@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-06T13:40:13Z",
-  "updated_at": "2026-10-06T13:40:13Z",
+  "updated_at": "2026-10-06T19:18:04Z",
   "files": {
     ".codex/config.toml": {
       "role": "index",
@@ -23,9 +23,9 @@
     },
     ".gitignore": {
       "role": "index",
-      "sha256": "4e86008860613a2be8e02b7614fa8498a852771bf995999c44406558707df6dd",
-      "size": 1291,
-      "normalized_sha256": "4782f16658ce6ebb34fed0354a14ad4ad49d96d441291c101841341b8cb3e9c0"
+      "sha256": "c90396d3f1abe98db5f7886a9044eaaa8c016c8056fb3cbd4c857f5e9beb410f",
+      "size": 1318,
+      "normalized_sha256": "c90396d3f1abe98db5f7886a9044eaaa8c016c8056fb3cbd4c857f5e9beb410f"
     },
     "AGENTS.md": {
       "role": "index",
@@ -47,9 +47,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "12cbc237b863041b3ab7b6c6330091964cb014a20e624ec1f88de6056aed56c2",
-      "size": 21,
-      "normalized_sha256": "12cbc237b863041b3ab7b6c6330091964cb014a20e624ec1f88de6056aed56c2"
+      "sha256": "d2963cd50965cb03744ae6b768ab67f5a754ec10d84e0fb648231b897b8c1938",
+      "size": 72069,
+      "normalized_sha256": "d2963cd50965cb03744ae6b768ab67f5a754ec10d84e0fb648231b897b8c1938"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -609,10 +609,10 @@
     },
     "backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_driver.go": {
       "role": "index",
-      "sha256": "8aed7a49ec1ea635623f8a1abee8ee2b3df0c9df146503019d93d3618d9df0d7",
-      "size": 83361,
-      "normalized_sha256": "8aed7a49ec1ea635623f8a1abee8ee2b3df0c9df146503019d93d3618d9df0d7",
-      "format_sha256": "8aed7a49ec1ea635623f8a1abee8ee2b3df0c9df146503019d93d3618d9df0d7",
+      "sha256": "1f5b9e7a1ab682889ed8c06112bc3763c73881fb2f45488248862a7892f0edd4",
+      "size": 83940,
+      "normalized_sha256": "1f5b9e7a1ab682889ed8c06112bc3763c73881fb2f45488248862a7892f0edd4",
+      "format_sha256": "1f5b9e7a1ab682889ed8c06112bc3763c73881fb2f45488248862a7892f0edd4",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_driver_audio_mockupstream_test.go": {
@@ -1161,10 +1161,10 @@
     },
     "backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_v1_loop.go": {
       "role": "index",
-      "sha256": "e2410c6250923ec9de2e143b2506f1de101fbc72ce7b3a781b50e6d33262d1eb",
-      "size": 88749,
-      "normalized_sha256": "e2410c6250923ec9de2e143b2506f1de101fbc72ce7b3a781b50e6d33262d1eb",
-      "format_sha256": "e2410c6250923ec9de2e143b2506f1de101fbc72ce7b3a781b50e6d33262d1eb",
+      "sha256": "e03226938d3707868c0ed315fef7d8640518feb274f877f1fad6af92b0d57381",
+      "size": 89159,
+      "normalized_sha256": "e03226938d3707868c0ed315fef7d8640518feb274f877f1fad6af92b0d57381",
+      "format_sha256": "e03226938d3707868c0ed315fef7d8640518feb274f877f1fad6af92b0d57381",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_v1_node_contract_test.go": {
@@ -3355,10 +3355,10 @@
     },
     "backend-go/projects/gateway/internal/accounts/m09_routes.go": {
       "role": "index",
-      "sha256": "90877fd73d55231ac41e5560bf531be9f0db1fdae1e2b40e539083365870222b",
-      "size": 10862,
-      "normalized_sha256": "90877fd73d55231ac41e5560bf531be9f0db1fdae1e2b40e539083365870222b",
-      "format_sha256": "90877fd73d55231ac41e5560bf531be9f0db1fdae1e2b40e539083365870222b",
+      "sha256": "7012d8e723cdfa0b5b0a494c6eceb2993bbc97f1f7d15b325c71b7d027e93dab",
+      "size": 11879,
+      "normalized_sha256": "7012d8e723cdfa0b5b0a494c6eceb2993bbc97f1f7d15b325c71b7d027e93dab",
+      "format_sha256": "7012d8e723cdfa0b5b0a494c6eceb2993bbc97f1f7d15b325c71b7d027e93dab",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/accounts/m09_test.go": {
@@ -9129,10 +9129,10 @@
     },
     "backend-go/projects/gateway/internal/gatewaydispatch/attemptoutcomes.go": {
       "role": "index",
-      "sha256": "fa293608210f3697c564b246d6d8c1096ee9a197adc4e297ac9f972ca4cc8931",
-      "size": 29350,
-      "normalized_sha256": "fa293608210f3697c564b246d6d8c1096ee9a197adc4e297ac9f972ca4cc8931",
-      "format_sha256": "fa293608210f3697c564b246d6d8c1096ee9a197adc4e297ac9f972ca4cc8931",
+      "sha256": "f47ae5ff20e46055aa87568a35f37bb0f5a8668df9894ef8d5732788cf96401c",
+      "size": 29843,
+      "normalized_sha256": "f47ae5ff20e46055aa87568a35f37bb0f5a8668df9894ef8d5732788cf96401c",
+      "format_sha256": "f47ae5ff20e46055aa87568a35f37bb0f5a8668df9894ef8d5732788cf96401c",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/gatewaydispatch/benchfixtures_bench_test.go": {
@@ -26481,9 +26481,9 @@
     },
     "docs/architecture/Go三项目架构基线.md": {
       "role": "index",
-      "sha256": "3b7a2497044633e7b1fa21f741b957f6f1c11e02bb810788bd165c0aaea12ab7",
-      "size": 13694,
-      "normalized_sha256": "06a8975fad8ea23b4be60260f2947b5bac0f034f54cc840bdf6deaa0994c2f24"
+      "sha256": "699ab4a8aa0b561a43f477aa34b7b0794c86abaf0e1bcc8aba759a58ab88f52e",
+      "size": 14199,
+      "normalized_sha256": "b62f3409b5fb4725f26332339aac6744defb23d4d477c4a8e9c3982bf1c355ae"
     },
     "docs/architecture/Go后端架构基线.md": {
       "role": "index",

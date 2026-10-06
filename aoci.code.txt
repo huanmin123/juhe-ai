@@ -1,1 +1,355 @@
 #AOCI-CODE-VOLUME: 1
+
+===F:/sub2api-lite/===
+LICENSE[SG3M]: F:Apache-2.0许可证全文，约束本项目代码的分发、修改与免责条款 | R:- | A:- | S:-
+.gitignore[FV3T]: F:Git忽略规则，排除构建产物、密钥env、SQLite与运行时临时目录 | R:code:.dockerignore, code:.gitattributes | A:- | S:-
+
+===F:/sub2api-lite/frontend/src/api/===
+client.ts[CG6T]: F:聚合全部 domain 模块为统一 api 出口并转发 http 处理器 | R:code:frontend/src/api/http.ts | A:api 聚合对象、apiUrl、setUnauthorizedHandler、setMustChangePasswordHandler | S:业务域按管理端与 my 前缀用户自助成对导出
+contracts.ts[CG6L]: F:声明各业务域请求参数与负载的共享类型契约 | R:code:frontend/src/types/domain.ts | A:ListParams、AccountListParams、AuditLogListParams 等 60 余个类型 | S:仅 MediaJobListParams 用 limit/offset 与 snake_case 键
+
+===F:/sub2api-lite/frontend/src/api/domains/===
+accounts.ts[IB6S]: F:封装 AI 账户管理全量调用，含测试会话与运行时重置 | R:- | A:accountsApi/myAccountsApi 的 list、update、test、batchUpdate | S:test 系列经 noTimeout 关闭超时；变更需 expectedConfigRevision
+announcements.ts[IB4T]: F:封装公告管理端发布流程与公开已读调用 | R:- | A:announcementsApi 的 list、publish、publicList、markRead | S:更新、发布、下线与删除均需 expectedRevision 乐观锁
+anthropicOAuth.ts[IB4T]: F:封装 Anthropic OAuth 授权建户与凭据轮换调用 | R:- | A:anthropicOAuthApi 的 authUrl、createFromCode、refreshToken | S:refreshToken 单独放宽超时至 130000ms
+apiKeys.ts[IB4T]: F:封装 API Key 增删改查、密钥查看与重置调用 | R:- | A:apiKeysApi/myApiKeysApi 的 list、create、update、secret | S:变更需 expectedRevision；id 经 encodeURIComponent 编码
+auth.ts[II5T]: F:封装验证码、登录登出、资料与改密调用 | R:- | A:authApi 的 login、me、captcha、changePassword | S:auth/ 前缀请求 401 不触发全局登出回调
+authorizationOptions.ts[II3T]: F:封装授权对象账户、团队与分组候选项查询 | R:- | A:authorizationOptionsApi 的 granteeAccounts、granteeGroups | S:granteeGroups 必传 granteeSystemAccountId
+authorizations.ts[II5S]: F:封装资源授权生命周期管理与用量统计调用 | R:- | A:authorizationsApi 的 list、create、revoke、teamUsage | S:revoke 与归还经 DELETE 请求体传 expectedUpdatedAt
+chat.ts[IB4S]: F:封装问答会话管理、SSE 流式与附件上传调用 | R:code:frontend/src/views/chat/chatStream.ts | A:chatApi.listConversations、streamChatMessage、attachChatStream | S:流式用原生 fetch 直连，绕过 axios 拦截器与 unwrap
+externalIntegrationSources.ts[IB3T]: F:封装外部集成源及其访问令牌管理调用 | R:- | A:externalIntegrationSourcesApi 的 list、create、createToken、tokenSecret | S:删除经 DELETE 请求体携带 expectedUpdatedAt
+geminiOAuth.ts[IB4T]: F:封装 Gemini OAuth 能力查询、建户与凭据轮换调用 | R:- | A:geminiOAuthApi 的 capabilities、authUrl、refreshToken | S:oauth 类型与能力经 capabilities 接口动态获取
+grokOAuth.ts[IB4T]: F:封装 Grok OAuth 建户、SSO 导入与凭据轮换调用 | R:- | A:grokOAuthApi 的 authUrl、ssoToOAuth、refreshToken | S:ssoToOAuth 批量导入超时 600000ms，逐项报错
+groups.ts[IB5T]: F:封装分组管理与账户、路由策略候选项查询 | R:- | A:groupsApi/myGroupsApi 的 list、options、routeStrategyOptions | S:list 默认 pageSize=500 拉全量；更新需 expectedUpdatedAt
+ipStats.ts[IS3T]: F:封装客户端 IP 统计查询与黑白名单策略调用 | R:- | A:ipStatsApi 的 list、detail、blacklist、allowlist | S:路径以 ipHash 而非明文 IP 标识
+logs.ts[IO5S]: F:封装审计、运行时、操作与公开四类日志查询 | R:- | A:auditLogsApi/runtimeLogsApi 的 list、searchHot、grep | S:审计与 grep 大查询用 noTimeout；my 域剥离管理端参数
+mediaJobs.ts[IB3T]: F:封装媒体任务列表分页查询调用 | R:- | A:mediaJobsApi.list | S:查询用 limit/offset 与 snake_case 键，非 page 分页
+modelChecks.ts[IB4S]: F:封装模型质检执行、质量策略计划与题库调用 | R:code:frontend/src/api/modelCheckStream.ts | A:modelChecksApi 的 run、runStream、saveQualityPolicy、questionBankReview | S:run 关闭超时；runStream 走 SSE 而非普通 POST
+openaiOAuth.ts[IB4T]: F:封装 OpenAI OAuth 授权建户与凭据轮换调用 | R:- | A:openaiOAuthApi 的 authUrl、createFromCode、refreshToken | S:refreshToken 单独放宽超时至 130000ms
+providers.ts[IB5T]: F:封装供应商定义、模型定价与健康检查模型调用 | R:- | A:providersApi 的 list、options、modelOptions、updateModel | S:-
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/gatewaydispatch/===
+accountpreparation.go[DB8L]: F:构造上游账户准备链：Key 选取、代理跳过、Codex 历史清洗 | R:code:backend-go/projects/gateway/internal/accountkeystates | A:- | S:指纹须与 accountkeystates 探活池逐字节一致，组合根注入同一 JUHE_AI_SECRET
+apikeyrotation.go[DW7M]: F:轮转选取账户 API Key：failover、round_robin、加权计数 | R:- | A:APIKeyRotationCounter 计数器端口（组合根实现注入） | S:计数器键含 strategy 段与 30 天 TTL；冷却中 Key 仅无健康候选时兜底返回
+attempt.go[DB6T]: F:定义单次上游尝试记录 UpstreamAttempt 与真实尝试判定 | R:- | A:UpstreamAttempt、IsRealUpstreamAttempt | S:UpstreamURL 承载 proxy:/account: 等伪协议哨兵，仅 http(s) 计真实尝试
+attemptoutcomes.go[DB9L]: F:结算尝试结局：成功句柄组装、失败分类与换 Key/跳账户决策 | R:code:backend-go/projects/gateway/internal/gatewaycircuit | A:- | S:失败/透传分支熔断须 ReportUnknown，禁前置 FramingComplete（BUG-0267）；结算幂等
+bodypreparation.go[DN6M]: F:归一化上游请求体：Anthropic messages 压平与 reasoning 对形 | R:- | A:PrepareAnthropicMessagesBodyForAttempt、NormalizeOpenAIReasoningFieldsForUpstream | S:已扫描 JSON 体复用准入期元数据，避免二次全量扫描
+candidatefilter.go[AB8M]: F:编排候选过滤管线：能力/模型过滤、模型感知重载与回退完成 | R:code:backend-go/projects/gateway/internal/gatewaypreauth | A:实现 gatewaypreauth.CandidatePipeline 候选过滤入口 | S:切号冻结目标不可解析 fail-closed；模型感知重载仅两层过滤零命中触发
+capacity.go[DW6M]: F:排序候选账户：lane 容量繁忙度优先并保留调度优先级分层 | R:- | A:OrderGatewayAccountsByLaneCapacityAvailabilityAsync、RefreshGatewayAccountCurrentConcurrencyAsync | S:busy 账户仅降位不剔除，容量等待由上游派发器负责；排序后叠加优先级分层保留
+circuitfacade.go[DR6S]: F:判定 Codex 压缩请求；启发式归类熔断传输失败 timeout/transport | R:- | A:CodexCompactionExpectedForRequest | S:压缩触发检测只扫 body 头尾各 64KiB；timeout 归类靠错误名与文本启发非类型
+dispatchsingle.go[AB9L]: F:执行单账户派发循环：Key 轮换、URL/尝试双环与 key-model 准入 | R:code:backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_dispatch.go | A:ResolveNormalRouteTotalTimeDeadline 与总时间档位常量 | S:准入让位释放并发槽后须把 Release 中和为 no-op，生产 Release 非幂等（P0-1）
+doc.go[SZ4T]: F:声明调度包职责范围、Node 迁移契约权威与组合要点 | R:- | A:- | S:契约权威为 Node 树 git HEAD；工作树未提交的 ProviderAnchor 符号刻意不含
+engine.go[AB8M]: F:装配调度引擎端口与运行配置，提供管线门面与熔断告警节流 | R:- | A:Engine、NewEngine、DefaultEngineConfig、CandidatePipelineOf | S:Secret 须与水合层同一 JUHE_AI_SECRET 否则 Key 指纹失配；nil 端口按 Node 守卫降级
+enginehelpers.go[DB7L]: F:提供并发短等获取、换 Key 判定、墙钟预算断言与尝试构造 | R:- | A:- | S:短等余额经 ServerRetryBudget 收窄后须回写请求级预算（BUG-0247 递减语义）
+errorhelpers.go[DN6S]: F:装配最后尝试为诊断错误信封并保留上游错误消息 | R:- | A:BuildDiagnosticUpstreamError | S:解析出上游 error 对象时整体优先；timeout→504 其余传输失败→502
+errors.go[DR7S]: F:定义派发错误分类：已证实传输失败、墙钟耗尽与首字切换 | R:code:backend-go/projects/gateway/internal/gatewaydispatch/gatewayupstream | A:UpstreamAttemptError、GatewayRequestWallBudgetExhaustedError 与传输失败判定 | S:Node WeakSet 已达上游事实改由包装错误类型承载，须 errors.As 识别
+fallbackcandidate.go[DB7M]: F:解析下一个分组回退候选：按 Key 绑定与路由计划游标推进 | R:- | A:CanAttemptApiKeyGroupFallback、ResolveNextGroupFallbackCandidateForArgs | S:切号冻结目标不可解析 fail-closed 跳组；runtime_degraded 全降级亦跳组
+candfilters.go[DB8L]: F:过滤候选账户：按请求能力与支持模型并产出逐账户跳过原因 | R:- | A:FilterGatewayAccountsByRequestCapability 等 4 个导出过滤入口 | S:直连命中排在映射命中之前；跳过明细封顶 20 条并带截断布尔
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/gatewaydispatch/gatewayoauthcodex/===
+builtintools.go[DN4T]: F:归一化 Codex 内建工具：web_search_preview 收敛为 web_search | R:- | A:NormalizeOpenAICodexBuiltinTools | S:-
+codexturnavoidance.go[DB5T]: F:过滤 Codex 回合避让账户并计算最后手段回转候选 | R:- | A:FilterCodexTurnAvoidedAccounts、CodexTurnReversalCandidates | S:reversed=true 时语义反转为保留避让账户；recoverable 失败不算穷尽保留回转资格
+errors.go[DN5T]: F:定义 Codex 适配器错误类型与构造选项 | R:- | A:OpenAIOAuthCodexAdapterError、NewOpenAIOAuthCodexAdapterError | S:AccountScoped 决定派发层跳账户或整组终止；默认 400 invalid_request_error
+oauthadapter.go[IN7M]: F:构造 OpenAI OAuth Codex 上游请求头与归一化请求体 | R:code:backend-go/projects/gateway/internal/gatewaydispatch/gatewayupstream | A:BuildOpenAIOAuthCodexRequestParts | S:X-Oai-Attestation 限 32KiB 且拒绝 CR/LF/NUL；非法 JSON 体 fail-fast 400
+
+===F:/sub2api-lite/docs/architecture/===
+Go三项目架构基线.md[SG8S]: F:规定Go三项目边界、依赖方向与验收门 | R:- | A:- | S:三项目禁止互相import；新定时功能只进jobs
+Go后端架构基线.md[SB7M]: F:规定Go后端技术、存储与并发基线 | R:- | A:- | S:SQLite同文件单writer；禁止无owner无取消goroutine
+Go开发手册.md[SB6T]: F:规定Go开发复用、并发与后台任务准则 | R:code:backend-go/shared/platform/upstreamhttp, code:backend-go/shared/platform/sqlpool | A:- | S:jobs不得调用gateway；探活直连账户真实上游
+Go技术选型与依赖基线.md[SB7S]: F:固定Go默认依赖、禁用清单与封装规则 | R:- | A:- | S:业务模块禁止import第三方库；新功能不引入队列
+README.md[SG3T]: F:索引架构设计目录文档入口 | R:- | A:- | S:-
+供应商驱动分层规范.md[SB6S]: F:规定协议、供应商与计费驱动分层边界 | R:- | A:- | S:通用网关层禁止写具体供应商分支，只经driver registry依赖
+功能开发指导.md[SG7M]: F:规定功能开发分层落点与数据统计边界 | R:code:backend-go/shared/platform/safego | A:- | S:日志原文保留，禁止重新加回脱敏清洗处理
+大文件重构指南.md[SG5S]: F:规定大文件拆分触发条件与标准流程 | R:- | A:- | S:单文件不得超过3000行，超限即不合格交付
+架构总览.md[SG8M]: F:规定整体架构、模块边界与网关主链路 | R:- | A:- | S:API Key只绑定路由策略；跨协议转换只属混合供应商账户
+账号类型统计缓存边界决策.md[SD4T]: F:规定统计与缓存键按本地身份隔离 | R:- | A:- | S:统计亲和缓存键禁止加入账号类型或上游账号ID
+
+===F:/sub2api-lite/docs/architecture/backend/===
+AI工具创建规范.md[SA5T]: F:规定AI工具参数契约与执行器边界 | R:- | A:- | S:执行器禁止按用户提示词改写或放宽工具参数
+OAuth模拟上游E2E设计.md[SQ3T]: F:记录OAuth模拟上游E2E历史测试设计 | R:- | A:- | S:历史文档不构成当前实现或操作授权
+README.md[SB4M]: F:记录Node时代后端架构历史设计截面 | R:- | A:- | S:Node时代设计截面，不构成当前实现或授权
+后台Worker多角色拆分设计.md[SW3S]: F:记录Node后台worker三角色拆分历史设计 | R:- | A:- | S:历史worker拓扑叙述不构成当前实现或授权
+后台任务使用说明.md[SW3S]: F:记录Node后台任务拓扑与周期偏移策略 | R:code:backend-go/projects/jobs/internal/schedulejitter | A:- | S:被动周期任务逐轮随机偏移，Node与Go窗口契约一致
+
+===F:/sub2api-lite/docs/architecture/frontend/===
+README.md[SU6T]: F:规定前端范围、菜单模式与页面缓存边界 | R:- | A:- | S:用户侧与管理侧入口必须由viewScope区分
+产品与品牌边界.md[SU4T]: F:规定品牌展示与登录页固定文案边界 | R:- | A:- | S:全局配置仅系统名称与图标路径；登录文案固定不配置
+响应式列表规范.md[SU5S]: F:规定列表页断点、滚动与响应式组件规则 | R:code:frontend/src/components/ResponsiveDataList.vue, code:frontend/src/components/ResponsiveListToolbar.vue | A:- | S:列表断点统一900px，工具栏与列表必须同步切换
+样式规范.md[SU5M]: F:规定页面样式、主题令牌与组件交互规范 | R:code:frontend/src/styles/global.css | A:- | S:AntD JS主题令牌必须hex字面量，var()使派生色失效
+通用组件规范.md[SU5M]: F:规定跨页面通用组件复用边界与默认语义 | R:code:frontend/src/components | A:- | S:业务页面禁止直接写a-table；危险动作必须二次确认
+
+===F:/sub2api-lite/backend-go/projects/gateway/===
+go.mod[FV4T]: F:声明 gateway 模块依赖版本与本地 replace 映射 | R:- | A:module github.com/huanminabc/juhe-ai/backend-go-gateway；go 1.26.0 | S:maintenance replace 是经批准跨项目导入例外（X05），限组合根 ensure+seed
+go.sum[FV4S]: F:锁定依赖模块内容哈希以供构建校验 | R:- | A:- | S:-
+
+===F:/sub2api-lite/backend-go/projects/gateway/cmd/juhe-ai-gateway/===
+storage_bootstrap_physical_unix.go[ED7T]: F:校验 SQLite 路径 nlink=1 并产出 dev:ino 物理身份 | R:code:backend-go/projects/gateway/cmd/juhe-ai-gateway/storage_bootstrap_physical.go | A:- | S:取不到 Stat_t 或 Nlink≠1 均 fail-fast 拒绝该 SQLite 路径
+storage_bootstrap_physical_windows.go[ED7T]: F:降级 Windows 硬链接门为 no-op 并停用 dev:ino 身份 | R:code:backend-go/projects/gateway/cmd/juhe-ai-gateway/storage_bootstrap_physical.go | A:- | S:os.Stat 无 nlink/ino，同文件重复改由共享门 os.SameFile 成对拒绝
+chain_runtime.go[AB8L]: F:组合根装配 /v1 链运行时服务族，按驱动轴分叉并 fail-fast | R:- | A:- | S:构造失败须先 Close 已建服务；ConcurrencyTracker 单实例供引擎与队列共享
+chain_spool_diagnostics.go[AO4T]: F:启动期打印用量 spool 目录解析路径并探测可写性 | R:- | A:- | S:spool 目录须与 jobs drain 侧解析到同一路径，否则交接静默断裂
+chain_switchtarget.go[AB5T]: F:构造成功后冻结本请求的切号有效上游目标 | R:- | A:- | S:仅主请求派发允许冻结；内部辅助派发须经 WithoutSwitchTargetCapture 剥离
+chain_turn_probe_store.go[AR4M]: F:装配 turn 探测服务并按 Node memory 语义实现探测状态存储 | R:- | A:- | S:仅实现 Node memory 驱动子集；跨实例探测协调待 Redis store 落地
+chain_turn_retry_redis.go[AD4S]: F:为 codex turn-retry 状态装配 Redis 驱动并复刻 Lua 契约 | R:- | A:- | S:nil client 回落 memory 驱动；键空间与 Node 同名运行态存储同构
+chain_usage.go[AB7L]: F:桥接用量持久投递与完成/失败尝试记账（缓冲加 spool 兜底） | R:- | A:- | S:入队先归一化补稳定 id/createdAt；spool 记录缺 id 被 jobs drain 判损坏
+chain_usage_wiring.go[AB4S]: F:接线 usage 服务的语义解析与协议错误解析组合根端口 | R:- | A:- | S:usage_semantic 按协议档案分派，hybrid 按档案 ID 小写包含判断
+chain_v1.go[EG9L]: F:编排 /v1 请求全流程与错误出口，时序镜像 Node 调用序列 | R:code:backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_v1_loop.go | A:gatewayChain 实现 http.Handler 承接 /v1 子树（compose 挂载） | S:compat 家族故意挂协议门之前（Go 增强）；三协议并集放行同链
+chain_v1_audit.go[AO5M]: F:把 G17 审计捕获适配进 preauth 与响应层审计面并投影输入 | R:- | A:- | S:Finalize 与 FinalizeExtended 二选一，不双写 finalize
+chain_v1_loop.go[AB9L]: F:驱动 /v1 派发循环：错误结算、分组回退切换与终态渲染 | R:- | A:- | S:post-verdict 结算先于分支树；typed nil 句柄装箱保持接口 nil
+chain_v1_speedfirst.go[AP7L]: F:实现速度优先首字/总时间截止决策与切号预留重派 | R:- | A:- | S:总时间决策回调在 transport timer goroutine，写槽与清零须持观察互斥锁
+chain_v1_streamretry.go[AB4S]: F:渲染流式服务端重试耗尽契约并过滤重派候选窗口 | R:- | A:- | S:客户端文案固定二选一，内部 message 只进审计不外发
+chain_wiring_w2c.go[AR5L]: F:装配 W2-C 可靠性服务端口适配器并挂上 /v1 派发链 | R:- | A:- | S:熔断持久观测配置不齐保持无持久化行为，绝不 fail-fast 网关启动
+circuit_runtime_init.go[OD4S]: F:一次性从业务库回填账户电路 Redis 运行态索引基线 | R:- | A:CLI flag：-init-account-circuit-runtime-index（one-shot 退出） | S:幂等整体重建；锁只防并发回填，不围栏遗留写入方
+codex_context_store.go[AD5T]: F:按数据库驱动装配 codex 桥双模行存储并探针 PG schema | R:- | A:- | S:PG 缺 juhe_codex_context schema 启动期 fail-fast 不静默降级
+compose.go[AG9L]: F:组合根装配 system-api 全部路由族、六库句柄与 /v1 链挂载 | R:- | A:挂载矩阵：/__aisys__/api 管理族、/__aipublic__、/v1、GET /health 两面 | S:SQLite 业务池 MaxOpenConns(1)，写事务内端口须专用读句柄防挂死
+compose_account_balance_health.go[AO4S]: F:按蓝绿 ownerMode 语义探测 jobs /health 裁定余额依赖健康 | R:- | A:env 契约：JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER/JOBS_HTTP_URL | S:health 恒 200，依赖降级只体现在 body status=degraded
+compose_account_balance_refresh.go[AB5L]: F:进程内装配手动余额刷新与模型目录刷新执行端口 | R:- | A:- | S:SQLite 由 gateway 直写 stats 快照；PG 由 jobs 投影 gateway 不直写
+compose_account_reads.go[AD4T]: F:装配账户列表授权统计与 API Key 运行明细读伴随端口 | R:- | A:- | S:端口容忍 nil 降级；装配失败按组合根 fail-fast
+compose_account_runtime_overlay.go[AD4S]: F:装配账户列表三路运行态 overlay 读端口并合并避让状态 | R:- | A:- | S:避让条目覆盖同键本地屏蔽；circuit 摘要按 100 键分块防截断
+compose_account_test_local.go[AW5S]: F:进程内装配手动账号测试执行链与单持有者本地队列 | R:- | A:env 契约：JUHE_AI_JOBS_PROBE_CONCURRENCY（默认 512 越界 fail） | S:EnqueueLocal false 按幂等成功，不得把 running 任务置败
+compose_accounts_reset.go[AR5L]: F:装配账户运行态重置桥：避让清理、Key 重验与探针派发 | R:- | A:- | S:transient generation 靠桥内存记，缺失时跳过 CAS 不写陈旧墓碑
+compose_authz_expiry_sync.go[AR4T]: F:按分钟节拍幂等重放已到期授权的 runtime 投影与配额同步 | R:- | A:- | S:单轮失败仅告警等下一轮；组件只在 ctx 取消时退出
+compose_authz_grant_returner.go[AI4T]: F:把账户归还端口接到 authz.Store.Return 终态状态机 | R:- | A:- | S:Status 逐字透传 updated/unchanged/not_found/conflict 供路由渲染
+compose_codex_usage_headers.go[AD4S]: F:把 codex/anthropic 用量响应头派发为维护表用量快照行 | R:- | A:- | S:fire-and-forget goroutine 用 WithoutCancel，失败仅 warn
+compose_prewarm.go[AP3T]: F:启动后异步预热网关 API Key 校验缓存 | R:- | A:- | S:失败仅告警不阻断启动；60s 超时，脱离 supervisor 生命周期
+compose_routestrategies_wiring.go[AC4S]: F:接线路由策略的校验缓存失效与速度优先运行态门面 | R:- | A:- | S:K5 发布无失败通道恒返回 nil，Node 500 分支结构性不可达
+gatewaychain.go[FG3T]: F:声明 /v1 链冻结端口的组合根归属并提供装配门 | R:- | A:- | S:装配恒开（开关已移除），gate 恒 nil 只要求 system-api 组合
+health_route.go[RO5T]: F:聚合进程 owner 就绪原子量统一两个健康端点判定 | R:- | A:GET /__aisys__/health 与 loopback /health 共用就绪判定（200/503） | S:validate 要求每个 owner 家族接线真实 atomic，防请求期 panic
+j3b_memory_keymodel.go[AD3T]: F:无 Redis 时为 key-model 前台准入提供进程内 memory 回退 | R:- | A:- | S:单进程 owner 重启即重置；配置 Redis 后本实现退出参与
+main.go[EG9L]: F:进程入口：解析 flag、装配 owner 租约与 supervisor 组件 | R:- | A:CLI: -version/-check-boundary/-init-account-circuit-runtime-index | S:F3/F4 共享租约须同 owner_id/fence_token；健康监听默认仅回环
+runtime.go[CC8L]: F:解析校验网关全量 env 配置并派生六库路径与驱动轴 | R:- | A:env 契约：JUHE_AI_RUNTIME_MODE/JUHE_AI_SECRET/USAGE_SPOOL_* 等全量校验 | S:NODE_ENV=production 是唯一生产信号；namespace 剥 juhe-ai: 根前缀
+runtime_logger.go[CO4T]: F:装配 slog 多路输出到 stdout 与按大小滚动 JSONL 文件 | R:- | A:- | S:文件 sink 失败降级 stdout-only 不拒绝启动；清理归 jobs 保留
+storage_bootstrap.go[AD5S]: F:SQLite 启动期按 Node 依赖顺序执行六库 ensure 与 seed | R:- | A:- | S:PG 模式启动不 ensure，schema 由 maintenance 显式执行
+storage_bootstrap_physical.go[AD4S]: F:校验六库配置两两不指向同一 SQLite 物理文件 | R:- | A:- | S:canonical 路径加 dev:ino 加 SameFile 三重判定；Windows 缺 nlink 有缺口
+chain_account_locks.go[AB7L]: F:实现账户锁运行态端口，直连业务库维护 ENGAGED 状态机 CAS 租约 | R:code:backend-go/projects/gateway/internal/gatewaydispatch | A:- | S:未启用锁账户四操作等价未锁；settle 写 temporary_unavailable 须带冷却复测 fence
+chain_accounts.go[AB8L]: F:实现 AccountsSelector：按分组查询可调度账户候选并排序水合凭据与质量分 | R:code:backend-go/projects/gateway/internal/gatewayruntimecache | A:JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT（1-50000，越界构造失败） | S:account_model_mappings 无 id 列，排序须按复合主键列，按 id 排序新库恒 500
+chain_accounts_secret.go[AB7L]: F:投影账户行为 OpenAIAccountSecret 运行凭据：解密、端点模式、Key 池与代理 | R:code:backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_accounts.go | A:- | S:凭据解密失败静默返回 nil 丢弃账户；端点模式不在词表即在投影时滤除
+chain_accounts_traffic_migration.go[AB4T]: F:适配 AffinityService 为 TrafficRuntimeMigrator 执行账户流量迁移交接 | R:- | A:- | S:Redis 失败须显式抛错（ThrowOnRedisError），不得静默返回零迁移数
+chain_affinity_dispatch.go[AW5T]: F:把 dispatch 亲和端口接到 preauth 同一 AffinityService 合流读写数据面 | R:- | A:- | S:仅 Redis cacheDriver 启用；高并发忙判定恒走 localSessionAffinity 活计数
+chain_apikey_rotation_redis.go[AW4T]: F:实现 Redis 版 API Key 轮转计数器：INCR+PEXPIRE 30d 取 (value-1)%modulo | R:- | A:- | S:键名不走命名空间后缀；memory 驱动注入 nil，引擎回落进程内计数器
+chain_bridge_response.go[AN7L]: F:按账户模型映射把上游 OK 响应跨协议转换为客户端形态（流式增量管道） | R:code:backend-go/projects/gateway/internal/openaicompat/openaicompatbridge | A:- | S:仅转换 OK 响应；流式泵 goroutine 独占上游体关闭，错误经 CloseWithError 传播
+chain_catalog.go[AB7L]: F:实现 CatalogSource：聚合内置与自定义目录，继承能力并过滤排序 | R:code:backend-go/projects/gateway/internal/providers | A:- | S:chainIsSupportedCatalogModel 与 internal/providers 同源，改动必须两处同步
+chain_chat.go[AU6M]: F:装配 AI 问答 /v1 链执行器、模型目录、Key 校验与资产对象存储 | R:- | A:- | S:Dispatch 直驱进程内 /v1 链无 loopback HTTP，响应头提交即返回体持续流转
+chain_chat_dispatch.go[AW6M]: F:实现会话绑定账户的调度覆盖：收敛候选窗口并对齐分组上下文 | R:- | A:- | S:身份缺失 fail-closed；携带目标禁用分组回退，绑定会话不逃逸绑定作用域
+chain_chat_image_proxy.go[AB4T]: F:按生图账户 proxy_profile 构造图片下载出站 HTTP 客户端 | R:- | A:- | S:代理解析失败或停用一律返回 nil 回落直连，不升级为生图失败
+chain_chat_images.go[AU5L]: F:解码缩放 chat 图片并以内置 VP8L 编码器输出无损 WebP（含 EXIF 方向校正） | R:- | A:- | S:输出无损 WebP 非 sharp 有损 82（字节偏大）；VP8L 编码宽高上限 1<<14
+chain_chat_keys.go[AU5L]: F:幂等创建 purpose='chat' API Key 与默认 GPT 策略路由并解密取回明文 | R:- | A:- | S:唯一索引竞态按查库回退幂等；分组名仅 SQL NULL 回退「默认分组」空串原样
+chain_chat_mount.go[AU6M]: F:装配 my-chat 路由族：组合 chat Deps 端口并挂载 systemApiPrefix/my-chat | R:- | A:- | S:shutdowns 为 LIFO：hub 排空须晚注册以先于链关闭；SQLite chat 库限单连接
+chain_chat_observation.go[AU5L]: F:调度图片语义观察：claim 资产行、派发 /v1/responses、解析回写观察 JSON | R:- | A:- | S:claim 带 15min 陈旧接管；回写按 revision+claimId CAS；绑定作用域缺失跳过
+chain_circuit_controlplane.go[AR6M]: F:把主链熔断状态转换桥接到 control-plane 持久化（ledger CAS 与 outbox） | R:- | A:- | S:owner gate 未齐不持久化；回调恒 nil，DB 写全在 worker；重放按 dedupe_key 幂等
+chain_compose.go[AW8L]: F:装配 /v1 网关链组合根：fail-fast 校验必填协作者并构造引擎与 preauth | R:- | A:- | S:必填协作者缺失即拒启；可选端口降级 disabled*；EngineSecret 须与水合层同源
+chain_dispatch.go[AW7L]: F:装配 dispatch 端口适配器：降级实现与避让、配额、并发、效果链桥 | R:- | A:- | S:configured-policy 避让先于本地屏蔽过滤；全避让即 503 completeFailure
+chain_dispatch_decision.go[AO4T]: F:把引擎调度决策事件投影为 gateway_dispatch_decision 结构化日志 | R:- | A:- | S:回调 panic-safe；skippedTop 截断 20 条；每请求至多一条日志
+chain_dispatch_recoverable_wait.go[AR4T]: F:把 G11 等待引擎适配为 dispatch 抑制恢复等待端口 | R:- | A:- | S:超时不算错误，回传最后采样状态由 AllSuppressed 分叉决定耗尽退出
+chain_driver.go[AN8L]: F:实现 ProviderDriver：按协议构造上游 URL、认证头与报文并裁决端点能力 | R:- | A:- | S:端点模式映射分支先于通用判定；媒体 adapter 能力缺失显式失败不静默回退
+chain_error_policy.go[DB7L]: F:按系统继承与账户规则匹配上游失败并决策 retry_next/cooldown/disable | R:- | A:- | S:系统额度规则 code 与文本标记取「或」；规则读取非法即上抛不静默跳过
+chain_error_policy_effects.go[AB7L]: F:把错误策略决策落库：冷却停用写侧与 Key 级失败记录 | R:code:backend-go/projects/gateway/cmd/juhe-ai-gateway/chain_error_policy.go | A:- | S:写侧带 dispatch_revision 观察围栏；系统 quota 通用码不得覆盖显式重置冷却
+chain_gateway_root.go[EG6T]: F:把无 /v1 前缀的协议路径根形态按族分流挂载进网关链 | R:- | A:根形态路由 /responses、/messages、/models、/videos、/v1beta/* 注册 kernel | S:gemini 族零重写透传：补 /v1 或剥 /v1beta 均过不了链门谓词
+chain_http_completion.go[AO4T]: F:提供每请求单次 HTTP 完成信号 subject，驱动审计与失败用量的完成时刻 | R:- | A:- | S:complete 幂等仅首次生效；监听锁外同步回调；1 缓冲通道无人等待不阻塞
+chain_media_video.go[AN7L]: F:承载媒体任务链：创建走派发，任务面直连落终态计费 | R:code:backend-go/projects/gateway/internal/gatewaymedia | A:- | S:终态仅 RowsAffected==1 入队 usage 防双计；上游 404 不伪造终态；受理后不换账户
+chain_obs_wiring.go[AO4T]: F:装配观测暗区：电路、热质量与路由预算回调接入 gatewayobs Observer | R:- | A:- | S:全部回调 panic-safe recover；Observer 构造失败 fail-fast；未装配保持 nil
+chain_openaicompat.go[AG4T]: F:挂载 openai-compatible files/containers/vector_stores 路由族进链 | R:- | A:非协议路由族 /v1/files、/v1/containers、/v1/vector_stores | S:族前缀未命中路由仍回 Node 404 JSON 契约，不用 net/http text/plain 默认
+chain_ports.go[AW8L]: F:装配链端口适配器：上游失败决策树与显式降级端口 | R:- | A:- | S:降级端口首用各告警一次；诊断与非网关流量直返上游响应不换账户；失败体 256KiB
+chain_preflight.go[AW6L]: F:装配网关 Key 校验、图像权限预检与 speed_first body 背压准入门 | R:- | A:- | S:准入租约须编排器在响应完成时 Release（幂等）；429 拒绝置 Connection:close
+chain_pricing.go[AB5M]: F:适配成本估算与同步定价目录，计费规则委托 internal/pricing 引擎 | R:- | A:- | S:不复制第二套估算实现（裁定以引擎为准）；目录行按 trim 相等匹配
+chain_realtime.go[AN7L]: F:承载 /v1/realtime WS 双向桥：认证选户拨号升级、双向泵与终态 usage 落账 | R:- | A:WS 入口 GET /v1/realtime（协议门后短路；Bearer 或 ?token= 认证二选一） | S:上游 101 即受理并绑定账户不换；受理前失败释放并发槽换下一候选
+chain_realtime_secrets.go[AI4T]: F:处理 POST /v1/realtime/client_secrets 签发 ephemeral token | R:- | A:POST /v1/realtime/client_secrets 响应 {"value","expires_at"(Unix 秒)} | S:token 值与请求 body 不进审计；model 须命中 realtime 目录否则早拒
+chain_request_failure_health.go[AR6M]: F:经 account_health_probe_request_outbox 落行交接 jobs J1 健康探针 | R:code:backend-go/projects/jobs | A:- | S:request_id 幂等；deadline 由网关写死同源 env；每请求至多派发一次（4096 FIFO）
+chain_routing.go[AW7L]: F:桥接 RouteResolver 到路由核心：普通与 merge 解析、账户再水合与配额门 | R:- | A:- | S:merge 段全池覆盖写 BoundGroupID；全片段配额剔空即 429 终局；映射行反射投影
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/businessauth/===
+service.go[DI5S]: F:封装 Business SQLite 会话生命周期并强制 owner 交接门 | R:code:backend-go/projects/gateway/internal/modelcheckauth | A:Service 实现 Port 接口：Login/Authenticate/ChangePassword/Revoke* 等会话操作 | S:OwnerGate 三字段全真才放行，否则 ErrOwnerGate；临时令牌前缀 juhe_tmp_
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accountkeystates/===
+credentials.go[DB7S]: F:投影凭据池 Key 条目，生成 HMAC 指纹并判定池隔离 | R:code:backend-go/projects/gateway/internal/accounts | A:FingerprintAPIKey/IsAccountAPIKeyPoolIsolationEnabled 供网关链判定池隔离 | S:provider 白名单按归档 Node 原文，不含 hybrid/xai，与 jobs proberepo 有意偏差
+details.go[DB5S]: F:投影账户 Key 池运行明细，脱敏为指纹前缀加末 4 位 | R:- | A:LoadAPIKeyRuntimeDetails 实现 accounts.APIKeyRuntimeDetailsReader 端口 | S:解密失败/非池/Key<2 渲染空列表；只出指纹前 12 位与明文末 4 位
+probe.go[PD6L]: F:登记池 Key 探针成败、CAS 抢占候选租约、解析探针目标 | R:code:backend-go/shared/platform/accounttest/proberepo | A:RecordFailure/RecordSuccess 与 FailureInput 等输入契约供网关失败链 | S:success 禁写 error/disabled 态；背期由注入时钟应用侧计算（同 proberepo）
+revalidate.go[DB5M]: F:重校验池 Key，将可重试非活动 Key 立即置到期并标记统计脏 | R:- | A:RevalidatePool 经 runtime-reset 桥接触发；Reason* 重校验理由码 | S:gate 顺序 not_found→revision 冲突→非 active→不可调度；租约未过 Key 不动
+states.go[PD5S]: F:按账户批量读取 Key 运行态选择状态 DB 投影 | R:- | A:- | S:两读面共享 selectionStateColumns 列序，scan 顺序与其强耦合
+store.go[PD8M]: F:构建域 Store，统一 PG/SQLite 方言绑定与时间序列化 | R:- | A:NewStore/Config：业务库句柄、Postgres 方言开关、Secret、时钟与缓存失效注入 | S:Secret 必填 fail-fast：凭据 AES-GCM 解密与 HMAC 指纹同源 JUHE_AI_SECRET
+summary.go[DB5M]: F:聚合池 Key 摘要统计并判定池是否全部不可用 | R:- | A:LoadSummariesByAccountIds/AllUnavailable 供列表 overlay 与 runtime-reset | S:凭据/协议字段 COALESCE 回落来源账户；解密失败账户跳过不出摘要
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accounts/accountsbalance/===
+accountsbalance.go[AB6S]: F:装配余额查询子域 Service 与跨域 Deps 函数端口 | R:- | A:New(Service)、Deps、BalanceAPIKeyFingerprint、StatsTable 方言限定 | S:StatsDatabase nil 时回落 store.DB()；指纹密钥为 store.Secret()
+balance.go[DB6L]: F:实现余额明细、手动刷新候选与强制激活 CAS 投影 | R:- | A:FindBalanceDetails/ForceActivatePending/ManualBalanceRefresher 端口 | S:快照须携带相等 configRevision 且 next_refresh_after 毫秒相等或双空
+balance_config.go[DB5M]: F:归一化校验余额查询配置与上游余额查询能力 | R:- | A:NormalizeAccountBalanceConfig、EffectiveAccountApiKeys 等余额配置面 | S:custom 适配器与 custom 块/内置偏好互斥；path 须同源相对（非 //）
+list_snapshot.go[DB4S]: F:叠加账户列表余额快照并投影白名单公共形状 | R:- | A:LoadRelayBalanceSnapshotRecords、BalanceSnapshotPublicFromSnapshot | S:900 分块 IN；解析失败行整行跳过；同 account_id 后写覆盖
+oauth_usage_snapshot.go[DB5L]: F:读取三种 kind 用量快照并投影 codex/claude 双窗 | R:- | A:LoadOpenAICodexUsageSnapshots 等 kind 键控读取与 RequiredRFC3339Instant | S:快照解析失败整行跳过；单字段时间非法只跳该字段；kind 为编译期字面量
+quota_recovery.go[DC4S]: F:归一化校验按账户类型的额度恢复策略与时区 | R:- | A:NormalizeQuotaRecoveryPolicy/Schedule；jitter_minutes 固定 15 | S:jitter_minutes 仅接受固定 15 兼容值；策略 JSON 上限 4096 字节
+snapshot_cleanup_port.go[CB3T]: F:声明保存后旧余额快照清理的 nil-safe 窄端口 | R:- | A:BalanceSnapshotCleaner、BalanceSnapshotCleanupRequest、reason 常量 | S:nil 端口保持消费方自含：清理静默跳过；实现须 best-effort 非阻塞
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accounts/accountscore/===
+credentials.go[CG5T]: F:定义凭据记录类型并委托平台加解密信封 | R:- | A:Credentials、EncryptJSON/DecryptJSON、AuthorizedAccountReader | S:v1 信封与 apikeys、jobs oauthrefresh 共享；Node 旧行逐字节可解
+doc.go[SG3T]: F:声明 accounts 中立类型层的依赖方向契约 | R:- | A:- | S:众人只 import accountscore；它不 import 门面或兄弟子域包
+endpointmodes.go[CG6M]: F:维护端点模式词表、供应商 token 与默认模式解析 | R:- | A:OpenAIEndpointModeValues 词表与 Default*/Is* 模式谓词族 | S:新能力 token 进词表不进默认集；词表缺失使对应 /v1 车道无候选
+errors.go[CG5T]: F:定义账户域冲突、校验与修订冲突错误类型 | R:- | A:ConflictError/ValidationError/RevisionConflictError | S:-
+listoptions.go[CG4T]: F:定义列表查询排序分页过滤的跨包契约 | R:- | A:ListOptions、ListSort、AccountListSortFields | S:-
+patch.go[CG3T]: F:定义审计日志共用的字段变更载荷类型 | R:- | A:PatchChange | S:-
+primitives.go[CG5S]: F:沉淀时间、SQL 占位与 JSON 归一化的跨包原语 | R:- | A:IsoMillis、Placeholders、CanonicalRFC3339、DuplicateAccountNameError | S:DuplicateAccountNameError 依赖唯一约束错误文本匹配（SQLite/PG 双文案）
+schedule_types.go[CG4T]: F:定义可用性时间计划的存储文档类型 | R:- | A:AvailabilitySchedule、ScheduleWindow、ScheduleException | S:解析与求值逻辑留门面 schedule.go，经 Deps 端口注入子域
+scope.go[CI6T]: F:定义账户访问范围并推导管理与归属身份 | R:- | A:AccessScope、ManageableID、CanAccessAll、OwnerID、EffectiveViewerID | S:非 admin 钉死 ViewerID；OwnerID 空 viewer 直接报错
+sql.go[CG5T]: F:提供双方言表名限定、占位符改写与布尔字面量 | R:- | A:SQLTable/SQLBind/SQLForUpdate/BoolTrueLiteral 等方言原语 | S:PG 分支把 instr( 改写 strpos(（2026-09-25 生产 500 修复）
+storebase.go[CG7T]: F:收敛子域包消费的 Store 能力窄端口与 Queryer | R:- | A:StoreBase、Queryer | S:门面以活字段实现端口：测试克隆 Store 换字段仍被观察
+writeinput.go[CB4T]: F:定义创建输入与状态选择等写路径跨包 DTO | R:- | A:CreateInput、AccountCreationStatusInput、AccountHealthCheckEndpointModes | S:非法 status 回落 pending_test；active 跳过初始健康检查并置可调度
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accounts/accountsreset/===
+effects.go[CB5S]: F:声明运行时重置端点的跨包副作用端口族 | R:- | A:RuntimeResetEffects 接口与 RuntimeAvailabilityClearInput 等载荷 | S:nil 端口保持端点自含：运行时清理报 unchanged/zero，生产须装配真桥
+runtime_reset.go[DB7L]: F:实现账户运行时重置：失败态清理与授权派发恢复 | R:- | A:ResetAccountRuntimeState 主流程与 RuntimeResetEffects 消费面 | S:锁死 ENGAGED/DEAD_CONFIRMED 硬边界永不复位；revision CAS 失败即 409
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accounts/accountstest/===
+accountstest.go[CB5T]: F:承载手动测试子域 Service 并声明派发副作用端口 | R:- | A:New(Service)、TestDispatchEffects、SetTestDispatchEffects | S:nil 端口→派发 503、取消 no-op；队列本进程单 sweep owner
+options_service.go[DB5L]: F:装配手动测试模型选项、能力解析与目录合并 | R:- | A:AccountManualTestOptions/AccountManualTestModelCapabilities 等选项面 | S:目录合并 personal>global>built_in、同优先级后写胜、发布日期新者胜
+store.go[PB6L]: F:实现测试会话与任务持久化、取消及过期清理 | R:code:backend-go/shared/platform/accounttest/manualtestrepo | A:CreateTestSession/CreateTestTask/CancelTestSession 等持久化面 | S:testTaskRowSelect 必须经方法走 Table()，const 裸表名曾致 PG 42P01
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accounts/accountstransfer/===
+accountstransfer.go[AB6S]: F:装配导入导出与批量编辑子域的写端口与函数端口 | R:- | A:New(Service)、Deps、AccountWriter 窄写接口 | S:子域只 import accountscore；跨域写面/目录断言/计划求值经 Deps 端口
+batch.go[DB6L]: F:实现批量编辑上下文加载与全字段事务批量更新 | R:- | A:BatchUpdate、LoadBatchEditContext、BatchUpdateBody、BatchEditContextBody | S:批量事务 all-or-nothing；模型类字段限相同供应商/协议档案/账户类型
+batch_effects.go[DB6M]: F:推进批量派发修订族并执行提交后缓存失效链 | R:- | A:AdvanceBatchDispatchRevisionFamily、CacheInvalidator 失效端口 | S:族推进先锁父后锁子防死锁；提交后失效 best-effort 仅告警
+export.go[DB5L]: F:构建原生导入协议的账户导出文档与代理引用 | R:- | A:ExportAccounts、ParseExportBody、AccountImportProtocolType 协议常量 | S:授权实例永不导出；凭据按类型白名单；上限 500、分页 200
+import.go[DB6L]: F:实现账户导入预览计划与确认执行流水线 | R:- | A:PreviewImport、ExecuteImport、ParseImportBody | S:预览零写入；active 导入改写 pending_test；代理创建失败级联账户失败
+import_source.go[IB5L]: F:改写第三方来源账户为原生导入协议文档 | R:- | A:AdaptImportSource、ImportSourceModes、AdapterState、SafeSourceBaseURL | S:base_url 全过 assertSafeUpstream，拒绝计 ignoredFields；masked key 丢弃
+import_source_yaml.go[IB3T]: F:解码 CPA YAML 输入并归一为 JSON 形态值 | R:- | A:ParseCpaInput、NormalizeYAMLValue | S:仅接受单文档；空流按 null；YAML 数值/时间归一 float64/ISO
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/accounts/===
+api_key_runtime_revalidate.go[EB6S]: F:挂载并处理 API Key 池重新验证路由与操作日志 | R:- | A:POST /accounts/{id}/api-key-runtime/revalidate 与 /my-accounts 同名路由 | S:admin 面走 RequireAdmin、my 面走会话；revision 不符 409
+authorization_stats.go[CI4T]: F:注入账户列表授权统计投影的窄读取端口 | R:- | A:AuthorizationStatsSource、Store.SetAuthorizationStatsSource | S:nil 端口零值降级；authorized 行恒 0/false；source 错误使列表失败
+authorized.go[CI5S]: F:接线授权实例可读集合并定义授权视图权限 | R:- | A:Store.SetAuthorizedReader/SetLogger；AuthorizedAccountReader 别名 | S:读取失败降级 owner 视图仅记日志；admin 跳过投影
+balance_snapshot_cleanup.go[AB4M]: F:实现旧余额快照的有界重试队列删除执行器 | R:code:backend-go/projects/gateway/internal/accounts/accountsbalance/snapshot_cleanup_port.go | A:NewStoreBalanceSnapshotCleaner、Store.SetBalanceSnapshotCleaner、Close | S:Close 必须先于 SQL 连接关闭；同账户新请求替换旧队列项
+balance_subdomain_bridge.go[AB5L]: F:桥接余额子域：保留别名与 Store 转发，活字段构造服务 | R:code:backend-go/projects/gateway/internal/accounts/accountsbalance | A:SetManualBalanceRefresher/SetModelCatalogRefresher 组合根注入 | S:每次以 Store 活字段构造子域 Service，无缓存保持故障注入克隆语义
+chat_lookup.go[PB4S]: F:提供会话账户绑定只读查询与启用分组列表 | R:- | A:Store.FindChatAccount/ListChatAccountOptions（GET /my-chat/accounts） | S:两查询必须同口径；范围外或不存在返回 (nil, nil)
+client_compatibility.go[DB4T]: F:推导与归一化客户端兼容值，openai/v1 下 gpt 渲染 codex_responses | R:- | A:normalizeOpenAIAccountClientCompatibility（列表/克隆/草稿共用） | S:非 gpt 或非 openai/v1 恒归 openai_standard；非法存储值失败整页
+clone.go[PB5L]: F:读取克隆上下文：凭据选项投影与双读版本稳定校验 | R:- | A:Store.FindCloneContext（GET /accounts/{id}/clone-context） | S:双读 revision 不一致重试一次后报冲突；凭据只回计数与配置
+credential_update.go[DB5S]: F:实现凭据合并语义：null 删键、遗留提交池替换与字段保留 | R:- | A:applyAccountCredentialsPatch/mergeAccountCredentialsForUpdate | S:api_key 单 Key 提交清空池字段；池提交删除单 api_key
+credentials_normalize.go[DB7L]: F:归一化凭据写入：键白名单、按类型校验与 JSON 大小上限 | R:- | A:NormalizeAccountCredentialsForWrite：全部凭据写入唯一漏斗 | S:输出 JSON 往返规范化保证深比较形状；speech_* 仅 volcengine 放行
+crypto.go[CS6T]: F:转发凭据信封加解密与 sha256/掩码工具，生成 acc/acctag ID | R:- | A:EncryptJSON/DecryptJSON/HashSecret/MaskSecret/NewAccountID/NewTagID | S:secret 为 Node runtimeConfig.secret，Node 写入行须保持可解密
+delete.go[AB6M]: F:软删账户及实例并撤销授权链，同事务投递健康墓碑 | R:- | A:Store.Delete（DELETE /accounts/{id}）；SetDeletedResourceGrantRevoker 接线 | S:授权账户拒绝删除须走归还；SQLite 走 revoker 端口否则批量臂
+endpoint_modes.go[DB7L]: F:维护端点模式词表与 driver 注册表，写侧归一化与兼容断言 | R:- | A:normalizeEndpointModesForWrite/assertEndpointModesCompatible 等写侧入口 | S:driver 未注册硬错误；minimax/volcengine/qwen 默认集仅零费用档
+error_policy.go[DB5M]: F:校验错误处理规则与系统覆盖：动作、恢复与匹配约束 | R:- | A:normalizeAccountErrorHandlingRules（含系统覆盖校验） | S:系统继承规则拒绝写入；状态码/错误码禁 2xx 成功值
+invalidation.go[AB5M]: F:同步提交后的统计脏标记与 lookup/运行时缓存失效 | R:- | A:Store.AdvanceDispatchRevisionFamily（oauthmgmt 凭据轮换 fence） | S:失效尽力而为失败仅告警；lock 族刻意不发缓存失效（Node 对齐）
+list.go[PB7L]: F:查询分页管理列表：范围过滤、固定排序与多层 hydrate | R:- | A:Store.ListPage/ListOptionSummaries/FindEditBasicDetail；ListItem 投影 | S:availabilityPresentation 必须在 runtime overlay 之后；authorized 行省略余额
+list_availability_presentation.go[DB4M]: F:合成列表可用性展示：状态映射、边界与探针事实 | R:- | A:AccountAvailabilityPresentation JSON 对齐前端 accounts.ts | S:statusBoundary 命中即返回不看 probe；不发 probePresentation 键
+list_runtime_overlay.go[AB5M]: F:叠加运行态三路事实到列表行并重算可用性分支 | R:- | A:SetRuntimeAvailabilitySource/SetCircuitSummarySource 等 overlay 端口 | S:端口 nil 或读失败逐源降级字段缺席；runtime 分支仅实例 active 生效
+list_usage.go[AB5M]: F:读取统计库列表用量：日桶与总量按 scope 连接投影 | R:- | A:UsageSource 端口与 StatsUsageSource.AccountListUsageSummaries | S:nil source 零值降级但 source 错误使列表失败；成本列读 success_cost_usd
+lock.go[AB5M]: F:设置锁死状态与配置：双 CAS 事务与活跃事件簿记保留 | R:- | A:Store.SetLock/LockConfig；NormalizeLockDeathTimeoutSeconds 校验 | S:重锁保留 ENGAGED 事件簿记；锁配置变化释放重试租约
+m11_authorized_dispatch.go[AB6L]: F:更新授权账户调度绑定：守卫、失败清除与 revision 推进（单事务） | R:- | A:Store.UpdateAuthorizedDispatch（PATCH /{id}/authorized-dispatch） | S:超级优先与降级备用互斥；恢复调度须推进 dispatch revision
+m11_reads.go[PB5L]: F:提供高级详情、重授权上下文与 Key 运行时读取投影 | R:- | A:FindAdvancedDetail/FindOAuthReauthorizationContext 等三读取入口 | S:授权行凭据面只回有效策略投影；实例行禁读来源 Key 池明细
+m11_return_authorization.go[AB5S]: F:定位可归还直接授权并交由 authz Return 状态机终写 | R:code:backend-go/projects/gateway/internal/authz | A:Store.ReturnAuthorizationInstance（POST /{id}/return-authorization） | S:终态写必须走注入的 authz Returner；not_found/conflict 渲染 404
+m11_routes.go[EB6L]: F:挂载 M11 路由族：高级/余额/流量/归还/调度/分组双面注册 | R:- | A:mountM11Routes：advanced/balance/traffic/return/dispatch/group 12 对路由 | S:balance refresher 未接线显式 500；流量迁移 runtime 失败不静默降级
+m11_traffic_migration.go[AB6L]: F:迁移账户流量：归属/分组守卫、源状态 CAS 与交接输入组装 | R:- | A:Store.MigrateTraffic（POST /{id}/traffic-migration） | S:源置 temporary_unavailable 写 3 秒退避与新冷却代际
+model_catalog_validation.go[DB5L]: F:校验请求覆盖与映射的目录归属及上游协议声明 | R:- | A:AccountModelCatalogReader 端口/SetModelCatalogReader（组合根接线） | S:nil 端口断言 no-op；媒体映射放开 includeUnpriced；q 须传调用方事务防死锁
+model_mapping_protocol_matrix.go[DB5L]: F:维护协议转换矩阵、端点族能力门与协议模型池校验 | R:- | A:assertAccountModelMappingProtocolAllowed（含 hybrid 变体）矩阵断言 | S:媒体端点族与目录协议 token 不同名须经翻译；媒体池须 includeUnpriced
+patch.go[AB8L]: F:执行基础编辑事务：字段 diff、凭据重封与运行态归一化 | R:- | A:Store.Patch/PatchInput/PatchResult（PATCH /accounts/{id} 与 group 绑定共用） | S:clearFailureState 禁与字段修改混交；运行态同列赋值保留末值
+patch_runtime_state.go[DB6M]: F:按目标状态归一化冷却/错误列族与状态变更白名单 | R:- | A:nextRuntimeState/assertStatusMutationAllowed（patch 编辑状态机） | S:clearRetest 保留新武装代际（jobs 冷却 fence 依赖）；初始退避 3 秒
+response_inspection.go[DB4M]: F:校验响应检查规则：动作枚举、匹配字段与数量上限 | R:- | A:normalizeAccountResponseInspectionRules | S:非禁用规则至少一个匹配条件；上限 20 条
+retryqueue.go[CR4M]: F:提供键控有界重试队列：并发上限、序列退避与 followUp 单槽 | R:- | A:- | S:running 项替换走唯一 followUp 槽；重试延迟按下一 attempt 索引取
+routes.go[EB7L]: F:挂载账户路由族：admin 与 self 双面、请求范围与审计落库 | R:- | A:Deps.Mount（组合根入口）；/accounts 与 /my-accounts 全路由族 | S:my-* 面强制 self 范围；PATCH 健康相关变更提交后派发配置探针
+runtime_reset_routes.go[EB4T]: F:挂载运行时清理路由：无去重保留与错误映射 | R:- | A:POST /accounts/{id}/runtime-reset（+ /my-accounts 镜像） | S:清理可重试：成功/失败均不保留去重条目（DedupNoRetention）
+runtime_reset_subdomain_bridge.go[AB4S]: F:桥接运行时重置子域：别名转发与 Effects 端口注入 | R:code:backend-go/projects/gateway/internal/accounts/accountsreset | A:Store.SetRuntimeResetEffects/ResetAccountRuntimeState 转发 | S:每次以活字段构造子域 Service，无缓存指针保持克隆注入语义
+schedule.go[DB5L]: F:解析与求值时间计划：窗口校验、跨午夜与下次检查点 | R:- | A:NormalizeSchedule/ParseScheduleJSON/ScheduleStatus/NextScheduleCheckAt | S:跨午夜窗口取今昨两天起点；本地分钟到 UTC 迭代对齐 DST
+store.go[PB7L]: F:承载 Store 方言基础：错误别名、绑定、搜索词与生效状态 | R:- | A:NewStore/Store；AccessScope/ValidationError/RevisionConflictError 别名 | S:stats 句柄未接线回退业务句柄；生效状态 SQL 内联时钟字面量
+tags.go[PB4S]: F:提供账户标签列表与删除：绑定计数与占用拒绝 | R:- | A:Store.ListTags/DeleteTag | S:标签仍绑定活跃账户时拒绝删除（TagInUseError）
+m09_routes.go[EB6M]: F:挂载批量编辑与导入导出处理器：self 范围与统一 400 错误 | R:- | A:POST /accounts/batch-update、import 预览与确认、export（含 my 镜像） | S:导出审计 Sensitive 只记规模不落明文；my-* 面对管理员也强制 self
+test_dispatch_routes.go[EB6L]: F:挂载手动测试路由族：派发、会话、状态与草稿快照链 | R:- | A:/{id}/test-options 与 test、test-draft、test-sessions 族 | S:多段测试路径骑 /accounts/ 子树手工分发（ServeMux 冲突）；投递失败落 503
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/business/key_model_runtime/===
+operations.go[DB5T]: F:声明 key-model dispatch owner 须绑定的 12 个 manifest 操作 | R:- | A:导出 ManifestOperations：12 个 key-model manifest 操作名 | S:Node key-model 代码归档前须由 dispatch owner 绑定
+redis.go[DB8L]: F:用 Lua 脚本原子管理 key-model 熔断准入、失败与恢复状态 | R:- | A:NewRedisStore/OwnerGate；RedisStore 原子准入、失败记录、恢复租约、J1 确认 | S:键前缀与 Node 同源；probe fence 写/清/延由 gatewayaccounteffects 承担
+runner.go[DB7S]: F:周期扫描到期 key-model，执行半开探针并结算恢复 | R:- | A:NewRunner/Runner.Run/RunCycle；RecoveryStore 接口与 ProbeExecutor | S:跨实例互斥靠 Redis 租约；结算提交用 context.WithoutCancel
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/business/session_retention/===
+README.md[SB3T]: F:说明会话保留原语的冻结 Node 语义与 owner gate 约束 | R:- | A:- | S:expiredBefore 验证后保留原串，禁止归一化防改变文本比较语义
+retention.go[PB5M]: F:单事务内按冻结语义清理过期 system_sessions 并返回删除数 | R:- | A:Store.Cleanup/CheckContract；Port 接口；OwnerGate 三证写门槛 | S:严格 expires_at < cutoff；显式时间戳验证后原样保留
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/business/settings/===
+settings.go[PB5M]: F:提供设置读写与 provider 目录 CAS 整替的事务端口 | R:- | A:Port：Get/PutGlobal/System、ListProviderModels、ReplaceProviderCatalog | S:expected 空即仅允许新建；catalog_visible 谓词须按方言生成
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/business/system_accounts/===
+README.md[SB3T]: F:说明系统账户原语覆盖范围、写门槛与默认资源创建 | R:- | A:- | S:Create 仅接受已生成 PasswordHash；缺加密能力即失败关闭
+service.go[AB4M]: F:定义系统账户契约类型并薄转发调用到 Store | R:- | A:Port、Service、SystemAccount/Patch/PatchResult、SecretCipher | S:Patch 用指针的指针区分 null 与未提交；模型不含密钥明文
+store.go[DB6L]: F:以事务实现系统账户 List/Options/Create/PatchCAS 与默认资源 | R:- | A:NewStore/New、Store.List/Options/Create/PatchCAS/CheckContract、错误集 | S:super_admin 变更先 advisory lock 保底超管；改密/停用同事务清会话
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/authsys/===
+app.go[EI6L]: F:挂载系统账户管理 CRUD 路由并定义操作日志条目契约 | R:- | A:NewDeps/MountSystemAccounts 注册 /__aisys__/api/system-accounts CRUD | S:D-238：空格校验为路由级 400；patch 需 expectedUpdatedAt 且至少一个修改字段
+default_resources.go[DB6M]: F:在账户创建事务内补种默认分组、默认路由与默认 API Key | R:- | A:NewSQLDefaultResources 供组合根装配 DefaultResourceEnsurer | S:sealer 缺失 fail-fast；顺序 分组→路由→Key；chat Key 依赖 GPT 默认路由
+middleware.go[MI8M]: F:解析会话令牌注入 AuthContext 并按角色与改密门拦截 | R:- | A:RequireSession/RequireAdmin/AuthContextFrom/SetSessionCookie | S:改密门仅 RequireSession 携带；auth 族用 ForAuthRoutes 保持 /me 可达
+operationlog_sink.go[IO5M]: F:把 authsys 操作日志条目适配为 F4 producer 持久化输入 | R:- | A:OperationLogProducerSink（组合根接线为 Deps.Sink） | S:MaxChanges 0 视为默认 500，越界丢弃整条并告警，超限截断为 __truncated__
+owner_gate.go[DI7T]: F:以交接门 fail-closed 守护系统账户存储的全部读写 | R:- | A:OwnerGate.Ready/ErrOwnerGate/CheckContract | S:门未就绪时每个 store 操作返回 ErrOwnerGate，绝不触碰业务库
+profile_limits.go[DI4M]: F:计算资料页有效请求限流：全局设置叠加用户覆盖 | R:- | A:- | S:usageStatsTimezone 缺失即报错；覆盖按该时区日期判断是否仍生效
+routes.go[EI8L]: F:挂载登录、验证码、改密与临时令牌认证路由族 | R:- | A:MountAuth 注册 /__aisys__/api/auth 全部认证路由 | S:登录守卫存储故障 fail-closed 返 500；临时令牌 ttl 限 60..3600 且校验 IP 白名单
+shared_captcha.go[IS4M]: F:以 Redis 共享态签发验证码并 GETDEL 一次性核销 | R:code:backend-go/projects/gateway/internal/authsys/shared_runtime_state.go | A:NewRedisCaptchaService/NewSharedCaptchaService 实现 CaptchaIssuer | S:与 Node 共用 auth_captcha 键空间；Verify 存储故障读作核验失败
+shared_login_guard.go[IS5S]: F:以 Redis 共享态实现 IP 与用户名两级登录节流锁定 | R:code:backend-go/projects/gateway/internal/authsys/shared_runtime_state.go | A:NewRedisLoginGuard/NewSharedLoginGuard 实现 LoginGuardDriver | S:D8：Check/Failed 存储故障向上传播为 500，绝不降级为未锁定
+shared_runtime_state.go[ID5M]: F:实现 Node 兼容命名空间的 Redis 运行态键值存储 | R:- | A:RedisStateStore；NewRedisNamespacedStateStore(url, namespace, name) | S:键前缀 juhe-ai:<ns>:state:<name>: 与 Node 一致；JSON 解析失败删毒键读作未命中
+store_accounts.go[PI7L]: F:持久化系统账户 CRUD、密码与乐观锁补丁并联动缓存失效 | R:- | A:NewAccountStore/Create/Patch/UpdatePassword/ListPage；HashNodePassword | S:PG 以 advisory lock 串行化最后活跃 super_admin 不变量；改密或停用清空会话
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/authz/===
+authorized_reads.go[PD4T]: F:解析查看者经自身授权运行态行可读的实例账户集合 | R:- | A:AuthorizedReadableAccountIDs 供 accounts 授权读面消费 | S:过期由 sweep 翻状态故不做墙钟比较；未打戳实例回退限被授权人命名空间
+delete_resource.go[DB5T]: F:资源删除时逐条回收未终结授权 grant 并同步运行态 | R:code:backend-go/projects/gateway/internal/authz/sync.go | A:RevokeGrantsForResourceDeleted 供 accounts 删除事务调用 | S:终态 grant 跳过不清理其绑定，与 PG 批量臂存在方言差异
+downstream.go[DB6L]: F:重建 grant 配额小时窗绑定并联播账户健康任务输入 | R:- | A:- | S:绑定重建须在运行态投影后同一事务内执行；仅 PG 标脏小时窗统计
+expiry.go[DD4S]: F:规范化授权过期时间并校验不早于当前与账户到期 | R:- | A:-（canonicalize/validate 均包内共享） | S:裸本地时间不得落服务器时区；NULL 过期永不失效；版本比较按毫秒瞬间
+expiry_reconcile.go[DR6S]: F:重放 jobs 侧已翻转 expired 的运行态投影与配额绑定 | R:code:backend-go/projects/gateway/internal/authz/downstream.go | A:ReconcileExpiredGrants 由 gateway 到期对账任务周期调用 | S:授权过期以 jobs sweep 为准，gateway 仅补偿同步；健康输入不重放防空耗
+instance_provision.go[DB7L]: F:为账户授权克隆实例账户并绑定被授权人默认分组 | R:- | A:SyncAccountAuthorizationInstanceNamesForSourceAccount | S:实例 credentials 列仅为空 JSON 占位，读面投影 NULL 改读源账户凭据
+invalidation.go[AD4S]: F:提交后按 Node 六件套扇出授权写侧缓存失效 | R:- | A:AttachWriteInvalidator 由组合根注入统计脏标记与失效总线 | S:仅在提交后的 created/updated 结果调用；通道失败只告警不回滚
+json_helper.go[CL2T]: F:提供 json 序列化与反序列化的包内统一包装 | R:- | A:- | S:-
+list_projection.go[PD4M]: F:批量投影 grant 行为授权列表项并按管理权裁剪字段 | R:- | A:ListItem/ListItemSourceSummary 为授权列表 HTTP 形状 | S:limits 与账户到期仅 canManage 可见；可选字段照 Node undefined 缺省
+mutations.go[DB7L]: F:实现授权创建、补丁、回收、归还与到期扫描状态机 | R:code:backend-go/projects/gateway/internal/authz/sync.go | A:Store.Create/Patch/Revoke/Return/ExpireSweep | S:CAS 冲突判定先于一切输入派生结果；相同重创建幂等；团队有效授权上限 20
+options_routes.go[EI4M]: F:挂载被授权人账户、团队与分组选项查询路由族 | R:- | A:MountAuthorizationOptions 双前缀挂载 admin 与 my-* 面 | S:选项查询不受 access scope 过滤，路由仅决定可见性
+options_store.go[PD4S]: F:提供被授权人账户、团队与分组的免 scope 选项查询 | R:- | A:- | S:分组选项按 is_default DESC 排序，preferDefault=false 才改按更新时间
+return_group.go[DB5S]: F:实现被授权人归还分组授权并终结手工来源运行态 | R:- | A:ReturnGroupForGrantee 供 groups 归还路由消费 | S:owner 不可归还自己的分组；此路径无乐观锁版本检查直接盖时间戳
+routes.go[EI8L]: F:挂载授权管理面与 my-* 自助面的完整授权路由族 | R:- | A:MountAuthz(k, deps) 为 gateway 组合根唯一挂载入口 | S:my-* 面固定 owner scope 丢弃 systemAccountId；管理员代建必须带 scope 账户
+stats_loader.go[KP4M]: F:按资源聚合活跃授权数与团队来源数并带 LRU 缓存 | R:- | A:ResourceAuthorizationStatsByResourceIds 供 accounts 摘要注入 | S:零值同样入缓存；归档 Node 未接线失效，Go 保持仅 TTL 过期语义
+store.go[PB6L]: F:承载授权 grant/source/runtime 三表状态机持久化基座 | R:- | A:NewStore；NextVersion；Status*/Max* 常量；Fail/Conflict；ListItemsPage/Find | S:NextVersion=max(now,current+1ms)；乐观锁比较 updated_at；SQLite 用量读需注入 stats 句柄
+sync.go[DB7L]: F:把 grant 变更投影为运行态行、来源与有效来源刷新 | R:code:backend-go/projects/gateway/internal/authz/downstream.go | A:-（sync/upsert/refresh 链均包内调用） | S:revoked/returned 须先显式写回再 refresh；单独 refresh 只钉住现有状态
+team_cascade.go[DB6M]: F:把团队启停与成员增删级联到授权运行态与来源 | R:- | A:RevokeAllTeamSources/ReactivateTeamGrants 等级联入口及 Tx 变体 | S:扇出超 members×grants 上限即中止整个事务；owner 不获自己资源的团队来源行
+usage_detail.go[PD5L]: F:聚合单条授权的成员用量明细与团队窗口汇总 | R:- | A:UsageSummary/UsageDetail 为授权用量明细 HTTP 形状 | S:account 用量记被授权人、group 记 owner；团队汇总读每日表不查冻结窗口
+usage_reads.go[PD5L]: F:从授权每日汇总表聚合团队与用户用量行与汇总 | R:- | A:- | S:日期范围钳制 31 天；admin 无 filter 读 global 聚合行；全零组被 HAVING 隐藏
+usage_routes.go[EI5M]: F:挂载授权用量聚合、明细查询与管理员归还路由 | R:- | A:- | S:严格 schema 拒绝未知查询键且英文 zod 文案标 upstream；GET 明细不再内联到期扫描
+validation.go[CQ4M]: F:镜像 zod 契约校验授权路由查询与 JSON 请求体 | R:- | A:-（decodeStrictJSON/queryParser 包内共享） | S:首个 issue 按字段声明顺序渲染；英文默认文案标 upstream 防本地化改写
+limits.go[CG4T]: F:经 gatewayquota 规范化授权 limits JSON，空文档落 SQL NULL | R:- | A:-（包内共享规范化与投影解码） | S:NULL 与 "{}" 语义等价；非法遗留行投影时省略而不改读契约
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/aipublic/===
+accounts.go[EB7L]: F:实现公开账号 list/add/update/del 四路由，strict 校验后经 accounts.Store 落库 | R:- | A:- | S:更新走 3 次 configRevision CAS 重试，仍冲突 409；仅支持 api_key 账户
+aipublic.go[EG8M]: F:装配 /__aipublic__ 18 条公开路由，统一 bearer 鉴权、scope 与限流守卫 | R:- | A:Deps.Mount 注册 18 路由；Prefix=/__aipublic__；鉴权错误体为 {message,code} | S:capture 先于鉴权包裹 guard，401/429 也记录；测试 token 走 mock 不触资源表
+apikeys.go[EB6L]: F:实现公开 API Key 四路由；新增明文仅随创建响应返回一次 | R:- | A:- | S:删除分支 not_found 也回 200 信封；validation cache 失效失败按 500
+auth.go[MI7M]: F:校验来源系统 token：sha256 哈希查库、状态过期门与 scope 求交 | R:code:backend-go/projects/gateway/internal/apikeys/crypto.go | A:ValidateToken 返回 AuthContext/AuthError；AuthContextFrom 读取请求上下文 | S:last_used_at 每 60s 至多触碰一次且失败不阻断；错误无 code 时按裸 500 处理
+capture.go[MO5M]: F:捕获公开面请求生命周期：缓冲 body、截取响应快照交 Capture 端口 | R:- | A:PublicApiLogCapture 端口与 PublicApiLogCaptureSink 适配器导出 | S:请求体超 256KB 直接 413 不回放；快照仅收首个响应载荷且截 32KB
+dto.go[CB4M]: F:定义公开响应 DTO 与 sanitize 投影，输出 strict 字段子集与统一信封 | R:- | A:导出 PublicTarget/PublicGroupTarget/Public*Summary 系列 JSON DTO | S:-
+groups.go[EB6L]: F:实现公开分组四路由；列表走包内轻量 SQL 而非管理分组 store | R:- | A:- | S:已存在分组返回 action=existing；已删分组 not_found 走 404 裸 {message}
+helpers.go[CG4S]: F:提供包内双库 SQL 方言绑定与值归一、JSON 小工具 | R:- | A:- | S:bind 把 ? 重写为 PG $N；runeLen 以 rune 近似 JS UTF-16 length
+operationlog.go[MO4S]: F:记录公开账号写删操作日志，actor 记为 external:<sourceRefId> | R:- | A:- | S:Sink 为空或账号 ID 空即静默跳过；日志失败从不使请求失败
+providers.go[EB5M]: F:实现公开供应商只读 list/detail，detail 分 basic/models 两标签页 | R:- | A:- | S:basic 页拒绝 category/page/pageSize；models 页按 model ASC+id 稳定排序
+ratelimit.go[MP7M]: F:实现惩罚窗限流：逐规则独立桶、惩罚翻倍，支持 Redis 共享桶 | R:code:backend-go/projects/gateway/internal/gatewayproxyhealth | A:NewPenaltyWindowLimiter/LimitDecision/RedisStateClient 导出 | S:先检全部规则再统一计数；Redis 故障回退内存并 warn；惩罚上限 max(窗口,15min)
+strategies.go[EB6L]: F:实现公开路由策略四路由，列表补全绑定摘要经策略 store 落库 | R:- | A:- | S:更新以 owner.updated_at 为期望版本；绑定缺省 priority=序号、weight=1
+target.go[AB6L]: F:解析并自动创建公开目标用户与分组，预检供应商档案 | R:- | A:- | S:自动建用户带随机密码与 must_change_password；分组名匹配大小写不敏感
+zod.go[CG4M]: F:复刻 zod v3 校验消息与 query/body 解析器，使 400 文案逐字节对齐 Node | R:- | A:- | S:非 nullable 字符串遇显式 null 报 invalid_type；query 重复键取首值
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/announcements/===
+routes.go[EU6L]: F:装配公告公开与管理面路由族，zod 等价校验后写操作日志 | R:- | A:Mount(k,deps,store,sink) 注册 /__aisys__/api/announcements 路由族 | S:公开 /announcements/public 靠字面路由优先于 /{id}；本族刻意不做缓存失效
+store.go[PD6L]: F:持久化公告：公开列表已读、管理分页、revision CAS 与发布迁移 | R:- | A:NewStore 与 Store（ListPublic/MarkRead/ListPage/Patch/Delete）导出 | S:revision 固定毫秒宽防排序错乱；转 published 清空已读；无变更 no-op 不 bump
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/apikeys/===
+crypto.go[CS6T]: F:提供 API Key 密封加解密、sha256 哈希与 sk- 随机密钥生成 | R:- | A:EncryptJSON/DecryptJSON/HashSecret/NewAPIKey；HashSecret 供 aipublic 复用 | S:密文走共享 accountcrypto AES-256-GCM v1 信封，Node 旧行可逐字节解密
+patch.go[DB7L]: F:实现 revision 锁定 PATCH：逐字段变更、schedule 状态覆盖与缓存失效 | R:- | A:Store.Patch/PatchInput/RevisionConflictError（409+currentRevision） | S:quota/status 变更后重建小时窗绑定并打脏；validation 失效失败随 Outcome 上报
+quota_hourly_dirty.go[PW4T]: F:标记配额小时窗脏范围供 jobs 增量消费，仅 PG 且提交后执行 | R:- | A:- | S:仅 PG 打脏（SQLite 无消费者）；提交后尾随效果，失败仅 warn 不回滚主写
+routes.go[EB7L]: F:装配 /api-keys 管理面与 /my-api-keys 自助面双前缀路由族与操作日志 | R:- | A:Deps.Mount 挂 /__aisys__/api/api-keys 与 my-api-keys 全 CRUD 家族 | S:my-* 强制 self scope；validation 失效失败统一 500；400/500 前先留原始错误日志
+schedule.go[DB6L]: F:归一化并求值 API Key 时间计划：窗口、例外与下次检查点 | R:- | A:NormalizeSchedule/ParseScheduleJSON/ScheduleStatus/NextScheduleCheckAt | S:跨午夜窗口同时评估今昨两日起点；默认时区懒解析防嵌套查询；无边界回退 +7d
+store.go[PB7L]: F:持久化 API Key：密封创建、秘密刷新、守卫删除与清理目标登记 | R:- | A:NewStore 与 Store（ListPage/FindDetail/Create/Patch/RefreshSecret/Delete） | S:明文仅响应一次；validation 失效失败使操作失败；PG 删除事务内登记清理目标
+usage.go[PA5M]: F:水合 API Key 用量摘要：从 stats 库读列表三项投影与明细全量聚合 | R:- | A:UsageSource/SetUsageSource/NewStatsUsageSource 导出读端口 | S:仅 SQLite 读 worker（JUHE_AI_SQLITE_READ_WORKER）对缺表降级，PG 一律失败
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/auditlog/===
+config.go[FC7M]: F:加载并校验 F3 审计 env：模式、租约、保留策略与专库物理隔离 | R:- | A:LoadConfig/Config/RetentionConfigAt；JUHE_AI_AUDIT_LOG_* env 契约 | S:采样率 0 与保留天数 0 必须联动；SQLite 专库不得与六库及 shard 共用文件
+hot_search.go[PO5L]: F:维护小时桶 NDJSON 热搜索镜像：fence 追加、有界扫描与桶级清理 | R:- | A:sqlStore.AppendHotSearch/SearchHotSearch/CleanupHotSearch 导出 | S:追加清理同 owner fence；桶端点晚于 cutoff 不删；超长文本 64KB 分块记序号
+legacy_migration.go[OD4L]: F:执行旧 Node 审计 SQLite 到 Go 专库的一次性离线迁移与全量校验 | R:- | A:MigrateLegacySQLite(options)；需 --node-stopped --go-stopped 双停机门 | S:行数/主键/EXCEPT 字段全等校验；blob 先验 sha256 再临时文件原子发布
+owner.go[RR7L]: F:承载 F3 owner 租约续期循环与 retention 节奏，支持丢租后重获 | R:- | A:StartLeaseKeeper/RunOwner/LeaseKeeper.Lease()/Lost()/LostError() | S:续约有 owner+fence+未过期守护；传输类失败 2×TTL 宽限重试；reacquire 换 fence
+producer.go[MM6S]: F:异步持久化审计：有界队列，逐条续租、写库、镜像热搜索 | R:- | A:NewProducer/Producer.Capture/DroppedTotal 导出（fire-and-forget） | S:队列满丢弃并累计告警；每条先续租，失败即丢弃；panic 单条隔离不伤 worker
+retention.go[PR6L]: F:执行 owner fence 下有界保留清理：热窗降级、非持久化源清除与 blob GC | R:- | A:sqlStore.CleanupRetention/Retain；RetentionResult 六项计数返回 | S:先删子行再删主行；blob GC 先落持久意图；文件删除失败保留重试不删元数据
+routes.go[EO6S]: F:暴露管理员手动审计清理路由，与自动轮共用 lease 与配置合成 | R:- | A:Deps.Mount 注册 POST /__aisys__/api/audit-logs/cleanup（RequireAdmin） | S:固定操作指纹防连击重放；lease 丢失 400 其余 500；设置读取失败整轮拒绝
+schema.go[PD4S]: F:声明 F3 审计五表双库 DDL 与全套索引（SQLite 与 juhe_dataset） | R:- | A:- | S:attempts/refs 级联删除；blob 唯一键含 content_type；PG 文本索引 COLLATE C
+settingsread.go[CC5M]: F:热读业务库审计保留设置，按 DB 行存在性合成生效配置 | R:- | A:ReadRetentionSettings 热读；EffectiveRetentionSettings 合成生效配置 | S:值非法报错跳过本轮不扩清理；SQLite 只读 mode=ro+query_only；单句柄懒打开
+store.go[PB8L]: F:持久化 F3 审计：fence 校验、blob 发布、幂等 upsert 与错误分组聚合 | R:- | A:OpenStore 构建 sqlStore 实现同包 Store 接口（含租约/保留/热搜索全家） | S:PG 锁序 audit→blob advisory；已有 gzip blob 不重编码；提交未知保留 blob
+types.go[DD6L]: F:定义 F3 审计 DTO、枚举、Store 接口与输入归一化及深拷贝 | R:- | A:Store 接口与 AuditLogInput/OwnerLease/RetentionConfig/RetentionResult | S:归一化前深拷贝可变字段防并发突变；finalized 后迟到 in_progress 输入被忽略
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/business/account_cleanup/===
+README.md[SD4T]: F:声明账户清理 owner 边界、冻结 Node 行为与安全门 | R:code:backend-go/projects/gateway/internal/business/account_cleanup/cleanup.go | A:- | S:OwnerGate 三项同为真才可写；cleared fence 无 token 即 fail-closed
+cleanup.go[DD5L]: F:软删孤立授权实例，fence cleared 后事务内物理删除过期账户 | R:- | A:Port{CheckContract,CleanupExpiredDeletedAccounts}; RecordFenceReader | S:每账户独立事务+行 CAS；Gate 三真才写；物理删前重读 tombstone 校验恒等
+
+===F:/sub2api-lite/backend-go/projects/gateway/internal/business/account_test_task/===
+operations.go[FW4T]: F:声明账户测试任务已覆盖与未接管的操作清单 | R:- | A:CoveredManifestOperations; OutstandingManifestOperations | S:清单仅作证据，不得据此宣告 transaction group 交接完成
