@@ -62,8 +62,5 @@ backend-go/docker/single-server/build/bin/
 .zcode
 .playwright-cli
 /.zcode/
-
-/.aoci/
-
 /AGENTS.md.backup.*
 /.codex/
