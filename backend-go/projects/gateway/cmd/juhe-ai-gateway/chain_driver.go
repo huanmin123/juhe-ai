@@ -1808,38 +1808,46 @@ func (d *chainProviderDriver) requiredSupportedEndpointMode(req *gatewaypreauth.
 		return "", false
 	}
 	stream := gatewaypreauth.RequestStream(req)
-	// codex_responses 客户端的 /responses POST 强制 SSE（D-99），账户必须持有
-	// responses_sse。
-	if strings.EqualFold(requestClientCompatibility, "codex_responses") &&
-		isOpenAIResponsesPostRequestForCompatibility(req) {
-		return gatewaypreauth.EndpointModeResponsesSSE, true
-	}
 	// 跨协议映射把许可词汇表切到上游族（Node
 	// anthropicMessagesChatBridgeRequiredEndpointMode /
 	// geminiGenerateContentChatBridgeRequiredEndpointMode /
 	// codexResponsesChatBridgeRequiredEndpointMode /
-	// openAIToAnthropicBridgeRequiredEndpointMode）。
-	if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil &&
-		mapping.UpstreamEndpointFamily != "" && mapping.UpstreamEndpointFamily != mapping.SourceEndpointFamily {
-		switch openaicompatcore.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) {
-		case "chat_completions":
-			if stream || openaicompatcore.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == "responses" {
-				return gatewaypreauth.EndpointModeChatSSE, true
+	// openAIToAnthropicBridgeRequiredEndpointMode）。映射分支一律先于通用
+	// 分支判定（Node glm / openai-compatible / hybrid / gpt 各 driver 同序）：
+	// 命中 responses -> chat_completions 显式映射的 chat-only 账户对
+	// codex_responses 客户端请求只要求 chat_sse，不被 responses_sse 强制
+	// 淘汰（BUG-0179）。OAuth 账户不走映射分支（Node gpt driver 的
+	// account.type !== 'oauth' 守卫），保持原生 Responses 语义。
+	if account.Type != "oauth" {
+		if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil &&
+			mapping.UpstreamEndpointFamily != "" && mapping.UpstreamEndpointFamily != mapping.SourceEndpointFamily {
+			switch openaicompatcore.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) {
+			case "chat_completions":
+				if stream || openaicompatcore.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == "responses" {
+					return gatewaypreauth.EndpointModeChatSSE, true
+				}
+				return gatewaypreauth.EndpointModeChatJSON, true
+			case "anthropic_messages":
+				if stream {
+					return gatewaypreauth.EndpointModeMessagesSSE, true
+				}
+				return gatewaypreauth.EndpointModeMessagesJSON, true
+			case "gemini_generate_content", "gemini_stream_generate":
+				if stream {
+					return gatewaypreauth.EndpointModeGenerateContentSSE, true
+				}
+				return gatewaypreauth.EndpointModeGenerateContentJSON, true
+			default:
+				return "", false
 			}
-			return gatewaypreauth.EndpointModeChatJSON, true
-		case "anthropic_messages":
-			if stream {
-				return gatewaypreauth.EndpointModeMessagesSSE, true
-			}
-			return gatewaypreauth.EndpointModeMessagesJSON, true
-		case "gemini_generate_content", "gemini_stream_generate":
-			if stream {
-				return gatewaypreauth.EndpointModeGenerateContentSSE, true
-			}
-			return gatewaypreauth.EndpointModeGenerateContentJSON, true
-		default:
-			return "", false
 		}
+	}
+	// codex_responses 客户端的 /responses POST 强制 SSE（D-99），账户必须持有
+	// responses_sse；仅无跨族映射账户（对齐 Node driver 映射分支先行语义，
+	// BUG-0179）。
+	if strings.EqualFold(requestClientCompatibility, "codex_responses") &&
+		isOpenAIResponsesPostRequestForCompatibility(req) {
+		return gatewaypreauth.EndpointModeResponsesSSE, true
 	}
 	switch normalizeProtocol(account.ProtocolCode) {
 	case driverProtocolAnthropic:
