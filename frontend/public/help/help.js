@@ -1,12 +1,9 @@
+// juhe-ai 在线帮助文档站：manifest 篇目导航 + rendered 预渲染 HTML 加载 + Markdown 原文下载。
+// 内容管线：docs/**/*.md（唯一人工维护层）→ scripts/render-help-docs.mjs → rendered/**/*.html。
+// 本文件零依赖；帮助面不引入任何外部域脚本。
 (function () {
-  var sourceNav = document.querySelector('[data-nav]');
-  var mobileNavTarget = document.querySelector('[data-nav-mobile]');
-  if (sourceNav && mobileNavTarget) mobileNavTarget.innerHTML = sourceNav.innerHTML;
+  'use strict';
 
-  var searchInput = document.querySelector('[data-help-search]');
-  var liveRegion = document.querySelector('[data-search-status]');
-  var sections = Array.prototype.slice.call(document.querySelectorAll('.section[id]'));
-  var links = Array.prototype.slice.call(document.querySelectorAll('[data-nav-link][href^="#"]'));
   var brandImages = Array.prototype.slice.call(document.querySelectorAll('.brand-icon'));
   var brandFallbacks = Array.prototype.slice.call(document.querySelectorAll('.brand-badge'));
 
@@ -21,203 +18,15 @@
   }
 
   brandImages.forEach(function (image) {
-    image.addEventListener('load', function () {
-      showBrandImage(image);
-    });
-    image.addEventListener('error', function () {
-      showBrandFallback(image);
-    });
+    image.addEventListener('load', function () { showBrandImage(image); });
+    image.addEventListener('error', function () { showBrandFallback(image); });
     if (image.complete) {
       if (image.naturalWidth > 0) showBrandImage(image);
       else showBrandFallback(image);
     }
   });
 
-  function setActive(id) {
-    links.forEach(function (link) {
-      var active = link.getAttribute('href') === '#' + id;
-      link.classList.toggle('active', active);
-      if (active) link.setAttribute('aria-current', 'true');
-      else link.removeAttribute('aria-current');
-    });
-  }
-
-  if ('IntersectionObserver' in window && sections.length) {
-    var observer = new IntersectionObserver(function (entries) {
-      var visible = entries.filter(function (entry) { return entry.isIntersecting; })
-        .sort(function (a, b) { return b.intersectionRatio - a.intersectionRatio; })[0];
-      if (visible) setActive(visible.target.id);
-    }, { rootMargin: '-16% 0px -72% 0px', threshold: [0.1, 0.3, 0.6] });
-    sections.forEach(function (section) { observer.observe(section); });
-  }
-
-  var searchResults;
-
-  function getSearchMatches(query) {
-    var terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.length) return [];
-    return sections.filter(function (section) {
-      var content = section.textContent.toLocaleLowerCase();
-      return terms.every(function (term) { return content.indexOf(term) !== -1; });
-    });
-  }
-
-  function getSectionLabel(section) {
-    var heading = section.querySelector('h2');
-    return heading ? heading.textContent.trim() : section.id;
-  }
-
-  function locateSection(section) {
-    window.history.replaceState(null, '', '#' + section.id);
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    setActive(section.id);
-    searchInput.value = '';
-    searchResults.hidden = true;
-    if (liveRegion) liveRegion.textContent = '已定位到“' + getSectionLabel(section) + '”。';
-    searchInput.blur();
-  }
-
-  function renderSearchResults(matches, query) {
-    searchResults.replaceChildren();
-    searchResults.hidden = !query || !matches.length;
-    matches.slice(0, 8).forEach(function (section) {
-      var result = document.createElement('button');
-      result.type = 'button';
-      result.textContent = getSectionLabel(section);
-      result.addEventListener('click', function () { locateSection(section); });
-      searchResults.appendChild(result);
-    });
-    if (liveRegion) {
-      liveRegion.textContent = query
-        ? matches.length ? '找到 ' + matches.length + ' 个章节，按 Enter 定位第一个结果。' : '未找到匹配章节。'
-        : '';
-    }
-  }
-
-  function applySearch() {
-    if (!searchInput) return [];
-    var query = searchInput.value.trim();
-    var matches = getSearchMatches(query);
-    renderSearchResults(matches, query);
-    return matches;
-  }
-
-  if (searchInput) {
-    searchResults = document.createElement('div');
-    searchResults.className = 'search-results';
-    searchResults.hidden = true;
-    searchInput.parentElement.appendChild(searchResults);
-    searchInput.addEventListener('input', applySearch);
-    searchInput.addEventListener('keydown', function (event) {
-      if (event.key !== 'ArrowDown' || searchResults.hidden) return;
-      var first = searchResults.querySelector('button');
-      if (first) {
-        event.preventDefault();
-        first.focus();
-      }
-    });
-    searchResults.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape') {
-        searchInput.value = '';
-        applySearch();
-        searchInput.focus();
-        return;
-      }
-      var buttons = Array.prototype.slice.call(searchResults.querySelectorAll('button'));
-      if (!buttons.length) return;
-      var index = buttons.indexOf(document.activeElement);
-      if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        buttons[(index + 1) % buttons.length].focus();
-      }
-      if (event.key === 'ArrowUp') {
-        event.preventDefault();
-        buttons[(index <= 0 ? buttons.length : index) - 1].focus();
-      }
-    });
-    document.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape' && document.activeElement === searchInput) {
-        searchInput.value = '';
-        applySearch();
-        searchInput.blur();
-      }
-      if (event.key === 'Enter' && document.activeElement === searchInput) {
-        var matches = applySearch();
-        if (matches.length) {
-          event.preventDefault();
-          locateSection(matches[0]);
-        }
-      }
-    });
-  }
-
-  var mobileNav = document.querySelector('.mobile-nav');
-  if (mobileNav) {
-    links.forEach(function (link) {
-      link.addEventListener('click', function () {
-        if (window.matchMedia('(max-width: 900px)').matches) mobileNav.removeAttribute('open');
-      });
-    });
-  }
-
-  var flowExplorers = Array.prototype.slice.call(document.querySelectorAll('[data-flow-explorer]'));
-
-  flowExplorers.forEach(function (explorer) {
-    var flowButtons = Array.prototype.slice.call(explorer.querySelectorAll('[data-flow-step]'));
-    var flowNodes = Array.prototype.slice.call(explorer.querySelectorAll('[data-flow-node]'));
-    var flowDetails = Array.prototype.slice.call(explorer.querySelectorAll('[data-flow-detail]'));
-    var defaultStep = explorer.getAttribute('data-default-flow-step') || (flowButtons[0] && flowButtons[0].getAttribute('data-flow-step'));
-
-    function setFlowStep(step, announce) {
-      flowButtons.forEach(function (button) {
-        var selected = button.getAttribute('data-flow-step') === step;
-        button.setAttribute('aria-selected', selected ? 'true' : 'false');
-        button.setAttribute('tabindex', selected ? '0' : '-1');
-      });
-      flowNodes.forEach(function (node) {
-        node.classList.toggle('is-active', node.getAttribute('data-flow-node') === step);
-      });
-      flowDetails.forEach(function (detail) {
-        var selected = detail.getAttribute('data-flow-detail') === step;
-        detail.hidden = !selected;
-        detail.setAttribute('aria-hidden', selected ? 'false' : 'true');
-      });
-      if (announce && liveRegion) {
-        var activeDetail = explorer.querySelector('[data-flow-detail="' + step + '"] strong');
-        if (activeDetail) liveRegion.textContent = activeDetail.textContent;
-      }
-    }
-
-    flowButtons.forEach(function (button) {
-      button.addEventListener('click', function () {
-        setFlowStep(button.getAttribute('data-flow-step'), true);
-      });
-      button.addEventListener('keydown', function (event) {
-        var currentIndex = flowButtons.indexOf(button);
-        var targetIndex;
-        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') targetIndex = (currentIndex + 1) % flowButtons.length;
-        if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') targetIndex = (currentIndex - 1 + flowButtons.length) % flowButtons.length;
-        if (typeof targetIndex !== 'number') return;
-        event.preventDefault();
-        flowButtons[targetIndex].focus();
-        setFlowStep(flowButtons[targetIndex].getAttribute('data-flow-step'), true);
-      });
-    });
-
-    flowNodes.forEach(function (node) {
-      var nodeLink = node.closest('a');
-      if (!nodeLink) return;
-      nodeLink.addEventListener('focus', function () {
-        setFlowStep(node.getAttribute('data-flow-node'), false);
-      });
-      nodeLink.addEventListener('pointerenter', function () {
-        setFlowStep(node.getAttribute('data-flow-node'), false);
-      });
-    });
-
-    if (defaultStep) setFlowStep(defaultStep, false);
-  });
-
+  // 角色分流门控页（/__aisys__/help/）：按登录身份跳转对应受众文档站。
   if (document.body.classList.contains('help-gate')) {
     fetch('/__aisys__/api/auth/me', { credentials: 'include' })
       .then(function (response) {
@@ -231,5 +40,167 @@
       .catch(function () {
         window.location.assign('/__aisys__/login?redirect=' + encodeURIComponent('/__aisys__/help/'));
       });
+    return;
   }
+
+  var audience = document.body.getAttribute('data-audience') === 'admin' ? 'admin' : 'user';
+  var searchInput = document.querySelector('[data-help-search]');
+  var liveRegion = document.querySelector('[data-search-status]');
+  var navRoot = document.querySelector('[data-doc-nav]');
+  var titleNode = document.querySelector('[data-doc-title]');
+  var summaryNode = document.querySelector('[data-doc-summary]');
+  var bodyNode = document.querySelector('[data-doc-body]');
+  var downloadLink = document.querySelector('[data-download-link]');
+  var pagerRoot = document.querySelector('[data-doc-pager]');
+  var updatedAtNode = document.querySelector('[data-updated-at]');
+  var docs = [];
+  var currentId = null;
+
+  function docById(id) {
+    for (var i = 0; i < docs.length; i += 1) {
+      if (docs[i].id === id) return { doc: docs[i], index: i };
+    }
+    return null;
+  }
+
+  function renderNav(filter) {
+    if (!navRoot) return;
+    var query = (filter || '').trim().toLocaleLowerCase();
+    navRoot.replaceChildren();
+    var shown = 0;
+    docs.forEach(function (doc, index) {
+      var haystack = (doc.title + ' ' + (doc.summary || '')).toLocaleLowerCase();
+      if (query && haystack.indexOf(query) === -1) return;
+      shown += 1;
+      var link = document.createElement('a');
+      link.href = '#/doc/' + encodeURIComponent(doc.id);
+      link.textContent = (index + 1) + '. ' + doc.title;
+      link.setAttribute('data-doc-link', doc.id);
+      if (doc.id === currentId) {
+        link.classList.add('active');
+        link.setAttribute('aria-current', 'page');
+      }
+      navRoot.appendChild(link);
+    });
+    if (liveRegion) {
+      liveRegion.textContent = query
+        ? (shown ? '匹配到 ' + shown + ' 篇，按 Enter 打开第一篇。' : '没有匹配的篇目。')
+        : '';
+    }
+  }
+
+  function renderPager(index) {
+    if (!pagerRoot) return;
+    pagerRoot.replaceChildren();
+    var previous = docs[index - 1];
+    var next = docs[index + 1];
+    [previous && { target: previous, label: '← 上一篇：' }, next && { target: next, label: '下一篇：' }]
+      .filter(Boolean)
+      .forEach(function (item) {
+        var link = document.createElement('a');
+        link.href = '#/doc/' + encodeURIComponent(item.target.id);
+        link.className = item.label.indexOf('←') === 0 ? 'pager-prev' : 'pager-next';
+        link.textContent = item.label + item.target.title;
+        pagerRoot.appendChild(link);
+      });
+  }
+
+  function loadDoc(id) {
+    var found = docById(id) || docById(docs.length ? docs[0].id : '');
+    if (!found) return;
+    var doc = found.doc;
+    currentId = doc.id;
+    window.history.replaceState(null, '', '#/doc/' + encodeURIComponent(doc.id));
+
+    renderNav(searchInput ? searchInput.value : '');
+    renderPager(found.index);
+    docs.forEach(function (item) {
+      var link = navRoot && navRoot.querySelector('[data-doc-link="' + item.id + '"]');
+      if (!link) return;
+      var active = item.id === currentId;
+      link.classList.toggle('active', active);
+      if (active) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    if (titleNode) titleNode.textContent = doc.title;
+    if (summaryNode) summaryNode.textContent = doc.summary || '';
+    if (downloadLink) {
+      downloadLink.href = '../docs/' + doc.file;
+      downloadLink.setAttribute('download', doc.file.split('/').pop());
+    }
+    if (bodyNode) {
+      bodyNode.setAttribute('aria-busy', 'true');
+      bodyNode.textContent = '正在加载…';
+      var request = new XMLHttpRequest();
+      request.open('GET', '../rendered/' + doc.file.replace(/\.md$/, '.html'), true);
+      request.addEventListener('load', function () {
+        if (request.status >= 200 && request.status < 400) {
+          bodyNode.innerHTML = request.responseText
+            .replace(/^<!--[\s\S]*?-->/, '');
+          var heading = bodyNode.querySelector('h1');
+          if (heading) heading.remove();
+        } else {
+          bodyNode.textContent = '这一篇加载失败了（HTTP ' + request.status + '）。请刷新重试；若持续失败请联系管理员。';
+        }
+        bodyNode.removeAttribute('aria-busy');
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      });
+      request.addEventListener('error', function () {
+        bodyNode.textContent = '网络错误，加载失败。请刷新重试。';
+        bodyNode.removeAttribute('aria-busy');
+      });
+      request.send();
+    }
+  }
+
+  function currentHashId() {
+    var match = /#\/doc\/([^/?#]+)/.exec(window.location.hash || '');
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  window.addEventListener('hashchange', function () {
+    var id = currentHashId();
+    if (id && id !== currentId) loadDoc(id);
+  });
+
+  if (searchInput) {
+    searchInput.addEventListener('input', function () { renderNav(searchInput.value); });
+    searchInput.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter') return;
+      var query = searchInput.value.trim().toLocaleLowerCase();
+      var match = docs.filter(function (doc) {
+        return (doc.title + ' ' + (doc.summary || '')).toLocaleLowerCase().indexOf(query) !== -1;
+      })[0];
+      if (match) {
+        event.preventDefault();
+        loadDoc(match.id);
+        searchInput.blur();
+      }
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && document.activeElement === searchInput) {
+        searchInput.value = '';
+        renderNav('');
+        searchInput.blur();
+      }
+    });
+  }
+
+  fetch('../manifest.json')
+    .then(function (response) {
+      if (!response.ok) throw new Error('manifest 加载失败');
+      return response.json();
+    })
+    .then(function (manifest) {
+      var section = manifest.audiences[audience];
+      if (!section) throw new Error('manifest 缺少受众: ' + audience);
+      docs = section.docs;
+      if (updatedAtNode) updatedAtNode.textContent = '更新于 ' + manifest.updatedAt;
+      var brandTitle = document.querySelector('[data-audience-title]');
+      if (brandTitle) brandTitle.textContent = section.title;
+      loadDoc(currentHashId() || (docs[0] && docs[0].id));
+    })
+    .catch(function () {
+      if (bodyNode) bodyNode.textContent = '帮助目录加载失败，请刷新重试；若持续失败请联系管理员。';
+    });
 })();

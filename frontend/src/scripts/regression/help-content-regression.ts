@@ -3,22 +3,32 @@ type DynamicImport = (specifier: string) => Promise<unknown>
 const dynamicImport = new Function('specifier', 'return import(specifier)') as DynamicImport
 const nodeFs = await dynamicImport('node:fs') as {
   readFileSync: (path: string, encoding: 'utf8') => string
+  existsSync: (path: string) => boolean
 }
 const nodePath = await dynamicImport('node:path') as {
   dirname: (path: string) => string
   resolve: (...segments: string[]) => string
+  join: (...segments: string[]) => string
 }
 const nodeUrl = await dynamicImport('node:url') as { fileURLToPath: (url: string) => string }
+const nodeChildProcess = await dynamicImport('node:child_process') as {
+  spawnSync: (command: string, args: string[], options: { stdio: 'pipe' }) => { status: number | null; stdout: string; stderr: string }
+}
 const repoRoot = nodePath.resolve(nodePath.dirname(nodeUrl.fileURLToPath(import.meta.url)), '../../../..')
 const readRepoFile = (...segments: string[]) => nodeFs.readFileSync(nodePath.resolve(repoRoot, ...segments), 'utf8')
+const helpRoot = nodePath.resolve(repoRoot, 'frontend', 'public', 'help')
 
 const routerSource = readRepoFile('frontend', 'src', 'router', 'index.ts')
 const viteConfigSource = readRepoFile('frontend', 'vite.config.ts')
-const userHelp = readRepoFile('frontend', 'public', 'help', 'user', 'index.html')
-const adminHelp = readRepoFile('frontend', 'public', 'help', 'admin', 'index.html')
+const manifest = JSON.parse(readRepoFile('frontend', 'public', 'help', 'manifest.json')) as {
+  updatedAt: string
+  audiences: Record<string, { title: string; docs: Array<{ id: string; title: string; file: string }> }>
+}
 const helpIndex = readRepoFile('frontend', 'public', 'help', 'index.html')
 const helpCss = readRepoFile('frontend', 'public', 'help', 'help.css')
 const helpJs = readRepoFile('frontend', 'public', 'help', 'help.js')
+const userShell = readRepoFile('frontend', 'public', 'help', 'user', 'index.html')
+const adminShell = readRepoFile('frontend', 'public', 'help', 'admin', 'index.html')
 
 const userRoutes = [
   '/my-chat', '/my-stats', '/my-accounts', '/my-groups', '/my-api-keys', '/my-route-strategies',
@@ -36,122 +46,146 @@ const adminRoutes = [
   '/announcements', '/system-accounts', '/settings'
 ] as const
 
-assertEqual(userRoutes.length, 17, '用户手册路由清单必须维护 17 项')
-assertEqual(adminRoutes.length, 28, '管理员手册路由清单必须维护 28 项')
-
+assertEqual(userRoutes.length, 17, '用户帮助路由清单必须维护 17 项')
+assertEqual(adminRoutes.length, 28, '管理员帮助路由清单必须维护 28 项')
 for (const route of [...userRoutes, ...adminRoutes]) {
   assertMatch(routerSource, new RegExp(`path:\\s*['"]${escapeRegExp(route)}['"]`), `路由源必须保留 ${route}`)
 }
 
+// 渲染管线一致性：源 md 与生成物 rendered/ 必须同步入库（--check 由渲染脚本自身钉住）
+const rendered = nodeChildProcess.spawnSync(
+  process.execPath,
+  [nodePath.join(repoRoot, 'frontend', 'scripts', 'render-help-docs.mjs'), '--check'],
+  { stdio: 'pipe' }
+)
+assertEqual(rendered.status ?? -1, 0, `渲染物一致性校验必须通过：${rendered.stderr.toString().trim()}`)
+
+// manifest 结构：双受众、每篇 id/file 唯一、md 与 rendered 生成物都在
+const userDocs = manifest.audiences.user?.docs ?? []
+const adminDocs = manifest.audiences.admin?.docs ?? []
+assertEqual(userDocs.length, 15, '用户篇目必须维护 15 篇')
+assertEqual(adminDocs.length, 8, '管理员篇目必须维护 8 篇')
+const seenIds = new Set<string>()
+const userMdBundle: string[] = []
+const adminMdBundle: string[] = []
+for (const audience of [manifest.audiences.user, manifest.audiences.admin]) {
+  for (const doc of audience.docs) {
+    assertFalse(seenIds.has(doc.id), `篇目 id 不得重复：${doc.id}`)
+    seenIds.add(doc.id)
+    const mdPath = nodePath.join(helpRoot, 'docs', doc.file)
+    const htmlPath = nodePath.join(helpRoot, 'rendered', doc.file.replace(/\.md$/, '.html'))
+    assertTrue(nodeFs.existsSync(mdPath), `篇目源文件必须存在：${doc.file}`)
+    assertTrue(nodeFs.existsSync(htmlPath), `篇目渲染物必须存在：${doc.file}`)
+    const md = readRepoFile('frontend', 'public', 'help', 'docs', ...doc.file.split('/'))
+    assertMatch(md.replace(/\r\n/g, '\n'), /^# .+/, `篇目首行必须是 h1 标题：${doc.file}`)
+    const h1 = /^# (.+)$/m.exec(md.replace(/\r\n/g, '\n'))?.[1]?.trim() ?? ''
+    assertEqual(h1, doc.title, `篇目 h1 必须与 manifest 标题一致：${doc.file}`)
+    // 行内代码与围栏代码块里的尖括号（如 <API Key>）是合法占位符；只拦正文中真正的内联 HTML 标签
+    const prose = md.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')
+    assertNotMatch(prose, /<\w+[^>]*>/, `篇目正文不得写内联 HTML（渲染器会剥离）：${doc.file}`)
+    if (doc.file.startsWith('user/')) userMdBundle.push(md)
+    else adminMdBundle.push(md)
+  }
+}
+
+// 深链资产：旧手册 17 条用户页与 28 条管理页深链必须全部出现在新篇目中
+const userBundle = userMdBundle.join('\n')
+const adminBundle = adminMdBundle.join('\n')
 for (const route of userRoutes) {
-  assertContains(userHelp, `href="/__aisys__${route}"`, `用户手册必须提供 ${route} 深链`)
+  // 管理台挂在 /__aisys__/ base 下，帮助文档中的深链必须带前缀，裸 /my-* 会 404
+  assertContains(userBundle, `](/__aisys__${route})`, `用户篇目必须保留 ${route} 管理页深链`)
 }
-
 for (const route of adminRoutes) {
-  assertContains(adminHelp, `href="/__aisys__${route}"`, `管理员手册必须提供 ${route} 深链`)
+  // 管理员篇目沿用旧手册的完整管理面路径形态（/__aisys__/ 前缀）
+  assertContains(adminBundle, `](/__aisys__${route})`, `管理员篇目必须保留 ${route} 管理页深链`)
+}
+// 语义资产：跨协议口径与高危语义必须随篇目保留
+assertContains(userBundle, '专属对话 Key', '用户篇目必须说明 AI 问答使用专属对话 Key')
+assertContains(userBundle, '不能替代客户端 Key 的接入验证', '用户篇目不得把 AI 问答当作客户端 Key 验证入口')
+assertContains(userBundle, '`active`（检查通过且启用）是进入候选的必要条件，不保证当前一定可调度', '用户篇目不得把 active 写成充分条件')
+assertContains(adminBundle, 'juhe-ai-account-import v1', '管理员篇目必须说明代用户导入协议')
+assertContains(adminBundle, 'pending_test', '管理员篇目必须保留 pending_test 语义')
+assertContains(adminBundle, '最多 50 个账户', '管理员篇目必须保留导入限额')
+assertContains(adminBundle, '分组保存 `providerCode`，它既是账户集合，也是供应商过滤边界', '管理员篇目必须说明分组保存供应商边界')
+assertContains(adminBundle, '新建一个同配置的策略', '管理员篇目必须说明复制策略的正确做法')
+
+// 页面壳契约：受众参数、导航挂载点、正文挂载点、下载链接
+assertContains(userShell, 'data-audience="user"', '用户壳必须声明受众')
+assertContains(adminShell, 'data-audience="admin"', '管理员壳必须声明受众')
+for (const [shell, label] of [[userShell, '用户'], [adminShell, '管理员']] as const) {
+  assertContains(shell, 'data-doc-nav', `${label}壳必须提供篇目导航挂载点`)
+  assertContains(shell, 'data-doc-body', `${label}壳必须提供正文挂载点`)
+  assertContains(shell, 'data-download-link', `${label}壳必须提供 Markdown 下载链接`)
+  assertContains(shell, ' download>', `${label}壳的下载链接必须带 download 属性`)
+  assertContains(shell, 'data-doc-pager', `${label}壳必须提供上下篇导航`)
+  assertContains(shell, 'aria-live="polite"', `${label}壳的搜索状态必须向辅助技术播报`)
+  assertContains(shell, '跳到正文', `${label}壳必须有跳到正文链接`)
+  assertContains(shell, '/__aisys__/brand-icon.svg', `${label}壳必须复用品牌图标`)
 }
 
-for (const term of [
-  '普通用户只导入到自己名下', '管理员可在管理账户页选择目标系统账户导入',
-  'juhe-ai-account-import v1', 'JSON', '解析预览', '确认导入', '自动创建', '跳过',
-  '普通用户不能创建新代理', 'pending_test', '256KB', '最多 50 个账户', '最多 20 个代理',
-  '请根据我附上的《juhe-ai AI 账户导入协议 v1》Markdown', '只输出合法 JSON'
-]) {
-  assertContains(userHelp, term, `用户手册必须说明导入语义：${term}`)
+// 入口门控页
+assertContains(helpIndex, 'help-gate', '入口页必须保留角色分流门控')
+assertContains(helpIndex, '/__aisys__/brand-icon.svg', '入口页必须复用品牌图标')
+
+// 脚本契约：manifest 驱动导航、hash 路由、门控分流、Esc 清空搜索
+assertContains(helpJs, "contains('help-gate')", '入口页角色分流必须由外部脚本执行')
+assertContains(helpJs, "fetch('../manifest.json')", '文档站必须由 manifest 驱动篇目')
+assertContains(helpJs, 'hashchange', '文档站必须支持 hash 路由深链')
+assertContains(helpJs, "'#/doc/'", '文档站路由必须使用 #/doc/<id> 形态')
+assertContains(helpJs, '../rendered/', '正文必须加载预渲染生成物')
+assertContains(helpJs, "event.key === 'Escape'", '搜索必须支持 Esc 清空')
+assertContains(helpJs, 'aria-busy', '正文加载必须播报忙闲状态')
+
+// 渲染产物安全：生成物是受信自家内容，但不得携带脚本或内联事件
+for (const audience of ['user', 'admin'] as const) {
+  const dir = nodePath.join(helpRoot, 'rendered', audience)
+  for (const name of nodeFs.readdirSync(dir)) {
+    const html = nodeFs.readFileSync(nodePath.join(dir, name), 'utf8')
+    assertMatch(html, /^<!-- Code generated by scripts\/render-help-docs\.mjs/, `渲染物必须带生成头：${audience}/${name}`)
+    assertNotMatch(html, /<script/i, `渲染物不得包含脚本：${audience}/${name}`)
+    assertNotMatch(html, /\son\w+=/i, `渲染物不得包含内联事件：${audience}/${name}`)
+  }
 }
 
-for (const term of ['juhe-ai-account-import v1', '256KB', '最多 50 个账户', '最多 20 个代理', '解析预览', 'pending_test']) {
-  assertContains(adminHelp, term, `管理员手册必须说明代用户导入语义：${term}`)
-}
-
-assertContains(adminHelp, '分组会保存 <code>providerCode</code>，它既是账户集合，也是供应商过滤边界', '管理员手册必须说明分组保存供应商配置')
-assertContains(adminHelp, '新建一个同配置的策略，再将 API Key 绑定到新策略', '管理员手册必须说明复制策略的正确做法')
-assertContains(userHelp, '用户使用手册', '用户页顶部应标明用户使用手册')
-assertContains(adminHelp, '管理员使用手册', '管理员页顶部应标明管理员使用手册')
-assertContains(userHelp, '专属对话 Key', '用户手册应说明 AI 问答使用专属对话 Key')
-assertContains(userHelp, '不替代客户端 API Key', '用户手册不得将 AI 问答当作客户端 Key 验证入口')
-assertNotMatch(userHelp, /AI 问答<\/a>做一次调用确认|用自己的 API Key 与模型进行交互验证/, '用户手册不得误导 AI 问答使用客户端 API Key')
-for (const term of ['最大单账户排队阈值', '上游接口能力', '账号模型别名', 'n 小时美元额度', '时间计划', 'data-flow-explorer', 'data-flow-step', 'data-flow-detail', '<svg', '<title', '<desc']) {
-  assertContains(userHelp, term, `用户手册必须保留字段级指南或 SVG 交互契约：${term}`)
-}
-for (const term of ['pending_test', '账户电路独立确认失败次数', '策略路由与流量变更', '系统设置与日常运维', 'data-flow-explorer', 'data-flow-step', 'data-flow-detail', '<svg', '<title', '<desc']) {
-  assertContains(adminHelp, term, `管理员手册必须保留字段级指南或 SVG 交互契约：${term}`)
-}
-for (const status of ['temporary_unavailable', 'rate_limited', 'quality_isolated', 'error']) {
-  assertContains(adminHelp, status, `管理员生命周期图必须覆盖独立运行状态：${status}`)
-}
-assertContains(adminHelp, '四种状态是分叉，不是依次迁移', '管理员生命周期图不得把运行状态画成线性顺序')
-assertContains(adminHelp, '<code>active</code> 是进入候选的必要条件，不保证当前可调度', '管理员手册不得把 active 写成充分条件')
-assertContains(userHelp, '<code>active</code> 是进入候选的必要条件，不保证当前一定可调度', '用户手册不得把 active 写成充分条件')
-assertContains(userHelp, 'aria-controls="user-flow-panel-key"', '用户流程步骤必须关联说明面板')
-assertContains(userHelp, 'role="tabpanel" aria-labelledby="user-flow-tab-key"', '用户流程说明必须具有 tabpanel 语义')
-assertContains(adminHelp, 'aria-controls="admin-flow-panel-key"', '管理员流程步骤必须关联说明面板')
-assertContains(adminHelp, 'role="tabpanel" aria-labelledby="admin-flow-tab-key"', '管理员流程说明必须具有 tabpanel 语义')
-assertNotMatch(`${userHelp}\n${adminHelp}\n${helpIndex}`, /brand-icon">\?/i, '帮助页不得继续使用问号品牌图标')
-assertNotMatch(helpCss, /linear-gradient|repeating-linear-gradient|background-size:\s*\d+px\s+\d+px/i, '帮助页不得保留大渐变或网格背景')
+// 样式契约：对齐主应用设计语言 + 文档站关键布局
 assertContains(helpCss, '--page: #f5f7fb', '帮助页必须以 #f5f7fb 为页面底色并对齐主应用')
 assertContains(helpCss, '--bg: #ffffff', '帮助页卡片表面必须保持纯白 --bg')
-assertNotMatch(helpCss, /--bg:\s*#f5f7fa/i, '帮助页不得恢复灰色主背景')
-assertContains(helpCss, '.document-title { padding: 0; background: transparent; border: 0; }', '帮助页不得恢复占用首屏的标题横幅')
 assertContains(helpCss, '.brand-badge', '帮助页必须为品牌图标加载失败提供视觉回退')
 assertContains(helpCss, '.brand-badge[hidden] { display: none; }', '品牌图加载成功后必须隐藏文字徽标')
 assertContains(helpCss, '@media (max-width: 900px)', '帮助页必须在平板宽度前切换为单列布局')
-assertContains(helpCss, '.flow-explorer', '帮助页必须提供流程图交互容器')
-assertContains(helpCss, '.reference-entry', '帮助页必须提供可展开字段参考')
-assertContains(helpCss, '.diagram-node', '帮助页必须为 SVG 节点提供交互样式')
-assertNotMatch(`${userHelp}\n${adminHelp}`, /接口能力限制|先复制策略再绑定|不保存供应商配置/i, '帮助页不得保留已废弃或错误文案')
-assertNotMatch(`${userHelp}\n${adminHelp}\n${helpIndex}`, /<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>|\bonload\s*=/i, '帮助页不得引入会被 CSP 阻止的内联脚本或事件处理器')
+assertContains(helpCss, '.docs-nav', '帮助页必须提供篇目导航样式')
+assertContains(helpCss, '.markdown-body', '帮助页必须提供 Markdown 正文排版')
+assertContains(helpCss, '.download-link', '帮助页必须提供下载按钮样式')
+assertContains(helpCss, '.doc-pager', '帮助页必须提供上下篇样式')
+assertNotMatch(`${userShell}\n${adminShell}\n${helpIndex}`, /<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>|\bonload\s*=/i, '帮助页不得引入会被 CSP 阻止的内联脚本或事件处理器')
 
-assertContains(helpIndex, '/__aisys__/brand-icon.svg', '入口页必须复用品牌图标')
-assertContains(userHelp, '/__aisys__/brand-icon.svg', '用户页必须复用品牌图标')
-assertContains(adminHelp, '/__aisys__/brand-icon.svg', '管理员页必须复用品牌图标')
-assertContains(helpIndex, '跳到正文', '入口页必须有跳到正文链接')
-assertContains(userHelp, '跳到正文', '用户页必须有跳到正文链接')
-assertContains(adminHelp, '跳到正文', '管理员页必须有跳到正文链接')
-assertContains(userHelp, '更新于 2026-09-22', '用户页必须标明更新时间')
-assertContains(adminHelp, '更新于 2026-09-22', '管理员页必须标明更新时间')
-assertContains(userHelp, 'data-nav-mobile', '用户页必须提供移动目录')
-assertContains(adminHelp, 'data-nav-mobile', '管理员页必须提供移动目录')
-assertContains(helpCss, '.mobile-nav { display: none;', '样式必须在桌面隐藏移动目录')
-assertContains(helpCss, '.mobile-nav { display: block;', '样式必须在手机显示移动目录')
-assertContains(helpJs, 'data-help-search', '脚本必须实现无依赖搜索')
-assertContains(helpJs, "event.key === 'Escape'", '脚本必须支持 Esc 清空搜索')
-assertContains(helpJs, 'getSearchMatches', '搜索必须按关键词匹配章节')
-assertContains(helpJs, "section.scrollIntoView({ behavior: 'smooth', block: 'start' })", '搜索结果必须支持滚动定位章节')
-assertNotMatch(helpJs, /section\.hidden\s*=/, '搜索不得通过隐藏正文章节来呈现结果')
-assertContains(helpJs, "aria-current", '脚本必须同步激活目录的 aria-current')
-assertContains(helpJs, "mobileNav.removeAttribute('open')", '移动目录跳转后必须自动收起')
-assertContains(helpJs, 'setFlowStep', '脚本必须支持 SVG 流程节点与步骤控件同步')
-assertContains(helpJs, "event.key === 'ArrowRight'", '流程步骤必须支持键盘方向键')
-assertContains(helpJs, "button.setAttribute('tabindex', selected ? '0' : '-1')", '流程步骤必须使用 roving tabindex')
-assertContains(helpJs, "document.body.classList.contains('help-gate')", '入口页角色分流必须由外部脚本执行')
+// 构建契约：dev 侧帮助面仍由 vite 静态服务，不代理给 gateway
 assertNotContains(viteConfigSource, "devProxy['^/__aisys__/help", 'dev 代理不得把帮助页转发给 gateway：未配置 JUHE_AI_FRONTEND_DIST_PATH 时 help 面不挂载会 404')
 assertContains(viteConfigSource, 'helpPageDirectoryIndexPlugin', 'dev 下必须保留帮助页目录索引插件，否则目录形 URL 会落入 SPA fallback 返回主应用页面')
-assertContains(userHelp, 'aria-live="polite"', '用户搜索状态必须向辅助技术播报')
-assertContains(adminHelp, 'aria-live="polite"', '管理员搜索状态必须向辅助技术播报')
 
-console.log('帮助页内容回归通过：17 个用户路由、28 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致（2026-09-22 两本手册白皮书改版后复验，全部截图断言与截图样式断言已随截图移除）')
+console.log(`帮助文档站回归通过：${userDocs.length + adminDocs.length} 篇 md/渲染物/manifest 三方一致，17+28 条管理页深链全部保留，协议/概念/导入语义与下载、hash 路由、门控契约完好（更新于 ${manifest.updatedAt}）`)
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
-
 function assertEqual(actual: number, expected: number, message: string): void {
   if (actual !== expected) throw new Error(`${message}，实际 ${actual}，期望 ${expected}`)
 }
-
+function assertTrue(value: boolean, message: string): void {
+  if (!value) throw new Error(message)
+}
+function assertFalse(value: boolean, message: string): void {
+  if (value) throw new Error(message)
+}
 function assertContains(value: string, expected: string, message: string): void {
   if (!value.includes(expected)) throw new Error(`${message}：缺少 ${expected}`)
 }
-
-function assertMatch(value: string, pattern: RegExp, message: string): void {
-  if (!pattern.test(value)) throw new Error(message)
-}
-
 function assertNotContains(value: string, forbidden: string, message: string): void {
   if (value.includes(forbidden)) throw new Error(`${message}：不应出现 ${forbidden}`)
 }
-
+function assertMatch(value: string, pattern: RegExp, message: string): void {
+  if (!pattern.test(value)) throw new Error(message)
+}
 function assertNotMatch(value: string, pattern: RegExp, message: string): void {
   if (pattern.test(value)) throw new Error(message)
 }
