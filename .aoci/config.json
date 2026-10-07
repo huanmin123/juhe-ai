@@ -159,6 +159,39 @@
         "created_by": "zcode-host-agent",
         "order": 502,
         "enabled": true
+      },
+      {
+        "rule_id": "exclude-sensitive-input-key",
+        "action": "exclude",
+        "pattern": "**/account-health-input.key",
+        "pattern_kind": "glob",
+        "reason": "账户健康探针输入密钥文件，含真实凭据，不进入认知索引",
+        "source": "user",
+        "created_by": "zcode-host-agent",
+        "order": 510,
+        "enabled": true
+      },
+      {
+        "rule_id": "exclude-env-files",
+        "action": "exclude",
+        "pattern": "**/.env",
+        "pattern_kind": "glob",
+        "reason": "环境变量密钥文件，含真实凭据，不进入认知索引",
+        "source": "user",
+        "created_by": "zcode-host-agent",
+        "order": 511,
+        "enabled": true
+      },
+      {
+        "rule_id": "exclude-npmrc",
+        "action": "exclude",
+        "pattern": ".npmrc",
+        "pattern_kind": "file",
+        "reason": "npm 认证配置，含 registry 令牌，不进入认知索引",
+        "source": "user",
+        "created_by": "zcode-host-agent",
+        "order": 513,
+        "enabled": true
       }
     ]
   },
