@@ -1,6 +1,6 @@
 # 计划目录
 
-- [PLAN-20261007T164058012Z](计划-20261007T164058012Z-客户端版本自动跟版与请求特征加固.md)：客户端版本自动跟版与请求特征加固总计划——源自 codex-proxy-rs 调研（"不降智"机制=第一档真实价值：自动跟版/正文保真/观测随机化；TLS/WS/滞后档位留观）；范围=jobs 新任务族每日拉四官方源（Codex GitHub Releases 0.159.3→0.161.0、Claude Code npm、Gemini CLI npm、ZCode GitHub，均已实测）写现键 `upstreamClientVersionOverrides`（消费链路三处已接线零改动）+ Grok 426 反应式跟版（待裁决 A）+ 探针抖动接线审计（`schedulejitter` 基建已有）+ UA 混合身份核实（`codex_exec` 后缀疑点）+ 留观项登记；三项裁决（Grok 入期/手动覆盖冻结策略/UA 修复随批）待用户确认；草案，待开始。
+- [PLAN-20261007T164058012Z](计划-20261007T164058012Z-客户端版本自动跟版与请求特征加固.md)：客户端版本自动跟版与请求特征加固总计划——源自 codex-proxy-rs 调研（"不降智"机制=第一档真实价值：自动跟版/正文保真/观测随机化；TLS/WS/滞后档位留观）；v2 已吸收外部复审 10 条（全部取证成立）：两期拆分（第一期=阶段 0 设计→C 消费点收敛含 6 处平行锚点与 guard 测试→A 四源拉取+新增 `upstreamClientVersionAutoOverrides` 兄弟键有效手动>有效自动>内置→B UA 证据核实→D 抖动审计；第二期=Grok 426 反应式跟版与 UA 改造证据闭合后立项），任务契约/parser contract/真实出站验收补齐；4 项裁决已按推荐落定（2026-10-08：auto 兄弟键存储模型/一期不含 Grok 与 UA 改造/引入 guard 测试/管理页只读展示自动值），待外部 AI 审核后启动阶段 0；已裁决待审核。
 
 - [PLAN-20261003T164247971Z](计划-20261003T164247971Z-音频视频模型接入与多供应商扩展.md)：音频/视频模型接入与多供应商扩展总计划——设计契约见《音频视频模型接入与统一媒体网关设计》；范围=同步音频（TTS/STT）链路、`media_jobs` 异步任务框架（`/v1/videos`、`/v1/audio/jobs`）、`audio`/`video` 分类与 lane、受理切换边界统一、零资源存储、`provider_options` 扩展通道、已有供应商音视频能力补齐（openai/gemini/glm，xai 核实）+ 新增 `minimax`/`volcengine`/`qwen`；分期 M1 同步音频 → M2 异步任务+视频 → M3 多厂商 → M4 统计 → M5 Realtime（独立立项）；M0 文档裁决已完成，M1 待开始。
 

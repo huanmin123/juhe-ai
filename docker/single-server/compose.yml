@@ -19,12 +19,19 @@ services:
     # 实测缓存命中率 0.85~0.95、iowait ~9%、checkpoint 5 分钟一轮刷 2-3k 缓冲区）。
     # shared_buffers=2GB（物理内存 25% 标准值）；effective_cache_size=4GB 是优化器估值
     # 不占内存。其余参数维持默认，按需再调。
+    # shared_preload_libraries=pg_stat_statements（2026-10-08 起，慢 SQL 可追溯契约）：
+    # 预加载语句统计扩展，随发布重建后执行 CREATE EXTENSION pg_stat_statements 即可
+    # 查询累计慢/热语句（Top-N 采样口径见 .local 运维手册《监控与告警运维.md》）；
+    # 逐条慢语句留痕由 ALTER SYSTEM log_min_duration_statement=500ms 负责（reload
+    # 级参数，首启后已在实例 postgresql.auto.conf 固化，随数据卷持久）。
     command:
       - postgres
       - -c
       - shared_buffers=2GB
       - -c
       - effective_cache_size=4GB
+      - -c
+      - shared_preload_libraries=pg_stat_statements
     environment:
       POSTGRES_DB: juhe_ai
       POSTGRES_USER: juhe_ai
@@ -59,6 +66,13 @@ services:
       - "900 1"
       - --save
       - "300 10"
+      # 慢命令可追溯（2026-10-08 起部署契约）：slowlog 阈值维持默认 10ms（当前生产慢命令
+      # 实测集中在 10-15ms 的 Lua 脚本，>10ms 即"服务端耗时异常"的有效信号；收紧到 1ms
+      # 会让环形缓冲被常规 eval 刷满，反而丧失巡检价值），ring 从默认 128 扩到 1024 增加
+      # 追溯窗口。持久留痕由宿主机 /opt/juhe-monitoring/redis-slowlog 快照 cron 负责
+      # （每 5 分钟按 id 增量导出到 jsonl 并出 node-exporter textfile 指标，见监控手册）。
+      - --slowlog-max-len
+      - "1024"
     environment:
       TZ: Asia/Shanghai
       REDIS_PASSWORD: ${REDIS_PASSWORD}
@@ -118,6 +132,11 @@ services:
       # （> 30s TTL，覆盖发布过渡窗口，F3/F4 两获取点共用）。jobs 无启动
       # fail-fast 租约（运行期由 supervisor 重试覆盖），不配。
       JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT: 45s
+      # 慢 SQL / pg_stat_activity 来源区分（2026-10-08 起）：主库 URL 三进程共用同一
+      # .env 变量，无法在 .env 层区分进程，故在此按服务追加 application_name 查询参数
+      # （当前实例 URL 均无查询串，追加符恒为 ?；若未来 .env 值自带参数需同步改 &）。
+      # 其余子系统专用 URL 的 application_name 在 .env 值内配置，契约见 README.md。
+      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-gateway
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
@@ -169,6 +188,8 @@ services:
       # jobs 健康监听绑全接口供 gateway 跨容器抓取（BUG-0226：代码默认仍是
       # 127.0.0.1；容器网络无公网映射，不构成暴露）。gateway 侧同名变量配容器名
       JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3305
+      # 主库 URL 按 service 追加 application_name（与 gateway 同理，见 gateway 注释）
+      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-jobs
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
@@ -209,6 +230,9 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Shanghai
+      # 主库 URL 按 service 追加 application_name（与 gateway/jobs 同理）：
+      # maintenance 一次性容器曾因 DDL 死锁无法从 PG 日志区分来源（BUG-0237 取证痛点）
+      JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-maintenance
     extra_hosts:
       # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
       # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
