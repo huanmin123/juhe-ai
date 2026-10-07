@@ -60,15 +60,17 @@ func TestPatchClearFailureStateRejectsMixedFieldEdits(t *testing.T) {
 	}
 
 	// 纯命令仍然可用：只带 expectedConfigRevision 的 clearFailureState=true
-	// 正常恢复（changedFields == ['clearFailureState']）。
+	// 正常恢复。BUG-0288 起恢复语义为状态原子翻转（temporary_unavailable →
+	// active，对齐授权实例 patchAuthorizedDispatchTx），changedFields 携带
+	// clearFailureState 与 status。
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
 		`{"expectedConfigRevision":1,"clearFailureState":true}`)
 	if code != http.StatusOK {
 		t.Fatalf("pure clearFailureState patch: %d %v", code, patched)
 	}
 	changed := changedFieldSet(t, patched)
-	if len(changed) != 1 || !changed["clearFailureState"] {
-		t.Fatalf("pure command changedFields must be exactly clearFailureState: %v", changed)
+	if !changed["clearFailureState"] || !changed["status"] {
+		t.Fatalf("pure command must atomically flip the persisted status (BUG-0288): %v", changed)
 	}
 }
 

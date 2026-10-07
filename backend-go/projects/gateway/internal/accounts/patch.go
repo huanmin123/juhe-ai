@@ -291,6 +291,26 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 
 	now := s.now()
 	nowISO := isoMillis(now)
+
+	// 人工恢复目标状态（BUG-0288）：clearFailureState 是显式人工确认——冷却态
+	// 直接恢复调度（与授权实例 patchAuthorizedDispatchTx 的 clearFailure→
+	// active+schedulable 同语义），error 进入待检查复检；目标仍受时间计划与
+	// 套餐到期约束，由既有状态机统一裁定。
+	clearFailureRestoreTarget := ""
+	if input.ClearFailureState {
+		switch row.status {
+		case "error":
+			clearFailureRestoreTarget = "pending_test"
+		case "temporary_unavailable", "rate_limited":
+			clearFailureRestoreTarget = "active"
+		}
+	}
+	// 时间计划门（复用 ForceActivatePending 同款 m11ScheduleAllowed 判定：
+	// 无计划/解析失败视为允许）：恢复到 active 仅在行内可用时间计划当前
+	// 生效时允许，计划不生效时落停用。
+	clearFailureScheduleBlocksActive := clearFailureRestoreTarget == "active" &&
+		!m11ScheduleAllowed(row.availabilitySchedule.String, now)
+
 	changes := []PatchChange{}
 	addChange := func(field string, before, after any) {
 		changes = append(changes, PatchChange{Field: field, Before: before, After: after})
@@ -829,6 +849,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	requestedStatus := row.status
 	if hasStatusInput {
 		requestedStatus = *input.Status
+	} else if clearFailureRestoreTarget != "" {
+		// 人工恢复目标作为 requestedStatus 参与既有状态机（BUG-0288）；
+		// 不经 input.Status 以免触碰混交守卫与 assertStatusMutationAllowed。
+		requestedStatus = clearFailureRestoreTarget
 	}
 	requestedSchedulable := row.schedulable == 1
 	if input.Schedulable != nil {
@@ -845,6 +869,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			(requestedStatus == "active" || requestedStatus == "disabled") {
 			scheduledStatus = override
 		}
+	} else if clearFailureScheduleBlocksActive {
+		// 人工恢复仍受时间计划约束：计划当前不生效时落停用（对齐
+		// ForceActivatePending）；套餐到期臂优先级不变（上文 expiredByPackage）。
+		scheduledStatus = "disabled"
 	}
 	nextStatus := scheduledStatus
 	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput {
@@ -904,6 +932,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		})
 		runtimeColumnsBefore := len(runtimeColumnOrder)
 		applyRuntimeStateColumns(setRuntimeColumn, before, state)
+		// 恢复语义（BUG-0288）：error → pending_test 时归一化会写入“账户配置
+		// 已保存，等待后台检查”，对人工恢复不准确——恢复即清错误标记，同列
+		// 后写覆盖先写（runtimeColumn 单赋值通道）。
+		if input.ClearFailureState && nextStatus == "pending_test" {
+			setRuntimeColumn("last_error_message", nil)
+		}
 		// 归档 :630-636：派生列确实变化且 status/schedulable 都没变时，
 		// 以 runtimeState 变更项披露这次归一化。
 		if len(runtimeColumnOrder) > runtimeColumnsBefore &&
@@ -1140,6 +1174,13 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if healthCheckRequired {
 		sets = append(sets, "next_health_check_at = NULL")
 	}
+	// 恢复到 pending_test 立即复检（BUG-0288）：清掉既有排期让路由尾部按
+	// HealthCheckRequired 调 DispatchAccountHealthCheck 走既有探针 outbox，
+	// reason 词表不新增（configuration）。
+	clearFailurePendingTest := input.ClearFailureState && nextStatus == "pending_test"
+	if clearFailurePendingTest {
+		sets = append(sets, "next_health_check_at = NULL")
+	}
 	if connectionChanged {
 		sets = append(sets,
 			"last_health_check_at = NULL",
@@ -1225,6 +1266,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	result.ConfigRevision = row.configRevision + 1
 	result.Tags = savedTags
 	if healthCheckRequired {
+		result.HealthCheckRequired = true
+		result.HealthCheckReason = "configuration"
+	}
+	if clearFailurePendingTest {
 		result.HealthCheckRequired = true
 		result.HealthCheckReason = "configuration"
 	}
