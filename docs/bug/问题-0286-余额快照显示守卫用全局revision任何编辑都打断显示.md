@@ -56,6 +56,7 @@
 | 生产取证 | J2 周期 outcome 按天 2.1-2.8 万条连续、目标账户 5 分钟节拍无空洞、active 账户快照 0 缺失 | 见问题描述 |
 | 审核轮单元 | CredentialBalanceIdentity 契约（base_url/次 Key 成员/池追加区分、Key 空白 trim、尾斜杠区分） | 通过 |
 | 审核轮集成 | accounts 包全量（授权实例种子改真信封后全绿）+ jobs internal 全量 + cmd 余额子集 | 通过 |
+| 复查轮单元 | 两侧解密同源回归锁定（执行核 openCredential/DecryptV1Envelope 与读端 accountcrypto.DecryptJSON 同密文 payload 等价 + 摘要一致）；探测候选 ProxyProfileID 来源链（ListDueCandidates SELECT → row → candidate → buildQueryInput）逐环核验；PG schema `proxy_profile_id text` 与 COALESCE 兼容 | 通过 |
 
 ## 遗留与边界
 

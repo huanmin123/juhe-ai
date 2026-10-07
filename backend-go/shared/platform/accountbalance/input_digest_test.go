@@ -1,6 +1,11 @@
 package accountbalance
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+)
 
 // BalanceInputDigest 契约（BUG-0286）：确定性、逐输入区分、与全局
 // config_revision 无关——非余额相关编辑（revision 推进）不得改变摘要。
@@ -87,5 +92,37 @@ func TestCredentialBalanceIdentityContract(t *testing.T) {
 		"api_keys": []any{"sk-a", "sk-b", "sk-c"},
 	}); changed == base {
 		t.Fatal("Key 池追加成员必须改变身份")
+	}
+}
+
+// TestBalanceInputDigestDecryptParity 锁定读端摘要现算的解密前提：执行核
+// 打点侧（openCredential → DecryptV1Envelope）与 gateway 读端闭包
+// （accountcrypto.DecryptJSON）是两份 v1 envelope 解密实现，必须在同一
+// credentials_encrypted 密文上产出等价 payload 与相同摘要——否则同一账户
+// 两侧各算各的，显示判据永久失配（全部待查询）。
+func TestBalanceInputDigestDecryptParity(t *testing.T) {
+	const secret = "parity-secret"
+	envelope, err := NewCredentialEnvelope(secret, "api_key", map[string]any{
+		"api_key":  "sk-parity",
+		"base_url": "https://parity.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writerPayload := map[string]any{}
+	if err := openCredential(secret, envelope, "api_key", &writerPayload); err != nil {
+		t.Fatalf("执行核解密失败: %v", err)
+	}
+	readerPayload := map[string]any{}
+	if err := accountcrypto.DecryptJSON(secret, envelope.Ciphertext, &readerPayload); err != nil {
+		t.Fatalf("读端解密失败: %v", err)
+	}
+	if !reflect.DeepEqual(writerPayload, readerPayload) {
+		t.Fatalf("两套解密实现 payload 不等价: %#v vs %#v", writerPayload, readerPayload)
+	}
+	writerDigest := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin"}`, CredentialBalanceIdentity(writerPayload), "proxy-1")
+	readerDigest := BalanceInputDigest("openai", "fp-1", `{"adapter":"builtin"}`, CredentialBalanceIdentity(readerPayload), "proxy-1")
+	if writerDigest != readerDigest {
+		t.Fatalf("两侧摘要必须一致: %q vs %q", writerDigest, readerDigest)
 	}
 }
