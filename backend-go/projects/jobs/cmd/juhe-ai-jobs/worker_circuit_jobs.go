@@ -18,9 +18,12 @@ import (
 // wireCircuitFamily 把账户电路族的两个任务翻转为 GoWired：
 //   - account-circuit-control-plane-maintenance（opsjobs.ControlPlaneMaintenance：
 //     CircuitStore 由 circuitstore 的 Redis 同键实现提供，Ledger/Outbox 由
-//     circuitstore 的业务库双模适配器提供）；
+//     circuitstore 的业务库双模适配器提供；RunMaintenance 之后追加孤儿 incident
+//     结清扫描（opsjobs.OrphanIncidentCloser）与 ledger Cleanup）；
 //   - account-circuit-recovery（opsjobs.CircuitRecoveryService：同一 CircuitStore，
-//     恢复探针目标解析走 proberepo 账户域读取链 + accountprobe limited 诊断）。
+//     恢复探针目标解析走 proberepo 账户域读取链 + accountprobe limited 诊断；
+//     mutation 经 opsjobs.CircuitIncidentProjector 投影回业务库 ledger——
+//     CAS 写 + incident_changed outbox，与 gateway 写侧同键同契约）。
 //
 // 账户电路运行态是 Redis 单实现（与 Node/Go 网关同键空间、同一 Lua 状态机，
 // 见 internal/circuitstore/store.go）：缺 JUHE_AI_REDIS_STATE_URL 或命名空间
@@ -84,10 +87,47 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 	if err != nil {
 		return err
 	}
+	// ledger 投影器 + 孤儿结清扫描：恢复扫描 mutation 的落库管道（与 gateway
+	// 写侧同键同契约），以及 Redis 运行态缺键的遗留活动行结清。
+	projector, err := opsjobs.NewCircuitIncidentProjector(controlPlaneRepo, opsjobs.CircuitIncidentProjectorOptions{
+		OwnerID: ownerID,
+		NowMS:   func() int64 { return time.Now().UnixMilli() },
+	})
+	if err != nil {
+		return err
+	}
+	a.addCloser(func() error { projector.Close(); return nil })
+	orphanCloser, err := opsjobs.NewOrphanIncidentCloser(store, controlPlaneRepo, opsjobs.OrphanCloseOptions{
+		Lister: controlPlaneRepo,
+		NowMS:  func() int64 { return time.Now().UnixMilli() },
+	})
+	if err != nil {
+		return err
+	}
 	a.scheduleWiredJob("account-circuit-control-plane-maintenance", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		// Node runGatewayAccountCircuitControlPlaneMaintenance(limit=100)。
 		if _, err := maintenance.RunMaintenance(taskCtx, 100); err != nil {
 			return jobsched.TaskResult{}, err
+		}
+		// 孤儿结清 + ledger 清理是修复性维护：失败记 partial warning，不判
+		// 任务失败（RunMaintenance 的投影/对账主链已成功）。
+		orphan, err := orphanCloser.Sweep(taskCtx, opsjobs.DefaultOrphanScanPageSize)
+		if err != nil {
+			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial,
+				Warning: fmt.Sprintf("孤儿 incident 结清扫描失败: %v", err)}, nil
+		}
+		cleaned, err := controlPlaneRepo.Cleanup(taskCtx, time.Now().UnixMilli())
+		if err != nil {
+			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial,
+				Warning: fmt.Sprintf("账户 circuit ledger 清理失败: %v", err)}, nil
+		}
+		if orphan.ClosedRetired > 0 || orphan.ConflictRetired > 0 || orphan.StaleSkipped > 0 || orphan.Errors > 0 || cleaned > 0 {
+			a.logger.Info("账户 circuit 修复性维护完成",
+				"scanned", orphan.Scanned, "closedRetired", orphan.ClosedRetired,
+				"conflictRetired", orphan.ConflictRetired, "staleSkipped", orphan.StaleSkipped,
+				"gracePending", orphan.GracePending, "runtimePresent", orphan.RuntimePresent,
+				"runningLeased", orphan.RunningLeased, "invalidSkipped", orphan.InvalidSkipped,
+				"errors", orphan.Errors, "cleanedIncidents", cleaned)
 		}
 		return jobsched.TaskResult{}, nil
 	})
@@ -97,11 +137,15 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 	recovery, err := opsjobs.NewCircuitRecoveryService(store, resolver.Resolve, opsjobs.CircuitRecoveryServiceOptions{
 		Concurrency: a.config.ProbeConcurrency,
 		NowMS:       func() int64 { return time.Now().UnixMilli() },
+		OnMutation:  projector.OnRecoveryMutation,
 	})
 	if err != nil {
 		return err
 	}
 	a.scheduleWiredJob("account-circuit-recovery", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		// 先重放上一轮投影失败残留（FlushPending 自行记日志，失败不阻断
+		// 本轮 Sweep；sweep 5s 一轮即重试节奏）。
+		projector.FlushPending(taskCtx)
 		result, err := recovery.Sweep(taskCtx)
 		if err != nil {
 			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial, Warning: fmt.Sprintf("due=%d framingComplete=%d transportIncomplete=%d unknown=%d fenced=%d skipped=%d credentialRejected=%d",

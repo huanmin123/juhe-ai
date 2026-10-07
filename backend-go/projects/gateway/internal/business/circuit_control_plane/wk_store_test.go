@@ -693,14 +693,10 @@ func TestValidateIncidentExtendedBranches(t *testing.T) {
 		class := "mystery"
 		v.LastFailureClass = &class
 	})
-	expectFail("attempt timestamps without lease", func(v *Incident) {
-		started := int64(100)
-		v.AttemptStartedAtMS = &started
-	})
-	expectFail("active lease without attempt times", func(v *Incident) {
-		purpose, until := "confirmation", int64(500)
-		v.LeaseID, v.LeasePurpose, v.LeaseUntilMS = &lease, &purpose, &until
-	})
+	// 2026-10-08 attempt-optional 对齐（validateIncident 注释同键）：原
+	// "attempt timestamps without lease" 与 "active lease without attempt
+	// times" 两条锁定 attempt/租约双向耦合的断言随强制校验删除而移除；正向
+	// 覆盖见 TestW9ELeaseWithoutAttemptTimesApplied。
 	expectFail("attempt start after hard deadline", func(v *Incident) {
 		purpose, until := "confirmation", int64(500)
 		started, deadline := int64(900), int64(400)

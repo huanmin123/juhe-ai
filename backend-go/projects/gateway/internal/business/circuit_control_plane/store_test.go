@@ -504,11 +504,9 @@ func TestIncidentStateScopeLeaseAndRetentionBounds(t *testing.T) {
 		{name: "key scope shape", edit: func(v *Incident) { v.ScopeKind = "key" }},
 		{name: "protocol scope shape", edit: func(v *Incident) { v.ScopeKind = "protocol_model" }},
 		{name: "partial lease", edit: func(v *Incident) { lease := "lease"; v.LeaseID = &lease }},
-		{name: "lease without attempt times", edit: func(v *Incident) {
-			lease, purpose, owner := "lease", "confirmation", "run"
-			until := int64(100)
-			v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS = &lease, &purpose, &owner, &until
-		}},
+		// 2026-10-08 attempt-optional 对齐（validateIncident 注释同键）：原
+		// "lease without attempt times" 用例锁定 attempt/租约耦合强制，随该
+		// 校验删除而移除；正向覆盖见 TestW9ELeaseWithoutAttemptTimesApplied。
 		{name: "invalid failure scope", edit: func(v *Incident) { v.FailureScope = "upstream" }},
 		{name: "negative created time", edit: func(v *Incident) { v.CreatedAtMS = -1 }},
 		{name: "negative recovery successes", edit: func(v *Incident) { v.RecoveringSuccesses = -1 }},

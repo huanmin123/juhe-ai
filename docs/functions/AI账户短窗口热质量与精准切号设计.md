@@ -633,6 +633,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 - performance：状态转换必须经可靠队列写入最小持久 incident ledger；Redis 启动后按有界分页从 ledger 重建。已完成权威投影的账户立即恢复正常状态判断；尚未确认的账户通过一次按账户权威查询渐进恢复其父 incident、最多 64 个活动/恢复必需子 incident、当前 revision 和 `CLOSED` ledger。只有该账户仍无法确认的作用域返回 `temporarily_blocked(reason=runtime_state_rebuilding)`，不得把未确认伪装成健康，也不得连带阻塞其他已确认账户。
 - standalone：进程重启同样从业务库 / 本地 ledger 有界重建，并使用相同的按账户渐进恢复与局部阻断语义；全量分页未完成不等于全站不可用。
 - 若产品明确接受 Redis 丢失后 fail-open，必须删除“活动状态不得因过期恢复”的保证，并写入告警与验收；本文默认不接受。
+- Go 装配事实（BUG-0295 修复后，2026-10-08）：主链（gateway）的每次状态转换经 `gatewaycircuit.Bridge` CAS 写 ledger + outbox，`ServiceOptions` 挂 `IsRuntimeStateReady` / `EnsureRuntimeStateReady` 实现按账户渐进恢复（业务库 owner gate 未就绪时不装配，保持恒就绪的既有行为）；jobs 侧 `account-circuit-recovery` 的后台恢复/退避转换经 `CircuitIncidentProjector` 以同契约 CAS 投影回 ledger（冲突回填重试、终态丢弃、pending 随每轮扫描重放），`account-circuit-control-plane-maintenance` 追加孤儿结清扫描——ledger 非终态行在运行态缺键、无活跃租约、非交接态（`PERSISTING`/`SHADOWED_BY_PERSISTENT`）、超宽限期且冲突复查未被复开时才结清为 `CLOSED`（对齐本节"缺失 key 按 CLOSED 处理"守卫），并执行 `CLOSED` 保留期到期行的物理清理。CAS 入参 attempt 时间戳为纯 optional（对齐 Node），不与租约耦合。
 
 `dispatchRevision` 跨 DB 与 Redis 不做伪原子事务，采用 outbox saga：
 

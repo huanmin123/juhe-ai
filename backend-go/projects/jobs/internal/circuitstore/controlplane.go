@@ -19,12 +19,15 @@ import (
 // 与 Node 相同：postgres 使用 FOR UPDATE [SKIP LOCKED]，SQLite 退化为
 // 单 writer 串行；业务表位于 juhe_business schema（PG）。
 //
-// 本适配器只读 ledger（写侧归 gateway 模块
-// backend-go/projects/gateway/internal/business/circuit_control_plane 的 CAS
-// 写路径；归档热修 account_not_found 终态语义——账户行缺失或 deleted_at 非空时
-// 迟到运行态观察必须终态而非重试——也在该写侧实现，跨 module 不可 import，
-// 同键同语义注释互指；本文件 List* 读侧的 deleted_at IS NULL 围栏与归档
-// repository 一致，保证已删账户的迟到事实不回放），outbox ack 中对
+// 本适配器的 ledger 读面（List* / Get*）带 dispatch_revision / deleted_at
+// IS NULL 围栏，与归档 repository 一致，保证已删账户的迟到事实不回放。
+// CAS 写侧 2026-10-08 起由本文件承载（jobs 恢复扫描投影
+// internal/opsjobs.CircuitIncidentProjector 与孤儿结清扫描
+// OrphanIncidentCloser 的落库管道），与 gateway 写侧
+// backend-go/projects/gateway/internal/business/circuit_control_plane 同键
+// 同契约成对维护（跨 module 不可 import；归档热修 account_not_found 终态
+// 语义——账户行缺失或 deleted_at 非空时迟到运行态观察必须终态而非重试——
+// 在两侧写路径都有）；outbox ack 中对
 // circuit_projection_revision / projected_ledger_revision 的回写与
 // Node acknowledge 完全一致。
 
@@ -380,7 +383,778 @@ func (r *ControlPlaneRepo) GetByScopeKey(ctx context.Context, circuitScopeKey st
 	return &record, nil
 }
 
-// ---- opsjobs.ControlPlaneOutbox ----
+// ---- ledger CAS 写侧（与 gateway 写侧成对维护）----
+
+// 与 gateway circuitcontrolplane 同名哨兵错误逐字对齐（跨 module 不可
+// import，成对复制）。
+var (
+	// ErrCAS 是 upsert 账户守卫（WHERE account_id=excluded.account_id）未
+	// 命中时的冲突错误。
+	ErrCAS = errors.New("account circuit compare-and-set conflict")
+	// ErrIdentityReplay 是 dedupe 回放身份不一致的错误。
+	ErrIdentityReplay = errors.New("account circuit replay identity conflict")
+)
+
+// incidentCASColumns 与 gateway store.go incidentColumns 逐字一致（44 列，
+// 同一张物理表；成对复制约定——修改任一侧必须同步另一侧并核对列序）。
+const incidentCASColumns = "circuit_scope_key,account_id,account_runtime_key,scope_kind,key_fingerprint,protocol_code,request_lane,model_family,client_model,capability_hash,credential_source_account_id,client_endpoint_family,final_upstream_model,upstream_endpoint_mode,incident_id,parent_incident_id,child_incident_ids_json,caused_by_terminal_outcome_id,state,failure_scope,generation,dispatch_revision,ledger_revision,projected_ledger_revision,transition_id,cooldown_observation_generation,open_until_ms,next_transition_at_ms,lease_id,lease_purpose,lease_owner_run_id,lease_until_ms,attempt_started_at_ms,attempt_hard_deadline_ms,upstream_attempt_observed,backoff_level,consecutive_failures,confirmation_failures_required,confirmation_failure_evidence_keys_json,recovering_successes,last_failure_class,retained_until_ms,created_at_ms,updated_at_ms"
+
+// circuitIncidentCleanupBatchLimit 限制 Cleanup 单批删除行数。
+const circuitIncidentCleanupBatchLimit = 500
+
+func casBoolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func casNullStringPtr(value sql.NullString) *string {
+	if !value.Valid || value.String == "" {
+		return nil
+	}
+	copied := value.String
+	return &copied
+}
+
+func casNullInt64Ptr(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	copied := value.Int64
+	return &copied
+}
+
+// scanIncidentCASRow 按 incidentCASColumns 列序扫描全字段行。
+func scanIncidentCASRow(row interface{ Scan(...any) error }) (opsjobs.IncidentCASRow, error) {
+	var (
+		v                opsjobs.IncidentCASRow
+		keyFingerprint   sql.NullString
+		protocolCode     sql.NullString
+		requestLane      sql.NullString
+		modelFamily      sql.NullString
+		clientModel      sql.NullString
+		capabilityHash   sql.NullString
+		credentialSource sql.NullString
+		clientEndpoint   sql.NullString
+		finalUpstream    sql.NullString
+		upstreamMode     sql.NullString
+		parentIncidentID sql.NullString
+		causedBy         sql.NullString
+		failureScope     sql.NullString
+		children         string
+		evidence         string
+		openUntil        sql.NullInt64
+		nextTransition   sql.NullInt64
+		leaseID          sql.NullString
+		leasePurpose     sql.NullString
+		leaseOwnerRunID  sql.NullString
+		leaseUntil       sql.NullInt64
+		attemptStarted   sql.NullInt64
+		attemptDeadline  sql.NullInt64
+		upstreamObserved int
+		lastFailureClass sql.NullString
+		retainedUntil    sql.NullInt64
+	)
+	if err := row.Scan(
+		&v.CircuitScopeKey, &v.AccountID, &v.AccountRuntimeKey, &v.ScopeKind,
+		&keyFingerprint, &protocolCode, &requestLane, &modelFamily,
+		&clientModel, &capabilityHash, &credentialSource, &clientEndpoint,
+		&finalUpstream, &upstreamMode,
+		&v.IncidentID, &parentIncidentID, &children, &causedBy,
+		&v.State, &failureScope,
+		&v.Generation, &v.DispatchRevision, &v.LedgerRevision, &v.ProjectedLedgerRevision,
+		&v.TransitionID, &v.CooldownObservationGeneration,
+		&openUntil, &nextTransition,
+		&leaseID, &leasePurpose, &leaseOwnerRunID, &leaseUntil,
+		&attemptStarted, &attemptDeadline,
+		&upstreamObserved, &v.BackoffLevel, &v.ConsecutiveFailures, &v.ConfirmationFailuresRequired,
+		&evidence, &v.RecoveringSuccesses,
+		&lastFailureClass, &retainedUntil, &v.CreatedAtMS, &v.UpdatedAtMS,
+	); err != nil {
+		return opsjobs.IncidentCASRow{}, err
+	}
+	childIncidentIDs, err := parseBoundedIDArray(children)
+	if err != nil {
+		return opsjobs.IncidentCASRow{}, err
+	}
+	v.ChildIncidentIDs = childIncidentIDs
+	evidenceKeys, err := parseEvidenceKeys(evidence, v.ConfirmationFailuresRequired)
+	if err != nil {
+		return opsjobs.IncidentCASRow{}, err
+	}
+	v.ConfirmationFailureEvidenceKeys = evidenceKeys
+	v.KeyFingerprint = casNullStringPtr(keyFingerprint)
+	v.ProtocolCode = casNullStringPtr(protocolCode)
+	v.RequestLane = casNullStringPtr(requestLane)
+	v.ModelFamily = casNullStringPtr(modelFamily)
+	v.ClientModel = casNullStringPtr(clientModel)
+	v.CapabilityHash = casNullStringPtr(capabilityHash)
+	v.CredentialSourceAccountID = casNullStringPtr(credentialSource)
+	v.ClientEndpointFamily = casNullStringPtr(clientEndpoint)
+	v.FinalUpstreamModel = casNullStringPtr(finalUpstream)
+	v.UpstreamEndpointMode = casNullStringPtr(upstreamMode)
+	v.ParentIncidentID = casNullStringPtr(parentIncidentID)
+	v.CausedByTerminalOutcomeID = casNullStringPtr(causedBy)
+	v.FailureScope = casNullStringPtr(failureScope)
+	v.OpenUntilMS = casNullInt64Ptr(openUntil)
+	v.NextTransitionAtMS = casNullInt64Ptr(nextTransition)
+	v.LeaseID = casNullStringPtr(leaseID)
+	v.LeasePurpose = casNullStringPtr(leasePurpose)
+	v.LeaseOwnerRunID = casNullStringPtr(leaseOwnerRunID)
+	v.LeaseUntilMS = casNullInt64Ptr(leaseUntil)
+	v.AttemptStartedAtMS = casNullInt64Ptr(attemptStarted)
+	v.AttemptHardDeadlineMS = casNullInt64Ptr(attemptDeadline)
+	v.UpstreamAttemptObserved = upstreamObserved != 0
+	v.LastFailureClass = casNullStringPtr(lastFailureClass)
+	v.RetainedUntilMS = casNullInt64Ptr(retainedUntil)
+	return v, nil
+}
+
+// CompareAndSetIncident 逐语义移植 gateway
+// circuitcontrolplane.Store.CompareAndSetIncident：账户行锁 → 归档终态围栏
+// （行缺失/deleted_at 非空 → account_not_found；dispatch revision 失配 →
+// stale_dispatch_revision）→ outbox dedupe 幂等回放 → incident 行锁 →
+// expected/generation CAS → ledger_revision+1 → 全列 upsert（账户守卫）+
+// 同事务 incident_changed outbox。PG 对账户行与 incident 行加 FOR UPDATE，
+// SQLite 依赖单 writer 串行等价。
+func (r *ControlPlaneRepo) CompareAndSetIncident(ctx context.Context, input opsjobs.IncidentCASInput) (opsjobs.IncidentCASResult, error) {
+	incident := input.Incident
+	if incident.ChildIncidentIDs == nil {
+		incident.ChildIncidentIDs = []string{}
+	}
+	if incident.ConfirmationFailureEvidenceKeys == nil {
+		incident.ConfirmationFailureEvidenceKeys = []string{}
+	}
+	if input.ExpectedLedgerRevision != nil && *input.ExpectedLedgerRevision < 0 {
+		return opsjobs.IncidentCASResult{}, errors.New("expected ledger revision cannot be negative")
+	}
+	if err := validateIncidentCAS(&incident); err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	if err := validateIncidentCASTimes(&incident, incident.UpdatedAtMS); err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	now := incident.UpdatedAtMS
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	lockClause := ""
+	if r.postgres {
+		lockClause = " FOR UPDATE"
+	}
+	// 归档热修：物理清理会级联 circuit ledger，账户行锁 SELECT 需带
+	// deleted_at；行缺失或已逻辑删除时迟到观察落 account_not_found 终态。
+	var (
+		currentDispatch  int64
+		accountDeletedAt sql.NullString
+	)
+	err = tx.QueryRowContext(ctx,
+		"SELECT dispatch_revision, deleted_at FROM "+r.table("accounts")+" WHERE id=?"+lockClause,
+		incident.AccountID).Scan(&currentDispatch, &accountDeletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASAccountNotFound, CurrentDispatchRevision: 0}, nil
+	}
+	if err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	if accountDeletedAt.Valid {
+		_ = tx.Rollback()
+		return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASAccountNotFound, CurrentDispatchRevision: currentDispatch}, nil
+	}
+	if currentDispatch != incident.DispatchRevision {
+		_ = tx.Rollback()
+		return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASStaleDispatchRevision, CurrentDispatchRevision: currentDispatch}, nil
+	}
+	dedupe := "incident:" + incident.TransitionID
+	var (
+		replayEventType  string
+		replayAccountID  string
+		replayRuntimeKey string
+		replayScopeKey   sql.NullString
+	)
+	err = tx.QueryRowContext(ctx,
+		"SELECT event_type, account_id, account_runtime_key, circuit_scope_key FROM "+
+			r.table("account_circuit_outbox")+" WHERE projection_key=? AND dedupe_key=?",
+		ProjectionKey, dedupe).Scan(&replayEventType, &replayAccountID, &replayRuntimeKey, &replayScopeKey)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// 无回放记录，继续 CAS。
+	case err != nil:
+		return opsjobs.IncidentCASResult{}, err
+	default:
+		if replayEventType != "incident_changed" || replayAccountID != incident.AccountID ||
+			replayRuntimeKey != incident.AccountRuntimeKey || replayScopeKey.String != incident.CircuitScopeKey {
+			return opsjobs.IncidentCASResult{}, ErrIdentityReplay
+		}
+		current, found, err := r.incidentCASByScope(ctx, tx, incident.CircuitScopeKey, false)
+		if err != nil {
+			return opsjobs.IncidentCASResult{}, err
+		}
+		if !found {
+			return opsjobs.IncidentCASResult{}, errors.New("deduplicated incident receipt has no incident")
+		}
+		if err := tx.Commit(); err != nil {
+			return opsjobs.IncidentCASResult{}, err
+		}
+		return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASIdempotent, CurrentDispatchRevision: currentDispatch, Incident: &current}, nil
+	}
+	// incident 行属于 CAS 临界区：PG 必须先锁已有行再比较/upsert，否则并发
+	// 写可同时观察到同一 ledger revision 互相覆盖（注释对齐 gateway 写侧）。
+	current, found, err := r.incidentCASByScope(ctx, tx, incident.CircuitScopeKey, true)
+	if err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	if (input.ExpectedLedgerRevision == nil && found) ||
+		(input.ExpectedLedgerRevision != nil && (!found || current.LedgerRevision != *input.ExpectedLedgerRevision)) {
+		_ = tx.Rollback()
+		var currentPtr *opsjobs.IncidentCASRow
+		if found {
+			currentPtr = &current
+		}
+		return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASConflict, CurrentDispatchRevision: currentDispatch, Incident: currentPtr}, nil
+	}
+	if found && current.AccountID != incident.AccountID {
+		return opsjobs.IncidentCASResult{}, errors.New("circuit scope key belongs to another account")
+	}
+	if found && current.Generation > incident.Generation {
+		_ = tx.Rollback()
+		return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASConflict, CurrentDispatchRevision: currentDispatch, Incident: &current}, nil
+	}
+	if found {
+		incident.ProjectedLedgerRevision = current.ProjectedLedgerRevision
+		incident.CreatedAtMS = current.CreatedAtMS
+		if err := validateIncidentCASTimes(&incident, now); err != nil {
+			return opsjobs.IncidentCASResult{}, err
+		}
+		incident.LedgerRevision = current.LedgerRevision + 1
+	} else {
+		incident.ProjectedLedgerRevision = 0
+		incident.LedgerRevision = 1
+	}
+	if err := r.upsertIncidentCAS(ctx, tx, incident); err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	if err := r.insertIncidentChangedOutbox(ctx, tx, incident, dedupe, now); err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return opsjobs.IncidentCASResult{}, err
+	}
+	return opsjobs.IncidentCASResult{Status: opsjobs.IncidentCASApplied, CurrentDispatchRevision: currentDispatch, Incident: &incident}, nil
+}
+
+func (r *ControlPlaneRepo) incidentCASByScope(ctx context.Context, q txLike, scopeKey string, forUpdate bool) (opsjobs.IncidentCASRow, bool, error) {
+	query := "SELECT " + incidentCASColumns + " FROM " + r.table("account_circuit_incidents") + " WHERE circuit_scope_key=?"
+	if forUpdate && r.postgres {
+		query += " FOR UPDATE"
+	}
+	row, err := scanIncidentCASRow(q.QueryRowContext(ctx, query, scopeKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return opsjobs.IncidentCASRow{}, false, nil
+	}
+	if err != nil {
+		return opsjobs.IncidentCASRow{}, false, err
+	}
+	return row, true, nil
+}
+
+func (r *ControlPlaneRepo) upsertIncidentCAS(ctx context.Context, tx *sql.Tx, v opsjobs.IncidentCASRow) error {
+	if v.ChildIncidentIDs == nil {
+		v.ChildIncidentIDs = []string{}
+	}
+	if v.ConfirmationFailureEvidenceKeys == nil {
+		v.ConfirmationFailureEvidenceKeys = []string{}
+	}
+	children, err := json.Marshal(v.ChildIncidentIDs)
+	if err != nil {
+		return err
+	}
+	evidence, err := json.Marshal(v.ConfirmationFailureEvidenceKeys)
+	if err != nil {
+		return err
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", strings.Count(incidentCASColumns, ",")+1), ",")
+	// ON CONFLICT 全列覆盖 + 账户守卫，与 gateway upsertIncident 逐字对齐
+	// （守卫未命中 0 行受影响 → ErrCAS）。
+	query := "INSERT INTO " + r.table("account_circuit_incidents") + " (" + incidentCASColumns + ") VALUES (" + placeholders + ") " +
+		"ON CONFLICT(circuit_scope_key) DO UPDATE SET " +
+		"account_id=excluded.account_id,account_runtime_key=excluded.account_runtime_key,scope_kind=excluded.scope_kind," +
+		"key_fingerprint=excluded.key_fingerprint,protocol_code=excluded.protocol_code,request_lane=excluded.request_lane," +
+		"model_family=excluded.model_family,client_model=excluded.client_model,capability_hash=excluded.capability_hash," +
+		"credential_source_account_id=excluded.credential_source_account_id,client_endpoint_family=excluded.client_endpoint_family," +
+		"final_upstream_model=excluded.final_upstream_model,upstream_endpoint_mode=excluded.upstream_endpoint_mode," +
+		"incident_id=excluded.incident_id,parent_incident_id=excluded.parent_incident_id," +
+		"child_incident_ids_json=excluded.child_incident_ids_json,caused_by_terminal_outcome_id=excluded.caused_by_terminal_outcome_id," +
+		"state=excluded.state,failure_scope=excluded.failure_scope,generation=excluded.generation," +
+		"dispatch_revision=excluded.dispatch_revision,ledger_revision=excluded.ledger_revision," +
+		"projected_ledger_revision=excluded.projected_ledger_revision,transition_id=excluded.transition_id," +
+		"cooldown_observation_generation=excluded.cooldown_observation_generation,open_until_ms=excluded.open_until_ms," +
+		"next_transition_at_ms=excluded.next_transition_at_ms,lease_id=excluded.lease_id,lease_purpose=excluded.lease_purpose," +
+		"lease_owner_run_id=excluded.lease_owner_run_id,lease_until_ms=excluded.lease_until_ms," +
+		"attempt_started_at_ms=excluded.attempt_started_at_ms,attempt_hard_deadline_ms=excluded.attempt_hard_deadline_ms," +
+		"upstream_attempt_observed=excluded.upstream_attempt_observed,backoff_level=excluded.backoff_level," +
+		"consecutive_failures=excluded.consecutive_failures,confirmation_failures_required=excluded.confirmation_failures_required," +
+		"confirmation_failure_evidence_keys_json=excluded.confirmation_failure_evidence_keys_json," +
+		"recovering_successes=excluded.recovering_successes,last_failure_class=excluded.last_failure_class," +
+		"retained_until_ms=excluded.retained_until_ms,updated_at_ms=excluded.updated_at_ms " +
+		"WHERE account_circuit_incidents.account_id=excluded.account_id"
+	result, err := tx.ExecContext(ctx, query,
+		v.CircuitScopeKey, v.AccountID, v.AccountRuntimeKey, v.ScopeKind,
+		v.KeyFingerprint, v.ProtocolCode, v.RequestLane, v.ModelFamily,
+		v.ClientModel, v.CapabilityHash, v.CredentialSourceAccountID, v.ClientEndpointFamily,
+		v.FinalUpstreamModel, v.UpstreamEndpointMode,
+		v.IncidentID, v.ParentIncidentID, string(children), v.CausedByTerminalOutcomeID,
+		v.State, v.FailureScope,
+		v.Generation, v.DispatchRevision, v.LedgerRevision, v.ProjectedLedgerRevision,
+		v.TransitionID, v.CooldownObservationGeneration,
+		v.OpenUntilMS, v.NextTransitionAtMS,
+		v.LeaseID, v.LeasePurpose, v.LeaseOwnerRunID, v.LeaseUntilMS,
+		v.AttemptStartedAtMS, v.AttemptHardDeadlineMS,
+		casBoolInt(v.UpstreamAttemptObserved), v.BackoffLevel, v.ConsecutiveFailures, v.ConfirmationFailuresRequired,
+		string(evidence), v.RecoveringSuccesses,
+		v.LastFailureClass, v.RetainedUntilMS, v.CreatedAtMS, v.UpdatedAtMS)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrCAS
+	}
+	return nil
+}
+
+// insertIncidentChangedOutbox 列集与 gateway insertOutbox 一致（claim 面
+// 列保持 NULL，由 claim 更新）。
+func (r *ControlPlaneRepo) insertIncidentChangedOutbox(ctx context.Context, tx *sql.Tx, v opsjobs.IncidentCASRow, dedupe string, nowMS int64) error {
+	scopeKey := v.CircuitScopeKey
+	incidentID := v.IncidentID
+	generation := v.Generation
+	ledgerRevision := v.LedgerRevision
+	query := "INSERT INTO " + r.table("account_circuit_outbox") +
+		" (event_id,projection_key,dedupe_key,event_type,account_id,account_runtime_key,circuit_scope_key,incident_id," +
+		"transition_id,dispatch_revision,generation,ledger_revision,status,available_at_ms,attempt_count,created_at_ms,updated_at_ms)" +
+		" VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+	_, err := tx.ExecContext(ctx, query,
+		newClaimToken(), ProjectionKey, dedupe, "incident_changed",
+		v.AccountID, v.AccountRuntimeKey, &scopeKey, &incidentID,
+		v.TransitionID, v.DispatchRevision, &generation, &ledgerRevision,
+		"pending", nowMS, 0, nowMS, nowMS)
+	return err
+}
+
+// Cleanup 对齐 gateway Cleanup 的 incident 删除条件：CLOSED 且保留期到期、
+// 投影水位已覆盖、无未 dispatched outbox。dispatched outbox 的清理由 gateway
+// 写侧维护，本方法只删 incident 行。
+func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (int64, error) {
+	if nowMS < 0 {
+		return 0, errors.New("nowMs 必须是非负整数")
+	}
+	incidents := r.table("account_circuit_incidents")
+	outbox := r.table("account_circuit_outbox")
+	condition := "state='CLOSED' AND retained_until_ms<=? AND projected_ledger_revision>=ledger_revision" +
+		" AND NOT EXISTS (SELECT 1 FROM " + outbox + " o WHERE o.circuit_scope_key=" + incidents + ".circuit_scope_key AND o.status<>'dispatched')"
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	query := "SELECT circuit_scope_key FROM " + incidents +
+		" WHERE " + condition + " ORDER BY retained_until_ms,updated_at_ms,circuit_scope_key LIMIT ?"
+	rows, err := tx.QueryContext(ctx, query, nowMS, circuitIncidentCleanupBatchLimit)
+	if err != nil {
+		return 0, err
+	}
+	var scopeKeys []string
+	for rows.Next() {
+		var scopeKey string
+		if err := rows.Scan(&scopeKey); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		scopeKeys = append(scopeKeys, scopeKey)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(scopeKeys) == 0 {
+		return 0, tx.Commit()
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(scopeKeys)), ",")
+	args := make([]any, len(scopeKeys))
+	for i := range scopeKeys {
+		args[i] = scopeKeys[i]
+	}
+	result, err := tx.ExecContext(ctx, "DELETE FROM "+incidents+" WHERE circuit_scope_key IN ("+placeholders+")", args...)
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return deleted, tx.Commit()
+}
+
+// ListActiveIncidentsPage 是不带 dispatch_revision 围栏的活动行 keyset 分页
+// 读（state<>'CLOSED'），供孤儿结清扫描使用：围栏内的行归 CAS 结清，围栏外
+// 的行 CAS 会返回 stale 丢弃——语义正确。
+func (r *ControlPlaneRepo) ListActiveIncidentsPage(ctx context.Context, afterUpdatedAtMS int64, afterScopeKey string, limit int) ([]opsjobs.IncidentCASRow, error) {
+	if limit < 1 {
+		return nil, errors.New("limit 必须是正整数")
+	}
+	rows, err := r.db.QueryContext(ctx, `
+    SELECT `+incidentCASColumns+`
+    FROM `+r.table("account_circuit_incidents")+` circuit_incident
+    WHERE state <> 'CLOSED'
+      AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
+    ORDER BY updated_at_ms ASC, circuit_scope_key ASC
+    LIMIT ?`, afterUpdatedAtMS, afterUpdatedAtMS, afterScopeKey, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := []opsjobs.IncidentCASRow{}
+	for rows.Next() {
+		record, err := scanIncidentCASRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// ---- CAS 写侧入参校验（对照 gateway validateIncident / validateIncidentTimes，
+// 成对复制；唯一刻意偏差见 validateIncidentCAS 内注释）----
+
+var casIncidentStates = map[string]bool{
+	"CLOSED": true, "SUSPECT": true, "OPEN": true, "HALF_OPEN": true,
+	"RECOVERING": true, "PERSISTING": true, "SHADOWED_BY_PERSISTENT": true,
+}
+var casScopeKinds = map[string]bool{"account": true, "key": true, "protocol_model": true, "key_model": true}
+var casLeasePurposes = map[string]bool{"confirmation": true, "half_open": true, "recovery": true, "cooldown_retest": true, "background_probe": true}
+var casFailureClasses = map[string]bool{"connect_failed": true, "timeout_before_complete": true, "read_interrupted": true, "incomplete_response": true, "explicit_policy": true}
+
+func casRequireText(v, name string) error {
+	if strings.TrimSpace(v) == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	return nil
+}
+
+func casRequireTextBounded(v string, maxLength int, name string) error {
+	if err := casRequireText(v, name); err != nil {
+		return err
+	}
+	if len(v) > maxLength {
+		return fmt.Errorf("%s is too long", name)
+	}
+	return nil
+}
+
+func casValidateOptionalText(value *string, maxLength int, name string) error {
+	if value == nil {
+		return nil
+	}
+	if err := casRequireText(*value, name); err != nil {
+		return err
+	}
+	if len(*value) > maxLength {
+		return fmt.Errorf("%s is too long", name)
+	}
+	return nil
+}
+
+func casValidateRuntimeKey(v string) error {
+	// Node 持久化契约把 runtime key 当作有界文本，不限制字符集。
+	return casRequireTextBounded(v, 1024, "account runtime key")
+}
+
+func casHasKeyModelFields(v *opsjobs.IncidentCASRow) bool {
+	return v.ClientModel != nil || v.CapabilityHash != nil || v.CredentialSourceAccountID != nil ||
+		v.ClientEndpointFamily != nil || v.FinalUpstreamModel != nil || v.UpstreamEndpointMode != nil
+}
+
+func casHasAllKeyModelFields(v *opsjobs.IncidentCASRow) bool {
+	return v.ClientModel != nil && v.CapabilityHash != nil && v.CredentialSourceAccountID != nil &&
+		v.ClientEndpointFamily != nil && v.FinalUpstreamModel != nil && v.UpstreamEndpointMode != nil
+}
+
+func casValidateScopeShape(v *opsjobs.IncidentCASRow) error {
+	switch v.ScopeKind {
+	case "account":
+		if v.KeyFingerprint != nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil || casHasKeyModelFields(v) {
+			return errors.New("account scope cannot carry key/protocol/model fields")
+		}
+	case "key":
+		if v.KeyFingerprint == nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil || casHasKeyModelFields(v) {
+			return errors.New("key scope requires only key fingerprint")
+		}
+	case "protocol_model":
+		if v.KeyFingerprint != nil || v.ProtocolCode == nil || v.RequestLane == nil || v.ModelFamily == nil || casHasKeyModelFields(v) {
+			return errors.New("protocol_model scope requires protocol, request lane and model family")
+		}
+	case "key_model":
+		if v.KeyFingerprint == nil || v.ProtocolCode != nil || v.RequestLane != nil || v.ModelFamily != nil || !casHasAllKeyModelFields(v) {
+			return errors.New("key_model scope requires key fingerprint and complete key-model identity")
+		}
+	}
+	return nil
+}
+
+func casNormalizeIncidentText(v *opsjobs.IncidentCASRow) error {
+	v.CircuitScopeKey = strings.TrimSpace(v.CircuitScopeKey)
+	if err := casRequireTextBounded(v.CircuitScopeKey, 2048, "circuit scope key"); err != nil {
+		return err
+	}
+	v.AccountID = strings.TrimSpace(v.AccountID)
+	if err := casRequireTextBounded(v.AccountID, 256, "account id"); err != nil {
+		return err
+	}
+	v.AccountRuntimeKey = strings.TrimSpace(v.AccountRuntimeKey)
+	if err := casRequireTextBounded(v.AccountRuntimeKey, 1024, "account runtime key"); err != nil {
+		return err
+	}
+	v.TransitionID = strings.TrimSpace(v.TransitionID)
+	if err := casRequireTextBounded(v.TransitionID, 256, "transition id"); err != nil {
+		return err
+	}
+	v.IncidentID = strings.TrimSpace(v.IncidentID)
+	if err := casRequireTextBounded(v.IncidentID, 256, "incident id"); err != nil {
+		return err
+	}
+	for name, field := range map[string]*string{
+		"parent incident id":            v.ParentIncidentID,
+		"caused by terminal outcome id": v.CausedByTerminalOutcomeID,
+		"key fingerprint":               v.KeyFingerprint,
+		"protocol code":                 v.ProtocolCode,
+		"request lane":                  v.RequestLane,
+		"model family":                  v.ModelFamily,
+		"client model":                  v.ClientModel,
+		"capability hash":               v.CapabilityHash,
+		"credential source account id":  v.CredentialSourceAccountID,
+		"client endpoint family":        v.ClientEndpointFamily,
+		"final upstream model":          v.FinalUpstreamModel,
+		"upstream endpoint mode":        v.UpstreamEndpointMode,
+		"lease id":                      v.LeaseID,
+		"lease owner run id":            v.LeaseOwnerRunID,
+	} {
+		if field == nil {
+			continue
+		}
+		*field = strings.TrimSpace(*field)
+		max := 256
+		switch name {
+		case "key fingerprint":
+			max = 256
+		case "protocol code", "request lane":
+			max = 64
+		case "model family", "client model", "final upstream model":
+			max = 256
+		case "capability hash":
+			max = 128
+		case "credential source account id":
+			max = 256
+		case "client endpoint family", "upstream endpoint mode":
+			max = 128
+		}
+		if err := casRequireTextBounded(*field, max, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIncidentCAS(v *opsjobs.IncidentCASRow) error {
+	if err := casNormalizeIncidentText(v); err != nil {
+		return err
+	}
+	for name, field := range map[string]struct {
+		value string
+		max   int
+	}{
+		"circuit scope key":   {v.CircuitScopeKey, 2048},
+		"account id":          {v.AccountID, 256},
+		"account runtime key": {v.AccountRuntimeKey, 1024},
+		"scope kind":          {v.ScopeKind, 32},
+		"incident id":         {v.IncidentID, 256},
+		"state":               {v.State, 64},
+		"transition id":       {v.TransitionID, 256},
+	} {
+		if err := casRequireTextBounded(field.value, field.max, name); err != nil {
+			return err
+		}
+	}
+	if err := casValidateRuntimeKey(v.AccountRuntimeKey); err != nil {
+		return err
+	}
+	if !casIncidentStates[v.State] {
+		return fmt.Errorf("invalid incident state: %s", v.State)
+	}
+	if !casScopeKinds[v.ScopeKind] {
+		return fmt.Errorf("invalid scope kind: %s", v.ScopeKind)
+	}
+	if v.FailureScope != nil && *v.FailureScope != "" && !casScopeKinds[*v.FailureScope] {
+		return fmt.Errorf("invalid failure scope: %s", *v.FailureScope)
+	}
+	if err := casValidateScopeShape(v); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.KeyFingerprint, 256, "key fingerprint"); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.ProtocolCode, 64, "protocol code"); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.RequestLane, 64, "request lane"); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.ModelFamily, 256, "model family"); err != nil {
+		return err
+	}
+	for name, field := range map[string]struct {
+		value *string
+		max   int
+	}{
+		"client model":                 {v.ClientModel, 256},
+		"capability hash":              {v.CapabilityHash, 128},
+		"credential source account id": {v.CredentialSourceAccountID, 256},
+		"client endpoint family":       {v.ClientEndpointFamily, 128},
+		"final upstream model":         {v.FinalUpstreamModel, 256},
+		"upstream endpoint mode":       {v.UpstreamEndpointMode, 128},
+	} {
+		if err := casValidateOptionalText(field.value, field.max, name); err != nil {
+			return err
+		}
+	}
+	if err := casValidateOptionalText(v.LeaseID, 256, "lease id"); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.LeaseOwnerRunID, 256, "lease owner run id"); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.ParentIncidentID, 256, "parent incident id"); err != nil {
+		return err
+	}
+	if err := casValidateOptionalText(v.CausedByTerminalOutcomeID, 256, "caused by terminal outcome id"); err != nil {
+		return err
+	}
+	if v.LeasePurpose != nil && !casLeasePurposes[*v.LeasePurpose] {
+		return fmt.Errorf("invalid lease purpose: %s", *v.LeasePurpose)
+	}
+	leaseFieldCount := 0
+	if v.LeaseID != nil {
+		leaseFieldCount++
+	}
+	if v.LeasePurpose != nil {
+		leaseFieldCount++
+	}
+	if v.LeaseOwnerRunID != nil {
+		leaseFieldCount++
+	}
+	if v.LeaseUntilMS != nil {
+		leaseFieldCount++
+	}
+	if leaseFieldCount != 0 && leaseFieldCount != 4 {
+		return errors.New("lease id, purpose, owner run id and until must be provided together")
+	}
+	if leaseFieldCount == 0 && (v.AttemptStartedAtMS != nil || v.AttemptHardDeadlineMS != nil) {
+		return errors.New("attempt timestamps require an active lease")
+	}
+	// 刻意偏差（相对 gateway validateIncident）：gateway 在"租约四元组齐全"
+	// 时还要求 attempt_started_at_ms / attempt_hard_deadline_ms 同时存在，但
+	// Node 归档与 gateway 自身 bridge 的 CAS 输入（含本仓库投影器）都不携带
+	// attempt 时间戳——照抄该条会让租约态 mutation 的投影全部被入参校验拒绝、
+	// pending 永不结清。Node 归档 repository 无此校验，本侧对齐 Node。
+	if v.LastFailureClass != nil && !casFailureClasses[*v.LastFailureClass] {
+		return fmt.Errorf("invalid last failure class: %s", *v.LastFailureClass)
+	}
+	if len(v.ChildIncidentIDs) > 64 {
+		return errors.New("child incident ids exceed the maximum of 64")
+	}
+	childIDs := make(map[string]struct{}, len(v.ChildIncidentIDs))
+	for i, childID := range v.ChildIncidentIDs {
+		childID = strings.TrimSpace(childID)
+		v.ChildIncidentIDs[i] = childID
+		if err := casRequireTextBounded(childID, 256, "child incident id"); err != nil {
+			return err
+		}
+		if _, duplicate := childIDs[childID]; duplicate {
+			return errors.New("child incident ids must be unique")
+		}
+		childIDs[childID] = struct{}{}
+	}
+	if len(v.ConfirmationFailureEvidenceKeys) > int(v.ConfirmationFailuresRequired)+1 {
+		return errors.New("confirmation evidence keys exceed the configured bound")
+	}
+	evidenceKeys := make(map[string]struct{}, len(v.ConfirmationFailureEvidenceKeys))
+	for i, evidenceKey := range v.ConfirmationFailureEvidenceKeys {
+		evidenceKey = strings.ToLower(strings.TrimSpace(evidenceKey))
+		v.ConfirmationFailureEvidenceKeys[i] = evidenceKey
+		if !isSHA256Hex(evidenceKey) {
+			return errors.New("confirmation evidence keys must be SHA256 values")
+		}
+		if _, duplicate := evidenceKeys[evidenceKey]; duplicate {
+			return errors.New("confirmation evidence keys must be unique")
+		}
+		evidenceKeys[evidenceKey] = struct{}{}
+	}
+	if v.DispatchRevision < 1 || v.Generation < 0 || v.CooldownObservationGeneration < 0 ||
+		v.ConsecutiveFailures < 0 || v.BackoffLevel < 0 || v.ConfirmationFailuresRequired < 1 || v.RecoveringSuccesses < 0 {
+		return errors.New("incident numeric values are invalid")
+	}
+	if v.ConsecutiveFailures > v.ConfirmationFailuresRequired {
+		return errors.New("consecutive failures exceed confirmation failures required")
+	}
+	if v.State == "CLOSED" && v.RetainedUntilMS == nil {
+		return errors.New("closed incident requires retained_until_ms")
+	}
+	if v.State != "CLOSED" && v.RetainedUntilMS != nil {
+		return errors.New("non-closed incident cannot have retained_until_ms")
+	}
+	return nil
+}
+
+func validateIncidentCASTimes(v *opsjobs.IncidentCASRow, nowMS int64) error {
+	if v.CreatedAtMS < 0 {
+		return errors.New("createdAtMs cannot be negative")
+	}
+	if v.UpdatedAtMS < 0 {
+		return errors.New("updatedAtMs cannot be negative")
+	}
+	if v.CreatedAtMS > v.UpdatedAtMS {
+		return errors.New("created_at_ms cannot follow updated_at_ms")
+	}
+	for name, value := range map[string]*int64{
+		"openUntilMs": v.OpenUntilMS, "nextTransitionAtMs": v.NextTransitionAtMS,
+		"leaseUntilMs": v.LeaseUntilMS, "attemptStartedAtMs": v.AttemptStartedAtMS,
+		"attemptHardDeadlineMs": v.AttemptHardDeadlineMS, "retainedUntilMs": v.RetainedUntilMS,
+	} {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("%s cannot be negative", name)
+		}
+	}
+	if v.State == "CLOSED" && v.RetainedUntilMS != nil && *v.RetainedUntilMS < nowMS {
+		return errors.New("closed incident retained_until_ms cannot precede updated_at_ms")
+	}
+	if v.LeaseUntilMS != nil && v.AttemptStartedAtMS != nil && v.AttemptHardDeadlineMS != nil {
+		if *v.AttemptStartedAtMS > *v.AttemptHardDeadlineMS || *v.AttemptHardDeadlineMS > *v.LeaseUntilMS {
+			return errors.New("lease timestamps must satisfy attempt start <= hard deadline <= lease until")
+		}
+	}
+	return nil
+}
 
 type outboxClaimRow struct {
 	eventID           string

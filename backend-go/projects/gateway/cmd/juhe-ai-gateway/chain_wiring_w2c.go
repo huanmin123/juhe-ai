@@ -276,28 +276,54 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 		}
 		store = memoryStore
 	}
-	// BUG-0222：logger 为 nil 时服务内部回落 NopLogger；生产装配传
-	// chainCircuitWaitLogger（releaseAcquiredConfirmation 二次补结算失败的
-	// Warn 留痕依赖注入，否则日志逻辑就位但不输出）。
-	options := gatewaycircuit.ServiceOptions{Logger: logger}
-	closes := []func(){}
-	mutationHook, closePersist, hookErr := newChainAccountCircuitPersistHook(store, persist)
+	options, closePersist, hookErr := newChainAccountCircuitServiceOptions(store, persist, logger)
 	if hookErr != nil {
 		return nil, nil, hookErr
-	}
-	if mutationHook != nil {
-		options.OnMutation = mutationHook
-		closes = append(closes, closePersist)
 	}
 	service, serviceErr := gatewaycircuit.NewCircuitService(store, options)
 	if serviceErr != nil {
 		return nil, nil, fmt.Errorf("create gateway account circuit service: %w", serviceErr)
 	}
-	return service, func() {
-		for _, close := range closes {
-			close()
-		}
-	}, nil
+	return service, closePersist, nil
+}
+
+// newChainAccountCircuitServiceOptions 组装 CircuitService 的 ServiceOptions。
+// persist 配置齐备时挂三个 hook：
+//   - OnMutation → bridge.Observe（观测持久化，见 chain_circuit_controlplane.go）；
+//   - IsRuntimeStateReady / EnsureRuntimeStateReady → bridge 账户级运行态
+//     就绪与懒恢复（设计契约 docs/functions/AI账户短窗口热质量与精准切号
+//     设计.md §125：全量重建未完成或运行态缺失时，请求所在账户经"一次按
+//     账户权威查询"渐进恢复 incident 到运行态；无法确认的账户 fail-closed
+//     阻塞该账户请求，不连带其他账户）。
+//
+// persist 配置不齐（owner gate 未就绪/业务库契约缺失）时三个 hook 全部为
+// nil：service 侧 isRuntimeStateReady 回落默认恒 ready，行为与未接持久化
+// 的既有形态完全一致（不得在 gate 未就绪时把账户 fail-closed）。
+func newChainAccountCircuitServiceOptions(store gatewaycircuit.Store, persist chainAccountCircuitPersistConfig, logger gatewaycircuit.Logger) (gatewaycircuit.ServiceOptions, func(), error) {
+	// BUG-0222：logger 为 nil 时服务内部回落 NopLogger；生产装配传
+	// chainCircuitWaitLogger（releaseAcquiredConfirmation 二次补结算失败的
+	// Warn 留痕依赖注入，否则日志逻辑就位但不输出）。
+	options := gatewaycircuit.ServiceOptions{Logger: logger}
+	mutationHook, bridge, closePersist, hookErr := newChainAccountCircuitPersistHook(store, persist)
+	if hookErr != nil {
+		return gatewaycircuit.ServiceOptions{}, nil, hookErr
+	}
+	if mutationHook == nil {
+		return options, func() {}, nil
+	}
+	options.OnMutation = mutationHook
+	// IsAccountReady 是进程内 map 读，仅在运行键为空时报错（服务侧 scope 键
+	// 恒非空，bridge 不打日志）；err＝无法确认就绪 → false 走 ensure，无新增
+	// 失败面，不重复打日志。
+	options.IsRuntimeStateReady = func(accountRuntimeKey string) bool {
+		ready, err := bridge.IsAccountReady(accountRuntimeKey)
+		return err == nil && ready
+	}
+	// 签名直接匹配。bridge 内部自带单飞 + 有界退避：对 ledger 无 incident 的
+	// 正常账户，一次 ListByRuntimeKeys 后标记 ready 并进程内缓存，后续请求
+	// 不再查询业务库。
+	options.EnsureRuntimeStateReady = bridge.EnsureAccountReady
+	return options, closePersist, nil
 }
 
 // ---------------------------------------------------------------------------

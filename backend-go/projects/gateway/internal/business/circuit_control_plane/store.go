@@ -1294,12 +1294,15 @@ func validateIncident(v *Incident) error {
 	if leaseFieldCount != 0 && leaseFieldCount != 4 {
 		return errors.New("lease id, purpose, owner run id and until must be provided together")
 	}
-	if leaseFieldCount == 0 && (v.AttemptStartedAtMS != nil || v.AttemptHardDeadlineMS != nil) {
-		return errors.New("attempt timestamps require an active lease")
-	}
-	if leaseFieldCount == 4 && (v.AttemptStartedAtMS == nil || v.AttemptHardDeadlineMS == nil) {
-		return errors.New("active lease requires attempt start and hard deadline")
-	}
+	// attempt 时间戳与租约解耦（2026-10-08 裁决，对齐 Node 原版
+	// account-circuit-control-plane.repository.ts 的 :1325-1327 / :1376-1377：
+	// attemptStartedAtMs / attemptHardDeadlineMs 走 optionalIntegerInput 纯可
+	// 选，不与租约耦合）。理由：主链 bridge 的 CAS 输入
+	// （gatewaycircuit/bridge.go buildPersistIncidentInput）带租约四元组却
+	// 从不携带 attempt 两字段，此前的双向强制会使一切带租约状态
+	// （confirmation / half_open / recovery 租约）的持久化入参校验必然失败
+	// 并重试耗尽——生产 ledger 行停在无租约 SUSPECT 的既有源头之一。有值时
+	// 仍由 validateIncidentTimes 校验非负与 start <= deadline <= leaseUntil。
 	if v.LastFailureClass != nil && !allowedFailureClasses[*v.LastFailureClass] {
 		return fmt.Errorf("invalid last failure class: %s", *v.LastFailureClass)
 	}

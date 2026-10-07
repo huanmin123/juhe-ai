@@ -788,21 +788,10 @@ func TestW9EValidateIncidentBranches(t *testing.T) {
 	if _, err := s.CompareAndSetIncident(ctx, bad); err == nil || !strings.Contains(err.Error(), "together") {
 		t.Fatalf("lease 字段不齐 = %v", err)
 	}
-	// attempt 时间戳缺 lease。
-	bad = base()
-	bad.Incident.AttemptStartedAtMS = int64Ptr2(100)
-	if _, err := s.CompareAndSetIncident(ctx, bad); err == nil || !strings.Contains(err.Error(), "active lease") {
-		t.Fatalf("attempt 缺 lease = %v", err)
-	}
-	// 有 lease 但缺 attempt 时间戳。
-	bad = base()
-	bad.Incident.LeaseID = strPtr2("lease")
-	bad.Incident.LeasePurpose = strPtr2("confirmation")
-	bad.Incident.LeaseOwnerRunID = strPtr2("run")
-	bad.Incident.LeaseUntilMS = int64Ptr2(500)
-	if _, err := s.CompareAndSetIncident(ctx, bad); err == nil || !strings.Contains(err.Error(), "attempt start and hard deadline") {
-		t.Fatalf("lease 缺 attempt = %v", err)
-	}
+	// 2026-10-08 attempt-optional 对齐（validateIncident 注释同键）：原
+	// "attempt 时间戳缺 lease"与"有 lease 但缺 attempt 时间戳"两条锁定
+	// attempt/租约双向耦合的断言随强制校验删除而移除；解耦后的正向覆盖见
+	// TestW9ELeaseWithoutAttemptTimesApplied。
 	// 非法 failure class。
 	bad = base()
 	bad.Incident.LastFailureClass = strPtr2("bogus")
@@ -895,6 +884,33 @@ func TestW9EValidateKeyModelScopeHappyPath(t *testing.T) {
 	res, err := s.CompareAndSetIncident(ctx, mut)
 	if err != nil || res.Status != "applied" {
 		t.Fatalf("key_model happy path = %+v err=%v", res, err)
+	}
+}
+
+// TestW9ELeaseWithoutAttemptTimesApplied 验证 attempt-optional 对齐（2026-
+// 10-08）：bridge buildPersistIncidentInput 的真实写面形状——带租约四元组、
+// attempt 两字段缺省——必须校验通过并 applied（此前被"active lease requires
+// attempt start and hard deadline"强制拦截，带租约状态持久化重试耗尽）。
+func TestW9ELeaseWithoutAttemptTimesApplied(t *testing.T) {
+	s, db := wkReadyStore(t)
+	defer db.Close()
+	ctx := context.Background()
+	mut := wkBaseIncident("w9e-lease-no-attempt", "a1", 1)
+	mut.Incident.LeaseID = strPtr2("lease-1")
+	mut.Incident.LeasePurpose = strPtr2("confirmation")
+	mut.Incident.LeaseOwnerRunID = strPtr2("run-1")
+	mut.Incident.LeaseUntilMS = int64Ptr2(500)
+	res, err := s.CompareAndSetIncident(ctx, mut)
+	if err != nil || res.Status != "applied" {
+		t.Fatalf("带租约缺 attempt 应 applied: %+v err=%v", res, err)
+	}
+	// attempt 两字段单独出现（无租约）同样合法。
+	mut2 := wkBaseIncident("w9e-attempt-no-lease", "a1", 1)
+	mut2.Incident.AttemptStartedAtMS = int64Ptr2(100)
+	mut2.Incident.AttemptHardDeadlineMS = int64Ptr2(200)
+	res, err = s.CompareAndSetIncident(ctx, mut2)
+	if err != nil || res.Status != "applied" {
+		t.Fatalf("缺租约带 attempt 应 applied: %+v err=%v", res, err)
 	}
 }
 

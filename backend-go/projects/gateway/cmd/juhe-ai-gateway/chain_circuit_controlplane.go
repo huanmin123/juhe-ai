@@ -295,16 +295,20 @@ func chainCircuitDerefBool(value *bool) bool {
 }
 
 // newChainAccountCircuitPersistHook 装配主链熔断持久观测回调。返回
-// (hook, close, error)：
-//   - 配置不齐（无业务库句柄或 owner gate 未就绪）时返回 (nil, nil, nil)，
+// (hook, bridge, close, error)：
+//   - 配置不齐（无业务库句柄或 owner gate 未就绪）时返回 (nil, nil, nil, nil)，
 //     保持既有"无持久观测"行为——Node 仍是业务库写者的混合运行态下，
 //     Go 主链不越权写 incidents（ErrOwnerGate 纪律）；
 //   - 业务库契约缺失（表未建）时不 fail-fast 启动，只记警告并停用持久化，
 //     由运维执行 maintenance ensure-schema 后重启恢复；
 //   - 其余构造错误按组合根 fail-fast 契约返回 error。
-func newChainAccountCircuitPersistHook(runtimeStore gatewaycircuit.Store, config chainAccountCircuitPersistConfig) (func(context.Context, gatewaycircuit.MutationEvent) error, func(), error) {
+//   - hook 非 nil 时 bridge 同步返回（close 即 bridge.Close），供调用方把
+//     ServiceOptions 的运行态就绪双 hook（IsRuntimeStateReady /
+//     EnsureRuntimeStateReady）委托到同一 bridge 实例；hook 为 nil 时
+//     bridge 恒为 nil，双 hook 必须保持不挂（gate 未就绪不得 fail-closed）。
+func newChainAccountCircuitPersistHook(runtimeStore gatewaycircuit.Store, config chainAccountCircuitPersistConfig) (func(context.Context, gatewaycircuit.MutationEvent) error, *gatewaycircuit.Bridge, func(), error) {
 	if config.DB == nil || !config.Confirmed || !config.SchemaReady || !config.NodeWriterStopped {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	mode := circuitcontrolplane.SQLite
 	if config.Postgres {
@@ -317,13 +321,13 @@ func newChainAccountCircuitPersistHook(runtimeStore gatewaycircuit.Store, config
 	}
 	controlStore, err := circuitcontrolplane.New(config.DB, mode, businessSchema, gate)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create gateway account circuit control-plane store: %w", err)
+		return nil, nil, nil, fmt.Errorf("create gateway account circuit control-plane store: %w", err)
 	}
 	if contractErr := controlStore.CheckContract(context.Background()); contractErr != nil {
 		slog.Warn("gateway 账户电路持久观测停用：业务库 circuit control-plane 契约校验失败（maintenance ensure-schema 后重启恢复）",
 			"event", "gateway_account_circuit_persistence_disabled",
 			"error", contractErr.Error())
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	bridge, err := gatewaycircuit.NewBridge(gatewaycircuit.BridgeOptions{
 		Store:            runtimeStore,
@@ -331,7 +335,7 @@ func newChainAccountCircuitPersistHook(runtimeStore gatewaycircuit.Store, config
 		OnPersistFailure: chainCircuitPersistFailureLogger,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("create gateway account circuit control-plane bridge: %w", err)
+		return nil, nil, nil, fmt.Errorf("create gateway account circuit control-plane bridge: %w", err)
 	}
 	hook := func(_ context.Context, event gatewaycircuit.MutationEvent) error {
 		// 热路径安全契约：Observe 只做按 scope 的合并入队（互斥锁 + worker
@@ -341,7 +345,7 @@ func newChainAccountCircuitPersistHook(runtimeStore gatewaycircuit.Store, config
 		bridge.Observe(event.Scope, event.State)
 		return nil
 	}
-	return hook, bridge.Close, nil
+	return hook, bridge, bridge.Close, nil
 }
 
 // chainCircuitPersistFailureLogger 把 bridge 持久化失败诊断记入进程日志

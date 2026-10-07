@@ -206,9 +206,9 @@ func TestChainAccountCircuitPersistHookArms(t *testing.T) {
 		"noDB":           {},
 		"gateIncomplete": {Confirmed: true, SchemaReady: true, NodeWriterStopped: false},
 	} {
-		hook, closeHook, hookErr := newChainAccountCircuitPersistHook(store, config)
-		if hookErr != nil || hook != nil || closeHook != nil {
-			t.Fatalf("%s: hook nil=%v close nil=%v err=%v, want all disabled", name, hook == nil, closeHook == nil, hookErr)
+		hook, bridge, closeHook, hookErr := newChainAccountCircuitPersistHook(store, config)
+		if hookErr != nil || hook != nil || bridge != nil || closeHook != nil {
+			t.Fatalf("%s: hook nil=%v bridge nil=%v close nil=%v err=%v, want all disabled", name, hook == nil, bridge == nil, closeHook == nil, hookErr)
 		}
 	}
 	// DB 就绪但库内无 circuit 契约表：只停用并告警，不报错。
@@ -217,9 +217,9 @@ func TestChainAccountCircuitPersistHookArms(t *testing.T) {
 		t.Fatalf("open empty sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = emptyDB.Close() })
-	hook, closeHook, hookErr := newChainAccountCircuitPersistHook(store, w17eGateReadyConfig(emptyDB))
-	if hookErr != nil || hook != nil || closeHook != nil {
-		t.Fatalf("contract missing: hook nil=%v close nil=%v err=%v, want graceful disable", hook == nil, closeHook == nil, hookErr)
+	hook, bridge, closeHook, hookErr := newChainAccountCircuitPersistHook(store, w17eGateReadyConfig(emptyDB))
+	if hookErr != nil || hook != nil || bridge != nil || closeHook != nil {
+		t.Fatalf("contract missing: hook nil=%v bridge nil=%v close nil=%v err=%v, want graceful disable", hook == nil, bridge == nil, closeHook == nil, hookErr)
 	}
 }
 
