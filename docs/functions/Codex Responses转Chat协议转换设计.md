@@ -8,12 +8,12 @@
 
 OpenAI Chat / Responses 到 Anthropic Messages 是另一条桥接线，不复用本文的 Chat-only 结论；它需要同时覆盖 Chat JSON、Chat SSE、Responses JSON、Responses SSE 四类下游入口，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 
-当前实现落点：
+当前实现落点（Go，2026-09-05 Node 归档后）：
 
-- 通用转换层：`backend/src/modules/providers/drivers/_shared/codex-responses-chat-bridge.ts`
-- GLM 启用点：`backend/src/modules/providers/drivers/glm/driver.ts`
-- DeepSeek 启用点：`backend/src/modules/providers/drivers/deepseek/driver.ts`
-- 普通账号模型映射判断：`backend/src/modules/gateway/protocols/openai-v1/model-mapping.ts`
+- Responses↔Chat 转换与桥接状态：`backend-go/projects/gateway/internal/gatewaycodex/`（Responses item 契约注册表 `contract.go`、历史 item 清理 `historysanitizer.go`、桥接状态与 compact snapshot `chatbridgestate.go`、compact preflight `compactpreflight.go`）
+- 请求构建、Codex 响应变换与分发：`backend-go/projects/gateway/internal/openaicompat/openaicompatbridge/`（`bridge_request.go`、`bridge_codex_response.go`、`bridgedispatch.go`）
+- 供应商启用：Go 无每供应商 driver 启用点；GLM / DeepSeek 等 Chat-only 上游经供应商档案（`backend-go/projects/gateway/internal/accounts/accountscore/endpointmodes.go`）与模型映射承接
+- 模型映射判断：`backend-go/projects/gateway/internal/accounts/model_mapping_protocol_matrix.go`（混合账户跨协议矩阵）；普通账号映射规则口径见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)
 
 ## 设计原则
 
