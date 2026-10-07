@@ -232,7 +232,8 @@ func quizRequestFailureEvaluation(question QuizQuestion, result Result) Evaluati
 		evidence["error"] = result.ErrorMessage
 	}
 	// BUG-0292：截断已读的部分作答文本只作证据留存（对齐 BUG-0287 部分体
-	// 保留精神），不参与判分，也绝不冒充完整答案进入裁判。
+	// 保留精神），不参与判分，也绝不冒充完整答案进入裁判。本函数两跳共用：
+	// 裁判跳截断时摘录的是裁判输出的 JSON 碎片，并非模型作答文本。
 	if strings.TrimSpace(result.Output) != "" {
 		evidence["answerExcerpt"] = answerExcerpt(result.Output)
 	}

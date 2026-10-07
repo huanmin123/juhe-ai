@@ -1,8 +1,8 @@
 # 官方可落地 OAuth 账户接入设计
 
-> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明）。文中 Node 实现叙述是写作时点的截面，保留为历史对照，不构成当前实现或操作授权。
+> 状态：已落地。OpenAI 管理式 OAuth 与 Gemini / Anthropic / Grok OAuth 均由 Go 承接：`backend-go/projects/gateway/internal/oauthmgmt`（授权、换码、刷新、SSO device flow）与 `backend-go/projects/jobs/internal/oauthrefresh`（保活刷新）；Anthropic 托管接入细则见 [Anthropic官方OAuth托管接入设计](Anthropic官方OAuth托管接入设计.md)。本文保留跨供应商统一建模、能力矩阵与刷新策略契约；文中 Node 时代措辞已按 Go 现行口径修订。
 >
-> 状态：进行中。目标是在 `juhe-ai` 内独立支持当前已验证、可长期维护的 OAuth 账户接入，不复制第三方订阅代理内核。
+> 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`）。目标是在 `juhe-ai` 内独立支持已验证、可长期维护的 OAuth 账户接入，不复制第三方订阅代理内核。
 
 ## 背景
 
@@ -16,7 +16,7 @@
   仍不复用第三方 client identity，也不接入订阅代理语义。
 - xAI / Grok 使用 `oauth`，支持 xAI PKCE 授权、Refresh Token、直接 Access Token，以及 Grok Web SSO Cookie 通过 device flow 转换成可刷新的 OAuth 凭据；Grok OAuth 运行时只承接 Responses。
 
-本次目标是把这些已可落地的语义统一进现有账户模型、网关鉴权、前端账户表单和测试链路，而不是把 CLIProxyAPI、sub2api_source 或其他项目里的私有订阅代理整体移植进来。
+这些已可落地的语义已统一进现有账户模型、网关鉴权、前端账户表单和测试链路（实现落点见“后端设计”），而不是把 CLIProxyAPI、sub2api_source 或其他项目里的私有订阅代理整体移植进来。
 
 ## 目标
 
@@ -44,7 +44,7 @@
 - 新增依赖外部 sidecar 的运行时认证内核。
 - Vertex AI、Google Workspace 管理授权、Google ADC / Service Account JWT。
 - Grok OAuth / SSO device flow 之外的 X 会话代理、浏览器自动化和任意 Cookie 长期网关认证。
-- Antigravity、Kimi 等尚未建立当前 Node driver 与凭据闭环的私有 OAuth 链路。
+- Antigravity、Kimi 等尚未建立 Go driver 与凭据闭环的私有 OAuth 链路。
 
 ## 供应商 OAuth 矩阵
 
@@ -78,7 +78,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
 - OpenAI：继续允许现有 refresh token 生命周期。
 - Gemini：保存 token、模式 client、`oauth_type`、project、tier、base URL；Google One 可附带 Drive 配额快照。
-- Anthropic：最小必填为 `access_token`；允许预留 `refresh_token` 字段，但当前运行时只消费 `access_token`。
+- Anthropic：最小必填为 `access_token`；允许预留 `refresh_token` 字段，但导入型运行时只消费 `access_token`（托管型有 refresh 刷新链路，口径见 [Anthropic官方OAuth托管接入设计](Anthropic官方OAuth托管接入设计.md)）。
 - Grok：保存 access / refresh / ID token、client、scope、到期时间及可取得的用户、团队和订阅 claims；SSO Cookie 不落入账户凭据。
 
 ### endpoint modes
@@ -91,6 +91,8 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 - 不再把所有 `oauth` 账户统一压成 OpenAI Responses 能力集合。
 
 ## 后端设计
+
+实现落点（Go）：管理面授权、换码、刷新与 SSO device flow 位于 `backend-go/projects/gateway/internal/oauthmgmt`（按供应商拆分为 `openai.go`、`gemini.go`、`anthropic.go`、`grok.go`、`groksso.go` 等，路由见 `routes.go`）；后台保活刷新位于 `backend-go/projects/jobs/internal/oauthrefresh/keepalive.go`，Anthropic / Gemini 提前量为 60 秒、Grok 为 5 分钟，单批默认 20 个账户。以下小节保留设计契约。
 
 ### 存储与默认档案
 
@@ -146,8 +148,8 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 
 ### 自动化回归
 
-- 后端 typecheck
-- 前端 typecheck
+- 后端按 Go 三项目验收入口执行 `go build ./...` 与 `go test ./...`（`backend-go/projects/{gateway,jobs,maintenance}`，见 [Go三项目架构基线](../architecture/Go三项目架构基线.md)；原 Node 后端 typecheck 与 pnpm 回归清单已随 Node 后端归档）
+- 前端 typecheck 与回归按前端现行测试入口执行（见 `docs/develop/README.md`）
 - 账户能力 / endpoint mode 纯函数回归
 - Anthropic 网关 mock 回归
 - Gemini OAuth 协议契约、Code Assist runtime 与 token refresh 回归
@@ -170,6 +172,7 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 ## 关联文档
 
 - [供应商订阅认证接入安全设计](供应商订阅认证接入安全设计.md)
+- [Anthropic官方OAuth托管接入设计](Anthropic官方OAuth托管接入设计.md)
 - [OpenAI 账号接入](OpenAI账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)
 - [Anthropic 账号接入](Anthropic账号接入.md)

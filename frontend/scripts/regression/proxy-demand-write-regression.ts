@@ -44,6 +44,11 @@ assert.deepEqual(
   { description: null, port: 7891, enabled: false },
   '代理编辑只能提交实际变化字段，并将清空说明归一化为 null'
 )
+assert.deepEqual(
+  buildProxyPatchPayload(baseline, { ...baseline, username: ' ' }),
+  { username: null },
+  '清空代理用户名必须归一化为 null（后端落 NULL，与说明同构）'
+)
 assert.equal(hasProxyPatchChanges(baseline, { ...baseline, port: 7891 }), true, '实际字段变化必须生成 PATCH')
 assert.deepEqual(
   buildProxyPatchPayload(baseline, { ...baseline, password: 'new-secret' }),

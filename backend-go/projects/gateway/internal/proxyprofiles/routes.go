@@ -653,13 +653,17 @@ func parseProxyInput(body map[string]any, update bool) (proxyInput, string) {
 		port := int(number)
 		input.Port = &port
 	}
-	if value, ok := body["username"]; ok && value != nil {
-		text, isText := value.(string)
-		if !isText {
+	// username 与 description 同构（nullable 文本）：JSON null = 清除（写面
+	// HasUsername + nil 落 NULL），缺省 = 不修改；create 侧 null 结果与缺省一致。
+	if value, ok := body["username"]; ok {
+		if value == nil {
+			input.HasUsername = true
+		} else if text, isText := value.(string); isText {
+			input.HasUsername = true
+			input.Username = &text
+		} else {
 			return input, "代理参数无效"
 		}
-		input.HasUsername = true
-		input.Username = &text
 	}
 	if value, ok := body["password"]; ok {
 		if value == nil {

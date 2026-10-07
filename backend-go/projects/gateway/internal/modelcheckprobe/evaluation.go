@@ -208,7 +208,11 @@ func requestFailureEvaluation(kind string, result Result, expectedModel string, 
 		evidence["retryWaitMilliseconds"] = retryWaitMilliseconds(result.RetryWaitDurations)
 		evidence["attempts"] = safeAttemptDetails(result.AttemptDetails)
 	}
-	if result.HTTPStatus == http.StatusOK && !IsModelUnavailable(result, expectedModel) {
+	// BUG-0292：Incomplete 200 属传输面失败，保持 skipped + 请求失败证据
+	// 路径（terminalFailure 由上方 isTerminalProbeFailure 分支附加，进而
+	// 触发 summary.hasTerminalCoreProbeFailure 的整轮 unavailable 口径），
+	// 不得剥离后按计分 failed 输出；本分支仅服务于完整读取 200 的质量失败。
+	if result.HTTPStatus == http.StatusOK && !result.Incomplete && !IsModelUnavailable(result, expectedModel) {
 		delete(evidence, "requestFailure")
 		delete(evidence, "excludedFromScoring")
 		delete(evidence, "evidenceInsufficient")

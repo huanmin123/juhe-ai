@@ -18,7 +18,7 @@ export function buildProxyCreatePayload(form: ProxyFormState): Record<string, un
     type: form.type,
     host: form.host.trim(),
     port: form.port,
-    username: form.username.trim(),
+    username: form.username.trim() || null,
     enabled: form.enabled
   }
   if (form.password.trim()) payload.password = form.password
@@ -35,7 +35,7 @@ export function buildProxyPatchPayload(baseline: ProxyFormState, current: ProxyF
   if (baseline.host.trim() !== current.host.trim()) payload.host = current.host.trim()
   if (baseline.port !== current.port) payload.port = current.port
   if (normalizedNullableText(baseline.username) !== normalizedNullableText(current.username)) {
-    payload.username = current.username.trim()
+    payload.username = normalizedNullableText(current.username)
   }
   if (baseline.enabled !== current.enabled) payload.enabled = current.enabled
   if (current.password.trim()) payload.password = current.password

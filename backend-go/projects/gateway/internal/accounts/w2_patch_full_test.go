@@ -179,6 +179,19 @@ func TestW2PatchScheduleStatusAndFailureClear(t *testing.T) {
 		t.Fatal("时间表未落库")
 	}
 
+	// 可用性时间表置空（availabilitySchedule:null → NormalizeSchedule(nil) 落
+	// NULL；BUG-0291 同类审计补的清空臂覆盖）。
+	code, payload = w2PatchBody(t, env, id, `"availabilitySchedule":null`)
+	if code != http.StatusOK {
+		t.Fatalf("时间表置空: %d %v", code, payload)
+	}
+	if !containsChange(dataMap(t, payload)["changedFields"], "availabilitySchedule") {
+		t.Fatalf("置空未列入变更：%v", dataMap(t, payload)["changedFields"])
+	}
+	if got := env.queryCell(t, `SELECT COALESCE(availability_schedule_json,'') FROM accounts WHERE id = ?`, id); got != "" {
+		t.Fatalf("置空后时间表应清除：%s", got)
+	}
+
 	// 状态置为 cooldown 并预置失败痕迹，然后 clearFailureState 清理。
 	env.exec(t, `UPDATE accounts SET status = 'cooldown', cooldown_until = '2030-01-01T00:00:00Z',
 		last_error_code = 'upstream_5xx', last_error_message = 'boom', health_check_failure_count = 3,

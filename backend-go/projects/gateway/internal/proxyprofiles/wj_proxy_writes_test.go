@@ -132,6 +132,54 @@ func TestWJPatchSamePasswordKeepsEnvelope(t *testing.T) {
 	}
 }
 
+// TestWJPatchUsernameNullClears 固定 username 的 nullable 契约（与 description
+// 同构）：先绑定再提交 null → 行内 username 落 NULL 并记入差异；重复清空
+// 不再产生差异。
+func TestWJPatchUsernameNullClears(t *testing.T) {
+	fixture := newProxyFixture(t)
+	created := wjCreateProxy(t, fixture, "代理-清空用户名")
+	withUser := "diag-user"
+	if _, err := fixture.store.Patch(context.Background(), created.ID, proxyInput{
+		Username: &withUser, HasUsername: true,
+		ExpectedUpdatedAt: currentUpdatedAt(t, fixture, created.ID),
+	}); err != nil {
+		t.Fatalf("set username: %v", err)
+	}
+	if got := wjUsernameCell(t, fixture, created.ID); got != "diag-user" {
+		t.Fatalf("username 应已绑定: %q", got)
+	}
+	if _, err := fixture.store.Patch(context.Background(), created.ID, proxyInput{
+		HasUsername: true, ExpectedUpdatedAt: currentUpdatedAt(t, fixture, created.ID),
+	}); err != nil {
+		t.Fatalf("clear username: %v", err)
+	}
+	if got := wjUsernameCell(t, fixture, created.ID); got != "" {
+		t.Fatalf("清空后 username 应为 NULL: %q", got)
+	}
+	// 重复清空：无差异（不产生 username 变更记录）。
+	outcome, err := fixture.store.Patch(context.Background(), created.ID, proxyInput{
+		HasUsername: true, ExpectedUpdatedAt: currentUpdatedAt(t, fixture, created.ID),
+	})
+	if err != nil {
+		t.Fatalf("clear again: %v", err)
+	}
+	for _, change := range diffSafeChanges(outcome.Before, outcome.After) {
+		if change.Field == "username" {
+			t.Fatalf("重复清空不得再产生 username 差异: %+v", outcome)
+		}
+	}
+}
+
+// wjUsernameCell 读行内 username（NULL/空串统一为空串便于断言）。
+func wjUsernameCell(t *testing.T, fixture *proxyFixture, id string) string {
+	t.Helper()
+	var username string
+	if err := fixture.db.QueryRow(`SELECT COALESCE(username,'') FROM proxy_profiles WHERE id = ?`, id).Scan(&username); err != nil {
+		t.Fatalf("query username: %v", err)
+	}
+	return username
+}
+
 // TestWJPatchConflictAndMissing 固定版本冲突与缺失行。
 func TestWJPatchConflictAndMissing(t *testing.T) {
 	fixture := newProxyFixture(t)

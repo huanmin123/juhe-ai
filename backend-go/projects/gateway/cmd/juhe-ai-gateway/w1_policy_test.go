@@ -131,7 +131,7 @@ func TestW1AccountErrorRuleCooldownUntil(t *testing.T) {
 	if elapsed := parsed.Sub(now); elapsed < 11*time.Hour+30*time.Minute || elapsed > 12*time.Hour+31*time.Minute {
 		t.Fatalf("daily 冷却跨度 = %v", elapsed)
 	}
-	// BUG-0292 已修复：weekly 分支原先把 daysAhead 误传给 AddDate 的年参数
+	// BUG-0293 已修复：weekly 分支原先把 daysAhead 误传给 AddDate 的年参数
 	// （Go 签名 AddDate(years, months, days)），daysAhead=3 被当作 +3 年；
 	// 现按 Node 语义传 AddDate(0, 0, daysAhead)。now=2026-09-13（周日）、
 	// WeeklyResetDay=3（周三）、WeeklyResetHour=8：daysAhead=(3-0+7)%7=3，
@@ -146,7 +146,7 @@ func TestW1AccountErrorRuleCooldownUntil(t *testing.T) {
 	if elapsed := parsed.Sub(now); elapsed < 69*time.Hour || elapsed > 71*time.Hour {
 		t.Fatalf("weekly 冷却跨度 = %v，want [70h-1h, 70h+1h]", elapsed)
 	}
-	// weekly 目标时刻已过则顺延一周（BUG-0292 第二处：顺延原写 AddDate(7, 0, 0)
+	// weekly 目标时刻已过则顺延一周（BUG-0293 第二处：顺延原写 AddDate(7, 0, 0)
 	// 即 +7 年，应为 AddDate(0, 0, 7)）。now=2026-09-16（周三）10:00、
 	// WeeklyResetDay=3、WeeklyResetHour=8 → 当日 08:00 已过，target 顺延到
 	// 2026-09-23 08:00 UTC（+7 天），距 now 166 小时（< 7d → 抖动 ±1h）。

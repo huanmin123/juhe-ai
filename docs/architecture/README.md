@@ -15,8 +15,6 @@
 - [问题修复指导](问题修复指导.md)
 - [AI 账户错误语义与状态变更边界](../functions/AI账户错误语义与状态变更边界.md)
 - [大文件重构指南](大文件重构指南.md)
-- [后端架构设计](backend/README.md)
-- [后台任务使用说明](backend/后台任务使用说明.md)
 - [前端架构设计](frontend/README.md)
 - [前端样式规范](frontend/样式规范.md)
 - [前端通用组件规范](frontend/通用组件规范.md)

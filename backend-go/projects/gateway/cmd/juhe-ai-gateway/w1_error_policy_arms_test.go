@@ -387,35 +387,20 @@ func TestW1ERuleCooldownUntilArms(t *testing.T) {
 	w1eAssertWithin(t, accountErrorRuleCooldownUntil(dailyRollover, now, "seed-c"),
 		time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), time.Hour)
 
-	// weekly 目标（周五 8 点）在未来：只断言确定性、非精确时刻与落在未来。
-	// 【疑似生产 bug，待用户裁决，不在测试中固化】chain_error_policy.go 的
-	// accountErrorRuleCooldownUntil weekly 分支写 target.AddDate(daysAhead, 0, 0)，
-	// 而 Go AddDate(years, months, days) 的首参是年 —— 「+3 天」被当作
-	// 「+3 年」推进（2026-09-01 → 2029-09-01），weekly 限流冷却会以年为单位。
-	// 正确写法应为 AddDate(0, 0, daysAhead)；修复后应把本段改回
-	// w1eAssertWithin(±1h, 2026-09-04T08:00Z) 中心断言。
+	// weekly 目标（周五 8 点）在未来：BUG-0293 修复后回正中心断言。
+	// now=2026-09-01（周二 10:00Z）：daysAhead=(5-2+7)%7=3 → target=
+	// 2026-09-04（周五）08:00Z，距 now 70 小时 ∈ [24h,7d) → 确定性抖动 ±1h。
+	// （原「疑似生产 bug」注释所记 AddDate 年/日参数错位已随 53d685183 修复。）
 	weeklyFuture := accountErrorHandlingRule{ResetStrategy: "weekly", WeeklyResetDay: 5, WeeklyResetHour: 8}
-	weeklyUntil := accountErrorRuleCooldownUntil(weeklyFuture, now, "seed-d")
-	if weeklyUntil != accountErrorRuleCooldownUntil(weeklyFuture, now, "seed-d") {
-		t.Fatalf("weekly 同种子结果不稳定：%s vs %s", weeklyUntil, accountErrorRuleCooldownUntil(weeklyFuture, now, "seed-d"))
-	}
-	if !w1eParseUntil(t, weeklyUntil).After(now) {
-		t.Fatalf("weekly 冷却必须在未来：%s", weeklyUntil)
-	}
-	if w1eParseUntil(t, weeklyUntil).Equal(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)) {
-		t.Fatalf("weekly 冷却等于精确边界，确定性抖动缺失：%s", weeklyUntil)
-	}
+	w1eAssertWithin(t, accountErrorRuleCooldownUntil(weeklyFuture, now, "seed-d"),
+		time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC), time.Hour)
 
-	// weekly 同日早于当前时刻（周二 8 点 < 10 点）：同上只断言诚实性质
-	// （期望语义应为顺延到 9 月 8 日 08:00，受上述 AddDate 疑点影响不强断言中心）。
+	// weekly 同日早于当前时刻（周二 8 点 < 10 点）：BUG-0293 修复后顺延为
+	// +7 天（原 AddDate(7,0,0) 同型误传年参数即 +7 年）→ 2026-09-08（次周二）
+	// 08:00Z，距 now 166 小时 → 抖动 ±1h。
 	weeklyRollover := accountErrorHandlingRule{ResetStrategy: "weekly", WeeklyResetDay: 2, WeeklyResetHour: 8}
-	weeklyRolloverUntil := accountErrorRuleCooldownUntil(weeklyRollover, now, "seed-e")
-	if weeklyRolloverUntil != accountErrorRuleCooldownUntil(weeklyRollover, now, "seed-e") {
-		t.Fatalf("weekly 顺延同种子结果不稳定：%s", weeklyRolloverUntil)
-	}
-	if !w1eParseUntil(t, weeklyRolloverUntil).After(now) {
-		t.Fatalf("weekly 顺延冷却必须在未来：%s", weeklyRolloverUntil)
-	}
+	w1eAssertWithin(t, accountErrorRuleCooldownUntil(weeklyRollover, now, "seed-e"),
+		time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC), time.Hour)
 
 	// 相同输入结果稳定（确定性），不同种子几乎必然不同。
 	first := accountErrorRuleCooldownUntil(dailyFuture, now, "seed-x")

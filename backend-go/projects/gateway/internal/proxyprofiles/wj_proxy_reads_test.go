@@ -93,6 +93,20 @@ func TestWJParseProxyInputNilFields(t *testing.T) {
 	if message != "" || !input.HasDescription || input.Description != nil {
 		t.Fatalf("description null 语义不符: (%+v, %q)", input, message)
 	}
+	// update：username=null 清空（与 description 同构；原 value != nil 门使
+	// null 清除臂经 HTTP 不可达，此处为该契约的回归覆盖）。
+	input, message = parseProxyInput(map[string]any{
+		"username": nil, "expectedUpdatedAt": "2026-09-04T12:00:00Z",
+	}, true)
+	if message != "" || !input.HasUsername || input.Username != nil {
+		t.Fatalf("username null 语义不符: (%+v, %q)", input, message)
+	}
+	// username 非字符串仍拒绝。
+	if _, message := parseProxyInput(map[string]any{
+		"username": float64(1), "expectedUpdatedAt": "2026-09-04T12:00:00Z",
+	}, true); message != "代理参数无效" {
+		t.Fatalf("username 非字符串必须拒绝: %q", message)
+	}
 	// name=null 跳过赋值但不算 payload key 之外的键。
 	input, message = parseProxyInput(map[string]any{
 		"name": nil, "expectedUpdatedAt": "2026-09-04T12:00:00Z",

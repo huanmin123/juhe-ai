@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20261007T164058012Z](计划-20261007T164058012Z-客户端版本自动跟版与请求特征加固.md)：客户端版本自动跟版与请求特征加固总计划——源自 codex-proxy-rs 调研（"不降智"机制=第一档真实价值：自动跟版/正文保真/观测随机化；TLS/WS/滞后档位留观）；范围=jobs 新任务族每日拉四官方源（Codex GitHub Releases 0.159.3→0.161.0、Claude Code npm、Gemini CLI npm、ZCode GitHub，均已实测）写现键 `upstreamClientVersionOverrides`（消费链路三处已接线零改动）+ Grok 426 反应式跟版（待裁决 A）+ 探针抖动接线审计（`schedulejitter` 基建已有）+ UA 混合身份核实（`codex_exec` 后缀疑点）+ 留观项登记；三项裁决（Grok 入期/手动覆盖冻结策略/UA 修复随批）待用户确认；草案，待开始。
+
 - [PLAN-20261003T164247971Z](计划-20261003T164247971Z-音频视频模型接入与多供应商扩展.md)：音频/视频模型接入与多供应商扩展总计划——设计契约见《音频视频模型接入与统一媒体网关设计》；范围=同步音频（TTS/STT）链路、`media_jobs` 异步任务框架（`/v1/videos`、`/v1/audio/jobs`）、`audio`/`video` 分类与 lane、受理切换边界统一、零资源存储、`provider_options` 扩展通道、已有供应商音视频能力补齐（openai/gemini/glm，xai 核实）+ 新增 `minimax`/`volcengine`/`qwen`；分期 M1 同步音频 → M2 异步任务+视频 → M3 多厂商 → M4 统计 → M5 Realtime（独立立项）；M0 文档裁决已完成，M1 待开始。
 
 - [PLAN-20261003T071031978Z](计划-20261003T071031978Z-mainProbeFence清理侧接线.md)：BUG-0277 残余项立项——mainProbeFence 清理侧接线：写侧已接线（gatewayaccounteffects settleOnce → `RecordMainProbeFence`，Redis `SET mainProbeFence:<capabilityHash> PX 90000`）但 `ClearMainProbeFence`/`DeferMainProbeFence` 零生产调用，现靠 90s TTL（`KeyModelForegroundPrecommitLeaseMs`）自愈；范围=outbox 行承载 `KeyModelFenceReference` 三元组（gateway `chain_request_failure_health.go:54-70` 与 jobs `worker_health_probe_outbox.go` 两侧 DDL 同步 + `w0cross_contract_golden_test.go` golden 更新）+ `compose_accounts_reset.go:268` 透传替代 `_` 丢弃 + J1 outcome 观察器（success+winner→Clear、unknown→Defer，落点推荐 gateway 观察复用现成方法）；非目标=不动 admitScript/90s TTL 兜底；待开始。
@@ -36,8 +38,6 @@
 
 - [PLAN-20260821T182741627Z](计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md)：2026-08-23 dev scratch 经 PgBouncer `6432` required smoke 与 Go business-result projector applied/stale、receipt、cursor、CAS/replay 已通过并清理；Node 子进程→Go handler manual 互操作已通过，独立 jobs 二进制、active-path-zero、生产与 owner handoff 仍未完成。
 
-- [PLAN-20260822T140000000Z](计划-20260822T140000000Z-J3a代理延迟检测Node-Go深度对照.md)：逐项对照 Node 机制与 Go 迁移侧证据，记录 projector/manual/handoff 本地接线、shared golden 与真实 PG/owner 后续门禁。
-
 - [PLAN-20260820T235441488Z](计划-20260820T235441488Z-J3后台任务L1语义冻结.md)：冻结 J3a 代理延迟检测、J3b 模型检测、J3c 质量检查的 L1 语义；账号复制因缺少后台契约排除，未执行代码或真实环境验证。
 
 - [PLAN-20260820T025332906Z](计划-20260820T025332906Z-上游额度不足继承错误策略.md)：已实施上游额度不足继承错误策略：系统静态规则、严格 403 额度语义、现有 `error_disabled` 状态复用、账户页继承混排和保存隔离均已完成；隔离页面与真实上游验证未执行。
@@ -52,8 +52,6 @@
 
 - [PLAN-20260731T000000000Z](计划-20260731T000000000Z-内置默认分组全用户补齐.md)：为所有系统账户幂等补齐内置默认分组，包含历史 xAI 默认分组迁移和 seed 回归。
 
-- [PLAN-20260729T202347505Z](计划-20260729T202347505Z-遗留NodePostgreSQL整数标志与索引桥接.md)：修复历史 Node PostgreSQL `INTEGER(0/1)` 标志谓词/参数错配，并交付不写 Goose ledger 的受控索引桥接。
-
 - [PLAN-20260729T130300133Z](计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md)：修复 Codex Remote Compaction V2 将精确 `response.failed` 延后到 EOF 并错误改写为本地 compact 契约 mismatch 的状态机缺陷。
 
 - [PLAN-20260729T094521796Z](计划-20260729T094521796Z-使用记录PostgreSQL死锁修复.md)：修复高性能模式下 usage 批量落库先写唯一索引、后按非固定顺序更新账户引发的 PostgreSQL `40P01` 死锁，统一为账户行稳定锁定后再写使用记录。
@@ -64,19 +62,13 @@
 
 - [PLAN-20260728T153944136Z](计划-20260728T153944136Z-本地Git主线收敛与安全清理.md)：备份并审计全部本地 Git 引用和脏 worktree，移植仍有效的分支独有修复，再分级清理失效 worktree 与冗余分支。
 
-- [PLAN-20260728T141710063Z](计划-20260728T141710063Z-Node管理接口按需读写后续分批治理.md)：承接账户主链路之外的场景 DTO / 字段级 PATCH 分批治理；A1-A4 与 B1-B5 及 B 类剩余实现均已完成，运行 / 审计 / 公开接口日志已收口，健康 / 表监控和最终总门禁仍在收尾；当前源码核心 Browser 矩阵已通过，真实 PostgreSQL 未配置。
-
 - [PLAN-20260728T141028099Z](计划-20260728T141028099Z-ResponsesReasoning判定扩展评估.md)：已关闭，不实施；正文标签、reasoning 不可见和语义完整性无法形成可靠硬证据，现有 Responses 硬协议检查继续保留。
 
 - [PLAN-20260728T132013724Z](计划-20260728T132013724Z-CodexReasoning完整性检测调研.md)：审计 OpenAI Codex reasoning 结构、流式生命周期与不可见边界，形成 Responses-only 检测、拦截和模型探针方案。
 
-- [PLAN-20260728T183036249Z](计划-20260728T183036249Z-Node提交审查问题修复与网关验收.md)：修复当天 Node/Vue 提交审查确认的 9 个问题，并完成网关核心链路与隔离本地启动、页面访问验收。
-
 - [PLAN-20260728T071315383Z](计划-20260728T071315383Z-CodexResponses双向协议防护修复.md)：基于目标生产会话审计，修复 Codex Responses 请求历史 ID 污染和响应 identity 安全映射失效，并验证严格拦截换号与性能边界。
 
 - [PLAN-20260727T213120104Z](计划-20260727T213120104Z-四供应商OAuth模拟上游E2E与协议复核.md)：为 Node 后端建立 OpenAI、Anthropic、Gemini、Grok 严格本地 OAuth 模拟上游 E2E，并按成熟参考实现复核绑定、刷新和首次请求细节。
-
-- [PLAN-20260727T183737351Z](计划-20260727T183737351Z-Node管理接口按需读写重构.md)：仅针对 Node + Vue（本计划不包含 Go），从“我的 AI 账户”开始落实场景 DTO、交互按需 options、登录后默认资源引用缓存和字段级 PATCH，并治理 API Key 与其他管理页同类问题。
 
 - [PLAN-20260727T174540632Z](计划-20260727T174540632Z-Gemini与GrokOAuth完整补全.md)：补齐 Gemini `ai_studio` / `code_assist` / `google_one` OAuth、Code Assist runtime 与 Grok OAuth / SSO device flow。
 
@@ -102,11 +94,7 @@
 
 - [PLAN-20260727T154522809Z](计划-20260727T154522809Z-AI账户模型映射规则收敛.md)：统一普通供应商与 Hybrid 账户的模型映射选择、保存校验和网关候选分类，消除单编辑、批量编辑和后端规则漂移。
 
-- [PLAN-20260726T071018152Z](计划-20260726T071018152Z-Node后台任务统一错峰治理.md)：统一修复 Node 后台 scheduler、统计聚合、维护清理、跨部署租约和高成本全量任务，并使用隔离 PostgreSQL / Redis 验证。
-
 - [PLAN-20260726T063803063Z](计划-20260726T063803063Z-用户个人信息页面.md)：统一头像菜单个人信息入口，集中展示账户角色、生图权限和资料，并维护用户名称与登录密码。
-
-- [PLAN-20260726T062111512Z](计划-20260726T062111512Z-Node后台任务全局错峰审计.md)：仅针对 Node 后端全量审计周期 Job、统计聚合、清理、探测和常驻计时器的负载碰撞，形成分层错峰与验证方案。
 
 - [PLAN-20260725T232043094Z](计划-20260725T232043094Z-高性能模式同机多进程与旁路容灾.md)：仅在 performance 模式启用同机 3 Gateway、2 Usage、2 Log、1 Stats、1 Ops 多进程拓扑，并修复 Redis 入队、旁路阻塞和 DB service 降级。
 
@@ -365,12 +353,9 @@ docs/plans/
 | PLAN-20260729T130300133Z | Codex 压缩失败终态结构处理修复 | 已关闭（Node 遗留收口，Go 无此病灶；见 BUG-0142 关闭记录） | 2026-07-29 | Node 后端 / 网关 / Codex Responses / SSE / 响应检查 | `docs/plans/计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md` |
 | PLAN-20260729T094521796Z | 使用记录 PostgreSQL 死锁修复 | 待发布验证 | 2026-07-29 | Node 后端 / Usage worker / Redis Stream / PostgreSQL / accounts | `docs/plans/计划-20260729T094521796Z-使用记录PostgreSQL死锁修复.md` |
 | PLAN-20260729T071220373Z | AI 账户余额探测与刷新闭环修复 | 已完成（本地验证完成） | 2026-07-29 | Node 后端 / AI 账户 / ops-worker / 余额快照 / 前端展示 / PostgreSQL | `docs/plans/计划-20260729T071220373Z-AI账户余额探测与刷新闭环修复.md` |
-| PLAN-20260728T141710063Z | Node 管理接口按需读写后续分批治理 | 已关闭（Node 归档收口；Go 管理接口现状以 functions 文档为准）| 2026-07-28 | Node 管理 API / Vue / 供应商模型 / 授权 / 响应策略 / 模型检测 / 其他管理页 | `docs/plans/计划-20260728T141710063Z-Node管理接口按需读写后续分批治理.md` |
-| PLAN-20260727T183737351Z | Node 管理接口按需读写重构 | 已完成（Node / Vue 类型检查、生产构建、定向矩阵与核心 Browser 矩阵已通过；真实 PostgreSQL smoke 未执行） | 2026-07-28 | Node 管理 API / Vue / AI 账户 / API Key / 文档 / 验证 | `docs/plans/计划-20260727T183737351Z-Node管理接口按需读写重构.md` |
 | PLAN-20260727T102554847Z | Codex 流式中断重试与失败账号避让修复 | 已完成（未部署） | 2026-07-27 | Node 网关 / Responses SSE / Codex turn / Redis / 审计 / 验证 | `docs/plans/计划-20260727T102554847Z-Codex流式中断重试与失败账号避让修复.md` |
 | PLAN-20260726T081949550Z | 用户请求限制 | 已完成（Node / Vue） | 2026-07-26 | 系统设置 / 系统账户 / 网关 / Redis / 内存运行态 / 个人信息 / 文档 / 验证 | `docs/plans/计划-20260726T081949550Z-用户请求限制.md` |
 | PLAN-20260726T063803063Z | 用户个人信息页面 | 已完成 | 2026-07-26 | 前端 / Node / Go / 认证 / 系统账户 / 权限 / 文档 / 验证 | `docs/plans/计划-20260726T063803063Z-用户个人信息页面.md` |
-| PLAN-20260726T062111512Z | Node 后台任务全局错峰审计 | 已关闭（Node 归档收口；错峰机制由 Go jobsched 与 jobregistry 承接）| 2026-07-26 | Node / 后台任务 / stats-worker / ops-worker / ingest-worker / 调度 / 性能 | `docs/plans/计划-20260726T062111512Z-Node后台任务全局错峰审计.md` |
 | PLAN-20260726T030356119Z | 模型质量定时检查与处罚恢复 | 已完成（手工 / 定时策略职责拆分） | 2026-07-26 | 模型检测 / 定时任务 / AI 账户状态 / 健康监控 / ops-worker | `docs/plans/计划-20260726T030356119Z-模型质量定时检查与处罚恢复.md` |
 | PLAN-20260723T160339731Z | 账户错误作用域与重试选择验证 | 已完成 | 2026-07-23 | Node 网关 / AI 账户 / 多 Key / 电路 / 重试 / Redis / PostgreSQL / 文档 / 验证 | `docs/plans/计划-20260723T160339731Z-账户错误作用域与重试选择验证.md` |
 | PLAN-20260725T085700550Z | AI 健康监控 | 已完成（未上线） | 2026-07-25 | 账户健康检查 / stats-worker / 管理 API / 前端列表 | `docs/plans/计划-20260725T085700550Z-AI健康监控.md` |
@@ -439,7 +424,6 @@ docs/plans/
 | PLAN-20260710T235421001Z | AI 账户检查模型与人工测试解耦 | 已完成（Go 实现承载，test-options 契约落地）| 2026-07-11 | 前端 / 后端 / 存储 / AI 账户 / 模型目录 / 后台 worker / 网关运行态 / API Key 恢复 / 导入导出 / 文档 / 验证 | `docs/plans/计划-20260710T235421001Z-AI账户检查模型与人工测试解耦.md` |
 | PLAN-20260710T235421000Z | GPT 服务等级与思考级别覆盖 | 已完成（Go 实现承载，见 GPT 请求服务等级与思考级别覆盖设计）| 2026-07-10 | 前端 / 后端 / 存储 / 网关 / GPT 供应商 / 模型目录 / Codex 兼容 / 审计 / 文档 / 验证 | `docs/plans/计划-20260710T235421000Z-GPT服务等级与思考级别覆盖.md` |
 | PLAN-20260710T103151000Z | 通用客户端重试协调 | 已完成 | 2026-07-10 | 后端 / 网关 / 客户端画像 / 账号调度 / 审计 / 测试 / 部署 / 文档 | `docs/plans/计划-20260710T103151000Z-通用客户端重试协调.md` |
-| PLAN-20260706T071505000Z | Node 转 Go 渐进减法迁移 | 已完成（2026-09-05 Node 全量迁移终局；go-only 生产切流待完成，见切流里程碑）| 2026-07-06 | 后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证 | `docs/plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md` |
 | PLAN-20260705T170841000Z | 用户维度热数据分区与归档治理 | 已完成 / PG live smoke 与归档恢复已复验 | 2026-07-05 | 前端 / 后端 / 存储 / SQLite / PostgreSQL / 统计 / 日志 / 审计 / 表监控 / 文档 / 验证 | `docs/plans/计划-20260705T170841000Z-用户维度热数据分区与归档治理.md` |
 | PLAN-20260705T092619000Z | 可靠统计与读写资源隔离 | 进行中 | 2026-07-05 | 后端 / PostgreSQL / Redis / DB service / stats-worker / ingest-worker / record maintenance / 部署 / 压测 / 文档 | `docs/plans/计划-20260705T092619000Z-可靠统计与读写资源隔离.md` |
 | PLAN-20260704T150858000Z | 普通路由速度优先调度 | 已完成（Go latency_degraded 与速度优先落地）| 2026-07-04 | 前端 / 后端 / 存储 / 网关 / 策略路由 / AI 账户运行态 / 审计 / 文档 / 验证 | `docs/plans/计划-20260704T150858000Z-普通路由速度优先调度.md` |
@@ -473,7 +457,6 @@ docs/plans/
 | PLAN-20260621T115616000Z | 智谱 GLM 接入 | 已完成 | 2026-06-20 | 前端 / 后端 / 存储 / 网关 / 模型目录 / 使用记录 / 统计 / 审计 / 文档 / 验证 | `docs/plans/计划-20260621T115616000Z-智谱GLM接入.md` |
 | PLAN-20260619T075432000Z | 供应商驱动化分层重构 | 已完成（ProtocolDriver 与 ProviderDriver 分层落地）| 2026-06-19 | 后端 / 前端 / 存储 / 网关 / 模型目录 / 使用记录 / 文档 / 验证 | `docs/plans/计划-20260619T075432000Z-供应商驱动化分层重构.md` |
 | PLAN-20260618T161627000Z | Anthropic 响应语义与前端能力补齐 | 已完成 | 2026-06-18 | 后端 / 前端 / 网关 / Anthropic / 响应检查策略 / 模型价格 / 使用记录 / 文档 / 验证 | `docs/plans/计划-20260618T161627000Z-Anthropic响应语义与前端能力补齐.md` |
-| PLAN-20260618T024133000Z | SQLite 单写者写队列治理 | 已完成 | 2026-06-18 | 后端 / SQLite / DB service / 后台任务 / 存储 / 统计 / 日志 / 维护清理 / 文档 / 验证 | `docs/plans/计划-20260618T024133000Z-SQLite单写者写队列治理.md` |
 | PLAN-20260617T131119000Z | 账号健康检测 | 已完成 | 2026-06-17 | 前端 / 后端 / 存储 / 后台任务 / 账号 / 网关 / 文档 / 验证 | `docs/plans/计划-20260617T131119000Z-账号健康检测.md` |
 | PLAN-20260613T173757001Z | 测试与探测任务并发取消治理 | 已关闭 / 被 PLAN-0084、PLAN-0085 取代 | 2026-06-13 | 历史账号测试 session / 批量测试 / 探测任务治理 | `docs/plans/计划-20260613T173757001Z-测试与探测任务并发取消治理.md` |
 | PLAN-20260613T173757000Z | 后台 Worker 轻量拆分与任务租约 | 已关闭（Node 归档收口；Go 由 jobsched 与 jobregistry 承接）| 2026-06-13 | 后端 / 后台任务 / 统计 / 系统监控 / SQLite / 部署 / 文档 / 验证 | `docs/plans/计划-20260613T173757000Z-后台Worker轻量拆分与任务租约.md` |

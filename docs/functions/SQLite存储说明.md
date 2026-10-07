@@ -1,55 +1,59 @@
 # SQLite 存储说明
 
-> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明）。文中“当前 Node 阶段”的 SQLite 单写者、DB service、typed command 与 owner bridge 等迁移期叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权；当前存储事实以 [架构总览](../architecture/架构总览.md) 与 Go 实现为准。
+> 本文是 standalone SQLite 模式的存储说明。Node 后端已于 2026-09-05 归档清零，现行后端为 Go 三项目，SQLite 与 PostgreSQL+Redis 双模式均由 Go 原生支持（`backend-go/projects/gateway/cmd/juhe-ai-gateway/runtime.go`）；文中 DB service、typed command、owner bridge 等 Node 迁移期机制叙述已删除或标注为历史截面；schema 由 `backend-go/projects/maintenance` 的 `juhe-ai-maintenance --ensure-schema` 幂等初始化，表清单以其 `internal/schema/` 的 Go DDL 为准；PG 模式见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。当前数据访问与写边界以 [架构总览](../architecture/架构总览.md) 数据访问隔离节为准。
 
-## 当前 Node 阶段为什么用 SQLite
+## standalone 模式为什么用 SQLite
 
 当前项目只给个人使用，不需要复杂部署、水平扩展或极限并发。SQLite 足够稳定，文件备份也简单，更符合轻量项目定位。
 
 ## 默认位置
 
-后端运行时按业务库、聊天库、数据集目录库、使用记录目录库、统计结果库和 Responses 桥接状态索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成；未配置这些路径时，直接使用各自默认位置：
+后端运行时按业务库、聊天库、数据集目录库、使用记录目录库、统计结果库和 Responses 桥接状态索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成。Go gateway 按 datadir 约定解析路径（`backend-go/projects/gateway/internal/datadir/datadir.go`）：数据根由 `JUHE_AI_DATA_DIR` 指定，缺省为相对进程工作目录的 `./data`；未配置的路径类 env 派生 `<DATA_DIR>/<固定名>`，显式配置始终优先。当前默认布局：
 
 ```text
-业务库：backend/data/juhe-ai.sqlite3
-聊天库：backend/data/juhe-ai-chat.sqlite3
-统计数据集目录库：backend/data/juhe-ai-dataset.sqlite3
-使用记录目录库：backend/data/juhe-ai-usage-catalog.sqlite3
-统计结果库：backend/data/juhe-ai-stats.sqlite3
-使用记录分片：backend/data/usage-shards/
-Responses 桥接状态索引库分片：backend/data/codex-context/state-shards/state-000.sqlite3 ...
-Responses 桥接状态 payload 文件：backend/data/codex-context/
+业务库：<DATA_DIR>/business.sqlite3
+聊天库：<DATA_DIR>/chat.sqlite3
+统计数据集目录库：<DATA_DIR>/dataset.sqlite3
+使用记录目录库：<DATA_DIR>/usage-catalog.sqlite3
+统计结果库：<DATA_DIR>/stats.sqlite3
+Go F1 运行日志索引库：<DATA_DIR>/runtime-log.sqlite3
+Go F2 表监控专库：<DATA_DIR>/table-monitor.sqlite3
+Go F4 操作日志专库：<DATA_DIR>/operation-log.sqlite3
+模型检测（J3b）专库：<DATA_DIR>/model-check.sqlite3
+余额手动刷新租约库：<DATA_DIR>/account-balance.sqlite3
+使用记录分片：<DATA_DIR>/usage-shards/
+Responses 桥接状态索引库分片：<DATA_DIR>/codex-context/state-shards/ 下多个 shard 文件
+Responses 桥接状态 payload 文件：<DATA_DIR>/codex-context/
 ```
 
-如需调整位置，编辑项目内本地配置文件 `backend/.env`，不设置系统环境变量：
+Node 时代的默认布局（`backend/data/juhe-ai.sqlite3`、`juhe-ai-chat.sqlite3`、`juhe-ai-dataset.sqlite3`、`juhe-ai-usage-catalog.sqlite3`、`juhe-ai-stats.sqlite3`、`backend/data/usage-shards/`、`backend/data/codex-context/`）为历史截面，现行以 `<DATA_DIR>` datadir 布局为准。
+
+路径与分片数量通过环境变量调整；Go gateway 直接读取进程环境变量，Node 时代的项目内配置文件 `backend/.env` 已随 Node 后端退役：
 
 ```dotenv
-JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
-JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
-JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
-JUHE_AI_CHAT_DATABASE_PATH=./data/juhe-ai-chat.sqlite3
-JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
+JUHE_AI_DATA_DIR=./data
+JUHE_AI_DATABASE_PATH=./data/business.sqlite3
+JUHE_AI_DATASET_DATABASE_PATH=./data/dataset.sqlite3
+JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/usage-catalog.sqlite3
+JUHE_AI_CHAT_DATABASE_PATH=./data/chat.sqlite3
+JUHE_AI_STATS_DATABASE_PATH=./data/stats.sqlite3
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
-# gateway 自 2026-10-03 起同样消费该 env（Responses↔Chat 桥 segments 根）：
+# gateway 与 jobs retention 消费该 env（Responses↔Chat 桥 segments 根）：
 # 未配置时按 datadir 约定派生 <DATA_DIR>/codex-context，与 jobs retention
 # 清理根同名同默认，双进程必须同源。
 JUHE_AI_CODEX_CONTEXT_ROOT=./data/codex-context
 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=./data/codex-context/state-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT=16
-JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED=true
-JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_SIZE=0
-JUHE_AI_CODEX_CONTEXT_STATE_WRITER_QUEUE_MAX_ITEMS=5000
-JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED=false
-JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE=0
-JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-chat.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-usage-catalog.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。业务库、聊天库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+F1 运行日志索引库、F2 表监控专库、F4 操作日志专库和余额手动刷新租约库分别使用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`、`JUHE_AI_TABLE_MONITOR_DATABASE_PATH`、`JUHE_AI_OPERATION_LOG_DATABASE_PATH` 和 `JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH`，未配置时同样按 `<DATA_DIR>` 派生。Node 时代的 keyed child process writer pool 开关（`JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_*`、`JUHE_AI_USAGE_RECORD_WRITER_POOL_*`）不被 Go 读取，已从配置面删除。
 
-聊天库保存 `chat_conversations`、`chat_messages`、`chat_message_idempotency` 和 `chat_user_storage_windows`。正文只保留滚动 7 天，DB service 是唯一 writer；请求路径按游标读取，容量门禁只读取用户最近 7 个日桶。普通发布不得删除或重建聊天库，只有当前 schema 明确变化且上线方案包含数据处理时才单独同步该文件。
+相对路径按进程工作目录解析；为了保持可移植部署，推荐使用 `./data/...` 这类项目内相对路径或显式配置 `JUHE_AI_DATA_DIR`。业务库、聊天库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同（gateway 启动预检会校验物理文件不同）；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
 
-搬到其他电脑或服务器时，保留 `backend/.env` 和当前数据目录即可带走配置与数据；如果本地库结构和当前 schema 不一致，按当前 schema 离线修复或重建，不在运行时代码里放结构适配分支。
+聊天库保存 `chat_conversations`、`chat_messages`、`chat_message_idempotency` 和 `chat_user_storage_windows`。正文只保留滚动 7 天，gateway 进程内 chat store 是唯一 writer；请求路径按游标读取，容量门禁只读取用户最近 7 个日桶。普通发布不得删除或重建聊天库，只有当前 schema 明确变化且上线方案包含数据处理时才单独同步该文件。
+
+搬到其他电脑或服务器时，保留环境变量配置和当前数据目录即可带走配置与数据；如果本地库结构和当前 schema 不一致，按当前 schema 离线修复或重建，不在运行时代码里放结构适配分支。
 
 ## 业务库、数据集目录库、使用记录目录库与统计结果库边界
 
@@ -76,6 +80,8 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `model_check_runs`、`model_check_items`、`model_check_observations`（仅受控探针有界脱敏事实，不保存普通用户正文）
 - `api_key_record_cleanup_targets`
 
+（上列清单为 Node 时代截面：Go 现行将运行日志、原始审计、操作日志和模型检测事实分别落在 F1 `runtime-log.sqlite3`、F3 `audit-log.sqlite3`（blob 文件在 `audit-blob/`）、F4 `operation-log.sqlite3` 与 J3b `model-check.sqlite3` 专用 SQLite 文件（均按 datadir 约定派生，见 `backend-go/projects/gateway/internal/datadir`）；数据集目录库与各专用库的现行表边界以 backend-go schema 为准。）
+
 统计结果库保存可重建、紧凑且面向查询的结果数据：
 
 - `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`model_token_integrity_windows`、`model_token_integrity_rounds`、`model_token_intercept_baseline_versions`、`model_trust_window_sources`、`model_identity_source_features`、`model_identity_baseline_versions`、`model_paired_similarity_windows`、`model_account_trust_results`、`stats_job_state`、`usage_record_cleanup_deductions`
@@ -84,7 +90,7 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `group_account_stats`、`account_quality_scores`、`account_quality_minute_stats`
 - `account_usage_snapshots`
 - `system_metrics_samples`、`system_metrics_hourly`、`system_metrics_trend_windows`
-- `process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows`
+- `process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows`（process_event_loop_* 为 Node 时代表名，Go 现行系统指标为 `go_runtime_metrics_*`（PG 模式，见 [系统指标统计设计](系统指标统计设计.md)）；SQLite 模式对应表清单以 backend-go schema 为准）
 - Go F2 专用表监控快照：standalone 位于 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`，performance 位于 PostgreSQL `juhe_stats`；不属于 Node 统计结果库
 - Go 余额手动刷新租约四表（owner/account leases、snapshots、outcomes）：standalone 位于 `JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH`（默认 `<数据根>/account-balance.sqlite3`，gateway 独占、启动期幂等自建），performance 位于 PostgreSQL `juhe_jobs` 同名四表
 
@@ -94,7 +100,7 @@ Responses 桥接状态索引库分片保存 Chat-only bridge 的可丢弃运行�
 - 只保存 `response_id`、`session_id`、API Key / 分组 / 供应商档案边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at` 和 `expires_at`
 - 不保存完整用户上下文、完整工具参数、完整模型输出或大段 compact payload
 
-Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED` 启用后，DB service 内部通过可复用 keyed child process writer pool 按目标 shard 分发 response / compact / touch 操作，每个 shard 始终只进入一个 writer 队列，同一 SQLite shard 不允许多 writer 并发写。`save response` 和 `save compact` 先在 DB service 内按 shard 做短窗口批量合并，再分别等待 session shard 与 response / compact shard 批量写入完成后才向调用方确认，保证刚返回给 Codex 客户端的 `response_id` / compact envelope 立刻可读。`last_used_at` / `expires_at` touch 不阻塞 response chain restore 结果返回，会按 session / response shard 做 best-effort 合并刷新，失败只记录运行日志。过期清理是跨 shard 操作，但不再一次扫描全部 session shard；writer pool 维护 cleanup cursor，每次只选择一个 session shard 做小步清理，并在删除后全 shard 检查 `storage_key` 是否仍被活跃 response / compact 引用，避免误删共享 segment 文件，减少全局屏障持续时间。
+Responses 桥接状态索引写入归 gateway 进程内 bridge state store 所有；SQLite 单个数据库文件同一时间只有一个写事务的约束不变，同一 shard 不允许多 writer 并发写。原文中 keyed child process writer pool（`JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_*`）、shard 内短窗口批量合并确认、touch best-effort 刷新与 cleanup cursor 小步清理为 Node 时代实现截面（这些 writer pool 开关不被 Go 读取），现行 shard 写入与过期清理行为以 gateway bridge state store 与 jobs retention 实现为准。
 
 运行时代码不通过 `ATTACH` 跨库查询，也不读取当前 schema 之外的表结构。业务库是恢复的硬边界，必须保留；数据集目录库、使用记录目录库、usage shard、统计结果库和 Responses 桥接状态索引 shard 都可以丢弃、清空或重建。需要拆分、清理或取证本地保留数据时，只能使用停机后的显式离线脚本；不关心既有统计、排障明细或 Responses 续链状态时，可以直接新建空数据集目录库、使用记录目录库、usage shard 目录、统计结果库和 Responses 桥接状态目录。
 
@@ -114,13 +120,11 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 四个主库拆分解决了业务库、数据集目录库、使用记录目录库和统计结果库之间互相拖慢的问题，但不能消除单个 SQLite 文件内部的单 writer 上限。当前高频写入优化以 [数据集库分片写入设计](数据集库分片写入设计.md) 为准，先只拆最热的 `usage_records`：
 
 - `JUHE_AI_DATASET_DATABASE_PATH` 继续作为数据集目录库，保存审计、公开接口日志和模型检测等非 usage 明细；F4 操作日志使用 `JUHE_AI_OPERATION_LOG_DATABASE_PATH` 专用库。
-- `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 是 Go F1 唯一写入的运行日志索引库，保存运行日志、cursor、facet 和索引保留状态；Node 只读，且不得和 dataset 库共用。
+- `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 是 Go F1 唯一写入的运行日志索引库，保存运行日志、cursor、facet 和索引保留状态；管理面查询只读，且不得和 dataset 库共用。
 - `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 作为使用记录目录库，保存 usage shard 注册表、列表筛选目录和按账号 / API Key 去重的 shard scope catalog。它是高频写入瓶颈之一，必须独立于数据集目录库，避免审计、日志和 usage 目录抢同一个 SQLite 写锁。
 - `JUHE_AI_USAGE_SHARD_ROOT` 未配置或留空时默认跟随使用记录目录库所在目录生成 `usage-shards`；生产也可以显式配置为 `./data/usage-shards` 或其他独立目录。
 - 新增 `JUHE_AI_USAGE_SHARD_COUNT`，默认 `16`。
-- 新写入的 `usage_records` 按 `bucket_date + stable_hash(id) % shardCount` 路由到多个 SQLite shard 文件。
-- 当前实现由 `ingest-worker` 承接 background worker usage 队列，在 ingest-worker 内按 shard 分组并对每个 shard 执行短事务；usage shard catalog 写入会在同一批使用记录目录库事务内合并 shard location、entry 和 scope catalog。已知 shard location 使用进程内缓存跳过重复 upsert；同一批 entry 先按 `usage_id` 去重；scope catalog 按账号 / API Key / shard 计算 `first_created_at` 最小值和 `last_seen_at` 最大值，冲突更新带 `WHERE` 条件避免无变化写页。真实压测显示 shard 数不是越大越好，需要按机器测试 8 / 16 / 32 shard 的吞吐和 usage catalog 写放大后再定默认值。
-- `JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED` 是可选优化开关，默认关闭。开启后只有 usage shard 行写入会按目标 shard 交给 keyed child process writer pool；使用记录目录库里的 `usage_record_shards`、`usage_record_shard_entries`、scope catalog、账号最后使用时间和成功时间副作用仍由 `ingest-worker` 单写者批量提交，避免子进程并发写同一个 usage catalog。当前本机真实 SQLite 压测显示 usage writer pool 在现有批量模型下未提升吞吐，反而会被 IPC 与 catalog 单写者瓶颈抵消，因此不能默认开启；后续只在目标机器压测 direct 与 pool 都稳定后再考虑打开。
+- 新写入的 `usage_records` 按 `bucket_date + stable_hash(id) % shardCount` 路由到多个 SQLite shard 文件。Go 实现中，gateway 在请求终态把使用记录写入与 jobs 同源的 durable spool（usage-record-spool），由 `juhe-ai-jobs` 的 usagewriter（`backend-go/projects/jobs/internal/usagewriter`）按 shard 分组执行短事务并维护使用记录目录库中的 shard location、entry 和 scope catalog；`JUHE_AI_USAGE_SHARD_COUNT` 默认 `16`。Node 时代 ingest-worker 批量合并、进程内 shard location 缓存与“8 / 16 / 32 shard 压测定默认值”的结论为历史截面，现行写入行为以 jobs usagewriter 实现为准。
 - 统计结果库仍不分片；统计 worker 改为按 shard 独立游标读取 usage，再在统计结果库同事务写结果和推进水位。
 - 使用记录列表按 shard 有界读取；页面不提供使用记录按 ID 详情。后台维护或存储验证如需按 usage id 定位 shard，仍可使用日期和 shard 信息，但不得重新暴露为使用记录 HTTP 详情接口。
 - 使用记录列表由 repository 内部跨 shard 有界读取并稳定合并，不做全 shard 精确 `COUNT(*)`。
@@ -131,25 +135,25 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 ## 当前实现
 
-- 使用 Node 内置 `node:sqlite`，要求官方 Node.js LTS；当前支持 22.x LTS（>=22.13.0）或 24.x LTS（>=24.11.0），且内置 `node:sqlite` 必须可用。
-- 启动时自动建表
-- `usage_records` 新增字段需要兼容历史 shard 时，必须先停服并运行对应离线升级脚本；本次 `upstream_response_model` 使用 `pnpm --filter juhe-ai-backend maintenance:migrate-usage-response-model -- --confirm-offline`。运行时查询不为旧结构伪造缺失字段或回退结果。
-- 启动时自动写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`hybrid` 混合供应商、各供应商协议档案、全部内置默认分组、默认全局设置和默认系统设置；策略路由和 API Key 不默认创建，必须由用户显式新增
+- SQLite 由 Go 后端原生驱动（`backend-go` 三项目）；Node 时代 `node:sqlite` 与官方 Node.js LTS 版本要求为历史截面。
+- schema 由 `juhe-ai-maintenance --ensure-schema` 幂等初始化，gateway 启动 preflight 复检并执行默认 seed；Node 时代“启动时自动建表”为历史截面。
+- `usage_records` 新增字段需要兼容历史 shard 时，必须先停服并运行对应离线升级脚本；Node 时代一次性迁移命令 `pnpm --filter juhe-ai-backend maintenance:migrate-usage-response-model` 已随 Node 后端归档删除。运行时查询不为旧结构伪造缺失字段或回退结果。
+- 默认 seed 写入默认超级管理员账号、OpenAI v1 协议、Anthropic v1 协议、`openai` 通用供应商、`gpt` 子供应商、`anthropic` 官方 Claude 供应商、目标 `deepseek` 供应商、目标 `glm` 供应商、`hybrid` 混合供应商、各供应商协议档案、全部内置默认分组、默认全局设置和默认系统设置；策略路由和 API Key 不默认创建，必须由用户显式新增（默认分组口径见下文 `route_strategies.is_default` 条目）
 - 使用 `PRAGMA journal_mode = WAL`
-- 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
-- 通过 `backend/src/storage/repositories.ts` 统一访问数据
-- 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
-- SQLite standalone 模式下，DB service 对 typed operation 显式区分 `read`、`write`、`maintenance` 和 `runtime`：写入与维护任务继续走受控写队列；管理端主读、公开全局设置、供应商模型目录、运行日志索引、OpenAI-compatible files / vector stores 的 list / get / search / chunks 等确认安全的仓储纯读进入 query-only read worker 子进程。read worker 使用只读 SQLite handle 和 `PRAGMA query_only=ON`，把 SQLite busy wait 留在子进程内，不能在 DB service 主事件循环同步等待写锁；读失败必须返回真实错误，不能用空列表、空统计或缺字段伪装成功。gateway runtime / cache / quota / health / cooldown / account-test、Codex context writer pool 等有 owner 或副作用语义的路径不放入 query-only read worker。
-- 运行时写入必须遵循 [SQLite 单写者写队列治理设计](SQLite单写者写队列治理设计.md)：业务库写入归 DB service，Responses 桥接状态索引 shard 写入归 DB service 并按目标 shard 短事务提交，数据集目录库和使用记录目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按单 shard writer 串行写。多 worker 可以并行生产 command，但不能并行写同一个 SQLite 文件。
-- 写队列必须暴露可观测指标：DB service runtime 包含按优先级拆分的排队数量、最老等待时间、最近 / 最大排队等待、最近 / 最大执行耗时和慢操作计数；background worker role state 包含 pending 写请求数量和最老等待时间；usage 队列包含最老本地等待、最近 / 最大 flush 耗时、慢 flush 计数，以及可选 usage writer pool 的 worker 数、排队数、活跃任务、失败 / 拒绝数和最大等待 / 执行耗时。排查 `database is locked`、worker 堵塞或请求延迟时先看这些指标，不直接扩大 shard 数或 writer 数。
-- IP 封禁命中计数只在 server 进程内做短暂有界聚合后投递 DB service：待写 distinct `ip_hash + policy_id` 最多 `5000` 个，单次 flush 最多 `1000` 条，满载时丢弃新的 distinct 命中并计数，不能让恶意多来源封禁流量形成无界 Map 或一次大 IPC。
+- 每个 SQLite 连接必须设置短暂写锁等待时间，避免各写者低频短事务重叠时立即返回 `database is locked`；该设置只用于吸收短冲突，不能替代文件级单写者治理。
+- 数据访问由各进程内 store 包统一承载（gateway / jobs 各自 owner 范围）；Node 时代 `backend/src/storage/repositories.ts` 统一仓储入口为历史截面。
+- 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，由 `juhe-ai-gateway` 单进程内对应 store 包承载；数据访问故障时请求链路返回可读错误，不静默降级为无数据成功。Node 时代独立 DB service 进程、主 Web 进程代理 `/__aisys__/api/*` 的形态为历史截面。
+- Node 时代 DB service typed operation（`read` / `write` / `maintenance` / `runtime` 分类与 query-only read worker 子进程）为历史截面，Go 不存在该机制；现行读写边界见 [架构总览](../architecture/架构总览.md) 数据访问隔离节。
+- 运行时写入遵循单进程唯一写者边界：业务库写入归 gateway 唯一写者（standalone），Responses 桥接状态索引 shard 写入归 gateway 按 shard 串行提交，数据集目录库和使用记录目录库写入归对应 owner writer，统计结果库写入归 jobs 串行提交，usage shard 按单 shard writer 串行写；同一 SQLite 文件不允许多进程并发写。Node 时代《SQLite单写者写队列治理设计》已随 Node 后端归档删除（纯文字保留文件名），其单写者原则由架构总览数据访问隔离节承接。
+- Node 时代写队列排队指标（runtime 写队列、worker role state、usage 队列指标）为历史截面；排查 `database is locked` 时先核对各进程写边界与短事务范围，不直接扩大 shard 数或 writer 数。
+- IP 封禁命中计数由网关进程内短暂有界聚合后异步批量写库，不能让恶意多来源封禁流量形成无界内存聚合或一次大事务（Node 时代经 DB service IPC 投递、distinct `ip_hash + policy_id` 上限 `5000`、单次 flush `1000` 条的数字为历史截面，现行以网关进程内缓冲实现为准）。
 - 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；数据集目录库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；使用记录目录库通过 `JUHE_AI_USAGE_CATALOG_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开；F1 运行日志库通过 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 打开；F2 表监控输出库通过 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 打开；Responses 桥接状态索引库通过 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 打开多个 shard。所有 SQLite 入口都使用 WAL，并且这些独立文件、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同。
-- 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。server 角色只把使用记录投递给 ingest-worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于运维排查与存储级验证
+- 使用记录按每次上游尝试写入 usage shard；`usage_records.client_ip` 只保存规范化 IPv4，非 IPv4 来源写空。gateway 在请求终态把使用记录写入与 jobs 同源的 durable spool（usage-record-spool），由 jobs usagewriter 按 shard 提交，spool 支持稳定 ID 重放，不静默丢弃。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于运维排查与存储级验证
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 公开接口日志使用 `public_api_logs` 保存 `/__aipublic__` 外部来源系统调用元数据、状态码、耗时、客户端 IP、trace ID、有限请求 / 响应快照和错误摘要；请求 / 响应快照先按深度、字段数量和字节预算克隆，再按 32KB 上限保存或截断，不能为了估算大小先把完整大对象 `JSON.stringify` 到内存。公开接口日志保留期由 `publicApiLogRetentionDays` 控制，默认 30 天、合法范围 `1..365`，由后台数据保留任务分批清理。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志；防重复提交缓存属于进程内易失状态，过期维护固定小批量轮转，容量淘汰不全量展开排序。
-- 原始审计日志使用独立表保存所有进入审计的事件元数据；最近 1 小时完全成功请求全量保留 payload，超过热窗口后仅 10% 稳定成功样本继续保留 payload，未命中样本的成功主记录降为 `metadata_only`；失败、异常、客户端中断、流式中断和重试后成功链路完整保留。请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 ingest-worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
-- 普通运行日志仍以完整 JSON Lines 写入角色日志文件并滚动清理；最近 3 天的索引查询只使用 Go F1 专用运行日志库表 `runtime_logs`，Go indexer 通过 `runtime_log_file_cursors` 记录文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志不使用内存或 Redis 逐行队列，不允许按级别采样、丢弃完整行或截断 `raw_json`；积压只形成受 cursor 和轮转保护约束的文件 backlog。
+- 原始审计日志使用独立表保存所有进入审计的事件元数据；最近 1 小时完全成功请求全量保留 payload，超过热窗口后仅 10% 稳定成功样本继续保留 payload，未命中样本的成功主记录降为 `metadata_only`；失败、异常、客户端中断、流式中断和重试后成功链路完整保留。请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，网关在请求终态一次签名提交给 Go F3，由其在同一请求事务中落库，不在请求路径同步写审计表。
+- 普通运行日志仍以完整 JSON Lines 写入角色日志文件并滚动清理；最近 3 天的索引查询只使用 Go F1 专用运行日志库表 `runtime_logs`，Go indexer 通过 `runtime_log_file_cursors` 记录文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取由 gateway 直接读取 F1 专用运行日志库，不在请求路径同步扫描日志文件。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配；keyword 查询没有显式时间范围时默认加最近 6 小时窗口，完整日志正文搜索交给 `grep 模式`。运行日志不使用内存或 Redis 逐行队列，不允许按级别采样、丢弃完整行或截断 `raw_json`；积压只形成受 cursor 和轮转保护约束的文件 backlog。
 - 系统团队、团队成员和统一资源授权使用独立表记录；账户授权会为被授权用户创建独立授权实例账户，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `protocols` 保存协议族和版本，当前包含 `openai/v1`、`anthropic/v1` 和 `gemini/v1beta`；`protocol_endpoint_families` 保存协议下的端点族，OpenAI v1 当前包含 `chat_completions` 和 `responses`，Anthropic v1 当前包含 `messages`、`models` 和 `message_token_counting`，Gemini v1beta 当前包含 `models`、`generate_content`、`stream_generate_content`、`count_tokens` 和 `embed_content`；`providers` 保存供应商身份和父子关系，当前为通用 `openai` 供应商、`gpt` 与 `xai` 两个 `parent_code = openai` 子供应商，以及独立 `deepseek`、`anthropic`、`gemini`、`glm` 和 `hybrid` 供应商；`provider_protocol_profiles` 把供应商绑定到协议版本并保存默认 `base_url`、内置默认检查模型、账户类型和能力，当前默认档案为 `profile_openai_openai_v1`、`profile_gpt_openai_v1`、`profile_xai_openai_v1`、`profile_anthropic_anthropic_v1`、`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`、`profile_gemini_openai_chat_v1beta`、`profile_gemini_native_v1beta`、`profile_glm_general_openai_v1`、`profile_glm_coding_openai_v1`、`profile_glm_coding_anthropic_v1`、`profile_hybrid_openai_chat_v1` 和 `profile_hybrid_anthropic_messages_v1`；`provider_protocol_profile_families` 保存档案启用的端点族能力。Anthropic 官方档案当前允许 `api_key` 与 Bearer Token 型 `oauth` 账户，并启用 Messages / Models / Count Tokens；其中 `oauth` 账户只保存用户直接导入的 `access_token`、可选 `refresh_token` 与通用非敏感元数据，不在项目内维护浏览器换码、Setup Token、Cookie / sessionKey、Claude Code 订阅登录或其他私有 token 生命周期。DeepSeek Anthropic 和 GLM Coding Anthropic 当前只允许 `api_key`，只启用 Messages / Models，不默认启用 Count Tokens；GLM OpenAI 档案当前只启用 `chat_completions`，Anthropic 档案只启用 `messages`。xAI OpenAI 档案允许 `api_key` 与 Grok OAuth，启用 Chat Completions 与 Responses；Gemini OpenAI Chat 档案只允许 `api_key` 且只启用 `chat_completions`；Gemini v1beta 原生档案允许 `api_key` 与 `google_oauth`，启用 Gemini v1beta 原生接口族；混合供应商两个档案只允许 `api_key`，真实上游 Base URL 与目标协议由账户模型映射显式声明。账户凭据 JSON 中的 `supported_endpoint_modes` 保存单个上游实际支持的协议端点与 JSON / SSE 组合，OpenAI v1 使用 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`，Anthropic v1 使用 `messages_json`、`messages_sse`、`message_token_counting`；网关候选筛选、后台系统检查和人工诊断都按该字段执行。
 - `provider_protocol_profiles` 的长期唯一性不能只使用 `provider_code + protocol_code + protocol_version`。同一供应商可能在同一协议版本下暴露多个业务档案，例如智谱 GLM 的通用 API 和 Coding Plan 都是 `glm + openai/v1`，但默认 Base URL、账户创建类型和额度解释不同。schema 以 `id` 作为稳定唯一键；运行路径不得通过 `provider_code + protocol_code + protocol_version` 反查唯一档案。
@@ -176,7 +180,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - 账户批量编辑在业务库单个事务中按 `expectedVersions` 校验全部目标，计算最终白名单配置并统一更新主表和关联表；任一账户无权限、属于授权实例、跨作用域、版本冲突或最终配置非法时整批回滚。事务提交后再失效缓存，并对代理、检查模型、支持模型、映射或 endpoint modes 变化投递后台系统检查。
 - 高并发分组已使用 `groups.group_type` 和 `groups.scheduling_policy_json`：前者保存分组调度类型，默认 `personal`；后者接收最大单账户排队阈值和分组最大等待时间，快速优先、慢请求分流、亲和打破、备用启用和分组级短等待容量都使用代码内置默认开启策略。默认分组使用个人分组语义。
 - 高并发分组的单账户排队阈值只来自 `groups.scheduling_policy_json` 里的分组目标配置；账户绑定关系不再保存绑定级权重或绑定级单账户排队阈值。实际调度阈值仍不能突破账号 `concurrency_limit` 硬上限。
-- 高并发分组需要的近期质量、超时率、首 token 和总耗时趋势应由 background worker 或请求终态事件增量写入紧凑缓存，网关热路径只读取 DB service 已批量带出的运行时快照，不实时回扫 `usage_records` 或 `account_quality_minute_stats`。跨进程共享指标必须落到 SQLite 缓存表或明确 IPC，不能只放在 worker 进程内存。
+- 高并发分组需要的近期质量、超时率、首 token 和总耗时趋势应由后台任务增量写入紧凑缓存，网关热路径只读取已批量带出的运行时快照，不实时回扫 `usage_records` 或 `account_quality_minute_stats`；跨进程共享的指标必须落到 SQLite 缓存表（Node 时代多进程 IPC 表述为历史截面）。
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理，过期维护只做节流后的固定小批量扫描，容量淘汰不展开全部 challenge 排序。
 - 登录失败限频和账号临时锁定暂不写入 SQLite，使用后端进程内存保存短时窗口和锁定状态；单个 IP / 用户名只保留阈值内最近失败时间戳，过期维护固定小批量轮转，容量淘汰不全量展开排序；后续多实例部署时再迁移到共享存储。
 - 会话亲和、当前并发占用、短 TTL 网关校验缓存、验证码挑战、登录失败窗口和 IPC 待投递队列都属于单节点易失运行态；SQLite 只承载长期事实、业务状态、数据集明细和预聚合缓存。服务或子进程重启后这些易失状态允许丢失，并从 SQLite 事实和预聚合结果重新恢复保守判断。
@@ -197,23 +201,22 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - 适用对象：当前并发、账号质量分、运行时可用性、额度快照、网关校验运行态、频繁变化的授权可用性、近期统计窗口等。
 - 写入方式：事实变化发生时由网关副作用、写接口或后台 worker 主动把最新结果写入内存缓存或预聚合表；列表读取时先读缓存或窗口表。
 - 刷新节奏：高频缓存有效期必须跟对应后台定时统计或刷新间隔一致，不能单独拍一个 TTL。用量统计默认跟随 `statsAggregationIntervalSeconds = 60`，分组账户状态默认跟随 `groupAccountStatsRefreshIntervalSeconds = 60`，账号质量默认跟随 `accountQualityRefreshIntervalSeconds = 600`；后台任务刷新统计时，应同时补齐 API 列表需要的缓存行、窗口行或轻量快照。
-- 进程边界：worker 定时刷新如果只写 worker 自己的内存缓存，API server 和 DB service 不会自动拿到。需要给前端列表读取的高频缓存，优先写入紧凑 SQLite 缓存 / 预聚合 / 窗口表；确需内存预热时必须明确由 API 进程预热或通过 IPC 同步，不能假设跨进程内存共享。
+- 进程边界：后台任务刷新结果必须落 SQLite 缓存 / 预聚合 / 窗口表；Node 时代 worker 定时刷新只写 worker 内存缓存、需 IPC 同步给 API server 和 DB service 的跨进程表述为历史截面，现行 gateway 请求链路直接读取落表缓存。
 - 兜底方式：缓存 miss 时可以按主键读 SQLite 或读取最近预聚合行，并在读取后回填缓存；不能在请求路径扫描明细、现场 `SUM/GROUP BY` 或逐条补齐。
 - 用户告知：如果某类高频数据无法可靠主动缓存，必须在需求或实现说明中告知用户存在实时查询成本或统计滞后，并优先改为后台预聚合、窗口表或事件驱动缓存。
 
 敏感和大体积数据不得进入通用 lookup 缓存：API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文、日志大字段和可能造成越权的权限判定中间结果，必须走专门的受控读取、权限裁剪和分块策略。
 
-standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，standalone 模式不引入 Redis 等分布式依赖。performance 模式显式引入 Redis 作为跨进程短 TTL 缓存和运行态 state store，具体见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。缓存只用于降低请求链路反查成本，standalone 模式事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
+standalone 模式的轻量缓存优先使用进程内 LRU 封装（Node 时代 `backend/src/shared/cache.ts` 为历史截面，Go 在 gateway 进程内实现等价缓存）；多实例或跨进程一致性需求出现前，standalone 模式不引入 Redis 等分布式依赖。performance 模式显式引入 Redis 作为跨进程短 TTL 缓存和运行态 state store，具体见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。缓存只用于降低请求链路反查成本，standalone 模式事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
 
-`PLAN-0115` 待实现的页面统一确认在 standalone 中不能每 30 秒查询 SQLite。目标方案由各事实 owner 在事务内写紧凑 outbox / dirty generation，DB service 作为页面 revision 和 epoch 的内存 owner，server、ingest-worker、stats-worker 与 ops-worker 通过有界 IPC 加速通知；IPC 失败后由持久 outbox 重放，无法证明连续时返回 `resetRequired`。DB service 重启时更换 standalone epoch 并让前端重建当前域。最近 7 天登录用户预热也必须把结果送到 DB service owner，不能只写 worker 自己的 Map。完整契约见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
+Node 时代 `PLAN-0115` 页面统一确认与 revision / epoch 契约为历史截面，现行以 Go gateway 实现为准；完整契约原文见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
 
 高性能模式下，缓存、运行态和队列的全局边界是 Redis / Redis Streams，而不是进程内 memory：
 
-- `JUHE_AI_RUNTIME_MODE=performance` 必须搭配 `JUHE_AI_CACHE_DRIVER=redis`、`JUHE_AI_RUNTIME_STATE_DRIVER=redis` 和 `JUHE_AI_QUEUE_DRIVER=redis_stream`；不能用 `memory` driver 作为高性能模式兜底。
-- `SharedJsonCache` 在 Redis cache driver 下必须读写 Redis；同文件的 `createAppCache` 只能作为本地 L1，缓存 miss、清理版本、跨进程复用和失效事实必须能回到 Redis、PostgreSQL 或已落表窗口。
-- 登录限流、验证码、账号并发槽、网关缓存失效版本等运行态必须通过 `RuntimeStateStore` 或等价 Redis state 路径保存；进程内 Map / LRU 只能服务 standalone 或单进程内观测，不能决定跨进程是否允许登录、是否占用并发、是否已失效。
-- 使用记录、公开接口日志和维护任务等仍由 Node worker/Redis Streams 承载的记录型队列，在 performance 模式必须使用对应的 Streams consumer；普通运行日志不属于 Redis Stream，业务进程只追加实例独立 JSONL 文件，由独立 Go F1 indexer 按 cursor 直接索引专用运行日志库。原始审计和操作日志已经分别由 Go F3/F4 sidecar 通过受签名 loopback HTTP 直接接收、读取和保留，不再经过 Node queue、Redis Stream 或 Node fallback。usage 入队失败时允许进入 release 外本机 durable spool 并保留稳定 ID 重放；这不是 memory 回退。其他记录队列仍不得回退本地 memory 后声明已接收。
-- 新增缓存、运行态或队列实现时，必须同步更新 `pnpm --filter juhe-ai-backend test:performance-redis-boundary` 的分类或断言；未分类的进程内缓存视为潜在跨进程事实源风险。
+- `JUHE_AI_RUNTIME_MODE=performance` 必须搭配 `JUHE_AI_CACHE_DRIVER=redis` 和 `JUHE_AI_RUNTIME_STATE_DRIVER=redis`，并配置 PostgreSQL URL（Go gateway runtime 强制校验）；Node 时代 `JUHE_AI_QUEUE_DRIVER=redis_stream` 必填要求为历史截面，Go gateway / jobs 不读取 `JUHE_AI_QUEUE_DRIVER`。
+- Node 时代 `SharedJsonCache` / `createAppCache` 与 `RuntimeStateStore` driver 抽象词汇为历史截面；现行边界不变：跨进程复用和失效的事实必须能回到 Redis、PostgreSQL 或已落表窗口，进程内缓存只能服务 standalone 或单进程内观测，不能决定跨进程是否允许登录、是否占用并发、是否已失效。
+- 记录型数据（使用记录、公开接口日志、维护任务）的承载形态以 Go gateway / jobs 现行实现为准；普通运行日志不属于队列，业务进程只追加实例独立 JSONL 文件，由独立 Go F1 indexer 按 cursor 直接索引专用运行日志库。原始审计和操作日志分别由 Go F3/F4 通过受签名 loopback HTTP 直接接收、读取和保留。usage 入队失败时允许进入 release 外本机 durable spool 并保留稳定 ID 重放；这不是 memory 回退。其他记录队列仍不得回退本地 memory 后声明已接收。
+- 新增缓存、运行态或队列实现时，必须按影响范围同步更新 backend-go 对应回归测试；Node 时代 `pnpm --filter juhe-ai-backend test:performance-redis-boundary` 分类断言已随 Node 后端归档（纯文字保留命令名）。
 
 ## 大文件与频繁读取底线
 
@@ -224,7 +227,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。超过单次最大读取窗口的 payload 默认保持未压缩，避免读取后半段时反复从头解压 gzip。
 - Responses Chat-only bridge 的 `previous_response_id` 状态和 gateway compact snapshot 不把完整上下文写入 SQLite。Responses 桥接状态索引 shard 只保存 `response_id`、`session_id`、授权边界、`storage_key`、`storage_offset_bytes`、`raw_size_bytes`、`compressed_size_bytes`、`sha256`、`last_used_at`、`expires_at` 等轻量索引；每轮 request input / instructions、output items 和摘要 snapshot 都放在 `backend/data/codex-context/` 下，并按 session/hour 追加到 gzip segment 文件。session 目录名使用可读前缀加 `session_id` hash，不能只靠字符替换或截断。读取时必须按 `storage_key + storage_offset_bytes + compressed_size_bytes + sha256` 做有界文件读取，不能扫描目录、审计 payload、使用记录或运行日志反推上下文。
 - 使用记录、操作日志、原始审计日志、审计错误组和运行日志索引这类高增长列表，默认只读取当前页 `pageSize + 1` 条来判断 `hasMore`，不在请求路径执行全量 `COUNT(*)`；返回的 `total` 只是前端分页器上界值，不代表精确全表总数。
-- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 DB service 承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给 DB service 事件循环同步解析。`/v1` raw body 当前入口硬上限为 `64mb`，认证预检和可提前识别的图像权限拒绝通过后才读取 body；文本 lane 业务上限默认 `16mb`，由系统设置 `gatewayTextRawBodyLimitMegabytes` 在 `1..64` MB 内调整；图像生成 lane 保留 `64mb` 上限。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过入口硬上限时进入 worker thread 做顶层元数据扫描，其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具，或已选 GPT 账户存在服务等级 / 思考级别覆盖等必须改写请求体的路径才完整解析。GPT 覆盖在模型映射和协议桥接确定实际上游模型后执行，大请求必须复用 JSON worker；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获。
+- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；系统管理 API 和公开系统 API 由 gateway 进程内承载，JSON 请求体硬上限为 `256KB`，超过上限直接返回 413，不能把大体积管理 payload 交给请求链路同步解析。`/v1` raw body 当前入口硬上限为 `64mb`，认证预检和可提前识别的图像权限拒绝通过后才读取 body；文本 lane 业务上限默认 `16mb`，由系统设置 `gatewayTextRawBodyLimitMegabytes` 在 `1..64` MB 内调整；图像生成 lane 保留 `64mb` 上限（现行边界见 `backend-go/projects/gateway/internal/gatewaybody/body.go`）。网关 JSON body 小于等于 `256KB` 时可主线程内联解析；超过 `256KB` 且不超过入口硬上限时进入解析池做顶层元数据扫描（Go 为进程内有界 goroutine 池，Node 时代为 worker thread，见 [网关 Body 解析性能治理设计](网关Body解析性能治理设计.md)），其中超过 `2MB` 会按大 JSON 请求记录预警；只有 OAuth Codex 归一化、禁用图像权限下移除 optional `image_generation` 工具，或已选 GPT 账户存在服务等级 / 思考级别覆盖等必须改写请求体的路径才完整解析。GPT 覆盖在模型映射和协议桥接确定实际上游模型后执行，大请求必须复用解析池；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获。
 
 ## 统计缓存与监控存储
 
@@ -266,7 +269,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后；`event_loop_lag_ms` 保存后台 worker 采样值，用于主机级概览。多进程事件循环趋势以 `process_event_loop_samples` 为准。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `system_metrics_trend_windows`：按统计概览日期范围预生成系统性能 / 网络吞吐趋势，接口只按范围窗口直读。
-- `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，当前角色为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`，用于区分主 Web 进程、写入 worker、统计 worker、运维 worker 和本地 DB service 哪个进程卡顿或内存爬升。
+- `process_event_loop_samples`：（Node 时代表名与采样语义，见上文统计清单标注）按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，Node 时代角色为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`，用于区分主 Web 进程、写入 worker、统计 worker、运维 worker 和本地 DB service 哪个进程卡顿或内存爬升。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟有效样本数、平均值、最大值，以及进程 RSS / Heap 的平均值和峰值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势和进程内存占用趋势均读取该窗口，不在接口请求时扫描 `process_event_loop_samples`。
 - `database_storage_snapshots`：由 Go F2 表监控 owner 保存各 SQLite 源库或 PostgreSQL schema 的容量快照。standalone 记录在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 指定的专用 SQLite 文件，performance 记录在 PostgreSQL `juhe_stats`；不再写入 Node 统计结果库。F2 每分钟直接异步采样，源库不可读或 schema 缺失时显式失败，绝不写零值占位快照。
@@ -356,7 +359,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `resource_authorizations(resource_type, resource_id, grantee_system_account_id)`：保证同一资源同一最终用户全生命周期只有一条运行时授权记录。
 - `resource_authorization_grants(resource_owner_system_account_id, status)`：资源归属人查看授权操作。
 - `resource_authorization_grants(resource_owner_system_account_id / resource_type + resource_id / grantee_system_account_id / grantee_team_id, status, created_at, id)`：授权列表按归属人、资源、被授权人或团队筛选时直接按创建时间分页，避免请求链路临时排序大量授权操作。
-- `resource_authorization_grants(expires_at, updated_at, id) WHERE status IN (active, paused) AND expires_at IS NOT NULL`：统一授权过期扫描只按到期时间读取固定批量，避免 DB service 请求路径或 worker 扫描全表并为排序创建临时 B-tree。
+- `resource_authorization_grants(expires_at, updated_at, id) WHERE status IN (active, paused) AND expires_at IS NOT NULL`：统一授权过期扫描只按到期时间读取固定批量，避免请求路径或后台任务扫描全表并为排序创建临时 B-tree。
 - `resource_authorization_grants(resource_type, resource_id, grantee_system_account_id) WHERE status = active AND grantee_type = system_account`：防止同一资源重复创建有效人员授权；已回收、已归还或已过期的再次授权复用原记录恢复。
 - `resource_authorization_grants(resource_type, resource_id, grantee_team_id) WHERE status = active AND grantee_type = team`：防止同一资源重复创建有效团队授权；已回收或已过期的再次授权复用原记录恢复。
 - `resource_authorization_sources(authorization_id, source_type) WHERE status = active AND source_type = manual`、`resource_authorization_sources(authorization_id, source_type, source_team_id) WHERE status = active AND source_type = team`：防止同一最终授权存在重复有效来源。
@@ -398,7 +401,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `usage_scope_range_windows(system_account_id, scope_type, window_key, request_count, total_cost_usd, input_tokens + output_tokens, last_used_at, scope_id)`：管理侧账号用量默认排序读取。
 - `usage_scope_range_windows(system_account_id, scope_type, window_key, request_count / success_count / error_count / error_rate / total_tokens / total_cost_usd / active_days / last_used_at, scope_id)`：账号用量统计按指标排行读取，接口只能使用窗口表索引分页，不能回扫日表聚合后排序。
 - `system_metrics_trend_windows(window_key, start_date, end_date, bucket_key)`：系统性能 / 网络吞吐趋势读取。
-- `process_event_loop_trend_windows(window_key, start_date, end_date, bucket_key, process_role)`：主进程、后台 worker 和 DB service 的事件循环延迟、RSS 和 Heap 趋势读取。
+- `process_event_loop_trend_windows(window_key, start_date, end_date, bucket_key, process_role)`：Node 时代各进程角色的事件循环延迟、RSS 和 Heap 趋势读取（表名与采样语义为历史截面，见上文标注）。
 - `usage_model_daily(system_account_id, stat_date, model)`：模型分布读取。
 - `usage_error_daily(system_account_id, stat_date, error_group, error_code)`：错误分布读取。
 - `usage_model_hourly(system_account_id, stat_hour, model)`：监控窗口模型分布读取。
@@ -443,13 +446,12 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 默认任务策略：
 
-- Node 专属的定时和批处理任务必须在独立 background worker 进程内调度和执行，不能在 Web/API 主进程里用 `setInterval`、cron 或调度框架直接执行任务函数。Go sidecar 的 F1-F4 按各自 owner lease 和组件生命周期执行，不能回退到 Node worker。
-- Node 调度框架只负责 Node worker 内的注册、不可重入、错误隔离和触发时机；Node worker 不能通过 IPC 回到主进程执行统计、清理、刷新或批量落库。
-- 主进程和 DB service 可以把仍由 Node owner 的请求链路记录投递给其对应 owner，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求；操作日志在业务提交后一次签名提交给 Go F4，原始审计在请求终态一次签名提交给 Go F3，二者不进入 Node worker、IPC、Redis Stream 或本地 SQLite writer；普通运行日志不进入 IPC，也不能因为 worker 未就绪回退到本地 SQLite 逐行索引队列。
-- SQLite writer boundary strict 模式是常规运行时默认状态：非 owner 进程打开非所属 SQLite 文件时只允许 `query_only` 读取，生产环境不能关闭；只有 `src/scripts/` / `dist/scripts/` 下离线维护、回归和造数脚本按停机 / 离线边界默认关闭 strict，不得作为常驻运行路径。
-- worker 本地队列 flush 失败时必须保持原队列等待重试，不能用 `pending = [...batch, ...pending]` 或全量 reduce 字节数的方式把失败 batch 拼回队头；成功写入后再从队头移除已提交 batch，避免数据库异常期间按积压量复制数组阻塞 worker 事件循环。
-- DB service 负责系统管理 API 与数据库请求隔离，不负责后台定时调度；仍由 Node owner 的后台 worker 负责统计、未接管数据保留和 OAuth 后台刷新，J3a 代理延迟检测已由 Go `juhe-ai-jobs` 独占执行、结果投影和 `proxy_profiles` 写回，Node 不再保留该 scheduler、executor 或 writer。运行日志索引与保留由 Go F1 owner 负责，表监控由 F2 owner 负责，原始审计由 F3 owner 负责；F4 已完成切换前 Go owner 实现，生产切流后由 F4 接管操作日志接收、落库、读取与保留。server 角色下 DB service 未就绪、队列满、IPC 超时或内部系统 API 不可用时，请求链路返回可读错误并等待 supervisor 重启，不能在主进程同步执行 DB service 操作，也不能恢复主进程管理 CRUD。业务库写入必须通过 DB service 短事务同步提交；DB service 父进程 IPC 请求按优先级 drain，管理面、网关请求链路、账号状态、API Key、授权和会话等用户可感知写入默认高优先级，过期清理、dirty 标记、后台维护和全量刷新游标等定时任务写入低优先级，且每个 IPC 请求后必须让出事件循环，避免维护写入让后台管理体感卡顿。统计数据集域记录型写入优先投递对应 writer 队列，由单写者消费端使用短事务、优先级和 blocked 重试控制 SQLite 写锁等待。`busy_timeout` 只是最后一道短等待保护，不能作为多 writer 抢锁的常态方案。
-- 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。usage 分片落地后，统计输入侧改为每个 shard 独立维护 `(created_at, id)` 游标，统计结果库表和查询口径不变。
+- 后台定时和批处理任务由 `juhe-ai-jobs` 进程执行（Node 时代“独立 background worker 进程 + Node 调度框架 + IPC 回主进程”的规则为历史截面）；Go sidecar 的 F1-F4 按各自 owner lease 和组件生命周期执行，不能回退到 Node worker。
+- 请求链路记录按各自 owner 提交：操作日志在业务提交后一次签名提交给 Go F4，原始审计在请求终态一次签名提交给 Go F3，二者不进入队列、Redis Stream 或本地 SQLite writer 缓冲；普通运行日志不进入队列，完整 JSONL 文件是耐久 spool。
+- Node 时代 SQLite writer boundary strict 模式与 `src/scripts/` / `dist/scripts/` 离线脚本豁免为历史截面；现行写边界见 [架构总览](../architecture/架构总览.md) 数据访问隔离节。
+- Node 时代 worker 本地队列 flush 失败重试规则（失败 batch 拼回队头禁止等）为历史截面；现行 usage durable spool 支持稳定 ID 重放，不静默丢弃。
+- 系统管理 API 与数据访问由 gateway 单进程内 store 包承载，后台定时调度由 `juhe-ai-jobs` 负责；J3a 代理延迟检测已由 Go `juhe-ai-jobs` 独占执行、结果投影和 `proxy_profiles` 写回，Node 不再保留该 scheduler、executor 或 writer。运行日志索引与保留由 Go F1 owner 负责，表监控由 F2 owner 负责，原始审计由 F3 owner 负责，F4 负责操作日志接收、落库、读取与保留。数据访问故障时请求链路返回可读错误并短暂快速失败，不能在请求链路同步执行管理 CRUD，也不能静默降级。业务库写入由 gateway 唯一写者以短事务提交（WAL、`busy_timeout` 吸收短写锁等待）；`busy_timeout` 只是最后一道短等待保护，不能作为多 writer 抢锁的常态方案。统计数据集域记录型写入由对应 owner writer 使用短事务提交（Node 时代 DB service 进程、IPC 优先级 drain 与 typed 写队列为历史截面）。
+- 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表（SQLite standalone 下聚合事实源是统计结果库内的 `usage_records` 镜像表，见下文 rebuild-usage-stats 条目）。usage 分片落地后，统计输入侧改为每个 shard 独立维护 `(created_at, id)` 游标，统计结果库表和查询口径不变。
 - 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：用户侧 `我的用量` 和管理侧 `用量统计管理` 页面日期范围都默认最近 31 天，最大最近 31 天；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10。趋势点读取 `usage_stats_daily` 的日行，范围累计读取 `usage_scope_range_windows` 的范围行；账户关键词必须先在业务库解析为当前调用方 `caller_account` 范围窗口中的实际账户 ID，解析范围包含自有账户名、授权实例名、授权实例来源账户当前名，以及分组授权来源账户名，再用 `scope_id IN (...)` 读取窗口。点选账户时页面只在当前已返回的账户范围窗口行内切换卡片和明细展示，不回扫明细表。管理员全部用户视图的顶部摘要读取 `system_account = global` 的范围行。接口不能把每日行再相加生成范围汇总，前端也不能把日行汇总成摘要。
 - 统计概览属于监控窗口；页面日期范围默认今天，最大最近 31 天。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均读取 worker 写入的 `usage_overview_*_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`，不在接口中按小时缓存临时相加；这些窗口快照由 worker 按功能表分阶段短事务刷新，阶段之间让出事件循环。概览 scope 发现按 `usage_stats_totals.updated_at` 读取固定上限窗口，避免异常系统账号数量让单轮 worker 装载全部 scope；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势、进程事件循环趋势和进程内存占用趋势只在管理侧展示。
 - `AI性能监控` 的默认账户池在用户侧读取 `usage_rank_snapshots` 中当前调用方 `caller_account + last7d + request_count` 的最近 7 天活跃前 10，管理侧未筛选时读取 `system_account_id = global` 的 `account` 统计缓存和排行快照；快照缺失时默认列表为空，不能在接口请求时临时聚合降级。图表序列在用户侧读取 `usage_stats_hourly` 的 `scope_type = caller_account` 数据，在管理全局视图读取 `scope_type = account` 数据。账号选项关键词只支持账号名精确 / 前缀和授权实例来源账户当前名精确 / 前缀；显式追加只能通过 `accountIds` 回填，关键词不按账号 ID、供应商编码或系统账号名搜索，不能在账号选项查询中使用多列前导通配符扫描。用户侧可见范围包含自有账户、授权实例账户和授权分组内来源账户；授权分组来源账户只读取当前调用方自己的 `caller_account` 数据，不能把资源归属人的自用数据带入被授权人页面。授权实例账户和归属人原账户分别统计，互不混入。页面日期范围默认最近 3 天，最大最近 31 天，按小时返回首 token 和总耗时的平均值 / 最大值；页面顶部摘要由后端返回，前端账户筛选只影响图表显隐，不重新计算业务摘要。接口不得实时 `GROUP BY usage_records`。
@@ -458,8 +460,8 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 授权分组的高并发配置优先读取 `group_authorization_settings.group_type / scheduling_policy_json`，没有本地覆盖时才读取来源 `groups` 配置；被授权人的本地配置只影响该调用方的授权分组调度，不改写来源分组。
 - 高并发分组的后台反向缓存只保存可重建的短窗口质量摘要，不能保存敏感 payload、完整错误响应或会话内容。缓存缺失、过期或 worker 滞后时，网关必须按保守默认选号，不能在请求链路触发同步重建。
 - 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再消费 `account_quality_dirty_accounts` 中固定数量账号，从 `account_quality_minute_stats` 汇总这些账号近 10 分钟真实网关请求并刷新 `account_quality_scores`。分钟桶和 dirty 目录由用量统计 worker 随主游标增量写入；刷新 worker 不回扫 `usage_records`，也不一次性加载全部账号、全部近期样本账号或全部质量缓存，只按 dirty 账号窗口批量补业务元数据和旧质量行。无新样本账号的 `stale` 标记、已删除账号质量行和失效分钟桶按固定批次滚动推进，避免账号总量决定单轮 worker 阻塞时间。主动探测能力已删除，worker 只处理真实请求样本。超过 24 小时未更新的质量分不参与网关调度。
-- OpenAI OAuth Access Token 保活 worker 默认每 1 分钟扫描仍存在、未删除、有 `refresh_token` 且即将过期的真实 OAuth 来源账户，扫描不受账户状态和调度标记影响；授权实例不作为后台预刷新对象，因为实例不持有真实 token。成功时只更新来源账户 `accounts.credentials_encrypted` 中的 token 凭据，不恢复普通冷却状态；失败按本地授权维护任务退避并记录有界诊断，不得从 token endpoint 的 HTTP status/body 推断凭据死亡，也不得因任意刷新异常自动把账户写为 `error`。需要人工重新授权或本地凭据缺失 / 解密失败时走独立、可验证的授权维护路径；手动停用和用户显式状态不被后台刷新覆盖。
-- 网关请求中触发的 OpenAI OAuth Access Token 即时刷新，在 server 角色下必须通过 DB service 查最新账户、解析代理和持久化新凭据，不能直接读取或更新 SQLite；如果命中的是授权实例，刷新结果必须写回 `credentialSourceAccountId` 指向的来源账户，而不是写入授权实例。该路径只作为后台预刷新未覆盖时的正确性兜底，同账号并发刷新必须由进程内串行锁和最近刷新缓存收敛，避免一波临期请求重复打 DB service。
+- OpenAI OAuth Access Token 保活刷新由 Go 承接（后台保活与临期刷新见 `backend-go/projects/jobs/internal/oauthrefresh` 与 gateway oauth 链路），默认每 1 分钟扫描仍存在、未删除、有 `refresh_token` 且即将过期的真实 OAuth 来源账户，扫描不受账户状态和调度标记影响；授权实例不作为后台预刷新对象，因为实例不持有真实 token。成功时只更新来源账户 `accounts.credentials_encrypted` 中的 token 凭据，不恢复普通冷却状态；失败按本地授权维护任务退避并记录有界诊断，不得从 token endpoint 的 HTTP status/body 推断凭据死亡，也不得因任意刷新异常自动把账户写为 `error`。需要人工重新授权或本地凭据缺失 / 解密失败时走独立、可验证的授权维护路径；手动停用和用户显式状态不被后台刷新覆盖。
+- 网关请求中触发的 OpenAI OAuth Access Token 即时刷新由 gateway 进程内 store 查最新账户、解析代理并持久化新凭据，不再经过跨进程写通道（Node 时代经 DB service 的表述为历史截面）；如果命中的是授权实例，刷新结果必须写回 `credentialSourceAccountId` 指向的来源账户，而不是写入授权实例。该路径只作为后台预刷新未覆盖时的正确性兜底，同账号并发刷新必须由进程内串行锁和最近刷新缓存收敛，避免一波临期请求重复刷新。
 - 冷却账号恢复性复测处理冷却到期的 `temporary_unavailable` / `rate_limited`、仍可调度、已绑定分组且未过期的账号；`error`、`disabled` 等硬状态不进入后台复测队列。复测不从 `usage_records` 读取历史 `endpoint/model/stream`，也不读取 `request_snapshot_json` 或重放用户 prompt、工具参数、文件内容。恢复探活严格读取账户 `health_check_model`，并由协议档案、endpoint modes 和模型能力解析最小请求形态；检查模型缺失或非法时记录配置异常，不回退默认模型或支持模型首项。后台复测固定启用，复用真实网关链路但候选只包含当前复测账号；`complete_success` 只按匹配 provenance 恢复，`framing_complete_neutral` 只诊断并顺延，`probe_task_failure/stale/unknown` 不计数，只有 `transport_incomplete` 按快速恢复和指数退避更新 `cooldown_until`。进入长期不可用后固定每 1 小时复测，从首次独立 transport 失败起满 7 天后的再次独立 transport 失败才转为 `error`。恢复探活使用记录与审计标记 `traffic_source = cooldown_retest`，不参与业务统计或账户质量统计。
 - J3a 代理延迟检测由 Go `juhe-ai-jobs` 按 owner lease 固定周期检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址；Go 结果 projector 以 receipt/cursor/CAS 将最近状态、延迟和检测时间写回 `proxy_profiles`，出口 IP / 地区只由 Go 手动 adapter 刷新。Node 不注册该任务，也不提供 J3a business writer。
 - 授权账户调用需要同时写入调用方统计、调用方命中账户统计、授权实例账户统计、授权额度统计和授权报表：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该授权实例的消耗；授权实例账户总量按被授权实例所属 `system_account_id + scope_type = account + account_id` 聚合；账号授权额度按被授权实例所属 `system_account_id + account_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤授权方自用消耗。使用记录写入只拿到授权实例 `account_id` 时，存储层必须自动补齐 `account_owner_system_account_id`、`account_access_type = account_authorized` 和 `account_authorization_id`，避免旁路记录被误记成自有账户。
@@ -470,25 +472,27 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。启用 hourly 额度时写路径同步登记 `request_quota_hourly_window_configs.window_hours`。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 API Key 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
 - API Key 额度是轻量异步统计口径：统计 worker 默认每 1 分钟增量推进，只有本轮实际聚合到新使用记录时才刷新额度小时窗口并推送额度快照，空轮不重建额度窗口；网关额度判断带短 TTL 内存缓存，因此允许轻微超额；统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - API Key 生命周期分为停用、业务删除和记录物理清理：停用只改状态并立即拒绝后续调用；业务删除同步移除业务库记录并让后续请求立即无法再使用该 Key；该 Key 关联的历史使用记录由 usage shard 清理，原始审计日志、审计尝试、payload 引用和审计错误组由数据集目录库清理，API Key 维度统计缓存、额度窗口、排行 / 范围窗口以及调用方、账户、分组、授权、模型和错误等相关聚合缓存由统计结果库反向扣减。usage shard 与统计结果库不能共享强事务，因此清理任务先通过去重 shard 目录锁定当前 Key 仍有记录的有限 shard 窗口，再在统计结果库用 `usage_record_cleanup_deductions` 保证每条 usage 只扣减一次，最后删除对应 shard 行；如果 shard 删除或后续步骤失败，后台重试只补删或继续收尾，不重复扣减统计。未被任何审计引用继续使用的 payload blob 由后续无引用 blob 清理任务删除。
-- AI 账户生命周期分为逻辑删除和过期物理清理：删除操作只面向真实来源账户，只写 `accounts.deleted_at / deleted_by`，并把账户置为停用、不可调度、清空冷却；列表、options、授权使用、网关调度、账户测试、后台 OAuth 刷新和冷却复测都必须排除 `deleted_at IS NOT NULL` 的账户。删除来源账户时，同步逻辑删除该来源下所有授权实例，授权操作记录和运行时授权改为 `revoked`；授权实例账户不接受删除，被授权人归还个人直授权时个人授权改为 `returned`。逻辑删除阶段不删除 `usage_records`、审计、模型检测、质量分、额度快照和统计缓存。后台每天扫描 `deleted_at` 已超过 1 个月的账户时，DB service 只做业务库候选扫描和最终业务行物理删除；如果关联 usage shard、数据集目录库或统计结果库数据尚未清空，会返回记录清理目标，由 `ops-worker` 协调投递 ingest 队列和 stats writer。ingest 按统计安全游标分批删除 usage shard / dataset 明细，stats-writer 幂等扣减统计和清理窗口；记录清空后，下一轮 DB service 才物理删除账户、分组绑定、支持模型、授权来源、授权主记录和授权 grant，并显式清理账户名称搜索词条、搜索文档与 API Key 运行态行（Go jobs retention 双方言显式 DELETE；SQLite 侧业务库写句柄未启用外键级联，不能依赖 CASCADE）。孤儿授权实例扫尾（来源已删的授权实例 revoke + 逻辑删除）为双方言执行，语义同 bulk 终态。
+- AI 账户生命周期分为逻辑删除和过期物理清理：删除操作只面向真实来源账户，只写 `accounts.deleted_at / deleted_by`，并把账户置为停用、不可调度、清空冷却；列表、options、授权使用、网关调度、账户测试、后台 OAuth 刷新和冷却复测都必须排除 `deleted_at IS NOT NULL` 的账户。删除来源账户时，同步逻辑删除该来源下所有授权实例，授权操作记录和运行时授权改为 `revoked`；授权实例账户不接受删除，被授权人归还个人直授权时个人授权改为 `returned`。逻辑删除阶段不删除 `usage_records`、审计、模型检测、质量分、额度快照和统计缓存。后台每天扫描 `deleted_at` 已超过 1 个月的账户时，先做业务库候选扫描和最终业务行物理删除；如果关联 usage shard、数据集目录库或统计结果库数据尚未清空，会返回记录清理目标，由后台 record maintenance 任务协调数据集与统计清理（Node 时代 `ops-worker` / ingest 队列 / stats-writer 词汇为历史截面）：usage shard / dataset 明细按统计安全游标分批删除，统计扣减幂等完成；记录清空后，下一轮才物理删除账户、分组绑定、支持模型、授权来源、授权主记录和授权 grant，并显式清理账户名称搜索词条、搜索文档与 API Key 运行态行（Go jobs retention 双方言显式 DELETE；SQLite 侧业务库写句柄未启用外键级联，不能依赖 CASCADE）。孤儿授权实例扫尾（来源已删的授权实例 revoke + 逻辑删除）为双方言执行，语义同 bulk 终态。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
-- `stats-worker` 按系统监控间隔写入 `system_metrics_samples`、`system_metrics_hourly` 和 `process_event_loop_samples`，不写用户级业务归属。多进程事件循环延迟和进程内存由 stats-worker 通过 IPC 拉取 server、DB service、`ingest-worker`、`stats-worker` 和 `ops-worker` 样本后统一落 stats SQLite；诊断 IPC 不进入 DB service 业务请求计数，也不触发不可用熔断。采样频率跟随系统监控间隔，只有少量 IPC、一次直方图读取和一次 `process.memoryUsage()`，不扫描业务数据。概览接口的最新进程采样状态和最近 24 小时峰值状态都固定返回 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service` 五个角色；缺少样本时用 `sampleAvailable = false` 和 `null` 字段表达未知，不用缺项、0 或默认时间伪装正常。事件循环趋势和进程内存占用趋势跟随概览日期范围读取 `process_event_loop_trend_windows`，接口不扫描原始采样。
-- `ingest-worker`、`stats-worker` 和 `ops-worker` 是固定常驻子进程，不是每个后台任务临时创建一个进程；内部各定时任务由对应 worker 内的调度器注册、不可重入执行并记录运行快照。`temporary-maintenance-worker` 仅作为历史按需任务入口保留，当前 usage shard、dataset 和 stats 运行时维护任务不再 fork 临时 worker。管理侧系统监控可查看每个后台任务的所属 worker、最近耗时、最长耗时、运行中状态、成功次数、失败次数、跳过次数和最近错误，用于判断具体是哪一个任务拖慢哪个 worker；worker snapshot 不可用时接口必须返回显式可用性标记和 `null`，不能把未知状态压成空任务数组。
-- 系统采样的 `memory_used_percent` 表示主机实际内存压力口径，不是所有平台都等同于 `totalmem - freemem`。macOS 会把可回收文件缓存、inactive 和 speculative 页面排除在已用内存外，按 `vm_stat` 的 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算，避免把系统缓存误报为应用内存占用；读取失败时才回退到 Node 默认口径。
-- 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
-- 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
-- 操作日志在业务库写操作提交成功后由 Node 经本机签名 RPC 一次提交给 Go F4；F4 是 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 和 `operation_log_summary_search_terms` 的唯一 SQLite/PostgreSQL writer、reader 和 retention owner。RPC 或单条落库失败只影响追溯数据，不反向回滚已提交业务变更；Node 不保留 queue、Redis/IPC、writer 或 fallback。
-- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` / `model_check_observations` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker；模型可信窗口由 stats-worker 读取 observation 游标增量写入 `model_token_integrity_windows`、`model_token_integrity_rounds`、`model_token_intercept_baseline_versions`、`model_trust_window_sources`、`model_identity_source_features`、`model_identity_baseline_versions`、`model_paired_similarity_windows` 和 `model_account_trust_results`。身份来源向量按累计特征均值聚合，约束维度使用累计通过率；映射 / 协议硬冲突只保留 observation 和 latest 诊断，不进入来源或基线。`model_trust_window_sources` 的 cohort 来源计数由 `idx_model_trust_window_sources_cohort(cohort_key_hmac, upstream_bucket_hmac)` 覆盖。Token 轮次表按 run / round 的 P0、P1、P2 有效掩码确认完整轮次；固定 intercept 版本表按上游桶折叠并保存 median / MAD / 分位、校准状态和默认关闭的强判门；详情 API 只读 latest，不在请求链聚合。usage shard / usage catalog / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
+- Node 时代 stats-worker 多进程采样（通过 IPC 拉取 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service` 五角色样本写入 `process_event_loop_*` 表）为历史截面；Go 现行系统指标见 [系统指标统计设计](系统指标统计设计.md)（PG 模式写 `go_runtime_metrics_*` 三表，SQLite 模式对应表清单以 backend-go schema 为准），页面进程趋势图的现行数据口径以 gateway/jobs 现行实现为准。
+- Node 时代 `ingest-worker`、`stats-worker`、`ops-worker` 固定常驻子进程与 `temporary-maintenance-worker` 拓扑为历史截面；现行后台任务由 `juhe-ai-jobs` 单进程内任务注册表执行，管理侧后台任务运行状态读取 jobs 任务运行快照，快照不可用时接口必须返回显式可用性标记和 `null`，不能把未知状态压成空任务数组。
+- Node 时代主机内存采样口径（macOS `vm_stat` 匿名页 + wired + compressor、读取失败回退 `totalmem - freemem`）为历史截面，现行采样口径以 Go jobs 系统指标实现为准。
+- 原始审计落库由 Go F3 在同一请求事务中按策略计算正文保留、压缩、去重和错误聚合，并写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups`（Node 时代 worker 批量队列为历史截面）；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
+- 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态一次签名提交给 Go F3。
+- 操作日志在业务库写操作提交成功后由 gateway 一次签名提交给 Go F4；F4 是 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 和 `operation_log_summary_search_terms` 的唯一 SQLite/PostgreSQL writer、reader 和 retention owner。提交或单条落库失败只影响追溯数据，不反向回滚已提交业务变更；不保留 queue、Redis/IPC、writer 或 fallback。
+- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理等由后台 record maintenance 任务执行（Node 时代 `recordMaintenanceQueue`、DB service system API 触发与 ingest-worker / stats-writer 投递词汇为历史截面）。模型检测由管理 API 触发，Go J3b model-check owner 独占 datadir 派生的专用 `model-check.sqlite3` 写入；模型可信窗口由统计任务读取 observation 游标增量写入 `model_token_integrity_windows`、`model_token_integrity_rounds`、`model_token_intercept_baseline_versions`、`model_trust_window_sources`、`model_identity_source_features`、`model_identity_baseline_versions`、`model_paired_similarity_windows` 和 `model_account_trust_results`。身份来源向量按累计特征均值聚合，约束维度使用累计通过率；映射 / 协议硬冲突只保留 observation 和 latest 诊断，不进入来源或基线。`model_trust_window_sources` 的 cohort 来源计数由 `idx_model_trust_window_sources_cohort(cohort_key_hmac, upstream_bucket_hmac)` 覆盖。Token 轮次表按 run / round 的 P0、P1、P2 有效掩码确认完整轮次；固定 intercept 版本表按上游桶折叠并保存 median / MAD / 分位、校准状态和默认关闭的强判门；详情 API 只读 latest，不在请求链聚合。usage shard / usage catalog / dataset 部分与 stats 部分按各自 owner 串行执行；表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
 - Go F1 indexer 从各角色 Pino JSONL 文件按持久化 cursor 读取完整行，批量写入专用 `runtime_logs`，并随新增日志增量维护级别 / 事件 facets；常规维护只在 facets 缺失时重建，数据保留清理按已删除索引行扣减 facets，不能每轮或每次清理后对 `runtime_logs` 全量 `COUNT/GROUP BY`。
 - 运行日志 keyword 只查 `runtime_logs.message`；操作日志 `summaryKeyword` 日常读取由 Go F4 写入时同步生成的 `operation_log_summary_search_terms` 摘要倒排词项驱动。词项规则升级前必须新增并验证 Go 离线维护命令；当前没有可执行的历史重建入口，不在在线请求路径回填。
 - “日志搜索”索引查询读取 Go F1 专用 SQLite `runtime_logs` 表或 PostgreSQL `juhe_dataset.runtime_logs`，使用 `traceId`、级别、事件和日志时间等通用索引条件缩小结果，关键字只对 `message` 列做普通模糊匹配；如果只有 keyword、没有显式开始或结束时间，后端默认只查最近 6 小时。列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由 Go F1 indexer 控制。
 - “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；同一后端进程一次只允许 1 个 grep 搜索，单次 `rg` 搜索 15 秒超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
-- 使用记录、统计数据集域维护和审计按各自队列可靠性契约运行；操作日志采用 Node 一次签名提交到 Go F4 的 best-effort 契约，不复刻 Node 队列。普通运行日志不属于 best-effort 队列，完整 JSONL 文件是耐久 spool，进程重启或消费变慢后必须从 cursor 继续追平，不允许通过队列溢出、采样或级别丢弃减压。
+- 使用记录、统计数据集域维护和审计按各自 owner 可靠性契约运行；操作日志采用一次签名提交到 Go F4 的 best-effort 契约，不复刻 Node 队列。普通运行日志不属于 best-effort 队列，完整 JSONL 文件是耐久 spool，进程重启或消费变慢后必须从 cursor 继续追平，不允许通过队列溢出、采样或级别丢弃减压。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
 - 概览摘要按 `system_account_id + window_key` 单行读取 `usage_overview_summary_windows`；其余筛选范围图表接口读取 `usage_overview_trend_windows`、`usage_model_rank_windows`、`usage_error_rank_windows`、`system_metrics_trend_windows` 和 `process_event_loop_trend_windows`。Token 与成本柱状图默认近 31 天并跟随页面日期筛选，按 `system_account_id + scope_type + scope_id + stat_date` 索引范围直读最多 31 行 `usage_stats_daily`，不扫描明细，也不在请求时求和或分组。进程事件循环趋势和进程内存占用趋势都是运维排障图，跟随概览日期范围读取预生成窗口，不在请求时扫描原始采样；页面上方摘要取最近 24 小时内各进程最大延迟；后台任务运行状态来自 worker 运行态快照，不落表，统一展示 scheduled job 以及手动账号测试、账号质量失败预检、ingest 数据维护、stats 数据维护这类关键本地队列；运行态快照缺失时通过可用性字段表达不可观测，不用 `0`、`false`、`[]` 或默认天数伪装正常；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据，摘要只读 `ai_performance_summary_windows`。
 - 全局规则：除独立 background worker、离线清洗脚本、使用记录分页明细外，任何前端列表、概览、详情和下拉元数据接口都不能在请求时做统计聚合。
 
 表数据保留与统一清理：
+
+> 下表中 `ingest-worker`、`stats-writer` 为 Node 时代执行者名称；现行统一由 `juhe-ai-jobs` 对应 cleanup / stats 任务执行，保留策略口径不变。
 
 | 表 | 数据类型 | 保留策略 | 是否已有统一定时清理 | 注意事项 |
 | --- | --- | --- | --- | --- |
@@ -499,7 +503,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 | `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求 payload 热窗口默认 1 小时，成功长期 payload 样本默认 3 天，问题事件默认 7 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 按清理间隔清理长期过期数据 | 完全成功请求先全量热保留；超过热窗口后，未命中 10% 长期采样的记录删除 attempts 和 payload 引用、主记录降为 `metadata_only`；成功三项环境变量全为 0 时不采集成功审计 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 3 天，问题正文默认 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只做展示和排障聚合，不替代事件记录 |
-| `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts`、`codex_context_storage_cleanup_queue` | Responses Chat-only bridge 状态索引与文件清理重试线索 | 固定 7 天未使用即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理过期关系，并且只删除没有任何剩余 response / compact 引用的 `backend/data/codex-context/` segment 文件 | 位于 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的多个 shard，不属于业务库。过期索引删除与 storage key 入队在同一事务内；文件删除成功或已不存在后确认出队，失败则持久记录次数、错误和下次重试时间。SQLite 只保存关系、文件引用和待删线索；当前已落地 `previous_response_id` response 状态索引和 `juhecmp.v2.<compact_id>.<digest>` compact snapshot 索引。过期后旧 `previous_response_id` 或 compact snapshot 必须返回状态不存在 |
+| `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts`、`codex_context_storage_cleanup_queue` | Responses Chat-only bridge 状态索引与文件清理重试线索 | 固定 7 天未使用即清理 | 是，jobs `data-retention-cleanup` 按清理间隔清理过期关系，并且只删除没有任何剩余 response / compact 引用的 `<DATA_DIR>/codex-context/` segment 文件 | 位于 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的多个 shard，不属于业务库。过期索引删除与 storage key 入队在同一事务内；文件删除成功或已不存在后确认出队，失败则持久记录次数、错误和下次重试时间。SQLite 只保存关系、文件引用和待删线索；当前已落地 `previous_response_id` response 状态索引和 `juhecmp.v2.<compact_id>.<digest>` compact snapshot 索引。过期后旧 `previous_response_id` 或 compact snapshot 必须返回状态不存在 |
 | `usage_record_shards`、`usage_record_shard_entries`、`usage_record_account_shards`、`usage_record_api_key_shards` | usage shard 全局目录和 scope catalog | 跟随 `usage_records` 和物理 shard 文件 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理；表监控硬清理会按截止时间清理目录和空 shard 文件 | 只保存定位关系、筛选字段和 shard 文件引用，不保存完整使用记录正文；目录库按批删除，避免大事务拖住 usage catalog 写锁 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |
@@ -520,7 +524,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 | `process_event_loop_hourly` | 进程事件循环 / 内存小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理 | 长期粗粒度排障缓存，包含延迟有效样本数、RSS / Heap 平均值和峰值 |
 | `process_event_loop_trend_windows` | 进程运行态窗口趋势缓存 | 默认最近 31 天窗口 | 是，`data-retention-cleanup` 按清理间隔投递 stats-writer 清理；刷新任务会覆盖当前窗口 | 供进程事件循环趋势和进程内存占用趋势接口直读 |
 | `database_storage_snapshots`、`table_storage_snapshots` | Go sidecar 内 F2 表监控采样历史 | 默认 30 天 | 否，Node `data-retention-cleanup` 和 stats-writer 均不得处理；由 F2 owner 在提交快照后清理 | standalone 位于 F2 专用 SQLite 文件，performance 位于 PostgreSQL `juhe_stats`；用于管理员表监控页面，不纳入默认业务备份 |
-| `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理 | 查询时也会校验过期时间，定时清理用于回收表数据；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
+| `system_sessions` | 后台登录会话 | 到期即清理 | 是，后台数据保留任务按清理间隔清理 | 查询时也会校验过期时间，定时清理用于回收表数据；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
 
 不按保留期物理清理：
 
@@ -533,7 +537,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 统一清理规则：
 
 - 除 F1/F2/F4 专属事实外，表数据长期保留期统一由 `data-retention-cleanup` 默认每 10 分钟在独立 background worker 进程内执行；原始审计普通成功请求的 1 小时热窗口后置采样裁剪由 `audit-hot-retention-cleanup` 每分钟分批执行，避免排障窗口结束后未采样成功日志继续堆积；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。F1 运行日志、F2 快照和 F4 操作日志分别由对应 Go owner 保留清理，Node 清理器不得删除它们的专用事实。
-- 清理任务按内部常量小批次删除，固定每类表每轮最多处理 1000 条、最多 20 批，即每类数据每轮最多 2 万行；这些吞吐参数不属于系统设置，不允许用户在线调整。SQLite 每批之间会让出事件循环，并在继续下一批前固定等待 25ms，给其他 writer 留出写入间隙；PostgreSQL 使用 async repository 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。Codex Context 文件删除使用独立持久待删队列：过期索引删除和 storage key 入队同事务提交，单个文件失败不会阻断同批其他 key，失败项指数退避，成功或文件已不存在才确认出队；取消只在当前批文件与队列确认收尾后生效。原始审计成功热保留清理每分钟运行，但单轮带固定 5 秒预算，预算耗尽后停止本轮并留给下一轮继续，避免热窗口清理在积压时长时间占用 ingest worker。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。SQLite 清理实际删除数据后会执行轻量 WAL checkpoint，避免 WAL 长期膨胀；在线任务不自动 `VACUUM`。
+- 清理任务按内部常量小批次删除，固定每类表每轮最多处理 1000 条、最多 20 批，即每类数据每轮最多 2 万行；这些吞吐参数不属于系统设置，不允许用户在线调整。SQLite 每批之间固定等待 25ms，给其他 writer 留出写入间隙（Node 时代“让出事件循环”表述为历史截面）；PostgreSQL 使用 async repository 按 ctid / 主键窗口分批删除，避免单事务长时间持锁。Codex Context 文件删除使用独立持久待删队列：过期索引删除和 storage key 入队同事务提交，单个文件失败不会阻断同批其他 key，失败项指数退避，成功或文件已不存在才确认出队；取消只在当前批文件与队列确认收尾后生效。原始审计成功热保留清理每分钟运行，但单轮带固定 5 秒预算，预算耗尽后停止本轮并留给下一轮继续，避免热窗口清理在积压时长时间占用审计 owner。保留清理按表独立推进，前序表已经清完后，如果后续表失败，下一轮从失败表继续。SQLite 清理实际删除数据后会执行轻量 WAL checkpoint，避免 WAL 长期膨胀；在线任务不自动 `VACUUM`。
 - 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样和审计日志落库只负责写入或聚合，不再在各自流程里顺手删除历史表数据；F1 运行日志索引与 F2 表监控由对应 Go owner 持有各自的 retention，不接受 Node 清理器回退接管。
 - **统计缓存离线重建（Go maintenance CLI，BUG-0182 已实现）**：统计缓存损坏或统计口径升级时，使用 `backend-go/projects/maintenance` 的一次性命令 `juhe-ai-maintenance rebuild-usage-stats` 停服离线重建（历史上由 Node 脚本 `backend/dist/scripts/maintenance/rebuild-usage-stats.js` 承担，该脚本已随 Node 后端归档删除，不要再执行 `node backend/dist/...` 命令）：
@@ -551,7 +555,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 源码边界：
 
-- 操作日志 schema 位于 `backend-go/internal/operationlog/` 的独立 F4 SQLite/PostgreSQL store；Node `storage/schema/` 不再拥有这些表的活跃 schema。
+- 操作日志 schema 位于 `backend-go/internal/operationlog/` 的独立 F4 SQLite/PostgreSQL store，表清单以其 Go DDL 为准（Node `storage/schema/` 已随 Node 后端归档）。
 - 操作日志只记录成功提交的状态变更；`GET`、列表、详情、筛选、分页和日志查看不写操作日志。
 - 操作日志不主动采集完整请求体、完整响应体、完整 headers 或原始审计 payload；结构化变更项的 `field` 精确命中认证容器 allowlist 时只持久化状态摘要。allowlist 包含 `credentials/credential/token/key/secret/password` 和 API Key、access/refresh/id/identity token、client secret、session token、proxy password 的 camelCase / snake_case 精确字段名。服务不扫描普通文本、metadata、summary、字段子串或疑似 token 字符串，调用方不得把秘密放入这些非敏感容器。
 - 删除业务资源时不删除历史操作日志；历史日志保留当时的资源 ID、资源名称、安全摘要和影响用户。
@@ -618,7 +622,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 源码边界：
 
-- F3 Go sidecar schema/store 维护审计事件、尝试、payload 引用、blob 元数据和错误聚合；Node `storage/schema/` 不再拥有审计表 schema/writer。
+- F3 Go sidecar schema/store 维护审计事件、尝试、payload 引用、blob 元数据和错误聚合，表清单以其 Go DDL 为准（Node `storage/schema/` 已随 Node 后端归档）。
 - 网关模块只创建请求内捕获上下文、追加原始片段并在终态作一次签名 RPC 投递，不直接调用 repository 同步写审计表。
 - Go F3 在同一请求事务中计算正文保全策略、压缩、去重和错误聚合；它不是 Node worker queue，单条输入失败只返回该条失败且 listener 保持可用。
 - 大 payload blob 由 `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY` 指向的 Go F3 专用目录保存，SQLite/PostgreSQL 仅保存 blob 元数据和引用。
@@ -761,8 +765,8 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 源码边界：
 
-- `backend/src/storage/schema.ts` 作为 schema 入口，`backend/src/storage/schema/` 拆分文件只保留当前完整表结构、索引、默认约束和外键。
-- 后端启动路径、repository、routes、前端页面都只维护当前数据契约，不挂载一次性数据处理、临时同步修复、临时表改名或处理标记代码。
+- schema 权威入口为 `backend-go/projects/maintenance` 的 `internal/schema/` Go DDL，由 `juhe-ai-maintenance --ensure-schema` 幂等初始化，gateway 启动 preflight 复检并执行默认 seed；Node 时代 `backend/src/storage/schema.ts` / `backend/src/storage/schema/` 为历史截面。
+- 后端启动路径、store、routes、前端页面都只维护当前数据契约，不挂载一次性数据处理、临时同步修复、临时表改名或处理标记代码。
 - 本地库异常或结构变化时，先备份数据库，再按当前 schema 用直接 SQL、临时离线脚本或重建库处理；处理脚本不得挂入运行时代码。
 - 本地库异常或结构变化需要处理既有数据时，单独生成一次性离线修复方案，不写进主代码。
 
@@ -867,10 +871,10 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 授权操作以 `resource_authorization_grants` 为业务主表；最终用户可调用关系以 `resource_authorizations` 为运行时主表；来源解释和优先级切换以 `resource_authorization_sources` 追踪。
 - AI 账户授权实例必须在授权创建、团队成员加入或授权重新激活这类写路径中物化；账户列表、账户 options、账户详情和网关调度选号只能读取已物化的实例行，不得在请求读取路径按被授权人全量扫描 `resource_authorizations` 后补建实例。
 - 团队授权由 service 层展开为成员用户级授权；资源所有者如果也是团队成员，其自用调用仍按自用处理，不计入授权消耗。
-- 为避免团队越大导致管理写请求、授权创建、团队停用或成员变化在 DB service 中同步展开过久，系统团队采用固定展开边界：单个团队最多 20 个有效成员，单次最多添加 20 个成员，单个团队最多 20 条有效团队授权；团队列表页也固定最多返回 20 个团队。超过该边界应拆分团队或回收旧授权，不能在请求路径一次性展开更多成员或授权。
+- 为避免团队越大导致管理写请求、授权创建、团队停用或成员变化在单个写事务中同步展开过久，系统团队采用固定展开边界：单个团队最多 20 个有效成员，单次最多添加 20 个成员，单个团队最多 20 条有效团队授权；团队列表页也固定最多返回 20 个团队。超过该边界应拆分团队或回收旧授权，不能在请求路径一次性展开更多成员或授权。
 - 同一个 `resource_type + resource_id + grantee_system_account_id` 在 `resource_authorizations` 中只维护一条最终用户授权；同一资源同一业务目标的有效人员 / 团队授权由 `resource_authorization_grants` 的部分唯一索引兜底。
 - 授权记录不提供普通物理删除动作；AI 账户授权实例创建后与归属人的原账户运行态解耦。来源账户被删除时只先逻辑删除来源账户和所有授权实例，授权操作记录与运行时授权标记为 `revoked`，一个月后由过期物理清理任务删除账户、授权、绑定、历史记录和统计缓存。被授权人归还个人直授权时，个人授权标记为 `returned`，来源账户不受影响；授权实例账户不能通过账户删除接口删除。
-- 暂停授权把 `status` 改为 `paused`，被授权人仍可见但不可用；到期授权把 `status` 改为 `expired`，被授权人仍可见但不可用，独立 background worker 进程负责自动处理。
+- 暂停授权把 `status` 改为 `paused`，被授权人仍可见但不可用；到期授权把 `status` 改为 `expired`，被授权人仍可见但不可用，由 `juhe-ai-jobs` 后台任务自动处理。
 - 授权到期扫描按固定批量处理，单次最多推进 20 条到期授权；请求路径只做同样的短批次兜底，不能因为积压大量到期授权而一次性同步更新全部运行态。
 - 回收授权把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，被授权人不可见也不可用；归还授权把 `status` 改为 `returned`，被授权人不可见也不可用。历史统计继续按原授权 ID 可查。
 - 团队停用、成员移除或系统账户停用后，授权来源和最终用户授权状态必须同步更新；网关调度按最终用户授权、系统账户、资源和绑定状态阻断调用，不再额外把团队作为运行时主体遍历判断。
@@ -1079,6 +1083,6 @@ API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_jso
 
 ## F2 表监控专用库
 
-`JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 是 F2 表存储监控的专用 SQLite 输出库。`juhe-ai-go-sidecar` 内的 F2 是该文件唯一 writer，启动时使用 WAL 和 `busy_timeout`，并以 owner lease 防止第二个 Go 实例并发写入；Node 的表监控路由只读打开该文件。该路径不得与业务、dataset、usage catalog、stats、F1 runtime log 或 Codex Context shard 共用，也不得因缺失或失败回退到旧统计库。F2 使用直接异步采样，不通过 Node IPC、Redis 或任务队列。
+`JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 是 F2 表存储监控的专用 SQLite 输出库。`juhe-ai-jobs` 内的 F2 是该文件唯一 writer，启动时使用 WAL 和 `busy_timeout`，并以 owner lease 防止第二个 Go 实例并发写入；管理面表监控查询只读打开该文件。该路径不得与业务、dataset、usage catalog、stats、F1 runtime log 或 Codex Context shard 共用，也不得因缺失或失败回退到旧统计库。F2 使用直接异步采样，不通过 Node IPC、Redis 或任务队列。
 
 更完整的凭据展示、请求快照、操作日志、原始审计日志、日志原文保留、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md)、[操作日志设计](操作日志设计.md) 与 [原始审计日志设计](原始审计日志设计.md)。

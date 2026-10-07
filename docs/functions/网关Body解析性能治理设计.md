@@ -1,12 +1,12 @@
 # 网关 Body 解析性能治理设计
 
-> **历史状态。** 本文是 Node 后端时代的网关 Body 解析性能治理记录（“本轮范围仅限 Node 后端”）：Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`（见 `docs/architecture/架构总览.md` 终局声明），文中治理条目与 Node 热路径叙述保留为历史对照，不构成当前实现或操作授权。
+> 本文是 Node 后端时代的一次 Body 解析治理记录与解析边界契约。治理原则、一次性解析复用与第 7 节解析边界清单已由 Go `backend-go/projects/gateway/internal/gatewaybody` 承接（该包逐文件镜像原管线，以有界 goroutine 池替代 worker_threads，见包 doc 注释）；文中 Express、worker_threads、V8 GC、IPC/Redis codec 等 Node 实现细节为历史截面。64mb 入口硬上限与 16mb 文本 lane 是现行边界（`backend-go/projects/gateway/internal/gatewaybody/body.go`）。
 
 ## 1. 目标
 
 盘点请求接收、路由、账号适配、协议桥接、响应处理、SSE、审计、用量和运行日志中的 Body 解析，减少网关热路径上的重复 `JSON.parse`、重复 UTF-8 转换和纯日志目的结构扫描。
 
-本轮范围仅限 Node 后端，不包含 Go 实现。
+本轮范围仅限 Node 后端（历史截面；治理决策已由 Go `backend-go/projects/gateway/internal/gatewaybody` 承接）。
 
 本设计不以“删除所有解析”为目标。协议转换、模型改写、usage 计费、精确客户端响应语义和用户显式响应检查依赖结构化数据，必须保留。治理原则是：
 
@@ -28,10 +28,11 @@
 | 原始审计 | 超限摘要为了展示顶层类型和 key，会解析或扫描 Body | 纯日志目的，删除结构解析，只保留 hash、大小、首尾字节和文本预览 |
 | 使用记录 | 快照只做大小、深度和字段数约束 | 不做 Body JSON 解析，保持 |
 | 运行日志索引 | worker/查询侧解析 JSONL 日志行 | 不在网关请求热路径，保持 |
+| Go 对照 | Express raw parser 边界由 `gatewaybody/middleware.go` raw 读取承接；运行日志索引由 jobs F1 cursor 承接 | 解析次数契约按边界逐条承接，验证见 `gatewaybody` 各 `*_test.go` |
 
 ## 3. 一次性交付范围与落地结果
 
-本计划不再拆分第一、第二阶段。请求入口、账号准备、非流式响应、SSE、账户诊断、模型检测、OAuth、审计和运行日志中已经识别的重复或纯展示解析，必须在同一次验收中完成；无法删除的解析必须属于明确的 HTTP、协议、计费、持久化或 IPC 边界，并在终版清单中说明。
+本节为已交付历史记录（Node 后端）；对应能力已由 Go `backend-go/projects/gateway/internal/gatewaybody` 承接。本计划不再拆分第一、第二阶段。请求入口、账号准备、非流式响应、SSE、账户诊断、模型检测、OAuth、审计和运行日志中已经识别的重复或纯展示解析，必须在同一次验收中完成；无法删除的解析必须属于明确的 HTTP、协议、计费、持久化或 IPC 边界，并在终版清单中说明。
 
 | 项目 | 结果 | 判定 |
 | --- | --- | --- |
@@ -49,7 +50,9 @@
 | 非 2xx 错误响应 | 以真实上游协议建立 failure context，并把 parsed response 随 attempt 传递给最终诊断错误；策略、usage、摘要、账号副作用和最终错误共享，显式区分“已解析但无摘要” | 有策略路径最多完整解析一次；generic opaque 无策略路径完整解析 0 次，最终确需诊断时也只解析一次 |
 | SSE | 响应策略 interceptor、Codex guard 和 OpenAI/Anthropic/Gemini inspector 共享同一 parsed event；内存网关把已解析 event 和 inspection 直接交给账户诊断、模型检测 | 同一 SSE event 只解码一次；诊断 event 缓存受 256 KiB 预览上限约束 |
 | 账户诊断与模型检测 | JSON、SSE、错误、输出、模型、usage 和完成证据统一消费 `DiagnosticResponseContext`；非流式与流式均复用内存网关解析结果 | 不再对完整诊断正文重复解析；图片响应只做有界 envelope 扫描，不物化 base64 |
-| 审计与运行日志 | 审计传输按精确字节账本裁剪，最终 Redis codec 只整体编码一次；预处理 IPC 不再二次裁剪；公开接口日志和操作日志删除纯展示反解析 | 原始模型 Body 不为日志展示解析；JSONL、Redis、DB 和 IPC 的边界编解码保留 |
+| 审计与运行日志 | 审计传输按精确字节账本裁剪，最终 Redis codec 只整体编码一次；预处理 IPC 不再二次裁剪；公开接口日志和操作日志删除纯展示反解析 | 原始模型 Body 不为日志展示解析；JSONL、Redis、DB 和 IPC 的边界编解码保留（"Redis codec""预处理 IPC"为 Node 审计链路词汇；Go 审计为进程内 F3 owner 提交，无 IPC 边界） |
+
+Go 对应物：`scanned_json` 元数据状态对应 `gatewaybody.JSONParseStatusScannedJSON`；256KB 内联阈值对应 `GatewayJSONBodyInlineParseMaxBytes = 256 * 1024`。
 
 ## 4. 删除与保留判定
 
@@ -68,7 +71,7 @@
 - 同一 SSE event 的协议分类、usage、错误和响应检查。
 - 账户测试、健康探针和模型检测对内存网关 JSON/SSE 解析结果的复用。
 
-缓存必须绑定单个 Express request 或单次 upstream attempt，Body 被改写时必须失效；不能跨请求或跨租户保存解析对象。单请求内跨账号复用时，必须把所有账号敏感输入纳入缓存键。
+缓存必须绑定单个请求生命周期（Node 时代为单个 Express request）或单次 upstream attempt，Body 被改写时必须失效；不能跨请求或跨租户保存解析对象。单请求内跨账号复用时，必须把所有账号敏感输入纳入缓存键。
 
 ### 4.3 必须保留
 
@@ -86,6 +89,8 @@
 
 ## 5. 实施顺序
 
+（历史实施记录，六步已全部完成；现行承接见 `backend-go/projects/gateway/internal/gatewaybody`。）
+
 1. 删除审计摘要中的 Body JSON 解析与前缀 key 扫描。
 2. 为下游请求增加 request-scoped 完整 JSON 解析结果与 in-flight Promise 复用。
 3. 将 OAuth、模型映射和协议 bridge 迁移到统一请求解析入口。
@@ -93,7 +98,7 @@
 5. 审计 SSE inspector 与响应检查 interceptor，确认是否可以共享同一事件解析结果。
 6. 小于等于 256KB 请求已从入口立即完整解析改为单遍严格语法/元数据扫描和按需完整解析；扫描器只解码顶层目标键与嵌套 `type`，大请求继续在 worker 扫描。
 
-该方案优化的是完整对象分配、GC 压力和重复解析次数，不假设 JavaScript 严格扫描的 CPU 必然低于原生 `JSON.parse`。当前本机典型 messages 基准中，约 11KB/112KB 请求的扫描耗时约为 0.024ms/0.108ms。严格扫描器使用每层 1 byte 的紧凑栈；8MB、400 万层构造输入实测堆增量约 8MB、ArrayBuffer 增量约 16MB，不再出现对象栈约 30 倍的内存放大。运行期仍应持续观测事件循环 CPU、吞吐和 GC，再按事实调整内联扫描阈值。
+该方案优化的是完整对象分配、GC 压力和重复解析次数，不假设 JavaScript 严格扫描的 CPU 必然低于原生 `JSON.parse`。以下为 Node 实测历史截面：本机典型 messages 基准中，约 11KB/112KB 请求的扫描耗时约为 0.024ms/0.108ms；严格扫描器使用每层 1 byte 的紧凑栈；8MB、400 万层构造输入实测堆增量约 8MB、ArrayBuffer 增量约 16MB，不再出现对象栈约 30 倍的内存放大。运行期仍应持续观测吞吐与内存，再按事实调整内联扫描阈值（Node 时代观测对象为事件循环 CPU 与 V8 GC）。
 
 ## 6. 验收
 
@@ -103,7 +108,7 @@
 - 同一完整非流式 JSON 响应不被 usage、错误和协议校验重复解析。
 - 审计、usage 和运行日志不为展示目的解析原始模型 Body。
 - Body 改写后缓存失效，后续上游请求使用新 Body。
-- 现有协议转换、计费、响应检查、错误处理和审计保全回归保持通过。
+- 现有协议转换、计费、响应检查、错误处理和审计保全回归保持通过（现行回归入口为 `backend-go/projects/gateway/internal/gatewaybody` 各 `*_test.go` 及网关链路测试）。
 
 ## 7. 最终解析边界清单
 
@@ -117,4 +122,4 @@
 | SSE | 每个完整 event 1 | interceptor、guard、协议 inspector、账户诊断和模型检测共享 parsed event |
 | 图片账户诊断 | 完整解析 0 | 有界 envelope scanner 识别成功、错误和缺失结果，不复制 base64 |
 | 审计/公开日志/操作日志 | 原始模型 Body 0 | 只保留字节、hash、窗口和必要传输编码 |
-| 协议转换与持久化 | 每个独立边界 1 | 源/目标 wire document、HTTP、Redis、DB、IPC、JSONL 分别属于独立正确性边界 |
+| 协议转换与持久化 | 每个独立边界 1 | 源/目标 wire document、HTTP、Redis、DB、IPC、JSONL 分别属于独立正确性边界（"Redis""IPC"为 Node 审计链路词汇；Go 审计为进程内 F3 owner 提交，无 IPC 边界，现行边界以 Go 实现为准） |

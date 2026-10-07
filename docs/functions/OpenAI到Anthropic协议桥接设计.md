@@ -1,7 +1,6 @@
 # OpenAI 到 Anthropic Messages 协议桥接设计
 
-> 2026-06-27 路由分层更新：本文旧段落里提到的 API Key 显式桥接配置只作为历史背景；当前目标是 API Key 只绑定策略路由，策略路由负责分组和模型调度，OpenAI / Anthropic 跨协议转换落到混合供应商账户。
-> 当前代码已移除 API Key / 策略路由层的显式跨协议桥接入口；本文后续如果仍出现“混合供应商账户”，均表示待迁移历史设计，不得作为新增实现、测试断言或页面配置依据。跨协议承接统一迁移到混合供应商账户。
+> 2026-06-27 路由分层更新：API Key 只绑定策略路由，策略路由负责分组和模型调度，API Key/策略路由层不保存显式跨协议桥接规则；OpenAI/Anthropic 跨协议转换由混合供应商账户的模型映射承接。本文是 chat_completions|responses -> messages 桥接线的权威设计（PLAN-0058），现行实现为 Go `backend-go/projects/gateway/internal/openaicompat/openaicompatbridge/` 与供应商侧 `backend-go/projects/gateway/internal/gatewayanthropic/`。
 
 ## 1. 背景
 
@@ -181,7 +180,7 @@ Anthropic Messages 上游不认识 OpenAI `previous_response_id`，因此 Respon
 2. 后续请求带 `previous_response_id` 时，网关先校验 API Key、系统账户、分组、供应商档案和模型映射边界。
 3. 校验通过后，读取历史状态并追加本轮 input，再构造新的 Anthropic Messages 请求。
 4. 状态缺失、过期、跨分组、跨供应商、工具调用不完整或摘要校验失败时，返回本地受控错误，不把缺失历史的请求发给上游。
-5. `/v1/responses/compact` 不能透传给 Anthropic。需要 compact 时，由网关在当前授权边界内执行 summary compact，保存为网关自有 compact snapshot，再返回 OpenAI CompactResource 兼容外形：`object=response.compaction`，`output` 中恰好 1 个 `type=compaction` item，`encrypted_content=juhecmp.v2.<compact_id>.<digest>`。后续 `/v1/responses` 携带该 item 时，状态层先校验 API Key、分组、供应商档案、TTL 和 digest，再恢复为 inline summary。OpenAI 到 Anthropic bridge 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`，只把已恢复摘要写入 Anthropic 顶层 `system`；不会把 compact envelope 发给上游。缺少 `encrypted_content`、`juhecmp.v1` inline summary 解析失败、解析后没有摘要或未知 compact envelope 时必须本地拒绝且不请求 Anthropic，不能静默丢弃压缩历史后继续生成。
+5. `/v1/responses/compact` 不能透传给 Anthropic。需要 compact 时，由网关在当前授权边界内执行 summary compact，保存为网关自有 compact snapshot，再返回 OpenAI CompactResource 兼容外形：`object=response.compaction`，`output` 中恰好 1 个 `type=compaction` item，`encrypted_content=juhecmp.v2.<compact_id>.<digest>`。后续 `/v1/responses` 携带该 item 时，状态层先校验 API Key、分组、供应商档案、TTL 和 digest，再恢复为 inline summary。OpenAI 到 Anthropic bridge 同时接受官方 `compaction` 和 Codex 兼容别名 `compaction_summary`，只把已恢复摘要写入 Anthropic 顶层 `system`；不会把 compact envelope 发给上游。缺少 `encrypted_content`、`juhecmp.v1` inline summary 解析失败、解析后没有摘要或未知 compact envelope 时必须本地拒绝且不请求 Anthropic，不能静默丢弃压缩历史后继续生成。Go 锚点：`backend-go/projects/gateway/internal/gatewaycodex/chatbridgestate.go`（`juhecmp.v1` / `juhecmp.v2` 前缀）。
 
 这套机制复用现有 Chat-only Responses bridge 的状态存储思路，并作为“非原生 Responses 上游桥接状态”继续扩展。当前已覆盖 Codex SSE 续链和普通 Responses JSON / SSE 续链；后续如果继续新增跨供应商 Responses 状态能力，命名和文档应从 Chat-only 语义逐步收敛到通用 Responses bridge state。
 
@@ -264,56 +263,15 @@ Responses SSE 不能复用 Chat SSE chunk handler。OpenAI Responses 是 typed e
 - 工具调用历史不完整时必须受控拒绝，不能把 orphan tool result 发给 Anthropic。
 - JSON schema 严格输出必须走合成 Anthropic tool 或后续账号显式启用的原生 structured output，并通过本地 schema 校验；校验失败不能冒充成功。
 
-## 9. 路由与显式混合规则
+## 9. 路由与模型映射承接
 
-跨协议目标通过 混合供应商账户声明：
+跨协议目标由混合供应商账户的模型映射承接，API Key / 策略路由层不存在显式桥接规则（旧 `sourceClientProfile` / `targetGroupId` / `adapterMode` 规则 schema 已移除）。Go 侧现行跨协议矩阵是 `backend-go/projects/gateway/internal/accounts/model_mapping_protocol_matrix.go` 的 `hybridAccountModelMappingProtocolRules`：15 条跨协议转换矩阵，包含 `chat_completions -> messages` 与 `responses -> messages`。模型映射的配置、校验与展示契约见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 
-```json
-{
-  "id": "openai_responses_to_anthropic_messages",
-  "enabled": true,
-  "priority": 1,
-  "sourceClientProfile": "auto",
-  "sourceModel": "gpt-5.5-codex",
-  "sourceEndpointFamily": "responses",
-  "targetGroupId": "grp_anthropic_messages",
-  "upstreamModel": "claude-opus-4-8",
-  "upstreamEndpointFamily": "messages",
-  "adapterMode": "bridge"
-}
-```
+路由候选判定语义保持不变：
 
-Chat 入口示例：
-
-```json
-{
-  "id": "openai_chat_to_anthropic_messages",
-  "enabled": true,
-  "priority": 2,
-  "sourceClientProfile": "auto",
-  "sourceModel": "gpt-5.5",
-  "sourceEndpointFamily": "chat_completions",
-  "targetGroupId": "grp_anthropic_messages",
-  "upstreamModel": "claude-sonnet-4-6",
-  "upstreamEndpointFamily": "messages",
-  "adapterMode": "bridge"
-}
-```
-
-保存校验：
-
-- `sourceEndpointFamily` 允许 `chat_completions` 或 `responses`。
-- `targetGroupId` 必须是当前 API Key 所选路由策略已绑定且启用的目标分组。
-- `upstreamEndpointFamily = messages` 只允许目标账户协议档案为 Anthropic v1 Messages，目标分组只按供应商归属校验。
-- Anthropic 官方目标分组的 `upstreamModel` 必须来自 Anthropic 模型目录或目标账号支持模型。
-- Anthropic-compatible 第三方目标分组的 `upstreamModel` 必须来自该供应商模型目录或目标账号支持模型。
-- `responses -> messages` 的 SSE 请求要求 `messages_sse`；JSON 请求要求 `messages_json`。
-- `chat_completions -> messages` 同理按 stream 选择 `messages_sse` 或 `messages_json`。
-
-混合供应商账户承接下的路由调整：
-
-- 路由候选分组绑定混合供应商账户时，候选筛选必须判断“当前下游 OpenAI 请求是否能被该目标分组通过桥接承接”。
-- 原有“目标分组必须能承接当前请求协议和端点”改为“目标分组必须具备原生承接能力或显式桥接承接能力”。
+- 路由候选分组绑定混合供应商账户时，候选筛选必须判断“当前下游 OpenAI 请求是否能被该目标分组通过桥接承接”；目标分组必须具备原生承接能力或显式桥接承接能力才可进入候选，画像与候选判定细节见 [客户端画像与混合路由设计](客户端画像与混合路由设计.md)。
+- Anthropic 官方目标分组的上游模型必须来自 Anthropic 模型目录或目标账号支持模型；Anthropic-compatible 第三方目标分组的上游模型必须来自该供应商模型目录或目标账号支持模型。
+- `responses -> messages` 的 SSE 请求要求上游 `messages_sse`；JSON 请求要求 `messages_json`。`chat_completions -> messages` 同理按 stream 选择 `messages_sse` 或 `messages_json`。
 
 ## 10. 使用记录、审计和成本
 
@@ -335,11 +293,9 @@ Chat 入口示例：
 
 ## 11. 实现落点
 
-建议新增共享桥接层：
+现行 Go 实现位于共享桥接层 `backend-go/projects/gateway/internal/openaicompat/openaicompatbridge/`：请求构建在 `bridge_request_openai_chat_to_anthropic.go`、`bridge_request_openai_responses_to_anthropic.go`；响应渲染在 `bridge_anthropic_responses_response.go`；SSE 状态机在 `bridge_stream.go`、`bridgedispatch.go`；托管工具 registry 在 `hostedtoolregistry.go`。
 
-- `backend/src/modules/providers/drivers/_shared/openai-anthropic-bridge.ts`
-
-它只负责：
+桥接层只负责：
 
 - 判断 OpenAI Chat / Responses 请求是否可桥接到 Anthropic Messages。
 - 构造 Anthropic Messages 上游 body。
@@ -347,13 +303,15 @@ Chat 入口示例：
 - 将 Anthropic JSON / SSE 渲染回下游 OpenAI Chat / Responses 形态。
 - 维护桥接内部状态机和错误码。
 
-Anthropic / DeepSeek / GLM 的 Anthropic v1 provider driver 只负责：
+Anthropic / DeepSeek / GLM 的 Anthropic v1 provider driver 职责在 `backend-go/projects/gateway/internal/gatewayanthropic/`（Claude Code 客户端兼容见其 `clientcompatibility.go`），只负责：
 
 - 判断当前档案是否允许启用桥接。
 - 拼接 `/v1/messages` 上游 URL。
 - 注入各自供应商认证方式。
 - 根据账号真实 endpoint modes 判断 `messages_json/messages_sse` 能力。
 - 把转换后的响应交给网关统一返回侧管线。
+
+DeepSeek / GLM Anthropic 档案 ID `profile_deepseek_anthropic_v1`、`profile_glm_coding_anthropic_v1` 见 `backend-go/projects/gateway/internal/accounts/accountscore/endpointmodes.go`。
 
 响应协议选择必须按“下游请求协议”决定，而不是只按“当前账号协议档案”决定。OpenAI 下游请求命中 Anthropic 桥接时，返回侧 usage、错误渲染、JSON 检查和 SSE 事件都要使用 OpenAI response protocol。
 
@@ -378,11 +336,7 @@ mock 回归必须覆盖：
 | 回归 | Anthropic native `/v1/messages` 原生链路不受影响 |
 | 回归 | OpenAI `responses -> chat_completions` 既有 GLM / DeepSeek bridge 不受影响 |
 
-真实账户联调必须使用临时环境变量，不把凭据写入仓库、文档或脚本默认值：
-
-- `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_API_KEY`
-- `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_BASE_URL`
-- `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_MODEL`
+真实账户联调凭据按当次测试约定临时提供，不设固定 env 契约，不把凭据写入仓库、文档或脚本默认值（`JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_API_KEY`、`JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_BASE_URL`、`JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_MODEL` 为历史 Node 联调约定，现行 Go 实现不读取）。
 
 真实联调至少覆盖四类入口各一次成功、工具调用一次、一个错误样本和一个混合供应商账户样本。真实平台如果某模型或端点返回 403 / 429 / 5xx，只记录为上游稳定性事实，不写死到桥接规则。
 
@@ -398,8 +352,8 @@ mock 回归必须覆盖：
 
 ## 14. 当前不做
 
-- 不做 Anthropic Messages 到 OpenAI Chat / Responses 的反向转换。
-- 不做 OpenAI Chat 到 Responses 或 Responses 到 Chat 的新能力；既有 `responses -> chat_completions` bridge 继续归原文档维护。
+- Anthropic Messages 到 OpenAI Chat / Responses 的反向 messages -> chat_completions 桥接已落地，见 [Anthropic Messages 转 Chat 协议转换设计](AnthropicMessages转Chat协议转换设计.md)。
+- 不做 OpenAI Chat 到 Responses 或 Responses 到 Chat 的新能力；既有 `responses -> chat_completions` bridge 继续归 [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md) 维护。
 - `PLAN-0058` 首版不做 OpenAI 内置 hosted tools 到 Anthropic 的自动仿真；后续 web_search、file_search、image_generation、code_interpreter 和 computer 的承接方式以 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md) 和 `PLAN-0059` 为准。
 - `PLAN-0058` 首版及当前实现都不把 MCP 当成上游模型协议，也不在网关服务端桥接 MCP tool；MCP 统一返回客户端本地 MCP / 原生上游 guidance。
 - `PLAN-0058` 首版不把严格 Structured Outputs 宣称为完全等价；后续 strict schema 必须通过合成工具、Anthropic 原生 structured output 或本地 schema 校验后才能宣称成功。

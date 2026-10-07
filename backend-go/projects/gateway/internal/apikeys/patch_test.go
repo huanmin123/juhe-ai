@@ -222,6 +222,23 @@ func TestAPIKeyPatchUpdateLifecycleAndChangedFields(t *testing.T) {
 	if len(updateEntries(env.sink)) != logsBefore || len(env.inval.reasons) != reasonsBefore {
 		t.Fatal("no-op patch must not log or invalidate")
 	}
+
+	// Clearing description with null flips the column back to NULL（BUG-0291
+	// 同类审计补覆盖：与 expiresAt:null 同款清除臂回归）。
+	code, clearedDesc := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/"+keyID,
+		`{"expectedRevision":"`+revision+`","description":null}`)
+	if code != http.StatusOK {
+		t.Fatalf("clear description: %d %v", code, clearedDesc)
+	}
+	if fields := changedFieldsOf(t, clearedDesc); len(fields) != 1 || fields[0] != "description" {
+		t.Fatalf("clear description changedFields: %v", fields)
+	}
+	if rowPatch := rowPatchOf(t, clearedDesc); rowPatch["description"] != nil {
+		t.Fatalf("cleared rowPatch.description must be null: %v", rowPatch)
+	}
+	if _, description, _, _, _, _, _, _ := patchRow(t, env, keyID); description != "" {
+		t.Fatalf("description must be empty after clear: %q", description)
+	}
 }
 
 func TestAPIKeyPatchRevisionConflict(t *testing.T) {
