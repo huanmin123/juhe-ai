@@ -145,13 +145,18 @@ func streamRetryDispatchAccounts(accounts []gatewaydispatch.AccountCandidate, ex
 }
 
 // streamServerRetryFallbackReason mirrors streamServerRetryFallbackReason
-// (routes.ts:2845-2853).
+// (routes.ts:2845-2853)。
 func streamServerRetryFallbackReason(retryReason string) string {
 	switch retryReason {
 	case gatewayresponse.StreamServerRetryResponseInspection:
 		return "response_inspection_server_retry_exhausted"
 	case gatewayresponse.StreamServerRetryUpstreamProtocolFailure:
 		return "upstream_protocol_server_retry_exhausted"
+	case gatewayresponse.StreamServerRetryCodexEncryptedContentRecovery:
+		// BUG-0289 防御命名：恢复轮经 settleResponseStreamServerRetry 恢复臂
+		// 返回 false，正常流不会走到耗尽出口；若后续改动把恢复轮漏进既有
+		// 耗尽分支，fallback reason 仍显式可辨，不再误报为通用 stream 耗尽。
+		return "codex_encrypted_content_recovery"
 	}
 	return "stream_server_retry_exhausted"
 }

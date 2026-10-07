@@ -90,13 +90,18 @@ type HandleUpstreamResponseInput struct {
 	ResponsePrecommitDeadlineAtMs *int64
 	OnFirstByteDeadline           FirstByteDeadlineHandler
 	OnFirstByteDeadlineSuperseded func()
-	SessionAffinityKey            string
-	ClientStrategy                *ClientStrategyView
-	ResponseInspectionPolicies    []gatewayruntimecache.ResponseInspectionPolicySummary
-	MarkFirstOutput               func()
-	DownstreamCommitState         *DownstreamCommitState
-	Driver                        ResponseDriverPort
-	Deps                          *FinalizationDeps
+	// RequestBody 是本次 attempt 实际发送到上游的请求体（引擎
+	// UpstreamDispatchResult.RequestBody，已经过模型映射与账户准备）。200 流内
+	// 失败的加密上下文恢复臂（BUG-0289）以它构造清理重放体——不得传客户端
+	// 原始 RawBody，否则重放丢映射。
+	RequestBody                []byte
+	SessionAffinityKey         string
+	ClientStrategy             *ClientStrategyView
+	ResponseInspectionPolicies []gatewayruntimecache.ResponseInspectionPolicySummary
+	MarkFirstOutput            func()
+	DownstreamCommitState      *DownstreamCommitState
+	Driver                     ResponseDriverPort
+	Deps                       *FinalizationDeps
 }
 
 func (input *HandleUpstreamResponseInput) nowMs() func() int64 {
@@ -465,6 +470,20 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 			ResponseSnapshot: streamFailureResponseSnapshot(input, pipeResult),
 			ErrorMessage:     pipeResult.Message,
 		})
+	}
+
+	// ---- BUG-0289：codex 加密上下文 200 流内失败恢复臂 ----
+	// 生产事实：Codex 会话携带上一轮 encrypted_content，请求被路由到非生成
+	// 上游时上游以 200 SSE 首事件 response.failed(code=encrypted_context_invalid)
+	// 拒绝。default_openai_response_error（system_default, retry_no_avoidance）
+	// 拦截后，下方两个既有服务端重试分支都判否（无 ReplayAuthority /
+	// AccountSwitch；ResponseInspection != nil 互斥短路），失败以"请重试"文案
+	// 交回客户端，Codex 自动重试但上下文不变 → 死循环。本臂在两个分支之前，
+	// 从结构化决策字段（而非原始文本）分类信号，用引擎实际发送体（RequestBody，
+	// 已过模型映射）构造清理重放 verdict 交 chain 面同账户重放一次；不可恢复
+	// 时把客户端文案改写为恢复终态（见 encryptedrecovery.go）。
+	if recoveryVerdict, handled := input.codexEncryptedContentRecoveryArm(&pipeResult); handled {
+		return recoveryVerdict, nil
 	}
 
 	// ---- 服务端重试判定（response inspection / pre-commit failure）----

@@ -28,6 +28,11 @@ const (
 	SignalThinkingSignatureInvalid         = "thinking_signature_invalid"
 	SignalInvalidEncryptedContent          = "invalid_encrypted_content"
 	SignalEncryptedContentDecryptionFailed = "encrypted_content_decryption_failed"
+	// SignalEncryptedContextInvalid 是 BUG-0289 补齐的生产信号：Codex 会话携带
+	// 上一轮 encrypted_content，被路由到非生成上游时返回
+	// code=encrypted_context_invalid（200 流内 response.failed / 非 2xx 失败面
+	// 皆可出现），语义与既有三信号同为"加密上下文被上游拒绝，清理后同账户重放"。
+	SignalEncryptedContextInvalid = "encrypted_context_invalid"
 )
 
 // CodexEncryptedContentRecoveryExhaustedMessage mirrors
@@ -87,20 +92,35 @@ type EncryptedContentRecoveryInput struct {
 }
 
 // RecoverCodexEncryptedContent mirrors recoverCodexEncryptedContentRequest.
+// 协议门控 + 全文 Classify 之后，核心 parse→清理→序列化→组装逻辑统一走
+// BuildCodexEncryptedContentRecoveryRetry（与 200 流内失败面共享，BUG-0289）。
 func RecoverCodexEncryptedContent(_ context.Context, input EncryptedContentRecoveryInput) CodexEncryptedContentRecoveryResult {
 	if !isOpenAIProtocolProfile(input.Account) || gatewayRequestEndpointFamily(input.Req, input.EndpointFamily) != gatewayopenai.FamilyResponses {
 		return CodexEncryptedContentRecoveryResult{Action: RecoveryActionNotApplicable}
 	}
 
 	signal := ClassifyCodexEncryptedContentRecoverySignal(input.UpstreamErrorText)
-	if signal == "" || input.Body == nil {
-		if signal != "" {
-			return CodexEncryptedContentRecoveryResult{Action: RecoveryActionNotRecoverable, Signal: signal}
-		}
+	if signal == "" {
 		return CodexEncryptedContentRecoveryResult{Action: RecoveryActionNotApplicable}
 	}
+	return BuildCodexEncryptedContentRecoveryRetry(input.Body, signal)
+}
 
-	parsed, ok := parseJSONObjectBody(input.Body)
+// BuildCodexEncryptedContentRecoveryRetry 承载加密上下文清理重放的核心构造：
+// parse → removeRejectedCodexEncryptedContent → 序列化 → 组装
+// Metadata/SemanticRetryID。signal 由调用方分类（非 2xx 失败面用全文
+// Classify，200 流内失败面用 ClassifyCodexEncryptedContentFailureParts 的
+// 结构化决策字段），body 必须是本次 attempt 实际发送的请求体（已过模型
+// 映射）。行为与既有 Recover 分支逐字段一致：
+//   - body 为 nil → not_recoverable（仅携带 signal）；
+//   - 解析失败 → not_recoverable + request_body_parse_failed；
+//   - 无可清理内容 → not_recoverable + no_removable_encrypted_content。
+func BuildCodexEncryptedContentRecoveryRetry(body []byte, signal CodexEncryptedContentRecoverySignal) CodexEncryptedContentRecoveryResult {
+	if body == nil {
+		return CodexEncryptedContentRecoveryResult{Action: RecoveryActionNotRecoverable, Signal: signal}
+	}
+
+	parsed, ok := parseJSONObjectBody(body)
 	if !ok {
 		return CodexEncryptedContentRecoveryResult{Action: RecoveryActionNotRecoverable, Signal: signal, Reason: RecoveryReasonRequestBodyParseFailed}
 	}
@@ -130,10 +150,18 @@ func RecoverCodexEncryptedContent(_ context.Context, input EncryptedContentRecov
 			RemovedAgentMessageItemCount:               sanitized.removedAgentMessageItemCount,
 			RemovedCompactionItemCount:                 sanitized.removedCompactionItemCount,
 			PreservedPreviousResponseID:                preserved,
-			BodyBytesBefore:                            len(input.Body),
+			BodyBytesBefore:                            len(body),
 			BodyBytesAfter:                             len(serialized.Raw),
 		},
 	}
+}
+
+// IsOpenAIResponsesRequest 判断请求是否属于 OpenAI /v1/responses 族（复用
+// 既有 endpoint family 判定通道）。200 流内失败面的恢复臂以它做请求族门控；
+// EndpointFamily override 场景（合成请求）走 gatewayRequestEndpointFamily 的
+// 同一约定——本包装只读请求路径，不携带 override。
+func IsOpenAIResponsesRequest(req *gatewaypreauth.GatewayRequest) bool {
+	return gatewayRequestEndpointFamily(req, "") == gatewayopenai.FamilyResponses
 }
 
 // ClassifyCodexEncryptedContentRecoverySignal mirrors
@@ -158,6 +186,8 @@ func signalForExactErrorCode(value string) CodexEncryptedContentRecoverySignal {
 		return SignalInvalidEncryptedContent
 	case "encrypted_content_decryption_failed":
 		return SignalEncryptedContentDecryptionFailed
+	case "encrypted_context_invalid":
+		return SignalEncryptedContextInvalid
 	default:
 		return ""
 	}
@@ -208,9 +238,23 @@ func jsTrimStart(value string) string {
 
 func signalForStructuredErrorPayload(payload map[string]any) CodexEncryptedContentRecoverySignal {
 	nestedError, hasNestedError := payload["error"].(map[string]any)
+	// BUG-0289：Responses 失败形态把 error 挂在 response.error 下（200 流内
+	// response.failed 事件的 data 行即此形状）。作为追加候选加入——只扩展
+	// 信号载体的搜索面，信号判定本身（精确码 / 消息启发）不变。
+	responsesError, hasResponsesError := func() (map[string]any, bool) {
+		response, ok := payload["response"].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		errorObject, ok := response["error"].(map[string]any)
+		return errorObject, ok
+	}()
 	candidates := []map[string]any{payload}
 	if hasNestedError {
-		candidates = []map[string]any{payload, nestedError}
+		candidates = append(candidates, nestedError)
+	}
+	if hasResponsesError {
+		candidates = append(candidates, responsesError)
 	}
 	for candidateIndex, candidate := range candidates {
 		if code, isString := candidate["code"].(string); isString {
@@ -221,8 +265,9 @@ func signalForStructuredErrorPayload(payload map[string]any) CodexEncryptedConte
 
 		// Node: candidate === nestedError || payload.type === 'error' ||
 		// nestedError !== undefined — the second candidate is the nested
-		// error object.
-		errorPayload := candidateIndex == 1 ||
+		// error object; the third is the Responses response.error 对象
+		// （BUG-0289），与嵌套 error 同等对待。
+		errorPayload := candidateIndex >= 1 ||
 			func() bool {
 				typeField, isString := payload["type"].(string)
 				return isString && typeField == "error"
@@ -244,7 +289,25 @@ func looksLikeEncryptedContentDecryptionFailure(value string) bool {
 		(contains("could not be decrypted") ||
 			contains("could not be decoded") ||
 			contains("could not be verified") ||
-			contains("could not be parsed"))
+			contains("could not be parsed") ||
+			// BUG-0289 生产文案："The upstream could not validate encrypted
+			// continuation context..."——主动语态的校验失败变体，与被动语态
+			// "could not be decrypted" 同义；仍以 "encrypted" 出现为前提。
+			contains("could not validate"))
+}
+
+// ClassifyCodexEncryptedContentFailureParts 对齐响应层（BUG-0289）从结构化
+// 决策字段分类的入口：先走精确错误码，再走消息启发。非 2xx 失败面继续用
+// ClassifyCodexEncryptedContentRecoverySignal(全文)；200 流内失败面在
+// finalize 侧已拆出 code / message 字段，不再拼回原始文本。
+func ClassifyCodexEncryptedContentFailureParts(errorCode, errorMessage string) CodexEncryptedContentRecoverySignal {
+	if signal := signalForExactErrorCode(errorCode); signal != "" {
+		return signal
+	}
+	if looksLikeEncryptedContentDecryptionFailure(errorMessage) {
+		return SignalEncryptedContentDecryptionFailed
+	}
+	return ""
 }
 
 func parseJSONRecord(value string) map[string]any {

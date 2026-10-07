@@ -31,7 +31,7 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 单次流式 response 的 raw chunk 停顿、连接读取异常或 transport EOF，在 `semanticCommitted = false` 且预算允许时按统一规则进入服务端候选切换；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 不设例外。SSE 等待账号期间网关可写 comment 心跳，该心跳只设置 `transportCommitted`，不等同于语义提交。通用 OpenAI-compatible 客户端不解析上游 comment、失败事件或终止事件来决定切号，完整 SSE 原样转发。Codex Responses、Claude Code Messages 和 Gemini CLI 精确画像才解释各自协议语义并使用对应失败事件；真实协议事件写出后禁止拼接第二条上游流。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-Codex Responses SSE 在建流前遇到上游 HTTP 非 `2xx`，或精确协议确认失败且 `semanticCommitted = false`、预算允许时，按统一规则切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 同样执行。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；所有端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 继续按协议透明或验证边界处理。
+Codex Responses SSE 在建流前遇到上游 HTTP 非 `2xx`，或精确协议确认失败且 `semanticCommitted = false`、预算允许时，按统一规则切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 同样执行。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接；例外是加密上下文信号（如 `encrypted_context_invalid`）命中且下游语义未提交时，网关先执行服务端一次性兼容清理并钉住同账户重放一次，仍不可恢复时下发加密上下文恢复终态文案而非可重试文案。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；所有端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 继续按协议透明或验证边界处理。
 
 Codex 的跨请求 turn 避让只接受合法 `x-codex-turn-metadata.turn_id` 与官方 `session-id` 的 resolver 结果；metadata 中的 `session_id` / `thread_id`、请求 body、body hash、User-Agent 和显式客户端画像都不提供会话或共享避让亲和。没有官方会话时，仅在已有 API Key 和客户端 IP 时才使用短 TTL 的 HMAC IP 桶；官方会话非法或冲突时不降级，且无 IP 时不创建跨请求状态。该规则只影响同一 dispatch priority tier 的候选重排，不修改账户健康、account circuit 或 `temporary_unavailable` 恢复路径。首次来源避让只会投递已有后台健康检查；来源逻辑本身不直接探测上游，后台单飞 owner 才能以现有健康分类结算账户状态并按匹配来源 generation 清理避让。
 

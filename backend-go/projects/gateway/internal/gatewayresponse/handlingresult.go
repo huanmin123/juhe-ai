@@ -1,6 +1,7 @@
 package gatewayresponse
 
 import (
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
@@ -27,6 +28,14 @@ type UpstreamResponseHandlingResult struct {
 	Message                     string
 	UncommittedResponseBody     []byte
 	CompatibilityRecoverySignal string
+	// BUG-0289：200 流内失败的 codex 加密上下文恢复臂（RetryReason =
+	// StreamServerRetryCodexEncryptedContentRecovery）的专用载荷。RecoveryBody
+	// 是基于引擎实际发送体（input.RequestBody）清理后的重放体；chain 面下一轮
+	// 派发经 RequestBodyOverride + SameAccountRetry 钉回同账户重放一次。
+	// gatewayresponse → gatewaycodex 单向依赖（gatewaycodex 不依赖本包）。
+	RecoveryBody            []byte
+	RecoverySemanticRetryID string
+	RecoveryMetadata        *gatewaycodex.CodexEncryptedContentRecoveryMetadata
 
 	// FirstByteDeadlineCutover 标记非流式首字截止竞速的 configured_deadline
 	// abort（速度优先切号，R5）：响应面不渲染固定 503，由 chain dispatch

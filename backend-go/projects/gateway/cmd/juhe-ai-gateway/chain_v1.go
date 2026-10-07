@@ -597,11 +597,20 @@ func (c *gatewayChain) handleUpstreamResponse(
 		attemptStartedAt = startedAt
 	}
 	input := &gatewayresponse.HandleUpstreamResponseInput{
-		Req:                        req,
-		Downstream:                 gatewayresponse.StreamDownstream{Res: res},
-		Account:                    gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
-		UpstreamResponse:           responseSnapshot,
-		UpstreamURL:                dispatched.UpstreamURL,
+		Req:              req,
+		Downstream:       gatewayresponse.StreamDownstream{Res: res},
+		Account:          gatewayresponse.OpenAIAccountView{Account: dispatched.Account},
+		UpstreamResponse: responseSnapshot,
+		UpstreamURL:      dispatched.UpstreamURL,
+		// BUG-0289：带出本次 attempt 实际发送的请求体（引擎
+		// UpstreamDispatchResult.RequestBody，attemptoutcomes.go:63/:201 由
+		// c.loop.body 填充）。该 body 在 dispatchsingle.go:397 取自
+		// BuildPreparedUpstreamRequestParts（模型映射宿主，accountpreparation.go
+		// :455 Driver.BuildGatewayUpstreamRequestParts）之后的 :398-400——
+		// RequestBodyOverride 的注入点在其后，override 体不会再次过模型映射，
+		// 因此这里必须传"已映射"体：响应层恢复臂（加密上下文清理重放）以它
+		// 构造重放体，传客户端 RawBody 会丢映射。
+		RequestBody:                dispatched.RequestBody,
 		AuditAttemptID:             dispatched.AuditAttemptID,
 		AuditCapture:               responseAuditCaptureOf(auditCapture),
 		Settings:                   settings,
@@ -730,7 +739,12 @@ func (c *gatewayChain) handleUpstreamResponse(
 		// 零值 handling 误分类为"完整转发"（circuit framing-complete 治愈证据）。
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
-	if handling.RetryUpstream {
+	// AlreadyFinalized 生产者（finalizeStreamFailure、非流式协议失败/检查兜底
+	// 等）在返回前已自写 usage 失败行并 finalize 审计：终态已写入下游
+	//（handlingresult.go 三态契约），chain 层再走 FinalizeHandledUpstreamResponse
+	// 会按上游 2xx 二次落库一条伪成功行（与失败行同毫秒成对出现；BUG-0289
+	// 附属发现，登记 BUG-0290），必须与 RetryUpstream 同样短路。
+	if handling.RetryUpstream || handling.AlreadyFinalized {
 		// Node consumes the retry verdict before the finalize-usage path
 		// (routes.ts:1899 vs finalizeHandledUpstreamResponse): a retrying
 		// attempt records no completion usage.

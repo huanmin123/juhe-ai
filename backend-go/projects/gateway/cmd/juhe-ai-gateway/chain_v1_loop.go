@@ -19,6 +19,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -120,6 +121,23 @@ type v1DispatchLoop struct {
 	// 调用前刷新）：upstream.dispatch.failed 耗尽埋点的阶段起点口径仍含引擎内
 	// 候选/排队，但远小于整请求 startedAt 口径；0 表示未记录（回落 startedAt）。
 	roundStartedAtMs int64
+	// pendingCodexRecovery 携带 BUG-0289 流内加密上下文恢复的一次性同账户
+	// 重放载荷：settleResponseStreamServerRetry 恢复臂写入，下一轮
+	// newRequestCoordination 注入 RequestBodyOverride / SameAccountRetry /
+	// SemanticRetryID 后一次性清空。nil = 无待重放。
+	pendingCodexRecovery *v1PendingCodexEncryptedContentRecovery
+}
+
+// v1PendingCodexEncryptedContentRecovery 是恢复重放载荷（BUG-0289）。AccountID
+// 取当前 dispatched.Account.ID；Body 是响应层基于引擎实际发送体清理后的重放体
+// （已过模型映射，RequestBodyOverride 注入点在其后、不会二次映射，见
+// dispatchsingle.go:397-400）；SemanticRetryID 作请求级 attempt 去重键。
+type v1PendingCodexEncryptedContentRecovery struct {
+	AccountID       string
+	Body            []byte
+	SemanticRetryID string
+	Metadata        *gatewaycodex.CodexEncryptedContentRecoveryMetadata
+	Signal          string
 }
 
 // v1FallbackSwitch mirrors the switchToFallbackGroup return union
@@ -156,6 +174,44 @@ func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordi
 	}
 	if l.budgets.wall != nil && l.budgets.wall.Unbounded {
 		coordination.TimeoutPolicy = gatewaydispatch.TimeoutPolicyCodexCompactionUnbounded
+	}
+	// BUG-0289 一次性消费：待重放的加密上下文清理体钉回同账户。钉住与去重
+	// 走两个正交通道：SameAccountRetry 把候选窗口塌缩到该账户并放行注册
+	// 预检（upstreamdispatch.go:536-538/:591-593），RetryID 必须留空——
+	// SameAccountRetryID 注册通道与 SemanticRetryID 互斥（routecoordination.go
+	// :1076 mode conflict），且同账户重试模式还要求引擎内预留（:1084 not
+	// registered）；去重经 SemanticRetryID 通道（dispatchsingle.go:754 →
+	// CanAttemptAccount :897-906，(SemanticRetryID, accountRuntimeKey,
+	// physicalCredentialKey) 首次出现即放行——首次尝试未携带语义 ID）。
+	// RetryID 留空还使引擎 activeSameAccountRetryID 为空，API Key 选择按
+	// SameAccountRetry!=nil 语义剥掉旧指纹重选（dispatchsingle.go:291-302，
+	// 排除集按引擎调用重置，同 Key 可再选）。override 体注入在模型映射之后
+	// （dispatchsingle.go:398-400，不再二次映射）。注入后立即清空，后续轮次
+	// （含组切换）不再携带。
+	if l.pendingCodexRecovery != nil {
+		pending := l.pendingCodexRecovery
+		l.pendingCodexRecovery = nil
+		coordination.SemanticRetryID = pending.SemanticRetryID
+		coordination.RequestBodyOverride = &gatewaydispatch.RequestBodyOverride{
+			AccountID: pending.AccountID,
+			Body:      pending.Body,
+		}
+		sameAccount := gatewaydispatch.AccountCandidate{}
+		if l.current != nil {
+			for _, account := range l.current.Accounts {
+				if account.ID == pending.AccountID {
+					sameAccount = account
+					break
+				}
+			}
+		}
+		if sameAccount.ID != "" {
+			coordination.SameAccountRetry = &gatewaydispatch.SameAccountRetry{
+				// RetryID 留空：见上方通道互斥注释。
+				RetryID: "",
+				Account: sameAccount,
+			}
+		}
 	}
 	return coordination
 }
@@ -502,6 +558,38 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	if writableEndedOf(l.res) {
 		return true
 	}
+	// BUG-0289 恢复臂：codex 加密上下文流内失败的清理重放 verdict。挂在既有
+	// 排除集/计数/metadata 之前——恢复轮钉回同账户（下一轮
+	// newRequestCoordination 消费 pending 状态注入 override/钉住/语义重试 ID），
+	// 既不把当前账户加入 streamRetryExcludedAccounts，也不计入
+	// stream_server_retry_dispatch 的换号重试计数。恢复重放是一轮：pending
+	// 注入即清空，重放再失败走既有派发错误结算（含换号/切组）。
+	if handling.RetryReason == gatewayresponse.StreamServerRetryCodexEncryptedContentRecovery {
+		metadata := recoveryMetadataOrZero(handling.RecoveryMetadata)
+		l.auditCapture.AddGatewayMetadata("codex_encrypted_content_recovery_retry", map[string]any{
+			"accountId":                             dispatched.Account.ID,
+			"retryCount":                            l.streamServerRetryCount + 1,
+			"signal":                                handling.CompatibilityRecoverySignal,
+			"strategy":                              metadata.Strategy,
+			"removedReasoningEncryptedContentCount": metadata.RemovedReasoningEncryptedContentCount,
+			"removedFunctionOutputEncryptedContentCount": metadata.RemovedFunctionOutputEncryptedContentCount,
+			"removedAgentMessageEncryptedContentCount":   metadata.RemovedAgentMessageEncryptedContentCount,
+			"removedCompactionEncryptedContentCount":     metadata.RemovedCompactionEncryptedContentCount,
+			"removedReasoningItemCount":                  metadata.RemovedReasoningItemCount,
+			"removedAgentMessageItemCount":               metadata.RemovedAgentMessageItemCount,
+			"removedCompactionItemCount":                 metadata.RemovedCompactionItemCount,
+			"bodyBytesBefore":                            metadata.BodyBytesBefore,
+			"bodyBytesAfter":                             metadata.BodyBytesAfter,
+		})
+		l.pendingCodexRecovery = &v1PendingCodexEncryptedContentRecovery{
+			AccountID:       dispatched.Account.ID,
+			Body:            handling.RecoveryBody,
+			SemanticRetryID: handling.RecoverySemanticRetryID,
+			Metadata:        handling.RecoveryMetadata,
+			Signal:          handling.CompatibilityRecoverySignal,
+		}
+		return false
+	}
 	current := l.current
 	accountID := dispatched.Account.ID
 	// Node 2301-2307: a policy-requested exclusion puts the current account
@@ -600,6 +688,16 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	}
 	// Node 2398: candidates remain — continue the dispatch loop.
 	return false
+}
+
+// recoveryMetadataOrZero 是恢复臂 metadata 读取的 nil 安全视图：verdict 正常
+// 携带 BuildCodexEncryptedContentRecoveryRetry 产出的 Metadata，nil 仅是旧
+// 构造路径的防御形态。
+func recoveryMetadataOrZero(metadata *gatewaycodex.CodexEncryptedContentRecoveryMetadata) gatewaycodex.CodexEncryptedContentRecoveryMetadata {
+	if metadata == nil {
+		return gatewaycodex.CodexEncryptedContentRecoveryMetadata{}
+	}
+	return *metadata
 }
 
 // settleDispatchError maps one dispatch-loop error onto the Node error
@@ -1363,6 +1461,9 @@ type postVerdictClassification struct {
 //   - transportFailure 三元（:1777-1790）：neutral → nil；hard → 原生
 //     TransportFailure 或合成 timeout；其余（非 neutral cutover）→ 原生
 //     TransportFailure（含 nil）。
+//   - BUG-0289 增补：codex 加密上下文清理重放轮（RetryReason =
+//     StreamServerRetryCodexEncryptedContentRecovery）并入 neutral
+//     （网关主动的同账户 body 变体重放，非传输失败也非帧完成证据）。
 func classifyPostVerdictOutcome(
 	dispatched gatewaydispatch.UpstreamDispatchResult,
 	handling gatewayresponse.UpstreamResponseHandlingResult,
@@ -1370,6 +1471,14 @@ func classifyPostVerdictOutcome(
 	neutralRequestWallTermination := handling.ErrorCode == gatewayresponse.GatewayRequestWallBudgetExhaustedCode
 	gatewayLocalFailure := handling.GatewayLocalFailure
 	normalRouteFirstByteCutover := handling.FirstByteDeadlineCutover
+	// BUG-0289：codex 加密上下文清理重放轮是网关主动发起的请求体变体重放
+	//（同账户、body 去加密上下文），本 attempt 的失败是"加密上下文被拒"的
+	// 确定性上游拒绝，既非传输失败、也非帧完成治愈证据——归入中性
+	// （circuit ReportUnknown / keyModel ReportUnknown / 账户锁不记失败），
+	// 与既有注释表口径一致；不得落入 transportFailure==nil 的
+	// ReportFramingComplete 臂把 SUSPECT 推进 RECOVERING。
+	codexEncryptedContentRecoveryRetry := handling.RetryUpstream &&
+		handling.RetryReason == gatewayresponse.StreamServerRetryCodexEncryptedContentRecovery
 	limitingFactor := ""
 	if dispatched.NormalRouteFirstByteDeadline != nil {
 		limitingFactor = dispatched.NormalRouteFirstByteDeadline.LimitingFactor
@@ -1380,7 +1489,8 @@ func classifyPostVerdictOutcome(
 	hardNormalRouteFirstByteCutover := normalRouteFirstByteCutover &&
 		(limitingFactor == gatewayrouting.FirstByteLimitingFactorLaneTimeout ||
 			limitingFactor == gatewayrouting.FirstByteLimitingFactorUncommittedAttempt)
-	neutralSchedulingTermination := neutralRequestWallTermination || neutralNormalRouteFirstByteCutover || gatewayLocalFailure
+	neutralSchedulingTermination := neutralRequestWallTermination || neutralNormalRouteFirstByteCutover || gatewayLocalFailure ||
+		codexEncryptedContentRecoveryRetry
 	var transportFailure *gatewayresponse.StreamTransportFailure
 	switch {
 	case neutralSchedulingTermination:
@@ -1432,6 +1542,8 @@ func classifyPostVerdictOutcome(
 //	           其余非 transportFailure → ReportFramingComplete；transportFailure
 //	           但已中止/下游关闭 → 不结算（兜底 defer 以 unknown 收口，对齐
 //	           Node 同形态下 circuitDecision undefined 且第二支不触发）；
+//	           BUG-0289：codex 加密上下文清理重放轮并入 neutral（ReportUnknown），
+//	           不计治愈证据；
 //	keyModel = neutral || requestLocalProtocolFailure || explicitUserPolicyRetry
 //	           → ReportUnknown；protocolValidatedSuccess → ReportCompleteSuccess；
 //	           其余 → ReportUpstreamNotComplete；
