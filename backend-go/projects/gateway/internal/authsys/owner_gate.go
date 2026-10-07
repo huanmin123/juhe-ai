@@ -7,9 +7,9 @@ import (
 )
 
 // OwnerGate is the external handoff evidence for the authsys system-account
-// writes, isomorphic to internal/business/system_accounts OwnerGate and the
-// businessauth gate: a partial handoff never permits a mutation even when the
-// database and all relations are reachable (BUG-0169.3).
+// writes, isomorphic to the businessauth gate: a partial handoff never permits
+// a mutation even when the database and all relations are reachable
+// (BUG-0169.3).
 type OwnerGate struct {
 	Confirmed         bool
 	SchemaReady       bool
@@ -25,7 +25,8 @@ func (g OwnerGate) Ready() bool {
 // gate is not satisfied. It is a sentinel so callers can branch on it.
 var ErrOwnerGate = errors.New("authsys system-account owner handoff gate is not satisfied")
 
-// errContract mirrors the business system_accounts contract failure shape.
+// errContract mirrors the former business system_accounts contract failure
+// shape, kept for the authsys contract gate.
 var errContract = errors.New("authsys system-account contract is not satisfied")
 
 // checkContract verifies that the relations and columns this store writes

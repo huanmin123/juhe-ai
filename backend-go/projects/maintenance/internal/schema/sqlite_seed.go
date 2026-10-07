@@ -143,10 +143,9 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 	if err := seedSQLiteBuiltInGroupsForAllSystemAccounts(exec, now); err != nil {
 		return SQLiteSeedResult{}, err
 	}
+	// The admin chat API key seeding was removed with the 2026-10-07 默认资源
+	// 收口 — AI chat sessions provision it on demand (EnsureChatAPIKey).
 	if err := seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx, db, exec, options, now); err != nil {
-		return SQLiteSeedResult{}, err
-	}
-	if err := seedSQLiteAdminChatAPIKey(ctx, db, exec, options, now); err != nil {
 		return SQLiteSeedResult{}, err
 	}
 	if err := seedSQLiteExternalIntegrationTestToken(ctx, db, exec, options, now); err != nil {
@@ -494,13 +493,16 @@ const sqSeedBuiltInGroupInsert = `
       )
     `
 
-// sqSeedDefaultGroupsSelect lists the admin default groups (hybrid excluded).
+// sqSeedDefaultGroupsSelect lists the admin default GPT group (2026-10-07
+// 默认资源收口: only the GPT family is auto-provisioned, so only it derives a
+// default route strategy here — the PG variant iterates the same narrowed
+// seed list).
 const sqSeedDefaultGroupsSelect = `
       SELECT id, name
       FROM groups
       WHERE system_account_id = 'sys_admin'
         AND is_default = 1
-        AND provider_code <> ?
+        AND provider_code = ?
       ORDER BY created_at ASC, id ASC
     `
 
@@ -536,28 +538,6 @@ const sqSeedDefaultAPIKeyInsert = `
       availability_schedule_next_check_at, created_at, updated_at
     )
     VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, ?, ?, 'active', 1, NULL, NULL, NULL, NULL, ?, ?)
-  `
-
-// sqSeedChatKeyExistsSelect finds any existing admin chat API key.
-const sqSeedChatKeyExistsSelect = "SELECT id FROM api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat' LIMIT 1"
-
-// sqSeedChatKeyDefaultGroupSelect picks the admin default GPT group.
-const sqSeedChatKeyDefaultGroupSelect = `
-    SELECT id FROM groups
-    WHERE system_account_id = 'sys_admin' AND provider_code = ? AND is_default = 1
-    ORDER BY created_at ASC, id ASC LIMIT 1
-  `
-
-// sqSeedChatKeyRouteSelect verifies the derived route strategy is active.
-const sqSeedChatKeyRouteSelect = "SELECT id, name FROM route_strategies WHERE id = ? AND status = 'active' LIMIT 1"
-
-// sqSeedChatAPIKeyInsert seeds the admin chat API key.
-const sqSeedChatAPIKeyInsert = `
-    INSERT OR IGNORE INTO api_keys (
-      id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
-      key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json,
-      availability_schedule_next_check_at, created_at, updated_at
-    ) VALUES (?, 'sys_admin', ?, 'AI 对话 API Key', ?, ?, ?, ?, ?, 'active', 0, 'chat', NULL, NULL, NULL, NULL, ?, ?)
   `
 
 // sqSeedExternalIntegrationSourceInsert seeds the built-in test source row.
@@ -779,10 +759,11 @@ func seedSQLiteBuiltInGroupsForAllSystemAccounts(exec func(string, ...any) error
 }
 
 // seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys ports
-// seedAdminDefaultRouteStrategiesAndApiKeys (SQLite variant: the default
-// groups are read from the groups table ordered by created_at, id).
+// seedAdminDefaultRouteStrategiesAndApiKeys (SQLite variant: the default GPT
+// group is read from the groups table ordered by created_at, id — narrowed to
+// gpt with the 2026-10-07 默认资源收口, matching the PG seed list iteration).
 func seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx context.Context, db *sql.DB, exec func(string, ...any) error, options SeedOptions, now string) error {
-	rows, err := db.QueryContext(ctx, sqSeedDefaultGroupsSelect, hybridProviderCode)
+	rows, err := db.QueryContext(ctx, sqSeedDefaultGroupsSelect, gptVendorCode)
 	if err != nil {
 		return fmt.Errorf("sqlite seed select default groups: %w", err)
 	}
@@ -848,54 +829,9 @@ func seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx context.Context, db *sq
 	return nil
 }
 
-// seedSQLiteAdminChatAPIKey ports seedAdminChatApiKey (SQLite variant).
-func seedSQLiteAdminChatAPIKey(ctx context.Context, db *sql.DB, exec func(string, ...any) error, options SeedOptions, now string) error {
-	var existingID string
-	err := db.QueryRowContext(ctx, sqSeedChatKeyExistsSelect).Scan(&existingID)
-	if err == nil {
-		if existingID != "" {
-			return nil
-		}
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("sqlite seed check chat api key: %w", err)
-	}
-	var groupID string
-	err = db.QueryRowContext(ctx, sqSeedChatKeyDefaultGroupSelect, gptVendorCode).Scan(&groupID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("sqlite seed select chat key default group: %w", err)
-	}
-	routeStrategyID := defaultRouteStrategyIDForGroup(groupID)
-	var routeID, routeName string
-	err = db.QueryRowContext(ctx, sqSeedChatKeyRouteSelect, routeStrategyID).Scan(&routeID, &routeName)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("sqlite seed select chat key route strategy: %w", err)
-	}
-	apiKey, err := seedCreateAPIKey()
-	if err != nil {
-		return err
-	}
-	keySecretEncrypted, err := seedEncryptJSONWithOptions(options, map[string]string{"key": apiKey})
-	if err != nil {
-		return err
-	}
-	return exec(sqSeedChatAPIKeyInsert,
-		"key_chat_sys_admin",
-		routeID,
-		"AI 对话专用 API Key，默认绑定"+routeName+"。",
-		seedHashSecret(apiKey),
-		seedKeyPrefix(apiKey),
-		seedKeySuffix(apiKey),
-		keySecretEncrypted,
-		now,
-		now,
-	)
-}
+// seedSQLiteAdminChatAPIKey was removed with the 2026-10-07 默认资源收口:
+// the sys_admin chat API key is no longer seeded. AI chat sessions provision
+// it on demand through the gateway EnsureChatAPIKey chain.
 
 // seedSQLiteExternalIntegrationTestToken ports
 // seedBuiltInExternalIntegrationTestToken (SQLite variant).

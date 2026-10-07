@@ -4,7 +4,7 @@ export interface AccountUsagePageState {
 }
 
 export function accountUsageStatsTableScrollX(isManagementView: boolean): number {
-  return isManagementView ? 1790 : 1610
+  return isManagementView ? 1650 : 1470
 }
 
 export function accountUsageStatsTableColumns(isManagementView: boolean): Array<Record<string, unknown>> {
@@ -20,8 +20,7 @@ export function accountUsageStatsTableColumns(isManagementView: boolean): Array<
   }
   baseColumns.push(
     { title: '请求', key: 'requests', width: 120, align: 'right' },
-    { title: 'Token', key: 'tokens', width: 130, align: 'right' },
-    { title: '媒体用量', key: 'media', width: 140, align: 'right' },
+    { title: '用量', key: 'tokens', width: 150, align: 'right' },
     { title: '缓存读占比', key: 'cacheRate', width: 130, align: 'right' },
     { title: '缓存成本', key: 'cacheCost', width: 130, align: 'right' },
     { title: '成本', key: 'cost', width: 130, align: 'right' },

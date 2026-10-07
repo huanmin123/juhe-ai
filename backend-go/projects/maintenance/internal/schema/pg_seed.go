@@ -7,8 +7,10 @@
 //     static rows are generated into model_catalog_data.go from the Node
 //     pricing modules) and the stale built-in model disable with the Node
 //     PostgreSQL reference guards,
-//   - default route strategies / default API keys and the admin chat API key
-//     (createApiKey + hashSecret + encryptJson),
+//   - default route strategies / default API keys for the narrowed GPT-only
+//     default family (createApiKey + hashSecret + encryptJson); the admin chat
+//     API key port was removed with the 2026-10-07 默认资源收口 (the gateway
+//     chat-session ensure chain provisions it on demand),
 //   - the external integration source token create/update.
 //
 // Statement order and idempotency mirror Node exactly: every INSERT uses ON
@@ -142,13 +144,11 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		}
 	}
 
-	// Node: seedAdminDefaultRouteStrategiesAndApiKeys, seedAdminChatApiKey,
-	// seedBuiltInExternalIntegrationTestToken (with the token-free source row
-	// insert/update at its head).
+	// Node: seedAdminDefaultRouteStrategiesAndApiKeys, seedBuiltInExternalIntegrationTestToken
+	// (with the token-free source row insert/update at its head). The admin
+	// chat API key seeding was removed with the 2026-10-07 默认资源收口 —
+	// AI chat sessions provision it on demand.
 	if err := seedPostgresAdminDefaultRouteStrategiesAndAPIKeys(ctx, client, exec, options, now); err != nil {
-		return PGSeedResult{}, err
-	}
-	if err := seedPostgresAdminChatAPIKey(ctx, client, exec, options, now); err != nil {
 		return PGSeedResult{}, err
 	}
 	if err := seedPostgresExternalIntegrationTestToken(ctx, client, exec, options, now); err != nil {
@@ -402,33 +402,6 @@ const pgSeedAdminDefaultGroupSelect = `
         LIMIT 1
       `
 
-// pgSeedAdminChatKeyExistsSelect finds any existing admin chat API key.
-const pgSeedAdminChatKeyExistsSelect = `
-    SELECT id FROM "juhe_business"."api_keys" WHERE system_account_id = 'sys_admin' AND purpose = 'chat' LIMIT 1
-  `
-
-// pgSeedAdminChatKeyDefaultGroupSelect picks the admin default GPT group.
-const pgSeedAdminChatKeyDefaultGroupSelect = `
-    SELECT id FROM "juhe_business"."groups"
-    WHERE system_account_id = 'sys_admin' AND provider_code = $1 AND is_default = 1
-    ORDER BY created_at ASC, id ASC LIMIT 1
-  `
-
-// pgSeedAdminChatKeyRouteSelect verifies the derived route strategy is active.
-const pgSeedAdminChatKeyRouteSelect = `
-    SELECT id, name FROM "juhe_business"."route_strategies" WHERE id = $1 AND status = 'active' LIMIT 1
-  `
-
-// pgSeedAdminChatAPIKeyInsert seeds the admin chat API key.
-const pgSeedAdminChatAPIKeyInsert = `
-    INSERT INTO "juhe_business"."api_keys" (
-      id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
-      key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json,
-      availability_schedule_next_check_at, created_at, updated_at
-    ) VALUES ($1, 'sys_admin', $2, 'AI 对话 API Key', $3, $4, $5, $6, $7, 'active', 0, 'chat', NULL, NULL, NULL, NULL, $8, $9)
-    ON CONFLICT DO NOTHING
-  `
-
 // pgSeedExternalIntegrationTokenSelect reads the built-in token id.
 const pgSeedExternalIntegrationTokenSelect = `
       SELECT id
@@ -672,52 +645,9 @@ func seedPostgresAdminDefaultRouteStrategiesAndAPIKeys(ctx context.Context, clie
 	return nil
 }
 
-// seedPostgresAdminChatAPIKey ports seedAdminChatApiKey (PostgreSQL variant).
-func seedPostgresAdminChatAPIKey(ctx context.Context, client postgresSeedClient, exec func(string, ...any) error, options SeedOptions, now string) error {
-	var existingID string
-	err := client.QueryRowContext(ctx, pgSeedAdminChatKeyExistsSelect).Scan(&existingID)
-	if err == nil {
-		return nil
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("postgres seed check chat api key: %w", err)
-	}
-	var groupID string
-	err = client.QueryRowContext(ctx, pgSeedAdminChatKeyDefaultGroupSelect, gptVendorCode).Scan(&groupID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("postgres seed select chat key default group: %w", err)
-	}
-	routeStrategyID := defaultRouteStrategyIDForGroup(groupID)
-	var routeID, routeName string
-	err = client.QueryRowContext(ctx, pgSeedAdminChatKeyRouteSelect, routeStrategyID).Scan(&routeID, &routeName)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return fmt.Errorf("postgres seed select chat key route strategy: %w", err)
-	}
-	apiKey, err := seedCreateAPIKey()
-	if err != nil {
-		return err
-	}
-	keySecretEncrypted, err := seedEncryptJSONWithOptions(options, map[string]string{"key": apiKey})
-	if err != nil {
-		return err
-	}
-	return exec(pgSeedAdminChatAPIKeyInsert,
-		"key_chat_sys_admin",
-		routeID,
-		"AI 对话专用 API Key，默认绑定"+routeName+"。",
-		seedHashSecret(apiKey),
-		seedKeyPrefix(apiKey),
-		seedKeySuffix(apiKey),
-		keySecretEncrypted,
-		now,
-		now,
-	)
-}
+// seedPostgresAdminChatAPIKey was removed with the 2026-10-07 默认资源收口:
+// the sys_admin chat API key is no longer seeded. AI chat sessions provision
+// it on demand through the gateway EnsureChatAPIKey chain.
 
 // seedPostgresExternalIntegrationTestToken ports
 // seedBuiltInExternalIntegrationTestToken (PostgreSQL variant, including the

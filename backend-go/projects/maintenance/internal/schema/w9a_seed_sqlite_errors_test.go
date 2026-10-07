@@ -21,9 +21,6 @@ func TestW9ASeedSQLiteDefaultsFullScriptInjectFailures(t *testing.T) {
 		// 默认分组列表。
 		rec.script(sqSeedDefaultGroupsSelect, nil, [][]driver.Value{{"grp_gpt_default", "gpt默认分组"}})
 		rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default"}})
-		// chat key 创建链。
-		rec.script(sqSeedChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-		rec.script(sqSeedChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default", "gpt默认路由"}})
 		return rec
 	}
 
@@ -97,30 +94,6 @@ func TestW9ASeedSQLiteRouteStrategyErrorBranches(t *testing.T) {
 	err = seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx, dbKeyInsert, w9aCountingExec(nil, 2), SeedOptions{}, now)
 	if err == nil {
 		t.Fatalf("api key insert 失败必须上抛: %v", err)
-	}
-}
-
-// TestW9ASeedSQLiteChatKeyScanErrorBranches 覆盖 chat key 的两个 Scan 错误
-// 分支。
-func TestW9ASeedSQLiteChatKeyScanErrorBranches(t *testing.T) {
-	ctx := context.Background()
-	exec := func(string, ...any) error { return nil }
-
-	recGroup := &wmSchemaRecorder{}
-	recGroup.script(sqSeedChatKeyDefaultGroupSelect, nil, [][]driver.Value{{nil}})
-	dbGroup := openWMSchemaFakeDB(recGroup)
-	defer dbGroup.Close()
-	if err := seedSQLiteAdminChatAPIKey(ctx, dbGroup, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err == nil {
-		t.Fatal("default group Scan 失败必须上抛")
-	}
-
-	recRoute := &wmSchemaRecorder{}
-	recRoute.script(sqSeedChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	recRoute.script(sqSeedChatKeyRouteSelect, nil, [][]driver.Value{{nil, nil}})
-	dbRoute := openWMSchemaFakeDB(recRoute)
-	defer dbRoute.Close()
-	if err := seedSQLiteAdminChatAPIKey(ctx, dbRoute, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err == nil {
-		t.Fatal("route Scan 失败必须上抛")
 	}
 }
 

@@ -103,15 +103,17 @@ func TestW2PatchBalanceAndProxyAndGroup(t *testing.T) {
 	if got := env.queryCell(t, `SELECT proxy_profile_id FROM accounts WHERE id = ?`, id); got != "pp-patch" {
 		t.Fatalf("代理未绑定：%s", got)
 	}
-	// 行为存疑：PATCH 置空代理（proxyProfileId: null）的变更判定
-	// `(requested == nil) != current.Valid` 与预期相反，已绑定代理提交 null
-	// 时被判定为「无变化」，代理保持不变。按当前实际行为断言。
+	// BUG-0291 修复后：PATCH 置空代理（proxyProfileId: null）必须真实移除
+	// 行内绑定（旧判定 `(requested == nil) != current.Valid` 写反时静默无操作）。
 	code, payload = w2PatchBody(t, env, id, `"proxyProfileId":null`)
 	if code != http.StatusOK {
 		t.Fatalf("代理置空: %d %v", code, payload)
 	}
-	if got := env.queryCell(t, `SELECT COALESCE(proxy_profile_id,'') FROM accounts WHERE id = ?`, id); got != "pp-patch" {
-		t.Fatalf("置空行为存疑（当前实际保持不变）：%s", got)
+	if !containsChange(dataMap(t, payload)["changedFields"], "proxyProfileId") {
+		t.Fatalf("置空应列入变更：%v", dataMap(t, payload)["changedFields"])
+	}
+	if got := env.queryCell(t, `SELECT COALESCE(proxy_profile_id,'') FROM accounts WHERE id = ?`, id); got != "" {
+		t.Fatalf("置空后代理应移除：%s", got)
 	}
 	// 停用代理拒绝绑定（读取实时修订号）。
 	code, payload = w2PatchBody(t, env, id, `"proxyProfileId":"pp-patch-disabled"`)

@@ -9,7 +9,7 @@ import (
 )
 
 // 本文件驱动 seedPostgresDefaults 的“对象已存在”分支（admin 默认分组/路由
-// 策略/API Key、chat API Key、外部集成测试 token），锁定幂等跳过语义。
+// 策略/API Key、外部集成测试 token），锁定幂等跳过语义。
 
 func TestWMSeedPostgresDefaultsWrapperRunsOnInjectedDB(t *testing.T) {
 	rec := &wmSchemaRecorder{}
@@ -38,8 +38,6 @@ func TestWMSeedPostgresDefaultsSkipsExistingAdminObjects(t *testing.T) {
 		rec.script("route_strategies", []string{"c0"}, [][]driver.Value{{defaultRouteStrategyIDForGroup(group.ID)}})
 		rec.script("WHERE route_strategy_id = $1 AND is_default = 1", []string{"c0"}, [][]driver.Value{{defaultAPIKeyIDForRouteStrategy(defaultRouteStrategyIDForGroup(group.ID))}})
 	}
-	// chat API Key 已存在：整段创建路径跳过。
-	rec.script("WHERE system_account_id = 'sys_admin' AND purpose = 'chat'", []string{"c0"}, [][]driver.Value{{"key_chat_existing"}})
 	// 外部集成测试 token 已存在：只走受保护 UPDATE。
 	rec.script("external_integration_source_tokens", []string{"c0"}, [][]driver.Value{{externalIntegrationTestTokenID}})
 

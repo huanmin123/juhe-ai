@@ -538,7 +538,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			requested = &trimmed
 		}
 		current := row.proxyProfileID
-		changed := (requested == nil) != current.Valid ||
+		changed := (requested != nil) != current.Valid ||
 			(requested != nil && (!current.Valid || *requested != current.String))
 		if changed {
 			var next sql.NullString

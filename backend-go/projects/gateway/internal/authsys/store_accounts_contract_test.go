@@ -291,10 +291,12 @@ func TestPatchLastSuperAdminSQLiteSingleWriter(t *testing.T) {
 	}
 }
 
-// TestCreateSeedsDefaultResources proves BUG-0170.1: with the production
-// ensurer wired, Create seeds the eight built-in groups, seven default route
-// strategies (hybrid excluded) with bindings, seven default API keys and the
-// chat API key inside the same transaction, with the Node field values.
+// TestCreateSeedsDefaultResources proves the narrowed default-resource
+// contract (2026-10-07 默认资源收口): with the production ensurer wired,
+// Create seeds exactly one built-in default group (GPT), one default route
+// strategy with its binding, one default API key and NO chat API key inside
+// the same transaction, with the Node field values. The chat key is
+// provisioned on demand by the chat-session ensure chain.
 func TestCreateSeedsDefaultResources(t *testing.T) {
 	db := newContractTestDB(t)
 	store, err := NewAccountStore(db, modelcheckauth.SQLite, time.Now, readyOwnerGate)
@@ -313,7 +315,7 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Groups: 8 built-ins, defaults, personal type via schema default.
+	// Groups: exactly the single GPT default, personal type via schema default.
 	type groupRow struct {
 		name, provider, groupType string
 		enabled, isDefault        int
@@ -333,31 +335,20 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 		groupCount++
 	}
 	rows.Close()
-	wantSeeds := []defaultResourceGroupSeed{
-		{name: "默认 OpenAI 兼容分组", provider: "openai"},
-		{name: "默认 GPT 分组", provider: "gpt"},
-		{name: "默认 xAI 分组", provider: "xai"},
-		{name: "默认 DeepSeek 分组", provider: "deepseek"},
-		{name: "默认 Anthropic 分组", provider: "anthropic"},
-		{name: "默认 Gemini 分组", provider: "gemini"},
-		{name: "默认 GLM 分组", provider: "glm"},
-		{name: "默认混合供应商分组", provider: "hybrid", description: "混合供应商账户保存真实上游凭据和 Base URL，允许账户内配置跨协议入口映射"},
+	wantSeed := defaultResourceGroupSeed{name: "默认 GPT 分组", provider: "gpt"}
+	if groupCount != 1 {
+		t.Fatalf("groups=%d want 1 (GPT only)", groupCount)
 	}
-	if groupCount != len(wantSeeds) {
-		t.Fatalf("groups=%d want %d", groupCount, len(wantSeeds))
+	row, ok := groups[wantSeed.provider]
+	if !ok {
+		t.Fatal("missing default GPT group")
 	}
-	for _, seed := range wantSeeds {
-		row, ok := groups[seed.provider]
-		if !ok {
-			t.Fatalf("missing default group for provider %s", seed.provider)
-		}
-		if row.name != seed.name || row.enabled != 1 || row.isDefault != 1 || row.groupType != "personal" {
-			t.Fatalf("group %+v != seed %+v", row, seed)
-		}
+	if row.name != wantSeed.name || row.enabled != 1 || row.isDefault != 1 || row.groupType != "personal" {
+		t.Fatalf("group %+v != seed %+v", row, wantSeed)
 	}
 
-	// Route strategies: 7 (hybrid excluded), default normal/active with the
-	// Node-generated names.
+	// Route strategy: one (the GPT default), default normal/active with the
+	// Node-generated name.
 	routeNames := map[string]string{}
 	routeCount := 0
 	rows, err = db.Query(`SELECT name, mode, status, is_default FROM route_strategies WHERE system_account_id = ?`, item.ID)
@@ -377,26 +368,24 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 		routeCount++
 	}
 	rows.Close()
-	if routeCount != 7 {
-		t.Fatalf("route strategies=%d want 7", routeCount)
+	if routeCount != 1 {
+		t.Fatalf("route strategies=%d want 1", routeCount)
 	}
-	for _, want := range []string{"默认 OpenAI 兼容路由", "默认 GPT 路由", "默认 xAI 路由", "默认 DeepSeek 路由", "默认 Anthropic 路由", "默认 Gemini 路由", "默认 GLM 路由"} {
-		if _, ok := routeNames[want]; !ok {
-			t.Fatalf("missing route strategy %q (got %v)", want, routeNames)
-		}
+	if _, ok := routeNames["默认 GPT 路由"]; !ok {
+		t.Fatalf("missing route strategy 默认 GPT 路由 (got %v)", routeNames)
 	}
 
-	// Bindings: one active priority-1/weight-1 binding per route.
+	// Binding: one active priority-1/weight-1 binding for the route.
 	var bindings int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategy_groups WHERE system_account_id = ? AND priority = 1 AND weight = 1 AND status = 'active'`, item.ID).Scan(&bindings); err != nil {
 		t.Fatal(err)
 	}
-	if bindings != 7 {
-		t.Fatalf("route strategy bindings=%d want 7", bindings)
+	if bindings != 1 {
+		t.Fatalf("route strategy bindings=%d want 1", bindings)
 	}
 
-	// API keys: 7 defaults (is_default=1, purpose 'general' schema default)
-	// + 1 chat key (purpose 'chat', is_default=0) bound to the GPT route.
+	// API keys: exactly one default (is_default=1, purpose 'general' schema
+	// default) bound to the GPT route; zero chat keys.
 	type keyRow struct {
 		name, purpose, status, keyPrefix, keySuffix, sealed string
 		isDefault                                           int
@@ -414,46 +403,34 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 		keys = append(keys, row)
 	}
 	rows.Close()
-	if len(keys) != 8 {
-		t.Fatalf("api keys=%d want 8", len(keys))
+	if len(keys) != 1 {
+		t.Fatalf("api keys=%d want 1 (no chat key anymore)", len(keys))
 	}
-	var chatKeys, defaultKeys int
-	chatBoundToGPTRoute := false
-	for _, key := range keys {
-		if key.status != "active" {
-			t.Fatalf("key %s status=%s", key.name, key.status)
-		}
-		if key.purpose == "chat" {
-			chatKeys++
-			if key.isDefault != 0 || key.name != "AI 对话 API Key" {
-				t.Fatalf("chat key %+v", key)
-			}
-			var provider string
-			if err := db.QueryRow(`SELECT g.provider_code FROM api_keys k JOIN route_strategy_groups rsg ON rsg.route_strategy_id = k.route_strategy_id JOIN groups g ON g.id = rsg.group_id WHERE k.system_account_id = ? AND k.purpose = 'chat'`, item.ID).Scan(&provider); err != nil {
-				t.Fatal(err)
-			}
-			chatBoundToGPTRoute = provider == "gpt"
-			continue
-		}
-		defaultKeys++
-		if key.isDefault != 1 {
-			t.Fatalf("default key %+v", key)
-		}
-		if !strings.HasPrefix(key.name, "默认 ") || !strings.HasSuffix(key.name, "API Key") {
-			t.Fatalf("default key name %q", key.name)
-		}
-		if key.sealed == "" || !strings.HasPrefix(key.sealed, "v1:test-sealed:") {
-			t.Fatalf("key %s not sealed through the injected sealer: %q", key.name, key.sealed)
-		}
+	key := keys[0]
+	if key.status != "active" {
+		t.Fatalf("key %s status=%s", key.name, key.status)
 	}
-	if chatKeys != 1 || defaultKeys != 7 {
-		t.Fatalf("chatKeys=%d defaultKeys=%d want 1/7", chatKeys, defaultKeys)
+	if key.purpose != "general" {
+		t.Fatalf("key purpose=%q, want general (no chat key at creation)", key.purpose)
 	}
-	if !chatBoundToGPTRoute {
-		t.Fatal("chat key is not bound to the default GPT route")
+	if key.isDefault != 1 {
+		t.Fatalf("default key %+v", key)
 	}
-	if len(secrets.plainIVs) != 8 {
-		t.Fatalf("sealed secrets=%d want 8", len(secrets.plainIVs))
+	if key.name != "默认 GPT API Key" {
+		t.Fatalf("default key name %q", key.name)
+	}
+	if key.sealed == "" || !strings.HasPrefix(key.sealed, "v1:test-sealed:") {
+		t.Fatalf("key %s not sealed through the injected sealer: %q", key.name, key.sealed)
+	}
+	var keyRouteProvider string
+	if err := db.QueryRow(`SELECT g.provider_code FROM api_keys k JOIN route_strategy_groups rsg ON rsg.route_strategy_id = k.route_strategy_id JOIN groups g ON g.id = rsg.group_id WHERE k.system_account_id = ? AND k.is_default = 1`, item.ID).Scan(&keyRouteProvider); err != nil {
+		t.Fatal(err)
+	}
+	if keyRouteProvider != "gpt" {
+		t.Fatalf("default key is not bound to the default GPT route: %q", keyRouteProvider)
+	}
+	if len(secrets.plainIVs) != 1 {
+		t.Fatalf("sealed secrets=%d want 1", len(secrets.plainIVs))
 	}
 	for _, secret := range secrets.plainIVs {
 		if len(secret) != 67 || !strings.HasPrefix(secret, "sk-") {

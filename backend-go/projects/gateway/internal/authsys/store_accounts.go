@@ -581,9 +581,11 @@ func newID(prefix string) (string, error) {
 
 // Create mirrors createSystemAccountWithPasswordHashInClientAsync: validation,
 // the account row, and (when a DefaultResourceEnsurer is wired, as production
-// composition always does) the four Node ensure side effects
+// composition always does) the narrowed ensure side effects
 // (ensureDefaultBuiltInGroups / ensureDefaultRouteStrategies /
-// ensureDefaultApiKeys / ensureChatApiKey) run inside the same transaction.
+// ensureDefaultApiKeys — 2026-10-07 默认资源收口后仅 GPT 一套) run inside the
+// same transaction; the chat API key is provisioned on demand by the
+// chat-session ensure chain (EnsureChatAPIKey), not here.
 func (s *AccountStore) Create(ctx context.Context, input CreateInput) (AccountListItem, error) {
 	ctx = ensureCtx(ctx)
 	if err := s.requireOwner(); err != nil {

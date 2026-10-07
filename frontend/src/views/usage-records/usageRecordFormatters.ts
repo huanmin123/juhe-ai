@@ -29,7 +29,8 @@ export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
   return record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
 }
 
-export function usageRecordTokenParts(record: UsageRecordListItem): string[] {
+export function usageRecordTokenParts(record: Pick<UsageRecordListItem,
+  'inputTokens' | 'outputTokens' | 'cacheReadTokens'>): string[] {
   return [
     `输入 ${formatTokens(record.inputTokens)}`,
     `输出 ${formatTokens(record.outputTokens)}`,
@@ -65,6 +66,14 @@ export function usageRecordMediaParts(record: Pick<UsageRecordListItem,
 export function usageRecordHasMediaMetering(record: Pick<UsageRecordListItem,
   'inputAudioTokens' | 'outputAudioTokens' | 'ttsInputChars' | 'audioInputSeconds' | 'outputVideoSeconds'>): boolean {
   return usageRecordMediaParts(record).length > 0
+}
+
+/** 用量列按计费类型切换：媒体记录只展示媒体计量，对话记录只展示 token 三项；后续新增计费类型在同一切换点扩展。 */
+export function usageRecordUsageParts(record: Pick<UsageRecordListItem,
+  'inputTokens' | 'outputTokens' | 'cacheReadTokens' |
+  'inputAudioTokens' | 'outputAudioTokens' | 'ttsInputChars' | 'audioInputSeconds' | 'outputVideoSeconds'>): string[] {
+  if (usageRecordHasMediaMetering(record)) return usageRecordMediaParts(record)
+  return usageRecordTokenParts(record)
 }
 
 export function formatRecordTokens(record: UsageRecordListItem): string {

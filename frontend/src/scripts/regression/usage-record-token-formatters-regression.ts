@@ -10,11 +10,14 @@ import {
 import {
   formatCost,
   formatRecordTokens,
+  usageRecordHasMediaMetering,
   usageRecordLatencyParts,
+  usageRecordMediaParts,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
   usageRecordDisplayCostUsd,
-  usageRecordTokenParts
+  usageRecordTokenParts,
+  usageRecordUsageParts
 } from '../../views/usage-records/usageRecordFormatters'
 
 const richRecord = usageRecordFixture({
@@ -59,6 +62,35 @@ assertArrayEqual(usageRecordTokenParts(usageRecordFixture({
   '输出 2',
   '缓存读 0'
 ], '为 0 的扩展 Token 维度不应占用使用记录列表空间')
+
+assertArrayEqual(usageRecordMediaParts(richRecord), [
+  '音入 11',
+  '音出 13'
+], '媒体计量只展示非零音频维度并按千分位展示')
+assertTrue(usageRecordHasMediaMetering(richRecord), '存在媒体计量时用量列应切换为媒体展示')
+assertArrayEqual(usageRecordMediaParts(usageRecordFixture({
+  ttsInputChars: 1200,
+  audioInputSeconds: 12.34,
+  outputVideoSeconds: 8
+})), [
+  '字符 1,200',
+  '音秒 12.3',
+  '视频秒 8.0'
+], '字符按千分位、媒体秒按一位小数展示')
+assertTrue(!usageRecordHasMediaMetering(usageRecordFixture({})), '全零或缺失媒体计量时不应切换为媒体展示')
+assertArrayEqual(usageRecordUsageParts(richRecord), [
+  '音入 11',
+  '音出 13'
+], '媒体记录的用量列切换为只展示媒体计量，不再叠加 token 三项')
+assertArrayEqual(usageRecordUsageParts(usageRecordFixture({
+  inputTokens: 1000,
+  outputTokens: 250,
+  cacheReadTokens: 125
+})), [
+  '输入 1,000',
+  '输出 250',
+  '缓存读 125'
+], '对话记录的用量列切换为只展示 token 三项')
 
 const anthropicCostRecord = usageRecordFixture({
   providerCode: 'anthropic',

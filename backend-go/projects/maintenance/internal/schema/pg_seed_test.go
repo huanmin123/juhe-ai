@@ -89,7 +89,6 @@ func TestPostgresSeedStatementContracts(t *testing.T) {
 		"adminRouteStrategy":   pgSeedAdminRouteStrategyInsert,
 		"adminRouteBinding":    pgSeedAdminRouteStrategyGroupBindingInsert,
 		"adminDefaultAPIKey":   pgSeedAdminDefaultAPIKeyInsert,
-		"adminChatAPIKey":      pgSeedAdminChatAPIKeyInsert,
 		"externalSourceInsert": pgSeedExternalIntegrationSourceInsert,
 	} {
 		if !strings.Contains(statement, "ON CONFLICT DO NOTHING") {
@@ -171,13 +170,11 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 	).Scan(&defaultKeys); err != nil {
 		t.Fatalf("count seeded api keys: %v", err)
 	}
-	// 2026-10-04 M3 minimax 批（8→9 非混合默认分组）、第四批 volcengine 批
-	//（9→10）与第五批 qwen 批（10→11）各派生一个默认 API Key：默认 Key 10
-	// 把 + admin chat Key（is_default=0、purpose='chat'）1 把 = 11。注：本
-	// 断言在 minimax 批后曾遗留 8 未同步（本测试 env 门禁默认跳过），
-	// volcengine 批一并回正。
-	if defaultKeys != 11 {
-		t.Fatalf("seeded api keys = %d, want 11", defaultKeys)
+	// 2026-10-07 默认资源收口：seed 只保留 GPT 一套 —— 默认 GPT 分组派生
+	// 1 把默认 Key（is_default=1、purpose='general'）；admin chat Key 不再
+	// 预置（AI 问答会话创建时由 EnsureChatAPIKey 幂等补建）。
+	if defaultKeys != 1 {
+		t.Fatalf("seeded api keys = %d, want 1", defaultKeys)
 	}
 	var tokens int
 	if err := db.QueryRowContext(ctx,

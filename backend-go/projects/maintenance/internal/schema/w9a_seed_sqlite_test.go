@@ -35,7 +35,8 @@ func TestW9ASeedSQLiteDefaultsStatementFailures(t *testing.T) {
 }
 
 // TestW9ASeedSQLiteHelpersSuccessPaths 通过脚本化查询覆盖 SQLite 变体的
-// 路由策略/API Key/对话 Key/外部集成 Token 创建链与存在即跳过分支。
+// 路由策略/API Key/外部集成 Token 创建链与存在即跳过分支（admin chat Key
+// 随 2026-10-07 默认资源收口移除，不再有种子链）。
 func TestW9ASeedSQLiteHelpersSuccessPaths(t *testing.T) {
 	rec := &wmSchemaRecorder{}
 	now := "2026-09-01T00:00:00.000Z"
@@ -51,10 +52,6 @@ func TestW9ASeedSQLiteHelpersSuccessPaths(t *testing.T) {
 	rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_grp_deepseek_default"}})
 	// existing default api key：零行 → 创建。
 
-	// chat key：已存在且非空 → 直接返回；这里走创建链。
-	rec.script(sqSeedChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	rec.script(sqSeedChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default", "gpt默认路由"}})
-
 	db := openWMSchemaFakeDB(rec)
 	defer db.Close()
 	var executed []string
@@ -66,9 +63,6 @@ func TestW9ASeedSQLiteHelpersSuccessPaths(t *testing.T) {
 	if err := seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx, db, exec, SeedOptions{}, now); err != nil {
 		t.Fatalf("route strategies: %v", err)
 	}
-	if err := seedSQLiteAdminChatAPIKey(ctx, db, exec, SeedOptions{}, now); err != nil {
-		t.Fatalf("chat api key: %v", err)
-	}
 	if err := seedSQLiteExternalIntegrationTestToken(ctx, db, exec, SeedOptions{}, now); err != nil {
 		t.Fatalf("external token: %v", err)
 	}
@@ -78,7 +72,6 @@ func TestW9ASeedSQLiteHelpersSuccessPaths(t *testing.T) {
 		sqSeedRouteStrategyInsert,
 		sqSeedRouteStrategyGroupBindingInsert,
 		sqSeedDefaultAPIKeyInsert,
-		sqSeedChatAPIKeyInsert,
 		sqSeedExternalIntegrationTokenInsert,
 	} {
 		if !strings.Contains(joined, fragment) {
@@ -106,39 +99,6 @@ func TestW9ASeedSQLiteRouteStrategyMissing(t *testing.T) {
 		if strings.Contains(query, sqSeedRouteStrategyGroupBindingInsert) {
 			t.Fatal("exists=false 不应插入绑定")
 		}
-	}
-}
-
-// TestW9ASeedSQLiteChatKeyBranches 覆盖 chat key 的已存在/分组缺失/路由缺失
-// 分支。
-func TestW9ASeedSQLiteChatKeyBranches(t *testing.T) {
-	ctx := context.Background()
-	exec := func(string, ...any) error { return nil }
-
-	// 已存在非空 → return nil。
-	recExists := &wmSchemaRecorder{}
-	recExists.script(sqSeedChatKeyExistsSelect, nil, [][]driver.Value{{"key_chat_sys_admin"}})
-	dbExists := openWMSchemaFakeDB(recExists)
-	defer dbExists.Close()
-	if err := seedSQLiteAdminChatAPIKey(ctx, dbExists, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("existing: %v", err)
-	}
-
-	// 不存在且默认分组缺失 → return nil。
-	recMissing := &wmSchemaRecorder{}
-	dbMissing := openWMSchemaFakeDB(recMissing)
-	defer dbMissing.Close()
-	if err := seedSQLiteAdminChatAPIKey(ctx, dbMissing, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("missing group: %v", err)
-	}
-
-	// 分组存在但路由缺失 → return nil。
-	recNoRoute := &wmSchemaRecorder{}
-	recNoRoute.script(sqSeedChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	dbNoRoute := openWMSchemaFakeDB(recNoRoute)
-	defer dbNoRoute.Close()
-	if err := seedSQLiteAdminChatAPIKey(ctx, dbNoRoute, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("missing route: %v", err)
 	}
 }
 
@@ -176,10 +136,6 @@ func TestW9ASeedSQLiteQueryFailuresOnClosedDB(t *testing.T) {
 	err = seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx, db, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z")
 	if err == nil || !strings.Contains(err.Error(), "select default groups") {
 		t.Fatalf("default groups select 失败必须被包装: %v", err)
-	}
-	err = seedSQLiteAdminChatAPIKey(ctx, db, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z")
-	if err == nil || !strings.Contains(err.Error(), "check chat api key") {
-		t.Fatalf("chat key check 失败必须被包装: %v", err)
 	}
 	if _, err := seedSQLiteRouteStrategyExists(ctx, db, "route_strategy_x"); err == nil || !strings.Contains(err.Error(), "check route strategy") {
 		t.Fatalf("route strategy exists 失败必须被包装: %v", err)

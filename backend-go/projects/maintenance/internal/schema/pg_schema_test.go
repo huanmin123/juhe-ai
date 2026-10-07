@@ -329,8 +329,14 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedProfiles) != 16 {
 		t.Fatalf("profile seeds = %d, want 16", len(pgSeedProfiles))
 	}
-	if len(pgSeedGroups) != 11 {
-		t.Fatalf("group seeds = %d, want 11", len(pgSeedGroups))
+	// 2026-10-07 默认资源收口：默认分组 seed 收敛为仅 GPT 一项（其余
+	// provider 分组与 hybrid 分组不再随 seed 创建；admin chat Key 同步
+	// 移除，改由会话创建链按需 Ensure）。
+	if len(pgSeedGroups) != 1 {
+		t.Fatalf("group seeds = %d, want 1", len(pgSeedGroups))
+	}
+	if pgSeedGroups[0].ProviderCode != "gpt" || pgSeedGroups[0].Name != "默认 GPT 分组" {
+		t.Fatalf("sole group seed = %+v, want the GPT default", pgSeedGroups[0])
 	}
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))

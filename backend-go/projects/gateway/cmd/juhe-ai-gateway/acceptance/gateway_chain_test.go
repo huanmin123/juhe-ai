@@ -96,9 +96,15 @@ func startChainFixture(t *testing.T) *chainFixture {
 		t.Fatalf("chain account not active: %#v", data(accountDetail)["status"])
 	}
 
+	// 2026-10-07 默认资源收口：seed 只保留 GPT 分组 + GPT 默认路由 + GPT
+	// 默认 Key；chat key 不再随 seed 预置，改由 AI 问答会话创建链幂等补建
+	//（EnsureChatAPIKey）——此处走 my-chat provision 端点触发后再读取。
+	admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations",
+		map[string]any{"bindMode": "group", "groupId": "grp_default_gpt_sys_admin"},
+		wantStatus(http.StatusCreated))
 	// seed 默认 key（maintenance seed 的 is_default key，绑定 seed 默认
-	// 策略 route_strategy_default_gpt_sys_admin）与 seed chat key
-	// （purpose=chat「AI 对话 API Key」）。
+	// 策略 route_strategy_default_gpt_sys_admin）与上一步会话创建链补建的
+	// chat key（purpose=chat「AI 对话 API Key」）。
 	_, listPayload := admin.do(http.MethodGet, "/__aisys__/api/api-keys?page=1&pageSize=100", nil, wantStatus(http.StatusOK))
 	listData := data(listPayload)
 	items, _ := listData["items"].([]any)

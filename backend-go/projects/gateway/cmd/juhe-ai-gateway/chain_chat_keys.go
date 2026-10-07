@@ -59,11 +59,16 @@ func (p *chatAPIKeyProvider) bind(query string) string {
 	return out.String()
 }
 
-// EnsureChatAPIKey mirrors ensureChatApiKeyForSystemAccountAsync: the default
-// route strategies are ensured first, then the purpose='chat' key is created
-// against the GPT default strategy with the Node duplicate-race recovery.
+// EnsureChatAPIKey mirrors ensureChatApiKeyForSystemAccountAsync under the
+// 2026-10-07 默认资源收口 contract: the default GPT group is rebuilt first when
+// data governance removed it (self-heal), then the default GPT route strategy
+// is ensured, then the purpose='chat' key is created against it with the Node
+// duplicate-race recovery.
 func (p *chatAPIKeyProvider) EnsureChatAPIKey(ownerID string) (string, error) {
 	timestamp := p.now().UTC().Format(chainTimeLayout)
+	if err := p.ensureDefaultGPTGroup(ownerID, timestamp); err != nil {
+		return "", err
+	}
 	if err := p.ensureDefaultRouteStrategies(ownerID, timestamp); err != nil {
 		return "", err
 	}
@@ -251,9 +256,56 @@ type chatDefaultGroup struct {
 	nameNull bool
 }
 
-// defaultRouteStrategyGroups mirrors defaultRouteStrategyGroupsForSystemAccountAsync.
+// gptDefaultGroupName mirrors the narrowed defaultResourceGroupSeeds entry in
+// internal/authsys: exactly one built-in default group, the GPT one.
+const gptDefaultGroupName = "默认 GPT 分组"
+
+// ensureDefaultGPTGroup is the self-heal half of the 默认资源收口 contract: an
+// account whose default GPT group was deleted (data governance) gets it
+// rebuilt idempotently here, so a new AI chat session can provision its key
+// without operator intervention. Row shape mirrors authsys ensureDefaultGroups
+// (enabled=1, is_default=1, empty description). Concurrent first-provision
+// races are recovered like the route/chat-key inserts below: the INSERT loser
+// re-probes and reuses the winner's row instead of failing the session.
+func (p *chatAPIKeyProvider) ensureDefaultGPTGroup(ownerID, timestamp string) error {
+	existing, err := p.defaultGPTGroupIDForOwner(ownerID)
+	if err != nil {
+		return err
+	}
+	if existing != "" {
+		return nil
+	}
+	_, err = p.db.Exec(p.bind(fmt.Sprintf(`INSERT INTO %s (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, 'gpt', '', 1, 1, ?, ?)`, p.table("groups"))),
+		p.newID("grp"), ownerID, gptDefaultGroupName, timestamp, timestamp)
+	if err != nil {
+		raced, raceErr := p.defaultGPTGroupIDForOwner(ownerID)
+		if raceErr == nil && raced != "" && isDuplicateGroupError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// defaultGPTGroupIDForOwner mirrors defaultGptRouteStrategyForSystemAccount's
+// group probe: the owner's default GPT group id, or "" when absent.
+func (p *chatAPIKeyProvider) defaultGPTGroupIDForOwner(ownerID string) (string, error) {
+	var id string
+	err := p.db.QueryRow(p.bind(fmt.Sprintf(`SELECT id FROM %s WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1`, p.table("groups"))), ownerID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// defaultRouteStrategyGroups mirrors defaultRouteStrategyGroupsForSystemAccountAsync
+// narrowed to the default GPT group (默认资源收口: only the GPT family is
+// auto-provisioned, so only it gets a default route here).
 func (p *chatAPIKeyProvider) defaultRouteStrategyGroups(ownerID string) ([]chatDefaultGroup, error) {
-	query := fmt.Sprintf(`SELECT id, name, provider_code FROM %s WHERE system_account_id = ? AND is_default = 1 ORDER BY created_at ASC, id ASC`, p.table("groups"))
+	query := fmt.Sprintf(`SELECT id, name FROM %s WHERE system_account_id = ? AND is_default = 1 AND provider_code = 'gpt' ORDER BY created_at ASC, id ASC`, p.table("groups"))
 	rows, err := p.db.Query(p.bind(query), ownerID)
 	if err != nil {
 		return nil, err
@@ -263,12 +315,8 @@ func (p *chatAPIKeyProvider) defaultRouteStrategyGroups(ownerID string) ([]chatD
 	for rows.Next() {
 		var id string
 		var name sql.NullString
-		var providerCode string
-		if err := rows.Scan(&id, &name, &providerCode); err != nil {
+		if err := rows.Scan(&id, &name); err != nil {
 			return nil, err
-		}
-		if strings.EqualFold(strings.TrimSpace(providerCode), "hybrid") {
-			continue
 		}
 		out = append(out, chatDefaultGroup{id: id, name: name.String, nameNull: !name.Valid})
 	}
@@ -406,4 +454,17 @@ func isDuplicateRouteStrategyNameError(err error) bool {
 	return strings.Contains(message, "idx_route_strategies_owner_name_unique") ||
 		strings.Contains(message, "idx_route_strategies_owner_name_unique_lower") ||
 		strings.Contains(message, "UNIQUE constraint failed: route_strategies.system_account_id, route_strategies.name")
+}
+
+// isDuplicateGroupError mirrors isDuplicateRouteStrategyNameError for the
+// groups owner/provider/name unique index
+// (idx_groups_owner_provider_name_unique), the constraint a concurrent
+// ensureDefaultGPTGroup INSERT loser hits.
+func isDuplicateGroupError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "idx_groups_owner_provider_name_unique") ||
+		strings.Contains(message, "UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name")
 }

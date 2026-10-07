@@ -931,23 +931,17 @@ var pgSeedProfiles = []pgSeedProfile{
 	},
 }
 
-// pgSeedGroup mirrors DEFAULT_BUILT_IN_GROUPS.
+// pgSeedGroup mirrors the narrowed default-resource family (2026-10-07 默认
+// 资源收口): sys_admin seeds exactly one built-in default group — the GPT one.
+// Other provider groups (and hybrid) are created explicitly by the operator;
+// the sys_admin chat key is no longer seeded here either (the chat-session
+// ensure chain provisions it on demand).
 type pgSeedGroup struct {
 	ID, SystemAccountID, Name, ProviderCode, Description string
 }
 
 var pgSeedGroups = []pgSeedGroup{
-	{ID: "grp_default_openai_sys_admin", SystemAccountID: "sys_admin", Name: "默认 OpenAI 兼容分组", ProviderCode: "openai", Description: ""},
 	{ID: "grp_default_gpt_sys_admin", SystemAccountID: "sys_admin", Name: "默认 GPT 分组", ProviderCode: "gpt", Description: ""},
-	{ID: "grp_default_xai_sys_admin", SystemAccountID: "sys_admin", Name: "默认 xAI 分组", ProviderCode: "xai", Description: ""},
-	{ID: "grp_default_deepseek_sys_admin", SystemAccountID: "sys_admin", Name: "默认 DeepSeek 分组", ProviderCode: "deepseek", Description: ""},
-	{ID: "grp_default_anthropic_sys_admin", SystemAccountID: "sys_admin", Name: "默认 Anthropic 分组", ProviderCode: "anthropic", Description: ""},
-	{ID: "grp_default_gemini_sys_admin", SystemAccountID: "sys_admin", Name: "默认 Gemini 分组", ProviderCode: "gemini", Description: ""},
-	{ID: "grp_default_glm_sys_admin", SystemAccountID: "sys_admin", Name: "默认 GLM 分组", ProviderCode: "glm", Description: ""},
-	{ID: "grp_default_minimax_sys_admin", SystemAccountID: "sys_admin", Name: "默认 MiniMax 分组", ProviderCode: "minimax", Description: ""},
-	{ID: "grp_default_volcengine_sys_admin", SystemAccountID: "sys_admin", Name: "默认火山方舟分组", ProviderCode: "volcengine", Description: ""},
-	{ID: "grp_default_qwen_sys_admin", SystemAccountID: "sys_admin", Name: "默认通义百炼分组", ProviderCode: "qwen", Description: ""},
-	{ID: "grp_default_hybrid_openai_chat_sys_admin", SystemAccountID: "sys_admin", Name: "默认混合供应商分组", ProviderCode: "hybrid", Description: "混合供应商账户保存真实上游凭据和 Base URL，允许账户内配置跨协议入口映射"},
 }
 
 // pgSeedExternalIntegrationSource mirrors the built-in external integration

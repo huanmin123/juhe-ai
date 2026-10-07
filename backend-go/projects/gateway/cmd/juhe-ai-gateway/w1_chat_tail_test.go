@@ -90,7 +90,7 @@ func w1yKeysDB(t *testing.T) *sql.DB {
 	db := w1yOpenSQLite(t, "w1y-keys")
 	for _, ddl := range []string{
 		`CREATE TABLE groups (
-			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT,
+			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
 			provider_code TEXT, enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0,
 			created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategies (
@@ -357,25 +357,54 @@ func TestW1YEnsureChatAPIKeyGuardErrors(t *testing.T) {
 	db := w1yKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "w1y-secret")
 
-	if _, err := provider.EnsureChatAPIKey("own-nogroups"); err == nil ||
-		!strings.Contains(err.Error(), "创建默认策略路由前必须先创建默认分组") {
-		t.Fatalf("无默认分组 EnsureChatAPIKey 错误 = %v, want 默认分组提示", err)
+	// 回归（2026-10-07 默认资源收口）：连「默认 GPT 分组」都不存在的 owner
+	// （如被数据治理清理过）——Ensure 链自愈重建 GPT 分组 + 默认路由 + 绑定，
+	// 再幂等补建 chat key，而不是要求人工预置。
+	keyID, err := provider.EnsureChatAPIKey("own-nogroups")
+	if err != nil || keyID == "" {
+		t.Fatalf("空库自愈 EnsureChatAPIKey = %q, %v", keyID, err)
+	}
+	var groupName, groupProvider string
+	if err := db.QueryRow(`SELECT name, provider_code FROM groups WHERE system_account_id = 'own-nogroups'`).Scan(&groupName, &groupProvider); err != nil {
+		t.Fatalf("回读自愈分组: %v", err)
+	}
+	if groupName != "默认 GPT 分组" || groupProvider != "gpt" {
+		t.Fatalf("自愈分组 = (%q, %q), want (默认 GPT 分组, gpt)", groupName, groupProvider)
+	}
+	var strategyCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategies WHERE system_account_id = 'own-nogroups'`).Scan(&strategyCount); err != nil {
+		t.Fatalf("回读自愈策略路由: %v", err)
+	}
+	if strategyCount != 1 {
+		t.Fatalf("自愈策略路由数 = %d, want 1", strategyCount)
 	}
 
+	// 非 gpt 分组场景：gpt 默认分组缺失被自愈补建；openai 分组不再派生
+	// 默认路由（默认资源收口后仅 GPT 一套）。
 	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
 		VALUES ('grp-w1y-openai', 'own-openai', 'OpenAI 分组', 'openai', 1, 1, '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`)
-	// 非 gpt 分组场景：GPT 默认策略查询正常返回 no-row（JOIN 修复后不再
-	// 抛 no such column），守卫提示"先创建 GPT 默认策略路由"可达。
-	if _, err := provider.EnsureChatAPIKey("own-openai"); err == nil ||
-		!strings.Contains(err.Error(), "创建 AI 对话 API Key 前必须先创建 GPT 默认策略路由") {
-		t.Fatalf("无 GPT 默认策略 EnsureChatAPIKey = %v, want GPT 默认策略守卫提示", err)
+	if _, err := provider.EnsureChatAPIKey("own-openai"); err != nil {
+		t.Fatalf("openai 分组场景 EnsureChatAPIKey = %v, want 自愈成功", err)
 	}
-	var openaiStrategyName string
-	if err := db.QueryRow(`SELECT name FROM route_strategies WHERE system_account_id = 'own-openai'`).Scan(&openaiStrategyName); err != nil {
-		t.Fatalf("回读 OpenAI 默认策略路由: %v", err)
+	var openaiRoutes, openaiGroups int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategies WHERE system_account_id = 'own-openai'`).Scan(&openaiRoutes); err != nil {
+		t.Fatalf("回读 openai 场景策略路由: %v", err)
 	}
-	if openaiStrategyName != "OpenAI 路由" {
-		t.Errorf("OpenAI 默认策略路由名 = %q, want OpenAI 路由", openaiStrategyName)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM groups WHERE system_account_id = 'own-openai'`).Scan(&openaiGroups); err != nil {
+		t.Fatalf("回读 openai 场景分组: %v", err)
+	}
+	if openaiRoutes != 1 || openaiGroups != 2 {
+		t.Fatalf("openai 场景 路由/分组 = %d/%d, want 1/2（仅自愈的 GPT 一套派生路由）", openaiRoutes, openaiGroups)
+	}
+	var openaiRouteName, openaiRouteProvider string
+	if err := db.QueryRow(`SELECT route_strategies.name, groups.provider_code FROM route_strategies
+		INNER JOIN route_strategy_groups ON route_strategy_groups.route_strategy_id = route_strategies.id
+		INNER JOIN groups ON groups.id = route_strategy_groups.group_id
+		WHERE route_strategies.system_account_id = 'own-openai'`).Scan(&openaiRouteName, &openaiRouteProvider); err != nil {
+		t.Fatalf("回读 openai 场景路由绑定: %v", err)
+	}
+	if openaiRouteProvider != "gpt" {
+		t.Fatalf("唯一默认路由应绑定 gpt 分组, got %q（%q）", openaiRouteProvider, openaiRouteName)
 	}
 
 	w1ySeedGPTDefault(t, db, "own-existing")
@@ -505,7 +534,7 @@ func w1yKeysSchemaOnProbe(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, ddl := range []string{
 		`CREATE TABLE groups (
-			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT,
+			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
 			provider_code TEXT, enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0,
 			created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategies (

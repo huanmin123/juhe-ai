@@ -139,55 +139,6 @@ func TestW9ASeedPostgresRouteStrategyErrorBranches(t *testing.T) {
 	}
 }
 
-// TestW9ASeedPostgresChatKeyErrorBranches 覆盖 chat key 的检查/选择错误分支
-// 与插入失败。
-func TestW9ASeedPostgresChatKeyErrorBranches(t *testing.T) {
-	ctx := context.Background()
-	now := "2026-09-01T00:00:00.000Z"
-
-	// exists select Scan 失败。
-	recExists := &wmSchemaRecorder{}
-	recExists.script(pgSeedAdminChatKeyExistsSelect, nil, [][]driver.Value{{nil}})
-	dbExists := openWMSchemaFakeDB(recExists)
-	defer dbExists.Close()
-	err := seedPostgresAdminChatAPIKey(ctx, &w9aRowsAffectedErrClient{db: dbExists}, w9aCountingExec(nil, 99), SeedOptions{}, now)
-	if err == nil || !strings.Contains(err.Error(), "check chat api key") {
-		t.Fatalf("chat key check 失败必须被包装: %v", err)
-	}
-
-	// default group select Scan 失败。
-	recGroup := &wmSchemaRecorder{}
-	recGroup.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{nil}})
-	dbGroup := openWMSchemaFakeDB(recGroup)
-	defer dbGroup.Close()
-	err = seedPostgresAdminChatAPIKey(ctx, &w9aRowsAffectedErrClient{db: dbGroup}, w9aCountingExec(nil, 99), SeedOptions{}, now)
-	if err == nil || !strings.Contains(err.Error(), "select chat key default group") {
-		t.Fatalf("default group select 失败必须被包装: %v", err)
-	}
-
-	// route select Scan 失败。
-	recRoute := &wmSchemaRecorder{}
-	recRoute.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	recRoute.script(pgSeedAdminChatKeyRouteSelect, nil, [][]driver.Value{{nil, nil}})
-	dbRoute := openWMSchemaFakeDB(recRoute)
-	defer dbRoute.Close()
-	err = seedPostgresAdminChatAPIKey(ctx, &w9aRowsAffectedErrClient{db: dbRoute}, w9aCountingExec(nil, 99), SeedOptions{}, now)
-	if err == nil || !strings.Contains(err.Error(), "select chat key route strategy") {
-		t.Fatalf("route select 失败必须被包装: %v", err)
-	}
-
-	// chat api key insert 失败。
-	recInsert := &wmSchemaRecorder{}
-	recInsert.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	recInsert.script(pgSeedAdminChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default", "gpt默认路由"}})
-	dbInsert := openWMSchemaFakeDB(recInsert)
-	defer dbInsert.Close()
-	err = seedPostgresAdminChatAPIKey(ctx, &w9aRowsAffectedErrClient{db: dbInsert}, w9aCountingExec(nil, 0), SeedOptions{}, now)
-	if err == nil {
-		t.Fatalf("chat key insert 失败必须上抛: %v", err)
-	}
-}
-
 // TestW9ASeedPostgresExternalTokenSelectError 覆盖 token select 的非
 // ErrNoRows 失败分支（exec 成功、查询失败）。
 func TestW9ASeedPostgresExternalTokenSelectError(t *testing.T) {
@@ -213,8 +164,6 @@ func TestW9ASeedPostgresDefaultsWithFullScriptInjectFailures(t *testing.T) {
 			rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{"grp_" + groupSeed.ProviderCode + "_default", groupSeed.Name + "分组"}})
 			rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup("grp_" + groupSeed.ProviderCode + "_default")}})
 		}
-		rec.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-		rec.script(pgSeedAdminChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default", "gpt默认路由"}})
 		return rec
 	}
 

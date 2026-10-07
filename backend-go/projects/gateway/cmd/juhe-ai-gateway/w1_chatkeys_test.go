@@ -22,9 +22,9 @@ func w1ChatKeysDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	statements := []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, provider_code TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)`,
-		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, purpose TEXT, key_secret_encrypted TEXT, expires_at TEXT, route_strategy_id TEXT, description TEXT, key_hash TEXT, key_prefix TEXT, key_suffix TEXT, is_default INTEGER, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT, provider_code TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, status TEXT NOT NULL, purpose TEXT, key_secret_encrypted TEXT, expires_at TEXT, route_strategy_id TEXT, key_hash TEXT, key_prefix TEXT, key_suffix TEXT, is_default INTEGER, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, mode TEXT, status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, config_json TEXT, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 1, weight INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 	}
 	for _, statement := range statements {
@@ -47,23 +47,25 @@ func w1SeedDefaultGroup(t *testing.T, db *sql.DB, id, owner, providerCode string
 func TestW1ChatAPIKeyDefaultRouteStrategyGroups(t *testing.T) {
 	db := w1ChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "chat-keys-secret")
-	// 无默认分组：报错（Node ensureDefaultRouteStrategyGroups 为空）。
+	// 无 gpt 默认分组（ensureDefaultGPTGroup 未运行的独立调用）：报错
+	//（默认策略路由步骤 fail-closed）。
 	if err := provider.ensureDefaultRouteStrategies("sys_1", "2026-01-01T00:00:00Z"); err == nil || !strings.Contains(err.Error(), "默认分组") {
 		t.Fatalf("no groups err = %v", err)
 	}
-	// 默认分组列举：hybrid 跳过、SQL NULL 名称走默认回退。
-	w1SeedDefaultGroup(t, db, "grp_openai", "sys_1", "openai")
+	// 默认分组列举（2026-10-07 默认资源收口：仅 gpt）：gpt 命中、SQL NULL
+	// 名称走默认回退、非 gpt 分组被查询过滤。
+	w1SeedDefaultGroup(t, db, "grp_gpt", "sys_1", "gpt")
 	w1SeedDefaultGroup(t, db, "grp_hybrid", "sys_1", "hybrid")
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, is_default, enabled, created_at) VALUES ('grp_null', 'sys_1', NULL, 'openai', 1, 1, '2026-01-01T01:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, is_default, enabled, created_at) VALUES ('grp_null', 'sys_1', NULL, 'gpt', 1, 1, '2026-01-01T01:00:00Z')`); err != nil {
 		t.Fatalf("seed null-name group: %v", err)
 	}
 	// 其他租户的默认分组不得串号。
-	w1SeedDefaultGroup(t, db, "grp_other", "sys_2", "openai")
+	w1SeedDefaultGroup(t, db, "grp_other", "sys_2", "gpt")
 	groups, err := provider.defaultRouteStrategyGroups("sys_1")
 	if err != nil || len(groups) != 2 {
 		t.Fatalf("groups = %+v, %v", groups, err)
 	}
-	if groups[0].id != "grp_openai" || groups[0].nameNull {
+	if groups[0].id != "grp_gpt" || groups[0].nameNull {
 		t.Fatalf("first = %+v", groups[0])
 	}
 	if groups[1].id != "grp_null" || !groups[1].nameNull {
@@ -193,14 +195,23 @@ func TestW1ChatAPIKeyGptStrategyCurrentBehavior(t *testing.T) {
 	db := w1ChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "chat-keys-secret")
 	w1SeedDefaultGroup(t, db, "grp_gpt", "sys_1", "gpt")
-	if _, err := db.Exec(`INSERT INTO route_strategies (id, system_account_id, name, status, is_default) VALUES ('rs_gpt', 'sys_1', 'GPT 默认', 'active', 1)`); err != nil {
-		t.Fatalf("seed strategy: %v", err)
+	// gpt 默认分组存在但默认策略路由缺失：EnsureChatAPIKey 先自愈补齐
+	// 默认策略路由 + 绑定（历史 JOIN 缺陷修复后的契约），再建 chat key。
+	keyID, err := provider.EnsureChatAPIKey("sys_1")
+	if err != nil || keyID == "" {
+		t.Fatalf("EnsureChatAPIKey = %q, %v", keyID, err)
 	}
-	// 行为存疑：defaultGptRouteStrategyForSystemAccount 的别名连接把
-	// route_strategies 自连接为 route_strategy_groups，引用了不存在的
-	// route_strategy_id 列——生产 schema 上该查询必然报错（疑似生产
-	// 问题 1）。按现状断言：EnsureChatAPIKey 以错误收场，而不是建键。
-	if _, err := provider.EnsureChatAPIKey("sys_1"); err == nil {
-		t.Fatal("当前实现应因策略查询失败而报错（行为存疑）")
+	var bindingCount, keyCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategy_groups WHERE system_account_id = 'sys_1'`).Scan(&bindingCount); err != nil {
+		t.Fatalf("count bindings: %v", err)
+	}
+	if bindingCount != 1 {
+		t.Fatalf("route_strategy_groups rows = %d, want 1", bindingCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE system_account_id = 'sys_1' AND purpose = 'chat'`).Scan(&keyCount); err != nil {
+		t.Fatalf("count chat keys: %v", err)
+	}
+	if keyCount != 1 {
+		t.Fatalf("chat key rows = %d, want 1", keyCount)
 	}
 }

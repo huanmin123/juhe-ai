@@ -133,7 +133,8 @@ func TestW9ASeedPostgresRepairProfileAccountTypes(t *testing.T) {
 }
 
 // TestW9ASeedPostgresAdminRouteStrategiesSuccessPath 通过脚本化查询结果覆盖
-// 默认路由策略/API Key/对话 Key/外部集成 Token 的完整创建链。
+// 默认路由策略/API Key/外部集成 Token 的完整创建链（admin chat Key 随
+// 2026-10-07 默认资源收口移除，不再有种子链）。
 func TestW9ASeedPostgresAdminRouteStrategiesSuccessPath(t *testing.T) {
 	rec := &wmSchemaRecorder{}
 	now := "2026-09-01T00:00:00.000Z"
@@ -145,9 +146,6 @@ func TestW9ASeedPostgresAdminRouteStrategiesSuccessPath(t *testing.T) {
 		rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup("grp_" + groupSeed.ProviderCode + "_default")}})
 		// existing default api key select 不登记 → ErrNoRows → 创建新 Key。
 	}
-	// chat key：不存在 → 选默认分组 → 选路由 → 创建。
-	rec.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	rec.script(pgSeedAdminChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_gpt_default", "gpt默认路由"}})
 	// external integration token：不存在 → 创建。
 
 	db := openWMSchemaFakeDB(rec)
@@ -160,9 +158,6 @@ func TestW9ASeedPostgresAdminRouteStrategiesSuccessPath(t *testing.T) {
 	if err := seedPostgresAdminDefaultRouteStrategiesAndAPIKeys(context.Background(), &w9aRowsAffectedErrClient{db: db}, exec, SeedOptions{}, now); err != nil {
 		t.Fatalf("route strategies: %v", err)
 	}
-	if err := seedPostgresAdminChatAPIKey(context.Background(), &w9aRowsAffectedErrClient{db: db}, exec, SeedOptions{}, now); err != nil {
-		t.Fatalf("chat api key: %v", err)
-	}
 	if err := seedPostgresExternalIntegrationTestToken(context.Background(), &w9aRowsAffectedErrClient{db: db}, exec, SeedOptions{}, now); err != nil {
 		t.Fatalf("external integration token: %v", err)
 	}
@@ -173,9 +168,6 @@ func TestW9ASeedPostgresAdminRouteStrategiesSuccessPath(t *testing.T) {
 	}
 	if !strings.Contains(joined, pgSeedAdminDefaultAPIKeyInsert) {
 		t.Fatal("必须插入默认 API Key")
-	}
-	if !strings.Contains(joined, pgSeedAdminChatAPIKeyInsert) {
-		t.Fatal("必须插入对话 API Key")
 	}
 	if !strings.Contains(joined, pgSeedExternalIntegrationTokenInsert) {
 		t.Fatal("必须插入外部集成测试 Token")
@@ -197,37 +189,6 @@ func TestW9ASeedPostgresAdminRouteStrategySelectNoRows(t *testing.T) {
 	exec := func(string, ...any) error { return nil }
 	if err := seedPostgresAdminDefaultRouteStrategiesAndAPIKeys(context.Background(), &w9aRowsAffectedErrClient{db: db}, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
 		t.Fatalf("ErrNoRows 跳过必须不报错: %v", err)
-	}
-}
-
-// TestW9ASeedPostgresChatKeyExistingPaths 覆盖 chat key 已存在（返回值）与
-// 默认分组缺失（ErrNoRows → return nil）分支。
-func TestW9ASeedPostgresChatKeyExistingPaths(t *testing.T) {
-	// 已存在 → 直接返回。
-	recExists := &wmSchemaRecorder{}
-	recExists.script(pgSeedAdminChatKeyExistsSelect, nil, [][]driver.Value{{"key_chat_sys_admin"}})
-	dbExists := openWMSchemaFakeDB(recExists)
-	defer dbExists.Close()
-	exec := func(string, ...any) error { return nil }
-	if err := seedPostgresAdminChatAPIKey(context.Background(), &w9aRowsAffectedErrClient{db: dbExists}, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("existing chat key: %v", err)
-	}
-
-	// 不存在且默认分组缺失 → return nil。
-	recMissing := &wmSchemaRecorder{}
-	dbMissing := openWMSchemaFakeDB(recMissing)
-	defer dbMissing.Close()
-	if err := seedPostgresAdminChatAPIKey(context.Background(), &w9aRowsAffectedErrClient{db: dbMissing}, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("missing default group: %v", err)
-	}
-
-	// 分组存在但路由策略缺失 → return nil。
-	recNoRoute := &wmSchemaRecorder{}
-	recNoRoute.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	dbNoRoute := openWMSchemaFakeDB(recNoRoute)
-	defer dbNoRoute.Close()
-	if err := seedPostgresAdminChatAPIKey(context.Background(), &w9aRowsAffectedErrClient{db: dbNoRoute}, exec, SeedOptions{}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("missing route strategy: %v", err)
 	}
 }
 

@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2738 : 2558"
+    :scroll-x="isManagementView ? 2588 : 2408"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -83,14 +83,8 @@
       </template>
       <template v-else-if="column.key === 'tokens'">
         <div class="token-cell">
-          <span v-for="part in usageRecordTokenParts(record)" :key="part">{{ part }}</span>
+          <span v-for="part in usageRecordUsageParts(record)" :key="part">{{ part }}</span>
         </div>
-      </template>
-      <template v-else-if="column.key === 'media'">
-        <div v-if="usageRecordHasMediaMetering(record)" class="token-cell">
-          <span v-for="part in usageRecordMediaParts(record)" :key="part">{{ part }}</span>
-        </div>
-        <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'cost'">
         <UsageRecordCostCell :record="record" />
@@ -133,12 +127,10 @@ import {
   trafficSourceColor,
   trafficSourceText,
   usageRecordLatencyParts,
-  usageRecordHasMediaMetering,
-  usageRecordMediaParts,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
-  usageRecordTokenParts,
-  usageRecordSystemAccountText
+  usageRecordSystemAccountText,
+  usageRecordUsageParts
 } from './usageRecordFormatters'
 
 withDefaults(defineProps<{

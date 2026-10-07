@@ -323,17 +323,6 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 	})
-	t.Run("无 GPT 路由时 chat key 失败关闭", func(t *testing.T) {
-		db := newContractTestDB(t)
-		store, _ := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
-		ensurer := NewSQLDefaultResources(store, wlStringSealer{})
-		tx, _ := db.BeginTx(ctx, nil)
-		defer tx.Rollback()
-		err := ensurer.ensureChatAPIKey(ctx, tx, "acc", nowText)
-		if err == nil || !strings.Contains(err.Error(), missingGPTRouteError) {
-			t.Fatalf("err=%v", err)
-		}
-	})
 	t.Run("sealer 空信封拒绝", func(t *testing.T) {
 		db := newContractTestDB(t)
 		store, _ := NewAccountStore(db, modelcheckauth.SQLite, time.Now)
@@ -349,7 +338,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at) VALUES ('b1','r1','acc','g1','active','t','t')`); err != nil {
 			t.Fatal(err)
 		}
-		err := ensurer.ensureChatAPIKey(ctx, tx, "acc", nowText)
+		err := ensurer.ensureDefaultAPIKeys(ctx, tx, "acc", nowText)
 		if err == nil || !strings.Contains(err.Error(), "empty envelope") {
 			t.Fatalf("err=%v", err)
 		}

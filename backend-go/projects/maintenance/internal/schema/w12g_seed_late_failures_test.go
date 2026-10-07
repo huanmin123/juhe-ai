@@ -23,8 +23,6 @@ func w12gScriptedSeedRec(isSQLite bool) *wmSchemaRecorder {
 		w9aScriptRowsFor(rec, sqSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
 		rec.script(sqSeedDefaultGroupsSelect, nil, [][]driver.Value{{"grp_gpt_default", "gpt默认分组"}})
 		rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default"}})
-		rec.script(sqSeedChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-		rec.script(sqSeedChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default", "gpt默认路由"}})
 		return rec
 	}
 	w9aScriptRowsFor(rec, pgSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
@@ -35,8 +33,6 @@ func w12gScriptedSeedRec(isSQLite bool) *wmSchemaRecorder {
 		rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{"grp_" + groupSeed.ProviderCode + "_default", groupSeed.Name + "分组"}})
 		rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup("grp_" + groupSeed.ProviderCode + "_default")}})
 	}
-	rec.script(pgSeedAdminChatKeyDefaultGroupSelect, nil, [][]driver.Value{{"grp_gpt_default"}})
-	rec.script(pgSeedAdminChatKeyRouteSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default", "gpt默认路由"}})
 	return rec
 }
 

@@ -418,8 +418,9 @@ func TestW11AEnsureDefaultResourcesFailureArms(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		// Pre-fill every "<base> N" candidate for the chat key name so the
-		// ladder falls through to the millisecond fallback.
+		// Pre-fill every "<base> N" candidate for the default API key name so
+		// the ladder falls through to the millisecond fallback (默认资源收口
+		// 后账户创建不再产生 chat key，名称阶梯由默认 Key 链路覆盖).
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		if _, err := tx.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
 			VALUES ('w11a-grp', 'w11a-acc', 'g', 'gpt', '', 1, 1, ?, ?)`, now, now); err != nil {
@@ -441,26 +442,26 @@ func TestW11AEnsureDefaultResourcesFailureArms(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		occupy("w11a-key-1", defaultChatAPIKeyName)
+		occupy("w11a-key-1", "s")
 		for i := 2; i <= 1000; i++ {
-			occupy("w11a-key-"+itoa(i), defaultChatAPIKeyName+" "+itoa(i))
+			occupy("w11a-key-"+itoa(i), "s "+itoa(i))
 		}
 		if err := e.EnsureDefaultResources(context.Background(), tx, "w11a-acc", now); err != nil {
 			t.Fatalf("millisecond fallback run failed: %v", err)
 		}
 		var count int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE system_account_id='w11a-acc' AND purpose='chat'`).Scan(&count); err != nil {
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE system_account_id='w11a-acc' AND route_strategy_id='w11a-st' AND is_default=1`).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 1 {
-			t.Fatalf("chat fallback keys = %d", count)
+			t.Fatalf("default key fallback rows = %d", count)
 		}
-		var chatName string
-		if err := tx.QueryRow(`SELECT name FROM api_keys WHERE system_account_id='w11a-acc' AND purpose='chat'`).Scan(&chatName); err != nil {
+		var keyName string
+		if err := tx.QueryRow(`SELECT name FROM api_keys WHERE system_account_id='w11a-acc' AND route_strategy_id='w11a-st' AND is_default=1`).Scan(&keyName); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(chatName, defaultChatAPIKeyName+" ") {
-			t.Fatalf("chat fallback name = %q", chatName)
+		if !strings.HasPrefix(keyName, "s ") {
+			t.Fatalf("default key fallback name = %q", keyName)
 		}
 	})
 }

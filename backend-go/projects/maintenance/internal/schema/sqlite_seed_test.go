@@ -165,9 +165,9 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// providers 11 / families 13 / profiles
 	// 16 / profile 绑定 40（M3f qwen +audio_transcription、M4b hybrid
 	// +video_generation+tts、M6 volcengine +tts、对话批 volcengine/qwen
-	// +chat_completions）/ groups 11；默认分组派生
-	// route_strategies 与 bindings 10（hybrid 不派生）、api_keys 11（10 默认
-	// + 1 admin chat）。
+	// +chat_completions）/ groups 1（2026-10-07 默认资源收口：仅 GPT）；
+	// 默认分组派生 route_strategies 与 bindings 1（仅 GPT）、api_keys 1
+	//（1 默认；admin chat 不再预置，由会话创建链按需 Ensure）。
 	expectCounts := map[string]int{
 		"global_settings":                     2,
 		"request_quota_hourly_window_configs": 8,
@@ -176,10 +176,10 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"protocol_endpoint_families":          13,
 		"provider_protocol_profiles":          16,
 		"provider_protocol_profile_families":  40,
-		"groups":                              11,
-		"route_strategies":                    10,
-		"route_strategy_groups":               10,
-		"api_keys":                            11,
+		"groups":                              1,
+		"route_strategies":                    1,
+		"route_strategy_groups":               1,
+		"api_keys":                            1,
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
 		"system_settings":                     71,
@@ -191,7 +191,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		}
 	}
 
-	// Every default group is default for sys_admin, exactly one per provider.
+	// Every default group is default for sys_admin, exactly the single GPT
+	// default family (2026-10-07 默认资源收口).
 	var nonDefaultGroups int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM groups WHERE is_default <> 1 OR system_account_id <> 'sys_admin'").Scan(&nonDefaultGroups); err != nil {
 		t.Fatal(err)
@@ -325,18 +326,18 @@ func verifySeedTestAPIKeys(t *testing.T, db *sql.DB) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	// 2026-10-04 M3 第四批 volcengine 与第五批 qwen 增补：默认分组派生 Key
-	// 10 把（hybrid 不派生）+ admin chat Key 1 把 = 11。
-	if count != 11 {
-		t.Fatalf("api key rows = %d, want 11", count)
+	// 2026-10-07 默认资源收口：默认分组派生 Key 仅 GPT 1 把；
+	// admin chat Key 不再预置（会话创建链按需 Ensure）。
+	if count != 1 {
+		t.Fatalf("api key rows = %d, want 1", count)
 	}
-	// Exactly one chat-purpose key bound to the default GPT route.
+	// No chat-purpose key may be seeded anymore.
 	var chatKeys int
-	if err := db.QueryRowContext(context.Background(), "SELECT count(*) FROM api_keys WHERE purpose = 'chat' AND id = 'key_chat_sys_admin'").Scan(&chatKeys); err != nil {
+	if err := db.QueryRowContext(context.Background(), "SELECT count(*) FROM api_keys WHERE purpose = 'chat'").Scan(&chatKeys); err != nil {
 		t.Fatal(err)
 	}
-	if chatKeys != 1 {
-		t.Fatalf("chat api key rows = %d, want 1", chatKeys)
+	if chatKeys != 0 {
+		t.Fatalf("chat api key rows = %d, want 0 (chat key provisioning moved to the session ensure chain)", chatKeys)
 	}
 }
 

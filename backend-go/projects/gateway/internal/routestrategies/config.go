@@ -105,26 +105,24 @@ func routeStrategyConfigJSON(normal *NormalRoutingConfig) sql.NullString {
 }
 
 // parseStoredConfig mirrors parseRouteStrategyRuntimeConfigJson: unknown keys
-// are ignored on read; broken values surface the domain errors.
+// are ignored on read; broken values surface the domain errors. 读取必须一次
+// unmarshal 到 map 后直接归一化，不走 storedConfig struct 往返：SpeedFirstConfig
+// 的 json tag 均无 omitempty，struct 会把存量行缺失的键物化为 0，越过
+// normalize 的缺省回退直达越界拒绝；缺失键必须保持缺失，按缺省默认生效
+// （显式 0/越界仍拒绝）。
 func parseStoredConfig(raw sql.NullString) (*NormalRoutingConfig, error) {
 	if !raw.Valid || raw.String == "" {
 		return nil, nil
 	}
-	var document storedConfig
+	var document map[string]any
 	if err := json.Unmarshal([]byte(raw.String), &document); err != nil {
 		return nil, &ValidationError{Message: "策略路由配置无效"}
 	}
-	if document.NormalRoutingConfig == nil {
+	normalValue, exists := document["normalRoutingConfig"]
+	if !exists || normalValue == nil {
 		return nil, nil
 	}
-	// Re-normalize through the raw shape so legacy/partial rows repair.
-	encoded, encodeErr := json.Marshal(document.NormalRoutingConfig)
-	if encodeErr != nil {
-		return nil, &ValidationError{Message: "策略路由配置无效"}
-	}
-	var decoded any
-	_ = json.Unmarshal(encoded, &decoded)
-	return normalizeNormalRoutingConfig(decoded)
+	return normalizeNormalRoutingConfig(normalValue)
 }
 
 // normalizeConfigForWrite mirrors normalizeRouteStrategyConfigForWrite: every

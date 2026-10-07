@@ -14,6 +14,7 @@ package accounts
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,34 @@ func TestW13GPatchProxyArms(t *testing.T) {
 	}, admin)
 	if err != nil {
 		t.Fatalf("清空代理：%v", err)
+	}
+
+	// BUG-0291：绑定中的代理清空（nil 值）→ 行内绑定必须真实移除。
+	// changed 判定曾把 (requested == nil) != current.Valid 写反，清空已绑定
+	// 代理被误判为"无变化"静默跳过，接口 200 但绑定残留。
+	env.seedAccount(t, "acc-w13g-px2", adminID, "w13g-px2", "active")
+	enabled := "proxy-w13g-on"
+	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
+		VALUES ('proxy-w13g-on', ?, '启用代理', 'http', '192.0.2.2', 8080, 1, ?, ?)`, adminID, now, now)
+	if _, err := env.store.Patch(context.Background(), "acc-w13g-px2", PatchInput{
+		ExpectedConfigRevision: 1, ProxyProfileID: &enabled, ProxyProfileIDPresent: true,
+	}, admin); err != nil {
+		t.Fatalf("绑定启用代理：%v", err)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-w13g-px2' AND proxy_profile_id = 'proxy-w13g-on'`) != 1 {
+		t.Fatal("代理应已绑定")
+	}
+	cleared, err := env.store.Patch(context.Background(), "acc-w13g-px2", PatchInput{
+		ExpectedConfigRevision: 2, ProxyProfileIDPresent: true,
+	}, admin)
+	if err != nil || cleared == nil {
+		t.Fatalf("清空已绑定代理：%v %v", cleared, err)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-w13g-px2' AND (proxy_profile_id IS NULL OR proxy_profile_id = '')`) != 1 {
+		t.Fatal("清空后行内代理绑定应移除")
+	}
+	if !slices.Contains(cleared.ChangedFields, "proxyProfileId") {
+		t.Fatalf("清空应记入 changedFields：%v", cleared.ChangedFields)
 	}
 }
 

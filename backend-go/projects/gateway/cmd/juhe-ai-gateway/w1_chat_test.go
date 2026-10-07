@@ -236,7 +236,7 @@ func newW1ChatKeysFixture(t *testing.T) *w1ChatKeysFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, statement := range []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, provider_code TEXT, enabled INTEGER, is_default INTEGER, created_at TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, description TEXT, provider_code TEXT, enabled INTEGER, is_default INTEGER, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, description TEXT, mode TEXT, status TEXT, is_default INTEGER, config_json TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT, system_account_id TEXT, group_id TEXT, priority INTEGER, weight INTEGER, status TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT, route_strategy_id TEXT, name TEXT, description TEXT, key_hash TEXT, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT, status TEXT, is_default INTEGER, purpose TEXT, expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT, updated_at TEXT)`,
@@ -278,18 +278,23 @@ func TestW1ChatKeysProviderTableAndBind(t *testing.T) {
 
 func TestW1EnsureChatAPIKeyLifecycle(t *testing.T) {
 	f := newW1ChatKeysFixture(t)
-	// 无默认分组：fail fast（不触达 SQL）。
-	if _, err := f.provider.EnsureChatAPIKey(f.ownerID); err == nil || !strings.Contains(err.Error(), "默认分组") {
-		t.Fatalf("无默认分组错误 = %v", err)
-	}
-	f.seedDefaultGPTGroup(t)
-	// merge 后实现先 ensureDefaultRouteStrategies（默认分组存在即自动创建
-	// GPT 默认普通路由并绑定分组），首次 ensure 直接成功创建 chat key；
-	// theirs 分支报告的「SQL 别名缺陷」路径在当前实现中不存在。
+	// 回归（2026-10-07 默认资源收口）：连「默认 GPT 分组」都被清理过的
+	// owner，新建 AI 对话会话时 Ensure 链必须自愈重建 分组 → 默认路由 →
+	// 绑定 → chat key，而不是要求人工预置。
 	created, err := f.provider.EnsureChatAPIKey(f.ownerID)
 	if err != nil || created == "" {
-		t.Fatalf("首次 ensure 创建 chat key = %q, %v", created, err)
+		t.Fatalf("空库自愈 ensure 创建 chat key = %q, %v", created, err)
 	}
+	var groupName, groupProvider string
+	var groupDefault int
+	if err := f.db.QueryRow(`SELECT name, provider_code, is_default FROM groups WHERE system_account_id = ?`, f.ownerID).
+		Scan(&groupName, &groupProvider, &groupDefault); err != nil {
+		t.Fatalf("read rebuilt group: %v", err)
+	}
+	if groupName != "默认 GPT 分组" || groupProvider != "gpt" || groupDefault != 1 {
+		t.Fatalf("rebuilt group = (%q, %q, %d)", groupName, groupProvider, groupDefault)
+	}
+	// 自愈链已包含 默认分组 → 默认策略路由 → 绑定 → chat key 全程。
 	strategy, err := f.provider.defaultGptRouteStrategyForSystemAccount(f.ownerID)
 	if err != nil || strategy == nil || strategy.id == "" {
 		t.Fatalf("gpt strategy = %+v, %v", strategy, err)

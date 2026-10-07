@@ -10,8 +10,11 @@ import (
 	"strings"
 )
 
-// defaultResourceGroupSeed mirrors DEFAULT_BUILT_IN_GROUPS
-// (storage/schema-defaults.ts:105-114) in order.
+// defaultResourceGroupSeed mirrors the narrowed DEFAULT_BUILT_IN_GROUPS
+// contract (2026-10-07 默认资源收口): account creation provisions exactly one
+// default family — the GPT group. Other providers (and the hybrid group) are
+// created explicitly by the operator; the hybrid guard in the route/key steps
+// still protects databases that carry legacy default groups.
 type defaultResourceGroupSeed struct {
 	name        string
 	provider    string
@@ -19,26 +22,14 @@ type defaultResourceGroupSeed struct {
 }
 
 var defaultResourceGroupSeeds = []defaultResourceGroupSeed{
-	{name: "默认 OpenAI 兼容分组", provider: "openai"},
 	{name: "默认 GPT 分组", provider: "gpt"},
-	{name: "默认 xAI 分组", provider: "xai"},
-	{name: "默认 DeepSeek 分组", provider: "deepseek"},
-	{name: "默认 Anthropic 分组", provider: "anthropic"},
-	{name: "默认 Gemini 分组", provider: "gemini"},
-	{name: "默认 GLM 分组", provider: "glm"},
-	{name: "默认混合供应商分组", provider: "hybrid", description: "混合供应商账户保存真实上游凭据和 Base URL，允许账户内配置跨协议入口映射"},
 }
 
 const (
 	hybridProviderCode = "hybrid"
-	gptVendorCode      = "gpt"
 
 	// defaultRouteStrategyName mirrors DEFAULT_ROUTE_STRATEGY_NAME.
 	defaultRouteStrategyName = "默认路由"
-	// defaultChatAPIKeyName mirrors the ensureChatApiKey base name.
-	defaultChatAPIKeyName = "AI 对话 API Key"
-	// missingGPTRouteError mirrors the Node ensureChatApiKey failure message.
-	missingGPTRouteError = "创建 AI 对话 API Key 前必须先创建 GPT 默认策略路由"
 	// missingDefaultGroupError mirrors the Node ensureDefaultRouteStrategies
 	// failure message.
 	missingDefaultGroupError = "创建默认策略路由前必须先创建默认分组"
@@ -60,9 +51,12 @@ func NewSQLDefaultResources(store *AccountStore, sealer SecretSealer) *SQLDefaul
 	return &SQLDefaultResources{store: store, sealer: sealer}
 }
 
-// EnsureDefaultResources mirrors createSystemAccountWithPasswordHashInClientAsync
-// lines 629-632: ensureDefaultBuiltInGroups -> ensureDefaultRouteStrategies ->
-// ensureDefaultApiKeys -> ensureChatApiKey.
+// EnsureDefaultResources runs inside the account-create transaction and
+// provisions the narrowed default family (2026-10-07 默认资源收口):
+// ensureDefaultBuiltInGroups (GPT only) -> ensureDefaultRouteStrategies ->
+// ensureDefaultAPIKeys. The AI chat key is NOT provisioned here anymore; it is
+// created on demand by the chat-session ensure chain
+// (cmd/juhe-ai-gateway EnsureChatAPIKey).
 func (e *SQLDefaultResources) EnsureDefaultResources(ctx context.Context, tx *sql.Tx, accountID, nowRFC3339 string) error {
 	if e == nil || e.store == nil {
 		return errors.New("default resource ensurer is not initialized")
@@ -76,10 +70,7 @@ func (e *SQLDefaultResources) EnsureDefaultResources(ctx context.Context, tx *sq
 	if err := e.ensureDefaultRouteStrategies(ctx, tx, accountID, nowRFC3339); err != nil {
 		return err
 	}
-	if err := e.ensureDefaultAPIKeys(ctx, tx, accountID, nowRFC3339); err != nil {
-		return err
-	}
-	return e.ensureChatAPIKey(ctx, tx, accountID, nowRFC3339)
+	return e.ensureDefaultAPIKeys(ctx, tx, accountID, nowRFC3339)
 }
 
 // ensureDefaultGroups mirrors ensureDefaultBuiltInGroupsForSystemAccountAsync:
@@ -224,33 +215,7 @@ func (e *SQLDefaultResources) ensureDefaultAPIKeys(ctx context.Context, tx *sql.
 	return nil
 }
 
-// ensureChatAPIKey mirrors ensureChatApiKeyForSystemAccountAsync: at most one
-// purpose='chat' key per account, bound to the default active GPT route.
-func (e *SQLDefaultResources) ensureChatAPIKey(ctx context.Context, tx *sql.Tx, accountID, nowText string) error {
-	var existing string
-	err := tx.QueryRowContext(ctx, e.store.bind(`SELECT id FROM `+e.store.table("api_keys")+` WHERE system_account_id = ? AND purpose = 'chat' LIMIT 1`), accountID).Scan(&existing)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	var routeID, routeName string
-	err = tx.QueryRowContext(ctx, e.store.bind(`SELECT route_strategies.id, route_strategies.name FROM `+e.store.table("route_strategies")+` route_strategies INNER JOIN `+e.store.table("route_strategy_groups")+` route_strategy_groups ON route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id AND route_strategy_groups.status = 'active' INNER JOIN `+e.store.table("groups")+` groups ON groups.id = route_strategy_groups.group_id AND groups.system_account_id = route_strategy_groups.system_account_id AND groups.enabled = 1 AND groups.is_default = 1 WHERE route_strategies.system_account_id = ? AND route_strategies.status = 'active' AND route_strategies.is_default = 1 AND groups.provider_code = ? ORDER BY route_strategies.created_at ASC, route_strategies.id ASC LIMIT 1`), accountID, gptVendorCode).Scan(&routeID, &routeName)
-	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New(missingGPTRouteError)
-	}
-	if err != nil {
-		return err
-	}
-	name, err := e.nextDefaultResourceName(ctx, tx, "api_keys", accountID, defaultChatAPIKeyName)
-	if err != nil {
-		return err
-	}
-	return e.insertAPIKey(ctx, tx, accountID, routeID, name, "AI 对话专用 API Key，默认绑定"+routeName+"，可在 API Key 页面修改策略路由。", "chat", 0, nowText)
-}
-
-// insertAPIKey mirrors the Node default/chat INSERT: the plaintext is sealed
+// insertAPIKey mirrors the Node default INSERT: the plaintext is sealed
 // through the injected Node-compatible envelope, the lookup hash is the
 // sha256 hex of the plaintext, and purpose/is_default follow the caller.
 func (e *SQLDefaultResources) insertAPIKey(ctx context.Context, tx *sql.Tx, accountID, routeID, name, description, purpose string, isDefault int, nowText string) error {

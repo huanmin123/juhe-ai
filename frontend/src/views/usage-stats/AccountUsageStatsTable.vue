@@ -59,13 +59,15 @@
           <span class="usage-number">{{ formatInteger(record.rangeUsage.requestCount) }}</span>
         </template>
         <template v-else-if="column.key === 'tokens'">
-          <span class="usage-number">{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
-        </template>
-        <template v-else-if="column.key === 'media'">
-          <div v-if="usageRecordHasMediaMetering(record.rangeUsage)" class="usage-media-cell">
-            <span v-for="part in usageRecordMediaParts(record.rangeUsage)" :key="part">{{ part }}</span>
+          <div class="usage-token-cell">
+            <span
+              v-if="record.rangeUsage.totalTokens > 0 || !usageRecordHasMediaMetering(record.rangeUsage)"
+              class="usage-number"
+            >{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
+            <div v-if="usageRecordHasMediaMetering(record.rangeUsage)" class="usage-media-cell">
+              <span v-for="part in usageRecordMediaParts(record.rangeUsage)" :key="part">{{ part }}</span>
+            </div>
           </div>
-          <span v-else class="muted-cell">-</span>
         </template>
         <template v-else-if="column.key === 'cacheRate'">
           <span class="usage-number">{{ formatPercent(cacheReadRate(record.rangeUsage, record.providerCode)) }}</span>
@@ -237,9 +239,17 @@ const emit = defineEmits<{
   font-family: Consolas, 'Courier New', monospace;
 }
 
+.usage-token-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
 .usage-media-cell {
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 3px;
   color: var(--juhe-fg-soft);
   font-size: 12px;
