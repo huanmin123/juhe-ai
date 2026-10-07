@@ -355,17 +355,23 @@ func (s *Store) hydrateBalanceSnapshots(ctx context.Context, items []ListItem) {
 			"error", err)
 		return
 	}
+	// BUG-0286：显示匹配判据改为余额输入身份摘要（provider/凭据指纹/适配器
+	// 配置）——原 config_revision + next_refresh_at 双相等会被任何非余额编辑
+	// 与每个刷新周期边界的投影滞后打断，造成「待查询」长时间驻留。
+	digests, err := s.balanceService().LoadBalanceInputDigests(ctx, ids)
+	if err != nil {
+		slog.Warn("账户余额输入摘要现算失败，列表回退无余额快照",
+			"event", "account_balance_input_digest_failed",
+			"error", err)
+		return
+	}
 	for index := range items {
 		item := &items[index]
 		if !eligible[item.ID] {
 			continue
 		}
 		record := records[item.ID]
-		nextRefreshAt := ""
-		if item.BalanceQueryNextRefreshAt != nil {
-			nextRefreshAt = *item.BalanceQueryNextRefreshAt
-		}
-		if !balanceSnapshotMatchesConfiguration(nextRefreshAt, item.ConfigRevision, record) {
+		if !balanceSnapshotMatchesConfiguration(record, digests[item.ID]) {
 			continue
 		}
 		item.BalanceSnapshot = balanceSnapshotPublicFromSnapshot(record.Snapshot)

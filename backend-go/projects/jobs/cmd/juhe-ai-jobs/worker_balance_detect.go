@@ -497,6 +497,10 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 // 变化）。
 type balanceSnapshotPersist struct {
 	Status         string  `json:"status"`
+	// InputDigest 是余额输入身份摘要（BUG-0286）：gateway 读端以账户当前
+	// 列值现算同一摘要做显示匹配；两个写入方（PG 投影 / SQLite 探测）都
+	// 从 shared J2 快照透传。
+	InputDigest    string  `json:"inputDigest,omitempty"`
 	ConfigRevision int64   `json:"configRevision"`
 	RemainingUSD   *string `json:"remainingUsd,omitempty"`
 	RawRemaining   *string `json:"rawRemaining,omitempty"`
@@ -636,6 +640,8 @@ func (r *balanceDetectRuntime) buildSnapshotJSON(input opsjobs.BalanceSnapshotIn
 			}
 			// 瞬时失败三字段透传：pending/failed 瞬态快照携带三振计数与最近
 			// 一次失败消息/时间；成功快照零值省略（JSON 形状零变化）。
+			// BUG-0286：输入身份摘要透传（J2 执行核统一打点）。
+			view.InputDigest = full.InputDigest
 			view.ConsecutiveTransientFails = full.ConsecutiveTransientFails
 			view.LastTransientErrorMessage = full.LastTransientErrorMessage
 			view.LastTransientFailureAt = full.LastTransientFailureAt

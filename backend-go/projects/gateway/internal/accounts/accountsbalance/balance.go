@@ -70,6 +70,51 @@ type BalanceSnapshotRecord struct {
 	UpdatedAt        string
 }
 
+// LoadBalanceInputDigests 批量现算账户的余额输入身份摘要（BUG-0286）：
+// BalanceInputDigest 的输入取 accounts 当前列值（provider_code /
+// credential_fingerprint / balance_query_config_json 列原文，COALESCE 空串），
+// 与 J2 周期路径的直读 reader 同源同列。分块大小对齐
+// LoadRelayBalanceSnapshotRecords 的 900。缺失 id 不出现在返回值中（读端
+// 匹配按缺 digest 处理 = 不显示快照）。
+func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(accountIDs))
+	const chunkSize = 900
+	for start := 0; start < len(accountIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(accountIDs) {
+			end = len(accountIDs)
+		}
+		page := accountIDs[start:end]
+		args := make([]any, 0, len(page))
+		placeholders := make([]string, 0, len(page))
+		for _, id := range page {
+			args = append(args, id)
+			placeholders = append(placeholders, "?")
+		}
+		query := s.store.Bind(`SELECT id, provider_code, COALESCE(credential_fingerprint, ''), COALESCE(balance_query_config_json, '')
+			FROM ` + s.store.Table("accounts") + `
+			WHERE deleted_at IS NULL AND id IN (` + strings.Join(placeholders, ", ") + `)`)
+		rows, err := s.store.DB().QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id, provider, fingerprint, configJSON string
+			if err := rows.Scan(&id, &provider, &fingerprint, &configJSON); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			out[id] = s.deps.BalanceInputDigest(provider, fingerprint, configJSON)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return out, nil
+}
+
 // LoadBalanceSnapshotRecord reads the relay_balance stats row.
 func (s *Service) LoadBalanceSnapshotRecord(ctx context.Context, accountID string) (*BalanceSnapshotRecord, error) {
 	var (
@@ -107,23 +152,22 @@ func BalanceSnapshotTimestampMs(value string) (int64, bool) {
 // BalanceSnapshotMatchesConfiguration mirrors accountBalanceSnapshotMatchesConfiguration:
 // the snapshot must carry the current config revision and the persisted
 // next_refresh_after must equal the configured due instant.
-func BalanceSnapshotMatchesConfiguration(nextRefreshAt string, configRevision int64, record *BalanceSnapshotRecord) bool {
-	if record == nil || record.Snapshot == nil {
+// BalanceSnapshotMatchesConfiguration 判定快照是否仍反映账户当前的余额
+// 输入：匹配负载内的 inputDigest（J2 执行核对 provider/凭据指纹/适配器
+// 配置原文计算的 BalanceInputDigest）与读端对账户当前列值现算的摘要。
+// 原 config_revision + next_refresh_at 毫秒相等双判定过宽——config_revision
+// 是全账户级版本，任何编辑（改名/备注/状态等非余额字段）都会推进并打断
+// 余额显示直到下一轮 J2 刷新；next_refresh_at 相等则把每个刷新周期边界的
+// 投影滞后都变成显示空洞（BUG-0286，用户裁决为全局性缺陷后改判据）。
+// 判据改为余额输入身份后：非余额相关编辑不再打断显示；换 Key / 改适配器
+// 配置仍立即失效（摘要变化），下一轮查询（≤5 分钟）自愈。旧快照无
+// inputDigest 时不匹配，随下一轮写入自愈。
+func BalanceSnapshotMatchesConfiguration(record *BalanceSnapshotRecord, currentDigest string) bool {
+	if record == nil || record.Snapshot == nil || currentDigest == "" {
 		return false
 	}
-	if revision, ok := record.Snapshot["configRevision"].(float64); ok {
-		if int64(revision) != configRevision {
-			return false
-		}
-	} else {
-		return false
-	}
-	configuredMs, configuredOK := BalanceSnapshotTimestampMs(nextRefreshAt)
-	persistedMs, persistedOK := BalanceSnapshotTimestampMs(record.NextRefreshAfter.String)
-	if !configuredOK || !persistedOK {
-		return !configuredOK && !persistedOK && nextRefreshAt == "" && !record.NextRefreshAfter.Valid
-	}
-	return configuredMs == persistedMs
+	digest, _ := record.Snapshot["inputDigest"].(string)
+	return digest != "" && digest == currentDigest
 }
 
 // FindBalanceDetails mirrors the GET /:id/balance/details projection: the
@@ -209,7 +253,11 @@ func (s *Service) FindBalanceDetails(ctx context.Context, accountID string, acce
 		KeyBalances:    []BalanceKeySnapshot{},
 	}
 	var currentSnapshot map[string]any
-	if BalanceSnapshotMatchesConfiguration(row.nextRefreshAt.String, row.configRevision, record) {
+	digests, digestErr := s.LoadBalanceInputDigests(ctx, []string{row.id})
+	if digestErr != nil {
+		return nil, err
+	}
+	if BalanceSnapshotMatchesConfiguration(record, digests[row.id]) {
 		currentSnapshot = record.Snapshot
 		details.UpdatedAt = &record.UpdatedAt
 	}
@@ -324,7 +372,10 @@ type BalanceRefreshCandidate struct {
 	ConfigRevision      int64
 	DispatchRevision    int64
 	CredentialsEnvelope string
-	ConfigJSON          string
+	// CredentialFingerprint / ConfigJSON 原文：buildManualInput 据此填
+	// Input 的摘要输入字段（BUG-0286，与 J2 周期路径同源同列）。
+	CredentialFingerprint string
+	ConfigJSON            string
 	NextRefreshAt       sql.NullString
 	ProxyProfileID      sql.NullString
 }
@@ -338,8 +389,8 @@ func (s *Service) FindBalanceManualRefreshCandidate(ctx context.Context, account
 	var row BalanceRefreshCandidate
 	var schedulable int
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, system_account_id, provider_code, type, status, schedulable,
-			config_revision, dispatch_revision, credentials_encrypted, balance_query_config_json,
-			balance_query_next_refresh_at, proxy_profile_id
+			config_revision, dispatch_revision, credentials_encrypted, COALESCE(credential_fingerprint, ''),
+			balance_query_config_json, balance_query_next_refresh_at, proxy_profile_id
 		FROM `+s.store.Table("accounts")+`
 		WHERE id = ?
 			AND type = 'api_key'
@@ -348,8 +399,8 @@ func (s *Service) FindBalanceManualRefreshCandidate(ctx context.Context, account
 			AND authorization_instance_authorization_id IS NULL
 		LIMIT 1`), strings.TrimSpace(accountID)).Scan(
 		&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.Type, &row.Status, &schedulable,
-		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEnvelope, &row.ConfigJSON,
-		&row.NextRefreshAt, &row.ProxyProfileID)
+		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEnvelope, &row.CredentialFingerprint,
+		&row.ConfigJSON, &row.NextRefreshAt, &row.ProxyProfileID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

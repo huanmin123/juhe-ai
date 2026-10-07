@@ -32,52 +32,58 @@ type CredentialEnvelope struct {
 // a read-only business adapter or a test fixture without giving this package
 // access to Node-owned storage.
 type Candidate struct {
-	AccountID       string              `json:"account_id"`
-	SystemAccountID string              `json:"system_account_id"`
-	InputVersion    int64               `json:"input_version"`
-	ConfigRevision  int64               `json:"config_revision"`
-	Provider        string              `json:"provider"`
-	Type            string              `json:"type"`
-	Status          string              `json:"status"`
-	Schedulable     bool                `json:"schedulable"`
-	Deleted         bool                `json:"deleted"`
-	Authorized      bool                `json:"authorized"`
-	BaseURL         string              `json:"base_url"`
-	Config          QueryConfig         `json:"config"`
-	BalanceEnabled  bool                `json:"balance_query_enabled"`
-	FirstProbe      bool                `json:"first_probe"`
-	Recovery        bool                `json:"-"`
-	APIKeyCount     int                 `json:"api_key_count"`
-	APIKey          CredentialEnvelope  `json:"api_key"`
-	Credential      CredentialEnvelope  `json:"credential,omitempty"`
-	Proxy           *CredentialEnvelope `json:"proxy,omitempty"`
-	IssuedAt        time.Time           `json:"issued_at"`
-	ExpiresAt       time.Time           `json:"expires_at"`
-	NextRefreshAt   *time.Time          `json:"next_refresh_at,omitempty"`
+	AccountID             string      `json:"account_id"`
+	SystemAccountID       string      `json:"system_account_id"`
+	InputVersion          int64       `json:"input_version"`
+	ConfigRevision        int64       `json:"config_revision"`
+	Provider              string      `json:"provider"`
+	Type                  string      `json:"type"`
+	Status                string      `json:"status"`
+	Schedulable           bool        `json:"schedulable"`
+	CredentialFingerprint string      `json:"credential_fingerprint"`
+	ConfigJSON            string      `json:"config_json"`
+	Deleted               bool        `json:"deleted"`
+	Authorized            bool        `json:"authorized"`
+	BaseURL               string      `json:"base_url"`
+	Config                QueryConfig `json:"config"`
+	BalanceEnabled        bool        `json:"balance_query_enabled"`
+	FirstProbe            bool        `json:"first_probe"`
+	Recovery              bool        `json:"-"`
+	APIKeyCount           int         `json:"api_key_count"`
+	// CredentialFingerprint / ConfigJSON 携带余额输入身份摘要的原始输入
+	APIKey        CredentialEnvelope  `json:"api_key"`
+	Credential    CredentialEnvelope  `json:"credential,omitempty"`
+	Proxy         *CredentialEnvelope `json:"proxy,omitempty"`
+	IssuedAt      time.Time           `json:"issued_at"`
+	ExpiresAt     time.Time           `json:"expires_at"`
+	NextRefreshAt *time.Time          `json:"next_refresh_at,omitempty"`
 }
 
 // Input is a frozen, single-account execution contract.  The runner never
 // rereads mutable business facts while using this value; a newer input or
 // config revision can therefore fence the result at the jobs Store boundary.
 type Input struct {
-	AccountID       string              `json:"account_id"`
-	SystemAccountID string              `json:"system_account_id"`
-	InputVersion    int64               `json:"input_version"`
-	ConfigRevision  int64               `json:"config_revision"`
-	Provider        string              `json:"provider"`
-	Type            string              `json:"type"`
-	Status          string              `json:"status"`
-	Schedulable     bool                `json:"schedulable"`
-	BaseURL         string              `json:"base_url"`
-	Config          QueryConfig         `json:"config"`
-	APIKey          CredentialEnvelope  `json:"api_key"`
-	Credential      CredentialEnvelope  `json:"credential,omitempty"`
-	Proxy           *CredentialEnvelope `json:"proxy,omitempty"`
-	Trigger         Trigger             `json:"trigger"`
-	IssuedAt        time.Time           `json:"issued_at"`
-	ExpiresAt       time.Time           `json:"expires_at"`
-	NextRefreshAt   *time.Time          `json:"next_refresh_at,omitempty"`
-	Recovery        bool                `json:"-"`
+	AccountID       string `json:"account_id"`
+	SystemAccountID string `json:"system_account_id"`
+	InputVersion    int64  `json:"input_version"`
+	ConfigRevision  int64  `json:"config_revision"`
+	Provider        string `json:"provider"`
+	Type            string `json:"type"`
+	Status          string `json:"status"`
+	// 与 Candidate 同名段同源；persistInput 据此落快照 inputDigest（BUG-0286）。
+	CredentialFingerprint string              `json:"credential_fingerprint"`
+	ConfigJSON            string              `json:"config_json"`
+	Schedulable           bool                `json:"schedulable"`
+	BaseURL               string              `json:"base_url"`
+	Config                QueryConfig         `json:"config"`
+	APIKey                CredentialEnvelope  `json:"api_key"`
+	Credential            CredentialEnvelope  `json:"credential,omitempty"`
+	Proxy                 *CredentialEnvelope `json:"proxy,omitempty"`
+	Trigger               Trigger             `json:"trigger"`
+	IssuedAt              time.Time           `json:"issued_at"`
+	ExpiresAt             time.Time           `json:"expires_at"`
+	NextRefreshAt         *time.Time          `json:"next_refresh_at,omitempty"`
+	Recovery              bool                `json:"-"`
 }
 
 // ToInput converts a candidate into a bounded input. It deliberately does not
@@ -158,6 +164,7 @@ func (c Candidate) ToInput(trigger Trigger, now time.Time, ttl time.Duration) (I
 	return Input{
 		AccountID: c.AccountID, SystemAccountID: c.SystemAccountID, InputVersion: c.InputVersion, ConfigRevision: c.ConfigRevision,
 		Provider: c.Provider, Type: c.Type, Status: c.Status, Schedulable: c.Schedulable,
+		CredentialFingerprint: c.CredentialFingerprint, ConfigJSON: c.ConfigJSON,
 		BaseURL: strings.TrimRight(c.BaseURL, "/"), Config: c.Config, APIKey: credential, Credential: credential,
 		Proxy: cloneCredential(c.Proxy), Trigger: trigger, IssuedAt: issued, ExpiresAt: expires, NextRefreshAt: cloneTime(c.NextRefreshAt), Recovery: c.Recovery,
 	}, nil

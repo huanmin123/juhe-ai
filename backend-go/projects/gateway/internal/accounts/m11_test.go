@@ -168,6 +168,7 @@ func (e *testEnv) seedBalanceAccount(t *testing.T, id, configJSON string, enable
 
 func (e *testEnv) seedBalanceSnapshot(t *testing.T, ownerID, accountID, snapshotJSON, nextRefreshAfter, updatedAt string) {
 	t.Helper()
+	snapshotJSON = e.withAccountInputDigest(t, accountID, snapshotJSON)
 	e.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, source,
 		snapshot_json, refresh_status, next_refresh_after, updated_at, created_at)
 		VALUES (?, ?, 'relay_balance', 'upstream_api', ?, 'fresh', ?, ?, ?)
@@ -358,11 +359,17 @@ func TestM11BalanceDetailsProjection(t *testing.T) {
 		t.Fatalf("key balance entry: %v", entry)
 	}
 
-	// A stale config revision maps every Key back to pending and drops the
-	// stored timestamp.
-	env.seedBalanceSnapshot(t, adminID, "acc-bal",
+	// Stale 等价形态（BUG-0286 摘要语义）：旧形状快照（无 inputDigest，如
+	// 升级前写入的行）无法确认余额输入身份——Keys 回落 pending、不暴露
+	// updatedAt；下一轮 J2 写入带摘要后自愈。
+	env.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, source,
+		snapshot_json, refresh_status, next_refresh_after, updated_at, created_at)
+		VALUES (?, ?, 'relay_balance', 'upstream_api', ?, 'fresh', ?, ?, ?)
+		ON CONFLICT(system_account_id, account_id, kind) DO UPDATE SET
+		snapshot_json = excluded.snapshot_json, next_refresh_after = excluded.next_refresh_after,
+		updated_at = excluded.updated_at`, adminID, "acc-bal",
 		`{"status":"fresh","configRevision":1,"keyBalances":[]}`,
-		"2026-09-04T00:05:00.000Z", "2026-09-04T00:04:30.000Z")
+		"2026-09-04T00:05:00.000Z", "2026-09-04T00:04:30.000Z", "2026-09-04T00:04:30.000Z")
 	code, stale := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts/acc-bal/balance/details", "")
 	if code != http.StatusOK {
 		t.Fatalf("stale details: %d %v", code, stale)

@@ -176,14 +176,14 @@ func (r *PostgresDirectInputReader) decodeCandidateCredential(accountID, credent
 }
 
 func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time) (Candidate, error) {
-	var id, systemID, provider, typ, status, credentials, configJSON sql.NullString
+	var id, systemID, provider, typ, status, credentials, configJSON, fingerprint sql.NullString
 	var revision, dispatch int64
 	var schedulable, enabled sql.NullInt64
 	var next sql.NullString
 	var proxyRequired, proxyID, proxyType, proxyHost, proxyUser, proxyPassword sql.NullString
 	var proxyPort sql.NullInt64
 	var proxyEnabled sql.NullBool
-	if err := rows.Scan(&id, &systemID, &revision, &dispatch, &provider, &typ, &status, &schedulable, &enabled, &configJSON, &next, &credentials, &proxyRequired, &proxyID, &proxyType, &proxyHost, &proxyPort, &proxyUser, &proxyPassword, &proxyEnabled); err != nil {
+	if err := rows.Scan(&id, &systemID, &revision, &dispatch, &provider, &typ, &status, &schedulable, &enabled, &configJSON, &next, &credentials, &fingerprint, &proxyRequired, &proxyID, &proxyType, &proxyHost, &proxyPort, &proxyUser, &proxyPassword, &proxyEnabled); err != nil {
 		return Candidate{}, fmt.Errorf("解码 J2 PG 候选失败: %w", err)
 	}
 	if !id.Valid || !systemID.Valid || !credentials.Valid {
@@ -210,7 +210,7 @@ func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time)
 	} else {
 		config = QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}
 	}
-	candidate := Candidate{AccountID: id.String, SystemAccountID: systemID.String, InputVersion: dispatch, ConfigRevision: revision, Provider: provider.String, Type: typ.String, Status: status.String, Schedulable: schedulable.Valid && schedulable.Int64 == 1, BalanceEnabled: enabled.Valid && enabled.Int64 == 1, FirstProbe: !enabled.Valid || enabled.Int64 == 0, Recovery: !next.Valid && enabled.Valid && enabled.Int64 == 1, APIKeyCount: len(keys), APIKey: CredentialEnvelope{Kind: "api_key", Ciphertext: credentials.String}, BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), Config: config, IssuedAt: now, ExpiresAt: now.Add(r.ttl)}
+	candidate := Candidate{AccountID: id.String, SystemAccountID: systemID.String, InputVersion: dispatch, ConfigRevision: revision, Provider: provider.String, Type: typ.String, Status: status.String, Schedulable: schedulable.Valid && schedulable.Int64 == 1, BalanceEnabled: enabled.Valid && enabled.Int64 == 1, FirstProbe: !enabled.Valid || enabled.Int64 == 0, Recovery: !next.Valid && enabled.Valid && enabled.Int64 == 1, APIKeyCount: len(keys), APIKey: CredentialEnvelope{Kind: "api_key", Ciphertext: credentials.String}, CredentialFingerprint: strings.TrimSpace(fingerprint.String), ConfigJSON: strings.TrimSpace(configJSON.String), BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"), Config: config, IssuedAt: now, ExpiresAt: now.Add(r.ttl)}
 	if next.Valid {
 		value, err := time.Parse(time.RFC3339Nano, next.String)
 		if err != nil {
@@ -285,7 +285,7 @@ func j2CandidateSQL(kind candidateReadKind) string {
 	if kind == candidateReadRecovery {
 		limit = "$1"
 	}
-	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,a.provider_code,a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
+	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,a.provider_code,a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.credential_fingerprint,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
 }
 
 func j2CandidateByIDSQL(kind candidateReadKind) string {

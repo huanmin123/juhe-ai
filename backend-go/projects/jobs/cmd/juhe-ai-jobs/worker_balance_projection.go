@@ -242,6 +242,8 @@ func balanceSnapshotFromJ2(source *accountbalance.Snapshot, configRevision int64
 		Scope:                     source.Scope,
 		Aggregation:               source.Aggregation,
 	}
+	// BUG-0286：输入身份摘要透传（J2 执行核统一打点，gateway 读端匹配）。
+	view.InputDigest = source.InputDigest
 	view.RemainingUSD = optionalString(source.RemainingUSD)
 	view.RawRemaining = optionalString(source.RawRemaining)
 	view.RawUnit = optionalString(string(source.RawUnit))

@@ -40,7 +40,20 @@ const multiKeyDeadlineMessage = "上游余额查询超时"
 // (adapter dispatch / proxy / response caps) and merge the results into one
 // Snapshot. A returned error still means the input/transport setup failed
 // locally; upstream and per-Key diagnostics are represented in QueryResult.
+// ExecuteAccountBalanceQuery 是三个写入方（J2 周期/首探、SQLite 自动探测、
+// gateway 手动刷新）共用的执行核。BUG-0286：成功返回（含上游失败形态的
+// QueryResult）统一在此打点余额输入身份摘要——快照负载携带 inputDigest，
+// gateway 读端以账户当前列值现算同一摘要做显示匹配；本地错误（解封失败等）
+// 不产生快照，无需打点。
 func ExecuteAccountBalanceQuery(ctx context.Context, input Input, options QueryOptions) (QueryResult, error) {
+	result, err := executeAccountBalanceQuery(ctx, input, options)
+	if err == nil {
+		result.Snapshot.InputDigest = BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON)
+	}
+	return result, err
+}
+
+func executeAccountBalanceQuery(ctx context.Context, input Input, options QueryOptions) (QueryResult, error) {
 	now := time.Now
 	if options.Now != nil {
 		now = options.Now

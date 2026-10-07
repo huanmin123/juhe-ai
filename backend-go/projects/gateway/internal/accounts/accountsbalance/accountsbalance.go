@@ -55,6 +55,10 @@ type Deps struct {
 	// (crypto.go): the original call site bypassed the store-injected newID
 	// clock, so the port closes over the free function instead of StoreBase.
 	NewDispatchID func() string
+	// BalanceInputDigest 计算余额输入身份摘要（BUG-0286）。实现由组合根从
+	// shared/platform/accountbalance 提供（与 J2 写端同一算法源），本子域
+	// 保持不直接依赖共享执行核的依赖方向约束。
+	BalanceInputDigest func(providerCode, credentialFingerprint, configJSON string) string
 }
 
 // Service carries the balance & probe subdomain state: the injected Store

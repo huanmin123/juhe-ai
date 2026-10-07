@@ -319,6 +319,10 @@ func (r *gatewayManualBalanceRefresher) buildManualInput(ctx context.Context, ca
 		Config:          config,
 		// credentials_encrypted 列即 v1 信封密文，解封后含 api_key 字段
 		// （同 jobs buildQueryInput 的直用语义，不重复加密）。
+		// CredentialFingerprint / ConfigJSON 原文随候选行携带：执行核据此打
+		// 快照 inputDigest（BUG-0286），与 J2 周期路径同源同列。
+		CredentialFingerprint: candidate.CredentialFingerprint,
+		ConfigJSON:            candidate.ConfigJSON,
 		APIKey:    accountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
 		Trigger:   accountbalance.TriggerManual,
 		IssuedAt:  now,

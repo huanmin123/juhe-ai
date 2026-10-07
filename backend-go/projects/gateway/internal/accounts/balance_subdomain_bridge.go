@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountsbalance"
+	accountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 )
 
 // REFACTOR-0005 阶段 B 桥接层：余额与探子子域（accountsbalance）从根包拆出
@@ -111,6 +112,8 @@ func (s *Store) balanceService() *accountsbalance.Service {
 			return item, err
 		},
 		ScheduleGate: m11ScheduleAllowed,
+		// BUG-0286：余额输入身份摘要与 J2 写端同一算法源（shared 执行核）。
+		BalanceInputDigest: accountbalance.BalanceInputDigest,
 		NewDispatchID: func() string {
 			return newID("dispatch")
 		},
@@ -472,8 +475,8 @@ func balanceSnapshotTimestampMs(value string) (int64, bool) {
 	return accountsbalance.BalanceSnapshotTimestampMs(value)
 }
 
-func balanceSnapshotMatchesConfiguration(nextRefreshAt string, configRevision int64, record *balanceSnapshotRecord) bool {
-	return accountsbalance.BalanceSnapshotMatchesConfiguration(nextRefreshAt, configRevision, record)
+func balanceSnapshotMatchesConfiguration(record *balanceSnapshotRecord, currentDigest string) bool {
+	return accountsbalance.BalanceSnapshotMatchesConfiguration(record, currentDigest)
 }
 
 func balanceSnapshotPublicFromSnapshot(snapshot map[string]any) *AccountBalanceSnapshotPublic {

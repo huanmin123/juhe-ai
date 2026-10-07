@@ -42,9 +42,29 @@ func setAccountBalanceQuery(t *testing.T, env *testEnv, id string, enabled bool,
 	env.exec(t, `UPDATE accounts SET balance_query_enabled = ?, balance_query_next_refresh_at = ? WHERE id = ?`, enabledValue, nextRefreshAt, id)
 }
 
+// withAccountInputDigest 按账户当前列值现算余额输入身份摘要并注入快照 JSON
+// 首字段（模拟 jobs 写端 balanceSnapshotPersist 的 inputDigest 透传，
+// BUG-0286）。
+func (e *testEnv) withAccountInputDigest(t *testing.T, accountID, snapshotJSON string) string {
+	t.Helper()
+	digests, err := e.store.balanceService().LoadBalanceInputDigests(context.Background(), []string{accountID})
+	if err != nil {
+		t.Fatalf("现算余额输入摘要失败: %v", err)
+	}
+	digest := digests[accountID]
+	if digest == "" {
+		t.Fatalf("账户 %s 摘要现算为空（列缺失？）", accountID)
+	}
+	if len(snapshotJSON) == 0 || snapshotJSON[0] != '{' {
+		t.Fatalf("快照 JSON 形状异常: %s", snapshotJSON)
+	}
+	return `{"inputDigest":"` + digest + `",` + snapshotJSON[1:]
+}
+
 // seedRelayBalanceSnapshot writes one kind='relay_balance' stats row.
 func seedRelayBalanceSnapshot(t *testing.T, env *testEnv, ownerID, accountID, snapshotJSON, nextRefreshAfter string) {
 	t.Helper()
+	snapshotJSON = env.withAccountInputDigest(t, accountID, snapshotJSON)
 	env.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, snapshot_json,
 		next_refresh_after, updated_at, created_at)
 		VALUES (?, ?, 'relay_balance', ?, ?, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z')`,
@@ -80,11 +100,15 @@ func TestListPageBalanceSnapshotOverlayAdmin(t *testing.T) {
 	// 停用行：三字段皆无。
 	setAccountBalanceQuery(t, env, "acc-bal-disabled", false, nil)
 	seedRelayBalanceSnapshot(t, env, adminID, "acc-bal-disabled", balanceListSnapshotJSON, balanceListNextRefreshAt)
-	// configRevision 不匹配：快照随新配置作废，列表不带。
+	// 余额输入身份不符（换 Key / 改适配器配置后旧快照作废）：列表不带。注意
+	// configRevision 漂移本身不再隐藏快照（BUG-0286 摘要语义，非余额编辑
+	// 不打断显示）。
 	setAccountBalanceQuery(t, env, "acc-bal-stale", true, balanceListNextRefreshAt)
 	seedRelayBalanceSnapshot(t, env, adminID, "acc-bal-stale",
 		`{"status":"ok","configRevision":2,"remainingUsd":"99.00"}`, balanceListNextRefreshAt)
-	// next_refresh_after 毫秒不等（刷新代次不一致）：列表不带。
+	// bal-stale 的隐藏靠摘要不一致：把账户凭据指纹改成与快照写入时不同的值。
+	env.exec(t, `UPDATE accounts SET credential_fingerprint = 'rotated-fp' WHERE id = 'acc-bal-stale'`)
+	// next_refresh_after 毫秒不等（刷新代次不一致）：不再隐藏（BUG-0286）。
 	setAccountBalanceQuery(t, env, "acc-bal-generation", true, balanceListNextRefreshAt)
 	seedRelayBalanceSnapshot(t, env, adminID, "acc-bal-generation", balanceListSnapshotJSON, "2026-01-01T00:00:00.000Z")
 	// enabled 但 stats 无快照行：仅基础字段。
@@ -130,11 +154,15 @@ func TestListPageBalanceSnapshotOverlayAdmin(t *testing.T) {
 	}
 	requireMissingKeys(t, staleItem, "balanceSnapshot")
 
+	// BUG-0286 语义固化：next_refresh 代次不一致（刷新周期边界的投影滞后）
+	// 不再隐藏快照——余额输入身份一致就显示，滞后 ≤5 分钟自愈。
 	generationItem := items["acc-bal-generation"]
 	if generationItem["balanceQueryEnabled"] != true {
 		t.Fatalf("acc-bal-generation 基础字段应保留：%v", generationItem)
 	}
-	requireMissingKeys(t, generationItem, "balanceSnapshot")
+	if _, present := generationItem["balanceSnapshot"]; !present {
+		t.Fatalf("代次不一致不得隐藏余额快照（摘要一致即显示）：%v", generationItem)
+	}
 
 	norowItem := items["acc-bal-norow"]
 	if norowItem["balanceQueryEnabled"] != true {
@@ -249,8 +277,10 @@ func TestLoadRelayBalanceSnapshotRecordsChunking(t *testing.T) {
 	for index := 0; index < total; index++ {
 		id := fmt.Sprintf("acc-chunk-%04d", index)
 		ids = append(ids, id)
-		seedRelayBalanceSnapshot(t, env, ownerID, id,
-			`{"status":"ok","configRevision":1,"remainingUsd":"1.00"}`, balanceListNextRefreshAt)
+		env.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, snapshot_json,
+			next_refresh_after, updated_at, created_at)
+			VALUES (?, ?, 'relay_balance', ?, ?, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z')`,
+			ownerID, id, `{"status":"ok","configRevision":1,"remainingUsd":"1.00"}`, balanceListNextRefreshAt)
 	}
 	records, err := env.store.loadRelayBalanceSnapshotRecords(context.Background(), ids)
 	if err != nil {

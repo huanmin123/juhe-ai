@@ -6,7 +6,6 @@ package accounts
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"testing"
 )
@@ -174,7 +173,7 @@ func TestW14BBalanceDetailsAndSnapshotArms(t *testing.T) {
 		"errorMessage":"none","lastAttemptAt":"2026-09-17T00:00:00Z","lastSuccessAt":"2026-09-17T00:01:00Z"}]}`
 	env.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, source, snapshot_json, refresh_status, next_refresh_after, updated_at, created_at)
 		VALUES (?, 'acc-w14b-bal', 'relay_balance', 'openai_codex', ?, 'ok', '2026-09-17T00:10:00.000Z', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')`,
-		adminID, snapshotJSON)
+		adminID, env.withAccountInputDigest(t, "acc-w14b-bal", snapshotJSON))
 	details, err := env.store.FindBalanceDetails(ctx, "acc-w14b-bal", scope)
 	if err != nil {
 		t.Fatalf("余额详情应成功：%v", err)
@@ -202,34 +201,25 @@ func TestW14BBalanceDetailsAndSnapshotArms(t *testing.T) {
 	if got := maskBalanceAPIKey("sk-1234567890abcdef"); !strings.Contains(got, "…") || len(got) > 12 {
 		t.Fatalf("长键掩码不符：%q", got)
 	}
-	// 配置匹配判定臂。
-	if balanceSnapshotMatchesConfiguration("x", 1, nil) {
+	// 配置匹配判定臂（BUG-0286 摘要语义：匹配 = 负载 inputDigest 与读端
+	// 现算摘要一致；nil 记录 / 空负载 / 缺摘要 / 摘要不一致一律不匹配）。
+	if balanceSnapshotMatchesConfiguration(nil, "digest-a") {
 		t.Fatal("nil 记录应不匹配")
 	}
-	if balanceSnapshotMatchesConfiguration("", 1, &balanceSnapshotRecord{}) {
+	if balanceSnapshotMatchesConfiguration(&balanceSnapshotRecord{}, "digest-a") {
 		t.Fatal("空快照应不匹配")
 	}
-	mismatch := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(2)}}
-	if balanceSnapshotMatchesConfiguration("2026-09-17T00:10:00.000Z", 1, mismatch) {
-		t.Fatal("版本不一致应不匹配")
+	noDigest := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}}
+	if balanceSnapshotMatchesConfiguration(noDigest, "digest-a") {
+		t.Fatal("旧快照缺 inputDigest 应不匹配（随下一轮 J2 写入自愈）")
 	}
-	nonNumber := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": "1"}}
-	if balanceSnapshotMatchesConfiguration("2026-09-17T00:10:00.000Z", 1, nonNumber) {
-		t.Fatal("非数字版本应不匹配")
+	mismatch := &balanceSnapshotRecord{Snapshot: map[string]any{"inputDigest": "digest-b"}}
+	if balanceSnapshotMatchesConfiguration(mismatch, "digest-a") {
+		t.Fatal("摘要不一致应不匹配（换 Key/改适配器配置立即失效）")
 	}
-	match := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}, NextRefreshAfter: sql.NullString{String: "2026-09-17T00:10:00.000Z", Valid: true}}
-	if !balanceSnapshotMatchesConfiguration("2026-09-17T00:10:00.000Z", 1, match) {
-		t.Fatal("版本与时刻一致应匹配")
-	}
-	// 双方无效时刻且均未持久化 → 视为从未调度，视为匹配。
-	bothInvalid := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}}
-	if !balanceSnapshotMatchesConfiguration("", 1, bothInvalid) {
-		t.Fatal("双方无效时刻且无持久值应视为匹配")
-	}
-	// 单侧无效 → 不匹配。
-	oneSided := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}, NextRefreshAfter: sql.NullString{String: "bogus", Valid: true}}
-	if balanceSnapshotMatchesConfiguration("", 1, oneSided) {
-		t.Fatal("单侧无效时刻应不匹配")
+	match := &balanceSnapshotRecord{Snapshot: map[string]any{"inputDigest": "digest-a", "configRevision": float64(7)}}
+	if !balanceSnapshotMatchesConfiguration(match, "digest-a") {
+		t.Fatal("摘要一致应匹配——config_revision 已推进（非余额编辑）不得打断显示")
 	}
 	// 损坏密文详情报错臂。
 	env.seedAccount(t, "acc-w14b-bal2", adminID, "w14b-bal2", "active")

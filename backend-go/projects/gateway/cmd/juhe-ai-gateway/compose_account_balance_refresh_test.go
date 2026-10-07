@@ -620,6 +620,10 @@ func TestGatewayManualBalanceRefresherSingleKeyInputShapePinned(t *testing.T) {
 		BaseURL:         "https://upstream.example/v1",
 		Config:          platformaccountbalance.QueryConfig{Adapter: "builtin", IntervalMinutes: 5},
 		// credentials_encrypted 列密文原样直传（不拆包、不重复加密）。
+		// CredentialFingerprint / ConfigJSON 原文随候选行直传（BUG-0286：执行
+		// 核据此打快照 inputDigest，读端摘要匹配的写端输入）。
+		CredentialFingerprint: candidate.CredentialFingerprint,
+		ConfigJSON:            candidate.ConfigJSON,
 		APIKey:    platformaccountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
 		Trigger:   platformaccountbalance.TriggerManual,
 		IssuedAt:  fixedNow.UTC(),
