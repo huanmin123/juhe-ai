@@ -21,7 +21,7 @@ export interface AccountTestOutputLine {
   tone?: 'muted' | 'info' | 'success' | 'warning' | 'error' | 'label' | 'divider'
 }
 
-const diagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000]
+const diagnosticAttemptTimeoutsMs = [20_000, 30_000, 40_000]
 const imageDiagnosticAttemptTimeoutsMs = [120_000]
 
 interface SingleAccountTestOutputOptions {

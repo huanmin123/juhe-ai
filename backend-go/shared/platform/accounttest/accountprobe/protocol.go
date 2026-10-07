@@ -5,7 +5,8 @@
 //   - backend/src/modules/accounts/account-test-response-diagnostics.ts 与
 //     account-test-success-evidence.ts 的响应分类；
 //   - backend/src/modules/accounts/account-diagnostic-retry-policy.ts 的
-//     分级超时（10s/20s/30s）与 automatic-account-probe-outcome 的传输证据。
+//     分级超时（Node 10s/20s/30s，2026-10-07 上调为 20s/30s/40s）与
+//     automatic-account-probe-outcome 的传输证据。
 //
 // Node 侧探针经进程内网关（handleOpenAIGatewayRequest）发起；Go jobs 不复刻
 // 整个网关，只复刻后台探针路径的可观察行为：单候选账户、disableSessionAffinity、

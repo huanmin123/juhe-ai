@@ -25,9 +25,11 @@ func DefaultRetryOptions() RetryOptions {
 func RetryOptionsForProfile(profile string) RetryOptions {
 	// Node's diagnostic oracle uses one shared per-attempt schedule for quick
 	// and full profiles. Keep the schedule explicit so a slow reasoning turn
-	// gets the same bounded 10s/20s/30s retry budget on both paths.
+	// gets the same bounded retry budget on both paths. Node 时代为
+	// 10s/20s/30s；2026-10-07 与账户诊断阶梯一起统一上调（probe.go
+	// DiagnosticRetryTimeouts 同源裁决）。
 	_ = profile
-	timeouts := []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}
+	timeouts := []time.Duration{20 * time.Second, 30 * time.Second, 40 * time.Second}
 	return RetryOptions{AttemptTimeouts: timeouts}
 }
 

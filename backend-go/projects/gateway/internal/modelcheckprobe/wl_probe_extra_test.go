@@ -891,7 +891,7 @@ func TestWlRetryPolicyOptions(t *testing.T) {
 	if options := DefaultRetryOptions(); len(options.AttemptTimeouts) != 3 {
 		t.Fatalf("默认重试档位=%v", options.AttemptTimeouts)
 	}
-	if options := RetryOptionsForProfile("quick"); len(options.AttemptTimeouts) != 3 || options.AttemptTimeouts[0] != 10*time.Second {
+	if options := RetryOptionsForProfile("quick"); len(options.AttemptTimeouts) != 3 || options.AttemptTimeouts[0] != 20*time.Second {
 		t.Fatalf("quick 与 full 共享同一重试档位: %v", options.AttemptTimeouts)
 	}
 }

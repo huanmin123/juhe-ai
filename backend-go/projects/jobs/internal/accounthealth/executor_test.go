@@ -15,10 +15,10 @@ func TestProbeTimeoutLadder(t *testing.T) {
 		in   time.Duration
 		want []time.Duration
 	}{
-		{"default", 65 * time.Second, []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}},
+		{"default", 65 * time.Second, []time.Duration{20 * time.Second, 30 * time.Second, 40 * time.Second}},
 		{"short", 5 * time.Second, []time.Duration{5 * time.Second}},
-		{"mid", 15 * time.Second, []time.Duration{10 * time.Second, 15 * time.Second}},
-		{"long", 25 * time.Second, []time.Duration{10 * time.Second, 20 * time.Second, 25 * time.Second}},
+		{"mid", 25 * time.Second, []time.Duration{20 * time.Second, 25 * time.Second}},
+		{"long", 35 * time.Second, []time.Duration{20 * time.Second, 30 * time.Second, 35 * time.Second}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

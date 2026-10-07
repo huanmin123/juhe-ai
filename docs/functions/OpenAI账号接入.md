@@ -286,7 +286,7 @@ OpenAI 网关使用短期会话亲和，只影响账号排序，不绕过本地 
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时先在同一 dispatch priority tier 内避让已发生客户端可见失败的账号；新候选全部失败后，先前避让账号仍作为最后兜底重新进入候选。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `10s -> 20s -> 30s` 档位。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时先在同一 dispatch priority tier 内避让已发生客户端可见失败的账号；新候选全部失败后，先前避让账号仍作为最后兜底重新进入候选。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `20s -> 30s -> 40s` 档位（2026-10-07 自 `10s -> 20s -> 30s` 统一上调）。
 
 ### OpenAI OAuth 额度进度
 

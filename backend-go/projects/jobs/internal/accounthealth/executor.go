@@ -75,10 +75,12 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 }
 
 func probeTimeoutLadder(configured time.Duration) []time.Duration {
+	// 2026-10-07 与 accountprobe.DiagnosticRetryTimeouts 同源上调（原
+	// 10s/20s/30s）；configured 低于档位时按预算截断阶梯。
 	const (
-		first  = 10 * time.Second
-		second = 20 * time.Second
-		third  = 30 * time.Second
+		first  = 20 * time.Second
+		second = 30 * time.Second
+		third  = 40 * time.Second
 	)
 	if configured <= 0 || configured >= third {
 		return []time.Duration{first, second, third}

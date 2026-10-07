@@ -164,7 +164,7 @@ func TestExecutorDraftSuccessWritesEnvelope(t *testing.T) {
 	if result.Message != "OpenAI Chat Completions 测试通过" {
 		t.Fatalf("message = %q", result.Message)
 	}
-	if len(progress) != 1 || progress[0] != "真实请求测试中：本次诊断最长等待 60s" {
+	if len(progress) != 1 || progress[0] != "真实请求测试中：本次诊断最长等待 90s" {
 		t.Fatalf("进度消息 = %v", progress)
 	}
 	if len(requests) != 1 || requests[0][0] != "/v1/chat/completions" {

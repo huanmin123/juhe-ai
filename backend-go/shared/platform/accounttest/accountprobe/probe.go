@@ -19,8 +19,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
-// 诊断分级超时（Node accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000]）。
-var DiagnosticRetryTimeouts = []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}
+// 诊断分级超时。Node 时代为 [10_000, 20_000, 30_000]；2026-10-07 用户裁决
+// 上调为 [20_000, 30_000, 40_000]（10s 一级对慢中转/推理模型过紧，BUG-0287
+// 根治后统一上调；下游总预算与前端等待上限同步 60s→90s）。
+var DiagnosticRetryTimeouts = []time.Duration{20 * time.Second, 30 * time.Second, 40 * time.Second}
 
 // ImageDiagnosticRetryTimeouts 等价 Node accountImageDiagnosticRetryTimeoutMs =
 // [120_000]（images_json 单次长预算，不晋级）。
@@ -537,6 +539,26 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 			// 必须共享同一裁决；尾部传输错误不能覆盖语义成功。
 			if attempt.Result.Success {
 				attempt.Evidence.UpstreamCompleted = true
+			} else if transportFailureFromError(readErr, timeout).timedOut &&
+				attempt.Result.ErrorCode == errorCodeInvalidProtocolSuccessResponse &&
+				parseUpstreamErrorCodeFromBody(response.bodyText) == "" {
+				// 本级预算在响应体中途到点（BUG-0287）：截断源于探针自身
+				// 超时，不是上游读取中断，也不是协议违规——慢流只是还没
+				// 读完。设计契约“真实上游超时才按分级阶梯重测”（档位见
+				// DiagnosticRetryTimeouts）包含此态，必须保留超时证据让
+				// 分级阶梯晋级；终审口径与 framing 未完成的超时一致。已读
+				// 部分带上游错误语义（可解析错误码，或失败码已非缺证据口
+				// 径）的不在此列，仍按 read_incomplete 终审，不掩盖真实
+				// 上游故障。
+				timeoutFailure := transportFailure{timedOut: true}
+				attempt.Evidence.TransportFailureKind = accountquality.TransportFailureTimeout
+				attempt.Evidence.TimedOut = true
+				attempt.Result.ErrorCode = timeoutFailure.errorCode()
+				message := timeoutFailure.message(readErr)
+				if limited {
+					message = limitedFailureMessage(*attempt.Result.StatusCode, attempt.Result.ErrorCode, searchableText(message))
+				}
+				attempt.Result.Message = message
 			} else {
 				attempt.Evidence.TransportFailureKind = accountquality.TransportFailureRead
 				attempt.Evidence.TimedOut = false
@@ -714,6 +736,11 @@ func classifyAttemptError(view *View, err error, timeout time.Duration, limited 
 	}
 }
 
+// errorCodeInvalidProtocolSuccessResponse：HTTP 2xx 但缺协议完成证据的语义
+// 失败码。生产方是 classifyResponse；executeAttempt 消费它区分“上游协议
+// 违规”与“本级预算在响应体中途到点的探针侧截断”（BUG-0287）。
+const errorCodeInvalidProtocolSuccessResponse = "invalid_protocol_success_response"
+
 // classifyResponse 移植 testOpenAIAccount 成功路径的结果分类。
 func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode, bodyText string, headers map[string]string, statusCode int, firstTokenMS, durationMS int64, challenge OutputChallenge, limited bool) *accountquality.ProbeObservation {
 	context := parseResponseContext(bodyText)
@@ -807,10 +834,10 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 			if mode == ModeImagesJSON {
 				errorCode = upstreamErrorCode
 				if errorCode == "" {
-					errorCode = "invalid_protocol_success_response"
+					errorCode = errorCodeInvalidProtocolSuccessResponse
 				}
 			} else {
-				errorCode = "invalid_protocol_success_response"
+				errorCode = errorCodeInvalidProtocolSuccessResponse
 			}
 		default:
 			errorCode = upstreamErrorCode

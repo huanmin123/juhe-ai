@@ -6,7 +6,7 @@ import type { AccountTestTask } from '@/types/domain'
 export const accountTestPollIntervalMs = 3000
 /** Compatibility fallback when older DTOs omit queuedDeadlineAt; server responses normally provide it. */
 export const accountTestLegacyQueuedFallbackMaxWaitMs = 10 * 60_000
-export const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
+export const accountDiagnosticAttemptTimeoutsMs = [20_000, 30_000, 40_000] as const
 export const accountImageDiagnosticAttemptTimeoutsMs = [120_000] as const
 
 export function accountTestTaskMaxWaitMs(testEndpointMode?: AccountTestTask['testEndpointMode']): number {

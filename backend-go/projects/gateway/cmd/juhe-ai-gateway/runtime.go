@@ -703,10 +703,12 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 	cfg.GoRuntimeMetrics = goRuntimeMetrics
 	// 健康检查派发 outbox 行的探针 deadline 窗口（原 jobs 侧发布器读取的同名
-	// env；默认 65000、范围 [1000, 600000] 对齐 Node integerConfig。非法值按
-	// 0 处理：outbox writer 保持 inert，派发显式 input_unavailable，不阻塞
-	// 启动——与原 jobs 装配失败即 503 的降级语义一致）。
-	cfg.AccountHealthProbeDeadlineMS = 65_000
+	// env；范围 [1000, 600000] 对齐 Node integerConfig。默认原为 65000（Node
+	// 60s 阶梯 + 5s 余量）；2026-10-07 诊断阶梯统一上调为 20s/30s/40s（90s
+	// 预算）后同步调为 95000。非法值按 0 处理：outbox writer 保持 inert，派
+	// 发显式 input_unavailable，不阻塞启动——与原 jobs 装配失败即 503 的降
+	// 级语义一致）。
+	cfg.AccountHealthProbeDeadlineMS = 95_000
 	if raw := strings.TrimSpace(getenv("JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS")); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed < 1_000 || parsed > 10*60_000 {

@@ -85,8 +85,8 @@ func TestLoadRuntimeConfigAccountHealthProbeDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("base config: %v", err)
 	}
-	if cfg.AccountHealthProbeDeadlineMS != 65_000 {
-		t.Fatalf("default deadline = %d want 65000", cfg.AccountHealthProbeDeadlineMS)
+	if cfg.AccountHealthProbeDeadlineMS != 95_000 {
+		t.Fatalf("default deadline = %d want 95000", cfg.AccountHealthProbeDeadlineMS)
 	}
 	env["JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS"] = "30000"
 	cfg, err = loadRuntimeConfigEnv(t, env)

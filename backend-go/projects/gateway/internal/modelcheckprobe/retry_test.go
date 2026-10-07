@@ -41,7 +41,7 @@ func TestExecuteWithRetryRetriesNonOKThenStopsAtOK(t *testing.T) {
 func TestRetryOptionsForProfileUsesNodeThreeAttemptBudget(t *testing.T) {
 	for _, profile := range []string{"quick", "full", "unknown"} {
 		options := RetryOptionsForProfile(profile)
-		if len(options.AttemptTimeouts) != 3 || options.AttemptTimeouts[0] != 10*time.Second || options.AttemptTimeouts[1] != 20*time.Second || options.AttemptTimeouts[2] != 30*time.Second {
+		if len(options.AttemptTimeouts) != 3 || options.AttemptTimeouts[0] != 20*time.Second || options.AttemptTimeouts[1] != 30*time.Second || options.AttemptTimeouts[2] != 40*time.Second {
 			t.Fatalf("profile=%q attempts=%d want=3", profile, len(options.AttemptTimeouts))
 		}
 	}
