@@ -57,8 +57,12 @@ type Deps struct {
 	NewDispatchID func() string
 	// BalanceInputDigest 计算余额输入身份摘要（BUG-0286）。实现由组合根从
 	// shared/platform/accountbalance 提供（与 J2 写端同一算法源），本子域
-	// 保持不直接依赖共享执行核的依赖方向约束。
-	BalanceInputDigest func(providerCode, credentialFingerprint, configJSON string) string
+	// 保持不直接依赖共享执行核的依赖方向约束。读端契约：credentialsEnvelope
+	// 是 accounts.credentials_encrypted 列原文、proxyProfileID 是
+	// accounts.proxy_profile_id 列值，实现负责解密凭据并提取逻辑身份
+	// （base_url + 有效 Key 全池）；解密失败返回空串（读端按缺摘要处理 =
+	// 不显示快照，安全方向降级）。
+	BalanceInputDigest func(providerCode, credentialFingerprint, configJSON, credentialsEnvelope, proxyProfileID string) string
 }
 
 // Service carries the balance & probe subdomain state: the injected Store

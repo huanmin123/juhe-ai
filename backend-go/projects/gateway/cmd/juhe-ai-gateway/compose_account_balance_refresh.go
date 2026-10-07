@@ -319,10 +319,12 @@ func (r *gatewayManualBalanceRefresher) buildManualInput(ctx context.Context, ca
 		Config:          config,
 		// credentials_encrypted 列即 v1 信封密文，解封后含 api_key 字段
 		// （同 jobs buildQueryInput 的直用语义，不重复加密）。
-		// CredentialFingerprint / ConfigJSON 原文随候选行携带：执行核据此打
-		// 快照 inputDigest（BUG-0286），与 J2 周期路径同源同列。
+		// CredentialFingerprint / ConfigJSON / ProxyProfileID 原文随候选行
+		// 携带：执行核据此打快照 inputDigest（BUG-0286），与 J2 周期路径
+		// 同源同列。
 		CredentialFingerprint: candidate.CredentialFingerprint,
 		ConfigJSON:            candidate.ConfigJSON,
+		ProxyProfileID:        strings.TrimSpace(candidate.ProxyProfileID.String),
 		APIKey:    accountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
 		Trigger:   accountbalance.TriggerManual,
 		IssuedAt:  now,
@@ -484,10 +486,12 @@ func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input acc
 		Schedulable:     true,
 		BaseURL:         baseURL,
 		Config:          config,
-		APIKey:          keyEnvelope,
-		Trigger:         accountbalance.TriggerManual,
-		IssuedAt:        now,
-		ExpiresAt:       now.Add(manualBalanceInputTTL),
+		// 草稿快照不落库（inputDigest 无消费方），透传仅保持输入身份完整。
+		ProxyProfileID: strings.TrimSpace(derefText(input.ProxyProfileID)),
+		APIKey:         keyEnvelope,
+		Trigger:        accountbalance.TriggerManual,
+		IssuedAt:       now,
+		ExpiresAt:      now.Add(manualBalanceInputTTL),
 	}
 	proxy, err := resolveProxyURLEnvelope(ctx, r.db, r.pg, r.secret, derefText(input.ProxyProfileID))
 	if err != nil {

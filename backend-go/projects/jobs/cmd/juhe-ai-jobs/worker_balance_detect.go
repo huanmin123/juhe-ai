@@ -806,10 +806,12 @@ func (r *balanceDetectRuntime) buildQueryInput(ctx context.Context, candidate op
 			IntervalMinutes:         config.IntervalMinutes,
 			PreferredBuiltinAdapter: accountbalance.Adapter(config.PreferredBuiltinAdapter),
 		},
-		APIKey:    accountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: credentialsText},
-		Trigger:   accountbalance.TriggerFirstProbe,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(balanceDetectInputTTL),
+		// 执行核据此打快照 inputDigest（BUG-0286）：换绑代理必须立即失效。
+		ProxyProfileID: strings.TrimSpace(candidate.ProxyProfileID),
+		APIKey:         accountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: credentialsText},
+		Trigger:        accountbalance.TriggerFirstProbe,
+		IssuedAt:       now,
+		ExpiresAt:      now.Add(balanceDetectInputTTL),
 	}
 	if candidate.NextRefreshAt != nil {
 		parsed, err := parseBalanceInstant(*candidate.NextRefreshAt)

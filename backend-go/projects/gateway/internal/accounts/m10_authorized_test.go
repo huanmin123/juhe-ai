@@ -63,12 +63,23 @@ func newAuthorizedTestEnv(t *testing.T) (*testEnv, *authz.Store) {
 func (e *testEnv) seedAuthorizationInstance(t *testing.T, id, namespaceID, runtimeID, sourceID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// BUG-0286 审核轮：读端摘要现算解密凭据提取逻辑身份，假密文 'sealed'
+	// 会命中解密失败降级（摘要空 = 快照不显示），种子必须用真信封；密钥用
+	// 包级 testSecret（各测试 Store 构造同源），部分 stats 测试 env 不挂
+	// store 字段。
+	sealed, err := EncryptJSON(testSecret, map[string]any{
+		"api_key":  "sk-" + id,
+		"base_url": "https://" + id + ".example.com",
+	})
+	if err != nil {
+		t.Fatalf("加密授权实例凭据失败: %v", err)
+	}
 	e.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_authorization_id, authorization_instance_source_account_id,
 		created_at, updated_at)
 		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', 'active',
-		'sealed', 'masked', 'gpt-4o-mini', ?, ?, ?, ?)`, id, namespaceID, "授权实例-"+id, runtimeID, sourceID, now, now)
+		?, 'masked', 'gpt-4o-mini', ?, ?, ?, ?)`, id, namespaceID, "授权实例-"+id, sealed, runtimeID, sourceID, now, now)
 }
 
 func (e *testEnv) seedTeamMember(t *testing.T, teamID, creatorID, memberID string) {

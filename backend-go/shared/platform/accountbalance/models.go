@@ -42,6 +42,7 @@ type Candidate struct {
 	Schedulable           bool        `json:"schedulable"`
 	CredentialFingerprint string      `json:"credential_fingerprint"`
 	ConfigJSON            string      `json:"config_json"`
+	ProxyProfileID        string      `json:"proxy_profile_id"`
 	Deleted               bool        `json:"deleted"`
 	Authorized            bool        `json:"authorized"`
 	BaseURL               string      `json:"base_url"`
@@ -50,7 +51,8 @@ type Candidate struct {
 	FirstProbe            bool        `json:"first_probe"`
 	Recovery              bool        `json:"-"`
 	APIKeyCount           int         `json:"api_key_count"`
-	// CredentialFingerprint / ConfigJSON 携带余额输入身份摘要的原始输入
+	// CredentialFingerprint / ConfigJSON / ProxyProfileID 携带余额输入身份
+	// 摘要的原始输入（ProxyProfileID 为空串 = 未绑代理，合法）。
 	APIKey        CredentialEnvelope  `json:"api_key"`
 	Credential    CredentialEnvelope  `json:"credential,omitempty"`
 	Proxy         *CredentialEnvelope `json:"proxy,omitempty"`
@@ -73,6 +75,7 @@ type Input struct {
 	// 与 Candidate 同名段同源；persistInput 据此落快照 inputDigest（BUG-0286）。
 	CredentialFingerprint string              `json:"credential_fingerprint"`
 	ConfigJSON            string              `json:"config_json"`
+	ProxyProfileID        string              `json:"proxy_profile_id"`
 	Schedulable           bool                `json:"schedulable"`
 	BaseURL               string              `json:"base_url"`
 	Config                QueryConfig         `json:"config"`
@@ -164,7 +167,7 @@ func (c Candidate) ToInput(trigger Trigger, now time.Time, ttl time.Duration) (I
 	return Input{
 		AccountID: c.AccountID, SystemAccountID: c.SystemAccountID, InputVersion: c.InputVersion, ConfigRevision: c.ConfigRevision,
 		Provider: c.Provider, Type: c.Type, Status: c.Status, Schedulable: c.Schedulable,
-		CredentialFingerprint: c.CredentialFingerprint, ConfigJSON: c.ConfigJSON,
+		CredentialFingerprint: c.CredentialFingerprint, ConfigJSON: c.ConfigJSON, ProxyProfileID: c.ProxyProfileID,
 		BaseURL: strings.TrimRight(c.BaseURL, "/"), Config: c.Config, APIKey: credential, Credential: credential,
 		Proxy: cloneCredential(c.Proxy), Trigger: trigger, IssuedAt: issued, ExpiresAt: expires, NextRefreshAt: cloneTime(c.NextRefreshAt), Recovery: c.Recovery,
 	}, nil

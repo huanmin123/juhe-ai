@@ -2,6 +2,8 @@ package accounts
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -113,11 +115,37 @@ func (s *Store) balanceService() *accountsbalance.Service {
 		},
 		ScheduleGate: m11ScheduleAllowed,
 		// BUG-0286：余额输入身份摘要与 J2 写端同一算法源（shared 执行核）。
-		BalanceInputDigest: accountbalance.BalanceInputDigest,
+		// 读端行带凭据密文列原文：此处解密提取逻辑身份（base_url + 有效
+		// Key 全池，与 J2 执行核同一 CredentialBalanceIdentity），解密失败
+		// 该账户摘要置空 = 不显示快照（安全方向降级），warn 留痕。
+		BalanceInputDigest: func(providerCode, credentialFingerprint, configJSON, credentialsEnvelope, proxyProfileID string) string {
+			identity, err := s.balanceCredentialIdentity(credentialsEnvelope)
+			if err != nil {
+				slog.Warn("账户余额输入凭据身份提取失败，该账户余额显示回退待查询",
+					"event", "account_balance_credential_identity_failed",
+					"error", err)
+				return ""
+			}
+			return accountbalance.BalanceInputDigest(providerCode, credentialFingerprint, configJSON, identity, proxyProfileID)
+		},
 		NewDispatchID: func() string {
 			return newID("dispatch")
 		},
 	})
+}
+
+// balanceCredentialIdentity 解密账户凭据密文并提取余额逻辑身份（base_url +
+// 有效 Key 全池）。与 J2 直读 reader 同源：同一 DecryptJSON 解封、同一
+// shared CredentialBalanceIdentity 提取，保证读写两侧摘要输入逐字节一致。
+func (s *Store) balanceCredentialIdentity(envelope string) (string, error) {
+	if strings.TrimSpace(envelope) == "" {
+		return "", errors.New("凭据密文为空")
+	}
+	var payload map[string]any
+	if err := DecryptJSON(s.secret, envelope, &payload); err != nil {
+		return "", err
+	}
+	return accountbalance.CredentialBalanceIdentity(payload), nil
 }
 
 // ---- 手动余额刷新 / 模型目录注入口（Store 字段保留，组合根装配不变） ----

@@ -44,11 +44,18 @@ const multiKeyDeadlineMessage = "上游余额查询超时"
 // gateway 手动刷新）共用的执行核。BUG-0286：成功返回（含上游失败形态的
 // QueryResult）统一在此打点余额输入身份摘要——快照负载携带 inputDigest，
 // gateway 读端以账户当前列值现算同一摘要做显示匹配；本地错误（解封失败等）
-// 不产生快照，无需打点。
+// 不产生快照，无需打点。摘要输入含凭据逻辑身份（base_url + 有效 Key 全池）
+// 与 proxy_profile_id：credential_fingerprint 只覆盖主 Key，不足以表达池内
+// 次成员与端点/出口变化（审核轮补齐）。
 func ExecuteAccountBalanceQuery(ctx context.Context, input Input, options QueryOptions) (QueryResult, error) {
 	result, err := executeAccountBalanceQuery(ctx, input, options)
 	if err == nil {
-		result.Snapshot.InputDigest = BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON)
+		// 身份计算重复解封一次凭据（AES-GCM 解密 + JSON 解析，微秒级），
+		// 换取单/多 Key 执行路径零侵入；解封失败时不打点（读端按缺摘要
+		// 处理 = 不显示快照，安全方向）。
+		if payload, _, perr := resolveCredentialPayload(input, options.Secret); perr == nil {
+			result.Snapshot.InputDigest = BalanceInputDigest(input.Provider, input.CredentialFingerprint, input.ConfigJSON, CredentialBalanceIdentity(payload), input.ProxyProfileID)
+		}
 	}
 	return result, err
 }
@@ -76,10 +83,10 @@ func executeAccountBalanceQuery(ctx context.Context, input Input, options QueryO
 	return executeMultiKeyBalanceQuery(ctx, input, options, keys, kind)
 }
 
-// effectiveCredentialKeys unseals the input credential envelope (same
+// resolveCredentialPayload unseals the input credential envelope (same
 // selection order and error wrapping as ExecuteBalanceQuery) and returns the
-// effective Key pool plus the envelope Kind the per-Key sub-envelopes reuse.
-func effectiveCredentialKeys(input Input, secret string) ([]string, string, error) {
+// plaintext payload map plus the envelope Kind the per-Key sub-envelopes reuse.
+func resolveCredentialPayload(input Input, secret string) (map[string]any, string, error) {
 	credential := input.APIKey
 	if strings.TrimSpace(credential.Ciphertext) == "" {
 		credential = input.Credential
@@ -88,7 +95,17 @@ func effectiveCredentialKeys(input Input, secret string) ([]string, string, erro
 	if err := openCredential(secret, credential, "api_key", &payload); err != nil {
 		return nil, "", fmt.Errorf("account-balance API Key envelope 无法安全解封: %w", err)
 	}
-	return EffectiveAPIKeys(payload), credential.Kind, nil
+	return payload, credential.Kind, nil
+}
+
+// effectiveCredentialKeys derives the effective Key pool from the unsealed
+// payload.
+func effectiveCredentialKeys(input Input, secret string) ([]string, string, error) {
+	payload, kind, err := resolveCredentialPayload(input, secret)
+	if err != nil {
+		return nil, "", err
+	}
+	return EffectiveAPIKeys(payload), kind, nil
 }
 
 // executeMultiKeyBalanceQuery 对齐 Node queryMultiKeyAccountBalance：共享总

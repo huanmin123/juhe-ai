@@ -72,10 +72,12 @@ type BalanceSnapshotRecord struct {
 
 // LoadBalanceInputDigests 批量现算账户的余额输入身份摘要（BUG-0286）：
 // BalanceInputDigest 的输入取 accounts 当前列值（provider_code /
-// credential_fingerprint / balance_query_config_json 列原文，COALESCE 空串），
-// 与 J2 周期路径的直读 reader 同源同列。分块大小对齐
-// LoadRelayBalanceSnapshotRecords 的 900。缺失 id 不出现在返回值中（读端
-// 匹配按缺 digest 处理 = 不显示快照）。
+// credential_fingerprint / balance_query_config_json 列原文、
+// credentials_encrypted 密文（实现解密提取 base_url + 有效 Key 全池逻辑
+// 身份）、proxy_profile_id，COALESCE 空串），与 J2 周期路径的直读 reader
+// 同源同列。分块大小对齐 LoadRelayBalanceSnapshotRecords 的 900。单行凭据
+// 解密失败不中断批量：该行摘要为空串（读端按缺 digest 处理 = 不显示快照，
+// 安全方向降级）。缺失 id 不出现在返回值中。
 func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []string) (map[string]string, error) {
 	out := make(map[string]string, len(accountIDs))
 	const chunkSize = 900
@@ -91,7 +93,7 @@ func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []stri
 			args = append(args, id)
 			placeholders = append(placeholders, "?")
 		}
-		query := s.store.Bind(`SELECT id, provider_code, COALESCE(credential_fingerprint, ''), COALESCE(balance_query_config_json, '')
+		query := s.store.Bind(`SELECT id, provider_code, COALESCE(credential_fingerprint, ''), COALESCE(balance_query_config_json, ''), COALESCE(credentials_encrypted, ''), COALESCE(proxy_profile_id, '')
 			FROM ` + s.store.Table("accounts") + `
 			WHERE deleted_at IS NULL AND id IN (` + strings.Join(placeholders, ", ") + `)`)
 		rows, err := s.store.DB().QueryContext(ctx, query, args...)
@@ -99,12 +101,12 @@ func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []stri
 			return nil, err
 		}
 		for rows.Next() {
-			var id, provider, fingerprint, configJSON string
-			if err := rows.Scan(&id, &provider, &fingerprint, &configJSON); err != nil {
+			var id, provider, fingerprint, configJSON, credentialsEnvelope, proxyProfileID string
+			if err := rows.Scan(&id, &provider, &fingerprint, &configJSON, &credentialsEnvelope, &proxyProfileID); err != nil {
 				_ = rows.Close()
 				return nil, err
 			}
-			out[id] = s.deps.BalanceInputDigest(provider, fingerprint, configJSON)
+			out[id] = s.deps.BalanceInputDigest(provider, fingerprint, configJSON, credentialsEnvelope, proxyProfileID)
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
