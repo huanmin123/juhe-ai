@@ -83,7 +83,11 @@ func (input *HandleUpstreamResponseInput) codexEncryptedContentRecoveryArm(pipeR
 		pipeResult.UncommittedResponseBody = nil
 		return UpstreamResponseHandlingResult{}, false
 	default:
-		// not_applicable（含 RequestBody 缺失、非对象体等）：完全维持现状。
+		// 防御分支：核心构造器 BuildCodexEncryptedContentRecoveryRetry 实际只会
+		// 返回 retry_with_body_variant / not_recoverable（nil body、解析失败、
+		// 无可清理项都归 not_recoverable，分别走上方重试臂与文案改写臂），本
+		// 分支当前不可达；保留作 switch 完整性兜底——语义为不重试、不改文案、
+		// 完全维持既有行为（BUG-0289 复查轮注释纠正）。
 		return UpstreamResponseHandlingResult{}, false
 	}
 }
