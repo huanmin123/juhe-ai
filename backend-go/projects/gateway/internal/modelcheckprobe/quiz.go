@@ -231,6 +231,11 @@ func quizRequestFailureEvaluation(question QuizQuestion, result Result) Evaluati
 	if result.ErrorMessage != "" {
 		evidence["error"] = result.ErrorMessage
 	}
+	// BUG-0292：截断已读的部分作答文本只作证据留存（对齐 BUG-0287 部分体
+	// 保留精神），不参与判分，也绝不冒充完整答案进入裁判。
+	if strings.TrimSpace(result.Output) != "" {
+		evidence["answerExcerpt"] = answerExcerpt(result.Output)
+	}
 	return withRetryEvidence(Evaluation{Kind: "custom_quiz", Status: "skipped", Evidence: evidence}, result)
 }
 

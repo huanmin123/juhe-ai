@@ -131,18 +131,33 @@ func TestW1AccountErrorRuleCooldownUntil(t *testing.T) {
 	if elapsed := parsed.Sub(now); elapsed < 11*time.Hour+30*time.Minute || elapsed > 12*time.Hour+31*time.Minute {
 		t.Fatalf("daily 冷却跨度 = %v", elapsed)
 	}
-	// 行为存疑：weekly 分支用 target.AddDate(daysAhead, 0, 0) 把目标天数
-	// 加在了 AddDate 的年参数上（daysAhead=3 → +3 年，Node 语义应为
-	// +3 天）。当前实际行为按「冷却落在数年后」断言；见报告
-	// 「疑似生产问题」。
+	// BUG-0292 已修复：weekly 分支原先把 daysAhead 误传给 AddDate 的年参数
+	// （Go 签名 AddDate(years, months, days)），daysAhead=3 被当作 +3 年；
+	// 现按 Node 语义传 AddDate(0, 0, daysAhead)。now=2026-09-13（周日）、
+	// WeeklyResetDay=3（周三）、WeeklyResetHour=8：daysAhead=(3-0+7)%7=3，
+	// target=2026-09-16 08:00 UTC，距 now 70 小时且在未来，不顺延。
+	// 70h 落在 passiveScheduleJitterWindowMs 的 [24h, 7d) 窗口 → 抖动 ±1h。
 	weekly := accountErrorHandlingRule{ResetStrategy: "weekly", WeeklyResetHour: 8, WeeklyResetDay: 3}
 	until = accountErrorRuleCooldownUntil(weekly, now, "seed-3")
 	parsed, err = time.Parse(time.RFC3339, until)
 	if err != nil {
 		t.Fatalf("解析 weekly until: %v", err)
 	}
-	if elapsed := parsed.Sub(now); elapsed < 365*24*time.Hour {
-		t.Fatalf("weekly 冷却按当前实现应为年跨度（AddDate 缺陷），got %v", elapsed)
+	if elapsed := parsed.Sub(now); elapsed < 69*time.Hour || elapsed > 71*time.Hour {
+		t.Fatalf("weekly 冷却跨度 = %v，want [70h-1h, 70h+1h]", elapsed)
+	}
+	// weekly 目标时刻已过则顺延一周（BUG-0292 第二处：顺延原写 AddDate(7, 0, 0)
+	// 即 +7 年，应为 AddDate(0, 0, 7)）。now=2026-09-16（周三）10:00、
+	// WeeklyResetDay=3、WeeklyResetHour=8 → 当日 08:00 已过，target 顺延到
+	// 2026-09-23 08:00 UTC（+7 天），距 now 166 小时（< 7d → 抖动 ±1h）。
+	rolloverNow := time.Date(2026, 9, 16, 10, 0, 0, 0, time.UTC)
+	until = accountErrorRuleCooldownUntil(weekly, rolloverNow, "seed-4")
+	parsed, err = time.Parse(time.RFC3339, until)
+	if err != nil {
+		t.Fatalf("解析 weekly 顺延 until: %v", err)
+	}
+	if elapsed := parsed.Sub(rolloverNow); elapsed < 165*time.Hour || elapsed > 167*time.Hour {
+		t.Fatalf("weekly 顺延冷却跨度 = %v，want [166h-1h, 166h+1h]", elapsed)
 	}
 	if max64(5, 3) != 5 || max64(3, 5) != 5 {
 		t.Fatal("max64 错误")

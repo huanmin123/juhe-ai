@@ -2,6 +2,7 @@
 
 > **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档（归档已移出仓库，git 历史可溯）；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
 
+- [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)：同层"速度-缓存率死区裁决"调度契约（cost_first 10s / speed_first 5s 阈值、缓存率 10pp 死区、滚动 24h 快照）与账户列表"用量(日)"缓存率 tag；设计稿，实施交付时按其第 13 节清单同步权威文档。
 - [系统指标统计设计](系统指标统计设计.md)：系统指标统计页三层契约（进程状态双卡、Go Runtime 角色×指标组趋势与后台任务表），含 samplingEnabled 空态、POSTGRES_URL 回退与已删除 ROLE 的 env 契约。
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)：记录 reasoning 可见性诊断边界，以及不在响应热路径实施质量拦截的当前决定。
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)：记录当前账户级健康机制的代码事实，以及多模型按实际 Route / Key 精确探测和隔离的目标设计。
@@ -50,6 +51,7 @@
 - [使用手册页面设计](使用手册页面设计.md)
 - [策略路由设计](策略路由设计.md)
 - [普通路由速度优先延迟切换设计](普通路由速度优先延迟切换设计.md)
+- [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)
 - [合并路由设计](合并路由设计.md)
 - [AI 账户短窗口热质量与精准切号设计](AI账户短窗口热质量与精准切号设计.md)
 - [切号时有效上游目标与上下文迁移设计](切号时有效上游目标与上下文迁移设计.md)

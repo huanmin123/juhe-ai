@@ -90,7 +90,9 @@ func ExecuteWithRetry(ctx context.Context, request Request, options Options, ret
 		// HTTP 200 is definitive quality evidence even when the body carries a
 		// provider error envelope (for example model_not_found). Node does not
 		// retry such responses; only transport/non-200 failures consume retries.
-		if result.Success || result.HTTPStatus == http.StatusOK || index == len(timeouts)-1 {
+		// BUG-0292：200 定论仅指完整读取的响应体；Incomplete 200 是传输面
+		// 请求失败，消耗阶梯晋级下一级更大预算，末轮照常返回。
+		if result.Success || (result.HTTPStatus == http.StatusOK && !result.Incomplete) || index == len(timeouts)-1 {
 			return attachRetry(attempts, waits, started, now, len(timeouts)), nil
 		}
 	}
@@ -105,7 +107,10 @@ func isTerminalProbeFailure(result Result) bool {
 	if result.Success {
 		return false
 	}
-	if result.HTTPStatus == http.StatusOK {
+	// BUG-0292：Incomplete 200 是传输面请求失败，按设计 §1.2/§5.7 请求失败
+	// 口径参与终态判定——阶梯耗尽时为家族终态；完整 200 的语义失败仍是
+	// 质量定论，不终止家族。
+	if result.HTTPStatus == http.StatusOK && !result.Incomplete {
 		return false
 	}
 	if result.RetryMaxAttempts <= 0 {

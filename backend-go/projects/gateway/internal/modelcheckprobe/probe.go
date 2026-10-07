@@ -51,8 +51,14 @@ const (
 )
 
 type Result struct {
-	HTTPStatus          int
-	Success             bool
+	HTTPStatus int
+	Success    bool
+	// Incomplete marks a transport-level failure: the response body was not
+	// read to completion (connection interrupted mid-body, or the attempt
+	// budget cut a still-active stream). It is request-failure evidence for
+	// the retry ladder, never a quality verdict; Output then carries only the
+	// best-effort partial text for diagnostics. BUG-0292.
+	Incomplete          bool
 	ExpectedModel       string
 	RequestModel        string
 	ModelMappingApplied bool
@@ -559,16 +565,38 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 	// bounded/read failure is still an HTTP response and its status is useful
 	// evidence to the caller.
 	result.HTTPStatus = response.StatusCode
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	// BUG-0292：分块读取并保留已读 buffer。响应体读取中断（连接断开，或
+	// 本级预算到点截断仍在活跃输出的流）不是质量定论：已读部分先按语义完
+	// 整性裁决，不完整时保留部分证据并交由重试阶梯晋级（与 accountprobe
+	// BUG-0287 readUpstreamWithClient 同源形态）。
+	body, readErr := readResponseBody(response.Body, maxBytes, requestCtx)
 	if int64(len(body)) > maxBytes {
 		result.ErrorMessage = "J3b upstream response exceeded limit"
 		return result, nil
 	}
+	observedModel, output, usage, parsed, parseErrorMessage := parseResponseDetailed(request.Protocol, body)
+	if readErr != nil && responseBodyIsSemanticallyComplete(body, parseErrorMessage) {
+		// 已读内容已携带完整语义（完整 JSON 或流式终态事件）且无流内失败
+		// 信封：尾部传输错误不得覆盖语义成功，按完整响应正常判定。
+		readErr = nil
+	}
 	if readErr != nil {
-		result.ErrorMessage = "J3b upstream response read failed"
+		result.Incomplete = true
+		// 已读部分文本只作排障证据保留，绝不冒充模型答案进入评分或裁判。
+		result.Output = output
+		// 错误分类对齐 Do 阶段（上方 Do 分支同序）：本级预算到点按探针
+		// 超时归类以保留阶梯晋级证据；外层取消不得伪造成上游读取失败。
+		switch {
+		case errors.Is(requestCtx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+			result.ErrorMessage = "J3b probe canceled"
+		case errors.Is(requestCtx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+			result.ErrorMessage = "J3b probe timed out"
+		default:
+			result.ErrorMessage = "J3b upstream response read failed"
+		}
 		return result, nil
 	}
-	result.ObservedModel, result.Output, result.Usage, result.JSON, result.ErrorMessage = parseResponseDetailed(request.Protocol, body)
+	result.ObservedModel, result.Output, result.Usage, result.JSON, result.ErrorMessage = observedModel, output, usage, parsed, parseErrorMessage
 	result.Success = response.StatusCode == http.StatusOK && result.ErrorMessage == ""
 	if result.Success && settle != nil {
 		settle(true)
@@ -578,6 +606,72 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 		result.ErrorMessage = fmt.Sprintf("J3b upstream returned HTTP %d", response.StatusCode)
 	}
 	return result, nil
+}
+
+// readResponseBody reads the bounded upstream body in chunks and keeps every
+// byte already received when the read ends in an error or the attempt budget
+// expires mid-body. A buffer larger than maxBytes signals the limit branch at
+// the call site; a nil error means the body was read to completion.
+func readResponseBody(body io.Reader, maxBytes int64, requestCtx context.Context) ([]byte, error) {
+	buffer := make([]byte, 0, 8192)
+	chunk := make([]byte, 8192)
+	for {
+		if int64(len(buffer)) > maxBytes {
+			return buffer, nil
+		}
+		n, readErr := body.Read(chunk)
+		if n > 0 {
+			buffer = append(buffer, chunk[:n]...)
+		}
+		if int64(len(buffer)) > maxBytes {
+			return buffer, nil
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return buffer, nil
+			}
+			return buffer, readErr
+		}
+		if requestCtx.Err() != nil {
+			return buffer, requestCtx.Err()
+		}
+		if n == 0 {
+			return buffer, nil
+		}
+	}
+}
+
+// responseBodyIsSemanticallyComplete judges whether the already-read body
+// already carries a complete response despite the transport read ending in an
+// error: a fully parseable JSON document, or an SSE stream that has already
+// delivered its terminal event, in both cases without an in-stream failure
+// envelope. BUG-0292：终态已到但连接未干净关闭时按完整响应判定。
+func responseBodyIsSemanticallyComplete(body []byte, parseErrorMessage string) bool {
+	if parseErrorMessage != "" {
+		return false
+	}
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
+	var directValue map[string]any
+	if json.Unmarshal(trimmed, &directValue) == nil && directValue != nil {
+		return true
+	}
+	for _, event := range parseSSEResponseEvents(trimmed) {
+		if event.payload == nil {
+			continue
+		}
+		candidate := event.payload
+		if nested, ok := event.payload["response"].(map[string]any); ok {
+			candidate = nested
+		}
+		typeName := strings.TrimSpace(asString(event.payload["type"]))
+		if typeName == "" {
+			typeName = event.event
+		}
+		if isResponseTerminalEvent(typeName, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildURL(endpoint string, protocol modelcheckprofile.Protocol, path string, adapter string) (string, error) {

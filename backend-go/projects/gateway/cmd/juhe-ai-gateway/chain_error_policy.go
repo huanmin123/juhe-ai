@@ -810,11 +810,11 @@ func accountErrorRuleCooldownUntil(rule accountErrorHandlingRule, now time.Time,
 	target := time.Date(now.Year(), now.Month(), now.Day(), int(resetHour), 0, 0, 0, now.Location())
 	if rule.ResetStrategy == "weekly" {
 		daysAhead := (int(rule.WeeklyResetDay) - int(now.Weekday()) + 7) % 7
-		target = target.AddDate(daysAhead, 0, 0)
+		target = target.AddDate(0, 0, daysAhead)
 	}
 	if !target.After(now) {
 		if rule.ResetStrategy == "weekly" {
-			target = target.AddDate(7, 0, 0)
+			target = target.AddDate(0, 0, 7)
 		} else {
 			target = target.AddDate(0, 0, 1)
 		}
