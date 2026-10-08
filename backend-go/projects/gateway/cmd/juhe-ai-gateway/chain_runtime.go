@@ -113,6 +113,11 @@ type chainRuntimeServices struct {
 	// AccountCircuitRecovery 是 memory 形态的进程内恢复驱动组件
 	//（redis 形态与构造失败降级路径保持零值，main.go 判 Run 非 nil 才挂载）。
 	AccountCircuitRecovery supervisor.Component
+	// KeyModelMemoryRecovery 是 memory 形态的 key-model 能力熔断记忆恢复
+	// 驱动组件（PLAN-20261008T113056000Z 根治阶段，chain_keymodel_recovery.go；
+	// redis 形态恢复归 jobs keymodelrecovery，字段保持零值，main.go 判
+	// Run 非 nil 才挂载）。
+	KeyModelMemoryRecovery supervisor.Component
 	// ClientIPSlots is the D-109 high-concurrency client-IP slot family.
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
 	// HighConcurrencyQueue is the D-109 high-concurrency group short queue
@@ -585,7 +590,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		NodeWriterStopped: cfg.BusinessNodeWriterStopped,
 	}, chainCircuitWaitLogger{inner: slog.Default()})
 	if circuitsErr != nil {
-		return nil, circuitsErr
+		services.Close()
+		return nil, fmt.Errorf("create gateway account circuit service: %w", circuitsErr)
 	}
 	services.AccountCircuits = accountCircuitRuntime.Service
 	// PLAN-20261008T113056000Z：store 与 mutation hook 外露给恢复组件
@@ -600,13 +606,14 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if cfg.RuntimeStateDriver != "redis" {
 		recoveryComponent, recoveryErr := newChainAccountCircuitRecoveryComponent(accountCircuitRuntime, composed, cfg)
 		if recoveryErr != nil {
+			services.Close()
 			return nil, recoveryErr
 		}
 		services.AccountCircuitRecovery = recoveryComponent
 	}
 
 	// D-134：本地账户屏蔽状态（Node account-local-suppression-store 单例；
-	// memory 驱动才可用，redis 驱动按 canUseProcessLocal=false 全量直通），
+	// 进程内实现，装配未设 CanUseProcessLocal——构造器默认恒可用），
 	// 恢复等待引擎复用同一 wait coordinator 语义。并发投影挂共享计数器的
 	// total 账户并发（Node getAccountCurrentConcurrency）。
 	// R4：CircuitSuppressionDelayLadderMs 为测试注入点；nil 保持生产阶梯
@@ -670,6 +677,26 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("select key-model runtime store: %w", keyModelErr)
 	}
 	services.KeyModelStore = keyModelStore
+
+	// PLAN-20261008T113056000Z 根治阶段：key-model 能力熔断记忆的恢复驱动。
+	// memory 形态（RuntimeStateDriver != "redis"）下 Select 返回的就是
+	// selector 内建的进程内 store，类型断言外露给恢复组件（不二次
+	// Select("memory")——那会改写 selector 的 driver 状态）；redis 形态
+	// 恢复职责归 jobs keymodelrecovery，组件保持零值不挂载。构造失败按
+	// 组合根 fail-fast 契约向上传播。
+	if cfg.RuntimeStateDriver != "redis" {
+		keyModelMemoryStore, memoryOK := keyModelStore.(*gatewayaccounteffects.InMemoryKeyModelRuntimeStore)
+		if !memoryOK {
+			services.Close()
+			return nil, fmt.Errorf("select key-model runtime store: memory 驱动未返回进程内 store")
+		}
+		keyModelRecoveryComponent, keyModelRecoveryErr := newChainKeyModelMemoryRecoveryComponent(keyModelMemoryStore, composed, cfg)
+		if keyModelRecoveryErr != nil {
+			services.Close()
+			return nil, keyModelRecoveryErr
+		}
+		services.KeyModelMemoryRecovery = keyModelRecoveryComponent
+	}
 
 	// ---- recoverable wait (G11 circuit wait engine) ----
 	// preauth 与 dispatch 共用同一等待引擎实例（无状态；dispatch 侧经

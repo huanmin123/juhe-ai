@@ -634,6 +634,10 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 						RequestID:     usageContext.TraceID,
 						AttemptID:     keyModelAttemptID,
 						FailureBudget: in.keyModelFailureBudget,
+						// PLAN-20261008T113056000Z 登记补缺：不传 RecoveryTarget
+						// 时 memory store 的 recoveryTargets 恒空，恢复 runner
+						// Sweep 时 GetRecoveryTarget 返回 nil 直接跳过（空转）。
+						RecoveryTarget: gatewayKeyModelRecoveryTarget(route, usageContext),
 					})
 					if prepErr != nil {
 						// upstream-dispatch.ts:1240-1242: release the slot and let

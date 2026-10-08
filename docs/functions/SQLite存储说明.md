@@ -272,9 +272,9 @@ Node 时代 `PLAN-0115` 页面统一确认与 revision / epoch 契约为历史�
 - `process_event_loop_samples`：（Node 时代表名与采样语义，见上文统计清单标注）按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，Node 时代角色为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`，用于区分主 Web 进程、写入 worker、统计 worker、运维 worker 和本地 DB service 哪个进程卡顿或内存爬升。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟有效样本数、平均值、最大值，以及进程 RSS / Heap 的平均值和峰值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势和进程内存占用趋势均读取该窗口，不在接口请求时扫描 `process_event_loop_samples`。
-- `database_storage_snapshots`：由 Go F2 表监控 owner 保存各 SQLite 源库或 PostgreSQL schema 的容量快照。standalone 记录在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 指定的专用 SQLite 文件，performance 记录在 PostgreSQL `juhe_stats`；不再写入 Node 统计结果库。F2 每分钟直接异步采样，源库不可读或 schema 缺失时显式失败，绝不写零值占位快照。
+- `database_storage_snapshots`：由 Go F2 表监控 owner 保存各 SQLite 源库或 PostgreSQL schema 的容量快照。standalone 记录在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 指定的专用 SQLite 文件，performance 记录在 PostgreSQL `juhe_stats`；不再写入 Node 统计结果库。F2 按默认间隔（见下条）直接异步采样，源库不可读或 schema 缺失时显式失败，绝不写零值占位快照。
 - `table_storage_snapshots`：由 Go F2 保存表级可选行数、表大小、索引大小、总大小、分区 / 归档状态和 1 小时 / 24 小时增长。SQLite 在稳定目录与并发预算内执行受控精确 `COUNT(*)`，可选 `dbstat` 不可用时大小和页数保持未知；PostgreSQL 使用 catalog 与 relation size。F2 不依赖 Node stats-worker 游标轮转，也不从 Node 表保留流程接管写入。
-- F2 默认每 1 分钟采样，历史默认保留最近 30 天；同一 Go owner 在提交成功后执行批量 retention。Node stats-worker、Node data-retention 和硬清理均不删除两张 F2 快照表。
+- F2 自 2026-10-08 起默认每 1 小时采样（原默认 1 分钟；默认档含 ±30 分钟调度抖动，实际间隔 30~90 分钟），历史默认保留最近 30 天；同一 Go owner 在提交成功后执行批量 retention。Node stats-worker、Node data-retention 和硬清理均不删除两张 F2 快照表。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。IP 范围窗口额外使用 `scope_type = client_ip_range_window` 记录窗口刷新 ready/stale 标记，只表达窗口是否完成刷新，不保存数量或范围总量。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
 - `usage_record_cleanup_deductions`：API Key 关联记录物理清理的统计扣减账本，按 `usage_id + source_shard_key` 记录已扣减但可能尚未完成 shard 删除的使用记录；统计扣减和账本标记在同一个统计结果库事务内提交，用于跨 SQLite 文件清理失败后的幂等续跑。
 - 已删除 AI 账户和 API Key 的关联记录清理只由后台 record maintenance worker 执行；用户删除请求只提交业务库删除事实，并登记 dataset 清理目标。清理过程按库边界拆成短事务：usage shard 删除、stats 扣减 / 维度清理 / 窗口刷新、dataset 审计和模型检测删除互不包在同一个长事务里。遇到 SQLite `database is locked` 时，清理目标写入 `last_blocked_reason` 并等待后续重试，不能把可重试锁竞争抛成用户删除失败。

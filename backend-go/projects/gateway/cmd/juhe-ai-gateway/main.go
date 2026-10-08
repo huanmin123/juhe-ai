@@ -842,6 +842,12 @@ func main() {
 		if chain := composed.chainServices; chain != nil && chain.AccountCircuitRecovery.Run != nil {
 			components = append(components, chain.AccountCircuitRecovery)
 		}
+		// key-model 能力熔断记忆恢复驱动（PLAN-20261008T113056000Z 根治
+		// 阶段）：同上仅 memory 运行态形态装配（redis 形态归 jobs
+		// keymodelrecovery），组件零值不挂载。
+		if chain := composed.chainServices; chain != nil && chain.KeyModelMemoryRecovery.Run != nil {
+			components = append(components, chain.KeyModelMemoryRecovery)
+		}
 		// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标（role 默认
 		// gateway，读 jobs+gateway 同一份共享 trend 库）。store 未启用（默认）
 		// 时组合根不装配采样器；store 句柄由 composed.Shutdown 关闭。

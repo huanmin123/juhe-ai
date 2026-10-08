@@ -96,11 +96,11 @@ F3/F4 的 ingest HTTP 监听器已随去跨进程战役删除：审计与操作�
 | `account-circuit-control-plane-maintenance` | 账户电路运行态为 Redis 单实现，jobs 与网关共用键空间，无 Redis 时不得落库复制 | 进程重启后的 ledger 重建由 gateway 自身按 §7.5 渐进恢复承担；孤儿结清/保留清理在 Redis 形态执行 |
 | `account-circuit-recovery` | 同上 | 熔断恢复驱动由 gateway 进程内组件承担（见下），无用户损失 |
 | `normal-route-speed-first-recovery-probe` | speed-first 降级运行态仓储依赖 Redis | 无实际损失：降级本身是 TTL 自愈（默认 300s）+ 排序降位（非禁用），真实流量首字达标即清除 |
-| key-model Redis 恢复（jobs `keymodelrecovery` Runner） | `Enabled = JUHE_AI_REDIS_STATE_URL != ""` | 见下「gateway 进程内恢复驱动覆盖范围」的边界说明 |
+| key-model Redis 恢复（jobs `keymodelrecovery` Runner） | `Enabled = JUHE_AI_REDIS_STATE_URL != ""` | memory 形态由 gateway 进程内 `key-model-memory-recovery` 组件承担（见下），无用户损失 |
 
 账户列表可用性不受任何上述缺席影响：SQLite 形态的账户列表可用性为实时现算（网关进程内按当前状态推导），不依赖后台投影任务。
 
-gateway 进程内恢复驱动覆盖范围（2026-10-08 补齐，熔断设计 §7.6）：memory 运行态形态下 gateway 自带 `account-circuit-recovery` 组件（5s 节拍 + 抖动），按期推进熔断账户的确认/金丝雀/退避直至 `CLOSED`，恢复转换经既有 persist hook 投影 ledger（管理页可见推进）；redis 运行态形态下恢复职责仍归 jobs，该组件不装配。覆盖边界：key-model 能力熔断记忆（单进程内 `(凭据来源账户, Key, 模型)` 维度的熔断）目前**没有**恢复驱动——jobs 的 Redis 恢复 Runner 在无 Redis 时不跑，gateway 进程内的同语义 memory Runner 尚无装配点（其 exact key/model 诊断链在 jobs internal 包，装配待裁决），该记忆因此会持续到进程重启（重启即清零）；账户级熔断不受此影响。
+gateway 进程内恢复驱动覆盖范围（2026-10-08 补齐，熔断设计 §7.6）：memory 运行态形态下 gateway 自带两个恢复组件——`account-circuit-recovery`（5s 节拍 + 抖动，按期推进熔断账户的确认/金丝雀/退避直至 `CLOSED`）与 `key-model-memory-recovery`（1s 节拍 + 抖动，按期推进 key-model 能力熔断记忆的恢复探针，3 连成功解除屏蔽；PLAN-20261008T113056000Z 根治阶段）。两者恢复转换/结算均经进程内事实推进，管理页可见；redis 运行态形态下恢复职责仍归 jobs（key-model 归 jobs `keymodelrecovery`），组件不装配。key-model 恢复的已知边界：探针输入构造不可行的账户（OAuth 类型——exact key/model 探针首版仅支持 `api_key`、账户配置已变更致 revision 围栏不匹配、或账户状态/绑定不满足探针输入契约）按 unknown 中性处理，等待自然退避，不会误治愈；账户级熔断不受此影响。
 
 ### 只补 Redis 环境变量会导致 gateway 拒启
 

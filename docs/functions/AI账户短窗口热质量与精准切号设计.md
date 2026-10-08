@@ -666,6 +666,18 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 5. 投影：sweep 的每次 store mutation 以 `MutationEvent` 形状交给主链既有 persist hook（`Bridge.Observe` 包装，§7.5 Go 装配事实段）——恢复转换与请求热路径转换投影同一条 ledger 管道，管理页 circuitSummary 可见推进；owner gate 未就绪（hook 为 nil）时 sweep 照常推进运行态，仅 ledger 展示滞后，不 fail。
 6. 与 BUG-0295 渐进恢复的互补关系：BUG-0295 修的是"进程重启后 ledger → 运行态的重建与懒恢复"（恢复的起点），本节修的是"运行期内到期状态无人推进"（恢复的过程）；两者叠加后本地单机形态的熔断生命周期与 Redis 形态等价闭环。
 
+#### 7.6.1 key-model 能力熔断记忆恢复驱动（gateway 进程内，PLAN-20261008T113056000Z 根治阶段，2026-10-08）
+
+key-model 能力熔断记忆（单进程内 `(凭据来源账户, Key 指纹, 客户端模型, 上游模型, 端点形态)` 维度的前台准入短电路，D-133/BUG-0175 引入，状态机契约见 `gatewayaccounteffects` 包注释）在 memory 运行态形态下曾有同族缺口：`KeyModelMemoryRecoveryRunner` 已实现但无装配点，且 dispatch 的 Prepare 调用不登记 `RecoveryTarget`——恢复 runner 扫描到到期状态时因 target 缺失直接跳过（空转）。根治阶段补齐三件事：
+
+1. **Target 登记链**：dispatch Prepare（`gatewaydispatch/dispatchsingle.go`）构造 `RecoveryTarget{AccountID, GroupID, SystemAccountID}` 随失败 intent 写入 memory store 的 `recoveryTargets`（`RecordFailure` → `normalizeRecoveryTarget` 三字段非空强制）。字段语义对照 Node `recoveryTarget(route)`（key-model-attempt.ts:230-237）：`GroupID`/`SystemAccountID` 取**请求上下文**（Go 侧 `GatewayFailureUsageContext.GroupID/SystemAccountID`，即 Node `getRequestContext()` 的请求解析组与系统账户；不是候选账户的 `BoundGroupID`/`SystemAccountID`）；`AccountID` 取路由载体账户 ID（Node `route.accountId` = 候选账户 ID，不是 capability 的 `credentialSourceAccountId`）。任一字段缺失不登记（镜像 Node `undefined`，跳过登记不报错）；登记只发生在非 main-probe、failure budget 可认领的失败结算臂。构造是纯字段读取，热路径无查询。
+2. **恢复驱动装配**：memory 形态（`JUHE_AI_RUNTIME_STATE_DRIVER != "redis"`）装配 supervisor 组件 `key-model-memory-recovery`：节拍 1s（对齐 `KeyModelRecoveryScanIntervalMs`）+ 初始延迟 5s + `schedulejitter` 抖动；每轮 `WithTimeout` 120s（runner 每 Sweep 的选中数受并发上限 32 收敛——batch 128 只约束 ListDue——32 探针并发执行且各受 30s 租约内硬超时，理论最坏约 30s，取 4× 余量覆盖调度毛刺）；单轮失败仅告警，组件只在进程 ctx 取消时退出。runner 内部契约（batch 128 / 并发 32 / 探针租约 45s 每 10s 续 / 探针超时 30s → unknown / 连续 3 次恢复成功 CLOSED）与 Redis 形态共享同一纯状态机。
+3. **探针执行链**（照抄 jobs `internal/keymodelrecovery` 适配契约；探针执行器为下沉共享包 `shared/platform/accounttest/exactkeyprobe`，两侧以包注释互指）：按 `state.CredentialSourceAccountID` 加载窄输入 → 账户行 `dispatch_revision` 与 `state.DispatchRevision` 不匹配（配置已变更）→ unknown 中性；账户加载失败 → unknown 中性；`ProbeExactKeyModel`（钉 `state.KeyFingerprint + state.FinalUpstreamModel + state.UpstreamEndpointMode`，保证"探测路由 == 熔断路由"）outcome 映射与 jobs `defaultProbe` 逐分支一致：`complete_success` → `complete_success`、`probe_task_failure` → `unknown`、其余（framing 中性/上游失败）→ `upstream_not_complete`。凭据密钥与 gateway 进程既有的业务凭据 secret 同源（`JUHE_AI_SECRET`，Key 指纹 HMAC 与 v1 封套同契约）。
+
+窄 InputLoader 职责边界（gateway 自己的单账户窄查询，SQLite/PG 双方言）：只取账户行凭据（解密 → API Key 重新封套 + HMAC 指纹，经下沉 `DirectInput.ToInput` 原语）+ base_url 解析 + 健康模型映射 + dispatch revision 围栏；**不做 J1 资格守卫**（调度谓词 / `next_health_check_at` / 输入版本 epoch）、**不做配额过滤**——恢复探针场景账户刚在服务流量。账户状态/有效期/冷却 fence/启用绑定由 `ToInput` 固有守卫 fail-closed：输入构造失败 → unknown 中性，不误治愈。已知限制：探针执行器首版仅支持 `api_key` 账户（OAuth 落 `key_model_credential_type_unsupported` → unknown 中性等待自然退避），扩大支持属产品决策另行评估。
+
+双 owner 互斥裁决：redis 驱动下 key-model 运行态经 Redis 共享，恢复职责归 jobs `keymodelrecovery`，gateway 不装配本组件（`RuntimeStateDriver != "redis"` 是运行态归属决定的依赖门禁，非功能开关，无配置项），同进程不会双驱动重复探针。本组件与主链 `account-circuit-recovery`（本节上文）平行，同属 memory 形态的 gateway 进程内恢复族，互不管辖对方的状态面。
+
 `dispatchRevision` 跨 DB 与 Redis 不做伪原子事务，采用 outbox saga：
 
 1. 配置事务只负责原子递增持久 `dispatchRevision` 并写入 outbox。

@@ -104,6 +104,30 @@ func gatewayKeyModelCapabilityForRoute(account AccountCandidate, clientModel str
 	}
 }
 
+// gatewayKeyModelRecoveryTarget mirrors the Node recoveryTarget(route)
+// (key-model-attempt.ts:230-237，PLAN-20261008T113056000Z 根治阶段登记补缺）：
+// account/group/system 三元组取自「请求上下文 + 路由载体」，与 Node
+// getRequestContext() 逐字段同源——groupId/systemAccountId 是请求解析出的
+// 上下文（Go 侧即 dispatch 循环携带的 GatewayFailureUsageContext，而非
+// AccountCandidate.BoundGroupID/SystemAccountID），accountId 取
+// route.AccountID（候选账户 ID，Node route.accountId=account.id，不取
+// capability 的 credentialSourceAccountId）。任一字段缺失返回 nil，镜像
+// Node 的 undefined：recordFailure 对 nil recoveryTarget 跳过登记不报错
+// （keymodelmemory.go normalizeRecoveryTarget 三字段非空强制）。纯字段读取，
+// 仅三字段齐全时一次小分配；热路径（每请求 Prepare 输入构造）无查询。
+func gatewayKeyModelRecoveryTarget(route *gatewayaccounteffects.GatewayKeyModelCapability, usage *gatewaypreauth.GatewayFailureUsageContext) *gatewayaccounteffects.KeyModelRecoveryTarget {
+	if route == nil || usage == nil {
+		return nil
+	}
+	groupID := strings.TrimSpace(usage.GroupID)
+	systemAccountID := strings.TrimSpace(usage.SystemAccountID)
+	accountID := strings.TrimSpace(route.AccountID)
+	if groupID == "" || systemAccountID == "" || accountID == "" {
+		return nil
+	}
+	return &gatewayaccounteffects.KeyModelRecoveryTarget{AccountID: accountID, GroupID: groupID, SystemAccountID: systemAccountID}
+}
+
 // mergePermitLostSignal mirrors GatewayKeyModelAttempt.transportSignal
 // (key-model-attempt.ts `AbortSignal.any([parent, renewalAbort])`): the
 // derived signal cancels when the parent request signal cancels or the

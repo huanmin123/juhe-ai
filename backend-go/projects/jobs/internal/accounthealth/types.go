@@ -103,10 +103,3 @@ type CurrentState struct {
 	AccountStatus    string
 	CooldownFence    *exactkeyprobe.CooldownFence
 }
-
-type ProbeResult struct {
-	Outcome      string
-	StatusCode   int
-	ErrorCode    string
-	ErrorMessage string
-}
