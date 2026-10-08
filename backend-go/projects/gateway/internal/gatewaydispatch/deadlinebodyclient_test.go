@@ -365,7 +365,7 @@ func TestNormalizeOpenAICodexClientHeaders(t *testing.T) {
 	if headers.Get("Originator") != OpenAICodexOriginator {
 		t.Fatalf("Originator = %q", headers.Get("Originator"))
 	}
-	if headers.Get("User-Agent") != OpenAICodexUserAgent {
+	if headers.Get("User-Agent") != gatewayupstream.EffectiveOpenAICodexUserAgent() {
 		t.Fatalf("User-Agent = %q", headers.Get("User-Agent"))
 	}
 	if headers.Get("Session-Id") == "" || headers.Get("Thread-Id") == "" || headers.Get("X-Client-Request-Id") == "" {

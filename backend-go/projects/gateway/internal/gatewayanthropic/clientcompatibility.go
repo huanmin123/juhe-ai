@@ -14,14 +14,9 @@ import (
 const (
 	GatewayClientProfileHeader = "x-juhe-client-profile"
 
-	// Claude Code 画像补齐版本（对齐真实 Claude Code CLI）。版本跟随官方
-	// changelog 最新稳定（code.claude.com；2026-10-02 锚点 2.1.285），与
-	// upstreamidentity.ClaudeCodeUserAgent 的 cli 入口变体同步维护。内置
-	// 默认；运行时可被 upstreamidentity.SetClientVersionOverrides 覆盖
-	//（EffectiveAnthropicClaudeCodeUserAgent / upstreamidentity.
-	// EffectiveClaudeCodeVersion）。
-	AnthropicClaudeCodeVersion    = "2.1.285"
-	AnthropicClaudeCodeUserAgent  = "claude-cli/" + AnthropicClaudeCodeVersion + " (external, sdk-cli)"
+	// Claude Code 补齐 UA 的 sdk-cli 入口变体由
+	// EffectiveAnthropicClaudeCodeUserAgent 运行时拼接（版本事实与覆盖机制在
+	// upstreamidentity）；与 cli 变体的格式差异见该函数注释。
 	ClaudeCodeSessionIDHeader     = "x-claude-code-session-id"
 	ClaudeCodeAgentIDHeader       = "x-claude-code-agent-id"
 	AnthropicBetaHeader           = "anthropic-beta"

@@ -44,9 +44,10 @@ func TestApplySystemClientHeadersSelectsZCodeForWholeGLMFamily(t *testing.T) {
 	}
 }
 
-// BUG-0201：GPT/Codex 家族的 API Key 系统请求仅注入 Codex Desktop 静态 UA；
+// BUG-0201：GPT/Codex 家族的 API Key 系统请求仅注入 Codex exec 静态 UA
+//（源码锚定 exec surface，客户端版本自动跟版设计 §8.1）；
 // originator/session-id 等每请求动态头由调用方生成。
-func TestApplySystemClientHeadersUsesCodexDesktopUAForGPTFamilyAPIKeys(t *testing.T) {
+func TestApplySystemClientHeadersUsesCodexExecUAForGPTFamilyAPIKeys(t *testing.T) {
 	for _, input := range []Input{
 		{ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", CredentialType: "api_key"},
 		{ProviderCode: "codex", CredentialType: "api_key"},
@@ -54,8 +55,8 @@ func TestApplySystemClientHeadersUsesCodexDesktopUAForGPTFamilyAPIKeys(t *testin
 	} {
 		headers := http.Header{}
 		ApplySystemClientHeaders(headers, input)
-		if headers.Get("User-Agent") != CodexDesktopUserAgent || len(headers) != 1 {
-			t.Fatalf("GPT family API-key requests must carry the static Codex Desktop UA only: input=%+v headers=%v", input, headers)
+		if headers.Get("User-Agent") != CodexExecUserAgent || len(headers) != 1 {
+			t.Fatalf("GPT family API-key requests must carry the static Codex exec UA only: input=%+v headers=%v", input, headers)
 		}
 		for _, dynamic := range []string{"Originator", "Session-Id", "Thread-Id", "X-Codex-Window-Id"} {
 			if value := headers.Get(dynamic); value != "" {

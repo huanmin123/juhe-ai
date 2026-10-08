@@ -77,7 +77,7 @@ func TestWAApplyClientCompatibilityHeaders(t *testing.T) {
 		request.Header.Set("User-Agent", "some-client/1.0")
 		request.Header.Set(AnthropicBetaHeader, "Interleaved-Thinking-2025-05-14, output-128k")
 		session := ApplyClientCompatibilityHeaders(request, ClientCompatibilityOptions{RequestClientCompatibility: "claude_code"})
-		if request.Header.Get("User-Agent") != AnthropicClaudeCodeUserAgent {
+		if request.Header.Get("User-Agent") != EffectiveAnthropicClaudeCodeUserAgent() {
 			t.Fatalf("User-Agent = %q", request.Header.Get("User-Agent"))
 		}
 		merged := request.Header.Get(AnthropicBetaHeader)

@@ -280,6 +280,14 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 60 * second,
 			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
 		},
+		// upstream-client-version-refresh：Go 新增任务（客户端版本自动跟版设计
+		// §6）。日频串行拉四族官方发布源，幂等 upsert 自动键；InitialDelay 37min
+		// 避让现有 31min 档内时隙；PassiveJitter 走 DayWindow ±1h。
+		"upstream-client-version-refresh": {
+			Interval: 24 * hour, InitialDelay: 37 * minute, PassiveJitter: true,
+			OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 3 * minute,
+			BackoffBase: 30 * minute, BackoffMax: 6 * hour, LeaseTTL: 2 * minute,
+		},
 		// account-balance-stats-projection：Go 新增任务（归档 Node
 		// account-balance-jobs-projector 的 Go 等价，归档无 scheduler.schedule
 		// 实参可对照，按注册表约定取保守值并注明来源）。每轮全量投影

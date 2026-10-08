@@ -25,21 +25,28 @@ const (
 	// 因此归入 GLM 家族选择 ZCode 身份。
 	ProfileHybridOpenAIChatV1        = "profile_hybrid_openai_chat_v1"
 	ProfileHybridAnthropicMessagesV1 = "profile_hybrid_anthropic_messages_v1"
-	// 内置客户端版本常量：下方 UA 常量由这些版本拼接。运行时可被
-	// SetClientVersionOverrides 覆盖（system_settings 键
-	// upstreamClientVersionOverrides）；常量本身保留为内置默认与文档锚点。
-	builtInCodexDesktopVersion = "0.159.3"
+	// 内置客户端版本常量：下方 UA 常量由这些版本拼接。运行时生效值 = 手动
+	// 覆盖（system_settings 键 upstreamClientVersionOverrides）> 自动覆盖
+	//（键 upstreamClientVersionAutoOverrides，jobs 跟版任务写入）> 本常量；
+	// BuiltInClientVersion 导出本层供任务侧单调检查。常量本身保留为内置默认
+	// 与文档锚点。
+	builtInCodexVersion = "0.159.3"
 	builtInClaudeCodeVersion   = "2.1.285"
 	builtInGeminiCLIVersion    = "0.61.0"
 	// OpenCodeUserAgent is the static identity observed in OpenCode 1.18.5.
 	// BUG-0201 之后本包不再把它注入任何系统请求；常量仅为兼容既有引用保留。
 	OpenCodeUserAgent = "opencode/1.18.5"
-	// CodexDesktopUserAgent is the static Codex Desktop identity. GPT/Codex
-	// 家族的系统请求在本包与 accountprobe 的 codex_responses 动态头分支共用
+	// CodexExecUserAgent is the static Codex exec surface identity（源码锚定，
+	// 客户端版本自动跟版设计 §8.1）：UA 模板与 openai/codex 源码
+	// codex-rs/login/src/auth/default_client.rs get_codex_user_agent() 的
+	// {originator}/{version} ({os}; {arch}) {terminal} 同构；headless exec
+	// 入口（codex-rs/exec/src/lib.rs set_default_originator("codex_exec")）
+	// 不设置 USER_AGENT_SUFFIX，故无 (codex_exec; {v}) 后缀。GPT/Codex 家族
+	// 的系统请求在本包与 accountprobe 的 codex_responses 动态头分支共用
 	// 的身份子集。版本跟随 openai/codex 官方最新稳定（GitHub Releases；
 	// 2026-10-02 锚点 0.159.3）。运行时可被 SetClientVersionOverrides 覆盖
-	//（EffectiveCodexDesktopUserAgent）。
-	CodexDesktopUserAgent = "Codex Desktop/" + builtInCodexDesktopVersion + " (Windows 10.0.22621; x86_64) unknown (codex_exec; " + builtInCodexDesktopVersion + ")"
+	//（EffectiveCodexUserAgent）。
+	CodexExecUserAgent = "codex_exec/" + builtInCodexVersion + " (Windows 10.0.22621; x86_64) unknown"
 	// ZCodeVersion 是 GLM 家族注入的 ZCode 客户端版本（UA 与
 	// X-ZCode-App-Version 共用）。版本跟随 zcode.z.ai 官方 changelog 最新
 	//（2026-10-02 锚点 3.14.3）。运行时可被 SetClientVersionOverrides 覆盖
@@ -71,10 +78,17 @@ type Input struct {
 }
 
 // clientVersionOverrides 保存 system_settings 键 upstreamClientVersionOverrides
-// 解析出的「客户端家族 -> 版本」覆盖（拷贝存储，调用方再改原 map 不影响已存
-// 值）。nil/空 map 表示全部使用内置版本；进程内由 gateway/jobs 组合根在启动
-// 与设置写入后刷新。
+// 解析出的「客户端家族 -> 版本」手动覆盖（拷贝存储，调用方再改原 map 不影响
+// 已存值）。nil/空 map 表示该层为空；进程内由 gateway/jobs 组合根在启动与设置
+// 写入后刷新。语义为「非空即生效」：可升可降，不做与内置版本的 max 合并。
 var clientVersionOverrides atomic.Value
+
+// clientVersionAutoOverrides 保存 system_settings 键
+// upstreamClientVersionAutoOverrides 解析出的「客户端家族 -> 版本」自动覆盖
+// （拷贝存储，语义同 clientVersionOverrides）。nil/空 map 表示该层为空；该键
+// 由 jobs 自动跟版任务独占写入，gateway/jobs 组合根在启动与周期刷新时读取
+// （gateway 60s ticker），生效优先级低于手动覆盖（见 EffectiveClientVersion）。
+var clientVersionAutoOverrides atomic.Value
 
 // 客户端家族键，与 upstreamClientVersionOverrides 的合法 JSON 键一一对应。
 const (
@@ -85,10 +99,10 @@ const (
 	clientFamilyGrokCLI    = "grokCLI"
 )
 
-// SetClientVersionOverrides 全量替换客户端版本覆盖：nil/空 map 清空回内置；
+// SetClientVersionOverrides 全量替换客户端版本手动覆盖：nil/空 map 清空回内置；
 // 只接受五个合法家族键，未知键与不匹配 ^\d+\.\d+\.\d+$ 的值忽略（防御性，
 // 正常校验在 settings 层）。覆盖语义为「非空即生效」：可升可降，不做与内置
-// 版本的 max 合并。
+// 版本的 max 合并。只影响手动层；自动层由 SetClientVersionAutoOverrides 维护。
 func SetClientVersionOverrides(overrides map[string]string) {
 	filtered := make(map[string]string, len(overrides))
 	for family, version := range overrides {
@@ -100,17 +114,28 @@ func SetClientVersionOverrides(overrides map[string]string) {
 	clientVersionOverrides.Store(filtered)
 }
 
-// EffectiveClientVersion 返回该客户端家族的生效版本：覆盖优先，否则内置；
-// 未知家族返回 ""。
-func EffectiveClientVersion(family string) string {
-	if stored, _ := clientVersionOverrides.Load().(map[string]string); stored != nil {
-		if version, ok := stored[family]; ok {
-			return version
+// SetClientVersionAutoOverrides 全量替换客户端版本自动覆盖：nil/空 map 清空
+// 自动层；过滤语义与 SetClientVersionOverrides 完全一致（只接受五个合法家族
+// 键，未知键与不匹配 ^\d+\.\d+\.\d+$ 的值忽略）。只影响自动层，手动层保持
+// 不动；合并优先级见 EffectiveClientVersion。
+func SetClientVersionAutoOverrides(overrides map[string]string) {
+	filtered := make(map[string]string, len(overrides))
+	for family, version := range overrides {
+		if !isKnownClientFamily(family) || !isSemverVersion(version) {
+			continue
 		}
+		filtered[family] = version
 	}
+	clientVersionAutoOverrides.Store(filtered)
+}
+
+// BuiltInClientVersion 返回该客户端家族的内置版本常量（未知家族返回 ""），
+// 供自动跟版任务做单调检查（新值低于内置基线时拒绝写入自动层）。与
+// EffectiveClientVersion 的内置分支同源，常量本身是内置默认与文档锚点。
+func BuiltInClientVersion(family string) string {
 	switch family {
 	case clientFamilyCodex:
-		return builtInCodexDesktopVersion
+		return builtInCodexVersion
 	case clientFamilyClaudeCode:
 		return builtInClaudeCodeVersion
 	case clientFamilyGeminiCLI:
@@ -123,18 +148,35 @@ func EffectiveClientVersion(family string) string {
 	return ""
 }
 
-// 便捷 getter：五个客户端家族的生效版本（覆盖或内置）。
+// EffectiveClientVersion 返回该客户端家族的生效版本：三层合并——手动覆盖 >
+// 自动覆盖 > 内置；未知家族返回 ""。手动层为空时回退自动层，自动层也为空时
+// 回退内置常量（BuiltInClientVersion）。
+func EffectiveClientVersion(family string) string {
+	if manual, _ := clientVersionOverrides.Load().(map[string]string); manual != nil {
+		if version, ok := manual[family]; ok {
+			return version
+		}
+	}
+	if auto, _ := clientVersionAutoOverrides.Load().(map[string]string); auto != nil {
+		if version, ok := auto[family]; ok {
+			return version
+		}
+	}
+	return BuiltInClientVersion(family)
+}
+
+// 便捷 getter：五个客户端家族的生效版本（手动覆盖 > 自动覆盖 > 内置）。
 func EffectiveCodexVersion() string      { return EffectiveClientVersion(clientFamilyCodex) }
 func EffectiveClaudeCodeVersion() string { return EffectiveClientVersion(clientFamilyClaudeCode) }
 func EffectiveGeminiCLIVersion() string  { return EffectiveClientVersion(clientFamilyGeminiCLI) }
 func EffectiveZCodeVersion() string      { return EffectiveClientVersion(clientFamilyZCode) }
 func EffectiveGrokCLIVersion() string    { return EffectiveClientVersion(clientFamilyGrokCLI) }
 
-// EffectiveCodexDesktopUserAgent 运行时拼接 Codex Desktop UA（版本取
-// EffectiveCodexVersion，无覆盖时与 CodexDesktopUserAgent 常量逐字一致）。
-func EffectiveCodexDesktopUserAgent() string {
+// EffectiveCodexUserAgent 运行时拼接 Codex exec surface UA（版本取
+// EffectiveCodexVersion，无覆盖时与 CodexExecUserAgent 常量逐字一致）。
+func EffectiveCodexUserAgent() string {
 	version := EffectiveCodexVersion()
-	return "Codex Desktop/" + version + " (Windows 10.0.22621; x86_64) unknown (codex_exec; " + version + ")"
+	return "codex_exec/" + version + " (Windows 10.0.22621; x86_64) unknown"
 }
 
 // EffectiveClaudeCodeUserAgent 运行时拼接 Claude Code CLI 入口 UA（与
@@ -181,7 +223,8 @@ func isSemverVersion(version string) bool {
 // ApplySystemClientHeaders 按「上游家族 -> 官方客户端身份」为系统生成的上游
 // 请求选择静态身份（BUG-0201）：GLM 家族（provider glm、profile_glm_ 前缀、
 // 两个 hybrid 桥接档案）应用 ZCode 全套；GPT/Codex 家族（provider gpt/codex、
-// profile_gpt_/profile_codex_ 前缀）仅应用 Codex Desktop 静态 UA；Anthropic
+// profile_gpt_/profile_codex_ 前缀）仅应用 Codex exec 静态 UA（源码锚定，
+// 客户端版本自动跟版设计 §8.1）；Anthropic
 // 家族 OAuth 应用完整 Claude Code 身份，API Key 不注入任何身份；Gemini/xai
 // 保持既有精确分支。provider openai 承载「通用 OpenAI-compatible 供应商」
 // 泛化档案（supeai 类第三方上游），不构成任何家族依据。
@@ -208,7 +251,7 @@ func ApplySystemClientHeaders(headers http.Header, input Input) {
 	case credentialType == "api_key" && matchesGLMFamily(provider, profileID):
 		applyZCode(headers)
 	case credentialType == "api_key" && matchesGPTFamily(provider, profileID):
-		headers.Set("User-Agent", EffectiveCodexDesktopUserAgent())
+		headers.Set("User-Agent", EffectiveCodexUserAgent())
 	case matchesAnthropicFamily(provider, profileID) && credentialType == "oauth":
 		applyClaudeCode(headers)
 	// Anthropic 家族 API Key 不注入任何身份：实测 supeai.cc 等上游对已知

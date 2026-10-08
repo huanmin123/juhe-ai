@@ -7,8 +7,9 @@ import (
 	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -43,6 +44,14 @@ type PreparationResult struct {
 	// docs/functions/网关全链路轨迹日志设计.md 能力二）。
 	QuotaDeniedAccountIDs  []string
 	CapacityBusyAccountIDs []string
+	// 期二（缓存率设计 5.6/7）：最终生效那次排序的决策解释——非高并发 =
+	// applyHotQualityOrder 的 OrderAsync；高并发 = 等待后 ReorderOnly。
+	// 未执行质量排序（媒体车道/降级端口/排序失败）时为 nil；重排序失败时
+	// 保留上一次质量排序的解释并以 HotQualityReorderDegraded 标记。
+	HotQualityOrderExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
+	// HotQualityReorderDegraded：高并发最终重排序失败（端口报错或未产出解
+	// 释），派发按等待后亲和序继续（不阻塞），决策日志据此标记降级。
+	HotQualityReorderDegraded bool
 	// fallback variant
 	Reason  string
 	Context any
@@ -90,6 +99,16 @@ type DispatchDecisionSkip struct {
 	Reason    string `json:"reason"`
 }
 
+// DispatchDecisionCandidateOrderDetail 是摘要里的一条候选排序明细（缓存率
+// 设计 5.6：候选级 cacheHitRate / cacheQuantum / speedQualified；JSON 键名
+// 即决策日志/审计形状，AccountID 沿用既有明细的 id 键）。
+type DispatchDecisionCandidateOrderDetail struct {
+	AccountID      string   `json:"id"`
+	CacheHitRate   *float64 `json:"cacheHitRate,omitempty"`
+	CacheQuantum   int      `json:"cacheQuantum"`
+	SpeedQualified bool     `json:"speedQualified"`
+}
+
 // DispatchDecisionSummary 汇总一次候选准备窗口的调度决策。JSON 形状即
 // gateway_dispatch_candidates 审计标签值与 gateway_dispatch_decision 日志
 // 的摘要形状；空列表/零值字段经 omitempty 保持紧凑。
@@ -123,6 +142,19 @@ type DispatchDecisionSummary struct {
 	DegradedTruncated     bool                   `json:"degradedTruncated,omitempty"`
 	Avoided               []string               `json:"avoidedAccountIds,omitempty"`
 	AvoidedTruncated      bool                   `json:"avoidedTruncated,omitempty"`
+	// 期二缓存率排序块（设计 5.6，全部来自最终生效那次排序的解释；未执行
+	// 质量排序时整体缺省）：决策级速度基准（层内最小已知 EWMA，无已知
+	// EWMA 为 nil）、生效阈值（cost_first 10s / speed_first 5s）、快照失
+	// 效标记（8.1：stale 时缓存率维度中性）与缓存档位键是否参与。
+	SpeedBaseEwmaMs  *float64 `json:"speedBaseEwmaMs,omitempty"`
+	SpeedThresholdMs int64    `json:"speedThresholdMs,omitempty"`
+	CacheRateStale   bool     `json:"cacheRateStale,omitempty"`
+	CacheRateEnabled bool     `json:"cacheRateEnabled,omitempty"`
+	// CandidateOrder 是候选级排序明细（按最终排序序）；HotQualityReorder
+	// Degraded 标记高并发最终重排序失败（派发按等待后亲和序继续）。
+	CandidateOrder            []DispatchDecisionCandidateOrderDetail `json:"candidateOrder,omitempty"`
+	CandidateOrderTruncated   bool                                   `json:"candidateOrderTruncated,omitempty"`
+	HotQualityReorderDegraded bool                                   `json:"hotQualityReorderDegraded,omitempty"`
 }
 
 // DispatchDecisionSummaryInput 是汇总组装输入：全部为既有决策数据的只读
@@ -146,6 +178,11 @@ type DispatchDecisionSummaryInput struct {
 	Suppressed       []string
 	Degraded         []string
 	Avoided          []string
+	// HotQualityExplanation 是最终生效那次热质量排序的决策解释（缓存率设
+	// 计 5.6；nil = 本窗口未执行质量排序，缓存率排序块整体缺省）。
+	HotQualityExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
+	// HotQualityReorderDegraded 标记高并发最终重排序失败（降级继续派发）。
+	HotQualityReorderDegraded bool
 }
 
 // BuildDispatchDecisionSummary 把候选窗口既有决策数据汇成可序列化摘要。
@@ -186,6 +223,25 @@ func BuildDispatchDecisionSummary(input DispatchDecisionSummaryInput) DispatchDe
 	summary.Suppressed, summary.SuppressedTruncated = cappedSortedUniqueIDs(input.Suppressed)
 	summary.Degraded, summary.DegradedTruncated = cappedSortedUniqueIDs(input.Degraded)
 	summary.Avoided, summary.AvoidedTruncated = cappedSortedUniqueIDs(input.Avoided)
+	// 期二缓存率排序块（设计 5.6）：全部字段取自最终生效那次排序的解释，
+	// 未执行质量排序时保持缺省——不用零值占位伪造数据源。
+	if explanation := input.HotQualityExplanation; explanation != nil {
+		summary.SpeedBaseEwmaMs = explanation.SpeedBaseEwmaMs
+		summary.SpeedThresholdMs = explanation.SpeedThresholdMs
+		summary.CacheRateStale = explanation.CacheRateStale
+		summary.CacheRateEnabled = explanation.CacheRateEnabled
+		details := make([]DispatchDecisionCandidateOrderDetail, 0, len(explanation.CandidateOrderDetails))
+		for _, detail := range explanation.CandidateOrderDetails {
+			details = append(details, DispatchDecisionCandidateOrderDetail{
+				AccountID:      detail.AccountID,
+				CacheHitRate:   detail.CacheHitRate,
+				CacheQuantum:   detail.CacheQuantum,
+				SpeedQualified: detail.SpeedQualified,
+			})
+		}
+		summary.CandidateOrder, summary.CandidateOrderTruncated = cappedSlice(details)
+	}
+	summary.HotQualityReorderDegraded = input.HotQualityReorderDegraded
 	return summary
 }
 
@@ -686,6 +742,11 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 			proxyHealthOrder.AvoidedAccountIDs...),
 			clientIpAccountAvoidance.AvoidedAccountIDs...),
 			clientSourceAvoidance.AvoidedAccountIDs...),
+		// 期二（缓存率设计 5.6）：最终生效那次排序的解释（非高并发 =
+		// applyHotQualityOrder；高并发 = 等待后 ReorderOnly）与重排序降级
+		// 标记——全部来自准备结果，不用零值占位。
+		HotQualityExplanation:     readyPreparation.HotQualityOrderExplanation,
+		HotQualityReorderDegraded: readyPreparation.HotQualityReorderDegraded,
 	})
 	input.AuditCapture.AddGatewayMetadata("gateway_dispatch_candidates", decisionSummary.AuditMetadata())
 	notifyDispatchDecisionObserver(DispatchDecisionEvent{
@@ -758,6 +819,13 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	accounts := []AccountCandidate{}
 	var hotQualityExplorationReservation *HotQualityReservation
 	var settleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
+	// 期二（缓存率设计 5.6/7）：最终生效排序的解释与高并发重排序降级标记，
+	// 随 ready 出口/终态决策摘要带出。
+	var hotQualityExplanation *gatewayhotquality.HotQualityCandidateSelectionExplanation
+	var hotQualityReorderDegraded bool
+	// hotQualityReorderPending：高并发等待块执行了最终 Affinity.OrderAsync
+	//（可能覆盖 905 那次热质量顺序）后置位——return 前据此重应用层内排序。
+	var hotQualityReorderPending bool
 	var err error
 
 	// T4/B14（合并路由设计）：merge 上下文跳过窗口级配额批查——此处用窗口
@@ -801,7 +869,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			}
 			if fallbackAttempted {
 				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "authorization_quota_exceeded", DispatchDecisionSummaryInput{
-					QuotaDenied: quotaDeniedAccountIDs,
+					QuotaDenied:           quotaDeniedAccountIDs,
+					HotQualityExplanation: hotQualityExplanation,
 				})
 				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "authorization_quota_exceeded", Context: fallbackContext}, nil
 			}
@@ -815,7 +884,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 				return PreparationResult{}, err
 			}
 			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
-				QuotaDenied: quotaDeniedAccountIDs,
+				QuotaDenied:           quotaDeniedAccountIDs,
+				HotQualityExplanation: hotQualityExplanation,
 			})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
@@ -828,7 +898,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}); err != nil {
 			return PreparationResult{}, err
 		}
-		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
+		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+			HotQualityExplanation: hotQualityExplanation,
+		})
 		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 	}
 
@@ -847,6 +919,24 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		if err != nil {
 			return PreparationResult{}, err
 		}
+	}
+
+	// latencyDegradedTailPartition 与原闭包内 speed_first 降级臂同语义：
+	// 降级账户整体后置（层间分段先于层内比较），闭包与高并发重排序共用。
+	latencyDegradedTailPartition := func(candidates []AccountCandidate) []AccountCandidate {
+		if input.hotQualityMode != HotQualityModeSpeedFirst || len(input.latencyDegradedAccountIDs) == 0 {
+			return candidates
+		}
+		healthy := make([]AccountCandidate, 0, len(candidates))
+		degraded := make([]AccountCandidate, 0, len(candidates))
+		for _, account := range candidates {
+			if _, isDegraded := input.latencyDegradedAccountIDs[account.ID]; isDegraded {
+				degraded = append(degraded, account)
+			} else {
+				healthy = append(healthy, account)
+			}
+		}
+		return append(append([]AccountCandidate{}, healthy...), degraded...)
 	}
 
 	applyHotQualityOrder := func() error {
@@ -876,20 +966,12 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			return err
 		}
 		accounts = hotQualityOrder.Accounts
-		if input.hotQualityMode == HotQualityModeSpeedFirst && len(input.latencyDegradedAccountIDs) > 0 {
-			healthy := make([]AccountCandidate, 0, len(accounts))
-			degraded := make([]AccountCandidate, 0, len(accounts))
-			for _, account := range accounts {
-				if _, isDegraded := input.latencyDegradedAccountIDs[account.ID]; isDegraded {
-					degraded = append(degraded, account)
-				} else {
-					healthy = append(healthy, account)
-				}
-			}
-			accounts = append(append([]AccountCandidate{}, healthy...), degraded...)
-		}
+		accounts = latencyDegradedTailPartition(accounts)
 		hotQualityExplorationReservation = hotQualityOrder.ExplorationReservation
 		settleHotQualityExplorationAfterDispatch = hotQualityOrder.SettleExplorationAfterDispatch
+		// 期二（设计 5.6）：带出该次排序的决策解释，作为非高并发路径的最终
+		// 生效排序事实（高并发路径会被等待后的重排序覆盖）。
+		hotQualityExplanation = hotQualityOrder.Explanation
 		if hotQualityOrder.DispatchIntent == "same_tier_exploration" || len(hotQualityOrder.QualityReorderedTierKeys) > 0 {
 			req.AuditCapture.AddGatewayMetadata("hot_quality_candidate_selection", map[string]any{
 				"dispatchIntent":                 hotQualityOrder.DispatchIntent,
@@ -918,7 +1000,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			return PreparationResult{}, err
 		}
 		if fallbackAttempted {
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{})
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{
+				HotQualityExplanation: hotQualityExplanation,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "high_concurrency_group_busy", Context: fallbackContext}, nil
 		}
 	}
@@ -934,7 +1018,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 				return PreparationResult{}, err
 			}
 			if fallbackAttempted {
-				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "group_capacity_busy", DispatchDecisionSummaryInput{})
+				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "group_capacity_busy", DispatchDecisionSummaryInput{
+					HotQualityExplanation: hotQualityExplanation,
+				})
 				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "group_capacity_busy", Context: fallbackContext}, nil
 			}
 		}
@@ -984,7 +1070,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 		if !clientIpConcurrency.Acquired {
 			if signalAborted(req.Signal) || resWritableEnded(ctx) {
-				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
+				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+					HotQualityExplanation: hotQualityExplanation,
+				})
 				return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 			}
 			if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
@@ -997,12 +1085,16 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			}); err != nil {
 				return PreparationResult{}, err
 			}
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+				HotQualityExplanation: hotQualityExplanation,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 		if signalAborted(req.Signal) || resWritableEnded(ctx) {
 			releaseClientIPConcurrencyOnce()
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+				HotQualityExplanation: hotQualityExplanation,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 	}
@@ -1048,7 +1140,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		})
 		if signalAborted(req.Signal) || resWritableEnded(ctx) {
 			releaseClientIPConcurrencyOnce()
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+				HotQualityExplanation: hotQualityExplanation,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 		refreshed, err := RefreshGatewayAccountCurrentConcurrencyAsync(ctx, e.Concurrency, accounts)
@@ -1059,6 +1153,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		if err != nil {
 			return fail(err)
 		}
+		// 该次亲和排序可能覆盖 905 那次热质量顺序（缓存率设计第 7 节）：
+		// busy 复查通过后、return 前重应用层内排序。
+		hotQualityReorderPending = true
 	}
 
 	highConcurrencyBusy, err = e.Affinity.AreHighConcurrencyAccountsBusyForLaneAsync(ctx, accounts, busyOptions)
@@ -1072,7 +1169,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 		if fallbackAttempted {
 			releaseClientIPConcurrencyOnce()
-			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{})
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{
+				HotQualityExplanation: hotQualityExplanation,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "high_concurrency_group_busy", Context: fallbackContext}, nil
 		}
 		releaseClientIPConcurrencyOnce()
@@ -1086,8 +1185,36 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}); err != nil {
 			return PreparationResult{}, err
 		}
-		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
+		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+			HotQualityExplanation: hotQualityExplanation,
+		})
 		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
+	}
+
+	// 期二（缓存率设计 5.6/7 高并发分组行）：等待块里的最终 Affinity.
+	// OrderAsync 可能覆盖早先的热质量顺序——最终派发前重应用层内排序。
+	// 失败不阻塞派发：保持等待后亲和序继续，决策摘要标记降级；媒体车道
+	// 与 905 闭包同语义豁免（质量排序从未生效，无重排可言）。
+	if hotQualityReorderPending && !isMediaRequestLane(req.RequestLane) {
+		reorder, reorderErr := e.HotQuality.ReorderOnly(ctx, HotQualityOrderInput{
+			Accounts:                     accounts,
+			ModelPriority:                req.ModelPriority,
+			Mode:                         input.hotQualityMode,
+			SystemAccountID:              req.SystemAccountID,
+			RouteStrategyID:              req.RouteStrategyID,
+			GroupID:                      req.GroupID,
+			RequestLane:                  req.RequestLane,
+			Model:                        requestModelOrEmpty(req.Req),
+			RequestID:                    req.UsageContext.TraceID,
+			LatencyDegradedAccountIDs:    input.latencyDegradedAccountIDs,
+			EligibleFirstPrimaryDispatch: input.eligibleFirstPrimaryDispatch,
+		})
+		if reorderErr != nil || reorder.Explanation == nil {
+			hotQualityReorderDegraded = true
+		} else {
+			accounts = latencyDegradedTailPartition(reorder.Accounts)
+			hotQualityExplanation = reorder.Explanation
+		}
 	}
 
 	return PreparationResult{
@@ -1098,6 +1225,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		SettleHotQualityExplorationAfterDispatch: settleHotQualityExplorationAfterDispatch,
 		QuotaDeniedAccountIDs:                    quotaDeniedAccountIDs,
 		CapacityBusyAccountIDs:                   capacityBusyAccountIDs,
+		HotQualityOrderExplanation:               hotQualityExplanation,
+		HotQualityReorderDegraded:                hotQualityReorderDegraded,
 	}, nil
 }
 

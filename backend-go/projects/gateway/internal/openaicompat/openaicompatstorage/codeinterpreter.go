@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -368,6 +369,14 @@ func normalizeArtifactPath(value string) string {
 // runPythonProcess is the default interpreterRunnerFunc mirroring
 // spawnPythonCodeInterpreter: -I -B, whitelisted env, shared output byte cap,
 // timeout kill and abort handling.
+//
+// stdout 与 stderr 各由一个 goroutine 并发读取（串行读取的死锁修复）：子进程
+// 任一管道写满（Linux 管道缓冲约 64KiB）后另一管道写端不关闭，串行 collect
+// 会与子进程互等，只能靠超时 kill 误杀正常执行。MaxOutputBytes 是两流共享
+// 上限，剩余配额用互斥锁协调：任一流取到配额即扣减，超限截断并 cancel（子
+// 进程被杀、两管道 EOF、读取自然收尾，超时路径行为不变）。Wait 在两个读取
+// goroutine 收敛之后调用（StdoutPipe/StderrPipe 约束：Wait 会在管道读完前
+// 关闭读端）。
 func runPythonProcess(ctx context.Context, config CodeInterpreterConfig, runnerPath, codePath, workDir string) interpreterRunResult {
 	result := interpreterRunResult{}
 	if ctx == nil {
@@ -399,27 +408,27 @@ func runPythonProcess(ctx context.Context, config CodeInterpreterConfig, runnerP
 	})
 	defer timer.Stop()
 
-	collect := func(reader io.Reader) (string, bool) {
-		remaining := config.MaxOutputBytes
+	var quotaMu sync.Mutex
+	remaining := config.MaxOutputBytes
+	collect := func(reader io.Reader, out *bytes.Buffer) bool {
 		truncated := false
-		var out bytes.Buffer
 		buffer := make([]byte, 8192)
 		for {
 			n, readErr := reader.Read(buffer)
 			if n > 0 {
-				if remaining <= 0 {
-					truncated = true
-					cancel()
-					continue
-				}
+				quotaMu.Lock()
+				avail := remaining
 				take := int64(n)
-				if take > remaining {
-					take = remaining
-					truncated = true
+				if take > avail {
+					take = avail
 				}
-				out.Write(buffer[:take])
 				remaining -= take
+				quotaMu.Unlock()
+				if take > 0 {
+					out.Write(buffer[:take])
+				}
 				if take < int64(n) {
+					truncated = true
 					cancel()
 				}
 			}
@@ -427,13 +436,24 @@ func runPythonProcess(ctx context.Context, config CodeInterpreterConfig, runnerP
 				break
 			}
 		}
-		return out.String(), truncated
+		return truncated
 	}
-	stdoutText, stdoutTruncated := collect(stdoutPipe)
-	stderrText, stderrTruncated := collect(stderrPipe)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	var stdoutTruncated, stderrTruncated bool
+	var readers sync.WaitGroup
+	readers.Add(2)
+	go func() {
+		defer readers.Done()
+		stdoutTruncated = collect(stdoutPipe, &stdoutBuf)
+	}()
+	go func() {
+		defer readers.Done()
+		stderrTruncated = collect(stderrPipe, &stderrBuf)
+	}()
+	readers.Wait()
 	waitErr := command.Wait()
-	result.Stdout = stdoutText
-	result.Stderr = stderrText
+	result.Stdout = stdoutBuf.String()
+	result.Stderr = stderrBuf.String()
 	result.TimedOut = timedOut
 	result.OutputTruncated = stdoutTruncated || stderrTruncated
 	if ctx.Err() != nil && !timedOut {

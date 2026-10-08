@@ -454,8 +454,8 @@ func applyCodexResponsesCompatibility(body map[string]any) codexProbeIdentity {
 }
 
 func applyCodexProbeHeaders(request *http.Request, identity codexProbeIdentity, input Input) {
-	request.Header.Set("Originator", "Codex Desktop")
-	request.Header.Set("User-Agent", upstreamidentity.EffectiveCodexDesktopUserAgent())
+	request.Header.Set("Originator", "codex_exec")
+	request.Header.Set("User-Agent", upstreamidentity.EffectiveCodexUserAgent())
 	request.Header.Set("Session-Id", identity.sessionID)
 	request.Header.Set("Thread-Id", identity.threadID)
 	request.Header.Set("X-Client-Request-Id", identity.sessionID)

@@ -82,10 +82,11 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		AccountOptionsLookup: accountOptionsLookup,
 		ObjectStore:          objectStore,
 		// 生图 URL 下载按绑定账户的 proxy_profile 出站（BUG-0232 关联：
-		// grok /v1/images/edits 只回 imgen.x.ai 临时链接）；解析失败回落直连。
-		ImageDownloadProxy:      newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, func(message string) { slog.Warn(message) }),
-		ImageProcessor:          newChatImageProcessor(),
-		ImageObservation:        newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
+		// grok /v1/images/edits 只回 imgen.x.ai 临时链接）；guard 与 /v1 链
+		// 同用部署级 UpstreamURLSecurity 配置；解析失败回落直连。
+		ImageDownloadProxy: newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, cfg.UpstreamURLSecurity, func(message string) { slog.Warn(message) }),
+		ImageProcessor:     newChatImageProcessor(),
+		ImageObservation:   newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
 		// M7 问答音视频工具的 media_jobs 只读端口（问答音视频工具设计 §4：
 		// 任务面归属校验与终态快照；gatewaymedia 仓储适配——internal/chat 不
 		// 直接依赖 gatewaymedia，沿组合根注入先例）。媒体任务面未装配（组合
@@ -131,7 +132,7 @@ type chatMediaJobsLookupAdapter struct {
 }
 
 // newChatMediaJobsLookup 从链上的媒体任务面运行时解析端口；任务面未装配
-//（组合测试）返回 nil。
+// （组合测试）返回 nil。
 func newChatMediaJobsLookup(chain *gatewayChain) chat.ChatMediaJobsLookup {
 	if chain == nil || chain.mediaJobs == nil || chain.mediaJobs.repo == nil {
 		return nil

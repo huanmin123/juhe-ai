@@ -17,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	upstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // Image generation transport, artifact sink and object storage ports ported
@@ -127,7 +129,8 @@ func (e *ChatImageGenerationRequestError) Error() string { return e.Message }
 // through the executor, decodes b64_json and verifies the payload.
 // downloadClient 为 url 回退下载的 HTTP 客户端（BUG-0232 关联：上游 grok
 // /v1/images/edits 只回 imgen.x.ai 临时链接，需按绑定账户的 proxy_profile
-// 出站）；nil 使用直连默认。
+// 出站）；nil 回落到带 DialGuard 的直连默认客户端（拒绝私网/保留地址、不跟
+// 随重定向）。
 func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input ChatImageGenerationRequest, apiKey, traceID string, downloadClient *http.Client) (ChatImageGenerationToolResult, error) {
 	result := ChatImageGenerationToolResult{}
 	model := trimSpace(input.Model)
@@ -341,7 +344,31 @@ func decodeBase64Payload(value string, maxBytes int64) ([]byte, error) {
 // x.ai temporary links). It must not ride GenerationExecutor: the production
 // executor only serves the in-process /v1 chain. Timeout 60s and the 16 MiB
 // read cap mirror the b64 payload contract.
-var chatImageURLDownloadClient = &http.Client{Timeout: 60 * time.Second}
+//
+// SSRF 防护（生图 URL 下载修复）：直连回退不是无防护默认客户端——transport
+// 经 upstreamhttp.DialGuard 解析-校验-钉扎拨号，本机/内网/链路本地/保留地址
+// 一律拒绝（chat 包没有部署级私网放行配置面，取最严默认）；重定向不跟随
+// （对齐主路径 ErrUseLastResponse 语义，302 由下方非 2xx 检查收敛为下载失败）。
+var chatImageURLDownloadClient = mustChatImageURLDownloadClient()
+
+// mustChatImageURLDownloadClient 构造带 DialGuard 的直连回退客户端。空代理
+// 加合法 TransportOptions 下 NewTransport 不会失败，失败即程序错误，构造期
+// 直接暴露（urlguard.go must* 系列同一约定）。
+func mustChatImageURLDownloadClient() *http.Client {
+	transport, err := upstreamhttp.NewTransport("", upstreamhttp.TransportOptions{
+		DialGuard: upstreamhttp.NewDialGuard(upstreamhttp.URLSecurityConfig{}, nil, nil),
+	})
+	if err != nil {
+		panic(fmt.Sprintf("chatImageURLDownloadClient 构造失败: %v", err))
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   60 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
 
 // downloadGeneratedImage GETs an upstream image URL with a bounded read; the
 // bytes rejoin the same MIME sniffing / dimension parsing path as b64_json.
@@ -497,7 +524,7 @@ type ObjectStore interface {
 }
 
 // chatAssetObjectExtension mirrors extensionForChatAssetMimeType. M7 媒体扩展名
-//（问答音视频工具设计 §3：.mp3/.wav/.mp4 等，词表与 MIME 嗅探器一致）。
+// （问答音视频工具设计 §3：.mp3/.wav/.mp4 等，词表与 MIME 嗅探器一致）。
 func chatAssetObjectExtension(mimeType string) string {
 	switch mimeType {
 	case "image/png":

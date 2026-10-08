@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // ---------------------------------------------------------------------------
@@ -599,7 +601,7 @@ func TestGoogleOneDriveQuotaProberCarriesProxyURL(t *testing.T) {
 	if seen.Method != "GET" || seen.URL != "https://www.googleapis.com/drive/v3/about?fields=storageQuota" {
 		t.Fatalf("request=%+v", seen)
 	}
-	if seen.Headers["authorization"] != "Bearer at-1" || seen.Headers["user-agent"] != geminiCLIUserAgent {
+	if seen.Headers["authorization"] != "Bearer at-1" || seen.Headers["user-agent"] != upstreamidentity.EffectiveGeminiCLIUserAgent() {
 		t.Fatalf("headers=%v", seen.Headers)
 	}
 

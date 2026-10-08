@@ -54,6 +54,10 @@ func (errorHotQualityPort) OrderAsync(context.Context, HotQualityOrderInput) (Ho
 	return HotQualityOrder{}, errPortBoom
 }
 
+func (errorHotQualityPort) ReorderOnly(context.Context, HotQualityOrderInput) (HotQualityOrder, error) {
+	return HotQualityOrder{}, errPortBoom
+}
+
 type errorFilterSuppression struct{}
 
 func (errorFilterSuppression) FilterAsync(context.Context, []AccountCandidate, SuppressionFilterOptions) (SuppressionFilterResult, error) {

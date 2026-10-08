@@ -115,5 +115,42 @@ func (o *chainDispatchDecisionObserver) observe(event gatewaydispatch.DispatchDe
 	if len(summary.Avoided) > 0 {
 		fields["avoidedAccountIds"] = summary.Avoided
 	}
+	// 期二（缓存率设计 5.6）：缓存率排序块——决策级速度基准/生效阈值/快照
+	// 失效与档位键参与标记，候选级排序明细（按最终序，截断防爆炸）。全部
+	// 字段来自最终生效那次排序的解释；未执行质量排序时整体缺省（与引擎侧
+	// omitempty 同风格，直接构造事件的旧调用方不出现）。
+	if summary.SpeedThresholdMs > 0 {
+		if summary.SpeedBaseEwmaMs != nil {
+			fields["speedBaseEwmaMs"] = *summary.SpeedBaseEwmaMs
+		}
+		fields["speedThresholdMs"] = summary.SpeedThresholdMs
+		if summary.CacheRateStale {
+			fields["cacheRateStale"] = true
+		}
+		if summary.CacheRateEnabled {
+			fields["cacheRateEnabled"] = true
+		}
+		candidateTop := summary.CandidateOrder
+		if len(candidateTop) > chainDispatchDecisionSkippedTopCap {
+			candidateTop = candidateTop[:chainDispatchDecisionSkippedTopCap]
+			fields["candidateOrderTruncated"] = true
+		}
+		top := make([]map[string]any, 0, len(candidateTop))
+		for _, candidate := range candidateTop {
+			entry := map[string]any{
+				"id":             candidate.AccountID,
+				"cacheQuantum":   candidate.CacheQuantum,
+				"speedQualified": candidate.SpeedQualified,
+			}
+			if candidate.CacheHitRate != nil {
+				entry["cacheHitRate"] = *candidate.CacheHitRate
+			}
+			top = append(top, entry)
+		}
+		fields["candidateOrder"] = top
+	}
+	if summary.HotQualityReorderDegraded {
+		fields["hotQualityReorderDegraded"] = true
+	}
 	o.logger.Info("gateway_dispatch_decision", fieldsArgs(fields)...)
 }

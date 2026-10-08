@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -521,7 +522,10 @@ type ClientSourceAvoidancePort interface {
 // hot-quality-attempt-lifecycle.ts, G12)
 // ---------------------------------------------------------------------------
 
-// HotQualityOrder mirrors the ordering result.
+// HotQualityOrder mirrors the ordering result. Explanation carries the
+// cache-rate/speed ordering explanation of the decision that produced
+// Accounts (section 5.6 of the cache-rate design doc); nil when the port did
+// not run a quality ordering (degraded adapters, media-lane skips).
 type HotQualityOrder struct {
 	Accounts                       []AccountCandidate
 	DispatchIntent                 string
@@ -531,6 +535,7 @@ type HotQualityOrder struct {
 	LatencyDegradedOverrideApplied bool
 	ExplorationReservation         *HotQualityReservation
 	SettleExplorationAfterDispatch func(ctx context.Context, outcome string) error
+	Explanation                    *gatewayhotquality.HotQualityCandidateSelectionExplanation
 }
 
 // HotQualityReservation mirrors GatewayHotQualityExplorationReservation
@@ -540,6 +545,12 @@ type HotQualityReservation = gatewaypreauth.HotQualityExplorationReservation
 // HotQualityPort mirrors orderGatewayAccountsByHotQualityAsync.
 type HotQualityPort interface {
 	OrderAsync(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error)
+	// ReorderOnly is the pure within-tier ordering pass of the cache-rate
+	// design (section 7): no exploration accrual/reservation, no audit
+	// writes — used by the high-concurrency group to re-apply the ordering
+	// after its final session-affinity ordering, returning the sorted
+	// candidates plus the decision explanation of that final ordering.
+	ReorderOnly(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error)
 }
 
 // HotQualityOrderInput mirrors the ordering input.

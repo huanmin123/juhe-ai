@@ -65,6 +65,7 @@ var goAddedAfterOAuthRefreshJobNames = []string{
 // account-balance-jobs-projector 的 Go 等价任务，归档无对应 scheduled job）。
 var goAddedAfterBalanceDetectJobNames = []string{
 	"xai-grok-usage-refresh",
+	"upstream-client-version-refresh",
 	"account-balance-stats-projection",
 }
 
@@ -79,7 +80,7 @@ var goAddedAfterRetentionJobNames = []string{
 // usage-scope-range-windows-refresh 之后（原锚点 authorization-usage-range-
 // windows-refresh 已消灭），keepalive 刷新插在 openai-oauth-access-token-
 // refresh 之后，grok 用量快照刷新插在 account-balance-auto-detect-recovery
-// 之后，与 ScheduledEntries 的登记位置一致。
+// 之后（客户端版本自动跟版紧随 grok 用量快照），与 ScheduledEntries 的登记位置一致。
 func expectedScheduledOrder() []string {
 	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
 	for _, name := range nodeScheduledJobNames {
@@ -187,7 +188,7 @@ func TestFindCoversBothCategories(t *testing.T) {
 }
 
 // TestMediaJobsRetentionRegistered 显式锁定 M2 media-jobs-retention 注册
-//（媒体设计 §8.2 清理任务）：GoWired、storage-maintenance lane、每小时节拍。
+// （媒体设计 §8.2 清理任务）：GoWired、storage-maintenance lane、每小时节拍。
 func TestMediaJobsRetentionRegistered(t *testing.T) {
 	entry, ok := Find("media-jobs-retention")
 	if !ok {

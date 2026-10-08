@@ -236,6 +236,17 @@ func ScheduledEntries() []Entry {
 			GoBinding: "wireXAIGrokUsageFamily 经组合根接线：全量扫描 xai oauth 账户（无游标/候选租约，并发≤4）→ 解密凭据 access_token → 上游 billing?format=credits + settings（账户代理或直连，15s/端点）→ stats 库 account_usage_snapshots kind='xai_grok' UPSERT（成功 ok+last_success_at 全量替换并清错，失败 failed+截断 last_error_message 且保留上次成功 payload；两种情况均写 last_attempt_at/next_refresh_after=now+10min/updated_at，created_at 不更新）",
 		},
 		{
+			// Go 新增条目：归档 Node 无对应 scheduled job（客户端版本自动跟版
+			// 设计 §6，registry_test.go 的 goAddedAfterBalanceDetectJobNames
+			// 锁定登记位置）。四族官方发布源日频跟版，只写自动键；单持有者，
+			// PG 调度租约/运行历史由组合根 withLease 承担。
+			JobName: "upstream-client-version-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true,
+			Writes:   []string{"business:system_settings"},
+			GoStatus: GoWired, GoPackage: "versiontracking + cmd/juhe-ai-jobs（worker_version_tracking.go 组合根适配器）",
+			GoBinding: "wireVersionTrackingFamily 经组合根接线：串行 GET 四族官方发布源（直连、单源 15s、响应限读 1MiB、GitHub 带标识 UA）→ parser 校验归属/prerelease/draft/三段版本 → 写者侧单调规则（低于当前自动值或内置基线则该族拒绝保留旧值）→ 有变化时幂等 upsert system_settings 键 upstreamClientVersionAutoOverrides 并注入 upstreamidentity.SetClientVersionAutoOverrides；单源失败仅该族跳过，全部源失败返回 error 交调度退避",
+		},
+		{
 			// Go 新增条目：对齐归档 Node account-balance-jobs-projector（jobs→
 			// stats 投影）的 Go 等价任务（归档无对应 scheduled job，Go 侧收敛为
 			// 周期全量投影）。生产事实：gateway 列表/明细读端全部读 juhe_stats

@@ -618,12 +618,32 @@ func (p chainProxyHealthPort) RecordFailureAsync(ctx context.Context, account ga
 
 // chainHotQualityPort adapts the gatewayhotquality runtime onto the dispatch
 // HotQualityPort (Node hot-quality-runtime.service.ts
-// orderGatewayAccountsByHotQualityAsync).
+// orderGatewayAccountsByHotQualityAsync). cacheRates 是缓存率快照取数口
+// （gatewaycacherate.SnapshotSource.Snapshot；设计 8.1）：每次调用取最新，
+// 未装配/未加载/stale 时返回 (nil, true)——排序输入不喂 CacheRates，维度
+// 中性（设计第 7 节）。
 type chainHotQualityPort struct {
-	runtime *gatewayhotquality.GatewayHotQualityRuntime
+	runtime    *gatewayhotquality.GatewayHotQualityRuntime
+	cacheRates func() (map[string]gatewayhotquality.CacheRateWindow, bool)
+}
+
+// cacheRatesSnapshot 取最新缓存率快照；nil 取数口（组合测试的零值端口）
+// 与 stale 同语义：无有效数据。
+func (p chainHotQualityPort) cacheRatesSnapshot() (map[string]gatewayhotquality.CacheRateWindow, bool) {
+	if p.cacheRates == nil {
+		return nil, true
+	}
+	return p.cacheRates()
 }
 
 func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispatch.HotQualityOrderInput) (gatewaydispatch.HotQualityOrder, error) {
+	rates, cacheRateStale := p.cacheRatesSnapshot()
+	ratesForInput := rates
+	if cacheRateStale {
+		// stale 或 nil 时不喂 CacheRates（设计 8.1：维度中性）；stale 标记
+		// 仍透传给决策解释（决策日志 cacheRateStale）。
+		ratesForInput = nil
+	}
 	result, err := gatewayhotquality.OrderGatewayAccountsByHotQuality(ctx, p.runtime, gatewayhotquality.GatewayHotQualityCandidateOrderInput[gatewaydispatch.AccountCandidate]{
 		Accounts:                     input.Accounts,
 		Base:                         chainHotQualityAccountViewOf,
@@ -637,6 +657,8 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 		RequestID:                    input.RequestID,
 		LatencyDegradedAccountIDs:    chainLatencyDegradedOf(input.LatencyDegradedAccountIDs),
 		EligibleFirstPrimaryDispatch: input.EligibleFirstPrimaryDispatch,
+		CacheRates:                   ratesForInput,
+		CacheRateStale:               cacheRateStale,
 	})
 	if err != nil {
 		return gatewaydispatch.HotQualityOrder{}, err
@@ -663,7 +685,33 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 			AccountRuntimeKey: result.ExplorationReservation.AccountRuntimeKey,
 		}
 	}
+	// 期二（设计 5.6）：排序决策解释随 runtime 结果直出（首协议组决策的
+	// 同源产出），此处仅透传——不为解释重跑排序（快照读次数与改造前一致）。
+	// 空候选结果无解释（nil），决策摘要按缺省处理。
+	order.Explanation = result.Explanation
 	return order, nil
+}
+
+// ReorderOnly 是高并发分组最终亲和排序后的纯层内排序（设计第 7 节）：
+// 无探索/无预留/无审计写入，缓存率快照每次调用取最新（stale/未加载不喂）。
+func (p chainHotQualityPort) ReorderOnly(ctx context.Context, input gatewaydispatch.HotQualityOrderInput) (gatewaydispatch.HotQualityOrder, error) {
+	rates, cacheRateStale := p.cacheRatesSnapshot()
+	if cacheRateStale {
+		rates = nil
+	}
+	return chainHotQualityReorderAccounts(ctx, p.runtime, chainHotQualityReorderInput{
+		Accounts:                  input.Accounts,
+		ModelPriority:             input.ModelPriority,
+		Mode:                      input.Mode,
+		SystemAccountID:           input.SystemAccountID,
+		RouteStrategyID:           input.RouteStrategyID,
+		GroupID:                   input.GroupID,
+		RequestLane:               input.RequestLane,
+		Model:                     input.Model,
+		LatencyDegradedAccountIDs: input.LatencyDegradedAccountIDs,
+		CacheRates:                rates,
+		CacheRateStale:            cacheRateStale,
+	})
 }
 
 // chainHotQualityAccountViewOf mirrors the Node UpstreamAccount projection

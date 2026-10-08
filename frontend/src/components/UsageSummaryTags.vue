@@ -3,11 +3,14 @@
     <a-tag class="usage-summary-tag">{{ formatRequestCountTag(usage?.requestCount) }}</a-tag>
     <a-tag class="usage-summary-tag">{{ formatCompactUsageAmount(usage?.totalTokens) }}</a-tag>
     <a-tag class="usage-summary-tag">{{ formatUsd(usage?.totalCost) }}</a-tag>
+    <a-tag v-if="showCacheRate && cacheRate != null" class="usage-summary-tag" :color="cacheRateTone(cacheRate)">{{ cacheRateTagText(cacheRate) }}</a-tag>
   </div>
 </template>
 
 <script setup lang="ts">
 import { formatCompactUsageAmount, formatRequestCountTag, formatUsd } from '@/shared/formatters'
+
+import { cacheRateTagText, cacheRateTone } from './usageCacheRateTag'
 
 defineProps<{
   compact?: boolean
@@ -21,6 +24,8 @@ defineProps<{
     inputImageTokens?: number
     outputImageTokens?: number
   }
+  showCacheRate?: boolean
+  cacheRate?: number | null
 }>()
 </script>
 

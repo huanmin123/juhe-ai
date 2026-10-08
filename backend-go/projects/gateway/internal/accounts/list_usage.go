@@ -44,10 +44,11 @@ type UsageScope struct {
 // UsageSource is the stats-database read port behind the list usage
 // hydration (Node loadAccountManagementListUsageAsync). statDate selects the
 // usage_stats_daily bucket (today's key) or, when empty, the
-// usage_stats_totals aggregate. Implementations must be safe for concurrent
-// use.
+// usage_stats_totals aggregate. 今日臂返回 TodayUsageSummary（含缓存率投影），
+// 累计臂由消费方映射回三字段 UsageSummary（设计 9.1，今日字段不进累计 DTO）。
+// Implementations must be safe for concurrent use.
 type UsageSource interface {
-	AccountListUsageSummaries(ctx context.Context, scopes []UsageScope, statDate string) (map[string]UsageSummary, error)
+	AccountListUsageSummaries(ctx context.Context, scopes []UsageScope, statDate string) (map[string]TodayUsageSummary, error)
 }
 
 // SetUsageSource wires the stats reader; nil (the default) keeps the
@@ -116,7 +117,14 @@ func (s *Store) hydrateListUsage(ctx context.Context, items []ListItem, records 
 			items[index].TodayUsage = summary
 		}
 		if summary, ok := totals[items[index].ID]; ok {
-			items[index].Usage = summary
+			// 累计 usage 固定映射回三字段 UsageSummary（设计 9.1）：今日扩展
+			// 字段（inputTokens/cacheReadTokens/cacheReadRate）在映射处丢弃，
+			// ListItem.Usage 序列化保持 requestCount/totalTokens/totalCost。
+			items[index].Usage = UsageSummary{
+				RequestCount: summary.RequestCount,
+				TotalTokens:  summary.TotalTokens,
+				TotalCost:    summary.TotalCost,
+			}
 		}
 	}
 	return nil
@@ -185,15 +193,19 @@ func (s *StatsUsageSource) bind(query string) string {
 }
 
 // AccountListUsageSummaries renders the requested rows through the
-// COALESCE'd three-field projection: request_count, input+output tokens and
-// total cost. Missing rows still join (LEFT JOIN) so the caller's zero
-// fallback equals Node's usageMap with zeroed COALESCE values. 成本列读
-// success_cost_usd：展示面与配额执法口径（quota/hourly 窗口的成功交付成本）
-// 一致，失败尝试成本只留在 total_cost_usd 供账号成本观测。
-func (s *StatsUsageSource) AccountListUsageSummaries(ctx context.Context, scopes []UsageScope, statDate string) (map[string]UsageSummary, error) {
+// COALESCE'd projection: request_count, input+output tokens（totalTokens 语义
+// 保持 input+output 不变）、拆分输出的 input_tokens 与 cache_read_tokens 两列
+// （设计 9.1 今日行扩展）以及 total cost. Missing rows still join (LEFT JOIN)
+// so the caller's zero fallback equals Node's usageMap with zeroed COALESCE
+// values. 成本列读 success_cost_usd：展示面与配额执法口径（quota/hourly 窗口
+// 的成功交付成本）一致，失败尝试成本只留在 total_cost_usd 供账号成本观测。
+// 该函数同时服务今日（statDate 非空）与累计（statDate 为空）两条调用臂；
+// 累计臂的结果由 hydrateListUsage 映射回三字段 UsageSummary，今日字段不进
+// 累计 DTO。cacheReadRate 在装配处按样本门计算（cacheReadRate）。
+func (s *StatsUsageSource) AccountListUsageSummaries(ctx context.Context, scopes []UsageScope, statDate string) (map[string]TodayUsageSummary, error) {
 	normalized := uniqueUsageScopes(scopes)
 	if len(normalized) == 0 {
-		return map[string]UsageSummary{}, nil
+		return map[string]TodayUsageSummary{}, nil
 	}
 	tableName := s.table("usage_stats_totals")
 	if statDate != "" {
@@ -216,6 +228,8 @@ func (s *StatsUsageSource) AccountListUsageSummaries(ctx context.Context, scopes
       requested.row_key,
       COALESCE(usage_rows.request_count, 0) AS request_count,
       COALESCE(usage_rows.input_tokens, 0) + COALESCE(usage_rows.output_tokens, 0) AS total_tokens,
+      COALESCE(usage_rows.input_tokens, 0) AS input_tokens,
+      COALESCE(usage_rows.cache_read_tokens, 0) AS cache_read_tokens,
       COALESCE(usage_rows.success_cost_usd, 0) AS total_cost
     FROM requested
     LEFT JOIN ` + tableName + ` usage_rows
@@ -234,25 +248,43 @@ func (s *StatsUsageSource) AccountListUsageSummaries(ctx context.Context, scopes
 		return nil, err
 	}
 	defer rows.Close()
-	summaries := make(map[string]UsageSummary, len(normalized))
+	summaries := make(map[string]TodayUsageSummary, len(normalized))
 	for rows.Next() {
 		var (
-			rowKey       string
-			requestCount sql.NullInt64
-			totalTokens  sql.NullInt64
-			totalCost    sql.NullFloat64
+			rowKey          string
+			requestCount    sql.NullInt64
+			totalTokens     sql.NullInt64
+			inputTokens     sql.NullInt64
+			cacheReadTokens sql.NullInt64
+			totalCost       sql.NullFloat64
 		)
-		if err := rows.Scan(&rowKey, &requestCount, &totalTokens, &totalCost); err != nil {
+		if err := rows.Scan(&rowKey, &requestCount, &totalTokens, &inputTokens, &cacheReadTokens, &totalCost); err != nil {
 			return nil, err
 		}
-		summaries[rowKey] = UsageSummary{
-			RequestCount: int(requestCount.Int64),
-			TotalTokens:  int(totalTokens.Int64),
-			TotalCost:    totalCost.Float64,
+		input := int(inputTokens.Int64)
+		cacheRead := int(cacheReadTokens.Int64)
+		summaries[rowKey] = TodayUsageSummary{
+			RequestCount:    int(requestCount.Int64),
+			TotalTokens:     int(totalTokens.Int64),
+			TotalCost:       totalCost.Float64,
+			InputTokens:     input,
+			CacheReadTokens: cacheRead,
+			CacheReadRate:   cacheReadRate(input, cacheRead),
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return summaries, nil
+}
+
+// cacheReadRate computes the today cache-read ratio（设计 9.1 / 第 10 节）：
+// input_tokens 未达样本门（CacheMinSampleInputTokens）或 cache_read > input
+// 的异常行都视为无有效数据返回 nil；有效样本 rate = cache_read / input。
+func cacheReadRate(inputTokens, cacheReadTokens int) *float64 {
+	if inputTokens < CacheMinSampleInputTokens || cacheReadTokens > inputTokens {
+		return nil
+	}
+	rate := float64(cacheReadTokens) / float64(inputTokens)
+	return &rate
 }

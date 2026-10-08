@@ -1036,6 +1036,9 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "systemMetricsRetentionDays", ValueJSON: "7"},
 	{Key: "systemMetricsHourlyRetentionDays", ValueJSON: "30"},
 	{Key: "upstreamClientVersionOverrides", ValueJSON: "{}"},
+	// 客户端版本自动层键（客户端版本自动跟版设计 §3）：与手动键同结构同默认，
+	// 由 jobs 跟版任务独占写入、gateway/jobs 只读消费。
+	{Key: "upstreamClientVersionAutoOverrides", ValueJSON: "{}"},
 }
 
 // pgSeedKeyValue is one key -> JSON-encoded value pair.

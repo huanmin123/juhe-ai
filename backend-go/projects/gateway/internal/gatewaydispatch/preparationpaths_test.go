@@ -864,6 +864,11 @@ func (f *recordingHotQualityPort) OrderAsync(_ context.Context, input HotQuality
 	return HotQualityOrder{Accounts: reversed, DispatchIntent: "primary_service"}, nil
 }
 
+// ReorderOnly 与 OrderAsync 同形（反转 + 计数），供高并发重排序路径复用。
+func (f *recordingHotQualityPort) ReorderOnly(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error) {
+	return f.OrderAsync(ctx, input)
+}
+
 // TestMediaLaneSkipsHotQualityOrder：audio/video lane 跳过热质量排序——
 // 端口不被调用、候选保持既有顺序、不携带探索预留/结算钩子；text lane
 // 照常进入热质量排序。

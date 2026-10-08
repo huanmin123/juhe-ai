@@ -326,17 +326,17 @@ func TestW1FConcurrencyStoreAcquireRelease(t *testing.T) {
 		t.Fatalf("释放后 lane 并发 = %+v err %v, want 0", after, err)
 	}
 
-	// LaneLimit 覆盖总上限：lane 限额 2 时前两次成功、第三次失败。
+	// 总量硬上限不可被 laneLimit 放宽（Node 双重校验语义）：limit=1 时即使
+	// lane 限额为 2，第二次获取也必须因 total 达限被拒（laneLimit 在生产装配
+	// 中恒 <= 总上限，此处验证 total 闸门优先生效）。
 	wideLimit := 2
-	for index := 0; index < 2; index++ {
-		acquired, err := store.TryAcquireAsync(ctx, "acc-b", 1, gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: "text", LaneLimit: &wideLimit})
-		if err != nil || !acquired.Acquired {
-			t.Fatalf("第 %d 次获取 = %+v err %v, want 成功", index+1, acquired, err)
-		}
+	first, err := store.TryAcquireAsync(ctx, "acc-b", 1, gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: "text", LaneLimit: &wideLimit})
+	if err != nil || !first.Acquired {
+		t.Fatalf("首次获取 = %+v err %v, want 成功", first, err)
 	}
 	blocked, err := store.TryAcquireAsync(ctx, "acc-b", 1, gatewaydispatch.AccountConcurrencyAcquireOptions{Lane: "text", LaneLimit: &wideLimit})
 	if err != nil || blocked.Acquired {
-		t.Fatalf("lane 限额耗尽后 = %+v err %v, want 拒绝", blocked, err)
+		t.Fatalf("总量达限后 = %+v err %v, want 拒绝", blocked, err)
 	}
 
 	// concurrencyLimit=0 表示不限流：总能获取。

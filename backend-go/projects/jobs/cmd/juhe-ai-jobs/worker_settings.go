@@ -64,19 +64,25 @@ func settingsMode(postgres bool) jobssettings.Mode {
 	return jobssettings.SQLite
 }
 
-// refreshUpstreamClientVersionOverrides 把 system_settings 的
-// upstreamClientVersionOverrides 当前值应用到 upstreamidentity 的进程内
-// 覆盖（worker_assembly 装配期启动一次 + 每 60s 周期调用）。读取失败只
-// warn 并保持既有覆盖不动，下次刷新或进程重启再对齐。
+// refreshUpstreamClientVersionOverrides 把 system_settings 的手动键与自动键
+// 当前值应用到 upstreamidentity 的进程内覆盖（worker_assembly 装配期启动一次
+// + 每 60s 周期调用，不新增 ticker）。两层各自独立：读取失败只 warn 并保持
+// 该层既有值不动，下次刷新或进程重启再对齐。
 func (a *workerAssembly) refreshUpstreamClientVersionOverrides(source *jobssettings.Source) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	overrides, err := source.UpstreamClientVersionOverrides(ctx)
 	if err != nil {
 		a.logger.Warn("upstream_client_version_overrides_refresh_failed", slog.Any("error", err))
+	} else {
+		upstreamidentity.SetClientVersionOverrides(overrides)
+	}
+	autoOverrides, err := source.UpstreamClientVersionAutoOverrides(ctx)
+	if err != nil {
+		a.logger.Warn("upstream_client_version_auto_overrides_refresh_failed", slog.Any("error", err))
 		return
 	}
-	upstreamidentity.SetClientVersionOverrides(overrides)
+	upstreamidentity.SetClientVersionAutoOverrides(autoOverrides)
 }
 
 // probeSettingsSource 经 system_settings 读模型解析 probe 族设置（Node

@@ -20,6 +20,9 @@ const (
 	maxAccountListIDs          = 200
 	maxAccountOptionIDs        = 50
 	maxAccountListTagFilters   = 100
+	// CacheMinSampleInputTokens（缓存率感知调度与用量缓存率展示设计.md 第 10 节）：
+	// 今日 input_tokens 低于该值视为无有效缓存样本，cacheReadRate 恒 null。
+	CacheMinSampleInputTokens = 100_000
 )
 
 // ListSort / ListOptions 下沉中立层 accountscore（accountstransfer 的
@@ -149,8 +152,10 @@ type EffectiveAvailability struct {
 	RetryAt      *string `json:"retryAt,omitempty"`
 }
 
-// UsageSummary mirrors AccountListUsageSummary; the populated variant is
-// owned by the J5 stats slice, so the slice renders the shared zero value.
+// UsageSummary mirrors AccountListUsageSummary（累计 usage 的三字段投影）；
+// the populated variant is owned by the J5 stats slice, so the slice renders
+// the shared zero value. 累计对象固定三字段（设计 9.1）：今日扩展字段禁止
+// 泄漏进累计 DTO，hydrateListUsage 把共享读口结果映射回本结构时丢弃。
 type UsageSummary struct {
 	RequestCount int     `json:"requestCount"`
 	TotalTokens  int     `json:"totalTokens"`
@@ -158,6 +163,22 @@ type UsageSummary struct {
 }
 
 func emptyUsageSummary() UsageSummary { return UsageSummary{} }
+
+// TodayUsageSummary mirrors the extended "用量(日)" projection（设计 9.1）：
+// 三字段基础形状 + inputTokens / cacheReadTokens / cacheReadRate。
+// CacheReadRate 刻意不带 omitempty：nil 序列化为 null 表示无有效缓存样本
+// （input_tokens 未达样本门 CacheMinSampleInputTokens，或 cache_read > input
+// 的异常行）。
+type TodayUsageSummary struct {
+	RequestCount    int      `json:"requestCount"`
+	TotalTokens     int      `json:"totalTokens"`
+	TotalCost       float64  `json:"totalCost"`
+	InputTokens     int      `json:"inputTokens"`
+	CacheReadTokens int      `json:"cacheReadTokens"`
+	CacheReadRate   *float64 `json:"cacheReadRate"`
+}
+
+func emptyTodayUsageSummary() TodayUsageSummary { return TodayUsageSummary{} }
 
 // LockStatePublic mirrors the lock fields joined onto list items; the fields
 // stay omitted when the account has no lock row (Node only assigns them from
@@ -220,7 +241,7 @@ type ListItem struct {
 	LastErrorTraceID          *string               `json:"lastErrorTraceId,omitempty"`
 	LastUsedAt                *string               `json:"lastUsedAt,omitempty"`
 	EffectiveAvailability     EffectiveAvailability `json:"effectiveAvailability"`
-	TodayUsage                UsageSummary          `json:"todayUsage"`
+	TodayUsage                TodayUsageSummary     `json:"todayUsage"`
 	Usage                     UsageSummary          `json:"usage"`
 	// OAuthUsage mirrors the AccountSummary.oauthUsage read projection
 	// (account-summary.repository.ts:1452,1575, BUG-0175 D-206): populated
@@ -912,7 +933,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		LastUsedAt:                nullPtrString(row.lastUsedAt),
 		AccessType:                "owner",
 		Permissions:               ownerPermissions(),
-		TodayUsage:                emptyUsageSummary(),
+		TodayUsage:                emptyTodayUsageSummary(),
 		Usage:                     emptyUsageSummary(),
 	}
 	if authorized {

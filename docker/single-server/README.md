@@ -87,9 +87,16 @@ bash docker/single-server/deploy.sh all          # gateway + jobs + maintenance 
 bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / maintenance 同理
 ```
 
-脚本固定执行：**无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ `docker compose build` + `up -d`（maintenance 为一次性 CLI 只重建镜像不 up，`up -d` 会等其入口退出而挂起）→ 逐容器等待 healthy → 公网健康检查 → **发布后验证**（`verify-release.sh`，见下）。任一环节失败立即退出并给出回滚提示。**all 含 maintenance（2026-10-03 起）**：schema/seed 变更必须随发版落地——否则发布后 `--ensure-schema` 用旧清单"幂等成功"却漏建新表（2026-10-02 与 10-03 两次同款事故：旧二进制 623/624 语句"一致"掩盖 chat/j3b 迁移未落地，功能静默不可用）；ensure 后应核对 `StatementCount` 与本地清单期望一致。
+脚本固定执行：**前端漏发门禁**（2026-10-08 起，见下）→ **无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ `docker compose build` + `up -d`（maintenance 为一次性 CLI 只重建镜像不 up，`up -d` 会等其入口退出而挂起）→ 逐容器等待 healthy → 公网健康检查 → **发布后验证**（`verify-release.sh`，见下）。任一环节失败立即退出并给出回滚提示——服务器侧 `docker compose build`/`up -d` 失败同样使发布立即中止（远端命令显式 pipefail，构建失败不会继续用旧镜像滚动更新）。**all 含 maintenance（2026-10-03 起）**：schema/seed 变更必须随发版落地——否则发布后 `--ensure-schema` 用旧清单"幂等成功"却漏建新表（2026-10-02 与 10-03 两次同款事故：旧二进制 623/624 语句"一致"掩盖 chat/j3b 迁移未落地，功能静默不可用）；ensure 后应核对 `StatementCount` 与本地清单期望一致。
 
-手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
+**前端漏发门禁（2026-10-08 起，deploy.sh 第 [0/6] 步；仅当本次发布包含 gateway 时执行）**：前端产物由 `Dockerfile.runtime` 的 `COPY build/frontend-dist` 烤进镜像，而脚本此前只编译上传 Go 二进制——本地 `build/frontend-dist` 未重建时，后端发版会把旧前端再次烤进新镜像（2026-10-07/10-08 多次漏发的成因：使用记录「媒体并入用量列」等已提交的前端改动在生产不可见）。门禁规则：
+
+- **判据**：读取线上正在服务的前端版本（gateway 容器内 `/app/frontend/dist/build-info.json` 的 `buildId`），与本地 `frontend/` 做差异比对——线上版本以来已提交的差异、已跟踪文件的未提交修改、未跟踪新文件三段并集。任一非空即判定"前端有改动"。读取失败或该 commit 在本地仓库不存在时直接中止发布（版本未知不得放行）。
+- **有改动时自动补齐**：`pnpm build`（产物 `buildId` 必须等于当前 HEAD，且构建期间不得再有前端源文件改动写入，否则中止）→ 服务器旧目录备份为 `build/frontend-dist.bak-<时间戳>` → 上传 → 服务器产物 `buildId` 复核。新前端随本次 gateway 镜像重建生效，发布后额外校验容器内前端 `buildId` 与 HEAD 一致，防止"目录更新了但镜像没重烤"。
+- **无改动时**：沿用服务器现有前端产物，不重建。`jobs` / `maintenance` 单独发布不触碰前端，不执行本门禁。
+- 前置：`frontend/node_modules` 必须已安装（缺失即中止并提示 `pnpm install`）。回滚前端 = 恢复服务器 `frontend-dist.bak-*` 后重新 `docker compose build gateway && docker compose up -d gateway`。
+
+手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。**手动流程不含前端漏发门禁**，发布前必须自行确认 `frontend/` 相对线上前端版本无差异，或已重新 `pnpm build` 并上传 `build/frontend-dist`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
 
 **发布后验证（`verify-release.sh`，2026-10-02 起 deploy.sh 第 [6/6] 步自动上传并在服务器运行；也可手动 `cd /opt/juhe-ai && bash verify-release.sh`）**。强制断言（无凭据）：① gateway 与 jobs 的 `/app/backend/data` 挂载解析到同一宿主目录且两侧 `usage-record-spool` 目录存在——不同源时接口照常 200 但用量永不到库（BUG-0193）；② jobs 近 10 分钟日志无 `usage_record_spool_drain_unwired`。容器内端口拓扑（实测 2026-10-03）：3000=业务链路（`/v1/*`），3306=health 专用（无 `/v1` 路由）。~~可选闭环（`/v1` 请求 → 审计+用量落库 trace 级门禁）~~ **已于 2026-10-03 按用户裁定移除**：闭环依赖具体账户/模型的实时可用性，无法保证稳定，作为门禁会随上游波动误报；本实例曾配置并实测 PASS 一次（trace 双落库、新修复字段活体实证），随后移除凭据与该项，链路落库正确性改由发布后巡检（`audit_logs`/`usage_records` 新行字段核验）覆盖。
 

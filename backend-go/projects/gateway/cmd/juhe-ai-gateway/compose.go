@@ -261,6 +261,39 @@ func settingsString(value any) string {
 	}
 }
 
+// upstreamClientVersionAutoRefreshInterval 是自动覆盖键（jobs 跟版任务独占
+// 写入）的周期刷新节拍：60s，与 jobs 侧 worker_assembly 的 60s ticker 同量级，
+// 即跨进程写入在 gateway 侧的生效上界（客户端版本自动跟版设计 §4）。
+const upstreamClientVersionAutoRefreshInterval = 60 * time.Second
+
+// startUpstreamClientVersionAutoRefresh 启动自动覆盖键的进程内周期刷新：每
+// 60s 直读 system_settings 并全量替换 upstreamidentity 的自动层；读取失败仅
+// 告警并保持既有值（下一轮或进程重启再对齐，与启动接线同风格）。返回取消
+// 函数：组合根把 cancel 登记进 shutdowns，进程停机时 goroutine 随之退出
+// （compose 无 ctx 入参，故用自持 cancel 绑定组合根生命周期）。
+func startUpstreamClientVersionAutoRefresh(store *settings.Store) context.CancelFunc {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(upstreamClientVersionAutoRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				overrides, err := store.UpstreamClientVersionAutoOverrides(ctx)
+				if err != nil {
+					slog.Default().Warn("周期刷新上游客户端版本自动覆盖失败，保持既有覆盖",
+						"event", "upstream_client_version_auto_overrides_refresh_failed", "error", err.Error())
+					continue
+				}
+				upstreamidentity.SetClientVersionAutoOverrides(overrides)
+			}
+		}
+	}()
+	return cancel
+}
+
 // composeSystemAPI assembles the Go system-api composition root: business
 // stores over the dual-mode business database, the kernel in the Node
 // system-api-app.ts middleware order, every mount-ready management and public
@@ -529,6 +562,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	} else {
 		upstreamidentity.SetClientVersionOverrides(overrides)
 	}
+	// upstreamClientVersionAutoOverrides 启动接线：自动层由 jobs 跟版任务独占
+	// 写入（管理端不可写），gateway 启动读取一次并在此后每 60s 周期刷新
+	//（读取失败 warn、保持既有值），跨进程写入在 gateway 侧最迟 60s 生效。
+	if autoOverrides, autoOverridesErr := settingsStore.UpstreamClientVersionAutoOverrides(context.Background()); autoOverridesErr != nil {
+		slog.Default().Warn("启动读取上游客户端版本自动覆盖失败，先使用内置/手动客户端版本",
+			"event", "upstream_client_version_auto_overrides_startup_read_failed", "error", autoOverridesErr.Error())
+	} else {
+		upstreamidentity.SetClientVersionAutoOverrides(autoOverrides)
+	}
+	cancelAutoOverridesRefresh := startUpstreamClientVersionAutoRefresh(settingsStore)
+	composed.shutdowns = append(composed.shutdowns, func() { cancelAutoOverridesRefresh() })
 
 	// X04 404 项补齐 (logreads three-family reads): build the audit/runtime/
 	// public-api log readers over the dataset handles opened above.
@@ -688,6 +732,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create account stats usage source: %w", err)
 	}
 	accountStore.SetUsageSource(accountUsageSource)
+	// 期二（缓存率设计 8.1）：缓存率快照加载器（读统计库 usage_stats_hourly
+	// 的 global/account 行 + 业务库 usageStatsTimezone 时区源）；组合根启动
+	// 后台 Warmup 一次，请求路径只读内存（TTL 后台刷新），超龄由排序接线侧
+	// 转维度中性。取消函数随 shutdowns 登记。
+	cacheRateSource, err := newChainCacheRateSnapshotSource(composed.statsDB, composed.db, composed.pgDialect)
+	if err != nil {
+		return nil, fmt.Errorf("create cache-rate snapshot source: %w", err)
+	}
+	cancelCacheRateWarmup := startChainCacheRateWarmup(cacheRateSource)
+	composed.shutdowns = append(composed.shutdowns, func() { cancelCacheRateWarmup() })
 	// account_usage_snapshots（openai_codex 快照读、relay_balance 快照读与旧
 	// 快照清理 DELETE）必须落在 stats 库句柄上：生产 SQLite 打开独立的
 	// stats 文件，裸表名在业务句柄上解析不到（同 authzStore.AttachStatsDatabase
@@ -1326,8 +1380,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			AccountCircuits:    chainServices.AccountCircuits,
 			KeyModelStore:      chainServices.KeyModelStore,
 			ProxyHealth:        chainProxyHealthPort{service: chainServices.ProxyHealth},
-			HotQuality:         &chainHotQualityPort{runtime: chainServices.HotQuality},
-			HotQualityFactory:  newChainHotQualityLifecycleFactory(chainServices.HotQuality),
+			// 期二（缓存率设计 8.1/7）：热质量端口注入缓存率快照取数口——
+			// 每次排序调用取最新内存快照，stale/未加载不喂 CacheRates。
+			HotQuality:        &chainHotQualityPort{runtime: chainServices.HotQuality, cacheRates: cacheRateSource.Snapshot},
+			HotQualityFactory: newChainHotQualityLifecycleFactory(chainServices.HotQuality),
 			Suppression: chainSuppressionPort{
 				store:  chainServices.SuppressionStore,
 				waiter: chainServices.SuppressionWaiter,

@@ -45,6 +45,29 @@ const SettingsSnapshotTTL = 60 * time.Second
 // SystemSettingsAccountID mirrors SYSTEM_SETTINGS_ACCOUNT_ID.
 const SystemSettingsAccountID = "sys_admin"
 
+// systemSettingSelectSQLite / systemSettingSelectPostgres 是单键设置读取的
+// 唯二查询串（readValue 与 readValueStrict 共用，禁止在调用点内联 SQL）。
+// 实参顺序固定为 (system_account_id, key)：SQLite 的 ? 按位置绑定，PG 的
+// $1/$2 必须与之对应——$1 = system_account_id、$2 = key。
+//
+// BUG-0297：PG 分支曾写反为 system_account_id = $2 AND key = $1，与实参
+// (SystemSettingsAccountID, key) 错配，PG 下恒 ErrNoRows 回退默认值，jobs
+// 进程全部经这两条路径的设置读取在生产从未读到真实值。SQLite 分支不受影响，
+// 测试因此全绿未暴露。占位符映射由 TestPostgresSettingSelectPlaceholderOrder
+// 锁定。
+const (
+	systemSettingSelectSQLite   = `SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ? LIMIT 1`
+	systemSettingSelectPostgres = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = $1 AND key = $2 LIMIT 1`
+)
+
+// systemSettingSelectQuery 按模式返回单键设置查询串。
+func systemSettingSelectQuery(mode Mode) string {
+	if mode == Postgres {
+		return systemSettingSelectPostgres
+	}
+	return systemSettingSelectSQLite
+}
+
 // Mode selects the table qualifier and the failure semantics.
 type Mode int
 
@@ -163,13 +186,42 @@ func (s *Source) UpstreamClientVersionOverrides(ctx context.Context) (map[string
 	return overrides, nil
 }
 
+// UpstreamClientVersionAutoOverrides 读取 system_settings 的
+// upstreamClientVersionAutoOverrides 键（自动层，跟版任务独占写入、gateway
+// 周期消费）并做同款防御式过滤；空对象、缺行（回退默认 {}）与全非法都返回
+// 空 map（= 自动层为空，生效值回退手动层/内置）。
+//
+// 与 UpstreamClientVersionOverrides 同语义：走 readValueStrict 而非
+// settingValue，DB 读失败必须返回 error（调用方保持既有自动层不动），不得
+// 降级成默认 {}——否则 PG 瞬断会把已跟版成功的自动值静默清空；同样不进
+// per-key TTL 缓存。
+func (s *Source) UpstreamClientVersionAutoOverrides(ctx context.Context) (map[string]string, error) {
+	value, err := s.readValueStrict(ctx, "upstreamClientVersionAutoOverrides")
+	if err != nil {
+		return nil, err
+	}
+	decoded, ok := value.(map[string]any)
+	if !ok {
+		return map[string]string{}, nil
+	}
+	overrides := make(map[string]string, len(decoded))
+	for family, raw := range decoded {
+		if !upstreamClientVersionFamilySet[family] {
+			continue
+		}
+		version, ok := raw.(string)
+		if !ok || !upstreamClientVersionPattern.MatchString(version) {
+			continue
+		}
+		overrides[family] = version
+	}
+	return overrides, nil
+}
+
 // readValueStrict 直读一行设置：缺行回退 DEFAULT_SYSTEM_SETTINGS，其余
 // 读错误原样返回（不走 readValue 的 PG 降级/SQLite 缺表降级路径）。
 func (s *Source) readValueStrict(ctx context.Context, key string) (any, error) {
-	query := `SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ? LIMIT 1`
-	if s.mode == Postgres {
-		query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = $2 AND key = $1 LIMIT 1`
-	}
+	query := systemSettingSelectQuery(s.mode)
 	var rawValue sql.NullString
 	readErr := s.db.QueryRowContext(ctx, query, SystemSettingsAccountID, key).Scan(&rawValue)
 	if readErr == sql.ErrNoRows {
@@ -212,10 +264,7 @@ func (s *Source) settingValue(ctx context.Context, key string) (any, error) {
 }
 
 func (s *Source) readValue(ctx context.Context, key string) (any, error) {
-	query := `SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ? LIMIT 1`
-	if s.mode == Postgres {
-		query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = $2 AND key = $1 LIMIT 1`
-	}
+	query := systemSettingSelectQuery(s.mode)
 	var rawValue sql.NullString
 	readErr := s.db.QueryRowContext(ctx, query, SystemSettingsAccountID, key).Scan(&rawValue)
 	if readErr == nil || readErr == sql.ErrNoRows {

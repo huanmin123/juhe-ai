@@ -19,6 +19,7 @@ import (
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 const (
@@ -1051,8 +1052,8 @@ func normalizeOpenAIOAuthCodexRequest(request Request, headers http.Header) ([]b
 	if _, ok := headers["Authorization"]; !ok && headers.Get("Authorization") == "" {
 		return nil, headers, errors.New("J3b OpenAI OAuth Codex authorization is missing")
 	}
-	headers.Set("originator", "Codex Desktop")
-	headers.Set("user-agent", "Codex Desktop/0.159.3 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.159.3)")
+	headers.Set("originator", "codex_exec")
+	headers.Set("user-agent", upstreamidentity.EffectiveCodexUserAgent())
 	sessionID, err := codexUUID()
 	if err != nil {
 		return nil, headers, errors.New("J3b OpenAI OAuth Codex identity unavailable")

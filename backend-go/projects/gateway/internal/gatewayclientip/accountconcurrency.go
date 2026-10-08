@@ -60,6 +60,40 @@ func NewMemoryAccountConcurrency(clock Clock) *MemoryAccountConcurrency {
 	}
 }
 
+// AccountConcurrencyAcquireOutcome 是一次原子占位尝试的观测结果：Acquired
+// 表示是否占位成功；Total 与 LaneCurrent 是本次尝试时刻的账户总量与归一化
+// lane 计数（成功时为占位后的值，拒绝时保持原值、两个计数都不自增）。
+type AccountConcurrencyAcquireOutcome struct {
+	Acquired    bool
+	Total       int
+	LaneCurrent int
+}
+
+// TryAcquire 在单个互斥临界区内完成“账户总量 + lane”双重校验并占位，恢复
+// Node tryAcquireAccountConcurrency 的拒绝语义（current >= limit ||
+// laneCurrent >= laneLimit 即拒绝）：任一计数达到上限即拒绝且不自增，通过才
+// 同时自增 total 与 lane 并返回成功。totalLimit/laneLimit <= 0 视为不设限
+// （与 dispatch 侧“上限>0 才拒绝”的既有语义一致）；lane 非 image 归入 text。
+// 检查与占用同锁执行，消除“先读后判再 Acquire”两步逻辑的并发超卖窗口。
+func (m *MemoryAccountConcurrency) TryAcquire(accountID string, totalLimit int, lane string, laneLimit int) AccountConcurrencyAcquireOutcome {
+	if lane != AccountConcurrencyLaneImage {
+		lane = AccountConcurrencyLaneText
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := m.total[accountID]
+	laneCurrent := m.byLane[accountID+":"+lane]
+	if totalLimit > 0 && total >= totalLimit {
+		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent}
+	}
+	if laneLimit > 0 && laneCurrent >= laneLimit {
+		return AccountConcurrencyAcquireOutcome{Total: total, LaneCurrent: laneCurrent}
+	}
+	m.total[accountID] = total + 1
+	m.byLane[accountID+":"+lane] = laneCurrent + 1
+	return AccountConcurrencyAcquireOutcome{Acquired: true, Total: total + 1, LaneCurrent: laneCurrent + 1}
+}
+
 // Acquire mirrors tryAcquireAccountConcurrency's successful local path.
 func (m *MemoryAccountConcurrency) Acquire(accountID string, lane string) bool {
 	if lane != AccountConcurrencyLaneImage {

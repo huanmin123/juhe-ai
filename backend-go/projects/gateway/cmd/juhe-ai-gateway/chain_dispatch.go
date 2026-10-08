@@ -91,6 +91,15 @@ func (d *degradedHotQuality) OrderAsync(_ context.Context, input gatewaydispatch
 	return gatewaydispatch.HotQualityOrder{Accounts: input.Accounts}, nil
 }
 
+// ReorderOnly 与 OrderAsync 同语义降级：候选保持原序、无解释（重排序调用
+// 方把 nil 解释计为降级标记，不阻塞派发）。
+func (d *degradedHotQuality) ReorderOnly(_ context.Context, input gatewaydispatch.HotQualityOrderInput) (gatewaydispatch.HotQualityOrder, error) {
+	d.once.Do(func() {
+		slogOnceWarn("gatewaydispatch.HotQualityPort", "热度质量排序保持不变")
+	})
+	return gatewaydispatch.HotQualityOrder{Accounts: input.Accounts}, nil
+}
+
 // degradedClientSourceAvoidance implements
 // gatewaydispatch.ClientSourceAvoidancePort (client-profiles
 // client-source-avoidance.service.ts is a later slice; absent state means no
@@ -244,27 +253,28 @@ func (s *chainConcurrencyStore) LoadCurrentByLaneAsync(ctx context.Context, acco
 }
 
 // TryAcquireAsync acquires one concurrency slot when the account is below
-// its (lane-scoped) limit; the returned release puts the slot back.
+// its hard limit. 校验与占用由 tracker.TryAcquire 在单个互斥临界区内原子完
+// 成（Node tryAcquireAccountConcurrency：current >= limit ||
+// laneCurrent >= laneLimit 即拒绝），totalLimit 是账户配置的硬并发上限
+// （concurrencyLimit，laneLimit 未配置时 lane 上限同为硬上限）；拒绝时
+// total/lane 计数都不自增，slot 仅携带观测值。
 func (s *chainConcurrencyStore) TryAcquireAsync(_ context.Context, accountID string, concurrencyLimit int, options gatewaydispatch.AccountConcurrencyAcquireOptions) (gatewaydispatch.ConcurrencySlot, error) {
-	current := s.tracker.CurrentAccountConcurrency(accountID, options.Lane)
 	laneLimit := concurrencyLimit
 	if options.LaneLimit != nil {
 		laneLimit = *options.LaneLimit
 	}
+	outcome := s.tracker.TryAcquire(accountID, concurrencyLimit, options.Lane, laneLimit)
 	slot := gatewaydispatch.ConcurrencySlot{
-		Current:     current,
+		Current:     outcome.Total,
 		Limit:       concurrencyLimit,
 		Lane:        options.Lane,
-		LaneCurrent: current,
+		LaneCurrent: outcome.LaneCurrent,
 		LaneLimit:   laneLimit,
 	}
-	if concurrencyLimit > 0 && current >= laneLimit {
+	if !outcome.Acquired {
 		return slot, nil
 	}
-	s.tracker.Acquire(accountID, options.Lane)
 	slot.Acquired = true
-	slot.Current = current + 1
-	slot.LaneCurrent = current + 1
 	accountIDCopy := accountID
 	laneCopy := options.Lane
 	slot.Release = func() { s.tracker.Release(accountIDCopy, laneCopy) }

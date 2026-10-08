@@ -407,3 +407,47 @@ func readSOCKS5Request(connection net.Conn) (socksRequest, bool) {
 	request.port = int(port[0])<<8 | int(port[1])
 	return request, true
 }
+
+// TestNewTransportInstallsDialGuardOnDirectAndHTTPProxy 钉住 TransportOptions
+// 的 DialGuard 装配契约（生图 URL 下载 SSRF 修复的前提回归钉）：直连与
+// HTTP(S) 代理路径的 transport 必须经 guard 建立连接，guard 校验实际 socket
+// 对端（直连为上游主机，HTTP 代理为代理主机），命中保留网段时在连接建立前
+// 拒绝。此前安装条件 transport.DialContext == nil 恒为假，guard 从未生效。
+func TestNewTransportInstallsDialGuardOnDirectAndHTTPProxy(t *testing.T) {
+	guard := NewDialGuard(URLSecurityConfig{}, nil, nil)
+	var guardErr *UnsafeResolvedUpstreamURLError
+
+	direct, err := NewTransport("", TransportOptions{DialGuard: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, dialErr := direct.DialContext(context.Background(), "tcp", "127.0.0.1:1"); !errors.As(dialErr, &guardErr) {
+		t.Fatalf("直连拨号应被 guard 拒绝: %v", dialErr)
+	}
+
+	proxied, err := NewTransport("http://127.0.0.1:1", TransportOptions{DialGuard: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proxied.Proxy == nil {
+		t.Fatal("HTTP 代理 transport 应保留 proxy 设置")
+	}
+	// 代理路径 guard 校验的是代理主机：transport 对代理地址的拨号必须被拒。
+	if _, dialErr := proxied.DialContext(context.Background(), "tcp", "127.0.0.1:1"); !errors.As(dialErr, &guardErr) {
+		t.Fatalf("HTTP 代理主机应被 guard 拒绝: %v", dialErr)
+	}
+}
+
+// TestNewTransportWithoutDialGuardDialsPlainly 证明上述拒绝来自 guard：同一
+// 保留地址在无 guard 时走普通拨号（连接拒绝），不产生保留网段错误。
+func TestNewTransportWithoutDialGuardDialsPlainly(t *testing.T) {
+	plain, err := NewTransport("", TransportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, dialErr := plain.DialContext(context.Background(), "tcp", "127.0.0.1:1")
+	var guardErr *UnsafeResolvedUpstreamURLError
+	if errors.As(dialErr, &guardErr) {
+		t.Fatalf("无 guard 不应产生保留网段拒绝: %v", dialErr)
+	}
+}

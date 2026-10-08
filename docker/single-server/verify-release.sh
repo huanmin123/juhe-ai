@@ -57,11 +57,18 @@ done
 # 2. jobs drain 接线断言
 # ---------------------------------------------------------------------------
 echo "-- [2/2] jobs usage spool drain 接线断言"
-UNWIRED=$(docker compose logs jobs --since 10m 2>&1 | grep -c 'usage_record_spool_drain_unwired' || true)
-if [ "${UNWIRED:-0}" -gt 0 ]; then
-  fail "jobs 近 10 分钟出现 usage_record_spool_drain_unwired（近 $UNWIRED 次）：用量交接未接线，统计将恒空"
+# 门禁 fail-closed：先取日志并检查 docker compose logs 退出码——logs 本身失败
+# （compose 目录错误、jobs 容器缺失等）时无法断言接线，必须判失败；`|| true`
+# 只兜 grep 无匹配（正常无告警）路径的退出码。
+if ! JOBS_LOGS=$(docker compose logs jobs --since 10m 2>&1); then
+  fail "docker compose logs jobs 读取失败，无法断言 drain 接线，按门禁失败处理。原始错误：${JOBS_LOGS:-<无输出>}"
 else
-  pass "jobs 近 10 分钟无 drain 未接线告警"
+  UNWIRED=$(printf '%s\n' "$JOBS_LOGS" | grep -c 'usage_record_spool_drain_unwired' || true)
+  if [ "${UNWIRED:-0}" -gt 0 ]; then
+    fail "jobs 近 10 分钟出现 usage_record_spool_drain_unwired（近 $UNWIRED 次）：用量交接未接线，统计将恒空"
+  else
+    pass "jobs 近 10 分钟无 drain 未接线告警"
+  fi
 fi
 
 if [ "$FAIL" -eq 0 ]; then echo "== 结果：PASS =="; else echo "== 结果：FAIL ==" >&2; fi

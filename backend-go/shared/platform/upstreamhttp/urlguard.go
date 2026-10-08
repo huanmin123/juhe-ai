@@ -291,14 +291,16 @@ type Resolver interface {
 }
 
 // NewDialGuard builds the guard. A nil resolver falls back to
-// net.DefaultResolver; a nil dialer falls back to a 10s-timeout dialer (the
-// transport's own response-header budget stays independent).
+// net.DefaultResolver; a nil dialer falls back to a dialer matching
+// http.DefaultTransport's dialer budget (30s timeout, 30s keep-alive) so that
+// installing a guard does not by itself tighten the connection budget — the
+// transport's own response-header budget stays independent.
 func NewDialGuard(config URLSecurityConfig, resolver Resolver, dialer *net.Dialer) *DialGuard {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	if dialer == nil {
-		dialer = &net.Dialer{Timeout: 10 * time.Second}
+		dialer = &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	}
 	guard := &DialGuard{
 		config:           config,

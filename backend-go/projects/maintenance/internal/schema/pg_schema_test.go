@@ -341,11 +341,12 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
-	// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
-	// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）。
-	if len(pgSeedSystemSettings) != 71 {
-		t.Fatalf("system settings = %d, want 71", len(pgSeedSystemSettings))
-	}
+		// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
+		// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）；
+		// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）。
+		if len(pgSeedSystemSettings) != 72 {
+			t.Fatalf("system settings = %d, want 72", len(pgSeedSystemSettings))
+		}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {
 		profileFamilyCount += len(profile.EndpointFamilies)

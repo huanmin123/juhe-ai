@@ -1070,11 +1070,11 @@ func TestW13DRedisAccountConcurrencyStore(t *testing.T) {
 		t.Fatalf("empty lane=%+v err=%v", values, err)
 	}
 
-	// 写入计数后读取。
-	if err := source.AcquireAccountConcurrency(ctx, "a1", "", 60_000); err != nil {
+	// 写入计数后读取（上限传 0 表示不设限，纯计数语义）。
+	if _, err := source.AcquireAccountConcurrency(ctx, "a1", "", 60_000, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.AcquireAccountConcurrency(ctx, "a1", AccountConcurrencyLaneImage, 60_000); err != nil {
+	if _, err := source.AcquireAccountConcurrency(ctx, "a1", AccountConcurrencyLaneImage, 60_000, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := source.CurrentAccountConcurrency("a1", ""); got != 1 {

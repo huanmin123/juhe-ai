@@ -12,6 +12,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 const recoveryBatchLimit int64 = 128
@@ -41,6 +42,11 @@ type Runner struct {
 	probe  ProbeExecutor
 	logger *slog.Logger
 
+	// scanDelay 计算扫描循环每轮等待时长，默认 schedulejitter.Delay（1s 扫描按
+	// <1min 档位窗口 = ±interval/2 = ±0.5s 抖动，不扩窗）；抽成字段供单测注入
+	// 桩，断言间隔来源每轮重新求值（客户端版本自动跟版设计 §9 抖动缺口修复）。
+	scanDelay func(time.Duration) time.Duration
+
 	mu                sync.Mutex
 	running           map[string]Running
 	lastClosedCleanup time.Time
@@ -63,15 +69,19 @@ func NewRunner(store Store, loader InputLoader, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
+	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, scanDelay: schedulejitter.Delay, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
 	if r == nil || r.store == nil || r.loader == nil {
 		return fmt.Errorf("model-recovery runner 未初始化")
 	}
-	ticker := time.NewTicker(ScanInterval)
-	defer ticker.Stop()
+	// 每轮重随机扫描间隔（对齐 accountbalance.Service.Run 范式）：裸 ticker 的
+	// 相位锁定在进程起跑时刻，重启后多实例同相位扫描、due 候选同相位打上游；
+	// Timer 每轮 Reset 抖动后的延迟可逐轮解耦相位。等待仍从上一轮到期时刻起算
+	// （Ticker 语义），慢轮次不会往后累积漂移，只表现为立即进入下一轮。
+	timer := time.NewTimer(r.scanDelay(ScanInterval))
+	defer timer.Stop()
 	for {
 		if err := r.RunCycle(ctx); err != nil && ctx.Err() == nil {
 			r.logger.Warn("model-recovery scan failed", "error", err)
@@ -79,7 +89,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
+			timer.Reset(r.scanDelay(ScanInterval))
 		}
 	}
 }

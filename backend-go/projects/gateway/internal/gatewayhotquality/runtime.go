@@ -224,7 +224,12 @@ func GatewayAccountRuntimeKey(account GatewayHotQualityAccountView) (string, err
 
 // GatewayHotQualityCandidateOrderInput mirrors
 // GatewayHotQualityCandidateOrderInput; the generic payload + Base projection
-// mirrors the Node account objects.
+// mirrors the Node account objects. The cache-rate block feeds the
+// cache-rate-aware ordering: CacheRates keys physical account IDs to their
+// 24h windows (nil = no snapshot data) and is injected into the candidate
+// selection snapshots below; CacheRateStale is the passthrough staleness
+// marker for the decision explanation; SpeedThresholdMs overrides the
+// speed-qualified threshold (0 resolves the mode-backed package constant).
 type GatewayHotQualityCandidateOrderInput[T any] struct {
 	Accounts                       []T
 	Base                           func(T) GatewayHotQualityAccountView
@@ -240,6 +245,9 @@ type GatewayHotQualityCandidateOrderInput[T any] struct {
 	StableBindingOrderByRuntimeKey map[string]int
 	EligibleFirstPrimaryDispatch   bool
 	NowMs                          *int64
+	CacheRates                     map[string]CacheRateWindow
+	CacheRateStale                 bool
+	SpeedThresholdMs               int64
 }
 
 // GatewayHotQualityExplorationReservation extends
@@ -251,7 +259,12 @@ type GatewayHotQualityExplorationReservation struct {
 
 // GatewayHotQualityCandidateOrderResult mirrors
 // GatewayHotQualityCandidateOrderResult. Node's `selectedAccountId?: string`
-// and `explorationReservation?` become ” / nil.
+// and `explorationReservation?` become ” / nil. Explanation carries the first
+// protocol group's ordering-decision explanation (cache-rate design doc
+// section 5.6: CandidateOrderDetails / SpeedBaseEwmaMs / SpeedThresholdMs /
+// CacheRateStale / CacheRateEnabled) so consumers can project the decision
+// facts without re-running the ordering; nil only on the empty-candidates
+// result.
 type GatewayHotQualityCandidateOrderResult[T any] struct {
 	Accounts                       []T
 	QualityReorderedTierKeys       []string
@@ -261,6 +274,7 @@ type GatewayHotQualityCandidateOrderResult[T any] struct {
 	ExplorationStatus              string
 	ExplorationReservation         *GatewayHotQualityExplorationReservation
 	SettleExplorationAfterDispatch func(ctx context.Context, outcome string) error
+	Explanation                    *HotQualityCandidateSelectionExplanation
 }
 
 type orderedCandidatePayload[T any] struct {
@@ -349,6 +363,14 @@ func OrderGatewayAccountsByHotQuality[T any](
 				HotQuality:         selectionViewOrNil(snapshots[index]),
 				LatencyDegraded:    input.LatencyDegradedAccountIDs[view.ID],
 			}
+			// Cache-rate window injection (section 8.1): the selection view is
+			// a fresh per-request value, so writing the 24h window keyed by
+			// the physical account ID never mutates shared store state.
+			if input.CacheRates != nil {
+				if window, ok := input.CacheRates[view.ID]; ok {
+					applyCacheRateWindow(candidates[index].HotQuality, window)
+				}
+			}
 			payloads[index].base = candidates[index]
 		}
 
@@ -361,10 +383,13 @@ func OrderGatewayAccountsByHotQuality[T any](
 			}
 		} else {
 			decision, err := DecideHotQualityCandidate[HotQualityCandidate](DecideHotQualityCandidateInput[HotQualityCandidate]{
-				Mode:          input.Mode,
-				RouteScopeKey: routeScopeKey,
-				Candidates:    candidates,
-				Base:          func(candidate HotQualityCandidate) HotQualityCandidate { return candidate },
+				Mode:             input.Mode,
+				RouteScopeKey:    routeScopeKey,
+				Candidates:       candidates,
+				Base:             func(candidate HotQualityCandidate) HotQualityCandidate { return candidate },
+				CacheRates:       input.CacheRates,
+				CacheRateStale:   input.CacheRateStale,
+				SpeedThresholdMs: input.SpeedThresholdMs,
 			})
 			if err != nil {
 				return nil, err
@@ -416,6 +441,7 @@ func OrderGatewayAccountsByHotQuality[T any](
 		ExplorationStatus:              first.ExplorationStatus,
 		ExplorationReservation:         first.ExplorationReservation,
 		SettleExplorationAfterDispatch: first.SettleExplorationAfterDispatch,
+		Explanation:                    first.Explanation,
 	}, nil
 }
 
@@ -427,6 +453,9 @@ type gatewayHotQualityOrderResultFields struct {
 	ExplorationStatus              string
 	ExplorationReservation         *GatewayHotQualityExplorationReservation
 	SettleExplorationAfterDispatch func(ctx context.Context, outcome string) error
+	// Explanation 是首协议组排序决策的解释（缓存率设计 5.6），与上面的
+	// 窗口级字段同一决策产出，随结果带出避免消费方重排序重建。
+	Explanation *HotQualityCandidateSelectionExplanation
 }
 
 type gatewayHotQualityGroupSelection[T any] struct {
@@ -479,7 +508,7 @@ func selectFirstProtocolGroup[T any](
 	if err != nil {
 		return nil, err
 	}
-	decision, err := DecideHotQualityCandidate(orderedDecisionInput(payloads, candidates, input.Mode, routeScopeKey, decisionState))
+	decision, err := DecideHotQualityCandidate(orderedDecisionInput(payloads, candidates, input.Mode, routeScopeKey, decisionState, input.CacheRates, input.CacheRateStale, input.SpeedThresholdMs))
 	if err != nil {
 		return nil, err
 	}
@@ -500,6 +529,7 @@ func selectFirstProtocolGroup[T any](
 				SelectedAccountID:              selectedAccountID,
 				DispatchIntent:                 decision.DispatchIntent,
 				ExplorationStatus:              decision.Explanation.Exploration.Status,
+				Explanation:                    &decision.Explanation,
 			},
 		}, nil
 	}
@@ -533,6 +563,7 @@ func selectFirstProtocolGroup[T any](
 				SelectedAccountID:              firstAccountID(decision.QualityOrderedCandidates),
 				DispatchIntent:                 "primary_service",
 				ExplorationStatus:              "reservation_" + reservation.Status,
+				Explanation:                    &decision.Explanation,
 			},
 		}, nil
 	}
@@ -571,6 +602,7 @@ func selectFirstProtocolGroup[T any](
 			ExplorationStatus:              "reserved",
 			ExplorationReservation:         selectedReservation,
 			SettleExplorationAfterDispatch: settleExplorationAfterDispatch,
+			Explanation:                    &decision.Explanation,
 		},
 	}, nil
 }
@@ -582,13 +614,19 @@ func orderedDecisionInput[T any](
 	mode HotQualityRoutingMode,
 	routeScopeKey string,
 	exploration *SameTierExplorationDecisionState,
+	cacheRates map[string]CacheRateWindow,
+	cacheRateStale bool,
+	speedThresholdMs int64,
 ) DecideHotQualityCandidateInput[HotQualityCandidate] {
 	return DecideHotQualityCandidateInput[HotQualityCandidate]{
-		Mode:          mode,
-		RouteScopeKey: routeScopeKey,
-		Candidates:    candidates,
-		Base:          func(candidate HotQualityCandidate) HotQualityCandidate { return candidate },
-		Exploration:   exploration,
+		Mode:             mode,
+		RouteScopeKey:    routeScopeKey,
+		Candidates:       candidates,
+		Base:             func(candidate HotQualityCandidate) HotQualityCandidate { return candidate },
+		Exploration:      exploration,
+		CacheRates:       cacheRates,
+		CacheRateStale:   cacheRateStale,
+		SpeedThresholdMs: speedThresholdMs,
 	}
 }
 

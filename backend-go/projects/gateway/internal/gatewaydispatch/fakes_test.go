@@ -213,6 +213,13 @@ func (f *fakeHotQuality) OrderAsync(ctx context.Context, input HotQualityOrderIn
 	return HotQualityOrder{Accounts: input.Accounts, DispatchIntent: "primary_service"}, nil
 }
 
+// ReorderOnly keeps the pure-ordering default: passthrough order, no
+// explanation (degraded shape — the reorder call site treats a nil
+// explanation as the degradation marker).
+func (f *fakeHotQuality) ReorderOnly(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error) {
+	return HotQualityOrder{Accounts: input.Accounts, DispatchIntent: "primary_service"}, nil
+}
+
 type fakeAffinity struct {
 	remembered []string
 	forgotten  []string

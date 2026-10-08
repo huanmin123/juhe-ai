@@ -37,7 +37,9 @@ const LEGACY_EXCEPTION_BASELINE = {
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_pg_wave_test.go': 1,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/w2_assembly_tail_test.go': 1,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/fullchain_clients_test.go': 2,
-  'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/harness_test.go': 2,
+  // acceptance harness（2026-10-08 追认 9ef312ce9：模型检测零配置自动认领
+  // 验收新增 maintenance --apply-j3b-model-check-postgres 子进程调用点）
+  'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/harness_test.go': 3,
   'backend-go/projects/gateway/cmd/juhe-ai-gateway/acceptance/main_test.go': 1,
   // jobs cmd main arms / e2e 系列
   'backend-go/projects/jobs/cmd/juhe-ai-jobs/w13g8_cmd_main_arms_test.go': 2,

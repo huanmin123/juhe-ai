@@ -325,3 +325,61 @@ func TestCovCodeInterpreterArtifactOmitReasons(t *testing.T) {
 		}
 	})
 }
+
+// TestCovRunPythonProcessConcurrentStreams 钉住 stdout/stderr 并发读取修复：
+// 子进程向 stderr 写入超过 64KiB（Linux 管道缓冲量级）时，串行 collect 会因
+// stderr 写满阻塞、stdout 写端不关闭而与子进程互等，只能靠超时 kill 误判
+// timedOut；并发读取后应正常完成，且两流合计不超过共享 MaxOutputBytes。
+// 断言只用与调度次序无关的确定性事实：单流洪泛的流恰好收敛到配额；双流
+// 洪泛时两流合计恰好等于配额（两流先于配额耗尽各自 flush 完整输出）。
+func TestCovRunPythonProcessConcurrentStreams(t *testing.T) {
+	t.Run("stderr 洪泛不误判超时", func(t *testing.T) {
+		executor := covRealExecutor(t, nil)
+		result, err := executor.Execute(context.Background(), CodeInterpreterInput{
+			Code: "import sys\nsys.stderr.write('e' * 70000)\nsys.stderr.flush()",
+		})
+		if err != nil {
+			t.Fatalf("执行失败：%v", err)
+		}
+		if result.TimedOut {
+			t.Fatalf("stderr 洪泛不应被误判超时：%+v", result)
+		}
+		if !result.OutputTruncated {
+			t.Fatalf("超过共享上限应标记截断：%+v", result)
+		}
+		// 无 stdout 字节，stderr 单流恰好耗尽 64KiB 共享配额。
+		if int64(len(result.Stderr)) != executor.config.MaxOutputBytes {
+			t.Errorf("stderr 应恰好收敛到共享上限 %d：实际 %d", executor.config.MaxOutputBytes, len(result.Stderr))
+		}
+		if !strings.HasPrefix(result.Stderr, "eeee") {
+			t.Errorf("截断后应保留 stderr 前缀：%q", result.Stderr)
+		}
+	})
+
+	t.Run("两流合计不超过共享配额", func(t *testing.T) {
+		executor := covRealExecutor(t, func(config *Config) {
+			config.CodeInterpreter.MaxOutputBytes = 65536
+		})
+		// 两流各 40KiB、立即 flush：合计 80KiB 超过 64KiB 共享上限；分配次序
+		// 不确定，但合计必须恰好收敛到配额且不误判超时。
+		result, err := executor.Execute(context.Background(), CodeInterpreterInput{
+			Code: "import sys\nsys.stderr.write('e' * 40960)\nsys.stderr.flush()\nprint('o' * 40960, flush=True)",
+		})
+		if err != nil {
+			t.Fatalf("执行失败：%v", err)
+		}
+		if result.TimedOut {
+			t.Fatalf("双流洪泛不应误判超时：%+v", result)
+		}
+		combined := int64(len(result.Stdout) + len(result.Stderr))
+		if combined != 65536 {
+			t.Errorf("两流合计应等于共享上限 65536：实际 %d (stdout=%d stderr=%d)", combined, len(result.Stdout), len(result.Stderr))
+		}
+		if !result.OutputTruncated {
+			t.Errorf("超限应标记 OutputTruncated：%+v", result)
+		}
+		if result.Stdout == "" || result.Stderr == "" {
+			t.Errorf("两流都应有并发读取到的字节：stdout=%d stderr=%d", len(result.Stdout), len(result.Stderr))
+		}
+	})
+}

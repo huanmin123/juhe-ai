@@ -3,9 +3,11 @@ package main
 // 生图 URL 下载代理端口装配（BUG-0232 关联事实的落地）：上游
 // /v1/images/edits（grok-imagine）只返回 imgen.x.ai 临时图片链接，国内
 // 单机直连不可达——按生图绑定账户的 proxy_profile 构造出站 HTTP 客户端。
-// 未绑定代理、代理停用或解析失败一律返回 nil（直连默认），代理配置问题不
-// 升级为生图失败（与 buildProxyClient / proxyProfileRequestURL 同一构造范
-// 式：scheme 小写化、socks5 升级 socks5h、密码走 v1 AES-GCM 信封）。
+// 客户端经部署级 DialGuard 校验 socket 对端（生图 URL 下载 SSRF 修复，与
+// /v1 dispatch 链同一 URL 安全配置面）。未绑定代理、代理停用或解析失败一
+// 律返回 nil（直连默认），代理配置问题不升级为生图失败（与
+// buildProxyClient / proxyProfileRequestURL 同一构造范式：scheme 小写化、
+// socks5 升级 socks5h、密码走 v1 AES-GCM 信封）。
 
 import (
 	"database/sql"
@@ -22,8 +24,13 @@ import (
 
 // newChatImageDownloadProxy 构造 chat.Deps.ImageDownloadProxy 端口：每次解
 // 析按账户直查（生图为秒级低频操作，两行查询的直读开销可忽略，且天然跟随
-// 绑定变更，无缓存失效面）。
-func newChatImageDownloadProxy(db *sql.DB, postgres bool, secret string, warn func(message string)) func(accountID string) *http.Client {
+// 绑定变更，无缓存失效面）。urlSecurity 是部署级上游 URL 安全配置（与 /v1
+// dispatch 链的 UpstreamURLSecurity 同源）：guard 校验的是实际 socket 对端
+// （代理路径即代理主机），私网代理是否放行由部署配置裁决，不在此处硬编码。
+func newChatImageDownloadProxy(db *sql.DB, postgres bool, secret string, urlSecurity UpstreamURLSecurityConfig, warn func(message string)) func(accountID string) *http.Client {
+	// 单例 guard（transport_urlpolicy.go 同一装配方式）：guard 实例身份参与
+	// SharedClient 池键，按工厂复用同一实例避免按账户碎片化传输池。
+	guard := upstreamhttp.NewDialGuard(urlSecurity, nil, nil)
 	bind := func(query string) string { return accountscore.SQLBind(postgres, query) }
 	table := func(name string) string {
 		if postgres {
@@ -32,7 +39,7 @@ func newChatImageDownloadProxy(db *sql.DB, postgres bool, secret string, warn fu
 		return name
 	}
 	return func(accountID string) *http.Client {
-		client, err := chatImageProxyClientFor(db, bind, table, secret, accountID)
+		client, err := chatImageProxyClientFor(db, bind, table, secret, guard, accountID)
 		if err != nil {
 			// 代理不可用时回落直连并留痕；直连失败再按既有下载错误面收敛。
 			if warn != nil {
@@ -44,7 +51,7 @@ func newChatImageDownloadProxy(db *sql.DB, postgres bool, secret string, warn fu
 	}
 }
 
-func chatImageProxyClientFor(db *sql.DB, bind func(string) string, table func(string) string, secret, accountID string) (*http.Client, error) {
+func chatImageProxyClientFor(db *sql.DB, bind func(string) string, table func(string) string, secret string, guard *upstreamhttp.DialGuard, accountID string) (*http.Client, error) {
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
 		return nil, nil
@@ -106,7 +113,7 @@ func chatImageProxyClientFor(db *sql.DB, bind func(string) string, table func(st
 		}
 		proxyURL.User = url.UserPassword(user, plain)
 	}
-	client, err := upstreamhttp.SharedClient(proxyURL.String(), upstreamhttp.TransportOptions{})
+	client, err := upstreamhttp.SharedClient(proxyURL.String(), upstreamhttp.TransportOptions{DialGuard: guard})
 	if err != nil {
 		return nil, err
 	}

@@ -574,12 +574,8 @@ func requestGeminiToken(ctx context.Context, ex TokenExchanger, form map[string]
 	}, nil
 }
 
-// geminiCLIUserAgent mirrors GEMINI_CLI_USER_AGENT. 版本跟随
-// @google/gemini-cli npm 最新稳定（2026-10-02 锚点 0.61.0），与
-// upstreamidentity.GeminiCLIUserAgent 同步维护。内置默认；运行时可被
-// upstreamidentity.SetClientVersionOverrides 覆盖（使用点经
-// upstreamidentity.EffectiveGeminiCLIUserAgent 运行时拼接）。
-const geminiCLIUserAgent = "GeminiCLI/0.61.0 (Windows; AMD64)"
+// Gemini CLI 出站 UA 由 upstreamidentity.EffectiveGeminiCLIUserAgent() 运行时
+// 拼接（版本事实与 upstreamClientVersionOverrides 覆盖机制在该包）。
 
 // googleDriveMetadataScope mirrors the scope check
 // hasGoogleDriveMetadataScope: only grants carrying this scope get the Drive

@@ -123,6 +123,7 @@ var SystemSettingKeys = []string{
 	"systemMetricsRetentionDays",
 	"systemMetricsHourlyRetentionDays",
 	"upstreamClientVersionOverrides",
+	"upstreamClientVersionAutoOverrides",
 }
 
 var systemSettingKeySet = func() map[string]bool {
@@ -224,13 +225,18 @@ var systemSettingSpecs = map[string]settingSpec{
 	"systemMetricsRetentionDays":                 {integer: true, min: 1, max: 7},
 	"systemMetricsHourlyRetentionDays":           {integer: true, min: 1, max: 30},
 	"upstreamClientVersionOverrides":             {clientVersionsJSON: true},
+	// upstreamClientVersionAutoOverrides 是 jobs 自动跟版任务独占写入的自动层
+	//（管理端 v1 不可写，见客户端版本自动跟版设计 §3/§7）：与手动键同结构同
+	// 校验，写入路径复用同一 spec 与 normalizeUpstreamClientVersionOverrides。
+	"upstreamClientVersionAutoOverrides": {clientVersionsJSON: true},
 }
 
 // compatibleSystemSettingDefaults mirrors compatibleSystemSettingDefaults:
 // legacy databases may miss these rows and the loader fills them in. Integer
-// entries keep the Node semantics (stored as float64); the object entry
-// upstreamClientVersionOverrides defaults to the empty object (= 全部使用内置
-// 客户端版本，与 jobssettings.DefaultSystemSettings 镜像一致)。
+// entries keep the Node semantics (stored as float64); the object entries
+// upstreamClientVersionOverrides / upstreamClientVersionAutoOverrides default
+// to the empty object (= 全部使用内置客户端版本，与 jobssettings.
+// DefaultSystemSettings 镜像一致)。
 var compatibleSystemSettingDefaults = map[string]any{
 	"gatewayUserRequestLimitPerMinute": 0,
 	"gatewayUserRequestLimitPerDay":    0,
@@ -238,6 +244,9 @@ var compatibleSystemSettingDefaults = map[string]any{
 	"gatewayUserRequestLimitPerMonth":  0,
 	"userAiAccountLimit":               100,
 	"upstreamClientVersionOverrides":   map[string]any{},
+	// 自动层同样必须有兼容默认：Load 的 all-keys-present 断言会因缺键连锁
+	// 失败（manual 键的既有教训）。
+	"upstreamClientVersionAutoOverrides": map[string]any{},
 	// 2026-10-02 日志与审计设置：存量库缺行时按代码默认补齐（与 env 未显式
 	// 配置时的 LoadConfig 默认一致；见 docs/functions/日志与审计设置设计.md）。
 	"auditLogSuccessRetentionDays":     3,
@@ -952,6 +961,14 @@ func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[
 	}
 	normalized := make(map[string]any, len(input))
 	for key, value := range input {
+		// 分区写路径与全量写路径同一收口：系统任务独占键（自动键）即使
+		// 出现在分区键表内也不可经管理接口写入（设计 §7）。当前目录没有
+		// 包含该键的分区，本守卫是目录扩张时的防线。
+		if section.Domain == settingsSectionDomainSystem {
+			if err := rejectSystemManagedSettingWrite(key); err != nil {
+				return nil, err
+			}
+		}
 		value, err := normalizeSectionSetting(section, key, value)
 		if err != nil {
 			return nil, err
@@ -1009,9 +1026,17 @@ func normalizeSectionSetting(section ManagementSettingsSection, key string, valu
 // normalizeSystemSettingsInput mirrors normalizeSystemSettingsInput: every
 // entry must be a whitelisted key with a valid value; an empty update is
 // rejected.
+//
+// 自动键拒绝只放在本函数（Update 的全量写入口）而不放进
+// normalizeSystemSetting：后者同时服务 Load/LoadSection 的读路径
+// （loadFromDatabase / loadSectionFromDatabase 经 normalizeSectionSetting
+// 调用），读路径必须继续正常返回自动键值（设计 §7：GET 可见、只读语义）。
 func normalizeSystemSettingsInput(input map[string]any) (map[string]any, error) {
 	output := map[string]any{}
 	for key, value := range input {
+		if err := rejectSystemManagedSettingWrite(key); err != nil {
+			return nil, err
+		}
 		normalized, err := normalizeSystemSetting(key, value)
 		if err != nil {
 			return nil, err
@@ -1022,6 +1047,24 @@ func normalizeSystemSettingsInput(input map[string]any) (map[string]any, error) 
 		return nil, &ValidationError{Message: "系统设置更新不能为空"}
 	}
 	return output, nil
+}
+
+// systemManagedSettingWriteRejection 是管理接口不可写的系统设置键及其拒绝
+// 文案。键在白名单内（GET 可见），但由系统任务独占写入，管理端 v1 不可写
+// （设计 §7）。
+var systemManagedSettingWriteRejection = map[string]string{
+	// upstreamClientVersionAutoOverrides 由 jobs 跟版任务独占写入（设计
+	// §3/§7）；开放写入会与自动写者竞争并破坏只读语义。
+	upstreamClientVersionAutoOverridesKey: "客户端版本自动覆盖由系统任务维护，不支持通过管理接口写入",
+}
+
+// rejectSystemManagedSettingWrite 在写路径拒绝系统任务独占键；非独占键返回
+// nil 交后续校验。
+func rejectSystemManagedSettingWrite(key string) error {
+	if message, managed := systemManagedSettingWriteRejection[key]; managed {
+		return &ValidationError{Message: message}
+	}
+	return nil
 }
 
 // normalizeSystemSetting mirrors normalizeSystemSetting + the validator table.
@@ -1125,6 +1168,10 @@ func normalizeUsageStatsTimezone(value any) (string, error) {
 // upstreamClientVersionOverridesKey 是系统设置键（白名单成员）。
 const upstreamClientVersionOverridesKey = "upstreamClientVersionOverrides"
 
+// upstreamClientVersionAutoOverridesKey 是自动层系统设置键（白名单成员，
+// jobs 跟版任务独占写入；gateway 只读）。
+const upstreamClientVersionAutoOverridesKey = "upstreamClientVersionAutoOverrides"
+
 // upstreamClientVersionFamilies 是该键允许的客户端家族（与
 // upstreamidentity 的家族键一致）。
 var upstreamClientVersionFamilies = map[string]bool{
@@ -1141,7 +1188,7 @@ var upstreamClientVersionFamilies = map[string]bool{
 func normalizeUpstreamClientVersionOverrides(key string, value any) (any, error) {
 	object, ok := value.(map[string]any)
 	if !ok {
-		return nil, &ValidationError{Message: key + " 必须是 JSON 对象（键为客户端家族，值为三段版本字符串，空对象表示全部使用内置版本）"}
+		return nil, &ValidationError{Message: key + " 必须是 JSON 对象（键为客户端家族，值为三段版本字符串，空对象表示不覆盖任何家族）"}
 	}
 	for family, familyValue := range object {
 		if !upstreamClientVersionFamilies[family] {
@@ -1217,13 +1264,36 @@ func (s *Store) UpstreamClientVersionOverrides(ctx context.Context) (map[string]
 // refreshUpstreamClientVersionOverrides 把该键当前值应用到
 // upstreamidentity 的进程内覆盖（gateway 组合根在启动与每次系统设置写入
 // 成功后调用，管理端保存后新请求立即使用新版本）。读取失败保持既有覆盖
-// 不动（不影响写请求结果，下一轮写入或进程重启再对齐）。
+// 不动（不影响写请求结果，下一轮写入或进程重启再对齐）。只刷新手动层。
 func (s *Store) refreshUpstreamClientVersionOverrides(ctx context.Context) {
 	overrides, err := s.UpstreamClientVersionOverrides(ctx)
 	if err != nil {
 		return
 	}
 	upstreamidentity.SetClientVersionOverrides(overrides)
+}
+
+// UpstreamClientVersionAutoOverrides 读取自动键当前生效的覆盖表：缺行/空对象/
+// 无法解析返回空 map（= 自动层为空），数据库错误原样返回。与手动键读取同款：
+// 直读数据库不经过 60s 应用缓存，供组合根启动接线与周期刷新（gateway 60s
+// ticker）使用。过滤复用 filterUpstreamClientVersionOverrides（宽容过滤存量
+// 脏数据；严格校验在 normalizeUpstreamClientVersionOverrides 写入路径）。
+func (s *Store) UpstreamClientVersionAutoOverrides(ctx context.Context) (map[string]string, error) {
+	ctx = ensureCtx(ctx)
+	var valueJSON sql.NullString
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT value_json FROM `+s.table("system_settings")+`
+		WHERE system_account_id = ? AND key = ?`), SystemSettingsAccountID, upstreamClientVersionAutoOverridesKey).Scan(&valueJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var decoded any
+	if json.Unmarshal([]byte(valueJSON.String), &decoded) != nil {
+		return map[string]string{}, nil
+	}
+	return filterUpstreamClientVersionOverrides(decoded), nil
 }
 
 // applyCompatibleSystemSettingDefaults mirrors applyCompatibleSystemSettingDefaults:

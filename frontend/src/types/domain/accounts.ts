@@ -383,6 +383,10 @@ export interface AccountUsageListSummary {
   requestCount: number
   totalTokens: number
   totalCost: number
+  inputTokens?: number
+  cacheReadTokens?: number
+  /** 后端注入的今日缓存读占比（cache_read ÷ input 分数）；null 表示无有效数据 */
+  cacheReadRate?: number | null
 }
 
 export interface AccountSummary {

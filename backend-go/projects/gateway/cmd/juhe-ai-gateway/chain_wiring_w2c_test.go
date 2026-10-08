@@ -757,7 +757,7 @@ func TestComposeWiresW2CChainPorts(t *testing.T) {
 		"chainServices.AccountCircuits",
 		"chainServices.KeyModelStore",
 		"chainProxyHealthPort{service: chainServices.ProxyHealth}",
-		"chainHotQualityPort{runtime: chainServices.HotQuality}",
+		"chainHotQualityPort{runtime: chainServices.HotQuality, cacheRates: cacheRateSource.Snapshot}",
 		"newChainHotQualityLifecycleFactory(chainServices.HotQuality)",
 		"store:  chainServices.SuppressionStore",
 	} {

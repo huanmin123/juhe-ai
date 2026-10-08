@@ -796,6 +796,10 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 	})
 
 	t.Run("b64_json 缺失回退下载 url", func(t *testing.T) {
+		// 注入 server.Client() 而非 nil：httptest 监听 127.0.0.1，nil 回落的
+		// 默认客户端现按 SSRF 防护拒绝私网目标（语义钉在
+		// TestChatImageURLDownloadRejectsPrivateTargets），本用例只钉 URL
+		// 下载管道本身。
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write(testTinyPNGBytesW3)
 		}))
@@ -806,7 +810,7 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/img","mime_type":"image/png"}]}`)
 			},
 		}}}
-		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", nil)
+		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", server.Client())
 		if err != nil {
 			t.Fatalf("url 回退失败: %v", err)
 		}
@@ -826,7 +830,9 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/missing"}]}`)
 			},
 		}}}
-		if _, err := GenerateChatImage(context.Background(), &notFound, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "下载失败") {
+		// 注入 server.Client()：httptest 地址被回退默认客户端的 SSRF 防护拒
+		// 绝，本用例需真实命中 404 才能钉 HTTP 状态收敛语义。
+		if _, err := GenerateChatImage(context.Background(), &notFound, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", server.Client()); err == nil || !strings.Contains(err.Error(), "下载失败") {
 			t.Fatalf("url 下载失败应报错: %v", err)
 		}
 		missing := mockExecutor{steps: []scriptStep{{
@@ -913,8 +919,8 @@ func TestGenerateChatImageDownloadClientInjection(t *testing.T) {
 	if downloaded != 1 {
 		t.Fatalf("注入客户端应被使用: downloaded=%d", downloaded)
 	}
-	// nil 注入回落默认直连客户端（同一测试服务器可达，验证语义不回归）。
-	if _, err := GenerateChatImage(context.Background(), &executor, request, "key", "", nil); err != nil {
-		t.Fatalf("nil 注入应回落直连默认: %v", err)
-	}
+	// nil 注入回落的默认客户端已按 SSRF 防护收紧（拒绝私网目标、不跟随重定
+	// 向），无法再对 127.0.0.1 的 httptest 服务器做下载 e2e；契约钉在
+	// TestChatImageURLDownloadRejectsPrivateTargets 与
+	// TestChatImageURLDownloadClientContract。
 }

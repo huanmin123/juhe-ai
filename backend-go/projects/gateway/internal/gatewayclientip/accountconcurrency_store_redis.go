@@ -161,10 +161,22 @@ const redisAccountConcurrencyAcquireScript = `
 local key = KEYS[1]
 local field = ARGV[1]
 local ttl_ms = tonumber(ARGV[2])
-redis.call('HINCRBY', key, 'total', 1)
-redis.call('HINCRBY', key, field, 1)
+local total_limit = tonumber(ARGV[3])
+local lane_limit = tonumber(ARGV[4])
+local total = tonumber(redis.call('HGET', key, 'total') or '0')
+local lane_current = tonumber(redis.call('HGET', key, field) or '0')
+-- 与内存驱动 TryAcquire 同一契约：total 或 lane 任一达到上限即拒绝且不自增；
+-- 上限 <=0 视为不设限。校验与 HINCRBY 同脚本执行，保持原子。
+if total_limit > 0 and total >= total_limit then
+  return {0, total, lane_current}
+end
+if lane_limit > 0 and lane_current >= lane_limit then
+  return {0, total, lane_current}
+end
+total = redis.call('HINCRBY', key, 'total', 1)
+lane_current = redis.call('HINCRBY', key, field, 1)
 redis.call('PEXPIRE', key, ttl_ms)
-return {1}
+return {1, total, lane_current}
 `
 
 const redisAccountConcurrencyReleaseScript = `
@@ -178,17 +190,39 @@ end
 return {new_lane}
 `
 
-// AcquireAccountConcurrency increments the total and lane concurrency
-// counters for an account (LoadAccountCurrentConcurrencyByID reads 'total').
-func (r *RedisAccountConcurrency) AcquireAccountConcurrency(ctx context.Context, accountID string, lane string, ttlMs int64) error {
+// AcquireAccountConcurrency 在单个 Lua 脚本内原子完成“账户总量 + lane”双
+// 重校验并自增 total 与 lane 计数（与内存驱动 TryAcquire 同一契约：
+// total >= totalLimit 或 laneCurrent >= laneLimit 即拒绝且不自增；上限
+// <=0 视为不设限；空 lane 归入 text）。返回占位结果与尝试时刻的两个计数
+// （LoadAccountCurrentConcurrencyByID reads 'total'）。
+func (r *RedisAccountConcurrency) AcquireAccountConcurrency(ctx context.Context, accountID string, lane string, ttlMs int64, totalLimit int, laneLimit int) (AccountConcurrencyAcquireOutcome, error) {
 	key := r.accountConcurrencyKey(accountID)
 	field := lane
 	if field == "" {
 		field = AccountConcurrencyLaneText
 	}
-	_, err := r.client.Eval(ctx, redisAccountConcurrencyAcquireScript, []string{key},
-		field, strconv.Itoa(int(ttlMs))).Result()
-	return err
+	values, err := r.client.Eval(ctx, redisAccountConcurrencyAcquireScript, []string{key},
+		field, strconv.Itoa(int(ttlMs)), strconv.Itoa(totalLimit), strconv.Itoa(laneLimit)).Result()
+	if err != nil {
+		return AccountConcurrencyAcquireOutcome{}, err
+	}
+	reply, ok := values.([]interface{})
+	if !ok || len(reply) != 3 {
+		return AccountConcurrencyAcquireOutcome{}, errors.New("账户并发 acquire 脚本返回格式错误")
+	}
+	return AccountConcurrencyAcquireOutcome{
+		Acquired:    replyInt(reply[0]) == 1,
+		Total:       replyInt(reply[1]),
+		LaneCurrent: replyInt(reply[2]),
+	}, nil
+}
+
+// replyInt 把 Lua 返回的整数应答转成 int（go-redis 对 Lua integer 返回 int64）。
+func replyInt(value interface{}) int {
+	if number, ok := value.(int64); ok {
+		return int(number)
+	}
+	return 0
 }
 
 // ReleaseAccountConcurrency decrements the total and lane concurrency

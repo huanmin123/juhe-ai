@@ -94,7 +94,19 @@ func NewTransport(rawProxyURL string, options TransportOptions) (*http.Transport
 		transport.ProxyConnectHeader = cloneHeader(options.ProxyConnectHeader)
 	}
 
+	// DialGuard 装配（BUG-0175 既有缺陷的修复）：此前安装条件
+	// `transport.DialContext == nil` 恒为假（Clone 自 http.DefaultTransport 的
+	// DialContext 非 nil），且直连路径在本段之前提前返回，导致
+	// TransportOptions.DialGuard 从未生效。按 TransportOptions 契约在直连与
+	// HTTP(S) 代理路径安装 guard（校验实际 socket 对端：直连为上游主机，代理
+	// 为代理主机）；SOCKS 拨号器保持自身解析（socks5h 为远端解析），不受影响。
+	installDialGuard := func() {
+		if options.DialGuard != nil {
+			transport.DialContext = options.DialGuard.DialContext
+		}
+	}
 	if strings.TrimSpace(rawProxyURL) == "" {
+		installDialGuard()
 		return transport, nil
 	}
 	proxyURL, err := ParseProxyURL(rawProxyURL)
@@ -104,18 +116,13 @@ func NewTransport(rawProxyURL string, options TransportOptions) (*http.Transport
 	switch strings.ToLower(proxyURL.Scheme) {
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(proxyURL)
+		installDialGuard()
 	case "socks5", "socks5h":
 		transport.DialContext = NewSOCKS5DialContext(proxyURL, strings.EqualFold(proxyURL.Scheme, "socks5h") || options.ForceRemoteSOCKS5)
 	default:
 		// ParseProxyURL currently makes this unreachable. Keep the branch so a
 		// future scheme cannot silently fall back to direct connectivity.
 		return nil, ErrProxySchemeUnsupported
-	}
-	if options.DialGuard != nil && transport.DialContext == nil {
-		// Direct and HTTP(S)-proxy paths both establish their socket through
-		// DialContext, so the guard validates the actual connect target (the
-		// upstream host, or the proxy host when a proxy is configured).
-		transport.DialContext = options.DialGuard.DialContext
 	}
 	return transport, nil
 }

@@ -229,8 +229,6 @@ const (
 
 	OpenAICodexOriginator          = gatewayupstream.OpenAICodexOriginator
 	OpenAICodexResponsesLiteHeader = gatewayupstream.OpenAICodexResponsesLiteHeader
-	OpenAICodexUserAgent           = gatewayupstream.OpenAICodexUserAgent
-	OpenAICodexVersion             = gatewayupstream.OpenAICodexVersion
 
 	OAuthHeaderProfileAnthropicClaude = gatewayupstream.OAuthHeaderProfileAnthropicClaude
 	OAuthHeaderProfileGeminiCLI       = gatewayupstream.OAuthHeaderProfileGeminiCLI

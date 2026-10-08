@@ -60,16 +60,21 @@ type HotQualitySelectionWindowSnapshot struct {
 }
 
 // HotQualitySelectionSnapshot carries the snapshot fields candidate selection
-// reads (reduced view of HotQualitySnapshot).
+// reads (reduced view of HotQualitySnapshot). CacheHitRate / WindowInputTokens
+// hold the raw 24h cache-rate window injected at assembly time (section 8.1 of
+// the cache-rate design doc); validity gating happens in the ordering-key
+// materialization, not here.
 type HotQualitySelectionSnapshot struct {
-	Window5m              HotQualitySelectionWindowSnapshot
-	Window10m             HotQualitySelectionWindowSnapshot
-	Window30m             HotQualitySelectionWindowSnapshot
-	EffectiveReliability  float64
-	ReliabilityLevel      HotQualityReliabilityLevel
-	SampleState           HotQualitySampleState
-	FirstByteEwma5m       *float64
-	FirstByteP95Bucket10m *float64
+	Window5m               HotQualitySelectionWindowSnapshot
+	Window10m              HotQualitySelectionWindowSnapshot
+	Window30m              HotQualitySelectionWindowSnapshot
+	EffectiveReliability   float64
+	ReliabilityLevel       HotQualityReliabilityLevel
+	SampleState            HotQualitySampleState
+	FirstByteEwma5m        *float64
+	FirstByteP95Bucket10m  *float64
+	CacheHitRate           *float64
+	CacheWindowInputTokens int64
 }
 
 // HotQualityCandidate mirrors HotQualityCandidate.
@@ -140,8 +145,25 @@ type SameTierExplorationExplanation struct {
 	SelectedTargetAccountID         string
 }
 
+// HotQualityCandidateOrderDetail is the per-candidate cache-rate/speed-order
+// trace emitted in final sort order (section 5.6 of the cache-rate design
+// doc): CacheHitRate is the window value (nil without valid data),
+// CacheQuantum is the 10pp tier (-1 without valid data, never 0%) and
+// SpeedQualified reports speed-qualified-set membership.
+type HotQualityCandidateOrderDetail struct {
+	AccountID      string
+	CacheHitRate   *float64
+	CacheQuantum   int
+	SpeedQualified bool
+}
+
 // HotQualityCandidateSelectionExplanation mirrors
-// HotQualityCandidateSelectionExplanation.
+// HotQualityCandidateSelectionExplanation. The cache-rate block (section 5.6)
+// exposes the ordering facts of the baseline primary's tier: SpeedBaseEwmaMs
+// is the in-tier speed base (nil without any known EWMA), SpeedThresholdMs the
+// effective speed-qualified threshold, CacheRateStale the passthrough
+// snapshot-staleness marker and CacheRateEnabled whether the cache-rate tier
+// key participated. CandidateOrderDetails lists every candidate in sort order.
 type HotQualityCandidateSelectionExplanation struct {
 	Mode                           HotQualityRoutingMode
 	RouteScopeKey                  string
@@ -155,6 +177,11 @@ type HotQualityCandidateSelectionExplanation struct {
 	LatencyDegradedOverrideApplied bool
 	QualityReorderedTierKeys       []string
 	DuplicateRuntimeAccountIDs     []string
+	SpeedBaseEwmaMs                *float64
+	SpeedThresholdMs               int64
+	CacheRateStale                 bool
+	CacheRateEnabled               bool
+	CandidateOrderDetails          []HotQualityCandidateOrderDetail
 	Exploration                    SameTierExplorationExplanation
 }
 
@@ -170,17 +197,26 @@ type HotQualityCandidateDecision[T any] struct {
 
 // DecideHotQualityCandidateInput mirrors DecideHotQualityCandidateInput. Base
 // projects each payload onto its HotQualityCandidate view (mirrors the TS
-// generic constraint TCandidate extends HotQualityCandidate).
+// generic constraint TCandidate extends HotQualityCandidate). The cache-rate
+// block feeds the cache-rate-aware ordering: CacheRates keys physical account
+// IDs to their 24h windows (nil = no snapshot data), CacheRateStale is the
+// passthrough staleness marker for the explanation, and SpeedThresholdMs
+// overrides the speed-qualified threshold (0 resolves the mode-backed
+// package constant).
 type DecideHotQualityCandidateInput[T any] struct {
-	Mode          HotQualityRoutingMode
-	RouteScopeKey string
-	Candidates    []T
-	Base          func(T) HotQualityCandidate
-	Exploration   *SameTierExplorationDecisionState
+	Mode             HotQualityRoutingMode
+	RouteScopeKey    string
+	Candidates       []T
+	Base             func(T) HotQualityCandidate
+	Exploration      *SameTierExplorationDecisionState
+	CacheRates       map[string]CacheRateWindow
+	CacheRateStale   bool
+	SpeedThresholdMs int64
 }
 
 // indexedCandidate mirrors IndexedCandidate; identity comparisons in Node
-// become original-index comparisons here.
+// become original-index comparisons here. orderKey holds the scalar ordering
+// keys materialized per tier before sorting (cacherate_keys.go).
 type indexedCandidate[T any] struct {
 	payload          T
 	base             HotQualityCandidate
@@ -188,6 +224,7 @@ type indexedCandidate[T any] struct {
 	tierKey          string
 	sampleState      HotQualitySampleState
 	reliabilityLevel HotQualityReliabilityLevel
+	orderKey         tierOrderKey
 }
 
 type explorationRankedCandidate[T any] struct {
@@ -234,6 +271,10 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 	if err != nil {
 		return nil, err
 	}
+	// The threshold resolves once per dispatch decision and feeds the whole
+	// tier-wide key materialization (section 5.4); it is never read from
+	// global state or switched per candidate pair inside the comparator.
+	speedThresholdMs := resolveSpeedDominanceThresholdMs(mode, input.SpeedThresholdMs)
 	normalized, duplicateRuntimeAccountIDs, err := normalizeCandidates(input.Candidates, input.Base, routeScopeKey)
 	if err != nil {
 		return nil, err
@@ -242,9 +283,11 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 	baseTierOrder := distinctTierKeys(normalized)
 	qualityReorderedTierKeys := []string{}
 	qualityByTier := map[string][]*indexedCandidate[T]{}
+	tierOrderInfo := map[string]tierOrderMaterialization{}
 
 	for _, tierKey := range baseTierOrder {
 		originalTier := candidatesOfTier(normalized, tierKey)
+		tierOrderInfo[tierKey] = materializeTierOrderKeys(originalTier, input.CacheRates, speedThresholdMs)
 		qualityTier := sortedWithinTier(originalTier)
 		qualityByTier[tierKey] = qualityTier
 		if !sameCandidateOrder(originalTier, qualityTier) {
@@ -304,14 +347,30 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 			LatencyDegradedOverrideApplied: latencyDegradedOverrideApplied,
 			QualityReorderedTierKeys:       qualityReorderedTierKeys,
 			DuplicateRuntimeAccountIDs:     duplicateRuntimeAccountIDs,
+			SpeedThresholdMs:               speedThresholdMs,
+			CacheRateStale:                 input.CacheRateStale,
+			CandidateOrderDetails:          []HotQualityCandidateOrderDetail{},
 			Exploration:                    exploration.explanation,
 		},
 	}
-	if exploration.selected != nil {
-		decision.DispatchIntent = DispatchIntentSameTierExploration
-	}
 	if baselinePrimary != nil {
 		decision.Explanation.BaselinePrimaryAccountID = baselinePrimary.base.AccountID
+		// Decision-level cache-rate/speed-base facts describe the tier that
+		// produced the baseline primary (the tier deciding the first choice).
+		info := tierOrderInfo[baselinePrimary.tierKey]
+		decision.Explanation.SpeedBaseEwmaMs = info.BaseEwmaMs
+		decision.Explanation.CacheRateEnabled = info.CacheRateEnabled
+	}
+	for _, candidate := range qualityOrdered {
+		decision.Explanation.CandidateOrderDetails = append(decision.Explanation.CandidateOrderDetails, HotQualityCandidateOrderDetail{
+			AccountID:      candidate.base.AccountID,
+			CacheHitRate:   candidate.orderKey.cacheRate,
+			CacheQuantum:   candidate.orderKey.cacheQuantum,
+			SpeedQualified: candidate.orderKey.speedQualified,
+		})
+	}
+	if exploration.selected != nil {
+		decision.DispatchIntent = DispatchIntentSameTierExploration
 	}
 	if selected != nil {
 		decision.SelectedCandidate = &selected.payload
@@ -581,7 +640,16 @@ func sameExplorationPriority[T any](left, right *explorationRankedCandidate[T]) 
 		left.lastExplorationAttemptAtMs == right.lastExplorationAttemptAtMs
 }
 
-// compareWithinTier mirrors compareWithinTier.
+// compareWithinTier orders one tier by the section 5.2 key sequence:
+// reliabilityRank → effectiveReliability → speed-qualified set (qualified
+// first) → cache-rate quantum between qualified peers (descending, disabled
+// layers skip; any unqualified side goes straight to the speed key) →
+// materialized speed key (ascending) → StableBindingOrder → AccountID →
+// original index. Keys 3/4a/4b are read from the per-candidate keys
+// materialized by materializeTierOrderKeys before sorting — the comparator
+// never reads the opposite candidate's snapshot and never applies relative
+// threshold judgments, which keeps it a strict weak ordering independent of
+// candidate input order.
 func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
 	reliability := reliabilityRank(left.reliabilityLevel) - reliabilityRank(right.reliabilityLevel)
 	if reliability != 0 {
@@ -594,11 +662,25 @@ func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
 		}
 		return -1
 	}
-	if left.sampleState != HotQualitySampleCold && right.sampleState != HotQualitySampleCold {
-		speed := compareSpeed(left.base.HotQuality, right.base.HotQuality)
-		if speed != 0 {
-			return speed
+	if left.orderKey.speedQualified != right.orderKey.speedQualified {
+		if left.orderKey.speedQualified {
+			return -1
 		}
+		return 1
+	}
+	// Key 4a: cache-rate quantum descending, applied only when both sides are
+	// members of the speed-qualified set (section 5.2 table annotation: the
+	// tier key lives inside the qualified set; any unqualified side skips
+	// straight to the materialized speed key, so a candidate beyond the speed
+	// threshold can never outrank a faster peer by cache tier). The -1
+	// sentinel sorts after valid quanta without meaning 0%; a layer without
+	// any valid cache data disables the dimension for every candidate.
+	if left.orderKey.speedQualified && right.orderKey.speedQualified &&
+		left.orderKey.cacheQuantumEnabled && left.orderKey.cacheQuantum != right.orderKey.cacheQuantum {
+		return right.orderKey.cacheQuantum - left.orderKey.cacheQuantum
+	}
+	if speed := compareMaterializedSpeed(left.orderKey, right.orderKey); speed != 0 {
+		return speed
 	}
 	if left.base.StableBindingOrder != right.base.StableBindingOrder {
 		return left.base.StableBindingOrder - right.base.StableBindingOrder
@@ -609,25 +691,17 @@ func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
 	return left.originalIndex - right.originalIndex
 }
 
-// compareSpeed mirrors compareSpeed.
-func compareSpeed(left, right *HotQualitySelectionSnapshot) int {
-	leftEwma, leftOK := normalizedOptionalDuration(left, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteEwma5m })
-	rightEwma, rightOK := normalizedOptionalDuration(right, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteEwma5m })
-	if leftOK && rightOK && leftEwma != rightEwma {
-		if leftEwma < rightEwma {
-			return -1
-		}
-		return 1
-	}
-	leftP95, leftP95OK := normalizedOptionalDuration(left, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteP95Bucket10m })
-	rightP95, rightP95OK := normalizedOptionalDuration(right, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteP95Bucket10m })
-	if leftP95OK && rightP95OK && leftP95 != rightP95 {
-		if leftP95 < rightP95 {
-			return -1
-		}
-		return 1
-	}
-	return 0
+// DecideHotQualityCandidateOrderOnly is the pure-ordering export for
+// post-affinity reordering (e.g. the high-concurrency group's final reorder
+// after OrderAsync, cache-rate design doc section 7): the tier segmentation
+// and within-tier ordering are identical to DecideHotQualityCandidate, but
+// same-tier exploration is never triggered — the exploration state is forced
+// to nil, which decideExploration short-circuits into
+// ExplorationStatusNotConfigured with no selected target, no store access and
+// no reservation or audit side effects.
+func DecideHotQualityCandidateOrderOnly[T any](input DecideHotQualityCandidateInput[T]) (*HotQualityCandidateDecision[T], error) {
+	input.Exploration = nil
+	return DecideHotQualityCandidate(input)
 }
 
 // normalizeCandidates mirrors normalizeCandidates (duplicate runtime keys are
@@ -774,6 +848,9 @@ func payloadsOf[T any](candidates []*indexedCandidate[T]) []T {
 	return payloads
 }
 
+// sortedWithinTier sorts one tier with sort.SliceStable. The per-candidate
+// ordering keys must have been materialized by materializeTierOrderKeys on
+// exactly this tier slice beforehand; the comparator reads only those keys.
 func sortedWithinTier[T any](tier []*indexedCandidate[T]) []*indexedCandidate[T] {
 	sorted := append([]*indexedCandidate[T]{}, tier...)
 	sort.SliceStable(sorted, func(left, right int) bool {

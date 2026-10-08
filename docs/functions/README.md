@@ -2,7 +2,8 @@
 
 > **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档（归档已移出仓库，git 历史可溯）；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
 
-- [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)：同层"速度合格集 + 缓存率量化档"全局排序契约（严格弱序、cost_first 10s / speed_first 5s、物理账户混合缓存率、快照 stale 上限）与账户列表"用量(日)"缓存率 tag；设计稿 v2，实施交付时按其第 13 节清单同步权威文档。
+- [客户端版本自动跟版设计](客户端版本自动跟版设计.md)：客户端版本事实单点契约（两键三层合并：手动 `upstreamClientVersionOverrides` > 自动 `upstreamClientVersionAutoOverrides` > 内置）、jobs 每日四源跟版任务契约（codex/claudeCode/geminiCLI/zcode，写者侧单调与回退拒绝）、消费点收敛清单与 guard、UA 混合身份核实结论（官方 originator 与 UA 后缀同源，现状 `Codex Desktop`+`(codex_exec;…)` 组合非官方 surface）与第二期选项、抖动审计结论（唯一缺口 key-model-memory-recovery）。
+- [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)：同层"速度合格集 + 缓存率量化档"全局排序契约（严格弱序、cost_first 10s / speed_first 5s、物理账户混合缓存率、快照 stale 上限）与账户列表"用量(日)"缓存率 tag；已实施（2026-10-08，期一列表展示 + 期二调度维度），权威文档已按其第 13 节清单同步。
 - [系统指标统计设计](系统指标统计设计.md)：系统指标统计页三层契约（进程状态双卡、Go Runtime 角色×指标组趋势与后台任务表），含 samplingEnabled 空态、POSTGRES_URL 回退与已删除 ROLE 的 env 契约。
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)：记录 reasoning 可见性诊断边界，以及不在响应热路径实施质量拦截的当前决定。
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)：记录当前账户级健康机制的代码事实，以及多模型按实际 Route / Key 精确探测和隔离的目标设计。
@@ -119,7 +120,7 @@
 - [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)
 - [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)
 - [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)
-- [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回内置），含内置锚点表与维护规则。
+- [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回下一层：自动跟版层优先于内置），含内置锚点表与维护规则。
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
 - [MiniMax 账号接入](MiniMax账号接入.md)：M3 媒体专用供应商（Hailuo 视频 + speech TTS，API Key 单档案 `profile_minimax_openai_v1`，不承接聊天流量）。
 - [火山方舟 账号接入](火山方舟账号接入.md)：M3 媒体供应商、对话批补对话（豆包 Seedance 视频 + 豆包 TTS + ark OpenAI 兼容对话端点，API Key 单档案 `profile_volcengine_openai_v1`，chat 端点模式 opt-in）。

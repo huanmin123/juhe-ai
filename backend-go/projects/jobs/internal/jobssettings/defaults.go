@@ -91,4 +91,8 @@ var DefaultSystemSettings = map[string]any{
 	// 内置客户端版本），与 maintenance 种子的 "{}" 对应；镜像表以解码后的
 	// map[string]any{} 对照（seed_consistency_test）。
 	"upstreamClientVersionOverrides": map[string]any{},
+	// upstreamClientVersionAutoOverrides 是自动层 JSON 对象默认值（同为空对象
+	// = 自动层为空，全部回退手动层/内置），由跟版任务独占写入；与 maintenance
+	// 种子的 "{}" 对应。
+	"upstreamClientVersionAutoOverrides": map[string]any{},
 }

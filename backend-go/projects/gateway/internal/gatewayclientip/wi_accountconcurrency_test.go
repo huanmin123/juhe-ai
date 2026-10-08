@@ -120,11 +120,11 @@ func TestWIRedisAccountConcurrencyStoreContract(t *testing.T) {
 	ctx := context.Background()
 
 	// 契约：AcquireAccountConcurrency 对 account hash 的 lane 字段做 HINCRBY 并续 TTL；
-	// 空 lane 归入 text。
-	if err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000); err != nil {
+	// 空 lane 归入 text。上限传 0 表示不设限（纯计数语义）。
+	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", AccountConcurrencyLaneText, 60_000, 0, 0); err != nil {
 		t.Fatalf("AcquireAccountConcurrency 失败: %v", err)
 	}
-	if err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000); err != nil {
+	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 60_000, 0, 0); err != nil {
 		t.Fatalf("AcquireAccountConcurrency(空 lane=text) 失败: %v", err)
 	}
 	key := "juhe-ai:dev:gateway-account-concurrency:account-concurrency:acc-1"
@@ -236,7 +236,7 @@ func TestWIRedisAccountConcurrencyLoadByLaneAndErrors(t *testing.T) {
 	if _, err := instance.LoadAccountCurrentConcurrencyByLane(ctx, []string{"acc-1"}, "image"); err == nil {
 		t.Fatal("Redis 故障必须透传错误")
 	}
-	if err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 1_000); err == nil {
+	if _, err := instance.AcquireAccountConcurrency(ctx, "acc-1", "", 1_000, 0, 0); err == nil {
 		t.Fatal("Redis 故障时 acquire 必须报错")
 	}
 	if err := instance.ReleaseAccountConcurrency(ctx, "acc-1", ""); err == nil {

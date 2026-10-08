@@ -1,6 +1,10 @@
 <template>
   <div class="usage-cell">
-    <UsageSummaryTags :usage="account.todayUsage" />
+    <UsageSummaryTags
+      :usage="account.todayUsage"
+      :show-cache-rate="true"
+      :cache-rate="account.todayUsage?.cacheReadRate ?? null"
+    />
     <div v-if="bars.length" class="oauth-usage-bars">
       <template v-for="bar in bars" :key="bar.key">
         <a-tooltip :title="bar.tooltip">

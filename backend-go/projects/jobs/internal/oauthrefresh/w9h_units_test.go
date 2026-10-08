@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // ---------------------------------------------------------------------------
@@ -198,7 +200,7 @@ func TestW9HGoogleOneDriveQuotaProberArms(t *testing.T) {
 	if success.request.Headers["authorization"] != "Bearer tok" {
 		t.Fatalf("auth header=%q", success.request.Headers["authorization"])
 	}
-	if success.request.Headers["user-agent"] != geminiCLIUserAgent {
+	if success.request.Headers["user-agent"] != upstreamidentity.EffectiveGeminiCLIUserAgent() {
 		t.Fatalf("user-agent=%q", success.request.Headers["user-agent"])
 	}
 	// Missing quota fields read as zero.
