@@ -78,7 +78,7 @@ const OVERRIDE_PREFIX = 'upstreamClientVersionOverrides.'
 export const upstreamOverrideFieldKeys: readonly UpstreamClientVersionKey[] = ['codex', 'claudeCode', 'geminiCLI', 'zcode', 'grokCLI']
 
 export const upstreamOverrideLabels: Record<UpstreamClientVersionKey, string> = {
-  codex: 'Codex Desktop',
+  codex: 'Codex exec',
   claudeCode: 'Claude Code',
   geminiCLI: 'Gemini CLI',
   zcode: 'ZCode',
@@ -352,7 +352,7 @@ export const settingGroups: readonly SettingGroupDef[] = [
     sectionKeys: ['gateway-core'],
     itemCount: 5,
     fields: [
-      { key: `${OVERRIDE_PREFIX}codex`, label: upstreamOverrideLabels.codex, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 GPT/Codex 家族系统请求的 Codex Desktop 画像版本，如 0.159.3' },
+      { key: `${OVERRIDE_PREFIX}codex`, label: upstreamOverrideLabels.codex, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 GPT/Codex 家族系统请求的 codex exec 画像版本，如 0.159.3' },
       { key: `${OVERRIDE_PREFIX}claudeCode`, label: upstreamOverrideLabels.claudeCode, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 Anthropic 家族系统请求与网关画像补齐的 claude-cli 版本，如 2.1.285' },
       { key: `${OVERRIDE_PREFIX}geminiCLI`, label: upstreamOverrideLabels.geminiCLI, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 Gemini OAuth（code_assist / google_one）系统请求的 GeminiCLI 画像版本，如 0.61.0' },
       { key: `${OVERRIDE_PREFIX}zcode`, label: upstreamOverrideLabels.zcode, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 GLM 家族系统请求的 ZCode 画像版本（UA 与 X-ZCode-App-Version 同步），如 3.14.3' },

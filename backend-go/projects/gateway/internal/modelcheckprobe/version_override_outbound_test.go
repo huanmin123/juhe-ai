@@ -45,7 +45,7 @@ func TestNormalizeOpenAIOAuthCodexRequestUsesAutoOverrideUserAgent(t *testing.T)
 	if err != nil {
 		t.Fatalf("normalizeOpenAIOAuthCodexRequest() err=%v", err)
 	}
-	wantUA := "Codex Desktop/9.9.9 (Windows 10.0.22621; x86_64) unknown (codex_exec; 9.9.9)"
+	wantUA := "codex_exec/9.9.9 (Windows 10.0.22621; x86_64) unknown"
 	if got := headers.Get("user-agent"); got != wantUA {
 		t.Fatalf("probe outbound user-agent=%q, want %q", got, wantUA)
 	}
@@ -55,7 +55,7 @@ func TestNormalizeOpenAIOAuthCodexRequestUsesAutoOverrideUserAgent(t *testing.T)
 	if err != nil {
 		t.Fatalf("normalizeOpenAIOAuthCodexRequest() after clearing err=%v", err)
 	}
-	if got := headers.Get("user-agent"); got != upstreamidentity.CodexDesktopUserAgent {
-		t.Fatalf("probe outbound user-agent after clearing=%q, want builtin %q", got, upstreamidentity.CodexDesktopUserAgent)
+	if got := headers.Get("user-agent"); got != upstreamidentity.CodexExecUserAgent {
+		t.Fatalf("probe outbound user-agent after clearing=%q, want builtin %q", got, upstreamidentity.CodexExecUserAgent)
 	}
 }

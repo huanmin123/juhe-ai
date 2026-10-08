@@ -176,7 +176,7 @@ export function buildSystemSettingsPayload(form: SystemForm): SystemSettingsPatc
 const upstreamClientVersionKeys: readonly UpstreamClientVersionKey[] = ['codex', 'claudeCode', 'geminiCLI', 'zcode', 'grokCLI']
 
 const upstreamClientVersionLabels: Record<UpstreamClientVersionKey, string> = {
-  codex: 'Codex Desktop 版本覆盖',
+  codex: 'Codex exec 版本覆盖',
   claudeCode: 'Claude Code 版本覆盖',
   geminiCLI: 'Gemini CLI 版本覆盖',
   zcode: 'ZCode 版本覆盖',

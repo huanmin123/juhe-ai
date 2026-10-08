@@ -738,8 +738,8 @@ func TestW1GApplyOpenAIClientCompatibilityHeadersArms(t *testing.T) {
 		if headers.Get("Accept") != "text/event-stream" || headers.Get("Content-Type") != "application/json" {
 			t.Fatalf("accept/content-type = %q/%q", headers.Get("Accept"), headers.Get("Content-Type"))
 		}
-		if headers.Get("Originator") != "Codex Desktop" {
-			t.Fatalf("originator = %q, want 合成 Codex Desktop", headers.Get("Originator"))
+		if headers.Get("Originator") != "codex_exec" {
+			t.Fatalf("originator = %q, want 合成 codex_exec", headers.Get("Originator"))
 		}
 	})
 }

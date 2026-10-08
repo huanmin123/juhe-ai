@@ -41,12 +41,12 @@ func TestBuildOpenAIOAuthCodexHeadersUsesAutoOverrideUserAgent(t *testing.T) {
 	upstreamidentity.SetClientVersionAutoOverrides(map[string]string{"codex": "9.9.9"})
 
 	headers := buildCodexOutboundHeaders(t)
-	wantUA := "Codex Desktop/9.9.9 (Windows 10.0.22621; x86_64) unknown (codex_exec; 9.9.9)"
+	wantUA := "codex_exec/9.9.9 (Windows 10.0.22621; x86_64) unknown"
 	if got := headers.Get("User-Agent"); got != wantUA {
 		t.Fatalf("outbound User-Agent=%q, want %q", got, wantUA)
 	}
-	if got := headers.Get("Originator"); got != "Codex Desktop" {
-		t.Fatalf("outbound Originator=%q, want Codex Desktop", got)
+	if got := headers.Get("Originator"); got != "codex_exec" {
+		t.Fatalf("outbound Originator=%q, want codex_exec", got)
 	}
 }
 
@@ -57,7 +57,7 @@ func TestBuildOpenAIOAuthCodexHeadersManualBeatsAutoOverride(t *testing.T) {
 	upstreamidentity.SetClientVersionAutoOverrides(map[string]string{"codex": "9.9.9"})
 
 	headers := buildCodexOutboundHeaders(t)
-	wantUA := "Codex Desktop/8.8.8 (Windows 10.0.22621; x86_64) unknown (codex_exec; 8.8.8)"
+	wantUA := "codex_exec/8.8.8 (Windows 10.0.22621; x86_64) unknown"
 	if got := headers.Get("User-Agent"); got != wantUA {
 		t.Fatalf("outbound User-Agent=%q, want manual override %q", got, wantUA)
 	}
@@ -69,13 +69,13 @@ func TestBuildOpenAIOAuthCodexHeadersClearingAutoFallsBackToBuiltin(t *testing.T
 	upstreamidentity.SetClientVersionAutoOverrides(map[string]string{"codex": "9.9.9"})
 
 	headers := buildCodexOutboundHeaders(t)
-	if got := headers.Get("User-Agent"); got != "Codex Desktop/9.9.9 (Windows 10.0.22621; x86_64) unknown (codex_exec; 9.9.9)" {
+	if got := headers.Get("User-Agent"); got != "codex_exec/9.9.9 (Windows 10.0.22621; x86_64) unknown" {
 		t.Fatalf("setup failed: outbound User-Agent=%q", got)
 	}
 
 	upstreamidentity.SetClientVersionAutoOverrides(nil)
 	headers = buildCodexOutboundHeaders(t)
-	if got := headers.Get("User-Agent"); got != upstreamidentity.CodexDesktopUserAgent {
-		t.Fatalf("outbound User-Agent after clearing auto layer=%q, want builtin %q", got, upstreamidentity.CodexDesktopUserAgent)
+	if got := headers.Get("User-Agent"); got != upstreamidentity.CodexExecUserAgent {
+		t.Fatalf("outbound User-Agent after clearing auto layer=%q, want builtin %q", got, upstreamidentity.CodexExecUserAgent)
 	}
 }

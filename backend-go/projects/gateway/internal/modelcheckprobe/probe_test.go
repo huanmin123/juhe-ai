@@ -208,7 +208,7 @@ func TestExecuteOpenAIOAuthCodexAdapterUsesFixedCodexResponsesSSE(t *testing.T) 
 	if captured == nil || captured.URL.String() != OpenAIOAuthCodexBaseURL+"/responses" {
 		t.Fatalf("OAuth Codex URL=%v", captured)
 	}
-	if captured.Header.Get("Authorization") != "Bearer access-token" || captured.Header.Get("Accept") != "text/event-stream" || captured.Header.Get("Originator") != "Codex Desktop" || captured.Header.Get("Openai-Beta") != "responses=experimental" {
+	if captured.Header.Get("Authorization") != "Bearer access-token" || captured.Header.Get("Accept") != "text/event-stream" || captured.Header.Get("Originator") != "codex_exec" || captured.Header.Get("Openai-Beta") != "responses=experimental" {
 		t.Fatalf("OAuth Codex headers=%v", captured.Header)
 	}
 	body, _ := io.ReadAll(captured.Body)

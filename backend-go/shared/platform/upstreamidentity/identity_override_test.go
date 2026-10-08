@@ -16,8 +16,8 @@ func resetClientVersionOverrides(t *testing.T) {
 func TestEffectiveClientVersionsDefaultToBuiltins(t *testing.T) {
 	resetClientVersionOverrides(t)
 	SetClientVersionOverrides(nil)
-	if got := EffectiveCodexVersion(); got != builtInCodexDesktopVersion {
-		t.Fatalf("EffectiveCodexVersion()=%q, want %q", got, builtInCodexDesktopVersion)
+	if got := EffectiveCodexVersion(); got != builtInCodexVersion {
+		t.Fatalf("EffectiveCodexVersion()=%q, want %q", got, builtInCodexVersion)
 	}
 	if got := EffectiveClaudeCodeVersion(); got != builtInClaudeCodeVersion {
 		t.Fatalf("EffectiveClaudeCodeVersion()=%q, want %q", got, builtInClaudeCodeVersion)
@@ -31,8 +31,8 @@ func TestEffectiveClientVersionsDefaultToBuiltins(t *testing.T) {
 	if got := EffectiveGrokCLIVersion(); got != GrokCLIClientVersion {
 		t.Fatalf("EffectiveGrokCLIVersion()=%q, want %q", got, GrokCLIClientVersion)
 	}
-	if got := EffectiveCodexDesktopUserAgent(); got != CodexDesktopUserAgent {
-		t.Fatalf("EffectiveCodexDesktopUserAgent()=%q, want %q", got, CodexDesktopUserAgent)
+	if got := EffectiveCodexUserAgent(); got != CodexExecUserAgent {
+		t.Fatalf("EffectiveCodexUserAgent()=%q, want %q", got, CodexExecUserAgent)
 	}
 	if got := EffectiveClaudeCodeUserAgent(); got != ClaudeCodeUserAgent {
 		t.Fatalf("EffectiveClaudeCodeUserAgent()=%q, want %q", got, ClaudeCodeUserAgent)
@@ -72,9 +72,9 @@ func TestSetClientVersionOverridesChangesEffectiveValues(t *testing.T) {
 	if got := EffectiveGrokCLIVersion(); got != "1.0.14" {
 		t.Fatalf("EffectiveGrokCLIVersion()=%q, want 1.0.14", got)
 	}
-	wantCodexUA := "Codex Desktop/0.200.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.200.0)"
-	if got := EffectiveCodexDesktopUserAgent(); got != wantCodexUA {
-		t.Fatalf("EffectiveCodexDesktopUserAgent()=%q, want %q", got, wantCodexUA)
+	wantCodexUA := "codex_exec/0.200.0 (Windows 10.0.22621; x86_64) unknown"
+	if got := EffectiveCodexUserAgent(); got != wantCodexUA {
+		t.Fatalf("EffectiveCodexUserAgent()=%q, want %q", got, wantCodexUA)
 	}
 	if got := EffectiveClaudeCodeUserAgent(); got != "claude-cli/2.2.0 (external, cli)" {
 		t.Fatalf("EffectiveClaudeCodeUserAgent()=%q", got)
@@ -101,7 +101,7 @@ func TestSetClientVersionOverridesEmptyMapClearsToBuiltins(t *testing.T) {
 		t.Fatalf("setup failed: EffectiveCodexVersion()=%q", got)
 	}
 	SetClientVersionOverrides(map[string]string{})
-	if got := EffectiveCodexVersion(); got != builtInCodexDesktopVersion {
+	if got := EffectiveCodexVersion(); got != builtInCodexVersion {
 		t.Fatalf("empty map must restore builtin, got %q", got)
 	}
 	SetClientVersionOverrides(map[string]string{"zcode": "1.0.0"})
@@ -172,7 +172,7 @@ func TestApplySystemClientHeadersUsesEffectiveOverriddenVersions(t *testing.T) {
 
 	headers := http.Header{}
 	ApplySystemClientHeaders(headers, Input{ProviderCode: "gpt", CredentialType: "api_key"})
-	if got := headers.Get("User-Agent"); got != "Codex Desktop/0.200.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.200.0)" {
+	if got := headers.Get("User-Agent"); got != "codex_exec/0.200.0 (Windows 10.0.22621; x86_64) unknown" {
 		t.Fatalf("GPT family UA must use override, got %q", got)
 	}
 
@@ -245,7 +245,7 @@ func TestClientVersionOverridesConcurrentReadWrite(t *testing.T) {
 				_ = EffectiveGeminiCLIVersion()
 				_ = EffectiveZCodeVersion()
 				_ = EffectiveGrokCLIVersion()
-				_ = EffectiveCodexDesktopUserAgent()
+				_ = EffectiveCodexUserAgent()
 				_ = EffectiveClaudeCodeUserAgent()
 				_ = EffectiveGeminiCLIUserAgent()
 				headers := http.Header{}

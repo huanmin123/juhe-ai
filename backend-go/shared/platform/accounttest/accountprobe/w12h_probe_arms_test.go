@@ -138,12 +138,12 @@ func TestW12HProbeHeaderArms(t *testing.T) {
 	if _, err := codexService.Probe(ctx, accountquality.ProbeRequest{AccountID: codexView.AccountID}); err != nil {
 		t.Fatal(err)
 	}
-	if seen["originator"] != "Codex Desktop" || seen["session-id"] == "" || seen["x-codex-window-id"] == "" {
+	if seen["originator"] != "codex_exec" || seen["session-id"] == "" || seen["x-codex-window-id"] == "" {
 		t.Fatalf("codex 头未携带: %v (path=%s)", seen, seenPath)
 	}
 	// codex UA 与 upstreamidentity 的 GPT/Codex 家族身份共用同一常量（BUG-0201）。
-	if seen["user-agent"] != upstreamidentity.CodexDesktopUserAgent {
-		t.Fatalf("codex User-Agent=%q, want CodexDesktopUserAgent", seen["user-agent"])
+	if seen["user-agent"] != upstreamidentity.CodexExecUserAgent {
+		t.Fatalf("codex User-Agent=%q, want CodexExecUserAgent", seen["user-agent"])
 	}
 
 	// oauth 流式 accept 头。

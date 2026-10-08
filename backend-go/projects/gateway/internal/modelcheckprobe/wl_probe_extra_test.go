@@ -166,7 +166,7 @@ func TestWlExecuteCodexAdapterNormalizesRequest(t *testing.T) {
 	if reasoning["context"] != "all_turns" || payload["parallel_tool_calls"] != false {
 		t.Fatalf("gpt-5.6 模型必须带 reasoning.context=all_turns: %#v", payload)
 	}
-	if transport.seenHdr.Get("originator") != "Codex Desktop" || transport.seenHdr.Get("session-id") == "" || transport.seenHdr.Get("x-codex-turn-metadata") == "" {
+	if transport.seenHdr.Get("originator") != "codex_exec" || transport.seenHdr.Get("session-id") == "" || transport.seenHdr.Get("x-codex-turn-metadata") == "" {
 		t.Fatalf("Codex 身份头缺失: %v", transport.seenHdr)
 	}
 	if transport.seenHdr.Get("thread-id") != transport.seenHdr.Get("session-id") || transport.seenHdr.Get("x-codex-window-id") != transport.seenHdr.Get("session-id")+":0" {

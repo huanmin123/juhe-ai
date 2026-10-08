@@ -80,7 +80,7 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 func TestProbeOpenAICodexResponsesMatchesManualCompatibilityContract(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Originator") != "Codex Desktop" || request.Header.Get("User-Agent") != upstreamidentity.CodexDesktopUserAgent {
+		if request.Header.Get("Originator") != "codex_exec" || request.Header.Get("User-Agent") != upstreamidentity.CodexExecUserAgent {
 			t.Fatalf("unexpected Codex client headers: %#v", request.Header)
 		}
 		sessionID := request.Header.Get("Session-Id")

@@ -50,6 +50,35 @@ func TestVersionLiteralGuard(t *testing.T) {
 	}
 }
 
+// TestVersionLiteralGuardPatternDiscrimination 锁定 guard 正则的判别力：
+// 六种客户端标识的「标识/x.y.z」字面量必须命中（防正则失效回潮），
+// 无版本段或纯 getter 引用不得命中（防误伤合法代码）。
+func TestVersionLiteralGuardPatternDiscrimination(t *testing.T) {
+	mustMatch := []string{
+		`Codex Desktop/0.159.3 (Windows 10.0.22621; x86_64) unknown`,
+		`codex_exec/0.161.0 (Windows 10.0.22621; x86_64) unknown`,
+		`claude-cli/2.1.292 (external, cli)`,
+		`GeminiCLI/0.63.0 (Windows; AMD64)`,
+		`ZCode/3.14.3`,
+		`xai-grok-workspace/1.0.13`,
+	}
+	for _, sample := range mustMatch {
+		if !versionLiteralGuardPattern.MatchString(sample) {
+			t.Errorf("guard 正则应命中版本字面量: %q", sample)
+		}
+	}
+	noMatch := []string{
+		`claude-cli (external, cli)`,
+		`codex_exec getter 转发 upstreamidentity.EffectiveCodexUserAgent()`,
+		`xai-grok-workspace/ + upstreamidentity.EffectiveGrokCLIVersion()`,
+	}
+	for _, sample := range noMatch {
+		if versionLiteralGuardPattern.MatchString(sample) {
+			t.Errorf("guard 正则不应命中无版本段的合法引用: %q", sample)
+		}
+	}
+}
+
 // scanVersionLiterals 返回文件内全部命中，格式为「文件:行号: 原文」。
 func scanVersionLiterals(t *testing.T, path string) []string {
 	t.Helper()

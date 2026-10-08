@@ -139,7 +139,7 @@ describe('展示行生成', () => {
       isCustom: (key) => (key === 'upstreamClientVersionOverrides.codex' ? true : base.isCustom(key))
     }
     const rows = settingGroups.find((g) => g.key === 'upstream-versions')!.viewRows(access)[0].rows
-    expect(rows).toEqual([{ key: 'upstreamClientVersionOverrides.codex', label: 'Codex Desktop', value: '0.159.3', custom: true }])
+    expect(rows).toEqual([{ key: 'upstreamClientVersionOverrides.codex', label: 'Codex exec', value: '0.159.3', custom: true }])
   })
 
   it('默认行不附默认对照，仅自定义行附（默认 X）', () => {

@@ -55,8 +55,8 @@ func TestEffectiveClientVersionManualOverAutoOverBuiltIn(t *testing.T) {
 		t.Fatalf("EffectiveGrokCLIVersion()=%q, want 1.1.0", got)
 	}
 	// UA getter 同样消费三层合并结果（手动层胜出）。
-	if got := EffectiveCodexDesktopUserAgent(); got != "Codex Desktop/0.300.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.300.0)" {
-		t.Fatalf("EffectiveCodexDesktopUserAgent()=%q", got)
+	if got := EffectiveCodexUserAgent(); got != "codex_exec/0.300.0 (Windows 10.0.22621; x86_64) unknown" {
+		t.Fatalf("EffectiveCodexUserAgent()=%q", got)
 	}
 	if got := EffectiveClaudeCodeUserAgent(); got != "claude-cli/3.0.0 (external, cli)" {
 		t.Fatalf("EffectiveClaudeCodeUserAgent()=%q", got)
@@ -124,7 +124,7 @@ func TestClearingAutoLayerFallsBackToBuiltIn(t *testing.T) {
 	}
 	SetClientVersionAutoOverrides(nil)
 	builtIns := map[string]string{
-		"codex":      builtInCodexDesktopVersion,
+		"codex":      builtInCodexVersion,
 		"claudeCode": builtInClaudeCodeVersion,
 		"geminiCLI":  builtInGeminiCLIVersion,
 		"zcode":      ZCodeVersion,
@@ -198,7 +198,7 @@ func TestSetClientVersionAutoOverridesIgnoresUnknownKeysAndInvalidValues(t *test
 	// 非法输入全被过滤时自动层为空（不产生半合法状态）。
 	SetClientVersionAutoOverrides(map[string]string{"codex": "1.2.3"})
 	SetClientVersionAutoOverrides(map[string]string{"nope": "1.2.3", "codex": "1.2"})
-	if got := EffectiveCodexVersion(); got != builtInCodexDesktopVersion {
+	if got := EffectiveCodexVersion(); got != builtInCodexVersion {
 		t.Fatalf("all-invalid auto map must clear the layer, got %q", got)
 	}
 }
@@ -211,7 +211,7 @@ func TestBuiltInClientVersionFiveFamiliesAndUnknown(t *testing.T) {
 	SetClientVersionOverrides(map[string]string{"codex": "0.300.0"})
 	SetClientVersionAutoOverrides(map[string]string{"codex": "0.200.0"})
 	cases := map[string]string{
-		"codex":      builtInCodexDesktopVersion,
+		"codex":      builtInCodexVersion,
 		"claudeCode": builtInClaudeCodeVersion,
 		"geminiCLI":  builtInGeminiCLIVersion,
 		"zcode":      ZCodeVersion,
