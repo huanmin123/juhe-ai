@@ -263,3 +263,88 @@ type ioNopCloser struct{ Reader *strings.Reader }
 
 func (c ioNopCloser) Read(p []byte) (int, error) { return c.Reader.Read(p) }
 func (c ioNopCloser) Close() error               { return nil }
+
+// prepareInput 的持约契约：账户租约被同 owner 持有（ErrAccountLeaseHeld）时
+// 必须返回 (runStateSkipped, nil query, nil error)——runInputs 的 skipped
+// 分支依赖该契约短路（缺 continue 时直落 dbTask 的 *query 解引用 panic，
+// 生产发布重启窗口实证：上一进程账户租约 TTL 未过期，新进程首轮对同账户
+// AcquireAccountLease 必然 Held）。构造：测试自持 owner lease（不经过
+// RunPeriodic 的 acquire/release 生命周期），先预置账户租约再调 prepareInput，
+// 无并发不确定性。
+func TestPrepareInputSkipsHeldLeaseWithoutError(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/prepare-held.sqlite"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret := "runner-test-secret"
+	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: "runner", CredentialSecret: secret, HTTPClient: &balanceTestJSONHTTP{body: `{"unit":"USD","remaining":"12.5"}`}, MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, acquired, err := store.AcquireOwnerLease(context.Background(), "runner", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire owner lease: acquired=%t err=%v", acquired, err)
+	}
+	if _, acquired, err := store.AcquireAccountLease(context.Background(), owner, "acct-held", time.Minute); err != nil || !acquired {
+		t.Fatalf("pre-hold account lease: acquired=%t err=%v", acquired, err)
+	}
+	now := time.Now().UTC()
+	input := Input{AccountID: "acct-held", SystemAccountID: "sys-held", InputVersion: 1, ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, BaseURL: "https://example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}, APIKey: credential, Trigger: TriggerManual, IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
+	state, _, query, itemErr := runner.prepareInput(context.Background(), owner, input)
+	if state != runStateSkipped || query != nil || itemErr != nil {
+		t.Fatalf("held lease must return (skipped, nil query, nil error), got state=%v queryNil=%t err=%v", state, query == nil, itemErr)
+	}
+}
+
+// runInputs 在 owner lease 不可得（AcquireOwnerLease 返回 false——被其他实例
+// 持有且未过期）时的优雅契约：全部输入计 Skipped、正常返回 nil error，不得
+// 挂起或 panic。注意：这与"账户租约 Held"（prepareInput 层的
+// ErrAccountLeaseHeld → skipped 形态，见
+// TestPrepareInputSkipsHeldLeaseWithoutError）不同层；后者在 runInputs 层的
+// 调用方短路（skipped 分支 continue）无法以真 Store 稳定构造红绿——账户
+// 租约 Held 的稳定前提是同 owner 重复 Acquire，而 runInputs 每轮自持
+// owner lease 且结束即释放，预置流程必然使 owner-lease 短路先行。该调用方
+// 缺陷（skipped 分支缺 continue 对 nil query 解引用 panic，生产栈
+// runner.go:293）由 2026-10-09 生产实证与本地调试复现定案。
+func TestRunInputsAllHeldLeasesDrainWithoutWorkerLoss(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/runinputs-all-held.sqlite"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret := "runner-test-secret"
+	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: "runner", CredentialSecret: secret, HTTPClient: &balanceTestJSONHTTP{body: `{"unit":"USD","remaining":"12.5"}`}, MaxConcurrent: 2, IOConcurrency: 2, DBConcurrency: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, acquired, err := store.AcquireOwnerLease(context.Background(), "runner", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire owner lease: acquired=%t err=%v", acquired, err)
+	}
+	now := time.Now().UTC()
+	var inputs []Input
+	for _, id := range []string{"acct-h0", "acct-h1", "acct-h2", "acct-h3"} {
+		if _, acquired, err := store.AcquireAccountLease(context.Background(), owner, id, time.Minute); err != nil || !acquired {
+			t.Fatalf("pre-hold %s: acquired=%t err=%v", id, acquired, err)
+		}
+		inputs = append(inputs, Input{AccountID: id, SystemAccountID: "sys-held", InputVersion: 1, ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, BaseURL: "https://example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}, APIKey: credential, Trigger: TriggerManual, IssuedAt: now, ExpiresAt: now.Add(time.Minute)})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report, err := runner.runInputs(ctx, TriggerManual, inputs)
+	if err != nil {
+		t.Fatalf("all-held must drain without worker loss: %v", err)
+	}
+	if report.Skipped != len(inputs) || report.Executed != 0 || len(report.Errors) != 0 {
+		t.Fatalf("report = %#v, want all %d skipped", report, len(inputs))
+	}
+}

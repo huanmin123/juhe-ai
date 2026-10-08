@@ -283,13 +283,18 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 				}
 				if state == runStateSkipped {
 					skipped.Add(1)
+					// 三种 skipped 形态（validate/ctx 失败、ErrAccountLeaseHeld、
+					// !acquired）均伴随 nil query；其中租约未获取两态 itemErr 为
+					// nil，必须在此短路——继续下走会对 nil query 解引用 panic
+					//（发布重启窗口上一进程账户租约 TTL 未过期时必现）。
+					continue
 				}
 				if itemErr != nil {
 					recordError(input.AccountID, itemErr)
 					continue
 				}
-				// prepareInput 仅在 queryErr 时返回 nil query 且同时返回错误，
-				// 此处 query 为 nil 必然已走错误分支（w12h 授权删除）。
+				// 此处仅剩 executed 形态：queryErr（nil query+错误，上方已
+				// continue）与正常查询（非 nil query）。
 				task := dbTask{input: input, account: account, query: *query}
 				queuedAt := time.Now()
 				select {
