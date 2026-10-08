@@ -5,6 +5,7 @@ import (
 	"regexp"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -509,6 +510,41 @@ func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult Strea
 			SameAccountRetryEligible: IsTransientPrecommitUpstreamFailureDecision(pipeResult.ResponseInspection),
 			ResponseInspection:       pipeResult.ResponseInspection,
 			ExcludeCurrentAccount:    ShouldExcludeCurrentAccountForStreamServerRetry(pipeResult.ResponseInspection),
+			Message:                  pipeResult.Message,
+			ErrorCode:                clientFacingErrorCode,
+			UncommittedResponseBody:  pipeResult.UncommittedResponseBody,
+			TransportFailure:         pipeResult.TransportFailure,
+		}, nil
+	}
+	// ---- BUG-0298：加密上下文信号未命中的预提交失败换号重试 ----
+	// 生产：同一"上游拒绝加密续上下文"失败会随上游实现漂移报错形状
+	//（encrypted_context_invalid → invalid_request 通用参数文案），恢复臂
+	// 白名单未命中时上方两分支均判否，失败带"请重试"文案落客户端，Codex
+	// 自动重试但上下文不变 → 同账户死循环。该失败与账户绑定——加密续状态
+	// 仅生成它的上游会话可验证，换号即可能解开。复用既有 pre-commit 换号
+	// 通道（同谓词、同 verdict、同重试预算），域限恢复臂门控（openai 协议
+	// + /v1/responses 族）；白名单命中面维持上方清理重放优先，恢复臂已改写
+	// 恢复终态文案（不可恢复）的失败维持终态不换号。
+	if !pipeResult.SemanticCommitted && pipeResult.ResponseInspection != nil &&
+		pipeResult.ResponseInspection.PolicyProtocolCode == codexOpenAIProtocolCode &&
+		gatewaycodex.IsOpenAIResponsesRequest(input.Req) &&
+		pipeResult.Message != gatewaycodex.CodexEncryptedContentRecoveryExhaustedMessage &&
+		ShouldRetryPreCommitStreamFailureOnServer(pipeResult, responseState) {
+		clientFacingErrorCode := PreCommitStreamServerRetryErrorCode(pipeResult, preCommitProtocolError)
+		input.AuditCapture.AddGatewayMetadata("pre_commit_stream_server_retry", map[string]any{
+			"errorCode":              pipeResult.ErrorCode,
+			"clientFacingErrorCode":  clientFacingErrorCode,
+			"message":                pipeResult.Message,
+			"downstreamBytesWritten": pipeResult.DownstreamBytesWritten,
+			"outputReceived":         pipeResult.OutputReceived,
+			"accountId":              input.Account.GetID(),
+		})
+		return UpstreamResponseHandlingResult{
+			RetryUpstream:            true,
+			RetryReason:              StreamServerRetryPreCommitStreamFailure,
+			SameAccountRetryEligible: pipeResult.TransportFailure != nil,
+			ResponseInspection:       pipeResult.ResponseInspection,
+			ExcludeCurrentAccount:    true,
 			Message:                  pipeResult.Message,
 			ErrorCode:                clientFacingErrorCode,
 			UncommittedResponseBody:  pipeResult.UncommittedResponseBody,
