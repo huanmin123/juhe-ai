@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -708,5 +709,154 @@ func TestRecoveryFailureReasonEmptyForUnknown(t *testing.T) {
 	got := recoveryFailureReason(TransportProbeOutcome{Kind: RecoveryProbeOutcomeTransportIncomplete, FailureKind: RecoveryProbeFailureConnection, StatusCode: &status})
 	if !strings.HasPrefix(got, "background_probe:connection:http_429") {
 		t.Fatalf("reason = %q", got)
+	}
+}
+
+// escalation 清理臂的观测缝：MemoryStore 不外露 ClearAccountEscalationEvidence
+// 的调用记录，直接可见状态效果需要先造 3 scope 升级证据（RecordProtocolModel
+// OpenEvidence 全链，远重于本用例目标），故用包装 store spy 记录调用后委托真
+// MemoryStore（同包 w11cErrorStore 先例）。sweep 并发执行，记录需加锁。
+type recoveryEscalationSpyStore struct {
+	Store
+	mu     sync.Mutex
+	clears []ClearAccountEscalationEvidenceInput
+}
+
+func (s *recoveryEscalationSpyStore) ClearAccountEscalationEvidence(ctx context.Context, input ClearAccountEscalationEvidenceInput) (bool, error) {
+	s.mu.Lock()
+	s.clears = append(s.clears, input)
+	s.mu.Unlock()
+	return s.Store.ClearAccountEscalationEvidence(ctx, input)
+}
+
+func (s *recoveryEscalationSpyStore) clearCalls() []ClearAccountEscalationEvidenceInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ClearAccountEscalationEvidenceInput(nil), s.clears...)
+}
+
+// 触发路径（第一轮复审建议①的 sweep 级收口）：protocol_model scope 到期状态
+// + 探针 framing_complete 且语义失败 → 结算完成（applied）后必须调用
+// store.ClearAccountEscalationEvidence（recovery.go 清理臂；契约源 jobs
+// internal/opsjobs/circuitrecovery.go 同段）。语义失败落 unknown verdict，
+// 确认 unknown 中性保持 SUSPECT 并释放租约。
+func TestRecoverySweepClearsEscalationEvidenceOnProtocolModelSemanticFailure(t *testing.T) {
+	nowMS, advance := recoveryTestClock(t)
+	scope := protocolScope("acc-recovery-13")
+	mem := newTestMemoryStore(t, 10, nowMS)
+	spy := &recoveryEscalationSpyStore{Store: mem}
+	seed := recoverySuspectState(t, scope, 1, "5", nowMS())
+	if _, err := mem.Restore(context.Background(), seed, int64Ptr(nowMS())); err != nil {
+		t.Fatal(err)
+	}
+	status := 200
+	service := newTestRecoveryService(t, spy, nowMS, recoveryStaticResolver(RecoveryProbeTarget{
+		DispatchRevision: "5",
+		Probe: func(context.Context) (TransportProbeOutcome, error) {
+			// framing_complete 且语义失败（invalid_probe_output 分类同款形状）。
+			return TransportProbeOutcome{Kind: RecoveryProbeOutcomeFramingComplete, StatusCode: &status, SemanticSuccess: recoveryBoolPtr(false)}, nil
+		},
+	}, true))
+
+	result, err := service.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep 失败: %v", err)
+	}
+	if result.FramingCompleteCount != 1 {
+		t.Fatalf("framingCompleteCount = %d: %+v", result.FramingCompleteCount, result)
+	}
+	state, err := mem.Get(context.Background(), scope, int64Ptr(nowMS()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != PhaseSuspect {
+		t.Fatalf("语义失败确认按 unknown 中性应保持 SUSPECT，got %s", state.Phase)
+	}
+	if state.Lease != nil {
+		t.Fatal("结算后不应残留租约")
+	}
+	clears := spy.clearCalls()
+	if len(clears) != 1 {
+		t.Fatalf("ClearAccountEscalationEvidence 应被调用 1 次: %d", len(clears))
+	}
+	if clears[0].AccountRuntimeKey != scope.AccountRuntimeKey {
+		t.Fatalf("accountRuntimeKey = %q, want %q", clears[0].AccountRuntimeKey, scope.AccountRuntimeKey)
+	}
+	if clears[0].DispatchRevision != "5" {
+		t.Fatalf("dispatchRevision = %q, want 5", clears[0].DispatchRevision)
+	}
+	if clears[0].EvidenceID == "" {
+		t.Fatal("evidenceId 必填（store 契约）")
+	}
+	advance(nowMS() + 1)
+}
+
+// 负臂：account scope 同 outcome 不触发清理；protocol_model scope 但语义成功
+// （SemanticSuccess=true，verdict framing_complete 直接闭合）同样不触发——
+// 清理只对"framing_complete 且语义失败"。
+func TestRecoverySweepEscalationClearNegativeArms(t *testing.T) {
+	cases := []struct {
+		name    string
+		scope   Scope
+		wantOne bool
+		probe   TransportProbeOutcome
+	}{
+		{
+			name:  "account scope 语义失败",
+			scope: accountScope("acc-recovery-14"),
+			probe: func() TransportProbeOutcome {
+				status := 200
+				return TransportProbeOutcome{Kind: RecoveryProbeOutcomeFramingComplete, StatusCode: &status, SemanticSuccess: recoveryBoolPtr(false)}
+			}(),
+		},
+		{
+			name:    "protocol_model 语义成功",
+			scope:   protocolScope("acc-recovery-15"),
+			wantOne: true,
+			probe: func() TransportProbeOutcome {
+				status := 200
+				return TransportProbeOutcome{Kind: RecoveryProbeOutcomeFramingComplete, StatusCode: &status, SemanticSuccess: recoveryBoolPtr(true)}
+			}(),
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			nowMS, advance := recoveryTestClock(t)
+			mem := newTestMemoryStore(t, 10, nowMS)
+			spy := &recoveryEscalationSpyStore{Store: mem}
+			seed := recoverySuspectState(t, testCase.scope, 1, "5", nowMS())
+			if _, err := mem.Restore(context.Background(), seed, int64Ptr(nowMS())); err != nil {
+				t.Fatal(err)
+			}
+			service := newTestRecoveryService(t, spy, nowMS, recoveryStaticResolver(RecoveryProbeTarget{
+				DispatchRevision: "5",
+				Probe: func(context.Context) (TransportProbeOutcome, error) {
+					return testCase.probe, nil
+				},
+			}, true))
+
+			result, err := service.Sweep(context.Background())
+			if err != nil {
+				t.Fatalf("Sweep 失败: %v", err)
+			}
+			if clears := spy.clearCalls(); len(clears) != 0 {
+				t.Fatalf("负臂不得触发清理: %+v", clears)
+			}
+			state, err := mem.Get(context.Background(), testCase.scope, int64Ptr(nowMS()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.wantOne {
+				// 语义成功的 framing_complete（verdict=framing_complete）直接
+				// CLOSED；但 item 计数走 unknown（recoveryFramingComplete 只计
+				// 语义失败形态，对齐契约源 circuitrecovery.go 同段 fall-through）。
+				if result.FramingCompleteCount != 0 || result.UnknownCount != 1 || state.Phase != PhaseClosed {
+					t.Fatalf("语义成功应 CLOSED 且计数 unknown: %+v phase=%s", result, state.Phase)
+				}
+			} else if result.FramingCompleteCount != 1 || result.UnknownCount != 0 || state.Phase != PhaseSuspect {
+				t.Fatalf("语义失败应计入 framingComplete 并保持 SUSPECT: %+v phase=%s", result, state.Phase)
+			}
+			advance(nowMS() + 1)
+		})
 	}
 }

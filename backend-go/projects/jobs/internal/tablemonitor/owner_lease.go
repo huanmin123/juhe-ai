@@ -77,6 +77,12 @@ func RunWithOwnerLease(ctx context.Context, cfg Config, store *Store, run func(c
 				return
 			case <-ticker.C:
 				renewed, renewErr := store.RenewOwnerLease(runCtx, lease, cfg.OwnerLease)
+				if renewErr != nil && runCtx.Err() != nil {
+					// 停止序列已发起（回调返回/外部取消 → defer cancel），
+					// 与最后一次续租 tick 竞态产生的 context 错误不构成租约
+					// 丢失证据，不外泄——租约由 defer 的 release 释放。
+					return
+				}
 				if renewErr == nil && renewed {
 					continue
 				}

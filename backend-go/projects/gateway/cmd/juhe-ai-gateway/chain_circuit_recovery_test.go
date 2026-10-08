@@ -10,8 +10,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
@@ -238,5 +241,229 @@ func TestChainCircuitRecoveryProbeRequestPinsModelBucket(t *testing.T) {
 	}, "grp", "sys")
 	if blankRequest.ProbeModel != "" {
 		t.Fatalf("空白 modelBucket 应回退空: %q", blankRequest.ProbeModel)
+	}
+}
+
+// recoveryLedgerTables 在 chain fixture 业务库上补 circuit control-plane 契约面
+//（DDL 与 chain_circuit_controlplane_test.go w17eOpenBusinessSQLite 同款，加法
+// 应用到共享 fixture）；并补 fixture 缺失的两列：accounts.circuit_projection_
+// revision（CheckContract 与 outbox 投影水位回写需要）、group_accounts.updated_at
+//（proberepo 账户行读取引用，recoveryProbeStore 同款加法）。
+func recoveryLedgerTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	statements := []string{
+		`ALTER TABLE accounts ADD COLUMN circuit_projection_revision INTEGER`,
+		`ALTER TABLE group_accounts ADD COLUMN updated_at TEXT`,
+		`CREATE TABLE account_circuit_incidents (
+ circuit_scope_key TEXT PRIMARY KEY, account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, scope_kind TEXT NOT NULL,
+ key_fingerprint TEXT, protocol_code TEXT, request_lane TEXT, model_family TEXT, client_model TEXT, capability_hash TEXT,
+ credential_source_account_id TEXT, client_endpoint_family TEXT, final_upstream_model TEXT, upstream_endpoint_mode TEXT, incident_id TEXT NOT NULL,
+ parent_incident_id TEXT, child_incident_ids_json TEXT NOT NULL, caused_by_terminal_outcome_id TEXT, state TEXT NOT NULL,
+ failure_scope TEXT, generation INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, ledger_revision INTEGER NOT NULL,
+ projected_ledger_revision INTEGER NOT NULL, transition_id TEXT NOT NULL, cooldown_observation_generation INTEGER NOT NULL,
+ open_until_ms INTEGER, next_transition_at_ms INTEGER, lease_id TEXT, lease_purpose TEXT, lease_owner_run_id TEXT,
+ lease_until_ms INTEGER, attempt_started_at_ms INTEGER, attempt_hard_deadline_ms INTEGER, upstream_attempt_observed INTEGER NOT NULL,
+ backoff_level INTEGER NOT NULL, consecutive_failures INTEGER NOT NULL, confirmation_failures_required INTEGER NOT NULL,
+ confirmation_failure_evidence_keys_json TEXT NOT NULL, recovering_successes INTEGER NOT NULL, last_failure_class TEXT,
+ retained_until_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
+		`CREATE TABLE account_circuit_outbox (
+ event_id TEXT PRIMARY KEY, projection_key TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+ account_id TEXT NOT NULL, account_runtime_key TEXT NOT NULL, circuit_scope_key TEXT, incident_id TEXT, transition_id TEXT NOT NULL,
+ dispatch_revision INTEGER NOT NULL, generation INTEGER, ledger_revision INTEGER, status TEXT NOT NULL, available_at_ms INTEGER NOT NULL,
+ claim_token TEXT, claimed_by TEXT, claim_until_ms INTEGER, attempt_count INTEGER NOT NULL, last_error_class TEXT,
+ acknowledged_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL)`,
+		`CREATE UNIQUE INDEX idx_account_circuit_incidents_key_model_capability ON account_circuit_incidents(scope_kind, capability_hash) WHERE scope_kind = 'key_model' AND capability_hash IS NOT NULL`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") || strings.Contains(err.Error(), "already exists") {
+				continue
+			}
+			t.Fatalf("create circuit ledger contract: %v", err)
+		}
+	}
+}
+
+// 恢复 mutation → persist hook → ledger 端到端（终审查漏修复②）：
+//
+//	a) hook 传递断言：真实装配链路 newChainAccountCircuitService（gate 三证
+//	   就绪，MutationHook = bridge.Observe 包装）→ newChainAccountCircuitRecovery
+//	   Component 构造（chain_circuit_recovery.go OnMutation: runtime.MutationHook）
+//	   → 组件首轮 sweep。若装配丢失 hook 传递，spy 收不到 acquire/complete 事件、
+//	   ledger 也无行，两个断言同时失败。spy 记录后委托真 hook，兼顾两断言且只付
+//	   一次首轮延迟（5s±2.5s PassiveJitter）。
+//	b) ledger 端到端：断言 account_circuit_incidents 出现该 scope 行
+//	   （state/generation/dispatch_revision/lease 终态符合）且 outbox 有事件——
+//	   恢复转换与主链请求热路径共用同一条 CAS 投影管道的实证。
+//
+// 探针不触网：runtime key 对应账户行存在但无分组绑定 → resolver found=false →
+// releaseUnknown，恰好产生 acquire_confirmation + complete_confirmation 两笔
+// mutation（账户维度 unknown 中性保持 SUSPECT、租约释放）。CAS 要求账户行
+// dispatch_revision 匹配（account_not_found/stale 均不落行），故种子账户行。
+func TestChainCircuitRecoverySweepMutationHookPersistsLedger(t *testing.T) {
+	fixture := newChainFixture(t)
+	recoveryLedgerTables(t, fixture.db)
+	const (
+		hookAccountID = "acc_recovery_hook_e2e"
+		revisionID    = int64(7)
+	)
+	seed, seedErr := fixture.db.Exec(`INSERT INTO accounts
+		(id, system_account_id, provider_code, name, type, status, dispatch_revision)
+		VALUES (?, 'sys_owner', 'openai', '恢复 hook e2e 账户', 'api_key', 'active', ?)`,
+		hookAccountID, revisionID)
+	if seedErr != nil {
+		t.Fatalf("seed account row: %v", seedErr)
+	}
+	if rows, _ := seed.RowsAffected(); rows != 1 {
+		t.Fatalf("seed account rows = %d, want 1", rows)
+	}
+	runtime, closeService, err := newChainAccountCircuitService("memory", "", "", w17eGateReadyConfig(fixture.db), nil)
+	if err != nil {
+		t.Fatalf("newChainAccountCircuitService: %v", err)
+	}
+	t.Cleanup(closeService)
+	if runtime.MutationHook == nil {
+		t.Fatal("owner gate 三证就绪时装配必须外露 persist hook")
+	}
+
+	// spy：记录 sweep 流经 hook 的 MutationEvent，再委托真实 persist hook。
+	var (
+		eventMu sync.Mutex
+		events  []gatewaycircuit.MutationEvent
+	)
+	baseHook := runtime.MutationHook
+	runtime.MutationHook = func(ctx context.Context, event gatewaycircuit.MutationEvent) error {
+		eventMu.Lock()
+		events = append(events, event)
+		eventMu.Unlock()
+		return baseHook(ctx, event)
+	}
+
+	// 注入即时到期的 due SUSPECT 状态（memory store 为真实时间时钟）。
+	scope := gatewaycircuit.Scope{Kind: gatewaycircuit.ScopeKindAccount, AccountRuntimeKey: hookAccountID}
+	scopeKey := gatewaycircuit.MustScopeKey(scope)
+	now := time.Now().UnixMilli()
+	required := int64(2)
+	count := int64(0)
+	retryAt := now - 1_000
+	if _, err := runtime.Store.Restore(context.Background(), gatewaycircuit.State{
+		ScopeKey:                     scopeKey,
+		Scope:                        scope,
+		Phase:                        gatewaycircuit.PhaseSuspect,
+		Generation:                   1,
+		DispatchRevision:             "7",
+		TransitionID:                 "seed-hook-e2e",
+		ConfirmationFailuresRequired: &required,
+		ConfirmationFailureCount:     &count,
+		RetryAtMs:                    &retryAt,
+		UpdatedAtMs:                  now,
+	}, &now); err != nil {
+		t.Fatalf("seed due state: %v", err)
+	}
+
+	cfg := composeTestConfig(t)
+	composed := &composition{db: fixture.db, statsDB: fixture.statsDB, Bus: nil}
+	component, err := newChainAccountCircuitRecoveryComponent(runtime, composed, cfg)
+	if err != nil {
+		t.Fatalf("newChainAccountCircuitRecoveryComponent: %v", err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	runDone := make(chan error, 1)
+	go func() { runDone <- component.Run(runCtx) }()
+
+	waitUntil := func(description string, timeout time.Duration, probe func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if probe() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", description)
+	}
+	eventsSnapshot := func() []gatewaycircuit.MutationEvent {
+		eventMu.Lock()
+		defer eventMu.Unlock()
+		return append([]gatewaycircuit.MutationEvent(nil), events...)
+	}
+
+	// 等 sweep 首轮（初始延迟 5s±2.5s + sweep 耗时）；事件到齐立即取消，
+	// 抢在确认 unknown 退避（attempt 2 = 5s）触发第二轮 sweep 之前。
+	waitUntil("sweep mutations reach hook", 20*time.Second, func() bool {
+		return len(eventsSnapshot()) >= 2
+	})
+	cancel()
+	select {
+	case runErr := <-runDone:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("组件退出错误 = %v, want context.Canceled", runErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("组件未随 ctx 取消退出")
+	}
+
+	snapshot := eventsSnapshot()
+	if len(snapshot) < 2 {
+		t.Fatalf("hook 至少应收到 2 笔 mutation: %d", len(snapshot))
+	}
+	for index, event := range snapshot[:2] {
+		if event.Scope.AccountRuntimeKey != hookAccountID || event.State.ScopeKey != scopeKey {
+			t.Fatalf("event[%d] scope 不符: %+v", index, event.Scope)
+		}
+		if event.Status != gatewaycircuit.MutationApplied {
+			t.Fatalf("event[%d] status = %s, want applied", index, event.Status)
+		}
+		if event.PreviousPhase != gatewaycircuit.PhaseSuspect {
+			t.Fatalf("event[%d] previousPhase = %s, want SUSPECT", index, event.PreviousPhase)
+		}
+	}
+	if snapshot[0].Operation != gatewaycircuit.OperationAcquireConfirmation {
+		t.Fatalf("event[0] operation = %s, want acquire_confirmation", snapshot[0].Operation)
+	}
+	if snapshot[1].Operation != gatewaycircuit.OperationCompleteConfirmation {
+		t.Fatalf("event[1] operation = %s, want complete_confirmation", snapshot[1].Operation)
+	}
+
+	// 运行态终态（组件已停，无并发 sweep）：确认 unknown 中性保持 SUSPECT，
+	// 租约释放。
+	state, err := runtime.Store.Get(context.Background(), scope, nil)
+	if err != nil {
+		t.Fatalf("read runtime state: %v", err)
+	}
+	if state.Phase != gatewaycircuit.PhaseSuspect || state.Lease != nil {
+		t.Fatalf("运行态终态 = %s lease=%v, want SUSPECT 且无租约", state.Phase, state.Lease)
+	}
+
+	// ledger 端到端：等 bridge worker 落行（终态 CAS 携带 complete 后的
+	// 无租约状态）。state/generation/dispatch_revision 必须与 sweep 结果一致。
+	var (
+		incidentState  string
+		ledgerRevision int64
+		generation     int64
+		dispatchRev    int64
+		leaseID        sql.NullString
+	)
+	waitUntil("incident row persisted with released lease", 15*time.Second, func() bool {
+		return fixture.db.QueryRow(`SELECT state, ledger_revision, generation, dispatch_revision, lease_id
+			FROM account_circuit_incidents WHERE circuit_scope_key = ?`, scopeKey).
+			Scan(&incidentState, &ledgerRevision, &generation, &dispatchRev, &leaseID) == nil && !leaseID.Valid
+	})
+	if incidentState != "SUSPECT" {
+		t.Fatalf("incident state = %s, want SUSPECT", incidentState)
+	}
+	if generation != 1 || dispatchRev != revisionID {
+		t.Fatalf("incident (generation,dispatchRevision) = (%d,%d), want (1,%d)", generation, dispatchRev, revisionID)
+	}
+	if ledgerRevision < 1 {
+		t.Fatalf("ledger revision = %d, want >= 1", ledgerRevision)
+	}
+	var outboxRows int
+	if err := fixture.db.QueryRow(`SELECT count(*) FROM account_circuit_outbox WHERE circuit_scope_key = ?`, scopeKey).Scan(&outboxRows); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if outboxRows < 1 {
+		t.Fatalf("outbox rows = %d, want >= 1", outboxRows)
 	}
 }

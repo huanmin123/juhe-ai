@@ -322,30 +322,39 @@ func TestW12fTMOwnerLeaseRenewalArms(t *testing.T) {
 	}
 
 	// 续租丢失臂：回调期间删除 lease 行 → RenewOwnerLease 返回 false → ErrOwnerLeaseLost。
+	// 续租丢失臂：回调只等取消（无超时出口）。主测试先跨过第一次续租
+	// tick（OwnerLease/3 = 1s，确认续租循环健康），再删 lease 行——其后的
+	// 下一个 tick 必然续租失败 → ErrOwnerLeaseLost，不受调度延迟影响。
 	leaseErr := make(chan error, 1)
 	go func() {
 		leaseErr <- RunWithOwnerLease(context.Background(), cfg, store, func(ownerCtx context.Context) error {
-			select {
-			case <-ownerCtx.Done():
-				return ownerCtx.Err()
-			case <-time.After(2200 * time.Millisecond):
-				return nil
-			}
+			<-ownerCtx.Done()
+			return ownerCtx.Err()
 		})
 	}()
+	time.Sleep(1200 * time.Millisecond)
 	deadline := time.Now().Add(5 * time.Second)
+	deleted := false
 	for time.Now().Before(deadline) {
 		var count int
 		if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM table_monitor_owner_leases WHERE lease_key = 'table-monitor-sampling-retention'`).Scan(&count); err == nil && count > 0 {
-			break
+			if _, err := store.db.ExecContext(context.Background(), `DELETE FROM table_monitor_owner_leases WHERE lease_key = 'table-monitor-sampling-retention'`); err == nil {
+				deleted = true
+				break
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := store.db.ExecContext(context.Background(), `DELETE FROM table_monitor_owner_leases WHERE lease_key = 'table-monitor-sampling-retention'`); err != nil {
-		t.Fatal(err)
+	if !deleted {
+		t.Fatal("未能在窗口内删除 lease 行")
 	}
-	if err := <-leaseErr; !errors.Is(err, ErrOwnerLeaseLost) {
-		t.Fatalf("lease 行被删后必须返回 ErrOwnerLeaseLost: %v", err)
+	select {
+	case err := <-leaseErr:
+		if !errors.Is(err, ErrOwnerLeaseLost) {
+			t.Fatalf("lease 行被删后必须返回 ErrOwnerLeaseLost: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("删行后 5s 内未返回 ErrOwnerLeaseLost")
 	}
 }
 

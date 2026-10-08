@@ -94,7 +94,12 @@ func sqliteOutputDSN(path string) (string, error) {
 	if !strings.HasPrefix(uriPath, "/") {
 		uriPath = "/" + uriPath
 	}
-	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_pragma=busy_timeout(5000)"}).String(), nil
+	// _txlock=immediate：SQLite 分支的 3 处 BeginTx（WriteSample/
+	// hasExpiredSnapshots/cleanupSQLite）均为 DEFERRED 起事务后升级写锁，
+	// 升级失败的 SQLITE_BUSY 不受 busy_timeout 保护；standalone 形态 gateway
+	// 以读写句柄打开同一文件。写句柄先例：taskruns/store.go 与
+	// worker_assembly.go openSQLite 同款参数。
+	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_pragma=busy_timeout(5000)&_txlock=immediate"}).String(), nil
 }
 
 func (s *Store) Close() error {
