@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -290,12 +291,12 @@ func (f *projectionFixture) outboxCount(t *testing.T) int {
 }
 
 // cooldownSuccessOutcome 构造一条 Go scheduler 冷却复测成功的真实投影形态。
-func cooldownSuccessOutcome(observedAt time.Time, fence CooldownFence) Outcome {
+func cooldownSuccessOutcome(observedAt time.Time, fence exactkeyprobe.CooldownFence) Outcome {
 	return Outcome{
 		OutcomeID:        "outcome-cooldown-success",
 		RequestID:        "request-cooldown-success",
 		AccountID:        "acct-1",
-		Outcome:          OutcomeSuccess,
+		Outcome:          exactkeyprobe.OutcomeSuccess,
 		InputVersion:     1,
 		ConfigRevision:   5,
 		DispatchRevision: 7,
@@ -338,7 +339,7 @@ func TestProjectionCooldownSuccessRestoresActive(t *testing.T) {
 		"health_check_failure_count":             2,
 	})
 	observed := projectionFixtureNow.Add(-time.Minute)
-	fixture.insertOutcome(observed, cooldownSuccessOutcome(observed, CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"}))
+	fixture.insertOutcome(observed, cooldownSuccessOutcome(observed, exactkeyprobe.CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"}))
 
 	result := fixture.drain(t)
 	if result.Processed != 1 {
@@ -397,7 +398,7 @@ func activationSuccessOutcome(observedAt time.Time) Outcome {
 		OutcomeID:        "outcome-activation-success",
 		RequestID:        "request-activation-success",
 		AccountID:        "acct-1",
-		Outcome:          OutcomeSuccess,
+		Outcome:          exactkeyprobe.OutcomeSuccess,
 		InputVersion:     1,
 		ConfigRevision:   5,
 		DispatchRevision: 7,
@@ -423,7 +424,7 @@ func activationSuccessOutcome(observedAt time.Time) Outcome {
 // 无余额配置的 api_key 账户安排余额探测，dispatch revision 推进。
 func TestProjectionActivationSuccessSchedulesBalance(t *testing.T) {
 	fixture := newProjectionFixture(t)
-	credentials, err := EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	credentials, err := exactkeyprobe.EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
 	if err != nil {
 		t.Fatalf("加密测试凭据失败: %v", err)
 	}
@@ -469,7 +470,7 @@ func TestProjectionActivationSuccessSchedulesBalance(t *testing.T) {
 func TestProjectionActivationSuccessOutsideScheduleWindow(t *testing.T) {
 	fixture := newProjectionFixture(t)
 	schedule := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1,2,3,4,5,6,7],"start":"01:00","end":"02:00"}]}`
-	credentials, err := EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	credentials, err := exactkeyprobe.EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
 	if err != nil {
 		t.Fatalf("加密测试凭据失败: %v", err)
 	}
@@ -566,7 +567,7 @@ func TestProjectionHealthFailureKeepsActive(t *testing.T) {
 		OutcomeID:        "outcome-health-failure",
 		RequestID:        "request-health-failure",
 		AccountID:        "acct-1",
-		Outcome:          OutcomeUpstreamFailed,
+		Outcome:          exactkeyprobe.OutcomeUpstreamFailed,
 		InputVersion:     1,
 		ConfigRevision:   5,
 		DispatchRevision: 7,
@@ -633,7 +634,7 @@ func TestProjectionCooldownFenceAcceptsSubMillisecondPersistedTimestamp(t *testi
 		"cooldown_retest_generation":             "gen-precision",
 	})
 	observed := projectionFixtureNow.Add(-time.Minute)
-	fixture.insertOutcome(observed, cooldownSuccessOutcome(observed, CooldownFence{
+	fixture.insertOutcome(observed, cooldownSuccessOutcome(observed, exactkeyprobe.CooldownFence{
 		ObservationStartedAt: observation,
 		Generation:           "gen-precision",
 	}))
@@ -683,8 +684,8 @@ func TestProjectionRejectsTransitionOutcomeMismatch(t *testing.T) {
 	fixture := newProjectionFixture(t)
 	fixture.seedAccount(t, map[string]any{"status": "temporary_unavailable", "schedulable": 1})
 	observation := projectionFixtureNow.Add(-2 * time.Hour)
-	outcome := cooldownSuccessOutcome(projectionFixtureNow.Add(-time.Minute), CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"})
-	outcome.Outcome = OutcomeUpstreamFailed
+	outcome := cooldownSuccessOutcome(projectionFixtureNow.Add(-time.Minute), exactkeyprobe.CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"})
+	outcome.Outcome = exactkeyprobe.OutcomeUpstreamFailed
 	fixture.insertOutcome(projectionFixtureNow.Add(-time.Minute), outcome)
 
 	result := fixture.drain(t)
@@ -705,9 +706,9 @@ func TestProjectionRejectsTransitionOutcomeMismatch(t *testing.T) {
 // validateProjection 的关键分支）。
 func TestValidateProjectionTruthTable(t *testing.T) {
 	observed := projectionFixtureNow
-	fence := CooldownFence{ObservationStartedAt: observed.Add(-time.Hour), Generation: "gen-1"}
+	fence := exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Hour), Generation: "gen-1"}
 	base := Outcome{
-		OutcomeID: "o", RequestID: "r", AccountID: "acct-1", Outcome: OutcomeSuccess,
+		OutcomeID: "o", RequestID: "r", AccountID: "acct-1", Outcome: exactkeyprobe.OutcomeSuccess,
 		ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(observed.Add(time.Hour)),
 	}
@@ -820,7 +821,7 @@ func TestValidateProjectionTruthTable(t *testing.T) {
 					p.TransitionKind = "cooldown_defer"
 					p.ExpectedAccountStatus = "temporary_unavailable"
 					p.ExpectedCooldownFence = &fence
-					p.CooldownFence = &CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: "gen-2"}
+					p.CooldownFence = &exactkeyprobe.CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: "gen-2"}
 				})
 			},
 			expect: "rejected:projection_cooldown_fence_mismatch",
@@ -833,7 +834,7 @@ func TestValidateProjectionTruthTable(t *testing.T) {
 					p.ExpectedAccountStatus = "temporary_unavailable"
 					p.ExpectedCooldownFence = &fence
 				})
-				outcome.Outcome = OutcomeUpstreamFailed
+				outcome.Outcome = exactkeyprobe.OutcomeUpstreamFailed
 				return outcome
 			},
 			expect: "rejected:projection_outcome_transition_mismatch",
@@ -847,7 +848,7 @@ func TestValidateProjectionTruthTable(t *testing.T) {
 					p.ExpectedCooldownFence = &fence
 					p.CooldownFence = &fence
 				})
-				outcome.Outcome = OutcomeTaskFailed
+				outcome.Outcome = exactkeyprobe.OutcomeTaskFailed
 				return outcome
 			},
 		},
@@ -889,7 +890,7 @@ func splitDispositionExpectation(value string) []string {
 func TestProjectionCursorPagination(t *testing.T) {
 	fixture := newProjectionFixture(t)
 	fixture.seedAccount(t, nil)
-	first := cooldownSuccessOutcome(projectionFixtureNow.Add(-2*time.Minute), CooldownFence{ObservationStartedAt: projectionFixtureNow.Add(-3 * time.Hour), Generation: "gen-0"})
+	first := cooldownSuccessOutcome(projectionFixtureNow.Add(-2*time.Minute), exactkeyprobe.CooldownFence{ObservationStartedAt: projectionFixtureNow.Add(-3 * time.Hour), Generation: "gen-0"})
 	first.OutcomeID = "outcome-first"
 	first.RequestID = "request-first"
 	second := activationSuccessOutcome(projectionFixtureNow.Add(-time.Minute))
@@ -968,7 +969,7 @@ func TestProjectionDispatchFamilyAdvance(t *testing.T) {
 	if _, err := fixture.business.Exec(`INSERT INTO account_health_jobs_input_versions (account_id, input_version, current_version, updated_at) VALUES ('acct-2', 1, 1, '2026-09-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	fixture.insertOutcome(projectionFixtureNow.Add(-time.Minute), cooldownSuccessOutcome(observation, CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"}))
+	fixture.insertOutcome(projectionFixtureNow.Add(-time.Minute), cooldownSuccessOutcome(observation, exactkeyprobe.CooldownFence{ObservationStartedAt: observation, Generation: "gen-1"}))
 
 	result := fixture.drain(t)
 	if result.Processed != 1 {
@@ -1029,7 +1030,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 // 脏行。
 func TestProjectionAppliedMarksGroupAccountStatsDirty(t *testing.T) {
 	fixture := newProjectionFixture(t)
-	credentials, err := EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	credentials, err := exactkeyprobe.EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
 	if err != nil {
 		t.Fatalf("加密测试凭据失败: %v", err)
 	}
@@ -1062,7 +1063,7 @@ func TestProjectionAppliedMarksGroupAccountStatsDirty(t *testing.T) {
 	// ignored 处置（无 projection → outcome_has_no_account_projection）不标脏。
 	ignored := Outcome{
 		OutcomeID: "outcome-ignored-no-projection", RequestID: "request-ignored",
-		AccountID: "acct-1", Outcome: OutcomeSuccess,
+		AccountID: "acct-1", Outcome: exactkeyprobe.OutcomeSuccess,
 		InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, StatusCode: 200,
 		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
 	}
@@ -1084,7 +1085,7 @@ func TestProjectionAppliedMarksGroupAccountStatsDirty(t *testing.T) {
 // stale 回放若也标脏会让分组统计在无状态变化时反复失效。
 func TestProjectionStaleOutcomeSkipsGroupAccountStatsDirty(t *testing.T) {
 	fixture := newProjectionFixture(t)
-	credentials, err := EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	credentials, err := exactkeyprobe.EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
 	if err != nil {
 		t.Fatalf("加密测试凭据失败: %v", err)
 	}

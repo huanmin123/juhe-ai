@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 const w12bProbeSecret = "w12b-probe-secret"
 
-func w12bProbeInput(baseURL string) accounthealth.Input {
+func w12bProbeInput(baseURL string) exactkeyprobe.Input {
 	now := time.Now().UTC()
-	return accounthealth.Input{
+	return exactkeyprobe.Input{
 		AccountID:            "w12b-account",
 		InputVersion:         1,
 		ConfigRevision:       1,
@@ -43,14 +43,14 @@ func w12bProbeState() State {
 	return state
 }
 
-func w12bAPIKeyInput(t *testing.T, fingerprint string) accounthealth.Input {
+func w12bAPIKeyInput(t *testing.T, fingerprint string) exactkeyprobe.Input {
 	t.Helper()
-	ciphertext, err := accounthealth.EncryptV1Envelope(w12bProbeSecret, []byte(`{"api_key":"sk-w12b-key"}`))
+	ciphertext, err := exactkeyprobe.EncryptV1Envelope(w12bProbeSecret, []byte(`{"api_key":"sk-w12b-key"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	input := w12bProbeInput("")
-	input.APIKeys = []accounthealth.APIKeyInput{{Fingerprint: fingerprint, Credential: accounthealth.CredentialEnvelope{Kind: "api_key", Ciphertext: ciphertext}}}
+	input.APIKeys = []exactkeyprobe.APIKeyInput{{Fingerprint: fingerprint, Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: ciphertext}}}
 	return input
 }
 

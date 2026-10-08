@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"testing"
 	"time"
@@ -229,7 +230,7 @@ func TestW12dStoreFaultArms(t *testing.T) {
 		t.Fatal("invalid cursor args must fail")
 	}
 	// 拒绝写入的 outcome（状态契约）。
-	contract := Outcome{OutcomeID: "w12d-c", RequestID: "w12d-c", AccountID: "w12d-c", Outcome: OutcomeSuccess, ObservedAt: time.Now(), InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, AccountStatus: "error"}
+	contract := Outcome{OutcomeID: "w12d-c", RequestID: "w12d-c", AccountID: "w12d-c", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: time.Now(), InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, AccountStatus: "error"}
 	if _, err := open.AppendOutcome(ctx, lease, contract); err == nil {
 		t.Fatal("invalid state contract must fail")
 	}
@@ -255,7 +256,7 @@ func TestW12dSQLiteDuplicateOutcomeRefresh(t *testing.T) {
 	observed := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	outcome := Outcome{
 		OutcomeID: "w12d-dup-1", RequestID: "w12d-dup-r", AccountID: "w12d-dup-acc",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		ErrorCode: "direct_input_invalid", ErrorMessage: "隔离", NextDueAt: ptrTime(observed.Add(10 * time.Minute)),
 	}
 	inserted, err := store.AppendOutcome(ctx, lease, outcome)

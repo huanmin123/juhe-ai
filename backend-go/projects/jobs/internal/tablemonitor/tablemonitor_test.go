@@ -48,6 +48,37 @@ func TestPostgresIndexSummaryScopesTargetSchema(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDefaultSamplingInterval 守住 2026-10-08 粒度根治裁决的出厂
+// 契约：未配置 INTERVAL 时缺省 1h（1h×30 天恰铺满前端 720 点月视图上限），
+// 显式配置仍生效，非法值保持 fail-fast。
+func TestLoadConfigDefaultSamplingInterval(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	derived, err := LoadConfig(func(key string) string { return sqliteTestEnv(root)[key] })
+	if err != nil {
+		t.Fatalf("缺省配置必须通过: %v", err)
+	}
+	if derived.Interval != time.Hour {
+		t.Fatalf("缺省采样间隔 = %v, want 1h", derived.Interval)
+	}
+	env := sqliteTestEnv(root)
+	env["JUHE_AI_TABLE_MONITOR_INTERVAL"] = "15m"
+	explicit, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatalf("显式间隔必须通过: %v", err)
+	}
+	if explicit.Interval != 15*time.Minute {
+		t.Fatalf("显式采样间隔 = %v, want 15m", explicit.Interval)
+	}
+	for _, invalid := range []string{"0", "-5m", "not-a-duration"} {
+		env := sqliteTestEnv(root)
+		env["JUHE_AI_TABLE_MONITOR_INTERVAL"] = invalid
+		if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil {
+			t.Fatalf("非法间隔 %q 必须报错", invalid)
+		}
+	}
+}
+
 func TestLoadConfigRequiresDedicatedSQLiteOutput(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

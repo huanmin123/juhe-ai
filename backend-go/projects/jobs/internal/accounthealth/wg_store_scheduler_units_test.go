@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,7 +134,7 @@ func TestNullableHelpers(t *testing.T) {
 // TestOutcomeCooldownFenceSources 覆盖 cooldown fence 三级来源与 observation。
 func TestOutcomeCooldownFenceSources(t *testing.T) {
 	observed := time.Date(2026, 9, 10, 7, 0, 0, 0, time.UTC)
-	fence := &CooldownFence{ObservationStartedAt: observed, Generation: "gen-1"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: "gen-1"}
 	if outcomeCooldownFence(Outcome{}) != nil {
 		t.Fatal("无 fence 必须为 nil")
 	}
@@ -153,10 +154,10 @@ func TestOutcomeCooldownFenceSources(t *testing.T) {
 	if cooldownObservation(Outcome{}) != nil {
 		t.Fatal("缺 fence observation 必须为 nil")
 	}
-	if cooldownObservation(Outcome{CooldownFence: &CooldownFence{Generation: "g"}}) != nil {
+	if cooldownObservation(Outcome{CooldownFence: &exactkeyprobe.CooldownFence{Generation: "g"}}) != nil {
 		t.Fatal("零值 observation 必须为 nil")
 	}
-	if cooldownObservation(Outcome{CooldownFence: &CooldownFence{ObservationStartedAt: observed}}) != nil {
+	if cooldownObservation(Outcome{CooldownFence: &exactkeyprobe.CooldownFence{ObservationStartedAt: observed}}) != nil {
 		t.Fatal("缺 generation observation 必须为 nil")
 	}
 	if value, ok := cooldownObservation(direct).(time.Time); !ok || !value.Equal(observed.UTC()) {
@@ -195,16 +196,16 @@ func TestSchedulerHelpersUnit(t *testing.T) {
 	if err := waitContext(context.Background(), time.Millisecond); err != nil {
 		t.Fatalf("正常等待必须返回 nil: %v", err)
 	}
-	if cooldownMaxPause(Schedule{}) != defaultCooldownMaxPauseMinutes*time.Minute {
+	if cooldownMaxPause(exactkeyprobe.Schedule{}) != defaultCooldownMaxPauseMinutes*time.Minute {
 		t.Fatal("MaxPause 缺省必须回落 2 分钟")
 	}
-	if cooldownMaxPause(Schedule{MaxPauseMinutes: 30}) != 30*time.Minute {
+	if cooldownMaxPause(exactkeyprobe.Schedule{MaxPauseMinutes: 30}) != 30*time.Minute {
 		t.Fatal("显式 MaxPause 必须生效")
 	}
-	if cooldownMaxRecovery(Schedule{}) != defaultCooldownMaxRecoveryHours*time.Hour {
+	if cooldownMaxRecovery(exactkeyprobe.Schedule{}) != defaultCooldownMaxRecoveryHours*time.Hour {
 		t.Fatal("MaxRecovery 缺省必须回落 12 小时")
 	}
-	if cooldownMaxRecovery(Schedule{MaxRecoveryHours: 6}) != 6*time.Hour {
+	if cooldownMaxRecovery(exactkeyprobe.Schedule{MaxRecoveryHours: 6}) != 6*time.Hour {
 		t.Fatal("显式 MaxRecovery 必须生效")
 	}
 	// passiveDelayBefore 边界：deadline<=1ms、偏移裁剪。
@@ -271,33 +272,33 @@ func TestRunnerStatusAndRunGuards(t *testing.T) {
 // TestValidateScheduledInputMatrix 表驱动覆盖调度输入校验真值表。
 func TestValidateScheduledInputMatrix(t *testing.T) {
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	valid := Input{
+	valid := exactkeyprobe.Input{
 		AccountID: "a", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
 		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
-		Schedule:    Schedule{HealthIntervalMS: 300_000, HealthJitterMS: 1000, FailureThreshold: 3, FailureRetryMS: 10_000, CooldownNeutralBaseMS: 1000, CooldownNeutralMaxMS: 2000, CooldownFailureBackoffMS: 3000, MaxPauseMinutes: 2, MaxRecoveryHours: 12},
-		Eligibility: Eligibility{BoundGroup: true, AuthorizationEligible: true, AccountStatus: "active"},
+		Schedule:    exactkeyprobe.Schedule{HealthIntervalMS: 300_000, HealthJitterMS: 1000, FailureThreshold: 3, FailureRetryMS: 10_000, CooldownNeutralBaseMS: 1000, CooldownNeutralMaxMS: 2000, CooldownFailureBackoffMS: 3000, MaxPauseMinutes: 2, MaxRecoveryHours: 12},
+		Eligibility: exactkeyprobe.Eligibility{BoundGroup: true, AuthorizationEligible: true, AccountStatus: "active"},
 	}
 	if err := validateScheduledInput(valid, now); err != nil {
 		t.Fatalf("合法输入必须通过: %v", err)
 	}
 	invalid := []struct {
 		name   string
-		mutate func(input *Input)
+		mutate func(input *exactkeyprobe.Input)
 	}{
-		{"缺账户", func(i *Input) { i.AccountID = " " }},
-		{"缺 InputVersion", func(i *Input) { i.InputVersion = 0 }},
-		{"过期", func(i *Input) { i.ExpiresAt = now.Add(-time.Minute) }},
-		{"间隔过短", func(i *Input) { i.Schedule.HealthIntervalMS = 1000 }},
-		{"抖动超限", func(i *Input) { i.Schedule.HealthJitterMS = maxScheduleMilliseconds + 1 }},
-		{"抖动大于间隔", func(i *Input) { i.Schedule.HealthJitterMS = i.Schedule.HealthIntervalMS + 1 }},
-		{"失败阈值 0", func(i *Input) { i.Schedule.FailureThreshold = 0 }},
-		{"失败重试过短", func(i *Input) { i.Schedule.FailureRetryMS = 100 }},
-		{"暂停上限越界", func(i *Input) { i.Schedule.MaxPauseMinutes = 1441 }},
-		{"恢复上限越界", func(i *Input) { i.Schedule.MaxRecoveryHours = 24*30 + 1 }},
-		{"缺绑定", func(i *Input) { i.Eligibility.BoundGroup = false }},
-		{"缺授权", func(i *Input) { i.Eligibility.AuthorizationEligible = false }},
-		{"状态不可调度", func(i *Input) { i.Eligibility.AccountStatus = "disabled" }},
-		{"冷却缺 cooldown_until", func(i *Input) {
+		{"缺账户", func(i *exactkeyprobe.Input) { i.AccountID = " " }},
+		{"缺 InputVersion", func(i *exactkeyprobe.Input) { i.InputVersion = 0 }},
+		{"过期", func(i *exactkeyprobe.Input) { i.ExpiresAt = now.Add(-time.Minute) }},
+		{"间隔过短", func(i *exactkeyprobe.Input) { i.Schedule.HealthIntervalMS = 1000 }},
+		{"抖动超限", func(i *exactkeyprobe.Input) { i.Schedule.HealthJitterMS = maxScheduleMilliseconds + 1 }},
+		{"抖动大于间隔", func(i *exactkeyprobe.Input) { i.Schedule.HealthJitterMS = i.Schedule.HealthIntervalMS + 1 }},
+		{"失败阈值 0", func(i *exactkeyprobe.Input) { i.Schedule.FailureThreshold = 0 }},
+		{"失败重试过短", func(i *exactkeyprobe.Input) { i.Schedule.FailureRetryMS = 100 }},
+		{"暂停上限越界", func(i *exactkeyprobe.Input) { i.Schedule.MaxPauseMinutes = 1441 }},
+		{"恢复上限越界", func(i *exactkeyprobe.Input) { i.Schedule.MaxRecoveryHours = 24*30 + 1 }},
+		{"缺绑定", func(i *exactkeyprobe.Input) { i.Eligibility.BoundGroup = false }},
+		{"缺授权", func(i *exactkeyprobe.Input) { i.Eligibility.AuthorizationEligible = false }},
+		{"状态不可调度", func(i *exactkeyprobe.Input) { i.Eligibility.AccountStatus = "disabled" }},
+		{"冷却缺 cooldown_until", func(i *exactkeyprobe.Input) {
 			i.Eligibility.AccountStatus = "temporary_unavailable"
 		}},
 	}
@@ -322,7 +323,7 @@ func TestPersistTaskFailureIdempotent(t *testing.T) {
 		t.Fatalf("获取租约: %v %v", acquired, err)
 	}
 	t.Cleanup(func() { _ = store.ReleaseOwnerLease(context.Background(), lease) })
-	input := Input{AccountID: "acct-fail", InputVersion: 3, ConfigRevision: 1, DispatchRevision: 1}
+	input := exactkeyprobe.Input{AccountID: "acct-fail", InputVersion: 3, ConfigRevision: 1, DispatchRevision: 1}
 	if err := runner.persistTaskFailure(ctx, lease, input, time.Now(), "invalid_input", "坏输入"); err != nil {
 		t.Fatalf("首次失败持久化: %v", err)
 	}
@@ -351,7 +352,7 @@ func TestPersistExplicitTerminalPersistsOutcome(t *testing.T) {
 		InputVersion: 2, ConfigRevision: 4, DispatchRevision: 5,
 		Deadline: time.Now().Add(time.Minute),
 	}
-	if err := runner.persistExplicitTerminal(ctx, lease, request, OutcomeTaskFailed, time.Now(), "request_expired", "显式请求过期"); err != nil {
+	if err := runner.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, time.Now(), "request_expired", "显式请求过期"); err != nil {
 		t.Fatalf("终态持久化: %v", err)
 	}
 	found, err := store.HasRequest(ctx, "req-explicit-1")

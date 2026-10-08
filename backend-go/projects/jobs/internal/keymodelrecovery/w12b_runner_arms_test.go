@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // w12bArmsStore 是可注入错误的 Store，额外实现 CleanClosed 以覆盖清理分支。
@@ -174,7 +174,7 @@ func w12bDueCandidate(t *testing.T, now time.Time) State {
 
 func w12bMatchingLoader(t *testing.T, state State) runnerLoader {
 	t.Helper()
-	return runnerLoader{input: accounthealth.Input{AccountID: state.CredentialSourceAccountID, DispatchRevision: state.DispatchRevision}}
+	return runnerLoader{input: exactkeyprobe.Input{AccountID: state.CredentialSourceAccountID, DispatchRevision: state.DispatchRevision}}
 }
 
 func TestW12bRunCycleInfrastructureErrors(t *testing.T) {
@@ -204,7 +204,7 @@ func TestW12bRunCycleRecoveringContinuationFlags(t *testing.T) {
 	state.Phase = Recovering
 	store := &w12bArmsStore{now: state.RetryAt, candidate: state, settleSignal: make(chan struct{}, 4), commitCalled: make(chan struct{}, 4)}
 	runner := NewRunner(store, w12bMatchingLoader(t, state), nil)
-	runner.probe = func(_ context.Context, candidate State, _ accounthealth.Input) Outcome {
+	runner.probe = func(_ context.Context, candidate State, _ exactkeyprobe.Input) Outcome {
 		if candidate.CapabilityHash != state.CapabilityHash {
 			t.Errorf("probe 收到意外候选: %s", candidate.CapabilityHash)
 		}
@@ -296,7 +296,7 @@ func TestW12bRunLogsCycleWarningThenExits(t *testing.T) {
 	store := &w12bArmsStore{now: state.RetryAt, candidate: state, nowErr: errors.New("w12b first tick down"), blockRelease: make(chan struct{}), entered: make(chan struct{}, 1), commitCalled: make(chan struct{}, 2)}
 	handler := &w12bCaptureHandler{warns: make(chan string, 4)}
 	runner := NewRunner(store, w12bMatchingLoader(t, state), slog.New(handler))
-	runner.probe = func(context.Context, State, accounthealth.Input) Outcome { return CompleteSuccess }
+	runner.probe = func(context.Context, State, exactkeyprobe.Input) Outcome { return CompleteSuccess }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -339,7 +339,7 @@ func TestW12bRenewLeaseLostLeaseSkipsSettlement(t *testing.T) {
 	runner := NewRunner(store, w12bMatchingLoader(t, state), nil)
 	probeEntered := make(chan struct{}, 1)
 	probeReturned := make(chan struct{}, 1)
-	runner.probe = func(probeCtx context.Context, _ State, _ accounthealth.Input) Outcome {
+	runner.probe = func(probeCtx context.Context, _ State, _ exactkeyprobe.Input) Outcome {
 		probeEntered <- struct{}{}
 		<-probeCtx.Done() // 续约失败触发 cancel 后返回，避免整测超时。
 		probeReturned <- struct{}{}

@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"strings"
 	"testing"
@@ -80,7 +81,7 @@ func w12dSeedSettings(t *testing.T, db *sql.DB) {
 // w12dSeedAPIKeyAccount 插入一个可被 direct input 读到的 api_key 候选。
 func w12dSeedAPIKeyAccount(t *testing.T, db *sql.DB, secret, id, provider, profile string) {
 	t.Helper()
-	envelope, err := EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-`+id+`"}`))
+	envelope, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-`+id+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +164,7 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 	w12dSeedSettings(t, db)
 	secret := "w12d-quota-secret"
 	// (a) 授权 + 无 limits → 候选通过 quota（grant ErrNoRows 臂）。
-	envelope, err := EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-quota-a"}`))
+	envelope, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-quota-a"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,12 +315,12 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.ReleaseOwnerLease(ctx, lease) })
 	observed := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	fence := &CooldownFence{ObservationStartedAt: observed, Generation: "gen-w12d-cool"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: "gen-w12d-cool"}
 	// cooldown 转换（ExpectedCooldownFence 存在）→ updateCooldownCurrentStateTx：
 	// 无基线行 → epoch upsert 臂。
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-1", RequestID: "w12d-cool-r1", AccountID: "w12d-cool-acc",
-		Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		AccountStatus: "temporary_unavailable",
 		NextDueAt:     ptrTime(observed.Add(30 * time.Minute)),
 		Projection: &Projection{
@@ -337,7 +338,7 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	// 同 epoch 冷却 CAS 命中（fence 一致）→ update 臂。
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-2", RequestID: "w12d-cool-r2", AccountID: "w12d-cool-acc",
-		Outcome: OutcomeNeutral, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(observed.Add(40 * time.Minute)),
 		Projection: &Projection{
 			TargetAccountID: "w12d-cool-acc", TransitionKind: "cooldown_defer", InputVersion: 1,
@@ -351,19 +352,19 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	// 再以冷却转换 rehydrate（updateCooldownCurrentStateTx 的空基线分支）。
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-3", RequestID: "w12d-cool-r3", AccountID: "w12d-cool-baseline",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		ErrorCode: "direct_input_invalid", ErrorMessage: "隔离",
 	}); err != nil {
 		t.Fatalf("invalid baseline: %v", err)
 	}
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-4", RequestID: "w12d-cool-r4", AccountID: "w12d-cool-baseline",
-		Outcome: OutcomeNeutral, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(observed.Add(50 * time.Minute)),
 		Projection: &Projection{
 			TargetAccountID: "w12d-cool-baseline", TransitionKind: "cooldown_defer", InputVersion: 1,
 			ConfigRevision: 5, DispatchRevision: 7, ExpectedAccountStatus: "rate_limited",
-			ExpectedCooldownFence: &CooldownFence{ObservationStartedAt: observed, Generation: "gen-w12d-baseline"},
+			ExpectedCooldownFence: &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: "gen-w12d-baseline"},
 		},
 	}); err != nil {
 		t.Fatalf("rehydrate append: %v", err)
@@ -371,20 +372,20 @@ func TestW12dStoreCooldownStateArms(t *testing.T) {
 	// task failure retry：先落普通 health 基线，再追加带 NextDueAt 的 TaskFailed。
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-5", RequestID: "w12d-cool-r5", AccountID: "w12d-cool-retry",
-		Outcome: OutcomeSuccess, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		StatusCode: 200, NextDueAt: ptrTime(observed.Add(time.Hour)),
 	}); err != nil {
 		t.Fatalf("success baseline: %v", err)
 	}
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w12d-cool-6", RequestID: "w12d-cool-r6", AccountID: "w12d-cool-retry",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed.Add(time.Minute), InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		ErrorCode: "probe_timeout", ErrorMessage: "超时", NextDueAt: ptrTime(observed.Add(2 * time.Hour)),
 	}); err != nil {
 		t.Fatalf("task failure retry: %v", err)
 	}
 	retryState, found, err := store.LoadCurrentState(ctx, "w12d-cool-retry")
-	if err != nil || !found || retryState.Outcome != OutcomeTaskFailed || retryState.NextDueAt == nil {
+	if err != nil || !found || retryState.Outcome != exactkeyprobe.OutcomeTaskFailed || retryState.NextDueAt == nil {
 		t.Fatalf("retry state: found=%t state=%#v err=%v", found, retryState, err)
 	}
 	// 输出 fence 一致的投影 outcome → writeOutcomePayloadTx PG 臂。

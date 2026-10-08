@@ -19,7 +19,7 @@ package accounthealth
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -199,30 +199,30 @@ func TestW13g5HealthStoreSQLiteFlows(t *testing.T) {
 }
 
 func TestW13g5HealthCryptoArms(t *testing.T) {
-	if _, err := EncryptV1Envelope("  ", []byte("data")); err == nil {
+	if _, err := exactkeyprobe.EncryptV1Envelope("  ", []byte("data")); err == nil {
 		t.Fatal("空 secret 必须报错")
 	}
-	envelope, err := EncryptV1Envelope("w13g5-secret", []byte("w13g5-plaintext"))
+	envelope, err := exactkeyprobe.EncryptV1Envelope("w13g5-secret", []byte("w13g5-plaintext"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	plaintext, err := DecryptV1Envelope("w13g5-secret", envelope)
+	plaintext, err := exactkeyprobe.DecryptV1Envelope("w13g5-secret", envelope)
 	if err != nil || string(plaintext) != "w13g5-plaintext" {
 		t.Fatalf("回环失败: %s %v", plaintext, err)
 	}
 	// 错 secret → 认证失败。
-	if _, err := DecryptV1Envelope("w13g5-other", envelope); err == nil {
+	if _, err := exactkeyprobe.DecryptV1Envelope("w13g5-other", envelope); err == nil {
 		t.Fatal("错 secret 必须认证失败")
 	}
 	// 坏 envelope：部分缺失 / 非法 base64 / 非法长度。
-	if _, err := DecryptV1Envelope("w13g5-secret", "v1"); err == nil {
+	if _, err := exactkeyprobe.DecryptV1Envelope("w13g5-secret", "v1"); err == nil {
 		t.Fatal("不完整 envelope 必须报错")
 	}
 	parts := strings.Split(envelope, ":")
-	if _, err := DecryptV1Envelope("w13g5-secret", parts[0]+":"+parts[1]+":!!!:!!!"); err == nil {
+	if _, err := exactkeyprobe.DecryptV1Envelope("w13g5-secret", parts[0]+":"+parts[1]+":!!!:!!!"); err == nil {
 		t.Fatal("非法 base64 必须报错")
 	}
-	if _, err := DecryptV1Envelope("w13g5-secret", parts[0]+":"+parts[1]+":AQ:AQ"); err == nil {
+	if _, err := exactkeyprobe.DecryptV1Envelope("w13g5-secret", parts[0]+":"+parts[1]+":AQ:AQ"); err == nil {
 		t.Fatal("非法 IV/tag 长度必须报错")
 	}
 }
@@ -259,6 +259,9 @@ func TestW13g5HealthConfigIsolationArms(t *testing.T) {
 	}
 }
 
+// TestW13g5HealthDirectHelpers 的 openAIProfileMode/mustJSON/directTime 臂随
+// 探针执行器闭包下沉 exactkeyprobe（同名测试），此处保留 directInputScanCap/
+// directSettingInt 留守臂。
 func TestW13g5HealthDirectHelpers(t *testing.T) {
 	// directInputScanCap：16x 准入窗口。
 	if got := directInputScanCap(64); got != 64*16 {
@@ -278,93 +281,53 @@ func TestW13g5HealthDirectHelpers(t *testing.T) {
 	if _, err := directSettingInt(map[string]string{"w13g5-key": "99"}, "w13g5", "w13g5-key", 1, 10); err == nil {
 		t.Fatal("越界必须报错")
 	}
-	// openAIProfileMode。
-	if !openAIProfileMode("api_key", "images_json", true) {
-		t.Fatal("api_key images 模式必须允许")
-	}
-	if openAIProfileMode("w13g5-type", "chat_json", true) {
-		t.Fatal("未知账户类型必须拒绝")
-	}
-	if !openAIProfileMode("oauth", "responses_sse", false) {
-		t.Fatal("oauth responses 模式必须允许")
-	}
-	// mustJSON。
-	if got := mustJSON("w13g5"); got != `"w13g5"` {
-		t.Fatalf("文本必须 JSON 编码: %s", got)
-	}
-	if got := mustJSON(`{"a":1}`); got == "" {
-		t.Fatal("合法 JSON 必须压缩输出")
-	}
-	// directTime。
-	values := map[string]json.RawMessage{"w13g5-at": json.RawMessage(`"2026-09-18T08:00:00Z"`)}
-	if parsed, ok := directTime(values, "w13g5-at"); !ok || parsed.IsZero() {
-		t.Fatalf("合法时间必须解析: %v %v", parsed, ok)
-	}
-	if _, ok := directTime(map[string]json.RawMessage{"w13g5-at": json.RawMessage(`"not-time"`)}, "w13g5-at"); ok {
-		t.Fatal("非法时间必须失败")
-	}
 }
 
 func TestW13g5HealthSchedulerPureArms(t *testing.T) {
 	// sourceFenceHealthMutationAllowed。
-	if sourceFenceHealthMutationAllowed(Input{}, CurrentState{}, false) {
+	if sourceFenceHealthMutationAllowed(exactkeyprobe.Input{}, CurrentState{}, false) {
 		t.Fatal("无 fence 无 prior 时不得允许健康突变")
 	}
 	// preserveStateForSourceOnlyOutcome：fence 一致 → 保留 prior 状态。
 	prior := CurrentState{AccountID: "w13g5-acc", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, FailureCount: 3}
 	outcome := w13g5HealthOutcome()
-	input := Input{InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}
+	input := exactkeyprobe.Input{InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}
 	preserveStateForSourceOnlyOutcome(&outcome, input, prior, true)
 	if outcome.FailureCount != 3 {
 		t.Fatalf("fence 一致必须保留 prior 状态: %+v", outcome)
 	}
 	// fence 不一致 → 不保留（走 Eligibility 分支）。
 	outcome2 := w13g5HealthOutcome()
-	preserveStateForSourceOnlyOutcome(&outcome2, Input{Eligibility: Eligibility{AccountStatus: "temporary_unavailable"}}, prior, true)
+	preserveStateForSourceOnlyOutcome(&outcome2, exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable"}}, prior, true)
 	if outcome2.FailureCount == 3 {
 		t.Fatal("fence 不一致不得保留 prior 状态")
 	}
 	// cooldownDeferGrowthStep / cooldownDefer / boundedCooldownRemaining。
-	fence := &CooldownFence{Generation: "w13g5-gen"}
+	fence := &exactkeyprobe.CooldownFence{Generation: "w13g5-gen"}
 	if step := cooldownDeferGrowthStep(fence, time.Now(), time.Minute); step < 0 {
 		t.Fatalf("增长步必须非负: %d", step)
 	}
 	if got := cooldownDefer(0, time.Minute, time.Hour); got <= 0 {
 		t.Fatalf("defer 必须为正: %v", got)
 	}
-	d, ok := boundedCooldownRemaining(Input{}, "failure", fence, time.Now())
+	d, ok := boundedCooldownRemaining(exactkeyprobe.Input{}, "failure", fence, time.Now())
 	if ok && d < 0 {
 		t.Fatalf("剩余冷却不得为负: %v", d)
 	}
 }
 
-func TestW13g5HealthProbeCodexMetadata(t *testing.T) {
-	if got := codexMetadataJSON(nil); got != "null" {
-		t.Fatalf("nil 序列化: %s", got)
-	}
-	if got := codexMetadataJSON(map[string]any{"a": 1}); got == "" {
-		t.Fatal("合法值必须序列化")
-	}
-	if err := verifyImagesJSON(nil); err == nil {
-		t.Fatal("nil images 必须报错")
-	}
-	if err := verifyImagesJSON(map[string]any{}); err == nil {
-		t.Fatal("空 images 必须报错")
-	}
-}
-
 func TestW13g5HealthExecutorRequestFenceArms(t *testing.T) {
-	input := Input{AccountID: "w13g5-acc", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, Type: "api_key"}
+	input := exactkeyprobe.Input{AccountID: "w13g5-acc", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, Type: "api_key"}
 	request := ProbeRequest{RequestID: "w13g5-req", AccountID: "w13g5-other", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, Deadline: time.Now().Add(time.Hour)}
 	// fence 不匹配臂。
-	outcome, err := ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, request, ProbeOptions{})
+	outcome, err := ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, request, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "request_fence_invalid" {
 		t.Fatalf("fence 不匹配必须失败: %+v %v", outcome, err)
 	}
 	// 过期臂。
 	request.AccountID = "w13g5-acc"
 	request.Deadline = time.Now().Add(-time.Hour)
-	outcome, err = ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, request, ProbeOptions{})
+	outcome, err = ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, request, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "request_deadline_elapsed" {
 		t.Fatalf("过期必须失败: %+v %v", outcome, err)
 	}
@@ -372,58 +335,13 @@ func TestW13g5HealthExecutorRequestFenceArms(t *testing.T) {
 	request.Deadline = time.Now().Add(time.Hour)
 	oauthInput := input
 	oauthInput.Type = "oauth"
-	outcome, err = ExecuteInputProbe(context.Background(), nil, OwnerLease{}, oauthInput, request, ProbeOptions{})
+	outcome, err = ExecuteInputProbe(context.Background(), nil, OwnerLease{}, oauthInput, request, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "oauth_access_missing" {
 		t.Fatalf("OAuth access 缺失必须失败: %+v %v", outcome, err)
 	}
 	// api key pool 缺失臂。
-	outcome, err = ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, request, ProbeOptions{})
+	outcome, err = ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, request, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "api_key_pool_missing" {
 		t.Fatalf("API Key pool 缺失必须失败: %+v %v", outcome, err)
-	}
-}
-
-func TestW13g5HealthProbeTransportArms(t *testing.T) {
-	// 无代理直通。
-	if _, err := probeTransport(Input{}, ProbeOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	// 代理凭据解密失败（坏 envelope 文本）。
-	badCipher := CredentialEnvelope{Kind: "v1", Ciphertext: "not-an-envelope"}
-	if _, _, err := probeTransportConfig(Input{Proxy: &badCipher}, ProbeOptions{Secret: "w13g5-secret"}); err == nil {
-		t.Fatal("代理凭据不可用必须报错")
-	}
-	// 代理协议不支持（合法 v1 envelope 包裹 ftp URL）。
-	plainProxy, err := EncryptV1Envelope("w13g5-secret", []byte("ftp://w13g5-proxy"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := probeTransportConfig(Input{Proxy: &CredentialEnvelope{Kind: "v1", Ciphertext: plainProxy}}, ProbeOptions{Secret: "w13g5-secret"}); err == nil {
-		t.Fatal("未支持的代理协议必须报错")
-	}
-	// 合法代理 URL → 成功。
-	httpProxy, err := EncryptV1Envelope("w13g5-secret", []byte("http://127.0.0.1:9"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := probeTransportConfig(Input{Proxy: &CredentialEnvelope{Kind: "v1", Ciphertext: httpProxy}}, ProbeOptions{Secret: "w13g5-secret"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestW13g5HealthDirectProbeTargetArms(t *testing.T) {
-	// directProbeTarget 的错误臂依赖 accountprobe 视图上下文（候选源缺失），
-	// 单元级不可构造，登记于文件头。
-	if err := validateDirectAccount(DirectAccount{ID: ""}, time.Now()); err == nil {
-		t.Fatal("空 ID 必须报错")
-	}
-	if err := validateDirectAccount(DirectAccount{ID: "w13g5", ConfigRevision: 1, DispatchRevision: 1, Type: "w13g5-type"}, time.Now()); err == nil {
-		t.Fatal("未知 type 必须报错")
-	}
-}
-
-func TestW13g5HealthDirectTimeArms(t *testing.T) {
-	if _, ok := directTime(nil, "w13g5-missing"); ok {
-		t.Fatal("缺键必须失败")
 	}
 }

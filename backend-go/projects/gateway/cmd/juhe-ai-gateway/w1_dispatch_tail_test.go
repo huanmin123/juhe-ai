@@ -1528,21 +1528,21 @@ func TestW1XAccountCircuitServiceForkArms(t *testing.T) {
 
 	// redis 驱动 + miniredis：服务可用且关闭句柄安全。
 	server := miniredis.RunT(t)
-	service, closeRedis, err := newChainAccountCircuitService("redis", "redis://"+server.Addr(), "w1x", chainAccountCircuitPersistConfig{}, nil)
+	circuitRuntime, closeRedis, err := newChainAccountCircuitService("redis", "redis://"+server.Addr(), "w1x", chainAccountCircuitPersistConfig{}, nil)
 	if err != nil {
 		t.Fatalf("create redis circuit service: %v", err)
 	}
-	if service == nil {
+	if circuitRuntime.Service == nil {
 		t.Fatal("redis 驱动必须返回电路服务")
 	}
 	closeRedis()
 
 	// memory 驱动：进程内存储。
-	service, closeMemory, err := newChainAccountCircuitService("memory", "", "", chainAccountCircuitPersistConfig{}, nil)
+	memoryRuntime, closeMemory, err := newChainAccountCircuitService("memory", "", "", chainAccountCircuitPersistConfig{}, nil)
 	if err != nil {
 		t.Fatalf("create memory circuit service: %v", err)
 	}
-	if service == nil {
+	if memoryRuntime.Service == nil {
 		t.Fatal("memory 驱动必须返回电路服务")
 	}
 	closeMemory()

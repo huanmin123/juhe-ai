@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,7 +16,7 @@ const inputFileSuffix = ".account-health-input.json"
 // Node 发布方遗留的已签名不可变文件。自 2026-09 起 sqlite/PG store 缺省走
 // 各自的直读 reader，本通道仅在显式配置时启用；坏文件仍是可见的单文件错误，
 // 不静默回退到任何业务库读取。
-func LoadSignedInputFiles(directory string, keys map[string][]byte) ([]Input, error) {
+func LoadSignedInputFiles(directory string, keys map[string][]byte) ([]exactkeyprobe.Input, error) {
 	root := strings.TrimSpace(directory)
 	if root == "" {
 		return nil, errors.New("account-health input 目录缺失")
@@ -31,7 +32,7 @@ func LoadSignedInputFiles(directory string, keys map[string][]byte) ([]Input, er
 		}
 	}
 	sort.Strings(paths)
-	inputs := make([]Input, 0, len(paths))
+	inputs := make([]exactkeyprobe.Input, 0, len(paths))
 	accountVersions := make(map[string]int64, len(paths))
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)

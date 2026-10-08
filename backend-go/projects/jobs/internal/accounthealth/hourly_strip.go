@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"time"
 )
 
@@ -69,7 +70,7 @@ func recordAccountHealthHourlyObservation(ctx context.Context, sink AccountHealt
 		SystemAccountID: systemAccountID.String,
 		ObservedAt:      outcome.ObservedAt,
 		OutcomeID:       outcome.OutcomeID,
-		Success:         outcome.Outcome == OutcomeSuccess,
+		Success:         outcome.Outcome == exactkeyprobe.OutcomeSuccess,
 		StatusCode:      outcome.StatusCode,
 		ErrorCode:       outcome.ErrorCode,
 		ErrorMessage:    outcome.ErrorMessage,

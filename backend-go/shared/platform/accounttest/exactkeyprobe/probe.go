@@ -1,4 +1,10 @@
-package accounthealth
+// Package exactkeyprobe 是 jobs internal/accounthealth「精确 Key+模型诊断探针」
+// 执行器最小闭包的平台层下沉副本（PLAN-20261008T113056000Z 根治阶段）：gateway
+// 进程内的 key-model 恢复驱动需要与 jobs 完全一致的探针语义，而 Go internal
+// 可见性禁止跨项目 import，故整体下沉本包；jobs accounthealth 留守 J1 机制
+// （reader/scheduler/projection/outbox）并 import 本包。两侧以本注释互指：
+// 修改探针契约时必须两侧同步，禁止任一侧独自漂移。
+package exactkeyprobe
 
 import (
 	"bytes"

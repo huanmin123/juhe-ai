@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
@@ -49,6 +50,21 @@ const (
 	xaiGrokUsageConcurrency = 4
 	// xaiGrokErrorMessageLimit 是 last_error_message 的 rune 截断上限。
 	xaiGrokErrorMessageLimit = 500
+)
+
+// Grok 426 版本门触发器参数（客户端版本自动跟版设计 §8.3 第二期：426 降级
+// 为触发器，零解析文案）。
+const (
+	// grokVersionGateTriggerCooldown 是两次触发版本刷新的最小冷却间隔
+	//（≥10 分钟；原子时间戳 CompareAndSwap 去重，防 426 风暴重复刷新）。
+	grokVersionGateTriggerCooldown = 10 * time.Minute
+	// grokVersionGateTriggerRefreshTimeout 是 426 触发的后台刷新整体上限
+	//（对齐注册表 upstream-client-version-refresh 的 Timeout 3min；单源 15s
+	// 由 versiontracking.SourceTimeout 另行约束）。
+	grokVersionGateTriggerRefreshTimeout = 3 * time.Minute
+	// grokVersionGateExcerptLimit 是 426 告警日志响应体摘录的字节上限（原文
+	// 有界留痕供人工判读，不解析）。
+	grokVersionGateExcerptLimit = 300
 )
 
 // xaiGrokSnapshotKind / xaiGrokSnapshotSource 是快照行的 kind/source 固定值
@@ -215,6 +231,14 @@ type xaiGrokUsageRuntime struct {
 	// clientFactory 可注入测试客户端工厂；nil 时按账户代理经
 	// upstreamhttp.SharedClient 取进程级共享客户端（支持 socks5h）。
 	clientFactory func(proxyURL string) (*http.Client, error)
+	// versionRefreshTrigger 是版本跟版刷新入口（装配期由
+	// wireXAIGrokUsageFamily 注入运行期延迟解引用
+	// assembly.upstreamClientVersionRefresh 的闭包；字段为 nil 或入口未接线
+	// 时 426 触发安全跳过）。
+	versionRefreshTrigger func(ctx context.Context) error
+	// lastVersionGateTrigger 是上次 426 触发刷新的 UnixNano 原子时间戳
+	//（冷却去重；0 = 从未触发）。
+	lastVersionGateTrigger atomic.Int64
 }
 
 func (r *xaiGrokUsageRuntime) clientFor(proxyURL string) (*http.Client, error) {
@@ -364,10 +388,72 @@ func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http
 		return nil, fmt.Errorf("读取上游用量响应失败: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode == http.StatusUpgradeRequired {
+			// Grok 上游 426 版本门（设计 §8.3）：记录告警 + 触发版本刷新；
+			// 不改变本函数的错误返回与调用方快照落库语义。
+			r.observeGrokVersionGate426(response.StatusCode, body)
+		}
 		return nil, fmt.Errorf("上游用量端点返回 HTTP %d：%s",
 			response.StatusCode, truncateXAIGrokErrorMessage(string(body)))
 	}
 	return body, nil
+}
+
+// observeGrokVersionGate426 记录一次 Grok 上游 426 版本门观测（设计 §8.3，
+// 零解析文案）：①结构化告警日志 `grok_version_gate_426_observed`（状态码 +
+// ≤300 字节响应体原文摘录 + 当前生效 grokCLI 版本）；②经冷却去重后异步
+// 触发一次版本跟版刷新——尽力而为：失败仅记日志，不影响调用方错误返回
+// 路径；冷却 ≥10 分钟由原子时间戳保证，并发 426 至多触发一次。
+func (r *xaiGrokUsageRuntime) observeGrokVersionGate426(statusCode int, responseBody []byte) {
+	if r.logger != nil {
+		r.logger.Warn("Grok 上游返回 HTTP 426 版本门，已按冷却窗口触发版本跟版刷新",
+			"event", "grok_version_gate_426_observed",
+			"status_code", statusCode,
+			"response_excerpt", truncateGrokVersionGateExcerpt(responseBody),
+			"grok_cli_version", upstreamidentity.EffectiveGrokCLIVersion())
+	}
+	trigger := r.versionRefreshTrigger
+	if trigger == nil {
+		return
+	}
+	if !r.claimGrokVersionGateRefresh(r.nowFunc()) {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), grokVersionGateTriggerRefreshTimeout)
+		defer cancel()
+		if err := trigger(ctx); err != nil {
+			if r.logger != nil {
+				r.logger.Warn("Grok 426 触发的版本跟版刷新失败（尽力而为，不影响原请求错误路径）",
+					"event", "grok_version_gate_426_refresh_failed",
+					"error", err.Error())
+			}
+		}
+	}()
+}
+
+// claimGrokVersionGateRefresh 以原子时间戳做冷却窗口去重，认领成功返回
+// true；冷却期内返回 false（CompareAndSwap 循环保证并发 426 下至多一次
+// 认领，两次竞争必有一个失败方）。
+func (r *xaiGrokUsageRuntime) claimGrokVersionGateRefresh(now time.Time) bool {
+	for {
+		last := r.lastVersionGateTrigger.Load()
+		if last != 0 && now.UnixNano()-last < int64(grokVersionGateTriggerCooldown) {
+			return false
+		}
+		if r.lastVersionGateTrigger.CompareAndSwap(last, now.UnixNano()) {
+			return true
+		}
+	}
+}
+
+// truncateGrokVersionGateExcerpt 把 426 响应体按字节截断到告警摘录上限
+//（原文留痕不解析；超限截断不补省略号，保持"≤300 字节"严格成立）。
+func truncateGrokVersionGateExcerpt(responseBody []byte) string {
+	if len(responseBody) <= grokVersionGateExcerptLimit {
+		return string(responseBody)
+	}
+	return string(responseBody[:grokVersionGateExcerptLimit])
 }
 
 // xaiGrokUsageRoundSummary 是一轮刷新的聚合结果。
@@ -593,6 +679,17 @@ func (a *workerAssembly) wireXAIGrokUsageFamily(ctx context.Context) error {
 		secret:   a.config.Secret,
 		nowFunc:  func() time.Time { return time.Now().UTC() },
 		logger:   a.logger,
+	}
+	// Grok 426 版本门触发器（设计 §8.3 第二期）：注入运行期延迟解引用
+	// upstreamClientVersionRefresh 的闭包——本家族先于 wireVersionTrackingFamily
+	// 装配，刷新入口在运行期才非 nil；入口未接线（登记 disabled）时闭包返回
+	// nil，触发安全跳过。
+	runtime.versionRefreshTrigger = func(taskCtx context.Context) error {
+		refresh := a.upstreamClientVersionRefresh
+		if refresh == nil {
+			return nil
+		}
+		return refresh(taskCtx)
 	}
 	a.addCloser(business.close)
 	a.scheduleWiredJob(name, func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {

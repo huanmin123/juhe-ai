@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -315,7 +316,7 @@ func (f *sqliteDirectFixture) seedCandidate(t *testing.T, seed sqliteDirectCandi
 	t.Helper()
 	credentials := seed.credentials
 	if credentials == "" && seed.apiKey != "" {
-		envelope, err := EncryptV1Envelope(f.secret, []byte(`{"api_key":`+mustJSON(seed.apiKey)+`,"base_url":`+mustJSON(seed.baseURL)+`}`))
+		envelope, err := exactkeyprobe.EncryptV1Envelope(f.secret, []byte(`{"api_key":`+mustJSON(seed.apiKey)+`,"base_url":`+mustJSON(seed.baseURL)+`}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -461,7 +462,7 @@ func TestSQLiteDirectInputReaderPendingTestFirstAndInputShape(t *testing.T) {
 	if len(input.APIKeys) != 1 || input.APIKeys[0].Credential.Kind != "api_key" {
 		t.Fatalf("api key 输入错误: %+v", input.APIKeys)
 	}
-	plaintext, err := DecryptV1Envelope(fixture.secret, input.APIKeys[0].Credential.Ciphertext)
+	plaintext, err := exactkeyprobe.DecryptV1Envelope(fixture.secret, input.APIKeys[0].Credential.Ciphertext)
 	if err != nil {
 		t.Fatalf("解封凭据: %v", err)
 	}
@@ -723,7 +724,7 @@ func TestSQLiteDirectInputReaderRunnerCycleActivatesPendingAccount(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("jobs store 状态必须落库: found=%t err=%v", found, err)
 	}
-	if state.Outcome != OutcomeSuccess || state.AccountStatus != "active" {
+	if state.Outcome != exactkeyprobe.OutcomeSuccess || state.AccountStatus != "active" {
 		t.Fatalf("outcome 错误: %#v", state)
 	}
 	// 经现有 OutcomeProjector 把 outcome 投影回业务库。

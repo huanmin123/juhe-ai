@@ -217,23 +217,23 @@ func TestGatewayAccountProtocolModelScopeIsolatesAuthorizedBindings(t *testing.T
 func TestComposeWiresAccountCircuits(t *testing.T) {
 	fixture := newChainFixture(t)
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, "")
-	circuits, closeCircuits, err := newChainAccountCircuitService("memory", "", "", chainAccountCircuitPersistConfig{}, nil)
+	circuitRuntime, closeCircuits, err := newChainAccountCircuitService("memory", "", "", chainAccountCircuitPersistConfig{}, nil)
 	if err != nil {
 		t.Fatalf("create circuit service: %v", err)
 	}
 	t.Cleanup(closeCircuits)
-	deps.AccountCircuits = circuits
+	deps.AccountCircuits = circuitRuntime.Service
 	chain, shutdown, err := composeGatewayChain(deps)
 	if err != nil {
 		t.Fatalf("compose gateway chain: %v", err)
 	}
 	defer shutdown()
-	if chain.engine.Circuits != circuits {
+	if chain.engine.Circuits != circuitRuntime.Service {
 		t.Fatalf("engine.Circuits = %T, want the injected circuit service", chain.engine.Circuits)
 	}
 	// SUSPECT 链路可触发：通过注入的服务走一次 PrepareAttempt（closed 状态
 	// 放行），证明组合根的服务在引擎调用面上真实可用。
-	result, err := circuits.PrepareAttempt(context.Background(), gatewaycircuit.PrepareAttemptInput{
+	result, err := circuitRuntime.Service.PrepareAttempt(context.Background(), gatewaycircuit.PrepareAttemptInput{
 		Account:                     gatewayruntimecache.OpenAIAccountSecret{ID: "acc", ProviderProtocolProfileID: "profile"},
 		RequestLane:                 gatewaycircuit.LaneText,
 		Model:                       strPtrOf("gpt-4o"),

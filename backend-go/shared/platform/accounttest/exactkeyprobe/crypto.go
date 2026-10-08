@@ -1,4 +1,7 @@
-package accounthealth
+// 本文件是 jobs internal/accounthealth「精确 Key+模型诊断探针」执行器闭包
+// 的平台层下沉副本（成对关系见 probe.go 包注释）：jobs 侧同包同名机制与
+// gateway 恢复驱动共用本实现。
+package exactkeyprobe
 
 import (
 	"crypto/aes"

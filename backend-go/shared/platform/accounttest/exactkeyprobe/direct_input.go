@@ -1,4 +1,7 @@
-package accounthealth
+// 本文件是 jobs internal/accounthealth「精确 Key+模型诊断探针」执行器闭包
+// 的平台层下沉副本（成对关系见 probe.go 包注释）：jobs 侧同包同名机制与
+// gateway 恢复驱动共用本实现。
+package exactkeyprobe
 
 import (
 	"crypto/hmac"
@@ -667,4 +670,18 @@ func cloneTime(value *time.Time) *time.Time {
 	}
 	result := value.UTC()
 	return &result
+}
+
+// validCooldownFence 是 jobs accounthealth scheduler.go 同名函数的成对副本
+// （下沉取证发现 ToInput 的冷却 fence 校验依赖该留守函数，而平台层禁止反向
+// import jobs，故按「成对复制+注释互指」先例复制）：实现为纯函数，两侧语义
+// 必须一致，修改任一侧必须同步另一侧。
+func validCooldownFence(fence *CooldownFence, input Input) bool {
+	if fence == nil || fence.ObservationStartedAt.IsZero() || strings.TrimSpace(fence.Generation) == "" {
+		return false
+	}
+	if input.Eligibility.SourceConfigRevision == nil {
+		return fence.SourceConfigRevision == nil
+	}
+	return fence.SourceConfigRevision != nil && *fence.SourceConfigRevision == *input.Eligibility.SourceConfigRevision
 }

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
@@ -28,10 +28,10 @@ type Store interface {
 }
 
 type InputLoader interface {
-	LoadAccount(context.Context, string) ([]accounthealth.Input, error)
+	LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error)
 }
 
-type ProbeExecutor func(context.Context, State, accounthealth.Input) Outcome
+type ProbeExecutor func(context.Context, State, exactkeyprobe.Input) Outcome
 
 // Runner owns only model-recovery probe leases. It schedules independently of
 // J1: probe results are committed to the key_model state and never projected
@@ -283,16 +283,16 @@ func (r *Runner) executeProbe(ctx context.Context, state State) Outcome {
 	return Unknown
 }
 
-func defaultProbe(ctx context.Context, state State, input accounthealth.Input) Outcome {
+func defaultProbe(ctx context.Context, state State, input exactkeyprobe.Input) Outcome {
 	// 缺陷修复：此前 ProbeOptions 缺少 Secret，decryptToken 对空 secret 直接
 	// 报"凭据 envelope 缺失"，恢复探针永远只能得到 unknown。凭据 envelope 由
 	// account-health 输入读取器以 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET
 	// 加密（见 accounthealth/config.go），这里读取同一契约变量。
-	result := accounthealth.ProbeExactKeyModel(ctx, input, state.KeyFingerprint, state.FinalUpstreamModel, state.UpstreamEndpointMode, accounthealth.ProbeOptions{Secret: os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"), Timeout: ProbeTimeout, MaxResponseBytes: 256 * 1024})
-	if result.Outcome == accounthealth.OutcomeSuccess {
+	result := exactkeyprobe.ProbeExactKeyModel(ctx, input, state.KeyFingerprint, state.FinalUpstreamModel, state.UpstreamEndpointMode, exactkeyprobe.ProbeOptions{Secret: os.Getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"), Timeout: ProbeTimeout, MaxResponseBytes: 256 * 1024})
+	if result.Outcome == exactkeyprobe.OutcomeSuccess {
 		return CompleteSuccess
 	}
-	if result.Outcome == accounthealth.OutcomeTaskFailed {
+	if result.Outcome == exactkeyprobe.OutcomeTaskFailed {
 		return Unknown
 	}
 	return UpstreamNotComplete

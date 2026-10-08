@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,8 +12,8 @@ import (
 // w12d_scheduler_units_test.go 补齐 w12d 波次调度决策的纯函数分支与
 // applyOutcomeDecision / applyCooldownDecision / nextDue 的臂覆盖。
 
-func w12dSchedule() Schedule {
-	return Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: 3_000, MaxPauseMinutes: 60, MaxRecoveryHours: 24}
+func w12dSchedule() exactkeyprobe.Schedule {
+	return exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 3, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: 3_000, MaxPauseMinutes: 60, MaxRecoveryHours: 24}
 }
 
 // TestW12dValidateScheduledInputArms 覆盖 scheduled input 校验拒绝分支。
@@ -73,7 +74,7 @@ func TestW12dValidateScheduledInputArms(t *testing.T) {
 	cooldownValid := base
 	cooldownValid.Eligibility.AccountStatus = "temporary_unavailable"
 	cooldownValid.Eligibility.CooldownUntil = ptrTime(now.Add(time.Hour))
-	cooldownValid.Cooldown = &CooldownFence{ObservationStartedAt: now, Generation: "gen-w12d"}
+	cooldownValid.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now, Generation: "gen-w12d"}
 	if err := validateScheduledInput(cooldownValid, now); err != nil {
 		t.Fatalf("cooldown valid: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestW12dNextDueArms(t *testing.T) {
 		t.Fatal("cooldown without fence must not schedule")
 	}
 	// 状态版本过期 + cooldown 状态带 fence → cooldown_retest。
-	cooling.Cooldown = &CooldownFence{ObservationStartedAt: now, Generation: "gen"}
+	cooling.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now, Generation: "gen"}
 	cooling.Eligibility.CooldownUntil = ptrTime(now.Add(time.Hour))
 	kind, due, ok = nextDue(cooling, CurrentState{}, false, now)
 	if !ok || kind != "cooldown_retest" || due != *cooling.Eligibility.CooldownUntil {
@@ -139,9 +140,9 @@ func TestW12dNextDueArms(t *testing.T) {
 	state.NextDueAt = nil
 	// cooling 状态 fence 改变且冷却未过期 → reconciliation due。
 	state.AccountStatus = "temporary_unavailable"
-	state.CooldownFence = &CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "gen-old"}
+	state.CooldownFence = &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "gen-old"}
 	state.NextDueAt = ptrTime(now.Add(-time.Minute))
-	cooling.Cooldown = &CooldownFence{ObservationStartedAt: now, Generation: "gen-new"}
+	cooling.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now, Generation: "gen-new"}
 	cooling.Eligibility.CooldownUntil = ptrTime(now.Add(-time.Second))
 	kind, due, ok = nextDue(cooling, state, true, now)
 	if !ok || kind != "cooldown_retest" {
@@ -171,26 +172,26 @@ func TestW12dApplyCooldownDecisionArms(t *testing.T) {
 	input.ExpiresAt = now.Add(time.Hour)
 	input.Schedule = w12dSchedule()
 	// (a) fence 无效 → TaskFailed。
-	outcome := Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyCooldownDecision(&outcome, input, CurrentState{}, false, "temporary_unavailable", now)
-	if outcome.Outcome != OutcomeTaskFailed || outcome.ErrorCode != "cooldown_fence_invalid" {
+	if outcome.Outcome != exactkeyprobe.OutcomeTaskFailed || outcome.ErrorCode != "cooldown_fence_invalid" {
 		t.Fatalf("invalid fence: %+v", outcome)
 	}
 	// (b) neutral → cooldown_defer 投影。
-	input.Cooldown = &CooldownFence{ObservationStartedAt: now, Generation: "gen-w12d-defer"}
-	outcome = Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	input.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now, Generation: "gen-w12d-defer"}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyCooldownDecision(&outcome, input, CurrentState{}, false, "temporary_unavailable", now)
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_defer" || outcome.CooldownFence == nil {
 		t.Fatalf("defer: %+v", outcome)
 	}
 	// (c) upstream failed → cooldown_failure 投影 + 指数退避。
-	outcome = Outcome{Outcome: OutcomeUpstreamFailed, ObservedAt: now, StatusCode: 500}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: now, StatusCode: 500}
 	applyCooldownDecision(&outcome, input, CurrentState{}, false, "temporary_unavailable", now)
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_failure" || outcome.FailureCount != 1 {
 		t.Fatalf("failure: %+v", outcome)
 	}
 	// (d) success → cooldown_success + active。
-	outcome = Outcome{Outcome: OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
 	applyCooldownDecision(&outcome, input, CurrentState{}, false, "temporary_unavailable", now)
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_success" || outcome.AccountStatus != "active" {
 		t.Fatalf("success: %+v", outcome)
@@ -202,10 +203,10 @@ func TestW12dApplyCooldownDecisionArms(t *testing.T) {
 		t.Fatalf("unknown outcome: %+v", outcome)
 	}
 	// (f) prior fence 与 input fence 一致 → 采用 prior fence。
-	priorFence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "gen-prior"}
-	input.Cooldown = &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "gen-prior"}
+	priorFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "gen-prior"}
+	input.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "gen-prior"}
 	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, CooldownFence: priorFence}
-	outcome = Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyCooldownDecision(&outcome, input, prior, true, "temporary_unavailable", now)
 	if outcome.CooldownFence == nil || outcome.CooldownFence.Generation != "gen-prior" {
 		t.Fatalf("prior fence: %+v", outcome.CooldownFence)
@@ -220,7 +221,7 @@ func TestW12dApplyOutcomeDecisionArms(t *testing.T) {
 	input.ExpiresAt = now.Add(time.Hour)
 	input.Schedule = w12dSchedule()
 	// success + prior active → health_success。
-	outcome := Outcome{Outcome: OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}, true, "scheduled_health")
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "health_success" || outcome.FailureCount != 0 {
 		t.Fatalf("health success: %+v", outcome)
@@ -229,32 +230,32 @@ func TestW12dApplyOutcomeDecisionArms(t *testing.T) {
 	// input eligibility 状态一致才采信 prior）。
 	activationInput := input
 	activationInput.Eligibility.AccountStatus = "pending_test"
-	outcome = Outcome{Outcome: OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
 	applyOutcomeDecision(&outcome, activationInput, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "pending_test"}, true, "health")
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "activation_success" {
 		t.Fatalf("activation success: %+v", outcome.Projection)
 	}
 	// neutral + active + scheduled_health → 立即冷却（阈值旁路）。
-	outcome = Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}, true, "scheduled_health")
 	if outcome.AccountStatus != "temporary_unavailable" || outcome.CooldownFence == nil {
 		t.Fatalf("immediate cooldown: %+v", outcome)
 	}
 	// neutral + active + 阈值内显式 health kind → health_failure。
-	outcome = Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active"}, true, "health")
 	if outcome.Projection == nil || outcome.Projection.TransitionKind != "health_failure" || outcome.FailureCount != 1 {
 		t.Fatalf("health failure: %+v", outcome)
 	}
 	// neutral + active 达到阈值 → temporary_unavailable + 输出 fence。
-	outcome = Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyOutcomeDecision(&outcome, input, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "active", FailureCount: 2}, true, "scheduled_health")
 	if outcome.AccountStatus != "temporary_unavailable" || outcome.CooldownFence == nil || outcome.FailureCount != 0 {
 		t.Fatalf("threshold cooldown: %+v", outcome)
 	}
 	// pending_test 失败超过 24h → activation_error。
 	lateStarted := now.Add(-25 * time.Hour)
-	outcome = Outcome{Outcome: OutcomeNeutral, ObservedAt: now}
+	outcome = Outcome{Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now}
 	applyOutcomeDecision(&outcome, activationInput, CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "pending_test", FailureCount: 1, FailureStartedAt: &lateStarted}, true, "scheduled_health")
 	if outcome.AccountStatus != "error" || outcome.ErrorCode != "account_activation_check_timeout" || outcome.Projection.TransitionKind != "activation_error" {
 		t.Fatalf("activation timeout: %+v", outcome)
@@ -269,10 +270,10 @@ func TestW12dApplyOutcomeDecisionArms(t *testing.T) {
 
 // TestW12dSchedulerPureHelpers 覆盖调度剩余纯函数。
 func TestW12dSchedulerPureHelpers(t *testing.T) {
-	if cooldownMaxPause(Schedule{}) != defaultCooldownMaxPauseMinutes*time.Minute {
+	if cooldownMaxPause(exactkeyprobe.Schedule{}) != defaultCooldownMaxPauseMinutes*time.Minute {
 		t.Fatal("max pause default")
 	}
-	if cooldownMaxRecovery(Schedule{}) != defaultCooldownMaxRecoveryHours*time.Hour {
+	if cooldownMaxRecovery(exactkeyprobe.Schedule{}) != defaultCooldownMaxRecoveryHours*time.Hour {
 		t.Fatal("max recovery default")
 	}
 	if cooldownFailureDelay("a", "g", 0, 0) != 3*time.Second {
@@ -287,37 +288,37 @@ func TestW12dSchedulerPureHelpers(t *testing.T) {
 	// boundedCooldownRemaining：仅 temporary_unavailable 且未开启持续探活。
 	disabled := false
 	enabled := true
-	fence := &CooldownFence{ObservationStartedAt: time.Now().UTC().Add(-time.Minute)}
-	if _, bounded := boundedCooldownRemaining(Input{}, "active", fence, time.Now()); bounded {
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now().UTC().Add(-time.Minute)}
+	if _, bounded := boundedCooldownRemaining(exactkeyprobe.Input{}, "active", fence, time.Now()); bounded {
 		t.Fatal("wrong status must not bound")
 	}
-	if _, bounded := boundedCooldownRemaining(Input{Eligibility: Eligibility{TemporaryUnavailableContinuousProbeEnabled: &enabled}}, "temporary_unavailable", fence, time.Now()); bounded {
+	if _, bounded := boundedCooldownRemaining(exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{TemporaryUnavailableContinuousProbeEnabled: &enabled}}, "temporary_unavailable", fence, time.Now()); bounded {
 		t.Fatal("continuous probe must not bound")
 	}
-	remaining, bounded := boundedCooldownRemaining(Input{Eligibility: Eligibility{TemporaryUnavailableContinuousProbeEnabled: &disabled}}, "temporary_unavailable", fence, time.Now())
+	remaining, bounded := boundedCooldownRemaining(exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{TemporaryUnavailableContinuousProbeEnabled: &disabled}}, "temporary_unavailable", fence, time.Now())
 	if !bounded || remaining <= 0 {
 		t.Fatalf("bounded remaining=%s bounded=%t", remaining, bounded)
 	}
 	// validCooldownFence 五元检查。
-	if validCooldownFence(nil, Input{}) {
+	if validCooldownFence(nil, exactkeyprobe.Input{}) {
 		t.Fatal("nil fence invalid")
 	}
-	if validCooldownFence(&CooldownFence{Generation: "g"}, Input{}) {
+	if validCooldownFence(&exactkeyprobe.CooldownFence{Generation: "g"}, exactkeyprobe.Input{}) {
 		t.Fatal("zero observation invalid")
 	}
 	source := int64(3)
-	if !validCooldownFence(&CooldownFence{ObservationStartedAt: time.Now(), Generation: "g", SourceConfigRevision: &source}, Input{Eligibility: Eligibility{SourceConfigRevision: &source}}) {
+	if !validCooldownFence(&exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now(), Generation: "g", SourceConfigRevision: &source}, exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{SourceConfigRevision: &source}}) {
 		t.Fatal("matching source revision must pass")
 	}
-	if validCooldownFence(&CooldownFence{ObservationStartedAt: time.Now(), Generation: "g"}, Input{Eligibility: Eligibility{SourceConfigRevision: &source}}) {
+	if validCooldownFence(&exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now(), Generation: "g"}, exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{SourceConfigRevision: &source}}) {
 		t.Fatal("missing source revision must fail")
 	}
 	// inputEligible。
-	pending := Input{Eligibility: Eligibility{AccountStatus: "pending_test", BoundGroup: true, AuthorizationEligible: true}}
+	pending := exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{AccountStatus: "pending_test", BoundGroup: true, AuthorizationEligible: true}}
 	if !inputEligible(pending) {
 		t.Fatal("pending_test must be eligible without schedulable")
 	}
-	if inputEligible(Input{Eligibility: Eligibility{AccountStatus: "active", BoundGroup: true, AuthorizationEligible: true}}) {
+	if inputEligible(exactkeyprobe.Input{Eligibility: exactkeyprobe.Eligibility{AccountStatus: "active", BoundGroup: true, AuthorizationEligible: true}}) {
 		t.Fatal("unschedulable active must not be eligible")
 	}
 	// reconciliationDue 与 waitContext。
@@ -396,10 +397,10 @@ func (r *failingDirectReader) LoadDueWithFailures(ctx context.Context, limit int
 	return DirectInputLoadResult{}, errors.New("load due failed")
 }
 
-func (r *failingDirectReader) LoadDue(ctx context.Context, limit int) ([]Input, error) {
+func (r *failingDirectReader) LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error) {
 	return nil, errors.New("load due failed")
 }
 
-func (r *failingDirectReader) LoadAccount(ctx context.Context, accountID string) ([]Input, error) {
+func (r *failingDirectReader) LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error) {
 	return nil, errors.New("load explicit failed")
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -50,7 +51,7 @@ type Runner struct {
 
 type scheduledDBTask struct {
 	ready   bool
-	input   Input
+	input   exactkeyprobe.Input
 	state   CurrentState
 	found   bool
 	kind    string
@@ -64,8 +65,8 @@ type scheduledDBTask struct {
 // PostgreSQL or SQLite store.  Signed-files input stays as the explicit
 // fallback source (JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=files).
 type directInputLoader interface {
-	LoadDue(ctx context.Context, limit int) ([]Input, error)
-	LoadAccount(ctx context.Context, accountID string) ([]Input, error)
+	LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error)
+	LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error)
 }
 
 type directInputFailureLoader interface {
@@ -82,9 +83,9 @@ type directInputAccountFailureLoader interface {
 // DirectInputReader 是 PG 与 SQLite 直读适配器的公共装配面：组合根用它承载
 // 两种输入源；SetSuppressionProvider 由 Runner 装配时注入 jobs 重试窗口。
 type DirectInputReader interface {
-	LoadDue(ctx context.Context, limit int) ([]Input, error)
+	LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error)
 	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
-	LoadAccount(ctx context.Context, accountID string) ([]Input, error)
+	LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error)
 	SetSuppressionProvider(provider func(context.Context, time.Time) ([]DirectInputSuppression, error))
 }
 
@@ -282,7 +283,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 		return err
 	}
 	var err error
-	var inputs []Input
+	var inputs []exactkeyprobe.Input
 	if r.directInputReader != nil {
 		if reader, ok := r.directInputReader.(directInputFailureLoader); ok {
 			result, loadErr := reader.LoadDueWithFailures(ctx, r.cfg.DirectInputLimit)
@@ -318,13 +319,13 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	// This does not change the durable input fence or broaden any candidate.
 	now = r.cfg.Now().UTC()
 	r.setScan(now)
-	inputsByAccount := make(map[string]Input, len(inputs))
+	inputsByAccount := make(map[string]exactkeyprobe.Input, len(inputs))
 	for _, input := range inputs {
 		inputsByAccount[input.AccountID] = input
 	}
 	for _, request := range requests {
 		if _, found := inputsByAccount[request.AccountID]; !found && r.directInputReader != nil {
-			var explicitInputs []Input
+			var explicitInputs []exactkeyprobe.Input
 			if accountLoader, ok := r.directInputReader.(directInputAccountFailureLoader); ok {
 				result, loadErr := accountLoader.LoadAccountWithFailures(ctx, request.AccountID)
 				if loadErr != nil {
@@ -360,7 +361,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 		}
 	}
 	sort.Slice(inputs, func(left, right int) bool { return inputs[left].AccountID < inputs[right].AccountID })
-	ioJobs := make(chan Input)
+	ioJobs := make(chan exactkeyprobe.Input)
 	dbQueueSize := r.cfg.DBQueueSize
 	if dbQueueSize <= 0 {
 		dbQueueSize = defaultDBQueueSize
@@ -470,7 +471,7 @@ func (r *Runner) persistDirectInputFailure(ctx context.Context, lease OwnerLease
 		OutcomeID:        requestID,
 		RequestID:        requestID,
 		AccountID:        failure.AccountID,
-		Outcome:          OutcomeTaskFailed,
+		Outcome:          exactkeyprobe.OutcomeTaskFailed,
 		ObservedAt:       observed,
 		InputVersion:     failure.InputVersion,
 		ConfigRevision:   failure.ConfigRevision,
@@ -520,7 +521,7 @@ func (r *Runner) removeConsumedRequest(ctx context.Context, request ProbeRequest
 	return nil
 }
 
-func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input Input, request ProbeRequest, now time.Time) error {
+func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, request ProbeRequest, now time.Time) error {
 	already, err := r.store.HasRequest(ctx, request.RequestID)
 	if err != nil || already {
 		return err
@@ -529,10 +530,10 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 		return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, "input_stale", "request 对应的 input 已失效")
 	}
 	if requestDeadlineExpired(request, now) {
-		return r.persistExplicitTerminal(ctx, lease, request, OutcomeTaskFailed, now, "request_deadline_elapsed", "探活请求已过期")
+		return r.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, now, "request_deadline_elapsed", "探活请求已过期")
 	}
 	if err := validateScheduledInput(input, now); err != nil {
-		return r.persistExplicitTerminal(ctx, lease, request, OutcomeTaskFailed, now, "input_invalid", err.Error())
+		return r.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, now, "input_invalid", err.Error())
 	}
 	initialState, initialFound, err := r.store.LoadCurrentState(ctx, input.AccountID)
 	if err != nil {
@@ -547,7 +548,7 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 		}
 	}
 	probeCtx, cancel := context.WithDeadline(ctx, request.Deadline)
-	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now})
+	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, exactkeyprobe.ProbeOptions{Secret: r.cfg.CredentialSecret, Timeout: r.cfg.ProbeTimeout, MaxResponseBytes: r.cfg.MaxResponseBytes, Now: r.cfg.Now})
 	cancel()
 	if err != nil {
 		return err
@@ -570,7 +571,7 @@ func (r *Runner) persistExplicitTerminal(ctx context.Context, lease OwnerLease, 
 	return err
 }
 
-func preserveStateForSourceOnlyOutcome(outcome *Outcome, input Input, prior CurrentState, found bool) {
+func preserveStateForSourceOnlyOutcome(outcome *Outcome, input exactkeyprobe.Input, prior CurrentState, found bool) {
 	if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision {
 		copyStateToOutcome(outcome, prior)
 		return
@@ -590,7 +591,7 @@ func copyStateToOutcome(outcome *Outcome, prior CurrentState) {
 	outcome.CooldownFence = prior.CooldownFence
 }
 
-func applyExplicitRequestDecision(outcome *Outcome, input Input, request ProbeRequest, prior CurrentState, found bool, mutationKind string) {
+func applyExplicitRequestDecision(outcome *Outcome, input exactkeyprobe.Input, request ProbeRequest, prior CurrentState, found bool, mutationKind string) {
 	if request.MutateAccount {
 		decisionKind := mutationKind
 		if request.Reason == "request_failure" && mutationKind == "health" {
@@ -601,7 +602,7 @@ func applyExplicitRequestDecision(outcome *Outcome, input Input, request ProbeRe
 		applyOutcomeDecision(outcome, input, prior, found, decisionKind)
 		return
 	}
-	if request.SourceFence != nil && outcome.Outcome == OutcomeUpstreamFailed && sourceFenceHealthMutationAllowed(input, prior, found) {
+	if request.SourceFence != nil && outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed && sourceFenceHealthMutationAllowed(input, prior, found) {
 		applyOutcomeDecision(outcome, input, prior, found, "source_health")
 		return
 	}
@@ -612,7 +613,7 @@ func applyExplicitRequestDecision(outcome *Outcome, input Input, request ProbeRe
 // If a current, matching state is cooling, it must use the cooldown state
 // machine; an already-terminal state has no authority to emit a health
 // transition that the Node projector would correctly reject.
-func explicitMutationKind(input Input, prior CurrentState, found bool) (string, bool) {
+func explicitMutationKind(input exactkeyprobe.Input, prior CurrentState, found bool) (string, bool) {
 	status := input.Eligibility.AccountStatus
 	if found && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision && prior.AccountStatus != "" {
 		status = prior.AccountStatus
@@ -631,14 +632,14 @@ func explicitMutationKind(input Input, prior CurrentState, found bool) (string, 
 	}
 }
 
-func sourceFenceHealthMutationAllowed(input Input, prior CurrentState, found bool) bool {
+func sourceFenceHealthMutationAllowed(input exactkeyprobe.Input, prior CurrentState, found bool) bool {
 	if !found || prior.InputVersion != input.InputVersion || prior.ConfigRevision != input.ConfigRevision || prior.DispatchRevision != input.DispatchRevision {
 		return false
 	}
 	return prior.AccountStatus == "active" || prior.AccountStatus == "pending_test"
 }
 
-func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) (scheduledDBTask, error) {
+func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, now time.Time) (scheduledDBTask, error) {
 	var task scheduledDBTask
 	// A signed revoke/disable snapshot deliberately carries no credential or
 	// protocol data. It immediately suppresses older durable state and makes no
@@ -677,7 +678,7 @@ func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, in
 		return task, nil
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, r.cfg.ProbeTimeout)
-	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, ProbeOptions{
+	outcome, err := ExecuteInputProbe(probeCtx, r.store, lease, input, request, exactkeyprobe.ProbeOptions{
 		Secret:           r.cfg.CredentialSecret,
 		Timeout:          r.cfg.ProbeTimeout,
 		MaxResponseBytes: r.cfg.MaxResponseBytes,
@@ -692,7 +693,7 @@ func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, in
 	return task, nil
 }
 
-func (r *Runner) applyScheduledOutcome(outcome *Outcome, input Input, state CurrentState, found bool, kind string) {
+func (r *Runner) applyScheduledOutcome(outcome *Outcome, input exactkeyprobe.Input, state CurrentState, found bool, kind string) {
 	decisionKind := kind
 	if kind == "health" {
 		decisionKind = "scheduled_health"
@@ -708,7 +709,7 @@ const cooldownTerminalReprojectKind = "cooldown_terminal_reproject"
 // prepareCooldownTerminalReproject 为终态脑裂形态构造不发探针的补投影任务
 // （BUG-0260）。幂等：request ID 只由账户 + input epoch + kind 派生（不含
 // 时钟），同一 input_version 内至多尝试一次；已尝试过的 epoch 直接跳过。
-func (r *Runner) prepareCooldownTerminalReproject(ctx context.Context, input Input, state CurrentState, now time.Time) (scheduledDBTask, error) {
+func (r *Runner) prepareCooldownTerminalReproject(ctx context.Context, input exactkeyprobe.Input, state CurrentState, now time.Time) (scheduledDBTask, error) {
 	var task scheduledDBTask
 	requestID := cooldownTerminalReprojectRequestID(input)
 	already, err := r.store.HasRequest(ctx, requestID)
@@ -732,12 +733,12 @@ func (r *Runner) prepareCooldownTerminalReproject(ctx context.Context, input Inp
 // CooldownFence 取 business 现存状态与 fence（input 快照），业务库 CAS 守卫
 // 才能命中。Outcome 取 upstream_failure 以满足投影契约
 // outcomeMatchesTransition 对 cooldown_error 的要求。
-func cooldownTerminalReprojectOutcome(input Input, state CurrentState, requestID string, observed time.Time) Outcome {
+func cooldownTerminalReprojectOutcome(input exactkeyprobe.Input, state CurrentState, requestID string, observed time.Time) Outcome {
 	return Outcome{
 		OutcomeID:        newOutcomeID(),
 		RequestID:        requestID,
 		AccountID:        input.AccountID,
-		Outcome:          OutcomeUpstreamFailed,
+		Outcome:          exactkeyprobe.OutcomeUpstreamFailed,
 		ObservedAt:       observed,
 		InputVersion:     input.InputVersion,
 		ConfigRevision:   input.ConfigRevision,
@@ -792,7 +793,7 @@ func (r *Runner) applyCooldownTerminalReproject(ctx context.Context, lease Owner
 // cooldownTerminalReprojectRequestID 派生终态补投影的幂等 request ID：仅由
 // 账户 + input epoch + kind 构成（不含时钟），保证同一 input_version 内同
 // kind 至多尝试一次（BUG-0260 防放大下界）。
-func cooldownTerminalReprojectRequestID(input Input) string {
+func cooldownTerminalReprojectRequestID(input exactkeyprobe.Input) string {
 	value := sha256.Sum256([]byte(strings.Join([]string{
 		input.AccountID,
 		fmt.Sprintf("%d", input.InputVersion),
@@ -818,7 +819,7 @@ func (r *Runner) settleScheduledTask(ctx context.Context, lease OwnerLease, task
 	return nil
 }
 
-func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) error {
+func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, now time.Time) error {
 	task, err := r.prepareScheduledInput(ctx, lease, input, now)
 	if err != nil {
 		return err
@@ -829,7 +830,7 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 	return r.settleScheduledTask(ctx, lease, &task)
 }
 
-func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input Input, observed time.Time, code, message string) error {
+func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, observed time.Time, code, message string) error {
 	// Invalid input is a deterministic failure of this immutable input fence,
 	// not a new scheduled attempt.  The observed clock is deliberately omitted
 	// so repeated scans cannot append one durable failure per scan.
@@ -842,7 +843,7 @@ func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input
 		OutcomeID:        newOutcomeID(),
 		RequestID:        requestID,
 		AccountID:        input.AccountID,
-		Outcome:          OutcomeTaskFailed,
+		Outcome:          exactkeyprobe.OutcomeTaskFailed,
 		ObservedAt:       observed,
 		InputVersion:     input.InputVersion,
 		ConfigRevision:   input.ConfigRevision,
@@ -854,7 +855,7 @@ func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input
 	return err
 }
 
-func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind string, due time.Time, ok bool) {
+func nextDue(input exactkeyprobe.Input, state CurrentState, found bool, now time.Time) (kind string, due time.Time, ok bool) {
 	if !found || state.InputVersion != input.InputVersion || state.ConfigRevision != input.ConfigRevision || state.DispatchRevision != input.DispatchRevision {
 		if input.Eligibility.AccountStatus == "temporary_unavailable" || input.Eligibility.AccountStatus == "rate_limited" {
 			if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
@@ -942,7 +943,7 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 	return "health", *state.NextDueAt, true
 }
 
-func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, priorFound bool, kind string) {
+func applyOutcomeDecision(outcome *Outcome, input exactkeyprobe.Input, prior CurrentState, priorFound bool, kind string) {
 	observed := outcome.ObservedAt.UTC()
 	if !matchingCurrentStateInput(prior, priorFound, input) {
 		// A new input/config/dispatch epoch has no authority to inherit the
@@ -961,15 +962,15 @@ func applyOutcomeDecision(outcome *Outcome, input Input, prior CurrentState, pri
 	applyHealthDecision(outcome, input, prior, priorStatus, kind, observed)
 }
 
-func matchingCurrentStateInput(prior CurrentState, priorFound bool, input Input) bool {
+func matchingCurrentStateInput(prior CurrentState, priorFound bool, input exactkeyprobe.Input) bool {
 	return priorFound && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision
 }
 
-func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, priorStatus, kind string, observed time.Time) {
+func applyHealthDecision(outcome *Outcome, input exactkeyprobe.Input, prior CurrentState, priorStatus, kind string, observed time.Time) {
 	interval := durationMS(input.Schedule.HealthIntervalMS, time.Hour)
 	retry := durationMS(input.Schedule.FailureRetryMS, 5*time.Minute)
 	switch outcome.Outcome {
-	case OutcomeSuccess:
+	case exactkeyprobe.OutcomeSuccess:
 		next := observed.Add(schedulejitter.Delay(interval))
 		outcome.NextDueAt = &next
 		outcome.FailureCount = 0
@@ -979,7 +980,7 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 			transition = "activation_success"
 		}
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: transition, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: priorStatus, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
-	case OutcomeNeutral, OutcomeUpstreamFailed:
+	case exactkeyprobe.OutcomeNeutral, exactkeyprobe.OutcomeUpstreamFailed:
 		failures := prior.FailureCount + 1
 		outcome.FailureCount = failures
 		started := prior.FailureStartedAt
@@ -1005,7 +1006,7 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 			next := observed.Add(schedulejitter.Delay(durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second)))
 			outcome.NextDueAt = &next
 			outcome.Projection = healthProjection(input, "temporary_unavailable", priorStatus, nil, observed, outcome, failures)
-			outcome.CooldownFence = &CooldownFence{ObservationStartedAt: observed, Generation: generation, SourceConfigRevision: input.Eligibility.SourceConfigRevision}
+			outcome.CooldownFence = &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: generation, SourceConfigRevision: input.Eligibility.SourceConfigRevision}
 			outcome.Projection.CooldownFence = outcome.CooldownFence
 			return
 		}
@@ -1022,13 +1023,13 @@ func applyHealthDecision(outcome *Outcome, input Input, prior CurrentState, prio
 	}
 }
 
-func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, priorFound bool, expectedStatus string, observed time.Time) {
+func applyCooldownDecision(outcome *Outcome, input exactkeyprobe.Input, prior CurrentState, priorFound bool, expectedStatus string, observed time.Time) {
 	fence := input.Cooldown
 	if priorFound && prior.InputVersion == input.InputVersion && prior.ConfigRevision == input.ConfigRevision && prior.DispatchRevision == input.DispatchRevision && (input.Cooldown == nil || sameCooldownFence(prior.CooldownFence, input.Cooldown)) {
 		fence = prior.CooldownFence
 	}
 	if !validCooldownFence(fence, input) {
-		outcome.Outcome = OutcomeTaskFailed
+		outcome.Outcome = exactkeyprobe.OutcomeTaskFailed
 		outcome.ErrorCode = "cooldown_fence_invalid"
 		outcome.ErrorMessage = "冷却复测缺少或不匹配五元 fence"
 		outcome.AccountStatus = input.Eligibility.AccountStatus
@@ -1038,13 +1039,13 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 	maxDelay := durationMS(input.Schedule.CooldownNeutralMaxMS, 15*time.Minute)
 	initialBackoff := durationMS(input.Schedule.CooldownFailureBackoffMS, 3*time.Second)
 	switch outcome.Outcome {
-	case OutcomeSuccess:
+	case exactkeyprobe.OutcomeSuccess:
 		next := observed.Add(schedulejitter.Delay(durationMS(input.Schedule.HealthIntervalMS, time.Hour)))
 		outcome.NextDueAt = &next
 		outcome.FailureCount = 0
 		outcome.AccountStatus = "active"
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_success", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
-	case OutcomeNeutral, OutcomeTaskFailed:
+	case exactkeyprobe.OutcomeNeutral, exactkeyprobe.OutcomeTaskFailed:
 		growthStep := cooldownDeferGrowthStep(fence, observed, base)
 		delay := schedulejitter.Delay(cooldownDefer(growthStep, base, maxDelay))
 		next := observed.Add(delay)
@@ -1054,7 +1055,7 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 		outcome.AccountStatus = expectedStatus
 		outcome.CooldownFence = fence
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_defer", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
-	case OutcomeUpstreamFailed:
+	case exactkeyprobe.OutcomeUpstreamFailed:
 		failures := prior.FailureCount + 1
 		outcome.FailureCount = failures
 		outcome.FailureStartedAt = prior.FailureStartedAt
@@ -1099,11 +1100,11 @@ func applyCooldownDecision(outcome *Outcome, input Input, prior CurrentState, pr
 	}
 }
 
-func healthProjection(input Input, transition, expectedStatus string, expectedFence *CooldownFence, observed time.Time, outcome *Outcome, failures int) *Projection {
+func healthProjection(input exactkeyprobe.Input, transition, expectedStatus string, expectedFence *exactkeyprobe.CooldownFence, observed time.Time, outcome *Outcome, failures int) *Projection {
 	return &Projection{TargetAccountID: input.AccountID, TransitionKind: transition, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: expectedFence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode, "last_health_check_error_code": outcome.ErrorCode, "last_health_check_error_message": outcome.ErrorMessage, "health_check_failure_count": failures}}
 }
 
-func validateScheduledInput(input Input, now time.Time) error {
+func validateScheduledInput(input exactkeyprobe.Input, now time.Time) error {
 	if strings.TrimSpace(input.AccountID) == "" || input.InputVersion < 1 || input.ConfigRevision < 1 || input.DispatchRevision < 1 {
 		return errors.New("input version 或账户 fence 无效")
 	}
@@ -1130,7 +1131,7 @@ func validateScheduledInput(input Input, now time.Time) error {
 	return nil
 }
 
-func cooldownMaxPause(schedule Schedule) time.Duration {
+func cooldownMaxPause(schedule exactkeyprobe.Schedule) time.Duration {
 	minutes := schedule.MaxPauseMinutes
 	if minutes == 0 {
 		minutes = defaultCooldownMaxPauseMinutes
@@ -1138,7 +1139,7 @@ func cooldownMaxPause(schedule Schedule) time.Duration {
 	return time.Duration(minutes) * time.Minute
 }
 
-func cooldownMaxRecovery(schedule Schedule) time.Duration {
+func cooldownMaxRecovery(schedule exactkeyprobe.Schedule) time.Duration {
 	hours := schedule.MaxRecoveryHours
 	if hours == 0 {
 		hours = defaultCooldownMaxRecoveryHours
@@ -1169,7 +1170,7 @@ func cooldownSlowRetryDelay() time.Duration {
 	return 60 * time.Second
 }
 
-func boundedCooldownRemaining(input Input, expectedStatus string, fence *CooldownFence, observed time.Time) (time.Duration, bool) {
+func boundedCooldownRemaining(input exactkeyprobe.Input, expectedStatus string, fence *exactkeyprobe.CooldownFence, observed time.Time) (time.Duration, bool) {
 	if expectedStatus != "temporary_unavailable" || input.Eligibility.TemporaryUnavailableContinuousProbeEnabled == nil || *input.Eligibility.TemporaryUnavailableContinuousProbeEnabled || fence == nil {
 		return 0, false
 	}
@@ -1180,7 +1181,7 @@ func boundedCooldownRemaining(input Input, expectedStatus string, fence *Cooldow
 	return remaining, true
 }
 
-func validCooldownFence(fence *CooldownFence, input Input) bool {
+func validCooldownFence(fence *exactkeyprobe.CooldownFence, input exactkeyprobe.Input) bool {
 	if fence == nil || fence.ObservationStartedAt.IsZero() || strings.TrimSpace(fence.Generation) == "" {
 		return false
 	}
@@ -1190,7 +1191,7 @@ func validCooldownFence(fence *CooldownFence, input Input) bool {
 	return fence.SourceConfigRevision != nil && *fence.SourceConfigRevision == *input.Eligibility.SourceConfigRevision
 }
 
-func inputEligible(input Input) bool {
+func inputEligible(input exactkeyprobe.Input) bool {
 	// pending_test is the activation probe state and cooldown states are the
 	// recovery probe path; both may legitimately carry schedulable=false.
 	return (input.Eligibility.Schedulable || input.Eligibility.AccountStatus == "pending_test" || input.Eligibility.AccountStatus == "temporary_unavailable" || input.Eligibility.AccountStatus == "rate_limited") &&
@@ -1198,7 +1199,7 @@ func inputEligible(input Input) bool {
 		input.Eligibility.AuthorizationEligible
 }
 
-func scheduledRequestID(input Input, kind string, due time.Time) string {
+func scheduledRequestID(input exactkeyprobe.Input, kind string, due time.Time) string {
 	value := sha256.Sum256([]byte(strings.Join([]string{input.AccountID, fmt.Sprintf("%d", input.InputVersion), fmt.Sprintf("%d", input.ConfigRevision), fmt.Sprintf("%d", input.DispatchRevision), kind, due.UTC().Format(time.RFC3339Nano)}, "\n")))
 	return "account-health-" + hex.EncodeToString(value[:])
 }
@@ -1211,7 +1212,7 @@ func reconciliationDue(cooldownUntil, now time.Time) time.Time {
 	return now
 }
 
-func invalidInputRequestID(input Input) string {
+func invalidInputRequestID(input exactkeyprobe.Input) string {
 	value := sha256.Sum256([]byte(strings.Join([]string{
 		input.AccountID,
 		fmt.Sprintf("%d", input.InputVersion),
@@ -1222,7 +1223,7 @@ func invalidInputRequestID(input Input) string {
 	return "account-health-" + hex.EncodeToString(value[:])
 }
 
-func cooldownDeferGrowthStep(fence *CooldownFence, observed time.Time, base time.Duration) int {
+func cooldownDeferGrowthStep(fence *exactkeyprobe.CooldownFence, observed time.Time, base time.Duration) int {
 	if fence == nil || fence.ObservationStartedAt.IsZero() || base <= 0 || observed.Before(fence.ObservationStartedAt) {
 		return 0
 	}

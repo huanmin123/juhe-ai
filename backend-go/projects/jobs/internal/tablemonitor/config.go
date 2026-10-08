@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultInterval                  = time.Minute
+	defaultInterval                  = time.Hour
 	defaultRunTimeout                = 45 * time.Second
 	defaultOwnerLease                = 5 * time.Minute
 	defaultRetentionDays             = 30
@@ -55,6 +55,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if mode != ModeSQLite && mode != ModePostgres {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_STORE 必须为 sqlite 或 postgres")
 	}
+	// INTERVAL 缺省 1h：前端全部历史查询上限 720 点，1h×30 天恰铺满月视图，
+	// 分钟级快照没有消费方（2026-10-08 粒度根治裁决，量化依据见
+	// docs/plans/计划-20261008T203741000Z-表监控采样粒度根治.md）。缺省档
+	// 落在 schedulejitter 1 小时档，实际采样间隔 30~90 分钟。
 	interval, err := durationOrDefault("JUHE_AI_TABLE_MONITOR_INTERVAL", getenv("JUHE_AI_TABLE_MONITOR_INTERVAL"), defaultInterval)
 	if err != nil {
 		return Config{}, err

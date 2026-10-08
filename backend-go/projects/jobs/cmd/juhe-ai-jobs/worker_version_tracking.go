@@ -1,8 +1,11 @@
 package main
 
-// upstream-client-version-refresh 组合根适配器（客户端版本自动跟版设计 §5/§6）。
-// 串行拉取四族官方发布源，按写者侧单调规则幂等 upsert 自动键
-// upstreamClientVersionAutoOverrides，并即时注入进程内自动层。直连、无代理。
+// upstream-client-version-refresh 组合根适配器（客户端版本自动跟版设计
+// §5/§6/§8.3）。串行拉取五族官方发布源（含第二期收尾追加的 grokCLI），按
+// 写者侧单调规则幂等 upsert 自动键 upstreamClientVersionAutoOverrides，并
+// 即时注入进程内自动层。直连、无代理。单轮刷新入口同时存入装配字段
+// upstreamClientVersionRefresh，供 Grok 426 版本门触发器即时调用
+// （worker_xai_grok_usage.go）。
 
 import (
 	"context"
@@ -45,8 +48,8 @@ func (a *workerAssembly) wireVersionTrackingFamily(_ context.Context) error {
 		Warn: jobssettingsWarn(a.logger),
 	})
 	client := &http.Client{Timeout: versiontracking.SourceTimeout}
-	a.scheduleWiredJob(name, func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		_, runErr := versiontracking.Refresh(taskCtx, versiontracking.Deps{
+	refresh := func(ctx context.Context) error {
+		_, runErr := versiontracking.Refresh(ctx, versiontracking.Deps{
 			HTTP: client,
 			Read: source.UpstreamClientVersionAutoOverrides,
 			Write: func(ctx context.Context, next map[string]string) error {
@@ -57,7 +60,14 @@ func (a *workerAssembly) wireVersionTrackingFamily(_ context.Context) error {
 			Now:     func() time.Time { return time.Now().UTC() },
 			Logger:  a.logger,
 		})
-		if runErr != nil {
+		return runErr
+	}
+	// Grok 426 版本门触发器消费该入口（设计 §8.3）。nil 安全：本家族登记
+	// disabled 时字段保持 nil，xai worker 侧跳过触发；两家族装配顺序无关
+	//（xai worker 先于本家族装配，持有的是运行期延迟解引用本字段的闭包）。
+	a.upstreamClientVersionRefresh = refresh
+	a.scheduleWiredJob(name, func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		if runErr := refresh(taskCtx); runErr != nil {
 			return jobsched.TaskResult{}, runErr
 		}
 		return jobsched.TaskResult{}, nil

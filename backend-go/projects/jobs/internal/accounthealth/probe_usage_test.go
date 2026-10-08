@@ -2,6 +2,7 @@ package accounthealth
 
 import (
 	"context"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"log/slog"
 	"testing"
 	"time"
@@ -60,17 +61,17 @@ func TestRecordProbeUsage(t *testing.T) {
 		wantCount int
 		wantSucc  bool
 	}{
-		{"success", OutcomeSuccess, 1, true},
-		{"neutral", OutcomeNeutral, 1, false},
-		{"upstream failure", OutcomeUpstreamFailed, 1, false},
+		{"success", exactkeyprobe.OutcomeSuccess, 1, true},
+		{"neutral", exactkeyprobe.OutcomeNeutral, 1, false},
+		{"upstream failure", exactkeyprobe.OutcomeUpstreamFailed, 1, false},
 		{"stale skipped", OutcomeStale, 0, false},
-		{"task failure skipped", OutcomeTaskFailed, 0, false},
+		{"task failure skipped", exactkeyprobe.OutcomeTaskFailed, 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &probeUsageFakeSink{}
 			runner := probeUsageRunner(sink)
-			runner.recordProbeUsage(context.Background(), probeUsageOutcome(tc.outcome), Input{HealthModel: "gpt-test"}, "account_health_check")
+			runner.recordProbeUsage(context.Background(), probeUsageOutcome(tc.outcome), exactkeyprobe.Input{HealthModel: "gpt-test"}, "account_health_check")
 			if len(sink.observations) != tc.wantCount {
 				t.Fatalf("observations = %d, want %d", len(sink.observations), tc.wantCount)
 			}
@@ -84,7 +85,7 @@ func TestRecordProbeUsage(t *testing.T) {
 // TestRecordProbeUsageNilRecorder 未装配时零行为。
 func TestRecordProbeUsageNilRecorder(t *testing.T) {
 	runner := &Runner{logger: slog.Default()}
-	runner.recordProbeUsage(context.Background(), probeUsageOutcome(OutcomeSuccess), Input{}, "account_health_check")
+	runner.recordProbeUsage(context.Background(), probeUsageOutcome(exactkeyprobe.OutcomeSuccess), exactkeyprobe.Input{}, "account_health_check")
 }
 
 // TestEndpointFamilyForMode 对齐 direct_input_reader 的端点族映射。

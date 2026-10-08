@@ -824,6 +824,31 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 // avoidance stays off (Node keeps it off for a missing source key too), and a
 // probe dispatch failure keeps the short avoidance.
 func (d *chainFailureDispatcher) scheduleClientSourceAvoidanceFailure(ctx context.Context, input gatewaydispatch.UpstreamRequestErrorInput, message string) {
+	d.scheduleStreamClientSourceAvoidance(ctx, streamClientSourceAvoidanceInput{
+		Req:           input.Req,
+		UsageContext:  input.UsageContext,
+		Account:       input.Account,
+		ErrorCode:     upstreamRequestErrorName(input.Error),
+		Message:       message,
+		ObservationID: input.AuditAttemptID + ":transport_failure",
+	})
+}
+
+// streamClientSourceAvoidanceInput 是来源级失败避让的共享入参：调用方自带
+// 失败时刻的请求、使用上下文与账户身份，错误码/文案/观测 ID 由各失败面按
+// 自身语义供给（transport 面用 error name，流式换号面用上游原始码与文案）。
+type streamClientSourceAvoidanceInput struct {
+	Req           *gatewaypreauth.GatewayRequest
+	UsageContext  gatewaypreauth.GatewayFailureUsageContext
+	Account       gatewaydispatch.AccountCandidate
+	ErrorCode     string
+	Message       string
+	ObservationID string
+}
+
+// scheduleStreamClientSourceAvoidance 是来源级失败避让的共享核心（原传输失败
+// 分支专用语义抽出，BUG-0298 流式换号面复用同一记录/探活管线）。
+func (d *chainFailureDispatcher) scheduleStreamClientSourceAvoidance(ctx context.Context, input streamClientSourceAvoidanceInput) {
 	if d.clientStrategy == nil || d.turnRetry == nil {
 		if input.UsageContext.TrafficSource == gatewayTrafficSource {
 			slogOnceWarn("gatewaydispatch.ClientSourceAvoidanceRecording", "来源级失败避让记录未装配，避让保持关闭")
@@ -848,9 +873,9 @@ func (d *chainFailureDispatcher) scheduleClientSourceAvoidanceFailure(ctx contex
 		return
 	}
 	record, err := d.turnRetry.RememberGatewayClientSourceFailureAsync(ctx, strategy, input.Account.ID, gatewaycodex.CodexTurnFailureInput{
-		ErrorCode:     upstreamRequestErrorName(input.Error),
-		Message:       message,
-		ObservationID: input.AuditAttemptID + ":transport_failure",
+		ErrorCode:     input.ErrorCode,
+		Message:       input.Message,
+		ObservationID: input.ObservationID,
 	})
 	if err != nil {
 		slog.Warn("来源级失败避让未能记录，保留短期避让",
@@ -882,6 +907,24 @@ func (d *chainFailureDispatcher) scheduleClientSourceAvoidanceFailure(ctx contex
 				"accountId", account.ID, "error", err.Error())
 		}
 	}()
+}
+
+// scheduleStreamSwitchClientSourceAvoidance（BUG-0298）：加密上下文信号未命中
+// 的预提交换号在换号被接受时调用——解除失败账户的会话亲和并记录来源级短
+// TTL 避让（含后台探活）。该失败与“来源×账户”绑定：加密续状态仅生成它的
+// 上游会话可验证，换号后同一会话的后续请求应把该账户排到同层候选之后，而不是
+// 反复先撞它。记录管线与既有传输失败分支同源；协作方未装配时显式降级，不
+// 影响换号本身，也不写账户健康/熔断状态（预提交零输出失败契约不变）。
+func (d *chainFailureDispatcher) scheduleStreamSwitchClientSourceAvoidance(ctx context.Context, req *gatewaypreauth.GatewayRequest, usageContext gatewaypreauth.GatewayFailureUsageContext, sessionAffinityKey string, account gatewaydispatch.AccountCandidate, upstreamErrorCode, upstreamErrorMessage, auditAttemptID string) {
+	d.forgetSessionAffinity(ctx, sessionAffinityKey, account.ID)
+	d.scheduleStreamClientSourceAvoidance(ctx, streamClientSourceAvoidanceInput{
+		Req:           req,
+		UsageContext:  usageContext,
+		Account:       account,
+		ErrorCode:     upstreamErrorCode,
+		Message:       upstreamErrorMessage,
+		ObservationID: auditAttemptID + ":pre_commit_switch",
+	})
 }
 
 // codexRecoveryMetadataOf mirrors the Node retry audit metadata:

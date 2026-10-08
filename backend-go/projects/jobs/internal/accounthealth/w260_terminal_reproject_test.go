@@ -15,6 +15,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,8 +27,8 @@ import (
 var w260Now = time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
 
 // w260Fence 模拟生产形态：观察期起点在 8 天前（超过 7 天观察期上限）。
-func w260Fence() *CooldownFence {
-	return &CooldownFence{ObservationStartedAt: w260Now.Add(-8 * 24 * time.Hour), Generation: "w260-gen"}
+func w260Fence() *exactkeyprobe.CooldownFence {
+	return &exactkeyprobe.CooldownFence{ObservationStartedAt: w260Now.Add(-8 * 24 * time.Hour), Generation: "w260-gen"}
 }
 
 // w260Fixture 组装完整链路：jobs store + 业务库 + 投影器 + 绑定投影器的
@@ -58,13 +59,13 @@ func newW260Fixture(t *testing.T, businessSeed map[string]any) *w260Fixture {
 		fixture.seedAccount(t, businessSeed)
 	}
 	result.runner = NewRunner(Config{
-		CredentialSecret:  "projection-test-secret",
-		ProbeTimeout:      time.Second,
-		MaxResponseBytes:  4096,
-		MaxConcurrency:    1,
-		Now:               func() time.Time { return w260Now },
-		InputDirectory:    t.TempDir(),
-		InputKeys:         map[string][]byte{"current": []byte("w260-input-signing-key-1234567890")},
+		CredentialSecret: "projection-test-secret",
+		ProbeTimeout:     time.Second,
+		MaxResponseBytes: 4096,
+		MaxConcurrency:   1,
+		Now:              func() time.Time { return w260Now },
+		InputDirectory:   t.TempDir(),
+		InputKeys:        map[string][]byte{"current": []byte("w260-input-signing-key-1234567890")},
 	}, fixture.store, nil)
 	result.runner.SetOutcomeProjector(fixture.projector)
 	return result
@@ -72,13 +73,13 @@ func newW260Fixture(t *testing.T, businessSeed map[string]any) *w260Fixture {
 
 // w260SeedTerminalState 通过真实 AppendOutcome 落一条与生产 2026-09-29 终态
 // 判定同形的 cooldown_error outcome，建立 jobs current_state 的 error 终态。
-func w260SeedTerminalState(t *testing.T, fixture *w260Fixture, fence *CooldownFence, observed time.Time) {
+func w260SeedTerminalState(t *testing.T, fixture *w260Fixture, fence *exactkeyprobe.CooldownFence, observed time.Time) {
 	t.Helper()
 	terminal := Outcome{
 		OutcomeID:        "w260-terminal-original",
 		RequestID:        "w260-terminal-original-request",
 		AccountID:        "acct-1",
-		Outcome:          OutcomeUpstreamFailed,
+		Outcome:          exactkeyprobe.OutcomeUpstreamFailed,
 		ObservedAt:       observed,
 		InputVersion:     1,
 		ConfigRevision:   5,
@@ -104,7 +105,7 @@ func w260SeedTerminalState(t *testing.T, fixture *w260Fixture, fence *CooldownFe
 
 // w260SplitBrainInput 构造与 jobs state epoch 一致的 business 冷却快照
 // （携带真实可解密凭据：红态下若仍发探针，计数服务器会留下命中证据）。
-func w260SplitBrainInput(t *testing.T, fixture *w260Fixture, fence *CooldownFence) Input {
+func w260SplitBrainInput(t *testing.T, fixture *w260Fixture, fence *exactkeyprobe.CooldownFence) exactkeyprobe.Input {
 	t.Helper()
 	input := testInput(fixture.server.URL, "chat_json")
 	input.AccountID = "acct-1"
@@ -112,10 +113,10 @@ func w260SplitBrainInput(t *testing.T, fixture *w260Fixture, fence *CooldownFenc
 	input.IssuedAt = w260Now.Add(-time.Minute)
 	input.ExpiresAt = w260Now.Add(time.Hour)
 	cooldownUntil := w260Now.Add(-time.Hour)
-	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
 	input.Cooldown = fence
-	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: 3_000}
-	input.APIKeys = []APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, "projection-test-secret", `{"api_key":"sk-w260"}`)}}}
+	input.Schedule = exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: 3_000}
+	input.APIKeys = []exactkeyprobe.APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, "projection-test-secret", `{"api_key":"sk-w260"}`)}}}
 	input.KeySetFingerprint = "keyset-w260"
 	return input
 }
@@ -163,7 +164,7 @@ func TestW260NextDueErrorTerminalSplitBrainReturnsReprojectKind(t *testing.T) {
 	input := testInput("https://probe.invalid", "chat_json")
 	input.InputVersion, input.ConfigRevision, input.DispatchRevision = 1, 5, 7
 	cooldownUntil := w260Now.Add(-time.Hour)
-	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
 	input.Cooldown = fence
 	state := CurrentState{InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, AccountStatus: "error", ErrorCode: "cooldown_retest_observation_timeout", CooldownFence: fence}
 
@@ -310,7 +311,7 @@ func TestW260TerminalReprojectFenceAndEpochGuards(t *testing.T) {
 	input := testInput("https://probe.invalid", "chat_json")
 	input.InputVersion, input.ConfigRevision, input.DispatchRevision = 1, 5, 7
 	cooldownUntil := w260Now.Add(-time.Hour)
-	input.Eligibility = Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
 	input.Cooldown = fence
 
 	// epoch 前进（state 停留在旧 input epoch）：走原 cooldown_retest 路径。
@@ -321,7 +322,7 @@ func TestW260TerminalReprojectFenceAndEpochGuards(t *testing.T) {
 	}
 
 	// business fence 无效（source revision 与 input 不一致）：不 due。
-	badFence := &CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: fence.Generation}
+	badFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: fence.Generation}
 	sourceRevision := int64(99)
 	badFence.SourceConfigRevision = &sourceRevision
 	badInput := input

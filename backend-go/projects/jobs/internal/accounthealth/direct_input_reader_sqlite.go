@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 	"time"
 
@@ -116,7 +117,7 @@ var sqliteDirectInputStatsRelations = []string{
 	"usage_quota_hourly_windows",
 }
 
-func (r *SQLiteDirectInputReader) LoadDue(ctx context.Context, limit int) ([]Input, error) {
+func (r *SQLiteDirectInputReader) LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error) {
 	result, err := r.LoadDueWithFailures(ctx, limit)
 	if err == nil && len(result.Failures) > 0 {
 		return nil, fmt.Errorf("SQLite direct input 存在 %d 个候选构造失败；请使用 LoadDueWithFailures 处理隔离结果", len(result.Failures))
@@ -130,7 +131,7 @@ func (r *SQLiteDirectInputReader) LoadDueWithFailures(ctx context.Context, limit
 
 // LoadAccount 与 PG reader 同义：仅供显式请求使用，跳过周期到期谓词但保留
 // 其余全部资格守卫。
-func (r *SQLiteDirectInputReader) LoadAccount(ctx context.Context, accountID string) ([]Input, error) {
+func (r *SQLiteDirectInputReader) LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error) {
 	result, err := r.LoadAccountWithFailures(ctx, accountID)
 	if err == nil && len(result.Failures) > 0 {
 		return nil, fmt.Errorf("SQLite direct input account=%s 候选构造失败；请使用 LoadAccountWithFailures 处理隔离结果", strings.TrimSpace(accountID))
@@ -171,13 +172,13 @@ func (r *SQLiteDirectInputReader) load(ctx context.Context, limit int, ignoreSch
 		return DirectInputLoadResult{}, fmt.Errorf("开始 SQLite direct input 统计只读事务失败: %w", err)
 	}
 	defer stx.Rollback()
-	schedule, timezone, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (Schedule, *time.Location, error) {
+	schedule, timezone, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (exactkeyprobe.Schedule, *time.Location, error) {
 		return loadDirectScheduleFrom(fetchCtx, btx, "system_settings", "SQLite direct input")
 	})
 	if err != nil {
 		return DirectInputLoadResult{}, err
 	}
-	result := DirectInputLoadResult{Inputs: make([]Input, 0, limit), Failures: make([]DirectInputFailure, 0)}
+	result := DirectInputLoadResult{Inputs: make([]exactkeyprobe.Input, 0, limit), Failures: make([]DirectInputFailure, 0)}
 	err = collectDirectCandidatePages(limit, func(offset int) (int, error) {
 		candidateSQL, suppressionArgs := sqliteDirectInputCandidatesQuery(suppressions)
 		ignoreScheduleInt := 0
@@ -227,7 +228,7 @@ func (r *SQLiteDirectInputReader) load(ctx context.Context, limit int, ignoreSch
 				}
 				candidate.authorization.QuotaEligible = eligible
 			}
-			direct := DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
+			direct := exactkeyprobe.DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
 			input, failure, err := buildDirectCandidateInput(candidate, direct, r.credentialSecret, now)
 			if err != nil {
 				return 0, err

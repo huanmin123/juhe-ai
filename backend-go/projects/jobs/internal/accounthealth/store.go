@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -542,7 +543,7 @@ func (s *Store) writeCurrentStateTx(ctx context.Context, tx *sql.Tx, outcome Out
 		// source result.
 		return false, nil
 	}
-	if outcome.Outcome == OutcomeTaskFailed && outcome.Projection == nil {
+	if outcome.Outcome == exactkeyprobe.OutcomeTaskFailed && outcome.Projection == nil {
 		// Preflight/config/deadline failures have no due time and are audit-only.
 		// A task failure produced after an actual probe carries a bounded due
 		// time; update only retry metadata and error receipt, preserving status,
@@ -816,11 +817,11 @@ func validateOutcomeStateContract(outcome Outcome) error {
 	return nil
 }
 
-func validStoredCooldownFence(fence *CooldownFence) bool {
+func validStoredCooldownFence(fence *exactkeyprobe.CooldownFence) bool {
 	return fence != nil && !fence.ObservationStartedAt.IsZero() && strings.TrimSpace(fence.Generation) != ""
 }
 
-func sameCooldownFence(left, right *CooldownFence) bool {
+func sameCooldownFence(left, right *exactkeyprobe.CooldownFence) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
@@ -895,7 +896,7 @@ func (s *Store) LoadCurrentState(ctx context.Context, accountID string) (Current
 		state.FailureStartedAt = &value
 	}
 	if cooldownObserved.Valid && cooldownGeneration.Valid {
-		fence := &CooldownFence{ObservationStartedAt: cooldownObserved.Time, Generation: cooldownGeneration.String}
+		fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: cooldownObserved.Time, Generation: cooldownGeneration.String}
 		if cooldownSourceRevision.Valid {
 			value := cooldownSourceRevision.Int64
 			fence.SourceConfigRevision = &value
@@ -1103,7 +1104,7 @@ func nullableTimeText(value *time.Time) any {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func outcomeCooldownFence(outcome Outcome) *CooldownFence {
+func outcomeCooldownFence(outcome Outcome) *exactkeyprobe.CooldownFence {
 	if outcome.CooldownFence != nil {
 		return outcome.CooldownFence
 	}

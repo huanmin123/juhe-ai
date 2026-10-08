@@ -68,7 +68,7 @@ type Result struct {
 	Next     map[string]string
 }
 
-// Refresh 串行拉取四源，按写者侧规则汇总后（有变化时）幂等 upsert 并注入进程内
+// Refresh 串行拉取五个发布源，按写者侧规则汇总后（有变化时）幂等 upsert 并注入进程内
 // 自动层。全部源失败返回 error（交调度退避）；部分成功返回 nil。
 func Refresh(ctx context.Context, deps Deps) (Result, error) {
 	if err := validateDeps(&deps); err != nil {

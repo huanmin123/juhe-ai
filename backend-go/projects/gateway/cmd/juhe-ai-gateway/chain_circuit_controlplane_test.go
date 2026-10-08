@@ -229,7 +229,8 @@ func TestChainAccountCircuitPersistHookArms(t *testing.T) {
 // 识别为 idempotent 回执，不产生重复行、ledger 不回退。
 func TestChainAccountCircuitMutationPersistsIncident(t *testing.T) {
 	db := w17eOpenBusinessSQLite(t)
-	service, closeService, err := newChainAccountCircuitService("memory", "", "", w17eGateReadyConfig(db), nil)
+	circuitRuntime, closeService, err := newChainAccountCircuitService("memory", "", "", w17eGateReadyConfig(db), nil)
+	service := circuitRuntime.Service
 	if err != nil {
 		t.Fatalf("create circuit service: %v", err)
 	}
@@ -342,7 +343,8 @@ func TestChainAccountCircuitMutationPersistsIncident(t *testing.T) {
 // 通道（热路径安全契约）。
 func TestChainAccountCircuitPersistFailureDoesNotBreakChain(t *testing.T) {
 	db := w17eOpenBusinessSQLite(t)
-	service, closeService, err := newChainAccountCircuitService("memory", "", "", w17eGateReadyConfig(db), nil)
+	circuitRuntime, closeService, err := newChainAccountCircuitService("memory", "", "", w17eGateReadyConfig(db), nil)
+	service := circuitRuntime.Service
 	if err != nil {
 		t.Fatalf("create circuit service: %v", err)
 	}

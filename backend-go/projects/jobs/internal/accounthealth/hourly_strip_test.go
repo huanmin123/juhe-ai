@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"testing"
 	"time"
 )
@@ -63,13 +64,13 @@ func TestRecordAccountHealthHourlyObservation(t *testing.T) {
 		wantStatus bool
 		wantProv   string
 	}{
-		{"success", Outcome{OutcomeID: "o1", AccountID: "acc-1", Outcome: OutcomeSuccess, ObservedAt: observedAt, StatusCode: 200}, true, true, "openai"},
-		{"upstream failure maps to failure", Outcome{OutcomeID: "o2", AccountID: "acc-1", Outcome: OutcomeUpstreamFailed, ObservedAt: observedAt, ErrorCode: "upstream_protocol_failure"}, true, false, "openai"},
-		{"neutral maps to failure", Outcome{OutcomeID: "o3", AccountID: "acc-1", Outcome: OutcomeNeutral, ObservedAt: observedAt}, true, false, "openai"},
-		{"missing provider falls to unknown", Outcome{OutcomeID: "o4", AccountID: "acc-no-provider", Outcome: OutcomeUpstreamFailed, ObservedAt: observedAt}, true, false, "unknown"},
+		{"success", Outcome{OutcomeID: "o1", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observedAt, StatusCode: 200}, true, true, "openai"},
+		{"upstream failure maps to failure", Outcome{OutcomeID: "o2", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt, ErrorCode: "upstream_protocol_failure"}, true, false, "openai"},
+		{"neutral maps to failure", Outcome{OutcomeID: "o3", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observedAt}, true, false, "openai"},
+		{"missing provider falls to unknown", Outcome{OutcomeID: "o4", AccountID: "acc-no-provider", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, true, false, "unknown"},
 		{"stale skipped", Outcome{OutcomeID: "o5", AccountID: "acc-1", Outcome: OutcomeStale, ObservedAt: observedAt}, false, false, ""},
-		{"deleted account skipped", Outcome{OutcomeID: "o6", AccountID: "acc-gone", Outcome: OutcomeUpstreamFailed, ObservedAt: observedAt}, false, false, ""},
-		{"no owner skipped", Outcome{OutcomeID: "o7", AccountID: "acc-no-owner", Outcome: OutcomeUpstreamFailed, ObservedAt: observedAt}, false, false, ""},
+		{"deleted account skipped", Outcome{OutcomeID: "o6", AccountID: "acc-gone", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, false, false, ""},
+		{"no owner skipped", Outcome{OutcomeID: "o7", AccountID: "acc-no-owner", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, false, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,7 +107,7 @@ func TestRecordAccountHealthHourlyObservationSinkError(t *testing.T) {
 	business := newHourlyBusinessFixture(t)
 	sink := &hourlyFakeSink{err: context.DeadlineExceeded}
 	err := recordAccountHealthHourlyObservation(context.Background(), sink, business, Outcome{
-		OutcomeID: "o-err", AccountID: "acc-1", Outcome: OutcomeUpstreamFailed,
+		OutcomeID: "o-err", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeUpstreamFailed,
 		ObservedAt: time.Date(2026, 9, 26, 15, 0, 0, 0, time.UTC),
 	})
 	if err == nil {

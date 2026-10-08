@@ -281,7 +281,7 @@ func schedules() map[string]Schedule {
 			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
 		},
 		// upstream-client-version-refresh：Go 新增任务（客户端版本自动跟版设计
-		// §6）。日频串行拉四族官方发布源，幂等 upsert 自动键；InitialDelay 37min
+		// §6）。日频串行拉五族官方发布源，幂等 upsert 自动键；InitialDelay 37min
 		// 避让现有 31min 档内时隙；PassiveJitter 走 DayWindow ±1h。
 		"upstream-client-version-refresh": {
 			Interval: 24 * hour, InitialDelay: 37 * minute, PassiveJitter: true,

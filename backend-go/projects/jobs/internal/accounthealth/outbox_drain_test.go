@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -72,12 +73,14 @@ func (b probeDrainBoundary) CurrentProbeInput(_ context.Context, accountID strin
 // probeDrainDirectReader 是 directInputLoader 的单账户实现（LoadDue 恒空，
 // drain 与 runCycle 的显式请求路径都只走 LoadAccount）。
 type probeDrainDirectReader struct {
-	input Input
+	input exactkeyprobe.Input
 }
 
-func (r probeDrainDirectReader) LoadDue(context.Context, int) ([]Input, error) { return nil, nil }
-func (r probeDrainDirectReader) LoadAccount(context.Context, string) ([]Input, error) {
-	return []Input{r.input}, nil
+func (r probeDrainDirectReader) LoadDue(context.Context, int) ([]exactkeyprobe.Input, error) {
+	return nil, nil
+}
+func (r probeDrainDirectReader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
+	return []exactkeyprobe.Input{r.input}, nil
 }
 
 func newDrainRunner(t *testing.T, secret string, outbox *probeOutboxMemoryStore, boundary ProbeRequestBoundary, reader directInputLoader) *Runner {
@@ -175,10 +178,10 @@ func TestDrainProbeOutboxInScopeRunsExplicitRequest(t *testing.T) {
 	defer server.Close()
 
 	input := testInput(server.URL, "chat_json")
-	input.APIKeys = []APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}}}
+	input.APIKeys = []exactkeyprobe.APIKeyInput{{Index: 0, Fingerprint: "key-1", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}}}
 	input.KeySetFingerprint = "keyset-1"
-	input.Eligibility = Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
-	input.Schedule = Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "active", Schedulable: true, BoundGroup: true, AuthorizationEligible: true}
+	input.Schedule = exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
 
 	outbox := &probeOutboxMemoryStore{pending: []ProbeOutboxRow{{
 		RequestID: "j1-in-scope",
@@ -208,7 +211,7 @@ func TestDrainProbeOutboxInScopeRunsExplicitRequest(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("outcome missing: found=%t err=%v", found, err)
 	}
-	if state.Outcome != OutcomeSuccess || state.AccountStatus != "active" {
+	if state.Outcome != exactkeyprobe.OutcomeSuccess || state.AccountStatus != "active" {
 		t.Fatalf("explicit request outcome = %#v", state)
 	}
 

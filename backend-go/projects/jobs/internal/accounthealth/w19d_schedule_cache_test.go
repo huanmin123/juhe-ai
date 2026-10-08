@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"testing"
 	"time"
 )
@@ -17,10 +18,10 @@ func TestDirectScheduleCacheTTLLifecycle(t *testing.T) {
 	now := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	fetches := 0
-	schedule := Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond)}
+	schedule := exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond)}
 	timezone := time.UTC
 	cache := &directScheduleCache{ttl: directScheduleCacheTTL, now: clock}
-	fetch := func(context.Context) (Schedule, *time.Location, error) {
+	fetch := func(context.Context) (exactkeyprobe.Schedule, *time.Location, error) {
 		fetches++
 		return schedule, timezone, nil
 	}
@@ -53,12 +54,12 @@ func TestDirectScheduleCacheFetchFailureNotCached(t *testing.T) {
 	fetches := 0
 	fetchErr := errors.New("system_settings unavailable")
 	cache := &directScheduleCache{ttl: directScheduleCacheTTL, now: clock}
-	fetch := func(context.Context) (Schedule, *time.Location, error) {
+	fetch := func(context.Context) (exactkeyprobe.Schedule, *time.Location, error) {
 		fetches++
 		if fetches == 1 {
-			return Schedule{}, nil, fetchErr
+			return exactkeyprobe.Schedule{}, nil, fetchErr
 		}
-		return Schedule{HealthIntervalMS: 1}, time.UTC, nil
+		return exactkeyprobe.Schedule{HealthIntervalMS: 1}, time.UTC, nil
 	}
 
 	if _, _, err := cache.load(context.Background(), fetch); !errors.Is(err, fetchErr) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // ---- 状态 JSON 契约（毫秒时间戳，可选字段省略） ----
@@ -273,20 +273,20 @@ func TestRunnerExecuteProbeBranches(t *testing.T) {
 		t.Fatalf("装载失败应为 unknown: %s", got)
 	}
 	// 输入账号或派次不匹配 → unknown。
-	mismatched := NewRunner(&woFakeStore{}, woLoaderReturning([]accounthealth.Input{{AccountID: "other", DispatchRevision: 7}}, nil), nil)
+	mismatched := NewRunner(&woFakeStore{}, woLoaderReturning([]exactkeyprobe.Input{{AccountID: "other", DispatchRevision: 7}}, nil), nil)
 	if got := mismatched.executeProbe(context.Background(), state); got != Unknown {
 		t.Fatalf("输入不匹配应为 unknown: %s", got)
 	}
 	// 命中输入后委托注入的 probe。
-	matching := woLoaderReturning([]accounthealth.Input{{AccountID: "src-1", DispatchRevision: 7}}, nil)
+	matching := woLoaderReturning([]exactkeyprobe.Input{{AccountID: "src-1", DispatchRevision: 7}}, nil)
 	probing := NewRunner(&woFakeStore{}, matching, nil)
-	probing.probe = func(_ context.Context, _ State, _ accounthealth.Input) Outcome { return CompleteSuccess }
+	probing.probe = func(_ context.Context, _ State, _ exactkeyprobe.Input) Outcome { return CompleteSuccess }
 	if got := probing.executeProbe(context.Background(), state); got != CompleteSuccess {
 		t.Fatalf("命中输入应委托 probe: %s", got)
 	}
 	// 命中输入但 probe 报告任务失败 → unknown。
 	failing := NewRunner(&woFakeStore{}, matching, nil)
-	failing.probe = func(_ context.Context, _ State, _ accounthealth.Input) Outcome { return Unknown }
+	failing.probe = func(_ context.Context, _ State, _ exactkeyprobe.Input) Outcome { return Unknown }
 	if got := failing.executeProbe(context.Background(), state); got != Unknown {
 		t.Fatalf("probe 失败应为 unknown: %s", got)
 	}
@@ -304,15 +304,15 @@ func TestRunnerHelpers(t *testing.T) {
 
 // ---- 测试辅助 ----
 
-func woLoaderReturning(inputs []accounthealth.Input, err error) InputLoader {
+func woLoaderReturning(inputs []exactkeyprobe.Input, err error) InputLoader {
 	return woFakeLoader{inputs: inputs, err: err}
 }
 
 type woFakeLoader struct {
-	inputs []accounthealth.Input
+	inputs []exactkeyprobe.Input
 	err    error
 }
 
-func (l woFakeLoader) LoadAccount(context.Context, string) ([]accounthealth.Input, error) {
+func (l woFakeLoader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
 	return l.inputs, l.err
 }

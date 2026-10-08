@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 	"sync"
 	"time"
@@ -300,9 +301,9 @@ func (r *Runner) consumeProbeOutboxRow(ctx context.Context, lease OwnerLease, ro
 			"requestId", row.RequestID, "accountId", row.AccountID)
 		return nil
 	}
-	var input Input
+	var input exactkeyprobe.Input
 	if r.directInputReader != nil {
-		var inputs []Input
+		var inputs []exactkeyprobe.Input
 		if accountLoader, ok := r.directInputReader.(directInputAccountFailureLoader); ok {
 			result, loadErr := accountLoader.LoadAccountWithFailures(ctx, row.AccountID)
 			if loadErr != nil {

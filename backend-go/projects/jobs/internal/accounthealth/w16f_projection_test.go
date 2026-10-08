@@ -11,6 +11,7 @@ package accounthealth
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -216,7 +217,7 @@ func TestW16fProjectionMissingAccountArm(t *testing.T) {
 	fixture := newProjectionFixture(t)
 	outcome := Outcome{
 		OutcomeID: "w16f-missing-outcome", RequestID: "w16f-missing-request", AccountID: "w16f-ghost",
-		Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow,
 		InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{
@@ -246,7 +247,7 @@ func TestW16fProjectionActivationErrorArm(t *testing.T) {
 	fixture.seedAccount(t, map[string]any{"id": "acct-1", "status": "pending_test"})
 	outcome := Outcome{
 		OutcomeID: "w16f-activation-error", RequestID: "w16f-activation-error-request", AccountID: "acct-1",
-		Outcome: OutcomeNeutral, ObservedAt: projectionFixtureNow,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: projectionFixtureNow,
 		InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		Projection: &Projection{
 			TargetAccountID: "acct-1", TransitionKind: "activation_error",

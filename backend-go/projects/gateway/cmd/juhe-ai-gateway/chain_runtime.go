@@ -35,6 +35,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
 // chainRuntimeServices bundles every concrete service the chain assembly
@@ -104,6 +105,14 @@ type chainRuntimeServices struct {
 	// ones exactly like the Node missing-runtime branches. ----
 	// AccountCircuits is the D-131 account-circuit service.
 	AccountCircuits *gatewaycircuit.CircuitService
+	// AccountCircuitRuntime 外露主链电路的 store 与 persist mutation hook
+	//（PLAN-20261008T113056000Z）：memory 形态由恢复组件
+	//（chain_circuit_recovery.go）复用同一 store 与投影管道；redis 形态
+	// 不消费（恢复职责归 jobs）。
+	AccountCircuitRuntime chainAccountCircuitRuntime
+	// AccountCircuitRecovery 是 memory 形态的进程内恢复驱动组件
+	//（redis 形态与构造失败降级路径保持零值，main.go 判 Run 非 nil 才挂载）。
+	AccountCircuitRecovery supervisor.Component
 	// ClientIPSlots is the D-109 high-concurrency client-IP slot family.
 	ClientIPSlots *gatewayclientip.ClientIPConcurrency
 	// HighConcurrencyQueue is the D-109 high-concurrency group short queue
@@ -568,7 +577,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// owner gate 与 businesssettings/businessauth/groupdirtycursor 同源
 	// （cfg.Business*，零配置自动认领时已置真）；gate 未就绪/契约缺失时
 	// 保持既有无持久观测行为（见 chain_circuit_controlplane.go）。
-	accountCircuits, closeAccountCircuits, circuitsErr := newChainAccountCircuitService(cfg.RuntimeStateDriver, cfg.RedisStateURL, cfg.RedisNamespace, chainAccountCircuitPersistConfig{
+	accountCircuitRuntime, closeAccountCircuits, circuitsErr := newChainAccountCircuitService(cfg.RuntimeStateDriver, cfg.RedisStateURL, cfg.RedisNamespace, chainAccountCircuitPersistConfig{
 		DB:                composed.db,
 		Postgres:          composed.pgDialect,
 		Confirmed:         cfg.BusinessHandoffConfirmed,
@@ -578,8 +587,23 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	if circuitsErr != nil {
 		return nil, circuitsErr
 	}
-	services.AccountCircuits = accountCircuits
+	services.AccountCircuits = accountCircuitRuntime.Service
+	// PLAN-20261008T113056000Z：store 与 mutation hook 外露给恢复组件
+	// 装配（chain_circuit_recovery.go，仅 memory 形态消费；redis 形态字段
+	// 保持原样不消费，恢复职责仍归 jobs）。
+	services.AccountCircuitRuntime = accountCircuitRuntime
 	services.closeFuncs = append(services.closeFuncs, closeAccountCircuits)
+	// 本地单机形态恢复驱动（PLAN-20261008T113056000Z）：memory 运行态归
+	// gateway 进程所有，恢复驱动随进程装配；redis 形态恢复职责归 jobs，
+	// 组件保持零值（main.go 判 Run 非 nil 才挂载）。构造失败按组合根
+	// fail-fast 契约向上传播。
+	if cfg.RuntimeStateDriver != "redis" {
+		recoveryComponent, recoveryErr := newChainAccountCircuitRecoveryComponent(accountCircuitRuntime, composed, cfg)
+		if recoveryErr != nil {
+			return nil, recoveryErr
+		}
+		services.AccountCircuitRecovery = recoveryComponent
+	}
 
 	// D-134：本地账户屏蔽状态（Node account-local-suppression-store 单例；
 	// memory 驱动才可用，redis 驱动按 canUseProcessLocal=false 全量直通），

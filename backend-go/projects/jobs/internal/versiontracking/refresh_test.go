@@ -137,6 +137,7 @@ func TestRefreshSkipsUpsertWhenNothingChanged(t *testing.T) {
 		FamilyClaudeCode: "2.1.300",
 		FamilyGeminiCLI:  "0.70.0",
 		FamilyZCode:      "3.20.0",
+		FamilyGrokCLI:    "1.0.45",
 	}
 	deps := testDeps(t, current, func(map[string]string) {
 		writeCalls++
@@ -148,6 +149,7 @@ func TestRefreshSkipsUpsertWhenNothingChanged(t *testing.T) {
 		FamilyClaudeCode: releaseResponse(http.StatusOK, npmJSON("@anthropic-ai/claude-code", "2.1.300")),
 		FamilyGeminiCLI:  releaseResponse(http.StatusOK, npmJSON("@google/gemini-cli", "0.70.0")),
 		FamilyZCode:      releaseResponse(http.StatusOK, zcodeJSON("v3.20.0", "https://github.com/zai-org/ZCode/releases/tag/v3.20.0")),
+		FamilyGrokCLI:    releaseResponse(http.StatusOK, "[package]\nname = \"xai-grok-shell\"\nversion = \"1.0.45\"\n"),
 	}
 
 	result, err := Refresh(context.Background(), deps)
@@ -223,6 +225,8 @@ func familyForURL(rawURL string) string {
 		return FamilyGeminiCLI
 	case strings.Contains(rawURL, "zai-org/ZCode"):
 		return FamilyZCode
+	case strings.Contains(rawURL, "xai-org/grok-build"):
+		return FamilyGrokCLI
 	default:
 		return ""
 	}

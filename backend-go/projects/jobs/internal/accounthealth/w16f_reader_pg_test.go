@@ -11,6 +11,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ const w16fReaderSecret = "w16f-reader-secret"
 // w16fCredentials 用读链 secret 构造凭据 envelope。
 func w16fCredentials(t *testing.T, plaintext string) string {
 	t.Helper()
-	envelope, err := EncryptV1Envelope(w16fReaderSecret, []byte(plaintext))
+	envelope, err := exactkeyprobe.EncryptV1Envelope(w16fReaderSecret, []byte(plaintext))
 	if err != nil {
 		t.Fatal(err)
 	}

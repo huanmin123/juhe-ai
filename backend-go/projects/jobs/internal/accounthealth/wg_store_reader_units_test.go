@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ func wgOutcomeBase(requestID string) Outcome {
 		OutcomeID:        "oid-" + requestID,
 		RequestID:        requestID,
 		AccountID:        "acct-store",
-		Outcome:          OutcomeUpstreamFailed,
+		Outcome:          exactkeyprobe.OutcomeUpstreamFailed,
 		ObservedAt:       time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC),
 		InputVersion:     1,
 		ConfigRevision:   2,
@@ -63,7 +64,7 @@ func TestAppendOutcomeValidationContract(t *testing.T) {
 	badFence.Projection = &Projection{
 		TargetAccountID: "acct-store", InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
 		ExpectedAccountStatus: "active",
-		ExpectedCooldownFence: &CooldownFence{Generation: "g"},
+		ExpectedCooldownFence: &exactkeyprobe.CooldownFence{Generation: "g"},
 	}
 	if _, err := store.AppendOutcome(ctx, lease, badFence); err == nil {
 		t.Fatal("无效 expected fence 必须报错")
@@ -74,7 +75,7 @@ func TestAppendOutcomeValidationContract(t *testing.T) {
 	fenceMismatch.Projection = &Projection{
 		TargetAccountID: "acct-store", InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
 		ExpectedAccountStatus: "active",
-		ExpectedCooldownFence: &CooldownFence{ObservationStartedAt: time.Now(), Generation: "g", SourceConfigRevision: &revision},
+		ExpectedCooldownFence: &exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now(), Generation: "g", SourceConfigRevision: &revision},
 		SourceRevision:        int64Pointer(6),
 	}
 	if _, err := store.AppendOutcome(ctx, lease, fenceMismatch); err == nil {
@@ -177,9 +178,9 @@ func TestAppendOutcomeCooldownProjectionPayload(t *testing.T) {
 	ctx := context.Background()
 	observed := time.Date(2026, 9, 10, 11, 0, 0, 0, time.UTC)
 	revision := int64(2)
-	fence := &CooldownFence{ObservationStartedAt: observed, Generation: "gen-cool", SourceConfigRevision: &revision}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: "gen-cool", SourceConfigRevision: &revision}
 	outcome := wgOutcomeBase("req-cool-1")
-	outcome.Outcome = OutcomeSuccess
+	outcome.Outcome = exactkeyprobe.OutcomeSuccess
 	outcome.Projection = &Projection{
 		TargetAccountID:       "acct-store",
 		InputVersion:          1,

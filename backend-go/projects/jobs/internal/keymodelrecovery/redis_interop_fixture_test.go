@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // TestNodeRedisRecoveryInteropFixture is opt-in. Its Node driver owns an
@@ -56,8 +56,8 @@ func TestNodeRedisRecoveryInteropFixture(t *testing.T) {
 	if len(due) != 1 || due[0].CapabilityHash != hash || due[0].Phase != Open {
 		t.Fatalf("Node 发布的 interop due state 不存在或不精确: %#v", due)
 	}
-	runner := NewRunner(store, redisInteropLoader{input: accounthealth.Input{AccountID: sourceID, DispatchRevision: key.DispatchRevision}}, nil)
-	runner.probe = func(_ context.Context, state State, input accounthealth.Input) Outcome {
+	runner := NewRunner(store, redisInteropLoader{input: exactkeyprobe.Input{AccountID: sourceID, DispatchRevision: key.DispatchRevision}}, nil)
+	runner.probe = func(_ context.Context, state State, input exactkeyprobe.Input) Outcome {
 		if state.CapabilityHash != hash || input.AccountID != sourceID || input.DispatchRevision != key.DispatchRevision {
 			t.Errorf("精确恢复输入不匹配: state=%#v input=%#v", state, input)
 		}
@@ -89,10 +89,10 @@ func TestNodeRedisRecoveryInteropFixture(t *testing.T) {
 	}
 }
 
-type redisInteropLoader struct{ input accounthealth.Input }
+type redisInteropLoader struct{ input exactkeyprobe.Input }
 
-func (l redisInteropLoader) LoadAccount(context.Context, string) ([]accounthealth.Input, error) {
-	return []accounthealth.Input{l.input}, nil
+func (l redisInteropLoader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
+	return []exactkeyprobe.Input{l.input}, nil
 }
 
 func waitForInteropState(t *testing.T, ctx context.Context, store *RedisStore, hash string, expectedSuccesses int) State {

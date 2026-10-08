@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestW12dProjectionCursorReanchoring(t *testing.T) {
 	fixture := newProjectionFixture(t)
 	ctx := context.Background()
 	// 存一条 outcome（存储时间与游标文本不同）。
-	outcome := Outcome{OutcomeID: "w12d-anchor", RequestID: "w12d-anchor-r", AccountID: "w12d-acc", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
+	outcome := Outcome{OutcomeID: "w12d-anchor", RequestID: "w12d-anchor-r", AccountID: "w12d-acc", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
 	fixture.insertOutcome(projectionFixtureNow, outcome)
 	// 游标指向同一 outcome 但时间文本精度漂移。
 	if _, err := fixture.business.Exec(`INSERT INTO account_health_projection_cursors (consumer_key, observed_at, outcome_id, updated_at) VALUES (?, '2026-09-06T11:00:00Z', 'w12d-anchor', '2026-09-06T11:00:00Z')`, DefaultProjectionConsumerKey); err != nil {
@@ -56,7 +57,7 @@ func TestW12dProjectionFaultInjection(t *testing.T) {
 	if _, err := fixture.business.Exec(`DROP TABLE account_health_projection_receipts`); err != nil {
 		t.Fatal(err)
 	}
-	outcome := Outcome{OutcomeID: "w12d-fault-1", RequestID: "r", AccountID: "w12d-acc", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
+	outcome := Outcome{OutcomeID: "w12d-fault-1", RequestID: "r", AccountID: "w12d-acc", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
 	fixture.insertOutcome(projectionFixtureNow, outcome)
 	// findReceipt 读取错误先于插入上抛（receipts 表缺失）。
 	if _, err := fixture.projector.DrainOnce(ctx); err == nil || !strings.Contains(err.Error(), "receipt 失败") {
@@ -105,7 +106,7 @@ func TestW12dProjectOutcomeFaults(t *testing.T) {
 	if _, err := fixture.business.Exec(`DROP TABLE account_health_jobs_input_versions`); err != nil {
 		t.Fatal(err)
 	}
-	outcome := Outcome{OutcomeID: "w12d-fault-2", RequestID: "r", AccountID: "w12d-fault-acc", Outcome: OutcomeUpstreamFailed, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+	outcome := Outcome{OutcomeID: "w12d-fault-2", RequestID: "r", AccountID: "w12d-fault-acc", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt:  ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{TargetAccountID: "w12d-fault-acc", TransitionKind: "health_failure", InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, ExpectedAccountStatus: "active"}}
 	fixture.insertOutcome(projectionFixtureNow, outcome)
@@ -131,7 +132,7 @@ func TestW12dProjectionPlanArms(t *testing.T) {
 	// (a) 坏 schedule JSON → plan 降级 disabled、不恢复 dispatch。
 	fixture.seedAccount(t, map[string]any{"id": "w12d-plan-acc", "status": "pending_test", "config_revision": int64(5), "dispatch_revision": int64(7), "availability_schedule_json": "{bad-json"})
 	w12dSeedInputVersion(t, fixture, "w12d-plan-acc", 1)
-	outcome := Outcome{OutcomeID: "w12d-plan-1", RequestID: "r", AccountID: "w12d-plan-acc", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+	outcome := Outcome{OutcomeID: "w12d-plan-1", RequestID: "r", AccountID: "w12d-plan-acc", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt:  ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{TargetAccountID: "w12d-plan-acc", TransitionKind: "activation_success", InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, ExpectedAccountStatus: "pending_test"}}
 	fixture.insertOutcome(projectionFixtureNow, outcome)

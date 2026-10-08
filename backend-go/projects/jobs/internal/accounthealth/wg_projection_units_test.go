@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"testing"
 	"time"
 )
@@ -112,7 +113,7 @@ func TestFenceMismatchReasonTruthTable(t *testing.T) {
 			ConfigRevision:        5,
 			DispatchRevision:      7,
 			ExpectedAccountStatus: "active",
-			ExpectedCooldownFence: &CooldownFence{ObservationStartedAt: observed, Generation: "gen-1"},
+			ExpectedCooldownFence: &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: "gen-1"},
 		}
 	}
 	baseProjection := wgFenceProjection()

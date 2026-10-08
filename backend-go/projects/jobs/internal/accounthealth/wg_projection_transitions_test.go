@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 // wgTransitionOutcome 构造指定 transition kind 的投影 outcome（fence 形状
 // 与归档一致：expected/输出共用同一不可变 fence）。
 func wgTransitionOutcome(kind string, observedAt time.Time, withOutputFence bool, expectedStatus string) Outcome {
-	fence := &CooldownFence{ObservationStartedAt: observedAt.Add(-time.Hour), Generation: "gen-" + kind, SourceConfigRevision: nil}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observedAt.Add(-time.Hour), Generation: "gen-" + kind, SourceConfigRevision: nil}
 	projection := &Projection{
 		TargetAccountID:       "acct-1",
 		TransitionKind:        kind,
@@ -31,12 +32,12 @@ func wgTransitionOutcome(kind string, observedAt time.Time, withOutputFence bool
 	}
 	// outcome 与 transition 的匹配真值表见 outcomeMatchesTransition：
 	// 成功族需要 Success；defer 需要 Neutral；failure/error 需要 UpstreamFailed。
-	outcomeKind := OutcomeUpstreamFailed
+	outcomeKind := exactkeyprobe.OutcomeUpstreamFailed
 	switch kind {
 	case "cooldown_defer":
-		outcomeKind = OutcomeNeutral
+		outcomeKind = exactkeyprobe.OutcomeNeutral
 	case "health_success":
-		outcomeKind = OutcomeSuccess
+		outcomeKind = exactkeyprobe.OutcomeSuccess
 	}
 	outcome := Outcome{
 		OutcomeID:        "outcome-" + kind,
@@ -138,7 +139,7 @@ func TestProjectionTransitionBranches(t *testing.T) {
 	observed := projectionFixtureNow.Add(-time.Minute)
 	outcome := wgTransitionOutcome("cooldown_error", observed, false, "temporary_unavailable")
 	outcome.Projection.CooldownFence = nil
-	outcome.Projection.ExpectedCooldownFence = &CooldownFence{ObservationStartedAt: observation, Generation: "gen-cooldown_error"}
+	outcome.Projection.ExpectedCooldownFence = &exactkeyprobe.CooldownFence{ObservationStartedAt: observation, Generation: "gen-cooldown_error"}
 	fixture.insertOutcome(observed, outcome)
 	if result := fixture.drain(t); result.Processed != 1 {
 		t.Fatalf("legacy cooldown_error Processed = %d", result.Processed)
@@ -244,39 +245,6 @@ func sqlOpenSQLiteFileForTest(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
-}
-
-// TestVerifyResponseSSEDispatch 覆盖 verifyResponse 的 SSE 分派（走顶层
-// switch 而非各 verifier 直测）。
-func TestVerifyResponseSSEDispatch(t *testing.T) {
-	goodChat := "data: {\"choices\":[{\"delta\":{\"content\":\"juhe\"}}]}\n\ndata: [DONE]\n\n"
-	if err := verifyResponse(wgSSEInput("chat_sse", "openai", "profile_openai_openai_v1"), []byte(goodChat)); err != nil {
-		t.Fatalf("chat_sse 分派: %v", err)
-	}
-	goodResponses := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\n" +
-		"data: {\"type\":\"response.completed\"}\n\n"
-	if err := verifyResponse(wgSSEInput("responses_sse", "openai", "profile_openai_openai_v1"), []byte(goodResponses)); err != nil {
-		t.Fatalf("responses_sse 分派: %v", err)
-	}
-	goodMessages := "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"juhe\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
-	if err := verifyResponse(wgSSEInput("messages_sse", "anthropic", "profile_anthropic_anthropic_v1"), []byte(goodMessages)); err != nil {
-		t.Fatalf("messages_sse 分派: %v", err)
-	}
-	goodGemini := "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"juhe\"}]}}]}\n\n"
-	if err := verifyResponse(wgSSEInput("generate_content_sse", "gemini", "profile_gemini_native_v1beta"), []byte(goodGemini)); err != nil {
-		t.Fatalf("generate_content_sse 分派: %v", err)
-	}
-	goodInteractions := "data: {\"status\":\"completed\"}\n\ndata: {\"interaction\":{\"output\":\"juhe\"}}\n\ndata: [DONE]\n\n"
-	if err := verifyResponse(wgSSEInput("interactions_sse", "gemini", "profile_gemini_native_v1beta"), []byte(goodInteractions)); err != nil {
-		t.Fatalf("interactions_sse 分派: %v", err)
-	}
-	// OAuth 过期分支（validateInput）。
-	oauth := wgSSEInput("responses_sse", "gpt", "profile_gpt_openai_v1")
-	oauth.Type = "oauth"
-	oauth.OAuthExpiresAt = ptrTime(time.Now().Add(-time.Minute))
-	if err := validateInput(oauth, ProbeOptions{}); err == nil {
-		t.Fatal("OAuth token 过期必须报错")
-	}
 }
 
 // TestCooldownDeferBounds 覆盖冷却推迟时长的边界钳制（负步长、下限、上限）。

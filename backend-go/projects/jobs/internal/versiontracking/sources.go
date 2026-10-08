@@ -1,6 +1,6 @@
 // Package versiontracking 实现客户端版本自动跟版任务的发布源解析与单轮刷新
-// （客户端版本自动跟版设计 §5/§6）。本包只覆盖前四族（codex/claudeCode/
-// geminiCLI/zcode）；grokCLI 不在本期跟版范围。
+// （客户端版本自动跟版设计 §5/§6/§8.3）。覆盖五族：codex/claudeCode/
+// geminiCLI/zcode/grokCLI（grokCLI 为第二期收尾追加，源契约见设计 §8.3）。
 package versiontracking
 
 import (
@@ -17,6 +17,7 @@ const (
 	FamilyClaudeCode = "claudeCode"
 	FamilyGeminiCLI  = "geminiCLI"
 	FamilyZCode      = "zcode"
+	FamilyGrokCLI    = "grokCLI"
 )
 
 const (
@@ -24,6 +25,11 @@ const (
 	claudeCodeRegistryURL = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"
 	geminiCLIRegistryURL  = "https://registry.npmjs.org/@google/gemini-cli/latest"
 	zcodeReleasesURL      = "https://api.github.com/repos/zai-org/ZCode/releases/latest"
+	// grokCLICargoTomlURL 是 grokCLI 家族的主动跟版源（设计 §8.3：xai-org/
+	// grok-build 不发 GitHub Release/tag，不能用 releases/latest 惯用接口；
+	// 改取 CLI 主 crate 的 Cargo.toml，raw.githubusercontent 国内可达，与
+	// 现有四源同路）。
+	grokCLICargoTomlURL = "https://raw.githubusercontent.com/xai-org/grok-build/main/crates/codegen/xai-grok-shell/Cargo.toml"
 
 	codexOwner = "openai"
 	codexRepo  = "codex"
@@ -56,13 +62,14 @@ type ParsedRelease struct {
 	RawField string
 }
 
-// Sources 按设计 §5 固定顺序返回四族发布源。
+// Sources 按设计 §5/§8.3 固定顺序返回五族发布源（grokCLI 追加在末位）。
 func Sources() []Source {
 	return []Source{
 		{Family: FamilyCodex, URL: codexReleasesURL, GitHub: true, parse: parseCodexRelease},
 		{Family: FamilyClaudeCode, URL: claudeCodeRegistryURL, parse: parseNPMRelease(FamilyClaudeCode, claudeCodePackage)},
 		{Family: FamilyGeminiCLI, URL: geminiCLIRegistryURL, parse: parseNPMRelease(FamilyGeminiCLI, geminiCLIPackage)},
 		{Family: FamilyZCode, URL: zcodeReleasesURL, GitHub: true, parse: parseZCodeRelease},
+		{Family: FamilyGrokCLI, URL: grokCLICargoTomlURL, GitHub: true, parse: parseGrokCLICargoToml},
 	}
 }
 
@@ -224,6 +231,74 @@ func parseNPMRelease(family, packageName string) func([]byte) (ParsedRelease, er
 		}
 		return ParsedRelease{Version: version, RawField: version}, nil
 	}
+}
+
+// parseGrokCLICargoToml 解析 grok-build 仓库 xai-grok-shell crate 的
+// Cargo.toml（设计 §8.3）：只取 [package] section 内的 version 键——从
+// `[package]` 行起、到下一个行首 `[` section 头止；section 外的 version 行
+// （[dependencies] 等段的依赖版本、[package.metadata] 子表）一律忽略，
+// 不作"取全文第一个 version 行"假设（文件布局可变，[patch.crates-io]/
+// [workspace] 可出现在 [package] 之前）。
+func parseGrokCLICargoToml(body []byte) (ParsedRelease, error) {
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return ParsedRelease{}, fmt.Errorf("%s 发布响应为空", FamilyGrokCLI)
+	}
+	version, err := cargoTomlPackageVersion(FamilyGrokCLI, string(body))
+	if err != nil {
+		return ParsedRelease{}, err
+	}
+	if !semverPattern.MatchString(version) {
+		return ParsedRelease{}, fmt.Errorf("%s 版本 %q 不是三段数字版本", FamilyGrokCLI, version)
+	}
+	return ParsedRelease{Version: version, RawField: version}, nil
+}
+
+// cargoTomlPackageVersion 在 Cargo.toml 文本中按 section 定位 [package] 内的
+// 首个 version 键。section 头去掉行尾注释后必须精确等于 [package]
+// （[package.metadata] 等子表不得误判）；任何行首 `[`（含 [[bench]] 等
+// array-of-table 头）都终止 [package] 段。缺 [package] 与段内无 version
+// 分别返回带原因 error。
+func cargoTomlPackageVersion(family, text string) (string, error) {
+	inPackage := false
+	sawPackage := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			header := strings.TrimSpace(strings.SplitN(trimmed, "#", 2)[0])
+			inPackage = header == "[package]"
+			if inPackage {
+				sawPackage = true
+			}
+			continue
+		}
+		if !inPackage || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(key) != "version" {
+			continue
+		}
+		return cargoTomlQuotedValue(family, strings.TrimSpace(value))
+	}
+	if !sawPackage {
+		return "", fmt.Errorf("%s 的 Cargo.toml 缺少 [package] section", family)
+	}
+	return "", fmt.Errorf("%s 的 [package] section 缺少 version", family)
+}
+
+// cargoTomlQuotedValue 取 TOML 值的引号内文本（双引号或单引号；裸值或引号
+// 未闭合报错，取首个闭合引号以容忍行尾注释）。
+func cargoTomlQuotedValue(family, value string) (string, error) {
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') {
+		if end := strings.IndexByte(value[1:], value[0]); end >= 0 {
+			return value[1 : 1+end], nil
+		}
+		return "", fmt.Errorf("%s 的 version 值引号未闭合: %q", family, value)
+	}
+	return "", fmt.Errorf("%s 的 version 值不是带引号字符串: %q", family, value)
 }
 
 // CompareSemver 比较两段已由 parser 保证形状的三段整数版本。

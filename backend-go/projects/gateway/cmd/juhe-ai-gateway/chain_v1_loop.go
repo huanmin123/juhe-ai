@@ -67,6 +67,15 @@ type v1DispatchLoop struct {
 	// streamServerRetryCount mirrors Node streamServerRetryCount (routes.ts:
 	// 541) for the stream_server_retry_dispatch audit metadata.
 	streamServerRetryCount int
+	// lastPreCommitSwitchSignature（BUG-0298）记录上一次"检查拦截命中且加密
+	// 上下文信号未命中"换号的上游失败签名（错误码+文案）：连续两次签名一致
+	// 判定同源（同一上游拒绝形状），停止级联候选，走既有耗尽契约。仅覆盖
+	// ResponseInspection 非 nil 的换号 verdict；检查未命中换号（无决策对象可
+	// 签名）与恢复臂重放（专用通道）不受影响。切组时不重置本签名——这是裁决
+	// 而非遗漏：触发跨组即停需两组的首末失败逐字节同码同文案，对另一账户池
+	// 仍是系统性上游故障的较强证据；勿按与 streamRetryExcludedAccounts 的
+	// 对称性在此补重置。
+	lastPreCommitSwitchSignature string
 	// compactWaitHeartbeat 是 codex 压缩 SSE 请求在上游派发等待期的专属保活
 	// 心跳（Node activeCompactSseWaitHeartbeat，routes.ts:1229-1239：10s 间隔
 	// 写出 compaction 保活块，防客户端/中间层在压缩长等待期空闲断连）。
@@ -592,6 +601,39 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	}
 	current := l.current
 	accountID := dispatched.Account.ID
+	// ---- BUG-0298：信号未命中换号的同签名即停与会话级避让 ----
+	// 该换号面（检查拦截命中且加密上下文信号未命中）的失败与"来源×账户"绑定：
+	// 加密续状态仅生成它的上游会话可验证。①换号被接受时解除失败账户的会话
+	// 亲和并记录来源级短 TTL 避让（含后台探活），同一会话的后续请求把该账户
+	// 排到同层候选之后，不再反复先撞它；②连续两次换号失败且上游错误码+文案
+	// 完全一致判定同源，停止级联候选，走既有耗尽契约。签名与避让仅覆盖
+	// ResponseInspection 非 nil 的换号；恢复臂重放（上方专用通道）与检查未
+	// 命中换号（无决策对象可签名）行为不变。避让不写账户健康/熔断状态
+	// （预提交零输出失败契约不变），协作方未装配时显式降级。
+	if handling.RetryReason == gatewayresponse.StreamServerRetryPreCommitStreamFailure && handling.ResponseInspection != nil {
+		signature := handling.ResponseInspection.UpstreamErrorCode + "\x1f" + handling.ResponseInspection.UpstreamErrorMessage
+		if signature == l.lastPreCommitSwitchSignature {
+			l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, current, "pre_commit_switch_same_signature")
+			l.auditCapture.AddGatewayMetadata("pre_commit_stream_server_retry_stopped", map[string]any{
+				"reason":    "same_signature",
+				"accountId": accountID,
+				"errorCode": handling.ErrorCode,
+			})
+			l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+				message:        handling.Message,
+				retryReason:    handling.RetryReason,
+				errorCode:      handling.ErrorCode,
+				decision:       handling.ResponseInspection,
+				usageContext:   current.UsageContext,
+				clientStrategy: &current.ClientStrategy,
+			})
+			return true
+		}
+		l.lastPreCommitSwitchSignature = signature
+		if l.c.streamFailureAvoidance != nil {
+			l.c.streamFailureAvoidance.scheduleStreamSwitchClientSourceAvoidance(ctx, l.req, current.UsageContext, current.SessionAffinityKey, dispatched.Account, handling.ResponseInspection.UpstreamErrorCode, handling.ResponseInspection.UpstreamErrorMessage, dispatched.AuditAttemptID)
+		}
+	}
 	// Node 2301-2307: a policy-requested exclusion puts the current account
 	// into the per-group stream-retry excluded set.
 	policyRequestedAccountExclusion := handling.ExcludeCurrentAccount

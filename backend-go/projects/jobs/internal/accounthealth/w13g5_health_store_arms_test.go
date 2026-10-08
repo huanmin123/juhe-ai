@@ -6,6 +6,7 @@ package accounthealth
 
 import (
 	"context"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"testing"
 	"time"
 )
@@ -184,7 +185,7 @@ func TestW13g5HealthDirectInputSuppressionWriteArms(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	base := func() Outcome {
 		outcome := w13g5HealthOutcome()
-		outcome.Outcome = OutcomeTaskFailed
+		outcome.Outcome = exactkeyprobe.OutcomeTaskFailed
 		outcome.ErrorCode = "direct_input_invalid"
 		outcome.NextDueAt = &future
 		return outcome

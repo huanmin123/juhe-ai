@@ -58,6 +58,11 @@ type workerAssembly struct {
 	// B②：队列满时记录先落盘溢出 spool，再由本 drain 幂等回放入队；未消费
 	// 文件的队头水位并入 ingestgate 多源积压）。
 	usageOverflowReplay *usagespooldrain.Drainer
+	// upstreamClientVersionRefresh 是 upstream-client-version-refresh 的单轮
+	// 刷新入口（wireVersionTrackingFamily 装配期赋值）。Grok 426 版本门触发
+	// 器（worker_xai_grok_usage.go）运行期经它即时触发一次跟版刷新；nil =
+	// 家族未接线（登记 disabled），消费方必须 nil 安全跳过。
+	upstreamClientVersionRefresh func(ctx context.Context) error
 
 	settings workerSettingsSource
 

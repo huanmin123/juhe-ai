@@ -176,6 +176,86 @@ func TestParseZCodeReleaseRejectsPrereleaseWrongRepoAndBadVersion(t *testing.T) 
 	}
 }
 
+// grokCLICargoTomlFixture 按 xai-org/grok-build xai-grok-shell/Cargo.toml 的
+// 真实形状构造（设计 §8.3）：首部注释行 + [patch.crates-io]（在 [workspace]
+// 之前，段内含 version 干扰行）+ [package] 在文件后部 + 依赖段含裸版本与
+// 内嵌 version 键的干扰行 + [[bench]]/[[bin]] array-of-table 头。
+const grokCLICargoTomlFixture = `# Codegen shell crate. The CLI version lives in [package].version below.
+[patch.crates-io]
+rustls = { version = "0.23", git = "https://github.com/example/rustls" }
+
+[workspace]
+members = ["crates/*"]
+
+[package]
+license = "Apache-2.0"
+name = "xai-grok-shell"
+version = "1.0.45"
+edition.workspace = true
+
+[dependencies]
+bm25 = "2.3"
+serde = { version = "1.0", features = ["derive"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+
+[[bench]]
+name = "session_list"
+harness = false
+
+[[bin]]
+name = "chat-history-downgrade"
+path = "src/bin/chat-history-downgrade.rs"
+`
+
+// TestParseGrokCLICargoTomlAcceptsPackageSectionVersion：真实形状样本下只取
+// [package] section 内的 version，忽略 patch 段与依赖段的全部 version 行。
+func TestParseGrokCLICargoTomlAcceptsPackageSectionVersion(t *testing.T) {
+	parsed, err := sourceByFamily(FamilyGrokCLI).Parse([]byte(grokCLICargoTomlFixture))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.Version != "1.0.45" || parsed.RawField != "1.0.45" {
+		t.Fatalf("parsed = %+v", parsed)
+	}
+}
+
+// TestParseGrokCLICargoTomlRejectsMissingPackageSectionAndBadVersion：缺
+// [package]、section 内无 version、版本非法分别报带原因 error；子表
+// [package.metadata] 中的 version 行不得被误取为 [package] 版本。
+func TestParseGrokCLICargoTomlRejectsMissingPackageSectionAndBadVersion(t *testing.T) {
+	_, err := sourceByFamily(FamilyGrokCLI).Parse([]byte(`[dependencies]
+serde = { version = "1.0" }
+`))
+	if err == nil || !strings.Contains(err.Error(), "缺少 [package]") {
+		t.Fatalf("missing package err = %v", err)
+	}
+	_, err = sourceByFamily(FamilyGrokCLI).Parse([]byte(`[package]
+name = "xai-grok-shell"
+edition.workspace = true
+`))
+	if err == nil || !strings.Contains(err.Error(), "缺少 version") {
+		t.Fatalf("missing version err = %v", err)
+	}
+	_, err = sourceByFamily(FamilyGrokCLI).Parse([]byte(`[package]
+version = "1.0.45-beta"
+`))
+	if err == nil || !strings.Contains(err.Error(), "三段数字版本") {
+		t.Fatalf("bad version err = %v", err)
+	}
+	_, err = sourceByFamily(FamilyGrokCLI).Parse([]byte(`[package]
+name = "xai-grok-shell"
+
+[package.metadata]
+version = "9.9.9"
+`))
+	if err == nil || !strings.Contains(err.Error(), "缺少 version") {
+		t.Fatalf("子表 version 不得顶替 [package] 版本: %v", err)
+	}
+}
+
 func TestCompareSemver(t *testing.T) {
 	cases := []struct {
 		left, right string
@@ -198,18 +278,18 @@ func TestCompareSemver(t *testing.T) {
 	}
 }
 
-func TestSourcesCoverFourFamilies(t *testing.T) {
+func TestSourcesCoverFiveFamilies(t *testing.T) {
 	sources := Sources()
-	if len(sources) != 4 {
+	if len(sources) != 5 {
 		t.Fatalf("sources = %d", len(sources))
 	}
-	want := []string{FamilyCodex, FamilyClaudeCode, FamilyGeminiCLI, FamilyZCode}
+	want := []string{FamilyCodex, FamilyClaudeCode, FamilyGeminiCLI, FamilyZCode, FamilyGrokCLI}
 	for index, family := range want {
 		if sources[index].Family != family || sources[index].URL == "" {
 			t.Fatalf("source %d = %+v", index, sources[index])
 		}
 	}
-	if !sources[0].GitHub || !sources[3].GitHub || sources[1].GitHub || sources[2].GitHub {
+	if !sources[0].GitHub || !sources[3].GitHub || !sources[4].GitHub || sources[1].GitHub || sources[2].GitHub {
 		t.Fatal("GitHub UA 标记与设计不符")
 	}
 }

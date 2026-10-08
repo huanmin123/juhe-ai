@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ import (
 func TestW12dValidateProjectionTruthTable(t *testing.T) {
 	base := Outcome{
 		OutcomeID: "w12d-outcome", RequestID: "w12d-request", AccountID: "w12d-acc",
-		Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow,
 		InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{
@@ -40,7 +41,7 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 			ExpectedAccountStatus: "pending_test",
 		},
 	}
-	fence := &CooldownFence{ObservationStartedAt: projectionFixtureNow, Generation: "gen-w12d"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: projectionFixtureNow, Generation: "gen-w12d"}
 	cases := []struct {
 		name     string
 		mutate   func(*Outcome)
@@ -108,7 +109,7 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 			name: "activation error next due optional", terminal: false,
 			mutate: func(o *Outcome) {
 				o.NextDueAt = nil
-				o.Outcome = OutcomeNeutral
+				o.Outcome = exactkeyprobe.OutcomeNeutral
 				o.Projection.TransitionKind = "activation_error"
 			},
 		},
@@ -122,7 +123,7 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 		{
 			name: "expected cooldown fence missing", terminal: true, dispose: ProjectionRejected, reason: "projection_expected_cooldown_fence_missing",
 			mutate: func(o *Outcome) {
-				o.Outcome = OutcomeUpstreamFailed
+				o.Outcome = exactkeyprobe.OutcomeUpstreamFailed
 				o.Projection.TransitionKind = "cooldown_failure"
 				o.Projection.ExpectedAccountStatus = "temporary_unavailable"
 				o.Projection.CooldownFence = fence
@@ -131,17 +132,17 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 		{
 			name: "cooldown fence mismatch", terminal: true, dispose: ProjectionRejected, reason: "projection_cooldown_fence_mismatch",
 			mutate: func(o *Outcome) {
-				o.Outcome = OutcomeUpstreamFailed
+				o.Outcome = exactkeyprobe.OutcomeUpstreamFailed
 				o.Projection.TransitionKind = "cooldown_defer"
 				o.Projection.ExpectedAccountStatus = "temporary_unavailable"
 				o.Projection.ExpectedCooldownFence = fence
-				o.Projection.CooldownFence = &CooldownFence{ObservationStartedAt: projectionFixtureNow.Add(time.Second), Generation: "gen-other"}
+				o.Projection.CooldownFence = &exactkeyprobe.CooldownFence{ObservationStartedAt: projectionFixtureNow.Add(time.Second), Generation: "gen-other"}
 			},
 		},
 		{
 			name: "expected cooldown source fence mismatch", terminal: true, dispose: ProjectionRejected, reason: "projection_expected_cooldown_source_fence_mismatch",
 			mutate: func(o *Outcome) {
-				o.Outcome = OutcomeUpstreamFailed
+				o.Outcome = exactkeyprobe.OutcomeUpstreamFailed
 				o.Projection.TransitionKind = "cooldown_error"
 				o.Projection.ExpectedAccountStatus = "temporary_unavailable"
 				o.Projection.SourceRevision = ptrInt64(3)
@@ -158,13 +159,13 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 				o.Projection.TransitionKind = "health_success"
 				o.Projection.ExpectedAccountStatus = "active"
 				o.Projection.SourceRevision = ptrInt64(3)
-				o.Projection.CooldownFence = &CooldownFence{ObservationStartedAt: projectionFixtureNow, Generation: "gen-w12d", SourceConfigRevision: ptrInt64(4)}
+				o.Projection.CooldownFence = &exactkeyprobe.CooldownFence{ObservationStartedAt: projectionFixtureNow, Generation: "gen-w12d", SourceConfigRevision: ptrInt64(4)}
 			},
 		},
 		{
 			name: "outcome transition mismatch", terminal: true, dispose: ProjectionRejected, reason: "projection_outcome_transition_mismatch",
 			mutate: func(o *Outcome) {
-				o.Outcome = OutcomeNeutral
+				o.Outcome = exactkeyprobe.OutcomeNeutral
 				o.Projection.TransitionKind = "health_success"
 				o.Projection.ExpectedAccountStatus = "active"
 			},
@@ -172,7 +173,7 @@ func TestW12dValidateProjectionTruthTable(t *testing.T) {
 		{
 			name: "valid cooldown defer", terminal: false,
 			mutate: func(o *Outcome) {
-				o.Outcome = OutcomeNeutral
+				o.Outcome = exactkeyprobe.OutcomeNeutral
 				o.Projection.TransitionKind = "cooldown_defer"
 				o.Projection.ExpectedAccountStatus = "temporary_unavailable"
 				o.Projection.ExpectedCooldownFence = fence
@@ -268,7 +269,7 @@ func TestW12dListProjectedOutcomesArms(t *testing.T) {
 	if _, err := fixture.store.listProjectedOutcomes(context.Background(), nil, 0); err == nil {
 		t.Fatal("limit<1 必须报错")
 	}
-	outcome := Outcome{OutcomeID: "w12d-list", RequestID: "w12d-list-r", AccountID: "w12d-acc", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
+	outcome := Outcome{OutcomeID: "w12d-list", RequestID: "w12d-list-r", AccountID: "w12d-acc", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
 	payload, _ := json.Marshal(outcome)
 	if _, err := fixture.store.db.Exec(`INSERT INTO account_health_outcomes (outcome_id, request_id, account_id, outcome, observed_at, input_version, config_revision, dispatch_revision, status_code, error_code, error_message, payload)
 VALUES ('w12d-list', 'r', 'a', 'success', '2026-09-06T12:00:00Z', 1, 5, 7, NULL, NULL, NULL, ?)`, string(payload)); err != nil {
@@ -358,7 +359,7 @@ func TestW12dProjectOutcomeExistingReceipt(t *testing.T) {
 	if _, err := fixture.business.Exec(`INSERT INTO account_health_projection_receipts (outcome_id, account_id, input_version, disposition, reason, applied_at) VALUES ('w12d-receipted', 'w12d-acc', 1, 'stale', 'config_revision_stale', '2026-09-06T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	outcome := Outcome{OutcomeID: "w12d-receipted", RequestID: "r", AccountID: "w12d-acc", Outcome: OutcomeUpstreamFailed, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
+	outcome := Outcome{OutcomeID: "w12d-receipted", RequestID: "r", AccountID: "w12d-acc", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
 	result, err := fixture.projector.projectOutcome(ctx, outcome)
 	if err != nil {
 		t.Fatalf("projectOutcome: %v", err)
@@ -371,7 +372,7 @@ func TestW12dProjectOutcomeExistingReceipt(t *testing.T) {
 // TestW12dProjectOutcomeTerminalReceipt 无投影 outcome 落 ignored receipt 并推进游标。
 func TestW12dProjectOutcomeTerminalReceipt(t *testing.T) {
 	fixture := newProjectionFixture(t)
-	outcome := Outcome{OutcomeID: "w12d-ignored", RequestID: "r", AccountID: "w12d-acc", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
+	outcome := Outcome{OutcomeID: "w12d-ignored", RequestID: "r", AccountID: "w12d-acc", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7}
 	fixture.insertOutcome(projectionFixtureNow, outcome)
 	result := fixture.drain(t)
 	if result.Processed != 1 {
@@ -393,7 +394,7 @@ func TestW12dCASGuardSourceRevision(t *testing.T) {
 	}
 	w12dSeedInputVersion(t, fixture, "w12d-src", 1)
 	w12dSeedInputVersion(t, fixture, "w12d-inst", 1)
-	outcome := Outcome{OutcomeID: "w12d-cas-src", RequestID: "r", AccountID: "w12d-inst", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
+	outcome := Outcome{OutcomeID: "w12d-cas-src", RequestID: "r", AccountID: "w12d-inst", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{
 			TargetAccountID: "w12d-inst", TransitionKind: "activation_success",
@@ -439,7 +440,7 @@ func TestW12dApplyProjectionUpdateArms(t *testing.T) {
 	}
 	defer tx.Rollback()
 	missingFence := Outcome{
-		OutcomeID: "w12d-guard", RequestID: "r", AccountID: "w12d-cas", Outcome: OutcomeNeutral,
+		OutcomeID: "w12d-guard", RequestID: "r", AccountID: "w12d-cas", Outcome: exactkeyprobe.OutcomeNeutral,
 		ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		Projection: &Projection{TargetAccountID: "w12d-cas", TransitionKind: "temporary_unavailable", InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, ExpectedAccountStatus: "active"},
 	}
@@ -453,7 +454,7 @@ func TestW12dApplyProjectionUpdateArms(t *testing.T) {
 	}
 	// (b) fence 期望与库内行不一致 → CAS miss。
 	staleOutcome := Outcome{
-		OutcomeID: "w12d-cas-miss", RequestID: "r", AccountID: "w12d-cas", Outcome: OutcomeUpstreamFailed,
+		OutcomeID: "w12d-cas-miss", RequestID: "r", AccountID: "w12d-cas", Outcome: exactkeyprobe.OutcomeUpstreamFailed,
 		ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
 		NextDueAt: ptrTime(projectionFixtureNow.Add(10 * time.Minute)),
 		Projection: &Projection{

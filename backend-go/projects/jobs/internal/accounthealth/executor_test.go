@@ -2,6 +2,7 @@ package accounthealth
 
 import (
 	"context"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -59,12 +60,12 @@ func TestExecuteInputProbeUsesKeyPoolCursorAndReportsWinner(t *testing.T) {
 	}
 	input := testInput(server.URL, "chat_json")
 	input.KeySetFingerprint = "set-v1"
-	input.APIKeys = []APIKeyInput{
-		{Index: 0, Fingerprint: "bad", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-bad")}},
-		{Index: 1, Fingerprint: "good", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-good")}},
+	input.APIKeys = []exactkeyprobe.APIKeyInput{
+		{Index: 0, Fingerprint: "bad", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-bad")}},
+		{Index: 1, Fingerprint: "good", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-good")}},
 	}
-	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-1", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if err != nil || outcome.Outcome != OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 || outcome.WinnerKeyFingerprint != "good" {
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-1", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, exactkeyprobe.ProbeOptions{Secret: secret, Timeout: time.Second})
+	if err != nil || outcome.Outcome != exactkeyprobe.OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 || outcome.WinnerKeyFingerprint != "good" {
 		t.Fatalf("outcome=%#v err=%v", outcome, err)
 	}
 	next, found, err := store.LoadKeyCursor(ctx, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint)
@@ -75,8 +76,8 @@ func TestExecuteInputProbeUsesKeyPoolCursorAndReportsWinner(t *testing.T) {
 
 func TestExecuteInputProbeUsesInjectedClockForOutcome(t *testing.T) {
 	fixed := time.Date(2026, 8, 17, 3, 4, 5, 678000000, time.FixedZone("UTC+8", 8*60*60))
-	input := Input{AccountID: "account", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}
-	outcome, err := ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, ProbeRequest{RequestID: "request", AccountID: "other"}, ProbeOptions{Now: func() time.Time { return fixed }})
+	input := exactkeyprobe.Input{AccountID: "account", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}
+	outcome, err := ExecuteInputProbe(context.Background(), nil, OwnerLease{}, input, ProbeRequest{RequestID: "request", AccountID: "other"}, exactkeyprobe.ProbeOptions{Now: func() time.Time { return fixed }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,17 +107,17 @@ func TestExecuteInputProbePersistsCursorAfterProbeContextExpires(t *testing.T) {
 	}
 	input := testInput(server.URL, "chat_json")
 	input.KeySetFingerprint = "set-timeout"
-	input.APIKeys = []APIKeyInput{
-		{Index: 0, Fingerprint: "first", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-first")}},
-		{Index: 1, Fingerprint: "second", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-second")}},
+	input.APIKeys = []exactkeyprobe.APIKeyInput{
+		{Index: 0, Fingerprint: "first", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-first")}},
+		{Index: 1, Fingerprint: "second", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-second")}},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-timeout", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Second)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-timeout", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Second)}, exactkeyprobe.ProbeOptions{Secret: secret, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("expired probe context must still produce an outcome after cursor persistence: %v", err)
 	}
-	if outcome.Outcome != OutcomeUpstreamFailed && outcome.Outcome != OutcomeTaskFailed {
+	if outcome.Outcome != exactkeyprobe.OutcomeUpstreamFailed && outcome.Outcome != exactkeyprobe.OutcomeTaskFailed {
 		t.Fatalf("outcome=%#v, want a failed probe outcome", outcome)
 	}
 	next, found, err := store.LoadKeyCursor(context.Background(), input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint)
@@ -159,15 +160,15 @@ func TestExecuteInputProbeKeepsSuccessOutcomeWhenCursorSaveFails(t *testing.T) {
 	ctx := context.Background()
 	input := testInput(server.URL, "chat_json")
 	input.KeySetFingerprint = "set-cursor-success"
-	input.APIKeys = []APIKeyInput{
-		{Index: 0, Fingerprint: "bad", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-bad")}},
-		{Index: 1, Fingerprint: "good", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-good")}},
+	input.APIKeys = []exactkeyprobe.APIKeyInput{
+		{Index: 0, Fingerprint: "bad", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-bad")}},
+		{Index: 1, Fingerprint: "good", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-good")}},
 	}
-	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-cursor-success", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-cursor-success", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, exactkeyprobe.ProbeOptions{Secret: secret, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("cursor save failure must not fail ExecuteInputProbe: %v", err)
 	}
-	if outcome.Outcome != OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 || outcome.WinnerKeyFingerprint != "good" {
+	if outcome.Outcome != exactkeyprobe.OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 || outcome.WinnerKeyFingerprint != "good" {
 		t.Fatalf("outcome=%#v, want intact success outcome with winner index 1", outcome)
 	}
 	if outcome.RequestID != "request-cursor-success" || outcome.AccountID != input.AccountID || outcome.OutcomeID == "" || outcome.ObservedAt.IsZero() {
@@ -194,18 +195,18 @@ func TestExecuteInputProbeKeepsAllKeysFailedOutcomeWhenCursorSaveFails(t *testin
 	ctx := context.Background()
 	input := testInput(server.URL, "chat_json")
 	input.KeySetFingerprint = "set-cursor-allfail"
-	input.APIKeys = []APIKeyInput{
-		{Index: 0, Fingerprint: "first", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-first")}},
-		{Index: 1, Fingerprint: "second", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-second")}},
+	input.APIKeys = []exactkeyprobe.APIKeyInput{
+		{Index: 0, Fingerprint: "first", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-first")}},
+		{Index: 1, Fingerprint: "second", Credential: exactkeyprobe.CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-second")}},
 	}
-	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-cursor-allfail", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-cursor-allfail", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, exactkeyprobe.ProbeOptions{Secret: secret, Timeout: time.Second})
 	if err != nil {
 		t.Fatalf("cursor save failure must not replace the failed-probe outcome: %v", err)
 	}
 	// Per the probe contract a non-2xx HTTP status classifies as neutral
 	// ("upstream_http_status"); that business outcome — not a cursor error —
 	// must reach the caller, without a winner.
-	if outcome.Outcome != OutcomeNeutral || outcome.ErrorCode != "upstream_http_status" || outcome.WinnerIndex != nil {
+	if outcome.Outcome != exactkeyprobe.OutcomeNeutral || outcome.ErrorCode != "upstream_http_status" || outcome.WinnerIndex != nil {
 		t.Fatalf("outcome=%#v, want all-keys-failed business outcome", outcome)
 	}
 	if outcome.RequestID != "request-cursor-allfail" || outcome.AccountID != input.AccountID || outcome.OutcomeID == "" || outcome.ObservedAt.IsZero() {

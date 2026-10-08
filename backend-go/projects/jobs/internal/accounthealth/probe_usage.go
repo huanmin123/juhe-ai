@@ -2,6 +2,7 @@ package accounthealth
 
 import (
 	"context"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 	"time"
 )
@@ -101,13 +102,13 @@ func endpointFamilyForMode(mode string) string {
 
 // recordProbeUsage 在 outcome 持久化成功后补记使用记录；失败 warn 继续
 // （使用记录为旁路观测面，不阻塞健康管道主职责）。
-func (r *Runner) recordProbeUsage(ctx context.Context, outcome Outcome, input Input, trafficSource string) {
+func (r *Runner) recordProbeUsage(ctx context.Context, outcome Outcome, input exactkeyprobe.Input, trafficSource string) {
 	if r.usageRecorder == nil {
 		return
 	}
 	// 非真实探针观测：stale（输入失效未执行）、task_failure（输入级确定性
 	// 失败，未发起上游请求）不补记。
-	if outcome.Outcome == OutcomeStale || outcome.Outcome == OutcomeTaskFailed {
+	if outcome.Outcome == OutcomeStale || outcome.Outcome == exactkeyprobe.OutcomeTaskFailed {
 		return
 	}
 	observation := ProbeUsageObservation{
@@ -115,7 +116,7 @@ func (r *Runner) recordProbeUsage(ctx context.Context, outcome Outcome, input In
 		TrafficSource: trafficSource,
 		Model:         input.HealthModel,
 		Endpoint:      endpointFamilyForMode(input.EndpointMode),
-		Success:       outcome.Outcome == OutcomeSuccess,
+		Success:       outcome.Outcome == exactkeyprobe.OutcomeSuccess,
 		StatusCode:    outcome.StatusCode,
 		ErrorCode:     outcome.ErrorCode,
 		ErrorMessage:  outcome.ErrorMessage,

@@ -77,6 +77,11 @@ type gatewayChain struct {
 	// 响应头的成功面持久化窄口（AI账户Grok用量快照设计 §8.2；失败面在
 	// chainFailureDispatcher.anthropicUsageHeaders）；nil 保持静默。
 	anthropicUsageHeaders gatewaycodex.AnthropicUsageHeadersDispatcher
+	// streamFailureAvoidance 是流式换号的来源级避让入口（BUG-0298）：与 engine
+	// 失败派发器同一 chainFailureDispatcher 实例，换号被接受时经它解除失败账户
+	// 的会话亲和并记录来源级短 TTL 避让（含后台探活）。nil = 未装配，换号仍
+	// 执行、仅不记录（组合测试降级语义）。
+	streamFailureAvoidance *chainFailureDispatcher
 	// mediaJobs 是 M2 媒体任务面运行时（媒体设计 §4.2/§7/§8：media_jobs
 	// 仓储 + 账户亲和水合 + 上游直连传输面）。nil 仅组合测试——任务面端点
 	// 显式 503 降级，创建链受理后落库失败同样显式报错。

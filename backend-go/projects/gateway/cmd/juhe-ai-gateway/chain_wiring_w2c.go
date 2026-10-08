@@ -242,6 +242,17 @@ func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input g
 // D-131: account circuits (gatewaycircuit.CircuitService)
 // ---------------------------------------------------------------------------
 
+// chainAccountCircuitRuntime 是主链账户电路的运行态装配出口：service 供主链
+// 热路径使用；store 与 mutation hook 外露给恢复组件（chain_circuit_recovery.go，
+// 本地单机 memory 形态的进程内恢复驱动）复用同一 store 与同一条 persist 投影
+// 管道。MutationHook 为 nil 表示 persist gate 未就绪（无业务库句柄或 owner
+// gate 三证不齐），恢复 sweep 照常推进运行态，仅 ledger 投影缺席。
+type chainAccountCircuitRuntime struct {
+	Service      *gatewaycircuit.CircuitService
+	Store        gatewaycircuit.Store
+	MutationHook func(context.Context, gatewaycircuit.MutationEvent) error
+}
+
 // newChainAccountCircuitService mirrors the Node GatewayAccountCircuitService
 // singleton fork: the redis driver persists the circuit store through
 // JUHE_AI_REDIS_STATE_URL, memory keeps the process-local store.
@@ -253,7 +264,12 @@ func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input g
 // circuitSummary 复用同一事实源）；配置不齐或契约校验失败时保持既有
 // ServiceOptions{} 行为（无持久观测），绝不 fail-fast 网关启动，也绝不向
 // 请求热路径传播持久化错误（见 chain_circuit_controlplane.go）。
-func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNamespace string, persist chainAccountCircuitPersistConfig, logger gatewaycircuit.Logger) (*gatewaycircuit.CircuitService, func(), error) {
+//
+// PLAN-20261008T113056000Z：返回值扩展为 chainAccountCircuitRuntime（外露
+// store 与 mutation hook），调用点 chain_runtime.go 同步；redis 分支的
+// store/hook 行为不变（恢复组件只在 memory 形态装配，redis 形态恢复职责
+// 仍归 jobs）。
+func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNamespace string, persist chainAccountCircuitPersistConfig, logger gatewaycircuit.Logger) (chainAccountCircuitRuntime, func(), error) {
 	var store gatewaycircuit.Store
 	if runtimeStateDriver == "redis" {
 		redisStore, storeErr := gatewaycircuit.NewRedisStore(gatewaycircuit.RedisStoreOptions{
@@ -263,7 +279,7 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 			Capacity:  10_000,
 		})
 		if storeErr != nil {
-			return nil, nil, fmt.Errorf("create gateway account circuit redis store: %w", storeErr)
+			return chainAccountCircuitRuntime{}, nil, fmt.Errorf("create gateway account circuit redis store: %w", storeErr)
 		}
 		store = redisStore
 	} else {
@@ -272,19 +288,25 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 			Now:      nil,
 		})
 		if storeErr != nil {
-			return nil, nil, fmt.Errorf("create gateway account circuit memory store: %w", storeErr)
+			return chainAccountCircuitRuntime{}, nil, fmt.Errorf("create gateway account circuit memory store: %w", storeErr)
 		}
 		store = memoryStore
 	}
 	options, closePersist, hookErr := newChainAccountCircuitServiceOptions(store, persist, logger)
 	if hookErr != nil {
-		return nil, nil, hookErr
+		return chainAccountCircuitRuntime{}, nil, hookErr
 	}
 	service, serviceErr := gatewaycircuit.NewCircuitService(store, options)
 	if serviceErr != nil {
-		return nil, nil, fmt.Errorf("create gateway account circuit service: %w", serviceErr)
+		return chainAccountCircuitRuntime{}, nil, fmt.Errorf("create gateway account circuit service: %w", serviceErr)
 	}
-	return service, closePersist, nil
+	return chainAccountCircuitRuntime{Service: service, Store: store, MutationHook: mutationHookOf(options)}, closePersist, nil
+}
+
+// mutationHookOf 提取 ServiceOptions.OnMutation（persist hook 已在
+// newChainAccountCircuitServiceOptions 装配；nil 即 gate 未就绪）。
+func mutationHookOf(options gatewaycircuit.ServiceOptions) func(context.Context, gatewaycircuit.MutationEvent) error {
+	return options.OnMutation
 }
 
 // newChainAccountCircuitServiceOptions 组装 CircuitService 的 ServiceOptions。

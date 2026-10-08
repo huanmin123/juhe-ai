@@ -75,17 +75,36 @@ JUHE_AI_OAUTH_PROXY_URL=
 
 上表样例沿用了 Node 时代长名（如 `./data/juhe-ai.sqlite3`）。这些旧长名仅在像样例这样显式配置时继续有效：路径 env 显式配置时 gateway、jobs 与 maintenance 预检都直接使用配置值，两侧一致。若不配置这些路径 env，gateway/jobs 与 maintenance 预检按零配置派生表落到数据根 `JUHE_AI_DATA_DIR`（缺省 `./data`）下的短名文件（`business.sqlite3`、`chat.sqlite3`、`dataset.sqlite3`、`usage-catalog.sqlite3`、`stats.sqlite3` 等），不会读取长名文件；新部署可省略这些路径 env 改用短名派生（owner ID 等其他必填项仍需配置），沿用长名的既有部署保持显式配置即可。
 
-新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。F3 审计与 F4 操作日志已完全进程内写入（去跨进程战役第四刀），不存在独立的输入端点密钥；审计派发、操作日志写入与 `JUHE_AI_SECRET` 派生的 owner lease 全部在 gateway 进程内完成。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
+新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。F3 审计与 F4 操作日志已完全进程内写入（去跨进程战役第四刀），不存在独立的输入端点密钥；审计派发、操作日志写入与 `JUHE_AI_SECRET` 派生的 owner lease 全部在 gateway 进程内完成。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。上述九个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 
 发布包启动器会为 Go 子进程设置 `TZ=UTC`。所有 API、异步任务、日志事件和回执中的绝对时间只接受或输出 RFC3339 的 `Z` 或明确数字 offset，绝不以本机时区或上海裸时间表达。管理页面按浏览器本地时区展示；排班、可用时段和统计日界线等业务日历只使用显式 IANA timezone（在管理后台「系统设置」中配置，持久化于 `system_settings`）。
 
 启动脚本先启动 `juhe-ai-go-gateway` 并等待 owner health `3306 /health` 返回 `200`，然后确认业务端口 `/__aisys__/api/health` 返回 `200`；随后启动 `juhe-ai-go-jobs` 并确认 `3305 /health` 返回 `200`。F1、F2、F3、F4 各自拥有 Store、schema 和 owner lease，且 owner ID 必须在 `backend/.env` 或更高优先级环境中显式配置且稳定；启动脚本绝不生成或改写这些标识。普通单条/单轮错误只记录并交给下一轮处理；租约丢失、启动预检失败、外部停止或 OOM/runtime fatal 等不可恢复故障只结束所属 Go 项目并交由服务管理器恢复。PID 与日志分别位于 `backend/runtime/juhe-ai-{gateway,jobs}.pid`（Windows 为 `juhe-ai-go-{gateway,jobs}.pid`）和 `backend/logs/juhe-ai-{gateway,jobs}.log`。
 
-F1 是运行日志索引、cursor、facet 与保留清理的唯一 writer；F2 是表监控采样、快照写入和保留清理的唯一 owner；F3 是原始审计持久化、payload/blob、hot-search 与保留的唯一 writer；F4 是操作日志写入、读取、摘要索引与保留的唯一 owner。gateway 的 system API 组合根直接读写业务库，是业务库唯一 writer。SQLite 的 F1/F2/F3/F4 路径必须物理隔离；PostgreSQL 下各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时才回退 `JUHE_AI_POSTGRES_URL`。
+F1 是运行日志索引、cursor、facet 与保留清理的唯一 writer；F2 是表监控采样、快照写入和保留清理的唯一 owner；F3 是原始审计持久化、payload/blob、hot-search 与保留的唯一 writer；F4 是操作日志写入、读取、摘要索引与保留的唯一 owner。业务库（`JUHE_AI_DATABASE_PATH` / `JUHE_AI_POSTGRES_URL`）按表划分 writer：gateway 的 system API 组合根是业务配置与资源主数据（accounts、api_keys、groups、路由策略、系统设置等）及其派生运行面的唯一 writer，也是账户电路 ledger（`account_circuit_incidents` / `account_circuit_outbox`）的 CAS 写侧（主链热路径转换）与 `account_health_probe_request_outbox` 的写侧；jobs 写自己拥有的事实面——账户健康输入与 probe_request_outbox 的消费、手动账户测试任务的执行结果、后台恢复转换对 circuit ledger 的同契约 CAS 投影（与 gateway 写侧同键同契约，见熔断设计 §7.5）以及用量 spool drain 落 usage shard。SQLite 的 F1/F2/F3/F4 路径必须物理隔离；PostgreSQL 下各功能优先使用各自 `JUHE_AI_*_POSTGRES_URL`，留空时才回退 `JUHE_AI_POSTGRES_URL`。
 
 F3/F4 的 ingest HTTP 监听器已随去跨进程战役删除：审计与操作日志由 gateway 进程内 producer 直写各自身份库，不再存在 loopback 输入端点、密钥或超时配置；历史 `.env` 中残留的 `*_INPUT_*` 变量不会被读取。
 
 容量提示（去跨进程战役）：手动账户测试探针与余额手动查询已改在 gateway 进程内执行，`JUHE_AI_JOBS_PROBE_CONCURRENCY`（默认 512、上限 5096）等并发预算随执行权一并转移至 gateway，与 /v1 链路并发叠加时按宿主 FD/连接容量核对；健康检查派发改走业务库 `account_health_probe_request_outbox` 通道，其行由 jobs 消费后删除，并按 `JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_RETENTION_DAYS`（默认 7 天）做与 J1 启停无关的保留期清理。
+
+### 未配置 Redis 时的行为
+
+本地单机形态（不配 `JUHE_AI_REDIS_STATE_URL`）下，jobs 依赖 Redis 运行态的任务族 fail-closed 登记 disabled（jobs `/health` 的 `workerDisabledJobs` 字段可观察缺席清单与原因）：
+
+| 任务族 | 缺席原因 | 实际影响 |
+| --- | --- | --- |
+| `account-circuit-control-plane-maintenance` | 账户电路运行态为 Redis 单实现，jobs 与网关共用键空间，无 Redis 时不得落库复制 | 进程重启后的 ledger 重建由 gateway 自身按 §7.5 渐进恢复承担；孤儿结清/保留清理在 Redis 形态执行 |
+| `account-circuit-recovery` | 同上 | 熔断恢复驱动由 gateway 进程内组件承担（见下），无用户损失 |
+| `normal-route-speed-first-recovery-probe` | speed-first 降级运行态仓储依赖 Redis | 无实际损失：降级本身是 TTL 自愈（默认 300s）+ 排序降位（非禁用），真实流量首字达标即清除 |
+| key-model Redis 恢复（jobs `keymodelrecovery` Runner） | `Enabled = JUHE_AI_REDIS_STATE_URL != ""` | 见下「gateway 进程内恢复驱动覆盖范围」的边界说明 |
+
+账户列表可用性不受任何上述缺席影响：SQLite 形态的账户列表可用性为实时现算（网关进程内按当前状态推导），不依赖后台投影任务。
+
+gateway 进程内恢复驱动覆盖范围（2026-10-08 补齐，熔断设计 §7.6）：memory 运行态形态下 gateway 自带 `account-circuit-recovery` 组件（5s 节拍 + 抖动），按期推进熔断账户的确认/金丝雀/退避直至 `CLOSED`，恢复转换经既有 persist hook 投影 ledger（管理页可见推进）；redis 运行态形态下恢复职责仍归 jobs，该组件不装配。覆盖边界：key-model 能力熔断记忆（单进程内 `(凭据来源账户, Key, 模型)` 维度的熔断）目前**没有**恢复驱动——jobs 的 Redis 恢复 Runner 在无 Redis 时不跑，gateway 进程内的同语义 memory Runner 尚无装配点（其 exact key/model 诊断链在 jobs internal 包，装配待裁决），该记忆因此会持续到进程重启（重启即清零）；账户级熔断不受此影响。
+
+### 只补 Redis 环境变量会导致 gateway 拒启
+
+如果只想为某个功能补配 `JUHE_AI_REDIS_STATE_URL`，注意 gateway 的 runtime mode 自动推断：任一 performance 提示变量（`JUHE_AI_POSTGRES_URL` / `JUHE_AI_REDIS_CACHE_URL` / `JUHE_AI_REDIS_STATE_URL`）出现时，未显式设置 `JUHE_AI_RUNTIME_MODE` 的进程会被推断为 `performance` 模式，该模式要求 `JUHE_AI_POSTGRES_URL`，缺失即拒绝启动。本地单机形态请保持不配 Redis 变量；确需 Redis 运行态时必须显式设置 `JUHE_AI_RUNTIME_MODE=performance` 并配齐 PostgreSQL URL，或显式设 `JUHE_AI_RUNTIME_MODE=standalone` 停用推断。
 
 ### 空 PostgreSQL 库的首次初始化
 

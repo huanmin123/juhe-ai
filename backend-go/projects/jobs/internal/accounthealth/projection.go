@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -886,7 +887,7 @@ func (p *OutcomeProjector) applyProjectionUpdate(ctx context.Context, tx *sql.Tx
 		set("cooldown_retest_last_at", nil)
 		set("cooldown_retest_last_status_code", nil)
 	}
-	setCooldown := func(fence *CooldownFence) {
+	setCooldown := func(fence *exactkeyprobe.CooldownFence) {
 		set("cooldown_until", timeTextOrNil(outcome.NextDueAt))
 		set("cooldown_retest_failure_count", outcome.FailureCount)
 		set("cooldown_retest_observation_started_at", fenceGuardText(fence.ObservationStartedAt))
@@ -1007,7 +1008,7 @@ func (p *OutcomeProjector) shouldScheduleBalanceAutoDetection(account *projectio
 	if account.accountType != "api_key" || account.balanceQueryEnabled.Int64 != 0 || account.balanceQueryConfigJSON != "{}" {
 		return false, nil
 	}
-	plaintext, err := DecryptV1Envelope(p.secret, account.credentialsEncrypted)
+	plaintext, err := exactkeyprobe.DecryptV1Envelope(p.secret, account.credentialsEncrypted)
 	if err != nil {
 		return false, fmt.Errorf("解密 J1 投影账户凭据失败: %w", err)
 	}
@@ -1192,13 +1193,13 @@ func projectionValueAllowed(key string) bool {
 func outcomeMatchesTransition(outcome Outcome, transition string) bool {
 	switch {
 	case transition == "activation_success" || transition == "health_success" || transition == "cooldown_success":
-		return outcome.Outcome == OutcomeSuccess
+		return outcome.Outcome == exactkeyprobe.OutcomeSuccess
 	case transition == "cooldown_defer":
-		return outcome.Outcome == OutcomeNeutral || outcome.Outcome == OutcomeTaskFailed
+		return outcome.Outcome == exactkeyprobe.OutcomeNeutral || outcome.Outcome == exactkeyprobe.OutcomeTaskFailed
 	case transition == "cooldown_failure" || transition == "cooldown_error":
-		return outcome.Outcome == OutcomeUpstreamFailed
+		return outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed
 	default:
-		return outcome.Outcome == OutcomeNeutral || outcome.Outcome == OutcomeUpstreamFailed
+		return outcome.Outcome == exactkeyprobe.OutcomeNeutral || outcome.Outcome == exactkeyprobe.OutcomeUpstreamFailed
 	}
 }
 

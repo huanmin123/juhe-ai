@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"strings"
 	"testing"
@@ -126,7 +127,7 @@ func w9hSeedBusinessAccount(t *testing.T, db *sql.DB, id, provider, profile, acc
 }
 
 func w9hCredentialsEnvelope(id string) string {
-	envelope, err := EncryptV1Envelope("w9h-credential-secret", []byte(`{"api_key":"sk-w9h-`+id+`"}`))
+	envelope, err := exactkeyprobe.EncryptV1Envelope("w9h-credential-secret", []byte(`{"api_key":"sk-w9h-`+id+`"}`))
 	if err != nil {
 		panic(err)
 	}
@@ -166,7 +167,7 @@ func TestW9HPgStoreLifecycleAndSuppression(t *testing.T) {
 	observed := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	inserted, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w9h-outcome-1", RequestID: "w9h-request-1", AccountID: "w9h-acc-x",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
 		ErrorCode: "direct_input_invalid", ErrorMessage: "坏凭据", NextDueAt: ptrTime(observed.Add(10 * time.Minute)),
 	})
 	if err != nil || !inserted {
@@ -189,7 +190,7 @@ func TestW9HPgStoreLifecycleAndSuppression(t *testing.T) {
 	// suppression next-due timestamp.
 	inserted, err = store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w9h-outcome-1-dup", RequestID: "w9h-request-1", AccountID: "w9h-acc-x",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
 		ErrorCode: "direct_input_invalid", NextDueAt: ptrTime(observed.Add(20 * time.Minute)),
 	})
 	if err != nil || inserted {
@@ -248,7 +249,7 @@ func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
 	}
 
 	base := Outcome{
-		AccountID: "w9h-proj-acc", Outcome: OutcomeUpstreamFailed,
+		AccountID: "w9h-proj-acc", Outcome: exactkeyprobe.OutcomeUpstreamFailed,
 		ObservedAt: now(), InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
 	}
 	lease := mustLease(t, store)
@@ -303,7 +304,7 @@ func TestW9HPgOutcomeProjectionEndToEnd(t *testing.T) {
 	w9hMustExec(t, db, `UPDATE juhe_business.account_health_jobs_input_versions SET current_version = 2 WHERE account_id = 'w9h-proj-acc'`)
 	if _, err := store.AppendOutcome(ctx, lease, Outcome{
 		OutcomeID: "w9h-outcome-activate", RequestID: "w9h-request-activate", AccountID: base.AccountID,
-		Outcome: OutcomeSuccess, ObservedAt: base.ObservedAt.Add(2 * time.Second), InputVersion: 2, ConfigRevision: 1, DispatchRevision: 1,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: base.ObservedAt.Add(2 * time.Second), InputVersion: 2, ConfigRevision: 1, DispatchRevision: 1,
 		NextDueAt: ptrTime(now().Add(30 * time.Minute)),
 		Projection: &Projection{
 			TargetAccountID: base.AccountID, TransitionKind: "activation_success", InputVersion: 2,
@@ -486,7 +487,7 @@ func TestW9HPgDirectInputReaderChain(t *testing.T) {
 }
 
 func w9hOAuthEnvelope(payload string) string {
-	envelope, err := EncryptV1Envelope("w9h-credential-secret", []byte(payload))
+	envelope, err := exactkeyprobe.EncryptV1Envelope("w9h-credential-secret", []byte(payload))
 	if err != nil {
 		panic(err)
 	}

@@ -17,7 +17,12 @@ import (
 )
 
 const (
-	defaultInterval      = 15 * time.Second
+	// 缺省 1m（2026-10-08 粒度根治，原 15s）：明细表 go_runtime_metrics_samples
+	// 无任何 SELECT 消费方（系统指标页只读 hourly/trend_windows 聚合表），
+	// 15s×双进程×30 天保留约 34.6 万行纯写入浪费；1m 密度对小时/天级窗口
+	// 聚合语义无损。裁决与量化见
+	// docs/plans/计划-20261008T203741000Z-表监控采样粒度根治.md 第 7 节。
+	defaultInterval      = time.Minute
 	defaultRetentionDays = 30
 )
 

@@ -244,7 +244,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true,
 			Writes:   []string{"business:system_settings"},
 			GoStatus: GoWired, GoPackage: "versiontracking + cmd/juhe-ai-jobs（worker_version_tracking.go 组合根适配器）",
-			GoBinding: "wireVersionTrackingFamily 经组合根接线：串行 GET 四族官方发布源（直连、单源 15s、响应限读 1MiB、GitHub 带标识 UA）→ parser 校验归属/prerelease/draft/三段版本 → 写者侧单调规则（低于当前自动值或内置基线则该族拒绝保留旧值）→ 有变化时幂等 upsert system_settings 键 upstreamClientVersionAutoOverrides 并注入 upstreamidentity.SetClientVersionAutoOverrides；单源失败仅该族跳过，全部源失败返回 error 交调度退避",
+			GoBinding: "wireVersionTrackingFamily 经组合根接线：串行 GET 五族官方发布源（直连、单源 15s、响应限读 1MiB、GitHub 带标识 UA）→ parser 校验归属/prerelease/draft/三段版本 → 写者侧单调规则（低于当前自动值或内置基线则该族拒绝保留旧值）→ 有变化时幂等 upsert system_settings 键 upstreamClientVersionAutoOverrides 并注入 upstreamidentity.SetClientVersionAutoOverrides；单源失败仅该族跳过，全部源失败返回 error 交调度退避",
 		},
 		{
 			// Go 新增条目：对齐归档 Node account-balance-jobs-projector（jobs→

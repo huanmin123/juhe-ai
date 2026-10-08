@@ -512,7 +512,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 	// D-151（BUG-0175）接线：把 runtime cache 的 provider model catalog 适配进
 	// gpt 请求覆盖能力解析（Nil cache 保持能力解析为空，覆盖保持惰性）。
-	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), &chainFailureDispatcher{
+	// failureDispatcher 与 gatewayChain.streamFailureAvoidance（BUG-0298 流式
+	// 换号的来源级避让入口）同一实例——协作方（strategy/turnRetry/probe/affinity）
+	// 同源，避免第二份装配漂移。
+	failureDispatcher := &chainFailureDispatcher{
 		usage:                 usageService,
 		affinity:              dispatchSessionAffinity,
 		clientStrategy:        codexClientStrategy,
@@ -524,7 +527,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		apiKeyObservation:     deps.AccountAPIKeyObservation,
 		codexUsageHeaders:     deps.CodexUsageHeadersDispatcher,
 		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
-	})
+	}
+	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), failureDispatcher)
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
 	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
 	engine.Config.Secret = deps.EngineSecret
@@ -760,6 +764,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// anthropic unified rate limit 头成功面派发（AI账户Grok用量快照设计
 		// §8.2；失败面对称口在 chainFailureDispatcher.anthropicUsageHeaders）。
 		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
+		// BUG-0298：流式换号的来源级避让入口，与 engine 失败派发器同一实例
+		//（见上方 failureDispatcher 注释）；nil = 未装配，换号仍执行、仅不记录。
+		streamFailureAvoidance: failureDispatcher,
 		// M2 媒体任务面（媒体设计 §4.2/§7/§8）。
 		mediaJobs: mediaJobs,
 		// M5b realtime ephemeral token 面（Realtime 设计 §2/§4）。

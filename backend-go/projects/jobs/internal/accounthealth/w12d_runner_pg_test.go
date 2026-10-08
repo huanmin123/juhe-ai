@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"path/filepath"
 	"testing"
 	"time"
@@ -111,7 +112,7 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 	w12dSeedSettings(t, db)
 	secret := "w12d-team-secret"
 	// 授权实例 + 源账户 + 授权（带 effective_source_team_id）。
-	envelope, err := EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-team"}`))
+	envelope, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-team"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,11 +56,11 @@ func TestStoreLoadDirectInputSuppressionsReturnsOnlyActiveFences(t *testing.T) {
 	now := time.Date(2030, 8, 16, 12, 0, 0, 0, time.UTC)
 	future := now.Add(5 * time.Minute)
 	past := now.Add(-time.Minute)
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-future", RequestID: "direct-suppression-future", AccountID: "direct-suppression-future-account", Outcome: OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &future, FailureCount: 1})
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-past", RequestID: "direct-suppression-past", AccountID: "direct-suppression-past-account", Outcome: OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &past, FailureCount: 1})
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-other", RequestID: "direct-suppression-other", AccountID: "direct-suppression-other-account", Outcome: OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "other_error", NextDueAt: &future, FailureCount: 1})
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-newer-state", RequestID: "direct-suppression-newer-state", AccountID: "direct-suppression-old-state-account", Outcome: OutcomeSuccess, ObservedAt: now, InputVersion: 9, ConfigRevision: 9, DispatchRevision: 9, AccountStatus: "active"})
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-old-state", RequestID: "direct-suppression-old-state", AccountID: "direct-suppression-old-state-account", Outcome: OutcomeTaskFailed, ObservedAt: now.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &future, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-future", RequestID: "direct-suppression-future", AccountID: "direct-suppression-future-account", Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &future, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-past", RequestID: "direct-suppression-past", AccountID: "direct-suppression-past-account", Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &past, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-other", RequestID: "direct-suppression-other", AccountID: "direct-suppression-other-account", Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: now, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "other_error", NextDueAt: &future, FailureCount: 1})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-newer-state", RequestID: "direct-suppression-newer-state", AccountID: "direct-suppression-old-state-account", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, InputVersion: 9, ConfigRevision: 9, DispatchRevision: 9, AccountStatus: "active"})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "direct-suppression-old-state", RequestID: "direct-suppression-old-state", AccountID: "direct-suppression-old-state-account", Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: now.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "direct_input_invalid", NextDueAt: &future, FailureCount: 1})
 	suppressions, err := store.LoadDirectInputSuppressions(context.Background(), now)
 	if err != nil || len(suppressions) != 2 {
 		t.Fatalf("active direct-input suppressions = %#v err=%v", suppressions, err)
@@ -87,7 +88,7 @@ func TestStoreDuplicateDirectInputInvalidRefreshesSuppressionOnly(t *testing.T) 
 	secondDue := secondObserved.Add(5 * time.Minute)
 	first := Outcome{
 		OutcomeID: "direct-refresh-first", RequestID: "direct-refresh-request", AccountID: "direct-refresh-account",
-		Outcome: OutcomeTaskFailed, ObservedAt: firstObserved, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: firstObserved, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
 		ErrorCode: "direct_input_invalid", NextDueAt: &firstDue, FailureCount: 1, FailureStartedAt: &firstObserved,
 	}
 	inserted, err := store.AppendOutcome(ctx, lease, first)
@@ -132,7 +133,7 @@ func TestStoreDuplicateDirectInputInvalidDifferentGenerationDoesNotRefreshSuppre
 	secondDue := secondObserved.Add(5 * time.Minute)
 	first := Outcome{
 		OutcomeID: "direct-generation-a", RequestID: "direct-generation-shared-request", AccountID: "direct-generation-account",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
 		ErrorCode: "direct_input_invalid", NextDueAt: &firstDue, FailureCount: 1, FailureStartedAt: &observed,
 	}
 	if inserted, err := store.AppendOutcome(ctx, lease, first); err != nil || !inserted {
@@ -190,8 +191,8 @@ func TestPostgresCurrentStateCASRegression(t *testing.T) {
 
 	observed := time.Now().UTC().Round(0)
 	revisionAccount := unique + "-revision"
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: unique + "-baseline", RequestID: unique + "-baseline-request", AccountID: revisionAccount, Outcome: OutcomeSuccess, ObservedAt: observed, InputVersion: 5, ConfigRevision: 8, DispatchRevision: 13, AccountStatus: "active"})
-	late := Outcome{OutcomeID: unique + "-revision", RequestID: unique + "-revision-request", AccountID: revisionAccount, Outcome: OutcomeUpstreamFailed, ObservedAt: observed.Add(time.Second), InputVersion: 5, ConfigRevision: 9, DispatchRevision: 13, AccountStatus: "temporary_unavailable"}
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: unique + "-baseline", RequestID: unique + "-baseline-request", AccountID: revisionAccount, Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed, InputVersion: 5, ConfigRevision: 8, DispatchRevision: 13, AccountStatus: "active"})
+	late := Outcome{OutcomeID: unique + "-revision", RequestID: unique + "-revision-request", AccountID: revisionAccount, Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed.Add(time.Second), InputVersion: 5, ConfigRevision: 9, DispatchRevision: 13, AccountStatus: "temporary_unavailable"}
 	appendStoreOutcome(t, store, lease, late)
 	state, found, err := store.LoadCurrentState(ctx, revisionAccount)
 	if err != nil || !found || state.OutcomeID != late.OutcomeID || state.ConfigRevision != 9 || state.DispatchRevision != 13 {
@@ -199,9 +200,9 @@ func TestPostgresCurrentStateCASRegression(t *testing.T) {
 	}
 
 	cooldownAccount := unique + "-cooldown"
-	oldFence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: unique + "-generation-old"}
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: unique + "-cooldown-baseline", RequestID: unique + "-cooldown-baseline-request", AccountID: cooldownAccount, Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17, AccountStatus: "temporary_unavailable", CooldownFence: oldFence})
-	mismatch := cooldownCASOutcome(unique+"-generation-mismatch", unique+"-generation-mismatch-request", cooldownAccount, observed.Add(time.Second), &CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: unique + "-generation-new"})
+	oldFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: unique + "-generation-old"}
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: unique + "-cooldown-baseline", RequestID: unique + "-cooldown-baseline-request", AccountID: cooldownAccount, Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17, AccountStatus: "temporary_unavailable", CooldownFence: oldFence})
+	mismatch := cooldownCASOutcome(unique+"-generation-mismatch", unique+"-generation-mismatch-request", cooldownAccount, observed.Add(time.Second), &exactkeyprobe.CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: unique + "-generation-new"})
 	appendStoreOutcome(t, store, lease, mismatch)
 	state, found, err = store.LoadCurrentState(ctx, cooldownAccount)
 	if err != nil || !found || state.OutcomeID != unique+"-cooldown-baseline" || state.CooldownFence == nil || state.CooldownFence.Generation != oldFence.Generation {
@@ -236,8 +237,8 @@ func TestSQLiteStoreOwnerLeaseAndIdempotentOutcome(t *testing.T) {
 		t.Fatalf("lease renewal must succeed: renewed=%t err=%v", renewed, err)
 	}
 	observed := time.Now().UTC()
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "generation-1"}
-	outcome := Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "account-1", Outcome: OutcomeSuccess, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, StatusCode: 200, AccountStatus: "temporary_unavailable", CooldownFence: fence}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "generation-1"}
+	outcome := Outcome{OutcomeID: "outcome-1", RequestID: "request-1", AccountID: "account-1", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1, StatusCode: 200, AccountStatus: "temporary_unavailable", CooldownFence: fence}
 	inserted, err := store.AppendOutcome(ctx, lease, outcome)
 	if err != nil || !inserted {
 		t.Fatalf("append outcome inserted=%t err=%v", inserted, err)
@@ -250,7 +251,7 @@ func TestSQLiteStoreOwnerLeaseAndIdempotentOutcome(t *testing.T) {
 	if err != nil || !found || state.CooldownFence == nil || state.CooldownFence.Generation != fence.Generation || !state.CooldownFence.ObservationStartedAt.Equal(fence.ObservationStartedAt) {
 		t.Fatalf("cooldown fence must survive current-state read: found=%t state=%#v err=%v", found, state, err)
 	}
-	if _, err := store.AppendOutcome(ctx, OwnerLease{OwnerID: "owner-a", FenceToken: lease.FenceToken + 1}, Outcome{OutcomeID: "outcome-2", RequestID: "request-2", AccountID: "account-1", Outcome: OutcomeSuccess, ObservedAt: time.Now().UTC(), InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}); !errors.Is(err, ErrOwnerLeaseLost) {
+	if _, err := store.AppendOutcome(ctx, OwnerLease{OwnerID: "owner-a", FenceToken: lease.FenceToken + 1}, Outcome{OutcomeID: "outcome-2", RequestID: "request-2", AccountID: "account-1", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: time.Now().UTC(), InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}); !errors.Is(err, ErrOwnerLeaseLost) {
 		t.Fatalf("stale lease must fail: %v", err)
 	}
 }
@@ -260,14 +261,14 @@ func TestSQLiteNewInputEpochAppliesProjectionAfterStatusChange(t *testing.T) {
 	observed := time.Now().UTC().Round(0)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "new-epoch-baseline", RequestID: "new-epoch-baseline-request", AccountID: "new-epoch-account",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1,
 		AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(observed.Add(time.Minute)), FailureCount: 3,
 	})
 
 	next := observed.Add(time.Second)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "new-epoch-projected", RequestID: "new-epoch-projected-request", AccountID: "new-epoch-account",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: next, InputVersion: 2, ConfigRevision: 2, DispatchRevision: 2,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: next, InputVersion: 2, ConfigRevision: 2, DispatchRevision: 2,
 		AccountStatus: "pending_test", NextDueAt: ptrTime(next.Add(5 * time.Minute)), FailureCount: 1,
 		Projection: &Projection{
 			TargetAccountID: "new-epoch-account", TransitionKind: "health_failure", InputVersion: 2,
@@ -297,13 +298,13 @@ func TestSQLiteNewConfigEpochAppliesProjectionAfterStatusChange(t *testing.T) {
 	observed := time.Now().UTC().Round(0)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "new-config-baseline", RequestID: "new-config-baseline-request", AccountID: "new-config-account",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 4, ConfigRevision: 1, DispatchRevision: 1,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed, InputVersion: 4, ConfigRevision: 1, DispatchRevision: 1,
 		AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(observed.Add(5 * time.Minute)), FailureCount: 1,
 	})
 	next := observed.Add(time.Second)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "new-config-projected", RequestID: "new-config-projected-request", AccountID: "new-config-account",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: next, InputVersion: 4, ConfigRevision: 2, DispatchRevision: 1,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: next, InputVersion: 4, ConfigRevision: 2, DispatchRevision: 1,
 		AccountStatus: "pending_test", NextDueAt: ptrTime(next.Add(5 * time.Minute)), FailureCount: 1,
 		Projection: &Projection{
 			TargetAccountID: "new-config-account", TransitionKind: "health_failure", InputVersion: 4,
@@ -360,7 +361,7 @@ func TestSQLiteCurrentStateCASAppliesNewerRevisionAndRejectsOlderOutcome(t *test
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "baseline", RequestID: "baseline-request", AccountID: "account-revision", Outcome: OutcomeSuccess, ObservedAt: observed, InputVersion: 5, ConfigRevision: 8, DispatchRevision: 13, AccountStatus: "active"})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "baseline", RequestID: "baseline-request", AccountID: "account-revision", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed, InputVersion: 5, ConfigRevision: 8, DispatchRevision: 13, AccountStatus: "active"})
 
 	late := projectedHealthCASOutcome("revision-newer", "revision-newer-request", "account-revision", observed.Add(time.Second), 5, 9, 13)
 	appendStoreOutcome(t, store, lease, late)
@@ -385,17 +386,17 @@ func TestSQLiteCurrentStateCASReconcilesBusinessActiveFromStaleCooldownState(t *
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Round(0)
-	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "stale-cooldown-generation"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "stale-cooldown-generation"}
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "stale-cooldown", RequestID: "stale-cooldown-request", AccountID: "account-business-active",
-		Outcome: OutcomeNeutral, ObservedAt: now, InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now, InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
 		AccountStatus: "temporary_unavailable", NextDueAt: ptrTime(now.Add(time.Minute)), CooldownFence: fence,
 	})
 
 	nextDue := now.Add(time.Hour)
 	health := Outcome{
 		OutcomeID: "reconciled-health", RequestID: "reconciled-health-request", AccountID: "account-business-active",
-		Outcome: OutcomeSuccess, ObservedAt: now.Add(time.Second), InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now.Add(time.Second), InputVersion: 1, ConfigRevision: 2, DispatchRevision: 3,
 		AccountStatus: "active", StatusCode: 200, NextDueAt: &nextDue,
 		Projection: &Projection{
 			TargetAccountID: "account-business-active", TransitionKind: "health_success", InputVersion: 1,
@@ -415,15 +416,15 @@ func TestSQLiteTaskFailureWithoutProjectionCannotResetCurrentState(t *testing.T)
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "task-failure-generation"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "task-failure-generation"}
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "task-baseline", RequestID: "task-baseline-request", AccountID: "account-task-failure",
-		Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
 		AccountStatus: "temporary_unavailable", FailureCount: 7, NextDueAt: ptrTime(observed.Add(time.Minute)), CooldownFence: fence,
 	})
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "task-failure", RequestID: "task-failure-request", AccountID: "account-task-failure",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6,
 		ErrorCode: "request_deadline_elapsed",
 	})
 	state, found, err := store.LoadCurrentState(ctx, "account-task-failure")
@@ -436,10 +437,10 @@ func TestSQLiteTaskFailureWithDueOnlyReschedulesWithoutChangingState(t *testing.
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "task-retry-generation"}
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "retry-baseline", RequestID: "retry-baseline-request", AccountID: "account-task-retry", Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, AccountStatus: "active", FailureCount: 3, CooldownFence: fence})
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "task-retry-generation"}
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "retry-baseline", RequestID: "retry-baseline-request", AccountID: "account-task-retry", Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, AccountStatus: "active", FailureCount: 3, CooldownFence: fence})
 	due := observed.Add(5 * time.Minute)
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "retry-failure", RequestID: "retry-failure-request", AccountID: "account-task-retry", Outcome: OutcomeTaskFailed, ObservedAt: observed.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "upstream_unavailable", ErrorMessage: "probe transport failed", NextDueAt: &due})
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "retry-failure", RequestID: "retry-failure-request", AccountID: "account-task-retry", Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed.Add(time.Second), InputVersion: 4, ConfigRevision: 5, DispatchRevision: 6, ErrorCode: "upstream_unavailable", ErrorMessage: "probe transport failed", NextDueAt: &due})
 	state, found, err := store.LoadCurrentState(ctx, "account-task-retry")
 	if err != nil || !found || state.OutcomeID != "retry-failure" || state.AccountStatus != "active" || state.FailureCount != 3 || state.NextDueAt == nil || !state.NextDueAt.Equal(due) || !sameCooldownFence(state.CooldownFence, fence) {
 		t.Fatalf("task failure retry must only advance due/error receipt: found=%t state=%#v err=%v", found, state, err)
@@ -453,11 +454,11 @@ func TestSQLiteCooldownCASRehydratesDirectInputQuarantineAndKeepsAdvancing(t *te
 	quarantineDue := observed.Add(5 * time.Minute)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "rehydrate-direct-invalid", RequestID: "rehydrate-direct-invalid-request", AccountID: "account-rehydrate-cooldown",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
 		ErrorCode: "direct_input_invalid", NextDueAt: &quarantineDue, FailureCount: 1,
 	})
 
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "rehydrated-generation"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "rehydrated-generation"}
 	firstDue := observed.Add(7 * time.Minute)
 	first := cooldownCASOutcome("rehydrate-first", "rehydrate-first-request", "account-rehydrate-cooldown", observed.Add(6*time.Minute), fence)
 	first.NextDueAt = &firstDue
@@ -480,7 +481,7 @@ func TestSQLiteCooldownCASRehydratesDirectInputQuarantineAndKeepsAdvancing(t *te
 
 	recovered := Outcome{
 		OutcomeID: "rehydrate-success", RequestID: "rehydrate-success-request", AccountID: first.AccountID,
-		Outcome: OutcomeSuccess, ObservedAt: observed.Add(10 * time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed.Add(10 * time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
 		AccountStatus: "active",
 		Projection: &Projection{
 			TargetAccountID: first.AccountID, TransitionKind: "cooldown_success", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
@@ -509,11 +510,11 @@ func TestSQLiteCooldownCASDoesNotRehydrateOtherBlankState(t *testing.T) {
 	retryDue := observed.Add(5 * time.Minute)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "blank-other-error", RequestID: "blank-other-error-request", AccountID: "account-blank-other-error",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
 		ErrorCode: "request_deadline_elapsed", NextDueAt: &retryDue, FailureCount: 1,
 	})
 
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "must-not-rehydrate"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "must-not-rehydrate"}
 	candidate := cooldownCASOutcome("blank-other-candidate", "blank-other-candidate-request", "account-blank-other-error", observed.Add(time.Second), fence)
 	appendStoreOutcome(t, store, lease, candidate)
 	state, found, err := store.LoadCurrentState(ctx, candidate.AccountID)
@@ -525,7 +526,7 @@ func TestSQLiteCooldownCASDoesNotRehydrateOtherBlankState(t *testing.T) {
 
 // TestSQLiteHealthCASAdvancesDirectInputQuarantineForPendingTest 锁定 BUG-0284：
 // 同 epoch 的 pending_test 激活成功必须推进 direct_input_invalid 隔离基线
-// （account_status='' 且无冷却围栏），否则账户永久停在待检查；对非隔离状态行
+// （account_status=” 且无冷却围栏），否则账户永久停在待检查；对非隔离状态行
 // （temporary_unavailable）仍不得越权推进。
 func TestSQLiteHealthCASAdvancesDirectInputQuarantineForPendingTest(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
@@ -534,13 +535,13 @@ func TestSQLiteHealthCASAdvancesDirectInputQuarantineForPendingTest(t *testing.T
 	quarantineDue := observed.Add(5 * time.Minute)
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "health-quarantine-invalid", RequestID: "health-quarantine-invalid-request", AccountID: "account-health-quarantine-pending",
-		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
 		ErrorCode: "direct_input_invalid", NextDueAt: &quarantineDue, FailureCount: 1,
 	})
 
 	activation := Outcome{
 		OutcomeID: "health-quarantine-success", RequestID: "health-quarantine-success-request", AccountID: "account-health-quarantine-pending",
-		Outcome: OutcomeSuccess, ObservedAt: observed.Add(time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed.Add(time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
 		AccountStatus: "pending_test",
 		Projection: &Projection{
 			TargetAccountID: "account-health-quarantine-pending", TransitionKind: "health_success", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
@@ -555,12 +556,12 @@ func TestSQLiteHealthCASAdvancesDirectInputQuarantineForPendingTest(t *testing.T
 	assertStoredOutcomeProjectionPresent(t, store, activation.RequestID)
 
 	// 收窄：pending_test 健康成功不得推进已有权威状态（temporary_unavailable）的行。
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(2 * time.Minute), Generation: "health-quarantine-narrow-fence"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(2 * time.Minute), Generation: "health-quarantine-narrow-fence"}
 	cooldown := cooldownCASOutcome("health-quarantine-narrow-cooldown", "health-quarantine-narrow-cooldown-request", "account-health-quarantine-narrow", observed.Add(2*time.Minute), fence)
 	appendStoreOutcome(t, store, lease, cooldown)
 	narrow := Outcome{
 		OutcomeID: "health-quarantine-narrow-success", RequestID: "health-quarantine-narrow-success-request", AccountID: cooldown.AccountID,
-		Outcome: OutcomeSuccess, ObservedAt: observed.Add(3 * time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observed.Add(3 * time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
 		AccountStatus: "pending_test",
 		Projection: &Projection{
 			TargetAccountID: cooldown.AccountID, TransitionKind: "health_success", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
@@ -581,14 +582,14 @@ func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndBootstrapsMiss
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
 	sourceRevision := int64(23)
-	oldFence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "generation-old", SourceConfigRevision: &sourceRevision}
-	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "cooldown-baseline", RequestID: "cooldown-baseline-request", AccountID: "account-cooldown", Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17, AccountStatus: "temporary_unavailable", CooldownFence: oldFence})
+	oldFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "generation-old", SourceConfigRevision: &sourceRevision}
+	appendStoreOutcome(t, store, lease, Outcome{OutcomeID: "cooldown-baseline", RequestID: "cooldown-baseline-request", AccountID: "account-cooldown", Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17, AccountStatus: "temporary_unavailable", CooldownFence: oldFence})
 
-	wrongFence := &CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: "generation-new", SourceConfigRevision: &sourceRevision}
+	wrongFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: "generation-new", SourceConfigRevision: &sourceRevision}
 	mismatch := cooldownCASOutcome("cooldown-generation-mismatch", "cooldown-generation-mismatch-request", "account-cooldown", observed.Add(time.Second), wrongFence)
 	appendStoreOutcome(t, store, lease, mismatch)
 	wrongSourceRevision := sourceRevision + 1
-	sourceMismatch := cooldownCASOutcome("cooldown-source-revision-mismatch", "cooldown-source-revision-mismatch-request", "account-cooldown", observed.Add(2*time.Second), &CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: oldFence.Generation, SourceConfigRevision: &wrongSourceRevision})
+	sourceMismatch := cooldownCASOutcome("cooldown-source-revision-mismatch", "cooldown-source-revision-mismatch-request", "account-cooldown", observed.Add(2*time.Second), &exactkeyprobe.CooldownFence{ObservationStartedAt: oldFence.ObservationStartedAt, Generation: oldFence.Generation, SourceConfigRevision: &wrongSourceRevision})
 	appendStoreOutcome(t, store, lease, sourceMismatch)
 	state, found, err := store.LoadCurrentState(ctx, mismatch.AccountID)
 	if err != nil || !found || state.OutcomeID != "cooldown-baseline" || state.CooldownFence == nil || state.CooldownFence.Generation != oldFence.Generation || state.CooldownFence.SourceConfigRevision == nil || *state.CooldownFence.SourceConfigRevision != sourceRevision {
@@ -632,14 +633,14 @@ func TestSQLiteCooldownCASAdvancesStrictlyNewerEpoch(t *testing.T) {
 			ctx := context.Background()
 			observed := time.Now().UTC().Round(0)
 			accountID := "account-cooldown-epoch-" + name
-			staleFence := &CooldownFence{ObservationStartedAt: observed.Add(-2 * time.Minute), Generation: "stale-generation"}
+			staleFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-2 * time.Minute), Generation: "stale-generation"}
 			appendStoreOutcome(t, store, lease, Outcome{
 				OutcomeID: "cooldown-epoch-old-" + name, RequestID: "cooldown-epoch-old-request-" + name, AccountID: accountID,
-				Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: staleEpoch.inputVersion, ConfigRevision: staleEpoch.configRevision, DispatchRevision: staleEpoch.dispatchRevision,
+				Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: staleEpoch.inputVersion, ConfigRevision: staleEpoch.configRevision, DispatchRevision: staleEpoch.dispatchRevision,
 				AccountStatus: "active", CooldownFence: staleFence,
 			})
 
-			newFence := &CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "new-generation"}
+			newFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-time.Minute), Generation: "new-generation"}
 			newer := cooldownCASOutcome("cooldown-epoch-new-"+name, "cooldown-epoch-new-request-"+name, accountID, observed.Add(time.Second), newFence)
 			appendStoreOutcome(t, store, lease, newer)
 			state, found, err := store.LoadCurrentState(ctx, newer.AccountID)
@@ -655,15 +656,15 @@ func TestSQLiteCooldownTerminalPreservesFenceAndRejectsMismatchedOutputFence(t *
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
 	observed := time.Now().UTC().Round(0)
-	fence := &CooldownFence{ObservationStartedAt: observed.Add(-7 * 24 * time.Hour), Generation: "terminal-generation"}
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: observed.Add(-7 * 24 * time.Hour), Generation: "terminal-generation"}
 	appendStoreOutcome(t, store, lease, Outcome{
 		OutcomeID: "terminal-baseline", RequestID: "terminal-baseline-request", AccountID: "account-terminal",
-		Outcome: OutcomeNeutral, ObservedAt: observed, InputVersion: 3, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observed, InputVersion: 3, ConfigRevision: 5, DispatchRevision: 7,
 		AccountStatus: "temporary_unavailable", FailureCount: 1, CooldownFence: fence,
 	})
 	terminal := Outcome{
 		OutcomeID: "terminal", RequestID: "terminal-request", AccountID: "account-terminal",
-		Outcome: OutcomeUpstreamFailed, ObservedAt: observed.Add(time.Second), InputVersion: 3, ConfigRevision: 5, DispatchRevision: 7,
+		Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed.Add(time.Second), InputVersion: 3, ConfigRevision: 5, DispatchRevision: 7,
 		AccountStatus: "error", FailureCount: 2, CooldownFence: fence,
 		Projection: &Projection{
 			TargetAccountID: "account-terminal", TransitionKind: "cooldown_error", InputVersion: 3, ConfigRevision: 5, DispatchRevision: 7,
@@ -676,7 +677,7 @@ func TestSQLiteCooldownTerminalPreservesFenceAndRejectsMismatchedOutputFence(t *
 		t.Fatalf("terminal current state must retain final cooldown audit fence: found=%t state=%#v err=%v", found, state, err)
 	}
 	assertStoredOutcomeProjectionPresent(t, store, terminal.RequestID)
-	wrongFence := &CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: "wrong-terminal-generation"}
+	wrongFence := &exactkeyprobe.CooldownFence{ObservationStartedAt: fence.ObservationStartedAt, Generation: "wrong-terminal-generation"}
 	invalid := terminal
 	invalid.OutcomeID = "terminal-invalid"
 	invalid.RequestID = "terminal-invalid-request"
@@ -715,12 +716,12 @@ func appendStoreOutcome(t *testing.T, store *Store, lease OwnerLease, outcome Ou
 	}
 }
 
-func cooldownCASOutcome(outcomeID, requestID, accountID string, observed time.Time, expectedFence *CooldownFence) Outcome {
+func cooldownCASOutcome(outcomeID, requestID, accountID string, observed time.Time, expectedFence *exactkeyprobe.CooldownFence) Outcome {
 	return Outcome{
 		OutcomeID:        outcomeID,
 		RequestID:        requestID,
 		AccountID:        accountID,
-		Outcome:          OutcomeNeutral,
+		Outcome:          exactkeyprobe.OutcomeNeutral,
 		ObservedAt:       observed,
 		InputVersion:     7,
 		ConfigRevision:   11,
@@ -743,7 +744,7 @@ func cooldownCASOutcome(outcomeID, requestID, accountID string, observed time.Ti
 
 func projectedHealthCASOutcome(outcomeID, requestID, accountID string, observed time.Time, inputVersion, configRevision, dispatchRevision int64) Outcome {
 	return Outcome{
-		OutcomeID: outcomeID, RequestID: requestID, AccountID: accountID, Outcome: OutcomeUpstreamFailed, ObservedAt: observed,
+		OutcomeID: outcomeID, RequestID: requestID, AccountID: accountID, Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed,
 		InputVersion: inputVersion, ConfigRevision: configRevision, DispatchRevision: dispatchRevision, AccountStatus: "temporary_unavailable",
 		Projection: &Projection{
 			TargetAccountID: accountID, TransitionKind: "temporary_unavailable", InputVersion: inputVersion, ConfigRevision: configRevision, DispatchRevision: dispatchRevision,

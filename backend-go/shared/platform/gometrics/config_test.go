@@ -22,7 +22,9 @@ func TestLoadConfigDefaultsToSQLiteDerivedPath(t *testing.T) {
 	if cfg.DatabasePath != filepath.Join("./data", "go-runtime-metrics.sqlite3") {
 		t.Fatalf("derived path must be <data root>/go-runtime-metrics.sqlite3: %q", cfg.DatabasePath)
 	}
-	if cfg.Interval != defaultInterval || cfg.RetentionDays != defaultRetentionDays || cfg.Service != "juhe-ai" || cfg.Role != "jobs" {
+	// Interval 锁定具体值而非引用 defaultInterval 常量：2026-10-08 粒度根治
+	// 把出厂默认从 15s 放宽到 1m，锁定值防止后续被无声改回细粒度。
+	if cfg.Interval != time.Minute || cfg.RetentionDays != defaultRetentionDays || cfg.Service != "juhe-ai" || cfg.Role != "jobs" {
 		t.Fatalf("deployment defaults must be kept: cfg=%+v err=%v", cfg, err)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 type runnerStore struct {
@@ -34,10 +34,10 @@ func (s *runnerStore) Commit(_ context.Context, _ State, next State, _ string) (
 	return Applied, nil
 }
 
-type runnerLoader struct{ input accounthealth.Input }
+type runnerLoader struct{ input exactkeyprobe.Input }
 
-func (l runnerLoader) LoadAccount(context.Context, string) ([]accounthealth.Input, error) {
-	return []accounthealth.Input{l.input}, nil
+func (l runnerLoader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
+	return []exactkeyprobe.Input{l.input}, nil
 }
 
 func TestRunnerKeepsRecoveryWritesOutOfAccountHealth(t *testing.T) {
@@ -47,10 +47,10 @@ func TestRunnerKeepsRecoveryWritesOutOfAccountHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &runnerStore{now: state.RetryAt, candidate: state}
-	input := accounthealth.Input{AccountID: state.CredentialSourceAccountID, DispatchRevision: state.DispatchRevision}
+	input := exactkeyprobe.Input{AccountID: state.CredentialSourceAccountID, DispatchRevision: state.DispatchRevision}
 	runner := NewRunner(store, runnerLoader{input: input}, nil)
 	seen := make(chan State, 1)
-	runner.probe = func(_ context.Context, candidate State, supplied accounthealth.Input) Outcome {
+	runner.probe = func(_ context.Context, candidate State, supplied exactkeyprobe.Input) Outcome {
 		if supplied.AccountID != candidate.CredentialSourceAccountID || supplied.DispatchRevision != candidate.DispatchRevision {
 			t.Errorf("probe received mismatched frozen input: %#v %#v", candidate, supplied)
 		}

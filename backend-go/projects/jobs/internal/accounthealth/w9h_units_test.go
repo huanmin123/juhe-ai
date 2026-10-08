@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,28 +19,28 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestW9HCredentialEnvelopeArms(t *testing.T) {
-	if _, err := EncryptV1Envelope("  ", []byte("x")); err == nil || !strings.Contains(err.Error(), "secret 不能为空") {
+	if _, err := exactkeyprobe.EncryptV1Envelope("  ", []byte("x")); err == nil || !strings.Contains(err.Error(), "secret 不能为空") {
 		t.Fatalf("empty secret err=%v", err)
 	}
-	if _, err := DecryptV1Envelope("s", "v1:only:three"); err == nil || !strings.Contains(err.Error(), "不支持的凭据 envelope 格式") {
+	if _, err := exactkeyprobe.DecryptV1Envelope("s", "v1:only:three"); err == nil || !strings.Contains(err.Error(), "不支持的凭据 envelope 格式") {
 		t.Fatalf("bad shape err=%v", err)
 	}
-	if _, err := DecryptV1Envelope("s", "v2:a:b:c"); err == nil || !strings.Contains(err.Error(), "不支持") {
+	if _, err := exactkeyprobe.DecryptV1Envelope("s", "v2:a:b:c"); err == nil || !strings.Contains(err.Error(), "不支持") {
 		t.Fatalf("bad version err=%v", err)
 	}
-	if _, err := DecryptV1Envelope("s", "v1:!!!:!!!:!!!"); err == nil {
+	if _, err := exactkeyprobe.DecryptV1Envelope("s", "v1:!!!:!!!:!!!"); err == nil {
 		t.Fatal("bad base64 must fail")
 	}
 	// Round trip proves the secret/key derivation; a wrong secret must fail.
-	sealed, err := EncryptV1Envelope("secret-w9h", []byte(`{"k":"v"}`))
+	sealed, err := exactkeyprobe.EncryptV1Envelope("secret-w9h", []byte(`{"k":"v"}`))
 	if err != nil {
 		t.Fatalf("seal err=%v", err)
 	}
-	plaintext, err := DecryptV1Envelope("secret-w9h", sealed)
+	plaintext, err := exactkeyprobe.DecryptV1Envelope("secret-w9h", sealed)
 	if err != nil || string(plaintext) != `{"k":"v"}` {
 		t.Fatalf("round trip=%q err=%v", plaintext, err)
 	}
-	if _, err := DecryptV1Envelope("other-secret", sealed); err == nil {
+	if _, err := exactkeyprobe.DecryptV1Envelope("other-secret", sealed); err == nil {
 		t.Fatal("wrong secret must fail")
 	}
 }
@@ -184,7 +185,7 @@ func TestW9HVerifySignedPayloadArms(t *testing.T) {
 		t.Fatalf("bad signature encoding err=%v", err)
 	}
 	// VerifySignedInput decodes the payload into the Input contract.
-	input := Input{AccountID: "acc-w9h", InputVersion: 2}
+	input := exactkeyprobe.Input{AccountID: "acc-w9h", InputVersion: 2}
 	signedInput := w9hSign(t, keys["k1"], "k1", input)
 	decoded, err := VerifySignedInput(signedInput, keys)
 	if err != nil || decoded.AccountID != "acc-w9h" || decoded.InputVersion != 2 {
@@ -204,7 +205,7 @@ func TestW9HLoadSignedInputFilesArms(t *testing.T) {
 	}
 	keys := map[string][]byte{"k1": []byte("key-w9h-00000000000000000000000000")}
 	directory := t.TempDir()
-	input := Input{AccountID: "acc-file", InputVersion: 7}
+	input := exactkeyprobe.Input{AccountID: "acc-file", InputVersion: 7}
 	w9hWrite(t, filepath.Join(directory, "acc.account-health-input.json"), w9hSign(t, keys["k1"], "k1", input))
 	// An unrelated file is ignored.
 	w9hWrite(t, filepath.Join(directory, "notes.txt"), []byte("ignore me"))
@@ -233,32 +234,32 @@ func w9hWrite(t *testing.T, path string, content []byte) {
 func TestW9HExecuteInputProbeEarlyArms(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
-	base := Input{AccountID: "w9h-exec-acc", InputVersion: 3, ConfigRevision: 2, DispatchRevision: 5, Type: "api_key"}
+	base := exactkeyprobe.Input{AccountID: "w9h-exec-acc", InputVersion: 3, ConfigRevision: 2, DispatchRevision: 5, Type: "api_key"}
 	request := ProbeRequest{RequestID: "req-w9h-exec", AccountID: "w9h-exec-acc", Reason: "cycle", InputVersion: 3, ConfigRevision: 2, DispatchRevision: 5, Deadline: time.Now().Add(time.Hour)}
 
 	// Fence mismatch.
 	mismatch := request
 	mismatch.ConfigRevision = 9
-	outcome, err := ExecuteInputProbe(ctx, store, lease, base, mismatch, ProbeOptions{})
+	outcome, err := ExecuteInputProbe(ctx, store, lease, base, mismatch, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "request_fence_invalid" {
 		t.Fatalf("fence outcome=%+v err=%v", outcome, err)
 	}
 	// Elapsed deadline.
 	expired := request
 	expired.Deadline = time.Now().Add(-time.Minute)
-	outcome, err = ExecuteInputProbe(ctx, store, lease, base, expired, ProbeOptions{})
+	outcome, err = ExecuteInputProbe(ctx, store, lease, base, expired, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "request_deadline_elapsed" {
 		t.Fatalf("deadline outcome=%+v err=%v", outcome, err)
 	}
 	// OAuth input without an access envelope.
 	oauth := base
 	oauth.Type = "oauth"
-	outcome, err = ExecuteInputProbe(ctx, store, lease, oauth, request, ProbeOptions{})
+	outcome, err = ExecuteInputProbe(ctx, store, lease, oauth, request, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "oauth_access_missing" {
 		t.Fatalf("oauth outcome=%+v err=%v", outcome, err)
 	}
 	// api_key input with an empty pool.
-	outcome, err = ExecuteInputProbe(ctx, store, lease, base, request, ProbeOptions{})
+	outcome, err = ExecuteInputProbe(ctx, store, lease, base, request, exactkeyprobe.ProbeOptions{})
 	if err != nil || outcome.ErrorCode != "api_key_pool_missing" {
 		t.Fatalf("api key outcome=%+v err=%v", outcome, err)
 	}

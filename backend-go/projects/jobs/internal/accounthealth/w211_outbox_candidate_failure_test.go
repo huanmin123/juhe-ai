@@ -10,6 +10,7 @@ package accounthealth
 import (
 	"context"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"testing"
 	"time"
 )
@@ -18,15 +19,17 @@ import (
 // 形态文案），隔离接口返回 Failures。
 type probeDrainFailingAccountReader struct{}
 
-func (probeDrainFailingAccountReader) LoadDue(context.Context, int) ([]Input, error) { return nil, nil }
+func (probeDrainFailingAccountReader) LoadDue(context.Context, int) ([]exactkeyprobe.Input, error) {
+	return nil, nil
+}
 
-func (probeDrainFailingAccountReader) LoadAccount(_ context.Context, accountID string) ([]Input, error) {
+func (probeDrainFailingAccountReader) LoadAccount(_ context.Context, accountID string) ([]exactkeyprobe.Input, error) {
 	return nil, fmt.Errorf("PG direct input account=%s 候选构造失败；请使用 LoadAccountWithFailures 处理隔离结果", accountID)
 }
 
 func (probeDrainFailingAccountReader) LoadAccountWithFailures(_ context.Context, accountID string) (DirectInputLoadResult, error) {
 	return DirectInputLoadResult{
-		Inputs:   []Input{},
+		Inputs:   []exactkeyprobe.Input{},
 		Failures: []DirectInputFailure{{AccountID: accountID, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}},
 	}, nil
 }
@@ -52,7 +55,7 @@ func TestDrainProbeOutboxCandidateFailureConsumesRow(t *testing.T) {
 	healthy := testInput("http://127.0.0.1:9", "chat_json")
 	healthy.AccountID = "account-2"
 	// 单 reader：account-1 构造失败、account-2 正常返回（两行都走隔离接口）。
-	reader := &splitAccountReader{failures: map[string]bool{"account-1": true}, inputs: map[string][]Input{"account-2": {healthy}}}
+	reader := &splitAccountReader{failures: map[string]bool{"account-1": true}, inputs: map[string][]exactkeyprobe.Input{"account-2": {healthy}}}
 	runner := newDrainRunner(t, "drain-secret", outbox, probeDrainBoundary{
 		facts: map[string][3]int64{"account-1": {1, 1, 1}, "account-2": {1, 1, 1}},
 		ok:    map[string]bool{"account-1": true, "account-2": true},
@@ -71,12 +74,14 @@ func TestDrainProbeOutboxCandidateFailureConsumesRow(t *testing.T) {
 // 其余返回预置 inputs。
 type splitAccountReader struct {
 	failures map[string]bool
-	inputs   map[string][]Input
+	inputs   map[string][]exactkeyprobe.Input
 }
 
-func (r *splitAccountReader) LoadDue(context.Context, int) ([]Input, error) { return nil, nil }
+func (r *splitAccountReader) LoadDue(context.Context, int) ([]exactkeyprobe.Input, error) {
+	return nil, nil
+}
 
-func (r *splitAccountReader) LoadAccount(ctx context.Context, accountID string) ([]Input, error) {
+func (r *splitAccountReader) LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error) {
 	result, err := r.LoadAccountWithFailures(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -90,7 +95,7 @@ func (r *splitAccountReader) LoadAccount(ctx context.Context, accountID string) 
 func (r *splitAccountReader) LoadAccountWithFailures(_ context.Context, accountID string) (DirectInputLoadResult, error) {
 	if r.failures[accountID] {
 		return DirectInputLoadResult{
-			Inputs:   []Input{},
+			Inputs:   []exactkeyprobe.Input{},
 			Failures: []DirectInputFailure{{AccountID: accountID, InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1}},
 		}, nil
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +33,7 @@ const directScheduleCacheTTL = time.Minute
 
 // directScheduleCacheEntry 是一份缓存快照：调度参数 + 统计时区 + 过期时刻。
 type directScheduleCacheEntry struct {
-	schedule  Schedule
+	schedule  exactkeyprobe.Schedule
 	timezone  *time.Location
 	expiresAt time.Time
 }
@@ -50,7 +51,7 @@ type directScheduleCache struct {
 
 // load 返回缓存快照；命中（now < expiresAt）直接复用，miss/过期经 fetch
 // 重读并回填。fetch 失败原样返回且不缓存（下一次读取立即重试真实查询）。
-func (c *directScheduleCache) load(ctx context.Context, fetch func(context.Context) (Schedule, *time.Location, error)) (Schedule, *time.Location, error) {
+func (c *directScheduleCache) load(ctx context.Context, fetch func(context.Context) (exactkeyprobe.Schedule, *time.Location, error)) (exactkeyprobe.Schedule, *time.Location, error) {
 	c.mu.Lock()
 	entry := c.entry
 	if entry != nil && c.now().Before(entry.expiresAt) {
@@ -60,7 +61,7 @@ func (c *directScheduleCache) load(ctx context.Context, fetch func(context.Conte
 	c.mu.Unlock()
 	schedule, timezone, err := fetch(ctx)
 	if err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	c.mu.Lock()
 	c.entry = &directScheduleCacheEntry{schedule: schedule, timezone: timezone, expiresAt: c.now().Add(c.ttl)}
@@ -72,7 +73,7 @@ func (c *directScheduleCache) load(ctx context.Context, fetch func(context.Conte
 // a failed read transaction. The runner must persist every Failure before it
 // probes Inputs; a SQL/query/scan failure remains a whole-read error.
 type DirectInputLoadResult struct {
-	Inputs   []Input
+	Inputs   []exactkeyprobe.Input
 	Failures []DirectInputFailure
 }
 
@@ -169,7 +170,7 @@ var directInputRequiredRelations = []string{
 	"juhe_stats.usage_quota_hourly_windows",
 }
 
-func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]Input, error) {
+func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]exactkeyprobe.Input, error) {
 	result, err := r.LoadDueWithFailures(ctx, limit)
 	if err == nil && len(result.Failures) > 0 {
 		return nil, fmt.Errorf("PG direct input 存在 %d 个候选构造失败；请使用 LoadDueWithFailures 处理隔离结果", len(result.Failures))
@@ -184,7 +185,7 @@ func (r *PostgresDirectInputReader) LoadDueWithFailures(ctx context.Context, lim
 // LoadAccount is only for a signed explicit request. It skips the periodic
 // due-time predicate, but retains every account/source/authorization/binding/
 // quota eligibility guard from LoadDue.
-func (r *PostgresDirectInputReader) LoadAccount(ctx context.Context, accountID string) ([]Input, error) {
+func (r *PostgresDirectInputReader) LoadAccount(ctx context.Context, accountID string) ([]exactkeyprobe.Input, error) {
 	result, err := r.LoadAccountWithFailures(ctx, accountID)
 	if err == nil && len(result.Failures) > 0 {
 		return nil, fmt.Errorf("PG direct input account=%s 候选构造失败；请使用 LoadAccountWithFailures 处理隔离结果", strings.TrimSpace(accountID))
@@ -221,13 +222,13 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	if _, err := tx.ExecContext(ctx, "SET LOCAL TRANSACTION READ ONLY"); err != nil {
 		return DirectInputLoadResult{}, fmt.Errorf("设置 PG direct input 只读事务失败: %w", err)
 	}
-	schedule, timezone, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (Schedule, *time.Location, error) {
+	schedule, timezone, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (exactkeyprobe.Schedule, *time.Location, error) {
 		return loadDirectSchedule(fetchCtx, tx)
 	})
 	if err != nil {
 		return DirectInputLoadResult{}, err
 	}
-	result := DirectInputLoadResult{Inputs: make([]Input, 0, limit), Failures: make([]DirectInputFailure, 0)}
+	result := DirectInputLoadResult{Inputs: make([]exactkeyprobe.Input, 0, limit), Failures: make([]DirectInputFailure, 0)}
 	err = collectDirectCandidatePages(limit, func(offset int) (int, error) {
 		candidateSQL, suppressionArgs := directInputCandidatesQuery(suppressions)
 		args := []any{now.Format(time.RFC3339Nano), limit, ignoreSchedule, accountID, offset}
@@ -275,7 +276,7 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 				}
 				candidate.authorization.QuotaEligible = eligible
 			}
-			direct := DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
+			direct := exactkeyprobe.DirectInput{Account: candidate.account, Authorization: candidate.authorization, Source: candidate.source, Binding: candidate.binding, Proxy: candidate.proxy, InputVersion: candidate.inputVersion, IssuedAt: now, ExpiresAt: now.Add(r.inputTTL), TLSPolicy: "j1-direct-upstream-v1", Schedule: schedule}
 			input, failure, err := buildDirectCandidateInput(candidate, direct, r.credentialSecret, now)
 			if err != nil {
 				return 0, err
@@ -303,25 +304,25 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	return result, nil
 }
 
-func buildDirectCandidateInput(candidate directCandidate, direct DirectInput, secret string, now time.Time) (Input, *DirectInputFailure, error) {
+func buildDirectCandidateInput(candidate directCandidate, direct exactkeyprobe.DirectInput, secret string, now time.Time) (exactkeyprobe.Input, *DirectInputFailure, error) {
 	input, err := direct.ToInput(secret, now)
 	if err == nil {
 		return input, nil, nil
 	}
 	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision, Reason: err.Error()}
 	if strings.TrimSpace(failure.AccountID) == "" || failure.InputVersion < 1 || failure.ConfigRevision < 1 || failure.DispatchRevision < 1 {
-		return Input{}, nil, fmt.Errorf("PG direct input 坏候选缺少可持久化的 account/revision fence")
+		return exactkeyprobe.Input{}, nil, fmt.Errorf("PG direct input 坏候选缺少可持久化的 account/revision fence")
 	}
-	return Input{}, &failure, nil
+	return exactkeyprobe.Input{}, &failure, nil
 }
 
 type directCandidate struct {
-	account                 DirectAccount
-	authorization           *DirectAuthorization
+	account                 exactkeyprobe.DirectAccount
+	authorization           *exactkeyprobe.DirectAuthorization
 	authorizationLimits     string
-	source                  *DirectSource
-	binding                 DirectBinding
-	proxy                   *DirectProxy
+	source                  *exactkeyprobe.DirectSource
+	binding                 exactkeyprobe.DirectBinding
+	proxy                   *exactkeyprobe.DirectProxy
 	inputVersion            int64
 	systemAccount           string
 	authorizationResourceID string
@@ -545,15 +546,15 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		if err != nil || !cooldownGeneration.Valid || strings.TrimSpace(cooldownGeneration.String) == "" {
 			return result, fmt.Errorf("PG direct input 的 cooldown fence 无效")
 		}
-		result.account.Cooldown = &CooldownFence{ObservationStartedAt: observed, Generation: cooldownGeneration.String}
+		result.account.Cooldown = &exactkeyprobe.CooldownFence{ObservationStartedAt: observed, Generation: cooldownGeneration.String}
 	}
-	result.binding = DirectBinding{GroupID: groupID.String, Enabled: groupID.Valid, AuthorizationBindingID: bindingAuthorizationID.String}
+	result.binding = exactkeyprobe.DirectBinding{GroupID: groupID.String, Enabled: groupID.Valid, AuthorizationBindingID: bindingAuthorizationID.String}
 	if authorizationID.Valid {
 		expiresAt, err := parseNullableDirectTime(authorizationExpires)
 		if err != nil {
 			return result, err
 		}
-		result.authorization = &DirectAuthorization{ID: authorizationID.String, Status: authorizationStatus.String, ExpiresAt: expiresAt}
+		result.authorization = &exactkeyprobe.DirectAuthorization{ID: authorizationID.String, Status: authorizationStatus.String, ExpiresAt: expiresAt}
 		result.authorizationLimits = authorizationLimits.String
 		result.authorizationResourceID = authorizationResourceID.String
 		result.authorizationOwner = authorizationOwner.String
@@ -568,14 +569,14 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		if err != nil {
 			return result, err
 		}
-		result.source = &DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ClientCompatibility: sourceClientCompatibility.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
+		result.source = &exactkeyprobe.DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ClientCompatibility: sourceClientCompatibility.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
 			value := result.source.ConfigRevision
 			result.account.Cooldown.SourceConfigRevision = &value
 		}
 	}
 	if proxyID.Valid {
-		result.proxy = &DirectProxy{ID: proxyID.String, Enabled: proxyEnabled.Bool, Type: proxyType.String, Host: proxyHost.String, Port: int(proxyPort.Int64), Username: proxyUsername.String, PasswordEncrypted: proxyPassword.String}
+		result.proxy = &exactkeyprobe.DirectProxy{ID: proxyID.String, Enabled: proxyEnabled.Bool, Type: proxyType.String, Host: proxyHost.String, Port: int(proxyPort.Int64), Username: proxyUsername.String, PasswordEncrypted: proxyPassword.String}
 	}
 	return result, nil
 }
@@ -593,7 +594,7 @@ func directInputFailureForCandidate(candidate directCandidate) (DirectInputFailu
 	return failure, true
 }
 
-func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Location, error) {
+func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (exactkeyprobe.Schedule, *time.Location, error) {
 	return loadDirectScheduleFrom(ctx, tx, "juhe_business.system_settings", "PG direct input")
 }
 
@@ -606,52 +607,52 @@ type directScheduleQueryer interface {
 // loadDirectScheduleFrom 是 loadDirectSchedule 的方言无关内核：table 承载
 // juhe_business 前缀差异，label 承载错误文案的方言前缀；PG 与 SQLite reader
 // 共用，修改 settings 语义时必须同步全部调用方。
-func loadDirectScheduleFrom(ctx context.Context, queryer directScheduleQueryer, table, label string) (Schedule, *time.Location, error) {
+func loadDirectScheduleFrom(ctx context.Context, queryer directScheduleQueryer, table, label string) (exactkeyprobe.Schedule, *time.Location, error) {
 	rows, err := queryer.QueryContext(ctx, `SELECT key, value_json FROM `+table+` WHERE system_account_id = 'sys_admin' AND key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold', 'defaultTemporaryUnschedulableMinutes', 'cooldownAccountRetestMaxBackoffHours', 'usageStatsTimezone')`)
 	if err != nil {
-		return Schedule{}, nil, fmt.Errorf("读取 %s settings 失败: %w", label, err)
+		return exactkeyprobe.Schedule{}, nil, fmt.Errorf("读取 %s settings 失败: %w", label, err)
 	}
 	defer rows.Close()
 	values := map[string]string{}
 	for rows.Next() {
 		var key, value string
 		if err := rows.Scan(&key, &value); err != nil {
-			return Schedule{}, nil, err
+			return exactkeyprobe.Schedule{}, nil, err
 		}
 		values[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	intervalHours, err := directSettingInt(values, label, "accountHealthCheckIntervalHours", 1, 168)
 	if err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	jitterMinutes, err := directSettingInt(values, label, "accountHealthCheckJitterMinutes", 0, 1440)
 	if err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	threshold, err := directSettingInt(values, label, "accountHealthCheckFailureThreshold", 1, 10)
 	if err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	maxPauseMinutes, err := directSettingInt(values, label, "defaultTemporaryUnschedulableMinutes", 1, 1440)
 	if err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	maxRecoveryHours, err := directSettingInt(values, label, "cooldownAccountRetestMaxBackoffHours", 1, 24*30)
 	if err != nil {
-		return Schedule{}, nil, err
+		return exactkeyprobe.Schedule{}, nil, err
 	}
 	var timezone string
 	if raw, found := values["usageStatsTimezone"]; !found || json.Unmarshal([]byte(raw), &timezone) != nil || strings.TrimSpace(timezone) == "" {
-		return Schedule{}, nil, fmt.Errorf("%s 缺少有效 usageStatsTimezone", label)
+		return exactkeyprobe.Schedule{}, nil, fmt.Errorf("%s 缺少有效 usageStatsTimezone", label)
 	}
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
-		return Schedule{}, nil, fmt.Errorf("%s usageStatsTimezone 无效: %w", label, err)
+		return exactkeyprobe.Schedule{}, nil, fmt.Errorf("%s usageStatsTimezone 无效: %w", label, err)
 	}
-	return Schedule{HealthIntervalMS: int64(intervalHours) * int64(time.Hour/time.Millisecond), HealthJitterMS: int64(jitterMinutes) * int64(time.Minute/time.Millisecond), FailureThreshold: threshold, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: int64(30 * time.Second / time.Millisecond), CooldownNeutralMaxMS: int64(15 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: int64(3 * time.Second / time.Millisecond), MaxPauseMinutes: maxPauseMinutes, MaxRecoveryHours: maxRecoveryHours}, location, nil
+	return exactkeyprobe.Schedule{HealthIntervalMS: int64(intervalHours) * int64(time.Hour/time.Millisecond), HealthJitterMS: int64(jitterMinutes) * int64(time.Minute/time.Millisecond), FailureThreshold: threshold, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: int64(30 * time.Second / time.Millisecond), CooldownNeutralMaxMS: int64(15 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: int64(3 * time.Second / time.Millisecond), MaxPauseMinutes: maxPauseMinutes, MaxRecoveryHours: maxRecoveryHours}, location, nil
 }
 
 func directSettingInt(values map[string]string, label, key string, minimum, maximum int) (int, error) {

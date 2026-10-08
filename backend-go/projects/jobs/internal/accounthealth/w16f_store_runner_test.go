@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func TestW16fStoreAppendOutcomeMarshalArm(t *testing.T) {
 		TargetAccountID: outcome.AccountID, TransitionKind: "cooldown_defer",
 		InputVersion: outcome.InputVersion, ConfigRevision: outcome.ConfigRevision, DispatchRevision: outcome.DispatchRevision,
 		ExpectedAccountStatus: "temporary_unavailable",
-		ExpectedCooldownFence: &CooldownFence{ObservationStartedAt: time.Now().UTC(), Generation: "gen-w16f"},
+		ExpectedCooldownFence: &exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now().UTC(), Generation: "gen-w16f"},
 		Values:                map[string]any{"rogue": make(chan int)},
 	}
 	if _, err := store.AppendOutcome(ctx, lease, outcome); err == nil || !strings.Contains(err.Error(), "编码 account-health outcome 失败") {
@@ -116,8 +117,8 @@ func TestW16fStoreOutcomeContractArms(t *testing.T) {
 		TargetAccountID: outcome.AccountID, TransitionKind: "cooldown_error",
 		InputVersion: outcome.InputVersion, ConfigRevision: outcome.ConfigRevision, DispatchRevision: outcome.DispatchRevision,
 		ExpectedAccountStatus: "temporary_unavailable",
-		ExpectedCooldownFence: &CooldownFence{ObservationStartedAt: time.Now().UTC(), Generation: "gen-a"},
-		CooldownFence:         &CooldownFence{ObservationStartedAt: time.Now().UTC(), Generation: "gen-b"},
+		ExpectedCooldownFence: &exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now().UTC(), Generation: "gen-a"},
+		CooldownFence:         &exactkeyprobe.CooldownFence{ObservationStartedAt: time.Now().UTC(), Generation: "gen-b"},
 	}
 	if _, err := store.AppendOutcome(ctx, lease, outcome); err == nil || !strings.Contains(err.Error(), "输出 fence") {
 		t.Fatalf("cooldown_error fence 不一致必须报错: %v", err)
@@ -191,7 +192,7 @@ func (l *w16fSequencedLoader) LoadDueWithFailures(context.Context, int) (DirectI
 	return DirectInputLoadResult{Failures: l.failures}, nil
 }
 
-func (l *w16fSequencedLoader) LoadDue(context.Context, int) ([]Input, error) {
+func (l *w16fSequencedLoader) LoadDue(context.Context, int) ([]exactkeyprobe.Input, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls++
@@ -201,7 +202,7 @@ func (l *w16fSequencedLoader) LoadDue(context.Context, int) ([]Input, error) {
 	return nil, nil
 }
 
-func (l *w16fSequencedLoader) LoadAccount(context.Context, string) ([]Input, error) {
+func (l *w16fSequencedLoader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
 	return nil, nil
 }
 
@@ -210,8 +211,10 @@ type w16fDueOnlyLoader struct {
 	err error
 }
 
-func (l *w16fDueOnlyLoader) LoadDue(context.Context, int) ([]Input, error) { return nil, l.err }
-func (l *w16fDueOnlyLoader) LoadAccount(context.Context, string) ([]Input, error) {
+func (l *w16fDueOnlyLoader) LoadDue(context.Context, int) ([]exactkeyprobe.Input, error) {
+	return nil, l.err
+}
+func (l *w16fDueOnlyLoader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
 	return nil, nil
 }
 
@@ -224,11 +227,11 @@ func (l *w16fExplicitAccountLoader) LoadDueWithFailures(context.Context, int) (D
 	return DirectInputLoadResult{}, nil
 }
 
-func (l *w16fExplicitAccountLoader) LoadDue(context.Context, int) ([]Input, error) {
+func (l *w16fExplicitAccountLoader) LoadDue(context.Context, int) ([]exactkeyprobe.Input, error) {
 	return nil, nil
 }
 
-func (l *w16fExplicitAccountLoader) LoadAccount(context.Context, string) ([]Input, error) {
+func (l *w16fExplicitAccountLoader) LoadAccount(context.Context, string) ([]exactkeyprobe.Input, error) {
 	return nil, l.accountErr
 }
 
@@ -251,7 +254,7 @@ func w16fOutcome(outcomeID, requestID string) Outcome {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	return Outcome{
 		OutcomeID: outcomeID, RequestID: requestID, AccountID: "w16f-acc",
-		Outcome: OutcomeNeutral, ObservedAt: now,
+		Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: now,
 		InputVersion: 2, ConfigRevision: 3, DispatchRevision: 4,
 	}
 }
@@ -368,7 +371,7 @@ func TestW16fPrepareScheduledInputArms(t *testing.T) {
 	runner := NewRunner(w16fRunnerConfig(store, t.TempDir()), store, nil)
 	// 不合格 input → 直接跳过。
 	ineligible := testScheduledAPIKeyInput(t, "https://api.example.com", "w16f-secret", "w16f-ineligible")
-	ineligible.Eligibility = Eligibility{}
+	ineligible.Eligibility = exactkeyprobe.Eligibility{}
 	task, err := runner.prepareScheduledInput(ctx, lease, ineligible, now)
 	if err != nil || task.ready {
 		t.Fatalf("不合格 input 必须跳过: %t %v", task.ready, err)
@@ -400,7 +403,7 @@ func TestW16fPrepareScheduledInputArms(t *testing.T) {
 }
 
 // prepareScheduledInputErr 仅返回 error（丢弃任务值），便于注入断言。
-func (r *Runner) prepareScheduledInputErr(ctx context.Context, lease OwnerLease, input Input, now time.Time) error {
+func (r *Runner) prepareScheduledInputErr(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, now time.Time) error {
 	_, err := r.prepareScheduledInput(ctx, lease, input, now)
 	return err
 }
@@ -583,7 +586,7 @@ func TestW16fExecutorCursorReadFailure(t *testing.T) {
 	}
 	spec.armOnce("FROM account_health_key_cursors")
 	defer spec.disarm()
-	if _, err := ExecuteInputProbe(context.Background(), store, lease, input, request, ProbeOptions{Secret: secret, Now: time.Now}); err == nil {
+	if _, err := ExecuteInputProbe(context.Background(), store, lease, input, request, exactkeyprobe.ProbeOptions{Secret: secret, Now: time.Now}); err == nil {
 		t.Fatal("cursor 读取失败必须传播")
 	}
 }
@@ -663,11 +666,11 @@ func TestW16fRunCycleConsumedRequestRemovalFailureArm(t *testing.T) {
 func TestW16fLoadSignedInputFilesDuplicateVersionArm(t *testing.T) {
 	root := t.TempDir()
 	key := []byte("w16f-dup-key")
-	newer, err := json.Marshal(Input{AccountID: "w16f-dup-acc", InputVersion: 2, ConfigRevision: 1, DispatchRevision: 1})
+	newer, err := json.Marshal(exactkeyprobe.Input{AccountID: "w16f-dup-acc", InputVersion: 2, ConfigRevision: 1, DispatchRevision: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	older, err := json.Marshal(Input{AccountID: "w16f-dup-acc", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1})
+	older, err := json.Marshal(exactkeyprobe.Input{AccountID: "w16f-dup-acc", InputVersion: 1, ConfigRevision: 1, DispatchRevision: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

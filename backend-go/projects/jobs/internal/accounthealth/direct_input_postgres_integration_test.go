@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
 	"testing"
 	"time"
@@ -155,7 +156,7 @@ func TestPostgresDirectInputReaderExcludesHealthyImagesFromPeriodicScan(t *testi
 	}
 }
 
-func directInputIndex(inputs []Input, accountID string) int {
+func directInputIndex(inputs []exactkeyprobe.Input, accountID string) int {
 	for index, input := range inputs {
 		if input.AccountID == accountID {
 			return index

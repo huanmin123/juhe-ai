@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -625,4 +628,181 @@ INSERT INTO proxy_profiles (id, type, host, port, username, password_encrypted, 
 	if _, err := runtime.xaiGrokProxyRequestURL(ctx, "proxy-disabled"); err == nil {
 		t.Fatal("停用代理档案必须报错")
 	}
+}
+
+// waitVersionGateTrigger 等待一次版本刷新触发（触发在后台 goroutine 内
+// 执行，经通道同步观测）。
+func waitVersionGateTrigger(t *testing.T, triggered chan struct{}) {
+	t.Helper()
+	select {
+	case <-triggered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("426 未触发版本刷新")
+	}
+}
+
+// assertNoVersionGateTrigger 断言窗口期内无刷新触发（冷却去重/非 426 用）。
+func assertNoVersionGateTrigger(t *testing.T, triggered chan struct{}) {
+	t.Helper()
+	select {
+	case <-triggered:
+		t.Fatal("不得触发版本刷新")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// TestXAIGrokUsageVersionGate426TriggersRefresh（设计 §8.3）：426 → 触发
+// 函数被调用一次 + 告警日志（状态码、响应体摘录、当前 grokCLI 版本）；
+// 冷却期内第二次 426 不再触发（日志照记）；冷却窗口过后恢复触发；426 的
+// 错误返回路径保持原样。
+func TestXAIGrokUsageVersionGate426TriggersRefresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipped in -short mode")
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUpgradeRequired)
+		_, _ = w.Write([]byte(`{"error":"upgrade_required","message":"client version 1.0.44 is below minimum 1.0.46"}`))
+	}))
+	defer upstream.Close()
+
+	triggered := make(chan struct{}, 4)
+	var logBuf bytes.Buffer
+	runtime := &xaiGrokUsageRuntime{
+		secret:  "0123456789abcdef0123456789abcdef",
+		nowFunc: func() time.Time { return xaiGrokFixtureNow },
+		logger:  slog.New(slog.NewTextHandler(&logBuf, nil)),
+		versionRefreshTrigger: func(context.Context) error {
+			triggered <- struct{}{}
+			return nil
+		},
+	}
+
+	_, err := runtime.fetchXAIGrokJSON(context.Background(), upstream.Client(), "tok", upstream.URL+"/billing?format=credits")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 426") {
+		t.Fatalf("426 必须保持原错误返回路径: %v", err)
+	}
+	waitVersionGateTrigger(t, triggered)
+	logged := logBuf.String()
+	if !strings.Contains(logged, "grok_version_gate_426_observed") {
+		t.Fatalf("缺少 426 告警日志事件: %s", logged)
+	}
+	if !strings.Contains(logged, "status_code=426") {
+		t.Fatalf("告警日志缺少状态码: %s", logged)
+	}
+	if !strings.Contains(logged, "response_excerpt=") || !strings.Contains(logged, "upgrade_required") {
+		t.Fatalf("告警日志缺少响应体摘录: %s", logged)
+	}
+	if !strings.Contains(logged, "grok_cli_version=") {
+		t.Fatalf("告警日志缺少当前生效 grokCLI 版本: %s", logged)
+	}
+
+	// 冷却期内第二次 426：告警日志照记，刷新不重触发。
+	logBuf.Reset()
+	if _, err := runtime.fetchXAIGrokJSON(context.Background(), upstream.Client(), "tok", upstream.URL+"/billing?format=credits"); err == nil {
+		t.Fatal("冷却期内 426 仍须报错")
+	}
+	assertNoVersionGateTrigger(t, triggered)
+	if !strings.Contains(logBuf.String(), "grok_version_gate_426_observed") {
+		t.Fatalf("冷却期内 426 告警日志不得缺失: %s", logBuf.String())
+	}
+
+	// 冷却窗口过后恢复触发。
+	runtime.nowFunc = func() time.Time { return xaiGrokFixtureNow.Add(grokVersionGateTriggerCooldown + time.Minute) }
+	if _, err := runtime.fetchXAIGrokJSON(context.Background(), upstream.Client(), "tok", upstream.URL+"/billing?format=credits"); err == nil {
+		t.Fatal("冷却后 426 仍须报错")
+	}
+	waitVersionGateTrigger(t, triggered)
+}
+
+// TestXAIGrokUsageVersionGateNon426AndNilTriggerSafe：非 426 不触发；刷新
+// 函数为 nil 时 426 安全跳过（不 panic），告警日志照常。
+func TestXAIGrokUsageVersionGateNon426AndNilTriggerSafe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipped in -short mode")
+	}
+	var status atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(int(status.Load()))
+		_, _ = w.Write([]byte("upstream exploded"))
+	}))
+	defer upstream.Close()
+
+	triggered := make(chan struct{}, 4)
+	runtime := &xaiGrokUsageRuntime{
+		secret:  "0123456789abcdef0123456789abcdef",
+		nowFunc: func() time.Time { return xaiGrokFixtureNow },
+		versionRefreshTrigger: func(context.Context) error {
+			triggered <- struct{}{}
+			return nil
+		},
+	}
+
+	status.Store(http.StatusInternalServerError)
+	if _, err := runtime.fetchXAIGrokJSON(context.Background(), upstream.Client(), "tok", upstream.URL+"/v1/billing"); err == nil {
+		t.Fatal("500 必须报错")
+	}
+	assertNoVersionGateTrigger(t, triggered)
+
+	runtime.versionRefreshTrigger = nil
+	var logBuf bytes.Buffer
+	runtime.logger = slog.New(slog.NewTextHandler(&logBuf, nil))
+	status.Store(http.StatusUpgradeRequired)
+	if _, err := runtime.fetchXAIGrokJSON(context.Background(), upstream.Client(), "tok", upstream.URL+"/v1/billing"); err == nil {
+		t.Fatal("426 必须报错")
+	}
+	assertNoVersionGateTrigger(t, triggered)
+	if !strings.Contains(logBuf.String(), "grok_version_gate_426_observed") {
+		t.Fatalf("nil 触发器时告警日志不得缺失: %s", logBuf.String())
+	}
+}
+
+// TestXAIGrokUsageRuntime426KeepsSnapshotSemantics：426 走既有失败状态机
+//（failed + last_error_message 带 HTTP 426），触发器仅旁路刷新、不改变
+// 快照落库语义；冷却内重复一轮不再触发。
+func TestXAIGrokUsageRuntime426KeepsSnapshotSemantics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipped in -short mode")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	businessDB := mustOpenSQLite(t, filepath.Join(root, "business.sqlite3"))
+	defer businessDB.Close()
+	statsDB := mustOpenSQLite(t, filepath.Join(root, "stats.sqlite3"))
+	defer statsDB.Close()
+	if err := balanceFixtureSchema(ctx, businessDB, statsDB); err != nil {
+		t.Fatal(err)
+	}
+	secret := "0123456789abcdef0123456789abcdef"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUpgradeRequired)
+		_, _ = w.Write([]byte(`{"error":"upgrade_required"}`))
+	}))
+	defer upstream.Close()
+	seedXAIGrokUsageAccount(t, ctx, businessDB, secret,
+		`{"access_token":"tok-xai","base_url":"`+upstream.URL+`/v1"}`)
+
+	triggered := make(chan struct{}, 4)
+	runtime := newXaiGrokTestRuntime(t, businessDB, statsDB, secret)
+	runtime.versionRefreshTrigger = func(context.Context) error {
+		triggered <- struct{}{}
+		return nil
+	}
+	summary, err := runtime.runRound(ctx)
+	if err != nil {
+		t.Fatalf("单账户失败不得使轮次失败: %v", err)
+	}
+	if summary.Scanned != 1 || summary.Failed != 1 {
+		t.Fatalf("轮次聚合不符: %+v", summary)
+	}
+	waitVersionGateTrigger(t, triggered)
+	_, refreshStatus, _, _, _, lastError := readXAIGrokSnapshotRow(t, ctx, statsDB)
+	if refreshStatus.String != "failed" || !strings.Contains(lastError.String, "HTTP 426") {
+		t.Fatalf("426 快照语义不符: %q %q", refreshStatus.String, lastError.String)
+	}
+	// 冷却内第二轮：快照语义重复执行，但不再触发刷新。
+	if _, err := runtime.runRound(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoVersionGateTrigger(t, triggered)
 }

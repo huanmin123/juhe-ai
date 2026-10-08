@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 )
 
@@ -22,14 +23,14 @@ type SignedInputEnvelope struct {
 	Signature string `json:"signature"`
 }
 
-func VerifySignedInput(raw []byte, keys map[string][]byte) (Input, error) {
+func VerifySignedInput(raw []byte, keys map[string][]byte) (exactkeyprobe.Input, error) {
 	payload, err := VerifySignedPayload(raw, keys)
 	if err != nil {
-		return Input{}, err
+		return exactkeyprobe.Input{}, err
 	}
-	var input Input
+	var input exactkeyprobe.Input
 	if err := json.Unmarshal(payload, &input); err != nil {
-		return Input{}, fmt.Errorf("解析 input payload 失败: %w", err)
+		return exactkeyprobe.Input{}, fmt.Errorf("解析 input payload 失败: %w", err)
 	}
 	return input, nil
 }

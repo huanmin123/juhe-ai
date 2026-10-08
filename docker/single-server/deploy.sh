@@ -115,9 +115,11 @@ if [[ " ${TARGETS[*]} " == *" gateway "* ]]; then
       exit 1
     fi
     # mtime 在 Windows 工作区与容器化构建间会有秒级抖动，给 2 秒容忍。
-    if find frontend -path frontend/dist -prune -o -path frontend/node_modules -prune -o -type f -newer "$FRONTEND_BASELINE" -print | grep -q .; then
+    # tsconfig.tsbuildinfo 是 vue-tsc 增量构建缓存（gitignored 构建产物），
+    # 每次构建必被改写，不属于源文件改动（2026-10-08 首次触发误报修复）。
+    if find frontend -path frontend/dist -prune -o -path frontend/node_modules -prune -o -path frontend/tsconfig.tsbuildinfo -prune -o -type f -newer "$FRONTEND_BASELINE" -print | grep -q .; then
       echo "[FAIL] 前端源文件在构建期间被修改，产物可能未包含最新改动：" >&2
-      find frontend -path frontend/dist -prune -o -path frontend/node_modules -prune -o -type f -newer "$FRONTEND_BASELINE" -print >&2
+      find frontend -path frontend/dist -prune -o -path frontend/node_modules -prune -o -path frontend/tsconfig.tsbuildinfo -prune -o -type f -newer "$FRONTEND_BASELINE" -print >&2
       echo "       发布中止；待改动稳定后重跑（脚本会重新构建）。" >&2
       rm -f "$FRONTEND_BASELINE"
       exit 1
@@ -128,7 +130,7 @@ if [[ " ${TARGETS[*]} " == *" gateway "* ]]; then
     echo "== [0/6] 上传前端到 $SERVER:$SERVER_DIR/build/frontend-dist（旧目录备份）=="
     tar czf - -C docker/single-server/build frontend-dist \
       | $SSH "$SERVER" "set -e; cd $SERVER_DIR/build && mv frontend-dist frontend-dist.bak-\$(date +%m%d-%H%M%S) && tar xzf -"
-    SERVER_DIST_ID=$($SSH "$SERVER" "sed -n 's/.*\"buildId\"[[:space:]]*:[[:space:]]*\"\([0-9a-f]\{40\}\)\"/\1/p' $SERVER_DIR/build/frontend-dist/build-info.json")
+    SERVER_DIST_ID=$($SSH "$SERVER" "sed -n 's/.*\"buildId\"[[:space:]]*:[[:space:]]*\"\([0-9a-f]\{40\}\)\".*/\1/p' $SERVER_DIR/build/frontend-dist/build-info.json")
     if [ "$SERVER_DIST_ID" != "$HEAD_COMMIT" ]; then
       echo "[FAIL] 服务器前端产物 buildId=$SERVER_DIST_ID 与本地 HEAD=$HEAD_COMMIT 不一致，上传可能不完整，发布中止。" >&2
       exit 1

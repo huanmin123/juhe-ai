@@ -651,6 +651,21 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 - 若产品明确接受 Redis 丢失后 fail-open，必须删除“活动状态不得因过期恢复”的保证，并写入告警与验收；本文默认不接受。
 - Go 装配事实（BUG-0295 修复后，2026-10-08）：主链（gateway）的每次状态转换经 `gatewaycircuit.Bridge` CAS 写 ledger + outbox，`ServiceOptions` 挂 `IsRuntimeStateReady` / `EnsureRuntimeStateReady` 实现按账户渐进恢复（业务库 owner gate 未就绪时不装配，保持恒就绪的既有行为）；jobs 侧 `account-circuit-recovery` 的后台恢复/退避转换经 `CircuitIncidentProjector` 以同契约 CAS 投影回 ledger（冲突回填重试、终态丢弃、pending 随每轮扫描重放），`account-circuit-control-plane-maintenance` 追加孤儿结清扫描——ledger 非终态行在运行态缺键、无活跃租约、非交接态（`PERSISTING`/`SHADOWED_BY_PERSISTENT`）、超宽限期且冲突复查未被复开时才结清为 `CLOSED`（对齐本节"缺失 key 按 CLOSED 处理"守卫），并执行 `CLOSED` 保留期到期行的物理清理。CAS 入参 attempt 时间戳为纯 optional（对齐 Node），不与租约耦合。
 
+### 7.6 本地单机形态恢复驱动（gateway 进程内，2026-10-08）
+
+§7.4 的生命周期闭环依赖一个后台恢复驱动按期推进到期状态（确认/金丝雀/退避）。在 Redis 共享运行态形态下该职责归 jobs 的 `account-circuit-recovery` 任务族；本地单机形态（SQLite + 无 Redis，memory 运行态）下该任务族 fail-closed disabled，而熔断运行态是 gateway 进程内事实——若 gateway 内无替补驱动，账户熔断后永久冻结直到进程重启（PLAN-20261008T113056000Z 修复的缺口）。
+
+形态归属裁决：**谁拥有运行态，谁负责恢复**。运行态在 memory 驱动（`JUHE_AI_RUNTIME_STATE_DRIVER != "redis"`，即 runtime mode 自动推断的 standalone 默认形态）下归 gateway 进程所有，恢复驱动随 gateway 进程装配（supervisor 组件 `account-circuit-recovery`）；redis 驱动下运行态共享，恢复仍归 jobs，gateway 不装配——同进程不会出现双驱动重复探针（store 级 lease/generation/revision CAS 围栏兜底单 winner，但职责单一化）。这是运行态归属决定的依赖门禁，不是功能开关，无任何配置项。
+
+契约（gateway 侧 `gatewaycircuit.RecoveryService`，与 jobs `opsjobs.CircuitRecoveryService` 逐段对照成对维护，上游同为 Node `account-circuit-recovery.service.ts`）：
+
+1. 调度：节拍 5s + 初始延迟 5s，均带 PassiveJitter（对齐 jobs jobregistry 的 `account-circuit-recovery` 条目；抖动用 shared `schedulejitter`）；每轮 `WithTimeout`（覆盖单轮最坏探针租约 180s），单轮失败仅告警不中断，组件只在进程 ctx 取消时退出。
+2. 扫描与围栏：每轮 `ListDue`（batch 200，租约互斥/generation/revision CAS 与 jobs 完全一致）；相位过滤仅 `SUSPECT/OPEN/RECOVERING`；`SUSPECT` 取确认租约、`OPEN/RECOVERING` 取金丝雀租约，租约 180s；目标 `dispatchRevision` 漂移时 `ReplaceDispatchRevision` 后按 fenced 跳过；探针超出租约 deadline 按 unknown 中性结算。
+3. 探针契约（与 jobs `worker_circuit_jobs.go` 适配层同构）：identity 解析（`id` / `id:authorized:sys:group:authz`）→ `proberepo.LoadAccountForTest` → authorized 取 identity 的 group/system → `LoadAccountForGroup`（ignoreAvailability）→ 候选 `dispatchRevision > 0` 围栏 → limited 诊断（`TrafficSource: "runtime_recovery_probe"`、`Full: false`、protocol_model scope 钉 `modelBucket` 保证"探测模型 == 熔断模型"，解析不到回退账户健康检查模型）→ `TransportProbeOutcomeFromResult` 分类（401/403 → `credential_rejected` 不推进恢复走 transport_failure 臂，防 401 自愈振荡；与 jobs 同一用户裁决）。
+4. 结算语义与 jobs 逐项一致：`framing_complete` 确认成功直接 `CLOSED`、金丝雀累计 `RecoverySuccessCount` 到阈值 3 关闭；`transport_incomplete` / `credential_rejected` 走 `transport_failure` 臂（确认失败计证据、金丝雀重新 OPEN + 退避升级）；`unknown` 中性回原相位；fencing 跳过不结算。
+5. 投影：sweep 的每次 store mutation 以 `MutationEvent` 形状交给主链既有 persist hook（`Bridge.Observe` 包装，§7.5 Go 装配事实段）——恢复转换与请求热路径转换投影同一条 ledger 管道，管理页 circuitSummary 可见推进；owner gate 未就绪（hook 为 nil）时 sweep 照常推进运行态，仅 ledger 展示滞后，不 fail。
+6. 与 BUG-0295 渐进恢复的互补关系：BUG-0295 修的是"进程重启后 ledger → 运行态的重建与懒恢复"（恢复的起点），本节修的是"运行期内到期状态无人推进"（恢复的过程）；两者叠加后本地单机形态的熔断生命周期与 Redis 形态等价闭环。
+
 `dispatchRevision` 跨 DB 与 Redis 不做伪原子事务，采用 outbox saga：
 
 1. 配置事务只负责原子递增持久 `dispatchRevision` 并写入 outbox。
