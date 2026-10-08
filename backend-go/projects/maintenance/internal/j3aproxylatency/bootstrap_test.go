@@ -69,7 +69,7 @@ func TestBootstrapDDLIsScopedToJ3aJobsObjects(t *testing.T) {
 			t.Fatalf("bootstrap DDL must not touch %q", forbidden)
 		}
 	}
-	if names := requiredIndexNames(); len(names) != 2 || names[0] != "idx_proxy_latency_outcomes_cursor" || names[1] != "idx_proxy_latency_outcomes_proxy" {
+	if names := requiredIndexNames(); len(names) != 3 || names[0] != "idx_proxy_latency_inputs_expires_at" || names[1] != "idx_proxy_latency_outcomes_cursor" || names[2] != "idx_proxy_latency_outcomes_proxy" {
 		t.Fatalf("required index names are not stable/sorted: %v", names)
 	}
 }

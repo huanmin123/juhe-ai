@@ -308,4 +308,5 @@ CREATE TABLE IF NOT EXISTS juhe_jobs.proxy_latency_execution_claims (
 );
 CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_proxy ON juhe_jobs.proxy_latency_outcomes(proxy_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_cursor ON juhe_jobs.proxy_latency_outcomes(stored_at, outcome_id);
+CREATE INDEX IF NOT EXISTS idx_proxy_latency_inputs_expires_at ON juhe_jobs.proxy_latency_inputs(expires_at);
 `
