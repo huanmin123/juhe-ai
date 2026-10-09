@@ -259,6 +259,8 @@ export interface ModelCheckQuestionBankItem {
   createdBy: string
   /** 创建者系统账户显示名；仅管理面透出，自助面缺失 */
   createdByName?: string
+  /** 系统内置题标记：seed 预置、不可编辑/删除/审核 */
+  isBuiltin?: boolean
   createdAt: string
   updatedAt: string
   reviewedAt?: string

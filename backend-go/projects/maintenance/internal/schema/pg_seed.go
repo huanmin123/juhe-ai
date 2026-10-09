@@ -107,6 +107,11 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		return PGSeedResult{}, err
 	}
 
+	// 系统内置题库题（模型检测设计 §5.7 系统内置题）：固定 id 幂等预置。
+	if err := seedPostgresBuiltinModelCheckQuestions(ctx, exec, now, &result); err != nil {
+		return PGSeedResult{}, err
+	}
+
 	for _, protocol := range pgSeedProtocols {
 		if err := exec(pgSeedProtocolInsert, protocol.ID, protocol.Code, protocol.Version, protocol.Name, protocol.Description, protocol.Enabled, now, now); err != nil {
 			return PGSeedResult{}, err
@@ -179,6 +184,48 @@ const pgSeedGPTVendorCodexAutoReviewRemovalUpdate = `
         SET default_supported_models_json = $1, updated_at = $2
         WHERE code = $3
       `
+
+// pgSeedBuiltinQuestionUpsert 预置一道系统内置题：固定 id，冲突时仅在
+// 目标行仍是内置行时把题面字段恢复为 seed 权威值——应用层禁止编辑内置
+// 题，因此该 upsert 要么插入新行、要么把被人工改动的内置行拉回版本值，
+// 题面修订得以随版本到达存量环境；updated_at 不在更新列内，重复 seed
+// 对已一致的行零写入。
+const pgSeedBuiltinQuestionUpsert = `
+        INSERT INTO "juhe_business"."model_check_question_bank"
+          (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,'approved',NULL,'system','system',1,NULL,NULL,$7,$7)
+        ON CONFLICT (id) DO UPDATE SET
+          title = EXCLUDED.title,
+          title_norm = EXCLUDED.title_norm,
+          question_text = EXCLUDED.question_text,
+          reference_answer = EXCLUDED.reference_answer,
+          key_points_json = EXCLUDED.key_points_json
+          WHERE "juhe_business"."model_check_question_bank".is_builtin = 1
+      `
+
+// seedPostgresBuiltinModelCheckQuestions 预置系统内置题库题（模型检测设计
+// §5.7）：approved + is_builtin=1，供用户直接选用。
+func seedPostgresBuiltinModelCheckQuestions(ctx context.Context, exec func(string, ...any) error, now string, result *PGSeedResult) error {
+	for _, question := range builtinModelCheckQuestions {
+		keyPointsJSON, err := builtinQuestionKeyPointsJSON(question)
+		if err != nil {
+			return err
+		}
+		if err := exec(pgSeedBuiltinQuestionUpsert,
+			question.ID,
+			question.Title,
+			builtinQuestionTitleNorm(question.Title),
+			question.QuestionText,
+			question.ReferenceAnswer,
+			keyPointsJSON,
+			now,
+		); err != nil {
+			return fmt.Errorf("postgres seed statement %d (builtin question %s): %w", result.StatementCount+1, question.ID, err)
+		}
+		result.BuiltinQuestionRows++
+	}
+	return nil
+}
 
 // seedPostgresGPTVendorCodexAutoReviewRemoval ports the SQLite
 // sqSeedGPTVendorCodexAutoReviewRemoval repair (Node seed-defaults.ts) to the

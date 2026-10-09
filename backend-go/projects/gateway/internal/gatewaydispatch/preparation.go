@@ -144,8 +144,10 @@ type DispatchDecisionSummary struct {
 	AvoidedTruncated      bool                   `json:"avoidedTruncated,omitempty"`
 	// 期二缓存率排序块（设计 5.6，全部来自最终生效那次排序的解释；未执行
 	// 质量排序时整体缺省）：决策级速度基准（层内最小已知 EWMA，无已知
-	// EWMA 为 nil）、生效阈值（cost_first 10s / speed_first 5s）、快照失
-	// 效标记（8.1：stale 时缓存率维度中性）与缓存档位键是否参与。
+	// EWMA 为 nil）、基准层生效速度合格窗口 W（override 优先，否则
+	// max(k×基准 EWMA, 1s 下限)；层内无已知 EWMA 时为 0 并经 omitempty
+	// 省略）、快照失效标记（8.1：stale 时缓存率维度中性）与缓存档位键
+	// 是否参与。
 	SpeedBaseEwmaMs  *float64 `json:"speedBaseEwmaMs,omitempty"`
 	SpeedThresholdMs int64    `json:"speedThresholdMs,omitempty"`
 	CacheRateStale   bool     `json:"cacheRateStale,omitempty"`

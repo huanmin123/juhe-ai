@@ -45,7 +45,7 @@
             <span class="wizard-step-no">{{ wizardStep > 1 ? '✓' : '1' }}</span>
             <span class="wizard-step-text">
               <span class="wizard-step-title">类型与凭证</span>
-              <span class="wizard-step-sub">密钥或授权</span>
+              <span class="wizard-step-sub">必填 · 密钥或授权</span>
             </span>
           </div>
           <div class="wizard-step-bar" :class="{ done: wizardStep > 1 }" />
@@ -53,7 +53,7 @@
             <span class="wizard-step-no">{{ wizardStep > 2 ? '✓' : '2' }}</span>
             <span class="wizard-step-text">
               <span class="wizard-step-title">归属与调度</span>
-              <span class="wizard-step-sub">分组、标签与状态</span>
+              <span class="wizard-step-sub">常用配置 · 可跳过</span>
             </span>
           </div>
           <div class="wizard-step-bar" :class="{ done: wizardStep > 2 }" />
@@ -583,11 +583,12 @@
         <a-button v-if="!oauthCreateTestHidden" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
         <template v-if="!editing">
           <a-button v-if="wizardStep > 1" @click="wizardStep -= 1">上一步</a-button>
-          <a-button v-if="wizardStep < 3" type="primary" @click="wizardStep += 1">下一步</a-button>
+          <a-button v-if="wizardStep < 3" @click="wizardStep += 1">下一步</a-button>
         </template>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
-          <a-button v-if="editing || wizardStep === 3" v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
+          <!-- 新建向导每一步都可提交：必填项集中在第 1 步（api_key 形态），2/3 步全可跳过，校验失败由 validationFailure 回跳出错步骤。 -->
+          <a-button v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">{{ editing ? '确定' : '创建' }}</a-button>
         </a-space>
       </div>
     </template>

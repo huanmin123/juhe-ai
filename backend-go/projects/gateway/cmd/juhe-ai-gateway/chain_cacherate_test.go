@@ -70,7 +70,7 @@ func w2cOrderInput(accounts []gatewaydispatch.AccountCandidate) gatewaydispatch.
 func TestChainHotQualityPortReorderOnlyAppliesCacheRateOrdering(t *testing.T) {
 	runtime := newW2CHotQualityRuntime(t)
 	rates := map[string]gatewayhotquality.CacheRateWindow{
-		"a2": {CacheReadTokens: 50_000, InputTokens: 100_000}, // rate 0.5 → 档位 5
+		"a2": {CacheReadTokens: 50_000, InputTokens: 100_000}, // rate 0.5 → cost_first 20pp 档位 2
 	}
 	port := chainHotQualityPort{runtime: runtime, cacheRates: func() (map[string]gatewayhotquality.CacheRateWindow, bool) {
 		return rates, false
@@ -87,8 +87,10 @@ func TestChainHotQualityPortReorderOnlyAppliesCacheRateOrdering(t *testing.T) {
 		t.Fatal("ReorderOnly 必须返回排序决策解释")
 	}
 	explanation := order.Explanation
-	if explanation.SpeedThresholdMs != gatewayhotquality.SpeedDominanceThresholdCostFirstMs {
-		t.Fatalf("speedThresholdMs = %d", explanation.SpeedThresholdMs)
+	// 两个候选均无已知 EWMA：恒合格但生效窗口 W 无定义，speedThresholdMs
+	// 按契约省略（零值）。
+	if explanation.SpeedThresholdMs != 0 {
+		t.Fatalf("speedThresholdMs = %d, want 0（无已知 EWMA 层省略）", explanation.SpeedThresholdMs)
 	}
 	if !explanation.CacheRateEnabled {
 		t.Fatal("存在有效样本时缓存档位键必须参与")
@@ -100,8 +102,8 @@ func TestChainHotQualityPortReorderOnlyAppliesCacheRateOrdering(t *testing.T) {
 		t.Fatalf("candidateOrderDetails = %#v", explanation.CandidateOrderDetails)
 	}
 	first, second := explanation.CandidateOrderDetails[0], explanation.CandidateOrderDetails[1]
-	if first.AccountID != "a2" || first.CacheHitRate == nil || *first.CacheHitRate != 0.5 || first.CacheQuantum != 5 {
-		t.Fatalf("candidate[0] = %#v, want a2 rate 0.5 quantum 5", first)
+	if first.AccountID != "a2" || first.CacheHitRate == nil || *first.CacheHitRate != 0.5 || first.CacheQuantum != 2 {
+		t.Fatalf("candidate[0] = %#v, want a2 rate 0.5 quantum 2", first)
 	}
 	if second.AccountID != "a1" || second.CacheHitRate != nil || second.CacheQuantum != -1 {
 		t.Fatalf("candidate[1] = %#v, want a1 无数据（nil rate / -1 哨兵）", second)
@@ -225,8 +227,10 @@ func TestNewChainCacheRateSnapshotSourceWiring(t *testing.T) {
 }
 
 // 决策日志观察者：缓存率排序块投影（决策级 + 候选级），未排序时整体缺省。
+// speedThresholdMs 在窗口 W 语义下是直接构造的解释值（透传断言，不参与排序）。
 func TestChainDispatchDecisionObserverCacheRateFields(t *testing.T) {
 	rate := 0.5
+	speedWindowMs := int64(3_000)
 	var buffer bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	observer := newChainDispatchDecisionObserver(logger)
@@ -234,7 +238,7 @@ func TestChainDispatchDecisionObserverCacheRateFields(t *testing.T) {
 		TraceID: "trace-test",
 		Summary: gatewaydispatch.DispatchDecisionSummary{
 			SpeedBaseEwmaMs:  &rate,
-			SpeedThresholdMs: gatewayhotquality.SpeedDominanceThresholdCostFirstMs,
+			SpeedThresholdMs: speedWindowMs,
 			CacheRateStale:   true,
 			CacheRateEnabled: true,
 			CandidateOrder: []gatewaydispatch.DispatchDecisionCandidateOrderDetail{
@@ -248,7 +252,7 @@ func TestChainDispatchDecisionObserverCacheRateFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(buffer.String())), &record); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if record["speedThresholdMs"].(float64) != float64(gatewayhotquality.SpeedDominanceThresholdCostFirstMs) {
+	if record["speedThresholdMs"].(float64) != float64(speedWindowMs) {
 		t.Fatalf("speedThresholdMs = %#v", record["speedThresholdMs"])
 	}
 	if record["speedBaseEwmaMs"].(float64) != 0.5 || record["cacheRateStale"] != true || record["cacheRateEnabled"] != true {

@@ -169,6 +169,9 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteBusinessCustomQuestionColumns(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite business custom_question_ids columns: %w", err)
 	}
+	if err := ensureSQLiteTableColumn(ctx, db, "model_check_question_bank", "is_builtin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure model_check_question_bank.is_builtin: %w", err)
+	}
 	if err := ensureSQLiteBusinessScheduleIntervalCheck(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite business schedule interval check: %w", err)
 	}

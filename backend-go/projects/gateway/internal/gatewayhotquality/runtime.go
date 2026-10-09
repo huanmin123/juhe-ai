@@ -229,7 +229,8 @@ func GatewayAccountRuntimeKey(account GatewayHotQualityAccountView) (string, err
 // 24h windows (nil = no snapshot data) and is injected into the candidate
 // selection snapshots below; CacheRateStale is the passthrough staleness
 // marker for the decision explanation; SpeedThresholdMs overrides the
-// speed-qualified threshold (0 resolves the mode-backed package constant).
+// speed-qualification window W outright (0 resolves the mode-backed
+// max(k × vBase, floor) window).
 type GatewayHotQualityCandidateOrderInput[T any] struct {
 	Accounts                       []T
 	Base                           func(T) GatewayHotQualityAccountView
@@ -261,10 +262,10 @@ type GatewayHotQualityExplorationReservation struct {
 // GatewayHotQualityCandidateOrderResult. Node's `selectedAccountId?: string`
 // and `explorationReservation?` become ” / nil. Explanation carries the first
 // protocol group's ordering-decision explanation (cache-rate design doc
-// section 5.6: CandidateOrderDetails / SpeedBaseEwmaMs / SpeedThresholdMs /
-// CacheRateStale / CacheRateEnabled) so consumers can project the decision
-// facts without re-running the ordering; nil only on the empty-candidates
-// result.
+// section 5.6: CandidateOrderDetails / SpeedBaseEwmaMs / SpeedThresholdMs =
+// the baseline tier's effective window W / CacheRateStale / CacheRateEnabled)
+// so consumers can project the decision facts without re-running the ordering;
+// nil only on the empty-candidates result.
 type GatewayHotQualityCandidateOrderResult[T any] struct {
 	Accounts                       []T
 	QualityReorderedTierKeys       []string

@@ -928,3 +928,44 @@ func TestHandlersCreatedByNameContract(t *testing.T) {
 		}
 	})
 }
+
+func TestHandlersBuiltinQuestionContract(t *testing.T) {
+	h := newHandlerHarness(t)
+	if _, err := h.db.Exec(`INSERT INTO model_check_question_bank (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at) VALUES ('mcq-builtin-ui','内置·展示题','内置展示题','内置题面内容。','内置参考答案。','["要点一"]','approved',NULL,'system','system',1,NULL,NULL,'2026-10-09T00:00:00Z','2026-10-09T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("管理面列表透出 isBuiltin 与提交人", func(t *testing.T) {
+		recorder := call(t, h.admin, h.adminActor, http.MethodGet, "/q", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		items, total := decodeList(t, recorder)
+		if total != 1 || items[0]["isBuiltin"] != true {
+			t.Fatalf("items = %v", items)
+		}
+		if items[0]["createdByName"] != nil {
+			t.Fatalf("system 来源无显示名时应省略 createdByName: %v", items[0])
+		}
+	})
+
+	t.Run("自助面同样透出 isBuiltin", func(t *testing.T) {
+		recorder := call(t, h.self, aliceAuth(), http.MethodGet, "/q", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d", recorder.Code)
+		}
+		items, _ := decodeList(t, recorder)
+		if len(items) != 1 || items[0]["isBuiltin"] != true {
+			t.Fatalf("items = %v", items)
+		}
+		if items[0]["createdByName"] != nil {
+			t.Fatalf("自助面不得透出 createdByName: %v", items[0])
+		}
+	})
+
+	t.Run("管理员删除内置题 403", func(t *testing.T) {
+		if recorder := call(t, h.admin, h.adminActor, http.MethodDelete, "/q/mcq-builtin-ui", ""); recorder.Code != http.StatusForbidden {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+}

@@ -95,6 +95,7 @@
               <div class="question-item-main">
                 <div class="question-item-title-row">
                   <h4>{{ item.title }}</h4>
+                  <a-tag v-if="item.isBuiltin" color="geekblue">内置</a-tag>
                   <a-tag :color="questionStatusColor(item.status)">{{ questionStatusText(item.status) }}</a-tag>
                 </div>
                 <p class="question-item-text">{{ item.questionText }}</p>
@@ -139,6 +140,7 @@
               <template v-if="isManagementView">提交人 {{ questionCreatorText(detailItem) }} · </template>提交于 {{ questionBankDateTimeText(detailItem.createdAt) }}
             </div>
           </div>
+          <a-tag v-if="detailItem.isBuiltin" color="geekblue">内置</a-tag>
           <a-tag :color="questionStatusColor(detailItem.status)">{{ questionStatusText(detailItem.status) }}</a-tag>
         </div>
         <a-alert
@@ -281,6 +283,7 @@ watch(() => props.open, (open) => {
 
 function rowActionsFor(item: ModelCheckQuestionBankItem): RowActionItem[] {
   const actions: RowActionItem[] = [{ key: 'detail', label: '详情', icon: 'detail' }]
+  if (item.isBuiltin) return actions
   if (canEdit(item)) {
     actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
@@ -305,10 +308,12 @@ function isOwn(item: ModelCheckQuestionBankItem): boolean {
 }
 
 function canEdit(item: ModelCheckQuestionBankItem): boolean {
+  if (item.isBuiltin) return false
   return isOwn(item) && (item.status === 'pending' || item.status === 'rejected')
 }
 
 function canDelete(item: ModelCheckQuestionBankItem): boolean {
+  if (item.isBuiltin) return false
   if (props.isManagementView) return true
   return isOwn(item) && (item.status === 'pending' || item.status === 'rejected')
 }

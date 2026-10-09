@@ -2187,11 +2187,19 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
       reject_reason text,
       created_by text NOT NULL,
       created_scope text NOT NULL,
-	      reviewed_by text,
-	      reviewed_at text,
-	      created_at text NOT NULL,
-	      updated_at text NOT NULL
-	    )`,
+      is_builtin integer NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
+      reviewed_by text,
+      reviewed_at text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL
+    )`,
+	},
+	{
+		// 系统内置题标记列（模型检测设计 §5.7 系统内置题）：历史库幂等补列，
+		// 新库由上方 CREATE TABLE 直接声明。
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-builtin-pg-column",
+		SQL:        `ALTER TABLE model_check_question_bank ADD COLUMN IF NOT EXISTS is_builtin integer NOT NULL DEFAULT 0`,
 	},
 	{
 		// media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：id 是对外 job id

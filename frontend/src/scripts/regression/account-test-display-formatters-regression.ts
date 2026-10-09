@@ -205,7 +205,8 @@ const runningLines = accountTestSingleOutputLines({
 })
 assertLineIncludes(runningLines, '测试请求形态：Responses API (Streaming)', 'OAuth 账户应展示固定 endpoint mode')
 assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth（测试中）', '运行输出应展示后台任务状态')
-assertLineIncludes(runningLines, '本次诊断最长等待 60s，超时会自动停止', '运行输出应只展示统一总时限，不展示内部重试阶梯')
+// 非图像诊断时限阶梯为 [20s, 30s, 40s]（accountTestDisplayFormatters），输出只展示累加后的统一总时限 90s。
+assertLineIncludes(runningLines, '本次诊断最长等待 90s，超时会自动停止', '运行输出应只展示统一总时限，不展示内部重试阶梯')
 assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
 
 const imageRunningLines = accountTestSingleOutputLines({

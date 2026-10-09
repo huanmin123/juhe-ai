@@ -102,29 +102,130 @@ func crDetailByAccount(t *testing.T, decision *HotQualityCandidateDecision[HotQu
 }
 
 func TestCacheRateQuantizationBoundaries(t *testing.T) {
-	// Exact tier-boundary rates belong to their own tier (section 5.5).
-	for k := 0; k <= 10; k++ {
-		rate := float64(k) / 10
-		if got := cacheQuantumOf(rate); got != k {
-			t.Fatalf("cacheQuantumOf(%.2f) = %d, want %d", rate, got, k)
+	// Exact tier-boundary rates belong to their own tier, per mode tier width
+	// (section 5.5): 20pp for cost_first, 10pp for speed_first.
+	for k := 0; k <= 5; k++ {
+		rate := float64(k) * CacheRateQuantumCostFirst
+		if got := cacheQuantumOf(speedQualificationParamsForMode(HotQualityModeCostFirst), rate); got != k {
+			t.Fatalf("cost_first cacheQuantumOf(%.2f) = %d, want %d", rate, got, k)
 		}
 	}
-	// Off-boundary rates floor normally.
+	for k := 0; k <= 10; k++ {
+		rate := float64(k) / 10
+		if got := cacheQuantumOf(speedQualificationParamsForMode(HotQualityModeSpeedFirst), rate); got != k {
+			t.Fatalf("speed_first cacheQuantumOf(%.2f) = %d, want %d", rate, got, k)
+		}
+	}
+	// Off-boundary rates floor normally (cost_first 20pp tiers).
 	cases := []struct {
 		rate float64
 		want int
-	}{{0.0, 0}, {0.09, 0}, {0.11, 1}, {0.19, 1}, {0.99, 9}, {0.999, 9}}
+	}{{0.0, 0}, {0.19, 0}, {0.21, 1}, {0.39, 1}, {0.99, 4}, {0.999, 4}}
 	for _, testCase := range cases {
-		if got := cacheQuantumOf(testCase.rate); got != testCase.want {
-			t.Fatalf("cacheQuantumOf(%v) = %d, want %d", testCase.rate, got, testCase.want)
+		if got := cacheQuantumOf(speedQualificationParamsForMode(HotQualityModeCostFirst), testCase.rate); got != testCase.want {
+			t.Fatalf("cost_first cacheQuantumOf(%v) = %d, want %d", testCase.rate, got, testCase.want)
+		}
+	}
+	// Off-boundary rates floor normally (speed_first 10pp tiers): 9% and 11%
+	// straddle the 10pp boundary and split into tiers 0 and 1.
+	speedOffBoundary := []struct {
+		rate float64
+		want int
+	}{{0.09, 0}, {0.11, 1}}
+	for _, testCase := range speedOffBoundary {
+		if got := cacheQuantumOf(speedQualificationParamsForMode(HotQualityModeSpeedFirst), testCase.rate); got != testCase.want {
+			t.Fatalf("speed_first cacheQuantumOf(%v) = %d, want %d", testCase.rate, got, testCase.want)
+		}
+	}
+	// The clamp upper bound is floor(1/tier width) per mode: 5 vs 10.
+	if got := cacheQuantumOf(speedQualificationParamsForMode(HotQualityModeCostFirst), 1.0); got != 5 {
+		t.Fatalf("cost_first clamp = %d, want 5", got)
+	}
+	if got := cacheQuantumOf(speedQualificationParamsForMode(HotQualityModeSpeedFirst), 1.0); got != 10 {
+		t.Fatalf("speed_first clamp = %d, want 10", got)
+	}
+}
+
+// TestCacheRateComparatorWeakOrderingProperties asserts the strict weak
+// ordering properties of compareWithinTier directly over the production
+// materialization path (section 11.1 P0): irreflexive except for full
+// equality, antisymmetric, and transitive across a candidate set mixing every
+// ordering dimension — window edge, absolute ceiling breach, cache tiers,
+// qualified-set in/out, P95-only and no-signal candidates. Cache data rides
+// the snapshot-injection path (nil cacheRates map) to cover that assembly
+// route alongside the explicit-window-map route used elsewhere.
+func TestCacheRateComparatorWeakOrderingProperties(t *testing.T) {
+	compose := func(mutates ...func(*HotQualityCandidate)) func(*HotQualityCandidate) {
+		return func(candidate *HotQualityCandidate) {
+			for _, mutate := range mutates {
+				mutate(candidate)
+			}
+		}
+	}
+	candidates := []HotQualityCandidatePayload{
+		hqCandidate("fast-rich", normalTier(), compose(crSpeed(1_000, true, nil), crCacheSnapshot(0.90, true, 1_000_000))),
+		hqCandidate("mid-poor", normalTier(), compose(crSpeed(2_000, true, nil), crCacheSnapshot(0.05, true, 1_000_000))),
+		hqCandidate("mid-tie", normalTier(), compose(crSpeed(2_500, true, nil), crCacheSnapshot(0.25, true, 1_000_000))),
+		hqCandidate("edge-window", normalTier(), compose(crSpeed(4_000, true, nil), crCacheSnapshot(0.45, true, 1_000_000))),
+		hqCandidate("beyond-window", normalTier(), compose(crSpeed(6_000, true, nil), crCacheSnapshot(0.65, true, 1_000_000))),
+		hqCandidate("beyond-ceiling", normalTier(), compose(crSpeed(12_000, true, nil), crCacheSnapshot(0.85, true, 1_000_000))),
+		hqCandidate("p95-only", normalTier(), compose(crSpeed(0, false, floatPtr(3)), crCacheSnapshot(0.15, true, 1_000_000))),
+		hqCandidate("no-signal", normalTier(), compose(crSpeed(0, false, nil), crCacheSnapshot(0.55, true, 1_000_000))),
+	}
+	normalized, _, err := normalizeCandidates(candidates, baseOf, "scope")
+	if err != nil {
+		t.Fatalf("normalizeCandidates: %v", err)
+	}
+	tier := candidatesOfTier(normalized, normalized[0].tierKey)
+	if len(tier) != len(candidates) {
+		t.Fatalf("tier split across keys: %d/%d", len(tier), len(candidates))
+	}
+	// cost_first: vBase=1s → W=max(3s,1s)=3s, ceiling 10s, 20pp tiers.
+	materializeTierOrderKeys(tier, nil, speedQualificationParamsForMode(HotQualityModeCostFirst), 0)
+
+	compare := compareWithinTier[HotQualityCandidatePayload]
+	name := func(candidate *indexedCandidate[HotQualityCandidatePayload]) string { return candidate.base.AccountID }
+	for i := range tier {
+		self := compare(tier[i], tier[i])
+		if self != 0 {
+			t.Fatalf("irreflexivity violated for %s: %d", name(tier[i]), self)
+		}
+		for j := range tier {
+			if i == j {
+				continue
+			}
+			forward := compare(tier[i], tier[j])
+			backward := compare(tier[j], tier[i])
+			if forward != -backward {
+				t.Fatalf("antisymmetry violated: %s vs %s: %d / %d", name(tier[i]), name(tier[j]), forward, backward)
+			}
+		}
+	}
+	for i := range tier {
+		for j := range tier {
+			for k := range tier {
+				ab := compare(tier[i], tier[j])
+				bc := compare(tier[j], tier[k])
+				ac := compare(tier[i], tier[k])
+				if ab < 0 && bc < 0 && ac >= 0 {
+					t.Fatalf("transitivity violated: %s < %s < %s but not %s < %s",
+						name(tier[i]), name(tier[j]), name(tier[k]), name(tier[i]), name(tier[k]))
+				}
+				if ab == 0 && bc == 0 && ac != 0 {
+					t.Fatalf("equality transitivity violated: %s == %s == %s but %s vs %s = %d",
+						name(tier[i]), name(tier[j]), name(tier[k]), name(tier[i]), name(tier[k]), ac)
+				}
+			}
 		}
 	}
 }
 
 // TestDecideHotQualityCandidateCacheRateLoopSample locks the section 5.4
-// verdict: A(1s/0%) B(7s/20%) C(13s/40%) under cost_first (10s) resolves to
-// B -> A -> C for every input permutation — the pairwise dead-zone cycle
-// (B>A, C>B, A>C) must never leak into the result.
+// verdict with the relative window: A(1s/0%) B(4s/20%) C(7s/40%) under
+// cost_first (W = max(3×1s, 1s) = 3s) resolves to B -> A -> C for every input
+// permutation — B (diff 3s, exactly W) stays qualified, C (diff 6s) drops out
+// of the qualified set and is judged by the speed key. The pairwise dead-zone
+// cycle (B>A, C>B, A>C) must never leak into the result.
 func TestDecideHotQualityCandidateCacheRateLoopSample(t *testing.T) {
 	cacheRates := map[string]CacheRateWindow{
 		"A": crWindow(0, 1_000_000),
@@ -134,8 +235,8 @@ func TestDecideHotQualityCandidateCacheRateLoopSample(t *testing.T) {
 	build := func() []HotQualityCandidatePayload {
 		return []HotQualityCandidatePayload{
 			hqCandidate("A", normalTier(), crSpeed(1_000, true, nil)),
-			hqCandidate("B", normalTier(), crSpeed(7_000, true, nil)),
-			hqCandidate("C", normalTier(), crSpeed(13_000, true, nil)),
+			hqCandidate("B", normalTier(), crSpeed(4_000, true, nil)),
+			hqCandidate("C", normalTier(), crSpeed(7_000, true, nil)),
 		}
 	}
 	// All 6 input permutations (index triples over A,B,C).
@@ -146,10 +247,11 @@ func TestDecideHotQualityCandidateCacheRateLoopSample(t *testing.T) {
 		crAssertOrder(t, decision, "B", "A", "C")
 
 		speedDecision := crDecide(t, HotQualityModeSpeedFirst, permuted, cacheRates, nil)
-		// speed_first (5s): A qualified (diff 0); B (diff 6s) and C (12s)
-		// unqualified. The unqualified pair skips the cache tier and is
-		// decided by the materialized speed key, so the faster B keeps the
-		// lead over the richer-cache C (speed dominance hard rule).
+		// speed_first (W = max(1×1s, 1s) = 1s): A qualified (diff 0); B
+		// (diff 3s) and C (6s) unqualified. The unqualified pair skips the
+		// cache tier and is decided by the materialized speed key, so the
+		// faster B keeps the lead over the richer-cache C (speed dominance
+		// hard rule).
 		crAssertOrder(t, speedDecision, "A", "B", "C")
 	}
 
@@ -160,7 +262,7 @@ func TestDecideHotQualityCandidateCacheRateLoopSample(t *testing.T) {
 		rate      float64
 		rateKnown bool
 	}{"A": {0, true}, "B": {0.20, true}, "C": {0.40, true}}
-	ewmaByLabel := map[string]float64{"A": 1_000, "B": 7_000, "C": 13_000}
+	ewmaByLabel := map[string]float64{"A": 1_000, "B": 4_000, "C": 7_000}
 	for index := range snapshotCarried {
 		label := snapshotCarried[index].Candidate.AccountID
 		mutate := crSpeed(ewmaByLabel[label], true, nil)
@@ -175,7 +277,13 @@ func TestDecideHotQualityCandidateCacheRateLoopSample(t *testing.T) {
 // TestDecideHotQualityCandidateCacheRateShuffleInvariance is the P0 property
 // test: a mixed candidate set (EWMA-only / P95-only / no signal / valid cache /
 // invalid cache) must produce the identical total order under every input
-// permutation, in both modes.
+// permutation, in both modes. The pinned baseline orders lock the relative
+// window/ceiling/quantum parameters: cost_first (W = max(3×1s, 1s) = 3s,
+// ceiling 10s, 20pp tiers) qualifies everything except probe-3 (12s) and ranks
+// probe-1(q4) → probe-4(q2) → probe-2(q1) → the -1 group by speed key → the
+// unqualified tail ordered by the speed key (probe-3 rank 0, probe-5 rank 2);
+// speed_first (W = 1s, ceiling 5s, 10pp tiers) additionally drops probe-2
+// (diff 3s > 1s) into that tail ahead of probe-5.
 func TestDecideHotQualityCandidateCacheRateShuffleInvariance(t *testing.T) {
 	build := func() []HotQualityCandidatePayload {
 		return []HotQualityCandidatePayload{
@@ -196,10 +304,17 @@ func TestDecideHotQualityCandidateCacheRateShuffleInvariance(t *testing.T) {
 		"probe-4": crWindow(50, 1_000_000),
 		"probe-7": crWindow(99, 50_000), // below the sample gate: invalid
 	}
+	wantOrders := map[HotQualityRoutingMode]string{
+		HotQualityModeCostFirst:  "probe-1,probe-4,probe-2,probe-8,probe-6,probe-7,probe-3,probe-5",
+		HotQualityModeSpeedFirst: "probe-1,probe-4,probe-8,probe-6,probe-7,probe-2,probe-3,probe-5",
+	}
 	shuffler := rand.New(rand.NewSource(20261008))
 	for _, mode := range []HotQualityRoutingMode{HotQualityModeCostFirst, HotQualityModeSpeedFirst} {
 		baseline := crDecide(t, mode, build(), cacheRates, nil)
 		want := strings.Join(crLabels(baseline), ",")
+		if want != wantOrders[mode] {
+			t.Fatalf("mode %s baseline order = %q, want %q", mode, want, wantOrders[mode])
+		}
 		if got := strings.Count(want, ",") + 1; got != 8 {
 			t.Fatalf("candidate count = %d", got)
 		}
@@ -244,7 +359,8 @@ func TestDecideHotQualityCandidateOrderKeySequence(t *testing.T) {
 			"qualified-low": crWindow(0, 1_000_000),
 			"slow-rich":     crWindow(90, 1_000_000),
 		}
-		// cost_first: slow-rich diff 19s > 10s → unqualified despite q=9.
+		// cost_first: W = 3s, slow-rich diff 19s > W and 20s > 10s ceiling →
+		// unqualified despite q=4.
 		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 		crAssertOrder(t, decision, "qualified-low", "slow-rich")
 		details := crDetailByAccount(t, decision)
@@ -256,27 +372,31 @@ func TestDecideHotQualityCandidateOrderKeySequence(t *testing.T) {
 	t.Run("qualified membership separates across the threshold edge", func(t *testing.T) {
 		candidates := []HotQualityCandidatePayload{
 			hqCandidate("baseline-fast", normalTier(), crSpeed(1_000, true, nil)), // pins vBase
-			hqCandidate("edge-in", normalTier(), crSpeed(10_000, true, nil)),      // diff 9s → qualified, q=0
-			hqCandidate("edge-out", normalTier(), crSpeed(12_000, true, nil)),     // diff 11s → unqualified, q=9
+			hqCandidate("edge-in", normalTier(), crSpeed(10_000, true, nil)),      // diff 9s > W=3s (10s == ceiling) → unqualified
+			hqCandidate("edge-out", normalTier(), crSpeed(12_000, true, nil)),     // diff 11s > W and 12s > ceiling → unqualified
 		}
 		cacheRates := map[string]CacheRateWindow{
 			"baseline-fast": crWindow(50, 1_000_000),
 			"edge-in":       crWindow(0, 1_000_000),
 			"edge-out":      crWindow(90, 1_000_000),
 		}
-		// Key 3 separates edge-out from the qualified pair before any cache
-		// comparison: the richer and merely-2s-slower candidate outside the
-		// qualified set must not outrank edge-in. Inside the qualified set the
-		// cache tier ranks baseline-fast (q=5) over edge-in (q=0).
+		// Key 3 separates the two unqualified candidates from baseline-fast
+		// before any cache comparison: the richer and merely-2s-slower
+		// candidate outside the qualified set must not outrank the qualified
+		// baseline. The unqualified pair then falls to the speed key.
 		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 		crAssertOrder(t, decision, "baseline-fast", "edge-in", "edge-out")
+		details := crDetailByAccount(t, decision)
+		if !details["baseline-fast"].SpeedQualified || details["edge-in"].SpeedQualified || details["edge-out"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
 	})
 
 	t.Run("both unqualified skip cache tier and compare speed", func(t *testing.T) {
 		candidates := []HotQualityCandidatePayload{
 			hqCandidate("baseline-fast", normalTier(), crSpeed(1_000, true, nil)), // qualified, pins vBase
-			hqCandidate("out-poor", normalTier(), crSpeed(20_000, true, nil)),     // diff 19s → unqualified, q=1
-			hqCandidate("out-rich", normalTier(), crSpeed(30_000, true, nil)),     // diff 29s → unqualified, q=9
+			hqCandidate("out-poor", normalTier(), crSpeed(20_000, true, nil)),     // diff 19s → unqualified, q=0
+			hqCandidate("out-rich", normalTier(), crSpeed(30_000, true, nil)),     // diff 29s → unqualified, q=4
 		}
 		cacheRates := map[string]CacheRateWindow{
 			"baseline-fast": crWindow(50, 1_000_000),
@@ -286,14 +406,14 @@ func TestDecideHotQualityCandidateOrderKeySequence(t *testing.T) {
 		// Within the unqualified pair the cache tier is skipped entirely: the
 		// EWMA-ascending speed key decides, so the 10%-cache but faster
 		// candidate outranks the 90%-cache slower one. Speed beyond the
-		// threshold is the judge, never the cache tier.
+		// window/ceiling is the judge, never the cache tier.
 		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 		crAssertOrder(t, decision, "baseline-fast", "out-poor", "out-rich")
 		details := crDetailByAccount(t, decision)
 		if details["out-poor"].SpeedQualified || details["out-rich"].SpeedQualified {
 			t.Fatalf("qualified flags = %+v", details)
 		}
-		if details["out-poor"].CacheQuantum != 1 || details["out-rich"].CacheQuantum != 9 {
+		if details["out-poor"].CacheQuantum != 0 || details["out-rich"].CacheQuantum != 4 {
 			t.Fatalf("quantums = %+v", details)
 		}
 	})
@@ -301,13 +421,14 @@ func TestDecideHotQualityCandidateOrderKeySequence(t *testing.T) {
 	t.Run("cache quantum descending inside qualified set", func(t *testing.T) {
 		candidates := []HotQualityCandidatePayload{
 			hqCandidate("fast-poor", normalTier(), crSpeed(1_000, true, nil)),
-			hqCandidate("nearby-rich", normalTier(), crSpeed(5_000, true, nil)),
+			hqCandidate("nearby-rich", normalTier(), crSpeed(3_000, true, nil)),
 		}
 		cacheRates := map[string]CacheRateWindow{
 			"fast-poor":   crWindow(0, 1_000_000),
 			"nearby-rich": crWindow(90, 1_000_000),
 		}
-		// Both qualified (5s <= 10s); the richer cache tier wins over raw EWMA.
+		// Both qualified (diff 2s <= W = 3s, 3s <= 10s ceiling); the richer
+		// cache tier wins over raw EWMA.
 		crAssertOrder(t, crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil), "nearby-rich", "fast-poor")
 	})
 
@@ -356,25 +477,27 @@ func TestDecideHotQualityCandidateOrderKeySequence(t *testing.T) {
 func TestDecideHotQualityCandidateSpeedThresholdModes(t *testing.T) {
 	candidates := []HotQualityCandidatePayload{
 		hqCandidate("fast-poor", normalTier(), crSpeed(1_000, true, nil)),
-		hqCandidate("nearby-rich", normalTier(), crSpeed(7_000, true, nil)),
+		hqCandidate("nearby-rich", normalTier(), crSpeed(4_000, true, nil)),
 	}
 	cacheRates := map[string]CacheRateWindow{
 		"fast-poor":   crWindow(0, 1_000_000),
 		"nearby-rich": crWindow(90, 1_000_000),
 	}
-	// cost_first default (10s): 6s diff qualified → cache tier wins.
+	// cost_first: W = max(3×1s, 1s) = 3s; nearby-rich diff 3s == W and 4s <=
+	// 10s ceiling → qualified, so the cache tier wins.
 	decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 	crAssertOrder(t, decision, "nearby-rich", "fast-poor")
-	if decision.Explanation.SpeedThresholdMs != SpeedDominanceThresholdCostFirstMs {
-		t.Fatalf("threshold = %d", decision.Explanation.SpeedThresholdMs)
+	if decision.Explanation.SpeedThresholdMs != 3_000 {
+		t.Fatalf("threshold = %d, want the 3s window W", decision.Explanation.SpeedThresholdMs)
 	}
-	// speed_first default (5s): 6s diff unqualified → the fast candidate leads.
+	// speed_first: W = max(1×1s, 1s) = 1s; diff 3s > W → unqualified, the fast
+	// candidate leads.
 	speedDecision := crDecide(t, HotQualityModeSpeedFirst, candidates, cacheRates, nil)
 	crAssertOrder(t, speedDecision, "fast-poor", "nearby-rich")
-	if speedDecision.Explanation.SpeedThresholdMs != SpeedDominanceThresholdSpeedFirstMs {
-		t.Fatalf("speed threshold = %d", speedDecision.Explanation.SpeedThresholdMs)
+	if speedDecision.Explanation.SpeedThresholdMs != 1_000 {
+		t.Fatalf("speed threshold = %d, want the 1s window W", speedDecision.Explanation.SpeedThresholdMs)
 	}
-	// Explicit override wins over the mode default.
+	// Explicit override wins over the mode-backed window.
 	override := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, func(input *DecideHotQualityCandidateInput[HotQualityCandidatePayload]) {
 		input.SpeedThresholdMs = 1_000
 	})
@@ -387,11 +510,12 @@ func TestDecideHotQualityCandidateSpeedThresholdModes(t *testing.T) {
 func TestDecideHotQualityCandidateCacheKeyEnablement(t *testing.T) {
 	t.Run("layer without valid data equals cache off", func(t *testing.T) {
 		candidates := []HotQualityCandidatePayload{
-			hqCandidate("sub-gate-rich", normalTier(), crSpeed(5_000, true, nil)),
+			hqCandidate("sub-gate-rich", normalTier(), crSpeed(2_500, true, nil)),
 			hqCandidate("fast-clean", normalTier(), crSpeed(1_000, true, nil)),
 		}
 		// The only cache data is below the sample gate: the layer disables the
-		// cache key and pure EWMA ordering stands.
+		// cache key and pure EWMA ordering stands (both stay qualified:
+		// diff 1.5s <= W = 3s).
 		cacheRates := map[string]CacheRateWindow{"sub-gate-rich": crWindow(99, 50_000)}
 		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 		crAssertOrder(t, decision, "fast-clean", "sub-gate-rich")
@@ -403,7 +527,8 @@ func TestDecideHotQualityCandidateCacheKeyEnablement(t *testing.T) {
 		}
 
 		// Raising the same account over the gate enables the key and flips the
-		// winner to the 99% cache tier (both stay qualified: 4s <= 10s).
+		// winner to the 99% cache tier (both stay qualified: diff 1.5s <=
+		// W = 3s).
 		enabledRates := map[string]CacheRateWindow{"sub-gate-rich": crWindow(99, 1_000_000)}
 		enabled := crDecide(t, HotQualityModeCostFirst, candidates, enabledRates, nil)
 		crAssertOrder(t, enabled, "sub-gate-rich", "fast-clean")
@@ -425,7 +550,7 @@ func TestDecideHotQualityCandidateCacheKeyEnablement(t *testing.T) {
 		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 		crAssertOrder(t, decision, "rich", "mid", "no-data")
 		details := crDetailByAccount(t, decision)
-		if details["rich"].CacheQuantum != 4 || details["mid"].CacheQuantum != 2 || details["no-data"].CacheQuantum != -1 {
+		if details["rich"].CacheQuantum != 2 || details["mid"].CacheQuantum != 1 || details["no-data"].CacheQuantum != -1 {
 			t.Fatalf("quantums = %+v", details)
 		}
 		if details["no-data"].CacheHitRate != nil {
@@ -445,7 +570,7 @@ func TestDecideHotQualityCandidateCacheKeyEnablement(t *testing.T) {
 		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
 		crAssertOrder(t, decision, "b-at-gate", "a-below")
 		details := crDetailByAccount(t, decision)
-		if details["a-below"].CacheQuantum != -1 || details["b-at-gate"].CacheQuantum != 5 {
+		if details["a-below"].CacheQuantum != -1 || details["b-at-gate"].CacheQuantum != 2 {
 			t.Fatalf("quantums = %+v", details)
 		}
 		// Section 5.6: a sub-gate sample still carrying cache_read (input
@@ -480,22 +605,22 @@ func TestDecideHotQualityCandidateCacheKeyEnablement(t *testing.T) {
 		}
 	})
 
-	t.Run("quantum boundaries 9 vs 11 split, 10 vs 10 tie", func(t *testing.T) {
+	t.Run("quantum boundaries 19 vs 21 split, 19 vs 19 tie", func(t *testing.T) {
 		candidates := []HotQualityCandidatePayload{
 			hqCandidate("a-nine", normalTier(), crSpeed(1_000, true, nil)),
 			hqCandidate("b-eleven", normalTier(), crSpeed(1_000, true, nil)),
 		}
 		cacheRates := map[string]CacheRateWindow{
-			"a-nine":   crWindow(9, 1_000_000),
-			"b-eleven": crWindow(11, 1_000_000),
+			"a-nine":   crWindow(19, 1_000_000),
+			"b-eleven": crWindow(21, 1_000_000),
 		}
-		// A 2pp difference still splits tiers 0 vs 1 (section 5.5 boundary
-		// effect).
+		// A 2pp difference across the 20pp boundary still splits tiers 0 vs 1
+		// (section 5.5 boundary effect, cost_first tier width).
 		crAssertOrder(t, crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil), "b-eleven", "a-nine")
 
 		sameTier := map[string]CacheRateWindow{
-			"a-nine":   crWindow(10, 1_000_000),
-			"b-eleven": crWindow(10, 1_000_000),
+			"a-nine":   crWindow(19, 1_000_000),
+			"b-eleven": crWindow(19, 1_000_000),
 		}
 		// Same tier → equal key → AccountID tiebreak.
 		crAssertOrder(t, crDecide(t, HotQualityModeCostFirst, candidates, sameTier, nil), "a-nine", "b-eleven")
@@ -590,8 +715,8 @@ func TestDecideHotQualityCandidateP95Regression(t *testing.T) {
 func TestDecideHotQualityCandidateCacheRateExplanation(t *testing.T) {
 	candidates := []HotQualityCandidatePayload{
 		hqCandidate("A", normalTier(), crSpeed(1_000, true, nil)),
-		hqCandidate("B", normalTier(), crSpeed(7_000, true, nil)),
-		hqCandidate("C", normalTier(), crSpeed(13_000, true, nil)),
+		hqCandidate("B", normalTier(), crSpeed(4_000, true, nil)),
+		hqCandidate("C", normalTier(), crSpeed(7_000, true, nil)),
 	}
 	cacheRates := map[string]CacheRateWindow{
 		"A": crWindow(0, 1_000_000),
@@ -605,8 +730,10 @@ func TestDecideHotQualityCandidateCacheRateExplanation(t *testing.T) {
 	if explanation.SpeedBaseEwmaMs == nil || *explanation.SpeedBaseEwmaMs != 1_000 {
 		t.Fatalf("speed base = %v", explanation.SpeedBaseEwmaMs)
 	}
-	if explanation.SpeedThresholdMs != SpeedDominanceThresholdCostFirstMs {
-		t.Fatalf("threshold = %d", explanation.SpeedThresholdMs)
+	// SpeedThresholdMs echoes the baseline tier's effective window W =
+	// max(3×1s, 1s) = 3s (field name unchanged, section 5.6).
+	if explanation.SpeedThresholdMs != 3_000 {
+		t.Fatalf("threshold = %d, want the 3s window W", explanation.SpeedThresholdMs)
 	}
 	if !explanation.CacheRateStale {
 		t.Fatal("stale marker lost")
@@ -619,7 +746,7 @@ func TestDecideHotQualityCandidateCacheRateExplanation(t *testing.T) {
 	if len(details) != 3 || details[0].AccountID != "B" || details[1].AccountID != "A" || details[2].AccountID != "C" {
 		t.Fatalf("details = %+v", details)
 	}
-	wantQuantums := map[string]int{"A": 0, "B": 2, "C": 4}
+	wantQuantums := map[string]int{"A": 0, "B": 1, "C": 2}
 	wantQualified := map[string]bool{"A": true, "B": true, "C": false}
 	for _, detail := range details {
 		if detail.CacheQuantum != wantQuantums[detail.AccountID] || detail.SpeedQualified != wantQualified[detail.AccountID] {
@@ -630,10 +757,14 @@ func TestDecideHotQualityCandidateCacheRateExplanation(t *testing.T) {
 		}
 	}
 
-	// No known EWMA anywhere → nil speed base; no cache data → disabled key.
+	// No known EWMA anywhere → nil speed base, W undefined → the threshold
+	// field stays 0 (omitted downstream); no cache data → disabled key.
 	bare := crDecide(t, HotQualityModeCostFirst, []HotQualityCandidatePayload{hqCandidate("cold", normalTier(), nil)}, nil, nil)
 	if bare.Explanation.SpeedBaseEwmaMs != nil || bare.Explanation.CacheRateEnabled {
 		t.Fatalf("bare explanation = %+v", bare.Explanation)
+	}
+	if bare.Explanation.SpeedThresholdMs != 0 {
+		t.Fatalf("bare threshold = %d, want 0 (field omitted without known EWMA)", bare.Explanation.SpeedThresholdMs)
 	}
 
 	// Decision-level facts describe the baseline primary's tier: the normal
@@ -653,6 +784,11 @@ func TestDecideHotQualityCandidateCacheRateExplanation(t *testing.T) {
 	}
 	if multi.Explanation.SpeedBaseEwmaMs == nil || *multi.Explanation.SpeedBaseEwmaMs != 1_000 {
 		t.Fatalf("multi-tier speed base = %v", multi.Explanation.SpeedBaseEwmaMs)
+	}
+	// The window W also comes from the baseline tier: 3s (normal tier,
+	// vBase=1s), not the fallback tier's own max(3×0.5s, 1s) = 1.5s.
+	if multi.Explanation.SpeedThresholdMs != 3_000 {
+		t.Fatalf("multi-tier threshold = %d, want the baseline tier's 3s window", multi.Explanation.SpeedThresholdMs)
 	}
 }
 
@@ -797,8 +933,9 @@ func TestOrderGatewayAccountsByHotQualityCacheRateInjection(t *testing.T) {
 		t.Fatalf("plain order = %v", orderOf(plain))
 	}
 
-	// With windows injected, the 90% tier outranks the 10% tier (both
-	// qualified: identical speed signals, diff 0 <= threshold).
+	// With windows injected, the 90% tier outranks the 10% tier (the layer
+	// has no known EWMA at all, so every candidate is speed-qualified and
+	// only the cache tiers can separate them).
 	injected, err := OrderGatewayAccountsByHotQuality(context.Background(), build(), GatewayHotQualityCandidateOrderInput[GatewayHotQualityAccountView]{
 		Accounts: accounts, Base: baseView, Mode: HotQualityModeCostFirst,
 		SystemAccountID: "sys", GroupID: "g1", RequestLane: "text",
@@ -807,8 +944,7 @@ func TestOrderGatewayAccountsByHotQualityCacheRateInjection(t *testing.T) {
 			"acc-a": crWindow(10, 1_000_000),
 			"acc-b": crWindow(90, 1_000_000),
 		},
-		CacheRateStale:   false,
-		SpeedThresholdMs: SpeedDominanceThresholdCostFirstMs,
+		CacheRateStale: false,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -820,3 +956,279 @@ func TestOrderGatewayAccountsByHotQualityCacheRateInjection(t *testing.T) {
 		t.Fatalf("reordered tiers = %v", injected.QualityReorderedTierKeys)
 	}
 }
+
+// TestDecideHotQualityCandidateRelativeSpeedWindow locks the relative
+// speed-qualification contract (section 5.4): W = max(k × vBase,
+// SpeedQualificationFloorMs) with an explicit override winning outright, and
+// the absolute ceiling (absCap) applied independently on top of EWMA-known
+// candidates only.
+func TestDecideHotQualityCandidateRelativeSpeedWindow(t *testing.T) {
+	t.Run("k boundary: diff exactly k*base qualifies, one ms more does not", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(1_000, true, nil)),
+			hqCandidate("edge-in", normalTier(), crSpeed(4_000, true, nil)),
+			hqCandidate("edge-out", normalTier(), crSpeed(4_001, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":     crWindow(0, 1_000_000),
+			"edge-in":  crWindow(90, 1_000_000),
+			"edge-out": crWindow(90, 1_000_000),
+		}
+		// cost_first W = max(3×1s, 1s) = 3s: edge-in (diff exactly 3s,
+		// 4s <= 10s ceiling) stays qualified and outranks the 0% base by cache
+		// tier; edge-out misses the window by the smallest millisecond step
+		// and is judged by the speed key instead.
+		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, decision, "edge-in", "base", "edge-out")
+		details := crDetailByAccount(t, decision)
+		if !details["edge-in"].SpeedQualified || details["edge-out"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+		if details["edge-in"].CacheQuantum != 4 {
+			t.Fatalf("edge-in quantum = %d", details["edge-in"].CacheQuantum)
+		}
+	})
+
+	t.Run("floor lifts the window when k*base falls below it", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(300, true, nil)),
+			hqCandidate("edge-in", normalTier(), crSpeed(1_300, true, nil)),
+			hqCandidate("edge-out", normalTier(), crSpeed(1_301, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":     crWindow(0, 1_000_000),
+			"edge-in":  crWindow(90, 1_000_000),
+			"edge-out": crWindow(90, 1_000_000),
+		}
+		// cost_first k×vBase = 900ms < floor: W is lifted to 1s, so diff 1s
+		// qualifies and diff 1s+1ms does not.
+		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, decision, "edge-in", "base", "edge-out")
+		if decision.Explanation.SpeedThresholdMs != SpeedQualificationFloorMs {
+			t.Fatalf("threshold = %d, want the 1s floor", decision.Explanation.SpeedThresholdMs)
+		}
+		details := crDetailByAccount(t, decision)
+		if !details["edge-in"].SpeedQualified || details["edge-out"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+	})
+
+	t.Run("absolute ceiling converges slow tiers", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(8_000, true, nil)),
+			hqCandidate("within-ceiling", normalTier(), crSpeed(9_000, true, nil)),
+			hqCandidate("beyond-ceiling", normalTier(), crSpeed(11_000, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":           crWindow(0, 1_000_000),
+			"within-ceiling": crWindow(90, 1_000_000),
+			"beyond-ceiling": crWindow(90, 1_000_000),
+		}
+		// cost_first W = max(3×8s, 1s) = 24s: the 9s candidate (diff 1s <= W,
+		// 9s <= 10s ceiling) qualifies while the 11s candidate (diff 3s <= W
+		// but 11s > 10s) stays unqualified — the ceiling binds even when the
+		// window is wide enough.
+		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, decision, "within-ceiling", "base", "beyond-ceiling")
+		if decision.Explanation.SpeedThresholdMs != 24_000 {
+			t.Fatalf("threshold = %d, want the 24s window", decision.Explanation.SpeedThresholdMs)
+		}
+		details := crDetailByAccount(t, decision)
+		if !details["within-ceiling"].SpeedQualified || details["beyond-ceiling"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+	})
+
+	t.Run("absolute ceiling boundary: EWMA exactly at the ceiling qualifies", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(4_000, true, nil)),
+			hqCandidate("at-ceiling", normalTier(), crSpeed(10_000, true, nil)),
+			hqCandidate("beyond-ceiling", normalTier(), crSpeed(10_001, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":           crWindow(0, 1_000_000),
+			"at-ceiling":     crWindow(90, 1_000_000),
+			"beyond-ceiling": crWindow(90, 1_000_000),
+		}
+		// cost_first W = max(3×4s, 1s) = 12s: the 10s candidate sits exactly on
+		// the ceiling (<= binds) with diff 6s <= W → qualified and outranks the
+		// 0% base by cache tier; 10.001s misses the ceiling by 1ms → judged by
+		// the speed key behind the qualified set.
+		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, decision, "at-ceiling", "base", "beyond-ceiling")
+		details := crDetailByAccount(t, decision)
+		if !details["at-ceiling"].SpeedQualified || details["beyond-ceiling"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+	})
+
+	t.Run("absolute ceiling keeps fast layers no looser", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(1_500, true, nil)),
+			hqCandidate("slow-rich", normalTier(), crSpeed(10_500, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":      crWindow(0, 1_000_000),
+			"slow-rich": crWindow(90, 1_000_000),
+		}
+		// Default W = max(3×1.5s, 1s) = 4.5s: diff 9s already misses the
+		// window (and 10.5s > 10s ceiling) → unqualified.
+		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, decision, "base", "slow-rich")
+		// Widening the window via override must not relax the ceiling:
+		// diff 9s <= 20s now, but 10.5s > 10s keeps the candidate out.
+		override := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, func(input *DecideHotQualityCandidateInput[HotQualityCandidatePayload]) {
+			input.SpeedThresholdMs = 20_000
+		})
+		crAssertOrder(t, override, "base", "slow-rich")
+		if override.Explanation.SpeedThresholdMs != 20_000 {
+			t.Fatalf("override threshold = %d", override.Explanation.SpeedThresholdMs)
+		}
+		details := crDetailByAccount(t, override)
+		if details["slow-rich"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+	})
+
+	t.Run("override fixes the window while the ceiling still applies", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(1_500, true, nil)),
+			hqCandidate("mid-rich", normalTier(), crSpeed(4_000, true, nil)),
+			hqCandidate("slow-rich", normalTier(), crSpeed(12_000, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":      crWindow(0, 1_000_000),
+			"mid-rich":  crWindow(90, 1_000_000),
+			"slow-rich": crWindow(90, 1_000_000),
+		}
+		// Default W = 4.5s: mid-rich (diff 2.5s) qualified, slow-rich beyond
+		// the ceiling → mid-rich first.
+		decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, decision, "mid-rich", "base", "slow-rich")
+		// Override 2s shrinks the window: mid-rich (diff 2.5s > 2s) drops out
+		// and the speed key ranks the unqualified pair.
+		shrunk := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, func(input *DecideHotQualityCandidateInput[HotQualityCandidatePayload]) {
+			input.SpeedThresholdMs = 2_000
+		})
+		crAssertOrder(t, shrunk, "base", "mid-rich", "slow-rich")
+		if shrunk.Explanation.SpeedThresholdMs != 2_000 {
+			t.Fatalf("shrunk threshold = %d", shrunk.Explanation.SpeedThresholdMs)
+		}
+		// Override 20s widens the window past slow-rich's diff (10.5s <= 20s),
+		// but the 10s ceiling still rejects it — the override never disables
+		// the absolute cap.
+		widened := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, func(input *DecideHotQualityCandidateInput[HotQualityCandidatePayload]) {
+			input.SpeedThresholdMs = 20_000
+		})
+		crAssertOrder(t, widened, "mid-rich", "base", "slow-rich")
+		if widened.Explanation.SpeedThresholdMs != 20_000 {
+			t.Fatalf("widened threshold = %d", widened.Explanation.SpeedThresholdMs)
+		}
+		details := crDetailByAccount(t, widened)
+		if !details["mid-rich"].SpeedQualified || details["slow-rich"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+	})
+}
+
+// TestDecideHotQualityCandidateSpeedFirstParameterSet proves the speed_first
+// parameter package (k=1, ceiling 5s, 10pp tier width) takes effect
+// independently of cost_first.
+func TestDecideHotQualityCandidateSpeedFirstParameterSet(t *testing.T) {
+	t.Run("k=1 window is tighter than cost_first k=3", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(1_000, true, nil)),
+			hqCandidate("nearby-rich", normalTier(), crSpeed(3_500, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":        crWindow(0, 1_000_000),
+			"nearby-rich": crWindow(90, 1_000_000),
+		}
+		// cost_first W = 3s: diff 2.5s <= W → qualified → cache tier wins.
+		crAssertOrder(t, crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil), "nearby-rich", "base")
+		// speed_first W = max(1×1s, 1s) = 1s: diff 2.5s > W → unqualified →
+		// speed key decides.
+		speedDecision := crDecide(t, HotQualityModeSpeedFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, speedDecision, "base", "nearby-rich")
+		if speedDecision.Explanation.SpeedThresholdMs != 1_000 {
+			t.Fatalf("speed threshold = %d", speedDecision.Explanation.SpeedThresholdMs)
+		}
+	})
+
+	t.Run("5s ceiling applies on top of a wide override", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("base", normalTier(), crSpeed(2_000, true, nil)),
+			hqCandidate("slow-rich", normalTier(), crSpeed(5_500, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"base":      crWindow(0, 1_000_000),
+			"slow-rich": crWindow(90, 1_000_000),
+		}
+		mutate := func(input *DecideHotQualityCandidateInput[HotQualityCandidatePayload]) {
+			input.SpeedThresholdMs = 10_000
+		}
+		// cost_first ceiling 10s: 5.5s <= 10s → qualified with the same
+		// override.
+		crAssertOrder(t, crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, mutate), "slow-rich", "base")
+		// speed_first ceiling 5s: 5.5s > 5s → unqualified despite diff 3.5s
+		// <= override window 10s.
+		speedDecision := crDecide(t, HotQualityModeSpeedFirst, candidates, cacheRates, mutate)
+		crAssertOrder(t, speedDecision, "base", "slow-rich")
+		if speedDecision.Explanation.SpeedThresholdMs != 10_000 {
+			t.Fatalf("speed threshold = %d", speedDecision.Explanation.SpeedThresholdMs)
+		}
+		details := crDetailByAccount(t, speedDecision)
+		if details["slow-rich"].SpeedQualified {
+			t.Fatalf("qualified flags = %+v", details)
+		}
+	})
+
+	t.Run("10pp tier width splits where cost_first ties", func(t *testing.T) {
+		candidates := []HotQualityCandidatePayload{
+			hqCandidate("a-fifteen", normalTier(), crSpeed(1_000, true, nil)),
+			hqCandidate("b-five", normalTier(), crSpeed(1_000, true, nil)),
+		}
+		cacheRates := map[string]CacheRateWindow{
+			"a-fifteen": crWindow(15, 1_000_000),
+			"b-five":    crWindow(5, 1_000_000),
+		}
+		// speed_first 10pp tiers: 15% → q=1 beats 5% → q=0.
+		speedDecision := crDecide(t, HotQualityModeSpeedFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, speedDecision, "a-fifteen", "b-five")
+		if details := crDetailByAccount(t, speedDecision); details["a-fifteen"].CacheQuantum != 1 || details["b-five"].CacheQuantum != 0 {
+			t.Fatalf("speed_first quantums = %+v", details)
+		}
+		// cost_first 20pp tiers: both floor to q=0 → AccountID tiebreak
+		// keeps the same order for a different reason.
+		costDecision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+		crAssertOrder(t, costDecision, "a-fifteen", "b-five")
+		if details := crDetailByAccount(t, costDecision); details["a-fifteen"].CacheQuantum != 0 || details["b-five"].CacheQuantum != 0 {
+			t.Fatalf("cost_first quantums = %+v", details)
+		}
+	})
+}
+
+// TestDecideHotQualityCandidateCacheQuantumModeTierWidth locks the 20pp
+// cost_first tier-width boundaries at the ordering level (19% → q=0,
+// 20% → q=1, 21% → q=1).
+func TestDecideHotQualityCandidateCacheQuantumModeTierWidth(t *testing.T) {
+	candidates := []HotQualityCandidatePayload{
+		hqCandidate("a-nineteen", normalTier(), crSpeed(1_000, true, nil)),
+		hqCandidate("b-twenty", normalTier(), crSpeed(1_000, true, nil)),
+		hqCandidate("c-twentyone", normalTier(), crSpeed(1_000, true, nil)),
+	}
+	cacheRates := map[string]CacheRateWindow{
+		"a-nineteen":  crWindow(19, 1_000_000),
+		"b-twenty":    crWindow(20, 1_000_000),
+		"c-twentyone": crWindow(21, 1_000_000),
+	}
+	// b-twenty and c-twentyone share q=1 (20% and 21% both floor to tier 1)
+	// and split by AccountID; a-nineteen (q=0) trails both.
+	decision := crDecide(t, HotQualityModeCostFirst, candidates, cacheRates, nil)
+	crAssertOrder(t, decision, "b-twenty", "c-twentyone", "a-nineteen")
+	details := crDetailByAccount(t, decision)
+	if details["a-nineteen"].CacheQuantum != 0 || details["b-twenty"].CacheQuantum != 1 || details["c-twentyone"].CacheQuantum != 1 {
+		t.Fatalf("quantums = %+v", details)
+	}
+}
+

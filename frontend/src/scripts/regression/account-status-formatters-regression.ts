@@ -215,13 +215,15 @@ const activeHealthTimeline = accountStatusTooltipLines(accountFixture({
 assertTrue(activeHealthTimeline.some((line) => line.includes('最近检查：')), '正常账户应显示最近检查时间')
 assertTrue(activeHealthTimeline.some((line) => line.includes('下次检查：')), '正常账户应显示下次检查时间')
 const accountFormattersSource = readFileSync(resolve('../frontend/src/views/accounts/accountFormatters.ts'), 'utf8')
+// 冷却/健康检查展示已收敛：cooldownUntil 直显于 accountCooldownText，健康检查时间迁至 accountStatusPresentation（均为后端时间直显，禁止前端重算退避）。
+const accountStatusPresentationSource = readFileSync(resolve('../frontend/src/views/accounts/accountStatusPresentation.ts'), 'utf8')
 assertTrue(
-  /function accountRetestNextText[\s\S]*serverDateTimeTimestamp\(account\.cooldownUntil\)[\s\S]*formatDateTime\(account\.cooldownUntil\)/.test(accountFormattersSource),
+  /function accountCooldownText[\s\S]*?formatDateTime\(account\.cooldownUntil\)/.test(accountFormattersSource),
   '冷却复测时间必须直接使用后端 cooldownUntil，不得由前端重算退避时间'
 )
 assertTrue(
-  /account\.nextHealthCheckAt[\s\S]*serverDateTimeTimestamp\(account\.nextHealthCheckAt\)[\s\S]*formatDateTime\(account\.nextHealthCheckAt\)/.test(accountFormattersSource),
-  '健康检查时间必须直接使用后端 nextHealthCheckAt，不得由前端重算退避时间'
+  accountStatusPresentationSource.includes('formatDateTime(schedule.nextAttemptAt)'),
+  '健康检查时间必须直接使用后端 schedule.nextAttemptAt，不得由前端重算退避时间'
 )
 
 const coolingHealthTimeline = accountStatusTooltipLines(accountFixture({

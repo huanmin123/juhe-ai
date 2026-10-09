@@ -17,6 +17,7 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
 - 8 个 PG schema：6 个由 `maintenance --ensure-schema` 建（business/usage/stats/chat/dataset/codex_context）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres`（J2 account_balance 四表，2026-10-02 起取代手工 SQL）建表（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
 - chat 库加表随例行 `--ensure-schema` 幂等生效，无一次性迁移：如 2026-10-02 的 `juhe_chat.chat_user_tool_preferences`（AI 对话工具默认绑定，见 docs/functions/AI问答工具体系与主子模型设计.md §7）。
+- 模型检测题库内置题（2026-10-09 起）：`model_check_question_bank` 新增 `is_builtin` 列（`--ensure-schema` 幂等补列，SQLite PRAGMA 守卫 / PG `ADD COLUMN IF NOT EXISTS`），8 道系统内置公开题（草莓字母计数、9.11 vs 9.9、糖果多步算术、牛奶稀释等）由 seed 幂等写入（固定 id 条件 upsert：新行插入、存量内置行题面随 seed 版本恢复权威值）。生效方式按存储模式区分：**SQLite（开发/单机直跑）gateway 每次启动的 storage preflight 自动 ensure+seed，内置题自动出现**；**PG（生产）需在发版后跑 `maintenance --ensure-schema --seed`**——只跑 ensure-schema 会补列但不写内置题数据；seed 幂等可重入，对用户自拟题无副作用。
 - gateway 启动硬性要求 J3b 运行态索引 ready：新库必须先跑 `docker compose run --rm gateway -init-account-circuit-runtime-index`。
 - 管理前端由 gateway 从镜像内 `/app/frontend/dist` 提供（必须显式 `JUHE_AI_FRONTEND_DIST_PATH`，默认空不挂 SPA）；根路径 `/` 由 Caddy 301 到 `/__aisys__/`。
 - PG/Redis 不对宿主机发布端口。入口为 `https://aijh.huanmin.top`（Caddy ACME 自动续期，80 常驻 308 升级 HTTPS，443/udp HTTP/3）。

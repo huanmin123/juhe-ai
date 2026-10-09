@@ -44,6 +44,7 @@ const testQuestionBankDDL = `CREATE TABLE model_check_question_bank (
       reject_reason TEXT,
       created_by TEXT NOT NULL,
       created_scope TEXT NOT NULL,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
       reviewed_by TEXT,
       reviewed_at TEXT,
       created_at TEXT NOT NULL,
@@ -697,6 +698,64 @@ func TestStoreSystemAccountNames(t *testing.T) {
 		}
 		if _, ok := names["sys-ghost"]; ok {
 			t.Fatalf("未知 id 应省略: %v", names)
+		}
+	})
+}
+
+func TestStoreBuiltinQuestionWriteProtection(t *testing.T) {
+	store, db := newTestStore(t)
+	builtin := Question{
+		ID: "mcq-builtin-test", Title: "内置测试题", TitleNorm: "内置测试题",
+		QuestionText: "内置题面。", ReferenceAnswer: "内置答案。",
+		Status: StatusApproved, CreatedBy: "system", CreatedScope: "system", IsBuiltin: true,
+		CreatedAt: "2026-10-09T00:00:00Z", UpdatedAt: "2026-10-09T00:00:00Z",
+	}
+	keyPointsJSON := `["要点"]`
+	if _, err := db.Exec(`INSERT INTO model_check_question_bank (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,'approved',NULL,'system','system',1,NULL,NULL,?,?)`,
+		builtin.ID, builtin.Title, builtin.TitleNorm, builtin.QuestionText, builtin.ReferenceAnswer, keyPointsJSON, builtin.CreatedAt, builtin.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	admin := Actor{SystemAccountID: "sys-admin"}
+
+	t.Run("内置题读取透出 is_builtin", func(t *testing.T) {
+		question, err := store.GetByID(context.Background(), builtin.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !question.IsBuiltin || question.Status != StatusApproved {
+			t.Fatalf("builtin question = %+v", question)
+		}
+	})
+
+	t.Run("管理员编辑内置题被拒", func(t *testing.T) {
+		_, err := store.Update(context.Background(), builtin.ID, admin, true, UpdateQuestionInput{
+			Title: "改题", QuestionText: "改内容。", ReferenceAnswer: "改答案。", KeyPoints: []string{"改要点"},
+		})
+		if statusErrorCode(t, err).Status != statusForbidden {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("管理员删除内置题被拒", func(t *testing.T) {
+		err := store.Delete(context.Background(), builtin.ID, admin, true)
+		if statusErrorCode(t, err).Status != statusForbidden {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("管理员驳回内置题被拒（下架后无恢复入口）", func(t *testing.T) {
+		_, err := store.Review(context.Background(), builtin.ID, admin, true, "reject", "下架试试")
+		if statusErrorCode(t, err).Status != statusForbidden {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("用户提交与内置题同标题仍被查重拒绝", func(t *testing.T) {
+		_, err := store.Create(context.Background(), Actor{SystemAccountID: "sys-alice"}, CreateQuestionInput{
+			Title: builtin.Title, QuestionText: "自定义内容，与内置题不同。", ReferenceAnswer: "答案。",
+		})
+		if statusErrorCode(t, err).Status != statusConflict {
+			t.Fatalf("err = %v", err)
 		}
 	})
 }

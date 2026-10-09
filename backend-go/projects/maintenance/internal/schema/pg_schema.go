@@ -143,6 +143,10 @@ type PGSeedResult struct {
 	// 与本次 seed 运行时可见内置行同名的 custom_provider_models 存量行数
 	// （契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先）。
 	CustomModelOverlapCleaned int
+	// BuiltinQuestionRows 是本次 seed 尝试写入的系统内置题库题行数
+	//（固定 8 题；冲突时按内置行恢复 seed 权威题面，详见
+	// pgSeedBuiltinQuestionUpsert）。
+	BuiltinQuestionRows int
 }
 
 // pgSeedSystemAccountsInsert seeds the default super admin account with

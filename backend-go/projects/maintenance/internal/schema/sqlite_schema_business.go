@@ -429,6 +429,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       reject_reason TEXT,
       created_by TEXT NOT NULL,
       created_scope TEXT NOT NULL,
+      is_builtin INTEGER NOT NULL DEFAULT 0 CHECK (is_builtin IN (0, 1)),
       reviewed_by TEXT,
       reviewed_at TEXT,
       created_at TEXT NOT NULL,

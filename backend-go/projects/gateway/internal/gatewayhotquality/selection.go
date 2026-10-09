@@ -148,8 +148,9 @@ type SameTierExplorationExplanation struct {
 // HotQualityCandidateOrderDetail is the per-candidate cache-rate/speed-order
 // trace emitted in final sort order (section 5.6 of the cache-rate design
 // doc): CacheHitRate is the window value (nil without valid data),
-// CacheQuantum is the 10pp tier (-1 without valid data, never 0%) and
-// SpeedQualified reports speed-qualified-set membership.
+// CacheQuantum is the mode tier width quantum (cost_first 20pp / speed_first
+// 10pp; -1 without valid data, never 0%) and SpeedQualified reports
+// speed-qualified-set membership.
 type HotQualityCandidateOrderDetail struct {
 	AccountID      string
 	CacheHitRate   *float64
@@ -160,8 +161,9 @@ type HotQualityCandidateOrderDetail struct {
 // HotQualityCandidateSelectionExplanation mirrors
 // HotQualityCandidateSelectionExplanation. The cache-rate block (section 5.6)
 // exposes the ordering facts of the baseline primary's tier: SpeedBaseEwmaMs
-// is the in-tier speed base (nil without any known EWMA), SpeedThresholdMs the
-// effective speed-qualified threshold, CacheRateStale the passthrough
+// is the in-tier speed base (nil without any known EWMA), SpeedThresholdMs
+// that tier's effective speed-qualification window W (0 — omitted downstream —
+// when the tier has no known EWMA), CacheRateStale the passthrough
 // snapshot-staleness marker and CacheRateEnabled whether the cache-rate tier
 // key participated. CandidateOrderDetails lists every candidate in sort order.
 type HotQualityCandidateSelectionExplanation struct {
@@ -201,8 +203,9 @@ type HotQualityCandidateDecision[T any] struct {
 // block feeds the cache-rate-aware ordering: CacheRates keys physical account
 // IDs to their 24h windows (nil = no snapshot data), CacheRateStale is the
 // passthrough staleness marker for the explanation, and SpeedThresholdMs
-// overrides the speed-qualified threshold (0 resolves the mode-backed
-// package constant).
+// overrides the speed-qualification window W outright (0 resolves the
+// mode-backed max(k × vBase, floor) window; the absolute ceiling always
+// applies independently).
 type DecideHotQualityCandidateInput[T any] struct {
 	Mode             HotQualityRoutingMode
 	RouteScopeKey    string
@@ -271,10 +274,12 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 	if err != nil {
 		return nil, err
 	}
-	// The threshold resolves once per dispatch decision and feeds the whole
-	// tier-wide key materialization (section 5.4); it is never read from
-	// global state or switched per candidate pair inside the comparator.
-	speedThresholdMs := resolveSpeedDominanceThresholdMs(mode, input.SpeedThresholdMs)
+	// The window/ceiling parameters resolve once per dispatch decision and
+	// feed the whole tier-wide key materialization (section 5.4); they are
+	// never read from global state or switched per candidate pair inside the
+	// comparator. SpeedThresholdMs is the explicit window-W override (0 = the
+	// mode-backed max(k × vBase, floor) window).
+	params := speedQualificationParamsForMode(mode)
 	normalized, duplicateRuntimeAccountIDs, err := normalizeCandidates(input.Candidates, input.Base, routeScopeKey)
 	if err != nil {
 		return nil, err
@@ -287,7 +292,7 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 
 	for _, tierKey := range baseTierOrder {
 		originalTier := candidatesOfTier(normalized, tierKey)
-		tierOrderInfo[tierKey] = materializeTierOrderKeys(originalTier, input.CacheRates, speedThresholdMs)
+		tierOrderInfo[tierKey] = materializeTierOrderKeys(originalTier, input.CacheRates, params, input.SpeedThresholdMs)
 		qualityTier := sortedWithinTier(originalTier)
 		qualityByTier[tierKey] = qualityTier
 		if !sameCandidateOrder(originalTier, qualityTier) {
@@ -347,7 +352,6 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 			LatencyDegradedOverrideApplied: latencyDegradedOverrideApplied,
 			QualityReorderedTierKeys:       qualityReorderedTierKeys,
 			DuplicateRuntimeAccountIDs:     duplicateRuntimeAccountIDs,
-			SpeedThresholdMs:               speedThresholdMs,
 			CacheRateStale:                 input.CacheRateStale,
 			CandidateOrderDetails:          []HotQualityCandidateOrderDetail{},
 			Exploration:                    exploration.explanation,
@@ -357,8 +361,12 @@ func DecideHotQualityCandidate[T any](input DecideHotQualityCandidateInput[T]) (
 		decision.Explanation.BaselinePrimaryAccountID = baselinePrimary.base.AccountID
 		// Decision-level cache-rate/speed-base facts describe the tier that
 		// produced the baseline primary (the tier deciding the first choice).
+		// SpeedThresholdMs carries that tier's effective window W (section
+		// 5.4); it stays 0 — and downstream omits the field — when the tier
+		// has no known EWMA at all.
 		info := tierOrderInfo[baselinePrimary.tierKey]
 		decision.Explanation.SpeedBaseEwmaMs = info.BaseEwmaMs
+		decision.Explanation.SpeedThresholdMs = info.SpeedWindowMs
 		decision.Explanation.CacheRateEnabled = info.CacheRateEnabled
 	}
 	for _, candidate := range qualityOrdered {

@@ -63,7 +63,11 @@ func (f *sequencedBusyAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(conte
 	return f.busyByCall[index], nil
 }
 
-// cacherateExplanation 构造带候选明细的排序解释（threshold 固定 cost_first）。
+// cacherateFakeSpeedWindowMs 是 fake 解释里速度窗口字段的占位值（W 语义，
+// 只断言摘要投影透传，不参与排序推导）。
+const cacherateFakeSpeedWindowMs = int64(3_000)
+
+// cacherateExplanation 构造带候选明细的排序解释（窗口字段固定占位值）。
 func cacherateExplanation(accountIDs ...string) *gatewayhotquality.HotQualityCandidateSelectionExplanation {
 	base := 1200.0
 	details := make([]gatewayhotquality.HotQualityCandidateOrderDetail, 0, len(accountIDs))
@@ -79,7 +83,7 @@ func cacherateExplanation(accountIDs ...string) *gatewayhotquality.HotQualityCan
 	return &gatewayhotquality.HotQualityCandidateSelectionExplanation{
 		Mode:                  gatewayhotquality.HotQualityModeCostFirst,
 		SpeedBaseEwmaMs:       &base,
-		SpeedThresholdMs:      gatewayhotquality.SpeedDominanceThresholdCostFirstMs,
+		SpeedThresholdMs:      cacherateFakeSpeedWindowMs,
 		CacheRateStale:        true,
 		CacheRateEnabled:      true,
 		CandidateOrderDetails: details,
@@ -134,7 +138,7 @@ func TestHighConcurrencyReorderOnlyAppliedAfterFinalAffinityOrdering(t *testing.
 		t.Fatalf("events = %d", len(*received))
 	}
 	summary := (*received)[0].Summary
-	if summary.SpeedThresholdMs != gatewayhotquality.SpeedDominanceThresholdCostFirstMs {
+	if summary.SpeedThresholdMs != cacherateFakeSpeedWindowMs {
 		t.Fatalf("speedThresholdMs = %d", summary.SpeedThresholdMs)
 	}
 	if summary.SpeedBaseEwmaMs == nil || *summary.SpeedBaseEwmaMs != 1200.0 {
@@ -189,7 +193,7 @@ func TestHighConcurrencyReorderOnlyFailureKeepsOrderAndMarksDegraded(t *testing.
 	if !summary.HotQualityReorderDegraded {
 		t.Fatal("summary 必须携带 hotQualityReorderDegraded")
 	}
-	if summary.SpeedThresholdMs != gatewayhotquality.SpeedDominanceThresholdCostFirstMs {
+	if summary.SpeedThresholdMs != cacherateFakeSpeedWindowMs {
 		t.Fatalf("speedThresholdMs = %d", summary.SpeedThresholdMs)
 	}
 }
@@ -244,7 +248,7 @@ func TestNonHighConcurrencyExplanationFromOrderAsync(t *testing.T) {
 		t.Fatal("解释必须来自 OrderAsync 那次排序")
 	}
 	summary := (*received)[0].Summary
-	if summary.SpeedThresholdMs != gatewayhotquality.SpeedDominanceThresholdCostFirstMs || len(summary.CandidateOrder) != 2 {
+	if summary.SpeedThresholdMs != cacherateFakeSpeedWindowMs || len(summary.CandidateOrder) != 2 {
 		t.Fatalf("summary cache-rate block = %#v/%#v", summary.SpeedThresholdMs, summary.CandidateOrder)
 	}
 	if summary.HotQualityReorderDegraded {
@@ -272,7 +276,7 @@ func TestBuildDispatchDecisionSummaryCacheRateBlock(t *testing.T) {
 	}
 	input.HotQualityExplanation.CandidateOrderDetails = details
 	summary := BuildDispatchDecisionSummary(input)
-	if summary.SpeedThresholdMs != gatewayhotquality.SpeedDominanceThresholdCostFirstMs {
+	if summary.SpeedThresholdMs != cacherateFakeSpeedWindowMs {
 		t.Fatalf("speedThresholdMs = %d", summary.SpeedThresholdMs)
 	}
 	if !summary.CandidateOrderTruncated || len(summary.CandidateOrder) != dispatchDecisionSummaryListCap {
@@ -289,7 +293,7 @@ func TestBuildDispatchDecisionSummaryCacheRateBlock(t *testing.T) {
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if decoded["speedThresholdMs"].(float64) != float64(gatewayhotquality.SpeedDominanceThresholdCostFirstMs) {
+	if decoded["speedThresholdMs"].(float64) != float64(cacherateFakeSpeedWindowMs) {
 		t.Fatalf("decoded speedThresholdMs = %#v", decoded["speedThresholdMs"])
 	}
 	if decoded["speedBaseEwmaMs"].(float64) != 1200.0 || decoded["cacheRateStale"] != true || decoded["cacheRateEnabled"] != true {

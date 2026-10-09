@@ -26,7 +26,7 @@ const (
 // QuestionView 是题库对外 JSON 契约（前端并行开发依赖，字段名不得改动）：
 //
 //	{ id, title, questionText, referenceAnswer, keyPoints, status, rejectReason,
-//	  createdBy, createdByName, createdAt, updatedAt, reviewedAt, reviewedBy }
+//	  createdBy, createdByName, isBuiltin, createdAt, updatedAt, reviewedAt, reviewedBy }
 //
 // 无权限时的处理约定（本包唯一契约解释）：referenceAnswer 与 keyPoints
 // 选择【省略字段】——referenceAnswer 为必填非空，omitempty 即等价于
@@ -34,8 +34,9 @@ const (
 // （渲染 []）"。rejectReason/reviewedAt 无值渲染 null。reviewedBy（审核
 // 人系统账户 id）无值或自助面渲染 null，仅管理面透出。createdByName
 // （创建者系统账户显示名）同样仅管理面透出：自助面省略字段，管理面由
-// attachCreatorNames 解析填充，解析失败按请求失败返回。titleNorm 不进
-// 对外契约。
+// attachCreatorNames 解析填充，解析失败按请求失败返回。isBuiltin 仅系统
+// 内置题渲染 true（omitempty），自助面同样透出——用户选用时需要知道题
+// 目来源。titleNorm 不进对外契约。
 type QuestionView struct {
 	ID              string    `json:"id"`
 	Title           string    `json:"title"`
@@ -46,6 +47,7 @@ type QuestionView struct {
 	RejectReason    *string   `json:"rejectReason"`
 	CreatedBy       string    `json:"createdBy"`
 	CreatedByName   string    `json:"createdByName,omitempty"`
+	IsBuiltin       bool      `json:"isBuiltin,omitempty"`
 	CreatedAt       string    `json:"createdAt"`
 	UpdatedAt       string    `json:"updatedAt"`
 	ReviewedAt      *string   `json:"reviewedAt"`
@@ -507,6 +509,7 @@ func questionView(question Question, includeAnswer, includeReviewer bool) Questi
 		QuestionText: question.QuestionText,
 		Status:       question.Status,
 		CreatedBy:    question.CreatedBy,
+		IsBuiltin:    question.IsBuiltin,
 		CreatedAt:    question.CreatedAt,
 		UpdatedAt:    question.UpdatedAt,
 	}

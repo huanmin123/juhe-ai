@@ -30,8 +30,8 @@ func TestOrderGatewayAccountsByHotQualityReturnsFirstGroupDecisionExplanation(t 
 	)
 	nowMs := int64(1_800_000)
 	cacheRates := map[string]CacheRateWindow{
-		// a1 带有效缓存样本（rate 0.5 → 档位 5），输入序让 a2 在前——
-		// 质量排序应把 a1 反超到首位，并体现 QualityReorderedTierKeys。
+		// a1 带有效缓存样本（rate 0.5 → cost_first 20pp 档位 2），输入序让
+		// a2 在前——质量排序应把 a1 反超到首位，并体现 QualityReorderedTierKeys。
 		"a1": {CacheReadTokens: 50_000, InputTokens: 100_000},
 	}
 	accounts := []GatewayHotQualityAccountView{testAccount("a2", 1), testAccount("a1", 1)}
@@ -114,7 +114,9 @@ func TestOrderGatewayAccountsByHotQualityReturnsFirstGroupDecisionExplanation(t 
 		t.Fatalf("explanation mismatch:\nruntime = %#v\ndirect  = %#v", runtimeExplanation, directExplanation)
 	}
 
-	// 语义断言：缓存样本反超 + 档位/哨兵 + stale 透传 + 重排层键。
+	// 语义断言：缓存样本反超 + 档位/哨兵 + stale 透传 + 重排层键。两个候
+	// 选均无已知 EWMA（整层无速度信号），恒合格且窗口 W 无定义——
+	// speedThresholdMs 按契约省略（零值），speedBaseEwmaMs 为 nil。
 	if got := accountIDListOf(result.Accounts); !reflect.DeepEqual(got, []string{"a1", "a2"}) {
 		t.Fatalf("ordered accounts = %v, want a1（缓存样本）在前", got)
 	}
@@ -122,7 +124,7 @@ func TestOrderGatewayAccountsByHotQualityReturnsFirstGroupDecisionExplanation(t 
 	if explanation.CacheRateStale != true || explanation.CacheRateEnabled != true {
 		t.Fatalf("cacheRate stale/enabled = %v/%v", explanation.CacheRateStale, explanation.CacheRateEnabled)
 	}
-	if explanation.SpeedThresholdMs != SpeedDominanceThresholdCostFirstMs || explanation.SpeedBaseEwmaMs != nil {
+	if explanation.SpeedThresholdMs != 0 || explanation.SpeedBaseEwmaMs != nil {
 		t.Fatalf("speed block = %d/%#v", explanation.SpeedThresholdMs, explanation.SpeedBaseEwmaMs)
 	}
 	if len(explanation.QualityReorderedTierKeys) == 0 {
@@ -132,7 +134,7 @@ func TestOrderGatewayAccountsByHotQualityReturnsFirstGroupDecisionExplanation(t 
 		t.Fatalf("candidateOrderDetails = %#v", explanation.CandidateOrderDetails)
 	}
 	first, second := explanation.CandidateOrderDetails[0], explanation.CandidateOrderDetails[1]
-	if first.AccountID != "a1" || first.CacheQuantum != 5 || first.CacheHitRate == nil || *first.CacheHitRate != 0.5 {
+	if first.AccountID != "a1" || first.CacheHitRate == nil || *first.CacheHitRate != 0.5 || first.CacheQuantum != 2 {
 		t.Fatalf("details[0] = %#v", first)
 	}
 	if second.AccountID != "a2" || second.CacheQuantum != -1 || second.CacheHitRate != nil {

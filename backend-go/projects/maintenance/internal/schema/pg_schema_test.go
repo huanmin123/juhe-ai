@@ -24,8 +24,8 @@ import (
 // goldenPostgresSchemaStatementCount is the number of statements produced by
 // collectPostgresSchemaStatements() in backend/src/storage/postgres-schema.ts,
 // plus the Go-appended statements (model-check question bank table, its
-// indexes, the custom_question_ids ALTER columns, the stats
-// success_cost_usd ALTER/backfill statements, the chat_conversations
+// indexes and is_builtin ALTER column, the custom_question_ids ALTER columns,
+// the stats success_cost_usd ALTER/backfill statements, the chat_conversations
 // account-binding ALTER columns, the model_quality_schedules
 // interval_minutes CHECK migration DO block, the chat_user_tool_preferences
 // user-level tool binding table, the accounts health_check_endpoint_mode
@@ -35,12 +35,12 @@ import (
 // migration DO block; the retired bind-mode ALTERs
 // were removed with the account-only binding migration). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 703
+const goldenPostgresSchemaStatementCount = 704
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      315,
+	"juhe_business":      316,
 	"juhe_chat":          52,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
@@ -134,8 +134,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 89 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 89", alterColumns)
+	if alterColumns != 90 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 90", alterColumns)
 	}
 	if doBlocks != 4 {
 		t.Fatalf("DO block count = %d, want 4", doBlocks)

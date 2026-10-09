@@ -1,7 +1,7 @@
 <template>
   <!-- bench 变体：编辑工作台"常用配置区"的分组块，仅渲染加入分组；名称/调度/状态由弹框标题栏与摘要卡承载 -->
   <section v-if="variant === 'bench'" class="form-section">
-    <a-form-item label="加入分组" required>
+    <a-form-item label="加入分组" :required="editing">
       <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
         <GroupSelect
           v-model:value="form.groupId"
@@ -31,7 +31,8 @@
           :placeholder="['oauth', 'google_oauth'].includes(form.type) ? '凭据账户可使用授权信息作为名称' : '例如 openai-main'"
         />
       </a-form-item>
-      <a-form-item label="加入分组" required>
+      <!-- 保存校验（accountSavePayload）只对编辑态强制分组；新建态可空，创建成功提示会引导补绑。 -->
+      <a-form-item label="加入分组" :required="editing">
         <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
           <GroupSelect
             v-model:value="form.groupId"

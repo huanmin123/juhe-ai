@@ -53,6 +53,7 @@ func seedTestSnapshot(t *testing.T, db *sql.DB) map[string]string {
 		"provider_protocol_profiles", "provider_protocol_profile_families",
 		"groups", "route_strategies", "route_strategy_groups", "api_keys",
 		"external_integration_sources", "external_integration_source_tokens", "system_settings",
+		"model_check_question_bank",
 	}
 	snapshot := map[string]string{}
 	for _, table := range tables {
@@ -119,6 +120,34 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	}
 	if first.ModelCatalogRows != 214 {
 		t.Fatalf("first seed model catalog rows = %d, want 214 (目录 220 行，按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2025-11-12；deepseek-v4-flash 残留行已随 JSON 种子生成器修正)", first.ModelCatalogRows)
+	}
+	if first.BuiltinQuestionRows != len(builtinModelCheckQuestions) {
+		t.Fatalf("first seed builtin question rows = %d, want %d", first.BuiltinQuestionRows, len(builtinModelCheckQuestions))
+	}
+	if got := countSeedTestRows(t, db, `SELECT COUNT(*) FROM model_check_question_bank WHERE is_builtin = 1 AND status = 'approved' AND created_by = 'system'`); got != len(builtinModelCheckQuestions) {
+		t.Fatalf("builtin questions in db = %d, want %d", got, len(builtinModelCheckQuestions))
+	}
+	// 内置题题面随 seed 版本演进：人工改动内置行后重跑 seed，题面字段恢复
+	// 为 seed 权威值（upsert WHERE is_builtin=1），updated_at 保持不变。
+	if _, err := db.Exec(`UPDATE model_check_question_bank SET question_text = '人工改动后的题面', updated_at = '2099-01-01T00:00:00Z' WHERE id = ?`, builtinModelCheckQuestions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	third, err := SeedSQLiteDefaults(ctx, db, options)
+	if err != nil {
+		t.Fatalf("third seed (builtin question repair): %v", err)
+	}
+	if third.BuiltinQuestionRows != len(builtinModelCheckQuestions) {
+		t.Fatalf("third seed builtin question rows = %d", third.BuiltinQuestionRows)
+	}
+	var repairedText, repairedUpdatedAt string
+	if err := db.QueryRowContext(ctx, `SELECT question_text, updated_at FROM model_check_question_bank WHERE id = ?`, builtinModelCheckQuestions[0].ID).Scan(&repairedText, &repairedUpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if repairedText != builtinModelCheckQuestions[0].QuestionText {
+		t.Fatalf("builtin question text not repaired = %q", repairedText)
+	}
+	if repairedUpdatedAt != "2099-01-01T00:00:00Z" {
+		t.Fatalf("repair must not touch updated_at, got %q", repairedUpdatedAt)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 

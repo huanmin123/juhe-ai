@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 
 import {
   accountModelMappingEndpointFamilyProtocol,
@@ -22,8 +22,18 @@ const accountApiKeySectionSource = readFileSync(new URL('../../views/accounts/Ac
 const accountEditFormSource = readFileSync(new URL('../../views/accounts/useAccountEditForm.ts', import.meta.url), 'utf8')
 const accountSavePayloadSource = readFileSync(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url), 'utf8')
 const accountStrategySectionSource = readFileSync(new URL('../../views/accounts/AccountStrategySection.vue', import.meta.url), 'utf8')
-const userHelpSource = readFileSync(new URL('../../../public/help/user/index.html', import.meta.url), 'utf8')
-const adminHelpSource = readFileSync(new URL('../../../public/help/admin/index.html', import.meta.url), 'utf8')
+// 在线帮助自 9268cb4df 起重构为 Markdown 文档站（public/help/docs/**，render-help-docs 渲染管线的唯一人工维护层）；
+// 账户配置语义（模型映射 / 接口能力）迁入 admin 篇，消费语义在 user 篇，断言以各篇全部 md 合集为源。
+function readHelpDocsSource(section: 'user' | 'admin'): string {
+  const dir = new URL(`../../../public/help/docs/${section}/`, import.meta.url)
+  return readdirSync(dir)
+    .filter((file) => file.endsWith('.md'))
+    .sort()
+    .map((file) => readFileSync(new URL(file, dir), 'utf8'))
+    .join('\n')
+}
+const userHelpSource = readHelpDocsSource('user')
+const adminHelpSource = readHelpDocsSource('admin')
 const publicHelpSource = `${userHelpSource}\n${adminHelpSource}`
 
 const options: AccountModelMappingModelOption[] = [
@@ -154,11 +164,11 @@ assertIncludes(accountStrategySectionSource, 'placeholder="上游模型"', '账�
 assertIncludes(accountStrategySectionSource, '真实上游支持的接口形态', '账户表单提示必须解释真实上游能力语义')
 assertNotIncludes(accountStrategySectionSource, '接口能力限制', '账户表单不得继续展示旧接口能力限制文案')
 assertNotIncludes(accountStrategySectionSource, '可承接的接口形态', '账户表单不得把上游能力描述成客户端可承接请求')
-assertIncludes(userHelpSource, '<dt>上游接口能力</dt>', '用户帮助必须展示上游接口能力字段')
-assertIncludes(userHelpSource, '声明真实上游能接收的请求形态', '用户帮助必须解释上游接口能力边界')
-assertIncludes(userHelpSource, '右侧目标必须同时满足账户支持模型和上游接口能力', '用户帮助必须解释模型映射按右侧上游能力检查')
-assertNotIncludes(publicHelpSource, '接口能力限制', '公开帮助不得继续展示接口能力限制旧文案')
-assertNotIncludes(publicHelpSource, '账号可承接的请求形态', '公开帮助不得展示派生的可承接请求形态')
+assertIncludes(adminHelpSource, '接口能力 / 模型别名', '帮助必须展示上游接口能力字段（模型别名配置说明）')
+assertIncludes(adminHelpSource, '只声明真实上游能处理的协议', '帮助必须解释上游接口能力边界')
+assertIncludes(adminHelpSource, '别名两端都受协议档案和支持模型限制', '帮助必须解释模型映射两端受支持模型与上游能力约束')
+assertNotIncludes(publicHelpSource, '接口能力限制', '帮助不得继续展示接口能力限制旧文案')
+assertNotIncludes(publicHelpSource, '账号可承接的请求形态', '帮助不得展示派生的可承接请求形态')
 
 const openAIProfile = { protocolCode: 'openai', protocolVersion: 'v1' }
 const anthropicProfile = { protocolCode: 'anthropic', protocolVersion: 'v1' }

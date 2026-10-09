@@ -37,6 +37,10 @@ const (
 
 const questionBankTable = "model_check_question_bank"
 
+// questionSelectColumns 是完整题目行的查询列清单（is_builtin 供内置题写
+// 保护与契约透出）。所有完整行 SELECT 必须引用同一常量，防止清单漂移。
+const questionSelectColumns = "id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at"
+
 // systemAccountsTable 与题库同库（juhe_business），createdByName 由它解析。
 const systemAccountsTable = "system_accounts"
 
@@ -71,10 +75,13 @@ type Question struct {
 	CreatedBy       string
 	CreatedByName   string
 	CreatedScope    string
-	ReviewedBy      string
-	ReviewedAt      string
-	CreatedAt       string
-	UpdatedAt       string
+	// IsBuiltin 标识系统内置题（maintenance seed 预置，approved）：应用层
+	// 禁止编辑/删除/审核。
+	IsBuiltin  bool
+	ReviewedBy string
+	ReviewedAt string
+	CreatedAt  string
+	UpdatedAt  string
 }
 
 // CreateQuestionInput 是提交题目的入参。
@@ -169,7 +176,7 @@ const questionStatusPendingLiteral = `'pending'`
 
 // GetByID 读取单题；不存在时返回 404 StatusError。
 func (s *Store) GetByID(ctx context.Context, id string) (Question, error) {
-	row := s.db.QueryRowContext(ctx, s.bind(`SELECT id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at FROM `+s.table(questionBankTable)+` WHERE id=?`), strings.TrimSpace(id))
+	row := s.db.QueryRowContext(ctx, s.bind(`SELECT `+questionSelectColumns+` FROM `+s.table(questionBankTable)+` WHERE id=?`), strings.TrimSpace(id))
 	question, err := scanQuestion(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Question{}, newStatusError(statusNotFound, "题目不存在")
@@ -212,7 +219,7 @@ func (s *Store) List(ctx context.Context, filter QuestionFilter) ([]Question, in
 		return nil, 0, err
 	}
 	listArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at FROM `+s.table(questionBankTable)+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`), listArgs...)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+questionSelectColumns+` FROM `+s.table(questionBankTable)+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`), listArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -255,6 +262,9 @@ func (s *Store) Update(ctx context.Context, id string, actor Actor, admin bool, 
 	}
 	if !admin && current.CreatedBy != actorID {
 		return Question{}, newStatusError(statusForbidden, "无权修改该题目")
+	}
+	if current.IsBuiltin {
+		return Question{}, newStatusError(statusForbidden, "系统内置题目不可编辑，题面调整随系统版本更新")
 	}
 	if current.Status == StatusApproved {
 		return Question{}, newStatusError(statusConflict, "已通过审核的题目不可编辑")
@@ -300,6 +310,9 @@ func (s *Store) Delete(ctx context.Context, id string, actor Actor, admin bool) 
 	if !admin && current.Status == StatusApproved {
 		return newStatusError(statusForbidden, "已通过审核的题目仅管理员可删除")
 	}
+	if current.IsBuiltin {
+		return newStatusError(statusForbidden, "系统内置题目不可删除，如需调整请随系统版本更新 seed 数据")
+	}
 	res, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM `+s.table(questionBankTable)+` WHERE id=?`), current.ID)
 	if err != nil {
 		return err
@@ -335,6 +348,13 @@ func (s *Store) Review(ctx context.Context, id string, reviewer Actor, admin boo
 		}
 	} else {
 		reason = ""
+	}
+	// 内置题锁定审核：approve 只接受 pending（内置题恒 approved），reject
+	// 下架后没有恢复入口（approve 不接受 rejected），一旦驳回即不可逆，
+	// 因此干脆拒绝全部审核动作，题面调整随版本 seed 演进。读取失败（含
+	// 不存在的 404）不在此拦截，保持既有 CAS 错误语义。
+	if existing, err := s.GetByID(ctx, strings.TrimSpace(id)); err == nil && existing.IsBuiltin {
+		return Question{}, newStatusError(statusForbidden, "系统内置题目不可审核，如需调整请随系统版本更新 seed 数据")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	questionID := strings.TrimSpace(id)
@@ -378,7 +398,7 @@ func (s *Store) ListByIDs(ctx context.Context, ids []string, status string) ([]Q
 	if status != "" && !validStatus(status) {
 		return nil, newStatusError(statusBadRequest, "题库状态筛选无效")
 	}
-	query := `SELECT id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at FROM ` + s.table(questionBankTable) + ` WHERE id IN (` + placeholders(len(cleaned)) + `)`
+	query := `SELECT `+questionSelectColumns+` FROM ` + s.table(questionBankTable) + ` WHERE id IN (` + placeholders(len(cleaned)) + `)`
 	args := make([]any, 0, len(cleaned)+1)
 	for _, id := range cleaned {
 		args = append(args, id)
@@ -476,7 +496,7 @@ func (s *Store) checkDuplicateInTx(ctx context.Context, tx *sql.Tx, title, quest
 
 // getForPermissionCheck 读取删除前的状态与创建者；不存在返回 404。
 func (s *Store) getForPermissionCheck(ctx context.Context, id string) (Question, error) {
-	row := s.db.QueryRowContext(ctx, s.bind(`SELECT id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at FROM `+s.table(questionBankTable)+` WHERE id=?`), id)
+	row := s.db.QueryRowContext(ctx, s.bind(`SELECT `+questionSelectColumns+` FROM `+s.table(questionBankTable)+` WHERE id=?`), id)
 	question, err := scanQuestion(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Question{}, newStatusError(statusNotFound, "题目不存在")
@@ -486,7 +506,7 @@ func (s *Store) getForPermissionCheck(ctx context.Context, id string) (Question,
 
 // questionInTx 是事务内的单题读取；不存在返回 404。
 func (s *Store) questionInTx(ctx context.Context, tx *sql.Tx, id string) (Question, error) {
-	row := tx.QueryRowContext(ctx, s.bind(`SELECT id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at FROM `+s.table(questionBankTable)+` WHERE id=?`), id)
+	row := tx.QueryRowContext(ctx, s.bind(`SELECT `+questionSelectColumns+` FROM `+s.table(questionBankTable)+` WHERE id=?`), id)
 	question, err := scanQuestion(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Question{}, newStatusError(statusNotFound, "题目不存在")
@@ -655,7 +675,7 @@ func keyPointsJSONValue(keyPoints []string) (any, error) {
 func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 	var question Question
 	var keyPointsJSON, rejectReason, reviewedBy, reviewedAt sql.NullString
-	err := row.Scan(&question.ID, &question.Title, &question.TitleNorm, &question.QuestionText, &question.ReferenceAnswer, &keyPointsJSON, &question.Status, &rejectReason, &question.CreatedBy, &question.CreatedScope, &reviewedBy, &reviewedAt, &question.CreatedAt, &question.UpdatedAt)
+	err := row.Scan(&question.ID, &question.Title, &question.TitleNorm, &question.QuestionText, &question.ReferenceAnswer, &keyPointsJSON, &question.Status, &rejectReason, &question.CreatedBy, &question.CreatedScope, &question.IsBuiltin, &reviewedBy, &reviewedAt, &question.CreatedAt, &question.UpdatedAt)
 	if err != nil {
 		return Question{}, err
 	}

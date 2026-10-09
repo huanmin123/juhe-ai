@@ -2,8 +2,11 @@
 
 > **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档（归档已移出仓库，git 历史可溯）；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
 
+- [网关模型列表账户并集设计](网关模型列表账户并集设计.md)：`GET /v1/models`（含根形态 `/models`、`/v1beta/models` 等全部端点形态）成员资格从供应商模型目录切换为「Key 激活绑定分组上静态门+授权门的资格主体，其模型事实主体（`COALESCE(来源账户, 账户)`）supportedModels ∪ 有效映射源」的配置能力并集，读时聚合 + 双层缓存（零 schema/jobs/部署变更，不引入冗余表与第二失效链，目录降级为元数据字典，失效随运行时失效无条件清空、有效期受最近到期点约束、失败禁止静默空列表）；含原始 API Key 维度冗余表提案的否决论证。设计稿 v2 待复审（已按首轮评审修订授权实例主体/授权门/失效关系/到期一致性/并发规则/失败语义）。
+- [调度内核通用化设计](调度内核通用化设计.md)：调度内核通用参数与有序分派段契约——段内让位、软避让一次解除、动态翻回、不绕过硬门，保持准备层健康分段与既有候选顺序；超时参数化、三处错误消费和前置/适配器/后置历史策略；文档契约有界通过，代码未实施，桥接组合仍须实施前取证。
+- [上游模型漂移防护与加密上下文失效治理设计](上游模型漂移防护与加密上下文失效治理设计.md)：原生 Responses/compact 响应声明异常观测、完整接纳矩阵、固定状态机参数、attempt 去重与账户版本屏障；管理员当前运行态诊断，不恢复使用记录详情；A/B 文档契约已通过有界独立复审、代码未实施，C 上下文硬过滤继续冻结，未提供密文兼容保证。
 - [客户端版本自动跟版设计](客户端版本自动跟版设计.md)：客户端版本事实单点契约（两键三层合并：手动 `upstreamClientVersionOverrides` > 自动 `upstreamClientVersionAutoOverrides` > 内置）、jobs 每日五源（含 grokCLI）跟版任务契约（codex/claudeCode/geminiCLI/zcode/grokCLI，grokCLI 为第二期追加，随 xai worker 426 触发器落地，见设计 §8.3；写者侧单调与回退拒绝）、消费点收敛清单与 guard、UA 混合身份核实结论（官方 originator 与 UA 后缀同源，原 `Codex Desktop`+`(codex_exec;…)` 组合非官方 surface）与第二期裁决——已按开源源码锚定切换 codex exec surface（`codex_exec/{version} (…) unknown`，无后缀）、抖动审计结论（唯一缺口 key-model-memory-recovery）。
-- [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)：同层"速度合格集 + 缓存率量化档"全局排序契约（严格弱序、cost_first 10s / speed_first 5s、物理账户混合缓存率、快照 stale 上限）与账户列表"用量(日)"缓存率 tag；已实施（2026-10-08，期一列表展示 + 期二调度维度），权威文档已按其第 13 节清单同步。
+- [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)：同层"速度合格集 + 缓存率量化档"全局排序契约（严格弱序、相对窗口速度合格集：cost_first k=3 / ceiling 10s / 档宽 20pp，speed_first k=1 / ceiling 5s / 档宽 10pp、物理账户混合缓存率、快照 stale 上限）与账户列表"用量(日)"缓存率 tag；已实施（2026-10-08，期一列表展示 + 期二调度维度；2026-10-09 v3 速度合格集相对化），权威文档已按其第 13 节清单同步。
 - [系统指标统计设计](系统指标统计设计.md)：系统指标统计页三层契约（进程状态双卡、Go Runtime 角色×指标组趋势与后台任务表），含 samplingEnabled 空态、POSTGRES_URL 回退与已删除 ROLE 的 env 契约。
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)：记录 reasoning 可见性诊断边界，以及不在响应热路径实施质量拦截的当前决定。
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)：记录当前账户级健康机制的代码事实，以及多模型按实际 Route / Key 精确探测和隔离的目标设计。
@@ -24,6 +27,9 @@
 
 ## 当前权威功能文档索引
 
+- [网关模型列表账户并集设计](网关模型列表账户并集设计.md)（设计稿 v2 待复审，已按首轮评审修订）
+- [调度内核通用化设计](调度内核通用化设计.md)（文档契约有界通过，代码未实施；桥接组合实施前取证）
+- [上游模型漂移防护与加密上下文失效治理设计](上游模型漂移防护与加密上下文失效治理设计.md)（A/B 契约有界通过，代码未实施；C 冻结）
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)
 - [网关 Body 解析性能治理设计](网关Body解析性能治理设计.md)
 - [统一会话身份与审计串联设计](统一会话身份与审计串联设计.md)

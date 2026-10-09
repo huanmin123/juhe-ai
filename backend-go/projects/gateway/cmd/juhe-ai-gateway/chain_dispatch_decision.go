@@ -115,9 +115,10 @@ func (o *chainDispatchDecisionObserver) observe(event gatewaydispatch.DispatchDe
 	if len(summary.Avoided) > 0 {
 		fields["avoidedAccountIds"] = summary.Avoided
 	}
-	// 期二（缓存率设计 5.6）：缓存率排序块——决策级速度基准/生效阈值/快照
-	// 失效与档位键参与标记，候选级排序明细（按最终序，截断防爆炸）。全部
-	// 字段来自最终生效那次排序的解释；未执行质量排序时整体缺省（与引擎侧
+	// 期二（缓存率设计 5.6）：缓存率排序块——决策级速度基准/基准层生效速
+	// 度合格窗口 W（层内无已知 EWMA 时为 0，本块整体缺省）/快照失效与档
+	// 位键参与标记，候选级排序明细（按最终序，截断防爆炸）。全部字段来自
+	// 最终生效那次排序的解释；未执行质量排序时整体缺省（与引擎侧
 	// omitempty 同风格，直接构造事件的旧调用方不出现）。
 	if summary.SpeedThresholdMs > 0 {
 		if summary.SpeedBaseEwmaMs != nil {

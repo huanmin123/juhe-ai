@@ -37,6 +37,10 @@ type SQLiteSeedResult struct {
 	// 与本次 seed 运行时可见内置行同名的 custom_provider_models 存量行数
 	// （契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先）。
 	CustomModelOverlapCleaned int
+	// BuiltinQuestionRows 是本次 seed 尝试写入的系统内置题库题行数
+	//（固定 8 题；冲突时按内置行恢复 seed 权威题面，详见
+	// sqSeedBuiltinQuestionUpsert）。
+	BuiltinQuestionRows int
 }
 
 // SeedSQLiteDefaults ports Node seedDefaults for one business SQLite
@@ -105,6 +109,11 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 		return SQLiteSeedResult{}, err
 	}
 	if err := seedSQLiteDisableStaleGeneratedModels(ctx, db, exec, now, builtInModelKeys); err != nil {
+		return SQLiteSeedResult{}, err
+	}
+
+	// 系统内置题库题（模型检测设计 §5.7 系统内置题）：固定 id 幂等预置。
+	if err := seedSQLiteBuiltinModelCheckQuestions(ctx, db, now, &result); err != nil {
 		return SQLiteSeedResult{}, err
 	}
 
@@ -585,6 +594,50 @@ const sqSeedSystemSettingInsert = `
     INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
     VALUES (?, ?, ?, ?)
   `
+
+// sqSeedBuiltinQuestionUpsert 预置一道系统内置题：固定 id，冲突时仅在
+// 目标行仍是内置行时把题面字段恢复为 seed 权威值——应用层禁止编辑内置
+// 题，因此该 upsert 要么插入新行、要么把被人工改动的内置行拉回版本值，
+// 题面修订得以随版本到达存量环境；updated_at 不在更新列内，重复 seed
+// 对已一致的行零写入。
+const sqSeedBuiltinQuestionUpsert = `
+    INSERT INTO model_check_question_bank
+      (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,'approved',NULL,'system','system',1,NULL,NULL,?,?)
+    ON CONFLICT(id) DO UPDATE SET
+      title=excluded.title,
+      title_norm=excluded.title_norm,
+      question_text=excluded.question_text,
+      reference_answer=excluded.reference_answer,
+      key_points_json=excluded.key_points_json
+      WHERE model_check_question_bank.is_builtin=1
+  `
+
+// seedSQLiteBuiltinModelCheckQuestions 预置系统内置题库题（模型检测设计
+// §5.7）：approved + is_builtin=1，供用户直接选用。
+func seedSQLiteBuiltinModelCheckQuestions(ctx context.Context, db *sql.DB, now string, result *SQLiteSeedResult) error {
+	for _, question := range builtinModelCheckQuestions {
+		keyPointsJSON, err := builtinQuestionKeyPointsJSON(question)
+		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, sqSeedBuiltinQuestionUpsert,
+			question.ID,
+			question.Title,
+			builtinQuestionTitleNorm(question.Title),
+			question.QuestionText,
+			question.ReferenceAnswer,
+			keyPointsJSON,
+			now,
+			now,
+		); err != nil {
+			return fmt.Errorf("sqlite seed statement %d (builtin question %s): %w", result.StatementCount+1, question.ID, err)
+		}
+		result.StatementCount++
+		result.BuiltinQuestionRows++
+	}
+	return nil
+}
 
 // seedSQLiteModelCatalog ports the Node provider_model_catalog upsert loop and
 // returns the built-in (provider \x00 model) key set for the stale disable.
