@@ -34,13 +34,21 @@
             <a-form-item label="参考答案" name="referenceAnswer" :rules="[{ required: true, message: '请输入参考答案' }]">
               <a-textarea v-model:value="form.referenceAnswer" :maxlength="4000" show-count :rows="4" placeholder="模型作答的判定依据，仅创建者与管理员可见，≤4000 字符" />
             </a-form-item>
-            <a-form-item label="评分要点（选填）" name="keyPoints">
+            <a-form-item name="keyPoints">
+              <template #label>
+                <span class="question-label-with-help">
+                  评分要点（选填）
+                  <a-tooltip title="评分要点是判分时的关键检查点：检测评分会把要点连同参考答案一起用于判定，模型的回答需要覆盖这些要点才算答对。例如翻译题可填「包含简体中文译文」「包含日文译文」。最多 10 条、每条不超过 50 字；不填则按参考答案整体判定。">
+                    <QuestionCircleOutlined class="question-label-help-icon" aria-label="评分要点说明" />
+                  </a-tooltip>
+                </span>
+              </template>
               <a-select
                 v-model:value="form.keyPoints"
                 mode="tags"
                 :open="false"
                 :token-separators="[',', '，']"
-                placeholder="输入判定要点后回车或逗号分隔，1-10 条、每条 ≤50 字符"
+                placeholder="每条写一个关键检查点，回车或逗号分隔"
                 @change="handleKeyPointsChange"
               />
             </a-form-item>
@@ -91,8 +99,9 @@
                 </div>
                 <p class="question-item-text">{{ item.questionText }}</p>
                 <div class="question-item-meta">
-                  <span>提交于 {{ formatDateTime(item.createdAt) }}</span>
-                  <span v-if="item.reviewedAt">审核于 {{ formatDateTime(item.reviewedAt) }}</span>
+                  <span v-if="isManagementView">提交人 {{ questionCreatorText(item) }}</span>
+                  <span>提交于 {{ questionBankDateTimeText(item.createdAt) }}</span>
+                  <span v-if="item.reviewedAt">审核于 {{ questionBankDateTimeText(item.reviewedAt) }}</span>
                   <span v-if="item.status === 'rejected' && item.rejectReason" class="question-item-reject">驳回理由：{{ item.rejectReason }}</span>
                 </div>
               </div>
@@ -126,7 +135,9 @@
         <div class="question-detail-head">
           <div>
             <div class="question-detail-title">{{ detailItem.title }}</div>
-            <div class="question-detail-subtitle">提交于 {{ formatDateTime(detailItem.createdAt) }}</div>
+            <div class="question-detail-subtitle">
+              <template v-if="isManagementView">提交人 {{ questionCreatorText(detailItem) }} · </template>提交于 {{ questionBankDateTimeText(detailItem.createdAt) }}
+            </div>
           </div>
           <a-tag :color="questionStatusColor(detailItem.status)">{{ questionStatusText(detailItem.status) }}</a-tag>
         </div>
@@ -147,16 +158,24 @@
           <p v-else class="question-detail-text question-detail-muted">仅创建者与管理员可见，当前无查看权限。</p>
         </div>
         <div class="question-detail-block">
-          <div class="question-detail-label">评分要点</div>
+          <div class="question-detail-label">
+            <span class="question-label-with-help">
+              评分要点
+              <a-tooltip title="判分时的关键检查点：检测评分会把要点连同参考答案一起用于判定，模型的回答需要覆盖这些要点才算答对。">
+                <QuestionCircleOutlined class="question-label-help-icon" aria-label="评分要点说明" />
+              </a-tooltip>
+            </span>
+          </div>
           <a-space v-if="detailItem.keyPoints?.length" wrap>
             <a-tag v-for="(point, index) in detailItem.keyPoints" :key="index" color="blue">{{ point }}</a-tag>
           </a-space>
           <p v-else class="question-detail-text question-detail-muted">提交者未填写，或当前无查看权限。</p>
         </div>
         <a-descriptions bordered size="small" :column="1" class="question-detail-descriptions">
-          <a-descriptions-item label="提交时间">{{ formatDateTime(detailItem.createdAt) }}</a-descriptions-item>
-          <a-descriptions-item label="更新时间">{{ formatDateTime(detailItem.updatedAt) }}</a-descriptions-item>
-          <a-descriptions-item label="审核时间">{{ detailItem.reviewedAt ? formatDateTime(detailItem.reviewedAt) : '-' }}</a-descriptions-item>
+          <a-descriptions-item v-if="isManagementView" label="提交人">{{ questionCreatorText(detailItem) }}</a-descriptions-item>
+          <a-descriptions-item label="提交时间">{{ questionBankDateTimeText(detailItem.createdAt) }}</a-descriptions-item>
+          <a-descriptions-item label="更新时间">{{ questionBankDateTimeText(detailItem.updatedAt) }}</a-descriptions-item>
+          <a-descriptions-item label="审核时间">{{ detailItem.reviewedAt ? questionBankDateTimeText(detailItem.reviewedAt) : '-' }}</a-descriptions-item>
           <a-descriptions-item label="审核人">{{ isManagementView && detailItem.reviewedBy ? detailItem.reviewedBy : '-' }}</a-descriptions-item>
         </a-descriptions>
       </div>
@@ -180,6 +199,7 @@
 
 <script setup lang="ts">
 import { Empty } from 'ant-design-vue'
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, nextTick, reactive, ref, toRef, watch } from 'vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
@@ -187,9 +207,8 @@ import { useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime } from '@/shared/formatters'
 import type { ModelCheckQuestionBankItem, ModelCheckQuestionStatus } from '@/types/domain'
-import { questionStatusColor, questionStatusText } from './modelCheckFormatters'
+import { questionBankDateTimeText, questionCreatorText, questionStatusColor, questionStatusText } from './modelCheckFormatters'
 
 const props = defineProps<{
   isManagementView: boolean
@@ -534,6 +553,17 @@ async function confirmReject() {
 .question-form-grid {
   display: grid;
   gap: 4px;
+}
+
+.question-label-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.question-label-help-icon {
+  color: var(--juhe-muted);
+  cursor: help;
 }
 
 .question-bank-form :deep(.ant-form-item) {

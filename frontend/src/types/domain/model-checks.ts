@@ -257,6 +257,8 @@ export interface ModelCheckQuestionBankItem {
   status: ModelCheckQuestionStatus
   rejectReason?: string
   createdBy: string
+  /** 创建者系统账户显示名；仅管理面透出，自助面缺失 */
+  createdByName?: string
   createdAt: string
   updatedAt: string
   reviewedAt?: string

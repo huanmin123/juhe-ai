@@ -1,6 +1,7 @@
 package modelcheckquestionbank
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,13 +26,15 @@ const (
 // QuestionView 是题库对外 JSON 契约（前端并行开发依赖，字段名不得改动）：
 //
 //	{ id, title, questionText, referenceAnswer, keyPoints, status, rejectReason,
-//	  createdBy, createdAt, updatedAt, reviewedAt, reviewedBy }
+//	  createdBy, createdByName, createdAt, updatedAt, reviewedAt, reviewedBy }
 //
 // 无权限时的处理约定（本包唯一契约解释）：referenceAnswer 与 keyPoints
 // 选择【省略字段】——referenceAnswer 为必填非空，omitempty 即等价于
 // "无权限"；keyPoints 用 *[]string 区分"无权限省略"与"有权但为空数组
 // （渲染 []）"。rejectReason/reviewedAt 无值渲染 null。reviewedBy（审核
-// 人系统账户 id）无值或自助面渲染 null，仅管理面透出。titleNorm 不进
+// 人系统账户 id）无值或自助面渲染 null，仅管理面透出。createdByName
+// （创建者系统账户显示名）同样仅管理面透出：自助面省略字段，管理面由
+// attachCreatorNames 解析填充，解析失败按请求失败返回。titleNorm 不进
 // 对外契约。
 type QuestionView struct {
 	ID              string    `json:"id"`
@@ -42,6 +45,7 @@ type QuestionView struct {
 	Status          string    `json:"status"`
 	RejectReason    *string   `json:"rejectReason"`
 	CreatedBy       string    `json:"createdBy"`
+	CreatedByName   string    `json:"createdByName,omitempty"`
 	CreatedAt       string    `json:"createdAt"`
 	UpdatedAt       string    `json:"updatedAt"`
 	ReviewedAt      *string   `json:"reviewedAt"`
@@ -133,6 +137,10 @@ func (h *HTTPHandlers) ServeList(w http.ResponseWriter, r *http.Request) {
 		h.writeStoreError(w, err)
 		return
 	}
+	if err := h.attachCreatorNames(r.Context(), items); err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
+		return
+	}
 	views := make([]QuestionView, 0, len(items))
 	for _, question := range items {
 		views = append(views, questionView(question, h.canSeeAnswer(question, actor), h.adminMode))
@@ -164,6 +172,11 @@ func (h *HTTPHandlers) ServeCreate(w http.ResponseWriter, r *http.Request) {
 			{Field: "title", Label: "标题", After: question.Title},
 			{Field: "status", Label: "状态", After: question.Status},
 		})
+	question, err = h.fillCreatorName(r.Context(), question)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
+		return
+	}
 	kernel.WriteJSON(w, http.StatusCreated, map[string]any{"data": questionView(question, true, h.adminMode)})
 }
 
@@ -187,6 +200,11 @@ func (h *HTTPHandlers) ServeDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.adminMode && question.CreatedBy != actor.SystemAccountID && question.Status != StatusApproved {
 		kernel.WriteNotFound(w, "题目不存在")
+		return
+	}
+	question, err = h.fillCreatorName(r.Context(), question)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
 		return
 	}
 	kernel.WriteOK(w, questionView(question, h.canSeeAnswer(question, actor), h.adminMode), "")
@@ -220,6 +238,11 @@ func (h *HTTPHandlers) ServeUpdate(w http.ResponseWriter, r *http.Request) {
 			{Field: "title", Label: "标题", After: question.Title},
 			{Field: "status", Label: "状态", After: question.Status},
 		})
+	question, err = h.fillCreatorName(r.Context(), question)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
+		return
+	}
 	kernel.WriteOK(w, questionView(question, true, h.adminMode), "")
 }
 
@@ -302,6 +325,11 @@ func (h *HTTPHandlers) ServeReview(w http.ResponseWriter, r *http.Request) {
 		changes = append(changes, authsys.OperationLogChange{Field: "rejectReason", Label: "驳回理由", After: body.Reason})
 	}
 	h.recordAudit(auth, r, action, "model_check_question_bank.review", question.ID, question.Title, summary, changes)
+	question, err = h.fillCreatorName(r.Context(), question)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
+		return
+	}
 	kernel.WriteOK(w, questionView(question, true, h.adminMode), "")
 }
 
@@ -386,6 +414,42 @@ func (h *HTTPHandlers) canSeeAnswer(question Question, actor Actor) bool {
 	return h.adminMode || question.CreatedBy == actor.SystemAccountID
 }
 
+// attachCreatorNames 在管理面把题目的 created_by 批量解析为系统账户显示
+// 名（Question.CreatedByName → QuestionView.createdByName），供管理员
+// 审核时识别提交者；自助面是 no-op。解析失败按请求失败返回——提交者
+// 是审核的关键信息，不得静默省略后仍返回 200。
+func (h *HTTPHandlers) attachCreatorNames(ctx context.Context, items []Question) error {
+	if !h.adminMode || len(items) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.CreatedBy)
+	}
+	names, err := h.store.SystemAccountNames(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		items[i].CreatedByName = names[items[i].CreatedBy]
+	}
+	return nil
+}
+
+// fillCreatorName 是单题响应的 attachCreatorNames：Question 是值类型，
+// 解析结果经返回值回传，调用方必须使用返回的 Question 组装视图。
+func (h *HTTPHandlers) fillCreatorName(ctx context.Context, question Question) (Question, error) {
+	if !h.adminMode {
+		return question, nil
+	}
+	names, err := h.store.SystemAccountNames(ctx, []string{question.CreatedBy})
+	if err != nil {
+		return Question{}, err
+	}
+	question.CreatedByName = names[question.CreatedBy]
+	return question, nil
+}
+
 func (h *HTTPHandlers) readKeyword(w http.ResponseWriter, raw string) (string, bool) {
 	keyword := strings.TrimSpace(raw)
 	if len([]rune(keyword)) > maxKeywordRunes {
@@ -434,8 +498,8 @@ func (h *HTTPHandlers) recordAudit(auth *authsys.AuthContext, r *http.Request, a
 
 // questionView 按权限渲染对外契约；includeAnswer=false 时
 // referenceAnswer/keyPoints 省略字段（见 QuestionView 契约注释）；
-// includeReviewer=true 且已落审核人时透出 reviewedBy——reviewedBy 仅
-// 管理面透出，自助面调用一律传 false。
+// includeReviewer=true 且已落审核人时透出 reviewedBy、已解析时透出
+// createdByName——两者仅管理面透出，自助面调用一律传 false。
 func questionView(question Question, includeAnswer, includeReviewer bool) QuestionView {
 	view := QuestionView{
 		ID:           question.ID,
@@ -454,9 +518,12 @@ func questionView(question Question, includeAnswer, includeReviewer bool) Questi
 		reviewedAt := question.ReviewedAt
 		view.ReviewedAt = &reviewedAt
 	}
-	if includeReviewer && question.ReviewedBy != "" {
-		reviewedBy := question.ReviewedBy
-		view.ReviewedBy = &reviewedBy
+	if includeReviewer {
+		view.CreatedByName = question.CreatedByName
+		if question.ReviewedBy != "" {
+			reviewedBy := question.ReviewedBy
+			view.ReviewedBy = &reviewedBy
+		}
 	}
 	if includeAnswer {
 		view.ReferenceAnswer = question.ReferenceAnswer

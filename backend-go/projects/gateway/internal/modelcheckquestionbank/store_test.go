@@ -23,6 +23,9 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	if _, err := db.Exec(testQuestionBankDDL); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(testSystemAccountsDDL); err != nil {
+		t.Fatal(err)
+	}
 	store, err := NewStore(db, false)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +48,13 @@ const testQuestionBankDDL = `CREATE TABLE model_check_question_bank (
       reviewed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    )`
+
+// testSystemAccountsDDL 是 SystemAccountNames 依赖的最小系统账户表
+// （真实 schema 的相关列：id 主键 + display_name）。
+const testSystemAccountsDDL = `CREATE TABLE system_accounts (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL DEFAULT ''
     )`
 
 var (
@@ -647,4 +657,46 @@ func TestStoreBindAndTableDialect(t *testing.T) {
 	if _, err := NewStore(nil, false); err == nil {
 		t.Fatal("nil db must be rejected")
 	}
+}
+
+func TestStoreSystemAccountNames(t *testing.T) {
+	store, db := newTestStore(t)
+	seed := []struct {
+		id      string
+		display string
+	}{
+		{"sys-alice", "甲"},
+		{"sys-bob", ""},
+	}
+	for _, item := range seed {
+		if _, err := db.Exec(`INSERT INTO system_accounts (id, display_name) VALUES (?, ?)`, item.id, item.display); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("空 ids 不访问数据库返回空 map", func(t *testing.T) {
+		names, err := store.SystemAccountNames(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(names) != 0 {
+			t.Fatalf("names = %v", names)
+		}
+	})
+
+	t.Run("去重解析且空名与未知 id 省略", func(t *testing.T) {
+		names, err := store.SystemAccountNames(context.Background(), []string{"sys-alice", "sys-alice", "sys-bob", "sys-ghost", " "})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if names["sys-alice"] != "甲" {
+			t.Fatalf("alice name = %q", names["sys-alice"])
+		}
+		if _, ok := names["sys-bob"]; ok {
+			t.Fatalf("空显示名应省略: %v", names)
+		}
+		if _, ok := names["sys-ghost"]; ok {
+			t.Fatalf("未知 id 应省略: %v", names)
+		}
+	})
 }

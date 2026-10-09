@@ -11,7 +11,7 @@
               :active-only="false"
               include-all
               allow-clear
-              :disabled="submitting || !targetId"
+              :disabled="submitting"
               :filter-option="false"
               :loading="systemAccountOptionsLoading"
               placeholder="请选择系统账户"
@@ -79,15 +79,16 @@
 
         <div class="model-checks-toolbar">
           <ModelQualityConfigPopover
-            :disabled="qualityActionsDisabled"
+            :disabled="submitting"
             :is-management-view="isManagementView"
             :loading="qualityPolicyLoading"
             :policy="qualityPolicy"
             :saving="qualityPolicySaving"
+            :scope-locked="qualityScopeLocked"
             @open="emit('quality-policy-open')"
             @save="emit('quality-policy-save', $event)"
           />
-          <a-button :disabled="qualityActionsDisabled" @click="emit('question-bank-open')">
+          <a-button :disabled="submitting" @click="emit('question-bank-open')">
             <template #icon><BookOutlined /></template>
             {{ isManagementView ? '题库管理' : '题库添加' }}
           </a-button>
@@ -97,7 +98,7 @@
             </template>
             {{ deepDetection ? '开始深度检测' : '快速检测' }}
           </a-button>
-          <a-button :disabled="qualityActionsDisabled" @click="emit('schedules-open')">
+          <a-button :disabled="submitting" @click="emit('schedules-open')">
             <template #icon><ClockCircleOutlined /></template>
             定时检查
           </a-button>
@@ -212,19 +213,20 @@
         </div>
         <div class="model-checks-mobile-row">
           <ModelQualityConfigPopover
-            :disabled="qualityActionsDisabled"
+            :disabled="submitting"
             :is-management-view="isManagementView"
             :loading="qualityPolicyLoading"
             :policy="qualityPolicy"
             :saving="qualityPolicySaving"
+            :scope-locked="qualityScopeLocked"
             @open="emit('quality-policy-open')"
             @save="emit('quality-policy-save', $event)"
           />
-          <a-button :disabled="qualityActionsDisabled" @click="emit('question-bank-open')">
+          <a-button :disabled="submitting" @click="emit('question-bank-open')">
             <template #icon><BookOutlined /></template>
             {{ isManagementView ? '题库管理' : '题库添加' }}
           </a-button>
-          <a-button :disabled="qualityActionsDisabled" @click="emit('schedules-open')">
+          <a-button :disabled="submitting" @click="emit('schedules-open')">
             <template #icon><ClockCircleOutlined /></template>
             定时检查
           </a-button>
@@ -278,7 +280,7 @@ const props = defineProps<{
   modelOptionsLoading: boolean
   optionsLoading: boolean
   qualityPolicy: ModelQualityPolicy
-  qualityActionsDisabled: boolean
+  qualityScopeLocked: boolean
   qualityPolicyLoading: boolean
   qualityPolicySaving: boolean
   selectedComparisonAccount?: AccountSelection

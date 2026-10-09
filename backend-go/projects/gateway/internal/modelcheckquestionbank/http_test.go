@@ -860,3 +860,71 @@ func TestStatusErrorMessage(t *testing.T) {
 		t.Fatalf("errors.As failed: %+v", target)
 	}
 }
+
+func TestHandlersCreatedByNameContract(t *testing.T) {
+	h := newHandlerHarness(t)
+	alice := aliceAuth()
+	question := mustCreateQuestion(t, h, alice, "提交者契约题", "提交者契约内容。")
+	questionID := question["id"].(string)
+	if _, err := h.db.Exec(`INSERT INTO system_accounts (id, display_name) VALUES (?, ?)`, alice.SystemAccountID, "甲"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("管理面列表与详情透出 createdByName", func(t *testing.T) {
+		recorder := call(t, h.admin, h.adminActor, http.MethodGet, "/q", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("admin list status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		items, _ := decodeList(t, recorder)
+		if len(items) != 1 || items[0]["createdByName"] != "甲" {
+			t.Fatalf("admin list createdByName = %v (items=%v)", items[0]["createdByName"], items)
+		}
+		detail := call(t, h.admin, h.adminActor, http.MethodGet, "/q/"+questionID, "")
+		if detail.Code != http.StatusOK {
+			t.Fatalf("detail status = %d", detail.Code)
+		}
+		if got := decodeData(t, detail)["createdByName"]; got != "甲" {
+			t.Fatalf("detail createdByName = %v", got)
+		}
+	})
+
+	t.Run("自助面省略 createdByName 字段", func(t *testing.T) {
+		recorder := call(t, h.self, alice, http.MethodGet, "/q", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("self list status = %d", recorder.Code)
+		}
+		if strings.Contains(recorder.Body.String(), "createdByName") {
+			t.Fatalf("自助面响应不得包含 createdByName: %s", recorder.Body.String())
+		}
+		selfDetail := call(t, h.self, alice, http.MethodGet, "/q/"+questionID, "")
+		if selfDetail.Code != http.StatusOK {
+			t.Fatalf("self detail status = %d", selfDetail.Code)
+		}
+		if strings.Contains(selfDetail.Body.String(), "createdByName") {
+			t.Fatalf("自助面详情响应不得包含 createdByName: %s", selfDetail.Body.String())
+		}
+	})
+
+	t.Run("审核响应同样透出 createdByName", func(t *testing.T) {
+		recorder := call(t, h.admin, h.adminActor, http.MethodPost, "/q/"+questionID+"/review", `{"action":"approve"}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("review status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if got := decodeData(t, recorder)["createdByName"]; got != "甲" {
+			t.Fatalf("review createdByName = %v", got)
+		}
+	})
+
+	t.Run("名称解析失败按整体失败返回", func(t *testing.T) {
+		if _, err := h.db.Exec(`DROP TABLE system_accounts`); err != nil {
+			t.Fatal(err)
+		}
+		recorder := call(t, h.admin, h.adminActor, http.MethodGet, "/q", "")
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("dropped-table list status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "解析题库提交者名称失败") {
+			t.Fatalf("body = %s", recorder.Body.String())
+		}
+	})
+}

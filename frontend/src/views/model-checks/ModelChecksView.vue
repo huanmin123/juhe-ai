@@ -13,7 +13,7 @@
       :model-options="runModelOptions"
       :model-options-loading="runModelSelectLoading"
       :options-loading="optionsLoading"
-      :quality-actions-disabled="qualityActionsDisabled"
+      :quality-scope-locked="qualityScopeLocked"
       :quality-policy="qualityPolicy"
       :quality-policy-loading="qualityPolicyLoading"
       :quality-policy-saving="qualityPolicySaving"
@@ -342,7 +342,7 @@ const modelCheckScopeParams = computed(() => {
   const systemAccountId = selectedManagementSystemAccountId.value
   return isManagementView.value && systemAccountId ? { systemAccountId } : undefined
 })
-const qualityActionsDisabled = computed(() => submitting.value || (isManagementView.value && !selectedManagementSystemAccountId.value))
+const qualityScopeLocked = computed(() => isManagementView.value && !selectedManagementSystemAccountId.value)
 
 function modelCheckRunListParams(pageState: { current: number; pageSize: number }) {
   return {
@@ -509,7 +509,11 @@ async function saveQualityPolicy(input: ModelQualityPolicyUpdateInput) {
 }
 
 async function openSchedules() {
-  if (qualityActionsDisabled.value) return
+  if (submitting.value) return
+  if (qualityScopeLocked.value) {
+    message.warning('请先在顶部选择具体系统账户，再管理定时检查')
+    return
+  }
   schedulesPage.value = 1
   resetScheduleAccountOptionsState()
   schedulesOpen.value = true
@@ -517,7 +521,6 @@ async function openSchedules() {
 }
 
 function openQuestionBank() {
-  if (qualityActionsDisabled.value) return
   questionBankOpen.value = true
 }
 

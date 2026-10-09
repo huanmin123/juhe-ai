@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { modelCheckQuizSummary } from './modelCheckFormatters'
+import { modelCheckQuizSummary, questionBankDateTimeText, questionCreatorText } from './modelCheckFormatters'
 
 describe('modelCheckQuizSummary 未执行判定', () => {
   it('以后端 executed=false 为准判定未执行（新后端契约：未执行时 score=0）', () => {
@@ -92,5 +92,32 @@ describe('modelCheckQuizSummary 未执行判定', () => {
   it('customQuiz 缺失时返回 undefined', () => {
     expect(modelCheckQuizSummary(undefined)).toBeUndefined()
     expect(modelCheckQuizSummary({})).toBeUndefined()
+  })
+})
+
+describe('questionBankDateTimeText 题库时间去毫秒', () => {
+  it('去除秒后的毫秒段', () => {
+    expect(questionBankDateTimeText('2026-10-08T09:16:02.389Z').endsWith('.389')).toBe(false)
+    expect(questionBankDateTimeText('2026-10-08T09:16:02.389Z')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  })
+
+  it('无毫秒的时间保持不变', () => {
+    const value = questionBankDateTimeText('2026-10-08T09:16:02Z')
+    expect(value).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  })
+
+  it('空值显示占位符', () => {
+    expect(questionBankDateTimeText(undefined)).toBe('-')
+  })
+})
+
+describe('questionCreatorText 提交人展示', () => {
+  it('优先显示管理面透出的显示名', () => {
+    expect(questionCreatorText({ createdByName: '造数-管理员用户', createdBy: 'mockdata_user_admin' })).toBe('造数-管理员用户')
+  })
+
+  it('显示名缺失时回退创建者 id，不静默消失', () => {
+    expect(questionCreatorText({ createdBy: 'mockdata_user_admin' })).toBe('mockdata_user_admin')
+    expect(questionCreatorText({ createdByName: '   ', createdBy: 'mockdata_user_admin' })).toBe('mockdata_user_admin')
   })
 })

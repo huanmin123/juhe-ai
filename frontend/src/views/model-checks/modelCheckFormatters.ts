@@ -1,9 +1,10 @@
-import { formatMillisecondsAsSeconds } from '@/shared/formatters'
+import { formatDateTime, formatMillisecondsAsSeconds } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type {
   ModelCheckCheckResult,
   ModelCheckLevel,
   ModelCheckOption,
+  ModelCheckQuestionBankItem,
   ModelCheckQuestionStatus,
   ModelCheckQuizItem,
   ModelCheckQuizItemVerdict,
@@ -153,6 +154,19 @@ export function questionStatusColor(value: ModelCheckQuestionStatus): string {
   if (value === 'approved') return 'green'
   if (value === 'rejected') return 'red'
   return 'gold'
+}
+
+// 题库场景的时间展示去掉毫秒段：formatDateTime 保留全站统一的毫秒精度，
+// 但题目卡片与详情的提交/审核时间只需秒级，毫秒只有噪音。
+export function questionBankDateTimeText(value?: string): string {
+  const formatted = formatDateTime(value)
+  return formatted.replace(/\.(\d{1,6})(\s|$)/, '$2')
+}
+
+// 题库提交人展示文本：管理面透出 createdByName；缺省（自助面或名称解析
+// 失败的存量行）回退显示创建者 id，保证字段不会静默消失。
+export function questionCreatorText(item: Pick<ModelCheckQuestionBankItem, 'createdByName' | 'createdBy'>): string {
+  return item.createdByName?.trim() || item.createdBy
 }
 
 export function quizVerdictText(value: ModelCheckQuizItemVerdict): string {

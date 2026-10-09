@@ -2,7 +2,15 @@
   <a-popover v-model:open="open" trigger="click" placement="bottomRight" :overlay-style="{ width: '360px', maxWidth: 'calc(100vw - 24px)' }">
     <template #content>
       <a-spin :spinning="loading">
-        <div class="quality-config">
+        <div v-if="scopeLocked" class="quality-config">
+          <a-alert
+            type="info"
+            show-icon
+            message="请先在顶部选择具体系统账户"
+            description="手动检测质量配置按系统账户作用域读写。选定系统账户后即可在这里配置深度检测、手动测试处罚与题库测试。"
+          />
+        </div>
+        <div v-else class="quality-config">
           <div>
             <div class="quality-config-title">手动检测质量配置</div>
             <div class="quality-config-help">仅用于页面手动检查；定时计划使用各自独立配置。</div>
@@ -64,6 +72,9 @@ const props = defineProps<{
   isManagementView: boolean
   loading: boolean
   policy: ModelQualityPolicy
+  // 管理视图下未选定具体系统账户时为 true：入口保持可点，弹层内容换成
+  // 引导提示（质量配置按系统账户作用域读写，不能落到"全部账户"）。
+  scopeLocked?: boolean
   saving: boolean
 }>()
 const emit = defineEmits<{

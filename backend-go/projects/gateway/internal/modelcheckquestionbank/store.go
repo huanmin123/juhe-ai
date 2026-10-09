@@ -37,6 +37,9 @@ const (
 
 const questionBankTable = "model_check_question_bank"
 
+// systemAccountsTable 与题库同库（juhe_business），createdByName 由它解析。
+const systemAccountsTable = "system_accounts"
+
 // 列表与选项的分页/截断默认值与上限（照仓库 parsePage / account options
 // 的 1..100 惯例，选项默认 50）。
 const (
@@ -54,7 +57,8 @@ type Actor struct {
 
 // Question 是题库题目的完整行（title_norm 不出 HTTP 契约；reviewed_by
 // 经 http.go 的 QuestionView 仅管理面透出）。时间一律为 UTC RFC3339Nano
-// 文本，空字符串表示无值。
+// 文本，空字符串表示无值。CreatedByName 不落库：由 http.go 管理面经
+// SystemAccountNames 解析填充，供审核时展示提交者。
 type Question struct {
 	ID              string
 	Title           string
@@ -65,6 +69,7 @@ type Question struct {
 	Status          string
 	RejectReason    string
 	CreatedBy       string
+	CreatedByName   string
 	CreatedScope    string
 	ReviewedBy      string
 	ReviewedAt      string
@@ -487,6 +492,50 @@ func (s *Store) questionInTx(ctx context.Context, tx *sql.Tx, id string) (Questi
 		return Question{}, newStatusError(statusNotFound, "题目不存在")
 	}
 	return question, err
+}
+
+// SystemAccountNames 按 id 批量解析系统账户显示名（管理面透出
+// createdByName 用）。传入 id 去重后单条 IN 查询；查不到的 id 不在返回
+// map 中，调用方据此省略名称。ids 为空时返回空 map，不访问数据库。
+func (s *Store) SystemAccountNames(ctx context.Context, ids []string) (map[string]string, error) {
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	names := make(map[string]string, len(unique))
+	if len(unique) == 0 {
+		return names, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, 0, len(unique))
+	for _, id := range unique {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, display_name FROM `+s.table(systemAccountsTable)+` WHERE id IN (`+placeholders+`)`), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var displayName sql.NullString
+		if err := rows.Scan(&id, &displayName); err != nil {
+			return nil, err
+		}
+		if displayName.Valid && strings.TrimSpace(displayName.String) != "" {
+			names[id] = displayName.String
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return names, nil
 }
 
 func (s *Store) table(name string) string {
