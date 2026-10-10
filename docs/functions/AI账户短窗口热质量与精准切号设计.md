@@ -650,6 +650,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 - standalone：进程重启同样从业务库 / 本地 ledger 有界重建，并使用相同的按账户渐进恢复与局部阻断语义；全量分页未完成不等于全站不可用。
 - 若产品明确接受 Redis 丢失后 fail-open，必须删除“活动状态不得因过期恢复”的保证，并写入告警与验收；本文默认不接受。
 - Go 装配事实（BUG-0295 修复后，2026-10-08）：主链（gateway）的每次状态转换经 `gatewaycircuit.Bridge` CAS 写 ledger + outbox，`ServiceOptions` 挂 `IsRuntimeStateReady` / `EnsureRuntimeStateReady` 实现按账户渐进恢复（业务库 owner gate 未就绪时不装配，保持恒就绪的既有行为）；jobs 侧 `account-circuit-recovery` 的后台恢复/退避转换经 `CircuitIncidentProjector` 以同契约 CAS 投影回 ledger（冲突回填重试、终态丢弃、pending 随每轮扫描重放），`account-circuit-control-plane-maintenance` 追加孤儿结清扫描——ledger 非终态行在运行态缺键、无活跃租约、非交接态（`PERSISTING`/`SHADOWED_BY_PERSISTENT`）、超宽限期且冲突复查未被复开时才结清为 `CLOSED`（对齐本节"缺失 key 按 CLOSED 处理"守卫），并执行 `CLOSED` 保留期到期行的物理清理。CAS 入参 attempt 时间戳为纯 optional（对齐 Node），不与租约耦合。
+- J3b 独立键空间 GC 契约（BUG-0306，2026-10-11）：`account-circuit` 运行态索引的 `closed`/`due` 是 `states`/`escalation` 的派生投影。**过期 CLOSED 墓碑的 GC 不得以索引一致性校验为删除前置**——索引映射缺失的过期墓碑按不可投影垃圾直接回收（mutation/escalation 两脚本的 `cleanup_closed` 与容量驱逐臂），索引映射存在但内容不一致仍响亮失败；索引重建（`begin`）必须以 `states` 为准清扫 `closed`/`due` 中无来源成员，否则重建留下的孤儿会让 GC 永久失败、所有 mutation 被拒（2026-10-10 生产模型检测全量秒拒事故的根因，档案 docs/bug/问题-0306）。
 
 ### 7.6 本地单机形态恢复驱动（gateway 进程内，2026-10-08）
 

@@ -35,6 +35,8 @@ local meta_key = KEYS[5]
 local lock_key = KEYS[6]
 local states_key = KEYS[7]
 local escalation_key = KEYS[8]
+local closed_key = KEYS[9]
+local due_key = KEYS[10]
 local owner = ARGV[1]
 local epoch = ARGV[2]
 local function require_type(key, expected)
@@ -44,8 +46,21 @@ end
 if redis.call('GET', lock_key) ~= owner then return redis.error_reply('account circuit runtime index lock is lost') end
 if not require_type(scope_runtime_key, 'hash') or not require_type(runtime_scopes_key, 'hash')
   or not require_type(account_runtimes_key, 'hash') or not require_type(runtime_accounts_key, 'hash')
-  or not require_type(meta_key, 'hash') or not require_type(states_key, 'hash') or not require_type(escalation_key, 'hash') then
+  or not require_type(meta_key, 'hash') or not require_type(states_key, 'hash') or not require_type(escalation_key, 'hash')
+  or not require_type(closed_key, 'zset') or not require_type(due_key, 'zset') then
   return redis.error_reply('invalid account circuit Redis key type')
+end
+-- 回收无 states 来源的 closed/due 成员：索引以 states/escalation 为唯一投影
+-- 来源，无来源墓碑不可投影；残留会让重建后的 cleanup_closed 永久失败、所有
+-- 变更被拒绝（问题-0306）。HEXISTS 返回数字 1/0，Lua 中 0 为真值，必须显式比较。
+for _, target_scope in ipairs(redis.call('ZRANGE', closed_key, 0, -1)) do
+  if redis.call('HEXISTS', states_key, target_scope) == 0 then
+    redis.call('ZREM', closed_key, target_scope)
+    redis.call('ZREM', due_key, target_scope)
+  end
+end
+for _, target_scope in ipairs(redis.call('ZRANGE', due_key, 0, -1)) do
+  if redis.call('HEXISTS', states_key, target_scope) == 0 then redis.call('ZREM', due_key, target_scope) end
 end
 redis.call('DEL', scope_runtime_key, runtime_scopes_key, account_runtimes_key, runtime_accounts_key)
 redis.call('HSET', meta_key,
@@ -360,7 +375,7 @@ func (b *AccountCircuitRuntimeIndexBackfiller) BackfillGatewayAccountCircuitRunt
 		}
 	}()
 
-	if _, err = beginAccountCircuitRuntimeIndexScript.Run(ctx, b.client.client, []string{b.keys.scopeRuntime, b.keys.runtimeScopes, b.keys.accountRuntimes, b.keys.runtimeAccounts, b.keys.indexMeta, b.keys.indexLock, b.keys.states, b.keys.escalation}, lockToken, epoch).Result(); err != nil {
+	if _, err = beginAccountCircuitRuntimeIndexScript.Run(ctx, b.client.client, []string{b.keys.scopeRuntime, b.keys.runtimeScopes, b.keys.accountRuntimes, b.keys.runtimeAccounts, b.keys.indexMeta, b.keys.indexLock, b.keys.states, b.keys.escalation, b.keys.closed, b.keys.due}, lockToken, epoch).Result(); err != nil {
 		return result, fmt.Errorf("begin account circuit runtime index backfill: %w", err)
 	}
 	result.Epoch = epoch

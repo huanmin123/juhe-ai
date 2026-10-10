@@ -292,11 +292,21 @@ local function cleanup_closed()
   local expired = redis.call('ZRANGEBYSCORE', closed_key, '-inf', now_ms, 'LIMIT', 0, capacity)
   for _, target_scope in ipairs(expired) do
     local target_runtime = redis.call('HGET', scope_runtime_key, target_scope)
-    if not target_runtime or not validate_runtime_index(target_scope, target_runtime, redis.call('HGET', runtime_accounts_key, target_runtime), true) then
+    if target_runtime and not validate_runtime_index(target_scope, target_runtime, redis.call('HGET', runtime_accounts_key, target_runtime), true) then
       return false
     end
   end
-  for _, target_scope in ipairs(expired) do if not remove_scope(target_scope) then return false end end
+  for _, target_scope in ipairs(expired) do
+    -- 索引重建/键空间迁移会留下无映射的过期墓碑（不可投影的垃圾）；删除
+    -- 它们不能再要求索引存在，否则 GC 永久失败、所有变更被卡死（问题-0306）。
+    if not redis.call('HGET', scope_runtime_key, target_scope) then
+      redis.call('HDEL', states_key, target_scope)
+      redis.call('ZREM', due_key, target_scope)
+      redis.call('ZREM', closed_key, target_scope)
+    elseif not remove_scope(target_scope) then
+      return false
+    end
+  end
   return true
 end
 
@@ -305,6 +315,12 @@ local function reserve_capacity()
   if tonumber(redis.call('HLEN', states_key)) < capacity then return true end
   local evict = redis.call('ZRANGE', closed_key, 0, 0)
   if #evict == 0 then return false end
+  if not redis.call('HGET', scope_runtime_key, evict[1]) then
+    redis.call('HDEL', states_key, evict[1])
+    redis.call('ZREM', due_key, evict[1])
+    redis.call('ZREM', closed_key, evict[1])
+    return true
+  end
   if not remove_scope(evict[1]) then return nil end
   return true
 end
@@ -796,14 +812,28 @@ local function remove_scope(target_scope)
 end
 local function cleanup_closed()
   local expired = redis.call('ZRANGEBYSCORE', closed_key, '-inf', now_ms, 'LIMIT', 0, capacity)
-  for _, target_scope in ipairs(expired) do if not validate_removal(target_scope) then return false end end
-  for _, target_scope in ipairs(expired) do if not remove_scope(target_scope) then return false end end
+  for _, target_scope in ipairs(expired) do
+    if redis.call('HGET', scope_runtime_key, target_scope) and not validate_removal(target_scope) then return false end
+  end
+  for _, target_scope in ipairs(expired) do
+    if not redis.call('HGET', scope_runtime_key, target_scope) then
+      redis.call('HDEL', states_key, target_scope)
+      redis.call('ZREM', due_key, target_scope)
+      redis.call('ZREM', closed_key, target_scope)
+    elseif not remove_scope(target_scope) then return false end
+  end
   return true
 end
 local function reserve_capacity()
   if not cleanup_closed() then return nil end
   if tonumber(redis.call('HLEN', states_key)) < capacity then return true end
   local evict = redis.call('ZRANGE', closed_key, 0, 0); if #evict == 0 then return false end
+  if not redis.call('HGET', scope_runtime_key, evict[1]) then
+    redis.call('HDEL', states_key, evict[1])
+    redis.call('ZREM', due_key, evict[1])
+    redis.call('ZREM', closed_key, evict[1])
+    return true
+  end
   if not validate_removal(evict[1]) or not remove_scope(evict[1]) then return nil end
   return true
 end
