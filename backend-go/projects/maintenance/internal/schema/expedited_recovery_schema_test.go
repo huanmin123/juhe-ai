@@ -87,6 +87,24 @@ func TestPostgresExpeditedRecoverySchemaContract(t *testing.T) {
 		t.Fatal("system-account-expedited-account-limit-pg-column ALTER guard statement missing")
 	}
 
+	// BUG-0305 发布事故守卫：accounts.expedited_recovery_enabled 的存量库
+	// ALTER 必须在位——CREATE TABLE 只救新库，缺它时存量 PG 库新二进制启动
+	// 契约校验缺列 fail-closed 崩溃循环。
+	accountAlterFound := false
+	for _, statement := range postgresSchemaStatements {
+		if statement.Source != "account-expedited-recovery-pg-column" {
+			continue
+		}
+		accountAlterFound = true
+		want := `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))`
+		if statement.SQL != want {
+			t.Fatalf("accounts legacy ALTER guard drifted:\n got %q\nwant %q", statement.SQL, want)
+		}
+	}
+	if !accountAlterFound {
+		t.Fatal("account-expedited-recovery-pg-column ALTER guard statement missing")
+	}
+
 	triggerSQL := findPostgresStatementContaining(t, "CREATE OR REPLACE FUNCTION account_list_availability_accounts_update_dirty_statement_trigger()")
 	fnStart := strings.Index(triggerSQL, "CREATE OR REPLACE FUNCTION account_list_availability_accounts_update_dirty_statement_trigger()")
 	body := triggerSQL[fnStart:]

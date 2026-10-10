@@ -110,6 +110,7 @@ SQLite reader 同名同列同步（direct_input_reader_sqlite.go）
 1. **PG**（`pg_schema_business_tables.go`）：
    - `accounts` 建表 DDL 增 `expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))`（照 `temporary_unavailable_continuous_probe_enabled` 同位置）；
    - **`new_accounts` / `old_accounts` 触发器 ROW 投影两处清单同步加列**（该 ROW `IS DISTINCT FROM` 比较是 accounts 变更检测投影，漏加任一侧会导致该列变更不触发投影）；
+   - **`accounts` 既有库守卫（BUG-0305 发布事故修正；v3.1/v3.2 本条曾错误省略）**：`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))`——CREATE TABLE 只救新库，存量 PG 库（生产与开发主库）缺它时新二进制启动契约校验缺列 fail-closed 崩溃循环；"probe 列无 ALTER"的先例不成立（该列先于存量库存在，新列没有这个前提）。
    - `system_accounts` 建表 DDL 同步增加 `expedited_account_limit integer CHECK (expedited_account_limit BETWEEN 0 AND 100)`，既有库再照 `ai_account_limit` 模式执行 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`。
 2. **SQLite**（`sqlite_schema_business.go` + `sqlite_schema.go`）：
    - 新库：两表 CREATE TABLE DDL 同步加列；
@@ -195,6 +196,7 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 
 ## 13. 修订记录
 
+- **v3.3（2026-10-10，BUG-0305 发布事故修正）**：§7.1 补 `accounts.expedited_recovery_enabled` 的 PG 既有库 ALTER 守卫——v3.1/v3.2 契约错误省略该守卫（误引"probe 列无 ALTER"先例，该列先于存量库存在而新列不是），2026-10-10 发布窗口生产与 jobs 双双因缺列 fail-closed 崩溃循环约 11 分钟，手工 ALTER 恢复；代码守卫 + golden 706 + 守卫测试断言随本版入库。详 docs/bug/问题-0305。
 - **v3.2（2026-10-10，实施落定）**：功能已全部实施并测试通过，状态头改为"已实施"。① contracts business SQLite schema 版本 v13→v14（`accounts.expedited_recovery_enabled`、`system_accounts.expedited_account_limit` 双方言加列，随 `--ensure-schema` 生效）；② 实施落定澄清两处（§6.3）：新鲜度门查询落在 PG/SQLite 直读 reader 的 `LoadAccountConfigRevision`（业务库连接面）并由 `NewRunnerWithDirectInputReader` 注入 Runner、不落 jobs Store；files 文件输入后备通道组合根不装配业务读面，门未装配即跳过，陈旧输入上界由签名输入 24h TTL 兜底；③ 验证结果摘要：jobs accounthealth 全量 ok（含 8 项 PG 门禁）、gateway accounts/authsys ok、contracts ok、maintenance schema ok、前端 vue-tsc/build/960 项单测 ok。
 - **v3.1（2026-10-10，终审补充）**：① 明确执行前新鲜度门只覆盖 `accounts.config_revision`，补上全局 settings 不在覆盖范围内的边界；② 定义 freshness 判定的线性化点与补丁竞态，避免把“零旧请求”误写成无法实现的绝对保证；③ 补充数据库读失败/账户消失的失败关闭、旧签名输入不得原样重试与诊断语义；④ 补齐 PG `system_accounts` 建表 DDL、创建事务请求增量、幂等补丁不重复占额、系统账户限制字段的 `null` 三态；⑤ 修正 `SourceConfigRevision` 仅适用于授权实例的验收措辞；⑥ 将探针次数明确为无其他预算时的理论最密上界，并把普通账户后移改成需由双 SQL 回归锁定的实际候选数边界；⑦ 增加新鲜度门竞态与失败关闭验收项；⑧ 明确 batch-edit 不携带特供字段，未来批量开放必须按整批增量校验；README 索引同步。
 - **v3（2026-10-10，按第二轮外部审核修正）**：① 导入语义统一为"未知字段策略拒绝该条目、不落库"（核实 `import.go:549-557` 未知键错误路径），删除"忽略"表述（§3.10、§11.7）；② 探针成本上界修正：持续失败慢速道基准 15s（jitter 7.5–22.5s，单账户理论上界 ≈11,520 次/天），成本按当前名额 N 评估，删除"每天 ≤1440 次 / 3 个特供"的错误表述（§10）；③ 名额表述统一为"默认 3、可调上限 100"（§3.3、§5、§10），如实写明大名额下冷却类内普通账户名次后移的预期代价，jitter 决策理由改为与名额数无关（§5）；④ 新增**执行前新鲜度门**（§6.3）：核实签名输入默认 TTL 24h（`validateScheduledInput` 只查 `ExpiresAt`），旧输入在 TTL 内可照常发出旧档位探针——新增执行前 `config_revision` 复核，不匹配即在发起上游请求前拒绝；§11.4 验收增强为"零上游请求、零写回"断言；⑤ §4 状态覆盖边界收窄：特供只适用于已具合法冷却 fence 的冷却复测任务，用户显式 `rate_limited` 沿用上位设计来源保护，特供不得使其进入复测。

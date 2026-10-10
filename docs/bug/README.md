@@ -1,4 +1,5 @@
 # Bug 记录目录
+- [BUG-0305](问题-0305-特供列PG存量库缺ALTER守卫发布窗口双进程崩溃循环.md)：特供列 `accounts.expedited_recovery_enabled` 的 PG 契约缺存量库 ALTER 守卫（误引"probe 列无 ALTER"先例——该列先于存量库存在），ensure-schema 705 语句"成功"但存量库缺列，gateway/jobs 启动契约校验 fail-closed 崩溃循环约 11 分钟（/v1 全量不可用）；P1，已修复（2026-10-10 当日发布窗口实证）：手工 ALTER 即时恢复 + 仓库守卫/golden 706/守卫测试/契约 v3.3 四处入库；教训=PG 加列守卫判据是"存量库建库时 DDL 是否已含该列"而非"先例有没有 ALTER"，ensure-schema 语句计数成功 ≠ 列已存在。
 - [BUG-0304](问题-0304-用量溢出落盘失败仍确认接收并删除源文件.md)：writer 队列满且 overflow spool 写入失败仍返回 nil，drain 错当接收成功删除 durable 源文件；P2，已修复（2026-10-10，待发布验证），真实组件临时 overlay 组合复现确认（processed=1、源已删、drop=1、written=0），纠正先前以 writer best-effort 约定排除此项的判断。
 - [BUG-0303](问题-0303-退出登录时sessionStorage访问异常阻断本地注销.md)：服务端注销成功后，sessionStorage getter 抛错阻止 clearAuthState，前端保留旧登录态并提示退出失败；P3，已修复（2026-10-10），实际函数的内存 Mock 回放确认，未泛化到 IndexedDB 错误。
 - [BUG-0302](问题-0302-OAuth分组查询失败丢失日志原始原因.md)：OAuth 建户及 Grok SSO 导入的分组查询错误臂传入外层 nil err，HTTP 500 通用文案正确但请求日志漏 failureReason；P3，已修复（2026-10-10），已静态核验两处控制流。

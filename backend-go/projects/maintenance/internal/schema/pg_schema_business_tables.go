@@ -1505,6 +1505,14 @@ $$`,
 		SQL:        `ALTER TABLE system_accounts ADD COLUMN IF NOT EXISTS expedited_account_limit integer CHECK (expedited_account_limit BETWEEN 0 AND 100)`,
 	},
 	{
+		// 特供列的存量库守卫（BUG-0305 发布事故）：CREATE TABLE 只救新库，存量
+		// PG 库必须显式 ALTER——缺它时新二进制启动契约校验缺列 fail-closed 崩溃
+		// 循环（gateway/jobs 2026-10-10 发布窗口实证，修复列即时恢复）。
+		SchemaName: "juhe_business",
+		Source:     "account-expedited-recovery-pg-column",
+		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))`,
+	},
+	{
 		SchemaName: "juhe_business",
 		Source:     "account-list-projection-pg-trigram-extension",
 		SQL:        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
