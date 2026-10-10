@@ -270,7 +270,9 @@ type transportHistory struct {
 // loadChatTransportHistory mirrors loadChatTransportHistory（主对话恒
 // chat_completions，历史渲染不再随协议分叉）。
 func (rt *chatRoutes) loadChatTransportHistory(conversationID, ownerID, nowValue, excludeTurnID string) (*transportHistory, error) {
-	context, err := rt.deps.Store.LoadModelContext(conversationID, ownerID, nowValue, 512, 16*1024*1024)
+	// excludeTurnID 同时作用于尾部中断轮装载（§14.1，replace 路径不注入被
+	// 替换轮次）与 completeMessagePairs 的成对过滤。
+	context, err := rt.deps.Store.LoadModelContextExcludingTurn(conversationID, ownerID, nowValue, 512, 16*1024*1024, excludeTurnID)
 	if err != nil {
 		return nil, err
 	}

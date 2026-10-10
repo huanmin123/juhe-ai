@@ -1,5 +1,5 @@
 // expedited_recovery_test.go 覆盖「AI 账户特供快速恢复通道」jobs/shared 范围
-// （设计契约 docs/functions/AI账户特供快速恢复通道设计.md v3.1 §5/§6/§11）：
+// （设计契约 docs/functions/AI账户特供快速恢复通道设计.md v3.2 §5/§6/§11）：
 // 特供三处消费点与 7 天停损保留、普通账户节奏逐字节回归、执行前新鲜度门
 // （门前拒绝零上游/零写回、门后竞态 fence 拒绝、失败关闭与诊断限频）、
 // expedited_recovery 签名回路、双 reader 特供列装配与冷却类内优先排序。
@@ -494,7 +494,8 @@ type fakeDirectInputReaderOnly struct {
 	fakeDirectInputLoader
 }
 
-func (loader *fakeDirectInputReaderOnly) SetSuppressionProvider(func(context.Context, time.Time) ([]DirectInputSuppression, error)) {}
+func (loader *fakeDirectInputReaderOnly) SetSuppressionProvider(func(context.Context, time.Time) ([]DirectInputSuppression, error)) {
+}
 
 // TestNewRunnerWithDirectInputReaderWiresFreshnessGate：PG/SQLite 直读 reader
 // 自动装配新鲜度门；无业务读面的 loader（files 形态）保持门未装配。
@@ -640,5 +641,86 @@ func TestSQLiteDirectInputReaderLoadAccountConfigRevision(t *testing.T) {
 	}
 	if _, found, err := reader.LoadAccountConfigRevision(ctx, "wexp-rd-fresh"); err != nil || found {
 		t.Fatalf("软删账户必须视为不存在: found=%t err=%v", found, err)
+	}
+}
+
+// TestExpeditedRecoveryDiscoveryLatencyComposite：§11.9 决策层组合对比——
+// 同一条持续失败流（含越过最大恢复观察窗的长期道窗口）中，特供每轮复测
+// 间隔必须逐轮小于普通账户（两档间隔的 jitter 区间逐轮不相交，断言确定
+// 性成立）；成功轮两者都即时恢复 active。普通账户逐字节回归由其余用例锁定。
+func TestExpeditedRecoveryDiscoveryLatencyComposite(t *testing.T) {
+	now := time.Now().UTC()
+	runStream := func(expedited bool, fenceOffset time.Duration, rounds int) ([]time.Duration, int) {
+		observed := now
+		failures := 0
+		delays := make([]time.Duration, 0, rounds)
+		longTerms := 0
+		for i := 0; i < rounds; i++ {
+			fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(fenceOffset), Generation: "wexp-composite-gen"}
+			input := newCooldownRetestInput(fence, now.Add(-time.Second))
+			if expedited {
+				input.Eligibility.ExpeditedRecovery = true
+			} else {
+				input.Eligibility.TemporaryUnavailableContinuousProbeEnabled = boolPointer(true)
+			}
+			prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: failures, CooldownFence: fence}
+			outcome := Outcome{Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observed}
+			applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+			if outcome.NextDueAt == nil || outcome.AccountStatus != "temporary_unavailable" || outcome.ErrorCode == "cooldown_retest_observation_timeout" {
+				t.Fatalf("失败轮不得终态化（round=%d expedited=%t）: %#v", i+1, expedited, outcome)
+			}
+			if outcome.ErrorCode == "cooldown_retest_long_term_unavailable" {
+				longTerms++
+			}
+			delays = append(delays, outcome.NextDueAt.Sub(observed))
+			failures = outcome.FailureCount
+			observed = *outcome.NextDueAt
+		}
+		return delays, longTerms
+	}
+	// 场景一：观察窗 12 小时内的持续失败（fence 1h 前）。普通第 6 轮起进
+	// 60s 慢速道 [30s,90s]，特供 15s [7.5s,22.5s]——第 6 轮起区间不相交，
+	// 特供逐轮严格更短；前 5 轮两者同为 3s 倍增。
+	expDelays, expLong := runStream(true, -time.Hour, 10)
+	normDelays, normLong := runStream(false, -time.Hour, 10)
+	if expLong != 0 || normLong != 0 {
+		t.Fatalf("1 小时窗口内不得进入长期道: expedited=%d normal=%d", expLong, normLong)
+	}
+	for i := 5; i < 10; i++ {
+		if expDelays[i] >= normDelays[i] {
+			t.Fatalf("慢速道窗口特供间隔必须逐轮更短（round=%d expedited=%s normal=%s）", i+1, expDelays[i], normDelays[i])
+		}
+	}
+	// 场景二：已越过最大恢复观察窗（fence 13h 前，默认 MaxRecovery=12h）。
+	// 普通每轮落 1 小时长期道 [30m,90m] 且带 long_term 错误码，特供不降频
+	// 保持 15s [7.5s,22.5s]——区间不相交，逐轮严格更短。
+	expDelays2, expLong2 := runStream(true, -13*time.Hour, 5)
+	normDelays2, normLong2 := runStream(false, -13*time.Hour, 5)
+	if expLong2 != 0 {
+		t.Fatalf("特供不得进入长期道: %d", expLong2)
+	}
+	if normLong2 != 5 {
+		t.Fatalf("普通账户越过观察窗后必须全部落长期道: %d", normLong2)
+	}
+	for i := 0; i < 5; i++ {
+		if expDelays2[i] >= normDelays2[i] {
+			t.Fatalf("长期道窗口特供间隔必须逐轮更短（round=%d expedited=%s normal=%s）", i+1, expDelays2[i], normDelays2[i])
+		}
+	}
+	// 成功轮：两者都即时恢复 active 且失败计数清零（复活证据标准不变）。
+	for _, expedited := range []bool{true, false} {
+		fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-13 * time.Hour), Generation: "wexp-composite-success"}
+		input := newCooldownRetestInput(fence, now.Add(-time.Second))
+		if expedited {
+			input.Eligibility.ExpeditedRecovery = true
+		} else {
+			input.Eligibility.TemporaryUnavailableContinuousProbeEnabled = boolPointer(true)
+		}
+		prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", FailureCount: 9, CooldownFence: fence}
+		outcome := Outcome{Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: now, StatusCode: 200}
+		applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+		if outcome.AccountStatus != "active" || outcome.FailureCount != 0 || outcome.NextDueAt == nil {
+			t.Fatalf("成功轮必须即时恢复 active（expedited=%t）: %#v", expedited, outcome)
+		}
 	}
 }

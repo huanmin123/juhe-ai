@@ -301,6 +301,43 @@ func TestPrepareInputSkipsHeldLeaseWithoutError(t *testing.T) {
 	}
 }
 
+// validate/ctx 失败形态（prepareInput 返回 skipped + itemErr 非 nil）必须经
+// runInputs 的 recordError 原样上抛到 RunReport.Errors——BUG-0299 修复把
+// skipped 分支的 continue 条件化为 itemErr == nil 时，此臂不得回退为吞错。
+// 过期输入是确定性的 validate 失败（无并发、无真上游），作为该臂的红绿锚点。
+func TestRunManualValidateFailureSurfacesOriginalError(t *testing.T) {
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: t.TempDir() + "/validate-err.sqlite"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret := "runner-test-secret"
+	credential, err := NewCredentialEnvelope(secret, "api_key", map[string]string{"api_key": "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: "runner", CredentialSecret: secret, HTTPClient: &balanceTestJSONHTTP{body: `{"unit":"USD","remaining":"12.5"}`}, MaxConcurrent: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	input := Input{AccountID: "acct-validate-err", SystemAccountID: "sys-validate-err", InputVersion: 1, ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, BaseURL: "https://example.test", Config: QueryConfig{Adapter: Adapter("builtin"), IntervalMinutes: 5}, APIKey: credential, Trigger: TriggerManual, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-30 * time.Second)}
+	report, err := runner.RunManual(context.Background(), input)
+	if err != nil {
+		t.Fatalf("RunManual: %v", err)
+	}
+	itemErr, ok := report.Errors[input.AccountID]
+	if !ok || itemErr == nil {
+		t.Fatalf("validate 失败输入必须以原样错误进入 Report.Errors，实际 errors=%v", report.Errors)
+	}
+	if !strings.Contains(itemErr.Error(), "已过期") {
+		t.Fatalf("错误应原样保留 validate 语义，实际 %v", itemErr)
+	}
+	if report.Skipped != 1 {
+		t.Fatalf("skipped = %d, want 1（validate 失败计 skipped 且不中断其余输入）", report.Skipped)
+	}
+}
+
 // runInputs 在 owner lease 不可得（AcquireOwnerLease 返回 false——被其他实例
 // 持有且未过期）时的优雅契约：全部输入计 Skipped、正常返回 nil error，不得
 // 挂起或 panic。注意：这与"账户租约 Held"（prepareInput 层的

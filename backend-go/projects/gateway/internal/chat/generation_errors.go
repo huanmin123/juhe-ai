@@ -29,7 +29,7 @@ const maxPublicDiagnosticMessageLength = 1200
 
 var publicChatGenerationMessages = map[PublicChatGenerationErrorCode]string{
 	GenErrUpstreamHTTP:          "模型服务请求失败，请稍后重试",
-	GenErrUpstreamStream:        "模型响应中断，请重新发送",
+	GenErrUpstreamStream:        "模型响应中断，可直接发送消息继续，或重新生成",
 	GenErrImageFailed:           "图片生成失败，请重新发送",
 	GenErrImageNotEnabled:       "图片生成失败：可用上游分组未开通图片生成功能",
 	GenErrImagePermissionDenied: "图片生成失败：上游拒绝了图片生成权限",

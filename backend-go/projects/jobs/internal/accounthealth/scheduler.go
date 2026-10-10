@@ -886,7 +886,7 @@ func cooldownTerminalReprojectOutcome(input exactkeyprobe.Input, state CurrentSt
 // 落定后才追加幂等 audit outcome 行。jobs current_state 不改写：error 终态
 // 本就是正确状态，且 AppendOutcome 对该形态的 state CAS 永不命中、epoch
 // 相同不推进，state 行保持原样。
-func (r *Runner) applyCooldownTerminalReproject(ctx context.Context, lease OwnerLease, outcome Outcome) error {
+func (r *Runner) applyCooldownTerminalReproject(ctx context.Context, lease OwnerLease, outcome Outcome, expeditedRecovery bool) error {
 	if r.terminalProjector == nil {
 		return fmt.Errorf("补落地 J1 冷却终态投影失败（account=%s）：outcome 投影器未装配", outcome.AccountID)
 	}
@@ -899,7 +899,8 @@ func (r *Runner) applyCooldownTerminalReproject(ctx context.Context, lease Owner
 		"accountId", outcome.AccountID,
 		"outcomeId", outcome.OutcomeID,
 		"disposition", string(result.Disposition),
-		"reason", result.Reason)
+		"reason", result.Reason,
+		"expedited", expeditedRecovery)
 	if _, err := r.store.AppendOutcome(ctx, lease, outcome); err != nil {
 		return fmt.Errorf("落库 J1 冷却终态补投影 audit outcome 失败（account=%s）: %w", outcome.AccountID, err)
 	}
@@ -925,7 +926,7 @@ func cooldownTerminalReprojectRequestID(input exactkeyprobe.Input) string {
 // （BUG-0260）不发探针、不补使用记录，改走投影直调通道。
 func (r *Runner) settleScheduledTask(ctx context.Context, lease OwnerLease, task *scheduledDBTask) error {
 	if task.kind == cooldownTerminalReprojectKind {
-		return r.applyCooldownTerminalReproject(ctx, lease, task.outcome)
+		return r.applyCooldownTerminalReproject(ctx, lease, task.outcome, task.input.Eligibility.ExpeditedRecovery)
 	}
 	r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
 	if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {

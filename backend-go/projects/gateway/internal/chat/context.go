@@ -502,6 +502,13 @@ const (
 // first (row + byte budgets, whole-pair suffix turns), truncation flags when
 // either budget cuts the window.
 func (s *Store) LoadModelContext(conversationID, ownerID, nowValue string, maxRows, maxBytes int) (*ModelContextLoadResult, error) {
+	return s.LoadModelContextExcludingTurn(conversationID, ownerID, nowValue, maxRows, maxBytes, "")
+}
+
+// LoadModelContextExcludingTurn 在 LoadModelContext 之上追加尾部中断轮装载
+// （AI 问答设计 §14.1）；excludeTurnID 是 replace 重答路径传入的被替换轮次，
+// 命中尾部中断轮时不注入。
+func (s *Store) LoadModelContextExcludingTurn(conversationID, ownerID, nowValue string, maxRows, maxBytes int, excludeTurnID string) (*ModelContextLoadResult, error) {
 	if maxRows < 1 || maxRows > maxContextLoadRows {
 		return nil, &DomainError{Message: "maxRows 必须是 1..512 的整数"}
 	}
@@ -652,7 +659,95 @@ func (s *Store) LoadModelContext(conversationID, ownerID, nowValue string, maxRo
 		truncated := "suffix_messages"
 		result.TruncatedAt = &truncated
 	}
+	// 尾部中断轮（§14.1）：completed 成对轮次之后追加至多一个尾部失败轮
+	// （user 提问 + assistant 半截回答）。Complete/TruncatedAt 语义只覆盖
+	// completed 成对轮次，保持不变；预算不足以容纳完整两行时放弃注入，
+	// 自然降级且不报错。
+	tailPair, err := s.loadTailFailedTurnPair(conversationID, ownerID, nowValue, excludeTurnID, head.CompactedThroughSequence)
+	if err != nil {
+		return nil, err
+	}
+	if len(tailPair) == 2 {
+		pairBytes := tailPair[0].contentBytes + tailPair[1].contentBytes
+		if len(result.Entries)+len(result.Suffix)+2 <= maxRows && loadedBytes+pairBytes <= int64(maxBytes) {
+			result.Suffix = append(result.Suffix, tailPair[0], tailPair[1])
+			result.LoadedBytes = loadedBytes + pairBytes
+		}
+	}
 	return result, nil
+}
+
+// loadTailFailedTurnPair 装载尾部中断轮（§14.1）：会话中最后一个非流式
+// （status ≠ 'streaming'）assistant 消息为 failed、保留非空内容、未过期、
+// 位于压缩水位之后，且存在紧邻的 completed 用户提问时，返回 [user,
+// assistant] 两条消息；任一条件不满足（含 excludeTurnID 命中被替换轮次）
+// 返回 nil。SQL 条件与 sqlite/postgres 双模语法对齐（经 s.bind 渲染占位符）。
+func (s *Store) loadTailFailedTurnPair(conversationID, ownerID, nowValue, excludeTurnID string, compactedThroughSequence int64) ([]contextSourceMessage, error) {
+	messagesTable := s.table("chat_messages")
+	assistant, err := scanContextSourceMessage(s.db.QueryRow(s.bind(`SELECT assistant.id, assistant.turn_id, assistant.sequence_no, assistant.role, assistant.content_text,
+			assistant.content_blocks_json, assistant.content_bytes, assistant.model, assistant.created_at, assistant.completed_at, assistant.expires_at
+		FROM `+messagesTable+` AS assistant
+		WHERE assistant.conversation_id = ? AND assistant.system_account_id = ?
+			AND assistant.role = 'assistant' AND assistant.status = 'failed'
+			AND assistant.expires_at > ? AND assistant.sequence_no > ?
+			AND TRIM(assistant.content_text) <> ''
+			AND assistant.turn_id <> ?
+			AND NOT EXISTS (
+				SELECT 1 FROM `+messagesTable+` AS later
+				WHERE later.conversation_id = assistant.conversation_id
+					AND later.system_account_id = assistant.system_account_id
+					AND later.role = 'assistant' AND later.status <> 'streaming'
+					AND later.sequence_no > assistant.sequence_no
+			)
+			AND EXISTS (
+				SELECT 1 FROM `+messagesTable+` AS pair
+				WHERE pair.conversation_id = assistant.conversation_id
+					AND pair.system_account_id = assistant.system_account_id
+					AND pair.turn_id = assistant.turn_id
+					AND pair.role = 'user' AND pair.status = 'completed'
+					AND pair.expires_at > ?
+					AND pair.sequence_no = assistant.sequence_no - 1
+					AND pair.sequence_no > ?
+			)
+		ORDER BY assistant.sequence_no DESC
+		LIMIT 1`), conversationID, ownerID, nowValue, compactedThroughSequence, excludeTurnID, nowValue, compactedThroughSequence))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	user, err := scanContextSourceMessage(s.db.QueryRow(s.bind(`SELECT source.id, source.turn_id, source.sequence_no, source.role, source.content_text,
+			source.content_blocks_json, source.content_bytes, source.model, source.created_at, source.completed_at, source.expires_at
+		FROM `+messagesTable+` AS source
+		WHERE source.conversation_id = ? AND source.system_account_id = ?
+			AND source.turn_id = ? AND source.role = 'user' AND source.status = 'completed'
+			AND source.expires_at > ? AND source.sequence_no = ?
+			AND source.sequence_no > ?
+		LIMIT 1`), conversationID, ownerID, assistant.turnID, nowValue, assistant.sequenceNo-1, compactedThroughSequence))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []contextSourceMessage{user, assistant}, nil
+}
+
+// scanContextSourceMessage 按既有的 suffix 列顺序扫描一条消息行；content_bytes
+// 与已完成成对查询保持同一取大口径。
+func scanContextSourceMessage(row *sql.Row) (contextSourceMessage, error) {
+	var message contextSourceMessage
+	var contentText, contentBlocksJSON string
+	var contentBytes int64
+	if err := row.Scan(&message.id, &message.turnID, &message.sequenceNo, &message.role, &contentText,
+		&contentBlocksJSON, &contentBytes, &message.modelID, &message.createdAt, &message.completedAt, &message.expiresAt); err != nil {
+		return message, err
+	}
+	message.contentText = contentText
+	message.contentBlocksJSON = contentBlocksJSON
+	message.contentBytes = maxI64(contentBytes, int64(len(contentText)+len(contentBlocksJSON)))
+	return message, nil
 }
 
 func maxI64(a, b int64) int64 {

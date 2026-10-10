@@ -66,6 +66,7 @@ backend-go/
 - `jobs` 不提供通用业务 API。对已由 `jobs` 完整拥有的后台功能，允许提供受认证、精确路由的管理命令入口（例如 J3a）；J3b 不在此列，其入口和 runtime 由 gateway 在同一进程内提供。任何功能的入口都不得转发给 Node 或另一个 Go 项目，也不得演化为通用业务代理。
 - `jobs` 直接向账户配置的上游执行轻量诊断，不经 Node 或 Go gateway。J3b 由 gateway 进程内直接向上游执行，其诊断入口不经过 jobs。两者都不实现未获授权的用户请求路由、配额或跨项目写回。
 - PostgreSQL 使用稳定数据库契约；SQLite 使用 jobs 自己拥有的 Store 和单向输入/只读结果协议。`jobs` 绝不成为 Node SQLite 文件的第二 writer，也不以 Node/gateway RPC 为 fallback。
+- 账户健康探针输入在派发上游前执行 `accounts.config_revision` 新鲜度门（2026-10-10 起，随 AI 账户特供快速恢复通道落地，对所有账户行配置变更通用）：签名验证与 TTL 校验通过后、构造上游请求前按 `input.AccountID` 重读账户 `config_revision`，与 `input.ConfigRevision` 不一致即拒绝上游调用。查询落在 PG/SQLite 两个直读 reader 的 `LoadAccountConfigRevision`（业务库连接面），由 `NewRunnerWithDirectInputReader` 注入 Runner，不经 jobs Store——SQLite 模式 jobs Store 与业务库是两个物理文件，PG 模式 jobs Store 对业务库无读权限。作用域仅是 `accounts` 行配置，不覆盖全局调度设置；线性化点是 freshness SELECT 返回后、构造上游请求前，门后提交的补丁竞态允许请求已发出，写回由既有 fence 拒绝。数据库读失败或账户不存在按失败关闭（`input_freshness_unavailable`，不写回账户状态、不计失败，按账户 10 分钟限频）；定时路径拒绝记 `account_health_input_stale_before_dispatch` Warn 日志（零写回、零计数、零退避），显式请求路径以 `input_stale_before_dispatch` / `input_freshness_unavailable` 终态消费请求（audit-only，`account_health_current_state` 零写入）。files 文件输入后备通道的组合根不装配业务读面，门未装配即跳过——该通道保留探活能力，陈旧输入上界由签名输入 24h TTL 兜底。完整契约见 [AI 账户特供快速恢复通道设计](../functions/AI账户特供快速恢复通道设计.md)。
 
 ### `maintenance`
 

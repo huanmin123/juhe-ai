@@ -1,6 +1,6 @@
 package accounts
 
-// 特供快速恢复通道（AI账户特供快速恢复通道设计 v3.1）的 gateway accounts 侧
+// 特供快速恢复通道（AI账户特供快速恢复通道设计 v3.2）的 gateway accounts 侧
 // 名额与展示辅助：设置/创建通道的名额断言（§9）与列表/详情的"已超限"展示位
 // （§8.2/§9 上限下调不回溯）。消费方是 jobs 恢复道与 authsys 侧的
 // expedited_account_limit 读写，本文件只做归属名下的计数与上限归一。

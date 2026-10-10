@@ -1,6 +1,6 @@
 const publicChatErrorMessages: Readonly<Record<string, string>> = Object.freeze({
   upstream_http_error: '模型服务请求失败，请稍后重试',
-  upstream_stream_failed: '模型响应中断，请重新发送',
+  upstream_stream_failed: '模型响应中断，可直接发送消息继续，或重新生成',
   image_generation_failed: '图片生成失败，请重新发送',
   image_generation_not_enabled: '图片生成失败：可用上游分组未开通图片生成功能',
   image_generation_permission_denied: '图片生成失败：上游拒绝了图片生成权限',

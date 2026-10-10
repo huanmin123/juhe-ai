@@ -1,6 +1,6 @@
 # AI 账户特供快速恢复通道设计
 
-> **状态：设计稿 v3.1，已按两轮外部审核并完成终审补充，待用户终审，未实施。** 本文是"特供"能力的唯一设计契约；实现与本文冲突时按本文回正，或先修订本文。上位文档：[AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)（状态机与恢复出口矩阵权威，本文不重复其状态机定义，只叠加特供覆盖档）。修订记录见 §13。
+> **状态：已实施（2026-10-10），实现与本文档一致；后续行为变更先改本文。** 本文是"特供"能力的唯一设计契约；实现与本文冲突时按本文回正，或先修订本文。上位文档：[AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)（状态机与恢复出口矩阵权威，本文不重复其状态机定义，只叠加特供覆盖档）。修订记录见 §13。
 >
 > 实现归属（现行）：jobs 冷却复测在 `backend-go/projects/jobs/internal/accounthealth/`（调度决策 `scheduler.go`、PG/SQLite 双 reader `direct_input_reader*.go`、签名输入 `signed_input.go`）；共享探针契约在 `backend-go/shared/platform/accounttest/exactkeyprobe/types.go`；调度 jitter 在 `backend-go/shared/platform/schedulejitter/jitter.go`；账户补丁与管理面在 `backend-go/projects/gateway/internal/accounts/`；系统账户限制在 `backend-go/projects/gateway/internal/authsys/`；schema 在 `backend-go/projects/maintenance/internal/schema/`。
 
@@ -87,6 +87,7 @@
    - **线性化点与竞态边界**：门的线性化点是 freshness SELECT 成功返回后、构造上游请求前的最后一次判定。补丁事务在该点之前提交，必须拒绝旧输入；补丁在该点之后提交，可能与上游请求并发，允许请求已发出，但写回仍须由现有 fence 拒绝。若产品要求“任意补丁提交后绝不发出旧请求”的更强保证，需要账户级 dispatch lease/锁，超出本设计范围。
    - **读失败或账户不存在按失败关闭**：不能把数据库错误当作新鲜，也不能继续上游请求；记录 `input_freshness_unavailable`，不写回账户状态、不计失败。数据库 reader 模式下当前输入结束并由下一轮重新装配；文件输入源是只读的，jobs 不得擅自删除发布方文件，必须由发布方替换为新签名输入；在替换前每轮都应拒绝上游调用并对诊断限频。该结果是本任务已处理的 skip/terminal，不得作为本轮首个错误阻断其余账户，也不得把 freshness 拒绝当作可重试的上游失败。
    - 该门是所有账户行配置变更的通用保护，非特供专属；成本为每任务一次主键单列 SELECT，相对一次真实上游探针可忽略。
+   - **实施落定（2026-10-10）**：① 新鲜度查询落在 PG/SQLite 两个直读 reader 的 `LoadAccountConfigRevision`（业务库连接面），由 `NewRunnerWithDirectInputReader` 注入 Runner——不落在 jobs Store（SQLite 模式下 jobs Store 与业务库是两个物理文件，PG 模式下 jobs Store 对业务库无读权限），不改变上文门的位置与拒绝语义；② files 文件输入后备通道的组合根不装配业务读面，**门未装配即跳过**——该通道保留探活能力，陈旧输入的上界由签名输入 24h TTL 兜底，"文件输入源不得删除发布方文件"的契约语义不变。
 
 **传播链（实施必须逐环落位）**：
 
@@ -194,6 +195,7 @@ WHERE system_account_id = ?        -- 归属系统账户（授权实例行的归
 
 ## 13. 修订记录
 
+- **v3.2（2026-10-10，实施落定）**：功能已全部实施并测试通过，状态头改为"已实施"。① contracts business SQLite schema 版本 v13→v14（`accounts.expedited_recovery_enabled`、`system_accounts.expedited_account_limit` 双方言加列，随 `--ensure-schema` 生效）；② 实施落定澄清两处（§6.3）：新鲜度门查询落在 PG/SQLite 直读 reader 的 `LoadAccountConfigRevision`（业务库连接面）并由 `NewRunnerWithDirectInputReader` 注入 Runner、不落 jobs Store；files 文件输入后备通道组合根不装配业务读面，门未装配即跳过，陈旧输入上界由签名输入 24h TTL 兜底；③ 验证结果摘要：jobs accounthealth 全量 ok（含 8 项 PG 门禁）、gateway accounts/authsys ok、contracts ok、maintenance schema ok、前端 vue-tsc/build/960 项单测 ok。
 - **v3.1（2026-10-10，终审补充）**：① 明确执行前新鲜度门只覆盖 `accounts.config_revision`，补上全局 settings 不在覆盖范围内的边界；② 定义 freshness 判定的线性化点与补丁竞态，避免把“零旧请求”误写成无法实现的绝对保证；③ 补充数据库读失败/账户消失的失败关闭、旧签名输入不得原样重试与诊断语义；④ 补齐 PG `system_accounts` 建表 DDL、创建事务请求增量、幂等补丁不重复占额、系统账户限制字段的 `null` 三态；⑤ 修正 `SourceConfigRevision` 仅适用于授权实例的验收措辞；⑥ 将探针次数明确为无其他预算时的理论最密上界，并把普通账户后移改成需由双 SQL 回归锁定的实际候选数边界；⑦ 增加新鲜度门竞态与失败关闭验收项；⑧ 明确 batch-edit 不携带特供字段，未来批量开放必须按整批增量校验；README 索引同步。
 - **v3（2026-10-10，按第二轮外部审核修正）**：① 导入语义统一为"未知字段策略拒绝该条目、不落库"（核实 `import.go:549-557` 未知键错误路径），删除"忽略"表述（§3.10、§11.7）；② 探针成本上界修正：持续失败慢速道基准 15s（jitter 7.5–22.5s，单账户理论上界 ≈11,520 次/天），成本按当前名额 N 评估，删除"每天 ≤1440 次 / 3 个特供"的错误表述（§10）；③ 名额表述统一为"默认 3、可调上限 100"（§3.3、§5、§10），如实写明大名额下冷却类内普通账户名次后移的预期代价，jitter 决策理由改为与名额数无关（§5）；④ 新增**执行前新鲜度门**（§6.3）：核实签名输入默认 TTL 24h（`validateScheduledInput` 只查 `ExpiresAt`），旧输入在 TTL 内可照常发出旧档位探针——新增执行前 `config_revision` 复核，不匹配即在发起上游请求前拒绝；§11.4 验收增强为"零上游请求、零写回"断言；⑤ §4 状态覆盖边界收窄：特供只适用于已具合法冷却 fence 的冷却复测任务，用户显式 `rate_limited` 沿用上位设计来源保护，特供不得使其进入复测。
 - **v2（2026-10-10，按外部审核意见修订）**：① 新增 §6 shared 输入契约（`Eligibility.ExpeditedRecovery` 字段、`Schedule.CooldownNeutralMaxMS` 按账户覆盖、PG/SQLite reader → 签名序列化 → scheduler 三消费点的完整传播链）；② 全部时间承诺改为"基准值 + jitter 上下界"（§4 时间语义边界、§5 表、§5 量化效果：复活检测最坏 90 秒），不引入特供专属 jitter；③ §7 补 SQLite 既有库 ensure 守卫与 PG `new/old_accounts` 触发器 ROW 投影同源要求；④ §8 补完整 API 链路（请求/响应投影、权限、审计、`config_revision` 语义、`account_health_jobs_input_versions` 不参与的论证）与克隆/导出/导入不携带标记的契约（§3.10）；⑤ §9 名额计数精确 SQL 与口径裁决（授权实例计入、status 不过滤、`0 = 禁用`，显式偏离 `aiAccountLimit` 的论证见 §3.11）；⑥ §12 文档同步清单扩为 8 项（含 frontend README、账号健康检测、SQLite 存储说明）；⑦ 调度边界表述按审核建议收窄为"只改变 jobs 恢复扫描在冷却类内部的候选排序"；⑧ 上限下调后列表强制展示"已超限"。

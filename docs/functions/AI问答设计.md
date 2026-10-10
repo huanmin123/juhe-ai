@@ -527,7 +527,7 @@ event: message.completed
 data: {"messageId":"msg_xxx","finishReason":"stop","traceId":"trace_xxx"}
 
 event: message.failed
-data: {"messageId":"msg_xxx","code":"upstream_stream_failed","message":"模型响应中断，请重新发送"}
+data: {"messageId":"msg_xxx","code":"upstream_stream_failed","message":"模型响应中断，可直接发送消息继续，或重新生成"}
 
 event: message.canceled
 data: {"messageId":"msg_xxx"}
@@ -693,7 +693,7 @@ PostgreSQL 约束：
 2. 在 DB service 单个事务中检查 `active_turn_id` 和 `clientMessageId`。
 3. 按当前配置保留窗口的 `content_bytes + reserved_bytes` 检查硬配额；在同一事务中分配两个连续 `sequence_no`，写入已完成用户消息和带 448 KiB reservation 的 `streaming` 助手占位消息。
 4. 设置会话 `active_turn_id`、`active_started_at`、`last_model` 和 `last_message_at`。
-5. 按完整成功轮次组装上下文。
+5. 按完整成功轮次与至多一个尾部中断轮组装上下文（§14.1）。
 6. 使用绑定的真实 API Key 调用本机网关。
 7. delta 在内存中有界合批并向页面流式发送，不按 token 写数据库。
 8. 正常结束时先验证助手实际持久化字节不超过 reservation，再在单事务中结算窗口、更新为 `completed` 并清除 `active_turn_id`。
@@ -719,25 +719,33 @@ PostgreSQL 约束：
 
 ## 14. 上下文组装
 
-### 14.1 完整轮次
+### 14.1 完整轮次与尾部中断轮
 
-上下文的最小单位是一个完整成功轮次，而不是单条 `status=completed` 消息。
+上下文的基本单位是完整成功轮次，而不是单条 `status=completed` 消息；完整上下文 = 全部完整成功轮次 + 至多一个尾部中断轮。
 
-一个轮次只有同时满足以下条件才可进入下一次模型请求：
+一个完整成功轮次只有同时满足以下条件才可进入下一次模型请求：
 
 - 同一 `turn_id` 存在一条 `role=user,status=completed` 消息。
 - 同一 `turn_id` 存在一条 `role=assistant,status=completed` 消息。
 - 两条消息都未过期。
 
-因此助手失败或取消后，虽然用户问题可以在页面回看，但该用户问题不会孤立进入下一轮上下文。
+尾部中断轮定义：会话中最后一个非流式（`status ≠ 'streaming'`）assistant 消息为 `failed`、保留非空内容（`content_text` trim 后非空）、未过期、位于压缩水位（`compacted_through_sequence`）之后，且存在紧邻的 `completed` 用户提问（`sequence_no` 相邻、同 `turn_id`、未过期、同样位于压缩水位之后）时，该轮的用户提问与半截回答一并进入下一轮上下文，追加在全部完整成功轮次之后、当前用户消息之前，并计入行数与字节装载预算；预算不足以容纳完整两行时放弃注入（自然降级，不报错）。
+
+以下失败与中断形态不进入上下文：
+
+- 用户主动取消（`canceled`）的轮次。
+- 内容为空（trim 后为空）的失败轮。
+- 没有紧邻 `completed` 用户提问配对的失败轮。
+- 已被后续轮次覆盖的失败轮（其后存在更新的非流式 assistant 消息，即非尾部；正在生成的 `streaming` 占位不属于后续轮次）。
+- replace 重答路径中命中 `excludeTurnId` 的被替换轮次。
 
 ### 14.2 当前有界模型上下文
 
 - 只查当前 `system_account_id` 和当前 `conversation_id`。
-- 只查 `expires_at > now` 的完整成功轮次。
+- 只查 `expires_at > now` 的完整成功轮次，外加至多一个尾部中断轮（§14.1）。
 - 优先读取最新成功 checkpoint，再按游标分页读取 checkpoint 后的 recent suffix；页面消息继续独立分页。
 - 本地读取每页、总行数和总字节均有上限；达到装载上限时先触发一次紧急压缩再重新读取，不能把整个保留窗口读入内存。
-- 完整轮次按 `turn_id` 配对，失败或取消助手不会让后续成功轮次数组错位。
+- 完整轮次按 `turn_id` 配对，失败或取消助手不会让后续成功轮次数组错位；尾部中断轮按 §14.1 固定追加在末尾，不参与配对错位。
 - 结果按模型入口还原为 OpenAI Chat messages 或 Responses input；图片说明仍保持原图文顺序。
 - 当前用户问题始终保留，不计入历史轮次数量。
 
@@ -872,7 +880,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 替换事务复用原轮次序号、删除旧幂等登记，且新请求上下文不包含被替换的旧轮次。
 - SQLite standalone 与 PostgreSQL performance 使用相同契约。
 - 模型上下文只读取当前保留期内的 active checkpoint + recent suffix，并用行数、字节和请求体预算触发预压缩。
-- 失败、取消和崩溃遗留轮次不进入上下文。
+- 上下文只包含完整成功轮次与至多一个尾部中断轮（§14.1）；取消和崩溃遗留轮次、空内容失败轮、无提问配对或已被后续轮次覆盖的失败轮不进入上下文。
 - 清理按索引和游标推进，活跃会话只保留窗口内消息。
 
 ### 19.2 网关链路
@@ -964,7 +972,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 原会话总体方向可行，但以下细节已在本文修正：
 
 1. 聊天保留期不等于修改全局审计保全；MVP 不增加关闭审计正文的内部特权。
-2. 上下文按完整成功轮次筛选，不按单条 `completed` 消息筛选。
+2. 上下文按完整成功轮次筛选，不按单条 `completed` 消息筛选；尾部中断轮按 §14.1 作为唯一例外追加。
 3. 当前只为已落地的文本、图片资产、reasoning 投影和工具生命周期保存有界内容块，不为 MCP、Skill 或未实现附件类型预设计兼容结构。
 4. API Key 选择使用独立轻量 options 接口，不拉完整管理列表充当下拉数据。
 5. 新建对话先保留为前端草稿，第一次发送才持久化，降低空会话垃圾。
