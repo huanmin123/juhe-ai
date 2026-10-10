@@ -46,8 +46,8 @@
                   <template #icon><EditOutlined /></template>
                 </a-button>
               </a-tooltip>
-              <a-tooltip v-if="messages[item.index].id === retryableMessageId" :title="retryLabel || '重新发送'">
-                <a-button type="text" class="message-action-button" :aria-label="retryLabel || '重新发送'" @click="emit('retry-message', messages[item.index])">
+              <a-tooltip v-if="messages[item.index].id === retryableMessageId" :title="retryLabel || '重新生成'">
+                <a-button type="text" class="message-action-button" :aria-label="retryLabel || '重新生成'" @click="emit('retry-message', messages[item.index])">
                   <template #icon><ReloadOutlined /></template>
                 </a-button>
               </a-tooltip>

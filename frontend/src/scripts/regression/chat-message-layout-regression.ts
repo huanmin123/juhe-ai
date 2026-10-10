@@ -63,6 +63,8 @@ assert.match(messageProcessSource, /tool\.status === 'failed'[\s\S]{0,220}errorM
 assert.match(source, /retryableMessageId/, '消息列表必须只在指定用户消息上显示重试入口')
 assert.match(source, /ReloadOutlined/, '重新发送必须使用刷新图标')
 assert.match(source, /emit\('retry-message',\s*messages\[item\.index\]\)/, '重试入口必须回传原用户消息')
+assert.match(chatViewSource, /:retry-label="'重新生成：丢弃半截内容，按原问题重新回答'"/, '失败/停止轮重试入口必须明确「丢弃半截内容、按原问题重新生成」语义，与输入框直接发送的续写语义区分')
+assert.match(source, /retryLabel \|\| '重新生成'/, '重试入口兜底语义必须为重新生成，不得回退为与续写混淆的重新发送')
 
 assert.match(thinkingSource, /<span\s+role="status"\s+aria-live="polite"\s+aria-atomic="true">\{\{ label \}\}<\/span>/, '动态思考只播报状态标签')
 assert.match(thinkingSource, /<time[^>]*aria-hidden="true"/, '每秒变化的计时文本必须对读屏隐藏，避免重复播报')

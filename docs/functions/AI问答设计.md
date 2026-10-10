@@ -350,7 +350,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 约束：
 
-- 生成中、已过期或已经不是最近轮次的消息不能编辑；最近失败或已停止尾轮可以由用户显式编辑，也可以点击用户消息操作区的“重新发送/重新生成”原位替换。传输探测、状态查询和重附着只恢复同一服务端 runner，不创建第二次模型请求；只有用户显式点击重新发送才生成新 `clientMessageId`，产品不自动重试模型请求。已进入流式生成的轮次，客户端断开（连接关闭而非显式停止）只停止向该连接写响应，不取消服务端生成：runner 与请求 context 脱钩继续执行到终态，重附恢复同轮。
+- 生成中、已过期或已经不是最近轮次的消息不能编辑；最近失败或已停止尾轮可以由用户显式编辑，也可以点击用户消息操作区的“重新生成”原位替换（tooltip「重新生成：丢弃半截内容，按原问题重新回答」，与失败后输入框直接发送的 §14.1 续写语义区分：该入口丢弃半截内容、按原问题重新回答）。传输探测、状态查询和重附着只恢复同一服务端 runner，不创建第二次模型请求；只有用户显式点击重新发送才生成新 `clientMessageId`，产品不自动重试模型请求。已进入流式生成的轮次，客户端断开（连接关闭而非显式停止）只停止向该连接写响应，不取消服务端生成：runner 与请求 context 脱钩继续执行到终态，重附恢复同轮。
 - 编辑入口只出现在最近一个可编辑用户轮次，旧消息不显示编辑按钮。
 - 文本和已提交图片资产都可恢复到编辑器；用户输入图片继续引用原 `assetId`，替换事务会原子解绑旧轮次并绑定新轮次，不复制二进制或回退到 Data URL。旧助手消息产生的 `assistant_generated` 资产不能继续指向被删除消息；替换事务先删除旧输出引用并解除来源轮次/消息。明确出现在新用户消息 `input_image` 中的生成资产必须保持有效，再绑定为新用户输入并延长保留期；其他生成资产立即进入清理队列，物理对象删除成功后释放资产额度。编辑开始前暂存的草稿若引用这些已失效的旧回答图片，替换接受后前端只移除未随新用户消息保留的失效附件并明确提示，不能恢复一个下一次必然发送失败的草稿。
 - 复用 `assistant_generated` 后，`chat_assets.turn_id/message_id` 仍表示原始生成来源并在来源回答被替换时清空；当前输入归属、图片说明认领和有效期以匹配新用户轮次/消息的有效 `user_input` 引用为准。已有有效引用的生成资产不属于“未提交草稿”，不能占用每消息 5 张的新上传槽位，也不能被草稿删除接口认领。替换只删除目标消息的引用：仍有原 `assistant_output` 或其他有效 `user_input` 引用时必须保留全局资产；只有无来源且最后一个有效引用已删除、又未随新消息保留时才立即过期。引用删除按账号、会话和消息归属清理，即使资产在同一事务中刚被置为过期也不能留下悬空记录。
@@ -534,6 +534,7 @@ data: {"messageId":"msg_xxx"}
 ```
 
 - 事件族以 wire 为准（2026-09-28 回正修订）：Go 实现将 Node 的 text delta 投影为内容块事件——线上事件族只有 `message.started`、`message.snapshot`（重附着建立 SSE 时的首个事件，权威全量投影）、`content_block.*`、`tool.binding_required`（模型工具未绑定的纯引导事件，不驱动内容块投影，见 8.6）、`message.completed` / `message.failed` / `message.canceled` 与 comment heartbeat。文本、reasoning 与工具过程增量都经 `content_block.*` 承载（reasoning 是内容块类型之一）；旧清单中的 `message.delta`、`reasoning.delta`、`tool.started/updated/completed` 是内部投影事件，不上行 wire，前端不得依赖。
+- `message.failed` 的失败文案按该轮是否有已流出内容动态选择：`upstream_stream_failed`、`internal_generation_failed`、`upstream_http_error`、`image_generation_failed` 四码在该轮已有部分内容时携带续写引导变体（示例即变体形态，配合 §14.1 尾部中断轮续写），否则为原始重试引导；落库 `error_message` 与下发 `message` 使用同一动态文案，回显以存储的 `error_message` 为准。
 - SSE 建立后每 5 秒发送 comment heartbeat；初次流与重附着流复用同一实现。前端把任意 chunk 和 comment 记为传输活动，但 heartbeat 不进入业务事件、`eventVersion` 或消息内容。
 - 从请求开始 10 秒没有传输活动时，前端只进入“正在确认生成状态”并查询 submission status；`preparing` 继续等待，runner 存活时重附着同一轮，权威终态刷新当前消息，runner 缺失时由服务端收口为 `stream_interrupted`。10 秒静默本身不能直接标记失败。
 - `not_found` 必须连续确认 3 次且跨越至少 1 秒 grace 才能结束未接受请求；submission status 连续 5 次网络失败后停止自动查询并请求页面权威同步，新传输活动会重置计数。前台 watchdog 默认最多 180 次，页面级待确认最多 8 轮，普通 runtime reconciliation 最多 4 次，watchdog 耗尽后的最终权威同步最多 1 次；达到上限后停止定时器并保留人工操作，禁止永久轮询。
@@ -738,6 +739,8 @@ PostgreSQL 约束：
 - 没有紧邻 `completed` 用户提问配对的失败轮。
 - 已被后续轮次覆盖的失败轮（其后存在更新的非流式 assistant 消息，即非尾部；正在生成的 `streaming` 占位不属于后续轮次）。
 - replace 重答路径中命中 `excludeTurnId` 的被替换轮次。
+
+已知局限（连续失败遮蔽）：连续失败场景下，至多一个尾部中断轮意味着——若新中断轮内容为空或被后续轮次覆盖，更早中断轮的半截内容不再进入上下文（页面仍可见）。
 
 ### 14.2 当前有界模型上下文
 

@@ -29,7 +29,7 @@ const maxPublicDiagnosticMessageLength = 1200
 
 var publicChatGenerationMessages = map[PublicChatGenerationErrorCode]string{
 	GenErrUpstreamHTTP:          "模型服务请求失败，请稍后重试",
-	GenErrUpstreamStream:        "模型响应中断，可直接发送消息继续，或重新生成",
+	GenErrUpstreamStream:        "模型响应中断，请重新发送",
 	GenErrImageFailed:           "图片生成失败，请重新发送",
 	GenErrImageNotEnabled:       "图片生成失败：可用上游分组未开通图片生成功能",
 	GenErrImagePermissionDenied: "图片生成失败：上游拒绝了图片生成权限",
@@ -39,10 +39,29 @@ var publicChatGenerationMessages = map[PublicChatGenerationErrorCode]string{
 	GenErrInternal:              "生成任务异常结束，请重新发送",
 }
 
+// continuationGuidanceMessages 是失败轮已流出半截内容（§14.1 续写可用）时的
+// 续写引导文案变体（AI问答设计 §11.1）：仅覆盖可能携带部分内容的四个错误码；
+// stream_interrupted 恒为空内容，不设变体。
+var continuationGuidanceMessages = map[PublicChatGenerationErrorCode]string{
+	GenErrUpstreamHTTP:   "模型服务请求失败，已生成部分可直接发送消息继续",
+	GenErrUpstreamStream: "模型响应中断，可直接发送消息继续，或重新生成",
+	GenErrImageFailed:    "图片生成失败，已生成文本可直接发送消息继续，或重新生成",
+	GenErrInternal:       "生成任务异常结束，已生成部分可直接发送消息继续，或重新生成",
+}
+
 // PublicChatGenerationError mirrors PublicChatGenerationError.
 type PublicChatGenerationError struct {
 	Code    PublicChatGenerationErrorCode `json:"code"`
 	Message string                        `json:"message"`
+}
+
+// ChatGenerationContinuationMessage 返回错误码在「该轮已有部分内容」语境下的
+// 公开失败文案：有续写引导变体用变体，否则回落静态映射。
+func ChatGenerationContinuationMessage(code PublicChatGenerationErrorCode) string {
+	if message, ok := continuationGuidanceMessages[code]; ok {
+		return message
+	}
+	return publicChatGenerationMessages[code]
 }
 
 // ChatGenerationErrorMessage mirrors chatGenerationErrorMessage.

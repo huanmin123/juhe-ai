@@ -1153,11 +1153,11 @@ func TestW13BRecoverChatTurnFinalization(t *testing.T) {
 	rt := newChatRoutesForTest(env.deps)
 	// 终态权威：完成该轮后恢复应返回 completed。
 	f.complete("owner", "conv_rec", accepted.TurnID, "答")
-	if got := rt.recoverChatTurnFinalization("conv_rec", "owner", accepted.TurnID, "cmid-r", errors.New("x")); got != "completed" {
+	if got := rt.recoverChatTurnFinalization("conv_rec", "owner", accepted.TurnID, "cmid-r", "", errors.New("x")); got != "completed" {
 		t.Fatalf("恢复应返回 completed: %q", got)
 	}
 	// 不匹配轮次：返回 failed。
-	if got := rt.recoverChatTurnFinalization("conv_rec", "owner", "turn-other", "cmid-r", errors.New("x")); got != "failed" {
+	if got := rt.recoverChatTurnFinalization("conv_rec", "owner", "turn-other", "cmid-r", "", errors.New("x")); got != "failed" {
 		t.Fatalf("不匹配应返回 failed: %q", got)
 	}
 }

@@ -108,12 +108,12 @@ func TestRecoverChatTurnFinalizationW3(t *testing.T) {
 	rt := newChatRoutesForTest(env.deps)
 	accepted := env.fixture.accept(routeTestOwner, "chat_conv_recover", "cmid-1", "问题")
 	env.fixture.complete(routeTestOwner, "chat_conv_recover", accepted.TurnID, "回答")
-	status := rt.recoverChatTurnFinalization("chat_conv_recover", routeTestOwner, accepted.TurnID, "cmid-1", context.DeadlineExceeded)
+	status := rt.recoverChatTurnFinalization("chat_conv_recover", routeTestOwner, accepted.TurnID, "cmid-1", "", context.DeadlineExceeded)
 	if status != string(StatusCompleted) {
 		t.Fatalf("已终结轮次应返回其状态: %s", status)
 	}
 	// 无法恢复 → 迭代后返回 failed。
-	unknown := rt.recoverChatTurnFinalization("chat_conv_recover", routeTestOwner, "chat_turn_missing", "cmid-missing", context.DeadlineExceeded)
+	unknown := rt.recoverChatTurnFinalization("chat_conv_recover", routeTestOwner, "chat_turn_missing", "cmid-missing", "", context.DeadlineExceeded)
 	if unknown != string(StatusFailed) {
 		t.Fatalf("未知轮次应返回 failed: %s", unknown)
 	}

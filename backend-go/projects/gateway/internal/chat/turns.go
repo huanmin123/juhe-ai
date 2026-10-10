@@ -986,6 +986,8 @@ func (s *Store) CancelActiveTurnIfMatches(input CancelIfMatchesInput) (*CancelAc
 }
 
 // FailInterruptedTurnIfMatches mirrors failInterruptedChatTurnIfMatches.
+// input.InterruptedContent 非空时按 §13.3 恢复契约携带有界部分正文收口
+// （见 CancelIfMatchesInput.InterruptedContent 的降级与 CAS 语义）。
 func (s *Store) FailInterruptedTurnIfMatches(input CancelIfMatchesInput) (*CancelActiveTurnResult, error) {
 	return s.conditionalStop(input, "interrupted")
 }
@@ -995,6 +997,14 @@ type CancelIfMatchesInput struct {
 	SystemAccountID string
 	ExpectedTurnID  string
 	Now             string
+	// InterruptedContent 是进程内恢复收口（interrupted 模式）可选携带的部分
+	// 正文（§13.3：恢复路径不得丢弃已流出内容）：仅在 assistant 仍 streaming
+	// 且 active_turn_id 匹配的 CAS 命中时写入；超过预留字节时按 finalizeTurn
+	// 同型降级为空内容 + chat_assistant_storage_limit_exceeded（bounded，不因
+	// 正文超限产生新失败）。零值不写内容，canceled 模式与既有调用方（含
+	// routes.go 重附中断标记）语义不变；jobs 侧中断清理是独立 SQL 实现，
+	// 不共享本结构。
+	InterruptedContent string
 }
 
 func (s *Store) conditionalStop(input CancelIfMatchesInput, mode string) (*CancelActiveTurnResult, error) {
@@ -1038,12 +1048,29 @@ func (s *Store) conditionalStop(input CancelIfMatchesInput, mode string) (*Cance
 		errorCode = sql.NullString{String: "stream_interrupted", Valid: true}
 		errorMessage = sql.NullString{String: "生成进程异常中断，未取得原始异常详情", Valid: true}
 	}
+	// interrupted 模式按 CAS 命中结果决定是否写入部分正文：classifyConditionalStopState
+	// 已保证走到这里的行仍为 streaming 且 active_turn_id 匹配，因此内容只在
+	// 「本进程确认仍持有该活动轮次」时落库，不与并发收口方交叠（§13.3）。
+	interruptedContentText := ""
+	interruptedContentBytes := int64(0)
+	if mode == "interrupted" && input.InterruptedContent != "" {
+		requestedBytes := int64(utf8Bytes(input.InterruptedContent))
+		if requestedBytes > reservationBytes {
+			// 超预留降级（与 finalizeTurn 同型）：提交空内容安全 failed 终态，
+			// 错误码替换为存储上限，不因正文超限产生新失败。
+			errorCode = sql.NullString{String: "chat_assistant_storage_limit_exceeded", Valid: true}
+			errorMessage = sql.NullString{String: "AI 回答超过聊天存储上限", Valid: true}
+		} else {
+			interruptedContentText = input.InterruptedContent
+			interruptedContentBytes = requestedBytes
+		}
+	}
 	messageResult, err := tx.Exec(s.bind(`UPDATE `+s.table("chat_messages")+`
-		SET status = ?, storage_reserved_bytes = 0,
+		SET status = ?, content_text = ?, content_bytes = ?, storage_reserved_bytes = 0,
 			finish_reason = NULL, error_code = ?, error_message = ?, completed_at = ?
 		WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
 			AND role = 'assistant' AND status = 'streaming'`),
-		status, errorCode, errorMessage, now,
+		status, interruptedContentText, interruptedContentBytes, errorCode, errorMessage, now,
 		input.ConversationID, input.SystemAccountID, input.ExpectedTurnID)
 	if err != nil {
 		return nil, err
@@ -1058,7 +1085,12 @@ func (s *Store) conditionalStop(input CancelIfMatchesInput, mode string) (*Cance
 		}
 		return &CancelActiveTurnResult{State: CancelStateTurnMismatch}, nil
 	}
-	if err := s.releaseStorageWindowReservationStrict(tx, input.SystemAccountID, assistant.createdAt, reservationBytes, now); err != nil {
+	if interruptedContentBytes > 0 {
+		// 正文占用预留：按实际字节结算窗口（finalizeTurn 同型），释放剩余预留。
+		if err := s.settleStorageWindowReservationStrict(tx, input.SystemAccountID, assistant.createdAt, reservationBytes, interruptedContentBytes, now); err != nil {
+			return nil, err
+		}
+	} else if err := s.releaseStorageWindowReservationStrict(tx, input.SystemAccountID, assistant.createdAt, reservationBytes, now); err != nil {
 		return nil, err
 	}
 	conversationResult, err := tx.Exec(s.bind(`UPDATE `+s.table("chat_conversations")+`

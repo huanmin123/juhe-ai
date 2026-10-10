@@ -327,8 +327,9 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			}); err != nil {
 				// 成功路径落库失败（如 jobs 中断清理已清 active_turn_id）：与失败
 				// 路径同型走恢复收口，按权威侧状态收敛轮次并发终止事件，不再
-				// 裸 return err 丢弃已生成内容与终止事件。
-				recovered := rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, err)
+				// 裸 return err 丢弃已生成内容与终止事件。恢复收口按 §13.3 携带
+				// 已生成的 assistantContent 落库。
+				recovered := rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, assistantContent, err)
 				switch recovered {
 				case "completed":
 					// 权威侧已并发收口为 completed：继续成功收尾，保证 usage
@@ -337,7 +338,11 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 					return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
 				default:
 					publicError := classifyGenerationError(err, GenErrInternal)
-					data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": publicError.Message}
+					failureMessage := publicError.Message
+					if assistantContent != "" {
+						failureMessage = ChatGenerationContinuationMessage(publicError.Code)
+					}
+					data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": failureMessage}
 					if input.traceID != "" {
 						data["traceId"] = input.traceID
 					}
@@ -402,6 +407,16 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 		// Failure path (mirrors the execute catch block).
 		canceled := runCtx.Aborted() || isPreparationCanceled(execErr)
 		publicError := classifyGenerationError(execErr, failureCode)
+		// 失败文案按该轮是否已流出半截内容动态选择（AI问答设计 §11.1/§13.1）：
+		// 非取消失败且错误码存在续写引导变体时改用变体（§14.1 续写可用），
+		// 否则保持原始重试引导；落库 ErrorMessage 与下发 data["message"] 使用
+		// 同一值，取消轮不适用续写引导（§14.1：取消轮次不进入上下文）。
+		failureMessage := publicError.Message
+		if !canceled && partialContent.Len() > 0 {
+			if _, ok := continuationGuidanceMessages[publicError.Code]; ok {
+				failureMessage = ChatGenerationContinuationMessage(publicError.Code)
+			}
+		}
 		finalizedStatus := "failed"
 		if canceled {
 			finalizedStatus = "canceled"
@@ -429,7 +444,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				TurnID:           turnID,
 				AssistantContent: partialContent.String(),
 				ErrorCode:        string(publicError.Code),
-				ErrorMessage:     publicError.Message,
+				ErrorMessage:     failureMessage,
 				TraceID:          tracePtr,
 				ContentBlocksRaw: persisted,
 				Now:              rt.now(),
@@ -437,7 +452,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 		}
 		status := finalizedStatus
 		if finalizeErr != nil {
-			status = rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, finalizeErr)
+			status = rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, partialContent.String(), finalizeErr)
 		}
 		switch status {
 		case "canceled":
@@ -445,7 +460,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 		case "completed":
 			return ChatGenerationTerminalResult{Status: "completed", Data: map[string]any{"messageId": messageID}}, nil
 		default:
-			data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": publicError.Message}
+			data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": failureMessage}
 			if input.traceID != "" {
 				data["traceId"] = input.traceID
 			}
@@ -601,8 +616,14 @@ func classifyGenerationError(err error, failureCode PublicChatGenerationErrorCod
 	return unknown
 }
 
-// recoverChatTurnFinalization mirrors recoverChatTurnFinalization.
-func (rt *chatRoutes) recoverChatTurnFinalization(conversationID, ownerID, turnID, clientMessageID string, initialError error) string {
+// recoverChatTurnFinalization mirrors recoverChatTurnFinalization. partialContent
+// 是本进程内存中仍持有的该轮正文（成功路径恢复传 assistantContent，失败路径
+// 恢复传 partialContent）：权威状态查询（FindTurnByClientMessageID）优先——
+// 已终态的轮次直接返回存储状态，不写内容、不覆盖；只有权威侧未终态且条件收口
+// 的 CAS（active_turn_id 匹配 + assistant 仍 streaming）命中时，正文才随
+// interrupted 收口写入（§13.3 不得丢弃已流出内容），因此并发收口方（stop、
+// jobs 中断清理）与本写入不会交叠。partialContent 为空时保持既有无内容语义。
+func (rt *chatRoutes) recoverChatTurnFinalization(conversationID, ownerID, turnID, clientMessageID, partialContent string, initialError error) string {
 	lastError := initialError
 	for attempt := 0; attempt < 3; attempt++ {
 		authoritative, err := rt.deps.Store.FindTurnByClientMessageID(conversationID, ownerID, clientMessageID)
@@ -612,10 +633,11 @@ func (rt *chatRoutes) recoverChatTurnFinalization(conversationID, ownerID, turnI
 			return string(authoritative.AssistantStatus)
 		}
 		interrupted, err := rt.deps.Store.FailInterruptedTurnIfMatches(CancelIfMatchesInput{
-			ConversationID:  conversationID,
-			SystemAccountID: ownerID,
-			ExpectedTurnID:  turnID,
-			Now:             rt.now(),
+			ConversationID:     conversationID,
+			SystemAccountID:    ownerID,
+			ExpectedTurnID:     turnID,
+			InterruptedContent: partialContent,
+			Now:                rt.now(),
 		})
 		if err != nil {
 			lastError = err

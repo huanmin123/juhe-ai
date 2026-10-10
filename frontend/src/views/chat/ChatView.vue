@@ -24,7 +24,7 @@
           :editable-message-id="generating || submissionBlocked ? undefined : editableUserMessageId"
           :editing-turn-id="editingTurn?.turnId"
           :retryable-message-id="generating || submissionBlocked || modelsLoading ? undefined : retryableTurn?.userMessageId"
-          :retry-label="retryableTurn?.assistantStatus === 'canceled' ? '重新生成' : '重新发送'"
+          :retry-label="'重新生成：丢弃半截内容，按原问题重新回答'"
           @near-top="loadOlderMessages"
           @jump-visibility="showJumpToBottom = $event"
           @edit-message="beginTurnEdit"
