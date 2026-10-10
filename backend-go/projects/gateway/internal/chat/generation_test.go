@@ -127,6 +127,17 @@ func (mockModelCatalog) ListAccountsForGroup(groupID, systemAccountID, requested
 	}}
 }
 
+// ListChatPinnedAccountsForGroup 与 ListAccountsForGroup 同一账户视图，按 ID
+// 收敛单元素（对齐生产 pinned 直取语义）。
+func (m mockModelCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	for _, account := range m.ListAccountsForGroup(groupID, systemAccountID, "", "") {
+		if account.ID == accountID {
+			return []ChatTransportAccount{account}
+		}
+	}
+	return nil
+}
+
 func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	return []ProviderModelCatalogItem{
 		{

@@ -65,8 +65,8 @@ func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query 
 			case 0:
 				malformed := directInputLifecycleCandidateValues()
 				malformed[0] = "account-malformed-fence"
-				malformed[20] = "2030-08-16T11:00:00Z"
-				malformed[21] = nil
+				malformed[21] = "2030-08-16T11:00:00Z"
+				malformed[22] = nil
 				values = [][]driver.Value{malformed}
 			case 1:
 				values = [][]driver.Value{directInputLifecycleCandidateValues()}
@@ -131,7 +131,7 @@ func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
 }
 
 func directInputLifecycleCandidateColumns() []string {
-	columns := make([]string, 53)
+	columns := make([]string, 54)
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -142,13 +142,16 @@ func directInputLifecycleCandidateValues() []driver.Value {
 	return directInputLifecycleCandidateValuesFor("account-rows-lifecycle")
 }
 
+// directInputLifecycleCandidateValuesFor 的列序与 directInputCandidatesSQL 的
+// SELECT 投影逐列对齐；expedited_recovery_enabled 位于 index 20，其后的账户
+// /授权/来源/binding/proxy 列全部顺延一列。
 func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	secret := "direct-input-rows-lifecycle-secret"
 	credentials, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"],"base_url":"https://api.example.com"}`))
 	if err != nil {
 		panic(err)
 	}
-	values := make([]driver.Value, 53)
+	values := make([]driver.Value, 54)
 	values[0] = accountID
 	values[1] = int64(1)
 	values[2] = int64(2)
@@ -164,25 +167,27 @@ func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	values[12] = "chat_json"
 	values[13] = "gpt-test"
 	values[16] = credentials
-	values[22] = "system-account"
-	values[23] = "authorization-1"
-	values[24] = "active"
-	values[26] = `{}`
-	values[27] = "source-account"
-	values[28] = "owner-account"
-	values[30] = "source-account"
-	values[31] = int64(4)
-	values[32] = "openai"
-	values[33] = "profile_openai_openai_v1"
-	values[34] = "openai"
-	values[35] = "v1"
-	values[36] = "api_key"
-	values[37] = "openai_standard"
-	values[38] = "active"
-	values[39] = int64(1)
-	values[43] = credentials
-	values[44] = "group-1"
-	values[45] = "authorization-1"
+	values[19] = false
+	values[20] = int64(0)
+	values[23] = "system-account"
+	values[24] = "authorization-1"
+	values[25] = "active"
+	values[27] = `{}`
+	values[28] = "source-account"
+	values[29] = "owner-account"
+	values[31] = "source-account"
+	values[32] = int64(4)
+	values[33] = "openai"
+	values[34] = "profile_openai_openai_v1"
+	values[35] = "openai"
+	values[36] = "v1"
+	values[37] = "api_key"
+	values[38] = "openai_standard"
+	values[39] = "active"
+	values[40] = int64(1)
+	values[44] = credentials
+	values[45] = "group-1"
+	values[46] = "authorization-1"
 	return values
 }
 

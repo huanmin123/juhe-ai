@@ -30,10 +30,15 @@ type PreparationResult struct {
 	// Outcome is 'ready' | 'fallback' | 'completed'.
 	Outcome string
 	// ready variant
-	Accounts                                 []AccountCandidate
-	ReleaseClientIPConcurrency               func()
-	CodexTurnAccountAvoidanceApplied         bool
-	CodexTurnAvoidedAccountIDs               []string
+	Accounts                   []AccountCandidate
+	ReleaseClientIPConcurrency func()
+	// SchedulingExclusions 是通用调度排除集（设计 5.1）：来源避让（turn /
+	// client-source）与未来来源级排除统一在准备层算出最终排除集合；nil = 无
+	// 排除。画像语义（阈值、TTL、状态键）留在准备层之前的来源服务。
+	SchedulingExclusions *SchedulingExclusions
+	// DispatchSegments 是最终候选顺序上的连续分派段（设计 5.1）：只投影既有
+	// 顺序与元数据，不触发硬门；随 ready 结果固化供内核逐段状态机消费。
+	DispatchSegments                         []DispatchSegment
 	PrecheckHalfOpenEligible                 bool
 	HotQualityExplorationReservation         *HotQualityReservation
 	SettleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
@@ -718,8 +723,22 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 
 	readyPreparation.Accounts = readyAccounts
 	readyPreparation.PrecheckHalfOpenEligible = precheckHalfOpenEligible
-	readyPreparation.CodexTurnAccountAvoidanceApplied = clientSourceAvoidance.ThresholdReached
-	readyPreparation.CodexTurnAvoidedAccountIDs = clientSourceAvoidance.AvoidedAccountIDs
+	// 通用调度排除集（设计 5.1）：来源避让阈值达成且排除集非空时固化排除集
+	//（激活条件与原 turn 避让内核分支一致：阈值达成 && 排除账号非空）。
+	if clientSourceAvoidance.ThresholdReached && len(clientSourceAvoidance.AvoidedAccountIDs) > 0 {
+		readyPreparation.SchedulingExclusions = &SchedulingExclusions{
+			ExcludedAccountIDs: append([]string(nil), clientSourceAvoidance.AvoidedAccountIDs...),
+		}
+	}
+	// 分派段产出（设计 5.1）：在最终候选顺序（session affinity claim 之后）上
+	// 沿序列切段。外层段类来源与切段规则见 buildDispatchSegments 注释；生成
+	// 只投影既有顺序与元数据，不触发任何硬门。
+	readyPreparation.DispatchSegments = buildDispatchSegments(readyAccounts, input.ModelPriority, dispatchOuterSegmentClassOf(
+		hotQualityModeFor(input.NormalRouteSpeedFirstConfig) == HotQualityModeSpeedFirst && len(latencyDegradedAccountIDs) > 0,
+		latencyDegradedAccountIDs,
+		clientIpAccountAvoidance.Applied,
+		newAccountIDSet(clientIpAccountAvoidance.AvoidedAccountIDs),
+	))
 
 	// W1b：候选准备完成——把窗口既有决策数据汇成可序列化摘要。写入审计
 	// metadata 标签（门控沿用现有审计开关，不绕过），并经进程级观察槽发出

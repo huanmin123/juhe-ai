@@ -1,7 +1,8 @@
 package main
 
-// w1: chain_compose.go 客户端模型目录投影（selectClientCatalogItems 系列）
-// 与 JSON 辅助投影直测。
+// w1: chain_compose.go 客户端模型目录字典投影（scope 秩 / 条目投影）与 JSON
+// 辅助投影直测。旧成员过滤（selectClientCatalogItems 及可见性/价格/运营排序）
+// 已随 /v1/models 账户并集契约退役；字典构建行为见 chain_gatewaykeymodels_test.go。
 
 import (
 	"encoding/json"
@@ -31,44 +32,7 @@ func TestW1SortedUniqueProviderCodes(t *testing.T) {
 	}
 }
 
-func TestW1SelectClientCatalogItems(t *testing.T) {
-	personal := w1CatalogItem("gpt-x", "personal")
-	global := w1CatalogItem("gpt-x", "global")
-	builtin := w1CatalogItem("gpt-x", "built_in")
-	hidden := builtin
-	hiddenValue := false
-	hidden.CatalogVisible = &hiddenValue
-	unpriced := gatewayruntimecache.ProviderModelCatalogItem{Model: "gpt-free", Scope: "built_in", Status: "active"}
-	inactive := w1CatalogItem("gpt-old", "built_in")
-	inactive.Status = "disabled"
-	newer := w1CatalogItem("gpt-new", "built_in")
-	newerRelease := "2026-06-01"
-	newer.ReleaseDate = &newerRelease
-	selected := selectClientCatalogItems([]gatewayruntimecache.ProviderModelCatalogItem{
-		builtin, global, personal, hidden, unpriced, inactive, newer,
-	})
-	models := []string{}
-	for _, item := range selected {
-		models = append(models, item.Model+"@"+item.Scope)
-	}
-	// personal/global 同模型去重保留 best-scope（personal），隐藏与未定价被剔除。
-	if len(selected) != 2 {
-		t.Fatalf("selected = %v", models)
-	}
-	if selected[0].Model != "gpt-new" {
-		t.Fatalf("新模型未按发布日期排序: %v", models)
-	}
-	if selected[1].Scope != "personal" {
-		t.Fatalf("best scope = %q", selected[1].Scope)
-	}
-	// 空 model 剔除。
-	blank := w1CatalogItem("  ", "built_in")
-	if got := selectClientCatalogItems([]gatewayruntimecache.ProviderModelCatalogItem{blank}); len(got) != 0 {
-		t.Fatalf("空模型 = %v", got)
-	}
-}
-
-func TestW1ClientCatalogCompareHelpers(t *testing.T) {
+func TestW1ClientCatalogScopeRank(t *testing.T) {
 	if clientCatalogScopeRank(gatewayruntimecache.ProviderModelCatalogItem{Scope: "personal"}) != 3 {
 		t.Fatal("personal rank 错误")
 	}
@@ -77,28 +41,6 @@ func TestW1ClientCatalogCompareHelpers(t *testing.T) {
 	}
 	if clientCatalogScopeRank(gatewayruntimecache.ProviderModelCatalogItem{}) != 1 {
 		t.Fatal("default rank 错误")
-	}
-	older := w1CatalogItem("a", "built_in")
-	newer := w1CatalogItem("b", "built_in")
-	newerRelease := "2026-06-01"
-	newer.ReleaseDate = &newerRelease
-	if !clientCatalogCompareItems(newer, older) {
-		t.Fatal("新日期应排在前面")
-	}
-	if clientCatalogCompareItems(older, newer) {
-		t.Fatal("旧日期不应排在前面")
-	}
-	if got := clientCatalogReleaseDate(gatewayruntimecache.ProviderModelCatalogItem{}); got != "" {
-		t.Fatalf("nil date = %q", got)
-	}
-	priceBearing := gatewayruntimecache.ProviderModelCatalogItem{}
-	tierPrice := json.RawMessage(`{"priority":{}}`)
-	priceBearing.ServiceTierPrices = tierPrice
-	if !clientCatalogHasVisiblePrice(priceBearing) {
-		t.Fatal("tier 价格应视为可见定价")
-	}
-	if clientCatalogHasVisiblePrice(gatewayruntimecache.ProviderModelCatalogItem{}) {
-		t.Fatal("无定价不应可见")
 	}
 }
 

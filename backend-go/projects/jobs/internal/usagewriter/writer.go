@@ -3,6 +3,7 @@ package usagewriter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -236,26 +237,100 @@ func NewWriter(config Config, store ShardStore, clock Clock, options ...Option) 
 	return writer
 }
 
+// errUsageWriterStopped 与既有入队端口的 stopped 错误同文案（BUG-0304：
+// Enqueue 与 EnqueueDurable 共用同一构造，防止文案漂移）。
+func errUsageWriterStopped() error {
+	return errors.New("usage writer 已停止，拒绝写入使用记录")
+}
+
+// prepareForAdmission 是 Enqueue / EnqueueDurable 共用的前置流程（BUG-0304：
+// 两个入队端口共享 normalize → 可选 pricing freeze → 字节估算，防止漂移）。
+func (w *Writer) prepareForAdmission(ctx Ctx, input UsageRecordInput) (UsageRecordInput, int, error) {
+	normalized, err := NormalizeUsageRecordInput(input, w.clock, w.idFactory)
+	if err != nil {
+		return UsageRecordInput{}, 0, err
+	}
+	if w.config.FreezePricing {
+		normalized = FreezeUsageRecordPricingFacts(ctx, normalized, w.catalog, w.config.CatalogSnapshot)
+	}
+	return normalized, EstimateUsageRecordBytes(normalized, w.config.QueueMaxBytes), nil
+}
+
+// queueFullLocked 报告按 items/bytes 预算队列是否已满（caller holds mu；
+// BUG-0304：两个入队端口共用同一容量判定）。
+func (w *Writer) queueFullLocked(bytes int) bool {
+	return len(w.pending) >= w.config.QueueMaxItems || w.pendingBytes+bytes > w.config.QueueMaxBytes
+}
+
+// admissionOutcome 汇总准入尾部供解锁后的收尾使用。
+type admissionOutcome struct {
+	pendingCount      int
+	saturation        float64
+	saturationWarnDue bool
+	batchReady        bool
+}
+
+// admitTailLocked 是 Enqueue / EnqueueDurable 共用的准入尾部（caller holds
+// mu；BUG-0304）：pending append、字节与 handled 计数、饱和度计算与告警时
+// 间戳、batchReady 判定。
+func (w *Writer) admitTailLocked(normalized UsageRecordInput, bytes int) admissionOutcome {
+	w.pending = append(w.pending, queuedRecord{
+		input:    normalized,
+		bytes:    bytes,
+		enqueued: w.clock.Now(),
+	})
+	w.pendingBytes += bytes
+	w.handledRecords++
+	outcome := admissionOutcome{pendingCount: len(w.pending)}
+	outcome.saturation = w.queueSaturationRatioLocked()
+	outcome.saturationWarnDue = outcome.saturation >= queueSaturationWarnRatio &&
+		w.clock.Now().Sub(w.lastQueueSaturationWarningAt) >= queueSaturationWarnGapMs*time.Millisecond
+	if outcome.saturationWarnDue {
+		w.lastQueueSaturationWarningAt = w.clock.Now()
+	}
+	outcome.batchReady = outcome.pendingCount >= w.config.BatchSize
+	return outcome
+}
+
+// finishAdmission 是 Enqueue / EnqueueDurable 共用的锁外收尾（caller 已解
+// 锁；BUG-0304）：饱和 Warn 日志与 batchReady 即时冲刷信号。
+func (w *Writer) finishAdmission(outcome admissionOutcome) {
+	if outcome.saturationWarnDue && w.logger != nil {
+		w.logger.Warn("数据库写队列达到 80% 容量；IO 任务将继续排队，DB worker 保持受控并发", map[string]any{
+			"event":           "usage_record_db_write_queue_saturated",
+			"saturationRatio": outcome.saturation,
+			"pendingCount":    outcome.pendingCount,
+			"maxItems":        w.config.QueueMaxItems,
+			"maxBytes":        w.config.QueueMaxBytes,
+		})
+	}
+	// scheduleUsageRecordFlush contract: a full batch flushes immediately,
+	// anything else waits for the flush-interval ticker (the notify channel
+	// is the Node 0-delay timer; the ticker is the interval timer).
+	if outcome.batchReady {
+		w.signal()
+	}
+}
+
 // Enqueue mirrors enqueueUsageRecord (the UsageRecorder port contract):
 // normalize, freeze pricing facts at the enqueue instant, then admit into
 // the bounded in-process queue. Admission failures are terminal for the
 // record: oversize/overflow records are spooled (performance mode) or
 // dropped with the Node counters and sampled log copy.
+//
+// BUG-0304：本方法保持 best-effort 语义——队列满且溢出落盘失败时按终态丢
+// 弃计数并仍返回 nil。durable spool 交接消费方（usagespooldrain）必须使用
+// EnqueueDurable，不得用本方法的 best-effort 语义删除持久源。
 func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
-	normalized, err := NormalizeUsageRecordInput(input, w.clock, w.idFactory)
+	normalized, bytes, err := w.prepareForAdmission(ctx, input)
 	if err != nil {
 		return err
 	}
-	if w.config.FreezePricing {
-		normalized = FreezeUsageRecordPricingFacts(ctx, normalized, w.catalog, w.config.CatalogSnapshot)
-	}
-	bytes := EstimateUsageRecordBytes(normalized, w.config.QueueMaxBytes)
 
-	var saturation float64
 	w.mu.Lock()
 	if w.stopped {
 		w.mu.Unlock()
-		return errors.New("usage writer 已停止，拒绝写入使用记录")
+		return errUsageWriterStopped()
 	}
 	if bytes > w.config.QueueMaxBytes {
 		// Oversize records never enter the queue (the Node local-queue
@@ -264,7 +339,7 @@ func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 		w.mu.Unlock()
 		return nil
 	}
-	if len(w.pending) >= w.config.QueueMaxItems || w.pendingBytes+bytes > w.config.QueueMaxBytes {
+	if w.queueFullLocked(bytes) {
 		w.mu.Unlock()
 		// 溢出补偿（performance 语义）：先落 spool；spool 成功则记录不丢，
 		// spool 未配置或失败时按 Node 本地队列语义丢弃并计数。
@@ -275,38 +350,59 @@ func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 		}
 		return nil
 	}
-	w.pending = append(w.pending, queuedRecord{
-		input:    normalized,
-		bytes:    bytes,
-		enqueued: w.clock.Now(),
-	})
-	w.pendingBytes += bytes
-	w.handledRecords++
-	saturation = w.queueSaturationRatioLocked()
-	saturationWarnDue := saturation >= queueSaturationWarnRatio &&
-		w.clock.Now().Sub(w.lastQueueSaturationWarningAt) >= queueSaturationWarnGapMs*time.Millisecond
-	if saturationWarnDue {
-		w.lastQueueSaturationWarningAt = w.clock.Now()
-	}
-	pendingCount := len(w.pending)
-	batchReady := pendingCount >= w.config.BatchSize
+	outcome := w.admitTailLocked(normalized, bytes)
 	w.mu.Unlock()
+	w.finishAdmission(outcome)
+	return nil
+}
 
-	if saturationWarnDue && w.logger != nil {
-		w.logger.Warn("数据库写队列达到 80% 容量；IO 任务将继续排队，DB worker 保持受控并发", map[string]any{
-			"event":           "usage_record_db_write_queue_saturated",
-			"saturationRatio": saturation,
-			"pendingCount":    pendingCount,
-			"maxItems":        w.config.QueueMaxItems,
-			"maxBytes":        w.config.QueueMaxBytes,
-		})
+// EnqueueDurable 是 durable spool 交接（gateway usage spool 消费与 overflow
+// spool 回放）专用的入队端口（BUG-0304）：与 Enqueue 共享前置流程与准入尾
+// 部，区别只在队列满的溢出分支——未接收时返回可重试错误，而不是按终态丢
+// 弃后返回 nil。
+//
+// 契约：返回 nil ⇔ 记录已被接受（进入内存队列、幂等重复、溢出落盘成功，
+// 或 oversize 终态丢弃）；返回非 nil ⇔ 记录未被接收，调用方必须保留
+// durable 源文件重试（队列满随 flush 消退、溢出落盘失败均可重试）。oversize
+// 与 Enqueue 同款终态丢弃并返回 nil：oversize 记录重试不可能成功，且
+// durable replay 是队头阻塞模型，保留只会令整条回放队列永久卡死（该分支
+// 不在 BUG-0304 修复范围）。队列满且溢出落盘失败时不递增
+// droppedDispatchCount、不写丢弃日志：记录未终态丢失，由 durable 源重试，
+// 且 drain 侧每轮已有 usage_record_spool_flush_failed Error（含
+// usageRecordId），避免同事件双日志。
+func (w *Writer) EnqueueDurable(ctx Ctx, input UsageRecordInput) error {
+	normalized, bytes, err := w.prepareForAdmission(ctx, input)
+	if err != nil {
+		return err
 	}
-	// scheduleUsageRecordFlush contract: a full batch flushes immediately,
-	// anything else waits for the flush-interval ticker (the notify channel
-	// is the Node 0-delay timer; the ticker is the interval timer).
-	if batchReady {
-		w.signal()
+
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return errUsageWriterStopped()
 	}
+	if bytes > w.config.QueueMaxBytes {
+		// 与 Enqueue 相同的 oversize 终态丢弃（理由见方法注释）。
+		w.recordLocalDropLocked(queuedRecord{input: normalized, bytes: bytes}, "oversize")
+		w.mu.Unlock()
+		return nil
+	}
+	if w.queueFullLocked(bytes) {
+		w.mu.Unlock()
+		// durable 交接不丢弃：队列满是可重试失败（随 flush 消退）。
+		if w.spool == nil {
+			return errors.New("usage writer 队列已满且未配置溢出 spool，durable 交接不丢弃")
+		}
+		if err := w.spool.Persist(ctx, normalized); err != nil {
+			// 可重试失败：记录未接收，durable 源保留重试；不计数、不写丢
+			// 弃日志（理由见方法注释）。
+			return fmt.Errorf("usage writer 溢出落盘失败，durable 源记录未接收: %w", err)
+		}
+		return nil
+	}
+	outcome := w.admitTailLocked(normalized, bytes)
+	w.mu.Unlock()
+	w.finishAdmission(outcome)
 	return nil
 }
 

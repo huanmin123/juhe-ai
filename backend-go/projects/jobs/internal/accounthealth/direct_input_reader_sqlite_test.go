@@ -43,6 +43,7 @@ CREATE TABLE accounts (
   account_expires_at TEXT,
   cooldown_until TEXT,
   temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 0,
+  expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0,
   cooldown_retest_observation_started_at TEXT,
   cooldown_retest_generation TEXT,
   cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,

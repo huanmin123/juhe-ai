@@ -101,6 +101,10 @@ func (c w14lNoLimitCatalog) ListAccountsForGroup(groupID, systemAccountID, reque
 	return c.inner.ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily)
 }
 
+func (c w14lNoLimitCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	return c.inner.ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID)
+}
+
 func (c w14lNoLimitCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	items := c.inner.ListProviderCatalog(providerCode, systemAccountID)
 	for i := range items {

@@ -187,9 +187,12 @@ func (w *signalingResponseWriter) totalWritten() int {
 	return w.written
 }
 
-// TestV1CompactSseWaitHeartbeat：压缩等待保活的挂载条件（routes.ts:2939-2948
-// shouldKeepCodexCompactSseAliveDuringUpstreamWait）与生命周期（Start 立即写
-// 首个保活块，Stop 置空；run 收尾 defer 兜底）。
+// TestV1CompactSseWaitHeartbeat：压缩等待保活的预计算判定（routes.ts:2939-2948
+// shouldKeepCodexCompactSseAliveDuringUpstreamWait，调度内核通用化设计 5.6 收敛
+// 为 compactWaitKeepaliveOf 一次判定）与挂载生命周期（Start 立即写首个保活块，
+// Stop 置空；run 收尾 defer 兜底）。子测试按 handler 装配顺序先经
+// compactWaitKeepaliveOf 预计算 loop.compactWaitKeepalive，再验证挂载面只
+// 消费该布尔。
 func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 	compactionContext := func() *gatewaypreauth.DispatchContext {
 		return &gatewaypreauth.DispatchContext{
@@ -208,6 +211,14 @@ func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 		return bodyAttachedRequest(t, http.MethodPost, "/v1/responses",
 			`{"model":"gpt-test","stream":true,"input":[]}`)
 	}
+	// prepareKeepalive 镜像 handler 装配点的预计算接线（设计 5.6）：三要素在
+	// 初始上下文上一次判定写入 loop.compactWaitKeepalive，挂载与预算心跳排除
+	// 两处消费点只读该布尔。
+	prepareKeepalive := func(t *testing.T, loop *v1DispatchLoop, context *gatewaypreauth.DispatchContext) bool {
+		t.Helper()
+		loop.compactWaitKeepalive = compactWaitKeepaliveOf(loop.req, context)
+		return loop.compactWaitKeepalive
+	}
 
 	t.Run("compaction_sse_starts_and_writes_keepalive", func(t *testing.T) {
 		loop := newV1TestLoop(t, &recordingFailureSink{})
@@ -216,6 +227,9 @@ func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 		loop.res = gatewaypreauth.NewTrackingWriter(writer)
 		loop.waitCommitState = &gatewayresponse.DownstreamCommitState{}
 
+		if !prepareKeepalive(t, loop, compactionContext()) {
+			t.Fatal("codex 压缩 SSE 请求的预计算保活布尔必须置位")
+		}
 		loop.startCompactSseWaitHeartbeat(t.Context(), compactionContext())
 		if loop.compactWaitHeartbeat == nil {
 			t.Fatal("codex 压缩 SSE 等待保活必须挂载")
@@ -243,6 +257,9 @@ func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 		nonCompaction.ClientStrategy.Opaque = gatewaycodex.OpenAIGatewayClientStrategyContext{
 			ClientProfile: "codex",
 		}
+		if prepareKeepalive(t, loop, nonCompaction) {
+			t.Fatal("codexCompactionExpected=false 预计算保活布尔必须为 false")
+		}
 		loop.startCompactSseWaitHeartbeat(t.Context(), nonCompaction)
 		if loop.compactWaitHeartbeat != nil {
 			t.Fatal("codexCompactionExpected=false 不得挂载等待保活")
@@ -253,6 +270,9 @@ func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 		loop := newV1TestLoop(t, &recordingFailureSink{})
 		loop.req = bodyAttachedRequest(t, http.MethodPost, "/v1/responses",
 			`{"model":"gpt-test","stream":false,"input":[]}`)
+		if prepareKeepalive(t, loop, compactionContext()) {
+			t.Fatal("非流式请求的预计算保活布尔必须为 false")
+		}
 		loop.startCompactSseWaitHeartbeat(t.Context(), compactionContext())
 		if loop.compactWaitHeartbeat != nil {
 			t.Fatal("非流式请求不得挂载等待保活")
@@ -264,6 +284,9 @@ func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 		loop.req = streamRequest(t)
 		other := compactionContext()
 		other.ClientStrategy.ClientProfile = "openai"
+		if prepareKeepalive(t, loop, other) {
+			t.Fatal("非 codex 画像的预计算保活布尔必须为 false")
+		}
 		loop.startCompactSseWaitHeartbeat(t.Context(), other)
 		if loop.compactWaitHeartbeat != nil {
 			t.Fatal("非 codex 画像不得挂载压缩等待保活")
@@ -275,6 +298,9 @@ func TestV1CompactSseWaitHeartbeat(t *testing.T) {
 		loop.req = streamRequest(t)
 		jsonDownstream := compactionContext()
 		jsonDownstream.ClientStrategy.DownstreamProtocol = "openai_json"
+		if prepareKeepalive(t, loop, jsonDownstream) {
+			t.Fatal("非 responses_sse 下游协议的预计算保活布尔必须为 false")
+		}
 		loop.startCompactSseWaitHeartbeat(t.Context(), jsonDownstream)
 		if loop.compactWaitHeartbeat != nil {
 			t.Fatal("非 responses_sse 下游协议不得挂载压缩等待保活")

@@ -93,25 +93,30 @@ func TestSanitizeCodexResponsesHistoryForAccountOnRequest(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
 	req.Body = newTestRequestBody(t, `{"model":"gpt-test","input":[{"role":"user"}]}`)
-	// 非 codex_responses 不处理。
-	engine.sanitizeCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], "")
+	account := testAccounts("a-1")[0]
+	// Front 阶段策略由纯函数计算：非 codex_responses → preserve，codex_responses
+	// + responses 族 → sanitize_inline。
+	preservePolicy := HistoryPrepPolicyForRequest(account, "", GatewayRequestEndpointFamily(req))
+	sanitizePolicy := HistoryPrepPolicyForRequest(account, "codex_responses", GatewayRequestEndpointFamily(req))
+	// 非 codex_responses（策略 preserve）不处理。
+	engine.sanitizeCodexResponsesHistoryForAccount(req, account, preservePolicy)
 	parsed := mustJSONObject(t, `{"model":"gpt-test","input":[{"role":"user"}]}`)
 	_ = parsed
 	// 无 sanitizer 不处理。
-	engine.sanitizeCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], "codex_responses")
+	engine.sanitizeCodexResponsesHistoryForAccount(req, account, sanitizePolicy)
 	// 注入 sanitizer 后请求 body 被替换。
 	previous := gatewayoauthcodex.SanitizeCodexHistory
 	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: []any{"req-sanitized"}, Changed: true}
 	}
 	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
-	engine.sanitizeCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], "codex_responses")
+	engine.sanitizeCodexResponsesHistoryForAccount(req, account, sanitizePolicy)
 	if req.Body.Body.(map[string]any)["input"].([]any)[0] != "req-sanitized" {
 		t.Fatalf("req body = %#v", req.Body.Body)
 	}
 	// input 非数组不处理。
 	req.Body.Body = map[string]any{"input": "text"}
-	engine.sanitizeCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], "codex_responses")
+	engine.sanitizeCodexResponsesHistoryForAccount(req, account, sanitizePolicy)
 	if req.Body.Body.(map[string]any)["input"] != "text" {
 		t.Fatal("input 非数组保持原样")
 	}

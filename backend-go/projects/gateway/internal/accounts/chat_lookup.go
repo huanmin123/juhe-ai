@@ -9,14 +9,14 @@ import (
 )
 
 // FindChatAccount resolves the AI 问答会话 account 绑定对象（数据范围内存在
-// 性、启用口径、名称与 provider 事实、启用分组绑定的只读查询）。数据范围按
+// 性、名称与 provider 事实、启用分组绑定的只读查询）。数据范围按
 // ChatBindScope 收敛：admin/super_admin 读全量号池；普通用户只读自己名下
 // （system_account_id 命中，与 ListOptionSummaries 的 owner 面一致；授权账
 // 户以实例行落地且实例戳行本就被现有排除条件挡住）。账户不存在或范围外
-// （含软删、授权实例戳行）时返回 (nil, nil)；Enabled 沿用 /accounts/options
-// 仅启用账户的口径（ownerEffectiveStatusSQL = 'active'：status=active、可调
-// 度、未冷却、未过期、无 account_expired 错误），与管理面账户下拉一致；账户
-// 是否可调度由发送时网关候选解析做最终裁决。
+// （含软删、授权实例戳行）时返回 (nil, nil)。2026-10-10 修订：绑定与发送
+// 不再因账户生效状态拒绝（禁用/限流/冷却/过期账户均可测试），Enabled 沿用
+// 生效 active 口径仅供工具绑定候选计算消费（tool_bindings 的候选过滤），
+// 会话绑定与发送/模型列表链路不消费该字段。
 func (s *Store) FindChatAccount(bindScope chat.ChatBindScope, accountID string) (*chat.ChatAccountRef, error) {
 	now := sqlQuoteISO(isoMillis(s.now()))
 	effective := ownerEffectiveStatusSQL("accounts", now)
@@ -53,14 +53,16 @@ func chatOwnerScopeClause(bindScope chat.ChatBindScope) (string, []any) {
 	return ` AND accounts.system_account_id = ?`, []any{bindScope.ViewerID}
 }
 
-// ListChatAccountOptions 列出用户授权范围内全部可派发账户（GET /my-chat/
-// accounts，AI 问答会话账户唯一绑定设计 §5.2），与 FindChatAccount 完全同
+// ListChatAccountOptions 列出用户授权范围内全部未删除账户（GET /my-chat/
+// accounts，AI 问答设计 §5.2 2026-10-10 修订），与 FindChatAccount 完全同
 // 口径：数据范围内（admin/super_admin 全量号池，普通用户仅自己名下）
 // deleted_at IS NULL、非授权实例戳行（authorization_instance_authorization_id
-// IS NULL）且 ownerEffectiveStatusSQL = 'active'（status=active、可调度、未
-// 冷却、未过期、无 account_expired 错误）。投影 id/name/provider_code/status
-// （status 为生效状态表达式取值，查询过滤后恒 'active'，保留字段供后续工具
-// 绑定阶段展示绑定失效态），不暴露归属、授权状态等管理面字段；排序
+// IS NULL），不设可用性过滤——禁用、错误、限流、冷却、过期、禁调度等全部
+// 状态账户均可见可选（账户被禁用时正是不稳定、需要测试的场景）。投影
+// id/name/provider_code/status（status 为生效状态表达式原值：active/
+// pending_test/disabled/error/rate_limited/temporary_unavailable/
+// quality_isolated，含冷却→temporary_unavailable、过期/禁调度→disabled 的
+// 合成，供前端状态标注），不暴露归属、授权状态等管理面字段；排序
 // name ASC, id ASC 与下拉展示一致。
 func (s *Store) ListChatAccountOptions(ctx context.Context, bindScope chat.ChatBindScope) ([]chat.ChatAccountOption, error) {
 	now := sqlQuoteISO(isoMillis(s.now()))
@@ -70,8 +72,7 @@ func (s *Store) ListChatAccountOptions(ctx context.Context, bindScope chat.ChatB
 	rows, err := s.db.Query(s.bind(`SELECT accounts.id, accounts.name, accounts.provider_code, `+effective+`
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.deleted_at IS NULL
-			AND accounts.authorization_instance_authorization_id IS NULL
-			AND `+effective+` = 'active'`+ownerClause+`
+			AND accounts.authorization_instance_authorization_id IS NULL`+ownerClause+`
 		ORDER BY accounts.name ASC, accounts.id ASC`), args...)
 	if err != nil {
 		return nil, err

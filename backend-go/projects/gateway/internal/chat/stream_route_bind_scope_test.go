@@ -118,19 +118,39 @@ func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 func TestStreamBindValidationFailures(t *testing.T) {
 	prefix := "bind_stream_fail"
 
-	t.Run("绑定账户已停用", func(t *testing.T) {
+	t.Run("绑定停用账户可发送（pinned 直取链路）", func(t *testing.T) {
+		// 2026-10-10 修订：发送不再因账户生效状态拒绝——停用账户经 pinned 直取
+		// 视图收敛作用域后照常派发，覆盖端口绑定目标为停用账户。
 		env := newGenerationEnv(t)
+		aware := &targetAwareExecutor{inner: env.executor}
+		env.deps.Executor = aware
 		env.deps.AccountLookup = mockAccountLookup{}
-		env.deps.ModelCatalog = mockModelCatalog{}
+		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
+			"group-a": {
+				ID: "account-disabled", Type: "api_key", ProviderCode: "openai",
+				SupportedEndpointModes: []string{"chat_sse"},
+				SupportedModels:        []string{"gpt-5"},
+			},
+		}}
+		env.deps.ModelCatalog = catalog
 		createBoundConversation(t, env.fixture, prefix+"-adisabled", routeTestOwner, CreateConversationInput{
 			BindAccountID: "account-disabled", BindAccountNameSnapshot: "停用账户",
 		})
+		scriptChatCompletions(env)
 		response := env.streamPost(prefix+"-adisabled", routeTestOwner, streamPayload("cmid-ad", "问题", "gpt-5"))
-		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "会话绑定的账户已停用") {
+		if response.status != http.StatusOK {
 			t.Fatalf("停用账户发送 = %d %s", response.status, response.rawString())
 		}
-		if env.executor.callCount() != 0 {
-			t.Fatalf("停用账户不得派发上游")
+		// 作用域经 pinned 直取收敛到 group-a 的停用账户视图。
+		groups, _ := catalog.snapshot()
+		if len(groups) != 1 || groups[0] != "group-a" {
+			t.Fatalf("停用账户作用域 group calls = %v, want [group-a]", groups)
+		}
+		if paths := dispatchPaths(env.executor); len(paths) == 0 || paths[0] != "/v1/chat/completions" {
+			t.Fatalf("停用账户派发路径 = %v, want /v1/chat/completions", paths)
+		}
+		if withCalls, accountID := aware.snapshot(); withCalls != 1 || accountID != "account-disabled" {
+			t.Fatalf("停用账户派发目标 = calls:%d %s", withCalls, accountID)
 		}
 	})
 

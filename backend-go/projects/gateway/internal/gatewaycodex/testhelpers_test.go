@@ -85,14 +85,21 @@ func (s *recordedSink) SendGatewayFailureResponse(input gatewaypreauth.FailureRe
 func (s *recordedSink) FinalizeGatewayAuthFailureAudit(req *gatewaypreauth.GatewayRequest, res gatewaypreauth.GatewayResponseWriter, auditCapture gatewaypreauth.AuditCaptureContext) {
 }
 
-func (s *recordedSink) SendAuthenticatedModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {
+func (s *recordedSink) SendAuthenticatedModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
 
-func (s *recordedSink) SendOpenAIModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {}
+func (s *recordedSink) SendOpenAIModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
-func (s *recordedSink) SendAnthropicModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {}
+func (s *recordedSink) SendAnthropicModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
-func (s *recordedSink) SendGeminiModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {}
+func (s *recordedSink) SendGeminiModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
 func (s *recordedSink) lastFailure() (gatewaypreauth.FailureResponseInput, bool) {
 	s.mu.Lock()

@@ -747,13 +747,17 @@ func (s *w1PreflightResponseSink) SendGatewayFailureResponse(input gatewaypreaut
 }
 func (s *w1PreflightResponseSink) FinalizeGatewayAuthFailureAudit(*gatewaypreauth.GatewayRequest, gatewaypreauth.GatewayResponseWriter, gatewaypreauth.AuditCaptureContext) {
 }
-func (s *w1PreflightResponseSink) SendAuthenticatedModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *w1PreflightResponseSink) SendAuthenticatedModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
-func (s *w1PreflightResponseSink) SendOpenAIModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *w1PreflightResponseSink) SendOpenAIModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
-func (s *w1PreflightResponseSink) SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *w1PreflightResponseSink) SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
-func (s *w1PreflightResponseSink) SendGeminiModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *w1PreflightResponseSink) SendGeminiModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
 
 // TestW1ErrorPolicyReadHelpers 收割错误策略读取的纯辅助函数：

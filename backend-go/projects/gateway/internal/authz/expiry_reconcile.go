@@ -116,6 +116,12 @@ func (s *Store) ReconcileExpiredGrants(ctx context.Context, lookback time.Durati
 			return reconciled, err
 		}
 		reconciled++
+		// Post-commit invalidation fan-out per committed replay (网关模型列表
+		// 账户并集设计 6.3 coverage): the replay rewrites the runtime
+		// authorization rows, so the committed write clears the gateway runtime
+		// cache like every other committed authorization write. Best-effort,
+		// never blocks or fails the reconcile pass.
+		s.invalidateAfterBusinessWrite(ctx, invalidationReasonExpired)
 	}
 	return reconciled, nil
 }

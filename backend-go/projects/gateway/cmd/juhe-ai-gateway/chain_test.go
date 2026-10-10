@@ -86,7 +86,13 @@ func newChainFixture(t *testing.T) *chainFixture {
 	}
 	models.SetCatalogSource(catalogSource)
 	models.SetConcurrencySource(gatewayclientip.NewMemoryAccountConcurrency(nil))
-	cache, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{Clock: gatewayruntimecache.SystemClock()})
+	// /v1/models 账户并集装载器（chain_gatewaykeymodels.go）：夹具与生产
+	// chain_runtime.go 同样接 Union，使全链 /v1/models 用例走真实聚合。
+	unionLoader, err := newChainGroupModelUnionLoader(selector)
+	if err != nil {
+		t.Fatalf("create union loader: %v", err)
+	}
+	cache, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{Clock: gatewayruntimecache.SystemClock(), Union: unionLoader})
 	if err != nil {
 		t.Fatalf("create runtime cache: %v", err)
 	}

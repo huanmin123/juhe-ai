@@ -3,6 +3,7 @@ package accounthealth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
@@ -145,6 +146,20 @@ func (r *SQLiteDirectInputReader) LoadAccountWithFailures(ctx context.Context, a
 		return DirectInputLoadResult{}, fmt.Errorf("SQLite direct input account ID 不能为空")
 	}
 	return r.load(ctx, 1, true, normalizedAccountID)
+}
+
+// LoadAccountConfigRevision 与 PostgresDirectInputReader 同名方法语义一致
+// （设计 §6.3）：按账户主键单列重读 config_revision，软删行视为不存在。
+func (r *SQLiteDirectInputReader) LoadAccountConfigRevision(ctx context.Context, accountID string) (int64, bool, error) {
+	var revision int64
+	err := r.businessDB.QueryRowContext(ctx, `SELECT config_revision FROM accounts WHERE id=? AND deleted_at IS NULL`, accountID).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("读取 SQLite direct input 账户 config_revision 失败: %w", err)
+	}
+	return revision, true, nil
 }
 
 func (r *SQLiteDirectInputReader) load(ctx context.Context, limit int, ignoreSchedule bool, accountID string) (DirectInputLoadResult, error) {
@@ -371,6 +386,7 @@ var sqliteDirectInputNarrowTableColumns = map[string][]string{
 		"credentials_encrypted TEXT",
 		"account_expires_at TEXT",
 		"temporary_unavailable_continuous_probe_enabled INTEGER",
+		"expedited_recovery_enabled INTEGER",
 		"cooldown_retest_observation_started_at TEXT",
 		"cooldown_retest_generation TEXT",
 		"authorization_instance_authorization_id TEXT",
@@ -737,7 +753,7 @@ ranked_model_mappings AS (
 )
 SELECT
   a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.client_compatibility, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
+  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
@@ -805,6 +821,10 @@ WHERE a.deleted_at IS NULL
 -- active) backlog starve the other class under LIMIT; per-class row numbers
 -- give each class a slot while still filling from the other class when one is
 -- exhausted. Do not order by updated_at: outcome projection changes it.
+-- Within the cooldown class, expedited-recovery accounts form the first
+-- priority layer (expedited_recovery_enabled DESC) and keep cooldown_until ASC
+-- inside that layer; pending_test activation stays globally first. Keep this
+-- ORDER BY isomorphic to directInputCandidatesSQL.
 ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,
   CASE WHEN a.status = 'pending_test' THEN
     ROW_NUMBER() OVER (
@@ -813,9 +833,10 @@ ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,
   ELSE
     ROW_NUMBER() OVER (
       PARTITION BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END
-      ORDER BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)
+      ORDER BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.expedited_recovery_enabled ELSE 0 END DESC, CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)
   END,
   CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END,
+  CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.expedited_recovery_enabled ELSE 0 END DESC,
   CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST,
   a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
 LIMIT $2 OFFSET $5`

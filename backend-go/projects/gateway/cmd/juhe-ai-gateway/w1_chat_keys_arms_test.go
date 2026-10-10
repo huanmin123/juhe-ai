@@ -159,7 +159,9 @@ func TestW1SChatApiKeyIdForSystemAccount(t *testing.T) {
 func TestW1SDefaultRouteStrategyGroupsHybridFiltered(t *testing.T) {
 	db := newW1SChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "secret")
-	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g1", "owner", "grp", "openai")
+	// 2026-10-07 默认资源收口（0e83a580b）：defaultRouteStrategyGroups 收窄为
+	// provider_code='gpt'，非 gpt（含 hybrid）一律不派生默认路由。
+	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g1", "owner", "grp", "gpt")
 	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g2", "owner", "hgrp", "hybrid")
 	groups, err := provider.defaultRouteStrategyGroups("owner")
 	if err != nil {
@@ -178,7 +180,8 @@ func TestW1SDefaultRouteStrategyGroupsHybridFiltered(t *testing.T) {
 func TestW1SDefaultRouteStrategyGroupsNullName(t *testing.T) {
 	db := newW1SChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "secret")
-	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g1", "owner", nil, "openai")
+	// 收口后仅 provider_code='gpt' 的默认分组入选，NULL name 仍以 nameNull 透传。
+	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g1", "owner", nil, "gpt")
 	groups, _ := provider.defaultRouteStrategyGroups("owner")
 	if len(groups) != 1 || groups[0].id != "g1" || !groups[0].nameNull {
 		t.Fatalf("groups = %v", groups)

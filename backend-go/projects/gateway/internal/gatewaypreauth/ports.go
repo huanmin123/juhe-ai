@@ -198,10 +198,11 @@ type CodexCompactPreflightInput struct {
 	Signal                     context.Context
 }
 
-// CodexRequestCoordination mirrors requestCoordination.
+// CodexRequestCoordination mirrors requestCoordination。
+// （原 TimeoutPolicy 镜像字段已随调度内核通用化批次 2 删除：超时豁免由
+// GatewayRequestWallBudget.Unbounded 承载，引擎入参为 TimeoutsDisabled bool。）
 type CodexRequestCoordination struct {
 	Scope                    string
-	TimeoutPolicy            string
 	ServerRetryBudget        *ServerRetryBudget
 	GatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
 	RouteCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
@@ -334,6 +335,30 @@ type DispatchPreparationInput struct {
 	SkipGroupQuotaWindowCheck bool
 }
 
+// SchedulingExclusions 是通用调度排除集的端口镜像（调度内核通用化设计 5.1；
+// 与 gatewaydispatch.SchedulingExclusions 同形，由 CandidatePipeline 实现
+// 逐字段投影——本包不反向依赖引擎包）。排除只表示软排除，硬门语义不变。
+type SchedulingExclusions struct {
+	ExcludedAccountIDs []string
+}
+
+// DispatchPriorityTier 与 gatewaydispatch.DispatchPriorityTier 同形：四元
+// modelRank:fallbackRank:superRank:priority（不得折算为 account.Priority）。
+type DispatchPriorityTier struct {
+	ModelRank    int64
+	FallbackRank int64
+	SuperRank    int64
+	Priority     int64
+}
+
+// DispatchSegment 与 gatewaydispatch.DispatchSegment 同形：准备层最终候选顺序
+// 上的连续分派段；OpaqueSegmentID 只用于审计关联，不参与排序。
+type DispatchSegment struct {
+	OpaqueSegmentID string
+	Tier            DispatchPriorityTier
+	Accounts        []AccountCandidate
+}
+
 // DispatchPreparationResult mirrors DispatchPreparationResult.
 type DispatchPreparationResult struct {
 	// Outcome is 'accounts' | 'fallback' | 'completed'.
@@ -343,8 +368,8 @@ type DispatchPreparationResult struct {
 	HotQualityExplorationReservation         *HotQualityExplorationReservation
 	SettleHotQualityExplorationAfterDispatch func(outcome string) error
 	ReleaseClientIPConcurrency               func()
-	CodexTurnAccountAvoidanceApplied         bool
-	CodexTurnAvoidedAccountIDs               []string
+	SchedulingExclusions                     *SchedulingExclusions
+	DispatchSegments                         []DispatchSegment
 	PrecheckHalfOpenEligible                 bool
 	// fallback variant
 	Reason string
@@ -435,6 +460,10 @@ type FailureResponseInput struct {
 	FailureAttribution           string
 	FailureScope                 string
 	PreserveUpstreamErrorMessage bool
+	// Protocol 非空时失败 sink 按显式协议构造客户端错误形态（
+	// /v1/models 装载失败等已完成协议判定的收尾路径）；为空时保持既有
+	// 按请求路径的协议推断，既有失败调用行为零变化。
+	Protocol GatewayErrorProtocol
 }
 
 // FailureAudit mirrors the audit bag of sendGatewayFailureResponse.
@@ -455,23 +484,38 @@ type ResponseSink interface {
 	// FinalizeGatewayAuthFailureAudit mirrors finalizeGatewayAuthFailureAudit.
 	FinalizeGatewayAuthFailureAudit(req *GatewayRequest, res GatewayResponseWriter, auditCapture AuditCaptureContext)
 	// SendAuthenticatedModelsGatewayResponse mirrors
-	// sendAuthenticatedModelsGatewayResponse.
-	SendAuthenticatedModelsGatewayResponse(input ModelsResponseInput)
+	// sendAuthenticatedModelsGatewayResponse。返回非 nil error 表示模型列表
+	// 装载失败：此时 HTTP 未写出、未记成功审计/用量，调用方必须执行协议化
+	// 错误收尾（设计 4.6.4）。
+	SendAuthenticatedModelsGatewayResponse(input ModelsResponseInput) error
 	// SendOpenAIModelsGatewayResponse mirrors sendOpenAIModelsGatewayResponse.
-	SendOpenAIModelsGatewayResponse(input ModelsResponseInput)
+	SendOpenAIModelsGatewayResponse(input ModelsResponseInput) error
 	// SendAnthropicModelsGatewayResponse mirrors sendAnthropicModelsGatewayResponse.
-	SendAnthropicModelsGatewayResponse(input ModelsResponseInput)
+	SendAnthropicModelsGatewayResponse(input ModelsResponseInput) error
 	// SendGeminiModelsGatewayResponse mirrors sendGeminiModelsGatewayResponse.
-	SendGeminiModelsGatewayResponse(input ModelsResponseInput)
+	SendGeminiModelsGatewayResponse(input ModelsResponseInput) error
+}
+
+// GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影：绑定行的
+// (GroupID, ProviderCode) 对（设计 4.1/6.4 的绑定输入；canonical 定义在本包，
+// gatewayresponse 以别名引用）。
+type GatewayModelBinding struct {
+	GroupID      string
+	ProviderCode string
 }
 
 // ModelsResponseInput mirrors the models response input.
 type ModelsResponseInput struct {
-	Req           *GatewayRequest
-	Res           GatewayResponseWriter
-	AuditCapture  AuditCaptureContext
-	UsageContext  GatewayFailureUsageContext
-	ProviderCodes []string
+	Req          *GatewayRequest
+	Res          GatewayResponseWriter
+	AuditCapture AuditCaptureContext
+	UsageContext GatewayFailureUsageContext
+	// Bindings 是该 API Key 激活绑定的 (groupID, providerCode) 对（
+	// gatewayModelsBindings 产出），替代原 ProviderCodes 成员过滤输入。
+	Bindings []GatewayModelBinding
+	// Context 携带请求 ctx，贯穿并集缓存等待与数据面装载（设计 4.6.1）；
+	// 由 preflight 的 ctx 传入，不以 context.Background() 代替请求取消。
+	Context context.Context
 	// Protocol mirrors modelsResponseKind for the authenticated sender;
 	// empty means the openai sender variant applies.
 	Protocol  string

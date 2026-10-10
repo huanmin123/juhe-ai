@@ -54,6 +54,13 @@ assert.match(source, /version !== renderVersion/, '异步 Mermaid 渲染必须�
 assert.match(source, /\.chat-code-block[\s\S]{0,120}overflow/, '代码块必须局部横向滚动')
 assert.match(source, /\.chat-code-block > pre\) \{ max-width: 100%; max-height: 520px; margin: 0; padding: 12px 14px; overflow: auto;/, '代码块内容区必须限制最大高度 520px 并块内滚动')
 assert.match(source, /pre\.scrollTop = state\.pinned \? pre\.scrollHeight : state\.top/, '流式输出时贴底的代码块必须跟随最新输出，上滑阅读的保持原滚动位置')
+assert.match(source, /let pendingCodeScrollStates: ChatCodeScrollState\[\] = \[\]/, '滚动状态必须先暂存到组件作用域，再由 post watcher 恢复')
+assert.match(source, /watch\(html,\s*\(\)\s*=>\s*\{\s*pendingCodeScrollStates\s*=\s*captureChatCodeScrollStates\(\)\s*\},\s*\{\s*flush:\s*'pre'\s*\}\)/, '代码块滚动位置必须在 DOM 更新前的 pre watcher 捕获，post 阶段读到的已是重建后的新节点')
+const postWatcherSource = source.slice(source.indexOf('watch(html, async () => {'), source.indexOf("flush: 'post'"))
+assert.ok(postWatcherSource.length > 0, 'post watcher 必须继续存在并承担渲染后处理')
+assert.ok(!postWatcherSource.includes('captureChatCodeScrollStates()'), 'post 阶段 v-html DOM 已整体重建，post watcher 不得再捕获滚动位置')
+assert.match(postWatcherSource, /const scrollStates = pendingCodeScrollStates/, 'post watcher 必须消费 pre 阶段暂存的滚动状态')
+assert.match(postWatcherSource, /restoreChatCodeScrollStates\(scrollStates\)/, 'post watcher 必须在 nextTick 后恢复 pre 阶段捕获的滚动位置')
 assert.match(source, /\.chat-markdown\s+:deep\(table\)[\s\S]{0,120}overflow-x:\s*auto/, '表格必须局部横向滚动')
 assert.match(source, /\.chat-markdown\s+:deep\(\.katex-display\)[\s\S]{0,100}overflow-x:\s*auto/, '公式必须局部横向滚动')
 

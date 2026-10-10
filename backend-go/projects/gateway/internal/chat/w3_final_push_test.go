@@ -378,6 +378,10 @@ func (emptyCatalogW3) ListAccountsForGroup(string, string, string, string) []Cha
 	return nil
 }
 
+func (emptyCatalogW3) ListChatPinnedAccountsForGroup(string, string, string) []ChatTransportAccount {
+	return nil
+}
+
 func (emptyCatalogW3) ListProviderCatalog(string, string) []ProviderModelCatalogItem { return nil }
 
 // TestRequestEtagMatchesW3 覆盖 If-None-Match 匹配表。

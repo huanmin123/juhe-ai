@@ -22,7 +22,7 @@ xAI/Grok OAuth 账户（SuperGrok 订阅，上游 `https://cli-chat-proxy.grok.c
 
 ### 2.1 GET /v1/billing?format=credits
 
-请求头：`Authorization: Bearer <access_token>`、`x-xai-token-auth: xai-grok-cli`、`User-Agent: xai-grok-workspace/1.0.13`、`x-grok-client-version: 1.0.13`、`accept: application/json`（CLI 版本头与聊天链路共用 `upstreamidentity.GrokCLIClientVersion` 常量，2026-10 起随 xAI ≥1.0.13 门槛一并补齐）。出站走账户绑定代理（与聊天同域）。
+请求头：`Authorization: Bearer <access_token>`、`x-xai-token-auth: xai-grok-cli`、`User-Agent: xai-grok-workspace/1.0.45`、`x-grok-client-version: 1.0.45`、`accept: application/json`（CLI 版本头与聊天链路共用 `upstreamidentity.GrokCLIClientVersion` 常量；2026-10 起随 xAI ≥1.0.13 门槛补齐，现跟随官方最新，2026-10-10 锚点 1.0.45）。出站走账户绑定代理（与聊天同域）。
 
 实测响应（节选，2026-09-26）：
 

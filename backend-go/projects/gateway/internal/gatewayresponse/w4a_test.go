@@ -176,12 +176,12 @@ func TestSinkModelsAuditFirstTokenMsAndSemantic(t *testing.T) {
 	// anthropic 供应商的 models 调用语义应为 anthropic。
 	sink2, tracking2, _, _, usage2, _ := newSinkFixture()
 	sink2.SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput{
-		Req:           gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil)),
-		Res:           tracking2,
-		AuditCapture:  newMockAuditCapture(),
-		UsageContext:  usageContextFixture(),
-		ProviderCodes: []string{"anthropic"},
-		StartedAt:     1000,
+		Req:          gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil)),
+		Res:          tracking2,
+		AuditCapture: newMockAuditCapture(),
+		UsageContext: usageContextFixture(),
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{ProviderCode: "anthropic"}},
+		StartedAt:    1000,
 	})
 	if len(usage2.dispatch) != 1 || usage2.dispatch[0].UsageSemantic != "anthropic" {
 		t.Fatalf("anthropic semantic = %+v", usage2.dispatch)

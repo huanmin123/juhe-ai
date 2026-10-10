@@ -33,7 +33,7 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 Codex Responses SSE 在建流前遇到上游 HTTP 非 `2xx`，或精确协议确认失败且 `semanticCommitted = false`、预算允许时，按统一规则切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 同样执行。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接；例外是加密上下文信号（如 `encrypted_context_invalid`）命中且下游语义未提交时，网关先执行服务端一次性兼容清理并钉住同账户重放一次，仍不可恢复时下发加密上下文恢复终态文案而非可重试文案。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；所有端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 继续按协议透明或验证边界处理。
 
-Codex 的跨请求 turn 避让只接受合法 `x-codex-turn-metadata.turn_id` 与官方 `session-id` 的 resolver 结果；metadata 中的 `session_id` / `thread_id`、请求 body、body hash、User-Agent 和显式客户端画像都不提供会话或共享避让亲和。没有官方会话时，仅在已有 API Key 和客户端 IP 时才使用短 TTL 的 HMAC IP 桶；官方会话非法或冲突时不降级，且无 IP 时不创建跨请求状态。该规则只影响同一 dispatch priority tier 的候选重排，不修改账户健康、account circuit 或 `temporary_unavailable` 恢复路径。首次来源避让只会投递已有后台健康检查；来源逻辑本身不直接探测上游，后台单飞 owner 才能以现有健康分类结算账户状态并按匹配来源 generation 清理避让。
+Codex 的跨请求 turn 避让只接受合法 `x-codex-turn-metadata.turn_id` 与官方 `session-id` 的 resolver 结果；metadata 中的 `session_id` / `thread_id`、请求 body、body hash、User-Agent 和显式客户端画像都不提供会话或共享避让亲和。没有官方会话时，仅在已有 API Key 和客户端 IP 时才使用短 TTL 的 HMAC IP 桶；官方会话非法或冲突时不降级，且无 IP 时不创建跨请求状态。该规则只影响候选顺序：来源避让的排序影响保持在准备层，固化为通用调度排除集并把最终候选顺序表达为有序分派段（分派段 = 外层调度分段与 dispatch priority tier 四元组 `modelRank:fallbackRank:superRank:priority` 的联合连续 run）；调度引擎按分派段推进，被避让账号只让位给同段候选，段内候选耗尽或被硬门跳过时才动态翻回（只解除软排除、不绕过硬门，每账号每次引擎调用至多释放一次）并按原顺序尝试，绝不跨段降级。该规则不修改账户健康、account circuit 或 `temporary_unavailable` 恢复路径。首次来源避让只会投递已有后台健康检查；来源逻辑本身不直接探测上游，后台单飞 owner 才能以现有健康分类结算账户状态并按匹配来源 generation 清理避让。
 
 ## 协议与供应商定义
 
@@ -286,7 +286,7 @@ OpenAI 网关使用短期会话亲和，只影响账号排序，不绕过本地 
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
-- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时先在同一 dispatch priority tier 内避让已发生客户端可见失败的账号；新候选全部失败后，先前避让账号仍作为最后兜底重新进入候选。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `20s -> 30s -> 40s` 档位（2026-10-07 自 `10s -> 20s -> 30s` 统一上调）。
+- 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。服务端隐藏重试成功时不记录 Codex turn 失败；只有最终向 Codex 写出可见的 `response.failed/upstream_retryable_error` 才进入 turn 级失败账号避让。Codex turn 状态必须有可解析的 `turn_id`，并在官方会话身份或规范化 IP 软桶的严格来源边界内保存；识别不到时不使用 metadata session/thread、body、body hash、User-Agent、显式 profile 或 `x-client-request-id` 回退。后续同一 turn 到达时在所属分派段内避让已发生客户端可见失败的账号；段内普通候选全部耗尽或被硬门跳过后，被避让账号解除软排除按原顺序翻回尝试（每账号每次调度至多一次），不得跨段降级到更低分派段。正式请求热路径不执行额外同步探针：首次 activation 只把 HMAC source fence 交给后台 worker，worker success 仅精确清该来源账户避让；unknown/task failure 不改变账户状态，confirmed health failure 才进入既有健康阈值。后台探活仍保留 `20s -> 30s -> 40s` 档位（2026-10-07 自 `10s -> 20s -> 30s` 统一上调）。
 
 ### OpenAI OAuth 额度进度
 

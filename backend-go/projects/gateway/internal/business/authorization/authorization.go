@@ -47,6 +47,11 @@ type Store struct {
 	gate   OwnerGate
 	now    func() time.Time
 	usage  UsagePort
+	// invalidator carries the post-commit gateway runtime invalidation of the
+	// committed expiry/revoke cleanup (invalidation.go); nil keeps it off so
+	// unwired compositions and direct test construction keep their current
+	// behavior.
+	invalidator RuntimeInvalidator
 }
 type QuotaRequest struct {
 	GroupAuthorizationID string
@@ -289,6 +294,12 @@ func (s *Store) ExpireDue(ctx context.Context, limit int) (ExpireResult, error) 
 	if err = tx.Commit(); err != nil {
 		return r, err
 	}
+	// Post-commit gateway runtime invalidation (网关模型列表账户并集设计 6.3
+	// coverage): this pass materialized authorization terminal states and
+	// removed their group_accounts / group_authorization_settings rows, so the
+	// committed write must clear the runtime cache. Best-effort, after the
+	// commit, never blocks or fails the sweep (see invalidation.go).
+	s.invalidateAfterExpiryCleanup(r)
 	return r, nil
 }
 

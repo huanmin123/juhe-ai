@@ -278,7 +278,13 @@ type chainEligibleRow struct {
 }
 
 // ListOpenAIAccountsForGroupResult mirrors listOpenAIAccountsForGroupResult.
+// ChatPinnedAccountID 非空时分流到 chat-pinned 专用直取路径
+// （listChatPinnedOpenAIAccountResult，AI 问答设计 §5.2 2026-10-10 修订）；
+// 零值空串走常规候选窗口，/v1 语义不变。
 func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Context, groupID, systemAccountID string, opts gatewayruntimecache.OpenAIAccountsForGroupOptions) (gatewayruntimecache.OpenAIAccountsForGroupResult, error) {
+	if pinnedID := strings.TrimSpace(opts.ChatPinnedAccountID); pinnedID != "" {
+		return s.listChatPinnedOpenAIAccountResult(ctx, groupID, systemAccountID, pinnedID, opts.PreResolvedGroupAccess)
+	}
 	now := chainNowISO(s.now)
 	qualityFreshAfter := chainQualityFreshAfterISO(s.now)
 	groupAccess := opts.PreResolvedGroupAccess
@@ -314,6 +320,41 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 		groupAccountRows = mergeChainCandidateRows(modelRows, baseRows)
 	}
 
+	availabilityGate := func(row *chainCandidateRow) (bool, error) {
+		return chainAccountAvailableForSelection(row, now, opts.IncludeUnavailable)
+	}
+	return s.assembleOpenAIAccountsForGroupResult(ctx, groupAccess, groupAccountRows, modelRanks, systemAccountID, qualityFreshAfter, availabilityGate)
+}
+
+// listChatPinnedOpenAIAccountResult 是 chat-pinned 直取路径（ChatPinnedAccountID
+// 非空，AI 问答设计 §5.2 2026-10-10 修订）：分组 access 解析（分组禁用/不存在
+// → 空结果，保持既有「禁用分组空候选」语义）→ 专用直取窗口（含禁用/冷却/过期/
+// 禁调度账户）→ 跳过可用性闸的共享装配主体。仅收敛到目标账户单元素。
+func (s *chainAccountsSelector) listChatPinnedOpenAIAccountResult(ctx context.Context, groupID, systemAccountID, accountID string, preResolved *gatewayruntimecache.GroupUsageAccessMetadata) (gatewayruntimecache.OpenAIAccountsForGroupResult, error) {
+	groupAccess := preResolved
+	if groupAccess == nil {
+		meta, err := s.resolveGroupAccess(ctx, groupID, systemAccountID)
+		if err != nil {
+			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
+		}
+		if meta == nil {
+			return gatewayruntimecache.OpenAIAccountsForGroupResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{}}, nil
+		}
+		groupAccess = meta
+	}
+	qualityFreshAfter := chainQualityFreshAfterISO(s.now)
+	rows, err := s.listChatPinnedCandidateRows(ctx, groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode, accountID)
+	if err != nil {
+		return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
+	}
+	return s.assembleOpenAIAccountsForGroupResult(ctx, groupAccess, rows, nil, systemAccountID, qualityFreshAfter, nil)
+}
+
+// assembleOpenAIAccountsForGroupResult 是常规候选窗口与 chat-pinned 直取共享
+// 的装配主体：authorizations 预取 → 资格闸（access 解析 + 授权调度 + 授权绑定
+// 闸；availabilityGate 为 nil 时跳过可用性闸——pinned 直取行来自专用窗口，含
+// 非可用状态账户）→ 质量行 → 派发排序 → hydration 批次。
+func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context.Context, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, groupAccountRows []chainCandidateRow, modelRanks map[string]int, systemAccountID, qualityFreshAfter string, availabilityGate func(row *chainCandidateRow) (bool, error)) (gatewayruntimecache.OpenAIAccountsForGroupResult, error) {
 	// Account authorizations for owner-scope accounts
 	// (loadAccountAuthorizationsForSelection: nil map for authorized groups —
 	// the per-row reads then hit the database like the Node fallback).
@@ -339,12 +380,14 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 		if access.accountAccessType == chainAccountAccessAuthorized && !row.ResourceAccountID.Valid {
 			continue
 		}
-		available, err := chainAccountAvailableForSelection(row, now, opts.IncludeUnavailable)
-		if err != nil {
-			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
-		}
-		if !available {
-			continue
+		if availabilityGate != nil {
+			available, err := availabilityGate(row)
+			if err != nil {
+				return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
+			}
+			if !available {
+				continue
+			}
 		}
 		if access.accountAccessType == chainAccountAccessAuthorized {
 			// isOpenAIAccountAvailableForSelection binding gate.
@@ -450,6 +493,50 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 			ScanLimitReached:      len(groupAccountRows) >= s.candidateScanLimit,
 		},
 	}, nil
+}
+
+// listChatPinnedCandidateRows 是 chat-pinned 直取专用窗口（AI 问答设计 §5.2
+// 2026-10-10 修订）：按账户 ID 直取其在启用分组中的候选行。与共享候选窗
+// chainCandidateWhere 的差异只有可用性条件——不限定 status/schedulable/
+// cooldown/account_expires_at（含禁用、错误、限流、冷却、过期与禁调度账户，
+// 绕过可用性窗口）；保留存在性与凭据结构条件（deleted_at IS NULL、类型集合、
+// 分组启用与 provider 匹配、授权实例戳行排除——chat 绑定口径本就排除实例
+// 戳行，LEFT JOIN 仅为维持 chainCandidateColumns 列形状）。chainCandidateWhere
+// 常量本身不被修改，/v1 常规窗口语义不变。
+func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context, groupID, groupOwnerSystemAccountID, providerCode, accountID string) ([]chainCandidateRow, error) {
+	query := strings.NewReplacer(
+		"{columns}", chainCandidateColumns,
+		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),
+	).Replace(`SELECT {columns},
+			NULL AS quality_score, NULL AS quality_state, NULL AS quality_ewma_first_token_ms
+			{from}
+			WHERE group_accounts.group_id = ?
+				AND group_accounts.system_account_id = ?
+				AND group_accounts.enabled = 1
+				AND accounts.provider_code = ?
+				AND accounts.deleted_at IS NULL
+				AND accounts.id = ?
+				AND accounts.authorization_instance_authorization_id IS NULL
+				AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
+			ORDER BY group_accounts.created_at ASC, group_accounts.account_id ASC
+			LIMIT 1`)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupOwnerSystemAccountID, providerCode, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []chainCandidateRow{}
+	for rows.Next() {
+		var row chainCandidateRow
+		dest := candidateScanDest(&row)
+		dest = append(dest, &nullStringSink{}, &nullStringSink{}, &nullStringSink{})
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		row.ModelRank = -1
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // ---------------------------------------------------------------------------

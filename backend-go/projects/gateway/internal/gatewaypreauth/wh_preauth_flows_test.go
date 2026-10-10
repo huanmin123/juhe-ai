@@ -91,8 +91,11 @@ func TestWhModelsBeforeRequiredAuth(t *testing.T) {
 	if len(sink.modelSends) != 1 || sink.modelSends[0].Protocol != "openai" {
 		t.Fatalf("模型响应 = %+v", sink.modelSends)
 	}
-	if got := sink.modelSends[0].ProviderCodes; len(got) != 1 || got[0] != "openai" {
-		t.Fatalf("provider codes = %v", got)
+	if got := sink.modelSends[0].Bindings; len(got) != 1 || got[0].ProviderCode != "openai" || got[0].GroupID != "group_1" {
+		t.Fatalf("bindings = %v", got)
+	}
+	if sink.modelSends[0].Context == nil {
+		t.Fatal("请求 ctx 应传入 ModelsResponseInput.Context")
 	}
 	_ = recorder
 
@@ -142,6 +145,67 @@ func TestWhModelsBeforeRequiredAuth(t *testing.T) {
 	}
 	if sink.authFailures != 1 || len(sink.failureInputs) != 0 {
 		t.Fatalf("认证失败审计 = %d", sink.authFailures)
+	}
+}
+
+// /v1/models 成员装载失败（设计 4.6.4）：sender 错误经共用 helper 收尾为
+// 500 + models_list_unavailable 标准载荷（显式协议形态），审计元数据落
+// authenticated_models_list_load_failed，请求按"已完成"返回，不落外层
+// generic 500、不继续链路。
+func TestWhModelsBeforeAuthLoadFailureFinish(t *testing.T) {
+	cases := []struct {
+		name         string
+		protocol     ResponseProtocolCode
+		wantProtocol GatewayErrorProtocol
+	}{
+		{name: "openai", protocol: ResponseProtocolOpenAI, wantProtocol: GatewayErrorProtocolOpenAI},
+		{name: "anthropic", protocol: ResponseProtocolAnthropicV, wantProtocol: GatewayErrorProtocolAnthropic},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			service, _, sink := newTestService(t, func(s *Service) {
+				s.APIKeyValidator = &fakeAPIKeyValidator{row: validRuntimeRow()}
+				s.ModelsRateLimit = &fakeModelsRateLimit{decision: AuthenticatedModelsRateLimitDecision{Allowed: true}}
+			})
+			sink.modelsSendErr = errors.New("聚合 SQL 失败")
+			audit := &fakeAuditCapture{}
+			req := whAuthorizedModelsRequest()
+			_, recorder, writer := newTestRequest("GET", "/v1/models")
+			completed, err := service.handleGatewayModelsRequestBeforeRequiredAuth(context.Background(), modelsBeforeAuthInput{
+				req: req, res: writer, protocol: tc.protocol, auditCapture: audit,
+				clientIP: "1.2.3.4", traceID: "t-load-fail", endpoint: "GET /v1/models",
+			})
+			if err != nil || !completed {
+				t.Fatalf("completed = %v err=%v", completed, err)
+			}
+			if len(sink.failureInputs) != 1 {
+				t.Fatalf("failureInputs = %+v", sink.failureInputs)
+			}
+			failure := sink.failureInputs[0]
+			if failure.StatusCode != 500 || failure.Protocol != tc.wantProtocol {
+				t.Fatalf("failure = %+v", failure)
+			}
+			if failure.ResponsePayload.Error.Code != "models_list_unavailable" || failure.ResponsePayload.Error.Type != "internal_error" {
+				t.Fatalf("payload = %+v", failure.ResponsePayload)
+			}
+			if failure.Audit.Outcome != AuditOutcomeGatewayFailed || failure.Audit.ErrorCode != "models_list_unavailable" {
+				t.Fatalf("audit = %+v", failure.Audit)
+			}
+			found := false
+			for _, call := range audit.metadata {
+				if call.label != "authenticated_models_list_load_failed" {
+					continue
+				}
+				found = true
+				if call.metadata["reason"] != "聚合 SQL 失败" || call.metadata["traceId"] != "t-load-fail" {
+					t.Fatalf("metadata = %+v", call.metadata)
+				}
+			}
+			if !found {
+				t.Fatalf("缺少装载失败审计元数据: %+v", audit.metadata)
+			}
+			_ = recorder
+		})
 	}
 }
 
@@ -467,12 +531,8 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 	if got := probeModelOverride(&PreflightOptions{}); got != "" {
 		t.Fatalf("默认探针模型 = %q", got)
 	}
-	if got := compactionTimeoutsDisabledTimeoutPolicy(true); got != "codex_compaction_unbounded" {
-		t.Fatalf("compaction 策略 = %q", got)
-	}
-	if got := compactionTimeoutsDisabledTimeoutPolicy(false); got != "" {
-		t.Fatalf("默认 compaction 策略 = %q", got)
-	}
+	// compactionTimeoutsDisabledTimeoutPolicy 镜像已随调度内核通用化批次 2 删除
+	// （超时豁免由 GatewayRequestWallBudget.Unbounded 承载）。
 	if gatewayAccountRuntimeKey(gatewayruntimecache.OpenAIAccountSecret{ID: "acc"}) != "acc" {
 		t.Fatal("运行键 = 账户 ID")
 	}

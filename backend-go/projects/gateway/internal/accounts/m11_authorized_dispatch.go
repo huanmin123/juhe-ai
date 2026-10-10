@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -239,6 +240,17 @@ func (s *Store) UpdateAuthorizedDispatch(ctx context.Context, accountID string, 
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// 授权实例调度恢复提交后改动了账户 status/schedulable/config_revision 与
+	// group_accounts 绑定，都在网关调度与模型并集的依赖面上；复用账户 patch
+	// 的 runtime 失效 reason（网关模型列表账户并集设计 6.3 失效覆盖表补齐点，
+	// nil 端口跳过，对齐 Store.invalidator 的 nil 语义）。
+	if s.invalidator != nil {
+		if err := s.invalidator.InvalidateGatewayRuntime(accountPatchRuntimeInvalidationReason); err != nil {
+			slog.Warn("授权实例调度恢复已提交，但网关运行时缓存失效失败",
+				"event", "authorized_dispatch_runtime_invalidation_failed",
+				"accountId", outcome.ID, "error", err)
+		}
 	}
 	// Node runtimeRestoreRequired → clearServerAccountRuntimeAvailability via
 	// the runtime-reset port (a nil port skips the runtime surfaces).

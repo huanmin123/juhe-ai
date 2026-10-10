@@ -1,12 +1,14 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
+import type { AccountStatus } from '@/types/domain'
 import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMediaTaskSnapshot, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus, ChatToolPreferencesPatch } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 /**
  * 会话账户唯一绑定（AI 问答会话账户唯一绑定设计）：创建免请求体直进空会话，
  * 服务端忽略任何请求体内容；进入会话后经 PATCH accountId 完成绑定。
+ * status 为账户真实生效状态（并非恒 active），供下拉选项区分展示。
  */
-export interface ChatAccountOption { id: string; name: string; providerCode: string; status: string }
+export interface ChatAccountOption { id: string; name: string; providerCode: string; status: AccountStatus }
 
 /**
  * 模型工具的会话级绑定键（工具体系设计 §8.2 + 问答音视频工具设计 §3）：
@@ -19,7 +21,7 @@ export type ChatToolBindingPatch =
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
-  /** 用户授权范围内全部可派发账户（会话绑定与工具绑定统一候选源）。 */
+  /** 用户数据范围内全部未删除账户（会话绑定与工具绑定统一候选源），status 为真实生效状态。 */
   listChatAccounts: () => unwrap<ChatAccountOption[]>(http.get('/my-chat/accounts')),
   createConversation: () => unwrap<ChatConversation>(http.post('/my-chat/conversations')),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),

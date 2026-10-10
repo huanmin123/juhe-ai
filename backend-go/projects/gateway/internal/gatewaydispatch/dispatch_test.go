@@ -399,28 +399,36 @@ func TestIsTransientSameAccountHttpStatus(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// F5-2: the codex turn (client source) avoidance filter + last-resort reversal
-// (Node routes.ts:911-917 / 1060-1075 / 1454-1465, engine-internalized).
+// 通用调度排除集 + 分派段状态机（调度内核通用化设计 5.1，批次 1）：原 Codex
+// turn 避让整体过滤 + last-resort 翻回两段画像分支的改写用例。段内让位、段
+// 耗尽后翻回与逐段推进语义的矩阵回归见 dispatchsegments_test.go。
 // ---------------------------------------------------------------------------
 
-func codexTurnDispatchArgs(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate, audit *frozenAudit, avoided []string) FetchFirstAvailableUpstreamArgs {
+func schedulingDispatchArgs(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate, audit *frozenAudit, excluded []string, segments []DispatchSegment) FetchFirstAvailableUpstreamArgs {
 	t.Helper()
 	args := dispatchArgs(t, req, accounts)
 	args.AuditCapture = AuditCapture{Context: audit, Sink: audit.sink}
-	args.CodexTurnAccountAvoidanceApplied = true
-	args.CodexTurnAvoidedAccountIDs = avoided
+	if excluded != nil {
+		args.SchedulingExclusions = &SchedulingExclusions{ExcludedAccountIDs: excluded}
+	}
+	args.DispatchSegments = segments
 	return args
 }
 
-// TestFetchFirstAvailableUpstreamCodexTurnAvoidanceFilter: while the avoidance
-// is applied the avoided accounts are filtered out of the dispatch list even
-// when they sit in front of the fresh ones.
-func TestFetchFirstAvailableUpstreamCodexTurnAvoidanceFilter(t *testing.T) {
-	avoidedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// TestFetchFirstAvailableUpstreamExclusionYieldsInSegment: 排除集只做段内让位
+// ——同段普通候选可用时被排除账号不派发（原 CodexTurnAvoidanceFilter 用例的
+// 通用化改写，行为等价）。
+func TestFetchFirstAvailableUpstreamExclusionYieldsInSegment(t *testing.T) {
+	excludedHits := 0
+	var mu sync.Mutex
+	excludedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		excludedHits++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-avoided"}`))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-excluded"}`))
 	}))
-	defer avoidedUpstream.Close()
+	defer excludedUpstream.Close()
 	freshUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-fresh"}`))
@@ -429,12 +437,18 @@ func TestFetchFirstAvailableUpstreamCodexTurnAvoidanceFilter(t *testing.T) {
 
 	engine, driver, _ := newTestEngine(t)
 	driver.urlByAccount = map[string][]string{
-		"a-1": {avoidedUpstream.URL + "/v1/chat/completions"},
+		"a-1": {excludedUpstream.URL + "/v1/chat/completions"},
 		"a-2": {freshUpstream.URL + "/v1/chat/completions"},
 	}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	audit := &frozenAudit{sink: &fakeAuditSink{}}
-	args := codexTurnDispatchArgs(t, req, testAccounts("a-1", "a-2"), audit, []string{"a-1"})
+	accounts := testAccounts("a-1", "a-2")
+	segments := []DispatchSegment{{
+		OpaqueSegmentID: "prep-seg-1",
+		Tier:            dispatchPriorityTierOf(accounts[0], nil),
+		Accounts:        accounts,
+	}}
+	args := schedulingDispatchArgs(t, req, accounts, audit, []string{"a-1"}, segments)
 	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
 	if err != nil {
 		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
@@ -442,14 +456,24 @@ func TestFetchFirstAvailableUpstreamCodexTurnAvoidanceFilter(t *testing.T) {
 	if result.Account.ID != "a-2" {
 		t.Fatalf("fresh account must be dispatched, got %s", result.Account.ID)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	if excludedHits != 0 {
+		t.Fatalf("被排除账号在普通候选成功时必须零尝试，hits = %d", excludedHits)
+	}
+	for _, label := range audit.metadata {
+		if label == "gateway_dispatch_exclusion_release" {
+			t.Fatalf("普通候选成功时不得触发释放: %v", audit.metadata)
+		}
+	}
 }
 
-// TestFetchFirstAvailableUpstreamCodexTurnLastResortReversal: the avoided
-// accounts get one avoided-only pass once every fresh account failed, audited
-// as client_source_avoided_accounts_last_resort.
-func TestFetchFirstAvailableUpstreamCodexTurnLastResortReversal(t *testing.T) {
+// TestFetchFirstAvailableUpstreamExclusionReleaseAfterExhaustion: 段内普通候选
+// 真实耗尽后释放被排除账号并按原顺序尝试（原 CodexTurnLastResortReversal 用例
+// 的通用化改写），审计为 gateway_dispatch_exclusion_release。
+func TestFetchFirstAvailableUpstreamExclusionReleaseAfterExhaustion(t *testing.T) {
 	var mu sync.Mutex
-	freshHits, avoidedHits := 0, 0
+	freshHits, excludedHits := 0, 0
 	freshUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		freshHits++
@@ -458,80 +482,90 @@ func TestFetchFirstAvailableUpstreamCodexTurnLastResortReversal(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"upstream down","type":"server_error","code":"upstream_error"}}`))
 	}))
 	defer freshUpstream.Close()
-	avoidedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	excludedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		avoidedHits++
+		excludedHits++
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-avoided-ok"}`))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-excluded-ok"}`))
 	}))
-	defer avoidedUpstream.Close()
+	defer excludedUpstream.Close()
 
 	engine, driver, _ := newTestEngine(t)
 	driver.urlByAccount = map[string][]string{
 		"a-1": {freshUpstream.URL + "/v1/chat/completions"},
-		"a-2": {avoidedUpstream.URL + "/v1/chat/completions"},
+		"a-2": {excludedUpstream.URL + "/v1/chat/completions"},
 	}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	audit := &frozenAudit{sink: &fakeAuditSink{}}
-	args := codexTurnDispatchArgs(t, req, testAccounts("a-1", "a-2"), audit, []string{"a-2"})
+	accounts := testAccounts("a-1", "a-2")
+	segments := []DispatchSegment{{
+		OpaqueSegmentID: "prep-seg-1",
+		Tier:            dispatchPriorityTierOf(accounts[0], nil),
+		Accounts:        accounts,
+	}}
+	args := schedulingDispatchArgs(t, req, accounts, audit, []string{"a-2"}, segments)
 	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
 	if err != nil {
 		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
 	}
 	if result.Account.ID != "a-2" {
-		t.Fatalf("the avoided account must serve the last-resort pass, got %s", result.Account.ID)
+		t.Fatalf("被排除账号必须在普通候选耗尽后释放并服务, got %s", result.Account.ID)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	// The fresh account burns its same-account retries on the 500 before the
-	// reversal; the avoided account must be attempted exactly once, only
-	// after that.
-	if avoidedHits != 1 || freshHits < 1 {
-		t.Fatalf("hits: fresh=%d avoided=%d (the avoided account must not be tried before the reversal)", freshHits, avoidedHits)
+	// 尝试顺序：普通候选先打并在失败后耗尽，被排除账号在其后恰好尝试一次。
+	if excludedHits != 1 || freshHits < 1 {
+		t.Fatalf("hits: fresh=%d excluded=%d（被排除账号不得先于普通候选尝试）", freshHits, excludedHits)
 	}
-	reversalAudited := false
+	releaseAudited := false
 	for _, label := range audit.metadata {
-		if label == "client_source_avoided_accounts_last_resort" {
-			reversalAudited = true
+		if label == "gateway_dispatch_exclusion_release" {
+			releaseAudited = true
 		}
 	}
-	if !reversalAudited {
-		t.Fatalf("last-resort reversal must be audited: %v", audit.metadata)
+	if !releaseAudited {
+		t.Fatalf("释放必须审计为 gateway_dispatch_exclusion_release: %v", audit.metadata)
 	}
 }
 
-// TestFetchFirstAvailableUpstreamCodexTurnEntryReversal: when the filter
-// empties the dispatch list at entry, the reversal fires before anything is
-// dispatched (routes.ts:1060-1075).
-func TestFetchFirstAvailableUpstreamCodexTurnEntryReversal(t *testing.T) {
-	avoidedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// TestFetchFirstAvailableUpstreamExclusionEntryRelease: 段入口即无普通候选时
+// 立即释放（原 CodexTurnEntryReversal 用例的通用化改写），审计为
+// gateway_dispatch_exclusion_release。
+func TestFetchFirstAvailableUpstreamExclusionEntryRelease(t *testing.T) {
+	excludedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-avoided-entry"}`))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-excluded-entry"}`))
 	}))
-	defer avoidedUpstream.Close()
+	defer excludedUpstream.Close()
 
 	engine, driver, _ := newTestEngine(t)
 	driver.urlByAccount = map[string][]string{
-		"a-1": {avoidedUpstream.URL + "/v1/chat/completions"},
+		"a-1": {excludedUpstream.URL + "/v1/chat/completions"},
 	}
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	audit := &frozenAudit{sink: &fakeAuditSink{}}
-	args := codexTurnDispatchArgs(t, req, testAccounts("a-1"), audit, []string{"a-1"})
+	accounts := testAccounts("a-1")
+	segments := []DispatchSegment{{
+		OpaqueSegmentID: "prep-seg-1",
+		Tier:            dispatchPriorityTierOf(accounts[0], nil),
+		Accounts:        accounts,
+	}}
+	args := schedulingDispatchArgs(t, req, accounts, audit, []string{"a-1"}, segments)
 	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
 	if err != nil {
 		t.Fatalf("FetchFirstAvailableUpstream: %v", err)
 	}
 	if result.Account.ID != "a-1" {
-		t.Fatalf("the avoided account must serve the entry reversal, got %s", result.Account.ID)
+		t.Fatalf("段入口无普通候选必须立即释放并服务, got %s", result.Account.ID)
 	}
-	reversalAudited := false
+	releaseAudited := false
 	for _, label := range audit.metadata {
-		if label == "client_source_avoided_accounts_last_resort" {
-			reversalAudited = true
+		if label == "gateway_dispatch_exclusion_release" {
+			releaseAudited = true
 		}
 	}
-	if !reversalAudited {
-		t.Fatalf("entry reversal must be audited: %v", audit.metadata)
+	if !releaseAudited {
+		t.Fatalf("入口释放必须审计: %v", audit.metadata)
 	}
 }

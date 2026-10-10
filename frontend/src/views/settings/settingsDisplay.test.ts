@@ -129,17 +129,32 @@ describe('展示行生成', () => {
     expect(row.defaultText).toBe('默认 1 小时 · 10 分钟 · 3 次')
   })
 
-  it('版本覆盖组：全内置一行；有覆盖逐行列出', () => {
-    expect(settingGroups.find((g) => g.key === 'upstream-versions')!.viewRows(defaultAccess())[0].rows).toEqual([
-      { key: 'upstream-all-default', label: '全部家族', value: '内置版本' }
+  it('版本覆盖组：逐族显示生效值与来源（手动 > 自动 > 内置；facts 缺失回退占位）', () => {
+    const group = settingGroups.find((g) => g.key === 'upstream-versions')!
+    // facts 未加载（旧后端或分区未就绪）：全部回退「内置版本」占位，不阻塞
+    expect(group.viewRows(defaultAccess())[0].rows).toEqual([
+      { key: 'upstreamClientVersionOverrides.codex', label: 'Codex exec', value: '内置版本' },
+      { key: 'upstreamClientVersionOverrides.claudeCode', label: 'Claude Code', value: '内置版本' },
+      { key: 'upstreamClientVersionOverrides.geminiCLI', label: 'Gemini CLI', value: '内置版本' },
+      { key: 'upstreamClientVersionOverrides.zcode', label: 'ZCode', value: '内置版本' },
+      { key: 'upstreamClientVersionOverrides.grokCLI', label: 'Grok CLI', value: '内置版本' }
     ])
+    // facts 加载：手动非空即生效（可低于自动层，与后端显式覆盖语义一致），
+    // 否则自动层该族有值显示自动值，否则内置基线
     const base = defaultAccess()
     const access: SettingsDisplayAccess = {
-      baseline: (key) => (key === 'upstreamClientVersionOverrides.codex' ? '0.159.3' : base.baseline(key)),
-      isCustom: (key) => (key === 'upstreamClientVersionOverrides.codex' ? true : base.isCustom(key))
+      baseline: (key) => (key === 'upstreamClientVersionOverrides.grokCLI' ? '1.0.10' : base.baseline(key)),
+      isCustom: (key) => (key === 'upstreamClientVersionOverrides.grokCLI' ? true : base.isCustom(key)),
+      clientVersionAuto: (family) => (family === 'grokCLI' ? '1.0.46' : family === 'codex' ? '0.160.0' : ''),
+      clientVersionBuiltIn: (family) => ({ codex: '0.159.3', claudeCode: '2.1.285', geminiCLI: '0.61.0', zcode: '3.14.3', grokCLI: '1.0.13' })[family]
     }
-    const rows = settingGroups.find((g) => g.key === 'upstream-versions')!.viewRows(access)[0].rows
-    expect(rows).toEqual([{ key: 'upstreamClientVersionOverrides.codex', label: 'Codex exec', value: '0.159.3', custom: true }])
+    expect(group.viewRows(access)[0].rows).toEqual([
+      { key: 'upstreamClientVersionOverrides.codex', label: 'Codex exec', value: '0.160.0（自动跟版）' },
+      { key: 'upstreamClientVersionOverrides.claudeCode', label: 'Claude Code', value: '2.1.285（内置）' },
+      { key: 'upstreamClientVersionOverrides.geminiCLI', label: 'Gemini CLI', value: '0.61.0（内置）' },
+      { key: 'upstreamClientVersionOverrides.zcode', label: 'ZCode', value: '3.14.3（内置）' },
+      { key: 'upstreamClientVersionOverrides.grokCLI', label: 'Grok CLI', value: '1.0.10（手动覆盖）', custom: true }
+    ])
   })
 
   it('默认行不附默认对照，仅自定义行附（默认 X）', () => {

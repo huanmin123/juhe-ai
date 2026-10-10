@@ -3,10 +3,10 @@ package gatewayresponse
 import (
 	"encoding/json"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -74,6 +74,10 @@ func TestCodexCompactionContractMismatchFrame(t *testing.T) {
 
 func gatewayEndpointFamilyResponses() string { return "responses" }
 
+// TestCodexCompactionExpectedForRequest 锁定请求侧压缩判定的唯一实现
+// （gatewaycodex.CodexCompactionExpectedForRequest，调度内核通用化设计 5.2
+// 三轨合一后本包不再保留同形拷贝）：经同一 GatewayRequest 输入形状验证
+// /responses/compact 端点与 compaction_trigger 触发双条件。
 func TestCodexCompactionExpectedForRequest(t *testing.T) {
 	newReq := func(method, target string, bodyState *gatewaybody.BodyState, parsed map[string]any) *gatewaypreauth.GatewayRequest {
 		req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(method, target, nil))
@@ -84,47 +88,32 @@ func TestCodexCompactionExpectedForRequest(t *testing.T) {
 		req.Body = gatewayRequest
 		return req
 	}
-	if CodexCompactionExpectedForRequest(newReq("GET", "/v1/responses", &gatewaybody.BodyState{}, nil)) {
+	if gatewaycodex.CodexCompactionExpectedForRequest(newReq("GET", "/v1/responses", &gatewaybody.BodyState{}, nil)) {
 		t.Fatal("GET never expects compaction")
 	}
-	if !CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses/compact", &gatewaybody.BodyState{}, nil)) {
+	if !gatewaycodex.CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses/compact", &gatewaybody.BodyState{}, nil)) {
 		t.Fatal("compact endpoint expects compaction")
 	}
-	if !CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses", &gatewaybody.BodyState{CodexCompactionTrigger: true}, nil)) {
+	if !gatewaycodex.CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses", &gatewaybody.BodyState{CodexCompactionTrigger: true}, nil)) {
 		t.Fatal("compaction trigger body state expects compaction")
 	}
-	if !CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses", &gatewaybody.BodyState{}, map[string]any{
+	if !gatewaycodex.CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses", &gatewaybody.BodyState{}, map[string]any{
 		"input": []any{map[string]any{"type": "compaction_trigger"}},
 	})) {
 		t.Fatal("parsed compaction trigger expects compaction")
 	}
-	if CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses", &gatewaybody.BodyState{JSONParseStatus: gatewaybody.JSONParseStatusScannedJSON}, nil)) {
+	if gatewaycodex.CodexCompactionExpectedForRequest(newReq("POST", "/v1/responses", &gatewaybody.BodyState{JSONParseStatus: gatewaybody.JSONParseStatusScannedJSON}, nil)) {
 		t.Fatal("scanned json without trigger does not expect compaction")
 	}
-	if CodexCompactionExpectedForRequest(newReq("POST", "/v1/chat/completions", &gatewaybody.BodyState{}, nil)) {
+	if gatewaycodex.CodexCompactionExpectedForRequest(newReq("POST", "/v1/chat/completions", &gatewaybody.BodyState{}, nil)) {
 		t.Fatal("chat endpoint never expects compaction")
 	}
 }
 
-func TestRequestBodyHasCompactionTriggerRawScan(t *testing.T) {
-	pattern := `"type": "compaction_trigger"`
-	small := []byte(`{"model":"gpt-5","input":[` + pattern + `]}`)
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, small) {
-		t.Fatal("small body scan finds trigger")
-	}
-	head := strings.Repeat("a", 128) + pattern + strings.Repeat("b", codexCompactionRawBodyScanEdgeBytes)
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, []byte(head)) {
-		t.Fatal("head scan finds trigger inside prefix window")
-	}
-	tail := strings.Repeat("a", codexCompactionRawBodyScanEdgeBytes) + strings.Repeat("b", codexCompactionRawBodyScanEdgeBytes-30) + pattern
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, []byte(tail)) {
-		t.Fatal("tail scan finds trigger inside suffix window")
-	}
-	middle := []byte(strings.Repeat("a", codexCompactionRawBodyScanEdgeBytes) + "xx" + pattern + "yy" + strings.Repeat("b", codexCompactionRawBodyScanEdgeBytes))
-	if requestPathHasCompactionTrigger("/v1/responses", nil, middle) {
-		t.Fatal("trigger outside both edge windows is not scanned")
-	}
-}
+// requestPathHasCompactionTrigger / requestBodyHasCompactionTrigger 已随批次 2
+// 遗留清理从 codexcontract.go 删除（唯一实现 gatewaycodex.
+// CodexCompactionExpectedForRequest，raw 扫描窗口边界由 gatewaycodex 包
+// TestCodexCompactionExpectedRawBodyEdgeWindows 锁定）；原直驱用例一并移除。
 
 func TestCountCodexCompactionOutputItemsFromStreamEvent(t *testing.T) {
 	event := gatewayopenai.ParsedStreamEvent{

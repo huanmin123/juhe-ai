@@ -955,7 +955,7 @@ func TestCooldownFailureUsesDeterministicSlowBackoffAfterFastRetries(t *testing.
 		t.Fatalf("slow recovery outcome invalid: %#v", outcome)
 	}
 	delay := outcome.NextDueAt.Sub(now)
-	if delay < 30*time.Second || delay > 5*time.Minute+30*time.Second || delay == cooldownFailureDelay(input.AccountID, fence.Generation, 3*time.Second, 11) {
+	if delay < 30*time.Second || delay > 5*time.Minute+30*time.Second || delay == cooldownFailureDelay(input.AccountID, fence.Generation, 3*time.Second, 11, false) {
 		t.Fatalf("slow recovery delay must apply a fresh global offset in [30s,5m30s]: %s", delay)
 	}
 }
@@ -1008,13 +1008,13 @@ func isJitteredWithin(delay, interval time.Duration) bool {
 
 func TestCooldownFailureDelayStartsAtInitialBackoff(t *testing.T) {
 	initial := 3 * time.Second
-	if got := cooldownFailureDelay("account-1", "generation-1", initial, 1); got != initial {
+	if got := cooldownFailureDelay("account-1", "generation-1", initial, 1, false); got != initial {
 		t.Fatalf("first cooldown failure delay = %s, want %s", got, initial)
 	}
-	if got := cooldownFailureDelay("account-1", "generation-1", initial, 2); got != 6*time.Second {
+	if got := cooldownFailureDelay("account-1", "generation-1", initial, 2, false); got != 6*time.Second {
 		t.Fatalf("second cooldown failure delay = %s, want 6s", got)
 	}
-	if got := cooldownFailureDelay("account-1", "generation-1", initial, 6); got < time.Minute || got > 5*time.Minute {
+	if got := cooldownFailureDelay("account-1", "generation-1", initial, 6, false); got < time.Minute || got > 5*time.Minute {
 		t.Fatalf("slow cooldown failure delay = %s, want [1m,5m]", got)
 	}
 }

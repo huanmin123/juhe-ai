@@ -385,13 +385,14 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	kernel.SetRequestEventSink(kernel.NewSlogRequestEventSink(logger))
 
 	// ---- response sink (G16) ----
-	// The models fast-path reads the client model catalog through the same
-	// runtime cache the preflight uses (Node listClientModelCatalogAsync);
-	// an unwired ModelCatalog port renders /v1/models as an empty list.
+	// The models fast-path loads the account union through the runtime cache
+	// (chain_gatewaykeymodels.go：union 成员 ∪ 目录字典，/v1/models 账户并集
+	// 设计 §6.1/§6.4)；an unwired ModelCatalog port fails the load with an
+	// explicit error instead of rendering an empty list.
 	sink := gatewayresponse.NewSink(gatewayresponse.SinkDeps{
 		UsageRecords:  &usageDispatchAdapter{service: usageService, recorder: recorder},
 		UsageDispatch: &usageDispatchAdapter{service: usageService, recorder: recorder},
-		ModelCatalog:  chainClientModelCatalog{cache: deps.Cache},
+		ModelCatalog:  chainGatewayKeyModelCatalog{cache: deps.Cache},
 		// HTTP 完成观测：sink 失败 usage 的 CompletedAtMs 按请求上下文里的
 		// subject 解析（chain_http_completion.go），缺失回退 nowMs 兜底。
 		HTTPCompletion: chainHTTPCompletionObserver{},
@@ -896,42 +897,14 @@ func firstNonEmptyString(values ...string) string {
 }
 
 // ---------------------------------------------------------------------------
-// client model catalog (models fast-path; Node client-model-catalog.service.ts)
+// client model catalog dictionary (models fast-path; /v1/models 账户并集设计
+// §4.9——目录降级为元数据字典。成员资格装载见 chain_gatewaykeymodels.go 的
+// chainGatewayKeyModelCatalog；此处只保留字典构建所需的条目投影与 scope 秩。
+// 旧的成员过滤职责（selectClientCatalogItems 及可见性/价格/运营排序 helper）
+// 已随并集契约退役：catalog_visible、可见价格、音视频/realtime 模式过滤不再
+// 影响 /v1/models 列出什么，只保留 active 行内 personal > global > built_in
+// 的每模型最优行选取。)
 // ---------------------------------------------------------------------------
-
-// chainClientModelCatalog implements gatewayresponse.ModelCatalogLoader over
-// the runtime cache catalog read: listClientModelCatalogAsync +
-// selectClientModelCatalog. The composition previously left the port
-// unwired, rendering every /v1/models response as an empty list.
-type chainClientModelCatalog struct {
-	cache *gatewayruntimecache.Service
-}
-
-func (c chainClientModelCatalog) ListClientModelCatalog(systemAccountID string, providerCodes []string) []gatewayresponse.ModelCatalogEntry {
-	if c.cache == nil || len(providerCodes) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	codes := sortedUniqueProviderCodes(providerCodes)
-	var items []gatewayruntimecache.ProviderModelCatalogItem
-	for _, code := range codes {
-		catalog, err := c.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{
-			ProviderCode:    code,
-			SystemAccountID: systemAccountID,
-		})
-		if err != nil {
-			return nil
-		}
-		items = append(items, catalog...)
-	}
-	selected := selectClientCatalogItems(items)
-	entries := make([]gatewayresponse.ModelCatalogEntry, 0, len(selected))
-	for _, item := range selected {
-		entries = append(entries, clientCatalogEntryOf(item))
-	}
-	return entries
-}
 
 // sortedUniqueProviderCodes mirrors resolveClientModelCatalogProviderCodes'
 // normalization output for an explicit provider-code list.
@@ -950,45 +923,6 @@ func sortedUniqueProviderCodes(providerCodes []string) []string {
 	return codes
 }
 
-// selectClientCatalogItems mirrors selectClientModelCatalog: active, visible
-// and priced candidates, best-scope-first dedupe by model, client ordering.
-func selectClientCatalogItems(items []gatewayruntimecache.ProviderModelCatalogItem) []gatewayruntimecache.ProviderModelCatalogItem {
-	candidates := make([]gatewayruntimecache.ProviderModelCatalogItem, 0, len(items))
-	for _, item := range items {
-		if item.Status != "active" {
-			continue
-		}
-		if item.Scope == "built_in" && item.CatalogVisible != nil && !*item.CatalogVisible {
-			continue
-		}
-		if !clientCatalogHasVisiblePrice(item) {
-			continue
-		}
-		candidates = append(candidates, item)
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		scopeOrder := clientCatalogScopeRank(candidates[j]) - clientCatalogScopeRank(candidates[i])
-		if scopeOrder != 0 {
-			return scopeOrder < 0
-		}
-		return clientCatalogCompareItems(candidates[i], candidates[j])
-	})
-	byModel := map[string]bool{}
-	selected := make([]gatewayruntimecache.ProviderModelCatalogItem, 0, len(candidates))
-	for _, item := range candidates {
-		model := strings.TrimSpace(item.Model)
-		if model == "" || byModel[model] {
-			continue
-		}
-		byModel[model] = true
-		selected = append(selected, item)
-	}
-	sort.SliceStable(selected, func(i, j int) bool {
-		return clientCatalogCompareItems(selected[i], selected[j])
-	})
-	return selected
-}
-
 func clientCatalogScopeRank(item gatewayruntimecache.ProviderModelCatalogItem) int {
 	switch item.Scope {
 	case "personal":
@@ -998,32 +932,6 @@ func clientCatalogScopeRank(item gatewayruntimecache.ProviderModelCatalogItem) i
 	default:
 		return 1
 	}
-}
-
-func clientCatalogCompareItems(left, right gatewayruntimecache.ProviderModelCatalogItem) bool {
-	if dateOrder := strings.Compare(clientCatalogReleaseDate(right), clientCatalogReleaseDate(left)); dateOrder != 0 {
-		return dateOrder < 0
-	}
-	if providerOrder := strings.Compare(chainNormalizeProviderToken(left.ProviderCode), chainNormalizeProviderToken(right.ProviderCode)); providerOrder != 0 {
-		return providerOrder < 0
-	}
-	return left.Model < right.Model
-}
-
-func clientCatalogReleaseDate(item gatewayruntimecache.ProviderModelCatalogItem) string {
-	if item.ReleaseDate == nil {
-		return ""
-	}
-	return strings.TrimSpace(*item.ReleaseDate)
-}
-
-func clientCatalogHasVisiblePrice(item gatewayruntimecache.ProviderModelCatalogItem) bool {
-	return item.InputUsdPer1M != nil || item.OutputUsdPer1M != nil ||
-		item.CachedInputUsdPer1M != nil || item.CacheWriteUsdPer1M != nil ||
-		item.CacheWrite1hUsdPer1M != nil || item.CacheStorageUsdPer1MPerHour != nil ||
-		item.ImageInputUsdPer1M != nil || item.ImageOutputUsdPer1M != nil ||
-		item.AudioInputUsdPer1M != nil || item.AudioOutputUsdPer1M != nil ||
-		item.OutputUsdPerImage != nil || len(item.ServiceTierPrices) > 0
 }
 
 func clientCatalogEntryOf(item gatewayruntimecache.ProviderModelCatalogItem) gatewayresponse.ModelCatalogEntry {

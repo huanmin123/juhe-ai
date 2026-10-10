@@ -24,6 +24,8 @@
         <StatusTag v-if="lockTag" class="status-tag priority-tag" :color="lockTag.color" :label="lockTag.label" />
         <StatusTag v-if="account.superPriorityEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
         <StatusTag v-if="account.fallbackEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
+        <StatusTag v-if="account.expeditedRecoveryEnabled" class="status-tag priority-tag" color="cyan" label="特供" />
+        <StatusTag v-if="account.expeditedOverLimit" class="status-tag priority-tag" color="volcano" label="已超限" />
       </span>
     </a-tooltip>
     <span v-else class="status-tag-group">
@@ -36,6 +38,12 @@
       </a-tooltip>
       <a-tooltip v-if="account.fallbackEnabled" :title="fallbackTooltip">
         <StatusTag class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
+      </a-tooltip>
+      <a-tooltip v-if="account.expeditedRecoveryEnabled" :title="expeditedRecoveryTooltip">
+        <StatusTag class="status-tag priority-tag" color="cyan" label="特供" />
+      </a-tooltip>
+      <a-tooltip v-if="account.expeditedOverLimit" :title="expeditedOverLimitTooltip">
+        <StatusTag class="status-tag priority-tag" color="volcano" label="已超限" />
       </a-tooltip>
     </span>
   </div>
@@ -64,6 +72,9 @@ const fallbackTooltip = computed(() => dispatchFlagActive.value
   ? '降级备用：仅在同分组其他可用账户都不可用时使用'
   : '降级备用已保留；账户恢复可调度并参与调度后自动生效'
 )
+// 特供徽章只表达“恢复道加速”，不表达健康、可用性或调度优先级（设计 §4 展示边界）。
+const expeditedRecoveryTooltip = '特供恢复：中性封顶基准 1 分钟，实际 30–90 秒'
+const expeditedOverLimitTooltip = '特供账户数量已超过当前上限'
 
 const lockTag = computed(() => accountLockTag(props.account))
 const lockTooltip = computed(() => accountLockTooltipLines(props.account)[0])

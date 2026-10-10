@@ -117,6 +117,35 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
   }
 
+  // 特供快速恢复（AI账户特供快速恢复通道设计 §8.3）：只走账户 PATCH 通道
+  // （patchBody 白名单含 expeditedRecoveryEnabled；authorized-dispatch 不含该
+  // 字段，授权实例行同样经 my-accounts PATCH 提交，照授权账户编辑保存流先例）。
+  // 超限错误按行操作既有模式直接展示后端返回的 message。
+  async function updateAccountExpeditedRecovery(account: AccountListItem, enabled: boolean): Promise<void> {
+    if (!canEditAccount(account)) {
+      message.warning('当前账户不能设置特供恢复')
+      return
+    }
+    const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    try {
+      const expectedConfigRevision = Number(account.configRevision)
+      if (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return
+      }
+      const payload = { expectedConfigRevision, expeditedRecoveryEnabled: enabled }
+      const updated = options.isManagementView.value
+        ? await api.accounts.update(account.id, payload, scopeParams)
+        : await api.myAccounts.update(account.id, payload)
+      options.markAccountMutation(updated)
+      message.success(enabled ? '已设为特供，恢复复测按特供节奏执行' : '已取消特供')
+      await options.reloadAccountPageAfterMutation()
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, enabled ? '设置特供失败' : '取消特供失败'))
+    }
+  }
+
   async function updateAccountState(account: AccountListItem, payload: Record<string, unknown>, successText: string, updateOptions: { allowExceptionRecovery?: boolean } = {}) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (isAuthorizedAccount(account)) {
@@ -297,6 +326,10 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (key === 'lock' || key === 'unlock') {
       await updateAccountLock(account, key === 'lock')
+      return
+    }
+    if (key === 'expedited-on' || key === 'expedited-off') {
+      await updateAccountExpeditedRecovery(account, key === 'expedited-on')
       return
     }
     if (!canUseAccountActions(account)) {

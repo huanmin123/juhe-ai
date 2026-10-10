@@ -59,14 +59,25 @@ func (toolPrefsTestCatalog) ListAccountsForGroup(groupID, systemAccountID, reque
 	return nil
 }
 
+// ListChatPinnedAccountsForGroup 与 ListAccountsForGroup 同一视图按 ID 收敛
+// 单元素（对齐生产 pinned 直取语义）。
+func (c toolPrefsTestCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	for _, account := range c.ListAccountsForGroup(groupID, systemAccountID, "", "") {
+		if account.ID == accountID {
+			return []ChatTransportAccount{account}
+		}
+	}
+	return nil
+}
+
 func (toolPrefsTestCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	if providerCode != "openai" {
 		return nil
 	}
 	return []ProviderModelCatalogItem{{
 		Model: "gpt-5", ProviderCode: "openai",
-		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
-		SupportedToolsByProtocol:  map[string][]string{"chat_completions": {"function_calling"}, "responses": {"function_calling", "web_search"}},
+		SupportedAPIProtocols:    []string{"chat_completions", "responses"},
+		SupportedToolsByProtocol: map[string][]string{"chat_completions": {"function_calling"}, "responses": {"function_calling", "web_search"}},
 	}}
 }
 
@@ -178,7 +189,7 @@ func TestUserToolPreferencesGetDefault(t *testing.T) {
 // TestUserToolPreferencesPatchArms：PATCH 候选内成功（搜索二元组 / 生图 +
 // defaultImageModel）、候选外 400 chat_tool_binding_invalid + 候选、未知键
 // 400、枚举外 400、null 解绑、合并只更新请求键；偏好端点不修改任何会话
-//（契约 §8.6/§14.8-2/§14.8-8 末句）。
+// （契约 §8.6/§14.8-2/§14.8-8 末句）。
 func TestUserToolPreferencesPatchArms(t *testing.T) {
 	prefix := "/__aisys__/api/my-chat"
 
@@ -230,10 +241,10 @@ func TestUserToolPreferencesPatchArms(t *testing.T) {
 		// 会话 PATCH 同机制），HTTP 层断言改写后的客户端可见行为；parse 级
 		// 精确文案由 TestParseUpdateToolPreferencesBody 锁定。
 		cases := []struct {
-			name     string
-			body     string
-			code     string
-			message  string
+			name    string
+			body    string
+			code    string
+			message string
 		}{
 			{"搜索候选外模型", `{"searchBinding":{"accountId":"account-1","modelId":"no-such-model"}}`, "chat_tool_binding_invalid", "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）"},
 			{"搜索候选外账户", `{"searchBinding":{"accountId":"account-grok","modelId":"gpt-5"}}`, "chat_tool_binding_invalid", "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）"},
@@ -330,10 +341,10 @@ func TestUserToolPreferencesCreateInheritance(t *testing.T) {
 	t.Run("偏好部分列继承（空列不覆盖默认）", func(t *testing.T) {
 		env := newToolPrefsEnv(t)
 		if err := env.fixture.store.UpsertUserToolPreferences(UserToolPreferences{
-			SystemAccountID:  routeTestOwner,
-			SearchAccountID:  "account-1",
-			SearchModelID:    "gpt-5",
-			ImageAccountID:   "",
+			SystemAccountID: routeTestOwner,
+			SearchAccountID: "account-1",
+			SearchModelID:   "gpt-5",
+			ImageAccountID:  "",
 		}); err != nil {
 			t.Fatal(err)
 		}

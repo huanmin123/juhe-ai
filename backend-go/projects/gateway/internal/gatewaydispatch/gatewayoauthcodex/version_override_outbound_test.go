@@ -63,7 +63,7 @@ func TestBuildOpenAIOAuthCodexHeadersManualBeatsAutoOverride(t *testing.T) {
 	}
 }
 
-// 清空自动层后出站 UA 回退内置常量（0.159.3），不得残留覆盖值。
+// 清空自动层后出站 UA 回退内置常量（CodexExecUserAgent），不得残留覆盖值。
 func TestBuildOpenAIOAuthCodexHeadersClearingAutoFallsBackToBuiltin(t *testing.T) {
 	resetClientVersionOverrideLayers(t)
 	upstreamidentity.SetClientVersionAutoOverrides(map[string]string{"codex": "9.9.9"})

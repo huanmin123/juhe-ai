@@ -333,6 +333,14 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.Accounts = selector
 	models.SetAccountsSelector(selector)
+	// /v1/models 账户并集装载器（网关模型列表账户并集设计 §6.3/§6.4）：复用
+	// 同一 selector 实例——db 句柄、table/bind 方言与授权臂判定同源，避免第二
+	// 份装配漂移。
+	unionLoader, unionLoaderErr := newChainGroupModelUnionLoader(selector)
+	if unionLoaderErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create gateway group model union loader: %w", unionLoaderErr)
+	}
 	// D-110（BUG-0175）：G08 动态路由选择器（Node
 	// api-key-group-route-selector.service.ts）。redis 驱动共享轮转/权重
 	// 计数器；非动态模式保持存储顺序（selector 语义）。
@@ -363,6 +371,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// D-110: the dynamic group-binding orderer seam (nil would keep the
 		// stored binding order for every dynamic strategy mode).
 		Orderer: newChainGroupBindingOrderer(routeSelector),
+		// /v1/models 分组模型并集装载端口（chain_gatewaykeymodels.go）。
+		Union: unionLoader,
 	})
 	if err != nil {
 		services.Close()

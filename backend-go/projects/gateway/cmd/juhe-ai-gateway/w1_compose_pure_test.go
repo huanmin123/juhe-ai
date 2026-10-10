@@ -63,10 +63,6 @@ func (w1cFailingReadModels) ReadGatewaySettings(context.Context) (gatewayruntime
 
 func w1cStringPtr(value string) *string { return &value }
 
-func w1cBoolPtr(value bool) *bool { return &value }
-
-func w1cFloat64Ptr(value float64) *float64 { return &value }
-
 func w1cInt64Ptr(value int64) *int64 { return &value }
 
 // ---------------------------------------------------------------------------
@@ -150,39 +146,6 @@ func TestW1CSortedUniqueProviderCodes(t *testing.T) {
 	}
 }
 
-func TestW1CSelectClientCatalogItems(t *testing.T) {
-	items := []gatewayruntimecache.ProviderModelCatalogItem{
-		// G：与 B 同模型但 scope 更低（去重时被 B 淘汰）。
-		{Model: "alpha", Scope: "built_in", Status: "active", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2025-06-01"), InputUsdPer1M: w1cFloat64Ptr(2)},
-		{Model: "alpha", Scope: "global", Status: "active", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2025-06-01"), InputUsdPer1M: w1cFloat64Ptr(2)},
-		{Model: "zeta", Scope: "personal", Status: "active", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2025-01-01"), InputUsdPer1M: w1cFloat64Ptr(1)},
-		{Model: "mike", Scope: "built_in", Status: "active", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2024-01-01"), InputUsdPer1M: w1cFloat64Ptr(3)},
-		// D：非 active 应剔除。
-		{Model: "bravo", Scope: "built_in", Status: "retired", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2025-01-01"), InputUsdPer1M: w1cFloat64Ptr(1)},
-		// E：built_in 且目录不可见应剔除。
-		{Model: "kilo", Scope: "built_in", Status: "active", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2025-01-01"), InputUsdPer1M: w1cFloat64Ptr(1),
-			CatalogVisible: w1cBoolPtr(false)},
-		// F：无可见价格应剔除。
-		{Model: "november", Scope: "built_in", Status: "active", ProviderCode: "openai",
-			ReleaseDate: w1cStringPtr("2025-01-01")},
-	}
-	selected := selectClientCatalogItems(items)
-	gotModels := make([]string, 0, len(selected))
-	for _, item := range selected {
-		gotModels = append(gotModels, item.Model)
-	}
-	want := []string{"alpha", "zeta", "mike"}
-	if !reflect.DeepEqual(gotModels, want) {
-		t.Fatalf("选择与排序不符，期望 %v 实际 %v", want, gotModels)
-	}
-}
-
 func TestW1CClientCatalogScopeRank(t *testing.T) {
 	cases := []struct {
 		scope string
@@ -202,66 +165,9 @@ func TestW1CClientCatalogScopeRank(t *testing.T) {
 	}
 }
 
-func TestW1CClientCatalogCompareItemsAndReleaseDate(t *testing.T) {
-	newer := gatewayruntimecache.ProviderModelCatalogItem{ReleaseDate: w1cStringPtr("2025-02-01"), ProviderCode: "openai", Model: "m"}
-	older := gatewayruntimecache.ProviderModelCatalogItem{ReleaseDate: w1cStringPtr("2024-12-01"), ProviderCode: "openai", Model: "m"}
-	if !clientCatalogCompareItems(newer, older) {
-		t.Fatalf("新发布日期应排在前（less(newer,older)=true）")
-	}
-	if clientCatalogCompareItems(older, newer) {
-		t.Fatalf("旧发布日期不应排在新日期之前")
-	}
-	anthropic := gatewayruntimecache.ProviderModelCatalogItem{ReleaseDate: w1cStringPtr("2025-01-01"), ProviderCode: "Anthropic", Model: "m"}
-	openai := gatewayruntimecache.ProviderModelCatalogItem{ReleaseDate: w1cStringPtr("2025-01-01"), ProviderCode: "OpenAI", Model: "m"}
-	if !clientCatalogCompareItems(anthropic, openai) {
-		t.Fatalf("同日期按归一化供应商码升序，anthropic 应在 openai 之前")
-	}
-	modelA := gatewayruntimecache.ProviderModelCatalogItem{ProviderCode: "openai", Model: "a"}
-	modelB := gatewayruntimecache.ProviderModelCatalogItem{ProviderCode: "openai", Model: "b"}
-	if !clientCatalogCompareItems(modelA, modelB) {
-		t.Fatalf("同日期同供应商按模型名升序")
-	}
-	if clientCatalogCompareItems(modelB, modelA) {
-		t.Fatalf("模型名降序不应判为 less")
-	}
-	if got := clientCatalogReleaseDate(gatewayruntimecache.ProviderModelCatalogItem{}); got != "" {
-		t.Fatalf("nil 日期应为空串，实际 %q", got)
-	}
-	dated := gatewayruntimecache.ProviderModelCatalogItem{ReleaseDate: w1cStringPtr(" 2025-01-01 ")}
-	if got := clientCatalogReleaseDate(dated); got != "2025-01-01" {
-		t.Fatalf("日期应去首尾空白，实际 %q", got)
-	}
-}
-
-func TestW1CClientCatalogHasVisiblePrice(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(*gatewayruntimecache.ProviderModelCatalogItem)
-		want   bool
-	}{
-		{"全空价格", func(*gatewayruntimecache.ProviderModelCatalogItem) {}, false},
-		{"输入价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.InputUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"输出价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.OutputUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"缓存读价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.CachedInputUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"缓存写价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.CacheWriteUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"图像输入价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.ImageInputUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"图像输出价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.ImageOutputUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"音频输出价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.AudioOutputUsdPer1M = w1cFloat64Ptr(1) }, true},
-		{"单张图像价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) { item.OutputUsdPerImage = w1cFloat64Ptr(1) }, true},
-		{"分层价格", func(item *gatewayruntimecache.ProviderModelCatalogItem) {
-			item.ServiceTierPrices = json.RawMessage(`[{"x":1}]`)
-		}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			item := &gatewayruntimecache.ProviderModelCatalogItem{}
-			tc.mutate(item)
-			if got := clientCatalogHasVisiblePrice(*item); got != tc.want {
-				t.Fatalf("期望 %v 实际 %v", tc.want, got)
-			}
-		})
-	}
-}
+// 旧 TestW1CSelectClientCatalogItems / TestW1CClientCatalogCompareItemsAndReleaseDate
+// / TestW1CClientCatalogHasVisiblePrice 已随成员过滤退役删除（/v1/models 账户
+// 并集设计 §4.5/§4.9.4）；字典端口行为由 chain_gatewaykeymodels_test.go 覆盖。
 
 func TestW1CClientCatalogEntryOf(t *testing.T) {
 	item := gatewayruntimecache.ProviderModelCatalogItem{

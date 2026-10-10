@@ -102,8 +102,8 @@ func (p *CandidatePipeline) PrepareDispatchAccounts(ctx context.Context, input g
 			}
 		}
 		result.ReleaseClientIPConcurrency = output.ReleaseClientIPConcurrency
-		result.CodexTurnAccountAvoidanceApplied = output.CodexTurnAccountAvoidanceApplied
-		result.CodexTurnAvoidedAccountIDs = output.CodexTurnAvoidedAccountIDs
+		result.SchedulingExclusions = projectSchedulingExclusionsToPreauth(output.SchedulingExclusions)
+		result.DispatchSegments = projectDispatchSegmentsToPreauth(output.DispatchSegments)
 		result.PrecheckHalfOpenEligible = output.PrecheckHalfOpenEligible
 	case gatewaypreauth.CandidateOutcomeFallback:
 		result.Reason = output.Reason
@@ -141,6 +141,41 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidate(ctx context.Contex
 		ResponseInspectionPolicies: output.ResponseInspectionPolicies,
 		RoutePlanSnapshot:          output.RoutePlanSnapshot,
 	}, true, nil
+}
+
+// projectSchedulingExclusionsToPreauth 把引擎侧排除集投影为 preauth 端口镜像
+// 形状（gatewaypreauth 不反向依赖引擎包，跨端口投影逐字段复制；
+// AccountSkipDetail 同模式）。nil 保持 nil。
+func projectSchedulingExclusionsToPreauth(exclusions *SchedulingExclusions) *gatewaypreauth.SchedulingExclusions {
+	if exclusions == nil {
+		return nil
+	}
+	return &gatewaypreauth.SchedulingExclusions{
+		ExcludedAccountIDs: append([]string(nil), exclusions.ExcludedAccountIDs...),
+	}
+}
+
+// projectDispatchSegmentsToPreauth 把引擎侧分派段投影为 preauth 端口镜像形状
+// （逐字段复制；AccountCandidate 两侧同为 gatewayruntimecache.OpenAIAccountSecret
+// 别名，切片直接复用，准备结果在本投影链上只读）。
+func projectDispatchSegmentsToPreauth(segments []DispatchSegment) []gatewaypreauth.DispatchSegment {
+	if len(segments) == 0 {
+		return nil
+	}
+	out := make([]gatewaypreauth.DispatchSegment, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, gatewaypreauth.DispatchSegment{
+			OpaqueSegmentID: segment.OpaqueSegmentID,
+			Tier: gatewaypreauth.DispatchPriorityTier{
+				ModelRank:    segment.Tier.ModelRank,
+				FallbackRank: segment.Tier.FallbackRank,
+				SuperRank:    segment.Tier.SuperRank,
+				Priority:     segment.Tier.Priority,
+			},
+			Accounts: segment.Accounts,
+		})
+	}
+	return out
 }
 
 // gatewayprotoLane converts the string lane into the typed lane.

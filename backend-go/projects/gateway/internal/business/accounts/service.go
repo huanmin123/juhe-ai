@@ -154,6 +154,13 @@ func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
 	if err := tx.Commit(); err != nil {
 		return Account{}, err
 	}
+	// Post-commit gateway runtime invalidation (网关模型列表账户并集设计 6.3
+	// coverage): the committed create (accounts row + supportedModels/
+	// mappings relations) is part of the union dependency face. The
+	// idempotent-retry arm above rolls back and publishes nothing.
+	// Best-effort, after the commit, never blocks or fails the write (see
+	// invalidation.go).
+	s.invalidateAfterCommittedWrite(invalidationReasonCreated)
 	return s.get(ctx, in.SystemAccountID, in.ID)
 }
 
@@ -272,7 +279,8 @@ func (s *Store) patch(ctx context.Context, systemID, id string, p Patch) (Accoun
 			return Account{}, ErrRevisionConflict
 		}
 	}
-	if p.SupportedModels != nil || p.ModelMappings != nil || p.Tags != nil || p.APIKeyBindings != nil {
+	relationsTouched := p.SupportedModels != nil || p.ModelMappings != nil || p.Tags != nil || p.APIKeyBindings != nil
+	if relationsTouched {
 		if err := writeRelationsPatch(ctx, tx, s, id, systemID, p, now); err != nil {
 			return Account{}, err
 		}
@@ -289,6 +297,15 @@ func (s *Store) patch(ctx context.Context, systemID, id string, p Patch) (Accoun
 	}
 	if err := tx.Commit(); err != nil {
 		return Account{}, err
+	}
+	// Post-commit gateway runtime invalidation (网关模型列表账户并集设计 6.3
+	// coverage): a changed patch is part of the union dependency face
+	// (supportedModels/mappings ride writeRelationsPatch; a non-nil relations
+	// field always bumps config_revision). An all-nil patch commits an empty
+	// transaction and publishes nothing. Best-effort, after the commit,
+	// never blocks or fails the write (see invalidation.go).
+	if baseChanged || relationsTouched {
+		s.invalidateAfterCommittedWrite(invalidationReasonPatched)
 	}
 	return s.get(ctx, systemID, id)
 }
@@ -321,6 +338,14 @@ func (s *Store) delete(ctx context.Context, systemID, id string, expected int64)
 	if err := tx.Commit(); err != nil {
 		return Account{}, err
 	}
+	// Post-commit gateway runtime invalidation (网关模型列表账户并集设计 6.3
+	// coverage): the committed soft delete flips status/schedulable/
+	// deleted_at on the accounts row — part of the union dependency face.
+	// The not-found (already deleted / unknown account) and stale-revision
+	// arms above return or roll back before the commit and publish nothing.
+	// Best-effort, after the commit, never blocks or fails the write (see
+	// invalidation.go).
+	s.invalidateAfterCommittedWrite(invalidationReasonDeleted)
 	a.Status = "disabled"
 	a.Schedulable = false
 	a.ConfigRevision = expected + 1

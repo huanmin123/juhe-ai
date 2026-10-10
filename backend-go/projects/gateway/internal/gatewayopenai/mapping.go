@@ -59,6 +59,15 @@ func isHybridProviderCode(account *RuntimeAccount) bool {
 	return gatewayNormalize(account.ProviderCode) == "hybrid"
 }
 
+// isProfileExcludedSourceFamily 是协议档案排除的唯一判定源：Gemini
+// OpenAI-chat 档案账户不接受 anthropic messages 源族映射（账户模型映射
+// 代码侧第③道判定，先于恒等拒绝与转换矩阵）。
+func isProfileExcludedSourceFamily(account *RuntimeAccount, sourceEndpointFamily string) bool {
+	return account != nil &&
+		account.ProviderProtocolProfileID == GeminiOpenAIChatProfileID &&
+		sourceEndpointFamily == FamilyAnthropicMessages
+}
+
 func gatewayNormalize(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	return normalized
@@ -73,9 +82,7 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 	if !isAccountModelMappingSourceEndpointFamily(sourceEndpointFamily) {
 		return nil
 	}
-	if account != nil &&
-		account.ProviderProtocolProfileID == GeminiOpenAIChatProfileID &&
-		sourceEndpointFamily == FamilyAnthropicMessages {
+	if isProfileExcludedSourceFamily(account, sourceEndpointFamily) {
 		return nil
 	}
 	mappings := accountMappings(account)
@@ -93,10 +100,10 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 	if mapping == nil {
 		return nil
 	}
-	if mapping.UpstreamModel == mapping.SourceModel && mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
-		return nil
-	}
-	if !isOpenAIModelMappingRuntimeConversionSupported(mapping, account) {
+	// 命中行之后的三道判定（恒等拒绝、转换矩阵，连同已满足的启用、源族
+	// 可接受集、档案排除）统一走 IsAdmissibleModelMapping 唯一函数源；
+	// 请求级预检与循环内启用跳过保持既有早退语义不变。
+	if !IsAdmissibleModelMapping(*mapping, account) {
 		return nil
 	}
 	resolved := &gatewayproto.ResolvedModelMapping{
@@ -108,6 +115,32 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 		RuntimeRouteRuleID:     mapping.RuntimeRouteRuleID,
 	}
 	return resolved
+}
+
+// IsAdmissibleModelMapping 判定单条账户模型映射行在给定账户（模型事实主体）
+// 上是否为运行时可执行的映射：启用 + 源端点族在可接受集 + 协议档案排除 +
+// 非恒等改写 + 运行时转换矩阵支持（网关模型列表账户并集设计 4.2）。与
+// ResolveAccountModelMapping 内联的同一组判定共享唯一函数源；矩阵演化时
+// 两侧自动同步，禁止在任何调用方复刻第二份判定。判定只依赖映射行与账户
+// 协议档案/provider，可静态执行；account 为 nil 时无模型事实主体，与
+// ResolveAccountModelMapping（nil 账户解析不到任何行）保持一致返回 false。
+func IsAdmissibleModelMapping(mapping AccountModelMapping, account *RuntimeAccount) bool {
+	if account == nil {
+		return false
+	}
+	if mapping.Enabled != nil && !*mapping.Enabled {
+		return false
+	}
+	if !isAccountModelMappingSourceEndpointFamily(mapping.SourceEndpointFamily) {
+		return false
+	}
+	if isProfileExcludedSourceFamily(account, mapping.SourceEndpointFamily) {
+		return false
+	}
+	if mapping.UpstreamModel == mapping.SourceModel && mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
+		return false
+	}
+	return isOpenAIModelMappingRuntimeConversionSupported(&mapping, account)
 }
 
 func accountMappings(account *RuntimeAccount) []AccountModelMapping {

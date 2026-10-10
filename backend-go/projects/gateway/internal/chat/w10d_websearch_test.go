@@ -20,6 +20,12 @@ func (w10dWebSearchCatalog) ListAccountsForGroup(groupID, systemAccountID, reque
 	return (mockModelCatalog{}).ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily)
 }
 
+// ListChatPinnedAccountsForGroup 与 ListAccountsForGroup 同一视图按 ID 收敛
+// 单元素（对齐生产 pinned 直取语义）。
+func (w10dWebSearchCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	return (mockModelCatalog{}).ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID)
+}
+
 func (w10dWebSearchCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	items := (mockModelCatalog{}).ListProviderCatalog(providerCode, systemAccountID)
 	for i := range items {

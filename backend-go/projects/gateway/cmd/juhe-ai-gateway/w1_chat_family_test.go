@@ -18,15 +18,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -657,40 +660,79 @@ func TestW1HChatObservationSetObservation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// C8. chainClientModelCatalog.ListClientModelCatalog
+// C8. chainGatewayKeyModelCatalog.ListGatewayKeyModels（并集成员 ∪ 目录字典，
+// /v1/models 账户并集设计 §4.9；聚合语义由 chain_gatewaykeymodels_test.go 覆盖）
 // ---------------------------------------------------------------------------
 
-func TestW1HListClientModelCatalog(t *testing.T) {
-	invisible := false
+func TestW1HListGatewayKeyModels(t *testing.T) {
+	window := int64(128000)
+	personalWindow := int64(200000)
 	catalog := []gatewayruntimecache.ProviderModelCatalogItem{
-		{Scope: "global", Status: "active", ProviderCode: "openai", Model: "w1h-a", InputUsdPer1M: w1hFloatPtr(2.5), ReleaseDate: w1hStringPtr("2026-01-01")},
-		// 同模型 personal 作用域副本：best-scope-first 去重应保留 personal。
-		{Scope: "personal", Status: "active", ProviderCode: "openai", Model: "w1h-a", InputUsdPer1M: w1hFloatPtr(2.5), ReleaseDate: w1hStringPtr("2026-01-01")},
-		// built_in 且目录不可见：过滤。
-		{Scope: "built_in", Status: "active", ProviderCode: "openai", Model: "w1h-b", CatalogVisible: &invisible, InputUsdPer1M: w1hFloatPtr(1)},
-		// 非 active：过滤。
-		{Scope: "global", Status: "inactive", ProviderCode: "openai", Model: "w1h-c", InputUsdPer1M: w1hFloatPtr(1)},
-		// 无可见价格：过滤。
-		{Scope: "global", Status: "active", ProviderCode: "openai", Model: "w1h-d"},
-		// 另一供应商，release date 更新：排序在前。
-		{Scope: "personal", Status: "active", ProviderCode: "anthropic", Model: "w1h-e", OutputUsdPer1M: w1hFloatPtr(5), ReleaseDate: w1hStringPtr("2026-02-01")},
+		{Scope: "global", Status: "active", ProviderCode: "openai", Model: "w1h-a", ContextWindowTokens: &window},
+		// 同模型 personal 作用域副本：字典取 best-scope（personal）行元数据。
+		{Scope: "personal", Status: "active", ProviderCode: "openai", Model: "w1h-a", ContextWindowTokens: &personalWindow},
+		// 非 active 行不进字典。
+		{Scope: "global", Status: "inactive", ProviderCode: "openai", Model: "w1h-a"},
+		// 并集未包含的目录模型不出现——成员资格来自并集，目录只是字典
+		//（可见性/价格/模式过滤已退役，不再参与成员资格）。
+		{Scope: "global", Status: "active", ProviderCode: "openai", Model: "w1h-z"},
 	}
-	loader := chainClientModelCatalog{cache: w1hNewRuntimeCache(t, &w1hReadModels{catalog: catalog})}
-	entries := loader.ListClientModelCatalog("sys-w1h", []string{"openai", " OpenAI ", "anthropic", ""})
-	if len(entries) != 2 {
-		t.Fatalf("entries = %d（%+v）, want 2", len(entries), entries)
+	validUntil := time.Now().Add(time.Hour)
+	union := &gkmFakeUnionLoader{entry: gatewayruntimecache.GroupModelUnionEntry{
+		Models:     []string{"w1h-missing", "w1h-a"},
+		ValidUntil: validUntil,
+	}}
+	service, err := gatewayruntimecache.New(&w1hReadModels{catalog: catalog}, gatewayruntimecache.Options{Union: union})
+	if err != nil {
+		t.Fatalf("组装 w1h runtime cache: %v", err)
 	}
-	if entries[0].Model != "w1h-e" || entries[0].Scope != "personal" {
-		t.Errorf("entries[0] = %+v, want w1h-e/personal（release date 降序）", entries[0])
+	t.Cleanup(service.Close)
+	loader := chainGatewayKeyModelCatalog{cache: service}
+	result, err := loader.ListGatewayKeyModels(context.Background(), "sys-w1h", []gatewayresponse.GatewayModelBinding{
+		{GroupID: "grp-b", ProviderCode: "openai"},
+		{GroupID: "grp-a", ProviderCode: "openai"},
+		{GroupID: "grp-b", ProviderCode: "openai"},
+	})
+	if err != nil {
+		t.Fatalf("ListGatewayKeyModels: %v", err)
 	}
-	if entries[1].Model != "w1h-a" || entries[1].Scope != "personal" {
-		t.Errorf("entries[1] = %+v, want w1h-a/personal（best-scope-first 去重保留 personal）", entries[1])
+	if len(result.Entries) != 2 {
+		t.Fatalf("entries = %d（%+v）, want 2", len(result.Entries), result.Entries)
 	}
-	if got := loader.ListClientModelCatalog("sys-w1h", nil); got != nil {
-		t.Fatalf("空 provider 列表 = %+v, want nil", got)
+	if result.Entries[0].Model != "w1h-a" || result.Entries[0].Scope != "personal" || result.Entries[0].ContextWindowTokens != 200000 {
+		t.Errorf("entries[0] = %+v, want w1h-a/personal（字典 best-scope 元数据）", result.Entries[0])
 	}
-	if got := (chainClientModelCatalog{}).ListClientModelCatalog("sys-w1h", []string{"openai"}); got != nil {
-		t.Fatalf("cache 为 nil 时 = %+v, want nil", got)
+	if result.Entries[1].Model != "w1h-missing" || result.Entries[1].Scope != "" || result.Entries[1].ContextWindowTokens != 0 {
+		t.Errorf("entries[1] = %+v, want w1h-missing 合成零值条目", result.Entries[1])
+	}
+	if !result.ValidUntil.Equal(validUntil) {
+		t.Errorf("ValidUntil = %v, want 并集条目有效期", result.ValidUntil)
+	}
+	// 并集入参：分组去重排序 + 调用方透传。
+	union.mu.Lock()
+	calls := len(union.calls)
+	var gotInput gatewayruntimecache.GroupModelUnionListOptions
+	if calls > 0 {
+		gotInput = union.calls[0]
+	}
+	union.mu.Unlock()
+	if calls != 1 || gotInput.CallerSystemAccountID != "sys-w1h" || !reflect.DeepEqual(gotInput.GroupIDs, []string{"grp-a", "grp-b"}) {
+		t.Fatalf("并集入参 calls=%d input=%+v", calls, gotInput)
+	}
+	// 空 bindings：空列表且不再触发并集（§4.7）。
+	empty, err := loader.ListGatewayKeyModels(context.Background(), "sys-w1h", nil)
+	if err != nil {
+		t.Fatalf("空绑定: %v", err)
+	}
+	if len(empty.Entries) != 0 || empty.Entries == nil {
+		t.Fatalf("空绑定 entries = %+v, want 非 nil 空列表", empty.Entries)
+	}
+	if union.callCount() != 1 {
+		t.Fatalf("空绑定不得触发并集装载，调用次数 = %d", union.callCount())
+	}
+	// cache 缺席：装配错误显式失败，不再静默空列表。
+	if _, err := (chainGatewayKeyModelCatalog{}).ListGatewayKeyModels(context.Background(), "sys-w1h", nil); err == nil {
+		t.Fatal("cache 缺席必须报错")
 	}
 }
 

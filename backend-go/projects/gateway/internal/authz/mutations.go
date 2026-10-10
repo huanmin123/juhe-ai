@@ -879,6 +879,12 @@ func (s *Store) ExpireSweep(ctx context.Context, limit int) (int, error) {
 			return expired, err
 		}
 		expired++
+		// Post-commit invalidation fan-out per committed flip (网关模型列表
+		// 账户并集设计 6.3 coverage): the expiry materialization rewrites the
+		// runtime authorization rows, so the committed write must clear the
+		// gateway runtime cache exactly like the business mutations. Best-effort,
+		// never blocks or fails the sweep.
+		s.invalidateAfterBusinessWrite(ctx, invalidationReasonExpired)
 	}
 	return expired, nil
 }

@@ -17,9 +17,11 @@ import (
 // 间接层。
 //
 // 注入语义：SanitizeCodexHistory 是可注入 hook 变量（生产恒 nil），真身唯一
-// 留在 gatewayoauthcodex（oauthnormalizer.go）；根包 accountpreparation.go 的
-// 读取点与根包测试的注入点经 `gatewayoauthcodex.SanitizeCodexHistory` 前缀
-// 直接读写同一变量，保持单一全局注入语义不变。
+// 留在 gatewayoauthcodex（oauthnormalizer.go）；根包测试的注入点经
+// `gatewayoauthcodex.SanitizeCodexHistory` 前缀直接写同一变量；根包
+// accountpreparation.go 的读取点经下方 sanitizeCodexHistoryHookIfSet 以活
+// 绑定读取同一变量（调度内核通用化批次 3b：审计门五文件不再出现
+// gatewayoauthcodex 前缀），保持单一全局注入语义不变。
 
 // --- OpenAI OAuth Codex 适配器错误（原 errors.go 243-295 块） ---
 
@@ -49,6 +51,17 @@ var (
 	MarkGatewayCodexHistorySanitized = gatewayoauthcodex.MarkGatewayCodexHistorySanitized
 	IsGatewayCodexHistorySanitized   = gatewayoauthcodex.IsGatewayCodexHistorySanitized
 )
+
+// sanitizeCodexHistoryHookIfSet 以活绑定方式读取可注入历史清理 hook
+// （gatewayoauthcodex.SanitizeCodexHistory，生产恒 nil，测试注入）：未注入时
+// 返回 false，调用方保持输入不变。经函数读取而非 init 期值拷贝，保证测试
+// 注入对根包消费点始终可见。
+func sanitizeCodexHistoryHookIfSet(items []any, options SanitizeCodexHistoryOptions) (CodexHistorySanitizeResult, bool) {
+	if gatewayoauthcodex.SanitizeCodexHistory == nil {
+		return CodexHistorySanitizeResult{}, false
+	}
+	return gatewayoauthcodex.SanitizeCodexHistory(items, options), true
+}
 
 // --- OAuth codex 规范化 / 适配（原 oauthnormalizer.go / oauthadapter.go /
 // builtintools.go 导出面） ---
@@ -116,22 +129,10 @@ var (
 	SetGptRequestOverrideModelCatalog    = gatewayoauthcodex.SetGptRequestOverrideModelCatalog
 )
 
-// --- Codex turn 规避过滤（原 codexturnavoidance.go，私有名经桥保持
-// upstreamdispatch.go 消费点零改动） ---
-
-func stringSet(ids []string) map[string]struct{} { return gatewayoauthcodex.StringSet(ids) }
-
-func filterCodexTurnAvoidedAccounts(accounts []AccountCandidate, avoided map[string]struct{}, reversed bool) []AccountCandidate {
-	return gatewayoauthcodex.FilterCodexTurnAvoidedAccounts(accounts, avoided, reversed)
-}
-
-func codexTurnReversalCandidates(accounts []AccountCandidate, avoided map[string]struct{}, exhausted map[string]struct{}) []AccountCandidate {
-	return gatewayoauthcodex.CodexTurnReversalCandidates(accounts, avoided, exhausted)
-}
-
-func nonRecoverableFailedAccountIDs(failed, recoverable map[string]struct{}) map[string]struct{} {
-	return gatewayoauthcodex.NonRecoverableFailedAccountIDs(failed, recoverable)
-}
+// --- Codex turn 规避过滤（原 codexturnavoidance.go）---
+// 调度内核通用化（设计 5.1，批次 1）后内核不再消费 turn 避让纯函数：排除语义
+// 由准备层固化的通用调度排除集（SchedulingExclusions）承载，过滤/翻回由内核
+// 分派段状态机取代。codexturnavoidance.go 及其桥接转发已随批次删除。
 
 func jsonValueEqual(left, right any) bool {
 	return gatewayoauthcodex.JSONValueEqual(left, right)

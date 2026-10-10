@@ -1286,55 +1286,11 @@ func TestShouldReloadModelAwareCandidates(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// circuitfacade.go 压缩触发识别
+// circuitfacade.go 压缩触发识别（设计 5.2 三轨合一后已随批次 2 删除：唯一
+// 形状判定实现在 gatewaycodex.CodexCompactionExpectedForRequest，由其自身
+// 测试与 preflight 消费覆盖；引擎超时豁免改为链面传入 TimeoutsDisabled /
+// TotalTimeLane 参数，行为面由 chain_v1_compaction_timeout_test 锁定）
 // ---------------------------------------------------------------------------
-
-func TestCodexCompactionExpectedForRequest(t *testing.T) {
-	if CodexCompactionExpectedForRequest(nil) {
-		t.Fatal("nil 请求不触发")
-	}
-	getReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodGet, "/v1/responses/compact", nil))
-	if CodexCompactionExpectedForRequest(getReq) {
-		t.Fatal("GET 不触发")
-	}
-	compactReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil))
-	if !CodexCompactionExpectedForRequest(compactReq) {
-		t.Fatal("POST /responses/compact 必须触发")
-	}
-	// /responses 路径靠 body 中的 compaction_trigger 识别。
-	responsesTrigger := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
-	responsesTrigger.Body = newTestRequestBody(t, `{"model":"gpt-test","input":[{"type":"compaction_trigger"}]}`)
-	if !CodexCompactionExpectedForRequest(responsesTrigger) {
-		t.Fatal("body 含 compaction_trigger 必须命中")
-	}
-	responsesPlain := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
-	responsesPlain.Body = newTestRequestBody(t, `{"model":"gpt-test"}`)
-	if CodexCompactionExpectedForRequest(responsesPlain) {
-		t.Fatal("普通 body 不应命中")
-	}
-}
-
-func TestRequestBodyHasCompactionTriggerEdgeScan(t *testing.T) {
-	// >64KiB 的 body 只扫描头尾窗口：触发词放在头部窗口内命中。
-	pad := make([]byte, 70*1024)
-	head := `{"input":[{"type":"compaction_trigger"}],"pad":"` + string(pad) + `"}`
-	large := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
-	large.Body = newTestRequestBody(t, head)
-	if !requestBodyHasCompactionTrigger(large) {
-		t.Fatal("头部窗口内触发词必须命中")
-	}
-	// 触发词只在中段（头尾窗口外）时不命中。
-	middle := `{"a":"` + string(pad) + `","type":"compaction_trigger","b":"` + string(pad) + `"}`
-	midReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
-	midReq.Body = newTestRequestBody(t, middle)
-	if requestBodyHasCompactionTrigger(midReq) {
-		t.Fatal("窗口外触发词不应命中")
-	}
-	// 空 body / nil body 不命中。
-	if requestBodyHasCompactionTrigger(&gatewaypreauth.GatewayRequest{}) {
-		t.Fatal("nil body 不命中")
-	}
-}
 
 // newTestRequestBody 构造带解析对象与状态的最小请求 body。
 func newTestRequestBody(t *testing.T, body string) *gatewaybody.Request {

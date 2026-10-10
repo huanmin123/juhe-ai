@@ -25,6 +25,8 @@ export interface SystemAccountSummary {
   mustChangePassword: boolean
   imageGenerationEnabled: boolean
   aiAccountLimit?: number
+  /** 特供账户上限覆盖；null/缺省表示未覆盖（默认 3），0 = 禁止新增/重新启用。 */
+  expeditedAccountLimit?: number | null
   requestLimits?: UserRequestLimits
   lastLoginAt?: string
   createdAt: string
@@ -75,6 +77,8 @@ export type SystemAccountPatchPayload = {
   password?: string
   description?: string | null
   aiAccountLimit?: number | null
+  /** 三态：键缺省=不修改；显式 null=清除覆盖；整数=设置 0–100。 */
+  expeditedAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }
 
@@ -92,6 +96,7 @@ export type SystemAccountMutationResult = {
 >> & {
   description?: string | null
   aiAccountLimit?: number | null
+  expeditedAccountLimit?: number | null
   requestLimits?: UserRequestLimits | null
 }
 

@@ -433,8 +433,12 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 	// 换代点统一回收（初始 preflight 直接产出与 RouteAction→fallback 产物都在
 	// 这里进入主循环）：compaction 的 Unbounded wall budget 等请求级实例随
-	// context 生效，coordination 构造据此重导出 TimeoutPolicy。
+	// context 生效，coordination 构造据此携带 TimeoutsDisabled / TotalTimeLane。
 	loop.adoptDispatchContextBudgets(context)
+	// 压缩等待保活判定预计算（调度内核通用化设计 5.6）：三重画像条件在初始
+	// DispatchContext 上一次判定写入 loop.compactWaitKeepalive，下方预算等待
+	// 心跳排除与 run 循环内的压缩保活挂载只消费该布尔。
+	loop.compactWaitKeepalive = compactWaitKeepaliveOf(req, context)
 	// D-120（BUG-0175）SSE 等待心跳装配（preflight.ts:855-860）：等待预算在
 	// BeginNoAvailableWait/PauseNoAvailableWait 边沿起停心跳，长等待期间向
 	// 下游写 SSE 保活块，防止空闲超时断连。非 SSE 下游协议心跳为 nil
@@ -452,7 +456,7 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		DownstreamCommit:   loop.waitCommitState,
 		Signal:             ctx,
 	})
-	if loop.waitHeartbeat != nil && !shouldKeepCompactSseAliveDuringUpstreamWait(req, context) {
+	if loop.waitHeartbeat != nil && !loop.compactWaitKeepalive {
 		// 预算等待心跳只在非压缩保活场景挂载（复审竞态修复）：压缩场景的
 		// compact 保活心跳覆盖整个 fetch 窗口（含等待期，保活块语义更精确），
 		// 是预算心跳等待期职责的超集；两个心跳 goroutine 并发写同一

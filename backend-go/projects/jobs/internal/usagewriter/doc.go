@@ -43,6 +43,12 @@
 // 与 Node 完全一致；>0 时同一批重试耗尽后转入死信终态并计数，防止进程内
 // 队列永久堆积——Redis Stream 路径消灭后不再有"pending 消息"兜底）。
 //
+// durable 例外（BUG-0304）：EnqueueDurable 为 durable spool 交接消费方
+// （usagespooldrain）提供非终态的队列满路径——溢出落盘失败返回可重试错误
+// 而不计终态丢弃，记录由 durable 源文件重试（nil ⇔ 已接受，非 nil ⇔ 未接
+// 收）；oversize 仍按终态丢弃返回 nil（重试不可能成功，保留会卡死回放队
+// 头）。Enqueue 的 best-effort 终态语义保持不变。
+//
 // # pricing freeze
 //
 // freeze.go 复刻 freezeUsageRecordPricingFactsAsync 的冻结时点语义：记录在

@@ -114,6 +114,10 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		}
 		return ref.EnabledGroupIDs, true
 	})
+	// AI 问答调度覆盖通道（2026-10-10 修订）：chat-pinned 直取端口——经 runtime
+	// cache 专用路径按（分组, 账户 ID）直取运行时快照，含禁用/冷却/过期/禁调度
+	// 账户；装配期置位一次，此后只读。
+	setChainChatDispatchPinnedFetch(services.Cache.ListFreshOpenAIAccountsForChatPinnedAsync)
 	// 可靠性批次2（缺陷1）：把生成排空接进 composed.shutdowns。shutdowns 是
 	// LIFO（后注册先执行）：本注册晚于 chainShutdown / chainServices.Close，
 	// 停机时 hub 排空先于网关链关闭——runner 的收尾派发（轮次落 canceled 终态）

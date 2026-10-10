@@ -243,12 +243,18 @@ func (s *recordingFailureSink) SendGatewayFailureResponse(input gatewaypreauth.F
 func (s *recordingFailureSink) FinalizeGatewayAuthFailureAudit(*gatewaypreauth.GatewayRequest, gatewaypreauth.GatewayResponseWriter, gatewaypreauth.AuditCaptureContext) {
 }
 
-func (s *recordingFailureSink) SendAuthenticatedModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *recordingFailureSink) SendAuthenticatedModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
-func (s *recordingFailureSink) SendOpenAIModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {}
-func (s *recordingFailureSink) SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *recordingFailureSink) SendOpenAIModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
-func (s *recordingFailureSink) SendGeminiModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {}
+func (s *recordingFailureSink) SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
+func (s *recordingFailureSink) SendGeminiModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
 // newV1TestLoop builds a dispatch loop over a stub service + sink.
 func newV1TestLoop(t *testing.T, sink *recordingFailureSink) *v1DispatchLoop {

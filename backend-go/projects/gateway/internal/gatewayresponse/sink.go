@@ -1,6 +1,7 @@
 package gatewayresponse
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -55,7 +56,12 @@ var _ gatewaypreauth.ResponseSink = (*Sink)(nil)
 
 // SendGatewayFailureResponse 对齐 sendGatewayFailureResponse。
 func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseInput) {
+	// Protocol 非空时按调用方已判定的显式协议构造错误形态（models 装载
+	// 失败收尾）；为空时保持既有按请求路径的协议推断，其他失败调用零变化。
 	protocol := gatewayErrorProtocolForRequest(input.Req)
+	if input.Protocol != "" {
+		protocol = input.Protocol
+	}
 	deliveredPayload := gatewaypreauth.LocalizedGatewayErrorPayload(input.ResponsePayload, input.StatusCode)
 	if input.PreserveUpstreamErrorMessage {
 		deliveredPayload = input.ResponsePayload
@@ -220,32 +226,39 @@ func (s *Sink) FinalizeGatewayAuthFailureAudit(req *gatewaypreauth.GatewayReques
 }
 
 // SendAuthenticatedModelsGatewayResponse 对齐
-// sendAuthenticatedModelsGatewayResponse。
-func (s *Sink) SendAuthenticatedModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {
-	s.sendModelsGatewayResponse(input, input.Protocol)
+// sendAuthenticatedModelsGatewayResponse。返回非 nil error 表示模型列表装载
+// 失败：HTTP 未写出、未记成功审计/用量，由调用方执行协议化错误收尾
+// （设计 4.6.4）。
+func (s *Sink) SendAuthenticatedModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return s.sendModelsGatewayResponse(input, input.Protocol)
 }
 
 // SendOpenAIModelsGatewayResponse 对齐 sendOpenAIModelsGatewayResponse。
-func (s *Sink) SendOpenAIModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {
-	s.sendModelsGatewayResponse(input, "openai")
+func (s *Sink) SendOpenAIModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return s.sendModelsGatewayResponse(input, "openai")
 }
 
 // SendAnthropicModelsGatewayResponse 对齐 sendAnthropicModelsGatewayResponse。
-func (s *Sink) SendAnthropicModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {
-	s.sendModelsGatewayResponse(input, "anthropic")
+func (s *Sink) SendAnthropicModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return s.sendModelsGatewayResponse(input, "anthropic")
 }
 
 // SendGeminiModelsGatewayResponse 对齐 sendGeminiModelsGatewayResponse。
-func (s *Sink) SendGeminiModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) {
-	s.sendModelsGatewayResponse(input, "gemini")
+func (s *Sink) SendGeminiModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput) error {
+	return s.sendModelsGatewayResponse(input, "gemini")
 }
 
-func (s *Sink) sendModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput, protocol string) {
-	providerCodes := normalizedProviderCodeList(input.ProviderCodes)
+func (s *Sink) sendModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput, protocol string) error {
+	providerCodes := normalizedBindingProviderCodes(input.Bindings)
 	providerCode := modelsUsageProviderCode(providerCodes, input.UsageContext.ProviderCode)
-	responsePayload := s.sendModelsGatewayResponsePayload(input, protocol, providerCode, providerCodes)
+	responsePayload, err := s.sendModelsGatewayResponsePayload(input, protocol)
+	if err != nil {
+		// 装载失败：不写 HTTP、不 finalize、不记成功用量，错误原样传给
+		// 调用方（设计 4.6.2/4.6.4）。
+		return err
+	}
 	if s.Deps.UsageDispatch == nil {
-		return
+		return nil
 	}
 	now := s.nowMs()
 	elapsed := now - input.StartedAt
@@ -260,6 +273,7 @@ func (s *Sink) sendModelsGatewayResponse(input gatewaypreauth.ModelsResponseInpu
 		UsageSemantic: s.usageSemanticFor(input, providerCode),
 	})
 	_ = responsePayload
+	return nil
 }
 
 // usageSemanticFor 对齐 usageSemanticForProfile({providerCode,
@@ -291,17 +305,20 @@ func usageSemanticForProviderCode(providerCode string) string {
 	}
 }
 
-func (s *Sink) sendModelsGatewayResponsePayload(input gatewaypreauth.ModelsResponseInput, protocol string, providerCode string, providerCodes []string) any {
+func (s *Sink) sendModelsGatewayResponsePayload(input gatewaypreauth.ModelsResponseInput, protocol string) (any, error) {
 	systemAccountID := input.UsageContext.SystemAccountID
-	catalog := s.loadCatalog(systemAccountID, providerCodes)
+	catalog, err := s.loadCatalog(input, systemAccountID)
+	if err != nil {
+		return nil, err
+	}
 	var responsePayload any
 	switch protocol {
 	case "anthropic":
-		responsePayload = buildAnthropicModelsPayload(catalog)
+		responsePayload = buildAnthropicModelsPayload(catalog.Entries)
 	case "gemini":
-		responsePayload = buildGeminiModelsPayload(catalog)
+		responsePayload = buildGeminiModelsPayload(catalog.Entries)
 	default:
-		responsePayload = buildOpenAIModelsPayload(catalog, input.Req)
+		responsePayload = buildOpenAIModelsPayload(catalog.Entries, input.Req)
 	}
 	if systemAccountID != "" {
 		setAuthenticatedModelsClientCacheHeaders(input.Res)
@@ -321,17 +338,35 @@ func (s *Sink) sendModelsGatewayResponsePayload(input gatewaypreauth.ModelsRespo
 	}
 	if extender, ok := input.AuditCapture.(AuditFinalizeExtender); ok {
 		extender.FinalizeExtended(finalizeInput, AuditFinalizeExtras{FirstTokenMs: &firstTokenMs})
-		return responsePayload
+		return responsePayload, nil
 	}
 	input.AuditCapture.Finalize(finalizeInput)
-	return responsePayload
+	return responsePayload, nil
 }
 
-func (s *Sink) loadCatalog(systemAccountID string, providerCodes []string) []ModelCatalogEntry {
+// loadCatalog 经 ModelCatalogLoader 装载一次 /v1/models 成员∪元数据结果。
+// input.Context 为空时兜底 context.Background()：请求 ctx 由 preflight 经
+// ModelsResponseInput.Context 传入（设计 4.6.1），兜底仅覆盖未携带 ctx 的
+// 调用方（测试或历史装配），此时放弃请求取消语义。
+func (s *Sink) loadCatalog(input gatewaypreauth.ModelsResponseInput, systemAccountID string) (GatewayKeyModelList, error) {
 	if s.Deps.ModelCatalog == nil {
-		return nil
+		return GatewayKeyModelList{}, nil
 	}
-	return s.Deps.ModelCatalog.ListClientModelCatalog(systemAccountID, providerCodes)
+	ctx := input.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.Deps.ModelCatalog.ListGatewayKeyModels(ctx, systemAccountID, input.Bindings)
+}
+
+// normalizedBindingProviderCodes 返回绑定 provider code 的去重规范化序列
+// （usage 归因沿用首个 provider，行为与原 ProviderCodes 路径一致）。
+func normalizedBindingProviderCodes(bindings []gatewaypreauth.GatewayModelBinding) []string {
+	codes := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		codes = append(codes, binding.ProviderCode)
+	}
+	return normalizedProviderCodeList(codes)
 }
 
 func normalizedProviderCodeList(providerCodes []string) []string {

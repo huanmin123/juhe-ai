@@ -382,7 +382,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	var guidanceErr *gatewaypreauth.GatewayAgentGuidanceResponse
 	var localErr *gatewaypreauth.GatewayLocalProtocolResponse
 	var validationErr *gatewaypreauth.GatewayRequestValidationError
-	var adapterErr *OpenAIOAuthCodexAdapterError
+	var adapterErr UpstreamAdapterContractError
 	if errorsAs(err, &guidanceErr) && guidanceErr.IsAccountScoped() {
 		auditCapture.CompleteAttempt(c.auditAttemptID, CompleteAttemptInput{
 			Success: false, ErrorPhase: "request_validation", ErrorMessage: err.Error(),

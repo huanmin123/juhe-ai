@@ -1,7 +1,9 @@
 package gatewayresponse
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -161,18 +163,32 @@ func (m *mockHTTPObserver) Observe(req *gatewaypreauth.GatewayRequest, res gatew
 
 type mockCatalogLoader struct {
 	items []ModelCatalogEntry
+	// listErr 非空时 ListGatewayKeyModels 返回该错误（模拟装载失败）。
+	listErr error
 }
 
-func (m *mockCatalogLoader) ListClientModelCatalog(systemAccountID string, providerCodes []string) []ModelCatalogEntry {
-	if len(providerCodes) > 0 && providerCodes[0] == "anthropic" {
-		return []ModelCatalogEntry{{Model: "claude-x", Scope: "built_in", ReleaseDate: "2025-01-02"}}
+func (m *mockCatalogLoader) ListGatewayKeyModels(_ context.Context, _ string, bindings []GatewayModelBinding) (GatewayKeyModelList, error) {
+	if m.listErr != nil {
+		return GatewayKeyModelList{}, m.listErr
 	}
-	if len(providerCodes) > 0 && providerCodes[0] == "gemini" {
-		return []ModelCatalogEntry{{Model: "gemini-x", Scope: "built_in", CapabilityNotes: "fast"}}
+	if m.items != nil {
+		return GatewayKeyModelList{Entries: m.items}, nil
 	}
-	return []ModelCatalogEntry{
-		{Model: "gpt-x", Scope: "built_in", ReleaseDate: "2024-06-01"},
-		{Model: "custom-y", Scope: "personal", CreatedAt: "2025-03-04T05:06:07Z", CapabilityNotes: "自定义模型"},
+	// 首个绑定的 provider code 决定返回条目（对齐原 providerCodes 键控行为）。
+	first := ""
+	if len(bindings) > 0 {
+		first = strings.ToLower(strings.TrimSpace(bindings[0].ProviderCode))
+	}
+	switch first {
+	case "anthropic":
+		return GatewayKeyModelList{Entries: []ModelCatalogEntry{{Model: "claude-x", Scope: "built_in", ReleaseDate: "2025-01-02"}}}, nil
+	case "gemini":
+		return GatewayKeyModelList{Entries: []ModelCatalogEntry{{Model: "gemini-x", Scope: "built_in", CapabilityNotes: "fast"}}}, nil
+	default:
+		return GatewayKeyModelList{Entries: []ModelCatalogEntry{
+			{Model: "gpt-x", Scope: "built_in", ReleaseDate: "2024-06-01"},
+			{Model: "custom-y", Scope: "personal", CreatedAt: "2025-03-04T05:06:07Z", CapabilityNotes: "自定义模型"},
+		}}, nil
 	}
 }
 

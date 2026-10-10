@@ -44,6 +44,15 @@ type Runner struct {
 	// backlogWarnedAt 是 outbox 堆积告警的上次触发时刻（drain 频控用；
 	// mu 保护：告警窗口 10 分钟内不重复）。
 	backlogWarnedAt time.Time
+	// inputFreshness 是执行前新鲜度门（设计 §6.3）的业务库读面：PG/SQLite
+	// 直读 reader 各自实现按账户主键单列重读 accounts.config_revision；
+	// nil（files 显式后备通道没有业务读连接）时门结构性不可用，跳过判定。
+	inputFreshness inputFreshnessReader
+	// freshnessMu/freshnessWarnedAt 保护 input_freshness_unavailable 诊断的
+	// 每账户限频（发布方修复前该形态会逐轮复现，10 分钟窗口内不重复告警，
+	// 与 backlogWarnedAt 同款模式）。
+	freshnessMu       sync.Mutex
+	freshnessWarnedAt map[string]time.Time
 
 	mu     sync.RWMutex
 	status RunnerStatus
@@ -119,6 +128,9 @@ func NewRunnerWithDirectInputReader(cfg Config, store *Store, logger *slog.Logge
 	runner.directInputReader = reader
 	if reader != nil && store != nil {
 		reader.SetSuppressionProvider(store.LoadDirectInputSuppressions)
+	}
+	if freshness, ok := reader.(inputFreshnessReader); ok {
+		runner.inputFreshness = freshness
 	}
 	return runner
 }
@@ -535,6 +547,21 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 	if err := validateScheduledInput(input, now); err != nil {
 		return r.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, now, "input_invalid", err.Error())
 	}
+	// 执行前新鲜度门（设计 §6.3）：拒绝时允许按现有请求终态落库以消费该请求，
+	// 但不得写回账户健康状态或失败计数（OutcomeStale 与无 due 的 task_failed
+	// 在 store 侧均为 audit-only，current_state 零写入）。
+	if verdict, current := r.checkInputFreshness(ctx, input); verdict != freshnessProceed {
+		if verdict == freshnessStale {
+			r.logger.Warn("显式探活请求输入的账户配置已变更，拒绝发起上游调用",
+				"event", inputStaleBeforeDispatchEvent,
+				"accountId", input.AccountID,
+				"inputConfigRevision", input.ConfigRevision,
+				"currentConfigRevision", current,
+				"expedited", input.Eligibility.ExpeditedRecovery)
+			return r.persistExplicitTerminal(ctx, lease, request, OutcomeStale, now, "input_stale_before_dispatch", "request 对应的账户配置已变更，input 在派发前失效")
+		}
+		return r.persistExplicitTerminal(ctx, lease, request, exactkeyprobe.OutcomeTaskFailed, now, "input_freshness_unavailable", "账户配置新鲜度判定不可用，按失败关闭拒绝上游调用")
+	}
 	initialState, initialFound, err := r.store.LoadCurrentState(ctx, input.AccountID)
 	if err != nil {
 		return err
@@ -639,6 +666,81 @@ func sourceFenceHealthMutationAllowed(input exactkeyprobe.Input, prior CurrentSt
 	return prior.AccountStatus == "active" || prior.AccountStatus == "pending_test"
 }
 
+// inputFreshnessReader 是执行前新鲜度门（设计 §6.3）的最小业务读面：按账户
+// 主键单列重读业务库 accounts.config_revision。found=false 表示业务账户行
+// 不存在（软删或已消失）；读取错误原样上抛。两者都由调用方按失败关闭处理。
+type inputFreshnessReader interface {
+	LoadAccountConfigRevision(ctx context.Context, accountID string) (int64, bool, error)
+}
+
+// inputFreshnessVerdict 是新鲜度门的三态结论。
+type inputFreshnessVerdict int
+
+const (
+	// freshnessProceed：门通过（或门未装配），允许构造上游请求。
+	freshnessProceed inputFreshnessVerdict = iota
+	// freshnessStale：业务行 config_revision 与输入不一致，拒绝上游调用。
+	freshnessStale
+	// freshnessUnavailable：读取失败或账户不存在，按失败关闭拒绝上游调用。
+	freshnessUnavailable
+)
+
+const (
+	inputStaleBeforeDispatchEvent  = "account_health_input_stale_before_dispatch"
+	inputFreshnessUnavailableEvent = "account_health_input_freshness_unavailable"
+	// inputFreshnessDiagnosticWindow 与 backlogWarnedAt 告警窗口同款。
+	inputFreshnessDiagnosticWindow = 10 * time.Minute
+)
+
+// checkInputFreshness 在 ExecuteInputProbe 之前复核 accounts.config_revision。
+// 线性化点（设计 §6.3）：freshness SELECT 成功返回之后、构造上游请求之前；
+// 补丁在该点之前提交必须拒绝，在该点之后提交允许请求竞态（写回由既有
+// fence 拒绝，属现状行为）。门未装配（files 后备通道无业务读连接）时
+// 结构性跳过。
+func (r *Runner) checkInputFreshness(ctx context.Context, input exactkeyprobe.Input) (inputFreshnessVerdict, int64) {
+	if r.inputFreshness == nil {
+		return freshnessProceed, 0
+	}
+	revision, found, err := r.inputFreshness.LoadAccountConfigRevision(ctx, input.AccountID)
+	if err == nil && found {
+		if revision == input.ConfigRevision {
+			return freshnessProceed, revision
+		}
+		return freshnessStale, revision
+	}
+	// 失败关闭：DB 读错或账户不存在一律视为不新鲜，不发出上游请求。
+	reason := "业务账户行不存在"
+	if err != nil {
+		reason = err.Error()
+	}
+	r.warnInputFreshnessUnavailable(input, reason)
+	return freshnessUnavailable, 0
+}
+
+// warnInputFreshnessUnavailable 记录 input_freshness_unavailable 诊断并按
+// 账户限频：该形态在发布方修复前会逐轮复现，窗口内不重复打点避免日志噪音。
+func (r *Runner) warnInputFreshnessUnavailable(input exactkeyprobe.Input, reason string) {
+	now := time.Now().UTC()
+	if r.cfg.Now != nil {
+		now = r.cfg.Now().UTC()
+	}
+	r.freshnessMu.Lock()
+	if r.freshnessWarnedAt == nil {
+		r.freshnessWarnedAt = make(map[string]time.Time)
+	}
+	if last, ok := r.freshnessWarnedAt[input.AccountID]; ok && now.Sub(last) < inputFreshnessDiagnosticWindow {
+		r.freshnessMu.Unlock()
+		return
+	}
+	r.freshnessWarnedAt[input.AccountID] = now
+	r.freshnessMu.Unlock()
+	r.logger.Warn("账户配置新鲜度判定不可用，按失败关闭拒绝本次探针派发",
+		"event", inputFreshnessUnavailableEvent,
+		"accountId", input.AccountID,
+		"reason", reason,
+		"expedited", input.Eligibility.ExpeditedRecovery)
+}
+
 func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, input exactkeyprobe.Input, now time.Time) (scheduledDBTask, error) {
 	var task scheduledDBTask
 	// A signed revoke/disable snapshot deliberately carries no credential or
@@ -649,6 +751,20 @@ func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, in
 	}
 	if err := validateScheduledInput(input, now); err != nil {
 		return task, r.persistTaskFailure(ctx, lease, input, now, "input_invalid", err.Error())
+	}
+	// 执行前新鲜度门（设计 §6.3）：拒绝时不写回 account_health_current_state、
+	// 不改失败计数、不推进退避；当前输入结束，下一轮 reader 重新装配。该结论
+	// 是已处理的 skip，不得作为错误阻断本轮其余账户。
+	if verdict, current := r.checkInputFreshness(ctx, input); verdict != freshnessProceed {
+		if verdict == freshnessStale {
+			r.logger.Warn("定时探针输入的账户配置已变更，拒绝发起上游调用",
+				"event", inputStaleBeforeDispatchEvent,
+				"accountId", input.AccountID,
+				"inputConfigRevision", input.ConfigRevision,
+				"currentConfigRevision", current,
+				"expedited", input.Eligibility.ExpeditedRecovery)
+		}
+		return task, nil
 	}
 	state, found, err := r.store.LoadCurrentState(ctx, input.AccountID)
 	if err != nil {
@@ -1077,7 +1193,9 @@ func applyCooldownDecision(outcome *Outcome, input exactkeyprobe.Input, prior Cu
 			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_error", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
 			return
 		}
-		if elapsed >= cooldownMaxRecovery(input.Schedule) {
+		// 长期降频道（超过最大恢复观察窗后 1 小时/轮）对特供跳过（设计 §5）：
+		// 特供继续走常规 cooldownFailureDelay 节奏，不降频。
+		if !input.Eligibility.ExpeditedRecovery && elapsed >= cooldownMaxRecovery(input.Schedule) {
 			next := observed.Add(schedulejitter.Delay(cooldownLongTermInterval))
 			outcome.NextDueAt = &next
 			outcome.AccountStatus = expectedStatus
@@ -1086,7 +1204,7 @@ func applyCooldownDecision(outcome *Outcome, input exactkeyprobe.Input, prior Cu
 			outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_failure", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
 			return
 		}
-		delay := schedulejitter.Delay(cooldownFailureDelay(input.AccountID, fence.Generation, initialBackoff, failures))
+		delay := schedulejitter.Delay(cooldownFailureDelay(input.AccountID, fence.Generation, initialBackoff, failures, input.Eligibility.ExpeditedRecovery))
 		if remaining, bounded := boundedCooldownRemaining(input, expectedStatus, fence, observed); bounded && delay > remaining {
 			delay = passiveDelayBefore(remaining)
 		}
@@ -1147,7 +1265,7 @@ func cooldownMaxRecovery(schedule exactkeyprobe.Schedule) time.Duration {
 	return time.Duration(hours) * time.Hour
 }
 
-func cooldownFailureDelay(accountID, generation string, initial time.Duration, failures int) time.Duration {
+func cooldownFailureDelay(accountID, generation string, initial time.Duration, failures int, expeditedRecovery bool) time.Duration {
 	if initial <= 0 {
 		initial = 3 * time.Second
 	}
@@ -1155,7 +1273,7 @@ func cooldownFailureDelay(accountID, generation string, initial time.Duration, f
 		failures = 1
 	}
 	if failures > 5 {
-		return cooldownSlowRetryDelay()
+		return cooldownSlowRetryDelay(expeditedRecovery)
 	}
 	delay := initial
 	for step := 1; step < failures; step++ {
@@ -1164,14 +1282,23 @@ func cooldownFailureDelay(accountID, generation string, initial time.Duration, f
 	return delay
 }
 
-func cooldownSlowRetryDelay() time.Duration {
+// cooldownSlowRetryDelay 是连续失败 >5 轮后的慢速道基准：普通账户 60s；
+// 特供账户（expedited recovery，设计 §5）保持 15s 高压复测，不因失败次数
+// 松弛。基准值确定，jitter 由调用方每次重试统一施加一次。
+func cooldownSlowRetryDelay(expeditedRecovery bool) time.Duration {
 	// Keep the policy base deterministic only; the caller applies the global
 	// passive jitter once per retry so every round gets a fresh offset.
+	if expeditedRecovery {
+		return 15 * time.Second
+	}
 	return 60 * time.Second
 }
 
 func boundedCooldownRemaining(input exactkeyprobe.Input, expectedStatus string, fence *exactkeyprobe.CooldownFence, observed time.Time) (time.Duration, bool) {
-	if expectedStatus != "temporary_unavailable" || input.Eligibility.TemporaryUnavailableContinuousProbeEnabled == nil || *input.Eligibility.TemporaryUnavailableContinuousProbeEnabled || fence == nil {
+	// 特供视同持续探针（设计 §5/§3.7）：有界观察预算约束"未知状态账户"的
+	// 探针成本，用户显式声明密集复测后前提不成立，绕开 10 分钟 error 终态与
+	// 到点前的 delay 收口。
+	if expectedStatus != "temporary_unavailable" || input.Eligibility.ExpeditedRecovery || input.Eligibility.TemporaryUnavailableContinuousProbeEnabled == nil || *input.Eligibility.TemporaryUnavailableContinuousProbeEnabled || fence == nil {
 		return 0, false
 	}
 	remaining := cooldownLimitedProbeTimeout - observed.Sub(fence.ObservationStartedAt)

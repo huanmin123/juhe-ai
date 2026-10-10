@@ -589,6 +589,10 @@ export interface AccountListItem {
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   lockDeathTimeoutSeconds?: number
   lockRetryIntervalSeconds?: number
+  /** 特供快速恢复（恢复道加速档）：行属性标记；列表投影恒输出（合成行可能缺省）。 */
+  expeditedRecoveryEnabled?: boolean
+  /** 归属系统账户特供名额超限展示位：归属超限时名下所有行（含未特供行）都为 true。 */
+  expeditedOverLimit?: boolean
   permissions?: Partial<Pick<ResourcePermissions,
     | 'canUse'
     | 'canEdit'
@@ -652,6 +656,9 @@ export interface AccountAdvancedDetail {
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   lockDeathTimeoutSeconds?: number
   lockRetryIntervalSeconds?: number
+  /** 特供快速恢复：advanced 详情投影，与列表行同名字段恒输出。 */
+  expeditedRecoveryEnabled: boolean
+  expeditedOverLimit: boolean
 }
 
 export interface AccountEffectiveErrorHandlingRule {

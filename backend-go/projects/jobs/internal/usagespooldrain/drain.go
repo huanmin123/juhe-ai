@@ -17,13 +17,17 @@
 //     （event=usage_record_spool_file_read_failed，同文件 60s 窗口内不
 //     重复）后跳过，继续本轮后续文件，运维修复属主/权限后下轮自然消费
 //     （区别于损坏文件的 .corrupt 隔离语义）；
-//   - 校验通过经 usagewriter.Writer.Enqueue 入队；Enqueue 返回 nil 即视为
-//     接受并删除文件。接受语义 = 记录已进入 writer 内存队列，或（队列满
-//     时）已同步溢出落盘到 overflow spool 文件（落盘成功 Enqueue 才返回，
-//     可回放不丢）。删除后、writer 批量落库（默认 500ms flush）前进程崩
-//     溃的内存窗口是已知取舍（Node 本地队列同款边界）；Enqueue 失败
-//     （writer 已停等瞬态）保留文件、终止本轮并按固定退避重试
-//     （at-least-once，head-of-line 与 Node 本地队列 flush 语义一致）；
+//   - 校验通过经 usagewriter.Writer.EnqueueDurable 入队（BUG-0304：durable
+//     交接必须走该端口；Enqueue 的 best-effort 语义会在溢出落盘失败时终态
+//     丢弃却仍返回 nil，用它删源文件会丢记录）。EnqueueDurable 返回 nil 即
+//     视为接受并删除文件。接受语义 = 记录已进入 writer 内存队列，或（队列
+//     满时）已同步溢出落盘到 overflow spool 文件（落盘成功才返回 nil，可
+//     回放不丢），或 oversize 终态丢弃（重试不可能成功，保留会卡死回放队
+//     头）。删除后、writer 批量落库（默认 500ms flush）前进程崩溃的内存
+//     窗口是已知取舍（Node 本地队列同款边界）；EnqueueDurable 失败（writer
+//     已停、队列满且溢出落盘失败等未接收形态）保留文件、终止本轮并按固定
+//     退避重试（at-least-once，head-of-line 与 Node 本地队列 flush 语义一
+//     致）；
 //   - 每轮结束时刷新待删水位（OldestPendingCreatedAt）：按文件名序取第
 //     一个可读待消费 spool 文件内记录的 created_at 反馈给 ingestgate 游
 //     标安全门，使统计游标在 drain 仍持有未确认文件时不得越过其中最旧记
@@ -91,11 +95,14 @@ const (
 	readFailureLogPruneAt = 1024
 )
 
-// Enqueuer 是 usagewriter.Writer.Enqueue 的窄口（接口化供测试 Mock）。
-// 返回 nil 表示记录已被接受（入队成功或幂等重复）；非 nil 表示瞬态失败，
-// 文件保留重试。
+// Enqueuer 是 usagewriter.Writer.EnqueueDurable 的窄口（接口化供测试
+// Mock；BUG-0304：durable 交接必须走该端口，不得用 Enqueue 的 best-effort
+// 语义删除持久源）。返回 nil 表示记录已被接受（入队成功、幂等重复、溢出
+// 落盘成功，或 oversize 终态丢弃——oversize 重试不可能成功，保留会卡死回
+// 放队头）；非 nil 表示记录未被接收（writer 已停、队列满且溢出落盘失败等
+// 瞬态失败），文件保留重试。
 type Enqueuer interface {
-	Enqueue(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error
+	EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error
 }
 
 // Drainer 轮询 gateway usage spool 目录并入队用量记录。
@@ -254,7 +261,7 @@ func (d *Drainer) DrainOnce(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		if err := d.Enqueuer.Enqueue(ctx, input); err != nil {
+		if err := d.Enqueuer.EnqueueDurable(ctx, input); err != nil {
 			d.logger().Error("usage spool 投递失败，已保留文件等待重试",
 				"event", "usage_record_spool_flush_failed",
 				"file", filePath, "usageRecordId", input.ID, "error", err.Error())

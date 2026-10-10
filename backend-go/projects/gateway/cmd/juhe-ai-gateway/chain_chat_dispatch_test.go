@@ -264,6 +264,15 @@ func withChatDispatchAccountGroups(t *testing.T, groups ...string) {
 	t.Cleanup(func() { setChainChatDispatchAccountGroups(nil) })
 }
 
+// withChatDispatchPinnedFetch 置位 chat-pinned 直取端口（生产由
+// composeChatFamily 装配为 runtime cache 的 ListFreshOpenAIAccountsForChatPinnedAsync；
+// full-chain 测试不走 chat mount 装配，需显式置位），测试结束还原。
+func withChatDispatchPinnedFetch(t *testing.T, fixture *chainFixture) {
+	t.Helper()
+	setChainChatDispatchPinnedFetch(fixture.cache.ListFreshOpenAIAccountsForChatPinnedAsync)
+	t.Cleanup(func() { setChainChatDispatchPinnedFetch(nil) })
+}
+
 // TestChatDispatchAccountPinFullChain：绑定账户目标经消费侧承载分组解析收敛
 // 单账户（acc_pin 落在 group_pin 上游），usage 归属按实际派发账户记账
 // （accountId=acc_pin，groupId=承载分组 group_pin）。
@@ -274,6 +283,7 @@ func TestChatDispatchAccountPinFullChain(t *testing.T) {
 	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
 	withChatDispatchAccountGroups(t, "group_pin")
+	withChatDispatchPinnedFetch(t, fixture)
 	chain, spoolDir := composeChatDispatchChain(t, fixture)
 
 	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
@@ -326,6 +336,7 @@ func TestChatDispatchAccountMultiGroupConvergesFullChain(t *testing.T) {
 	}
 	// 承载分组（group_pin）位于启用分组列表第二位。
 	withChatDispatchAccountGroups(t, "group_other", "group_pin")
+	withChatDispatchPinnedFetch(t, fixture)
 	chain, spoolDir := composeChatDispatchChain(t, fixture)
 
 	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
@@ -391,6 +402,7 @@ func TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics(t *testing.
 		t.Fatalf("seed empty group: %v", err)
 	}
 	withChatDispatchAccountGroups(t, "group_empty")
+	withChatDispatchPinnedFetch(t, fixture)
 	chain, _ := composeChatDispatchChain(t, fixture)
 
 	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
@@ -428,6 +440,7 @@ func TestChatDispatchPinnedAccountExhaustedDoesNotEscape(t *testing.T) {
 	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, dead, "active")
 	withChatDispatchAccountGroups(t, "group_pin")
+	withChatDispatchPinnedFetch(t, fixture)
 	chain, _ := composeChatDispatchChain(t, fixture)
 
 	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
@@ -436,6 +449,46 @@ func TestChatDispatchPinnedAccountExhaustedDoesNotEscape(t *testing.T) {
 	}
 	if main.hits != 0 || pin.hits != 0 {
 		t.Fatalf("绑定账户耗尽不得逃逸: main=%d pin=%d", main.hits, pin.hits)
+	}
+}
+
+// TestChatDispatchPinnedDisabledAccountFullChain：绑定账户为禁用状态时经
+// pinned 直取路径仍收敛为候选并派发（AI 问答设计 §5.2 2026-10-10 修订：
+// 账户被禁用时正是不稳定、需要测试的场景）；usage 归属与 active 账户同口径
+// （accountId=acc_pin，groupId=承载分组）。
+func TestChatDispatchPinnedDisabledAccountFullChain(t *testing.T) {
+	fixture := newChainFixture(t)
+	shortenChainWaitBudgets(t, fixture)
+	main := newChatDispatchUpstream(t, chatDispatchSmokeBody)
+	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
+	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "disabled")
+	withChatDispatchAccountGroups(t, "group_pin")
+	withChatDispatchPinnedFetch(t, fixture)
+	chain, spoolDir := composeChatDispatchChain(t, fixture)
+
+	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if pin.hits != 1 || main.hits != 0 {
+		t.Fatalf("upstream hits main=%d pin=%d, want main=0 pin=1（禁用账户照常派发）", main.hits, pin.hits)
+	}
+	records := waitForSpoolRecords(t, spoolDir)
+	var successRecord map[string]any
+	for _, record := range records {
+		if success, _ := record["success"].(bool); success {
+			successRecord = record
+			break
+		}
+	}
+	if successRecord == nil {
+		t.Fatalf("spool 缺成功记录: %v", records)
+	}
+	if got := successRecord["accountId"]; got != "acc_pin" {
+		t.Fatalf("usage accountId = %v, want acc_pin", got)
+	}
+	if got := successRecord["groupId"]; got != "group_pin" {
+		t.Fatalf("usage groupId = %v, want group_pin（承载分组）", got)
 	}
 }
 

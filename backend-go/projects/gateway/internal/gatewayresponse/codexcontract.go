@@ -1,12 +1,7 @@
 package gatewayresponse
 
 import (
-	"regexp"
-	"strings"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
@@ -33,86 +28,11 @@ type CodexCompactionContractMismatchInput struct {
 	Message             string
 }
 
-// codexCompactionRawBodyScanEdgeBytes 对齐同名常量。
-const codexCompactionRawBodyScanEdgeBytes = 64 * 1024
-
-// codexCompactionRequestSearchPattern 对齐
-// /"type"\s*:\s*"compaction_trigger"/。
-var codexCompactionRequestSearchPattern = regexp.MustCompile(`"type"\s*:\s*"compaction_trigger"`)
-
-// CodexCompactionExpectedForRequest 对齐 codexCompactionExpectedForRequest。
-// 请求体状态经由 gatewaypreauth.GatewayRequest（gatewaybody 承载扫描结果）。
-func CodexCompactionExpectedForRequest(req *gatewaypreauth.GatewayRequest) bool {
-	if req == nil || req.MethodUpper() != "POST" {
-		return false
-	}
-	normalizedPath := normalizedOpenAIRequestPath(req)
-	if normalizedPath == "/responses/compact" {
-		return true
-	}
-	return normalizedPath == "/responses" && requestBodyHasCompactionTrigger(req)
-}
-
-func requestBodyHasCompactionTrigger(req *gatewaypreauth.GatewayRequest) bool {
-	if parsedBody := req.ParsedJSONObjectBody(); parsedBody != nil {
-		if jsonValueHasCompactionTrigger(parsedBody, 0) {
-			return true
-		}
-	}
-	bodyState := req.BodyState()
-	if bodyState != nil && bodyState.CodexCompactionTrigger {
-		return true
-	}
-	if bodyState != nil && bodyState.JSONParseStatus == gatewaybody.JSONParseStatusScannedJSON {
-		return false
-	}
-	// 原始正文兜底扫描由 gatewaybody 的 BodyState 承担（rawBody 未在
-	// GatewayRequest 视图导出）；此处保持 Node 的“其余情况 false”语义。
-	return false
-}
-
-// jsonValueHasCompactionTrigger 对齐 jsonValueHasCompactionTrigger：有限深度
-// 与广度的对象图扫描。encoding/json 解码产物不存在环，无需 Node 的 WeakSet。
-func jsonValueHasCompactionTrigger(value any, depth int) bool {
-	if depth > 8 {
-		return false
-	}
-	switch typed := value.(type) {
-	case []any:
-		limit := len(typed)
-		if limit > 500 {
-			limit = 500
-		}
-		for index := 0; index < limit; index++ {
-			if jsonValueHasCompactionTrigger(typed[index], depth+1) {
-				return true
-			}
-		}
-		return false
-	case map[string]any:
-		if typed == nil {
-			return false
-		}
-		if typeField, exists := typed["type"]; exists {
-			if s, isString := typeField.(string); isString && s == "compaction_trigger" {
-				return true
-			}
-		}
-		visited := 0
-		for _, child := range typed {
-			if visited >= 200 {
-				break
-			}
-			visited++
-			if jsonValueHasCompactionTrigger(child, depth+1) {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
-}
+// 请求侧压缩触发判定唯一实现在 gatewaycodex.CodexCompactionExpectedForRequest
+// （调度内核通用化设计 5.2 三轨合一：preflight 单点消费）。本包原有的第四份
+// 同形拷贝与配套触发判定辅助（requestPathHasCompactionTrigger /
+// jsonValueHasCompactionTrigger 等）已随批次 2 及其遗留清理删除；边界行为
+// （深度/广度上限、raw 扫描窗口）由 gatewaycodex 包自身测试锁定。
 
 // CodexCompactionContractMismatchFrame 对齐
 // codexCompactionContractMismatchFrame。
@@ -198,48 +118,4 @@ func isCodexDeserializableCompactionItem(item map[string]any) bool {
 	}
 	_, isString := item["encrypted_content"].(string)
 	return isString
-}
-
-func normalizedOpenAIRequestPath(req *gatewaypreauth.GatewayRequest) string {
-	rawPath := req.Path()
-	if rawPath == "" {
-		rawPath = "/"
-	}
-	return normalizeV1PrefixPath(rawPath)
-}
-
-// 供非流式 JSON 检查复用的 compaction 触发判定辅助。
-func requestPathHasCompactionTrigger(pathAndQuery string, body *gatewaybody.BodyState, rawBody []byte) bool {
-	normalized := normalizeV1PrefixPath(strings.ToLower(splitPathOnly(pathAndQuery)))
-	if normalized != "/responses" {
-		return false
-	}
-	if body != nil && body.CodexCompactionTrigger {
-		return true
-	}
-	if body != nil && body.JSONParseStatus == gatewaybody.JSONParseStatusScannedJSON {
-		return false
-	}
-	if len(rawBody) == 0 {
-		return false
-	}
-	if len(rawBody) <= codexCompactionRawBodyScanEdgeBytes*2 {
-		return codexCompactionRequestSearchPattern.Match(rawBody)
-	}
-	prefix := rawBody[:codexCompactionRawBodyScanEdgeBytes]
-	if codexCompactionRequestSearchPattern.Match(prefix) {
-		return true
-	}
-	tailStart := len(rawBody) - codexCompactionRawBodyScanEdgeBytes
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	return codexCompactionRequestSearchPattern.Match(rawBody[tailStart:])
-}
-
-func splitPathOnly(pathAndQuery string) string {
-	if index := strings.Index(pathAndQuery, "?"); index >= 0 {
-		return pathAndQuery[:index]
-	}
-	return pathAndQuery
 }

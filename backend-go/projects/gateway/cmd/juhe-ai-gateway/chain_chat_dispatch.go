@@ -12,9 +12,10 @@ package main
 // /v1 链消费点（handleOpenAIGatewayRequest）：
 //  1. 派发候选装配前：把 preflight 的原始候选窗口收敛到绑定作用域——按账户
 //     当前启用分组（accounts.FindChatAccount 的 EnabledGroupIDs 同口径）逐组
-//     解析并收敛为该账户单元素。候选走既有 FilterCandidates /
-//     PrepareDispatchAccounts 管线，模型过滤、优先级、抑制、并发槽语义不变；
-//     候选为空走既有"无可用账户"错误分支。
+//     pinned 直取运行时快照（2026-10-10 修订：绕过共享候选窗可用性窗口，含
+//     禁用/冷却/过期/禁调度账户）并收敛为该账户单元素。候选走既有
+//     FilterCandidates / PrepareDispatchAccounts 管线，优先级、抑制、并发槽
+//     语义不变；候选为空走既有"无可用账户"错误分支。
 //  2. DispatchContext 装配后、派发循环前：GroupSchedulingPolicy 与
 //     UsageContext.GroupID 对齐到生效分组（承载分组，即派发命中组/BoundGroupID
 //     口径）。使用记录仍由 applyUsageAccountScope 按实际派发账户的
@@ -109,6 +110,32 @@ func chainChatDispatchAccountGroupsOf(accountID string) ([]string, bool) {
 	return resolve(accountID)
 }
 
+// chainChatDispatchPinnedFetch 是 chat-pinned 直取的运行时快照读取端口（AI 问答
+// 设计 §5.2 2026-10-10 修订）：按（分组, 账户 ID）经 runtime cache 专用路径
+// 直取该账户快照（含禁用/冷却/过期/禁调度账户，绕过共享候选窗可用性窗口）。
+// 组合根（composeChatFamily）在装配期置位一次，此后只读（与
+// chainChatDispatchAccountGroups 同一进程级槽纪律）；nil = 未装配（空候选，
+// 走既有"无可用账户"语义）。
+var (
+	chainChatDispatchPinnedFetchMu sync.RWMutex
+	chainChatDispatchPinnedFetch   func(ctx context.Context, groupID, systemAccountID, accountID string) ([]gatewayruntimecache.OpenAIAccountSecret, error)
+)
+
+// setChainChatDispatchPinnedFetch 装配 pinned 直取端口（组合根唯一置位点；
+// 测试可显式置位与还原）。
+func setChainChatDispatchPinnedFetch(fetch func(ctx context.Context, groupID, systemAccountID, accountID string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) {
+	chainChatDispatchPinnedFetchMu.Lock()
+	defer chainChatDispatchPinnedFetchMu.Unlock()
+	chainChatDispatchPinnedFetch = fetch
+}
+
+// chainChatDispatchPinnedFetchOf 读取 pinned 直取端口；未装配返回 ok=false。
+func chainChatDispatchPinnedFetchOf() func(ctx context.Context, groupID, systemAccountID, accountID string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	chainChatDispatchPinnedFetchMu.RLock()
+	defer chainChatDispatchPinnedFetchMu.RUnlock()
+	return chainChatDispatchPinnedFetch
+}
+
 // chatDispatchTargetAwareExecutor 是 cmd 侧执行器覆盖端口的最小断言面
 // （与 internal/chat 的 chatDispatchTargetAware 同形），观察适配器据此在
 // 派发前绑定目标。
@@ -142,10 +169,11 @@ type chatDispatchTargetScope struct {
 }
 
 // resolveChatDispatchTargetScope 在派发候选装配前按绑定账户解析生效分组并
-// 收敛原始候选窗口：按账户启用分组逐组解析、按账户 ID 收敛为单元素（多启用
-// 分组时任一组解析都可收敛，取第一命中组），生效分组 = 命中组（与该候选的
-// BoundGroupID 同口径）；无命中时回落第一启用组、空候选走既有"无可用账户"
-// 语义。
+// 收敛原始候选窗口（AI 问答设计 §5.2 2026-10-10 修订）：按账户启用分组逐组
+// pinned 直取运行时快照（绕过共享候选窗可用性窗口，含禁用/冷却/过期/禁调度
+// 账户），第一命中组即收敛为该账户单元素，生效分组 = 命中组（与该候选的
+// BoundGroupID 同口径）；全部未命中时回落第一启用组、空候选走既有"无可用
+// 账户"语义。
 //
 // 运行时身份缺失时返回错误（fail-closed：宁可失败也不脱离绑定作用域派发）。
 func (c *gatewayChain) resolveChatDispatchTargetScope(ctx context.Context, req *gatewaypreauth.GatewayRequest, target chatDispatchTarget) (chatDispatchTargetScope, error) {
@@ -153,34 +181,31 @@ func (c *gatewayChain) resolveChatDispatchTargetScope(ctx context.Context, req *
 	if systemAccountID == "" {
 		return chatDispatchTargetScope{}, errors.New("聊天调度目标缺少运行时身份，无法收敛派发作用域")
 	}
-	model, _ := gatewaypreauth.RequestModel(req)
 	enabledGroups, _ := chainChatDispatchAccountGroupsOf(target.AccountID)
+	pinnedFetch := chainChatDispatchPinnedFetchOf()
 	narrowed := []gatewayruntimecache.OpenAIAccountSecret{}
 	hitGroup := ""
 	for _, groupID := range enabledGroups {
-		accounts, err := c.preauth.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(ctx, groupID, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
-			RequestedModel: model,
-		})
+		if pinnedFetch == nil {
+			// 直取端口未装配：按既有"无可用账户"语义处理（不脱离绑定作用域）。
+			break
+		}
+		accounts, err := pinnedFetch(ctx, groupID, systemAccountID, target.AccountID)
 		if err != nil {
 			return chatDispatchTargetScope{}, fmt.Errorf("收敛聊天调度目标候选失败: %w", err)
 		}
-		for _, account := range accounts {
-			if account.ID != target.AccountID {
-				continue
-			}
-			narrowed = append(narrowed, account)
+		if len(accounts) > 0 {
+			// 收敛为指定账户单元素：第一命中组的直取候选即派发目标（该账户可
+			// 属多个启用分组，跨组直取同账户一致，任一组均可收敛）。
+			narrowed = accounts
 			hitGroup = groupID
-			break
-		}
-		if len(narrowed) > 0 {
-			// 收敛为指定账户单元素：第一命中组的候选即派发目标（该账户可属
-			// 多个启用分组，跨组解析同账户一致，任一组均可收敛）。
 			break
 		}
 	}
 	if hitGroup == "" && len(enabledGroups) > 0 {
-		// 启用分组都未解析出该账户（如模型过滤后不可派发）：窗口组回落第一
-		// 启用组（仅影响展示/失败记录窗口组），空候选走既有"无可用账户"语义。
+		// 启用分组都未直取到该账户（如分组禁用或账户不在组内）：窗口组回落
+		// 第一启用组（仅影响展示/失败记录窗口组），空候选走既有"无可用账户"
+		// 语义。
 		hitGroup = enabledGroups[0]
 	}
 	return chatDispatchTargetScope{

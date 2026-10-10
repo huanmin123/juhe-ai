@@ -527,17 +527,31 @@ func TestUniqueActiveRouteGroupIds(t *testing.T) {
 	}
 }
 
-func TestGatewayModelsProviderCodes(t *testing.T) {
+func TestGatewayModelsBindings(t *testing.T) {
 	row := &gatewayruntimecache.GatewayAPIKeyRow{GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-		{ProviderCode: "openai", Status: "active"},
-		{ProviderCode: " openai ", Status: "active"},
-		{ProviderCode: "anthropic", Status: "active"},
-		{ProviderCode: "gemini", Status: "disabled"},
-		{ProviderCode: "", Status: "active"},
+		{GroupID: "g1", ProviderCode: "openai", Status: "active"},
+		{GroupID: " g1 ", ProviderCode: " openai ", Status: "active"}, // 同组同 provider 去重
+		{GroupID: "g2", ProviderCode: "openai", Status: "active"},     // 不同组不去重
+		{GroupID: "g1", ProviderCode: "anthropic", Status: "active"},  // 同组不同 provider 不去重
+		{GroupID: "g3", ProviderCode: "gemini", Status: "disabled"},   // 非 active 剔除
+		{GroupID: "g4", ProviderCode: "", Status: "active"},           // 空 provider 剔除
 	}}
-	codes := gatewayModelsProviderCodes(row)
-	if len(codes) != 2 || codes[0] != "openai" || codes[1] != "anthropic" {
-		t.Fatalf("codes = %v", codes)
+	bindings := gatewayModelsBindings(row)
+	want := []GatewayModelBinding{
+		{GroupID: "g1", ProviderCode: "openai"},
+		{GroupID: "g2", ProviderCode: "openai"},
+		{GroupID: "g1", ProviderCode: "anthropic"},
+	}
+	if len(bindings) != len(want) {
+		t.Fatalf("bindings = %v, want %v", bindings, want)
+	}
+	for i, binding := range bindings {
+		if binding != want[i] {
+			t.Fatalf("bindings[%d] = %v, want %v（顺序须保持绑定序）", i, binding, want[i])
+		}
+	}
+	if got := gatewayModelsBindings(nil); len(got) != 0 {
+		t.Fatalf("nil record bindings = %v", got)
 	}
 }
 

@@ -96,6 +96,10 @@ type PatchInput struct {
 	BalanceQueryConfigCanonical                *string
 	BalanceQueryConfigPresent                  bool
 	TemporaryUnavailableContinuousProbeEnabled *bool
+	// ExpeditedRecoveryEnabled mirrors the expedited-recovery switch (设计
+	// §8.1/§9)：false→true 的翻转在补丁事务内做归属名额校验；置 false 与幂等
+	// true 不校验。特供消费方是 jobs 恢复道，不进 gatewayRuntimeFields。
+	ExpeditedRecoveryEnabled *bool
 }
 
 // accountPatchChangeLabel mirrors accountPatchChangeLabel (credentials.*
@@ -131,6 +135,8 @@ func accountPatchChangeLabel(field string) string {
 		return "检查协议"
 	case "temporaryUnavailableContinuousProbeEnabled":
 		return "持续恢复探活"
+	case "expeditedRecoveryEnabled":
+		return "特供恢复"
 	case "modelMappings":
 		return "模型映射"
 	case "tags":
@@ -226,6 +232,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		lastHealthErrorMessage    sql.NullString
 		lastHealthTraceID         sql.NullString
 		authorizationID           sql.NullString
+		expeditedRecoveryEnabled  int
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.name, accounts.notes, accounts.type,
@@ -246,7 +253,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.health_check_failure_count, accounts.health_check_failure_started_at,
 			accounts.last_health_check_status_code, accounts.last_health_check_error_code,
 			accounts.last_health_check_error_message, accounts.last_health_check_trace_id,
-			accounts.authorization_instance_authorization_id
+			accounts.authorization_instance_authorization_id,
+			accounts.expedited_recovery_enabled
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL`+scopeClause+`
@@ -265,7 +273,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.nextHealthCheckAt,
 		&row.lastHealthCheckAt, &row.lastHealthSuccessAt, &row.healthCheckFailureCount,
 		&row.healthCheckFailureStart, &row.lastHealthStatusCode, &row.lastHealthErrorCode,
-		&row.lastHealthErrorMessage, &row.lastHealthTraceID, &row.authorizationID)
+		&row.lastHealthErrorMessage, &row.lastHealthTraceID, &row.authorizationID,
+		&row.expeditedRecoveryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -991,6 +1000,30 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// 特供快速恢复开关（AI账户特供快速恢复通道设计 §8.1/§9）：false→true 的
+	// 翻转在同一补丁事务内先锁归属行（PG FOR UPDATE，SQLite 单写者等价）再
+	// 计数校验，超限整体回滚（ValidationError → 400）；置 false 与幂等 true
+	// （本已为特供）不校验、不重复占额。写入随既有无条件 config_revision+1
+	// 与 updated_at；特供消费方是 jobs 恢复道，不进
+	// accountPatchGatewayRuntimeFields（§8.4）。
+	if input.ExpeditedRecoveryEnabled != nil {
+		next := 0
+		if *input.ExpeditedRecoveryEnabled {
+			next = 1
+		}
+		if next != row.expeditedRecoveryEnabled {
+			if next == 1 {
+				// 待翻转行当前计数为 0（尚未特供），翻转后归属名下 +1。
+				if err := s.assertExpeditedRecoveryLimit(ctx, tx, row.systemAccountID, 1); err != nil {
+					return nil, err
+				}
+			}
+			addChange("expeditedRecoveryEnabled", row.expeditedRecoveryEnabled == 1, *input.ExpeditedRecoveryEnabled)
+			sets = append(sets, "expedited_recovery_enabled = ?")
+			setArgs = append(setArgs, next)
+		}
+	}
+
 	// Balance query (Node :712-773): any balance-relevant change revalidates
 	// the capability boundary, writes the enabled flag plus the normalized
 	// config and refreshes the next-refresh generation when the balance
@@ -1686,7 +1719,8 @@ func patchHasMixedEditField(input PatchInput) bool {
 		input.GroupIDPresent ||
 		input.BalanceQueryEnabled != nil ||
 		input.BalanceQueryConfigPresent ||
-		input.TemporaryUnavailableContinuousProbeEnabled != nil
+		input.TemporaryUnavailableContinuousProbeEnabled != nil ||
+		input.ExpeditedRecoveryEnabled != nil
 }
 
 // initialCooldownUntilForStatus mirrors initialCooldownUntilForStatus

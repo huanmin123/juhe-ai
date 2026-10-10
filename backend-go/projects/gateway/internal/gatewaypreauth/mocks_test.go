@@ -274,6 +274,8 @@ type fakeResponseSink struct {
 	failureInputs []FailureResponseInput
 	modelSends    []ModelsResponseInput
 	authFailures  int
+	// modelsSendErr 非空时 models sender 返回该错误（模拟装载失败）。
+	modelsSendErr error
 }
 
 func (r *fakeResponseSink) SendGatewayFailureResponse(input FailureResponseInput) {
@@ -286,22 +288,24 @@ func (r *fakeResponseSink) FinalizeGatewayAuthFailureAudit(*GatewayRequest, Gate
 	r.authFailures++
 	r.mu.Unlock()
 }
-func (r *fakeResponseSink) SendAuthenticatedModelsGatewayResponse(input ModelsResponseInput) {
-	r.recordModelSend(input)
+func (r *fakeResponseSink) SendAuthenticatedModelsGatewayResponse(input ModelsResponseInput) error {
+	return r.recordModelSend(input)
 }
-func (r *fakeResponseSink) SendOpenAIModelsGatewayResponse(input ModelsResponseInput) {
-	r.recordModelSend(input)
+func (r *fakeResponseSink) SendOpenAIModelsGatewayResponse(input ModelsResponseInput) error {
+	return r.recordModelSend(input)
 }
-func (r *fakeResponseSink) SendAnthropicModelsGatewayResponse(input ModelsResponseInput) {
-	r.recordModelSend(input)
+func (r *fakeResponseSink) SendAnthropicModelsGatewayResponse(input ModelsResponseInput) error {
+	return r.recordModelSend(input)
 }
-func (r *fakeResponseSink) SendGeminiModelsGatewayResponse(input ModelsResponseInput) {
-	r.recordModelSend(input)
+func (r *fakeResponseSink) SendGeminiModelsGatewayResponse(input ModelsResponseInput) error {
+	return r.recordModelSend(input)
 }
-func (r *fakeResponseSink) recordModelSend(input ModelsResponseInput) {
+func (r *fakeResponseSink) recordModelSend(input ModelsResponseInput) error {
 	r.mu.Lock()
 	r.modelSends = append(r.modelSends, input)
+	err := r.modelsSendErr
 	r.mu.Unlock()
+	return err
 }
 func (r *fakeResponseSink) lastFailure() (FailureResponseInput, bool) {
 	r.mu.Lock()

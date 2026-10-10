@@ -344,10 +344,15 @@ func rebuildSQLiteConversations(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("创建重建目标表失败: %w", err)
 	}
 	copyColumns := append(append([]string{}, retainedConversationColumns...),
-		"archived", "search_account_id", "search_model_id", "image_account_id")
+		"archived", "search_account_id", "search_model_id", "image_account_id",
+		// 媒体账户四列（chat schema 24d40743c 起）：legacy 表无这些列，重建按
+		// 可空缺省回填 NULL，与 ensure-schema 的 chat 形状对齐。
+		"video_account_id", "default_video_model", "audio_account_id", "default_audio_model")
 	selectColumns := append(append([]string{}, retainedConversationColumns...),
 		"CASE WHEN bind_mode IS NULL OR bind_mode <> 'account' THEN 1 ELSE 0 END AS archived",
-		"NULL AS search_account_id", "NULL AS search_model_id", "NULL AS image_account_id")
+		"NULL AS search_account_id", "NULL AS search_model_id", "NULL AS image_account_id",
+		"NULL AS video_account_id", "NULL AS default_video_model",
+		"NULL AS audio_account_id", "NULL AS default_audio_model")
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 		"INSERT INTO chat_conversations_migrating (%s)\nSELECT %s FROM chat_conversations",
 		strings.Join(copyColumns, ", "), strings.Join(selectColumns, ", "))); err != nil {
@@ -381,6 +386,10 @@ const sqliteRebuildConversationDDL = `CREATE TABLE chat_conversations_migrating 
       search_account_id TEXT,
       search_model_id TEXT,
       image_account_id TEXT,
+      video_account_id TEXT,
+      default_video_model TEXT,
+      audio_account_id TEXT,
+      default_audio_model TEXT,
       title TEXT NOT NULL DEFAULT '新对话',
       title_source_message_id TEXT,
       is_pinned INTEGER NOT NULL DEFAULT 0,

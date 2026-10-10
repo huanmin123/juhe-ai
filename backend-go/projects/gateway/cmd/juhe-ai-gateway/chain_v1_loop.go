@@ -81,6 +81,13 @@ type v1DispatchLoop struct {
 	// 写出 compaction 保活块，防客户端/中间层在压缩长等待期空闲断连）。
 	// 每轮 fetch 前创建 Start、fetch 返回即停；nil = 非压缩等待保活场景。
 	compactWaitHeartbeat *gatewayresponse.GatewaySseWaitHeartbeat
+	// compactWaitKeepalive 是压缩等待保活判定的准备层预计算布尔（调度内核
+	// 通用化设计 5.6）：preflight 上下文就绪后由 compactWaitKeepaliveOf 一次
+	// 判定，预算等待心跳排除（handler 装配点）与每轮压缩保活挂载
+	//（startCompactSseWaitHeartbeat）只消费该布尔，不再每轮重投影画像条件。
+	// 判定输入（请求流式性 + codex 画像 + compaction 期望 + responses_sse
+	// 协议）均为请求级冻结量，组回退换代重解析同一请求不改变取值。
+	compactWaitKeepalive bool
 	// forceRecoverableFailureWait 镜像 Node routes.ts:566/1483：切组未成但仍有
 	// 可恢复账户且等待预算未到 recoverable_later 交接点时置位——下一轮引擎
 	// 调用强制进入可恢复等待（优先等即将恢复的账户，保住亲和）。
@@ -169,10 +176,11 @@ func (l *v1DispatchLoop) stopWaitHeartbeat() {
 }
 
 // newRequestCoordination 构造每轮派发的引擎协调上下文（Node routes.ts 主循环
-// 顶部的 coordination 装配）。TimeoutPolicy 对齐 Node routes.ts:1261-1263：
-// wall budget unbounded（codex 压缩请求在 preflight 内经 WithoutLimit 得到的
-// Unbounded 实例）时重导出 'codex_compaction_unbounded'，dispatch 层据此禁用
-// 压缩流的超时判定；其余请求保持空串（默认超时策略）。
+// 顶部的 coordination 装配）。超时豁免与总时间档位是链面预算好的参数（调度
+// 内核通用化设计 5.2 三轨合一）：压缩豁免以 preflight 单点判定经 wall budget
+// Unbounded 承载（compaction 请求在 preflight 内 WithoutLimit），coordination
+// 据此携带 TimeoutsDisabled / TotalTimeLane，引擎不再感知"压缩"概念、不做
+// 请求形状扫描；其余请求保持零值（normal 档、不豁免）。
 func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordinationContext {
 	coordination := &gatewaydispatch.RequestCoordinationContext{
 		Scope:                    gatewaydispatch.CoordinationScopeGatewayRequest,
@@ -181,9 +189,8 @@ func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordi
 		RouteCoordinationBudget:  l.budgets.coordination,
 		RequestAttemptTracker:    l.budgets.tracker,
 	}
-	if l.budgets.wall != nil && l.budgets.wall.Unbounded {
-		coordination.TimeoutPolicy = gatewaydispatch.TimeoutPolicyCodexCompactionUnbounded
-	}
+	coordination.TimeoutsDisabled = l.budgets.wall != nil && l.budgets.wall.Unbounded
+	coordination.TotalTimeLane = speedFirstTotalTimeLaneOf(l.budgets.wall, l.req)
 	// BUG-0289 一次性消费：待重放的加密上下文清理体钉回同账户。钉住与去重
 	// 走两个正交通道：SameAccountRetry 把候选窗口塌缩到该账户并放行注册
 	// 预检（upstreamdispatch.go:536-538/:591-593），RetryID 必须留空——
@@ -225,11 +232,49 @@ func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordi
 	return coordination
 }
 
-// shouldKeepCompactSseAliveDuringUpstreamWait 对齐 Node routes.ts:2939-2948
+// engineSchedulingExclusionsOf 把 preauth 端口镜像的通用调度排除集投影为引擎
+// 入参形状（调度内核通用化设计 5.1；两包镜像类型逐字段复制）。nil 保持 nil。
+func engineSchedulingExclusionsOf(exclusions *gatewaypreauth.SchedulingExclusions) *gatewaydispatch.SchedulingExclusions {
+	if exclusions == nil {
+		return nil
+	}
+	return &gatewaydispatch.SchedulingExclusions{
+		ExcludedAccountIDs: append([]string(nil), exclusions.ExcludedAccountIDs...),
+	}
+}
+
+// engineDispatchSegmentsOf 把 preauth 端口镜像的分派段列表投影为引擎入参形状
+// （逐字段复制；AccountCandidate 两侧同为 gatewayruntimecache.OpenAIAccountSecret
+// 别名，切片只读复用）。空列表保持 nil，引擎按未携带段元数据合成单一活动段。
+func engineDispatchSegmentsOf(segments []gatewaypreauth.DispatchSegment) []gatewaydispatch.DispatchSegment {
+	if len(segments) == 0 {
+		return nil
+	}
+	out := make([]gatewaydispatch.DispatchSegment, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, gatewaydispatch.DispatchSegment{
+			OpaqueSegmentID: segment.OpaqueSegmentID,
+			Tier: gatewaydispatch.DispatchPriorityTier{
+				ModelRank:    segment.Tier.ModelRank,
+				FallbackRank: segment.Tier.FallbackRank,
+				SuperRank:    segment.Tier.SuperRank,
+				Priority:     segment.Tier.Priority,
+			},
+			Accounts: segment.Accounts,
+		})
+	}
+	return out
+}
+
+// compactWaitKeepaliveOf 对齐 Node routes.ts:2939-2948
 // shouldKeepCodexCompactSseAliveDuringUpstreamWait：流式 codex 压缩请求（G18
-// 上下文 codexCompactionExpected）且下游 responses_sse。
-func shouldKeepCompactSseAliveDuringUpstreamWait(req *gatewaypreauth.GatewayRequest, current *gatewaypreauth.DispatchContext) bool {
-	view := clientStrategyViewOf(current)
+// 上下文 codexCompactionExpected）且下游 responses_sse。这是保活判定的唯一
+// 推导点（调度内核通用化设计 5.6）：preflight 上下文就绪后调用一次写入
+// loop.compactWaitKeepalive，链面消费点只读该预计算布尔——三要素均为请求级
+// 冻结量（画像/压缩期望/协议来自 ClientStrategy 对同一请求的冻结解析，组回退
+// 换代重解析不改变取值），单次判定与既有每轮重判行为等价。
+func compactWaitKeepaliveOf(req *gatewaypreauth.GatewayRequest, context *gatewaypreauth.DispatchContext) bool {
+	view := clientStrategyViewOf(context)
 	return gatewaypreauth.RequestStream(req) &&
 		view.ClientProfile == "codex" && view.CodexCompactionExpected &&
 		view.DownstreamProtocol == "responses_sse"
@@ -238,9 +283,9 @@ func shouldKeepCompactSseAliveDuringUpstreamWait(req *gatewaypreauth.GatewayRequ
 // startCompactSseWaitHeartbeat 对齐 Node routes.ts:1229-1239：满足挂载条件时
 // 挂 10s 间隔的 compaction 保活心跳并立即 Start（首个保活块即刻写出）。
 // 提交状态与预算心跳共享 loop.waitCommitState 单实例（语义已提交后心跳自动
-// 停写）。
+// 停写）。挂载门是准备层预计算布尔 loop.compactWaitKeepalive（设计 5.6）。
 func (l *v1DispatchLoop) startCompactSseWaitHeartbeat(ctx context.Context, current *gatewaypreauth.DispatchContext) {
-	if !shouldKeepCompactSseAliveDuringUpstreamWait(l.req, current) {
+	if !l.compactWaitKeepalive {
 		return
 	}
 	heartbeat := gatewayresponse.CreateGatewaySseWaitHeartbeat(gatewayresponse.HeartbeatDeps{
@@ -383,12 +428,13 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			RequestClientCompatibility:      current.ClientStrategy.RequestClientCompatibility,
 			ModelPriority:                   current.ModelPriority,
 			AllowPrecheckHalfOpen:           current.PrecheckHalfOpenEligible,
-			// F5-2: the codex turn (client source) avoidance filter + last-
-			// resort reversal ride the dispatch loop (Node routes.ts:911-917).
-			CodexTurnAccountAvoidanceApplied: current.CodexTurnAccountAvoidanceApplied,
-			CodexTurnAvoidedAccountIDs:       current.CodexTurnAvoidedAccountIDs,
-			RequestCoordination:              coordination,
-			WaitForRecoverableFailures:       l.waitForRecoverableFailures(current),
+			// 通用调度排除集 + 分派段（调度内核通用化设计 5.1，批次 1）：内核
+			// 按分派段推进，段内让位、普通候选耗尽后翻回，替代原 Codex turn
+			// 避让的整体过滤 + last-resort 翻回两段画像分支。
+			SchedulingExclusions:       engineSchedulingExclusionsOf(current.SchedulingExclusions),
+			DispatchSegments:           engineDispatchSegmentsOf(current.DispatchSegments),
+			RequestCoordination:        coordination,
+			WaitForRecoverableFailures: l.waitForRecoverableFailures(current),
 			// W4-B（BUG-0175）D-114：速度优先切换预留（Node
 			// preAcquiredConcurrency 参数）。
 			PreAcquiredConcurrency: speedFirstReservationHandleOf(dispatchReservation),

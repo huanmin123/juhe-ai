@@ -22,52 +22,9 @@ import (
 
 // ---- codexcontract ----
 
-func TestW13CJsonValueHasCompactionTrigger(t *testing.T) {
-	if jsonValueHasCompactionTrigger(nil, 0) {
-		t.Fatal("nil value must be false")
-	}
-	if jsonValueHasCompactionTrigger([]any{map[string]any{"type": "compaction_trigger"}}, 0) != true {
-		t.Fatal("nested compaction trigger must be found")
-	}
-	if jsonValueHasCompactionTrigger(map[string]any{}, 0) {
-		t.Fatal("empty object must be false")
-	}
-	deep := any("leaf")
-	for i := 0; i < 12; i++ {
-		deep = []any{deep}
-	}
-	if jsonValueHasCompactionTrigger(deep, 0) {
-		t.Fatal("depth limit must stop the scan")
-	}
-}
-
-func TestW13CNormalizedOpenAIRequestPath(t *testing.T) {
-	request := &gatewaypreauth.GatewayRequest{}
-	if got := normalizedOpenAIRequestPath(request); got != "/" {
-		t.Fatalf("empty path = %q", got)
-	}
-}
-
-func TestW13CRequestPathHasCompactionTrigger(t *testing.T) {
-	if requestPathHasCompactionTrigger("/v1/chat/completions", nil, nil) {
-		t.Fatal("non-responses path must be false")
-	}
-	if requestPathHasCompactionTrigger("/v1/responses", nil, nil) {
-		t.Fatal("empty raw body must be false")
-	}
-	pattern := []byte(`{"type":"compaction_trigger"}`)
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, pattern) {
-		t.Fatal("small body with trigger must be true")
-	}
-	big := append([]byte(strings.Repeat(" ", 512)), pattern...)
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, big) {
-		t.Fatal("edge-scanned body must find the trigger")
-	}
-	clean := []byte(strings.Repeat(" ", 512) + `{"type":"other"}`)
-	if requestPathHasCompactionTrigger("/v1/responses", nil, clean) {
-		t.Fatal("clean body must be false")
-	}
-}
+// 请求侧压缩触发判定辅助（jsonValueHasCompactionTrigger 等）已随批次 2 遗留
+// 清理从 codexcontract.go 删除（唯一实现 gatewaycodex.CodexCompactionExpected
+// ForRequest，边界行为由 gatewaycodex 包测试锁定）；原直驱用例一并移除。
 
 // ---- convert / errors / failclass / failurestatus ----
 

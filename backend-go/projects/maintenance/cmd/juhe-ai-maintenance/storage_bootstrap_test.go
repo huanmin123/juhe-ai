@@ -133,8 +133,11 @@ func TestRunStorageBootstrapSQLiteEndToEnd(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {
 		t.Fatalf("query api keys: %v", err)
 	}
-	if apiKeys != 11 {
-		t.Fatalf("api keys = %d, want 11", apiKeys)
+	if apiKeys != 1 {
+		// 0e83a580b 默认资源收口：默认组收窄 provider_code='gpt'，
+		// seedSQLiteAdminChatAPIKey 移除，种子契约收敛为 1 个 API Key
+		// （与 maintenance/internal/schema/sqlite_seed_test.go 锚点同源）。
+		t.Fatalf("api keys = %d, want 1", apiKeys)
 	}
 	for _, name := range []string{"chat.sqlite3", "dataset.sqlite3", "usage-catalog.sqlite3", "stats.sqlite3", filepath.Join("shards", "state-000.sqlite3"), filepath.Join("shards", "state-001.sqlite3")} {
 		db, err := sql.Open("sqlite", "file:"+filepath.Join(root, filepath.FromSlash(name))+"?mode=ro")

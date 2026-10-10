@@ -55,11 +55,19 @@ import (
 
 // Node reason strings for the four business-write reasons and the return
 // fan-out (resource-authorization-write/return.repository.ts).
+// invalidationReasonExpired has no archived Node trigger — the archived
+// expireDueResourceAuthorizationsAsync ran no refresh fan-out — but the
+// gateway model-list union cache contract (网关模型列表账户并集设计 6.3) requires
+// every committed authorization status materialization to clear the runtime
+// cache; the sweeps below fire it per committed grant flip. The validUntil
+// natural-expiry fallback stays untouched (仅 expires_at 类自然到期由 validUntil
+// 覆盖).
 const (
 	invalidationReasonCreated  = "resource_authorization_created"
 	invalidationReasonUpdated  = "resource_authorization_updated"
 	invalidationReasonRevoked  = "resource_authorization_revoked"
 	invalidationReasonReturned = "resource_authorization_returned"
+	invalidationReasonExpired  = "resource_authorization_expired"
 )
 
 // StatsDirtyMarker is the committed-write group-stats refresh arm

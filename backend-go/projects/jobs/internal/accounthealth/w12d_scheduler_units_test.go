@@ -276,14 +276,17 @@ func TestW12dSchedulerPureHelpers(t *testing.T) {
 	if cooldownMaxRecovery(exactkeyprobe.Schedule{}) != defaultCooldownMaxRecoveryHours*time.Hour {
 		t.Fatal("max recovery default")
 	}
-	if cooldownFailureDelay("a", "g", 0, 0) != 3*time.Second {
+	if cooldownFailureDelay("a", "g", 0, 0, false) != 3*time.Second {
 		t.Fatal("failure delay floor")
 	}
-	if cooldownFailureDelay("a", "g", time.Second, 6) != 60*time.Second {
+	if cooldownFailureDelay("a", "g", time.Second, 6, false) != 60*time.Second {
 		t.Fatal("failure delay slow path")
 	}
-	if cooldownFailureDelay("a", "g", time.Second, 3) != 4*time.Second {
+	if cooldownFailureDelay("a", "g", time.Second, 3, false) != 4*time.Second {
 		t.Fatal("failure delay doubling")
+	}
+	if cooldownSlowRetryDelay(false) != 60*time.Second || cooldownSlowRetryDelay(true) != 15*time.Second {
+		t.Fatal("slow retry lane base must stay 60s for normal accounts and 15s for expedited")
 	}
 	// boundedCooldownRemaining：仅 temporary_unavailable 且未开启持续探活。
 	disabled := false

@@ -897,7 +897,8 @@ func createBody(body map[string]any) (CreateInput, string) {
 			"tags", "status", "skipInitialHealthCheck", "concurrencyLimit", "priority",
 			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId", "schedulable",
 			"groupId", "accountExpiresAt", "availabilitySchedule", "balanceQueryEnabled",
-			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled", "notes":
+			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled",
+			"expeditedRecoveryEnabled", "notes":
 		default:
 			return CreateInput{}, "账户参数无效"
 		}
@@ -1068,6 +1069,15 @@ func createBody(body map[string]any) (CreateInput, string) {
 		}
 		input.TemporaryUnavailableContinuousProbeEnabled = &enabled
 	}
+	// 特供快速恢复（设计 §8.1）：严格布尔；true 由创建事务内的名额校验把关，
+	// clone-context 派生的创建体不含该键，克隆副本恒为未标记。
+	if value, exists := body["expeditedRecoveryEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		input.ExpeditedRecoveryEnabled = &enabled
+	}
 	if value, exists := body["notes"]; exists && value != nil {
 		text, ok := value.(string)
 		if !ok {
@@ -1090,7 +1100,7 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
 			"availabilitySchedule", "clearFailureState", "proxyProfileId", "groupId",
 			"balanceQueryEnabled", "balanceQueryConfig",
-			"temporaryUnavailableContinuousProbeEnabled":
+			"temporaryUnavailableContinuousProbeEnabled", "expeditedRecoveryEnabled":
 		default:
 			return PatchInput{}, "账户更新参数无效"
 		}
@@ -1303,6 +1313,15 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			return PatchInput{}, "账户更新参数无效"
 		}
 		input.TemporaryUnavailableContinuousProbeEnabled = &enabled
+	}
+	// 特供快速恢复（设计 §8.1）：严格布尔；false→true 的翻转在补丁事务内做
+	// 名额校验（§9），置 false 与幂等 true 不校验。
+	if value, exists := body["expeditedRecoveryEnabled"]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.ExpeditedRecoveryEnabled = &enabled
 	}
 	if value, exists := body["clearFailureState"]; exists && value != nil {
 		if enabled, ok := value.(bool); ok {

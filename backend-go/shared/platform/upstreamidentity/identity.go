@@ -16,11 +16,11 @@ const (
 	ProfileGLMCodingOpenAIV1    = "profile_glm_coding_openai_v1"
 	ProfileXAIOpenAIV1          = "profile_xai_openai_v1"
 	// GrokCLIClientVersion 是 xai Grok CLI 客户端画像的伪装版本。xAI 自
-	// 2026-10 起对 cli-chat-proxy.grok.com 强制 CLI >= 1.0.13，旧版本画像
-	// 返回 426 Upgrade Required（"Grok CLI version ... outdated"）；跟随
-	// 门槛取最低要求值，升级时同步本常量与文档。运行时可被
-	// SetClientVersionOverrides 覆盖（EffectiveGrokCLIVersion）。
-	GrokCLIClientVersion = "1.0.13"
+	// 2026-10 起对 cli-chat-proxy.grok.com 强制 CLI 版本门槛（首见 >= 1.0.13，
+	// 低于门槛返回 426 Upgrade Required）。版本跟随 xAI grok-build 官方最新
+	//（与自动跟版同源：main 分支 Cargo.toml；2026-10-10 锚点 1.0.45）。运行时
+	// 可被 SetClientVersionOverrides 覆盖（EffectiveGrokCLIVersion）。
+	GrokCLIClientVersion = "1.0.45"
 	// 两个 hybrid 档案当前桥接的目标上游都是 GLM（BUG-0176 时代的兼容事实），
 	// 因此归入 GLM 家族选择 ZCode 身份。
 	ProfileHybridOpenAIChatV1        = "profile_hybrid_openai_chat_v1"
@@ -30,9 +30,9 @@ const (
 	//（键 upstreamClientVersionAutoOverrides，jobs 跟版任务写入）> 本常量；
 	// BuiltInClientVersion 导出本层供任务侧单调检查。常量本身保留为内置默认
 	// 与文档锚点。
-	builtInCodexVersion = "0.159.3"
-	builtInClaudeCodeVersion   = "2.1.285"
-	builtInGeminiCLIVersion    = "0.61.0"
+	builtInCodexVersion = "0.162.0"
+	builtInClaudeCodeVersion   = "2.1.295"
+	builtInGeminiCLIVersion    = "0.63.0"
 	// OpenCodeUserAgent is the static identity observed in OpenCode 1.18.5.
 	// BUG-0201 之后本包不再把它注入任何系统请求；常量仅为兼容既有引用保留。
 	OpenCodeUserAgent = "opencode/1.18.5"
@@ -44,23 +44,23 @@ const (
 	// 不设置 USER_AGENT_SUFFIX，故无 (codex_exec; {v}) 后缀。GPT/Codex 家族
 	// 的系统请求在本包与 accountprobe 的 codex_responses 动态头分支共用
 	// 的身份子集。版本跟随 openai/codex 官方最新稳定（GitHub Releases；
-	// 2026-10-02 锚点 0.159.3）。运行时可被 SetClientVersionOverrides 覆盖
+	// 2026-10-10 锚点 0.162.0）。运行时可被 SetClientVersionOverrides 覆盖
 	//（EffectiveCodexUserAgent）。
 	CodexExecUserAgent = "codex_exec/" + builtInCodexVersion + " (Windows 10.0.22621; x86_64) unknown"
 	// ZCodeVersion 是 GLM 家族注入的 ZCode 客户端版本（UA 与
 	// X-ZCode-App-Version 共用）。版本跟随 zcode.z.ai 官方 changelog 最新
-	//（2026-10-02 锚点 3.14.3）。运行时可被 SetClientVersionOverrides 覆盖
+	//（2026-10-10 核实仍为 3.14.3）。运行时可被 SetClientVersionOverrides 覆盖
 	//（EffectiveZCodeVersion）。
 	ZCodeVersion = "3.14.3"
 	// ClaudeCodeUserAgent 是 Anthropic 家族 OAuth 系统请求的静态身份。
-	// 版本跟随 Claude Code 官方 changelog 最新稳定（code.claude.com；
-	// 2026-10-02 锚点 2.1.285）。anthropic-beta 特性集与 x-stainless SDK
+	// 版本跟随 Claude Code 官方 changelog 最新稳定（npm registry，与自动跟版
+	// 同源；2026-10-10 锚点 2.1.295）。anthropic-beta 特性集与 x-stainless SDK
 	// 版本无公开对应关系，维持实测值不随版本号联动。运行时可被
 	// SetClientVersionOverrides 覆盖（EffectiveClaudeCodeUserAgent）。
 	ClaudeCodeUserAgent = "claude-cli/" + builtInClaudeCodeVersion + " (external, cli)"
 	// GeminiCLIUserAgent 是 Gemini OAuth（code_assist/google_one）系统请求的
-	// 静态身份。版本跟随 @google/gemini-cli npm 最新稳定（2026-10-02 锚点
-	// 0.61.0）。运行时可被 SetClientVersionOverrides 覆盖
+	// 静态身份。版本跟随 @google/gemini-cli npm 最新稳定（2026-10-10 锚点
+	// 0.63.0）。运行时可被 SetClientVersionOverrides 覆盖
 	//（EffectiveGeminiCLIUserAgent）。
 	GeminiCLIUserAgent = "GeminiCLI/" + builtInGeminiCLIVersion + " (Windows; AMD64)"
 	claudeCodeBeta     = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"

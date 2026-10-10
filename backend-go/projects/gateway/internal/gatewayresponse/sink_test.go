@@ -2,6 +2,7 @@ package gatewayresponse
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -171,12 +172,12 @@ func TestSinkSendOpenAIModelsGatewayResponse(t *testing.T) {
 	sink, tracking, recorder, audit, usage, _ := newSinkFixture()
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil))
 	input := gatewaypreauth.ModelsResponseInput{
-		Req:           req,
-		Res:           tracking,
-		AuditCapture:  audit,
-		UsageContext:  usageContextFixture(),
-		ProviderCodes: []string{"OpenAI"},
-		StartedAt:     1000,
+		Req:          req,
+		Res:          tracking,
+		AuditCapture: audit,
+		UsageContext: usageContextFixture(),
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1", ProviderCode: "OpenAI"}},
+		StartedAt:    1000,
 	}
 	sink.SendOpenAIModelsGatewayResponse(input)
 	if recorder.Code != 200 {
@@ -224,12 +225,12 @@ func TestSinkSendAnthropicAndGeminiModelsResponses(t *testing.T) {
 	sink, tracking, recorder, audit, _, _ := newSinkFixture()
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil))
 	input := gatewaypreauth.ModelsResponseInput{
-		Req:           req,
-		Res:           tracking,
-		AuditCapture:  audit,
-		UsageContext:  usageContextFixture(),
-		ProviderCodes: []string{"anthropic"},
-		StartedAt:     1000,
+		Req:          req,
+		Res:          tracking,
+		AuditCapture: audit,
+		UsageContext: usageContextFixture(),
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{ProviderCode: "anthropic"}},
+		StartedAt:    1000,
 	}
 	sink.SendAnthropicModelsGatewayResponse(input)
 	var anthropicPayload struct {
@@ -251,12 +252,12 @@ func TestSinkSendAnthropicAndGeminiModelsResponses(t *testing.T) {
 	tracking2 := gatewaypreauth.NewTrackingWriter(recorder2)
 	audit2 := newMockAuditCapture()
 	input2 := gatewaypreauth.ModelsResponseInput{
-		Req:           gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1beta/models", nil)),
-		Res:           tracking2,
-		AuditCapture:  audit2,
-		UsageContext:  usageContextFixture(),
-		ProviderCodes: []string{"gemini"},
-		StartedAt:     1000,
+		Req:          gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1beta/models", nil)),
+		Res:          tracking2,
+		AuditCapture: audit2,
+		UsageContext: usageContextFixture(),
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{ProviderCode: "gemini"}},
+		StartedAt:    1000,
 	}
 	sink.SendGeminiModelsGatewayResponse(input2)
 	var geminiPayload struct {
@@ -270,6 +271,83 @@ func TestSinkSendAnthropicAndGeminiModelsResponses(t *testing.T) {
 	}
 	if len(geminiPayload.Models) != 1 || geminiPayload.Models[0].Name != "models/gemini-x" {
 		t.Fatalf("gemini payload = %+v", geminiPayload)
+	}
+}
+
+// 装载失败语义（设计 4.6）：loader 错误原样上抛为 sender 返回 error，
+// HTTP 未写出、不记成功审计与成功用量。
+func TestSinkModelsLoadFailureReturnsErrorWithoutWriting(t *testing.T) {
+	sink, tracking, recorder, audit, usage, _ := newSinkFixture()
+	sink.Deps.ModelCatalog.(*mockCatalogLoader).listErr = errors.New("聚合 SQL 失败")
+	input := gatewaypreauth.ModelsResponseInput{
+		Req:          gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil)),
+		Res:          tracking,
+		AuditCapture: audit,
+		UsageContext: usageContextFixture(),
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1", ProviderCode: "openai"}},
+		StartedAt:    1000,
+	}
+	err := sink.SendOpenAIModelsGatewayResponse(input)
+	if err == nil || err.Error() != "聚合 SQL 失败" {
+		t.Fatalf("err = %v, want 原始装载错误", err)
+	}
+	if tracking.HeadersSent() {
+		t.Fatal("HTTP 头不应写出")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("HTTP body 不应写出: %q", recorder.Body.String())
+	}
+	if len(audit.finalized) != 0 {
+		t.Fatalf("不应记成功审计: %+v", audit.finalized)
+	}
+	if usage.dispatchCount() != 0 {
+		t.Fatalf("不应记成功用量: %+v", usage.dispatch)
+	}
+}
+
+// FailureResponseInput.Protocol：为空时保持既有按请求路径的协议推断，
+// 非空时按显式协议构造错误形态（既有失败调用行为零变化）。
+func TestSinkFailureResponseProtocolOverride(t *testing.T) {
+	// 未传 Protocol：/v1/messages 路径 → 既有推断 anthropic 形态。
+	sink, tracking, recorder, _, _, _ := newSinkFixture()
+	recordUsage := false
+	sink.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/messages", nil)),
+		Res:             tracking,
+		AuditCapture:    newMockAuditCapture(),
+		UsageContext:    usageContextFixture(),
+		StartedAt:       1000,
+		StatusCode:      500,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf("内部错误", "internal_error", "models_list_unavailable"),
+		RecordUsage:     &recordUsage,
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome: "gateway_failed", ErrorPhase: "dispatch",
+			ErrorCode: "models_list_unavailable", ErrorMessage: "内部错误",
+		},
+	})
+	if !strings.Contains(recorder.Body.String(), `"type":"error"`) || !strings.Contains(recorder.Body.String(), `"api_error"`) {
+		t.Fatalf("未传 Protocol 应保持路径推断的 anthropic 形态: %s", recorder.Body.String())
+	}
+	// 显式 Protocol=openai：同一路径按 openai 形态输出。
+	sink2, tracking2, recorder2, _, _, _ := newSinkFixture()
+	sink2.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/messages", nil)),
+		Res:             tracking2,
+		AuditCapture:    newMockAuditCapture(),
+		UsageContext:    usageContextFixture(),
+		StartedAt:       1000,
+		StatusCode:      500,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf("内部错误", "internal_error", "models_list_unavailable"),
+		Protocol:        gatewaypreauth.GatewayErrorProtocolOpenAI,
+		RecordUsage:     &recordUsage,
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome: "gateway_failed", ErrorPhase: "dispatch",
+			ErrorCode: "models_list_unavailable", ErrorMessage: "内部错误",
+		},
+	})
+	body := recorder2.Body.String()
+	if strings.Contains(body, `"type":"error"`) || !strings.Contains(body, `"internal_error"`) || !strings.Contains(body, `"models_list_unavailable"`) {
+		t.Fatalf("显式 Protocol=openai 应输出 openai 形态: %s", body)
 	}
 }
 

@@ -682,11 +682,14 @@ func TestW1YNextDefaultNameLikeEscapeDefect(t *testing.T) {
 func TestW1YDefaultRouteStrategyGroupsScanError(t *testing.T) {
 	db := w1yKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "w1y-secret")
+	// 2026-10-07 默认资源收口（0e83a580b）后查询不再 SELECT provider_code，
+	// Scan 转换错误臂改由 NULL 主键（id 列 Scan 进 string）触发；词表过滤
+	// 仍要求 provider_code='gpt' 才能命中该行。
 	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('grp-w1y-null', 'own-nullname', '空供应商', NULL, 1, 1, 'now', 'now')`)
+		VALUES (NULL, 'own-nullname', '空主键', 'gpt', 1, 1, 'now', 'now')`)
 	if _, err := provider.defaultRouteStrategyGroups("own-nullname"); err == nil ||
 		!strings.Contains(err.Error(), "converting NULL to string is unsupported") {
-		t.Fatalf("NULL provider_code defaultRouteStrategyGroups = %v, want Scan 转换错误", err)
+		t.Fatalf("NULL id defaultRouteStrategyGroups = %v, want Scan 转换错误", err)
 	}
 }
 

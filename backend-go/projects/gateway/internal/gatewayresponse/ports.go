@@ -1,6 +1,9 @@
 package gatewayresponse
 
 import (
+	"context"
+	"time"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -223,9 +226,26 @@ type AccountFailureEffects interface {
 	// SuppressLocally / SuppressUpstreamBucket 保留给显式策略副作用。
 }
 
-// ModelCatalogLoader 对齐 listClientModelCatalogAsync（model-pricing，G17）。
+// GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影
+// (GroupID, ProviderCode)。canonical 定义在 gatewaypreauth（
+// ModelsResponseInput 携带 bindings，而本包依赖 gatewaypreauth，不能反向
+// 导入）；此别名保证 cmd 装配按设计稿 6.4 的 gatewayresponse.GatewayModelBinding
+// 名称引用同一类型。
+type GatewayModelBinding = gatewaypreauth.GatewayModelBinding
+
+// GatewayKeyModelList 是一次 /v1/models 成员装载的结果：条目已按模型名
+// 字典序排序、成员∪元数据合并完成。ValidUntil 来自并集缓存，供诊断，
+// 响应构建不依赖它。
+type GatewayKeyModelList struct {
+	Entries    []ModelCatalogEntry
+	ValidUntil time.Time
+}
+
+// ModelCatalogLoader 对齐 listGatewayKeyModelsAsync（/v1/models 账户并集，
+// 设计 4.6.1/6.4）：装载失败必须原样返回错误（数据面失败禁止渲染成 200
+// 空列表、禁止回退目录）；缓存面失败由实现按既有容错降级。
 type ModelCatalogLoader interface {
-	ListClientModelCatalog(systemAccountID string, providerCodes []string) []ModelCatalogEntry
+	ListGatewayKeyModels(ctx context.Context, systemAccountID string, bindings []GatewayModelBinding) (GatewayKeyModelList, error)
 }
 
 // HTTPCompletion 对齐 observeGatewayHttpCompletion(res).wait()。

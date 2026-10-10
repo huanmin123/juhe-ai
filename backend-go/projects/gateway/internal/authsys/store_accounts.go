@@ -45,19 +45,24 @@ func (e *BadRequestError) Error() string { return e.Message }
 
 // AccountSummary mirrors Node SystemAccountSummary (domain/types.ts).
 type AccountSummary struct {
-	ID                     string             `json:"id"`
-	Username               string             `json:"username"`
-	DisplayName            string             `json:"displayName"`
-	Description            *string            `json:"description,omitempty"`
-	Role                   string             `json:"role"`
-	Status                 string             `json:"status"`
-	MustChangePassword     bool               `json:"mustChangePassword"`
-	ImageGenerationEnabled bool               `json:"imageGenerationEnabled"`
-	AIAccountLimit         *int               `json:"aiAccountLimit,omitempty"`
-	RequestLimits          *UserRequestLimits `json:"requestLimits,omitempty"`
-	LastLoginAt            *string            `json:"lastLoginAt,omitempty"`
-	CreatedAt              string             `json:"createdAt"`
-	UpdatedAt              string             `json:"updatedAt"`
+	ID                     string  `json:"id"`
+	Username               string  `json:"username"`
+	DisplayName            string  `json:"displayName"`
+	Description            *string `json:"description,omitempty"`
+	Role                   string  `json:"role"`
+	Status                 string  `json:"status"`
+	MustChangePassword     bool    `json:"mustChangePassword"`
+	ImageGenerationEnabled bool    `json:"imageGenerationEnabled"`
+	AIAccountLimit         *int    `json:"aiAccountLimit,omitempty"`
+	// ExpeditedAccountLimit mirrors system_accounts.expedited_account_limit
+	// (设计契约《AI账户特供快速恢复通道》§8 系统账户侧): the key is always
+	// rendered as int|null — DB NULL stays JSON null so consumers normalize the
+	// default 3 with COALESCE on the read side without writing it back.
+	ExpeditedAccountLimit *int               `json:"expeditedAccountLimit"`
+	RequestLimits         *UserRequestLimits `json:"requestLimits,omitempty"`
+	LastLoginAt           *string            `json:"lastLoginAt,omitempty"`
+	CreatedAt             string             `json:"createdAt"`
+	UpdatedAt             string             `json:"updatedAt"`
 }
 
 // UserRequestLimits mirrors parseUserRequestLimitsJson.
@@ -88,6 +93,7 @@ type AccountMutationResult struct {
 	MustChangePassword                      *bool           `json:"mustChangePassword,omitempty"`
 	ImageGenerationEnabled                  *bool           `json:"imageGenerationEnabled,omitempty"`
 	AIAccountLimit                          json.RawMessage `json:"aiAccountLimit,omitempty"`
+	ExpeditedAccountLimit                   json.RawMessage `json:"expeditedAccountLimit,omitempty"`
 	RequestLimits                           json.RawMessage `json:"requestLimits,omitempty"`
 	APIKeyValidationCacheInvalidationFailed bool            `json:"apiKeyValidationCacheInvalidationFailed,omitempty"`
 }
@@ -216,15 +222,15 @@ var whitespacePattern = regexp.MustCompile(`\s`)
 func hasWhitespace(value string) bool { return whitespacePattern.MatchString(value) }
 
 const (
-	accountColumns = `id,username,COALESCE(display_name,''),COALESCE(description,''),role,status,must_change_password,image_generation_enabled,ai_account_limit,COALESCE(request_limits_json,''),COALESCE(last_login_at,''),created_at,updated_at`
+	accountColumns = `id,username,COALESCE(display_name,''),COALESCE(description,''),role,status,must_change_password,image_generation_enabled,ai_account_limit,expedited_account_limit,COALESCE(request_limits_json,''),COALESCE(last_login_at,''),created_at,updated_at`
 )
 
 func (s *AccountStore) scanSummary(scanner interface{ Scan(...any) error }) (AccountSummary, error) {
 	var a AccountSummary
 	var description, requestLimitsJSON, lastLoginAt string
 	var mustChange, imageEnabled int
-	var aiLimit sql.NullInt64
-	if err := scanner.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt); err != nil {
+	var aiLimit, expeditedLimit sql.NullInt64
+	if err := scanner.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt); err != nil {
 		return AccountSummary{}, err
 	}
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
@@ -241,6 +247,10 @@ func (s *AccountStore) scanSummary(scanner interface{ Scan(...any) error }) (Acc
 	if aiLimit.Valid {
 		limit := int(aiLimit.Int64)
 		a.AIAccountLimit = &limit
+	}
+	if expeditedLimit.Valid {
+		limit := int(expeditedLimit.Int64)
+		a.ExpeditedAccountLimit = &limit
 	}
 	if lastLoginAt != "" {
 		a.LastLoginAt = &lastLoginAt
@@ -300,8 +310,8 @@ func (s *AccountStore) findRow(ctx context.Context, where string, args ...any) (
 	var a AccountSummary
 	var description, requestLimitsJSON, lastLoginAt, passwordHash string
 	var mustChange, imageEnabled int
-	var aiLimit sql.NullInt64
-	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt, &passwordHash); err != nil {
+	var aiLimit, expeditedLimit sql.NullInt64
+	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt, &passwordHash); err != nil {
 		return AccountSummary{}, "", err
 	}
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
@@ -317,6 +327,10 @@ func (s *AccountStore) findRow(ctx context.Context, where string, args ...any) (
 	if aiLimit.Valid {
 		limit := int(aiLimit.Int64)
 		a.AIAccountLimit = &limit
+	}
+	if expeditedLimit.Valid {
+		limit := int(expeditedLimit.Int64)
+		a.ExpeditedAccountLimit = &limit
 	}
 	if lastLoginAt != "" {
 		a.LastLoginAt = &lastLoginAt
@@ -570,6 +584,7 @@ type CreateInput struct {
 	MustChangePassword     *bool
 	ImageGenerationEnabled *bool
 	AIAccountLimit         *int
+	ExpeditedAccountLimit  *int
 	RequestLimits          *UserRequestLimits
 }
 
@@ -637,6 +652,10 @@ func (s *AccountStore) Create(ctx context.Context, input CreateInput) (AccountLi
 	if input.AIAccountLimit != nil && (*input.AIAccountLimit < 0 || *input.AIAccountLimit > 1_000_000) {
 		return AccountListItem{}, &ValidationError{Message: "AI 账户上限必须是 0 到 1000000 之间的整数"}
 	}
+	if input.ExpeditedAccountLimit != nil && (*input.ExpeditedAccountLimit < 0 || *input.ExpeditedAccountLimit > 100) {
+		// 设计契约《AI账户特供快速恢复通道》§8 系统账户侧：特供账户上限 0–100。
+		return AccountListItem{}, &ValidationError{Message: "特供账户上限必须是 0 到 100 之间的整数"}
+	}
 	requestLimitsJSON, err := marshalRequestLimits(input.RequestLimits)
 	if err != nil {
 		return AccountListItem{}, &ValidationError{Message: err.Error()}
@@ -674,8 +693,8 @@ func (s *AccountStore) Create(ctx context.Context, input CreateInput) (AccountLi
 	nowText := s.now().UTC().Format(time.RFC3339Nano)
 	mustChangeInt := boolInt(mustChange)
 	imageInt := boolInt(imageEnabled)
-	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_accounts")+` (id,username,display_name,description,role,status,password_hash,must_change_password,image_generation_enabled,ai_account_limit,request_limits_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`),
-		id, input.Username, input.DisplayName, description, role, status, passwordHash, mustChangeInt, imageInt, input.AIAccountLimit, requestLimitsJSON, nowText, nowText)
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_accounts")+` (id,username,display_name,description,role,status,password_hash,must_change_password,image_generation_enabled,ai_account_limit,expedited_account_limit,request_limits_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		id, input.Username, input.DisplayName, description, role, status, passwordHash, mustChangeInt, imageInt, input.AIAccountLimit, input.ExpeditedAccountLimit, requestLimitsJSON, nowText, nowText)
 	if err != nil {
 		return AccountListItem{}, err
 	}
@@ -754,10 +773,16 @@ type PatchInput struct {
 	MustChangePassword     *bool
 	ImageGenerationEnabled *bool
 	AIAccountLimit         *int
+	ExpeditedAccountLimit  *int
 	RequestLimits          *UserRequestLimits
 	DescriptionPresent     bool
 	AIAccountLimitPresent  bool
-	RequestLimitsPresent   bool
+	// ExpeditedAccountLimitPresent carries the JSON tri-state of
+	// expeditedAccountLimit (设计契约 §8 系统账户侧): absent = leave untouched,
+	// explicit null = clear the override back to DB NULL (default 3), integer =
+	// set 0–100.
+	ExpeditedAccountLimitPresent bool
+	RequestLimitsPresent         bool
 }
 
 // normalizeRFC3339 mirrors the Node rfc3339 normalization used for the
@@ -1031,16 +1056,29 @@ func (s *AccountStore) Patch(ctx context.Context, id string, input PatchInput) (
 			mutationResult.AIAccountLimit = json.RawMessage(mustMarshalJSON(input.AIAccountLimit))
 		}
 	}
+	if input.ExpeditedAccountLimitPresent {
+		if input.ExpeditedAccountLimit != nil && (*input.ExpeditedAccountLimit < 0 || *input.ExpeditedAccountLimit > 100) {
+			return AccountMutationResult{}, &ValidationError{Message: "特供账户上限必须是 0 到 100 之间的整数"}
+		}
+		if !sameOptionalInt(current.ExpeditedAccountLimit, input.ExpeditedAccountLimit) {
+			changes["expedited_account_limit"] = nullableIntValue(input.ExpeditedAccountLimit)
+			mutationResult.ExpeditedAccountLimit = json.RawMessage(mustMarshalJSON(input.ExpeditedAccountLimit))
+		}
+	}
 	// Node evaluates every field before the no-op decision
 	// (patchSystemAccountManagementAsync: `if (!assignments.length)` after the
 	// field projections), so the gate sits after mustChangePassword /
-	// imageGenerationEnabled / aiAccountLimit detection; mustChangePassword,
-	// image and AI-account-limit-only patches are real mutations.
+	// imageGenerationEnabled / aiAccountLimit / expeditedAccountLimit detection;
+	// mustChangePassword, image, AI-account-limit- and expedited-account-limit-
+	// only patches are real mutations.
 	if len(changes) == 0 && !passwordChanged {
 		return mutationResult, nil
 	}
 	if value, ok := changes["ai_account_limit"]; ok {
 		setIf("ai_account_limit", value)
+	}
+	if value, ok := changes["expedited_account_limit"]; ok {
+		setIf("expedited_account_limit", value)
 	}
 	if value, ok := changes["request_limits_json"]; ok {
 		setIf("request_limits_json", value)
@@ -1090,8 +1128,8 @@ func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where s
 	var a AccountSummary
 	var description, requestLimitsJSON, lastLoginAt, passwordHash string
 	var mustChange, imageEnabled int
-	var aiLimit sql.NullInt64
-	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt, &passwordHash); err != nil {
+	var aiLimit, expeditedLimit sql.NullInt64
+	if err := row.Scan(&a.ID, &a.Username, &a.DisplayName, &description, &a.Role, &a.Status, &mustChange, &imageEnabled, &aiLimit, &expeditedLimit, &requestLimitsJSON, &lastLoginAt, &a.CreatedAt, &a.UpdatedAt, &passwordHash); err != nil {
 		return AccountSummary{}, "", err
 	}
 	a.MustChangePassword = mustChange == 1 && !IsAdminRole(a.Role)
@@ -1107,6 +1145,10 @@ func (s *AccountStore) findRowForUpdate(ctx context.Context, tx *sql.Tx, where s
 	if aiLimit.Valid {
 		limit := int(aiLimit.Int64)
 		a.AIAccountLimit = &limit
+	}
+	if expeditedLimit.Valid {
+		limit := int(expeditedLimit.Int64)
+		a.ExpeditedAccountLimit = &limit
 	}
 	return a, passwordHash, nil
 }

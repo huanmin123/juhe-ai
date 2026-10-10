@@ -10,7 +10,6 @@ import (
 	"context"
 	"io"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,56 +21,10 @@ import (
 
 // ---- codexcontract.go ----
 
-func TestW14CCodexContractGaps(t *testing.T) {
-	// requestBodyHasCompactionTrigger：无触发、bodyState 缺失 → false 兜底。
-	req := &gatewaypreauth.GatewayRequest{}
-	if requestBodyHasCompactionTrigger(req) {
-		t.Fatal("空请求不得触发 compaction")
-	}
+// 请求侧压缩触发判定辅助（requestBodyHasCompactionTrigger 等）已随批次 2 遗留
+// 清理从 codexcontract.go 删除（唯一实现 gatewaycodex.CodexCompactionExpected
+// ForRequest，边界行为由 gatewaycodex 包测试锁定）；原直驱用例一并移除。
 
-	// jsonValueHasCompactionTrigger：nil map、超 200 子节点截断。
-	if jsonValueHasCompactionTrigger(map[string]any(nil), 0) {
-		t.Fatal("nil map 不得触发")
-	}
-	wide := map[string]any{}
-	for i := 0; i < 260; i++ {
-		wide["w14c-key-"+strconv.Itoa(i)] = i
-	}
-	if jsonValueHasCompactionTrigger(wide, 0) {
-		t.Fatal("广度截断处不得误报")
-	}
-	if !jsonValueHasCompactionTrigger(map[string]any{"type": "compaction_trigger"}, 0) {
-		t.Fatal("type 触发必须命中")
-	}
-
-	// normalizedOpenAIRequestPath：空路径回退 "/"。
-	if got := normalizedOpenAIRequestPath(&gatewaypreauth.GatewayRequest{}); got == "" {
-		t.Fatal("空路径必须回退 /")
-	}
-
-	// requestPathHasCompactionTrigger：前缀命中与尾部命中。
-	edge := codexCompactionRawBodyScanEdgeBytes
-	pattern := []byte(`{"type":"compaction_trigger"}`)
-	prefixBody := make([]byte, 0, edge*3)
-	prefixBody = append(prefixBody, pattern...)
-	for len(prefixBody) < edge*3 {
-		prefixBody = append(prefixBody, ' ')
-	}
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, prefixBody) {
-		t.Fatal("前缀命中必须识别 compaction trigger")
-	}
-	tailBody := make([]byte, 0, edge*3)
-	for len(tailBody) < edge*3-len(pattern) {
-		tailBody = append(tailBody, ' ')
-	}
-	tailBody = append(tailBody, pattern...)
-	if !requestPathHasCompactionTrigger("/responses", nil, tailBody) {
-		t.Fatal("尾部命中必须识别 compaction trigger")
-	}
-	if requestPathHasCompactionTrigger("/chat/completions", nil, prefixBody) {
-		t.Fatal("非 responses 路径不检查")
-	}
-}
 
 // ---- convert.go ----
 

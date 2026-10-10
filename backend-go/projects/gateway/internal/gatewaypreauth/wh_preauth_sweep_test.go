@@ -2,6 +2,7 @@ package gatewaypreauth
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -214,10 +215,69 @@ func TestWhPreflightModelsProtocolBranches(t *testing.T) {
 				t.Fatalf("result = %+v err=%v", result, err)
 			}
 			// 分支选择只体现为不同的 Send 方法；共同记录一条模型响应。
-			if len(sink.modelSends) != 1 || len(sink.modelSends[0].ProviderCodes) != 1 {
+			if len(sink.modelSends) != 1 || len(sink.modelSends[0].Bindings) != 1 {
 				t.Fatalf("模型响应 = %+v", sink.modelSends)
 			}
 			_ = tt.protocol
+		})
+	}
+}
+
+// Identity 注入分支的 models 装载失败（设计 4.6.4）：与 before-auth 同一
+// 收尾 helper——500 + models_list_unavailable（按显式 models 协议形态）、
+// 审计元数据一次、返回已完成零值结果，不落外层 generic 500、不进入上游派发。
+func TestWhPreflightModelsLoadFailureFinish(t *testing.T) {
+	tests := []struct {
+		name         string
+		target       string
+		headers      map[string]string
+		wantProtocol GatewayErrorProtocol
+	}{
+		{name: "openai", target: "/v1/models", wantProtocol: GatewayErrorProtocolOpenAI},
+		{name: "gemini", target: "/v1beta/models", wantProtocol: GatewayErrorProtocolGemini},
+		{name: "anthropic", target: "/v1/models", headers: map[string]string{"anthropic-version": "2023-06-01"}, wantProtocol: GatewayErrorProtocolAnthropic},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, _, sink := newTestService(t, func(s *Service) {
+				s.RuntimeCache = whRuntimeCacheFor(nil)
+			})
+			sink.modelsSendErr = errors.New("并集聚合失败")
+			audit := &fakeAuditCapture{}
+			req, _, writer := newTestRequest("GET", tt.target)
+			for key, value := range tt.headers {
+				req.HTTP.Header.Set(key, value)
+			}
+			result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
+				Req: req, Res: writer, AuditCapture: audit,
+				Options:   plainPreflightOptions(),
+				StartedAt: 1, TraceID: "trace-load-fail", Endpoint: "GET " + tt.target,
+			})
+			if err != nil || result.DispatchContext != nil || result.RouteAction != nil {
+				t.Fatalf("result = %+v err=%v", result, err)
+			}
+			if len(sink.failureInputs) != 1 {
+				t.Fatalf("failureInputs = %+v", sink.failureInputs)
+			}
+			failure := sink.failureInputs[0]
+			if failure.StatusCode != 500 || failure.Protocol != tt.wantProtocol {
+				t.Fatalf("failure = %+v", failure)
+			}
+			if failure.ResponsePayload.Error.Code != "models_list_unavailable" {
+				t.Fatalf("payload = %+v", failure.ResponsePayload)
+			}
+			found := false
+			for _, call := range audit.metadata {
+				if call.label == "authenticated_models_list_load_failed" {
+					found = true
+					if call.metadata["reason"] != "并集聚合失败" {
+						t.Fatalf("metadata = %+v", call.metadata)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("缺少装载失败审计元数据: %+v", audit.metadata)
+			}
 		})
 	}
 }

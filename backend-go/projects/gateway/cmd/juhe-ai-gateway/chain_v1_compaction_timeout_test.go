@@ -3,9 +3,10 @@ package main
 // Codex 压缩请求免超时传导修复的回归测试（生产「上游流式请求 120s 内未返回
 // 首段数据」根因的三处传导断线）：
 //
-//   - 断点 A2：loop 构造的 RequestCoordinationContext.TimeoutPolicy 必须从
-//     wall budget 的 Unbounded 重导出 'codex_compaction_unbounded'（对齐 Node
-//     routes.ts:1261-1263），非 Unbounded 保持空串；
+//   - 断点 A2：loop 构造的 RequestCoordinationContext 必须从 wall budget 的
+//     Unbounded 携带 TimeoutsDisabled=true（调度内核通用化设计 5.2 三轨合一：
+//     压缩豁免唯一形状判定在 preflight，经 wall budget Unbounded 承载），非
+//     Unbounded 保持 false；总时间档位同源判 extended；
 //   - 断点 B：响应层 TimeoutProfile 必须原样使用 dispatched
 //     （UpstreamDispatchResult）携带的 profile——TimeoutsDisabled=true 时
 //     响应层禁超时（BuildGatewayStreamReadPlan 返回 nil）；dispatched 零值
@@ -46,14 +47,15 @@ func unboundedTestWallBudget(t *testing.T) *gatewayrouting.GatewayRequestWallBud
 	return budget
 }
 
-// TestV1LoopCoordinationTimeoutPolicyMirrorsWallBudget：断点 A2——wall budget
+// TestV1LoopCoordinationTimeoutsDisabledMirrorsWallBudget：断点 A2——wall budget
 // Unbounded（压缩请求经 preflight WithoutLimit 的实例）→ coordination 的
-// TimeoutPolicy 重导出 'codex_compaction_unbounded'；有界 / nil wall budget →
-// 空串（默认超时策略）。coordination 的预算实例必须逐指针来自 loop.budgets。
-func TestV1LoopCoordinationTimeoutPolicyMirrorsWallBudget(t *testing.T) {
+// TimeoutsDisabled 置位（设计 5.2 三轨合一后的参数化入参）；有界 / nil wall
+// budget → false（默认超时行为）。coordination 的预算实例必须逐指针来自
+// loop.budgets。
+func TestV1LoopCoordinationTimeoutsDisabledMirrorsWallBudget(t *testing.T) {
 	sink := &recordingFailureSink{}
 
-	t.Run("unbounded_wall_budget_sets_codex_policy", func(t *testing.T) {
+	t.Run("unbounded_wall_budget_sets_timeouts_disabled", func(t *testing.T) {
 		loop := newV1TestLoop(t, sink)
 		budgets, err := newRequestBudgets("trace_compact", loop.startedAt, gatewaypreauth.SystemClock{})
 		if err != nil {
@@ -63,8 +65,11 @@ func TestV1LoopCoordinationTimeoutPolicyMirrorsWallBudget(t *testing.T) {
 		loop.budgets = budgets
 
 		coordination := loop.newRequestCoordination()
-		if coordination.TimeoutPolicy != gatewaydispatch.TimeoutPolicyCodexCompactionUnbounded {
-			t.Fatalf("Unbounded wall budget 必须重导出 codex_compaction_unbounded, got %q", coordination.TimeoutPolicy)
+		if !coordination.TimeoutsDisabled {
+			t.Fatalf("Unbounded wall budget 必须置位 TimeoutsDisabled")
+		}
+		if coordination.TotalTimeLane != gatewaydispatch.TotalTimeLaneExtended {
+			t.Fatalf("超时豁免请求总时间档位必须判 extended, got %v", coordination.TotalTimeLane)
 		}
 		if coordination.GatewayRequestWallBudget != budgets.wall {
 			t.Fatal("coordination 必须携带 loop.budgets.wall 同一实例")
@@ -77,7 +82,7 @@ func TestV1LoopCoordinationTimeoutPolicyMirrorsWallBudget(t *testing.T) {
 		}
 	})
 
-	t.Run("bounded_wall_budget_keeps_empty_policy", func(t *testing.T) {
+	t.Run("bounded_wall_budget_keeps_timeouts_enabled", func(t *testing.T) {
 		loop := newV1TestLoop(t, sink)
 		budgets, err := newRequestBudgets("trace_plain", loop.startedAt, gatewaypreauth.SystemClock{})
 		if err != nil {
@@ -86,16 +91,19 @@ func TestV1LoopCoordinationTimeoutPolicyMirrorsWallBudget(t *testing.T) {
 		loop.budgets = budgets
 
 		coordination := loop.newRequestCoordination()
-		if coordination.TimeoutPolicy != "" {
-			t.Fatalf("有界 wall budget 必须保持空串 timeout policy, got %q", coordination.TimeoutPolicy)
+		if coordination.TimeoutsDisabled {
+			t.Fatalf("有界 wall budget 必须保持 TimeoutsDisabled=false")
+		}
+		if coordination.TotalTimeLane != gatewaydispatch.TotalTimeLaneNormal {
+			t.Fatalf("普通请求总时间档位必须判 normal, got %v", coordination.TotalTimeLane)
 		}
 	})
 
-	t.Run("nil_wall_budget_keeps_empty_policy", func(t *testing.T) {
+	t.Run("nil_wall_budget_keeps_timeouts_enabled", func(t *testing.T) {
 		loop := newV1TestLoop(t, sink)
 		coordination := loop.newRequestCoordination()
-		if coordination.TimeoutPolicy != "" {
-			t.Fatalf("nil wall budget 必须保持空串 timeout policy, got %q", coordination.TimeoutPolicy)
+		if coordination.TimeoutsDisabled {
+			t.Fatalf("nil wall budget 必须保持 TimeoutsDisabled=false")
 		}
 	})
 }
@@ -104,8 +112,8 @@ func TestV1LoopCoordinationTimeoutPolicyMirrorsWallBudget(t *testing.T) {
 // 与 switchToFallbackGroup 的加固）——adoptDispatchContextBudgets 必须把
 // DispatchContext 携带的请求级实例（compaction 时含 WithoutLimit 的 Unbounded
 // wall budget）回填 loop.budgets / loop.serverRetryBudget，adopt 后
-// newRequestCoordination 立即重导出 codex_compaction_unbounded；nil 字段保持
-// 原值（防御），nil context 无操作。
+// newRequestCoordination 立即置位 TimeoutsDisabled；nil 字段保持原值（防御），
+// nil context 无操作。
 func TestV1LoopAdoptsDispatchContextBudgets(t *testing.T) {
 	sink := &recordingFailureSink{}
 
@@ -142,8 +150,8 @@ func TestV1LoopAdoptsDispatchContextBudgets(t *testing.T) {
 		if loop.serverRetryBudget != fallbackRetry {
 			t.Fatal("换代后 serverRetryBudget 必须替换为 DispatchContext 实例")
 		}
-		if policy := loop.newRequestCoordination().TimeoutPolicy; policy != gatewaydispatch.TimeoutPolicyCodexCompactionUnbounded {
-			t.Fatalf("adopt 后 coordination 必须重导出 codex_compaction_unbounded, got %q", policy)
+		if !loop.newRequestCoordination().TimeoutsDisabled {
+			t.Fatalf("adopt 后 coordination 必须置位 TimeoutsDisabled")
 		}
 	})
 

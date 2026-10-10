@@ -19,11 +19,11 @@ import (
 // --- 媒体字节夹具（真实魔数，与嗅探词表一一对应） ---
 
 var (
-	mediaWAVFixture = append([]byte("RIFF"), append(make([]byte, 4, 36), []byte("WAVEfmt ")...)...)
-	mediaMP3Fixture = append([]byte("ID3"), []byte("\x03\x00\x00\x00\x00\x00\x00\x00")...)
-	mediaOGGFixture = append([]byte("OggS"), []byte("\x00\x02\x00\x00\x00\x00\x00\x00")...)
-	mediaM4AFixture = append([]byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p'}, []byte("M4A ")...)
-	mediaMP4Fixture = append([]byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p'}, []byte("isom")...)
+	mediaWAVFixture  = append([]byte("RIFF"), append(make([]byte, 4, 36), []byte("WAVEfmt ")...)...)
+	mediaMP3Fixture  = append([]byte("ID3"), []byte("\x03\x00\x00\x00\x00\x00\x00\x00")...)
+	mediaOGGFixture  = append([]byte("OggS"), []byte("\x00\x02\x00\x00\x00\x00\x00\x00")...)
+	mediaM4AFixture  = append([]byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p'}, []byte("M4A ")...)
+	mediaMP4Fixture  = append([]byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p'}, []byte("isom")...)
 	mediaWebMFixture = append([]byte{0x1A, 0x45, 0xDF, 0xA3}, []byte("\x01\x00\x00\x00")...)
 )
 
@@ -387,6 +387,17 @@ func (mediaTestCatalog) ListAccountsForGroup(groupID, systemAccountID, requested
 	return nil
 }
 
+// ListChatPinnedAccountsForGroup 与 ListAccountsForGroup 同一视图按 ID 收敛
+// 单元素（对齐生产 pinned 直取语义）。
+func (c mediaTestCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	for _, account := range c.ListAccountsForGroup(groupID, systemAccountID, "", "") {
+		if account.ID == accountID {
+			return []ChatTransportAccount{account}
+		}
+	}
+	return nil
+}
+
 func (mediaTestCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	switch providerCode {
 	case "openai", "gpt":
@@ -437,9 +448,9 @@ func newMediaRoutesForCandidates(t *testing.T) *chatRoutes {
 	_, clock := fixedChatClock()
 	return &chatRoutes{deps: &Deps{
 		Store: fixture.store, Now: clock,
-		ModelCatalog:          mediaTestCatalog{},
-		AccountLookup:         mediaTestLookup{},
-		AccountOptionsLookup:  mediaTestOptions{},
+		ModelCatalog:            mediaTestCatalog{},
+		AccountLookup:           mediaTestLookup{},
+		AccountOptionsLookup:    mediaTestOptions{},
 		MaxTurnsPerConversation: 10,
 	}}
 }

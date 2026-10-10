@@ -295,6 +295,14 @@ func (imageOnlyCatalogW13B) ListAccountsForGroup(groupID, systemAccountID, reque
 	return []ChatTransportAccount{{ID: "a1", Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: requestedModel, SourceEndpointFamily: endpointFamily}}}}
 }
 
+// ListChatPinnedAccountsForGroup 仅 a1 可直取（对齐生产 pinned 直取语义）。
+func (imageOnlyCatalogW13B) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	if accountID != "a1" {
+		return nil
+	}
+	return (imageOnlyCatalogW13B{}).ListAccountsForGroup(groupID, systemAccountID, "", "")
+}
+
 func (imageOnlyCatalogW13B) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	return []ProviderModelCatalogItem{{Model: "gpt-image-2", ProviderCode: "openai", SupportedAPIProtocols: []string{"images"}}}
 }
@@ -302,6 +310,10 @@ func (imageOnlyCatalogW13B) ListProviderCatalog(providerCode, systemAccountID st
 type emptyCatalogW13B struct{}
 
 func (emptyCatalogW13B) ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []ChatTransportAccount {
+	return nil
+}
+
+func (emptyCatalogW13B) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
 	return nil
 }
 
@@ -923,9 +935,9 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 		t.Fatalf("非 active 默认 key 应报错")
 	}
 	rt.deps.ChatKeys = &mockChatKeys{}
-	// accountsForGroups nil catalog。
+	// convergeChatAccountScope nil catalog。
 	rt.deps.ModelCatalog = nil
-	if accounts := rt.accountsForGroups([]string{"g"}, "o", "m", ""); len(accounts) != 0 {
+	if accounts := rt.convergeChatAccountScope(&ChatAccountRef{ID: "a", EnabledGroupIDs: []string{"g"}}, "o"); len(accounts) != 0 {
 		t.Fatalf("nil catalog 应返回空")
 	}
 	rt.deps.ModelCatalog = mockModelCatalog{}

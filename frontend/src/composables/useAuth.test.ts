@@ -148,6 +148,68 @@ describe('login / logout', () => {
     expect(authState.currentUser.value).toBeUndefined()
     expect(authState.authChecked.value).toBe(true)
   })
+
+  it('sessionStorage 被禁用时 logout 仍完成本地注销并记录清理失败', async () => {
+    // BUG-0303：浏览器禁用存储策略时 sessionStorage getter 抛 SecurityError，
+    // 聊天清理失败不得阻断服务端注销成功后的本地注销。
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const securityError = new DOMException('session storage disabled', 'SecurityError')
+    const alice = user({ id: 'acc-1' })
+    authState.currentUser.value = alice
+    vi.mocked(api.auth.logout).mockResolvedValue({ loggedOut: true })
+    const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'sessionStorage')
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw securityError
+      }
+    })
+    try {
+      await expect(logout()).resolves.toBeUndefined()
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(window, 'sessionStorage', originalDescriptor)
+      } else {
+        Reflect.deleteProperty(window, 'sessionStorage')
+      }
+    }
+    expect(api.auth.logout).toHaveBeenCalledTimes(1)
+    expect(authState.currentUser.value).toBeUndefined()
+    expect(authState.isLoggedIn.value).toBe(false)
+    expect(consoleError).toHaveBeenCalledTimes(1)
+    const [message, logged] = consoleError.mock.calls[0]
+    expect(typeof message).toBe('string')
+    expect(logged).toBe(securityError)
+  })
+
+  it('服务端注销失败时保留当前登录用户', async () => {
+    const alice = user({ id: 'acc-1' })
+    authState.currentUser.value = alice
+    vi.mocked(api.auth.logout).mockRejectedValue(new Error('logout unavailable'))
+    await expect(logout()).rejects.toThrow('logout unavailable')
+    expect(authState.currentUser.value).toEqual(alice)
+  })
+
+  it('注销期间新登录时旧 logout 不得清掉新身份', async () => {
+    const alice = user({ id: 'acc-1' })
+    authState.currentUser.value = alice
+    let releaseLogout!: (value: { loggedOut: boolean }) => void
+    const logoutGate = new Promise<{ loggedOut: boolean }>((resolve) => {
+      releaseLogout = resolve
+    })
+    vi.mocked(api.auth.logout).mockReturnValue(logoutGate)
+    const staleLogout = logout()
+    const replacement = user({ id: 'acc-2', username: 'bob', displayName: 'Bob' })
+    vi.mocked(api.auth.login).mockResolvedValue(replacement)
+    await login({ username: 'bob', password: 'pw' })
+    expect(authState.currentUser.value).toEqual(replacement)
+    releaseLogout({ loggedOut: true })
+    await expect(staleLogout).resolves.toBeUndefined()
+    // 版本守卫生效：旧 logout 提前 return，新登录身份保留且聊天清理未执行。
+    expect(authState.currentUser.value).toEqual(replacement)
+    expect(invalidateChatConversationSyncAccount).not.toHaveBeenCalled()
+    expect(chatGenerationRuntime.close).not.toHaveBeenCalled()
+  })
 })
 
 describe('其他账户操作', () => {

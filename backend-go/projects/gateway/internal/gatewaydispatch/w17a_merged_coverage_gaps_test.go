@@ -191,14 +191,6 @@ func TestW17aAnthropicFamilyFromPathWithoutLeadingSlash(t *testing.T) {
 	}
 }
 
-func TestW17aRequestBodyCompactionTriggerFromState(t *testing.T) {
-	req := newTestRequest(t, `{"model":"gpt-test"}`)
-	req.Body.State.CodexCompactionTrigger = true
-	if !requestBodyHasCompactionTrigger(req) {
-		t.Fatal("state 标记应识别 compaction trigger")
-	}
-}
-
 func TestW17aConcurrencyLimitsSkipEmptyIdentity(t *testing.T) {
 	limits := GatewayAccountConcurrencyLimitsByAccountID([]AccountCandidate{{}})
 	if len(limits) != 0 {
@@ -308,25 +300,27 @@ func TestW17aAccountPreparationSmallBranches(t *testing.T) {
 		t.Fatalf("wrapped = %v", wrapped)
 	}
 
-	// sanitizeCodexResponsesHistoryForAccount 分支。
+	// sanitizeCodexResponsesHistoryForAccount 分支（Front 阶段策略由纯函数
+	// 计算：codex_responses + responses 族 → sanitize_inline）。
 	sanitizeEngine := &Engine{}
+	frontPolicy := HistoryPrepPolicyForRequest(AccountCandidate{ID: "w17a-acc"}, "codex_responses", "responses")
 	// a) input 非数组（字符串）→ 直接返回。
 	reqStringInput := newCodexRequest(t, "/v1/responses")
-	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqStringInput, AccountCandidate{ID: "w17a-acc"}, "codex_responses")
+	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqStringInput, AccountCandidate{ID: "w17a-acc"}, frontPolicy)
 	// b) 钩子为 nil → 直接返回。
 	previousHook := gatewayoauthcodex.SanitizeCodexHistory
 	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previousHook })
 	reqNilHook := newCodexRequest(t, "/v1/responses")
 	reqNilHook.Body.Body.(map[string]any)["input"] = []any{map[string]any{"type": "message"}}
 	gatewayoauthcodex.SanitizeCodexHistory = nil
-	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqNilHook, AccountCandidate{ID: "w17a-acc"}, "codex_responses")
+	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqNilHook, AccountCandidate{ID: "w17a-acc"}, frontPolicy)
 	// c) 钩子结果未变化 → 直接返回。
 	reqUnchanged := newCodexRequest(t, "/v1/responses")
 	reqUnchanged.Body.Body.(map[string]any)["input"] = []any{map[string]any{"type": "message", "role": "user"}}
 	gatewayoauthcodex.SanitizeCodexHistory = func(list []any, options gatewayoauthcodex.SanitizeCodexHistoryOptions) gatewayoauthcodex.CodexHistorySanitizeResult {
 		return gatewayoauthcodex.CodexHistorySanitizeResult{Items: list, Changed: false}
 	}
-	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqUnchanged, AccountCandidate{ID: "w17a-acc"}, "codex_responses")
+	sanitizeEngine.sanitizeCodexResponsesHistoryForAccount(reqUnchanged, AccountCandidate{ID: "w17a-acc"}, frontPolicy)
 
 	// BuildPreparedUpstreamRequestParts：CodexBridge 失败臂。
 	bridgeEngine, _, _ := newTestEngine(t)

@@ -60,6 +60,11 @@ type CreateInput struct {
 	// normalizeOptionalBooleanInput tri-state: nil = not provided (defaults
 	// to enabled), false persists the explicit opt-out.
 	TemporaryUnavailableContinuousProbeEnabled *bool
+	// ExpeditedRecoveryEnabled mirrors the expedited-recovery tri-state:
+	// nil = not provided (persists 0), true persists 1 after the owner quota
+	// assertion (AI账户特供快速恢复通道设计 §8.1/§9). Clone contexts and the
+	// import planner never set it, so cloned/imported rows stay unmarked.
+	ExpeditedRecoveryEnabled *bool
 }
 
 // EndpointModeDefaultContext mirrors the exported credential write context

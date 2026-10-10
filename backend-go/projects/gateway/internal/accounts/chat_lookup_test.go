@@ -1,12 +1,12 @@
 package accounts
 
 // ListChatAccountOptions / FindChatAccount（会话账户绑定侧）的存储级覆盖：
-// 与 FindChatAccount 同口径的五类过滤（status 非 active、schedulable 禁用、
-// deleted_at 非空、authorization_instance_authorization_id 非空、正常
-// active），仅最后一类可见，排序 name ASC, id ASC（同名跨 owner 按 id 决胜）；
-// 数据范围按 ChatBindScope 收敛——admin/super_admin 读全量号池，普通用户仅
-// 自己名下（他人行、已删行、实例戳行仍排除）。选项投影含
-// providerCode/status（/my-chat/accounts 形状）。
+// 2026-10-10 修订后列表 = 数据范围内全部未删除账户（status 非 active、
+// schedulable 禁用等全部状态均可见，status 投影为生效状态原值）；仅
+// deleted_at 非空与 authorization_instance_authorization_id 非空仍排除，排序
+// name ASC, id ASC（同名跨 owner 按 id 决胜）；数据范围按 ChatBindScope 收
+// 敛——admin/super_admin 读全量号池，普通用户仅自己名下（他人行、已删行、
+// 实例戳行仍排除）。选项投影含 providerCode/status（/my-chat/accounts 形状）。
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 )
 
-func TestListChatAccountOptionsAdminSeesAllActive(t *testing.T) {
+func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
 	env := newTestEnv(t)
 	for _, row := range []struct {
 		id            string
@@ -50,15 +50,19 @@ func TestListChatAccountOptionsAdminSeesAllActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []chat.ChatAccountOption{
+		// status 投影为生效状态原值：status=disabled 原样；schedulable=0 合成
+		// disabled（ownerEffectiveStatusSQL）。name 排序为字节序（停 < 可 < 禁）。
+		{ID: "acc_inactive", Name: "停用账户", ProviderCode: "openai", Status: "disabled"},
 		{ID: "acc_active_1", Name: "可用账户", ProviderCode: "openai", Status: "active"},
 		{ID: "acc_active_2", Name: "可用账户", ProviderCode: "openai", Status: "active"},
+		{ID: "acc_unschedulable", Name: "禁调度账户", ProviderCode: "openai", Status: "disabled"},
 	}
 	if len(options) != len(want) {
 		t.Fatalf("options = %v, want %v", options, want)
 	}
 	for index, option := range options {
 		if option != want[index] {
-			t.Fatalf("options[%d] = %v, want %v（顺序须 name ASC, id ASC 且仅正常 active 行）", index, option, want[index])
+			t.Fatalf("options[%d] = %v, want %v（顺序须 name ASC, id ASC，已删/实例戳行排除，其余全状态可见）", index, option, want[index])
 		}
 	}
 }
@@ -80,9 +84,10 @@ func sameChatAccountRef(got, want *chat.ChatAccountRef) bool {
 	return true
 }
 
-// TestChatAccountLookupViewerScope 覆盖普通用户臂：下拉只见自己名下正常
-// active 行（他人行、已删行、实例戳行仍排除）；FindChatAccount 同口径，范围
-// 外与不存在同型返回 (nil, nil)；admin 臂读全量号池。
+// TestChatAccountLookupViewerScope 覆盖普通用户臂：下拉见自己名下全部未删行
+// （含停用，status 投影生效状态；他人行、已删行、实例戳行仍排除）；
+// FindChatAccount 同口径返回存在性 + Enabled 投影，范围外与不存在同型返回
+// (nil, nil)；admin 臂读全量号池。
 func TestChatAccountLookupViewerScope(t *testing.T) {
 	env := newTestEnv(t)
 	viewer, other := "viewer-1", "owner-other"
@@ -112,12 +117,15 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 		}
 	}
 
-	t.Run("非 admin 下拉只见自己名下正常 active 行", func(t *testing.T) {
+	t.Run("非 admin 下拉见自己名下全部未删行", func(t *testing.T) {
 		options, err := env.store.ListChatAccountOptions(context.Background(), chat.ChatBindScope{ViewerID: viewer})
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []chat.ChatAccountOption{{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"}}
+		want := []chat.ChatAccountOption{
+			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"},
+			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "openai", Status: "disabled"},
+		}
 		if len(options) != len(want) {
 			t.Fatalf("viewer options = %v, want %v", options, want)
 		}
@@ -163,6 +171,7 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 		}
 		want := []chat.ChatAccountOption{
 			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"},
+			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "openai", Status: "disabled"},
 			{ID: "acc_other_active", Name: "c 他人可用", ProviderCode: "openai", Status: "active"},
 		}
 		if len(options) != len(want) {

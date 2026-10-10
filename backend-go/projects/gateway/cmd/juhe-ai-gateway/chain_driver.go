@@ -550,9 +550,15 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, err
 		}
+		// 调度内核通用化批次 3b：适配器历史清理选项改由通用 HistoryPrepPolicy
+		// 承载（单一来源为 gatewaydispatch.HistoryPrepPolicyForRequest 纯函数，
+		// 此处按链面已有信息重算）。isCodexOAuthAccount 分支的账户均为 oauth
+		// 形态，策略 Adapter 恒为 sanitize，选项取值与改造前常量 true 逐点
+		// 一致（OAuth adapter 的已处理标记写入不变）。
+		historyPrepPolicy := gatewaydispatch.HistoryPrepPolicyForRequest(account, requestClientCompatibility, gatewaydispatch.GatewayRequestEndpointFamily(req))
 		parts, err := gatewaydispatch.BuildOpenAIOAuthCodexRequestParts(req, req.HTTP.Header, codexAccountOf(account), codexIdentityOf(account), gatewaydispatch.OpenAIOAuthCodexRequestOptions{
 			ModelOverride:                    modelOverride,
-			SanitizeCodexHistory:             true,
+			SanitizeCodexHistory:             historyPrepPolicy.Adapter == gatewaydispatch.HistoryPrepStageSanitize,
 			RequestOverrideModelCapabilities: requestOverrideCapabilities,
 		})
 		if err != nil {

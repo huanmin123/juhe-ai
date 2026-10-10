@@ -37,7 +37,10 @@ func cascadeTeamGrantLimit() int { return MaxTeamActiveGrantCount + 1 }
 func cascadeFanoutLimit() int { return MaxTeamMembersPerTeam*MaxTeamActiveGrantCount + 1 }
 
 // RevokeAllTeamSources opens its own transaction and revokes every active
-// team source of a team (reason e.g. team_disabled).
+// team source of a team (reason e.g. team_disabled). The committed revocation
+// fires the post-commit invalidation fan-out (网关模型列表账户并集设计 6.3
+// coverage); the Tx variant stays fan-out-free because its caller commits and
+// invalidates (systemteams afterCommit).
 func (s *Store) RevokeAllTeamSources(ctx context.Context, teamID, actor, reason string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -48,7 +51,11 @@ func (s *Store) RevokeAllTeamSources(ctx context.Context, teamID, actor, reason 
 	if err := s.revokeAllTeamSourcesTx(ctx, tx, teamID, actor, s.now().UTC().Format(time.RFC3339Nano), reason); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonRevoked)
+	return nil
 }
 
 // RevokeAllTeamSourcesTx is the transaction-bound variant used by the team
@@ -102,7 +109,11 @@ func (s *Store) revokeAllTeamSourcesTx(ctx context.Context, tx *sql.Tx, teamID, 
 }
 
 // ReactivateTeamGrants opens its own transaction and re-applies active team
-// grants to their members after a team is re-enabled.
+// grants to their members after a team is re-enabled. The committed
+// re-expansion (runtime row upsert + instance provisioning) fires the
+// post-commit invalidation fan-out (网关模型列表账户并集设计 6.3 coverage); the Tx
+// variant stays fan-out-free because its caller commits and invalidates
+// (systemteams afterCommit).
 func (s *Store) ReactivateTeamGrants(ctx context.Context, teamID, actor string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -113,7 +124,11 @@ func (s *Store) ReactivateTeamGrants(ctx context.Context, teamID, actor string) 
 	if err := s.ReactivateTeamGrantsTx(ctx, tx, teamID, actor, s.now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonUpdated)
+	return nil
 }
 
 // ReactivateTeamGrantsTx mirrors reactivateTeamGrantSourcesAsync
@@ -198,7 +213,10 @@ func (s *Store) ApplyActiveTeamGrantsToMembersTx(ctx context.Context, tx *sql.Tx
 }
 
 // RevokeTeamSourcesForMember opens its own transaction and revokes the team
-// sources of one removed member.
+// sources of one removed member. The committed revocation fires the
+// post-commit invalidation fan-out (网关模型列表账户并集设计 6.3 coverage); the Tx
+// variant stays fan-out-free because its caller commits and invalidates
+// (systemteams afterCommit).
 func (s *Store) RevokeTeamSourcesForMember(ctx context.Context, teamID, memberAccountID, actor string) error {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -209,7 +227,11 @@ func (s *Store) RevokeTeamSourcesForMember(ctx context.Context, teamID, memberAc
 	if err := s.RevokeTeamSourcesForMemberTx(ctx, tx, teamID, memberAccountID, actor, s.now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateAfterBusinessWrite(ctx, invalidationReasonRevoked)
+	return nil
 }
 
 // RevokeTeamSourcesForMemberTx mirrors revokeTeamSourcesForMemberAsync

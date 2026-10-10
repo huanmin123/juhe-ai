@@ -8,11 +8,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 // dispatchSingleAccount owns the per-candidate dispatch loop of
@@ -35,7 +33,7 @@ type dispatchSingleAccountInput struct {
 	bypassLocalSuppression               bool
 	automaticAccountStateMutationAllowed bool
 	accountLockTrafficEnabled            bool
-	compactionTimeoutsDisabled           bool
+	timeoutsDisabled                     bool
 	requestApiKeyAttemptCount            *int
 	activeSameAccountRetryID             *string
 	activeAccountLockRetryLease          **AccountLockRetryLease
@@ -336,7 +334,7 @@ rotationLoop:
 			err := partsErr
 			var guidanceErr *gatewaypreauth.GatewayAgentGuidanceResponse
 			var localErr *gatewaypreauth.GatewayLocalProtocolResponse
-			var adapterErr *OpenAIOAuthCodexAdapterError
+			var adapterErr UpstreamAdapterContractError
 			var validationErr *gatewaypreauth.GatewayRequestValidationError
 			switch {
 			case errors.As(err, &guidanceErr) && guidanceErr.IsAccountScoped():
@@ -347,7 +345,7 @@ rotationLoop:
 			case signal.Err() != nil,
 				errors.As(err, &guidanceErr),
 				errors.As(err, &localErr),
-				errors.As(err, &adapterErr) && !adapterErr.AccountScoped,
+				errors.As(err, &adapterErr) && !adapterErr.IsAccountScoped(),
 				errors.As(err, &validationErr) && !validationErr.AccountScoped:
 				releaseTransientState()
 				return dispatchResultContinue, nil, err
@@ -556,7 +554,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			// so a first-byte deadline would cut legitimate long outputs.
 			var normalRouteFirstByteDeadline *gatewayrouting.NormalRouteAttemptFirstByteDeadline
 			var firstByteDeadlineCoordinator *NormalRouteFirstByteAttemptCoordinator
-			if !in.compactionTimeoutsDisabled &&
+			if !in.timeoutsDisabled &&
 				gatewayrouting.NormalRouteFirstByteDeadlineAppliesToLane(gatewayprotoLane(in.requestLane)) &&
 				in.coordination.NormalRouteFirstByteConfig != nil &&
 				IsEffectiveOpenAIStreamRequest(in.args.Req, headerAccountOf(c.account)) {
@@ -587,21 +585,20 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			}
 
 			// Normal-route total-time deadline（设计 6.3）：与首字 timer 并存
-			// 互不替代的 attempt 级软观察 timer。档位在装配时解析一次（压缩
-			// 识别优先；非压缩按估算输入 token 与 100000 分界选档），压缩请求
-			// 在首字豁免门之外照常装配（total_time 维度生效）。适用门与首字
-			// 同 lane 判定（副作用 lane 不装）；阈值选档的纯函数与 chain 层
-			// 完成观测共用（ResolveNormalRouteTotalTimeDeadline），保证同一
+			// 互不替代的 attempt 级软观察 timer。档位是链面预算好的参数
+			// （TotalTimeLane：超时豁免或大输入判 extended，设计 5.2），压缩
+			// 请求在首字豁免门之外照常装配（total_time 维度生效）。适用门与
+			// 首字同 lane 判定（副作用 lane 不装）；阈值选档的纯函数与 chain
+			// 层完成观测共用（ResolveNormalRouteTotalTimeDeadline），保证同一
 			// attempt 样本只用一把尺。
 			var normalRouteTotalTimeDeadlineMs *int64
 			var onTotalTimeDeadline gatewayupstream.TotalTimeDeadlineHandler
 			if in.coordination.NormalRouteSpeedFirstConfig != nil &&
 				gatewayrouting.NormalRouteFirstByteDeadlineAppliesToLane(gatewayprotoLane(in.requestLane)) {
 				totalTimeDeadline, ok := ResolveNormalRouteTotalTimeDeadline(NormalRouteTotalTimeDeadlineInput{
-					Config:                     in.coordination.NormalRouteSpeedFirstConfig,
-					CompactionTimeoutsDisabled: in.compactionTimeoutsDisabled,
-					EstimatedInputTokens:       estimateNormalRouteRequestInputTokens(in.args.Req),
-					AttemptStartedAtMs:         attemptStartedAt,
+					Config:             in.coordination.NormalRouteSpeedFirstConfig,
+					Lane:               in.coordination.TotalTimeLane,
+					AttemptStartedAtMs: attemptStartedAt,
 				})
 				if ok {
 					thresholdMs := totalTimeDeadline.ThresholdMs
@@ -1002,9 +999,9 @@ const (
 )
 
 // NormalRouteTotalTimeDeadlineDefaultMs / NormalRouteCompactionTotalTimeDeadlineDefaultMs
-// 是总时间档位阈值的缺省回落（设计 6.2：普通档默认 120s、压缩档默认 300s），
-// preauth 运行态两字段为 nil（存量策略缺省提交）时生效；取值与 chain 侧
-// chainSpeedFirstRuntimeConfigOf 的内联默认一致。
+// 是总时间档位阈值的缺省回落（设计 6.2：normal 档默认 120s、extended 档默
+// 认 300s），preauth 运行态两字段为 nil（存量策略缺省提交）时生效；取值与
+// chain 侧 chainSpeedFirstRuntimeConfigOf 的内联默认一致。
 const (
 	NormalRouteTotalTimeDeadlineDefaultMs           = 120_000
 	NormalRouteCompactionTotalTimeDeadlineDefaultMs = 300_000
@@ -1015,40 +1012,34 @@ const (
 type NormalRouteTotalTimeDeadlineInput struct {
 	// Config 是 preauth 运行态速度优先配置；nil = 不装配总时间 timer。
 	Config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig
-	// CompactionTimeoutsDisabled 是 dispatch 侧压缩豁免门（TimeoutPolicy
-	// codex_compaction_unbounded 或 codexCompactionExpectedForRequest）：
-	// true = 压缩请求，恒压缩档。
-	CompactionTimeoutsDisabled bool
-	// EstimatedInputTokens 是请求体估算输入 token（转发前没有精确值；估算
-	// 失败按 0 = 普通档处理）。
-	EstimatedInputTokens int
-	AttemptStartedAtMs   int64
+	// Lane 是链面预算好的总时间档位（调度内核通用化设计 5.2：超时豁免布
+	// 尔 + 估算输入 token 与 SpeedFirstLargeInputTokenThreshold 的比较在链
+	// 面完成后传入，内核不做请求形状扫描、不感知"压缩"概念）。
+	Lane               TotalTimeLane
+	AttemptStartedAtMs int64
 }
 
 // NormalRouteTotalTimeDeadline 携带该 attempt 选定的总时间档位。
 type NormalRouteTotalTimeDeadline struct {
 	// ThresholdMs 是选定档位阈值（相对 attempt 起点的时长）。
 	ThresholdMs int64
-	// CompactionLane 标记压缩/大输入档（true）或普通档（false）。
-	CompactionLane bool
+	// Lane 是该 attempt 选定的档位（入参原样回带：normal / extended）。
+	Lane TotalTimeLane
 	// DeadlineAtMs 是绝对截止（attemptStartedAtMs + ThresholdMs）。
 	DeadlineAtMs int64
 }
 
-// ResolveNormalRouteTotalTimeDeadline 镜像设计 6.3 的总时间选档：压缩识别
-// 优先（恒压缩档）；非压缩请求按估算输入 token 与
-// routestrategies.SpeedFirstLargeInputTokenThreshold 分界选档。阈值取
-// preauth 配置对应档位字段，nil 回落内联默认。返回 false = 不装配（配置
-// 缺席或阈值非正）。该函数同时被 dispatch 层 timer 装配与 chain 层完成观测
-// 消费：同一样本只用一把尺。
+// ResolveNormalRouteTotalTimeDeadline 镜像设计 6.3 的总时间选档：extended
+// 档（链面判定：超时豁免或大输入）取 preauth 压缩档阈值，normal 档取普通
+// 档阈值；配置字段 nil 回落内联默认。返回 false = 不装配（配置缺席或阈值
+// 非正）。该函数同时被 dispatch 层 timer 装配与 chain 层完成观测消费：同一
+// 样本只用一把尺。
 func ResolveNormalRouteTotalTimeDeadline(input NormalRouteTotalTimeDeadlineInput) (NormalRouteTotalTimeDeadline, bool) {
 	if input.Config == nil {
 		return NormalRouteTotalTimeDeadline{}, false
 	}
-	compactionLane := input.CompactionTimeoutsDisabled ||
-		input.EstimatedInputTokens >= routestrategies.SpeedFirstLargeInputTokenThreshold
 	var configuredMs int64 = NormalRouteTotalTimeDeadlineDefaultMs
-	if compactionLane {
+	if input.Lane == TotalTimeLaneExtended {
 		configuredMs = NormalRouteCompactionTotalTimeDeadlineDefaultMs
 		if input.Config.CompactionTotalTimeDeadlineMs != nil && *input.Config.CompactionTotalTimeDeadlineMs > 0 {
 			configuredMs = *input.Config.CompactionTotalTimeDeadlineMs
@@ -1060,20 +1051,10 @@ func ResolveNormalRouteTotalTimeDeadline(input NormalRouteTotalTimeDeadlineInput
 		return NormalRouteTotalTimeDeadline{}, false
 	}
 	return NormalRouteTotalTimeDeadline{
-		ThresholdMs:    configuredMs,
-		CompactionLane: compactionLane,
-		DeadlineAtMs:   input.AttemptStartedAtMs + configuredMs,
+		ThresholdMs:  configuredMs,
+		Lane:         input.Lane,
+		DeadlineAtMs: input.AttemptStartedAtMs + configuredMs,
 	}, true
-}
-
-// estimateNormalRouteRequestInputTokens 投影请求体估算输入（nil body 安全；
-// 估算失败按 0 = 普通档处理，设计 6.10 接受边界带误档）。
-func estimateNormalRouteRequestInputTokens(req *gatewaypreauth.GatewayRequest) int {
-	if req == nil || req.Body == nil {
-		return 0
-	}
-	tokens, _ := gatewayopenai.EstimateRequestInputTokens(req.Body.Body, req.Body.RawBody)
-	return tokens
 }
 
 // upstreamAttemptResponseContext carries the response handling inputs.

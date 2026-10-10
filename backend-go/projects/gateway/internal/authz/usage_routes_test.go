@@ -27,6 +27,7 @@ var usageRouteEnvDDL = []string{
 	`ALTER TABLE system_accounts ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE system_accounts ADD COLUMN image_generation_enabled INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE system_accounts ADD COLUMN ai_account_limit INTEGER`,
+	`ALTER TABLE system_accounts ADD COLUMN expedited_account_limit INTEGER`,
 	`ALTER TABLE system_accounts ADD COLUMN request_limits_json TEXT`,
 	`ALTER TABLE system_accounts ADD COLUMN last_login_at TEXT`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,

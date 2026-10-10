@@ -45,14 +45,21 @@ func (s *w1fResponseSink) SendGatewayFailureResponse(input gatewaypreauth.Failur
 func (s *w1fResponseSink) FinalizeGatewayAuthFailureAudit(*gatewaypreauth.GatewayRequest, gatewaypreauth.GatewayResponseWriter, gatewaypreauth.AuditCaptureContext) {
 }
 
-func (s *w1fResponseSink) SendAuthenticatedModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {
+func (s *w1fResponseSink) SendAuthenticatedModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
 }
 
-func (s *w1fResponseSink) SendOpenAIModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {}
+func (s *w1fResponseSink) SendOpenAIModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
-func (s *w1fResponseSink) SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {}
+func (s *w1fResponseSink) SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
-func (s *w1fResponseSink) SendGeminiModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) {}
+func (s *w1fResponseSink) SendGeminiModelsGatewayResponse(gatewaypreauth.ModelsResponseInput) error {
+	return nil
+}
 
 // w1fAffinityForget 记录一次会话亲和遗忘调用。
 type w1fAffinityForget struct {

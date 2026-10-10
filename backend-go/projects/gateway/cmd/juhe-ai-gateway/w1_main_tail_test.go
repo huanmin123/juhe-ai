@@ -1167,9 +1167,12 @@ func TestW1WChainRuntimeWarnClosures(t *testing.T) {
 	t.Logf("chain_runtime warn 闭包（368-370、376-378）已驱动")
 }
 
-// TestW1WChainRuntimeEmptySecretArm 覆盖 accountkeystates 构造失败臂
-// （chain_runtime.go 606-608）：空 Secret 走完内存驱动全部装配后在
-// accountkeystates.NewStore 处 fail-fast。
+// TestW1WChainRuntimeEmptySecretArm 覆盖空 Secret 组合 fail-fast 臂：
+// ebb241a85 起内存形态的电路恢复驱动（chain_runtime.go newChainAccountCircuit
+// RecoveryComponent 接线）先于 accountkeystates.NewStore 装配，其 proberepo
+// 探针 store 同样强依赖 JUHE_AI_SECRET（凭据解密与 Key 指纹），成为空 Secret
+// 的最早失败点；accountkeystates.NewStore 自身的空 Secret 校验臂由
+// internal/accountkeystates TestW9DStoreDialectArms 覆盖。
 func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 	composed := &composition{
 		db:        w1uOpenSeededBusinessDB(t),
@@ -1191,10 +1194,10 @@ func TestW1WChainRuntimeEmptySecretArm(t *testing.T) {
 		services.Close()
 		t.Fatalf("空 Secret 的组合必须 fail-fast")
 	}
-	if !strings.Contains(err.Error(), "create account api-key effects key states store") {
-		t.Fatalf("期望 accountkeystates 构造失败，实际: %v", err)
+	if !strings.Contains(err.Error(), "create gateway circuit recovery probe store") {
+		t.Fatalf("期望电路恢复探针 store 构造失败（先于 accountkeystates），实际: %v", err)
 	}
-	t.Logf("chain_runtime 空 Secret 失败臂（606-608）已驱动")
+	t.Logf("chain_runtime 空 Secret 失败臂（电路恢复探针 store）已驱动")
 }
 
 // ---------------------------------------------------------------------------

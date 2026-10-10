@@ -71,6 +71,10 @@ export interface SettingsDisplayAccess {
   baseline: (key: string) => string | number | undefined
   /** 基线是否偏离前端默认值（= 自定义）。 */
   isCustom: (key: string) => boolean
+  /** 客户端版本自动层当前值（jobs 跟版任务维护，gateway-core 分区伴随字段下发）。未实现/缺族/未加载视为空。 */
+  clientVersionAuto?: (family: UpstreamClientVersionKey) => string
+  /** 客户端版本内置基线（编译期常量，gateway-core 分区伴随字段下发）。未实现/未加载视为空。 */
+  clientVersionBuiltIn?: (family: UpstreamClientVersionKey) => string
 }
 
 const OVERRIDE_PREFIX = 'upstreamClientVersionOverrides.'
@@ -348,29 +352,29 @@ export const settingGroups: readonly SettingGroupDef[] = [
   {
     key: 'upstream-versions',
     title: '上游版本覆盖',
-    hint: '5 项 · 应急热覆盖 · 留空用内置 · 保存即生效',
+    hint: '5 项 · 应急热覆盖 · 生效取手动 > 自动跟版 > 内置 · 保存即生效',
     sectionKeys: ['gateway-core'],
     itemCount: 5,
     fields: [
-      { key: `${OVERRIDE_PREFIX}codex`, label: upstreamOverrideLabels.codex, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 GPT/Codex 家族系统请求的 codex exec 画像版本，如 0.159.3' },
-      { key: `${OVERRIDE_PREFIX}claudeCode`, label: upstreamOverrideLabels.claudeCode, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 Anthropic 家族系统请求与网关画像补齐的 claude-cli 版本，如 2.1.285' },
-      { key: `${OVERRIDE_PREFIX}geminiCLI`, label: upstreamOverrideLabels.geminiCLI, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 Gemini OAuth（code_assist / google_one）系统请求的 GeminiCLI 画像版本，如 0.61.0' },
-      { key: `${OVERRIDE_PREFIX}zcode`, label: upstreamOverrideLabels.zcode, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 GLM 家族系统请求的 ZCode 画像版本（UA 与 X-ZCode-App-Version 同步），如 3.14.3' },
-      { key: `${OVERRIDE_PREFIX}grokCLI`, label: upstreamOverrideLabels.grokCLI, kind: 'text', placeholder: '留空使用内置版本', tip: '覆盖 Grok OAuth 上游的 Grok CLI 画像版本（x-grok-client-version 与 UA 同步），如 1.0.13' }
+      { key: `${OVERRIDE_PREFIX}codex`, label: upstreamOverrideLabels.codex, kind: 'text', placeholder: '留空用自动跟版值', tip: '覆盖 GPT/Codex 家族系统请求的 codex exec 画像版本，如 0.162.0' },
+      { key: `${OVERRIDE_PREFIX}claudeCode`, label: upstreamOverrideLabels.claudeCode, kind: 'text', placeholder: '留空用自动跟版值', tip: '覆盖 Anthropic 家族系统请求与网关画像补齐的 claude-cli 版本，如 2.1.295' },
+      { key: `${OVERRIDE_PREFIX}geminiCLI`, label: upstreamOverrideLabels.geminiCLI, kind: 'text', placeholder: '留空用自动跟版值', tip: '覆盖 Gemini OAuth（code_assist / google_one）系统请求的 GeminiCLI 画像版本，如 0.63.0' },
+      { key: `${OVERRIDE_PREFIX}zcode`, label: upstreamOverrideLabels.zcode, kind: 'text', placeholder: '留空用自动跟版值', tip: '覆盖 GLM 家族系统请求的 ZCode 画像版本（UA 与 X-ZCode-App-Version 同步），如 3.14.3' },
+      { key: `${OVERRIDE_PREFIX}grokCLI`, label: upstreamOverrideLabels.grokCLI, kind: 'text', placeholder: '留空用自动跟版值', tip: '覆盖 Grok OAuth 上游的 Grok CLI 画像版本（x-grok-client-version 与 UA 同步），如 1.0.45' }
     ],
     viewRows: (access) => {
-      const overridden = upstreamOverrideFieldKeys
-        .map((subKey) => ({ subKey, value: String(access.baseline(`${OVERRIDE_PREFIX}${subKey}`) ?? '') }))
-        .filter((entry) => entry.value)
-        .map((entry) => ({
-          key: `${OVERRIDE_PREFIX}${entry.subKey}`,
-          label: upstreamOverrideLabels[entry.subKey],
-          value: entry.value,
-          custom: true
-        }))
-      const rows: SettingViewRow[] = overridden.length
-        ? overridden
-        : [{ key: 'upstream-all-default', label: '全部家族', value: '内置版本' }]
+      const rows = upstreamOverrideFieldKeys.map((subKey) => {
+        const manual = String(access.baseline(`${OVERRIDE_PREFIX}${subKey}`) ?? '')
+        if (manual) {
+          return { key: `${OVERRIDE_PREFIX}${subKey}`, label: upstreamOverrideLabels[subKey], value: `${manual}（手动覆盖）`, custom: true }
+        }
+        const auto = access.clientVersionAuto?.(subKey) ?? ''
+        if (auto) {
+          return { key: `${OVERRIDE_PREFIX}${subKey}`, label: upstreamOverrideLabels[subKey], value: `${auto}（自动跟版）` }
+        }
+        const builtIn = access.clientVersionBuiltIn?.(subKey) ?? ''
+        return { key: `${OVERRIDE_PREFIX}${subKey}`, label: upstreamOverrideLabels[subKey], value: builtIn ? `${builtIn}（内置）` : '内置版本' }
+      })
       return [{ title: '', rows }]
     }
   },

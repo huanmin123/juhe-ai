@@ -177,6 +177,9 @@ type Store struct {
 	schema string
 	gate   OwnerGate
 	now    func() time.Time
+	// invalidator carries the post-commit gateway runtime invalidation of the
+	// committed cleanup writes (see invalidation.go); nil keeps it off.
+	invalidator RuntimeInvalidator
 }
 
 // Port is the package-local owner boundary. Gateway wiring is intentionally
@@ -577,6 +580,13 @@ func (s *Store) softDeleteOrphan(ctx context.Context, row accountRow) (bool, err
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
+	// Post-commit gateway runtime invalidation (网关模型列表账户并集设计 6.3
+	// coverage): this committed tombstone materialized the authorization
+	// revoke and removed dependent rows, so it must clear the runtime cache.
+	// The two no-change commit arms above stay silent (the ExpireDue
+	// no-change precedent). Best-effort, after the commit, never blocks or
+	// fails the sweep (see invalidation.go).
+	s.invalidateAfterCleanupApplied()
 	return true, nil
 }
 
@@ -1009,6 +1019,12 @@ func (s *Store) deleteBusiness(ctx context.Context, c candidate, cutoff string) 
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
+	// Post-commit gateway runtime invalidation (网关模型列表账户并集设计 6.3
+	// coverage): reaching this commit implies at least the root account row
+	// changed (the CAS re-read above requires exactly one root delete), so
+	// the physical-delete arm always publishes. Best-effort, after the
+	// commit, never blocks or fails the cleanup (see invalidation.go).
+	s.invalidateAfterCleanupApplied()
 	return result, nil
 }
 

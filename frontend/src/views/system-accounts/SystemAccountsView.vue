@@ -92,7 +92,7 @@
         <div class="request-limit-editor">
           <div class="request-limit-editor-head">
             <strong>用户限制</strong>
-            <span>留空继承全局，填写 0 表示不限。请求限制可设置到期日；AI 账户数量限制长期有效。</span>
+            <span>留空继承全局，填写 0 表示不限。请求限制可设置到期日；AI 账户数量限制长期有效。特供账户上限留空默认 3，0 表示禁止新增/重新启用。</span>
           </div>
           <div class="request-limit-grid">
             <a-form-item label="每分钟请求数">
@@ -109,6 +109,9 @@
             </a-form-item>
             <a-form-item label="AI 账户数量限制" tooltip="限制该用户可创建的自有 AI 账户数量；删除账户后释放名额。">
               <a-input-number v-model:value="form.aiAccountLimit" :min="0" :max="1000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
+            </a-form-item>
+            <a-form-item label="特供账户上限" tooltip="该用户名下可标记“特供”快速恢复的 AI 账户数量。默认 3，0 = 禁止新增/重新启用；清空输入并保存将恢复默认。">
+              <a-input-number v-model:value="form.expeditedAccountLimit" :min="0" :max="100" :precision="0" :step="1" placeholder="默认 3，0 = 禁止新增/重新启用" style="width: 100%" />
             </a-form-item>
           </div>
           <a-form-item label="覆盖到期日" tooltip="可选。所选日期当天仍生效，次日 00:00 起按系统统计时区自动继承全局。">
@@ -187,6 +190,7 @@ const form = reactive({
   mustChangePassword: true,
   imageGenerationEnabled: false,
   aiAccountLimit: null as number | null,
+  expeditedAccountLimit: null as number | null,
   requestLimitPerMinute: null as number | null,
   requestLimitPerDay: null as number | null,
   requestLimitPerWeek: null as number | null,
@@ -272,7 +276,7 @@ function openCreate() {
   editingBaseline.value = undefined
   Object.assign(form, {
     username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true,
-    imageGenerationEnabled: false, aiAccountLimit: null, requestLimitPerMinute: null, requestLimitPerDay: null, requestLimitPerWeek: null, requestLimitPerMonth: null,
+    imageGenerationEnabled: false, aiAccountLimit: null, expeditedAccountLimit: null, requestLimitPerMinute: null, requestLimitPerDay: null, requestLimitPerWeek: null, requestLimitPerMonth: null,
     requestLimitExpiresOn: null
   })
   modalOpen.value = true
@@ -292,6 +296,7 @@ function openEdit(record: SystemAccountListItem) {
     mustChangePassword: record.mustChangePassword,
     imageGenerationEnabled: record.imageGenerationEnabled,
     aiAccountLimit: record.aiAccountLimit ?? null,
+    expeditedAccountLimit: record.expeditedAccountLimit ?? null,
     requestLimitPerMinute: record.requestLimits?.perMinute ?? null,
     requestLimitPerDay: record.requestLimits?.perDay ?? null,
     requestLimitPerWeek: record.requestLimits?.perWeek ?? null,
@@ -354,6 +359,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
       mustChangePassword: boolean
       imageGenerationEnabled: boolean
       aiAccountLimit: number | null
+      expeditedAccountLimit: number | null
       requestLimits: UserRequestLimits | null
     } = {
       ...editableValues
@@ -571,6 +577,7 @@ function systemAccountEditableValues(displayName: string): SystemAccountEditable
     mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword,
     imageGenerationEnabled: form.imageGenerationEnabled,
     aiAccountLimit: normalizedOptionalAiAccountLimit(form.aiAccountLimit),
+    expeditedAccountLimit: normalizedOptionalExpeditedAccountLimit(form.expeditedAccountLimit),
     requestLimits: requestLimitsPayload()
   }
 }
@@ -587,6 +594,15 @@ function normalizedOptionalAiAccountLimit(value: number | null): number | null {
   if (value === null) return null
   if (!Number.isInteger(value) || value < 0 || value > 1_000_000) {
     throw new Error('AI 账户数量限制必须是 0 到 1000000 之间的整数')
+  }
+  return value
+}
+
+// 三态语义：null=未触碰/清除覆盖（提交显式 null 表示清除）；整数=设置 0–100。
+function normalizedOptionalExpeditedAccountLimit(value: number | null): number | null {
+  if (value === null) return null
+  if (!Number.isInteger(value) || value < 0 || value > 100) {
+    throw new Error('特供账户上限必须是 0 到 100 之间的整数')
   }
   return value
 }

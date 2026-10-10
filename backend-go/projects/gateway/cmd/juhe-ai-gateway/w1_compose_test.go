@@ -48,46 +48,18 @@ func TestW1UpstreamResponseModelObserver(t *testing.T) {
 }
 
 func TestW1ClientCatalogSelection(t *testing.T) {
-	// 目录缓存缺席 / 无 provider → nil。
-	if got := (chainClientModelCatalog{}).ListClientModelCatalog("sys_1", nil); got != nil {
-		t.Fatalf("nil cache = %v", got)
-	}
-	if got := (chainClientModelCatalog{}).ListClientModelCatalog("sys_1", []string{"openai"}); got != nil {
-		t.Fatalf("无 provider 码不应触发读取 = %v", got)
-	}
 	// 排序与去重：provider 码规范化去重后排序。
 	codes := sortedUniqueProviderCodes([]string{"OpenAI", "openai ", "", "anthropic", "OPENAI"})
 	if len(codes) != 2 || codes[0] != "anthropic" || codes[1] != "openai" {
 		t.Fatalf("codes = %v", codes)
 	}
-	// 候选筛选：非 active / 内置不可见 / 无价目剔除；作用域 personal > global > 其他。
-	hidden := false
-	inputPrice := 1.5
-	recent := "2026-01-01"
-	old := "2024-01-01"
-	items := []gatewayruntimecache.ProviderModelCatalogItem{
-		{Model: "inactive", Status: "retired", Scope: "global", InputUsdPer1M: &inputPrice},
-		{Model: "invisible", Status: "active", Scope: "built_in", CatalogVisible: &hidden, InputUsdPer1M: &inputPrice},
-		{Model: "unpriced", Status: "active", Scope: "global"},
-		{Model: "dup-global", Status: "active", Scope: "global", InputUsdPer1M: &inputPrice, ReleaseDate: &old},
-		{Model: "dup-personal", Status: "active", Scope: "personal", OutputUsdPer1M: &inputPrice, ReleaseDate: &old},
-		{Model: "fresh", Status: "active", Scope: "global", InputUsdPer1M: &inputPrice, ReleaseDate: &recent},
-		{Model: "  ", Status: "active", Scope: "global", InputUsdPer1M: &inputPrice},
-	}
-	selected := selectClientCatalogItems(items)
-	if len(selected) != 3 {
-		t.Fatalf("selected = %+v", selected)
-	}
-	// 最终排序与作用域无关（作用域只决定同模型去重时保留谁）：
-	// 按发布日期新者优先，其次 provider 与模型名。
-	if selected[0].Model != "fresh" || selected[1].Model != "dup-global" || selected[2].Model != "dup-personal" {
-		t.Fatalf("order = %s/%s/%s", selected[0].Model, selected[1].Model, selected[2].Model)
-	}
-	// 作用域秩。
+	// 作用域秩（字典构建的每模型最优行选取依据；成员过滤已随并集契约退役，
+	// 字典端口行为见 chain_gatewaykeymodels_test.go）。
 	if got := clientCatalogScopeRank(gatewayruntimecache.ProviderModelCatalogItem{Scope: "personal"}); got != 3 {
 		t.Fatalf("personal rank = %d", got)
 	}
 	// 条目投影：nil 指针字段回落零值。
+	inputPrice := 1.5
 	entry := clientCatalogEntryOf(gatewayruntimecache.ProviderModelCatalogItem{
 		Model: "gpt-5", Scope: "global", InputUsdPer1M: &inputPrice,
 		CodexSupportedReasoningLevels: json.RawMessage(`["low","high"]`),

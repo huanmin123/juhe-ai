@@ -20,6 +20,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 // releasePendingSpeedFirstReservation 释放请求结束时仍未消费的切号预留。
@@ -589,16 +590,26 @@ type speedFirstTotalTimeCutoverSignal struct {
 	elapsedMs   int64
 }
 
-// speedFirstCompactionGateOf 镜像 dispatch 侧压缩豁免门
-// （upstreamdispatch.go compactionTimeoutsDisabled）：wall budget 无界
-// （codex 压缩请求的 TimeoutPolicy 源头）或请求体压缩识别。loop 层与引擎的
-// coordination.TimeoutPolicy 同源（newRequestCoordination 以 wall.Unbounded
-// 导出该策略），压缩判定由此保持两侧一致。
-func (l *v1DispatchLoop) speedFirstCompactionGateOf(current *gatewaypreauth.DispatchContext) bool {
-	if l.budgets.wall != nil && l.budgets.wall.Unbounded {
-		return true
+// speedFirstCompactionGateOf 是链面压缩豁免门（调度内核通用化设计 5.2 三轨
+// 合一后）：压缩豁免唯一形状判定在 preflight（gatewaycodex
+// CompactionExpectedForRequest），经 wall budget Unbounded 承载（compaction
+// 请求在 preflight 内 WithoutLimit）。链面与引擎 coordination 的
+// TimeoutsDisabled 同源，本门不再二次扫描请求形状。
+func (l *v1DispatchLoop) speedFirstCompactionGateOf() bool {
+	return l.budgets.wall != nil && l.budgets.wall.Unbounded
+}
+
+// speedFirstTotalTimeLaneOf 计算总时间档位（调度内核通用化设计 5.2）：压缩
+// 豁免（preflight 单点判定经 wall budget Unbounded 承载）或估算输入 token 达
+// routestrategies.SpeedFirstLargeInputTokenThreshold 判 extended 档，否则
+// normal 档。引擎 coordination 与 chain 完成观测消费同一结果（估算与
+// dispatch 侧同源，nil body 安全）。
+func speedFirstTotalTimeLaneOf(wall *gatewayrouting.GatewayRequestWallBudget, req *gatewaypreauth.GatewayRequest) gatewaydispatch.TotalTimeLane {
+	if (wall != nil && wall.Unbounded) ||
+		estimateChainRequestInputTokens(req) >= routestrategies.SpeedFirstLargeInputTokenThreshold {
+		return gatewaydispatch.TotalTimeLaneExtended
 	}
-	return gatewaydispatch.CodexCompactionExpectedForRequest(l.req)
+	return gatewaydispatch.TotalTimeLaneNormal
 }
 
 // speedFirstDownstreamCommittedOf 判断当前请求是否已向下游写出可见内容
@@ -622,10 +633,9 @@ func (l *v1DispatchLoop) speedFirstTotalTimeThresholdMsOf(current *gatewaypreaut
 		return 0, false
 	}
 	deadline, ok := gatewaydispatch.ResolveNormalRouteTotalTimeDeadline(gatewaydispatch.NormalRouteTotalTimeDeadlineInput{
-		Config:                     config,
-		CompactionTimeoutsDisabled: l.speedFirstCompactionGateOf(current),
-		EstimatedInputTokens:       estimateChainRequestInputTokens(l.req),
-		AttemptStartedAtMs:         l.c.preauth.NowMs(),
+		Config:             config,
+		Lane:               speedFirstTotalTimeLaneOf(l.budgets.wall, l.req),
+		AttemptStartedAtMs: l.c.preauth.NowMs(),
 	})
 	if !ok {
 		return 0, false
@@ -633,8 +643,8 @@ func (l *v1DispatchLoop) speedFirstTotalTimeThresholdMsOf(current *gatewaypreaut
 	return deadline.ThresholdMs, true
 }
 
-// estimateChainRequestInputTokens 投影请求体估算输入（与 dispatch 侧
-// estimateNormalRouteRequestInputTokens 同源估算；nil body 安全）。
+// estimateChainRequestInputTokens 投影请求体估算输入（总时间档位判定的大输
+// 入维度，设计 5.2；nil body 安全，估算失败按 0 = normal 档处理）。
 func estimateChainRequestInputTokens(req *gatewaypreauth.GatewayRequest) int {
 	if req == nil || req.Body == nil {
 		return 0
@@ -987,7 +997,7 @@ func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
 	// 压缩守卫（设计 6.3）：压缩请求首字维度维持既有豁免——不补记首字慢
 	// 样本、不记首字恢复样本（成功压缩首输出可达 125 秒以上，属正常形态，
 	// 不得进入首字慢样本通道）。
-	if !l.speedFirstCompactionGateOf(current) && handling.FirstTokenMs != nil {
+	if !l.speedFirstCompactionGateOf() && handling.FirstTokenMs != nil {
 		l.observeSpeedFirstFirstByteOutcome(ctx, dispatched, handling, decisions, scope, config)
 	}
 	// 总时间维度照常生效（含压缩请求）：timer 未到点时由完成观测补记慢

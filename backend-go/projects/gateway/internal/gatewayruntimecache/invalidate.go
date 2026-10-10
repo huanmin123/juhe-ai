@@ -24,6 +24,22 @@ func (s *Service) ClearGatewayRuntimeCache(reason string) {
 // ClearGatewayRuntimeCacheLocal mirrors clearGatewayRuntimeCacheLocal: every
 // generation advances so in-flight loads cannot repopulate stale entries.
 func (s *Service) ClearGatewayRuntimeCacheLocal(options ClearOptions) {
+	// 分组模型并集缓存无条件随运行时失效推进（网关模型列表账户并集设计 §6.3，
+	// 不使用目录 reason 白名单）。专用发布锁内单临界区完成：旧版本键捕获 → 代
+	// 推进 → pending 清空 → 本地清空，与本地发布互斥（目录缓存“检查与写入分两
+	// 次加锁”的窗口不得复现）。旧代共享桶异步尽力回收：桶名含旧 token/generation，
+	// 当前代桶名不同、不会被误删；失败记 WARN——旧代键已因版本键不可达，删除
+	// 只负责空间回收。
+	s.unionPublicationMu.Lock()
+	previousUnionVersionKey := s.unionVersionKeyLocked()
+	s.unionGeneration++
+	s.pendingUnionLoads = map[string]*unionLoad{}
+	s.unionCache.clear()
+	s.unionPublicationMu.Unlock()
+	if s.opts.Shared != nil {
+		go s.cleanupUnionSharedBucket(previousUnionVersionKey)
+	}
+
 	s.mu.Lock()
 	s.runtimeGeneration++
 	s.apiKeyRuntimeGeneration++

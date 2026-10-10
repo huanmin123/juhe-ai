@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Deps bundles the M12 slice collaborators.
@@ -107,7 +109,10 @@ func (d *Deps) patchGlobalSettings(w http.ResponseWriter, r *http.Request) {
 // sectionKey, values: await getManagementSettingsSectionAsync(sectionKey) }).
 // An unknown section key renders 400 未知设置分区：key
 // (InvalidSettingsSectionError); every other failure takes next(error) — the
-// generic 500.
+// generic 500. gateway-core additionally carries the read-only
+// clientVersionFacts companion field (自动层当前值 + 五族内置基线) so the
+// upstream-versions group can render each family's effective source
+// (客户端版本自动跟版设计 §7).
 func (d *Deps) getSettingsSection(w http.ResponseWriter, r *http.Request) {
 	sectionKey, err := parseSettingsSectionKey(r.PathValue("sectionKey"))
 	if err != nil {
@@ -119,7 +124,32 @@ func (d *Deps) getSettingsSection(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 		return
 	}
-	kernel.WriteOK(w, map[string]any{"sectionKey": sectionKey, "values": values}, "")
+	response := map[string]any{"sectionKey": sectionKey, "values": values}
+	if sectionKey == "gateway-core" {
+		facts, factsErr := d.clientVersionFacts(r.Context())
+		if factsErr != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		response["clientVersionFacts"] = facts
+	}
+	kernel.WriteOK(w, response, "")
+}
+
+// clientVersionFacts 组装客户端版本三层事实中分区 values 拿不到的两层：自动层
+// 当前值（jobs 跟版任务独占维护，不在 gateway-core 分区键表内）与五族内置
+// 基线（编译期常量）。手动层已在 values.upstreamClientVersionOverrides，不
+// 重复返回。只读伴随字段：不是设置键，不进白名单、不参与 PATCH。
+func (d *Deps) clientVersionFacts(ctx context.Context) (map[string]any, error) {
+	autoOverrides, err := d.Store.UpstreamClientVersionAutoOverrides(ctx)
+	if err != nil {
+		return nil, err
+	}
+	builtIns := make(map[string]string, len(upstreamClientVersionFamilies))
+	for family := range upstreamClientVersionFamilies {
+		builtIns[family] = upstreamidentity.BuiltInClientVersion(family)
+	}
+	return map[string]any{"autoOverrides": autoOverrides, "builtIns": builtIns}, nil
 }
 
 // patchSettingsSection mirrors PATCH /settings/sections/:sectionKey: the body

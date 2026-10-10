@@ -130,7 +130,7 @@ import { message } from '@/lib/antd'
 import { computed, onActivated, onMounted, onBeforeUnmount, onDeactivated, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import type { ManagementSettingsSectionKey } from '@/api/domains/settings'
+import type { ClientVersionFacts, ManagementSettingsSectionKey } from '@/api/domains/settings'
 import type { GlobalSettings, SystemSettings } from '@/types/domain'
 import { authState } from '@/composables/useAuth'
 import { applyAppBrand } from '@/composables/useAppBrand'
@@ -172,6 +172,9 @@ const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | und
   'cooldown-retest': undefined, 'data-retention': undefined, 'log-retention': undefined
 })
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
+// gateway-core 分区伴随的客户端版本事实（自动层当前值 + 内置基线），供
+// upstream-versions 组展示态逐族标注生效来源；手动层走 sectionBaselines。
+const clientVersionFacts = reactive<ClientVersionFacts>({ autoOverrides: {}, builtIns: {} })
 const sectionRequestGate = createSettingsSectionRequestGate()
 const sectionSaveRequestGate = createSettingsSectionRequestGate()
 let pageActive = true
@@ -212,6 +215,10 @@ async function loadSection(sectionKey: ManagementSettingsSectionKey, force = fal
     if (sectionKey === 'brand') Object.assign(globalForm, normalizeGlobalSettings(responseValues as unknown as GlobalSettings))
     else applySystemSectionValues(sectionKey, responseValues)
     sectionBaselines[sectionKey] = { ...result.values }
+    if (result.clientVersionFacts) {
+      clientVersionFacts.autoOverrides = { ...result.clientVersionFacts.autoOverrides }
+      clientVersionFacts.builtIns = { ...result.clientVersionFacts.builtIns }
+    }
     sectionReady[sectionKey] = true
     if (sectionKey === 'brand') applyAppBrand(globalForm)
   } catch (error) {
@@ -268,7 +275,9 @@ const displayAccess: SettingsDisplayAccess = {
       return String(baselineValue) !== String(fallback)
     }
     return baselineValue !== fallback
-  }
+  },
+  clientVersionAuto: (family) => clientVersionFacts.autoOverrides[family] ?? '',
+  clientVersionBuiltIn: (family) => clientVersionFacts.builtIns[family] ?? ''
 }
 
 // ---------------------------------------------------------------------------

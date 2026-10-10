@@ -9,7 +9,7 @@ import (
 )
 
 // 错误分类与纯函数单元测试：errors.go / attempt.go / util.go /
-// providerprotocol.go / codexturnavoidance.go / apikeyrotation.go。
+// providerprotocol.go / apikeyrotation.go / dispatchsegments.go。
 // 断言只依赖标准库；确定性：所有时间通过注入 gatewayupstream.NowMs 控制。
 
 func TestErrorTaxonomyMessagesAndCodes(t *testing.T) {
@@ -305,33 +305,122 @@ func TestProviderProtocolTokens(t *testing.T) {
 	}
 }
 
-func TestCodexTurnAvoidanceHelpers(t *testing.T) {
-	accounts := testAccounts("a-1", "a-2", "a-3")
-	avoided := stringSet([]string{"a-1", "a-2"})
-	if avoided == nil {
-		t.Fatal("非空列表应生成集合")
+// TestBuildDispatchSegmentsRuns：分派段切段纯函数（原 CodexTurnAvoidanceHelpers
+// 用例的改写——内核不再消费 turn 避让纯函数，改为锁定替代实现的段界规则）。
+func TestBuildDispatchSegmentsRuns(t *testing.T) {
+	if buildDispatchSegments(nil, nil, nil) != nil {
+		t.Fatal("空候选应返回 nil")
 	}
-	if stringSet(nil) != nil {
-		t.Fatal("空列表应返回 nil")
+	// 四元 tier run：相同 tier 连续归段，不同 tier 切段；非连续相同 tier 不
+	// 合并；不按数值重排（T0,T1,T0 保持原序）。
+	accounts := []AccountCandidate{
+		testAccountWithPriority("a-1", 0),
+		testAccountWithPriority("a-2", 10),
+		testAccountWithPriority("a-3", 0),
 	}
-	kept := filterCodexTurnAvoidedAccounts(accounts, avoided, false)
-	if len(kept) != 1 || kept[0].ID != "a-3" {
-		t.Fatalf("普通 pass 只保留非规避账户: %#v", accountIDs(kept))
+	segments := buildDispatchSegments(accounts, nil, nil)
+	if len(segments) != 3 {
+		t.Fatalf("应切为三个连续段: %d", len(segments))
 	}
-	reversed := filterCodexTurnAvoidedAccounts(accounts, avoided, true)
-	if len(reversed) != 2 {
-		t.Fatalf("反转 pass 只保留规避账户: %#v", accountIDs(reversed))
+	ids := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		ids = append(ids, segment.OpaqueSegmentID)
+		if len(segment.Accounts) != 1 {
+			t.Fatalf("单账户连续 run 应各成一段: %#v", accountIDs(segment.Accounts))
+		}
 	}
-	exhausted := nonRecoverableFailedAccountIDs(map[string]struct{}{"a-1": {}, "a-3": {}}, map[string]struct{}{"a-3": {}})
-	if _, ok := exhausted["a-1"]; !ok {
-		t.Fatal("a-1 非可恢复，应进入 exhausted")
+	if ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2] {
+		t.Fatalf("OpaqueSegmentID 必须逐段唯一: %v", ids)
 	}
-	if _, ok := exhausted["a-3"]; ok {
-		t.Fatal("a-3 可恢复，不应进入 exhausted")
+	if segments[0].Tier != segments[2].Tier {
+		t.Fatal("非连续相同 tier 的段四元组必须一致")
 	}
-	candidates := codexTurnReversalCandidates(accounts, avoided, exhausted)
-	if len(candidates) != 1 || candidates[0].ID != "a-2" {
-		t.Fatalf("reversal 候选 = %#v", accountIDs(candidates))
+	if segments[0].Tier == segments[1].Tier {
+		t.Fatal("不同 tier 的段不得合并")
+	}
+	// 相同 tier 相同外层类 → 合并单段。
+	merged := buildDispatchSegments([]AccountCandidate{accounts[0], accounts[2]}, nil, nil)
+	if len(merged) != 1 || len(merged[0].Accounts) != 2 {
+		t.Fatalf("相同 tier 同类连续候选应合并: %#v", merged)
+	}
+	// 相同 tier 相邻不同外层类 → 切段（矩阵 m 的段界来源）。
+	classOf := dispatchOuterSegmentClassOf(true, map[string]struct{}{"a-3": {}}, false, nil)
+	partitioned := buildDispatchSegments([]AccountCandidate{accounts[0], accounts[2]}, nil, classOf)
+	if len(partitioned) != 2 {
+		t.Fatalf("相邻同 tier 不同外层段不得合并: %d", len(partitioned))
+	}
+	if accountIDs(partitioned[0].Accounts)[0] != "a-1" || accountIDs(partitioned[1].Accounts)[0] != "a-3" {
+		t.Fatalf("切段必须保持原顺序: %#v", partitioned)
+	}
+	// 排除集成员不构成段界：排除账号与其普通候选同段（段内让位的前提）。
+	sourceExclusionClass := dispatchOuterSegmentClassOf(false, nil, false, nil)
+	unpartitioned := buildDispatchSegments([]AccountCandidate{accounts[0], accounts[2]}, nil, sourceExclusionClass)
+	if len(unpartitioned) != 1 {
+		t.Fatalf("无外层段类差异时不得切段: %d", len(unpartitioned))
+	}
+}
+
+// TestDeriveActiveDispatchSegments：内核活动段推导——按来源段分组保持外层段
+// 界，未携带段元数据时合成单一活动段。
+func TestDeriveActiveDispatchSegments(t *testing.T) {
+	accounts := []AccountCandidate{
+		testAccountWithPriority("a-1", 0),
+		testAccountWithPriority("a-2", 10),
+		testAccountWithPriority("a-3", 0),
+	}
+	provided := []DispatchSegment{
+		{OpaqueSegmentID: "s1", Tier: dispatchPriorityTierOf(accounts[0], nil), Accounts: accounts[:1]},
+		{OpaqueSegmentID: "s2", Tier: dispatchPriorityTierOf(accounts[1], nil), Accounts: accounts[1:2]},
+		{OpaqueSegmentID: "s3", Tier: dispatchPriorityTierOf(accounts[2], nil), Accounts: accounts[2:]},
+	}
+	derived := deriveActiveDispatchSegments(accounts, provided, nil, nil, nil)
+	if len(derived) != 3 {
+		t.Fatalf("来源段边界必须保持: %d", len(derived))
+	}
+	for i, segment := range derived {
+		if segment.opaqueSegmentID != provided[i].OpaqueSegmentID {
+			t.Fatalf("首次推导应沿用来源段 ID: %s", segment.opaqueSegmentID)
+		}
+		if len(segment.pendingExclusions) != 0 {
+			t.Fatalf("无排除集时不得有待释放账号: %#v", segment.pendingExclusions)
+		}
+	}
+	// 软排除账号从 working 拆入 pendingExclusions，普通候选保留原顺序。
+	exclusions := map[string]struct{}{"a-1": {}}
+	derivedExcluded := deriveActiveDispatchSegments(accounts[:2], provided[:2], exclusions, nil, nil)
+	if len(derivedExcluded) != 2 {
+		t.Fatalf("段数: %d", len(derivedExcluded))
+	}
+	if len(derivedExcluded[0].working) != 0 || len(derivedExcluded[0].pendingExclusions) != 1 {
+		t.Fatalf("排除账号应让位待释放: %#v", derivedExcluded[0])
+	}
+	if accountIDs(derivedExcluded[1].working)[0] != "a-2" {
+		t.Fatalf("普通候选顺序: %#v", derivedExcluded[1].working)
+	}
+	// 已释放账号不再进入 pendingExclusions。
+	derivedReleased := deriveActiveDispatchSegments(accounts[:1], provided[:1], exclusions, map[string]struct{}{"a-1": {}}, nil)
+	if len(derivedReleased[0].working) != 1 || len(derivedReleased[0].pendingExclusions) != 0 {
+		t.Fatalf("已释放账号应回到普通候选: %#v", derivedReleased[0])
+	}
+	// 未携带段元数据 → 合成单一活动段。
+	flat := deriveActiveDispatchSegments(accounts, nil, nil, nil, nil)
+	if len(flat) != 1 || len(flat[0].working) != 3 {
+		t.Fatalf("无段元数据应合成单一活动段: %#v", flat)
+	}
+	if flat[0].opaqueSegmentID == "" {
+		t.Fatal("合成段必须有 opaque 段 ID")
+	}
+}
+
+// TestDispatchPriorityTierRoundTrip：四元 tier 与引擎 tier 口径互转。
+func TestDispatchPriorityTierRoundTrip(t *testing.T) {
+	account := testAccountWithPriority("a-1", 7)
+	tier := dispatchPriorityTierOf(account, nil)
+	if tier.String() != gatewayAccountDispatchPriorityTier(account, nil) {
+		t.Fatalf("tier 往返不一致: %s vs %s", tier.String(), gatewayAccountDispatchPriorityTier(account, nil))
+	}
+	if tier.Priority != 7 {
+		t.Fatalf("四元组 Priority 位 = %d", tier.Priority)
 	}
 }
 

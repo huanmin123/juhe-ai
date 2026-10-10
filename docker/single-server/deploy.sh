@@ -193,9 +193,14 @@ for p in "${TARGETS[@]}"; do
   [ "$p" = "maintenance" ] && continue  # maintenance 是一次性 tool 容器，无常驻进程
   ok=""
   for i in $(seq 1 30); do
-    st=$($SSH "$SERVER" "cd $SERVER_DIR && docker compose ps $p --format '{{.Status}}'")
-    case "$st" in *healthy*) ok=1; break ;; esac
-    echo "  $p 等待 healthy（第 $i 次）：$st"
+    # BUG-0301：docker compose ps 的 Status 文案里 "unhealthy" 含子串 "healthy"，
+    # `*healthy*` 子串判断会把 unhealthy 误判为已通过；改读 docker inspect 的
+    # 结构化健康字段（gateway/jobs 容器名固定为 juhe-ai-go-$p）并做精确相等比较。
+    # `|| st=""` 是 set -e 兜底：单轮查询失败（容器不存在、ssh 失败等）不得中止
+    # 整个发布，按未 healthy 继续等待至预算耗尽 fail-closed。
+    st=$($SSH "$SERVER" "docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' juhe-ai-go-$p" 2>/dev/null) || st=""
+    if [ "$st" = "healthy" ]; then ok=1; break; fi
+    echo "  $p 等待 healthy（第 $i 次）：${st:-<状态查询失败>}"
     sleep 10
   done
   if [ -z "$ok" ]; then

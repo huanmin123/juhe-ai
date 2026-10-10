@@ -186,6 +186,7 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		MustChangePassword     *bool              `json:"mustChangePassword"`
 		ImageGenerationEnabled *bool              `json:"imageGenerationEnabled"`
 		AIAccountLimit         *int               `json:"aiAccountLimit"`
+		ExpeditedAccountLimit  *int               `json:"expeditedAccountLimit"`
 		RequestLimits          *UserRequestLimits `json:"requestLimits"`
 	}
 	if !kernel.DecodeJSON(w, r, &body) {
@@ -231,7 +232,7 @@ func (d *Deps) createAccount(w http.ResponseWriter, r *http.Request) {
 		Username: *body.Username, DisplayName: *body.DisplayName, Description: description,
 		Password: *body.Password, Role: role, Status: valueOr(body.Status, ""),
 		MustChangePassword: body.MustChangePassword, ImageGenerationEnabled: body.ImageGenerationEnabled,
-		AIAccountLimit: body.AIAccountLimit, RequestLimits: body.RequestLimits,
+		AIAccountLimit: body.AIAccountLimit, ExpeditedAccountLimit: body.ExpeditedAccountLimit, RequestLimits: body.RequestLimits,
 	})
 	if err != nil {
 		writeAccountError(w, err, "创建系统账户失败")
@@ -396,7 +397,7 @@ func summaryFor(action, resourceName string) string {
 var changeLabels = map[string]string{
 	"displayName": "用户名称", "description": "说明", "password": "登录密码", "role": "角色",
 	"status": "状态", "mustChangePassword": "下次登录改密", "imageGenerationEnabled": "支持图像生成",
-	"aiAccountLimit": "AI 账户数量限制", "requestLimits": "用户限制",
+	"aiAccountLimit": "AI 账户数量限制", "expeditedAccountLimit": "特供账户上限", "requestLimits": "用户限制",
 }
 
 func buildChanges(before AccountSummary, input PatchInput, result AccountMutationResult) []OperationLogChange {
@@ -439,6 +440,14 @@ func buildChanges(before AccountSummary, input PatchInput, result AccountMutatio
 		}
 		appendChange("aiAccountLimit", intPtrText(before.AIAccountLimit), afterLimit)
 	}
+	if len(result.ExpeditedAccountLimit) > 0 {
+		afterLimit := ""
+		var limit *int
+		if json.Unmarshal(result.ExpeditedAccountLimit, &limit) == nil && limit != nil {
+			afterLimit = strconv.Itoa(*limit)
+		}
+		appendChange("expeditedAccountLimit", intPtrText(before.ExpeditedAccountLimit), afterLimit)
+	}
 	if len(result.RequestLimits) > 0 {
 		appendChange("requestLimits", "已设置", "已设置")
 	}
@@ -471,7 +480,7 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		"expectedUpdatedAt": true,
 		"displayName":       true, "description": true, "password": true, "role": true,
 		"status": true, "mustChangePassword": true, "imageGenerationEnabled": true,
-		"aiAccountLimit": true, "requestLimits": true,
+		"aiAccountLimit": true, "expeditedAccountLimit": true, "requestLimits": true,
 	}
 	var unknown []string
 	for key := range body {
@@ -578,6 +587,22 @@ func parsePatchInput(body map[string]any) (PatchInput, error) {
 		} else if number, isFloat := value.(float64); isFloat && number == float64(int(number)) {
 			limit := int(number)
 			input.AIAccountLimit = &limit
+		} else {
+			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
+		}
+		mutating++
+	}
+	// expeditedAccountLimit tri-state (设计契约《AI账户特供快速恢复通道》§8 系统
+	// 账户侧): absent leaves the column untouched, explicit null clears the
+	// override back to DB NULL, an integer sets 0–100 (range enforced in the
+	// store patch like aiAccountLimit).
+	if value, exists := body["expeditedAccountLimit"]; exists {
+		input.ExpeditedAccountLimitPresent = true
+		if value == nil {
+			input.ExpeditedAccountLimit = nil
+		} else if number, isFloat := value.(float64); isFloat && number == float64(int(number)) {
+			limit := int(number)
+			input.ExpeditedAccountLimit = &limit
 		} else {
 			return PatchInput{}, &ValidationError{Message: "系统账户参数无效"}
 		}

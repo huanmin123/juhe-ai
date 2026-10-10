@@ -1,60 +1,17 @@
 package gatewaydispatch
 
 import (
-	"regexp"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
 
-// Codex compaction contract + circuit facade + degradation ordering helpers
-// shared by the dispatch engine.
-
-var codexCompactionRequestSearchPattern = regexp.MustCompile(`"type"\s*:\s*"compaction_trigger"`)
-
-// CodexCompactionExpectedForRequest mirrors codexCompactionExpectedForRequest.
-func CodexCompactionExpectedForRequest(req *gatewaypreauth.GatewayRequest) bool {
-	if req == nil || req.MethodUpper() != "POST" {
-		return false
-	}
-	normalizedPath := normalizedOpenAIRequestPath(req)
-	if normalizedPath == "/responses/compact" {
-		return true
-	}
-	return normalizedPath == "/responses" && requestBodyHasCompactionTrigger(req)
-}
-
-func (e *Engine) codexCompactionExpectedForRequest(req *gatewaypreauth.GatewayRequest) bool {
-	return CodexCompactionExpectedForRequest(req)
-}
-
-func normalizedOpenAIRequestPath(req *gatewaypreauth.GatewayRequest) string {
-	path := splitPath(req.PathAndQuery())
-	return stripV1Prefix(path)
-}
-
-func requestBodyHasCompactionTrigger(req *gatewaypreauth.GatewayRequest) bool {
-	if req == nil || req.Body == nil || len(req.Body.RawBody) == 0 {
-		return false
-	}
-	state := req.BodyState()
-	if state != nil && state.CodexCompactionTrigger {
-		return true
-	}
-	if len(req.Body.RawBody) <= 64*1024 {
-		return codexCompactionRequestSearchPattern.Match(req.Body.RawBody)
-	}
-	edge := 64 * 1024
-	head := req.Body.RawBody[:edge]
-	tail := req.Body.RawBody[len(req.Body.RawBody)-edge:]
-	return codexCompactionRequestSearchPattern.Match(head) || codexCompactionRequestSearchPattern.Match(tail)
-}
-
-var _ = gatewaybody.IsJSONContentType
+// Circuit facade + degradation ordering helpers shared by the dispatch engine.
+// 压缩请求形状判定已随调度内核通用化设计 5.2 三轨合一移出内核：唯一实现是
+// gatewaycodex.CodexCompactionExpectedForRequest（preflight 单点消费），引擎
+// 超时豁免改由链面传入 TimeoutsDisabled / TotalTimeLane 参数。
 
 // ---------------------------------------------------------------------------
 // gatewaycircuit attempt facade

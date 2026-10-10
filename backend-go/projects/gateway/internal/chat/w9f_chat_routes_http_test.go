@@ -181,6 +181,10 @@ func (w9fEmptyModelCatalog) ListAccountsForGroup(string, string, string, string)
 	return nil
 }
 
+func (w9fEmptyModelCatalog) ListChatPinnedAccountsForGroup(string, string, string) []ChatTransportAccount {
+	return nil
+}
+
 func (w9fEmptyModelCatalog) ListProviderCatalog(string, string) []ProviderModelCatalogItem {
 	return nil
 }
@@ -189,6 +193,10 @@ func (w9fEmptyModelCatalog) ListProviderCatalog(string, string) []ProviderModelC
 type w9fCatalogOnlyMock struct{}
 
 func (w9fCatalogOnlyMock) ListAccountsForGroup(string, string, string, string) []ChatTransportAccount {
+	return nil
+}
+
+func (w9fCatalogOnlyMock) ListChatPinnedAccountsForGroup(string, string, string) []ChatTransportAccount {
 	return nil
 }
 

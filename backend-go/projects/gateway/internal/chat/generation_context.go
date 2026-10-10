@@ -52,6 +52,11 @@ type GatewayKeyValidator interface {
 // listCachedOpenAIAccountsForGroupAsync + listCachedProviderModelCatalogAsync).
 type ModelCatalog interface {
 	ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []ChatTransportAccount
+	// ListChatPinnedAccountsForGroup 是会话绑定作用域的 pinned 直取视图：按
+	// 账户 ID 从运行时快照直取（含非 active/冷却/过期账户，绕过可用性窗口，
+	// AI 问答设计 §5.2 2026-10-10 修订），仅收敛到该账户单元素；账户不在该
+	// 分组（或分组禁用/不存在）时返回空切片。
+	ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount
 	ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem
 }
 

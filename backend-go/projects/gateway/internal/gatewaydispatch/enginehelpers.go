@@ -376,7 +376,7 @@ func isLocalRequestFailure(err error) bool {
 	var guidanceErr *gatewaypreauth.GatewayAgentGuidanceResponse
 	var localErr *gatewaypreauth.GatewayLocalProtocolResponse
 	var validationErr *gatewaypreauth.GatewayRequestValidationError
-	var adapterErr *OpenAIOAuthCodexAdapterError
+	var adapterErr UpstreamAdapterContractError
 	return errors.As(err, &guidanceErr) || errors.As(err, &localErr) ||
 		errors.As(err, &validationErr) || errors.As(err, &adapterErr)
 }

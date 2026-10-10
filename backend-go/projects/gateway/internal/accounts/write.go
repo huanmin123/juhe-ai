@@ -673,6 +673,18 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		temporaryProbeEnabled = 0
 	}
 
+	// 特供快速恢复（设计 §8.1/§9）：创建通道同样接受该标记，true 必须在
+	// 同一事务内、同一把归属行锁下完成名额校验并计入本次待插入行
+	// （当前计数 + 1 ≤ 上限，超限整体回滚）；nil/false 恒为未标记——克隆与
+	// 导入创建体不含该键，副本/导入行天然不带标记（§3.10）。
+	expeditedRecoveryEnabled := false
+	if input.ExpeditedRecoveryEnabled != nil && *input.ExpeditedRecoveryEnabled {
+		expeditedRecoveryEnabled = true
+		if err := s.assertExpeditedRecoveryLimit(ctx, tx, systemAccountID, 1); err != nil {
+			return nil, err
+		}
+	}
+
 	// Tags.
 	tagNames, err := normalizeAccountTagNamesInput(anySliceOrNil(input.Tags))
 	if err != nil {
@@ -714,9 +726,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message, health_check_model, health_check_endpoint_mode,
 		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
+		 expedited_recovery_enabled,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
@@ -724,6 +737,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
+		boolInt(expeditedRecoveryEnabled),
 		0, sql.NullString{}, balanceNextRefreshAt,
 		nowISO, nowISO); err != nil {
 		if duplicate := duplicateAccountNameError(err, strings.TrimSpace(input.Name)); duplicate != nil {

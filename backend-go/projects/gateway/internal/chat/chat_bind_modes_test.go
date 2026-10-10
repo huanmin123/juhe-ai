@@ -34,8 +34,9 @@ func (r *bindScopeRecorder) snapshot() (scopes []ChatBindScope, ids []string) {
 }
 
 // mockAccountLookup resolves test accounts: account-1/account-2/account-3 启
-// 用（默认绑定 group-a，可经 groupsOfAccount 覆盖），account-disabled 停用，
-// 其余不存在；seen 非 nil 时记录收到的 scope 与 accountID。
+// 用（默认绑定 group-a，可经 groupsOfAccount 覆盖），account-disabled 停用
+// （绑定 group-a：2026-10-10 修订后停用账户可绑定可发送，pinned 直取需启用
+// 分组收敛），其余不存在；seen 非 nil 时记录收到的 scope 与 accountID。
 type mockAccountLookup struct {
 	groupsOfAccount map[string][]string
 	seen            *bindScopeRecorder
@@ -53,7 +54,7 @@ func (m mockAccountLookup) FindChatAccount(scope ChatBindScope, accountID string
 		}
 		return &ChatAccountRef{ID: accountID, Name: "账户 " + accountID, ProviderCode: "openai", Enabled: true, EnabledGroupIDs: groups}, nil
 	case "account-disabled":
-		return &ChatAccountRef{ID: accountID, Name: "停用账户", Enabled: false}, nil
+		return &ChatAccountRef{ID: accountID, Name: "停用账户", Enabled: false, EnabledGroupIDs: []string{"group-a"}}, nil
 	}
 	return nil, nil
 }
@@ -157,7 +158,8 @@ func TestCreateConversationEmptyBody(t *testing.T) {
 }
 
 // TestPatchAccountIdFlow：accountId 键写入/切换绑定账户；切换时 lastModel 不
-// 在新账户可路由范围则联动清空，在范围内保留；停用/不存在/空白值 400；
+// 在新账户可路由范围则联动清空，在范围内保留；停用账户可绑定（2026-10-10
+// 修订）、不存在/空白值 400；
 // searchBinding/imageBinding 属工具阶段契约，本阶段按未知键拒绝。
 func TestPatchAccountIdFlow(t *testing.T) {
 	prefix := "/__aisys__/api/my-chat"
@@ -220,6 +222,22 @@ func TestPatchAccountIdFlow(t *testing.T) {
 		}
 	})
 
+	t.Run("停用账户可绑定", func(t *testing.T) {
+		// 2026-10-10 修订：绑定不再因账户生效状态拒绝（停用账户正是需要测试
+		// 的场景）；存在性口径不变（不存在仍 400）。
+		env := newGenerationEnv(t)
+		env.deps.AccountLookup = mockAccountLookup{}
+		conversation := createBoundConversation(t, env.fixture, "patch_bind_disabled", routeTestOwner, CreateConversationInput{})
+		response := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-disabled"}`)
+		if response.status != http.StatusOK {
+			t.Fatalf("停用账户绑定 = %d %s", response.status, response.rawString())
+		}
+		data := response.dataMap()
+		if data["bindAccountId"] != "account-disabled" || data["bindAccountName"] != "停用账户" {
+			t.Fatalf("停用账户绑定 payload = %v", data)
+		}
+	})
+
 	t.Run("失败臂", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.deps.AccountLookup = mockAccountLookup{}
@@ -231,7 +249,6 @@ func TestPatchAccountIdFlow(t *testing.T) {
 			message string
 		}{
 			{"账户不存在", `{"accountId":"missing"}`, "绑定的账户不存在"},
-			{"账户已停用", `{"accountId":"account-disabled"}`, "绑定的账户已停用"},
 			{"空白账户", `{"accountId":"  "}`, "请选择会话绑定的账户"},
 			// 工具绑定键（阶段 2 接入）：二元组不在候选内 → 400 + 候选返回
 			//（mock 账户 a1 无可派发视图，候选为空）。
@@ -330,6 +347,19 @@ func (c *accountViewCatalog) ListAccountsForGroup(groupID, systemAccountID, requ
 	view := c.views[groupID]
 	c.mu.Unlock()
 	if view.ID == "" {
+		return nil
+	}
+	return []ChatTransportAccount{view}
+}
+
+// ListChatPinnedAccountsForGroup 按（分组, 账户 ID）收敛单元素视图；与
+// ListAccountsForGroup 同一 views 表并同样记录 groupCalls（断言收敛组序列）。
+func (c *accountViewCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	c.mu.Lock()
+	c.groupCalls = append(c.groupCalls, groupID)
+	view := c.views[groupID]
+	c.mu.Unlock()
+	if view.ID == "" || view.ID != accountID {
 		return nil
 	}
 	return []ChatTransportAccount{view}

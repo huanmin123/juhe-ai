@@ -604,7 +604,8 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 	if managed.GroupID != nil {
 		groupOK, groupErr := d.Store.findGroupForProvider(r.Context(), *managed.GroupID, access, plan.providerCode)
 		if groupErr != nil {
-			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+			// 上方 profile 读取已成功、err 在此恒 nil，原样传入会让 failureReason 丢失；分组查询失败以 groupErr 为 cause（BUG-0302）。
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", groupErr)
 			return
 		}
 		if !groupOK {
@@ -1004,7 +1005,8 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 		if managed.GroupID != nil {
 			groupOK, groupErr := d.Store.findGroupForProvider(r.Context(), *managed.GroupID, access, plan.providerCode)
 			if groupErr != nil {
-				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+				// 上方 profile 读取已成功、err 在此恒 nil，原样传入会让 failureReason 丢失；分组查询失败以 groupErr 为 cause（BUG-0302）。
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", groupErr)
 				return
 			}
 			if !groupOK {

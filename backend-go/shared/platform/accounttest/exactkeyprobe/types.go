@@ -71,6 +71,12 @@ type Eligibility struct {
 	SourceConfigRevision                       *int64     `json:"source_config_revision,omitempty"`
 	CooldownUntil                              *time.Time `json:"cooldown_until,omitempty"`
 	TemporaryUnavailableContinuousProbeEnabled *bool      `json:"temporary_unavailable_continuous_probe_enabled,omitempty"`
+	// ExpeditedRecovery 是按账户显式标记的恢复道加速档（"特供"，账户属性而非
+	// 状态，与 TemporaryUnavailableContinuousProbeEnabled 同类的事实布尔）。
+	// jobs 冷却复测据此收紧节奏：失败慢速道基准 15s、跳过 1 小时长期降频道、
+	// 绕开有界 10 分钟 error 终态（7 天观察超时保留）；中性顺延封顶按账户走
+	// Schedule.CooldownNeutralMaxMS 覆盖（特供 60s），不在此字段承载。
+	ExpeditedRecovery bool `json:"expedited_recovery,omitempty"`
 }
 
 // Schedule is frozen with each input version.  Changing a policy requires a

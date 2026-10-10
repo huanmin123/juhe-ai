@@ -62,7 +62,7 @@ type recordingEnqueuer struct {
 	failOn map[string]error
 }
 
-func (e *recordingEnqueuer) Enqueue(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
+func (e *recordingEnqueuer) EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
 	if err, ok := e.failOn[input.ID]; ok {
 		return err
 	}

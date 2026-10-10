@@ -117,11 +117,12 @@ flowchart LR
 > 2026-09-28 起按 [AI 问答会话账户唯一绑定设计](AI问答会话账户唯一绑定设计.md) 实施：会话绑定收敛为仅 `account` 一种模式，旧 `api_key` / `group` 模式存量会话经一次性迁移归档为只读（`archived=1`），不做原地迁移。
 
 - 创建会话免请求体：`POST /my-chat/conversations` 直接创建空会话并进入，服务端忽略任何请求体内容；进入会话后先选 AI 账户（输入区上方引导条 + 账户选择器），再选模型，才能发送。
-- 会话唯一绑定一个 AI 账户（`bindAccountId` + `bindAccountNameSnapshot`），可选范围按角色两档：普通用户可选自有或被授权的启用账户（`/my-chat/accounts` 口径），`admin` / `super_admin` 见全量启用号池。
+- 会话唯一绑定一个 AI 账户（`bindAccountId` + `bindAccountNameSnapshot`），可选范围按角色两档：普通用户可选自有账户，`admin` / `super_admin` 见全量号池；范围内全部未删除账户（含禁用、错误、限流、冷却、过期、禁调度等全部状态）均可选可绑，不设可用性过滤（2026-10-10 修订：账户被禁用时正是不稳定、需要测试的场景，绑定不再要求生效 `active`）。
 - 账户绑定可在会话内切换（`PATCH /conversations/{id}` 携带 `accountId`）：切换视为新语境，当前 `lastModel` 不在新账户可路由范围时服务端联动清空（响应 `lastModel` 为空），前端提示重选模型。
 - 鉴权与计费主体是当前用户的 `purpose = chat` 专用对话 Key，由服务端幂等确保；它只承载 Bearer 鉴权、额度和使用记录归属，不参与调度与模型作用域。专用 Key 仍禁止删除或改名。
 - 归档（存量旧模式）会话只读：发送、切换账户与工具绑定修改返回 403 `chat_conversation_archived`；标题、置顶、默认图像模型等展示字段保持可改；历史消息可读。
-- 绑定账户删除或改名后，详情回退显示名称快照；账户停用或删除时历史消息仍可读，但不能继续发送。
+- 绑定账户删除或改名后，详情回退显示名称快照；账户删除时历史消息仍可读，但不能继续发送。账户停用、限流、冷却或过期仍可正常绑定与发送测试（2026-10-10 修订：绑定与发送/模型列表不再因账户生效状态拒绝）。
+- 发送时网关侧的 chat-pinned 派发按绑定账户 ID 直取运行时快照（专用查询路径，绕过 /v1 常规候选窗的可用性窗口，含禁用、限流、冷却、过期与禁调度账户），仍只收敛到绑定账户单元素，并沿用「按启用分组解析承载分组、分组禁用/未命中时空候选回落既有『无可用账户』语义」的既有 chat 侧约束；外部 /v1 请求的共享候选窗与可用性语义保持现状（2026-10-10 修订）。
 - 旧 `bind_mode` / `bind_group_id` / `bind_group_name_snapshot` 三列已物理删除（maintenance `--migrate-chat-account-only-binding` 一次性迁移，副表 `chat_conversations_bind_legacy_backup` 全量备份，报告含 rollbackSql）。
 
 ### 5.3 模型规则
@@ -129,7 +130,7 @@ flowchart LR
 - 模型下拉数据按会话绑定账户聚合当前供应商动态模型目录，与认证 `/v1/models` 共用目录事实：按绑定账户的 provider 目录并与 `account_supported_models` 取交集。列表项只返回 `id` 和 `name`；未绑定账户的会话返回空列表（引导先选账户）。
 - 会话创建后模型选择由用户完成（账户选定后展开模型下拉按需加载 `id/name` 列表），切换模型时按 ID 读取能力；服务端不再持久化默认模型引用。
 - 模型可以逐轮切换，`chat_conversations.last_model` 用于恢复界面当前/最近选择，不锁定会话模型；切换后能力由独立模型 ID 接口按需读取。
-- 发送时由网关对模型、绑定作用域和候选账户做最终校验；Chat 模块不维护第二份长期模型缓存。
+- 发送时由网关对模型、绑定作用域和候选账户做最终校验；Chat 模块不维护第二份长期模型缓存。绑定作用域按绑定账户 ID 直取运行时快照（含非 active 账户，见 §5.2），模型限制与协议能力仍由网关最终裁决。
 - 模型已下线或当前绑定作用域不能承接时返回网关错误，不悄悄换成其他模型。
 
 ## 6. 用户体验与页面设计
@@ -153,7 +154,7 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 ### 6.2 新建会话
 
 1. 用户点击"新建对话"免弹窗直接创建空会话并进入（`POST /conversations` 免请求体）；进入后输入区上方显示「先在下方选择 AI 账户」引导条，模型选择器与发送按钮保持禁用。
-2. 账户选择器位于输入框底部（模型选择器左侧）：展开时按需读取 `/my-chat/accounts`（登录用户授权范围内的可派发账户最小 id/name/provider/status 摘要；范围按角色两档：普通用户仅见自有或被授权启用对象，`admin`/`super_admin` 见全量启用号池）；选中后 `PATCH /conversations/{id}` 携带 `accountId` 完成绑定，引导条消失、模型选择器解锁。
+2. 账户选择器位于输入框底部（模型选择器左侧）：展开时按需读取 `/my-chat/accounts`（登录用户授权范围内全部未删除账户的最小 id/name/provider/status 摘要；含全部状态与冷却/过期账户，status 为真实生效状态投影、供前端状态标注；范围按角色两档：普通用户仅见自有账户，`admin`/`super_admin` 见全量号池）；选中后 `PATCH /conversations/{id}` 携带 `accountId` 完成绑定，引导条消失、模型选择器解锁。
 3. 账户绑定后用户首次展开模型下拉时读取 `id/name` 列表，切换模型时再按 ID 读取能力；切换账户导致 `lastModel` 联动清空时提示重选模型。
 4. 空会话属于正常可删除会话，不为其引入请求路径扫描或特殊兼容逻辑。
 
@@ -278,7 +279,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Chat Completions 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段（function tools），由网关做协议适配和安全校验。
 - 用户选择 reasoning effort 时按所选协议发送对应 reasoning 参数；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
 - Chat 模块将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块；上游自行执行的内置工具只展示状态和结果，Chat 模块不重复执行、不伪造工具结果。
-- **联网搜索（`web_search` 模型工具）**：未绑定时仍注入工具定义；主模型发起调用后返回 `tool.binding_required` SSE 引导事件（含候选列表与用户提示），主轮继续；已绑定时由子代理以绑定「账号 + 模型」发起**流式**子调用（按绑定模型与账号实际协议执行，典型为 Responses + hosted `web_search`，`x-juhe-ai-purpose: chat_web_search`），过程经内容块投影通道渐进下发（见设计文档 §6.1），经网关 /v1 链固定派发绑定账户，结果与来源 URL 裁剪后回喂主模型。绑定候选 = 全部授权可派发账户 × 目录「协议 × 工具」矩阵声明 `web_search` 的 responses 可派发模型（跨账户合法，如 GPT 对话 + Grok 搜索）。
+- **联网搜索（`web_search` 模型工具）**：未绑定时仍注入工具定义；主模型发起调用后返回 `tool.binding_required` SSE 引导事件（含候选列表与用户提示），主轮继续；已绑定时由子代理以绑定「账号 + 模型」发起**流式**子调用（按绑定模型与账号实际协议执行，典型为 Responses + hosted `web_search`，`x-juhe-ai-purpose: chat_web_search`），过程经内容块投影通道渐进下发（见设计文档 §6.1），经网关 /v1 链固定派发绑定账户，结果与来源 URL 裁剪后回喂主模型。绑定候选 = 全部授权可派发账户 × 目录「协议 × 工具」矩阵声明 `web_search` 的 responses 可派发模型（跨账户合法，如 GPT 对话 + Grok 搜索；工具候选按既有「可派发」口径仍只取生效 `active` 账户，2026-10-10 会话绑定口径放开不影响工具候选口径）。
 - **图片生成（`generate_image` 模型工具）**：绑定粒度为账户，生效模型沿会话 `defaultImageModel`（枚举白名单 GPT 系 `gpt-image-2` 与 Grok 系 `grok-imagine-image` / `grok-imagine-image-quality`）；候选 = 可路由注册图像模型的 api_key 型账户。文本模型明确需要位图时调用 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败。工具循环上限见设计文档（`MaxModelRounds=4`、`MaxToolCalls=8`、`MaxImageCalls=2`）。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照。通用边界见 [AI 工具创建规范](AI工具创建规范.md)。
 - 会话详情内嵌的 `toolCapabilities`（`web_search` / `generate_image` 的 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）按候选口径聚合（见《AI 问答工具体系与主子模型设计》§8）；会话绑定候选不随主对话账户收敛（跨账户组合合法）。前端会话详情弹窗不展示该字段（2026-10-03 起「工具能力」行已移除，见 8.10）。
 - **用户级默认工具绑定（2026-10-02；2026-10-03 入口收敛）**：搜索与生图的默认绑定按登录用户服务端存储（`chat_user_tool_preferences`，跨设备生效）；新建会话由服务端以默认值初始化绑定三列与 `defaultImageModel`（失效组合沿「已失效，请重设」引导，不静默漂移）；任一会话显式保存/解绑 `searchBinding`/`imageBinding` 后服务端回写全局默认（解绑置空；best-effort 不阻断会话保存）。`GET/PATCH /my-chat/tool-preferences`（PATCH 严格键 `searchBinding`/`imageBinding`/`defaultImageModel`，候选校验同会话 PATCH，只改用户默认不触碰会话）；入口为输入框 `/` 单一命令 `/tool-defaults`（「工具模型绑定」统一弹窗：一次展示网页搜索与图像生成各一区，候选来自偏好端点响应、无前端硬编码图像模型枚举，一次 PATCH 携带全部键；保存成功后存在未归档当前会话时按 UI 最终值再 PATCH 该会话三键，使当前会话立即同步为全局值，无会话或已归档则仅全局生效）；旧「搜索默认绑定」/「生图默认绑定」双命令与会话详情工具能力入口已删除。完整契约见设计文档 §2.11/§7/§8.5-8.6/§10.6-10.7。
@@ -424,18 +425,18 @@ POST /__aisys__/api/my-chat/conversations/:id/context/compactions
 ```
 
 - 创建免请求体（服务端忽略任何请求体内容，直进空会话）；进入会话后 `PATCH /conversations/:id` 携带 `accountId` 完成账户绑定，可重复切换（切换视为新语境，`lastModel` 不可路由时联动清空）。鉴权主体由服务端幂等确保为专用对话 Key。归档（存量旧模式）会话的发送与绑定修改返回 403。
-- 账户下拉读 `/my-chat/accounts`（登录用户可用、仅启用可派发对象、返回最小 id/name/providerCode/status 摘要，仅服务会话绑定与工具绑定下拉）。下拉范围按角色两档：普通用户仅返回自有或被授权的启用对象（口径同 §5.2），`admin`/`super_admin` 返回全量启用号池；该范围与绑定校验、发送前复核、模型列表、模型能力详情与手动压缩强制同口径，越权绑定与"对象不存在"同型返回 400。下拉为空时显示空态"暂无可绑定对象"，不渲染空白列表。该端点响应带 `Cache-Control: no-store`，账户摘要不落浏览器或任何中间层缓存。
+- 账户下拉读 `/my-chat/accounts`（登录用户数据范围内全部未删除账户、返回最小 id/name/providerCode/status 摘要，仅服务会话绑定与工具绑定下拉；status 投影为生效状态表达式原值——`active` / `pending_test` / `disabled` / `error` / `rate_limited` / `temporary_unavailable` / `quality_isolated`，供前端状态标注，不设可用性过滤，2026-10-10 修订）。下拉范围按角色两档：普通用户仅返回自有账户（口径同 §5.2），`admin`/`super_admin` 返回全量号池；该范围与绑定校验、发送前复核、模型列表、模型能力详情与手动压缩强制同口径（存在性口径：数据范围内未删除，越权绑定与"对象不存在"同型返回 400）。下拉为空时显示空态"暂无可绑定对象"，不渲染空白列表。该端点响应带 `Cache-Control: no-store`，账户摘要不落浏览器或任何中间层缓存。
 - 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
 - PATCH 接受 `title`、`isPinned`、`defaultImageModel`、`accountId`（账户绑定切换）与工具绑定键 `searchBinding` / `imageBinding`（见 8.6），至少提供一个字段；标题最长 60 字符。
-- 模型列表先校验会话归属与绑定账户可用性，再按绑定账户聚合供应商：按该账户 provider 目录并与 `account_supported_models` 取交集；未绑定账户的会话返回空列表。聚合后调用客户端动态模型目录服务；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数有关，不随账户数增长。目录聚合包含未定价模型（对齐 Node `includeUnpriced` 语义，chat 面与计费解耦），不能因静态定价表缺记录把模型从 chat 模型列表过滤掉；计费事实仍由网关使用记录链路维护。
+- 模型列表先校验会话归属与绑定账户存在性（不因账户生效状态拒绝，2026-10-10 修订），再按绑定账户聚合供应商：按该账户 provider 目录并与 `account_supported_models` 取交集；未绑定账户的会话返回空列表。聚合后调用客户端动态模型目录服务；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数有关，不随账户数增长。目录聚合包含未定价模型（对齐 Node `includeUnpriced` 语义，chat 面与计费解耦），不能因静态定价表缺记录把模型从 chat 模型列表过滤掉；计费事实仍由网关使用记录链路维护。
 - 模型能力使用 `/conversations/:conversationId/models/:modelId` 按相同供应商合集从当前目录定点读取，同名模型能力取保守交集；运行路径不读取 `chat_list:*` 或 `chat_model:*` 发布快照。
 - `gateway_model_catalog_snapshots` 中的旧聊天快照属于可清理历史数据，不再是发布门禁、模型列表或能力详情的事实来源。
-- 模型列表表达稳定配置能力，不因账户临时冷却、并发占满或短时不可用而抖动；实际发送仍由网关按实时账户状态、模型限制和协议能力完成最终校验与调度。
+- 模型列表表达稳定配置能力，不因账户临时冷却、并发占满、短时不可用或生效状态（禁用/错误/限流/过期）而抖动；实际发送按绑定账户直取运行时快照（含非 active 账户，2026-10-10 修订）进入既有候选管线，模型限制与协议能力仍由网关完成最终校验与调度。
 - 前端首屏不加载模型列表；只有用户展开模型下拉时才按会话缓存轻量列表。当前模型能力按会话和模型 ID 缓存、并发去重，切换模型、切换会话或卸载页面会取消旧请求。未重新选择时优先沿用会话 `lastModel`（归档只读会话不预填模型）。
 - 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`；服务列表在模型声明 Priority/Flex 能力时显式加入可供用户手动选择的标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。思考级别和服务等级有可用能力时，页面默认选择列表第一项；切换模型后保留仍有效的用户选择，否则回落新模型第一项；能力列表为空时不显示对应下拉。
 - 同一模型 ID 可命中多个实际供应商时，思考级别和服务档位取能力交集，最大输入窗口取所有候选的最小值；任一候选缺少窗口事实时不伪造窗口。这样切号后仍不会把某个账户不支持的字段发送给上游。
 - 发送接口按最新能力摘要再次校验用户显式提交的值，不能只信前端，也不得在字段缺失时补默认值；不支持的思考/服务值返回 `422 chat_model_capability_mismatch`。
-- 手动压缩 `POST /conversations/:id/context/compactions` 先校验会话归属与绑定对象可用性（五处强制之一）；压缩 claim 受理后立即返回 `202`，payload 的 status 为 `accepted`（本次受理）或 `already_running`（已有进行中的压缩），压缩主体在后台执行、执行 context 与请求连接脱钩——客户端断开不中止已受理的压缩，完成事实以会话上下文状态与后续消息为准，不在 HTTP 响应内等待压缩完成。
+- 手动压缩 `POST /conversations/:id/context/compactions` 先校验会话归属与绑定对象存在性（五处强制之一；不因账户生效状态拒绝，同 2026-10-10 修订口径）；压缩 claim 受理后立即返回 `202`，payload 的 status 为 `accepted`（本次受理）或 `already_running`（已有进行中的压缩），压缩主体在后台执行、执行 context 与请求连接脱钩——客户端断开不中止已受理的压缩，完成事实以会话上下文状态与后续消息为准，不在 HTTP 响应内等待压缩完成。
 - DELETE 返回 `204`，不删除网关使用记录或原始审计。
 
 ### 10.3 消息列表

@@ -291,6 +291,12 @@ type ListItem struct {
 	// 列 + 最终 effectiveAvailability 状态），恒产出；管理面/用户面共用
 	// ListPage，同构生效。
 	AvailabilityPresentation *AccountAvailabilityPresentation `json:"availabilityPresentation,omitempty"`
+	// 特供快速恢复（AI账户特供快速恢复通道设计 §8.2/§9）：行属性标记（授权
+	// 实例行取自身行值，来源特供不传染）+ 归属名下"已超限"展示位（归属上限
+	// COALESCE(limit,3) < 归属名下当前特供计数，上限下调不回溯时对管理员与
+	// 归属人都可见）。两字段恒输出，非 omitempty。
+	ExpeditedRecoveryEnabled bool `json:"expeditedRecoveryEnabled"`
+	ExpeditedOverLimit       bool `json:"expeditedOverLimit"`
 	LockStatePublic
 }
 
@@ -399,6 +405,38 @@ func (s *Store) hydrateBalanceSnapshots(ctx context.Context, items []ListItem) {
 	}
 }
 
+// hydrateExpeditedOverLimit overlays the per-owner expedited "已超限" display
+// bit（设计 §8.2/§9）：归属上限 COALESCE(expedited_account_limit, 3) 小于归属
+// 名下当前特供计数（软删不计、不过滤 status）时为 true——管理员下调上限造成
+// 的存量超限对管理员与归属人都可见，不静默。计数一条按 system_account_id
+// GROUP BY 的聚合 + 上限映射，经 expeditedOwnerUsage 批量完成。
+func (s *Store) hydrateExpeditedOverLimit(ctx context.Context, items []ListItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ownerIDs := []string{}
+	seen := map[string]bool{}
+	for _, item := range items {
+		if item.OwnerSystemAccountID == "" || seen[item.OwnerSystemAccountID] {
+			continue
+		}
+		seen[item.OwnerSystemAccountID] = true
+		ownerIDs = append(ownerIDs, item.OwnerSystemAccountID)
+	}
+	counts, limits, err := s.expeditedOwnerUsage(ctx, s.db, ownerIDs)
+	if err != nil {
+		return err
+	}
+	for index := range items {
+		limit, ok := limits[items[index].OwnerSystemAccountID]
+		if !ok {
+			limit = defaultExpeditedAccountLimit
+		}
+		items[index].ExpeditedOverLimit = counts[items[index].OwnerSystemAccountID] > limit
+	}
+	return nil
+}
+
 // listRow is the shared scan target for the management list rows.
 type listRow struct {
 	id                        string
@@ -478,6 +516,8 @@ type listRow struct {
 	// （0/1），next_refresh_at 可空。
 	balanceQueryEnabled       int
 	balanceQueryNextRefreshAt sql.NullString
+	// 特供快速恢复行值（设计 §8.2）：授权实例行同样取自身行值。
+	expeditedRecoveryEnabled int
 }
 
 func listItemColumns(alias string) []string {
@@ -559,6 +599,8 @@ func listItemColumns(alias string) []string {
 		// 的 balance_query_enabled / balance_query_next_refresh_at 选取）。
 		alias + ".balance_query_enabled",
 		alias + ".balance_query_next_refresh_at",
+		// 特供快速恢复行值（设计 §8.2）。
+		alias + ".expedited_recovery_enabled",
 	}
 }
 
@@ -647,6 +689,7 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.boundGroupLocalPriority, &row.boundGroupLocalSuperPriorityEnabled,
 		&row.boundGroupLocalFallbackEnabled,
 		&row.balanceQueryEnabled, &row.balanceQueryNextRefreshAt,
+		&row.expeditedRecoveryEnabled,
 	)
 	return row, err
 }
@@ -834,6 +877,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		items = append(items, item)
 		ids = append(ids, row.id)
 	}
+	// 特供"已超限"展示位（设计 §8.2/§9）：按归属人上限与当前特供计数派生，
+	// 对管理员与归属人都输出；读取失败随页面失败，不静默降级为 false。
+	if err := s.hydrateExpeditedOverLimit(ctx, items); err != nil {
+		return nil, err
+	}
 	if err := s.hydrateTags(ctx, items, ids); err != nil {
 		return nil, err
 	}
@@ -995,6 +1043,10 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 	item.ClientCompatibility = clientCompatibility
 	item.AccountAuthorizationID = nullPtrString(row.authorizationID)
 	item.AuthorizationInstanceSourceAccountID = nullPtrString(row.sourceAccountID)
+	// 特供行值（设计 §8.2）：恒取本行 accounts.expedited_recovery_enabled——
+	// 授权实例的特供打在实例自己的行上，来源特供不传染实例（§4 授权实例边界），
+	// authorized 分支的来源替换不适用于该字段。
+	item.ExpeditedRecoveryEnabled = row.expeditedRecoveryEnabled == 1
 	if access.CanAccessAll() {
 		id := row.systemAccountID
 		item.SystemAccountID = &id

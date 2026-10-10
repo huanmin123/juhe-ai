@@ -27,7 +27,9 @@ type ChatBindScope struct {
 }
 
 // ChatAccountLookup resolves the conversation's bound account object（数据范围
-// 内存在且启用 + 名称/provider 事实 + 启用分组绑定). Port satisfied at the
+// 内存在性 + 名称/provider 事实 + 启用分组绑定的只读查询）。数据范围按
+// ChatBindScope 收敛，不因账户生效状态拒绝（AI 问答设计 §5.2 2026-10-10 修订：
+// 禁用/错误/限流/冷却/过期账户均可绑定与发送测试）。Port satisfied at the
 // composition root by the accounts store; nil disables binding validation with
 // an explicit error.
 type ChatAccountLookup interface {
@@ -35,8 +37,9 @@ type ChatAccountLookup interface {
 }
 
 // ChatAccountOption 是 GET /my-chat/accounts 的最小投影：用户授权范围内全部
-// 可派发账户的 id/名称/供应商/生效状态，供会话绑定与（后续阶段的）工具绑定
-// 统一使用；不含归属、授权状态等管理面字段。
+// 未删除账户的 id/名称/供应商/生效状态（不设可用性过滤，status 为生效状态
+// 表达式原值，供前端状态标注），供会话绑定与（后续阶段的）工具绑定统一使用；
+// 不含归属、授权状态等管理面字段。
 type ChatAccountOption struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -44,18 +47,20 @@ type ChatAccountOption struct {
 	Status       string `json:"status"`
 }
 
-// ChatAccountOptionsLookup 列出用户授权范围内全部可派发账户（口径与
-// FindChatAccount 一致：数据范围内未删、非授权实例戳行、生效状态 active）。
-// ctx 供实现复用带 context 的查询。Port satisfied at the composition root by
-// the accounts store; nil 让 /my-chat/accounts 返回显式错误。
+// ChatAccountOptionsLookup 列出用户授权范围内全部未删除账户（口径与
+// FindChatAccount 一致：数据范围内未删、非授权实例戳行，不设可用性过滤，
+// status 投影为生效状态原值）。ctx 供实现复用带 context 的查询。Port
+// satisfied at the composition root by the accounts store; nil 让
+// /my-chat/accounts 返回显式错误。
 type ChatAccountOptionsLookup interface {
 	ListChatAccountOptions(ctx context.Context, scope ChatBindScope) ([]ChatAccountOption, error)
 }
 
 // ChatAccountRef is the read-only account view the binding relies on.
-// Enabled follows the /accounts/options 启用口径（effective status active，
-// 与管理面账户下拉一致）；EnabledGroupIDs 是该账户 enabled=1 的分组绑定，
-// 供模型作用域复用运行时账户快照。
+// Enabled 沿用生效状态 active 口径（ownerEffectiveStatusSQL = 'active'），
+// 仅工具绑定候选计算消费（tool_bindings 的候选仍按可派发口径过滤）；会话
+// 绑定与发送/模型列表不消费该字段（2026-10-10 修订）。EnabledGroupIDs 是该
+// 账户 enabled=1 的分组绑定，供模型作用域复用 pinned 直取收敛。
 type ChatAccountRef struct {
 	ID              string
 	Name            string
@@ -132,18 +137,6 @@ func (rt *chatRoutes) requireOwnedApiKey(apiKeyID, ownerID string) (*ChatAPIKeyR
 	return key, nil
 }
 
-// accountsForGroups mirrors the account snapshot fan-out.
-func (rt *chatRoutes) accountsForGroups(groupIDs []string, systemAccountID, requestedModel, endpointFamily string) []ChatTransportAccount {
-	if rt.deps.ModelCatalog == nil {
-		return []ChatTransportAccount{}
-	}
-	accounts := []ChatTransportAccount{}
-	for _, groupID := range uniqueStrings(groupIDs) {
-		accounts = append(accounts, rt.deps.ModelCatalog.ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily)...)
-	}
-	return accounts
-}
-
 func normalizeProviderToken(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	if normalized == "" {
@@ -152,11 +145,12 @@ func normalizeProviderToken(value string) string {
 	return normalized
 }
 
-// resolveChatBindingScope 校验会话归属下的绑定账户可用性并解析模型作用域
-// （仅 account 单一路径）：绑定对象须在请求者数据范围（ChatBindScope）内存
-// 在且启用——范围外与不存在同型 (nil, nil)，沿用既有 400 文案。未选账户由
-// 调用方预检（发送 400 chat_account_required、模型列表空列表），此处按可恢
-// 复输入错误返回同一引导文案兜底。
+// resolveChatBindingScope 校验会话归属下的绑定账户存在性并解析模型作用域
+// （仅 account 单一路径）：绑定对象须在请求者数据范围（ChatBindScope）内
+// 存在——范围外与不存在同型 (nil, nil)，沿用既有 400 文案；不因账户生效
+// 状态拒绝（2026-10-10 修订：禁用/限流/冷却/过期账户均可发送测试）。未选
+// 账户由调用方预检（发送 400 chat_account_required、模型列表空列表），此处
+// 按可恢复输入错误返回同一引导文案兜底。
 func (rt *chatRoutes) resolveChatBindingScope(conversation *Conversation, bindScope ChatBindScope) (*chatBindingScope, error) {
 	ownerID := bindScope.ViewerID
 	accountID := derefString(conversation.BindAccountID)
@@ -173,9 +167,6 @@ func (rt *chatRoutes) resolveChatBindingScope(conversation *Conversation, bindSc
 	if ref == nil {
 		return nil, &invalidRequestError{Message: "会话绑定的账户不存在或已删除"}
 	}
-	if !ref.Enabled {
-		return nil, &invalidRequestError{Message: "会话绑定的账户已停用"}
-	}
 	return &chatBindingScope{accounts: rt.convergeChatAccountScope(ref, ownerID)}, nil
 }
 
@@ -187,15 +178,17 @@ const chatAccountRequiredMessage = "请先选择会话绑定的 AI 账户，再�
 // （设计 §8）。
 const chatConversationArchivedMessage = "该会话绑定方式已升级，请新建会话"
 
-// convergeChatAccountScope 从运行时账户快照收敛绑定账户的传输视图：遍历该
-// 账户 enabled 分组绑定的快照列表并按 ID 收敛为单元素；账户不在任何启用
-// 分组快照中时为空作用域（模型列表返回空列表）。
+// convergeChatAccountScope 从运行时账户快照收敛绑定账户的传输视图：按账户
+// enabled 分组绑定逐组 pinned 直取（含非 active/冷却/过期账户，绕过可用性
+// 窗口，AI 问答设计 §5.2 2026-10-10 修订），第一命中组即收敛为单元素；账户
+// 不在任何启用分组（或分组禁用/不存在）时为空作用域（模型列表返回空列表）。
 func (rt *chatRoutes) convergeChatAccountScope(ref *ChatAccountRef, systemAccountID string) []ChatTransportAccount {
+	if rt.deps.ModelCatalog == nil {
+		return []ChatTransportAccount{}
+	}
 	for _, groupID := range uniqueStrings(ref.EnabledGroupIDs) {
-		for _, account := range rt.accountsForGroups([]string{groupID}, systemAccountID, "", "") {
-			if account.ID == ref.ID {
-				return []ChatTransportAccount{account}
-			}
+		if accounts := rt.deps.ModelCatalog.ListChatPinnedAccountsForGroup(groupID, systemAccountID, ref.ID); len(accounts) > 0 {
+			return accounts
 		}
 	}
 	return []ChatTransportAccount{}

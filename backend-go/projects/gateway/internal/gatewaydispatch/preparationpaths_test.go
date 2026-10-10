@@ -152,8 +152,32 @@ func TestPrepareDispatchAccountsWithAppliedOrderings(t *testing.T) {
 	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
 		t.Fatalf("outcome = %s", result.Outcome)
 	}
-	if !result.CodexTurnAccountAvoidanceApplied || len(result.CodexTurnAvoidedAccountIDs) != 1 {
-		t.Fatalf("codex turn 规避标记 = %v %v", result.CodexTurnAccountAvoidanceApplied, result.CodexTurnAvoidedAccountIDs)
+	// 通用调度排除集（设计 5.1）：来源避让阈值达成且排除集非空时固化。
+	if result.SchedulingExclusions == nil {
+		t.Fatal("来源避让阈值达成时必须固化排除集")
+	}
+	if len(result.SchedulingExclusions.ExcludedAccountIDs) != 1 || result.SchedulingExclusions.ExcludedAccountIDs[0] != "a-2" {
+		t.Fatalf("排除集 = %v", result.SchedulingExclusions.ExcludedAccountIDs)
+	}
+	// 分派段元数据（设计 5.1）：ready 结果必须携带连续分派段，段内候选拼接
+	// 与最终顺序一致、OpaqueSegmentID 逐段唯一。
+	if len(result.DispatchSegments) == 0 {
+		t.Fatal("ready 结果必须携带分派段元数据")
+	}
+	seenSegmentIDs := map[string]struct{}{}
+	concatenated := make([]string, 0, len(result.Accounts))
+	for _, segment := range result.DispatchSegments {
+		if segment.OpaqueSegmentID == "" {
+			t.Fatal("段必须携带 OpaqueSegmentID")
+		}
+		if _, dup := seenSegmentIDs[segment.OpaqueSegmentID]; dup {
+			t.Fatalf("OpaqueSegmentID 重复: %s", segment.OpaqueSegmentID)
+		}
+		seenSegmentIDs[segment.OpaqueSegmentID] = struct{}{}
+		concatenated = append(concatenated, accountIDs(segment.Accounts)...)
+	}
+	if strings.Join(concatenated, ",") != strings.Join(accountIDs(result.Accounts), ",") {
+		t.Fatalf("段内候选拼接必须等于最终顺序: %v vs %v", concatenated, accountIDs(result.Accounts))
 	}
 }
 

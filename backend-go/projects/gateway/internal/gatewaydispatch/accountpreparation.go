@@ -9,7 +9,10 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
+	// 历史清理消费面（清理 hook 读取、已处理标记检查、清理选项类型）经
+	// 包内桥别名文件承载（调度内核通用化批次 3b：审计门五文件该叶子包
+	// 前缀模式清零）；适配器错误已改经 UpstreamAdapterContractError 接口
+	// 消费，不再引用具名错误类型。
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -449,8 +452,12 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 			return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, err)
 		}
 	}
-	if !e.defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, account, requestClientCompatibility) {
-		e.sanitizeCodexResponsesHistoryForAccount(req, account, requestClientCompatibility)
+	// 历史准备策略在准备链入口由纯函数计算一次（调度内核通用化批次 3b，
+	// HistoryPrepPolicyForRequest）；计算位置与改造前 defer 判定的读取点一致
+	//（bridge 准备之后、Front 之前），endpoint family 为请求行纯函数。
+	historyPrepPolicy := HistoryPrepPolicyForRequest(account, requestClientCompatibility, GatewayRequestEndpointFamily(req))
+	if historyPrepPolicy.Front == HistoryPrepStageSanitizeInline {
+		e.sanitizeCodexResponsesHistoryForAccount(req, account, historyPrepPolicy)
 	}
 	parts, err := e.Driver.BuildGatewayUpstreamRequestParts(ctx, req, account, UsageIdentity{
 		SystemAccountID: usageContext.SystemAccountID,
@@ -460,7 +467,7 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 	if err != nil {
 		return PreparedRequestParts{}, e.wrapCodexPreparationError(ctx, req, usageContext, account, convertBridgeGuidanceError(err))
 	}
-	body := e.SanitizePreparedCodexResponsesHistoryForAccount(req, account, parts.Body, requestClientCompatibility)
+	body := e.SanitizePreparedCodexResponsesHistoryForAccount(account, parts.Body, historyPrepPolicy)
 	metadata := PreparedUpstreamBodyMetadata(req, body)
 	parts.Body = body
 	parts.EffectiveServiceTier = "default"
@@ -492,8 +499,8 @@ func convertBridgeGuidanceError(err error) error {
 	}
 }
 
-// wrapCodexPreparationError mirrors the OpenAIOAuthCodexAdapterError branch
-// of buildPreparedUpstreamRequestParts's catch.
+// wrapCodexPreparationError mirrors the upstream adapter contract error branch
+// (UpstreamAdapterContractError) of buildPreparedUpstreamRequestParts's catch.
 func (e *Engine) wrapCodexPreparationError(
 	ctx context.Context,
 	req *gatewaypreauth.GatewayRequest,
@@ -501,15 +508,15 @@ func (e *Engine) wrapCodexPreparationError(
 	account AccountCandidate,
 	err error,
 ) error {
-	var adapterErr *OpenAIOAuthCodexAdapterError
+	var adapterErr UpstreamAdapterContractError
 	if !errors.As(err, &adapterErr) {
 		return err
 	}
 	responseBody := map[string]any{
 		"error": map[string]any{
-			"message": adapterErr.Message,
-			"type":    adapterErr.Type,
-			"code":    adapterErr.Code,
+			"message": adapterErr.AdapterMessage(),
+			"type":    adapterErr.AdapterErrorType(),
+			"code":    adapterErr.AdapterErrorCode(),
 		},
 	}
 	serialized, marshalErr := json.Marshal(responseBody)
@@ -524,37 +531,25 @@ func (e *Engine) wrapCodexPreparationError(
 		_ = e.Usage.RecordFailedUpstreamAttempt(ctx, req, usageContext, account, FailedAttemptRecord{
 			UpstreamURL:   upstreamURL,
 			StartedAt:     gatewayupstream.NowMs(),
-			StatusCode:    adapterErr.StatusCode,
+			StatusCode:    adapterErr.AdapterStatusCode(),
 			HasStatusCode: true,
 			BodyText:      string(serialized),
-			ErrorMessage:  adapterErr.Message,
+			ErrorMessage:  adapterErr.AdapterMessage(),
 		})
 	}
 	return err
 }
 
-func (e *Engine) defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(
-	req *gatewaypreauth.GatewayRequest,
-	account AccountCandidate,
-	requestClientCompatibility string,
-) bool {
-	return account.Type == "oauth" &&
-		IsGptVendorCode(account.ProviderCode) &&
-		isOpenAIProtocolProfileWith(account.ProtocolCode, account.ProtocolVersion) &&
-		account.ProviderProtocolProfileID == GPTOpenAIV1ProfileID &&
-		requestClientCompatibility == "codex_responses" &&
-		GatewayRequestEndpointFamily(req) == "responses"
-}
-
+// sanitizeCodexResponsesHistoryForAccount 是历史准备策略的 Front 阶段执行体
+// （sanitize_inline）：仅由 BuildPreparedUpstreamRequestParts 在
+// policy.Front == sanitize_inline 时调用，阶段判定（compat/endpoint family/
+// 账户形态）由 HistoryPrepPolicyForRequest 承载，本函数只执行清理动作。
 func (e *Engine) sanitizeCodexResponsesHistoryForAccount(
 	req *gatewaypreauth.GatewayRequest,
 	account AccountCandidate,
-	requestClientCompatibility string,
+	policy HistoryPrepPolicy,
 ) {
-	if requestClientCompatibility != "codex_responses" {
-		return
-	}
-	if GatewayRequestEndpointFamily(req) != "responses" {
+	if policy.Front != HistoryPrepStageSanitizeInline {
 		return
 	}
 	body, ok := gatewaybodyJSONObject(req)
@@ -565,14 +560,14 @@ func (e *Engine) sanitizeCodexResponsesHistoryForAccount(
 	if !ok {
 		return
 	}
-	if gatewayoauthcodex.SanitizeCodexHistory == nil {
-		return
-	}
-	result := gatewayoauthcodex.SanitizeCodexHistory(items, SanitizeCodexHistoryOptions{
+	result, ok := sanitizeCodexHistoryHookIfSet(items, SanitizeCodexHistoryOptions{
 		Store:                  false,
 		TargetScopeKey:         "account:" + account.ID,
 		TargetPersistenceScope: "none",
 	})
+	if !ok {
+		return
+	}
 	if !result.Changed {
 		return
 	}
@@ -585,23 +580,20 @@ func (e *Engine) sanitizeCodexResponsesHistoryForAccount(
 }
 
 // SanitizePreparedCodexResponsesHistoryForAccount mirrors
-// sanitizePreparedCodexResponsesHistoryForAccount.
+// sanitizePreparedCodexResponsesHistoryForAccount；历史准备策略的 Post 阶段
+// 执行体（sanitize），阶段判定与已处理标记去重由 policy 承载。
 func (e *Engine) SanitizePreparedCodexResponsesHistoryForAccount(
-	req *gatewaypreauth.GatewayRequest,
 	account AccountCandidate,
 	body []byte,
-	requestClientCompatibility string,
+	policy HistoryPrepPolicy,
 ) []byte {
 	if body == nil {
 		return nil
 	}
-	if requestClientCompatibility != "codex_responses" {
+	if policy.Post != HistoryPrepStageSanitize {
 		return body
 	}
-	if GatewayRequestEndpointFamily(req) != "responses" {
-		return body
-	}
-	if IsGatewayCodexHistorySanitized(body) {
+	if policy.SkipIfProcessed && IsGatewayCodexHistorySanitized(body) {
 		return body
 	}
 	parsed, ok := decodeJSONObject(body)
@@ -612,14 +604,14 @@ func (e *Engine) SanitizePreparedCodexResponsesHistoryForAccount(
 	if !ok {
 		return body
 	}
-	if gatewayoauthcodex.SanitizeCodexHistory == nil {
-		return body
-	}
-	result := gatewayoauthcodex.SanitizeCodexHistory(items, SanitizeCodexHistoryOptions{
+	result, ok := sanitizeCodexHistoryHookIfSet(items, SanitizeCodexHistoryOptions{
 		Store:                  false,
 		TargetScopeKey:         "account:" + account.ID,
 		TargetPersistenceScope: "none",
 	})
+	if !ok {
+		return body
+	}
 	if !result.Changed {
 		return body
 	}

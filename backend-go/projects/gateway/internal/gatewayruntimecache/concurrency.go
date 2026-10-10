@@ -67,6 +67,15 @@ func (s *Service) isCatalogGenerationCurrent(generation int64) bool {
 // load and catalog load. It is a determinism seam for tests and graceful
 // shutdown; production callers use the fire-and-forget semantics unchanged.
 func (s *Service) AwaitBackgroundWork(ctx context.Context) error {
+	// 锁序契约（union.go / service.go 注释）：先 unionPublicationMu 后 s.mu，
+	// 不得反向。这里先在专用锁下快照 union 装载并释放，再取 s.mu 快照其余
+	// pending，避免持 s.mu 期间嵌套获取 unionPublicationMu。
+	s.unionPublicationMu.Lock()
+	unions := make([]*unionLoad, 0, 4)
+	for _, load := range s.pendingUnionLoads {
+		unions = append(unions, load)
+	}
+	s.unionPublicationMu.Unlock()
 	s.mu.Lock()
 	calls := make([]*refreshCall, 0, 8)
 	for _, call := range s.pendingGroupRefreshes {
@@ -107,7 +116,21 @@ func (s *Service) AwaitBackgroundWork(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	for _, load := range unions {
+		select {
+		case <-load.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
+}
+
+// pendingUnionLoadCount reports the union singleflight load registrations.
+func (s *Service) pendingUnionLoadCount() int {
+	s.unionPublicationMu.Lock()
+	defer s.unionPublicationMu.Unlock()
+	return len(s.pendingUnionLoads)
 }
 
 // pendingRuntimeLoadCount reports the singleflight load registrations.

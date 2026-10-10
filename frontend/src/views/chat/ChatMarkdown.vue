@@ -118,9 +118,18 @@ const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTex
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed']
 }))
 
+// 流式输出会整体重建 v-html DOM：旧 <pre> 销毁、新 <pre> scrollTop 归零，
+// 滚动位置必须在 DOM 更新之前的 pre 阶段捕获；post 阶段读到的已是重建后的新节点，
+// 此时捕获只能得到 top:0 / pinned:false，「贴底跟随 / 上滑保持」会整体失效。
+let pendingCodeScrollStates: ChatCodeScrollState[] = []
+watch(html, () => {
+  pendingCodeScrollStates = captureChatCodeScrollStates()
+}, { flush: 'pre' })
+
 watch(html, async () => {
   const version = ++renderVersion
-  const scrollStates = captureChatCodeScrollStates()
+  const scrollStates = pendingCodeScrollStates
+  pendingCodeScrollStates = []
   await nextTick()
   if (version !== renderVersion || !root.value) return
   restoreChatCodeScrollStates(scrollStates)

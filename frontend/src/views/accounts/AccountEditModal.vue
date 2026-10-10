@@ -341,6 +341,11 @@
                         />
                       </section>
 
+                      <div v-if="expeditedRecoveryNote" class="expedited-recovery-note">
+                        <span>{{ expeditedRecoveryNote }}</span>
+                        <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
+                      </div>
+
                       <section class="form-section">
                         <div class="form-section-title">账户锁死</div>
                         <div v-if="lockRuntimeStateText" class="lock-runtime-state">
@@ -522,6 +527,11 @@
                         un-checked-children="关闭"
                       />
                     </section>
+
+                    <div v-if="expeditedRecoveryNote" class="expedited-recovery-note">
+                      <span>{{ expeditedRecoveryNote }}</span>
+                      <small>特供启停请在列表操作菜单执行；不改变 /v1 请求调度。</small>
+                    </div>
 
                     <section class="form-section">
                       <div class="form-section-title">账户锁死</div>
@@ -736,6 +746,12 @@ const lockRuntimeStateText = computed(() => {
   if (lockState === 'ENGAGED') return '锁死坚持中（失败窗口内不切换账户）'
   if (lockState === 'DEAD_CONFIRMED') return '锁死待恢复（判死结算后等待探针恢复）'
   return undefined
+})
+
+// 特供恢复只读摘要：来自高级详情投影，不进入任何保存 payload；只表达恢复道加速节奏。
+const expeditedRecoveryNote = computed(() => {
+  if (props.accountAdvancedDetail?.expeditedRecoveryEnabled !== true) return undefined
+  return '特供恢复：中性封顶基准 1 分钟，实际 30–90 秒'
 })
 
 const sourceAccountStatusText = computed(() => {
@@ -1406,6 +1422,24 @@ const emit = defineEmits<{
 }
 
 .lock-runtime-state small {
+  color: var(--juhe-muted);
+  font-size: 12px;
+}
+
+.expedited-recovery-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--juhe-border);
+  border-radius: 6px;
+  background: var(--juhe-soft);
+  color: var(--juhe-fg-soft);
+  font-size: 12px;
+}
+
+.expedited-recovery-note small {
   color: var(--juhe-muted);
   font-size: 12px;
 }

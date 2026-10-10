@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -408,26 +407,9 @@ func TestW13CHeartbeatLoopArms2(t *testing.T) {
 
 // ---- codexcontract / precommit / streamresult 散点 ----
 
-func TestW13CCompactionRequestPathArms(t *testing.T) {
-	scanned := &gatewaybody.BodyState{JSONParseStatus: gatewaybody.JSONParseStatusScannedJSON}
-	if requestPathHasCompactionTrigger("/v1/responses", scanned, []byte(`{"type":"compaction_trigger"}`)) {
-		t.Fatal("scanned JSON state must skip the raw scan")
-	}
-	compacted := &gatewaybody.BodyState{CodexCompactionTrigger: true}
-	if !requestPathHasCompactionTrigger("/v1/responses", compacted, nil) {
-		t.Fatal("compaction state must short-circuit true")
-	}
-	// jsonValue 数组截断与 map 广度截断。
-	array := make([]any, 600)
-	array[499] = map[string]any{"type": "compaction_trigger"}
-	if !jsonValueHasCompactionTrigger(array, 0) {
-		t.Fatal("trigger within the scan limit must be found")
-	}
-	wide := map[string]any{"type": "other"}
-	if jsonValueHasCompactionTrigger(wide, 0) {
-		t.Fatal("non-trigger object must be false")
-	}
-}
+// 请求侧压缩触发判定辅助（requestPathHasCompactionTrigger 等）已随批次 2 遗留
+// 清理从 codexcontract.go 删除（唯一实现 gatewaycodex.CodexCompactionExpected
+// ForRequest，截断边界由 gatewaycodex 包测试锁定）；原直驱用例一并移除。
 
 func TestW13CPreCommitBufferPushArms(t *testing.T) {
 	state := NewPreCommitBufferState(true)

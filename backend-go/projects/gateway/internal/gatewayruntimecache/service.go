@@ -50,6 +50,10 @@ const (
 	responseInspectionPolicyCacheName = "gateway:response-inspection-policies"
 	runtimeCacheName                  = "gateway:runtime"
 	runtimeAPIKeyIdentityCacheName    = "gateway:runtime-api-key-identity"
+	// groupModelUnionCacheName 是分组模型并集缓存的桶名前缀（网关模型列表账
+	// 户并集设计 §6.3）：共享桶名 = 该前缀 + ":" + 启动 token + ":" + generation，
+	// 桶内键为业务键。
+	groupModelUnionCacheName = "gateway:group-model-union"
 )
 
 // Provider model catalog invalidation reasons mirror
@@ -103,12 +107,16 @@ type ConcurrencySource interface {
 
 // OpenAIAccountsForGroupOptions mirrors the loader options the Node cache
 // forwards (requestedModel / requestedEndpointFamily / includeUnavailable /
-// preResolvedGroupAccess).
+// preResolvedGroupAccess)。ChatPinnedAccountID 是 AI 问答 chat-pinned 派发的
+// 专用直取选项（AI 问答设计 §5.2 2026-10-10 修订）：非空时 loader 按账户 ID
+// 直取该账户（含非 active/冷却/过期/禁调度账户，绕过共享候选窗可用性窗口），
+// 仅收敛到该账户单元素；零值空串保持 /v1 常规候选窗语义不变。
 type OpenAIAccountsForGroupOptions struct {
 	RequestedModel          string
 	RequestedEndpointFamily string
 	IncludeUnavailable      bool
 	PreResolvedGroupAccess  *GroupUsageAccessMetadata
+	ChatPinnedAccountID     string
 }
 
 // ModelCatalogListOptions mirrors ModelCatalogListOptions.
@@ -184,6 +192,10 @@ type Options struct {
 	// ClearSettingsCache mirrors clearSettingsRepositoryCache: invoked when a
 	// settings invalidation also clears the settings repository cache.
 	ClearSettingsCache func()
+	// Union 是分组模型并集的装载端口（网关模型列表账户并集设计 §6.3/§6.4，
+	// 数据面为聚合 SQL + 授权门 + 映射有效性过滤）。nil 合法：读取返回
+	// ErrGroupModelUnionLoaderUnavailable。
+	Union GroupModelUnionLoader
 }
 
 // Service is the Go gateway runtime read-only cache. All exported methods
@@ -193,6 +205,8 @@ type Service struct {
 	opts   Options
 	clock  Clock
 	logger Logger
+	// unionLoader 是分组模型并集的数据面装载端口；nil 合法（读取报错）。
+	unionLoader GroupModelUnionLoader
 
 	sharedSettings   SharedCache
 	sharedGroup      SharedCache
@@ -226,6 +240,17 @@ type Service struct {
 	// background refresh per cache key (same primitive as the group/inspect
 	// refreshes).
 	pendingAccountRefreshes map[string]*refreshCall
+
+	// 分组模型并集缓存状态（网关模型列表账户并集设计 §6.3）。unionPublicationMu
+	// 是专用发布锁：本地发布的代号复核与写入、失效的代号推进与本地/pending 清空
+	// 必须在同一临界区串行（目录缓存“检查与写入分两次加锁”的窗口不得复现）。
+	// 锁序固定 unionPublicationMu 先、其他锁后，且任何锁内不做 Redis I/O；
+	// processStartToken 每次进程启动唯一，使重启后的旧 Redis 键不可达。
+	unionPublicationMu sync.Mutex
+	unionGeneration    uint64
+	processStartToken  string
+	unionCache         *entryCache[string, GroupModelUnionEntry]
+	pendingUnionLoads  map[string]*unionLoad
 
 	sharedFailureMu       sync.Mutex
 	sharedFailureLoggedAt map[string]time.Time
@@ -287,10 +312,11 @@ func New(models ReadModels, opts Options) (*Service, error) {
 	enabled := opts.Shared == nil
 	updateAge := opts.UpdateAgeOnGet
 	s := &Service{
-		models: models,
-		opts:   opts,
-		clock:  clock,
-		logger: opts.Logger,
+		models:      models,
+		opts:        opts,
+		clock:       clock,
+		logger:      opts.Logger,
+		unionLoader: opts.Union,
 
 		runtimeCache:  newEntryCache[string, gatewayRuntimeCacheEntry](runtimeCacheName, cacheMaxEntries, gatewayRuntimeRetainTTL, updateAge, true, clock, nil, nil),
 		settingsCache: newEntryCache[string, GatewaySettings](settingsCacheName, 1, gatewaySettingsTTL, false, enabled, clock, nil, nil),
@@ -299,6 +325,10 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		catalogCache:  newEntryCache[string, []ProviderModelCatalogItem](providerModelCatalogCacheName, 1000, providerModelCatalogTTL, false, enabled, clock, nil, nil),
 		routeIdxCache: newEntryCache[string, providerModelRouteIndexCacheEntry](providerModelRouteIndexCacheName, 1000, providerModelCatalogTTL, false, enabled, clock, nil, nil),
 		inspectCache:  newEntryCache[string, responseInspectionPolicyCacheEntry](responseInspectionPolicyCacheName, 100, responseInspectionPolicyRetainTTL, false, enabled, clock, nil, nil),
+		// 分组模型并集缓存：本地层在 memory/redis 两种模式都启用——载荷只有模
+		// 型名与有效期（无凭据），设计 §6.3 要求共享命中回填进程内、发布写入进
+		// 程内与 Redis 两层。
+		unionCache: newEntryCache[string, GroupModelUnionEntry](groupModelUnionCacheName, 1000, GroupModelUnionBaseTTL, false, true, clock, nil, nil),
 
 		keysByAPIKeyID:          map[string]map[string]struct{}{},
 		pendingRuntimeLoads:     map[string]*runtimeLoad{},
@@ -306,6 +336,8 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		pendingCatalogLoads:     map[string]*catalogLoad{},
 		pendingInspectRefreshes: map[string]*refreshCall{},
 		pendingAccountRefreshes: map[string]*refreshCall{},
+		pendingUnionLoads:       map[string]*unionLoad{},
+		processStartToken:       newProcessStartToken(),
 		sharedFailureLoggedAt:   map[string]time.Time{},
 		lastSeenVer:             map[string]int64{},
 	}

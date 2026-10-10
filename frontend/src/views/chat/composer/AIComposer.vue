@@ -143,6 +143,7 @@ import type { Editor, JSONContent } from '@tiptap/core'
 import { chatApi, chatAssetContentUrl, type ChatAccountOption } from '@/api/domains/chat'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { statusText } from '@/views/accounts/accountFormatters'
 import { composerDocumentToBlocks, composerTextToDocument, type ChatInputBlock } from './chatComposerDocument'
 import { createChatComposerSubmission } from './chatComposerSubmission'
 import { ChatImageAttachment } from './ChatImageAttachment'
@@ -351,8 +352,13 @@ function filterSelectOptionByLabel(input: string, option: { label?: unknown }): 
   if (!query) return true
   return String(option.label ?? '').toLowerCase().includes(query)
 }
-const accountSelectOptions = computed(() => props.accountOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
-const accountControlWidths = computed(() => chatComposerControlWidths('account', props.accountOptions.find((item) => item.id === props.accountValue)?.name, accountSelectOptions.value.map((item) => item.label)))
+// 账户下拉标注真实状态：仅非 active 账户在名称后附加中文状态名，放开状态限制后用户可区分可调度与不可调度账户。
+const accountSelectOptions = computed(() => props.accountOptions.map((item) => {
+  const label = item.status === 'active' ? item.name : `${item.name}（${statusText(item.status)}）`
+  return { label, value: item.id, title: label }
+}))
+// 触发器宽度必须按选中项实际展示文本计算，否则选中带状态后缀的账户时后缀会被截断。
+const accountControlWidths = computed(() => chatComposerControlWidths('account', accountSelectOptions.value.find((item) => item.value === props.accountValue)?.label, accountSelectOptions.value.map((item) => item.label)))
 const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
 const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => {
   const label = `思考 ${reasoningEffortLabel(value)}`

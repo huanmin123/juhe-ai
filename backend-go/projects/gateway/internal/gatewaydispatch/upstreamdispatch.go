@@ -142,9 +142,19 @@ func (s *UpstreamResponseModelSlot) Bind(consumer func(model string)) {
 
 // RequestCoordinationContext mirrors GatewayUpstreamRequestCoordinationContext.
 type RequestCoordinationContext struct {
-	Scope                          string // 'gateway_request'
-	Reason                         string
-	TimeoutPolicy                  string // 'codex_compaction_unbounded' | ''
+	Scope  string // 'gateway_request'
+	Reason string
+	// TimeoutsDisabled 是链面传入的超时豁免参数（调度内核通用化设计 5.2：
+	// 压缩豁免在 preflight 单点判定、经 wall budget Unbounded 由链面投影；
+	// 内核不感知"压缩"概念、不做请求形状扫描）。true = wall 整体预算、
+	// 首响应等待、首字截止与 attempt 生命周期豁免（raw stream idle 保留，
+	// 重试 backoff 与 NoAvailableAccountWait 不豁免），总时间软观察转
+	// extended 档（TotalTimeLane）。
+	TimeoutsDisabled bool
+	// TotalTimeLane 是总时间软观察的档位输入（设计 5.2）：链面以超时豁免
+	// 布尔 + 估算输入 token 与 SpeedFirstLargeInputTokenThreshold 比较算好
+	// 后传入；零值 = normal 档。
+	TotalTimeLane                  TotalTimeLane
 	ServerRetryBudget              *gatewaypreauth.ServerRetryBudget
 	GatewayRequestWallBudget       *gatewayrouting.GatewayRequestWallBudget
 	RouteCoordinationBudget        *gatewayrouting.RouteCoordinationBudget
@@ -173,9 +183,15 @@ const (
 	CoordinationScopeGatewayRequest = "gateway_request"
 )
 
-// Timeout policies.
+// TotalTimeLane 是总时间软观察的档位输入（调度内核通用化设计 5.2）：normal
+// 普通档、extended 压缩/大输入档。档位判定（超时豁免布尔 + 估算输入 token
+// 与 SpeedFirstLargeInputTokenThreshold 比较）由链面完成后传入，内核不感知
+// "压缩"概念。零值 = normal。
+type TotalTimeLane int
+
 const (
-	TimeoutPolicyCodexCompactionUnbounded = "codex_compaction_unbounded"
+	TotalTimeLaneNormal TotalTimeLane = iota
+	TotalTimeLaneExtended
 )
 
 // NormalRouteTotalTimeTimeoutError 与其谓词的包内桥接（gatewayupstream 传输
@@ -431,38 +447,33 @@ func (h *hotQualityAttemptHandle) RecordTerminal(ctx context.Context, terminal H
 // FetchFirstAvailableUpstreamArgs mirrors the fetchFirstAvailableUpstream
 // parameter list (Go groups them; the doc comments name each Node arg).
 type FetchFirstAvailableUpstreamArgs struct {
-	Req                                *gatewaypreauth.GatewayRequest
-	Accounts                           []AccountCandidate
-	Settings                           gatewayruntimecache.GatewaySettings
-	UsageContext                       gatewaypreauth.GatewayFailureUsageContext
-	AuditCapture                       AuditCapture
-	SessionAffinityKey                 string
-	Signal                             context.Context
-	ClientIPAccountAvoidanceTracker    gatewaypreauth.ClientIPAccountAvoidanceTracker
-	RequestLane                        string // default 'text'
-	GroupSchedulingPolicy              *gatewayruntimecache.GroupSchedulingPolicy
-	AccountStateMutationEnabled        bool
-	RequestClientCompatibility         string
-	ModelPriority                      *gatewayrouting.GatewayAccountModelPriority
-	PreAcquiredConcurrency             *SpeedFirstCutoverReservationHandle
-	AllowPrecheckHalfOpen              bool
-	RequestCoordination                *RequestCoordinationContext
-	InterpretUpstreamResponseSemantics bool
-	WaitForRecoverableFailures         bool
-	AccountCircuitConfirmation         *gatewaycircuit.Confirmation
-	BypassKeyModelAdmission            bool
-	// CodexTurnAccountAvoidanceApplied / CodexTurnAvoidedAccountIDs mirror the
-	// preflight's codexTurnAccountAvoidanceApplied / codexTurnAvoidedAccountIds
-	// (routes.ts:890-892). Node filters the avoided accounts out of the
-	// dispatch list before every fetch attempt, with the last-resort reversal
-	// once everything else is exhausted (routes.ts:911-917 / 1060-1075 /
-	// 1454-1465); the Go engine internalizes that route loop, so the filter
-	// lives here. The reversal state is per call: a fallback group switch
-	// prepares a fresh context and calls the engine again, which resets it
-	// exactly like Node's codexTurnAvoidedFallbackEnabled=false on the switch
-	// (routes.ts:651).
-	CodexTurnAccountAvoidanceApplied bool
-	CodexTurnAvoidedAccountIDs       []string
+	Req                             *gatewaypreauth.GatewayRequest
+	Accounts                        []AccountCandidate
+	Settings                        gatewayruntimecache.GatewaySettings
+	UsageContext                    gatewaypreauth.GatewayFailureUsageContext
+	AuditCapture                    AuditCapture
+	SessionAffinityKey              string
+	Signal                          context.Context
+	ClientIPAccountAvoidanceTracker gatewaypreauth.ClientIPAccountAvoidanceTracker
+	RequestLane                     string // default 'text'
+	GroupSchedulingPolicy           *gatewayruntimecache.GroupSchedulingPolicy
+	AccountStateMutationEnabled     bool
+	RequestClientCompatibility      string
+	ModelPriority                   *gatewayrouting.GatewayAccountModelPriority
+	PreAcquiredConcurrency          *SpeedFirstCutoverReservationHandle
+	AllowPrecheckHalfOpen           bool
+	RequestCoordination             *RequestCoordinationContext
+	WaitForRecoverableFailures      bool
+	AccountCircuitConfirmation      *gatewaycircuit.Confirmation
+	BypassKeyModelAdmission         bool
+	// SchedulingExclusions 是准备层固化的通用调度排除集（设计 5.1）：nil =
+	// 无排除。SameAccountRetry 钉住目标与熔断确认路径豁免排除集（引擎内
+	// 清空，钉住/确认把候选窗口塌缩到单一账户）。
+	SchedulingExclusions *SchedulingExclusions
+	// DispatchSegments 是准备层最终候选顺序上的有序分派段（设计 5.1）；
+	// nil/空 = 未携带段元数据，引擎合成单一活动段（既有扁平行为不变）。
+	// OpaqueSegmentID 只用于审计关联，不参与排序。
+	DispatchSegments []DispatchSegment
 }
 
 // SpeedFirstCutoverReservationHandle mirrors preAcquiredConcurrency.
@@ -493,8 +504,10 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	requestAttemptTracker := coordination.RequestAttemptTracker
 	semanticRetryID := coordination.SemanticRetryID
 
-	compactionTimeoutsDisabled := coordination.TimeoutPolicy == TimeoutPolicyCodexCompactionUnbounded ||
-		e.codexCompactionExpectedForRequest(args.Req)
+	// 超时豁免面为链面传入参数（设计 5.2）：preflight 单点压缩判定经 wall
+	// budget Unbounded 由链面投影到 TimeoutsDisabled / TotalTimeLane，引擎
+	// 不再做请求形状扫描。
+	timeoutsDisabled := coordination.TimeoutsDisabled
 	timeoutProfile := gatewayrouting.GatewayTimeoutProfileForLane(gatewayrouting.GatewayTimeoutSettings{
 		TextFirstResponseTimeoutSeconds:           settings.TextFirstResponseTimeoutSeconds,
 		TextNonStreamFirstResponseTimeoutSeconds:  settings.TextNonStreamFirstResponseTimeoutSeconds,
@@ -506,7 +519,7 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 		AudioFirstResponseTimeoutSeconds:          settings.AudioFirstResponseTimeoutSeconds,
 		VideoCreateTimeoutSeconds:                 settings.VideoCreateTimeoutSeconds,
 		NoAvailableAccountWaitTimeoutSeconds:      settings.NoAvailableAccountWaitTimeoutSeconds,
-	}, gatewayprotoLane(requestLane), compactionTimeoutsDisabled)
+	}, gatewayprotoLane(requestLane), timeoutsDisabled)
 
 	accountCircuitFailureEvidenceKey := e.gatewayForegroundAccountCircuitFailureEvidenceKey(args.Req, usageContext)
 	automaticAccountStateMutationAllowed := args.AccountStateMutationEnabled && isAccountProbeTrafficSource(usageContext.TrafficSource)
@@ -550,31 +563,22 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 		}
 		dispatchAccounts = filtered
 	}
-	// Codex turn avoidance (routes.ts:911-917): while the avoidance is applied
-	// the avoided accounts are filtered out of the dispatch list before any
-	// attempt; the circuit-confirmation path keeps the full list. When the
-	// filter empties the list the last-resort reversal fires immediately
-	// (routes.ts:1060-1075) — nothing has been exhausted inside this call yet.
-	codexTurnAvoided := stringSet(args.CodexTurnAvoidedAccountIDs)
-	codexTurnReversalFired := false
-	codexTurnAvoidanceActive := args.CodexTurnAccountAvoidanceApplied &&
-		len(codexTurnAvoided) > 0 && args.AccountCircuitConfirmation == nil
-	if codexTurnAvoidanceActive {
-		dispatchAccounts = filterCodexTurnAvoidedAccounts(dispatchAccounts, codexTurnAvoided, false)
-		if len(dispatchAccounts) == 0 {
-			if reversal := codexTurnReversalCandidates(args.Accounts, codexTurnAvoided, nil); len(reversal) > 0 {
-				codexTurnReversalFired = true
-				auditCapture.AddGatewayMetadata("client_source_avoided_accounts_last_resort", map[string]any{
-					"avoidedAccountIds":   args.CodexTurnAvoidedAccountIDs,
-					"exhaustedAccountIds": []string{},
-				})
-				dispatchAccounts = reversal
-			}
-		}
+	// 通用调度排除集（设计 5.1）：入口由准备层固化。SameAccountRetry 钉住目标
+	// 与熔断确认路径豁免排除集（现状 AccountCircuitConfirmation == nil 豁免
+	// 语义 + 钉住窗口塌缩到单一账户），排除集不参与其裁决。
+	schedulingExclusionIDs := map[string]struct{}{}
+	if coordination.SameAccountRetry == nil && args.AccountCircuitConfirmation == nil && args.SchedulingExclusions != nil {
+		schedulingExclusionIDs = newAccountIDSet(args.SchedulingExclusions.ExcludedAccountIDs)
 	}
 	{
 		filtered := make([]AccountCandidate, 0, len(dispatchAccounts))
 		for _, account := range dispatchAccounts {
+			// 软排除账号保留在候选序列（不参加入口准入注册，由分派段状态机在
+			// 翻回时解除软排除后走真实尝试路径的硬门；设计 5.1 硬门边界）。
+			if _, excluded := schedulingExclusionIDs[account.ID]; excluded {
+				filtered = append(filtered, account)
+				continue
+			}
 			accountRuntimeKey, keyErr := gatewayAccountRuntimeKey(account)
 			if keyErr != nil {
 				return UpstreamDispatchResult{}, keyErr
@@ -597,9 +601,25 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	}
 
 	primaryDispatchTier := ""
-	if len(dispatchAccounts) > 0 {
-		primaryDispatchTier = gatewayAccountDispatchPriorityTier(dispatchAccounts[0], args.ModelPriority)
+	for _, account := range dispatchAccounts {
+		if _, excluded := schedulingExclusionIDs[account.ID]; excluded {
+			continue
+		}
+		primaryDispatchTier = gatewayAccountDispatchPriorityTier(account, args.ModelPriority)
+		break
 	}
+	// 分派段状态机（设计 5.1）：入口由当前有序候选按分派段来源推导活动段；
+	// releasedAccountIDs 初始为空，在段之间、外层等待和同一次调用内的
+	// reload/reorder 中持续保留，新的引擎调用重新开始。释放只解除软排除。
+	dispatchSegmentIdentityGen := 0
+	activeSegments := deriveActiveDispatchSegments(
+		dispatchAccounts,
+		args.DispatchSegments,
+		schedulingExclusionIDs,
+		map[string]struct{}{},
+		args.ModelPriority,
+	)
+	releasedAccountIDs := map[string]struct{}{}
 	observedEscapedTiers := map[string]struct{}{}
 	snapshot := requestAttemptTracker.Snapshot()
 	requestApiKeyAttemptCount := len(snapshot.AttemptedKeyFingerprints)
@@ -840,129 +860,227 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	var cycleRecoverableAccountIDs map[string]struct{}
 	var pendingApiKeyFailures []PendingAccountApiKeyFailure
 
-codexTurnReversalPass:
-	for len(dispatchAccounts) > 0 {
+	// 逐段状态机（设计 5.1）：按分派段顺序推进。每段先按原顺序处理普通候选
+	// （可调度性只由真实尝试路径的既有硬门决定）；段内普通候选真实耗尽或被
+	// 硬门逐个跳过、且段内仍有未释放排除账号时，解除这些账号的软排除并按原
+	// 顺序尝试（段入口即无普通候选同样触发；中途腾空不得先进入下一段）。
+	// 排除集不影响熔断确认路径的既有语义，SameAccountRetry 钉住目标豁免排除集。
+	//
+	// 整池等待域（批次 1 回炉裁决，恢复无排除场景行为等价）：外层容量等待、
+	// 可恢复等待与 Ready/恢复后的重排重跑统一在本轮全部段候选打完后执行
+	// （wholePoolRound 尾部的整池 post-cycle），等待/重排域聚合全部活动段的
+	// working 候选（等价旧 dispatchAccounts——不含尚未释放的排除账号，释放后
+	// 的账号按释放门规则已在 working）。单一活动段周期结束不得提前进入外层
+	// 等待：高优段的容量/可恢复等待会把低优段首试推迟到等待之后，旧行为是
+	// 单周期内继续尝试后续候选。
+	releaseSegmentExclusions := func(seg *activeDispatchSegment, reason string) []AccountCandidate {
+		candidateIDs := accountIDList(seg.pendingExclusions)
+		releasedCandidates := make([]AccountCandidate, 0, len(seg.pendingExclusions))
+		for _, account := range seg.pendingExclusions {
+			if _, alreadyReleased := releasedAccountIDs[account.ID]; alreadyReleased {
+				continue
+			}
+			releasedAccountIDs[account.ID] = struct{}{}
+			releasedCandidates = append(releasedCandidates, account)
+		}
+		seg.pendingExclusions = nil
+		if len(releasedCandidates) == 0 {
+			return nil
+		}
+		auditCapture.AddGatewayMetadata("gateway_dispatch_exclusion_release", map[string]any{
+			"opaqueSegmentId":     seg.opaqueSegmentID,
+			"tier":                seg.tier.String(),
+			"candidateAccountIds": candidateIDs,
+			"releasedAccountIds":  accountIDList(releasedCandidates),
+			"reason":              reason,
+		})
+		return releasedCandidates
+	}
+	// rebuildSegmentsAfterPoolReorder 在整池等待恢复/reload 重排后按新顺序重建
+	// 活动段（设计 5.1：新顺序必须重新生成外层段边界与 OpaqueSegmentID，不得
+	// 复用旧段）。releasedAccountIDs 持续保留，未释放排除账号随新顺序重新归段。
+	rebuildSegmentsAfterPoolReorder := func(reordered []AccountCandidate) {
+		nextSegments := deriveActiveDispatchSegments(reordered, args.DispatchSegments, schedulingExclusionIDs, releasedAccountIDs, args.ModelPriority)
+		for i := range nextSegments {
+			nextSegments[i].regenerateIdentity(&dispatchSegmentIdentityGen)
+		}
+		activeSegments = nextSegments
+	}
+wholePoolRound:
+	for {
+		if !activeSegmentsHaveRoundCandidates(activeSegments) {
+			break
+		}
+		// 旧整池循环的周期头重置原位恢复：容量失败与周期可恢复集合按整池周期
+		// 聚合，不按段截断（段级重置会让后续段周期丢失前段容量失败证据，整池
+		// 容量等待不再触发）。
 		cycleRecoverableAccountIDs = map[string]struct{}{}
 		capacityLimitFailures = nil
-
-		// SwitchTarget（切号冻结目标）：本请求一旦有账户完成上游请求构造，推进
-		// 到不同账户前必须按冻结目标过滤（与冻结源同账户的 Key 轮换 / 重试不是
-		// 切换点）。目标不可解析时 fail-closed：所有跨账户候选被拒，走既有
-		// UpstreamAttemptError 最终失败路径。
-		switchTargetGate := SwitchTargetGateFromContext(ctx)
-
-		for _, originalAccount := range dispatchAccounts {
-			if err := throwIfRequestAborted(signal); err != nil {
-				return UpstreamDispatchResult{}, err
-			}
-			if switchTargetGate != nil && switchTargetGate.Frozen() {
-				if len(switchTargetGate.FilterAccounts([]AccountCandidate{originalAccount})) == 0 {
-					if switchTargetGate.Unresolved() && switchTargetGate.MarkUnresolvedDiagnosed() {
-						auditCapture.AddGatewayMetadata("switch_target_unresolved", map[string]any{
-							"accountId":       originalAccount.ID,
-							"sourceAccountId": SwitchTargetGateSourceOf(switchTargetGate),
-							"traceId":         usageContext.TraceID,
-							"apiKeyId":        usageContext.APIKeyID,
-							"groupId":         usageContext.GroupID,
-							"reason":          "frozen_switch_target_unresolvable",
-						})
+	segmentLoop:
+		for segIdx := range activeSegments {
+			seg := &activeSegments[segIdx]
+			segCycleEntered := false
+			// 本轮尝试队列：普通候选在前，段内释放账号结算后仅追加进队列。
+			// working 保持整池成员不因段结算腾空，整池聚合与旧 dispatchAccounts
+			// 同口径。
+			roundQueue := seg.working
+			for {
+				if len(roundQueue) == 0 {
+					if len(seg.pendingExclusions) == 0 {
+						// 本段普通候选与待释放排除账号均无：进入下一段。
+						continue segmentLoop
 					}
+					// 翻回触发：解除本段未释放排除账号的软排除并按原顺序尝试。
+					// 释放资格每账号每次引擎调用至多一次；释放只解除软排除，不
+					// 绕过硬门、不新增尝试预算。
+					releaseReason := "segment_ordinary_candidates_exhausted"
+					if !segCycleEntered {
+						releaseReason = "segment_entry_no_ordinary_candidate"
+					}
+					releasedCandidates := releaseSegmentExclusions(seg, releaseReason)
+					if len(releasedCandidates) == 0 {
+						continue segmentLoop
+					}
+					// 释放账号并入整池 working；本轮只尝试新释放账号。
+					seg.working = append(seg.working, releasedCandidates...)
+					roundQueue = releasedCandidates
+				}
+				segCycleEntered = true
+
+				// SwitchTarget（切号冻结目标）：本请求一旦有账户完成上游请求构造，推进
+				// 到不同账户前必须按冻结目标过滤（与冻结源同账户的 Key 轮换 / 重试不是
+				// 切换点）。目标不可解析时 fail-closed：所有跨账户候选被拒，走既有
+				// UpstreamAttemptError 最终失败路径。
+				switchTargetGate := SwitchTargetGateFromContext(ctx)
+
+				for _, originalAccount := range roundQueue {
+					if err := throwIfRequestAborted(signal); err != nil {
+						return UpstreamDispatchResult{}, err
+					}
+					if switchTargetGate != nil && switchTargetGate.Frozen() {
+						if len(switchTargetGate.FilterAccounts([]AccountCandidate{originalAccount})) == 0 {
+							if switchTargetGate.Unresolved() && switchTargetGate.MarkUnresolvedDiagnosed() {
+								auditCapture.AddGatewayMetadata("switch_target_unresolved", map[string]any{
+									"accountId":       originalAccount.ID,
+									"sourceAccountId": SwitchTargetGateSourceOf(switchTargetGate),
+									"traceId":         usageContext.TraceID,
+									"apiKeyId":        usageContext.APIKeyID,
+									"groupId":         usageContext.GroupID,
+									"reason":          "frozen_switch_target_unresolvable",
+								})
+							}
+							continue
+						}
+					}
+					var accountCircuitAttempt *gatewaycircuitAttemptFacade
+					if e.Circuits != nil && coordination.SameAccountRetry == nil {
+						model := requestModelOrEmpty(args.Req)
+						confirmationEligible := !timeoutsDisabled
+						var confirmationFailuresRequired *int64
+						if e.Config.AccountCircuitConfirmationFailuresRequired != nil {
+							confirmationFailuresRequired = e.Config.AccountCircuitConfirmationFailuresRequired
+						} else {
+							confirmationFailuresRequired = ptrInt64(settings.AccountCircuitConfirmationFailuresRequired)
+						}
+						preparation, err := e.Circuits.PrepareAttempt(ctx, gatewaycircuit.PrepareAttemptInput{
+							Account:                      originalAccount,
+							RequestLane:                  requestLane,
+							Model:                        stringPtrOrNil(model),
+							ConfirmationLeaseDurationMs:  confirmationLeaseDurationMs,
+							ConfirmationEligible:         &confirmationEligible,
+							ConfirmationFailuresRequired: confirmationFailuresRequired,
+							Confirmation:                 args.AccountCircuitConfirmation,
+							FailureEvidenceKey:           ptrString(accountCircuitFailureEvidenceKey),
+						})
+						if err != nil {
+							return UpstreamDispatchResult{}, err
+						}
+						if preparation.Outcome == gatewaycircuit.PrepareBlocked {
+							// 熔断拦截是候选跳过的独立原因（区别于请求失败路径的
+							// gateway_upstream_response_failed 家族）。Warn 按
+							// (accountId, phase) 30s 节流（引擎循环对被拦候选逐次
+							// 触发，不节流会随 RPS 线性刷屏）；被拦的每次尝试仍由
+							// lastAttempt/audit metadata 完整承载。waitToken 无对应
+							// 出参，线索以 accountId + phase 承载（phase 取值
+							// CLOSED/SUSPECT/OPEN/HALF_OPEN，罕见 confirmation 不合格
+							// 分支可为 CLOSED）。
+							e.warnCircuitBlocked(originalAccount.ID, preparation.State.Phase)
+							lastAttempt = accountCircuitBlockedAttempt(originalAccount, preparation.State.Phase)
+							failedAccountIDs[originalAccount.ID] = struct{}{}
+							continue
+						}
+						accountCircuitAttempt = preparation.Attempt
+					}
+					kind, singleResult, loopErr := e.dispatchSingleAccount(ctx, dispatchSingleAccountInput{
+						args:                                 &args,
+						coordination:                         coordination,
+						originalAccount:                      originalAccount,
+						usageContext:                         &usageContext,
+						auditCapture:                         auditCapture,
+						settings:                             settings,
+						timeoutProfile:                       timeoutProfile,
+						signal:                               signal,
+						requestLane:                          requestLane,
+						semanticRetryID:                      semanticRetryID,
+						bypassLocalSuppression:               bypassLocalSuppression,
+						automaticAccountStateMutationAllowed: automaticAccountStateMutationAllowed,
+						accountLockTrafficEnabled:            accountLockTrafficEnabled,
+						timeoutsDisabled:                     timeoutsDisabled,
+						requestApiKeyAttemptCount:            &requestApiKeyAttemptCount,
+						activeSameAccountRetryID:             &activeSameAccountRetryID,
+						activeAccountLockRetryLease:          &activeAccountLockRetryLease,
+						activeAccountLockObservation:         &activeAccountLockObservation,
+						primaryDispatchTier:                  primaryDispatchTier,
+						observedEscapedTiers:                 observedEscapedTiers,
+						failedProxyDispatchKeys:              failedProxyDispatchKeys,
+						failedAccountIDs:                     failedAccountIDs,
+						recoverableFailedAccountIDs:          recoverableFailedAccountIDs,
+						cycleRecoverableAccountIDs:           cycleRecoverableAccountIDs,
+						capacityLimitFailures:                &capacityLimitFailures,
+						pendingApiKeyFailures:                &pendingApiKeyFailures,
+						lastAttempt:                          &lastAttempt,
+						agentGuidanceResponse:                &agentGuidanceResponse,
+						auditAttemptIndex:                    &auditAttemptIndex,
+						concurrencyRetryWaitBudgetMs:         &concurrencyRetryWaitBudgetMs,
+						keyModelFailureBudget:                keyModelFailureBudget,
+						accountCircuitAttempt:                accountCircuitAttempt,
+						reserveSameAccountRetry:              reserveSameAccountRetry,
+						createAccountLockLeaseRelease:        func(bool) func(bool) bool { return createAccountLockLeaseRelease() },
+					})
+					if loopErr != nil {
+						return UpstreamDispatchResult{}, loopErr
+					}
+					// M-2（BUG-0174）: a single-account terminal skip only ends that
+					// account's API-key rotation do/while (upstream-dispatch.ts:619-1859);
+					// the candidate for-of loop continues with the next account. There
+					// is no "skip rest of cycle" concept in Node — whole-cycle
+					// termination happens exclusively through thrown errors (loopErr)
+					// or the post-cycle recoverable-wait logic below.
+					// BUG-0247 项 3：Node :1855 的 if (!accountCircuitAttemptTransferred)
+					// settleUndispatchedAccountCircuitAttempt 在 Go 引擎无对应实现，
+					// transferred 标志在 Go 侧从无读者（迁移遗留死数据流，含
+					// setAccountCircuitAttemptTransferred 回调与两处构造点调用，已删）。
+					if kind == dispatchResultSelected {
+						return *singleResult, nil
+					}
+				}
+
+				// 段周期结束：本段仍有未释放排除账号时先腾空本轮队列回段释放门结算
+				// 翻回（设计 5.1：进入下一段或外层等待前先结算本段软排除）；否则本段
+				// 本轮完成，working（整池成员）保持不变，进入下一段。外层等待统一在
+				// 全部段候选打完后执行（下方整池 post-cycle）。
+				if len(seg.pendingExclusions) > 0 {
+					roundQueue = nil
 					continue
 				}
-			}
-			var accountCircuitAttempt *gatewaycircuitAttemptFacade
-			if e.Circuits != nil && coordination.SameAccountRetry == nil {
-				model := requestModelOrEmpty(args.Req)
-				confirmationEligible := !compactionTimeoutsDisabled
-				var confirmationFailuresRequired *int64
-				if e.Config.AccountCircuitConfirmationFailuresRequired != nil {
-					confirmationFailuresRequired = e.Config.AccountCircuitConfirmationFailuresRequired
-				} else {
-					confirmationFailuresRequired = ptrInt64(settings.AccountCircuitConfirmationFailuresRequired)
-				}
-				preparation, err := e.Circuits.PrepareAttempt(ctx, gatewaycircuit.PrepareAttemptInput{
-					Account:                      originalAccount,
-					RequestLane:                  requestLane,
-					Model:                        stringPtrOrNil(model),
-					ConfirmationLeaseDurationMs:  confirmationLeaseDurationMs,
-					ConfirmationEligible:         &confirmationEligible,
-					ConfirmationFailuresRequired: confirmationFailuresRequired,
-					Confirmation:                 args.AccountCircuitConfirmation,
-					FailureEvidenceKey:           ptrString(accountCircuitFailureEvidenceKey),
-				})
-				if err != nil {
-					return UpstreamDispatchResult{}, err
-				}
-				if preparation.Outcome == gatewaycircuit.PrepareBlocked {
-					// 熔断拦截是候选跳过的独立原因（区别于请求失败路径的
-					// gateway_upstream_response_failed 家族）。Warn 按
-					// (accountId, phase) 30s 节流（引擎循环对被拦候选逐次
-					// 触发，不节流会随 RPS 线性刷屏）；被拦的每次尝试仍由
-					// lastAttempt/audit metadata 完整承载。waitToken 无对应
-					// 出参，线索以 accountId + phase 承载（phase 取值
-					// CLOSED/SUSPECT/OPEN/HALF_OPEN，罕见 confirmation 不合格
-					// 分支可为 CLOSED）。
-					e.warnCircuitBlocked(originalAccount.ID, preparation.State.Phase)
-					lastAttempt = accountCircuitBlockedAttempt(originalAccount, preparation.State.Phase)
-					failedAccountIDs[originalAccount.ID] = struct{}{}
-					continue
-				}
-				accountCircuitAttempt = preparation.Attempt
-			}
-			kind, singleResult, loopErr := e.dispatchSingleAccount(ctx, dispatchSingleAccountInput{
-				args:                                 &args,
-				coordination:                         coordination,
-				originalAccount:                      originalAccount,
-				usageContext:                         &usageContext,
-				auditCapture:                         auditCapture,
-				settings:                             settings,
-				timeoutProfile:                       timeoutProfile,
-				signal:                               signal,
-				requestLane:                          requestLane,
-				semanticRetryID:                      semanticRetryID,
-				bypassLocalSuppression:               bypassLocalSuppression,
-				automaticAccountStateMutationAllowed: automaticAccountStateMutationAllowed,
-				accountLockTrafficEnabled:            accountLockTrafficEnabled,
-				compactionTimeoutsDisabled:           compactionTimeoutsDisabled,
-				requestApiKeyAttemptCount:            &requestApiKeyAttemptCount,
-				activeSameAccountRetryID:             &activeSameAccountRetryID,
-				activeAccountLockRetryLease:          &activeAccountLockRetryLease,
-				activeAccountLockObservation:         &activeAccountLockObservation,
-				primaryDispatchTier:                  primaryDispatchTier,
-				observedEscapedTiers:                 observedEscapedTiers,
-				failedProxyDispatchKeys:              failedProxyDispatchKeys,
-				failedAccountIDs:                     failedAccountIDs,
-				recoverableFailedAccountIDs:          recoverableFailedAccountIDs,
-				cycleRecoverableAccountIDs:           cycleRecoverableAccountIDs,
-				capacityLimitFailures:                &capacityLimitFailures,
-				pendingApiKeyFailures:                &pendingApiKeyFailures,
-				lastAttempt:                          &lastAttempt,
-				agentGuidanceResponse:                &agentGuidanceResponse,
-				auditAttemptIndex:                    &auditAttemptIndex,
-				concurrencyRetryWaitBudgetMs:         &concurrencyRetryWaitBudgetMs,
-				keyModelFailureBudget:                keyModelFailureBudget,
-				accountCircuitAttempt:                accountCircuitAttempt,
-				reserveSameAccountRetry:              reserveSameAccountRetry,
-				createAccountLockLeaseRelease:        func(bool) func(bool) bool { return createAccountLockLeaseRelease() },
-			})
-			if loopErr != nil {
-				return UpstreamDispatchResult{}, loopErr
-			}
-			// M-2（BUG-0174）: a single-account terminal skip only ends that
-			// account's API-key rotation do/while (upstream-dispatch.ts:619-1859);
-			// the candidate for-of loop continues with the next account. There
-			// is no "skip rest of cycle" concept in Node — whole-cycle
-			// termination happens exclusively through thrown errors (loopErr)
-			// or the post-cycle recoverable-wait logic below.
-			// BUG-0247 项 3：Node :1855 的 if (!accountCircuitAttemptTransferred)
-			// settleUndispatchedAccountCircuitAttempt 在 Go 引擎无对应实现，
-			// transferred 标志在 Go 侧从无读者（迁移遗留死数据流，含
-			// setAccountCircuitAttemptTransferred 回调与两处构造点调用，已删）。
-			if kind == dispatchResultSelected {
-				return *singleResult, nil
+				continue segmentLoop
 			}
 		}
 
+		// 整池 post-cycle：外层容量等待 + 抑制复查与可恢复等待（旧实现原位，等待域
+		// 从单一活动段恢复为整池 pool；Node postCycleSuppressionFilter ...
+		// waitForRecoverableUnavailableState）。
+		pool := activeSegmentsPool(activeSegments)
 		if len(capacityLimitFailures) > 0 && args.GroupSchedulingPolicy != nil {
 			queueWaitStartedAtMs := gatewayupstream.NowMs()
 			serverRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
@@ -972,8 +1090,8 @@ codexTurnReversalPass:
 					SystemAccountID:          usageContext.SystemAccountID,
 					GroupID:                  usageContext.GroupID,
 					APIKeyID:                 usageContext.APIKeyID,
-					AccountIDs:               gatewaySessionConcurrencyIDs(dispatchAccounts),
-					AccountConcurrencyLimits: GatewayAccountConcurrencyLimitsByAccountID(dispatchAccounts),
+					AccountIDs:               gatewaySessionConcurrencyIDs(pool),
+					AccountConcurrencyLimits: GatewayAccountConcurrencyLimitsByAccountID(pool),
 					Lane:                     requestLane,
 					Policy:                   args.GroupSchedulingPolicy,
 					MaxWaitMs:                serverRetryBudget.RemainingMs(&queueWaitStartedAtMs),
@@ -1000,12 +1118,12 @@ codexTurnReversalPass:
 				//（Node upstream-dispatch.ts:1892/:1909/:1926 三处同构重置；
 				// 预算递减恢复后本重置为活写）。
 				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
-				reordered, err := e.Degradation.OrderWithLaneAsync(ctx, dispatchAccounts, requestLane, args.GroupSchedulingPolicy, args.ModelPriority)
+				reordered, err := e.Degradation.OrderWithLaneAsync(ctx, pool, requestLane, args.GroupSchedulingPolicy, args.ModelPriority)
 				if err != nil {
 					return UpstreamDispatchResult{}, err
 				}
-				dispatchAccounts = reordered.Accounts
-				continue
+				rebuildSegmentsAfterPoolReorder(reordered.Accounts)
+				continue wholePoolRound
 			}
 			if !serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
 				if queueWait.Reason != "timeout" {
@@ -1022,7 +1140,7 @@ codexTurnReversalPass:
 				}
 				// BUG-0247 项 2：外环容量等待重试刷新预算（Node :1909）。
 				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
-				continue
+				continue wholePoolRound
 			}
 			if failure := lastCapacityLimitFailure(capacityLimitFailures); failure != nil {
 				auditAttemptIndex++
@@ -1044,7 +1162,7 @@ codexTurnReversalPass:
 				serverRetryBudget.PauseNoAvailableWait(nil)
 				// BUG-0247 项 2：外环容量等待重试刷新预算（Node :1926）。
 				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
-				continue
+				continue wholePoolRound
 			}
 			if failure := lastCapacityLimitFailure(capacityLimitFailures); failure != nil {
 				auditAttemptIndex++
@@ -1056,11 +1174,12 @@ codexTurnReversalPass:
 
 		// Post-cycle suppression re-check + recoverable wait (Node
 		// postCycleSuppressionFilter ... waitForRecoverableUnavailableState).
+		// 等待域为整池 pool（批次 1 回炉裁决）。
 		var postCycleSuppressionFilter SuppressionFilterResult
 		if bypassLocalSuppression {
-			postCycleSuppressionFilter = localSuppressionBypassResult(dispatchAccounts)
+			postCycleSuppressionFilter = localSuppressionBypassResult(pool)
 		} else {
-			filter, err := e.Suppression.FilterAsync(ctx, dispatchAccounts, SuppressionFilterOptions{})
+			filter, err := e.Suppression.FilterAsync(ctx, pool, SuppressionFilterOptions{})
 			if err != nil {
 				return UpstreamDispatchResult{}, err
 			}
@@ -1077,16 +1196,18 @@ codexTurnReversalPass:
 			recoverableAccountIDs[id] = struct{}{}
 		}
 		var recoverableAccounts []AccountCandidate
-		for _, account := range dispatchAccounts {
+		for _, account := range pool {
 			if _, recoverable := recoverableAccountIDs[account.ID]; recoverable {
 				recoverableAccounts = append(recoverableAccounts, account)
 			}
 		}
 		if len(recoverableAccounts) == 0 || !args.WaitForRecoverableFailures {
-			break
+			// 旧整池终止分支原位恢复：无可恢复失败即最终失败。段候选已在同一整池
+			// 周期内逐段打过，不再存在"段级终止进入下一段"的中间态。
+			break wholePoolRound
 		}
 		var suppressionFilter SuppressionFilterResult
-		if len(recoverableAccounts) == len(dispatchAccounts) {
+		if len(recoverableAccounts) == len(pool) {
 			suppressionFilter = postCycleSuppressionFilter
 		} else {
 			filter, err := e.Suppression.FilterAsync(ctx, recoverableAccounts, SuppressionFilterOptions{})
@@ -1097,7 +1218,7 @@ codexTurnReversalPass:
 		}
 		if !suppressionFilter.AllSuppressed {
 			if serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
-				break
+				break wholePoolRound
 			}
 			retryDelayMs := minInt64(upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 2, 3000), serverRetryBudget.RemainingMs(nil))
 			accountIDs := make([]string, 0, len(suppressionFilter.Accounts))
@@ -1119,20 +1240,19 @@ codexTurnReversalPass:
 			}
 			serverRetryBudget.PauseNoAvailableWait(nil)
 			if serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
-				break
+				break wholePoolRound
 			}
 			for key := range failedProxyDispatchKeys {
 				delete(failedProxyDispatchKeys, key)
 			}
 			degradation := e.Degradation.OrderSync(suppressionFilter.Accounts, args.ModelPriority)
-			reordered := degradation.Accounts
-			dispatchAccounts = reordered
-			continue
+			rebuildSegmentsAfterPoolReorder(degradation.Accounts)
+			continue wholePoolRound
 		}
 		precheckRuntimeScopes := suppressionFilter.PrecheckSuppressedRuntimeScopes
 		allBlockedByPrecheck := len(precheckRuntimeScopes) > 0 &&
 			suppressionFilter.PrecheckSuppressedAccountIDs != nil &&
-			len(suppressionFilter.PrecheckSuppressedAccountIDs) == len(dispatchAccounts)
+			len(suppressionFilter.PrecheckSuppressedAccountIDs) == len(pool)
 		waitStartedAtMs := gatewayupstream.NowMs()
 		deadlineAtMs := serverRetryBudget.DeadlineAtMs(&waitStartedAtMs)
 		scopeCandidates := make([]string, 0, len(precheckRuntimeScopes))
@@ -1188,9 +1308,8 @@ codexTurnReversalPass:
 				delete(failedProxyDispatchKeys, key)
 			}
 			degradationWait := e.Degradation.OrderSync(waitState.Accounts, args.ModelPriority)
-			reordered := degradationWait.Accounts
-			dispatchAccounts = reordered
-			continue
+			rebuildSegmentsAfterPoolReorder(degradationWait.Accounts)
+			continue wholePoolRound
 		}
 
 		auditCapture.AddGatewayMetadata("local_account_suppression_dispatch_exhausted", map[string]any{
@@ -1211,29 +1330,15 @@ codexTurnReversalPass:
 			UpstreamURL:               "account:locally_suppressed",
 			Message:                   "所有上游账户仍处于本地短期屏蔽",
 		}
-		break
+		break wholePoolRound
 	}
-	// Codex turn last-resort reversal (routes.ts:1454-1465): before the caller
-	// moves to the group fallback, avoided accounts that were not exhaustively
-	// failed get one avoided-only pass. Fires at most once per call; a
-	// fallback group switch calls the engine fresh, which is the reset
-	// (routes.ts:651).
-	if codexTurnAvoidanceActive && !codexTurnReversalFired {
-		exhausted := nonRecoverableFailedAccountIDs(failedAccountIDs, recoverableFailedAccountIDs)
-		reversal := codexTurnReversalCandidates(args.Accounts, codexTurnAvoided, exhausted)
-		if len(reversal) > 0 {
-			codexTurnReversalFired = true
-			auditCapture.AddGatewayMetadata("client_source_avoided_accounts_last_resort", map[string]any{
-				"avoidedAccountIds":   args.CodexTurnAvoidedAccountIDs,
-				"exhaustedAccountIds": setToSlice(exhausted),
-			})
-			// A fresh pass: Node re-enters fetchFirstAvailableUpstream, whose
-			// last attempt starts undefined.
-			lastAttempt = nil
-			dispatchAccounts = reversal
-			goto codexTurnReversalPass
-		}
-	}
+	// 周期后的 continue/break 语义映射（设计 5.1 逐段状态机 + 整池等待域）：
+	//   - 段内 continue → 回段释放门：先结算本段未释放排除账号（翻回），随后
+	//     进入下一段；
+	//   - 整池 continue（容量等待重试/Ready 重排、可恢复等待恢复）→ 按整池新
+	//     顺序重建段后重新进入段循环（reload 顺序重新生成 opaque 段 ID）；
+	//   - 整池 break（无可恢复失败、等待预算移交、本地抑制耗尽）→ 走既有
+	//     UpstreamAttemptError 最终失败路径。
 
 	return UpstreamDispatchResult{}, &UpstreamAttemptError{
 		Message:               buildUpstreamAttemptFailureMessage(len(args.Accounts), lastAttempt),

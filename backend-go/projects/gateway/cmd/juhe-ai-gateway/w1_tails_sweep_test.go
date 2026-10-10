@@ -37,6 +37,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
@@ -748,9 +749,13 @@ func TestW1TComposeGatewayChainNilCache(t *testing.T) {
 }
 
 func TestW1TChainComposeClientCatalogErrorArm(t *testing.T) {
-	loader := chainClientModelCatalog{cache: w1tNewTailCache(t, &w1tTailModels{catalogErr: errors.New("目录查询失败")})}
-	if got := loader.ListClientModelCatalog("sys-w1t", []string{"openai"}); got != nil {
-		t.Fatalf("错误臂 entries = %+v, want nil", got)
+	// Union loader 未装配（组合测试/降级装配）：装载错误原样上抛，不再吞成
+	// 200 空列表（/v1/models 账户并集设计 §4.6.2）。
+	loader := chainGatewayKeyModelCatalog{cache: w1tNewTailCache(t, &w1tTailModels{})}
+	_, err := loader.ListGatewayKeyModels(context.Background(), "sys-w1t",
+		[]gatewayresponse.GatewayModelBinding{{GroupID: "grp-w1t", ProviderCode: "openai"}})
+	if err == nil || !errors.Is(err, gatewayruntimecache.ErrGroupModelUnionLoaderUnavailable) {
+		t.Fatalf("err = %v, want ErrGroupModelUnionLoaderUnavailable", err)
 	}
 }
 

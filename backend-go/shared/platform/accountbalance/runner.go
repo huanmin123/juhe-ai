@@ -283,11 +283,16 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 				}
 				if state == runStateSkipped {
 					skipped.Add(1)
-					// 三种 skipped 形态（validate/ctx 失败、ErrAccountLeaseHeld、
-					// !acquired）均伴随 nil query；其中租约未获取两态 itemErr 为
-					// nil，必须在此短路——继续下走会对 nil query 解引用 panic
-					//（发布重启窗口上一进程账户租约 TTL 未过期时必现）。
-					continue
+					// 四种 skipped 形态均伴随 nil query：validate/ctx 失败
+					// （itemErr 非 nil）与 ErrAccountLeaseHeld、!acquired
+					// （itemErr 为 nil）。仅租约未获取两态必须在此短路——
+					// 继续下走会对 nil query 解引用 panic（发布重启窗口上一
+					// 进程账户租约 TTL 未过期时必现，BUG-0299）；validate/ctx
+					// 失败形态 itemErr 非 nil，必须落入下方 recordError 原样
+					// 上抛（RunManual Errors→原样错误契约），不得吞错。
+					if itemErr == nil {
+						continue
+					}
 				}
 				if itemErr != nil {
 					recordError(input.AccountID, itemErr)

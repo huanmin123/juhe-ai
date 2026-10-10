@@ -61,7 +61,9 @@ func (d *w9cUsageDispatch) all() []ModelsUsageDispatchInput {
 
 type w9cCatalog struct{ entries []ModelCatalogEntry }
 
-func (c w9cCatalog) ListClientModelCatalog(string, []string) []ModelCatalogEntry { return c.entries }
+func (c w9cCatalog) ListGatewayKeyModels(context.Context, string, []GatewayModelBinding) (GatewayKeyModelList, error) {
+	return GatewayKeyModelList{Entries: c.entries}, nil
+}
 
 func TestW9CSendAuthenticatedModelsGatewayResponse(t *testing.T) {
 	recorder := httptest.NewRecorder()
@@ -79,9 +81,11 @@ func TestW9CSendAuthenticatedModelsGatewayResponse(t *testing.T) {
 			SystemAccountID: "acc-1",
 			ProviderCode:    "openai",
 		},
-		ProviderCodes: []string{"OpenAI", "openai", ""},
-		Protocol:      "openai",
-		StartedAt:     1000,
+		Bindings: []GatewayModelBinding{
+			{ProviderCode: "OpenAI"}, {ProviderCode: "openai"}, {ProviderCode: ""},
+		},
+		Protocol:  "openai",
+		StartedAt: 1000,
 	})
 	if recorder.Code != 200 {
 		t.Fatalf("status = %d (%s)", recorder.Code, recorder.Body.String())
@@ -133,10 +137,10 @@ func TestW9CSendModelsGatewayResponseProtocolVariants(t *testing.T) {
 			NowMs:        func() int64 { return 1000 },
 		})
 		input := gatewaypreauth.ModelsResponseInput{
-			Res:           gatewaypreauth.NewTrackingWriter(recorder),
-			AuditCapture:  audit,
-			ProviderCodes: []string{"gemini"},
-			Protocol:      tc.protocol,
+			Res:          gatewaypreauth.NewTrackingWriter(recorder),
+			AuditCapture: audit,
+			Bindings:     []GatewayModelBinding{{ProviderCode: "gemini"}},
+			Protocol:     tc.protocol,
 		}
 		switch tc.protocol {
 		case "anthropic":

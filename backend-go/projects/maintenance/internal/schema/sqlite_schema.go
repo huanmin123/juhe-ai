@@ -175,7 +175,34 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteBusinessScheduleIntervalCheck(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite business schedule interval check: %w", err)
 	}
+	if err := ensureSystemAccountExpeditedAccountLimitSchema(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure system_accounts.expedited_account_limit: %w", err)
+	}
+	if err := ensureAccountExpeditedRecoverySchema(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure accounts.expedited_recovery_enabled: %w", err)
+	}
 	return counts, nil
+}
+
+// ensureAccountExpeditedRecoverySchema 把 accounts.expedited_recovery_enabled
+// 列（AI 账户特供快速恢复通道设计 §7）补齐到既有 SQLite 库。沿用 Node 侧
+// ensure*Schema 的 PRAGMA table_info 早退模式（Go 侧收敛在
+// ensureSQLiteTableColumn）：新库由建表 DDL 直接声明该列，守卫只在表存在且
+// 缺列时 ALTER 补列，声明与新库 DDL 同构（含列级 CHECK）；SQLite 允许 ADD
+// COLUMN 携带列级常量 CHECK，存量行取 DEFAULT 0 恒满足约束（archived 列
+// 先例）。可恢复道默认关闭（DEFAULT 0），存量行恒取 0。
+func ensureAccountExpeditedRecoverySchema(ctx context.Context, db *sql.DB) error {
+	return ensureSQLiteTableColumn(ctx, db, "accounts", "expedited_recovery_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))")
+}
+
+// ensureSystemAccountExpeditedAccountLimitSchema 把
+// system_accounts.expedited_account_limit 列（AI 账户特供快速恢复通道设计 §7）
+// 补齐到既有 SQLite 库。列可空、无默认值：NULL 即"未设覆盖"，读取侧以
+// COALESCE(expedited_account_limit, 3) 归一为默认名额 3，不在 DB 层写默认值；
+// legacy 补列携带与新库 DDL 同构的 CHECK，存量行 NULL 恒满足约束。PRAGMA
+// table_info 早退模式与 accounts 侧守卫一致。
+func ensureSystemAccountExpeditedAccountLimitSchema(ctx context.Context, db *sql.DB) error {
+	return ensureSQLiteTableColumn(ctx, db, "system_accounts", "expedited_account_limit", "INTEGER CHECK (expedited_account_limit BETWEEN 0 AND 100)")
 }
 
 // ensureSQLiteBusinessCustomQuestionColumns is the Go port of the Node

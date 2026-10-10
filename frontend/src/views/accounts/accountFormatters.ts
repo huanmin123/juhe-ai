@@ -171,6 +171,13 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
     lines.push(`下次电路检查：${formatDateTime(account.circuitSummary.nextCheckAt)}`)
   }
   lines.push(...accountLockTooltipLines(account))
+  // 特供只表达恢复道加速节奏，不表达调度优先级或健康状态（设计 §4 展示边界）。
+  if (account.expeditedRecoveryEnabled) {
+    lines.push('特供恢复：中性封顶基准 1 分钟，实际 30–90 秒')
+  }
+  if (account.expeditedOverLimit) {
+    lines.push('特供账户数量已超过当前上限')
+  }
   return lines
 }
 

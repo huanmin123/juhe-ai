@@ -45,6 +45,17 @@ func (mediaE2ECatalog) ListAccountsForGroup(groupID, systemAccountID, requestedM
 	return accounts
 }
 
+// ListChatPinnedAccountsForGroup 与 ListAccountsForGroup 同一视图按 ID 收敛
+// 单元素（对齐生产 pinned 直取语义）。
+func (c mediaE2ECatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []ChatTransportAccount {
+	for _, account := range c.ListAccountsForGroup(groupID, systemAccountID, "", "") {
+		if account.ID == accountID {
+			return []ChatTransportAccount{account}
+		}
+	}
+	return nil
+}
+
 func (mediaE2ECatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	items := (mockModelCatalog{}).ListProviderCatalog(providerCode, systemAccountID)
 	items = append(items, (mediaTestCatalog{}).ListProviderCatalog(providerCode, systemAccountID)...)

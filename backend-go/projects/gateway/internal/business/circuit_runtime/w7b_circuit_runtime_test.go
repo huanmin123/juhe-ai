@@ -1270,8 +1270,10 @@ func TestW7BContractMatrix(t *testing.T) {
 		t.Fatalf("protocol scope = %v", err)
 	}
 	// 2026-10-04 裁决 + 媒体设计 §3：媒体 lane（audio/video）以独立维度入
-	// 电路作用域，校验放行；realtime 在 M5 前不在车道词表，仍为非法值。
-	for _, lane := range []string{"audio", "video"} {
+	// 电路作用域，校验放行；M5b（24d40743c）起 realtime 同入车道词表
+	//（gatewayproto LaneRealtime，Realtime 设计 §6），同样放行；词表外
+	// 取值（"ws"）仍为非法值。
+	for _, lane := range []string{"audio", "video", "realtime"} {
 		mediaScope := protocolScope
 		mediaScope.RequestLane = lane
 		if err := ValidateGatewayAccountCircuitScope(mediaScope); err != nil {
@@ -1279,7 +1281,7 @@ func TestW7BContractMatrix(t *testing.T) {
 		}
 	}
 	protocolBadLane := protocolScope
-	protocolBadLane.RequestLane = "realtime"
+	protocolBadLane.RequestLane = "ws"
 	if err := ValidateGatewayAccountCircuitScope(protocolBadLane); err == nil {
 		t.Fatal("非法 request lane 必须报错")
 	}

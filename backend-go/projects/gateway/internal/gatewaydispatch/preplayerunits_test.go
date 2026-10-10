@@ -307,22 +307,27 @@ func TestWrapCodexPreparationErrorRecordsUsage(t *testing.T) {
 func TestSanitizePreparedCodexResponsesHistoryForAccount(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	account := testAccounts("a-1")[0]
+	// Post 阶段策略（Codex→API Key 形态）与非清理策略由纯函数计算。
+	postPolicy := HistoryPrepPolicyForRequest(account, "codex_responses", GatewayRequestEndpointFamily(req))
+	preservePolicy := HistoryPrepPolicyForRequest(account, "", GatewayRequestEndpointFamily(req))
 	// body 为 nil → nil。
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], nil, "codex_responses"); got != nil {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, nil, postPolicy); got != nil {
 		t.Fatal("nil body 返回 nil")
 	}
-	// 非 codex_responses 透传。
+	// 非 codex_responses（策略 preserve）透传。
 	original := []byte(`{"input":[]}`)
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], original, ""); string(got) != string(original) {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, original, preservePolicy); string(got) != string(original) {
 		t.Fatal("非 codex_responses 透传")
 	}
-	// 非 responses 端点透传。
+	// 非 responses 端点（策略 preserve）透传。
 	chatReq := newTestRequest(t, `{"model":"gpt-test"}`)
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(chatReq, testAccounts("a-1")[0], original, "codex_responses"); string(got) != string(original) {
+	chatPolicy := HistoryPrepPolicyForRequest(account, "codex_responses", GatewayRequestEndpointFamily(chatReq))
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, original, chatPolicy); string(got) != string(original) {
 		t.Fatal("非 responses 端点透传")
 	}
 	// 无 sanitizer 时透传。
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], original, "codex_responses"); string(got) != string(original) {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, original, postPolicy); string(got) != string(original) {
 		t.Fatal("无 sanitizer 透传")
 	}
 	// sanitizer 改写 input。
@@ -334,28 +339,28 @@ func TestSanitizePreparedCodexResponsesHistoryForAccount(t *testing.T) {
 		return CodexHistorySanitizeResult{Items: []any{"sanitized"}, Changed: true}
 	}
 	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
-	sanitized := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], []byte(`{"model":"gpt-test","input":[{"role":"user"}]}`), "codex_responses")
+	sanitized := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, []byte(`{"model":"gpt-test","input":[{"role":"user"}]}`), postPolicy)
 	parsed := mustJSONObject(t, string(sanitized))
 	if parsed["input"].([]any)[0] != "sanitized" {
 		t.Fatalf("sanitized = %#v", parsed["input"])
 	}
 	// 已标记的 body 不再清洗。
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], MarkGatewayCodexHistorySanitized([]byte(`{"input":[1]}`)), "codex_responses"); string(got) != `{"input":[1]}` {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, MarkGatewayCodexHistorySanitized([]byte(`{"input":[1]}`)), postPolicy); string(got) != `{"input":[1]}` {
 		t.Fatal("已标记 body 不再清洗")
 	}
 	// 非 JSON body 透传。
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], []byte("nope"), "codex_responses"); string(got) != "nope" {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, []byte("nope"), postPolicy); string(got) != "nope" {
 		t.Fatal("非 JSON body 透传")
 	}
 	// input 非数组透传。
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], []byte(`{"input":"text"}`), "codex_responses"); string(got) != `{"input":"text"}` {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, []byte(`{"input":"text"}`), postPolicy); string(got) != `{"input":"text"}` {
 		t.Fatal("input 非数组透传")
 	}
 	// sanitizer 未改写 → 原文。
 	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: items, Changed: false}
 	}
-	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], original, "codex_responses"); string(got) != string(original) {
+	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(account, original, postPolicy); string(got) != string(original) {
 		t.Fatal("未改写时透传原文")
 	}
 }
@@ -398,32 +403,10 @@ func (f *partsEchoDriver) BuildGatewayUpstreamRequestParts(ctx context.Context, 
 	return PreparedRequestParts{Headers: header, Body: []byte(`{"model":"gpt-test","input":[],"service_tier":"flex","reasoning_effort":"low"}`)}, nil
 }
 
-func TestDefersCodexResponsesHistorySanitization(t *testing.T) {
-	engine, _, _ := newTestEngine(t)
-	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
-	account := testAccounts("a-1")[0]
-	if engine.defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, account, "") {
-		t.Fatal("普通账户不延迟清洗")
-	}
-	oauth := testAccounts("a-1")[0]
-	oauth.Type = "oauth"
-	oauth.ProviderCode = "gpt"
-	oauth.ProtocolCode = "openai"
-	oauth.ProtocolVersion = "v1"
-	oauth.ProviderProtocolProfileID = GPTOpenAIV1ProfileID
-	if !engine.defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, oauth, "codex_responses") {
-		t.Fatal("openai oauth codex responses 请求延迟清洗")
-	}
-	// 非 responses 端点不延迟。
-	chatReq := newTestRequest(t, `{"model":"gpt-test"}`)
-	if engine.defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(chatReq, oauth, "codex_responses") {
-		t.Fatal("非 responses 端点不延迟")
-	}
-	// 非 codex_responses 兼容不延迟。
-	if engine.defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, oauth, "") {
-		t.Fatal("非 codex_responses 不延迟")
-	}
-}
+// TestDefersCodexResponsesHistorySanitization 已删除：defer 判定被
+// HistoryPrepPolicyForRequest 纯函数取代，其四个场景（普通账户 / oauth
+// codex responses / 非 responses 端点 / 非 codex_responses 兼容）已并入
+// historypreppolicy_test.go 的五形态取值表用例。
 
 // ---------------------------------------------------------------------------
 // oauthnormalizer.go / oauthadapter.go

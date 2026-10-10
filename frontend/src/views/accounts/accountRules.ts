@@ -279,6 +279,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
         items.push({ key: 'restore-normal', label: '异常恢复' })
       }
       pushDispatchFlagItems(items, account)
+      pushExpeditedRecoveryItem(items, account)
       pushAccountMaintenanceItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
@@ -286,6 +287,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
       items.push({ key: 'restore-normal', label: '恢复可调度' })
     }
     pushDispatchFlagItems(items, account)
+    pushExpeditedRecoveryItem(items, account)
     if (canUseBoundAuthorizedAccount(account)) {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
@@ -322,6 +324,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
       items.push({ key: 'restore-normal', label: '异常恢复' })
     }
     pushDispatchFlagItems(items, account)
+    pushExpeditedRecoveryItem(items, account)
     pushAccountMaintenanceItems(items, account)
     if (canToggleAccountStatus(account)) {
       pushAccountStatusToggleItem(items, account)
@@ -340,6 +343,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
       items.push({ key: 'restore-normal', label: '恢复可调度' })
     }
     pushDispatchFlagItems(items, account)
+    pushExpeditedRecoveryItem(items, account)
     if (account.status !== 'pending_test') {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
@@ -399,6 +403,16 @@ export function accountMenuItemsWithClone(menuItems: AccountMenuItem[], canClone
   ]
 }
 
+// 特供快速恢复是恢复道属性标记（非调度标记）：入口沿用账户编辑权限面，
+// 走账户 PATCH 通道（authorized-dispatch 白名单不含该字段，不经其提交）。
+function pushExpeditedRecoveryItem(items: AccountMenuItem[], account: AccountListItem): void {
+  if (!canEditAccount(account)) return
+  items.push({
+    key: account.expeditedRecoveryEnabled ? 'expedited-off' : 'expedited-on',
+    label: account.expeditedRecoveryEnabled ? '取消特供' : '设为特供'
+  })
+}
+
 function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountListItem): void {
   const canEnableDispatchFlag = isAuthorizedAccount(account)
     ? canUseBoundAuthorizedAccount(account)
@@ -443,6 +457,8 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'runtime-reset') return { ...item, icon: 'reset', tone: 'info' }
   if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
+  if (item.key === 'expedited-on') return { ...item, icon: 'restore', tone: 'warning' }
+  if (item.key === 'expedited-off') return { ...item, icon: 'restore', tone: 'default' }
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }
   if (item.key === 'fallback-off') return { ...item, icon: 'fallback', tone: 'default' }
   if (item.key === 'migrate-traffic') return { ...item, icon: 'migrate', tone: 'purple' }

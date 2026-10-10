@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -563,8 +562,8 @@ func TestW11BSinkAndModelsHelpers(t *testing.T) {
 	if bare.observeCompletion(gatewaypreauth.FailureResponseInput{}) != nil {
 		t.Fatal("无完成观察器时为 nil")
 	}
-	if bare.loadCatalog("sys", nil) != nil {
-		t.Fatal("无目录加载器时为 nil")
+	if list, err := bare.loadCatalog(gatewaypreauth.ModelsResponseInput{}, "sys"); err != nil || len(list.Entries) != 0 {
+		t.Fatalf("无目录加载器时应返回空列表: %+v err=%v", list, err)
 	}
 	sink, _, _, _, _, _ := newSinkFixture()
 	_ = sink
@@ -651,47 +650,9 @@ func TestW11BStreamResultAndErrorsHelpers(t *testing.T) {
 
 // ---- codexcontract ----
 
-func TestW11BCodexCompactionTriggerHelpers(t *testing.T) {
-	if jsonValueHasCompactionTrigger(nil, 0) {
-		t.Fatal("标量默认 false")
-	}
-	if jsonValueHasCompactionTrigger(map[string]any{"type": "compaction_trigger"}, 0) != true {
-		t.Fatal("compaction_trigger 命中")
-	}
-	nested := map[string]any{"items": []any{map[string]any{"type": "other"}, map[string]any{"type": "compaction_trigger"}}}
-	if !jsonValueHasCompactionTrigger(nested, 0) {
-		t.Fatal("嵌套命中")
-	}
-	if jsonValueHasCompactionTrigger(map[string]any{"a": 1}, 9) {
-		t.Fatal("深度超限 false")
-	}
-	// requestPathHasCompactionTrigger。
-	if requestPathHasCompactionTrigger("/v1/chat/completions", nil, nil) {
-		t.Fatal("非 /responses 路径 false")
-	}
-	scanned := &gatewaybody.BodyState{JSONParseStatus: gatewaybody.JSONParseStatusScannedJSON}
-	if requestPathHasCompactionTrigger("/v1/responses", scanned, []byte(`{"type":"compaction_trigger"}`)) {
-		t.Fatal("scanned 状态且无标记时 false")
-	}
-	triggered := &gatewaybody.BodyState{CodexCompactionTrigger: true}
-	if !requestPathHasCompactionTrigger("/v1/responses", triggered, nil) {
-		t.Fatal("已标记触发 true")
-	}
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, []byte(`{"type":"compaction_trigger"}`)) {
-		t.Fatal("小正文扫描命中")
-	}
-	if requestPathHasCompactionTrigger("/v1/responses", nil, []byte(`{}`)) {
-		t.Fatal("无匹配 false")
-	}
-	if requestPathHasCompactionTrigger("/v1/responses", nil, nil) {
-		t.Fatal("空正文 false")
-	}
-	// 大正文边缘扫描（prefix 命中）。
-	big := []byte(`{"instructions":"` + strings.Repeat("x", codexCompactionRawBodyScanEdgeBytes) + `","type":"compaction_trigger"}`)
-	if !requestPathHasCompactionTrigger("/v1/responses", nil, big) {
-		t.Fatal("尾部扫描命中")
-	}
-}
+// 请求侧压缩触发判定辅助（jsonValueHasCompactionTrigger 等）已随批次 2 遗留
+// 清理从 codexcontract.go 删除（唯一实现 gatewaycodex.CodexCompactionExpected
+// ForRequest，边界行为由 gatewaycodex 包测试锁定）；原直驱用例一并移除。
 
 // ---- inspection / precommit 纯辅助 ----
 

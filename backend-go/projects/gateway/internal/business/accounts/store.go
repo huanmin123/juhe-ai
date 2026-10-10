@@ -33,6 +33,10 @@ type Store struct {
 	postgres bool
 	gate     OwnerGate
 	now      func() time.Time
+	// invalidator carries the post-commit gateway runtime invalidation of the
+	// committed create/patch/delete writes (see invalidation.go); nil keeps
+	// it off.
+	invalidator RuntimeInvalidator
 }
 
 func NewStore(db *sql.DB, postgres bool, gate OwnerGate) (*Store, error) {

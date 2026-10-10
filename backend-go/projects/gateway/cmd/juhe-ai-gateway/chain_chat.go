@@ -189,6 +189,27 @@ func (c chatModelCatalog) ListAccountsForGroup(groupID, systemAccountID, request
 	if err != nil {
 		return nil
 	}
+	return chatTransportAccountsFromSecrets(accounts)
+}
+
+// ListChatPinnedAccountsForGroup 实现会话绑定作用域的 pinned 直取视图（AI 问答
+// 设计 §5.2 2026-10-10 修订）：按（分组, 账户 ID）经 runtime cache 专用路径
+// 直取运行时快照，含非 active/冷却/过期/禁调度账户；账户不在该分组或分组
+// 禁用/不存在时返回空切片。
+func (c chatModelCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []chat.ChatTransportAccount {
+	if c.cache == nil {
+		return nil
+	}
+	accounts, err := c.cache.ListFreshOpenAIAccountsForChatPinnedAsync(context.Background(), groupID, systemAccountID, accountID)
+	if err != nil {
+		return nil
+	}
+	return chatTransportAccountsFromSecrets(accounts)
+}
+
+// chatTransportAccountsFromSecrets 是 runtime cache 账户快照到 chat 传输视图
+// 的类型投影（ListAccountsForGroup 与 ListChatPinnedAccountsForGroup 共用）。
+func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccountSecret) []chat.ChatTransportAccount {
 	out := make([]chat.ChatTransportAccount, 0, len(accounts))
 	for _, account := range accounts {
 		mappings := make([]chat.ChatTransportModelMapping, 0, len(account.ModelMappings))

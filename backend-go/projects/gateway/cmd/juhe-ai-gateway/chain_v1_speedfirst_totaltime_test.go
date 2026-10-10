@@ -15,12 +15,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 // speedFirstTotalTimeFake 分维度记录决策面调用（首字与总时间通道独立计数，
@@ -578,7 +581,6 @@ func TestChainLatencyDegradationPortTotalTimeRecords(t *testing.T) {
 	}
 }
 
-
 // 压缩端到端切号（设计 6.9 压缩项）：压缩形态（wall 无界 + 首字阈值缺省）
 // 下总时间决策照常工作——确认慢 + 未写出 + 有候选 → abort + 预占 + 载荷槽
 // 按压缩档阈值；切号后 compact 契约重查为既有链（chain_v1 主流程）。
@@ -586,7 +588,7 @@ func TestSpeedFirstTotalTimeDeadlineDecisionCompactionLane(t *testing.T) {
 	fake := &speedFirstTotalTimeFake{degraded: map[string]bool{"acc_1": true}}
 	store := &w1FakeConcurrencyStore{}
 	loop := totalDeadlineLoop(t, fake)
-	// 压缩形态：wall 无界（TimeoutPolicyCodexCompactionUnbounded 同源）+
+	// 压缩形态：wall 无界（preflight 压缩判定承载，设计 5.2 三轨合一）+
 	// 首字阈值缺省（preflight 对压缩请求只豁免首字段）。
 	loop.budgets.wall = &gatewayrouting.GatewayRequestWallBudget{Unbounded: true}
 	loop.current.NormalRouteSpeedFirstConfig = &gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig{
@@ -611,6 +613,55 @@ func TestSpeedFirstTotalTimeDeadlineDecisionCompactionLane(t *testing.T) {
 	if len(store.acquired) == 0 {
 		t.Fatal("切号目标必须尝试获取并发槽")
 	}
+}
+
+// TestSpeedFirstTotalTimeLaneOf 锁定链面总时间档位判定（调度内核通用化设计
+// 5.2：超时豁免布尔 + 估算输入 token 与 SpeedFirstLargeInputTokenThreshold
+// 的比较在链面完成后经 TotalTimeLane 传入引擎；原 dispatch 侧
+// ResolveNormalRouteTotalTimeDeadline 的大输入选档分支随批次 2 移到此处）。
+func TestSpeedFirstTotalTimeLaneOf(t *testing.T) {
+	// 与引擎侧估算同输入形态：直接构造带 RawBody 的 GatewayRequest（chain
+	// 物化前的视图，估算按 rawBody 字符加权）。
+	plainReq := &gatewaypreauth.GatewayRequest{Body: &gatewaybody.Request{
+		RawBody: []byte(`{"model":"gpt-test","messages":[{"role":"user","content":"hello"}]}`),
+	}}
+	largeBody := `{"model":"gpt-test","messages":[{"role":"user","content":"` +
+		strings.Repeat("长输入内容用于字符加权估算", 14000) + `"}]}`
+	largeReq := &gatewaypreauth.GatewayRequest{Body: &gatewaybody.Request{
+		RawBody: []byte(largeBody),
+	}}
+	if gatewaydispatch.TotalTimeLane(0) != gatewaydispatch.TotalTimeLaneNormal {
+		t.Fatal("TotalTimeLane 零值必须是 normal 档")
+	}
+
+	t.Run("nil预算与nil请求判normal", func(t *testing.T) {
+		if lane := speedFirstTotalTimeLaneOf(nil, nil); lane != gatewaydispatch.TotalTimeLaneNormal {
+			t.Fatalf("nil wall + nil req 判 normal, got %v", lane)
+		}
+	})
+
+	t.Run("超时豁免恒extended", func(t *testing.T) {
+		wall := &gatewayrouting.GatewayRequestWallBudget{Unbounded: true}
+		if lane := speedFirstTotalTimeLaneOf(wall, nil); lane != gatewaydispatch.TotalTimeLaneExtended {
+			t.Fatalf("Unbounded wall（压缩豁免承载）判 extended, got %v", lane)
+		}
+	})
+
+	t.Run("大输入估算判extended", func(t *testing.T) {
+		tokens, _ := gatewayopenai.EstimateRequestInputTokens(largeReq.Body.Body, largeReq.Body.RawBody)
+		if tokens < routestrategies.SpeedFirstLargeInputTokenThreshold {
+			t.Fatalf("夹具必须达到大输入阈值: %d", tokens)
+		}
+		if lane := speedFirstTotalTimeLaneOf(nil, largeReq); lane != gatewaydispatch.TotalTimeLaneExtended {
+			t.Fatalf("估算输入 ≥ SpeedFirstLargeInputTokenThreshold 判 extended, got %v", lane)
+		}
+	})
+
+	t.Run("普通小请求判normal", func(t *testing.T) {
+		if lane := speedFirstTotalTimeLaneOf(nil, plainReq); lane != gatewaydispatch.TotalTimeLaneNormal {
+			t.Fatalf("小输入普通请求判 normal, got %v", lane)
+		}
+	})
 }
 
 // 引擎级同账户重试不变量（设计 6.9）：轮内二次完成观测（引擎内重试不触发
@@ -748,9 +799,8 @@ func TestObserveTotalTimeDeadlineSampleConfigNil(t *testing.T) {
 	}
 }
 
-
 // 副作用 lane（图片等）不参与总时间维度：软观察不 arm、完成观测静默
-//（speedFirstTotalTimeThresholdMsOf 的 lane 门，设计 6.2）。
+// （speedFirstTotalTimeThresholdMsOf 的 lane 门，设计 6.2）。
 func TestTotalTimeDeadlineSilentOnNonTextLane(t *testing.T) {
 	fake := &speedFirstTotalTimeFake{}
 	loop := totalDeadlineLoop(t, fake)

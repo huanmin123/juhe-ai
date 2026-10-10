@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -246,16 +247,17 @@ func TestW11BInterceptorCodexCyberPolicyPassthrough(t *testing.T) {
 // ---- codexcontract ----
 
 func TestW11BCodexContractHelpers(t *testing.T) {
-	// CodexCompactionExpectedForRequest。
-	if CodexCompactionExpectedForRequest(nil) {
+	// 压缩请求判定唯一实现（gatewaycodex.CodexCompactionExpectedForRequest，
+	// 设计 5.2 三轨合一后本包同形拷贝已删除）。
+	if gatewaycodex.CodexCompactionExpectedForRequest(nil) {
 		t.Fatal("nil 请求 false")
 	}
 	getReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/responses/compact", nil))
-	if CodexCompactionExpectedForRequest(getReq) {
+	if gatewaycodex.CodexCompactionExpectedForRequest(getReq) {
 		t.Fatal("GET false")
 	}
 	compactReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/responses/compact", nil))
-	if !CodexCompactionExpectedForRequest(compactReq) {
+	if !gatewaycodex.CodexCompactionExpectedForRequest(compactReq) {
 		t.Fatal("/responses/compact 恒命中")
 	}
 	// CountCodexCompactionOutputItemsFromJSON。
@@ -285,11 +287,6 @@ func TestW11BCodexContractHelpers(t *testing.T) {
 	}
 	if !isCodexDeserializableCompactionItem(map[string]any{"type": "compaction", "encrypted_content": "x"}) {
 		t.Fatal("合法项 true")
-	}
-	// normalizedOpenAIRequestPath 空路径回退。
-	emptyReq := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/", nil))
-	if normalizedOpenAIRequestPath(emptyReq) != "/" {
-		t.Fatal("空路径回退 /")
 	}
 }
 

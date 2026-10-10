@@ -96,15 +96,19 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 	if err := businessDB.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {
 		t.Fatalf("query api keys: %v", err)
 	}
-	if apiKeys != 11 {
-		t.Fatalf("api keys = %d, want 11 (10 default + 1 chat)", apiKeys)
+	// 2026-10-07 默认资源收口（0e83a580b）：种子只预置 GPT 一套默认分组 +
+	// 默认路由 + 默认 API Key，admin chat key 不再预置（由会话创建链按需
+	// EnsureChatAPIKey 自愈补建），与 maintenance sqlite_seed_test 的种子
+	// 契约计数（api_keys 1）同源。
+	if apiKeys != 1 {
+		t.Fatalf("api keys = %d, want 1 (2026-10-07 默认资源收口：仅 GPT 默认)", apiKeys)
 	}
 	var defaultGroups int
 	if err := businessDB.QueryRow("SELECT count(*) FROM groups WHERE is_default = 1 AND system_account_id = 'sys_admin'").Scan(&defaultGroups); err != nil {
 		t.Fatalf("query groups: %v", err)
 	}
-	if defaultGroups != 11 {
-		t.Fatalf("default groups = %d, want 11", defaultGroups)
+	if defaultGroups != 1 {
+		t.Fatalf("default groups = %d, want 1 (2026-10-07 默认资源收口：仅 GPT)", defaultGroups)
 	}
 
 	assertPreflightTables(t, filepath.Join(root, "stats.sqlite3"))

@@ -233,7 +233,7 @@ type hookEnqueuer struct {
 	onEnqueue func(input usagewriter.UsageRecordInput)
 }
 
-func (e *hookEnqueuer) Enqueue(_ usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
+func (e *hookEnqueuer) EnqueueDurable(_ usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
 	if e.onEnqueue != nil {
 		e.onEnqueue(input)
 	}
@@ -305,7 +305,7 @@ type failingEnqueuer struct {
 	calls int
 }
 
-func (e *failingEnqueuer) Enqueue(_ usagewriter.Ctx, _ usagewriter.UsageRecordInput) error {
+func (e *failingEnqueuer) EnqueueDurable(_ usagewriter.Ctx, _ usagewriter.UsageRecordInput) error {
 	e.calls++
 	return errors.New("usage writer 已停止，拒绝写入使用记录")
 }

@@ -66,7 +66,15 @@ export async function logout(): Promise<void> {
   const operationVersion = advanceAuthStateVersion()
   await api.auth.logout()
   if (operationVersion !== authStateVersion) return
-  await clearCurrentAccountChatState(systemAccountId)
+  // 服务端注销已成功，本地认证态必须完成注销（BUG-0303）：聊天清理失败
+  // （如浏览器禁用存储时 sessionStorage getter 抛 SecurityError）不得阻断
+  // clearAuthState；console.error 保留可观察性，不静默吞掉。
+  try {
+    await clearCurrentAccountChatState(systemAccountId)
+  } catch (error: unknown) {
+    console.error('注销时清理账户聊天状态失败，继续完成本地注销。', error)
+  }
+  // 版本守卫保护清理期间新登录的身份，不被本次旧注销清空。
   if (operationVersion !== authStateVersion) return
   clearAuthState()
 }

@@ -130,7 +130,7 @@ func TestWireUsageWriterFamilyWiresOverflowReplay(t *testing.T) {
 // wbFailingEnqueuer 恒失败入队器：让 drain 保留文件，制造待删水位。
 type wbFailingEnqueuer struct{}
 
-func (wbFailingEnqueuer) Enqueue(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
+func (wbFailingEnqueuer) EnqueueDurable(ctx usagewriter.Ctx, input usagewriter.UsageRecordInput) error {
 	return context.Canceled
 }
 

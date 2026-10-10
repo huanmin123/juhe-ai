@@ -405,23 +405,9 @@ func TestW9CPathHelpers(t *testing.T) {
 	if got := LowercasedRequestPath("/V1/Models?X=1"); got != "/v1/models" {
 		t.Fatalf("lowercased path = %q", got)
 	}
-	if got := splitPathOnly("/v1/models?a=1"); got != "/v1/models" {
-		t.Fatalf("splitPathOnly = %q", got)
-	}
-	if got := splitPathOnly("/v1/models"); got != "/v1/models" {
-		t.Fatalf("splitPathOnly plain = %q", got)
-	}
-	// requestPathHasCompactionTrigger arms.
-	// Only the exact /responses path (after /v1 stripping) consults the body.
-	if requestPathHasCompactionTrigger("/v1/responses/compact?x=1", nil, nil) != false {
-		t.Fatal("compact path is not the /responses trigger path")
-	}
-	if requestPathHasCompactionTrigger("/v1/responses", nil, []byte(`{"type":"compaction_trigger"}`)) != true {
-		t.Fatal("compaction body must trigger")
-	}
-	if requestPathHasCompactionTrigger("/v1/responses", nil, []byte(`{}`)) != false {
-		t.Fatal("plain body must not trigger")
-	}
+	// splitPathOnly / requestPathHasCompactionTrigger 已随批次 2 遗留清理从
+	// codexcontract.go 删除（唯一实现 gatewaycodex.
+	// CodexCompactionExpectedForRequest）；原直驱用例一并移除。
 	if got := timeoutSeconds(0); got != 1 {
 		t.Fatalf("zero timeout seconds = %d", got)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strconv"
@@ -201,6 +202,21 @@ func (r *PostgresDirectInputReader) LoadAccountWithFailures(ctx context.Context,
 	return r.load(ctx, 1, true, normalizedAccountID)
 }
 
+// LoadAccountConfigRevision 实现执行前新鲜度门的最小业务读面（设计 §6.3）：
+// 按账户主键单列重读 config_revision；软删行视为不存在。只读连接上的主键
+// SELECT，成本相对一次真实上游探针可忽略。
+func (r *PostgresDirectInputReader) LoadAccountConfigRevision(ctx context.Context, accountID string) (int64, bool, error) {
+	var revision int64
+	err := r.db.QueryRowContext(ctx, `SELECT config_revision FROM juhe_business.accounts WHERE id=$1 AND deleted_at IS NULL`, accountID).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("读取 PG direct input 账户 config_revision 失败: %w", err)
+	}
+	return revision, true, nil
+}
+
 func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreSchedule bool, accountID string) (DirectInputLoadResult, error) {
 	if limit < 1 || limit > maxJ1Capacity {
 		return DirectInputLoadResult{}, fmt.Errorf("PG direct input limit 必须在 1..%d", maxJ1Capacity)
@@ -304,9 +320,21 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	return result, nil
 }
 
+// expeditedCooldownNeutralMaxMS 是特供账户的中性顺延封顶基准（设计 §6.2）：
+// 仅在按账户装配点覆盖，普通账户维持 loadDirectScheduleFrom 装配的 900_000
+// 全局值不动。
+const expeditedCooldownNeutralMaxMS = int64(60 * time.Second / time.Millisecond)
+
 func buildDirectCandidateInput(candidate directCandidate, direct exactkeyprobe.DirectInput, secret string, now time.Time) (exactkeyprobe.Input, *DirectInputFailure, error) {
 	input, err := direct.ToInput(secret, now)
 	if err == nil {
+		// 特供档位按账户装配（设计 §6 传播链）：Eligibility 布尔随输入冻结，
+		// 中性封顶覆盖只发生在本装配点；普通账户 Schedule 逐字节保持 settings
+		// 全局值。
+		input.Eligibility.ExpeditedRecovery = candidate.expeditedRecovery
+		if candidate.expeditedRecovery {
+			input.Schedule.CooldownNeutralMaxMS = expeditedCooldownNeutralMaxMS
+		}
 		return input, nil, nil
 	}
 	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision, Reason: err.Error()}
@@ -324,6 +352,7 @@ type directCandidate struct {
 	binding                 exactkeyprobe.DirectBinding
 	proxy                   *exactkeyprobe.DirectProxy
 	inputVersion            int64
+	expeditedRecovery       bool
 	systemAccount           string
 	authorizationResourceID string
 	authorizationOwner      string
@@ -412,7 +441,7 @@ func directInputScanCap(limit int) int {
 const directInputCandidatesSQL = `
 SELECT
   a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.client_compatibility, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
+  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
@@ -485,6 +514,9 @@ WHERE a.deleted_at IS NULL
 -- active) backlog starve the other class under LIMIT; per-class row numbers
 -- give each class a slot while still filling from the other class when one is
 -- exhausted. Do not order by updated_at: outcome projection changes it.
+-- Within the cooldown class, expedited-recovery accounts form the first
+-- priority layer (expedited_recovery_enabled DESC) and keep cooldown_until ASC
+-- inside that layer; pending_test activation stays globally first.
 ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,
   CASE WHEN a.status = 'pending_test' THEN
     ROW_NUMBER() OVER (
@@ -493,9 +525,10 @@ ORDER BY CASE WHEN a.status = 'pending_test' THEN 0 ELSE 1 END,
   ELSE
     ROW_NUMBER() OVER (
       PARTITION BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END
-      ORDER BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)
+      ORDER BY CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.expedited_recovery_enabled ELSE 0 END DESC, CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST, a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC)
   END,
   CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN 0 ELSE 1 END,
+  CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.expedited_recovery_enabled ELSE 0 END DESC,
   CASE WHEN a.status IN ('temporary_unavailable', 'rate_limited') THEN a.cooldown_until ELSE a.next_health_check_at END ASC NULLS FIRST,
   a.last_health_check_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
 LIMIT $2 OFFSET $5`
@@ -504,6 +537,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var result directCandidate
 	var schedulable, sourceSchedulable sql.NullInt64
 	var continuousProbe sql.NullBool
+	var expeditedRecovery sql.NullInt64
 	var accountExpires, cooldownUntil, observationStarted, cooldownGeneration sql.NullString
 	var authorizationID, authorizationStatus, authorizationExpires, authorizationLimits sql.NullString
 	var authorizationResourceID, authorizationOwner, authorizationTeam sql.NullString
@@ -517,7 +551,7 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var proxyPort sql.NullInt64
 	if err := rows.Scan(
 		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &accountProfile, &accountProtocol, &accountProtocolVersion, &result.account.Type, &accountClientCompatibility, &result.account.Status, &schedulable,
-		&result.account.EndpointMode, &result.account.HealthModel, &mappedUpstreamModel, &mappedUpstreamFamily, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe,
+		&result.account.EndpointMode, &result.account.HealthModel, &mappedUpstreamModel, &mappedUpstreamFamily, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe, &expeditedRecovery,
 		&observationStarted, &cooldownGeneration, &result.systemAccount,
 		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
 		&sourceID, &sourceRevision, &sourceProvider, &sourceProfile, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceClientCompatibility, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
@@ -534,6 +568,9 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	result.account.MappedUpstreamEndpointFamily = mappedUpstreamFamily.String
 	result.account.Schedulable = schedulable.Valid && schedulable.Int64 == 1
 	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
+	// expedited_recovery_enabled 与 schedulable 同构（integer 0/1，NOT NULL
+	// DEFAULT 0）；窄表兜底补出的可空列 NULL 视为未标记，装配普通档位。
+	result.expeditedRecovery = expeditedRecovery.Valid && expeditedRecovery.Int64 == 1
 	var err error
 	if result.account.AccountExpiresAt, err = parseNullableDirectTime(accountExpires); err != nil {
 		return result, err

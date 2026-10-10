@@ -606,7 +606,8 @@ func setNoStoreHeaders(w http.ResponseWriter) {
 
 // myChatAccounts mirrors GET /my-chat/accounts（设计 §5.2，替代已退场的
 // GET /conversation-bind-options）：登录用户一次取回其数据范围
-// （ChatBindScope）内全部可派发账户（id/name/providerCode/status，去重），
+// （ChatBindScope）内全部未删除账户（id/name/providerCode/status，去重；
+// 不设可用性过滤，status 为生效状态原值，2026-10-10 修订），
 // 供会话绑定与（后续阶段的）工具绑定统一使用。查询端口未接线或查询失败沿用
 // 既有 500 语义。
 func (rt *chatRoutes) myChatAccounts(w http.ResponseWriter, r *http.Request) {
@@ -1119,10 +1120,11 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 }
 
 // patchConversation mirrors PATCH /conversations/{id}. accountId 走账户选择/
-// 切换链路：数据范围与启用校验（AccountLookup）→ 名称快照落库；当前
-// lastModel 不在新账户可路由范围时联动清空模型选择（前端按响应 lastModel
-// 为空提示重选，设计 §5.4/§6）。归档会话禁止切换账户与工具绑定（设计 §8
-// 「不做原地迁移」），展示字段（标题/置顶/默认图像模型）保持可改。
+// 切换链路：数据范围与存在性校验（AccountLookup，不因账户生效状态拒绝，
+// 2026-10-10 修订）→ 名称快照落库；当前 lastModel 不在新账户可路由范围时
+// 联动清空模型选择（前端按响应 lastModel 为空提示重选，设计 §5.4/§6）。
+// 归档会话禁止切换账户与工具绑定（设计 §8「不做原地迁移」），展示字段
+// （标题/置顶/默认图像模型）保持可改。
 // searchBinding/imageBinding 走候选校验（工具体系设计 §8.2）：二元组/账户
 // 必须在候选列表内，失败 400 返回候选；null 解绑。
 func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) {
@@ -1182,10 +1184,8 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 			writeChatRouteError(w, &invalidRequestError{Message: "绑定的账户不存在"})
 			return
 		}
-		if !ref.Enabled {
-			writeChatRouteError(w, &invalidRequestError{Message: "绑定的账户已停用"})
-			return
-		}
+		// 绑定不因账户生效状态拒绝（2026-10-10 修订：禁用/限流/冷却/过期账户
+		// 均可绑定与发送测试）；删除/范围外已由 ref == nil 拒绝。
 		bindAccountID = &ref.ID
 		bindAccountName = ref.Name
 		// 切换账户视为新语境（设计 §6）：当前 lastModel 不在新账户可路由

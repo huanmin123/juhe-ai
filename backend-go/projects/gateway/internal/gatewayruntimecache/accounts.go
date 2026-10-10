@@ -71,6 +71,23 @@ func (s *Service) ListFreshOpenAIAccountsForGroupAsync(ctx context.Context, grou
 	return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, result.Accounts)
 }
 
+// ListFreshOpenAIAccountsForChatPinnedAsync 是 AI 问答 chat-pinned 派发的专用
+// 直取读（AI 问答设计 §5.2 2026-10-10 修订）：loader 按（分组, 账户 ID）直取
+// 该账户的运行时快照（含非 active/冷却/过期/禁调度账户，绕过共享候选窗的
+// 可用性窗口），仅收敛到该账户单元素；分组禁用/不存在或账户不在该分组时返回
+// 空切片。恒 fresh 直读不走缓存（pinned 快照的可用性语义与常规窗口缓存不同
+// 键空间，不共享缓存条目）；返回前仅注入实时并发叠加，不做可用性剔除。
+// /v1 常规读路径不经过本方法，语义不受影响。
+func (s *Service) ListFreshOpenAIAccountsForChatPinnedAsync(ctx context.Context, groupID, systemAccountID, accountID string) ([]OpenAIAccountSecret, error) {
+	result, err := s.models.ListOpenAIAccountsForGroupResult(ctx, groupID, systemAccountID, OpenAIAccountsForGroupOptions{
+		ChatPinnedAccountID: accountID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.cloneOpenAIAccountsWithCurrentConcurrencyKeepAll(ctx, result.Accounts)
+}
+
 // ListRecoverableUnavailableOpenAIAccountsForGroupAsync mirrors
 // listRecoverableUnavailableOpenAIAccountsForGroupAsync: loader with
 // includeUnavailable then the local recoverability window filter.
@@ -192,6 +209,29 @@ func (s *Service) applyConcurrencyOverlay(accounts []OpenAIAccountSecret, concur
 		cloned := CloneStaticOpenAIAccountSecret(*account)
 		value := 0
 		if observed, ok := concurrency[gatewayAccountConcurrencyAccountID(account)]; ok {
+			value = observed
+		}
+		cloned.CurrentConcurrency = &value
+		out = append(out, cloned)
+	}
+	return out, nil
+}
+
+// cloneOpenAIAccountsWithCurrentConcurrencyKeepAll 是 chat-pinned 直取专用的
+// 克隆叠加（AI 问答设计 §5.2 2026-10-10 修订）：与 cloneOpenAIAccountsWith-
+// CurrentConcurrency 相同的实时并发注入，但不做 isOpenAIAccountRuntimeUsableAt
+// 可用性剔除——pinned 快照必须含禁用/冷却/过期账户。常规 /v1 读路径不经过
+// 本方法（applyConcurrencyOverlay 的过滤语义保持现状）。
+func (s *Service) cloneOpenAIAccountsWithCurrentConcurrencyKeepAll(ctx context.Context, accounts []OpenAIAccountSecret) ([]OpenAIAccountSecret, error) {
+	concurrency, err := s.models.LoadAccountCurrentConcurrencyByID(ctx, gatewayAccountConcurrencyAccountIDs(accounts))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]OpenAIAccountSecret, 0, len(accounts))
+	for i := range accounts {
+		cloned := CloneStaticOpenAIAccountSecret(accounts[i])
+		value := 0
+		if observed, ok := concurrency[gatewayAccountConcurrencyAccountID(&accounts[i])]; ok {
 			value = observed
 		}
 		cloned.CurrentConcurrency = &value

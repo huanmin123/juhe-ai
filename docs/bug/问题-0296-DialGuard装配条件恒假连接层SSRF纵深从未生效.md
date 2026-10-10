@@ -1,6 +1,6 @@
 # BUG-0296：TransportOptions.DialGuard 装配条件恒假，/v1 链连接层 SSRF 纵深自引入起从未生效
 
-状态：已修复（2026-10-08，随外部复审生图 SSRF 加固批次实施，待发布验证）。
+状态：已修复（2026-10-10）——DialGuard 装配、生图直连下载、生图代理下载最终目标校验（方案 A）全部收口，待发布验证。
 
 ## 缺陷
 
@@ -45,4 +45,48 @@ if options.DialGuard != nil && transport.DialContext == nil {
 ## 关联
 
 - 问题-0175 档案 D-146（SSRF 半边已随本档案收口，Governor/连接治理面仍开放）、D-192（已收口）。
-- 外部复审问题 1（生图下载 SSRF）为同批修复；问题 2/3/4/5/6/7 同批复审清单见会话交付说明。
+- 外部复审问题 1（生图下载 SSRF）为同批加固；直连与代理的修复覆盖不同，代理最终目标残留见下节。完整复审状态见 [全面审查复核与残留问题报告](../reports/全面审查复核与残留问题报告-2026-10-09.md)。
+
+## 2026-10-09 复审：代理最终图片 URL 校验残留
+
+### 已修复与仍缺失的边界
+
+`dd11b92a5` 已修复 transport 的 guard 装配及生图回退直连路径。不能由此推断所有代理下载的最终目标都已受保护：
+
+- `chat/generation_images.go` 的 `downloadGeneratedImage` 在发送前没有检查最终图片 URL 的主机。上游 JSON 中的 `url` 被直接送入该方法。
+- `cmd/juhe-ai-gateway/chain_chat_image_proxy.go` 用部署级配置创建 `DialGuard` 后交给 `upstreamhttp.SharedClient`。HTTP(S) 代理分支中，guard 检查的是代理 socket 主机；图片目标由 HTTP 代理处理。
+- `shared/platform/upstreamhttp/transport.go` 的 SOCKS 分支使用独立拨号器，`socks5h` 将目标域名交给代理解析，不执行该 guard 的本地解析与固定拨号。私网目标字面量也未在发送前拦截。
+- 两条下载路径当前均禁止跟随重定向；残留是首次目标校验，不是重定向回归。
+
+上游若能控制返回的图片 URL，仍可诱导已绑定代理尝试访问私网目标。实际可达范围取决于代理所在网络和目标 ACL，不能据此声称可访问 gateway 本机 Docker 内的 PostgreSQL/Redis，更不能声称已验证访问生产内网。
+
+### 本机 Mock 实证
+
+2026-10-09 在 gateway 模块下运行临时 Go 程序，使用现有 `upstreamhttp.NewDialGuard` 与 `NewClient`（与 `SharedClient` 共用 `NewTransport` 和 `NewClientWithTransport` 构造逻辑）：
+
+1. 创建本机 `httptest` HTTP 代理；handler 只记录请求并返回固定响应，不向任何目标转发。
+2. guard 使用严格配置，仅将该 Mock 代理 origin 加入私网 allowlist。
+3. 经代理请求 `http://10.255.255.1:8080/private-image.png`。
+4. 实际退出码为 `0`，输出如下：
+
+```text
+proxy_observed=GET http://10.255.255.1:8080/private-image.png
+response_status=200
+response_body=mock-only-no-forward
+```
+
+这证明私网最终 URL 被送到了代理。该实验未访问私网目标、真实代理或生产环境。SOCKS 路径本轮仅完成源码核验，未运行协议级 Mock。
+
+### 待处理与验收
+
+明确生图最终目标的安全策略，并在代理请求发出前执行目标校验；代理地址的合法性不能替代最终目标校验。远端 DNS 解析模式还需明确代理侧解析约束，不能把一次本地 DNS 预检当成已消除远端 rebinding。
+
+回归至少覆盖 HTTP(S)/SOCKS 代理对私网字面量、localhost、允许的公网目标及重定向的处理，同时保留合法私网代理的可用性。现有直连测试 `TestChatImageURLDownload*` 本轮通过，但不覆盖代理最终目标拒绝。此残留未修复前，外部问题 1 只能记为部分修复。
+
+## 2026-10-10 修复记录：代理最终目标校验（方案 A）
+
+- 实施裁决：用户 2026-10-10 选定方案 A（与 `/v1` 链同源的部署级 `URLSecurityConfig` 在发送前校验最终目标）。落点在组合根 `cmd/juhe-ai-gateway/chain_chat_image_proxy.go`：新增 `targetGuardRoundTripper`——发送前对 `request.URL` 最终目标主机经同一部署级 guard 的 `ValidateHost` 做本地解析校验（两条生图下载路径均禁跟随重定向，`req.URL` 即最终目标首跳；scheme 限 http/https、端口按 scheme 补默认；拒绝错误为 `UnsafeResolvedUpstreamURLError`，与直连路径可 `errors.As` 一致）；新增纯装配 helper `newTargetGuardProxyClient`（`SharedClient` 浅拷贝 + 替换 Transport，保留池 client 的 `CheckRedirect=ErrUseLastResponse` 禁跟随语义，池条目零改写）。三条路径的最终目标防护：直连=拨号边界 guard（原样不变）；HTTP(S) 代理=拨号边界校验代理主机（原样）+ 发送前目标预检（新增）；SOCKS5H=发送前本地解析预检（新增）。chat 包与 `ImageDownloadProxy` 端口形状零改动。
+- 残留登记（不宣称消除）：SOCKS5H 实际连接仍由代理解析，发送前本地预检不消除远端解析偏移窗口；预检与拨号之间亦无钉扎传递（与 `/v1` 链 prepare 同一语义，见 gatewayupstream/transport_urlpolicy.go 头注释）。
+- 验证：新增 9 用例（`chain_chat_image_proxy_targetguard_test.go`，`-race` 绿）——严格配置私网字面量在代理收到请求前拒绝（stub 代理计数 0，即 2026-10-09 Mock 实证形态的反面）、allowlist 私网放行（合法私网代理可用性）、`AllowPrivateBaseUrls=true`（生产 env 默认形态）放行、公网字面量放行、302 不跟随且计数不增、SOCKS5H 预检先于拨号（listener 连接计数 0）、非 http(s) 拒绝、localhost 域名拒绝、池条目不被改写；`internal/chat` 零改动且既有 `TestChatImageURLDownload*`/`TestGenerateChatImage*` 全绿。等价类归并说明：localhost/公网/302 为 wrapper 层代理协议无关行为，SOCKS 协议级实测仅私网字面量+先于拨号一臂；allowlist 无端口投影分支为静态核验。
+- 文档同步：`docs/functions/核心功能设计.md:195`（生图 url 下载发送前最终目标解析校验 + socks5h 残留窗口）；`docs/develop/安装指南.md:119`（配置面消费说明 + 残留窗口）。同段"全局开关…生产仍禁止"旧句与 runtime 默认放行决策（2026-09-19）的措辞张力为既有文档漂移，本批未处理、在此登记。
+- 复审：独立只读复审无 blocker（2026-10-10）。外部复审问题 1 自本记录起由"部分修复"改判"已修复"。

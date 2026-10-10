@@ -209,6 +209,10 @@ type AdvancedDetail struct {
 	LockState                                     string                              `json:"lockState"`
 	LockDeathTimeoutSeconds                       int                                 `json:"lockDeathTimeoutSeconds"`
 	LockRetryIntervalSeconds                      int                                 `json:"lockRetryIntervalSeconds"`
+	// 特供快速恢复（AI账户特供快速恢复通道设计 §8.2）：行属性标记（授权实例
+	// 行取自身行值，来源特供不传染）+ 归属名下"已超限"展示位。恒输出。
+	ExpeditedRecoveryEnabled bool `json:"expeditedRecoveryEnabled"`
+	ExpeditedOverLimit       bool `json:"expeditedOverLimit"`
 }
 
 // FindAdvancedDetail mirrors findAccountAdvancedDetailAsync: the scope-checked
@@ -243,6 +247,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		sourceAvailabilityJSON     sql.NullString
 		sourceAccountExpiresAt     sql.NullString
 		sourceProbeEnabled         sql.NullInt64
+		expeditedRecoveryEnabled   int
 	}
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
@@ -274,7 +279,8 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 			source_accounts.proxy_profile_id AS source_proxy_profile_id,
 			source_accounts.availability_schedule_json AS source_availability_schedule_json,
 			source_accounts.account_expires_at AS source_account_expires_at,
-			source_accounts.temporary_unavailable_continuous_probe_enabled AS source_temporary_unavailable_continuous_probe_enabled
+			source_accounts.temporary_unavailable_continuous_probe_enabled AS source_temporary_unavailable_continuous_probe_enabled,
+			accounts.expedited_recovery_enabled
 		FROM `+s.table("accounts")+` accounts
 		LEFT JOIN `+s.table("resource_authorizations")+` active_authorizations
 			ON active_authorizations.id = accounts.authorization_instance_authorization_id
@@ -299,7 +305,8 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		&row.authorizationID, &row.sourceAccountID, &row.activeAuthorizationID,
 		&row.sourceStatus, &row.sourceSchedulable,
 		&row.sourceProxyProfileID, &row.sourceAvailabilityJSON,
-		&row.sourceAccountExpiresAt, &row.sourceProbeEnabled)
+		&row.sourceAccountExpiresAt, &row.sourceProbeEnabled,
+		&row.expeditedRecoveryEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -436,6 +443,18 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		detail.LockDeathTimeoutSeconds = lock.deathTimeout
 		detail.LockRetryIntervalSeconds = lock.retryInterval
 	}
+	// 特供投影（设计 §8.2）：行值恒取本行（实例特供不传染来源），已超限位按
+	// 归属行上限与归属名下计数派生，管理员与归属人一致。
+	detail.ExpeditedRecoveryEnabled = row.expeditedRecoveryEnabled == 1
+	counts, limits, err := s.expeditedOwnerUsage(ctx, s.db, []string{row.systemAccountID})
+	if err != nil {
+		return nil, err
+	}
+	limit := defaultExpeditedAccountLimit
+	if value, ok := limits[row.systemAccountID]; ok {
+		limit = value
+	}
+	detail.ExpeditedOverLimit = counts[row.systemAccountID] > limit
 	return detail, nil
 }
 

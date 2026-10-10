@@ -86,8 +86,8 @@ type DispatchContext struct {
 	ResponseInspectionPolicies               []gatewayruntimecache.ResponseInspectionPolicySummary
 	APIKeyRecord                             *gatewayruntimecache.GatewayAPIKeyRow
 	GroupFallbackAPIKeyRecord                *gatewayruntimecache.GatewayAPIKeyRow
-	CodexTurnAccountAvoidanceApplied         bool
-	CodexTurnAvoidedAccountIDs               []string
+	SchedulingExclusions                     *SchedulingExclusions
+	DispatchSegments                         []DispatchSegment
 	PrecheckHalfOpenEligible                 bool
 	ServerRetryBudget                        *ServerRetryBudget
 	GatewayRequestWallBudget                 *gatewayrouting.GatewayRequestWallBudget
@@ -678,22 +678,34 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		}); err != nil {
 			return PreflightResult{}, err
 		}
+		modelsBindings := gatewayModelsBindings(apiKeyRecord)
+		var modelsSendErr error
 		switch modelsResponseProtocol {
 		case ResponseProtocolAnthropicV:
-			s.Responses.SendAnthropicModelsGatewayResponse(ModelsResponseInput{
+			modelsSendErr = s.Responses.SendAnthropicModelsGatewayResponse(ModelsResponseInput{
 				Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
-				ProviderCodes: gatewayModelsProviderCodes(apiKeyRecord), StartedAt: input.StartedAt,
+				Bindings: modelsBindings, Context: ctx, StartedAt: input.StartedAt,
 			})
 		case ResponseProtocolGeminiV:
-			s.Responses.SendGeminiModelsGatewayResponse(ModelsResponseInput{
+			modelsSendErr = s.Responses.SendGeminiModelsGatewayResponse(ModelsResponseInput{
 				Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
-				ProviderCodes: gatewayModelsProviderCodes(apiKeyRecord), StartedAt: input.StartedAt,
+				Bindings: modelsBindings, Context: ctx, StartedAt: input.StartedAt,
 			})
 		default:
-			s.Responses.SendOpenAIModelsGatewayResponse(ModelsResponseInput{
+			modelsSendErr = s.Responses.SendOpenAIModelsGatewayResponse(ModelsResponseInput{
 				Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
-				ProviderCodes: gatewayModelsProviderCodes(apiKeyRecord), StartedAt: input.StartedAt,
+				Bindings: modelsBindings, Context: ctx, StartedAt: input.StartedAt,
 			})
+		}
+		if modelsSendErr != nil {
+			// 装载失败：与 before-auth 分支同一收尾 helper，返回已完成状态，
+			// 禁止裸 error 落到外层 generic 500、重复写响应或进入上游派发
+			//（设计 4.6.4）。
+			s.finishGatewayModelsLoadFailure(modelsLoadFailureInput{
+				req: req, res: res, auditCapture: auditCapture,
+				usageContext: usageContext, startedAt: input.StartedAt,
+				traceID: input.TraceID,
+			}, gatewayModelsErrorProtocol(modelsResponseProtocol), modelsSendErr)
 		}
 		return PreflightResult{}, nil
 	}
@@ -961,7 +973,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		GroupSchedulingPolicy:      groupAccess.SchedulingPolicy,
 		RequestCoordination: CodexRequestCoordination{
 			Scope:                    "gateway_request",
-			TimeoutPolicy:            compactionTimeoutsDisabledTimeoutPolicy(compactionTimeoutsDisabled),
 			ServerRetryBudget:        serverRetryBudget,
 			GatewayRequestWallBudget: gatewayRequestWallBudget,
 			RouteCoordinationBudget:  routeCoordinationBudget,
@@ -1048,8 +1059,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		ResponseInspectionPolicies:               orEmptyPolicies(runtimeResponseInspectionPolicies),
 		APIKeyRecord:                             apiKeyRecord,
 		GroupFallbackAPIKeyRecord:                groupFallbackAPIKeyRecord,
-		CodexTurnAccountAvoidanceApplied:         dispatchPreparation.CodexTurnAccountAvoidanceApplied,
-		CodexTurnAvoidedAccountIDs:               dispatchPreparation.CodexTurnAvoidedAccountIDs,
+		SchedulingExclusions:                     dispatchPreparation.SchedulingExclusions,
+		DispatchSegments:                         dispatchPreparation.DispatchSegments,
 		PrecheckHalfOpenEligible:                 dispatchPreparation.PrecheckHalfOpenEligible,
 		ServerRetryBudget:                        serverRetryBudget,
 		GatewayRequestWallBudget:                 gatewayRequestWallBudget,
@@ -1266,23 +1277,29 @@ type interactionFailureInput struct {
 	message      string
 }
 
-// gatewayModelsProviderCodes mirrors gatewayModelsProviderCodes: the
-// deduplicated provider codes of the active bindings in binding order.
-func gatewayModelsProviderCodes(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) []string {
+// gatewayModelsBindings 替代 gatewayModelsProviderCodes（设计 6.4）：同一
+// 激活绑定遍历，返回 (groupID, providerCode) 对——按 (groupID, providerCode)
+// 去重，保持绑定顺序，供 /v1/models 成员装载端口使用。
+func gatewayModelsBindings(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) []GatewayModelBinding {
 	seen := map[string]bool{}
-	codes := []string{}
+	bindings := []GatewayModelBinding{}
 	for _, binding := range recordBindings(apiKeyRecord) {
 		if binding.Status != "active" {
 			continue
 		}
 		providerCode := strings.TrimSpace(binding.ProviderCode)
-		if providerCode == "" || seen[providerCode] {
+		groupID := strings.TrimSpace(binding.GroupID)
+		if providerCode == "" {
 			continue
 		}
-		seen[providerCode] = true
-		codes = append(codes, providerCode)
+		key := groupID + "\x00" + providerCode
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		bindings = append(bindings, GatewayModelBinding{GroupID: groupID, ProviderCode: providerCode})
 	}
-	return codes
+	return bindings
 }
 
 // modelsResponseKind mirrors modelsResponseKind.
@@ -1347,13 +1364,22 @@ func (s *Service) handleGatewayModelsRequestBeforeRequiredAuth(ctx context.Conte
 		})
 		return true, nil
 	}
-	s.Responses.SendAuthenticatedModelsGatewayResponse(ModelsResponseInput{
+	if err := s.Responses.SendAuthenticatedModelsGatewayResponse(ModelsResponseInput{
 		Req: input.req, Res: input.res, AuditCapture: input.auditCapture,
-		UsageContext:  usageContext,
-		ProviderCodes: gatewayModelsProviderCodes(apiKey),
-		Protocol:      modelsResponseKind(input.protocol),
-		StartedAt:     input.startedAt,
-	})
+		UsageContext: usageContext,
+		Bindings:     gatewayModelsBindings(apiKey),
+		Context:      ctx,
+		Protocol:     modelsResponseKind(input.protocol),
+		StartedAt:    input.startedAt,
+	}); err != nil {
+		// 装载失败：协议化错误收尾后就地完成请求，禁止裸 error 落到外层
+		// generic 500 或继续链路（设计 4.6.4）。
+		s.finishGatewayModelsLoadFailure(modelsLoadFailureInput{
+			req: input.req, res: input.res, auditCapture: input.auditCapture,
+			usageContext: usageContext, startedAt: input.startedAt,
+			traceID: input.traceID,
+		}, gatewayModelsErrorProtocol(input.protocol), err)
+	}
 	return true, nil
 }
 
@@ -1364,6 +1390,56 @@ type modelsRateLimitFailureInput struct {
 	usageContext GatewayFailureUsageContext
 	startedAt    int64
 	decision     AuthenticatedModelsRateLimitDecision
+}
+
+// modelsLoadFailureInput 是 before-auth 与 Identity 注入两处 models 发送点
+// 共用的装载失败收尾输入（设计 4.6.4）。
+type modelsLoadFailureInput struct {
+	req          *GatewayRequest
+	res          GatewayResponseWriter
+	auditCapture AuditCaptureContext
+	usageContext GatewayFailureUsageContext
+	startedAt    int64
+	traceID      string
+}
+
+// finishGatewayModelsLoadFailure 是 /v1/models 成员装载失败的共用收尾：
+// 记录 authenticated_models_list_load_failed 审计元数据后，经
+// SendGatewayFailureResponse 一次发送 500 + models_list_unavailable 标准
+// 载荷（protocol 为已判定的 models 响应协议），失败回包、失败审计与失败
+// 用量由既有失败 sink 完成。调用方此后必须按"已完成"返回，不得继续链路
+// 或上游派发。
+func (s *Service) finishGatewayModelsLoadFailure(input modelsLoadFailureInput, protocol GatewayErrorProtocol, loadErr error) {
+	input.auditCapture.AddGatewayMetadata("authenticated_models_list_load_failed", map[string]any{
+		"reason":  loadErr.Error(),
+		"traceId": input.traceID,
+	})
+	responsePayload := GatewayErrorPayloadOf("模型列表暂不可用，请稍后重试", "internal_error", "models_list_unavailable")
+	s.Responses.SendGatewayFailureResponse(FailureResponseInput{
+		Req: input.req, Res: input.res, AuditCapture: input.auditCapture,
+		UsageContext: input.usageContext, StartedAt: input.startedAt,
+		StatusCode:      500,
+		ResponsePayload: responsePayload,
+		Protocol:        protocol,
+		Audit: FailureAudit{
+			Outcome: AuditOutcomeGatewayFailed, ErrorPhase: "dispatch",
+			ErrorCode: "models_list_unavailable", ErrorMessage: responsePayload.Error.Message,
+		},
+	})
+}
+
+// gatewayModelsErrorProtocol 把已判定的 models 响应协议映射为失败 sink 的
+// 显式错误协议：openai/codex 请求按 openai 形态，显式 anthropic/gemini 头
+// 按对应协议（设计 4.6.3）。
+func gatewayModelsErrorProtocol(protocol ResponseProtocolCode) GatewayErrorProtocol {
+	switch protocol {
+	case ResponseProtocolAnthropicV:
+		return GatewayErrorProtocolAnthropic
+	case ResponseProtocolGeminiV:
+		return GatewayErrorProtocolGemini
+	default:
+		return GatewayErrorProtocolOpenAI
+	}
 }
 
 // sendAuthenticatedModelsRateLimitFailure mirrors sendAuthenticatedModelsRateLimitFailure.
@@ -1614,15 +1690,6 @@ func recoverableLoader(s *Service, options *PreflightOptions, interaction *gatew
 	return func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 		return s.waitForRecoverableOpenAIGatewayCandidateAccounts(input)
 	}
-}
-
-// compactionTimeoutsDisabledTimeoutPolicy mirrors `compactionTimeoutsDisabled
-// ? 'codex_compaction_unbounded' : undefined`.
-func compactionTimeoutsDisabledTimeoutPolicy(disabled bool) string {
-	if disabled {
-		return "codex_compaction_unbounded"
-	}
-	return ""
 }
 
 // onceSettle mirrors onceGatewayHotQualityExplorationSettlement.

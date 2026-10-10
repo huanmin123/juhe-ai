@@ -109,7 +109,7 @@ Claude Code 画像当前只影响：
 - 审计元数据中的 `clientProfile`、`clientProfileSource`、`downstreamProtocol` 和 `upstreamAdapter`。
 - 后续客户端专属策略的门控条件。
 - 本地 header 过滤：`x-juhe-client-profile` 不透传上游。
-- 上游请求头补齐：仅在 `requestClientCompatibility = claude_code`、显式 `x-juhe-client-profile: claude_code` 或官方 CLI 多信号命中时，为目标上游 `POST /v1/messages` 补齐 Claude Code 请求特征。若上游请求缺少或不是 `claude-cli/` User-Agent，补 `claude-cli/2.1.285 (external, sdk-cli)`（版本跟随 Claude Code 官方 changelog 最新稳定维护，`gatewayanthropic.AnthropicClaudeCodeVersion`，2026-10-02 锚点 2.1.285）；`anthropic-beta` 合并 `claude-code-20250219`、`interleaved-thinking-2025-05-14` 和 `effort-2025-11-24`，并保留客户端已有 beta；缺少 `x-claude-code-session-id` 时为本次请求补齐；上游 URL 缺少 `beta=true` 时补齐该查询参数。该版本可经系统设置 `upstreamClientVersionOverrides` 的 claudeCode 键热覆盖，见[上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)。
+- 上游请求头补齐：仅在 `requestClientCompatibility = claude_code`、显式 `x-juhe-client-profile: claude_code` 或官方 CLI 多信号命中时，为目标上游 `POST /v1/messages` 补齐 Claude Code 请求特征。若上游请求缺少或不是 `claude-cli/` User-Agent，补 `claude-cli/2.1.295 (external, sdk-cli)`（版本跟随 Claude Code 官方 changelog 最新稳定维护，取 `upstreamidentity.EffectiveClaudeCodeVersion()`，与 sdk-cli 变体后缀拼装；2026-10-10 锚点 2.1.295）；`anthropic-beta` 合并 `claude-code-20250219`、`interleaved-thinking-2025-05-14` 和 `effort-2025-11-24`，并保留客户端已有 beta；缺少 `x-claude-code-session-id` 时为本次请求补齐；上游 URL 缺少 `beta=true` 时补齐该查询参数。该版本可经系统设置 `upstreamClientVersionOverrides` 的 claudeCode 键热覆盖，见[上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)。
 
 它当前不影响：
 
