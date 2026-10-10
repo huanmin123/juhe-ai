@@ -730,14 +730,13 @@ PostgreSQL 约束：
 - 同一 `turn_id` 存在一条 `role=assistant,status=completed` 消息。
 - 两条消息都未过期。
 
-尾部中断轮定义：会话中最后一个非流式（`status ≠ 'streaming'`）assistant 消息为 `failed`、保留非空内容（`content_text` trim 后非空）、未过期、位于压缩水位（`compacted_through_sequence`）之后，且存在紧邻的 `completed` 用户提问（`sequence_no` 相邻、同 `turn_id`、未过期、同样位于压缩水位之后）时，该轮的用户提问与半截回答一并进入下一轮上下文，追加在全部完整成功轮次之后、当前用户消息之前，并计入行数与字节装载预算；预算不足以容纳完整两行时放弃注入（自然降级，不报错）。
+尾部中断轮定义：会话中最后一个非流式（`status ≠ 'streaming'`）assistant 消息为 `failed` 或 `canceled`、保留非空内容（`content_text` trim 后非空）、未过期、位于压缩水位（`compacted_through_sequence`）之后，且存在紧邻的 `completed` 用户提问（`sequence_no` 相邻、同 `turn_id`、未过期、同样位于压缩水位之后）时，该轮的用户提问与半截回答一并进入下一轮上下文，追加在全部完整成功轮次之后、当前用户消息之前，并计入行数与字节装载预算；预算不足以容纳完整两行时放弃注入（自然降级，不报错）。`canceled` 与 `failed` 同判据：用户主动停止（`CancelChatTurn`）同样携带半截内容落库，页面可见而模型无记忆是不对称，停止后发「继续」是明确且高频的续写意图。
 
-以下失败与中断形态不进入上下文：
+以下中断形态不进入上下文：
 
-- 用户主动取消（`canceled`）的轮次。
-- 内容为空（trim 后为空）的失败轮。
-- 没有紧邻 `completed` 用户提问配对的失败轮。
-- 已被后续轮次覆盖的失败轮（其后存在更新的非流式 assistant 消息，即非尾部；正在生成的 `streaming` 占位不属于后续轮次）。
+- 内容为空（trim 后为空）的中断轮；runner 不在 hub 时的兜底取消（`CancelActiveTurnIfMatches` → `conditionalStop`）不写内容，由该条件自然排除，无需按状态特判。
+- 没有紧邻 `completed` 用户提问配对的中断轮。
+- 已被后续轮次覆盖的中断轮（其后存在更新的非流式 assistant 消息，即非尾部；正在生成的 `streaming` 占位不属于后续轮次）。
 - replace 重答路径中命中 `excludeTurnId` 的被替换轮次。
 
 已知局限（连续失败遮蔽）：连续失败场景下，至多一个尾部中断轮意味着——若新中断轮内容为空或被后续轮次覆盖，更早中断轮的半截内容不再进入上下文（页面仍可见）。
@@ -883,7 +882,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 替换事务复用原轮次序号、删除旧幂等登记，且新请求上下文不包含被替换的旧轮次。
 - SQLite standalone 与 PostgreSQL performance 使用相同契约。
 - 模型上下文只读取当前保留期内的 active checkpoint + recent suffix，并用行数、字节和请求体预算触发预压缩。
-- 上下文只包含完整成功轮次与至多一个尾部中断轮（§14.1）；取消和崩溃遗留轮次、空内容失败轮、无提问配对或已被后续轮次覆盖的失败轮不进入上下文。
+- 上下文只包含完整成功轮次与至多一个尾部中断轮（§14.1，`failed`/`canceled` 同判据，需保留非空内容）；空内容中断轮、无提问配对或已被后续轮次覆盖的中断轮不进入上下文。
 - 清理按索引和游标推进，活跃会话只保留窗口内消息。
 
 ### 19.2 网关链路

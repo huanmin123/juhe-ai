@@ -659,11 +659,11 @@ func (s *Store) LoadModelContextExcludingTurn(conversationID, ownerID, nowValue 
 		truncated := "suffix_messages"
 		result.TruncatedAt = &truncated
 	}
-	// 尾部中断轮（§14.1）：completed 成对轮次之后追加至多一个尾部失败轮
-	// （user 提问 + assistant 半截回答）。Complete/TruncatedAt 语义只覆盖
-	// completed 成对轮次，保持不变；预算不足以容纳完整两行时放弃注入，
-	// 自然降级且不报错。
-	tailPair, err := s.loadTailFailedTurnPair(conversationID, ownerID, nowValue, excludeTurnID, head.CompactedThroughSequence)
+	// 尾部中断轮（§14.1）：completed 成对轮次之后追加至多一个尾部中断轮
+	// （user 提问 + assistant 半截回答，failed/canceled 同判据）。
+	// Complete/TruncatedAt 语义只覆盖 completed 成对轮次，保持不变；预算不足
+	// 以容纳完整两行时放弃注入，自然降级且不报错。
+	tailPair, err := s.loadTailInterruptedTurnPair(conversationID, ownerID, nowValue, excludeTurnID, head.CompactedThroughSequence)
 	if err != nil {
 		return nil, err
 	}
@@ -677,18 +677,21 @@ func (s *Store) LoadModelContextExcludingTurn(conversationID, ownerID, nowValue 
 	return result, nil
 }
 
-// loadTailFailedTurnPair 装载尾部中断轮（§14.1）：会话中最后一个非流式
-// （status ≠ 'streaming'）assistant 消息为 failed、保留非空内容、未过期、
-// 位于压缩水位之后，且存在紧邻的 completed 用户提问时，返回 [user,
-// assistant] 两条消息；任一条件不满足（含 excludeTurnID 命中被替换轮次）
-// 返回 nil。SQL 条件与 sqlite/postgres 双模语法对齐（经 s.bind 渲染占位符）。
-func (s *Store) loadTailFailedTurnPair(conversationID, ownerID, nowValue, excludeTurnID string, compactedThroughSequence int64) ([]contextSourceMessage, error) {
+// loadTailInterruptedTurnPair 装载尾部中断轮（§14.1）：会话中最后一个非流式
+// （status ≠ 'streaming'）assistant 消息为 failed 或 canceled（用户主动停止，
+// 正常停止路径 CancelChatTurn 携带半截内容落库，两态同判据）、保留非空内容、
+// 未过期、位于压缩水位之后，且存在紧邻的 completed 用户提问时，返回 [user,
+// assistant] 两条消息；任一条件不满足（含 excludeTurnID 命中被替换轮次）返回
+// nil。「内容非空」条件自然排除 runner 不在 hub 时的兜底取消（conditionalStop
+// 不写内容）等空内容 canceled 轮，无需按状态特判。SQL 条件与 sqlite/postgres
+// 双模语法对齐（经 s.bind 渲染占位符）。
+func (s *Store) loadTailInterruptedTurnPair(conversationID, ownerID, nowValue, excludeTurnID string, compactedThroughSequence int64) ([]contextSourceMessage, error) {
 	messagesTable := s.table("chat_messages")
 	assistant, err := scanContextSourceMessage(s.db.QueryRow(s.bind(`SELECT assistant.id, assistant.turn_id, assistant.sequence_no, assistant.role, assistant.content_text,
 			assistant.content_blocks_json, assistant.content_bytes, assistant.model, assistant.created_at, assistant.completed_at, assistant.expires_at
 		FROM `+messagesTable+` AS assistant
 		WHERE assistant.conversation_id = ? AND assistant.system_account_id = ?
-			AND assistant.role = 'assistant' AND assistant.status = 'failed'
+			AND assistant.role = 'assistant' AND assistant.status IN ('failed', 'canceled')
 			AND assistant.expires_at > ? AND assistant.sequence_no > ?
 			AND TRIM(assistant.content_text) <> ''
 			AND assistant.turn_id <> ?

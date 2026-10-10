@@ -410,7 +410,8 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 		// 失败文案按该轮是否已流出半截内容动态选择（AI问答设计 §11.1/§13.1）：
 		// 非取消失败且错误码存在续写引导变体时改用变体（§14.1 续写可用），
 		// 否则保持原始重试引导；落库 ErrorMessage 与下发 data["message"] 使用
-		// 同一值，取消轮不适用续写引导（§14.1：取消轮次不进入上下文）。
+		// 同一值。取消轮以 message.canceled 终态收口、无失败文案，变体仅
+		// 作用于失败终态。
 		failureMessage := publicError.Message
 		if !canceled && partialContent.Len() > 0 {
 			if _, ok := continuationGuidanceMessages[publicError.Code]; ok {

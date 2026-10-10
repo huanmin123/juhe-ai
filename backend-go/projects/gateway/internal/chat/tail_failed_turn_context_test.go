@@ -1,9 +1,9 @@
 package chat
 
-// 尾部中断轮进入上下文（AI 问答设计 §14.1）回归：上游流中断收口为 failed 的
-// 轮次（用户提问 + 半截回答）在作为会话尾部时进入下一次模型请求上下文，
-// 使「继续」可以续上；取消、空内容、无提问配对、非尾部与 replace 命中轮次
-// 不进入。
+// 尾部中断轮进入上下文（AI 问答设计 §14.1）回归：会话尾部收口为 failed 或
+// canceled 的轮次（用户提问 + 半截回答，保留非空内容）进入下一次模型请求
+// 上下文，使「继续」可以续上；空内容（含未保留正文的兜底取消）、无提问
+// 配对、非尾部与 replace 命中轮次不进入。
 
 import (
 	"encoding/json"
@@ -38,8 +38,9 @@ func seedFailedTurn(f *chatFixture, conversationID, clientMessageID, question, p
 	return accepted.TurnID
 }
 
-// seedCanceledTurn 落一轮用户主动取消的轮次。
-func seedCanceledTurn(f *chatFixture, conversationID, clientMessageID, question, partialAnswer string) {
+// seedCanceledTurn 落一轮用户主动停止的 canceled 轮次（正常停止路径携带半截
+// 内容落库），返回轮次 ID。
+func seedCanceledTurn(f *chatFixture, conversationID, clientMessageID, question, partialAnswer string) string {
 	f.t.Helper()
 	accepted := f.accept(routeTestOwner, conversationID, clientMessageID, question)
 	if _, err := f.store.CancelChatTurn(CancelTurnInput{
@@ -51,6 +52,7 @@ func seedCanceledTurn(f *chatFixture, conversationID, clientMessageID, question,
 	}); err != nil {
 		f.t.Fatal(err)
 	}
+	return accepted.TurnID
 }
 
 // insertBareAssistant 绕过轮次链路直插一条指定状态的 assistant 消息（无配对
@@ -137,19 +139,77 @@ func TestLoadModelContextTailFailedTurnCoveredByLaterTurn(t *testing.T) {
 	}
 }
 
-// TestLoadModelContextTailCanceledTurnNotInjected 用户主动取消的尾部轮次不注入。
-func TestLoadModelContextTailCanceledTurnNotInjected(t *testing.T) {
+// TestLoadModelContextTailCanceledTurnInjected 用户主动停止的尾部轮次
+// （canceled 且保留半截内容）与 failed 轮同判据注入 suffix 末尾，顺序为
+// [...completed 轮, user 原问题, assistant 半截]。
+func TestLoadModelContextTailCanceledTurnInjected(t *testing.T) {
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_tail_cancel", routeTestOwner)
 	seedCompletedTurn(f, "chat_conv_tail_cancel", "tail-cmid-1", "问题1", "回答1")
-	seedCanceledTurn(f, "chat_conv_tail_cancel", "tail-cmid-2", "被取消的问题", "被取消的半截")
+	canceledTurnID := seedCanceledTurn(f, "chat_conv_tail_cancel", "tail-cmid-2", "被停止的问题", "被停止的半截")
 
 	loaded, err := f.store.LoadModelContext("chat_conv_tail_cancel", routeTestOwner, f.nowISO, 512, 16*1024*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if loaded == nil || !loaded.Complete || loaded.TruncatedAt != nil {
+		t.Fatalf("装载应保持完整: %+v", loaded)
+	}
+	roles := suffixRoles(t, loaded)
+	if len(roles) != 4 || strings.Join(roles, ",") != "user,assistant,user,assistant" {
+		t.Fatalf("suffix 应为两对且尾部为中断轮: %v", roles)
+	}
+	tailUser := loaded.Suffix[2]
+	tailAssistant := loaded.Suffix[3]
+	if tailUser.contentText != "被停止的问题" || tailAssistant.contentText != "被停止的半截" {
+		t.Fatalf("尾部中断轮内容不正确: %q / %q", tailUser.contentText, tailAssistant.contentText)
+	}
+	if tailUser.turnID != canceledTurnID || tailAssistant.turnID != canceledTurnID {
+		t.Fatalf("尾部中断轮 turn_id 不正确: %q / %q", tailUser.turnID, tailAssistant.turnID)
+	}
+	if tailAssistant.sequenceNo != tailUser.sequenceNo+1 || tailUser.role != "user" || tailAssistant.role != "assistant" {
+		t.Fatalf("尾部中断轮顺序不正确: %d/%d", tailUser.sequenceNo, tailAssistant.sequenceNo)
+	}
+}
+
+// TestLoadModelContextTailCanceledEmptyContentNotInjected 空内容取消轮不注入
+// （含 runner 不在 hub 时兜底取消不写内容的形态，由「内容非空」条件自然排除）。
+func TestLoadModelContextTailCanceledEmptyContentNotInjected(t *testing.T) {
+	f := newChatFixture(t)
+	f.createConversation("chat_conv_tail_cancel_empty", routeTestOwner)
+	seedCompletedTurn(f, "chat_conv_tail_cancel_empty", "tail-cmid-1", "问题1", "回答1")
+	seedCanceledTurn(f, "chat_conv_tail_cancel_empty", "tail-cmid-2", "空内容的停止轮", "")
+
+	loaded, err := f.store.LoadModelContext("chat_conv_tail_cancel_empty", routeTestOwner, f.nowISO, 512, 16*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(loaded.Suffix) != 2 {
-		t.Fatalf("取消轮不应注入: %v", suffixRoles(t, loaded))
+		t.Fatalf("空内容取消轮不应注入: %v", suffixRoles(t, loaded))
+	}
+}
+
+// TestLoadModelContextTailCanceledTurnCoveredByLaterTurn canceled 轮之后存在
+// 更新的 completed 轮次（非尾部）→ 不注入。
+func TestLoadModelContextTailCanceledTurnCoveredByLaterTurn(t *testing.T) {
+	f := newChatFixture(t)
+	f.createConversation("chat_conv_tail_cancel_covered", routeTestOwner)
+	seedCompletedTurn(f, "chat_conv_tail_cancel_covered", "tail-cmid-1", "问题1", "回答1")
+	seedCanceledTurn(f, "chat_conv_tail_cancel_covered", "tail-cmid-2", "被停止的问题", "被停止的半截")
+	seedCompletedTurn(f, "chat_conv_tail_cancel_covered", "tail-cmid-3", "问题2", "回答2")
+
+	loaded, err := f.store.LoadModelContext("chat_conv_tail_cancel_covered", routeTestOwner, f.nowISO, 512, 16*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range loaded.Suffix {
+		if message.contentText == "被停止的问题" || message.contentText == "被停止的半截" {
+			t.Fatalf("非尾部取消轮不应注入: %+v", loaded.Suffix)
+		}
+	}
+	roles := suffixRoles(t, loaded)
+	if len(roles) != 4 {
+		t.Fatalf("suffix 应只含两个 completed 轮次: %v", roles)
 	}
 }
 
@@ -417,6 +477,46 @@ func TestStreamRouteTailFailedTurnEntersUpstreamHistory(t *testing.T) {
 	}
 	if messages[3]["content"] != "帮我写一段长文" || messages[4]["content"] != "开头半截内容" {
 		t.Fatalf("上游 history 缺少失败轮的提问与半截回答: %v / %v", messages[3], messages[4])
+	}
+	if messages[5]["content"] != "继续" {
+		t.Fatalf("新用户消息应在最后: %v", messages[5])
+	}
+}
+
+// TestStreamRouteTailCanceledTurnEntersUpstreamHistory 端到端：用户停止生成
+// （canceled 且保留半截内容）之后发送「继续」，发往上游的请求体 history 包含
+// 停止轮 user 原问题与 assistant 半截内容，且位于新用户消息之前。
+func TestStreamRouteTailCanceledTurnEntersUpstreamHistory(t *testing.T) {
+	f := newChatFixture(t)
+	conversationID := "chat_conv_tail_cancel_route"
+	f.createConversation(conversationID, routeTestOwner)
+	seedCompletedTurn(f, conversationID, "tail-cancel-route-cmid-1", "问题1", "回答1")
+	seedCanceledTurn(f, conversationID, "tail-cancel-route-cmid-2", "帮我写一段长文", "开头半截内容")
+
+	env := buildGenerationEnvW10D(t, f)
+	appendChatCompletionStep(env, "继续后的新回答")
+	rt := newChatRoutesForTest(env.deps)
+
+	recorder := w14lStreamPostRaw(rt, conversationID, streamPayload("tail-cancel-route-cmid-3", "继续", "gpt-5"), routeTestOwner)
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, "message.started") {
+		t.Fatalf("发送应成功出流: %d %s", recorder.Code, body[:min(len(body), 300)])
+	}
+	if env.executor.callCount() < 1 {
+		t.Fatal("上游请求缺失")
+	}
+	messages := decodeUpstreamMessages(t, env.executor.calls[0].Body)
+	wantRoles := []string{"system", "user", "assistant", "user", "assistant", "user"}
+	if len(messages) != len(wantRoles) {
+		t.Fatalf("上游 history 形状不正确: %v", messages)
+	}
+	for index, role := range wantRoles {
+		if messages[index]["role"] != role {
+			t.Fatalf("上游第 %d 条 role 应为 %s: %v", index, role, messages[index])
+		}
+	}
+	if messages[3]["content"] != "帮我写一段长文" || messages[4]["content"] != "开头半截内容" {
+		t.Fatalf("上游 history 缺少停止轮的提问与半截回答: %v / %v", messages[3], messages[4])
 	}
 	if messages[5]["content"] != "继续" {
 		t.Fatalf("新用户消息应在最后: %v", messages[5])
