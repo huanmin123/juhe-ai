@@ -486,18 +486,27 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 	if err != nil {
 		return result, err
 	}
-	httpRequest.Header.Set("Content-Type", "application/json")
-	if strings.Contains(request.Path, "alt=sse") || strings.Contains(string(request.Body), `"stream":true`) {
-		httpRequest.Header.Set("Accept", "text/event-stream")
-	} else {
-		httpRequest.Header.Set("Accept", "application/json")
-	}
-	// M2 注记：Accept 口径与信封 acceptHeader（api-key 双 accept/OAuth 纯
-	// 流式）的收敛涉及上游内容协商行为语义，留待单独裁决步骤；URL 与预算
-	// 已于本步迁移到 upstreamenvelope。
 	for key, values := range headers {
 		for _, value := range values {
 			httpRequest.Header.Add(key, value)
+		}
+	}
+	// 标准头走信封口径（信封统一设计 §4.1，M2 收敛裁决）：JSON 形态
+	// application/json；SSE 形态 api-key 双 accept、OAuth/Code Assist 纯流式
+	// ——与 accountprobe/exactkeyprobe 生产同规。标准头只是缺省填充：
+	// 适配器（Codex 归一化）或调用方已提供的头不覆盖。
+	httpRequest.Header.Set("Content-Type", "application/json")
+	acceptStrategy := upstreamenvelope.AuthBearer
+	if options.Adapter == AdapterOpenAIOAuthCodex {
+		acceptStrategy = upstreamenvelope.AuthOAuth
+	}
+	if httpRequest.Header.Get("Accept") == "" {
+		if acceptValue, acceptErr := upstreamenvelope.AcceptHeader(upstreamenvelope.EndpointMode(request.EndpointMode), acceptStrategy); acceptErr == nil {
+			httpRequest.Header.Set("Accept", acceptValue)
+		} else if strings.Contains(request.Path, "alt=sse") || strings.Contains(string(request.Body), `"stream":true`) {
+			httpRequest.Header.Set("Accept", "text/event-stream")
+		} else {
+			httpRequest.Header.Set("Accept", "application/json")
 		}
 	}
 	var response *http.Response
