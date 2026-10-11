@@ -1,9 +1,15 @@
 <template>
   <div class="health-check-config-grid">
-    <a-form-item
-      label="检查模型"
-      tooltip="推荐由上游目录自动选择；可手动调整。后台激活检查、周期健康检查和恢复探测使用该模型。"
-    >
+    <a-form-item :required="checkModelRequired">
+      <template #label>
+        <span class="check-model-label">
+          <span>检查模型</span>
+          <span v-if="autoHintText" class="check-model-auto-hint">{{ autoHintText }}</span>
+          <a-tooltip :title="checkModelTooltip">
+            <QuestionCircleOutlined class="check-model-help" />
+          </a-tooltip>
+        </span>
+      </template>
       <a-select
         v-model:value="form.healthCheckModel"
         :disabled="!options.length"
@@ -37,6 +43,7 @@
 </template>
 
 <script setup lang="ts">
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, watch } from 'vue'
 
 import type { AccountFormModel } from './accountFormTypes'
@@ -45,12 +52,24 @@ import { accountTestEndpointModesForModel } from './accountEndpointModes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 
 const props = defineProps<{
+  editing: boolean
   form: AccountFormModel
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
   protocolCode?: string
   protocolVersion?: string
 }>()
+
+const checkModelTooltip = '推荐由上游目录自动选择；可手动调整。后台激活检查、周期健康检查和恢复探测使用该模型。'
+const managedOAuthDefaultsAllowed = computed(() => (
+  ['oauth', 'google_oauth'].includes(props.form.type)
+  && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode)
+))
+const checkModelRequired = computed(() => props.editing || !managedOAuthDefaultsAllowed.value)
+const autoHintText = computed(() => {
+  if (props.editing) return ''
+  return checkModelRequired.value ? '自动推荐' : '可留空'
+})
 
 const options = computed(() => {
   const labels = new Map(props.modelOptions.map((option) => [option.value, option.label]))
@@ -103,6 +122,24 @@ watch(endpointModeOptions, (next) => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 16px;
+}
+
+.check-model-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.check-model-auto-hint {
+  color: var(--juhe-faint);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.check-model-help {
+  color: rgba(0, 0, 0, 0.45);
+  cursor: help;
 }
 
 @media (max-width: 768px) {

@@ -1,30 +1,28 @@
 <template>
   <div class="ai-performance-page">
     <AiPerformanceFilterToolbar
-      v-model:added-account-ids="addedAccountIds"
       v-model:date-range="dateRange"
       v-model:selected-system-account="selectedSystemAccount"
       v-model:selected-system-account-id="selectedSystemAccountId"
       :account-filter-items="accountFilterItems"
-      :account-picker-hidden-values="accountPickerHiddenValues"
-      :accounts="accounts"
+      :account-options="panelAccountOptions"
       :accounts-loading="accountsLoading"
-      :added-account-selections="addedAccountSelections"
       :disabled-date="disabledDate"
       :has-active-account-filter="hasActiveAccountFilter"
       :is-management-view="isManagementView"
       :loading="initialLoading"
       :system-account-options-loading="systemAccountOptionsLoading"
       :system-accounts="systemAccounts"
-      @account-dropdown-visible-change="handleAccountDropdownVisibleChange"
+      @account-open-change="handleAccountDropdownVisibleChange"
       @account-search="handleAccountSearch"
-      @added-accounts-change="handleAddedAccountsChange"
+      @add-account="addAccount"
       @calendar-change="handleCalendarChange"
       @date-range-change="handleDateRangeChange"
       @date-range-open-change="handleDateRangeOpenChange"
       @refresh="refreshPerformance"
       @remove-account="removeAddedAccount"
       @reset="resetFilters"
+      @reset-accounts="clearAccountState"
       @system-account-change="handleSystemAccountChange"
       @system-account-dropdown-visible-change="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
@@ -66,8 +64,10 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import type { AiPerformanceBaseResult, AiPerformanceSeriesResult } from '@/types/domain'
@@ -189,9 +189,7 @@ const {
   accounts,
   accountsLoading,
   accountFilterItems,
-  accountPickerHiddenValues,
   addedAccountIds,
-  addedAccountSelections,
   clearAccountState,
   handleAccountDropdownVisibleChange,
   handleAccountSearch,
@@ -206,6 +204,12 @@ const {
   visibleHourlySeries,
   visibleOverview
 } = accountSelection
+// 管理面板候选：补齐面板次行供应商展示名，面板组件不感知供应商编码。
+const panelAccountOptions = computed(() => accounts.value.map((option) => ({
+  id: option.id,
+  name: option.name,
+  providerName: providerDisplayName(option.providerCode)
+})))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => (contextLoading.value || baseLoading.value) && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
@@ -444,6 +448,15 @@ function handleSystemAccountChange() {
   invalidateAccountOptions()
   clearAdditionalSeries()
   void loadPerformanceContext()
+}
+
+function addAccount(id: string) {
+  if (accountFilterItems.value.some((item) => item.account.id === id)) return
+  if (addedAccountIds.value.length >= 20) {
+    message.warning('最多添加 20 个账户')
+    return
+  }
+  handleAddedAccountsChange([...addedAccountIds.value, id], addedAccountIds.value)
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {

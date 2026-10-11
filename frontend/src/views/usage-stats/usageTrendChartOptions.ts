@@ -9,8 +9,14 @@ import { metricValue, type UsageTrendMetric } from './usageTrendMetrics'
 export type { UsageTrendMetric } from './usageTrendMetrics'
 export const chartColors = aiPerformanceChartColors
 
-export function buildAccountUsageTrendOption(overview: AccountUsageStatsListResult, metric: UsageTrendMetric, visibleRows?: AccountUsageStatsRow[]): EChartsOption {
+export interface AccountUsageTrendOptionParams {
+  labelFor?: (row: AccountUsageStatsRow) => string
+}
+
+export function buildAccountUsageTrendOption(overview: AccountUsageStatsListResult, metric: UsageTrendMetric, visibleRows?: AccountUsageStatsRow[], options?: AccountUsageTrendOptionParams): EChartsOption {
   const rows = visibleRows ?? orderedUsageRows(overview.rows)
+  const labelFor = options?.labelFor
+  const rowLabel = (row: AccountUsageStatsRow) => (labelFor ? labelFor(row) : row.name)
   const dates = rows[0]?.dailyUsage.map((point) => point.statDate) ?? overview.rows[0]?.dailyUsage.map((point) => point.statDate) ?? []
   const tooltipUsage = rows.map((row) => row.dailyUsage)
   return {
@@ -40,7 +46,7 @@ export function buildAccountUsageTrendOption(overview: AccountUsageStatsListResu
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },
     series: rows.map((row) => ({
-      name: row.name,
+      name: rowLabel(row),
       type: 'line',
       smooth: true,
       connectNulls: false,
@@ -90,7 +96,11 @@ interface TooltipPoint {
   seriesIndex?: number
 }
 
-function usageTrendTooltip(params: unknown, metric: UsageTrendMetric, usageBySeriesIndex: Array<AccountUsageStatsRow['dailyUsage']>) {
+function usageTrendTooltip(
+  params: unknown,
+  metric: UsageTrendMetric,
+  usageBySeriesIndex: Array<AccountUsageStatsRow['dailyUsage']>
+) {
   const points = Array.isArray(params) ? params as TooltipPoint[] : [params as TooltipPoint]
   const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
   const visiblePoints = points.filter((point) => {

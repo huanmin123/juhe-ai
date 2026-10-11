@@ -151,9 +151,13 @@ var usageRecordColumns = []string{
 	"created_at",
 }
 
-// statsUsageRecordColumns 是 stats 库 usage_records 镜像的列（jobs
-// statsMirrorAggregateColumns 的逐字副本，也是 statsverify sqliteStatsSchema 的
-// usage_records 形状）：SQLite standalone 模式下 statsagg 聚合器的唯一输入源。
+// statsUsageRecordColumns 是 stats 库 usage_records 镜像的列（jobs statsagg
+// aggregate.go usageStatsRecordSelectColumns 聚合 SELECT 全列的逐字副本，列集
+// 也是 statsverify sqliteStatsSchema 的 usage_records 形状）：SQLite standalone
+// 模式下 statsagg 聚合器的唯一输入源。媒体计量五列（音频设计 §10 / 媒体设计
+// §10）必须随聚合 SELECT 一并镜像，缺列会让 statsagg 查询报 no such column 并
+// 永久重试；usagewriter store.go 的 statsMirrorAggregateColumns（镜像写入列）
+// 尚未带上这五列，jobs 侧镜像写由表 DDL 的 DEFAULT 兜底。
 var statsUsageRecordColumns = []string{
 	"id",
 	"system_account_id",
@@ -182,6 +186,11 @@ var statsUsageRecordColumns = []string{
 	"thinking_tokens",
 	"input_image_tokens",
 	"output_image_tokens",
+	"input_audio_tokens",
+	"output_audio_tokens",
+	"tts_input_chars",
+	"audio_input_seconds",
+	"output_video_seconds",
 	"cost_usd",
 	"error_code",
 	"error_message",
@@ -280,6 +289,11 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	thinking_tokens INTEGER,
 	input_image_tokens INTEGER,
 	output_image_tokens INTEGER,
+	input_audio_tokens INTEGER,
+	output_audio_tokens INTEGER,
+	tts_input_chars INTEGER NOT NULL DEFAULT 0,
+	audio_input_seconds REAL NOT NULL DEFAULT 0,
+	output_video_seconds REAL NOT NULL DEFAULT 0,
 	endpoint TEXT,
 	provider_code TEXT,
 	provider_protocol_profile_id TEXT,

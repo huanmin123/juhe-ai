@@ -93,10 +93,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
       hourlySeries: visibleHourlySeries.value
     }
   })
-  const accountPickerHiddenValues = computed(() => [
-    ...overviewAccounts.value.map((account) => account.id),
-    ...addedAccountIds.value
-  ])
   const addedAccountIdSet = computed(() => new Set(addedAccountIds.value))
   const accountFilterItems = computed(() => {
     const currentOverview = displayOverview.value
@@ -106,7 +102,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
       return counts
     }, new Map<string, number>())
     const accountById = new Map(currentOverview.accounts.map((account) => [account.id, account]))
-    const activeIds = activeAccountIdSet.value
     return orderedAiPerformanceSeries(currentOverview).map((series, index) => {
       const account = accountById.get(series.accountId)
       const label = performanceAccountLabel(account, series, nameCounts)
@@ -118,8 +113,10 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
         },
         label,
         color: chartColors[index % chartColors.length],
-        selected: activeIds.has(series.accountId),
-        removable: addedAccountIdSet.value.has(series.accountId) && !defaultAccountIdSet.value.has(series.accountId)
+        // selected 字段语义是真实可见性：未隐藏任何账户（activeAccountIds 为空的规范形）时全部可见。
+        selected: activeAccountIds.value.length ? activeAccountIdSet.value.has(series.accountId) : true,
+        removable: addedAccountIdSet.value.has(series.accountId) && !defaultAccountIdSet.value.has(series.accountId),
+        isDefault: defaultAccountIdSet.value.has(series.accountId)
       }
     })
   })
@@ -233,12 +230,24 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     loadingAccountOptionsPromise = undefined
   }
 
-  function toggleAccountFilter(id: string) {
-    if (!overviewAccounts.value.some((account) => account.id === id)) return
-    activeAccountIds.value = activeAccountIds.value.includes(id)
-      ? activeAccountIds.value.filter((accountId) => accountId !== id)
-      : [...activeAccountIds.value, id]
+  // 显隐语义：点击账户 = 隐藏可见项 / 显示隐藏项，与用量统计页趋势账户一致。
+  // activeAccountIds 表示“可见子集”，空数组是“全部可见”的规范形；
+  // 隐藏最后一条可见线时结果集合为空，按规范形等价于恢复全部显示。
+  function toggleAccountFilter(id: string): boolean {
+    if (!overviewAccounts.value.some((account) => account.id === id)) return false
+    const allIds = overviewAccounts.value.map((account) => account.id)
+    const visibleIdSet = activeAccountIds.value.length
+      ? new Set(activeAccountIds.value)
+      : new Set(allIds)
+    if (visibleIdSet.has(id)) {
+      visibleIdSet.delete(id)
+    } else {
+      visibleIdSet.add(id)
+    }
+    const nextVisibleIds = allIds.filter((accountId) => visibleIdSet.has(accountId))
+    activeAccountIds.value = nextVisibleIds.length === allIds.length ? [] : nextVisibleIds
     options.requestRender()
+    return true
   }
 
   function clearAccountSearchTimer() {
@@ -346,7 +355,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     accounts,
     accountsLoading,
     accountFilterItems,
-    accountPickerHiddenValues,
     activeAccountIds,
     addedAccountIds,
     addedAccountSelections,

@@ -115,11 +115,11 @@ export type AccountOAuthCreateCommonPayload = {
   notes?: string
 }
 
-// 向导步骤归属：创建向导（三步）下校验消息应带回的步骤。基础信息字段在第 2 步、
-// 高级配置字段在第 3 步，其余（供应商/类型/凭证/模型/检查字段）都在第 1 步。
+// 向导步骤归属：创建向导（三步）下校验消息应带回的步骤。名称/供应商/类型/凭证/模型/检查字段
+// 都在第 1 步，归属与调度字段在第 2 步、高级配置字段在第 3 步。
 // 与 validateAccountSaveForm 的消息文本同文件维护：调整上方消息文案时须同步本表关键词。
 const VALIDATION_STEP_HINTS: Array<{ step: 2 | 3; keywords: string[] }> = [
-  { step: 2, keywords: ['账户名称', '加入分组', '标签'] },
+  { step: 2, keywords: ['加入分组', '标签'] },
   { step: 3, keywords: ['时段', '余额', '锁死', '服务等级', '思考级别', '错误处理策略', '响应检查策略', '映射'] }
 ]
 

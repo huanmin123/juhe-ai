@@ -32,33 +32,21 @@
             @open-change="handleDateRangeOpenChange"
           />
           <a-segmented v-model:value="selectedMetric" class="usage-stats-metric-segmented" :disabled="loading" :options="metricOptions" @change="handleMetricChange" />
-          <a-popover
-            :open="accountPanelOpen"
-            trigger="click"
-            placement="bottomLeft"
-            :overlay-style="{ width: '380px', maxWidth: 'calc(100vw - 24px)' }"
+          <AccountManagePanelPopover
+            :collection-items="panelCollectionItems"
+            :options="accountOptionRows"
+            :collection-max="maxTrendAccounts"
+            :max-added-accounts="maxTrendAccounts"
+            :loading="accountOptionsLoading"
+            :disabled="loading"
+            :count-text="`${accountFilterItems.length}/${maxTrendAccounts}`"
             @open-change="handleAccountPanelOpenChange"
-          >
-            <template #content>
-              <UsageStatsAccountPanel
-                :collection-items="accountFilterItems"
-                :options="accountOptionRows"
-                :collection-ids="panelCollectionIds"
-                :loading="accountOptionsLoading"
-                :max-accounts="maxTrendAccounts"
-                @add="addTrendAccount"
-                @remove="removeAddedTrendAccount"
-                @toggle="toggleTrendAccount"
-                @search="handleAccountOptionsSearch"
-                @reset-defaults="resetTrendAccountDefaults"
-              />
-            </template>
-            <a-button class="usage-stats-account-trigger" :disabled="loading">
-              账户
-              <span class="usage-stats-account-trigger-count">{{ accountFilterItems.length }}/{{ maxTrendAccounts }}</span>
-              <DownOutlined class="usage-stats-account-trigger-caret" />
-            </a-button>
-          </a-popover>
+            @add="addTrendAccount"
+            @remove="removeAddedTrendAccount"
+            @toggle="toggleTrendAccount"
+            @search="handleAccountOptionsSearch"
+            @reset-defaults="resetTrendAccountDefaults"
+          />
         </div>
         <div class="page-toolbar-actions">
           <a-button @click="resetFilters">重置</a-button>
@@ -81,48 +69,6 @@
           <span v-if="mobileFilterActive" class="usage-stats-mobile-filter-dot" />
         </a-button>
       </div>
-      <div
-        v-if="accountFilterItems.length"
-        class="usage-stats-account-list"
-        :class="{ collapsed: mobileChipsCollapsed }"
-        aria-label="账户筛选"
-      >
-        <span
-          v-for="item in accountFilterItems"
-          :key="item.account.id"
-          class="usage-stats-account-filter-entry"
-          :class="{ active: item.selected, muted: hasSelectedTrendAccounts && !item.selected }"
-        >
-          <button
-            class="usage-stats-account-filter-item"
-            type="button"
-            :aria-pressed="item.selected"
-            @click="toggleTrendAccount(item.account.id)"
-          >
-            <span class="usage-stats-legend-dot" :style="{ backgroundColor: item.color }" />
-            <span class="usage-stats-legend-name">{{ item.label }}</span>
-          </button>
-          <a-tooltip v-if="item.removable" title="移除">
-            <button
-              class="usage-stats-account-filter-remove"
-              type="button"
-              :aria-label="`移除${item.label}`"
-              @click.stop="removeAddedTrendAccount(item.account.id)"
-            >
-              <CloseOutlined />
-            </button>
-          </a-tooltip>
-        </span>
-      </div>
-      <button
-        v-if="accountFilterItems.length > mobileChipCollapseThreshold"
-        type="button"
-        class="usage-stats-chips-toggle"
-        @click="mobileChipsCollapsed = !mobileChipsCollapsed"
-      >
-        {{ mobileChipsCollapsed ? `展开全部 ${accountFilterItems.length} 个账户` : '收起账户列表' }}
-        <CaretDownOutlined class="usage-stats-chips-toggle-icon" :class="{ open: !mobileChipsCollapsed }" />
-      </button>
     </a-card>
 
     <a-drawer
@@ -169,13 +115,14 @@
         </div>
         <div class="stats-mobile-filter-field">
           <span class="stats-mobile-filter-label">趋势账户（{{ accountFilterItems.length }}/{{ maxTrendAccounts }}）</span>
-          <UsageStatsAccountPanel
+          <AccountManagePanel
             class="usage-stats-account-panel-inline"
-            :collection-items="accountFilterItems"
+            :collection-items="panelCollectionItems"
             :options="accountOptionRows"
-            :collection-ids="panelCollectionIds"
+            :collection-max="maxTrendAccounts"
+            :max-added-accounts="maxTrendAccounts"
             :loading="accountOptionsLoading"
-            :max-accounts="maxTrendAccounts"
+            :disabled="loading"
             @add="addTrendAccount"
             @remove="removeAddedTrendAccount"
             @toggle="toggleTrendAccount"
@@ -229,11 +176,13 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { CaretDownOutlined, CloseOutlined, DownOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 
 import { api } from '@/api/client'
+import AccountManagePanel from '@/components/AccountManagePanel.vue'
+import AccountManagePanelPopover from '@/components/AccountManagePanelPopover.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -279,7 +228,6 @@ import {
 } from './usageStatsPageState'
 import { useUsageStatsAccountOptions } from './useUsageStatsAccountOptions'
 import { useUsageStatsTrendAccountSelection } from './useUsageStatsTrendAccountSelection'
-import UsageStatsAccountPanel from './UsageStatsAccountPanel.vue'
 import { buildAccountUsageTrendOption, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -421,11 +369,9 @@ const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizeUsageStatsDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
-// 手机端：筛选抽屉开合；账户 chips（图例兼筛选）超过阈值折叠，展开按钮显示总数。
+// 手机端：筛选抽屉开合。
 // 筛选打点：指定到具体用户时提示（'all' 是全部用户哨兵；日期为必选无「非默认」态）。
 const mobileFilterOpen = ref(false)
-const mobileChipsCollapsed = ref(true)
-const mobileChipCollapseThreshold = 4
 const mobileFilterActive = computed(() => Boolean(filters.systemAccountId) && filters.systemAccountId !== 'all')
 const {
   accountFilterItems,
@@ -452,8 +398,15 @@ const {
   providerName
 })
 // 账户管理面板：桌面 Popover 与移动抽屉共用，展开时才懒加载账户候选。
-const accountPanelOpen = ref(false)
-const panelCollectionIds = computed(() => accountFilterItems.value.map((item) => item.account.id))
+// 共享管理面板条目：accountFilterItems 的 selected 字段语义即真实可见性，映射为面板的 visible。
+const panelCollectionItems = computed(() => accountFilterItems.value.map((item) => ({
+  id: item.account.id,
+  label: item.label,
+  color: item.color,
+  visible: item.selected,
+  removable: item.removable,
+  isDefault: item.isDefault
+})))
 const displayTablePagination = computed(() => hasSelectedTrendAccounts.value ? false : tablePagination.value)
 const displayMobileHasMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileHasMore.value)
 const displayMobileLoadingMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileLoadingMore.value)
@@ -651,14 +604,13 @@ function clearTrendAccountState() {
 }
 
 function handleAccountPanelOpenChange(open: boolean) {
-  accountPanelOpen.value = open
   handleAccountOptionsDropdown(open)
 }
 
 function addTrendAccount(id: string) {
   if (accountFilterItems.value.some((item) => item.account.id === id)) return
-  if (accountFilterItems.value.length >= maxTrendAccounts) {
-    message.warning(`最多展示 ${maxTrendAccounts} 个账户`)
+  if (addedTrendAccountIds.value.length >= maxTrendAccounts) {
+    message.warning(`最多添加 ${maxTrendAccounts} 个账户`)
     return
   }
   handleAddedTrendAccountsChange([...addedTrendAccountIds.value, id], addedTrendAccountIds.value)
@@ -688,7 +640,13 @@ async function renderUsageTrendChart() {
   }
   const chart = await ensureChart(trendChartRef, trendChart, () => pageActive.value)
   if (!chart || !overview.value || !pageActive.value) return
-  chart.setOption(buildAccountUsageTrendOption(overview.value, selectedMetric.value, visibleTrendRows.value), { notMerge: true })
+  const labelById = new Map(accountFilterItems.value.map((item) => [item.account.id, item.label]))
+  chart.setOption(
+    buildAccountUsageTrendOption(overview.value, selectedMetric.value, visibleTrendRows.value, {
+      labelFor: (row) => labelById.get(row.id) ?? row.name
+    }),
+    { notMerge: true }
+  )
 }
 
 function resizeCharts() {
@@ -762,103 +720,11 @@ watch(mobileFilterOpen, (open) => {
   max-width: 100%;
 }
 
-.usage-stats-account-trigger {
-  flex: 0 0 auto;
-}
-
-.usage-stats-account-trigger-count {
-  margin-left: 2px;
-  color: var(--juhe-muted);
-  font-size: 12px;
-}
-
-.usage-stats-account-trigger-caret {
-  margin-left: 4px;
-  color: var(--juhe-muted);
-  font-size: 10px;
-}
-
 .usage-stats-account-panel-inline {
   width: 100%;
 }
 
-.usage-stats-account-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 10px;
-  margin-top: 12px;
-}
-
-.usage-stats-account-filter-entry {
-  display: inline-flex;
-  align-items: center;
-  max-width: min(360px, 100%);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
-}
-
-.usage-stats-account-filter-entry:hover,
-.usage-stats-account-filter-entry.active {
-  border-color: var(--juhe-border-strong);
-  background: var(--juhe-accent-soft);
-}
-
-.usage-stats-account-filter-entry.muted {
-  opacity: 0.46;
-}
-
-.usage-stats-account-filter-item {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  gap: 6px;
-  padding: 2px 8px;
-  border: 0;
-  color: var(--juhe-fg-soft);
-  background: transparent;
-  font-size: 13px;
-  line-height: 20px;
-  cursor: pointer;
-}
-
-.usage-stats-account-filter-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-left: -4px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  color: var(--juhe-muted);
-  background: transparent;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background-color 0.16s ease, color 0.16s ease;
-}
-
-.usage-stats-account-filter-remove:hover {
-  color: var(--juhe-danger);
-  background: var(--juhe-danger-soft);
-}
-
-.usage-stats-legend-dot {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-}
-
-.usage-stats-legend-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 手机端紧凑筛选条与账户 chips 折叠（桌面隐藏） */
+/* 手机端紧凑筛选条（桌面隐藏） */
 .usage-stats-mobile-bar {
   display: none;
 }
@@ -886,31 +752,6 @@ watch(mobileFilterOpen, (open) => {
   height: 7px;
   border-radius: 50%;
   background: var(--juhe-coral, var(--juhe-coral));
-}
-
-.usage-stats-chips-toggle {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 100%;
-  min-height: 32px;
-  margin-top: 8px;
-  border: 0;
-  border-radius: var(--juhe-radius-sm, 8px);
-  background: transparent;
-  color: var(--juhe-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.usage-stats-chips-toggle-icon {
-  font-size: 10px;
-  transition: transform 0.18s ease;
-}
-
-.usage-stats-chips-toggle-icon.open {
-  transform: rotate(180deg);
 }
 
 .stats-mobile-filter-field {
@@ -954,15 +795,6 @@ watch(mobileFilterOpen, (open) => {
     justify-content: space-between;
     gap: 12px;
     min-width: 0;
-  }
-
-  .usage-stats-account-list.collapsed {
-    max-height: 84px;
-    overflow: hidden;
-  }
-
-  .usage-stats-chips-toggle {
-    display: flex;
   }
 
   .chart-panel {

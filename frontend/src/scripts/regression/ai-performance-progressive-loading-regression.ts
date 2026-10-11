@@ -55,7 +55,8 @@ assert.doesNotMatch(viewSource, /activeAccountIds:\s*\[\.\.\.activeAccountIds\.v
 assert.doesNotMatch(viewSource, /addedAccountIds:\s*\[\.\.\.addedAccountIds\.value\]/, '临时追加账户不得跨页面进入持久化')
 assert.doesNotMatch(viewSource, /function refreshPerformance\(\)[\s\S]{0,120}force:\s*true/, '手动刷新不得绕过 usage-window 短缓存')
 assert.doesNotMatch(accountTypeSource, /requestCountLast7d|defaultVisible|selected:\s*boolean/, 'AI 性能 HTTP DTO 不得返回页面自行派生或未渲染字段')
-assert.match(filterToolbarSource, /<AccountAppendSelect[\s\S]*?:record-preference="false"/, '临时追加账户不得写入本地选择偏好')
+assert.match(filterToolbarSource, /<AccountManagePanelPopover[\s\S]*?@open-change=/, '账户面板开合必须显式转发给页面，展开时才加载账户候选')
+assert.doesNotMatch(filterToolbarSource, /AccountAppendSelect/, '临时追加账户必须迁移为共享账户管理面板，不得保留写入本地选择偏好的追加下拉')
 assert.match(viewSource, /channel === 'series' && overview\.value[\s\S]*?startDate: overview\.value\.range\.startDate[\s\S]*?endDate: overview\.value\.range\.endDate/, '追加 series 必须锁定已接受的 base 日期范围')
 
 const query = aiPerformanceSeriesParams({ accountIds: ['a', 'a', 'b'], startDate: '2026-07-01', endDate: '2026-07-03' })

@@ -151,10 +151,17 @@
 
     <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放。" />
 
-    <a-form-item required>
+    <AccountNameField
+      v-if="!editing"
+      :form="form"
+      hint="自动生成，可修改"
+    />
+
+    <a-form-item :required="supportedModelsRequired">
       <template #label>
         <div class="supported-models-label">
           <span>支持模型</span>
+          <span v-if="supportedModelsHint" class="supported-models-auto-hint">{{ supportedModelsHint }}</span>
           <a-tooltip title="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
             <QuestionCircleOutlined class="supported-models-help" />
           </a-tooltip>
@@ -188,6 +195,7 @@
       </div>
     </a-form-item>
     <AccountHealthCheckModelField
+      :editing="editing"
       :form="form"
       :model-options="modelOptions"
       :models-loading="modelsLoading"
@@ -205,6 +213,7 @@ import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
 import { isXaiProviderCode } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
+import AccountNameField from './AccountNameField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
@@ -226,6 +235,13 @@ const props = defineProps<{
   protocolVersion?: string
   title: string
 }>()
+
+const managedOAuthDefaultsAllowed = computed(() => (
+  ['oauth', 'google_oauth'].includes(props.form.type)
+  && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode)
+))
+const supportedModelsRequired = computed(() => props.editing || !managedOAuthDefaultsAllowed.value)
+const supportedModelsHint = computed(() => (!props.editing && managedOAuthDefaultsAllowed.value) ? '可留空' : '')
 
 const oauthModeOptions = computed(() => {
   if (props.isAnthropicOAuth || props.isGoogleOAuth || isGrokOAuth.value) {
@@ -400,6 +416,12 @@ defineEmits<{
 .supported-models-help {
   color: rgba(0, 0, 0, 0.45);
   cursor: help;
+}
+
+.supported-models-auto-hint {
+  color: var(--juhe-faint);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 :deep(.ant-form-item-label > label:has(.supported-models-label)) {

@@ -147,13 +147,11 @@
         @change="suggestAccountNameFromBaseUrlChange"
       />
     </a-form-item>
-    <AccountMetaFields
-      :deleting-tag-id="deletingTagId"
+    <AccountNameField
+      v-if="!editing"
       :form="form"
-      :tag-options="tagOptions"
-      :tag-options-loading="tagOptionsLoading"
-      @delete-tag="$emit('delete-tag', $event)"
-      @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
+      hint="自动生成 · 跟随 Base URL"
+      required
     />
     <a-form-item required>
       <template #label>
@@ -192,6 +190,7 @@
       </div>
     </a-form-item>
     <AccountHealthCheckModelField
+      :editing="editing"
       :form="form"
       :model-options="modelOptions"
       :models-loading="modelsLoading"
@@ -206,20 +205,19 @@ import { DeleteOutlined, HolderOutlined, PlusOutlined, QuestionCircleOutlined, R
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus, AccountTagSummary } from '@/types/domain'
+import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus } from '@/types/domain'
 import { followBaseUrlAccountName } from './accountNameSuggestion'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { normalizedAccountApiKeys } from './accountCredentials'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
-import AccountMetaFields from './AccountMetaFields.vue'
+import AccountNameField from './AccountNameField.vue'
 
 const props = defineProps<{
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   apiKeyRuntimeLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   baseUrlPlaceholder: string
-  deletingTagId?: string
   editing: boolean
   form: AccountFormModel
   modelOptions: AccountModelSelectOption[]
@@ -227,18 +225,14 @@ const props = defineProps<{
   modelsLoading: boolean
   protocolCode?: string
   protocolVersion?: string
-  tagOptions: AccountTagSummary[]
-  tagOptionsLoading: boolean
   title: string
 }>()
 
 defineEmits<{
-  (event: 'delete-tag', tagId: string): void
   (event: 'load-api-key-runtime', force?: boolean): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
-  (event: 'tag-options-dropdown', open: boolean): void
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)

@@ -64,17 +64,28 @@ export function useUsageStatsTrendAccountSelection(options: UseUsageStatsTrendAc
       account,
       label: trendAccountLabel(account),
       color: chartColors[index % chartColors.length],
-      selected: selectedIds.has(account.id),
+      selected: selectedTrendAccountIds.value.length ? selectedIds.has(account.id) : true,
       removable: addedTrendAccountIdSet.value.has(account.id) && !defaultTrendAccountIdSet.value.has(account.id),
       isDefault: defaultTrendAccountIdSet.value.has(account.id)
     }))
   })
 
+  // 显隐语义：点击账户 = 隐藏可见项 / 显示隐藏项，与图表图例点击一致。
+  // selectedTrendAccountIds 表示"可见子集"，空数组是"全部可见"的规范形；
+  // 隐藏最后一条可见线时结果集合为空，按规范形等价于恢复全部显示。
   function toggleTrendAccount(id: string): boolean {
     if (!trendAccountRows.value.some((row) => row.id === id)) return false
-    selectedTrendAccountIds.value = selectedTrendAccountIds.value.includes(id)
-      ? selectedTrendAccountIds.value.filter((accountId) => accountId !== id)
-      : [...selectedTrendAccountIds.value, id]
+    const allIds = trendAccountRows.value.map((row) => row.id)
+    const visibleIdSet = selectedTrendAccountIds.value.length
+      ? new Set(selectedTrendAccountIds.value)
+      : new Set(allIds)
+    if (visibleIdSet.has(id)) {
+      visibleIdSet.delete(id)
+    } else {
+      visibleIdSet.add(id)
+    }
+    const nextVisibleIds = allIds.filter((accountId) => visibleIdSet.has(accountId))
+    selectedTrendAccountIds.value = nextVisibleIds.length === allIds.length ? [] : nextVisibleIds
     return true
   }
 

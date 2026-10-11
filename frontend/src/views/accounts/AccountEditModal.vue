@@ -97,7 +97,6 @@
                 :api-key-runtime-loading="apiKeyRuntimeLoading"
                 :api-key-test-details="apiKeyTestDetails"
                 :base-url-placeholder="baseUrlPlaceholder"
-                :deleting-tag-id="deletingTagId"
                 :editing="editing"
                 :form="form"
                 :model-options="modelOptions"
@@ -105,15 +104,11 @@
                 :model-syncing="modelSyncing"
                 :protocol-code="selectedProtocolProfile?.protocolCode"
                 :protocol-version="selectedProtocolProfile?.protocolVersion"
-                :tag-options="tagOptions"
-                :tag-options-loading="tagOptionsLoading"
                 :title="credentialTitle"
-                @delete-tag="$emit('delete-tag', $event)"
                 @load-api-key-runtime="(force) => $emit('load-api-key-runtime', force)"
                 @model-options-open="$emit('model-options-open', $event)"
                 @model-options-search="$emit('model-options-search', $event)"
                 @refresh-models="$emit('refresh-models')"
-                @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
               />
 
               <AccountOAuthSection
@@ -193,7 +188,6 @@
                 :form="form"
                 :group-options="groupOptions"
                 :group-options-loading="groupOptionsLoading"
-                :show-meta-fields="!isApiKeyForm"
                 :tag-options="tagOptions"
                 :tag-options-loading="tagOptionsLoading"
                 :deleting-tag-id="deletingTagId"
@@ -212,25 +206,22 @@
                 <span class="bench-section-line" />
               </div>
               <div class="bench-cards">
-                <div class="bench-card" :class="{ open: advancedActiveKeys.includes('dispatch') }">
-                  <button type="button" class="bench-card-head" @click="toggleBenchCard('dispatch')">
-                    <span class="bench-card-icon"><SlidersOutlined /></span>
-                    <span class="bench-card-main">
-                      <span class="bench-card-name">调度参数</span>
-                      <span class="bench-card-sum" :class="{ configured: dispatchCardCount > 0 }">{{ dispatchCardSummary }}</span>
-                    </span>
-                    <span class="bench-card-badge" :class="{ on: dispatchCardCount > 0 }">{{ benchCardBadgeText(dispatchCardCount) }}</span>
-                    <span class="bench-arrow"><RightOutlined /></span>
-                  </button>
-                  <div v-show="advancedActiveKeys.includes('dispatch')" class="bench-card-body">
-                    <div v-if="advancedLoading" class="advanced-loading">
-                      <a-spin tip="正在加载高级配置" />
-                    </div>
-                    <div v-else-if="advancedPending" class="advanced-loading">
-                      <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                    </div>
-                    <div v-else class="advanced-section-stack">
-                      <div class="bench-dispatch-grid">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('dispatch')"
+                  name="调度参数"
+                  :summary="dispatchCardSummary"
+                  :count="dispatchCardCount"
+                  :icon="SlidersOutlined"
+                  @toggle="toggleBenchCard('dispatch')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
+                    <div class="bench-dispatch-grid">
                         <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
                           <a-input-number v-model:value="form.priority" :disabled="authorizedEditing" :min="0" style="width: 100%" />
                         </a-form-item>
@@ -245,38 +236,24 @@
                           </a-select>
                         </a-form-item>
                       </div>
-                      <AccountMetaFields
-                        v-if="!isApiKeyForm"
-                        :deleting-tag-id="deletingTagId"
-                        :form="form"
-                        :readonly="authorizedEditing"
-                        :tag-options="tagOptions"
-                        :tag-options-loading="tagOptionsLoading"
-                        @delete-tag="$emit('delete-tag', $event)"
-                        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
-                      />
                     </div>
-                  </div>
-                </div>
+                </AccountAdvancedCard>
 
-                <div class="bench-card" :class="{ open: advancedActiveKeys.includes('strategy') }">
-                  <button type="button" class="bench-card-head" @click="toggleBenchCard('strategy')">
-                    <span class="bench-card-icon"><SwapOutlined /></span>
-                    <span class="bench-card-main">
-                      <span class="bench-card-name">策略与代理</span>
-                      <span class="bench-card-sum" :class="{ configured: strategyCardCount > 0 }">{{ strategyCardSummary }}</span>
-                    </span>
-                    <span class="bench-card-badge" :class="{ on: strategyCardCount > 0 }">{{ benchCardBadgeText(strategyCardCount) }}</span>
-                    <span class="bench-arrow"><RightOutlined /></span>
-                  </button>
-                  <div v-show="advancedActiveKeys.includes('strategy')" class="bench-card-body">
-                    <div v-if="advancedLoading" class="advanced-loading">
-                      <a-spin tip="正在加载高级配置" />
-                    </div>
-                    <div v-else-if="advancedPending" class="advanced-loading">
-                      <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                    </div>
-                    <div v-else class="advanced-section-stack">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('strategy')"
+                  name="策略与代理"
+                  :summary="strategyCardSummary"
+                  :count="strategyCardCount"
+                  :icon="SwapOutlined"
+                  @toggle="toggleBenchCard('strategy')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
                       <AccountGptRequestOverridesSection
                         :form="form"
                         :model-options="modelOptions"
@@ -305,27 +282,24 @@
                         @proxy-options-search="$emit('proxyOptionsSearch', $event)"
                       />
                     </div>
-                  </div>
-                </div>
+                </AccountAdvancedCard>
 
-                <div class="bench-card" :class="{ open: advancedActiveKeys.includes('stability') }">
-                  <button type="button" class="bench-card-head" @click="toggleBenchCard('stability')">
-                    <span class="bench-card-icon ok"><HeartOutlined /></span>
-                    <span class="bench-card-main">
-                      <span class="bench-card-name">稳定性与锁死</span>
-                      <span class="bench-card-sum" :class="{ configured: stabilityCardCount > 0 }">{{ stabilityCardSummary }}</span>
-                    </span>
-                    <span class="bench-card-badge" :class="{ on: stabilityCardCount > 0 }">{{ benchCardBadgeText(stabilityCardCount) }}</span>
-                    <span class="bench-arrow"><RightOutlined /></span>
-                  </button>
-                  <div v-show="advancedActiveKeys.includes('stability')" class="bench-card-body">
-                    <div v-if="advancedLoading" class="advanced-loading">
-                      <a-spin tip="正在加载高级配置" />
-                    </div>
-                    <div v-else-if="advancedPending" class="advanced-loading">
-                      <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                    </div>
-                    <div v-else class="advanced-section-stack">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('stability')"
+                  name="稳定性与锁死"
+                  :summary="stabilityCardSummary"
+                  :count="stabilityCardCount"
+                  :icon="HeartOutlined"
+                  tone="ok"
+                  @toggle="toggleBenchCard('stability')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
                       <section class="form-section probe-toggle-row">
                         <div class="probe-toggle-label">
                           <span>持续恢复探活</span>
@@ -362,27 +336,24 @@
                         </div>
                       </section>
                     </div>
-                  </div>
-                </div>
+                </AccountAdvancedCard>
 
-                <div class="bench-card" :class="{ open: advancedActiveKeys.includes('balance') }">
-                  <button type="button" class="bench-card-head" @click="toggleBenchCard('balance')">
-                    <span class="bench-card-icon warn"><WalletOutlined /></span>
-                    <span class="bench-card-main">
-                      <span class="bench-card-name">余额与到期</span>
-                      <span class="bench-card-sum" :class="{ configured: balanceCardCount > 0 }">{{ balanceCardSummary }}</span>
-                    </span>
-                    <span class="bench-card-badge" :class="{ on: balanceCardCount > 0 }">{{ benchCardBadgeText(balanceCardCount) }}</span>
-                    <span class="bench-arrow"><RightOutlined /></span>
-                  </button>
-                  <div v-show="advancedActiveKeys.includes('balance')" class="bench-card-body">
-                    <div v-if="advancedLoading" class="advanced-loading">
-                      <a-spin tip="正在加载高级配置" />
-                    </div>
-                    <div v-else-if="advancedPending" class="advanced-loading">
-                      <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                    </div>
-                    <div v-else class="advanced-section-stack">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('balance')"
+                  name="余额与到期"
+                  :summary="balanceCardSummary"
+                  :count="balanceCardCount"
+                  :icon="WalletOutlined"
+                  tone="warn"
+                  @toggle="toggleBenchCard('balance')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
                       <AccountExtraInfoSection
                         :form="form"
                         :readonly="authorizedEditing"
@@ -396,53 +367,46 @@
                         @query="emit('balance-query')"
                       />
                     </div>
-                  </div>
-                </div>
+                </AccountAdvancedCard>
 
-                <div class="bench-card" :class="{ open: advancedActiveKeys.includes('schedule') }">
-                  <button type="button" class="bench-card-head" @click="toggleBenchCard('schedule')">
-                    <span class="bench-card-icon"><ScheduleOutlined /></span>
-                    <span class="bench-card-main">
-                      <span class="bench-card-name">时间计划</span>
-                      <span class="bench-card-sum" :class="{ configured: scheduleCardCount > 0 }">{{ scheduleCardSummary }}</span>
-                    </span>
-                    <span class="bench-card-badge" :class="{ on: scheduleCardCount > 0 }">{{ benchCardBadgeText(scheduleCardCount) }}</span>
-                    <span class="bench-arrow"><RightOutlined /></span>
-                  </button>
-                  <div v-show="advancedActiveKeys.includes('schedule')" class="bench-card-body">
-                    <div v-if="advancedLoading" class="advanced-loading">
-                      <a-spin tip="正在加载高级配置" />
-                    </div>
-                    <div v-else-if="advancedPending" class="advanced-loading">
-                      <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                    </div>
-                    <div v-else class="advanced-section-stack">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('schedule')"
+                  name="时间计划"
+                  :summary="scheduleCardSummary"
+                  :count="scheduleCardCount"
+                  :icon="ScheduleOutlined"
+                  @toggle="toggleBenchCard('schedule')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
                       <AccountAvailabilityScheduleSection
                         :form="form"
                         :readonly="authorizedEditing"
                       />
                     </div>
-                  </div>
-                </div>
+                </AccountAdvancedCard>
 
-                <div class="bench-card" :class="{ open: advancedActiveKeys.includes('policy') }">
-                  <button type="button" class="bench-card-head" @click="toggleBenchCard('policy')">
-                    <span class="bench-card-icon warn"><FlagOutlined /></span>
-                    <span class="bench-card-main">
-                      <span class="bench-card-name">错误与响应规则</span>
-                      <span class="bench-card-sum" :class="{ configured: policyCardCount > 0 }">{{ policyCardSummary }}</span>
-                    </span>
-                    <span class="bench-card-badge" :class="{ on: policyCardCount > 0 }">{{ benchCardBadgeText(policyCardCount) }}</span>
-                    <span class="bench-arrow"><RightOutlined /></span>
-                  </button>
-                  <div v-show="advancedActiveKeys.includes('policy')" class="bench-card-body">
-                    <div v-if="advancedLoading" class="advanced-loading">
-                      <a-spin tip="正在加载高级配置" />
-                    </div>
-                    <div v-else-if="advancedPending" class="advanced-loading">
-                      <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                    </div>
-                    <div v-else class="advanced-section-stack">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('policy')"
+                  name="错误与响应规则"
+                  :summary="policyCardSummary"
+                  :count="policyCardCount"
+                  :icon="FlagOutlined"
+                  tone="warn"
+                  @toggle="toggleBenchCard('policy')"
+                >
+                  <div v-if="advancedLoading" class="advanced-loading">
+                    <a-spin tip="正在加载高级配置" />
+                  </div>
+                  <div v-else-if="advancedPending" class="advanced-loading">
+                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
+                  </div>
+                  <div v-else class="advanced-section-stack">
                       <AccountErrorPolicyCard
                         v-model:rules="errorPolicyRules"
                         v-model:error-handling-rule-overrides="form.errorHandlingRuleOverrides"
@@ -455,8 +419,7 @@
                         :readonly="authorizedEditing"
                       />
                     </div>
-                  </div>
-                </div>
+                </AccountAdvancedCard>
               </div>
             </template>
 
@@ -466,25 +429,17 @@
               id="acct-sec-advanced"
               class="form-part"
             >
-              <a-collapse
-                v-model:activeKey="advancedActiveKeys"
-                class="account-advanced-collapse"
-                expand-icon-position="end"
-              >
-                <a-collapse-panel key="advanced">
-                  <template #header>
-                    <div class="advanced-header">
-                      <span>高级配置</span>
-                      <small v-if="wizardAdvancedConfiguredCount > 0">已配置 {{ wizardAdvancedConfiguredCount }} 项</small>
-                    </div>
-                  </template>
-                  <div v-if="advancedLoading" class="advanced-loading">
-                    <a-spin tip="正在加载高级配置" />
-                  </div>
-                  <div v-else-if="advancedPending" class="advanced-loading">
-                    <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
-                  </div>
-                  <div v-else-if="shouldRenderAdvancedSections" class="advanced-section-stack">
+              <!-- 与编辑态同款折叠摘要卡（AccountAdvancedCard 壳）；创建态不加载高级详情，卡体不含 advancedLoading/advancedPending 分支。 -->
+              <div class="bench-cards">
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('strategy')"
+                  name="策略与代理"
+                  :summary="strategyCardSummary"
+                  :count="strategyCardCount"
+                  :icon="SwapOutlined"
+                  @toggle="toggleBenchCard('strategy')"
+                >
+                  <div class="advanced-section-stack">
                     <AccountGptRequestOverridesSection
                       :form="form"
                       :model-options="modelOptions"
@@ -512,7 +467,19 @@
                       @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
                       @proxy-options-search="$emit('proxyOptionsSearch', $event)"
                     />
+                  </div>
+                </AccountAdvancedCard>
 
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('stability')"
+                  name="稳定性与锁死"
+                  :summary="stabilityCardSummary"
+                  :count="stabilityCardCount"
+                  :icon="HeartOutlined"
+                  tone="ok"
+                  @toggle="toggleBenchCard('stability')"
+                >
+                  <div class="advanced-section-stack">
                     <section class="form-section probe-toggle-row">
                       <div class="probe-toggle-label">
                         <span>持续恢复探活</span>
@@ -548,7 +515,19 @@
                         </a-form-item>
                       </div>
                     </section>
+                  </div>
+                </AccountAdvancedCard>
 
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('balance')"
+                  name="余额与到期"
+                  :summary="balanceCardSummary"
+                  :count="balanceCardCount"
+                  :icon="WalletOutlined"
+                  tone="warn"
+                  @toggle="toggleBenchCard('balance')"
+                >
+                  <div class="advanced-section-stack">
                     <AccountExtraInfoSection
                       :form="form"
                       :readonly="authorizedEditing"
@@ -561,12 +540,35 @@
                       :readonly="authorizedEditing"
                       @query="emit('balance-query')"
                     />
+                  </div>
+                </AccountAdvancedCard>
 
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('schedule')"
+                  name="时间计划"
+                  :summary="scheduleCardSummary"
+                  :count="scheduleCardCount"
+                  :icon="ScheduleOutlined"
+                  @toggle="toggleBenchCard('schedule')"
+                >
+                  <div class="advanced-section-stack">
                     <AccountAvailabilityScheduleSection
                       :form="form"
                       :readonly="authorizedEditing"
                     />
+                  </div>
+                </AccountAdvancedCard>
 
+                <AccountAdvancedCard
+                  :open="advancedActiveKeys.includes('policy')"
+                  name="错误与响应规则"
+                  :summary="policyCardSummary"
+                  :count="policyCardCount"
+                  :icon="FlagOutlined"
+                  tone="warn"
+                  @toggle="toggleBenchCard('policy')"
+                >
+                  <div class="advanced-section-stack">
                     <AccountErrorPolicyCard
                       v-model:rules="errorPolicyRules"
                       v-model:error-handling-rule-overrides="form.errorHandlingRuleOverrides"
@@ -578,10 +580,11 @@
                       v-model:rules="responseInspectionRules"
                       :readonly="authorizedEditing"
                     />
-
                   </div>
-                </a-collapse-panel>
-              </a-collapse>
+                </AccountAdvancedCard>
+              </div>
+
+              <p class="wizard-advanced-skip-hint">本页全部为可选项，留空即使用默认值；可直接点「创建」完成。</p>
             </section>
           </div>
         </div>
@@ -606,7 +609,7 @@
 </template>
 
 <script setup lang="ts">
-import { FlagOutlined, HeartOutlined, QuestionCircleOutlined, RightOutlined, ScheduleOutlined, SlidersOutlined, SwapOutlined, WalletOutlined } from '@ant-design/icons-vue'
+import { FlagOutlined, HeartOutlined, QuestionCircleOutlined, ScheduleOutlined, SlidersOutlined, SwapOutlined, WalletOutlined } from '@ant-design/icons-vue'
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
@@ -614,6 +617,7 @@ import { defaultAccountNameFromBaseUrl } from './accountNameSuggestion'
 import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
+import AccountAdvancedCard from './AccountAdvancedCard.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
@@ -654,7 +658,7 @@ const advancedActiveKeys = ref<string[]>([])
 // 只控制分区可见性与折叠开合，不参与表单数据、校验与提交逻辑。
 const wizardStep = ref(1)
 
-// 编辑态 6 张折叠摘要卡的 key；与向导高级折叠（'advanced'）共用 advancedActiveKeys。
+// 编辑态 6 张折叠摘要卡的展开 key。
 const benchCardAllKeys = ['dispatch', 'strategy', 'stability', 'balance', 'schedule', 'policy']
 
 const props = withDefaults(defineProps<{
@@ -793,7 +797,6 @@ const confirmButtonProps = computed(() => ({
   disabled: Boolean(props.okButtonProps.disabled) || props.loading || props.testLoading
 }))
 const advancedPending = computed(() => props.editing && !props.authorizedEditing && !props.advancedLoaded)
-const shouldRenderAdvancedSections = computed(() => (props.authorizedEditing || !advancedPending.value) && advancedActiveKeys.value.includes('advanced'))
 
 // ---- 编辑态标题栏 ----
 
@@ -814,12 +817,10 @@ const accountTypeBadgeText = computed(() => {
 const dispatchCardSummary = computed(() =>
   `优先级 ${props.form.priority} · 并发 ${props.form.concurrencyLimit || '不限制'} · ${privilegeSummaryText()}`)
 const dispatchCardCount = computed(() => [
-  // 默认值以 accountFormDefaults.ts 为准：priority=0 / concurrencyLimit=DEFAULT_ACCOUNT_CONCURRENCY_LIMIT / privilege='normal' / tags=[]
+  // 默认值以 accountFormDefaults.ts 为准：priority=0 / concurrencyLimit=DEFAULT_ACCOUNT_CONCURRENCY_LIMIT / privilege='normal'
   props.form.priority !== 0,
   props.form.concurrencyLimit !== DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
-  props.form.privilege !== 'normal',
-  // api_key 表单的标签实际在凭证区（AccountApiKeySection 内的 MetaFields）编辑，不计入本卡徽标。
-  !props.isApiKeyForm && props.form.tags.length > 0
+  props.form.privilege !== 'normal'
 ].filter(Boolean).length)
 
 function privilegeSummaryText(): string {
@@ -875,35 +876,6 @@ const policyCardSummary = computed(() =>
   `错误 ${errorPolicyRules.value.length} 条 · 响应 ${responseInspectionRules.value.length} 条`)
 const policyCardCount = computed(() => errorPolicyRules.value.length + responseInspectionRules.value.length)
 
-function benchCardBadgeText(count: number): string {
-  return count > 0 ? `已配置 ${count} 项` : '默认值'
-}
-
-// 向导高级折叠头部沿用旧版固定 13 项布尔合计（与编辑态各卡自身计数相互独立，口径不得漂移）：
-// 别名/接口能力/代理/两个请求覆盖（策略）、探活关闭/锁死两参（稳定性）、到期/配额恢复（余额）、时间计划、错误与响应规则各按 length>0 计 1。
-const wizardAdvancedConfiguredCount = computed(() => {
-  const form = props.form
-  const checks = [
-    form.modelMappings.length > 0,
-    !endpointModesEqual(form.supportedEndpointModes, defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
-      provider: props.selectedProvider,
-      protocolProfile: props.selectedProtocolProfile
-    })),
-    Boolean(form.proxyProfileId),
-    Boolean(form.accountExpiresAt),
-    form.availabilitySchedule.enabled,
-    errorPolicyRules.value.length > 0,
-    Object.keys(form.quotaRecoveryPolicy ?? {}).length > 0,
-    responseInspectionRules.value.length > 0,
-    Boolean(form.serviceTierOverride),
-    Boolean(form.reasoningEffortOverride),
-    form.temporaryUnavailableContinuousProbeEnabled === false,
-    form.lockDeathTimeoutSeconds !== 300,
-    form.lockRetryIntervalSeconds !== 5
-  ]
-  return checks.filter(Boolean).length
-})
-
 function toggleBenchCard(key: string): void {
   const index = advancedActiveKeys.value.indexOf(key)
   if (index >= 0) advancedActiveKeys.value.splice(index, 1)
@@ -913,8 +885,8 @@ function toggleBenchCard(key: string): void {
 watch(open, (next) => {
   if (!next) return
   wizardStep.value = 1
-  // 授权只读态打开即展开全部摘要卡（keys 变化经下方双保险 watch 触发加载）；普通编辑态自动加载等 basic 详情就绪后触发。
-  advancedActiveKeys.value = props.authorizedEditing ? [...benchCardAllKeys] : []
+  // 编辑普通态收起起步；授权只读态与创建向导第 3 步默认全部展开。
+  advancedActiveKeys.value = props.authorizedEditing || !props.editing ? [...benchCardAllKeys] : []
   // 新建/克隆打开时名称为空则按供应商默认 Base URL 生成「域名-6 位随机」默认名。
   // 必须挂在 open watch：弹窗 force-render 下子组件 onMounted 只在页面加载时跑一次，会错过打开时机。
   if (!props.editing && !props.form.name.trim()) {
@@ -1166,123 +1138,12 @@ const emit = defineEmits<{
   background: var(--juhe-border);
 }
 
-/* ---- 折叠摘要卡：头部显示当前值摘要，不展开也能掌握配置状态 ---- */
+/* ---- 折叠摘要卡（卡壳与头部样式在 AccountAdvancedCard.vue 内，两形态共用） ---- */
 
 .bench-cards {
   display: grid;
   gap: 10px;
   min-width: 0;
-}
-
-.bench-card {
-  min-width: 0;
-  border: 1px solid var(--juhe-border);
-  border-radius: var(--juhe-radius);
-  overflow: hidden;
-  background: var(--juhe-surface);
-}
-
-.bench-card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  padding: 12px 16px;
-  border: 0;
-  border-radius: 0;
-  background: var(--juhe-surface);
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-
-.bench-card-head:hover {
-  background: var(--juhe-rail);
-}
-
-.bench-card.open .bench-card-head {
-  background: var(--juhe-rail);
-  border-bottom: 1px solid var(--juhe-border);
-}
-
-.bench-card-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: var(--juhe-accent-soft);
-  color: var(--juhe-accent);
-  display: grid;
-  place-items: center;
-  font-size: 14px;
-  flex: 0 0 auto;
-}
-
-.bench-card-icon.ok {
-  background: var(--juhe-ok-soft);
-  color: var(--juhe-ok);
-}
-
-.bench-card-icon.warn {
-  background: var(--juhe-surface-soft);
-  color: var(--juhe-coral);
-}
-
-.bench-card-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.bench-card-name {
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--juhe-fg);
-}
-
-.bench-card-sum {
-  font-size: 11.5px;
-  color: var(--juhe-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.bench-card-sum.configured {
-  color: var(--juhe-accent-mid);
-}
-
-.bench-card-badge {
-  flex: 0 0 auto;
-  font-size: 10.5px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--juhe-soft);
-  color: var(--juhe-faint);
-}
-
-.bench-card-badge.on {
-  background: var(--juhe-accent-soft);
-  color: var(--juhe-accent);
-}
-
-.bench-arrow {
-  flex: 0 0 auto;
-  color: var(--juhe-faint);
-  font-size: 11px;
-  transition: transform 0.18s;
-}
-
-.bench-card.open .bench-arrow {
-  transform: rotate(90deg);
-}
-
-.bench-card-body {
-  padding: 16px;
-  background: var(--juhe-rail);
 }
 
 .bench-dispatch-grid {
@@ -1334,14 +1195,6 @@ const emit = defineEmits<{
   gap: 6px;
 }
 
-.account-advanced-collapse {
-  max-width: 100%;
-  min-width: 0;
-  border: 1px solid var(--juhe-border);
-  border-radius: 8px;
-  background: var(--juhe-surface);
-}
-
 .account-form,
 .account-form :deep(.ant-form-item),
 .account-form :deep(.ant-form-item-control),
@@ -1363,49 +1216,16 @@ const emit = defineEmits<{
   place-items: center;
 }
 
-.account-advanced-collapse :deep(.ant-collapse-item) {
-  min-width: 0;
-  border-bottom: 0;
-}
-
-.account-advanced-collapse :deep(.ant-collapse-header) {
-  align-items: center;
-  padding: 14px 16px !important;
-}
-
-.account-advanced-collapse :deep(.ant-collapse-content) {
-  min-width: 0;
-  border-top: 1px solid var(--juhe-border);
-}
-
-.account-advanced-collapse :deep(.ant-collapse-content-box) {
-  min-width: 0;
-  padding: 16px !important;
-  background: var(--juhe-surface-soft);
-}
-
-.advanced-header {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-.advanced-header span {
-  color: var(--juhe-fg);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.advanced-header small {
-  color: var(--juhe-muted);
-  font-size: 12px;
-}
-
 .advanced-section-stack {
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.wizard-advanced-skip-hint {
+  margin: 16px 2px 0;
+  color: var(--juhe-faint);
+  font-size: 12px;
 }
 
 .lock-runtime-state {
@@ -1551,11 +1371,7 @@ const emit = defineEmits<{
     display: none;
   }
 
-  /* 编辑态：摘要卡头摘要文本隐藏，标题栏允许换行，调度字段折叠为单列 */
-  .bench-card-sum {
-    display: none;
-  }
-
+  /* 编辑态：标题栏允许换行，调度字段折叠为单列 */
   .modal-title-bar {
     flex-wrap: wrap;
     row-gap: 8px;

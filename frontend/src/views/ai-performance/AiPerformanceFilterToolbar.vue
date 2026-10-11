@@ -30,21 +30,20 @@
           @change="emit('date-range-change')"
           @open-change="emit('date-range-open-change', $event)"
         />
-        <AccountAppendSelect
-          v-model:value="addedAccountIds"
-          :accounts="accounts"
-          :selected-accounts="addedAccountSelections"
-          class="ai-performance-account-select"
-          :hidden-account-ids="accountPickerHiddenValues"
+        <AccountManagePanelPopover
+          :collection-items="panelCollectionItems"
+          :options="accountOptions"
+          :max-added-accounts="20"
           :loading="accountsLoading"
           :disabled="loading"
-          :max="20"
-          max-tag-count="responsive"
-          placeholder="输入账户名称添加账户"
-          :record-preference="false"
-          @change="handleAddedAccountsChange"
+          search-hint="输入账户名称搜索添加（默认已展示活跃前 10）"
+          :count-text="accountCountText"
+          @open-change="emit('account-open-change', $event)"
+          @add="emit('add-account', $event)"
+          @remove="emit('remove-account', $event)"
+          @toggle="emit('toggle-account', $event)"
           @search="emit('account-search', $event)"
-          @dropdown-visible-change="emit('account-dropdown-visible-change', $event)"
+          @reset-defaults="emit('reset-accounts')"
         />
       </div>
       <div class="page-toolbar-actions">
@@ -57,7 +56,7 @@
         </a-button>
       </div>
     </div>
-    <!-- 手机端紧凑条：当前时间范围（点按开抽屉）+ 筛选按钮；账户 chips 保留在下方 -->
+    <!-- 手机端紧凑条：当前时间范围（点按开抽屉）+ 筛选按钮；账户管理收进筛选抽屉面板 -->
     <div class="ai-performance-mobile-bar">
       <button type="button" class="ai-performance-mobile-range" @click="mobileFilterOpen = true">
         {{ mobileRangeLabel }}
@@ -68,48 +67,6 @@
         <span v-if="mobileFilterActive" class="ai-performance-mobile-filter-dot" />
       </button>
     </div>
-    <div
-      v-if="accountFilterItems.length"
-      class="ai-performance-account-list"
-      :class="{ collapsed: mobileChipsCollapsed }"
-      aria-label="性能账户筛选"
-    >
-      <span
-        v-for="item in accountFilterItems"
-        :key="item.account.id"
-        class="ai-performance-account-filter-entry"
-        :class="{ active: item.selected, muted: hasActiveAccountFilter && !item.selected }"
-      >
-        <button
-          class="ai-performance-account-filter-item"
-          type="button"
-          :aria-pressed="item.selected"
-          @click="emit('toggle-account', item.account.id)"
-        >
-          <span class="ai-performance-legend-dot" :style="{ backgroundColor: item.color }" />
-          <span class="ai-performance-legend-name">{{ item.label }}</span>
-        </button>
-        <a-tooltip v-if="item.removable" title="移除">
-          <button
-            class="ai-performance-account-filter-remove"
-            type="button"
-            :aria-label="`移除${item.label}`"
-            @click.stop="emit('remove-account', item.account.id)"
-          >
-            <CloseOutlined />
-          </button>
-        </a-tooltip>
-      </span>
-    </div>
-    <button
-      v-if="accountFilterItems.length > mobileChipCollapseThreshold"
-      type="button"
-      class="ai-performance-chips-toggle"
-      @click="mobileChipsCollapsed = !mobileChipsCollapsed"
-    >
-      {{ mobileChipsCollapsed ? `展开全部 ${accountFilterItems.length} 个账户` : '收起账户列表' }}
-      <caret-down-outlined class="ai-performance-chips-toggle-icon" :class="{ open: !mobileChipsCollapsed }" />
-    </button>
   </a-card>
 
   <a-drawer
@@ -155,22 +112,20 @@
         />
       </div>
       <div class="ai-performance-mobile-filter-field">
-        <span class="ai-performance-mobile-filter-label">添加账户</span>
-        <AccountAppendSelect
-          v-model:value="addedAccountIds"
-          :accounts="accounts"
-          :selected-accounts="addedAccountSelections"
+        <span class="ai-performance-mobile-filter-label">监控账户（{{ accountFilterItems.length }}）</span>
+        <AccountManagePanel
           class="ai-performance-mobile-filter-control"
-          :hidden-account-ids="accountPickerHiddenValues"
+          :collection-items="panelCollectionItems"
+          :options="accountOptions"
+          :max-added-accounts="20"
           :loading="accountsLoading"
           :disabled="loading"
-          :max="20"
-          max-tag-count="responsive"
-          placeholder="输入账户名称添加账户"
-          :record-preference="false"
-          @change="handleAddedAccountsChange"
+          search-hint="输入账户名称搜索添加（默认已展示活跃前 10）"
+          @add="emit('add-account', $event)"
+          @remove="emit('remove-account', $event)"
+          @toggle="emit('toggle-account', $event)"
           @search="emit('account-search', $event)"
-          @dropdown-visible-change="emit('account-dropdown-visible-change', $event)"
+          @reset-defaults="emit('reset-accounts')"
         />
       </div>
       <div class="ai-performance-mobile-filter-actions">
@@ -187,15 +142,15 @@
 </template>
 
 <script setup lang="ts">
-import { CaretDownOutlined, CloseOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { computed, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 
-import AccountAppendSelect from '@/components/AccountAppendSelect.vue'
+import AccountManagePanel from '@/components/AccountManagePanel.vue'
+import AccountManagePanelPopover from '@/components/AccountManagePanelPopover.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { AccountSelection } from '@/shared/accountLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { AiPerformanceAccountOption, AiPerformanceOverview, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AiPerformanceOverview, SystemAccountPrincipalSummary } from '@/types/domain'
 
 type AiPerformanceAccountFilterItem = {
   account: AiPerformanceOverview['accounts'][number]
@@ -203,12 +158,12 @@ type AiPerformanceAccountFilterItem = {
   color: string
   selected: boolean
   removable: boolean
+  isDefault: boolean
 }
 
 const selectedSystemAccountId = defineModel<string>('selectedSystemAccountId', { required: true })
 const selectedSystemAccount = defineModel<PrincipalSelection | undefined>('selectedSystemAccount')
 const dateRange = defineModel<[Dayjs, Dayjs]>('dateRange', { required: true })
-const addedAccountIds = defineModel<string[]>('addedAccountIds', { required: true })
 
 const props = defineProps<{
   isManagementView: boolean
@@ -216,19 +171,26 @@ const props = defineProps<{
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountOptionsLoading: boolean
   disabledDate: (current: Dayjs) => boolean
-  accounts: AiPerformanceAccountOption[]
-  addedAccountSelections: AccountSelection[]
-  accountPickerHiddenValues: Array<string | undefined>
-  accountsLoading: boolean
   accountFilterItems: AiPerformanceAccountFilterItem[]
+  accountOptions: Array<{ id: string; name: string; providerName?: string }>
+  accountsLoading: boolean
   hasActiveAccountFilter: boolean
 }>()
 
-// 手机端：筛选抽屉开合；账户 chips 超 4 条折叠。
+// 共享管理面板条目：selected 字段语义即真实可见性（未隐藏任何账户时全部可见）。
+const panelCollectionItems = computed(() => props.accountFilterItems.map((item) => ({
+  id: item.account.id,
+  label: item.label,
+  color: item.color,
+  visible: item.selected,
+  removable: item.removable,
+  isDefault: item.isDefault
+})))
+const accountCountText = computed(() => `${props.accountFilterItems.length}`)
+
+// 手机端：筛选抽屉开合。
 // 打点：有生效账户筛选，或指定到具体用户（'all' 是全部用户哨兵）。
 const mobileFilterOpen = ref(false)
-const mobileChipsCollapsed = ref(true)
-const mobileChipCollapseThreshold = 4
 const mobileFilterActive = computed(() => props.hasActiveAccountFilter
   || (Boolean(selectedSystemAccountId.value) && selectedSystemAccountId.value !== 'all'))
 
@@ -245,18 +207,15 @@ const emit = defineEmits<{
   'calendar-change': [value: Array<Dayjs | null> | null]
   'date-range-change': []
   'date-range-open-change': [open: boolean]
-  'added-accounts-change': [value: string[], previousValue: string[]]
+  'account-open-change': [open: boolean]
+  'add-account': [id: string]
   'account-search': [value: string]
-  'account-dropdown-visible-change': [open: boolean]
   reset: []
   refresh: []
   'toggle-account': [id: string]
   'remove-account': [id: string]
+  'reset-accounts': []
 }>()
-
-function handleAddedAccountsChange(value: string[], previousValue: string[]) {
-  emit('added-accounts-change', value, previousValue)
-}
 </script>
 
 <style scoped>
@@ -285,90 +244,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   width: 250px;
 }
 
-.ai-performance-account-select {
-  flex: 0 1 380px;
-  width: min(380px, 100%);
-  min-width: 0;
-  max-width: 100%;
-}
-
-.ai-performance-account-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 10px;
-  margin-top: 12px;
-}
-
-.ai-performance-account-filter-entry {
-  display: inline-flex;
-  align-items: center;
-  max-width: min(360px, 100%);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
-}
-
-.ai-performance-account-filter-entry:hover,
-.ai-performance-account-filter-entry.active {
-  border-color: var(--juhe-border-strong);
-  background: var(--juhe-accent-soft);
-}
-
-.ai-performance-account-filter-entry.muted {
-  opacity: 0.46;
-}
-
-.ai-performance-account-filter-item {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  gap: 6px;
-  padding: 2px 8px;
-  border: 0;
-  color: var(--juhe-fg-soft);
-  background: transparent;
-  font-size: 13px;
-  line-height: 20px;
-  cursor: pointer;
-}
-
-.ai-performance-account-filter-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-left: -4px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  color: var(--juhe-muted);
-  background: transparent;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background-color 0.16s ease, color 0.16s ease;
-}
-
-.ai-performance-account-filter-remove:hover {
-  color: var(--juhe-danger);
-  background: var(--juhe-danger-soft);
-}
-
-.ai-performance-legend-dot {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-}
-
-.ai-performance-legend-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 手机端紧凑条 + chips 折叠（桌面隐藏） */
+/* 手机端紧凑条（桌面隐藏） */
 .ai-performance-mobile-bar {
   display: none;
 }
@@ -413,31 +289,6 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   background: var(--juhe-coral, var(--juhe-coral));
 }
 
-.ai-performance-chips-toggle {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 100%;
-  min-height: 32px;
-  margin-top: 8px;
-  border: 0;
-  border-radius: var(--juhe-radius-sm, 8px);
-  background: transparent;
-  color: var(--juhe-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.ai-performance-chips-toggle-icon {
-  font-size: 10px;
-  transition: transform 0.18s ease;
-}
-
-.ai-performance-chips-toggle-icon.open {
-  transform: rotate(180deg);
-}
-
 .ai-performance-mobile-filter-field {
   display: flex;
   flex-direction: column;
@@ -472,15 +323,6 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-  }
-
-  .ai-performance-account-list.collapsed {
-    max-height: 84px;
-    overflow: hidden;
-  }
-
-  .ai-performance-chips-toggle {
-    display: flex;
   }
 }
 

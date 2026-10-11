@@ -1,5 +1,5 @@
 <template>
-  <!-- bench 变体：编辑工作台"常用配置区"的分组块，仅渲染加入分组；名称/调度/状态由弹框标题栏与摘要卡承载 -->
+  <!-- bench 变体：编辑工作台"常用配置区"：加入分组 + 标签/说明；名称/调度/状态由弹框标题栏与摘要卡承载 -->
   <section v-if="variant === 'bench'" class="form-section">
     <a-form-item label="加入分组" :required="editing">
       <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
@@ -16,21 +16,18 @@
         />
       </div>
     </a-form-item>
+    <AccountMetaFields
+      v-if="!authorizedEditing"
+      :deleting-tag-id="deletingTagId"
+      :form="form"
+      :tag-options="tagOptions"
+      :tag-options-loading="tagOptionsLoading"
+      @delete-tag="$emit('delete-tag', $event)"
+      @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
+    />
   </section>
   <section v-else class="form-section">
-    <div class="form-grid">
-      <a-form-item label="账户名称" :required="form.type === 'api_key' || editing">
-        <a-input
-          v-model:value="form.name"
-          autocomplete="off"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          :disabled="authorizedEditing"
-          :maxlength="maxAccountNameLength"
-          :placeholder="['oauth', 'google_oauth'].includes(form.type) ? '凭据账户可使用授权信息作为名称' : '例如 openai-main'"
-        />
-      </a-form-item>
+    <div class="form-grid attribution-grid">
       <!-- 保存校验（accountSavePayload）只对编辑态强制分组；新建态可空，创建成功提示会引导补绑。 -->
       <a-form-item label="加入分组" :required="editing">
         <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
@@ -47,6 +44,15 @@
           />
         </div>
       </a-form-item>
+      <AccountMetaFields
+        :deleting-tag-id="deletingTagId"
+        :form="form"
+        :readonly="authorizedEditing"
+        :tag-options="tagOptions"
+        :tag-options-loading="tagOptionsLoading"
+        @delete-tag="$emit('delete-tag', $event)"
+        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
+      />
     </div>
     <div class="dispatch-config-grid">
       <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
@@ -70,17 +76,6 @@
         </a-radio-group>
       </a-form-item>
     </div>
-    <div v-if="showMetaFields" class="form-grid meta-fields-grid">
-      <AccountMetaFields
-        :deleting-tag-id="deletingTagId"
-        :form="form"
-        :readonly="authorizedEditing"
-        :tag-options="tagOptions"
-        :tag-options-loading="tagOptionsLoading"
-        @delete-tag="$emit('delete-tag', $event)"
-        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
-      />
-    </div>
   </section>
 </template>
 
@@ -91,15 +86,12 @@ import type { AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import AccountMetaFields from './AccountMetaFields.vue'
 
-const maxAccountNameLength = 128
-
 const props = withDefaults(defineProps<{
   authorizedEditing: boolean
   editing: boolean
   form: AccountFormModel
   groupOptionsLoading: boolean
   groupOptions: Array<{ label: string; value: string }>
-  showMetaFields?: boolean
   tagOptionsLoading: boolean
   tagOptions: AccountTagSummary[]
   deletingTagId?: string
@@ -154,9 +146,13 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
   gap: 0 18px;
 }
 
+.attribution-grid :deep(.tag-form-item) {
+  grid-column: auto;
+}
+
 .dispatch-config-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(112px, 150px)) minmax(210px, 1fr);
+  grid-template-columns: repeat(3, minmax(96px, 118px)) minmax(220px, 1fr);
   gap: 0 18px;
 }
 
