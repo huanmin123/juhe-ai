@@ -456,12 +456,12 @@ Claude Code 模型配置别名仍单独处理，不作为官方模型目录项�
 
 Anthropic 账户测试必须复用真实网关链路。
 
-测试请求使用无工具 Claude Code 健康探针，核心字段如下：
+测试请求使用无工具 Claude Code 健康探针，核心字段如下（2026-10-11 按当前实现与 BUG-0201 契约修订；历史版本曾记载 `max_tokens: 32000` + `thinking`/`effort`，那是 Claude Code 真实客户端画像的请求形状描述，不是探针契约——探针必须轻量有界，见下）：
 
 ```json
 {
   "model": "claude-opus-5",
-  "max_tokens": 32000,
+  "max_tokens": 1024,
   "system": [
     { "type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.201.eb7; cc_entrypoint=sdk-cli;" },
     { "type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK." }
@@ -477,6 +477,7 @@ Anthropic 账户测试必须复用真实网关链路。
 
 测试要求：
 
+- 探针预算契约（BUG-0201）：`max_tokens` 固定 1024，不带 `thinking` / `output_config.effort` 等推理增强字段——非流式探针要等完整响应，推理增强会让首字节超过 Cloudflare 类代理的 100s 上限（上游回 524），也远超手动测试 60s 诊断预算。探针请求构造统一走 `shared/platform/upstreamenvelope`（见 `docs/architecture/上游请求信封统一设计.md`）。
 - 测试路径使用 `/v1/messages`。
 - 新建账户的检查模型按“个人默认 > 管理员系统默认 > 协议档案默认”初始化，保存后严格读取账户自己的 `healthCheckModel`。新增和编辑表单测试默认使用当前表单检查模型，可切换目录候选且不回写表单；列表单项测试按需读取当前作用域可见的启用文本模型目录。
 - 测试请求必须带 `anthropic-version: 2023-06-01`，并通过 `x-juhe-client-profile: claude_code` 触发上游 Claude Code `User-Agent`、`anthropic-beta`、`x-claude-code-session-id` 和 `?beta=true` 补齐。

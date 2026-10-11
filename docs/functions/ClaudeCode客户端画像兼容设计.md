@@ -164,7 +164,7 @@ Claude Code 当前沿用 Anthropic native 响应透传：
 - 普通 Anthropic API Key 请求不默认注入 Claude Code 专属 `anthropic-beta` 或 User-Agent。
 - Claude Code 画像请求缺少专属 User-Agent、`anthropic-beta` 或 `?beta=true` 时应在上游请求侧补齐；客户端已有 Claude Code User-Agent 和 beta 时应保留并去重合并。
 - opencode 等 OpenAI-compatible 客户端通过混合供应商账户桥接到 Anthropic Messages 时，`x-juhe-client-profile: claude_code` 应触发上游 `/v1/messages?beta=true`、Claude Code header 和最小 body envelope；未带该 header 的普通桥接不得默认注入 Claude Code 画像。
-- Anthropic 账户测试应使用无工具 Claude Code 健康探针：显式 `x-juhe-client-profile: claude_code`、`x-claude-code-session-id`、`system` 数组、`thinking: { type: "adaptive" }`、`output_config: { effort: "high" }`、`metadata.user_id`、`max_tokens: 32000` 和 `tools: []`；不得伪造 Bash / Edit / Read 工具列表。
+- Anthropic 账户测试应使用无工具 Claude Code 健康探针：显式 `x-juhe-client-profile: claude_code`、`x-claude-code-session-id`、`system` 数组、`metadata.user_id`、`max_tokens: 1024` 和 `tools: []`；不带 `thinking` / `output_config.effort`（BUG-0201：探针必须轻量有界，推理增强会拖爆代理 100s/524 与 60s 诊断预算；32000+thinking 是真实 Claude Code 客户端画像的透传形状描述，不是探针契约）；不得伪造 Bash / Edit / Read 工具列表。
 - 账号异常处理仍走统一上游失败、确认、半开、冷却复测和账户错误策略；不得按状态码或错误类型直接判死账号。
 - 官方 Claude Code CLI 抓包作为可选验证项；抓包时必须隔离用户级 Claude settings，否则可能被已有 `ANTHROPIC_BASE_URL` / token 设置覆盖而命中其他上游。
 - 开启模型发现时，本地 `/v1/models` 应返回 Anthropic 形态模型目录；`/v1/messages/count_tokens` 应能通过同一套本地认证和账号调度链路转发。

@@ -10,7 +10,15 @@ import (
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
+
+// protocolBasicOutputTokens 是 protocol_basic 家族（基础 + 流式 + 可信对比
+// 首探针）的统一输出预算（信封统一设计 §4.3 / BUG-0308）：旧值 16 低于
+// 真实中转普遍实施的输出最低值（2026-10-11 生产实证 min 100 直接 400，
+// 模型检测整轮误判"不可检测"），且对思考模型会耗尽预算输出为空。预算是
+// 上限不是计费值；其余探针族的语义预算按设计 §4.4 原样保留。
+const protocolBasicOutputTokens = upstreamenvelope.DefaultProbeOutputTokens
 
 // Suite runs the ordered credential-free core probes. It stops after a
 // transport failure so that partial evidence is explicit and never treated as
@@ -115,7 +123,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		upstreamMode = modelcheckprofile.EndpointModeForProtocol(input.UpstreamProtocol, stream)
 	}
 	results := make([]Result, 0, 4)
-	basic, err := input.tunedBasic(input.Model, "Reply with exactly: OK-MODEL-CHECK", upstreamMode, stream, 16, 0)
+	basic, err := input.tunedBasic(input.Model, "Reply with exactly: OK-MODEL-CHECK", upstreamMode, stream, protocolBasicOutputTokens, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +143,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		return items, nil
 	}
 	if stream {
-		streamRequest, streamErr := input.tunedBasic(input.Model, "Reply with exactly: STREAM-OK", upstreamMode, true, 16, 0)
+		streamRequest, streamErr := input.tunedBasic(input.Model, "Reply with exactly: STREAM-OK", upstreamMode, true, protocolBasicOutputTokens, 0)
 		if streamErr != nil {
 			return nil, streamErr
 		}
@@ -786,7 +794,7 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	execute := func(owner Suite, request Request) (Result, error) {
 		return owner.execute(ctx, request, timeout)
 	}
-	targetBasic, err := target.tunedBasic(targetModel, "Reply with exactly: OK-MODEL-CHECK", targetMode, targetStream, 16, 0)
+	targetBasic, err := target.tunedBasic(targetModel, "Reply with exactly: OK-MODEL-CHECK", targetMode, targetStream, protocolBasicOutputTokens, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -795,7 +803,7 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	// comparison suite above already ran its own ordinary basic probe; this
 	// request must use the CROSS-MODEL-OK output contract so the comparison item
 	// does not silently score as a generic basic response.
-	comparisonBasic, err := comparison.tunedBasic(comparisonModel, "Reply with exactly: CROSS-MODEL-OK", comparisonMode, comparisonStream, 16, 0)
+	comparisonBasic, err := comparison.tunedBasic(comparisonModel, "Reply with exactly: CROSS-MODEL-OK", comparisonMode, comparisonStream, protocolBasicOutputTokens, 0)
 	if err != nil {
 		return nil, err
 	}
