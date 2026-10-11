@@ -24,6 +24,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
@@ -87,7 +88,9 @@ const (
 	outputChallengePrompt = "接口连通性自动测试：请原样输出 " + outputChallengeExpected
 	// 1024 而非 Node 的 256：推理模型的思考 token 计入输出上限，256 会被思考
 	// 耗尽（finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
-	outputTokenLimit    = 1024
+	// M4 起取值引用信封单一来源（信封统一设计 §6 M4），BUG-0201 下 1024 的
+	// 既有语义不变。
+	outputTokenLimit    = upstreamenvelope.DefaultProbeOutputTokens
 	anthropicBuildID    = "eb7"
 	anthropicDeviceID   = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
 	clientProfileHeader = "x-juhe-client-profile"

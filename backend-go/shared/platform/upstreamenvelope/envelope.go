@@ -235,7 +235,7 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 	for name, value := range entry.Headers {
 		header.Set(name, value)
 	}
-	if err := spec.Auth.apply(header); err != nil {
+	if err := spec.Auth.Apply(header); err != nil {
 		return nil, err
 	}
 	for name, value := range spec.ExtraHeaders {

@@ -24,16 +24,20 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 const (
 	probeChallenge = "juhe"
+	// probeOutputTokenLimit 是 F4 健康/恢复探针的文本输出预算别名（信封统一
+	// 设计 §6 M3）：取值权威已上收 upstreamenvelope.DefaultProbeOutputTokens，
+	// 本包不再私有定义数值；保留别名是 probe_test 的线上预算断言仍引用本名。
 	// 1024 而非 256：推理模型的思考 token 计入输出上限，256 会被思考耗尽
-	// （finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
+	//（finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
 	// 与 platform 包 accounttest/accountprobe 的 outputTokenLimit 保持同值。
-	probeOutputTokenLimit = 1024
+	probeOutputTokenLimit = upstreamenvelope.DefaultProbeOutputTokens
 	defaultMaxBodyBytes   = int64(256 * 1024)
 )
 
@@ -238,7 +242,18 @@ func probeTransportConfig(input Input, options ProbeOptions) (string, time.Durat
 
 func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token string) (*http.Request, error) {
 	protocol := directProbeProtocolForMode(input.ProtocolProfileID, input.Provider, input.EndpointMode)
+	// endpoint catalog 条目统一取自信封（信封统一设计 §6 M3）：预算字段声明、
+	// anthropic-version / api-revision 端点固定头与 Accept 口径都以 catalog 为
+	// 准。未登记的 endpoint mode 保持既有 "未冻结的 endpoint mode" 错误契约；
+	// body switch 的 default 由 isSupportedDirectProfile 保证不可达，属防御守卫。
+	entry, err := upstreamenvelope.Lookup(upstreamenvelope.EndpointMode(input.EndpointMode))
+	if err != nil {
+		return nil, errors.New("未冻结的 endpoint mode")
+	}
+	// F4 既有文本输出预算语义：1024，值权威在信封 DefaultProbeOutputTokens。
+	budget := upstreamenvelope.BudgetBounded(upstreamenvelope.DefaultProbeOutputTokens)
 	path := ""
+	codexResponsesPath := false
 	method := http.MethodPost
 	// 请求侧报文随机化：挑战词带 3~6 位随机数字后缀，responses 形态的
 	// system 指令从轮换池随机选取。验证侧只宽松匹配挑战词，不回读请求，
@@ -254,38 +269,41 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	case "chat_json", "chat_sse":
 		path = "/v1/chat/completions"
 		body = map[string]any{
-			"model":      input.HealthModel,
-			"messages":   []map[string]any{{"role": "user", "content": challengePrompt}},
-			"max_tokens": probeOutputTokenLimit,
-			"stream":     input.EndpointMode == "chat_sse",
+			"model":    input.HealthModel,
+			"messages": []map[string]any{{"role": "user", "content": challengePrompt}},
+			"stream":   input.EndpointMode == "chat_sse",
 		}
+		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "responses_json":
 		path = "/v1/responses"
 		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
 			path = "/responses"
+			codexResponsesPath = true
 		}
-		body = map[string]any{
-			"model":             input.HealthModel,
-			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
-			"instructions":      instructions,
-			"max_output_tokens": probeOutputTokenLimit,
-			"stream":            false,
+		payload := map[string]any{
+			"model":        input.HealthModel,
+			"input":        []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
+			"instructions": instructions,
+			"stream":       false,
 		}
-		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
-			body.(map[string]any)["store"] = false
+		applyProbeBudget(payload, entry.BudgetField, budget)
+		if codexResponsesPath {
+			payload["store"] = false
 		}
+		body = payload
 	case "responses_sse":
 		path = "/v1/responses"
 		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
 			path = "/responses"
+			codexResponsesPath = true
 		}
 		body = map[string]any{
-			"model":             input.HealthModel,
-			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
-			"instructions":      instructions,
-			"max_output_tokens": probeOutputTokenLimit,
-			"stream":            true,
+			"model":        input.HealthModel,
+			"input":        []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
+			"instructions": instructions,
+			"stream":       true,
 		}
+		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "images_json":
 		path = "/v1/images/generations"
 		body = map[string]any{
@@ -297,14 +315,16 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"output_format":      "webp",
 			"output_compression": 100,
 		}
+		// images 契约无预算字段（catalog BudgetFieldNone），不伪造兜底。
+		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "messages_json", "messages_sse":
 		path = "/v1/messages"
 		body = map[string]any{
-			"model":      input.HealthModel,
-			"max_tokens": probeOutputTokenLimit,
-			"messages":   []map[string]any{{"role": "user", "content": challengePrompt}},
-			"stream":     input.EndpointMode == "messages_sse",
+			"model":    input.HealthModel,
+			"messages": []map[string]any{{"role": "user", "content": challengePrompt}},
+			"stream":   input.EndpointMode == "messages_sse",
 		}
+		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "generate_content_json", "generate_content_sse":
 		model := strings.TrimPrefix(input.HealthModel, "models/")
 		path = "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
@@ -312,9 +332,9 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			path = "/v1beta/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse"
 		}
 		body = map[string]any{
-			"contents":         []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challengePrompt}}}},
-			"generationConfig": map[string]any{"maxOutputTokens": probeOutputTokenLimit},
+			"contents": []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challengePrompt}}}},
 		}
+		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "interactions_json", "interactions_sse":
 		path = "/v1beta/interactions"
 		body = map[string]any{
@@ -322,6 +342,8 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"input":  challengePrompt,
 			"stream": input.EndpointMode == "interactions_sse",
 		}
+		// interactions 契约无预算字段（catalog BudgetFieldNone），不伪造兜底。
+		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	default:
 		return nil, errors.New("未冻结的 endpoint mode")
 	}
@@ -335,17 +357,20 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		path = "/v1internal:streamGenerateContent?alt=sse"
 		body = map[string]any{"model": input.HealthModel, "project": input.OAuthProjectID, "request": body}
 	}
-	if input.ProtocolProfileID == "profile_gemini_openai_chat_v1beta" && protocol == "openai" && geminiOpenAIBaseOwnsPath(base) {
-		path = strings.TrimPrefix(path, "/v1")
+	// 目标 URL（信封统一设计 §6 M3）：登记端点的 base 归一化（base 补 /v1、
+	// GLM 与 gemini-openai 路径规约、Anthropic / Gemini 版本对齐）全部交信封
+	// UpstreamURL，本包不再私有拼接。oauth /responses 与 Code Assist 改道两面
+	// 保留既有 joinBaseURL：信封对这两面没有逐字节等价口径（待裁决差异，见
+	// M3 迁移报告），按现状优先原则不静默改行为。
+	var target string
+	if codexResponsesPath || codeAssist {
+		target = joinBaseURL(base, path).String()
+	} else {
+		target, err = upstreamenvelope.UpstreamURL(base.String(), entry.Mode, input.ProtocolProfileID, upstreamenvelope.AdapterNone, path)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if (input.ProtocolProfileID == "profile_glm_general_openai_v1" || input.ProtocolProfileID == "profile_glm_coding_openai_v1") && protocol == "openai" && !glmOpenAIBaseOwnsV1Path(base) {
-		// GLM official roots already contain their versioned service path
-		// (/api/paas/v4 or /api/coding/paas/v4), while OpenAI-compatible
-		// proxies use the conventional /v1 root. Keep the request version
-		// for the latter so joinBaseURL does not turn /v1/chat into /chat.
-		path = strings.TrimPrefix(path, "/v1")
-	}
-	target := joinBaseURL(base, path)
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -354,32 +379,44 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
+	request, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return nil, err
 	}
+	// 认证策略映射（与信封 auth.go 的现状取证同源）：Anthropic 默认
+	// x-api-key，OAuth 与 GLM anthropic 档案（profile_glm_coding_anthropic_v1）
+	// 改 Bearer；Gemini api_key 用 x-goog-api-key，google_oauth 改 Bearer +
+	// x-goog-user-project（供应商专用头经 Auth.ExtraHeaders 注入）；其余
+	// （OpenAI 系）一律 Bearer。
+	auth := upstreamenvelope.Auth{Token: token, ExtraHeaders: map[string]string{}}
 	switch protocol {
 	case "anthropic":
-		request.Header.Set("anthropic-version", "2023-06-01")
-		if input.Type == "oauth" || input.ProtocolProfileID == "profile_glm_coding_anthropic_v1" {
-			request.Header.Set("Authorization", "Bearer "+token)
-		} else {
-			request.Header.Set("x-api-key", token)
+		switch {
+		case input.Type == "oauth":
+			auth.Strategy = upstreamenvelope.AuthOAuth
+		case input.ProtocolProfileID == "profile_glm_coding_anthropic_v1":
+			auth.Strategy = upstreamenvelope.AuthBearer
+		default:
+			auth.Strategy = upstreamenvelope.AuthAnthropicAPIKey
 		}
 	case "gemini":
 		if input.Type == "google_oauth" {
-			request.Header.Set("Authorization", "Bearer "+token)
+			auth.Strategy = upstreamenvelope.AuthOAuth
 			if value := strings.TrimSpace(input.OAuthQuotaProjectID); value != "" {
-				request.Header.Set("x-goog-user-project", value)
+				auth.ExtraHeaders["x-goog-user-project"] = value
 			}
 		} else {
-			request.Header.Set("x-goog-api-key", token)
-		}
-		if input.EndpointMode == "interactions_json" || input.EndpointMode == "interactions_sse" {
-			request.Header.Set("api-revision", "2026-05-20")
+			auth.Strategy = upstreamenvelope.AuthGeminiAPIKey
 		}
 	default:
-		request.Header.Set("Authorization", "Bearer "+token)
+		auth.Strategy = upstreamenvelope.AuthBearer
+	}
+	// 端点固定特殊头（anthropic-version / api-revision）按 catalog 写入。
+	for name, value := range entry.Headers {
+		request.Header.Set(name, value)
+	}
+	if err := auth.Apply(request.Header); err != nil {
+		return nil, err
 	}
 	upstreamidentity.ApplySystemClientHeaders(request.Header, upstreamidentity.Input{
 		ProviderProtocolProfileID: input.ProtocolProfileID,
@@ -390,18 +427,25 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	if codexIdentity != nil {
 		applyCodexProbeHeaders(request, *codexIdentity, input)
 	}
-	if input.EndpointMode == "responses_sse" || input.EndpointMode == "chat_sse" || input.EndpointMode == "messages_sse" || input.EndpointMode == "generate_content_sse" || input.EndpointMode == "interactions_sse" || codeAssist {
-		// 对照归档 memory-gateway-http.ts:56 手动测试请求：OAuth（含 codex
-		// responses 的 oauth 形态）保持官方客户端纯流式头；API-key 探针与
-		// 手动网关诊断同为双 accept。
-		if input.Type == "oauth" || codeAssist {
-			request.Header.Set("Accept", "text/event-stream")
-		} else {
-			request.Header.Set("Accept", "application/json, text/event-stream")
-		}
-	} else {
-		request.Header.Set("Accept", "application/json")
+	// Accept 标准头走信封口径（§4.1 L1）：JSON 形态 application/json；SSE
+	// 形态 api-key 双 accept、OAuth/Code Assist 纯流式。两点现状保留：
+	//   - google_oauth 非 Code Assist 形态的 SSE 现状为双 accept，按
+	//     AuthBearer 解析（认证侧仍是 AuthOAuth Bearer）；
+	//   - Code Assist 统一改道 :streamGenerateContent?alt=sse，Accept 按流式
+	//     端点解析，不看原 endpoint 编码。
+	acceptMode := entry.Mode
+	if codeAssist {
+		acceptMode = upstreamenvelope.ModeGenerateContentSSE
 	}
+	acceptStrategy := upstreamenvelope.AuthBearer
+	if input.Type == "oauth" || codeAssist {
+		acceptStrategy = upstreamenvelope.AuthOAuth
+	}
+	acceptValue, acceptErr := upstreamenvelope.AcceptHeader(acceptMode, acceptStrategy)
+	if acceptErr != nil {
+		return nil, acceptErr
+	}
+	request.Header.Set("Accept", acceptValue)
 	if protocol == "openai" && input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
 		request.Header.Set("OpenAI-Beta", "responses=experimental")
 		if accountID := strings.TrimSpace(input.OAuthAccountID); accountID != "" {
@@ -409,9 +453,30 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		}
 	}
 	if body != nil {
+		// 信封 Build 对 JSON/SSE 编码端点统一 application/json（本包登记
+		// 端点全部为 JSON body，multipart 不在 F4 范围）。
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request, nil
+}
+
+// applyProbeBudget 按信封 catalog 的预算字段声明写入输出预算（设计文档
+// §4.3）：字段名与落点由 entry.BudgetField 决定，数值来自信封 BudgetPolicy；
+// 契约无预算字段的端点（images/interactions，BudgetFieldNone）保持无字段，
+// 不伪造兜底。
+func applyProbeBudget(body map[string]any, field upstreamenvelope.BudgetField, budget upstreamenvelope.BudgetPolicy) {
+	switch field {
+	case upstreamenvelope.BudgetFieldMaxTokens:
+		body["max_tokens"] = budget.Limit()
+	case upstreamenvelope.BudgetFieldMaxOutputTokens:
+		body["max_output_tokens"] = budget.Limit()
+	case upstreamenvelope.BudgetFieldGeminiGenerationConfig:
+		if config, ok := body["generationConfig"].(map[string]any); ok {
+			config["maxOutputTokens"] = budget.Limit()
+			return
+		}
+		body["generationConfig"] = map[string]any{"maxOutputTokens": budget.Limit()}
+	}
 }
 
 type codexProbeIdentity struct {

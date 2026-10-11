@@ -35,8 +35,12 @@ type Auth struct {
 	ExtraHeaders map[string]string
 }
 
-// apply 把认证头与附加头映射写入请求 header。
-func (a Auth) apply(header http.Header) error {
+// Apply 把认证头与附加头映射写入请求 header（§4.1 L1 导出入口）：供迁移中
+// 的组合式调用方把私有认证头选择迁到共享规则——exactkeyprobe
+// buildProbeRequest（M3）；头部规则与 Build 完全一致，URL 与 body 编码仍由
+// Build 承担。Token 为空属于构造错误——探针凭据缺失必须显式失败，不得静默
+// 发出无认证请求。
+func (a Auth) Apply(header http.Header) error {
 	if strings.TrimSpace(a.Token) == "" {
 		return errors.New("upstreamenvelope: 认证凭据为空（凭据由调用方解析后传入，缺失必须显式失败）")
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
@@ -408,6 +409,36 @@ func protocolCodeForView(view *View) string {
 	}
 }
 
+// upstreamAuthStrategy 是账户视图到信封认证策略的映射（信封统一设计 §6 M4），
+// 取证自 executeAttempt 的认证头分支与流式 accept 覆盖规则：
+//   - view.Type oauth（OpenAI OAuth，含 anthropic 协议账户）与 google_oauth：
+//     Bearer + 纯流式 accept，即 AuthOAuth 的信封语义（oauth 伴随头
+//     openai-beta / chatgpt-account-id / x-goog-user-project 仍由认证头分支
+//     现状写入）；
+//   - anthropic api-key：x-api-key；GLM anthropic 档案改用 Bearer
+//     （AuthBearer，api-key 形态双 accept）；
+//   - gemini api-key：x-goog-api-key；
+//   - 其余 OpenAI 形态：Bearer。
+//
+// M4 组合式迁移只消费该策略的 AcceptHeader 口径；认证头写入保留本包现状
+// （信封仅在 Build 内应用 Auth，整体 Build 与现状存在 body 字段序等差异，
+// 见 M4 迁移报告）。本映射是后续整体 Build 迁移的接缝。
+func upstreamAuthStrategy(view *View) upstreamenvelope.AuthStrategy {
+	switch {
+	case view.Type == "oauth" || view.Type == "google_oauth":
+		return upstreamenvelope.AuthOAuth
+	case isAnthropicProtocol(view):
+		if view.ProviderProtocolProfileID == "profile_glm_coding_anthropic_v1" {
+			return upstreamenvelope.AuthBearer
+		}
+		return upstreamenvelope.AuthAnthropicAPIKey
+	case isGeminiProtocol(view):
+		return upstreamenvelope.AuthGeminiAPIKey
+	default:
+		return upstreamenvelope.AuthBearer
+	}
+}
+
 // executeAttempt 构造请求、发起真实上游调用并做协议分类。
 func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntry, timeout time.Duration, limited bool) (*accountquality.ProbeObservation, error) {
 	routedView, endpointMode, model, routeErr := resolveProbeView(view)
@@ -437,10 +468,14 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	if reqErr != nil {
 		return nil, reqErr
 	}
-	isStream := endpointMode.streaming()
-	accept := "application/json"
-	if isStream {
-		accept = "application/json, text/event-stream"
+	// 标准头 accept 走信封口径（信封统一设计 §6 M4）：JSON/multipart 一律
+	// application/json；SSE 形态 oauth / google_oauth（AuthOAuth）纯流式、
+	// api-key 形态双 accept——账户形态映射与下方认证头分支同源（见
+	// upstreamAuthStrategy）。endpointMode 全部在信封 catalog 登记，查询
+	// 失败属编程错误，显式失败不静默兜底。
+	accept, acceptErr := upstreamenvelope.AcceptHeader(upstreamenvelope.EndpointMode(endpointMode), upstreamAuthStrategy(view))
+	if acceptErr != nil {
+		return nil, acceptErr
 	}
 	httpReq.Header.Set("accept", accept)
 	httpReq.Header.Set("content-type", "application/json")
@@ -506,13 +541,6 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		httpReq.Header.Set("x-codex-turn-metadata", fmt.Sprintf(`{"installation_id":%q,"session_id":%q,"thread_id":%q,"turn_id":%q,"window_id":%q,"request_kind":"turn","thread_source":"user","sandbox":"none"}`, newUUID(), sessionID, threadID, turnID, windowID))
 	}
 	httpReq.Header.Set("content-length", fmt.Sprintf("%d", len(request.body)))
-	if isStream {
-		if view.Type == "oauth" || view.Type == "google_oauth" {
-			httpReq.Header.Set("accept", "text/event-stream")
-		} else {
-			httpReq.Header.Set("accept", "application/json, text/event-stream")
-		}
-	}
 
 	startedAt := s.now()
 	client := s.client
@@ -1416,61 +1444,56 @@ func applyCodexCompatibilityPayload(raw []byte) ([]byte, error) {
 	return json.Marshal(body)
 }
 
-// buildUpstreamURL 等价各协议 buildUpstreamUrl：
+// buildUpstreamURL 等价各协议 buildUpstreamUrl（M4 迁移：URL 归一化统一由
+// upstreamenvelope.UpstreamURL 承担，信封统一设计 §6 M4；信封内部实现与本包
+// 原拼接逐行为对齐）：
 //   - OpenAI：base 归一化补 /v1，剥请求路径 /v1 前缀；
-//   - Anthropic：base 原样去尾斜杠，保留完整请求路径；
-//   - Gemini：base pathname + 请求路径（base 以 /v1beta 结尾时剥请求前缀）。
+//   - Anthropic：base 原样去尾斜杠，保留完整请求路径（缺 /v1 时补 /v1）；
+//   - Gemini：base pathname + 请求路径（base 以 /v1beta 结尾时剥请求前缀）；
+//   - profile_gemini_openai_chat_v1beta：base 以 /v1beta/openai 结尾时剥请求
+//     /v1 前缀；
+//   - OpenAI OAuth + profile_gpt_openai_v1：Codex 固定上游（信封
+//     AdapterOpenAIOAuthCodex 表达）。
+//
+// base 缺失/非法的错误文案保留本包原文：错误文本经 classifyAttemptError 进入
+// 探针结果消息，属可观察行为。协议族分支经 catalog 代表 mode 选择（信封
+// UpstreamURL 只消费条目协议，请求路径由参数独立传入），与 modelcheckprobe
+// buildURL 的 M2 同规。信封对 GLM OpenAI 档案另有剥 /v1 分支（exactkeyprobe
+// 规约），accountprobe 现状没有：为保持行为零变化，除
+// profile_gemini_openai_chat_v1beta 外的档案不传给信封（待裁决差异，见 M4
+// 迁移报告）。
 func buildUpstreamURL(view *View, pathAndQuery string) (string, error) {
 	base := strings.TrimSpace(view.BaseURL)
 	if base == "" {
 		return "", errors.New("账户缺少上游 base_url")
 	}
-	parsed, err := url.Parse(strings.TrimRight(base, "/"))
-	if err != nil {
+	if _, err := url.Parse(strings.TrimRight(base, "/")); err != nil {
 		return "", fmt.Errorf("账户 base_url 无效：%w", err)
 	}
-	if isGeminiProtocol(view) {
-		basePath := strings.TrimRight(parsed.Path, "/")
-		suffixPath, suffixQuery := splitPathAndQuery(pathAndQuery)
-		if strings.HasSuffix(basePath, "/v1beta") {
-			suffixPath = stripV1BetaPrefix(suffixPath)
-		}
-		parsed.Path = strings.ReplaceAll(basePath+stripTrailingSlashPath(suffixPath), "//", "/")
-		parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
-		return parsed.String(), nil
+	profileID := view.ProviderProtocolProfileID
+	if profileID != "profile_gemini_openai_chat_v1beta" {
+		profileID = ""
 	}
-	if view.ProviderProtocolProfileID == "profile_gemini_openai_chat_v1beta" {
-		// Gemini's OpenAI-compatible profile owns the complete
-		// /v1beta/openai service path. Match the gateway and J1 builders by
-		// removing the client /v1 prefix only for that canonical base.
-		basePath := strings.TrimRight(parsed.Path, "/")
-		if strings.HasSuffix(strings.ToLower(basePath), "/v1beta/openai") {
-			suffixPath, suffixQuery := splitPathAndQuery(openAIPathSuffix(pathAndQuery))
-			parsed.Path = basePath + suffixPath
-			parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
-			return parsed.String(), nil
-		}
-	}
+	adapter := upstreamenvelope.AdapterNone
 	if view.Type == "oauth" && view.ProviderProtocolProfileID == "profile_gpt_openai_v1" {
-		codexBase, err := url.Parse("https://chatgpt.com/backend-api/codex")
-		if err != nil {
-			return "", err
-		}
-		codexBase.Path = strings.TrimRight(codexBase.Path, "/") + openAIPathSuffix(pathAndQuery)
-		return codexBase.String(), nil
+		adapter = upstreamenvelope.AdapterOpenAIOAuthCodex
 	}
-	if isAnthropicProtocol(view) {
-		normalizedBase := strings.TrimRight(parsed.String(), "/")
-		if !strings.HasSuffix(strings.ToLower(strings.TrimRight(parsed.Path, "/")), "/v1") {
-			normalizedBase += "/v1"
-		}
-		return normalizedBase + openAIPathSuffix(pathAndQuery), nil
+	return upstreamenvelope.UpstreamURL(view.BaseURL, protocolKeyMode(view), profileID, adapter, pathAndQuery)
+}
+
+// protocolKeyMode 返回按视图协议族选择信封 URL 分支的 catalog 代表 mode：
+// 信封 UpstreamURL 经条目协议选择 gemini / anthropic / openai 归一化分支，
+// 请求路径不取自条目模板，openai 系共用 chat_json 代表（与 modelcheckprobe
+// buildURL 的 M2 同规）。
+func protocolKeyMode(view *View) upstreamenvelope.EndpointMode {
+	switch {
+	case isGeminiProtocol(view):
+		return upstreamenvelope.ModeGenerateContentJSON
+	case isAnthropicProtocol(view):
+		return upstreamenvelope.ModeMessagesJSON
+	default:
+		return upstreamenvelope.ModeChatJSON
 	}
-	normalizedBase := parsed.String()
-	if !strings.HasSuffix(normalizedBase, "/v1") {
-		normalizedBase += "/v1"
-	}
-	return normalizedBase + openAIPathSuffix(pathAndQuery), nil
 }
 
 func openAIPathSuffix(pathAndQuery string) string {
