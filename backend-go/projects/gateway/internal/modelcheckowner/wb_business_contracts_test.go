@@ -145,9 +145,9 @@ func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
 		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: ptrInt(0)}); err == nil {
 			t.Fatal("非法间隔必须拒绝")
 		}
-		// D2：interval=1 是新契约下限，patch 校验必须放行。
-		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: ptrInt(1), Profile: ptrString("quick"), PenaltyThreshold: ptrInt(70), PenaltyAction: ptrString("fallback"), RecoveryIntervalMinutes: ptrInt(10)}); err != nil {
-			t.Fatalf("interval=1 必须合法: %v", err)
+		// 2026-10-11 下限收紧：5 分钟为最低档，patch 校验必须放行。
+		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: ptrInt(5), Profile: ptrString("quick"), PenaltyThreshold: ptrInt(70), PenaltyAction: ptrString("fallback"), RecoveryIntervalMinutes: ptrInt(10)}); err != nil {
+			t.Fatalf("interval=5 必须合法: %v", err)
 		}
 		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, Profile: ptrString("fast")}); err == nil {
 			t.Fatal("非法 profile 必须拒绝")
@@ -162,9 +162,9 @@ func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
 				t.Fatalf("%s 必须拒绝", name)
 			}
 		}
-		// D2：创建校验同样接受 1 分钟间隔。
-		if err := validateSchedule(QualityScheduleInput{AccountID: "acct", Model: "m", IntervalMinutes: 1, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err != nil {
-			t.Fatalf("interval=1 创建校验必须合法: %v", err)
+		// 创建校验同样接受 5 分钟最低档。
+		if err := validateSchedule(QualityScheduleInput{AccountID: "acct", Model: "m", IntervalMinutes: 5, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err != nil {
+			t.Fatalf("interval=5 创建校验必须合法: %v", err)
 		}
 		if err := validateQualityValues("fast", 70, "fallback", 10); err == nil {
 			t.Fatal("非法 profile 必须拒绝")

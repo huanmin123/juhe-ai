@@ -274,7 +274,9 @@ func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
 // D2：interval=1 全链
 // ---------------------------------------------------------------------------
 
-// CompleteScheduled 接受 interval=1 的完成回写（下限收敛到 1）。
+// CompleteScheduled 完成回写不对 interval 下限做校验：2026-10-11 收紧为
+// 5 分钟后，历史存量记录（interval<5）的调度完成路径仍必须正常回写，
+// 不得因新建校验收紧而炸存量数据。
 func TestBusinessSchedulerCompletesIntervalOneSchedule(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
 	if err != nil {

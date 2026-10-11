@@ -58,7 +58,7 @@
             <div class="schedule-section-label">运行规则</div>
             <div class="schedule-rule-grid">
               <a-form-item label="检查间隔" name="intervalMinutes" :rules="intervalRules">
-                <a-input-number v-model:value="form.intervalMinutes" :min="1" :max="10080" :precision="0" addon-after="分钟" />
+                <a-input-number v-model:value="form.intervalMinutes" :min="5" :max="10080" :precision="0" addon-after="分钟" />
               </a-form-item>
               <a-form-item class="schedule-profile-field" label="检测模式">
                 <a-radio-group v-model:value="form.profile" button-style="solid">
@@ -75,7 +75,7 @@
                   选择最多 3 道已通过题目；检测最后逐题作答，答错按 31 分池扣分。
                 </div>
               </a-form-item>
-              <a-form-item class="schedule-state-field" label="计划状态">
+              <a-form-item class="schedule-state-field">
                 <div class="schedule-switch-row">
                   <div>
                     <strong>{{ form.enabled ? '启用计划' : '暂停计划' }}</strong>
@@ -290,9 +290,9 @@ const penaltyOptions: Array<{ label: string; value: ModelQualityPenaltyAction }>
   { label: '质量隔离', value: 'quality_isolate' }
 ]
 const intervalRules = [{
-  validator: (_rule: unknown, value: number) => Number.isInteger(value) && value >= 1 && value <= 10080
+  validator: (_rule: unknown, value: number) => Number.isInteger(value) && value >= 5 && value <= 10080
     ? Promise.resolve()
-    : Promise.reject(new Error('请输入 1 到 10080 的整数'))
+    : Promise.reject(new Error('请输入 5 到 10080 的整数'))
 }]
 const thresholdRules = [{
   validator: (_rule: unknown, value: number) => Number.isInteger(value) && value >= 40 && value <= 100

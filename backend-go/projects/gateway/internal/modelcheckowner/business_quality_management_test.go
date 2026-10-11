@@ -1,6 +1,7 @@
 package modelcheckowner
 
 import (
+	"strings"
 	"context"
 	"database/sql"
 	"testing"
@@ -90,14 +91,23 @@ func TestBusinessQualityManagerPolicyAndScheduleCAS(t *testing.T) {
 	if updated.Revision != schedule.Revision+1 || updated.IntervalMinutes != 120 {
 		t.Fatalf("updated=%+v", updated)
 	}
-	// D2：interval_minutes 下限收敛到 1，1 分钟为合法配置。
-	minInterval := 1
-	minimal, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: updated.Revision, IntervalMinutes: &minInterval})
-	if err != nil || minimal.IntervalMinutes != 1 {
-		t.Fatalf("interval=1 必须合法: %+v err=%v", minimal, err)
+	// 2026-10-11 下限收紧：1..4 分钟一律拒绝，5 分钟为最低档（字段级更新走同一校验）。
+	below := 4
+	if _, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: updated.Revision, IntervalMinutes: &below}); err == nil || !strings.Contains(err.Error(), "5 到 10080") {
+		t.Fatalf("间隔 4 分钟必须报下限错误: %v", err)
 	}
-	unchanged, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: minimal.Revision, IntervalMinutes: &minInterval})
-	if err != nil || unchanged.Revision != minimal.Revision {
+	floor := 5
+	floored, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: updated.Revision, IntervalMinutes: &floor})
+	if err != nil {
+		t.Fatalf("间隔 5 分钟为合法下限: %v", err)
+	}
+	if floored.IntervalMinutes != 5 {
+		t.Fatalf("interval=%d, want 5", floored.IntervalMinutes)
+	}
+	// 同值 patch 是无操作：revision 不前进（原 D2 幂等语义；interval 下限
+	// 1 分钟的旧契约已由上方 4 拒绝 / 5 合法的收紧回归取代）。
+	unchanged, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: floored.Revision, IntervalMinutes: &floor})
+	if err != nil || unchanged.Revision != floored.Revision {
 		t.Fatalf("unchanged=%+v err=%v", unchanged, err)
 	}
 	if _, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: schedule.Revision, IntervalMinutes: &interval}); err == nil {

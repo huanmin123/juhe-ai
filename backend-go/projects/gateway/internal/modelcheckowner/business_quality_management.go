@@ -582,8 +582,8 @@ func validateSchedule(i QualityScheduleInput) error {
 	if strings.TrimSpace(i.AccountID) == "" || strings.TrimSpace(i.Model) == "" {
 		return errors.New("定时检查账户和模型不能为空")
 	}
-	if i.IntervalMinutes < 1 || i.IntervalMinutes > 10080 {
-		return errors.New("定时检查间隔必须是 1 到 10080 的整数分钟")
+	if i.IntervalMinutes < 5 || i.IntervalMinutes > 10080 {
+		return errors.New("定时检查间隔必须是 5 到 10080 的整数分钟")
 	}
 	if err := validateQualityCustomQuestionIds(i.CustomQuestionIds); err != nil {
 		return err
@@ -600,8 +600,8 @@ func validateSchedulePatch(p QualitySchedulePatch) error {
 	if p.Model != nil && strings.TrimSpace(*p.Model) == "" {
 		return errors.New("定时检查模型不能为空")
 	}
-	if p.IntervalMinutes != nil && (*p.IntervalMinutes < 1 || *p.IntervalMinutes > 10080) {
-		return errors.New("定时检查间隔必须是 1 到 10080 的整数分钟")
+	if p.IntervalMinutes != nil && (*p.IntervalMinutes < 5 || *p.IntervalMinutes > 10080) {
+		return errors.New("定时检查间隔必须是 5 到 10080 的整数分钟")
 	}
 	if err := validateQualityCustomQuestionIds(valueOrSlice(p.CustomQuestionIds)); err != nil {
 		return err
