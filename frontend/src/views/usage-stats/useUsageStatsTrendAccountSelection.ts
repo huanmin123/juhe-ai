@@ -65,7 +65,8 @@ export function useUsageStatsTrendAccountSelection(options: UseUsageStatsTrendAc
       label: trendAccountLabel(account),
       color: chartColors[index % chartColors.length],
       selected: selectedIds.has(account.id),
-      removable: addedTrendAccountIdSet.value.has(account.id) && !defaultTrendAccountIdSet.value.has(account.id)
+      removable: addedTrendAccountIdSet.value.has(account.id) && !defaultTrendAccountIdSet.value.has(account.id),
+      isDefault: defaultTrendAccountIdSet.value.has(account.id)
     }))
   })
 

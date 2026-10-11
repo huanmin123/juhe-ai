@@ -32,21 +32,33 @@
             @open-change="handleDateRangeOpenChange"
           />
           <a-segmented v-model:value="selectedMetric" class="usage-stats-metric-segmented" :disabled="loading" :options="metricOptions" @change="handleMetricChange" />
-          <AccountAppendSelect
-            v-model:value="addedTrendAccountIds"
-            :accounts="accountOptionRows"
-            :selected-accounts="addedTrendAccountSelections"
-            class="usage-stats-account-select"
-            :disabled="loading"
-            :hidden-account-ids="accountPickerHiddenValues"
-            :loading="accountOptionsLoading"
-            :max="maxAddedTrendAccounts"
-            max-tag-count="responsive"
-            placeholder="输入账户名称添加账户"
-            @change="handleAddedTrendAccountsChange"
-            @dropdown-visible-change="handleAccountOptionsDropdown"
-            @search="handleAccountOptionsSearch"
-          />
+          <a-popover
+            :open="accountPanelOpen"
+            trigger="click"
+            placement="bottomLeft"
+            :overlay-style="{ width: '380px', maxWidth: 'calc(100vw - 24px)' }"
+            @open-change="handleAccountPanelOpenChange"
+          >
+            <template #content>
+              <UsageStatsAccountPanel
+                :collection-items="accountFilterItems"
+                :options="accountOptionRows"
+                :collection-ids="panelCollectionIds"
+                :loading="accountOptionsLoading"
+                :max-accounts="maxTrendAccounts"
+                @add="addTrendAccount"
+                @remove="removeAddedTrendAccount"
+                @toggle="toggleTrendAccount"
+                @search="handleAccountOptionsSearch"
+                @reset-defaults="resetTrendAccountDefaults"
+              />
+            </template>
+            <a-button class="usage-stats-account-trigger" :disabled="loading">
+              账户
+              <span class="usage-stats-account-trigger-count">{{ accountFilterItems.length }}/{{ maxTrendAccounts }}</span>
+              <DownOutlined class="usage-stats-account-trigger-caret" />
+            </a-button>
+          </a-popover>
         </div>
         <div class="page-toolbar-actions">
           <a-button @click="resetFilters">重置</a-button>
@@ -156,21 +168,19 @@
           />
         </div>
         <div class="stats-mobile-filter-field">
-          <span class="stats-mobile-filter-label">添加趋势账户</span>
-          <AccountAppendSelect
-            v-model:value="addedTrendAccountIds"
-            :accounts="accountOptionRows"
-            :selected-accounts="addedTrendAccountSelections"
-            class="stats-mobile-filter-control"
-            :disabled="loading"
-            :hidden-account-ids="accountPickerHiddenValues"
+          <span class="stats-mobile-filter-label">趋势账户（{{ accountFilterItems.length }}/{{ maxTrendAccounts }}）</span>
+          <UsageStatsAccountPanel
+            class="usage-stats-account-panel-inline"
+            :collection-items="accountFilterItems"
+            :options="accountOptionRows"
+            :collection-ids="panelCollectionIds"
             :loading="accountOptionsLoading"
-            :max="maxAddedTrendAccounts"
-            max-tag-count="responsive"
-            placeholder="输入账户名称添加账户"
-            @change="handleAddedTrendAccountsChange"
-            @dropdown-visible-change="handleAccountOptionsDropdown"
+            :max-accounts="maxTrendAccounts"
+            @add="addTrendAccount"
+            @remove="removeAddedTrendAccount"
+            @toggle="toggleTrendAccount"
             @search="handleAccountOptionsSearch"
+            @reset-defaults="resetTrendAccountDefaults"
           />
         </div>
         <div class="stats-mobile-filter-actions">
@@ -219,12 +229,11 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { CaretDownOutlined, CloseOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { CaretDownOutlined, CloseOutlined, DownOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 
 import { api } from '@/api/client'
-import AccountAppendSelect from '@/components/AccountAppendSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -260,7 +269,7 @@ import {
   defaultUsageStatsPageState,
   initialUsageStatsMetric,
   isUsageStatsDateDisabled,
-  maxAddedTrendAccounts,
+  maxTrendAccounts,
   normalizeUsageStatsDateRange,
   parseUsageStatsDateRange,
   responseUsageStatsDateRange,
@@ -270,6 +279,7 @@ import {
 } from './usageStatsPageState'
 import { useUsageStatsAccountOptions } from './useUsageStatsAccountOptions'
 import { useUsageStatsTrendAccountSelection } from './useUsageStatsTrendAccountSelection'
+import UsageStatsAccountPanel from './UsageStatsAccountPanel.vue'
 import { buildAccountUsageTrendOption, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -419,9 +429,7 @@ const mobileChipCollapseThreshold = 4
 const mobileFilterActive = computed(() => Boolean(filters.systemAccountId) && filters.systemAccountId !== 'all')
 const {
   accountFilterItems,
-  accountPickerHiddenValues,
   accountUsageEmptyDescription,
-  addedTrendAccountSelections,
   displayRows,
   hasSelectedTrendAccounts,
   hasTrendData,
@@ -443,6 +451,9 @@ const {
   isManagementView: () => isManagementView.value,
   providerName
 })
+// 账户管理面板：桌面 Popover 与移动抽屉共用，展开时才懒加载账户候选。
+const accountPanelOpen = ref(false)
+const panelCollectionIds = computed(() => accountFilterItems.value.map((item) => item.account.id))
 const displayTablePagination = computed(() => hasSelectedTrendAccounts.value ? false : tablePagination.value)
 const displayMobileHasMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileHasMore.value)
 const displayMobileLoadingMore = computed(() => hasSelectedTrendAccounts.value ? false : accountUsageMobileLoadingMore.value)
@@ -505,7 +516,7 @@ function normalizeAccountUsageListOverview(nextOverview: AccountUsageStatsListRe
   const defaultTrendAccountIds = nextOverview.rows
     .map((row) => row.id)
     .filter((id) => !addedTrendAccountIds.value.includes(id))
-    .slice(0, 10)
+    .slice(0, Math.max(0, maxTrendAccounts - addedTrendAccountIds.value.length))
   return {
     ...nextOverview,
     defaultTrendAccountIds,
@@ -521,7 +532,7 @@ async function loadAccountUsageTrend(usageOverview: AccountUsageStatsListResult,
   const accountIds = [...new Set([
     ...addedTrendAccountIds.value,
     ...usageOverview.defaultTrendAccountIds
-  ])].slice(0, 10)
+  ])].slice(0, maxTrendAccounts)
   if (!accountIds.length) {
     renderChart()
     return
@@ -639,6 +650,26 @@ function clearTrendAccountState() {
   clearAccountOptionsSearchTimer()
 }
 
+function handleAccountPanelOpenChange(open: boolean) {
+  accountPanelOpen.value = open
+  handleAccountOptionsDropdown(open)
+}
+
+function addTrendAccount(id: string) {
+  if (accountFilterItems.value.some((item) => item.account.id === id)) return
+  if (accountFilterItems.value.length >= maxTrendAccounts) {
+    message.warning(`最多展示 ${maxTrendAccounts} 个账户`)
+    return
+  }
+  handleAddedTrendAccountsChange([...addedTrendAccountIds.value, id], addedTrendAccountIds.value)
+}
+
+function resetTrendAccountDefaults() {
+  clearTrendAccountState()
+  resetAccountUsagePagination()
+  void loadData({ quiet: true })
+}
+
 function disabledDate(current: Dayjs) {
   return isUsageStatsDateDisabled(current, calendarRange.value, usageStatsWindowEndDate.value, usageStatsWindowMaxDays.value)
 }
@@ -689,6 +720,9 @@ function pruneLoadedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(mobileFilterOpen, (open) => {
+  if (open) handleAccountOptionsDropdown(true)
+})
 </script>
 
 <style scoped>
@@ -728,11 +762,24 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   max-width: 100%;
 }
 
-.usage-stats-account-select {
-  flex: 0 1 380px;
-  width: min(380px, 100%);
-  min-width: 0;
-  max-width: 100%;
+.usage-stats-account-trigger {
+  flex: 0 0 auto;
+}
+
+.usage-stats-account-trigger-count {
+  margin-left: 2px;
+  color: var(--juhe-muted);
+  font-size: 12px;
+}
+
+.usage-stats-account-trigger-caret {
+  margin-left: 4px;
+  color: var(--juhe-muted);
+  font-size: 10px;
+}
+
+.usage-stats-account-panel-inline {
+  width: 100%;
 }
 
 .usage-stats-account-list {

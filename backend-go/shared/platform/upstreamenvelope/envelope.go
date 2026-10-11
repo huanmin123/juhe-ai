@@ -443,6 +443,37 @@ func buildUpstreamURL(spec Spec, entry Endpoint, def adapterDef, pathAndQuery st
 	return normalizedBase + openAIPathSuffix(pathAndQuery), nil
 }
 
+// UpstreamURL 是 URL 归一化的导出入口（§4.1 L1）：供迁移中的调用方把私有
+// 拼接迁到共享规则——modelcheckprobe buildURL（M2）。寻址规则与 Build 完全
+// 一致；认证头与 body 编码仍由 Build 承担。
+func UpstreamURL(baseURL string, mode EndpointMode, protocolProfileID string, adapter Adapter, pathAndQuery string) (string, error) {
+	entry, err := Lookup(mode)
+	if err != nil {
+		return "", err
+	}
+	spec := Spec{BaseURL: baseURL, Protocol: entry.Protocol, ProtocolProfileID: protocolProfileID, EndpointMode: mode, Adapter: adapter}
+	var def adapterDef
+	if adapter != AdapterNone {
+		d, ok := adapters[adapter]
+		if !ok {
+			return "", fmt.Errorf("upstreamenvelope: 适配器 %q 未在适配器登记表登记（设计文档 §4.2/§8.1）", adapter)
+		}
+		def = d
+	}
+	return buildUpstreamURL(spec, entry, def, pathAndQuery)
+}
+
+// AcceptHeader 是端点的 Accept 标准头口径（§4.1 L1）：JSON 形态
+// application/json；SSE 形态 api-key 双 accept、OAuth/Code Assist 纯流式
+// （现状取证：accountprobe/exactkeyprobe；modelcheckprobe 已于 M2 收敛）。
+func AcceptHeader(mode EndpointMode, strategy AuthStrategy) (string, error) {
+	entry, err := Lookup(mode)
+	if err != nil {
+		return "", err
+	}
+	return acceptHeader(entry, strategy), nil
+}
+
 // openAIPathSuffix 等价 accountprobe openAIPathSuffix：确保前导斜杠并剥一次
 // /v1 前缀（Node replace(/^\/v1(?=\/|$)/, ”)），保留 query。
 func openAIPathSuffix(pathAndQuery string) string {

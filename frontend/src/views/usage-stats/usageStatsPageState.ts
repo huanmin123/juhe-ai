@@ -21,7 +21,7 @@ export type UsageStatsPageState = {
 
 export const maxUsageStatsRangeDays = 31
 export const accountUsagePageSize = 10
-export const maxAddedTrendAccounts = 20
+export const maxTrendAccounts = 10
 export const usageStatsMetricOptions: Array<{ label: string; value: UsageTrendMetric }> = [
   { label: '成本', value: 'cost' },
   { label: 'Token', value: 'tokens' },

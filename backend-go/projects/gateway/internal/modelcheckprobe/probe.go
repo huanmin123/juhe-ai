@@ -19,6 +19,7 @@ import (
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
@@ -491,6 +492,9 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 	} else {
 		httpRequest.Header.Set("Accept", "application/json")
 	}
+	// M2 注记：Accept 口径与信封 acceptHeader（api-key 双 accept/OAuth 纯
+	// 流式）的收敛涉及上游内容协商行为语义，留待单独裁决步骤；URL 与预算
+	// 已于本步迁移到 upstreamenvelope。
 	for key, values := range headers {
 		for _, value := range values {
 			httpRequest.Header.Add(key, value)
@@ -675,44 +679,28 @@ func responseBodyIsSemanticallyComplete(body []byte, parseErrorMessage string) b
 	return false
 }
 
+// buildURL 经共享信封的 URL 归一化构造上游地址（信封统一设计 §4.1/§6 M2）：
+// 寻址规则（base 补 /v1 或 /v1beta、剥请求前缀、Codex 固定上游）全部由
+// upstreamenvelope 承担，本包不再私有拼接。Codex 分支保留"仅 /responses"
+// 的路径契约校验。
 func buildURL(endpoint string, protocol modelcheckprofile.Protocol, path string, adapter string) (string, error) {
-	if adapter == AdapterOpenAIOAuthCodex {
-		base, err := url.Parse(strings.TrimSpace(endpoint))
-		if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || strings.ContainsAny(endpoint, "\r\n\t\\") {
-			return "", errors.New("J3b probe endpoint URL is invalid")
-		}
-		parts := strings.SplitN(path, "?", 2)
-		requestPath := parts[0]
-		if requestPath != "/responses" {
-			return "", errors.New("J3b OpenAI OAuth Codex request path is unsupported")
-		}
-		return OpenAIOAuthCodexBaseURL + requestPath, nil
-	}
-	base, err := url.Parse(strings.TrimSpace(endpoint))
-	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || strings.ContainsAny(endpoint, "\r\n\t\\") {
+	// 端点安全校验保持在本包（SSRF 契约，wl_probe_extra_test 钉死）：控制
+	// 字符/userinfo/query/fragment 一律拒绝，再交信封归一化。
+	if base, err := url.Parse(strings.TrimSpace(endpoint)); err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || strings.ContainsAny(endpoint, "\r\n\t\\") {
 		return "", errors.New("J3b probe endpoint URL is invalid")
 	}
-	parts := strings.SplitN(path, "?", 2)
-	requestPath, query := parts[0], ""
-	if len(parts) == 2 {
-		query = parts[1]
-	}
-	basePath := strings.TrimRight(base.Path, "/")
-	if protocol == modelcheckprofile.ProtocolGeminiNative {
-		if !strings.HasSuffix(basePath, "/v1beta") {
-			basePath += "/v1beta"
+	if adapter == AdapterOpenAIOAuthCodex {
+		if parts := strings.SplitN(path, "?", 2); parts[0] != "/responses" {
+			return "", errors.New("J3b OpenAI OAuth Codex request path is unsupported")
 		}
-		requestPath = strings.TrimPrefix(requestPath, "/v1beta")
-	} else {
-		if !strings.HasSuffix(basePath, "/v1") {
-			basePath += "/v1"
-		}
-		requestPath = strings.TrimPrefix(requestPath, "/v1")
 	}
-	base.Path = strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(requestPath, "/")
-	base.RawQuery = query
-	base.RawPath = ""
-	return base.String(), nil
+	mode := modelcheckprofile.EndpointModeForProtocol(protocol, strings.Contains(path, "alt=sse"))
+	if mode == "" {
+		// 契约外手工构造的 Request（测试/边界）：URL 归一化只需协议族，
+		// openai 系共用同一分支，chat_json 是其 catalog 代表。
+		mode = modelcheckprofile.EndpointModeChatJSON
+	}
+	return upstreamenvelope.UpstreamURL(endpoint, upstreamenvelope.EndpointMode(mode), "", upstreamenvelope.Adapter(adapter), path)
 }
 
 func parseResponse(protocol modelcheckprofile.Protocol, body []byte) (string, string, map[string]any, map[string]any) {
