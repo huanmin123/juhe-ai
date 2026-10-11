@@ -120,13 +120,13 @@ func BuildBasic(protocol modelcheckprofile.Protocol, model, prompt string, strea
 	switch protocol {
 	case modelcheckprofile.ProtocolOpenAIResponses:
 		path = "/v1/responses"
-		payload = map[string]any{"model": model, "input": prompt, "instructions": "You are a model capability checker. Follow the requested output exactly.", "max_output_tokens": 64, "stream": stream, "store": false}
+		payload = map[string]any{"model": model, "input": prompt, "instructions": "You are a model capability checker. Follow the requested output exactly.", "max_output_tokens": upstreamenvelope.DefaultProbeOutputTokens, "stream": stream, "store": false}
 	case modelcheckprofile.ProtocolOpenAIChat:
 		path = "/v1/chat/completions"
-		payload = map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": prompt}}, "max_tokens": 64, "stream": stream}
+		payload = map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": prompt}}, "max_tokens": upstreamenvelope.DefaultProbeOutputTokens, "stream": stream}
 	case modelcheckprofile.ProtocolAnthropic:
 		path = "/v1/messages"
-		payload = map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": prompt}}, "max_tokens": 64, "stream": stream}
+		payload = map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": prompt}}, "max_tokens": upstreamenvelope.DefaultProbeOutputTokens, "stream": stream}
 	case modelcheckprofile.ProtocolGeminiNative:
 		action := "generateContent"
 		if stream {
@@ -136,7 +136,7 @@ func BuildBasic(protocol modelcheckprofile.Protocol, model, prompt string, strea
 		if stream {
 			path += "?alt=sse"
 		}
-		payload = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": 64}}
+		payload = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": upstreamenvelope.DefaultProbeOutputTokens}}
 	default:
 		return Request{}, fmt.Errorf("unsupported J3b probe protocol %q", protocol)
 	}
@@ -284,7 +284,7 @@ func applyStructuredToolTunings(payload map[string]any, protocol modelcheckprofi
 			generation = map[string]any{}
 		}
 		generation["temperature"] = 0
-		generation["maxOutputTokens"] = 128
+		generation["maxOutputTokens"] = upstreamenvelope.DefaultProbeOutputTokens
 		payload["generationConfig"] = generation
 	}
 }
@@ -313,7 +313,7 @@ func BuildStructured(protocol modelcheckprofile.Protocol, model string, stream b
 	case modelcheckprofile.ProtocolOpenAIChat:
 		payload["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "model_check_structured_output", "strict": true, "schema": schema}}
 	case modelcheckprofile.ProtocolGeminiNative:
-		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "temperature": 0, "responseMimeType": "application/json", "responseSchema": map[string]any{
+		payload["generationConfig"] = map[string]any{"maxOutputTokens": upstreamenvelope.DefaultProbeOutputTokens, "temperature": 0, "responseMimeType": "application/json", "responseSchema": map[string]any{
 			"type": "OBJECT", "properties": map[string]any{
 				"status": map[string]any{"type": "STRING", "enum": []string{"ok"}},
 				"value":  map[string]any{"type": "INTEGER"},
@@ -352,7 +352,7 @@ func BuildStructuredForEndpointMode(protocol modelcheckprofile.Protocol, model, 
 	case modelcheckprofile.ProtocolOpenAIChat:
 		payload["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "model_check_structured_output", "strict": true, "schema": schema}}
 	case modelcheckprofile.ProtocolGeminiNative:
-		payload["generationConfig"] = map[string]any{"maxOutputTokens": 128, "temperature": 0, "responseMimeType": "application/json", "responseSchema": map[string]any{
+		payload["generationConfig"] = map[string]any{"maxOutputTokens": upstreamenvelope.DefaultProbeOutputTokens, "temperature": 0, "responseMimeType": "application/json", "responseSchema": map[string]any{
 			"type": "OBJECT", "properties": map[string]any{
 				"status": map[string]any{"type": "STRING", "enum": []string{"ok"}},
 				"value":  map[string]any{"type": "INTEGER"},

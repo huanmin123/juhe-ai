@@ -77,8 +77,8 @@ func assertProbeSamplingTunings(t *testing.T, protocol modelcheckprofile.Protoco
 		}
 	case modelcheckprofile.ProtocolGeminiNative:
 		generation, ok := payload["generationConfig"].(map[string]any)
-		if !ok || generation["temperature"] != float64(0) || generation["maxOutputTokens"] != float64(128) {
-			t.Fatalf("%s %s generationConfig=%#v, want temperature=0 maxOutputTokens=128", protocol, kind, payload["generationConfig"])
+		if !ok || generation["temperature"] != float64(0) || generation["maxOutputTokens"] != float64(upstreamenvelope.DefaultProbeOutputTokens) {
+			t.Fatalf("%s %s generationConfig=%#v, want temperature=0 maxOutputTokens=1024（BUG-0308 统一钳位）", protocol, kind, payload["generationConfig"])
 		}
 	}
 }
