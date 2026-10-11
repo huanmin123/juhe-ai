@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20261011T231000000Z](计划-20261011T231000-F2F4信封最终接线.md)：F2–F4 最终请求接线 Build（信封统一收口）——复核证实 M1–M5 后 Build 生产调用方为零，最终构造仍在各调用方；F2 存在真实缺陷：headers 与 body 各生成一套随机身份（session-id 与 client_metadata.session_id 两个 UUID）且屏蔽 GLM profile 产生 /v1 多拼寻址差异。目标契约已落权威设计文档 §9（三形态矩阵：OAuth Codex / codex_responses 兼容画像 / 普通 API Key；八项差异逐项处置；身份单源；验收门禁=生产调用图到达 Build 且旧构造删除）。实施 W1 信封能力补齐（身份输入/B 包装/api-revision/multipart/GLM golden）→ W2 F3 接线 → W3 F4 接线 → W4 F2 接线，串行独立提交。待用户审核，未动代码。
+
 - [PLAN-20261011T225418000Z](计划-20261011T225418-成功成本历史回填治理.md)：成功成本历史回填治理——BUG-0307 观察项 2 根治：六表 `success_cost_usd` 回填 UPDATE 作为 schema statements 每次 ensure-schema 全表扫（生产 minute 表实测 max 234s）且无完成标记；用户裁决 2026-10-11 三项：受控维护窗口协调首次回填（jobs 增量游标聚合保证停摆零丢失）、扣减事务内补正（删失败记录使 error_count 归零的行在扣减同事务按扣减后值补正，根治"marker 后迟到行永停 0"）、部分索引过渡方案否决（根治原则）。设计：专用 `backfill_progress` marker 表 + maintenance `--apply-success-cost-backfill` 一次性子命令（主键 tuple 游标分批、批内谓词重判、cursor 原子提交、四形态统一承接）+ ensure 彻底卸载回填职责 + `statsSubtractSetExpr` CASE 补正六表生效。待用户审核，未动代码；来源复核报告 §4。
 
 - [PLAN-20261011T141004000Z](计划-20261011T141004000Z-AI账户能力域拆分.md)：AI 账户能力域拆分——用户裁决按 对话/视频/音频/图像 四域拆分账户菜单与形态，终结"万能账户容器"（单账户自由声明全部 lane 能力导致表单/调度/故障/统计耦合）。已裁决三项：域显式落库（`accounts.capability_domain`，加式迁移）、存量混合账户归对话域且 modes 全量保留（纯加列可回滚）、管理面 `/accounts` 先行用户面跟进；网关派发零改动（modes 来源从用户勾选改为域+档案 endpointFamilies 推导），域×供应商合法矩阵直接从现有种子档案派生；媒体域精简三段式表单（图像/语音合成探针已存在，视频/长音频按媒体设计不做真实生成探针）；分期 M1 地基（schema+推导+数据通道）→ M2 四菜单与分域表单 → M3 统计/检测配套。设计定稿待用户审阅，未动代码；2026-10-11 同日已落地的表单改进（三分区向导/摘要卡/组开关/默认收起）沉淀为对话域表单基础。
