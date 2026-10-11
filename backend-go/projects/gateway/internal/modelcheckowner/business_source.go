@@ -1130,6 +1130,12 @@ func validateAccountCredentialFields(fields map[string]any, credentialType strin
 		}
 	}
 	common := []string{"base_url", "supported_endpoint_modes", "service_tier_override", "reasoning_effort_override", "error_handling_rules", "error_handling_rule_overrides", "response_inspection_rules", "quota_recovery_policy"}
+	// 废弃键放行：主链 normalize（accounts/credentials_normalize.go
+	// deprecatedAccountCredentialKeys）已停止写入并剥离这两个 Codex 遗留
+	// 字段，但生产存量凭据仍可能携带原文；J3b 解密校验必须与主链容忍语义
+	// 同步，否则存量账户在模型检测直接 unsupported field（BUG-0308 扩展
+	// 实测：worldclawpro terra 账户 2026-10-11）。
+	add("codex_responses_safe_repair_enabled", "codex_responses_strict_intercept_enabled")
 	switch credentialType {
 	case "api_key":
 		add(common...)
