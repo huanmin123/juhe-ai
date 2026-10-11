@@ -92,8 +92,14 @@ func TestW13g5HealthClosedStoreWriteArms(t *testing.T) {
 	if err := store.SaveKeyCursor(ctx, lease, "w13g5-acc", "w13g5-purpose", "w13g5-fp", 1); err == nil {
 		t.Fatal("关闭句柄后保存 cursor 必须报错")
 	}
+	// BUG-0307 记忆化：上方 setup 已成功 EnsureSchema（schemaReady=true），
+	// 关闭句柄后再调用按设计短路 no-op；要验证"实际执行时失败"需先复位。
+	store.schemaReady.Store(false)
 	if err := store.EnsureSchema(ctx); err == nil {
 		t.Fatal("关闭句柄后建表必须报错")
+	}
+	if store.schemaReady.Load() {
+		t.Fatal("失败的 EnsureSchema 不得记忆 schemaReady")
 	}
 }
 

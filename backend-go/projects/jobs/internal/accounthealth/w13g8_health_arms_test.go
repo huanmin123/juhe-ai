@@ -168,10 +168,16 @@ func TestW13G8StoreInjectionArms(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("基线 EnsureSchema 必须成功: %v", err)
 	}
+	// BUG-0307 记忆化：成功后再次调用是设计内 no-op（这正是热路径修复点），
+	// 故障臂验证前需显式复位记忆位。
+	store.schemaReady.Store(false)
 	// PRAGMA table_info 失败 → 读 state schema 失败臂。
 	spec.arm("PRAGMA table_info")
 	if err := store.EnsureSchema(ctx); err == nil || !strings.Contains(err.Error(), "state schema") {
 		t.Fatalf("PRAGMA 注入必须报 schema 读取错误: %v", err)
+	}
+	if store.schemaReady.Load() {
+		t.Fatal("失败的 EnsureSchema 不得记忆 schemaReady")
 	}
 	spec.disarm()
 	// ALTER TABLE 失败 → 扩展列失败臂：预置旧形状 current_state 表（缺新列），

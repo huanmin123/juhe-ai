@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
@@ -46,6 +47,11 @@ type Store struct {
 	mode      StoreMode
 	writeGate chan struct{}
 	pool      *pgpool.Handle
+	// schemaReady 记忆化成功过的 EnsureSchema：AcquireOwnerLease 等热路径
+	// 每次都全量跑 DDL 时，PG 的 ALTER TABLE ADD COLUMN IF NOT EXISTS 即使
+	// 列已存在也要先取 ACCESS EXCLUSIVE 锁，会在锁队列里冻结该表全部读写
+	// 并把 J1 结算事务连带卡死（BUG-0307）。失败不记忆，允许下次重试。
+	schemaReady atomic.Bool
 }
 
 func OpenStore(config StoreConfig) (*Store, error) {
@@ -143,6 +149,14 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) EnsureSchema(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("account-health store is required")
+	}
+	// 成功过即跳过（BUG-0307）：DDL 里的 ALTER 在 PG 是无操作也要取
+	// ACCESS EXCLUSIVE，不能放进租约续约这类热路径反复执行。
+	if s.schemaReady.Load() {
+		return nil
+	}
 	if err := s.lockWrite(ctx); err != nil {
 		return err
 	}
@@ -166,7 +180,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 				}
 			}
 		}
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		s.schemaReady.Store(true)
+		return nil
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -192,6 +210,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	committed = true
+	s.schemaReady.Store(true)
 	return nil
 }
 
