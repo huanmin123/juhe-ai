@@ -700,15 +700,30 @@ func (s *Store) reserveAccountHealthInputVersions(ctx context.Context, tx *sql.T
 		return err
 	}
 	defer rows.Close()
+	// pgx 的查询结果按流式读取:外层 rows 未读完时连接处于 busy,循环内再
+	// 在同一事务上 QueryRow/Exec 会得到 driver: bad connection(PG 唯一路径
+	// 必炸;SQLite 全量缓冲无此约束)。先把账户行全部读入内存并关闭 rows,
+	// 再做版本预留。
+	type accountHealthRevision struct {
+		accountID                        string
+		configRevision, dispatchRevision int64
+	}
+	var accounts []accountHealthRevision
 	for rows.Next() {
-		var accountID string
-		var configRevision, dispatchRevision int64
-		if err := rows.Scan(&accountID, &configRevision, &dispatchRevision); err != nil {
+		var account accountHealthRevision
+		if err := rows.Scan(&account.accountID, &account.configRevision, &account.dispatchRevision); err != nil {
 			return err
 		}
+		accounts = append(accounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, account := range accounts {
 		var currentVersion sql.NullInt64
 		err := tx.QueryRowContext(ctx, s.bind(`SELECT current_version FROM `+s.table("account_health_jobs_input_versions")+`
-			WHERE account_id = ?`)+lockSuffix, accountID).Scan(&currentVersion)
+			WHERE account_id = ?`)+lockSuffix, account.accountID).Scan(&currentVersion)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -716,17 +731,17 @@ func (s *Store) reserveAccountHealthInputVersions(ctx context.Context, tx *sql.T
 		if err == nil && currentVersion.Valid {
 			nextVersion = currentVersion.Int64 + 1
 			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_health_jobs_input_versions")+`
-				SET current_version = ?, reserved_at = ? WHERE account_id = ?`), nextVersion, now, accountID); err != nil {
+				SET current_version = ?, reserved_at = ? WHERE account_id = ?`), nextVersion, now, account.accountID); err != nil {
 				return err
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_versions")+`
-				(account_id, current_version, reserved_at) VALUES (?, ?, ?)`), accountID, nextVersion, now); err != nil {
+				(account_id, current_version, reserved_at) VALUES (?, ?, ?)`), account.accountID, nextVersion, now); err != nil {
 				return err
 			}
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // refreshSystemCache mirrors refreshSystemSettingsCacheAfterSectionWrite's

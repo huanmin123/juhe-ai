@@ -125,15 +125,30 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 		return nil, fmt.Errorf("claim J3b schedules: %w", err)
 	}
 	defer rows.Close()
-	var tasks []ScheduleTask
+	// pgx 的查询结果按流式读取:外层 rows 未读完时连接处于 busy,循环内再
+	// 在同一事务上执行租约 UPDATE 会得到 driver: bad connection(PG 唯一
+	// 路径必炸;SQLite 全量缓冲无此约束)。先把到期行全部读入内存并关闭
+	// rows,再统一领取租约。
+	type claimedScheduleRow struct {
+		id, systemID, accountID, model, profile, action, provider                         string
+		revision, interval, recoveryInterval, threshold, configRevision, dispatchRevision int
+		customQuestionIds                                                                 sql.NullString
+	}
+	scanned := make([]claimedScheduleRow, 0, limit)
 	for rows.Next() {
-		var id, systemID, accountID, model, profile, action, provider string
-		var revision, interval, recoveryInterval, threshold, configRevision, dispatchRevision int
-		var customQuestionIds sql.NullString
-		if err := rows.Scan(&id, &revision, &systemID, &accountID, &model, &interval, &profile, &threshold, &action, &recoveryInterval, &customQuestionIds, &configRevision, &dispatchRevision, &provider); err != nil {
+		var row claimedScheduleRow
+		if err := rows.Scan(&row.id, &row.revision, &row.systemID, &row.accountID, &row.model, &row.interval, &row.profile, &row.threshold, &row.action, &row.recoveryInterval, &row.customQuestionIds, &row.configRevision, &row.dispatchRevision, &row.provider); err != nil {
 			return nil, err
 		}
-		res, err := tx.ExecContext(ctx, q(`UPDATE `+s.table("model_quality_schedules")+` SET lease_owner=?,lease_until=?,updated_at=? WHERE id=? AND revision=? AND enabled=1 AND (lease_until IS NULL OR lease_until<=?)`), s.OwnerID, now.Add(lease).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), id, revision, now.UTC().Format(time.RFC3339Nano))
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	var tasks []ScheduleTask
+	for _, row := range scanned {
+		res, err := tx.ExecContext(ctx, q(`UPDATE `+s.table("model_quality_schedules")+` SET lease_owner=?,lease_until=?,updated_at=? WHERE id=? AND revision=? AND enabled=1 AND (lease_until IS NULL OR lease_until<=?)`), s.OwnerID, now.Add(lease).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), row.id, row.revision, now.UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			return nil, err
 		}
@@ -142,13 +157,13 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 		}
 		// claim 时冻结：题库 id 取自 schedule 行并写入不可变 payload，运行中
 		// 的配置变更不影响本次执行。
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(configRevision), SourceDispatchRevision: int64(dispatchRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval, RecoveryIntervalMinutes: recoveryInterval, CustomQuestionIds: qualityCustomQuestionIds(customQuestionIds)})
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: row.systemID, ActorSystemAccountID: row.systemID, TargetType: "account", TargetID: row.accountID, Model: row.model, Profile: row.profile, ProviderCode: row.provider, Threshold: row.threshold, PenaltyAction: row.action, ConfigRevision: strconv.Itoa(row.configRevision), DispatchRevision: int64(row.dispatchRevision), SourceConfigRevision: strconv.Itoa(row.configRevision), SourceDispatchRevision: int64(row.dispatchRevision), PolicyRevision: strconv.Itoa(row.revision), ProbeSetVersion: probeSetForProfile(row.profile), IdentityKey: row.systemID + ":" + row.accountID + ":" + row.model, ScheduleID: row.id, OwnerID: s.OwnerID, ScheduleRevision: row.revision, IntervalMinutes: row.interval, RecoveryIntervalMinutes: row.recoveryInterval, CustomQuestionIds: qualityCustomQuestionIds(row.customQuestionIds)})
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, ScheduleTask{ID: "schedule:" + id + ":" + strconv.Itoa(revision), Kind: SchedulerScheduled, OwnerID: s.OwnerID, Payload: payload})
+		tasks = append(tasks, ScheduleTask{ID: "schedule:" + row.id + ":" + strconv.Itoa(row.revision), Kind: SchedulerScheduled, OwnerID: s.OwnerID, Payload: payload})
 	}
-	return tasks, rows.Err()
+	return tasks, nil
 }
 
 func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.Tx, now time.Time, limit int, lease time.Duration) ([]ScheduleTask, error) {
@@ -162,18 +177,31 @@ func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.T
 		return nil, fmt.Errorf("claim J3b recoveries: %w", err)
 	}
 	defer rows.Close()
-	var tasks []ScheduleTask
+	// 与 claimSchedules 同约束:pgx 流式结果未读完时同事务 Exec 必炸
+	// (driver: bad connection),先读入内存并关闭 rows 再统一领取租约。
+	type claimedRecoveryRow struct {
+		accountID, systemID, enforcementID, model, scheduleID, profile, provider                                                        string
+		generation, configRevision, dispatchRevision, sourceConfigRevision, sourceDispatchRevision, policyRevision, threshold, interval int
+		customQuestionIds                                                                                                               sql.NullString
+	}
+	scanned := make([]claimedRecoveryRow, 0, limit)
 	for rows.Next() {
-		var accountID, systemID, enforcementID, model, scheduleID, profile, provider string
-		var generation, configRevision, dispatchRevision, sourceConfigRevision, sourceDispatchRevision, policyRevision, threshold, interval int
-		var customQuestionIds sql.NullString
-		if err := rows.Scan(&accountID, &systemID, &enforcementID, &generation, &model, &configRevision, &dispatchRevision, &sourceConfigRevision, &sourceDispatchRevision, &policyRevision, &scheduleID, &profile, &threshold, &interval, &provider, &customQuestionIds); err != nil {
+		var row claimedRecoveryRow
+		if err := rows.Scan(&row.accountID, &row.systemID, &row.enforcementID, &row.generation, &row.model, &row.configRevision, &row.dispatchRevision, &row.sourceConfigRevision, &row.sourceDispatchRevision, &row.policyRevision, &row.scheduleID, &row.profile, &row.threshold, &row.interval, &row.provider, &row.customQuestionIds); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(model) == "" {
+		if strings.TrimSpace(row.model) == "" {
 			continue
 		}
-		res, err := tx.ExecContext(ctx, q(`UPDATE `+s.table("account_quality_enforcements")+` SET recovery_lease_owner=?,recovery_lease_until=?,account_config_revision=?,updated_at=? WHERE account_id=? AND enforcement_id=? AND generation=? AND state='active' AND action='quality_isolate' AND (recovery_lease_until IS NULL OR recovery_lease_until<=?)`), s.OwnerID, now.Add(lease).UTC().Format(time.RFC3339Nano), configRevision, now.UTC().Format(time.RFC3339Nano), accountID, enforcementID, generation, now.UTC().Format(time.RFC3339Nano))
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	var tasks []ScheduleTask
+	for _, row := range scanned {
+		res, err := tx.ExecContext(ctx, q(`UPDATE `+s.table("account_quality_enforcements")+` SET recovery_lease_owner=?,recovery_lease_until=?,account_config_revision=?,updated_at=? WHERE account_id=? AND enforcement_id=? AND generation=? AND state='active' AND action='quality_isolate' AND (recovery_lease_until IS NULL OR recovery_lease_until<=?)`), s.OwnerID, now.Add(lease).UTC().Format(time.RFC3339Nano), row.configRevision, now.UTC().Format(time.RFC3339Nano), row.accountID, row.enforcementID, row.generation, now.UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			return nil, err
 		}
@@ -183,13 +211,13 @@ func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.T
 		// 恢复路径的题库配置与 scheduled 同语义：触发源是 schedule 时冻结该
 		// schedule 行的配置，否则回落系统账户的 policy 行配置；NULL 一律归一
 		// 为空（不执行题库家族）。
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: "quality_isolate", ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(sourceConfigRevision), SourceDispatchRevision: int64(sourceDispatchRevision), PolicyRevision: strconv.Itoa(policyRevision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: scheduleID, OwnerID: s.OwnerID, EnforcementID: enforcementID, Generation: generation, RecoveryIntervalMinutes: interval, CustomQuestionIds: qualityCustomQuestionIds(customQuestionIds)})
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: row.systemID, ActorSystemAccountID: row.systemID, TargetType: "account", TargetID: row.accountID, Model: row.model, Profile: row.profile, ProviderCode: row.provider, Threshold: row.threshold, PenaltyAction: "quality_isolate", ConfigRevision: strconv.Itoa(row.configRevision), DispatchRevision: int64(row.dispatchRevision), SourceConfigRevision: strconv.Itoa(row.sourceConfigRevision), SourceDispatchRevision: int64(row.sourceDispatchRevision), PolicyRevision: strconv.Itoa(row.policyRevision), ProbeSetVersion: probeSetForProfile(row.profile), IdentityKey: row.systemID + ":" + row.accountID + ":" + row.model, ScheduleID: row.scheduleID, OwnerID: s.OwnerID, EnforcementID: row.enforcementID, Generation: row.generation, RecoveryIntervalMinutes: row.interval, CustomQuestionIds: qualityCustomQuestionIds(row.customQuestionIds)})
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, ScheduleTask{ID: "recovery:" + accountID + ":" + enforcementID + ":" + strconv.Itoa(generation), Kind: SchedulerQualityRecovery, OwnerID: s.OwnerID, Payload: payload})
+		tasks = append(tasks, ScheduleTask{ID: "recovery:" + row.accountID + ":" + row.enforcementID + ":" + strconv.Itoa(row.generation), Kind: SchedulerQualityRecovery, OwnerID: s.OwnerID, Payload: payload})
 	}
-	return tasks, rows.Err()
+	return tasks, nil
 }
 
 func (s *BusinessSchedulerSource) CompleteScheduled(ctx context.Context, payload ScheduledPayload, result RunResult) error {
