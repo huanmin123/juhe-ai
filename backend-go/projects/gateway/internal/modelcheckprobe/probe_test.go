@@ -13,6 +13,7 @@ import (
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 func TestBuildStructuredAndToolRequestsPreserveProtocolShapes(t *testing.T) {
@@ -135,8 +136,10 @@ func TestBuildBasicWithTuningsAppliesProtocolOutputTokenFloors(t *testing.T) {
 		want     float64
 		field    string
 	}{
-		{name: "responses", protocol: modelcheckprofile.ProtocolOpenAIResponses, want: 16, field: "max_output_tokens"},
-		{name: "chat", protocol: modelcheckprofile.ProtocolOpenAIChat, want: 64, field: "max_tokens"},
+		// BUG-0308 扩展裁决（2026-10-11）：协议 floor 统一为信封下限 1024，
+		// 旧 16/64 在 min-100 类中转上 400、在思考模型上预算耗尽输出为空。
+		{name: "responses", protocol: modelcheckprofile.ProtocolOpenAIResponses, want: float64(upstreamenvelope.DefaultProbeOutputTokens), field: "max_output_tokens"},
+		{name: "chat", protocol: modelcheckprofile.ProtocolOpenAIChat, want: float64(upstreamenvelope.DefaultProbeOutputTokens), field: "max_tokens"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -164,8 +167,8 @@ func TestBuildBasicWithTuningsAppliesProtocolOutputTokenFloors(t *testing.T) {
 			t.Fatal(err)
 		}
 		generation, ok := payload["generationConfig"].(map[string]any)
-		if !ok || generation["maxOutputTokens"] != float64(128) {
-			t.Fatalf("generationConfig=%#v, want maxOutputTokens=128", payload["generationConfig"])
+		if !ok || generation["maxOutputTokens"] != float64(upstreamenvelope.DefaultProbeOutputTokens) {
+			t.Fatalf("generationConfig=%#v, want maxOutputTokens=%d（BUG-0308 扩展裁决）", payload["generationConfig"], upstreamenvelope.DefaultProbeOutputTokens)
 		}
 	})
 }

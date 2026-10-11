@@ -13,6 +13,7 @@ import (
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
 
 // ---- 传输层桩：在无网络环境下驱动 Execute 的各条分支 ----
@@ -1296,7 +1297,8 @@ func TestWlBuildBasicProtocolRejection(t *testing.T) {
 	if _, err := BuildBasicForEndpointMode(modelcheckprofile.ProtocolOpenAIChat, "m", "p", modelcheckprofile.EndpointModeResponsesJSON); err == nil {
 		t.Fatal("端点模式与协议不匹配必须拒绝")
 	}
-	// Anthropic 不接受 temperature 调节，按原样透传 max_tokens。
+	// Anthropic 不接受 temperature 调节；max_tokens 经统一预算下限钳位
+	// （BUG-0308 扩展裁决：min-100 类中转拒绝更小值）。
 	request, err := buildBasicWithTunings(modelcheckprofile.ProtocolAnthropic, "m", "p", "", false, 5, 0.7)
 	if err != nil {
 		t.Fatalf("err=%v", err)
@@ -1305,8 +1307,8 @@ func TestWlBuildBasicProtocolRejection(t *testing.T) {
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		t.Fatalf("body 非法: %v", err)
 	}
-	if payload["max_tokens"] != float64(5) {
-		t.Fatalf("Anthropic 必须按原样透传 max_tokens: %#v", payload)
+	if payload["max_tokens"] != float64(upstreamenvelope.DefaultProbeOutputTokens) {
+		t.Fatalf("Anthropic max_tokens 应钳位到信封下限: %#v", payload)
 	}
 	if _, ok := payload["temperature"]; ok {
 		t.Fatalf("Anthropic 不能携带 temperature: %#v", payload)
@@ -1320,8 +1322,8 @@ func TestWlBuildBasicProtocolRejection(t *testing.T) {
 		t.Fatalf("body 非法: %v", err)
 	}
 	generation := payload["generationConfig"].(map[string]any)
-	if generation["maxOutputTokens"] != float64(128) {
-		t.Fatalf("Gemini 下限 128: %#v", generation)
+	if generation["maxOutputTokens"] != float64(upstreamenvelope.DefaultProbeOutputTokens) {
+		t.Fatalf("Gemini 预算下限 1024（BUG-0308 扩展裁决）: %#v", generation)
 	}
 	// Codex 归一化忽略 tuning 字段。
 	request, err = buildBasicWithTunings(modelcheckprofile.ProtocolOpenAIResponses, "m", "p", "", false, 1, 0.9)
@@ -1331,8 +1333,8 @@ func TestWlBuildBasicProtocolRejection(t *testing.T) {
 	if err := json.Unmarshal(request.Body, &payload); err != nil {
 		t.Fatalf("body 非法: %v", err)
 	}
-	if payload["max_output_tokens"] != float64(16) {
-		t.Fatalf("Responses 输出下限 16: %#v", payload)
+	if payload["max_output_tokens"] != float64(upstreamenvelope.DefaultProbeOutputTokens) {
+		t.Fatalf("Responses 预算下限 1024（BUG-0308 扩展裁决）: %#v", payload)
 	}
 }
 

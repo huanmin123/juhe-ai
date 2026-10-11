@@ -224,13 +224,16 @@ func buildBasicWithEndpointMode(protocol modelcheckprofile.Protocol, model, prom
 	return BuildBasic(protocol, model, prompt, stream)
 }
 
-// buildBasicWithTunings mirrors the Node payload factories that vary per-probe
-// output budgets and sampling temperature. Protocol floors match the Node
-// oracle exactly: Responses requests never ask for fewer than 16 output
-// tokens, chat requests never ask for fewer than 64 completion tokens and
-// Gemini never fewer than 128; Anthropic is sent verbatim without a
-// temperature field.
+// buildBasicWithTunings 构造各探针族的请求并统一应用输出预算下限
+// （upstreamenvelope.DefaultProbeOutputTokens = 1024，信封统一设计 §4.3、
+// BUG-0308 扩展裁决 2026-10-11）：生产实证 min-100 类中转会拒绝一切更小的
+// 预算（protocol_basic 16、structured_output 64 先后 400），且思考模型会
+// 把小预算耗尽在推理上输出为空。探针族调用方的语义预算只会被抬升到该
+// 下限，不会被压低；预算是上限不是计费值。
 func buildBasicWithTunings(protocol modelcheckprofile.Protocol, model, prompt, endpointMode string, stream bool, maxOutputTokens int, temperature float64) (Request, error) {
+	if maxOutputTokens < upstreamenvelope.DefaultProbeOutputTokens {
+		maxOutputTokens = upstreamenvelope.DefaultProbeOutputTokens
+	}
 	request, err := buildBasicWithEndpointMode(protocol, model, prompt, stream, endpointMode)
 	if err != nil {
 		return Request{}, err
@@ -241,18 +244,10 @@ func buildBasicWithTunings(protocol modelcheckprofile.Protocol, model, prompt, e
 	}
 	switch protocol {
 	case modelcheckprofile.ProtocolOpenAIResponses:
-		tokens := maxOutputTokens
-		if tokens < 16 {
-			tokens = 16
-		}
-		payload["max_output_tokens"] = tokens
+		payload["max_output_tokens"] = maxOutputTokens
 		payload["temperature"] = temperature
 	case modelcheckprofile.ProtocolOpenAIChat:
-		tokens := maxOutputTokens
-		if tokens < 64 {
-			tokens = 64
-		}
-		payload["max_tokens"] = tokens
+		payload["max_tokens"] = maxOutputTokens
 		payload["temperature"] = temperature
 	case modelcheckprofile.ProtocolAnthropic:
 		payload["max_tokens"] = maxOutputTokens
@@ -261,11 +256,7 @@ func buildBasicWithTunings(protocol modelcheckprofile.Protocol, model, prompt, e
 		if generation == nil {
 			generation = map[string]any{}
 		}
-		tokens := maxOutputTokens
-		if tokens < 128 {
-			tokens = 128
-		}
-		generation["maxOutputTokens"] = tokens
+		generation["maxOutputTokens"] = maxOutputTokens
 		generation["temperature"] = temperature
 		payload["generationConfig"] = generation
 	}
