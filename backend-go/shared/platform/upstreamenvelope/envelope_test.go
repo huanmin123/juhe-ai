@@ -401,7 +401,7 @@ func TestBuildURLBaseNormalization(t *testing.T) {
 }
 
 // TestBuildURLVariantPathRules 覆盖 GLM / gemini-openai 路径规约与 Codex
-// 固定上游（适配器包装 M5 才迁移，URL 规约先经本函数直接钉住）。
+// 固定上游（URL 规约；适配器包装 body golden 见 adapterwrap_test.go）。
 func TestBuildURLVariantPathRules(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -613,8 +613,8 @@ func TestBuildBudgetGuards(t *testing.T) {
 	})
 }
 
-// TestBuildUnknownModeAndAdapter 断言未知形态与未迁移适配器全部明确失败，
-// 不静默兜底（§4.2）。
+// TestBuildUnknownModeAndAdapter 断言未知形态与未知适配器全部明确失败，
+// 不静默兜底（§4.2）。已登记适配器的包装行为由 adapterwrap_test.go 覆盖。
 func TestBuildUnknownModeAndAdapter(t *testing.T) {
 	body := []BodyField{{Key: "model", Value: "gpt-probe"}}
 	if _, err := Build(context.Background(), Spec{BaseURL: testOpenAIBase, EndpointMode: "robot_json", Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: BudgetNone, BodyFields: body}); err == nil || !strings.Contains(err.Error(), "robot_json") {
@@ -622,12 +622,6 @@ func TestBuildUnknownModeAndAdapter(t *testing.T) {
 	}
 	if _, err := Build(context.Background(), Spec{BaseURL: testOpenAIBase, EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: BudgetNone, BodyFields: body, Adapter: Adapter("unknown_adapter")}); err == nil || !strings.Contains(err.Error(), "unknown_adapter") {
 		t.Fatalf("未知适配器必须明确报错，实际: %v", err)
-	}
-	for _, adapter := range []Adapter{AdapterOpenAIOAuthCodex, AdapterGeminiCodeAssist} {
-		_, err := Build(context.Background(), Spec{BaseURL: testOpenAIBase, EndpointMode: ModeResponsesJSON, Auth: Auth{Strategy: AuthOAuth, Token: testBearerToken}, Budget: BudgetNone, BodyFields: body, Adapter: adapter})
-		if err == nil || !strings.Contains(err.Error(), "M5") {
-			t.Fatalf("适配器 %s 的包装尚未迁移，必须报 M5 错误，实际: %v", adapter, err)
-		}
 	}
 	if _, err := Build(context.Background(), Spec{BaseURL: testOpenAIBase, EndpointMode: ModeResponsesJSON, Protocol: ProtocolGemini, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken}, Budget: BudgetNone, BodyFields: body}); err == nil || !strings.Contains(err.Error(), "不一致") {
 		t.Fatalf("协议与端点不一致必须明确报错，实际: %v", err)

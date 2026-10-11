@@ -6,9 +6,9 @@
 // （§3.1 共享构造规则）。本包只负责请求构造（method/URL/header/body 编码），
 // 不持有凭据，不承担重试、评分、结算、超时、账户选择或网络发送职责（§4.1）。
 //
-// M1 交付范围：endpoint catalog、认证策略、预算策略、统一入口与契约测试；
-// F2–F5 探针包的请求构造迁移在 M2–M4，Codex / Gemini Code Assist 的包装
-// 钩子在 M5 接入（§6 迁移步骤）。
+// 交付里程碑见设计文档 §6：M1 endpoint catalog、认证策略、预算策略、统一
+// 入口与契约测试；M5 Codex / Gemini Code Assist 的包装钩子（adapterwrap.go）。
+// F2–F5 探针包的请求构造迁移在 M2–M4 推进。
 //
 // catalog 条目数据取证自三个探针包现状：accountprobe 的 buildTestRequest /
 // buildUpstreamURL / executeAttempt，exactkeyprobe 的 buildProbeRequest /

@@ -23,15 +23,17 @@ const (
 	AdapterNone Adapter = ""
 	// AdapterOpenAIOAuthCodex：OpenAI OAuth Codex 形态（F5）。上游固定为
 	// CodexBaseURL；Responses body 归一化删除 max_output_tokens 等不接受的
-	// tuning 字段，预算策略恒为 BudgetNone（§4.3 Codex 例外）。Body 包装
-	// 钩子在 M5 接入（§6 M5），当前 Build 选中即明确报错，禁止调用方私有
-	// 拼装包装请求。
+	// tuning 字段，预算策略恒为 BudgetNone（§4.3 Codex 例外）。包装钩子
+	// wrapCodexResponses 逐行为对齐 modelcheckprobe
+	// normalizeOpenAIOAuthCodexRequest 的 body 改写（§6 M5）；请求头增强
+	// （originator、session-id、x-codex-* 等）属于账户/凭据语义，仍由调用方
+	// 经 Spec.Auth / Spec.ExtraHeaders 注入。
 	AdapterOpenAIOAuthCodex Adapter = "openai_oauth_codex"
 	// AdapterGeminiCodeAssist：Gemini Code Assist / Google One 形态。路径
 	// /v1internal:streamGenerateContent?alt=sse，body 包装为
 	// {model, project, request} 三字段（accountprobe buildTestRequest /
-	// exactkeyprobe buildProbeRequest 现状）。包装钩子在 M5 接入（§6 M5），
-	// 当前 Build 选中即明确报错。
+	// exactkeyprobe buildProbeRequest 现状）；project 由 Spec.Project 传入。
+	// 包装钩子见 wrapGeminiCodeAssist（§6 M5）。
 	AdapterGeminiCodeAssist Adapter = "gemini_code_assist"
 )
 
@@ -40,8 +42,10 @@ const (
 // 同源）。
 const CodexBaseURL = "https://chatgpt.com/backend-api/codex"
 
-// wrapFunc 是适配器的 path/body 包装钩子。M1 登记表内全部为 nil——这是
-// §6 M5 的迁移锚点：Build 选中 wrap 为 nil 的适配器时返回明确错误。
+// wrapFunc 是适配器的 path/body 包装钩子（§6 M5，实现见 adapterwrap.go）：
+// 在 body 编码与预算字段注入之后应用，输入已编码 body 与 Spec，输出最终
+// path 与 body。登记表不变量：每个适配器必须提供非 nil wrap，Build 遇 nil
+// 显式报错，不静默跳过包装。
 type wrapFunc func(spec Spec, path string, body []byte) (string, []byte, error)
 
 type adapterDef struct {
@@ -49,14 +53,14 @@ type adapterDef struct {
 	budget *BudgetPolicy
 	// fixedBaseURL 非空时替换调用方 base（Codex 固定上游）。
 	fixedBaseURL string
-	// wrap 为 nil 表示包装钩子尚未迁移（§6 M5）。
+	// wrap 是适配器包装钩子（登记项必填，见 wrapFunc）。
 	wrap wrapFunc
 }
 
 // adapters 是适配器登记表（§8.1：新增变体先登记再使用）。
 var adapters = map[Adapter]adapterDef{
-	AdapterOpenAIOAuthCodex: {budget: budgetPtr(BudgetNone), fixedBaseURL: CodexBaseURL},
-	AdapterGeminiCodeAssist: {},
+	AdapterOpenAIOAuthCodex: {budget: budgetPtr(BudgetNone), fixedBaseURL: CodexBaseURL, wrap: wrapCodexResponses},
+	AdapterGeminiCodeAssist: {wrap: wrapGeminiCodeAssist},
 }
 
 func budgetPtr(value BudgetPolicy) *BudgetPolicy { return &value }
@@ -113,7 +117,14 @@ type Spec struct {
 	Adapter Adapter
 	// Model 仅 gemini generateContent 的路径模板需要（{model} 占位符）；
 	// 其余端点的 model 属于 body 字段，由 BodyFields 承载。
+	// AdapterGeminiCodeAssist 例外：包装后的 {model, project, request} 顶层
+	// model 字段也取本值（accountprobe / exactkeyprobe 现状：取请求模型原名）。
 	Model string
+	// Project 仅 AdapterGeminiCodeAssist 使用：Code Assist / Google One 账户
+	// 凭据中的 project_id，包装为 body 顶层 project 字段（§6 M5，取证见
+	// wrapGeminiCodeAssist）。它是包装协议字段而非 HTTP 头，不经
+	// ExtraHeaders 传入；其他适配器忽略本字段。
+	Project string
 	// Auth 是策略与凭据（见 auth.go）。
 	Auth Auth
 	// Budget 是调用方解析后的预算策略（通常经 ResolveBudgetPolicy 得到）。
@@ -130,8 +141,8 @@ type Spec struct {
 }
 
 // Build 生成最终 *http.Request（§4.1）：method、URL、标准头、认证头与
-// body 编码全部由本包决定。未知 endpointMode、未知适配器、未迁移的适配器
-// 包装、预算策略与端点契约冲突都返回明确错误，不静默兜底。
+// body 编码全部由本包决定。未知 endpointMode、未知适配器、缺少包装钩子的
+// 适配器、预算策略与端点契约冲突都返回明确错误，不静默兜底。
 func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 	entry, err := Lookup(spec.EndpointMode)
 	if err != nil {
@@ -148,7 +159,7 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 			return nil, fmt.Errorf("upstreamenvelope: 适配器 %q 未在适配器登记表登记（设计文档 §4.2/§8.1）", spec.Adapter)
 		}
 		if def.wrap == nil {
-			return nil, fmt.Errorf("upstreamenvelope: 适配器 %s 的请求包装尚未迁移到共享构造（设计文档 §6 M5）；禁止调用方私有拼装包装请求", spec.Adapter)
+			return nil, fmt.Errorf("upstreamenvelope: 适配器 %s 未实现请求包装钩子（适配器登记表不变量）", spec.Adapter)
 		}
 	}
 	if spec.Budget.unspecified() {
@@ -202,7 +213,7 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 	}
 
 	// 适配器包装（Codex Responses 归一化 / Gemini Code Assist 三字段包装）
-	// 在此应用；当前登记表全部为 nil，由上方守卫拦截（§6 M5 迁移锚点）。
+	// 在 body 编码与预算字段注入之后应用（§6 M5，实现见 adapterwrap.go）。
 	if def.wrap != nil {
 		path, body, err = def.wrap(spec, path, body)
 		if err != nil {
