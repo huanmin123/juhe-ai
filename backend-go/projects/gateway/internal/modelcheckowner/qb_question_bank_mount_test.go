@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,8 +17,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// qbFakeTestRunner 是提交门禁测试执行器替身：固定返回 pass 结论与账户名，
+// 供挂载层端到端验证 POST /question-bank/test 双前缀可达。
+type qbFakeTestRunner struct{}
+
+func (qbFakeTestRunner) TestQuestion(ctx context.Context, input modelcheckquestionbank.TestQuestionInput) (modelcheckquestionbank.TestQuestionResult, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		panic("TestQuestion 必须在带截止时间的 ctx 下调用")
+	}
+	return modelcheckquestionbank.TestQuestionResult{Verdict: "pass", Alignment: "aligned", AccountName: "测试账户甲", LatencyMs: 42}, nil
+}
+
 // qbQuestionBankFixture 构造全局共享题库 store（内存 SQLite）与 admin/self
-// 两个 HTTPHandlers 实例（照 compose/main 的装配形态：同 store、双 adminMode）。
+// 两个 HTTPHandlers 实例（照 compose/main 的装配形态：同 store、双 adminMode、
+// 同一测试执行器）。
 func qbQuestionBankFixture(t *testing.T) (*modelcheckquestionbank.Store, *modelcheckquestionbank.HTTPHandlers, *modelcheckquestionbank.HTTPHandlers) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/questionbank.db?mode=rwc")
@@ -36,21 +49,71 @@ func qbQuestionBankFixture(t *testing.T) (*modelcheckquestionbank.Store, *modelc
 		reject_reason TEXT,
 		created_by TEXT NOT NULL,
 		created_scope TEXT NOT NULL,
+		is_builtin INTEGER NOT NULL DEFAULT 0,
 		reviewed_by TEXT,
 		reviewed_at TEXT,
 		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
+		updated_at TEXT NOT NULL,
+		last_test_id TEXT,
+		last_test_json TEXT
 	)`); err != nil {
+		t.Fatal(err)
+	}
+	// 提交门禁测试记录表（maintenance SQLite DDL 同构最小形状）。
+	if _, err := db.Exec(`CREATE TABLE model_check_question_tests (
+		id TEXT PRIMARY KEY,
+		created_by TEXT NOT NULL,
+		account_id TEXT NOT NULL,
+		account_name TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL,
+		draft_hash TEXT NOT NULL,
+		verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'invalid', 'request_failed')),
+		alignment TEXT NOT NULL DEFAULT '' CHECK (alignment IN ('', 'aligned', 'misaligned', 'unknown')),
+		diagnosis_json TEXT,
+		http_status INTEGER,
+		latency_ms INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	// 管理面 attachCreatorNames 解析提交人显示名，需要 system_accounts 表。
+	if _, err := db.Exec(`CREATE TABLE system_accounts (
+		id TEXT PRIMARY KEY,
+		display_name TEXT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO system_accounts (id, display_name) VALUES ('sys-1', '提交人甲'), ('sys-2', '提交人乙')`); err != nil {
 		t.Fatal(err)
 	}
 	store, err := modelcheckquestionbank.NewStore(db, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin := modelcheckquestionbank.NewHTTPHandlers(store, nil, time.Now, true)
-	self := modelcheckquestionbank.NewHTTPHandlers(store, nil, time.Now, false)
+	runner := qbFakeTestRunner{}
+	admin := modelcheckquestionbank.NewHTTPHandlers(store, nil, time.Now, true, runner)
+	self := modelcheckquestionbank.NewHTTPHandlers(store, nil, time.Now, false, runner)
 	return store, admin, self
 }
+
+// qbSeedPassingTest 按内容造一条 pass 测试记录并返回 testId（提交门禁
+// 通过路径造数；keyPoints 恒 nil 与挂载测试的提交体一致）。
+func qbSeedPassingTest(t *testing.T, store *modelcheckquestionbank.Store, actor, questionText, referenceAnswer string) string {
+	t.Helper()
+	qbSeedCounter++
+	testID := fmt.Sprintf("mcqt-mount-%d", qbSeedCounter)
+	if err := store.InsertTestRecord(context.Background(), modelcheckquestionbank.TestRecord{
+		ID: testID, CreatedBy: actor, AccountID: "acct-1", AccountName: "测试账户甲", Model: "gpt-5.6",
+		DraftHash: modelcheckquestionbank.DraftHash(questionText, referenceAnswer, nil),
+		Verdict:   "pass", Alignment: "aligned", LatencyMs: 42,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return testID
+}
+
+var qbSeedCounter int
 
 // qbMountHandler 照 main.go 的 MountScoped 形态克隆 handler：admin 挂载
 // AllowCrossAccount=true，self 挂载 ForceActorScope=true。
@@ -103,8 +166,17 @@ func TestQBQuestionBankMountsAndGlobalVisibility(t *testing.T) {
 	selfMount := qbMountHandler(t, admin, self, false)
 	adminMount := qbMountHandler(t, admin, self, true)
 
-	// 自助面 sys-1 提交题目（pending）。
-	created := qbSend(t, selfMount, http.MethodPost, "/question-bank", `{"title":"自有类目","questionText":"自有题面：2+2=?","referenceAnswer":"4"}`)
+	// 自助面 sys-1 先同步测试再提交题目（pending；提交门禁端到端）。
+	tested := qbSend(t, selfMount, http.MethodPost, "/question-bank/test", `{"questionText":"自有题面：2+2=?","referenceAnswer":"4","accountId":"acct-1","model":"gpt-5.6"}`)
+	if tested.Code != http.StatusOK || !strings.Contains(tested.Body.String(), `"testId":"mcqt-`) || !strings.Contains(tested.Body.String(), `"accountName":"测试账户甲"`) {
+		t.Fatalf("self POST /question-bank/test status=%d body=%s", tested.Code, tested.Body.String())
+	}
+	testedViaAdmin := qbSend(t, adminMount, http.MethodPost, "/question-bank/test", `{"questionText":"管理面前缀同样可达。","referenceAnswer":"可达","accountId":"acct-1","model":"gpt-5.6"}`)
+	if testedViaAdmin.Code != http.StatusOK || !strings.Contains(testedViaAdmin.Body.String(), `"testId":"mcqt-`) {
+		t.Fatalf("admin POST /question-bank/test status=%d body=%s", testedViaAdmin.Code, testedViaAdmin.Body.String())
+	}
+	selfTestID := qbSeedPassingTest(t, store, "sys-1", "自有题面：2+2=?", "4")
+	created := qbSend(t, selfMount, http.MethodPost, "/question-bank", `{"title":"自有类目","questionText":"自有题面：2+2=?","referenceAnswer":"4","testId":"`+selfTestID+`"}`)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("self create status=%d body=%s", created.Code, created.Body.String())
 	}
@@ -113,16 +185,23 @@ func TestQBQuestionBankMountsAndGlobalVisibility(t *testing.T) {
 	if ownID == "" {
 		t.Fatalf("self create body=%s", created.Body.String())
 	}
+	if lastTest, ok := view["lastTest"].(map[string]any); !ok || lastTest["testId"] != selfTestID {
+		t.Fatalf("created lastTest = %v", view["lastTest"])
+	}
 
 	// sys-2 直接经 store 提交并自审一题 approved、留一题 pending。
-	approved, err := store.Create(context.Background(), modelcheckquestionbank.Actor{SystemAccountID: "sys-2"}, modelcheckquestionbank.CreateQuestionInput{Title: "他人类目一", QuestionText: "他人题面：1+1=?", ReferenceAnswer: "2"})
+	approvedText := "他人题面：1+1=?"
+	approvedTest := qbSeedPassingTest(t, store, "sys-2", approvedText, "2")
+	approved, err := store.Create(context.Background(), modelcheckquestionbank.Actor{SystemAccountID: "sys-2"}, modelcheckquestionbank.CreateQuestionInput{Title: "他人类目一", QuestionText: approvedText, ReferenceAnswer: "2", TestID: approvedTest})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Review(context.Background(), approved.ID, modelcheckquestionbank.Actor{SystemAccountID: "sys-2"}, true, "approve", ""); err != nil {
 		t.Fatal(err)
 	}
-	foreignPending, err := store.Create(context.Background(), modelcheckquestionbank.Actor{SystemAccountID: "sys-2"}, modelcheckquestionbank.CreateQuestionInput{Title: "他人类目二", QuestionText: "他人待审题面", ReferenceAnswer: "x"})
+	foreignText := "他人待审题面"
+	foreignTest := qbSeedPassingTest(t, store, "sys-2", foreignText, "x")
+	foreignPending, err := store.Create(context.Background(), modelcheckquestionbank.Actor{SystemAccountID: "sys-2"}, modelcheckquestionbank.CreateQuestionInput{Title: "他人类目二", QuestionText: foreignText, ReferenceAnswer: "x", TestID: foreignTest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,9 +212,9 @@ func TestQBQuestionBankMountsAndGlobalVisibility(t *testing.T) {
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), approved.ID) || !strings.Contains(list.Body.String(), ownID) || strings.Contains(list.Body.String(), foreignPending.ID) {
 		t.Fatalf("self list status=%d body=%s", list.Code, list.Body.String())
 	}
-	// 他人 approved 详情：题面可读但参考答案字段省略（非创建者）。
+	// 他人 approved 详情：题面与参考答案/要点全员可见（题库共享契约）。
 	foreign := qbGet(t, selfMount, http.MethodGet, "/question-bank/"+approved.ID)
-	if foreign.Code != http.StatusOK || strings.Contains(foreign.Body.String(), `"referenceAnswer"`) || strings.Contains(foreign.Body.String(), `"keyPoints"`) {
+	if foreign.Code != http.StatusOK || !strings.Contains(foreign.Body.String(), `"referenceAnswer"`) || !strings.Contains(foreign.Body.String(), `"keyPoints"`) {
 		t.Fatalf("self foreign detail status=%d body=%s", foreign.Code, foreign.Body.String())
 	}
 
@@ -188,9 +267,13 @@ func TestQBQuestionBankMountsAndGlobalVisibility(t *testing.T) {
 		t.Fatalf("unauthenticated list status=%d, want 401", status.Code)
 	}
 
-	// owner 未接线（nil handlers）→ 503。
+	// owner 未接线（nil handlers）→ 503；/test 字面路径同样不受 /{id}
+	// 前缀分支吞噬（404 会伪装成"路由存在但题库未接线"）。
 	unwired := qbMountHandler(t, nil, nil, false)
 	if status := qbGet(t, unwired, http.MethodGet, "/question-bank"); status.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unwired question bank status=%d, want 503", status.Code)
+	}
+	if status := qbSend(t, unwired, http.MethodPost, "/question-bank/test", `{}`); status.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unwired question bank test status=%d, want 503", status.Code)
 	}
 }

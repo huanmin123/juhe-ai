@@ -403,7 +403,8 @@ assert.match(
 )
 for (const [sectionName, source] of [['API Key', apiKeySectionSource], ['OAuth', oauthSectionSource]] as const) {
   assert.doesNotMatch(source, /<a-form-item required tooltip=/, `${sectionName} 支持模型说明不得由表单标签尾部自动渲染`)
-  assert.match(source, /<span>支持模型<\/span>\s*<a-tooltip[^>]*>\s*<QuestionCircleOutlined class="supported-models-help"/s, `${sectionName} 支持模型说明图标必须紧跟标题`)
+  // 「可留空/自动推荐」注记 span（e28fb5719 起仅在 OAuth 侧存在）是标题与说明图标之间的合法节点
+  assert.match(source, /<span>支持模型<\/span>(?:\s*<span[^>]*class="supported-models-auto-hint"[^>]*>[\s\S]*?<\/span>)?\s*<a-tooltip[^>]*>\s*<QuestionCircleOutlined class="supported-models-help"/s, `${sectionName} 支持模型说明图标必须紧跟标题（注记 span 可选）`)
   const supportedModelsLabelSource = sourceBetween(source, '<div class="supported-models-label">', '</div>')
   const supportedModelsControlSource = sourceBetween(source, '<div class="supported-models-control">', '</div>')
   assert.doesNotMatch(supportedModelsLabelSource, /supported-models-refresh-button|refresh-models|SyncOutlined/, `${sectionName} 支持模型标签不得包含刷新按钮或刷新事件`)

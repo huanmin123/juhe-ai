@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
@@ -215,6 +216,18 @@ func (d *Deps) optionsHandler(selfOnly bool) http.HandlerFunc {
 
 func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	query := r.URL.Query()
+	// domain 过滤（AI 账户能力域拆分 M1 读通道，管理面 /accounts 与用户面
+	// /my-accounts 共用本处理器）：空缺省=不过滤，"all" 与 providerCode/type
+	// 的既有语义一致视为不过滤，其余非四枚举值按既有参数错误语义 400 拒绝
+	// （不让越界值静默退化成全量列表，M2 域菜单依赖该错误面暴露路由错位）。
+	domain := strings.TrimSpace(query.Get("domain"))
+	if _, ok := accountscore.NormalizeAccountCapabilityDomain(domain); !ok && domain != "all" {
+		kernel.WriteBadRequest(w, "账户能力域过滤参数无效")
+		return
+	}
+	if domain == "all" {
+		domain = ""
+	}
 	options := ListOptions{
 		Sorts:                     parseSortQuery(query["sorts"]),
 		IDs:                       textListQuery(query["ids"]),
@@ -228,6 +241,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 		Type:                      strings.TrimSpace(query.Get("type")),
 		Status:                    statusQueryValue(query.Get("status")),
 		Schedulable:               schedulableQueryValue(query.Get("schedulable")),
+		Domain:                    domain,
 	}
 	result, err := d.Store.ListPage(r.Context(), access, options)
 	if err != nil {

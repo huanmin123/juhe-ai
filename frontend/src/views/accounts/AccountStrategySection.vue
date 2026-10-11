@@ -1,20 +1,29 @@
 <template>
   <section class="form-section">
     <a-form-item label="上游接口能力" tooltip="声明这个账号真实上游支持的接口形态。未勾选的上游请求不会进入该账号候选；OAuth 账号按来源能力只读。">
-      <a-checkbox-group
-        v-model:value="form.supportedEndpointModes"
-        :disabled="authorizedEditing || isOAuthForm"
-      >
-        <div class="endpoint-mode-grid">
+      <div class="endpoint-mode-grid">
+        <template v-for="row in endpointModeRows" :key="row.kind === 'group' ? row.key : row.value">
           <a-checkbox
-            v-for="option in endpointModeOptions"
-            :key="option.value"
-            :value="option.value"
+            v-if="row.kind === 'mode'"
+            :checked="form.supportedEndpointModes.includes(row.value)"
+            :disabled="endpointModesDisabled"
+            @change="setModeEnabled(row.value, $event.target.checked)"
           >
-            {{ option.label }}
+            {{ row.label }}
           </a-checkbox>
-        </div>
-      </a-checkbox-group>
+          <div v-else class="endpoint-mode-group">
+            <a-checkbox
+              :checked="isGroupChecked(row.modes)"
+              :indeterminate="isGroupIndeterminate(row.modes)"
+              :disabled="endpointModesDisabled"
+              :title="row.tooltip"
+              @change="toggleGroup(row, $event.target.checked)"
+            >
+              {{ row.label }}
+            </a-checkbox>
+          </div>
+        </template>
+      </div>
     </a-form-item>
     <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
@@ -98,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
@@ -110,7 +119,7 @@ import {
   OPENAI_VIDEO_GENERATION_FAMILY,
   isHybridProviderCode
 } from '@/shared/providerProtocol'
-import type { ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountSupportedEndpointMode, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   accountModelMappingSourceModelOptions,
@@ -171,6 +180,67 @@ const endpointModeOptions = computed(() => {
   const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
 })
+type EndpointModeRow =
+  | { kind: 'mode'; value: AccountSupportedEndpointMode; label: string }
+  | { kind: 'group'; key: string; label: string; tooltip: string; modes: AccountSupportedEndpointMode[] }
+
+// 视频与长音频任务是同一业务能力的生命周期端点（创建/查询/内容/取消），
+// 按业务语义不可拆分——支持即全部端点支持，表单按能力成组勾选、不提供
+// 单独微调。仅展示层分组，supportedEndpointModes 的词表与派发语义不变。
+const ENDPOINT_MODE_GROUPS: Array<{ key: string; label: string; tooltip: string; modes: AccountSupportedEndpointMode[] }> = [
+  {
+    key: 'video',
+    label: '视频生成（Videos API）',
+    tooltip: '支持即声明该能力的全部端点（创建、查询、内容、取消）',
+    modes: ['video_create', 'video_get', 'video_content', 'video_cancel']
+  },
+  {
+    key: 'audio_job',
+    label: '长音频任务（Audio Jobs）',
+    tooltip: '支持即声明该能力的全部端点（创建、查询、内容、取消）',
+    modes: ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel']
+  }
+]
+
+const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
+
+const endpointModeRows = computed<EndpointModeRow[]>(() => {
+  const labelByMode = new Map(endpointModeOptions.value.map((option) => [option.value, option.label]))
+  const consumed = new Set<AccountSupportedEndpointMode>()
+  const rows: EndpointModeRow[] = []
+  for (const option of endpointModeOptions.value) {
+    if (consumed.has(option.value)) continue
+    const group = ENDPOINT_MODE_GROUPS.find((item) => item.modes.includes(option.value))
+    if (group && group.modes.every((mode) => labelByMode.has(mode))) {
+      rows.push({ kind: 'group', key: group.key, label: group.label, tooltip: group.tooltip, modes: [...group.modes] })
+      group.modes.forEach((mode) => consumed.add(mode))
+    } else {
+      rows.push({ kind: 'mode', value: option.value, label: option.label })
+    }
+  }
+  return rows
+})
+
+const expandedModeGroupKeys = ref(new Set<string>())
+
+function isGroupChecked(modes: AccountSupportedEndpointMode[]): boolean {
+  return modes.every((mode) => props.form.supportedEndpointModes.includes(mode))
+}
+
+function isGroupIndeterminate(modes: AccountSupportedEndpointMode[]): boolean {
+  const enabledCount = modes.filter((mode) => props.form.supportedEndpointModes.includes(mode)).length
+  return enabledCount > 0 && enabledCount < modes.length
+}
+
+function setModeEnabled(mode: AccountSupportedEndpointMode, enabled: boolean): void {
+  props.form.supportedEndpointModes = enabled
+    ? [...new Set([...props.form.supportedEndpointModes, mode])]
+    : props.form.supportedEndpointModes.filter((item) => item !== mode)
+}
+
+function toggleGroup(row: Extract<EndpointModeRow, { kind: 'group' }>, checked: boolean): void {
+  row.modes.forEach((mode) => setModeEnabled(mode, checked))
+}
 const upstreamEndpointFamilyBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
@@ -433,5 +503,9 @@ function modelMappingProtocolContext() {
   .model-mapping-side {
     grid-template-columns: 1fr;
   }
+}
+
+.endpoint-mode-group {
+  min-width: 0;
 }
 </style>

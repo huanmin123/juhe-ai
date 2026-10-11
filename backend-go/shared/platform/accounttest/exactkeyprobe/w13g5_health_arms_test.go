@@ -9,13 +9,11 @@ import (
 	"time"
 )
 
-func TestW13g5HealthProbeCodexMetadata(t *testing.T) {
-	if got := codexMetadataJSON(nil); got != "null" {
-		t.Fatalf("nil 序列化: %s", got)
-	}
-	if got := codexMetadataJSON(map[string]any{"a": 1}); got == "" {
-		t.Fatal("合法值必须序列化")
-	}
+// TestW13g5HealthProbeImagesVerifyArms 承接原 Codex metadata 测试中的
+// verifyImagesJSON 臂；codexMetadataJSON 断言随 W3 接线删除（该函数的静默
+// "{}" 兜底由 newCodexIdentity 的显式报错替代，身份形状断言见
+// w3f4_envelope_baseline_test.go 的身份单源派生关系）。
+func TestW13g5HealthProbeImagesVerifyArms(t *testing.T) {
 	if err := verifyImagesJSON(nil); err == nil {
 		t.Fatal("nil images 必须报错")
 	}

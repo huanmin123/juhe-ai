@@ -273,6 +273,16 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 			outcome_id TEXT,
 			updated_at TEXT NOT NULL
 		)`,
+		// accounts.capability_domain 是 jobs 启动的业务库形状契约
+		// （capability_domain_schema.go 启动只读校验，2026-10 M1）：fixture 只
+		// 提供启动校验消费的最小 accounts 形状（列声明与 maintenance DDL
+		// 同构）；任务族所需的完整列集由 wgUnionBusinessSchema 等专项 fixture
+		// 承载。
+		`CREATE TABLE IF NOT EXISTS accounts (
+			id TEXT PRIMARY KEY,
+			deleted_at TEXT,
+			capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))
+		)`,
 	} {
 		if _, err := business.Exec(statement); err != nil {
 			t.Fatal(err)

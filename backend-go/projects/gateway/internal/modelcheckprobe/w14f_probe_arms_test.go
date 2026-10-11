@@ -8,12 +8,13 @@ package modelcheckprobe
 //     的 map，序列化不失败）；
 //   - probe.go buildBasicWithTunings / applyStructuredToolTunings 的
 //     `generation == nil` 防御臂（BuildBasic 的 Gemini 载荷恒含 generationConfig）；
-//   - probe.go Execute 内 http.NewRequestWithContext 错误臂（buildURL 已先行
-//     校验同一 URL）；
+//   - probe.go Execute 内最终 http.NewRequestWithContext 错误臂（W2 接线后
+//     由信封 Build 构造，本包 SSRF 校验已先行过滤同一 URL）；
 //   - probe.go parseResponseDetailed 的 `payload == nil` continue 臂
 //     （parseSSEResponseEvents 只收非空 JSON 载荷）与其 json.Marshal 错误臂；
-//   - probe.go normalizeOpenAIOAuthCodexRequest 内 codexUUID /
-//     mustHeaderUUID / json.Marshal 的错误臂（crypto/rand 不失败）；
+//   - probe.go newCodexIdentity 内 codexUUID / json.Marshal 的错误臂
+//     （crypto/rand 不失败；W2 接线后 normalizeOpenAIOAuthCodexRequest /
+//     mustHeaderUUID 已删除）；
 //   - token.go randomTokenNonce 的 crypto/rand 错误臂；
 //   - retry.go ExecuteWithRetry 循环自然退出臂（末次尝试必在循环内返回）；
 //   - suite.go probeMode 之后的 tunedBasic / buildStructured / buildTool /
@@ -292,7 +293,15 @@ func TestW14fDistributionEvaluationArms(t *testing.T) {
 
 func TestW14fRetryArms(t *testing.T) {
 	// 零值 RetryOptions + 零超时 → DefaultTimeout 臂（47）。
-	result, err := ExecuteWithRetry(context.Background(), Request{Path: "/v1/responses"}, Options{Endpoint: "http://w14f-target.test"}, RetryOptions{})
+	// W2 接线后 Execute 构造需契约形状请求（协议/模式/body/凭据），
+	// 旧"空协议手工 Request"夹具随构造迁移更新为契约形状。
+	w14fBasic, err := BuildBasicForEndpointMode(modelcheckprofile.ProtocolOpenAIResponses, "w14f-m", "w14f-p", modelcheckprofile.EndpointModeResponsesJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w14fHeaders := http.Header{}
+	w14fHeaders.Set("Authorization", "Bearer w14f")
+	result, err := ExecuteWithRetry(context.Background(), w14fBasic, Options{Endpoint: "http://w14f-target.test", Headers: w14fHeaders}, RetryOptions{})
 	if err != nil {
 		t.Fatalf("默认单尝试不应报错: %v", err)
 	}

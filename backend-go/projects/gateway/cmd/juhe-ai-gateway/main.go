@@ -388,8 +388,14 @@ func main() {
 		if questionBankErr != nil {
 			fail(fmt.Errorf("create J3b Gateway question bank store: %w", questionBankErr))
 		}
-		questionBankAdmin := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true)
-		questionBankSelf := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false)
+		// 提交门禁测试执行器（检测题库提交门禁设计）：businessSource 在本块
+		// 之前已构造（businessConnection.Source）。Dispatcher 取下方
+		// HostDependencies 装配的检测 ProbeAdapter 同款组合（同 KeyModel gate
+		// 与熔断 gate，独立实例同语义）；提交前诊断直连不走新的调度语义，
+		// nil 时 probe 亦回退直连。
+		questionTestRunner := modelcheckowner.NewQuestionTestRunner(businessSource.Resolver(), &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}})
+		questionBankAdmin := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true, questionTestRunner)
+		questionBankSelf := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false, questionTestRunner)
 		quality.SetQuestionBankVerifier(questionBankStore)
 		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: businessMode == modelcheckauth.Postgres, OwnerID: j3bConfig.InstanceID}
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {

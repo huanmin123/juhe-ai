@@ -26,32 +26,34 @@ const (
 // QuestionView 是题库对外 JSON 契约（前端并行开发依赖，字段名不得改动）：
 //
 //	{ id, title, questionText, referenceAnswer, keyPoints, status, rejectReason,
-//	  createdBy, createdByName, isBuiltin, createdAt, updatedAt, reviewedAt, reviewedBy }
+//	  createdBy, createdByName, isBuiltin, createdAt, updatedAt, reviewedAt,
+//	  reviewedBy, lastTest }
 //
-// 无权限时的处理约定（本包唯一契约解释）：referenceAnswer 与 keyPoints
-// 选择【省略字段】——referenceAnswer 为必填非空，omitempty 即等价于
-// "无权限"；keyPoints 用 *[]string 区分"无权限省略"与"有权但为空数组
-// （渲染 []）"。rejectReason/reviewedAt 无值渲染 null。reviewedBy（审核
+// 参考答案与评分要点全员可见（题库共享契约）：referenceAnswer 必填非空
+// 恒渲染；keyPoints 恒渲染，未填写时归一为空数组（渲染 []）而非 null。
+// rejectReason/reviewedAt 无值渲染 null。reviewedBy（审核
 // 人系统账户 id）无值或自助面渲染 null，仅管理面透出。createdByName
 // （创建者系统账户显示名）同样仅管理面透出：自助面省略字段，管理面由
 // attachCreatorNames 解析填充，解析失败按请求失败返回。isBuiltin 仅系统
 // 内置题渲染 true（omitempty），自助面同样透出——用户选用时需要知道题
-// 目来源。titleNorm 不进对外契约。
+// 目来源。lastTest 是最近一次通过提交门禁的测试摘要，仅题目带有
+// last_test_json 时渲染（omitempty），双面一致透出。titleNorm 不进对外契约。
 type QuestionView struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	QuestionText    string    `json:"questionText"`
-	ReferenceAnswer string    `json:"referenceAnswer,omitempty"`
-	KeyPoints       *[]string `json:"keyPoints,omitempty"`
-	Status          string    `json:"status"`
-	RejectReason    *string   `json:"rejectReason"`
-	CreatedBy       string    `json:"createdBy"`
-	CreatedByName   string    `json:"createdByName,omitempty"`
-	IsBuiltin       bool      `json:"isBuiltin,omitempty"`
-	CreatedAt       string    `json:"createdAt"`
-	UpdatedAt       string    `json:"updatedAt"`
-	ReviewedAt      *string   `json:"reviewedAt"`
-	ReviewedBy      *string   `json:"reviewedBy"`
+	ID              string                `json:"id"`
+	Title           string                `json:"title"`
+	QuestionText    string                `json:"questionText"`
+	ReferenceAnswer string                `json:"referenceAnswer"`
+	KeyPoints       []string              `json:"keyPoints"`
+	Status          string                `json:"status"`
+	RejectReason    *string               `json:"rejectReason"`
+	CreatedBy       string                `json:"createdBy"`
+	CreatedByName   string                `json:"createdByName,omitempty"`
+	IsBuiltin       bool                  `json:"isBuiltin,omitempty"`
+	CreatedAt       string                `json:"createdAt"`
+	UpdatedAt       string                `json:"updatedAt"`
+	ReviewedAt      *string               `json:"reviewedAt"`
+	ReviewedBy      *string               `json:"reviewedBy"`
+	LastTest        *QuestionLastTestView `json:"lastTest,omitempty"`
 }
 
 // QuestionList 是列表契约：{ items, total, page, pageSize }。
@@ -73,7 +75,7 @@ type OptionsList struct {
 	Items []QuestionOptionView `json:"items"`
 }
 
-// HTTPHandlers 承载题库八个 HTTP 端点（供 Wave2 挂载）：
+// HTTPHandlers 承载题库九个 HTTP 端点（供 Wave2 挂载）：
 //
 //	ServeList    GET    …/question-bank?status=&keyword=&page=&pageSize=
 //	ServeCreate  POST   …/question-bank
@@ -83,31 +85,37 @@ type OptionsList struct {
 //	ServeReview  POST   …/question-bank/{id}/review
 //	ServeOptions GET    …/question-bank/options?keyword=&limit=
 //	ServeByIds   GET    …/question-bank/by-ids?ids=a,b,c
+//	ServeTest    POST   …/question-bank/test
 //
 // 方法与路径由挂载方负责；handler 只认"路径末段 = 题目 id"（review 预先
 // 剥离 /review 后缀），两种挂载形态（ServeMux 通配或前缀委托）都成立，
-// 但 by-ids/options 为字面路径，挂载方须让它们优先于 /{id} 条目路由。
+// 但 by-ids/options/test 为字面路径，挂载方须让它们优先于 /{id} 条目路由。
 // 认证同样由挂载方完成：handler 从 authsys 会话上下文取当前 actor。
 // adminMode=true 的实例（管理面前缀）返回全量并可审核（含驳回下架
 // approved 题目）；false 的实例（自助面前缀）只返回 approved + 本人提交，
-// 且参考答案/要点仅本人题目可见，审核一律 403。写操作接
+// 审核一律 403。参考答案/要点全员可见（题库共享契约，2026-10-11 起，
+// 原仅创建者与管理员可见的限制取消）。写操作接
 // authsys.OperationLogSink 审计。题库是全局共享数据，不做
-// ManagementScope 系统账户过滤。
+// ManagementScope 系统账户过滤。runner 是提交门禁测试执行器（owner
+// 装配注入）；nil 时 ServeTest 返回 503。
 type HTTPHandlers struct {
 	store     *Store
 	audit     authsys.OperationLogSink
 	clock     func() time.Time
 	adminMode bool
+	runner    TestRunner
 }
 
 // NewHTTPHandlers 构造题库 handlers。clock 是显式注入的时钟：当前 JSON
 // 契约不含服务器时间戳（时间一律来自 Store 写入值），该注入点保留给
-// 挂载方统一时钟与后续契约扩展，nil 时回退 time.Now。
-func NewHTTPHandlers(store *Store, audit authsys.OperationLogSink, clock func() time.Time, adminMode bool) *HTTPHandlers {
+// 挂载方统一时钟与后续契约扩展，nil 时回退 time.Now。runner 是同步测试
+// 执行器（owner 侧 BusinessTargetSource + probe 诊断的组合实现），双前缀
+// 实例共用同一 runner。
+func NewHTTPHandlers(store *Store, audit authsys.OperationLogSink, clock func() time.Time, adminMode bool, runner TestRunner) *HTTPHandlers {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &HTTPHandlers{store: store, audit: audit, clock: clock, adminMode: adminMode}
+	return &HTTPHandlers{store: store, audit: audit, clock: clock, adminMode: adminMode, runner: runner}
 }
 
 // ServeList 列出题目。管理员视角返回全部状态并支持 status 筛选；自助
@@ -145,7 +153,7 @@ func (h *HTTPHandlers) ServeList(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]QuestionView, 0, len(items))
 	for _, question := range items {
-		views = append(views, questionView(question, h.canSeeAnswer(question, actor), h.adminMode))
+		views = append(views, questionView(question, h.adminMode))
 	}
 	kernel.WriteOK(w, QuestionList{Items: views, Total: total, Page: page, PageSize: pageSize}, "")
 }
@@ -164,6 +172,7 @@ func (h *HTTPHandlers) ServeCreate(w http.ResponseWriter, r *http.Request) {
 	question, err := h.store.Create(r.Context(), actor, CreateQuestionInput{
 		Title: body.Title, QuestionText: body.QuestionText,
 		ReferenceAnswer: body.ReferenceAnswer, KeyPoints: body.KeyPoints,
+		TestID: body.TestID,
 	})
 	if err != nil {
 		h.writeStoreError(w, err)
@@ -179,12 +188,11 @@ func (h *HTTPHandlers) ServeCreate(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
 		return
 	}
-	kernel.WriteJSON(w, http.StatusCreated, map[string]any{"data": questionView(question, true, h.adminMode)})
+	kernel.WriteJSON(w, http.StatusCreated, map[string]any{"data": questionView(question, h.adminMode)})
 }
 
-// ServeDetail 查看单题：approved 题面全员可读；pending/rejected 题目仅
-// 创建者与管理员可见（其他人一律 404，不泄露存在性）；参考答案/要点仅
-// 创建者与管理员可见。
+// ServeDetail 查看单题：approved 题面与参考答案/要点全员可读；pending/
+// rejected 题目仅创建者与管理员可见（其他人一律 404，不泄露存在性）。
 func (h *HTTPHandlers) ServeDetail(w http.ResponseWriter, r *http.Request) {
 	actor, _, ok := h.requireActor(w, r)
 	if !ok {
@@ -209,7 +217,7 @@ func (h *HTTPHandlers) ServeDetail(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
 		return
 	}
-	kernel.WriteOK(w, questionView(question, h.canSeeAnswer(question, actor), h.adminMode), "")
+	kernel.WriteOK(w, questionView(question, h.adminMode), "")
 }
 
 // ServeUpdate 修改题目（创建者或管理员，仅 pending/rejected）。
@@ -230,6 +238,7 @@ func (h *HTTPHandlers) ServeUpdate(w http.ResponseWriter, r *http.Request) {
 	question, err := h.store.Update(r.Context(), id, actor, h.adminMode, UpdateQuestionInput{
 		Title: body.Title, QuestionText: body.QuestionText,
 		ReferenceAnswer: body.ReferenceAnswer, KeyPoints: body.KeyPoints,
+		TestID: body.TestID,
 	})
 	if err != nil {
 		h.writeStoreError(w, err)
@@ -245,7 +254,7 @@ func (h *HTTPHandlers) ServeUpdate(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
 		return
 	}
-	kernel.WriteOK(w, questionView(question, true, h.adminMode), "")
+	kernel.WriteOK(w, questionView(question, h.adminMode), "")
 }
 
 // ServeDelete 硬删除题目（管理员任意；创建者限本人 pending/rejected）。
@@ -332,7 +341,7 @@ func (h *HTTPHandlers) ServeReview(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusInternalServerError, "解析题库提交者名称失败，请稍后重试")
 		return
 	}
-	kernel.WriteOK(w, questionView(question, true, h.adminMode), "")
+	kernel.WriteOK(w, questionView(question, h.adminMode), "")
 }
 
 // ServeOptions 是选择器专用端点：仅 approved，返回 {items:[{id,title}]}。
@@ -402,6 +411,119 @@ func (h *HTTPHandlers) ServeByIds(w http.ResponseWriter, r *http.Request) {
 	kernel.WriteOK(w, OptionsList{Items: views}, "")
 }
 
+// questionTestTimeout 是单次提交前测试的同步等待上限（两跳诊断：作答 +
+// 裁判，各带 quick 档重试阶梯；ctx 截止为准，防止重试阶梯超出同步预算）。
+const questionTestTimeout = 120 * time.Second
+
+// ServeTest 同步执行一次提交前测试（POST …/question-bank/test，双前缀
+// 共用）：以 actor 身份对指定账户/模型发起单题两跳诊断，结果落
+// model_check_question_tests 留档并返回 {data: Outcome}。上游请求失败是
+// 正常结果（verdict=request_failed 照常落库返回），不是 5xx；runner error
+// 仅表示"无法执行"（账户解析失败等），按 400 透传原始错误文案。
+// runner 未接线返回 503。testId 凭据仅在 Create/Update 提交时消费
+// （FindUsableTest），测试端点本身不限频次。
+func (h *HTTPHandlers) ServeTest(w http.ResponseWriter, r *http.Request) {
+	actor, auth, ok := h.requireActor(w, r)
+	if !ok {
+		return
+	}
+	if h.runner == nil {
+		kernel.WriteError(w, http.StatusServiceUnavailable, "题目测试未完成接线")
+		return
+	}
+	body, ok := decodeTestBody(w, r)
+	if !ok {
+		return
+	}
+	// 复用题目提交的题面/答案/要点校验（上限与要点契约同源）；title 不在
+	// 测试契约内，传占位值只为复用其余字段的归一化校验逻辑。
+	_, questionText, referenceAnswer, keyPoints, err := normalizeQuestionFields(
+		"test", body.QuestionText, body.ReferenceAnswer, body.KeyPoints)
+	if err != nil {
+		h.writeStoreError(w, err)
+		return
+	}
+	accountID := strings.TrimSpace(body.AccountID)
+	if accountID == "" {
+		kernel.WriteBadRequest(w, "测试账户不能为空")
+		return
+	}
+	model := strings.TrimSpace(body.Model)
+	if model == "" {
+		kernel.WriteBadRequest(w, "测试模型不能为空")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), questionTestTimeout)
+	defer cancel()
+	result, err := h.runner.TestQuestion(ctx, TestQuestionInput{
+		SystemAccountID: actor.SystemAccountID, AccountID: accountID, Model: model,
+		QuestionText: questionText, ReferenceAnswer: referenceAnswer, KeyPoints: keyPoints,
+	})
+	if err != nil {
+		// 透传原始错误文案（账户解析失败等"无法执行"错误）。加中文前缀
+		// 既是语义标注，也满足 kernel 错误本地化契约（无 CJK 的 400 文案
+		// 会被替换为状态码默认文案，原始细节丢失）。
+		kernel.WriteBadRequest(w, "题目测试执行失败："+err.Error())
+		return
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	testedAt := h.clock().UTC()
+	testID := newTestRecordID()
+	if err := h.store.InsertTestRecord(r.Context(), TestRecord{
+		ID: testID, CreatedBy: actor.SystemAccountID,
+		AccountID: accountID, AccountName: result.AccountName, Model: model,
+		DraftHash: DraftHash(questionText, referenceAnswer, keyPoints),
+		Verdict:   result.Verdict, Alignment: result.Alignment,
+		DiagnosisJSON: string(encoded), HTTPStatus: result.HTTPStatus,
+		LatencyMs: result.LatencyMs, CreatedAt: testedAt.Format(time.RFC3339Nano),
+	}); err != nil {
+		h.writeStoreError(w, err)
+		return
+	}
+	h.recordAudit(auth, r, "test", "model_check_question_bank.test", testID, "",
+		"提交前测试："+"账户 "+accountID+" / 模型 "+model, []authsys.OperationLogChange{
+			{Field: "verdict", Label: "测试结论", After: result.Verdict},
+			{Field: "accountId", Label: "测试账户", After: accountID},
+			{Field: "model", Label: "测试模型", After: model},
+		})
+	kernel.WriteOK(w, TestQuestionOutcome{
+		TestID: testID, TestQuestionResult: result,
+		AccountID: accountID, AccountName: result.AccountName, Model: model, TestedAt: testedAt,
+	}, "")
+}
+
+// testBody 是提交前测试入参契约：{ questionText, referenceAnswer,
+// keyPoints?, accountId, model }（title 不在测试契约内）。
+type testBody struct {
+	QuestionText    string   `json:"questionText"`
+	ReferenceAnswer string   `json:"referenceAnswer"`
+	KeyPoints       []string `json:"keyPoints,omitempty"`
+	AccountID       string   `json:"accountId"`
+	Model           string   `json:"model"`
+}
+
+// decodeTestBody 照 decodeQuestionBody 惯例：单个 JSON 对象、拒绝未知
+// 字段、512KB 上限；无效一律 400"题目测试参数无效"。
+func decodeTestBody(w http.ResponseWriter, r *http.Request) (testBody, bool) {
+	var body testBody
+	decoder := json.NewDecoder(io.LimitReader(r.Body, questionBankMaxBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		kernel.WriteBadRequest(w, "题目测试参数无效")
+		return testBody{}, false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		kernel.WriteBadRequest(w, "题目测试参数无效")
+		return testBody{}, false
+	}
+	return body, true
+}
+
 func (h *HTTPHandlers) requireActor(w http.ResponseWriter, r *http.Request) (Actor, *authsys.AuthContext, bool) {
 	auth := authsys.AuthContextFrom(r)
 	if auth == nil || strings.TrimSpace(auth.SystemAccountID) == "" {
@@ -409,11 +531,6 @@ func (h *HTTPHandlers) requireActor(w http.ResponseWriter, r *http.Request) (Act
 		return Actor{}, nil, false
 	}
 	return Actor{SystemAccountID: strings.TrimSpace(auth.SystemAccountID)}, auth, true
-}
-
-// canSeeAnswer 决定参考答案/要点是否进入响应：管理员或题目创建者可见。
-func (h *HTTPHandlers) canSeeAnswer(question Question, actor Actor) bool {
-	return h.adminMode || question.CreatedBy == actor.SystemAccountID
 }
 
 // attachCreatorNames 在管理面把题目的 created_by 批量解析为系统账户显示
@@ -467,7 +584,28 @@ func (h *HTTPHandlers) writeStoreError(w http.ResponseWriter, err error) {
 		kernel.WriteError(w, status.Status, status.Message)
 		return
 	}
+	if message, ok := testGateMessage(err); ok {
+		kernel.WriteError(w, http.StatusBadRequest, message)
+		return
+	}
 	kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+}
+
+// testGateMessage 把提交门禁哨兵错误映射为 400 中文文案（四类拒绝：
+// 不存在/未通过/内容不一致/已过期，语义见 errors.go）。
+func testGateMessage(err error) (string, bool) {
+	switch {
+	case errors.Is(err, ErrTestNotFound):
+		return ErrTestNotFound.Error(), true
+	case errors.Is(err, ErrTestNotPassed):
+		return ErrTestNotPassed.Error(), true
+	case errors.Is(err, ErrTestDraftMismatch):
+		return ErrTestDraftMismatch.Error(), true
+	case errors.Is(err, ErrTestExpired):
+		return ErrTestExpired.Error(), true
+	default:
+		return "", false
+	}
 }
 
 func (h *HTTPHandlers) recordAudit(auth *authsys.AuthContext, r *http.Request, action, operationKey, resourceID, resourceTitle, summary string, changes []authsys.OperationLogChange) {
@@ -498,11 +636,11 @@ func (h *HTTPHandlers) recordAudit(auth *authsys.AuthContext, r *http.Request, a
 	}, r)
 }
 
-// questionView 按权限渲染对外契约；includeAnswer=false 时
-// referenceAnswer/keyPoints 省略字段（见 QuestionView 契约注释）；
-// includeReviewer=true 且已落审核人时透出 reviewedBy、已解析时透出
-// createdByName——两者仅管理面透出，自助面调用一律传 false。
-func questionView(question Question, includeAnswer, includeReviewer bool) QuestionView {
+// questionView 渲染对外契约；参考答案/要点全员可见恒渲染（keyPoints nil
+// 归一为空数组，见 QuestionView 契约注释）；includeReviewer=true 且已落
+// 审核人时透出 reviewedBy、已解析时透出 createdByName——两者仅管理面
+// 透出，自助面调用一律传 false。
+func questionView(question Question, includeReviewer bool) QuestionView {
 	view := QuestionView{
 		ID:           question.ID,
 		Title:        question.Title,
@@ -528,14 +666,13 @@ func questionView(question Question, includeAnswer, includeReviewer bool) Questi
 			view.ReviewedBy = &reviewedBy
 		}
 	}
-	if includeAnswer {
-		view.ReferenceAnswer = question.ReferenceAnswer
-		keyPoints := question.KeyPoints
-		if keyPoints == nil {
-			keyPoints = []string{}
-		}
-		view.KeyPoints = &keyPoints
+	view.ReferenceAnswer = question.ReferenceAnswer
+	keyPoints := question.KeyPoints
+	if keyPoints == nil {
+		keyPoints = []string{}
 	}
+	view.KeyPoints = keyPoints
+	view.LastTest = question.LastTest
 	return view
 }
 
@@ -556,12 +693,15 @@ func lastPathSegment(path string) string {
 }
 
 // questionBody 是 Create/Update 共用入参契约：
-// { title, questionText, referenceAnswer, keyPoints? }。
+// { title, questionText, referenceAnswer, keyPoints?, testId }。testId 是
+// 提交门禁凭据（POST …/question-bank/test 的返回值），缺失时由 store
+// 按 400 语义拒绝。
 type questionBody struct {
 	Title           string   `json:"title"`
 	QuestionText    string   `json:"questionText"`
 	ReferenceAnswer string   `json:"referenceAnswer"`
 	KeyPoints       []string `json:"keyPoints,omitempty"`
+	TestID          string   `json:"testId"`
 }
 
 // decodeQuestionBody 照 modelcheckowner decodeOwnerJSON 惯例：单个 JSON

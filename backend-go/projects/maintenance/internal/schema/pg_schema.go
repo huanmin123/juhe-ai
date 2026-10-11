@@ -54,6 +54,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -126,7 +127,111 @@ func EnsurePostgres(ctx context.Context, db *sql.DB) (PGResult, error) {
 			return PGResult{}, fmt.Errorf("postgres schema statement %d (%s/%s): %w", i, statement.SchemaName, statement.Source, err)
 		}
 	}
+	// AI 账户能力域拆分（PLAN-20261011T141004000Z）：ADD COLUMN IF NOT EXISTS
+	// 只保证列存在，不以命中替代形状检查——全部语句执行完后对既存列做四值
+	// 形状校验（类型/NOT NULL/DEFAULT/CHECK），不符原样报错停止。
+	if err := VerifyPostgresBusinessCapabilityDomainShape(ctx, db); err != nil {
+		return PGResult{}, fmt.Errorf("verify accounts.capability_domain shape: %w", err)
+	}
 	return PGResult{SchemaCount: len(createdSchemas), StatementCount: len(postgresSchemaStatements)}, nil
+}
+
+// EnsurePostgresBusinessCapabilityDomainColumn 把 accounts.capability_domain
+// 补齐到既有 PostgreSQL 业务库并做四值形状校验，供能力域迁移命令使用：缺列
+// 则执行与 schema 语句清单同文的 ADD COLUMN IF NOT EXISTS（存量行落
+// DEFAULT 'chat' 满足列级 CHECK）；列已存在时仅做形状校验。只承载这一列，
+// 不执行其余 schema 语句（迁移窗口内不改函数/索引/触发器定义）。调用面是
+// maintenance 一次性命令，不在请求路径反复执行（BUG-0307）。
+func EnsurePostgresBusinessCapabilityDomainColumn(ctx context.Context, db *sql.DB) error {
+	const alter = `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+	if _, err := db.ExecContext(ctx, alter); err != nil {
+		return fmt.Errorf("add accounts.capability_domain: %w", err)
+	}
+	return VerifyPostgresBusinessCapabilityDomainShape(ctx, db)
+}
+
+// VerifyPostgresBusinessCapabilityDomainShape 校验既存
+// "juhe_business"."accounts".capability_domain 列的四值形状。列不存在返回
+// nil（调用方决定缺列是否可接受：EnsurePostgres 的 ALTER 已先行补列，只有
+// 显式 ALTER 失败才会走到这里缺列）。任何一项形状不符都原样报错停止，不做
+// 静默修补。
+func VerifyPostgresBusinessCapabilityDomainShape(ctx context.Context, db *sql.DB) error {
+	const query = `SELECT data_type, is_nullable, column_default
+		FROM information_schema.columns
+		WHERE table_schema = 'juhe_business' AND table_name = 'accounts' AND column_name = 'capability_domain'`
+	var dataType, isNullable string
+	var columnDefault sql.NullString
+	err := db.QueryRowContext(ctx, query).Scan(&dataType, &isNullable, &columnDefault)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if dataType != "text" {
+		return fmt.Errorf("accounts.capability_domain 形状不符：列类型为 %q，期望 text", dataType)
+	}
+	if isNullable != "NO" {
+		return fmt.Errorf("accounts.capability_domain 形状不符：列可空，期望 NOT NULL")
+	}
+	// PostgreSQL 对 text 列 DEFAULT 的规范化渲染是 '<literal>::text'（实测 PG
+	// information_schema 不产出 ::character varying 后缀；gateway/jobs 启动侧
+	// 同口径按 ::text 前缀判据）。
+	if !columnDefault.Valid || !strings.HasPrefix(columnDefault.String, "'chat'::text") {
+		return fmt.Errorf("accounts.capability_domain 形状不符：默认值为 %s，期望 'chat'::text", pgShapeDefaultText(columnDefault))
+	}
+	const checkQuery = `SELECT cc.check_clause
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.check_constraints cc
+		  ON tc.constraint_schema = cc.constraint_schema AND tc.constraint_name = cc.constraint_name
+		WHERE tc.table_schema = 'juhe_business' AND tc.table_name = 'accounts'
+		  AND tc.constraint_type = 'CHECK' AND cc.check_clause LIKE '%capability_domain%'`
+	rows, err := db.QueryContext(ctx, checkQuery)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	clauses := []string{}
+	for rows.Next() {
+		var clause string
+		if err := rows.Scan(&clause); err != nil {
+			return err
+		}
+		clauses = append(clauses, clause)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// 归一化后的 CHECK 文本可能把 IN 重写为 = ANY (ARRAY[...])，不锚定具体
+	// 文法；判据是四值词表与列名同时出现在同一 CHECK 子句中，且四值齐全。
+	for _, clause := range clauses {
+		if pgCapabilityDomainCheckComplete(clause) {
+			return nil
+		}
+	}
+	if len(clauses) == 0 {
+		return fmt.Errorf("accounts.capability_domain 形状不符：未找到该列的 CHECK 约束")
+	}
+	return fmt.Errorf("accounts.capability_domain 形状不符：CHECK 约束缺少四值枚举（chat/video/audio/image），实际：%s", strings.Join(clauses, " | "))
+}
+
+// pgCapabilityDomainCheckComplete 判定一段归一化 CHECK 文本是否覆盖
+// capability_domain 的四值枚举。
+func pgCapabilityDomainCheckComplete(clause string) bool {
+	for _, value := range []string{"chat", "video", "audio", "image"} {
+		if !strings.Contains(clause, "'"+value+"'") {
+			return false
+		}
+	}
+	return strings.Contains(clause, "capability_domain")
+}
+
+// pgShapeDefaultText renders an information_schema column_default for error messages.
+func pgShapeDefaultText(dflt sql.NullString) string {
+	if !dflt.Valid {
+		return "NULL（无默认值）"
+	}
+	return dflt.String
 }
 
 // quotePGIdentifier mirrors quoteIdentifier in postgres-schema.ts.

@@ -115,11 +115,15 @@ func parseSQLiteStoragePaths(raw string) (sqliteStoragePaths, error) {
 
 // storageBootstrapReport is the JSON result printed by both commands.
 type storageBootstrapReport struct {
-	Driver    string                    `json:"driver"`
-	EnsureRan bool                      `json:"ensureRan"`
-	SeedRan   bool                      `json:"seedRan"`
-	SQLite    *storageBootstrapSQLite   `json:"sqlite,omitempty"`
-	Postgres  *storageBootstrapPostgres `json:"postgres,omitempty"`
+	Driver    string `json:"driver"`
+	EnsureRan bool   `json:"ensureRan"`
+	SeedRan   bool   `json:"seedRan"`
+	// PendingBackfillTables 是 ensure 后 backfill_progress 中 status <> 'done'
+	// 的表名清单（成功成本历史回填治理：ensure 不自动迁移，仅在结果摘要
+	// 提示待回填表；marker 表不存在或全部 done 时缺省不出现，见计划 §3.2）。
+	PendingBackfillTables []string                  `json:"pendingBackfillTables,omitempty"`
+	SQLite                *storageBootstrapSQLite   `json:"sqlite,omitempty"`
+	Postgres              *storageBootstrapPostgres `json:"postgres,omitempty"`
 }
 
 type storageBootstrapSQLite struct {
@@ -173,6 +177,15 @@ func runStorageBootstrap(ensure, seed bool, driver, paths, dsn, secret string) i
 				fmt.Fprintf(os.Stderr, "sqlite ensure-schema 失败：%v\n", err)
 				return 1
 			}
+			// 成功成本历史回填治理（计划 §3.2）：ensure 不自动迁移，仅探测
+			// stats 库的回填待办并在结果摘要提示；marker 表不存在（未跑过
+			// ensure 的库）或刚建表为空均静默，探测失败保留原始错误。
+			pending, _, pendingErr := pendingBackfillTablesSQLite(context.Background(), parsed.Stats)
+			if pendingErr != nil {
+				fmt.Fprintf(os.Stderr, "sqlite ensure-schema 后探测回填待办失败：%v\n", pendingErr)
+				return 1
+			}
+			report.PendingBackfillTables = pending
 		}
 		if seed {
 			seedResult, seedErr := seedSQLiteBusiness(context.Background(), parsed, secret)
@@ -202,6 +215,15 @@ func runStorageBootstrap(ensure, seed bool, driver, paths, dsn, secret string) i
 				return 1
 			}
 			report.Postgres.Schema = &schemaResult
+			// 成功成本历史回填治理（计划 §3.2）：ensure 不自动迁移，仅探测
+			// juhe_stats 的回填待办并在结果摘要提示；marker 表不存在（新建
+			// 库刚建表为空）或全部 done 均静默，探测失败保留原始错误。
+			pending, _, pendingErr := pendingBackfillTables(context.Background(), db, backfillDialect{postgres: true})
+			if pendingErr != nil {
+				fmt.Fprintf(os.Stderr, "postgres ensure-schema 后探测回填待办失败：%v\n", pendingErr)
+				return 1
+			}
+			report.PendingBackfillTables = pending
 		}
 		if seed {
 			seedResult, seedErr := schema.SeedPostgresDefaults(context.Background(), db, schema.SeedOptions{Secret: seedSecretValue(secret)})
@@ -211,6 +233,11 @@ func runStorageBootstrap(ensure, seed bool, driver, paths, dsn, secret string) i
 			}
 			report.Postgres.Seed = &seedResult
 		}
+	}
+	// 结果摘要提示（计划 §3.2 原文口径）：仅在确有非 done marker 时输出。
+	if len(report.PendingBackfillTables) > 0 {
+		fmt.Fprintf(os.Stderr, "成功成本历史回填提示：存在待回填表（%s），请在维护窗口执行 --apply-success-cost-backfill。\n",
+			strings.Join(report.PendingBackfillTables, "、"))
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode storage bootstrap report: %v\n", err)

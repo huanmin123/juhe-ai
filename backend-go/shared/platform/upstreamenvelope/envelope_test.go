@@ -488,6 +488,100 @@ func TestBuildURLVariantPathRules(t *testing.T) {
 	}
 }
 
+// TestBuildGLMBaseFullChainGolden 覆盖 GLM 三种 base 形态经 Build 全链路的
+// 最终 URL（§9.2-5，期望值与 TestBuildURLVariantPathRules 的 URL 层直测同源）：
+// 官方版本根（/api/paas/v4 等）剥请求 /v1，代理 /v1 根与空根保留请求 /v1；
+// 覆盖 C 形态（普通 API Key + GLM profile）与 B 形态
+// （AdapterOpenAICodexCompatibility：无固定上游，URL 走账户 base + 档案路径
+// 规约）各至少一组。
+func TestBuildGLMBaseFullChainGolden(t *testing.T) {
+	chatBody := []BodyField{
+		{Key: "model", Value: "glm-probe"},
+		{Key: "messages", Value: []map[string]any{{"role": "user", "content": "接口连通性自动测试"}}},
+		{Key: "stream", Value: false},
+	}
+	cases := []struct {
+		name    string
+		spec    Spec
+		wantURL string
+	}{
+		{
+			name: "C 形态 GLM 官方版本根剥请求 /v1",
+			spec: Spec{
+				BaseURL: "https://open.bigmodel.example/api/paas/v4", ProtocolProfileID: profileGLMGeneralOpenAI,
+				EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken},
+				Budget: BudgetBounded(DefaultProbeOutputTokens), BodyFields: chatBody,
+			},
+			wantURL: "https://open.bigmodel.example/api/paas/v4/chat/completions",
+		},
+		{
+			name: "C 形态 GLM 代理 /v1 根保留请求 /v1",
+			spec: Spec{
+				BaseURL: "https://proxy.example.com/v1", ProtocolProfileID: profileGLMCodingOpenAI,
+				EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken},
+				Budget: BudgetBounded(DefaultProbeOutputTokens), BodyFields: chatBody,
+			},
+			wantURL: "https://proxy.example.com/v1/chat/completions",
+		},
+		{
+			name: "C 形态 GLM 空根保留请求 /v1",
+			spec: Spec{
+				BaseURL: "https://proxy.example.com", ProtocolProfileID: profileGLMGeneralOpenAI,
+				EndpointMode: ModeChatJSON, Auth: Auth{Strategy: AuthBearer, Token: testBearerToken},
+				Budget: BudgetBounded(DefaultProbeOutputTokens), BodyFields: chatBody,
+			},
+			wantURL: "https://proxy.example.com/v1/chat/completions",
+		},
+		{
+			name: "B 形态 CodexCompatibility 官方版本根剥请求 /v1",
+			spec: Spec{
+				BaseURL: "https://open.bigmodel.example/api/paas/v4", ProtocolProfileID: profileGLMGeneralOpenAI,
+				EndpointMode: ModeResponsesJSON, Adapter: AdapterOpenAICodexCompatibility,
+				CodexIdentity: fixedCodexIdentity(),
+				Auth:          Auth{Strategy: AuthBearer, Token: testBearerToken},
+				Budget:        BudgetBounded(DefaultProbeOutputTokens),
+				BodyFields:    []BodyField{{Key: "model", Value: "gpt-5.4"}, {Key: "input", Value: "ok"}, {Key: "stream", Value: false}},
+			},
+			wantURL: "https://open.bigmodel.example/api/paas/v4/responses",
+		},
+		{
+			name: "B 形态 CodexCompatibility 代理 /v1 根保留请求 /v1",
+			spec: Spec{
+				BaseURL: "https://proxy.example.com/v1", ProtocolProfileID: profileGLMCodingOpenAI,
+				EndpointMode: ModeResponsesJSON, Adapter: AdapterOpenAICodexCompatibility,
+				CodexIdentity: fixedCodexIdentity(),
+				Auth:          Auth{Strategy: AuthBearer, Token: testBearerToken},
+				Budget:        BudgetBounded(DefaultProbeOutputTokens),
+				BodyFields:    []BodyField{{Key: "model", Value: "gpt-5.4"}, {Key: "input", Value: "ok"}, {Key: "stream", Value: false}},
+			},
+			wantURL: "https://proxy.example.com/v1/responses",
+		},
+		{
+			name: "B 形态 CodexCompatibility 空根保留请求 /v1",
+			spec: Spec{
+				BaseURL: "https://proxy.example.com", ProtocolProfileID: profileGLMGeneralOpenAI,
+				EndpointMode: ModeResponsesJSON, Adapter: AdapterOpenAICodexCompatibility,
+				CodexIdentity: fixedCodexIdentity(),
+				Auth:          Auth{Strategy: AuthBearer, Token: testBearerToken},
+				Budget:        BudgetBounded(DefaultProbeOutputTokens),
+				BodyFields:    []BodyField{{Key: "model", Value: "gpt-5.4"}, {Key: "input", Value: "ok"}, {Key: "stream", Value: false}},
+			},
+			wantURL: "https://proxy.example.com/v1/responses",
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			request, err := Build(context.Background(), item.spec)
+			if err != nil {
+				t.Fatalf("Build 失败: %v", err)
+			}
+			if got := request.URL.String(); got != item.wantURL {
+				t.Fatalf("URL = %q，期望 %q", got, item.wantURL)
+			}
+		})
+	}
+}
+
 // TestBuildAuthStrategies 断言四类认证策略的头形态与错误路径；凭据值由
 // 调用方传入，包不持有。
 func TestBuildAuthStrategies(t *testing.T) {

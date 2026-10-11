@@ -5,6 +5,7 @@ import type {
   ModelCheckLevel,
   ModelCheckOption,
   ModelCheckQuestionBankItem,
+  ModelCheckQuestionBankTestVerdict,
   ModelCheckQuestionStatus,
   ModelCheckQuizItem,
   ModelCheckQuizItemVerdict,
@@ -179,6 +180,28 @@ export function quizVerdictColor(value: ModelCheckQuizItemVerdict): string {
   if (value === 'passed') return 'green'
   if (value === 'failed') return 'red'
   return 'default'
+}
+
+// 题库可用性测试 verdict 的展示文案：颜色只作辅助语义，四态文案始终保留。
+export function questionTestVerdictText(value: ModelCheckQuestionBankTestVerdict): string {
+  if (value === 'pass') return '通过'
+  if (value === 'fail') return '未通过'
+  if (value === 'invalid') return '无法判定'
+  return '请求失败'
+}
+
+// 取值方式与 quizVerdictColor 保持一致：喂 a-tag :color 的 AntD 预设/状态色字面量。
+export function questionTestVerdictColor(value: ModelCheckQuestionBankTestVerdict): string {
+  if (value === 'pass') return 'green'
+  if (value === 'fail') return 'red'
+  if (value === 'invalid') return 'default'
+  return 'warning'
+}
+
+// 题库提交门禁的内容指纹：题面与参考答案按 trim 归一，评分要点按原顺序参与。
+// 与可用性测试通过时的指纹一致才允许提交；标题不参与（不影响判题）。
+export function questionDraftKey(questionText: string, referenceAnswer: string, keyPoints: readonly string[]): string {
+  return JSON.stringify([questionText.trim(), referenceAnswer.trim(), [...keyPoints]])
 }
 
 export function modelCheckQuizSummary(resultSummary: Record<string, unknown> | undefined): ModelCheckQuizSummary | undefined {

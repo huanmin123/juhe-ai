@@ -353,41 +353,10 @@ func TestW7COutputChallengeRandomization(t *testing.T) {
 	}
 }
 
+// TestW7CProtocolPayloadBuilders 覆盖保留的协议路径工具（原 payload builder
+// 随 W4 接线删除：body 编码归信封 Build，出站形状矩阵见
+// w4_envelope_final_wiring_test.go）。
 func TestW7CProtocolPayloadBuilders(t *testing.T) {
-	responses, err := buildOpenAIResponsesPayload("gpt-test", "prompt", true, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(responses, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded["store"] != false || decoded["model"] != "gpt-test" || decoded["max_output_tokens"] != float64(outputTokenLimit) {
-		t.Fatalf("responses payload: %s", responses)
-	}
-	// Key order matches the Node literal.
-	if !strings.HasPrefix(string(responses), `{"model":`) {
-		t.Fatalf("responses key order: %s", responses)
-	}
-	nonOAuth, err := buildOpenAIResponsesPayload("m", "p", false, true)
-	if err != nil || strings.Contains(string(nonOAuth), `"store"`) {
-		t.Fatalf("non-oauth responses payload: %s", nonOAuth)
-	}
-
-	images, err := buildImagesPayload("img-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Image prompt keeps the historical prefix and gains a 3-6 digit random
-	// suffix (fingerprint rotation); image verification ignores prompt text.
-	if !regexp.MustCompile(`"prompt":"Solid black\. \d{3,6}"`).MatchString(string(images)) {
-		t.Fatalf("images payload prompt: %s", images)
-	}
-	gemini, err := buildGeminiGenerateContentPayload("p")
-	if err != nil || !strings.Contains(string(gemini), `"generationConfig"`) {
-		t.Fatalf("gemini payload: %s %v", gemini, err)
-	}
-
 	// geminiModelPath strips one case-insensitive models/ prefix, falls back
 	// to gemini-pro and escapes the remainder like encodeURIComponent.
 	if got := geminiModelPath("models/gemini-2.5"); got != "models/gemini-2.5" {

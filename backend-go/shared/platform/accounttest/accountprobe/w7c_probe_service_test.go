@@ -2,11 +2,11 @@ package accountprobe
 
 // w7c service-level probe coverage: staged escalation, pool diagnostics,
 // manual diagnostics dispatch, cancellation and slot exhaustion, transport
-// failure classification, and request construction for every endpoint mode.
+// failure classification, and request helpers（原各形态请求构造断言随 W4
+// 接线移至 w4_envelope_final_wiring_test.go）。
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -109,7 +109,7 @@ func TestW7CManualDiagnosticsDispatch(t *testing.T) {
 	// via SelectedAPIKey（Node 等价：runAccountApiKeyPoolTestIfNeeded 对非
 	// api_key 账户返回 undefined，回落 testOpenAIAccountWithDiagnosticRetries，
 	// 凭据由网关链路按账户类型解析为 OAuth access token，不要求 API Key）。
-	// 非 codex profile 避免 buildUpstreamURL 重定向到 chatgpt.com。
+	// 非 codex/gpt 档案,保持普通探针形态(不进入 A 形态固定上游)。
 	oauthView := probeView(server.URL)
 	oauthView.Type = "oauth"
 	oauthView.ProviderProtocolProfileID = ""
@@ -304,84 +304,11 @@ type w7cTimeoutError struct{}
 func (w7cTimeoutError) Error() string { return "i/o timeout" }
 func (w7cTimeoutError) Timeout() bool { return true }
 
-func TestW7CRequestBuildersPerMode(t *testing.T) {
-	view := probeView("https://upstream.example.com")
-	challenge := CreateOutputChallenge()
-
-	images, err := buildTestRequest(view, ModeImagesJSON, "img-1", challenge)
-	if err != nil || images.path != "/v1/images/generations" {
-		t.Fatalf("images request: %v %v", images, err)
-	}
-	anthropic, err := buildTestRequest(view, ModeMessagesJSON, "claude-1", challenge)
-	if err != nil || anthropic.path != "/v1/messages" {
-		t.Fatalf("anthropic request: %v %v", anthropic, err)
-	}
-	if anthropic.headers[clientProfileHeader] != "claude_code" || anthropic.headers["x-claude-code-session-id"] == "" {
-		t.Fatalf("anthropic headers: %v", anthropic.headers)
-	}
-	interactions, err := buildTestRequest(view, ModeInteractionsSSE, "gemini-2", challenge)
-	if err != nil || interactions.path != "/v1beta/interactions" || interactions.headers["accept"] != "text/event-stream" {
-		t.Fatalf("interactions request: %+v %v", interactions, err)
-	}
-	geminiSSE, err := buildTestRequest(view, ModeGenerateContentSSE, "gemini-2", challenge)
-	if err != nil || geminiSSE.path != "/v1beta/models/gemini-2:streamGenerateContent?alt=sse" {
-		t.Fatalf("gemini sse request: %+v %v", geminiSSE, err)
-	}
-	geminiJSON, err := buildTestRequest(view, ModeGenerateContentJSON, "models/gemini-2", challenge)
-	if err != nil || geminiJSON.path != "/v1beta/models/gemini-2:generateContent" {
-		t.Fatalf("gemini json request: %+v %v", geminiJSON, err)
-	}
-
-	// codex_responses compatibility layer rewrites the responses payload.
-	codex := probeView("https://upstream.example.com")
-	codex.ClientCompatibility = "codex_responses"
-	codexRequest, err := buildTestRequest(codex, ModeResponsesJSON, "gpt-5", challenge)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(codexRequest.body, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload["store"] != false || payload["parallel_tool_calls"] != false {
-		t.Fatalf("codex payload: %s", codexRequest.body)
-	}
-	if _, ok := payload["client_metadata"]; !ok {
-		t.Fatal("codex metadata missing")
-	}
-	if _, err := applyCodexCompatibilityPayload([]byte("not-json")); err == nil {
-		t.Fatal("codex payload must reject invalid JSON")
-	}
-
-	// OAuth GPT profile roots the request at the Codex backend.
-	oauthView := probeView("https://ignored.example.com")
-	oauthView.Type = "oauth"
-	oauthView.ProviderProtocolProfileID = "profile_gpt_openai_v1"
-	oauthRequest, err := buildTestRequest(oauthView, ModeResponsesJSON, "gpt-5", challenge)
-	if err != nil || !strings.HasPrefix(oauthRequest.path, "/responses") {
-		t.Fatalf("oauth responses path: %q %v", oauthRequest.path, err)
-	}
-
-	// Gemini Code Assist wraps the request and needs a project id.
-	codeAssist := probeView("https://upstream.example.com")
-	codeAssist.Type = "google_oauth"
-	codeAssist.Credentials = map[string]any{"oauth_type": "code_assist"}
-	if _, err := buildTestRequest(codeAssist, ModeGenerateContentSSE, "gemini-2", challenge); err == nil || !strings.Contains(err.Error(), "project_id") {
-		t.Fatalf("missing project id: %v", err)
-	}
-	codeAssist.Credentials["project_id"] = "proj-1"
-	wrapped, err := buildTestRequest(codeAssist, ModeGenerateContentSSE, "gemini-2", challenge)
-	if err != nil || wrapped.path != "/v1internal:streamGenerateContent?alt=sse" {
-		t.Fatalf("code assist request: %+v %v", wrapped, err)
-	}
-	var envelope map[string]any
-	if err := json.Unmarshal(wrapped.body, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope["project"] != "proj-1" || envelope["model"] != "gemini-2" {
-		t.Fatalf("code assist envelope: %s", wrapped.body)
-	}
-
+// TestW7CRequestHelpers 保留原 TestW7CRequestBuildersPerMode 中与最终请求
+// 形状无关的工具断言（resolveTestModel 守卫、路由族映射、值工具）；各形态
+// 出站形状随 W4 接线移至 w4_envelope_final_wiring_test.go 矩阵，已删除的
+// payload builder / buildUpstreamURL / 路径后缀工具不再断言。
+func TestW7CRequestHelpers(t *testing.T) {
 	// resolveTestModel guards.
 	if _, err := resolveTestModel(&View{}, ""); err == nil || !strings.Contains(err.Error(), "未配置") {
 		t.Fatalf("missing model: %v", err)
@@ -420,27 +347,6 @@ func TestW7CRequestBuildersPerMode(t *testing.T) {
 		if got := endpointFamilyForProbeMode(mode); got != family {
 			t.Fatalf("endpointFamilyForProbeMode(%s) = %s", mode, got)
 		}
-	}
-
-	// URL suffix helpers.
-	if got := openAIPathSuffix("/v1/chat/completions?x=1"); got != "/chat/completions?x=1" {
-		t.Fatalf("v1 suffix strip: %q", got)
-	}
-	if got := openAIPathSuffix("chat"); got != "/chat" {
-		t.Fatalf("slash insertion: %q", got)
-	}
-	if got := openAIPathSuffix("/v1"); got != "" {
-		t.Fatalf("bare v1: %q", got)
-	}
-	// Only the /v1beta segment is stripped; the leading slash is kept.
-	if got := stripV1BetaPrefix("/v1beta/models/x"); got != "/models/x" {
-		t.Fatalf("v1beta strip: %q", got)
-	}
-	if got := stripV1BetaPrefix("/models/x"); got != "/models/x" {
-		t.Fatalf("v1beta passthrough: %q", got)
-	}
-	if got := stripTrailingSlashPath("/x?y=1"); got != "/x" {
-		t.Fatalf("query strip: %q", got)
 	}
 
 	// credentialText trims and rejects non-strings.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 )
@@ -33,13 +34,43 @@ func (s *fakeAuditSink) recorded() []authsys.OperationLogEntry {
 	return append([]authsys.OperationLogEntry{}, s.entries...)
 }
 
+// fakeTestRunner 是 TestRunner 端口的测试替身（Mock 优先）：记录入参并
+// 返回预置结果或错误。
+type fakeTestRunner struct {
+	mu     sync.Mutex
+	inputs []TestQuestionInput
+	result TestQuestionResult
+	err    error
+}
+
+func (r *fakeTestRunner) TestQuestion(ctx context.Context, input TestQuestionInput) (TestQuestionResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inputs = append(r.inputs, input)
+	if _, ok := ctx.Deadline(); !ok {
+		panic("TestQuestion 必须在带截止时间的 ctx 下调用")
+	}
+	if r.err != nil {
+		return TestQuestionResult{}, r.err
+	}
+	return r.result, nil
+}
+
+func (r *fakeTestRunner) recorded() []TestQuestionInput {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]TestQuestionInput{}, r.inputs...)
+}
+
 // handlerHarness 是 handlers 测试基建：临时 SQLite store + 管理/自助两个
-// handler 实例 + 假审计 sink。
+// handler 实例 + 假审计 sink + 带假 runner 的自助实例（ServeTest 用）。
 type handlerHarness struct {
 	store      *Store
 	db         *sql.DB
 	admin      *HTTPHandlers
 	self       *HTTPHandlers
+	withRunner *HTTPHandlers
+	runner     *fakeTestRunner
 	sink       *fakeAuditSink
 	adminActor *authsys.AuthContext
 }
@@ -49,11 +80,14 @@ func newHandlerHarness(t *testing.T) *handlerHarness {
 	store, db := newTestStore(t)
 	sink := &fakeAuditSink{}
 	adminActor := &authsys.AuthContext{SystemAccountID: "sys-admin", Username: "admin", DisplayName: "管理员", Role: "super_admin"}
+	runner := &fakeTestRunner{}
 	return &handlerHarness{
 		store:      store,
 		db:         db,
-		admin:      NewHTTPHandlers(store, sink, nil, true),
-		self:       NewHTTPHandlers(store, sink, nil, false),
+		admin:      NewHTTPHandlers(store, sink, nil, true, nil),
+		self:       NewHTTPHandlers(store, sink, nil, false, nil),
+		withRunner: NewHTTPHandlers(store, sink, nil, false, runner),
+		runner:     runner,
 		sink:       sink,
 		adminActor: adminActor,
 	}
@@ -86,6 +120,15 @@ func dispatch(handler *HTTPHandlers, w http.ResponseWriter, r *http.Request) {
 		default:
 			http.NotFound(w, r)
 		}
+		return
+	}
+	// 提交门禁测试端点：字面路径 test，须先于 /{id} 条目路由。
+	if segment == "test" {
+		if r.Method == http.MethodPost {
+			handler.ServeTest(w, r)
+			return
+		}
+		http.NotFound(w, r)
 		return
 	}
 	if segment != "" {
@@ -141,10 +184,33 @@ func createBody(title, text, answer string, points []string) string {
 	return string(encoded)
 }
 
+// createBodySeeded 先按内容造一条 pass 测试记录，再返回带 testId 的创建
+// 入参 JSON（门禁通过路径用；查重/校验 409/400 路径不需要凭据）。
+func createBodySeeded(t *testing.T, h *handlerHarness, actor Actor, title, text, answer string, points []string) string {
+	t.Helper()
+	testID := seedPassingTest(t, h.store, actor, text, answer, points)
+	payload := map[string]any{"title": title, "questionText": text, "referenceAnswer": answer, "testId": testID}
+	if points != nil {
+		payload["keyPoints"] = points
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+// patchBodySeeded 同 createBodySeeded，供修改重提交的门禁通过路径。
+func patchBodySeeded(t *testing.T, h *handlerHarness, actor Actor, title, text, answer string, points []string) string {
+	return createBodySeeded(t, h, actor, title, text, answer, points)
+}
+
 // mustCreateQuestion 通过 self handler 提交题目并返回 data JSON。
 func mustCreateQuestion(t *testing.T, h *handlerHarness, auth *authsys.AuthContext, title, text string) map[string]any {
 	t.Helper()
-	recorder := call(t, h.self, auth, http.MethodPost, "/__aisys__/api/my-model-checks/question-bank", createBody(title, text, "参考答案："+title, []string{"要点"}))
+	actor := Actor{SystemAccountID: auth.SystemAccountID}
+	recorder := call(t, h.self, auth, http.MethodPost, "/__aisys__/api/my-model-checks/question-bank",
+		createBodySeeded(t, h, actor, title, text, "参考答案："+title, []string{"要点"}))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create %q status = %d body=%s", title, recorder.Code, recorder.Body.String())
 	}
@@ -205,12 +271,12 @@ func TestHandlersCreateContractAndDedup(t *testing.T) {
 	h := newHandlerHarness(t)
 
 	t.Run("201 与契约字段", func(t *testing.T) {
-		recorder := call(t, h.self, aliceAuth(), http.MethodPost, "/q", createBody("什么是降智？", "请描述降智表现。", "回答缓慢且质量差。", []string{"要点1", "要点2"}))
+		recorder := call(t, h.self, aliceAuth(), http.MethodPost, "/q", createBodySeeded(t, h, actorAlice, "什么是降智？", "请描述降智表现。", "回答缓慢且质量差。", []string{"要点1", "要点2"}))
 		if recorder.Code != http.StatusCreated {
 			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 		}
 		data := decodeData(t, recorder)
-		for _, key := range []string{"id", "title", "questionText", "referenceAnswer", "keyPoints", "status", "rejectReason", "createdBy", "createdAt", "updatedAt", "reviewedAt", "reviewedBy"} {
+		for _, key := range []string{"id", "title", "questionText", "referenceAnswer", "keyPoints", "status", "rejectReason", "createdBy", "createdAt", "updatedAt", "reviewedAt", "reviewedBy", "lastTest"} {
 			if _, ok := data[key]; !ok {
 				t.Fatalf("契约缺少字段 %q: %v", key, data)
 			}
@@ -224,6 +290,10 @@ func TestHandlersCreateContractAndDedup(t *testing.T) {
 		if data["reviewedBy"] != nil {
 			t.Fatalf("自助面新题 reviewedBy 必须为 null: %v", data)
 		}
+		lastTest, ok := data["lastTest"].(map[string]any)
+		if !ok || lastTest["testId"] == "" || lastTest["accountName"] != "种子账户" || lastTest["model"] != "gpt-seed" || lastTest["passedAt"] == "" {
+			t.Fatalf("新题必须透出门禁测试摘要 lastTest: %v", data["lastTest"])
+		}
 		points, ok := data["keyPoints"].([]any)
 		if !ok || len(points) != 2 {
 			t.Fatalf("keyPoints = %v", data["keyPoints"])
@@ -231,7 +301,7 @@ func TestHandlersCreateContractAndDedup(t *testing.T) {
 	})
 
 	t.Run("无 keyPoints 时有权视角渲染空数组", func(t *testing.T) {
-		recorder := call(t, h.self, aliceAuth(), http.MethodPost, "/q", `{"title":"第二题","questionText":"另一个内容题目。","referenceAnswer":"答案"}`)
+		recorder := call(t, h.self, aliceAuth(), http.MethodPost, "/q", createBodySeeded(t, h, actorAlice, "第二题", "另一个内容题目。", "答案", nil))
 		if recorder.Code != http.StatusCreated {
 			t.Fatalf("status = %d", recorder.Code)
 		}
@@ -295,7 +365,7 @@ func TestHandlersCreateContractAndDedup(t *testing.T) {
 	})
 }
 
-func TestHandlersDetailPermissionAndMasking(t *testing.T) {
+func TestHandlersDetailPermission(t *testing.T) {
 	h := newHandlerHarness(t)
 	alice := aliceAuth()
 	bob := bobAuth()
@@ -307,17 +377,17 @@ func TestHandlersDetailPermissionAndMasking(t *testing.T) {
 	bobQuestion := mustCreateQuestion(t, h, bob, "乙的待审", "乙提交的待审内容。")
 	bobPendingID := bobQuestion["id"].(string)
 
-	t.Run("approved 非创建者可见题面但答案被省略", func(t *testing.T) {
+	t.Run("approved 非创建者题面与答案全员可见", func(t *testing.T) {
 		recorder := call(t, h.self, bob, http.MethodGet, "/q/"+questionID, "")
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d", recorder.Code)
 		}
 		data := decodeData(t, recorder)
-		if _, leaked := data["referenceAnswer"]; leaked {
-			t.Fatalf("referenceAnswer 泄漏: %v", data)
+		if data["referenceAnswer"] != "参考答案：甲的题目" {
+			t.Fatalf("非创建者应看到参考答案: %v", data)
 		}
-		if _, leaked := data["keyPoints"]; leaked {
-			t.Fatalf("keyPoints 泄漏: %v", data)
+		if points, ok := data["keyPoints"].([]any); !ok || len(points) == 0 {
+			t.Fatalf("非创建者应看到评分要点: %v", data)
 		}
 		if data["questionText"] != "甲提交的题目内容。" {
 			t.Fatalf("题面应可见: %v", data)
@@ -413,18 +483,12 @@ func TestHandlersListScopeAndContract(t *testing.T) {
 		}
 	})
 
-	t.Run("自助列表答案掩码", func(t *testing.T) {
+	t.Run("自助列表答案全员可见", func(t *testing.T) {
 		recorder := call(t, h.self, alice, http.MethodGet, "/q", "")
 		items, _ := decodeList(t, recorder)
 		for _, item := range items {
-			if item["createdBy"] != "sys-alice" {
-				if _, leaked := item["referenceAnswer"]; leaked {
-					t.Fatalf("他人题目答案泄漏: %v", item)
-				}
-				continue
-			}
 			if item["referenceAnswer"] == nil {
-				t.Fatalf("本人题目应有答案: %v", item)
+				t.Fatalf("列表答案全员可见，不应缺失: %v", item)
 			}
 		}
 	})
@@ -472,7 +536,7 @@ func TestHandlersUpdateAndDeletePermissions(t *testing.T) {
 	})
 
 	t.Run("创建者修改成功并写审计", func(t *testing.T) {
-		recorder := call(t, h.self, alice, http.MethodPatch, "/q/"+questionID, createBody("修改后的标题", "修改后的题目内容。", "修改后的答案", nil))
+		recorder := call(t, h.self, alice, http.MethodPatch, "/q/"+questionID, patchBodySeeded(t, h, actorAlice, "修改后的标题", "修改后的题目内容。", "修改后的答案", nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 		}
@@ -503,7 +567,7 @@ func TestHandlersUpdateAndDeletePermissions(t *testing.T) {
 		if _, err := h.store.Review(context.Background(), revisableID, admin, true, "reject", "请修订"); err != nil {
 			t.Fatal(err)
 		}
-		recorder := call(t, h.self, alice, http.MethodPatch, "/q/"+revisableID, createBody("回炉后的标题", "回炉后修订的题目内容。", "回炉的答案", nil))
+		recorder := call(t, h.self, alice, http.MethodPatch, "/q/"+revisableID, patchBodySeeded(t, h, actorAlice, "回炉后的标题", "回炉后修订的题目内容。", "回炉的答案", nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 		}
@@ -965,6 +1029,223 @@ func TestHandlersBuiltinQuestionContract(t *testing.T) {
 
 	t.Run("管理员删除内置题 403", func(t *testing.T) {
 		if recorder := call(t, h.admin, h.adminActor, http.MethodDelete, "/q/mcq-builtin-ui", ""); recorder.Code != http.StatusForbidden {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+}
+
+func testRequestBody(text, answer string, points []string) string {
+	payload := map[string]any{"questionText": text, "referenceAnswer": answer, "accountId": "acct-9", "model": "gpt-x"}
+	if points != nil {
+		payload["keyPoints"] = points
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+// TestHandlersServeTest 覆盖提交门禁同步测试端点：认证、runner 未接线
+// 503、body 校验 400、runner error 400 透传、成功 200 落库 + 审计 +
+// Outcome 契约，以及测试凭据供 Create 门禁消费的端到端链路。
+func TestHandlersServeTest(t *testing.T) {
+	h := newHandlerHarness(t)
+	alice := aliceAuth()
+
+	t.Run("未登录 401", func(t *testing.T) {
+		recorder := call(t, h.withRunner, nil, http.MethodPost, "/q/test", testRequestBody("题面。", "答案。", nil))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d", recorder.Code)
+		}
+	})
+
+	t.Run("runner 未接线 503", func(t *testing.T) {
+		recorder := call(t, h.self, alice, http.MethodPost, "/q/test", testRequestBody("题面。", "答案。", nil))
+		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "题目测试未完成接线") {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("body 校验 400", func(t *testing.T) {
+		for name, body := range map[string]string{
+			"非 JSON": `not-json`,
+			"未知字段":   `{"questionText":"题面","referenceAnswer":"答案","accountId":"a","model":"m","hacker":1}`,
+			"空题面":    `{"questionText":" ","referenceAnswer":"答案","accountId":"a","model":"m"}`,
+			"空账户":    `{"questionText":"题面","referenceAnswer":"答案","accountId":" ","model":"m"}`,
+			"空模型":    `{"questionText":"题面","referenceAnswer":"答案","accountId":"a","model":""}`,
+			"要点超量":   testRequestBody("题面。", "答案。", make([]string, KeyPointsMaxCount+1)),
+		} {
+			recorder := call(t, h.withRunner, alice, http.MethodPost, "/q/test", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("%s: status = %d body=%s", name, recorder.Code, recorder.Body.String())
+			}
+		}
+		if inputs := h.runner.recorded(); len(inputs) != 0 {
+			t.Fatalf("校验失败不得触达 runner: %v", inputs)
+		}
+	})
+
+	t.Run("runner error 400 透传原文", func(t *testing.T) {
+		h.runner.err = errors.New("J3b Business account does not exist or is outside scope")
+		recorder := call(t, h.withRunner, alice, http.MethodPost, "/q/test", testRequestBody("题面。", "答案。", nil))
+		// 中文前缀带 CJK，保证原始错误文案不被 kernel 本地化替换。
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "题目测试执行失败") || !strings.Contains(recorder.Body.String(), "outside scope") {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		h.runner.err = nil
+	})
+
+	t.Run("成功 200 落库并返回 Outcome", func(t *testing.T) {
+		h.runner.result = TestQuestionResult{
+			Verdict: TestVerdictPass, Alignment: TestAlignmentAligned,
+			KeyPointResults: []TestKeyPointResult{{Point: "要点", Met: true, Note: "覆盖"}},
+			AnswerExcerpt:   "回答摘录", GraderNote: "结论一致", LatencyMs: 456, HTTPStatus: 200,
+			AccountName: "测试账户甲",
+		}
+		recorder := call(t, h.withRunner, alice, http.MethodPost, "/q/test", testRequestBody("  题面内容。  ", "答案内容。", []string{"要点"}))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		var payload struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		testID, _ := payload.Data["testId"].(string)
+		if !strings.HasPrefix(testID, "mcqt-") {
+			t.Fatalf("testId = %v", payload.Data["testId"])
+		}
+		if payload.Data["verdict"] != TestVerdictPass || payload.Data["questionAlignment"] != TestAlignmentAligned {
+			t.Fatalf("data = %v", payload.Data)
+		}
+		if payload.Data["accountName"] != "测试账户甲" || payload.Data["testedAt"] == nil {
+			t.Fatalf("data = %v", payload.Data)
+		}
+		// Outcome 契约必须回填被测账户 id 与模型（前端渲染依赖）。
+		if payload.Data["accountId"] != "acct-9" || payload.Data["model"] != "gpt-x" {
+			t.Fatalf("data = %v", payload.Data)
+		}
+		inputs := h.runner.recorded()
+		if len(inputs) == 0 {
+			t.Fatal("runner 必须被调用")
+		}
+		input := inputs[len(inputs)-1]
+		if input.SystemAccountID != "sys-alice" || input.AccountID != "acct-9" || input.Model != "gpt-x" ||
+			input.QuestionText != "题面内容。" || input.ReferenceAnswer != "答案内容。" || len(input.KeyPoints) != 1 {
+			t.Fatalf("runner input = %+v", input)
+		}
+		// 记录落库：verdict/account/模型/draft hash 与请求内容一致。
+		record, err := h.store.FindUsableTest(context.Background(), actorAlice, testID, DraftHash("题面内容。", "答案内容。", []string{"要点"}), time.Now().UTC())
+		if err != nil {
+			t.Fatalf("落库记录必须能通过门禁校验: %v", err)
+		}
+		if record.AccountName != "测试账户甲" || record.Model != "gpt-x" || record.LatencyMs != 456 {
+			t.Fatalf("record = %+v", record)
+		}
+		if !strings.Contains(record.DiagnosisJSON, `"verdict":"pass"`) {
+			t.Fatalf("diagnosis_json = %q", record.DiagnosisJSON)
+		}
+		// 审计：module 同题库、action "test"、Changes 含 verdict/accountId/model。
+		entries := h.sink.recorded()
+		last := entries[len(entries)-1]
+		if last.Module != "model_check_question_bank" || last.Action != "test" || last.OperationKey != "model_check_question_bank.test" {
+			t.Fatalf("entry = %+v", last)
+		}
+		fields := map[string]string{}
+		for _, change := range last.Changes {
+			fields[change.Field] = change.After
+		}
+		if fields["verdict"] != TestVerdictPass || fields["accountId"] != "acct-9" || fields["model"] != "gpt-x" {
+			t.Fatalf("changes = %+v", last.Changes)
+		}
+
+		// 端到端：同一内容凭 ServeTest 返回的 testId 提交题目 → 201 且透出
+		// lastTest。
+		createdPayload := map[string]any{"title": "凭据题", "questionText": "题面内容。", "referenceAnswer": "答案内容。", "keyPoints": []string{"要点"}, "testId": testID}
+		createdBody, err := json.Marshal(createdPayload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := call(t, h.self, alice, http.MethodPost, "/q", string(createdBody))
+		if created.Code != http.StatusCreated {
+			t.Fatalf("create with served testId status = %d body=%s", created.Code, created.Body.String())
+		}
+		view := decodeData(t, created)
+		lastTest, ok := view["lastTest"].(map[string]any)
+		if !ok || lastTest["testId"] != testID || lastTest["accountName"] != "测试账户甲" {
+			t.Fatalf("created lastTest = %v", view["lastTest"])
+		}
+	})
+
+	t.Run("request_failed 结果照常 200 落库", func(t *testing.T) {
+		h.runner.result = TestQuestionResult{Verdict: TestVerdictRequestFailed, Alignment: TestAlignmentUnknown, HTTPStatus: 503, ErrorMessage: "stage failure"}
+		recorder := call(t, h.withRunner, alice, http.MethodPost, "/q/test", testRequestBody("请求失败题面。", "请求失败答案。", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+		var payload struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		testID, _ := payload.Data["testId"].(string)
+		if testID == "" {
+			t.Fatalf("data = %v", payload.Data)
+		}
+		// request_failed 记录存在但不能作为提交凭据。
+		_, err := h.store.FindUsableTest(context.Background(), actorAlice, testID, DraftHash("请求失败题面。", "请求失败答案。", nil), time.Now().UTC())
+		if !errors.Is(err, ErrTestNotPassed) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+// TestHandlersSubmissionGateErrors 覆盖 Create/Update 门禁错误的 HTTP
+// 映射：缺 testId 与哨兵错误分别渲染对应 400 中文文案。
+func TestHandlersSubmissionGateErrors(t *testing.T) {
+	h := newHandlerHarness(t)
+	alice := aliceAuth()
+
+	t.Run("Create 缺 testId 400", func(t *testing.T) {
+		recorder := call(t, h.self, alice, http.MethodPost, "/q", createBody("无凭据题", "无凭据提交的独立内容。", "答案", nil))
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "缺少测试记录 testId") {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("Create 内容不一致 400", func(t *testing.T) {
+		testID := seedPassingTest(t, h.store, actorAlice, "测试内容甲。", "测试答案甲", nil)
+		payload := map[string]any{"title": "不一致题", "questionText": "提交内容与测试完全不同，足够独特。", "referenceAnswer": "答案", "testId": testID}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := call(t, h.self, alice, http.MethodPost, "/q", string(encoded))
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "测试记录与题目内容不一致") {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("Create 非本人 testId 400", func(t *testing.T) {
+		testID := seedPassingTest(t, h.store, actorBob, "乙的测试内容。", "乙的答案", nil)
+		payload := map[string]any{"title": "盗用凭据题", "questionText": "乙的测试内容。", "referenceAnswer": "乙的答案", "testId": testID}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := call(t, h.self, alice, http.MethodPost, "/q", string(encoded))
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "测试记录不存在") {
+			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("Update 缺 testId 400", func(t *testing.T) {
+		question := mustCreateQuestion(t, h, alice, "待改无凭据题", "待改无凭据的题目内容。")
+		recorder := call(t, h.self, alice, http.MethodPatch, "/q/"+question["id"].(string), createBody("新标题", "新内容。", "新答案", nil))
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "缺少测试记录 testId") {
 			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 		}
 	})

@@ -7,7 +7,6 @@
 package exactkeyprobe
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -241,20 +240,22 @@ func probeTransportConfig(input Input, options ProbeOptions) (string, time.Durat
 }
 
 func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token string) (*http.Request, error) {
-	protocol := directProbeProtocolForMode(input.ProtocolProfileID, input.Provider, input.EndpointMode)
 	// endpoint catalog 条目统一取自信封（信封统一设计 §6 M3）：预算字段声明、
 	// anthropic-version / api-revision 端点固定头与 Accept 口径都以 catalog 为
-	// 准。未登记的 endpoint mode 保持既有 "未冻结的 endpoint mode" 错误契约；
-	// body switch 的 default 由 isSupportedDirectProfile 保证不可达，属防御守卫。
+	// 准。未登记的 endpoint mode 保持既有 "未冻结的 endpoint mode" 错误契约。
 	entry, err := upstreamenvelope.Lookup(upstreamenvelope.EndpointMode(input.EndpointMode))
 	if err != nil {
 		return nil, errors.New("未冻结的 endpoint mode")
 	}
-	// F4 既有文本输出预算语义：1024，值权威在信封 DefaultProbeOutputTokens。
-	budget := upstreamenvelope.BudgetBounded(upstreamenvelope.DefaultProbeOutputTokens)
-	path := ""
-	codexResponsesPath := false
-	method := http.MethodPost
+	protocol := directProbeProtocolForMode(input.ProtocolProfileID, input.Provider, input.EndpointMode)
+	// 形态判定单源（§9.1 按账户形态分列）：请求构造与响应评分（verifyResponse）
+	// 共用同一判定函数，评分跟随请求编码形态（§9.4 2026-10-12 W3 裁决）。
+	// A 形态优先：§9.1-B 明确兼容画像是 API Key 形态，oauth 账户即使携带
+	// ClientCompatibility=codex_responses 也按 A 处理（矩阵无第四形态）。
+	oauthCodex := isOAuthCodexForm(input)
+	codeAssist := isCodeAssistForm(input)
+	codexCompatibility := !oauthCodex && protocol == "openai" && input.ClientCompatibility == "codex_responses" &&
+		(input.EndpointMode == "responses_json" || input.EndpointMode == "responses_sse")
 	// 请求侧报文随机化：挑战词带 3~6 位随机数字后缀，responses 形态的
 	// system 指令从轮换池随机选取。验证侧只宽松匹配挑战词，不回读请求，
 	// 也不要求包含随机后缀。
@@ -264,243 +265,209 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	// accountprobe 的 outputChallengePrompt 保持同义。
 	challengePrompt := "接口连通性自动测试：请原样输出 " + probeChallenge + challengeSuffix
 	instructions := pickProbeInstructions()
-	var body any
+	// 探针语义 body 字段（§3.2/§9.4 调用方职责）：预算字段由信封按 catalog
+	// 与 BudgetPolicy 统一追加，本包不再私有注入（applyProbeBudget 已删除）。
+	var fields []upstreamenvelope.BodyField
 	switch input.EndpointMode {
 	case "chat_json", "chat_sse":
-		path = "/v1/chat/completions"
-		body = map[string]any{
-			"model":    input.HealthModel,
-			"messages": []map[string]any{{"role": "user", "content": challengePrompt}},
-			"stream":   input.EndpointMode == "chat_sse",
+		fields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: input.HealthModel},
+			{Key: "messages", Value: []map[string]any{{"role": "user", "content": challengePrompt}}},
+			{Key: "stream", Value: input.EndpointMode == "chat_sse"},
 		}
-		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
-	case "responses_json":
-		path = "/v1/responses"
-		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
-			path = "/responses"
-			codexResponsesPath = true
+	case "responses_json", "responses_sse":
+		fields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: input.HealthModel},
+			{Key: "input", Value: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}}},
+			{Key: "instructions", Value: instructions},
 		}
-		payload := map[string]any{
-			"model":        input.HealthModel,
-			"input":        []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
-			"instructions": instructions,
-			"stream":       false,
+		if !oauthCodex {
+			// A 形态 stream 由 wrapCodexResponses 强制写入（§9.1-A 恒 SSE，
+			// 行为变化属 §9.1 裁决）；B/C 保留账户配置模式名对应的 stream 值。
+			fields = append(fields, upstreamenvelope.BodyField{Key: "stream", Value: input.EndpointMode == "responses_sse"})
 		}
-		applyProbeBudget(payload, entry.BudgetField, budget)
-		if codexResponsesPath {
-			payload["store"] = false
-		}
-		body = payload
-	case "responses_sse":
-		path = "/v1/responses"
-		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
-			path = "/responses"
-			codexResponsesPath = true
-		}
-		body = map[string]any{
-			"model":        input.HealthModel,
-			"input":        []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
-			"instructions": instructions,
-			"stream":       true,
-		}
-		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "images_json":
-		path = "/v1/images/generations"
-		body = map[string]any{
-			"model":              input.HealthModel,
-			"prompt":             "Solid black. " + challengeSuffix,
-			"n":                  1,
-			"size":               "1024x1024",
-			"quality":            "low",
-			"output_format":      "webp",
-			"output_compression": 100,
+		fields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: input.HealthModel},
+			{Key: "prompt", Value: "Solid black. " + challengeSuffix},
+			{Key: "n", Value: 1},
+			{Key: "size", Value: "1024x1024"},
+			{Key: "quality", Value: "low"},
+			{Key: "output_format", Value: "webp"},
+			{Key: "output_compression", Value: 100},
 		}
-		// images 契约无预算字段（catalog BudgetFieldNone），不伪造兜底。
-		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "messages_json", "messages_sse":
-		path = "/v1/messages"
-		body = map[string]any{
-			"model":    input.HealthModel,
-			"messages": []map[string]any{{"role": "user", "content": challengePrompt}},
-			"stream":   input.EndpointMode == "messages_sse",
+		fields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: input.HealthModel},
+			{Key: "messages", Value: []map[string]any{{"role": "user", "content": challengePrompt}}},
+			{Key: "stream", Value: input.EndpointMode == "messages_sse"},
 		}
-		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "generate_content_json", "generate_content_sse":
-		model := strings.TrimPrefix(input.HealthModel, "models/")
-		path = "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
-		if input.EndpointMode == "generate_content_sse" {
-			path = "/v1beta/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse"
+		fields = []upstreamenvelope.BodyField{
+			{Key: "contents", Value: []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challengePrompt}}}}},
 		}
-		body = map[string]any{
-			"contents": []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challengePrompt}}}},
-		}
-		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	case "interactions_json", "interactions_sse":
-		path = "/v1beta/interactions"
-		body = map[string]any{
-			"model":  input.HealthModel,
-			"input":  challengePrompt,
-			"stream": input.EndpointMode == "interactions_sse",
+		fields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: input.HealthModel},
+			{Key: "input", Value: challengePrompt},
+			{Key: "stream", Value: input.EndpointMode == "interactions_sse"},
 		}
-		// interactions 契约无预算字段（catalog BudgetFieldNone），不伪造兜底。
-		applyProbeBudget(body.(map[string]any), entry.BudgetField, budget)
 	default:
+		// isSupportedDirectProfile 保证不可达，属防御守卫。
 		return nil, errors.New("未冻结的 endpoint mode")
 	}
-	var codexIdentity *codexProbeIdentity
-	if protocol == "openai" && input.ClientCompatibility == "codex_responses" && (input.EndpointMode == "responses_json" || input.EndpointMode == "responses_sse") {
-		identity := applyCodexResponsesCompatibility(body.(map[string]any))
-		codexIdentity = &identity
-	}
-	codeAssist := protocol == "gemini" && input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one")
-	if codeAssist {
-		path = "/v1internal:streamGenerateContent?alt=sse"
-		body = map[string]any{"model": input.HealthModel, "project": input.OAuthProjectID, "request": body}
-	}
-	// 目标 URL（信封统一设计 §6 M3）：登记端点的 base 归一化（base 补 /v1、
-	// GLM 与 gemini-openai 路径规约、Anthropic / Gemini 版本对齐）全部交信封
-	// UpstreamURL，本包不再私有拼接。oauth /responses 与 Code Assist 改道两面
-	// 保留既有 joinBaseURL：信封对这两面没有逐字节等价口径（待裁决差异，见
-	// M3 迁移报告），按现状优先原则不静默改行为。
-	var target string
-	if codexResponsesPath || codeAssist {
-		target = joinBaseURL(base, path).String()
-	} else {
-		target, err = upstreamenvelope.UpstreamURL(base.String(), entry.Mode, input.ProtocolProfileID, upstreamenvelope.AdapterNone, path)
-		if err != nil {
-			return nil, err
-		}
-	}
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("编码探活请求失败: %w", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequestWithContext(ctx, method, target, reader)
-	if err != nil {
-		return nil, err
+	spec := upstreamenvelope.Spec{
+		BaseURL:           base.String(),
+		Protocol:          entry.Protocol,
+		ProtocolProfileID: input.ProtocolProfileID,
+		EndpointMode:      entry.Mode,
+		Model:             input.HealthModel,
+		BodyFields:        fields,
+		Auth:              upstreamenvelope.Auth{Token: token, ExtraHeaders: map[string]string{}},
 	}
 	// 认证策略映射（与信封 auth.go 的现状取证同源）：Anthropic 默认
-	// x-api-key，OAuth 与 GLM anthropic 档案（profile_glm_coding_anthropic_v1）
-	// 改 Bearer；Gemini api_key 用 x-goog-api-key，google_oauth 改 Bearer +
-	// x-goog-user-project（供应商专用头经 Auth.ExtraHeaders 注入）；其余
-	// （OpenAI 系）一律 Bearer。
-	auth := upstreamenvelope.Auth{Token: token, ExtraHeaders: map[string]string{}}
+	// x-api-key，OAuth 与 GLM anthropic 档案改 Bearer；Gemini api_key 用
+	// x-goog-api-key，google_oauth 改 Bearer + x-goog-user-project；OAuth 系
+	// 账户（type=oauth）用 AuthOAuth——头与 AuthBearer 同为 Bearer，差别在
+	// 信封对 SSE 端点的 Accept 口径（OAuth 纯流式，现状同）。
 	switch protocol {
 	case "anthropic":
 		switch {
 		case input.Type == "oauth":
-			auth.Strategy = upstreamenvelope.AuthOAuth
+			spec.Auth.Strategy = upstreamenvelope.AuthOAuth
 		case input.ProtocolProfileID == "profile_glm_coding_anthropic_v1":
-			auth.Strategy = upstreamenvelope.AuthBearer
+			spec.Auth.Strategy = upstreamenvelope.AuthBearer
 		default:
-			auth.Strategy = upstreamenvelope.AuthAnthropicAPIKey
+			spec.Auth.Strategy = upstreamenvelope.AuthAnthropicAPIKey
 		}
 	case "gemini":
-		if input.Type == "google_oauth" {
-			auth.Strategy = upstreamenvelope.AuthOAuth
+		switch {
+		case codeAssist:
+			// Code Assist 线真相恒 SSE：请求改道 /v1internal:streamGenerateContent?alt=sse
+			//（wrapGeminiCodeAssist 承担路径与三字段包装，project 经 Spec.Project），
+			// Accept 必须按流式端点解析，不看账户配置模式名（responses/json
+			// 模式名仅是账户配置，jobs 侧记录不变）。Accept 现状即纯流式。
+			spec.Auth.Strategy = upstreamenvelope.AuthOAuth
+			spec.Adapter = upstreamenvelope.AdapterGeminiCodeAssist
+			spec.Project = input.OAuthProjectID
+			spec.EndpointMode = upstreamenvelope.ModeGenerateContentSSE
 			if value := strings.TrimSpace(input.OAuthQuotaProjectID); value != "" {
-				auth.ExtraHeaders["x-goog-user-project"] = value
+				spec.Auth.ExtraHeaders["x-goog-user-project"] = value
 			}
-		} else {
-			auth.Strategy = upstreamenvelope.AuthGeminiAPIKey
+		case input.Type == "google_oauth":
+			// §4.1 口径统一（W4 跨包裁决，与 F2 同规）：google_oauth 非 Code
+			// Assist 按 AuthOAuth 解析——认证头不变（Bearer + 配额项目），SSE
+			// Accept 从 api-key 双 accept 收敛为纯流式（W3 曾按 AuthBearer 保
+			// 双 accept 留现状，W4 统一）。
+			spec.Auth.Strategy = upstreamenvelope.AuthOAuth
+			if value := strings.TrimSpace(input.OAuthQuotaProjectID); value != "" {
+				spec.Auth.ExtraHeaders["x-goog-user-project"] = value
+			}
+		default:
+			spec.Auth.Strategy = upstreamenvelope.AuthGeminiAPIKey
 		}
 	default:
-		auth.Strategy = upstreamenvelope.AuthBearer
+		if input.Type == "oauth" {
+			spec.Auth.Strategy = upstreamenvelope.AuthOAuth
+		} else {
+			spec.Auth.Strategy = upstreamenvelope.AuthBearer
+		}
 	}
-	// 端点固定特殊头（anthropic-version / api-revision）按 catalog 写入。
-	for name, value := range entry.Headers {
-		request.Header.Set(name, value)
+	switch {
+	case oauthCodex:
+		// A 形态（OAuth Codex，§9.1-A）：固定上游 + 强制 SSE + BudgetNone +
+		// 身份单源（调用方每次请求生成，§9.3）。行为变化属 §9.1 裁决：恒
+		// SSE + stream:true + 删 max_output_tokens + 新增身份头集合（原 A
+		// 形态无身份头，与 F3 W2 接线同构）。chatgpt-account-id 是 OAuth
+		// 账户专用伴随头，经 Auth.ExtraHeaders 注入（现状条件保留）。
+		identity, err := newCodexIdentity()
+		if err != nil {
+			return nil, err
+		}
+		spec.Adapter = upstreamenvelope.AdapterOpenAIOAuthCodex
+		spec.CodexIdentity = identity
+		spec.Budget = upstreamenvelope.BudgetNone
+		if accountID := strings.TrimSpace(input.OAuthAccountID); accountID != "" {
+			spec.Auth.ExtraHeaders["ChatGPT-Account-Id"] = accountID
+		}
+	case codexCompatibility:
+		// B 形态（codex_responses 兼容画像，§9.1-B）：保留档案预算字段
+		//（不继承 A 的 BudgetNone 例外）；身份头/Lite 头/client_metadata/
+		// prompt_cache_key 全由 Build 依同一份 Spec.CodexIdentity 承担
+		//（§9.3 单源，替代原 applyCodexResponsesCompatibility +
+		// applyCodexProbeHeaders 两段构造）。
+		identity, err := newCodexIdentity()
+		if err != nil {
+			return nil, err
+		}
+		spec.Adapter = upstreamenvelope.AdapterOpenAICodexCompatibility
+		spec.CodexIdentity = identity
+		spec.Budget = upstreamenvelope.BudgetBounded(upstreamenvelope.DefaultProbeOutputTokens)
+	default:
+		// C 形态与 Code Assist：预算按 catalog 条目解析（F4 既有文本预算
+		// 语义 1024；images/interactions 契约无预算字段返回 none，不伪造兜底）。
+		budget, err := upstreamenvelope.ResolveBudgetPolicy(spec.EndpointMode, "", spec.Adapter)
+		if err != nil {
+			return nil, err
+		}
+		spec.Budget = budget
 	}
-	if err := auth.Apply(request.Header); err != nil {
+	request, err := upstreamenvelope.Build(ctx, spec)
+	if err != nil {
 		return nil, err
 	}
+	// 系统客户端身份头保留调用方职责（§9.4：是否上收由 M2–M5 另行裁决）：
+	// 在 Build 之后应用；A/B 形态 Build 已写 Codex UA，本调用对已带 UA 的
+	// 请求保持沉默（upstreamidentity 契约），不会覆盖身份头。
 	upstreamidentity.ApplySystemClientHeaders(request.Header, upstreamidentity.Input{
 		ProviderProtocolProfileID: input.ProtocolProfileID,
 		CredentialType:            input.Type,
 		OAuthType:                 input.OAuthType,
 		UpstreamHostname:          request.URL.Hostname(),
 	})
-	if codexIdentity != nil {
-		applyCodexProbeHeaders(request, *codexIdentity, input)
-	}
-	// Accept 标准头走信封口径（§4.1 L1）：JSON 形态 application/json；SSE
-	// 形态 api-key 双 accept、OAuth/Code Assist 纯流式。两点现状保留：
-	//   - google_oauth 非 Code Assist 形态的 SSE 现状为双 accept，按
-	//     AuthBearer 解析（认证侧仍是 AuthOAuth Bearer）；
-	//   - Code Assist 统一改道 :streamGenerateContent?alt=sse，Accept 按流式
-	//     端点解析，不看原 endpoint 编码。
-	acceptMode := entry.Mode
-	if codeAssist {
-		acceptMode = upstreamenvelope.ModeGenerateContentSSE
-	}
-	acceptStrategy := upstreamenvelope.AuthBearer
-	if input.Type == "oauth" || codeAssist {
-		acceptStrategy = upstreamenvelope.AuthOAuth
-	}
-	acceptValue, acceptErr := upstreamenvelope.AcceptHeader(acceptMode, acceptStrategy)
-	if acceptErr != nil {
-		return nil, acceptErr
-	}
-	request.Header.Set("Accept", acceptValue)
-	if protocol == "openai" && input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
-		request.Header.Set("OpenAI-Beta", "responses=experimental")
-		if accountID := strings.TrimSpace(input.OAuthAccountID); accountID != "" {
-			request.Header.Set("ChatGPT-Account-Id", accountID)
-		}
-	}
-	if body != nil {
-		// 信封 Build 对 JSON/SSE 编码端点统一 application/json（本包登记
-		// 端点全部为 JSON body，multipart 不在 F4 范围）。
-		request.Header.Set("Content-Type", "application/json")
-	}
 	return request, nil
 }
 
-// applyProbeBudget 按信封 catalog 的预算字段声明写入输出预算（设计文档
-// §4.3）：字段名与落点由 entry.BudgetField 决定，数值来自信封 BudgetPolicy；
-// 契约无预算字段的端点（images/interactions，BudgetFieldNone）保持无字段，
-// 不伪造兜底。
-func applyProbeBudget(body map[string]any, field upstreamenvelope.BudgetField, budget upstreamenvelope.BudgetPolicy) {
-	switch field {
-	case upstreamenvelope.BudgetFieldMaxTokens:
-		body["max_tokens"] = budget.Limit()
-	case upstreamenvelope.BudgetFieldMaxOutputTokens:
-		body["max_output_tokens"] = budget.Limit()
-	case upstreamenvelope.BudgetFieldGeminiGenerationConfig:
-		if config, ok := body["generationConfig"].(map[string]any); ok {
-			config["maxOutputTokens"] = budget.Limit()
-			return
-		}
-		body["generationConfig"] = map[string]any{"maxOutputTokens": budget.Limit()}
+// isOAuthCodexForm 判定 A 形态账户输入（OAuth Codex，§9.1-A）：oauth + 空
+// profile（GPT 泛化）或 profile_gpt_openai_v1 + responses 模式。协议由
+// isSupportedDirectProfile 保证为 openai。请求构造与响应评分共用本判定。
+func isOAuthCodexForm(input Input) bool {
+	return input.Type == "oauth" &&
+		(input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") &&
+		(input.EndpointMode == "responses_json" || input.EndpointMode == "responses_sse")
+}
+
+// isCodeAssistForm 判定 Gemini Code Assist / Google One 形态输入（§9.1）：
+// 请求恒改道 :streamGenerateContent?alt=sse，响应恒按 Gemini SSE 解析。
+func isCodeAssistForm(input Input) bool {
+	return input.Provider == "gemini" && input.Type == "google_oauth" &&
+		(input.OAuthType == "code_assist" || input.OAuthType == "google_one")
+}
+
+// newCodexIdentity 生成一次 Codex 形态请求的身份值（信封统一设计 §9.3 身份
+// 单源）：session=UUID、thread=session、turn=独立 UUID（F4 现值，区别于 F3
+// 的 turn=session）、window=thread+":0"、installation=UUID，turn metadata
+// JSON 含全部身份值与 request_kind/thread_source/sandbox/
+// turn_started_at_unix_ms。同一份身份经 Spec.CodexIdentity 同时产出身份请求
+// 头与（B 形态）body client_metadata，替代原 applyCodexResponsesCompatibility
+// 与 applyCodexProbeHeaders 的两段构造。metadata marshal 失败显式报错，不
+// 静默兜底（原 codexMetadataJSON 的 "{}" 兜底随接线删除）。
+func newCodexIdentity() (upstreamenvelope.CodexIdentity, error) {
+	sessionID, err := codexUUID()
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, err
 	}
-}
-
-type codexProbeIdentity struct {
-	installationID string
-	sessionID      string
-	threadID       string
-	turnID         string
-	windowID       string
-	metadataJSON   string
-}
-
-// applyCodexResponsesCompatibility keeps the scheduled J1 request body in the
-// same shape as the account-test.service codex_responses diagnostic path.
-func applyCodexResponsesCompatibility(body map[string]any) codexProbeIdentity {
-	sessionID := uuid.NewString()
+	turnID, err := codexUUID()
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, err
+	}
+	installationID, err := codexUUID()
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, err
+	}
 	threadID := sessionID
-	turnID := uuid.NewString()
-	installationID := uuid.NewString()
 	windowID := threadID + ":0"
-	body["store"] = false
-	body["include"] = []string{"reasoning.encrypted_content"}
-	body["reasoning"] = map[string]any{"context": "all_turns"}
-	body["parallel_tool_calls"] = false
-	metadata := map[string]any{
+	metadata, err := json.Marshal(map[string]any{
 		"installation_id":         installationID,
 		"session_id":              sessionID,
 		"thread_id":               threadID,
@@ -510,45 +477,26 @@ func applyCodexResponsesCompatibility(body map[string]any) codexProbeIdentity {
 		"thread_source":           "user",
 		"sandbox":                 "none",
 		"turn_started_at_unix_ms": time.Now().UnixMilli(),
-	}
-	metadataJSON := codexMetadataJSON(metadata)
-	body["client_metadata"] = map[string]any{
-		"x-codex-window-id":       windowID,
-		"turn_id":                 turnID,
-		"session_id":              sessionID,
-		"x-codex-turn-metadata":   metadataJSON,
-		"x-codex-installation-id": installationID,
-		"thread_id":               threadID,
-	}
-	body["prompt_cache_key"] = sessionID
-	return codexProbeIdentity{installationID: installationID, sessionID: sessionID, threadID: threadID, turnID: turnID, windowID: windowID, metadataJSON: metadataJSON}
-}
-
-func applyCodexProbeHeaders(request *http.Request, identity codexProbeIdentity, input Input) {
-	request.Header.Set("Originator", "codex_exec")
-	request.Header.Set("User-Agent", upstreamidentity.EffectiveCodexUserAgent())
-	request.Header.Set("Session-Id", identity.sessionID)
-	request.Header.Set("Thread-Id", identity.threadID)
-	request.Header.Set("X-Client-Request-Id", identity.sessionID)
-	request.Header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
-	request.Header.Set("X-Codex-Turn-Metadata", identity.metadataJSON)
-	request.Header.Set("X-Codex-Window-Id", identity.windowID)
-	if isCodexResponsesLiteModel(input.HealthModel) {
-		request.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
-	}
-}
-
-func isCodexResponsesLiteModel(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	return model == "gpt-5.6-sol" || model == "gpt-5.6-terra" || model == "gpt-5.6-luna"
-}
-
-func codexMetadataJSON(value any) string {
-	encoded, err := json.Marshal(value)
+	})
 	if err != nil {
-		return "{}"
+		return upstreamenvelope.CodexIdentity{}, fmt.Errorf("生成 Codex 身份 metadata 失败: %w", err)
 	}
-	return string(encoded)
+	return upstreamenvelope.CodexIdentity{
+		InstallationID:   installationID,
+		SessionID:        sessionID,
+		ThreadID:         threadID,
+		TurnID:           turnID,
+		WindowID:         windowID,
+		TurnMetadataJSON: string(metadata),
+	}, nil
+}
+
+func codexUUID() (string, error) {
+	value, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("生成 Codex 身份 UUID 失败: %w", err)
+	}
+	return value.String(), nil
 }
 
 func parseBaseURL(raw string, allowInsecure bool) (*url.URL, error) {
@@ -564,46 +512,6 @@ func parseBaseURL(raw string, allowInsecure bool) (*url.URL, error) {
 		return nil, errors.New("base URL 必须使用 http 或 https")
 	}
 	return parsed, nil
-}
-
-func joinBaseURL(base *url.URL, path string) *url.URL {
-	copy := *base
-	pathOnly, rawQuery, hasQuery := strings.Cut(path, "?")
-	basePath := strings.TrimRight(copy.Path, "/")
-	if strings.HasSuffix(basePath, "/v1") {
-		basePath = strings.TrimSuffix(basePath, "/v1")
-	}
-	if strings.HasSuffix(basePath, "/v1beta") && strings.HasPrefix(pathOnly, "/v1beta/") {
-		pathOnly = strings.TrimPrefix(pathOnly, "/v1beta")
-	}
-	copy.Path = basePath + pathOnly
-	if hasQuery {
-		copy.RawQuery = rawQuery
-	}
-	return &copy
-}
-
-// glmOpenAIBaseOwnsV1Path reports whether a GLM OpenAI-compatible base URL
-// already carries the conventional /v1 service root. An empty path is treated
-// the same way as a generic OpenAI service root: joinBaseURL must retain the
-// request's /v1 prefix so manual tests and scheduled probes hit the same URL.
-func glmOpenAIBaseOwnsV1Path(base *url.URL) bool {
-	if base == nil {
-		return false
-	}
-	path := strings.TrimRight(base.Path, "/")
-	return path == "" || strings.HasSuffix(path, "/v1")
-}
-
-// geminiOpenAIBaseOwnsPath reports whether the Gemini OpenAI-compatibility
-// profile's base already includes its complete /v1beta/openai service path.
-// Only then should the request-side /v1 prefix be removed.
-func geminiOpenAIBaseOwnsPath(base *url.URL) bool {
-	if base == nil {
-		return false
-	}
-	path := strings.ToLower(strings.TrimRight(base.Path, "/"))
-	return strings.HasSuffix(path, "/v1beta/openai")
 }
 
 func decryptToken(secret string, envelope CredentialEnvelope) (string, error) {
@@ -630,9 +538,17 @@ func decryptToken(secret string, envelope CredentialEnvelope) (string, error) {
 }
 
 func verifyResponse(input Input, body []byte) error {
-	codeAssist := input.Provider == "gemini" && input.Type == "google_oauth" && (input.OAuthType == "code_assist" || input.OAuthType == "google_one")
-	if codeAssist {
+	// 评分跟随请求编码形态（§9.4 2026-10-12 W3 裁决，与 buildProbeRequest
+	// 共用形态判定单源）：Code Assist 恒改道 :streamGenerateContent?alt=sse，
+	// A 形态（OAuth Codex）恒 SSE（§9.1）——两者响应统一按 SSE 解析，与 F3
+	// 同构；responses_json/responses_sse、generate_content_json/_sse 为账户
+	// 配置模式名，不改变业务检测语义。解析选择按请求形态确定，禁止
+	// "先试 JSON 失败再试 SSE" 的 fallback。
+	if isCodeAssistForm(input) {
 		return verifyGeminiSSE(body)
+	}
+	if isOAuthCodexForm(input) {
+		return verifyResponsesSSE(body)
 	}
 	switch input.EndpointMode {
 	case "responses_sse":

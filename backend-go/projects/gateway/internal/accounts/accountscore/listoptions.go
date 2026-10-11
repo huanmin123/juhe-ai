@@ -25,6 +25,10 @@ type ListOptions struct {
 	Type                      string
 	Status                    string
 	Schedulable               string // all | enabled | disabled | cooling
+	// Domain 是 capability_domain 列表过滤参数（M1 读通道）：chat | video |
+	// audio | image，空串 = 不过滤。非法值由路由面 400 拒绝（共享契约），
+	// 规范化层再兜底为不过滤。
+	Domain string
 }
 
 // AccountListSortFields mirrors the allowed list sort field set.

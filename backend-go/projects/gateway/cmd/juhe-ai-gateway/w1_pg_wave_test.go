@@ -211,6 +211,9 @@ func w1g2CountCoverSchemas(t *testing.T, db *sql.DB) int {
 //   - 探针 B（形状）：provider_protocol_profiles 的 id 列必须带 PK/UNIQUE
 //     约束，旧版缺 id 主键的表会让 EnsurePostgres 建
 //     provider_protocol_profile_families FK 时报 42830。
+//   - 探针 C（形状，AI 账户能力域拆分 M1）：juhe_business.accounts 必须带
+//     capability_domain 列；旧版无列的持久子库不重灌会直接撞组合根启动
+//     capability_domain 形状校验（capability_domain_schema.go）。
 //
 // 表不存在或探针查询出错一律按漂移处理（交由重灌分支给出真实错误），不 Fatal。
 func w1g2CoverPostgresDrifted(t *testing.T, appDB *sql.DB) bool {
@@ -235,6 +238,17 @@ func w1g2CoverPostgresDrifted(t *testing.T, appDB *sql.DB) bool {
 			AND c.conkey @> (SELECT ARRAY[(SELECT attnum::smallint FROM pg_attribute WHERE attrelid = t.oid AND attname = 'id')])
 	)`).Scan(&idConstrained)
 	if err != nil || !idConstrained {
+		return true
+	}
+	// 探针 C：accounts.capability_domain 列存在且声明为 text/NOT NULL。
+	var domainShaped bool
+	err = appDB.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'juhe_business' AND table_name = 'accounts'
+			AND column_name = 'capability_domain'
+			AND lower(data_type) = 'text' AND is_nullable = 'NO'
+	)`).Scan(&domainShaped)
+	if err != nil || !domainShaped {
 		return true
 	}
 	return false

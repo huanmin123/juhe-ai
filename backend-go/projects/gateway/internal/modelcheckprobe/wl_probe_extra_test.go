@@ -182,10 +182,12 @@ func TestWlExecuteCodexAdapterRejectsInvalidInputs(t *testing.T) {
 		wantErr string
 	}{
 		{"端点模式不受支持", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeChatJSON, Body: json.RawMessage(`{}`)}, "endpoint mode is unsupported"},
+		// W2 F3 接线后 model/input/instructions 校验由信封 wrapCodexResponses
+		// 承担，失败文案为信封权威文案；mode/body/authorization 守卫保留本包。
 		{"body 非法", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`not-json`)}, "body is invalid"},
-		{"model 缺失", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"input":"hi"}`)}, "model is invalid"},
-		{"input 非法", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"model":"gpt-5.6-sol","input":123}`)}, "input is invalid"},
-		{"instructions 非法", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"model":"gpt-5.6-sol","input":"hi","instructions":123}`)}, "instructions are invalid"},
+		{"model 缺失", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"input":"hi"}`)}, "model 缺失或非法"},
+		{"input 非法", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"model":"gpt-5.6-sol","input":123}`)}, "input 非法"},
+		{"instructions 非法", Request{Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"model":"gpt-5.6-sol","input":"hi","instructions":123}`)}, "instructions 必须是字符串"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -342,41 +344,74 @@ func TestWlExecuteDispatcherPaths(t *testing.T) {
 	})
 }
 
+// TestWlBuildURLVariants 迁移（W2 F3 接线）：URL 归一化规则已由信封
+// upstreamenvelope.Build 统一承担（catalog/契约测试钉死），本包保留两端——
+// 端点 SSRF 安全校验（validateEndpointURL，原 buildURL 契约原样保留）与经
+// Execute Mock 捕获的出站 URL 形状锚定。原"codex 拒绝非 responses 路径"
+// 用例随路径守卫删除：旧 Execute 先改写 Path="/responses" 再校验，守卫实际
+// 不可达；路径现由信封 wrapCodexResponses 结构性固定。
 func TestWlBuildURLVariants(t *testing.T) {
-	tests := []struct {
-		name, endpoint, path, adapter string
-		protocol                      modelcheckprofile.Protocol
-		want                          string
-		wantErr                       bool
-	}{
-		{"chat 自动补 /v1", "https://api.example.com", "/chat/completions", "", modelcheckprofile.ProtocolOpenAIChat, "https://api.example.com/v1/chat/completions", false},
-		{"chat 保留既有 /v1", "https://api.example.com/v1/", "/chat/completions", "", modelcheckprofile.ProtocolOpenAIChat, "https://api.example.com/v1/chat/completions", false},
-		{"gemini 自动补 /v1beta", "https://api.example.com", "/v1beta/models/m:generateContent", "", modelcheckprofile.ProtocolGeminiNative, "https://api.example.com/v1beta/models/m:generateContent", false},
-		{"保留查询串", "https://api.example.com", "/v1/chat/completions?alt=sse", "", modelcheckprofile.ProtocolOpenAIChat, "https://api.example.com/v1/chat/completions?alt=sse", false},
-		{"codex 固定官方基址", "https://anything.example", "/responses", AdapterOpenAIOAuthCodex, modelcheckprofile.ProtocolOpenAIResponses, OpenAIOAuthCodexBaseURL + "/responses", false},
-		{"codex 拒绝非 responses 路径", "https://api.example.com", "/chat/completions", AdapterOpenAIOAuthCodex, modelcheckprofile.ProtocolOpenAIChat, "", true},
-		{"codex 拒绝带查询串端点", "https://api.example.com?x=1", "/responses", AdapterOpenAIOAuthCodex, modelcheckprofile.ProtocolOpenAIResponses, "", true},
-		{"拒绝 ftp", "ftp://api.example.com", "/v1/chat", "", modelcheckprofile.ProtocolOpenAIChat, "", true},
-		{"拒绝空 host", "https://", "/v1/chat", "", modelcheckprofile.ProtocolOpenAIChat, "", true},
-		{"拒绝用户信息", "https://user:pass@api.example.com", "/v1/chat", "", modelcheckprofile.ProtocolOpenAIChat, "", true},
-		{"拒绝端点查询串", "https://api.example.com/?x=1", "/v1/chat", "", modelcheckprofile.ProtocolOpenAIChat, "", true},
-		{"拒绝端点片段", "https://api.example.com/#frag", "/v1/chat", "", modelcheckprofile.ProtocolOpenAIChat, "", true},
-		{"拒绝控制字符", "https://api.example.com/\r\n", "/v1/chat", "", modelcheckprofile.ProtocolOpenAIChat, "", true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := buildURL(test.endpoint, test.protocol, test.path, test.adapter)
-			if test.wantErr {
-				if err == nil {
-					t.Fatalf("buildURL(%q) 必须失败, got=%q", test.endpoint, got)
+	t.Run("端点安全校验", func(t *testing.T) {
+		for _, endpoint := range []string{"https://api.example.com", "http://api.example.com/v1/", "https://api.example.com:8443/base"} {
+			if err := validateEndpointURL(endpoint); err != nil {
+				t.Fatalf("validateEndpointURL(%q) err=%v", endpoint, err)
+			}
+		}
+		for _, endpoint := range []string{
+			"ftp://api.example.com",
+			"https://",
+			"https://user:pass@api.example.com",
+			"https://api.example.com/?x=1",
+			"https://api.example.com/#frag",
+			"https://api.example.com/\r\n",
+			"w14f-controller-error",
+		} {
+			if err := validateEndpointURL(endpoint); err == nil {
+				t.Fatalf("validateEndpointURL(%q) 必须失败", endpoint)
+			}
+		}
+	})
+	t.Run("出站 URL 形状", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			protocol modelcheckprofile.Protocol
+			stream   bool
+			adapter  string
+			headers  func() http.Header
+			endpoint string
+			wantURL  string
+		}{
+			{name: "chat 自动补 /v1", protocol: modelcheckprofile.ProtocolOpenAIChat, endpoint: "https://api.example.com", wantURL: "https://api.example.com/v1/chat/completions"},
+			{name: "chat 保留既有 /v1", protocol: modelcheckprofile.ProtocolOpenAIChat, endpoint: "https://api.example.com/v1/", wantURL: "https://api.example.com/v1/chat/completions"},
+			{name: "gemini 自动补 /v1beta", protocol: modelcheckprofile.ProtocolGeminiNative, endpoint: "https://api.example.com", wantURL: "https://api.example.com/v1beta/models/m:generateContent"},
+			{name: "gemini sse 保留查询串", protocol: modelcheckprofile.ProtocolGeminiNative, stream: true, endpoint: "https://api.example.com", wantURL: "https://api.example.com/v1beta/models/m:streamGenerateContent?alt=sse"},
+			{name: "codex 固定官方基址", protocol: modelcheckprofile.ProtocolOpenAIResponses, adapter: AdapterOpenAIOAuthCodex, headers: func() http.Header {
+				headers := http.Header{}
+				headers.Set("Authorization", "Bearer wl-codex")
+				return headers
+			}, endpoint: "https://anything.example", wantURL: OpenAIOAuthCodexBaseURL + "/responses"},
+		}
+		for _, test := range cases {
+			t.Run(test.name, func(t *testing.T) {
+				request, err := BuildBasic(test.protocol, "m", "hello", test.stream)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-			if err != nil || got != test.want {
-				t.Fatalf("buildURL=%q err=%v want=%q", got, err, test.want)
-			}
-		})
-	}
+				var headers http.Header
+				if test.headers != nil {
+					headers = test.headers()
+				}
+				capture := &w2f3Capture{}
+				_, err = Execute(context.Background(), request, Options{Adapter: test.adapter, Endpoint: test.endpoint, Headers: headers, Client: &http.Client{Transport: capture.transport()}, Timeout: time.Second})
+				if err != nil {
+					t.Fatalf("Execute err=%v", err)
+				}
+				if got := capture.request.URL.String(); got != test.wantURL {
+					t.Fatalf("URL=%q want=%q", got, test.wantURL)
+				}
+			})
+		}
+	})
 }
 
 func TestWlParseResponseDetailedVariants(t *testing.T) {

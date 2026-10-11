@@ -179,6 +179,7 @@ var schemaStatements = []string{
 		cooldown_retest_last_status_code INTEGER,
 		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
 		expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0,
+		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
 		last_health_check_at TEXT,
 		last_health_success_at TEXT,
 		last_health_check_status_code INTEGER,

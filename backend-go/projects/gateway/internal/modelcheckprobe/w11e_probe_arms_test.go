@@ -92,16 +92,8 @@ func TestW11EErrorValueMessageAndUUIDArms(t *testing.T) {
 	if !isFailureEvent("response.failed") || !isFailureEvent("response.incomplete") || !isFailureEvent("error") || isFailureEvent("response.completed") {
 		t.Fatal("失败事件判定错误")
 	}
-	headers := http.Header{}
-	headers.Set("x-request-id", "existing")
-	var err error
-	if got := mustHeaderUUID(headers, "x-request-id", &err); got != "existing" || err != nil {
-		t.Fatalf("既有 header=%q err=%v", got, err)
-	}
-	generated := mustHeaderUUID(http.Header{}, "session_id", &err)
-	if err != nil || !strings.Contains(generated, "-") {
-		t.Fatalf("生成 UUID=%q err=%v", generated, err)
-	}
+	// W2 F3 接线后 mustHeaderUUID 随 normalizeOpenAIOAuthCodexRequest 删除，
+	// 身份 UUID 生成收敛到 newCodexIdentity/codexUUID 单点。
 	if _, uuidErr := codexUUID(); uuidErr != nil {
 		t.Fatalf("codexUUID=%v", uuidErr)
 	}

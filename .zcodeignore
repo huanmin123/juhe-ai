@@ -1,0 +1,95 @@
+node_modules/
+dist/
+coverage/
+release/
+.env
+.env.*
+!.env.example
+!**/.env.example
+!.env.*.example
+!**/.env.*.example
+*.log
+logs/
+tmp/
+reports/*.json
+!reports/perf-limit-report-2026-05-17.json
+reports/profiles/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.tsbuildinfo
+
+/backend/data/
+/backend/logs/
+# SQLite 数据库二进制及 WAL/SHM 伴生文件，任何目录一律不入库
+# （2026-09-20 清理 cmd/juhe-ai-gateway/data/，2026-09-21 清理
+# cmd/juhe-ai-gateway/acceptance/data/account-health.sqlite3）
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+# Go 网关本地开发/测试运行时写出的目录（含密钥等非 SQLite 文件）
+/backend-go/projects/gateway/cmd/juhe-ai-gateway/data/
+/backend-go/juhe-ai-runtime-log-indexer
+/backend-go/juhe-ai-runtime-log-indexer.exe
+**/*.exe
+# Go 测试二进制与性能剖析/临时产物（2026-09-18 清理误入库的
+# backend-go/go_tests_tmp.txt、gateway/gemline.tmp、gateway/w14p_prof.out）
+*.test
+*.prof
+*.out
+*.tmp
+go_tests_tmp.txt
+.worktrees/
+**/.local/
+/.tmp/
+
+.codex*
+.codegraph/
+
+vendor
+
+/.codegraph/
+
+# docker single-server 构建产物（deploy.sh 每次全量重编译，不信任既有产物）
+backend-go/docker/single-server/build/bin/
+.zcode
+.playwright-cli
+/.zcode/
+/.codex/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

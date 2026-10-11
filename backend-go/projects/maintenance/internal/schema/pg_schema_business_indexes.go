@@ -1353,6 +1353,18 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_title_norm ON model_check_question_bank(title_norm)`,
 	},
 	{
+		// 提交门禁测试记录索引：按创建者查近期测试（门禁 24 小时窗口过滤
+		// 前置收窄）与按题目内容哈希定位同内容历史测试。
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-tests-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_tests_created_by ON model_check_question_tests(created_by, created_at)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-tests-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_tests_draft_hash ON model_check_question_tests(draft_hash)`,
+	},
+	{
 		// media_jobs 查询索引（媒体设计 §8.2）：API Key 列表/鉴权过滤、
 		// 账户亲和定位、状态扫描（清理 job TTL 置 expired）。
 		SchemaName: "juhe_business",

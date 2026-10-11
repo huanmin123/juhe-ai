@@ -8,18 +8,16 @@
 //     分级超时（Node 10s/20s/30s，2026-10-07 上调为 20s/30s/40s）与
 //     automatic-account-probe-outcome 的传输证据。
 //
-// Node 侧探针经进程内网关（handleOpenAIGatewayRequest）发起；Go jobs 不复刻
-// 整个网关，只复刻后台探针路径的可观察行为：单候选账户、disableSessionAffinity、
-// disableAccountStateMutation、上游 Bearer 认证（gateway/upstream/request.ts
-// buildUpstreamHeaders 是唯一认证头写入点）与 limited 诊断脱敏。
+// W4 起（信封统一设计 §9，计划 W4 行）最终请求构造收口 upstreamenvelope.Build：
+// 本包只保留探针语义 body 装配（BodyFields / Multipart）、账户形态 → 认证/预算
+// 策略映射与身份生成（§9.3 单源）；method、URL、标准/认证/身份头、body 编码与
+// 适配器包装全部由 Build 承担，本包不再拼接最终 HTTP 请求。
 package accountprobe
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -78,22 +76,17 @@ const (
 	ProtocolGemini    DiagnosticProtocol = "gemini"
 )
 
-// 账户探针常量（Node account-test-request.ts；outputChallengePrompt 与
-// outputTokenLimit 为有意偏离，见各自注释）。
+// 账户探针常量（Node account-test-request.ts；outputChallengePrompt 为有意
+// 偏离，见注释）。
 const (
 	outputChallengeExpected = "juhe"
 	// 说明测试用途并要求原样输出：推理模型（GLM 思考模式、o 系列等）遇到无
 	// 解释的"只能回复：juhe00649"会在思考阶段纠结内容用途与安全疑虑，明确
 	// 用途可显著缩短思考。
 	outputChallengePrompt = "接口连通性自动测试：请原样输出 " + outputChallengeExpected
-	// 1024 而非 Node 的 256：推理模型的思考 token 计入输出上限，256 会被思考
-	// 耗尽（finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
-	// M4 起取值引用信封单一来源（信封统一设计 §6 M4），BUG-0201 下 1024 的
-	// 既有语义不变。
-	outputTokenLimit    = upstreamenvelope.DefaultProbeOutputTokens
-	anthropicBuildID    = "eb7"
-	anthropicDeviceID   = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
-	clientProfileHeader = "x-juhe-client-profile"
+	anthropicBuildID      = "eb7"
+	anthropicDeviceID     = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
+	clientProfileHeader   = "x-juhe-client-profile"
 )
 
 // probeInstructionsPool 是 responses 形态 system 指令的轮换池，用于消除固
@@ -161,14 +154,6 @@ func probeInstructions() string {
 // 后缀不影响结果。
 func buildImageTestPrompt() string {
 	return "Solid black. " + challengeDigits()
-}
-
-// testRequest 是一次探针请求的协议形态（path/body/headers）。
-type testRequest struct {
-	path    string
-	body    []byte
-	headers map[string]string
-	model   string
 }
 
 // defaultEndpointMode 等价 resolveAccountTestEndpointMode：无显式 mode 时取
@@ -242,125 +227,11 @@ func protocolFamilyForMode(mode EndpointMode) string {
 	}
 }
 
-func orderedJSON(fields []orderedField) ([]byte, error) {
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	for i, field := range fields {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		key, err := json.Marshal(field.key)
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(key)
-		buf.WriteByte(':')
-		value, err := field.marshal()
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(value)
-	}
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
-}
-
-type orderedField struct {
-	key     string
-	marshal func() ([]byte, error)
-}
-
-func rawField(key string, raw json.RawMessage) orderedField {
-	return orderedField{key: key, marshal: func() ([]byte, error) { return raw, nil }}
-}
-
-func marshalValue(value any) json.RawMessage {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		panic(fmt.Sprintf("accountprobe: 探针载荷序列化失败: %v", err))
-	}
-	return encoded
-}
-
-func rawText(value string) json.RawMessage { return marshalValue(value) }
-
-func rawBool(value bool) json.RawMessage { return marshalValue(value) }
-
-func rawInt(value int) json.RawMessage { return marshalValue(value) }
-
-// buildOpenAIResponsesPayload 等价 createOpenAIResponsesTestPayload
-// （对象键顺序与 Node 字面量一致；codex_responses 流式 lite 归一化仅在
-// OAuth + codex 兼容时出现，jobs 探针路径未复刻，见包注释）。
-func buildOpenAIResponsesPayload(model, prompt string, isOAuth bool, stream bool) ([]byte, error) {
-	input := []map[string]any{
-		{
-			"role": "user",
-			"content": []map[string]any{
-				{"type": "input_text", "text": prompt},
-			},
-		},
-	}
-	fields := []orderedField{
-		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-		rawField("input", marshalValue(input)),
-		{key: "instructions", marshal: func() ([]byte, error) { return rawText(probeInstructions()), nil }},
-		{key: "stream", marshal: func() ([]byte, error) { return rawBool(stream), nil }},
-		{key: "max_output_tokens", marshal: func() ([]byte, error) { return rawInt(outputTokenLimit), nil }},
-	}
-	if isOAuth {
-		fields = append(fields, orderedField{key: "store", marshal: func() ([]byte, error) { return rawBool(false), nil }})
-	}
-	return orderedJSON(fields)
-}
-
-// buildOpenAIChatCompletionsPayload 等价 createOpenAIChatCompletionsTestPayload。
-func buildOpenAIChatCompletionsPayload(model, prompt string, stream bool) ([]byte, error) {
-	messages := []map[string]any{{"role": "user", "content": prompt}}
-	return orderedJSON([]orderedField{
-		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-		rawField("messages", marshalValue(messages)),
-		{key: "max_tokens", marshal: func() ([]byte, error) { return rawInt(outputTokenLimit), nil }},
-		{key: "stream", marshal: func() ([]byte, error) { return rawBool(stream), nil }},
-	})
-}
-
-// buildGeminiGenerateContentPayload 等价 createGeminiGenerateContentTestPayload。
-func buildGeminiGenerateContentPayload(prompt string) ([]byte, error) {
-	contents := []map[string]any{
-		{
-			"role":  "user",
-			"parts": []map[string]any{{"text": prompt}},
-		},
-	}
-	return orderedJSON([]orderedField{
-		rawField("contents", marshalValue(contents)),
-		rawField("generationConfig", marshalValue(map[string]any{"maxOutputTokens": outputTokenLimit})),
-	})
-}
-
-// buildGeminiSpeechPayload 构造 gemini 协议 audio_speech 探针报文（契约
-// §5.1）：contents 文本 + responseModalities=["AUDIO"] + voiceName 取 "Kore"
-// （gemini 预置音色，openai 音色词表对 gemini 无效）。
-func buildGeminiSpeechPayload() ([]byte, error) {
-	contents := []map[string]any{
-		{
-			"parts": []map[string]any{{"text": "ok"}},
-		},
-	}
-	generationConfig := map[string]any{
-		"responseModalities": []string{"AUDIO"},
-		"speechConfig": map[string]any{
-			"prebuiltVoiceConfig": map[string]any{"voiceName": "Kore"},
-		},
-	}
-	return orderedJSON([]orderedField{
-		rawField("contents", marshalValue(contents)),
-		rawField("generationConfig", marshalValue(generationConfig)),
-	})
-}
-
-// buildAnthropicMessagesPayload 等价 createAnthropicClaudeCodeAccountTestPayload。
-func buildAnthropicMessagesPayload(model, prompt string, stream bool, sessionID string) ([]byte, error) {
+// anthropicMessagesBodyFields 装配 Anthropic Messages 探针语义 body（等价原
+// createAnthropicClaudeCodeAccountTestPayload 的字段集；W4 起不再私有编码，
+// max_tokens 由 Build 按 catalog 必填字段注入——BUG-0201 下 1024、无
+// thinking/effort 的轻量探针契约不变，见信封统一设计 §4.3）。
+func anthropicMessagesBodyFields(model, prompt string, stream bool, sessionID string) []upstreamenvelope.BodyField {
 	messages := []map[string]any{
 		{
 			"role": "user",
@@ -375,52 +246,22 @@ func buildAnthropicMessagesPayload(model, prompt string, stream bool, sessionID 
 		{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.", "cache_control": map[string]any{"type": "ephemeral"}},
 		{"type": "text", "text": fmt.Sprintf("CWD: %s\nDate: %s", cwdOrEmpty(), time.Now().UTC().Format("2006-01-02"))},
 	}
-	metadataUser := marshalValue(map[string]any{
+	metadataUser := map[string]any{
 		"device_id":    anthropicDeviceID,
 		"account_uuid": "",
 		"session_id":   sessionID,
-	})
-	return orderedJSON([]orderedField{
-		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-		rawField("messages", marshalValue(messages)),
-		rawField("system", marshalValue(system)),
-		{key: "tools", marshal: func() ([]byte, error) { return marshalValue([]any{}), nil }},
+	}
+	return []upstreamenvelope.BodyField{
+		{Key: "model", Value: model},
+		{Key: "messages", Value: messages},
+		{Key: "system", Value: system},
+		{Key: "tools", Value: []any{}},
 		// 探测请求必须轻量（max_tokens 1024、不带 thinking/effort）：非流式
 		// 探测要等完整响应，推理增强会让首字节超过 Cloudflare 类代理的 100s
 		// 上限（上游回 524），也远超手动测试 60s 诊断预算（BUG-0201）。
-		{key: "max_tokens", marshal: func() ([]byte, error) { return rawInt(1024), nil }},
-		{key: "metadata", marshal: func() ([]byte, error) {
-			return orderedJSON([]orderedField{
-				{key: "user_id", marshal: func() ([]byte, error) { return metadataUser, nil }},
-			})
-		}},
-		{key: "stream", marshal: func() ([]byte, error) { return rawBool(stream), nil }},
-	})
-}
-
-// buildImagesPayload 等价 createOpenAIImageGenerationTestRequest 的 body。
-func buildImagesPayload(model string) ([]byte, error) {
-	return orderedJSON([]orderedField{
-		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-		{key: "prompt", marshal: func() ([]byte, error) { return rawText(buildImageTestPrompt()), nil }},
-		{key: "n", marshal: func() ([]byte, error) { return rawInt(1), nil }},
-		{key: "size", marshal: func() ([]byte, error) { return rawText("1024x1024"), nil }},
-		{key: "quality", marshal: func() ([]byte, error) { return rawText("low"), nil }},
-		{key: "output_format", marshal: func() ([]byte, error) { return rawText("webp"), nil }},
-		{key: "output_compression", marshal: func() ([]byte, error) { return rawInt(100), nil }},
-	})
-}
-
-// buildSpeechPayload 构造 M1 audio_speech 探针报文（音频设计 §11.9）：
-// input 固定短文本 "ok"（低成本），voice 取目录默认或 alloy（openai 官方
-// 常用音色），response_format=wav（合法 WAV 头可结构断言）。
-func buildSpeechPayload(model, voice string) ([]byte, error) {
-	return orderedJSON([]orderedField{
-		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-		{key: "input", marshal: func() ([]byte, error) { return rawText("ok"), nil }},
-		{key: "voice", marshal: func() ([]byte, error) { return rawText(voice), nil }},
-		{key: "response_format", marshal: func() ([]byte, error) { return rawText("wav"), nil }},
-	})
+		{Key: "metadata", Value: map[string]any{"user_id": metadataUser}},
+		{Key: "stream", Value: stream},
+	}
 }
 
 // probeSpeechDefaultVoice 是目录 voices 未承载时的探针音色缺省（任务报告
@@ -456,26 +297,6 @@ func probeWAVPayload() []byte {
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(data)))
 	b = append(b, data...)
 	return b
-}
-
-// buildTranscriptionMultipart 构造 M1 audio_transcription_json 探针的
-// multipart/form-data body（file 字段 = 内置小 WAV + model 字段），返回
-// body 与含 boundary 的 content-type。
-func buildTranscriptionMultipart(model string) (body []byte, contentType string, err error) {
-	boundary := "juheprobe-audio-" + hex.EncodeToString([]byte(newUUID())[:8])
-	var buf bytes.Buffer
-	writeField := func(name, value string) {
-		buf.WriteString("--" + boundary + "\r\n")
-		buf.WriteString("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n")
-		buf.WriteString(value + "\r\n")
-	}
-	writeField("model", model)
-	buf.WriteString("--" + boundary + "\r\n")
-	buf.WriteString("Content-Disposition: form-data; name=\"file\"; filename=\"probe.wav\"\r\n")
-	buf.WriteString("Content-Type: audio/wav\r\n\r\n")
-	buf.Write(probeWAVPayload())
-	buf.WriteString("\r\n--" + boundary + "--\r\n")
-	return buf.Bytes(), "multipart/form-data; boundary=" + boundary, nil
 }
 
 func anthropicSystemReminder() string {

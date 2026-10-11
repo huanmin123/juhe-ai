@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,54 +29,71 @@ func TestModeAudioVocabulary(t *testing.T) {
 	}
 }
 
+// TestBuildSpeechPayloadContract 经 buildTestRequest 断言 audio_speech 报文
+// 契约（body 编码归信封 Build 后，载荷断言指向最终出站请求）。
 func TestBuildSpeechPayloadContract(t *testing.T) {
-	body, err := buildSpeechPayload("tts-1", "alloy")
-	if err != nil {
-		t.Fatalf("err = %v", err)
+	request, body := w4BuildRequest(t, probeView("https://audio.test"), ModeAudioSpeech, "tts-1")
+	if request.URL.Path != "/v1/audio/speech" {
+		t.Fatalf("speech path = %q", request.URL.Path)
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("body not json: %v", err)
 	}
 	if decoded["model"] != "tts-1" || decoded["input"] != "ok" ||
-		decoded["voice"] != "alloy" || decoded["response_format"] != "wav" {
+		decoded["voice"] != probeSpeechDefaultVoice || decoded["response_format"] != "wav" {
 		t.Fatalf("speech payload = %v", decoded)
 	}
 }
 
 func TestBuildTestRequestAudioModes(t *testing.T) {
-	view := &View{Type: "api_key"}
-	speech, err := buildTestRequest(view, ModeAudioSpeech, "tts-1", OutputChallenge{})
-	if err != nil {
-		t.Fatalf("speech: %v", err)
+	speech, speechBody := w4BuildRequest(t, probeView("https://audio.test"), ModeAudioSpeech, "tts-1")
+	if speech.URL.Path != "/v1/audio/speech" {
+		t.Fatalf("speech path = %q", speech.URL.Path)
 	}
-	if speech.path != "/v1/audio/speech" || speech.model != "tts-1" {
-		t.Fatalf("speech request = %+v", speech)
-	}
-	if contentType := speech.headers["content-type"]; contentType != "application/json" {
+	if contentType := speech.Header.Get("Content-Type"); contentType != "application/json" {
 		t.Fatalf("speech content-type = %q", contentType)
 	}
+	var speechPayload map[string]any
+	if err := json.Unmarshal(speechBody, &speechPayload); err != nil {
+		t.Fatalf("speech body not json: %v", err)
+	}
+	if speechPayload["model"] != "tts-1" {
+		t.Fatalf("speech body = %v", speechPayload)
+	}
 
-	stt, err := buildTestRequest(view, ModeAudioTranscriptionJSON, "whisper-1", OutputChallenge{})
+	stt, sttBody := w4BuildRequest(t, probeView("https://audio.test"), ModeAudioTranscriptionJSON, "whisper-1")
+	if stt.URL.Path != "/v1/audio/transcriptions" {
+		t.Fatalf("stt path = %q", stt.URL.Path)
+	}
+	contentType := stt.Header.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
+		t.Fatalf("stt content-type = %q err=%v", contentType, err)
+	}
+	form, err := multipart.NewReader(bytes.NewReader(sttBody), params["boundary"]).ReadForm(1 << 20)
 	if err != nil {
-		t.Fatalf("stt: %v", err)
+		t.Fatalf("解析 multipart 失败: %v", err)
 	}
-	if stt.path != "/v1/audio/transcriptions" {
-		t.Fatalf("stt path = %q", stt.path)
+	if got := form.Value["model"]; len(got) != 1 || got[0] != "whisper-1" {
+		t.Fatalf("multipart missing model field: %v", form.Value["model"])
 	}
-	contentType := stt.headers["content-type"]
-	if !strings.HasPrefix(contentType, "multipart/form-data; boundary=") {
-		t.Fatalf("stt content-type = %q", contentType)
+	fileHeaders, ok := form.File["file"]
+	if !ok || len(fileHeaders) != 1 {
+		t.Fatalf("multipart missing file field: %v", form.File)
 	}
-	boundary := strings.TrimPrefix(contentType, "multipart/form-data; boundary=")
-	if !bytes.Contains(stt.body, []byte("--"+boundary)) {
-		t.Fatalf("body missing multipart boundary")
+	fileHeader := fileHeaders[0]
+	file, err := fileHeader.Open()
+	if err != nil {
+		t.Fatalf("打开 file 段失败: %v", err)
 	}
-	if !bytes.Contains(stt.body, []byte(`name="model"`)) || !bytes.Contains(stt.body, []byte("whisper-1")) {
-		t.Fatalf("multipart missing model field: %q", stt.body)
+	defer file.Close()
+	if fileHeader.Filename != "probe.wav" {
+		t.Fatalf("file filename = %q", fileHeader.Filename)
 	}
-	if !bytes.Contains(stt.body, []byte(`name="file"; filename="probe.wav"`)) {
-		t.Fatalf("multipart missing file field: %q", stt.body)
+	data, err := io.ReadAll(file)
+	if err != nil || !bytes.Equal(data, probeWAVPayload()) {
+		t.Fatalf("file bytes 不等于内置 WAV 样本: %v", err)
 	}
 }
 
@@ -188,19 +207,17 @@ func TestEndpointModeOrdersIncludeAudio(t *testing.T) {
 // 端点，请求按 generateContent 形态构造（contents 文本 + responseModalities
 // AUDIO + voiceName=Kore），判活验 candidates 含 inlineData。
 func TestBuildTestRequestGeminiAudioSpeech(t *testing.T) {
-	view := &View{Type: "api_key", ProtocolCode: "gemini"}
-	request, err := buildTestRequest(view, ModeAudioSpeech, "gemini-2.5-flash-preview-tts", OutputChallenge{})
-	if err != nil {
-		t.Fatalf("err = %v", err)
+	view := probeView("https://gem.test/v1beta")
+	view.ProtocolCode = "gemini"
+	request, body := w4BuildRequest(t, view, ModeAudioSpeech, "gemini-2.5-flash-preview-tts")
+	if request.URL.Path != "/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" {
+		t.Fatalf("gemini speech path = %q", request.URL.Path)
 	}
-	if request.path != "/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" {
-		t.Fatalf("gemini speech path = %q", request.path)
-	}
-	if contentType := request.headers["content-type"]; contentType != "application/json" {
+	if contentType := request.Header.Get("Content-Type"); contentType != "application/json" {
 		t.Fatalf("gemini speech content-type = %q", contentType)
 	}
 	var decoded map[string]any
-	if err := json.Unmarshal(request.body, &decoded); err != nil {
+	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("body not json: %v", err)
 	}
 	contents, _ := decoded["contents"].([]any)
@@ -226,13 +243,14 @@ func TestBuildTestRequestGeminiAudioSpeech(t *testing.T) {
 }
 
 func TestBuildUpstreamURLGeminiAudioSpeech(t *testing.T) {
-	view := &View{Type: "api_key", ProtocolCode: "gemini", BaseURL: "https://generativelanguage.googleapis.com/v1beta"}
-	upstream, err := buildUpstreamURL(view, "/v1beta/models/gemini-2.5-flash-preview-tts:generateContent")
+	view := probeView("https://generativelanguage.googleapis.com/v1beta")
+	view.ProtocolCode = "gemini"
+	request, err := buildTestRequest(context.Background(), view, ModeAudioSpeech, "gemini-2.5-flash-preview-tts", OutputChallenge{ExpectedOutput: "juhe", Prompt: "juhe"}, "sk-test")
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if upstream != "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" {
-		t.Fatalf("upstream url = %q", upstream)
+	if request.URL.String() != "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" {
+		t.Fatalf("upstream url = %q", request.URL)
 	}
 }
 

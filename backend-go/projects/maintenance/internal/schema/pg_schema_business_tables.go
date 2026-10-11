@@ -654,6 +654,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       cooldown_retest_last_status_code integer,
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
+      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
       health_check_model text NOT NULL,
       health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
       last_health_check_at text,
@@ -1513,6 +1514,18 @@ $$`,
 		SQL:        `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1))`,
 	},
 	{
+		// AI 账户能力域拆分（PLAN-20261011T141004000Z §数据变化）：accounts
+		// capability_domain 列的存量库加式迁移。与 expedited_recovery_enabled
+		// 同为「CREATE TABLE 只救新库」的显式 ALTER；ADD COLUMN 携带 NOT NULL
+		// DEFAULT 'chat'，存量行恒落 chat 满足列级 CHECK。列已存在时的四值
+		// 形状校验（类型/NOT NULL/DEFAULT/CHECK）由 EnsurePostgres 末尾的
+		// verifyPostgresBusinessCapabilityDomainShape 承载，不以 IF NOT EXISTS
+		// 命中替代形状检查。
+		SchemaName: "juhe_business",
+		Source:     "account-capability-domain-pg-column",
+		SQL:        `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`,
+	},
+	{
 		SchemaName: "juhe_business",
 		Source:     "account-list-projection-pg-trigram-extension",
 		SQL:        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
@@ -2217,6 +2230,43 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
 		SchemaName: "juhe_business",
 		Source:     "model-check-question-bank-builtin-pg-column",
 		SQL:        `ALTER TABLE model_check_question_bank ADD COLUMN IF NOT EXISTS is_builtin integer NOT NULL DEFAULT 0`,
+	},
+	{
+		// 提交门禁测试记录表（检测题库提交门禁设计）：每次 POST
+		// /question-bank/test 的同步诊断结果落一行。verdict 与 alignment 的
+		// CHECK 与 Go 侧常量一致；diagnosis_json 存裁判完整诊断 JSON；
+		// http_status 可空（直连失败无 HTTP 状态）；draft_hash 供提交门禁
+		// 比对题目内容哈希。CREATE TABLE IF NOT EXISTS 幂等。
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-tests-table",
+		SQL: `CREATE TABLE IF NOT EXISTS model_check_question_tests (
+      id text PRIMARY KEY,
+      created_by text NOT NULL,
+      account_id text NOT NULL,
+      account_name text NOT NULL DEFAULT '',
+      model text NOT NULL,
+      draft_hash text NOT NULL,
+      verdict text NOT NULL CHECK (verdict IN ('pass', 'fail', 'invalid', 'request_failed')),
+      alignment text NOT NULL DEFAULT '' CHECK (alignment IN ('', 'aligned', 'misaligned', 'unknown')),
+      diagnosis_json text,
+      http_status integer,
+      latency_ms integer NOT NULL DEFAULT 0,
+      created_at text NOT NULL
+    )`,
+	},
+	{
+		// 提交门禁透出列（last_test）：PG 的 model_check_question_bank
+		// CREATE TABLE 未内联两列，新库与历史库统一由下方幂等 ALTER 补列
+		//（仅 SQLite 侧建表 DDL 内联声明）。last_test_id 记录
+		// 通过门禁的测试记录 id，last_test_json 存题目视图透出的摘要 JSON。
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-lasttest-pg-column",
+		SQL:        `ALTER TABLE model_check_question_bank ADD COLUMN IF NOT EXISTS last_test_id text`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-lasttest-pg-column",
+		SQL:        `ALTER TABLE model_check_question_bank ADD COLUMN IF NOT EXISTS last_test_json text`,
 	},
 	{
 		// media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：id 是对外 job id

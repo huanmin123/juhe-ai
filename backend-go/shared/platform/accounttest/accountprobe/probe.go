@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -409,20 +408,16 @@ func protocolCodeForView(view *View) string {
 	}
 }
 
-// upstreamAuthStrategy 是账户视图到信封认证策略的映射（信封统一设计 §6 M4），
-// 取证自 executeAttempt 的认证头分支与流式 accept 覆盖规则：
+// upstreamAuthStrategy 是账户视图到信封认证策略的映射（信封统一设计 §6 M4
+// 取证，W4 起经 Spec.Auth 供 Build 统一写入认证头），取证自原 executeAttempt
+// 的认证头分支与流式 accept 覆盖规则：
 //   - view.Type oauth（OpenAI OAuth，含 anthropic 协议账户）与 google_oauth：
-//     Bearer + 纯流式 accept，即 AuthOAuth 的信封语义（oauth 伴随头
-//     openai-beta / chatgpt-account-id / x-goog-user-project 仍由认证头分支
-//     现状写入）；
+//     Bearer + 纯流式 accept，即 AuthOAuth 的信封语义（§4.1 口径：google_oauth
+//     非 Code Assist 同为纯流式，与 F4 W4 统一）；
 //   - anthropic api-key：x-api-key；GLM anthropic 档案改用 Bearer
 //     （AuthBearer，api-key 形态双 accept）；
 //   - gemini api-key：x-goog-api-key；
 //   - 其余 OpenAI 形态：Bearer。
-//
-// M4 组合式迁移只消费该策略的 AcceptHeader 口径；认证头写入保留本包现状
-// （信封仅在 Build 内应用 Auth，整体 Build 与现状存在 body 字段序等差异，
-// 见 M4 迁移报告）。本映射是后续整体 Build 迁移的接缝。
 func upstreamAuthStrategy(view *View) upstreamenvelope.AuthStrategy {
 	switch {
 	case view.Type == "oauth" || view.Type == "google_oauth":
@@ -440,6 +435,10 @@ func upstreamAuthStrategy(view *View) upstreamenvelope.AuthStrategy {
 }
 
 // executeAttempt 构造请求、发起真实上游调用并做协议分类。
+// 最终请求构造收口 upstreamenvelope.Build（信封统一设计 §9.4 门禁）：本函数
+// 保留调用方职责（§3.2/§9.4）——探针内容、账户与凭据选择、transport、超时、
+// 重试、评分、结算；method、URL/query、标准/认证/身份头、body 编码与适配器
+// 包装全部由 Build 承担。
 func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntry, timeout time.Duration, limited bool) (*accountquality.ProbeObservation, error) {
 	routedView, endpointMode, model, routeErr := resolveProbeView(view)
 	if routeErr != nil {
@@ -447,14 +446,6 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	}
 	protocol := DiagnosticProtocol(protocolCodeForView(routedView))
 	challenge := CreateOutputChallenge()
-	request, buildErr := buildTestRequest(routedView, endpointMode, model, challenge)
-	if buildErr != nil {
-		return nil, buildErr
-	}
-	upstreamURL, urlErr := buildUpstreamURL(routedView, request.path)
-	if urlErr != nil {
-		return nil, urlErr
-	}
 	apiKey := view.SelectedAPIKey
 	if entry != nil {
 		apiKey = entry.Key
@@ -462,86 +453,33 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("探针候选缺少可用凭据")
 	}
-
-	var firstByteAt time.Time
-	httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, strings.NewReader(string(request.body)))
-	if reqErr != nil {
-		return nil, reqErr
+	httpReq, buildErr := buildTestRequest(ctx, routedView, endpointMode, model, challenge, apiKey)
+	if buildErr != nil {
+		return nil, buildErr
 	}
-	// 标准头 accept 走信封口径（信封统一设计 §6 M4）：JSON/multipart 一律
-	// application/json；SSE 形态 oauth / google_oauth（AuthOAuth）纯流式、
-	// api-key 形态双 accept——账户形态映射与下方认证头分支同源（见
-	// upstreamAuthStrategy）。endpointMode 全部在信封 catalog 登记，查询
-	// 失败属编程错误，显式失败不静默兜底。
-	accept, acceptErr := upstreamenvelope.AcceptHeader(upstreamenvelope.EndpointMode(endpointMode), upstreamAuthStrategy(view))
-	if acceptErr != nil {
-		return nil, acceptErr
-	}
-	httpReq.Header.Set("accept", accept)
-	httpReq.Header.Set("content-type", "application/json")
-	for name, value := range request.headers {
-		if strings.EqualFold(name, clientProfileHeader) {
-			continue
-		}
-		httpReq.Header.Set(name, value)
-	}
-	// 认证头必须按协议与账户类型构造，不能让手动探针把所有上游都
-	// 伪装成 OpenAI Bearer。
-	switch protocol {
-	case ProtocolAnthropic:
-		httpReq.Header.Set("anthropic-version", "2023-06-01")
-		if view.Type == "oauth" || view.ProviderProtocolProfileID == "profile_glm_coding_anthropic_v1" {
-			httpReq.Header.Set("authorization", "Bearer "+apiKey)
-		} else {
-			httpReq.Header.Set("x-api-key", apiKey)
-		}
-	case ProtocolGemini:
-		if view.Type == "google_oauth" {
-			httpReq.Header.Set("authorization", "Bearer "+apiKey)
-		} else {
-			httpReq.Header.Set("x-goog-api-key", apiKey)
-		}
-	default:
-		httpReq.Header.Set("authorization", "Bearer "+apiKey)
-		if view.Type == "oauth" && (view.ProviderProtocolProfileID == "" || view.ProviderProtocolProfileID == "profile_gpt_openai_v1") {
-			httpReq.Header.Set("openai-beta", "responses=experimental")
-			if accountID := credentialText(view.Credentials, "account_id"); accountID != "" {
-				httpReq.Header.Set("chatgpt-account-id", accountID)
-			} else if accountID := credentialText(view.Credentials, "chatgpt_user_id"); accountID != "" {
-				httpReq.Header.Set("chatgpt-account-id", accountID)
-			}
-		}
-	}
-	if protocol == ProtocolGemini && view.Type == "google_oauth" {
-		if quotaProject := credentialText(view.Credentials, "quota_project_id"); quotaProject != "" {
-			httpReq.Header.Set("x-goog-user-project", quotaProject)
-		}
-	}
+	// 系统客户端身份头保留调用方职责（§9.4：是否上收由 M2–M5 另行裁决）：
+	// 在 Build 之后应用；A/B 形态 Build 已写 Codex UA，本调用对已带 UA 的
+	// 请求保持沉默（upstreamidentity 契约），不会覆盖身份头。
 	upstreamidentity.ApplySystemClientHeaders(httpReq.Header, upstreamidentity.Input{
-		ProviderCode:              view.ProviderCode,
-		ProviderProtocolProfileID: view.ProviderProtocolProfileID,
-		CredentialType:            view.Type,
-		OAuthType:                 credentialText(view.Credentials, "oauth_type"),
+		ProviderCode:              routedView.ProviderCode,
+		ProviderProtocolProfileID: routedView.ProviderProtocolProfileID,
+		CredentialType:            routedView.Type,
+		OAuthType:                 credentialText(routedView.Credentials, "oauth_type"),
 		UpstreamHostname:          httpReq.URL.Hostname(),
 	})
-	if view.ClientCompatibility == "codex_responses" && (endpointMode == ModeResponsesJSON || endpointMode == ModeResponsesSSE) {
-		sessionID := newUUID()
-		threadID := sessionID
-		turnID := newUUID()
-		windowID := threadID + ":0"
-		httpReq.Header.Set("originator", "codex_exec")
-		// UA 与 upstreamidentity 的 GPT/Codex 家族身份同源，经 Effective 取
-		// 运行时版本（system_settings 覆盖应急通道；BUG-0201 消除两处硬编码）。
-		httpReq.Header.Set("user-agent", upstreamidentity.EffectiveCodexUserAgent())
-		httpReq.Header.Set("session-id", sessionID)
-		httpReq.Header.Set("thread-id", threadID)
-		httpReq.Header.Set("x-client-request-id", sessionID)
-		httpReq.Header.Set("x-codex-beta-features", "remote_compaction_v2")
-		httpReq.Header.Set("x-codex-window-id", windowID)
-		httpReq.Header.Set("x-codex-turn-metadata", fmt.Sprintf(`{"installation_id":%q,"session_id":%q,"thread_id":%q,"turn_id":%q,"window_id":%q,"request_kind":"turn","thread_source":"user","sandbox":"none"}`, newUUID(), sessionID, threadID, turnID, windowID))
+	// 探针评分跟随请求编码形态（§9.4 2026-10-12 W3 裁决）：A 形态恒 SSE、
+	// Code Assist 线真相恒 SSE——responses_json / generate_content_json 只是
+	// 账户配置模式名，分类模式按请求形态钉住为对应 SSE 端点，禁止"先试
+	// JSON 失败再试 SSE"的 fallback；其余形态按账户配置模式分类。
+	classifyMode := endpointMode
+	switch {
+	case isOAuthCodexForm(routedView, endpointMode):
+		classifyMode = ModeResponsesSSE
+	case isCodeAssistForm(routedView, endpointMode):
+		classifyMode = ModeGenerateContentSSE
 	}
-	httpReq.Header.Set("content-length", fmt.Sprintf("%d", len(request.body)))
 
+	var firstByteAt time.Time
 	startedAt := s.now()
 	client := s.client
 	if strings.TrimSpace(routedView.ProxyURL) != "" {
@@ -558,7 +496,7 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		firstTokenMS = firstByteAt.Sub(startedAt).Milliseconds()
 	}
 	if response != nil {
-		attempt := classifyResponse(routedView, protocol, endpointMode, response.bodyText, response.headers, response.status, firstTokenMS, durationMS, challenge, limited)
+		attempt := classifyResponse(routedView, protocol, classifyMode, response.bodyText, response.headers, response.status, firstTokenMS, durationMS, challenge, limited)
 		attempt.Evidence.HasRealUpstreamAttempt = true
 		attempt.Evidence.UpstreamCompleted = readErr == nil
 		attempt.Evidence.UpstreamStatus = response.status
@@ -1275,259 +1213,269 @@ func resolveTestModel(view *View, explicitModel string) (string, error) {
 	return healthModel, nil
 }
 
-// buildTestRequest 按 endpoint mode 构造探针请求（等价 createOpenAITestRequest /
-// createAnthropicTestRequest / createGeminiTestRequest / Images）。
-func buildTestRequest(view *View, mode EndpointMode, model string, challenge OutputChallenge) (*testRequest, error) {
-	switch {
-	case mode == ModeAudioSpeech:
-		if isGeminiProtocol(view) {
-			// gemini 上游无 /v1/audio/speech 端点（恒 404），audio_speech
-			// 探针按契约 §5.1 走 generateContent，URL 沿既有 gemini 拼接分支。
-			body, err := buildGeminiSpeechPayload()
-			if err != nil {
-				return nil, err
-			}
-			return &testRequest{
-				path:    "/v1beta/" + geminiModelPath(model) + ":generateContent",
-				body:    body,
-				headers: map[string]string{"content-type": "application/json"},
-				model:   model,
-			}, nil
-		}
-		// M1 audio_speech 探针（音频设计 §11.9）：短输入 + wav 格式，voice
-		// 用缺省音色（目录 voices 清单 M1 未承载，缺口见任务报告）。
-		body, err := buildSpeechPayload(model, probeSpeechDefaultVoice)
-		if err != nil {
-			return nil, err
-		}
-		return &testRequest{path: "/v1/audio/speech", body: body, headers: map[string]string{"content-type": "application/json"}, model: model}, nil
-	case mode == ModeAudioTranscriptionJSON:
-		// M1 STT 探针：multipart，file 携带本包内置小 WAV 样本。
-		body, contentType, err := buildTranscriptionMultipart(model)
-		if err != nil {
-			return nil, err
-		}
-		return &testRequest{path: "/v1/audio/transcriptions", body: body, headers: map[string]string{"content-type": contentType}, model: model}, nil
-	case mode == ModeImagesJSON:
-		body, err := buildImagesPayload(model)
-		if err != nil {
-			return nil, err
-		}
-		return &testRequest{path: "/v1/images/generations", body: body, model: model}, nil
-	case mode.anthropic():
-		sessionID := newUUID()
-		body, err := buildAnthropicMessagesPayload(model, challenge.Prompt, mode.streaming(), sessionID)
-		if err != nil {
-			return nil, err
-		}
-		return &testRequest{
-			path: "/v1/messages",
-			body: body,
-			headers: map[string]string{
-				clientProfileHeader:        "claude_code",
-				"x-claude-code-session-id": sessionID,
-			},
-			model: model,
-		}, nil
-	case mode.gemini():
-		if mode == ModeInteractionsJSON || mode == ModeInteractionsSSE {
-			stream := mode == ModeInteractionsSSE
-			body, err := orderedJSON([]orderedField{
-				{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-				{key: "input", marshal: func() ([]byte, error) { return rawText(challenge.Prompt), nil }},
-				{key: "stream", marshal: func() ([]byte, error) { return rawBool(stream), nil }},
-			})
-			if err != nil {
-				return nil, err
-			}
-			request := &testRequest{path: "/v1beta/interactions", body: body, model: model}
-			if stream {
-				request.headers = map[string]string{"accept": "text/event-stream"}
-			}
-			return request, nil
-		}
-		body, err := buildGeminiGenerateContentPayload(challenge.Prompt)
-		if err != nil {
-			return nil, err
-		}
-		method := "generateContent"
-		query := ""
-		if mode == ModeGenerateContentSSE {
-			method = "streamGenerateContent"
-			query = "?alt=sse"
-		}
-		request := &testRequest{
-			path:  "/v1beta/" + geminiModelPath(model) + ":" + method + query,
-			body:  body,
-			model: model,
-		}
-		if view.Type == "google_oauth" && (credentialText(view.Credentials, "oauth_type") == "code_assist" || credentialText(view.Credentials, "oauth_type") == "google_one") {
-			project := credentialText(view.Credentials, "project_id")
-			if project == "" {
-				return nil, errors.New("Gemini Code Assist / Google One 缺少 project_id")
-			}
-			var wrapped map[string]any
-			if err := json.Unmarshal(body, &wrapped); err != nil {
-				return nil, err
-			}
-			request.path = "/v1internal:streamGenerateContent?alt=sse"
-			request.body, err = json.Marshal(map[string]any{"model": model, "project": project, "request": wrapped})
-			if err != nil {
-				return nil, err
-			}
-		}
-		return request, nil
-	default:
-		stream := mode.streaming()
-		var body []byte
-		var err error
-		path := "/v1/responses"
-		if mode == ModeChatJSON || mode == ModeChatSSE {
-			path = "/v1/chat/completions"
-			body, err = buildOpenAIChatCompletionsPayload(model, challenge.Prompt, stream)
-		} else {
-			body, err = buildOpenAIResponsesPayload(model, challenge.Prompt, view.Type == "oauth", stream)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if view.ClientCompatibility == "codex_responses" && (mode == ModeResponsesJSON || mode == ModeResponsesSSE) {
-			body, err = applyCodexCompatibilityPayload(body)
-			if err != nil {
-				return nil, err
-			}
-		}
-		request := &testRequest{path: path, body: body, model: model}
-		if view.Type == "oauth" && view.ProviderProtocolProfileID == "profile_gpt_openai_v1" && (mode == ModeResponsesJSON || mode == ModeResponsesSSE) {
-			request.path = strings.TrimPrefix(request.path, "/v1")
-		}
-		return request, nil
-	}
+// isOAuthCodexForm 判定 A 形态账户视图（OAuth Codex，§9.1-A）：oauth +
+// profile_gpt_openai_v1 + responses 模式（固定上游 /responses 只在该档案下
+// 成立，与本包原 buildUpstreamURL / buildTestRequest 的路由分支同口径）。
+// 请求构造与响应评分（classifyMode）共用本判定。
+func isOAuthCodexForm(view *View, mode EndpointMode) bool {
+	return view.Type == "oauth" &&
+		view.ProviderProtocolProfileID == "profile_gpt_openai_v1" &&
+		(mode == ModeResponsesJSON || mode == ModeResponsesSSE)
 }
 
-func applyCodexCompatibilityPayload(raw []byte) ([]byte, error) {
-	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return nil, fmt.Errorf("编码 Codex 兼容探针请求失败: %w", err)
-	}
-	sessionID := newUUID()
-	installationID := newUUID()
-	turnID := newUUID()
-	windowID := sessionID + ":0"
-	metadata := map[string]any{
-		"installation_id": installationID,
-		"session_id":      sessionID,
-		"thread_id":       sessionID,
-		"turn_id":         turnID,
-		"window_id":       windowID,
-		"request_kind":    "turn",
-		"thread_source":   "user",
-		"sandbox":         "none",
-	}
-	metadataJSON, err := json.Marshal(metadata)
+// isCodeAssistForm 判定 Gemini Code Assist / Google One 形态（§9.1）：仅
+// generateContent 形态改道内部端点（与原 buildTestRequest 分支同口径：
+// interactions / audio_speech 不包装）。请求恒 SSE，响应评分共用本判定。
+func isCodeAssistForm(view *View, mode EndpointMode) bool {
+	return isGeminiProtocol(view) && view.Type == "google_oauth" &&
+		(mode == ModeGenerateContentJSON || mode == ModeGenerateContentSSE) &&
+		(credentialText(view.Credentials, "oauth_type") == "code_assist" || credentialText(view.Credentials, "oauth_type") == "google_one")
+}
+
+// isCodexCompatibilityForm 判定 B 形态（codex_responses 兼容画像，§9.1-B）：
+// API Key + ClientCompatibility + responses 模式。A 形态优先——oauth 账户即使
+// 携带 codex_responses 也按 A 处理（§9.1 矩阵无第四形态，W3 同规）。
+func isCodexCompatibilityForm(view *View, mode EndpointMode) bool {
+	return !isOAuthCodexForm(view, mode) &&
+		view.ClientCompatibility == "codex_responses" &&
+		(mode == ModeResponsesJSON || mode == ModeResponsesSSE)
+}
+
+// buildTestRequest 组装探针语义输入并经信封 Build 生成最终请求（信封统一
+// 设计 §9.4 门禁：旧最终构造 buildUpstreamURL / applyCodexCompatibilityPayload
+// 已删除）。本函数保留调用方职责（§3.2/§9.4）：探针语义 body（提示词 /
+// 挑战 / 图片 / 音频样本）、账户形态 → 认证策略与预算策略映射、身份生成
+// （§9.3 单源）；method、URL/query、标准/认证/身份头、body 编码与适配器包装
+// 全部由 Build 承担。GLM 恢复消费 profile（§9.2-5）：ProtocolProfileID 恒
+// 传入 Spec，不再屏蔽——GLM 档案寻址与共享规则同规（官方版本根剥请求 /v1、
+// 代理 /v1 根与空根保留），原"多拼 /v1"差异是 §9.2-5 裁决的寻址修正。
+func buildTestRequest(ctx context.Context, view *View, mode EndpointMode, model string, challenge OutputChallenge, apiKey string) (*http.Request, error) {
+	spec, err := buildProbeSpec(view, mode, model, challenge, apiKey)
 	if err != nil {
 		return nil, err
 	}
-	body["store"] = false
-	body["include"] = []string{"reasoning.encrypted_content"}
-	body["reasoning"] = map[string]any{"context": "all_turns"}
-	body["parallel_tool_calls"] = false
-	body["prompt_cache_key"] = sessionID
-	body["client_metadata"] = map[string]any{
-		"x-codex-window-id":       windowID,
-		"turn_id":                 turnID,
-		"session_id":              sessionID,
-		"x-codex-turn-metadata":   string(metadataJSON),
-		"x-codex-installation-id": installationID,
-		"thread_id":               sessionID,
-	}
-	return json.Marshal(body)
+	return upstreamenvelope.Build(ctx, spec)
 }
 
-// buildUpstreamURL 等价各协议 buildUpstreamUrl（M4 迁移：URL 归一化统一由
-// upstreamenvelope.UpstreamURL 承担，信封统一设计 §6 M4；信封内部实现与本包
-// 原拼接逐行为对齐）：
-//   - OpenAI：base 归一化补 /v1，剥请求路径 /v1 前缀；
-//   - Anthropic：base 原样去尾斜杠，保留完整请求路径（缺 /v1 时补 /v1）；
-//   - Gemini：base pathname + 请求路径（base 以 /v1beta 结尾时剥请求前缀）；
-//   - profile_gemini_openai_chat_v1beta：base 以 /v1beta/openai 结尾时剥请求
-//     /v1 前缀；
-//   - OpenAI OAuth + profile_gpt_openai_v1：Codex 固定上游（信封
-//     AdapterOpenAIOAuthCodex 表达）。
-//
-// base 缺失/非法的错误文案保留本包原文：错误文本经 classifyAttemptError 进入
-// 探针结果消息，属可观察行为。协议族分支经 catalog 代表 mode 选择（信封
-// UpstreamURL 只消费条目协议，请求路径由参数独立传入），与 modelcheckprobe
-// buildURL 的 M2 同规。信封对 GLM OpenAI 档案另有剥 /v1 分支（exactkeyprobe
-// 规约），accountprobe 现状没有：为保持行为零变化，除
-// profile_gemini_openai_chat_v1beta 外的档案不传给信封（待裁决差异，见 M4
-// 迁移报告）。
-func buildUpstreamURL(view *View, pathAndQuery string) (string, error) {
-	base := strings.TrimSpace(view.BaseURL)
-	if base == "" {
-		return "", errors.New("账户缺少上游 base_url")
+// buildProbeSpec 把账户视图与 endpoint 形态映射为信封 Spec 输入（§9.1 三形态
+// 矩阵按账户形态分列，不按调用面分列）。
+func buildProbeSpec(view *View, mode EndpointMode, model string, challenge OutputChallenge, apiKey string) (upstreamenvelope.Spec, error) {
+	oauthCodex := isOAuthCodexForm(view, mode)
+	codeAssist := isCodeAssistForm(view, mode)
+	codexCompatibility := isCodexCompatibilityForm(view, mode)
+	envelopeMode := upstreamenvelope.EndpointMode(mode)
+	// gemini 协议的 audio_speech 探针按 generateContent 形态承载（gemini 上游
+	// 无 /v1/audio/speech 端点，恒 404；信封 catalog 的 audio_speech 条目是
+	// OpenAI 形态端点）。探针族无输出预算（§4.3 音频契约无预算字段），
+	// 显式 BudgetNone，不接 generate_content 条目的预算注入。
+	if mode == ModeAudioSpeech && isGeminiProtocol(view) {
+		envelopeMode = upstreamenvelope.ModeGenerateContentJSON
 	}
-	if _, err := url.Parse(strings.TrimRight(base, "/")); err != nil {
-		return "", fmt.Errorf("账户 base_url 无效：%w", err)
+	spec := upstreamenvelope.Spec{
+		BaseURL:           view.BaseURL,
+		ProtocolProfileID: view.ProviderProtocolProfileID,
+		EndpointMode:      envelopeMode,
+		// Model 是最终上游模型（模型映射后）：gemini {model} 路径模板替换、
+		// Code Assist 包装顶层 model、A/B 形态由 Build 按 §9.5 决定 Lite 头。
+		Model: model,
+		Auth:  upstreamenvelope.Auth{Token: apiKey, ExtraHeaders: map[string]string{}},
 	}
-	profileID := view.ProviderProtocolProfileID
-	if profileID != "profile_gemini_openai_chat_v1beta" {
-		profileID = ""
-	}
-	adapter := upstreamenvelope.AdapterNone
-	if view.Type == "oauth" && view.ProviderProtocolProfileID == "profile_gpt_openai_v1" {
-		adapter = upstreamenvelope.AdapterOpenAIOAuthCodex
-	}
-	return upstreamenvelope.UpstreamURL(view.BaseURL, protocolKeyMode(view), profileID, adapter, pathAndQuery)
-}
-
-// protocolKeyMode 返回按视图协议族选择信封 URL 分支的 catalog 代表 mode：
-// 信封 UpstreamURL 经条目协议选择 gemini / anthropic / openai 归一化分支，
-// 请求路径不取自条目模板，openai 系共用 chat_json 代表（与 modelcheckprobe
-// buildURL 的 M2 同规）。
-func protocolKeyMode(view *View) upstreamenvelope.EndpointMode {
+	// 探针语义 body 字段（§3.2 调用方职责）：预算字段由信封按 catalog 与
+	// BudgetPolicy 统一注入，本包不再私有携带。
 	switch {
-	case isGeminiProtocol(view):
-		return upstreamenvelope.ModeGenerateContentJSON
-	case isAnthropicProtocol(view):
-		return upstreamenvelope.ModeMessagesJSON
+	case mode == ModeAudioTranscriptionJSON:
+		// M1 STT 探针：multipart，file 携带本包内置小 WAV 样本；编码统一
+		// 信封标准库 writer（§9.2-4）。
+		spec.Multipart = &upstreamenvelope.MultipartContent{
+			Fields: []upstreamenvelope.MultipartField{{Name: "model", Value: model}},
+			File: upstreamenvelope.MultipartFile{
+				FieldName:   "file",
+				Filename:    "probe.wav",
+				ContentType: "audio/wav",
+				Data:        probeWAVPayload(),
+			},
+		}
+	case mode == ModeAudioSpeech:
+		if isGeminiProtocol(view) {
+			// gemini audio_speech（音频设计 §5.1）：contents 文本 +
+			// responseModalities AUDIO + voiceName Kore（gemini 预置音色）。
+			spec.BodyFields = []upstreamenvelope.BodyField{
+				{Key: "contents", Value: []map[string]any{{"parts": []map[string]any{{"text": "ok"}}}}},
+				{Key: "generationConfig", Value: map[string]any{
+					"responseModalities": []string{"AUDIO"},
+					"speechConfig":       map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": "Kore"}},
+				}},
+			}
+			spec.Budget = upstreamenvelope.BudgetNone
+		} else {
+			// M1 audio_speech 探针：短输入 + wav 格式，voice 用缺省音色。
+			spec.BodyFields = []upstreamenvelope.BodyField{
+				{Key: "model", Value: model},
+				{Key: "input", Value: "ok"},
+				{Key: "voice", Value: probeSpeechDefaultVoice},
+				{Key: "response_format", Value: "wav"},
+			}
+		}
+	case mode == ModeImagesJSON:
+		spec.BodyFields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: model},
+			// 图片报文带 3~6 位随机数字后缀消除固定指纹；图片验证不看 prompt 文本。
+			{Key: "prompt", Value: buildImageTestPrompt()},
+			{Key: "n", Value: 1},
+			{Key: "size", Value: "1024x1024"},
+			{Key: "quality", Value: "low"},
+			{Key: "output_format", Value: "webp"},
+			{Key: "output_compression", Value: 100},
+		}
+	case mode.anthropic():
+		sessionID := newUUID()
+		spec.BodyFields = anthropicMessagesBodyFields(model, challenge.Prompt, mode.streaming(), sessionID)
+		// Claude Code 身份：x-claude-code-session-id 头与 body
+		// metadata.user_id.session_id 共用一次生成的 session 值。
+		spec.Auth.ExtraHeaders["x-claude-code-session-id"] = sessionID
+	case mode == ModeInteractionsJSON || mode == ModeInteractionsSSE:
+		spec.BodyFields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: model},
+			{Key: "input", Value: challenge.Prompt},
+			{Key: "stream", Value: mode == ModeInteractionsSSE},
+		}
+	case mode.gemini():
+		spec.BodyFields = []upstreamenvelope.BodyField{
+			{Key: "contents", Value: []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challenge.Prompt}}}}},
+		}
+	case mode == ModeChatJSON || mode == ModeChatSSE:
+		spec.BodyFields = []upstreamenvelope.BodyField{
+			{Key: "model", Value: model},
+			{Key: "messages", Value: []map[string]any{{"role": "user", "content": challenge.Prompt}}},
+			{Key: "stream", Value: mode.streaming()},
+		}
 	default:
-		return upstreamenvelope.ModeChatJSON
+		// OpenAI Responses（chat 之外的 openai 形态）。
+		fields := []upstreamenvelope.BodyField{
+			{Key: "model", Value: model},
+			{Key: "input", Value: []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challenge.Prompt}}}}},
+			{Key: "instructions", Value: probeInstructions()},
+		}
+		// A 形态 stream 由 wrapCodexResponses 强制写 true（§9.1-A 恒 SSE，
+		// responses_json 只是账户配置模式名）。
+		if !oauthCodex {
+			fields = append(fields, upstreamenvelope.BodyField{Key: "stream", Value: mode.streaming()})
+		}
+		// C 形态 OAuth 账户的 responses 请求现状携带 store=false；A/B 形态
+		// 由适配器包装统一注入。
+		if view.Type == "oauth" && !oauthCodex && !codexCompatibility {
+			fields = append(fields, upstreamenvelope.BodyField{Key: "store", Value: false})
+		}
+		spec.BodyFields = fields
 	}
+	// 形态映射与预算（§9.1 矩阵）。
+	switch {
+	case oauthCodex:
+		// A 形态（OAuth Codex）：固定上游 /responses、强制 SSE、openai-beta
+		// 缺省补齐、身份头集合与 Codex 归一化（删 tuning 字段、store=false、
+		// stream=true、gpt-5.6-* 修复）全部由 Build 承担；BudgetNone（§4.3
+		// Codex 例外，原 A 形态 body 的 max_output_tokens 随归一化删除）。
+		identity, err := newCodexIdentity()
+		if err != nil {
+			return upstreamenvelope.Spec{}, err
+		}
+		spec.Adapter = upstreamenvelope.AdapterOpenAIOAuthCodex
+		spec.CodexIdentity = identity
+		spec.Budget = upstreamenvelope.BudgetNone
+		spec.Auth.Strategy = upstreamenvelope.AuthOAuth
+	case codexCompatibility:
+		// B 形态（codex_responses 兼容画像）：保留档案预算字段（不继承 A 的
+		// BudgetNone 例外）；身份头/Lite 头/client_metadata/prompt_cache_key
+		// 全由 Build 依同一份 Spec.CodexIdentity 承担（§9.3 单源，替代原
+		// applyCodexCompatibilityPayload 的第二套身份）。
+		identity, err := newCodexIdentity()
+		if err != nil {
+			return upstreamenvelope.Spec{}, err
+		}
+		spec.Adapter = upstreamenvelope.AdapterOpenAICodexCompatibility
+		spec.CodexIdentity = identity
+		spec.Budget = upstreamenvelope.BudgetBounded(upstreamenvelope.DefaultProbeOutputTokens)
+		spec.Auth.Strategy = upstreamenvelope.AuthBearer
+	default:
+		// C 形态与 Code Assist：预算按 catalog 条目解析（文本 1024 既有语义；
+		// images/audio/interactions 契约无预算字段返回 none，不伪造兜底；
+		// gemini audio_speech 已显式声明 none）。
+		spec.Auth.Strategy = upstreamAuthStrategy(view)
+		if codeAssist {
+			// Code Assist 线真相恒 SSE：改道 /v1internal:streamGenerateContent?alt=sse
+			//（wrapGeminiCodeAssist 承担路径与 {model, project, request} 三字段
+			// 包装，project 经 Spec.Project），Accept 按流式端点解析，不看账户
+			// 配置模式名（§9.2-7/§9.4 W3 裁决同规）。
+			spec.Adapter = upstreamenvelope.AdapterGeminiCodeAssist
+			spec.EndpointMode = upstreamenvelope.ModeGenerateContentSSE
+			project := credentialText(view.Credentials, "project_id")
+			if project == "" {
+				return upstreamenvelope.Spec{}, errors.New("Gemini Code Assist / Google One 缺少 project_id")
+			}
+			spec.Project = project
+		}
+		if spec.Budget == (upstreamenvelope.BudgetPolicy{}) {
+			budget, err := upstreamenvelope.ResolveBudgetPolicy(spec.EndpointMode, "", spec.Adapter)
+			if err != nil {
+				return upstreamenvelope.Spec{}, err
+			}
+			spec.Budget = budget
+		}
+	}
+	// OAuth 伴随头（现状口径，与形态无关地保留）：
+	//   - chatgpt-account-id：openai 协议 OAuth 账户（空/gpt 档案）携带，值取
+	//     credentials account_id，回落 chatgpt_user_id；
+	//   - x-goog-user-project：gemini 协议 google_oauth 账户（含 Code Assist）
+	//     携带 quota_project_id。
+	if view.Type == "oauth" && !isAnthropicProtocol(view) && !isGeminiProtocol(view) &&
+		(view.ProviderProtocolProfileID == "" || view.ProviderProtocolProfileID == "profile_gpt_openai_v1") {
+		if accountID := firstNonEmpty(credentialText(view.Credentials, "account_id"), credentialText(view.Credentials, "chatgpt_user_id")); accountID != "" {
+			spec.Auth.ExtraHeaders["chatgpt-account-id"] = accountID
+		}
+	}
+	if isGeminiProtocol(view) && view.Type == "google_oauth" {
+		if quotaProject := credentialText(view.Credentials, "quota_project_id"); quotaProject != "" {
+			spec.Auth.ExtraHeaders["x-goog-user-project"] = quotaProject
+		}
+	}
+	return spec, nil
 }
 
-func openAIPathSuffix(pathAndQuery string) string {
-	path, query := splitPathAndQuery(pathAndQuery)
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
+// newCodexIdentity 生成一次 Codex 形态请求的身份值（信封统一设计 §9.3 身份
+// 单源）：session=UUID、thread=session、turn=独立 UUID（F2 现值，与 F4 同）、
+// window=thread+":0"、installation=UUID，turn metadata JSON 含全部身份值与
+// request_kind/thread_source/sandbox/turn_started_at_unix_ms（F2 原headers段
+// metadata 缺 turn_started_at_unix_ms 属缺陷，本重构按 §9.3 契约九键补齐）。
+// 同一份身份经 Spec.CodexIdentity 同时产出身份请求头与（B 形态）body
+// client_metadata，替代原 executeAttempt headers 段与
+// applyCodexCompatibilityPayload 的两套独立 UUID（双身份缺陷根治）。metadata
+// marshal 失败显式报错，不静默兜底。
+func newCodexIdentity() (upstreamenvelope.CodexIdentity, error) {
+	sessionID := newUUID()
+	turnID := newUUID()
+	installationID := newUUID()
+	threadID := sessionID
+	windowID := threadID + ":0"
+	metadata, err := json.Marshal(map[string]any{
+		"installation_id":         installationID,
+		"session_id":              sessionID,
+		"thread_id":               threadID,
+		"turn_id":                 turnID,
+		"window_id":               windowID,
+		"request_kind":            "turn",
+		"thread_source":           "user",
+		"sandbox":                 "none",
+		"turn_started_at_unix_ms": time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, fmt.Errorf("生成 Codex 身份 metadata 失败: %w", err)
 	}
-	// Node: replace(/^\/v1(?=\/|$)/, '')。
-	if len(path) >= 3 && path[:3] == "/v1" && (len(path) == 3 || path[3] == '/') {
-		path = path[3:]
-	}
-	if path == "/" {
-		path = ""
-	}
-	return path + query
-}
-
-func splitPathAndQuery(pathAndQuery string) (path, query string) {
-	if index := strings.Index(pathAndQuery, "?"); index >= 0 {
-		return pathAndQuery[:index], pathAndQuery[index:]
-	}
-	return pathAndQuery, ""
-}
-
-func stripV1BetaPrefix(pathAndQuery string) string {
-	if len(pathAndQuery) >= 8 && strings.EqualFold(pathAndQuery[:8], "/v1beta/") {
-		return pathAndQuery[7:]
-	}
-	return pathAndQuery
-}
-
-func stripTrailingSlashPath(path string) string {
-	if index := strings.Index(path, "?"); index >= 0 {
-		return path[:index]
-	}
-	return path
+	return upstreamenvelope.CodexIdentity{
+		InstallationID:   installationID,
+		SessionID:        sessionID,
+		ThreadID:         threadID,
+		TurnID:           turnID,
+		WindowID:         windowID,
+		TurnMetadataJSON: string(metadata),
+	}, nil
 }

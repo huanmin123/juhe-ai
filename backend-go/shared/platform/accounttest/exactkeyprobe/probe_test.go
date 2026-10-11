@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
@@ -120,28 +121,54 @@ func TestProbeOpenAICodexResponsesMatchesManualCompatibilityContract(t *testing.
 	}
 }
 
-func TestProbeGPTOAuthResponsesSSEUsesCodexPath(t *testing.T) {
-	secret := "test-secret"
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/responses" {
-			t.Fatalf("GPT OAuth must use Codex responses path, got %s", request.URL.Path)
-		}
-		if request.Header.Get("OpenAI-Beta") != "responses=experimental" {
-			t.Fatalf("missing Codex OpenAI-Beta header: %q", request.Header.Get("OpenAI-Beta"))
-		}
-		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
-	}))
-	defer server.Close()
-	input := testInput(server.URL, "responses_sse")
+// TestProbeGPTOAuthResponsesSSEUsesCodexShape 断言 A 形态（OAuth Codex）恒
+// SSE 形状（§9.1-A，W3 接线后由 Build 承担）。A 形态请求恒发信封固定上游
+// （账户 base 不参与寻址），httptest 回环不可达，请求形状经 buildProbeRequest
+// 单元捕获断言；评分承接以 verifyResponse 直调验证（跟随请求编码形态）。
+func TestProbeGPTOAuthResponsesSSEUsesCodexShape(t *testing.T) {
+	base, err := url.Parse("https://probe-a.test/backend-api/codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := testInput(base.String(), "responses_sse")
 	input.Type = "oauth"
 	input.ProtocolProfileID = "profile_gpt_openai_v1"
 	input.ProtocolCode = "openai"
-	expiresAt := time.Now().UTC().Add(time.Hour)
-	input.OAuthExpiresAt = &expiresAt
-	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "oauth_access", Ciphertext: testEnvelope(t, secret, `{"access_token":"oauth-token"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeSuccess {
-		t.Fatalf("unexpected GPT OAuth result: %#v", result)
+	request, err := buildProbeRequest(context.Background(), base, input, "oauth-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.URL.String() != upstreamenvelope.CodexBaseURL+"/responses" {
+		t.Fatalf("GPT OAuth must use the frozen Codex upstream, got %s", request.URL)
+	}
+	if request.Header.Get("OpenAI-Beta") != "responses=experimental" {
+		t.Fatalf("missing Codex OpenAI-Beta header: %q", request.Header.Get("OpenAI-Beta"))
+	}
+	if request.Header.Get("Accept") != "text/event-stream" {
+		t.Fatalf("A 形态 Accept 恒 SSE, got %q", request.Header.Get("Accept"))
+	}
+	if got := request.Header.Get("Authorization"); got != "Bearer oauth-token" {
+		t.Fatalf("authorization=%q", got)
+	}
+	var body map[string]any
+	payload, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["stream"] != true || body["store"] != false {
+		t.Fatalf("A 形态恒 stream=true/store=false: %#v", body)
+	}
+	if _, exists := body["max_output_tokens"]; exists {
+		t.Fatalf("A 形态 BudgetNone 不得携带 max_output_tokens: %#v", body)
+	}
+	// 评分承接（§9.4 裁决）：响应按请求编码形态统一走 verifyResponsesSSE，
+	// SSE body 照旧 success。
+	sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	if err := verifyResponse(input, sseBody); err != nil {
+		t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
 	}
 }
 
@@ -445,27 +472,55 @@ func TestProbeOpenAIClassifiesCompleteSemanticFailureAsNeutral(t *testing.T) {
 	}
 }
 
-func TestProbeOpenAIOAuthUsesCodexEndpointAndHeaders(t *testing.T) {
-	secret := "test-secret"
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/backend-api/codex/responses" {
-			t.Fatalf("unexpected OAuth path: %s", request.URL.Path)
-		}
-		if request.Header.Get("OpenAI-Beta") != "responses=experimental" || request.Header.Get("ChatGPT-Account-Id") != "chatgpt-account-1" {
-			t.Fatalf("missing OAuth headers: %#v", request.Header)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"output_text":"juhe"}`))
-	}))
-	defer server.Close()
-	input := testInput(server.URL+"/backend-api/codex", "responses_json")
+// TestProbeOpenAIOAuthUsesCodexEndpointAndIdentity 断言 A 形态 responses_json
+// 接线后形状（§9.1-A 恒 SSE 裁决的显式 diff 臂）：请求恒发固定上游、恒 SSE
+// （账户配置模式名不再决定 Accept/编码）、BudgetNone、身份头集合，且评分
+// 跟随请求编码形态按 verifyResponsesSSE 承接（SSE body 照旧 success，JSON
+// body 不再满足探活语义——禁止 fallback，镜像 responses_sse 的 imposter 用例）。
+// A 形态 httptest 回环不可达，经 buildProbeRequest/verifyResponse 单元断言。
+func TestProbeOpenAIOAuthUsesCodexEndpointAndIdentity(t *testing.T) {
+	base, err := url.Parse("https://probe-a.test/backend-api/codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := testInput(base.String(), "responses_json")
 	input.Type = "oauth"
 	input.OAuthAccountID = "chatgpt-account-1"
-	expiresAt := time.Now().UTC().Add(time.Hour)
-	input.OAuthExpiresAt = &expiresAt
-	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "oauth_access", Ciphertext: testEnvelope(t, secret, `{"access_token":"oauth-token"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeSuccess {
-		t.Fatalf("unexpected OAuth probe result: %#v", result)
+	request, err := buildProbeRequest(context.Background(), base, input, "oauth-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.URL.String() != upstreamenvelope.CodexBaseURL+"/responses" {
+		t.Fatalf("unexpected OAuth upstream: %s", request.URL)
+	}
+	if request.Header.Get("OpenAI-Beta") != "responses=experimental" || request.Header.Get("ChatGPT-Account-Id") != "chatgpt-account-1" {
+		t.Fatalf("missing OAuth headers: %#v", request.Header)
+	}
+	if request.Header.Get("Accept") != "text/event-stream" {
+		t.Fatalf("A 形态 Accept 恒 SSE, got %q", request.Header.Get("Accept"))
+	}
+	payload, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["stream"] != true || body["store"] != false {
+		t.Fatalf("A 形态恒 stream=true/store=false: %#v", body)
+	}
+	if _, exists := body["max_output_tokens"]; exists {
+		t.Fatalf("A 形态 BudgetNone 不得携带 max_output_tokens: %#v", body)
+	}
+	// 评分承接：SSE body 照旧 success。
+	sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	if err := verifyResponse(input, sseBody); err != nil {
+		t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
+	}
+	// JSON body 不再满足 A 形态探活语义（评分跟随请求编码形态，无 fallback）。
+	if err := verifyResponse(input, []byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"juhe"}]}]}`)); err == nil {
+		t.Fatal("A 形态请求发 SSE 后 JSON 响应不得被判 success")
 	}
 }
 

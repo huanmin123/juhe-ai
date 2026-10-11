@@ -375,6 +375,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			return nil, fmt.Errorf("sqlite storage preflight: %w", err)
 		}
 	}
+	// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）：
+	// 加列/迁移归 maintenance，gateway 启动仅校验；缺失或四值形状不符即
+	// fail-fast（部署顺序契约：先迁移后启动新版）。只读，一次性，不做 DDL。
+	if err := checkAccountsCapabilityDomainSchema(context.Background(), composed.db, composed.pgDialect); err != nil {
+		closeOwnedBusiness()
+		return nil, fmt.Errorf("verify accounts capability_domain schema: %w", err)
+	}
 	if composed.pgDialect {
 		composed.statsDB = composed.db
 	} else {

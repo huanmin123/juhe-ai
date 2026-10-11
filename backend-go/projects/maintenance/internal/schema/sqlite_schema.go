@@ -72,12 +72,15 @@ var sqliteBusinessScript = sqliteScript{
 	sqliteBusinessAuthorizationInstanceIndexesDDL,
 }
 
-// sqliteStatsScript mirrors applyStatsSchema in stats-schema.ts.
+// sqliteStatsScript mirrors applyStatsSchema in stats-schema.ts. The Go-side
+// sqliteStatsBackfillProgressDDL marker table (成功成本历史回填治理) is
+// appended at the end so the Node-extracted statements keep their dump order.
 var sqliteStatsScript = sqliteScript{
 	sqliteStatsDirtyIPsDDL,
 	"PRAGMA foreign_keys = ON;",
 	sqliteStatsMainDDL,
 	sqliteStatsUsageCleanupDeductionsIndexDDL,
+	sqliteStatsBackfillProgressDDL,
 }
 
 // sqliteChatScript mirrors applyChatSchema in chat-schema.ts.
@@ -172,6 +175,14 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteTableColumn(ctx, db, "model_check_question_bank", "is_builtin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure model_check_question_bank.is_builtin: %w", err)
 	}
+	// 提交门禁透出列（last_test）：新库由 business 脚本建表 DDL 直接声明，
+	// 存量库按 PRAGMA table_info 早退守卫幂等补列（与 is_builtin 同模式）。
+	if err := ensureSQLiteTableColumn(ctx, db, "model_check_question_bank", "last_test_id", "TEXT"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure model_check_question_bank.last_test_id: %w", err)
+	}
+	if err := ensureSQLiteTableColumn(ctx, db, "model_check_question_bank", "last_test_json", "TEXT"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure model_check_question_bank.last_test_json: %w", err)
+	}
 	if err := ensureSQLiteBusinessScheduleIntervalCheck(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite business schedule interval check: %w", err)
 	}
@@ -180,6 +191,9 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	}
 	if err := ensureAccountExpeditedRecoverySchema(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure accounts.expedited_recovery_enabled: %w", err)
+	}
+	if err := EnsureSQLiteBusinessCapabilityDomainColumn(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure accounts.capability_domain: %w", err)
 	}
 	return counts, nil
 }
@@ -203,6 +217,137 @@ func ensureAccountExpeditedRecoverySchema(ctx context.Context, db *sql.DB) error
 // table_info 早退模式与 accounts 侧守卫一致。
 func ensureSystemAccountExpeditedAccountLimitSchema(ctx context.Context, db *sql.DB) error {
 	return ensureSQLiteTableColumn(ctx, db, "system_accounts", "expedited_account_limit", "INTEGER CHECK (expedited_account_limit BETWEEN 0 AND 100)")
+}
+
+// sqliteCapabilityDomainColumnDecl 是 accounts.capability_domain 列在既有库
+// 上的同形补齐声明（AI 账户能力域拆分 PLAN-20261011T141004000Z §数据变化）。
+// 与建表 DDL 内联列定义逐字一致；SQLite 允许 ADD COLUMN 携带列级常量 CHECK，
+// 存量行取 DEFAULT 'chat' 恒满足约束。确保调用面是 maintenance 一次性命令
+// （--ensure-schema 与能力域迁移命令），不在请求路径反复执行（BUG-0307）。
+const sqliteCapabilityDomainColumnDecl = "TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))"
+
+// sqliteCapabilityDomainCheckText 是 capability_domain 列级 CHECK 在
+// sqlite_master 建表文本中的判据片段。PRAGMA table_info 不透出列级 CHECK，
+// 形状校验对该片段做文本断言（schedule interval / chat assets 重建先例同
+// 模式）：片段覆盖四值枚举与列名，缺 CHECK 或词表漂移都会命中形状错误。
+const sqliteCapabilityDomainCheckText = "capability_domain IN ('chat','video','audio','image')"
+
+// EnsureSQLiteBusinessCapabilityDomainColumn 把 accounts.capability_domain
+// 补齐到既有 SQLite 业务库并做四值形状校验：缺列则按同形声明 ALTER 补列
+// （存量行落 DEFAULT 'chat'）；列已存在时校验类型/NOT NULL/DEFAULT/CHECK
+// 四值，形状不符原样报错停止，不静默修补。表不存在时早退——建表由同一次
+// ensure 的 CREATE TABLE 阶段负责，其内联列定义已含同形声明。该函数是
+// --ensure-schema 与能力域迁移命令共用的幂等入口，只承载这一列的加列与校验。
+func EnsureSQLiteBusinessCapabilityDomainColumn(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(accounts)")
+	if err != nil {
+		return err
+	}
+	tableExists, columnExists := false, false
+	var declaredType string
+	var notNull int
+	var defaultValue any
+	for rows.Next() {
+		var cid, pk int
+		var name string
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		tableExists = true
+		if name == "capability_domain" {
+			columnExists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !tableExists {
+		return nil
+	}
+	if !columnExists {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE accounts ADD COLUMN capability_domain "+sqliteCapabilityDomainColumnDecl); err != nil {
+			return fmt.Errorf("add accounts.capability_domain: %w", err)
+		}
+		return VerifySQLiteCapabilityDomainShape(ctx, db)
+	}
+	return VerifySQLiteCapabilityDomainShape(ctx, db)
+}
+
+// verifySQLiteCapabilityDomainShape 校验既存 accounts.capability_domain 列的
+// 四值形状：类型 TEXT、NOT NULL、DEFAULT 'chat'，以及 sqlite_master 建表
+// 文本中的四值 CHECK。任何一项不符都原样报错停止——错误行为静默修补会掩盖
+// 与新库 DDL 的漂移，由操作者裁决修正方向。
+func VerifySQLiteCapabilityDomainShape(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(accounts)")
+	if err != nil {
+		return err
+	}
+	found := false
+	var declaredType string
+	var notNull int
+	var defaultValue any
+	for rows.Next() {
+		var cid, pk int
+		var name string
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "capability_domain" {
+			found = true
+			break // 保留命中行的形状值；后续行的 dflt_value 为 NULL 会覆盖
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !found {
+		return errors.New("accounts.capability_domain 列缺失且守卫未生效（非预期状态）")
+	}
+	var dflt sql.NullString
+	if value, ok := defaultValue.(string); ok {
+		dflt = sql.NullString{String: value, Valid: true}
+	} else if defaultValue != nil {
+		return fmt.Errorf("accounts.capability_domain 形状不符：PRAGMA table_info dflt_value 类型异常 %T", defaultValue)
+	}
+	if !strings.EqualFold(strings.TrimSpace(declaredType), "TEXT") {
+		return fmt.Errorf("accounts.capability_domain 形状不符：列类型为 %q，期望 TEXT（同形建表声明见 sqlite_schema_business.go accounts DDL）", declaredType)
+	}
+	if notNull != 1 {
+		return fmt.Errorf("accounts.capability_domain 形状不符：列可空，期望 NOT NULL")
+	}
+	if !dflt.Valid || dflt.String != "'chat'" {
+		return fmt.Errorf("accounts.capability_domain 形状不符：默认值为 %s，期望 'chat'", sqliteShapeDefaultText(dflt))
+	}
+	var ddl sql.NullString
+	err = db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'`).Scan(&ddl)
+	if err != nil {
+		return fmt.Errorf("读取 accounts 建表文本失败: %w", err)
+	}
+	if !ddl.Valid || !strings.Contains(ddl.String, sqliteCapabilityDomainCheckText) {
+		return fmt.Errorf("accounts.capability_domain 形状不符：建表文本缺少列级 CHECK 判据 %q", sqliteCapabilityDomainCheckText)
+	}
+	return nil
+}
+
+// sqliteShapeDefaultText renders a PRAGMA dflt_value for error messages.
+func sqliteShapeDefaultText(dflt sql.NullString) string {
+	if !dflt.Valid {
+		return "NULL（无默认值）"
+	}
+	return dflt.String
+}
+
+// SQLiteBusinessMainDDLForTest 导出 business 主 DDL 常量，仅供 maintenance
+// 侧测试构造「capability_domain 加列前」的 legacy fixture（文本替换出缺列/
+// 错误形状变体）。非测试代码一律走 EnsureSQLiteBusiness。
+func SQLiteBusinessMainDDLForTest() string {
+	return sqliteBusinessMainDDL
 }
 
 // ensureSQLiteBusinessCustomQuestionColumns is the Go port of the Node
@@ -498,20 +643,17 @@ var sqliteStatsSuccessCostGuardTables = []string{
 // attempts) to legacy databases through the same guarded PRAGMA table_info /
 // ALTER TABLE ADD COLUMN pattern as the business schema: fresh databases
 // declare it inside the CREATE TABLE statements, legacy databases receive the
-// in-place ADD COLUMN. The follow-up backfill copies total_cost_usd into
-// success_cost_usd only for rows with error_count = 0 (failure-free rows, so
-// total is exactly the success cost); mixed rows cannot be decomposed from the
-// aggregate and start at 0 per the business rule that failed attempts do not
-// count toward quota. The WHERE guards keep the backfill idempotent across
-// repeated ensure runs and no-ops for post-cutover accumulations.
+// in-place ADD COLUMN. No backfill here (成功成本历史回填治理，2026-10-12):
+// the former per-ensure full-table UPDATE scans are retired — the one-shot
+// history migration is owned exclusively by the maintenance
+// --apply-success-cost-backfill subcommand, whose running/done markers and
+// primary-key tuple cursors live in the backfill_progress table created by
+// sqliteStatsBackfillProgressDDL above; late predicate-matching rows are
+// corrected inside the subtraction transaction instead.
 func ensureSQLiteStatsSuccessCostColumns(ctx context.Context, db *sql.DB) error {
 	for _, table := range sqliteStatsSuccessCostGuardTables {
 		if err := ensureSQLiteTableColumn(ctx, db, table, "success_cost_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
 			return fmt.Errorf("ensure %s.success_cost_usd: %w", table, err)
-		}
-		backfill := "UPDATE " + table + " SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd"
-		if _, err := db.ExecContext(ctx, backfill); err != nil {
-			return fmt.Errorf("backfill %s.success_cost_usd: %w", table, err)
 		}
 	}
 	return nil

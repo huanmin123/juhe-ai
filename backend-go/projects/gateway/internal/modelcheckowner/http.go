@@ -341,13 +341,16 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.patchScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/quality-schedules/"):
 		h.deleteScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
-	// 题库路由（计划阶段 2 挂载）。固定段（/question-bank、/options、
-	// /by-ids）必须先于 /{id} 前缀匹配——本 switch 按书写顺序求值，与
-	// quality-schedules 的精确段/前缀段排列同一语义。
+	// 题库路由（计划阶段 2 挂载 + 提交门禁 test 端点）。固定段
+	//（/question-bank、/options、/by-ids、/test）必须先于 /{id} 前缀匹配
+	//——本 switch 按书写顺序求值，与 quality-schedules 的精确段/前缀段排列
+	// 同一语义。
 	case r.Method == http.MethodGet && path == "/question-bank":
 		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeList)
 	case r.Method == http.MethodPost && path == "/question-bank":
 		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeCreate)
+	case r.Method == http.MethodPost && path == "/question-bank/test":
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeTest)
 	case r.Method == http.MethodGet && path == "/question-bank/options":
 		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeOptions)
 	case r.Method == http.MethodGet && path == "/question-bank/by-ids":

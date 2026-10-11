@@ -610,7 +610,7 @@ func TestW11FStorePostgresOverview(t *testing.T) {
 	script.canned("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(2)}}, nil)
 	tableCols := []string{"database_role", "table_name", "sampled_at", "table_kind", "parent_table_name", "is_partition", "is_archive",
 		"row_count", "table_bytes", "index_bytes", "total_bytes", "growth_bytes_1h", "growth_rows_1h", "growth_bytes_24h", "growth_rows_24h"}
-	script.canned("WITH latest_snapshots", tableCols, [][]driver.Value{
+	script.canned("WITH latest_table_ids", tableCols, [][]driver.Value{
 		{"business", "accounts", "2026-09-04T00:00:00.000Z", nil, nil, int64(0), int64(0), int64(20), int64(200), int64(50), int64(250), nil, nil, int64(130), int64(10)},
 	}, nil)
 
@@ -646,7 +646,7 @@ func TestW11FStorePostgresOverview(t *testing.T) {
 	store4, _ := NewStore(db4, true)
 	script4.canned("SELECT DISTINCT ON (database_role)", databaseCols, [][]driver.Value{{"business", "/b", "s", int64(1), int64(1), nil, int64(1), int64(1)}}, nil)
 	script4.canned("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(0)}}, nil)
-	script4.failQuery("WITH latest_snapshots")
+	script4.failQuery("WITH latest_table_ids")
 	if _, err := store4.LoadOverview(context.Background(), 1, 10, ""); err == nil {
 		t.Fatal("pg overview tables fault must fail")
 	}

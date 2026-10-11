@@ -131,7 +131,7 @@
       @save="saveSchedule"
     />
 
-    <QuestionBankModal v-model:open="questionBankOpen" :is-management-view="isManagementView" />
+    <QuestionBankModal v-model:open="questionBankOpen" :is-management-view="isManagementView" :model-check-scope-params="modelCheckScopeParams" />
   </div>
 </template>
 

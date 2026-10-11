@@ -369,6 +369,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       cooldown_retest_last_status_code INTEGER,
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
+      capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
       health_check_model TEXT NOT NULL,
       health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
       last_health_check_at TEXT,
@@ -435,11 +436,33 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       reviewed_by TEXT,
       reviewed_at TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      last_test_id TEXT,
+      last_test_json TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_status ON model_check_question_bank(status);
     CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_created_by ON model_check_question_bank(created_by);
     CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_title_norm ON model_check_question_bank(title_norm);
+
+    -- 提交门禁测试记录表（检测题库提交门禁设计）：每次 POST
+    -- /question-bank/test 的同步诊断结果落一行，verdict/alignment CHECK 与
+    -- PG 侧同构；列约束与 model_check_question_bank 的无外键记录表先例一致。
+    CREATE TABLE IF NOT EXISTS model_check_question_tests (
+      id TEXT PRIMARY KEY,
+      created_by TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      account_name TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL,
+      draft_hash TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'invalid', 'request_failed')),
+      alignment TEXT NOT NULL DEFAULT '' CHECK (alignment IN ('', 'aligned', 'misaligned', 'unknown')),
+      diagnosis_json TEXT,
+      http_status INTEGER,
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_check_question_tests_created_by ON model_check_question_tests(created_by, created_at);
+    CREATE INDEX IF NOT EXISTS idx_model_check_question_tests_draft_hash ON model_check_question_tests(draft_hash);
 
     CREATE TABLE IF NOT EXISTS model_quality_policies (
       system_account_id TEXT PRIMARY KEY,

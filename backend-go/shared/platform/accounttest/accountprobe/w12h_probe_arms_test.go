@@ -3,14 +3,15 @@ package accountprobe
 // w12h 补充 arms：分级重试/池诊断的取消与升级路径、executeAttempt 前置错误、
 // 请求头捕获（oauth/codex/流式）、读循环边界、分类矩阵与协议载荷提取。
 // 本文件补充登记的不可达语句：
-//   - probe.go executeAttempt 的 NewRequestWithContext 错误（413）：URL 已由
-//     buildUpstreamURL 校验，构造不会失败；
+//   - probe.go executeAttempt 的 NewRequestWithContext 错误（原 413）：URL 已
+//     由信封 Build 校验，构造不会失败（W4 起构造收口 Build，原注册项随
+//     buildUpstreamURL 退出）；
 //   - probe.go probePoolDetailed 的“没有返回结果”（324）：ctx 取消在循环入口
 //     先行返回，无法构造空结果到达；
 //   - probe.go NewService 的 SharedClient 错误（122）：空代理 URL 的共享客户端
 //     构造不会失败；
-//   - protocol.go orderedJSON 的 key 序列化错误（175）：key 恒为字符串；
-//     cwdOrEmpty 的 Getwd 错误（327）：测试进程工作目录恒有效。
+//   - protocol.go cwdOrEmpty 的 Getwd 错误（327）：测试进程工作目录恒有效
+//    （原 orderedJSON key 序列化错误注册项随 W4 删除 orderedJSON 退出）。
 
 import (
 	"context"
@@ -86,7 +87,7 @@ func TestW12HExecuteAttemptArms(t *testing.T) {
 	if _, err := service.executeAttempt(ctx, noModes, nil, time.Second, false); err == nil {
 		t.Fatal("无请求形态必须失败")
 	}
-	// Base URL 缺失 → buildUpstreamURL 失败。
+	// Base URL 缺失 → 构造失败(信封 buildUpstreamURL 阶段)。
 	noBase := probeView("")
 	if _, err := service.executeAttempt(ctx, noBase, nil, time.Second, false); err == nil || !strings.Contains(err.Error(), "base_url") {
 		t.Fatalf("缺失 base_url 必须失败: %v", err)
@@ -360,20 +361,6 @@ func TestW12HClassifyPayloadArms(t *testing.T) {
 
 // 协议构造与工具函数。
 func TestW12HProtocolHelperArms(t *testing.T) {
-	// orderedJSON：字段序列化错误传播。
-	_, err := orderedJSON([]orderedField{{key: "k", marshal: func() ([]byte, error) { return nil, w12hErrReader }}})
-	if err == nil {
-		t.Fatal("字段序列化失败必须传播")
-	}
-	// marshalValue 对不可序列化值 panic。
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("不可序列化值必须 panic")
-			}
-		}()
-		marshalValue(make(chan int))
-	}()
 	// 大小写无关前缀匹配。
 	if !equalFoldPrefix("JUHE-PROBE", "juhe-") {
 		t.Fatal("大小写无关前缀必须匹配")
@@ -381,8 +368,10 @@ func TestW12HProtocolHelperArms(t *testing.T) {
 	if equalFoldPrefix("juXe", "juhe") {
 		t.Fatal("不同内容不得匹配")
 	}
-	if _, err := buildUpstreamURL(&View{BaseURL: ""}, "/v1/x"); err == nil {
-		t.Fatal("缺失 base_url 必须失败")
+	// 缺失 base_url 经信封 Build 显式失败（错误含 base_url，经
+	// classifyAttemptError 进入探针消息的行为不变）。
+	if _, err := w4BuildRequestE(probeView(""), ModeChatJSON, "m"); err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("缺失 base_url 必须失败: %v", err)
 	}
 	if _, _, _, err := resolveProbeView(nil); err == nil {
 		t.Fatal("nil 视图必须失败")

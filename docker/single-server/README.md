@@ -12,6 +12,10 @@ jobs ─────┘（与 gateway 共用同一 PG/Redis/namespace）
 maintenance：compose --profile tool 一次性容器（幂等 CLI）
 
 一次性迁移命令（2026-09-28 AI 对话账户唯一绑定）：`juhe-ai-maintenance -migrate-chat-account-only-binding -driver postgres -dsn "$JUHE_AI_POSTGRES_URL"` —— 在 `--ensure-schema` 之后执行；幂等可重入（重复运行报 `alreadyMigrated: true`）；归档存量旧模式会话、备份并删除 `juhe_chat.chat_conversations` 的 `bind_mode`/`bind_group_id`/`bind_group_name_snapshot` 三列（PG 用 `DROP COLUMN IF EXISTS`）；stdout JSON 报告含 `rollbackSql`（回滚 = 先恢复旧版二进制，再执行报告中的恢复 SQL）。
+
+一次性回填命令（2026-10-12 成功成本历史回填）：`juhe-ai-maintenance --apply-success-cost-backfill [--dry-run] --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"`（SQLite 形态 `--driver sqlite --paths "stats=<stats 库文件>,..."`）—— 六表 success_cost_usd 历史回填的唯一执行者，先 `--ensure-schema` 建好 `juhe_stats.backfill_progress` 标记表再执行（表缺失时显式报错不建表；ensure 后 marker 含非 done 行时在结果摘要提示待回填表，不自动迁移）；幂等可重入（done 表零触碰、重复执行零批秒完），中断从持久化主键游标续跑；stdout 单行 JSON 报告六表批数/命中行数。仅限维护窗口（`docker compose stop jobs` 后）执行，完整窗口序列见下"更新发布"节。
+
+一次性迁移命令（AI 账户能力域拆分 M1，存量库赋域）：`juhe-ai-maintenance --migrate-account-capability-domain --account-capability-domain-stage=m1 --node-stopped --go-stopped --backup-confirmed --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"` —— `accounts.capability_domain` 赋域的唯一执行者；加列本身随例行 `--ensure-schema` 幂等生效（只加列不赋域），赋域必须在停写窗口（`docker compose stop gateway jobs` + 已验证可恢复备份）执行，三确认门禁缺一拒绝；失败清单非空零写入 exit 3，不得上线。只读核验 `juhe-ai-maintenance --verify-account-capability-domain --account-capability-domain-stage=m1 --account-capability-domain-check=preflight|postflight ...`。顺序契约：先迁移并核验通过，后启动依赖该列的新版 gateway/jobs。完整窗口序列见下"更新发布"节。
 ```
 
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
@@ -19,6 +23,9 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 - chat 库加表随例行 `--ensure-schema` 幂等生效，无一次性迁移：如 2026-10-02 的 `juhe_chat.chat_user_tool_preferences`（AI 对话工具默认绑定，见 docs/functions/AI问答工具体系与主子模型设计.md §7）。
 - 模型检测题库内置题（2026-10-09 起）：`model_check_question_bank` 新增 `is_builtin` 列（`--ensure-schema` 幂等补列，SQLite PRAGMA 守卫 / PG `ADD COLUMN IF NOT EXISTS`），8 道系统内置公开题（草莓字母计数、9.11 vs 9.9、糖果多步算术、牛奶稀释等）由 seed 幂等写入（固定 id 条件 upsert：新行插入、存量内置行题面随 seed 版本恢复权威值）。生效方式按存储模式区分：**SQLite（开发/单机直跑）gateway 每次启动的 storage preflight 自动 ensure+seed，内置题自动出现**；**PG（生产）需在发版后跑 `maintenance --ensure-schema --seed`**——只跑 ensure-schema 会补列但不写内置题数据；seed 幂等可重入，对用户自拟题无副作用。
 - 账户"特供"恢复标记（2026-10-10 起）：业务库加法式两列——`accounts.expedited_recovery_enabled`（integer 0/1，DEFAULT 0）与 `system_accounts.expedited_account_limit`（可空 integer 0–100，NULL 读侧默认 3），随发版执行既有 `--ensure-schema` 幂等补列生效（SQLite 两个 ensure 守卫 / PG 两侧均 `ADD COLUMN IF NOT EXISTS`——`accounts` 侧守卫为 BUG-0305 发布事故后补齐，2026-10-10 发布窗口曾因缺它崩溃循环约 11 分钟，生产库已手工 ALTER 恢复），无额外命令、无新增环境变量；回滚上一版二进制无需处理该列（加法式变更，旧代码不读）。契约见 docs/functions/AI账户特供快速恢复通道设计.md。
+- 模型检测题库提交门禁（2026-10-11 起）：业务库加法式一表两列——新表 `model_check_question_tests`（题目可用性测试记录，含 `(created_by, created_at)` 与 `draft_hash` 索引）与 `model_check_question_bank` 的 `last_test_id`/`last_test_json` 两列，随例行 `--ensure-schema` 幂等建表/补列/建索引生效（加法式 schema，无需手工迁移），无额外命令、无新增环境变量；回滚上一版二进制无需处理（加法式变更，旧代码不读）。契约见 docs/functions/模型检测设计.md §5.7。
+- 成功成本历史回填治理（2026-10-12 起）：`juhe_stats` 新增 `backfill_progress` 回填标记表（table_name 主键 + status/cursor_json/updated_at，PG 与 SQLite stats 同构），随例行 `--ensure-schema` 幂等建表；同批**卸载**原随每次 ensure 全表扫六表的六条 `usage_stats_*` 回填 UPDATE statements（PG StatementCount 711→706，本批次净 −5；与其他 schema 批次叠加时的绝对值以当次 `--ensure-schema` 输出为准）与 SQLite ensure 内的同谓词回填循环——历史回填唯一执行者收敛到 `--apply-success-cost-backfill` 一次性子命令（维护窗口，见下"更新发布"节）；发布后迟到符合谓词的行由扣减事务内 CASE 补正兜住。回滚上一版二进制无需处理（加法式变更，旧代码不读、也不再回填）。契约见 docs/plans/计划-20261011T225418-成功成本历史回填治理.md。
+- 账户能力域列（AI 账户能力域拆分 M1）：业务库 `accounts` 新增 `capability_domain`（`TEXT NOT NULL DEFAULT 'chat'` + CHECK 四值 `chat`/`video`/`audio`/`image`，SQLite/PG 同形）。新库建表含列；存量库随例行 `--ensure-schema` 幂等补列（SQLite PRAGMA 守卫 / PG `ADD COLUMN IF NOT EXISTS`，列已存在时仍做类型/NOT NULL/DEFAULT/CHECK 四值形状校验），**只加列不赋域**；赋域只由 `--migrate-account-capability-domain` 停写窗口执行（见"拓扑"节命令与下"更新发布"节窗口序列），阶段记录存 `global_settings` key `account_capability_domain_migration`。新版 gateway/jobs 启动对该列做只读形状校验，缺失 / 形状不符 fail-fast，只校验不 ALTER。契约见 docs/plans/计划-20261011T141004000Z-AI账户能力域拆分.md。
 - gateway 启动硬性要求 J3b 运行态索引 ready：新库必须先跑 `docker compose run --rm gateway -init-account-circuit-runtime-index`。
 - 管理前端由 gateway 从镜像内 `/app/frontend/dist` 提供（必须显式 `JUHE_AI_FRONTEND_DIST_PATH`，默认空不挂 SPA）；根路径 `/` 由 Caddy 301 到 `/__aisys__/`。
 - PG/Redis 不对宿主机发布端口。入口为 `https://aijh.huanmin.top`（Caddy ACME 自动续期，80 常驻 308 升级 HTTPS，443/udp HTTP/3）。
@@ -119,6 +126,46 @@ SELECT pg_get_constraintdef(oid) FROM pg_constraint
 ```
 
 也可直接经管理面创建/编辑一条 `intervalMinutes=1` 的定时检查计划做写入面验证。回滚提示：约束放宽向后兼容（旧二进制接受的取值是新约束的子集），回滚上一版二进制时**无需回滚约束**，直接按常规流程回滚即可。
+
+**成功成本历史回填维护窗口（2026-10-12，一次性命令）**：`--ensure-schema` 已不随每次执行回填 `juhe_stats` 六表 success_cost_usd，发布含 `--apply-success-cost-backfill` 子命令的三二进制后，**同窗口内**执行下述序列（不停 gateway——用量记录经持久化 spool 交接，jobs 恢复后照常消费聚合，零丢失；窗口内只跑一个回填实例；避开 04:00-07:00 备份窗口）：
+
+```sh
+cd /opt/juhe-ai
+# 1) 建 marker 表（幂等；backfill_progress DDL 随 schema statements 生效）
+docker compose run --rm maintenance --ensure-schema --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 2) 停聚合/扣减/清理写者
+docker compose stop jobs
+# 3) 只读预检（期望生产为 0：旧回填随最近一次 ensure 已收敛；非 0 属历史遗留错口径行）
+docker compose run --rm maintenance --apply-success-cost-backfill --dry-run --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 4) 一次性回填（stdout 单行 JSON 报告六表批数/命中行数；重复执行零批秒完）
+docker compose run --rm maintenance --apply-success-cost-backfill --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 5) 恢复写者（聚合游标增量消费）
+docker compose start jobs
+# 6) 复核：六行全 done；spool 积压归零
+docker compose exec postgres psql -U juhe_ai juhe_ai -c "SELECT table_name, status FROM juhe_stats.backfill_progress;"
+```
+
+SQLite 形态（单机直跑/开发）同构：`--driver sqlite --paths "stats=<stats 库文件>,..."`（paths 只强制 `stats=` 键，可复用六库完整 `--paths`），同样先 `--ensure-schema` 再子命令。回滚上一版二进制无需处理 `backfill_progress`（加法式变更，旧代码不读、也不再回填）。
+
+**账户能力域迁移维护窗口（AI 账户能力域拆分 M1，一次性赋域）**：`--ensure-schema` 只对存量库幂等补 `accounts.capability_domain` 列，不赋域；赋域必须在停写窗口按下述序列执行（顺序契约：**先迁移并核验通过，后启动依赖该列的新版 gateway/jobs**——新版启动对该列做只读形状校验，缺列 / 形状不符 fail-fast；停写不能用"低峰"或未观察到请求代替）：
+
+```sh
+cd /opt/juhe-ai
+# 1) 例行 ensure-schema（幂等补列 + 形状校验；只加列不赋域）
+docker compose run --rm maintenance --ensure-schema --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 2) 只读预检（可选；域列尚不存在时也允许执行，报告预计赋域账户数）
+docker compose run --rm maintenance --verify-account-capability-domain --account-capability-domain-stage=m1 --account-capability-domain-check=preflight --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 3) 停写窗口：停 gateway/jobs，完成并验证可恢复备份
+docker compose stop gateway jobs
+# 4) 执行迁移（--node-stopped --go-stopped --backup-confirmed 三确认缺一拒绝；失败清单非空零写入 exit 3，保持停写修复后同阶段重跑）
+docker compose run --rm maintenance --migrate-account-capability-domain --account-capability-domain-stage=m1 --node-stopped --go-stopped --backup-confirmed --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 5) 停写核验（要求域列存在、全表域值合法、授权实例与源账户域一致、失败清单清零）
+docker compose run --rm maintenance --verify-account-capability-domain --account-capability-domain-stage=m1 --account-capability-domain-check=postflight --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 6) 核验通过后才启动新版 gateway/jobs，恢复写入
+docker compose start gateway jobs
+```
+
+阶段记录存 `global_settings` key `account_capability_domain_migration`，已 `m1_complete` 的重复执行只报告完成、不再重算；失败清单非空不得上线（部分成功不满足上线门禁）。回滚 = 上传上一版 build/ 重新 build+up（加式列与阶段记录保留，旧代码不读；不执行删列）。契约见 docs/plans/计划-20261011T141004000Z-AI账户能力域拆分.md。
 
 ## .env 契约（当前实例全集见服务器 /opt/juhe-ai/.env）
 

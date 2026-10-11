@@ -55,17 +55,20 @@ func postgresStatsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 // （M4a）插在 output_image_tokens 与 total_cost_usd 之间、成功口径成本
 // success_cost_usd 紧随 total_cost_usd（列序对齐 statsagg upsert 的
 // usageStatsMetricColumns；回减量按记录 success 标志：成功记录 = cost、
-// 失败记录 = 0）。authorization 日报与 usage_model 桶无该两族列，继续用
-// postgresStatsSubtractParams / 显式参数。
+// 失败记录 = 0）。success_cost_usd 位置按 SET 的扣减补正 CASE 占位符展开为
+// 5 参：error_count、total、success、total、success 的同一扣减值
+// （PLAN-20261011T225418 §3.4）。authorization 日报与 usage_model 桶无该
+// 两族列，继续用 postgresStatsSubtractParams / 显式参数。
 func postgresUsageStatsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 	base := postgresStatsSubtractParams(stats)
-	result := make([]any, 0, len(base)+6)
+	result := make([]any, 0, len(base)+10)
 	result = append(result, base[:13]...) // Req..OutputImageTokens
 	result = append(result,
 		stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
 		stats.AudioInputSeconds, stats.OutputVideoSeconds)
 	result = append(result, base[13]) // total_cost_usd
-	result = append(result, stats.SuccessCostUsd)
+	result = append(result,
+		stats.ErrorCount, stats.TotalCostUsd, stats.SuccessCostUsd, stats.TotalCostUsd, stats.SuccessCostUsd)
 	result = append(result, base[14:]...) // duration/first_token 双份 + 尾部 request/error
 	return result
 }
@@ -680,6 +683,14 @@ func textSet(value *string) bool {
 
 // ---- 扣减语句家族 ----
 
+// success_cost_usd 在 totals 与时间桶两族 UPDATE 的 SET 中使用扣减事务内
+// 补正 CASE（计划 PLAN-20261011T225418 §3.4，与 SQLite 路径 MAX 形式同语义）：
+// 删除失败记录使 error_count 扣减后归零、且 total 与 success 扣减后不一致时，
+// success_cost_usd 补正为扣减后的 total_cost_usd；混合行（扣减后 error_count
+// 仍 >0）与其他情形维持原扣减结果。CASE 的 5 个 ? 依次为 error_count、total、
+// success、total、success 的同一扣减值，参数见 postgresUsageStatsSubtractParams。
+// 全零行 DELETE 条件不变：补正后的 (0,8,8) 非零，不会被误删。
+
 func (s *RecordCleanupStore) subtractPostgresUsageStatsTotals(ctx context.Context, tx *sql.Tx, entries []*postgresAggregatedStatsEntry, updatedAt string) error {
 	for _, entry := range entries {
 		_, err := tx.ExecContext(ctx, s.Stats.Bind(`
@@ -703,7 +714,12 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTotals(ctx context.Contex
           audio_input_seconds = GREATEST(0, audio_input_seconds - ?),
           output_video_seconds = GREATEST(0, output_video_seconds - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
-          success_cost_usd = GREATEST(0, success_cost_usd - ?),
+          success_cost_usd = CASE
+            WHEN GREATEST(0, error_count - ?) = 0
+                 AND GREATEST(0, total_cost_usd - ?) <> GREATEST(0, success_cost_usd - ?)
+            THEN GREATEST(0, total_cost_usd - ?)
+            ELSE GREATEST(0, success_cost_usd - ?)
+          END,
           duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
           duration_ms_count = GREATEST(0, duration_ms_count - ?),
           duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
@@ -764,7 +780,12 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTimeBucket(ctx context.Co
           audio_input_seconds = GREATEST(0, audio_input_seconds - ?),
           output_video_seconds = GREATEST(0, output_video_seconds - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
-          success_cost_usd = GREATEST(0, success_cost_usd - ?),
+          success_cost_usd = CASE
+            WHEN GREATEST(0, error_count - ?) = 0
+                 AND GREATEST(0, total_cost_usd - ?) <> GREATEST(0, success_cost_usd - ?)
+            THEN GREATEST(0, total_cost_usd - ?)
+            ELSE GREATEST(0, success_cost_usd - ?)
+          END,
           duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
           duration_ms_count = GREATEST(0, duration_ms_count - ?),
           duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,

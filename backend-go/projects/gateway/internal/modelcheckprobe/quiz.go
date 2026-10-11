@@ -122,6 +122,17 @@ func appendTerminalQuizItems(items []Evaluation, failing Evaluation) []Evaluatio
 // the question, the model's own answer text, and the reference answer, with
 // the fixed grading instructions mapped to the protocol's system slot.
 func (s Suite) quizGradingRequest(question QuizQuestion, answer string, protocol modelcheckprofile.Protocol, mode string, stream bool) (Request, error) {
+	request, err := s.tunedBasic(s.Model, quizGradingPrompt(question, answer), mode, stream, quizMaxOutputTokens, 0)
+	if err != nil {
+		return Request{}, err
+	}
+	return applyQuizGradingInstructions(request, protocol, quizGradingInstructions)
+}
+
+// quizGradingPrompt 拼装裁判跳的题面+回答+参考答案+要点正文。题库裁判与
+// 提交门禁诊断（quizdiagnosis.go）共用同一正文结构，指令由调用方按用途
+// 经 applyQuizGradingInstructions 注入协议槽位。
+func quizGradingPrompt(question QuizQuestion, answer string) string {
 	var builder strings.Builder
 	builder.WriteString("Question:\n")
 	builder.WriteString(question.Question)
@@ -137,11 +148,7 @@ func (s Suite) quizGradingRequest(question QuizQuestion, answer string, protocol
 			builder.WriteString("\n")
 		}
 	}
-	request, err := s.tunedBasic(s.Model, builder.String(), mode, stream, quizMaxOutputTokens, 0)
-	if err != nil {
-		return Request{}, err
-	}
-	return applyQuizGradingInstructions(request, protocol, quizGradingInstructions)
+	return builder.String()
 }
 
 // applyQuizGradingInstructions places the grading instructions into the

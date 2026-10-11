@@ -2141,11 +2141,12 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 	// 消费方 gateway gatewayquota/costs.go 的配额读改读新列。usage_quota_hourly_windows
 	// 不加列：其 total_cost_usd 单列即配额口径成本，由 statsagg 窗口刷新按
 	// success_cost_usd 汇总重建，历史窗口行在下一次刷新自然收敛。
-	// 回填策略（rerun-safe，可随 ensure 重复执行）：error_count = 0 的行
-	// （无失败尝试，total 即成功成本）置为 total_cost_usd；error_count > 0 的
-	// 混合历史行无法从聚合还原成功部分，保持 0 起算（业务口径：失败尝试不计
-	// 配额），新聚合随后自然精确累积。WHERE 守卫保证对已回填/已切换后聚合的
-	// 行为幂等（error_count = 0 且成功口径已累积时 success = total 恒成立）。
+	// 历史回填不在此执行（成功成本历史回填治理，2026-10-12）：早期版本把六条
+	// 回填 UPDATE 作为 statements 随每次 ensure 全表扫六表（生产实测
+	// usage_stats_minute 单表 max 234s），已卸载——回填职责唯一收敛到
+	// maintenance --apply-success-cost-backfill 一次性子命令（幂等、按
+	// backfill_progress 游标可中断续跑）；迟到符合回填谓词的行由扣减事务内
+	// CASE 补正兜住，不再依赖任何全表扫描。
 	{
 		SchemaName: "juhe_stats",
 		Source:     "success-cost-usd-pg-columns",
@@ -2176,35 +2177,20 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 		Source:     "success-cost-usd-pg-columns",
 		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
 	},
+	// backfill_progress：六表 success_cost_usd 历史回填的一次性完成标记
+	// （running/done）与主键 tuple 游标，PG juhe_stats 与 SQLite stats 库同构；
+	// ensure 只幂等建表、绝不执行回填（结构保证收敛到显式运维动作
+	// --apply-success-cost-backfill，BUG-0307 教训）。不复用 stats_job_state：
+	// 其 cursor 语义与 jobs 状态机耦合，回填完成态混入会污染 lag/心跳语义。
 	{
 		SchemaName: "juhe_stats",
-		Source:     "success-cost-usd-backfill",
-		SQL:        `UPDATE usage_stats_totals SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "success-cost-usd-backfill",
-		SQL:        `UPDATE usage_stats_minute SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "success-cost-usd-backfill",
-		SQL:        `UPDATE usage_stats_hourly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "success-cost-usd-backfill",
-		SQL:        `UPDATE usage_stats_daily SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "success-cost-usd-backfill",
-		SQL:        `UPDATE usage_stats_weekly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
-	},
-	{
-		SchemaName: "juhe_stats",
-		Source:     "success-cost-usd-backfill",
-		SQL:        `UPDATE usage_stats_monthly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
+		Source:     "backfill-progress-table",
+		SQL: `CREATE TABLE IF NOT EXISTS backfill_progress (
+      table_name text PRIMARY KEY,
+      status text NOT NULL,
+      cursor_json text NOT NULL DEFAULT '{}',
+      updated_at text NOT NULL
+    )`,
 	},
 	// 媒体计量维度列（M4a，媒体设计 §10 / 统计指标与分层聚合设计）：usage_records
 	// 已落的 input_audio_tokens / output_audio_tokens / tts_input_chars /

@@ -72,6 +72,28 @@ func w16hSeedSQLite(t *testing.T, path string) {
 	}
 }
 
+// w16hSeedBusinessCapabilityDomain 在基底业务库预置 accounts.capability_domain
+// 最小形状（AI 账户能力域拆分 M1：jobs 启动业务库形状契约
+// capability_domain_schema.go 的只读校验消费面；列声明与 maintenance DDL
+// 同构，任务族完整列集由各专项 fixture 承载）。
+func w16hSeedBusinessCapabilityDomain(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS accounts (
+		id TEXT PRIMARY KEY,
+		deleted_at TEXT,
+		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // w16hBaseEnv 构造 F1+F2+J1+worker 恒开装配成功的 owner env 基底（J1 与
 // worker 家族恒开后的必填项由基底统一提供，错误臂按需单项覆盖），用于驱动
 // J1/mR/J2/J3a/J3b/listener/goMetrics/worker 各加载臂与 listener 臂。
@@ -98,6 +120,9 @@ func w16hBaseEnv(t *testing.T) map[string]string {
 	for _, name := range []string{"business.sqlite3", "dataset.sqlite3", "stats.sqlite3", "usage-catalog.sqlite3"} {
 		w16hSeedSQLite(t, filepath.Join(root, name))
 	}
+	// 基底业务库预置 accounts.capability_domain 最小形状（jobs 启动业务库
+	// 形状契约，capability_domain_schema.go 只读校验消费面）。
+	w16hSeedBusinessCapabilityDomain(t, filepath.Join(root, "business.sqlite3"))
 	return map[string]string{
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "w16h-run",
 		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",

@@ -84,28 +84,48 @@ func runMaintenance(argv []string) int {
 	confirmOffline := fs.Bool("confirm-offline", false, "confirm an offline window for --rebuild-usage-stats (gateway/jobs stopped); alternatively set JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1")
 	rebuildBatchSize := fs.Int("batch-size", 2000, "rebuild-usage-stats aggregation batch size (clamped to 1..50000; default 2000)")
 	rebuildMaxBatches := fs.Int("max-batches", 1000, "rebuild-usage-stats aggregation batch cap per run (clamped to 1..10000; default 1000; rerun to continue when the cap is hit)")
+	applySuccessCostBackfill := fs.Bool("apply-success-cost-backfill", false, "one-shot idempotent backfill of usage_stats success_cost_usd from total_cost_usd for the six stats tables (maintenance window with jobs stopped; run --ensure-schema first to create the backfill_progress marker table; requires --driver postgres --dsn or --driver sqlite --paths stats=...; resumable from the persisted cursor)")
+	backfillDryRun := fs.Bool("dry-run", false, "with --apply-success-cost-backfill, read-only pending-row count per table; never reads or writes the backfill_progress marker")
+	migrateAccountCapabilityDomain := fs.Bool("migrate-account-capability-domain", false, "AI account capability-domain migration (PLAN-20261011T141004000Z): requires --account-capability-domain-stage=m1|m2-cutover plus --node-stopped --go-stopped --backup-confirmed; storage via --driver plus --paths/--dsn")
+	verifyAccountCapabilityDomain := fs.Bool("verify-account-capability-domain", false, "read-only AI account capability-domain verification: requires --account-capability-domain-stage=m1|m2-cutover and --account-capability-domain-check=preflight|postflight (preflight tolerates a missing column, postflight requires it)")
+	accountCapabilityDomainStage := fs.String("account-capability-domain-stage", "", "migration target for --migrate-account-capability-domain/--verify-account-capability-domain: m1 or m2-cutover")
+	accountCapabilityDomainCheck := fs.String("account-capability-domain-check", "", "verification mode for --verify-account-capability-domain: preflight or postflight")
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
+	if *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain {
+		if *migrateAccountCapabilityDomain && *verifyAccountCapabilityDomain {
+			fmt.Fprintln(os.Stderr, "capability-domain migrate and verify flags are mutually exclusive")
+			return 2
+		}
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill {
+			fmt.Fprintln(os.Stderr, "capability domain migration flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		if *migrateAccountCapabilityDomain {
+			return accountCapabilityDomainMigrateResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret, *accountCapabilityDomainStage, *nodeStopped, *goStopped, *backupConfirmed)
+		}
+		return accountCapabilityDomainVerifyResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret, *accountCapabilityDomainStage, *accountCapabilityDomainCheck)
+	}
 	if *migrateChatBinding {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "chat account-only binding migration flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return chatAccountOnlyBindingMigrationResult(*bootstrapDriver, *chatSQLitePath, *bootstrapDSN)
 	}
 	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats {
+		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return postgresSchemaSnapshotResult()
 	}
 	if *businessDatasetExport || *businessDatasetImport {
-		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats {
+		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "business dataset export/import flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -115,7 +135,7 @@ func runMaintenance(argv []string) int {
 		return businessDatasetImportResultWithReplace(*businessDatasetURL, *businessDatasetDir, businessDatasetAllowMissing, *businessDatasetExpectedTargetDB, *businessDatasetExpectedSourceDB, *businessDatasetReplaceExisting)
 	}
 	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats {
+		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -126,7 +146,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats {
+		if *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -137,7 +157,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "mockdata seeding and mockdata coverage verification flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *rebuildUsageStats {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "mockdata flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -153,11 +173,18 @@ func runMaintenance(argv []string) int {
 		})
 	}
 	if *rebuildUsageStats {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill {
 			fmt.Fprintln(os.Stderr, "rebuild-usage-stats flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return rebuildUsageStatsResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *rebuildBatchSize, *rebuildMaxBatches, *confirmOffline)
+	}
+	if *applySuccessCostBackfill {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain {
+			fmt.Fprintln(os.Stderr, "apply-success-cost-backfill flag is mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return applySuccessCostBackfillResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *backfillDryRun)
 	}
 	if *version {
 		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)

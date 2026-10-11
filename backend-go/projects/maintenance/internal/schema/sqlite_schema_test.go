@@ -15,8 +15,9 @@ import (
 
 // goldenBusinessTables is the golden table list extracted from the Node
 // business-schema.ts (72 tables) plus the Go-appended
-// model_check_question_bank table (model-check question bank feature) and
-// the Go-appended media_jobs table (M2 异步媒体任务，媒体设计 §8.2).
+// model_check_question_bank table (model-check question bank feature), the
+// Go-appended media_jobs table (M2 异步媒体任务，媒体设计 §8.2) and the
+// Go-appended model_check_question_tests table (提交门禁测试记录).
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -62,6 +63,7 @@ var goldenBusinessTables = []string{
 	"groups",
 	"media_jobs",
 	"model_check_question_bank",
+	"model_check_question_tests",
 	"model_quality_policies",
 	"model_quality_schedules",
 	"openai_compatible_files",
@@ -94,7 +96,9 @@ var goldenBusinessTables = []string{
 	"system_teams",
 }
 
-// goldenStatsTables is the golden table list extracted from the Node stats-schema.ts (62 tables).
+// goldenStatsTables is the golden table list extracted from the Node
+// stats-schema.ts (62 tables) plus the Go-appended backfill_progress marker
+// table (成功成本历史回填治理，2026-10-12).
 var goldenStatsTables = []string{
 	"account_health_hourly",
 	"account_quality_dirty_accounts",
@@ -107,6 +111,7 @@ var goldenStatsTables = []string{
 	"authorization_team_usage_summary_daily",
 	"authorization_user_usage_range_windows",
 	"authorization_user_usage_summary_daily",
+	"backfill_progress",
 	"background_job_leases",
 	"background_task_runs",
 	"client_ip_account_range_window_dirty_ips",
@@ -205,8 +210,8 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	Business:     SchemaCounts{Tables: 74, Indexes: 217},
-	Stats:        SchemaCounts{Tables: 64, Indexes: 124},
+	Business:     SchemaCounts{Tables: 75, Indexes: 219},
+	Stats:        SchemaCounts{Tables: 65, Indexes: 124},
 	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
 	Dataset:      SchemaCounts{Tables: 3, Indexes: 4},
@@ -216,12 +221,12 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 158
+const goldenTotalTables = 160
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
 // schema (IF NOT EXISTS no-ops on a fresh database) are not counted twice.
-const goldenTotalIndexes = 390
+const goldenTotalIndexes = 392
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

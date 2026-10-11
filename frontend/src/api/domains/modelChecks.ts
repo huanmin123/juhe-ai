@@ -7,6 +7,8 @@ import type {
   ModelCheckQuestionBankMutationInput,
   ModelCheckQuestionBankOptionsResult,
   ModelCheckQuestionBankReviewInput,
+  ModelCheckQuestionBankTestInput,
+  ModelCheckQuestionBankTestResult,
   ModelCheckRunDetail,
   ModelCheckRunListParams,
   ModelCheckRunListResult,
@@ -52,6 +54,7 @@ export const modelChecksApi = {
   questionBankUpdate: (id: string, payload: ModelCheckQuestionBankMutationInput, params?: ModelCheckScopeParams) => unwrap<ModelCheckQuestionBankItem>(http.patch(`/model-checks/question-bank/${id}`, payload, { params })),
   questionBankDelete: (id: string, params?: ModelCheckScopeParams) => unwrap<{ deleted: boolean }>(http.delete(`/model-checks/question-bank/${id}`, { params })),
   questionBankReview: (id: string, payload: ModelCheckQuestionBankReviewInput, params?: ModelCheckScopeParams) => unwrap<ModelCheckQuestionBankItem>(http.post(`/model-checks/question-bank/${id}/review`, payload, { params })),
+  questionBankTest: (payload: ModelCheckQuestionBankTestInput, params?: ModelCheckScopeParams) => unwrap<ModelCheckQuestionBankTestResult>(http.post('/model-checks/question-bank/test', payload, { ...noTimeout, params })),
   questionBankOptions: (params?: ModelCheckScopeParams & { keyword?: string; limit?: number }, options?: { signal?: AbortSignal }) => unwrap<ModelCheckQuestionBankOptionsResult>(http.get('/model-checks/question-bank/options', { params, signal: options?.signal })),
   questionBankByIds: (ids: string[], options?: { signal?: AbortSignal }) => unwrap<ModelCheckQuestionBankOptionsResult>(http.get('/model-checks/question-bank/by-ids', { params: { ids: ids.join(',') }, signal: options?.signal }))
 }
@@ -79,6 +82,7 @@ export const myModelChecksApi = {
   questionBankUpdate: (id: string, payload: ModelCheckQuestionBankMutationInput) => unwrap<ModelCheckQuestionBankItem>(http.patch(`/my-model-checks/question-bank/${id}`, payload)),
   questionBankDelete: (id: string) => unwrap<{ deleted: boolean }>(http.delete(`/my-model-checks/question-bank/${id}`)),
   questionBankReview: (id: string, payload: ModelCheckQuestionBankReviewInput) => unwrap<ModelCheckQuestionBankItem>(http.post(`/my-model-checks/question-bank/${id}/review`, payload)),
+  questionBankTest: (payload: ModelCheckQuestionBankTestInput) => unwrap<ModelCheckQuestionBankTestResult>(http.post('/my-model-checks/question-bank/test', payload, noTimeout)),
   questionBankOptions: (params?: { keyword?: string; limit?: number }, options?: { signal?: AbortSignal }) => unwrap<ModelCheckQuestionBankOptionsResult>(http.get('/my-model-checks/question-bank/options', { params, signal: options?.signal })),
   questionBankByIds: (ids: string[], options?: { signal?: AbortSignal }) => unwrap<ModelCheckQuestionBankOptionsResult>(http.get('/my-model-checks/question-bank/by-ids', { params: { ids: ids.join(',') }, signal: options?.signal }))
 }

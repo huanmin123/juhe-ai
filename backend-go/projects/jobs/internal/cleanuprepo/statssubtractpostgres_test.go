@@ -296,17 +296,22 @@ var pgTotalsSubtractSQL = bindTestPG(`
           audio_input_seconds = GREATEST(0, audio_input_seconds - $17),
           output_video_seconds = GREATEST(0, output_video_seconds - $18),
           total_cost_usd = GREATEST(0, total_cost_usd - $19),
-          success_cost_usd = GREATEST(0, success_cost_usd - $20),
-          duration_ms_sum = GREATEST(0, duration_ms_sum - $21),
-          duration_ms_count = GREATEST(0, duration_ms_count - $22),
-          duration_ms_max = CASE WHEN duration_ms_count <= $23 THEN 0 ELSE duration_ms_max END,
-          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $24),
-          first_token_ms_count = GREATEST(0, first_token_ms_count - $25),
-          first_token_ms_max = CASE WHEN first_token_ms_count <= $26 THEN 0 ELSE first_token_ms_max END,
-          last_used_at = CASE WHEN request_count <= $27 THEN NULL ELSE last_used_at END,
-          last_error_at = CASE WHEN error_count <= $28 THEN NULL ELSE last_error_at END,
-          updated_at = $29
-      WHERE system_account_id = $30 AND scope_type = $31 AND scope_id = $32
+          success_cost_usd = CASE
+            WHEN GREATEST(0, error_count - $20) = 0
+                 AND GREATEST(0, total_cost_usd - $21) <> GREATEST(0, success_cost_usd - $22)
+            THEN GREATEST(0, total_cost_usd - $23)
+            ELSE GREATEST(0, success_cost_usd - $24)
+          END,
+          duration_ms_sum = GREATEST(0, duration_ms_sum - $25),
+          duration_ms_count = GREATEST(0, duration_ms_count - $26),
+          duration_ms_max = CASE WHEN duration_ms_count <= $27 THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $28),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - $29),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= $30 THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= $31 THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= $32 THEN NULL ELSE last_error_at END,
+          updated_at = $33
+      WHERE system_account_id = $34 AND scope_type = $35 AND scope_id = $36
     `)
 
 func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
@@ -336,11 +341,16 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		}
 	}
 
-	// totals UPDATE：文本逐字符 + 首 scope 的 32 参逐项（含成功口径成本
-	// success_cost_usd 紧随 total_cost_usd，媒体五列紧随 output_image_tokens）。
+	// totals UPDATE：文本逐字符 + 首 scope 的 36 参逐项（含成功口径成本
+	// success_cost_usd 紧随 total_cost_usd，媒体五列紧随 output_image_tokens；
+	// success_cost_usd 为扣减补正 CASE 的 5 占位符，净 +4）。
 	totalUpdateArgs := statements[0].args
-	if len(totalUpdateArgs) != 32 {
-		t.Fatalf("totals UPDATE 参数数 = %d, 期望 32", len(totalUpdateArgs))
+	if len(totalUpdateArgs) != 36 {
+		t.Fatalf("totals UPDATE 参数数 = %d, 期望 36", len(totalUpdateArgs))
+	}
+	// 显式覆盖：CASE 出现在 SQL 文本。
+	if !strings.Contains(statements[0].query, "success_cost_usd = CASE") {
+		t.Fatalf("totals UPDATE 缺少 success_cost_usd 补正 CASE：\n%s", statements[0].query)
 	}
 	accumulator := statsagg.UsageStatsAccumulatorFromRecord(row)
 	// 同一行的 4 个 scope 条目共享同一 accumulator；首 scope 为 (sys-1, system_account, sys-1)。
@@ -352,6 +362,10 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		accumulator.ThinkingTokens, accumulator.InputImageTokens, accumulator.OutputImageTokens,
 		accumulator.InputAudioTokens, accumulator.OutputAudioTokens, accumulator.TTSInputChars,
 		accumulator.AudioInputSeconds, accumulator.OutputVideoSeconds,
+		accumulator.TotalCostUsd,
+		// success_cost_usd 补正 CASE 的 5 参（$20..$24）：
+		// [error, total, success, total, success] 的同一扣减值。
+		accumulator.ErrorCount, accumulator.TotalCostUsd, accumulator.SuccessCostUsd,
 		accumulator.TotalCostUsd, accumulator.SuccessCostUsd,
 		accumulator.DurationMsSum, accumulator.DurationMsCount,
 		accumulator.DurationMsCount,
@@ -364,6 +378,17 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		got := totalUpdateArgs[i]
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("totals UPDATE 参数[%d] = %v, 期望 %v", i, got, want)
+		}
+	}
+	// 显式覆盖：success_cost_usd 位置参数（索引 19..23，即 $20..$24）为
+	// [error, total, success, total, success] 同值序列。
+	caseArgs := []any{
+		accumulator.ErrorCount, accumulator.TotalCostUsd, accumulator.SuccessCostUsd,
+		accumulator.TotalCostUsd, accumulator.SuccessCostUsd,
+	}
+	for i, want := range caseArgs {
+		if fmt.Sprintf("%v", totalUpdateArgs[19+i]) != fmt.Sprintf("%v", want) {
+			t.Fatalf("CASE 参数[%d]（$%d）= %v, 期望 %v", i, 20+i, totalUpdateArgs[19+i], want)
 		}
 	}
 
@@ -379,7 +404,7 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		if update.query != pgTotalsSubtractSQL {
 			t.Fatalf("totals UPDATE[%d] 文本不匹配：\n%s", scopeIndex, update.query)
 		}
-		got := []string{fmt.Sprintf("%v", update.args[29]), fmt.Sprintf("%v", update.args[30]), fmt.Sprintf("%v", update.args[31])}
+		got := []string{fmt.Sprintf("%v", update.args[33]), fmt.Sprintf("%v", update.args[34]), fmt.Sprintf("%v", update.args[35])}
 		want := []string{scope[0], scope[1], scope[2]}
 		for i := range want {
 			if got[i] != want[i] {
@@ -430,26 +455,31 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
           audio_input_seconds = GREATEST(0, audio_input_seconds - $17),
           output_video_seconds = GREATEST(0, output_video_seconds - $18),
           total_cost_usd = GREATEST(0, total_cost_usd - $19),
-          success_cost_usd = GREATEST(0, success_cost_usd - $20),
-          duration_ms_sum = GREATEST(0, duration_ms_sum - $21),
-          duration_ms_count = GREATEST(0, duration_ms_count - $22),
-          duration_ms_max = CASE WHEN duration_ms_count <= $23 THEN 0 ELSE duration_ms_max END,
-          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $24),
-          first_token_ms_count = GREATEST(0, first_token_ms_count - $25),
-          first_token_ms_max = CASE WHEN first_token_ms_count <= $26 THEN 0 ELSE first_token_ms_max END,
-          last_used_at = CASE WHEN request_count <= $27 THEN NULL ELSE last_used_at END,
-          last_error_at = CASE WHEN error_count <= $28 THEN NULL ELSE last_error_at END,
-          updated_at = $29
-      WHERE system_account_id = $30 AND scope_type = $31 AND scope_id = $32 AND %s = $33
+          success_cost_usd = CASE
+            WHEN GREATEST(0, error_count - $20) = 0
+                 AND GREATEST(0, total_cost_usd - $21) <> GREATEST(0, success_cost_usd - $22)
+            THEN GREATEST(0, total_cost_usd - $23)
+            ELSE GREATEST(0, success_cost_usd - $24)
+          END,
+          duration_ms_sum = GREATEST(0, duration_ms_sum - $25),
+          duration_ms_count = GREATEST(0, duration_ms_count - $26),
+          duration_ms_max = CASE WHEN duration_ms_count <= $27 THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $28),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - $29),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= $30 THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= $31 THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= $32 THEN NULL ELSE last_error_at END,
+          updated_at = $33
+      WHERE system_account_id = $34 AND scope_type = $35 AND scope_id = $36 AND %s = $37
     `, "usage_stats_minute", "stat_minute"))
 	if bucketUpdate.query != wantBucketUpdate {
 		t.Fatalf("minute 桶 UPDATE 文本不匹配：\n%s", bucketUpdate.query)
 	}
-	if len(bucketUpdate.args) != 33 {
-		t.Fatalf("minute 桶 UPDATE 参数数 = %d, 期望 33", len(bucketUpdate.args))
+	if len(bucketUpdate.args) != 37 {
+		t.Fatalf("minute 桶 UPDATE 参数数 = %d, 期望 37", len(bucketUpdate.args))
 	}
-	if fmt.Sprintf("%v", bucketUpdate.args[32]) != "2026-01-05T11:04" {
-		t.Fatalf("minute 桶 timeValue = %v", bucketUpdate.args[32])
+	if fmt.Sprintf("%v", bucketUpdate.args[36]) != "2026-01-05T11:04" {
+		t.Fatalf("minute 桶 timeValue = %v", bucketUpdate.args[36])
 	}
 	wantBucketDelete := bindTestPG(fmt.Sprintf(`
     DELETE FROM juhe_stats.%s
@@ -636,17 +666,22 @@ func TestSubtractPostgresUsageStatsRowsFullFamily(t *testing.T) {
           audio_input_seconds = GREATEST(0, audio_input_seconds - $17),
           output_video_seconds = GREATEST(0, output_video_seconds - $18),
           total_cost_usd = GREATEST(0, total_cost_usd - $19),
-          success_cost_usd = GREATEST(0, success_cost_usd - $20),
-          duration_ms_sum = GREATEST(0, duration_ms_sum - $21),
-          duration_ms_count = GREATEST(0, duration_ms_count - $22),
-          duration_ms_max = CASE WHEN duration_ms_count <= $23 THEN 0 ELSE duration_ms_max END,
-          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $24),
-          first_token_ms_count = GREATEST(0, first_token_ms_count - $25),
-          first_token_ms_max = CASE WHEN first_token_ms_count <= $26 THEN 0 ELSE first_token_ms_max END,
-          last_used_at = CASE WHEN request_count <= $27 THEN NULL ELSE last_used_at END,
-          last_error_at = CASE WHEN error_count <= $28 THEN NULL ELSE last_error_at END,
-          updated_at = $29
-      WHERE system_account_id = $30 AND scope_type = $31 AND scope_id = $32 AND stat_minute = $33
+          success_cost_usd = CASE
+            WHEN GREATEST(0, error_count - $20) = 0
+                 AND GREATEST(0, total_cost_usd - $21) <> GREATEST(0, success_cost_usd - $22)
+            THEN GREATEST(0, total_cost_usd - $23)
+            ELSE GREATEST(0, success_cost_usd - $24)
+          END,
+          duration_ms_sum = GREATEST(0, duration_ms_sum - $25),
+          duration_ms_count = GREATEST(0, duration_ms_count - $26),
+          duration_ms_max = CASE WHEN duration_ms_count <= $27 THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $28),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - $29),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= $30 THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= $31 THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= $32 THEN NULL ELSE last_error_at END,
+          updated_at = $33
+      WHERE system_account_id = $34 AND scope_type = $35 AND scope_id = $36 AND stat_minute = $37
     `),
 		bindTestPG(`
       UPDATE juhe_stats.usage_latency_minute
@@ -799,6 +834,80 @@ func TestSubtractPostgresUsageStatsRowsFullFamily(t *testing.T) {
 	}
 	if quotaCount != 2 {
 		t.Fatalf("quota 脏范围 INSERT 数 = %d, 期望 2", quotaCount)
+	}
+}
+
+// TestPostgresSuccessCostSubtractCaseMatchesContract：pgRecorder 只录文本
+// 无法执行语义，按任务约定对录制 SQL 做契约结构等价断言（不留静默缺口）：
+// totals 与 minute 桶 UPDATE 中 success_cost_usd 的赋值片段逐 token 等于
+// 计划 PLAN-20261011T225418 §3.4 的 GREATEST 形式 CASE（占位符 $20..$24
+// 依次为 error、total、success、total、success），且无 success_cost_usd 列
+// 的 usage_model_minute 不含该列。
+func TestPostgresSuccessCostSubtractCaseMatchesContract(t *testing.T) {
+	rec := newPGRecorder()
+	store := newPGTestStore(rec)
+	row := pgTestRow()
+	row.Model = kitText("gpt-x")
+	tx, err := store.Stats.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := store.subtractPostgresUsageStatsRows(context.Background(), tx, []statsagg.UsageStatsRecordRow{row}, pgTestUpdatedAt, pgTestZone); err != nil {
+		t.Fatalf("subtractPostgresUsageStatsRows: %v", err)
+	}
+
+	contract := normalizeKitSQL(`
+success_cost_usd = CASE
+  WHEN GREATEST(0, error_count - $20) = 0
+       AND GREATEST(0, total_cost_usd - $21) <> GREATEST(0, success_cost_usd - $22)
+  THEN GREATEST(0, total_cost_usd - $23)
+  ELSE GREATEST(0, success_cost_usd - $24)
+END
+`)
+	extractSuccessCostCase := func(query, description string) string {
+		t.Helper()
+		start := strings.Index(query, "success_cost_usd = CASE")
+		if start < 0 {
+			t.Fatalf("%s 缺少 success_cost_usd = CASE：\n%s", description, query)
+		}
+		endMark := strings.Index(query[start:], "END,")
+		if endMark < 0 {
+			t.Fatalf("%s 的 CASE 缺少 END 终止：\n%s", description, query[start:])
+		}
+		return normalizeKitSQL(query[start : start+endMark+len("END,")-1])
+	}
+
+	statements := rec.all()
+	for _, target := range []struct {
+		fragment, description string
+	}{
+		{"UPDATE juhe_stats.usage_stats_totals", "totals UPDATE"},
+		{"UPDATE juhe_stats.usage_stats_minute", "minute 桶 UPDATE"},
+	} {
+		index := -1
+		for i, statement := range statements {
+			if strings.Contains(statement.query, target.fragment) {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			t.Fatalf("未找到 %s", target.description)
+		}
+		if got := extractSuccessCostCase(statements[index].query, target.description); got != contract {
+			t.Fatalf("%s 的 success_cost_usd 片段与契约表达式不等价：\n%s\n期望：\n%s", target.description, got, contract)
+		}
+	}
+
+	// usage_model_minute 无 success_cost_usd 列：不得出现该列赋值或补正 CASE。
+	for _, statement := range statements {
+		if strings.Contains(statement.query, "UPDATE juhe_stats.usage_model_minute") {
+			if strings.Contains(statement.query, "success_cost_usd") {
+				t.Fatalf("usage_model_minute 不应包含 success_cost_usd：\n%s", statement.query)
+			}
+			break
+		}
 	}
 }
 
@@ -1376,7 +1485,7 @@ func TestSQLiteInterlockSubtractSemantics(t *testing.T) {
 	var totalsUpdate *recordedStatement
 	for i, statement := range rec.all() {
 		if strings.Contains(statement.query, "UPDATE juhe_stats.usage_stats_totals") {
-			if statement.args[30] == "system_account" && statement.args[31] == "sys-1" {
+			if statement.args[34] == "system_account" && statement.args[35] == "sys-1" {
 				totalsUpdate = &rec.all()[i]
 				break
 			}

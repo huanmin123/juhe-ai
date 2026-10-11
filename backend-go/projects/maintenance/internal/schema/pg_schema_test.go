@@ -25,7 +25,10 @@ import (
 // collectPostgresSchemaStatements() in backend/src/storage/postgres-schema.ts,
 // plus the Go-appended statements (model-check question bank table, its
 // indexes and is_builtin ALTER column, the custom_question_ids ALTER columns,
-// the stats success_cost_usd ALTER/backfill statements, the chat_conversations
+// the stats success_cost_usd ALTER column statements and the Go-appended
+// backfill_progress marker table — the six stats backfill UPDATE statements
+// were retired to the --apply-success-cost-backfill subcommand, 2026-10-12 —
+// the chat_conversations
 // account-binding ALTER columns, the model_quality_schedules
 // interval_minutes CHECK migration DO block, the chat_user_tool_preferences
 // user-level tool binding table, the accounts health_check_endpoint_mode
@@ -33,19 +36,23 @@ import (
 // three indexes, the usage_records output_video_seconds ALTER column, and the
 // M7 chat media-tool binding ALTER columns with the chat_assets media CHECK
 // migration DO block, the system_accounts expedited_account_limit ALTER
-// column, and the accounts expedited_recovery_enabled ALTER column; the retired bind-mode ALTERs
-// were removed with the account-only binding migration). Regenerate them when
+// column, the accounts expedited_recovery_enabled ALTER column, and the
+// accounts capability_domain ALTER column (AI 账户能力域拆分
+// PLAN-20261011T141004000Z); the retired bind-mode ALTERs
+// were removed with the account-only binding migration, and the model-check
+// question-tests submission-gate table adds its two indexes and the question
+// bank last_test ALTER columns). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 706
+const goldenPostgresSchemaStatementCount = 707
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      318,
+	"juhe_business":      324,
 	"juhe_chat":          52,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
-	"juhe_stats":         261,
+	"juhe_stats":         256,
 	"juhe_codex_context": 16,
 }
 
@@ -135,8 +142,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 92 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 92", alterColumns)
+	if alterColumns != 95 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 95", alterColumns)
 	}
 	if doBlocks != 4 {
 		t.Fatalf("DO block count = %d, want 4", doBlocks)
@@ -342,12 +349,12 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
-		// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
-		// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）；
-		// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）。
-		if len(pgSeedSystemSettings) != 72 {
-			t.Fatalf("system settings = %d, want 72", len(pgSeedSystemSettings))
-		}
+	// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
+	// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）；
+	// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）。
+	if len(pgSeedSystemSettings) != 72 {
+		t.Fatalf("system settings = %d, want 72", len(pgSeedSystemSettings))
+	}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {
 		profileFamilyCount += len(profile.EndpointFamilies)

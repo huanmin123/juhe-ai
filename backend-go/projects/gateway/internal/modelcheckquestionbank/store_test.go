@@ -4,14 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-// newTestStore 打开本测试专属的临时 SQLite 业务库并建最小题库表
-// （照 modelcheckowner business_quality_management_test.go 的
+// newTestStore 打开本测试专属的临时 SQLite 业务库并建最小题库表与提交
+// 门禁测试记录表（照 modelcheckowner business_quality_management_test.go 的
 // t.TempDir()+mode=rwc 基建；表结构与 maintenance SQLite DDL 一致）。
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
@@ -21,6 +23,9 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(testQuestionBankDDL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(testQuestionTestsDDL); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(testSystemAccountsDDL); err != nil {
@@ -48,7 +53,26 @@ const testQuestionBankDDL = `CREATE TABLE model_check_question_bank (
       reviewed_by TEXT,
       reviewed_at TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      last_test_id TEXT,
+      last_test_json TEXT
+    )`
+
+// testQuestionTestsDDL 是提交门禁测试记录表（与 maintenance SQLite DDL
+// 一致的最小形状）。
+const testQuestionTestsDDL = `CREATE TABLE model_check_question_tests (
+      id TEXT PRIMARY KEY,
+      created_by TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      account_name TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL,
+      draft_hash TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'invalid', 'request_failed')),
+      alignment TEXT NOT NULL DEFAULT '' CHECK (alignment IN ('', 'aligned', 'misaligned', 'unknown')),
+      diagnosis_json TEXT,
+      http_status INTEGER,
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
     )`
 
 // testSystemAccountsDDL 是 SystemAccountNames 依赖的最小系统账户表
@@ -63,11 +87,37 @@ var (
 	actorBob   = Actor{SystemAccountID: "sys-bob"}
 )
 
+// seedTestCounter 保证同一 store 内多条种子测试记录 id 唯一。
+var seedTestCounter atomic.Int64
+
+// seedPassingTest 写入一条当前可用的 pass 测试记录并返回 testId
+// （经 InsertTestRecord 造数；draft hash 按调用方内容计算，keyPoints 传
+// 归一化后的原序要点）。
+func seedPassingTest(t *testing.T, store *Store, actor Actor, questionText, referenceAnswer string, keyPoints []string) string {
+	t.Helper()
+	testID := fmt.Sprintf("mcqt-seed-%d", seedTestCounter.Add(1))
+	record := TestRecord{
+		ID: testID, CreatedBy: actor.SystemAccountID,
+		AccountID: "acc-seed", AccountName: "种子账户", Model: "gpt-seed",
+		DraftHash: DraftHash(questionText, referenceAnswer, keyPoints),
+		Verdict:   TestVerdictPass, Alignment: TestAlignmentAligned,
+		LatencyMs: 1234, HTTPStatus: 200,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.InsertTestRecord(context.Background(), record); err != nil {
+		t.Fatalf("seed passing test: %v", err)
+	}
+	return testID
+}
+
 func mustCreate(t *testing.T, store *Store, actor Actor, title, text string) Question {
 	t.Helper()
+	referenceAnswer := "参考答案：" + title
+	keyPoints := []string{"要点一"}
+	testID := seedPassingTest(t, store, actor, text, referenceAnswer, keyPoints)
 	question, err := store.Create(context.Background(), actor, CreateQuestionInput{
-		Title: title, QuestionText: text, ReferenceAnswer: "参考答案：" + title,
-		KeyPoints: []string{"要点一"},
+		Title: title, QuestionText: text, ReferenceAnswer: referenceAnswer,
+		KeyPoints: keyPoints, TestID: testID,
 	})
 	if err != nil {
 		t.Fatalf("create %q: %v", title, err)
@@ -186,7 +236,9 @@ func TestStoreTitleAndSimilarityDeduplication(t *testing.T) {
 		if _, err := store.Review(ctx, original.ID, Actor{SystemAccountID: "sys-admin"}, true, "reject", "题目不严谨"); err != nil {
 			t.Fatalf("reject: %v", err)
 		}
-		recreated, err := store.Create(ctx, actorBob, CreateQuestionInput{Title: "什么是模型降智？", QuestionText: "全新的题目内容，与原题差异足够大，不构成相似证据。", ReferenceAnswer: "答案"})
+		recreatedText := "全新的题目内容，与原题差异足够大，不构成相似证据。"
+		recreatedTest := seedPassingTest(t, store, actorBob, recreatedText, "答案", nil)
+		recreated, err := store.Create(ctx, actorBob, CreateQuestionInput{Title: "什么是模型降智？", QuestionText: recreatedText, ReferenceAnswer: "答案", TestID: recreatedTest})
 		if err != nil {
 			t.Fatalf("rejected title must be reusable: %v", err)
 		}
@@ -225,8 +277,10 @@ func TestStoreUpdateFlow(t *testing.T) {
 		if _, err := store.Review(ctx, revisable.ID, admin, true, "reject", "口径过期，请更新"); err != nil {
 			t.Fatalf("reject: %v", err)
 		}
+		updatedText := "更新后的题目内容，同样足够独特。"
+		updatedTest := seedPassingTest(t, store, actorAlice, updatedText, "更新后的答案", []string{"新要点"})
 		updated, err := store.Update(ctx, revisable.ID, actorAlice, false, UpdateQuestionInput{
-			Title: "更新后的标题", QuestionText: "更新后的题目内容，同样足够独特。", ReferenceAnswer: "更新后的答案", KeyPoints: []string{"新要点"},
+			Title: "更新后的标题", QuestionText: updatedText, ReferenceAnswer: "更新后的答案", KeyPoints: []string{"新要点"}, TestID: updatedTest,
 		})
 		if err != nil {
 			t.Fatalf("update rejected question: %v", err)
@@ -260,7 +314,9 @@ func TestStoreUpdateFlow(t *testing.T) {
 		if code := statusErrorCode(t, err); code.Status != statusConflict || code.Message != "标题与现有题目重复" {
 			t.Fatalf("status=%d message=%q", code.Status, code.Message)
 		}
-		kept, err := store.Update(ctx, other.ID, actorAlice, false, UpdateQuestionInput{Title: "另一道题", QuestionText: "另一道题的内容，与前者明显不同。", ReferenceAnswer: "保持原样"})
+		keptText := "另一道题的内容，与前者明显不同。"
+		keptTest := seedPassingTest(t, store, actorAlice, keptText, "保持原样", nil)
+		kept, err := store.Update(ctx, other.ID, actorAlice, false, UpdateQuestionInput{Title: "另一道题", QuestionText: keptText, ReferenceAnswer: "保持原样", TestID: keptTest})
 		if err != nil {
 			t.Fatalf("update excluding self must pass: %v", err)
 		}
@@ -756,6 +812,172 @@ func TestStoreBuiltinQuestionWriteProtection(t *testing.T) {
 		})
 		if statusErrorCode(t, err).Status != statusConflict {
 			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+// TestStoreInsertAndFindUsableTest 覆盖测试记录的写入与门禁判定：本人可
+// 取回；不存在/非本人 → ErrTestNotFound；verdict 非 pass、内容不一致、
+// 超过 24 小时分别返回可区分哨兵。
+func TestStoreInsertAndFindUsableTest(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	draftHash := DraftHash("门禁题面。", "门禁答案。", []string{"要点"})
+
+	insert := func(t *testing.T, id, verdict, createdAt string) {
+		t.Helper()
+		err := store.InsertTestRecord(ctx, TestRecord{
+			ID: id, CreatedBy: actorAlice.SystemAccountID, AccountID: "acc-1", AccountName: "账户一",
+			Model: "gpt-x", DraftHash: draftHash, Verdict: verdict, Alignment: TestAlignmentAligned,
+			LatencyMs: 88, HTTPStatus: 200, CreatedAt: createdAt,
+		})
+		if err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	t.Run("Insert 后本人可取回且字段完整", func(t *testing.T) {
+		testID := seedPassingTest(t, store, actorAlice, "门禁题面。", "门禁答案。", []string{"要点"})
+		record, err := store.FindUsableTest(ctx, actorAlice, testID, draftHash, now)
+		if err != nil {
+			t.Fatalf("find: %v", err)
+		}
+		if record.ID != testID || record.Verdict != TestVerdictPass || record.AccountID != "acc-seed" ||
+			record.AccountName != "种子账户" || record.Model != "gpt-seed" || record.LatencyMs != 1234 || record.HTTPStatus != 200 {
+			t.Fatalf("record = %+v", record)
+		}
+		if record.CreatedAt == "" {
+			t.Fatal("created_at 必须落库")
+		}
+	})
+
+	t.Run("不存在与非本人记录一律 not found", func(t *testing.T) {
+		testID := seedPassingTest(t, store, actorAlice, "门禁题面。", "门禁答案。", []string{"要点"})
+		if _, err := store.FindUsableTest(ctx, actorAlice, "mcqt-missing", draftHash, now); !errors.Is(err, ErrTestNotFound) {
+			t.Fatalf("missing err = %v", err)
+		}
+		if _, err := store.FindUsableTest(ctx, actorBob, testID, draftHash, now); !errors.Is(err, ErrTestNotFound) {
+			t.Fatalf("cross-actor err = %v", err)
+		}
+	})
+
+	t.Run("verdict 非 pass 返回 not passed", func(t *testing.T) {
+		insert(t, "mcqt-fail-1", TestVerdictFail, now.Format(time.RFC3339Nano))
+		insert(t, "mcqt-invalid-1", TestVerdictInvalid, now.Format(time.RFC3339Nano))
+		for _, id := range []string{"mcqt-fail-1", "mcqt-invalid-1"} {
+			if _, err := store.FindUsableTest(ctx, actorAlice, id, draftHash, now); !errors.Is(err, ErrTestNotPassed) {
+				t.Fatalf("%s err = %v", id, err)
+			}
+		}
+	})
+
+	t.Run("draft hash 不一致返回 mismatch", func(t *testing.T) {
+		testID := seedPassingTest(t, store, actorAlice, "门禁题面。", "门禁答案。", []string{"要点"})
+		_, err := store.FindUsableTest(ctx, actorAlice, testID, DraftHash("别的题面。", "门禁答案。", []string{"要点"}), now)
+		if !errors.Is(err, ErrTestDraftMismatch) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("超过 24 小时返回 expired", func(t *testing.T) {
+		insert(t, "mcqt-expired-1", TestVerdictPass, now.Add(-25*time.Hour).Format(time.RFC3339Nano))
+		_, err := store.FindUsableTest(ctx, actorAlice, "mcqt-expired-1", draftHash, now)
+		if !errors.Is(err, ErrTestExpired) {
+			t.Fatalf("err = %v", err)
+		}
+		// 24 小时窗口内（边界）仍可用。
+		insert(t, "mcqt-fresh-1", TestVerdictPass, now.Add(-23*time.Hour).Format(time.RFC3339Nano))
+		if _, err := store.FindUsableTest(ctx, actorAlice, "mcqt-fresh-1", draftHash, now); err != nil {
+			t.Fatalf("fresh err = %v", err)
+		}
+	})
+}
+
+// TestStoreSubmissionGate 覆盖 Create/Update 的提交门禁接线：缺 testId
+// 400、内容不匹配哨兵、通过后 last_test 摘要写入与重提交刷新。
+func TestStoreSubmissionGate(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	t.Run("缺 testId 按域错误 400 拒绝", func(t *testing.T) {
+		_, err := store.Create(ctx, actorAlice, CreateQuestionInput{Title: "无凭据题", QuestionText: "无凭据提交的独立题目内容。", ReferenceAnswer: "答案"})
+		if code := statusErrorCode(t, err); code.Status != statusBadRequest {
+			t.Fatalf("status = %d", code.Status)
+		}
+	})
+
+	t.Run("内容不匹配返回哨兵错误", func(t *testing.T) {
+		testID := seedPassingTest(t, store, actorAlice, "测试用的另一段内容。", "另一答案", nil)
+		_, err := store.Create(ctx, actorAlice, CreateQuestionInput{
+			Title: "不匹配题", QuestionText: "与测试内容完全不同的题目内容，足够独特。", ReferenceAnswer: "答案", TestID: testID,
+		})
+		if !errors.Is(err, ErrTestDraftMismatch) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	t.Run("通过门禁后写入 last_test 摘要", func(t *testing.T) {
+		text, answer, points := "门禁通过的独立题目内容。", "门禁答案", []string{"要点"}
+		testID := seedPassingTest(t, store, actorAlice, text, answer, points)
+		question, err := store.Create(ctx, actorAlice, CreateQuestionInput{
+			Title: "门禁通过题", QuestionText: text, ReferenceAnswer: answer, KeyPoints: points, TestID: testID,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if question.LastTestID != testID {
+			t.Fatalf("last_test_id = %q, want %q", question.LastTestID, testID)
+		}
+		if question.LastTest == nil || question.LastTest.TestID != testID || question.LastTest.AccountID != "acc-seed" ||
+			question.LastTest.AccountName != "种子账户" || question.LastTest.Model != "gpt-seed" || question.LastTest.PassedAt == "" {
+			t.Fatalf("lastTest = %+v", question.LastTest)
+		}
+		// 无要点题目不携带要点参与哈希也能通过（归一化原序约定）。
+		plainText := "无要点题目的独立内容。"
+		plainTest := seedPassingTest(t, store, actorAlice, plainText, "无要点答案", nil)
+		if _, err := store.Create(ctx, actorAlice, CreateQuestionInput{
+			Title: "无要点门禁题", QuestionText: plainText, ReferenceAnswer: "无要点答案", TestID: plainTest,
+		}); err != nil {
+			t.Fatalf("create without key points: %v", err)
+		}
+	})
+
+	t.Run("Update 门禁与 last_test 刷新", func(t *testing.T) {
+		createText := "更新门禁的初始内容。"
+		createTest := seedPassingTest(t, store, actorAlice, createText, "初始答案", nil)
+		question, err := store.Create(ctx, actorAlice, CreateQuestionInput{
+			Title: "更新门禁题", QuestionText: createText, ReferenceAnswer: "初始答案", TestID: createTest,
+		})
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		// 无 testId 的重提交按 400 拒绝。
+		_, err = store.Update(ctx, question.ID, actorAlice, false, UpdateQuestionInput{
+			Title: "更新门禁题", QuestionText: createText, ReferenceAnswer: "初始答案",
+		})
+		if code := statusErrorCode(t, err); code.Status != statusBadRequest {
+			t.Fatalf("update without testId status = %d", code.Status)
+		}
+		// 与新内容不匹配的 testId 返回哨兵。
+		mismatchTest := seedPassingTest(t, store, actorAlice, "别的测试内容，完全不同。", "别的答案", nil)
+		_, err = store.Update(ctx, question.ID, actorAlice, false, UpdateQuestionInput{
+			Title: "更新门禁题", QuestionText: "修订后的独立内容，与初始不同。", ReferenceAnswer: "修订答案", TestID: mismatchTest,
+		})
+		if !errors.Is(err, ErrTestDraftMismatch) {
+			t.Fatalf("update mismatch err = %v", err)
+		}
+		// 匹配的新 testId 通过并刷新 last_test。
+		updatedText := "修订后的独立内容，与初始不同。"
+		updatedTest := seedPassingTest(t, store, actorAlice, updatedText, "修订答案", nil)
+		updated, err := store.Update(ctx, question.ID, actorAlice, false, UpdateQuestionInput{
+			Title: "更新门禁题", QuestionText: updatedText, ReferenceAnswer: "修订答案", TestID: updatedTest,
+		})
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if updated.LastTestID != updatedTest || updated.LastTest == nil || updated.LastTest.TestID != updatedTest {
+			t.Fatalf("updated lastTest = %+v (id %q)", updated.LastTest, updated.LastTestID)
 		}
 	})
 }

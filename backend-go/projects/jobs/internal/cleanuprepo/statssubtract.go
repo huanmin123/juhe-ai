@@ -355,6 +355,12 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
 // 标志计算——成功记录回减其 cost、失败记录回减 0），与聚合写入口径对称，
 // 已删记录的成功成本不再滞留新列。媒体计量五列（M4a）同样与聚合写侧
 // usageStatsMetricColumns 列序对齐（output_image_tokens 之后）。
+// success_cost_usd 的赋值为扣减事务内补正 CASE（计划 PLAN-20261011T225418
+// §3.4，totals 与五个时间桶共用本表达式）：删除失败记录使 error_count 扣减
+// 后归零、且 total 与 success 扣减后不一致时，success_cost_usd 补正为扣减后
+// 的 total_cost_usd；混合行（扣减后 error_count 仍 >0）与其他情形维持原扣减
+// 结果。CASE 引入 5 个 ?，占位符依次为 error_count、total、success、total、
+// success 的同一扣减值，参数见 statsSubtractParams。
 func statsSubtractSetExpr(prefix string) string {
 	columns := []string{
 		"request_count", "success_count", "error_count", "input_tokens", "output_tokens",
@@ -365,6 +371,15 @@ func statsSubtractSetExpr(prefix string) string {
 	}
 	assignments := make([]string, 0, len(columns)+4)
 	for _, column := range columns {
+		if column == "success_cost_usd" {
+			assignments = append(assignments, `success_cost_usd = CASE
+  WHEN MAX(0, error_count - ?) = 0
+       AND MAX(0, total_cost_usd - ?) <> MAX(0, success_cost_usd - ?)
+  THEN MAX(0, total_cost_usd - ?)
+  ELSE MAX(0, success_cost_usd - ?)
+END`)
+			continue
+		}
 		assignments = append(assignments, fmt.Sprintf("%s = MAX(0, %s - ?)", column, column))
 	}
 	assignments = append(assignments,
@@ -378,6 +393,10 @@ func statsSubtractSetExpr(prefix string) string {
 // 按记录 success 标志给出：成功记录 = cost，失败记录 = 0；媒体计量五列
 // （M4a）与 usage_stats / usage_model 桶的聚合写侧对称回减）。授权日报
 // 参数另见 authorizationSubtractParams（无媒体/成功口径列）。
+// success_cost_usd 位置按 statsSubtractSetExpr 的补正 CASE 占位符展开为
+// 5 参：error_count、total、success、total、success 的同一扣减值
+// （PLAN-20261011T225418 §3.4）；usage_model 桶仍取前 19 参（无
+// success_cost_usd 列，不受展开影响）。
 func statsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 	return []any{
 		stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
@@ -386,7 +405,8 @@ func statsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 		stats.InputImageTokens, stats.OutputImageTokens,
 		stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
 		stats.AudioInputSeconds, stats.OutputVideoSeconds,
-		stats.TotalCostUsd, stats.SuccessCostUsd,
+		stats.TotalCostUsd,
+		stats.ErrorCount, stats.TotalCostUsd, stats.SuccessCostUsd, stats.TotalCostUsd, stats.SuccessCostUsd,
 		stats.DurationMsSum, stats.DurationMsCount,
 		stats.FirstTokenMsSum, stats.FirstTokenMsCount,
 	}

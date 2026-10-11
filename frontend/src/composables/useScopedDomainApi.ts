@@ -214,6 +214,9 @@ export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
     questionBankReview: (id: string, payload: Parameters<typeof api.modelChecks.questionBankReview>[1], params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.questionBankReview(id, payload, params)
       : api.myModelChecks.questionBankReview(id, payload),
+    questionBankTest: (payload: Parameters<typeof api.modelChecks.questionBankTest>[0], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.questionBankTest(payload, params)
+      : api.myModelChecks.questionBankTest(payload),
     questionBankOptions: (params?: Parameters<typeof api.modelChecks.questionBankOptions>[0], options?: { signal?: AbortSignal }) => isManagementView.value
       ? api.modelChecks.questionBankOptions(params, options)
       : api.myModelChecks.questionBankOptions(params, options),

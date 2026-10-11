@@ -40,8 +40,12 @@ import (
 // 而 Node 对不可用组合回 404 JSON；转发后由链内守卫决定（与 /v1 同形态
 // 请求行为一致）。
 
-// gatewayRootFormPatterns 是补 /v1 前缀转发的无前缀网关协议路径（Go 1.22
-// ServeMux 语法）。{rest...} 子树通配承载族内子路径（/responses/compact、
+// mountGatewayRootForms 把根形态协议路径注册到 kernel，按族分流进入网关
+// 链。清单只放行网关协议路径族；其余未知路径（管理面探测、扫描器噪音）
+// 保持 kernel 404 JSON 兜底，不进链。
+//
+// 补 /v1 前缀转发的无前缀网关协议路径（Go 1.22 ServeMux 语法）逐条显式
+// 注册。{rest...} 子树通配承载族内子路径（/responses/compact、
 // /messages/count_tokens、images/audio/files 子资源）。清单对齐 Node 路径族：
 //   - openai（registry.ts）：contains /chat/completions、contains /responses、
 //     /models、/embeddings、/images*、/audio*
@@ -53,60 +57,48 @@ import (
 //   - anthropic（route-helpers.ts isSupportedAnthropicRequest）：/messages、
 //     /messages/count_tokens（GET /models 与 openai 清单合并——Node 驱动
 //     优先级同序）
-var gatewayRootFormPatterns = []string{
-	"/responses",
-	"/responses/{rest...}",
-	"/chat/completions",
-	"/models",
-	"/embeddings",
-	"/images",
-	"/images/{rest...}",
-	"/audio",
-	"/audio/{rest...}",
-	// M2 视频任务面（媒体设计 §4.2）：/videos 族根形态与 /audio 同批放行，
-	// 经 v1Adapter 补 /v1 前缀进链（创建走派发、任务面走账户亲和直连）。
-	"/videos",
-	"/videos/{rest...}",
-	"/files",
-	"/files/{rest...}",
-	"/containers",
-	"/containers/{rest...}",
-	"/vector_stores",
-	"/vector_stores/{rest...}",
-	"/messages",
-	"/messages/{rest...}",
-}
-
-// gatewayGeminiRootFormPatterns 是原样透传（零重写）进链的 gemini 原生
-// 路径：/models/{id}:<action> 族（modelActionPattern）、/interactions* 与
-// /v1beta 前缀形态整棵子树（gemini-endpoint-modes.ts normalizedGeminiPath）。
-// 原样透传是精确还原 Node 门语义的形态：链门三谓词按 openai→anthropic→
-// gemini 优先级读原始路径，/v1beta 前缀使 openai（剥 /v1，(?=\/|$) 不匹配
-// v1beta）与 anthropic（剥 /v1）双谓词都不中，gemini 谓词自剥 /v1beta 匹配
-// ^/models|^/interactions——GET /v1beta/models 因此返回 gemini 形态列表
-//（若剥前缀成裸 /models 会被 anthropic 谓词 GET /models 先拦，形态偏差；
-// 若补 /v1 则 gemini 谓词锚定 ^/models 直接落空，过不了门）。
-var gatewayGeminiRootFormPatterns = []string{
-	"/models/{rest...}",
-	"/interactions",
-	"/interactions/{rest...}",
-	"/v1beta/{rest...}",
-}
-
-// mountGatewayRootForms 把根形态协议路径注册到 kernel，按族分流进入网关
-// 链。清单只放行网关协议路径族；其余未知路径（管理面探测、扫描器噪音）
-// 保持 kernel 404 JSON 兜底，不进链。
+//
+// 显式逐条注册、不走 range 切片：前端契约脚本 api-contract-check 静态提取
+// Go 注册面时只认显式 Register 调用，range 元素裸引用无法静态求值。
 func mountGatewayRootForms(kern *kernel.Kernel, chain http.Handler) {
 	if kern == nil || chain == nil {
 		return
 	}
 	v1Adapter := gatewayRootFormV1Adapter(chain)
-	for _, pattern := range gatewayRootFormPatterns {
-		kern.Register(pattern, v1Adapter)
-	}
-	for _, pattern := range gatewayGeminiRootFormPatterns {
-		kern.Register(pattern, chain)
-	}
+	kern.Register("/responses", v1Adapter)
+	kern.Register("/responses/{rest...}", v1Adapter)
+	kern.Register("/chat/completions", v1Adapter)
+	kern.Register("/models", v1Adapter)
+	kern.Register("/embeddings", v1Adapter)
+	kern.Register("/images", v1Adapter)
+	kern.Register("/images/{rest...}", v1Adapter)
+	kern.Register("/audio", v1Adapter)
+	kern.Register("/audio/{rest...}", v1Adapter)
+	// M2 视频任务面（媒体设计 §4.2）：/videos 族根形态与 /audio 同批放行，
+	// 经 v1Adapter 补 /v1 前缀进链（创建走派发、任务面走账户亲和直连）。
+	kern.Register("/videos", v1Adapter)
+	kern.Register("/videos/{rest...}", v1Adapter)
+	kern.Register("/files", v1Adapter)
+	kern.Register("/files/{rest...}", v1Adapter)
+	kern.Register("/containers", v1Adapter)
+	kern.Register("/containers/{rest...}", v1Adapter)
+	kern.Register("/vector_stores", v1Adapter)
+	kern.Register("/vector_stores/{rest...}", v1Adapter)
+	kern.Register("/messages", v1Adapter)
+	kern.Register("/messages/{rest...}", v1Adapter)
+	// 以下 gemini 原生族原样透传（零重写）进链：/models/{id}:<action> 族
+	//（modelActionPattern）、/interactions* 与 /v1beta 前缀形态整棵子树
+	//（gemini-endpoint-modes.ts normalizedGeminiPath）。原样透传是精确还原
+	// Node 门语义的形态：链门三谓词按 openai→anthropic→gemini 优先级读原始
+	// 路径，/v1beta 前缀使 openai（剥 /v1，(?=\/|$) 不匹配 v1beta）与
+	// anthropic（剥 /v1）双谓词都不中，gemini 谓词自剥 /v1beta 匹配
+	// ^/models|^/interactions——GET /v1beta/models 因此返回 gemini 形态列表
+	//（若剥前缀成裸 /models 会被 anthropic 谓词 GET /models 先拦，形态偏差；
+	// 若补 /v1 则 gemini 谓词锚定 ^/models 直接落空，过不了门）。
+	kern.Register("/models/{rest...}", chain)
+	kern.Register("/interactions", chain)
+	kern.Register("/interactions/{rest...}", chain)
+	kern.Register("/v1beta/{rest...}", chain)
 }
 
 // rewriteRequestClone 返回重写 URL 后的浅克隆请求。Path 与 RawPath 同步

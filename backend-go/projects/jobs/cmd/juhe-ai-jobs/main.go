@@ -532,6 +532,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		logger.Warn("usage spool 目录来自旧名 JUHE_AI_USAGE_SPOOL_DIR 回退（兼容路径，建议改配 JUHE_AI_USAGE_SPOOL_DIRECTORY）",
 			"event", "usage_spool_directory_legacy_fallback", "directory", workerCfg.UsageSpoolDirectory)
 	}
+	// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）：
+	// 加列/迁移归 maintenance，jobs 启动仅校验；缺失或四值形状不符即
+	// fail-fast（部署顺序契约：先迁移后启动新版）。一次性只读连接，不 ALTER。
+	if err := checkAccountsCapabilityDomainSchemaAtStartup(context.Background(), workerCfg); err != nil {
+		return failWith(stderr, fmt.Errorf("verify accounts capability_domain schema: %w", err))
+	}
 	worker, err := buildWorkerAssembly(workerCfg, logger)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("assemble jobs worker: %w", err))

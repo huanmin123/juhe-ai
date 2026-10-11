@@ -194,27 +194,33 @@ func TestHandlersStoreFailureRenders500(t *testing.T) {
 // 写操作照常成功（recordAudit 直接返回，不落审计）。
 func TestHandlersNilAuditSinkIsOptional(t *testing.T) {
 	store, _ := newTestStore(t)
-	handlers := NewHTTPHandlers(store, nil, nil, false)
-	recorder := call(t, handlers, aliceAuth(), http.MethodPost, "/q", createBody("无审计题目", "无审计提交的内容。", "答案", nil))
+	handlers := NewHTTPHandlers(store, nil, nil, false, nil)
+	testID := seedPassingTest(t, store, actorAlice, "无审计提交的内容。", "答案", nil)
+	payload := map[string]any{"title": "无审计题目", "questionText": "无审计提交的内容。", "referenceAnswer": "答案", "testId": testID}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := call(t, handlers, aliceAuth(), http.MethodPost, "/q", string(encoded))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
 // TestQuestionViewNilKeyPointsRendersEmptyArray 固化视图契约：内存态
-// Question 的 nil 要点在有权视角必须渲染为空数组而非 null；无权视角
-// 必须省略答案与要点字段。
+// Question 的 nil 要点必须渲染为空数组而非 null；参考答案与要点全员可见
+// 恒渲染（题库共享契约）。
 func TestQuestionViewNilKeyPointsRendersEmptyArray(t *testing.T) {
-	view := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案"}, true, false)
+	view := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案"}, false)
 	if view.KeyPoints == nil {
 		t.Fatal("nil keyPoints 必须渲染为空数组")
 	}
-	if len(*view.KeyPoints) != 0 || view.ReferenceAnswer != "答案" {
+	if len(view.KeyPoints) != 0 || view.ReferenceAnswer != "答案" {
 		t.Fatalf("view = %+v", view)
 	}
-	restricted := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案", KeyPoints: []string{"要点"}}, false, false)
-	if restricted.ReferenceAnswer != "" || restricted.KeyPoints != nil {
-		t.Fatalf("无权视角必须省略答案与要点: %+v", restricted)
+	withPoints := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案", KeyPoints: []string{"要点"}}, false)
+	if len(withPoints.KeyPoints) != 1 || withPoints.KeyPoints[0] != "要点" {
+		t.Fatalf("要点必须渲染: %+v", withPoints)
 	}
 }
 
@@ -286,16 +292,18 @@ func TestStoreListByIDsInvalidStatus(t *testing.T) {
 }
 
 // TestStoreClosedDBErrorsPropagate 覆盖连接层失败原样上抛（BeginTx、
-// COUNT、ListByIDs、ListOptions 各入口），HTTP 层按 500 渲染。
+// COUNT、ListByIDs、ListOptions 各入口），HTTP 层按 500 渲染。Create/
+// Update 携带 testId：门禁凭据校验在 BeginTx 之后才触库，连接失败必须
+// 先于凭据检查暴露为原始错误。
 func TestStoreClosedDBErrorsPropagate(t *testing.T) {
 	store, db := newTestStore(t)
 	db.Close()
 	ctx := context.Background()
-	_, err := store.Create(ctx, actorAlice, CreateQuestionInput{Title: "标题", QuestionText: "内容", ReferenceAnswer: "答案"})
+	_, err := store.Create(ctx, actorAlice, CreateQuestionInput{Title: "标题", QuestionText: "内容", ReferenceAnswer: "答案", TestID: "mcqt-closed-1"})
 	assertNotStatusError(t, err)
 	_, _, listErr := store.List(ctx, QuestionFilter{Admin: true, Page: 1, PageSize: 20})
 	assertNotStatusError(t, listErr)
-	_, err = store.Update(ctx, "mcq-x", actorAlice, false, UpdateQuestionInput{Title: "标题", QuestionText: "内容", ReferenceAnswer: "答案"})
+	_, err = store.Update(ctx, "mcq-x", actorAlice, false, UpdateQuestionInput{Title: "标题", QuestionText: "内容", ReferenceAnswer: "答案", TestID: "mcqt-closed-1"})
 	assertNotStatusError(t, err)
 	_, err = store.ListByIDs(ctx, []string{"mcq-x"}, StatusApproved)
 	assertNotStatusError(t, err)
@@ -409,7 +417,7 @@ func TestStorePostgresDialectMissingTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = pgStore.Create(context.Background(), actorBob,
-		CreateQuestionInput{Title: "方言题目", QuestionText: "方言查重路径的内容。", ReferenceAnswer: "答案"})
+		CreateQuestionInput{Title: "方言题目", QuestionText: "方言查重路径的内容。", ReferenceAnswer: "答案", TestID: "mcqt-dialect-1"})
 	assertNotStatusError(t, err)
 }
 
@@ -431,13 +439,17 @@ func TestStoreExecFailuresRollBack(t *testing.T) {
 		}
 	}
 
-	// Create：事务内查重通过后 INSERT 失败。
-	_, err := store.Create(ctx, actorBob, CreateQuestionInput{Title: "故障注入新题", QuestionText: "故障注入新题的独立内容。", ReferenceAnswer: "答案"})
+	// Create：事务内查重与门禁校验通过后 INSERT 失败（凭据按新内容造数）。
+	createText := "故障注入新题的独立内容。"
+	createTest := seedPassingTest(t, store, actorBob, createText, "答案", nil)
+	_, err := store.Create(ctx, actorBob, CreateQuestionInput{Title: "故障注入新题", QuestionText: createText, ReferenceAnswer: "答案", TestID: createTest})
 	assertNotStatusError(t, err)
 
-	// Update：权限与查重通过后 UPDATE 失败，原题保持不变。
+	// Update：权限、查重与门禁校验通过后 UPDATE 失败，原题保持不变。
+	updateText := "不应生效的新内容。"
+	updateTest := seedPassingTest(t, store, actorAlice, updateText, "答案", nil)
 	_, err = store.Update(ctx, target.ID, actorAlice, false,
-		UpdateQuestionInput{Title: "不应生效的新标题", QuestionText: "不应生效的新内容。", ReferenceAnswer: "答案"})
+		UpdateQuestionInput{Title: "不应生效的新标题", QuestionText: updateText, ReferenceAnswer: "答案", TestID: updateTest})
 	assertNotStatusError(t, err)
 
 	// Delete：权限校验通过后 DELETE 失败。

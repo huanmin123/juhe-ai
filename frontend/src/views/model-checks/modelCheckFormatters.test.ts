@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { modelCheckQuizSummary, questionBankDateTimeText, questionCreatorText } from './modelCheckFormatters'
+import {
+  modelCheckQuizSummary,
+  questionBankDateTimeText,
+  questionCreatorText,
+  questionDraftKey,
+  questionTestVerdictColor,
+  questionTestVerdictText
+} from './modelCheckFormatters'
 
 describe('modelCheckQuizSummary 未执行判定', () => {
   it('以后端 executed=false 为准判定未执行（新后端契约：未执行时 score=0）', () => {
@@ -119,5 +126,35 @@ describe('questionCreatorText 提交人展示', () => {
   it('显示名缺失时回退创建者 id，不静默消失', () => {
     expect(questionCreatorText({ createdBy: 'mockdata_user_admin' })).toBe('mockdata_user_admin')
     expect(questionCreatorText({ createdByName: '   ', createdBy: 'mockdata_user_admin' })).toBe('mockdata_user_admin')
+  })
+})
+
+describe('questionTestVerdict 展示映射', () => {
+  it('四种 verdict 各有中文文案', () => {
+    expect(questionTestVerdictText('pass')).toBe('通过')
+    expect(questionTestVerdictText('fail')).toBe('未通过')
+    expect(questionTestVerdictText('invalid')).toBe('无法判定')
+    expect(questionTestVerdictText('request_failed')).toBe('请求失败')
+  })
+
+  it('颜色只作辅助语义：四态各有 tag 色，文案始终保留', () => {
+    expect(questionTestVerdictColor('pass')).toBe('green')
+    expect(questionTestVerdictColor('fail')).toBe('red')
+    expect(questionTestVerdictColor('invalid')).toBe('default')
+    expect(questionTestVerdictColor('request_failed')).toBe('warning')
+  })
+})
+
+describe('questionDraftKey 提交门禁内容指纹', () => {
+  it('题面、参考答案或要点变化都导致键变化', () => {
+    expect(questionDraftKey('q1', 'a', [])).not.toBe(questionDraftKey('q2', 'a', []))
+    expect(questionDraftKey('q', 'a1', [])).not.toBe(questionDraftKey('q', 'a2', []))
+    expect(questionDraftKey('q', 'a', ['k1'])).not.toBe(questionDraftKey('q', 'a', ['k2']))
+    expect(questionDraftKey('q', 'a', ['k1', 'k2'])).not.toBe(questionDraftKey('q', 'a', ['k2', 'k1']))
+  })
+
+  it('题面与参考答案的首尾空白差异归一，不触发重测', () => {
+    expect(questionDraftKey('  q  ', 'a', [])).toBe(questionDraftKey('q', 'a', []))
+    expect(questionDraftKey('q', '\n a \t', [])).toBe(questionDraftKey('q', 'a', []))
   })
 })

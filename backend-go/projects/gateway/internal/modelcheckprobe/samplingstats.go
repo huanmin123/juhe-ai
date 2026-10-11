@@ -20,8 +20,8 @@ package modelcheckprobe
 //
 // 温度可控性边界（2026-10-02 终审 CONCERN-A）：consistency_sampling 的
 // temperature=0 同题一致前提仅在温度可实际送达上游的路径成立。两条温度
-// 不可控路径——OpenAI OAuth Codex 适配（tunedBasic 不应用温度，且
-// normalizeOpenAIOAuthCodexRequest 在协议层 delete temperature）与
+// 不可控路径——OpenAI OAuth Codex 适配（tunedBasic 不应用温度，且信封
+// wrapCodexResponses 在协议层 delete temperature）与
 // Anthropic 协议（buildBasicWithTunings 只写 max_tokens，不送温度字段）——
 // 上的一致性采样运行在默认温度，诚实账户（尤其弱模型）答案天然分裂，不得
 // 保留 mixing_detected 硬判。三个子机制的差异化处理：consistency_sampling
@@ -221,7 +221,7 @@ type SamplingObservations struct {
 // samplingTemperatureControlled 判定采样温度能否实际送达上游（纯函数）。
 // 两条不可控路径（与 tunedBasic 的实际请求构造一致）：
 //   - Adapter == AdapterOpenAIOAuthCodex：tunedBasic 走 BuildOpenAIOAuthCodexBasic
-//     不应用温度，且 normalizeOpenAIOAuthCodexRequest 在协议层 delete temperature；
+//     不应用温度，且信封 wrapCodexResponses 在协议层 delete temperature；
 //   - Protocol == anthropic：buildBasicWithTunings 对 Anthropic 只写 max_tokens，
 //     不送温度字段（§4.2 既定避 400 约束）。
 //

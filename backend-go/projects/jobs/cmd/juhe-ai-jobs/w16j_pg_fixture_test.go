@@ -37,6 +37,10 @@ var w16jJ3aPresetSchemaStatements = []string{
 		request_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, proxy_id TEXT NOT NULL, input_version BIGINT NOT NULL, config_revision TEXT NOT NULL, trigger TEXT NOT NULL, owner_id TEXT NOT NULL, owner_fence_token BIGINT NOT NULL, proxy_fence_token BIGINT NOT NULL, input_digest TEXT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_proxy ON juhe_jobs.proxy_latency_outcomes(proxy_id, observed_at)`,
 	`CREATE INDEX IF NOT EXISTS idx_proxy_latency_outcomes_cursor ON juhe_jobs.proxy_latency_outcomes(stored_at, outcome_id)`,
+	// BUG-0300：CheckSchema 的索引契约含 expires_at 清理列索引（contracts
+	// J3AProxyLatencyIndexes 三索引），预置清单同步补齐（store.go postgres
+	// DDL 同文，加法幂等）。
+	`CREATE INDEX IF NOT EXISTS idx_proxy_latency_inputs_expires_at ON juhe_jobs.proxy_latency_inputs(expires_at)`,
 }
 
 // w16jEnsurePGJobsFixture 幂等预置覆盖库上 jobs 侧自有的 PG fixture：外部

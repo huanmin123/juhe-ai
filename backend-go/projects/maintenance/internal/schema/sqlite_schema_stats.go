@@ -20,6 +20,20 @@ const sqliteStatsDirtyIPsDDL = `    CREATE TABLE IF NOT EXISTS client_ip_range_w
       updated_at TEXT NOT NULL
     );
 `
+
+// sqliteStatsBackfillProgressDDL 是 Go 侧追加的 backfill_progress 表 DDL
+// （成功成本历史回填治理，2026-10-12；非 Node 源提取）：六表
+// success_cost_usd 历史回填的一次性完成标记（running/done）与主键 tuple
+// 游标，与 PG juhe_stats 同构。ensure 只幂等建表、绝不执行回填——回填职责
+// 唯一收敛到 maintenance --apply-success-cost-backfill 一次性子命令（结构性
+// 职责分离，BUG-0307 教训）。
+const sqliteStatsBackfillProgressDDL = `    CREATE TABLE IF NOT EXISTS backfill_progress (
+      table_name TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      cursor_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL
+    );
+`
 const sqliteStatsMainDDL = `    CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
           account_id TEXT NOT NULL,
           system_account_id TEXT NOT NULL,

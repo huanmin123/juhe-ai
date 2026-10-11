@@ -28,7 +28,7 @@ const (
 // 题目字段长度限制（rune 粒度，计划 §1）。
 const (
 	TitleMaxRunes           = 100
-	QuestionTextMaxRunes    = 2000
+	QuestionTextMaxRunes    = 5000
 	ReferenceAnswerMaxRunes = 4000
 	KeyPointsMaxCount       = 10
 	KeyPointMaxRunes        = 50
@@ -38,8 +38,9 @@ const (
 const questionBankTable = "model_check_question_bank"
 
 // questionSelectColumns 是完整题目行的查询列清单（is_builtin 供内置题写
-// 保护与契约透出）。所有完整行 SELECT 必须引用同一常量，防止清单漂移。
-const questionSelectColumns = "id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at"
+// 保护与契约透出；last_test_id/last_test_json 供提交门禁摘要透出）。所有
+// 完整行 SELECT 必须引用同一常量，防止清单漂移。
+const questionSelectColumns = "id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,is_builtin,reviewed_by,reviewed_at,created_at,updated_at,last_test_id,last_test_json"
 
 // systemAccountsTable 与题库同库（juhe_business），createdByName 由它解析。
 const systemAccountsTable = "system_accounts"
@@ -82,6 +83,22 @@ type Question struct {
 	ReviewedAt string
 	CreatedAt  string
 	UpdatedAt  string
+	// LastTestID / LastTest 是最近一次通过提交门禁的测试（last_test 透出
+	// 列）：LastTestID 原样存列值；LastTest 由 last_test_json 解析，NULL
+	// 时为 nil，非法 JSON 按损坏数据上抛（与 key_points_json 同口径）。
+	LastTestID string
+	LastTest   *QuestionLastTestView
+}
+
+// QuestionLastTestView 是题目最近一次通过门禁的提交测试摘要（JSON 契约
+// lastTest 键， Question 与 QuestionView 共用）。passedAt 取测试记录的
+// created_at（UTC RFC3339Nano）。
+type QuestionLastTestView struct {
+	TestID      string `json:"testId,omitempty"`
+	AccountID   string `json:"accountId"`
+	AccountName string `json:"accountName"`
+	Model       string `json:"model"`
+	PassedAt    string `json:"passedAt"`
 }
 
 // CreateQuestionInput 是提交题目的入参。
@@ -91,6 +108,9 @@ type CreateQuestionInput struct {
 	ReferenceAnswer string
 	// KeyPoints 可选；nil/空 = 无评分要点。
 	KeyPoints []string
+	// TestID 必填（提交门禁）：指向一条本人创建、内容哈希一致、24 小时内、
+	// verdict='pass' 的测试记录（POST /question-bank/test 的返回值）。
+	TestID string
 }
 
 // UpdateQuestionInput 是修改题目的入参（全量替换语义）。
@@ -99,6 +119,9 @@ type UpdateQuestionInput struct {
 	QuestionText    string
 	ReferenceAnswer string
 	KeyPoints       []string
+	// TestID 必填（提交门禁，重提交同样要求 freshly 通过的测试）：语义同
+	// CreateQuestionInput.TestID。
+	TestID string
 }
 
 // QuestionOption 是选择器专用选项（仅 approved 题目）。
@@ -135,7 +158,8 @@ func NewStore(db *sql.DB, postgres bool) (*Store, error) {
 }
 
 // Create 提交题目：服务端生成 id，status=pending；入库前执行标题查重与
-// 内容相似度查重（范围 pending+approved，计划 §2）。
+// 内容相似度查重（范围 pending+approved，计划 §2），并执行提交门禁：
+// testId 必填且必须指向可用测试记录，通过后把 last_test 摘要一并写入。
 func (s *Store) Create(ctx context.Context, actor Actor, input CreateQuestionInput) (Question, error) {
 	actorID := strings.TrimSpace(actor.SystemAccountID)
 	if actorID == "" {
@@ -146,6 +170,7 @@ func (s *Store) Create(ctx context.Context, actor Actor, input CreateQuestionInp
 	if err != nil {
 		return Question{}, err
 	}
+	draftHash := DraftHash(questionText, referenceAnswer, keyPoints)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Question{}, err
@@ -154,14 +179,30 @@ func (s *Store) Create(ctx context.Context, actor Actor, input CreateQuestionInp
 	if err := s.checkDuplicateInTx(ctx, tx, title, questionText, ""); err != nil {
 		return Question{}, err
 	}
+	// 提交门禁（查重之后、写入之前）：testId 必填 + 可用测试记录校验
+	//（本人/verdict/哈希/时效），与 Update 同构——域校验先行，凭据门禁
+	// 收口在写入前。FindUsableTest 走 s.db 独立读连接，此处事务尚未产生
+	// 写入，双向安全。
+	testID, err := requireSubmissionTestID(input.TestID)
+	if err != nil {
+		return Question{}, err
+	}
+	testRecord, err := s.FindUsableTest(ctx, actor, testID, draftHash, time.Now().UTC())
+	if err != nil {
+		return Question{}, err
+	}
+	lastTestValue, err := lastTestJSONValue(testRecord)
+	if err != nil {
+		return Question{}, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id := newQuestionID()
 	keyPointsValue, err := keyPointsJSONValue(keyPoints)
 	if err != nil {
 		return Question{}, err
 	}
-	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table(questionBankTable)+` (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,`+questionStatusPendingLiteral+`,NULL,?,?,NULL,NULL,?,?)`),
-		id, title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, actorID, actorID, now, now)
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table(questionBankTable)+` (id,title,title_norm,question_text,reference_answer,key_points_json,status,reject_reason,created_by,created_scope,reviewed_by,reviewed_at,created_at,updated_at,last_test_id,last_test_json) VALUES (?,?,?,?,?,?,`+questionStatusPendingLiteral+`,NULL,?,?,NULL,NULL,?,?,?,?)`),
+		id, title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, actorID, actorID, now, now, testRecord.ID, lastTestValue)
 	if err != nil {
 		return Question{}, err
 	}
@@ -240,7 +281,8 @@ func (s *Store) List(ctx context.Context, filter QuestionFilter) ([]Question, in
 
 // Update 修改题目。仅 pending/rejected 可改：rejected 改后回到 pending 并
 // 清空驳回/审核字段；approved 锁定不可编辑（409）。修改者必须是创建者或
-// 管理员；改题面后按 pending+approved 重新查重（排除自身）。
+// 管理员；改题面后按 pending+approved 重新查重（排除自身）；重提交同样
+// 受提交门禁约束，通过后刷新 last_test 摘要。
 func (s *Store) Update(ctx context.Context, id string, actor Actor, admin bool, input UpdateQuestionInput) (Question, error) {
 	actorID := strings.TrimSpace(actor.SystemAccountID)
 	if actorID == "" {
@@ -251,6 +293,7 @@ func (s *Store) Update(ctx context.Context, id string, actor Actor, admin bool, 
 	if err != nil {
 		return Question{}, err
 	}
+	draftHash := DraftHash(questionText, referenceAnswer, keyPoints)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Question{}, err
@@ -272,17 +315,32 @@ func (s *Store) Update(ctx context.Context, id string, actor Actor, admin bool, 
 	if err := s.checkDuplicateInTx(ctx, tx, title, questionText, current.ID); err != nil {
 		return Question{}, err
 	}
+	// 提交门禁（权限/状态/查重之后、写入之前）：testId 必填 + 可用测试
+	// 记录校验，语义与 Create 一致；FindUsableTest 走 s.db 独立读连接，
+	// 此处事务尚未产生写入，双向安全。
+	testID, err := requireSubmissionTestID(input.TestID)
+	if err != nil {
+		return Question{}, err
+	}
+	testRecord, err := s.FindUsableTest(ctx, actor, testID, draftHash, time.Now().UTC())
+	if err != nil {
+		return Question{}, err
+	}
+	lastTestValue, err := lastTestJSONValue(testRecord)
+	if err != nil {
+		return Question{}, err
+	}
 	keyPointsValue, err := keyPointsJSONValue(keyPoints)
 	if err != nil {
 		return Question{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if current.Status == StatusRejected {
-		_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table(questionBankTable)+` SET title=?,title_norm=?,question_text=?,reference_answer=?,key_points_json=?,status=`+questionStatusPendingLiteral+`,reject_reason=NULL,reviewed_by=NULL,reviewed_at=NULL,updated_at=? WHERE id=?`),
-			title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, now, current.ID)
+		_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table(questionBankTable)+` SET title=?,title_norm=?,question_text=?,reference_answer=?,key_points_json=?,status=`+questionStatusPendingLiteral+`,reject_reason=NULL,reviewed_by=NULL,reviewed_at=NULL,updated_at=?,last_test_id=?,last_test_json=? WHERE id=?`),
+			title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, now, testRecord.ID, lastTestValue, current.ID)
 	} else {
-		_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table(questionBankTable)+` SET title=?,title_norm=?,question_text=?,reference_answer=?,key_points_json=?,updated_at=? WHERE id=?`),
-			title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, now, current.ID)
+		_, err = tx.ExecContext(ctx, s.bind(`UPDATE `+s.table(questionBankTable)+` SET title=?,title_norm=?,question_text=?,reference_answer=?,key_points_json=?,updated_at=?,last_test_id=?,last_test_json=? WHERE id=?`),
+			title, NormalizeText(title), questionText, referenceAnswer, keyPointsValue, now, testRecord.ID, lastTestValue, current.ID)
 	}
 	if err != nil {
 		return Question{}, err
@@ -398,7 +456,7 @@ func (s *Store) ListByIDs(ctx context.Context, ids []string, status string) ([]Q
 	if status != "" && !validStatus(status) {
 		return nil, newStatusError(statusBadRequest, "题库状态筛选无效")
 	}
-	query := `SELECT `+questionSelectColumns+` FROM ` + s.table(questionBankTable) + ` WHERE id IN (` + placeholders(len(cleaned)) + `)`
+	query := `SELECT ` + questionSelectColumns + ` FROM ` + s.table(questionBankTable) + ` WHERE id IN (` + placeholders(len(cleaned)) + `)`
 	args := make([]any, 0, len(cleaned)+1)
 	for _, id := range cleaned {
 		args = append(args, id)
@@ -671,11 +729,11 @@ func keyPointsJSONValue(keyPoints []string) (any, error) {
 }
 
 // scanQuestion 扫描完整题目行；key_points_json/reject_reason/reviewed_by/
-// reviewed_at 为 NULL 时归零值。
+// reviewed_at/last_test_id/last_test_json 为 NULL 时归零值。
 func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 	var question Question
-	var keyPointsJSON, rejectReason, reviewedBy, reviewedAt sql.NullString
-	err := row.Scan(&question.ID, &question.Title, &question.TitleNorm, &question.QuestionText, &question.ReferenceAnswer, &keyPointsJSON, &question.Status, &rejectReason, &question.CreatedBy, &question.CreatedScope, &question.IsBuiltin, &reviewedBy, &reviewedAt, &question.CreatedAt, &question.UpdatedAt)
+	var keyPointsJSON, rejectReason, reviewedBy, reviewedAt, lastTestID, lastTestJSON sql.NullString
+	err := row.Scan(&question.ID, &question.Title, &question.TitleNorm, &question.QuestionText, &question.ReferenceAnswer, &keyPointsJSON, &question.Status, &rejectReason, &question.CreatedBy, &question.CreatedScope, &question.IsBuiltin, &reviewedBy, &reviewedAt, &question.CreatedAt, &question.UpdatedAt, &lastTestID, &lastTestJSON)
 	if err != nil {
 		return Question{}, err
 	}
@@ -697,6 +755,16 @@ func scanQuestion(row interface{ Scan(...any) error }) (Question, error) {
 	}
 	if reviewedAt.Valid {
 		question.ReviewedAt = reviewedAt.String
+	}
+	if lastTestID.Valid {
+		question.LastTestID = lastTestID.String
+	}
+	if lastTestJSON.Valid && strings.TrimSpace(lastTestJSON.String) != "" {
+		var view QuestionLastTestView
+		if err := json.Unmarshal([]byte(lastTestJSON.String), &view); err != nil {
+			return Question{}, err
+		}
+		question.LastTest = &view
 	}
 	return question, nil
 }

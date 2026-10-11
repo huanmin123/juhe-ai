@@ -384,55 +384,14 @@ func TestParseBaseURLMatrix(t *testing.T) {
 	}
 }
 
-// TestJoinBaseURLRules 覆盖 /v1 剥离、/v1beta 对齐与 query 保留。
-func TestJoinBaseURLRules(t *testing.T) {
-	base, _ := url.Parse("https://api.test/v1")
-	if got := joinBaseURL(base, "/v1/chat/completions").String(); got != "https://api.test/v1/chat/completions" {
-		t.Fatalf("/v1 根必须保留请求版本: %s", got)
-	}
-	nested, _ := url.Parse("https://api.test/openai/v1")
-	if got := joinBaseURL(nested, "/chat/completions").String(); got != "https://api.test/openai/chat/completions" {
-		t.Fatalf("嵌套 /v1 必须剥离: %s", got)
-	}
-	geminiBase, _ := url.Parse("https://generativelanguage.test/v1beta")
-	if got := joinBaseURL(geminiBase, "/v1beta/models/m:generateContent").String(); got != "https://generativelanguage.test/v1beta/models/m:generateContent" {
-		t.Fatalf("base 以 /v1beta 结尾时必须对齐请求版本: %s", got)
-	}
-	withQuery, _ := url.Parse("https://api.test")
-	if got := joinBaseURL(withQuery, "/v1beta/models/m:streamGenerateContent?alt=sse").String(); got != "https://api.test/v1beta/models/m:streamGenerateContent?alt=sse" {
-		t.Fatalf("query 必须保留: %s", got)
-	}
-}
+// TestJoinBaseURLRules 已随 W3 接线删除：joinBaseURL 移除后，/v1 剥离、
+// /v1beta 对齐与 query 保留的等价覆盖由 w3_codeassist_joinbaseurl_verify_test.go
+// 的 Code Assist golden（折叠口径）与 upstreamenvelope 包 URL 契约测试承接。
 
-// TestGLMAndGeminiBaseOwnership 覆盖 GLM/Gemini base 判定助手。
-func TestGLMAndGeminiBaseOwnership(t *testing.T) {
-	if glmOpenAIBaseOwnsV1Path(nil) {
-		t.Fatal("nil base 不得判定 owns")
-	}
-	glmRoot, _ := url.Parse("https://open.bigmodel.cn/api/paas/v4")
-	if glmOpenAIBaseOwnsV1Path(glmRoot) {
-		t.Fatal("GLM 官方根不含 /v1，请求侧必须保留 /v1 前缀")
-	}
-	compatible, _ := url.Parse("https://proxy.test/v1")
-	if !glmOpenAIBaseOwnsV1Path(compatible) {
-		t.Fatal("OpenAI 兼容根必须判定 owns")
-	}
-	empty, _ := url.Parse("https://proxy.test")
-	if !glmOpenAIBaseOwnsV1Path(empty) {
-		t.Fatal("空路径视同 OpenAI 服务根")
-	}
-	if geminiOpenAIBaseOwnsPath(nil) {
-		t.Fatal("nil base 不得判定 owns")
-	}
-	geminiOwned, _ := url.Parse("https://g.test/V1Beta/OpenAI")
-	if !geminiOpenAIBaseOwnsPath(geminiOwned) {
-		t.Fatal("大小写不敏感的 /v1beta/openai 必须判定 owns")
-	}
-	partial, _ := url.Parse("https://g.test/v1beta")
-	if geminiOpenAIBaseOwnsPath(partial) {
-		t.Fatal("不完整服务路径不得判定 owns")
-	}
-}
+// TestGLMAndGeminiBaseOwnership 已随 W4 跨包清理删除：glmOpenAIBaseOwnsV1Path /
+// geminiOpenAIBaseOwnsPath 是 M3 后仅测试引用的死代码（判定逻辑已由
+// upstreamenvelope 包 envelope.go 的同名私有实现承接，URL 分支覆盖见
+// w3f4_envelope_baseline_test.go 的 GLM golden 与 envelope 包契约测试）。
 
 // TestProbeOpenAIFailureLadder 覆盖 ProbeOpenAI 的前置失败阶梯与响应分支。
 func TestProbeOpenAIFailureLadder(t *testing.T) {

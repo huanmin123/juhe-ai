@@ -12,15 +12,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 const (
@@ -452,53 +453,27 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 	if headers == nil {
 		headers = make(http.Header)
 	}
-	if options.Adapter == AdapterOpenAIOAuthCodex {
-		var err error
-		request.Body, headers, err = normalizeOpenAIOAuthCodexRequest(request, headers)
-		if err != nil {
-			result.ErrorMessage = err.Error()
-			return result, err
-		}
-		request.Path = "/responses"
-		request.Protocol = modelcheckprofile.ProtocolOpenAIResponses
-	}
-	endpoint, err := buildURL(options.Endpoint, request.Protocol, request.Path, options.Adapter)
-	if err != nil {
-		result.ErrorMessage = err.Error()
-		return result, err
-	}
 	timeout := options.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, strings.NewReader(string(request.Body)))
-	if err != nil {
-		return result, err
-	}
-	for key, values := range headers {
-		for _, value := range values {
-			httpRequest.Header.Add(key, value)
-		}
-	}
-	// 标准头走信封口径（信封统一设计 §4.1，M2 收敛裁决）：JSON 形态
-	// application/json；SSE 形态 api-key 双 accept、OAuth/Code Assist 纯流式
-	// ——与 accountprobe/exactkeyprobe 生产同规。标准头只是缺省填充：
-	// 适配器（Codex 归一化）或调用方已提供的头不覆盖。
-	httpRequest.Header.Set("Content-Type", "application/json")
-	acceptStrategy := upstreamenvelope.AuthBearer
+	// 最终请求构造统一走共享信封（信封统一设计 §4.1/§9，W2 F3 接线）：
+	// method、URL、标准/认证/身份头、预算字段、body 编码与 Codex 归一化全部
+	// 由 upstreamenvelope.Build 承担；本包保留探针语义 body、凭据解析（从
+	// 调用方头提取）、端点 SSRF 校验与 OAuth Codex 形态守卫。响应处理
+	// （流式解析/评分/重试/结算）不在构造范围。
+	var httpRequest *http.Request
+	var err error
 	if options.Adapter == AdapterOpenAIOAuthCodex {
-		acceptStrategy = upstreamenvelope.AuthOAuth
+		httpRequest, err = buildOAuthCodexRequest(requestCtx, request, options, headers)
+	} else {
+		httpRequest, err = buildAPIKeyRequest(requestCtx, request, options, headers)
 	}
-	if httpRequest.Header.Get("Accept") == "" {
-		if acceptValue, acceptErr := upstreamenvelope.AcceptHeader(upstreamenvelope.EndpointMode(request.EndpointMode), acceptStrategy); acceptErr == nil {
-			httpRequest.Header.Set("Accept", acceptValue)
-		} else if strings.Contains(request.Path, "alt=sse") || strings.Contains(string(request.Body), `"stream":true`) {
-			httpRequest.Header.Set("Accept", "text/event-stream")
-		} else {
-			httpRequest.Header.Set("Accept", "application/json")
-		}
+	if err != nil {
+		result.ErrorMessage = err.Error()
+		return result, err
 	}
 	var response *http.Response
 	var settle func(bool)
@@ -679,28 +654,245 @@ func responseBodyIsSemanticallyComplete(body []byte, parseErrorMessage string) b
 	return false
 }
 
-// buildURL 经共享信封的 URL 归一化构造上游地址（信封统一设计 §4.1/§6 M2）：
-// 寻址规则（base 补 /v1 或 /v1beta、剥请求前缀、Codex 固定上游）全部由
-// upstreamenvelope 承担，本包不再私有拼接。Codex 分支保留"仅 /responses"
-// 的路径契约校验。
-func buildURL(endpoint string, protocol modelcheckprofile.Protocol, path string, adapter string) (string, error) {
-	// 端点安全校验保持在本包（SSRF 契约，wl_probe_extra_test 钉死）：控制
-	// 字符/userinfo/query/fragment 一律拒绝，再交信封归一化。
+// validateEndpointURL 端点安全校验保持在本包（SSRF 契约，wl_probe_extra_test
+// 钉死）：控制字符/userinfo/query/fragment 一律拒绝，URL 归一化交由信封
+// Build 的共享规则（信封统一设计 §4.1，M2 收敛裁决沿用）。
+func validateEndpointURL(endpoint string) error {
 	if base, err := url.Parse(strings.TrimSpace(endpoint)); err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || strings.ContainsAny(endpoint, "\r\n\t\\") {
-		return "", errors.New("J3b probe endpoint URL is invalid")
+		return errors.New("J3b probe endpoint URL is invalid")
 	}
-	if adapter == AdapterOpenAIOAuthCodex {
-		if parts := strings.SplitN(path, "?", 2); parts[0] != "/responses" {
-			return "", errors.New("J3b OpenAI OAuth Codex request path is unsupported")
+	return nil
+}
+
+// buildOAuthCodexRequest 经信封 AdapterOpenAIOAuthCodex 构造 OAuth Codex（A
+// 形态）最终请求（信封统一设计 §9.1-A/§9.3/§9.5）：固定上游 /responses、
+// 强制 SSE、openai-beta 缺省补齐、八身份头与 Codex 归一化全部由 Build/
+// wrapCodexResponses 承担。本包保留：端点模式守卫（现行文案）、语义 body
+// 解析、凭据解析（现行文案）、身份生成（§9.3 单源，替代原
+// normalizeOpenAIOAuthCodexRequest 的双阶段随机）与 SSRF 校验。原 buildURL
+// 的"仅 /responses"路径守卫随构造迁移删除：Execute 在旧流程中先改写
+// request.Path="/responses" 再校验，该守卫实际不可达；路径现由
+// wrapCodexResponses 结构性固定，调用方输入无法影响。调用方头（含
+// Authorization）经 Spec.ExtraHeaders 逐字直通——Build 的认证/身份头先写，
+// 调用方显式值最后覆盖，与旧直通语义等价；X-Codex-Installation-Id 是信封
+// 八头集合外的 F3 现行第 9 身份头，由同一身份单源补写，与 turn metadata 的
+// installation_id 恒等。
+func buildOAuthCodexRequest(ctx context.Context, request Request, options Options, headers http.Header) (*http.Request, error) {
+	if request.Protocol != modelcheckprofile.ProtocolOpenAIResponses || (request.EndpointMode != modelcheckprofile.EndpointModeResponsesJSON && request.EndpointMode != modelcheckprofile.EndpointModeResponsesSSE) {
+		return nil, errors.New("J3b OpenAI OAuth Codex endpoint mode is unsupported")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(request.Body, &body); err != nil || body == nil {
+		return nil, errors.New("J3b OpenAI OAuth Codex request body is invalid")
+	}
+	token, err := bearerToken(headers)
+	if err != nil {
+		return nil, err
+	}
+	identity, err := newCodexIdentity()
+	if err != nil {
+		return nil, errors.New("J3b OpenAI OAuth Codex identity unavailable")
+	}
+	if err := validateEndpointURL(options.Endpoint); err != nil {
+		return nil, err
+	}
+	// model/input/instructions 的校验由信封 wrapCodexResponses 承担（缺失
+	// 或类型非法显式失败），本包不再重复归一化规则。
+	fields := make([]upstreamenvelope.BodyField, 0, len(body))
+	for key, value := range body {
+		fields = append(fields, upstreamenvelope.BodyField{Key: key, Value: value})
+	}
+	extraHeaders := callerExtraHeaders(headers)
+	extraHeaders["X-Codex-Installation-Id"] = identity.InstallationID
+	return upstreamenvelope.Build(ctx, upstreamenvelope.Spec{
+		BaseURL:      options.Endpoint,
+		EndpointMode: upstreamenvelope.EndpointMode(request.EndpointMode),
+		Adapter:      upstreamenvelope.AdapterOpenAIOAuthCodex,
+		// Model 取最终上游模型（模型映射后），供信封按 §9.5 判断
+		// X-OpenAI-Internal-Codex-Responses-Lite。
+		Model: request.ExpectedModel,
+		Auth:  upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthOAuth, Token: token},
+		// Codex 归一化不携带预算字段（§4.3 Codex 例外）。
+		Budget:        upstreamenvelope.BudgetNone,
+		BodyFields:    fields,
+		CodexIdentity: identity,
+		ExtraHeaders:  extraHeaders,
+	})
+}
+
+// buildAPIKeyRequest 经信封构造普通 API Key（C 形态）最终请求（信封统一
+// 设计 §9.1-C）：URL/Accept/Content-Type/catalog 头、预算字段与 body 编码由
+// Build 承担；本包保留 SSRF 校验、端点模式解析、语义 body/预算拆分与凭据
+// 解析。认证头本身仍随调用方头逐字直通（Spec.ExtraHeaders），Auth 只承载
+// 已解析策略；调用方未携带任何凭据头时显式选择 AuthNone（现行语义：无凭据
+// 请求照发且不写认证头，信封统一设计 §4.1 AuthNone 契约），不是静默兜底。
+func buildAPIKeyRequest(ctx context.Context, request Request, options Options, headers http.Header) (*http.Request, error) {
+	if err := validateEndpointURL(options.Endpoint); err != nil {
+		return nil, err
+	}
+	mode := resolveAPIKeyEndpointMode(request)
+	entry, err := upstreamenvelope.Lookup(mode)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(request.Body, &payload); err != nil || payload == nil {
+		return nil, errors.New("J3b probe request body is invalid")
+	}
+	budget := extractBudgetPolicy(entry.BudgetField, payload)
+	fields := make([]upstreamenvelope.BodyField, 0, len(payload))
+	for key, value := range payload {
+		fields = append(fields, upstreamenvelope.BodyField{Key: key, Value: value})
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i].Key < fields[j].Key })
+	return upstreamenvelope.Build(ctx, upstreamenvelope.Spec{
+		BaseURL:      options.Endpoint,
+		EndpointMode: mode,
+		// Model 供 gemini {model} 路径模板替换（构造器写入 Path 的同一
+		// 模型即 ExpectedModel）；其余端点忽略本字段。
+		Model: request.ExpectedModel,
+		// 未知适配器串保持既有显式失败（信封登记表外适配器报错），不静默
+		// 回落 AdapterNone。
+		Adapter:      upstreamenvelope.Adapter(options.Adapter),
+		Auth:         resolveAPIKeyAuth(headers),
+		Budget:       budget,
+		BodyFields:   fields,
+		ExtraHeaders: callerExtraHeaders(headers),
+	})
+}
+
+// resolveAPIKeyEndpointMode 解析 C 形态的 catalog 端点：优先业务
+// request.EndpointMode（生产构造器恒填写且与协议匹配），契约外手工 Request
+// 按 M2 既有规则从 protocol+path 推导，仍无则回落 chat_json（URL 归一化
+// 只需协议族，openai 系共用同一分支；同协议 JSON/SSE 端点共享 catalog 路径
+// 模板，唯一路径分叉 gemini 的 alt=sse 就在请求路径里）。
+func resolveAPIKeyEndpointMode(request Request) upstreamenvelope.EndpointMode {
+	if mode := strings.TrimSpace(request.EndpointMode); mode != "" && modelcheckprofile.EndpointModeMatchesProtocol(request.Protocol, mode) {
+		return upstreamenvelope.EndpointMode(mode)
+	}
+	if mode := modelcheckprofile.EndpointModeForProtocol(request.Protocol, strings.Contains(request.Path, "alt=sse")); mode != "" {
+		return upstreamenvelope.EndpointMode(mode)
+	}
+	return upstreamenvelope.ModeChatJSON
+}
+
+// extractBudgetPolicy 把 catalog 声明的预算字段从载荷提取为命名预算策略，
+// 由 Build 统一注入（键值不变，落点顺序归信封）；载荷缺失或非法时保持
+// BudgetNone——字段原样随语义 body 发出，不伪造兜底。Anthropic messages 的
+// max_tokens 是协议必填，缺省由 Build 显式拒绝。
+func extractBudgetPolicy(field upstreamenvelope.BudgetField, payload map[string]any) upstreamenvelope.BudgetPolicy {
+	switch field {
+	case upstreamenvelope.BudgetFieldMaxTokens:
+		if limit, ok := budgetLimit(payload, "max_tokens"); ok {
+			delete(payload, "max_tokens")
+			return upstreamenvelope.BudgetBounded(limit)
+		}
+	case upstreamenvelope.BudgetFieldMaxOutputTokens:
+		if limit, ok := budgetLimit(payload, "max_output_tokens"); ok {
+			delete(payload, "max_output_tokens")
+			return upstreamenvelope.BudgetBounded(limit)
+		}
+	case upstreamenvelope.BudgetFieldGeminiGenerationConfig:
+		if generation, ok := payload["generationConfig"].(map[string]any); ok {
+			if limit, ok := budgetLimit(generation, "maxOutputTokens"); ok {
+				delete(generation, "maxOutputTokens")
+				return upstreamenvelope.BudgetBounded(limit)
+			}
 		}
 	}
-	mode := modelcheckprofile.EndpointModeForProtocol(protocol, strings.Contains(path, "alt=sse"))
-	if mode == "" {
-		// 契约外手工构造的 Request（测试/边界）：URL 归一化只需协议族，
-		// openai 系共用同一分支，chat_json 是其 catalog 代表。
-		mode = modelcheckprofile.EndpointModeChatJSON
+	return upstreamenvelope.BudgetNone
+}
+
+// budgetLimit 读取正整数预算值（JSON 解码产物为 float64）；非正或非整数视
+// 为未携带，字段保留原值直传。
+func budgetLimit(source map[string]any, key string) (int, bool) {
+	value, ok := source[key].(float64)
+	if !ok || value <= 0 || value != math.Trunc(value) {
+		return 0, false
 	}
-	return upstreamenvelope.UpstreamURL(endpoint, upstreamenvelope.EndpointMode(mode), "", upstreamenvelope.Adapter(adapter), path)
+	return int(value), true
+}
+
+// resolveAPIKeyAuth 从调用方头解析 C 形态认证（凭据解析属调用方职责，信封
+// 只接收已解析策略）：Authorization→Bearer、x-api-key→Anthropic、
+// x-goog-api-key→Gemini，与 owner 侧 credentialHeaders 的写入形态一一对应；
+// 均不存在时显式选择 AuthNone（见 buildAPIKeyRequest）。
+func resolveAPIKeyAuth(headers http.Header) upstreamenvelope.Auth {
+	if token := strings.TrimPrefix(headers.Get("Authorization"), "Bearer "); strings.TrimSpace(token) != "" {
+		return upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthBearer, Token: token}
+	}
+	if token := headers.Get("X-Api-Key"); strings.TrimSpace(token) != "" {
+		return upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthAnthropicAPIKey, Token: token}
+	}
+	if token := headers.Get("X-Goog-Api-Key"); strings.TrimSpace(token) != "" {
+		return upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthGeminiAPIKey, Token: token}
+	}
+	return upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthNone}
+}
+
+// bearerToken 提取 OAuth Codex 形态的调用方凭据；缺失显式失败，保留现行
+// 错误文案。Authorization 头本身仍经 ExtraHeaders 逐字直通。
+func bearerToken(headers http.Header) (string, error) {
+	token := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("J3b OpenAI OAuth Codex authorization is missing")
+	}
+	return token, nil
+}
+
+// newCodexIdentity 生成一次 OAuth Codex 请求的身份值（信封统一设计 §9.3
+// 身份单源）：session=UUID、thread=turn=session、window=thread+":0"、
+// installation=UUID，turn metadata JSON 含 request_kind/thread_source/
+// sandbox/turn_started_at_unix_ms 与全部身份值。同一份身份同时供信封写入
+// 身份请求头与 ExtraHeaders 补写的 X-Codex-Installation-Id 使用，替代原
+// normalizeOpenAIOAuthCodexRequest 中 headers 段与 metadata 段各自取值的
+// 双阶段随机。
+func newCodexIdentity() (upstreamenvelope.CodexIdentity, error) {
+	sessionID, err := codexUUID()
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, err
+	}
+	installationID, err := codexUUID()
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, err
+	}
+	windowID := sessionID + ":0"
+	metadata, err := json.Marshal(map[string]any{
+		"installation_id":         installationID,
+		"session_id":              sessionID,
+		"thread_id":               sessionID,
+		"turn_id":                 sessionID,
+		"window_id":               windowID,
+		"request_kind":            "turn",
+		"thread_source":           "user",
+		"sandbox":                 "none",
+		"turn_started_at_unix_ms": time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return upstreamenvelope.CodexIdentity{}, err
+	}
+	return upstreamenvelope.CodexIdentity{
+		InstallationID:   installationID,
+		SessionID:        sessionID,
+		ThreadID:         sessionID,
+		TurnID:           sessionID,
+		WindowID:         windowID,
+		TurnMetadataJSON: string(metadata),
+	}, nil
+}
+
+// callerExtraHeaders 把调用方头逐字映射为 Spec.ExtraHeaders（信封语义：
+// 最后应用，保留既有覆盖语义——调用方显式 Accept/catalog 头覆盖缺省填充，
+// 与旧 Execute 的缺省填充语义一致）。
+func callerExtraHeaders(headers http.Header) map[string]string {
+	extra := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if len(values) == 0 {
+			continue
+		}
+		extra[key] = values[0]
+	}
+	return extra
 }
 
 func parseResponse(protocol modelcheckprofile.Protocol, body []byte) (string, string, map[string]any, map[string]any) {
@@ -997,101 +1189,6 @@ func responseValueHasEvidence(protocol modelcheckprofile.Protocol, value map[str
 func asString(value any) string {
 	text, _ := value.(string)
 	return strings.TrimSpace(text)
-}
-
-func normalizeOpenAIOAuthCodexRequest(request Request, headers http.Header) ([]byte, http.Header, error) {
-	if request.Protocol != modelcheckprofile.ProtocolOpenAIResponses || (request.EndpointMode != modelcheckprofile.EndpointModeResponsesJSON && request.EndpointMode != modelcheckprofile.EndpointModeResponsesSSE) {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex endpoint mode is unsupported")
-	}
-	var body map[string]any
-	if err := json.Unmarshal(request.Body, &body); err != nil || body == nil {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex request body is invalid")
-	}
-	model, ok := body["model"].(string)
-	if !ok || strings.TrimSpace(model) == "" {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex request model is invalid")
-	}
-	if input, ok := body["input"].(string); ok {
-		body["input"] = []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": input}}}}
-	} else if _, ok := body["input"].([]any); !ok {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex request input is invalid")
-	}
-	if instructions, present := body["instructions"]; present {
-		if _, ok := instructions.(string); !ok {
-			return nil, headers, errors.New("J3b OpenAI OAuth Codex request instructions are invalid")
-		}
-	} else {
-		body["instructions"] = ""
-	}
-	for _, field := range []string{"background", "conversation", "context_management", "frequency_penalty", "max_completion_tokens", "max_output_tokens", "metadata", "presence_penalty", "prompt_cache_retention", "safety_identifier", "stream_options", "temperature", "top_p", "truncation", "user"} {
-		delete(body, field)
-	}
-	body["store"] = false
-	body["stream"] = true
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-5.6-") {
-		reasoning, _ := body["reasoning"].(map[string]any)
-		if reasoning == nil {
-			reasoning = map[string]any{}
-		}
-		reasoning["context"] = "all_turns"
-		body["reasoning"] = reasoning
-		body["parallel_tool_calls"] = false
-	}
-	if _, ok := headers["Authorization"]; !ok && headers.Get("Authorization") == "" {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex authorization is missing")
-	}
-	headers.Set("originator", "codex_exec")
-	headers.Set("user-agent", upstreamidentity.EffectiveCodexUserAgent())
-	sessionID, err := codexUUID()
-	if err != nil {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex identity unavailable")
-	}
-	if headers.Get("session-id") == "" {
-		headers.Set("session-id", sessionID)
-	}
-	if headers.Get("thread-id") == "" {
-		headers.Set("thread-id", headers.Get("session-id"))
-	}
-	if headers.Get("x-client-request-id") == "" {
-		headers.Set("x-client-request-id", headers.Get("session-id"))
-	}
-	if headers.Get("x-codex-beta-features") == "" {
-		headers.Set("x-codex-beta-features", "remote_compaction_v2")
-	}
-	if headers.Get("x-codex-window-id") == "" {
-		headers.Set("x-codex-window-id", headers.Get("thread-id")+":0")
-	}
-	metadata := map[string]any{"installation_id": mustHeaderUUID(headers, "x-codex-installation-id", &err), "session_id": headers.Get("session-id"), "thread_id": headers.Get("thread-id"), "turn_id": headers.Get("x-client-request-id"), "window_id": headers.Get("x-codex-window-id"), "request_kind": "turn", "thread_source": "user", "sandbox": "none", "turn_started_at_unix_ms": time.Now().UnixMilli()}
-	if err != nil {
-		return nil, headers, errors.New("J3b OpenAI OAuth Codex identity unavailable")
-	}
-	if headers.Get("x-codex-installation-id") == "" {
-		headers.Set("x-codex-installation-id", metadata["installation_id"].(string))
-	}
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		return nil, headers, err
-	}
-	headers.Set("x-codex-turn-metadata", string(metadataJSON))
-	headers.Set("content-type", "application/json")
-	headers.Set("accept", "text/event-stream")
-	if headers.Get("openai-beta") == "" {
-		headers.Set("openai-beta", "responses=experimental")
-	}
-	encoded, err := json.Marshal(body)
-	return encoded, headers, err
-}
-
-func mustHeaderUUID(headers http.Header, name string, err *error) string {
-	if value := headers.Get(name); value != "" {
-		return value
-	}
-	value, uuidErr := codexUUID()
-	if uuidErr != nil {
-		*err = uuidErr
-		return ""
-	}
-	return value
 }
 
 func codexUUID() (string, error) {

@@ -217,6 +217,9 @@ func TestResolveBudgetPolicy(t *testing.T) {
 		{name: "anthropic 默认有界 1024", mode: ModeMessagesJSON, probeFamily: "protocol_basic", want: BudgetBounded(DefaultProbeOutputTokens)},
 		{name: "gemini 默认有界 1024", mode: ModeGenerateContentJSON, probeFamily: "protocol_basic", want: BudgetBounded(DefaultProbeOutputTokens)},
 		{name: "codex 适配器无预算", mode: ModeResponsesJSON, probeFamily: "protocol_basic", adapter: AdapterOpenAIOAuthCodex, want: BudgetNone},
+		// §9.1-B：B 形态不继承 A 的 BudgetNone 例外，预算不覆盖，走端点默认
+		// bounded（保留档案/探针族预算字段）。
+		{name: "codex 兼容画像适配器保留默认有界预算", mode: ModeResponsesJSON, probeFamily: "protocol_basic", adapter: AdapterOpenAICodexCompatibility, want: BudgetBounded(DefaultProbeOutputTokens)},
 		{name: "无预算字段端点恒 none", mode: ModeImagesJSON, probeFamily: "image", want: BudgetNone},
 		{name: "interactions 契约无预算字段", mode: ModeInteractionsJSON, probeFamily: "protocol_basic", want: BudgetNone},
 		{name: "audio 契约无预算字段", mode: ModeAudioTranscriptionJSON, probeFamily: "stt", want: BudgetNone},

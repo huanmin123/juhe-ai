@@ -25,8 +25,8 @@ vi.mock('@/api/client', () => {
       myApiKeys: ns(['list', 'create', 'update', 'secret', 'refreshKey', 'delete']),
       accounts: ns(['options']),
       myAccounts: ns(['options']),
-      modelChecks: ns(['accountOptions', 'options', 'active', 'run', 'runStream', 'stop', 'list', 'detail', 'qualityPolicy', 'saveQualityPolicy', 'qualitySchedules', 'saveQualitySchedule', 'patchQualitySchedule', 'deleteQualitySchedule']),
-      myModelChecks: ns(['accountOptions', 'options', 'active', 'run', 'runStream', 'stop', 'list', 'detail', 'qualityPolicy', 'saveQualityPolicy', 'qualitySchedules', 'saveQualitySchedule', 'patchQualitySchedule', 'deleteQualitySchedule']),
+      modelChecks: ns(['accountOptions', 'options', 'active', 'run', 'runStream', 'stop', 'list', 'detail', 'qualityPolicy', 'saveQualityPolicy', 'qualitySchedules', 'saveQualitySchedule', 'patchQualitySchedule', 'deleteQualitySchedule', 'questionBankTest']),
+      myModelChecks: ns(['accountOptions', 'options', 'active', 'run', 'runStream', 'stop', 'list', 'detail', 'qualityPolicy', 'saveQualityPolicy', 'qualitySchedules', 'saveQualitySchedule', 'patchQualitySchedule', 'deleteQualitySchedule', 'questionBankTest']),
       groups: ns(['listPage', 'detail', 'editBasicDetail', 'options', 'routeStrategyOptions', 'create', 'update', 'returnAuthorization', 'delete']),
       myGroups: ns(['listPage', 'detail', 'editBasicDetail', 'options', 'routeStrategyOptions', 'create', 'update', 'returnAuthorization', 'delete']),
       usageRecords: ns(['list']),
@@ -156,7 +156,8 @@ const scopes: ScopeSpec[] = [
       qualitySchedules: { args: [{ page: 1 }] },
       saveQualitySchedule: { args: [{ id: 'q1' }, undefined], selfArgs: [{ id: 'q1' }] },
       patchQualitySchedule: { args: ['q1', { enabled: false }, undefined], selfArgs: ['q1', { enabled: false }] },
-      deleteQualitySchedule: { args: ['q1', undefined], selfArgs: ['q1'] }
+      deleteQualitySchedule: { args: ['q1', undefined], selfArgs: ['q1'] },
+      questionBankTest: { args: [{ questionText: 'q', referenceAnswer: 'a', accountId: 'acc-1', model: 'm-1' }, undefined], selfArgs: [{ questionText: 'q', referenceAnswer: 'a', accountId: 'acc-1', model: 'm-1' }] }
     }
   },
   {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
 // gkmBase 是装载器注入时钟的基准；所有到期点以它为参照。
@@ -603,7 +604,9 @@ func (m *gkmCountingModels) catalogCallCount() int {
 
 func gkmPortCache(t *testing.T, models gatewayruntimecache.ReadModels, union gatewayruntimecache.GroupModelUnionLoader) *gatewayruntimecache.Service {
 	t.Helper()
-	service, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{Union: union})
+	// 注入 gkmNow 固定钟：union 条目 ValidUntil 以 gkmBase 为参照，缺省系统
+	// 时钟越过该时点后读取恒判过期（retry exhausted），用例退化为定时炸弹。
+	service, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{Union: union, Clock: timeclock.ClockFunc(gkmNow)})
 	if err != nil {
 		t.Fatalf("组装端口 runtime cache: %v", err)
 	}

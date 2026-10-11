@@ -95,10 +95,12 @@ func (s *Store) provisionAuthorizedAccountInstance(ctx context.Context, tx *sql.
 }
 
 // sourceAccountColumns is the projection the restore and insert arms share
-// (archived `SELECT *` narrowed to the consumed fields).
+// (archived `SELECT *` narrowed to the consumed fields). capability_domain
+// 承载域继承（AI 账户能力域拆分 D3）：实例域恒等于源域，插入臂与软删除
+// 恢复臂都从源行直读（列 NOT NULL DEFAULT 'chat'，无空值臂）。
 const sourceAccountColumns = `provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 		name, type, concurrency_limit, temporary_unavailable_continuous_probe_enabled,
-		health_check_model, health_check_endpoint_mode`
+		health_check_model, health_check_endpoint_mode, capability_domain`
 
 // ensureAccountAuthorizationInstance mirrors the archived :259-370: the live
 // instance is reused untouched, the soft-deleted instance is restored with
@@ -130,12 +132,14 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		continuousProbeEnabled    int
 		healthCheckModel          string
 		healthCheckEndpointMode   string
+		capabilityDomain          string
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT `+sourceAccountColumns+` FROM `+s.table("accounts")+`
 		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), in.SourceAccountID).
 		Scan(&source.providerCode, &source.providerProtocolProfileID, &source.protocolCode,
 			&source.protocolVersion, &source.name, &source.accountType, &source.concurrencyLimit,
-			&source.continuousProbeEnabled, &source.healthCheckModel, &source.healthCheckEndpointMode)
+			&source.continuousProbeEnabled, &source.healthCheckModel, &source.healthCheckEndpointMode,
+			&source.capabilityDomain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -186,6 +190,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 				temporary_unavailable_continuous_probe_enabled = ?,
 				health_check_model = ?,
 				health_check_endpoint_mode = ?,
+				capability_domain = ?,
 				authorization_instance_source_account_id = ?,
 				authorization_instance_owner_system_account_id = ?,
 				deleted_at = NULL,
@@ -195,6 +200,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 			source.providerCode, source.providerProtocolProfileID, source.protocolCode,
 			source.protocolVersion, restoredName, source.accountType,
 			source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
+			source.capabilityDomain,
 			in.SourceAccountID, in.OwnerID, now, deletedID); err != nil {
 			return nil, err
 		}
@@ -222,14 +228,16 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		 cooldown_until, last_error_code, last_error_message,
 		 cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
 		 temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
+		 capability_domain,
 		 authorization_instance_source_account_id, authorization_instance_authorization_id,
 		 authorization_instance_owner_system_account_id,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, in.GranteeID, source.providerCode, source.providerProtocolProfileID, source.protocolCode,
 		source.protocolVersion, name, source.accountType, instanceEmptyCredentials, "",
 		source.concurrencyLimit, 0, 0, 0,
 		source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
+		source.capabilityDomain,
 		in.SourceAccountID, in.RuntimeAuthorizationID, in.OwnerID, now, now); err != nil {
 		return nil, err
 	}

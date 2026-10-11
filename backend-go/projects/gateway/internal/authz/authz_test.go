@@ -73,6 +73,7 @@ var ddl = []string{
 		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
 		health_check_model TEXT NOT NULL DEFAULT '',
 		health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
+		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
 		authorization_instance_source_account_id TEXT,
 		authorization_instance_authorization_id TEXT,
 		authorization_instance_owner_system_account_id TEXT,

@@ -52,6 +52,7 @@ type NormalizedListOptions struct {
 	Type                      string
 	Status                    string
 	Schedulable               string
+	Domain                    string
 }
 
 // normalizeListOptions mirrors normalizeAccountListOptions: deduplicated sort
@@ -106,6 +107,14 @@ func normalizeListOptions(options ListOptions) NormalizedListOptions {
 	if schedulable != "enabled" && schedulable != "disabled" && schedulable != "cooling" {
 		schedulable = "all"
 	}
+	// domain 过滤（M1 读通道）：路由面已对非法值 400，这里兜底为不过滤（与
+	// schedulable 的静默归一同一防线语义，store 查询永不消费越界值）。
+	domain := options.Domain
+	if _, ok := accountscore.NormalizeAccountCapabilityDomain(domain); !ok || domain == "all" {
+		domain = ""
+	} else {
+		domain = strings.TrimSpace(domain)
+	}
 	return NormalizedListOptions{
 		Sorts: sorts, IDs: normalizeTextList(options.IDs, maxAccountListIDs),
 		Page: page, PageSize: pageSize,
@@ -117,6 +126,7 @@ func normalizeListOptions(options ListOptions) NormalizedListOptions {
 		Type:                      strings.TrimSpace(options.Type),
 		Status:                    strings.TrimSpace(options.Status),
 		Schedulable:               schedulable,
+		Domain:                    domain,
 	}
 }
 
@@ -202,47 +212,51 @@ type LockStatePublic struct {
 // the runtime tracker, not a stats column), always rendered as a number (0
 // when the port is nil or the account is missing from the read).
 type ListItem struct {
-	ID                        string                `json:"id"`
-	ConfigRevision            int64                 `json:"configRevision"`
-	SystemAccountID           *string               `json:"systemAccountId,omitempty"`
-	SystemAccountName         *string               `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID      string                `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName    *string               `json:"ownerSystemAccountName,omitempty"`
-	ProviderCode              string                `json:"providerCode"`
-	ProviderName              *string               `json:"providerName,omitempty"`
-	ProviderProtocolProfileID string                `json:"providerProtocolProfileId"`
-	ProtocolCode              string                `json:"protocolCode"`
-	ProtocolVersion           string                `json:"protocolVersion"`
-	Name                      string                `json:"name"`
-	Notes                     *string               `json:"notes,omitempty"`
-	Type                      string                `json:"type"`
-	Status                    string                `json:"status"`
-	ConcurrencyLimit          int                   `json:"concurrencyLimit"`
-	CurrentConcurrency        int                   `json:"currentConcurrency"`
-	Priority                  int                   `json:"priority"`
-	SuperPriorityEnabled      bool                  `json:"superPriorityEnabled"`
-	FallbackEnabled           bool                  `json:"fallbackEnabled"`
-	ClientCompatibility       string                `json:"clientCompatibility"`
-	Tags                      []TagSummary          `json:"tags"`
-	HealthCheckModel          string                `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string                `json:"healthCheckEndpointMode"`
-	ProxyProfileID            *string               `json:"proxyProfileId,omitempty"`
-	ProxyProfileName          *string               `json:"proxyProfileName,omitempty"`
-	ProxyProfileType          *string               `json:"proxyProfileType,omitempty"`
-	ProxyProfileEnabled       *bool                 `json:"proxyProfileEnabled,omitempty"`
-	ProxyProfileUnavailable   *bool                 `json:"proxyProfileUnavailable,omitempty"`
-	ProxyProfileErrorMessage  *string               `json:"proxyProfileErrorMessage,omitempty"`
-	Schedulable               bool                  `json:"schedulable"`
-	AvailabilitySchedule      *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	AccountExpiresAt          *string               `json:"accountExpiresAt,omitempty"`
-	CooldownUntil             *string               `json:"cooldownUntil,omitempty"`
-	LastErrorCode             *string               `json:"lastErrorCode,omitempty"`
-	LastErrorMessage          *string               `json:"lastErrorMessage,omitempty"`
-	LastErrorTraceID          *string               `json:"lastErrorTraceId,omitempty"`
-	LastUsedAt                *string               `json:"lastUsedAt,omitempty"`
-	EffectiveAvailability     EffectiveAvailability `json:"effectiveAvailability"`
-	TodayUsage                TodayUsageSummary     `json:"todayUsage"`
-	Usage                     UsageSummary          `json:"usage"`
+	ID                        string  `json:"id"`
+	ConfigRevision            int64   `json:"configRevision"`
+	SystemAccountID           *string `json:"systemAccountId,omitempty"`
+	SystemAccountName         *string `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID      string  `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName    *string `json:"ownerSystemAccountName,omitempty"`
+	ProviderCode              string  `json:"providerCode"`
+	ProviderName              *string `json:"providerName,omitempty"`
+	ProviderProtocolProfileID string  `json:"providerProtocolProfileId"`
+	ProtocolCode              string  `json:"protocolCode"`
+	ProtocolVersion           string  `json:"protocolVersion"`
+	Name                      string  `json:"name"`
+	Notes                     *string `json:"notes,omitempty"`
+	Type                      string  `json:"type"`
+	// CapabilityDomain 回显 accounts.capability_domain（AI 账户能力域拆分
+	// M1 读通道）：域创建时确定、不可更改（D3），M1 无任何写入口；授权实例
+	// 域恒等于源域，读自身行列即可。
+	CapabilityDomain         string                `json:"capabilityDomain"`
+	Status                   string                `json:"status"`
+	ConcurrencyLimit         int                   `json:"concurrencyLimit"`
+	CurrentConcurrency       int                   `json:"currentConcurrency"`
+	Priority                 int                   `json:"priority"`
+	SuperPriorityEnabled     bool                  `json:"superPriorityEnabled"`
+	FallbackEnabled          bool                  `json:"fallbackEnabled"`
+	ClientCompatibility      string                `json:"clientCompatibility"`
+	Tags                     []TagSummary          `json:"tags"`
+	HealthCheckModel         string                `json:"healthCheckModel"`
+	HealthCheckEndpointMode  string                `json:"healthCheckEndpointMode"`
+	ProxyProfileID           *string               `json:"proxyProfileId,omitempty"`
+	ProxyProfileName         *string               `json:"proxyProfileName,omitempty"`
+	ProxyProfileType         *string               `json:"proxyProfileType,omitempty"`
+	ProxyProfileEnabled      *bool                 `json:"proxyProfileEnabled,omitempty"`
+	ProxyProfileUnavailable  *bool                 `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage *string               `json:"proxyProfileErrorMessage,omitempty"`
+	Schedulable              bool                  `json:"schedulable"`
+	AvailabilitySchedule     *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
+	AccountExpiresAt         *string               `json:"accountExpiresAt,omitempty"`
+	CooldownUntil            *string               `json:"cooldownUntil,omitempty"`
+	LastErrorCode            *string               `json:"lastErrorCode,omitempty"`
+	LastErrorMessage         *string               `json:"lastErrorMessage,omitempty"`
+	LastErrorTraceID         *string               `json:"lastErrorTraceId,omitempty"`
+	LastUsedAt               *string               `json:"lastUsedAt,omitempty"`
+	EffectiveAvailability    EffectiveAvailability `json:"effectiveAvailability"`
+	TodayUsage               TodayUsageSummary     `json:"todayUsage"`
+	Usage                    UsageSummary          `json:"usage"`
 	// OAuthUsage mirrors the AccountSummary.oauthUsage read projection
 	// (account-summary.repository.ts:1452,1575, BUG-0175 D-206): populated
 	// only for gpt-provider oauth accounts from the stats-side Codex
@@ -451,6 +465,7 @@ type listRow struct {
 	name                      string
 	notes                     sql.NullString
 	accountType               string
+	capabilityDomain          string
 	status                    string
 	concurrencyLimit          int
 	priority                  int
@@ -537,6 +552,10 @@ func listItemColumns(alias string) []string {
 		alias + ".name",
 		alias + ".notes",
 		alias + ".type",
+		// capability_domain（AI 账户能力域拆分 M1 读通道）：列 NOT NULL
+		// DEFAULT 'chat'，直接读列回显（授权实例域恒等于源域，D3 继承由
+		// 写路径保证，读侧不做 source 替换）。
+		alias + ".capability_domain",
 		alias + ".status",
 		alias + ".concurrency_limit",
 		alias + ".priority",
@@ -668,7 +687,7 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.id, &row.configRevision, &row.systemAccountID, &row.systemAccountName,
 		&row.providerCode, &row.providerName, &row.providerProtocolProfileID,
 		&row.protocolCode, &row.protocolVersion, &row.name, &row.notes,
-		&row.accountType, &row.status, &row.concurrencyLimit, &row.priority,
+		&row.accountType, &row.capabilityDomain, &row.status, &row.concurrencyLimit, &row.priority,
 		&row.superPriorityEnabled, &row.fallbackEnabled, &row.clientCompatibility,
 		&row.schedulable, &row.availabilityScheduleJSON, &row.accountExpiresAt,
 		&row.cooldownUntil, &row.lastErrorCode, &row.lastErrorMessage,
@@ -764,6 +783,11 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 	if options.Type != "" && options.Type != "all" {
 		clauses = append(clauses, "accounts.type = ?")
 		*args = append(*args, options.Type)
+	}
+	// domain 过滤（M1 读通道）：normalizeListOptions 已把非法值归一为空串。
+	if options.Domain != "" {
+		clauses = append(clauses, "accounts.capability_domain = ?")
+		*args = append(*args, options.Domain)
 	}
 	effective := ownerEffectiveStatusSQL("accounts", sqlQuoteISO(now))
 	statuses := accountStatusFilterValues(options.Status)
@@ -963,6 +987,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		Name:                      row.name,
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
+		CapabilityDomain:          row.capabilityDomain,
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,
 		Priority:                  row.priority,
@@ -1479,30 +1504,32 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 // full credentials so the edit form shows and saves real key material; masking
 // stays on the list surface and the stored credential_mask column.
 type EditBasicDetail struct {
-	ID                        string       `json:"id"`
-	ConfigRevision            int64        `json:"configRevision"`
-	SystemAccountID           *string      `json:"systemAccountId,omitempty"`
-	OwnerSystemAccountID      string       `json:"ownerSystemAccountId"`
-	ProviderCode              string       `json:"providerCode"`
-	ProviderProtocolProfileID string       `json:"providerProtocolProfileId"`
-	ProtocolCode              string       `json:"protocolCode"`
-	ProtocolVersion           string       `json:"protocolVersion"`
-	Name                      string       `json:"name"`
-	Notes                     *string      `json:"notes,omitempty"`
-	Type                      string       `json:"type"`
-	Credentials               Credentials  `json:"credentials"`
-	Status                    string       `json:"status"`
-	ConcurrencyLimit          int          `json:"concurrencyLimit"`
-	Priority                  int          `json:"priority"`
-	SuperPriorityEnabled      bool         `json:"superPriorityEnabled"`
-	FallbackEnabled           bool         `json:"fallbackEnabled"`
-	ClientCompatibility       string       `json:"clientCompatibility"`
-	SupportedModels           []string     `json:"supportedModels"`
-	Tags                      []TagSummary `json:"tags"`
-	HealthCheckModel          string       `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string       `json:"healthCheckEndpointMode"`
-	BoundGroupID              *string      `json:"boundGroupId,omitempty"`
-	BoundGroupName            *string      `json:"boundGroupName,omitempty"`
+	ID                        string  `json:"id"`
+	ConfigRevision            int64   `json:"configRevision"`
+	SystemAccountID           *string `json:"systemAccountId,omitempty"`
+	OwnerSystemAccountID      string  `json:"ownerSystemAccountId"`
+	ProviderCode              string  `json:"providerCode"`
+	ProviderProtocolProfileID string  `json:"providerProtocolProfileId"`
+	ProtocolCode              string  `json:"protocolCode"`
+	ProtocolVersion           string  `json:"protocolVersion"`
+	Name                      string  `json:"name"`
+	Notes                     *string `json:"notes,omitempty"`
+	Type                      string  `json:"type"`
+	// CapabilityDomain 回显 accounts.capability_domain（M1 读通道，域不可变）。
+	CapabilityDomain        string       `json:"capabilityDomain"`
+	Credentials             Credentials  `json:"credentials"`
+	Status                  string       `json:"status"`
+	ConcurrencyLimit        int          `json:"concurrencyLimit"`
+	Priority                int          `json:"priority"`
+	SuperPriorityEnabled    bool         `json:"superPriorityEnabled"`
+	FallbackEnabled         bool         `json:"fallbackEnabled"`
+	ClientCompatibility     string       `json:"clientCompatibility"`
+	SupportedModels         []string     `json:"supportedModels"`
+	Tags                    []TagSummary `json:"tags"`
+	HealthCheckModel        string       `json:"healthCheckModel"`
+	HealthCheckEndpointMode string       `json:"healthCheckEndpointMode"`
+	BoundGroupID            *string      `json:"boundGroupId,omitempty"`
+	BoundGroupName          *string      `json:"boundGroupName,omitempty"`
 }
 
 // Credentials mirrors AccountCredentials: an open record of credential fields.
@@ -1546,6 +1573,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		name                      string
 		notes                     sql.NullString
 		accountType               string
+		capabilityDomain          string
 		credentialsEncrypted      string
 		status                    string
 		concurrencyLimit          int
@@ -1563,7 +1591,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.notes,
-			accounts.type, accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
+			accounts.type, accounts.capability_domain, accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			accounts.client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id,
@@ -1593,7 +1621,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID, &row.providerCode,
 		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
-		&row.name, &row.notes, &row.accountType, &row.credentialsEncrypted,
+		&row.name, &row.notes, &row.accountType, &row.capabilityDomain, &row.credentialsEncrypted,
 		&row.status, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled,
 		&row.fallbackEnabled, &row.clientCompatibility, &row.healthCheckModel,
 		&row.healthCheckEndpointMode, &row.authorizationID, &row.sourceAccountID,
@@ -1677,6 +1705,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		Name:                      row.name,
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
+		CapabilityDomain:          row.capabilityDomain,
 		Credentials:               projectEditableCredentials(row.accountType, credentials),
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,

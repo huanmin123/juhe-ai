@@ -108,8 +108,13 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 	t.Run("openai oauth account id fallbacks", func(t *testing.T) {
 		// The gpt OAuth profile pins the upstream to chatgpt.com; capture the
 		// request in a local transport instead of dialing the real host.
+		// A 形态恒 SSE（§9.1-A）：罐装响应必须是 SSE 完成事件——评分跟随请求
+		// 编码形态（§9.4 W3 裁决），迁移前的 JSON 罐装体不再满足探活语义。
 		var captured http.Header
-		transport := &w7cCaptureTransport{capture: &captured, body: `{"status":"completed","object":"response","output_text":"juhe","output":[{"content":[{"type":"output_text","text":"juhe"}]}]}`}
+		transport := &w7cCaptureTransport{capture: &captured, body: "event: response.output_text.delta\n" +
+			`data: {"type":"response.output_text.delta","delta":"juhe"}` + "\n\n" +
+			"event: response.completed\n" +
+			`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n"}
 		view := probeView("https://ignored.example.com")
 		view.HealthCheckEndpointMode = string(ModeResponsesJSON)
 		view.Type = "oauth"
@@ -249,39 +254,59 @@ func (w7cFailingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("transport dead")
 }
 
-func TestW7CBuildUpstreamURLRemainingArms(t *testing.T) {
-	if _, err := buildUpstreamURL(&View{BaseURL: "   "}, "/v1/chat"); err == nil || !strings.Contains(err.Error(), "base_url") {
+// TestW7CUpstreamURLBranchArms 钉 URL 归一化分支（原 buildUpstreamURL 直调
+// 随 W4 接线删除，分支经 buildTestRequest → 信封 Build 断言；吸收原
+// probe_test.go 的 TestBuildUpstreamURL* 四例）。GLM OpenAI 档案三形态见
+// w4_envelope_final_wiring_test.go 的 TestW4GLMThreeBaseForms。
+func TestW7CUpstreamURLBranchArms(t *testing.T) {
+	// 空白 base 经 Build 显式失败（原“账户缺少上游 base_url”文案由信封承接，
+	// 错误均含 base_url，经 classifyAttemptError 进入探针消息的行为不变）。
+	if _, err := w4BuildRequestE(probeView("   "), ModeChatJSON, "m"); err == nil || !strings.Contains(err.Error(), "base_url") {
 		t.Fatalf("empty base: %v", err)
 	}
 
 	// Gemini base ending with /v1beta strips the request prefix.
 	geminiView := probeView("https://gem.example.com/v1beta")
 	geminiView.ProtocolCode = "gemini"
-	url, err := buildUpstreamURL(geminiView, "/v1beta/models/g:generateContent?alt=sse")
-	if err != nil || url != "https://gem.example.com/v1beta/models/g:generateContent?alt=sse" {
-		t.Fatalf("gemini v1beta base: %q %v", url, err)
+	request, _ := w4BuildRequest(t, geminiView, ModeGenerateContentSSE, "g")
+	if request.URL.String() != "https://gem.example.com/v1beta/models/g:streamGenerateContent?alt=sse" {
+		t.Fatalf("gemini v1beta base: %q", request.URL)
 	}
 
 	// Gemini OpenAI-compatible profile owns the /v1beta/openai base path.
 	profile := probeView("https://gem.example.com/v1beta/openai")
 	profile.ProviderProtocolProfileID = "profile_gemini_openai_chat_v1beta"
-	url, err = buildUpstreamURL(profile, "/v1/chat/completions")
-	if err != nil || url != "https://gem.example.com/v1beta/openai/chat/completions" {
-		t.Fatalf("gemini openai profile: %q %v", url, err)
+	request, _ = w4BuildRequest(t, profile, ModeChatJSON, "m")
+	if request.URL.String() != "https://gem.example.com/v1beta/openai/chat/completions" {
+		t.Fatalf("gemini openai profile: %q", request.URL)
 	}
 
 	// Anthropic bases gain a /v1 suffix only when missing.
-	anthropic := probeView("https://claude.example.com")
-	anthropic.ProtocolCode = "anthropic"
-	url, err = buildUpstreamURL(anthropic, "/v1/messages")
-	if err != nil || url != "https://claude.example.com/v1/messages" {
-		t.Fatalf("anthropic root base: %q %v", url, err)
+	for _, tc := range []struct{ base, want string }{
+		{"https://claude.example.com", "https://claude.example.com/v1/messages"},
+		{"https://claude.example.com/v1", "https://claude.example.com/v1/messages"},
+		// 供应商根路径稳定性（原 TestBuildUpstreamURLAnthropicProviderRoots）。
+		{"https://api.anthropic.com", "https://api.anthropic.com/v1/messages"},
+		{"https://api.deepseek.com/anthropic", "https://api.deepseek.com/anthropic/v1/messages"},
+		{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+		{"https://open.bigmodel.cn/api/anthropic/v1", "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+	} {
+		anthropic := probeView(tc.base)
+		anthropic.ProtocolCode = "anthropic"
+		anthropic.ProviderProtocolProfileID = "profile_glm_coding_anthropic_v1"
+		request, _ = w4BuildRequest(t, anthropic, ModeMessagesJSON, "claude-1")
+		if request.URL.String() != tc.want {
+			t.Fatalf("anthropic base %s: %q, want %q", tc.base, request.URL, tc.want)
+		}
 	}
-	anthropic = probeView("https://claude.example.com/v1")
-	anthropic.ProtocolCode = "anthropic"
-	url, err = buildUpstreamURL(anthropic, "/v1/messages")
-	if err != nil || url != "https://claude.example.com/v1/messages" {
-		t.Fatalf("anthropic v1 base: %q %v", url, err)
+
+	// Gemini SSE preserves the alt query（原 TestBuildUpstreamURLGeminiSSEPreservesAltQuery）。
+	geminiSSE := probeView("https://generativelanguage.googleapis.com/v1beta")
+	geminiSSE.ProtocolCode = "gemini"
+	geminiSSE.ProviderProtocolProfileID = "profile_gemini_native_v1beta"
+	request, _ = w4BuildRequest(t, geminiSSE, ModeGenerateContentSSE, "gemini-test")
+	if request.URL.String() != "https://generativelanguage.googleapis.com/v1beta/models/gemini-test:streamGenerateContent?alt=sse" {
+		t.Fatalf("gemini sse alt query: %q", request.URL)
 	}
 }
 

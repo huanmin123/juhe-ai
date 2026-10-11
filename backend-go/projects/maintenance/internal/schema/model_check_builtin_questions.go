@@ -1,10 +1,11 @@
 // 系统内置题库题的种子数据（模型检测设计 §5.7 系统内置题，2026-10-09 起）：
 // 一批社区流行的经典模型能力/降智检测题（草莓字母计数、9.11 与 9.9 比较、
 // 糖果多步算术、牛奶稀释常识、惯性陷阱、百分比陷阱、字符串倒序等），随
-// maintenance --seed 以固定 id 幂等写入 model_check_question_bank
-// （status='approved'、created_by='system'、is_builtin=1），供用户直接选用
-// 或作为自拟题参考。应用层对内置题禁止编辑/删除/审核，题面调整随版本演进
-// 本文件。
+// maintenance --seed 以固定 id 条件 upsert 写入 model_check_question_bank
+// （status='approved'、created_by='system'、is_builtin=1；新行插入，存量内
+// 置行的题面/参考答案/评分要点恢复为 seed 权威值），供用户直接选用或作为
+// 自拟题参考。应用层对内置题禁止编辑/删除/审核，题面与判定口径调整随版本
+// 演进本文件。
 package schema
 
 import (
@@ -15,7 +16,7 @@ import (
 )
 
 // builtinQuestionKeyPointsJSON 序列化评分要点为 key_points_json 列文本
-//（JSON 数组，与 gateway store 的 keyPointsJSONValue 读写契约一致）。
+// （JSON 数组，与 gateway store 的 keyPointsJSONValue 读写契约一致）。
 func builtinQuestionKeyPointsJSON(question BuiltinModelCheckQuestion) (string, error) {
 	encoded, err := json.Marshal(question.KeyPoints)
 	if err != nil {
@@ -40,8 +41,9 @@ func builtinQuestionTitleNorm(title string) string {
 }
 
 // BuiltinModelCheckQuestion 是一道系统内置题的种子定义。ID 是稳定主键：
-// 重复 seed 走 INSERT OR IGNORE，不覆盖用户可能已产生的引用；改题面等于
-// 发新版本数据，不得改动已有 ID 对应的题干语义。
+// 条件 upsert 只对 is_builtin=1 的内置行恢复 seed 权威值（用户题不受影响）；
+// 改题面等于发新版本数据，随版本到达存量环境，不得改动已有 ID 对应的题干
+// 语义。
 type BuiltinModelCheckQuestion struct {
 	ID              string
 	Title           string
@@ -74,7 +76,7 @@ var builtinModelCheckQuestions = []BuiltinModelCheckQuestion{
 		Title:           "内置·「人工智能改变世界」有几个汉字",
 		QuestionText:    "「人工智能改变世界」这句话一共有几个汉字？请直接给出数量。",
 		ReferenceAnswer: "8 个：人、工、智、能、改、变、世、界。",
-		KeyPoints:       []string{"答案为 8 个", "能完整列出这 8 个汉字"},
+		KeyPoints:       []string{"答案为 8 个"},
 	},
 	{
 		ID:              "mcq-builtin-candy-steps",
@@ -102,7 +104,7 @@ var builtinModelCheckQuestions = []BuiltinModelCheckQuestion{
 		Title:           "内置·先涨价 10% 再降价 10% 是多少",
 		QuestionText:    "一件商品标价 100 元，先涨价 10%，再降价 10%，现在价格是多少元？请给出计算过程。",
 		ReferenceAnswer: "99 元。涨价后 100 × 1.1 = 110 元，再降价 110 × 0.9 = 99 元。先涨后降相同百分比不会回到原价（基数变了）。",
-		KeyPoints:       []string{"最终价格为 99 元", "两步计算正确（110 元、99 元）", "点出先涨后降不对称、不会回到原价"},
+		KeyPoints:       []string{"最终价格为 99 元", "两步计算正确（110 元、99 元）"},
 	},
 	{
 		ID:              "mcq-builtin-string-reverse",

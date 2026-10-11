@@ -91,6 +91,9 @@ func TestWMMainExitBranches(t *testing.T) {
 		branch("j3a apply without env", []string{"-apply-j3a-proxy-latency-postgres"}, 2, "JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL"),
 		branch("j3b pg apply without env", []string{"-apply-j3b-model-check-postgres"}, 2, "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL"),
 		branch("j3b sqlite apply without env", []string{"-apply-j3b-model-check-sqlite"}, 2, "JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH"),
+		// 成功成本历史回填一次性子命令（2026-10-12）：与其他命令互斥。
+		branch("success-cost backfill mutex with storage bootstrap", []string{"-apply-success-cost-backfill", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
+		branch("success-cost backfill mutex with rebuild", []string{"-apply-success-cost-backfill", "-rebuild-usage-stats", "-confirm-offline"}, 2, "rebuild-usage-stats flag is mutually exclusive"),
 	}
 	// env 门控分支：原 exec 子进程版本以 cmd.Env 注入；进程内改用 t.Setenv
 	// （设置并自动恢复），语义与子进程“继承环境 + 覆盖目标变量”一致。

@@ -250,10 +250,10 @@ export interface ModelCheckQuestionBankItem {
   id: string
   title: string
   questionText: string
-  /** 参考答案仅创建者与管理员可见，无权限时缺失 */
-  referenceAnswer?: string
-  /** 评分要点仅创建者与管理员可见，无权限时缺失 */
-  keyPoints?: string[]
+  /** 参考答案全员可见（题库共享契约），必填非空恒返回 */
+  referenceAnswer: string
+  /** 评分要点全员可见（题库共享契约），未填写时为空数组 */
+  keyPoints: string[]
   status: ModelCheckQuestionStatus
   rejectReason?: string
   createdBy: string
@@ -261,6 +261,8 @@ export interface ModelCheckQuestionBankItem {
   createdByName?: string
   /** 系统内置题标记：seed 预置、不可编辑/删除/审核 */
   isBuiltin?: boolean
+  /** 最近一次通过可用性测试的快照（verdict 恒 pass）；缺失表示尚无通过记录 */
+  lastTest?: ModelCheckQuestionLastTest
   createdAt: string
   updatedAt: string
   reviewedAt?: string
@@ -287,11 +289,56 @@ export interface ModelCheckQuestionBankMutationInput {
   questionText: string
   referenceAnswer: string
   keyPoints?: string[]
+  /** 可用性测试凭证：提交门禁仅放行「测试通过且内容未变」的提交 */
+  testId: string
 }
 
 export interface ModelCheckQuestionBankReviewInput {
   action: 'approve' | 'reject'
   reason?: string
+}
+
+export interface ModelCheckQuestionBankTestInput {
+  questionText: string
+  referenceAnswer: string
+  keyPoints?: string[]
+  accountId: string
+  model: string
+}
+
+export interface ModelCheckQuestionBankTestKeyPointResult {
+  point: string
+  met: boolean
+  note?: string
+}
+
+export type ModelCheckQuestionBankTestVerdict = 'pass' | 'fail' | 'invalid' | 'request_failed'
+
+export type ModelCheckQuestionAlignment = 'aligned' | 'misaligned' | 'unknown'
+
+export interface ModelCheckQuestionBankTestResult {
+  testId: string
+  verdict: ModelCheckQuestionBankTestVerdict
+  questionAlignment: ModelCheckQuestionAlignment
+  keyPointResults: ModelCheckQuestionBankTestKeyPointResult[]
+  answerExcerpt?: string
+  graderNote?: string
+  verdictReason?: string
+  httpStatus?: number
+  /** request_failed 时的上游错误摘要（后端 ErrorMessage） */
+  error?: string
+  latencyMs: number
+  accountId: string
+  accountName: string
+  model: string
+  testedAt: string
+}
+
+export interface ModelCheckQuestionLastTest {
+  accountId: string
+  accountName: string
+  model: string
+  passedAt: string
 }
 
 export interface ModelCheckQuestionBankOption {

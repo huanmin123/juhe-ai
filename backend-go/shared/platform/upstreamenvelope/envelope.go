@@ -12,6 +12,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Adapter 是适配器选项位（§4.2：适配器只提供声明式端点、认证及能力描述，
@@ -21,14 +23,25 @@ type Adapter string
 
 const (
 	AdapterNone Adapter = ""
-	// AdapterOpenAIOAuthCodex：OpenAI OAuth Codex 形态（F5）。上游固定为
-	// CodexBaseURL；Responses body 归一化删除 max_output_tokens 等不接受的
-	// tuning 字段，预算策略恒为 BudgetNone（§4.3 Codex 例外）。包装钩子
-	// wrapCodexResponses 逐行为对齐 modelcheckprobe
-	// normalizeOpenAIOAuthCodexRequest 的 body 改写（§6 M5）；请求头增强
-	// （originator、session-id、x-codex-* 等）属于账户/凭据语义，仍由调用方
-	// 经 Spec.Auth / Spec.ExtraHeaders 注入。
+	// AdapterOpenAIOAuthCodex：OpenAI OAuth Codex 形态（A，§9.1-A）。上游
+	// 固定为 CodexBaseURL；Responses body 归一化删除 max_output_tokens 等不
+	// 接受的 tuning 字段，预算策略恒为 BudgetNone（§4.3 Codex 例外）。包装
+	// 钩子 wrapCodexResponses 逐行为对齐 modelcheckprobe
+	// normalizeOpenAIOAuthCodexRequest 的 body 改写。强制 SSE（Accept 恒
+	// text/event-stream）、openai-beta 缺省补齐与 Codex 身份头由 Build 按
+	// Spec 形态统一写入（§9.1/§9.3/§9.5）；身份值经 Spec.CodexIdentity 传入，
+	// 缺失显式失败。
 	AdapterOpenAIOAuthCodex Adapter = "openai_oauth_codex"
+	// AdapterOpenAICodexCompatibility：codex_responses 兼容画像形态（B，
+	// API Key + ClientCompatibility，§9.1-B）。不设固定上游：URL 走账户
+	// BaseURL + buildUpstreamURL 档案路径规约（含 GLM 剥 /v1）；预算不覆盖
+	//（B 保留档案/探针族预算字段，不继承 A 的 BudgetNone 例外）；包装钩子
+	// wrapCodexCompatibilityProfile 注入 store/include/reasoning/
+	// parallel_tool_calls/prompt_cache_key/client_metadata（与身份头共用
+	// Spec.CodexIdentity 一份身份，§9.3 单源）。身份头由 Build 统一写入
+	//（集合与 A 相同），Accept 按 endpointMode 走现行 acceptHeader 口径，
+	// 不强制 SSE、不补 openai-beta；Lite 头按 §9.5 模型条件与 A 同规。
+	AdapterOpenAICodexCompatibility Adapter = "openai_codex_compatibility"
 	// AdapterGeminiCodeAssist：Gemini Code Assist / Google One 形态。路径
 	// /v1internal:streamGenerateContent?alt=sse，body 包装为
 	// {model, project, request} 三字段（accountprobe buildTestRequest /
@@ -59,8 +72,9 @@ type adapterDef struct {
 
 // adapters 是适配器登记表（§8.1：新增变体先登记再使用）。
 var adapters = map[Adapter]adapterDef{
-	AdapterOpenAIOAuthCodex: {budget: budgetPtr(BudgetNone), fixedBaseURL: CodexBaseURL, wrap: wrapCodexResponses},
-	AdapterGeminiCodeAssist: {wrap: wrapGeminiCodeAssist},
+	AdapterOpenAIOAuthCodex:         {budget: budgetPtr(BudgetNone), fixedBaseURL: CodexBaseURL, wrap: wrapCodexResponses},
+	AdapterOpenAICodexCompatibility: {wrap: wrapCodexCompatibilityProfile},
+	AdapterGeminiCodeAssist:         {wrap: wrapGeminiCodeAssist},
 }
 
 func budgetPtr(value BudgetPolicy) *BudgetPolicy { return &value }
@@ -102,6 +116,22 @@ type MultipartContent struct {
 	File   MultipartFile
 }
 
+// CodexIdentity 是一次 Codex 形态请求的身份值（A: OAuth Codex / B:
+// codex_responses 兼容画像，设计文档 §9.3 身份单源）。身份由调用方在每次
+// 请求前生成（含时钟/随机源取时，信封不持有时钟/随机源之外的身份状态），
+// 经 Spec 传入 Build 后同时产出 body client_metadata（B 形态，
+// wrapCodexCompatibilityProfile）与全部身份请求头（Build）——禁止两个构造
+// 阶段各随机生成。TurnMetadataJSON 是调用方 marshal 好的 turn metadata
+// JSON 字符串（F4 现值含 turn_started_at_unix_ms）。零值=未提供身份。
+type CodexIdentity struct {
+	InstallationID   string
+	SessionID        string
+	ThreadID         string
+	TurnID           string
+	WindowID         string
+	TurnMetadataJSON string
+}
+
 // Spec 是一次请求构造的全部输入（§4.1：调用方提供已解析的账户/供应商目标、
 // 协议 profile、endpointMode、认证策略及凭据引用、探针语义 body 和预算
 // 类别；不得传入已拼好的 URL、认证头或完整 envelope 绕过共享入口）。
@@ -119,6 +149,9 @@ type Spec struct {
 	// 其余端点的 model 属于 body 字段，由 BodyFields 承载。
 	// AdapterGeminiCodeAssist 例外：包装后的 {model, project, request} 顶层
 	// model 字段也取本值（accountprobe / exactkeyprobe 现状：取请求模型原名）。
+	// Codex 形态适配器（AdapterOpenAIOAuthCodex / AdapterOpenAICodex
+	// Compatibility）语义扩展：最终上游模型（模型映射后），Build 按 §9.5
+	// 以本值决定 X-OpenAI-Internal-Codex-Responses-Lite 是否发送。
 	Model string
 	// Project 仅 AdapterGeminiCodeAssist 使用：Code Assist / Google One 账户
 	// 凭据中的 project_id，包装为 body 顶层 project 字段（§6 M5，取证见
@@ -134,9 +167,15 @@ type Spec struct {
 	BodyFields []BodyField
 	// Multipart 仅 multipart 端点使用。
 	Multipart *MultipartContent
-	// ExtraHeaders 是调用方附加头。系统客户端身份头
-	// （upstreamidentity.ApplySystemClientHeaders）在 M1 仍由调用方经此处
-	// 注入，是否上收由 M2–M5 迁移步骤裁决。
+	// CodexIdentity 仅 Codex 形态适配器（A/B，见 isCodexFormAdapter）使用：
+	// 调用方每次请求生成的身份值（§9.3 单源）。零值=无身份，Codex 形态缺失
+	// 时 Build 显式报错（防静默丢身份）；其他适配器忽略本字段。
+	CodexIdentity CodexIdentity
+	// ExtraHeaders 是调用方附加头。Codex 形态身份头（originator、session-id、
+	// x-codex-* 等，§9.1）自 W1 起由 Build 统一写入，先于本映射应用——调用
+	// 方仍可经此处覆盖单项（保留既有覆盖语义）；其余系统客户端身份头
+	//（upstreamidentity.ApplySystemClientHeaders）是否上收由 M2–M5 迁移
+	// 步骤另行裁决。
 	ExtraHeaders map[string]string
 }
 
@@ -161,6 +200,9 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 		if def.wrap == nil {
 			return nil, fmt.Errorf("upstreamenvelope: 适配器 %s 未实现请求包装钩子（适配器登记表不变量）", spec.Adapter)
 		}
+	}
+	if isCodexFormAdapter(spec.Adapter) && spec.CodexIdentity == (CodexIdentity{}) {
+		return nil, fmt.Errorf("upstreamenvelope: Codex 形态适配器 %s 缺少 Spec.CodexIdentity（设计文档 §9.3 身份单源：身份由调用方每次请求生成后传入，缺失必须显式失败，防静默丢身份）", spec.Adapter)
 	}
 	if spec.Budget.unspecified() {
 		return nil, errors.New("upstreamenvelope: 缺少预算策略（经 ResolveBudgetPolicy 按 endpointMode+probe family+adapter 解析后传入，设计文档 §4.3）")
@@ -231,6 +273,11 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 	}
 	header := httpReq.Header
 	header.Set("Accept", acceptHeader(entry, spec.Auth.Strategy))
+	if spec.Adapter == AdapterOpenAIOAuthCodex {
+		// A 形态强制 SSE（§9.1）：Accept 恒 text/event-stream，覆盖
+		// acceptHeader 结果；B/C 形态不强制，走现行 acceptHeader 口径。
+		header.Set("Accept", "text/event-stream")
+	}
 	header.Set("Content-Type", contentType)
 	for name, value := range entry.Headers {
 		header.Set(name, value)
@@ -238,10 +285,58 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 	if err := spec.Auth.Apply(header); err != nil {
 		return nil, err
 	}
+	if isCodexFormAdapter(spec.Adapter) {
+		// A/B 形态身份头单源（§9.1/§9.3）：与 body client_metadata 共用
+		// Spec.CodexIdentity 一份身份；先于 ExtraHeaders 写入，调用方仍可
+		// 经 ExtraHeaders 覆盖（保留既有覆盖语义）。
+		applyCodexIdentityHeaders(header, spec.CodexIdentity, spec.Model)
+	}
 	for name, value := range spec.ExtraHeaders {
 		header.Set(name, value)
 	}
+	if spec.Adapter == AdapterOpenAIOAuthCodex && header.Get("OpenAI-Beta") == "" {
+		// A 形态 openai-beta 缺省补齐（§9.5）；ExtraHeaders 已带显式值时保留，
+		// 不覆盖（OpenAI账号接入 透传策略同源）。仅 A 形态执行；B/C 不补。
+		header.Set("OpenAI-Beta", "responses=experimental")
+	}
 	return httpReq, nil
+}
+
+// isCodexFormAdapter 报告适配器是否为 Codex 形态（A: OAuth Codex；B:
+// codex_responses 兼容画像）：两形态共享同一身份头集合与 §9.5 Lite 头模型
+// 条件；强制 SSE 与 openai-beta 缺省补齐仅 A 形态适用。
+func isCodexFormAdapter(adapter Adapter) bool {
+	return adapter == AdapterOpenAIOAuthCodex || adapter == AdapterOpenAICodexCompatibility
+}
+
+// applyCodexIdentityHeaders 写入 A/B 形态共享的身份头集合（§9.1；取证：
+// exactkeyprobe applyCodexProbeHeaders——X-Client-Request-Id 与 Session-Id
+// 同取身份 SessionID，与 F3/F4 现状一致）。仅最终上游模型命中 §9.5 Lite
+// 清单时附加 X-OpenAI-Internal-Codex-Responses-Lite: true，其余模型不发送。
+func applyCodexIdentityHeaders(header http.Header, identity CodexIdentity, model string) {
+	header.Set("Originator", "codex_exec")
+	header.Set("User-Agent", upstreamidentity.EffectiveCodexUserAgent())
+	header.Set("Session-Id", identity.SessionID)
+	header.Set("Thread-Id", identity.ThreadID)
+	header.Set("X-Client-Request-Id", identity.SessionID)
+	header.Set("X-Codex-Beta-Features", "remote_compaction_v2")
+	header.Set("X-Codex-Window-Id", identity.WindowID)
+	header.Set("X-Codex-Turn-Metadata", identity.TurnMetadataJSON)
+	if codexLiteModel(model) {
+		header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+	}
+}
+
+// codexLiteModel 按 §9.5 判断最终上游模型是否命中 Codex Responses Lite
+// 清单：小写去空白后精确等于 gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna
+// （与 exactkeyprobe isCodexResponsesLiteModel 同规）。目录扩减模型时本清单
+// 随模型目录裁决更新，不做前缀/通配推断。
+func codexLiteModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+		return true
+	}
+	return false
 }
 
 // acceptHeader 按 body 编码与认证策略决定 Accept（现状取证：accountprobe
@@ -307,8 +402,8 @@ func applyGeminiBudgetField(fields []BodyField, limit int) ([]BodyField, error) 
 	return append(fields, BodyField{Key: "generationConfig", Value: map[string]any{"maxOutputTokens": limit}}), nil
 }
 
-// encodeOrderedJSON 按字段顺序编码 JSON 对象（与 accountprobe orderedJSON
-// 同构）；序列化失败显式报错，不静默降级。
+// encodeOrderedJSON 按字段顺序编码 JSON 对象（§9.2-3：最终编码只由共享包
+// 负责）；序列化失败显式报错，不静默降级。
 func encodeOrderedJSON(fields []BodyField) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')

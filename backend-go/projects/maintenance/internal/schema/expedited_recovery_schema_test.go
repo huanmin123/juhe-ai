@@ -113,7 +113,7 @@ func TestPostgresExpeditedRecoverySchemaContract(t *testing.T) {
 	if rowStart < 0 || rowMid < 0 || rowMid < rowStart {
 		t.Fatalf("update dirty trigger ROW comparison not found:\n%.400s", body)
 	}
-	newSection := body[rowStart+len("WHERE ROW("):rowMid]
+	newSection := body[rowStart+len("WHERE ROW(") : rowMid]
 	oldRest := body[rowMid+len(") IS DISTINCT FROM ROW("):]
 	oldEnd := strings.Index(oldRest, ");")
 	if oldEnd < 0 {

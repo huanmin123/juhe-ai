@@ -262,10 +262,16 @@ func (s *Store) LoadOverview(ctx context.Context, page, pageSize int, keyword st
 
 func (s *Store) loadOverviewPostgres(ctx context.Context, page, pageSize, offset int, keywordClause string, keywordParams []any) (Overview, error) {
 	databaseRows, err := s.query(ctx, `
-		SELECT DISTINCT ON (database_role)
-			database_role, database_path, sampled_at, file_bytes, wal_bytes, shm_bytes, free_bytes, table_count
-		FROM `+s.table("database_storage_snapshots")+`
-		ORDER BY database_role, sampled_at DESC, id DESC
+		WITH latest_database_ids AS MATERIALIZED (
+			SELECT DISTINCT ON (database_role) id
+			FROM `+s.table("database_storage_snapshots")+`
+			ORDER BY database_role, sampled_at DESC, id DESC
+		)
+		SELECT snapshots.database_role, snapshots.database_path, snapshots.sampled_at,
+			snapshots.file_bytes, snapshots.wal_bytes, snapshots.shm_bytes, snapshots.free_bytes, snapshots.table_count
+		FROM latest_database_ids AS latest
+		JOIN `+s.table("database_storage_snapshots")+` AS snapshots ON snapshots.id = latest.id
+		ORDER BY snapshots.database_role
 	`)
 	if err != nil {
 		return Overview{}, err
@@ -294,20 +300,21 @@ func (s *Store) loadOverviewPostgres(ctx context.Context, page, pageSize, offset
 		}
 	}
 	tableRows, err := s.query(ctx, `
-		WITH latest_snapshots AS (
+		WITH latest_table_ids AS MATERIALIZED (
 			SELECT DISTINCT ON (database_role, table_name)
-				id, database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive,
-				row_count, table_bytes, index_bytes, total_bytes, growth_bytes_1h, growth_rows_1h,
-				growth_bytes_24h, growth_rows_24h
+				id
 			FROM `+s.table("table_storage_snapshots")+`
 			WHERE 1 = 1`+keywordClause+`
 			ORDER BY database_role, table_name, sampled_at DESC, id DESC
 		)
-		SELECT database_role, table_name, sampled_at, table_kind, parent_table_name, is_partition, is_archive,
-			row_count, table_bytes, index_bytes, total_bytes, growth_bytes_1h, growth_rows_1h,
-			growth_bytes_24h, growth_rows_24h
-		FROM latest_snapshots
-		ORDER BY total_bytes DESC NULLS LAST, row_count DESC NULLS LAST, table_name ASC, database_role ASC
+		SELECT snapshots.database_role, snapshots.table_name, snapshots.sampled_at, snapshots.table_kind,
+			snapshots.parent_table_name, snapshots.is_partition, snapshots.is_archive,
+			snapshots.row_count, snapshots.table_bytes, snapshots.index_bytes, snapshots.total_bytes,
+			snapshots.growth_bytes_1h, snapshots.growth_rows_1h, snapshots.growth_bytes_24h, snapshots.growth_rows_24h
+		FROM latest_table_ids AS latest
+		JOIN `+s.table("table_storage_snapshots")+` AS snapshots ON snapshots.id = latest.id
+		ORDER BY snapshots.total_bytes DESC NULLS LAST, snapshots.row_count DESC NULLS LAST,
+			snapshots.table_name ASC, snapshots.database_role ASC
 		LIMIT ? OFFSET ?
 	`, append(append([]any{}, keywordParams...), pageSize, offset)...)
 	if err != nil {

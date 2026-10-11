@@ -218,15 +218,16 @@ func TestW9AEnsureAllSQLiteStatementFailures(t *testing.T) {
 	}
 
 	// 逐 schema 注入失败：前面 schema 的语句全部成功后，目标 schema 首条失败。
-	// stats 守卫（success_cost_usd 回填）在 stats DDL 之后追加
-	// len(sqliteStatsSuccessCostGuardTables) 条 UPDATE，后续 schema 偏移随之平移。
-	guardExecs := len(sqliteStatsSuccessCostGuardTables)
+	// stats 守卫（success_cost_usd 补列）只做 PRAGMA 查询、不产生 exec；历史上
+	// 在 stats DDL 之后追加的六条回填 UPDATE 已卸载（成功成本历史回填治理，
+	// 2026-10-12），回填职责唯一收敛到 maintenance
+	// --apply-success-cost-backfill 子命令，各 schema 偏移回归纯 DDL 长度。
 	offsets := map[string]int{
 		"stats":   len(sqliteBusinessScript),
-		"chat":    len(sqliteBusinessScript) + len(sqliteStatsScript) + guardExecs,
-		"codex":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + guardExecs,
-		"dataset": len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + guardExecs,
-		"usage":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript) + guardExecs,
+		"chat":    len(sqliteBusinessScript) + len(sqliteStatsScript),
+		"codex":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript),
+		"dataset": len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript),
+		"usage":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript),
 	}
 	needles := map[string]string{
 		"stats": "ensure sqlite stats schema", "chat": "ensure sqlite chat schema",

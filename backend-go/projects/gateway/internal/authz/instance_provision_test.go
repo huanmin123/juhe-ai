@@ -67,6 +67,7 @@ type provisionInstanceRow struct {
 	continuousProbeEnabled  int
 	healthCheckModel        string
 	healthCheckEndpointMode string
+	capabilityDomain        string
 	sourceAccountID         string
 	authorizationID         string
 	ownerSystemAccountID    string
@@ -85,6 +86,7 @@ func (f *fixture) provisionInstanceByAuthorization(t *testing.T, resourceID, gra
 		credentials_encrypted, credential_fingerprint, provider_code, provider_protocol_profile_id,
 		protocol_code, protocol_version, type, concurrency_limit,
 		temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
+		capability_domain,
 		authorization_instance_source_account_id, authorization_instance_authorization_id,
 		authorization_instance_owner_system_account_id, deleted_at, dispatch_revision
 		FROM accounts WHERE authorization_instance_authorization_id = ?`, runtimeID).
@@ -92,6 +94,7 @@ func (f *fixture) provisionInstanceByAuthorization(t *testing.T, resourceID, gra
 			&row.credentialsEncrypted, &row.credentialFingerprint, &row.providerCode, &row.providerProtocolProfile,
 			&row.protocolCode, &row.protocolVersion, &row.accountType, &row.concurrencyLimit,
 			&row.continuousProbeEnabled, &row.healthCheckModel, &row.healthCheckEndpointMode,
+			&row.capabilityDomain,
 			&row.sourceAccountID, &row.authorizationID, &row.ownerSystemAccountID,
 			&row.deletedAt, &row.dispatchRevision)
 	if err != nil {

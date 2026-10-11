@@ -141,7 +141,7 @@ func TestCheckBusinessSQLiteSchemaFailsClosedForConstraintDrift(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE system_accounts`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE system_accounts (id TEXT, username TEXT, display_name TEXT, status TEXT, role TEXT, must_change_password TEXT, password_hash TEXT, last_login_at TEXT, updated_at TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE system_accounts (id TEXT, username TEXT, display_name TEXT, status TEXT, role TEXT, must_change_password TEXT, password_hash TEXT, last_login_at TEXT, expedited_account_limit TEXT, updated_at TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	err := CheckBusinessSQLiteSchema(context.Background(), db)

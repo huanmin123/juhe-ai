@@ -175,9 +175,8 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if err := ensureAggregateColumnBackfills(ctx, s.db); err != nil {
 		return fmt.Errorf("迁移 statsverify stats sqlite 聚合列失败: %w", err)
 	}
-	if err := ensureStatsSuccessCostBackfill(ctx, s.db); err != nil {
-		return fmt.Errorf("回填 statsverify stats sqlite success_cost_usd 失败: %w", err)
-	}
+	// success_cost_usd 历史数据回填已移交 maintenance --apply-success-cost-backfill
+	// 一次性子命令（计划 PLAN-20261011T225418）：ensure 只建结构，不再扫描回填。
 	if _, err := s.business.ExecContext(ctx, sqliteBusinessSchema); err != nil {
 		return fmt.Errorf("初始化 statsverify business sqlite schema 失败: %w", err)
 	}
@@ -478,8 +477,9 @@ var postgresRequiredTables = []string{
 // （aggregate.go usageStatsRecordSelectColumns）；usage_stats_daily/hourly
 // 对齐聚合器写入的全累加器形状（maintenance EnsureSQLiteStats 同形 DDL，
 // gateway bootstrap 先建库时无感）。全部可空或带 DEFAULT，SQLite ADD COLUMN
-// 合法。success_cost_usd 的数据回填守卫见 ensureStatsSuccessCostBackfill
-// （与 maintenance ensureSQLiteStatsSuccessCostColumns 同语义）。
+// 合法。success_cost_usd 的历史数据回填职责已移交 maintenance
+// --apply-success-cost-backfill 一次性子命令（见计划 PLAN-20261011T225418），
+// ensure 不再扫描回填，本清单只保留 ADD COLUMN 结构守卫。
 var sqliteAggregateColumnBackfills = []struct {
 	table   string
 	columns []string
@@ -535,59 +535,9 @@ var sqliteAggregateColumnBackfills = []struct {
 	},
 }
 
-// statsSuccessCostBackfillTables 列出需要回填 success_cost_usd 的 stats
-// usage 投影表（本包 SQLite DDL 只建 usage_stats_daily/hourly 两张；
-// totals/minute/weekly/monthly 由 maintenance/gateway bootstrap 建库并守卫）。
-var statsSuccessCostBackfillTables = []string{"usage_stats_daily", "usage_stats_hourly"}
-
-// ensureStatsSuccessCostBackfill 与 maintenance
-// ensureSQLiteStatsSuccessCostColumns 的回填语句同款：无失败行
-// （error_count = 0）的 total_cost_usd 就是精确的成功口径成本，直接复制；
-// 混合行无法从聚合行分解，按业务口径（失败尝试不计配额）保持 0。WHERE 守卫
-// 保证重复 ensure 幂等，切后新增行不受影响。回填前置条件是表同时具备
-// success_cost_usd/total_cost_usd/error_count 三列：retention 清理探测面会
-// 在同一 stats 库建简化形状表（缺成本列），存在性检查使其跳过回填而非报错；
-// 聚合全形状表恒满足。调用前置：目标表已由 sqliteStatsSchema 的 CREATE TABLE
-// IF NOT EXISTS 建出。
-func ensureStatsSuccessCostBackfill(ctx context.Context, db *sql.DB) error {
-	for _, table := range statsSuccessCostBackfillTables {
-		columns, err := sqliteTableColumns(ctx, db, table)
-		if err != nil {
-			return fmt.Errorf("检查 %s 列形状: %w", table, err)
-		}
-		if !columns["success_cost_usd"] || !columns["total_cost_usd"] || !columns["error_count"] {
-			continue
-		}
-		backfill := "UPDATE " + table + " SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd"
-		if _, err := db.ExecContext(ctx, backfill); err != nil {
-			return fmt.Errorf("backfill %s.success_cost_usd: %w", table, err)
-		}
-	}
-	return nil
-}
-
-// sqliteTableColumns 返回表的列名集合（表不存在时返回空集合）。
-func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	columns := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name string
-		var ctype sql.NullString
-		var notNull any
-		var dflt any
-		var pk any
-		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-			return nil, err
-		}
-		columns[name] = true
-	}
-	return columns, rows.Err()
-}
+// sqliteStatsSchema 及其后的 business schema 常量承接建库；历史错口径行的
+// 数据回填唯一入口是 maintenance --apply-success-cost-backfill 一次性子命令
+// （计划 PLAN-20261011T225418），ensure 不再执行任何同谓词回填扫描。
 
 const sqliteStatsSchema = `
 CREATE TABLE IF NOT EXISTS usage_records (

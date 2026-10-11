@@ -885,8 +885,8 @@ function toggleBenchCard(key: string): void {
 watch(open, (next) => {
   if (!next) return
   wizardStep.value = 1
-  // 编辑普通态收起起步；授权只读态与创建向导第 3 步默认全部展开。
-  advancedActiveKeys.value = props.authorizedEditing || !props.editing ? [...benchCardAllKeys] : []
+  // 两形态默认收起起步：摘要卡头部已可见当前值，用户按需展开配置；授权只读态打开即全部展开。
+  advancedActiveKeys.value = props.authorizedEditing ? [...benchCardAllKeys] : []
   // 新建/克隆打开时名称为空则按供应商默认 Base URL 生成「域名-6 位随机」默认名。
   // 必须挂在 open watch：弹窗 force-render 下子组件 onMounted 只在页面加载时跑一次，会错过打开时机。
   if (!props.editing && !props.form.name.trim()) {
