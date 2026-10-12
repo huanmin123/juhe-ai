@@ -105,6 +105,7 @@ import {
   GlobalOutlined,
   BarChartOutlined,
   BranchesOutlined,
+  CustomerServiceOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
   FilterOutlined,
@@ -113,6 +114,7 @@ import {
   LinkOutlined,
   MessageOutlined,
   MenuOutlined,
+  PictureOutlined,
   SearchOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
@@ -120,6 +122,7 @@ import {
   SafetyCertificateOutlined,
   SettingOutlined,
   TeamOutlined,
+  ThunderboltOutlined,
   UserSwitchOutlined,
   VideoCameraOutlined
 } from '@ant-design/icons-vue'
@@ -245,8 +248,15 @@ const menuIconMap = {
   '/my-chat': MessageOutlined,
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
-  '/my-accounts': UserSwitchOutlined,
-  '/accounts': UserSwitchOutlined,
+  // AI 账户四域菜单（M2）：对话/视频/音频/图像图标区分，双面共用同一组图标。
+  '/my-accounts/chat': MessageOutlined,
+  '/my-accounts/video': VideoCameraOutlined,
+  '/my-accounts/audio': CustomerServiceOutlined,
+  '/my-accounts/image': PictureOutlined,
+  '/accounts/chat': MessageOutlined,
+  '/accounts/video': VideoCameraOutlined,
+  '/accounts/audio': CustomerServiceOutlined,
+  '/accounts/image': PictureOutlined,
   '/my-groups': ApartmentOutlined,
   '/groups': ApartmentOutlined,
   '/system-teams': TeamOutlined,
@@ -262,6 +272,8 @@ const menuIconMap = {
   '/api-keys': ApiKeyMenuIcon,
   '/my-route-strategies': BranchesOutlined,
   '/route-strategies': BranchesOutlined,
+  '/my-scheduling-preferences': ThunderboltOutlined,
+  '/scheduling-preferences': ThunderboltOutlined,
   '/my-model-checks': ExperimentOutlined,
   '/model-checks': ExperimentOutlined,
   '/proxies': NodeIndexOutlined,
@@ -295,6 +307,8 @@ const menuGroupIconMap = {
   'ai-management': DatabaseOutlined,
   authorization: SafetyCertificateOutlined,
   'log-management': ProfileOutlined,
+  // 用户面「AI 账户」分组沿用原 /my-accounts 的 UserSwitchOutlined。
+  'my-accounts': UserSwitchOutlined,
   'my-authorization': SafetyCertificateOutlined,
   'system-operations': SettingOutlined
 }

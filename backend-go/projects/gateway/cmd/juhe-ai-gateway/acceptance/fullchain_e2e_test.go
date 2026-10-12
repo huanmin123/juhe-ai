@@ -84,7 +84,10 @@ type fullchainUpstreamCall struct {
 	// AuthHeader 是该次上游请求的原始 Authorization 头（M6 火山语音
 	// `Bearer;<token>` 分号特例断言面；空串=无认证头）。
 	AuthHeader string
-	At         time.Time
+	// Body 是该次上游请求的原始请求体（能力域拆分 T5 验收：火山语音
+	// user.uid=speech_appid 注入断言面；透传面为原始 JSON 文本）。
+	Body string
+	At   time.Time
 }
 
 // fullchainProbeModel 是验收账户的专用健康检查模型：探针/冷却重试等后台
@@ -260,10 +263,10 @@ func (m *fullchainMockUpstream) nextScenario(key string, scriptable bool) platfo
 	return m.globalDefault
 }
 
-func (m *fullchainMockUpstream) record(key, method, path, model, authHeader string, scenario platformmock.Scenario) {
+func (m *fullchainMockUpstream) record(key, method, path, model, authHeader, body string, scenario platformmock.Scenario) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, At: time.Now()})
+	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, Body: body, At: time.Now()})
 }
 
 // fullchainScriptableRequest 判定该请求是否参与场景队列消费（媒体契约
@@ -453,7 +456,7 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &parsed)
 	scriptable := fullchainScriptableRequest(r, parsed.Model)
 	scenario := m.nextScenario(key, scriptable)
-	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, scenario)
+	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, string(raw), scenario)
 	if scenario == fullchainHoldScenario {
 		m.mu.Lock()
 		waiter, ok := m.holdWaiters[key]

@@ -1,15 +1,18 @@
 // Package capabilitydomain 实现 AI 账户能力域拆分（PLAN-20261011T141004000Z）
-// M1 maintenance 侧的域模型与存量迁移：
+// 的共享域模型与阶段记录面：
 //   - 域枚举与「对话 modes」锚集合（前后端镜像，计划 §推导规则）；
-//   - ruleVersion=1 推导规则（按序命中即停）与授权实例继承；
+//   - ruleVersion=1 推导规则（按序命中即停）；
 //   - 凭据声明（解密后 credentials JSON 的 supported_endpoint_modes）边界解析：
 //     缺省/空数组/null/非数组/未知模式不猜域，计入失败清单；
 //   - 业务库 global_settings 专用 key account_capability_domain_migration 的
-//     阶段记录（m1_running → m1_complete → m2_running → m2_finalized）与
-//     一次客户端命令一个阶段跃迁的条件更新（单执行者）；
-//   - 只更新 capability_domain 列与迁移记录，分批短事务且每批先完整读取
-//     （rows.Err + Close）再写入（BUG-0308）；报告只含账户 ID、域、计数与
-//     脱敏错误。
+//     阶段记录（m1_running → m1_complete → m2_running → m2_finalized）：
+//     只读读取（gateway/jobs 启动门禁）与条件更新写原语（maintenance 迁移
+//     执行器，一次客户端命令一个阶段跃迁、单执行者）。
+//
+// 本包原为 maintenance internal/capabilitydomain（2026-10 M2 下沉）：gateway
+// 与 jobs 启动门禁需要跨模块读取阶段记录，Go internal 规则不允许；下沉后
+// 解析语义只此一份，maintenance 的迁移执行器（分批事务、失败清单、两遍法
+// 实例继承）仍留在 maintenance internal/capabilitydomain。
 //
 // 一次客户端命令一个阶段跃迁；写入口约束（D6 三集合）与网关派发零改动属于
 // gateway/jobs 侧交付，不在本包范围。
@@ -229,8 +232,8 @@ func (f Failure) Error() string {
 	return fmt.Sprintf("account %s: %s: %s", f.AccountID, f.Kind, f.Detail)
 }
 
-// failureFor 把声明解析结果映射为失败清单条目（ModesOK 返回 false）。
-func failureFor(accountID string, reading ModesReading) (Failure, bool) {
+// FailureFor 把声明解析结果映射为失败清单条目（ModesOK 返回 false）。
+func FailureFor(accountID string, reading ModesReading) (Failure, bool) {
 	var kind FailureKind
 	switch reading.Status {
 	case ModesOK:

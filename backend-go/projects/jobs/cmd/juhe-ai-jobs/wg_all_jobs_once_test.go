@@ -278,6 +278,9 @@ func wgSeedAllJobsFixture(t *testing.T, dir string) {
 			t.Fatalf("业务库联合 schema 失败: %v", err)
 		}
 	}
+	// M2 启动阶段门禁夹具契约：手建联合 schema 必须自带已封存的阶段记录
+	// （真实库由 maintenance ensure/bootstrap 自动封存或显式迁移获得）。
+	w16hSeedCapabilityDomainStageRecord(t, business)
 	// record cleanup 重试目标表（dataset 库；gateway cleanup POST 的来源表）。
 	dataset := openTestSQLite(t, filepath.Join(dir, "dataset.sqlite3"))
 	mustExec(t, dataset,

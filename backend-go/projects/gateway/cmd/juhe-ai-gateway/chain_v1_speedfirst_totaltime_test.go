@@ -64,7 +64,7 @@ func (f *speedFirstTotalTimeFake) OrderAsync(context.Context, []gatewaydispatch.
 	return gatewaydispatch.LatencyDegradationOrder{}, nil
 }
 
-func (f *speedFirstTotalTimeFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput) (bool, error) {
+func (f *speedFirstTotalTimeFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput, _ *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error) {
 	f.degradedCalls++
 	if f.degradedErr != nil {
 		return false, f.degradedErr
@@ -550,7 +550,7 @@ func TestChainLatencyDegradationPortTotalTimeRecords(t *testing.T) {
 	if _, err := port.RecordTotalTimeSlowAsync(context.Background(), account, scope, config, "总时间慢 2"); err != nil {
 		t.Fatalf("slow 2: %v", err)
 	}
-	degraded, err := port.IsAccountLatencyDegradedAsync(context.Background(), account, scope)
+	degraded, err := port.IsAccountLatencyDegradedAsync(context.Background(), account, scope, nil)
 	if err != nil || !degraded {
 		t.Fatalf("degraded = %v err %v", degraded, err)
 	}
@@ -569,7 +569,7 @@ func TestChainLatencyDegradationPortTotalTimeRecords(t *testing.T) {
 			t.Fatalf("第三次达标应清理，got %+v", result)
 		}
 	}
-	cleared, err := port.IsAccountLatencyDegradedAsync(context.Background(), account, scope)
+	cleared, err := port.IsAccountLatencyDegradedAsync(context.Background(), account, scope, nil)
 	if err != nil || cleared {
 		t.Fatalf("cleared = %v err %v", cleared, err)
 	}

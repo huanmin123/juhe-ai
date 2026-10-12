@@ -16,6 +16,13 @@
         :message="targetSystemAccountLabel ? `目标系统账户：${targetSystemAccountLabel}` : '导入目标为当前系统账户'"
         :description="sourceDescription"
       />
+      <!-- 能力域上下文（M2 域拆分）：仅展示当前菜单归属域；导入校验以服务端为准，
+           前端不推导域，也不因域字段缺失改变导入行为。 -->
+      <div v-if="!isChatDomainContext" class="import-domain-context">
+        <span>导入目标能力域：</span>
+        <a-tag color="blue">{{ capabilityDomainLabel }}</a-tag>
+        <span class="import-domain-note">媒体域仅接受服务端校验通过的账户；含冲突能力的包会在预览中报错。</span>
+      </div>
 
       <div class="import-options">
         <label class="import-mode-field">
@@ -128,13 +135,19 @@
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'providerCode'">
-              <span>{{ providerDisplayName(record.providerCode) }}</span>
+              <a-space :size="4" wrap>
+                <span>{{ providerDisplayName(record.providerCode) }}</span>
+                <!-- 服务端推导域/冲突信息（后端字段交付后生效；缺失时整体不渲染）。 -->
+                <a-tooltip v-if="importItemDomainText(record)" :title="importItemDomainTitle(record)">
+                  <a-tag :color="importItemDomainConflict(record) ? 'red' : 'blue'">{{ importItemDomainText(record) }}</a-tag>
+                </a-tooltip>
+              </a-space>
             </template>
             <template v-else-if="column.key === 'action'">
               <a-tag :color="actionColor(record.action)">{{ actionText(record.action) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'message'">
-              <span :class="{ 'row-error': record.messages.length }">{{ itemMessage(record) }}</span>
+              <span :class="{ 'row-error': record.messages.length }">{{ accountItemMessage(record) }}</span>
             </template>
           </template>
         </a-table>
@@ -172,14 +185,23 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AccountImportItem, AccountImportOptions, AccountImportProxyItem, AccountImportResult, AccountImportSourceMode } from '@/types/domain'
+import {
+  ACCOUNT_CAPABILITY_DOMAINS,
+  ACCOUNT_CAPABILITY_DOMAIN_LABELS,
+  type AccountCapabilityDomain
+} from './accountCapabilityDomains'
 import { accountImportProtocolMarkdown, aiConversionPrompt, importTemplate } from './accountImportProtocol'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   isManagementView: boolean
   open: boolean
+  // 当前菜单能力域（M2 域拆分）：仅用于上下文展示，导入校验以服务端为准。
+  capabilityDomain?: AccountCapabilityDomain
   scopeParams?: { systemAccountId: string }
   targetSystemAccountLabel?: string
-}>()
+}>(), {
+  capabilityDomain: 'chat'
+})
 
 const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
@@ -191,6 +213,51 @@ const sourceMode = ref<AccountImportSourceMode>('native')
 const previewResult = ref<AccountImportResult>()
 const previewLoading = ref(false)
 const importLoading = ref(false)
+
+const isChatDomainContext = computed(() => props.capabilityDomain === 'chat')
+const capabilityDomainLabel = computed(() => {
+  const label = ACCOUNT_CAPABILITY_DOMAIN_LABELS[props.capabilityDomain]
+  return label ?? props.capabilityDomain
+})
+
+// 服务端推导域/冲突信息（容错展示）：字段未交付或条目缺失时不渲染任何内容，
+// 不做本地推导；冲突以条目 messages 中的域冲突文案配合红标提示。
+function importItemDomain(item: AccountImportItem): AccountCapabilityDomain | undefined {
+  const value = (item as { capabilityDomain?: unknown }).capabilityDomain
+  return typeof value === 'string' && (ACCOUNT_CAPABILITY_DOMAINS as readonly string[]).includes(value)
+    ? value as AccountCapabilityDomain
+    : undefined
+}
+
+function importItemDomainConflict(item: AccountImportItem): boolean {
+  const value = (item as { domainConflict?: unknown }).domainConflict
+  return value === true || item.messages.some((message) => message.includes('域'))
+}
+
+function importItemDomainText(item: AccountImportItem): string | undefined {
+  const domain = importItemDomain(item)
+  if (!domain) return undefined
+  const label = ACCOUNT_CAPABILITY_DOMAIN_LABELS[domain]
+  return importItemDomainConflict(item) ? `${label ?? domain}（冲突）` : label ?? domain
+}
+
+function importItemDomainTitle(item: AccountImportItem): string {
+  return importItemDomainConflict(item)
+    ? '该条目的能力与导入目标域冲突：按新建规则严格校验，需先拆分后再导入。'
+    : '服务端按导入包推导的能力域。'
+}
+
+// 媒体域账户无后台激活检查途径（生命周期定案 v7）：导入创建后落 pending_test
+// 需手动启用。按服务端回显的条目域追加提示；字段缺失或非媒体域不渲染（导入
+// 校验以服务端为准，前端不做域推导）。复用/跳过/失败条目不发生创建，不提示。
+const MEDIA_IMPORT_PENDING_NOTICE = '媒体域账户导入后为待检查状态，需手动启用'
+
+function accountItemMessage(item: AccountImportItem): string {
+  const base = itemMessage(item)
+  const domain = importItemDomain(item)
+  if (item.action !== 'create' || !domain || domain === 'chat') return base
+  return base === '校验通过' ? MEDIA_IMPORT_PENDING_NOTICE : `${base}；${MEDIA_IMPORT_PENDING_NOTICE}`
+}
 const options = reactive<Required<AccountImportOptions>>({
   createMissingGroups: true,
   createMissingProxies: true,
@@ -411,6 +478,21 @@ function downloadTextFile(filename: string, content: string, type: string): void
 
 .import-alert {
   border-radius: 10px;
+}
+
+.import-domain-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -8px;
+  padding: 0 2px;
+  color: var(--juhe-fg-soft);
+  font-size: 12px;
+}
+
+.import-domain-note {
+  color: var(--juhe-muted);
+  font-size: 12px;
 }
 
 .import-options {

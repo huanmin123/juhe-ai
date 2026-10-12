@@ -63,7 +63,7 @@
           :columns="runtimeColumns"
           :data-source="runtime.items"
           :pagination="false"
-          :scroll="{ x: 1080 }"
+          :scroll="{ x: 1250 }"
           :row-key="speedFirstRuntimeRowKey"
           size="small"
         >
@@ -76,6 +76,10 @@
             </template>
             <template v-else-if="column.key === 'scope'">
               <span class="mono-cell">{{ record.scope.groupId }}</span>
+            </template>
+            <template v-else-if="column.key === 'source'">
+              <a-tag v-if="record.source === 'preference'" color="geekblue">调度偏好{{ record.preferenceName ? `：${record.preferenceName}` : '' }}</a-tag>
+              <a-tag v-else color="default">策略路由</a-tag>
             </template>
             <template v-else-if="column.key === 'slowCount'">
               <span>{{ record.slowCount }}/{{ record.slowTriggerCount }}</span>
@@ -131,12 +135,15 @@ const emit = defineEmits<{
 }>()
 
 function speedFirstRuntimeRowKey(record: RouteStrategySpeedFirstLatencyRuntimeItem): string {
-  return `${record.accountId}|${record.scope.groupId}|${record.degradedUntil ?? ''}`
+  // 行复合键含命名空间身份（source + preferenceId）：同一账号在策略路由段
+  // （v1）与调度偏好段（v2）的降级条目并存，不去重。
+  return `${record.source ?? 'strategy'}|${record.preferenceId ?? ''}|${record.accountId}|${record.scope.groupId}|${record.degradedUntil ?? ''}`
 }
 
 const runtimeColumns = [
   { title: 'AI 账户', key: 'account', width: 190, fixed: 'left' },
   { title: '策略分组', key: 'scope', width: 140 },
+  { title: '来源', key: 'source', width: 170 },
   { title: '慢样本', key: 'slowCount', width: 190 },
   { title: '降级保留至', key: 'degradedUntil', width: 190 },
   { title: '下一次恢复探针', key: 'nextProbeAt', width: 190 },

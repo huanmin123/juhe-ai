@@ -5,10 +5,13 @@ import type {
   ApiKeySummary
 } from '@/types/domain'
 import type { ApiKeyMutationPayload } from '@/api/domains/apiKeys'
+import { SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID } from '@/api/domains/schedulingPreferences'
 
 export interface ApiKeyEditableSnapshot {
   name: string
   routeStrategyId?: string
+  /** 绑定调度偏好；undefined 表示历史「沿用策略路由（迁移期）」或 purpose=chat，delta 中清空时回内置 ID。 */
+  schedulingPreferenceId?: string
   status: 'active' | 'disabled'
   expiresAt: string | null
   description: string
@@ -26,6 +29,8 @@ export function buildApiKeyCreatePayload(
     ...(options.routeStrategyTouched && snapshot.routeStrategyId
       ? { routeStrategyId: snapshot.routeStrategyId }
       : {}),
+    // 契约要求创建总是提交显式偏好 ID：预选内置行（显式默认）或用户选择的偏好。
+    schedulingPreferenceId: snapshot.schedulingPreferenceId || SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
     ...(snapshot.status === 'disabled' ? { status: snapshot.status } : {}),
     ...(snapshot.expiresAt ? { expiresAt: snapshot.expiresAt } : {}),
     ...(description ? { description } : {}),
@@ -37,6 +42,7 @@ export function buildApiKeyCreatePayload(
 const editableFields = [
   'name',
   'routeStrategyId',
+  'schedulingPreferenceId',
   'status',
   'expiresAt',
   'description',
@@ -55,6 +61,9 @@ const rowPatchFields = [
   'routeStrategyName',
   'routeStrategyMode',
   'routeStrategyStatus',
+  'schedulingPreferenceId',
+  'schedulingPreferenceName',
+  'schedulingPreferenceBuiltIn',
   'expiresAt',
   'quotaLimits',
   'availabilitySchedule'
@@ -68,7 +77,10 @@ export function buildApiKeyMutationPatch(
   const writablePatch = patch as Record<string, unknown>
   for (const field of editableFields) {
     if (stableValue(baseline[field]) === stableValue(current[field])) continue
-    writablePatch[field] = current[field]
+    // 偏好清空不是「缺失保持原值」：契约要求显式回默认（内置 ID），避免空串/undefined 被丢弃后沿用旧绑定。
+    writablePatch[field] = field === 'schedulingPreferenceId'
+      ? (current.schedulingPreferenceId || SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID)
+      : current[field]
   }
   return patch
 }
@@ -89,7 +101,8 @@ export function mergeApiKeyMutationResult(
     if (!Object.prototype.hasOwnProperty.call(rowPatch, field)) continue
     const value = rowPatch[field]
     if (value === undefined) continue
-    if (value === null && (field === 'description' || field === 'expiresAt' || field === 'availabilitySchedule')) {
+    if (value === null && (field === 'description' || field === 'expiresAt' || field === 'availabilitySchedule'
+      || field === 'schedulingPreferenceId' || field === 'schedulingPreferenceName' || field === 'schedulingPreferenceBuiltIn')) {
       delete writableNext[field]
       continue
     }

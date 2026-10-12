@@ -288,6 +288,13 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 			t.Fatal(err)
 		}
 	}
+	// M2 启动阶段门禁夹具契约：main() 子进程启动会读阶段记录，手建业务库
+	// 必须自带已封存的 m2_finalized 记录。
+	w16hSeedCapabilityDomainStageRecord(t, business)
+	// 调度偏好启动校验夹具契约（scheduling_preference_schema.go 四臂只读校
+	// 验，2026-10-12 P1+P2）：手建业务库必须自带表形状 / 绑定列 / 内置行与
+	// 已完成迁移记录（seedSchedulingPreferenceStartupFixture 幂等可重入）。
+	seedSchedulingPreferenceStartupFixture(t, business)
 	if err := business.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -196,6 +196,9 @@
         <a-form-item label="说明" tooltip="补充这套路由策略的用途、适用范围或注意事项，只用于后台识别。">
           <a-textarea v-model:value="form.description" :rows="2" placeholder="可选" />
         </a-form-item>
+        <!-- 调度偏好独立实体（P2）后策略路由编辑回归纯拓扑职责：名称/说明/路由模式/
+             状态/分组绑定。调度形态与速度优先参数由调度偏好页维护，编辑器不再渲染
+             调度配置，也不再提交任何调度字段；速度运行态查询与 Drawer 保持独立。 -->
         <a-row :gutter="12">
           <a-col :span="12">
             <a-form-item label="路由模式" required tooltip="决定请求如何在绑定分组之间选择：普通、权重、故障回退、轮询或合并。">
@@ -208,67 +211,6 @@
             </a-form-item>
           </a-col>
         </a-row>
-
-        <template v-if="schedulingPreferenceSupported">
-          <div class="modal-section-title">
-            <span>调度偏好</span>
-            <a-tooltip :title="normalRoutingConfigTooltip">
-              <InfoCircleOutlined class="route-strategy-field-help-icon" />
-            </a-tooltip>
-          </div>
-          <div class="scheduling-config-grid">
-            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。作用域为当前请求所落分组内的账号调度。">
-              <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
-            </a-form-item>
-            <a-form-item v-if="form.normal.schedulingPreference === 'speed_first'" label="首字截止" required tooltip="只作用于速度优先的可重放文本；图像和其他副作用请求永久排除，不记录慢样本也不自动切号。">
-              <a-input-number v-model:value="form.normal.firstByteDeadlineSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
-            </a-form-item>
-          </div>
-          <div v-if="form.normal.schedulingPreference === 'speed_first'" class="scheduling-config-grid">
-            <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
-            </a-form-item>
-            <a-form-item label="慢速窗口期" required tooltip="统计连续慢速触发的时间窗口。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.slowWindowSeconds" :min="60" :max="600" addon-after="秒" />
-            </a-form-item>
-            <a-form-item label="恢复成功次数" required tooltip="后台探针连续满足首字阈值达到该次数后，账号恢复正常调度。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.recoverySuccessCount" :min="3" :max="10" addon-after="次" />
-            </a-form-item>
-            <a-form-item label="探针间隔" required tooltip="账号速度降级后，后台探针的最小执行间隔。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.probeIntervalSeconds" :min="10" :max="300" addon-after="秒" />
-            </a-form-item>
-            <a-form-item label="降级租约时间" required tooltip="确认慢或探针失败后刷新这段租约；持续慢会继续后置，连续达标后恢复。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.degradedTtlSeconds" :min="60" :max="3600" addon-after="秒" />
-            </a-form-item>
-            <a-form-item label="单请求切号次数" required tooltip="同一个请求在账号已确认首字慢后，最多隐藏切换账号的次数。">
-              <a-input-number
-                v-model:value="form.normal.speedFirstConfig.maxFirstByteRetriesPerRequest"
-                :min="1"
-                :max="3"
-                addon-after="次"
-              />
-            </a-form-item>
-            <a-form-item
-              label="请求总时间截止"
-              required
-              tooltip="总耗时超过该值的请求计为总时间慢样本；估算输入 ≥10 万 token 的大请求自动按压缩档兜底。默认 120 秒，范围 60-270 秒。"
-            >
-              <a-input-number v-model:value="form.normal.speedFirstConfig.totalTimeDeadlineSeconds" :min="60" :max="270" addon-after="秒" />
-            </a-form-item>
-            <a-form-item
-              label="压缩总时间截止"
-              required
-              tooltip="压缩与大输入请求的总时长兜底阈值。默认 300 秒，范围 300-900 秒。"
-            >
-              <a-input-number
-                v-model:value="form.normal.speedFirstConfig.compactionTotalTimeDeadlineSeconds"
-                :min="300"
-                :max="900"
-                addon-after="秒"
-              />
-            </a-form-item>
-          </div>
-        </template>
 
         <div class="modal-section-title">
           <span>分组绑定</span>
@@ -391,9 +333,6 @@ import { buildRouteStrategyMutationPatch, hasRouteStrategyMutationChanges, merge
 import type {
   RouteStrategyGroupOption,
   RouteStrategyEditBasicDetail,
-  RouteStrategyNormalRoutingConfig,
-  RouteStrategyNormalSchedulingPreference,
-  RouteStrategySpeedFirstConfig,
   RouteStrategySpeedFirstLatencyRuntime,
   RouteStrategyGroupBindingPreview,
   RouteStrategyGroupBindingSummary,
@@ -430,18 +369,6 @@ interface RouteStrategiesPageState {
   statusFilter: RouteStrategyStatus | 'all'
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
-}
-
-interface NormalRoutingForm {
-  schedulingPreference: RouteStrategyNormalSchedulingPreference
-  firstByteDeadlineSeconds: number
-  speedFirstConfig: SpeedFirstConfigForm
-}
-
-interface SpeedFirstConfigForm extends RouteStrategySpeedFirstConfig {
-  /** 表单内始终落具体数值：旧配置缺省时由 defaultSpeedFirstConfigForm 回落默认。 */
-  totalTimeDeadlineSeconds: number
-  compactionTotalTimeDeadlineSeconds: number
 }
 
 const routeStrategiesPageSize = 20
@@ -512,8 +439,7 @@ const form = reactive({
   description: '',
   mode: 'normal' as RouteStrategyMode,
   status: 'active' as RouteStrategyStatus,
-  groupBindings: [] as BindingFormRow[],
-  normal: defaultNormalRoutingForm()
+  groupBindings: [] as BindingFormRow[]
 })
 const modelProviderCodes = computed(() => {
   const selectedGroupIds = new Set(form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
@@ -556,15 +482,9 @@ const modeFilterOptions = [
   ...modeOptions
 ]
 
-const normalSchedulingPreferenceOptions = [
-  { label: '成本优先', value: 'cost_first' },
-  { label: '速度优先', value: 'speed_first' }
-]
-
-// 调度偏好（历史命名 normalRoutingConfig）支持的路由模式。
-const schedulingPreferenceSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin', 'merge']
-
-const normalRoutingConfigTooltip = '首字软截止只作用于速度优先的可重放文本，并用于累计慢样本、临时降级和探针恢复。成本优先、图像及其他副作用请求不创建该截止。'
+// 速度优先运行态（策略维度遗留配置语义）覆盖的路由模式：仅用于列表运行态汇总
+// 展示与「查看速度状态」入口判断，不再参与任何编辑器配置或写侧 payload。
+const speedFirstRuntimeSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin', 'merge']
 
 const columns = computed<Array<Record<string, unknown>>>(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -600,7 +520,6 @@ const bindingShowsDragColumn = computed(() => bindingShowsDragHandle.value && fo
 const bindingShowsRole = computed(() => form.mode === 'failover')
 const bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
-const schedulingPreferenceSupported = computed(() => schedulingPreferenceSupportedModes.includes(form.mode))
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
 const bindingSectionTooltip = computed(() => {
   if (form.mode === 'normal') return '普通路由只绑定一个分组，请求会直接进入这个分组的账号池。'
@@ -896,7 +815,6 @@ function openCreate() {
   form.mode = 'normal'
   form.status = 'active'
   form.groupBindings = [createBindingRow()]
-  form.normal = defaultNormalRoutingForm()
   resetGroupOptions()
   resetRouteModelOptions()
   modalOpen.value = true
@@ -954,13 +872,12 @@ function fillEditForm(record: RouteStrategyEditBasicDetail, fallbackSystemAccoun
   form.groupBindings = record.groupBindings.length
     ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status, binding.groupName))
     : [createBindingRow()]
-  form.normal = normalRoutingFormFromConfig(record.normalRoutingConfig)
   normalizeBindingRowsForMode()
   resetGroupOptions()
   resetRouteModelOptions()
   groupOptionsRaw.value = selectedGroupOptionsFromBindings(record.groupBindings)
   const baseline = buildRouteStrategyFormPayload()
-  editingBaseline = baseline === false ? undefined : baseline
+  editingBaseline = baseline
   modalOpen.value = true
 }
 
@@ -982,7 +899,6 @@ async function saveRouteStrategy() {
   }
   if (!validateGroupBindingsForMode(groupBindings)) return
   const completePayload = buildRouteStrategyFormPayload()
-  if (completePayload === false) return
   const payload = editingId.value
     ? (editingBaseline ? buildRouteStrategyMutationPatch(editingBaseline, completePayload) : undefined)
     : completePayload
@@ -1067,8 +983,8 @@ function routeStrategyMatchesCurrentFilters(record: RouteStrategyListItem): bool
     && (statusFilter.value === 'all' || record.status === statusFilter.value)
 }
 
-function buildRouteStrategyFormPayload(): RouteStrategyMutationPayload | false {
-  const payload: RouteStrategyMutationPayload = {
+function buildRouteStrategyFormPayload(): RouteStrategyMutationPayload {
+  return {
     name: form.name.trim(),
     description: form.description.trim() || null,
     mode: form.mode,
@@ -1080,13 +996,6 @@ function buildRouteStrategyFormPayload(): RouteStrategyMutationPayload | false {
       status: binding.status
     }))
   }
-  if (form.mode === 'normal') {
-    payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
-  } else {
-    // weighted/failover/round_robin/merge 与 normal 共用调度偏好配置（历史命名 normalRoutingConfig）。
-    payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
-  }
-  return payload
 }
 
 async function deleteRouteStrategy(record: RouteStrategyListItem) {
@@ -1504,15 +1413,16 @@ function routeStrategyModeText(mode: RouteStrategyMode): string {
   return modeOptions.find((item) => item.value === mode)?.label ?? mode
 }
 
+// P2 策略路由瘦身：列表/卡片只展示路由模式本身，调度形态摘要（速度优先/成本优先后缀）移除，
+// 调度形态归属调度偏好页与 API Key 绑定展示。
 function routeStrategyModeDisplayText(record: RouteStrategyListItem | RouteStrategySummary): string {
-  const base = routeStrategyModeText(record.mode)
-  if (!schedulingPreferenceSupportedModes.includes(record.mode)) return base
-  const preference = record.normalRoutingConfig?.schedulingPreference ?? 'cost_first'
-  return `${base} / ${preference === 'speed_first' ? '速度优先' : '成本优先'}`
+  return routeStrategyModeText(record.mode)
 }
 
+// 速度运行态沿用策略维度判断：历史策略行的 normalRoutingConfig 仍是运行态段（v1 键族）
+// 的身份事实，与配置编辑解耦；来源列已区分策略/偏好两代运行态。
 function isSpeedFirstRouteStrategy(record: Pick<RouteStrategyListItem | RouteStrategySummary, 'mode' | 'normalRoutingConfig'>): boolean {
-  return schedulingPreferenceSupportedModes.includes(record.mode) && record.normalRoutingConfig?.schedulingPreference === 'speed_first'
+  return speedFirstRuntimeSupportedModes.includes(record.mode) && record.normalRoutingConfig?.schedulingPreference === 'speed_first'
 }
 
 function speedFirstLatencyStatusText(record: RouteStrategyListItem): string {
@@ -1609,88 +1519,6 @@ function routeStrategyStatusText(status: RouteStrategyStatus): string {
 
 function routeStrategyStatusColor(status: RouteStrategyStatus): string {
   return status === 'active' ? 'green' : 'default'
-}
-
-function defaultNormalRoutingForm(): NormalRoutingForm {
-  return {
-    schedulingPreference: 'cost_first',
-    firstByteDeadlineSeconds: 30,
-    speedFirstConfig: defaultSpeedFirstConfigForm()
-  }
-}
-
-function defaultSpeedFirstConfigForm(): SpeedFirstConfigForm {
-  return {
-    slowTriggerCount: 3,
-    slowWindowSeconds: 120,
-    recoverySuccessCount: 3,
-    probeIntervalSeconds: 30,
-    degradedTtlSeconds: 300,
-    maxFirstByteRetriesPerRequest: 2,
-    totalTimeDeadlineSeconds: 120,
-    compactionTotalTimeDeadlineSeconds: 300
-  }
-}
-
-function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig): NormalRoutingForm {
-  const fallback = defaultNormalRoutingForm()
-  if (!config) return fallback
-  const speedFirstConfig = speedFirstConfigFormFromConfig(
-    config.schedulingPreference === 'speed_first' ? config.speedFirstConfig : undefined
-  )
-  return {
-    schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
-    firstByteDeadlineSeconds: config.schedulingPreference === 'speed_first'
-      ? millisecondsToSeconds(config.firstByteDeadlineMs, fallback.firstByteDeadlineSeconds)
-      : fallback.firstByteDeadlineSeconds,
-    speedFirstConfig
-  }
-}
-
-function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig): SpeedFirstConfigForm {
-  const fallback = defaultSpeedFirstConfigForm()
-  return {
-    slowTriggerCount: config?.slowTriggerCount ?? fallback.slowTriggerCount,
-    slowWindowSeconds: config?.slowWindowSeconds ?? fallback.slowWindowSeconds,
-    recoverySuccessCount: config?.recoverySuccessCount ?? fallback.recoverySuccessCount,
-    probeIntervalSeconds: config?.probeIntervalSeconds ?? fallback.probeIntervalSeconds,
-    degradedTtlSeconds: config?.degradedTtlSeconds ?? fallback.degradedTtlSeconds,
-    maxFirstByteRetriesPerRequest: config?.maxFirstByteRetriesPerRequest ?? fallback.maxFirstByteRetriesPerRequest,
-    totalTimeDeadlineSeconds: config?.totalTimeDeadlineSeconds ?? fallback.totalTimeDeadlineSeconds,
-    compactionTotalTimeDeadlineSeconds: config?.compactionTotalTimeDeadlineSeconds ?? fallback.compactionTotalTimeDeadlineSeconds
-  }
-}
-
-function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
-  if (form.normal.schedulingPreference !== 'speed_first') {
-    return { schedulingPreference: 'cost_first' }
-  }
-  const firstByteDeadlineMs = secondsToMilliseconds(form.normal.firstByteDeadlineSeconds)
-  const speedFirstConfig = form.normal.speedFirstConfig
-  return {
-    schedulingPreference: 'speed_first',
-    firstByteDeadlineMs,
-    speedFirstConfig: {
-      slowTriggerCount: boundedInteger(speedFirstConfig.slowTriggerCount, 2, 10),
-      slowWindowSeconds: boundedInteger(speedFirstConfig.slowWindowSeconds, 60, 600),
-      recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
-      probeIntervalSeconds: boundedInteger(speedFirstConfig.probeIntervalSeconds, 10, 300),
-      degradedTtlSeconds: boundedInteger(speedFirstConfig.degradedTtlSeconds, 60, 3600),
-      maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3),
-      totalTimeDeadlineSeconds: boundedInteger(speedFirstConfig.totalTimeDeadlineSeconds, 60, 270),
-      compactionTotalTimeDeadlineSeconds: boundedInteger(speedFirstConfig.compactionTotalTimeDeadlineSeconds, 300, 900)
-    }
-  }
-}
-
-function millisecondsToSeconds(value: unknown, fallback: number): number {
-  const numeric = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(numeric) || numeric <= 0) return fallback
-  return boundedInteger(Math.ceil(numeric / 1000), 10, 60)
-}
-
-function secondsToMilliseconds(value: unknown): number {
-  return boundedInteger(value, 10, 60) * 1000
 }
 
 function boundedInteger(value: unknown, min: number, max: number): number {
@@ -1916,25 +1744,12 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   width: 100%;
 }
 
-.scheduling-config-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 12px;
-}
-
-.scheduling-config-grid :deep(.ant-input-number),
-.scheduling-config-grid :deep(.ant-select),
-.scheduling-config-grid :deep(.ant-segmented) {
-  width: 100%;
-}
-
 @media (max-width: 720px) {
   .route-strategy-binding-header {
     display: none;
   }
 
-  .route-strategy-binding-row,
-  .scheduling-config-grid {
+  .route-strategy-binding-row {
     grid-template-columns: 1fr;
   }
 }

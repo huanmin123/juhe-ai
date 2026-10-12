@@ -46,6 +46,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/schedulingpreferences"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
@@ -382,6 +383,23 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		closeOwnedBusiness()
 		return nil, fmt.Errorf("verify accounts capability_domain schema: %w", err)
 	}
+	// M2 启动阶段门禁（AI 账户能力域拆分 v7）：形状合法之外还要求阶段记录
+	// 已封存 m2_finalized；缺失/未封存/规则版本不符即 fail-fast，错误信息
+	// 携带 maintenance 迁移命令序列（判定与文案在共享包，与 jobs 镜像共用）。
+	// 全新空库经 maintenance ensure-schema/bootstrap 的自动封存获得记录。
+	if err := checkAccountCapabilityDomainStageRecord(context.Background(), composed.db, composed.pgDialect); err != nil {
+		closeOwnedBusiness()
+		return nil, fmt.Errorf("verify accounts capability_domain stage record: %w", err)
+	}
+	// scheduling_preferences 启动只读校验（调度偏好独立实体 P1）：表形状 /
+	// api_keys 绑定列 / 内置行由 maintenance --ensure-schema（ensure 臂补种
+	// 内置行；SQLite fresh 库另经上方 preflight 的 bootstrap 种子路径自动满
+	// 足）保证，缺失或不符即 fail-fast（部署顺序契约：先 ensure-schema 后启
+	// 动新版）。只读，一次性，不做 DDL、不补种。
+	if err := checkSchedulingPreferenceSchema(context.Background(), composed.db, composed.pgDialect); err != nil {
+		closeOwnedBusiness()
+		return nil, fmt.Errorf("verify scheduling preference schema: %w", err)
+	}
 	if composed.pgDialect {
 		composed.statsDB = composed.db
 	} else {
@@ -687,6 +705,14 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// "route_strategy_updated" 不带 apiKeyId 后缀，订阅方（gatewayruntimecache）
 	// 做无差别全清。适配器与偏差说明见 compose_routestrategies_wiring.go。
 	routeStrategyStore.SetValidationCacheInvalidator(gatewayAPIKeyValidationBusInvalidator{bus: bus})
+	// 调度偏好独立实体（P1 SP-B）：Store 与策略路由共用同一业务库句柄与 K5
+	// 总线（create/update/delete 提交成功后由 store 发布 topic:gateway_
+	// runtime_cache 全局失效——绑定 Key 的合成配置依赖偏好内容/状态，理由与
+	// 订阅判据见 compose_scheduling_preferences_wiring.go）。
+	schedulingPreferenceStore, err := schedulingpreferences.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus)
+	if err != nil {
+		return nil, fmt.Errorf("create scheduling-preference store: %w", err)
+	}
 	apiKeyStore, err := apikeys.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID, apikeys.BusInvalidator{Bus: bus})
 	if err != nil {
 		return nil, fmt.Errorf("create api-key store: %w", err)
@@ -1456,9 +1482,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// （routestrategies 的 nil facade 语义）。kernel 是 ServeMux，注册顺序
 	// 不影响匹配（具体模式优先）。
 	if chainServices != nil && chainServices.LatencyDegradation != nil {
-		routeStrategyStore.SetSpeedFirstRuntimeFacade(routeStrategySpeedFirstFacade{service: chainServices.LatencyDegradation})
+		routeStrategyStore.SetSpeedFirstRuntimeFacade(routeStrategySpeedFirstFacade{
+				service:              chainServices.LatencyDegradation,
+				preferenceNameLookup: newSchedulingPreferenceNameLookup(composed),
+			})
 	}
 	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink, Log: slog.Default()}).Mount(kern)
+
+	// 调度偏好双面 CRUD（P1 SP-B）：读路径带内置行全局例外，写路径由 store
+	// 拒绝内置行（403）；装配理由与失效注入见 compose_scheduling_preferences_
+	// wiring.go。
+	mountSchedulingPreferences(kern, schedulingPreferenceStore, authDeps, sink)
 
 	// X04: the /__aipublic__ externally maintained legacy family mounts after
 	// the chain runtime services exist (the penalty-window limiter shares the

@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	_ "modernc.org/sqlite"
 )
 
@@ -200,4 +202,113 @@ func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCapabilityDomainStageRecordGateArms 覆盖 M2 启动阶段门禁三失败臂
+// （AI 账户能力域拆分 v7）：记录缺失 / 仅 m1_complete / ruleVersion 不符
+// （含 global_settings 表缺失的读取失败臂）都必须 fail-fast，且错误信息携带
+// 迁移命令指引；已封存 m2_finalized 放行。
+func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
+	const migrationCommandNeedle = "--migrate-account-capability-domain"
+	openGateFixture := func(t *testing.T, record string) *sql.DB {
+		t.Helper()
+		db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			deleted_at TEXT,
+			`+capabilityDomainCorrectColumn+`
+		)`)
+		if _, err := db.Exec(`CREATE TABLE global_settings (
+			key TEXT PRIMARY KEY,
+			value_json TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`); err != nil {
+			t.Fatalf("seed global_settings ddl: %v", err)
+		}
+		if record != "" {
+			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`,
+				capdomain.MigrationSettingKey, record); err != nil {
+				t.Fatalf("seed stage record: %v", err)
+			}
+		}
+		return db
+	}
+	scenarios := []struct {
+		name        string
+		record      string
+		wantErrText string
+	}{
+		{"record-missing", "", "不存在"},
+		{"m1-complete", `{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, "m1_complete"},
+		{"rule-version-mismatch", `{"stage":"m2_finalized","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`, "ruleVersion"},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := openGateFixture(t, scenario.record)
+			err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false)
+			if err == nil {
+				t.Fatalf("阶段门禁失败臂必须 fail-fast")
+			}
+			if !strings.Contains(err.Error(), scenario.wantErrText) || !strings.Contains(err.Error(), migrationCommandNeedle) {
+				t.Fatalf("错误应包含 %q 与迁移命令指引 %q，got: %v", scenario.wantErrText, migrationCommandNeedle, err)
+			}
+		})
+	}
+	t.Run("global-settings-table-missing", func(t *testing.T) {
+		db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			deleted_at TEXT,
+			`+capabilityDomainCorrectColumn+`
+		)`)
+		err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false)
+		if err == nil || !strings.Contains(err.Error(), "读取失败") || !strings.Contains(err.Error(), migrationCommandNeedle) {
+			t.Fatalf("global_settings 缺失必须报读取失败且携带迁移命令指引，got: %v", err)
+		}
+	})
+	t.Run("m2-finalized-passes", func(t *testing.T) {
+		db := openGateFixture(t, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`)
+		if err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false); err != nil {
+			t.Fatalf("已封存记录必须放行: %v", err)
+		}
+	})
+}
+
+// TestComposeSystemAPISealsCapabilityDomainStageRecord 验证 compose 夹具路径
+// 确实经过全新空库自动封存（AI 账户能力域拆分 v7）：SQLite storage preflight
+// 走 maintenance bootstrap.SeedSQLiteBusiness，fresh 业务库在组合根内获得
+// m2_finalized 阶段记录，启动阶段门禁因此放行（gateway 启动本身不是迁移
+// 执行者，封存发生在 bootstrap 种子路径）。
+func TestComposeSystemAPISealsCapabilityDomainStageRecord(t *testing.T) {
+	cfg := composeTestConfig(t)
+	store := openComposeOperationStore(t)
+	createRuntimeLogDataset(t, cfg.RuntimeLogDatabasePath)
+	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
+	defer closeAudit()
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
+	if err != nil {
+		t.Fatalf("compose system api: %v", err)
+	}
+	defer composed.Shutdown()
+	recordJSON, err := capabilityDomainStageRecordJSON(context.Background(), composed.DB)
+	if err != nil {
+		t.Fatalf("read stage record: %v", err)
+	}
+	record, err := capdomain.ParseRecord(recordJSON)
+	if err != nil {
+		t.Fatalf("parse stage record: %v", err)
+	}
+	if record.Stage != capdomain.StageM2Finalized || record.RuleVersion != capdomain.RuleVersion {
+		t.Fatalf("compose 夹具库阶段记录应已封存 m2_finalized，got %+v", record)
+	}
+}
+
+// capabilityDomainStageRecordJSON 读业务库阶段记录原始 JSON（无记录时报错）。
+func capabilityDomainStageRecordJSON(ctx context.Context, db *sql.DB) (string, error) {
+	var valueJSON string
+	err := db.QueryRowContext(ctx, `SELECT value_json FROM global_settings WHERE key = ?`, capdomain.MigrationSettingKey).Scan(&valueJSON)
+	if err != nil {
+		return "", fmt.Errorf("read capability domain stage record: %w", err)
+	}
+	return valueJSON, nil
 }

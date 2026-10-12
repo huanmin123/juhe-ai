@@ -6,8 +6,8 @@ package acceptance
 //
 //  1. TestFullchainMediaVideoLifecycle：完整生命周期——创建（统一 job 对象、
 //     params_ignored 回显 negative_prompt）→ 轮询 33→66→completed → content
-//     下载（video/mp4 + ftyp magic bytes）→ 管理面 media-jobs 行终态
-//     cost_usd>0；
+//     下载（video/mp4 + ftyp magic bytes）→ 管理面 media-jobs 行终态（零价
+//     自定义行 cost=0 不虚计；正价计费由 glm/xai 用例承载）；
 //  2. TestFullchainMediaVideoAcceptanceBoundary：受理边界（媒体设计 §7）——
 //     创建 429（受理前）换账户重建；受理后轮询 500 只报错不换账户（任务面
 //     账户亲和，断言另一账户无任何任务面请求）；
@@ -17,8 +17,10 @@ package acceptance
 //     （§7 创建行）——上游 400 invalid_size 透传客户端，不换账户、不落
 //     media_jobs 行（M2 复审 MAJOR-A 修复回归）。
 //
-// 视频账户与 chat 矩阵账户的差异只有两点：supportedModels 声明 sora-2（gpt
-// 供应商目录 M2 预置行）、credentials.supported_endpoint_modes 显式含
+// 视频账户与 chat 矩阵账户的差异只有三点：能力域显式 video（M2 写侧域规则，
+// 声明集收敛为 video_* 四值）、supportedModels 声明 fullchain-video-mock
+//（自定义目录行——2026-10-12 核对批起官方 sora-2 系已停用出池，openai 直通
+// 面验收模型改由自定义行承载）、credentials.supported_endpoint_modes 显式含
 // video_create（创建链候选过滤的 opt-in 模式，媒体设计 §11.6），其余完全
 // 复用 fullchain 夹具。场景队列时序注意（fixture 头注 §3.3.2）：任务面 GET
 // 也是 scriptable，会消耗队列剩余条目，但 mockupstream 引擎的 poll/content
@@ -37,20 +39,54 @@ import (
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
 )
 
-// fullchainVideoCreateBody 是视频创建请求体（negative_prompt 对 sora 请求面
-// 不支持 → 进 params_ignored 回显，契约 §2.4 规则 1；seconds 用 openai 原生
-// 字符串形态，契约 §4.3）。
-const fullchainVideoCreateBody = `{"model":"sora-2","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720","negative_prompt":"低清画质"}`
+// fullchainVideoMockModel 是 openai 形态 /v1/videos 面验收用的自定义目录行：
+// 2026-10-12 核对批起官方 sora-2 系已标停用（shutdown 2026-09-24，活跃目录
+// 与 hybrid 协议模型池都不再收录），而启用态自定义行只有文本价通道可过
+// validateCustomModelPricing（视频自定义行无价格通道恒不可启用）——故以
+//「text 模式 + video 协议 + 零价」的自定义行承载 openai 直通面的验收模型名。
+// 静态定价层无该行 → 终态 cost=0（不虚计）；正价视频计费断言由 glm（按次
+// $0.2）与 xai（$0.14/s）用例承载。
+const fullchainVideoMockModel = "fullchain-video-mock"
+
+// fullchainEnsureVideoMockCatalogModel 确保 openai 直通面验收模型行在 gpt
+// 目录可用（先查后建，幂等）。
+func (f *fullchainFixture) fullchainEnsureVideoMockCatalogModel() {
+	f.t.Helper()
+	_, payload := f.admin.do(http.MethodGet,
+		"/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true",
+		nil, wantStatus(http.StatusOK))
+	items, _ := payload["data"].([]any)
+	for _, raw := range items {
+		if item, ok := raw.(map[string]any); ok && str(item["model"]) == fullchainVideoMockModel {
+			return
+		}
+	}
+	f.admin.do(http.MethodPost, "/__aisys__/api/providers/gpt/models", map[string]any{
+		"model":                 fullchainVideoMockModel,
+		"scope":                 "global",
+		"status":                "active",
+		"supportedApiProtocols": []string{"video"},
+		"inputUsdPer1M":         0,
+		"outputUsdPer1M":        0,
+	}, wantStatus(http.StatusCreated))
+}
+
+// fullchainVideoCreateBody 是视频创建请求体（negative_prompt 对 openai 直通
+// 请求面不支持 → 进 params_ignored 回显，契约 §2.4 规则 1；seconds 用 openai
+// 原生字符串形态，契约 §4.3）。
+const fullchainVideoCreateBody = `{"model":"` + fullchainVideoMockModel + `","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720","negative_prompt":"低清画质"}`
 
 // fullchainVideoAccountExtra 是视频验收账户相对 createAccount 默认值的覆盖项：
-// 支持模型声明 sora-2 + 探针模型，凭据显式声明视频端点模式（创建链候选过滤
-// 消费 video_create；其余 chat/responses 模式保留健康检查语义）。
+// 能力域显式 video（M2 写侧域规则：新建声明集 ⊆ 域允许集，video 域 lanes =
+// video_* 四值，chat/responses 模式属 chat 域 lanes 不得混声明）+ 支持模型
+// 声明 openai 直通面验收模型 + 探针模型，凭据显式声明视频端点模式（创建链
+// 候选过滤消费 video_create；媒体设计 §11.6）。
 func fullchainVideoAccountExtra() map[string]any {
 	return map[string]any{
-		"supportedModels": []string{"sora-2", fullchainProbeModel},
+		"capabilityDomain": "video",
+		"supportedModels":  []string{fullchainVideoMockModel, fullchainProbeModel},
 		"credentials": map[string]any{
 			"supported_endpoint_modes": []string{
-				"chat_json", "chat_sse", "responses_json", "responses_sse",
 				"video_create", "video_get", "video_content", "video_cancel",
 			},
 		},
@@ -149,10 +185,12 @@ func (f *fullchainFixture) waitMediaJobRow(t *testing.T, apiKeyID, jobID string,
 
 // TestFullchainMediaVideoLifecycle 验证 M2 视频链主流程：管理面配置 → 创建
 // （params_ignored 回显）→ 轮询 33→66→completed → content mp4 下载 → 管理面
-// media-jobs 行终态 cost_usd>0（媒体设计 §10 终态计费回填）。
+// media-jobs 行终态 completed + 归因（零价自定义行 cost=0 不虚计；正价终态
+// 计费回填由 glm/xai 用例承载，媒体设计 §10）。
 func TestFullchainMediaVideoLifecycle(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
+	f.fullchainEnsureVideoMockCatalogModel()
 
 	route := f.newRoute("MV生命", "normal", []fullchainGroupSpec{
 		{accounts: []fullchainAccountSpec{
@@ -216,13 +254,17 @@ func TestFullchainMediaVideoLifecycle(t *testing.T) {
 		t.Fatalf("MV lifecycle content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
 	}
 
-	// 管理面 media-jobs：行终态 completed + cost_usd>0（sora-2 静态目录秒价
-	// × seconds_length=4，随终态一次落行），且归因到受理账户。
+	// 管理面 media-jobs：行终态 completed 且归因到受理账户。验收模型是零价
+	// 自定义行（静态定价层无秒价）→ cost_usd=0 不虚计；正价视频终态计费
+	//（媒体设计 §10）由 glm（按次 $0.2）与 xai（$0.14/s）用例承载。
 	row := f.waitMediaJobRow(t, route.apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
-		return row.Status == "completed" && row.CostUsd > 0
-	}, "completed with cost_usd>0")
+		return row.Status == "completed"
+	}, "completed")
 	if row.AccountID != route.accountIDs[0] {
 		t.Fatalf("MV lifecycle row accountId=%s, want %s", row.AccountID, route.accountIDs[0])
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV lifecycle row costUsd=%v, want 0（零价自定义行无静态秒价不虚计）", row.CostUsd)
 	}
 }
 
@@ -239,6 +281,7 @@ func TestFullchainMediaVideoLifecycle(t *testing.T) {
 func TestFullchainMediaVideoAcceptanceBoundary(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
+	f.fullchainEnsureVideoMockCatalogModel()
 
 	keyA := fullchainUpstreamKey(t, "mv-429")
 	route := f.newRoute("MV边界", "normal", []fullchainGroupSpec{
@@ -333,6 +376,7 @@ func TestFullchainMediaVideoAcceptanceBoundary(t *testing.T) {
 func TestFullchainMediaVideoCreate400BadSizeNoSwitch(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
+	f.fullchainEnsureVideoMockCatalogModel()
 
 	keyA := fullchainUpstreamKey(t, "mv-400")
 	route := f.newRoute("MV参数错误", "normal", []fullchainGroupSpec{
@@ -347,7 +391,7 @@ func TestFullchainMediaVideoCreate400BadSizeNoSwitch(t *testing.T) {
 
 	// size=9999x9999：本地 WxH 形态校验通过，值域由上游裁决 → 上游 400。
 	failed := f.videoT(t, route.apiKey, http.MethodPost, "/v1/videos",
-		`{"model":"sora-2","prompt":"参数错误不换账户","seconds":"4","size":"9999x9999"}`)
+		`{"model":"`+fullchainVideoMockModel+`","prompt":"参数错误不换账户","seconds":"4","size":"9999x9999"}`)
 	if failed.Status != http.StatusBadRequest {
 		t.Fatalf("MV 400 create status=%d body=%s, want 400（上游参数错误透传）", failed.Status, failed.Body)
 	}
@@ -387,6 +431,7 @@ func TestFullchainMediaVideoCreate400BadSizeNoSwitch(t *testing.T) {
 func TestFullchainMediaVideoArtifactExpired(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
+	f.fullchainEnsureVideoMockCatalogModel()
 
 	route := f.newRoute("MV过期", "normal", []fullchainGroupSpec{
 		{accounts: []fullchainAccountSpec{
@@ -424,11 +469,11 @@ func TestFullchainMediaVideoArtifactExpired(t *testing.T) {
 // fullchainGeminiVideoCreateBody 是 gemini 视频创建请求体：size 换算
 // aspectRatio/resolution（16:9/720p）、negative_prompt 进 parameters（veo
 // 原生支持）；seconds 对 veo 请求面不存在 → params_ignored 回显。
-const fullchainGeminiVideoCreateBody = `{"model":"veo-3.0-generate-preview","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"8"}`
+const fullchainGeminiVideoCreateBody = `{"model":"veo-3.1-fast-generate-preview","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"8"}`
 
 // fullchainCreateGeminiVideoAccount 经管理面创建指向 mock 上游的 gemini
 // api_key 账户并绑定分组（gemini 供应商 + 原生 v1beta 档案；目录 seed 预置
-// veo-3.0-generate-preview 行）；凭据显式声明 gemini 词表的 video_* 端点
+// veo-3.1-fast-generate-preview 行）；凭据显式声明 gemini 词表的 video_* 端点
 // 模式（opt-in，与 openai 族同语义）。
 func (f *fullchainFixture) fullchainCreateGeminiVideoAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
@@ -437,14 +482,15 @@ func (f *fullchainFixture) fullchainCreateGeminiVideoAccount(name, upstreamKey, 
 		"providerProtocolProfileId": "profile_gemini_native_v1beta",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
 			"supported_endpoint_modes": []string{
-				"generate_content_json", "video_create", "video_get", "video_content", "video_cancel",
+				"video_create", "video_get", "video_content", "video_cancel",
 			},
 		},
-		"supportedModels": []string{"veo-3.0-generate-preview"},
+		"supportedModels": []string{"veo-3.1-fast-generate-preview"},
 		"status":          "active",
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))
@@ -494,7 +540,7 @@ func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
 		t.Fatalf("MV gemini provider = %v, want gemini", job["provider"])
 	}
 	providerJobID := str(job["provider_job_id"])
-	if !strings.HasPrefix(providerJobID, "models/veo-3.0-generate-preview/operations/") {
+	if !strings.HasPrefix(providerJobID, "models/veo-3.1-fast-generate-preview/operations/") {
 		t.Fatalf("MV gemini provider_job_id = %q, want operation name 形态", providerJobID)
 	}
 	applied := fmt.Sprintf("%v", job["params_applied"])
@@ -586,11 +632,12 @@ func (f *fullchainFixture) fullchainCreateGlmVideoAccount(name, upstreamKey, gro
 		"providerProtocolProfileId": "profile_glm_general_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
 			"supported_endpoint_modes": []string{
-				"chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel",
+				"video_create", "video_get", "video_content", "video_cancel",
 			},
 		},
 		"supportedModels": []string{"cogvideox-3"},
@@ -742,6 +789,7 @@ func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey,
 		"providerProtocolProfileId": "profile_minimax_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
@@ -901,6 +949,7 @@ func (f *fullchainFixture) fullchainCreateVolcengineVideoAccount(name, upstreamK
 		"providerProtocolProfileId": "profile_volcengine_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
@@ -1063,6 +1112,7 @@ func (f *fullchainFixture) fullchainCreateQwenVideoAccount(name, upstreamKey, gr
 		"providerProtocolProfileId": "profile_qwen_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
@@ -1210,10 +1260,13 @@ func TestFullchainMediaVideoQwenWanx(t *testing.T) {
 
 // fullchainCreateHybridVideoAccount 经管理面创建指向 mock 上游的 hybrid
 // api_key 账户并绑定分组（hybrid 供应商 + 通用 openai v1 档案 profile_
-// hybrid_openai_chat_v1）。账号媒体映射 source sora-2-pro → upstream sora-2
-//（video_generation 族，写侧矩阵/协议模型池放行的端到端覆盖）；supportedModels
-// 只声明 upstream 名（候选过滤必须经映射命中，不得直连 source 名）；凭据声明
-// openai 族词表的 video_* 端点模式（opt-in，hybrid 模式词表并集）。
+// hybrid_openai_chat_v1）。能力域显式 video（M2 写侧域规则，声明集随之收敛
+// 为 video_* 四值——chat 模式属 chat 域 lanes，域内不得混声明）。账号媒体
+// 映射 source cogvideox-3 → upstream fullchain-video-mock（video_generation
+// 族，两端点都在活跃协议模型池：2026-10-12 核对批起官方 sora-2 系已停用出
+// 池，source 换 glm 在售行、upstream 换本文件自定义 gpt 行）；supportedModels
+// 只声明 upstream 名（候选过滤必须经映射命中，不得直连 source 名）；凭据
+// 声明 openai 族词表的 video_* 端点模式（opt-in，hybrid 模式词表并集）。
 func (f *fullchainFixture) fullchainCreateHybridVideoAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
@@ -1221,17 +1274,18 @@ func (f *fullchainFixture) fullchainCreateHybridVideoAccount(name, upstreamKey, 
 		"providerProtocolProfileId": "profile_hybrid_openai_chat_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
 			"supported_endpoint_modes": []string{
-				"chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel",
+				"video_create", "video_get", "video_content", "video_cancel",
 			},
 		},
-		"supportedModels": []string{"sora-2"},
+		"supportedModels": []string{fullchainVideoMockModel},
 		"modelMappings": []map[string]any{{
-			"sourceModel": "sora-2-pro", "sourceEndpointFamily": "video_generation",
-			"upstreamModel": "sora-2", "upstreamEndpointFamily": "video_generation",
+			"sourceModel": "cogvideox-3", "sourceEndpointFamily": "video_generation",
+			"upstreamModel": fullchainVideoMockModel, "upstreamEndpointFamily": "video_generation",
 		}},
 		"status":  "active",
 		"groupId": groupID,
@@ -1245,13 +1299,15 @@ func (f *fullchainFixture) fullchainCreateHybridVideoAccount(name, upstreamKey, 
 
 // TestFullchainMediaVideoHybridMapped 验证 M4b（媒体设计 §9 hybrid 行）：
 // 管理面配置（hybrid 分组 + 媒体映射账户，写侧矩阵与协议模型池放行）→ 客户端
-// 请求 source 模型名 sora-2-pro → 候选过滤经映射命中 → 创建链把出站 model
-// 改写为 upstream 名 sora-2 打到中转 base_url 的 /v1/videos（mock 命中记录
-// 断言）→ 统一 job 对象 provider=openai（hybrid 媒体执行面 = 中转的 OpenAI
-// 形态媒体端点）→ 轮询 completed → 管理面 media-jobs 行归因 hybrid 账户。
+// 请求 source 模型名 cogvideox-3 → 候选过滤经映射命中 → 创建链把出站 model
+// 改写为 upstream 名 fullchain-video-mock 打到中转 base_url 的 /v1/videos
+//（mock 命中记录断言）→ 统一 job 对象 provider=openai（hybrid 媒体执行面 =
+// 中转的 OpenAI 形态媒体端点）→ 轮询 completed → 管理面 media-jobs 行归因
+// hybrid 账户。
 func TestFullchainMediaVideoHybridMapped(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
+	f.fullchainEnsureVideoMockCatalogModel()
 
 	key := fullchainUpstreamKey(t, "mvhb")
 	groupID := f.createGroupWithProvider("MVhybrid组", "hybrid")
@@ -1262,11 +1318,11 @@ func TestFullchainMediaVideoHybridMapped(t *testing.T) {
 	apiKey := f.createAPIKey("全链路-MVhybrid-Key", strategyID)
 	apiKeyID := f.apiKeyIDByName("全链路-MVhybrid-Key")
 
-	// 创建：请求模型是 source 名 sora-2-pro；200 + 统一 job 对象（对外 id
+	// 创建：请求模型是 source 名 cogvideox-3；200 + 统一 job 对象（对外 id
 	// video_ 前缀、status queued、provider=openai）。
 	f.mock.script(key, platformmock.ScenarioMediaVideoOKPoll1)
 	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos",
-		`{"model":"sora-2-pro","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720"}`)
+		`{"model":"cogvideox-3","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720"}`)
 	if created.Status != http.StatusOK {
 		t.Fatalf("MV hybrid create status=%d body=%s", created.Status, created.Body)
 	}
@@ -1282,18 +1338,18 @@ func TestFullchainMediaVideoHybridMapped(t *testing.T) {
 		t.Fatalf("MV hybrid provider = %v, want openai（hybrid 媒体执行面为中转 OpenAI 形态媒体端点）", job["provider"])
 	}
 	// params 回显的 model 是改写后的 upstream 名（不得回显 source 名）。
-	if strings.Contains(fmt.Sprintf("%v", job["params_applied"]), "sora-2-pro") {
+	if strings.Contains(fmt.Sprintf("%v", job["params_applied"]), "cogvideox-3") {
 		t.Fatalf("MV hybrid params_applied 不得回显 source 模型名: %v", job["params_applied"])
 	}
 
 	// 出站模型改写证据：mock 命中记录的 POST /v1/videos 恰好一次且 Model 为
-	// upstream 名 sora-2（source 名不出站）。
+	// upstream 名（source 名不出站）。
 	creates := 0
 	for _, call := range f.mock.callsByKey(key) {
 		if call.Method == http.MethodPost && call.Path == "/v1/videos" {
 			creates++
-			if call.Model != "sora-2" {
-				t.Fatalf("MV hybrid 出站创建 model = %q, want upstream 名 sora-2", call.Model)
+			if call.Model != fullchainVideoMockModel {
+				t.Fatalf("MV hybrid 出站创建 model = %q, want upstream 名 %s", call.Model, fullchainVideoMockModel)
 			}
 		}
 	}
@@ -1315,10 +1371,10 @@ func TestFullchainMediaVideoHybridMapped(t *testing.T) {
 	if row.AccountID != accountID {
 		t.Fatalf("MV hybrid row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	// 终态计费沿用静态目录秒价（provider=openai + upstream 模型 sora-2 ×
-	// seconds_length=4 > 0）。
-	if row.CostUsd <= 0 {
-		t.Fatalf("MV hybrid row costUsd=%v, want >0（sora-2 秒价计费）", row.CostUsd)
+	// 终态计费：upstream 是零价自定义行（静态定价层无秒价）→ cost=0 不虚计；
+	// 正价视频计费断言由 glm（按次 $0.2）与 xai（$0.14/s）用例承载。
+	if row.CostUsd != 0 {
+		t.Fatalf("MV hybrid row costUsd=%v, want 0（零价自定义行不虚计）", row.CostUsd)
 	}
 }
 
@@ -1347,6 +1403,7 @@ func (f *fullchainFixture) fullchainCreateXaiVideoAccount(name, upstreamKey, gro
 		"providerProtocolProfileId": "profile_xai_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "video",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,

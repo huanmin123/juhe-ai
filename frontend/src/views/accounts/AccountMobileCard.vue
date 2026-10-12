@@ -16,7 +16,7 @@
         <div class="account-mobile-tags">
           <a-tag :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
           <a-tag color="geekblue">{{ providerName }}</a-tag>
-          <a-tooltip :title="accountScheduleSummary(account.availabilitySchedule)">
+          <a-tooltip v-if="!accountIsMedia" :title="accountScheduleSummary(account.availabilitySchedule)">
             <a-tag :color="accountScheduleTagColor(account.availabilitySchedule)">{{ accountScheduleSummary(account.availabilitySchedule) }}</a-tag>
           </a-tooltip>
           <AccountStatusTag :account="account" />
@@ -54,7 +54,8 @@
           <strong>{{ concurrencyText }}</strong>
         </a-tooltip>
       </div>
-      <div class="account-mobile-meta-item">
+      <!-- 时间计划与优先级是对话域调度语义：媒体域不渲染（计划 D7 / 移动端卡片按域裁剪）。 -->
+      <div v-if="!accountIsMedia" class="account-mobile-meta-item">
         <span>优先级</span>
         <div class="account-mobile-priority-row">
           <AccountPriorityEditor
@@ -118,6 +119,7 @@ import {
 } from './accountBasicFormatters'
 import { formatDateTime, isAuthorizedAccount } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
+import { capabilityDomainIsMedia } from './accountCapabilityDomains'
 import { accountMenuItemsWithClone, authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip, canReturnAuthorizedAccount } from './accountRules'
 import { accountProxyDisplay } from './accountProxyDisplay'
 
@@ -158,6 +160,9 @@ const emit = defineEmits<{
 }>()
 
 const currentProxy = computed(() => accountProxyDisplay(props.account, props.proxy))
+
+// 媒体域（video/audio/image）裁剪对话域调度语义：缺省（无 capabilityDomain）按对话域渲染。
+const accountIsMedia = computed(() => capabilityDomainIsMedia(props.account.capabilityDomain))
 
 const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''

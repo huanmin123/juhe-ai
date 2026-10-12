@@ -760,6 +760,26 @@ type chainLatencyDegradationPort struct {
 	service *gatewayproxyhealth.LatencyDegradationService
 }
 
+// chainLatencyDegradationScopeOf 把 dispatch 侧 scope 与 preauth 速度配置携带
+// 的调度偏好身份（PreferenceID/ConfigFingerprint，速度运行态 v2 命名空间）
+// 合成为时延降级服务的完整 scope。历史路径（字段为空）合成的 scope 与既有
+// 三字段构造逐字段一致，键族回落 v1。
+func chainLatencyDegradationScopeOf(scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) *gatewayproxyhealth.LatencyDegradationScope {
+	if scope == nil {
+		return nil
+	}
+	out := &gatewayproxyhealth.LatencyDegradationScope{
+		SystemAccountID: scope.SystemAccountID,
+		RouteStrategyID: scope.RouteStrategyID,
+		GroupID:         scope.GroupID,
+	}
+	if config != nil {
+		out.PreferenceID = config.PreferenceID
+		out.ConfigFingerprint = config.ConfigFingerprint
+	}
+	return out
+}
+
 func (p chainLatencyDegradationPort) OrderAsync(ctx context.Context, accounts []gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, modelPriority *gatewaydispatch.ModelPriority) (gatewaydispatch.LatencyDegradationOrder, error) {
 	if p.service == nil || scope == nil || config == nil || len(accounts) == 0 {
 		return gatewaydispatch.LatencyDegradationOrder{Accounts: accounts}, nil
@@ -769,11 +789,8 @@ func (p chainLatencyDegradationPort) OrderAsync(ctx context.Context, accounts []
 		return gatewaydispatch.LatencyDegradationOrder{Accounts: accounts}, nil
 	}
 	result, err := gatewayproxyhealth.OrderGatewayAccountsByNormalRouteLatencyDegradation(
-		ctx, p.service, accounts, chainLatencyAccountOf, &gatewayproxyhealth.LatencyDegradationScope{
-			SystemAccountID: scope.SystemAccountID,
-			RouteStrategyID: scope.RouteStrategyID,
-			GroupID:         scope.GroupID,
-		}, typedConfig, nil,
+		ctx, p.service, accounts, chainLatencyAccountOf,
+		chainLatencyDegradationScopeOf(scope, config), typedConfig, nil,
 	)
 	if err != nil {
 		return gatewaydispatch.LatencyDegradationOrder{}, err
@@ -786,66 +803,48 @@ func (p chainLatencyDegradationPort) OrderAsync(ctx context.Context, accounts []
 	}, nil
 }
 
-func (p chainLatencyDegradationPort) IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput) (bool, error) {
+func (p chainLatencyDegradationPort) IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error) {
 	if p.service == nil || scope == nil {
 		return false, nil
 	}
-	return p.service.IsNormalRouteAccountLatencyDegraded(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
-		SystemAccountID: scope.SystemAccountID,
-		RouteStrategyID: scope.RouteStrategyID,
-		GroupID:         scope.GroupID,
-	})
+	return p.service.IsNormalRouteAccountLatencyDegraded(ctx, chainLatencyAccountOf(account), chainLatencyDegradationScopeOf(scope, config))
 }
 
 func (p chainLatencyDegradationPort) RecordFirstByteSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
 	if p.service == nil || scope == nil {
 		return nil, nil
 	}
-	return p.service.RecordNormalRouteFirstByteSlow(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
-		SystemAccountID: scope.SystemAccountID,
-		RouteStrategyID: scope.RouteStrategyID,
-		GroupID:         scope.GroupID,
-	}, chainSpeedFirstRuntimeConfigOf(config), reason)
+	return p.service.RecordNormalRouteFirstByteSlow(ctx, chainLatencyAccountOf(account), chainLatencyDegradationScopeOf(scope, config), chainSpeedFirstRuntimeConfigOf(config), reason)
 }
 
 func (p chainLatencyDegradationPort) RecordFirstByteSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, firstByteMs int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
 	if p.service == nil || scope == nil {
 		return nil, nil
 	}
-	return p.service.RecordNormalRouteFirstByteSuccess(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
-		SystemAccountID: scope.SystemAccountID,
-		RouteStrategyID: scope.RouteStrategyID,
-		GroupID:         scope.GroupID,
-	}, chainSpeedFirstRuntimeConfigOf(config), &firstByteMs)
+	return p.service.RecordNormalRouteFirstByteSuccess(ctx, chainLatencyAccountOf(account), chainLatencyDegradationScopeOf(scope, config), chainSpeedFirstRuntimeConfigOf(config), &firstByteMs)
 }
 
 func (p chainLatencyDegradationPort) RecordTotalTimeSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
 	if p.service == nil || scope == nil {
 		return nil, nil
 	}
-	return p.service.RecordNormalRouteTotalTimeSlow(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
-		SystemAccountID: scope.SystemAccountID,
-		RouteStrategyID: scope.RouteStrategyID,
-		GroupID:         scope.GroupID,
-	}, chainSpeedFirstRuntimeConfigOf(config), reason)
+	return p.service.RecordNormalRouteTotalTimeSlow(ctx, chainLatencyAccountOf(account), chainLatencyDegradationScopeOf(scope, config), chainSpeedFirstRuntimeConfigOf(config), reason)
 }
 
 func (p chainLatencyDegradationPort) RecordTotalTimeSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, effectiveDeadlineMs int64, elapsedMs int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
 	if p.service == nil || scope == nil {
 		return nil, nil
 	}
-	return p.service.RecordNormalRouteTotalTimeSuccess(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
-		SystemAccountID: scope.SystemAccountID,
-		RouteStrategyID: scope.RouteStrategyID,
-		GroupID:         scope.GroupID,
-	}, chainSpeedFirstRuntimeConfigOf(config), effectiveDeadlineMs, elapsedMs)
+	return p.service.RecordNormalRouteTotalTimeSuccess(ctx, chainLatencyAccountOf(account), chainLatencyDegradationScopeOf(scope, config), chainSpeedFirstRuntimeConfigOf(config), effectiveDeadlineMs, elapsedMs)
 }
 
 // chainSpeedFirstDecisions 镜像 Node normalRouteSpeedFirstDecisionOperations
 // 的 store 函数面；组合根在链条侧以接口断言消费（决策闭包）。首字与总时间
-// 两个维度的采样入口成对携带（设计 6.4 双通道共享降级）。
+// 两个维度的采样入口成对携带（设计 6.4 双通道共享降级）。降级查询与采样
+// 入口都携带 preauth 速度配置：查询侧需要其中的调度偏好身份（v2 命名空间）
+// 才能与采样键族一致。
 type chainSpeedFirstDecisions interface {
-	IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput) (bool, error)
+	IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error)
 	RecordFirstByteSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error)
 	RecordFirstByteSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, firstByteMs int64) (*gatewayproxyhealth.LatencySuccessResult, error)
 	RecordTotalTimeSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error)

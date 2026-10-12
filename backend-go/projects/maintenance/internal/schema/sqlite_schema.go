@@ -186,6 +186,9 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteBusinessScheduleIntervalCheck(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite business schedule interval check: %w", err)
 	}
+	if err := ensureSQLiteBusinessTimeoutPenaltyColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite business timeout_penalty_enabled columns: %w", err)
+	}
 	if err := ensureSystemAccountExpeditedAccountLimitSchema(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure system_accounts.expedited_account_limit: %w", err)
 	}
@@ -194,6 +197,20 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	}
 	if err := EnsureSQLiteBusinessCapabilityDomainColumn(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure accounts.capability_domain: %w", err)
+	}
+	// 调度偏好独立实体（PLAN-20261012T033000000Z）：api_keys.scheduling_preference_id
+	// 守卫加列 + 绑定查询索引。新库由建表 DDL 内联声明该列（列级 REFERENCES
+	// scheduling_preferences(id)，无 ON DELETE 子句——删除被引用偏好由服务层
+	// 返回 409，SQLite 运行时 PRAGMA 不保证执行外键，存在性 / owner 校验以
+	// 事务内校验为主），存量库按 PRAGMA table_info 早退守卫幂等补列（与
+	// capability_domain 同模式，声明与建表 DDL 同构）。索引语句必须走在守卫
+	// 之后：主 DDL 阶段存量库该列尚不存在，放主 DDL 会因缺列失败；索引建在
+	// 新库与存量库两条到达路径的汇合点，CREATE INDEX IF NOT EXISTS 幂等。
+	if err := ensureSQLiteTableColumn(ctx, db, "api_keys", "scheduling_preference_id", "TEXT REFERENCES scheduling_preferences(id)"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure api_keys.scheduling_preference_id: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure idx_api_keys_scheduling_preference: %w", err)
 	}
 	return counts, nil
 }
@@ -368,6 +385,22 @@ func ensureSQLiteBusinessCustomQuestionColumns(ctx context.Context, db *sql.DB) 
 	return nil
 }
 
+// ensureSQLiteBusinessTimeoutPenaltyColumns 把模型质量两表（手动检测质量
+// 策略 model_quality_policies 与定时检测计划 model_quality_schedules）的
+// timeout_penalty_enabled 列补齐到既有 SQLite 库（模型检测超时处罚开关）。
+// PRAGMA table_info 早退守卫与 custom_question_ids 同模式：新库由建表 DDL
+// 直接声明该列，守卫只在表存在且缺列时 ALTER 补列，声明与新库 DDL 同构
+// （含列级 CHECK，存量行取 DEFAULT 0 恒满足约束）。开关默认关闭（0）：
+// 关闭时检测环节超时不按该环节失败计分/处罚，维持既有行为。
+func ensureSQLiteBusinessTimeoutPenaltyColumns(ctx context.Context, db *sql.DB) error {
+	for _, table := range []string{"model_quality_policies", "model_quality_schedules"} {
+		if err := ensureSQLiteTableColumn(ctx, db, table, "timeout_penalty_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK (timeout_penalty_enabled IN (0, 1))"); err != nil {
+			return fmt.Errorf("ensure %s.timeout_penalty_enabled: %w", table, err)
+		}
+	}
+	return nil
+}
+
 // sqliteScheduleIntervalLegacyCheckText 是 model_quality_schedules 旧建表
 // DDL 中 interval_minutes 列级 CHECK 的原文片段。必须带左括号前缀：
 // recovery_interval_minutes 的 CHECK 同样含 "BETWEEN 10 AND 10080"，但列名
@@ -380,6 +413,7 @@ const sqliteScheduleIntervalLegacyCheckText = "(interval_minutes BETWEEN 10 AND 
 var sqliteScheduleRebuildColumns = []string{
 	"id", "system_account_id", "account_id", "model", "interval_minutes",
 	"profile", "penalty_threshold", "penalty_action", "recovery_interval_minutes",
+	"timeout_penalty_enabled",
 	"enabled", "revision", "next_run_at", "last_run_id", "last_run_at",
 	"last_run_status", "lease_owner", "lease_until", "created_at", "updated_at",
 	"custom_question_ids",
@@ -408,6 +442,7 @@ const sqliteScheduleRebuildDDL = `CREATE TABLE model_quality_schedules_migrating
       penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
       penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
       recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0 CHECK (timeout_penalty_enabled IN (0, 1)),
       enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
       next_run_at TEXT NOT NULL,

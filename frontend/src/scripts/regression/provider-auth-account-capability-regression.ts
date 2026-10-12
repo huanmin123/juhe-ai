@@ -69,6 +69,7 @@ assert((googleCredentials.supported_endpoint_modes as string[]).includes('intera
 const managedGoogleForm = defaultAccountForm('gemini', 'google_oauth', FALLBACK_PROVIDERS, 'profile_gemini_native_v1beta')
 Object.assign(managedGoogleForm, {
   name: 'Gemini managed OAuth',
+  proxyProfileId: 'proxy-e2e',
   groupId: 'group-1',
   baseUrl: 'https://generativelanguage.googleapis.com',
   supportedModels: ['gemini-2.5-pro'],
@@ -147,6 +148,7 @@ assert.equal(managedOAuthProviderKind({ provider: xai, profile: xaiProfile }), '
 const grokAccessTokenForm = defaultAccountForm('xai', 'oauth', FALLBACK_PROVIDERS, 'profile_xai_openai_v1')
 Object.assign(grokAccessTokenForm, {
   name: 'Grok direct token',
+  proxyProfileId: 'proxy-e2e',
   groupId: 'group-1',
   oauthMode: 'access_token',
   accessToken: 'grok-access',

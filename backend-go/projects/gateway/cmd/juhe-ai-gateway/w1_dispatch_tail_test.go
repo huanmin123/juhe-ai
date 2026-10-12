@@ -1113,7 +1113,7 @@ func TestW1XDispatchAdapterPassthroughArms(t *testing.T) {
 
 	// 时延降级端口的空参直通臂。
 	port := chainLatencyDegradationPort{}
-	degraded, err := port.IsAccountLatencyDegradedAsync(ctx, gatewaydispatch.AccountCandidate{ID: "a"}, nil)
+	degraded, err := port.IsAccountLatencyDegradedAsync(ctx, gatewaydispatch.AccountCandidate{ID: "a"}, nil, nil)
 	if degraded || err != nil {
 		t.Fatalf("IsAccountLatencyDegradedAsync(nil scope) = (%v, %v)", degraded, err)
 	}

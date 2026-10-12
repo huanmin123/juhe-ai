@@ -188,6 +188,19 @@ if ! $SSH "$SERVER" "bash -c '$REMOTE_CMD'"; then
   exit 1
 fi
 
+if [ "$TARGET" = "maintenance" ]; then
+  # 一次性 CLI 的镜像校验独立于常驻进程：维护窗口内 jobs 必须保持停止。
+  # 覆盖 entrypoint 并禁止启动依赖，只读取新镜像二进制，不执行迁移。
+  echo "== [5/6] maintenance 镜像内二进制闭环校验 =="
+  CONTAINER_MD5=$($SSH "$SERVER" "cd $SERVER_DIR && docker compose --profile tool run --rm --no-deps --entrypoint md5sum maintenance /usr/local/bin/juhe-ai-go-project" | awk '{print $1}')
+  if [ "$CONTAINER_MD5" != "${LOCAL_MD5[maintenance]}" ]; then
+    echo "[FAIL] maintenance 镜像内二进制与本地新编译不一致: 本地 ${LOCAL_MD5[maintenance]} vs 镜像 $CONTAINER_MD5" >&2
+    exit 1
+  fi
+  echo "== [6/6] maintenance 镜像更新并校验完成；回填完成、恢复 gateway/jobs 后执行运行验证 =="
+  exit 0
+fi
+
 echo "== [5/6] 健康 check + 容器运行二进制闭环校验 =="
 for p in "${TARGETS[@]}"; do
   [ "$p" = "maintenance" ] && continue  # maintenance 是一次性 tool 容器，无常驻进程

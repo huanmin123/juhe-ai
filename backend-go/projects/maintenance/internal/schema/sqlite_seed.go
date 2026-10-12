@@ -24,6 +24,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
 )
 
 // SQLiteSeedResult summarizes SeedSQLiteDefaults.
@@ -41,6 +44,10 @@ type SQLiteSeedResult struct {
 	//（固定 8 题；冲突时按内置行恢复 seed 权威题面，详见
 	// sqSeedBuiltinQuestionUpsert）。
 	BuiltinQuestionRows int
+	// SchedulingPreferenceMigrationSealed 是本次 seed 触发「全新空库自动写调
+	// 度偏好迁移完成记录」的结果（调度偏好独立实体 P2 设计门裁决②；仅记录不
+	// 存在且 api_keys 无行时为 true）。
+	SchedulingPreferenceMigrationSealed bool
 }
 
 // SeedSQLiteDefaults ports Node seedDefaults for one business SQLite
@@ -116,6 +123,27 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 	if err := seedSQLiteBuiltinModelCheckQuestions(ctx, db, now, &result); err != nil {
 		return SQLiteSeedResult{}, err
 	}
+
+	// 内置调度偏好（调度偏好独立实体 PLAN-20261012T033000000Z）：固定 id
+	// 恢复式幂等预置（与 --ensure-schema 补种臂共用
+	// sqSeedBuiltinSchedulingPreferenceUpsert，权威值单源于
+	// scheduling_preference.go）。gateway SQLite preflight 的 bootstrap 种子
+	// 路径经本函数同步获得该行。
+	if err := exec(sqSeedBuiltinSchedulingPreferenceUpsert,
+		BuiltinSchedulingPreferenceID, BuiltinSchedulingPreferenceName, now, now); err != nil {
+		return SQLiteSeedResult{}, err
+	}
+
+	// 全新空库自动写调度偏好迁移完成记录（调度偏好独立实体 P2 设计门裁决②）：
+	// 迁移记录不存在且 api_keys 无行（本时点在默认路由策略/Key 预置之前，
+	// fresh 库恰为空）时原子写入 completed 记录（counts 全零）；记录已存在或
+	// api_keys 非空的库一律跳过（存量库由
+	// --migrate-scheduling-preferences 负责，见 internal/schedprefmigration）。
+	sealed, err := schedprefdomain.SealFreshInstall(ctx, db, capabilitydomain.DialectSQLite)
+	if err != nil {
+		return SQLiteSeedResult{}, fmt.Errorf("sqlite seed seal scheduling preferences fresh install: %w", err)
+	}
+	result.SchedulingPreferenceMigrationSealed = sealed
 
 	for _, protocol := range pgSeedProtocols {
 		if err := exec(sqSeedProtocolInsert, protocol.ID, protocol.Code, protocol.Version, protocol.Name, protocol.Description, protocol.Enabled, now, now); err != nil {
@@ -539,14 +567,19 @@ const sqSeedRouteStrategyGroupBindingInsert = `
 // strategy.
 const sqSeedExistingDefaultAPIKeySelect = "SELECT id FROM api_keys WHERE route_strategy_id = ? AND is_default = 1 LIMIT 1"
 
-// sqSeedDefaultAPIKeyInsert seeds one default API key.
+// sqSeedDefaultAPIKeyInsert seeds one default API key. 调度偏好独立实体 P1 起
+// 普通 Key 创建缺省持久化内置固定 ID（接口契约「调度偏好」章五写入口矩阵），
+// seed 预置的默认 Key 与该契约同形——内置行由本函数更早的
+// sqSeedBuiltinSchedulingPreferenceUpsert 预置，列级 REFERENCES 在同一连接内
+// 可满足；P1 之前已存在的默认 Key 不受影响（OR IGNORE 跳过，存量 NULL 由
+// --migrate-scheduling-preferences 回填）。
 const sqSeedDefaultAPIKeyInsert = `
     INSERT OR IGNORE INTO api_keys (
       id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
       key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
-      availability_schedule_next_check_at, created_at, updated_at
+      availability_schedule_next_check_at, scheduling_preference_id, created_at, updated_at
     )
-    VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, ?, ?, 'active', 1, NULL, NULL, NULL, NULL, ?, ?)
+    VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, ?, ?, 'active', 1, NULL, NULL, NULL, NULL, 'schpref-builtin-chat-cost-first', ?, ?)
   `
 
 // sqSeedExternalIntegrationSourceInsert seeds the built-in test source row.

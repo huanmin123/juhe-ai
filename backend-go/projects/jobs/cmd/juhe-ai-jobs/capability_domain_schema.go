@@ -5,8 +5,11 @@
 // 臂），jobs 启动只做一次性只读校验，不 ALTER、不重推账户域。列缺失或四值
 // 形状（TEXT / NOT NULL / DEFAULT 'chat' / CHECK 四枚举）不符时 fail-fast
 // 停止，错误信息携带期望形状；不静默修补（部署顺序契约：先迁移后启动新版
-// 本）。本文件与 juhe-ai-gateway 同名文件互为镜像（两模块无共享包），权威
-// DDL 在 maintenance/internal/schema 的 accounts 建表语句。
+// 本）。M2 起在形状校验之后追加阶段记录门禁（要求
+// account_capability_domain_migration 已封存 m2_finalized，判定语义与运维
+// 文案在共享包 capabilitydomain.RequireM2Finalized，与 gateway 启动门禁共
+// 用）。本文件与 juhe-ai-gateway 同名文件互为镜像（形状校验两模块无共享包），
+// 权威 DDL 在 maintenance/internal/schema 的 accounts 建表语句。
 //
 // 调用面：run() 在 loadWorkerConfig 成功后、buildWorkerAssembly 前执行一次
 // （守护路径与 --run-jobs-once 都到达；配置级 fail-fast 臂仍在它之前）。
@@ -31,6 +34,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // capabilityDomainColumn 是受检列名；capabilityDomainExpectedShape 用于错误
@@ -60,7 +65,7 @@ const (
 var capabilityDomainExpectedValues = [4]string{"'chat'", "'video'", "'audio'", "'image'"}
 
 // checkAccountsCapabilityDomainSchemaAtStartup 按装配方言打开一次性只读连接
-// 执行形状校验；worker 配置层面的 fail-fast 已在此前完成。
+// 执行形状校验与 M2 阶段记录门禁；worker 配置层面的 fail-fast 已在此前完成。
 func checkAccountsCapabilityDomainSchemaAtStartup(ctx context.Context, config workerConfig) error {
 	checkCtx, cancel := context.WithTimeout(ctx, capabilityDomainStartupCheckTimeout)
 	defer cancel()
@@ -73,7 +78,10 @@ func checkAccountsCapabilityDomainSchemaAtStartup(ctx context.Context, config wo
 		if err := db.PingContext(checkCtx); err != nil {
 			return fmt.Errorf("accounts.capability_domain 启动校验失败：连接业务 PostgreSQL 失败: %w", err)
 		}
-		return checkAccountsCapabilityDomainSchema(checkCtx, db, true)
+		if err := checkAccountsCapabilityDomainSchema(checkCtx, db, true); err != nil {
+			return err
+		}
+		return checkAccountCapabilityDomainStageRecord(checkCtx, db, true)
 	}
 	dsn, err := sqliteReadOnlyFileDSN(config.BusinessSQLitePath)
 	if err != nil {
@@ -88,7 +96,28 @@ func checkAccountsCapabilityDomainSchemaAtStartup(ctx context.Context, config wo
 	if err := db.PingContext(checkCtx); err != nil {
 		return fmt.Errorf("accounts.capability_domain 启动校验失败：连接业务 SQLite 失败（%s）: %w", config.BusinessSQLitePath, err)
 	}
-	return checkAccountsCapabilityDomainSchema(checkCtx, db, false)
+	if err := checkAccountsCapabilityDomainSchema(checkCtx, db, false); err != nil {
+		return err
+	}
+	return checkAccountCapabilityDomainStageRecord(checkCtx, db, false)
+}
+
+// checkAccountCapabilityDomainStageRecord 是 M2 启动阶段门禁（AI 账户能力域
+// 拆分 v7 定案）：在形状校验之后读业务库阶段记录，要求存在且 stage 已是
+// m2_finalized（ruleVersion 一致性与记录形状由共享包 ParseRecord 在读取时
+// 强制）。任一不满足即 fail-fast，错误信息直接给出运维动作（停写 → 显式跑
+// maintenance M1 → m2-cutover）。判定语义与文案单一事实源在共享包
+// RequireM2Finalized（与 gateway 启动门禁共用），本包装只做方言选择；启动
+// 只读，不变成迁移执行者。
+func checkAccountCapabilityDomainStageRecord(ctx context.Context, db *sql.DB, postgres bool) error {
+	if db == nil {
+		return fmt.Errorf("accounts.capability_domain 启动校验失败：业务库句柄为空")
+	}
+	dialect := capdomain.DialectSQLite
+	if postgres {
+		dialect = capdomain.DialectPostgres
+	}
+	return capdomain.RequireM2Finalized(ctx, db, dialect)
 }
 
 // checkAccountsCapabilityDomainSchema 对业务库 accounts.capability_domain 做

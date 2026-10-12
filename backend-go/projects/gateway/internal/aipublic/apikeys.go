@@ -7,6 +7,7 @@ package aipublic
 import (
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -132,23 +133,24 @@ func (d *Deps) apiKeyPaging(hasPage bool, page int, hasPageSize bool, pageSize i
 
 // apiKeyAddBody mirrors apiKeyAddSchema (strict).
 type apiKeyAddBody struct {
-	TargetUsername       string
-	Name                 string
-	Description          *string
-	HasDescription       bool
-	RouteStrategyID      string
-	Status               string
-	HasStatus            bool
-	ExpiresAt            string
-	HasExpiresAt         bool
-	QuotaLimits          any
-	HasQuotaLimits       bool
-	AvailabilitySchedule any
-	HasSchedule          bool
+	TargetUsername         string
+	Name                   string
+	Description            *string
+	HasDescription         bool
+	RouteStrategyID        string
+	SchedulingPreferenceID *string
+	Status                 string
+	HasStatus              bool
+	ExpiresAt              string
+	HasExpiresAt           bool
+	QuotaLimits            any
+	HasQuotaLimits         bool
+	AvailabilitySchedule   any
+	HasSchedule            bool
 }
 
 func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "routeStrategyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
+	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -175,6 +177,16 @@ func parseApiKeyAddBody(body map[string]any) (*apiKeyAddBody, string) {
 		return nil, issue
 	}
 	parsed.RouteStrategyID = strategyID
+	if value, exists := body["schedulingPreferenceId"]; exists && value != nil {
+		// 调度偏好绑定（公开 add 与内面创建同矩阵）：缺省或 null → 内置固
+		// 定 ID（store 层收敛）；非法类型/空字符串按绑定契约统一 400。
+		text, isString := value.(string)
+		if !isString || strings.TrimSpace(text) == "" {
+			return nil, apikeys.SchedulingPreferenceUnavailableMessage
+		}
+		trimmed := strings.TrimSpace(text)
+		parsed.SchedulingPreferenceID = &trimmed
+	}
 	status, hasStatus, issue := bodyOptionalEnumField(body, "status", []string{"active", "disabled"})
 	if issue != "" {
 		return nil, issue
@@ -221,6 +233,9 @@ func (d *Deps) addApiKey(w http.ResponseWriter, r *http.Request) {
 		Name:            parsed.Name,
 		Description:     parsed.Description,
 		RouteStrategyID: &parsed.RouteStrategyID,
+		// 目标 Key owner（target.SystemAccountID）名下的偏好校验由 store 层
+		// 绑定解析收敛（同 owner 启用偏好或全局内置行）。
+		SchedulingPreferenceID: parsed.SchedulingPreferenceID,
 	}
 	if parsed.HasStatus {
 		status := parsed.Status
@@ -258,29 +273,31 @@ func (d *Deps) addApiKey(w http.ResponseWriter, r *http.Request) {
 
 // apiKeyUpdateBody mirrors apiKeyUpdateSchema (strict + refine).
 type apiKeyUpdateBody struct {
-	TargetUsername       string
-	HasTarget            bool
-	ApiKeyID             string
-	Name                 *string
-	HasName              bool
-	Description          *string
-	HasDescription       bool
-	RouteStrategyID      string
-	HasStrategy          bool
-	Status               string
-	HasStatus            bool
-	ExpiresAt            *string
-	HasExpiresAt         bool
-	QuotaLimits          any
-	HasQuotaLimits       bool
-	AvailabilitySchedule any
-	HasSchedule          bool
+	TargetUsername          string
+	HasTarget               bool
+	ApiKeyID                string
+	Name                    *string
+	HasName                 bool
+	Description             *string
+	HasDescription          bool
+	RouteStrategyID         string
+	HasStrategy             bool
+	SchedulingPreferenceID  *string
+	HasSchedulingPreference bool
+	Status                  string
+	HasStatus               bool
+	ExpiresAt               *string
+	HasExpiresAt            bool
+	QuotaLimits             any
+	HasQuotaLimits          bool
+	AvailabilitySchedule    any
+	HasSchedule             bool
 }
 
-var apiKeyUpdateMutableFields = []string{"name", "description", "routeStrategyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule"}
+var apiKeyUpdateMutableFields = []string{"name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule"}
 
 func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "apiKeyId", "name", "description", "routeStrategyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
+	unknown := strictObjectKeys(body, "targetUsername", "apiKeyId", "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -318,6 +335,20 @@ func parseApiKeyUpdateBody(body map[string]any) (*apiKeyUpdateBody, string) {
 		}
 		if strategyID != nil {
 			parsed.RouteStrategyID, parsed.HasStrategy = *strategyID, true
+		}
+	}
+	if bodyHas(body, "schedulingPreferenceId") {
+		// 调度偏好绑定（公开 update 与内面 PATCH 同 Has 语义矩阵）：缺失 =
+		// 保持原值；显式 null = 内置固定 ID；非空 ID = 校验后持久化；非法类
+		// 型/空字符串统一 400。
+		parsed.HasSchedulingPreference = true
+		if value := body["schedulingPreferenceId"]; value != nil {
+			text, isString := value.(string)
+			if !isString || strings.TrimSpace(text) == "" {
+				return nil, apikeys.SchedulingPreferenceUnavailableMessage
+			}
+			trimmed := strings.TrimSpace(text)
+			parsed.SchedulingPreferenceID = &trimmed
 		}
 	}
 	status, hasStatus, issue := bodyOptionalEnumField(body, "status", []string{"active", "disabled"})
@@ -397,6 +428,10 @@ func (d *Deps) updateApiKey(w http.ResponseWriter, r *http.Request) {
 	if parsed.HasStrategy {
 		input.RouteStrategyID = parsed.RouteStrategyID
 		input.HasRouteStrategyID = true
+	}
+	if parsed.HasSchedulingPreference {
+		input.SchedulingPreferenceID = parsed.SchedulingPreferenceID
+		input.HasSchedulingPreferenceID = true
 	}
 	if parsed.HasStatus {
 		input.Status = parsed.Status

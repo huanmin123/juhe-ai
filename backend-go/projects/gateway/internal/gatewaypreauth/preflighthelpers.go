@@ -278,6 +278,10 @@ func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayrunt
 		TotalTimeDeadlineMs:           speedFirstConfig.TotalTimeDeadlineMs,
 		CompactionTotalTimeDeadlineMs: speedFirstConfig.CompactionTotalTimeDeadlineMs,
 		Raw:                           speedFirstConfig.Raw,
+		// 调度偏好独立实体 P1：随行快照三字段中的两键（SP-C2 v2 键材料）。
+		// 历史策略路径两字段为空串，v1 键语义不变。
+		PreferenceID:      apiKeyRecord.SchedulingPreferenceID,
+		ConfigFingerprint: apiKeyRecord.SchedulingPreferenceFingerprint,
 	}
 }
 

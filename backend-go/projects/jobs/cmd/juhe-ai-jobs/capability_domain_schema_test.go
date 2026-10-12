@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	_ "modernc.org/sqlite"
 )
 
@@ -76,7 +77,7 @@ func TestCapabilityDomainSchemaSQLiteFailureArms(t *testing.T) {
 }
 
 // TestCapabilityDomainSchemaAtStartupSQLite 走 AtStartup 包装：临时目录业务
-// 库（正确形状）必须通过；错误形状必须 fail-fast。
+// 库（正确形状 + 已封存阶段记录）必须通过；错误形状必须 fail-fast。
 func TestCapabilityDomainSchemaAtStartupSQLite(t *testing.T) {
 	dir := t.TempDir()
 	businessPath := filepath.Join(dir, "business.sqlite3")
@@ -90,6 +91,8 @@ func TestCapabilityDomainSchemaAtStartupSQLite(t *testing.T) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
+	// M2 阶段门禁夹具契约：AtStartup 校验现要求已封存的阶段记录。
+	w16hSeedCapabilityDomainStageRecord(t, db)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +122,72 @@ func TestCapabilityDomainSchemaAtStartupSQLite(t *testing.T) {
 	if err == nil {
 		t.Fatalf("业务库缺失必须 fail-fast")
 	}
+}
+
+// TestCapabilityDomainStageRecordGateArms 覆盖 M2 启动阶段门禁三失败臂
+// （AI 账户能力域拆分 v7）：记录缺失 / 仅 m1_complete / ruleVersion 不符
+// （含 global_settings 表缺失的读取失败臂）都必须 fail-fast，且错误信息携带
+// 迁移命令指引；已封存 m2_finalized 放行。
+func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
+	const migrationCommandNeedle = "--migrate-account-capability-domain"
+	openGateFixture := func(t *testing.T, record string) *sql.DB {
+		t.Helper()
+		db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
+			id TEXT PRIMARY KEY,
+			`+capabilityDomainCorrectColumn+`
+		)`)
+		if _, err := db.Exec(`CREATE TABLE global_settings (
+			key TEXT PRIMARY KEY,
+			value_json TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`); err != nil {
+			t.Fatalf("seed global_settings ddl: %v", err)
+		}
+		if record != "" {
+			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`,
+				capdomain.MigrationSettingKey, record); err != nil {
+				t.Fatalf("seed stage record: %v", err)
+			}
+		}
+		return db
+	}
+	scenarios := []struct {
+		name        string
+		record      string
+		wantErrText string
+	}{
+		{"record-missing", "", "不存在"},
+		{"m1-complete", `{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, "m1_complete"},
+		{"rule-version-mismatch", `{"stage":"m2_finalized","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`, "ruleVersion"},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := openGateFixture(t, scenario.record)
+			err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false)
+			if err == nil {
+				t.Fatalf("阶段门禁失败臂必须 fail-fast")
+			}
+			if !strings.Contains(err.Error(), scenario.wantErrText) || !strings.Contains(err.Error(), migrationCommandNeedle) {
+				t.Fatalf("错误应包含 %q 与迁移命令指引 %q，got: %v", scenario.wantErrText, migrationCommandNeedle, err)
+			}
+		})
+	}
+	t.Run("global-settings-table-missing", func(t *testing.T) {
+		db := openCapabilityDomainSQLiteFixture(t, `CREATE TABLE accounts (
+			id TEXT PRIMARY KEY,
+			`+capabilityDomainCorrectColumn+`
+		)`)
+		err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false)
+		if err == nil || !strings.Contains(err.Error(), "读取失败") || !strings.Contains(err.Error(), migrationCommandNeedle) {
+			t.Fatalf("global_settings 缺失必须报读取失败且携带迁移命令指引，got: %v", err)
+		}
+	})
+	t.Run("m2-finalized-passes", func(t *testing.T) {
+		db := openGateFixture(t, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`)
+		if err := checkAccountCapabilityDomainStageRecord(context.Background(), db, false); err != nil {
+			t.Fatalf("已封存记录必须放行: %v", err)
+		}
+	})
 }
 
 // TestCapabilityDomainSchemaPostgresArms 在 w12c 覆盖库上以独立 scratch schema

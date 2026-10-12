@@ -239,7 +239,7 @@ func TestWhLatencyGenerationLifecycle(t *testing.T) {
 	// 1. 缺失 → CAS 初始化 initial。
 	store := newWhLatencyStore(clock)
 	service := newWhLatencyServiceOnStore(clock, store)
-	generation, err := service.loadLatencyStateGeneration(ctx)
+	generation, err := service.loadLatencyStateGeneration(ctx, latencyStateKeyspaceV1)
 	if err != nil {
 		t.Fatalf("initial generation: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestWhLatencyGenerationLifecycle(t *testing.T) {
 	if err := store.SetJSON(ctx, latencyStateGenerationKey, map[string]any{"version": "gen-offset", "publishedAt": "2026-01-02T08:00:00+08:00"}, 60_000); err != nil {
 		t.Fatal(err)
 	}
-	event, raw, err := service.loadLatencyGenerationEventRaw(ctx)
+	event, raw, err := service.loadLatencyGenerationEventRaw(ctx, latencyStateKeyspaceV1)
 	if err != nil || event == nil {
 		t.Fatalf("offset 规范化: %+v err=%v", event, err)
 	}
@@ -264,7 +264,7 @@ func TestWhLatencyGenerationLifecycle(t *testing.T) {
 
 	// 3. 非法 JSON → 明确的 RFC3339 错误（直写非法载荷，SetJSON 无法编码）。
 	whSeedRaw(store.MemoryRuntimeStateStore, clock, latencyStateGenerationKey, json.RawMessage(`{oops`), 60_000)
-	if _, _, err := service.loadLatencyGenerationEventRaw(ctx); err == nil || !strings.Contains(err.Error(), "RFC3339") {
+	if _, _, err := service.loadLatencyGenerationEventRaw(ctx, latencyStateKeyspaceV1); err == nil || !strings.Contains(err.Error(), "RFC3339") {
 		t.Fatalf("非法 JSON 必须报 RFC3339 错误, err=%v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestWhLatencyGenerationLifecycle(t *testing.T) {
 	if err := store.SetJSON(ctx, latencyStateGenerationKey, map[string]any{"publishedAt": "2026-01-02T00:00:00Z"}, 60_000); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.loadLatencyStateGeneration(ctx); err == nil || !strings.Contains(err.Error(), "RFC3339") {
+	if _, err := service.loadLatencyStateGeneration(ctx, latencyStateKeyspaceV1); err == nil || !strings.Contains(err.Error(), "RFC3339") {
 		t.Fatalf("缺 version 必须报错, err=%v", err)
 	}
 
@@ -283,7 +283,7 @@ func TestWhLatencyGenerationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	store2.compareSetForce[latencyStateGenerationKey] = false
-	_, _, err = service2.loadLatencyGenerationEventRaw(ctx)
+	_, _, err = service2.loadLatencyGenerationEventRaw(ctx, latencyStateKeyspaceV1)
 	if err == nil || !strings.Contains(err.Error(), "generation marker canonical CAS 重试耗尽") {
 		t.Fatalf("规范化 CAS 耗尽必须报错, err=%v", err)
 	}
@@ -292,7 +292,7 @@ func TestWhLatencyGenerationLifecycle(t *testing.T) {
 	store3 := newWhLatencyStore(clock)
 	service3 := newWhLatencyServiceOnStore(clock, store3)
 	store3.compareSetForce[latencyStateGenerationKey] = false
-	if _, err := service3.loadLatencyStateGeneration(ctx); err == nil || !strings.Contains(err.Error(), "generation marker CAS 初始化重试耗尽") {
+	if _, err := service3.loadLatencyStateGeneration(ctx, latencyStateKeyspaceV1); err == nil || !strings.Contains(err.Error(), "generation marker CAS 初始化重试耗尽") {
 		t.Fatalf("初始化 CAS 耗尽必须报错, err=%v", err)
 	}
 }
@@ -302,23 +302,23 @@ func TestWhLatencyRenewGenerationMismatch(t *testing.T) {
 	ctx := contextBackground()
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryLatencyService(clock)
-	if _, err := service.loadLatencyStateGeneration(ctx); err != nil {
+	if _, err := service.loadLatencyStateGeneration(ctx, latencyStateKeyspaceV1); err != nil {
 		t.Fatal(err)
 	}
 	// 空纪元：marker 仍缺失时 renew 直接 false。
 	store2 := NewMemoryRuntimeStateStore(clock.Now)
 	service2 := NewLatencyDegradationService(store2, clock.Now, LatencyDegradationOptions{LockRetryDelay: func(int) {}})
-	if renewed, err := service2.renewLatencyStateGeneration(ctx, "bogus"); renewed || err != nil {
+	if renewed, err := service2.renewLatencyStateGeneration(ctx, latencyStateKeyspaceV1, "bogus"); renewed || err != nil {
 		t.Fatalf("缺失 marker renew = %v err=%v", renewed, err)
 	}
 	// 纪元已轮换：旧 token 必须被拒绝。
 	if _, err := service.ClearAllNormalRouteLatencyDegradation(ctx, LatencyGenerationEvent{Version: "reset", PublishedAt: ISOStringMs(2_000_000)}); err != nil {
 		t.Fatal(err)
 	}
-	if renewed, err := service.renewLatencyStateGeneration(ctx, `[0,"initial"]`); renewed || err != nil {
+	if renewed, err := service.renewLatencyStateGeneration(ctx, latencyStateKeyspaceV1, `[0,"initial"]`); renewed || err != nil {
 		t.Fatalf("旧纪元 renew = %v err=%v", renewed, err)
 	}
-	if renewed, err := service.renewLatencyStateGeneration(ctx, "totally-bogus"); renewed || err != nil {
+	if renewed, err := service.renewLatencyStateGeneration(ctx, latencyStateKeyspaceV1, "totally-bogus"); renewed || err != nil {
 		t.Fatalf("任意未知 token renew = %v err=%v", renewed, err)
 	}
 }

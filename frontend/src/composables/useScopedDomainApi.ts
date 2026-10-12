@@ -10,6 +10,16 @@ import {
   type OperationLogListParams,
   type UsageRecordListParams
 } from '@/api/client'
+import {
+  mySchedulingPreferencesApi,
+  schedulingPreferencesApi,
+  type SchedulingPreferenceCreatePayload,
+  type SchedulingPreferenceCreateScopeParams,
+  type SchedulingPreferenceListParams,
+  type SchedulingPreferenceOptionsParams,
+  type SchedulingPreferencePatchPayload,
+  type SchedulingPreferenceScopeParams
+} from '@/api/domains/schedulingPreferences'
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
@@ -146,6 +156,29 @@ export function useScopedRouteStrategiesApi(isManagementView: Ref<boolean>) {
     delete: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
       ? api.routeStrategies.delete(id, params)
       : api.myRouteStrategies.delete(id)
+  }
+}
+
+export function useScopedSchedulingPreferencesApi(isManagementView: Ref<boolean>) {
+  return {
+    list: (params?: SchedulingPreferenceListParams) => isManagementView.value
+      ? schedulingPreferencesApi.list(params)
+      : mySchedulingPreferencesApi.list(params),
+    options: (params?: SchedulingPreferenceOptionsParams) => isManagementView.value
+      ? schedulingPreferencesApi.options(params)
+      : mySchedulingPreferencesApi.options(params),
+    detail: (id: string, params?: SchedulingPreferenceScopeParams) => isManagementView.value
+      ? schedulingPreferencesApi.detail(id, params)
+      : mySchedulingPreferencesApi.detail(id),
+    create: (payload: SchedulingPreferenceCreatePayload, params: SchedulingPreferenceCreateScopeParams) => isManagementView.value
+      ? schedulingPreferencesApi.create(payload, params)
+      : mySchedulingPreferencesApi.create(payload),
+    update: (id: string, payload: SchedulingPreferencePatchPayload, params?: SchedulingPreferenceScopeParams) => isManagementView.value
+      ? schedulingPreferencesApi.update(id, payload, params)
+      : mySchedulingPreferencesApi.update(id, payload),
+    delete: (id: string, params?: SchedulingPreferenceScopeParams) => isManagementView.value
+      ? schedulingPreferencesApi.delete(id, params)
+      : mySchedulingPreferencesApi.delete(id)
   }
 }
 

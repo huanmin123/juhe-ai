@@ -7,10 +7,12 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -19,7 +21,45 @@ import (
 //   - juhe_jobs.proxy_latency_* 摘自 maintenance/internal/j3aproxylatency/bootstrap.go
 //   - group_account_stats_dirty 与 statsverify 的 SQLite 最小形同构
 func w14jPGSeedStatements() []string {
+	// M2 启动阶段门禁夹具契约：覆盖库必须自带已封存的阶段记录（记录 JSON
+	// 经共享包 Record 序列化，不在测试侧手写字面量）。
+	stageRecordJSON, err := json.Marshal(capdomain.Record{
+		Stage:       capdomain.StageM2Finalized,
+		RuleVersion: capdomain.RuleVersion,
+		UpdatedAt:   "2026-10-12T08:00:00Z",
+	})
+	if err != nil {
+		panic("marshal capability domain stage record: " + err.Error())
+	}
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS juhe_business.global_settings (
+      key text PRIMARY KEY,
+      value_json text NOT NULL,
+      updated_at text NOT NULL)`,
+		`INSERT INTO juhe_business.global_settings (key, value_json, updated_at)
+      VALUES ('` + capdomain.MigrationSettingKey + `', '` + string(stageRecordJSON) + `', '2026-10-12T08:00:00Z')
+      ON CONFLICT (key) DO NOTHING`,
+		// 调度偏好独立实体（PLAN-20261012T033000000Z P1）启动校验夹具契约：
+		// jobs 启动只读校验（scheduling_preference_schema.go）要求覆盖库自带
+		// scheduling_preferences 表、api_keys 绑定列与合规内置行；旧版外部
+		// 重建的共享覆盖库缺三者会直接撞启动门禁。按 maintenance 权威 DDL
+		// 加法幂等补齐（表在前——api_keys ALTER 的列级 REFERENCES 需要目标
+		// 表先存在；内置行权威值与 maintenance seed 同源，DO NOTHING 幂等，
+		// 同 global_settings 阶段记录先例）。
+		`CREATE TABLE IF NOT EXISTS juhe_business.scheduling_preferences (
+      id text PRIMARY KEY,
+      system_account_id text,
+      name text NOT NULL,
+      chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
+      chat_speed_first_config_json text,
+      built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
+      enabled integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at text NOT NULL,
+      updated_at text NOT NULL)`,
+		`ALTER TABLE juhe_business.api_keys ADD COLUMN IF NOT EXISTS scheduling_preference_id text REFERENCES juhe_business.scheduling_preferences(id)`,
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, built_in, enabled, created_at, updated_at)
+      VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
+      ON CONFLICT (id) DO NOTHING`,
 		`CREATE TABLE IF NOT EXISTS juhe_business.system_teams (
       id text PRIMARY KEY, name text NOT NULL, description text, status text NOT NULL DEFAULT 'active',
       created_by text NOT NULL, created_at text NOT NULL, updated_at text NOT NULL)`,

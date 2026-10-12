@@ -331,6 +331,39 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, message)
 		return
 	}
+	// M2 克隆契约：cloneSourceId 携带时复用 clone-context 的访问范围/归属/
+	// 授权实例禁克隆判定加载源账户（源不存在/已删除/越权 404，授权实例 403，
+	// 读取不稳定 409），并断言目标域 = 源域；随后走普通创建全量校验。不携带
+	// 该字段 = 普通新建。
+	if input.CloneSourceID != nil {
+		context, err := d.Store.FindCloneContext(r.Context(), *input.CloneSourceID, requestScope(r))
+		if err != nil {
+			var forbidden *cloneInteractionForbiddenError
+			var conflict *cloneInteractionConflictError
+			if errors.As(err, &forbidden) {
+				kernel.WriteError(w, http.StatusForbidden, forbidden.Message)
+				return
+			}
+			if errors.As(err, &conflict) {
+				kernel.WriteError(w, http.StatusConflict, conflict.Error())
+				return
+			}
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+			return
+		}
+		if context == nil {
+			kernel.WriteError(w, http.StatusNotFound, "账户不存在")
+			return
+		}
+		requestedDomain := input.CapabilityDomain
+		if strings.TrimSpace(requestedDomain) == "" {
+			requestedDomain = accountscore.CapabilityDomainChat
+		}
+		if context.CapabilityDomain != requestedDomain {
+			kernel.WriteBadRequest(w, "克隆账户能力域必须与源账户一致")
+			return
+		}
+	}
 	result, err := d.Store.Create(r.Context(), input, requestScope(r))
 	if err != nil {
 		d.writeError(w, err)
@@ -448,6 +481,33 @@ func (d *Deps) runPatch(w http.ResponseWriter, r *http.Request, auth *authsys.Au
 				},
 			}, r)
 		}
+	}
+	// M3 显式清理单独审计（D6 只缩不扩 + 计划 §M3）：PATCH 缩小域外遗留集合
+	// 时补记一条「清理域外能力」动作，含账户与被移除值列表；普通编辑不缩小
+	// 时不产生该条目。与上面的常规 update 条目并存（凭据变化已在其中体现）。
+	if d.Sink != nil && len(result.CapabilityLegacyCleanupRemoved) > 0 {
+		access := requestScope(r)
+		d.Sink.Record(authsys.OperationLogEntry{
+			ActorSystemAccountID:          auth.SystemAccountID,
+			ActorUsername:                 auth.Username,
+			ActorDisplayName:              auth.DisplayName,
+			ActorRole:                     auth.Role,
+			OperationScopeSystemAccountID: result.OwnerSystemAccountID,
+			Mode:                          operationMode(access),
+			Module:                        "accounts",
+			Action:                        "cleanup_capability_legacy",
+			OperationKey:                  "accounts.cleanup_capability_legacy",
+			ResourceType:                  "account",
+			ResourceID:                    result.ID,
+			ResourceName:                  result.Name,
+			Summary:                       "清理域外能力：" + result.Name + "（移除 " + strings.Join(result.CapabilityLegacyCleanupRemoved, "、") + "）",
+			Changes: []authsys.OperationLogChange{
+				safeChange("capabilityLegacyModes", "域外能力", result.CapabilityLegacyCleanupRemoved, nil),
+			},
+			Viewers: []authsys.OperationLogViewer{
+				{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},
+			},
+		}, r)
 	}
 	// Node PATCH route tail (accounts.routes.ts:367-369): a health-relevant
 	// change dispatches the post-commit configuration probe. The
@@ -912,7 +972,10 @@ func createBody(body map[string]any) (CreateInput, string) {
 			"superPriorityEnabled", "fallbackEnabled", "proxyProfileId", "schedulable",
 			"groupId", "accountExpiresAt", "availabilitySchedule", "balanceQueryEnabled",
 			"balanceQueryConfig", "temporaryUnavailableContinuousProbeEnabled",
-			"expeditedRecoveryEnabled", "notes":
+			"expeditedRecoveryEnabled", "notes",
+			// M2 能力域契约：capabilityDomain（缺省 chat，创建后不可更改）
+			// 与 cloneSourceId（可选克隆源账户）。
+			"capabilityDomain", "cloneSourceId":
 		default:
 			return CreateInput{}, "账户参数无效"
 		}
@@ -921,6 +984,26 @@ func createBody(body map[string]any) (CreateInput, string) {
 	input.ProviderProtocolProfileID = profileID
 	input.Name = name
 	input.AccountType = accountType
+	// capabilityDomain（M2）：缺省 chat；显式值必须是四枚举之一，否则 400
+	//「能力域无效」。
+	if value, exists := body["capabilityDomain"]; exists && value != nil {
+		text, ok := value.(string)
+		if !ok || !accountscore.AccountCapabilityDomainSet[strings.TrimSpace(text)] {
+			return CreateInput{}, "能力域无效"
+		}
+		input.CapabilityDomain = strings.TrimSpace(text)
+	}
+	// cloneSourceId（M2 克隆契约）：可选；非空时由路由层经 FindCloneContext
+	// 加载源账户并断言目标域 = 源域。不携带或空串 = 普通新建。
+	if value, exists := body["cloneSourceId"]; exists && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		if trimmed := strings.TrimSpace(text); trimmed != "" {
+			input.CloneSourceID = &trimmed
+		}
+	}
 	if credentials, ok := body["credentials"].(map[string]any); ok {
 		input.Credentials = Credentials(credentials)
 	}
@@ -1114,7 +1197,9 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			"healthCheckEndpointMode", "modelMappings", "tags", "accountExpiresAt",
 			"availabilitySchedule", "clearFailureState", "proxyProfileId", "groupId",
 			"balanceQueryEnabled", "balanceQueryConfig",
-			"temporaryUnavailableContinuousProbeEnabled", "expeditedRecoveryEnabled":
+			"temporaryUnavailableContinuousProbeEnabled", "expeditedRecoveryEnabled",
+			// M2 域不可变校验入参（携带即校验，≠ 行现值拒绝）。
+			"capabilityDomain":
 		default:
 			return PatchInput{}, "账户更新参数无效"
 		}
@@ -1340,6 +1425,18 @@ func patchBody(body map[string]any) (PatchInput, string) {
 	if value, exists := body["clearFailureState"]; exists && value != nil {
 		if enabled, ok := value.(bool); ok {
 			input.ClearFailureState = enabled
+		}
+	}
+	// capabilityDomain（M2 域不可变）：携带即 presence；字符串取裁剪值，
+	// null 视为携带 nil（≠ 任何行现值，必被拒绝），其他类型按参数无效。
+	if value, exists := body["capabilityDomain"]; exists {
+		input.CapabilityDomainPresent = true
+		if value != nil {
+			text, ok := value.(string)
+			if !ok {
+				return PatchInput{}, "账户更新参数无效"
+			}
+			input.CapabilityDomain = &text
 		}
 	}
 	return input, ""

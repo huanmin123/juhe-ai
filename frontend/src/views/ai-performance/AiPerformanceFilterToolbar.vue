@@ -30,6 +30,13 @@
           @change="emit('date-range-change')"
           @open-change="emit('date-range-open-change', $event)"
         />
+        <a-select
+          v-model:value="capabilityDomain"
+          :disabled="loading"
+          class="ai-performance-domain-select"
+          :options="capabilityDomainOptions"
+          @change="emit('capability-domain-change')"
+        />
         <AccountManagePanelPopover
           :collection-items="panelCollectionItems"
           :options="accountOptions"
@@ -112,6 +119,16 @@
         />
       </div>
       <div class="ai-performance-mobile-filter-field">
+        <span class="ai-performance-mobile-filter-label">能力域</span>
+        <a-select
+          v-model:value="capabilityDomain"
+          :disabled="loading"
+          class="ai-performance-mobile-filter-control"
+          :options="capabilityDomainOptions"
+          @change="emit('capability-domain-change')"
+        />
+      </div>
+      <div class="ai-performance-mobile-filter-field">
         <span class="ai-performance-mobile-filter-label">监控账户（{{ accountFilterItems.length }}）</span>
         <AccountManagePanel
           class="ai-performance-mobile-filter-control"
@@ -151,6 +168,7 @@ import AccountManagePanelPopover from '@/components/AccountManagePanelPopover.vu
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AiPerformanceOverview, SystemAccountPrincipalSummary } from '@/types/domain'
+import { ACCOUNT_CAPABILITY_DOMAINS, ACCOUNT_CAPABILITY_DOMAIN_LABELS, type AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 
 type AiPerformanceAccountFilterItem = {
   account: AiPerformanceOverview['accounts'][number]
@@ -161,9 +179,18 @@ type AiPerformanceAccountFilterItem = {
   isDefault: boolean
 }
 
+// 能力域筛选值：'all' 哨兵 = 全部（不下发 domain），其余为四枚举域。
+export type CapabilityDomainFilterValue = AccountCapabilityDomain | 'all'
+
+const capabilityDomainOptions: Array<{ label: string; value: CapabilityDomainFilterValue }> = [
+  { label: '全部', value: 'all' },
+  ...ACCOUNT_CAPABILITY_DOMAINS.map((domain) => ({ label: ACCOUNT_CAPABILITY_DOMAIN_LABELS[domain], value: domain }))
+]
+
 const selectedSystemAccountId = defineModel<string>('selectedSystemAccountId', { required: true })
 const selectedSystemAccount = defineModel<PrincipalSelection | undefined>('selectedSystemAccount')
 const dateRange = defineModel<[Dayjs, Dayjs]>('dateRange', { required: true })
+const capabilityDomain = defineModel<CapabilityDomainFilterValue>('capabilityDomain', { required: true })
 
 const props = defineProps<{
   isManagementView: boolean
@@ -207,6 +234,7 @@ const emit = defineEmits<{
   'calendar-change': [value: Array<Dayjs | null> | null]
   'date-range-change': []
   'date-range-open-change': [open: boolean]
+  'capability-domain-change': []
   'account-open-change': [open: boolean]
   'add-account': [id: string]
   'account-search': [value: string]
@@ -242,6 +270,10 @@ const emit = defineEmits<{
 
 .ai-performance-range-picker {
   width: 250px;
+}
+
+.ai-performance-domain-select {
+  width: 120px;
 }
 
 /* 手机端紧凑条（桌面隐藏） */

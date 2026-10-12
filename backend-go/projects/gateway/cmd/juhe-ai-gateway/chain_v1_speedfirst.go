@@ -318,7 +318,7 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
 		}
 	}
-	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope)
+	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
 	if err != nil {
 		return "", err
 	}
@@ -333,7 +333,7 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 		nextExcluded[id] = struct{}{}
 	}
 	nextExcluded[account.ID] = struct{}{}
-	remainingAccounts, err := l.speedFirstRouteEligibleDispatchAccounts(ctx, current, nextExcluded, scope, decisions)
+	remainingAccounts, err := l.speedFirstRouteEligibleDispatchAccounts(ctx, current, nextExcluded, scope, decisions, config)
 	if err != nil {
 		return "", err
 	}
@@ -437,6 +437,7 @@ func (l *v1DispatchLoop) speedFirstRouteEligibleDispatchAccounts(
 	excludedAccountIds map[string]struct{},
 	scope *gatewaydispatch.LatencyScopeInput,
 	decisions chainSpeedFirstDecisions,
+	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
 ) ([]gatewaydispatch.AccountCandidate, error) {
 	remaining := streamRetryDispatchAccounts(current.Accounts, excludedAccountIds)
 	if l.budgets.tracker != nil {
@@ -458,7 +459,7 @@ func (l *v1DispatchLoop) speedFirstRouteEligibleDispatchAccounts(
 	}
 	output := make([]gatewaydispatch.AccountCandidate, 0, len(remaining))
 	for _, account := range remaining {
-		degraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope)
+		degraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
 		if err != nil {
 			return nil, err
 		}
@@ -733,7 +734,7 @@ func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
 			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
 		}
 	}
-	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope)
+	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
 	if err != nil {
 		return "", err
 	}
@@ -760,7 +761,7 @@ func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
 		nextExcluded[id] = struct{}{}
 	}
 	nextExcluded[account.ID] = struct{}{}
-	remainingAccounts, err := l.speedFirstRouteEligibleDispatchAccounts(ctx, current, nextExcluded, scope, decisions)
+	remainingAccounts, err := l.speedFirstRouteEligibleDispatchAccounts(ctx, current, nextExcluded, scope, decisions, config)
 	if err != nil {
 		return "", err
 	}

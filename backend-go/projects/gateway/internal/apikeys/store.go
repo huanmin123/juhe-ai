@@ -602,8 +602,13 @@ type ListItem struct {
 	ExpiresAt            *string               `json:"expiresAt,omitempty"`
 	QuotaLimits          QuotaLimits           `json:"quotaLimits"`
 	AvailabilitySchedule *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
-	Usage                any                   `json:"usage"`
-	Revision             string                `json:"revision"`
+	// 调度偏好绑定投影（P1）：null = 历史「沿用策略路由（迁移期）」，前端
+	// 不得回显为成本优先；绑定行（含停用）回显 id/name/builtIn。
+	SchedulingPreferenceID      *string `json:"schedulingPreferenceId"`
+	SchedulingPreferenceName    *string `json:"schedulingPreferenceName"`
+	SchedulingPreferenceBuiltIn *bool   `json:"schedulingPreferenceBuiltIn"`
+	Usage                       any     `json:"usage"`
+	Revision                    string  `json:"revision"`
 }
 
 // ListPageResult mirrors ApiKeyListResult (total is the paged upper bound).
@@ -701,6 +706,10 @@ type apiKeyRow struct {
 	quotaJSON           sql.NullString
 	scheduleJSON        sql.NullString
 	updatedAt           string
+
+	schedulingPreferenceID      sql.NullString
+	schedulingPreferenceName    sql.NullString
+	schedulingPreferenceBuiltIn sql.NullInt64
 }
 
 func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error) {
@@ -713,6 +722,7 @@ func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error
 	}
 	targets = append(targets,
 		&row.routeStrategyID, &row.routeStrategyName, &row.routeStrategyMode, &row.routeStrategyStatus,
+		&row.schedulingPreferenceID, &row.schedulingPreferenceName, &row.schedulingPreferenceBuiltIn,
 		&row.name, &row.description, &row.keyPrefix, &row.keySuffix, &row.status, &row.isDefault,
 		&row.purpose, &row.expiresAt, &row.quotaJSON, &row.scheduleJSON, &row.updatedAt)
 	err := scan(targets...)
@@ -723,8 +733,18 @@ func scanAPIKeyRow(scan func(...any) error, includeOwner bool) (apiKeyRow, error
 func apiKeyJoin(s *Store) string {
 	return ` INNER JOIN ` + s.table("route_strategies") + ` route_strategies
 		ON route_strategies.id = api_keys.route_strategy_id
-		AND route_strategies.system_account_id = api_keys.system_account_id`
+		AND route_strategies.system_account_id = api_keys.system_account_id` +
+		// 调度偏好绑定投影 join：绑定行按 id 直连（含停用行照常回显；删除被
+		// 引用偏好被 409 挡住，绑定悬空不在写入口契约内）。
+		` LEFT JOIN ` + s.table("scheduling_preferences") + ` scheduling_preferences
+		ON scheduling_preferences.id = api_keys.scheduling_preference_id`
 }
+
+// apiKeySchedulingPreferenceColumns 是列表/详情共用的绑定投影三列（顺序与
+// scanAPIKeyRow 扫描目标一致）。
+const apiKeySchedulingPreferenceColumns = `api_keys.scheduling_preference_id,
+		scheduling_preferences.name AS scheduling_preference_name,
+		scheduling_preferences.built_in AS scheduling_preference_built_in,`
 
 // ListPage mirrors listApiKeysPageAsync (sqlite sync shape): scope + filters,
 // is_default DESC then recency ordering, pageSize+1 probe and the paged total
@@ -764,6 +784,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	}
 	columns += `api_keys.route_strategy_id, route_strategies.name AS route_strategy_name,
 		route_strategies.mode AS route_strategy_mode, route_strategies.status AS route_strategy_status,
+		` + apiKeySchedulingPreferenceColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
 		api_keys.availability_schedule_json, api_keys.updated_at`
@@ -917,23 +938,26 @@ func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error)
 		return ListItem{}, err
 	}
 	item := ListItem{
-		ID:                   row.id,
-		Name:                 row.name,
-		Description:          nullPtrString(row.description),
-		KeyPrefix:            row.keyPrefix,
-		KeySuffix:            row.keySuffix,
-		Status:               row.status,
-		IsDefault:            row.isDefault == 1,
-		Purpose:              normalizePurpose(row.purpose),
-		RouteStrategyID:      row.routeStrategyID,
-		RouteStrategyName:    nullPtrString(row.routeStrategyName),
-		RouteStrategyMode:    mode,
-		RouteStrategyStatus:  normalizedRouteStrategyStatus(row.routeStrategyStatus),
-		ExpiresAt:            nullPtrString(row.expiresAt),
-		QuotaLimits:          quotaLimits,
-		AvailabilitySchedule: schedule,
-		Usage:                emptyListUsageSummary(),
-		Revision:             row.updatedAt,
+		ID:                          row.id,
+		Name:                        row.name,
+		Description:                 nullPtrString(row.description),
+		KeyPrefix:                   row.keyPrefix,
+		KeySuffix:                   row.keySuffix,
+		Status:                      row.status,
+		IsDefault:                   row.isDefault == 1,
+		Purpose:                     normalizePurpose(row.purpose),
+		RouteStrategyID:             row.routeStrategyID,
+		RouteStrategyName:           nullPtrString(row.routeStrategyName),
+		RouteStrategyMode:           mode,
+		RouteStrategyStatus:         normalizedRouteStrategyStatus(row.routeStrategyStatus),
+		ExpiresAt:                   nullPtrString(row.expiresAt),
+		QuotaLimits:                 quotaLimits,
+		AvailabilitySchedule:        schedule,
+		SchedulingPreferenceID:      nullPtrString(row.schedulingPreferenceID),
+		SchedulingPreferenceName:    nullPtrString(row.schedulingPreferenceName),
+		SchedulingPreferenceBuiltIn: nullPtrBoolFromNullInt64(row.schedulingPreferenceBuiltIn),
+		Usage:                       emptyListUsageSummary(),
+		Revision:                    row.updatedAt,
 	}
 	if access.canAccessAll() {
 		item.SystemAccountID = &row.systemAccountID
@@ -987,6 +1011,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	}
 	columns += `api_keys.route_strategy_id, route_strategies.name AS route_strategy_name,
 		route_strategies.mode AS route_strategy_mode, route_strategies.status AS route_strategy_status,
+		` + apiKeySchedulingPreferenceColumns + `
 		api_keys.name, api_keys.description, api_keys.key_prefix, api_keys.key_suffix, api_keys.status,
 		api_keys.is_default, api_keys.purpose, api_keys.expires_at, api_keys.quota_limits_json,
 		api_keys.availability_schedule_json, api_keys.updated_at`
@@ -1068,15 +1093,18 @@ func (s *Store) FindSecret(ctx context.Context, id string, access AccessScope) (
 }
 
 // CreateInput is the validated create payload (apiKeyCreateSchema subset the
-// store consumes); nil pointers mean the field was absent.
+// store consumes); nil pointers mean the field was absent. nil 的
+// SchedulingPreferenceID（缺省或显式 null）持久化内置固定 ID（契约：管理/
+// 个人/公开创建同规则）。
 type CreateInput struct {
-	Name                 string
-	Description          *string
-	RouteStrategyID      *string
-	Status               *string
-	ExpiresAt            *string
-	QuotaLimits          any
-	AvailabilitySchedule any
+	Name                   string
+	Description            *string
+	RouteStrategyID        *string
+	Status                 *string
+	ExpiresAt              *string
+	QuotaLimits            any
+	AvailabilitySchedule   any
+	SchedulingPreferenceID *string
 }
 
 // Create mirrors createApiKeyRecordAsync: sealed random key, default-strategy
@@ -1149,6 +1177,13 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	if err != nil {
 		return nil, nil, err
 	}
+	// 调度偏好绑定（P1 五写入口矩阵）：缺省/null → 内置固定 ID；非空 ID →
+	// 同 owner 启用偏好或内置行，非法统一 400。purpose 恒 'general'（INSERT
+	// 字面量），无 chat 拒绝分支。
+	preference, err := s.resolveSchedulingPreferenceBinding(ctx, tx, ownerID, input.SchedulingPreferenceID)
+	if err != nil {
+		return nil, nil, err
+	}
 	sealed, err := EncryptJSON(s.secret, secretPayload{Key: key})
 	if err != nil {
 		return nil, nil, err
@@ -1156,10 +1191,11 @@ func (s *Store) Create(ctx context.Context, input CreateInput, access AccessScop
 	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("api_keys")+`
 		(id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
 		 key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json,
-		 availability_schedule_json, availability_schedule_next_check_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?)`),
+		 availability_schedule_json, availability_schedule_next_check_at, scheduling_preference_id,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'general', ?, ?, ?, ?, ?, ?, ?)`),
 		id, ownerID, strategy.id, name, description, HashSecret(key), keyPrefix, keySuffix,
-		sealed, status, expiresAt, quotaJSONValue, scheduleJSONValue, nextCheckAt, nowISO, revision)
+		sealed, status, expiresAt, quotaJSONValue, scheduleJSONValue, nextCheckAt, preference.id, nowISO, revision)
 	if err != nil {
 		if duplicate := duplicateAPIKeyNameError(err, name); duplicate != nil {
 			return nil, nil, duplicate
@@ -1558,4 +1594,14 @@ func nullPtrString(value sql.NullString) *string {
 		return nil
 	}
 	return &value.String
+}
+
+// nullPtrBoolFromNullInt64 把 built_in 整数列投影为可空 bool（NULL → nil，
+// 0 → false，1 → true）。
+func nullPtrBoolFromNullInt64(value sql.NullInt64) *bool {
+	if !value.Valid {
+		return nil
+	}
+	flag := value.Int64 == 1
+	return &flag
 }

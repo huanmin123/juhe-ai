@@ -11,6 +11,7 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
+import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import type { AiPerformanceAccountOption, AiPerformanceBaseResult, AiPerformanceOverview, AiPerformanceSeriesResult } from '@/types/domain'
 import { chartColors, orderedAiPerformanceSeries } from './aiPerformanceChartOptions'
 
@@ -26,6 +27,8 @@ interface UseAiPerformanceAccountSelectionOptions {
   clearSeries: () => void
   requestRender: () => void
   selectedSystemAccountId: () => string | undefined
+  // 当前能力域筛选；undefined = 全部（不下发 domain）。进入账户候选请求 key，保证跨域响应互相失效。
+  capabilityDomain: () => AccountCapabilityDomain | undefined
 }
 
 export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccountSelectionOptions) {
@@ -136,6 +139,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
           systemAccountId: request.systemAccountId,
           keyword: request.keyword,
           accountIds: request.accountIds,
+          domain: request.domain,
           limit: 50
         }
         const result = options.isManagementView.value
@@ -265,15 +269,17 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     activeAccountIds.value = activeAccountIds.value.filter((id) => visibleIds.has(id))
   }
 
-  function currentAccountOptionsRequest(): { key: string; systemAccountId?: string; keyword: string; accountIds: string[] } {
+  function currentAccountOptionsRequest(): { key: string; systemAccountId?: string; keyword: string; accountIds: string[]; domain?: AccountCapabilityDomain } {
     const keyword = accountSearchKeyword.value.trim()
     const systemAccountId = options.selectedSystemAccountId()
     const accountIds = [...addedAccountIds.value]
+    const domain = options.capabilityDomain()
     return {
-      key: JSON.stringify([options.isManagementView.value ? 'management' : 'self', systemAccountId ?? '', keyword, accountIds]),
+      key: JSON.stringify([options.isManagementView.value ? 'management' : 'self', systemAccountId ?? '', keyword, domain ?? '', accountIds]),
       systemAccountId,
       keyword,
-      accountIds
+      accountIds,
+      domain
     }
   }
 

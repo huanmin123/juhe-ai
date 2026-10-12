@@ -5,6 +5,10 @@
 // 一次客户端命令一个阶段跃迁；阶段写入全部走条件更新（首次 INSERT
 // ON CONFLICT DO NOTHING，跃迁 UPDATE 带 stage 谓词），保证并行迁移进程
 // 只有一个执行者能完成同一跃迁。
+//
+// 读取面（ReadRecord）供 gateway/jobs 启动门禁跨模块使用；写入原语
+// （ClaimNewStage/TransitionStage）供 maintenance 迁移执行器使用——阶段
+// 解析语义全仓库只此一份，禁止在任何模块复制。
 
 package capabilitydomain
 
@@ -68,8 +72,10 @@ func ParseRecord(valueJSON string) (Record, error) {
 	return record, nil
 }
 
-// readRecord 读取阶段记录；无记录返回 StageNone 且 ok=false。
-func readRecord(ctx context.Context, db *sql.DB, dialect Dialect) (Record, bool, error) {
+// ReadRecord 读取阶段记录（按方言用占位符）；无记录返回 ok=false。
+// gateway/jobs 启动门禁与 maintenance 迁移执行器共用此读取语义，解析语义
+// 只此一份。
+func ReadRecord(ctx context.Context, db *sql.DB, dialect Dialect) (Record, bool, error) {
 	query := "SELECT value_json FROM global_settings WHERE key = ?"
 	args := []any{MigrationSettingKey}
 	if dialect == DialectPostgres {
@@ -90,6 +96,29 @@ func readRecord(ctx context.Context, db *sql.DB, dialect Dialect) (Record, bool,
 	return record, true, nil
 }
 
+// stageGateActionText 是启动阶段门禁的统一运维动作指引（三个失败臂共用，
+// 迁移命令序列与部署顺序契约一致：停写 → 显式 M1 → m2-cutover）。
+const stageGateActionText = "运维动作：先停写（停止 gateway/jobs）并验证可恢复备份，再依次执行 juhe-ai-maintenance --migrate-account-capability-domain --account-capability-domain-stage=m1 与 juhe-ai-maintenance --migrate-account-capability-domain --account-capability-domain-stage=m2-cutover（均需显式携带 --node-stopped --go-stopped --backup-confirmed），核验通过后再启动本进程"
+
+// RequireM2Finalized 是 gateway/jobs 启动阶段门禁：阶段记录必须存在、stage
+// 必须已是 m2_finalized（ruleVersion 与本包一致由 ParseRecord 在读取时强制，
+// 损坏记录同样在此报错）。任一不满足即返回携带运维动作（迁移命令序列）的
+// 错误，调用方原样 fail-fast；启动只读，不把启动变成迁移执行者。两侧启动
+// 门禁共用本函数，禁止在调用侧复制判定语义与文案。
+func RequireM2Finalized(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	record, present, err := ReadRecord(ctx, db, dialect)
+	if err != nil {
+		return fmt.Errorf("AI 账户能力域阶段记录 %s 读取失败：%v。%s（记录损坏或 ruleVersion 不符时迁移命令同样拒绝执行，先核对记录来源与 maintenance 版本，禁止手工改写记录）", MigrationSettingKey, err, stageGateActionText)
+	}
+	if !present {
+		return fmt.Errorf("AI 账户能力域阶段记录 %s 不存在，M2 启动门禁要求 m2_finalized。%s", MigrationSettingKey, stageGateActionText)
+	}
+	if record.Stage != StageM2Finalized {
+		return fmt.Errorf("AI 账户能力域阶段记录当前为 %s，M2 启动门禁要求 m2_finalized。%s", record.Stage, stageGateActionText)
+	}
+	return nil
+}
+
 // stagePredicate 是条件更新的 stage 谓词表达式（方言分支）。
 func stagePredicate(dialect Dialect) string {
 	if dialect == DialectPostgres {
@@ -98,9 +127,9 @@ func stagePredicate(dialect Dialect) string {
 	return `json_extract(value_json, '$.stage')`
 }
 
-// claimNewStage 首次写入阶段记录（要求记录尚不存在）。并发竞争下只有一个
+// ClaimNewStage 首次写入阶段记录（要求记录尚不存在）。并发竞争下只有一个
 // INSERT 生效；返回 acquired=false 表示另一个执行者已写入。
-func claimNewStage(ctx context.Context, tx *sql.Tx, dialect Dialect, stage Stage, now time.Time) (bool, error) {
+func ClaimNewStage(ctx context.Context, tx *sql.Tx, dialect Dialect, stage Stage, now time.Time) (bool, error) {
 	payload, err := json.Marshal(Record{Stage: stage, RuleVersion: RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)})
 	if err != nil {
 		return false, err
@@ -127,9 +156,9 @@ func claimNewStage(ctx context.Context, tx *sql.Tx, dialect Dialect, stage Stage
 	return affected == 1, nil
 }
 
-// transitionStage 条件更新阶段：仅当当前 stage 等于 expect 时写入 next。
+// TransitionStage 条件更新阶段：仅当当前 stage 等于 expect 时写入 next。
 // 返回 acquired=false 表示当前 stage 已被并行执行者改变。
-func transitionStage(ctx context.Context, tx *sql.Tx, dialect Dialect, expect, next Stage, now time.Time) (bool, error) {
+func TransitionStage(ctx context.Context, tx *sql.Tx, dialect Dialect, expect, next Stage, now time.Time) (bool, error) {
 	payload, err := json.Marshal(Record{Stage: next, RuleVersion: RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)})
 	if err != nil {
 		return false, err

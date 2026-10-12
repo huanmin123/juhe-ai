@@ -192,7 +192,7 @@ func (s *w1vDecisionsStub) OrderAsync(ctx context.Context, accounts []gatewaydis
 	return gatewaydispatch.LatencyDegradationOrder{Accounts: accounts}, nil
 }
 
-func (s *w1vDecisionsStub) IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput) (bool, error) {
+func (s *w1vDecisionsStub) IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error) {
 	s.degradedCalls++
 	if s.degradedErr != nil {
 		return false, s.degradedErr
@@ -1031,7 +1031,7 @@ func TestW1VSpeedFirstRouteEligibleDispatchAccounts(t *testing.T) {
 	stub := &w1vDecisionsStub{}
 	loop.current.Accounts = []gatewaydispatch.AccountCandidate{{ID: "acc_1"}, {ID: "acc_2"}}
 	remaining, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current,
-		map[string]struct{}{"acc_2": {}}, nil, stub)
+		map[string]struct{}{"acc_2": {}}, nil, stub, nil)
 	if err != nil {
 		t.Fatalf("排除集过滤不应报错: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestW1VSpeedFirstRouteEligibleDispatchAccounts(t *testing.T) {
 	loop = newV1TestLoop(t, sink)
 	loop.current.Accounts = []gatewaydispatch.AccountCandidate{{ID: "acc_good"}, {ID: ""}}
 	w1vLoopBudgets(t, loop)
-	remaining, err = loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current, nil, nil, stub)
+	remaining, err = loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current, nil, nil, stub, nil)
 	if err != nil {
 		t.Fatalf("尝试预算过滤不应报错: %v", err)
 	}
@@ -1057,7 +1057,7 @@ func TestW1VSpeedFirstRouteEligibleDispatchAccounts(t *testing.T) {
 	stub = &w1vDecisionsStub{degradedByAccount: map[string]bool{"acc_2": true}}
 	w1vEnableLatencyScope(loop)
 	scope := loop.speedFirstLatencyScopeOf(loop.current)
-	remaining, err = loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current, nil, scope, stub)
+	remaining, err = loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current, nil, scope, stub, nil)
 	if err != nil {
 		t.Fatalf("降级过滤不应报错: %v", err)
 	}
@@ -1069,7 +1069,7 @@ func TestW1VSpeedFirstRouteEligibleDispatchAccounts(t *testing.T) {
 	loop = newV1TestLoop(t, sink)
 	loop.current.Accounts = []gatewaydispatch.AccountCandidate{{ID: "acc_1"}}
 	stub = &w1vDecisionsStub{degradedErr: errors.New("降级查询失败")}
-	remaining, err = loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current, nil, scope, stub)
+	remaining, err = loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), loop.current, nil, scope, stub, nil)
 	if err == nil || err.Error() != "降级查询失败" {
 		t.Fatalf("err = %v", err)
 	}

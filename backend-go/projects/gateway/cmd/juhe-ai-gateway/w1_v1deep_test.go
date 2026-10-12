@@ -49,7 +49,7 @@ func (f *w1DeepLatencyFake) OrderAsync(context.Context, []gatewaydispatch.Accoun
 	return gatewaydispatch.LatencyDegradationOrder{}, nil
 }
 
-func (f *w1DeepLatencyFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput) (bool, error) {
+func (f *w1DeepLatencyFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput, _ *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error) {
 	f.degradedCalls++
 	if f.degradedCalls > 1 && f.errEligible != nil {
 		return false, f.errEligible
@@ -927,14 +927,14 @@ func TestW1SpeedFirstEligibleWithBudgetTracker(t *testing.T) {
 	current.Accounts = []gatewaydispatch.AccountCandidate{{ID: "acc_1"}, {ID: "acc_2"}}
 	scope := &gatewaydispatch.LatencyScopeInput{SystemAccountID: "sys_1"}
 	remaining, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current,
-		map[string]struct{}{"acc_1": {}}, scope, loop.speedFirstDecisionsOf())
+		map[string]struct{}{"acc_1": {}}, scope, loop.speedFirstDecisionsOf(), nil)
 	if err != nil || len(remaining) != 1 || remaining[0].ID != "acc_2" {
 		t.Fatalf("remaining = %+v, %v", remaining, err)
 	}
 	// 空运行时键：预算登记报错按“不允许尝试”吞掉（continue），候选直接跳过。
 	current.Accounts = []gatewaydispatch.AccountCandidate{{ID: ""}}
 	blocked, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current,
-		nil, scope, loop.speedFirstDecisionsOf())
+		nil, scope, loop.speedFirstDecisionsOf(), nil)
 	if err != nil || len(blocked) != 0 {
 		t.Fatalf("空账户键必须被跳过 = %+v, %v", blocked, err)
 	}

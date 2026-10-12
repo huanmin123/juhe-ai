@@ -25,17 +25,17 @@ import (
 // 仍留本包。
 
 const (
-	gptOpenAIV1ProfileIDConstant         = "profile_gpt_openai_v1"
-	xaiOpenAIV1ProfileID                 = "profile_xai_openai_v1"
-	deepSeekOpenAIV1ProfileID            = "profile_deepseek_openai_v1"
+	gptOpenAIV1ProfileIDConstant         = accountscore.GptOpenAIV1ProfileID
+	xaiOpenAIV1ProfileID                 = accountscore.XaiOpenAIV1ProfileID
+	deepSeekOpenAIV1ProfileID            = accountscore.DeepSeekOpenAIV1ProfileID
 	deepSeekAnthropicV1ProfileID         = accountscore.DeepSeekAnthropicV1ProfileID
-	glmGeneralOpenAIV1ProfileID          = "profile_glm_general_openai_v1"
-	glmCodingOpenAIV1ProfileID           = "profile_glm_coding_openai_v1"
+	glmGeneralOpenAIV1ProfileID          = accountscore.GlmGeneralOpenAIV1ProfileID
+	glmCodingOpenAIV1ProfileID           = accountscore.GlmCodingOpenAIV1ProfileID
 	glmCodingAnthropicV1ProfileID        = accountscore.GlmCodingAnthropicV1ProfileID
-	geminiOpenAIChatV1BetaProfileID      = "profile_gemini_openai_chat_v1beta"
-	minimaxOpenAIV1ProfileID             = "profile_minimax_openai_v1"
-	volcengineOpenAIV1ProfileID          = "profile_volcengine_openai_v1"
-	qwenOpenAIV1ProfileID                = "profile_qwen_openai_v1"
+	geminiOpenAIChatV1BetaProfileID      = accountscore.GeminiOpenAIChatV1BetaProfileID
+	minimaxOpenAIV1ProfileID             = accountscore.MinimaxOpenAIV1ProfileID
+	volcengineOpenAIV1ProfileID          = accountscore.VolcengineOpenAIV1ProfileID
+	qwenOpenAIV1ProfileID                = accountscore.QwenOpenAIV1ProfileID
 	anthropicProviderCode                = accountscore.AnthropicProviderCode
 	geminiProviderCode                   = accountscore.GeminiProviderCode
 	anthropicProtocolCodeConstant        = accountscore.AnthropicProtocolCode
@@ -63,18 +63,15 @@ var openAIChatEndpointModeSet = accountscore.StringSet(openAIChatEndpointModes)
 // glmVideoEndpointModeSet 是 glm OpenAI 协议档案可显式勾选的视频端点模式
 // （M3 cogvideo adapter，契约 §7.1；与 openai 族共享 video_* token，opt-in
 // 不进默认集——DefaultOpenAIEndpointModes 的 glm 分支仍只落 chat 对）。
-var glmVideoEndpointModeSet = accountscore.StringSet([]string{
-	"video_create", "video_get", "video_content", "video_cancel",
-})
+// M2 下沉 accountscore（capabilityallowed.go 词表路由共用，禁止两处词表）。
+var glmVideoEndpointModeSet = accountscore.StringSet(accountscore.GlmVideoEndpointModeValues)
 
 // glmSpeechEndpointModeSet 是 glm OpenAI 协议档案可显式勾选的同步音频端点
 // 模式（M6 语音透传，契约 §7.2：audio_speech（TTS 透传 /api/paas/v4/
 // audio/speech）+ audio_transcription_json（STT 透传 transcriptions/
 // translations）；与 openai 族共享 token，opt-in 不进默认集——glm 默认集
 // 仍只落 chat 对）。
-var glmSpeechEndpointModeSet = accountscore.StringSet([]string{
-	"audio_speech", "audio_transcription_json",
-})
+var glmSpeechEndpointModeSet = accountscore.StringSet(accountscore.GlmSpeechEndpointModeValues)
 
 // minimaxMediaEndpointModeSet 是 minimax 媒体档案（profile_minimax_openai_v1）
 // 可声明的全部端点模式（M3，契约 §8）：audio_speech（t2a_v2）+ video_*
@@ -82,25 +79,20 @@ var glmSpeechEndpointModeSet = accountscore.StringSet([]string{
 // responses（MiniMax 聊天端点非 OpenAI Chat 形态）；全部 opt-in，默认集
 // 只有 audio_speech（与档案 DefaultHealthCheckModel=speech-02-turbo 的
 // 健康检查面对应，同 glm 默认 chat 对的先例结构）。
-var minimaxMediaEndpointModeSet = accountscore.StringSet([]string{
-	"audio_speech", "video_create", "video_get", "video_content", "video_cancel",
-})
+var minimaxMediaEndpointModeSet = accountscore.StringSet(accountscore.MinimaxMediaEndpointModeValues)
 
 // volcengineEndpointModeSet 是 volcengine 档案（profile_volcengine_openai_v1）
 // 可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat）：chat 对
-//（豆包对话 OpenAI 兼容端点 ark /api/v3/chat/completions，出站按 /api/v3
+// （豆包对话 OpenAI 兼容端点 ark /api/v3/chat/completions，出站按 /api/v3
 // 服务根归一）+ video_* 四值（video_generation）+ audio_speech（豆包 TTS
 // openspeech /api/v3/tts adapter，语音应用双值凭据 speech_appid/speech_token
 // ——缺失即该账户无该能力，派发时显式失败）。全部 opt-in；默认集 video_get
-//（只读任务查询形态——volcengine 无零费用健康检查面，视频/语音均按量计费
+// （只读任务查询形态——volcengine 无零费用健康检查面，视频/语音均按量计费
 // 不做自动真实生成探针（媒体设计 §11.9），video_get 是唯一零费用档的合法
 // 默认；chat_json/chat_sse 与创建 video_create / 语音 audio_speech 均需显式
 // 开启——chat 探针同为真实计费请求，且档案 DefaultHealthCheckModel 仍为
 // 媒体模型，chat 进默认集会让直建账户默认形态与检查模型错配）。
-var volcengineEndpointModeSet = accountscore.StringSet([]string{
-	"chat_json", "chat_sse",
-	"video_create", "video_get", "video_content", "video_cancel", "audio_speech",
-})
+var volcengineEndpointModeSet = accountscore.StringSet(accountscore.VolcengineEndpointModeValues)
 
 // qwenEndpointModeSet 是 qwen 档案（profile_qwen_openai_v1）可声明的全部
 // 端点模式（M3 第五批 video_* 四值 + M3f 长音频 audio_job_* 四值 + 对话批
@@ -112,11 +104,7 @@ var volcengineEndpointModeSet = accountscore.StringSet([]string{
 // ——同 volcengine 先例：qwen 无零费用探针面，视频/长转写/对话不做自动真实
 // 生成探针（媒体设计 §11.9），创建 video_create / audio_job_create 与 chat
 // 对仍需显式开启）。
-var qwenEndpointModeSet = accountscore.StringSet([]string{
-	"chat_json", "chat_sse",
-	"video_create", "video_get", "video_content", "video_cancel",
-	"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
-})
+var qwenEndpointModeSet = accountscore.StringSet(accountscore.QwenEndpointModeValues)
 
 func stringSet(values []string) map[string]bool {
 	return accountscore.StringSet(values)
@@ -474,7 +462,7 @@ func normalizeGeminiEndpointModesForWrite(value optionalValue, defaults endpoint
 // normalizeDeepSeekEndpointModesForWrite mirrors the deepSeek driver body:
 // anthropic profiles pin the messages pair, openai profiles normalize plainly.
 func normalizeDeepSeekEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
-	anthropicMessagesModes := map[string]bool{"messages_json": true, "messages_sse": true}
+	anthropicMessagesModes := accountscore.StringSet(accountscore.AnthropicMessagesEndpointModeValues)
 	if isAnthropicProtocolProfileOf(context.predicate()) || context.providerProtocolProfileID == deepSeekAnthropicV1ProfileID {
 		pinned := context
 		pinned.providerCode = deepSeekProviderCode
@@ -506,7 +494,7 @@ func normalizeDeepSeekEndpointModesForWrite(value optionalValue, context endpoin
 // 视频能力的 glm 账户在创建/编辑时被拒，/v1/videos 创建链按 video_create
 // 候选过滤无账户可命中，与 M2 openai 族 video_* 同语义，不进默认集)。
 func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
-	anthropicMessagesModes := map[string]bool{"messages_json": true, "messages_sse": true}
+	anthropicMessagesModes := accountscore.StringSet(accountscore.AnthropicMessagesEndpointModeValues)
 	if isAnthropicProtocolProfileOf(context.predicate()) || context.providerProtocolProfileID == glmCodingAnthropicV1ProfileID {
 		pinned := context
 		pinned.providerCode = glmProviderCode
@@ -579,7 +567,7 @@ func normalizeMinimaxEndpointModesForWrite(value optionalValue, context endpoint
 }
 
 // normalizeVolcengineEndpointModesForWrite 是 volcengine 档案的写侧归一化
-//（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat；沿 minimax driver 结构）：值域
+// （M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat；沿 minimax driver 结构）：值域
 // 校验用 openai 族词表（chat 对/video_*/audio_speech 是跨协议共享 token），
 // 再收敛到 volcengine 集——responses_json/responses_sse 等模式对 volcengine
 // 账户报错（档案 Capabilities 声明 chat+视频+语音，无原生 Responses 面）。

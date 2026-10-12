@@ -2,27 +2,46 @@
   <section class="form-section">
     <a-form-item label="上游接口能力" tooltip="声明这个账号真实上游支持的接口形态。未勾选的上游请求不会进入该账号候选；OAuth 账号按来源能力只读。">
       <div class="endpoint-mode-grid">
-        <template v-for="row in endpointModeRows" :key="row.kind === 'group' ? row.key : row.value">
-          <a-checkbox
-            v-if="row.kind === 'mode'"
-            :checked="form.supportedEndpointModes.includes(row.value)"
-            :disabled="endpointModesDisabled"
-            @change="setModeEnabled(row.value, $event.target.checked)"
-          >
-            {{ row.label }}
-          </a-checkbox>
-          <div v-else class="endpoint-mode-group">
-            <a-checkbox
-              :checked="isGroupChecked(row.modes)"
-              :indeterminate="isGroupIndeterminate(row.modes)"
-              :disabled="endpointModesDisabled"
-              :title="row.tooltip"
-              @change="toggleGroup(row, $event.target.checked)"
-            >
-              {{ row.label }}
-            </a-checkbox>
-          </div>
-        </template>
+        <a-checkbox
+          v-for="option in endpointModeOptions"
+          :key="option.value"
+          :checked="form.supportedEndpointModes.includes(option.value)"
+          :disabled="endpointModesDisabled"
+          @change="setModeEnabled(option.value, $event.target.checked)"
+        >
+          {{ option.label }}
+        </a-checkbox>
+      </div>
+      <!-- 存量混合账户的域外遗留声明（D6 三集合）：不进勾选集、编辑装载不裁剪，
+           提交时随完整声明集原样带回；只能经 M3 显式清理动作缩小。 -->
+      <div v-if="outOfDomainDeclaredModes.length" class="out-of-domain-modes">
+        <span class="out-of-domain-label">域外能力（保留）</span>
+        <a-tooltip
+          v-for="mode in outOfDomainDeclaredModes"
+          :key="mode"
+          title="该能力超出当前能力域允许集，属于存量账户的遗留声明：此处不可勾选或修改，保存时原样保留，不影响现有派发。"
+        >
+          <a-tag class="out-of-domain-tag">{{ endpointModeLabel(mode) }}</a-tag>
+        </a-tooltip>
+        <!-- M3 显式清理动作（D6 只缩不扩）：确认后从声明集移除全部域外遗留值，
+             保存时提交不含被清理值的完整 modes 数组，服务端放行缩小并单独审计。 -->
+        <a-popconfirm
+          v-if="!endpointModesDisabled"
+          title="清理域外能力"
+          ok-text="确认清理"
+          cancel-text="取消"
+          @confirm="cleanupOutOfDomainModes"
+        >
+          <template #title>
+            <div class="out-of-domain-confirm">
+              <p>将从声明集中移除以下域外遗留能力（保存后生效，不影响域内能力）：</p>
+              <p class="out-of-domain-confirm-modes">{{ outOfDomainCleanupSummary }}</p>
+            </div>
+          </template>
+          <a-button class="out-of-domain-cleanup" danger size="small" type="link">
+            清理域外能力
+          </a-button>
+        </a-popconfirm>
       </div>
     </a-form-item>
     <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
@@ -107,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
@@ -126,10 +145,10 @@ import {
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
-import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
+import { accountEndpointModeLabel, accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import {
-  endpointModesForProfile
-} from './accountProviderCapabilities'
+  allowedEndpointModesFor
+} from './accountCapabilityDomains'
 import {
   defaultAccountModelMappingUpstreamEndpointFamily,
   defaultAccountModelMappingSourceEndpointFamily,
@@ -177,69 +196,52 @@ const modelMappingTooltip = computed(() => (
     : '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
-  const allowedModes = new Set(endpointModesForProfile(activeProfile.value))
+  // M2 能力域收口（D6）：chat 域允许集 =（15 值对话锚集合 + images_json）∩
+  // 供应商写侧词表——视频/音频任务组不再出现在对话表单（媒体域走独立精简表单）。
+  const allowedModes = new Set(allowedEndpointModesFor({
+    capabilityDomain: 'chat',
+    providerCode: props.form.providerCode,
+    profile: activeProfile.value,
+    accountType: props.form.type
+  }))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
 })
-type EndpointModeRow =
-  | { kind: 'mode'; value: AccountSupportedEndpointMode; label: string }
-  | { kind: 'group'; key: string; label: string; tooltip: string; modes: AccountSupportedEndpointMode[] }
 
-// 视频与长音频任务是同一业务能力的生命周期端点（创建/查询/内容/取消），
-// 按业务语义不可拆分——支持即全部端点支持，表单按能力成组勾选、不提供
-// 单独微调。仅展示层分组，supportedEndpointModes 的词表与派发语义不变。
-const ENDPOINT_MODE_GROUPS: Array<{ key: string; label: string; tooltip: string; modes: AccountSupportedEndpointMode[] }> = [
-  {
-    key: 'video',
-    label: '视频生成（Videos API）',
-    tooltip: '支持即声明该能力的全部端点（创建、查询、内容、取消）',
-    modes: ['video_create', 'video_get', 'video_content', 'video_cancel']
-  },
-  {
-    key: 'audio_job',
-    label: '长音频任务（Audio Jobs）',
-    tooltip: '支持即声明该能力的全部端点（创建、查询、内容、取消）',
-    modes: ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel']
+// 实际声明集中超出 chat 域允许集的遗留值（存量混合账户兼容，D4/D6）：
+// 只读展示，不进勾选集，提交时原样带回。
+const outOfDomainDeclaredModes = computed(() => {
+  const allowed = new Set(endpointModeOptions.value.map((option) => option.value))
+  const output: AccountSupportedEndpointMode[] = []
+  const seen = new Set<AccountSupportedEndpointMode>()
+  for (const mode of props.form.supportedEndpointModes) {
+    if (allowed.has(mode) || seen.has(mode)) continue
+    seen.add(mode)
+    output.push(mode)
   }
-]
-
-const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
-
-const endpointModeRows = computed<EndpointModeRow[]>(() => {
-  const labelByMode = new Map(endpointModeOptions.value.map((option) => [option.value, option.label]))
-  const consumed = new Set<AccountSupportedEndpointMode>()
-  const rows: EndpointModeRow[] = []
-  for (const option of endpointModeOptions.value) {
-    if (consumed.has(option.value)) continue
-    const group = ENDPOINT_MODE_GROUPS.find((item) => item.modes.includes(option.value))
-    if (group && group.modes.every((mode) => labelByMode.has(mode))) {
-      rows.push({ kind: 'group', key: group.key, label: group.label, tooltip: group.tooltip, modes: [...group.modes] })
-      group.modes.forEach((mode) => consumed.add(mode))
-    } else {
-      rows.push({ kind: 'mode', value: option.value, label: option.label })
-    }
-  }
-  return rows
+  return output
 })
 
-const expandedModeGroupKeys = ref(new Set<string>())
+// M3 显式清理：将全部域外遗留值从声明集中移除（确认框列明将移除的 modes）。
+// 表单变更后由既有保存差量链路提交不含被清理值的完整 modes 数组；服务端
+// 「只缩不扩」规则放行该缩小分支。授权实例（凭据面 403）与 OAuth 表单
+// （modes 面只读）经 endpointModesDisabled 隐藏入口。
+const outOfDomainCleanupSummary = computed(() => outOfDomainDeclaredModes.value.map((mode) => endpointModeLabel(mode)).join('、'))
 
-function isGroupChecked(modes: AccountSupportedEndpointMode[]): boolean {
-  return modes.every((mode) => props.form.supportedEndpointModes.includes(mode))
+function cleanupOutOfDomainModes(): void {
+  const removing = new Set(outOfDomainDeclaredModes.value)
+  props.form.supportedEndpointModes = props.form.supportedEndpointModes.filter((mode) => !removing.has(mode))
 }
 
-function isGroupIndeterminate(modes: AccountSupportedEndpointMode[]): boolean {
-  const enabledCount = modes.filter((mode) => props.form.supportedEndpointModes.includes(mode)).length
-  return enabledCount > 0 && enabledCount < modes.length
+function endpointModeLabel(mode: AccountSupportedEndpointMode): string {
+  return accountEndpointModeLabel(mode, activeProfile.value)
 }
+
+const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
 
 function setModeEnabled(mode: AccountSupportedEndpointMode, enabled: boolean): void {
   props.form.supportedEndpointModes = enabled
     ? [...new Set([...props.form.supportedEndpointModes, mode])]
     : props.form.supportedEndpointModes.filter((item) => item !== mode)
-}
-
-function toggleGroup(row: Extract<EndpointModeRow, { kind: 'group' }>, checked: boolean): void {
-  row.modes.forEach((mode) => setModeEnabled(mode, checked))
 }
 const upstreamEndpointFamilyBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
@@ -507,5 +509,37 @@ function modelMappingProtocolContext() {
 
 .endpoint-mode-group {
   min-width: 0;
+}
+
+/* M3 清理动作：徽标行内文字按钮与确认框排版 */
+.out-of-domain-cleanup {
+  margin-left: 4px;
+  padding-inline: 4px;
+}
+
+.out-of-domain-confirm p {
+  margin: 0 0 4px;
+}
+
+.out-of-domain-confirm-modes {
+  font-weight: 600;
+}
+
+/* 域外遗留能力（D6 存量兼容）：只读徽标行，跟随勾选区展示 */
+.out-of-domain-modes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.out-of-domain-label {
+  color: var(--juhe-muted);
+  font-size: 12px;
+}
+
+.out-of-domain-tag {
+  cursor: help;
 }
 </style>

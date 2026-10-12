@@ -38,8 +38,12 @@ func randomInt63() (int64, error) {
 //   - claim/mutation 锁与 CAS Lua 语义与 shared/runtime-state-store.ts 一致。
 
 const (
-	speedFirstRedisGroup           = "state:gateway-normal-route-latency-degradation"
-	speedFirstStateVersion         = "v1"
+	speedFirstRedisGroup   = "state:gateway-normal-route-latency-degradation"
+	speedFirstStateVersion = "v1"
+	// speedFirstStateVersionV2 是调度偏好运行态命名空间（速度运行态 v2）：
+	// state 键在 routeStrategyID 之后插入 preferenceID / configFingerprint
+	// 两段，generation / 双索引 / mutation-lock / probe-claim 按版本段同构。
+	speedFirstStateVersionV2       = "v2"
 	speedFirstGenerationTTL        = 48 * time.Hour
 	speedFirstIndexTTL             = 24 * time.Hour
 	speedFirstIndexMaxKeys         = 10_000
@@ -113,7 +117,22 @@ func defaultRandom() float64 {
 }
 
 // stateKeyFor 等价 accountLatencyStateKey（Node 将 runtimeKey 作为第 5 段）。
+// 调度偏好路径（scope.PreferenceID 非空）落 v2 键：在 routeStrategyID 之后
+// 插入 preferenceID 与 configFingerprint 两段；历史路径（两身份字段为空）
+// 保持 v1 五段形状逐字节不变。版本判定只看 PreferenceID，与 gateway 侧
+// latencyStateKeyspaceFor 同构。
 func stateKeyFor(scope speedFirstScope, runtimeKey string) string {
+	if strings.TrimSpace(scope.PreferenceID) != "" {
+		return strings.Join([]string{
+			speedFirstStateVersionV2,
+			sanitizeKeyPart(scope.SystemAccountID),
+			sanitizeKeyPart(scope.RouteStrategyID),
+			sanitizeKeyPart(scope.PreferenceID),
+			sanitizeKeyPart(scope.ConfigFingerprint),
+			sanitizeKeyPart(scope.GroupID),
+			sanitizeKeyPart(runtimeKey),
+		}, ":")
+	}
 	return strings.Join([]string{
 		speedFirstStateVersion,
 		sanitizeKeyPart(scope.SystemAccountID),
@@ -121,6 +140,15 @@ func stateKeyFor(scope speedFirstScope, runtimeKey string) string {
 		sanitizeKeyPart(scope.GroupID),
 		sanitizeKeyPart(runtimeKey),
 	}, ":")
+}
+
+// speedFirstVersionOfStateKey 从 state 键的版本段反推键族版本（mutation
+// lock、probe claim、索引等以 stateKey 为唯一入参的路径用）。
+func speedFirstVersionOfStateKey(stateKey string) string {
+	if boundary := strings.IndexByte(stateKey, ':'); boundary >= 0 {
+		return stateKey[:boundary]
+	}
+	return stateKey
 }
 
 // OpenSpeedFirstStore 建立 Redis 连接。
@@ -158,16 +186,22 @@ func (s *SpeedFirstStore) Close() error {
 
 func (s *SpeedFirstStore) redisKey(key string) string { return s.prefix + key }
 
-func (s *SpeedFirstStore) generationKey() string { return speedFirstStateVersion + ":generation" }
-func (s *SpeedFirstStore) allIndexKey() string   { return speedFirstStateVersion + ":all-index" }
-func (s *SpeedFirstStore) probeIndexKey() string { return speedFirstStateVersion + ":probe-index" }
+// v1 键族方法保留（历史测试与 v1 路径的逐字节锚点）；按版本参数化的变体
+// 供双代扫描使用。
+func (s *SpeedFirstStore) generationKey() string { return s.generationKeyFor(speedFirstStateVersion) }
+func (s *SpeedFirstStore) allIndexKey() string   { return s.allIndexKeyFor(speedFirstStateVersion) }
+func (s *SpeedFirstStore) probeIndexKey() string { return s.probeIndexKeyFor(speedFirstStateVersion) }
+
+func (s *SpeedFirstStore) generationKeyFor(version string) string { return version + ":generation" }
+func (s *SpeedFirstStore) allIndexKeyFor(version string) string   { return version + ":all-index" }
+func (s *SpeedFirstStore) probeIndexKeyFor(version string) string { return version + ":probe-index" }
 
 func (s *SpeedFirstStore) mutationLockKey(stateKey string) string {
-	return speedFirstStateVersion + ":mutation-lock:" + stateKey
+	return speedFirstVersionOfStateKey(stateKey) + ":mutation-lock:" + stateKey
 }
 
 func (s *SpeedFirstStore) probeClaimLockKey(candidate opsjobs.ProbeCandidate) string {
-	return speedFirstStateVersion + ":probe-claim:" + candidate.Generation + ":" + candidate.StateKey
+	return speedFirstVersionOfStateKey(candidate.StateKey) + ":probe-claim:" + candidate.Generation + ":" + candidate.StateKey
 }
 
 // ---- Redis 原语（shared/runtime-state-store.ts 的 Lua 契约）----
@@ -314,17 +348,24 @@ func generationToken(event speedFirstGenerationEvent) (string, error) {
 
 var speedFirstInitialGenerationEvent = speedFirstGenerationEvent{Version: "initial", PublishedAt: "1970-01-01T00:00:00.000Z"}
 
-// LoadGeneration 等价 loadLatencyStateGeneration（读取或初始化 generation marker）。
+// LoadGeneration 等价 loadLatencyStateGeneration（读取或初始化 generation
+// marker）。v1（历史策略路径）的无参形式保留；按版本变体供 v2 键族使用。
 func (s *SpeedFirstStore) LoadGeneration(ctx context.Context) (string, error) {
+	return s.LoadGenerationForVersion(ctx, speedFirstStateVersion)
+}
+
+// LoadGenerationForVersion 读取（或初始化）指定版本键族的 generation token；
+// v1/v2 各自持有一个 generation marker。
+func (s *SpeedFirstStore) LoadGenerationForVersion(ctx context.Context, version string) (string, error) {
 	for attempt := 0; attempt < speedFirstGenerationCASRetries; attempt++ {
-		current, err := s.loadGenerationEvent(ctx)
+		current, err := s.loadGenerationEventForVersion(ctx, version)
 		if err != nil {
 			return "", err
 		}
 		if current != nil {
 			return generationToken(*current)
 		}
-		created, err := s.compareSetJSON(ctx, s.generationKey(), nil, speedFirstInitialGenerationEvent, speedFirstGenerationTTL)
+		created, err := s.compareSetJSON(ctx, s.generationKeyFor(version), nil, speedFirstInitialGenerationEvent, speedFirstGenerationTTL)
 		if err != nil {
 			return "", err
 		}
@@ -336,9 +377,13 @@ func (s *SpeedFirstStore) LoadGeneration(ctx context.Context) (string, error) {
 }
 
 func (s *SpeedFirstStore) loadGenerationEvent(ctx context.Context) (*speedFirstGenerationEvent, error) {
+	return s.loadGenerationEventForVersion(ctx, speedFirstStateVersion)
+}
+
+func (s *SpeedFirstStore) loadGenerationEventForVersion(ctx context.Context, version string) (*speedFirstGenerationEvent, error) {
 	for attempt := 0; attempt < speedFirstGenerationCASRetries; attempt++ {
 		var event speedFirstGenerationEvent
-		found, err := s.getJSON(ctx, s.generationKey(), &event)
+		found, err := s.getJSON(ctx, s.generationKeyFor(version), &event)
 		if err != nil {
 			return nil, err
 		}
@@ -355,7 +400,7 @@ func (s *SpeedFirstStore) loadGenerationEvent(ctx context.Context) (*speedFirstG
 		if string(encodedOriginal) == string(encodedNormalized) {
 			return &normalized, nil
 		}
-		updated, err := s.compareSetJSON(ctx, s.generationKey(), event, normalized, speedFirstGenerationTTL)
+		updated, err := s.compareSetJSON(ctx, s.generationKeyFor(version), event, normalized, speedFirstGenerationTTL)
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +412,11 @@ func (s *SpeedFirstStore) loadGenerationEvent(ctx context.Context) (*speedFirstG
 }
 
 func (s *SpeedFirstStore) renewGeneration(ctx context.Context, generation string) (bool, error) {
-	current, err := s.loadGenerationEvent(ctx)
+	return s.renewGenerationForVersion(ctx, speedFirstStateVersion, generation)
+}
+
+func (s *SpeedFirstStore) renewGenerationForVersion(ctx context.Context, version, generation string) (bool, error) {
+	current, err := s.loadGenerationEventForVersion(ctx, version)
 	if err != nil {
 		return false, err
 	}
@@ -381,7 +430,7 @@ func (s *SpeedFirstStore) renewGeneration(ctx context.Context, generation string
 	if token != generation {
 		return false, nil
 	}
-	return s.compareSetJSON(ctx, s.generationKey(), current, current, speedFirstGenerationTTL)
+	return s.compareSetJSON(ctx, s.generationKeyFor(version), current, current, speedFirstGenerationTTL)
 }
 
 // ---- state JSON（与 Node NormalRouteLatencyState 形状一致）----
@@ -390,6 +439,10 @@ type speedFirstScope struct {
 	SystemAccountID string `json:"systemAccountId"`
 	RouteStrategyID string `json:"routeStrategyId"`
 	GroupID         string `json:"groupId"`
+	// 调度偏好运行态身份（速度运行态 v2 命名空间）：omitempty 保证 v1 state
+	// 的 JSON 形状不变；写端（gateway）只在偏好路径填充。
+	PreferenceID      string `json:"preferenceId,omitempty"`
+	ConfigFingerprint string `json:"configFingerprint,omitempty"`
 }
 
 type speedFirstConfig struct {
@@ -461,9 +514,11 @@ func (s *speedFirstState) candidate() opsjobs.ProbeCandidate {
 		AccountName: s.AccountName,
 		RuntimeKey:  s.RuntimeKey,
 		Scope: opsjobs.ProbeScope{
-			RouteStrategyID: s.Scope.RouteStrategyID,
-			GroupID:         s.Scope.GroupID,
-			SystemAccountID: s.Scope.SystemAccountID,
+			RouteStrategyID:   s.Scope.RouteStrategyID,
+			GroupID:           s.Scope.GroupID,
+			SystemAccountID:   s.Scope.SystemAccountID,
+			PreferenceID:      s.Scope.PreferenceID,
+			ConfigFingerprint: s.Scope.ConfigFingerprint,
 		},
 		Generation:           s.Generation,
 		DegradationEventID:   s.DegradationEventID,
@@ -544,6 +599,10 @@ func candidateMatchesState(candidate opsjobs.ProbeCandidate, state *speedFirstSt
 		candidate.Scope.SystemAccountID == state.Scope.SystemAccountID &&
 		candidate.Scope.RouteStrategyID == state.Scope.RouteStrategyID &&
 		candidate.Scope.GroupID == state.Scope.GroupID &&
+		// 调度偏好身份参与围栏：迟到探针不能以旧偏好身份更新新键，也不能以
+		// 新身份覆盖旧键（v1 两侧均为空串，比较行为不变）。
+		candidate.Scope.PreferenceID == state.Scope.PreferenceID &&
+		candidate.Scope.ConfigFingerprint == state.Scope.ConfigFingerprint &&
 		candidate.DegradationEventID == state.DegradationEventID &&
 		candidate.RoundAttemptCount == state.roundAttempts() &&
 		candidate.RoundSuccessCount == state.roundSuccesses() &&
@@ -553,15 +612,17 @@ func candidateMatchesState(candidate opsjobs.ProbeCandidate, state *speedFirstSt
 
 // writeStateAndIndexes 等价 writeLatencyStateAndIndexesStrictAsync（简化回滚：
 // Node 的索引回滚分支在 jobs 只写探针侧状态时保持一致语义——失败即报错）。
+// 索引按 state 键的版本段落代（v1/v2 各自持有双索引）。
 func (s *SpeedFirstStore) writeStateAndIndexes(ctx context.Context, key string, state speedFirstState, ttl time.Duration, addProbeIndex bool) error {
 	if err := s.setJSON(ctx, key, state, ttl); err != nil {
 		return err
 	}
-	if err := s.addIndexKey(ctx, s.allIndexKey(), key); err != nil {
+	version := speedFirstVersionOfStateKey(key)
+	if err := s.addIndexKey(ctx, s.allIndexKeyFor(version), key); err != nil {
 		return err
 	}
 	if addProbeIndex {
-		return s.addIndexKey(ctx, s.probeIndexKey(), key)
+		return s.addIndexKey(ctx, s.probeIndexKeyFor(version), key)
 	}
 	return nil
 }
@@ -620,18 +681,39 @@ func (s *SpeedFirstStore) addIndexKey(ctx context.Context, indexKey, key string)
 	return fmt.Errorf("普通路由速度优先索引 CAS 重试耗尽（8 次）：%s", indexKey)
 }
 
+// removeIndexKeys 从两代索引中移除目标键。待移除键集可能横跨 v1/v2：按版本
+// 段分组后各代只在本代索引上过滤（无该代键时跳过），删除顺序保持先 probe
+// 后 all；任一代失败聚合报错。
 func (s *SpeedFirstStore) removeIndexKeys(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
 	removeSet := map[string]bool{}
+	versions := map[string]bool{}
 	for _, key := range keys {
 		removeSet[key] = true
+		version := speedFirstVersionOfStateKey(key)
+		if version != speedFirstStateVersion && version != speedFirstStateVersionV2 {
+			// 未知版本段（v2 化之后生产写入不会出现；防手写裸键的历史用法
+			// 静默跳过全部命令）：归入 v1 轮次执行，保持 fail-closed 错误传播。
+			version = speedFirstStateVersion
+		}
+		versions[version] = true
 	}
-	if err := s.filterIndexKeys(ctx, s.probeIndexKey(), removeSet); err != nil {
-		return err
+	var errs []error
+	for _, version := range []string{speedFirstStateVersion, speedFirstStateVersionV2} {
+		if !versions[version] {
+			continue
+		}
+		if err := s.filterIndexKeys(ctx, s.probeIndexKeyFor(version), removeSet); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := s.filterIndexKeys(ctx, s.allIndexKeyFor(version), removeSet); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return s.filterIndexKeys(ctx, s.allIndexKey(), removeSet)
+	return errors.Join(errs...)
 }
 
 func (s *SpeedFirstStore) filterIndexKeys(ctx context.Context, indexKey string, removeSet map[string]bool) error {
@@ -698,10 +780,12 @@ func (s *SpeedFirstStore) acquireIndexLock(ctx context.Context, lockKey, token s
 }
 
 // withMutationLock 等价 withLatencyStateMutationLock：锁内先续 generation，
-// 续租失败返回 false（调用方按 Node undefined 分支处理）。
+// 续租失败返回 false（调用方按 Node undefined 分支处理）。mutation lock 键
+// 与续租的 generation marker 都按 stateKey 的版本段定位（v1/v2 各自成族）。
 func (s *SpeedFirstStore) withMutationLock(ctx context.Context, stateKey, generation string, operation func() error) (bool, error) {
 	token := randomToken(16)
 	lockKey := s.mutationLockKey(stateKey)
+	version := speedFirstVersionOfStateKey(stateKey)
 	var locked bool
 	for attempt := 0; attempt < speedFirstLockMaxAttempts; attempt++ {
 		acquired, err := s.acquireLock(ctx, lockKey, token, speedFirstMutationLockTTL)
@@ -726,7 +810,7 @@ func (s *SpeedFirstStore) withMutationLock(ctx context.Context, stateKey, genera
 		return false, nil
 	}
 	defer func() { _ = s.releaseLock(ctx, lockKey, token) }()
-	renewed, err := s.renewGeneration(ctx, generation)
+	renewed, err := s.renewGenerationForVersion(ctx, version, generation)
 	if err != nil {
 		return false, err
 	}
@@ -768,7 +852,9 @@ func (s *SpeedFirstStore) ReleaseClaim(ctx context.Context, claim opsjobs.ProbeC
 func (s *SpeedFirstStore) Discard(ctx context.Context, candidate opsjobs.ProbeCandidate) error {
 	generation := candidate.Generation
 	if generation == "" {
-		loaded, err := s.LoadGeneration(ctx)
+		// candidate.Generation 缺省时按其 state 键版本段读取同代 generation
+		// marker（迟到路径兜底；正常候选都自带 generation）。
+		loaded, err := s.LoadGenerationForVersion(ctx, speedFirstVersionOfStateKey(candidate.StateKey))
 		if err != nil {
 			return err
 		}
@@ -791,7 +877,9 @@ func (s *SpeedFirstStore) Discard(ctx context.Context, candidate opsjobs.ProbeCa
 func (s *SpeedFirstStore) Defer(ctx context.Context, candidate opsjobs.ProbeCandidate) (bool, error) {
 	generation := candidate.Generation
 	if generation == "" {
-		loaded, err := s.LoadGeneration(ctx)
+		// candidate.Generation 缺省时按其 state 键版本段读取同代 generation
+		// marker（迟到路径兜底；正常候选都自带 generation）。
+		loaded, err := s.LoadGenerationForVersion(ctx, speedFirstVersionOfStateKey(candidate.StateKey))
 		if err != nil {
 			return false, err
 		}
@@ -836,7 +924,9 @@ func (s *SpeedFirstStore) Defer(ctx context.Context, candidate opsjobs.ProbeCand
 func (s *SpeedFirstStore) RecordSuccess(ctx context.Context, candidate opsjobs.ProbeCandidate, candidateAccountRef opsjobs.ProbeAccountRef, firstByteMS *int64) (opsjobs.SpeedFirstRecoveryResult, error) {
 	generation := candidate.Generation
 	if generation == "" {
-		loaded, err := s.LoadGeneration(ctx)
+		// candidate.Generation 缺省时按其 state 键版本段读取同代 generation
+		// marker（迟到路径兜底；正常候选都自带 generation）。
+		loaded, err := s.LoadGenerationForVersion(ctx, speedFirstVersionOfStateKey(candidate.StateKey))
 		if err != nil {
 			return opsjobs.SpeedFirstRecoveryResult{}, err
 		}
@@ -903,7 +993,9 @@ func (s *SpeedFirstStore) RecordSuccess(ctx context.Context, candidate opsjobs.P
 func (s *SpeedFirstStore) RecordFailure(ctx context.Context, candidate opsjobs.ProbeCandidate, reason string) error {
 	generation := candidate.Generation
 	if generation == "" {
-		loaded, err := s.LoadGeneration(ctx)
+		// candidate.Generation 缺省时按其 state 键版本段读取同代 generation
+		// marker（迟到路径兜底；正常候选都自带 generation）。
+		loaded, err := s.LoadGenerationForVersion(ctx, speedFirstVersionOfStateKey(candidate.StateKey))
 		if err != nil {
 			return err
 		}
@@ -965,7 +1057,9 @@ func (s *SpeedFirstStore) deleteStateAndIndexes(ctx context.Context, key string)
 
 // ---- 候选扫描（listNormalRouteLatencyProbeCandidatesAsync）----
 
-// ListProbeCandidates 扫描 probe-index 中到期且仍降级的候选。
+// ListProbeCandidates 扫描 probe-index 中到期且仍降级的候选。v1（策略段）
+// 与 v2（偏好段）各自持有 probe-index 与 generation marker，候选合并后按
+// 同一排序规则统一截断。
 func (s *SpeedFirstStore) ListProbeCandidates(ctx context.Context, limit int) ([]opsjobs.ProbeCandidate, error) {
 	if limit < 1 {
 		limit = 1
@@ -973,44 +1067,46 @@ func (s *SpeedFirstStore) ListProbeCandidates(ctx context.Context, limit int) ([
 	if limit > 100 {
 		limit = 100
 	}
-	keys, err := s.loadIndexKeys(ctx, s.probeIndexKey())
-	if err != nil {
-		return nil, err
-	}
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	generation, err := s.LoadGeneration(ctx)
-	if err != nil {
-		return nil, err
-	}
 	now := s.now().UnixMilli()
 	type scored struct {
 		candidate     opsjobs.ProbeCandidate
 		nextProbeAtMS int64
 	}
 	var candidates []scored
-	for _, key := range keys {
-		state, err := s.loadState(ctx, key, generation)
+	for _, version := range []string{speedFirstStateVersion, speedFirstStateVersionV2} {
+		keys, err := s.loadIndexKeys(ctx, s.probeIndexKeyFor(version))
 		if err != nil {
 			return nil, err
 		}
-		if state == nil {
+		if len(keys) == 0 {
 			continue
 		}
-		if state.DegradedUntilMS == nil || *state.DegradedUntilMS <= now {
-			continue
+		generation, err := s.LoadGenerationForVersion(ctx, version)
+		if err != nil {
+			return nil, err
 		}
-		// total_time 维度不参与探针恢复（设计 6.5）：不探、不清理、不续租。
-		if state.dimension() == speedFirstDimensionTotalTime {
-			continue
+		for _, key := range keys {
+			state, err := s.loadState(ctx, key, generation)
+			if err != nil {
+				return nil, err
+			}
+			if state == nil {
+				continue
+			}
+			if state.DegradedUntilMS == nil || *state.DegradedUntilMS <= now {
+				continue
+			}
+			// total_time 维度不参与探针恢复（设计 6.5）：不探、不清理、不续租。
+			if state.dimension() == speedFirstDimensionTotalTime {
+				continue
+			}
+			if state.NextProbeAtMS == nil || *state.NextProbeAtMS > now {
+				continue
+			}
+			candidate := state.candidate()
+			candidate.StateKey = key
+			candidates = append(candidates, scored{candidate: candidate, nextProbeAtMS: *state.NextProbeAtMS})
 		}
-		if state.NextProbeAtMS == nil || *state.NextProbeAtMS > now {
-			continue
-		}
-		candidate := state.candidate()
-		candidate.StateKey = key
-		candidates = append(candidates, scored{candidate: candidate, nextProbeAtMS: *state.NextProbeAtMS})
 	}
 	sort.Slice(candidates, func(left, right int) bool {
 		if candidates[left].nextProbeAtMS != candidates[right].nextProbeAtMS {

@@ -153,7 +153,7 @@ func (f *w1LatencyFake) OrderAsync(context.Context, []gatewaydispatch.AccountCan
 	return gatewaydispatch.LatencyDegradationOrder{}, nil
 }
 
-func (f *w1LatencyFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput) (bool, error) {
+func (f *w1LatencyFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput, _ *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error) {
 	if f.err != nil {
 		return false, f.err
 	}
@@ -197,19 +197,19 @@ func TestW1V1LoopSpeedFirstRouteEligibleAccounts(t *testing.T) {
 	loop.c = &gatewayChain{engine: &gatewaydispatch.Engine{Latency: fake}}
 	// scope 为 nil：只跑排除过滤，不查降级。
 	remaining, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current,
-		map[string]struct{}{"c": {}}, nil, nil)
+		map[string]struct{}{"c": {}}, nil, nil, nil)
 	if err != nil || len(remaining) != 2 {
 		t.Fatalf("nil scope = %+v, %v", remaining, err)
 	}
 	// scope + decisions：降级账户剔除。
 	scope := &gatewaydispatch.LatencyScopeInput{SystemAccountID: "sys_1"}
-	eligible, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current, nil, scope, fake)
+	eligible, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current, nil, scope, fake, nil)
 	if err != nil || len(eligible) != 2 || eligible[0].ID != "a" || eligible[1].ID != "c" {
 		t.Fatalf("eligible = %+v, %v", eligible, err)
 	}
 	// 决策错误透传。
 	fake.err = context.DeadlineExceeded
-	if _, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current, nil, scope, fake); err == nil {
+	if _, err := loop.speedFirstRouteEligibleDispatchAccounts(context.Background(), current, nil, scope, fake, nil); err == nil {
 		t.Fatal("决策错误必须透传")
 	}
 }

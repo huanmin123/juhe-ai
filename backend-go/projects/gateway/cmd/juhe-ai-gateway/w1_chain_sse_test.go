@@ -199,12 +199,12 @@ type w1vScriptedDecisions struct {
 	degradedCallCount int
 }
 
-func (s *w1vScriptedDecisions) IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput) (bool, error) {
+func (s *w1vScriptedDecisions) IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) (bool, error) {
 	s.degradedCallCount++
 	if err, ok := s.degradedErrAtCall[s.degradedCallCount]; ok {
 		return false, err
 	}
-	return s.w1vDecisionsStub.IsAccountLatencyDegradedAsync(ctx, account, scope)
+	return s.w1vDecisionsStub.IsAccountLatencyDegradedAsync(ctx, account, scope, config)
 }
 
 // w1vErrReader 读取即返回注入错误的请求体。
@@ -381,8 +381,8 @@ func w1vSeedMultiGroupKey(t *testing.T, fixture *chainFixture, groupIDs []string
 			VALUES (?, ?, ?, ?, ?, 1, 'active', ?)`,
 			"rsg_"+groupID, strategyID, fixture.systemAccount, groupID, index+1, now)
 	}
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES (?, ?, ?, 'W1V 多组 Key', ?, 'active', ?)`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES (?, ?, ?, 'W1V 多组 Key', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`,
 		"key_w1v_multi", fixture.systemAccount, strategyID, gatewayruntimecache.HashSecret(secret), now)
 	return secret
 }
@@ -503,8 +503,8 @@ func w1vSeedSpeedFirstStack(t *testing.T, fixture *chainFixture, suffix, schedul
 		strategyID, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES (?, ?, ?, ?, 1, 1, 'active', ?)`, "rsg_"+strategyID, strategyID, fixture.systemAccount, groupID, now)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES (?, ?, ?, 'W1V 速度优先 Key', ?, 'active', ?)`, "key_w1v_speed_"+suffix, fixture.systemAccount, strategyID, gatewayruntimecache.HashSecret(secret), now)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES (?, ?, ?, 'W1V 速度优先 Key', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`, "key_w1v_speed_"+suffix, fixture.systemAccount, strategyID, gatewayruntimecache.HashSecret(secret), now)
 	return secret
 }
 

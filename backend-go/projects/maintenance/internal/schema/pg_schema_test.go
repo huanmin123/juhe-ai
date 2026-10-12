@@ -43,12 +43,17 @@ import (
 // question-tests submission-gate table adds its two indexes and the question
 // bank last_test ALTER columns). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 707
+// 调度偏好独立实体（PLAN-20261012T033000000Z P1）批次 +7：scheduling_preferences
+// 建表、api_keys.scheduling_preference_id 幂等 ALTER、scheduling_preferences
+// 四枚索引与 api_keys 绑定列索引。
+// 模型检测超时处罚开关批次 +2：model_quality_policies /
+// model_quality_schedules 各一条 timeout_penalty_enabled 幂等 ALTER。
+const goldenPostgresSchemaStatementCount = 716
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      324,
+	"juhe_business":      333,
 	"juhe_chat":          52,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
@@ -142,8 +147,11 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 95 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 95", alterColumns)
+	// 98 = 95（既有清单）+ api_keys.scheduling_preference_id 守卫加列
+	//（调度偏好独立实体 PLAN-20261012T033000000Z）+ 模型检测超时处罚开关
+	// 两表 timeout_penalty_enabled 幂等 ALTER 各一条。
+	if alterColumns != 98 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 98", alterColumns)
 	}
 	if doBlocks != 4 {
 		t.Fatalf("DO block count = %d, want 4", doBlocks)

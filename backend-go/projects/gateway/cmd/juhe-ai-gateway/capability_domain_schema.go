@@ -5,8 +5,11 @@
 // 臂），gateway/jobs 启动只做一次性只读校验，不 ALTER、不重推账户域。列缺失
 // 或四值形状（TEXT / NOT NULL / DEFAULT 'chat' / CHECK 四枚举）不符时
 // fail-fast 停止，错误信息携带期望形状；不静默修补（部署顺序契约：先迁移后
-// 启动新版本）。本文件与 juhe-ai-jobs 同名文件互为镜像（两模块无共享包），
-// 权威 DDL 在 maintenance/internal/schema 的 accounts 建表语句。
+// 启动新版本）。M2 起在形状校验之后追加阶段记录门禁（要求
+// account_capability_domain_migration 已封存 m2_finalized，判定语义与运维
+// 文案在共享包 capabilitydomain.RequireM2Finalized，两侧启动门禁共用）。本
+// 文件与 juhe-ai-jobs 同名文件互为镜像（形状校验两模块无共享包），权威 DDL
+// 在 maintenance/internal/schema 的 accounts 建表语句。
 //
 // 判据说明：
 //   - SQLite：PRAGMA table_info 取类型/NOT NULL/DEFAULT；CHECK 读
@@ -24,6 +27,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // capabilityDomainColumn 是受检列名；capabilityDomainExpectedShape 用于错误
@@ -58,6 +63,23 @@ func checkAccountsCapabilityDomainSchema(ctx context.Context, db *sql.DB, postgr
 		return checkAccountsCapabilityDomainSchemaPostgres(ctx, db, capabilityDomainBusinessPGSchema)
 	}
 	return checkAccountsCapabilityDomainSchemaSQLite(ctx, db)
+}
+
+// checkAccountCapabilityDomainStageRecord 是 M2 启动阶段门禁（AI 账户能力域
+// 拆分 v7 定案）：在形状校验之后读业务库阶段记录，要求存在且 stage 已是
+// m2_finalized（ruleVersion 一致性与记录形状由共享包 ParseRecord 在读取时
+// 强制）。任一不满足即 fail-fast，错误信息直接给出运维动作（停写 → 显式跑
+// maintenance M1 → m2-cutover）。判定语义与文案单一事实源在共享包
+// RequireM2Finalized，本包装只做方言选择；启动只读，不变成迁移执行者。
+func checkAccountCapabilityDomainStageRecord(ctx context.Context, db *sql.DB, postgres bool) error {
+	if db == nil {
+		return fmt.Errorf("accounts.capability_domain 启动校验失败：业务库句柄为空")
+	}
+	dialect := capdomain.DialectSQLite
+	if postgres {
+		dialect = capdomain.DialectPostgres
+	}
+	return capdomain.RequireM2Finalized(ctx, db, dialect)
 }
 
 func checkAccountsCapabilityDomainSchemaSQLite(ctx context.Context, db *sql.DB) error {

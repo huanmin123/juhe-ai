@@ -14,6 +14,8 @@ export interface ApiKeyMutationPayload {
   name?: string
   description?: string | null
   routeStrategyId?: string
+  /** 绑定调度偏好；创建/编辑提交显式 ID（内置 ID 表示显式回默认），缺省由后端按契约处理。 */
+  schedulingPreferenceId?: string
   status?: 'active' | 'disabled'
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits | null

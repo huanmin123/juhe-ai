@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // parseCapabilityDomainBusinessPath 解析 --paths（键词汇与六库 bootstrap 相同，
@@ -59,7 +60,7 @@ func parseCapabilityDomainBusinessPath(raw string) (string, error) {
 }
 
 // openCapabilityDomainDB 按 driver 打开业务库连接（门禁检查先于开库）。
-func openCapabilityDomainDB(driver, paths, dsn string) (*sql.DB, capabilitydomain.Dialect, int) {
+func openCapabilityDomainDB(driver, paths, dsn string) (*sql.DB, capdomain.Dialect, int) {
 	driver = strings.ToLower(strings.TrimSpace(driver))
 	if driver != "sqlite" && driver != "postgres" {
 		fmt.Fprintf(os.Stderr, "--driver 必须为 sqlite 或 postgres: %q\n", driver)
@@ -84,7 +85,7 @@ func openCapabilityDomainDB(driver, paths, dsn string) (*sql.DB, capabilitydomai
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return nil, 0, 2
 		}
-		return db, capabilitydomain.DialectSQLite, 0
+		return db, capdomain.DialectSQLite, 0
 	}
 	parsedDSN := strings.TrimSpace(dsn)
 	if parsedDSN == "" {
@@ -96,16 +97,16 @@ func openCapabilityDomainDB(driver, paths, dsn string) (*sql.DB, capabilitydomai
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return nil, 0, 2
 	}
-	return db, capabilitydomain.DialectPostgres, 0
+	return db, capdomain.DialectPostgres, 0
 }
 
 // parseCapabilityDomainTarget 校验 --account-capability-domain-stage 取值。
-func parseCapabilityDomainTarget(raw string) (capabilitydomain.Target, bool) {
+func parseCapabilityDomainTarget(raw string) (capdomain.Target, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "m1":
-		return capabilitydomain.TargetM1, true
+		return capdomain.TargetM1, true
 	case "m2-cutover":
-		return capabilitydomain.TargetM2Cutover, true
+		return capdomain.TargetM2Cutover, true
 	}
 	return "", false
 }
@@ -141,9 +142,9 @@ func accountCapabilityDomainMigrateResult(driver, paths, dsn, secret, stage stri
 		return 1
 	}
 	if !report.Ready() {
-		runningStage := capabilitydomain.StageM1Running
-		if target == capabilitydomain.TargetM2Cutover {
-			runningStage = capabilitydomain.StageM2Running
+		runningStage := capdomain.StageM1Running
+		if target == capdomain.TargetM2Cutover {
+			runningStage = capdomain.StageM2Running
 		}
 		fmt.Fprintf(os.Stderr, "能力域迁移未完成：失败清单 %d 项（保留 %s 阶段，已提交批次保留；修复后在同阶段重跑）。部分成功不满足上线门禁。\n", len(report.Failures), string(runningStage))
 		return 3

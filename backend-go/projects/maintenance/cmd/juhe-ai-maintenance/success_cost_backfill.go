@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -234,9 +235,18 @@ func applySuccessCostBackfillResult(driver, paths, dsn string, dryRun bool) int 
 			fmt.Fprintf(os.Stderr, "%v\n", parseErr)
 			return 2
 		}
-		opened, openErr := bootstrap.OpenSQLiteFile(statsPath)
+		var opened *sql.DB
+		var openErr error
+		if dryRun {
+			opened, openErr = openReadOnlySuccessCostSQLite(statsPath)
+		} else {
+			opened, openErr = bootstrap.OpenSQLiteFile(statsPath)
+		}
 		if openErr != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", openErr)
+			if dryRun {
+				return 1
+			}
 			return 2
 		}
 		db = opened
@@ -296,6 +306,28 @@ func applySuccessCostBackfillResult(driver, paths, dsn string, dryRun bool) int 
 	return 0
 }
 
+func openReadOnlySuccessCostSQLite(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", "file:"+strings.TrimSpace(path)+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("open read-only sqlite stats: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open read-only sqlite stats: %w", err)
+	}
+	var queryOnly int
+	if err := db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("verify read-only sqlite stats: %w", err)
+	}
+	if queryOnly != 1 {
+		_ = db.Close()
+		return nil, errors.New("verify read-only sqlite stats: PRAGMA query_only is not enabled")
+	}
+	return db, nil
+}
+
 // encodeSuccessCostBackfillReport 以单行 JSON 输出报告。
 func encodeSuccessCostBackfillReport(report successCostBackfillReport) error {
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
@@ -350,40 +382,58 @@ func ensureBackfillProgressTablePresent(ctx context.Context, db *sql.DB, dialect
 	return nil
 }
 
-// pendingBackfillTables 探测目标库的回填待办（计划 §3.2：ensure 遇到
-// running/缺失 marker 时不自动迁移，仅提示）：marker 表不存在返回
-// (nil, false, nil)——未建表库与 ensure 刚建表的新库（表为空）都无需提示；
-// 表存在则返回 status <> 'done' 的表名升序清单（present=true）；查询失败
-// 保留原始错误。
+// pendingBackfillTables 探测固定六张回填目标的待办。marker 表不存在时六表
+// 均视为待办且 present=false；表存在时，缺少 marker 或 status 非 done 的
+// 已知目标列为待办。未知 marker 名称忽略；不扫描事实表。
 func pendingBackfillTables(ctx context.Context, db *sql.DB, dialect backfillDialect) ([]string, bool, error) {
 	present, err := backfillProgressPresent(ctx, db, dialect)
-	if err != nil || !present {
+	if err != nil {
 		return nil, false, err
 	}
+	if !present {
+		return sortedBackfillTargetNames(nil), false, nil
+	}
 	rows, err := db.QueryContext(ctx,
-		"SELECT table_name FROM "+dialect.table("backfill_progress")+" WHERE status <> 'done' ORDER BY table_name")
+		"SELECT table_name, status FROM "+dialect.table("backfill_progress"))
 	if err != nil {
 		return nil, true, fmt.Errorf("list pending backfill tables: %w", err)
 	}
 	defer rows.Close()
-	var pending []string
+	statuses := make(map[string]string, len(successCostBackfillTargets))
+	knownTargets := make(map[string]struct{}, len(successCostBackfillTargets))
+	for _, target := range successCostBackfillTargets {
+		knownTargets[target.name] = struct{}{}
+	}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, status string
+		if err := rows.Scan(&name, &status); err != nil {
 			return nil, true, fmt.Errorf("scan pending backfill table: %w", err)
 		}
-		pending = append(pending, name)
+		if _, known := knownTargets[name]; known {
+			statuses[name] = status
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, true, fmt.Errorf("iterate pending backfill tables: %w", err)
 	}
-	return pending, true, nil
+	return sortedBackfillTargetNames(statuses), true, nil
+}
+
+func sortedBackfillTargetNames(statuses map[string]string) []string {
+	pending := make([]string, 0, len(successCostBackfillTargets))
+	for _, target := range successCostBackfillTargets {
+		if statuses[target.name] != "done" {
+			pending = append(pending, target.name)
+		}
+	}
+	sort.Strings(pending)
+	return pending
 }
 
 // pendingBackfillTablesSQLite 打开 stats 库文件探测回填待办（ensure 各库
 // 连接已关闭，这里按需重开、探测后即关闭）。
 func pendingBackfillTablesSQLite(ctx context.Context, statsPath string) ([]string, bool, error) {
-	db, err := bootstrap.OpenSQLiteFile(statsPath)
+	db, err := openReadOnlySuccessCostSQLite(statsPath)
 	if err != nil {
 		return nil, false, fmt.Errorf("open sqlite stats for backfill probe: %w", err)
 	}
@@ -426,8 +476,8 @@ func encodeBackfillProgressCursor(values []string) (string, error) {
 }
 
 // backfillSuccessCostTable 回填单表并收敛 marker：done 直接跳过（只查一
-// 行）；无 marker 先 INSERT running；批锚点扫描、批内 UPDATE（谓词在当前
-// 值重判）与 cursor CAS 推进同一事务提交；扫完收敛 done 并清 cursor。
+// 行）；无 marker 先 INSERT running；每批的锚点扫描、批内 UPDATE（谓词在
+// 当前值重判）与 cursor CAS 推进同一事务提交；扫完收敛 done 并清 cursor。
 func backfillSuccessCostTable(ctx context.Context, db *sql.DB, dialect backfillDialect, target successCostBackfillTarget) (successCostTableStat, error) {
 	stat := successCostTableStat{Status: "done"}
 	now := successCostBackfillTimestamp(time.Now())
@@ -458,112 +508,130 @@ func backfillSuccessCostTable(ctx context.Context, db *sql.DB, dialect backfillD
 		return stat, fmt.Errorf("marker for %s: %w", target.name, cursorErr)
 	}
 
-	// 批游标推进与批 UPDATE 同一事务提交；cursor CAS 影响行数 0 = 并发
-	// runner 冲突（运维约定窗口内单实例，CAS 仅为防御）。
 	expectedCursor := cursorRaw
 	for {
-		tx, txErr := db.BeginTx(ctx, nil)
-		if txErr != nil {
-			return stat, fmt.Errorf("begin batch transaction for %s: %w", target.name, txErr)
+		last, matchedRows, done, batchErr := backfillSuccessCostBatch(ctx, db, dialect, target, cursor, expectedCursor, now)
+		if batchErr != nil {
+			return stat, batchErr
 		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = tx.Rollback()
-			}
-		}()
-
-		hasCursor := len(cursor) > 0
-		selectSQL := backfillBatchSelectSQL(dialect, target, hasCursor)
-		var scanArgs []any
-		if hasCursor {
-			for _, value := range cursor {
-				scanArgs = append(scanArgs, value)
-			}
-		}
-		rows, queryErr := tx.QueryContext(ctx, selectSQL, scanArgs...)
-		if queryErr != nil {
-			return stat, fmt.Errorf("scan batch of %s: %w", target.name, queryErr)
-		}
-		var batch [][]string
-		for rows.Next() {
-			values := make([]string, len(target.pkColumns))
-			scans := make([]any, len(values))
-			for i := range scans {
-				scans[i] = &values[i]
-			}
-			if err := rows.Scan(scans...); err != nil {
-				rows.Close()
-				return stat, fmt.Errorf("scan %s batch row: %w", target.name, err)
-			}
-			batch = append(batch, values)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return stat, fmt.Errorf("iterate %s batch: %w", target.name, err)
-		}
-		rows.Close()
-
-		if len(batch) == 0 {
-			// 全表扫完：收敛 done 并清 cursor（同事务提交）。
-			result, updateErr := tx.ExecContext(ctx, backfillMarkerDoneSQL(dialect), now, target.name, expectedCursor)
-			if updateErr != nil {
-				return stat, fmt.Errorf("mark %s done: %w", target.name, updateErr)
-			}
-			affected, rowsErr := result.RowsAffected()
-			if rowsErr != nil {
-				return stat, fmt.Errorf("mark %s done: read affected rows: %w", target.name, rowsErr)
-			}
-			if affected == 0 {
-				return stat, fmt.Errorf("cursor CAS conflict while marking %s done (another runner advanced the marker); rerun after the window", target.name)
-			}
-			if err := tx.Commit(); err != nil {
-				return stat, fmt.Errorf("commit done marker for %s: %w", target.name, err)
-			}
-			committed = true
+		if done {
 			return stat, nil
 		}
-
-		last := batch[len(batch)-1]
-		updateSQL := backfillBatchUpdateSQL(dialect, target, hasCursor)
-		updateArgs := make([]any, 0, 2*len(target.pkColumns))
-		if hasCursor {
-			for _, value := range cursor {
-				updateArgs = append(updateArgs, value)
-			}
-		}
-		for _, value := range last {
-			updateArgs = append(updateArgs, value)
-		}
-		updateResult, updateErr := tx.ExecContext(ctx, updateSQL, updateArgs...)
-		if updateErr != nil {
-			return stat, fmt.Errorf("backfill batch of %s: %w", target.name, updateErr)
-		}
-		newCursorJSON, encodeErr := encodeBackfillProgressCursor(last)
+		stat.Batches++
+		stat.MatchedRows += int(matchedRows)
+		cursor = last
+		nextCursor, encodeErr := encodeBackfillProgressCursor(last)
 		if encodeErr != nil {
 			return stat, encodeErr
 		}
-		cursorUpdate, markerErr := tx.ExecContext(ctx, backfillMarkerAdvanceSQL(dialect),
-			newCursorJSON, now, target.name, expectedCursor)
-		if markerErr != nil {
-			return stat, fmt.Errorf("advance cursor for %s: %w", target.name, markerErr)
+		expectedCursor = nextCursor
+	}
+}
+
+// backfillSuccessCostBatch 把单批事务限制在本次调用范围内。批 CAS 冲突或
+// 任一 SQL/RowsAffected 错误都在提交前返回并回滚整批。
+func backfillSuccessCostBatch(ctx context.Context, db *sql.DB, dialect backfillDialect, target successCostBackfillTarget, cursor []string, expectedCursor, now string) (last []string, matchedRows int64, done bool, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("begin batch transaction for %s: %w", target.name, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
 		}
-		affected, rowsErr := cursorUpdate.RowsAffected()
+	}()
+
+	hasCursor := len(cursor) > 0
+	selectSQL := backfillBatchSelectSQL(dialect, target, hasCursor)
+	var scanArgs []any
+	if hasCursor {
+		for _, value := range cursor {
+			scanArgs = append(scanArgs, value)
+		}
+	}
+	rows, queryErr := tx.QueryContext(ctx, selectSQL, scanArgs...)
+	if queryErr != nil {
+		return nil, 0, false, fmt.Errorf("scan batch of %s: %w", target.name, queryErr)
+	}
+	var batch [][]string
+	for rows.Next() {
+		values := make([]string, len(target.pkColumns))
+		scans := make([]any, len(values))
+		for i := range scans {
+			scans[i] = &values[i]
+		}
+		if scanErr := rows.Scan(scans...); scanErr != nil {
+			_ = rows.Close()
+			return nil, 0, false, fmt.Errorf("scan %s batch row: %w", target.name, scanErr)
+		}
+		batch = append(batch, values)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		_ = rows.Close()
+		return nil, 0, false, fmt.Errorf("iterate %s batch: %w", target.name, rowsErr)
+	}
+	if closeErr := rows.Close(); closeErr != nil {
+		return nil, 0, false, fmt.Errorf("close %s batch rows: %w", target.name, closeErr)
+	}
+
+	if len(batch) == 0 {
+		result, updateErr := tx.ExecContext(ctx, backfillMarkerDoneSQL(dialect), now, target.name, expectedCursor)
+		if updateErr != nil {
+			return nil, 0, false, fmt.Errorf("mark %s done: %w", target.name, updateErr)
+		}
+		affected, rowsErr := result.RowsAffected()
 		if rowsErr != nil {
-			return stat, fmt.Errorf("advance cursor for %s: read affected rows: %w", target.name, rowsErr)
+			return nil, 0, false, fmt.Errorf("mark %s done: read affected rows: %w", target.name, rowsErr)
 		}
 		if affected == 0 {
-			return stat, fmt.Errorf("cursor CAS conflict while advancing %s (another runner advanced the marker); rerun after the window", target.name)
+			return nil, 0, false, fmt.Errorf("cursor CAS conflict while marking %s done (another runner advanced the marker); rerun after the window", target.name)
 		}
 		if err := tx.Commit(); err != nil {
-			return stat, fmt.Errorf("commit batch of %s: %w", target.name, err)
+			return nil, 0, false, fmt.Errorf("commit done marker for %s: %w", target.name, err)
 		}
 		committed = true
-		stat.Batches++
-		if matched, err := updateResult.RowsAffected(); err == nil {
-			stat.MatchedRows += int(matched)
-		}
-		cursor = last
-		expectedCursor = newCursorJSON
+		return nil, 0, true, nil
 	}
+
+	last = batch[len(batch)-1]
+	updateSQL := backfillBatchUpdateSQL(dialect, target, hasCursor)
+	updateArgs := make([]any, 0, 2*len(target.pkColumns))
+	if hasCursor {
+		for _, value := range cursor {
+			updateArgs = append(updateArgs, value)
+		}
+	}
+	for _, value := range last {
+		updateArgs = append(updateArgs, value)
+	}
+	updateResult, updateErr := tx.ExecContext(ctx, updateSQL, updateArgs...)
+	if updateErr != nil {
+		return nil, 0, false, fmt.Errorf("backfill batch of %s: %w", target.name, updateErr)
+	}
+	matchedRows, err = updateResult.RowsAffected()
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("backfill batch of %s: read affected rows: %w", target.name, err)
+	}
+	newCursorJSON, encodeErr := encodeBackfillProgressCursor(last)
+	if encodeErr != nil {
+		return nil, 0, false, encodeErr
+	}
+	cursorUpdate, markerErr := tx.ExecContext(ctx, backfillMarkerAdvanceSQL(dialect),
+		newCursorJSON, now, target.name, expectedCursor)
+	if markerErr != nil {
+		return nil, 0, false, fmt.Errorf("advance cursor for %s: %w", target.name, markerErr)
+	}
+	affected, rowsErr := cursorUpdate.RowsAffected()
+	if rowsErr != nil {
+		return nil, 0, false, fmt.Errorf("advance cursor for %s: read affected rows: %w", target.name, rowsErr)
+	}
+	if affected == 0 {
+		return nil, 0, false, fmt.Errorf("cursor CAS conflict while advancing %s (another runner advanced the marker); rerun after the window", target.name)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, false, fmt.Errorf("commit batch of %s: %w", target.name, err)
+	}
+	committed = true
+	return last, matchedRows, false, nil
 }

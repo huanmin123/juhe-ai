@@ -212,15 +212,17 @@ import { api } from '@/api/client'
 import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
 import { isXaiProviderCode } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
+import { capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountNameField from './AccountNameField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   authLoading: boolean
   authResult?: OAuthAuthURLResult
+  capabilityDomain?: AccountCapabilityDomain
   editing: boolean
   form: AccountFormModel
   isAnthropicOAuth: boolean
@@ -234,10 +236,16 @@ const props = defineProps<{
   protocolCode?: string
   protocolVersion?: string
   title: string
-}>()
+}>(), {
+  capabilityDomain: 'chat'
+})
 
+// 媒体域（video/audio/image）支持模型一律必选（D7）：「OAuth 建号支持模型可留空」
+// 的默认 affordance（含「可留空」注记）只属于对话域，媒体域整体裁剪；chat 域不变。
+const mediaDomain = computed(() => capabilityDomainIsMedia(props.capabilityDomain))
 const managedOAuthDefaultsAllowed = computed(() => (
-  ['oauth', 'google_oauth'].includes(props.form.type)
+  !mediaDomain.value
+  && ['oauth', 'google_oauth'].includes(props.form.type)
   && ['gpt', 'anthropic', 'gemini', 'xai'].includes(props.form.providerCode)
 ))
 const supportedModelsRequired = computed(() => props.editing || !managedOAuthDefaultsAllowed.value)

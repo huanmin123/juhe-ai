@@ -4,6 +4,7 @@
       v-model:date-range="dateRange"
       v-model:selected-system-account="selectedSystemAccount"
       v-model:selected-system-account-id="selectedSystemAccountId"
+      v-model:capability-domain="selectedCapabilityDomain"
       :account-filter-items="accountFilterItems"
       :account-options="panelAccountOptions"
       :accounts-loading="accountsLoading"
@@ -17,6 +18,7 @@
       @account-search="handleAccountSearch"
       @add-account="addAccount"
       @calendar-change="handleCalendarChange"
+      @capability-domain-change="handleCapabilityDomainChange"
       @date-range-change="handleDateRangeChange"
       @date-range-open-change="handleDateRangeOpenChange"
       @refresh="refreshPerformance"
@@ -71,12 +73,13 @@ import { providerDisplayName } from '@/shared/providerDisplay'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import type { AiPerformanceBaseResult, AiPerformanceSeriesResult } from '@/types/domain'
+import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, type AiPerformanceMetric } from './aiPerformanceChartOptions'
-import AiPerformanceFilterToolbar from './AiPerformanceFilterToolbar.vue'
+import AiPerformanceFilterToolbar, { type CapabilityDomainFilterValue } from './AiPerformanceFilterToolbar.vue'
 import { buildAiPerformanceRequestSignature, createAiPerformanceRequestGate } from './aiPerformanceRequestGate'
 import { useAiPerformanceAccountSelection } from './useAiPerformanceAccountSelection'
 
@@ -112,6 +115,8 @@ const overview = ref<AiPerformanceBaseResult>()
 const additionalSeries = ref<AiPerformanceSeriesResult>()
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
+// 能力域筛选（'all' = 全部 = 不下发 domain，默认与既有行为一致；不进页状态缓存，重进页面回落全部）。
+const selectedCapabilityDomain = ref<CapabilityDomainFilterValue>('all')
 const baseLoading = ref(false)
 const seriesLoading = ref(false)
 const contextLoading = ref(false)
@@ -181,7 +186,8 @@ const accountSelection = useAiPerformanceAccountSelection({
   },
   clearSeries: clearAdditionalSeries,
   requestRender: renderCharts,
-  selectedSystemAccountId: selectedPerformanceSystemAccountId
+  selectedSystemAccountId: selectedPerformanceSystemAccountId,
+  capabilityDomain: capabilityDomainParam
 })
 clearAccountSearchTimerFromSelection = accountSelection.clearAccountSearchTimer
 
@@ -366,7 +372,8 @@ function currentPerformanceRequest(channel: 'base' | 'series', accountIds: strin
     : selectedRangeParams()
   const params = {
     ...rangeParams,
-    systemAccountId: selectedPerformanceSystemAccountId()
+    systemAccountId: selectedPerformanceSystemAccountId(),
+    domain: capabilityDomainParam()
   }
   return {
     params,
@@ -379,6 +386,7 @@ function currentPerformanceRequest(channel: 'base' | 'series', accountIds: strin
       ownerSystemAccountId: params.systemAccountId,
       startDate: params.startDate,
       endDate: params.endDate,
+      domain: params.domain,
       accountIds
     })
   }
@@ -441,6 +449,17 @@ function selectedPerformanceSystemAccountId(): string | undefined {
   return isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
 }
 
+function capabilityDomainParam(): AccountCapabilityDomain | undefined {
+  return selectedCapabilityDomain.value === 'all' ? undefined : selectedCapabilityDomain.value
+}
+
+function handleCapabilityDomainChange() {
+  // 跨域切换：清空已选/追加账户与账户候选等跨域残留，再按新域重建 base + series。
+  invalidateAccountOptions()
+  clearAccountState()
+  void loadPerformanceContext()
+}
+
 function handleSystemAccountChange() {
   if (selectedSystemAccountId.value === allSystemAccountsValue) {
     selectedSystemAccount.value = undefined
@@ -475,6 +494,7 @@ function resetFilters() {
   calendarRange.value = [null, null]
   selectedSystemAccountId.value = allSystemAccountsValue
   selectedSystemAccount.value = undefined
+  selectedCapabilityDomain.value = 'all'
   resetSystemAccountOptionsSearch()
   clearAccountState()
   pageStateCache.clear()
@@ -686,6 +706,7 @@ watch(() => authState.revision.value, () => {
   systemAccounts.value = []
   selectedSystemAccountId.value = allSystemAccountsValue
   selectedSystemAccount.value = undefined
+  selectedCapabilityDomain.value = 'all'
   resetSystemAccountOptionsSearch()
 })
 </script>

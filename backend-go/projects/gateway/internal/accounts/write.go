@@ -400,6 +400,28 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, &ValidationError{Message: "供应商协议档案 " + profile.name + " 不支持账户类型 " + accountType}
 	}
 
+	// M2 能力域保存规则（计划 §服务端统一校验，D6 三集合）：域由请求显式
+	// 携带（camelCase capabilityDomain，缺省 chat，创建后不可更改 D3）。
+	// 新建不允许任何域外声明：最终声明集 ⊆ allowed；allowed 为空 = 该供应
+	// 商不支持该域。
+	domain := strings.TrimSpace(input.CapabilityDomain)
+	if domain == "" {
+		domain = accountscore.CapabilityDomainChat
+	}
+	if !accountscore.AccountCapabilityDomainSet[domain] {
+		return nil, &ValidationError{Message: "能力域无效"}
+	}
+	profilePredicate := protocolPredicateInput{
+		providerCode:              providerCode,
+		protocolCode:              profile.protocolCode,
+		protocolVersion:           profile.protocolVersion,
+		providerProtocolProfileID: profile.id,
+	}
+	allowedModes := accountscore.AllowedEndpointModes(domain, providerCode, accountType, toProtocolPredicate(profilePredicate))
+	if len(allowedModes) == 0 {
+		return nil, accountscore.CapabilityDomainUnsupportedError(providerCode, domain)
+	}
+
 	// Credentials: normalized through the ported
 	// normalizeAccountCredentialsForWrite family, then sealed with the shared
 	// AES-GCM envelope plus the fingerprint and mask columns.
@@ -413,7 +435,24 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		ProtocolVersion:           profile.protocolVersion,
 		ProviderProtocolProfileID: profile.id,
 	})
-	credentials, err := NormalizeAccountCredentialsForWrite(accountType, input.Credentials, &EndpointModeDefaultContext{
+	// modes 缺省（键不存在）时按域落默认集（D6 默认能力集；chat 域与现行
+	// 默认逐项一致——I3）。显式 null/非数组/空数组不注入，走既有归一化错误
+	// 文案（行为与现状一致）。显式提供的 modes 原样进入归一化，越界值由
+	// 归一化后的 ⊆ allowed 校验拒绝（新建不允许任何域外声明）。
+	createCredentials := input.Credentials
+	if _, present := createCredentials["supported_endpoint_modes"]; !present {
+		defaultModes := accountscore.DefaultEndpointModesForDomain(domain, providerCode, accountType, toProtocolPredicate(profilePredicate))
+		if len(defaultModes) == 0 {
+			return nil, accountscore.CapabilityDomainUnsupportedError(providerCode, domain)
+		}
+		seeded := Credentials{}
+		for key, value := range createCredentials {
+			seeded[key] = value
+		}
+		seeded["supported_endpoint_modes"] = anyStrings(defaultModes)
+		createCredentials = seeded
+	}
+	credentials, err := NormalizeAccountCredentialsForWrite(accountType, createCredentials, &EndpointModeDefaultContext{
 		ProviderCode:              providerCode,
 		AccountType:               accountType,
 		ClientCompatibility:       derivedClientCompatibility,
@@ -423,6 +462,22 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	})
 	if err != nil {
 		return nil, err
+	}
+	// 新建域内校验：归一化后的最终声明集必须 ⊆ allowed（列出越界值）。
+	declaredModes := credentialEndpointModes(credentials)
+	if outliers := accountscore.OutOfDomainModes(declaredModes, allowedModes); len(outliers) > 0 {
+		return nil, accountscore.CapabilityDomainOutlierError(domain, outliers)
+	}
+	// Gemini 兼容校验联动（计划 §服务端统一校验）：chat 域 gemini（native
+	// 档案，api_key/google_oauth）保持「至少一种对话能力」；媒体域 gemini
+	// 走 native 档案域内允许集，不适用对话能力要求；chat 域其他供应商不新增
+	// 任何既有校验之外的拒绝（I3）。
+	if domain == accountscore.CapabilityDomainChat && isGeminiProtocolProfileOf(profilePredicate) {
+		if err := assertGeminiEndpointModesCompatible(declaredModes, accountType); err != nil {
+			// 断言族返回普通 error（既有批量/测试链原样透传）；创建链按
+			// ValidationError 渲染 400，文案保持断言族原文。
+			return nil, &ValidationError{Message: err.Error()}
+		}
 	}
 	source, err := requiredAccountCredentialSource(accountType, credentials)
 	if err != nil {
@@ -515,7 +570,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if err != nil {
 		return nil, err
 	}
-	healthCheckEndpointMode := "chat_json"
+	// 健康检查请求形态默认落值按域收窄（媒体账户生命周期定案表）：chat=
+	// chat_json（现行硬编码）、image=images_json、audio=audio_speech、
+	// video=video_create；仅入参未显式提供时生效。video_create 是 M2 写侧
+	// 白名单增补值（writeinput.go），不改变任何检查执行路径。
+	healthCheckEndpointMode := accountscore.DefaultHealthCheckEndpointModeForDomain(domain)
 	if input.HealthCheckEndpointMode != nil {
 		if !accountHealthCheckEndpointModes[*input.HealthCheckEndpointMode] {
 			return nil, &ValidationError{Message: "账户参数无效"}
@@ -726,10 +785,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message, health_check_model, health_check_endpoint_mode,
 		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
-		 expedited_recovery_enabled,
+		 expedited_recovery_enabled, capability_domain,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
@@ -737,7 +796,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
-		boolInt(expeditedRecoveryEnabled),
+		boolInt(expeditedRecoveryEnabled), domain,
 		0, sql.NullString{}, balanceNextRefreshAt,
 		nowISO, nowISO); err != nil {
 		if duplicate := duplicateAccountNameError(err, strings.TrimSpace(input.Name)); duplicate != nil {

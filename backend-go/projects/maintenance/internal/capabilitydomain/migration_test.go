@@ -28,6 +28,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	_ "modernc.org/sqlite"
 )
 
@@ -156,53 +157,30 @@ func accountDomain(t *testing.T, db *sql.DB, id string) string {
 }
 
 // storedRecord 读阶段记录（无记录返回 ok=false）。
-func storedRecord(t *testing.T, db *sql.DB) (Record, bool) {
+func storedRecord(t *testing.T, db *sql.DB) (capdomain.Record, bool) {
 	t.Helper()
 	var valueJSON string
-	err := db.QueryRow(`SELECT value_json FROM global_settings WHERE key = ?`, MigrationSettingKey).Scan(&valueJSON)
+	err := db.QueryRow(`SELECT value_json FROM global_settings WHERE key = ?`, capdomain.MigrationSettingKey).Scan(&valueJSON)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Record{}, false
+		return capdomain.Record{}, false
 	}
 	if err != nil {
 		t.Fatalf("read migration record: %v", err)
 	}
-	record, err := ParseRecord(valueJSON)
+	record, err := capdomain.ParseRecord(valueJSON)
 	if err != nil {
 		t.Fatalf("parse migration record: %v", err)
 	}
 	return record, true
 }
 
-func migrationOptions(dialect Dialect, target Target) Options {
+func migrationOptions(dialect capdomain.Dialect, target capdomain.Target) Options {
 	return Options{Dialect: dialect, Target: target, Secret: testSecret, Now: time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)}
 }
 
-// TestPlanMigrationStateMachine 钉死状态机全组合。
-func TestPlanMigrationStateMachine(t *testing.T) {
-	cases := []struct {
-		target       Target
-		current      Stage
-		wantDecision MigrationDecision
-		wantNext     Stage
-	}{
-		{TargetM1, StageNone, DecisionRun, StageM1Running},
-		{TargetM1, StageM1Running, DecisionRun, StageM1Running},
-		{TargetM1, StageM1Complete, DecisionAlreadyComplete, StageM1Complete},
-		{TargetM1, StageM2Running, DecisionReject, StageM2Running},
-		{TargetM1, StageM2Finalized, DecisionReject, StageM2Finalized},
-		{TargetM2Cutover, StageNone, DecisionReject, StageNone},
-		{TargetM2Cutover, StageM1Running, DecisionReject, StageM1Running},
-		{TargetM2Cutover, StageM1Complete, DecisionRun, StageM2Running},
-		{TargetM2Cutover, StageM2Running, DecisionRun, StageM2Running},
-		{TargetM2Cutover, StageM2Finalized, DecisionReject, StageM2Finalized},
-	}
-	for _, testCase := range cases {
-		decision, next, _ := PlanMigration(testCase.target, testCase.current)
-		if decision != testCase.wantDecision || next != testCase.wantNext {
-			t.Fatalf("PlanMigration(%s, %s) = (%d, %s), want (%d, %s)", testCase.target, testCase.current, decision, next, testCase.wantDecision, testCase.wantNext)
-		}
-	}
-}
+// TestPlanMigrationStateMachine 与 TestClaimTransitionRace 随阶段记录语义
+// 一起移入共享包 stage_test.go（2026-10 M2 下沉）；本文件只保留迁移执行器
+// 集成测试。
 
 // TestRunM1EndToEnd 覆盖成功迁移主路径：失败清单阻断完成 → 修复后同阶段
 // 恢复重跑收敛 m1_complete；多域推导、实例继承（源在/源软删除）、软删除
@@ -238,17 +216,17 @@ func TestRunM1EndToEnd(t *testing.T) {
 	}
 
 	// 首次执行：inst-orphan 源缺失 → 失败清单非空，不写完成阶段。
-	report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run m1: %v", err)
 	}
 	if report.Ready() {
 		t.Fatal("源缺失失败清单非空时报告不得 Ready")
 	}
-	if len(report.Failures) != 1 || report.Failures[0].AccountID != "inst-orphan" || report.Failures[0].Kind != FailureInstanceNoSource {
+	if len(report.Failures) != 1 || report.Failures[0].AccountID != "inst-orphan" || report.Failures[0].Kind != capdomain.FailureInstanceNoSource {
 		t.Fatalf("failures = %+v, want 仅 inst-orphan(instance_source_missing)", report.Failures)
 	}
-	if record, ok := storedRecord(t, db); !ok || record.Stage != StageM1Running {
+	if record, ok := storedRecord(t, db); !ok || record.Stage != capdomain.StageM1Running {
 		t.Fatalf("失败后阶段必须保留 m1_running，got %+v ok=%v", record, ok)
 	}
 	if accountDomain(t, db, "acct-video") != "chat" {
@@ -270,11 +248,11 @@ func TestRunM1EndToEnd(t *testing.T) {
 	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id = NULL WHERE id = 'inst-orphan'`); err != nil {
 		t.Fatalf("detach orphan instance: %v", err)
 	}
-	report, err = Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+	report, err = Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("resume Run m1: %v", err)
 	}
-	if !report.Ready() || report.CompletedStage != StageM1Complete {
+	if !report.Ready() || report.CompletedStage != capdomain.StageM1Complete {
 		t.Fatalf("resume m1 not complete: ready=%v stage=%q failures=%+v", report.Ready(), report.CompletedStage, report.Failures)
 	}
 	if report.AlreadyComplete {
@@ -309,11 +287,11 @@ func TestRunM1EndToEnd(t *testing.T) {
 		fixtureCredentials(t, accountFixture{id: "inst-orphan", modesJSON: `["chat_json"]`})); err != nil {
 		t.Fatalf("rewrite orphan credentials: %v", err)
 	}
-	report, err = Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+	report, err = Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("rerun m1 after complete: %v", err)
 	}
-	if !report.AlreadyComplete || report.CompletedStage != StageM1Complete {
+	if !report.AlreadyComplete || report.CompletedStage != capdomain.StageM1Complete {
 		t.Fatalf("m1_complete 重复执行应只报告完成: %+v", report)
 	}
 	if got := accountDomain(t, db, "inst-orphan"); got != "video" {
@@ -327,14 +305,14 @@ func TestRunM1FailureKinds(t *testing.T) {
 	cases := []struct {
 		name     string
 		fixture  accountFixture
-		wantKind FailureKind
+		wantKind capdomain.FailureKind
 	}{
-		{"缺省 modes", accountFixture{id: "acct-bad", modesJSON: ""}, FailureModesMissing},
-		{"空数组", accountFixture{id: "acct-bad", modesJSON: `[]`}, FailureModesEmpty},
-		{"null", accountFixture{id: "acct-bad", modesJSON: `null`}, FailureModesNull},
-		{"非数组", accountFixture{id: "acct-bad", modesJSON: `"chat_json"`}, FailureModesNotArray},
-		{"未知模式", accountFixture{id: "acct-bad", modesJSON: `["video_render_3d"]`}, FailureModesUnknown},
-		{"解密失败", accountFixture{id: "acct-bad", credentialsRaw: "not-a-v1-envelope"}, FailureCredentialsDecrypt},
+		{"缺省 modes", accountFixture{id: "acct-bad", modesJSON: ""}, capdomain.FailureModesMissing},
+		{"空数组", accountFixture{id: "acct-bad", modesJSON: `[]`}, capdomain.FailureModesEmpty},
+		{"null", accountFixture{id: "acct-bad", modesJSON: `null`}, capdomain.FailureModesNull},
+		{"非数组", accountFixture{id: "acct-bad", modesJSON: `"chat_json"`}, capdomain.FailureModesNotArray},
+		{"未知模式", accountFixture{id: "acct-bad", modesJSON: `["video_render_3d"]`}, capdomain.FailureModesUnknown},
+		{"解密失败", accountFixture{id: "acct-bad", credentialsRaw: "not-a-v1-envelope"}, capdomain.FailureCredentialsDecrypt},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -343,7 +321,7 @@ func TestRunM1FailureKinds(t *testing.T) {
 				{id: "acct-good", modesJSON: `["chat_json"]`},
 				testCase.fixture,
 			})
-			report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+			report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -353,7 +331,7 @@ func TestRunM1FailureKinds(t *testing.T) {
 			if len(report.Failures) != 1 || report.Failures[0].Kind != testCase.wantKind || report.Failures[0].AccountID != "acct-bad" {
 				t.Fatalf("failures = %+v, want acct-bad(%s)", report.Failures, testCase.wantKind)
 			}
-			if record, ok := storedRecord(t, db); !ok || record.Stage != StageM1Running {
+			if record, ok := storedRecord(t, db); !ok || record.Stage != capdomain.StageM1Running {
 				t.Fatalf("失败后阶段必须保留 m1_running，got %+v", record)
 			}
 			// 全有或全无：好行也不落域（避免部分成功误读为完成）。
@@ -371,7 +349,7 @@ func TestRunInstanceSourceFailed(t *testing.T) {
 		{id: "acct-source-bad", modesJSON: `["mystery_mode"]`},
 		{id: "inst-of-bad", sourceID: "acct-source-bad", modesJSON: `["chat_json"]`},
 	})
-	report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -380,7 +358,7 @@ func TestRunInstanceSourceFailed(t *testing.T) {
 	}
 	found := false
 	for _, failure := range report.Failures {
-		if failure.AccountID == "inst-of-bad" && failure.Kind == FailureInstanceSourceFailed {
+		if failure.AccountID == "inst-of-bad" && failure.Kind == capdomain.FailureInstanceSourceFailed {
 			found = true
 		}
 	}
@@ -397,7 +375,7 @@ func TestRunM1FailureThenRepairResume(t *testing.T) {
 		{id: "acct-good", modesJSON: `["video_create"]`},
 		{id: "acct-bad", modesJSON: `[]`},
 	})
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	// 修复：补上合法声明。
@@ -405,11 +383,11 @@ func TestRunM1FailureThenRepairResume(t *testing.T) {
 		fixtureCredentials(t, accountFixture{id: "acct-bad", modesJSON: `["images_json"]`})); err != nil {
 		t.Fatalf("repair: %v", err)
 	}
-	report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("resume run: %v", err)
 	}
-	if !report.Ready() || report.CompletedStage != StageM1Complete {
+	if !report.Ready() || report.CompletedStage != capdomain.StageM1Complete {
 		t.Fatalf("resume not complete: %+v", report)
 	}
 	if accountDomain(t, db, "acct-bad") != "image" {
@@ -429,43 +407,43 @@ func TestRunM2CutoverLifecycle(t *testing.T) {
 	})
 
 	// 无记录：m2-cutover 拒绝。
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
 		t.Fatalf("无记录时 m2-cutover 必须拒绝，got err=%v", err)
 	}
 	// M1 先行。
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1: %v", err)
 	}
 	// m1_running 阶段拒绝 m2：手工把记录拨回 m1_running 模拟未完成 M1。
 	if _, err := db.Exec(`UPDATE global_settings SET value_json = ? WHERE key = ?`,
-		`{"stage":"m1_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, MigrationSettingKey); err != nil {
+		`{"stage":"m1_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
 		t.Fatalf("m1_running 时 m2-cutover 必须拒绝，got err=%v", err)
 	}
 	// 拨回 m1_complete 再进 M2。
 	if _, err := db.Exec(`UPDATE global_settings SET value_json = ? WHERE key = ?`,
-		`{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, MigrationSettingKey); err != nil {
+		`{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
 		t.Fatal(err)
 	}
-	report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM2Cutover))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover))
 	if err != nil {
 		t.Fatalf("m2-cutover: %v", err)
 	}
-	if !report.Ready() || report.CompletedStage != StageM2Finalized {
+	if !report.Ready() || report.CompletedStage != capdomain.StageM2Finalized {
 		t.Fatalf("m2 not finalized: %+v", report)
 	}
 	// 封存后：任何 migrate 拒绝。
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err == nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err == nil {
 		t.Fatal("m2_finalized 后 M1 必须拒绝")
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM2Cutover)); err == nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err == nil {
 		t.Fatal("m2_finalized 后 m2-cutover 必须拒绝")
 	}
 	// 只读核验仍可执行，标记推导对账不适用。
 	verify, err := Verify(context.Background(), db, Options{
-		Dialect: DialectSQLite, Target: TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
+		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
 		Now: time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
@@ -489,10 +467,10 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 			{id: "acct-chat", modesJSON: `["chat_json"]`},
 			{id: "inst-of-chat", sourceID: "acct-chat"},
 		})
-		if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err != nil {
+		if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
 			t.Fatalf("m1: %v", err)
 		}
-		if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM2Cutover)); err != nil {
+		if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover)); err != nil {
 			t.Fatalf("m2-cutover: %v", err)
 		}
 		return db
@@ -500,14 +478,14 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 	finalizedPostflight := func(t *testing.T, db *sql.DB) VerifyReport {
 		t.Helper()
 		report, err := Verify(context.Background(), db, Options{
-			Dialect: DialectSQLite, Target: TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
+			Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
 		})
 		if err != nil {
 			t.Fatalf("finalized postflight: %v", err)
 		}
 		return report
 	}
-	containsFailure := func(report VerifyReport, accountID string, kind FailureKind) bool {
+	containsFailure := func(report VerifyReport, accountID string, kind capdomain.FailureKind) bool {
 		for _, failure := range report.Failures {
 			if failure.AccountID == accountID && failure.Kind == kind {
 				return true
@@ -569,7 +547,7 @@ func TestM2CutoverRecomputesStaleRows(t *testing.T) {
 		{id: "acct-flip", modesJSON: `["video_create"]`},
 		{id: "acct-still", modesJSON: `["chat_json"]`},
 	})
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1: %v", err)
 	}
 	if accountDomain(t, db, "acct-flip") != "video" {
@@ -580,13 +558,13 @@ func TestM2CutoverRecomputesStaleRows(t *testing.T) {
 		fixtureCredentials(t, accountFixture{id: "acct-flip", modesJSON: `["chat_json"]`})); err != nil {
 		t.Fatalf("window edit: %v", err)
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1 rerun: %v", err)
 	}
 	if accountDomain(t, db, "acct-flip") != "video" {
 		t.Fatalf("m1_complete 重复执行不得重算，got %q", accountDomain(t, db, "acct-flip"))
 	}
-	report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM2Cutover))
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM2Cutover))
 	if err != nil {
 		t.Fatalf("m2: %v", err)
 	}
@@ -617,7 +595,7 @@ func TestParallelSingleExecutor(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			report, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1))
+			report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -644,71 +622,11 @@ func TestParallelSingleExecutor(t *testing.T) {
 			t.Fatalf("并发竞争者的错误应指明单执行者约束：%v", err)
 		}
 	}
-	if record, ok := storedRecord(t, db); !ok || record.Stage != StageM1Complete {
+	if record, ok := storedRecord(t, db); !ok || record.Stage != capdomain.StageM1Complete {
 		t.Fatalf("完成阶段应恰好写入一次，got %+v", record)
 	}
 	if accountDomain(t, db, "acct-chat") != "chat" {
 		t.Fatal("迁移后域应为 chat")
-	}
-}
-
-// TestClaimTransitionRace 确定性覆盖条件更新互斥原语：首次领取冲突、跃迁
-// 谓词不命中、谓词命中推进。
-func TestClaimTransitionRace(t *testing.T) {
-	db := openMigrationDB(t)
-	now := time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	acquired, err := claimNewStage(context.Background(), tx, DialectSQLite, StageM1Running, now)
-	if err != nil || !acquired {
-		t.Fatalf("首次领取应成功: acquired=%v err=%v", acquired, err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	// 第二次首次领取（同阶段）：冲突 DO NOTHING → 未领取。
-	tx2, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	acquired, err = claimNewStage(context.Background(), tx2, DialectSQLite, StageM1Running, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acquired {
-		t.Fatal("并发首次领取只允许一个执行者成功")
-	}
-	_ = tx2.Rollback()
-	// 跃迁谓词不命中：expect=m1_complete 但当前是 m1_running。
-	tx3, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	acquired, err = transitionStage(context.Background(), tx3, DialectSQLite, StageM1Complete, StageM2Running, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acquired {
-		t.Fatal("阶段谓词不命中时不得推进")
-	}
-	_ = tx3.Rollback()
-	// 谓词命中：m1_running → m1_complete。
-	tx4, err := db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	acquired, err = transitionStage(context.Background(), tx4, DialectSQLite, StageM1Running, StageM1Complete, now)
-	if err != nil || !acquired {
-		t.Fatalf("命中跃迁应成功: acquired=%v err=%v", acquired, err)
-	}
-	if err := tx4.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	record, ok := storedRecord(t, db)
-	if !ok || record.Stage != StageM1Complete || record.RuleVersion != RuleVersion {
-		t.Fatalf("record = %+v", record)
 	}
 }
 
@@ -727,10 +645,10 @@ func TestRunCorruptRecordRejected(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			db := openMigrationDB(t)
 			seedFixtures(t, db, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`, MigrationSettingKey, testCase.valueJSON); err != nil {
+			if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`, capdomain.MigrationSettingKey, testCase.valueJSON); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err == nil {
+			if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err == nil {
 				t.Fatal("损坏记录必须拒绝执行")
 			}
 		})
@@ -742,11 +660,11 @@ func TestRunCorruptRecordRejected(t *testing.T) {
 func TestRunAddsMissingColumn(t *testing.T) {
 	legacyDB := openLegacyDB(t, "legacy.sqlite3", "")
 	seedFixtures(t, legacyDB, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-	report, err := Run(context.Background(), legacyDB, migrationOptions(DialectSQLite, TargetM1))
+	report, err := Run(context.Background(), legacyDB, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
 	if err != nil {
 		t.Fatalf("Run over legacy db: %v", err)
 	}
-	if !report.Ready() || report.CompletedStage != StageM1Complete {
+	if !report.Ready() || report.CompletedStage != capdomain.StageM1Complete {
 		t.Fatalf("legacy run not complete: %+v", report)
 	}
 	if accountDomain(t, legacyDB, "acct-chat") != "chat" {
@@ -755,7 +673,7 @@ func TestRunAddsMissingColumn(t *testing.T) {
 
 	brokenDB := openLegacyDB(t, "broken.sqlite3", "capability_domain TEXT")
 	seedFixtures(t, brokenDB, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
-	if _, err := Run(context.Background(), brokenDB, migrationOptions(DialectSQLite, TargetM1)); err == nil || !strings.Contains(err.Error(), "形状不符") {
+	if _, err := Run(context.Background(), brokenDB, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err == nil || !strings.Contains(err.Error(), "形状不符") {
 		t.Fatalf("错误形状必须原样报错，got err=%v", err)
 	}
 }
@@ -770,7 +688,7 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 		{id: "inst-of-chat", sourceID: "acct-chat"},
 	})
 	preflight, err := Verify(context.Background(), db, Options{
-		Dialect: DialectSQLite, Target: TargetM1, Check: CheckPreflight, Secret: testSecret,
+		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPreflight, Secret: testSecret,
 		Now: time.Date(2026, 10, 12, 7, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
@@ -782,12 +700,12 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 	if preflight.PendingMigration != 3 {
 		t.Fatalf("preflight pending = %d, want 3（预计需要赋域 N 个账户是正常结果）", preflight.PendingMigration)
 	}
-	if len(preflight.Failures) != 1 || preflight.Failures[0].Kind != FailureModesEmpty {
+	if len(preflight.Failures) != 1 || preflight.Failures[0].Kind != capdomain.FailureModesEmpty {
 		t.Fatalf("preflight failures = %+v", preflight.Failures)
 	}
 	// postflight 缺列必须失败。
 	if _, err := Verify(context.Background(), db, Options{
-		Dialect: DialectSQLite, Target: TargetM1, Check: CheckPostflight, Secret: testSecret,
+		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
 	}); err == nil || !strings.Contains(err.Error(), "postflight") {
 		t.Fatalf("缺列 postflight 必须报错，got %v", err)
 	}
@@ -796,11 +714,11 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 		fixtureCredentials(t, accountFixture{id: "acct-bad", modesJSON: `["chat_json"]`})); err != nil {
 		t.Fatalf("repair acct-bad: %v", err)
 	}
-	if _, err := Run(context.Background(), db, migrationOptions(DialectSQLite, TargetM1)); err != nil {
+	if _, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1)); err != nil {
 		t.Fatalf("m1: %v", err)
 	}
 	postflight, err := Verify(context.Background(), db, Options{
-		Dialect: DialectSQLite, Target: TargetM1, Check: CheckPostflight, Secret: testSecret,
+		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("postflight: %v", err)
@@ -813,7 +731,7 @@ func TestVerifyPreflightAndPostflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	postflight, err = Verify(context.Background(), db, Options{
-		Dialect: DialectSQLite, Target: TargetM1, Check: CheckPostflight, Secret: testSecret,
+		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPostflight, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("postflight after tamper: %v", err)
@@ -833,7 +751,7 @@ func TestVerifyPreflightWithColumn(t *testing.T) {
 	})
 	// 手工把两行拨到默认 'chat'，模拟「加列后未迁移」的中间状态。
 	report, err := Verify(context.Background(), db, Options{
-		Dialect: DialectSQLite, Target: TargetM1, Check: CheckPreflight, Secret: testSecret,
+		Dialect: capdomain.DialectSQLite, Target: capdomain.TargetM1, Check: CheckPreflight, Secret: testSecret,
 	})
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
@@ -847,4 +765,52 @@ func TestVerifyPreflightWithColumn(t *testing.T) {
 	if report.DomainsExpected["video"] != 1 || report.DomainsExpected["chat"] != 1 {
 		t.Fatalf("domainsExpected = %+v", report.DomainsExpected)
 	}
+}
+
+// TestSealFreshInstall 覆盖全新空库自动封存（PLAN §全新空库自动封存）：
+// 空库（无记录且 accounts 无行）按序写 m2_finalized 且幂等；accounts 非空
+// 的库一律不自动写记录；记录已存在直接跳过（真实切换必须显式跑迁移命令）。
+func TestSealFreshInstall(t *testing.T) {
+	t.Run("空库自动封存且幂等", func(t *testing.T) {
+		db := openMigrationDB(t)
+		sealed, err := SealFreshInstall(context.Background(), db, capdomain.DialectSQLite)
+		if err != nil {
+			t.Fatalf("seal fresh install: %v", err)
+		}
+		if !sealed {
+			t.Fatal("空库首次封存必须返回 sealed=true")
+		}
+		record, ok := storedRecord(t, db)
+		if !ok || record.Stage != capdomain.StageM2Finalized || record.RuleVersion != capdomain.RuleVersion {
+			t.Fatalf("空库封存后阶段记录应为 m2_finalized，got %+v ok=%v", record, ok)
+		}
+		// 重复执行（ensure/bootstrap 幂等重入）：跳过且不改写记录。
+		sealedAgain, err := SealFreshInstall(context.Background(), db, capdomain.DialectSQLite)
+		if err != nil {
+			t.Fatalf("re-seal: %v", err)
+		}
+		if sealedAgain {
+			t.Fatal("记录已存在时重复封存必须返回 sealed=false")
+		}
+		if record2, ok := storedRecord(t, db); !ok || record2.UpdatedAt != record.UpdatedAt {
+			t.Fatalf("重复封存不得改写已有记录：%+v vs %+v", record2, record)
+		}
+	})
+	t.Run("非空库不自动写记录", func(t *testing.T) {
+		db := openMigrationDB(t)
+		seedFixtures(t, db, []accountFixture{{id: "acct-chat", modesJSON: `["chat_json"]`}})
+		sealed, err := SealFreshInstall(context.Background(), db, capdomain.DialectSQLite)
+		if err != nil {
+			t.Fatalf("seal non-empty db: %v", err)
+		}
+		if sealed {
+			t.Fatal("accounts 非空的库不得自动写阶段记录")
+		}
+		if _, ok := storedRecord(t, db); ok {
+			t.Fatal("非空库不得出现阶段记录（真实切换必须显式跑迁移命令）")
+		}
+		if domain := accountDomain(t, db, "acct-chat"); domain != "chat" {
+			t.Fatalf("非空库域值不得被改动，got %q", domain)
+		}
+	})
 }

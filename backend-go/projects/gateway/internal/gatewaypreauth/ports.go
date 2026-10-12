@@ -594,6 +594,12 @@ type NormalRouteSpeedFirstRuntimeConfig struct {
 	// Raw mirrors the stored speedFirstConfig object (opaque to G05; typed
 	// decoding belongs to the latency-degradation slice).
 	Raw map[string]any
+	// 调度偏好独立实体 P1（SP-C1/SP-C2 冻结接口）：PreferenceID 是绑定偏好行
+	// id（空 = 历史策略路径，速度运行态 v1 键），ConfigFingerprint 是合成配置
+	// 规范化调度参数 sha256 前 12 位（非空 = v2 键材料）。两者仅在有效配置来
+	// 源为调度偏好时非空，随 speed_first 投影带出；FirstByte 投影不携带。
+	PreferenceID      string
+	ConfigFingerprint string
 }
 
 // NormalRouteFirstByteRuntimeConfig mirrors NormalRouteFirstByteRuntimeConfig.

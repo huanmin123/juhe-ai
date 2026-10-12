@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { computed, onBeforeUnmount, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountDraftTestAccountPayload } from '@/api/client'
 import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
@@ -84,7 +84,7 @@ type ReadonlyValue<T> = {
   readonly value: T
 }
 
-interface UseAccountEditFormOptions {
+export interface UseAccountEditFormOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   accounts: ReadonlyValue<AccountListItem[]>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
@@ -244,6 +244,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountResponseInspectionRules,
     accounts: options.accounts,
     createScopeParams,
+    cloningSourceId,
     editingAccountDetail,
     editingAccountAdvancedDetail,
     editingAccountScopeParams,
@@ -441,14 +442,20 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const requestToken = formOpenRequestToken
     const systemAccountId = createScopeParams.value?.systemAccountId
     resetForm(providerCode, '')
-    const initialDefaults = providerDefaultState(form)
     applyCachedDefaultGroup(providerCode)
-    void applyProviderDefinitionDefaultsAfterLoad({
-      ensureDefinition: () => options.ensureProviderDefinition(providerCode, systemAccountId),
-      form,
-      initialDefaults,
-      isCurrent: () => isCurrentFormOpenRequest(requestToken) && modalOpen.value && form.providerCode === providerCode,
-      resolvedDefaults: () => defaultForm(providerCode, '')
+    // 域默认 watch（如媒体表单）与 resetForm 落在同一 flush 周期内：快照必须等
+    // flush 落定后再拍，否则 watch 改写过的字段会让回填等值判定误判为「用户已
+    // 改动」而整体跳过（B3）。快照与加载都在 microtask 内完成，对外仍是同步入口。
+    void nextTick().then(async () => {
+      if (!isCurrentFormOpenRequest(requestToken) || !modalOpen.value || form.providerCode !== providerCode) return
+      const initialDefaults = providerDefaultState(form)
+      await applyProviderDefinitionDefaultsAfterLoad({
+        ensureDefinition: () => options.ensureProviderDefinition(providerCode, systemAccountId),
+        form,
+        initialDefaults,
+        isCurrent: () => isCurrentFormOpenRequest(requestToken) && modalOpen.value && form.providerCode === providerCode,
+        resolvedDefaults: () => defaultForm(providerCode, '')
+      })
     }).catch((error) => {
       if (!isCurrentFormOpenRequest(requestToken) || !modalOpen.value || form.providerCode !== providerCode) return
       console.error(error)
@@ -1124,20 +1131,35 @@ function mergeAccountProviderDefinitions(
   for (const provider of [...FALLBACK_PROVIDERS, ...loadedDefinitions]) {
     definitionsByCode.set(provider.code, provider)
   }
-  return providerOptions.map((provider) => {
+  const base = providerOptions.length ? providerOptions : FALLBACK_PROVIDERS
+  const merged: ProviderDefinition[] = []
+  const seen = new Set<string>()
+  for (const provider of base) {
+    seen.add(provider.code)
     const definition = definitionsByCode.get(provider.code)
-    if (!definition) return provider
-    return {
+    if (!definition) {
+      merged.push(provider)
+      continue
+    }
+    merged.push({
       ...definition,
       id: provider.id,
       code: provider.code,
       name: provider.name,
       enabled: provider.enabled
-    }
-  })
+    })
+  }
+  // 懒加载得到的完整定义可能覆盖基座之外的供应商码（媒体族不在 options 轻量
+  // 清单与回退清单里）：不追加会让标题、类型默认值与矩阵过滤永远缺这批供应商。
+  for (const provider of loadedDefinitions) {
+    if (!provider.code || seen.has(provider.code)) continue
+    seen.add(provider.code)
+    merged.push(provider)
+  }
+  return merged
 }
 
-type ProviderDefaultState = Pick<
+export type ProviderDefaultState = Pick<
   AccountFormModel,
   | 'providerProtocolProfileId'
   | 'type'
@@ -1159,9 +1181,32 @@ interface ApplyProviderDefinitionDefaultsInput {
 export async function applyProviderDefinitionDefaultsAfterLoad(
   input: ApplyProviderDefinitionDefaultsInput
 ): Promise<void> {
-  const definition = await input.ensureDefinition()
-  if (!definition || !input.isCurrent() || !providerDefaultsEqual(input.form, input.initialDefaults)) return
-  Object.assign(input.form, providerDefaultState(input.resolvedDefaults()))
+  let definition = await input.ensureDefinition()
+  // isCurrent 成立但 definition 缺失：ensureProviderDefinition 的全局请求代次被
+  // 并发切换顶掉时以 undefined 结束在途请求而非抛错。静默放弃会让首次选择停留
+  // 在空表单（B3 第二入口）——重试一次，仍失败则上抛由调用方提示用户。
+  if (!definition && input.isCurrent()) {
+    definition = await input.ensureDefinition()
+    if (!definition && input.isCurrent()) {
+      throw new Error('供应商定义加载失败，请重试')
+    }
+  }
+  if (!definition || !input.isCurrent()) return
+  const resolved = providerDefaultState(input.resolvedDefaults())
+  // 字段级 pristine 判定（B3 根修）：逐字段与快照比较，只回填未被触碰的字段，
+  // 替代旧的全量等值闸——同 flush 周期内域默认 watch 会改写个别字段，全量等值
+  // 必然失败并静默跳过回填，权威默认值整体不落。
+  const pristine = providerPristineFields(input.form, input.initialDefaults)
+  if (input.form.type === '' || pristine.has('type')) {
+    // type==='' 是重置占位而非用户选择，恒可回填。
+    input.form.type = resolved.type
+  }
+  if (pristine.has('providerProtocolProfileId')) input.form.providerProtocolProfileId = resolved.providerProtocolProfileId
+  if (pristine.has('baseUrl')) input.form.baseUrl = resolved.baseUrl
+  if (pristine.has('clientCompatibility')) input.form.clientCompatibility = resolved.clientCompatibility
+  if (pristine.has('healthCheckEndpointMode')) input.form.healthCheckEndpointMode = resolved.healthCheckEndpointMode
+  if (pristine.has('oauthMode')) input.form.oauthMode = resolved.oauthMode
+  if (pristine.has('supportedEndpointModes')) input.form.supportedEndpointModes = [...resolved.supportedEndpointModes]
 }
 
 function providerDefaultState(form: ProviderDefaultState): ProviderDefaultState {
@@ -1176,15 +1221,22 @@ function providerDefaultState(form: ProviderDefaultState): ProviderDefaultState 
   }
 }
 
-function providerDefaultsEqual(left: ProviderDefaultState, right: ProviderDefaultState): boolean {
-  return left.providerProtocolProfileId === right.providerProtocolProfileId
-    && left.type === right.type
-    && left.baseUrl === right.baseUrl
-    && left.clientCompatibility === right.clientCompatibility
-    && left.healthCheckEndpointMode === right.healthCheckEndpointMode
-    && left.oauthMode === right.oauthMode
-    && left.supportedEndpointModes.length === right.supportedEndpointModes.length
-    && left.supportedEndpointModes.every((mode, index) => mode === right.supportedEndpointModes[index])
+function providerPristineFields(
+  form: ProviderDefaultState,
+  initialDefaults: ProviderDefaultState
+): Set<keyof ProviderDefaultState> {
+  const pristine = new Set<keyof ProviderDefaultState>()
+  if (form.providerProtocolProfileId === initialDefaults.providerProtocolProfileId) pristine.add('providerProtocolProfileId')
+  if (form.type === initialDefaults.type) pristine.add('type')
+  if (form.baseUrl === initialDefaults.baseUrl) pristine.add('baseUrl')
+  if (form.clientCompatibility === initialDefaults.clientCompatibility) pristine.add('clientCompatibility')
+  if (form.healthCheckEndpointMode === initialDefaults.healthCheckEndpointMode) pristine.add('healthCheckEndpointMode')
+  if (form.oauthMode === initialDefaults.oauthMode) pristine.add('oauthMode')
+  if (form.supportedEndpointModes.length === initialDefaults.supportedEndpointModes.length
+    && form.supportedEndpointModes.every((mode, index) => mode === initialDefaults.supportedEndpointModes[index])) {
+    pristine.add('supportedEndpointModes')
+  }
+  return pristine
 }
 
 function authorizedAccountBasicDetail(

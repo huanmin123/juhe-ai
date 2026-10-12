@@ -78,7 +78,7 @@ func TestWhLatencyProbeMutationErrorSweep(t *testing.T) {
 	config := speedFirstConfig()
 	account := latencyAccount("a")
 	key := accountLatencyStateKey(*scope, account)
-	if _, err := service.loadLatencyStateGeneration(ctx); err != nil {
+	if _, err := service.loadLatencyStateGeneration(ctx, latencyStateKeyspaceV1); err != nil {
 		t.Fatal(err)
 	}
 	now := clock.NowMs()
@@ -335,7 +335,7 @@ func TestWhLatencyClearAllRefreshAndRenewErrors(t *testing.T) {
 	older := LatencyGenerationEvent{Version: "aaaa", PublishedAt: "1970-01-01T00:00:00.000Z"}
 
 	// 初始化纪元后：老事件刷新走 CompareSet，注入故障必须传播。
-	if _, err := service.loadLatencyStateGeneration(ctx); err != nil {
+	if _, err := service.loadLatencyStateGeneration(ctx, latencyStateKeyspaceV1); err != nil {
 		t.Fatal(err)
 	}
 	store.compareSetErr = func(k string) error {
@@ -362,7 +362,7 @@ func TestWhLatencyClearAllRefreshAndRenewErrors(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := service.renewLatencyStateGeneration(ctx, `[0,"initial"]`); err == nil {
+	if _, err := service.renewLatencyStateGeneration(ctx, latencyStateKeyspaceV1, `[0,"initial"]`); err == nil {
 		t.Fatal("renew 读取故障必须传播")
 	}
 	store.getJSONFail = nil
@@ -373,7 +373,7 @@ func TestWhLatencyClearAllRefreshAndRenewErrors(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := service.renewLatencyStateGeneration(ctx, `[0,"initial"]`); err == nil {
+	if _, err := service.renewLatencyStateGeneration(ctx, latencyStateKeyspaceV1, `[0,"initial"]`); err == nil {
 		t.Fatal("renew CAS 故障必须传播")
 	}
 	store.compareSetErr = nil

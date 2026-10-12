@@ -2,7 +2,7 @@ package main
 
 // --apply-success-cost-backfill CLI 测试（成功成本历史回填治理，2026-10-12）：
 // 新库 0 批秒 done、零错误行回填、混合行不动、已回填无 marker 收敛、持久化
-// cursor 续跑、--dry-run 零副作用、marker 缺失显式报错、用法错误与互斥，
+// cursor 续跑、--dry-run 不写事实与 marker、marker 缺失显式报错、用法错误与互斥，
 // 以及 PG 方言的语句形态（表名 juhe_stats 限定 + $n 占位符）。
 // 全部进程内直调（测试单进程纪律），SQLite 夹具走生产 EnsureSQLiteSchema
 // （stats 脚本含 backfill_progress 建表 DDL）；本包不依赖真实 PostgreSQL。
@@ -10,8 +10,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -254,11 +258,27 @@ func TestApplySuccessCostBackfillDryRunReadOnly(t *testing.T) {
 	db := openRebuildSQLite(t, statsPath)
 	defer db.Close()
 	backfillInsertTotal(t, db, "u1", "system_account", "u1", 0, 10, 0)
+	var journalModeBefore string
+	if err := db.QueryRow("PRAGMA journal_mode=DELETE").Scan(&journalModeBefore); err != nil {
+		t.Fatalf("将 dry-run 夹具切到 DELETE journal 失败: %v", err)
+	}
+	if !strings.EqualFold(journalModeBefore, "delete") {
+		t.Fatalf("夹具 journal_mode = %q, want delete", journalModeBefore)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭 DELETE journal 夹具连接失败: %v", err)
+	}
 
 	code, report, stderr := runApplySuccessCostBackfill(t, "-apply-success-cost-backfill", "-dry-run", "-driver", "sqlite", "-paths", pathsFlag)
 	if code != 0 {
 		t.Fatalf("dry-run 退出码 = %d, want 0, stderr=%s", code, stderr)
 	}
+	ro, err := openReadOnlySuccessCostSQLite(statsPath)
+	if err != nil {
+		t.Fatalf("打开 dry-run 只读连接失败: %v", err)
+	}
+	db = ro
+	defer db.Close()
 	if !report.DryRun || report.Completed {
 		t.Fatalf("报告 dryRun/completed = %v/%v, want true/false", report.DryRun, report.Completed)
 	}
@@ -270,6 +290,22 @@ func TestApplySuccessCostBackfillDryRunReadOnly(t *testing.T) {
 	}
 	if got := len(backfillMarkerRows(t, db)); got != 0 {
 		t.Fatalf("dry-run 写了 marker: 行数 = %d, want 0", got)
+	}
+	var journalMode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("读取 dry-run 后 journal_mode 失败: %v", err)
+	}
+	if !strings.EqualFold(journalMode, journalModeBefore) {
+		t.Fatalf("dry-run 不得切换已存在库的 journal_mode: before=%q after=%q", journalModeBefore, journalMode)
+	}
+	for _, sidecar := range []string{statsPath + "-wal", statsPath + "-shm"} {
+		if _, err := os.Stat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("DELETE journal dry-run 不得创建 SQLite sidecar %s, stat err=%v", sidecar, err)
+		}
+	}
+	var queryOnly int
+	if err := db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil || queryOnly != 1 {
+		t.Fatalf("dry-run 只读连接 query_only = %d, err=%v, want 1", queryOnly, err)
 	}
 }
 
@@ -429,20 +465,21 @@ func parseStorageBootstrapReport(t *testing.T, stdout string) storageBootstrapRe
 }
 
 // TestStorageBootstrapEnsureBackfillHintAndReport：计划 §3.2——ensure 遇到
-// running/缺失 marker 时不自动迁移，仅在结果摘要输出提示并随报告携带
-// pendingBackfillTables；新建库（marker 刚建表为空）与全部 done 均不提示。
+// marker 缺失或非 done 时不自动迁移，仅在结果摘要输出提示并随报告携带
+// pendingBackfillTables；待办只来自固定六张目标表。
 func TestStorageBootstrapEnsureBackfillHintAndReport(t *testing.T) {
-	t.Run("fresh stats with empty marker stays silent", func(t *testing.T) {
+	wantAll := []string{"usage_stats_daily", "usage_stats_hourly", "usage_stats_minute", "usage_stats_monthly", "usage_stats_totals", "usage_stats_weekly"}
+	t.Run("fresh stats with empty marker lists all six targets", func(t *testing.T) {
 		_, pathsFlag := ensureHintFixturePaths(t)
 		code, stdout, stderr := wmRunMaintenanceCapture(t, "-ensure-schema", "-driver", "sqlite", "-paths", pathsFlag)
 		if code != 0 {
 			t.Fatalf("ensure 退出码 = %d, want 0, stderr=%s", code, stderr)
 		}
-		if strings.Contains(stderr, "成功成本历史回填提示") {
-			t.Fatalf("空 marker 不应提示: %q", stderr)
+		if !strings.Contains(stderr, "成功成本历史回填提示") {
+			t.Fatalf("空 marker 应提示六表待办: %q", stderr)
 		}
-		if report := parseStorageBootstrapReport(t, stdout); len(report.PendingBackfillTables) != 0 {
-			t.Fatalf("空 marker 报告不应携带 pendingBackfillTables: %v", report.PendingBackfillTables)
+		if report := parseStorageBootstrapReport(t, stdout); !reflect.DeepEqual(report.PendingBackfillTables, wantAll) {
+			t.Fatalf("空 marker 报告应携带六表待办: %v", report.PendingBackfillTables)
 		}
 	})
 	t.Run("running markers are listed in summary and report", func(t *testing.T) {
@@ -461,14 +498,16 @@ func TestStorageBootstrapEnsureBackfillHintAndReport(t *testing.T) {
 			}
 		}
 		report := parseStorageBootstrapReport(t, stdout)
-		if want := []string{"usage_stats_minute", "usage_stats_totals"}; !reflect.DeepEqual(report.PendingBackfillTables, want) {
-			t.Fatalf("pendingBackfillTables = %v, want %v（升序）", report.PendingBackfillTables, want)
+		if !reflect.DeepEqual(report.PendingBackfillTables, wantAll) {
+			t.Fatalf("pendingBackfillTables = %v, want %v（升序）", report.PendingBackfillTables, wantAll)
 		}
 	})
-	t.Run("done markers stay silent", func(t *testing.T) {
+	t.Run("all done markers stay silent", func(t *testing.T) {
 		statsPath, pathsFlag := ensureHintFixturePaths(t)
 		db := openRebuildSQLite(t, statsPath)
-		backfillPresetMarker(t, db, "usage_stats_totals", "done")
+		for _, target := range successCostBackfillTargets {
+			backfillPresetMarker(t, db, target.name, "done")
+		}
 		db.Close()
 		code, stdout, stderr := wmRunMaintenanceCapture(t, "-ensure-schema", "-driver", "sqlite", "-paths", pathsFlag)
 		if code != 0 {
@@ -481,38 +520,42 @@ func TestStorageBootstrapEnsureBackfillHintAndReport(t *testing.T) {
 			t.Fatalf("全部 done 报告不应携带 pendingBackfillTables: %v", report.PendingBackfillTables)
 		}
 	})
-	t.Run("mixed markers list only non-done", func(t *testing.T) {
+	t.Run("mixed markers list missing and non-done known targets", func(t *testing.T) {
 		statsPath, pathsFlag := ensureHintFixturePaths(t)
 		db := openRebuildSQLite(t, statsPath)
 		backfillPresetMarker(t, db, "usage_stats_totals", "done")
 		backfillPresetMarker(t, db, "usage_stats_minute", "running")
+		backfillPresetMarker(t, db, "unknown_stats_table", "running")
 		db.Close()
 		code, stdout, stderr := wmRunMaintenanceCapture(t, "-ensure-schema", "-driver", "sqlite", "-paths", pathsFlag)
 		if code != 0 {
 			t.Fatalf("ensure 退出码 = %d, want 0, stderr=%s", code, stderr)
 		}
-		if !strings.Contains(stderr, "usage_stats_minute") || strings.Contains(stderr, "usage_stats_totals") {
-			t.Fatalf("混合 marker 应只列非 done 表: %q", stderr)
+		if !strings.Contains(stderr, "usage_stats_minute") || strings.Contains(stderr, "usage_stats_totals") || strings.Contains(stderr, "unknown_stats_table") {
+			t.Fatalf("混合 marker 应只列已知缺失/非 done 表: %q", stderr)
 		}
 		report := parseStorageBootstrapReport(t, stdout)
-		if want := []string{"usage_stats_minute"}; !reflect.DeepEqual(report.PendingBackfillTables, want) {
+		want := []string{"usage_stats_daily", "usage_stats_hourly", "usage_stats_minute", "usage_stats_monthly", "usage_stats_weekly"}
+		if !reflect.DeepEqual(report.PendingBackfillTables, want) {
 			t.Fatalf("pendingBackfillTables = %v, want %v", report.PendingBackfillTables, want)
 		}
 	})
 }
 
 // TestPendingBackfillTablesThreeStates：pendingBackfillTables 的三态探测
-// 契约——无表静默（present=false）、空表 present 无待办、非 done 行升序列出。
+// 契约——无表返回六表待办且 present=false、空表 present 仍返回六表待办、
+// 非 done 行与缺失 marker 均列出，未知 marker 忽略。
 func TestPendingBackfillTablesThreeStates(t *testing.T) {
 	ctx := context.Background()
+	wantAll := []string{"usage_stats_daily", "usage_stats_hourly", "usage_stats_minute", "usage_stats_monthly", "usage_stats_totals", "usage_stats_weekly"}
 	db := openRebuildSQLite(t, filepath.Join(t.TempDir(), "probe.sqlite3"))
 	defer db.Close()
 	if _, err := db.Exec(`CREATE TABLE unrelated (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatalf("建无关表失败: %v", err)
 	}
 	pending, present, err := pendingBackfillTables(ctx, db, backfillDialect{})
-	if err != nil || present || pending != nil {
-		t.Fatalf("无 marker 表应返回 (nil, false, nil): %v/%v/%v", pending, present, err)
+	if err != nil || present || !reflect.DeepEqual(pending, wantAll) {
+		t.Fatalf("无 marker 表应返回六表待办/present=false: %v/%v/%v", pending, present, err)
 	}
 	if _, err := db.Exec(`CREATE TABLE backfill_progress (
 		table_name TEXT PRIMARY KEY,
@@ -523,12 +566,225 @@ func TestPendingBackfillTablesThreeStates(t *testing.T) {
 		t.Fatalf("建 marker 表失败: %v", err)
 	}
 	pending, present, err = pendingBackfillTables(ctx, db, backfillDialect{})
-	if err != nil || !present || len(pending) != 0 {
-		t.Fatalf("空 marker 表应返回 (空, true, nil): %v/%v/%v", pending, present, err)
+	if err != nil || !present || !reflect.DeepEqual(pending, wantAll) {
+		t.Fatalf("空 marker 表应返回六表待办/present=true: %v/%v/%v", pending, present, err)
 	}
 	backfillPresetMarker(t, db, "usage_stats_totals", "running")
+	backfillPresetMarker(t, db, "unknown_stats_table", "running")
+	pending, present, err = pendingBackfillTables(ctx, db, backfillDialect{})
+	if err != nil || !present || !reflect.DeepEqual(pending, wantAll) {
+		t.Fatalf("running 行与缺失目标应被列出，未知 marker 忽略: %v/%v/%v", pending, present, err)
+	}
+	for _, target := range successCostBackfillTargets {
+		if target.name != "usage_stats_totals" {
+			backfillPresetMarker(t, db, target.name, "done")
+		}
+	}
 	pending, present, err = pendingBackfillTables(ctx, db, backfillDialect{})
 	if err != nil || !present || !reflect.DeepEqual(pending, []string{"usage_stats_totals"}) {
-		t.Fatalf("running 行应被列出: %v/%v/%v", pending, present, err)
+		t.Fatalf("仅 running 目标应被列出: %v/%v/%v", pending, present, err)
+	}
+}
+
+var errSuccessCostBackfillProbe = errors.New("success cost fake: marker query failed")
+
+type successCostBackfillProbeConnector struct{ conn *successCostBackfillProbeConn }
+
+func (c successCostBackfillProbeConnector) Connect(context.Context) (driver.Conn, error) {
+	return c.conn, nil
+}
+func (c successCostBackfillProbeConnector) Driver() driver.Driver {
+	return successCostBackfillProbeDriver{}
+}
+
+type successCostBackfillProbeDriver struct{}
+
+func (successCostBackfillProbeDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("success cost fake: use sql.OpenDB")
+}
+
+type successCostBackfillProbeConn struct{}
+
+func (*successCostBackfillProbeConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("success cost fake: Prepare should not be called")
+}
+func (*successCostBackfillProbeConn) Close() error { return nil }
+func (*successCostBackfillProbeConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("success cost fake: transaction should not be used")
+}
+func (*successCostBackfillProbeConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(query, "sqlite_master") {
+		return &successCostRowsAffectedRows{columns: []string{"COUNT(*)"}, values: [][]driver.Value{{int64(1)}}}, nil
+	}
+	return nil, errSuccessCostBackfillProbe
+}
+
+func TestPendingBackfillTablesPreservesMarkerQueryError(t *testing.T) {
+	db := sql.OpenDB(successCostBackfillProbeConnector{conn: &successCostBackfillProbeConn{}})
+	defer db.Close()
+	pending, present, err := pendingBackfillTables(context.Background(), db, backfillDialect{})
+	if !errors.Is(err, errSuccessCostBackfillProbe) {
+		t.Fatalf("marker 查询原始错误必须保留: %v", err)
+	}
+	if !present || pending != nil {
+		t.Fatalf("marker 查询错误应返回 nil/present=true: %v/%v", pending, present)
+	}
+}
+
+func TestApplySuccessCostBackfillDryRunMissingSQLiteDoesNotCreatePath(t *testing.T) {
+	root := t.TempDir()
+	statsPath := filepath.Join(root, "missing", "stats.sqlite3")
+	pathsFlag := "stats=" + filepath.ToSlash(statsPath)
+	code, _, stderr := runApplySuccessCostBackfill(t, "-apply-success-cost-backfill", "-dry-run", "-driver", "sqlite", "-paths", pathsFlag)
+	if code != 1 {
+		t.Fatalf("缺失 SQLite dry-run 退出码 = %d, want 1, stderr=%s", code, stderr)
+	}
+	if _, err := os.Stat(statsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("缺失 dry-run 不得创建 stats 文件，stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(statsPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("缺失 dry-run 不得创建 stats 目录，stat err=%v", err)
+	}
+}
+
+var errSuccessCostRowsAffected = errors.New("success cost fake: rows affected unavailable")
+
+type successCostRowsAffectedConnector struct{ conn *successCostRowsAffectedConn }
+
+func (c successCostRowsAffectedConnector) Connect(context.Context) (driver.Conn, error) {
+	return c.conn, nil
+}
+func (c successCostRowsAffectedConnector) Driver() driver.Driver {
+	return successCostRowsAffectedDriver{}
+}
+
+type successCostRowsAffectedDriver struct{}
+
+func (successCostRowsAffectedDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("success cost fake: use sql.OpenDB")
+}
+
+type successCostRowsAffectedConn struct{ rolledBack bool }
+
+func (c *successCostRowsAffectedConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("success cost fake: Prepare should not be called")
+}
+func (c *successCostRowsAffectedConn) Close() error { return nil }
+func (c *successCostRowsAffectedConn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
+func (c *successCostRowsAffectedConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return successCostRowsAffectedTx{conn: c}, nil
+}
+func (c *successCostRowsAffectedConn) CheckNamedValue(*driver.NamedValue) error { return nil }
+func (c *successCostRowsAffectedConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	switch {
+	case strings.Contains(query, "SELECT status, cursor_json"):
+		return &successCostRowsAffectedRows{columns: []string{"status", "cursor_json"}, values: [][]driver.Value{{"running", "{}"}}}, nil
+	case strings.Contains(query, "SELECT system_account_id"):
+		return &successCostRowsAffectedRows{columns: []string{"system_account_id", "scope_type", "scope_id"}, values: [][]driver.Value{{"u1", "system_account", "u1"}}}, nil
+	default:
+		return nil, fmt.Errorf("success cost fake: unexpected query %q", query)
+	}
+}
+func (c *successCostRowsAffectedConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if strings.Contains(query, "SET success_cost_usd") {
+		return successCostRowsAffectedResult{}, nil
+	}
+	return driver.RowsAffected(1), nil
+}
+
+type successCostRowsAffectedTx struct{ conn *successCostRowsAffectedConn }
+
+func (successCostRowsAffectedTx) Commit() error { return nil }
+func (t successCostRowsAffectedTx) Rollback() error {
+	t.conn.rolledBack = true
+	return nil
+}
+
+type successCostRowsAffectedResult struct{}
+
+func (successCostRowsAffectedResult) LastInsertId() (int64, error) { return 0, nil }
+func (successCostRowsAffectedResult) RowsAffected() (int64, error) {
+	return 0, errSuccessCostRowsAffected
+}
+
+type successCostRowsAffectedRows struct {
+	columns []string
+	values  [][]driver.Value
+}
+
+func (r *successCostRowsAffectedRows) Columns() []string { return r.columns }
+func (r *successCostRowsAffectedRows) Close() error      { return nil }
+func (r *successCostRowsAffectedRows) Next(dest []driver.Value) error {
+	if len(r.values) == 0 {
+		return io.EOF
+	}
+	row := r.values[0]
+	r.values = r.values[1:]
+	copy(dest, row)
+	return nil
+}
+
+func TestBackfillSuccessCostBatchRowsAffectedErrorRollsBack(t *testing.T) {
+	conn := &successCostRowsAffectedConn{}
+	db := sql.OpenDB(successCostRowsAffectedConnector{conn: conn})
+	defer db.Close()
+	_, err := backfillSuccessCostTable(context.Background(), db, backfillDialect{}, successCostBackfillTarget{
+		name: "usage_stats_totals", pkColumns: []string{"system_account_id", "scope_type", "scope_id"},
+	})
+	if err == nil || !errors.Is(err, errSuccessCostRowsAffected) {
+		t.Fatalf("RowsAffected 原始错误必须上抛: %v", err)
+	}
+	if !conn.rolledBack {
+		t.Fatal("RowsAffected 错误必须回滚当前批事务")
+	}
+}
+
+func TestBackfillSuccessCostBatchCASFailureRollsBackFactAndCursor(t *testing.T) {
+	statsPath, _ := backfillFixturePaths(t)
+	db := openRebuildSQLite(t, statsPath)
+	defer db.Close()
+	backfillInsertTotal(t, db, "cas", "system_account", "cas", 0, 10, 0)
+	backfillPresetMarker(t, db, "usage_stats_totals", "running")
+	target := successCostBackfillTarget{name: "usage_stats_totals", pkColumns: []string{"system_account_id", "scope_type", "scope_id"}}
+	_, _, _, err := backfillSuccessCostBatch(context.Background(), db, backfillDialect{}, target, nil, `["stale","system_account","stale"]`, "2026-01-01T00:00:00.000Z")
+	if err == nil || !strings.Contains(err.Error(), "cursor CAS conflict while advancing") {
+		t.Fatalf("CAS 失败必须显式上抛: %v", err)
+	}
+	if _, total, success := backfillTotalCosts(t, db, "cas"); total != 10 || success != 0 {
+		t.Fatalf("CAS 失败必须回滚事实行: total/success=(%v,%v), want (10,0)", total, success)
+	}
+	markers := backfillMarkerRows(t, db)
+	if markers["usage_stats_totals"] != [2]string{"running", "{}"} {
+		t.Fatalf("CAS 失败必须回滚 cursor: marker=%v, want [running {}]", markers["usage_stats_totals"])
+	}
+}
+
+func TestApplySuccessCostBackfillReprocessesRowsAfterLegacyWriter(t *testing.T) {
+	statsPath, pathsFlag := backfillFixturePaths(t)
+	if code, _, stderr := runApplySuccessCostBackfill(t, "-apply-success-cost-backfill", "-driver", "sqlite", "-paths", pathsFlag); code != 0 {
+		t.Fatalf("首次回填退出码 = %d, want 0, stderr=%s", code, stderr)
+	}
+	db := openRebuildSQLite(t, statsPath)
+	backfillInsertTotal(t, db, "legacy", "system_account", "legacy", 0, 10, 0)
+	if _, err := db.Exec(`UPDATE backfill_progress SET status = 'running', cursor_json = '{}'`); err != nil {
+		t.Fatalf("重置六表 marker 失败: %v", err)
+	}
+	db.Close()
+	if code, report, stderr := runApplySuccessCostBackfill(t, "-apply-success-cost-backfill", "-driver", "sqlite", "-paths", pathsFlag); code != 0 {
+		t.Fatalf("旧 writer 回归回填退出码 = %d, want 0, stderr=%s", code, stderr)
+	} else if got := report.Tables["usage_stats_totals"]; got.MatchedRows != 1 || got.Status != "done" {
+		t.Fatalf("旧 writer 回归 totals 报告 = %+v, want matched=1 done", got)
+	}
+	db = openRebuildSQLite(t, statsPath)
+	defer db.Close()
+	if _, total, success := backfillTotalCosts(t, db, "legacy"); total != 10 || success != 10 {
+		t.Fatalf("旧 writer 产生的错误行未补正: total/success=(%v,%v), want (10,10)", total, success)
+	}
+	for _, target := range successCostBackfillTargets {
+		if marker := backfillMarkerRows(t, db)[target.name]; marker != [2]string{"done", "{}"} {
+			t.Fatalf("旧 writer 回归 marker %s = %v, want [done {}]", target.name, marker)
+		}
 	}
 }

@@ -11,6 +11,7 @@ import type {
   AccountSupportedEndpointMode,
   AccountType
 } from '@/types/domain'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
@@ -72,6 +73,14 @@ export interface AccountFormModel {
   balanceQueryDivisor: string
   quotaRecoveryPolicy?: AccountQuotaRecoveryPolicyForm
   errorHandlingRuleOverrides?: AccountErrorPolicyRuleOverrideForm[]
+  /**
+   * 当前能力域上下文（M2 域拆分，D3）：由 AccountEditModal 按路由域注入，
+   * 不是可编辑字段；创建 payload 携带该值，编辑 payload 不携带（域不可变）。
+   */
+  capabilityDomain: AccountCapabilityDomain
+  /** 火山方舟语音应用双值凭据（M6 契约 §9.2）：仅 volcengine + audio 域表单渲染并提交。 */
+  speechAppId: string
+  speechToken: string
 }
 
 export type AccountOAuthAuthorizeForm = Pick<

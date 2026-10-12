@@ -14,6 +14,10 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     baseColumns.push(sortableColumn({ title: '系统账户', key: 'systemAccount', width: 180 }, 'systemAccount', sortOrder))
   }
   baseColumns.push(
+    // M3「域外能力」提示列（D6 存量兼容 + I7）：仅存在域外遗留声明的行显示
+    // 徽标（legacyCapabilityModes 由服务端按 declared−allowed 计算），其余行
+    // 留空；对话域与媒体域同样展示（媒体域理论无遗留，容错）。
+    { title: '域外能力', key: 'capabilityLegacy', width: 110 },
     { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
     sortableColumn({ title: '状态', key: 'status', width: 120, align: 'center' }, 'status', sortOrder),
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
@@ -104,7 +108,8 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
 }
 
 export function accountTableScrollX(isManagementView: boolean): number {
-  return (isManagementView ? 2650 : 2470) + accountSelectionColumnWidth
+  // M3 域外能力提示列（+110）随基础列参与横向滚动宽度。
+  return (isManagementView ? 2760 : 2580) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

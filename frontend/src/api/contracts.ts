@@ -22,6 +22,7 @@ import type {
   RuntimeLogLevel,
   UsageRecordTrafficSource
 } from '@/types/domain'
+import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 
 export interface ListParams {
   systemAccountId?: string
@@ -95,6 +96,8 @@ export interface AccountUsageStatsParams extends ListParams {
 export interface AiPerformanceParams extends ListParams {
   startDate?: string
   endDate?: string
+  // 读通道：按能力域过滤 AI 性能 base/series（chat/video/audio/image；缺省=不过滤，前端 'all' 哨兵不下发）。
+  domain?: AccountCapabilityDomain
 }
 
 export interface AiPerformanceSeriesParams extends AiPerformanceParams {
@@ -106,6 +109,8 @@ export interface AiHealthParams extends ListParams {
   keyword?: string
   page?: number
   pageSize?: number
+  // 读通道：按能力域过滤健康列表（缺省=不过滤，前端 'all' 哨兵不下发）。
+  domain?: AccountCapabilityDomain
 }
 
 export interface AiHealthHourDetailParams extends ListParams {
@@ -117,6 +122,8 @@ export interface AiPerformanceAccountOptionsParams extends ListParams {
   keyword?: string
   accountIds?: string[]
   limit?: number
+  // 读通道：按能力域过滤账户候选（缺省=不过滤，前端 'all' 哨兵不下发）。
+  domain?: AccountCapabilityDomain
 }
 
 export type SortDirection = 'asc' | 'desc'
@@ -139,6 +146,8 @@ export interface AccountListParams extends ListParams {
   type?: string
   status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  // M1 读通道：按能力域过滤列表/导出（chat/video/audio/image；all=不过滤，前端四域菜单恒传具体域）。
+  domain?: AccountCapabilityDomain
 }
 
 export type AccountExportFilters = Omit<AccountListParams, 'systemAccountId' | 'page' | 'pageSize'>

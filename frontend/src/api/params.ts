@@ -214,6 +214,7 @@ export function aiPerformanceParams(params?: AiPerformanceParams, includeSystemA
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.startDate) output.startDate = params.startDate
   if (params.endDate) output.endDate = params.endDate
+  if (params.domain) output.domain = params.domain
   return Object.keys(output).length ? output : undefined
 }
 
@@ -222,6 +223,7 @@ export function aiPerformanceSeriesParams(params: AiPerformanceSeriesParams, inc
   if (includeSystemAccount && params.systemAccountId) output.set('systemAccountId', params.systemAccountId)
   if (params.startDate) output.set('startDate', params.startDate)
   if (params.endDate) output.set('endDate', params.endDate)
+  if (params.domain) output.set('domain', params.domain)
   for (const accountId of [...new Set(params.accountIds.map((id) => id.trim()).filter(Boolean))].slice(0, 20)) {
     output.append('accountIds', accountId)
   }
@@ -235,6 +237,7 @@ export function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountO
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   if (params.limit) output.limit = params.limit
+  if (params.domain) output.domain = params.domain
   return Object.keys(output).length ? output : undefined
 }
 

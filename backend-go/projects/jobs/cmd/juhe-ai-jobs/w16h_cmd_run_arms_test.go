@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
@@ -75,7 +76,8 @@ func w16hSeedSQLite(t *testing.T, path string) {
 // w16hSeedBusinessCapabilityDomain 在基底业务库预置 accounts.capability_domain
 // 最小形状（AI 账户能力域拆分 M1：jobs 启动业务库形状契约
 // capability_domain_schema.go 的只读校验消费面；列声明与 maintenance DDL
-// 同构，任务族完整列集由各专项 fixture 承载）。
+// 同构，任务族完整列集由各专项 fixture 承载），并补种 m2_finalized 阶段
+// 记录（M2 启动阶段门禁的消费面）。
 func w16hSeedBusinessCapabilityDomain(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -89,8 +91,42 @@ func w16hSeedBusinessCapabilityDomain(t *testing.T, path string) {
 	)`); err != nil {
 		t.Fatal(err)
 	}
+	w16hSeedCapabilityDomainStageRecord(t, db)
+	// 调度偏好独立实体（PLAN-20261012T033000000Z P1）启动校验消费面：表形状
+	// / api_keys 绑定列 / 内置行（scheduling_preference_schema.go 只读校验），
+	// DDL 与权威值由其测试侧 seedSchedulingPreferenceStartupFixture 同源提供。
+	seedSchedulingPreferenceStartupFixture(t, db)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// w16hSeedCapabilityDomainStageRecord 在已打开的业务库补种 M2 阶段记录
+// （global_settings 的 account_capability_domain_migration 行，
+// stage=m2_finalized）：M2 启动阶段门禁（capability_domain_schema.go 的
+// checkAccountCapabilityDomainStageRecord 臂）的夹具消费面。global_settings
+// 缺失时按 maintenance DDL 同构补建；记录 JSON 经共享包 Record 序列化，
+// 不在测试侧手写记录字面量。已存在时跳过（幂等）。
+func w16hSeedCapabilityDomainStageRecord(t *testing.T, db *sql.DB) {
+	t.Helper()
+	payload, err := json.Marshal(capdomain.Record{
+		Stage:       capdomain.StageM2Finalized,
+		RuleVersion: capdomain.RuleVersion,
+		UpdatedAt:   "2026-10-12T08:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal capability domain stage record: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS global_settings (
+		key TEXT PRIMARY KEY,
+		value_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("seed global_settings ddl: %v", err)
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO global_settings (key, value_json, updated_at) VALUES (?, ?, '2026-10-12T08:00:00Z')`,
+		capdomain.MigrationSettingKey, string(payload)); err != nil {
+		t.Fatalf("seed capability domain stage record: %v", err)
 	}
 }
 

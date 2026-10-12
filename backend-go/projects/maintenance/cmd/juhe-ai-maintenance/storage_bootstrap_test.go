@@ -14,6 +14,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // seedActiveModelCatalogRowCount 在临时库上重放与 runStorageBootstrap
@@ -81,6 +82,57 @@ func TestRunStorageBootstrapUsageErrors(t *testing.T) {
 	}
 	if code := runStorageBootstrap(true, false, "sqlite", "", "postgres://db", ""); code != 2 {
 		t.Fatalf("sqlite with dsn exit = %d, want 2", code)
+	}
+}
+
+// TestRunStorageBootstrapEnsureArmSeedsBuiltinSchedulingPreference 覆盖
+// --ensure-schema 补种臂（调度偏好独立实体 PLAN-20261012T033000000Z）：仅
+// ensure（不 seed）也必须落内置调度偏好行——存量库升级 = 跑 ensure-schema 即
+// 得内置行；重复 ensure 幂等（updated_at 不漂移），权威值与契约一致。
+func TestRunStorageBootstrapEnsureArmSeedsBuiltinSchedulingPreference(t *testing.T) {
+	root := t.TempDir()
+	business := filepath.Join(root, "business.sqlite3")
+	paths := strings.Join([]string{
+		"business=" + business,
+		"chat=" + filepath.Join(root, "chat.sqlite3"),
+		"dataset=" + filepath.Join(root, "dataset.sqlite3"),
+		"usage-catalog=" + filepath.Join(root, "usage-catalog.sqlite3"),
+		"stats=" + filepath.Join(root, "stats.sqlite3"),
+		"codex-context-shard-root=" + filepath.Join(root, "shards"),
+	}, ",")
+	openBusiness := func(t *testing.T) *sql.DB {
+		t.Helper()
+		db, err := sql.Open("sqlite", "file:"+business+"?mode=ro")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		return db
+	}
+	readRow := func(t *testing.T) (name, chatMode string, builtIn, enabled int, updatedAt string) {
+		t.Helper()
+		db := openBusiness(t)
+		err := db.QueryRow(`SELECT name, chat_mode, built_in, enabled, updated_at FROM scheduling_preferences WHERE id = ?`,
+			schema.BuiltinSchedulingPreferenceID).Scan(&name, &chatMode, &builtIn, &enabled, &updatedAt)
+		if err != nil {
+			t.Fatalf("query builtin scheduling preference after ensure-only run: %v", err)
+		}
+		return
+	}
+
+	if code := runStorageBootstrap(true, false, "sqlite", paths, "", ""); code != 0 {
+		t.Fatalf("ensure-only exit = %d, want 0", code)
+	}
+	name, chatMode, builtIn, enabled, updatedAt := readRow(t)
+	if name != schema.BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || enabled != 1 {
+		t.Fatalf("builtin row = %q %q built_in=%d enabled=%d", name, chatMode, builtIn, enabled)
+	}
+	if code := runStorageBootstrap(true, false, "sqlite", paths, "", ""); code != 0 {
+		t.Fatalf("second ensure-only exit = %d, want 0", code)
+	}
+	_, _, _, _, updatedAtAfterRerun := readRow(t)
+	if updatedAtAfterRerun != updatedAt {
+		t.Fatalf("updated_at drifted on ensure rerun: %s -> %s", updatedAt, updatedAtAfterRerun)
 	}
 }
 
@@ -153,4 +205,31 @@ func TestRunStorageBootstrapSQLiteEndToEnd(t *testing.T) {
 			t.Fatalf("%s has no tables after ensure", name)
 		}
 	}
+	// 全新空库自动封存（AI 账户能力域拆分 M2）：ensure 臂对空业务库写入
+	// m2_finalized 阶段记录；第二次 ensure+seed（记录已存在）幂等跳过且退出码
+	// 仍为 0（上方两次 runStorageBootstrap 已覆盖）。
+	recordJSON, err := capabilityDomainBootstrapStageRecord(t, business)
+	if err != nil {
+		t.Fatalf("read stage record: %v", err)
+	}
+	record, err := capdomain.ParseRecord(recordJSON)
+	if err != nil {
+		t.Fatalf("parse stage record: %v", err)
+	}
+	if record.Stage != capdomain.StageM2Finalized || record.RuleVersion != capdomain.RuleVersion {
+		t.Fatalf("ensure 后阶段记录应已封存 m2_finalized，got %+v", record)
+	}
+}
+
+// capabilityDomainBootstrapStageRecord 读业务库阶段记录原始 JSON（无记录报错）。
+func capabilityDomainBootstrapStageRecord(t *testing.T, businessPath string) (string, error) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+businessPath+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open business for stage record: %v", err)
+	}
+	defer db.Close()
+	var valueJSON string
+	err = db.QueryRow("SELECT value_json FROM global_settings WHERE key = ?", capdomain.MigrationSettingKey).Scan(&valueJSON)
+	return valueJSON, err
 }

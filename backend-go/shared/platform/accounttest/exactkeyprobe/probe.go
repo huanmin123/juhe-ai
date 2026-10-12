@@ -81,6 +81,8 @@ func pickProbeInstructions() string {
 }
 
 type ProbeOptions struct {
+	// Client 用于替换 HTTP 依赖并确定性回放探针；nil 使用生产共享连接池。
+	Client           *http.Client
 	Secret           string
 	Timeout          time.Duration
 	MaxResponseBytes int64
@@ -134,6 +136,10 @@ func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope
 		return neutral(response.StatusCode, "upstream_http_status", "上游返回非成功状态")
 	}
 	if err := verifyResponse(input, body); err != nil {
+		var failure *responsesSSEFailure
+		if errors.As(err, &failure) {
+			return neutral(response.StatusCode, "upstream_protocol_invalid", failure.Error())
+		}
 		if readErr != nil {
 			return responseReadFailure(readErr)
 		}
@@ -214,6 +220,9 @@ func probeHTTPClient(input Input, options ProbeOptions) (*http.Client, error) {
 	proxyURL, timeout, err := probeTransportConfig(input, options)
 	if err != nil {
 		return nil, err
+	}
+	if options.Client != nil {
+		return options.Client, nil
 	}
 	return upstreamhttp.SharedClient(proxyURL, upstreamhttp.TransportOptions{ResponseHeaderTimeout: timeout})
 }
@@ -668,10 +677,20 @@ func verifyResponsesSSE(body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	completed := false
+	var protocolErr error
 	for _, block := range strings.Split(text, "\n\n") {
 		if err := consumeResponsesSSEEvent(block, &output, &completed); err != nil {
-			return err
+			var failure *responsesSSEFailure
+			if errors.As(err, &failure) {
+				return failure
+			}
+			if protocolErr == nil {
+				protocolErr = err
+			}
 		}
+	}
+	if protocolErr != nil {
+		return protocolErr
 	}
 	if !completed {
 		return errors.New("SSE 缺少 response.completed")
@@ -844,6 +863,27 @@ func verifyInteractionsSSE(body []byte) error {
 	return nil
 }
 
+// responsesSSEFailure 保留显式上游失败证据，避免被响应尾部读取错误覆盖。
+type responsesSSEFailure struct {
+	message string
+}
+
+func (failure *responsesSSEFailure) Error() string { return failure.message }
+
+func responsesSSEFailureEvent(eventName string) bool {
+	return eventName == "error" || eventName == "response.failed" || eventName == "response.incomplete"
+}
+
+func responsesSSEErrorMessage(value any) string {
+	if record, ok := value.(map[string]any); ok {
+		value = record["message"]
+	}
+	if message, ok := value.(string); ok && strings.TrimSpace(message) != "" {
+		return message
+	}
+	return ""
+}
+
 func consumeResponsesSSEEvent(block string, output *strings.Builder, completed *bool) error {
 	var eventName string
 	var dataLines []string
@@ -860,18 +900,51 @@ func consumeResponsesSSEEvent(block string, output *strings.Builder, completed *
 		}
 	}
 	if len(dataLines) == 0 {
+		if responsesSSEFailureEvent(eventName) {
+			return &responsesSSEFailure{message: "SSE 上游未完成"}
+		}
 		return nil
 	}
 	data := strings.Join(dataLines, "\n")
 	if data == "[DONE]" {
+		if responsesSSEFailureEvent(eventName) {
+			return &responsesSSEFailure{message: "SSE 上游未完成"}
+		}
 		return nil
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+	if err := json.Unmarshal([]byte(data), &payload); err != nil || payload == nil {
 		return errors.New("SSE data 不是 JSON")
 	}
-	if kind, ok := payload["type"].(string); ok && strings.TrimSpace(kind) != "" {
+	failed := responsesSSEFailureEvent(eventName)
+	if kind := textField(payload, "type"); kind != "" {
+		failed = failed || responsesSSEFailureEvent(kind)
 		eventName = kind
+	}
+	response, _ := payload["response"].(map[string]any)
+	message := responsesSSEErrorMessage(payload["error"])
+	if payload["error"] != nil {
+		failed = true
+	}
+	if response["error"] != nil {
+		failed = true
+		if message == "" {
+			message = responsesSSEErrorMessage(response["error"])
+		}
+	}
+	for _, status := range []string{textField(payload, "status"), textField(response, "status")} {
+		if status == "failed" || status == "incomplete" || (eventName == "response.completed" && status != "" && status != "completed") {
+			failed = true
+		}
+	}
+	if failed {
+		if message == "" {
+			message = responsesSSEErrorMessage(payload["message"])
+		}
+		if message == "" {
+			message = "SSE 上游未完成"
+		}
+		return &responsesSSEFailure{message: message}
 	}
 	switch eventName {
 	case "response.output_text.delta":
@@ -884,8 +957,6 @@ func consumeResponsesSSEEvent(block string, output *strings.Builder, completed *
 		}
 	case "response.completed":
 		*completed = true
-	case "response.failed", "response.incomplete":
-		return errors.New("SSE 上游未完成")
 	}
 	return nil
 }

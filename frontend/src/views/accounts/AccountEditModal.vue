@@ -39,6 +39,55 @@
       <div v-if="loading" class="account-form-loading">
         <a-spin tip="正在加载账户配置" />
       </div>
+      <!-- 媒体域（video/audio/image）：精简三段式（D7 清单表驱动）；对话域维持现行双形态。 -->
+      <AccountMediaForm
+        v-else-if="isMediaDomain"
+        :account-type-choices="accountTypeChoices"
+        :auth-loading="authLoading"
+        :auth-result="authResult"
+        :authorized-editing="authorizedEditing"
+        :base-url-placeholder="baseUrlPlaceholder"
+        :capability-domain="capabilityDomain"
+        :credential-title="credentialTitle"
+        :deleting-tag-id="deletingTagId"
+        :editing="editing"
+        :form="form"
+        :group-options="groupOptions"
+        :group-options-loading="groupOptionsLoading"
+        :is-management-view="isManagementView"
+        :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
+        :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
+        :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
+        :mapping-source-model-options="mappingSourceModelOptions"
+        :mapping-upstream-model-options="mappingUpstreamModelOptions"
+        :model-options="modelOptions"
+        :models-loading="modelsLoading"
+        :model-syncing="modelSyncing"
+        :open="open"
+        :providers="mediaProviders"
+        :proxy-options="proxyOptions"
+        :proxy-options-loading="proxyOptionsLoading"
+        :selected-protocol-profile="selectedProtocolProfile"
+        :selected-provider="selectedProvider"
+        :tag-options="tagOptions"
+        :tag-options-loading="tagOptionsLoading"
+        @copy-auth-url="$emit('copy-auth-url', $event)"
+        @delete-tag="$emit('delete-tag', $event)"
+        @generate-auth-url="$emit('generate-auth-url')"
+        @group-options-dropdown="$emit('group-options-dropdown', $event)"
+        @group-options-search="$emit('group-options-search', $event)"
+        @mapping-source-model-options-open="(protocol, value) => $emit('mapping-model-options-open', protocol, value)"
+        @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
+        @model-options-open="$emit('model-options-open', $event)"
+        @model-options-search="$emit('model-options-search', $event)"
+        @open-auth-url="$emit('open-auth-url')"
+        @proxyOptionsDropdown="$emit('proxyOptionsDropdown', $event)"
+        @proxyOptionsSearch="$emit('proxyOptionsSearch', $event)"
+        @refresh-models="$emit('refresh-models')"
+        @select-provider="$emit('select-provider', $event)"
+        @select-type-choice="$emit('select-type-choice', $event)"
+        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
+      />
       <template v-else>
         <div v-if="!editing" class="wizard-steps" aria-label="创建步骤">
           <div class="wizard-step" :class="{ current: wizardStep === 1, done: wizardStep > 1 }">
@@ -115,6 +164,7 @@
                 v-else-if="isTokenCredentialForm && !authorizedEditing"
                 :auth-loading="authLoading"
                 :auth-result="authResult"
+                :capability-domain="capabilityDomain"
                 :editing="editing"
                 :form="form"
                 :is-anthropic-o-auth="isAnthropicOAuthForm"
@@ -593,8 +643,8 @@
 
     <template #footer>
       <div class="account-modal-footer">
-        <a-button v-if="!oauthCreateTestHidden" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
-        <template v-if="!editing">
+        <a-button v-if="!oauthCreateTestHidden && !isMediaDomain" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <template v-if="!editing && !isMediaDomain">
           <a-button v-if="wizardStep > 1" @click="wizardStep -= 1">上一步</a-button>
           <a-button v-if="wizardStep < 3" @click="wizardStep += 1">下一步</a-button>
         </template>
@@ -613,6 +663,7 @@ import { FlagOutlined, HeartOutlined, QuestionCircleOutlined, ScheduleOutlined, 
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
+import { api } from '@/api/client'
 import { defaultAccountNameFromBaseUrl } from './accountNameSuggestion'
 import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
@@ -628,6 +679,7 @@ import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
+import AccountMediaForm from './AccountMediaForm.vue'
 import { statusText } from './accountFormatters'
 import {
   accountEndpointModeText,
@@ -636,6 +688,7 @@ import {
 } from './accountEndpointModes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
 import { accountValidationErrorStep } from './accountSavePayload'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
@@ -676,6 +729,9 @@ const props = withDefaults(defineProps<{
   baseUrlPlaceholder: string
   balanceQueryCanRun?: boolean
   balanceQueryLoading?: boolean
+  // 当前能力域（M2 域拆分）：AccountsView 按 route.meta 注入；chat 走现行双形态，
+  // 媒体域走精简三段式。域不是可编辑字段，仅承载创建 payload 与表单分发。
+  capabilityDomain?: AccountCapabilityDomain
   confirmLoading: boolean
   credentialTitle: string
   editing: boolean
@@ -716,10 +772,55 @@ const props = withDefaults(defineProps<{
   apiKeyRuntimeLoading: false,
   balanceQueryCanRun: false,
   balanceQueryLoading: false,
+  capabilityDomain: 'chat',
   loading: false,
   testButtonDisabled: false,
   testLoading: false
 })
+
+// 媒体域（video/audio/image）分发开关：三段式表单与对话双形态互斥。
+const isMediaDomain = computed(() =>
+  props.capabilityDomain === 'video'
+  || props.capabilityDomain === 'audio'
+  || props.capabilityDomain === 'image')
+
+// 媒体域供应商清单保障：列表页传入的 providers 是轻量 options（protocolProfiles
+// 懒加载），FALLBACK_PROVIDERS 也不含 minimax/volcengine/qwen——三段式的供应商×
+// 类型矩阵过滤依赖完整 protocolProfiles，缺定义时整个供应商会被静默滤掉。这里在
+// 媒体弹窗打开时拉一次全量完整定义兜底；对话域不走此路径（行为零变化）。
+const mediaProviderDefinitions = ref<ProviderDefinition[] | undefined>(undefined)
+watch(
+  [open, () => props.capabilityDomain],
+  () => {
+    if (!open.value || !isMediaDomain.value || mediaProviderDefinitions.value) return
+    api.providers.definitions().then((definitions) => {
+      if (Array.isArray(definitions) && definitions.length) mediaProviderDefinitions.value = definitions
+    }).catch(() => { /* 拉取失败保持调用方传入清单 */ })
+  },
+  { immediate: true }
+)
+const mediaProviders = computed(() => mediaProviderDefinitions.value ?? props.providers)
+
+// 能力域上下文同步（D3）：域由路由注入、不是可编辑字段。表单在新建/编辑/克隆
+// 装载路径会被整块 Object.assign 重置，这里在弹窗打开与结构字段变化后重放注入，
+// 保证保存时刻 payload 携带的域与当前路由域一致（保存按钮在装载完成前禁用，
+// 不存在中途取值窗口）。
+watch(
+  [
+    open,
+    () => props.capabilityDomain,
+    () => props.loading,
+    () => props.advancedLoading,
+    () => props.form.providerCode,
+    () => props.form.providerProtocolProfileId,
+    () => props.form.type
+  ],
+  () => {
+    if (!open.value) return
+    props.form.capabilityDomain = props.capabilityDomain
+  },
+  { immediate: true }
+)
 
 // OAuth 账户新建态没有可测凭据（授权码/token 一次性，落库后才能测）：
 // 隐藏底部测试按钮，编辑态（accountDetail 已加载）保留。

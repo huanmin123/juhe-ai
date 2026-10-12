@@ -294,6 +294,10 @@ func Build(ctx context.Context, spec Spec) (*http.Request, error) {
 	for name, value := range spec.ExtraHeaders {
 		header.Set(name, value)
 	}
+	if spec.Adapter == AdapterOpenAIOAuthCodex {
+		// OAuth Codex 的响应编码由适配器固定，附加头不能将它改回 JSON。
+		header.Set("Accept", "text/event-stream")
+	}
 	if spec.Adapter == AdapterOpenAIOAuthCodex && header.Get("OpenAI-Beta") == "" {
 		// A 形态 openai-beta 缺省补齐（§9.5）；ExtraHeaders 已带显式值时保留，
 		// 不覆盖（OpenAI账号接入 透传策略同源）。仅 A 形态执行；B/C 不补。
@@ -501,12 +505,18 @@ func buildUpstreamURL(spec Spec, entry Endpoint, def adapterDef, pathAndQuery st
 		return "", fmt.Errorf("upstreamenvelope: base_url 无效：%w", err)
 	}
 	if entry.Protocol == ProtocolGemini {
-		basePath := strings.TrimRight(parsed.Path, "/")
+		basePath := strings.TrimRight(parsed.EscapedPath(), "/")
 		suffixPath, suffixQuery := splitPathAndQuery(pathAndQuery)
 		if strings.HasSuffix(basePath, "/v1beta") {
 			suffixPath = stripV1BetaPrefix(suffixPath)
 		}
-		parsed.Path = strings.ReplaceAll(basePath+stripTrailingSlashPath(suffixPath), "//", "/")
+		escapedPath := strings.ReplaceAll(basePath+stripTrailingSlashPath(suffixPath), "//", "/")
+		decodedPath, err := url.PathUnescape(escapedPath)
+		if err != nil {
+			return "", fmt.Errorf("upstreamenvelope: Gemini 路径无效：%w", err)
+		}
+		parsed.Path = decodedPath
+		parsed.RawPath = escapedPath
 		parsed.RawQuery = strings.TrimPrefix(suffixQuery, "?")
 		return parsed.String(), nil
 	}

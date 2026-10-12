@@ -395,6 +395,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       penalty_threshold integer NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
       penalty_action text NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
       recovery_interval_minutes integer NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      timeout_penalty_enabled boolean NOT NULL DEFAULT false,
       created_at text NOT NULL,
       updated_at text NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
@@ -721,6 +722,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       penalty_threshold integer NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
       penalty_action text NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
       recovery_interval_minutes integer NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      timeout_penalty_enabled boolean NOT NULL DEFAULT false,
       enabled integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       revision integer NOT NULL DEFAULT 1 CHECK (revision >= 1),
       next_run_at text NOT NULL,
@@ -1287,6 +1289,28 @@ var postgresSchemaBusinessTables = []PGStatement{
       FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id) ON DELETE CASCADE,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+    )`,
+	},
+	{
+		// scheduling_preferences 调度偏好独立实体（调度偏好独立实体
+		// PLAN-20261012T033000000Z P1，接口契约「调度偏好」章）：与 SQLite 版
+		// 同构（sqlite_schema_business.go scheduling_preferences DDL）。
+		// system_account_id 内置行恒 NULL（全局只读例外）；不加 owner 外键——
+		// 契约只要求 api_keys 侧引用声明，自定义行 owner 非空由写入口事务内
+		// 校验。置于 api_keys 之前：下方 api_keys 存量库 ALTER 与新库语义
+		// 均要求目标表先存在。CREATE TABLE IF NOT EXISTS 幂等。
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-table",
+		SQL: `CREATE TABLE IF NOT EXISTS scheduling_preferences (
+      id text PRIMARY KEY,
+      system_account_id text,
+      name text NOT NULL,
+      chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
+      chat_speed_first_config_json text,
+      built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
+      enabled integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at text NOT NULL,
+      updated_at text NOT NULL
     )`,
 	},
 	{
@@ -2310,6 +2334,19 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
 		SQL:        `ALTER TABLE model_quality_schedules ADD COLUMN IF NOT EXISTS custom_question_ids text`,
 	},
 	{
+		// 模型检测超时处罚开关（手动质量策略与定时计划两表）：存量库幂等补
+		// 列，默认 false 维持既有"检测环节超时不单独按失败计分/处罚"的行为；
+		// 新库由建表 DDL 内联声明同形列。
+		SchemaName: "juhe_business",
+		Source:     "model-quality-timeout-penalty-pg-column",
+		SQL:        `ALTER TABLE model_quality_policies ADD COLUMN IF NOT EXISTS timeout_penalty_enabled boolean NOT NULL DEFAULT false`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-quality-timeout-penalty-pg-column",
+		SQL:        `ALTER TABLE model_quality_schedules ADD COLUMN IF NOT EXISTS timeout_penalty_enabled boolean NOT NULL DEFAULT false`,
+	},
+	{
 		// 定时质量检查间隔下限从 10 分钟放开到 1 分钟（schedule_now 契约）。
 		// 幂等迁移：仅当存量表上仍挂着旧的下限 10 匿名 CHECK 时替换。旧内联
 		// 约束被 PG 规范化为 ((interval_minutes >= 10) AND (interval_minutes <=
@@ -2410,5 +2447,16 @@ BEGIN
   END IF;
 END
 $$`,
+	},
+	{
+		// api_keys.scheduling_preference_id 绑定列（调度偏好独立实体
+		// PLAN-20261012T033000000Z P1）：新库与历史库统一由幂等 ALTER 补列
+		//（model-check-question-bank-lasttest-pg-column 先例——PG CREATE TABLE
+		// 未内联该列），存量行取 NULL 恒满足列级 REFERENCES 声明。外键无
+		// ON DELETE 子句（NO ACTION）仅作 belt：删除被引用偏好在服务层返回
+		// 409，存在性 / owner 校验以事务内校验为主。
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-api-keys-column",
+		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scheduling_preference_id text REFERENCES scheduling_preferences(id)`,
 	},
 }

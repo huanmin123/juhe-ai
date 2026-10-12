@@ -198,7 +198,7 @@ func TestBuildCodexAdapterWrapGolden(t *testing.T) {
 					{Key: "model", Value: "gpt-5.4"},
 					{Key: "input", Value: "ok"},
 				}, ModeResponsesSSE, BudgetNone)
-				spec.ExtraHeaders = map[string]string{"openai-beta": "responses=turbo_smoke"}
+				spec.ExtraHeaders = map[string]string{"openai-beta": "responses=turbo_smoke", "Accept": "application/json"}
 				return spec
 			}(),
 			wantURL:        CodexBaseURL + "/responses",

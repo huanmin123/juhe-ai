@@ -159,6 +159,15 @@ func normalizeStatus(value *string, fallback string) (string, error) {
 	return "", &ValidationError{Message: "策略路由状态无效"}
 }
 
+// NormalizeNormalRoutingConfig 把 normalizeNormalRoutingConfig（既有策略路由
+// 调度配置 normalize，domain/route-strategy.ts 镜像）导出给调度偏好实体的
+// 派发读取链（gatewayruntimecache）：偏好行 chat_mode + chat_speed_first_config_json
+// 经同一 normalize 合成有效配置，不另写默认值或校验。行为与错误文案与内部
+// normalize 完全一致。
+func NormalizeNormalRoutingConfig(value any) (*NormalRoutingConfig, error) {
+	return normalizeNormalRoutingConfig(value)
+}
+
 // normalizeNormalRoutingConfig mirrors domain/route-strategy.ts.
 func normalizeNormalRoutingConfig(value any) (*NormalRoutingConfig, error) {
 	if value == nil {

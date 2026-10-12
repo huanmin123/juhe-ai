@@ -278,7 +278,7 @@ func TestChainLatencyDegradationPortOrdersAndRecords(t *testing.T) {
 	if _, err := port.RecordFirstByteSlowAsync(context.Background(), slow, scope, config, "慢采样 2"); err != nil {
 		t.Fatalf("slow 2: %v", err)
 	}
-	degraded, err := port.IsAccountLatencyDegradedAsync(context.Background(), slow, scope)
+	degraded, err := port.IsAccountLatencyDegradedAsync(context.Background(), slow, scope, nil)
 	if err != nil || !degraded {
 		t.Fatalf("degraded = %v err %v", degraded, err)
 	}
@@ -302,7 +302,7 @@ func TestChainLatencyDegradationPortOrdersAndRecords(t *testing.T) {
 			t.Errorf("third success should clear, got %+v", result)
 		}
 	}
-	cleared, err := port.IsAccountLatencyDegradedAsync(context.Background(), slow, scope)
+	cleared, err := port.IsAccountLatencyDegradedAsync(context.Background(), slow, scope, nil)
 	if err != nil || cleared {
 		t.Errorf("cleared = %v err %v, want false", cleared, err)
 	}

@@ -1,3 +1,5 @@
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
+import { capabilityDomainIsMedia } from './accountCapabilityDomains'
 import type {
   AccountEditBasicDetail,
   AccountListItem,
@@ -29,7 +31,8 @@ import {
 } from './accountModelMappingProtocolMatrix'
 import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
 import {
-  isHybridProviderCode
+  isHybridProviderCode,
+  isVolcengineProviderCode
 } from '@/shared/providerProtocol'
 import { accountModelMappingEndpointFamilyProtocol, accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
 import {
@@ -79,6 +82,10 @@ export type AccountSavePayload = {
   notes: string
   balanceQueryEnabled?: boolean
   balanceQueryConfig?: Record<string, unknown>
+  // M2 能力域契约（D3/D6）：仅创建 payload 携带（域创建时确定、不可更改）；
+  // 更新 payload 由 buildAccountUpdatePayload 显式字段构造，天然不携带域字段。
+  capabilityDomain?: AccountCapabilityDomain
+  cloneSourceId?: string
 }
 
 export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type' | 'status'> & {
@@ -87,6 +94,7 @@ export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'pr
 
 export type AccountOAuthCreateCommonPayload = {
   providerProtocolProfileId?: string
+  capabilityDomain?: AccountCapabilityDomain
   name?: string
   groupId?: string
   concurrencyLimit: number
@@ -103,6 +111,7 @@ export type AccountOAuthCreateCommonPayload = {
   proxyProfileId?: string
   accountExpiresAt: string | null
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
+  cloneSourceId?: string
   credentialsPatch?: {
     supported_endpoint_modes?: AccountFormModel['supportedEndpointModes']
     service_tier_override?: Exclude<AccountFormModel['serviceTierOverride'], ''>
@@ -157,6 +166,13 @@ export function validateAccountSaveForm(input: {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
     if (baseUrlValidation) return baseUrlValidation
   }
+  // 火山方舟音频域双值凭据（D7 清单表定案）：volcengine + audio 域必填
+  // speech_appid/speech_token——出站缺一即显式失败，写入面前端先拦。
+  if (form.capabilityDomain === 'audio'
+    && isVolcengineProviderCode(form.providerCode)
+    && (!form.speechAppId.trim() || !form.speechToken.trim())) {
+    return '火山方舟音频账户必须填写语音应用 App ID 和 Access Token'
+  }
   const formProviderProfile = resolveFormProviderProfile(form, input.providers)
   const managedOAuthProvider = managedOAuthProviderKind(formProviderProfile)
   if (!editingId && form.type === 'google_oauth') {
@@ -198,8 +214,10 @@ export function validateAccountSaveForm(input: {
   const supportedModels = normalizeSupportedModels(form.supportedModels)
   // 国外 OAuth 供应商创建时支持模型/检查模型允许留空：后端自动取模型目录
   // 最新的对话模型并默认检查模型（留空项由系统兜底，见 oauthmgmt
-  // CreateOAuthAccount）。其余场景保持必填。
+  // CreateOAuthAccount）。其余场景保持必填；媒体域无该兜底（D7：支持模型
+  // 一律必选），gemini native google_oauth 媒体账户同样必选。
   const oauthDefaultsAllowed = !editingId
+    && !capabilityDomainIsMedia(form.capabilityDomain)
     && (form.type === 'oauth' || form.type === 'google_oauth')
     && ['gpt', 'anthropic', 'gemini', 'xai'].includes(form.providerCode)
   if (!supportedModels.length && !oauthDefaultsAllowed) return '请选择支持模型'
@@ -302,7 +320,10 @@ export function buildAccountSavePayload(input: {
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     groupId: input.form.groupId,
     notes: input.form.notes,
-    ...balancePayload
+    ...balancePayload,
+    // M2 能力域（D3）：创建携带当前域；编辑场景该字段被 buildAccountUpdatePayload
+    // 显式字段构造排除（域不可变，更新 payload 不携带）。
+    capabilityDomain: input.form.capabilityDomain
   }
 }
 
@@ -333,6 +354,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
 
 export function buildOAuthCreateCommonPayload(input: {
   accounts: AccountListItem[]
+  cloningSourceId?: string
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
@@ -342,6 +364,10 @@ export function buildOAuthCreateCommonPayload(input: {
   const payload: AccountOAuthCreateCommonPayload = {
     name: input.form.name.trim() || undefined,
     providerProtocolProfileId: input.form.providerProtocolProfileId,
+    // M2 能力域（D3）：OAuth 创建同样携带当前域（媒体域 gemini native google_oauth
+    // 走此通道；chat 域显式携带 'chat'）。
+    capabilityDomain: input.form.capabilityDomain,
+    ...(input.cloningSourceId && !input.editingId ? { cloneSourceId: input.cloningSourceId } : {}),
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,

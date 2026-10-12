@@ -256,7 +256,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		payloadSnapshot["detectionScope"] = detectionScope
 	}
 	payload, _ := json.Marshal(payloadSnapshot)
-	policySnapshotMap := map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
+	policySnapshotMap := map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "timeoutPenaltyEnabled": request.TimeoutPenaltyEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
 	// 题库配置随 policy_snapshot_json 自然快照：历史记录可读出当次实际引用
 	// 的题目 id（题目删除不回写历史，标题/判定从 items 证据读取）。
 	if len(request.CustomQuestionIds) > 0 {
@@ -368,7 +368,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		return s.finishFailure(ctx, runID, input, claim, now, fmt.Errorf("resolve J3b custom quiz questions: %w", quizErr))
 	}
 	probeModel := upstreamModel
-	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, Headers: target.Headers, Model: probeModel, RequestModel: request.Model, ModelMappingApplied: probeModel != request.Model, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile), QuizRequested: quizRequested, QuizQuestions: quizQuestions}
+	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, CredentialType: target.CredentialType, Headers: target.Headers, Model: probeModel, RequestModel: request.Model, ModelMappingApplied: probeModel != request.Model, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile), QuizRequested: quizRequested, QuizQuestions: quizQuestions, TimeoutPenalty: request.TimeoutPenaltyEnabled}
 	probeSuite.Dispatcher = s.Dispatcher
 	probeSuite.Client = target.Client
 	// 逐探针进度事件：只转发 modelcheckprobe 的真实 hook（每个带标签探针
@@ -391,7 +391,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	probeSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: credentialSourceID, KeyFingerprint: credentialSourceID, ClientModel: request.Model, ClientEndpointFamily: clientEndpointFamily, FinalUpstreamModel: probeModel, UpstreamEndpointMode: upstreamEndpointMode, DispatchRevision: target.DispatchRevision}
 	if request.TrustedComparison {
-		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, ProviderProtocolProfileID: comparisonTarget.ProviderProtocolProfileID, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, RequestModel: request.Model, ModelMappingApplied: comparisonTarget.UpstreamModel != request.Model, Profile: request.Profile, Protocol: comparisonTarget.Protocol, UpstreamProtocol: comparisonTarget.UpstreamProtocol, EndpointMode: comparisonTarget.EndpointMode, UpstreamEndpointMode: comparisonTarget.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), SupportedModels: append([]string(nil), comparisonTarget.SupportedModels...), Dispatcher: s.Dispatcher, Adapter: comparisonTarget.UpstreamAdapter, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
+		comparisonSuite := &modelcheckprobe.Suite{Endpoint: comparisonTarget.Endpoint, ProviderCode: comparisonTarget.ProviderCode, ProviderProtocolProfileID: comparisonTarget.ProviderProtocolProfileID, CredentialType: comparisonTarget.CredentialType, Headers: comparisonTarget.Headers, Model: comparisonTarget.UpstreamModel, RequestModel: request.Model, ModelMappingApplied: comparisonTarget.UpstreamModel != request.Model, Profile: request.Profile, Protocol: comparisonTarget.Protocol, UpstreamProtocol: comparisonTarget.UpstreamProtocol, EndpointMode: comparisonTarget.EndpointMode, UpstreamEndpointMode: comparisonTarget.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), comparisonTarget.SupportedEndpointModes...), SupportedModels: append([]string(nil), comparisonTarget.SupportedModels...), Dispatcher: s.Dispatcher, Adapter: comparisonTarget.UpstreamAdapter, Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
 		comparisonSuite.Client = comparisonTarget.Client
 		comparisonSourceID := comparisonTarget.CredentialSourceAccountID
 		if comparisonSourceID == "" {
@@ -430,7 +430,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
 	itemRecords := make([]ItemRecord, 0, len(items))
-	levelSummary := modelcheckprobe.SummarizeChecks(items, request.TrustedComparison, request.Profile)
+	levelSummary := modelcheckprobe.SummarizeChecksWithTimeoutPenalty(items, request.TrustedComparison, request.Profile, probeSuite.TimeoutPenalty)
 	level, message := levelSummary.Level, levelSummary.Message
 	for index, evaluation := range items {
 		status := ItemStatus(evaluation.Status)
@@ -488,7 +488,17 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	} else if mappingStatus == "undeclared_mismatch" {
 		trustReport.ReasonCodes = appendReason(trustReport.ReasonCodes, "undeclared_response_model_mismatch")
 	}
+	// 超时处罚开关与超时证据存在性（质量判定、健康投影、审计 payload 共用）。
+	// 开关关闭时 timeoutPenaltyTriggered 恒为 false，除 payload 常写键外所有
+	// 路径与既有实现逐字节等价。
+	timeoutPenaltyEnabled := request.TimeoutPenaltyEnabled
+	timeoutPenaltyTriggered := timeoutPenaltyEnabled && hasTimeoutPenaltyEvidence(evidenceItems)
 	modelCheckUnverified := hasTerminalEvidence(evidenceItems)
+	if timeoutPenaltyEnabled {
+		// 超时处罚开启：超时证据不再计入“未形成质量判定证据”抑制口径，
+		// 非超时传输失败终端证据仍抑制。
+		modelCheckUnverified = hasTerminalEvidenceExcludingTimeout(evidenceItems)
+	}
 	resultSummary := map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
 	if detectionScope != "" {
 		resultSummary["detectionScope"] = detectionScope
@@ -514,6 +524,11 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	// model conflict bypasses the threshold here.
 	hardQualityFailure := mappingStatus == "undeclared_mismatch"
 	qualityFailed := status == RunCompleted && !qualityUnavailable && (score < request.Threshold || hardQualityFailure)
+	// 超时处罚：开关开启且存在超时证据时，unavailable 不再一律免罚，视为
+	// 质量不达标；关闭时保持 unavailable 不处罚的既有语义。
+	if timeoutPenaltyTriggered && qualityUnavailable {
+		qualityFailed = true
+	}
 	// Recovery validates whether an existing isolation can be cleared; it must
 	// not create a second enforcement generation when the recovery probe fails.
 	enforcementAllowed := manualEnforcementEligible && qualityFailed && triggerKind != "quality_recovery"
@@ -540,7 +555,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if request.Threshold > 0 {
 		decisionThreshold = request.Threshold
 	}
-	qualityDecisionPayload := map[string]any{"triggerKind": triggerKind, "triggered": triggered, "hardFailure": hardQualityFailure, "score": score, "threshold": decisionThreshold, "configuredAction": penaltyAction, "reasonCodes": decisionReasonCodes, "result": "not_triggered", "decidedAt": finishedAt.Format(time.RFC3339), "evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
+	qualityDecisionPayload := map[string]any{"triggerKind": triggerKind, "triggered": triggered, "hardFailure": hardQualityFailure, "score": score, "threshold": decisionThreshold, "configuredAction": penaltyAction, "reasonCodes": decisionReasonCodes, "result": "not_triggered", "decidedAt": finishedAt.Format(time.RFC3339), "evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified, "timeoutPenaltyEnabled": timeoutPenaltyEnabled, "timeoutPenaltyTriggered": timeoutPenaltyTriggered}
 	if modelCheckUnverified {
 		qualityDecisionPayload["result"] = "not_triggered"
 		qualityDecisionPayload["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
@@ -581,7 +596,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 				err = fmt.Errorf("%w; mark J3b health sync failed: %v", err, markErr)
 			}
 			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
-		} else if err := s.Projector.Project(finalizeCtx, runID, aggregate, HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: statHour, RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, ScheduleID: request.ScheduleID, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, RecoveryIntervalMinutes: recoveryInterval, EnforcementAllowed: enforcementAllowed, ObservedAt: finishedAt, Score: score, Threshold: request.Threshold, Level: level, HardQualityFailure: hardQualityFailure}); err != nil {
+		} else if err := s.Projector.Project(finalizeCtx, runID, aggregate, HealthFact{AccountID: request.TargetID, SystemAccountID: request.SystemAccountID, StatHour: statHour, RunID: runID, ProviderCode: request.ProviderCode, Model: request.Model, Profile: request.Profile, ScheduleID: request.ScheduleID, PolicyRevision: request.PolicyRevision, AccountConfigRevision: request.ConfigRevision, PenaltyAction: penaltyAction, RecoveryIntervalMinutes: recoveryInterval, EnforcementAllowed: enforcementAllowed, ObservedAt: finishedAt, Score: score, Threshold: request.Threshold, Level: level, HardQualityFailure: hardQualityFailure, TimeoutPenaltyTriggered: timeoutPenaltyTriggered}); err != nil {
 			// The run/outcome is already durable. Keep the health publication
 			// retryable instead of reporting a false applied state.
 			emit(ProgressEvent{Kind: "health_sync_failed", Data: map[string]any{"runId": runID, "message": err.Error()}})
@@ -750,6 +765,18 @@ func hasResponseModelEvidence(items []map[string]any) bool {
 }
 
 func hasTerminalEvidence(items []map[string]any) bool {
+	return hasTerminalEvidenceScoped(items, false)
+}
+
+// hasTerminalEvidenceExcludingTimeout 是超时处罚口径的终端证据判定：超时项
+// （IsTimeoutPenaltyEvidence）不再计入“未形成质量判定证据”抑制；非超时
+// 传输失败终端证据仍抑制。trusted_comparison. 前缀项被超时口径排除，保持
+// 其既有终端证据语义。
+func hasTerminalEvidenceExcludingTimeout(items []map[string]any) bool {
+	return hasTerminalEvidenceScoped(items, true)
+}
+
+func hasTerminalEvidenceScoped(items []map[string]any, excludeTimeout bool) bool {
 	for _, item := range items {
 		// Token-integrity probes are diagnostic quality evidence, not transport
 		// evidence. Node's owner deliberately excludes this family from the
@@ -760,7 +787,25 @@ func hasTerminalEvidence(items []map[string]any) bool {
 			continue
 		}
 		evidence, _ := item["evidence"].(map[string]any)
-		if terminal, _ := evidence["terminalFailure"].(bool); terminal {
+		if terminal, _ := evidence["terminalFailure"].(bool); !terminal {
+			continue
+		}
+		if excludeTimeout && modelcheckprobe.IsTimeoutPenaltyEvidence(kind, evidence) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// hasTimeoutPenaltyEvidence reports whether any target-scoped detection item
+// carries the timeout penalty evidence shape (terminalFailure plus the exact
+// probe timeout classification, trusted_comparison items excluded).
+func hasTimeoutPenaltyEvidence(items []map[string]any) bool {
+	for _, item := range items {
+		kind, _ := item["kind"].(string)
+		evidence, _ := item["evidence"].(map[string]any)
+		if modelcheckprobe.IsTimeoutPenaltyEvidence(kind, evidence) {
 			return true
 		}
 	}

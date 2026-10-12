@@ -41,6 +41,64 @@ const (
 	// Profile IDs the runtime default resolution pins against.
 	DeepSeekAnthropicV1ProfileID  = "profile_deepseek_anthropic_v1"
 	GlmCodingAnthropicV1ProfileID = "profile_glm_coding_anthropic_v1"
+	// M2 能力域允许集（capabilityallowed.go）复用的档案 ID：与写侧 driver
+	// 路由（门面 endpoint_modes.go providerAccountCredentialDrivers）同一批
+	// 常量下沉，门面保留同名别名，不新增第二处字面量。
+	GptOpenAIV1ProfileID            = "profile_gpt_openai_v1"
+	XaiOpenAIV1ProfileID            = "profile_xai_openai_v1"
+	DeepSeekOpenAIV1ProfileID       = "profile_deepseek_openai_v1"
+	GlmGeneralOpenAIV1ProfileID     = "profile_glm_general_openai_v1"
+	GlmCodingOpenAIV1ProfileID      = "profile_glm_coding_openai_v1"
+	GeminiOpenAIChatV1BetaProfileID = "profile_gemini_openai_chat_v1beta"
+	MinimaxOpenAIV1ProfileID        = "profile_minimax_openai_v1"
+	VolcengineOpenAIV1ProfileID     = "profile_volcengine_openai_v1"
+	QwenOpenAIV1ProfileID           = "profile_qwen_openai_v1"
+)
+
+// AnthropicMessagesEndpointModeValues 是 anthropic 族 pin 档案（deepseek/glm
+// coding anthropic）的写侧默认与值域收敛集（原 DefaultAnthropicEndpointModes
+// 内联字面量与门面 normalizeDeepSeek/GLM 的 anthropicMessagesModes 局部表，
+// M2 收敛为单一常量）。
+var AnthropicMessagesEndpointModeValues = []string{"messages_json", "messages_sse"}
+
+// 门面 endpoint_modes.go 的 per-provider opt-in 集合（M3/M6/M2 对话批）下沉
+// accountscore：capabilityallowed.go 的写侧词表路由与门面归一化共用同一批
+// 集合（禁止新造词表），门面保留同名别名。
+var (
+	// GlmVideoEndpointModeValues 是 glm OpenAI 协议档案可显式勾选的视频端点
+	// 模式（M3 cogvideo adapter，契约 §7.1；与 openai 族共享 video_* token，
+	// opt-in 不进默认集——DefaultOpenAIEndpointModes 的 glm 分支仍只落 chat 对）。
+	GlmVideoEndpointModeValues = []string{
+		"video_create", "video_get", "video_content", "video_cancel",
+	}
+	// GlmSpeechEndpointModeValues 是 glm OpenAI 协议档案可显式勾选的同步音频
+	// 端点模式（M6 语音透传，契约 §7.2：audio_speech（TTS 透传）+
+	// audio_transcription_json（STT 透传）；opt-in 不进默认集）。
+	GlmSpeechEndpointModeValues = []string{
+		"audio_speech", "audio_transcription_json",
+	}
+	// MinimaxMediaEndpointModeValues 是 minimax 媒体档案可声明的全部端点模式
+	// （M3，契约 §8）：audio_speech（t2a_v2）+ video_* 四值；全部 opt-in，
+	// 默认集只有 audio_speech。
+	MinimaxMediaEndpointModeValues = []string{
+		"audio_speech", "video_create", "video_get", "video_content", "video_cancel",
+	}
+	// VolcengineEndpointModeValues 是 volcengine 档案可声明的全部端点模式
+	// （M3 §9.1 + M6 TTS §9.2 + 对话批 chat）：chat 对 + video_* 四值 +
+	// audio_speech。全部 opt-in；默认集 video_get（零费用档）。
+	VolcengineEndpointModeValues = []string{
+		"chat_json", "chat_sse",
+		"video_create", "video_get", "video_content", "video_cancel", "audio_speech",
+	}
+	// QwenEndpointModeValues 是 qwen 档案可声明的全部端点模式（M3 §10.1 +
+	// M3f 长音频 §10.2 + 对话批 chat）：chat 对 + video_* 四值 + audio_job_*
+	// 四值（CosyVoice TTS 未回填不收录 audio_speech）。全部 opt-in；默认集
+	// video_get（零费用档）。
+	QwenEndpointModeValues = []string{
+		"chat_json", "chat_sse",
+		"video_create", "video_get", "video_content", "video_cancel",
+		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+	}
 )
 
 // Endpoint-mode value tables mirror the *-endpoint-modes.ts families.
@@ -217,7 +275,7 @@ func DefaultOpenAIEndpointModes(input ModeDefaultContext) []string {
 func DefaultAnthropicEndpointModes(input ModeDefaultContext) []string {
 	if input.ProviderProtocolProfileID == DeepSeekAnthropicV1ProfileID ||
 		input.ProviderProtocolProfileID == GlmCodingAnthropicV1ProfileID {
-		return []string{"messages_json", "messages_sse"}
+		return append([]string{}, AnthropicMessagesEndpointModeValues...)
 	}
 	return append([]string{}, AnthropicEndpointModeValues...)
 }

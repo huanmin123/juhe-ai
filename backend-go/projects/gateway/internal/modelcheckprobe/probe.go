@@ -96,6 +96,13 @@ type Options struct {
 	Dispatcher       DispatcherPort
 	Capability       keymodelruntime.Capability
 	Adapter          string
+	// ProtocolProfileID is the immutable upstream protocol profile selected by
+	// the owner. It must reach upstreamenvelope.Spec unchanged so profile
+	// specific URL rules (GLM/gemini-openai) are applied by the shared builder.
+	ProtocolProfileID string
+	// CredentialType preserves the owner-side account type when a Bearer-shaped
+	// credential has OAuth semantics (for example oauth or google_oauth).
+	CredentialType string
 }
 
 // Dispatcher is the in-process transport owner used by a fully wired
@@ -554,16 +561,42 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 		result.ErrorMessage = "J3b upstream response exceeded limit"
 		return result, nil
 	}
-	observedModel, output, usage, parsed, parseErrorMessage := parseResponseDetailed(request.Protocol, body)
-	if readErr != nil && responseBodyIsSemanticallyComplete(body, parseErrorMessage) {
+	var observedModel, output string
+	var usage, parsed map[string]any
+	var parseErrorMessage string
+	semanticComplete := true
+	if options.Adapter == AdapterOpenAIOAuthCodex {
+		// OAuth Codex is an A-shape endpoint whose shared envelope forces SSE.
+		// Keep its response parser equally strict: JSON or an unterminated delta
+		// stream is not a successful model check, even when it contains text.
+		observedModel, output, usage, parsed, parseErrorMessage, semanticComplete = parseOAuthCodexResponseDetailed(body)
+	} else {
+		observedModel, output, usage, parsed, parseErrorMessage = parseResponseDetailed(request.Protocol, body)
+	}
+	if options.Adapter == AdapterOpenAIOAuthCodex && response.StatusCode != http.StatusOK && !semanticComplete {
+		if message := parseOAuthCodexHTTPFailureMessage(body); message != "" {
+			parseErrorMessage = message
+			semanticComplete = true
+		}
+	}
+	if readErr != nil && semanticComplete && responseBodyIsSemanticallyCompleteForAdapter(options.Adapter, body, parseErrorMessage) {
 		// 已读内容已携带完整语义（完整 JSON 或流式终态事件）且无流内失败
 		// 信封：尾部传输错误不得覆盖语义成功，按完整响应正常判定。
 		readErr = nil
 	}
 	if readErr != nil {
+		if options.Adapter == AdapterOpenAIOAuthCodex && semanticComplete && parseErrorMessage != "" {
+			result.ObservedModel, result.Output, result.Usage, result.JSON = observedModel, output, usage, parsed
+			result.ErrorMessage = parseErrorMessage
+			return result, nil
+		}
 		result.Incomplete = true
 		// 已读部分文本只作排障证据保留，绝不冒充模型答案进入评分或裁判。
 		result.Output = output
+		if options.Adapter == AdapterOpenAIOAuthCodex && parseErrorMessage != "" {
+			result.ErrorMessage = parseErrorMessage
+			return result, nil
+		}
 		// 错误分类对齐 Do 阶段（上方 Do 分支同序）：本级预算到点按探针
 		// 超时归类以保留阶梯晋级证据；外层取消不得伪造成上游读取失败。
 		switch {
@@ -573,6 +606,18 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 			result.ErrorMessage = "J3b probe timed out"
 		default:
 			result.ErrorMessage = "J3b upstream response read failed"
+		}
+		return result, nil
+	}
+	if options.Adapter == AdapterOpenAIOAuthCodex && !semanticComplete {
+		// A 200 response without response.completed is a transport/incomplete
+		// stream for retry purposes. Preserve the partial text, while keeping a
+		// protocol error only when it is the best available diagnostic.
+		result.Incomplete = true
+		result.ObservedModel, result.Output, result.Usage, result.JSON = observedModel, output, usage, parsed
+		result.ErrorMessage = parseErrorMessage
+		if result.ErrorMessage == "" {
+			result.ErrorMessage = "J3b OAuth Codex response stream incomplete"
 		}
 		return result, nil
 	}
@@ -689,7 +734,7 @@ func buildOAuthCodexRequest(ctx context.Context, request Request, options Option
 	if err != nil {
 		return nil, err
 	}
-	identity, err := newCodexIdentity()
+	identity, err := newCodexIdentity(headers)
 	if err != nil {
 		return nil, errors.New("J3b OpenAI OAuth Codex identity unavailable")
 	}
@@ -703,11 +748,21 @@ func buildOAuthCodexRequest(ctx context.Context, request Request, options Option
 		fields = append(fields, upstreamenvelope.BodyField{Key: key, Value: value})
 	}
 	extraHeaders := callerExtraHeaders(headers)
+	for _, name := range []string{
+		"Originator", "User-Agent", "Session-Id", "Thread-Id", "X-Codex-Window-Id",
+		"X-Codex-Installation-Id", "X-Codex-Turn-Metadata",
+	} {
+		deleteHeaderFold(extraHeaders, name)
+	}
+	// X-Client-Request-Id is deliberately retained in ExtraHeaders when the
+	// caller supplied a distinct value, preserving the old normalizer's
+	// explicit-header semantics while metadata.turn_id mirrors that value.
 	extraHeaders["X-Codex-Installation-Id"] = identity.InstallationID
 	return upstreamenvelope.Build(ctx, upstreamenvelope.Spec{
-		BaseURL:      options.Endpoint,
-		EndpointMode: upstreamenvelope.EndpointMode(request.EndpointMode),
-		Adapter:      upstreamenvelope.AdapterOpenAIOAuthCodex,
+		BaseURL:           options.Endpoint,
+		ProtocolProfileID: options.ProtocolProfileID,
+		EndpointMode:      upstreamenvelope.EndpointMode(request.EndpointMode),
+		Adapter:           upstreamenvelope.AdapterOpenAIOAuthCodex,
 		// Model 取最终上游模型（模型映射后），供信封按 §9.5 判断
 		// X-OpenAI-Internal-Codex-Responses-Lite。
 		Model: request.ExpectedModel,
@@ -746,15 +801,16 @@ func buildAPIKeyRequest(ctx context.Context, request Request, options Options, h
 	}
 	sort.Slice(fields, func(i, j int) bool { return fields[i].Key < fields[j].Key })
 	return upstreamenvelope.Build(ctx, upstreamenvelope.Spec{
-		BaseURL:      options.Endpoint,
-		EndpointMode: mode,
+		BaseURL:           options.Endpoint,
+		ProtocolProfileID: options.ProtocolProfileID,
+		EndpointMode:      mode,
 		// Model 供 gemini {model} 路径模板替换（构造器写入 Path 的同一
 		// 模型即 ExpectedModel）；其余端点忽略本字段。
 		Model: request.ExpectedModel,
 		// 未知适配器串保持既有显式失败（信封登记表外适配器报错），不静默
 		// 回落 AdapterNone。
 		Adapter:      upstreamenvelope.Adapter(options.Adapter),
-		Auth:         resolveAPIKeyAuth(headers),
+		Auth:         resolveAPIKeyAuth(headers, options.CredentialType),
 		Budget:       budget,
 		BodyFields:   fields,
 		ExtraHeaders: callerExtraHeaders(headers),
@@ -817,8 +873,12 @@ func budgetLimit(source map[string]any, key string) (int, bool) {
 // 只接收已解析策略）：Authorization→Bearer、x-api-key→Anthropic、
 // x-goog-api-key→Gemini，与 owner 侧 credentialHeaders 的写入形态一一对应；
 // 均不存在时显式选择 AuthNone（见 buildAPIKeyRequest）。
-func resolveAPIKeyAuth(headers http.Header) upstreamenvelope.Auth {
+func resolveAPIKeyAuth(headers http.Header, credentialType string) upstreamenvelope.Auth {
 	if token := strings.TrimPrefix(headers.Get("Authorization"), "Bearer "); strings.TrimSpace(token) != "" {
+		credentialType = strings.TrimSpace(credentialType)
+		if strings.EqualFold(credentialType, "oauth") || strings.EqualFold(credentialType, "google_oauth") {
+			return upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthOAuth, Token: token}
+		}
 		return upstreamenvelope.Auth{Strategy: upstreamenvelope.AuthBearer, Token: token}
 	}
 	if token := headers.Get("X-Api-Key"); strings.TrimSpace(token) != "" {
@@ -840,28 +900,44 @@ func bearerToken(headers http.Header) (string, error) {
 	return token, nil
 }
 
-// newCodexIdentity 生成一次 OAuth Codex 请求的身份值（信封统一设计 §9.3
-// 身份单源）：session=UUID、thread=turn=session、window=thread+":0"、
-// installation=UUID，turn metadata JSON 含 request_kind/thread_source/
-// sandbox/turn_started_at_unix_ms 与全部身份值。同一份身份同时供信封写入
-// 身份请求头与 ExtraHeaders 补写的 X-Codex-Installation-Id 使用，替代原
-// normalizeOpenAIOAuthCodexRequest 中 headers 段与 metadata 段各自取值的
-// 双阶段随机。
-func newCodexIdentity() (upstreamenvelope.CodexIdentity, error) {
-	sessionID, err := codexUUID()
-	if err != nil {
-		return upstreamenvelope.CodexIdentity{}, err
+// newCodexIdentity resolves the final identity once, reusing caller-provided
+// values as the legacy OAuth Codex normalizer did. Session-Id is the session
+// source; an explicit X-Client-Request-Id remains the turn source and is kept
+// as an extra header when supplied, so each metadata field mirrors its own
+// final wire header without conflating the two identities.
+func newCodexIdentity(headers http.Header) (upstreamenvelope.CodexIdentity, error) {
+	sessionID := strings.TrimSpace(headers.Get("Session-Id"))
+	var err error
+	if sessionID == "" {
+		sessionID, err = codexUUID()
+		if err != nil {
+			return upstreamenvelope.CodexIdentity{}, err
+		}
 	}
-	installationID, err := codexUUID()
-	if err != nil {
-		return upstreamenvelope.CodexIdentity{}, err
+	threadID := strings.TrimSpace(headers.Get("Thread-Id"))
+	if threadID == "" {
+		threadID = sessionID
 	}
-	windowID := sessionID + ":0"
+	turnID := strings.TrimSpace(headers.Get("X-Client-Request-Id"))
+	if turnID == "" {
+		turnID = sessionID
+	}
+	windowID := strings.TrimSpace(headers.Get("X-Codex-Window-Id"))
+	if windowID == "" {
+		windowID = threadID + ":0"
+	}
+	installationID := strings.TrimSpace(headers.Get("X-Codex-Installation-Id"))
+	if installationID == "" {
+		installationID, err = codexUUID()
+		if err != nil {
+			return upstreamenvelope.CodexIdentity{}, err
+		}
+	}
 	metadata, err := json.Marshal(map[string]any{
 		"installation_id":         installationID,
 		"session_id":              sessionID,
-		"thread_id":               sessionID,
-		"turn_id":                 sessionID,
+		"thread_id":               threadID,
+		"turn_id":                 turnID,
 		"window_id":               windowID,
 		"request_kind":            "turn",
 		"thread_source":           "user",
@@ -874,11 +950,19 @@ func newCodexIdentity() (upstreamenvelope.CodexIdentity, error) {
 	return upstreamenvelope.CodexIdentity{
 		InstallationID:   installationID,
 		SessionID:        sessionID,
-		ThreadID:         sessionID,
-		TurnID:           sessionID,
+		ThreadID:         threadID,
+		TurnID:           turnID,
 		WindowID:         windowID,
 		TurnMetadataJSON: string(metadata),
 	}, nil
+}
+
+func deleteHeaderFold(headers map[string]string, name string) {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			delete(headers, key)
+		}
+	}
 }
 
 // callerExtraHeaders 把调用方头逐字映射为 Spec.ExtraHeaders（信封语义：
@@ -976,6 +1060,276 @@ func parseResponseDetailed(protocol modelcheckprofile.Protocol, body []byte) (st
 		output = strings.TrimSpace(strings.Join(deltas, ""))
 	}
 	return model, output, usage, value, errorMessage
+}
+
+// parseOAuthCodexResponseDetailed 要求 A-shape OAuth Codex 成功响应必须是 SSE。
+// JSON 成功体、仅 delta 或尚未完成的坏帧都不能作为成功探针结果；明确失败
+// 事件和非空 error 信封优先于后续 completed，并保留上游原始错误文本。
+func parseOAuthCodexResponseDetailed(body []byte) (string, string, map[string]any, map[string]any, string, bool) {
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
+	var directValue map[string]any
+	if json.Unmarshal(trimmed, &directValue) == nil && directValue != nil {
+		if responseFailureEnvelope(directValue) {
+			model, output, usage, parsed := parseJSONResponse(modelcheckprofile.ProtocolOpenAIResponses, trimmed)
+			return model, output, usage, parsed, responseFailureEnvelopeMessage(directValue), true
+		}
+		return "", "", nil, nil, "J3b OAuth Codex response must be SSE", false
+	}
+	if !bytes.Contains(trimmed, []byte("data:")) && !bytes.Contains(trimmed, []byte("event:")) {
+		return "", strings.TrimSpace(string(body)), nil, nil, "J3b OAuth Codex response must be SSE", false
+	}
+	events := parseOAuthCodexSSEEvents(trimmed)
+	if len(events) == 0 {
+		return "", strings.TrimSpace(string(body)), nil, nil, "J3b OAuth Codex response contains no valid SSE events", false
+	}
+
+	var (
+		model, output, terminal string
+		usage                   map[string]any
+		value                   map[string]any
+		deltas                  []string
+		errorMessage            string
+		rawErrorMessage         string
+		completed, failed       bool
+		malformed               bool
+	)
+	for _, event := range events {
+		if event.malformed {
+			malformed = true
+			if errorMessage == "" {
+				errorMessage = "J3b OAuth Codex response contains malformed SSE data"
+			}
+		}
+		payload := event.payload
+		eventName := strings.TrimSpace(event.event)
+		eventFailure := isFailureEvent(eventName)
+		if eventFailure {
+			failed = true
+			if errorMessage == "" {
+				errorMessage = eventName
+			}
+		}
+		if payload == nil {
+			continue
+		}
+		candidate := payload
+		if nested, ok := payload["response"].(map[string]any); ok {
+			candidate = nested
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			continue
+		}
+		eventModel, eventOutput, eventUsage, parsed := parseJSONResponse(modelcheckprofile.ProtocolOpenAIResponses, encoded)
+		if eventOutput == "" {
+			eventOutput = parseSSEEventOutput(modelcheckprofile.ProtocolOpenAIResponses, payload)
+		}
+		if model == "" && eventModel != "" {
+			model = eventModel
+		}
+		if usage == nil && eventUsage != nil {
+			usage = eventUsage
+		}
+		if parsed != nil && responseValueHasEvidence(modelcheckprofile.ProtocolOpenAIResponses, parsed) {
+			value = parsed
+		}
+
+		typeName := strings.TrimSpace(asString(payload["type"]))
+		payloadFailure := responseFailureEnvelope(payload)
+		if payloadFailure {
+			failed = true
+			if errorMessage == "" {
+				errorMessage = responseFailureEnvelopeMessage(payload)
+			}
+		}
+		if (eventFailure || payloadFailure) && rawErrorMessage == "" {
+			rawErrorMessage = responseRawErrorMessage(payload)
+		}
+		if eventName == "response.completed" || typeName == "response.completed" {
+			completed = true
+			if nested, ok := payload["response"].(map[string]any); ok {
+				value = nested
+			}
+			status := strings.TrimSpace(asString(candidate["status"]))
+			if status == "" {
+				status = strings.TrimSpace(asString(payload["status"]))
+			}
+			if status != "" && status != "completed" {
+				failed = true
+				if errorMessage == "" {
+					if nestedError := responseErrorMessage(typeName, payload); nestedError != "" {
+						errorMessage = nestedError
+					} else {
+						errorMessage = "response.completed status " + status
+					}
+				}
+			}
+			if eventOutput != "" {
+				terminal = eventOutput
+			}
+		} else if eventOutput != "" {
+			deltas = append(deltas, eventOutput)
+		}
+	}
+	if terminal != "" {
+		output = terminal
+	} else {
+		output = strings.TrimSpace(strings.Join(deltas, ""))
+	}
+	if failed {
+		if rawErrorMessage != "" {
+			return model, output, usage, value, rawErrorMessage, true
+		}
+		if errorMessage != "" {
+			return model, output, usage, value, errorMessage, true
+		}
+		return model, output, usage, value, "J3b OAuth Codex response failed", true
+	}
+	if malformed {
+		return model, output, usage, value, "J3b OAuth Codex response contains malformed SSE data", completed
+	}
+	if !completed {
+		return model, output, usage, value, "J3b OAuth Codex response.completed event missing", false
+	}
+	return model, output, usage, value, "", true
+}
+
+type oauthCodexSSEEvent struct {
+	sseResponseEvent
+	malformed bool
+}
+
+func parseOAuthCodexSSEEvents(body []byte) []oauthCodexSSEEvent {
+	var events []oauthCodexSSEEvent
+	var eventName string
+	var dataLines []string
+	flush := func() {
+		if len(dataLines) == 0 {
+			if strings.TrimSpace(eventName) != "" {
+				events = append(events, oauthCodexSSEEvent{sseResponseEvent: sseResponseEvent{event: eventName}})
+			}
+			eventName = ""
+			return
+		}
+		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
+		event := oauthCodexSSEEvent{sseResponseEvent: sseResponseEvent{event: eventName}}
+		if data != "" && data != "[DONE]" {
+			var payload map[string]any
+			if json.Unmarshal([]byte(data), &payload) == nil && payload != nil {
+				event.payload = payload
+			} else {
+				event.malformed = true
+			}
+		}
+		events = append(events, event)
+		eventName = ""
+		dataLines = nil
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		field, fieldValue := line, ""
+		if separator := strings.IndexByte(line, ':'); separator >= 0 {
+			field, fieldValue = line[:separator], line[separator+1:]
+			fieldValue = strings.TrimPrefix(fieldValue, " ")
+		}
+		switch field {
+		case "event":
+			eventName = fieldValue
+		case "data":
+			dataLines = append(dataLines, fieldValue)
+		}
+	}
+	flush()
+	return events
+}
+
+func parseOAuthCodexHTTPFailureMessage(body []byte) string {
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}))
+	var payload map[string]any
+	if json.Unmarshal(trimmed, &payload) != nil || payload == nil {
+		return ""
+	}
+	if responseFailureEnvelope(payload) {
+		return responseFailureEnvelopeMessage(payload)
+	}
+	return asString(payload["message"])
+}
+
+func responseFailureEnvelope(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	if errorValue, exists := payload["error"]; exists && errorValue != nil {
+		return true
+	}
+	if isFailureEvent(strings.TrimSpace(asString(payload["type"]))) || responseFailureStatus(payload["status"]) {
+		return true
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if errorValue, exists := response["error"]; exists && errorValue != nil {
+			return true
+		}
+		if responseFailureStatus(response["status"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func responseFailureStatus(value any) bool {
+	status := strings.TrimSpace(asString(value))
+	return status == "failed" || status == "incomplete"
+}
+
+func responseFailureEnvelopeMessage(payload map[string]any) string {
+	if message := responseRawErrorMessage(payload); message != "" {
+		return message
+	}
+	typeName := strings.TrimSpace(asString(payload["type"]))
+	if message := responseErrorMessage(typeName, payload); message != "" {
+		return message
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if status := strings.TrimSpace(asString(response["status"])); status != "" {
+			return "response.completed status " + status
+		}
+	}
+	if status := strings.TrimSpace(asString(payload["status"])); status != "" {
+		return "response.status " + status
+	}
+	return "J3b OAuth Codex response failed"
+}
+
+func responseRawErrorMessage(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if nested, ok := payload["response"].(map[string]any); ok {
+		if message := responseRawErrorMessage(nested); message != "" {
+			return message
+		}
+	}
+	if errorValue, ok := payload["error"]; ok {
+		if message := errorValueMessage(errorValue); message != "" {
+			return message
+		}
+	}
+	return asString(payload["message"])
+}
+
+func responseBodyIsSemanticallyCompleteForAdapter(adapter string, body []byte, parseErrorMessage string) bool {
+	if adapter == AdapterOpenAIOAuthCodex {
+		_, _, _, _, _, terminal := parseOAuthCodexResponseDetailed(body)
+		return terminal && parseErrorMessage == ""
+	}
+	return responseBodyIsSemanticallyComplete(body, parseErrorMessage)
 }
 
 type sseResponseEvent struct {

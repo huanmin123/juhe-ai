@@ -245,12 +245,21 @@ func (d *Deps) enrichSpeedFirstSummaries(ctx context.Context, list []ListItem) {
 	}
 }
 
+// speedFirstRuntimeItemKey 是运行态条目的行复合键：来源命名空间
+// （strategy/preference）与偏好 ID 参与身份，同一账号在两代命名空间的条目
+// 并存不去重（契约：行复合键为 source + preferenceId + accountId 等字段
+// 组合）。存量条目缺省 Source 时按 strategy 语义参与去重。
+func speedFirstRuntimeItemKey(item SpeedFirstRuntimeItem) string {
+	return item.Scope.RouteStrategyID + "|" + item.Source + "|" + item.PreferenceID + "|" + item.AccountID
+}
+
 // speedFirstDegradedCounts mirrors the facade dedupe: per (routeStrategyId,
-// accountId) keep the latest degradedUntil and count per strategy.
+// source, preferenceId, accountId) keep the latest degradedUntil and count
+// per strategy.
 func speedFirstDegradedCounts(items []SpeedFirstRuntimeItem) map[string]int {
 	latest := map[string]SpeedFirstRuntimeItem{}
 	for _, item := range items {
-		key := item.Scope.RouteStrategyID + "|" + item.AccountID
+		key := speedFirstRuntimeItemKey(item)
 		if current, ok := latest[key]; !ok || current.DegradedUntil < item.DegradedUntil {
 			latest[key] = item
 		}
@@ -356,12 +365,13 @@ func (d *Deps) speedFirstRuntime(w http.ResponseWriter, r *http.Request, access 
 }
 
 // dedupeSpeedFirstItemsByAccount mirrors dedupeRuntimeItemsByAccount: keep the
-// latest degradedUntil per (routeStrategyId, accountId).
+// latest degradedUntil per (routeStrategyId, source, preferenceId, accountId) —
+// v1（策略段）与 v2（偏好段）的同账号条目并存。
 func dedupeSpeedFirstItemsByAccount(items []SpeedFirstRuntimeItem) []SpeedFirstRuntimeItem {
 	latest := map[string]SpeedFirstRuntimeItem{}
 	order := []string{}
 	for _, item := range items {
-		key := item.Scope.RouteStrategyID + "|" + item.AccountID
+		key := speedFirstRuntimeItemKey(item)
 		if current, ok := latest[key]; !ok {
 			order = append(order, key)
 			latest[key] = item

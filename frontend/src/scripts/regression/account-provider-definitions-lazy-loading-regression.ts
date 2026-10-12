@@ -77,12 +77,13 @@ const mergedDefinitionsSource = sourceBetween(accountEditFormSource, 'function m
 assert.doesNotMatch(openCreateSource, /ensureProviderDefinition|providers\.detail|providers\.definitions/, '打开新增弹窗不得加载供应商详情')
 assert.match(providerSelectSource, /ensureProviderDefinition\(providerCode, systemAccountId\)/, '只有用户选择供应商后才加载该供应商详情')
 assert.match(providerSelectSource, /applyProviderDefinitionDefaultsAfterLoad\(/, '供应商选择流程必须在 detail 返回后安全回填权威默认值')
+assert.match(providerSelectSource, /void nextTick\(\)\.then/, 'pristine 快照必须延后到 flush 落定的 microtask：域默认 watch 先落定再拍快照，回填判定不得被同周期改写误判')
 assert.match(accountEditFormSource, /mergeAccountProviderDefinitions\([\s\S]*FALLBACK_PROVIDERS/, '内置供应商在详情未加载时必须使用本地常量保持表单可用')
 assert.match(accountEditFormSource, /const availableProviders = computed\(mergedProviderDefinitions\)/, '表单展示与默认值必须共用同一套供应商定义合并逻辑')
 assert.match(defaultFormSource, /defaultAccountForm\(providerCode, type, mergedProviderDefinitions\(\), providerProtocolProfileId\)/, '表单默认值必须使用已合并的完整供应商定义')
 assert.doesNotMatch(defaultFormSource, /defaultAccountForm\([^\n]*options\.providers\.value/, '表单默认值不得直接使用缺少协议档案的轻量供应商 options')
 assert.match(mergedDefinitionsSource, /\[\.\.\.FALLBACK_PROVIDERS, \.\.\.loadedDefinitions\]/, '已加载 definition 必须覆盖内置回退定义')
-assert.match(mergedDefinitionsSource, /return \{\s*\.\.\.definition,/, '合并结果必须保留完整 definition 的 Base URL、协议档案和账户类型能力')
+assert.match(mergedDefinitionsSource, /\{\s*\.\.\.definition,/, '合并结果必须保留完整 definition 的 Base URL、协议档案和账户类型能力')
 assert.match(accountsViewSource, /providerDefinitions,[\s\S]*ensureProviderDefinition,[\s\S]*useAccountEditForm\([\s\S]*ensureProviderDefinition,[\s\S]*providerDefinitions,/, '账户页必须把按需详情状态和加载入口接入编辑表单')
 
 assert.match(providerResourceSource, /options\.includeDefinitions[\s\S]*api\.providers\.definitions/, '完整 definitions 标志必须路由到 definitions API')
@@ -129,7 +130,7 @@ async function verifyAsyncProviderDefinitionDefaults(): Promise<void> {
   editedDeferred.resolve({ code: 'gpt' } as ProviderDefinition)
   await editedApplyPromise
   assert.equal(editedForm.baseUrl, 'https://user.example/v1', '详情请求期间的用户输入不得被异步回填覆盖')
-  assert.equal(editedForm.providerProtocolProfileId, 'fallback-profile', '用户已修改默认字段时不得部分回填造成混合状态')
+  assert.equal(editedForm.providerProtocolProfileId, 'server-profile', '字段级 pristine 判定：只保留被触碰的字段，未触碰默认字段仍回填（域默认 watch 改写不再整体阻断回填）')
 }
 
 function providerDefaults(overrides: Partial<{

@@ -75,6 +75,12 @@ export interface RouteStrategySpeedFirstLatencyRuntimeItem {
   reason: string
   /** 慢样本维度；旧运行实例可能不返回该字段，缺失时按首字维度语义展示。 */
   dimension?: 'first_byte' | 'total_time'
+  /** 运行态命名空间来源；旧运行实例可能不返回该字段，缺失时按策略路由段语义展示。 */
+  source?: 'strategy' | 'preference'
+  /** 调度偏好 ID；仅 source=preference 的条目携带。 */
+  preferenceId?: string
+  /** 调度偏好名；仅 source=preference 且服务端解析成功时携带。 */
+  preferenceName?: string
 }
 
 export interface RouteStrategySpeedFirstLatencyRuntime {
@@ -225,6 +231,67 @@ export interface ApiKeyAvailabilitySchedule {
   exceptions?: ApiKeyAvailabilityScheduleException[]
 }
 
+export type SchedulingPreferenceChatMode = 'cost_first' | 'speed_first'
+
+/** 调度偏好速度优先配置：firstByteDeadlineMs + speedFirstConfig 八字段，写入时按契约九字段全量提交。 */
+export interface SchedulingPreferenceSpeedFirstConfig {
+  firstByteDeadlineMs: number
+  speedFirstConfig: RouteStrategySpeedFirstConfig
+}
+
+export interface SchedulingPreferenceSummary {
+  id: string
+  /** 管理面 owner 摘要；内置行缺席。个人面不返回。 */
+  systemAccountId?: string
+  systemAccountName?: string
+  name: string
+  chatMode: SchedulingPreferenceChatMode
+  /** 仅 chatMode=speed_first 出现（规范化后对象）。 */
+  chatSpeedFirstConfig?: SchedulingPreferenceSpeedFirstConfig
+  builtIn: boolean
+  enabled: boolean
+  /** 未删除且绑定该偏好的 API Key 精确计数（含停用 Key；purpose=chat Key 无绑定）。 */
+  boundApiKeyCount: number
+  createdAt?: string
+  updatedAt: string
+}
+
+/** 详情与列表行同型（低增长配置类资源，无独立 detail 投影）。 */
+export type SchedulingPreferenceDetail = SchedulingPreferenceSummary
+
+export interface SchedulingPreferenceOptionSummary {
+  id: string
+  name: string
+  chatMode: SchedulingPreferenceChatMode
+  builtIn: boolean
+  enabled: boolean
+  /** 管理面 options 返回 owner；个人面无 owner 字段。 */
+  systemAccountId?: string
+  systemAccountName?: string
+}
+
+export interface SchedulingPreferenceListResult {
+  items: SchedulingPreferenceSummary[]
+  total: number
+  hasMore?: boolean
+  page: number
+  pageSize: number
+}
+
+export interface SchedulingPreferenceRowPatch {
+  name?: string
+  chatMode?: SchedulingPreferenceChatMode
+  chatSpeedFirstConfig?: SchedulingPreferenceSpeedFirstConfig | null
+  enabled?: boolean
+}
+
+export interface SchedulingPreferenceMutationResult {
+  id: string
+  changedFields: string[]
+  rowPatch: SchedulingPreferenceRowPatch
+  updatedAt: string
+}
+
 export interface ApiKeyUsageListSummary {
   requestCount: number
   totalTokens: number
@@ -247,6 +314,10 @@ export interface ApiKeySummary {
   routeStrategyName?: string
   routeStrategyMode?: RouteStrategyMode
   routeStrategyStatus?: RouteStrategyStatus
+  /** 绑定调度偏好 ID；null/缺失表示历史「沿用策略路由（迁移期）」，不得回显为成本优先。 */
+  schedulingPreferenceId?: string | null
+  schedulingPreferenceName?: string
+  schedulingPreferenceBuiltIn?: boolean
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule
@@ -280,6 +351,9 @@ export interface ApiKeyMutationRowPatch {
   routeStrategyName?: string
   routeStrategyMode?: RouteStrategyMode
   routeStrategyStatus?: RouteStrategyStatus
+  schedulingPreferenceId?: string | null
+  schedulingPreferenceName?: string
+  schedulingPreferenceBuiltIn?: boolean
   expiresAt?: string | null
   quotaLimits?: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule | null

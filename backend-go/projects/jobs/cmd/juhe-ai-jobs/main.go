@@ -532,11 +532,19 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		logger.Warn("usage spool 目录来自旧名 JUHE_AI_USAGE_SPOOL_DIR 回退（兼容路径，建议改配 JUHE_AI_USAGE_SPOOL_DIRECTORY）",
 			"event", "usage_spool_directory_legacy_fallback", "directory", workerCfg.UsageSpoolDirectory)
 	}
-	// accounts.capability_domain 启动只读形状校验（AI 账户能力域拆分 M1）：
-	// 加列/迁移归 maintenance，jobs 启动仅校验；缺失或四值形状不符即
-	// fail-fast（部署顺序契约：先迁移后启动新版）。一次性只读连接，不 ALTER。
+	// accounts.capability_domain 启动只读校验（AI 账户能力域拆分 M1/M2）：
+	// 加列/迁移归 maintenance，jobs 启动仅校验；形状不符或阶段记录未封存
+	// m2_finalized 即 fail-fast（部署顺序契约：先迁移后启动新版）。一次性
+	// 只读连接，不 ALTER。
 	if err := checkAccountsCapabilityDomainSchemaAtStartup(context.Background(), workerCfg); err != nil {
 		return failWith(stderr, fmt.Errorf("verify accounts capability_domain schema: %w", err))
+	}
+	// scheduling_preferences 启动只读校验（调度偏好独立实体 P1）：表形状 /
+	// api_keys 绑定列 / 内置行由 maintenance --ensure-schema（ensure 臂补种
+	// 内置行）保证，缺失或不符即 fail-fast（部署顺序契约：先 ensure-schema
+	// 后启动新版）。一次性只读连接，不 ALTER、不补种。
+	if err := checkSchedulingPreferenceSchemaAtStartup(context.Background(), workerCfg); err != nil {
+		return failWith(stderr, fmt.Errorf("verify scheduling preference schema: %w", err))
 	}
 	worker, err := buildWorkerAssembly(workerCfg, logger)
 	if err != nil {

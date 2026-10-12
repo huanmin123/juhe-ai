@@ -93,7 +93,11 @@ export function defaultAccountForm(
     balanceQueryTotalPointer: '',
     balanceQueryUsedPointer: '',
     balanceQueryDivisor: '',
-    errorHandlingRuleOverrides: []
+    errorHandlingRuleOverrides: [],
+    // 能力域上下文默认 chat；媒体域由 AccountEditModal 按路由域注入（域不是可编辑字段）。
+    capabilityDomain: 'chat',
+    speechAppId: '',
+    speechToken: ''
   }
 }
 

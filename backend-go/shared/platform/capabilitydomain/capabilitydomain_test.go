@@ -143,7 +143,7 @@ func TestParseEndpointModesTable(t *testing.T) {
 			if reading.Status != testCase.wantStatus {
 				t.Fatalf("status = %d, want %d（detail: %s）", reading.Status, testCase.wantStatus, reading.Detail)
 			}
-			failure, bad := failureFor("acct-x", reading)
+			failure, bad := FailureFor("acct-x", reading)
 			if bad {
 				if failure.Kind != testCase.wantFailKind {
 					t.Fatalf("failure kind = %q, want %q", failure.Kind, testCase.wantFailKind)
@@ -221,7 +221,7 @@ func TestDeriveDomainOfParsedFixtures(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			reading := ParseEndpointModes(mustModesJSON(t, testCase.credentials))
-			failure, bad := failureFor("acct", reading)
+			failure, bad := FailureFor("acct", reading)
 			if bad {
 				t.Fatalf("金集账户不得进失败清单: %v", failure)
 			}

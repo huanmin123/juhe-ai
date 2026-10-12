@@ -105,6 +105,16 @@ type SpeedFirstRuntimeItem struct {
 	// gatewayproxyhealth.DegradedRuntimeItem.Dimension（存量状态兼容读作
 	// first_byte）。
 	Dimension string `json:"dimension"`
+	// Source 标识条目所在的运行态命名空间（strategy=策略段 v1 /
+	// preference=调度偏好段 v2）；同账号两代并存不去重，行复合键由前端按
+	// source + preferenceId + accountId 等字段组合。存量运行实例可能缺省
+	// 该字段，消费方按 strategy 语义兼容。
+	Source string `json:"source"`
+	// PreferenceID / PreferenceName 只在 Source=preference 时非空
+	// （omitempty：strategy 条目保持既有 wire 形状）；preferenceName 由组合
+	// 根按偏好表解析注入，解析不到时缺省。
+	PreferenceID   string `json:"preferenceId,omitempty"`
+	PreferenceName string `json:"preferenceName,omitempty"`
 }
 
 type runtimeScope struct {

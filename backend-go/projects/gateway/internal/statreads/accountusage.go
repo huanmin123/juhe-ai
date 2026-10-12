@@ -61,6 +61,13 @@ func (d *Deps) accountUsageHandler(selfOnly bool) http.HandlerFunc {
 		if !hasPageSize {
 			pageSize = 10
 		}
+		// M3 域筛选（计划 §M3 配套适配）：可选 domain 四枚举；缺省/"all" =
+		// 不过滤（默认行为零变化），非法值 400。筛选在服务端执行。
+		capabilityDomain, domainOK := optionalCapabilityDomainFilter(values.Get(capabilityDomainFilterParam))
+		if !domainOK {
+			kernel.WriteBadRequest(w, "账户用量统计参数不合法")
+			return
+		}
 		payload, err := d.accountUsageOverviewPage(r, accountUsagePageInput{
 			Access:   scope,
 			Range:    rng,
@@ -69,6 +76,7 @@ func (d *Deps) accountUsageHandler(selfOnly bool) http.HandlerFunc {
 			PageSize: pageSize,
 			Keyword:  optionalQueryText(values, "keyword"),
 			Accounts: parseAccountIDs(values["accountIds"]),
+			Domain:   capabilityDomain,
 		})
 		d.writeSection(w, payload, err)
 	}
@@ -93,11 +101,16 @@ func (d *Deps) accountUsageOptionsHandler(selfOnly bool) http.HandlerFunc {
 		if len(selectedIds) > 20 {
 			selectedIds = selectedIds[:20]
 		}
+		capabilityDomain, domainOK := optionalCapabilityDomainFilter(values.Get(capabilityDomainFilterParam))
+		if !domainOK {
+			kernel.WriteBadRequest(w, "账户候选参数不合法")
+			return
+		}
 		scope := requestScope(r)
 		if selfOnly {
 			scope = selfScope(r)
 		}
-		payload, err := d.accountUsageOptions(r, scope, keyword, limit, hasLimit, selectedIds)
+		payload, err := d.accountUsageOptions(r, scope, keyword, limit, hasLimit, selectedIds, capabilityDomain)
 		d.writeSection(w, payload, err)
 	}
 }
@@ -168,6 +181,8 @@ type accountUsagePageInput struct {
 	PageSize int
 	Keyword  string
 	Accounts []string
+	// Domain 是可选能力域筛选（M3）：空 = 不过滤；非空 = 仅该域账户的用量。
+	Domain string
 }
 
 // accountUsageOverviewPage mirrors getAccountUsageStatsOverviewPageFromWindows.
@@ -188,7 +203,12 @@ func (d *Deps) accountUsageOverviewPage(r *http.Request, input accountUsagePageI
 		page = maxPage
 	}
 	usageScope := accountUsageListScope(input.Access)
-	filterSQL, filterParams, err := d.accountUsageFilter(r, input, usageScope.scopeType)
+	// M3 域筛选：域内账户集合解析一次，主查询过滤与显式选中账户交集共用。
+	domainFilterIDs, err := d.capabilityDomainFilterIDs(r, input, usageScope.scopeType)
+	if err != nil {
+		return nil, err
+	}
+	filterSQL, filterParams, err := d.accountUsageFilter(r, input, usageScope.scopeType, domainFilterIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +253,7 @@ func (d *Deps) accountUsageOverviewPage(r *http.Request, input accountUsagePageI
 	for _, row := range pageRows {
 		excluded = append(excluded, row.text("scope_id"))
 	}
-	selectedRows, err := d.loadSelectedAccountUsageRows(r, input, usageScope, excluded)
+	selectedRows, err := d.loadSelectedAccountUsageRows(r, input, usageScope, excluded, domainFilterIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +393,7 @@ func (d *Deps) defaultTrendAccountIds(r *http.Request, scope AccessScope, rows [
 
 // loadSelectedAccountUsageRows mirrors loadSelectedAccountUsageRows: explicit
 // accountIds not already on the page.
-func (d *Deps) loadSelectedAccountUsageRows(r *http.Request, input accountUsagePageInput, usageScope accountUsageScopeState, excludeAccountIds []string) ([]Row, error) {
+func (d *Deps) loadSelectedAccountUsageRows(r *http.Request, input accountUsagePageInput, usageScope accountUsageScopeState, excludeAccountIds []string, domainFilterIDs []string) ([]Row, error) {
 	excluded := map[string]bool{}
 	for _, id := range excludeAccountIds {
 		excluded[id] = true
@@ -386,6 +406,10 @@ func (d *Deps) loadSelectedAccountUsageRows(r *http.Request, input accountUsageP
 		}
 		selectedSet[id] = true
 		accountIds = append(accountIds, id)
+	}
+	// M3 域筛选：显式选中账户同样按域收敛（AND 语义），再截断上限。
+	if domainFilterIDs != nil {
+		accountIds = intersectStringsPreserveOrder(accountIds, domainFilterIDs)
 	}
 	if len(accountIds) > accountUsageSelectedAccountLimit {
 		accountIds = accountIds[:accountUsageSelectedAccountLimit]
@@ -435,20 +459,21 @@ func mergeAccountUsageSourceRows(pageRows, selectedRows []Row) []Row {
 }
 
 // accountUsageOptions mirrors listAccountUsageOptions: a business-database
-// account option search plus the selected ids window.
-func (d *Deps) accountUsageOptions(r *http.Request, scope AccessScope, keyword string, limit int, hasLimit bool, selectedIds []string) (any, error) {
+// account option search plus the selected ids window. M3 域筛选：capabilityDomain
+// 非空时候选与已选账户同按域收敛。
+func (d *Deps) accountUsageOptions(r *http.Request, scope AccessScope, keyword string, limit int, hasLimit bool, selectedIds []string, capabilityDomain string) (any, error) {
 	ownerScope := accountUsageOptionScope(scope)
 	safeLimit := 50
 	if hasLimit {
 		safeLimit = clampInt(limit, 1, 50)
 	}
-	searchRows, err := d.queryAccountUsageOptionRows(r, ownerScope, keyword, nil, safeLimit)
+	searchRows, err := d.queryAccountUsageOptionRows(r, ownerScope, keyword, nil, safeLimit, capabilityDomain)
 	if err != nil {
 		return nil, err
 	}
 	var selectedRows []Row
 	if len(selectedIds) > 0 {
-		selectedRows, err = d.queryAccountUsageOptionRows(r, ownerScope, "", selectedIds, len(selectedIds))
+		selectedRows, err = d.queryAccountUsageOptionRows(r, ownerScope, "", selectedIds, len(selectedIds), capabilityDomain)
 		if err != nil {
 			return nil, err
 		}
@@ -489,9 +514,15 @@ func (d *Deps) accountUsageOptions(r *http.Request, scope AccessScope, keyword s
 	return options, nil
 }
 
-func (d *Deps) queryAccountUsageOptionRows(r *http.Request, ownerSystemAccountID string, keyword string, ids []string, limit int) ([]Row, error) {
+func (d *Deps) queryAccountUsageOptionRows(r *http.Request, ownerSystemAccountID string, keyword string, ids []string, limit int, capabilityDomain string) ([]Row, error) {
 	clauses := []string{"accounts.deleted_at IS NULL"}
 	params := []any{}
+	// M3 域筛选（计划 §M3 配套适配）：读自身行 capability_domain（授权实例域
+	// 恒等于源域），候选下拉与列表主查询同口径。
+	if capabilityDomain != "" {
+		clauses = append(clauses, capabilityDomainClause("accounts"))
+		params = append(params, capabilityDomain)
+	}
 	if ownerSystemAccountID != "" {
 		clauses = append(clauses, "accounts.system_account_id = ?")
 		params = append(params, ownerSystemAccountID)
@@ -580,7 +611,7 @@ func (d *Deps) accountUsageTrend(r *http.Request, scope AccessScope, rng Range, 
 	}
 	input := accountUsagePageInput{Access: scope, Range: rng, Accounts: ids}
 	usageScope := accountUsageListScope(scope)
-	sourceRows, err := d.loadSelectedAccountUsageRows(r, input, usageScope, nil)
+	sourceRows, err := d.loadSelectedAccountUsageRows(r, input, usageScope, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -815,9 +846,12 @@ func accountUsageOverviewSummaryScope(scope AccessScope) (string, string) {
 
 // accountUsageFilter mirrors accountUsageFilterPredicate (type is never
 // provided by the account-usage route; only the keyword path filters).
-func (d *Deps) accountUsageFilter(r *http.Request, input accountUsagePageInput, scopeType string) (string, []any, error) {
+// M3 域筛选（计划 §M3 配套适配）：domainFilterIDs 是调用方解析好的域内账户
+// 集合（nil = 无域筛选，行为与现状逐项一致）；与关键词解析集合取交集——两个
+// 筛选同时携带时按 AND 语义收敛，空交集恒假过滤。
+func (d *Deps) accountUsageFilter(r *http.Request, input accountUsagePageInput, scopeType string, domainFilterIDs []string) (string, []any, error) {
 	keyword := strings.TrimSpace(input.Keyword)
-	if scopeType == "account" && keyword == "" {
+	if scopeType == "account" && keyword == "" && domainFilterIDs == nil {
 		return "", nil, nil
 	}
 	if keyword != "" {
@@ -825,13 +859,93 @@ func (d *Deps) accountUsageFilter(r *http.Request, input accountUsagePageInput, 
 		if err != nil {
 			return "", nil, err
 		}
+		if domainFilterIDs != nil {
+			accountIds = intersectStringsPreserveOrder(accountIds, domainFilterIDs)
+		}
 		if len(accountIds) == 0 {
 			return "AND 0 = 1", nil, nil
 		}
 		filterSQL, filterParams := scopeIDFilter(accountIds)
 		return "AND " + filterSQL, filterParams, nil
 	}
+	if domainFilterIDs != nil {
+		filterSQL, filterParams := scopeIDFilter(domainFilterIDs)
+		return "AND " + filterSQL, filterParams, nil
+	}
 	return "", nil, nil
+}
+
+// capabilityDomainFilterIDs 解析 M3 域筛选的域内账户集合；未携带域筛选返回
+// nil（调用方据此区分「无筛选」与「空集合恒假」）。
+func (d *Deps) capabilityDomainFilterIDs(r *http.Request, input accountUsagePageInput, scopeType string) ([]string, error) {
+	if input.Domain == "" {
+		return nil, nil
+	}
+	return d.loadCapabilityDomainAccountIDs(r, input.Access, input.Domain, scopeType)
+}
+
+// loadCapabilityDomainAccountIDs 解析域内账户集合（M3 域筛选）：未删除行按
+// capability_domain 精确匹配；caller_account 视角叠加与关键词解析相同的
+// 可见性子句。集合供 usage_stats_daily 的 scope_id 过滤消费（scopeIDFilter
+// 内部按 400 分块防占位符上限），不设 LIMIT。
+func (d *Deps) loadCapabilityDomainAccountIDs(r *http.Request, scope AccessScope, domain string, scopeType string) ([]string, error) {
+	clauses := []string{"accounts.deleted_at IS NULL", capabilityDomainClause("accounts")}
+	params := []any{domain}
+	if scopeType == "caller_account" {
+		viewerID := scope.scopedID()
+		if viewerID == "" {
+			viewerID = scope.currentID()
+		}
+		clauses = append(clauses, d.accountUsageCallerVisibilityClause())
+		now := rfc3339Millis(d.Now())
+		params = append(params, viewerID, viewerID, now, viewerID, now)
+	}
+	rows, err := d.queryBusiness(r, `
+		SELECT accounts.id
+		FROM `+d.businessTable("accounts")+` accounts
+		WHERE `+strings.Join(clauses, " AND ")+`
+		ORDER BY accounts.name ASC, accounts.id ASC
+	`, params...)
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, row := range rows {
+		if id := row.text("id"); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// accountUsageCallerVisibilityClause 是 caller_account 视角的账户可见性子句
+// （自身行 ∪ 直接账户授权 ∪ 分组授权）；绑定参数依次为 viewerID、viewerID、
+// now、viewerID、now。既有关键词解析器与 M3 域解析器共用同一文本。
+func (d *Deps) accountUsageCallerVisibilityClause() string {
+	return `(
+			accounts.system_account_id = ?
+			OR EXISTS (
+				SELECT 1
+				FROM ` + d.businessTable("resource_authorizations") + ` visible_authorization
+				WHERE visible_authorization.resource_type = 'account'
+					AND visible_authorization.resource_id = accounts.id
+					AND visible_authorization.grantee_system_account_id = ?
+					AND visible_authorization.status = 'active'
+					AND (visible_authorization.expires_at IS NULL OR visible_authorization.expires_at > ?)
+			)
+			OR EXISTS (
+				SELECT 1
+				FROM ` + d.businessTable("group_accounts") + ` visible_group_account
+				INNER JOIN ` + d.businessTable("resource_authorizations") + ` visible_group_authorization
+					ON visible_group_authorization.resource_type = 'group'
+					AND visible_group_authorization.resource_id = visible_group_account.group_id
+					AND visible_group_authorization.grantee_system_account_id = ?
+					AND visible_group_authorization.status = 'active'
+					AND (visible_group_authorization.expires_at IS NULL OR visible_group_authorization.expires_at > ?)
+				WHERE visible_group_account.account_id = accounts.id
+					AND visible_group_account.enabled = 1
+			)
+		)`
 }
 
 // loadAccountUsageKeywordAccountIds mirrors loadAccountUsageKeywordAccountIds
@@ -882,30 +996,7 @@ func (d *Deps) loadAccountUsageKeywordAccountIds(r *http.Request, scope AccessSc
 	clauses := []string{base}
 	params := append([]any{}, baseParams...)
 	if scopeType == "caller_account" {
-		clauses = append(clauses, `(
-			accounts.system_account_id = ?
-			OR EXISTS (
-				SELECT 1
-				FROM `+d.businessTable("resource_authorizations")+` visible_authorization
-				WHERE visible_authorization.resource_type = 'account'
-					AND visible_authorization.resource_id = accounts.id
-					AND visible_authorization.grantee_system_account_id = ?
-					AND visible_authorization.status = 'active'
-					AND (visible_authorization.expires_at IS NULL OR visible_authorization.expires_at > ?)
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM `+d.businessTable("group_accounts")+` visible_group_account
-				INNER JOIN `+d.businessTable("resource_authorizations")+` visible_group_authorization
-					ON visible_group_authorization.resource_type = 'group'
-					AND visible_group_authorization.resource_id = visible_group_account.group_id
-					AND visible_group_authorization.grantee_system_account_id = ?
-					AND visible_group_authorization.status = 'active'
-					AND (visible_group_authorization.expires_at IS NULL OR visible_group_authorization.expires_at > ?)
-				WHERE visible_group_account.account_id = accounts.id
-					AND visible_group_account.enabled = 1
-			)
-		)`)
+		clauses = append(clauses, d.accountUsageCallerVisibilityClause())
 		now := rfc3339Millis(d.Now())
 		params = append(params, viewerID, viewerID, now, viewerID, now)
 	}

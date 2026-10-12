@@ -58,12 +58,20 @@ func (d *Deps) aiHealthListHandler(selfOnly bool) http.HandlerFunc {
 			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
 			return
 		}
+		// M3 域筛选（计划 §M3 配套适配）：可选 domain 四枚举；缺省/"all" =
+		// 不过滤（默认行为零变化），非法值 400。
+		capabilityDomain, domainOK := optionalCapabilityDomainFilter(values.Get(capabilityDomainFilterParam))
+		if !domainOK {
+			kernel.WriteBadRequest(w, "AI 健康监控参数不合法")
+			return
+		}
 		scope := requestScope(r)
 		if selfOnly {
 			scope = selfScope(r)
 		}
 		payload, readErr := d.aiHealthList(r, scope, aiHealthOptions{
 			Hours: hours, Page: page, PageSize: pageSize, Keyword: keyword,
+			Domain: capabilityDomain,
 		})
 		d.writeSection(w, payload, readErr)
 	}
@@ -153,6 +161,8 @@ type aiHealthOptions struct {
 	Page     int
 	PageSize int
 	Keyword  string
+	// Domain 是可选能力域筛选（M3）：空 = 不过滤；非空 = 仅该域账户。
+	Domain string
 }
 
 func (d *Deps) aiHealthList(r *http.Request, scope AccessScope, options aiHealthOptions) (any, error) {
@@ -271,6 +281,12 @@ func (d *Deps) loadAiHealthAccountPage(r *http.Request, scope AccessScope, optio
 		filterSQL, filterParams := d.aiHealthAccountNameContainsFilter(options.Keyword, scopeID)
 		clauses = append(clauses, filterSQL)
 		params = append(params, filterParams...)
+	}
+	// M3 域筛选：读自身行 capability_domain（授权实例域恒等于源域，写路径
+	// 继承保证），与关键词条件叠加（AND 语义）。
+	if options.Domain != "" {
+		clauses = append(clauses, capabilityDomainClause("accounts"))
+		params = append(params, options.Domain)
 	}
 	systemAccountExpr := "NULL"
 	systemAccountJoin := ""

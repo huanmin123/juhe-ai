@@ -28,7 +28,10 @@ func TestW9ASeedSQLiteDefaultsStatementFailures(t *testing.T) {
 		// 会随 real clock 变化，导致语句数与 total 不一致。
 		_, err := SeedSQLiteDefaults(context.Background(), db, SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC) }})
 		db.Close()
-		if err == nil || !strings.Contains(err.Error(), "sqlite seed statement") {
+		// 语句流尾段的调度偏好迁移完成记录封存（schedprefdomain.SealFreshInstall，
+		// P2 设计门裁决②）注入失败包装为「sqlite seed seal scheduling preferences
+		// fresh install」，与 seed statement 包装并存为合法错误形态。
+		if err == nil || (!strings.Contains(err.Error(), "sqlite seed statement") && !strings.Contains(err.Error(), "sqlite seed seal scheduling preferences fresh install")) {
 			t.Fatalf("failExecAfter=%d 错误异常: %v", failAfter, err)
 		}
 	}
@@ -222,12 +225,17 @@ func TestW9AEnsureAllSQLiteStatementFailures(t *testing.T) {
 	// 在 stats DDL 之后追加的六条回填 UPDATE 已卸载（成功成本历史回填治理，
 	// 2026-10-12），回填职责唯一收敛到 maintenance
 	// --apply-success-cost-backfill 子命令，各 schema 偏移回归纯 DDL 长度。
+	// business DDL 之后 EnsureSQLiteBusiness 守卫链还有一次 exec：api_keys
+	// scheduling_preference_id 守卫加列在本夹具上 PRAGMA 早退不产生 exec，其
+	// 后的绑定索引 CREATE INDEX 产生一次（调度偏好独立实体
+	// PLAN-20261012T033000000Z），stats 起各偏移 +1。
+	businessEnsureExecCount := len(sqliteBusinessScript) + 1
 	offsets := map[string]int{
-		"stats":   len(sqliteBusinessScript),
-		"chat":    len(sqliteBusinessScript) + len(sqliteStatsScript),
-		"codex":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript),
-		"dataset": len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript),
-		"usage":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript),
+		"stats":   businessEnsureExecCount,
+		"chat":    businessEnsureExecCount + len(sqliteStatsScript),
+		"codex":   businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript),
+		"dataset": businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript),
+		"usage":   businessEnsureExecCount + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript),
 	}
 	needles := map[string]string{
 		"stats": "ensure sqlite stats schema", "chat": "ensure sqlite chat schema",

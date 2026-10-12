@@ -16,11 +16,15 @@ import (
 // claim/renew/release 状态保存在降级运行态（Redis），进程被 kill 后重启
 // 只需重新入队候选：claim TTL 过期即自动可被任何节点重新领用。
 
-// ProbeScope 对齐候选里的路由作用域。
+// ProbeScope 对齐候选里的路由作用域。PreferenceID / ConfigFingerprint 是
+// 调度偏好运行态身份（速度运行态 v2 命名空间键材料），随 state Scope 原样
+// 透传并参与 candidate-match 围栏；v1（历史策略路径）两侧均为空串。
 type ProbeScope struct {
-	RouteStrategyID string `json:"route_strategy_id"`
-	GroupID         string `json:"group_id"`
-	SystemAccountID string `json:"system_account_id"`
+	RouteStrategyID   string `json:"route_strategy_id"`
+	GroupID           string `json:"group_id"`
+	SystemAccountID   string `json:"system_account_id"`
+	PreferenceID      string `json:"preference_id,omitempty"`
+	ConfigFingerprint string `json:"config_fingerprint,omitempty"`
 }
 
 // ProbeConfig 对齐候选里的阈值配置。

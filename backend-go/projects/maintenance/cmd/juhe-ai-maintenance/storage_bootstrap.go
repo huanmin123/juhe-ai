@@ -32,7 +32,9 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // sqliteStoragePaths mirrors the Node six-database storage layout.
@@ -118,9 +120,9 @@ type storageBootstrapReport struct {
 	Driver    string `json:"driver"`
 	EnsureRan bool   `json:"ensureRan"`
 	SeedRan   bool   `json:"seedRan"`
-	// PendingBackfillTables 是 ensure 后 backfill_progress 中 status <> 'done'
-	// 的表名清单（成功成本历史回填治理：ensure 不自动迁移，仅在结果摘要
-	// 提示待回填表；marker 表不存在或全部 done 时缺省不出现，见计划 §3.2）。
+	// PendingBackfillTables 是固定六目标中 marker 缺失或 status 非 done
+	// 的表名清单。ensure 只提示、不扫描事实表或自动迁移；六表均 done
+	// 时省略该字段，见成功成本历史回填治理计划 §3.2。
 	PendingBackfillTables []string                  `json:"pendingBackfillTables,omitempty"`
 	SQLite                *storageBootstrapSQLite   `json:"sqlite,omitempty"`
 	Postgres              *storageBootstrapPostgres `json:"postgres,omitempty"`
@@ -178,14 +180,41 @@ func runStorageBootstrap(ensure, seed bool, driver, paths, dsn, secret string) i
 				return 1
 			}
 			// 成功成本历史回填治理（计划 §3.2）：ensure 不自动迁移，仅探测
-			// stats 库的回填待办并在结果摘要提示；marker 表不存在（未跑过
-			// ensure 的库）或刚建表为空均静默，探测失败保留原始错误。
+			// stats 库的回填待办并在结果摘要提示；缺失或非 done 的目标
+			// marker 均列为待办，全部 done 才静默；探测失败保留原始错误。
 			pending, _, pendingErr := pendingBackfillTablesSQLite(context.Background(), parsed.Stats)
 			if pendingErr != nil {
 				fmt.Fprintf(os.Stderr, "sqlite ensure-schema 后探测回填待办失败：%v\n", pendingErr)
 				return 1
 			}
 			report.PendingBackfillTables = pending
+			// 全新空库自动封存（AI 账户能力域拆分 M2）：schema 确保后，阶段
+			// 记录不存在且 accounts 无行时按序执行空库 M1→M2 并封存
+			// m2_finalized；记录已存在或 accounts 非空一律跳过（真实切换必须
+			// 显式跑迁移命令，见 capabilitydomain.SealFreshInstall；gateway
+			// SQLite preflight 经 bootstrap.SeedSQLiteBusiness 走同一封存语义）。
+			businessDB, openErr := bootstrap.OpenSQLiteFile(parsed.Business)
+			if openErr != nil {
+				fmt.Fprintf(os.Stderr, "sqlite ensure-schema 后打开业务库失败：%v\n", openErr)
+				return 1
+			}
+			// 调度偏好独立实体（PLAN-20261012T033000000Z）：ensure 臂恢复式
+			// 补种内置调度偏好行，保证存量库「升级 = 跑 ensure-schema 即得
+			// 内置行」（ensure 臂不执行完整 seed）；与 --seed 链共用同一
+			// upsert 语句，幂等可重入，重复执行不推进 updated_at。
+			if seedErr := schema.SeedBuiltinSchedulingPreferenceSQLite(context.Background(), businessDB); seedErr != nil {
+				_ = businessDB.Close()
+				fmt.Fprintf(os.Stderr, "sqlite ensure-schema 内置调度偏好补种失败：%v\n", seedErr)
+				return 1
+			}
+			sealErr := sealFreshInstallCapabilityDomain(context.Background(), businessDB, capdomain.DialectSQLite)
+			if closeErr := businessDB.Close(); sealErr == nil {
+				sealErr = closeErr
+			}
+			if sealErr != nil {
+				fmt.Fprintf(os.Stderr, "能力域空库自动封存失败：%v\n", sealErr)
+				return 1
+			}
 		}
 		if seed {
 			seedResult, seedErr := seedSQLiteBusiness(context.Background(), parsed, secret)
@@ -216,14 +245,28 @@ func runStorageBootstrap(ensure, seed bool, driver, paths, dsn, secret string) i
 			}
 			report.Postgres.Schema = &schemaResult
 			// 成功成本历史回填治理（计划 §3.2）：ensure 不自动迁移，仅探测
-			// juhe_stats 的回填待办并在结果摘要提示；marker 表不存在（新建
-			// 库刚建表为空）或全部 done 均静默，探测失败保留原始错误。
+			// juhe_stats 的回填待办并在结果摘要提示；缺失或非 done 的目标
+			// marker 均列为待办，全部 done 才静默；探测失败保留原始错误。
 			pending, _, pendingErr := pendingBackfillTables(context.Background(), db, backfillDialect{postgres: true})
 			if pendingErr != nil {
 				fmt.Fprintf(os.Stderr, "postgres ensure-schema 后探测回填待办失败：%v\n", pendingErr)
 				return 1
 			}
 			report.PendingBackfillTables = pending
+			// 全新空库自动封存（AI 账户能力域拆分 M2）：与 sqlite ensure 臂
+			// 同语义（PG 方言），非空库一律不自动写阶段记录。
+			if sealErr := sealFreshInstallCapabilityDomain(context.Background(), db, capdomain.DialectPostgres); sealErr != nil {
+				fmt.Fprintf(os.Stderr, "能力域空库自动封存失败：%v\n", sealErr)
+				return 1
+			}
+			// 调度偏好独立实体（PLAN-20261012T033000000Z）：ensure 臂恢复式
+			// 补种内置调度偏好行，语义与 sqlite 臂一致（同源权威值、同恢复式
+			// 幂等；PG 模式 gateway 启动不自动 ensure/seed，本臂是存量库升级
+			// 的触达点）。
+			if seedErr := schema.SeedBuiltinSchedulingPreferencePostgres(context.Background(), db); seedErr != nil {
+				fmt.Fprintf(os.Stderr, "postgres ensure-schema 内置调度偏好补种失败：%v\n", seedErr)
+				return 1
+			}
 		}
 		if seed {
 			seedResult, seedErr := schema.SeedPostgresDefaults(context.Background(), db, schema.SeedOptions{Secret: seedSecretValue(secret)})
@@ -234,7 +277,7 @@ func runStorageBootstrap(ensure, seed bool, driver, paths, dsn, secret string) i
 			report.Postgres.Seed = &seedResult
 		}
 	}
-	// 结果摘要提示（计划 §3.2 原文口径）：仅在确有非 done marker 时输出。
+	// 结果摘要提示：缺失或非 done 的目标 marker 均为待办。
 	if len(report.PendingBackfillTables) > 0 {
 		fmt.Fprintf(os.Stderr, "成功成本历史回填提示：存在待回填表（%s），请在维护窗口执行 --apply-success-cost-backfill。\n",
 			strings.Join(report.PendingBackfillTables, "、"))
@@ -312,4 +355,20 @@ func openPostgresBootstrap(rawURL string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	return db, nil
+}
+
+// sealFreshInstallCapabilityDomain 在 schema 确保后执行全新空库自动封存
+// （AI 账户能力域拆分 M2）：阶段记录不存在且 accounts 无任何行时按序执行
+// 空库 M1→M2 并写 m2_finalized；记录已存在或 accounts 非空一律跳过（真实
+// 切换必须显式跑迁移命令）。封存成功时向 stderr 输出一行提示，便于操作者
+// 在 ensure 输出中确认封存发生。
+func sealFreshInstallCapabilityDomain(ctx context.Context, db *sql.DB, dialect capdomain.Dialect) error {
+	sealed, err := capabilitydomain.SealFreshInstall(ctx, db, dialect)
+	if err != nil {
+		return err
+	}
+	if sealed {
+		fmt.Fprintln(os.Stderr, "全新空库已自动封存 AI 账户能力域阶段记录（m2_finalized）。")
+	}
+	return nil
 }

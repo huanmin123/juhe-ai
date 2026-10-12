@@ -2,41 +2,48 @@ package statsverify
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
-	"strings"
 	"testing"
 	"time"
 )
 
-// w10c_pg_gate_test.go 门禁化开发 PostgreSQL（w1cover 临时覆盖库）覆盖
-// statsverify 的 PG 专有分支：checkPostgresSchema、groupstats Postgres
-// 包装与 MarkAllGroupAccountStatsDirty Postgres 臂、client-ip 聚合 PG 空批次
-// 臂。数据全部 w10cpgsv- 前缀 ID，测试结束清理；数据库不可达时 t.Skip。
+const w10cSvScratchDatabase = "juhe_ai_sub2api_dev_w1cover"
+
+// w10c_pg_gate_test.go 只在显式 opt-in 的 w1cover scratch 库上覆盖
+// statsverify 的 PostgreSQL 专有分支。测试不会从开发配置推导连接地址。
 
 func w10cSvPgSkip(reason string) string { return "w10c statsverify PG gated: " + reason }
 
+func w10cSvValidatePGURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("JUHE_AI_W10CSV_PG_URL 不是有效 PostgreSQL URL")
+	}
+	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
+		return fmt.Errorf("JUHE_AI_W10CSV_PG_URL 必须使用 postgres 或 postgresql scheme")
+	}
+	if parsed.Path != "/"+w10cSvScratchDatabase {
+		return fmt.Errorf("JUHE_AI_W10CSV_PG_URL 必须指向 scratch database %q", w10cSvScratchDatabase)
+	}
+	if database := parsed.Query().Get("dbname"); database != "" && database != w10cSvScratchDatabase {
+		return fmt.Errorf("JUHE_AI_W10CSV_PG_URL 的 dbname 参数必须指向 scratch database %q", w10cSvScratchDatabase)
+	}
+	return nil
+}
+
 func w10cSvPgDSN(t *testing.T) string {
 	t.Helper()
-	if url := os.Getenv("JUHE_AI_W10CSV_PG_URL"); url != "" {
-		return url
+	raw := os.Getenv("JUHE_AI_W10CSV_PG_URL")
+	if raw == "" {
+		t.Skip(w10cSvPgSkip("未设置 JUHE_AI_W10CSV_PG_URL"))
 	}
-	raw, err := os.ReadFile(`F:\sub2api-lite\.local\project-resources\dev\env\shared.env`)
-	if err != nil {
-		t.Skip(w10cSvPgSkip("shared.env 不可读"))
+	if err := w10cSvValidatePGURL(raw); err != nil {
+		t.Fatal(err)
 	}
-	base := ""
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "JUHE_AI_POSTGRES_URL=") {
-			base = strings.TrimPrefix(line, "JUHE_AI_POSTGRES_URL=")
-		}
-	}
-	if base == "" {
-		t.Skip(w10cSvPgSkip("shared.env 缺少 JUHE_AI_POSTGRES_URL"))
-	}
-	base = strings.Replace(base, ":6432/", ":5432/", 1)
-	base = strings.Replace(base, "/juhe_ai_sub2api_dev?", "/juhe_ai_sub2api_dev_w1cover?", 1)
-	return base
+	return raw
 }
 
 func TestW10CPGStoreGroupStatsAndClientIP(t *testing.T) {
@@ -48,14 +55,21 @@ func TestW10CPGStoreGroupStatsAndClientIP(t *testing.T) {
 		PostgresMaxIdleConns: 2,
 	})
 	if err != nil {
-		t.Skipf(w10cSvPgSkip("OpenStore PG 打开失败: %v"), err)
+		t.Fatalf("显式 opt-in 的 PG OpenStore 失败: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	if store.mode != StorePostgres {
 		t.Fatalf("模式应为 postgres")
 	}
+	var currentDatabase string
+	if err := store.db.QueryRowContext(ctx, "SELECT current_database()").Scan(&currentDatabase); err != nil {
+		t.Fatalf("显式 opt-in 的 PG 读取 current_database 失败: %v", err)
+	}
+	if currentDatabase != w10cSvScratchDatabase {
+		t.Fatalf("PG current_database=%q，要求为 scratch database %q", currentDatabase, w10cSvScratchDatabase)
+	}
 
-	// checkPostgresSchema：w1cover 预置表齐备则通过（0% → 全臂）。
+	// checkPostgresSchema：确认 scratch 库具备外部预置表。
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatalf("PG EnsureSchema 失败: %v", err)
 	}

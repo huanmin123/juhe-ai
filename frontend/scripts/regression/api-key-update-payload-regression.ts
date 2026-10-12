@@ -19,6 +19,7 @@ const rowActionsSource = readFileSync(resolve(frontendRoot, 'src/views/api-keys/
 const baseline: ApiKeyEditableSnapshot = {
   name: 'Key A',
   routeStrategyId: 'route_1',
+  schedulingPreferenceId: 'pref_1',
   status: 'active',
   expiresAt: '2026-08-01T00:00:00.000Z',
   description: 'before',
@@ -51,6 +52,27 @@ const clearPatch = buildApiKeyMutationPatch(baseline, {
 })
 assert.deepEqual(clearPatch, { expiresAt: null, availabilitySchedule: null }, '清空可空字段必须显式发送 null')
 
+const schedulingPreferencePatch = buildApiKeyMutationPatch(baseline, {
+  ...structuredClone(baseline),
+  schedulingPreferenceId: 'pref_2'
+})
+assert.deepEqual(schedulingPreferencePatch, { schedulingPreferenceId: 'pref_2' }, '只改调度偏好时只能发送 schedulingPreferenceId')
+
+// 偏好清空不是「缺失保持原值」：契约要求显式回默认（内置 ID）。
+const schedulingPreferenceResetPatch = buildApiKeyMutationPatch(baseline, {
+  ...structuredClone(baseline),
+  schedulingPreferenceId: undefined
+})
+assert.deepEqual(schedulingPreferenceResetPatch, { schedulingPreferenceId: 'schpref-builtin-chat-cost-first' }, '清空调度偏好必须显式提交内置默认 ID')
+
+// 历史 NULL 偏好（迁移期）未交互时不得产生偏好 delta。
+const legacyBaseline: ApiKeyEditableSnapshot = { ...structuredClone(baseline), schedulingPreferenceId: undefined }
+assert.deepEqual(
+  buildApiKeyMutationPatch(legacyBaseline, structuredClone(legacyBaseline)),
+  {},
+  '历史 NULL 偏好未变更时 PATCH 不得携带 schedulingPreferenceId'
+)
+
 const defaultCreatePayload = buildApiKeyCreatePayload({
   name: 'Key B',
   routeStrategyId: 'route_default',
@@ -60,18 +82,23 @@ const defaultCreatePayload = buildApiKeyCreatePayload({
   quotaLimits: {},
   availabilitySchedule: null
 }, { routeStrategyTouched: false })
-assert.deepEqual(defaultCreatePayload, { name: 'Key B' }, '新建默认值不得扩大为状态、空说明、空额度、空计划或缓存路由字段')
+// 契约变更（PLAN-20261012T033000000Z P1）：创建总是提交显式偏好 ID，未选择时持久化内置默认行。
+assert.deepEqual(defaultCreatePayload, {
+  name: 'Key B',
+  schedulingPreferenceId: 'schpref-builtin-chat-cost-first'
+}, '新建必须携带显式调度偏好 ID：未选择时提交内置默认（对话·成本优先）')
 assert.deepEqual(buildApiKeyCreatePayload({
   ...baseline,
   description: '  configured  '
 }, { routeStrategyTouched: true }), {
   name: baseline.name,
   routeStrategyId: baseline.routeStrategyId,
+  schedulingPreferenceId: baseline.schedulingPreferenceId,
   expiresAt: baseline.expiresAt,
   description: 'configured',
   quotaLimits: baseline.quotaLimits,
   availabilitySchedule: baseline.availabilitySchedule
-}, '新建只提交用户实际配置的非默认字段')
+}, '新建提交用户选择的偏好 ID 与实际配置的非默认字段')
 
 const current: ApiKeySummary = {
   id: 'key_1',
@@ -83,6 +110,9 @@ const current: ApiKeySummary = {
   status: 'active',
   purpose: 'general',
   routeStrategyId: 'route_1',
+  schedulingPreferenceId: baseline.schedulingPreferenceId,
+  schedulingPreferenceName: '偏好一',
+  schedulingPreferenceBuiltIn: false,
   quotaLimits: baseline.quotaLimits,
   availabilitySchedule: baseline.availabilitySchedule ?? undefined,
   usage: { requestCount: 1, totalTokens: 2, totalCost: 0.1 }
@@ -91,13 +121,33 @@ const result: ApiKeyMutationResult = {
   id: current.id,
   revision: 'revision-2',
   changedFields: ['description', 'availabilitySchedule'],
-  rowPatch: { revision: 'revision-2', description: null, availabilitySchedule: null }
+  rowPatch: {
+    revision: 'revision-2',
+    description: null,
+    availabilitySchedule: null,
+    schedulingPreferenceId: 'schpref-builtin-chat-cost-first',
+    schedulingPreferenceName: '对话·成本优先',
+    schedulingPreferenceBuiltIn: true
+  }
 }
 const merged = mergeApiKeyMutationResult(current, result)
 assert.equal(merged.revision, 'revision-2', '最小 mutation result 必须推进列表 revision')
 assert.equal(merged.description, undefined, 'rowPatch null 必须在列表行归一化为缺失值')
 assert.equal(merged.availabilitySchedule, undefined, '清空时间计划后列表行不得保留旧值')
+assert.equal(merged.schedulingPreferenceId, 'schpref-builtin-chat-cost-first', 'rowPatch 必须回写调度偏好绑定 ID')
+assert.equal(merged.schedulingPreferenceName, '对话·成本优先', 'rowPatch 必须回写调度偏好名称供回显')
+assert.equal(merged.schedulingPreferenceBuiltIn, true, 'rowPatch 必须回写内置标识')
 assert.deepEqual(merged.usage, current.usage, '最小 mutation result 不得覆盖未返回的 usage')
+
+const nulledPreference = mergeApiKeyMutationResult(current, {
+  id: current.id,
+  revision: 'revision-3',
+  changedFields: [],
+  rowPatch: { revision: 'revision-3', schedulingPreferenceId: null, schedulingPreferenceName: null, schedulingPreferenceBuiltIn: null }
+})
+assert.equal(nulledPreference.schedulingPreferenceId, undefined, 'rowPatch null 偏好绑定必须在列表行归一化为缺失值')
+assert.equal(nulledPreference.schedulingPreferenceName, undefined, 'rowPatch null 偏好名称必须在列表行归一化为缺失值')
+assert.equal(nulledPreference.schedulingPreferenceBuiltIn, undefined, 'rowPatch null 内置标识必须在列表行归一化为缺失值')
 
 assert.match(apiSource, /interface ApiKeyUpdatePayload[\s\S]*expectedRevision:\s*string/, 'PATCH payload 必须携带 expectedRevision')
 assert.match(apiSource, /unwrap<ApiKeyMutationResult>\(http\.patch/, 'PATCH 响应必须使用最小 mutation result')
@@ -124,6 +174,13 @@ assert(
   apiSource.includes("http.patch(`/my-api-keys/${encodeURIComponent(id)}`, payload)"),
   '个人 API Key 更新必须编码动态路径段'
 )
+
+// 调度偏好绑定（PLAN-20261012T033000000Z P1）：弹窗选择器与快照接入。
+assert.match(modalSource, /schedulingPreferencesApi:\s*Pick<ScopedSchedulingPreferencesApi,\s*'options'>/, '弹窗必须声明调度偏好 options 依赖')
+assert.match(modalSource, /v-if="schedulingPreferenceSelectorVisible"[^>]*label="调度偏好"/, '调度偏好选择器必须按可见性条件渲染')
+assert.match(modalSource, /editingPurpose\.value === 'chat'\) return undefined/, 'purpose=chat 的快照必须强制缺失偏好 ID，任何路径不提交')
+assert.match(sourceBetween(modalSource, 'function openCreate', 'function openEdit'), /schedulingPreferenceId:\s*SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID/, '新建必须预选内置默认（对话·成本优先）')
+assert.match(sourceBetween(modalSource, 'function openEdit', 'function apiKeyOperationScopeParams'), /schedulingPreferenceId:\s*apiKey\.schedulingPreferenceId \?\? ''/, '编辑必须从列表行回填调度偏好绑定（历史 NULL 显示占位）')
 
 console.log('API Key delta PATCH 与最小 mutation result 回归测试通过')
 

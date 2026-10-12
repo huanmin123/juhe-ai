@@ -39,8 +39,23 @@ import type {
   ListParams,
   RequestControlOptions
 } from '../contracts'
+import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import { http, noTimeout, unwrap } from '../http'
 import { accountListParams, accountOptionsParams } from '../params'
+
+// M2 创建契约（AI 账户能力域拆分）：创建 payload 携带能力域（域创建时确定、不可更改），
+// 克隆必须显式声明来源（服务端按 clone-context 校验归属与域一致；缺省即普通新建）。
+export interface AccountCreatePayload extends Record<string, unknown> {
+  capabilityDomain?: AccountCapabilityDomain
+  cloneSourceId?: string
+}
+
+// 列表查询序列化后追加能力域过滤参数（M1 读通道 domain 参数；前端四域菜单恒传具体域）。
+function accountListRequestParams(params?: AccountListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
+  const serialized = accountListParams(params, includeSystemAccount)
+  if (!params?.domain) return serialized
+  return { ...serialized, domain: params.domain }
+}
 
 export interface AccountTestModelOption {
   label: string
@@ -104,7 +119,7 @@ export interface AccountRuntimeResetResult {
 }
 
 export const accountsApi = {
-  list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params), signal: options?.signal })),
+  list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListRequestParams(params), signal: options?.signal })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
   tags: (params?: ListParams) => unwrap<AccountTagSummary[]>(http.get('/accounts/tags', { params })),
   deleteTag: (id: string, params?: ListParams) => http.delete(`/accounts/tags/${id}`, { params }),
@@ -118,7 +133,7 @@ export const accountsApi = {
   export: (payload: AccountExportPayload, params?: ListParams) => unwrap<AccountExportResult>(http.post('/accounts/export', payload, { params })),
   importPreview: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
   importConfirm: (payload: AccountImportRequestPayload, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
-  create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountCreateResult>(http.post('/accounts', payload, { params })),
+  create: (payload: AccountCreatePayload, params?: ListParams) => unwrap<AccountCreateResult>(http.post('/accounts', payload, { params })),
   update: (id: string, payload: AccountUpdatePayload, params?: ListParams) => unwrap<AccountMutationResult>(http.patch(`/accounts/${id}`, payload, { params })),
   lock: (id: string, payload?: AccountLockMutationPayload, params?: ListParams) => unwrap<Record<string, unknown>>(http.post(`/accounts/${id}/lock`, payload ?? {}, { params })),
   unlock: (id: string, payload?: AccountLockMutationPayload, params?: ListParams) => unwrap<Record<string, unknown>>(http.post(`/accounts/${id}/unlock`, payload ?? {}, { params })),
@@ -149,7 +164,7 @@ export const accountsApi = {
 }
 
 export const myAccountsApi = {
-  list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false), signal: options?.signal })),
+  list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListRequestParams(params, false), signal: options?.signal })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
   tags: () => unwrap<AccountTagSummary[]>(http.get('/my-accounts/tags')),
   deleteTag: (id: string) => http.delete(`/my-accounts/tags/${id}`),
@@ -163,7 +178,7 @@ export const myAccountsApi = {
   export: (payload: AccountExportPayload) => unwrap<AccountExportResult>(http.post('/my-accounts/export', payload)),
   importPreview: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/preview', payload)),
   importConfirm: (payload: AccountImportRequestPayload) => unwrap<AccountImportResult>(http.post('/my-accounts/import/confirm', payload)),
-  create: (payload: Record<string, unknown>) => unwrap<AccountCreateResult>(http.post('/my-accounts', payload)),
+  create: (payload: AccountCreatePayload) => unwrap<AccountCreateResult>(http.post('/my-accounts', payload)),
   update: (id: string, payload: AccountUpdatePayload) => unwrap<AccountMutationResult>(http.patch(`/my-accounts/${id}`, payload)),
   lock: (id: string, payload?: AccountLockMutationPayload) => unwrap<Record<string, unknown>>(http.post(`/my-accounts/${id}/lock`, payload ?? {})),
   unlock: (id: string, payload?: AccountLockMutationPayload) => unwrap<Record<string, unknown>>(http.post(`/my-accounts/${id}/unlock`, payload ?? {})),

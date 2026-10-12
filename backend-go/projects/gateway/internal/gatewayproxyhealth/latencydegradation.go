@@ -20,10 +20,17 @@ import (
 // two-probe recovery rounds, generation-scoped indexes and claims).
 
 // LatencyDegradationScope mirrors NormalRouteLatencyDegradationScope.
+// PreferenceID / ConfigFingerprint 是调度偏好运行态身份（速度运行态 v2 命名
+// 空间）：两者均空 = 历史策略路径（v1 键族，键与 state JSON 与现状逐字节
+// 一致）；PreferenceID 非空 = v2 键族（state 键多出 preferenceID 与
+// configFingerprint 两段）。字段随 Scope 一起写进 state JSON，omitempty 保证
+// v1 state 的载荷形状不变。
 type LatencyDegradationScope struct {
-	SystemAccountID string `json:"systemAccountId"`
-	RouteStrategyID string `json:"routeStrategyId"`
-	GroupID         string `json:"groupId"`
+	SystemAccountID   string `json:"systemAccountId"`
+	RouteStrategyID   string `json:"routeStrategyId"`
+	GroupID           string `json:"groupId"`
+	PreferenceID      string `json:"preferenceId,omitempty"`
+	ConfigFingerprint string `json:"configFingerprint,omitempty"`
 }
 
 // SpeedFirstRuntimeConfig mirrors NormalRouteSpeedFirstRuntimeConfig
@@ -119,6 +126,18 @@ type DegradedRuntimeItem struct {
 	// Dimension 是归一后的降级维度（first_byte | total_time），供运行态展示
 	// 区分触发通道（设计 6.4）。
 	Dimension string `json:"dimension"`
+	// Source 标识状态所在命名空间（strategy=策略段 v1 / preference=偏好段 v2）；
+	// PreferenceID 仅 Source=preference 时非空。两代条目并存不去重。
+	Source       string
+	PreferenceID string
+}
+
+// latencyRuntimeSourceOf 把 Scope 的偏好身份映射为查询条目的来源标识。
+func latencyRuntimeSourceOf(scope LatencyDegradationScope) string {
+	if scope.PreferenceID != "" {
+		return DegradedRuntimeSourcePreference
+	}
+	return DegradedRuntimeSourceStrategy
 }
 
 // LatencyGenerationEvent mirrors NormalRouteLatencyGenerationEvent.
@@ -197,7 +216,10 @@ type LatencyDegradationOptions struct {
 }
 
 const (
+	// v1（历史策略路径，完整保留）与 v2（调度偏好路径）两个键族版本段。
+	// v1 派生键常量继续存在并被测试引用，是"历史键零字节漂移"的锚点。
 	latencyStateVersion                = "v1"
+	latencyStateVersionV2              = "v2"
 	latencyStateGenerationKey          = latencyStateVersion + ":generation"
 	latencyStateAllIndexKey            = latencyStateVersion + ":all-index"
 	latencyStateProbeIndexKey          = latencyStateVersion + ":probe-index"
@@ -219,6 +241,91 @@ const (
 	// constant (30s probe claim renewal cadence).
 	NormalRouteLatencyProbeClaimRenewIntervalMs = int64(30_000)
 )
+
+// 降级运行态条目的来源命名空间（查询侧透出字段；与键族版本一一对应）。
+const (
+	DegradedRuntimeSourceStrategy   = "strategy"
+	DegradedRuntimeSourcePreference = "preference"
+)
+
+// latencyStateKeyspace 收敛同一版本段下全部键的构造：state、generation
+// marker、all/probe 索引、索引锁、mutation lock 与 probe claim。v1 输出与
+// 既有 v1 常量拼接逐字节一致；v2 按同一形状以版本段 v2 同构构造（契约：
+// 派生键按 v2 版本段同构）。
+type latencyStateKeyspace struct{ version string }
+
+var (
+	latencyStateKeyspaceV1 = latencyStateKeyspace{version: latencyStateVersion}
+	latencyStateKeyspaceV2 = latencyStateKeyspace{version: latencyStateVersionV2}
+)
+
+// latencyStateKeyspaces 按"先 v1 后 v2"的稳定顺序枚举两代键族（扫描与清理
+// 的遍历顺序确定，错误聚合与输出排序不随 map 迭代抖动）。
+func latencyStateKeyspaces() []latencyStateKeyspace {
+	return []latencyStateKeyspace{latencyStateKeyspaceV1, latencyStateKeyspaceV2}
+}
+
+// latencyStateKeyspaceFor 以 Scope 的偏好身份选键族：PreferenceID 非空 → v2，
+// 否则 v1（历史路径）。
+func latencyStateKeyspaceFor(scope LatencyDegradationScope) latencyStateKeyspace {
+	if strings.TrimSpace(scope.PreferenceID) != "" {
+		return latencyStateKeyspaceV2
+	}
+	return latencyStateKeyspaceV1
+}
+
+// latencyStateKeyspaceOfStateKey 从 state 键的版本段反推键族（mutation lock、
+// probe claim、索引维护等以 stateKey 为唯一入参的路径用）。
+func latencyStateKeyspaceOfStateKey(stateKey string) latencyStateKeyspace {
+	version := stateKey
+	if boundary := strings.IndexByte(stateKey, ':'); boundary >= 0 {
+		version = stateKey[:boundary]
+	}
+	return latencyStateKeyspace{version: version}
+}
+
+func (k latencyStateKeyspace) generationKey() string     { return k.version + ":generation" }
+func (k latencyStateKeyspace) allIndexKey() string       { return k.version + ":all-index" }
+func (k latencyStateKeyspace) probeIndexKey() string     { return k.version + ":probe-index" }
+func (k latencyStateKeyspace) allIndexLockKey() string   { return k.version + ":all-index-lock" }
+func (k latencyStateKeyspace) probeIndexLockKey() string { return k.version + ":probe-index-lock" }
+
+func (k latencyStateKeyspace) mutationLockKey(stateKey string) string {
+	return k.version + ":mutation-lock:" + stateKey
+}
+
+func (k latencyStateKeyspace) probeClaimLockKey(generation, stateKey string) string {
+	return k.version + ":probe-claim:" + generation + ":" + stateKey
+}
+
+// latencyStateMutationLockKey 是 v1 键族的 mutation-lock 键（历史形状锚点，
+// 测试直接引用；v2 由 keyspace 方法同构构造）。
+func latencyStateMutationLockKey(stateKey string) string {
+	return latencyStateKeyspaceV1.mutationLockKey(stateKey)
+}
+
+// stateKey 构造 state 键：v1 保持五段历史形状；v2 在 routeStrategyID 之后插入
+// preferenceID 与 configFingerprint 两段。sanitizeKeyPart 规则两代一致。
+func (k latencyStateKeyspace) stateKey(scope LatencyDegradationScope, runtimeKey string) string {
+	if k.version == latencyStateVersionV2 {
+		return strings.Join([]string{
+			k.version,
+			sanitizeKeyPart(scope.SystemAccountID),
+			sanitizeKeyPart(scope.RouteStrategyID),
+			sanitizeKeyPart(scope.PreferenceID),
+			sanitizeKeyPart(scope.ConfigFingerprint),
+			sanitizeKeyPart(scope.GroupID),
+			sanitizeKeyPart(runtimeKey),
+		}, ":")
+	}
+	return strings.Join([]string{
+		k.version,
+		sanitizeKeyPart(scope.SystemAccountID),
+		sanitizeKeyPart(scope.RouteStrategyID),
+		sanitizeKeyPart(scope.GroupID),
+		sanitizeKeyPart(runtimeKey),
+	}, ":")
+}
 
 var latencyStateInitialGenerationEvent = LatencyGenerationEvent{
 	Version:     "initial",
@@ -299,7 +406,7 @@ func OrderGatewayAccountsByNormalRouteLatencyDegradation[T any](
 		return LatencyDegradationOrderResult[T]{Accounts: accounts, DegradedAccountIDs: []string{}}, nil
 	}
 
-	generation, err := s.loadLatencyStateGeneration(ctx)
+	generation, err := s.loadLatencyStateGeneration(ctx, latencyStateKeyspaceFor(*scope))
 	if err != nil {
 		return LatencyDegradationOrderResult[T]{}, err
 	}
@@ -399,7 +506,7 @@ func (s *LatencyDegradationService) recordNormalRouteSlow(
 	if err != nil {
 		return nil, err
 	}
-	generation, err := s.loadLatencyStateGeneration(ctx)
+	generation, err := s.loadLatencyStateGeneration(ctx, latencyStateKeyspaceFor(resolvedScope))
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +719,7 @@ func (s *LatencyDegradationService) recordNormalRouteSuccess(
 	if err != nil {
 		return nil, err
 	}
-	generation, err := s.loadLatencyStateGeneration(ctx)
+	generation, err := s.loadLatencyStateGeneration(ctx, latencyStateKeyspaceFor(*scope))
 	if err != nil {
 		return nil, err
 	}
@@ -832,7 +939,7 @@ func (s *LatencyDegradationService) IsNormalRouteAccountLatencyDegraded(
 	if scope == nil {
 		return false, nil
 	}
-	generation, err := s.loadLatencyStateGeneration(ctx)
+	generation, err := s.loadLatencyStateGeneration(ctx, latencyStateKeyspaceFor(*scope))
 	if err != nil {
 		return false, err
 	}
@@ -857,42 +964,45 @@ func (s *LatencyDegradationService) ListNormalRouteLatencyProbeCandidates(
 	if now != nil {
 		nowMs = *now
 	}
-	keys, err := s.loadLatencyStateIndexKeys(ctx, latencyStateProbeIndexKey)
-	if err != nil {
-		return nil, err
-	}
-	if len(keys) == 0 {
-		return []LatencyProbeCandidate{}, nil
-	}
-
-	generation, err := s.loadLatencyStateGeneration(ctx)
-	if err != nil {
-		return nil, err
-	}
 	type candidateWithOrder struct {
 		candidate     LatencyProbeCandidate
 		nextProbeAtMs int64
 	}
 	var candidates []candidateWithOrder
-	for _, key := range keys {
-		state, err := s.loadLatencyState(ctx, key, generation)
+	// 双代扫描：v1（策略段）与 v2（偏好段）各自持有 probe-index 与 generation
+	// marker，候选合并后按同一排序规则统一截断。
+	for _, keyspace := range latencyStateKeyspaces() {
+		keys, err := s.loadLatencyStateIndexKeys(ctx, keyspace.probeIndexKey())
 		if err != nil {
 			return nil, err
 		}
-		if state == nil || state.DegradedUntilMs == nil || *state.DegradedUntilMs <= nowMs {
+		if len(keys) == 0 {
 			continue
 		}
-		// total_time 维度不参与探针恢复（设计 6.5）：探针请求规模小，测不出
-		// 容量型慢，不探、不清理、不续租，只认真实流量达标或 TTL 过期。
-		if latencyDimensionOf(*state) == LatencyDimensionTotalTime {
-			continue
+		generation, err := s.loadLatencyStateGeneration(ctx, keyspace)
+		if err != nil {
+			return nil, err
 		}
-		if state.NextProbeAtMs == nil || *state.NextProbeAtMs > nowMs {
-			continue
-		}
-		candidate, ok := probeCandidateFromState(key, *state)
-		if ok {
-			candidates = append(candidates, candidateWithOrder{candidate: candidate, nextProbeAtMs: *state.NextProbeAtMs})
+		for _, key := range keys {
+			state, err := s.loadLatencyState(ctx, key, generation)
+			if err != nil {
+				return nil, err
+			}
+			if state == nil || state.DegradedUntilMs == nil || *state.DegradedUntilMs <= nowMs {
+				continue
+			}
+			// total_time 维度不参与探针恢复（设计 6.5）：探针请求规模小，测不出
+			// 容量型慢，不探、不清理、不续租，只认真实流量达标或 TTL 过期。
+			if latencyDimensionOf(*state) == LatencyDimensionTotalTime {
+				continue
+			}
+			if state.NextProbeAtMs == nil || *state.NextProbeAtMs > nowMs {
+				continue
+			}
+			candidate, ok := probeCandidateFromState(key, *state)
+			if ok {
+				candidates = append(candidates, candidateWithOrder{candidate: candidate, nextProbeAtMs: *state.NextProbeAtMs})
+			}
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -938,18 +1048,6 @@ func (s *LatencyDegradationService) ListNormalRouteLatencyDegradedRuntime(
 		return nil, errors.New("普通路由速度优先运行态查询最多支持 50 个策略路由")
 	}
 
-	keys, err := s.loadLatencyStateIndexKeys(ctx, latencyStateProbeIndexKey)
-	if err != nil {
-		return nil, err
-	}
-	if len(keys) == 0 {
-		return []DegradedRuntimeItem{}, nil
-	}
-
-	generation, err := s.loadLatencyStateGeneration(ctx)
-	if err != nil {
-		return nil, err
-	}
 	nowMs := s.nowMs()
 	if input.Now != nil {
 		nowMs = *input.Now
@@ -958,49 +1056,66 @@ func (s *LatencyDegradationService) ListNormalRouteLatencyDegradedRuntime(
 	for _, id := range routeStrategyIDs {
 		routeStrategyIDSet[id] = struct{}{}
 	}
-	rawStates, err := s.store.GetJSONMany(ctx, keys)
-	if err != nil {
-		return nil, err
-	}
 	items := make([]DegradedRuntimeItem, 0)
-	for _, raw := range rawStates {
-		if raw == nil {
+	// 双代扫描：v1（策略段）与 v2（偏好段）各自持有 probe-index 与 generation
+	// marker；条目合并透出，同账号两代并存不去重（来源字段区分命名空间）。
+	for _, keyspace := range latencyStateKeyspaces() {
+		keys, err := s.loadLatencyStateIndexKeys(ctx, keyspace.probeIndexKey())
+		if err != nil {
+			return nil, err
+		}
+		if len(keys) == 0 {
 			continue
 		}
-		state, ok := decodeLatencyState(raw)
-		if !ok {
-			continue
+		generation, err := s.loadLatencyStateGeneration(ctx, keyspace)
+		if err != nil {
+			return nil, err
 		}
-		if !isCurrentLatencyState(state, generation) {
-			continue
+		rawStates, err := s.store.GetJSONMany(ctx, keys)
+		if err != nil {
+			return nil, err
 		}
-		if state.DegradedUntilMs == nil || *state.DegradedUntilMs <= nowMs {
-			continue
+		for _, raw := range rawStates {
+			if raw == nil {
+				continue
+			}
+			state, ok := decodeLatencyState(raw)
+			if !ok {
+				continue
+			}
+			if !isCurrentLatencyState(state, generation) {
+				continue
+			}
+			if state.DegradedUntilMs == nil || *state.DegradedUntilMs <= nowMs {
+				continue
+			}
+			if systemAccountID != "" && state.Scope.SystemAccountID != systemAccountID {
+				continue
+			}
+			if _, matched := routeStrategyIDSet[state.Scope.RouteStrategyID]; !matched {
+				continue
+			}
+			item := DegradedRuntimeItem{
+				AccountID:                      state.AccountID,
+				AccountName:                    state.AccountName,
+				ScopeRouteStrategyID:           state.Scope.RouteStrategyID,
+				ScopeGroupID:                   state.Scope.GroupID,
+				SlowCount:                      state.SlowCount,
+				SlowTriggerCount:               state.Config.SlowTriggerCount,
+				SlowWindowSeconds:              state.Config.SlowWindowSeconds,
+				DegradedUntil:                  ISOStringMs(*state.DegradedUntilMs),
+				NextProbeAt:                    isoPtr(state.NextProbeAtMs),
+				RecoverySuccessCount:           state.SuccessCount,
+				RequiredRecoverySuccessCount:   state.Config.RecoverySuccessCount,
+				RecoveryProbeRoundAttemptCount: recoveryProbeRoundAttempts(state),
+				RecoveryProbeRoundSuccessCount: recoveryProbeRoundSuccesses(state),
+				Reason:                         state.Reason,
+				Dimension:                      latencyDimensionOf(state),
+				Source:                         latencyRuntimeSourceOf(state.Scope),
+				PreferenceID:                   state.Scope.PreferenceID,
+			}
+			items = append(items, item)
 		}
-		if systemAccountID != "" && state.Scope.SystemAccountID != systemAccountID {
-			continue
-		}
-		if _, matched := routeStrategyIDSet[state.Scope.RouteStrategyID]; !matched {
-			continue
-		}
-		item := DegradedRuntimeItem{
-			AccountID:                      state.AccountID,
-			AccountName:                    state.AccountName,
-			ScopeRouteStrategyID:           state.Scope.RouteStrategyID,
-			ScopeGroupID:                   state.Scope.GroupID,
-			SlowCount:                      state.SlowCount,
-			SlowTriggerCount:               state.Config.SlowTriggerCount,
-			SlowWindowSeconds:              state.Config.SlowWindowSeconds,
-			DegradedUntil:                  ISOStringMs(*state.DegradedUntilMs),
-			NextProbeAt:                    isoPtr(state.NextProbeAtMs),
-			RecoverySuccessCount:           state.SuccessCount,
-			RequiredRecoverySuccessCount:   state.Config.RecoverySuccessCount,
-			RecoveryProbeRoundAttemptCount: recoveryProbeRoundAttempts(state),
-			RecoveryProbeRoundSuccessCount: recoveryProbeRoundSuccesses(state),
-			Reason:                         state.Reason,
-			Dimension:                      latencyDimensionOf(state),
-		}
-		items = append(items, item)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i], items[j]
@@ -1217,7 +1332,8 @@ func (s *LatencyDegradationService) DiscardNormalRouteLatencyProbeCandidate(
 // Clears.
 
 // ClearNormalRouteLatencyDegradationForRouteStrategy mirrors
-// clearNormalRouteLatencyDegradationForRouteStrategyAsync.
+// clearNormalRouteLatencyDegradationForRouteStrategyAsync. 按策略段清理必须
+// 同时覆盖 v1 与 v2 两代中该策略段的状态（契约：清理谓词跨代）。
 func (s *LatencyDegradationService) ClearNormalRouteLatencyDegradationForRouteStrategy(
 	ctx context.Context,
 	routeStrategyID string,
@@ -1226,25 +1342,51 @@ func (s *LatencyDegradationService) ClearNormalRouteLatencyDegradationForRouteSt
 	if normalizedRouteStrategyID == "" {
 		return 0, nil
 	}
-	keys, err := s.loadLatencyStateIndexKeys(ctx, latencyStateAllIndexKey)
-	if err != nil {
-		return 0, err
-	}
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	generation, err := s.loadLatencyStateGeneration(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return s.clearCurrentGenerationLatencyStateKeys(ctx, keys, generation, func(state latencyState) bool {
+	return s.clearAcrossLatencyKeyspaces(ctx, func(state latencyState) bool {
 		return state.Scope.RouteStrategyID == normalizedRouteStrategyID
 	})
 }
 
+// clearAcrossLatencyKeyspaces 对 v1/v2 两代键族分别按当前代际执行谓词清理，
+// 返回两代合计清理数；任一代失败聚合报错（部分成功的结果不静默丢弃）。
+func (s *LatencyDegradationService) clearAcrossLatencyKeyspaces(
+	ctx context.Context,
+	predicate func(latencyState) bool,
+) (int64, error) {
+	var totalCleared int64
+	var errs []error
+	for _, keyspace := range latencyStateKeyspaces() {
+		keys, err := s.loadLatencyStateIndexKeys(ctx, keyspace.allIndexKey())
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		generation, err := s.loadLatencyStateGeneration(ctx, keyspace)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		cleared, err := s.clearCurrentGenerationLatencyStateKeys(ctx, keys, keyspace, generation, predicate)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		totalCleared += cleared
+	}
+	if len(errs) > 0 {
+		return totalCleared, errors.Join(errs...)
+	}
+	return totalCleared, nil
+}
+
 // ClearAllNormalRouteLatencyDegradation mirrors clearAllNormalRouteLatencyDegradationAsync.
 // The bool result is false when the generation CAS attempts are exhausted
-// (Node returns false without throwing).
+// (Node returns false without throwing). The generation bump applies to both
+// keyspace generations (v1/v2): a global invalidation must expire states in
+// both namespaces.
 func (s *LatencyDegradationService) ClearAllNormalRouteLatencyDegradation(
 	ctx context.Context,
 	event LatencyGenerationEvent,
@@ -1253,13 +1395,32 @@ func (s *LatencyDegradationService) ClearAllNormalRouteLatencyDegradation(
 	if err != nil {
 		return false, err
 	}
+	for _, keyspace := range latencyStateKeyspaces() {
+		applied, err := s.bumpLatencyGenerationEventForKeyspace(ctx, keyspace, normalizedEvent)
+		if err != nil {
+			return false, err
+		}
+		if !applied {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// bumpLatencyGenerationEventForKeyspace 对单代键族执行 generation 事件的
+// compare-and-set 推进（原 ClearAll 主体按 keyspace 提取）。
+func (s *LatencyDegradationService) bumpLatencyGenerationEventForKeyspace(
+	ctx context.Context,
+	keyspace latencyStateKeyspace,
+	normalizedEvent LatencyGenerationEvent,
+) (bool, error) {
 	for attempt := 0; attempt < latencyStateGenerationCASMax; attempt++ {
-		current, currentRaw, err := s.loadLatencyGenerationEventRaw(ctx)
+		current, currentRaw, err := s.loadLatencyGenerationEventRaw(ctx, keyspace)
 		if err != nil {
 			return false, err
 		}
 		if current != nil && compareLatencyGenerationEvents(normalizedEvent, *current) <= 0 {
-			applied, err := s.store.CompareSetJSON(ctx, latencyStateGenerationKey, currentRaw, current, latencyStateGenerationTTLMs)
+			applied, err := s.store.CompareSetJSON(ctx, keyspace.generationKey(), currentRaw, current, latencyStateGenerationTTLMs)
 			if err != nil {
 				return false, err
 			}
@@ -1268,7 +1429,7 @@ func (s *LatencyDegradationService) ClearAllNormalRouteLatencyDegradation(
 			}
 			continue
 		}
-		applied, err := s.store.CompareSetJSON(ctx, latencyStateGenerationKey, currentRaw, normalizedEvent, latencyStateGenerationTTLMs)
+		applied, err := s.store.CompareSetJSON(ctx, keyspace.generationKey(), currentRaw, normalizedEvent, latencyStateGenerationTTLMs)
 		if err != nil {
 			return false, err
 		}
@@ -1309,18 +1470,8 @@ func (s *LatencyDegradationService) ClearNormalRouteLatencyDegradationForAccount
 	if systemAccountID == "" || accountID == "" || len(groupIDs) == 0 {
 		return 0, nil
 	}
-	keys, err := s.loadLatencyStateIndexKeys(ctx, latencyStateAllIndexKey)
-	if err != nil {
-		return 0, err
-	}
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	generation, err := s.loadLatencyStateGeneration(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return s.clearCurrentGenerationLatencyStateKeys(ctx, keys, generation, func(state latencyState) bool {
+	// 账户绑定级清理同样跨 v1/v2 两代（同账号在偏好路径的状态一并清除）。
+	return s.clearAcrossLatencyKeyspaces(ctx, func(state latencyState) bool {
 		if _, matched := groupIDs[state.Scope.GroupID]; !matched {
 			return false
 		}
@@ -1349,18 +1500,7 @@ func (s *LatencyDegradationService) ClearNormalRouteLatencyDegradationForAccount
 	if systemAccountID == "" || accountID == "" {
 		return 0, nil
 	}
-	keys, err := s.loadLatencyStateIndexKeys(ctx, latencyStateAllIndexKey)
-	if err != nil {
-		return 0, err
-	}
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	generation, err := s.loadLatencyStateGeneration(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return s.clearCurrentGenerationLatencyStateKeys(ctx, keys, generation, func(state latencyState) bool {
+	return s.clearAcrossLatencyKeyspaces(ctx, func(state latencyState) bool {
 		return state.Scope.SystemAccountID == systemAccountID &&
 			(state.AccountID == accountID || RuntimeAccountIDFromKey(state.RuntimeKey) == accountID)
 	})
@@ -1369,8 +1509,10 @@ func (s *LatencyDegradationService) ClearNormalRouteLatencyDegradationForAccount
 // ---------------------------------------------------------------------------
 // Generation handling.
 
-func (s *LatencyDegradationService) loadLatencyStateGeneration(ctx context.Context) (string, error) {
-	event, err := s.loadOrCreateLatencyGenerationEvent(ctx)
+// loadLatencyStateGeneration 读取（或初始化）指定键族的 generation token；
+// v1/v2 两代各自持有一个 generation marker。
+func (s *LatencyDegradationService) loadLatencyStateGeneration(ctx context.Context, keyspace latencyStateKeyspace) (string, error) {
+	event, err := s.loadOrCreateLatencyGenerationEvent(ctx, keyspace)
 	if err != nil {
 		return "", err
 	}
@@ -1380,9 +1522,9 @@ func (s *LatencyDegradationService) loadLatencyStateGeneration(ctx context.Conte
 // loadLatencyGenerationEventRaw returns the normalized event together with
 // the raw bytes it was read from, so CAS callers resend the exact stored
 // payload as the expected value (single read, no re-read race).
-func (s *LatencyDegradationService) loadLatencyGenerationEventRaw(ctx context.Context) (*LatencyGenerationEvent, json.RawMessage, error) {
+func (s *LatencyDegradationService) loadLatencyGenerationEventRaw(ctx context.Context, keyspace latencyStateKeyspace) (*LatencyGenerationEvent, json.RawMessage, error) {
 	for attempt := 0; attempt < latencyStateGenerationCASMax; attempt++ {
-		raw, err := s.store.GetJSON(ctx, latencyStateGenerationKey)
+		raw, err := s.store.GetJSON(ctx, keyspace.generationKey())
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1403,7 +1545,7 @@ func (s *LatencyDegradationService) loadLatencyGenerationEventRaw(ctx context.Co
 		if rawJSONEqual(raw, mustMarshalJSON(normalizedEvent)) {
 			return &normalizedEvent, raw, nil
 		}
-		applied, err := s.store.CompareSetJSON(ctx, latencyStateGenerationKey, raw, normalizedEvent, latencyStateGenerationTTLMs)
+		applied, err := s.store.CompareSetJSON(ctx, keyspace.generationKey(), raw, normalizedEvent, latencyStateGenerationTTLMs)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1414,21 +1556,21 @@ func (s *LatencyDegradationService) loadLatencyGenerationEventRaw(ctx context.Co
 	return nil, nil, fmt.Errorf("普通路由速度优先 generation marker canonical CAS 重试耗尽（%d 次）", latencyStateGenerationCASMax)
 }
 
-func (s *LatencyDegradationService) loadLatencyGenerationEvent(ctx context.Context) (*LatencyGenerationEvent, error) {
-	event, _, err := s.loadLatencyGenerationEventRaw(ctx)
+func (s *LatencyDegradationService) loadLatencyGenerationEvent(ctx context.Context, keyspace latencyStateKeyspace) (*LatencyGenerationEvent, error) {
+	event, _, err := s.loadLatencyGenerationEventRaw(ctx, keyspace)
 	return event, err
 }
 
-func (s *LatencyDegradationService) loadOrCreateLatencyGenerationEvent(ctx context.Context) (LatencyGenerationEvent, error) {
+func (s *LatencyDegradationService) loadOrCreateLatencyGenerationEvent(ctx context.Context, keyspace latencyStateKeyspace) (LatencyGenerationEvent, error) {
 	for attempt := 0; attempt < latencyStateGenerationCASMax; attempt++ {
-		current, err := s.loadLatencyGenerationEvent(ctx)
+		current, err := s.loadLatencyGenerationEvent(ctx, keyspace)
 		if err != nil {
 			return LatencyGenerationEvent{}, err
 		}
 		if current != nil {
 			return *current, nil
 		}
-		applied, err := s.store.CompareSetJSON(ctx, latencyStateGenerationKey, nil, latencyStateInitialGenerationEvent, latencyStateGenerationTTLMs)
+		applied, err := s.store.CompareSetJSON(ctx, keyspace.generationKey(), nil, latencyStateInitialGenerationEvent, latencyStateGenerationTTLMs)
 		if err != nil {
 			return LatencyGenerationEvent{}, err
 		}
@@ -1439,15 +1581,15 @@ func (s *LatencyDegradationService) loadOrCreateLatencyGenerationEvent(ctx conte
 	return LatencyGenerationEvent{}, fmt.Errorf("普通路由速度优先 generation marker CAS 初始化重试耗尽（%d 次）", latencyStateGenerationCASMax)
 }
 
-func (s *LatencyDegradationService) renewLatencyStateGeneration(ctx context.Context, generation string) (bool, error) {
-	current, currentRaw, err := s.loadLatencyGenerationEventRaw(ctx)
+func (s *LatencyDegradationService) renewLatencyStateGeneration(ctx context.Context, keyspace latencyStateKeyspace, generation string) (bool, error) {
+	current, currentRaw, err := s.loadLatencyGenerationEventRaw(ctx, keyspace)
 	if err != nil {
 		return false, err
 	}
 	if current == nil || latencyGenerationToken(current) != generation {
 		return false, nil
 	}
-	return s.store.CompareSetJSON(ctx, latencyStateGenerationKey, currentRaw, current, latencyStateGenerationTTLMs)
+	return s.store.CompareSetJSON(ctx, keyspace.generationKey(), currentRaw, current, latencyStateGenerationTTLMs)
 }
 
 func normalizeLatencyGenerationEvent(event LatencyGenerationEvent) (LatencyGenerationEvent, error) {
@@ -1604,13 +1746,7 @@ func accountLatencyStateKey(scope LatencyDegradationScope, account SuppressibleG
 	if err != nil {
 		runtimeKey = account.ID
 	}
-	return strings.Join([]string{
-		latencyStateVersion,
-		sanitizeKeyPart(scope.SystemAccountID),
-		sanitizeKeyPart(scope.RouteStrategyID),
-		sanitizeKeyPart(scope.GroupID),
-		sanitizeKeyPart(runtimeKey),
-	}, ":")
+	return latencyStateKeyspaceFor(scope).stateKey(scope, runtimeKey)
 }
 
 func accountLatencyStateKeyChecked(scope LatencyDegradationScope, account SuppressibleGatewayAccount) (string, error) {
@@ -1618,13 +1754,7 @@ func accountLatencyStateKeyChecked(scope LatencyDegradationScope, account Suppre
 	if err != nil {
 		return "", err
 	}
-	return strings.Join([]string{
-		latencyStateVersion,
-		sanitizeKeyPart(scope.SystemAccountID),
-		sanitizeKeyPart(scope.RouteStrategyID),
-		sanitizeKeyPart(scope.GroupID),
-		sanitizeKeyPart(runtimeKey),
-	}, ":"), nil
+	return latencyStateKeyspaceFor(scope).stateKey(scope, runtimeKey), nil
 }
 
 func sanitizeKeyPart(value string) string {
@@ -1682,6 +1812,10 @@ func latencyProbeCandidateMatchesState(candidate LatencyProbeCandidate, state la
 		candidate.Scope.SystemAccountID == state.Scope.SystemAccountID &&
 		candidate.Scope.RouteStrategyID == state.Scope.RouteStrategyID &&
 		candidate.Scope.GroupID == state.Scope.GroupID &&
+		// 调度偏好身份（v2 命名空间）参与围栏：迟到探针既不能以旧偏好身份更新
+		// 新键，也不能以新身份覆盖旧键（v1 两侧均为空串，比较行为不变）。
+		candidate.Scope.PreferenceID == state.Scope.PreferenceID &&
+		candidate.Scope.ConfigFingerprint == state.Scope.ConfigFingerprint &&
 		stringPtrEqual(candidate.DegradationEventID, state.DegradationEventID) &&
 		candidate.RecoveryProbeRoundAttemptCount == recoveryProbeRoundAttempts(state) &&
 		candidate.RecoveryProbeRoundSuccessCount == recoveryProbeRoundSuccesses(state) &&
@@ -1787,11 +1921,13 @@ func (s *LatencyDegradationService) loadLatencyStateIndexSnapshot(ctx context.Co
 }
 
 func (s *LatencyDegradationService) addLatencyStateAllIndexKey(ctx context.Context, key string) error {
-	return s.addLatencyStateIndexKey(ctx, latencyStateAllIndexKey, latencyStateAllIndexLockKey, key)
+	keyspace := latencyStateKeyspaceOfStateKey(key)
+	return s.addLatencyStateIndexKey(ctx, keyspace.allIndexKey(), keyspace.allIndexLockKey(), key)
 }
 
 func (s *LatencyDegradationService) addLatencyStateProbeIndexKey(ctx context.Context, key string) error {
-	return s.addLatencyStateIndexKey(ctx, latencyStateProbeIndexKey, latencyStateProbeIndexLockKey, key)
+	keyspace := latencyStateKeyspaceOfStateKey(key)
+	return s.addLatencyStateIndexKey(ctx, keyspace.probeIndexKey(), keyspace.probeIndexLockKey(), key)
 }
 
 func (s *LatencyDegradationService) addLatencyStateIndexKey(ctx context.Context, indexKey, lockKey, key string) error {
@@ -1809,22 +1945,37 @@ func (s *LatencyDegradationService) addLatencyStateIndexKey(ctx context.Context,
 	})
 }
 
+// removeLatencyStateIndexKeysStrict 从两代索引中移除目标键。待移除键集可能
+// 横跨 v1/v2：按版本段分组后各代只在本代索引上过滤（无该代键时跳过，避免
+// 无谓的索引锁竞争），删除顺序保持先 probe 后 all。
 func (s *LatencyDegradationService) removeLatencyStateIndexKeysStrict(ctx context.Context, keysToRemove []string) error {
 	if len(keysToRemove) == 0 {
 		return nil
 	}
 	removeSet := make(map[string]struct{}, len(keysToRemove))
+	versions := make(map[string]struct{}, 2)
 	for _, key := range keysToRemove {
 		removeSet[key] = struct{}{}
+		versions[latencyStateKeyspaceOfStateKey(key).version] = struct{}{}
 	}
-	if err := s.mutateLatencyStateIndexKeys(ctx, latencyStateProbeIndexKey, latencyStateProbeIndexLockKey, func(keys []string) []string {
-		return filterKeys(keys, removeSet)
-	}); err != nil {
-		return err
+	filter := func(keys []string) []string { return filterKeys(keys, removeSet) }
+	var errs []error
+	for _, keyspace := range latencyStateKeyspaces() {
+		if _, present := versions[keyspace.version]; !present {
+			continue
+		}
+		if err := s.mutateLatencyStateIndexKeys(ctx, keyspace.probeIndexKey(), keyspace.probeIndexLockKey(), filter); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := s.mutateLatencyStateIndexKeys(ctx, keyspace.allIndexKey(), keyspace.allIndexLockKey(), filter); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return s.mutateLatencyStateIndexKeys(ctx, latencyStateAllIndexKey, latencyStateAllIndexLockKey, func(keys []string) []string {
-		return filterKeys(keys, removeSet)
-	})
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func filterKeys(keys []string, removeSet map[string]struct{}) []string {
@@ -1932,7 +2083,8 @@ func (s *LatencyDegradationService) withLatencyStateMutationLock(
 	generation string,
 	operation func() (bool, error),
 ) (bool, error) {
-	lock, ok, err := s.acquireLatencyStateMutationLock(ctx, key, latencyStateMutationLockTTLMs)
+	keyspace := latencyStateKeyspaceOfStateKey(key)
+	lock, ok, err := s.acquireLatencyStateMutationLock(ctx, keyspace, key, latencyStateMutationLockTTLMs)
 	if err != nil {
 		return false, err
 	}
@@ -1940,7 +2092,7 @@ func (s *LatencyDegradationService) withLatencyStateMutationLock(
 		return false, nil
 	}
 	defer func() { _ = s.store.ReleaseLock(ctx, lock.lockKey, lock.token) }()
-	renewed, err := s.renewLatencyStateGeneration(ctx, generation)
+	renewed, err := s.renewLatencyStateGeneration(ctx, keyspace, generation)
 	if err != nil {
 		return false, err
 	}
@@ -1953,6 +2105,7 @@ func (s *LatencyDegradationService) withLatencyStateMutationLock(
 func (s *LatencyDegradationService) clearCurrentGenerationLatencyStateKeys(
 	ctx context.Context,
 	keys []string,
+	keyspace latencyStateKeyspace,
 	generation string,
 	predicate func(latencyState) bool,
 ) (int64, error) {
@@ -1979,7 +2132,7 @@ func (s *LatencyDegradationService) clearCurrentGenerationLatencyStateKeys(
 				}
 				key := keys[index]
 				cleared, err := s.runWithBackgroundSlot(ctx, func() (int64, error) {
-					return s.clearCurrentGenerationLatencyStateKey(ctx, key, generation, predicate)
+					return s.clearCurrentGenerationLatencyStateKey(ctx, key, keyspace, generation, predicate)
 				})
 				if err != nil {
 					errCh <- err
@@ -2014,10 +2167,11 @@ func (s *LatencyDegradationService) runWithBackgroundSlot(ctx context.Context, t
 func (s *LatencyDegradationService) clearCurrentGenerationLatencyStateKey(
 	ctx context.Context,
 	key string,
+	keyspace latencyStateKeyspace,
 	generation string,
 	predicate func(latencyState) bool,
 ) (int64, error) {
-	lock, ok, err := s.acquireLatencyStateMutationLock(ctx, key, latencyStateMutationLockTTLMs)
+	lock, ok, err := s.acquireLatencyStateMutationLock(ctx, keyspace, key, latencyStateMutationLockTTLMs)
 	if err != nil {
 		return 0, err
 	}
@@ -2025,7 +2179,7 @@ func (s *LatencyDegradationService) clearCurrentGenerationLatencyStateKey(
 		return 0, fmt.Errorf("普通路由速度优先状态 mutation lock 获取失败：%s", key)
 	}
 	defer func() { _ = s.store.ReleaseLock(ctx, lock.lockKey, lock.token) }()
-	renewed, err := s.renewLatencyStateGeneration(ctx, generation)
+	renewed, err := s.renewLatencyStateGeneration(ctx, keyspace, generation)
 	if err != nil {
 		return 0, err
 	}
@@ -2062,8 +2216,8 @@ func (s *LatencyDegradationService) deleteLatencyStateAndIndexesStrict(ctx conte
 	return s.removeLatencyStateIndexKeysStrict(ctx, []string{key})
 }
 
-func (s *LatencyDegradationService) acquireLatencyStateMutationLock(ctx context.Context, key string, ttlMs int64) (*latencyStateLock, bool, error) {
-	lockKey := latencyStateMutationLockKey(key)
+func (s *LatencyDegradationService) acquireLatencyStateMutationLock(ctx context.Context, keyspace latencyStateKeyspace, key string, ttlMs int64) (*latencyStateLock, bool, error) {
+	lockKey := keyspace.mutationLockKey(key)
 	token := NewUUID()
 	locked, err := s.acquireLatencyStateLock(ctx, lockKey, token, ttlMs)
 	if err != nil {
@@ -2075,12 +2229,9 @@ func (s *LatencyDegradationService) acquireLatencyStateMutationLock(ctx context.
 	return &latencyStateLock{key: key, lockKey: lockKey, token: token}, true, nil
 }
 
-func latencyStateMutationLockKey(key string) string {
-	return latencyStateVersion + ":mutation-lock:" + key
-}
-
 func normalRouteLatencyProbeClaimLockKey(candidate LatencyProbeCandidate) string {
-	return latencyStateVersion + ":probe-claim:" + candidate.Generation + ":" + candidate.StateKey
+	return latencyStateKeyspaceOfStateKey(candidate.StateKey).
+		probeClaimLockKey(candidate.Generation, candidate.StateKey)
 }
 
 func (s *LatencyDegradationService) acquireLatencyStateIndexLock(ctx context.Context, lockKey, token string) (bool, error) {

@@ -153,7 +153,7 @@
       hint="自动生成 · 跟随 Base URL"
       required
     />
-    <a-form-item required>
+    <a-form-item v-if="variant !== 'media'" required>
       <template #label>
         <div class="supported-models-label">
           <span>支持模型</span>
@@ -190,6 +190,7 @@
       </div>
     </a-form-item>
     <AccountHealthCheckModelField
+      v-if="variant !== 'media'"
       :editing="editing"
       :form="form"
       :model-options="modelOptions"
@@ -213,7 +214,7 @@ import { normalizedAccountApiKeys } from './accountCredentials'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountNameField from './AccountNameField.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   apiKeyRuntimeLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
@@ -226,7 +227,11 @@ const props = defineProps<{
   protocolCode?: string
   protocolVersion?: string
   title: string
-}>()
+  /** media 变体（M2 媒体域三段式）：只渲染凭据块，支持模型/检查模型由三段式段2承接。 */
+  variant?: 'chat' | 'media'
+}>(), {
+  variant: 'chat'
+})
 
 defineEmits<{
   (event: 'load-api-key-runtime', force?: boolean): void

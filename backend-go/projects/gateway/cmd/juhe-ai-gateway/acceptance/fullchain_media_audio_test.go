@@ -7,7 +7,7 @@ package acceptance
 // 回显）→ 轮询 queued → in_progress → completed（transcription_url 冻结）→
 // content 经绝对 URL 无凭据直连下载转写结果 JSON → 管理面 media-jobs 行终态
 //（kind=audio_transcription、usage duration 时长计量照落、目录无 USD 秒价
-// cost=0 不虚计）→ 账户亲和（上游命中只打 qwen 账户 key 的 transcription
+// cost=62.5s×$0.000012/s=0.00075，2026-10-05 起静态秒价）→ 账户亲和（上游命中只打 qwen 账户 key 的 transcription
 // 创建与 /api/v1/tasks 轮询端点）。
 import (
 	"fmt"
@@ -26,10 +26,11 @@ const fullchainQwenASRCreateBody = `{"model":"paraformer-v2","input_url":"https:
 
 // fullchainCreateQwenASRAccount 经管理面创建指向 mock 上游的 qwen api_key
 // 账户并绑定分组（qwen 供应商 + 媒体档案 profile_qwen_openai_v1；目录 seed
-// 预置 paraformer-v2 行）；凭据显式声明 openai 族词表的 audio_job_* 端点
-// 模式（opt-in，候选过滤按 audio_job_create 消费；qwen 档案 Capabilities
-// 声明 video_generation + audio_transcription，本用例同时覆盖长转写端点
-// 模式的写侧门禁）。
+// 预置 paraformer-v2 行）；能力域显式 audio（M2 写侧域规则：新建声明集
+// ⊆ 域允许集，audio 域 lanes = audio_speech + audio_job_* 四值）；凭据显式
+// 声明 openai 族词表的 audio_job_* 端点模式（opt-in，候选过滤按
+// audio_job_create 消费；qwen 档案 Capabilities 声明 video_generation +
+// audio_transcription，本用例同时覆盖长转写端点模式的写侧门禁）。
 func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
@@ -37,6 +38,7 @@ func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, grou
 		"providerProtocolProfileId": "profile_qwen_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "audio",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
@@ -61,7 +63,7 @@ func (f *fullchainFixture) fullchainCreateQwenASRAccount(name, upstreamKey, grou
 // model/input_url/language、provider_options_applied 含 parameters）→ 轮询
 // 三态推进 → content 下载转写结果 JSON（application/json + transcripts
 // 字段）→ 管理面 media-jobs 行 kind=audio_transcription 终态（时长计量照落
-// 但目录无 USD 秒价 → costUsd=0 不虚计）→ 账户亲和（创建 1 次 + 轮询 3 次，
+// cost=0.00075：2026-10-05 取证批起静态秒价 $0.000012/s）→ 账户亲和（创建 1 次 + 轮询 3 次，
 // content 直连无 Authorization）。
 func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 	requireFullchainGate(t)
@@ -142,8 +144,9 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 
 	// 管理面 media-jobs：行终态 completed、kind=audio_transcription、归因
 	// qwen 账户；usage JSON 字符串解析出 62.5 秒时长计量照落（链级测试断言
-	// audioInputSeconds=62.5 的 spool 记录）但目录未落 USD 秒价 → cost_usd=0
-	//（契约 §10.2/§2.8 计量照落成本不虚计）。
+	// audioInputSeconds=62.5 的 spool 记录）。2026-10-05 取证批起 paraformer-v2
+	// 落静态秒价（国际站 USD 明文 $0.000012/s，model_catalog_data.go 头注）→
+	// cost_usd=62.5×0.000012=0.00075（契约 §10.2 时长计量计费）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
@@ -153,8 +156,8 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 	if row.Kind != "audio_transcription" {
 		t.Fatalf("MV qwen asr row kind=%s, want audio_transcription", row.Kind)
 	}
-	if row.CostUsd != 0 {
-		t.Fatalf("MV qwen asr row costUsd=%v, want 0（目录无 USD 秒价不虚计）", row.CostUsd)
+	if row.CostUsd < 0.00074 || row.CostUsd > 0.00076 {
+		t.Fatalf("MV qwen asr row costUsd=%v, want 0.00075（$0.000012/s × 62.5s 静态秒价）", row.CostUsd)
 	}
 
 	// 账户亲和 + 出站形态：qwen key 命中创建（POST /api/v1/services/audio/
@@ -182,8 +185,9 @@ func TestFullchainMediaAudioJobParaformer(t *testing.T) {
 
 // fullchainCreateGlmSpeechAccount 经管理面创建指向 mock 上游的 glm api_key
 // 语音账户并绑定分组（glm 供应商 + 通用档案 profile_glm_general_openai_v1；
-// 目录 seed 预置 cogtts 行）；凭据显式声明 openai 族词表的 audio_speech 端点
-// 模式（opt-in；M6 起 glm 写侧词表放行同步音频 token）。
+// 目录 seed 预置 cogtts 行）；能力域显式 audio（M2 写侧域规则）；凭据显式
+// 声明 openai 族词表的 audio_speech 端点模式（opt-in；M6 起 glm 写侧词表
+// 放行同步音频 token）。
 func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, groupID string) string {
 	f.t.Helper()
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
@@ -191,6 +195,7 @@ func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, gr
 		"providerProtocolProfileId": "profile_glm_general_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "audio",
 		"credentials": map[string]any{
 			"api_key":  upstreamKey,
 			"base_url": f.mock.server.URL,
@@ -269,13 +274,25 @@ func TestFullchainMediaSpeechGlmTTS(t *testing.T) {
 	_ = records
 }
 
-// fullchainEnsureVolcengineTTSCatalogModel 把统一面 TTS 占位模型名注册进
-// volcengine 供应商目录（零价自定义行，沿 ensureProbeModelInCatalog 先例；
-// 协议声明 audio_speech 以过账户支持模型的档案协议承接校验）：火山 V3 TTS
-// 无官方模型 ID（模型由语音应用决定，契约 §9.2），网关模型门要求账户显式
-// 声明支持模型——运营以自定义目录行承载占位名，值不透传上游。
+// fullchainEnsureVolcengineTTSCatalogModel 确保 TTS 占位模型名在 volcengine
+// 供应商目录可用（协议声明 audio_speech 以过账户支持模型的档案协议承接
+// 校验）：先查目录已有该模型（含未定价/未启用行）则跳过创建——2026-10-12
+// 核对批起 doubao-tts 已落系统内置行，重复创建会 400「该模型已由系统内置
+// 提供」。火山 V3 TTS 无官方模型 ID（模型由语音应用决定，契约 §9.2），网关
+// 模型门要求账户显式声明支持模型——目录行承载占位名，值不透传上游；缺失时
+// 沿 ensureProbeModelInCatalog 先例补零价自定义行（mode=audio 的启用态价格
+// 校验要求 audio 价字段在场）。
 func (f *fullchainFixture) fullchainEnsureVolcengineTTSCatalogModel(model string) {
 	f.t.Helper()
+	_, payload := f.admin.do(http.MethodGet,
+		"/__aisys__/api/providers/volcengine/models?includeInactive=true&includeUnpriced=true",
+		nil, wantStatus(http.StatusOK))
+	items, _ := payload["data"].([]any)
+	for _, raw := range items {
+		if item, ok := raw.(map[string]any); ok && str(item["model"]) == model {
+			return
+		}
+	}
 	f.admin.do(http.MethodPost, "/__aisys__/api/providers/volcengine/models", map[string]any{
 		"model":                 model,
 		"scope":                 "global",
@@ -304,6 +321,7 @@ func (f *fullchainFixture) fullchainCreateVolcengineSpeechAccount(name, arkKey, 
 		"providerProtocolProfileId": "profile_volcengine_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
+		"capabilityDomain":          "audio",
 		"credentials": map[string]any{
 			"api_key":     arkKey,
 			"base_url":    f.mock.server.URL,
@@ -379,6 +397,11 @@ func TestFullchainMediaSpeechVolcengineTTS(t *testing.T) {
 	}
 	if calls[0].AuthHeader != "Bearer;"+speechToken {
 		t.Fatalf("MV volcengine tts Authorization=%q, want Bearer;%s（分号特例）", calls[0].AuthHeader, speechToken)
+	}
+	// T5 appid 鉴权字段：出站报文 user.uid = 账户 speech_appid（链级
+	// TestChainMediaVolcengineSpeechFullChain 的同款断言在真实 /v1 链复核）。
+	if !strings.Contains(calls[0].Body, `"uid":"app-voice-777"`) {
+		t.Fatalf("MV volcengine tts 出站报文缺少 user.uid=speech_appid: %s", calls[0].Body)
 	}
 	if len(f.mock.callsByKey(arkKey)) != 0 {
 		t.Fatalf("MV volcengine tts 不得经 ark 凭据出站: %+v", f.mock.callsByKey(arkKey))

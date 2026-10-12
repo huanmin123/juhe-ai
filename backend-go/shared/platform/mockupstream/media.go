@@ -54,6 +54,7 @@ var mediaEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/api/paas/v4/audio/transcriptions"}: true,
 	{http.MethodPost, "/api/paas/v4/audio/translations"}:   true,
 	{http.MethodPost, "/api/v3/tts"}:                      true,
+	{http.MethodPost, "/v1/images/generations"}:           true,
 }
 
 // acceptsMediaEndpoint matches the exact audio paths, the videos family
@@ -183,6 +184,11 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 	// M6 火山 TTS（契约 §9.2）：/api/v3/tts 报文面（code 3000 + data base64）。
 	if r.URL.Path == "/api/v3/tts" {
 		m.serveVolcengineTTS(w, idx, scenario)
+		return
+	}
+	// images 创建面（能力域拆分 T5 验收；url 形态 OpenAI images 响应）。
+	if r.URL.Path == imagesGenerationsPath {
+		m.serveImages(w, idx, scenario)
 		return
 	}
 	if r.URL.Path == "/v1/audio/speech" {

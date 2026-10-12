@@ -150,7 +150,20 @@ func newTestEnv(t *testing.T, wrapInvalidator ...func(CacheInvalidator) CacheInv
 			quota_limits_json TEXT,
 			availability_schedule_json TEXT,
 			availability_schedule_next_check_at TEXT,
+			scheduling_preference_id TEXT,
 			last_used_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		// 调度偏好独立实体 P1（api_keys.scheduling_preference_id 引用目标）。
+		`CREATE TABLE IF NOT EXISTS scheduling_preferences (
+			id TEXT PRIMARY KEY,
+			system_account_id TEXT,
+			name TEXT NOT NULL,
+			chat_mode TEXT NOT NULL,
+			chat_speed_first_config_json TEXT,
+			built_in INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,

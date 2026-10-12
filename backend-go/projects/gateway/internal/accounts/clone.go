@@ -35,12 +35,15 @@ type CloneCredentialOptions struct {
 
 // CloneContext mirrors AccountCloneContext.
 type CloneContext struct {
-	ID                                         string                 `json:"id"`
-	ConfigRevision                             int64                  `json:"configRevision"`
-	ProviderCode                               string                 `json:"providerCode"`
-	ProviderProtocolProfileID                  string                 `json:"providerProtocolProfileId"`
-	ProtocolCode                               string                 `json:"protocolCode"`
-	ProtocolVersion                            string                 `json:"protocolVersion"`
+	ID                        string `json:"id"`
+	ConfigRevision            int64  `json:"configRevision"`
+	ProviderCode              string `json:"providerCode"`
+	ProviderProtocolProfileID string `json:"providerProtocolProfileId"`
+	ProtocolCode              string `json:"protocolCode"`
+	ProtocolVersion           string `json:"protocolVersion"`
+	// CapabilityDomain 是源账户能力域（M2 克隆契约：正式克隆客户端按它锚定
+	// 目标 capabilityDomain；服务端在创建入口断言两者一致）。
+	CapabilityDomain                           string                 `json:"capabilityDomain"`
 	Name                                       string                 `json:"name"`
 	Notes                                      *string                `json:"notes,omitempty"`
 	Type                                       string                 `json:"type"`
@@ -169,6 +172,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		balanceQueryConfigJSON    string
 		authorizationID           sql.NullString
 		sourceAccountID           sql.NullString
+		capabilityDomain          string
 		boundGroupID              sql.NullString
 		boundGroupName            sql.NullString
 		boundGroupBindingUpdAt    sql.NullString
@@ -176,7 +180,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id,
-			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.notes,
+			accounts.protocol_code, accounts.protocol_version, accounts.capability_domain,
+			accounts.name, accounts.notes,
 			accounts.type, accounts.status, accounts.credentials_encrypted, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			accounts.client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
@@ -193,7 +198,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			AND accounts.deleted_at IS NULL`+scopeClause+`
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID, &row.providerCode,
-		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.name,
+		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.capabilityDomain,
+		&row.name,
 		&row.notes, &row.accountType, &row.status, &row.credentialsEncrypted,
 		&row.concurrencyLimit, &row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
 		&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
@@ -317,6 +323,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		ProviderProtocolProfileID: row.providerProtocolProfileID,
 		ProtocolCode:              row.protocolCode,
 		ProtocolVersion:           row.protocolVersion,
+		CapabilityDomain:          row.capabilityDomain,
 		Name:                      row.name,
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,

@@ -72,6 +72,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 
@@ -168,6 +169,22 @@ func w1g2CoverPostgres(t *testing.T) string {
 			t.Fatalf("临时子库幂等 EnsurePostgres 失败: %v", err)
 		}
 	}
+	// M2 启动阶段门禁夹具契约：持久子库 accounts 可能已有历史行，自动封存
+	// 不适用，fixture 直接补种已封存的 m2_finalized 阶段记录（ON CONFLICT
+	// DO NOTHING 幂等；记录 JSON 经共享包 Record 序列化）。
+	stageRecordJSON, stageRecordErr := json.Marshal(capabilitydomain.Record{
+		Stage:       capabilitydomain.StageM2Finalized,
+		RuleVersion: capabilitydomain.RuleVersion,
+		UpdatedAt:   "2026-10-12T08:00:00Z",
+	})
+	if stageRecordErr != nil {
+		t.Fatalf("序列化能力域阶段记录失败: %v", stageRecordErr)
+	}
+	if _, err := appDB.ExecContext(ctx, `INSERT INTO juhe_business.global_settings (key, value_json, updated_at)
+		VALUES ($1, $2, '2026-10-12T08:00:00Z') ON CONFLICT (key) DO NOTHING`,
+		capabilitydomain.MigrationSettingKey, string(stageRecordJSON)); err != nil {
+		t.Fatalf("补种能力域阶段记录失败: %v", err)
+	}
 	if got := w1g2CountCoverSchemas(t, appDB); got != len(w1g2CoverSchemas) {
 		t.Fatalf("临时子库 schema 数 = %d, want %d", got, len(w1g2CoverSchemas))
 	}
@@ -214,6 +231,11 @@ func w1g2CountCoverSchemas(t *testing.T, db *sql.DB) int {
 //   - 探针 C（形状，AI 账户能力域拆分 M1）：juhe_business.accounts 必须带
 //     capability_domain 列；旧版无列的持久子库不重灌会直接撞组合根启动
 //     capability_domain 形状校验（capability_domain_schema.go）。
+//   - 探针 D（种子，调度偏好独立实体 P1）：juhe_business.scheduling_preferences
+//     表必须存在且带合规内置行（built_in=1 / chat_mode 合法 / enabled=1）；
+//     旧版 seed 建立的持久子库缺该行会直接撞组合根启动调度偏好校验
+//     （scheduling_preference_schema.go）。重灌分支经 EnsurePostgres（建表 /
+//     加列）+ SeedPostgres（恢复式补种内置行）一并修复。
 //
 // 表不存在或探针查询出错一律按漂移处理（交由重灌分支给出真实错误），不 Fatal。
 func w1g2CoverPostgresDrifted(t *testing.T, appDB *sql.DB) bool {
@@ -249,6 +271,18 @@ func w1g2CoverPostgresDrifted(t *testing.T, appDB *sql.DB) bool {
 			AND lower(data_type) = 'text' AND is_nullable = 'NO'
 	)`).Scan(&domainShaped)
 	if err != nil || !domainShaped {
+		return true
+	}
+	// 探针 D：调度偏好内置行存在且三值合规（表缺失时查询出错按漂移处理，
+	// 交由重灌分支 EnsurePostgres + SeedPostgres 一并修复）。
+	var builtinShaped bool
+	err = appDB.QueryRow(`SELECT EXISTS (
+		SELECT 1 FROM juhe_business.scheduling_preferences
+		WHERE id = 'schpref-builtin-chat-cost-first'
+			AND built_in = 1 AND enabled = 1
+			AND chat_mode IN ('cost_first', 'speed_first')
+	)`).Scan(&builtinShaped)
+	if err != nil || !builtinShaped {
 		return true
 	}
 	return false

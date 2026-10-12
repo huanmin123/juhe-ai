@@ -37,10 +37,16 @@ func (c *w2f3Capture) transport() roundTripFunc {
 		}
 		c.body = body
 		request.Body = io.NopCloser(strings.NewReader(string(body)))
+		responseBody := `{"model":"w2f3-model","output_text":"OK-MODEL-CHECK"}`
+		responseHeader := "application/json"
+		if request.Header.Get("Accept") == "text/event-stream" {
+			responseHeader = "text/event-stream"
+			responseBody = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"w2f3-model\",\"output_text\":\"OK-MODEL-CHECK\"}}\n\ndata: [DONE]\n"
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"model":"w2f3-model","output_text":"OK-MODEL-CHECK"}`)),
+			Header:     http.Header{"Content-Type": []string{responseHeader}},
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
 			Request:    request,
 		}, nil
 	})

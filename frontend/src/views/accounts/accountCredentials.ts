@@ -10,6 +10,7 @@ import type { AccountFormModel } from './accountFormTypes'
 import { loadAccountQuotaRecoveryPolicy } from './accountQuotaRecoveryPolicyTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
 import { writeAccountGptRequestOverrides } from './accountGptRequestOverrides'
+import { isVolcengineProviderCode } from '@/shared/providerProtocol'
 
 const oauthCredentialMetadataKeys = [
   'expires_at',
@@ -59,7 +60,12 @@ function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown>
   const credentials = compactAccountCredentials({
     api_key: apiKey,
     base_url: form.baseUrl,
-    supported_endpoint_modes: [...form.supportedEndpointModes]
+    supported_endpoint_modes: [...form.supportedEndpointModes],
+    // 火山方舟语音应用双值凭据（M6 契约 §9.2）：仅 volcengine 供应商提交；
+    // 写侧对其它供应商的同名字段直接拒绝。空值经 compact 丢弃（可选语义）。
+    ...(isVolcengineProviderCode(form.providerCode)
+      ? { speech_appid: form.speechAppId.trim(), speech_token: form.speechToken.trim() }
+      : {})
   })
   if (apiKeys.length > 1) {
     credentials.api_keys = apiKeys

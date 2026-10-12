@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 	_ "modernc.org/sqlite"
 )
@@ -23,7 +24,9 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 	statements := []string{
 		`CREATE TABLE system_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, system_account_id TEXT NOT NULL DEFAULT 'sys_admin')`,
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT)`,
-		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT)`,
+		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT)`,
+		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
+		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
@@ -111,10 +114,10 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"usageRankSnapshotRetentionDays":             "30",
 		"systemMetricsRetentionDays":                 "7",
 		"systemMetricsHourlyRetentionDays":           "30",
-			// 上游客户端版本覆盖（613f2c618 新增键）：空对象是校验器认可的合法默认。
-			// 自动跟版键（2026-10-08）同形态默认。
-			"upstreamClientVersionOverrides":     "{}",
-			"upstreamClientVersionAutoOverrides": "{}",
+		// 上游客户端版本覆盖（613f2c618 新增键）：空对象是校验器认可的合法默认。
+		// 自动跟版键（2026-10-08）同形态默认。
+		"upstreamClientVersionOverrides":     "{}",
+		"upstreamClientVersionAutoOverrides": "{}",
 	}
 	for _, key := range settings.SystemSettingKeys {
 		value, ok := defaults[key]
@@ -163,12 +166,16 @@ func TestSQLReadGatewaySettingsProjection(t *testing.T) {
 
 func seedGatewayKeyFixture(t *testing.T, db *sql.DB) {
 	t.Helper()
+	// P2 迁移完成世界：内置偏好行存在，普通 Key 一律绑定（NULL 属未迁移错误，
+	// 读取链会显式失败），见 spc1 六态测试。
 	statements := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g1', 'sys_owner', 'gpt', 1)`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g2', 'sys_owner', 'gpt', 1)`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 2, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, NULL, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b3', 'rs1', 'sys_owner', 'g_disabled', 3, 1, 'disabled', '2026-01-01T00:00:00.000Z')`,
@@ -184,6 +191,11 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
 	seedGatewayKeyFixture(t, db)
+	// 策略 config 解码的消费路径（P2）只剩 purpose=chat（会话路径保持现状）；
+	// 普通 Key 的派发配置一律来自偏好合成，补一条 chat 键承载原断言。
+	if _, err := db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key-chat', 'sys_owner', 'rs1', '` + HashSecret("sk-chat-row") + `', 'active', 'chat')`); err != nil {
+		t.Fatal(err)
+	}
 	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -208,22 +220,37 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	if bindings[0].Weight != 1 || bindings[1].Weight != 2 {
 		t.Fatalf("weights must follow Node normalization, got %d/%d", bindings[0].Weight, bindings[1].Weight)
 	}
-	// config_json 缺失：normal_routing_config 为 undefined（Node parse → {}）。
-	if runtime.APIKey.NormalRoutingConfig != nil {
-		t.Fatalf("absent config must keep normal routing config undefined, got %+v", runtime.APIKey.NormalRoutingConfig)
+	// P2 迁移完成世界：普通 Key 绑定内置偏好，派发配置为合成的裸 cost_first
+	// 形（Raw nil），不再是策略 config（策略无 config 时也不为 undefined）。
+	if runtime.APIKey.NormalRoutingConfig == nil || runtime.APIKey.NormalRoutingConfig.SchedulingPreference != "cost_first" || runtime.APIKey.NormalRoutingConfig.Raw != nil {
+		t.Fatalf("migrated general key must carry synthesized bare cost_first, got %+v", runtime.APIKey.NormalRoutingConfig)
+	}
+	if runtime.APIKey.SchedulingPreferenceID != apikeys.BuiltinSchedulingPreferenceID {
+		t.Fatalf("fixture key must be bound to the builtin preference: %+v", runtime.APIKey)
 	}
 
-	// speed_first 配置保留完整对象；cost_first 归一为裸偏好。
+	// 普通 Key：策略 config 变更不影响派发配置（P2 起策略调度字段不再是普通
+	// Key 的配置来源；绑定合成始终覆盖）。
 	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := models.ReadGatewayRuntime(ctx, "sk-fixture")
+	general, err := models.ReadGatewayRuntime(ctx, "sk-fixture")
 	if err != nil {
-		t.Fatalf("speed_first read: %v", err)
+		t.Fatalf("general read after strategy speed_first: %v", err)
 	}
-	normalConfig := updated.APIKey.NormalRoutingConfig
+	if general.APIKey.NormalRoutingConfig == nil || general.APIKey.NormalRoutingConfig.SchedulingPreference != "cost_first" {
+		t.Fatalf("strategy scheduling config must not leak into migrated general keys, got %+v", general.APIKey.NormalRoutingConfig)
+	}
+
+	// chat 键沿用策略 config：speed_first 配置保留完整对象；cost_first 归一为
+	// 裸偏好（clone 语义不变）。
+	chat, err := models.ReadGatewayRuntime(ctx, "sk-chat-row")
+	if err != nil {
+		t.Fatalf("chat speed_first read: %v", err)
+	}
+	normalConfig := chat.APIKey.NormalRoutingConfig
 	if normalConfig == nil || normalConfig.SchedulingPreference != "speed_first" {
-		t.Fatalf("speed_first config mismatch: %+v", normalConfig)
+		t.Fatalf("chat speed_first config mismatch: %+v", normalConfig)
 	}
 	if string(normalConfig.Raw) == "" || !strings.Contains(string(normalConfig.Raw), "firstByteDeadlineMs") {
 		t.Fatalf("speed_first raw payload must be preserved, got %s", string(normalConfig.Raw))
@@ -235,14 +262,14 @@ func TestSQLGatewayAPIKeyRowAndBindings(t *testing.T) {
 	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
-	costFirst, err := models.ReadGatewayRuntime(ctx, "sk-fixture")
+	chatCostFirst, err := models.ReadGatewayRuntime(ctx, "sk-chat-row")
 	if err != nil {
-		t.Fatalf("cost_first read: %v", err)
+		t.Fatalf("chat cost_first read: %v", err)
 	}
-	if costFirst.APIKey.NormalRoutingConfig == nil || costFirst.APIKey.NormalRoutingConfig.SchedulingPreference != "cost_first" {
-		t.Fatalf("cost_first config mismatch: %+v", costFirst.APIKey.NormalRoutingConfig)
+	if chatCostFirst.APIKey.NormalRoutingConfig == nil || chatCostFirst.APIKey.NormalRoutingConfig.SchedulingPreference != "cost_first" {
+		t.Fatalf("chat cost_first config mismatch: %+v", chatCostFirst.APIKey.NormalRoutingConfig)
 	}
-	if costFirst.APIKey.NormalRoutingConfig.Clone().SchedulingPreference != "cost_first" {
+	if chatCostFirst.APIKey.NormalRoutingConfig.Clone().SchedulingPreference != "cost_first" {
 		t.Fatal("cost_first clone must collapse to the bare preference")
 	}
 
@@ -440,7 +467,9 @@ func TestSQLReadGatewayRuntimeComposition(t *testing.T) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g2', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-comp") + `', 'active')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-comp") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	}

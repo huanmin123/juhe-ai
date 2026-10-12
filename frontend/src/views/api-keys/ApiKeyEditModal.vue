@@ -29,6 +29,19 @@
           @update:value="markRouteStrategyTouched"
         />
       </a-form-item>
+      <a-form-item v-if="schedulingPreferenceSelectorVisible" label="调度偏好" tooltip="影响 API Key 在既定路由分组内的对话调度方式（成本优先 / 速度优先）；不改变路由层级，媒体请求不使用调度偏好。">
+        <CachedSelect
+          v-model:value="form.schedulingPreferenceId"
+          :options="visibleSchedulingPreferenceOptions"
+          :selected-options="schedulingPreferenceSelectedOptions"
+          cache-key="scheduling-preferences"
+          :loading="schedulingPreferenceOptionsLoading"
+          allow-clear
+          :placeholder="schedulingPreferencePlaceholder"
+          @dropdown-visible-change="handleSchedulingPreferenceDropdown"
+          @search="handleSchedulingPreferenceSearch"
+        />
+      </a-form-item>
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item label="运行状态" tooltip="API Key 只有一个运行状态；配置时间计划后，保存和计划边界都会直接更新该状态。">
@@ -56,8 +69,9 @@
 import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 
-import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
+import type { useScopedApiKeysApi, useScopedRouteStrategiesApi, useScopedSchedulingPreferencesApi } from '@/composables/useScopedDomainApi'
 import { getCachedUserReferenceData } from '@/composables/useUserReferenceData'
+import CachedSelect from '@/components/CachedSelect.vue'
 import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
@@ -65,13 +79,19 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
 import type { RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
+import type { SelectOption } from '@/shared/selectLabelCache'
 import type {
   ApiKeyAvailabilitySchedule,
   ApiKeyMutationResult,
   ApiKeyQuotaLimits,
   ApiKeySummary,
-  RouteStrategyOptionSummary
+  RouteStrategyOptionSummary,
+  SchedulingPreferenceOptionSummary
 } from '@/types/domain'
+import {
+  SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
+  SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_LABEL
+} from '@/api/domains/schedulingPreferences'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 import {
@@ -79,6 +99,8 @@ import {
   validateTimeScheduleForm
 } from '@/views/shared/timeSchedule'
 import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
+import { loadSchedulingPreferenceOptionsResource } from '@/views/scheduling-preferences/schedulingPreferenceOptionsResource'
+import { rememberSchedulingPreferenceSelectionLabel, schedulingPreferenceLabelForId } from '@/views/scheduling-preferences/schedulingPreferenceLabelCache'
 import {
   createApiKeyTimeScheduleForm,
   type ApiKeyAvailabilityScheduleForm
@@ -94,6 +116,7 @@ import { apiKeyStatusOptions as statusOptions } from './apiKeyTableConfig'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
 type ScopedRouteStrategiesApi = ReturnType<typeof useScopedRouteStrategiesApi>
+type ScopedSchedulingPreferencesApi = ReturnType<typeof useScopedSchedulingPreferencesApi>
 
 interface CreatedKeyPayload {
   key: string
@@ -106,12 +129,14 @@ interface ApiKeyEditModalSession {
   isManagementView: boolean
   parentScopeKey: string
   routeStrategyOptionsScopeKey: string
+  schedulingPreferenceOptionsScopeKey: string
   systemAccountId?: string
 }
 
 const props = defineProps<{
   apiKeysApi: Pick<ScopedApiKeysApi, 'create' | 'update'>
   routeStrategiesApi: Pick<ScopedRouteStrategiesApi, 'options'>
+  schedulingPreferencesApi: Pick<ScopedSchedulingPreferencesApi, 'options'>
   isManagementView: boolean
   scopeParams?: ApiKeyScopeParams
   targetSystemAccountLabel?: string
@@ -127,6 +152,9 @@ const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingIsDefault = ref(false)
 const editingNameLocked = ref(false)
+const editingPurpose = ref<'general' | 'chat'>('general')
+const editingOriginalSchedulingPreferenceId = ref('')
+const editingOriginalSchedulingPreferenceName = ref('')
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
@@ -137,6 +165,13 @@ let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
 let routeStrategyOptionsSearchTimer: number | undefined
+const schedulingPreferenceOptionsRaw = ref<SchedulingPreferenceOptionSummary[]>([])
+const schedulingPreferenceOptionsLoading = ref(false)
+const schedulingPreferenceOptionsScopeKey = ref('')
+let schedulingPreferenceOptionsRequestToken = 0
+let schedulingPreferenceOptionsLoadingKey: string | undefined
+let schedulingPreferenceOptionsLoadingPromise: Promise<void> | undefined
+let schedulingPreferenceOptionsSearchTimer: number | undefined
 let editingBaseline: ApiKeyEditableSnapshot | undefined
 let editingRevision: string | undefined
 let modalSessionGeneration = 0
@@ -146,6 +181,7 @@ const form = reactive({
   name: '',
   routeStrategyId: '',
   routeStrategy: undefined as RouteStrategySelection | undefined,
+  schedulingPreferenceId: SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID as string | undefined,
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
@@ -160,6 +196,43 @@ const visibleRouteStrategyOptions = computed(() => (
     : []
 ))
 
+const schedulingPreferenceSelectorVisible = computed(() => editingPurpose.value !== 'chat')
+
+const visibleSchedulingPreferenceOptions = computed<SelectOption[]>(() => (
+  activeModalSession.value
+  && modalOpen.value
+  && schedulingPreferenceOptionsScopeKey.value === activeModalSession.value.schedulingPreferenceOptionsScopeKey
+    ? schedulingPreferenceOptionsRaw.value.map(schedulingPreferenceSelectOption)
+    : []
+))
+
+const schedulingPreferenceSelectedOptions = computed<SelectOption[]>(() => {
+  const selectedId = form.schedulingPreferenceId?.trim()
+  if (!selectedId || visibleSchedulingPreferenceOptions.value.some((option) => option.value === selectedId)) return []
+  const label = schedulingPreferenceFallbackLabel(selectedId)
+  return label ? [{ label, value: selectedId }] : []
+})
+
+const schedulingPreferencePlaceholder = computed(() => (
+  editingId.value && !editingOriginalSchedulingPreferenceId.value
+    ? '沿用策略路由（迁移期）'
+    : '选择调度偏好'
+))
+
+function schedulingPreferenceSelectOption(option: SchedulingPreferenceOptionSummary): SelectOption {
+  return {
+    label: option.builtIn ? `系统默认（${option.name}）` : option.name,
+    value: option.id,
+    disabled: option.enabled === false
+  }
+}
+
+function schedulingPreferenceFallbackLabel(selectedId: string): string | undefined {
+  if (selectedId === SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID) return SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_LABEL
+  return schedulingPreferenceLabelForId(selectedId)
+    || (editingOriginalSchedulingPreferenceId.value === selectedId ? editingOriginalSchedulingPreferenceName.value || undefined : undefined)
+}
+
 function openCreate() {
   const createScopeParams = normalizedScopeParams(props.scopeParams)
   if (props.isManagementView && !createScopeParams?.systemAccountId) {
@@ -170,6 +243,7 @@ function openCreate() {
   editingId.value = undefined
   editingIsDefault.value = false
   editingNameLocked.value = false
+  editingPurpose.value = 'general'
   editingRevision = undefined
   routeStrategyTouched.value = false
   beginModalSession(createScopeParams)
@@ -177,6 +251,7 @@ function openCreate() {
     name: '',
     routeStrategyId: defaultStrategy?.id ?? '',
     routeStrategy: defaultStrategy,
+    schedulingPreferenceId: SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID,
     status: 'active',
     expiresAt: undefined,
     description: '',
@@ -207,6 +282,7 @@ function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
   editingIsDefault.value = apiKey.isDefault === true && apiKey.purpose !== 'chat'
   editingNameLocked.value = apiKey.isDefault === true || apiKey.purpose === 'chat'
+  editingPurpose.value = apiKey.purpose
   editingRevision = apiKey.revision
   routeStrategyTouched.value = false
   beginModalSession(editScopeParams)
@@ -214,12 +290,16 @@ function openEdit(apiKey: ApiKeySummary) {
     name: apiKey.name,
     routeStrategyId: apiKey.routeStrategyId,
     routeStrategy: apiKeyRouteStrategySelection(apiKey),
+    schedulingPreferenceId: apiKey.schedulingPreferenceId ?? '',
     status: apiKey.status,
     expiresAt,
     description: apiKey.description ?? '',
     quotaLimits,
     availabilitySchedule
   })
+  editingOriginalSchedulingPreferenceId.value = apiKey.schedulingPreferenceId?.trim() ?? ''
+  editingOriginalSchedulingPreferenceName.value = apiKey.schedulingPreferenceName?.trim() ?? ''
+  rememberSchedulingPreferenceSelectionLabel(apiKey.schedulingPreferenceId, apiKey.schedulingPreferenceName)
   editingBaseline = currentApiKeyEditableSnapshot(buildTimeSchedulePayload(form.availabilitySchedule))
   modalOpen.value = true
 }
@@ -307,12 +387,19 @@ function currentApiKeyEditableSnapshot(
   return {
     name: form.name.trim(),
     routeStrategyId: form.routeStrategyId.trim() || undefined,
+    schedulingPreferenceId: schedulingPreferenceSnapshotId(),
     status: form.status,
     expiresAt: formatServerDateTimeInput(form.expiresAt),
     description: form.description,
     quotaLimits: quotaLimitsPayload(),
     availabilitySchedule
   }
+}
+
+/** purpose=chat 的 Key 不消费调度偏好，快照恒为缺失（历史 NULL），任何路径都不提交偏好 ID。 */
+function schedulingPreferenceSnapshotId(): string | undefined {
+  if (editingPurpose.value === 'chat') return undefined
+  return form.schedulingPreferenceId?.trim() || undefined
 }
 
 function cachedDefaultRouteStrategy(scopeParams: ApiKeyScopeParams | undefined): RouteStrategySelection | undefined {
@@ -417,6 +504,7 @@ function beginModalSession(scopeParams: ApiKeyScopeParams | undefined): void {
     isManagementView: props.isManagementView,
     parentScopeKey: currentParentScopeKey(),
     routeStrategyOptionsScopeKey: routeStrategyOptionsCatalogScopeKey(props.isManagementView, systemAccountId),
+    schedulingPreferenceOptionsScopeKey: routeStrategyOptionsCatalogScopeKey(props.isManagementView, systemAccountId),
     systemAccountId
   }
 }
@@ -429,9 +517,16 @@ function invalidateModalSession(options: { clearOptions?: boolean } = {}): void 
   routeStrategyOptionsLoadingPromise = undefined
   routeStrategyOptionsLoading.value = false
   clearRouteStrategyOptionsSearchTimer()
+  schedulingPreferenceOptionsRequestToken += 1
+  schedulingPreferenceOptionsLoadingKey = undefined
+  schedulingPreferenceOptionsLoadingPromise = undefined
+  schedulingPreferenceOptionsLoading.value = false
+  clearSchedulingPreferenceOptionsSearchTimer()
   if (options.clearOptions) {
     routeStrategyOptionsRaw.value = []
     routeStrategyOptionsScopeKey.value = ''
+    schedulingPreferenceOptionsRaw.value = []
+    schedulingPreferenceOptionsScopeKey.value = ''
   }
 }
 
@@ -473,6 +568,82 @@ function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelec
     mode: apiKey.routeStrategyMode,
     status: apiKey.routeStrategyStatus,
     systemAccountName: apiKey.systemAccountName
+  }
+}
+
+function schedulingPreferenceOptionsRequestKey(modalSession: ApiKeyEditModalSession, keyword: string | undefined): string {
+  return JSON.stringify([
+    modalSession.schedulingPreferenceOptionsScopeKey,
+    keyword ?? ''
+  ])
+}
+
+async function loadSchedulingPreferenceOptions(keyword = '', selectedIds: string[] = []) {
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) return
+  const operationScopeParams = modalSessionScopeParams(modalSession)
+  if (modalSession.isManagementView && !operationScopeParams?.systemAccountId) return
+  const requestKeyword = keyword.trim() || undefined
+  const requestScopeKey = modalSession.schedulingPreferenceOptionsScopeKey
+  const requestKey = schedulingPreferenceOptionsRequestKey(modalSession, requestKeyword)
+  if (schedulingPreferenceOptionsLoadingKey === requestKey && schedulingPreferenceOptionsLoadingPromise) {
+    return schedulingPreferenceOptionsLoadingPromise
+  }
+  const requestToken = ++schedulingPreferenceOptionsRequestToken
+  schedulingPreferenceOptionsLoading.value = true
+  schedulingPreferenceOptionsLoadingKey = requestKey
+  schedulingPreferenceOptionsLoadingPromise = (async () => {
+    try {
+      await loadSchedulingPreferenceOptionsResource({
+        api: props.schedulingPreferencesApi,
+        apply: (nextOptions) => {
+          schedulingPreferenceOptionsRaw.value = nextOptions
+          schedulingPreferenceOptionsScopeKey.value = requestScopeKey
+        },
+        isCurrent: () => requestToken === schedulingPreferenceOptionsRequestToken
+          && isCurrentModalSession(modalSession)
+          && requestScopeKey === modalSession.schedulingPreferenceOptionsScopeKey,
+        keyword: requestKeyword,
+        selectedIds,
+        systemAccountId: operationScopeParams?.systemAccountId
+      })
+    } catch (error) {
+      if (requestToken !== schedulingPreferenceOptionsRequestToken || !isCurrentModalSession(modalSession)) return
+      message.error(extractApiErrorMessage(error, '调度偏好选项加载失败'))
+    } finally {
+      if (requestToken === schedulingPreferenceOptionsRequestToken && schedulingPreferenceOptionsLoadingKey === requestKey) {
+        schedulingPreferenceOptionsLoadingKey = undefined
+        schedulingPreferenceOptionsLoadingPromise = undefined
+      }
+      if (requestToken === schedulingPreferenceOptionsRequestToken) {
+        schedulingPreferenceOptionsLoading.value = false
+      }
+    }
+  })()
+  return schedulingPreferenceOptionsLoadingPromise
+}
+
+function handleSchedulingPreferenceDropdown(open: boolean) {
+  if (open && !visibleSchedulingPreferenceOptions.value.length) {
+    void loadSchedulingPreferenceOptions('', [form.schedulingPreferenceId ?? ''])
+  }
+}
+
+function handleSchedulingPreferenceSearch(value: string) {
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) return
+  clearSchedulingPreferenceOptionsSearchTimer()
+  schedulingPreferenceOptionsSearchTimer = window.setTimeout(() => {
+    schedulingPreferenceOptionsSearchTimer = undefined
+    if (!isCurrentModalSession(modalSession)) return
+    void loadSchedulingPreferenceOptions(value, [form.schedulingPreferenceId ?? ''])
+  }, 250)
+}
+
+function clearSchedulingPreferenceOptionsSearchTimer() {
+  if (schedulingPreferenceOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(schedulingPreferenceOptionsSearchTimer)
+    schedulingPreferenceOptionsSearchTimer = undefined
   }
 }
 

@@ -1,5 +1,7 @@
 import type { AccountSupportedEndpointMode, AccountType } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
+import { GEMINI_NATIVE_V1BETA_PROFILE_ID, isGeminiProviderCode, isGlmProviderCode, isGptVendorCode, isHybridProviderCode, isMinimaxProviderCode, isOpenAICompatibleProviderCode, isQwenProviderCode, isVolcengineProviderCode, isXaiProviderCode } from '@/shared/providerProtocol'
+import { defaultEndpointModesForAccount, endpointModesForProfile, type AccountProviderProfileLike } from './accountProviderCapabilities'
 
 // AI 账户能力域拆分（docs/plans/计划-20261011T141004000Z-AI账户能力域拆分.md
 // §域枚举与语义 / §D6 三集合模型 / §M1 清单「前端：域常量 + 推导镜像 + 三集合常量」）。
@@ -94,9 +96,8 @@ export function deriveCapabilityDomain(modes: ReadonlyArray<AccountSupportedEndp
   return 'chat'
 }
 
-// 三集合模型（§D6）。M1 只落类型与 Chat 域协议面可选项常量；
-// allowed 的「域 × 供应商档案 × 账户类型」完整矩阵推导与 default 的
-// defaultEndpointModesForAccount 按域收窄均由 M2 接线。
+// 三集合模型（§D6）。allowed =「域 modes 集 × 供应商写侧词表」求交（本文件底部矩阵），
+// default = defaultEndpointModesForAccount 按域收窄，declared = 账户当前 modes（可含域外遗留值）。
 
 /** 允许能力集（allowed）：新建及普通编辑可新增声明的上限；不包含仅为兼容保留的遗留值。 */
 export type AccountCapabilityAllowedSet = {
@@ -117,4 +118,210 @@ export type AccountCapabilityDefaultSet = {
 export type AccountCapabilityDeclaredSet = {
   capabilityDomain: AccountCapabilityDomain
   modes: AccountFormModel['supportedEndpointModes']
+}
+
+// ---- 档案×域清单表定案（v7）镜像：域 modes 集 × 供应商写侧词表求交 ----
+//
+// 媒体域（video/audio/image）的域 modes 集按「域×供应商合法矩阵」显式枚举，
+// 不依赖词表推断——矩阵依据是媒体设计供应商盘点表的「已实施」adapter + 写侧校验
+// + 凭据要求（计划 §域×供应商合法矩阵）。chat 域不枚举供应商：允许集 =
+// （对话 modes 锚集合 + images_json）∩ 供应商词表，minimax 等纯媒体词表求交后
+// 自然为空集（无 chat 域）。
+
+/** 媒体域供应商矩阵行（与计划矩阵行一一对应；deepseek/anthropic 与 gemini OpenAI Chat 档案无媒体行）。 */
+type MediaDomainMatrixRow = {
+  video: readonly AccountSupportedEndpointMode[]
+  audio: readonly AccountSupportedEndpointMode[]
+  image: readonly AccountSupportedEndpointMode[]
+}
+
+const VIDEO_GROUP: readonly AccountSupportedEndpointMode[] = ['video_create', 'video_get', 'video_content', 'video_cancel']
+const AUDIO_JOB_GROUP: readonly AccountSupportedEndpointMode[] = ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel']
+const AUDIO_SPEECH: readonly AccountSupportedEndpointMode[] = ['audio_speech']
+const IMAGES_JSON: readonly AccountSupportedEndpointMode[] = ['images_json']
+
+// qwen 音频域仅长音频任务四值（CosyVoice TTS 契约未回填，audio_speech 不进允许集）。
+const QWEN_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] }
+// xai：视频（grok imagine）已实施；语音/图像待契约回填，不做预留占位。
+const XAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [], image: [] }
+// glm：视频（CogVideoX）+ 语音（cogtts 透传 audio_speech）；写侧词表不含 images_json → 无 image 域。
+const GLM_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
+// gemini native：Veo adapter（视频）+ TTS adapter（audio_speech）；gemini 图像域另行立项。
+const GEMINI_NATIVE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
+// openai/gpt 本体直连：sora（视频）+ tts（audio_speech）+ images；STT 短转写属对话域协议面。
+const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: IMAGES_JSON }
+// hybrid：媒体映射面已实施，域内允许集含视频四值/audio_speech/images_json（映射模型另算，D7）。
+const HYBRID_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: IMAGES_JSON }
+// minimax：hailuo（视频）+ t2a_v2（audio_speech）；无 chat/image 域。
+const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
+// volcengine：seedance（视频）+ 豆包 TTS（audio_speech，speech_appid/speech_token 双值凭据）。
+const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
+
+function mediaMatrixRowForProfile(input: {
+  providerCode?: string
+  profile?: AccountProviderProfileLike
+}): MediaDomainMatrixRow | undefined {
+  const profile = input.profile
+  const providerCode = profile?.providerCode ?? profile?.code ?? input.providerCode
+  const profileId = profile?.providerProtocolProfileId ?? profile?.id
+  if (isHybridProviderCode(providerCode)) return HYBRID_MEDIA_ROW
+  if (isGeminiProviderCode(providerCode)) {
+    // 媒体能力挂 native 档案；OpenAI Chat 档案无媒体域（词表含对话族）。
+    return profileId === GEMINI_NATIVE_V1BETA_PROFILE_ID || (!profileId && isGeminiProtocolKind(profile))
+      ? GEMINI_NATIVE_MEDIA_ROW
+      : undefined
+  }
+  if (isGlmProviderCode(providerCode)) return GLM_MEDIA_ROW
+  if (isMinimaxProviderCode(providerCode)) return MINIMAX_MEDIA_ROW
+  if (isVolcengineProviderCode(providerCode)) return VOLCENGINE_MEDIA_ROW
+  if (isQwenProviderCode(providerCode)) return QWEN_MEDIA_ROW
+  if (isXaiProviderCode(providerCode)) return XAI_MEDIA_ROW
+  // 「openai / gpt」矩阵行：OpenAI 兼容供应商与 GPT 供应商共用本体词表。
+  if (isGptVendorCode(providerCode) || isOpenAICompatibleProviderCode(providerCode)) return OPENAI_MEDIA_ROW
+  return undefined
+}
+
+function isGeminiProtocolKind(profile?: AccountProviderProfileLike): boolean {
+  return profile?.protocolCode === 'gemini' && profile?.protocolVersion === 'v1beta'
+}
+
+function intersectWithProviderVocabulary(
+  modes: readonly AccountSupportedEndpointMode[],
+  profile?: AccountProviderProfileLike
+): AccountSupportedEndpointMode[] {
+  const vocabulary = new Set(endpointModesForProfile(profile))
+  return modes.filter((mode) => vocabulary.has(mode))
+}
+
+/** 媒体域可选账户类型 = `{api_key}` ∪ (gemini native: `google_oauth`)（清单表定案）；域内允许集为空（如 gemini 图像域）时返回空。 */
+export function capabilityDomainAccountTypes(input: {
+  capabilityDomain: AccountCapabilityDomain
+  providerCode?: string
+  profile?: AccountProviderProfileLike
+}): AccountType[] {
+  if (input.capabilityDomain === 'chat') return []
+  const row = mediaMatrixRowForProfile(input)
+  if (!row) return []
+  const domainModes = input.capabilityDomain === 'video'
+    ? row.video
+    : input.capabilityDomain === 'audio'
+      ? row.audio
+      : row.image
+  if (!domainModes.length) return []
+  const types: AccountType[] = ['api_key']
+  const profileId = input.profile?.providerProtocolProfileId ?? input.profile?.id
+  if (isGeminiProviderCode(input.profile?.providerCode ?? input.profile?.code ?? input.providerCode)
+    && (profileId === GEMINI_NATIVE_V1BETA_PROFILE_ID || (!profileId && isGeminiProtocolKind(input.profile)))) {
+    types.push('google_oauth')
+  }
+  return types
+}
+
+/**
+ * 允许能力集（allowed）镜像：域 modes 集 × 供应商写侧词表求交（§D6 / §档案×域清单表定案）。
+ *
+ * - chat 域 =（15 值对话锚集合 + 协议面可选 `images_json`）∩ 供应商词表；纯媒体词表
+ *   （minimax 等）求交后为空集，即该供应商无 chat 域。
+ * - 媒体域按域×供应商矩阵取域 modes 集，再与词表求交；gpt/xai/anthropic 系 oauth
+ *   不可媒体（账户类型门），gemini native `google_oauth` 在 video/audio 域可用。
+ * - 账户类型不在域允许集合内（媒体域传 `oauth`，或 google_oauth 非 gemini native）
+ *   返回空集——新建表单按空集拒绝该组合。
+ */
+export function allowedEndpointModesFor(input: {
+  capabilityDomain: AccountCapabilityDomain
+  providerCode?: string
+  profile?: AccountProviderProfileLike
+  accountType?: AccountType
+}): AccountSupportedEndpointMode[] {
+  const { capabilityDomain } = input
+  const profile = input.profile
+  if (capabilityDomain === 'chat') {
+    return intersectWithProviderVocabulary(
+      [...DOMAIN_ENDPOINT_MODES_CHAT, 'images_json'],
+      profile
+    )
+  }
+  const allowedTypes = capabilityDomainAccountTypes({ capabilityDomain, providerCode: input.providerCode, profile })
+  if (!input.accountType || !allowedTypes.includes(input.accountType)) return []
+  const row = mediaMatrixRowForProfile({ providerCode: input.providerCode, profile })
+  if (!row) return []
+  const domainModes = capabilityDomain === 'video'
+    ? row.video
+    : capabilityDomain === 'audio'
+      ? row.audio
+      : row.image
+  return intersectWithProviderVocabulary(domainModes, profile)
+}
+
+/**
+ * 默认能力集（default）按域收窄：chat 域逐项复用现行 `defaultEndpointModesForAccount`
+ * （对话域行为零变化，I3）；video 域 = 视频四值组；audio 域 = 音频组按供应商实际接入
+ * （qwen 长音频四值，其余 audio_speech）；image 域 = `images_json`。媒体域默认集
+ * 与「服务端统一校验」节的后端缺省解析镜像。
+ */
+export function defaultEndpointModesForCapabilityDomain(input: {
+  capabilityDomain: AccountCapabilityDomain
+  providerCode?: string
+  profile?: AccountProviderProfileLike
+  type: AccountType
+}): AccountSupportedEndpointMode[] {
+  if (input.capabilityDomain === 'chat') {
+    return defaultEndpointModesForAccount({
+      provider: undefined,
+      profile: input.profile,
+      type: input.type
+    })
+  }
+  const allowed = allowedEndpointModesFor({
+    capabilityDomain: input.capabilityDomain,
+    providerCode: input.providerCode,
+    profile: input.profile,
+    accountType: input.type
+  })
+  if (input.capabilityDomain === 'image') return [...allowed]
+  if (input.capabilityDomain === 'video') return [...allowed]
+  // audio：qwen 长音频四值整组为默认；其余供应商默认 audio_speech。
+  return allowed.includes('audio_speech')
+    ? ['audio_speech']
+    : [...allowed]
+}
+
+/** 媒体域新建账户 `health_check_endpoint_mode` 默认落值（生命周期定案表 v7）：image→images_json、audio→audio_speech（无则首个域内值）、video→video_create。 */
+export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
+  capabilityDomain: AccountCapabilityDomain
+  defaultModes: readonly AccountSupportedEndpointMode[]
+}): AccountFormModel['healthCheckEndpointMode'] {
+  if (input.capabilityDomain === 'image') return 'images_json'
+  if (input.capabilityDomain === 'video') return 'video_create'
+  if (input.capabilityDomain === 'audio') {
+    // 域内默认集的首值：qwen 长音频四值（audio_job_create）均为合法检查形态值；
+    // 空集兜底 audio_speech（写侧对不在 enabledModes 内的显式值会拒绝，域内默认集
+    // 非空由 allowedEndpointModesFor 保证）。
+    return (input.defaultModes.includes('audio_speech')
+      ? 'audio_speech'
+      : input.defaultModes[0] ?? 'audio_speech') as AccountFormModel['healthCheckEndpointMode']
+  }
+  return 'chat_json'
+}
+
+/** 媒体账户生命周期定案（v7）：新建表单默认 status 预选——chat=pending_test（现行），image/audio/video=active。 */
+export function defaultStatusForCapabilityDomain(capabilityDomain: AccountCapabilityDomain): AccountFormModel['status'] {
+  return capabilityDomain === 'chat' ? 'pending_test' : 'active'
+}
+
+/** 域是否媒体域（video/audio/image）：媒体域走精简三段式表单与 D7 清单表语义。 */
+export function capabilityDomainIsMedia(capabilityDomain: AccountCapabilityDomain | undefined): boolean {
+  return capabilityDomain === 'video' || capabilityDomain === 'audio' || capabilityDomain === 'image'
+}
+
+/**
+ * 媒体域支持模型选项的目录协议 token（模型目录 `supported_api_protocols` 词表，
+ * 与 model_catalog_data_gen.go 种子数据同源）：video→`video`；audio→`audio_speech`
+ * （TTS）∪ `audio_transcription`（长转写任务）；image→`images`。
+ */
+export function mediaDomainModelProtocolTokens(capabilityDomain: AccountCapabilityDomain): readonly string[] {
+  if (capabilityDomain === 'video') return ['video']
+  if (capabilityDomain === 'audio') return ['audio_speech', 'audio_transcription']
+  if (capabilityDomain === 'image') return ['images']
+  return []
 }

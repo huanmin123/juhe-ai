@@ -545,7 +545,9 @@ func assertTableMonitorOverviewSmallFixture(t *testing.T, results map[string]Ove
 	}
 	caseInsensitive := results["small_case_insensitive"]
 	caseNames := make([]string, 0, len(caseInsensitive.Tables))
-	for _, table := range caseInsensitive.Tables { caseNames = append(caseNames, table.TableName) }
+	for _, table := range caseInsensitive.Tables {
+		caseNames = append(caseNames, table.TableName)
+	}
 	sort.Strings(caseNames)
 	// 大小写名称的先后由 PostgreSQL collation 决定，顺序一致由新旧 SQL 对照验证。
 	if caseInsensitive.Total != 2 || !reflect.DeepEqual(caseNames, []string{"CaseTable", "casetable"}) {

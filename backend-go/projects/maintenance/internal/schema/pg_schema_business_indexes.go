@@ -1381,4 +1381,35 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		Source:     "media-jobs-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_jobs(status)`,
 	},
+	{
+		// 调度偏好索引（调度偏好独立实体 PLAN-20261012T033000000Z）：自定义行
+		// owner 内名称唯一（精确 + lower 归一，route_strategies
+		// owner_name_unique 先例，均挂 WHERE built_in=0 条件——内置行 name
+		// 权威且不参与查重）；UNIQUE(id) WHERE built_in=1 固定内置身份唯一；
+		// owner 列支撑管理面按 owner 收窄列表；api_keys 绑定列查询索引。
+		// 与 SQLite 同构（sqlite_schema_business.go 索引区）。
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique ON scheduling_preferences(system_account_id, name) WHERE built_in = 0`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique_lower ON scheduling_preferences(system_account_id, lower(name)) WHERE built_in = 0`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_builtin_id_unique ON scheduling_preferences(id) WHERE built_in = 1`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_scheduling_preferences_owner ON scheduling_preferences(system_account_id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)`,
+	},
 }

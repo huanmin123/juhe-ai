@@ -10,6 +10,11 @@
 //   - 解密失败、声明格式错误或缺失源账户不猜域，计入失败清单；失败清单
 //     非空或任一批失败都返回非零结果且不写完成阶段；最终落库核验与完成
 //     记录提交处于同一事务，核验或阶段提交失败都保留 running。
+//
+// 域模型、声明解析与阶段记录语义在共享包
+// github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain（2026-10
+// M2 自本包下沉：gateway/jobs 启动门禁跨模块读取所需）；本包只保留迁移
+// 执行器，全部经 capdomain 别名引用共享符号，不复制任何解析语义。
 
 package capabilitydomain
 
@@ -26,23 +31,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
-
-// Dialect 选择 schema 限定与方言 SQL。
-type Dialect int
-
-const (
-	DialectPostgres Dialect = iota
-	DialectSQLite
-)
-
-// String 返回报告 driver 标签。
-func (d Dialect) String() string {
-	if d == DialectSQLite {
-		return "sqlite"
-	}
-	return "postgres"
-}
 
 // DefaultDevSecret 与 schema.seedDefaultRuntimeSecret 同源（Node
 // defaultRuntimeSecret）：未显式提供 --secret/JUHE_AI_SECRET 时按 seed 同款
@@ -101,8 +91,8 @@ func OpenPostgres(rawURL string) (*sql.DB, error) {
 
 // Options 是迁移/核验命令的注入参数。
 type Options struct {
-	Dialect   Dialect
-	Target    Target
+	Dialect   capdomain.Dialect
+	Target    capdomain.Target
 	Check     string // preflight | postflight（仅 Verify 消费）
 	Secret    string // 解密密钥（调用方已经 ResolveSecret 归一）
 	Now       time.Time
@@ -117,23 +107,23 @@ type DomainCounts map[string]int
 
 // Report 是 migrate 命令的 JSON 报告。
 type Report struct {
-	Driver          string       `json:"driver"`
-	Target          string       `json:"target"`
-	RuleVersion     int          `json:"ruleVersion"`
-	Record          *Record      `json:"record"`
-	AlreadyComplete bool         `json:"alreadyComplete"`
-	ColumnEnsured   bool         `json:"columnEnsured"`
-	AccountsTotal   int          `json:"accountsTotal"`
-	UpdatedRows     int64        `json:"updatedRows"`
-	DomainsAssigned DomainCounts `json:"domainsAssigned"`
-	Failures        []Failure    `json:"failures"`
-	CompletedStage  Stage        `json:"completedStage,omitempty"`
-	CompletedAt     string       `json:"completedAt,omitempty"`
+	Driver          string              `json:"driver"`
+	Target          string              `json:"target"`
+	RuleVersion     int                 `json:"ruleVersion"`
+	Record          *capdomain.Record   `json:"record"`
+	AlreadyComplete bool                `json:"alreadyComplete"`
+	ColumnEnsured   bool                `json:"columnEnsured"`
+	AccountsTotal   int                 `json:"accountsTotal"`
+	UpdatedRows     int64               `json:"updatedRows"`
+	DomainsAssigned DomainCounts        `json:"domainsAssigned"`
+	Failures        []capdomain.Failure `json:"failures"`
+	CompletedStage  capdomain.Stage     `json:"completedStage,omitempty"`
+	CompletedAt     string              `json:"completedAt,omitempty"`
 }
 
 // Ready 报告后置条件：失败清单清零且阶段推进到完成（或此前已完成）。
 func (r Report) Ready() bool {
-	return len(r.Failures) == 0 && r.CompletedStage != StageNone
+	return len(r.Failures) == 0 && r.CompletedStage != capdomain.StageNone
 }
 
 // scannedAccount 是扫描阶段的一行内存投影（只含推导所需列，不保留凭据）。
@@ -141,15 +131,15 @@ type scannedAccount struct {
 	id            string
 	isInstance    bool
 	sourceID      string // 仅实例行非空
-	reading       ModesReading
-	domain        Domain // 非实例行推导结果（reading 为 ModesOK 时有效）
+	reading       capdomain.ModesReading
+	domain        capdomain.Domain // 非实例行推导结果（reading 为 ModesOK 时有效）
 	decryptFailed bool
 }
 
 // accountRowQuery 返回扫描投影 SQL（含软删除账户，按 id keyset 分批）。
 // SQLite 的 ? 与 PG 的 $1 各引用两次（after 同时充当空游标哨兵与下界）。
-func accountRowQuery(dialect Dialect, batchSize int) string {
-	if dialect == DialectPostgres {
+func accountRowQuery(dialect capdomain.Dialect, batchSize int) string {
+	if dialect == capdomain.DialectPostgres {
 		return `SELECT id, credentials_encrypted, authorization_instance_source_account_id FROM "juhe_business"."accounts"
 		WHERE ($1 = '' OR id > $1)
 		ORDER BY id
@@ -162,8 +152,8 @@ func accountRowQuery(dialect Dialect, batchSize int) string {
 }
 
 // scanArgs 组装扫描查询参数（方言分支：SQLite 需要三份，PG 复用 $1）。
-func scanArgs(dialect Dialect, after string, batchSize int) []any {
-	if dialect == DialectPostgres {
+func scanArgs(dialect capdomain.Dialect, after string, batchSize int) []any {
+	if dialect == capdomain.DialectPostgres {
 		return []any{after, batchSize}
 	}
 	return []any{after, after, batchSize}
@@ -171,10 +161,10 @@ func scanArgs(dialect Dialect, after string, batchSize int) []any {
 
 // scanAccounts 分批只读扫描全部账户（含软删除），推导源账户域并记录实例
 // 行。每批先完整读取（rows.Err + Close）再处理下一批，全程不开写事务。
-func scanAccounts(ctx context.Context, db *sql.DB, dialect Dialect, secret string, batchSize int) ([]scannedAccount, []Failure, error) {
+func scanAccounts(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, secret string, batchSize int) ([]scannedAccount, []capdomain.Failure, error) {
 	var (
 		all      []scannedAccount
-		failures []Failure
+		failures []capdomain.Failure
 	)
 	after := ""
 	for {
@@ -202,7 +192,7 @@ func scanAccounts(ctx context.Context, db *sql.DB, dialect Dialect, secret strin
 				if err := accountcrypto.DecryptJSON(secret, credentials, &credentialsMap); err != nil {
 					item.decryptFailed = true
 				} else {
-					item.reading = ParseEndpointModes(credentialsMap)
+					item.reading = capdomain.ParseEndpointModes(credentialsMap)
 				}
 			}
 			batch = append(batch, item)
@@ -220,19 +210,19 @@ func scanAccounts(ctx context.Context, db *sql.DB, dialect Dialect, secret strin
 			case item.isInstance:
 				all = append(all, item)
 			case item.decryptFailed:
-				failures = append(failures, Failure{
+				failures = append(failures, capdomain.Failure{
 					AccountID: item.id,
-					Kind:      FailureCredentialsDecrypt,
+					Kind:      capdomain.FailureCredentialsDecrypt,
 					Detail:    "credentials_encrypted 不是合法 v1 信封或解密失败",
 				})
 				all = append(all, item)
 			default:
-				if failure, bad := failureFor(item.id, item.reading); bad {
+				if failure, bad := capdomain.FailureFor(item.id, item.reading); bad {
 					failures = append(failures, failure)
 					all = append(all, item)
 					continue
 				}
-				item.domain = DeriveDomain(item.reading.Modes)
+				item.domain = capdomain.DeriveDomain(item.reading.Modes)
 				all = append(all, item)
 			}
 		}
@@ -250,12 +240,12 @@ func scanAccounts(ctx context.Context, db *sql.DB, dialect Dialect, secret strin
 
 // resolveInstances 在内存中把实例行落到源账户域。源行不存在、源行自身失败
 // 或源行也是实例（关联不完整/嵌套实例）都计为实例依赖失败，不改写实例域。
-func resolveInstances(accounts []scannedAccount) []Failure {
+func resolveInstances(accounts []scannedAccount) []capdomain.Failure {
 	byID := make(map[string]scannedAccount, len(accounts))
 	for _, item := range accounts {
 		byID[item.id] = item
 	}
-	failures := []Failure{}
+	failures := []capdomain.Failure{}
 	for i := range accounts {
 		item := &accounts[i]
 		if !item.isInstance {
@@ -264,29 +254,29 @@ func resolveInstances(accounts []scannedAccount) []Failure {
 		source, ok := byID[item.sourceID]
 		switch {
 		case !ok:
-			failures = append(failures, Failure{
+			failures = append(failures, capdomain.Failure{
 				AccountID: item.id,
-				Kind:      FailureInstanceNoSource,
+				Kind:      capdomain.FailureInstanceNoSource,
 				Detail:    "authorization_instance_source_account_id 指向的源账户行不存在: " + item.sourceID,
 			})
 		case source.isInstance:
-			failures = append(failures, Failure{
+			failures = append(failures, capdomain.Failure{
 				AccountID: item.id,
-				Kind:      FailureInstanceNoSource,
+				Kind:      capdomain.FailureInstanceNoSource,
 				Detail:    "源账户本身也是授权实例（关联不完整）: " + item.sourceID,
 			})
 		case source.decryptFailed:
-			failures = append(failures, Failure{
+			failures = append(failures, capdomain.Failure{
 				AccountID: item.id,
-				Kind:      FailureInstanceSourceFailed,
+				Kind:      capdomain.FailureInstanceSourceFailed,
 				Detail:    "源账户凭据解密失败，实例列依赖失败: " + item.sourceID,
 			})
 		default:
-			sourceFailure, bad := failureFor(item.sourceID, source.reading)
+			sourceFailure, bad := capdomain.FailureFor(item.sourceID, source.reading)
 			if bad || !source.domain.Valid() {
-				failures = append(failures, Failure{
+				failures = append(failures, capdomain.Failure{
 					AccountID: item.id,
-					Kind:      FailureInstanceSourceFailed,
+					Kind:      capdomain.FailureInstanceSourceFailed,
 					Detail:    "源账户声明不可推导，实例列依赖失败: " + item.sourceID + "（" + string(sourceFailure.Kind) + "）",
 				})
 				continue
@@ -299,9 +289,9 @@ func resolveInstances(accounts []scannedAccount) []Failure {
 
 // writeDomains 分批短事务写入推导结果。每批一个事务，批内只有 UPDATE；
 // 只更新 capability_domain，不触碰凭据与任何版本列。
-func writeDomains(ctx context.Context, db *sql.DB, dialect Dialect, accounts []scannedAccount, batchSize int) (int64, error) {
+func writeDomains(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, accounts []scannedAccount, batchSize int) (int64, error) {
 	updateSQL := `UPDATE accounts SET capability_domain = ? WHERE id = ?`
-	if dialect == DialectPostgres {
+	if dialect == capdomain.DialectPostgres {
 		updateSQL = `UPDATE "juhe_business"."accounts" SET capability_domain = $1 WHERE id = $2`
 	}
 	var updated int64
@@ -345,25 +335,25 @@ type querier interface {
 
 // verifyDomains 只读核对全部账户域值与推导计划一致（分批完整读取）。
 // 已封存（m2_finalized）时跳过推导对账，只核对域值合法与实例同源一致。
-func verifyDomains(ctx context.Context, q querier, dialect Dialect, accounts []scannedAccount, finalized bool) ([]Failure, error) {
-	var failures []Failure
-	expected := make(map[string]Domain, len(accounts))
+func verifyDomains(ctx context.Context, q querier, dialect capdomain.Dialect, accounts []scannedAccount, finalized bool) ([]capdomain.Failure, error) {
+	var failures []capdomain.Failure
+	expected := make(map[string]capdomain.Domain, len(accounts))
 	for _, item := range accounts {
 		if item.isInstance || item.decryptFailed {
 			continue
 		}
-		if _, bad := failureFor(item.id, item.reading); !bad {
+		if _, bad := capdomain.FailureFor(item.id, item.reading); !bad {
 			expected[item.id] = item.domain
 		}
 	}
-	instanceDomains := make(map[string]Domain, len(accounts))
+	instanceDomains := make(map[string]capdomain.Domain, len(accounts))
 	for _, item := range accounts {
 		if item.isInstance && item.domain.Valid() {
 			instanceDomains[item.id] = item.domain
 		}
 	}
 	table := "accounts"
-	if dialect == DialectPostgres {
+	if dialect == capdomain.DialectPostgres {
 		table = `"juhe_business"."accounts"`
 	}
 	after := ""
@@ -424,9 +414,9 @@ func verifyDomains(ctx context.Context, q querier, dialect Dialect, accounts []s
 					sealedInstances = append(sealedInstances, row)
 				}
 			}
-			value := Domain(row.domain)
+			value := capdomain.Domain(row.domain)
 			if !value.Valid() {
-				failures = append(failures, Failure{AccountID: row.id, Kind: "domain_value_invalid", Detail: "落库域值不在 chat/video/audio/image 内: " + row.domain})
+				failures = append(failures, capdomain.Failure{AccountID: row.id, Kind: "domain_value_invalid", Detail: "落库域值不在 chat/video/audio/image 内: " + row.domain})
 				continue
 			}
 			if finalized {
@@ -437,12 +427,12 @@ func verifyDomains(ctx context.Context, q querier, dialect Dialect, accounts []s
 			}
 			if row.isInstance {
 				if want, ok := instanceDomains[row.id]; ok && want != value {
-					failures = append(failures, Failure{AccountID: row.id, Kind: "instance_domain_mismatch", Detail: fmt.Sprintf("实例落库域 %s 与源推导域 %s 不一致", row.domain, want)})
+					failures = append(failures, capdomain.Failure{AccountID: row.id, Kind: "instance_domain_mismatch", Detail: fmt.Sprintf("实例落库域 %s 与源推导域 %s 不一致", row.domain, want)})
 				}
 				continue
 			}
 			if want, ok := expected[row.id]; ok && want != value {
-				failures = append(failures, Failure{AccountID: row.id, Kind: "domain_mismatch", Detail: fmt.Sprintf("落库域 %s 与推导域 %s 不一致", row.domain, want)})
+				failures = append(failures, capdomain.Failure{AccountID: row.id, Kind: "domain_mismatch", Detail: fmt.Sprintf("落库域 %s 与推导域 %s 不一致", row.domain, want)})
 			}
 		}
 		if len(batch) < batchSize {
@@ -458,11 +448,11 @@ func verifyDomains(ctx context.Context, q querier, dialect Dialect, accounts []s
 		for _, instance := range sealedInstances {
 			sourceDomain, ok := sealedStoredByID[instance.sourceID]
 			if !ok {
-				failures = append(failures, Failure{AccountID: instance.id, Kind: "instance_source_missing", Detail: "authorization_instance_source_account_id 指向的源账户行不存在: " + instance.sourceID})
+				failures = append(failures, capdomain.Failure{AccountID: instance.id, Kind: "instance_source_missing", Detail: "authorization_instance_source_account_id 指向的源账户行不存在: " + instance.sourceID})
 				continue
 			}
 			if sourceDomain != instance.domain {
-				failures = append(failures, Failure{AccountID: instance.id, Kind: "instance_domain_mismatch", Detail: fmt.Sprintf("实例落库域 %s 与源落库域 %s 不一致", instance.domain, sourceDomain)})
+				failures = append(failures, capdomain.Failure{AccountID: instance.id, Kind: "instance_domain_mismatch", Detail: fmt.Sprintf("实例落库域 %s 与源落库域 %s 不一致", instance.domain, sourceDomain)})
 			}
 		}
 	}
@@ -472,19 +462,19 @@ func verifyDomains(ctx context.Context, q querier, dialect Dialect, accounts []s
 	return failures, nil
 }
 
-func placeholder(dialect Dialect, index int) string {
-	if dialect == DialectPostgres {
+func placeholder(dialect capdomain.Dialect, index int) string {
+	if dialect == capdomain.DialectPostgres {
 		return fmt.Sprintf("$%d", index)
 	}
 	return "?"
 }
 
 // finalizeCompletedStage 是完成阶段值：M1 → m1_complete，M2 → m2_finalized。
-func finalizeCompletedStage(target Target) Stage {
-	if target == TargetM2Cutover {
-		return StageM2Finalized
+func finalizeCompletedStage(target capdomain.Target) capdomain.Stage {
+	if target == capdomain.TargetM2Cutover {
+		return capdomain.StageM2Finalized
 	}
-	return StageM1Complete
+	return capdomain.StageM1Complete
 }
 
 // Run 执行一次迁移命令。语义：
@@ -499,9 +489,9 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	report := Report{
 		Driver:          options.Dialect.String(),
 		Target:          string(options.Target),
-		RuleVersion:     RuleVersion,
+		RuleVersion:     capdomain.RuleVersion,
 		DomainsAssigned: DomainCounts{},
-		Failures:        []Failure{},
+		Failures:        []capdomain.Failure{},
 	}
 	now := options.Now
 	if now.IsZero() {
@@ -512,20 +502,20 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		batchSize = DefaultBatchSize
 	}
 
-	record, present, err := readRecord(ctx, db, options.Dialect)
+	record, present, err := capdomain.ReadRecord(ctx, db, options.Dialect)
 	if err != nil {
 		return report, err
 	}
-	current := StageNone
+	current := capdomain.StageNone
 	if present {
 		report.Record = &record
 		current = record.Stage
 	}
-	decision, next, reason := PlanMigration(options.Target, current)
+	decision, next, reason := capdomain.PlanMigration(options.Target, current)
 	switch decision {
-	case DecisionReject:
+	case capdomain.DecisionReject:
 		return report, fmt.Errorf("迁移被拒绝：%s", reason)
-	case DecisionAlreadyComplete:
+	case capdomain.DecisionAlreadyComplete:
 		report.AlreadyComplete = true
 		report.CompletedStage = current
 		report.CompletedAt = record.UpdatedAt
@@ -534,12 +524,12 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 
 	// 领取阶段（一次客户端命令一个阶段跃迁；条件更新保证单执行者）。
 	claimed := false
-	if current == StageNone {
+	if current == capdomain.StageNone {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return report, err
 		}
-		claimed, err = claimNewStage(ctx, tx, options.Dialect, next, now)
+		claimed, err = capdomain.ClaimNewStage(ctx, tx, options.Dialect, next, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return report, err
@@ -552,7 +542,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		if err != nil {
 			return report, err
 		}
-		claimed, err = transitionStage(ctx, tx, options.Dialect, current, next, now)
+		claimed, err = capdomain.TransitionStage(ctx, tx, options.Dialect, current, next, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return report, err
@@ -562,22 +552,22 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		}
 	}
 	if !claimed {
-		latest, _, readErr := readRecord(ctx, db, options.Dialect)
+		latest, _, readErr := capdomain.ReadRecord(ctx, db, options.Dialect)
 		if readErr != nil {
 			return report, readErr
 		}
 		return report, fmt.Errorf("检测到并行迁移执行者：阶段记录已被推进为 %q，本次命令放弃执行（并行迁移进程不得同时运行）", latest.Stage)
 	}
-	report.Record = &Record{Stage: next, RuleVersion: RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)}
+	report.Record = &capdomain.Record{Stage: next, RuleVersion: capdomain.RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)}
 	report.ColumnEnsured = true
 
 	// 加列并校验形状（缺列则加；列存在则四值形状校验）。
 	switch options.Dialect {
-	case DialectSQLite:
+	case capdomain.DialectSQLite:
 		if err := schema.EnsureSQLiteBusinessCapabilityDomainColumn(ctx, db); err != nil {
 			return report, err
 		}
-	case DialectPostgres:
+	case capdomain.DialectPostgres:
 		if err := schema.EnsurePostgresBusinessCapabilityDomainColumn(ctx, db); err != nil {
 			return report, err
 		}
@@ -625,7 +615,7 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		report.Failures = verifyFailures
 		return report, nil
 	}
-	claimed, err = transitionStage(ctx, tx, options.Dialect, next, completed, now)
+	claimed, err = capdomain.TransitionStage(ctx, tx, options.Dialect, next, completed, now)
 	if err != nil {
 		return report, err
 	}
@@ -642,19 +632,19 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 
 // VerifyReport 是 verify 命令的 JSON 报告。
 type VerifyReport struct {
-	Driver           string       `json:"driver"`
-	Check            string       `json:"check"`
-	Target           string       `json:"target"`
-	RuleVersion      int          `json:"ruleVersion"`
-	Record           *Record      `json:"record"`
-	ColumnPresent    bool         `json:"columnPresent"`
-	ReconcileSkipped bool         `json:"reconcileSkipped"`
-	AccountsTotal    int          `json:"accountsTotal"`
-	PendingMigration int          `json:"pendingMigration"`
-	AlreadyMatching  int          `json:"alreadyMatching"`
-	DomainsExpected  DomainCounts `json:"domainsExpected"`
-	Failures         []Failure    `json:"failures"`
-	ReconcileNote    string       `json:"reconcileNote,omitempty"`
+	Driver           string              `json:"driver"`
+	Check            string              `json:"check"`
+	Target           string              `json:"target"`
+	RuleVersion      int                 `json:"ruleVersion"`
+	Record           *capdomain.Record   `json:"record"`
+	ColumnPresent    bool                `json:"columnPresent"`
+	ReconcileSkipped bool                `json:"reconcileSkipped"`
+	AccountsTotal    int                 `json:"accountsTotal"`
+	PendingMigration int                 `json:"pendingMigration"`
+	AlreadyMatching  int                 `json:"alreadyMatching"`
+	DomainsExpected  DomainCounts        `json:"domainsExpected"`
+	Failures         []capdomain.Failure `json:"failures"`
+	ReconcileNote    string              `json:"reconcileNote,omitempty"`
 }
 
 // Ready 报告核验后置条件：失败清单清零（postflight 额外要求列存在）。
@@ -682,9 +672,9 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 		Driver:          options.Dialect.String(),
 		Check:           options.Check,
 		Target:          string(options.Target),
-		RuleVersion:     RuleVersion,
+		RuleVersion:     capdomain.RuleVersion,
 		DomainsExpected: DomainCounts{},
-		Failures:        []Failure{},
+		Failures:        []capdomain.Failure{},
 	}
 	batchSize := options.BatchSize
 	if batchSize <= 0 {
@@ -701,18 +691,18 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 	}
 	if columnPresent {
 		switch options.Dialect {
-		case DialectSQLite:
+		case capdomain.DialectSQLite:
 			if err := schema.VerifySQLiteCapabilityDomainShape(ctx, db); err != nil {
 				return report, err
 			}
-		case DialectPostgres:
+		case capdomain.DialectPostgres:
 			if err := schema.VerifyPostgresBusinessCapabilityDomainShape(ctx, db); err != nil {
 				return report, err
 			}
 		}
 	}
 
-	record, present, err := readRecord(ctx, db, options.Dialect)
+	record, present, err := capdomain.ReadRecord(ctx, db, options.Dialect)
 	if err != nil {
 		return report, err
 	}
@@ -727,7 +717,7 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 	failures = append(failures, resolveInstances(accounts)...)
 	report.AccountsTotal = len(accounts)
 
-	finalized := present && record.Stage == StageM2Finalized
+	finalized := present && record.Stage == capdomain.StageM2Finalized
 	if finalized {
 		report.ReconcileSkipped = true
 		if options.Check == CheckPostflight {
@@ -776,15 +766,15 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 
 // countPendingMigration 统计「预计域 ≠ 现值」与「已一致」的行数（preflight
 // 语义：差异只是待迁移项，不是失败）。
-func countPendingMigration(ctx context.Context, db *sql.DB, dialect Dialect, accounts []scannedAccount) (pending, matching int, err error) {
-	expected := make(map[string]Domain, len(accounts))
+func countPendingMigration(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, accounts []scannedAccount) (pending, matching int, err error) {
+	expected := make(map[string]capdomain.Domain, len(accounts))
 	for _, item := range accounts {
 		if item.domain.Valid() && !item.isInstance {
 			expected[item.id] = item.domain
 		}
 	}
 	table := "accounts"
-	if dialect == DialectPostgres {
+	if dialect == capdomain.DialectPostgres {
 		table = `"juhe_business"."accounts"`
 	}
 	after := ""
@@ -835,8 +825,8 @@ func countPendingMigration(ctx context.Context, db *sql.DB, dialect Dialect, acc
 }
 
 // capabilityDomainColumnPresent 判断域列是否已存在。
-func capabilityDomainColumnPresent(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
-	if dialect == DialectSQLite {
+func capabilityDomainColumnPresent(ctx context.Context, db *sql.DB, dialect capdomain.Dialect) (bool, error) {
+	if dialect == capdomain.DialectSQLite {
 		rows, err := db.QueryContext(ctx, "PRAGMA table_info(accounts)")
 		if err != nil {
 			return false, err
@@ -865,11 +855,51 @@ func capabilityDomainColumnPresent(ctx context.Context, db *sql.DB, dialect Dial
 }
 
 // sortFailures 稳定排序失败清单（账户 ID → 分类），保证报告可回放。
-func sortFailures(failures []Failure) {
+func sortFailures(failures []capdomain.Failure) {
 	sort.Slice(failures, func(i, j int) bool {
 		if failures[i].AccountID != failures[j].AccountID {
 			return failures[i].AccountID < failures[j].AccountID
 		}
 		return failures[i].Kind < failures[j].Kind
 	})
+}
+
+// SealFreshInstall 是全新空库自动封存（PLAN §阶段记录与重跑边界「全新 M2
+// 安装」与 §M2 启动门禁「全新空库自动封存」）：ensure-schema/bootstrap 在
+// schema 确保后调用。触发条件=阶段记录不存在且 accounts 无任何行（含软删
+// 除）；满足则按序执行空库 M1 → M2 cutover（空库无凭据可解密，Secret 留
+// 空）写 m2_finalized。记录已存在直接跳过（幂等）；accounts 非空的库一律
+// 不自动写记录（真实切换必须显式跑迁移命令）。返回是否本次写入封存记录。
+func SealFreshInstall(ctx context.Context, db *sql.DB, dialect capdomain.Dialect) (bool, error) {
+	if _, present, err := capdomain.ReadRecord(ctx, db, dialect); err != nil {
+		return false, err
+	} else if present {
+		return false, nil
+	}
+	countQuery := `SELECT COUNT(*) FROM accounts`
+	if dialect == capdomain.DialectPostgres {
+		countQuery = `SELECT COUNT(*) FROM "juhe_business"."accounts"`
+	}
+	var accounts int
+	if err := db.QueryRowContext(ctx, countQuery).Scan(&accounts); err != nil {
+		return false, fmt.Errorf("空库封存检查 accounts 行数失败: %w", err)
+	}
+	if accounts > 0 {
+		return false, nil
+	}
+	m1, err := Run(ctx, db, Options{Dialect: dialect, Target: capdomain.TargetM1})
+	if err != nil {
+		return false, fmt.Errorf("空库自动封存 M1 阶段失败: %w", err)
+	}
+	if !m1.Ready() {
+		return false, fmt.Errorf("空库自动封存 M1 阶段未就绪：失败清单 %d 项", len(m1.Failures))
+	}
+	m2, err := Run(ctx, db, Options{Dialect: dialect, Target: capdomain.TargetM2Cutover})
+	if err != nil {
+		return false, fmt.Errorf("空库自动封存 M2 切换失败: %w", err)
+	}
+	if !m2.Ready() {
+		return false, fmt.Errorf("空库自动封存 M2 切换未就绪：失败清单 %d 项", len(m2.Failures))
+	}
+	return true, nil
 }

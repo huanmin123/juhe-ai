@@ -310,6 +310,8 @@ type BatchUpdateItem struct {
 	ID             string   `json:"id"`
 	ConfigRevision int64    `json:"configRevision"`
 	ChangedFields  []string `json:"changedFields"`
+	// M3 显式清理：本账户被批量覆盖清理的域外遗留能力（omitempty = 无清理）。
+	CapabilityLegacyCleanup []string `json:"capabilityLegacyCleanup,omitempty"`
 }
 
 // BatchUpdateResult mirrors the route response payload (the owner scope stays
@@ -354,6 +356,7 @@ type batchLockedAccount struct {
 	cooldownRetestLastStatusCode       sql.NullInt64
 	healthCheckModel                   string
 	healthCheckEndpointMode            string
+	capabilityDomain                   string
 	supportedModels                    []string
 	modelMappings                      []accountscore.ModelMapping
 	tags                               []string
@@ -375,6 +378,10 @@ type batchPreparedAccount struct {
 	dispatchRevisionChanged bool
 	groupStatsAffected      bool
 	gatewayRuntimeAffected  bool
+	// M3 显式清理审计载荷（D6 只缩不扩）：本次批量覆盖中被该账户清理的域外
+	// 遗留能力（排序去重，空 = 无清理），透传到 BatchUpdateItem 供路由面落
+	// 单独审计。
+	capabilityLegacyCleanupRemoved []string
 }
 
 // batchCredentialFieldMap mirrors the Node credentialFieldMap: batch update
@@ -385,6 +392,23 @@ var batchCredentialFieldMap = [][2]string{
 	{"supportedEndpointModes", "supported_endpoint_modes"},
 	{"serviceTierOverride", "service_tier_override"},
 	{"reasoningEffortOverride", "reasoning_effort_override"},
+}
+
+// batchModesExplicitlyDeclared 判定批量覆盖是否显式携带 supportedEndpointModes
+// 数组（M3 只缩不扩的放行前提，与单账户 PATCH 的
+// credentialModesExplicitlyDeclared 同一语义）：nil（删键）走归一化默认集
+// 重置，由调用方维持逐项相等拦截（I7）。HTTP 面数组解码为 []any；[]string
+// 兼容 service 层直调。
+func batchModesExplicitlyDeclared(updates map[string]BatchUpdateField) bool {
+	update, ok := updates["supportedEndpointModes"]
+	if !ok || !update.Enabled || update.Value == nil {
+		return false
+	}
+	switch update.Value.(type) {
+	case []any, []string:
+		return true
+	}
+	return false
 }
 
 type batchDispatchBinding struct {
@@ -430,6 +454,10 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 		return nil, err
 	}
 	if err := assertLockedAccountsMatchTargets(accounts, input.Targets); err != nil {
+		return nil, err
+	}
+	// M2 批量同域校验（计划 §服务端统一校验）：整批目标域不一致 → 拒绝整批。
+	if err := assertBatchAccountsSameCapabilityDomain(accounts); err != nil {
 		return nil, err
 	}
 	prepared, err := s.prepareBatchUpdates(ctx, tx, accounts, input.Updates)
@@ -521,6 +549,7 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 			item.ChangedFields = append(item.ChangedFields, field)
 			changedFields[field] = true
 		}
+		item.CapabilityLegacyCleanup = account.capabilityLegacyCleanupRemoved
 		items = append(items, item)
 		changedAccountIDs = append(changedAccountIDs, account.accountID)
 		if account.groupStatsAffected {
@@ -638,7 +667,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			accounts.last_error_message, accounts.cooldown_retest_failure_count,
 			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_last_at,
 			accounts.cooldown_retest_last_status_code, accounts.health_check_model,
-			accounts.health_check_endpoint_mode
+			accounts.health_check_endpoint_mode, accounts.capability_domain
 		FROM `+s.store.Table("accounts")+` accounts
 		WHERE accounts.id IN (`+accountscore.Placeholders(len(ids))+`)
 			AND accounts.deleted_at IS NULL
@@ -665,7 +694,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			&account.lastErrorMessage, &account.cooldownRetestFailureCount,
 			&account.cooldownRetestObservationStartedAt, &account.cooldownRetestLastAt,
 			&account.cooldownRetestLastStatusCode, &account.healthCheckModel,
-			&account.healthCheckEndpointMode); err != nil {
+			&account.healthCheckEndpointMode, &account.capabilityDomain); err != nil {
 			return nil, err
 		}
 		account.credentials = accountscore.Credentials{}
@@ -710,6 +739,21 @@ func (s *Service) LoadBatchTags(ctx context.Context, q accountscore.Queryer, ids
 		out[accountID] = append(out[accountID], name)
 	}
 	return out, rows.Err()
+}
+
+// assertBatchAccountsSameCapabilityDomain 是 M2 批量同域校验：请求内全部
+// 账户的 capability_domain（各自库中现值）必须一致，否则整批拒绝。
+func assertBatchAccountsSameCapabilityDomain(accounts []batchLockedAccount) error {
+	if len(accounts) < 2 {
+		return nil
+	}
+	domain := accounts[0].capabilityDomain
+	for _, account := range accounts[1:] {
+		if account.capabilityDomain != domain {
+			return &accountscore.ValidationError{Message: "批量编辑仅支持同一能力域的账户"}
+		}
+	}
+	return nil
 }
 
 // assertLockedAccountsMatchTargets mirrors the repository target assertions.
@@ -941,6 +985,31 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 				return result, err
 			}
 			setColumn("credentials_encrypted", sealed)
+		}
+		// M2 三集合保存规则 + M3 放开分支（D6 显式清理，逐账户以各自库中
+		// 现值为基准）：supportedEndpointModes 参与覆盖且显式携带数组时，按
+		// 「只缩不扩」放行缩小并记录被清理值（批量路由按账户落清理审计）；
+		// 删键（null）走归一化默认集重置，维持逐项相等拦截——默认集不含遗留
+		// 值，放开会借归一化静默删除遗留能力（I7）。扩大或换元 → 整批回滚。
+		// modes 键未覆盖时合并结果 = 现值，天然通过。
+		if hasOwn("supportedEndpointModes") {
+			allowedModes := accountscore.AllowedEndpointModes(account.capabilityDomain, account.providerCode, account.accountType, accountscore.ProtocolPredicate{
+				ProviderCode:              account.providerCode,
+				ProtocolCode:              account.protocolCode,
+				ProtocolVersion:           account.protocolVersion,
+				ProviderProtocolProfileID: account.providerProtocolProfileID,
+			})
+			oldDeclared := StoredEndpointModes(account.credentials["supported_endpoint_modes"])
+			newDeclared := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
+			if batchModesExplicitlyDeclared(updates) {
+				removed, err := accountscore.AssertCapabilityLegacyShrinkOnly(oldDeclared, newDeclared, allowedModes)
+				if err != nil {
+					return result, err
+				}
+				result.capabilityLegacyCleanupRemoved = removed
+			} else if err := accountscore.AssertCapabilityLegacySetsEqual(oldDeclared, newDeclared, allowedModes); err != nil {
+				return result, err
+			}
 		}
 	}
 

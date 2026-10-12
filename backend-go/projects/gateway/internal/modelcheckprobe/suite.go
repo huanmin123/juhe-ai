@@ -29,6 +29,9 @@ type Suite struct {
 	Prefix       string
 	Endpoint     string
 	ProviderCode string
+	// CredentialType preserves the resolved account type for profile-aware
+	// envelope authentication (for example google_oauth uses AuthOAuth).
+	CredentialType string
 	// ProviderProtocolProfileID is the immutable Business profile identity.
 	// Trusted comparisons must use the exact same provider profile as target.
 	ProviderProtocolProfileID string
@@ -73,6 +76,12 @@ type Suite struct {
 	// layer. Only the top-level suite (empty Prefix) may run the quiz family;
 	// trusted-comparison nested suites never see quiz requests.
 	QuizQuestions []QuizQuestion
+	// TimeoutPenalty 是超时处罚开关（RunRequest.TimeoutPenaltyEnabled 的探针
+	// 层传递字段）：true 时 SummarizeChecksWithTimeoutPenalty 把超时证据
+	// （IsTimeoutPenaltyEvidence 口径）按“该环节判 failed”参与评分。false
+	// （默认）时评分与既有实现逐字节等价。可信对照嵌套套件无需设置：其
+	// 项全部带 trusted_comparison 前缀，本就被超时口径排除。
+	TimeoutPenalty bool
 	// probeCapture collects this round's per-probe executed outcomes (behavior
 	// probes and the identity anchor) for the sampling family's paired
 	// McNemar test. It never leaves the in-memory run.
@@ -689,7 +698,11 @@ func (s Suite) buildTool(model, mode string, stream bool) (Request, error) {
 }
 
 func (s Suite) options(endpoint string, headers http.Header, timeout time.Duration) Options {
-	return Options{Endpoint: endpoint, Headers: headers, Client: s.Client, Timeout: timeout, Dispatcher: s.Dispatcher, Capability: s.Capability, Adapter: s.Adapter}
+	return Options{
+		Endpoint: endpoint, Headers: headers, Client: s.Client, Timeout: timeout,
+		Dispatcher: s.Dispatcher, Capability: s.Capability, Adapter: s.Adapter,
+		ProtocolProfileID: s.ProviderProtocolProfileID, CredentialType: s.CredentialType,
+	}
 }
 
 func (s Suite) ProfileForModel() modelcheckprofile.ProtocolProfile {

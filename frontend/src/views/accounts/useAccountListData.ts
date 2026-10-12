@@ -13,6 +13,7 @@ import { rememberGroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountMutationResult, AccountSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
@@ -36,6 +37,8 @@ interface AccountsPageState {
 
 interface UseAccountListDataOptions {
   isManagementView: ComputedRef<boolean>
+  // 当前能力域（来自 route.meta.capabilityDomain）：列表请求按域过滤，页状态缓存按域隔离。
+  capabilityDomain: ComputedRef<AccountCapabilityDomain>
   scopedSystemAccountId: (filterValue?: string) => string | undefined
   onLoaded?: (selectableAccountIds: Set<string>) => void
 }
@@ -62,7 +65,10 @@ const defaultAccountsPageState = (): AccountsPageState => ({
 })
 
 export function useAccountListData(options: UseAccountListDataOptions) {
-  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 8 })
+  // 页状态缓存 key 显式包含能力域：四域路由共用本视图，跨域的筛选/分页/排序互不串写。
+  // 八条域路由按 path 强制重建组件实例，key 在每次挂载时随当前域固定。
+  const capabilityDomain = options.capabilityDomain
+  const pageStateCache = usePageStateCache<AccountsPageState>(`accounts:${capabilityDomain.value}`, defaultAccountsPageState, { version: 8 })
   const initialPageState = pageStateCache.read()
   rememberGroupSelection(initialPageState.filters.group)
   rememberPrincipalSelection(initialPageState.filters.systemAccount)
@@ -483,6 +489,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       sorts: accountSorts.value,
       page: pageState.current,
       pageSize: pageState.pageSize,
+      domain: capabilityDomain.value,
       keyword: filters.keyword.trim() || undefined,
       providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
       type: filters.type && filters.type !== 'all' ? filters.type : undefined,

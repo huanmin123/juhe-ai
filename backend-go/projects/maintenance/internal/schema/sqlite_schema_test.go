@@ -16,8 +16,10 @@ import (
 // goldenBusinessTables is the golden table list extracted from the Node
 // business-schema.ts (72 tables) plus the Go-appended
 // model_check_question_bank table (model-check question bank feature), the
-// Go-appended media_jobs table (M2 异步媒体任务，媒体设计 §8.2) and the
-// Go-appended model_check_question_tests table (提交门禁测试记录).
+// Go-appended media_jobs table (M2 异步媒体任务，媒体设计 §8.2), the
+// Go-appended model_check_question_tests table (提交门禁测试记录) and the
+// Go-appended scheduling_preferences table (调度偏好独立实体
+// PLAN-20261012T033000000Z P1).
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -89,6 +91,7 @@ var goldenBusinessTables = []string{
 	"response_inspection_policies",
 	"route_strategies",
 	"route_strategy_groups",
+	"scheduling_preferences",
 	"system_accounts",
 	"system_sessions",
 	"system_settings",
@@ -210,7 +213,11 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	Business:     SchemaCounts{Tables: 75, Indexes: 219},
+	// Business 表 +1（Go-appended scheduling_preferences）、索引 +4
+	//（scheduling_preferences 四枚，均内联于 business 主 DDL）；
+	// api_keys.scheduling_preference_id 的绑定查询索引由 EnsureSQLiteBusiness
+	// 守卫链尾创建（不进 DDL 常量，故不在此计），在 goldenTotalIndexes 计入。
+	Business:     SchemaCounts{Tables: 76, Indexes: 223},
 	Stats:        SchemaCounts{Tables: 65, Indexes: 124},
 	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
@@ -221,12 +228,16 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 160
+const goldenTotalTables = 161
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
 // schema (IF NOT EXISTS no-ops on a fresh database) are not counted twice.
-const goldenTotalIndexes = 392
+// Go-created indexes outside the DDL constants count too: the
+// scheduling_preferences batch adds four inline business indexes plus the
+// guarded idx_api_keys_scheduling_preference created by EnsureSQLiteBusiness
+// (调度偏好独立实体 PLAN-20261012T033000000Z).
+const goldenTotalIndexes = 397
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

@@ -13,6 +13,7 @@
     >
       <template #inline-filters>
         <a-select v-model:value="rangeHours" class="ai-health-range-select" :options="rangeOptions" @change="changeRange" />
+        <a-select v-model:value="capabilityDomainFilter" class="ai-health-domain-select" :options="capabilityDomainOptions" @change="changeCapabilityDomain" />
       </template>
       <template #actions>
         <div class="ai-health-legend" aria-label="状态图例">
@@ -101,6 +102,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AccountStatus, AiHealthAccountRow, AiHealthHourDetail, AiHealthHourPoint, AiHealthHourStatus } from '@/types/domain'
+import { ACCOUNT_CAPABILITY_DOMAINS, ACCOUNT_CAPABILITY_DOMAIN_LABELS, type AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import AiHealthStatusBar from './AiHealthStatusBar.vue'
 import { createAiHealthRequestCoordinator, isAiHealthCanceledRequest } from './aiHealthRequestCoordinator'
 
@@ -108,6 +110,12 @@ import { createAiHealthRequestCoordinator, isAiHealthCanceledRequest } from './a
 const pageSize = 10
 const keyword = ref('')
 const rangeHours = ref(7 * 24)
+// 能力域筛选（'all' = 全部 = 不下发 domain，默认与既有行为一致）。
+const capabilityDomainFilter = ref<AccountCapabilityDomain | 'all'>('all')
+const capabilityDomainOptions: Array<{ label: string; value: AccountCapabilityDomain | 'all' }> = [
+  { label: '全部', value: 'all' },
+  ...ACCOUNT_CAPABILITY_DOMAINS.map((domain) => ({ label: ACCOUNT_CAPABILITY_DOMAIN_LABELS[domain], value: domain }))
+]
 const contentRef = ref<HTMLElement>()
 const selectedDetail = ref<{ accountId: string; accountName: string; point: AiHealthHourDetail }>()
 const detailOpen = ref(false)
@@ -125,7 +133,7 @@ const rangeOptions = [
   { label: '最近 14 天', value: 14 * 24 },
   { label: '最近 31 天', value: 31 * 24 }
 ]
-const hasActiveFilters = computed(() => Boolean(keyword.value.trim()) || rangeHours.value !== 7 * 24)
+const hasActiveFilters = computed(() => Boolean(keyword.value.trim()) || rangeHours.value !== 7 * 24 || capabilityDomainFilter.value !== 'all')
 
 const { hasMore, items: accounts, loading, pagination, handleTableChange, invalidatePendingLoads, loadData, resetPagination } = useResponsivePagedList<AiHealthAccountRow>({
   pageSize,
@@ -139,7 +147,8 @@ const { hasMore, items: accounts, loading, pagination, handleTableChange, invali
         keyword: keyword.value.trim() || undefined,
         page: page.current,
         pageSize: page.pageSize,
-        systemAccountId: scopedSystemAccountId()
+        systemAccountId: scopedSystemAccountId(),
+        domain: capabilityDomainFilter.value === 'all' ? undefined : capabilityDomainFilter.value
       }, { signal: token.signal })
       if (!token.isCurrent()) return supersededPage(page.current, page.pageSize)
       return {
@@ -158,7 +167,8 @@ const { hasMore, items: accounts, loading, pagination, handleTableChange, invali
     scope: isManagementView.value ? 'admin' : 'self',
     systemAccountId: scopedSystemAccountId(),
     hours: rangeHours.value,
-    keyword: keyword.value.trim()
+    keyword: keyword.value.trim(),
+    domain: capabilityDomainFilter.value
   })
 })
 
@@ -174,6 +184,7 @@ function resetFilters(): void {
   closeDetail()
   keyword.value = ''
   rangeHours.value = 7 * 24
+  capabilityDomainFilter.value = 'all'
   scrollContentToTop()
   resetPagination()
   hasMore.value = false
@@ -181,6 +192,15 @@ function resetFilters(): void {
 }
 
 function changeRange(): void {
+  closeDetail()
+  scrollContentToTop()
+  resetPagination()
+  hasMore.value = false
+  void loadData()
+}
+
+function changeCapabilityDomain(): void {
+  // 跨域切换：关详情、回第一页并整表重载；请求代次由 coordinator + requestSignature 保证旧响应不覆盖。
   closeDetail()
   scrollContentToTop()
   resetPagination()
@@ -380,6 +400,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .ai-health-range-select { width: 148px; }
+.ai-health-domain-select { width: 110px; }
 .ai-health-legend { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; color: var(--juhe-muted); font-size: 13px; white-space: nowrap; }
 .ai-health-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .ai-health-legend i { width: 7px; height: 18px; border-radius: 2px; }

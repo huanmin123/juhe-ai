@@ -535,6 +535,8 @@ func ParseExportBody(body map[string]any) (ExportBody, bool) {
 	allowed := map[string]bool{
 		"sorts": true, "keyword": true, "providerCode": true, "groupId": true,
 		"tagIds": true, "type": true, "status": true, "schedulable": true,
+		// M2 域过滤：前端按域上送 filters.domain（与列表 domain 参数同词表）。
+		"domain": true,
 	}
 	for key := range rawFilters {
 		if !allowed[key] {
@@ -544,6 +546,19 @@ func ParseExportBody(body map[string]any) (ExportBody, bool) {
 	if text, ok := rawFilters["keyword"]; ok && text != nil {
 		if _, ok := text.(string); !ok {
 			return ExportBody{}, false
+		}
+	}
+	if text, ok := rawFilters["domain"]; ok && text != nil {
+		value, ok := text.(string)
+		if !ok {
+			return ExportBody{}, false
+		}
+		// 与列表 domain 过滤同一严格语义：空串/all 之外的越界值直接拒绝，
+		// 不让导出静默退化成全量。
+		if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != "all" {
+			if _, ok := accountscore.NormalizeAccountCapabilityDomain(trimmed); !ok {
+				return ExportBody{}, false
+			}
 		}
 	}
 	if text, ok := rawFilters["providerCode"]; ok && text != nil {
@@ -598,6 +613,11 @@ func (s *Service) ExportFiltersOptions(filters map[string]any, page int) account
 		Status:       s.deps.StatusQueryValue(TextValueOrJoin(filters["status"])),
 		Schedulable:  s.deps.SchedulableQueryValue(TextValueOrJoin(filters["schedulable"])),
 		TagIDs:       TextListOrSingle(filters["tagIds"]),
+	}
+	// M2 域过滤映射（filters["domain"] → ListOptions.Domain）：空/"all" = 不
+	// 过滤；四枚举值原样传入（解析层已拒绝越界值）。
+	if domain, ok := accountscore.NormalizeAccountCapabilityDomain(allText("domain")); ok {
+		options.Domain = domain
 	}
 	if sorts, ok := filters["sorts"].([]any); ok {
 		for _, item := range sorts {

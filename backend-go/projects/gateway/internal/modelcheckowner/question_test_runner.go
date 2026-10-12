@@ -87,6 +87,7 @@ func (r *questionTestRunner) suiteFor(target Target, input modelcheckquestionban
 		Endpoint:                  target.Endpoint,
 		ProviderCode:              target.ProviderCode,
 		ProviderProtocolProfileID: target.ProviderProtocolProfileID,
+		CredentialType:            target.CredentialType,
 		Headers:                   target.Headers,
 		Model:                     probeModel,
 		RequestModel:              input.Model,

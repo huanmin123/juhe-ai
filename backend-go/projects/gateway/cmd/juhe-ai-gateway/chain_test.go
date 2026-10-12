@@ -139,7 +139,13 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT, name TEXT,
 			key_hash TEXT NOT NULL, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT,
 			status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT,
-			expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, created_at TEXT, updated_at TEXT)`,
+			expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT,
+			scheduling_preference_id TEXT, created_at TEXT, updated_at TEXT)`,
+		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
+		`CREATE TABLE scheduling_preferences (
+			id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL,
+			chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
 			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT NOT NULL,
@@ -308,9 +314,13 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_1', 'rs_1', ?, ?, 0, 1, 'active', ?)`, fixture.systemAccount, fixture.groupID, now)
+	// 调度偏好 P2 迁移完成世界：内置行存在，普通 Key 一律绑定（NULL 属未迁移
+	// 错误，读取链显式失败）。
+	seed(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
+		VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, ?, ?)`, now, now)
 	secret := "sk-chain-test-key"
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'active', ?)`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now)
 	// 2026-09-20 目录源扩展后，openai 兼容目标的内置目录不含自身（Node
 	// modelCatalogBuiltInSourceProviderCodes 剔除 openai 目标）；fixture 的

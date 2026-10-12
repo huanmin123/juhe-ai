@@ -162,15 +162,23 @@ func (b GatewayAPIKeyGroupBindingRow) Clone() GatewayAPIKeyGroupBindingRow { ret
 // route strategy and the owner's system account, plus the normalized runtime
 // route fields and the active group bindings.
 type GatewayAPIKeyRow struct {
-	ID                                  string                            `json:"id"`
-	SystemAccountID                     string                            `json:"system_account_id"`
-	RouteStrategyID                     string                            `json:"route_strategy_id"`
-	RouteStrategyMode                   string                            `json:"route_strategy_mode"`
-	RouteStrategyConfigJSON             *string                           `json:"route_strategy_config_json"`
-	SelectedGroupID                     string                            `json:"selected_group_id"`
-	Status                              string                            `json:"status"`
-	ExpiresAt                           *string                           `json:"expires_at"`
-	QuotaLimitsJSON                     *string                           `json:"quota_limits_json"`
+	ID                      string  `json:"id"`
+	SystemAccountID         string  `json:"system_account_id"`
+	RouteStrategyID         string  `json:"route_strategy_id"`
+	RouteStrategyMode       string  `json:"route_strategy_mode"`
+	RouteStrategyConfigJSON *string `json:"route_strategy_config_json"`
+	SelectedGroupID         string  `json:"selected_group_id"`
+	Status                  string  `json:"status"`
+	ExpiresAt               *string `json:"expires_at"`
+	QuotaLimitsJSON         *string `json:"quota_limits_json"`
+	// 调度偏好独立实体 P1 快照三字段（SP-C1/SP-C2 冻结接口）：三者全空 =
+	// 历史策略路径（scheduling_preference_id IS NULL 或 purpose=chat，v1 运行
+	// 态键，行为与旧版逐项一致）；SchedulingPreferenceFingerprint 非空 = 合成
+	// 配置的规范化调度参数 sha256 前 12 位（速度运行态 v2 键材料）；
+	// SchedulingPreferenceChatMode 是合成的有效对话形态（成本/速度，仅信息用途）。
+	SchedulingPreferenceID              string                            `json:"scheduling_preference_id,omitempty"`
+	SchedulingPreferenceFingerprint     string                            `json:"scheduling_preference_fingerprint,omitempty"`
+	SchedulingPreferenceChatMode        string                            `json:"scheduling_preference_chat_mode,omitempty"`
 	NormalRoutingConfig                 *RouteStrategyNormalRoutingConfig `json:"normal_routing_config,omitempty"`
 	SystemAccountImageGenerationEnabled int                               `json:"system_account_image_generation_enabled"`
 	SystemAccountRequestLimitsJSON      *string                           `json:"system_account_request_limits_json,omitempty"`
@@ -178,7 +186,9 @@ type GatewayAPIKeyRow struct {
 	GroupBindings                       []GatewayAPIKeyGroupBindingRow    `json:"group_bindings,omitempty"`
 }
 
-// CloneGatewayAPIKeyRow mirrors cloneGatewayApiKeyRow.
+// CloneGatewayAPIKeyRow mirrors cloneGatewayApiKeyRow. 调度偏好快照三字段是
+// 非指针 string，随 `out := row` 结构体拷贝即为值拷贝（Clone 语义冻结：与
+// SP-C2 约定一致，无需深拷贝）。
 func CloneGatewayAPIKeyRow(row GatewayAPIKeyRow) GatewayAPIKeyRow {
 	out := row
 	out.RouteStrategyConfigJSON = cloneString(row.RouteStrategyConfigJSON)

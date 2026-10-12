@@ -12,12 +12,15 @@ import {
   downloadJsonFile,
   type AccountExportTargetState
 } from './accountExportHelpers'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFilters } from './accountFormTypes'
 import type { AccountScopeParams } from './accountOperationScope'
 
 interface UseAccountExportActionsConfig {
   accountScopeParams: MaybeRefOrGetter<AccountScopeParams>
   accountSorts: MaybeRefOrGetter<AccountListSortParam[]>
+  // 当前能力域：按筛选导出时随 filters 携带 domain，媒体域导出同样只含本域账户。
+  capabilityDomain: MaybeRefOrGetter<AccountCapabilityDomain>
   filters: AccountFilters
   isManagementView: MaybeRefOrGetter<boolean>
   allLoadedAccountsSelected: MaybeRefOrGetter<boolean>
@@ -58,7 +61,12 @@ export function useAccountExportActions(config: UseAccountExportActionsConfig) {
   async function exportFilteredAccounts(): Promise<void> {
     exportLoading.value = true
     try {
-      const payload = { filters: accountExportFiltersFromState(config.filters, toValue(config.accountSorts)) }
+      const payload = {
+        filters: {
+          ...accountExportFiltersFromState(config.filters, toValue(config.accountSorts)),
+          domain: toValue(config.capabilityDomain)
+        }
+      }
       const result = await exportWithScope(payload)
       downloadJsonFile(accountExportFilename(result.summary.accounts, targetState.value), result.document)
       message.success(accountFilterExportSuccessMessage(result.summary))

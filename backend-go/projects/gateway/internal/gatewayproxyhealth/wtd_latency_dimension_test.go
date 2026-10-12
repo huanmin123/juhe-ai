@@ -270,7 +270,7 @@ func TestWtdProbeCandidatesFilterTotalTimeDimension(t *testing.T) {
 	}
 
 	// 存量状态：无 dimension 字段的降级 state 直接写入存储。
-	generation, err := service.loadLatencyStateGeneration(contextBackground())
+	generation, err := service.loadLatencyStateGeneration(contextBackground(), latencyStateKeyspaceV1)
 	if err != nil {
 		t.Fatal(err)
 	}

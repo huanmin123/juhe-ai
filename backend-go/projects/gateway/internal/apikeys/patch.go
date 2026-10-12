@@ -52,6 +52,12 @@ type PatchInput struct {
 	RouteStrategyID    string
 	HasRouteStrategyID bool
 
+	// 调度偏好绑定（P1 Has 语义）：缺失 = 保持原值（含历史 NULL）；显式
+	// null（SchedulingPreferenceID 为 nil 且 HasSchedulingPreferenceID）=
+	// 持久化内置固定 ID（显式回默认）；非空 ID = 校验后持久化。
+	SchedulingPreferenceID    *string
+	HasSchedulingPreferenceID bool
+
 	Status    string
 	HasStatus bool
 
@@ -172,6 +178,25 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 		input.HasRouteStrategyID = true
 		input.RouteStrategyID = trimmed
 	}
+	if value, exists := body["schedulingPreferenceId"]; exists {
+		input.HasSchedulingPreferenceID = true
+		if value == nil {
+			// 显式 null：回默认（内置固定 ID），不再继承策略配置。
+			input.SchedulingPreferenceID = nil
+		} else {
+			text, isString := value.(string)
+			// 契约：非法类型、空字符串与不存在/跨 owner/停用统一 400，不区分
+			// 提示（zod 类型文案被绑定契约显式覆盖）。
+			if !isString {
+				return nil, SchedulingPreferenceUnavailableMessage
+			}
+			trimmed := strings.TrimSpace(text)
+			if trimmed == "" {
+				return nil, SchedulingPreferenceUnavailableMessage
+			}
+			input.SchedulingPreferenceID = &trimmed
+		}
+	}
 	if value, exists := body["status"]; exists {
 		text, isString := value.(string)
 		if !isString || (text != "active" && text != "disabled") {
@@ -226,7 +251,7 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 	var unknown []string
 	for key := range body {
 		switch key {
-		case "name", "description", "routeStrategyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "expectedRevision":
+		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule", "expectedRevision":
 		default:
 			unknown = append(unknown, key)
 		}
@@ -242,7 +267,8 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 		return nil, "Unrecognized key(s) in object: " + strings.Join(quoted, ", ")
 	}
 	if !input.HasName && !input.HasDescription && !input.HasRouteStrategyID &&
-		!input.HasStatus && !input.HasExpiresAt && !input.HasQuotaLimits && !input.HasSchedule {
+		!input.HasSchedulingPreferenceID && !input.HasStatus && !input.HasExpiresAt &&
+		!input.HasQuotaLimits && !input.HasSchedule {
 		return nil, "请提供要修改的 API Key 内容"
 	}
 	return input, ""
@@ -300,16 +326,16 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		args = append(args, scoped)
 	}
 	var rowID, ownerID, name, routeStrategyID, status, keyHash string
-	var description, purpose, expiresAt, quotaJSON, scheduleJSON, updatedAt sql.NullString
+	var description, purpose, expiresAt, quotaJSON, scheduleJSON, updatedAt, schedulingPreferenceID sql.NullString
 	var isDefault int
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT api_keys.id, api_keys.system_account_id, api_keys.name,
 			api_keys.description, api_keys.route_strategy_id, api_keys.status, api_keys.is_default, api_keys.purpose,
 			api_keys.key_hash, api_keys.expires_at, api_keys.quota_limits_json, api_keys.availability_schedule_json,
-			api_keys.updated_at
+			api_keys.scheduling_preference_id, api_keys.updated_at
 		FROM `+s.table("api_keys")+` api_keys
 		WHERE api_keys.id = ?`+where+` LIMIT 1`+lock), args...).
 		Scan(&rowID, &ownerID, &name, &description, &routeStrategyID, &status, &isDefault, &purpose,
-			&keyHash, &expiresAt, &quotaJSON, &scheduleJSON, &updatedAt)
+			&keyHash, &expiresAt, &quotaJSON, &scheduleJSON, &schedulingPreferenceID, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -398,6 +424,35 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		rowPatch["routeStrategyName"] = reference.name
 		rowPatch["routeStrategyMode"] = reference.mode.String
 		rowPatch["routeStrategyStatus"] = reference.status.String
+	}
+
+	// 调度偏好绑定（P1 Has 语义）。「默认 Key 不允许更换策略路由」限制不扩
+	// 展到本字段（契约明示）；purpose=chat Key 保持列恒 NULL 强不变量：提交
+	// schedulingPreferenceId（非空 ID 或显式 null）一律统一同型 400，不走
+	// 普通 Key 的「显式 null 回默认内置 ID」矩阵。
+	if input.HasSchedulingPreferenceID {
+		if purpose.Valid && purpose.String == "chat" {
+			return nil, &ValidationError{Message: SchedulingPreferenceUnavailableMessage}
+		}
+		// 期望存储值：显式 null/缺省提交位 → 内置固定 ID；非空 ID → trim 后
+		// 的值（空字符串经绑定解析统一拒绝）。同值提交是 no-op：不 bump
+		// revision、不失效、不写操作日志。
+		desired := sql.NullString{String: BuiltinSchedulingPreferenceID, Valid: true}
+		if input.SchedulingPreferenceID != nil {
+			desired = sql.NullString{String: strings.TrimSpace(*input.SchedulingPreferenceID), Valid: true}
+		}
+		if desired != schedulingPreferenceID {
+			binding, err := s.resolveSchedulingPreferenceBinding(ctx, tx, ownerID, input.SchedulingPreferenceID)
+			if err != nil {
+				return nil, err
+			}
+			addChange("schedulingPreferenceId", nullStringValue(schedulingPreferenceID), binding.id)
+			setClauses = append(setClauses, "scheduling_preference_id = ?")
+			setArgs = append(setArgs, binding.id)
+			rowPatch["schedulingPreferenceId"] = binding.id
+			rowPatch["schedulingPreferenceName"] = binding.name
+			rowPatch["schedulingPreferenceBuiltIn"] = binding.builtIn
+		}
 	}
 
 	if input.HasExpiresAt {
@@ -547,7 +602,8 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 		After:                after,
 	}
 	if s.inval != nil {
-		validationChanged := containsString(changed, "routeStrategyId") || containsString(changed, "status") ||
+		validationChanged := containsString(changed, "routeStrategyId") || containsString(changed, "schedulingPreferenceId") ||
+			containsString(changed, "status") ||
 			containsString(changed, "expiresAt") || containsString(changed, "quotaLimits")
 		if validationChanged {
 			if err := s.inval.InvalidateValidation(id, ReasonAPIKeyUpdated, []string{keyHash}); err != nil {

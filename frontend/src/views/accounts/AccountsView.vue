@@ -105,6 +105,7 @@
     <AccountImportModal
       v-if="importModalOpen"
       v-model:open="importModalOpen"
+      :capability-domain="capabilityDomain"
       :is-management-view="isManagementView"
       :scope-params="accountScopeParams"
       :target-system-account-label="targetSystemAccountLabel"
@@ -188,6 +189,7 @@
       :inherited-error-policy-rules="inheritedErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
+      :capability-domain="capabilityDomain"
       :validation-failure="lastValidationFailure"
       :api-key-runtime-details="accountApiKeyRuntimeDetails"
       :api-key-runtime-loading="accountApiKeyRuntimeLoading"
@@ -292,6 +294,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
@@ -325,7 +328,9 @@ import {
   accountTableScrollY,
   buildAccountTableColumns,
   accountColumnSortOrder as resolveAccountColumnSortOrder,
+  tableColumnKey,
 } from './accountTableColumns'
+import { ACCOUNT_CAPABILITY_DOMAINS, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import {
   accountMenuItems,
   canBatchEditAccount,
@@ -381,7 +386,22 @@ const balanceQueryTesting = ref(false)
 const modelCatalogSyncing = ref(false)
 const batchDisableConfirmOpen = ref(false)
 const batchDisableConfirmLoading = ref(false)
+const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+
+// 当前能力域（M2 域拆分）：来自 route.meta.capabilityDomain，四域路由共用本视图；
+// 兜底 'chat' 只防异常挂载，正常路由八条路径全部携带 meta。
+const capabilityDomain = computed<AccountCapabilityDomain>(() => {
+  const value = route.meta.capabilityDomain
+  return typeof value === 'string' && (ACCOUNT_CAPABILITY_DOMAINS as readonly string[]).includes(value)
+    ? value
+    : 'chat'
+})
+const isChatDomain = computed(() => capabilityDomain.value === 'chat')
+
+// 媒体域（video/audio/image）裁剪对话专属列：优先级（域内高级调度按 M3 另行立项）
+// 与时间计划（对话专属语义，见计划 D7）；状态/供应商/分组/标签/并发等通用列保留。
+const MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS: ReadonlySet<string> = new Set(['priority', 'availabilitySchedule'])
 const {
   loading,
   accounts,
@@ -422,6 +442,7 @@ const {
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
+  capabilityDomain,
   scopedSystemAccountId,
   onLoaded: handleAccountListLoaded
 })
@@ -751,10 +772,14 @@ async function queryBalanceFromEdit(): Promise<void> {
   }
 }
 
-const rawColumns = computed(() => buildAccountTableColumns(
-  isManagementView.value,
-  (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
-))
+const rawColumns = computed(() => {
+  const columns = buildAccountTableColumns(
+    isManagementView.value,
+    (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
+  )
+  if (isChatDomain.value) return columns
+  return columns.filter((column) => !MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS.has(tableColumnKey(column)))
+})
 const columnStorageKey = computed(() => (isManagementView.value ? 'accounts:management' : 'accounts:self'))
 const {
   managedColumns,
@@ -765,7 +790,14 @@ const {
   requiredKeys: ['name'],
   minVisible: 1
 })
-const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
+const tableScrollX = computed(() => {
+  const base = accountTableScrollX(isManagementView.value)
+  if (isChatDomain.value) return base
+  const hiddenWidth = buildAccountTableColumns(isManagementView.value, () => null)
+    .filter((column) => MEDIA_DOMAIN_HIDDEN_COLUMN_KEYS.has(tableColumnKey(column)))
+    .reduce((sum, column) => sum + (typeof column.width === 'number' ? column.width : 0), 0)
+  return base - hiddenWidth
+})
 const tableScrollY = computed(accountTableScrollY)
 
 function handleAccountTableChange(...args: unknown[]): void {
@@ -811,12 +843,16 @@ const batchEditableAccounts = computed(() => selectedAccounts.value.filter(canBa
 const batchDisableTargets = computed(() => selectedAccounts.value
   .filter(canToggleAccountStatus)
   .filter((account) => account.status !== 'disabled'))
+// 媒体域不开放批量编辑：批量弹窗含检查模型/检查请求形态/错误策略/请求覆盖等对话专属
+// 批量字段入口，域内裁剪需改 AccountBatchEditModal（不在本任务文件边界内），先在入口门控。
 const batchEditDisabled = computed(() => (
-  selectedAccounts.value.length < 2
+  !isChatDomain.value
+  || selectedAccounts.value.length < 2
   || selectedAccounts.value.length > 100
   || batchEditableAccounts.value.length !== selectedAccounts.value.length
 ))
 const batchEditDisabledReason = computed(() => {
+  if (!isChatDomain.value) return '批量编辑当前仅在对话账户提供'
   if (selectedAccounts.value.length < 2) return '至少选择 2 个账户'
   if (selectedAccounts.value.length > 100) return '一次最多编辑 100 个账户'
   if (batchEditableAccounts.value.length !== selectedAccounts.value.length) {
@@ -834,6 +870,7 @@ const {
 } = useAccountExportActions({
   accountScopeParams,
   accountSorts,
+  capabilityDomain,
   filters,
   isManagementView,
   allLoadedAccountsSelected,

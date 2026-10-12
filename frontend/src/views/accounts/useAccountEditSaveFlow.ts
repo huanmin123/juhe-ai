@@ -53,6 +53,7 @@ interface UseAccountEditSaveFlowOptions {
   accountResponseInspectionRules: Ref<AccountResponseInspectionRuleForm[]>
   accounts: ReadonlyValue<AccountListItem[]>
   createScopeParams: ComputedRef<AccountScopeParams>
+  cloningSourceId?: ReadonlyValue<string | undefined>
   editingAccountDetail: Ref<AccountEditBasicDetail | undefined>
   editingAccountAdvancedDetail: Ref<AccountAdvancedDetail | undefined>
   editingAdvancedBaseline: Ref<AccountSavePayload | undefined>
@@ -156,6 +157,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       errorPolicyRules: options.accountErrorPolicyRules.value,
       responseInspectionRules: options.accountResponseInspectionRules.value
     })
+    // M2 克隆契约（D6）：克隆流显式携带来源账户 ID——服务端按 clone-context
+    // 校验访问范围、归属与「目标域 = 源域」；未携带该字段的请求是普通新建。
+    if (options.cloningSourceId?.value && !options.editingId.value) {
+      payload.cloneSourceId = options.cloningSourceId.value
+    }
 
     try {
       if (options.editingId.value) {
@@ -516,6 +522,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   async function createOAuthAccountFromUnifiedForm(): Promise<AccountCreateResult> {
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
+      cloningSourceId: options.cloningSourceId?.value,
       editingId: options.editingId.value,
       form: options.form,
       errorPolicyRules: options.accountErrorPolicyRules.value,
@@ -551,6 +558,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     const ssoTokens = normalizeGrokSsoTokens(options.form.ssoTokens)
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
+      cloningSourceId: options.cloningSourceId?.value,
       editingId: options.editingId.value,
       form: options.form,
       errorPolicyRules: options.accountErrorPolicyRules.value,

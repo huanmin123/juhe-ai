@@ -65,6 +65,15 @@ type CreateInput struct {
 	// assertion (AI账户特供快速恢复通道设计 §8.1/§9). Clone contexts and the
 	// import planner never set it, so cloned/imported rows stay unmarked.
 	ExpeditedRecoveryEnabled *bool
+	// CapabilityDomain 是请求解析后的能力域（M2 D6 保存规则）：camelCase
+	// capabilityDomain，缺省/空串由写路径按 chat 处理；非法值由入口 400
+	// 「能力域无效」。导入执行器按包内推导域写入；授权实例等未赋值调用方
+	// 落 chat（与列 NOT NULL DEFAULT 'chat' 同语义）。
+	CapabilityDomain string
+	// CloneSourceID 是 M2 克隆契约的可选源账户 ID（camelCase cloneSourceId）：
+	// 非空时由路由层经 FindCloneContext 加载源账户并断言目标域 = 源域；
+	// 不携带 = 普通新建。
+	CloneSourceID *string
 }
 
 // EndpointModeDefaultContext mirrors the exported credential write context
@@ -89,7 +98,8 @@ const (
 
 // AccountHealthCheckEndpointModes mirrors the allowed health-check endpoint
 // mode set（原门面 write.go accountHealthCheckEndpointModes 常量表，导入域字段
-// 解析器共用；门面保留同名别名）.
+// 解析器共用；门面保留同名别名）。M2 媒体生命周期定案：白名单增补
+// video_create（DB CHECK 已允许），仅写侧落值词表，不改变任何检查执行路径。
 var AccountHealthCheckEndpointModes = map[string]bool{
 	"images_json": true, "chat_json": true, "chat_sse": true,
 	"responses_json": true, "responses_sse": true,
@@ -99,4 +109,7 @@ var AccountHealthCheckEndpointModes = map[string]bool{
 	// M1 同步音频探针形态（与 accounts.health_check_endpoint_mode CHECK
 	// 同步，maintenance pg_schema_business_tables.go）。
 	"audio_speech": true, "audio_transcription_json": true,
+	// M2 视频域默认落值（仅写侧白名单；J1 候选白名单不含该值，视频域账户
+	// 天然豁免周期检查）。
+	"video_create": true,
 }

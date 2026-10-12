@@ -229,7 +229,12 @@ type ListItem struct {
 	// CapabilityDomain 回显 accounts.capability_domain（AI 账户能力域拆分
 	// M1 读通道）：域创建时确定、不可更改（D3），M1 无任何写入口；授权实例
 	// 域恒等于源域，读自身行列即可。
-	CapabilityDomain         string                `json:"capabilityDomain"`
+	CapabilityDomain string `json:"capabilityDomain"`
+	// LegacyCapabilityModes 是实际声明集中域允许集之外的遗留值（M3「域外能
+	// 力」提示列，D6 存量兼容 + I7）：排序去重；无遗留时字段缺席（omitempty，
+	// 与运行态 overlay 的缺席语义一致）。由行内加密凭据解密计算，凭据原文
+	// 不出列表 DTO。对话域与媒体域同样输出（媒体域理论无遗留，容错展示）。
+	LegacyCapabilityModes    []string              `json:"legacyCapabilityModes,omitempty"`
 	Status                   string                `json:"status"`
 	ConcurrencyLimit         int                   `json:"concurrencyLimit"`
 	CurrentConcurrency       int                   `json:"currentConcurrency"`
@@ -466,20 +471,24 @@ type listRow struct {
 	notes                     sql.NullString
 	accountType               string
 	capabilityDomain          string
-	status                    string
-	concurrencyLimit          int
-	priority                  int
-	superPriorityEnabled      int
-	fallbackEnabled           int
-	clientCompatibility       string
-	schedulable               int
-	availabilityScheduleJSON  sql.NullString
-	accountExpiresAt          sql.NullString
-	cooldownUntil             sql.NullString
-	lastErrorCode             sql.NullString
-	lastErrorMessage          sql.NullString
-	lastErrorTraceID          sql.NullString
-	lastUsedAt                sql.NullString
+	// M3 域外能力提示列输入（同表加法扩选，不动既有列）：遗留值只存在于
+	// 加密凭据 JSON 的 supported_endpoint_modes，列表侧逐行解密计算 declared
+	// − allowed 差集（页大小上限 200 行，本地 AES-GCM，成本可控）。
+	credentialsEncrypted     string
+	status                   string
+	concurrencyLimit         int
+	priority                 int
+	superPriorityEnabled     int
+	fallbackEnabled          int
+	clientCompatibility      string
+	schedulable              int
+	availabilityScheduleJSON sql.NullString
+	accountExpiresAt         sql.NullString
+	cooldownUntil            sql.NullString
+	lastErrorCode            sql.NullString
+	lastErrorMessage         sql.NullString
+	lastErrorTraceID         sql.NullString
+	lastUsedAt               sql.NullString
 	// BUG-0278 批次二扩列（同表加法扩选，不动既有列）：availabilityPresentation
 	// 合成的行内健康输入（jobs listavailability_rows.go 持久列镜像的 gateway
 	// 窄投影）。cooldown_retest_last_* 当前只被未移植的 jobs sourceProbePayload
@@ -556,6 +565,9 @@ func listItemColumns(alias string) []string {
 		// DEFAULT 'chat'，直接读列回显（授权实例域恒等于源域，D3 继承由
 		// 写路径保证，读侧不做 source 替换）。
 		alias + ".capability_domain",
+		// M3 域外能力提示列输入：同表加法扩选（扫描目标 listRow.
+		// credentialsEncrypted；仅用于解密计算差集，凭据原文不出列表 DTO）。
+		alias + ".credentials_encrypted",
 		alias + ".status",
 		alias + ".concurrency_limit",
 		alias + ".priority",
@@ -687,7 +699,7 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.id, &row.configRevision, &row.systemAccountID, &row.systemAccountName,
 		&row.providerCode, &row.providerName, &row.providerProtocolProfileID,
 		&row.protocolCode, &row.protocolVersion, &row.name, &row.notes,
-		&row.accountType, &row.capabilityDomain, &row.status, &row.concurrencyLimit, &row.priority,
+		&row.accountType, &row.capabilityDomain, &row.credentialsEncrypted, &row.status, &row.concurrencyLimit, &row.priority,
 		&row.superPriorityEnabled, &row.fallbackEnabled, &row.clientCompatibility,
 		&row.schedulable, &row.availabilityScheduleJSON, &row.accountExpiresAt,
 		&row.cooldownUntil, &row.lastErrorCode, &row.lastErrorMessage,
@@ -973,7 +985,38 @@ func anySlice(values []string) []any {
 // through the strict vendor/profile normalizer (:517-523) over the effective
 // (possibly source-replaced) provider/type/protocol; a corrupt stored value
 // fails the page with Node's 客户端兼容配置无效 error.
+// legacyCapabilityModesForList 解密行内凭据并返回实际声明集中域允许集之外
+// 的遗留值（M3 列表提示列）。列表行此前不消费凭据列；M3 提示列需要
+// declared−allowed 差集，遗留值只存在于加密凭据 JSON 的
+// supported_endpoint_modes，因此逐行本地 AES-GCM 解密（页大小上限 200 行，
+// 成本可控）。域允许集与 PATCH 三集合规则共用 AllowedEndpointModes（按行内
+// capability_domain/provider/type/协议档案计算，授权实例读自身行，口径一致）。
+// 解密失败按行降级为字段缺席（与运行态 overlay 的「读失败字段缺席」和
+// BUG-0286 授权摘要的解密失败降级同一容错语义）：列表契约从未包含解密，
+// 单行密文损坏不得放大为整页失败；编辑链路对该行仍会显式报错，不静默吞掉。
+func (s *Store) legacyCapabilityModesForList(row listRow) []string {
+	credentials := Credentials{}
+	if err := DecryptJSON(s.secret, row.credentialsEncrypted, &credentials); err != nil {
+		return nil
+	}
+	allowed := accountscore.AllowedEndpointModes(row.capabilityDomain, row.providerCode, row.accountType, accountscore.ProtocolPredicate{
+		ProviderCode:              row.providerCode,
+		ProtocolCode:              row.protocolCode,
+		ProtocolVersion:           row.protocolVersion,
+		ProviderProtocolProfileID: row.providerProtocolProfileID,
+	})
+	outliers := accountscore.OutOfDomainModes(credentialEndpointModes(credentials), allowed)
+	if len(outliers) == 0 {
+		return nil
+	}
+	return outliers
+}
+
 func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (ListItem, error) {
+	// M3 域外能力提示列：每行解密计算 declared−allowed 差集（与 PATCH 三集合
+	// 规则同一 AllowedEndpointModes 收敛点、同一行内列，口径一致）。解密失败
+	// 按行降级为字段缺席（函数内处理），不阻断整页。
+	legacyCapabilityModes := s.legacyCapabilityModesForList(row)
 	now := s.now()
 	item := ListItem{
 		ID:                        row.id,
@@ -988,6 +1031,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
 		CapabilityDomain:          row.capabilityDomain,
+		LegacyCapabilityModes:     legacyCapabilityModes,
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,
 		Priority:                  row.priority,

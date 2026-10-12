@@ -21,7 +21,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // SchemaCounts reports how many CREATE TABLE and CREATE INDEX statements were
@@ -131,21 +133,35 @@ func EnsurePostgres(ctx context.Context, db *sql.DB) (int, error) {
 }
 
 // SeedSQLiteBusiness runs the full Node seedDefaults port over one business
-// database (the only seeded SQLite database, exactly like Node).
+// database (the only seeded SQLite database, exactly like Node). After a
+// successful seed it runs the fresh-install capability domain seal (AI
+// account capability domain split, M2): when the stage record is absent and
+// accounts has no rows it executes empty-database M1 -> M2 cutover and writes
+// m2_finalized; an existing record or a non-empty accounts table always skips
+// (explicit migration owns real cutovers). The gateway SQLite preflight and
+// test fixtures obtain the stage record through this path automatically.
 func SeedSQLiteBusiness(ctx context.Context, db *sql.DB, options SeedOptions) (SQLiteSeedResult, error) {
 	result, err := schema.SeedSQLiteDefaults(ctx, db, schema.SeedOptions{Now: options.Now, Secret: options.Secret})
 	if err != nil {
 		return SQLiteSeedResult{}, err
 	}
+	if _, err := capabilitydomain.SealFreshInstall(ctx, db, capdomain.DialectSQLite); err != nil {
+		return SQLiteSeedResult{}, fmt.Errorf("seed business sqlite defaults: %w", err)
+	}
 	return SQLiteSeedResult{StatementCount: result.StatementCount, ModelCatalogRows: result.ModelCatalogRows}, nil
 }
 
 // SeedPostgres runs the full Node seedPostgresDefaults port (the Node
-// init-postgres-schema.ts flow after EnsurePostgres).
+// init-postgres-schema.ts flow after EnsurePostgres). After a successful seed
+// it runs the same fresh-install capability domain seal as SeedSQLiteBusiness
+// (PostgreSQL dialect).
 func SeedPostgres(ctx context.Context, db *sql.DB, options SeedOptions) (PGSeedResult, error) {
 	result, err := schema.SeedPostgresDefaults(ctx, db, schema.SeedOptions{Now: options.Now, Secret: options.Secret})
 	if err != nil {
 		return PGSeedResult{}, err
+	}
+	if _, err := capabilitydomain.SealFreshInstall(ctx, db, capdomain.DialectPostgres); err != nil {
+		return PGSeedResult{}, fmt.Errorf("seed postgres defaults: %w", err)
 	}
 	return PGSeedResult{StatementCount: result.StatementCount}, nil
 }

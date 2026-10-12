@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"strings"
 )
 
@@ -69,21 +70,26 @@ type ImportSummary struct {
 
 // ImportItem mirrors AccountImportItem.
 type ImportItem struct {
-	Index                     int      `json:"index"`
-	Ref                       *string  `json:"ref,omitempty"`
-	Name                      *string  `json:"name,omitempty"`
-	ProviderCode              *string  `json:"providerCode,omitempty"`
-	ProviderProtocolProfileID *string  `json:"providerProtocolProfileId,omitempty"`
-	ProtocolCode              *string  `json:"protocolCode,omitempty"`
-	ProtocolVersion           *string  `json:"protocolVersion,omitempty"`
-	AccountType               *string  `json:"accountType,omitempty"`
-	GroupName                 *string  `json:"groupName,omitempty"`
-	GroupID                   *string  `json:"groupId,omitempty"`
-	ProxyRef                  *string  `json:"proxyRef,omitempty"`
-	Action                    string   `json:"action"`
-	Messages                  []string `json:"messages"`
-	Warnings                  []string `json:"warnings"`
-	AccountID                 *string  `json:"accountId,omitempty"`
+	Index                     int     `json:"index"`
+	Ref                       *string `json:"ref,omitempty"`
+	Name                      *string `json:"name,omitempty"`
+	ProviderCode              *string `json:"providerCode,omitempty"`
+	ProviderProtocolProfileID *string `json:"providerProtocolProfileId,omitempty"`
+	ProtocolCode              *string `json:"protocolCode,omitempty"`
+	ProtocolVersion           *string `json:"protocolVersion,omitempty"`
+	AccountType               *string `json:"accountType,omitempty"`
+	// CapabilityDomain 是包内账户的推导域回显（M2 导入严格校验）：凭据声明
+	// 经共享包 ParseEndpointModes + DeriveDomain 推导；声明缺失按 chat；声明
+	// 缺失/空/null/非数组/含未知值等无法推导的形态不回显（由既有归一化错误
+	// 报失败）。
+	CapabilityDomain *string  `json:"capabilityDomain,omitempty"`
+	GroupName        *string  `json:"groupName,omitempty"`
+	GroupID          *string  `json:"groupId,omitempty"`
+	ProxyRef         *string  `json:"proxyRef,omitempty"`
+	Action           string   `json:"action"`
+	Messages         []string `json:"messages"`
+	Warnings         []string `json:"warnings"`
+	AccountID        *string  `json:"accountId,omitempty"`
 }
 
 // ImportProxyItem mirrors AccountImportProxyItem.
@@ -312,6 +318,9 @@ type NormalizedImportAccount struct {
 	accountExpiresAt          string
 	availabilityScheduleRaw   any
 	notes                     string
+	// capabilityDomain 是包内账户的推导域（M2 导入严格校验）：随创建负载
+	// 写入 accounts.capability_domain，执行链经 Store.Create 重验 ⊆ allowed。
+	capabilityDomain string
 
 	// Messages aliases the plan item's message list (Node aliases
 	// item.messages into the normalized source).
@@ -1081,10 +1090,23 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	plan.item.ProtocolVersion = TextPointerOrNil(source.protocolVersion)
 	plan.item.AccountType = TextPointerOrNil(source.accountType)
 
+	// M2 导入严格校验（计划 §服务端统一校验）：包内账户用共享包
+	// ParseEndpointModes + DeriveDomain 推导域并在预览条目回显；modes 缺省
+	// 按推导域默认集补齐（同创建第 2 条规则）；声明无法推导的形态（空/null/
+	// 非数组/未知值）不猜域，由既有凭据归一化错误报失败。
+	applyImportCapabilityDomain(source, planCtx.providers)
+	plan.item.CapabilityDomain = TextPointerOrNil(source.capabilityDomain)
+
 	// Credential normalization (account-import-account-plan.ts:257-277): the
 	// normalized record feeds Store.Create; a failure lands as a per-account
 	// message and marks the item failed, exactly like the Node plan helper.
 	s.normalizeImportAccountCredentials(source)
+
+	// M2 导入严格校验（续）：归一化后的最终声明集必须 ⊆ 推导域允许集
+	//（含混合能力包）——冲突以 per-account message 呈现并置 failed
+	//（CanImport=false），不静默裁剪；预览与执行共用本计划函数，执行链经
+	// Store.Create 重验。
+	assertImportCapabilityDomainBounds(source, planCtx.providers)
 
 	// The endpoint-mode compatibility asserts stay with the model-validation
 	// companion slice; the gpt request-override catalog validation and the
@@ -1162,6 +1184,82 @@ func (s *Service) normalizeImportAccountCredentials(source *NormalizedImportAcco
 		return
 	}
 	source.credentials = normalized
+}
+
+// applyImportCapabilityDomain 是 M2 导入严格校验的第一段：解析包内凭据的
+// supported_endpoint_modes 声明（共享包 ParseEndpointModes），ModesOK 用
+// DeriveDomain 推导域、缺失视为 chat；modes 缺省（键不存在）时按推导域默认
+// 集补齐（DefaultEndpointModesForDomain，空集 = 该供应商不支持该域，直接报
+// 失败）。声明存在但无法证明与运行时口径一致（空数组/null/非数组/未知值）
+// 时不推导、不回显，交给既有凭据归一化错误路径。
+func applyImportCapabilityDomain(source *NormalizedImportAccount, providers map[string]*ImportProvider) {
+	if !importCapabilityContextResolvable(source, providers) {
+		return
+	}
+	reading := capabilitydomain.ParseEndpointModes(map[string]any(source.credentials))
+	var derived capabilitydomain.Domain
+	switch reading.Status {
+	case capabilitydomain.ModesOK:
+		derived = capabilitydomain.DeriveDomain(reading.Modes)
+	case capabilitydomain.ModesMissing:
+		derived = capabilitydomain.DomainChat
+	default:
+		return
+	}
+	source.capabilityDomain = string(derived)
+	if reading.Status == capabilitydomain.ModesMissing {
+		defaults := accountscore.DefaultEndpointModesForDomain(string(derived), source.providerCode, source.accountType, importCapabilityPredicate(source))
+		if len(defaults) == 0 {
+			source.Push(accountscore.CapabilityDomainUnsupportedError(source.providerCode, string(derived)).Error())
+			return
+		}
+		seeded := accountscore.Credentials{}
+		for key, value := range source.credentials {
+			seeded[key] = value
+		}
+		seeded["supported_endpoint_modes"] = accountscore.AnySlice(defaults)
+		source.credentials = seeded
+	}
+}
+
+// assertImportCapabilityDomainBounds 是 M2 导入严格校验的第二段：归一化后的
+// 最终声明集 ⊆ 推导域允许集，越界（含混合能力包）以 per-account message 报
+// 冲突（item failed → CanImport=false），不静默裁剪。
+func assertImportCapabilityDomainBounds(source *NormalizedImportAccount, providers map[string]*ImportProvider) {
+	if source.capabilityDomain == "" || !importCapabilityContextResolvable(source, providers) {
+		return
+	}
+	allowed := accountscore.AllowedEndpointModes(source.capabilityDomain, source.providerCode, source.accountType, importCapabilityPredicate(source))
+	if len(allowed) == 0 {
+		source.Push(accountscore.CapabilityDomainUnsupportedError(source.providerCode, source.capabilityDomain).Error())
+		return
+	}
+	declared := StoredEndpointModes(source.credentials["supported_endpoint_modes"])
+	if outliers := accountscore.OutOfDomainModes(declared, allowed); len(outliers) > 0 {
+		source.Push(accountscore.CapabilityDomainOutlierError(source.capabilityDomain, outliers).Error())
+	}
+}
+
+// importCapabilityContextResolvable 判定推导所需的 provider/协议档案上下文
+// 是否已落定（applyImportAccountProtocolProfileDefaults 之后）；供应商未知或
+// 档案未落定时跳过域校验（validateImportProviderAndBasics 已按既有文案报
+// 失败）。
+func importCapabilityContextResolvable(source *NormalizedImportAccount, providers map[string]*ImportProvider) bool {
+	provider, ok := providers[source.providerCode]
+	if !ok || provider == nil {
+		return false
+	}
+	profile := provider.profiles[source.providerProtocolProfileID]
+	return profile != nil && profile.providerCode == source.providerCode && profile.enabled
+}
+
+func importCapabilityPredicate(source *NormalizedImportAccount) accountscore.ProtocolPredicate {
+	return accountscore.ProtocolPredicate{
+		ProviderCode:              source.providerCode,
+		ProtocolCode:              source.protocolCode,
+		ProtocolVersion:           source.protocolVersion,
+		ProviderProtocolProfileID: source.providerProtocolProfileID,
+	}
 }
 
 // validateImportProviderAndBasics mirrors validateImportProviderAndBasics.
@@ -1707,7 +1805,13 @@ func (s *Service) executeImportPlan(ctx context.Context, plan *ImportPlan, acces
 		}
 		account.item.AccountID = &createdID
 		if createdStatus == "pending_test" {
-			account.item.Messages = []string{"已创建账户，等待后台健康检查通过后参与调度"}
+			// 媒体域账户无后台激活检查途径，pending_test 不会自动转可调度：
+			// 成功文案按计划条目回显域分流，避免「等待后台健康检查」误导。
+			if domain := account.item.CapabilityDomain; domain != nil && (*domain == "video" || *domain == "audio" || *domain == "image") {
+				account.item.Messages = []string{"已创建账户，媒体账户无后台激活检查，请手动启用"}
+			} else {
+				account.item.Messages = []string{"已创建账户，等待后台健康检查通过后参与调度"}
+			}
 		} else {
 			account.item.Messages = []string{"已创建账户"}
 		}
@@ -1803,6 +1907,9 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 		ModelMappings:             source.modelMappings,
 		Tags:                      source.tags,
 	}
+	// M2 导入严格校验：包内推导域随创建负载落列，执行链经 Store.Create 对
+	// ⊆ allowed 重验（不信任预览结果）。
+	input.CapabilityDomain = source.capabilityDomain
 	status := source.status
 	if status == "active" {
 		status = "pending_test"

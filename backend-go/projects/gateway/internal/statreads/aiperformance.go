@@ -66,7 +66,11 @@ func parseSeriesAccountIds(values url.Values) ([]string, string) {
 
 func (d *Deps) aiPerformanceBaseHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope := d.perfScope(r, selfOnly)
+		scope, domainBadRequest := d.perfScopeWithDomainFilter(r, selfOnly)
+		if domainBadRequest != "" {
+			kernel.WriteBadRequest(w, domainBadRequest)
+			return
+		}
 		startDate, endDate, badRequest := parseUsageOverviewQuery(r.URL.Query())
 		if badRequest != "" {
 			kernel.WriteBadRequest(w, badRequest)
@@ -84,7 +88,11 @@ func (d *Deps) aiPerformanceBaseHandler(selfOnly bool) http.HandlerFunc {
 
 func (d *Deps) aiPerformanceSeriesHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope := d.perfScope(r, selfOnly)
+		scope, badRequest := d.perfScopeWithDomainFilter(r, selfOnly)
+		if badRequest != "" {
+			kernel.WriteBadRequest(w, badRequest)
+			return
+		}
 		startDate, endDate, badRequest := parseUsageOverviewQuery(r.URL.Query())
 		if badRequest != "" {
 			kernel.WriteBadRequest(w, badRequest)
@@ -107,7 +115,11 @@ func (d *Deps) aiPerformanceSeriesHandler(selfOnly bool) http.HandlerFunc {
 
 func (d *Deps) aiPerformanceAccountsHandler(selfOnly bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scope := d.perfScope(r, selfOnly)
+		scope, badRequest := d.perfScopeWithDomainFilter(r, selfOnly)
+		if badRequest != "" {
+			kernel.WriteBadRequest(w, badRequest)
+			return
+		}
 		values := r.URL.Query()
 		keyword := optionalQueryText(values, "keyword")
 		limit, hasLimit := integerQueryValue(values, "limit")
@@ -137,10 +149,28 @@ func (d *Deps) perfScope(r *http.Request, selfOnly bool) perfScopeState {
 	return perfScopeState{SystemAccountID: access.currentID(), ScopeType: "caller_account", IncludeSystemAccountName: includeSystemAccountName}
 }
 
+// perfScopeWithDomainFilter 是 perfScope + 可选 domain 查询筛选（M3）：
+// domain 缺省/"all" = 不过滤；非四枚举值返回非空 badRequest 文案（调用方
+// 回 400）。
+func (d *Deps) perfScopeWithDomainFilter(r *http.Request, selfOnly bool) (perfScopeState, string) {
+	scope := d.perfScope(r, selfOnly)
+	capabilityDomain, ok := optionalCapabilityDomainFilter(r.URL.Query().Get(capabilityDomainFilterParam))
+	if !ok {
+		return scope, "AI账户筛选参数不合法"
+	}
+	scope.Domain = capabilityDomain
+	return scope, ""
+}
+
 type perfScopeState struct {
 	SystemAccountID          string
 	ScopeType                string
 	IncludeSystemAccountName bool
+	// Domain 是可选能力域筛选（M3，计划 §M3 配套适配）：空 = 不过滤（默认
+	// 行为零变化）；非空时 AI 性能三端点共用的账户水合查询按
+	// accounts.capability_domain 收敛（base 默认账户/series 显式账户/options
+	// 候选单一收敛点）。随 scope 由各 handler 解析 query 后挂载。
+	Domain string
 }
 
 func (d *Deps) aiPerformanceBase(r *http.Request, scope perfScopeState, rng Range) (any, error) {
@@ -348,6 +378,12 @@ func (d *Deps) mergeAiPerformanceStatsWithAccounts(r *http.Request, scope perfSc
 	}
 	idPlaceholders := placeholders(len(ids))
 	queryParams := append(params, idsToAny(ids)...)
+	// M3 域筛选：占位符按 SQL 文本顺序绑定（IN → domain → visibleFilter）。
+	domainClause := ""
+	if scope.Domain != "" {
+		domainClause = "\n\t\t\tAND " + capabilityDomainClause("accounts")
+		queryParams = append(queryParams, scope.Domain)
+	}
 	queryParams = append(queryParams, visibleParams...)
 	rows, err := d.queryBusiness(r, `
 		SELECT
@@ -361,7 +397,7 @@ func (d *Deps) mergeAiPerformanceStatsWithAccounts(r *http.Request, scope perfSc
 		`+systemAccountJoin+`
 		`+ownerJoin+`
 		WHERE accounts.id IN (`+idPlaceholders+`)
-			AND accounts.deleted_at IS NULL
+			AND accounts.deleted_at IS NULL`+domainClause+`
 			`+visibleFilter+`
 	`, queryParams...)
 	if err != nil {

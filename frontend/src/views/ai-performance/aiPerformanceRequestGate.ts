@@ -1,3 +1,4 @@
+import type { AccountCapabilityDomain } from '@/views/accounts/accountCapabilityDomains'
 import type { AccountUsageStatsRange } from '@/types/domain'
 
 export type AiPerformanceRequestChannel = 'base' | 'series'
@@ -17,6 +18,7 @@ export interface AiPerformanceRequestSignatureInput {
   ownerSystemAccountId?: string
   startDate?: string
   endDate?: string
+  domain?: AccountCapabilityDomain
   accountIds?: string[]
 }
 
@@ -30,6 +32,7 @@ export function buildAiPerformanceRequestSignature(input: AiPerformanceRequestSi
     input.ownerSystemAccountId ?? '',
     input.startDate ?? 'default',
     input.endDate ?? 'default',
+    input.domain ?? '',
     [...new Set(input.accountIds ?? [])].sort()
   ])
 }

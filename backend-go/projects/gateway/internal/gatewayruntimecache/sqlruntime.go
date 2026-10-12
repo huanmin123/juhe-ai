@@ -213,7 +213,15 @@ func (m *SQLReadModels) loadGatewayAPIKeyByID(ctx context.Context, apiKeyID stri
 func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate string, value any) (*GatewayAPIKeyRow, error) {
 	var id, systemAccountID, routeStrategyID, routeStrategyMode, status string
 	var routeConfigJSON, expiresAt, quotaLimitsJSON, requestLimitsJSON sql.NullString
+	var purpose, schedulingPreferenceID, schedulingPreferenceJoinedID sql.NullString
+	var schedulingPreferenceChatMode, schedulingPreferenceConfigJSON sql.NullString
+	var schedulingPreferenceEnabled sql.NullInt64
 	var imageGenerationEnabled int
+	// 调度偏好独立实体 P1（读取分阶段契约）：api_keys.scheduling_preference_id
+	// 与 api_keys.purpose 进 SELECT，LEFT JOIN scheduling_preferences 区分「无
+	// 绑定/NULL」与「绑定引用错误」——绑定谓词要求行属于 Key owner 或为全局
+	// 内置行（跨 owner 引用与行缺失同样落空，由六态解析显式上抛）；禁止用
+	// active 偏好 INNER JOIN 把整个 Key 当作不存在。
 	err := m.db.QueryRowContext(ctx, m.bind(`SELECT
 			api_keys.id,
 			api_keys.system_account_id,
@@ -224,7 +232,13 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 			api_keys.expires_at,
 			api_keys.quota_limits_json,
 			system_accounts.image_generation_enabled,
-			system_accounts.request_limits_json
+			system_accounts.request_limits_json,
+			api_keys.purpose,
+			api_keys.scheduling_preference_id,
+			scheduling_preferences.id AS scheduling_preference_joined_id,
+			scheduling_preferences.chat_mode AS scheduling_preference_chat_mode,
+			scheduling_preferences.chat_speed_first_config_json AS scheduling_preference_config_json,
+			scheduling_preferences.enabled AS scheduling_preference_enabled
 		FROM `+m.table("api_keys")+` api_keys
 		INNER JOIN `+m.table("system_accounts")+` system_accounts
 			ON system_accounts.id = api_keys.system_account_id
@@ -233,10 +247,16 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 			ON route_strategies.id = api_keys.route_strategy_id
 			AND route_strategies.system_account_id = api_keys.system_account_id
 			AND route_strategies.status = 'active'
+		LEFT JOIN `+m.table("scheduling_preferences")+` scheduling_preferences
+			ON scheduling_preferences.id = api_keys.scheduling_preference_id
+			AND (scheduling_preferences.system_account_id = api_keys.system_account_id
+				OR scheduling_preferences.built_in = 1)
 		WHERE `+predicate+`
 		LIMIT 1`), value).
 		Scan(&id, &systemAccountID, &routeStrategyID, &routeStrategyMode, &routeConfigJSON,
-			&status, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON)
+			&status, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON,
+			&purpose, &schedulingPreferenceID, &schedulingPreferenceJoinedID,
+			&schedulingPreferenceChatMode, &schedulingPreferenceConfigJSON, &schedulingPreferenceEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -282,6 +302,20 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 		// normalRoutingConfig 是调度模式共享的组内调度配置键（历史命名，
 		// 键名不再对应单一 normal 模式），统一解码。
 		row.NormalRoutingConfig = decodeNormalRoutingConfig(routeConfigJSON.String)
+	}
+	// 调度偏好六态解析（读取分阶段契约 P2 形态）：purpose=chat 原样沿用策略
+	// config（不合成、三字段保持空）；普通 Key 绑定 NULL 属未迁移/数据不一致，
+	// 显式错误（不回落策略也不回落内置）；绑定内置/启用偏好合成完整配置；停
+	// 用回落内置合成；引用损坏/配置损坏显式错误上抛。策略 config_json 解码保
+	// 持宽容（回滚 oracle），但普通 Key 的派发配置一律来自偏好合成覆盖。
+	snapshot, err := resolveSchedulingPreferenceSnapshot(purpose, schedulingPreferenceID,
+		schedulingPreferenceJoinedID, schedulingPreferenceChatMode, schedulingPreferenceConfigJSON,
+		schedulingPreferenceEnabled)
+	if err != nil {
+		return nil, err
+	}
+	if err := applySchedulingPreferenceSnapshot(row, snapshot); err != nil {
+		return nil, err
 	}
 	return row, nil
 }

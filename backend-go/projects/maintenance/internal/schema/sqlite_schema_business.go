@@ -472,6 +472,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
       penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
       recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0 CHECK (timeout_penalty_enabled IN (0, 1)),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       custom_question_ids TEXT,
@@ -488,6 +489,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
       penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
       recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0 CHECK (timeout_penalty_enabled IN (0, 1)),
       enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
       next_run_at TEXT NOT NULL,
@@ -1190,6 +1192,24 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
 
+    -- scheduling_preferences 调度偏好独立实体（调度偏好独立实体
+    -- PLAN-20261012T033000000Z P1，接口契约「调度偏好」章）：对话域组内调度
+    -- （成本优先 / 速度优先）与路由策略并列为 API Key 的两项绑定配置。
+    -- system_account_id 内置行恒 NULL（全局只读例外，供所有 owner 读取与绑定）；
+    -- built_in/enabled 走 0/1 词表；置于 api_keys 之前，api_keys 建表 DDL 的
+    -- 列级 REFERENCES 需要目标表先存在。CREATE TABLE IF NOT EXISTS 幂等。
+    CREATE TABLE IF NOT EXISTS scheduling_preferences (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT,
+      name TEXT NOT NULL,
+      chat_mode TEXT NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
+      chat_speed_first_config_json TEXT,
+      built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -1203,6 +1223,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       status TEXT NOT NULL DEFAULT 'active',
       is_default INTEGER NOT NULL DEFAULT 0,
       purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat')),
+      scheduling_preference_id TEXT REFERENCES scheduling_preferences(id),
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
@@ -1678,6 +1699,18 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique ON route_strategies(system_account_id, name);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_name_lookup ON route_strategies(name, id);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_system_account_name_lookup ON route_strategies(system_account_id, name, id);
+    -- 调度偏好索引（调度偏好独立实体 PLAN-20261012T033000000Z）：自定义行
+    -- owner 内名称唯一（精确 + lower 归一，route_strategies owner_name_unique
+    -- 先例，均挂 WHERE built_in=0 条件——内置行 name 权威且不参与查重）；
+    -- UNIQUE(id) WHERE built_in=1 固定内置身份唯一；owner 列支撑管理面按
+    -- owner 收窄列表。api_keys.scheduling_preference_id 的绑定查询索引不在此
+    -- 声明：存量库该列由 EnsureSQLiteBusiness 的守卫 ALTER 在主 DDL 之后补齐，
+    -- 索引语句放这里会因缺列失败，由守卫链尾 CREATE INDEX IF NOT EXISTS 兜住
+    -- 新库与存量库两种到达路径。
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique ON scheduling_preferences(system_account_id, name) WHERE built_in = 0;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_owner_name_unique_lower ON scheduling_preferences(system_account_id, lower(name)) WHERE built_in = 0;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_preferences_builtin_id_unique ON scheduling_preferences(id) WHERE built_in = 1;
+    CREATE INDEX IF NOT EXISTS idx_scheduling_preferences_owner ON scheduling_preferences(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_strategy_priority ON route_strategy_groups(route_strategy_id, status, priority ASC, created_at ASC, id ASC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategy_groups_unique ON route_strategy_groups(route_strategy_id, group_id);
     CREATE INDEX IF NOT EXISTS idx_route_strategy_groups_group_strategy ON route_strategy_groups(group_id, route_strategy_id);

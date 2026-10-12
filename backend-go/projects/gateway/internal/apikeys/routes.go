@@ -390,6 +390,7 @@ var patchChangeLabels = []struct{ Field, Label string }{
 	{"description", "说明"},
 	{"status", "状态"},
 	{"routeStrategyId", "策略路由"},
+	{"schedulingPreferenceId", "调度偏好"},
 	{"expiresAt", "过期时间"},
 	{"quotaLimits", "额度限制"},
 	{"availabilitySchedule", "时间计划"},
@@ -640,7 +641,7 @@ func createBody(body map[string]any) (CreateInput, string) {
 	}
 	for key := range body {
 		switch key {
-		case "name", "description", "routeStrategyId", "status", "expiresAt", "quotaLimits", "availabilitySchedule":
+		case "name", "description", "routeStrategyId", "schedulingPreferenceId", "status", "expiresAt", "quotaLimits", "availabilitySchedule":
 		default:
 			return CreateInput{}, "API Key 参数无效"
 		}
@@ -665,6 +666,17 @@ func createBody(body map[string]any) (CreateInput, string) {
 			return CreateInput{}, "请选择策略路由"
 		}
 		input.RouteStrategyID = &text
+	}
+	if value, exists := body["schedulingPreferenceId"]; exists && value != nil {
+		// 调度偏好绑定（P1 五写入口矩阵·创建）：缺省或 null → 内置固定 ID
+		// （store 层对 nil 输入落内置常量，此处只在显式提交值时携带）；非字
+		// 符串或空字符串按绑定契约统一 400。
+		text, isString := value.(string)
+		if !isString {
+			return CreateInput{}, SchedulingPreferenceUnavailableMessage
+		}
+		trimmed := strings.TrimSpace(text)
+		input.SchedulingPreferenceID = &trimmed
 	}
 	if value, exists := body["status"]; exists {
 		text, isString := value.(string)

@@ -49,7 +49,11 @@ func (t *wlStubTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	if t.readErr {
 		reader = wlErrReader{}
 	}
-	return &http.Response{StatusCode: t.status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(reader), Request: request}, nil
+	contentType := "application/json"
+	if strings.HasPrefix(strings.TrimSpace(t.body), "event:") || strings.HasPrefix(strings.TrimSpace(t.body), "data:") {
+		contentType = "text/event-stream"
+	}
+	return &http.Response{StatusCode: t.status, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(reader), Request: request}, nil
 }
 
 // wlErrReader 在读取时返回固定错误，驱动"响应读取失败"分支。
@@ -143,7 +147,7 @@ func TestWlBuildOpenAIOAuthCodexRequestShapes(t *testing.T) {
 
 func TestWlExecuteCodexAdapterNormalizesRequest(t *testing.T) {
 	// 业务契约：Codex 归一化必须剥离 tuning 字段并补齐桌面客户端身份头。
-	transport := &wlStubTransport{status: http.StatusOK, body: `{"model":"gpt-5.6-sol","output_text":"OK-MODEL-CHECK"}`}
+	transport := &wlStubTransport{status: http.StatusOK, body: "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output_text\":\"OK-MODEL-CHECK\"}}\n\ndata: [DONE]\n"}
 	result, err := Execute(context.Background(), Request{Path: "/v1/responses", ExpectedModel: "gpt-5.6-sol", Protocol: modelcheckprofile.ProtocolOpenAIResponses, EndpointMode: modelcheckprofile.EndpointModeResponsesJSON, Body: json.RawMessage(`{"model":"gpt-5.6-sol","input":"hello","instructions":"keep","max_output_tokens":64,"temperature":0.5}`)}, Options{Endpoint: "https://upstream.example", Headers: http.Header{"Authorization": []string{"Bearer codex"}}, Client: &http.Client{Transport: transport}, Adapter: AdapterOpenAIOAuthCodex})
 	if err != nil || !result.Success {
 		t.Fatalf("result=%+v err=%v", result, err)

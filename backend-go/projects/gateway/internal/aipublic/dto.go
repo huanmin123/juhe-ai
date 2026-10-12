@@ -83,6 +83,11 @@ type PublicApiKeySummary struct {
 	RouteStrategyStatus  *string `json:"routeStrategyStatus,omitempty"`
 	ExpiresAt            *string `json:"expiresAt,omitempty"`
 	AvailabilitySchedule any     `json:"availabilitySchedule,omitempty"`
+	// 调度偏好绑定投影（P1）：与内面 ApiKeyListItem 同规则，null = 历史沿
+	// 用策略路由（迁移期）；摘要不返回完整速度参数。
+	SchedulingPreferenceID      *string `json:"schedulingPreferenceId"`
+	SchedulingPreferenceName    *string `json:"schedulingPreferenceName"`
+	SchedulingPreferenceBuiltIn *bool   `json:"schedulingPreferenceBuiltIn"`
 }
 
 // PublicAccountSummary mirrors PublicAccountPushResponse.account.
@@ -222,16 +227,19 @@ func normalRoutingConfigValue(config *routestrategies.NormalRoutingConfig) any {
 // sanitizeApiKeyItem mirrors sanitizeApiKey (no secret).
 func sanitizeApiKeyItem(item *apikeys.ListItem) PublicApiKeySummary {
 	return PublicApiKeySummary{
-		ID:                   item.ID,
-		Name:                 item.Name,
-		KeyPrefix:            item.KeyPrefix,
-		Status:               item.Status,
-		RouteStrategyID:      item.RouteStrategyID,
-		RouteStrategyName:    item.RouteStrategyName,
-		RouteStrategyMode:    item.RouteStrategyMode,
-		RouteStrategyStatus:  item.RouteStrategyStatus,
-		ExpiresAt:            item.ExpiresAt,
-		AvailabilitySchedule: availabilityScheduleValue(item.AvailabilitySchedule),
+		ID:                          item.ID,
+		Name:                        item.Name,
+		KeyPrefix:                   item.KeyPrefix,
+		Status:                      item.Status,
+		RouteStrategyID:             item.RouteStrategyID,
+		RouteStrategyName:           item.RouteStrategyName,
+		RouteStrategyMode:           item.RouteStrategyMode,
+		RouteStrategyStatus:         item.RouteStrategyStatus,
+		ExpiresAt:                   item.ExpiresAt,
+		AvailabilitySchedule:        availabilityScheduleValue(item.AvailabilitySchedule),
+		SchedulingPreferenceID:      item.SchedulingPreferenceID,
+		SchedulingPreferenceName:    item.SchedulingPreferenceName,
+		SchedulingPreferenceBuiltIn: item.SchedulingPreferenceBuiltIn,
 	}
 }
 

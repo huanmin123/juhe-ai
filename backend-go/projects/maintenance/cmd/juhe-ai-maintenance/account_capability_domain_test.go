@@ -17,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // capabilityDomainTestSecret 是 CLI 测试的解密密钥（进程内固定测试值）。
@@ -179,14 +180,14 @@ func TestCapabilityDomainFailureExitCode(t *testing.T) {
 	}
 	defer db.Close()
 	var valueJSON string
-	if err := db.QueryRow(`SELECT value_json FROM global_settings WHERE key = ?`, capabilitydomain.MigrationSettingKey).Scan(&valueJSON); err != nil {
+	if err := db.QueryRow(`SELECT value_json FROM global_settings WHERE key = ?`, capdomain.MigrationSettingKey).Scan(&valueJSON); err != nil {
 		t.Fatalf("read record: %v", err)
 	}
-	record, err := capabilitydomain.ParseRecord(valueJSON)
+	record, err := capdomain.ParseRecord(valueJSON)
 	if err != nil {
 		t.Fatalf("parse record: %v", err)
 	}
-	if record.Stage != capabilitydomain.StageM1Running {
+	if record.Stage != capdomain.StageM1Running {
 		t.Fatalf("record stage = %q, want m1_running", record.Stage)
 	}
 	// 修复后同阶段重跑 → 0。

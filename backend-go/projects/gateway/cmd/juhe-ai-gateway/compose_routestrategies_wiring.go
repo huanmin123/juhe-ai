@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"strconv"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
@@ -59,6 +61,10 @@ func (i gatewayAPIKeyValidationBusInvalidator) InvalidateValidationCache(reason 
 // （Node facade 的 unavailable 形态，请求不失败）。
 type routeStrategySpeedFirstFacade struct {
 	service *gatewayproxyhealth.LatencyDegradationService
+	// preferenceNameLookup 批量解析调度偏好名（id → name）；nil（无业务库
+	// 句柄）时 preference 条目不附名，解析失败按存储错误上抛（请求以
+	// runtimeAvailable=false 呈现，不静默吞掉）。
+	preferenceNameLookup func(ctx context.Context, ids []string) (map[string]string, error)
 }
 
 func (f routeStrategySpeedFirstFacade) ListDegradedRuntime(ctx context.Context, systemAccountID *string, routeStrategyIDs []string) ([]routestrategies.SpeedFirstRuntimeItem, bool, error) {
@@ -73,7 +79,11 @@ func (f routeStrategySpeedFirstFacade) ListDegradedRuntime(ctx context.Context, 
 		return nil, false, err
 	}
 	out := make([]routestrategies.SpeedFirstRuntimeItem, 0, len(items))
+	preferenceIDs := make([]string, 0)
 	for _, item := range items {
+		if item.Source == gatewayproxyhealth.DegradedRuntimeSourcePreference && item.PreferenceID != "" {
+			preferenceIDs = append(preferenceIDs, item.PreferenceID)
+		}
 		out = append(out, routestrategies.SpeedFirstRuntimeItem{
 			AccountID:                      item.AccountID,
 			AccountName:                    item.AccountName,
@@ -89,7 +99,22 @@ func (f routeStrategySpeedFirstFacade) ListDegradedRuntime(ctx context.Context, 
 			RecoveryProbeRoundSuccessCount: item.RecoveryProbeRoundSuccessCount,
 			Reason:                         item.Reason,
 			Dimension:                      item.Dimension,
+			Source:                         item.Source,
+			PreferenceID:                   item.PreferenceID,
 		})
+	}
+	var names map[string]string
+	if len(preferenceIDs) > 0 && f.preferenceNameLookup != nil {
+		if names, err = f.preferenceNameLookup(ctx, preferenceIDs); err != nil {
+			return nil, false, err
+		}
+	}
+	if len(names) > 0 {
+		for index := range out {
+			if name, ok := names[out[index].PreferenceID]; ok {
+				out[index].PreferenceName = name
+			}
+		}
 	}
 	return out, true, nil
 }
@@ -98,6 +123,68 @@ func (f routeStrategySpeedFirstFacade) ClearDegradedRuntime(ctx context.Context,
 	if f.service == nil {
 		return 0, nil
 	}
+	// per-strategy 清理由服务内部同时覆盖 v1 与 v2 两代（同策略段的偏好状态
+	// 一并清除）。
 	cleared, err := f.service.ClearNormalRouteLatencyDegradationForRouteStrategy(ctx, routeStrategyID)
 	return int(cleared), err
+}
+
+// newSchedulingPreferenceNameLookup 构造运行态条目的偏好名批量解析闭包：
+// 按主键直查 scheduling_preferences（不过滤 enabled——停用偏好的运行态条目
+// 仍要显示其名，与"绑定保留"语义一致）；PG 方言带 juhe_business 前缀并使用
+// $n 占位（pgpool 无驱动层 ? -> $n 改写，BUG-0219），sqlite 用 ? 占位。
+func newSchedulingPreferenceNameLookup(composed *composition) func(ctx context.Context, ids []string) (map[string]string, error) {
+	if composed == nil || composed.db == nil {
+		return nil
+	}
+	pgDialect := composed.pgDialect
+	return func(ctx context.Context, ids []string) (map[string]string, error) {
+		unique := make([]string, 0, len(ids))
+		seen := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			unique = append(unique, id)
+		}
+		if len(unique) == 0 {
+			return map[string]string{}, nil
+		}
+		table := "scheduling_preferences"
+		if pgDialect {
+			table = "juhe_business.scheduling_preferences"
+		}
+		placeholders := make([]string, len(unique))
+		args := make([]any, len(unique))
+		for index, id := range unique {
+			if pgDialect {
+				placeholders[index] = "$" + strconv.Itoa(index+1)
+			} else {
+				placeholders[index] = "?"
+			}
+			args[index] = id
+		}
+		query := "SELECT id, name FROM " + table + " WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+		rows, err := composed.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		names := make(map[string]string, len(unique))
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
+				return nil, err
+			}
+			names[id] = name
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return names, nil
+	}
 }

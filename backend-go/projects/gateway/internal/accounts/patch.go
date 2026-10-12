@@ -46,6 +46,10 @@ type PatchResult struct {
 	// :744-761)：余额查询身份（开关/配置/Key 指纹/base URL/代理）发生变化，
 	// 提交后触发余额快照旧代次清理端口。
 	BalanceIdentityChanged bool `json:"-"`
+	// M3 显式清理审计载荷（D6 只缩不扩）：CapabilityLegacyCleanupRemoved 是
+	// 本次被清理的域外遗留能力（排序去重，空 = 无清理）；路由面据此落单独
+	// 的「清理域外能力」操作日志（含账户与被移除值列表）。JSON 不外发。
+	CapabilityLegacyCleanupRemoved []string `json:"-"`
 }
 
 // PatchInput is the validated basic-edit payload: the account-edit-basic
@@ -100,6 +104,32 @@ type PatchInput struct {
 	// §8.1/§9)：false→true 的翻转在补丁事务内做归属名额校验；置 false 与幂等
 	// true 不校验。特供消费方是 jobs 恢复道，不进 gatewayRuntimeFields。
 	ExpeditedRecoveryEnabled *bool
+	// CapabilityDomain 是 M2 域不可变校验的入参（camelCase capabilityDomain）：
+	// 携带且 ≠ 行现值 → 400「能力域不可更改」；不携带 = 无操作。域创建后
+	// 不可更改（D3），编辑面不允许任何改域路径。
+	CapabilityDomain        *string
+	CapabilityDomainPresent bool
+}
+
+// credentialModesExplicitlyDeclared 判定本次补丁是否显式携带
+// supported_endpoint_modes 数组（M3 只缩不扩的放行前提，计划 §D6 显式清理）：
+// 显式数组 = 清理动作的提交形态，允许缩小遗留集合；删键（null/缺省）走
+// 归一化默认集重置，默认集不含遗留值，放开会借归一化静默删除遗留能力
+// （I7），由调用方维持逐项相等拦截。HTTP 面数组解码为 []any；[]string 兼容
+// store 层直调。
+func credentialModesExplicitlyDeclared(input PatchInput) bool {
+	if !input.CredentialsPresent {
+		return false
+	}
+	raw, ok := input.Credentials["supported_endpoint_modes"]
+	if !ok || raw == nil {
+		return false
+	}
+	switch raw.(type) {
+	case []any, []string:
+		return true
+	}
+	return false
 }
 
 // accountPatchChangeLabel mirrors accountPatchChangeLabel (credentials.*
@@ -233,6 +263,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		lastHealthTraceID         sql.NullString
 		authorizationID           sql.NullString
 		expeditedRecoveryEnabled  int
+		capabilityDomain          string
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.name, accounts.notes, accounts.type,
@@ -254,7 +285,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.last_health_check_status_code, accounts.last_health_check_error_code,
 			accounts.last_health_check_error_message, accounts.last_health_check_trace_id,
 			accounts.authorization_instance_authorization_id,
-			accounts.expedited_recovery_enabled
+			accounts.expedited_recovery_enabled, accounts.capability_domain
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL`+scopeClause+`
@@ -274,7 +305,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.lastHealthCheckAt, &row.lastHealthSuccessAt, &row.healthCheckFailureCount,
 		&row.healthCheckFailureStart, &row.lastHealthStatusCode, &row.lastHealthErrorCode,
 		&row.lastHealthErrorMessage, &row.lastHealthTraceID, &row.authorizationID,
-		&row.expeditedRecoveryEnabled)
+		&row.expeditedRecoveryEnabled, &row.capabilityDomain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -296,6 +327,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 一致）。放在 revision CAS 之后对齐归档顺序：过期版本先返回 409。
 	if input.ClearFailureState && patchHasMixedEditField(input) {
 		return nil, &ValidationError{Message: "重新检查或异常恢复不能与账户字段修改同时提交"}
+	}
+	// M2 域不可变（D3，计划 §服务端统一校验）：body 携带 capabilityDomain 且
+	// ≠ 行现值 → 400；不携带 = 无操作。域创建后不可更改，编辑面没有改域路径。
+	if input.CapabilityDomainPresent {
+		requested := ""
+		if input.CapabilityDomain != nil {
+			requested = strings.TrimSpace(*input.CapabilityDomain)
+		}
+		if requested != row.capabilityDomain {
+			return nil, &ValidationError{Message: "能力域不可更改"}
+		}
 	}
 
 	now := s.now()
@@ -730,6 +772,38 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// M2 三集合保存规则 + M3 放开分支（D6 显式清理，计划 §M3 配套适配）：
+	// 合并后最终声明集与库中现值（事务内已读行）各自减去允许集（allowed 按
+	// 库中现存 domain/provider/type 计算）。显式携带 supported_endpoint_modes
+	// 数组的提交按「只缩不扩」放行缩小并记录被清理值（清理动作由路由面落
+	// 单独审计）；删键（null）等非显式路径走归一化默认集重置，维持逐项相等
+	// 拦截——默认集不含遗留值，放开会借归一化静默删除遗留能力（I7）。modes
+	// 键未携带时合并结果 = 现值，天然通过；旧集合一律服务端读库，不信任客户
+	// 端「遗留」标记（I7）。
+	var capabilityLegacyCleanupRemoved []string
+	if input.CredentialsPresent {
+		allowedModes := accountscore.AllowedEndpointModes(row.capabilityDomain, row.providerCode, row.accountType, accountscore.ProtocolPredicate{
+			ProviderCode:              row.providerCode,
+			ProtocolCode:              row.protocolCode,
+			ProtocolVersion:           row.protocolVersion,
+			ProviderProtocolProfileID: row.providerProtocolProfileID,
+		})
+		oldDeclared := credentialEndpointModes(currentCredentials)
+		newDeclared := oldDeclared
+		if credentialsChanged {
+			newDeclared = credentialEndpointModes(nextCredentials)
+		}
+		if credentialModesExplicitlyDeclared(input) {
+			removed, err := accountscore.AssertCapabilityLegacyShrinkOnly(oldDeclared, newDeclared, allowedModes)
+			if err != nil {
+				return nil, err
+			}
+			capabilityLegacyCleanupRemoved = removed
+		} else if err := accountscore.AssertCapabilityLegacySetsEqual(oldDeclared, newDeclared, allowedModes); err != nil {
+			return nil, err
+		}
+	}
+
 	// Provider model-catalog validations (account-management-patch.repository.ts
 	// :445-452 + :667 + normalizedModelMappingsForPatch): the gpt
 	// request-override assertion rides the final credential record and the
@@ -759,6 +833,28 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 		finalCredentialsResolved = true
 		return finalCredentials, nil
+	}
+	// M2 Gemini 对话域联动（计划 §服务端统一校验）：chat 域 gemini（native
+	// 档案）且 modes 参与变更时保持「至少一种对话能力」；媒体域 gemini 不适
+	// 用对话能力要求；chat 域其他供应商不新增任何既有校验之外的拒绝（I3）。
+	if endpointModesChanged && row.capabilityDomain == accountscore.CapabilityDomainChat {
+		patchProfile := protocolPredicateInput{
+			providerCode:              row.providerCode,
+			protocolCode:              row.protocolCode,
+			protocolVersion:           row.protocolVersion,
+			providerProtocolProfileID: row.providerProtocolProfileID,
+		}
+		if isGeminiProtocolProfileOf(patchProfile) {
+			finalCreds, err := resolveFinalCredentials()
+			if err != nil {
+				return nil, err
+			}
+			if err := assertGeminiEndpointModesCompatible(credentialEndpointModes(finalCreds), row.accountType); err != nil {
+				// 断言族返回普通 error；编辑链按 ValidationError 渲染 400，
+				// 文案保持断言族原文。
+				return nil, &ValidationError{Message: err.Error()}
+			}
+		}
 	}
 	if input.CredentialsPresent || input.SupportedModelsPresent {
 		finalCreds, err := resolveFinalCredentials()
@@ -1227,13 +1323,14 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 
 	result := &PatchResult{
-		ID:                     row.id,
-		ConfigRevision:         row.configRevision,
-		ChangedFields:          []string{},
-		Name:                   row.name,
-		OwnerSystemAccountID:   row.systemAccountID,
-		Changes:                changes,
-		BalanceIdentityChanged: balanceIdentityChangedFlag,
+		ID:                             row.id,
+		ConfigRevision:                 row.configRevision,
+		ChangedFields:                  []string{},
+		Name:                           row.name,
+		OwnerSystemAccountID:           row.systemAccountID,
+		Changes:                        changes,
+		BalanceIdentityChanged:         balanceIdentityChangedFlag,
+		CapabilityLegacyCleanupRemoved: capabilityLegacyCleanupRemoved,
 	}
 	if len(changes) == 0 {
 		return result, nil
