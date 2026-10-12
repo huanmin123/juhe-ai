@@ -40,7 +40,7 @@ J1 续约（周期性）→ ALTER 排队等长读事务（最长 143s）
 ## 同窗观察项（另行跟进，非本缺陷）
 
 1. **表存储监控概览查询**（`WITH latest_snapshots ... table_storage_snapshots`）：mean 373s / max 577s / 9 次调用——表 30 万行 **2.2GB**（行均 ~7KB）。SELECT 不阻塞 DML，但长事务持快照拖累 vacuum 与 IO，是夜间波放大器。方向：快照表保留期/预聚合/索引化 DISTINCT ON 列。
-2. **`UPDATE usage_stats_minute SET success_cost_usd...`**：max 234s / 5 次——24 万行全扫 UPDATE（谓词无索引）。方向：谓词索引或改批量分段。
+2. **`UPDATE usage_stats_minute SET success_cost_usd...`**：max 234s / 5 次——24 万行全扫 UPDATE（谓词无索引）。方向：谓词索引或改批量分段。**已结案（2026-10-12）**：按根治路线落地三处回填卸载 + `backfill_progress` marker + `--apply-success-cost-backfill` 一次性子命令 + 扣减事务内补正，见 [问题-0310](问题-0310-ensure六表成功成本回填全扫与迟到补正缺口.md)；谓词索引方案按用户裁决否决（部分索引过渡不采纳）。
 3. 运维手册《监控与告警运维.md》5.11 已有 Redis 运行态一致性巡检；建议增加"PG ALTER 热路径"巡检口径：`pg_stat_statements` 中 DDL 语句 calls 应在进程生命周期内只增一轮，持续增长即热路径 DDL 回归。
 
 ## 教训（固化）
