@@ -332,6 +332,45 @@ func TestW3F4BaselineCodexCompatibilityShape(t *testing.T) {
 	}
 }
 
+// TestW3F4BaselineCodexCompatibilityJSONMode 钉 B 形态 × responses_json 臂
+// （W3 复审补强）：B 形态不强制 SSE——json 模式 Accept 单 application/json、
+// body 不置 stream:true；身份单源/注入/预算与 sse 臂同规（§9.1-B）。
+func TestW3F4BaselineCodexCompatibilityJSONMode(t *testing.T) {
+	request, body := w3BaselineRequest(t, "https://w3-up.test", func(input *Input) {
+		input.EndpointMode = "responses_json"
+		input.ClientCompatibility = "codex_responses"
+		input.HealthModel = "gpt-5.6-sol"
+	})
+	if request.URL.String() != "https://w3-up.test/v1/responses" {
+		t.Fatalf("URL=%s", request.URL)
+	}
+	header := request.Header
+	if got := header.Get("Accept"); got != "application/json" {
+		t.Fatalf("accept=%q want 单 application/json（B 形态不强制 SSE）", got)
+	}
+	session := header.Get("Session-Id")
+	if session == "" || header.Get("Thread-Id") != session {
+		t.Fatalf("身份头缺失或不一致: %v", header)
+	}
+	if got := header.Get("X-OpenAI-Internal-Codex-Responses-Lite"); got != "true" {
+		t.Fatalf("Lite 头=%q", got)
+	}
+	payload := w3BaselineBody(t, body)
+	if stream, ok := payload["stream"].(bool); ok && stream {
+		t.Fatalf("B 形态 json 模式不得强制 stream:true: %#v", payload)
+	}
+	if payload["store"] != false || payload["max_output_tokens"] != float64(probeOutputTokenLimit) {
+		t.Fatalf("body=%#v", payload)
+	}
+	if payload["prompt_cache_key"] != session {
+		t.Fatalf("prompt_cache_key=%v want == session", payload["prompt_cache_key"])
+	}
+	metadata, ok := payload["client_metadata"].(map[string]any)
+	if !ok || metadata["session_id"] != session {
+		t.Fatalf("client_metadata=%#v", payload["client_metadata"])
+	}
+}
+
 // TestW3F4BaselineOAuthCodexOutboundShape 断言 A 形态（OAuth Codex）接线后
 // 出站形状（§9.1-A 裁决，与 F3 W2 接线同构）。迁移前基线已单独跑绿并留档
 // （URL=账户 base 拼 /responses、responses_json 发 JSON/stream:false +
