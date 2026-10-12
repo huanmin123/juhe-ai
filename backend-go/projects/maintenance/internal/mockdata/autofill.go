@@ -450,7 +450,7 @@ var autofillSkipSuffixes = []string{
 //     分组账户统计）。
 //  2. owner 状态与租约族：这些表的行代表「当前持有者 / 游标位置」，占位行会
 //     让本机后端误以为某个 owner 或某段游标有效。
-//  3. 造数域会显式写入的业务表：本包五个域各自负责它们的语义，占位行会在同
+//  3. 造数域会显式写入的业务表：本包各造数域各自负责它们的语义，占位行会在同
 //     一次运行的域写入之后盖上去，导致页面读到假数据。域实现者新增会写的表时
 //     必须同步登记到这里。
 var autofillSkipExactTables = map[string]string{
@@ -551,7 +551,6 @@ var autofillSkipExactTables = map[string]string{
 	"chat_context_checkpoints":        "域业务表：seedChatCodexModelCheck 写入上下文检查点",
 	"chat_context_entries":            "域业务表：seedChatCodexModelCheck 写入上下文条目",
 	"chat_message_idempotency":        "域业务表：seedChatCodexModelCheck 写入幂等键",
-	"chat_image_generations":          "域业务表：seedChatCodexModelCheck 写入图像生成",
 	"chat_asset_references":           "域业务表：seedChatCodexModelCheck 写入资产引用",
 	"chat_assets":                     "域业务表：seedChatCodexModelCheck 写入聊天资产",
 	"codex_context_sessions":          "域业务表：seedChatCodexModelCheck 写入 codex 会话",

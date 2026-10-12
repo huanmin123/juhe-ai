@@ -159,16 +159,27 @@ func TestRunSQLiteMigratesAndIsIdempotent(t *testing.T) {
 	if report.ArchivedRowsUpdated != 2 || report.ArchivedRowsTotal != 2 {
 		t.Fatalf("archived rows = updated %d total %d, want 2/2 (group+api_key)", report.ArchivedRowsUpdated, report.ArchivedRowsTotal)
 	}
-	// 列删除断言：旧三列不存在，新四列存在，保留列仍在。
+	// 列删除断言：旧三列不存在，绑定新列存在；工具绑定八列（含
+	// default_image_model）随重建一并退役（PLAN-20261012T121500000Z 决策 F），
+	// legacy 夹具里的 default_image_model 不得残留。
 	columns := tableColumns(t, db, "chat_conversations")
 	for _, legacy := range legacyColumns {
 		if hasColumn(columns, legacy) {
 			t.Errorf("chat_conversations still has legacy column %s", legacy)
 		}
 	}
-	for _, added := range []string{"archived", "search_account_id", "search_model_id", "image_account_id", "bind_account_id"} {
+	for _, added := range []string{"archived", "bind_account_id", "bind_account_name_snapshot"} {
 		if !hasColumn(columns, added) {
 			t.Errorf("chat_conversations lacks %s after migration", added)
+		}
+	}
+	for _, retired := range []string{
+		"default_image_model",
+		"search_account_id", "search_model_id", "image_account_id",
+		"video_account_id", "default_video_model", "audio_account_id", "default_audio_model",
+	} {
+		if hasColumn(columns, retired) {
+			t.Errorf("chat_conversations still has retired tool column %s after rebuild", retired)
 		}
 	}
 	// 数据断言：account 行保留绑定且未归档；group/api_key 行归档且保留消息事实。

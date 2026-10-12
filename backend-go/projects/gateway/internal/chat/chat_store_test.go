@@ -481,7 +481,7 @@ func userBytesFor(t *testing.T, db *sql.DB, messageID, content string) int64 {
 func TestCreateConversationAndDefaults(t *testing.T) {
 	f := newChatFixture(t)
 	conversation := f.createConversation("chat_conv_a", "owner-1")
-	if conversation.Title != "新对话" || conversation.DefaultImageModel != ImageModelGPTImage2 {
+	if conversation.Title != "新对话" {
 		t.Fatalf("unexpected defaults: %+v", conversation)
 	}
 	if nextSequenceNo(t, f.db, "chat_conv_a") != 1 || conversation.UserTurnCount != 0 {
@@ -636,12 +636,6 @@ func TestUpdateConversationPartialAnd404(t *testing.T) {
 	})
 	if err != nil || missing != nil {
 		t.Fatalf("expected nil conversation + nil err, got %v %v", missing, err)
-	}
-	if _, err := f.store.UpdateConversation(UpdateConversationInput{
-		ConversationID: "chat_conv_a", SystemAccountID: "owner-1",
-		DefaultImageModel: stringPtr("dall-e-3"), Now: f.nowISO,
-	}); err == nil {
-		t.Fatal("expected invalid image model error")
 	}
 }
 

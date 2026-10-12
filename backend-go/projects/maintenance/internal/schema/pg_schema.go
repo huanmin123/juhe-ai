@@ -1095,7 +1095,6 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "imageStreamIdleTimeoutSeconds", ValueJSON: "120"},
 	{Key: "imageUncommittedAttemptMaxLifetimeSeconds", ValueJSON: "3600"},
 	{Key: "imageRequestWallTimeoutSeconds", ValueJSON: "3600"},
-	{Key: "chatImageGenerationTotalTimeoutSeconds", ValueJSON: "900"},
 	// 媒体车道独立超时档位（音频视频模型接入设计 §3 车道独立超时）：audio
 	// 同步端点首响 120s；video 创建请求应快速返回 job 对象，60s。
 	{Key: "audioFirstResponseTimeoutSeconds", ValueJSON: "120"},

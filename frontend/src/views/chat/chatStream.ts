@@ -106,18 +106,6 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
     message.renderRevision = (message.renderRevision ?? 0) + 1
     return
   }
-  // tool.binding_required（工具体系设计 §9）：模型工具未绑定的引导事件。纯事件
-  // 不驱动内容块投影，落 toolEvents 失败条目（errorCode=tool_binding_required +
-  // UserHint），时间线渲染引导文案；candidates 原样保留供绑定弹窗预选。
-  if (event.type === 'tool.binding_required') {
-    const item = event.data.item
-    const id = String(item.callId ?? `binding-${message.toolEvents?.length ?? 0}`)
-    const existing = message.toolEvents?.find((tool) => tool.id === id)
-    if (existing) { existing.status = 'failed'; existing.item = item }
-    else (message.toolEvents ??= []).push({ id, type: String(item.toolId ?? 'tool'), status: 'failed', item })
-    message.renderRevision = (message.renderRevision ?? 0) + 1
-    return
-  }
   if (event.type === 'message.completed') {
     message.status = 'completed'
     message.finishReason = event.data.finishReason
@@ -193,7 +181,6 @@ function isValidChatStreamData(eventType: string, data: unknown): boolean {
   if (eventType === 'message.snapshot') return nonEmptyString(data.turnId) && isAssistantSnapshot(data.assistant)
   if (eventType === 'message.delta' || eventType === 'reasoning.delta') return nonEmptyString(data.messageId) && typeof data.delta === 'string'
   if (eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed' || eventType === 'tool.failed' || eventType === 'tool.canceled') return nonEmptyString(data.messageId) && isRecord(data.item)
-  if (eventType === 'tool.binding_required') return nonEmptyString(data.messageId) && isRecord(data.item) && nonEmptyString(data.item.toolId)
   if (eventType === 'content_block.started' || eventType === 'content_block.completed') return nonEmptyString(data.messageId) && isContentBlock(data.block)
   if (eventType === 'content_block.delta') return nonEmptyString(data.messageId) && nonEmptyString(data.blockId) && typeof data.delta === 'string'
   if (eventType === 'content_block.updated') return nonEmptyString(data.messageId) && nonEmptyString(data.blockId) && isSafeContentBlockPatch(data.patch)
@@ -252,22 +239,12 @@ function isContentBlock(value: unknown): value is ChatMessageContentBlock {
     && (value.order === undefined || validOrder(value.order))
     && isToolStatus(value.status)
     && (value.item === undefined || isRecord(value.item))
+  // 存量生成媒体块（output_image）保留校验放行：历史消息占位渲染需要（AI 问答
+  // 简化设计 D2）；output_audio/output_media_task 类型已随媒体工具退役删除。
   if (value.type === 'output_image') return nonEmptyString(value.blockId) && validOrder(value.order) && nonEmptyString(value.assetId)
     && isProcessStatus(value.status)
     && optionalString(value.mimeType) && optionalInteger(value.width) && optionalInteger(value.height) && optionalString(value.revisedPrompt)
     && Object.keys(value).every((key) => ['type', 'blockId', 'order', 'assetId', 'status', 'mimeType', 'width', 'height', 'revisedPrompt'].includes(key))
-  // M7 媒体块（问答音视频工具设计 §3）：SSE content_block 事件与快照里的
-  // output_audio/output_media_task 必须与既有块同口径验证放行，否则直播链路丢块。
-  if (value.type === 'output_audio') return nonEmptyString(value.blockId) && validOrder(value.order) && nonEmptyString(value.assetId)
-    && (value.status === undefined || isProcessStatus(value.status))
-    && optionalString(value.mimeType) && optionalInteger(value.durationHint)
-    && Object.keys(value).every((key) => ['type', 'blockId', 'order', 'assetId', 'status', 'mimeType', 'durationHint'].includes(key))
-  if (value.type === 'output_media_task') return nonEmptyString(value.blockId) && validOrder(value.order) && nonEmptyString(value.jobId)
-    && value.kind === 'video'
-    && (value.status === 'queued' || value.status === 'in_progress' || value.status === 'completed' || value.status === 'failed')
-    && optionalInteger(value.progress) && optionalString(value.model) && optionalString(value.promptSummary)
-    && optionalString(value.assetId) && optionalString(value.error)
-    && Object.keys(value).every((key) => ['type', 'blockId', 'order', 'jobId', 'kind', 'status', 'progress', 'model', 'promptSummary', 'assetId', 'error'].includes(key))
   return false
 }
 

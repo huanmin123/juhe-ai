@@ -221,12 +221,6 @@ func TestW13BStringHelpers(t *testing.T) {
 	if stringsLower("AbC") != "abc" {
 		t.Fatalf("stringsLower 失败")
 	}
-	if derefAssistantI64(nil) != 0 || derefAssistantI64(int64PtrT(7)) != 7 {
-		t.Fatalf("derefAssistantI64 失败")
-	}
-	if !containsAny([]string{"x", "responses"}, []string{"responses"}) || containsAny([]string{"x"}, []string{"y"}) {
-		t.Fatalf("containsAny 失败")
-	}
 	if normalizeProviderToken("  OpenAI ") != "openai" || normalizeProviderToken("  ") != "" {
 		t.Fatalf("normalizeProviderToken 失败")
 	}
@@ -273,13 +267,6 @@ func TestW13BNumericAndCloneHelpers(t *testing.T) {
 	if _, ok := numericValue("str"); ok {
 		t.Fatalf("numericValue 字符串应失败")
 	}
-	if stringItem(nil, "k") != "" || stringItem(map[string]any{"k": "  "}, "k") != "" {
-		t.Fatalf("stringItem 失败")
-	}
-	if positiveIntegerItem(map[string]any{"w": -1}, "w") != nil || positiveIntegerItem(map[string]any{"w": 1.5}, "w") != nil ||
-		positiveIntegerItem(map[string]any{"w": 18014398509481984.0}, "w") != nil {
-		t.Fatalf("positiveIntegerItem 边界失败")
-	}
 	if cloneJSONMap(nil) != nil {
 		t.Fatalf("cloneJSONMap nil 应返回 nil")
 	}
@@ -289,27 +276,8 @@ func TestW13BNumericAndCloneHelpers(t *testing.T) {
 	if jsonBytesOf(make(chan int)) != math.MaxInt32 {
 		t.Fatalf("jsonBytesOf marshal 失败应返回 MaxInt32")
 	}
-	if !jsonMapEqual(nil, nil) || jsonMapEqual(nil, map[string]any{"a": 1}) {
-		t.Fatalf("jsonMapEqual 失败")
-	}
-	small := &ChatGenerationToolEvent{ID: "x", ToolType: "y", Status: asstStarted, Item: map[string]any{"k": "v"}}
-	if sanitizeToolEvent(small).Item == nil {
-		t.Fatalf("sanitizeToolEvent 小载荷应保留 item")
-	}
-	big := &ChatGenerationToolEvent{ID: "x", ToolType: "y", Status: asstStarted, Item: map[string]any{"k": strings.Repeat("v", chatGenerationToolJSONMaxBytes+1)}}
-	sanitized := sanitizeToolEvent(big)
-	if sanitized.Item != nil {
-		t.Fatalf("sanitizeToolEvent 超大载荷应丢弃 item")
-	}
-	imageSanitized := sanitizeImageEvent(&ChatGenerationImageEvent{ID: "i", Status: "completed", Item: map[string]any{"assetId": "a", "b64_json": "zz", "result": "yy"}})
-	if imageSanitized.Item["b64_json"] != nil || imageSanitized.Item["result"] != nil || imageSanitized.Item["assetId"] != "a" {
-		t.Fatalf("sanitizeImageEvent 脱敏失败: %v", imageSanitized.Item)
-	}
 	if raw := jsonRawBlock(&assistantBlock{Type: "output_text", Text: "hi"}); raw["text"] != "hi" {
 		t.Fatalf("jsonRawBlock 失败")
-	}
-	if jsonRawMap(nil) != nil {
-		t.Fatalf("jsonRawMap nil 应返回 nil")
 	}
 }
 
@@ -326,26 +294,6 @@ func TestW13BAssistantTimeline(t *testing.T) {
 	if merged == nil || merged.Text != "想法" || merged.BlockID != "assistant_block_1" {
 		t.Fatalf("合并 reasoning 失败: %+v", merged)
 	}
-	if _, err := tl.StartTool("", "t", nil); err == nil {
-		t.Fatalf("空 callId 应报错")
-	}
-	if _, err := tl.StartTool("c1", " ", nil); err == nil {
-		t.Fatalf("空 toolType 应报错")
-	}
-	block, err := tl.StartTool("c1", "web_search", map[string]any{"q": 1})
-	if err != nil || block.Item["q"] != float64(1) {
-		t.Fatalf("StartTool 失败: %v", err)
-	}
-	dup, err := tl.StartTool("c1", "web_search", map[string]any{"q": 2})
-	if err != nil || dup.Item == nil {
-		t.Fatalf("重复 StartTool 应返回既有块: %+v", dup)
-	}
-	if _, err := tl.StartTool("c1", "other", nil); err == nil {
-		t.Fatalf("toolType 不一致应报错")
-	}
-	if _, err := tl.UpdateTool("missing", asstCompleted, nil); err == nil {
-		t.Fatalf("未知工具更新应报错")
-	}
 	if _, err := tl.CompleteBlock("missing"); err == nil {
 		t.Fatalf("未知块完成应报错")
 	}
@@ -353,54 +301,16 @@ func TestW13BAssistantTimeline(t *testing.T) {
 	if err != nil || completed.Status != asstCompleted {
 		t.Fatalf("完成 reasoning 失败: %+v %v", completed, err)
 	}
-	toolDone, err := tl.CompleteBlock("assistant_block_2")
-	if err != nil || toolDone.Status != asstCompleted {
-		t.Fatalf("完成 tool 失败")
-	}
-	// 更新已终结块：幂等返回。
-	if updated, err := tl.UpdateTool("c1", asstFailed, nil); err != nil || updated.Status != asstCompleted {
-		t.Fatalf("终态工具更新应幂等: %+v %v", updated, err)
-	}
-	// 图片块。
-	if tl.StartImage(StartImageInput{AssetID: " "}) != nil {
-		t.Fatalf("空 assetId 应返回 nil")
-	}
-	img := tl.StartImage(StartImageInput{AssetID: "a1", MimeType: "image/webp", Width: int64PtrT(16), Height: int64PtrT(16), RevisedPrompt: "p"})
-	if img == nil || img.MimeType != "image/webp" {
-		t.Fatalf("StartImage 失败")
-	}
-	if again := tl.StartImage(StartImageInput{AssetID: "a1"}); again.BlockID != img.BlockID {
-		t.Fatalf("重复 StartImage 应幂等")
-	}
-	if updated := tl.UpdateImage(StartImageInput{AssetID: "a1", RevisedPrompt: "p2"}, asstCompleted); updated.Status != asstCompleted {
-		t.Fatalf("UpdateImage 完成失败")
-	}
-	if frozen := tl.UpdateImage(StartImageInput{AssetID: "a1"}, asstFailed); frozen.Status != asstCompleted {
-		t.Fatalf("终态图片更新应幂等")
-	}
-	if tl.UpdateImage(StartImageInput{AssetID: "  "}, asstCompleted) != nil {
-		t.Fatalf("空 assetId 应返回 nil")
-	}
-	created := tl.UpdateImage(StartImageInput{AssetID: "a2", MimeType: "image/png"}, asstStarted)
-	if created == nil || created.MimeType != "image/png" {
-		t.Fatalf("UpdateImage 创建 started 块失败")
-	}
 	// 终态后所有追加都应被拒绝。
 	tl.Finalize(asstCompleted)
-	if tl.AppendReasoning("x") != nil || tl.UpdateImage(StartImageInput{AssetID: "a3"}, asstStarted) != nil {
+	if tl.AppendReasoning("x") != nil {
 		t.Fatalf("终态时间线应拒绝更新")
-	}
-	if _, err := tl.StartTool("c9", "t", nil); err == nil {
-		t.Fatalf("终态时间线 StartTool 应报错")
-	}
-	if _, err := tl.UpdateTool("c1", asstFailed, nil); err == nil {
-		t.Fatalf("终态时间线 UpdateTool 应报错")
 	}
 	if _, err := tl.CompleteBlock("assistant_block_1"); err == nil {
 		t.Fatalf("终态时间线 CompleteBlock 应报错")
 	}
 	snapshot := tl.Snapshot()
-	if snapshot.Status != asstCompleted || snapshot.ContentText != "" || len(snapshot.ContentBlocks) != 4 {
+	if snapshot.Status != asstCompleted || snapshot.ContentText != "" || len(snapshot.ContentBlocks) != 1 {
 		t.Fatalf("Snapshot 失败: %+v", snapshot)
 	}
 	if snapshot.ContentBlocks[0].Text != "想法" || snapshot.ContentBlocks[0].Status != asstCompleted {
@@ -436,24 +346,6 @@ func TestW13BRunnerProjectionAndEvents(t *testing.T) {
 	}
 	runner.Publish("noop", map[string]any{}, ChatGenerationProjectionUpdate{})
 	runner.Publish("noop2", map[string]any{}, ChatGenerationProjectionUpdate{ReasoningCompleted: true})
-	runner.Publish("tool.started", map[string]any{}, ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{ID: "c1", ToolType: "web_search", Status: asstStarted, Item: map[string]any{"q": 1}}})
-	runner.Publish("tool.updated", map[string]any{}, ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{ID: "c1", ToolType: "web_search", Status: asstUpdated}})
-	runner.Publish("tool.completed", map[string]any{}, ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{ID: "c1", ToolType: "web_search", Status: asstCompleted}})
-	// 未知工具更新（no-op 分支）。
-	runner.Publish("tool.completed", map[string]any{}, ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{ID: "ghost", ToolType: "web_search", Status: asstCompleted}})
-	// toolType 不一致（no-op 分支）。
-	runner.Publish("tool.started", map[string]any{}, ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{ID: "c1", ToolType: "other", Status: asstStarted}})
-	// started 但已有 item（no-op 分支）。
-	runner.Publish("tool.started", map[string]any{}, ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{ID: "c1", ToolType: "web_search", Status: asstStarted, Item: map[string]any{"q": 9}}})
-	// 图片事件：started -> completed（含字段 patch）。
-	runner.Publish("image.started", map[string]any{}, ChatGenerationProjectionUpdate{ImageEvent: &ChatGenerationImageEvent{ID: "i1", Status: asstStarted, Item: map[string]any{"assetId": "a1"}}})
-	runner.Publish("image.completed", map[string]any{}, ChatGenerationProjectionUpdate{ImageEvent: &ChatGenerationImageEvent{ID: "i1", Status: asstCompleted, Item: map[string]any{"assetId": "a1", "mimeType": "image/webp", "width": 32, "height": 32, "revisedPrompt": "p"}}})
-	// 已存在块重复 started（no-op 分支）。
-	runner.Publish("image.started", map[string]any{}, ChatGenerationProjectionUpdate{ImageEvent: &ChatGenerationImageEvent{ID: "i1", Status: asstStarted, Item: map[string]any{"assetId": "a1"}}})
-	// 未知图片 + failed（no-op 分支）。
-	runner.Publish("image.failed", map[string]any{}, ChatGenerationProjectionUpdate{ImageEvent: &ChatGenerationImageEvent{ID: "i9", Status: asstFailed, Item: map[string]any{"assetId": "zz"}}})
-	// 无 assetId（no-op 分支）。
-	runner.Publish("image.failed", map[string]any{}, ChatGenerationProjectionUpdate{ImageEvent: &ChatGenerationImageEvent{ID: "i9", Status: asstFailed, Item: map[string]any{"other": 1}}})
 	snapshot := runner.snapshotAssistantLocked()
 	if snapshot["contentText"] != "hi" || snapshot["reasoningText"] != "想" {
 		t.Fatalf("assistant 快照失败: %v", snapshot)
@@ -881,11 +773,11 @@ func TestW13BRouteCapabilityForAccount(t *testing.T) {
 	if _, ok := routeCapabilityForAccount(oauth, capability, "m", ProtocolChatCompletions); ok {
 		t.Fatalf("gpt oauth 应拒绝采样参数")
 	}
-	plain := ChatTransportAccount{ProviderCode: "openai", Type: "api_key"}
+	plain := ChatTransportAccount{ProviderCode: "deepseek", Type: "api_key"}
 	if got, ok := routeCapabilityForAccount(plain, capability, "m", ProtocolChatCompletions); !ok || got.Min != 0 {
 		t.Fatalf("无映射应直通: %+v %v", got, ok)
 	}
-	bridged := ChatTransportAccount{ProviderCode: "openai", Type: "api_key", ModelMappings: []ChatTransportModelMapping{{
+	bridged := ChatTransportAccount{ProviderCode: "deepseek", Type: "api_key", ModelMappings: []ChatTransportModelMapping{{
 		SourceModel: "m", SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "responses",
 	}}}
 	if _, ok := routeCapabilityForAccount(bridged, ChatGenerationParameterCapability{Parameter: "seed"}, "m", ProtocolChatCompletions); ok {
@@ -897,7 +789,7 @@ func TestW13BRouteCapabilityForAccount(t *testing.T) {
 	if _, ok := routeCapabilityForAccount(bridged, ChatGenerationParameterCapability{Parameter: "maxOutputTokens"}, "m", ProtocolChatCompletions); !ok {
 		t.Fatalf("桥接下 maxOutputTokens 应保留")
 	}
-	sameModel := ChatTransportAccount{ProviderCode: "openai", Type: "api_key", ModelMappings: []ChatTransportModelMapping{{
+	sameModel := ChatTransportAccount{ProviderCode: "deepseek", Type: "api_key", ModelMappings: []ChatTransportModelMapping{{
 		SourceModel: "m", SourceEndpointFamily: "chat_completions", UpstreamModel: "m",
 	}}}
 	if _, ok := routeCapabilityForAccount(sameModel, capability, "m", ProtocolChatCompletions); !ok {
@@ -912,7 +804,7 @@ func TestW13BRouteCapabilityForAccount(t *testing.T) {
 	if _, ok := routeCapabilityForAccount(different, ChatGenerationParameterCapability{Parameter: "maxOutputTokens"}, "m", ProtocolChatCompletions); !ok {
 		t.Fatalf("gpt-5 上游应支持 maxOutputTokens")
 	}
-	disabledMapping := ChatTransportAccount{ProviderCode: "openai", Type: "api_key", ModelMappings: []ChatTransportModelMapping{{
+	disabledMapping := ChatTransportAccount{ProviderCode: "deepseek", Type: "api_key", ModelMappings: []ChatTransportModelMapping{{
 		Enabled: boolPtr(false), SourceModel: "m", SourceEndpointFamily: "chat_completions",
 	}}}
 	if _, ok := routeCapabilityForAccount(disabledMapping, capability, "m", ProtocolChatCompletions); !ok {
@@ -937,56 +829,22 @@ func TestW13BReasoningDefault(t *testing.T) {
 		t.Fatalf("缺默认应为空")
 	}
 	// scopeSupportedProtocols 的单账户视图聚合（chatRoutes 方法，经
-	// chatBindingScope 间接覆盖；此处钉住账户视图双协议判定）。
+	// chatBindingScope 间接覆盖）：账户档案决定唯一主推方向（deepseek→chat、
+	// gpt→responses），不再按双协议求交集。
 	enabled := true
-	view := ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse", "responses_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "m"}}}
-	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{view}}, "o", "m")
-	if len(protocols) != 2 {
-		t.Fatalf("双协议解析失败: %v", protocols)
+	chatView := ChatTransportAccount{ProviderCode: "deepseek", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "m"}}}
+	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{chatView}}, "o", "m")
+	if len(protocols) != 1 || protocols[0] != ProtocolChatCompletions {
+		t.Fatalf("chat 方向解析失败: %v", protocols)
+	}
+	responsesView := ChatTransportAccount{ProviderCode: "gpt", SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "m"}}}
+	protocols = (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{responsesView}}, "o", "m")
+	if len(protocols) != 1 || protocols[0] != ProtocolResponses {
+		t.Fatalf("responses 方向解析失败: %v", protocols)
 	}
 	empty := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{}, "o", "m")
 	if len(empty) != 0 {
 		t.Fatalf("空账户应返回空协议: %v", empty)
-	}
-}
-
-func TestW13BJpegWebpDimensions(t *testing.T) {
-	if w, h := jpegDimensions([]byte{0xFF, 0xD8}); w != 0 || h != 0 {
-		t.Fatalf("过短 jpeg 应为 0")
-	}
-	jpeg := append([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x02}, make([]byte, 20)...)
-	if w, h := jpegDimensions(jpeg); w != 0 || h != 0 {
-		t.Fatalf("无 SOF jpeg 应为 0")
-	}
-	sof := []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x00, 0x00, 0x08, 0x00, 0x10, 0, 0, 0, 0, 0}
-	if w, h := jpegDimensions(sof); w != 16 || h != 8 {
-		t.Fatalf("SOF 尺寸失败: %d %d", w, h)
-	}
-	if w, h := webpDimensions([]byte("RIFF")); w != 0 || h != 0 {
-		t.Fatalf("过短 webp 应为 0")
-	}
-	vp8 := make([]byte, 30)
-	copy(vp8, "RIFF\x00\x00\x00\x00WEBPVP8 ")
-	vp8[27], vp8[29] = 0x10, 0x08
-	if w, h := webpDimensions(vp8); w != 16 || h != 8 {
-		t.Fatalf("VP8 尺寸失败: %d %d", w, h)
-	}
-	vp8l := make([]byte, 30)
-	copy(vp8l, "RIFF\x00\x00\x00\x00WEBPVP8L")
-	vp8l[24] = 0x0F
-	if w, h := webpDimensions(vp8l); w != 16 || h != 1 {
-		t.Fatalf("VP8L 尺寸失败: %d %d", w, h)
-	}
-	vp8x := make([]byte, 30)
-	copy(vp8x, "RIFF\x00\x00\x00\x00WEBPVP8X")
-	vp8x[24], vp8x[27] = 15, 7
-	if w, h := webpDimensions(vp8x); w != 16 || h != 8 {
-		t.Fatalf("VP8X 尺寸失败: %d %d", w, h)
-	}
-	unknown := make([]byte, 30)
-	copy(unknown, "RIFF\x00\x00\x00\x00WEBPXXXX")
-	if w, h := webpDimensions(unknown); w != 0 || h != 0 {
-		t.Fatalf("未知 webp 块应为 0")
 	}
 }
 
@@ -1037,79 +895,6 @@ func TestW13BLocalObjectStorePaths(t *testing.T) {
 	}
 }
 
-func TestW13BImageToolNormalizers(t *testing.T) {
-	if got, err := normalizeChatImageOutputFormat(nil); err != nil || got != "webp" {
-		t.Fatalf("默认输出格式失败")
-	}
-	if got, err := normalizeChatImageOutputFormat(" JPG "); err != nil || got != "jpeg" {
-		t.Fatalf("jpg 归一失败: %q %v", got, err)
-	}
-	if _, err := normalizeChatImageOutputFormat("bmp"); err == nil {
-		t.Fatalf("非法输出格式应报错")
-	}
-	if got, err := normalizeChatImageQuality("HIGH"); err != nil || got != "high" {
-		t.Fatalf("quality 归一失败")
-	}
-	if _, err := normalizeChatImageQuality("ultra"); err == nil {
-		t.Fatalf("非法 quality 应报错")
-	}
-	if got, err := normalizeChatImageSize("1024X1024"); err != nil || got != "1024x1024" {
-		t.Fatalf("尺寸归一失败: %q %v", got, err)
-	}
-	if _, err := normalizeChatImageSize("1000x1000"); err == nil {
-		t.Fatalf("非 16 倍数应报错")
-	}
-	if _, err := normalizeChatImageSize("4000x1024"); err == nil {
-		t.Fatalf("超长边应报错")
-	}
-	if _, err := normalizeChatImageSize("2048x512"); err == nil {
-		t.Fatalf("超比例应报错")
-	}
-	if _, err := normalizeChatImageSize("256x256"); err == nil {
-		t.Fatalf("像素过低应报错")
-	}
-	if _, err := normalizeChatImageSize("bogus"); err == nil {
-		t.Fatalf("非法尺寸应报错")
-	}
-	if parseInt("12x") != 0 {
-		t.Fatalf("parseInt 非数字应为 0")
-	}
-	ids, err := normalizeReferenceAssetIDs([]any{" chat_asset_" + strings.Repeat("a", 32) + " "})
-	if err != nil || len(ids) != 1 {
-		t.Fatalf("引用归一失败: %v", err)
-	}
-	if _, err := normalizeReferenceAssetIDs("nope"); err == nil {
-		t.Fatalf("非数组引用应报错")
-	}
-	if _, err := normalizeReferenceAssetIDs([]any{42}); err == nil {
-		t.Fatalf("非法 assetId 应报错")
-	}
-	if _, err := normalizeReferenceAssetIDs(make([]any, 6)); err == nil {
-		t.Fatalf("超过 5 张引用应报错")
-	}
-	if _, err := normalizeReferenceAssetIDs([]any{"chat_asset_" + strings.Repeat("a", 32), "chat_asset_" + strings.Repeat("a", 32)}); err == nil {
-		t.Fatalf("重复引用应报错")
-	}
-	if got := chatToolErrorCode(&chatInternalToolError{Code: "tool_timeout"}); got != "tool_timeout" {
-		t.Fatalf("工具错误码失败")
-	}
-	if got := chatToolErrorCode(&chatToolSchemaError{Code: "schema"}); got != "schema" {
-		t.Fatalf("schema 错误码失败")
-	}
-	if got := chatToolErrorCode(errors.New("plain")); got != "tool_execution_failed" {
-		t.Fatalf("普通错误码失败")
-	}
-	if got := publicChatDiagnostic(nil, "fallback"); got != "fallback" {
-		t.Fatalf("nil 诊断应回退")
-	}
-	if got := publicChatDiagnostic(errors.New("  "), "fallback"); got != "fallback" {
-		t.Fatalf("空白诊断应回退")
-	}
-	if got := publicChatDiagnostic(errors.New("boom"), "fallback"); got != "fallback；详情：boom" {
-		t.Fatalf("诊断拼接失败: %q", got)
-	}
-}
-
 func TestW13BUpstreamMessagePayload(t *testing.T) {
 	if msg := upstreamMessagePayload(`{"error":{"message":"上游错误"}}`, "fallback"); msg != "上游错误" {
 		t.Fatalf("上游错误消息失败: %q", msg)
@@ -1120,9 +905,6 @@ func TestW13BUpstreamMessagePayload(t *testing.T) {
 	if msg := upstreamMessagePayload("not json", "fallback"); msg != "fallback" {
 		t.Fatalf("非法载荷应回退")
 	}
-	if code := classifyGenerationError(&ChatImageGenerationRequestError{Code: GenErrImageFailed}, GenErrInternal).Code; code != GenErrImageFailed {
-		t.Fatalf("图片错误分类失败")
-	}
 	if code := classifyGenerationError(errors.New("x"), GenErrUpstreamHTTP).Code; code != GenErrUpstreamHTTP {
 		t.Fatalf("失败码透传失败: %s", code)
 	}
@@ -1131,18 +913,6 @@ func TestW13BUpstreamMessagePayload(t *testing.T) {
 	}
 	if headRevision(&chatRoutes{deps: &Deps{Store: newChatFixture(t).store}}, "w13b-missing", "o") != 0 {
 		t.Fatalf("无 head 应返回 0")
-	}
-	published := ""
-	publishApplicationToolEvent(func(eventType string, data map[string]any, update ChatGenerationProjectionUpdate) bool {
-		published = eventType
-		return true
-	}, "m", ChatToolExecutionEvent{
-		Status: "completed", CallID: "c1", ToolName: "generate_image", Reused: true,
-		ErrorCode: "x", ErrorMessage: "y",
-		PublicResult: map[string]any{"assetId": "a1", "mimeType": "image/webp", "width": 8, "height": 8},
-	})
-	if published != "tool.completed" {
-		t.Fatalf("应用工具事件发布失败: %q", published)
 	}
 }
 
@@ -1234,28 +1004,6 @@ func TestW13BResolveChatModelRequestOptions(t *testing.T) {
 }
 
 func floatPtrW13B(value float64) *float64 { return &value }
-
-func TestW13BStripImageResultStrings(t *testing.T) {
-	payload, values, err := stripImageResultStrings(`{"a":"x","result":"QUJD","b64_json":"REVG"}`, "result", "b64_json")
-	if err != nil || len(values) != 2 || values[0] != "QUJD" || values[1] != "REVG" {
-		t.Fatalf("提取失败: %q %v %v", payload, values, err)
-	}
-	if strings.Contains(payload, "QUJD") {
-		t.Fatalf("载荷应剔除 base64: %q", payload)
-	}
-	if _, _, err := stripImageResultStrings(`{"result":"AB\\C"}`); err == nil {
-		t.Fatalf("转义 base64 应报错")
-	}
-	if _, _, err := stripImageResultStrings(`{"result":""}`); err == nil {
-		t.Fatalf("空 base64 应报错")
-	}
-	if _, _, err := stripImageResultStrings(`{"result":"unterminated`); err == nil {
-		t.Fatalf("截断 JSON 应报错")
-	}
-	if _, _, err := stripImageResultStrings(`{"result":"QUJD"}`); err != nil {
-		t.Fatalf("默认字段应生效: %v", err)
-	}
-}
 
 func TestW13BCollectOpenAIChatSseEdgeCases(t *testing.T) {
 	if _, err := CollectOpenAIChatSse(strings.NewReader("\xff\xfe"), 100, nil, nil, 0); err == nil {
@@ -1513,250 +1261,7 @@ func TestW13BTokenCountFallbacks(t *testing.T) {
 	}
 }
 
-func TestW13BImagePayloadDecoding(t *testing.T) {
-	if _, err := decodeBase64Payload("!!!", 10); err == nil {
-		t.Fatalf("非法 base64 应报错")
-	}
-	if _, err := decodeBase64Payload("", 10); err == nil {
-		t.Fatalf("空解码应报错")
-	}
-	if _, err := decodeBase64Payload("QUJD", 1); err == nil {
-		t.Fatalf("超限应报错")
-	}
-	if imageMimeTypeFromBytes([]byte("not-an-image")) != "" {
-		t.Fatalf("未知格式应为空")
-	}
-	if got := chatAssetObjectExtension("image/gif"); got != ".bin" {
-		t.Fatalf("未知扩展应回退 bin")
-	}
-	if got := safeStorageSegment("  ", 4); got != "__" {
-		t.Fatalf("空段应替换为下划线: %q", got)
-	}
-	if got := safeStorageSegment(strings.Repeat("x", 300), 10); len(got) != 10 {
-		t.Fatalf("段长应截断")
-	}
-	if got := normalizedSHA256("nothex"); got != strings.Repeat("0", 64) {
-		t.Fatalf("非法摘要应回退全零")
-	}
-	key := StorageKeyForChatAsset("chat_asset_"+strings.Repeat("a", 32), strings.Repeat("b", 64), "image/png", "preview")
-	if !strings.Contains(key, "preview") || !strings.HasSuffix(key, ".png") {
-		t.Fatalf("存储键失败: %q", key)
-	}
-}
-
-func TestW13BChatInternalToolRegistry(t *testing.T) {
-	registry := newChatInternalToolRegistry("development", true, true)
-	if _, err := registry.definition("missing"); err == nil {
-		t.Fatalf("未知工具应报错")
-	}
-	if names := toolNamesOf(registry.resolveTools(true)); !equalStringsW3(names, []string{"diagnostic_echo", "web_search", "generate_image", "generate_video", "generate_audio"}) {
-		t.Fatalf("dev 注册表应含诊断/搜索/生图/媒体工具: %v", names)
-	}
-	if len(registry.resolveTools(false)) != 0 {
-		t.Fatalf("function calling 关闭应为空")
-	}
-	if names := toolNamesOf(newChatInternalToolRegistry("production", true, true).resolveTools(true)); !equalStringsW3(names, []string{"web_search", "generate_image", "generate_video", "generate_audio"}) {
-		t.Fatalf("生产环境应有搜索/图片/媒体模型工具: %v", names)
-	}
-	if names := toolNamesOf(newChatInternalToolRegistry("development", false, false).resolveTools(true)); !equalStringsW3(names, []string{"web_search", "generate_video", "generate_audio"}) {
-		t.Fatalf("开关全关时仍应注册搜索与媒体常驻工具（媒体无全局开关）: %v", names)
-	}
-	if _, err := registry.normalizeArguments("any", "{}", 1); err == nil {
-		t.Fatalf("参数超限应报错")
-	}
-	if _, err := registry.normalizeArguments("any", "not json", 100); err == nil {
-		t.Fatalf("非法 JSON 应报错")
-	}
-	if _, err := registry.normalizeArguments("any", "[1]", 100); err == nil {
-		t.Fatalf("根值非对象应报错")
-	}
-	value, err := registry.normalizeArguments("any", `{"a":1}`, 100)
-	if err != nil || value["a"] != float64(1) {
-		t.Fatalf("合法参数解析失败: %v", err)
-	}
-	if !availableInEnvironment([]string{"test"}, "test") || availableInEnvironment([]string{"test"}, "prod") {
-		t.Fatalf("环境可用性判断失败")
-	}
-	echo := newDiagnosticEchoTool()
-	result, err := echo.Execute(map[string]any{"text": "hi"}, nil)
-	if err != nil || result.PublicResult["echoedText"] != "hi" {
-		t.Fatalf("echo 工具失败: %v", err)
-	}
-	num, err := echo.Execute(map[string]any{"text": 7}, nil)
-	if err != nil || num.PublicResult["echoedText"] != "7" {
-		t.Fatalf("echo 数字回显失败: %+v", num)
-	}
-	empty, err := echo.Execute(nil, nil)
-	if err != nil || empty.PublicResult["echoedText"] != "" {
-		t.Fatalf("echo 空输入失败")
-	}
-}
-
-func TestW13BImageGenerationTransportValidation(t *testing.T) {
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: " ", Prompt: "p"}, "key", "", nil); err == nil {
-		t.Fatalf("空模型应报错")
-	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: " "}, "key", "", nil); err == nil {
-		t.Fatalf("空提示词应报错")
-	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Size: "bad"}, "key", "", nil); err == nil {
-		t.Fatalf("非法尺寸应报错")
-	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Quality: "ultra"}, "key", "", nil); err == nil {
-		t.Fatalf("非法质量应报错")
-	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", OutputFormat: "bmp"}, "key", "", nil); err == nil {
-		t.Fatalf("非法输出格式应报错")
-	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", References: []ChatImageEditReference{{}}}, "key", "", nil); err == nil {
-		t.Fatalf("引用限制应校验")
-	}
-	if err := validateChatImageEditReferenceLimits(nil); err == nil {
-		t.Fatalf("空引用应报错")
-	}
-	if err := validateChatImageEditReferenceLimits(make([]ChatImageEditReference, 6)); err == nil {
-		t.Fatalf("超量引用应报错")
-	}
-	if err := validateChatImageEditReferenceLimits([]ChatImageEditReference{{Bytes: 0}}); err == nil {
-		t.Fatalf("零字节引用应报错")
-	}
-	if err := validateChatImageEditReferenceLimits([]ChatImageEditReference{{Bytes: 100}, {Bytes: chatImageEditMaxReferenceBytes}}); err == nil {
-		t.Fatalf("总量超限应报错")
-	}
-	if code := imageGenerationPublicErrorCode(403, "Image generation is not enabled for this group", "permission_error"); code != GenErrImageNotEnabled {
-		t.Fatalf("未开通错误码失败: %s", code)
-	}
-	if code := imageGenerationPublicErrorCode(401, "x", ""); code != GenErrImagePermissionDenied {
-		t.Fatalf("权限错误码失败")
-	}
-	if code := imageGenerationPublicErrorCode(429, "x", ""); code != GenErrImageRateLimited {
-		t.Fatalf("限流错误码失败")
-	}
-	if code := imageGenerationPublicErrorCode(400, "x", ""); code != GenErrImageRequestRejected {
-		t.Fatalf("请求拒绝错误码失败")
-	}
-	if code := imageGenerationPublicErrorCode(500, "x", ""); code != GenErrImageFailed {
-		t.Fatalf("默认错误码失败")
-	}
-	if msg, errType := readImageGenerationErrorPayload(`{"error":{"message":"boom","type":"t"}}`, "fallback"); msg != "boom" || errType != "t" {
-		t.Fatalf("错误载荷解析失败: %q %q", msg, errType)
-	}
-	if msg, _ := readImageGenerationErrorPayload("nope", "fallback"); msg != "fallback" {
-		t.Fatalf("回退消息失败")
-	}
-}
-
-func TestW13BIsAbortError(t *testing.T) {
-	if isAbortError(errors.New("plain")) {
-		t.Fatalf("普通错误不应识别为中止")
-	}
-	if isAbortError(&abortLikeW13B{}) {
-		t.Fatalf("实现但返回 false 应为 false")
-	}
-	if !isAbortError(abortTrueW13B{}) {
-		t.Fatalf("AbortError 实现应识别")
-	}
-	if canceledTerm(true) != "canceled" || canceledTerm(false) != "failed" {
-		t.Fatalf("canceledTerm 失败")
-	}
-}
-
-type abortLikeW13B struct{}
-
-func (abortLikeW13B) Error() string    { return "abort" }
-func (abortLikeW13B) AbortError() bool { return false }
-
-type abortTrueW13B struct{}
-
-func (abortTrueW13B) Error() string    { return "abort" }
-func (abortTrueW13B) AbortError() bool { return true }
-
 func sha256SumW13B(data []byte) []byte {
 	digest := sha256.Sum256(data)
 	return digest[:]
-}
-
-func TestW13BOrchestratorRunLimits(t *testing.T) {
-	registry := newChatInternalToolRegistry("development", true, false)
-	tools := registry.resolveTools(true)
-	contextValue := &chatToolExecutionContext{OwnerID: "o"}
-	published := []ChatToolExecutionEvent{}
-	orchestrator := newChatInternalToolOrchestrator(registry, tools, contextValue, ChatOrchestratorLimits{MaxModelRounds: 1, MaxToolCalls: 1, MaxImageCalls: 0}, func(event ChatToolExecutionEvent) {
-		published = append(published, event)
-	})
-	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		return ChatToolModelTurn{}, errors.New("模型失败")
-	}); err == nil {
-		t.Fatalf("模型失败应上抛")
-	}
-	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"hi"}`}}}, nil
-	}); err == nil {
-		t.Fatalf("超过模型轮次上限应报错")
-	}
-	abortContext := &chatToolExecutionContext{OwnerID: "o", Aborted: func() bool { return true }}
-	abortOrchestrator := newChatInternalToolOrchestrator(registry, tools, abortContext, ChatOrchestratorLimits{MaxModelRounds: 2, MaxToolCalls: 2, MaxImageCalls: 0}, nil)
-	if _, err := abortOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		return ChatToolModelTurn{}, nil
-	}); err == nil || !strings.Contains(err.Error(), "取消") {
-		t.Fatalf("中止应报错: %v", err)
-	}
-	// 工具调用失败一次可纠偏后成功。
-	allowContext := &chatToolExecutionContext{OwnerID: "o"}
-	count := 0
-	failureOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 5, MaxImageCalls: 0}, nil)
-	result, err := failureOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		count++
-		if count == 1 {
-			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "bad", ToolName: "missing_tool", ArgumentsJSON: "{}"}}}, nil
-		}
-		return ChatToolModelTurn{Content: "done", FinishReason: "stop", InputTokens: int64PtrT(5), OutputTokens: int64PtrT(2)}, nil
-	})
-	if err != nil || result.Content != "done" || result.ModelRounds != 2 || result.ToolCalls != 1 {
-		t.Fatalf("纠偏轮失败: %+v %v", result, err)
-	}
-	if len(published) != 0 {
-		t.Fatalf("不应有事件")
-	}
-	// 复用缓存 + 次数上限。
-	cacheOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8, MaxImageCalls: 0}, nil)
-	cacheCount := 0
-	cacheResult, err := cacheOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		cacheCount++
-		if cacheCount == 1 {
-			return ChatToolModelTurn{ToolCalls: []ChatToolCall{
-				{CallID: "a", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"same"}`},
-				{CallID: "b", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"same"}`},
-			}}, nil
-		}
-		return ChatToolModelTurn{Content: "ok", FinishReason: "stop"}, nil
-	})
-	if err != nil || cacheResult.ToolCalls != 2 {
-		t.Fatalf("复用缓存失败: %+v %v", cacheResult, err)
-	}
-	// 超过工具调用上限。
-	limitOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 1, MaxImageCalls: 0}, nil)
-	if _, err := limitOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
-		return ChatToolModelTurn{ToolCalls: []ChatToolCall{
-			{CallID: "a", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"1"}`, SourceOrder: 1},
-			{CallID: "b", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"2"}`, SourceOrder: 0},
-		}}, nil
-	}); err == nil {
-		t.Fatalf("超过调用上限应报错")
-	}
-}
-
-func TestW13BStoreGeneratedImageSinkGuards(t *testing.T) {
-	sink := &storeGeneratedImageSink{routes: &chatRoutes{deps: &Deps{}}}
-	if _, err := sink.CommitGeneratedImage(GeneratedImageCommitInput{}); err == nil {
-		t.Fatalf("未配置存储应报错")
-	}
-}
-
-func toolNamesOf(tools []*toolDefinition) []string {
-	out := make([]string, 0, len(tools))
-	for _, tool := range tools {
-		out = append(out, tool.ModelName)
-	}
-	return out
 }

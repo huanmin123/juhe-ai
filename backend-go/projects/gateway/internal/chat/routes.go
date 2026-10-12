@@ -81,11 +81,6 @@ type AttachStreamHandler func(w http.ResponseWriter, r *http.Request, identity G
 // Deps carries the route collaborators.
 type Deps struct {
 	Store *Store
-	// AssetEditReferences is the narrow asset-read port consumed by the
-	// generation family (REFACTOR-0006 phase C: implemented by
-	// chatassets.AssetStore). Register wires it from Store when left nil,
-	// so the composition root needs no extra assembly.
-	AssetEditReferences AssetEditReferenceReader
 	// RequireSession mirrors the my-chat mount middleware (requireAuth +
 	// forceSelfAccessScope). Optional in tests that install the context
 	// directly.
@@ -120,11 +115,6 @@ type Deps struct {
 	AccountOptionsLookup ChatAccountOptionsLookup
 	// ObjectStore persists chat asset objects (local chat assets root).
 	ObjectStore ObjectStore
-	// ImageDownloadProxy resolves the HTTP client for downloading
-	// upstream-returned image URLs（BUG-0232 关联：上游 /v1/images/edits 只回
-	// imgen.x.ai 临时链接，国内直连不可达——按生图绑定账户的 proxy_profile
-	// 出站）。nil 端口或返回 nil 保持直连默认。
-	ImageDownloadProxy func(accountID string) *http.Client
 	// ImageProcessor decodes/encodes uploads and previews (sharp port).
 	ImageProcessor ImageProcessor
 	// ImageObservation schedules and awaits image semantic observations.
@@ -139,16 +129,6 @@ type Deps struct {
 	RetentionDays int
 	// MaxConversationsPerUserInt mirrors runtimeConfig.chat.maxConversationsPerUser.
 	MaxConversationsPerUserInt func() int
-	// DiagnosticToolEnabled mirrors runtimeConfig.chat.diagnosticToolEnabled.
-	DiagnosticToolEnabled bool
-	// ToolEnvironment mirrors chatToolRuntimeEnvironment().
-	ToolEnvironment string
-	// MediaJobs 是 M7 问答音视频工具的 media_jobs 只读查询端口（问答音视频
-	// 工具设计 §4：任务面归属校验与终态快照；组合根用 gatewaymedia.
-	// MediaJobsRepo.GetByIDAndAPIKey 适配注入——internal/chat 不直接依赖
-	// gatewaymedia，沿 AssetEditReferenceReader 的组合根注入先例）。nil 让
-	// media-tasks 任务接口返回显式错误。
-	MediaJobs ChatMediaJobsLookup
 }
 
 // chatSystemAPIJSONBodyLimit mirrors chatSystemApiJsonBodyLimit ('24mb').
@@ -314,24 +294,17 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 	if prefix == "" {
 		prefix = "/__aisys__/api/my-chat"
 	}
-	if d.AssetEditReferences == nil && d.Store != nil {
-		d.AssetEditReferences = d.Store.assets
-	}
 	rt := &chatRoutes{deps: d, preps: map[string]*activePreparation{}, actions: map[string]*activeConversationAction{}}
 	mount := func(method, pattern string, handler http.HandlerFunc) {
 		k.Register(method+" "+prefix+pattern, rt.wrap(handler))
 	}
 	mount("GET", "/image-policy", rt.imagePolicy)
 	mount("GET", "/accounts", rt.myChatAccounts)
-	mount("GET", "/tool-preferences", rt.toolPreferencesHandler)
-	mount("PATCH", "/tool-preferences", rt.patchToolPreferencesHandler)
 	mount("GET", "/conversations", rt.listConversations)
 	mount("POST", "/conversations", rt.createConversationHandler)
 	mount("GET", "/conversations/{conversationId}", rt.getConversation)
 	mount("PATCH", "/conversations/{conversationId}", rt.patchConversation)
 	mount("DELETE", "/conversations/{conversationId}", rt.deleteConversation)
-	mount("GET", "/conversations/{conversationId}/tool-bindings", rt.toolBindingsHandler)
-	mount("GET", "/conversations/{conversationId}/media-tasks/{jobId}", rt.mediaTaskStatus)
 	mount("POST", "/conversations/{conversationId}/clear", rt.clearConversation)
 	mount("GET", "/conversations/{conversationId}/messages", rt.listMessages)
 	mount("GET", "/conversations/{conversationId}/sync", rt.syncHead)
@@ -640,258 +613,6 @@ func (rt *chatRoutes) myChatAccounts(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, deduped)
 }
 
-// toolPreferencesHandler mirrors GET /my-chat/tool-preferences（工具体系设计
-// §8.5，2026-10-02）：用户级默认工具绑定状态，与 tool-bindings 同形状；偏好行
-// 不存在时两类模型工具均 bound:false。内容随数据范围/偏好实时变化，成功响应
-// 禁缓存。
-func (rt *chatRoutes) toolPreferencesHandler(w http.ResponseWriter, r *http.Request) {
-	bindScope, err := rt.requireChatBindScope(r)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	pref, err := rt.deps.Store.GetUserToolPreferences(bindScope.ViewerID)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	payload, err := rt.buildUserToolPreferencesPayload(bindScope, pref)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	setNoStoreHeaders(w)
-	writeOK(w, payload)
-}
-
-// updateToolPreferencesFields 是 PATCH /tool-preferences 的解析结果：nil 指针 =
-// 本次不修改；binding 非 nil 且 unbound=true 表示显式清除默认。
-type updateToolPreferencesFields struct {
-	searchBinding     *chatToolBindingUpdate
-	imageBinding      *chatToolBindingUpdate
-	defaultImageModel *string
-	videoBinding      *chatToolBindingUpdate
-	audioBinding      *chatToolBindingUpdate
-}
-
-// parseUpdateToolPreferencesBody 解析 PATCH /tool-preferences 请求体（契约
-// §8.6）：严格键集 {searchBinding, imageBinding, defaultImageModel}，未知键
-// 400，至少一键；searchBinding/imageBinding 复用会话 PATCH 的绑定对象解析
-// （parseChatToolBindingObject，null/空 = 清除默认）；defaultImageModel 校验
-// 同会话 PATCH 的枚举口径（IsSupportedChatImageModel）。
-func parseUpdateToolPreferencesBody(raw map[string]json.RawMessage) (updateToolPreferencesFields, error) {
-	fields := updateToolPreferencesFields{}
-	for _, key := range []string{"searchBinding", "imageBinding", "defaultImageModel", "videoBinding", "audioBinding"} {
-		value, ok := raw[key]
-		if !ok {
-			continue
-		}
-		switch key {
-		case "searchBinding":
-			binding, err := parseChatToolBindingObject(value, true)
-			if err != nil {
-				return fields, err
-			}
-			fields.searchBinding = binding
-		case "imageBinding":
-			binding, err := parseChatToolBindingObject(value, false)
-			if err != nil {
-				return fields, err
-			}
-			fields.imageBinding = binding
-		case "defaultImageModel":
-			var model string
-			if err := json.Unmarshal(value, &model); err != nil {
-				return fields, &invalidRequestError{Message: "Expected string, received " + jsonValueTypeName(value)}
-			}
-			if !IsSupportedChatImageModel(model) {
-				return fields, &invalidRequestError{Message: "Invalid enum value. Expected one of: " + chatImageModelEnumHint() + ", received '" + model + "'"}
-			}
-			fields.defaultImageModel = &model
-		case "videoBinding", "audioBinding":
-			// M7 媒体默认绑定（问答音视频工具设计 §3）：「账户+模型」二元组，
-			// null/空 = 清除默认。
-			binding, err := parseChatToolBindingObject(value, true)
-			if err != nil {
-				return fields, err
-			}
-			if key == "videoBinding" {
-				fields.videoBinding = binding
-			} else {
-				fields.audioBinding = binding
-			}
-		}
-	}
-	for key := range raw {
-		switch key {
-		case "searchBinding", "imageBinding", "defaultImageModel", "videoBinding", "audioBinding":
-		default:
-			return updateToolPreferencesFields{}, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
-		}
-	}
-	if fields.searchBinding == nil && fields.imageBinding == nil && fields.defaultImageModel == nil &&
-		fields.videoBinding == nil && fields.audioBinding == nil {
-		return fields, &invalidRequestError{Message: "没有可更新的工具偏好字段"}
-	}
-	return fields, nil
-}
-
-// patchToolPreferencesHandler mirrors PATCH /my-chat/tool-preferences（契约
-// §8.6，2026-10-02）：候选校验同会话 PATCH 口径——search 二元组必须 ∈
-// candidates.search，image 按「账户 × 生效后 defaultImageModel」组合判定
-// （同请求带 defaultImageModel 以新值为准，否则偏好行现值，现值空取
-// gpt-image-2），失败 writeChatToolBindingInvalid（400 + 候选负载）；通过后读
-// 现偏好行、合并只更新请求键、整行 upsert，返回 GET 同形状 payload。该端点
-// 只改用户默认，不触碰任何会话。
-func (rt *chatRoutes) patchToolPreferencesHandler(w http.ResponseWriter, r *http.Request) {
-	raw, err := readJSONBody(r)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	body, err := decodeObjectBody(raw)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	fields, err := parseUpdateToolPreferencesBody(body)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	bindScope, err := rt.requireChatBindScope(r)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	pref, err := rt.deps.Store.GetUserToolPreferences(bindScope.ViewerID)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	if fields.searchBinding != nil && !fields.searchBinding.unbound {
-		if !containsChatToolBindingCandidate(candidates.search, ChatToolBindingCandidate{
-			AccountID: fields.searchBinding.accountID,
-			ModelID:   fields.searchBinding.modelID,
-		}) {
-			writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-				Message:    "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）",
-				ToolID:     "web_search",
-				Candidates: candidates.search,
-			})
-			return
-		}
-	}
-	if fields.imageBinding != nil && !fields.imageBinding.unbound {
-		// 生图默认按「账户 × 生效后 defaultImageModel」组合判定：同请求带
-		// defaultImageModel 以新值为准，否则偏好行现值，现值空取 gpt-image-2
-		//（与会话 PATCH 的候选校验同口径）。
-		effectiveImageModel := chatToolPreferencesDefaultImageModelFallback
-		if pref != nil && pref.DefaultImageModel != "" {
-			effectiveImageModel = pref.DefaultImageModel
-		}
-		if fields.defaultImageModel != nil {
-			effectiveImageModel = *fields.defaultImageModel
-		}
-		if !containsChatToolBindingCandidate(candidates.image, ChatToolBindingCandidate{
-			AccountID: fields.imageBinding.accountID,
-			ModelID:   effectiveImageModel,
-		}) {
-			writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-				Message:    "生图绑定必须在候选列表内（账户可路由当前默认图像模型；如需切换模型请同时提交 defaultImageModel）",
-				ToolID:     "generate_image",
-				Candidates: candidates.image,
-			})
-			return
-		}
-	}
-	// M7 媒体默认绑定候选校验（问答音视频工具设计 §3）：二元组 ∈ 候选。
-	if fields.videoBinding != nil && !fields.videoBinding.unbound {
-		if !containsChatToolBindingCandidate(candidates.video, ChatToolBindingCandidate{
-			AccountID: fields.videoBinding.accountID,
-			ModelID:   fields.videoBinding.modelID,
-		}) {
-			writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-				Message:    "视频生成绑定必须在候选列表内（账户可路由且模型为视频目录模型）",
-				ToolID:     "generate_video",
-				Candidates: candidates.video,
-			})
-			return
-		}
-	}
-	if fields.audioBinding != nil && !fields.audioBinding.unbound {
-		if !containsChatToolBindingCandidate(candidates.audio, ChatToolBindingCandidate{
-			AccountID: fields.audioBinding.accountID,
-			ModelID:   fields.audioBinding.modelID,
-		}) {
-			writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-				Message:    "语音合成绑定必须在候选列表内（账户可路由且模型为 TTS 目录模型）",
-				ToolID:     "generate_audio",
-				Candidates: candidates.audio,
-			})
-			return
-		}
-	}
-	merged := UserToolPreferences{}
-	if pref != nil {
-		merged = *pref
-	}
-	merged.SystemAccountID = bindScope.ViewerID
-	if fields.searchBinding != nil {
-		if fields.searchBinding.unbound {
-			merged.SearchAccountID = ""
-			merged.SearchModelID = ""
-		} else {
-			merged.SearchAccountID = fields.searchBinding.accountID
-			merged.SearchModelID = fields.searchBinding.modelID
-		}
-	}
-	if fields.imageBinding != nil {
-		if fields.imageBinding.unbound {
-			merged.ImageAccountID = ""
-		} else {
-			merged.ImageAccountID = fields.imageBinding.accountID
-		}
-	}
-	if fields.defaultImageModel != nil {
-		merged.DefaultImageModel = *fields.defaultImageModel
-	}
-	if fields.videoBinding != nil {
-		if fields.videoBinding.unbound {
-			merged.VideoAccountID = ""
-			merged.DefaultVideoModel = ""
-		} else {
-			merged.VideoAccountID = fields.videoBinding.accountID
-			merged.DefaultVideoModel = fields.videoBinding.modelID
-		}
-	}
-	if fields.audioBinding != nil {
-		if fields.audioBinding.unbound {
-			merged.AudioAccountID = ""
-			merged.DefaultAudioModel = ""
-		} else {
-			merged.AudioAccountID = fields.audioBinding.accountID
-			merged.DefaultAudioModel = fields.audioBinding.modelID
-		}
-	}
-	if err := rt.deps.Store.UpsertUserToolPreferences(merged); err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	payload, err := rt.buildUserToolPreferencesPayload(bindScope, &merged)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
-	setNoStoreHeaders(w)
-	writeOK(w, payload)
-}
-
 func (rt *chatRoutes) listConversations(w http.ResponseWriter, r *http.Request) {
 	ownerID, err := rt.requireChatAuth(r)
 	if err != nil {
@@ -923,11 +644,6 @@ func (rt *chatRoutes) getConversation(w http.ResponseWriter, r *http.Request) {
 		writeChatRouteError(w, err)
 		return
 	}
-	bindScope, err := rt.requireChatBindScope(r)
-	if err != nil {
-		writeChatRouteError(w, err)
-		return
-	}
 	conversation, err := rt.deps.Store.GetConversation(r.PathValue("conversationId"), ownerID)
 	if err != nil {
 		writeChatRouteError(w, err)
@@ -937,105 +653,23 @@ func (rt *chatRoutes) getConversation(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteError(w, http.StatusNotFound, "会话不存在")
 		return
 	}
-	writeOK(w, struct {
-		conversationResponse
-		ToolCapabilities any `json:"toolCapabilities"`
-	}{conversationResponse: rt.conversationPayload(conversation), ToolCapabilities: rt.toolCapabilities(conversation, bindScope)})
-}
-
-// toolCapabilities 渲染会话详情内嵌的绑定状态聚合（契约 §8.3）：与 GET
-// tool-bindings 同一形状（chat 包 buildChatToolBindingsPayload，端口齐备时
-// 直接聚合）。解析失败时渲染兜底形状（工具条目标注不可用原因）。
-func (rt *chatRoutes) toolCapabilities(conversation *Conversation, bindScope ChatBindScope) any {
-	payload, err := rt.buildChatToolBindingsPayload(bindScope, conversation)
-	if err != nil {
-		return &ChatToolBindingsPayload{Tools: []ChatToolBindingStatus{
-			{ID: "web_search", Kind: "model", Candidates: []ChatToolBindingCandidate{}, InvalidReason: "工具绑定状态暂时无法读取"},
-			{ID: "generate_image", Kind: "model", Candidates: []ChatToolBindingCandidate{}, InvalidReason: "工具绑定状态暂时无法读取"},
-			{ID: "generate_video", Kind: "model", Candidates: []ChatToolBindingCandidate{}, InvalidReason: "工具绑定状态暂时无法读取"},
-			{ID: "generate_audio", Kind: "model", Candidates: []ChatToolBindingCandidate{}, InvalidReason: "工具绑定状态暂时无法读取"},
-		}}
-	}
-	return payload
+	writeOK(w, rt.conversationPayload(conversation))
 }
 
 type updateConversationFields struct {
-	title             *string
-	isPinned          *bool
-	defaultImageModel *string
-	accountID         *string
-	// searchBinding/imageBinding/videoBinding/audioBinding 是模型工具的绑定键
-	//（工具体系设计 §8.2 + 问答音视频工具设计 §3）：nil = 本次不修改；传 null
-	// 解绑（非 nil 指针指向 nil 对象时解绑）。video/audio 绑定为「账户+模型」
-	// 二元组（modelId 必填，候选校验在 handler 完成）。
-	searchBinding *chatToolBindingUpdate
-	imageBinding  *chatToolBindingUpdate
-	videoBinding  *chatToolBindingUpdate
-	audioBinding  *chatToolBindingUpdate
-}
-
-// chatToolBindingUpdate 是 PATCH 绑定键的解析结果：unbound=true 表示显式
-// 解绑；否则 accountId（+搜索的 modelId）必须落在候选内。
-type chatToolBindingUpdate struct {
-	unbound   bool
-	accountID string
-	modelID   string
-}
-
-// parseChatToolBindingObject 解析 {accountId, modelId?}（严格键：search 允许
-// accountId+modelId，image 仅 accountId）。nil JSON 值 = 解绑。
-func parseChatToolBindingObject(value json.RawMessage, allowModelID bool) (*chatToolBindingUpdate, error) {
-	if string(value) == "null" {
-		return &chatToolBindingUpdate{unbound: true}, nil
-	}
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(value, &parsed); err != nil || parsed == nil {
-		return nil, &invalidRequestError{Message: "Expected object, received " + jsonValueTypeName(value)}
-	}
-	allowed := []string{"accountId"}
-	if allowModelID {
-		allowed = append(allowed, "modelId")
-	}
-	for key := range parsed {
-		if !containsString(allowed, key) {
-			return nil, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
-		}
-	}
-	out := &chatToolBindingUpdate{}
-	for _, key := range allowed {
-		raw, ok := parsed[key]
-		if !ok {
-			continue
-		}
-		text, err := boundedTrimmedString(raw, defaultStringLimit)
-		if err != nil {
-			if err.Error() == "String must contain at least 1 character(s)" {
-				return nil, &invalidRequestError{Message: "请选择工具绑定的账户"}
-			}
-			return nil, &invalidRequestError{Message: err.Error()}
-		}
-		if key == "accountId" {
-			out.accountID = *text
-		} else {
-			out.modelID = *text
-		}
-	}
-	if out.accountID == "" {
-		return nil, &invalidRequestError{Message: "请选择工具绑定的账户"}
-	}
-	if allowModelID && out.modelID == "" {
-		return nil, &invalidRequestError{Message: "请选择工具绑定的模型"}
-	}
-	return out, nil
+	title     *string
+	isPinned  *bool
+	accountID *string
 }
 
 // parseUpdateConversationBody mirrors updateConversationSchema (strict +
 // refine, zod issue order) with the account-only binding extension（设计 §5.4）：
-// accountId 写入/切换绑定账户；searchBinding/imageBinding 是模型工具绑定键
-// （工具体系设计 §8.2，候选校验在 handler 完成）。
+// accountId 写入/切换绑定账户。工具绑定键（searchBinding/imageBinding/
+// defaultImageModel/videoBinding/audioBinding）已随工具体系退场
+//（PLAN-20261012T121500000Z D2）。
 func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversationFields, error) {
 	fields := updateConversationFields{}
-	for _, key := range []string{"title", "isPinned", "defaultImageModel", "accountId", "searchBinding", "imageBinding", "videoBinding", "audioBinding"} {
+	for _, key := range []string{"title", "isPinned", "accountId"} {
 		value, ok := raw[key]
 		if !ok {
 			continue
@@ -1060,15 +694,6 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 				return fields, &invalidRequestError{Message: "Expected boolean, received " + jsonValueTypeName(value)}
 			}
 			fields.isPinned = &flag
-		case "defaultImageModel":
-			var model string
-			if err := json.Unmarshal(value, &model); err != nil {
-				return fields, &invalidRequestError{Message: "Expected string, received " + jsonValueTypeName(value)}
-			}
-			if !IsSupportedChatImageModel(model) {
-				return fields, &invalidRequestError{Message: "Invalid enum value. Expected one of: " + chatImageModelEnumHint() + ", received '" + model + "'"}
-			}
-			fields.defaultImageModel = &model
 		case "accountId":
 			text, err := boundedTrimmedString(value, defaultStringLimit)
 			if err != nil {
@@ -1078,55 +703,33 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 				return fields, &invalidRequestError{Message: err.Error()}
 			}
 			fields.accountID = text
-		case "searchBinding":
-			binding, err := parseChatToolBindingObject(value, true)
-			if err != nil {
-				return fields, err
-			}
-			fields.searchBinding = binding
-		case "imageBinding":
-			binding, err := parseChatToolBindingObject(value, false)
-			if err != nil {
-				return fields, err
-			}
-			fields.imageBinding = binding
-		case "videoBinding", "audioBinding":
-			// M7 媒体绑定是「账户+模型」二元组（问答音视频工具设计 §3），
-			// 与 searchBinding 同形解析（modelId 必填）。
-			binding, err := parseChatToolBindingObject(value, true)
-			if err != nil {
-				return fields, err
-			}
-			if key == "videoBinding" {
-				fields.videoBinding = binding
-			} else {
-				fields.audioBinding = binding
-			}
 		}
 	}
 	for key := range raw {
 		switch key {
-		case "title", "isPinned", "defaultImageModel", "accountId", "searchBinding", "imageBinding", "videoBinding", "audioBinding":
+		case "title", "isPinned", "accountId":
 		default:
 			return updateConversationFields{}, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
 		}
 	}
-	if fields.title == nil && fields.isPinned == nil && fields.defaultImageModel == nil &&
-		fields.accountID == nil && fields.searchBinding == nil && fields.imageBinding == nil &&
-		fields.videoBinding == nil && fields.audioBinding == nil {
+	if fields.title == nil && fields.isPinned == nil && fields.accountID == nil {
 		return fields, &invalidRequestError{Message: "没有可更新的会话字段"}
 	}
 	return fields, nil
 }
 
+// chatConversationLockedMessage 是已锁定会话切换账户的提示文案（409
+// chat_conversation_locked）。
+const chatConversationLockedMessage = "会话已绑定账户与模型，更换请新建会话"
+
 // patchConversation mirrors PATCH /conversations/{id}. accountId 走账户选择/
 // 切换链路：数据范围与存在性校验（AccountLookup，不因账户生效状态拒绝，
-// 2026-10-10 修订）→ 名称快照落库；当前 lastModel 不在新账户可路由范围时
-// 联动清空模型选择（前端按响应 lastModel 为空提示重选，设计 §5.4/§6）。
-// 归档会话禁止切换账户与工具绑定（设计 §8「不做原地迁移」），展示字段
-// （标题/置顶/默认图像模型）保持可改。
-// searchBinding/imageBinding 走候选校验（工具体系设计 §8.2）：二元组/账户
-// 必须在候选列表内，失败 400 返回候选；null 解绑。
+// 2026-10-10 修订）→ 名称快照落库。会话锁定（PLAN-20261012T121500000Z D5）后
+// 账户不可切换：last_model 非空且请求账户与现值不同 → 409
+// chat_conversation_locked；相同账户重复提交幂等通过。展示字段（标题/置顶）
+// 保持可改；归档会话禁止切换账户。
+// 原「切账户联动 ClearLastModel」臂已删除：锁定后不可能切账户，未锁定时
+// last_model 为空无需清空。
 func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) {
 	raw, err := readJSONBody(r)
 	if err != nil {
@@ -1165,10 +768,15 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 	}
 	var bindAccountID *string
 	bindAccountName := ""
-	clearLastModel := false
 	if fields.accountID != nil {
 		if conversation.Archived {
 			writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
+			return
+		}
+		// 锁定语义（D5）：last_model 非空即锁定，账户不可切换；相同账户
+		// 重复提交不算切换，幂等通过。
+		if conversation.LastModel != nil && derefString(conversation.BindAccountID) != *fields.accountID {
+			writeMessageCode(w, http.StatusConflict, chatConversationLockedMessage, "chat_conversation_locked")
 			return
 		}
 		if rt.deps.AccountLookup == nil {
@@ -1188,145 +796,14 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 		// 均可绑定与发送测试）；删除/范围外已由 ref == nil 拒绝。
 		bindAccountID = &ref.ID
 		bindAccountName = ref.Name
-		// 切换账户视为新语境（设计 §6）：当前 lastModel 不在新账户可路由
-		// 范围时联动清空模型选择。
-		if conversation.LastModel != nil {
-			scope := &chatBindingScope{accounts: rt.convergeChatAccountScope(ref, ownerID)}
-			models, _, err := rt.loadChatModelListsForScope(scope, ownerID)
-			if err != nil {
-				writeChatRouteError(w, err)
-				return
-			}
-			routable := false
-			for _, model := range models {
-				if model.ID == *conversation.LastModel {
-					routable = true
-					break
-				}
-			}
-			clearLastModel = !routable
-		}
-	}
-	var searchAccountID *string
-	var searchModelID string
-	var imageAccountID *string
-	// effectiveImageModel 是本请求生效后的默认图像模型（生图绑定校验与用户
-	// 偏好回写共用：同请求携带 defaultImageModel 时以新值为准）。
-	var effectiveImageModel ChatImageModel
-	var videoAccountID *string
-	var videoModelID string
-	var audioAccountID *string
-	var audioModelID string
-	mediaBindingRequested := fields.videoBinding != nil || fields.audioBinding != nil
-	if fields.searchBinding != nil || fields.imageBinding != nil || mediaBindingRequested {
-		if conversation.Archived {
-			writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
-			return
-		}
-		candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
-		if err != nil {
-			writeChatRouteError(w, err)
-			return
-		}
-		if fields.searchBinding != nil {
-			if fields.searchBinding.unbound {
-				empty := ""
-				searchAccountID = &empty
-			} else if containsChatToolBindingCandidate(candidates.search, ChatToolBindingCandidate{AccountID: fields.searchBinding.accountID, ModelID: fields.searchBinding.modelID}) {
-				searchAccountID = &fields.searchBinding.accountID
-				searchModelID = fields.searchBinding.modelID
-			} else {
-				writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-					Message:    "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）",
-					ToolID:     "web_search",
-					Candidates: candidates.search,
-				})
-				return
-			}
-		}
-		if fields.imageBinding != nil {
-			effectiveImageModel = conversation.DefaultImageModel
-			if fields.defaultImageModel != nil {
-				effectiveImageModel = ChatImageModel(*fields.defaultImageModel)
-			}
-			if fields.imageBinding.unbound {
-				empty := ""
-				imageAccountID = &empty
-			} else {
-				// 生图绑定的生效模型是 default_image_model：校验按「账户 ×
-				// 本请求生效后的模型」组合判定（同请求携带 defaultImageModel
-				// 时以新值为准），避免裸 API 造出 grok 账户 + gpt-image-2 这类
-				// 立即失效的绑定（候选与状态聚合同口径）。
-				if !containsChatToolBindingCandidate(candidates.image, ChatToolBindingCandidate{
-					AccountID: fields.imageBinding.accountID,
-					ModelID:   string(effectiveImageModel),
-				}) {
-					writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-						Message:    "生图绑定必须在候选列表内（账户可路由当前默认图像模型；如需切换模型请同时提交 defaultImageModel）",
-						ToolID:     "generate_image",
-						Candidates: candidates.image,
-					})
-					return
-				}
-				imageAccountID = &fields.imageBinding.accountID
-			}
-		}
-		// M7 媒体绑定候选校验（问答音视频工具设计 §3）：「账户+模型」二元组
-		// 必须 ∈ 候选（模型空时不允许绑定——与 search 同形，避免造出立即失效
-		// 的绑定）；null 解绑。
-		if fields.videoBinding != nil {
-			if fields.videoBinding.unbound {
-				empty := ""
-				videoAccountID = &empty
-			} else if containsChatToolBindingCandidate(candidates.video, ChatToolBindingCandidate{
-				AccountID: fields.videoBinding.accountID, ModelID: fields.videoBinding.modelID,
-			}) {
-				videoAccountID = &fields.videoBinding.accountID
-				videoModelID = fields.videoBinding.modelID
-			} else {
-				writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-					Message:    "视频生成绑定必须在候选列表内（账户可路由且模型为视频目录模型）",
-					ToolID:     "generate_video",
-					Candidates: candidates.video,
-				})
-				return
-			}
-		}
-		if fields.audioBinding != nil {
-			if fields.audioBinding.unbound {
-				empty := ""
-				audioAccountID = &empty
-			} else if containsChatToolBindingCandidate(candidates.audio, ChatToolBindingCandidate{
-				AccountID: fields.audioBinding.accountID, ModelID: fields.audioBinding.modelID,
-			}) {
-				audioAccountID = &fields.audioBinding.accountID
-				audioModelID = fields.audioBinding.modelID
-			} else {
-				writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-					Message:    "语音合成绑定必须在候选列表内（账户可路由且模型为 TTS 目录模型）",
-					ToolID:     "generate_audio",
-					Candidates: candidates.audio,
-				})
-				return
-			}
-		}
 	}
 	updated, err := rt.deps.Store.UpdateConversation(UpdateConversationInput{
 		ConversationID:          conversationID,
 		SystemAccountID:         ownerID,
 		Title:                   fields.title,
 		IsPinned:                fields.isPinned,
-		DefaultImageModel:       fields.defaultImageModel,
 		BindAccountID:           bindAccountID,
 		BindAccountNameSnapshot: bindAccountName,
-		SearchAccountID:         searchAccountID,
-		SearchModelID:           searchModelID,
-		ImageAccountID:          imageAccountID,
-		VideoAccountID:          videoAccountID,
-		DefaultVideoModel:       videoModelID,
-		AudioAccountID:          audioAccountID,
-		DefaultAudioModel:       audioModelID,
-		ClearLastModel:          clearLastModel,
 		Now:                     rt.now(),
 	})
 	if err != nil {
@@ -1336,14 +813,6 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 	if updated == nil {
 		kernel.WriteError(w, http.StatusNotFound, "会话不存在")
 		return
-	}
-	// 用户级默认绑定回写（工具体系设计 §2.11/§10.6，2026-10-02）：会话内显式
-	// 改/解绑 searchBinding/imageBinding 成功后，best-effort 把生效值回写为该
-	// 用户全局默认（解绑置空；生图回写含联动后的 default_image_model）；回写
-	// 失败仅记日志，不影响会话 PATCH 的成功响应。单独 defaultImageModel 键不
-	// 触发回写；归档 403 路径在候选校验前返回，自然不回写。
-	if fields.searchBinding != nil || fields.imageBinding != nil || mediaBindingRequested {
-		rt.writeBackUserToolPreferences(bindScope.ViewerID, fields, effectiveImageModel)
 	}
 	writeOK(w, rt.conversationPayload(updated))
 }

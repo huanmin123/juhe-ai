@@ -212,6 +212,19 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if _, err := db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)"); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure idx_api_keys_scheduling_preference: %w", err)
 	}
+	// 媒体工作室（媒体工作室设计 §3.5）：api_keys.purpose CHECK 词表扩展
+	// 'studio'——存量库 SQLite 不能改列级 CHECK，按 schedule-interval /
+	// chat-assets media 先例整表重建；新库由建表 DDL 直接声明三值词表，守卫
+	// 按 sqlite_master 建表文本早退。studio_domains_json 域授权列在重建 DDL
+	// 内联声明，重建后由守卫兜底（已迁移 CHECK 但缺列的中间形状）。放在守卫
+	// 链尾：重建的拷贝列按旧表实际列求交，scheduling_preference_id /
+	// studio_domains_json 两列此时均已补齐，数据不丢。
+	if err := ensureSQLiteBusinessAPIKeysPurposeCheck(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure api_keys.purpose studio check: %w", err)
+	}
+	if err := ensureSQLiteTableColumn(ctx, db, "api_keys", "studio_domains_json", "TEXT"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure api_keys.studio_domains_json: %w", err)
+	}
 	return counts, nil
 }
 
@@ -560,6 +573,160 @@ func sqliteTableColumnSet(ctx context.Context, db *sql.DB, table string) (map[st
 	return columns, rows.Err()
 }
 
+// sqliteAPIKeysLegacyPurposeCheckText 是旧建表 DDL 中 purpose 列级 CHECK 的
+// 精确判据片段：旧词表以 ('general', 'chat')) 收尾（CHECK 括号 + 列定义括号），
+// 新词表其后还有 'studio' 条目（('general', 'chat', 'studio'))），不会被本
+// 片段命中。
+const sqliteAPIKeysLegacyPurposeCheckText = "purpose IN ('general', 'chat'))"
+
+// sqliteAPIKeysRebuildColumns 是重建后 api_keys 的完整列清单（顺序与
+// sqlite_schema_business.go 的建表 DDL 一致）。复制阶段按旧表实际列求交集，
+// 兼容 scheduling_preference_id / studio_domains_json 尚未由守卫补齐的更老
+// 形状（两列在守卫链先于本重建执行，正常路径均已存在）。
+var sqliteAPIKeysRebuildColumns = []string{
+	"id", "system_account_id", "route_strategy_id", "name", "description",
+	"key_hash", "key_prefix", "key_suffix", "key_secret_encrypted", "status",
+	"is_default", "purpose", "studio_domains_json", "scheduling_preference_id",
+	"expires_at", "quota_limits_json", "availability_schedule_json",
+	"availability_schedule_next_check_at", "last_used_at", "created_at", "updated_at",
+}
+
+// sqliteAPIKeysRebuildIndexes 在 rename 后按 business 脚本与守卫链的索引定义
+// 重建 api_keys 的全部索引（DROP TABLE 会连带删除旧表索引）。含守卫链尾创建
+// 的 idx_api_keys_scheduling_preference：本重建排在守卫链之后，不在此复建会
+// 把该索引随旧表一起丢掉。
+var sqliteAPIKeysRebuildIndexes = []string{
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_route_strategy ON api_keys(route_strategy_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_default_updated ON api_keys(is_default DESC, updated_at DESC, created_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_default_updated ON api_keys(system_account_id, is_default DESC, updated_at DESC, created_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_quota_snapshot
+      ON api_keys(status, updated_at DESC, id)
+      WHERE quota_limits_json IS NOT NULL`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_availability_schedule_next_check
+      ON api_keys(availability_schedule_next_check_at ASC, id ASC)
+      WHERE availability_schedule_json IS NOT NULL`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique ON api_keys(system_account_id, name)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique
+      ON api_keys(system_account_id)
+      WHERE purpose = 'chat'`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_studio_purpose_unique
+      ON api_keys(system_account_id)
+      WHERE purpose = 'studio'`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)`,
+}
+
+// sqliteAPIKeysRebuildDDL is the post-migration api_keys shape (mirrors the
+// updated business schema DDL; the only change is the widened purpose CHECK
+// vocabulary from ('general', 'chat') to ('general', 'chat', 'studio')). Column
+// and index parity is asserted by the schema tests so the two definitions
+// cannot drift.
+const sqliteAPIKeysRebuildDDL = `CREATE TABLE api_keys_migrating (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      route_strategy_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      key_suffix TEXT NOT NULL,
+      key_secret_encrypted TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      is_default INTEGER NOT NULL DEFAULT 0,
+      purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
+      studio_domains_json TEXT,
+      scheduling_preference_id TEXT REFERENCES scheduling_preferences(id),
+      expires_at TEXT,
+      quota_limits_json TEXT,
+      availability_schedule_json TEXT,
+      availability_schedule_next_check_at TEXT,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id)
+    )`
+
+// ensureSQLiteBusinessAPIKeysPurposeCheck delivers the widened api_keys.purpose
+// CHECK（词表扩展 'studio'，媒体工作室设计 §3.5）to legacy SQLite databases.
+// SQLite cannot DROP a column CHECK, so the table is rebuilt inside one
+// transaction following the schedule-interval / chat-assets media precedent
+// (staging table -> copy -> drop -> rename -> recreate indexes), with PRAGMA
+// foreign_keys toggled off and restored around the rebuild exactly like those
+// migrations — openai_compatible_* tables reference api_keys by name, and the
+// rename restores the name so those foreign keys stay intact. Fresh databases
+// (new CREATE TABLE text) and already-migrated tables exit before writing.
+func ensureSQLiteBusinessAPIKeysPurposeCheck(ctx context.Context, db *sql.DB) error {
+	var ddl sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='api_keys'`).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 表不存在：由同一次 ensure 的建表阶段负责，无需迁移。
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ddl.Valid || !strings.Contains(ddl.String, sqliteAPIKeysLegacyPurposeCheckText) {
+		// 已是新约束（或非预期形状）：不重建。
+		return nil
+	}
+	existing, err := sqliteTableColumnSet(ctx, db, "api_keys")
+	if err != nil {
+		return err
+	}
+	copyColumns := make([]string, 0, len(sqliteAPIKeysRebuildColumns))
+	for _, column := range sqliteAPIKeysRebuildColumns {
+		if existing[column] {
+			copyColumns = append(copyColumns, column)
+		}
+	}
+	if len(copyColumns) == 0 {
+		return nil
+	}
+	foreignKeys := 0
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("读取 PRAGMA foreign_keys 失败: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("关闭 PRAGMA foreign_keys 失败: %w", err)
+	}
+	defer func() {
+		if foreignKeys != 0 {
+			_, _ = db.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys=ON")
+		}
+	}()
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS api_keys_migrating"); err != nil {
+		return fmt.Errorf("清理上次重建残留失败: %w", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, sqliteAPIKeysRebuildDDL); err != nil {
+		return fmt.Errorf("创建 api_keys 重建表失败: %w", err)
+	}
+	columnList := strings.Join(copyColumns, ", ")
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+		"INSERT INTO api_keys_migrating (%s)\nSELECT %s FROM api_keys",
+		columnList, columnList)); err != nil {
+		return fmt.Errorf("回填 api_keys 重建表数据失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE api_keys"); err != nil {
+		return fmt.Errorf("删除旧 api_keys 失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE api_keys_migrating RENAME TO api_keys"); err != nil {
+		return fmt.Errorf("重命名 api_keys 重建表失败: %w", err)
+	}
+	for _, statement := range sqliteAPIKeysRebuildIndexes {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("重建 api_keys 索引失败: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // ensureSQLiteTableColumn adds "<column> <decl>" to table when the table
 // exists without the column. A missing table is not an error: the CREATE
 // TABLE phase of the same ensure run creates it with the column already
@@ -703,45 +870,10 @@ func EnsureSQLiteChat(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	if err := ensureSQLiteChatAccountBindingColumns(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat account-binding columns: %w", err)
 	}
-	if err := ensureSQLiteChatMediaToolColumns(ctx, db); err != nil {
-		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat media-tool columns: %w", err)
-	}
 	if err := ensureSQLiteChatAssetsMediaCheck(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat_assets media check: %w", err)
 	}
 	return counts, nil
-}
-
-// sqliteChatMediaToolColumns 列出 M7 问答音视频工具（问答音视频工具设计 §3，
-// 2026-10-04）在既有库上的幂等补齐声明：chat_conversations 与
-// chat_user_tool_preferences 各四列（video_account_id/default_video_model/
-// audio_account_id/default_audio_model）。新库由 sqliteChatDDL 直接声明这些
-// 列，守卫先查列存在再 ALTER。
-var sqliteChatMediaToolColumns = []struct {
-	table  string
-	column string
-	decl   string
-}{
-	{"chat_conversations", "video_account_id", "TEXT"},
-	{"chat_conversations", "default_video_model", "TEXT"},
-	{"chat_conversations", "audio_account_id", "TEXT"},
-	{"chat_conversations", "default_audio_model", "TEXT"},
-	{"chat_user_tool_preferences", "video_account_id", "TEXT"},
-	{"chat_user_tool_preferences", "default_video_model", "TEXT"},
-	{"chat_user_tool_preferences", "audio_account_id", "TEXT"},
-	{"chat_user_tool_preferences", "default_audio_model", "TEXT"},
-}
-
-// ensureSQLiteChatMediaToolColumns delivers the M7 media tool binding columns
-// to legacy databases through the same guarded PRAGMA table_info / ALTER TABLE
-// ADD COLUMN pattern as the account-binding columns.
-func ensureSQLiteChatMediaToolColumns(ctx context.Context, db *sql.DB) error {
-	for _, target := range sqliteChatMediaToolColumns {
-		if err := ensureSQLiteTableColumn(ctx, db, target.table, target.column, target.decl); err != nil {
-			return fmt.Errorf("ensure %s.%s: %w", target.table, target.column, err)
-		}
-	}
-	return nil
 }
 
 // sqliteChatAssetsLegacyMimeCheckText 是旧建表 DDL 中 processed_mime_type 词表
@@ -892,8 +1024,8 @@ const sqliteChatAssetsRebuildDDL = `CREATE TABLE chat_assets_migrating (
 // rename -> recreate indexes), with PRAGMA foreign_keys toggled off and
 // restored around the rebuild exactly like that migration. Fresh databases
 // (new CREATE TABLE text) and already-migrated tables exit before writing.
-// chat_asset_references / chat_image_generations reference chat_assets by
-// name; the rename restores the name so those foreign keys stay intact.
+// chat_asset_references references chat_assets by name; the rename restores
+// the name so that foreign key stays intact.
 func ensureSQLiteChatAssetsMediaCheck(ctx context.Context, db *sql.DB) error {
 	var ddl sql.NullString
 	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_assets'`).Scan(&ddl)
@@ -966,13 +1098,15 @@ func ensureSQLiteChatAssetsMediaCheck(ctx context.Context, db *sql.DB) error {
 
 // sqliteChatAccountBindingColumns 列出 chat_conversations 会话账户唯一绑定
 // 列（AI 问答会话账户唯一绑定设计，2026-09-28）在既有库上的幂等补齐声明：
-// bind_account_id/bind_account_name_snapshot（唯一绑定载体，早于本设计的
-// 三种绑定模式时期即存在）与 archived/search_account_id/search_model_id/
-// image_account_id 四个新列。新库由 sqliteChatDDL 直接声明这些列，守卫先查
-// 列存在再 ALTER。bind_mode/bind_group_id/bind_group_name_snapshot 三列已由
-// 一次性迁移命令 --migrate-chat-account-only-binding 删除（SQLite 侧经表重建，
-// 因表级 CHECK 引用旧列时 DROP COLUMN 报错），ensure 不再重建旧列。SQLite
-// 允许 ADD COLUMN 携带列级常量 CHECK，archived 存量行取 DEFAULT 0 恒满足约束。
+// bind_account_id/bind_account_name_snapshot（唯一绑定载体）与 archived 列。
+// 新库由 sqliteChatDDL 直接声明这些列，守卫先查列存在再 ALTER。
+// bind_mode/bind_group_id/bind_group_name_snapshot 三列已由一次性迁移命令
+// --migrate-chat-account-only-binding 删除（SQLite 侧经表重建，因表级 CHECK
+// 引用旧列时 DROP COLUMN 报错），ensure 不再重建旧列。工具绑定八列
+// （search/image/video/audio 账户与模型，含 default_image_model）已随 AI 问答
+// 简化设计（PLAN-20261012T121500000Z 决策 F）从当前 schema 退役，ensure 不再
+// 补齐；存量库的残留列按同决策由维护窗口另行处理。SQLite 允许 ADD COLUMN
+// 携带列级常量 CHECK，archived 存量行取 DEFAULT 0 恒满足约束。
 var sqliteChatAccountBindingColumns = []struct {
 	column string
 	decl   string
@@ -980,9 +1114,6 @@ var sqliteChatAccountBindingColumns = []struct {
 	{"bind_account_id", "TEXT"},
 	{"bind_account_name_snapshot", "TEXT"},
 	{"archived", "INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))"},
-	{"search_account_id", "TEXT"},
-	{"search_model_id", "TEXT"},
-	{"image_account_id", "TEXT"},
 }
 
 // ensureSQLiteChatAccountBindingColumns delivers the conversation

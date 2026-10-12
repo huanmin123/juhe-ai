@@ -1,6 +1,6 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
 import type { AccountStatus } from '@/types/domain'
-import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMediaTaskSnapshot, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus, ChatToolPreferencesPatch } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 /**
@@ -10,35 +10,19 @@ import { parseChatSseBlock } from '@/views/chat/chatStream'
  */
 export interface ChatAccountOption { id: string; name: string; providerCode: string; status: AccountStatus }
 
-/**
- * 模型工具的会话级绑定键（工具体系设计 §8.2 + 问答音视频工具设计 §3）：
- * searchBinding/videoBinding/audioBinding 为「账户+模型」二元组（传 null 解绑）；
- * imageBinding 仅账户（生图模型沿用 defaultImageModel）。
- */
-export type ChatToolBindingPatch =
-  | { searchBinding?: { accountId: string; modelId: string } | null; imageBinding?: { accountId: string } | null; videoBinding?: { accountId: string; modelId: string } | null; audioBinding?: { accountId: string; modelId: string } | null }
-
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
-  /** 用户数据范围内全部未删除账户（会话绑定与工具绑定统一候选源），status 为真实生效状态。 */
+  /** 用户数据范围内全部未删除账户（会话绑定候选源），status 为真实生效状态。 */
   listChatAccounts: () => unwrap<ChatAccountOption[]>(http.get('/my-chat/accounts')),
   createConversation: () => unwrap<ChatConversation>(http.post('/my-chat/conversations')),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
-  /** 会话工具绑定状态与候选（工具体系设计 §8.1）。 */
-  getToolBindings: (conversationId: string) => unwrap<ChatConversationToolCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/tool-bindings`)),
-  /** 用户级默认工具绑定状态与候选（工具体系设计 §8.5），与 tool-bindings 同形状。 */
-  getToolPreferences: () => unwrap<ChatConversationToolCapabilities>(http.get('/my-chat/tool-preferences')),
-  /** 更新用户级默认工具绑定（工具体系设计 §8.6）：严格键集至少一键，只改用户默认、不触碰任何会话。 */
-  updateToolPreferences: (payload: ChatToolPreferencesPatch) => unwrap<ChatConversationToolCapabilities>(http.patch('/my-chat/tool-preferences', payload)),
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),
   getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),
   getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),
   listModels: (conversationId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelListOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`, { signal: options?.signal })),
   getModelCapabilities: (conversationId: string, modelId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context-status`)),
-  /** 媒体任务当前态（问答音视频工具设计 §3 任务接口）：后端 poll 上游并幂等结算，终态携带 assetId。 */
-  mediaTask: (conversationId: string, jobId: string) => unwrap<ChatMediaTaskSnapshot>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/media-tasks/${encodeURIComponent(jobId)}`)),
   compactContext: (conversationId: string, payload: { model: string }) => unwrap<{ state: 'accepted' | 'already_running'; serverTime: string }>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context/compactions`, payload)),
   uploadAsset: (
     conversationId: string,
@@ -57,7 +41,7 @@ export const chatApi = {
     }))
   },
   deleteAsset: (conversationId: string, assetId: string) => http.delete(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}`),
-  updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean; defaultImageModel?: ChatImageModel; accountId?: string } & ChatToolBindingPatch) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${encodeURIComponent(conversationId)}`, payload)),
+  updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean; accountId?: string }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${encodeURIComponent(conversationId)}`, payload)),
   stop: (conversationId: string, target: { clientMessageId?: string; turnId?: string }) => unwrap<{ stopped: boolean }>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/stop`, target)),
   clearConversation: (conversationId: string) => unwrap<ChatConversation>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/clear`, {})),
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)
@@ -103,6 +87,8 @@ export async function streamChatMessage(input: {
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
   generationParameters?: ChatGenerationParameters
+  /** 本轮启用上游内置联网搜索（模型 builtinWebSearch 支持时前端才提供该选项）。 */
+  enableWebSearch?: boolean
   signal?: AbortSignal
   onActivity?: () => void
   onEvent: (event: ChatStreamEvent) => void
@@ -112,7 +98,7 @@ export async function streamChatMessage(input: {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier, generationParameters: input.generationParameters }),
+    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier, generationParameters: input.generationParameters, ...(input.enableWebSearch ? { enableWebSearch: true } : {}) }),
     signal: input.signal
   })
   await consumeChatSseResponse(response, path, input.onEvent, input.onActivity)

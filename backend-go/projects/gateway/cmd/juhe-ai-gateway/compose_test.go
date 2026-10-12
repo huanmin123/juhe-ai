@@ -362,7 +362,6 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 		"imageStreamIdleTimeoutSeconds":              120,
 		"imageUncommittedAttemptMaxLifetimeSeconds":  3600,
 		"imageRequestWallTimeoutSeconds":             3600,
-		"chatImageGenerationTotalTimeoutSeconds":     900,
 		"audioFirstResponseTimeoutSeconds":           120,
 		"videoCreateTimeoutSeconds":                  60,
 		"noAvailableAccountWaitTimeoutSeconds":       270,

@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-// 会话账户唯一绑定 + 模型工具绑定的前端契约回归（AI 问答会话账户唯一绑定设计
-// §5/§6 + AI 问答工具体系与主子模型设计 §8/§9/§10）：免弹窗直进、账户→模型→
-// 发送顺序流、绑定引导、归档只读与时间线来源展示。
+// 会话账户唯一绑定的前端契约回归（AI 问答会话账户唯一绑定设计 §5/§6 + AI 问答
+// 简化设计 D2/D5）：免弹窗直进、账户→模型→发送顺序流、锁定禁用态与工具体系退场。
 
 const chatViewSource = readFileSync(new URL('../../views/chat/ChatView.vue', import.meta.url), 'utf8')
 const composerSource = readFileSync(new URL('../../views/chat/composer/AIComposer.vue', import.meta.url), 'utf8')
-const bindingDialogSource = readFileSync(new URL('../../views/chat/ChatToolBindingDialog.vue', import.meta.url), 'utf8')
 const chatApiSource = readFileSync(new URL('../../api/domains/chat.ts', import.meta.url), 'utf8')
 const chatTypesSource = readFileSync(new URL('../../types/domain/chat.ts', import.meta.url), 'utf8')
 const chatStreamSource = readFileSync(new URL('../../views/chat/chatStream.ts', import.meta.url), 'utf8')
@@ -28,39 +26,38 @@ assert.match(chatApiSource, /listChatAccounts: \(\) => unwrap<ChatAccountOption\
 assert.match(chatViewSource, /const accountUnbound = computed\(\(\) => Boolean\(selectedConversation\.value && !selectedConversation\.value\.archived && !selectedConversation\.value\.bindAccountId\)\)/, '必须从会话权威字段计算未绑定状态')
 assert.match(chatViewSource, /v-else-if="accountUnbound"[\s\S]{0,200}先在下方选择 AI 账户/, '未绑定账户时输入区上方必须显示选择账户引导')
 assert.match(chatViewSource, /if \(accountUnbound\.value\)[\s\S]{0,220}message\.warning\('请先选择 AI 账户，再选择模型发送'\)/, '发送预检必须拦截未绑定账户')
-assert.match(composerSource, /:disabled="disabled \|\| !accountValue"/, '模型选择器在未选账户时必须禁用')
+assert.match(composerSource, /:disabled="disabled \|\| selectorsLocked \|\| !accountValue"/, '模型选择器在未选账户或会话锁定时必须禁用')
 assert.match(composerSource, /if \(!props\.accountValue\) return '请先选择 AI 账户'/, '发送按钮提示必须引导先选账户')
-assert.match(chatViewSource, /async function changeAccount[\s\S]{0,900}chatApi\.updateConversation\(conversation\.id, \{ accountId \}\)/, '账户选择必须经 PATCH accountId 写入')
+assert.match(chatViewSource, /async function changeAccount[\s\S]{0,1200}chatApi\.updateConversation\(conversation\.id, \{ accountId \}\)/, '账户选择必须经 PATCH accountId 写入')
+assert.match(chatViewSource, /if \(selectorsLocked\.value\)[\s\S]{0,200}message\.warning\('会话已绑定账户与模型，更换请新建会话'\)/, '锁定会话的账户切换必须被前端守卫拦截')
 assert.match(chatViewSource, /if \(conversation\.lastModel && !updated\.lastModel\)[\s\S]{0,400}selectedModel\.value = undefined/, '切换账户导致 lastModel 联动清空时必须重置本地模型选择')
 assert.match(composerSource, /@accounts-open|emit\('accounts-open'\)/, '账户下拉展开必须触发按需刷新')
 
-// --- 归档只读：输入禁用、模型不预填、归档会话跳过绑定同步 ---
+// --- 锁定（AI 问答简化设计 D5）：lastModel 非空即锁定，账户/模型选择器禁用 ---
+
+assert.match(chatViewSource, /const selectorsLocked = computed\(\(\) => Boolean\(selectedConversation\.value && !selectedConversation\.value\.archived && selectedConversation\.value\.lastModel\)\)/, '锁定状态必须由会话 lastModel 非空派生（归档会话除外）')
+assert.match(chatViewSource, /:selectors-locked="selectorsLocked"/, '锁定状态必须下传输入区组件')
+assert.match(composerSource, /:disabled="disabled \|\| selectorsLocked"/, '锁定后账户选择器必须禁用')
+assert.match(composerSource, /selectorsLocked \? selectorsLockedTooltip : ''/, '锁定后账户/模型选择器必须挂载锁定 tooltip')
+assert.match(composerSource, /const selectorsLockedTooltip = '会话已绑定账户与模型，更换请新建会话'/, '锁定 tooltip 必须使用 D5 交互状态表文案')
+assert.match(chatViewSource, /chat_conversation_locked/, 'PATCH accountId 的 409 chat_conversation_locked 必须映射为引导文案')
+assert.match(chatViewSource, /chat_conversation_binding_changed[\s\S]{0,700}refreshConversationSummary\(request\.conversationId\)/, 'chat_conversation_binding_changed 必须刷新会话详情后恢复输入')
+
+// --- 归档只读：输入禁用、模型不预填 ---
 
 assert.match(chatViewSource, /const conversationArchived = computed\(\(\) => Boolean\(selectedConversation\.value\?\.archived\)\)/, '必须计算归档只读状态')
 assert.match(chatViewSource, /:disabled="generating \|\| submissionBlocked \|\| conversationActionLoading \|\| conversationArchived"/, '归档会话必须禁用输入区')
 assert.match(chatViewSource, /conversation\.archived \? undefined : conversation\.lastModel/, '归档会话不得预填模型')
 assert.match(chatViewSource, /if \(conversationArchived\.value\)[\s\S]{0,220}message\.warning\('当前会话已归档，仅供查看/, '发送预检必须拦截归档会话')
-assert.match(chatViewSource, /if \(!conversation \|\| conversation\.archived\) \{\s*message\.success\('全局绑定已更新，新会话自动继承'\)/, '归档会话不得触发当前会话绑定同步')
 
-// --- 统一绑定弹窗与引导（工具体系设计 §8/§9/§10/§10.6-§10.7，2026-10-03 收敛） ---
+// --- 工具体系退场（AI 问答简化设计 D2）：弹窗、端点、引导事件不得回归 ---
 
-assert.match(bindingDialogSource, /const preferences = await chatApi\.getToolPreferences\(\)/, '统一绑定弹窗必须从 tool-preferences 端点拉取候选与状态（纯全局语义）')
-assert.match(bindingDialogSource, /searchBinding: searchCandidate \? \{ accountId: searchCandidate\.accountId, modelId: searchCandidate\.modelId \} : null/, '搜索绑定必须以「账户+模型」二元组整体写入或解绑')
-assert.match(bindingDialogSource, /imageBinding: imageCandidate \? \{ accountId: imageCandidate\.accountId \} : null/, '生图绑定必须只写账户键')
-assert.match(bindingDialogSource, /imageCandidate \? imageCandidate\.modelId as ChatImageModel : effectiveImageModel\.value/, '生图选定候选模型即默认图像模型，未选候选时保持偏好生效值')
-assert.match(bindingDialogSource, /\.\.\.\(imageModel \? \{ defaultImageModel: imageModel \} : \{\}\)/, '生图 UI 最终模型必须随保存写入 defaultImageModel 键（现值未知时省略即保持）')
-assert.doesNotMatch(bindingDialogSource, /mode\?:|props\.conversation|getToolBindings/, '统一弹窗为纯全局语义，不得保留会话/全局双模式与会话级数据源')
-assert.match(bindingDialogSource, /chatApi\.updateToolPreferences\(/, '保存必须走偏好 PATCH 端点')
-assert.match(chatApiSource, /getToolPreferences: \(\) => unwrap<ChatConversationToolCapabilities>\(http\.get\('\/my-chat\/tool-preferences'\)\)/, 'chatApi 必须提供用户级默认工具绑定读取方法')
-assert.match(chatApiSource, /updateToolPreferences: \(payload: ChatToolPreferencesPatch\) => unwrap<ChatConversationToolCapabilities>\(http\.patch\('\/my-chat\/tool-preferences', payload\)\)/, 'chatApi 必须提供用户级默认工具绑定更新方法')
-assert.match(chatStreamSource, /event\.type === 'tool\.binding_required'/, 'SSE 层必须处理 tool.binding_required 事件（否则协议错误中断流）')
-assert.match(chatViewSource, /toolEvent\.item\?\.errorCode !== 'tool_binding_required'[\s\S]{0,700}toolBindingDialogOpen\.value = true/, 'binding_required 事件必须 toast 提示并打开统一绑定弹窗')
-assert.match(chatViewSource, /bindingPromptedKeys/, 'binding_required 引导必须按事件去重')
+assert.doesNotMatch(chatViewSource, /ChatToolBindingDialog|toolBindingDialogOpen|toolBindingsSummary|handleToolBindingSaved|refreshToolBindingsSummary/, '工具绑定弹窗与摘要链路必须保持退场状态')
+assert.doesNotMatch(chatApiSource, /tool-preferences|tool-bindings|media-tasks|getToolBindings|getToolPreferences|updateToolPreferences|mediaTask/, '工具偏好/绑定/媒体任务端点必须保持退场状态')
+assert.doesNotMatch(chatStreamSource, /tool\.binding_required|tool_binding_required/, 'SSE 层必须保持拒绝 tool.binding_required 引导事件')
+assert.doesNotMatch(chatViewSource, /bindingPromptedKeys|binding_required/, 'binding_required 引导链路必须保持退场状态')
+assert.doesNotMatch(chatTypesSource, /ChatToolBindingCandidate|ChatToolPreferencesPatch|ChatToolBindingPatch|ChatMediaTaskSnapshot|ChatConversationToolCapabilit|supportedToolsByProtocol/, '类型层不得保留工具绑定与媒体任务契约')
+assert.doesNotMatch(processSource, /tool\.type === 'web_search'|tool\.type === 'generate_image'|tool\.type === 'generate_video'|tool\.type === 'generate_audio'|个来源/, '时间线必须保持删除站内工具投影分支')
+assert.match(chatTypesSource, /builtinWebSearch\?: boolean/, '模型能力类型必须携带内置联网搜索标记')
 
-// --- 时间线：搜索来源与来源计数（§10.3） ---
-
-assert.match(processSource, /if \(tool\.type === 'web_search'\)/, '时间线必须识别应用层 web_search 工具条目')
-assert.match(processSource, /statusDetail: `\$\{sourceCount\} 个来源`/, '搜索条目摘要行必须展示来源计数')
-assert.match(processSource, /item\.sources[\s\S]{0,200}\.slice\(0, 8\)/, '搜索来源 URL 必须进入可展开明细（限量）')
-
-console.log('会话账户唯一绑定与工具绑定契约回归通过')
+console.log('会话账户唯一绑定与锁定契约回归通过')

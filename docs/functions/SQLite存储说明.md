@@ -1000,9 +1000,8 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 流式超时检测固定启用，不写入系统设置；真实网关流式失败先进入短暂避让和后台探针，确认失败且当前账号并发归零后才写持久账号状态。
 - `textFirstResponseTimeoutSeconds = 120`、`textStreamIdleTimeoutSeconds = 30`、`textUncommittedAttemptMaxLifetimeSeconds = 1800`：文本 lane 流式请求的首响应、流式 raw chunk 停顿和未提交单次尝试寿命。
 - `textNonStreamFirstResponseTimeoutSeconds = 600`：文本 lane 非流式请求的“发请求→收到首个响应”与正文空闲等待上限，超时终止当前尝试进入候选接管。
-- `imageFirstResponseTimeoutSeconds = 600`、`imageStreamIdleTimeoutSeconds = 120`、`imageUncommittedAttemptMaxLifetimeSeconds = 3600`：图像 lane 的对应单次 attempt 超时档位；Images、图像模型和保留图像工具的 Responses 请求使用该档位。
-- `imageRequestWallTimeoutSeconds = 3600`：图像 lane 从网关接收请求开始计算的独立整请求墙钟，范围 `60..86400` 秒；账户模型映射把请求提升为图片时只扩展原墙钟并保留原接收时间。它与文本固定 270 秒墙钟、AI 对话单次图片工具总时限分别计算，且不启用普通路由 `speed_first` 的文本首 token timer、慢样本或速度切号。
-- `chatImageGenerationTotalTimeoutSeconds = 900`：AI 对话单次 `generate_image` 的整体执行时限，范围 `60..86400` 秒；新任务读取系统设置快照，包含内部网关和资产落盘全过程。
+- `imageFirstResponseTimeoutSeconds = 600`、`imageStreamIdleTimeoutSeconds = 120`、`imageUncommittedAttemptMaxLifetimeSeconds = 3600`：图像 lane 的对应单次 attempt 超时档位；Images 与图像模型的 Responses 请求使用该档位。
+- `imageRequestWallTimeoutSeconds = 3600`：图像 lane 从网关接收请求开始计算的独立整请求墙钟，范围 `60..86400` 秒；账户模型映射把请求提升为图片时只扩展原墙钟并保留原接收时间。它与文本固定 270 秒墙钟分别计算，且不启用普通路由 `speed_first` 的文本首 token timer、慢样本或速度切号。
 - `noAvailableAccountWaitTimeoutSeconds = 270`：只累计零可派发账号或并发槽等待阶段；真实上游 attempt、可立即派发账号扫描和活跃读取不计入。SSE 等待时可以发送注释心跳，非流式请求不发送非法 JSON 心跳。
 - 活跃且已提交语义的 SSE 不受未提交 attempt 寿命机械中断；`transportCommitted` 与 `semanticCommitted` 分开记录，SSE 注释只提交传输。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 5`：历史流失败诊断计数参数；真实网关流式失败不再依赖该阈值或窗口写账号状态。

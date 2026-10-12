@@ -216,7 +216,9 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"api_keys":                            1,
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
-		"system_settings":                     72,
+		// 72→71：chatImageGenerationTotalTimeoutSeconds 随 2026-10-12 AI 问答
+		// 简化批（生图工具退场）从 seed 删除。
+		"system_settings":                     71,
 		"provider_model_catalog":              214,
 	}
 	for table, want := range expectCounts {

@@ -854,49 +854,6 @@ func TestW13BAssetStoreLifecycle(t *testing.T) {
 	}
 }
 
-func TestW13BCommitGeneratedAssetLifecycle(t *testing.T) {
-	f := newChatFixture(t)
-	owner := "w13b-owner"
-	f.createConversation("w13b-conv-gen", owner)
-	accepted := f.accept(owner, "w13b-conv-gen", "cmid-1", "问")
-
-	asset, err := f.store.CommitChatGeneratedAsset(GeneratedAssetCommitInput{
-		SystemAccountID: owner, ConversationID: "w13b-conv-gen", TurnID: accepted.TurnID,
-		MessageID: accepted.AssistantMessage.ID, ContentOrder: 0,
-		MimeType: "image/webp", Width: 16, Height: 16, Bytes: 4, Sha256: strings.Repeat("6", 64),
-		StorageKey: "gen-key", PreviewMimeType: "image/webp", PreviewWidth: 8,
-		PreviewHeight: 8, PreviewBytes: 2, PreviewSha256: strings.Repeat("7", 64),
-		PreviewStorageKey: "gen-preview", Now: f.nowISO, RetentionDays: 30,
-		Generation: GeneratedImageGenerationRecord{Operation: "generate", Model: "gpt-image-2", Prompt: "猫"},
-	})
-	if err != nil || asset == nil || asset.SourceKind != "assistant_generated" {
-		t.Fatalf("生成资产提交失败: %+v %v", asset, err)
-	}
-	if _, err := f.store.CommitChatGeneratedAsset(GeneratedAssetCommitInput{
-		SystemAccountID: owner, ConversationID: "w13b-conv-gen", TurnID: accepted.TurnID,
-		MessageID: "missing", Now: f.nowISO, RetentionDays: 30,
-	}); err == nil || !strings.Contains(err.Error(), "生成图片只能绑定") {
-		t.Fatalf("错误助手消息应报错: %v", err)
-	}
-	if _, err := f.store.CommitChatGeneratedAsset(GeneratedAssetCommitInput{
-		SystemAccountID: owner, ConversationID: "w13b-conv-gen", TurnID: accepted.TurnID,
-		MessageID: accepted.AssistantMessage.ID, Now: "bad", RetentionDays: 30,
-	}); err == nil {
-		t.Fatalf("非法 now 应报错")
-	}
-	records, err := f.store.ListRecentImageGenerations("w13b-conv-gen", owner, f.nowISO, 0)
-	if err != nil || len(records) != 1 || records[0].RootAssetID == "" {
-		t.Fatalf("生成谱系列表失败: %+v %v", records, err)
-	}
-	if _, err := f.store.ListRecentImageGenerations("w13b-conv-gen", owner, "bad", 5); err == nil {
-		t.Fatalf("谱系列表非法 now 应报错")
-	}
-	// generatedAssetExtension。
-	if generatedAssetExtension("image/png") != ".png" || generatedAssetExtension("image/jpeg") != ".jpg" || generatedAssetExtension("other") != ".webp" {
-		t.Fatalf("生成扩展名失败")
-	}
-}
-
 func TestW13BCommitAssetsToMessageMatrix(t *testing.T) {
 	fixture, script := newFaultChatFixtureW13B(t)
 	f := fixture
@@ -951,43 +908,6 @@ func TestW13BCommitAssetsToMessageMatrix(t *testing.T) {
 	// 重复提交同资产到同消息：幂等更新仍成功（user_upload turn 相同）。
 	if err := commit(asset.ID); err != nil {
 		t.Fatalf("重复提交应成功: %v", err)
-	}
-}
-
-func TestW13BImageGenerationRootAssetIDs(t *testing.T) {
-	f := newChatFixture(t)
-	owner := "w13b-owner"
-	f.createConversation("w13b-conv-root", owner)
-	// 空列表直通。
-	ids, err := f.store.imageGenerationRootAssetIDs(f.db, nil, "w13b-conv-root", owner)
-	if err != nil || len(ids) != 0 {
-		t.Fatalf("空输入应返回空: %v", err)
-	}
-	// 注入 generation 行（含非法 root）。
-	if _, err := f.db.Exec(`INSERT INTO chat_image_generations (
-		asset_id, conversation_id, system_account_id, operation, model, prompt,
-		source_asset_ids_json, root_asset_id, size, quality, output_format, created_at, expires_at
-	) VALUES (?, 'w13b-conv-root', ?, 'generate', 'gpt-image-2', 'p', '[]', ?, 'auto', 'auto', 'webp', ?, ?)`,
-		"chat_asset_"+strings.Repeat("b", 32), owner, "chat_asset_"+strings.Repeat("c", 32), f.nowISO, "2099-01-01T00:00:00.000Z"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Exec(`INSERT INTO chat_image_generations (
-		asset_id, conversation_id, system_account_id, operation, model, prompt,
-		source_asset_ids_json, root_asset_id, size, quality, output_format, created_at, expires_at
-	) VALUES (?, 'w13b-conv-root', ?, 'generate', 'gpt-image-2', 'p', '[]', ?, 'auto', 'auto', 'webp', ?, ?)`,
-		"chat_asset_"+strings.Repeat("d", 32), owner, "not-an-id", f.nowISO, "2099-01-01T00:00:00.000Z"); err != nil {
-		t.Fatal(err)
-	}
-	ids, err = f.store.imageGenerationRootAssetIDs(f.db, []string{
-		"chat_asset_" + strings.Repeat("b", 32), "chat_asset_" + strings.Repeat("d", 32),
-	}, "w13b-conv-root", owner)
-	if err == nil || !strings.Contains(err.Error(), "聊天资产 ID 无效") {
-		t.Fatalf("非法 root 应报错: %v %v", ids, err)
-	}
-	// 去重 + 去除非法后仅剩合法 root。
-	ids, err = f.store.imageGenerationRootAssetIDs(f.db, []string{"chat_asset_" + strings.Repeat("b", 32)}, "w13b-conv-root", owner)
-	if err != nil || len(ids) != 1 {
-		t.Fatalf("root 提取失败: %v %v", ids, err)
 	}
 }
 

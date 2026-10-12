@@ -21,18 +21,6 @@ func TestConversationStoreLifecycleW3(t *testing.T) {
 		if err != nil || updated.Title != "新名字" || !updated.IsPinned {
 			t.Fatalf("更新失败: %+v err=%v", updated, err)
 		}
-		model := "bogus-model"
-		if _, err := f.store.UpdateConversation(UpdateConversationInput{
-			ConversationID: "conv_lc", SystemAccountID: "owner", DefaultImageModel: &model, Now: f.nowISO,
-		}); err == nil {
-			t.Fatalf("非法图片模型应报错")
-		}
-		good := string(ImageModelGPTImage2)
-		if _, err := f.store.UpdateConversation(UpdateConversationInput{
-			ConversationID: "conv_lc", SystemAccountID: "owner", DefaultImageModel: &good, Now: f.nowISO,
-		}); err != nil {
-			t.Fatalf("合法图片模型应通过: %v", err)
-		}
 		if _, err := f.store.UpdateConversation(UpdateConversationInput{
 			ConversationID: "conv_lc", SystemAccountID: "owner", Now: "bad",
 		}); err == nil {
@@ -219,32 +207,6 @@ func TestAssetStoreLifecycleW3(t *testing.T) {
 	}
 }
 
-// TestCommitGeneratedAssetW3 覆盖生成资产提交与谱系索引。
-func TestCommitGeneratedAssetW3(t *testing.T) {
-	f := newChatFixture(t)
-	f.createConversation("conv_gen", "owner")
-	accepted := f.accept("owner", "conv_gen", "cmid-1", "画一只猫")
-	f.complete("owner", "conv_gen", accepted.TurnID, "已生成")
-	asset, err := f.store.CommitChatGeneratedAsset(GeneratedAssetCommitInput{
-		SystemAccountID: "owner", ConversationID: "conv_gen",
-		TurnID: accepted.TurnID, MessageID: accepted.AssistantMessage.ID, ContentOrder: 0,
-		MimeType: "image/png", Width: 8, Height: 8, Bytes: 64, Sha256: strings.Repeat("c", 64),
-		StorageKey: "cc/ck/key", PreviewMimeType: "image/webp",
-		PreviewWidth: 4, PreviewHeight: 4, PreviewBytes: 16, PreviewSha256: strings.Repeat("d", 64),
-		PreviewStorageKey: "cc/ck/preview", Now: f.nowISO, RetentionDays: 30,
-		Generation: GeneratedImageGenerationRecord{Operation: "generate", Model: "gpt-image-2", Prompt: "一只猫", Size: "auto", Quality: "auto", OutputFormat: "webp"},
-	})
-	if err != nil || asset.SourceKind != "assistant_generated" {
-		t.Fatalf("生成资产提交失败: %+v err=%v", asset, err)
-	}
-	records, err := f.store.ListRecentImageGenerations("conv_gen", "owner", f.nowISO, 12)
-	if err != nil || len(records) != 1 || records[0].AssetID != asset.ID {
-		t.Fatalf("谱系索引失败: %+v err=%v", records, err)
-	}
-}
-
-// TestClosedDatabaseErrorsW3 以关闭数据库为故障注入，验证存储层错误传播
-// 而非 panic（连接丢失场景的错误分支覆盖）。
 func TestClosedDatabaseErrorsW3(t *testing.T) {
 	f := newChatFixture(t)
 	f.createConversation("conv_closed", "owner")
@@ -285,8 +247,6 @@ func TestClosedDatabaseErrorsW3(t *testing.T) {
 	assertError("GetConversationSyncHead", err)
 	err = f.store.AssertTurnReplaceable(AssertReplaceableInput{ConversationID: "conv_closed", SystemAccountID: "owner", ReplaceTurnID: "t", Now: f.nowISO})
 	assertError("AssertTurnReplaceable", err)
-	_, err = f.store.ListRecentImageGenerations("conv_closed", "owner", f.nowISO, 1)
-	assertError("ListRecentImageGenerations", err)
 	_, err = f.store.LoadCompactionSourcePage("conv_closed", "owner", "claim", 0, f.nowISO, 10, 1024)
 	assertError("LoadCompactionSourcePage", err)
 	_, err = f.store.RecordContextUsage(RecordContextUsageInput{ConversationID: "conv_closed", SystemAccountID: "owner", Now: f.nowISO})

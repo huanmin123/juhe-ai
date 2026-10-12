@@ -17,9 +17,11 @@ import (
 // business-schema.ts (72 tables) plus the Go-appended
 // model_check_question_bank table (model-check question bank feature), the
 // Go-appended media_jobs table (M2 异步媒体任务，媒体设计 §8.2), the
-// Go-appended model_check_question_tests table (提交门禁测试记录) and the
+// Go-appended model_check_question_tests table (提交门禁测试记录), the
 // Go-appended scheduling_preferences table (调度偏好独立实体
-// PLAN-20261012T033000000Z P1).
+// PLAN-20261012T033000000Z P1) and the Go-appended studio_* tables
+// (媒体工作室设计 §3.1-§3.4: studio_assets / studio_tasks /
+// studio_operations / studio_user_asset_usage).
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -92,6 +94,10 @@ var goldenBusinessTables = []string{
 	"route_strategies",
 	"route_strategy_groups",
 	"scheduling_preferences",
+	"studio_assets",
+	"studio_operations",
+	"studio_tasks",
+	"studio_user_asset_usage",
 	"system_accounts",
 	"system_sessions",
 	"system_settings",
@@ -168,20 +174,20 @@ var goldenStatsTables = []string{
 	"usage_stats_weekly",
 }
 
-// goldenChatTables is the golden table list extracted from the Node chat-schema.ts (10 tables,
-// plus the Go-appended chat_user_tool_preferences user-level tool binding table, 2026-10-02).
+// goldenChatTables is the golden table list extracted from the Node chat-schema.ts (10 tables;
+// the Go-appended chat_user_tool_preferences user-level tool binding table and the
+// chat_image_generations image-generation lineage table were retired with the 2026-10-12
+// AI 问答简化批, PLAN-20261012T121500000Z 决策 F).
 var goldenChatTables = []string{
 	"chat_asset_references",
 	"chat_assets",
 	"chat_context_checkpoints",
 	"chat_context_entries",
 	"chat_conversations",
-	"chat_image_generations",
 	"chat_message_idempotency",
 	"chat_messages",
 	"chat_user_asset_usage",
 	"chat_user_storage_windows",
-	"chat_user_tool_preferences",
 }
 
 // goldenCodexContextTables is the golden table list extracted from the Node codex-context-state-schema.ts (4 tables).
@@ -217,9 +223,14 @@ var goldenSchemaCounts = SQLiteResult{
 	//（scheduling_preferences 四枚，均内联于 business 主 DDL）；
 	// api_keys.scheduling_preference_id 的绑定查询索引由 EnsureSQLiteBusiness
 	// 守卫链尾创建（不进 DDL 常量，故不在此计），在 goldenTotalIndexes 计入。
-	Business:     SchemaCounts{Tables: 76, Indexes: 223},
-	Stats:        SchemaCounts{Tables: 65, Indexes: 124},
-	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
+	// 媒体工作室批（媒体工作室设计 §3）：表 +4（studio_assets / studio_tasks /
+	// studio_operations / studio_user_asset_usage）、索引 +6（studio 五枚 +
+	// idx_api_keys_studio_purpose_unique，均内联于 business 主 DDL）。
+	Business: SchemaCounts{Tables: 80, Indexes: 229},
+	Stats:    SchemaCounts{Tables: 65, Indexes: 124},
+	// 2026-10-12 AI 问答简化批（决策 F）：chat 两张工具专属表（含两枚索引）
+	// 退役，11→9 表、26→24 索引。
+	Chat:         SchemaCounts{Tables: 9, Indexes: 24},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
 	Dataset:      SchemaCounts{Tables: 3, Indexes: 4},
 	UsageCatalog: SchemaCounts{Tables: 4, Indexes: 10},
@@ -228,7 +239,7 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 161
+const goldenTotalTables = 163
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
@@ -236,8 +247,10 @@ const goldenTotalTables = 161
 // Go-created indexes outside the DDL constants count too: the
 // scheduling_preferences batch adds four inline business indexes plus the
 // guarded idx_api_keys_scheduling_preference created by EnsureSQLiteBusiness
-// (调度偏好独立实体 PLAN-20261012T033000000Z).
-const goldenTotalIndexes = 397
+// (调度偏好独立实体 PLAN-20261012T033000000Z). 2026-10-12 AI 问答简化批：
+// chat_image_generations 两枚索引退役，397→395。媒体工作室批：studio 五枚
+// 索引与 idx_api_keys_studio_purpose_unique 内联于 business 主 DDL，395→401。
+const goldenTotalIndexes = 401
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {
@@ -645,7 +658,13 @@ func TestEnsureSQLiteChatAddsAccountBindingColumns(t *testing.T) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`
-	accountBindingColumns := []string{"bind_account_id", "bind_account_name_snapshot", "archived", "search_account_id", "search_model_id", "image_account_id"}
+	accountBindingColumns := []string{"bind_account_id", "bind_account_name_snapshot", "archived"}
+	// retiredToolColumns 是 2026-10-12 AI 问答简化批（决策 F）退役的工具绑定
+	// 列：新库不得声明，ensure 也不得在存量库上重建。
+	retiredToolColumns := []string{
+		"search_account_id", "search_model_id", "image_account_id", "default_image_model",
+		"video_account_id", "default_video_model", "audio_account_id", "default_audio_model",
+	}
 
 	t.Run("fresh database declares the columns", func(t *testing.T) {
 		db := openSharedMemorySQLite(t, "authsys-schema-test-chat-bind-fresh")
@@ -659,6 +678,11 @@ func TestEnsureSQLiteChatAddsAccountBindingColumns(t *testing.T) {
 		}
 		if sqliteTableHasColumn(t, db, "chat_conversations", "bind_mode") {
 			t.Error("fresh chat_conversations must not declare the retired bind_mode column")
+		}
+		for _, column := range retiredToolColumns {
+			if sqliteTableHasColumn(t, db, "chat_conversations", column) {
+				t.Errorf("fresh chat_conversations must not declare the retired tool column %s", column)
+			}
 		}
 	})
 
@@ -680,6 +704,16 @@ func TestEnsureSQLiteChatAddsAccountBindingColumns(t *testing.T) {
 		for _, column := range accountBindingColumns {
 			if !sqliteTableHasColumn(t, db, "chat_conversations", column) {
 				t.Errorf("legacy chat_conversations lacks %s after ensure", column)
+			}
+		}
+		for _, column := range retiredToolColumns {
+			if column == "default_image_model" {
+				// 存量库的 default_image_model 残留列按决策 F 保留（ensure 不做
+				// 运行时删列），只验证 guard 不重建其余七列。
+				continue
+			}
+			if sqliteTableHasColumn(t, db, "chat_conversations", column) {
+				t.Errorf("legacy ensure must not recreate the retired tool column %s", column)
 			}
 		}
 		var archived int

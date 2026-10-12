@@ -30,31 +30,36 @@ import (
 // were retired to the --apply-success-cost-backfill subcommand, 2026-10-12 —
 // the chat_conversations
 // account-binding ALTER columns, the model_quality_schedules
-// interval_minutes CHECK migration DO block, the chat_user_tool_preferences
-// user-level tool binding table, the accounts health_check_endpoint_mode
-// audio/video CHECK migration DO block, the M2 media_jobs table with its
-// three indexes, the usage_records output_video_seconds ALTER column, and the
-// M7 chat media-tool binding ALTER columns with the chat_assets media CHECK
-// migration DO block, the system_accounts expedited_account_limit ALTER
-// column, the accounts expedited_recovery_enabled ALTER column, and the
-// accounts capability_domain ALTER column (AI 账户能力域拆分
+// interval_minutes CHECK migration DO block, the accounts
+// health_check_endpoint_mode audio/video CHECK migration DO block, the M2
+// media_jobs table with its three indexes, the usage_records
+// output_video_seconds ALTER column, the chat_assets media CHECK migration DO
+// block, the system_accounts expedited_account_limit ALTER column, the
+// accounts expedited_recovery_enabled ALTER column, and the accounts
+// capability_domain ALTER column (AI 账户能力域拆分
 // PLAN-20261011T141004000Z); the retired bind-mode ALTERs
 // were removed with the account-only binding migration, and the model-check
 // question-tests submission-gate table adds its two indexes and the question
-// bank last_test ALTER columns). Regenerate them when
-// either source changes.
+// bank last_test ALTER columns). 2026-10-12 AI 问答简化（决策 F）批次 -15：
+// chat_conversations 八个工具绑定列的 CREATE/ALTER、chat_user_tool_preferences
+// 与 chat_image_generations 两表及其两枚索引从当前 schema 退役。
+// Regenerate them when either source changes.
 // 调度偏好独立实体（PLAN-20261012T033000000Z P1）批次 +7：scheduling_preferences
 // 建表、api_keys.scheduling_preference_id 幂等 ALTER、scheduling_preferences
 // 四枚索引与 api_keys 绑定列索引。
 // 模型检测超时处罚开关批次 +2：model_quality_policies /
 // model_quality_schedules 各一条 timeout_penalty_enabled 幂等 ALTER。
-const goldenPostgresSchemaStatementCount = 716
+// 媒体工作室 P0 批次（媒体工作室设计 §3）+12：studio_assets / studio_tasks /
+// studio_operations / studio_user_asset_usage 四张建表、api_keys.studio_
+// domains_json 幂等 ALTER、api_keys purpose CHECK 迁移 DO 块，以及
+// idx_api_keys_studio_purpose_unique 与 studio 五枚索引（business indexes）。
+const goldenPostgresSchemaStatementCount = 713
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      333,
-	"juhe_chat":          52,
+	"juhe_business":      345,
+	"juhe_chat":          37,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
 	"juhe_stats":         256,
@@ -147,14 +152,18 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	// 98 = 95（既有清单）+ api_keys.scheduling_preference_id 守卫加列
-	//（调度偏好独立实体 PLAN-20261012T033000000Z）+ 模型检测超时处罚开关
-	// 两表 timeout_penalty_enabled 幂等 ALTER 各一条。
-	if alterColumns != 98 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 98", alterColumns)
+	// 87 = 98 - 11：2026-10-12 AI 问答简化批（决策 F）退役 11 条工具绑定
+	// ALTER（chat_conversations 的 search/image 三列与 video/audio 四列，
+	// 以及 chat_user_tool_preferences 的 video/audio 四列）；其余仍为原
+	// 清单 + api_keys.scheduling_preference_id 守卫加列（调度偏好独立实体
+	// PLAN-20261012T033000000Z）+ 模型检测超时处罚开关两表
+	// timeout_penalty_enabled 幂等 ALTER 各一条 + 媒体工作室批
+	// api_keys.studio_domains_json 幂等 ALTER（媒体工作室设计 §3.5）。
+	if alterColumns != 88 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 88", alterColumns)
 	}
-	if doBlocks != 4 {
-		t.Fatalf("DO block count = %d, want 4", doBlocks)
+	if doBlocks != 5 {
+		t.Fatalf("DO block count = %d, want 5", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
@@ -359,9 +368,11 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	}
 	// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
 	// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）；
-	// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）。
-	if len(pgSeedSystemSettings) != 72 {
-		t.Fatalf("system settings = %d, want 72", len(pgSeedSystemSettings))
+	// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）；
+	// 72→71：-1 来自 2026-10-12 AI 问答简化批——生图总超时键
+	// chatImageGenerationTotalTimeoutSeconds 随生图工具退场。
+	if len(pgSeedSystemSettings) != 71 {
+		t.Fatalf("system settings = %d, want 71", len(pgSeedSystemSettings))
 	}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {

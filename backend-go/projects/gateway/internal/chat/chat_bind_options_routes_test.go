@@ -29,9 +29,9 @@ func (m mockAccountOptionsLookup) ListChatAccountOptions(_ context.Context, scop
 		m.seen.record(scope, "")
 	}
 	if scope.IsAdmin {
-		return []ChatAccountOption{{ID: "a-admin", Name: "管理账户", ProviderCode: "openai", Status: "active"}}, nil
+		return []ChatAccountOption{{ID: "a-admin", Name: "管理账户", ProviderCode: "deepseek", Status: "active"}}, nil
 	}
-	return []ChatAccountOption{{ID: "a1", Name: "账户一", ProviderCode: "openai", Status: "active"}}, nil
+	return []ChatAccountOption{{ID: "a1", Name: "账户一", ProviderCode: "deepseek", Status: "active"}}, nil
 }
 
 func TestMyChatAccountsRoute(t *testing.T) {
@@ -43,7 +43,7 @@ func TestMyChatAccountsRoute(t *testing.T) {
 	}
 	// 最小投影信封的精确形状：accounts 恒为数组，元素只含
 	// id/name/providerCode/status。
-	want := `{"data":[{"id":"a1","name":"账户一","providerCode":"openai","status":"active"}]}`
+	want := `{"data":[{"id":"a1","name":"账户一","providerCode":"deepseek","status":"active"}]}`
 	if response.rawString() != want {
 		t.Fatalf("accounts body = %s, want %s", response.rawString(), want)
 	}
@@ -66,7 +66,7 @@ func TestMyChatAccountsScopeArms(t *testing.T) {
 		if len(scopes) != 1 || scopes[0] != userScope {
 			t.Fatalf("查询收到的 scope = %v, want [%v]", scopes, userScope)
 		}
-		want := `{"data":[{"id":"a1","name":"账户一","providerCode":"openai","status":"active"}]}`
+		want := `{"data":[{"id":"a1","name":"账户一","providerCode":"deepseek","status":"active"}]}`
 		if response.rawString() != want {
 			t.Fatalf("user accounts body = %s, want %s", response.rawString(), want)
 		}
@@ -80,7 +80,7 @@ func TestMyChatAccountsScopeArms(t *testing.T) {
 			if response.status != http.StatusOK {
 				t.Fatalf("%s accounts = %d %s", role, response.status, response.rawString())
 			}
-			want := `{"data":[{"id":"a-admin","name":"管理账户","providerCode":"openai","status":"active"}]}`
+			want := `{"data":[{"id":"a-admin","name":"管理账户","providerCode":"deepseek","status":"active"}]}`
 			if response.rawString() != want {
 				t.Fatalf("%s accounts body = %s, want %s", role, response.rawString(), want)
 			}

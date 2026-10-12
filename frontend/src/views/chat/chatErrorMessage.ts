@@ -1,14 +1,13 @@
+// 会话锁定相关错误码映射（AI 问答简化设计 D5）：服务端 message 优先，映射兜底。
+// 生成媒体与站内工具体系已退场，其专属错误码映射一并删除。
 const publicChatErrorMessages: Readonly<Record<string, string>> = Object.freeze({
   upstream_http_error: '模型服务请求失败，请稍后重试',
   upstream_stream_failed: '模型响应中断，请重新发送',
-  image_generation_failed: '图片生成失败，请重新发送',
-  image_generation_not_enabled: '图片生成失败：可用上游分组未开通图片生成功能',
-  image_generation_permission_denied: '图片生成失败：上游拒绝了图片生成权限',
-  image_generation_rate_limited: '图片生成失败：上游请求过于频繁，请稍后重试',
-  image_generation_request_rejected: '图片生成失败：上游拒绝了本次图片参数或内容',
   stream_interrupted: '生成连接已中断，请重新发送',
   internal_generation_failed: '生成任务异常结束，请重新发送',
-  tool_binding_required: '该能力需要先设置绑定的账户和模型后才能使用'
+  chat_model_locked: '当前会话已绑定模型，如需更换请新建会话',
+  chat_conversation_locked: '会话已锁定，切换账户请新建会话',
+  chat_conversation_binding_changed: '会话绑定已变化，请刷新后重试'
 })
 
 export function chatErrorMessage(errorCode: string | undefined): string {

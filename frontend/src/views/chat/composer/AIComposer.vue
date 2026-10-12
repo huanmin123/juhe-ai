@@ -89,36 +89,37 @@
                   <span><PictureOutlined /> 添加图片</span>
                 </a-tooltip>
               </a-menu-item>
-              <a-menu-item key="tool-bindings">
-                <a-tooltip title="设置网页搜索与图片生成的全局默认绑定（账户 + 模型）" placement="right">
-                  <span>
-                    <ApiOutlined /> 工具模型绑定
-                    <span v-if="toolBindingsSummary" class="ai-composer-toolbox-summary">{{ toolBindingsSummary }}</span>
-                  </span>
-                </a-tooltip>
-              </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
-        <a-select
-          :value="accountValue"
-          :options="accountSelectOptions"
-          :loading="accountsLoading"
-          :disabled="disabled"
-          size="small"
-          :bordered="false"
-          placeholder="选择账户"
-          aria-label="选择 AI 账户"
-          show-search
-          :filter-option="filterSelectOptionByLabel"
-          :style="{ width: `${accountControlWidths.triggerWidth}px` }"
-          :dropdown-match-select-width="accountControlWidths.popupWidth"
-          @dropdown-visible-change="handleAccountDropdownVisibleChange"
-          @update:value="emit('update:accountValue', $event)"
-        />
-        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled || !accountValue" size="small" :bordered="false" aria-label="选择模型" show-search :filter-option="filterSelectOptionByLabel" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
+        <a-tooltip :title="selectorsLocked ? selectorsLockedTooltip : ''">
+          <span class="ai-composer-control-anchor">
+            <a-select
+              :value="accountValue"
+              :options="accountSelectOptions"
+              :loading="accountsLoading"
+              :disabled="disabled || selectorsLocked"
+              size="small"
+              :bordered="false"
+              placeholder="选择账户"
+              aria-label="选择 AI 账户"
+              show-search
+              :filter-option="filterSelectOptionByLabel"
+              :style="{ width: `${accountControlWidths.triggerWidth}px` }"
+              :dropdown-match-select-width="accountControlWidths.popupWidth"
+              @dropdown-visible-change="handleAccountDropdownVisibleChange"
+              @update:value="emit('update:accountValue', $event)"
+            />
+          </span>
+        </a-tooltip>
+        <a-tooltip :title="selectorsLocked ? selectorsLockedTooltip : ''">
+          <span class="ai-composer-control-anchor">
+            <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled || selectorsLocked || !accountValue" size="small" :bordered="false" aria-label="选择模型" show-search :filter-option="filterSelectOptionByLabel" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
+          </span>
+        </a-tooltip>
         <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled || !accountValue" allow-clear size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="handleReasoningEffortUpdate" />
         <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled || !accountValue" allow-clear size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="handleServiceTierUpdate" />
+        <a-checkbox v-if="webSearchAvailable" class="ai-composer-web-search" :checked="webSearchEnabled" :disabled="disabled" aria-label="联网搜索" @update:checked="toggleWebSearch">联网</a-checkbox>
       </div>
       <a-tooltip :title="contextTooltip">
         <span class="ai-composer-context" role="img" :aria-label="`上下文用量 ${contextTooltip}`">
@@ -134,7 +135,7 @@
 
 <script setup lang="ts">
 import { Empty as AEmpty } from 'ant-design-vue'
-import { ApiOutlined, PictureOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
+import { PictureOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
 import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
@@ -181,19 +182,25 @@ const props = defineProps<{
   serviceTier: ChatServiceTier | ''
   generationParameters: ChatGenerationParameters
   mobile: boolean
-  toolBindingsSummary?: string
+  /** 会话锁定（AI 问答简化设计 D5）：true 时账户与模型选择器均禁用。 */
+  selectorsLocked: boolean
 }>()
 const emit = defineEmits<{
-  (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
+  (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent; enableWebSearch?: boolean }): void
   (event: 'stop' | 'models-open' | 'accounts-open'): void
-  (event: 'conversation-action', action: 'set-tool-defaults' | 'compact-context' | 'clear-conversation'): void
-  (event: 'open-tool-bindings'): void
+  (event: 'conversation-action', action: 'compact-context' | 'clear-conversation'): void
   (event: 'update:accountValue', value?: string): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
   (event: 'update:serviceTier', value: ChatServiceTier | ''): void
   (event: 'update:generationParameters', value: ChatGenerationParameters): void
 }>()
+
+// 会话锁定提示（D5 交互状态表）：锁定后账户/模型选择器禁用并展示该 tooltip。
+const selectorsLockedTooltip = '会话已绑定账户与模型，更换请新建会话'
+function toggleWebSearch(checked: boolean | string | number): void {
+  webSearchEnabled.value = checked === true
+}
 
 function handleAccountDropdownVisibleChange(open: boolean): void {
   if (open) emit('accounts-open')
@@ -233,7 +240,6 @@ function toggleGenerationParameter(parameter: ChatGenerationParameter, enabled: 
 }
 function handleToolboxMenuClick(event: { key: string | number }): void {
   if (String(event.key) === 'image') openImagePicker()
-  if (String(event.key) === 'tool-bindings') emit('open-tool-bindings')
 }
 function openImagePicker(): void {
   if (imageToolDisabledReason.value) {
@@ -344,6 +350,14 @@ const imageToolDisabledReason = computed(() => props.disabled
         ? '图片处理策略正在加载'
       : '')
 const selectedModelOption = computed(() => props.modelCapabilities?.id === props.modelValue ? props.modelCapabilities : undefined)
+// 联网开关（AI 问答简化设计 D3）：仅模型声明内置搜索（builtinWebSearch）时提供；
+// 默认不勾选，勾选后本轮 stream 请求携带 enableWebSearch: true。模型能力变化
+// 或切换会话时重算：能力不支持即复位为未勾选且不渲染。
+const webSearchEnabled = ref(false)
+const webSearchAvailable = computed(() => selectedModelOption.value?.builtinWebSearch === true)
+watch(webSearchAvailable, (available) => {
+  if (!available) webSearchEnabled.value = false
+})
 // 账户/模型下拉输入过滤（工具体系设计 §10.4）：按选项 label（账户名/模型名）
 // 模糊包含匹配，大小写不敏感；只过滤下拉内候选展示，不改变选项集，也不影响
 // chatComposerControlWidths 宽度自适应与 a-select 原生键盘导航。
@@ -428,6 +442,8 @@ watch(() => props.conversationId, (conversationId, previousConversationId) => {
   if (!previousConversationId || conversationId === previousConversationId) return
   advanceConversationGeneration()
   disposeImageUploadRecords(true)
+  // 切换会话时联网开关复位（能力随新会话模型重算，见 webSearchAvailable watch）。
+  webSearchEnabled.value = false
   if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument())
   contentRevision.value += 1
 })
@@ -442,7 +458,7 @@ function submit(): void {
     message.warning(error instanceof Error ? error.message : '消息内容暂时无法发送')
     return
   }
-  const payload = { blocks, snapshot }
+  const payload = { blocks, snapshot, enableWebSearch: webSearchEnabled.value || undefined }
   const submission = createChatComposerSubmission(snapshot as Record<string, unknown>)
   const submittedAssetIds = new Set(blocks.flatMap((block) => block.type === 'input_image' ? [block.assetId] : []))
   for (const record of imageUploadRecords.values()) record.submitted = submittedAssetIds.has(record.assetId)
@@ -858,7 +874,9 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-model-controls :deep(.ant-select-selector) { padding-inline: 5px !important; color: var(--juhe-fg-soft); font-size: 12px; }
 .ai-composer-context { width: 26px; height: 26px; flex: 0 0 26px; display: inline-flex; align-items: center; justify-content: center; color: var(--juhe-muted); }
 .ai-composer-toolbox-trigger { flex: 0 0 auto; }
-.ai-composer-toolbox-summary { margin-left: 12px; color: var(--juhe-muted); font-size: 12px; }
+.ai-composer-control-anchor { display: inline-flex; min-width: 0; }
+.ai-composer-web-search { flex: 0 0 auto; margin-left: 4px; white-space: nowrap; }
+.ai-composer-web-search :deep(.ant-checkbox + span) { padding-inline-start: 4px; padding-inline-end: 2px; color: var(--juhe-fg-soft); font-size: 12px; }
 .ai-composer-file { display: none; }
 .ai-composer-editor { min-height: 56px; max-height: 220px; overflow-y: auto; padding: 9px 12px; }
 .ai-composer-editor :deep(.ProseMirror) { min-height: 38px; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }

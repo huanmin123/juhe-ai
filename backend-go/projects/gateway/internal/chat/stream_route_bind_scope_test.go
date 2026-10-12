@@ -81,7 +81,7 @@ func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 	env.deps.AccountLookup = mockAccountLookup{groupsOfAccount: map[string][]string{"account-1": {"group-b"}}}
 	catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 		"group-b": {
-			ID: "account-1", Type: "api_key", ProviderCode: "openai",
+			ID: "account-1", Type: "api_key", ProviderCode: "deepseek",
 			SupportedEndpointModes: []string{"chat_sse"},
 			SupportedModels:        []string{"gpt-5"},
 		},
@@ -99,8 +99,8 @@ func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 	if len(groups) != 1 || groups[0] != "group-b" {
 		t.Fatalf("account scope group calls = %v, want [group-b]", groups)
 	}
-	if len(providers) == 0 || providers[0] != "openai" {
-		t.Fatalf("account scope provider calls = %v, want [openai ...]", providers)
+	if len(providers) == 0 || providers[0] != "deepseek" {
+		t.Fatalf("account scope provider calls = %v, want [deepseek ...]", providers)
 	}
 	// 协议选择按 scope 单账户端点视图：gpt-5 目录声明双协议，但该账户只有
 	// chat_sse → 派发走 chat_completions。
@@ -127,7 +127,7 @@ func TestStreamBindValidationFailures(t *testing.T) {
 		env.deps.AccountLookup = mockAccountLookup{}
 		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 			"group-a": {
-				ID: "account-disabled", Type: "api_key", ProviderCode: "openai",
+				ID: "account-disabled", Type: "api_key", ProviderCode: "deepseek",
 				SupportedEndpointModes: []string{"chat_sse"},
 				SupportedModels:        []string{"gpt-5"},
 			},

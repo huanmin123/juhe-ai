@@ -11,8 +11,12 @@ assert.equal(parseChatSseBlock('event: message.started\ndata: {"turnId":"turn_1"
 assert.equal(parseChatSseBlock('event: message.snapshot\ndata: {"turnId":"turn_1","assistant":{"id":"msg_2"},"eventVersion":2}'), undefined, 'snapshot 助手投影不完整必须拒绝')
 assert.equal(parseChatSseBlock('event: tool.started\ndata: {"messageId":"msg_2","item":null,"eventVersion":2}'), undefined, 'tool item 必须是对象')
 assert.equal(parseChatSseBlock('event: message.failed\ndata: {"messageId":"msg_2","eventVersion":2}'), undefined, 'failed 必须包含 code/message')
-const toolFailed = parseChatSseBlock('event: tool.failed\ndata: {"messageId":"msg_2","item":{"callId":"image_failed","type":"generate_image","errorCode":"image_generation_not_enabled","errorMessage":"图片上游分组未开通"},"eventVersion":1}')
-assert.ok(toolFailed, '内部工具失败事件必须被前端 SSE 校验器接受')
+const toolFailed = parseChatSseBlock('event: tool.failed\ndata: {"messageId":"msg_2","item":{"callId":"search_failed","type":"web_search_call","errorCode":"upstream_stream_failed","errorMessage":"搜索上游中断"},"eventVersion":1}')
+assert.ok(toolFailed, '上游工具失败事件必须被前端 SSE 校验器接受')
+// AI 问答简化设计 D2/D3：站内工具引导事件与退役媒体块不再进入前端事件面。
+assert.equal(parseChatSseBlock('event: tool.binding_required\ndata: {"messageId":"msg_2","item":{"toolId":"web_search"},"eventVersion":1}'), undefined, 'tool.binding_required 引导事件已随工具体系退场，必须拒绝')
+assert.equal(parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"output_audio","blockId":"block_audio","order":2,"assetId":"asset_audio"},"eventVersion":1}'), undefined, 'output_audio 块已随媒体工具退役，必须拒绝')
+assert.equal(parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"output_media_task","blockId":"block_task","order":3,"jobId":"job_1","kind":"video","status":"queued"},"eventVersion":1}'), undefined, 'output_media_task 块已随媒体工具退役，必须拒绝')
 const processStarted = parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"tool_call","blockId":"assistant_block_1","order":1,"callId":"tool_1","toolType":"web_search_call","status":"started"},"eventVersion":1}')
 assert.ok(processStarted, '有序过程 started 事件必须被前端 SSE 校验器接受')
 assert.equal(parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"tool_call","blockId":"assistant_block_1","order":1,"toolType":"web_search_call","status":"started"},"eventVersion":1}'), undefined, '有序工具块缺少 callId 必须拒绝')
@@ -25,7 +29,7 @@ const messages: ChatMessage[] = [{
 const failureMessages: ChatMessage[] = [{ ...messages[0]! }]
 applyChatStreamEvent(failureMessages, toolFailed!)
 assert.equal(failureMessages[0]?.toolEvents?.[0]?.status, 'failed')
-assert.equal(failureMessages[0]?.toolEvents?.[0]?.item?.errorMessage, '图片上游分组未开通')
+assert.equal(failureMessages[0]?.toolEvents?.[0]?.item?.errorMessage, '搜索上游中断')
 const messageFailed = parseChatSseBlock('event: message.failed\ndata: {"messageId":"msg_2","code":"internal_generation_failed","message":"数据库写入超时","traceId":"trace-failed","eventVersion":2}')
 assert.ok(messageFailed)
 applyChatStreamEvent(failureMessages, messageFailed!)

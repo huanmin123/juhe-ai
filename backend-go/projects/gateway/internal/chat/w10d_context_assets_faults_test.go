@@ -186,16 +186,6 @@ func TestW10DAssetStoreFaultArms(t *testing.T) {
 		}
 	})
 
-	// ListRecentImageGenerations 查询失败臂。
-	t.Run("ListRecentImageGenerations/查询失败", func(t *testing.T) {
-		fixture, script := newFaultChatFixtureW10D(t)
-		fixture.createConversation("conv_w10d_asset", routeTestOwner)
-		script.failOnce("FROM chat_image_generations")
-		if _, err := fixture.store.ListRecentImageGenerations("conv_w10d_asset", routeTestOwner, fixture.nowISO, 5); err == nil {
-			t.Fatalf("注入故障未生效")
-		}
-	})
-
 	// LoadCompactionSourcePage 认领/查询失败臂。
 	t.Run("LoadCompactionSourcePage/认领读取失败", func(t *testing.T) {
 		fixture, script := newFaultChatFixtureW10D(t)

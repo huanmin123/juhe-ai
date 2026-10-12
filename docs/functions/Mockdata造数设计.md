@@ -40,7 +40,7 @@ Mockdata 是项目里「可复用本地造数」的唯一职责入口：
 | `backend-go/projects/maintenance/internal/mockdata/domain_stats.go` | stats 库原始写入面造数域（派生聚合调用既有聚合器重建） |
 | `backend-go/projects/maintenance/internal/mockdata/domain_observability.go` | 运行日志、审计、操作日志、公开接口日志、后台清理目标等 observability 造数域 |
 | `backend-go/projects/maintenance/internal/mockdata/domain_chat_codex_modelcheck.go` | chat 库、codex context 分片、J3b 模型检测造数域 |
-| `backend-go/projects/maintenance/internal/mockdata/domain_chat_media_sample.go` | chat 域媒体工具样本（M7）：媒体工具演示会话的 `generate_video`/`generate_audio` 消息块（`output_media_task` 三状态 + `output_audio`）、可播放 MP4 常量与静音 WAV 生成器、媒体资产行 |
+| `backend-go/projects/maintenance/internal/mockdata/domain_chat_media_sample.go` | chat 域媒体样本：问答域媒体工具样本（`generate_video`/`generate_audio` 消息块、演示会话）已随 [PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md) 退役删除；保留 `/v1` 任务面六状态样本与用户图片样本 |
 | `backend-go/projects/jobs/cmd/juhe-ai-jobs/run_jobs_once.go` | jobs `-run-jobs-once` 一次性执行入口（脚本第 5 步用它重建派生表） |
 
 ## 3. 命令

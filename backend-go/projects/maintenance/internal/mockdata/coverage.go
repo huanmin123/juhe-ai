@@ -142,6 +142,11 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "api_keys.mock_sample", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM api_keys WHERE id LIKE '" + id + "' OR name LIKE '" + name + "'", Min: 1},
 		// 业务域媒体任务（媒体契约 §3.4）：kind=video 各状态样本行。
 		{Name: "media_jobs.video_status_distribution", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", Min: 4},
+		// 媒体工作室域（媒体工作室设计 §9）：任务状态种类、资产三 kind、
+		// 未结算态样本（§9 的三条覆盖断言，纳入 --verify-mockdata-coverage）。
+		{Name: "studio_tasks.status_distribution", Domain: DomainStudio, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM studio_tasks", Min: 5},
+		{Name: "studio_assets.kind_distribution", Domain: DomainStudio, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT kind) FROM studio_assets", Min: 3},
+		{Name: "studio_tasks.unsettled_sample", Domain: DomainStudio, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM studio_tasks WHERE settlement <> 'settled'", Min: 1},
 		// 用量域：图片 token、模型映射命中、上游响应模型一致 / 不一致样本、
 		// M1 同步音频计量（TTS 字符 / STT 秒，媒体契约 §3.4）。
 		{Name: "usage_records.image_tokens", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE input_image_tokens IS NOT NULL OR output_image_tokens IS NOT NULL", Min: 1},
@@ -161,12 +166,10 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "public_api_logs", Domain: DomainObservability, Store: StoreDataset, Query: "SELECT COUNT(*) FROM public_api_logs", Min: 1},
 		{Name: "table_storage_snapshots", Domain: DomainObservability, Store: StoreTableMonitor, Query: "SELECT COUNT(*) FROM table_storage_snapshots", Min: 1},
 		// chat / codex / model-check 域：会话与消息、J3b 运行与 observation。
+		// chat 域媒体块断言（output_media_task / output_audio / 媒体资产）已随
+		// 2026-10-12 AI 问答简化批（决策 A/F）退役。
 		{Name: "chat_conversations", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_conversations", Min: 1},
 		{Name: "chat_messages", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_messages", Min: 1},
-		// chat 域媒体块（问答音视频工具设计 §3）：任务块三状态 + 音频输出块 + 媒体资产。
-		{Name: "chat_messages.output_media_task", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_media_task\"%'", Min: 1},
-		{Name: "chat_messages.output_audio", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_audio\"%'", Min: 1},
-		{Name: "chat_assets.media", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_assets WHERE original_mime_type IN ('audio/mpeg','audio/wav','audio/ogg','audio/mp4','video/mp4','video/webm')", Min: 1},
 		{Name: "model_check_runs", Domain: DomainChatCodexModelCheck, Store: StoreModelCheck, Query: "SELECT COUNT(*) FROM model_check_runs", Min: 1},
 		{Name: "model_check_observations", Domain: DomainChatCodexModelCheck, Store: StoreModelCheck, Query: "SELECT COUNT(*) FROM model_check_observations", Min: 1},
 	}
@@ -282,7 +285,7 @@ func (e *env) storeExists(target store) (bool, error) {
 // evaluateAssertions 评估关键状态断言，返回未覆盖项与失败项。
 //
 // 未覆盖（域未接线）：断言无法评估，进 NotCovered，不阻塞 Ready——骨架阶段
-// 五个域都还没接线，把「域还没写」当成覆盖失败会让命令在可用的中间态永远失败。
+// 各域都还没接线，把「域还没写」当成覆盖失败会让命令在可用的中间态永远失败。
 // 已接线但不满足：进 Errors，直接让 Ready=false。
 func evaluateAssertions(ctx context.Context, e *env) ([]string, []string) {
 	var notCovered, failures []string

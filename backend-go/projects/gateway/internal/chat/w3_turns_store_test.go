@@ -382,7 +382,7 @@ func TestConversationLifecycleRoutesW3(t *testing.T) {
 	})
 }
 
-// TestGetConversationPayloadW3 覆盖会话详情与工具能力载荷。
+// TestGetConversationPayloadW3 覆盖会话详情载荷（工具能力键已随工具体系退役）。
 func TestGetConversationPayloadW3(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_detail", routeTestOwner)
@@ -391,16 +391,8 @@ func TestGetConversationPayloadW3(t *testing.T) {
 		t.Fatalf("status=%d", response.status)
 	}
 	data := response.dataMap()
-	if data["toolCapabilities"] == nil {
-		t.Fatalf("应包含工具能力: %v", data)
-	}
-	capabilities := data["toolCapabilities"].(map[string]any)
-	tools := capabilities["tools"].([]any)
-	// 环境未接线 AccountOptionsLookup → 候选解析失败渲染兜底形状：M7 起为
-	// web_search/generate_image/generate_video/generate_audio 四节（问答音视频
-	// 工具设计 §3）。
-	if len(tools) != 4 {
-		t.Fatalf("工具能力数量 = %d", len(tools))
+	if _, ok := data["toolCapabilities"]; ok {
+		t.Fatalf("工具能力键应已退役: %v", data)
 	}
 	if missing := env.do("GET", "/__aisys__/api/my-chat/conversations/none", routeTestOwner, ""); missing.status != http.StatusNotFound {
 		t.Fatalf("缺失会话应 404: %d", missing.status)

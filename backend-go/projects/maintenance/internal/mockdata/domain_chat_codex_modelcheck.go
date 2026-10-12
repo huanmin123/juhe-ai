@@ -1,13 +1,15 @@
 package mockdata
 
 // seedChatCodexModelCheck 是 chat / codex context / J3b 模型检测域：chat 会话与
-// 消息、图片资产、上下文检查点，codex context state 分片（会话 / 响应状态 /
-// 压缩摘要），以及 J3b 模型检测专库（运行、检查项、受控 observation、可信度
-// 投影、Token 基线、调度任务、小时健康，以及持久化输入 / 认领 / 产出）。
+// 消息、用户上传图片资产、上下文检查点，codex context state 分片（会话 / 响应
+// 状态 / 压缩摘要），以及 J3b 模型检测专库（运行、检查项、受控 observation、
+// 可信度投影、Token 基线、调度任务、小时健康，以及持久化输入 / 认领 / 产出）。
 //
 // 覆盖点（docs/functions/Mockdata造数设计.md「验证点」）：
-//   - chat：置顶会话、达轮次上限会话、reasoning / 工具调用 / 图片输出消息、
-//     图片生成与编辑、上下文检查点与条目；
+//   - chat：置顶会话（用户上传图片 + input_image 引用）、普通交替、达轮次上限
+//     会话、reasoning / 工具调用消息、上下文检查点与条目。问答媒体工具样本与
+//     生图工具样本已随 AI 问答简化设计（PLAN-20261012T121500000Z 决策 A/F）
+//     退役；/v1 媒体任务面样本仍在 business 域 media_jobs。
 //   - codex context state：分片按运行时哈希落盘，每个分片库自带会话 / 响应 /
 //     摘要三表；除自然分布样本外另按目标分片挑选 ID（分片对齐组），保证
 //     Paths.CodexContextShardCount 的每一个分片各有一整套会话 / 响应 / 摘要；
@@ -49,7 +51,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -65,9 +66,6 @@ import (
 // 词汇表：与 gateway / 前端 model-checks 的取值域逐字对齐（改这里必须同步
 // frontend/src/types/domain/model-checks.ts 与 gateway modelcheckowner 的校验）。
 const (
-	chatCodexImageModelGPT     = "gpt-image-2"
-	chatCodexImageSize         = "1024x1024"
-	chatCodexImageQuality      = "high"
 	chatCodexQuickProbeSet     = "multi-provider-model-check-quick-v2-light-suite"
 	chatCodexFullProbeSet      = "multi-provider-model-check-v4-gpt56-preview"
 	chatCodexTokenizerVersion  = "js-tiktoken@1.0.21:o200k_base"
@@ -103,7 +101,6 @@ var chatCodexChatTables = []string{
 	"chat_context_entries",
 	"chat_assets",
 	"chat_asset_references",
-	"chat_image_generations",
 }
 
 // seedChatCodexModelCheck 是域入口：资源解析 → chat → codex context → J3b。
@@ -595,17 +592,9 @@ type chatCodexAsset struct {
 	MimeType     string
 	Width        int
 	Height       int
-	WithPreview  bool
-	PreviewBytes []byte
 	QuotaBytes   int
 	CommittedAt  time.Time
 	CreatedAt    time.Time
-	// NoDimensions 标记媒体资产行（audio/*、video/*）：宽高四列写 NULL、无
-	// 预览变体，与 chatassets.CommitChatGeneratedMediaAsset 的落库形状一致。
-	NoDimensions bool
-	// StorageVariant 是存储键的变体后缀：生成资产（含媒体）为 "original"，
-	// 用户上传与既有图片样本为 ""。
-	StorageVariant string
 }
 
 // writeChatSection 是 chat 段的实际写入：先清后插，顺序为子表 → 父表。
@@ -663,20 +652,13 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			nextSequence: 101, userTurns: chatCodexTurnLimit, messageRev: chatCodexTurnLimit,
 			createdAt: now.Add(-30 * time.Hour), lastMessageAt: now.Add(-27 * time.Hour),
 		},
-		{
-			// 媒体工具演示（M7 问答音视频工具）：四轮消息承载 output_media_task
-			// 三状态与 output_audio 播放块，样本数据在 domain_chat_media_sample.go。
-			id: chatMediaConversationID, title: CleanupNamePrefix + "媒体工具演示", pinned: 0,
-			nextSequence: 9, userTurns: 4, messageRev: 4,
-			createdAt: now.Add(-4 * time.Hour), lastMessageAt: now.Add(-29 * time.Minute),
-		},
 	}
 	for _, conversation := range conversations {
 		columns := map[string]any{
 			"id": conversation.id, "system_account_id": user.ID, "api_key_id": key.ID,
 			"api_key_name_snapshot": key.Name, "title": conversation.title, "title_source_message_id": nil,
 			"is_pinned": conversation.pinned, "last_model": model,
-			"default_image_model": chatCodexImageModelGPT, "next_sequence_no": conversation.nextSequence,
+			"next_sequence_no": conversation.nextSequence,
 			"user_turn_count": conversation.userTurns, "message_revision": conversation.messageRev,
 			"active_turn_id": nil, "active_started_at": nil, "context_revision": conversation.contextRev,
 			"active_checkpoint_id": nil, "compacted_through_sequence": 0, "context_state": "ready",
@@ -702,14 +684,14 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		}
 	}
 
-	// —— 消息样本：置顶会话含 reasoning / 工具调用 / 图片输出，普通会话一对
-	// 交替消息，上限会话含失败与图片轮次。
+	// —— 消息样本：置顶会话含用户上传图片（input_image）与 reasoning / 工具
+	// 调用，普通会话一对交替消息，上限会话含失败轮次。
 	toolCall := map[string]any{
 		"type": "tool_call", "blockId": "mockdata_chat_block_tool_1", "order": 2,
 		"callId": "mockdata_chat_call_1", "toolType": "web_search", "status": "completed",
 		"item": map[string]any{"type": "web_search_call", "status": "completed", "query": "造数-本地联调"},
 	}
-	assistantBlocks := func(text, reasoning string, outputAssetID string) []map[string]any {
+	assistantBlocks := func(text, reasoning string) []map[string]any {
 		blocks := []map[string]any{}
 		if reasoning != "" {
 			blocks = append(blocks, map[string]any{
@@ -721,13 +703,6 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		blocks = append(blocks, map[string]any{
 			"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 3, "text": text, "status": "completed",
 		})
-		if outputAssetID != "" {
-			blocks = append(blocks, map[string]any{
-				"type": "output_image", "blockId": "mockdata_chat_block_image", "order": 4,
-				"assetId": outputAssetID, "mimeType": "image/png", "status": "completed",
-				"width": 1, "height": 1, "revisedPrompt": CleanupNamePrefix + "图像输出样本",
-			})
-		}
 		return blocks
 	}
 	userBlocks := func(text, assetID string) []map[string]any {
@@ -743,40 +718,36 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		return blocks
 	}
 
-	const (
-		assetUploadID   = "mockdata_chat_asset_upload"
-		assetGenerateID = "mockdata_chat_asset_generated"
-		assetEditID     = "mockdata_chat_asset_edited"
-	)
+	const assetUploadID = "mockdata_chat_asset_upload"
 	pinnedConv := conversations[0].id
 	defaultConv := conversations[1].id
 	limitConv := conversations[2].id
-	mediaConv := conversations[3].id
 	messages := []chatCodexMessage{
 		{
 			ID: "mockdata_chat_message_pinned_1", Sequence: 1, Role: "user", Status: "completed",
-			Text: CleanupNamePrefix + "帮我看这张图并生成一张同风格的新图", Blocks: userBlocks("帮我看这张图并生成一张同风格的新图", assetUploadID),
+			Text: CleanupNamePrefix + "帮我看这张图并总结要点", Blocks: userBlocks("帮我看这张图并总结要点", assetUploadID),
 			Model: model, TurnID: "mockdata_chat_turn_pinned_1", ClientMessageID: "mockdata_chat_client_pinned_1",
 			CreatedAt: now.Add(-26 * time.Hour), CompletedAt: now.Add(-26 * time.Hour),
 		},
 		{
 			ID: "mockdata_chat_message_pinned_2", Sequence: 2, Role: "assistant", Status: "completed",
-			Text:   CleanupNamePrefix + "已生成图片并整理要点",
-			Blocks: assistantBlocks("已生成图片并整理要点", CleanupNamePrefix+"先拆解图片构图，再生成同风格新图", assetGenerateID),
+			Text:   CleanupNamePrefix + "已读取图片并整理要点",
+			Blocks: assistantBlocks("已读取图片并整理要点", CleanupNamePrefix+"先读取图片，再提炼要点"),
 			Model:  model, TurnID: "mockdata_chat_turn_pinned_1", Trace: CleanupTracePrefix + "chat-pinned-1",
 			FinishReason: "stop", CreatedAt: now.Add(-26*time.Hour + time.Minute), CompletedAt: now.Add(-25*time.Hour + 58*time.Minute),
 		},
 		{
 			ID: "mockdata_chat_message_pinned_3", Sequence: 3, Role: "user", Status: "completed",
-			Text: CleanupNamePrefix + "把背景换成纯白，尺寸不变", Blocks: userBlocks("把背景换成纯白，尺寸不变", ""),
+			Text: CleanupNamePrefix + "主色调适合什么场景？", Blocks: userBlocks("主色调适合什么场景？", ""),
 			Model: model, TurnID: "mockdata_chat_turn_pinned_2", ClientMessageID: "mockdata_chat_client_pinned_2",
 			CreatedAt: now.Add(-24 * time.Hour), CompletedAt: now.Add(-24 * time.Hour),
 		},
 		{
 			ID: "mockdata_chat_message_pinned_4", Sequence: 4, Role: "assistant", Status: "completed",
-			Text:   CleanupNamePrefix + "已按原图改成纯白背景",
-			Blocks: assistantBlocks("已按原图改成纯白背景", CleanupNamePrefix+"先读取原图，再按尺寸约束重绘背景", assetEditID),
-			Model:  model, TurnID: "mockdata_chat_turn_pinned_2", Trace: CleanupTracePrefix + "chat-pinned-2",
+			Text: CleanupNamePrefix + "主色偏冷，适合科技类演示场景",
+			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
+				"text": CleanupNamePrefix + "主色偏冷，适合科技类演示场景", "status": "completed"}},
+			Model: model, TurnID: "mockdata_chat_turn_pinned_2", Trace: CleanupTracePrefix + "chat-pinned-2",
 			FinishReason: "stop", CreatedAt: now.Add(-24*time.Hour + time.Minute), CompletedAt: now.Add(-23*time.Hour + 59*time.Minute),
 		},
 		{
@@ -835,10 +806,6 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			FinishReason: "stop", CreatedAt: now.Add(-27*time.Hour + time.Minute), CompletedAt: now.Add(-26*time.Hour - 50*time.Minute),
 		},
 	}
-	// 媒体工具演示会话的消息（M7）：随主循环一起写，存储窗口按真实创建日期
-	// 自动分桶累计。
-	mediaMessages := chatMediaMessages(now)
-	messages = append(messages, mediaMessages...)
 	conversationOf := map[string]string{
 		"mockdata_chat_message_pinned_1":  pinnedConv,
 		"mockdata_chat_message_pinned_2":  pinnedConv,
@@ -852,9 +819,6 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		"mockdata_chat_message_limit_98":  limitConv,
 		"mockdata_chat_message_limit_99":  limitConv,
 		"mockdata_chat_message_limit_100": limitConv,
-	}
-	for _, message := range mediaMessages {
-		conversationOf[message.ID] = mediaConv
 	}
 	// 存储窗口按消息的真实创建日期分桶：窗口行必须与消息字节数自洽，否则
 	// 「用户存储用量」页面会与消息列表矛盾。
@@ -950,8 +914,8 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		trust    string
 		tokens   int
 	}{
-		{1, "mockdata_chat_message_pinned_1", "verbatim", `{"role":"user","text":"帮我看这张图并生成一张同风格的新图"}`, 60, "user", "untrusted", 28},
-		{2, "mockdata_chat_message_pinned_2", "task_state", `{"task":"生成同风格新图","state":"done"}`, 44, "assistant", "assistant_derived", 18},
+		{1, "mockdata_chat_message_pinned_1", "verbatim", `{"role":"user","text":"帮我看这张图并总结要点"}`, 60, "user", "untrusted", 28},
+		{2, "mockdata_chat_message_pinned_2", "task_state", `{"task":"提炼图片要点","state":"done"}`, 44, "assistant", "assistant_derived", 18},
 		{3, "mockdata_chat_message_pinned_3", "tool_result", `{"tool":"web_search","resultCount":3}`, 40, "tool", "untrusted", 15},
 	}
 	for _, entry := range entries {
@@ -966,12 +930,10 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		}
 	}
 
-	// —— 资产与图片：数据库行 + ChatAssetsRoot 下的真实文件（前端按 storage_key
-	// 直接取字节，只写行就是 404）。
+	// —— 资产：数据库行 + ChatAssetsRoot 下的真实文件（前端按 storage_key
+	// 直接取字节，只写行就是 404）。只造用户上传样本；助手生成资产已随
+	// PLAN-20261012T121500000Z 决策 A/F 停止新写入，不再造数。
 	uploadPNG := chatCodexPNG(1, 1)
-	generatedPNG := chatCodexPNG(1, 1)
-	editedJPEG := chatCodexJPEG(1, 1)
-	previewWebP := chatCodexWebP()
 	assets := []chatCodexAsset{
 		{
 			ID: assetUploadID, SourceKind: "user_upload", Filename: CleanupNamePrefix + "输入图.png",
@@ -980,43 +942,20 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			Width: 1, Height: 1, QuotaBytes: len(uploadPNG),
 			CommittedAt: now.Add(-26 * time.Hour), CreatedAt: now.Add(-26 * time.Hour),
 		},
-		{
-			ID: assetGenerateID, SourceKind: "assistant_generated", Filename: CleanupNamePrefix + "生成图.png",
-			Conversation: pinnedConv, Owner: user.ID, TurnID: "mockdata_chat_turn_pinned_1",
-			MessageID: "mockdata_chat_message_pinned_2", Bytes: generatedPNG, MimeType: "image/png",
-			Width: 1, Height: 1, WithPreview: true, PreviewBytes: previewWebP, QuotaBytes: len(generatedPNG),
-			CommittedAt: now.Add(-25*time.Hour - 58*time.Minute), CreatedAt: now.Add(-26 * time.Hour),
-		},
-		{
-			ID: assetEditID, SourceKind: "assistant_generated", Filename: CleanupNamePrefix + "编辑图.jpg",
-			Conversation: pinnedConv, Owner: user.ID, TurnID: "mockdata_chat_turn_pinned_2",
-			MessageID: "mockdata_chat_message_pinned_4", Bytes: editedJPEG, MimeType: "image/jpeg",
-			Width: 1, Height: 1, WithPreview: true, PreviewBytes: previewWebP, QuotaBytes: len(editedJPEG),
-			CommittedAt: now.Add(-23*time.Hour - 59*time.Minute), CreatedAt: now.Add(-24 * time.Hour),
-		},
 	}
-	// 媒体工具演示会话的资产（M7）：MP4 视频与 WAV 音频各一个，形状与
-	// CommitChatGeneratedMediaAsset 一致（无宽高、无预览、original 变体键）。
-	assets = append(assets, chatMediaAssets(mediaConv, user.ID, now)...)
 	assetBytesTotal := 0
 	for _, asset := range assets {
 		digest := chatCodexDigest(asset.Bytes)
-		storageKey := chatCodexStorageKey(asset.ID, digest, asset.MimeType, asset.StorageVariant)
+		storageKey := chatCodexStorageKey(asset.ID, digest, asset.MimeType, "")
 		if err := chatCodexWriteAssetFile(w.e.options.Paths.ChatAssetsRoot, storageKey, asset.Bytes); err != nil {
 			return err
-		}
-		originalWidth := any(asset.Width)
-		originalHeight := any(asset.Height)
-		if asset.NoDimensions {
-			// 媒体行宽高写 NULL（DDL 允许，ready 宽高 CHECK 对媒体 MIME 豁免）。
-			originalWidth, originalHeight = nil, nil
 		}
 		columns := map[string]any{
 			"id": asset.ID, "system_account_id": asset.Owner, "conversation_id": asset.Conversation,
 			"source_kind": asset.SourceKind, "original_filename": asset.Filename,
-			"original_mime_type": asset.MimeType, "original_width": originalWidth, "original_height": originalHeight,
+			"original_mime_type": asset.MimeType, "original_width": asset.Width, "original_height": asset.Height,
 			"original_bytes": len(asset.Bytes), "original_sha256": digest,
-			"processed_mime_type": asset.MimeType, "processed_width": originalWidth, "processed_height": originalHeight,
+			"processed_mime_type": asset.MimeType, "processed_width": asset.Width, "processed_height": asset.Height,
 			"processed_bytes": len(asset.Bytes), "processed_sha256": digest, "storage_key": storageKey,
 			"preview_mime_type": nil, "preview_width": nil, "preview_height": nil, "preview_bytes": nil,
 			"preview_sha256": nil, "preview_storage_key": nil,
@@ -1028,21 +967,6 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			"cleanup_claimed_at": nil, "cleanup_retry_at": nil, "cleanup_error_code": nil,
 			"created_at": stamp(asset.CreatedAt), "updated_at": stamp(asset.CommittedAt),
 			"expires_at": stamp(asset.CreatedAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
-		}
-		if asset.WithPreview {
-			previewDigest := chatCodexDigest(asset.PreviewBytes)
-			previewKey := chatCodexStorageKey(asset.ID, previewDigest, "image/webp", "preview")
-			if err := chatCodexWriteAssetFile(w.e.options.Paths.ChatAssetsRoot, previewKey, asset.PreviewBytes); err != nil {
-				return err
-			}
-			// assistant_generated 必须有 preview_storage_key（DDL CHECK），预览
-			// 组字段也要么全空要么全非空。
-			columns["preview_mime_type"] = "image/webp"
-			columns["preview_width"] = asset.Width
-			columns["preview_height"] = asset.Height
-			columns["preview_bytes"] = len(asset.PreviewBytes)
-			columns["preview_sha256"] = previewDigest
-			columns["preview_storage_key"] = previewKey
 		}
 		if err := w.put(StoreChat, "chat_assets", columns); err != nil {
 			return err
@@ -1063,10 +987,6 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		order     int
 	}{
 		{assetUploadID, "mockdata_chat_message_pinned_1", "user_input", 0},
-		{assetGenerateID, "mockdata_chat_message_pinned_2", "assistant_output", 0},
-		{assetEditID, "mockdata_chat_message_pinned_4", "assistant_output", 0},
-		{chatMediaAssetVideoID, "mockdata_chat_message_media_4", "assistant_output", 2},
-		{chatMediaAssetAudioID, "mockdata_chat_message_media_8", "assistant_output", 2},
 	}
 	for index, reference := range references {
 		if err := w.put(StoreChat, "chat_asset_references", map[string]any{
@@ -1074,39 +994,6 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			"message_id": reference.messageID, "reference_kind": reference.kind, "content_order": reference.order,
 			"created_at": stamp(assets[index].CreatedAt),
 			"expires_at": stamp(assets[index].CreatedAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
-		}); err != nil {
-			return err
-		}
-	}
-
-	generations := []struct {
-		assetID     string
-		operation   string
-		prompt      string
-		sourceIDs   string
-		rootAssetID string
-		outputFmt   string
-		createdAt   time.Time
-	}{
-		{
-			assetID: assetGenerateID, operation: "generate",
-			prompt: CleanupNamePrefix + "生成一张同风格极小图", sourceIDs: "[]", rootAssetID: assetGenerateID,
-			outputFmt: "png", createdAt: now.Add(-26 * time.Hour),
-		},
-		{
-			assetID: assetEditID, operation: "edit",
-			prompt: CleanupNamePrefix + "把背景换成纯白，尺寸不变", sourceIDs: `["` + assetUploadID + `"]`,
-			rootAssetID: assetUploadID, outputFmt: "jpeg", createdAt: now.Add(-24 * time.Hour),
-		},
-	}
-	for _, generation := range generations {
-		if err := w.put(StoreChat, "chat_image_generations", map[string]any{
-			"asset_id": generation.assetID, "conversation_id": pinnedConv, "system_account_id": user.ID,
-			"operation": generation.operation, "model": chatCodexImageModelGPT, "prompt": generation.prompt,
-			"source_asset_ids_json": generation.sourceIDs, "root_asset_id": generation.rootAssetID,
-			"size": chatCodexImageSize, "quality": chatCodexImageQuality, "output_format": generation.outputFmt,
-			"created_at": stamp(generation.createdAt),
-			"expires_at": stamp(generation.createdAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
 		}); err != nil {
 			return err
 		}
@@ -1120,7 +1007,6 @@ func clearChatSection(w *chatCodexWriter, ownerID string) error {
 		table   string
 		columns []string
 	}{
-		{"chat_image_generations", []string{"asset_id", "conversation_id", "root_asset_id"}},
 		{"chat_asset_references", []string{"asset_id", "conversation_id", "message_id"}},
 		{"chat_context_entries", []string{"checkpoint_id", "conversation_id"}},
 		{"chat_context_checkpoints", []string{"id", "conversation_id"}},
@@ -1147,7 +1033,7 @@ func clearChatSection(w *chatCodexWriter, ownerID string) error {
 }
 
 // ---------------------------------------------------------------------------
-// 图片字节与存储键
+// 资产字节与存储键
 // ---------------------------------------------------------------------------
 
 // chatCodexPNG 生成极小合法 PNG（标准库编码器保证 magic 与 CRC 正确）。
@@ -1160,37 +1046,6 @@ func chatCodexPNG(width, height int) []byte {
 		panic(err)
 	}
 	return buffer.Bytes()
-}
-
-// chatCodexJPEG 生成极小合法 JPEG（覆盖 JPEG magic 的资产样本）。
-func chatCodexJPEG(width, height int) []byte {
-	buffer := &bytes.Buffer{}
-	if err := jpeg.Encode(buffer, image.NewRGBA(image.Rect(0, 0, width, height)), nil); err != nil {
-		panic(err)
-	}
-	return buffer.Bytes()
-}
-
-// chatCodexWebP 返回最小的 1x1 无损 WebP（34 字节）。
-//
-// 为什么手写字节：chat_assets 的 preview_mime_type 只允许 image/webp，而标准库
-// 没有 WebP 编码器。容器由本函数按规范拼出（RIFF 头 + VP8L 块 + 奇数块填充），
-// VP8L payload 是公开的最小无损位图样本（1x1、无 alpha、版本 0）：浏览器能正常
-// 解码，预览不会变成破图。
-func chatCodexWebP() []byte {
-	payload := []byte{0x2f, 0x00, 0x00, 0x00, 0x10, 0x07, 0x10, 0x11, 0x11, 0x88, 0x88, 0xfe, 0x07}
-	// RIFF size = 文件长度 - 8 = 4（"WEBP"）+ 8（VP8L 块头）+ payload + 1 字节填充。
-	file := []byte{'R', 'I', 'F', 'F'}
-	file = appendLittleEndian(file, uint32(4+8+len(payload)+1))
-	file = append(file, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'L')
-	file = appendLittleEndian(file, uint32(len(payload)))
-	file = append(file, payload...)
-	return append(file, 0x00)
-}
-
-// appendLittleEndian 追加一个小端 uint32（RIFF/VP8L 块头都是小端长度字段）。
-func appendLittleEndian(target []byte, value uint32) []byte {
-	return append(target, byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
 }
 
 // chatCodexStorageKey 复刻 gateway 的 storageKeyForChatAsset：存储键是
@@ -1207,8 +1062,7 @@ func chatCodexStorageKey(assetID, digestHex, mimeType, variant string) string {
 	return fmt.Sprintf("%s/%s/%s%s-%s%s", digest[:2], digest[2:4], assetID, suffix, digest[:16], chatCodexImageExtension(mimeType))
 }
 
-// chatCodexImageExtension 与 chatAssetObjectExtension / GeneratedAssetExtension
-// 对齐（含 M7 媒体产物扩展名，问答音视频工具设计 §3）。
+// chatCodexImageExtension 与 gateway 的资产扩展名映射对齐（用户上传图片词表）。
 func chatCodexImageExtension(mimeType string) string {
 	switch strings.ToLower(strings.TrimSpace(mimeType)) {
 	case "image/png":
@@ -1217,18 +1071,6 @@ func chatCodexImageExtension(mimeType string) string {
 		return ".jpg"
 	case "image/webp":
 		return ".webp"
-	case "audio/mpeg":
-		return ".mp3"
-	case "audio/wav":
-		return ".wav"
-	case "audio/ogg":
-		return ".ogg"
-	case "audio/mp4":
-		return ".m4a"
-	case "video/webm":
-		return ".webm"
-	case "video/mp4":
-		return ".mp4"
 	default:
 		return ".bin"
 	}

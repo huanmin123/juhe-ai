@@ -1,8 +1,8 @@
 package chat
 
 // R5 性能基准（docs/plans/计划-20260918T064119294Z-后端架构与性能优化改革.md
-// 波次 R5）：chat 包热路径（上游 SSE 收集、图像结果剥离、transport 请求体
-// 组装、工具事件投影、checkpoint 序列化）的 go test -bench 基线。
+// 波次 R5）：chat 包热路径（上游 SSE 收集、transport 请求体组装、checkpoint
+// 序列化）的 go test -bench 基线。
 //
 // 可重放约束：固定输入（循环外构造一次）、无真实时间等待（token 计数与
 // TokenCount 注入均为纯长度计算，无时钟/随机/网络）；每个 Benchmark 在循环外
@@ -20,8 +20,6 @@ import (
 
 // bench 系列包级 sink 防止纯函数调用被编译器消除。
 var (
-	benchSinkStripped string
-	benchSinkValues   []string
 	benchSinkEndpoint string
 	benchSinkBody     map[string]any
 	benchSinkEntries  []CheckpointEntryInput
@@ -82,58 +80,8 @@ func BenchmarkChatCollectOpenAIChatSseContentToolUsage(b *testing.B) {
 	}
 }
 
-func benchBuildImageResultDoc() string {
-	payload := strings.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk", 92)
-	return `[{"type":"image_generation_call","call_id":"call_bench_1","result":"` + payload +
-		`"},{"type":"image_generation_call","call_id":"call_bench_2","b64_json":"` + payload + `"}]`
-}
-
-// BenchmarkChatStripImageResultStrings 量化图像结果 base64 剥离扫描器
-// （Responses 图像事件内存 spool 读取的热路径）：逐字符状态机 + 结果值收集。
-func BenchmarkChatStripImageResultStrings(b *testing.B) {
-	doc := benchBuildImageResultDoc()
-	stripped, values, err := stripImageResultStrings(doc, "result", "b64_json")
-	if err != nil {
-		b.Fatalf("sanity strip: %v", err)
-	}
-	if len(values) != 2 || values[0] == "" || values[0] != values[1] ||
-		strings.Contains(stripped, values[0]) ||
-		!strings.Contains(stripped, `"result"`) || !strings.Contains(stripped, `"b64_json"`) {
-		b.Fatalf("sanity strip result: values=%d strippedKeepsPayload=%v", len(values), strings.Contains(stripped, "QUJD"))
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchSinkStripped, benchSinkValues, err = stripImageResultStrings(doc, "result", "b64_json")
-		if err != nil || len(benchSinkValues) != 2 {
-			b.Fatalf("strip: err=%v values=%d", err, len(benchSinkValues))
-		}
-	}
-}
-
-// benchDiagnosticToolDef 是 transport 请求组装基准的最小内部工具定义
-// （compileChatInternalTools 只读取展示字段，不触达 Execute）。
-func benchDiagnosticToolDef() *toolDefinition {
-	return &toolDefinition{
-		ID:          "diagnostic_echo",
-		Version:     "1",
-		ModelName:   "diagnostic_echo",
-		Description: "回显输入的探测工具（bench 夹具）。",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"payload": map[string]any{"type": "string"}},
-			"required":   []string{"payload"},
-		},
-		MaxArgumentBytes: 4096,
-		MaxResultBytes:   4096,
-		TimeoutMs:        1000,
-		Environments:     []string{"development", "production"},
-	}
-}
-
 // benchBuildTransportInput 构造固定的 chat_completions 请求组装输入：
-// 8 条历史 + 生成参数 + 内部工具 + 工具往返消息。输入跨迭代只读复用。
+// 8 条历史 + 生成参数。输入跨迭代只读复用。
 func benchBuildTransportInput() ChatTransportRequestInput {
 	temperature, topP := 0.7, 0.9
 	maxOutputTokens, seed := 4096.0, float64(42)
@@ -150,29 +98,25 @@ func benchBuildTransportInput() ChatTransportRequestInput {
 		Model:                "gpt-4o",
 		History:              history,
 		CurrentContent:       "总结当前网关链路的性能基线结论。",
-		ToolContinuation:     []any{map[string]any{"role": "tool", "tool_call_id": "call_bench_alpha", "content": "{\"hits\":3}"}},
-		InternalTools:        []*toolDefinition{benchDiagnosticToolDef()},
 		ReasoningEffort:      "medium",
-		ServiceTier:          "auto",
 		GenerationParameters: &ChatGenerationParameters{Temperature: &temperature, TopP: &topP, MaxOutputTokens: &maxOutputTokens, Seed: &seed},
 		PromptCacheKey:       "cache-key-bench",
 	}
 }
 
 // BenchmarkChatBuildChatTransportRequestChatCompletions 量化上游请求体组装
-// （每次生成轮次执行）：消息归一拼接 → 内部工具 schema 编译 → 生成参数
-// 展开 → cache key / reasoning / service_tier 字段装配。
+// （每次生成轮次执行）：消息归一拼接 → 生成参数展开 → cache key / reasoning /
+// service_tier 字段装配。
 func BenchmarkChatBuildChatTransportRequestChatCompletions(b *testing.B) {
 	input := benchBuildTransportInput()
 	endpoint, body := buildChatTransportRequest(input)
 	messages, _ := body["messages"].([]any)
-	tools, _ := body["tools"].([]map[string]any)
 	if endpoint != "/v1/chat/completions" || body["model"] != "gpt-4o" ||
-		len(messages) != 11 || len(tools) != 1 ||
+		len(messages) != 10 ||
 		body["temperature"] != 0.7 || body["prompt_cache_key"] != "cache-key-bench" ||
 		body["reasoning_effort"] != "medium" {
-		b.Fatalf("sanity request: endpoint=%q model=%v messages=%d tools=%d body=%v",
-			endpoint, body["model"], len(messages), len(tools), body)
+		b.Fatalf("sanity request: endpoint=%q model=%v messages=%d body=%v",
+			endpoint, body["model"], len(messages), body)
 	}
 
 	b.ReportAllocs()

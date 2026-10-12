@@ -733,7 +733,7 @@ func TestQueryHelpersW3(t *testing.T) {
 // TestParseUpdateConversationBodyW3 覆盖会话更新体校验。
 func TestParseUpdateConversationBodyW3(t *testing.T) {
 	fields, err := parseUpdateConversationBody(map[string]json.RawMessage{
-		"title": json.RawMessage(`" 新标题 "`), "isPinned": json.RawMessage("true"), "defaultImageModel": json.RawMessage(`"gpt-image-2"`),
+		"title": json.RawMessage(`" 新标题 "`), "isPinned": json.RawMessage("true"),
 	})
 	if err != nil || *fields.title != "新标题" || *fields.isPinned != true {
 		t.Fatalf("合法更新解析失败: %+v err=%v", fields, err)
@@ -747,7 +747,7 @@ func TestParseUpdateConversationBodyW3(t *testing.T) {
 		{"title 空", `{"title":" "}`, "请输入会话标题"},
 		{"title 超长", `{"title":"` + strings.Repeat("题", 61) + `"}`, "会话标题最多 60 个字符"},
 		{"isPinned 非布尔", `{"isPinned":"x"}`, "Expected boolean"},
-		{"defaultImageModel 非法", `{"defaultImageModel":"dall-e"}`, "Invalid enum value"},
+		{"退役工具键", `{"defaultImageModel":"gpt-image-2"}`, "Unrecognized key"},
 		{"未知键", `{"bogus":1}`, "Unrecognized key"},
 		{"无字段", `{}`, "没有可更新的会话字段"},
 	}
@@ -786,11 +786,10 @@ func TestContextBudgetHelpersW3(t *testing.T) {
 	}
 	input := fixedChatBudgetInput{
 		CurrentUserContent: "abcd", Instructions: "abcd",
-		InternalTools:      []*toolDefinition{testToolW3("t")},
 		ImageTokenEstimate: 100,
 	}
 	total := rt.fixedChatInputTokens(input)
-	if total < protocolReserveTokens+8+24+toolDefinitionReserveTokens+100 {
+	if total < protocolReserveTokens+8+24+100 {
 		t.Fatalf("预算构成不正确: %d", total)
 	}
 	if err := rt.validateFixedChatInputBudget(fixedChatBudgetInput{MaxInputTokens: nil}); err != nil {
@@ -837,10 +836,6 @@ func TestContextBudgetHelpersW3(t *testing.T) {
 	entries := formatCheckpointEntries([]contextEntry{{kind: "task_state", provenance: "assistant", contentJSON: `{"a":1}`}})
 	if !strings.Contains(entries, "压缩记忆") || !strings.Contains(entries, "task_state") {
 		t.Fatalf("checkpoint 渲染不正确: %q", entries)
-	}
-	imageIndex := formatChatImageContextIndex([]ImageGenerationRecord{{AssetID: "asset-1", Operation: "generate", Model: "gpt-image-2", Prompt: "提示\x01词"}})
-	if !strings.Contains(imageIndex, "谱系索引") || strings.Contains(imageIndex, "\x01") {
-		t.Fatalf("图像谱系渲染不正确: %q", imageIndex)
 	}
 	_ = context.Background()
 }

@@ -1065,29 +1065,6 @@ func TestW1UBuildAssetDataURL(t *testing.T) {
 	}
 }
 
-func TestW1UChatResponsesOutputText(t *testing.T) {
-	if got := chatResponsesOutputText(map[string]any{"output_text": "直接文本"}); got != "直接文本" {
-		t.Fatalf("output_text 快捷路径 = %q", got)
-	}
-	payload := map[string]any{"output": []any{
-		map[string]any{"content": []any{
-			map[string]any{"text": "a"},
-			map[string]any{"text": "b"},
-			"非对象跳过",
-			map[string]any{"text": ""},
-			map[string]any{"other": "x"},
-		}},
-		"非对象项跳过",
-		map[string]any{"content": "非数组跳过"},
-	}}
-	if got := chatResponsesOutputText(payload); got != "a\nb" {
-		t.Fatalf("output 遍历 = %q，want \"a\\nb\"", got)
-	}
-	if got := chatResponsesOutputText(map[string]any{}); got != "" {
-		t.Fatalf("空载荷 = %q，want 空串", got)
-	}
-}
-
 func TestW1UParseChatImageObservation(t *testing.T) {
 	parsed, err := parseChatImageObservation(`{"summary":" 摘要 ","ocr":["o1"],"objects":[],"questionRelevantFacts":["f1"],"uncertainties":["u1"]}`)
 	if err != nil {

@@ -39,6 +39,9 @@ type streamMessageBody struct {
 	ReasoningEffort      string
 	ServiceTier          string
 	GenerationParameters *ChatGenerationParameters
+	// EnableWebSearch 是本轮请求级联网开关（D3，默认不勾选）：仅原生
+	// Responses 直连账户可用，透传 hosted web_search 给上游执行。
+	EnableWebSearch bool
 }
 
 // parseStreamMessageBody mirrors messageBodySchema (strict + refine order).
@@ -178,9 +181,16 @@ func parseStreamMessageBody(raw map[string]json.RawMessage) (*streamMessageBody,
 		}
 		body.GenerationParameters = params
 	}
+	if value, ok := raw["enableWebSearch"]; ok && string(value) != "null" {
+		var flag bool
+		if err := json.Unmarshal(value, &flag); err != nil {
+			return nil, &invalidRequestError{Message: "Expected boolean, received " + jsonValueTypeName(value)}
+		}
+		body.EnableWebSearch = flag
+	}
 	for key := range raw {
 		switch key {
-		case "clientMessageId", "replaceTurnId", "content", "contentBlocks", "model", "reasoningEffort", "serviceTier", "generationParameters":
+		case "clientMessageId", "replaceTurnId", "content", "contentBlocks", "model", "reasoningEffort", "serviceTier", "generationParameters", "enableWebSearch":
 		default:
 			return nil, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
 		}
@@ -338,13 +348,18 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 发送预检（设计 §5.5/§8）：归档（存量旧模式）会话只读；未选账户不能发送
-	//（400 chat_account_required 引导选择账户）。
+	//（400 chat_account_required 引导选择账户）；锁定会话（last_model 非空）
+	// 不接受其他模型（400 chat_model_locked，D5）。
 	if conversation.Archived {
 		writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
 		return
 	}
 	if conversation.BindAccountID == nil {
 		writeMessageCode(w, http.StatusBadRequest, chatAccountRequiredMessage, "chat_account_required")
+		return
+	}
+	if conversation.LastModel != nil && *conversation.LastModel != body.Model {
+		writeMessageCode(w, http.StatusBadRequest, (&ModelLockedError{LockedModel: *conversation.LastModel}).Error(), "chat_model_locked")
 		return
 	}
 	existingTurn, err := rt.deps.Store.FindTurnByClientMessageID(conversation.ID, ownerID, body.ClientMessageID)
@@ -435,8 +450,9 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(err)
 		return
 	}
-	gatewayKey, err := rt.deps.gatewayKeyOrError(apiKey.Secret)
-	if err != nil {
+	// 网关 Key 复核（purpose=chat 专用 Key 的分组绑定有效性；生图旗标消费点
+	// 已随生图工具退场）。
+	if _, err := rt.deps.gatewayKeyOrError(apiKey.Secret); err != nil {
 		failWith(err)
 		return
 	}
@@ -451,6 +467,15 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(err)
 		return
 	}
+	// 主推协议解析（D4）：按绑定账户真实 profile/映射解析请求形态与上游协议，
+	// 校验端点模式；不匹配/未知档案显式失败。主轮、压缩与图片观察共用这一份
+	// 解析结果（request_protocol.go 单一实现）。
+	routeAccount, resolvedRoute, err := chatRouteAccountForModel(scope.accounts, body.Model)
+	if err != nil {
+		failWith(&ModelCapabilityError{Message: err.Error()})
+		return
+	}
+	protocol := resolvedRoute.RequestProtocol
 	modelOptions := buildChatModelOptions([]string{body.Model}, catalog)
 	var modelOption *ChatModelOption
 	if len(modelOptions) > 0 {
@@ -460,56 +485,26 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(&ModelCapabilityError{Message: "当前模型能力信息不可用，请刷新模型列表"})
 		return
 	}
-	accountSupportedProtocols := rt.scopeSupportedProtocols(scope, ownerID, body.Model)
-	if err := assertActive(); err != nil {
-		failWith(err)
-		return
-	}
-	if len(accountSupportedProtocols) == 0 {
-		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
-		return
-	}
-	// 主对话恒 chat_completions（工具体系设计 §11.1）：协议不再由工具能力/图片
-	// 输入驱动；联网搜索与生图是会话级绑定的模型工具，经子代理执行。
-	protocol := ProtocolChatCompletions
-	routeAccounts := rt.scopeRouteAccounts(scope, ownerID, body.Model, string(protocol))
-	filteredAccounts := []ChatTransportAccount{}
-	for _, account := range routeAccounts {
-		if chatTransportAccountSupportsProtocol(account, body.Model, protocol) {
-			filteredAccounts = append(filteredAccounts, account)
-		}
-	}
-	if len(filteredAccounts) == 0 {
-		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
-		return
-	}
-	routeModelOption := constrainChatModelOptionForAccounts(modelOption, body.Model, filteredAccounts, []ChatTransportProtocol{protocol})
+	routeModelOption := constrainChatModelOptionForAccounts(modelOption, body.Model, []ChatTransportAccount{*routeAccount}, []ChatTransportProtocol{protocol})
 	if len(routeModelOption.SupportedAPIProtocols) == 0 {
 		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
 		return
 	}
-	imageGenerationEnabled := gatewayKey.ImageGenerationEnabled && rt.scopeHasImageGenerationRoute(scope, ownerID)
-	environment := rt.deps.ToolEnvironment
-	if environment == "" {
-		environment = "development"
-	}
-	internalToolRegistry := newChatInternalToolRegistry(environment, rt.deps.DiagnosticToolEnabled, imageGenerationEnabled)
-	// function_calling 判定口径：目录矩阵任一协议含 function_calling（主对话
-	// 恒 chat，但矩阵可能仅在 responses 键下声明，按「任一协议」避免误杀）。
-	internalTools := internalToolRegistry.resolveTools(modelOption.supportsTool("function_calling"))
-	internalToolNames := make([]string, 0, len(internalTools))
-	for _, tool := range internalTools {
-		internalToolNames = append(internalToolNames, tool.ModelName)
-	}
-	// 图片输入校验（契约 §11.3）：inputModalities 含 image 的模型才允许带图
-	//（目录矩阵读取链），协议维度不再参与。
+	// 图片输入校验（D6 保留边界）：inputModalities 含 image 的模型才允许带图。
 	if imageCount > 0 && !containsString(modelOption.InputModalities, "image") {
 		failWith(&RequestError{Code: RequestImageNotSupported, Message: "当前模型或路由不支持图片输入，请切换模型或移除图片"})
 		return
 	}
-	// 模型工具绑定运行时（契约 §6.3/§9）：候选摘要供 binding_required 引导，
-	// 绑定账户解析固定派发执行器；端口缺失时降级为无候选视图。
-	toolBindings := rt.resolveChatToolBindingRuntime(bindScope, conversation)
+	// 联网开关能力校验（D3）：仅原生 Responses 直连账户且目录声明内置搜索，
+	// 其余形态传 true → 422 chat_web_search_unsupported。
+	hostedTools := []map[string]any{}
+	if body.EnableWebSearch {
+		if !chatHostedWebSearchSupported(resolvedRoute, catalog, body.Model) {
+			failWith(&RequestError{Code: RequestWebSearchUnsupported, Message: "当前账户或模型不支持联网搜索，请关闭联网后重试"})
+			return
+		}
+		hostedTools = append(hostedTools, map[string]any{"type": HostedWebSearchToolKey})
+	}
 	nowValue := rt.now()
 	resolvedInput, err := rt.resolveChatAssetInput(body.ContentBlocks, ownerID, conversation.ID, nowValue)
 	if err != nil {
@@ -529,11 +524,10 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	if routeModelOption.SupportsPromptCaching {
 		promptCacheKey = buildChatPromptCacheKey(ownerID, apiKey.ID, conversation.ID)
 	}
-	_, systemInstructionsText, _ := buildChatSystemInstructions(internalToolNames)
+	_, systemInstructionsText, _ := buildChatSystemInstructions()
 	budgetInput := fixedChatBudgetInput{
 		CurrentUserContent: body.Content,
 		Instructions:       systemInstructionsText,
-		InternalTools:      internalTools,
 		ImageTokenEstimate: resolvedInput.ImageTokenEstimate,
 		MaxInputTokens:     effectiveContextLimitTokens,
 	}
@@ -546,6 +540,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		SystemAccountID:             ownerID,
 		APIKeySecret:                apiKey.Secret,
 		Model:                       body.Model,
+		Protocol:                    protocol,
 		EffectiveContextLimitTokens: effectiveContextLimitTokens,
 	}
 	compactOnce := func() bool {
@@ -581,6 +576,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			SystemAccountID:  ownerID,
 			APIKeySecret:     apiKey.Secret,
 			Model:            body.Model,
+			Protocol:         protocol,
 			UserContent:      "补全此前对话中的图片语义说明",
 			AssistantContent: "",
 		})
@@ -615,27 +611,35 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(&ContextBudgetError{})
 		return
 	}
-	buildTransport := func(continuation []any) (string, []byte, error) {
-		path, bodyMap := buildChatTransportRequest(ChatTransportRequestInput{
+	// buildTransport 按解析出的请求形态构造请求体（responses: instructions+input；
+	// chat: system+user messages），hosted 工具载荷仅在联网开启时注入（D3）。
+	buildTransport := func() (string, []byte, error) {
+		requestInput := ChatTransportRequestInput{
 			Instructions:         systemInstructionsText,
 			Model:                body.Model,
 			History:              preparedContext.History,
 			CurrentContent:       body.Content,
 			CurrentBlocks:        resolvedInput.Blocks,
-			InternalTools:        internalTools,
-			ToolContinuation:     continuation,
+			HostedTools:          hostedTools,
 			ReasoningEffort:      reasoningEffort,
 			ServiceTier:          serviceTier,
 			GenerationParameters: generationParameters,
 			PromptCacheKey:       promptCacheKey,
-		})
+		}
+		var path string
+		var bodyMap map[string]any
+		if protocol == ProtocolResponses {
+			path, bodyMap = buildResponsesTransportRequest(requestInput)
+		} else {
+			path, bodyMap = buildChatTransportRequest(requestInput)
+		}
 		payload, err := json.Marshal(bodyMap)
 		if err != nil {
 			return "", nil, err
 		}
 		return path, payload, nil
 	}
-	_, serializedTransportBody, err := buildTransport(nil)
+	_, serializedTransportBody, err := buildTransport()
 	if err != nil {
 		failWith(err)
 		return
@@ -653,7 +657,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 				failWith(&ContextBudgetError{})
 				return
 			}
-			_, serializedTransportBody, err = buildTransport(nil)
+			_, serializedTransportBody, err = buildTransport()
 			if err != nil {
 				failWith(err)
 				return
@@ -669,17 +673,18 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accepted, err = rt.deps.Store.AcceptTurn(AcceptTurnInput{
-		ConversationID:          conversation.ID,
-		SystemAccountID:         ownerID,
-		ClientMessageID:         body.ClientMessageID,
-		UserContent:             body.Content,
-		ContentBlocks:           body.ContentBlocks,
-		Model:                   body.Model,
-		Now:                     rt.now(),
-		StorageQuotaBytes:       streamStorageQuotaBytes,
-		RetentionDays:           rt.deps.RetentionDays,
+		ConversationID:        conversation.ID,
+		SystemAccountID:       ownerID,
+		ClientMessageID:       body.ClientMessageID,
+		UserContent:           body.Content,
+		ContentBlocks:         body.ContentBlocks,
+		Model:                 body.Model,
+		ExpectedBindAccountID: derefString(conversation.BindAccountID),
+		Now:                   rt.now(),
+		StorageQuotaBytes:     streamStorageQuotaBytes,
+		RetentionDays:         rt.deps.RetentionDays,
 		MaxTurnsPerConversation: rt.deps.MaxTurnsPerConversation,
-		ReplaceTurnID:           body.ReplaceTurnID,
+		ReplaceTurnID:         body.ReplaceTurnID,
 	})
 	if err != nil {
 		failWith(err)
@@ -719,9 +724,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			apiKey:                      apiKey,
 			executor:                    dispatchExecutor,
 			traceID:                     traceID,
-			defaultImageModel:           string(conversation.DefaultImageModel),
-			internalToolRegistry:        internalToolRegistry,
-			internalTools:               internalTools,
 			systemInstructionsText:      systemInstructionsText,
 			resolvedInput:               resolvedInput,
 			preparedContext:             preparedContext,
@@ -732,7 +734,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			effectiveContextLimitTokens: effectiveContextLimitTokens,
 			estimatedRequestTokens:      int64(estimatedRequestTokens),
 			buildTransport:              buildTransport,
-			toolBindings:                toolBindings,
 		}, identity),
 		UnexpectedErrorTraceID: traceID,
 	}
@@ -861,6 +862,11 @@ func writeStreamRouteError(w http.ResponseWriter, err error) {
 		writeMessageCode(w, 499, "消息准备已取消", "chat_preparation_canceled")
 		return
 	}
+	var modelLocked *ModelLockedError
+	if errors.As(err, &modelLocked) {
+		writeMessageCode(w, http.StatusBadRequest, modelLocked.Error(), "chat_model_locked")
+		return
+	}
 	var conflict *ConflictError
 	if errors.As(err, &conflict) {
 		writeChatRouteError(w, err)
@@ -938,20 +944,8 @@ func (d *Deps) gatewayKeyOrError(secret string) (*GatewayKeyView, error) {
 	return view, nil
 }
 
-// scopeRouteAccounts 按绑定作用域解析指定协议的候选账户：直接使用收敛后的
-// 单账户视图（协议过滤由调用方的 chatTransportAccountSupportsProtocol 循环
-// 承担）。
+// scopeRouteAccounts 返回绑定作用域的候选账户视图（协议方向由
+// request_protocol.go 的 resolver 承担）。
 func (rt *chatRoutes) scopeRouteAccounts(scope *chatBindingScope, systemAccountID, model, endpointFamily string) []ChatTransportAccount {
 	return scope.accounts
-}
-
-// scopeHasImageGenerationRoute 在收敛后的单账户视图上判断图像生成路由
-// （api_key 类型账户即可用生图路由）。
-func (rt *chatRoutes) scopeHasImageGenerationRoute(scope *chatBindingScope, systemAccountID string) bool {
-	for _, account := range scope.accounts {
-		if account.Type == "api_key" {
-			return true
-		}
-	}
-	return false
 }

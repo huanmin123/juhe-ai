@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 )
 
 // Runner execute closure ported from the POST /stream execute block in
-// chat.routes.ts: context head snapshot, internal tool orchestration with
-// model rounds over the GenerationExecutor port, turn completion, context
-// usage recording, observation/compaction scheduling and the failure
-// finalize/recover paths.
+// chat.routes.ts: context head snapshot, single model round over the
+// GenerationExecutor port, turn completion, context usage recording,
+// observation/compaction scheduling and the failure finalize/recover paths.
+// 站内模型工具编排（web_search/generate_image/generate_video/generate_audio
+// 与 binding_required 引导）已整体退场（PLAN-20261012T121500000Z D2）：
+// 一轮 = 一次模型调用 + 收尾。
 
 // chatDispatchTargetAware 是进程内调度覆盖通道在 chat 侧的可选扩展端口：
 // 组合根（cmd/juhe-ai-gateway）的 chatGatewayExecutor 实现它，把会话绑定
@@ -58,18 +59,12 @@ type generationExecuteInput struct {
 	conversation  *Conversation
 	ownerID       string
 	userMessageID string
-	// protocol 恒 chat_completions（工具体系设计 §11.1）；保留字段仅为
-	// Compactions.Schedule 等下游记账的协议枚举来源。
-	protocol ChatTransportProtocol
-	apiKey   *ChatAPIKeyRecord
-	// executor 是本轮生成的上游派发执行器：会话绑定账户的调度覆盖视图
-	//（stream_route 经 chatDispatchTargetAware 端口解析）；nil 回落
-	// rt.deps.Executor。
+	// protocol 是本轮解析出的请求形态（request_protocol.go 按绑定账户供应商
+	// 主推协议解析）；Compactions.Schedule 等下游记账沿用该枚举。
+	protocol                    ChatTransportProtocol
+	apiKey                      *ChatAPIKeyRecord
 	executor                    GenerationExecutor
 	traceID                     string
-	defaultImageModel           string
-	internalToolRegistry        *chatInternalToolRegistry
-	internalTools               []*toolDefinition
 	systemInstructionsText      string
 	resolvedInput               *resolvedChatInput
 	preparedContext             *transportHistory
@@ -79,10 +74,7 @@ type generationExecuteInput struct {
 	promptCacheKey              string
 	effectiveContextLimitTokens *int64
 	estimatedRequestTokens      int64
-	buildTransport              func(continuation []any) (string, []byte, error)
-	// toolBindings 是模型工具（web_search/generate_image）的会话绑定运行时
-	// 视图（候选 + 绑定目标 + 派发执行器），stream_route 解析后注入。
-	toolBindings *chatToolBindingRuntime
+	buildTransport              func() (string, []byte, error)
 }
 
 // buildGenerationExecute mirrors the `execute` closure handed to
@@ -90,384 +82,268 @@ type generationExecuteInput struct {
 func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, identity ChatGenerationIdentity) func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
 	return func(runCtx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
 		var partialContent strings.Builder
-		failureCode := GenErrInternal
+		failureCode := GenErrUpstreamHTTP
 		messageID := identity.AssistantMessageID
 		turnID := identity.TurnID
 
-		invokeModel := func(round int, continuation []any) (ChatToolModelTurn, error) {
-			path, payload, err := input.buildTransport(continuation)
-			if err != nil {
-				return ChatToolModelTurn{}, err
-			}
-			if len(payload) > maxInternalChatRequestBytes {
-				return ChatToolModelTurn{}, &RequestError{Code: RequestBodyTooLarge, Message: "工具续答请求体超过安全上限，请减少上下文后重试"}
-			}
-			failureCode = GenErrUpstreamHTTP
-			headers := map[string]string{
-				"authorization": "Bearer " + input.apiKey.Secret,
-				"content-type":  "application/json",
-				"accept":        "text/event-stream",
-			}
-			if input.traceID != "" {
-				headers["x-trace-id"] = input.traceID
-			}
-			var ctx context.Context = context.Background()
-			if runCtx.Context != nil {
-				ctx = runCtx.Context
-			}
-			upstream, err := dispatchExecutorOf(input, rt.deps.Executor).Dispatch(ctx, GenerationDispatchRequest{
-				Path: path, Method: "POST", Headers: headers, Body: payload,
-			})
-			if err != nil {
-				return ChatToolModelTurn{}, err
-			}
-			if upstream == nil || upstream.Status < 200 || upstream.Status >= 300 || upstream.Body == nil {
-				payloadText := ""
-				if upstream != nil && upstream.Body != nil {
-					raw, readErr := io.ReadAll(io.LimitReader(upstream.Body, 64*1024))
-					_ = upstream.Body.Close()
-					if readErr == nil {
-						payloadText = string(raw)
-					}
+		failureCode = GenErrUpstreamHTTP
+		path, payload, err := input.buildTransport()
+		if err != nil {
+			return rt.finalizeGenerationFailure(input, identity, runCtx, &partialContent, err, GenErrInternal)
+		}
+		if len(payload) > maxInternalChatRequestBytes {
+			return rt.finalizeGenerationFailure(input, identity, runCtx, &partialContent,
+				&RequestError{Code: RequestBodyTooLarge, Message: "本轮模型请求体超过安全上限，请减少上下文后重试"}, GenErrInternal)
+		}
+		headers := map[string]string{
+			"authorization": "Bearer " + input.apiKey.Secret,
+			"content-type":  "application/json",
+			"accept":        "text/event-stream",
+		}
+		if input.traceID != "" {
+			headers["x-trace-id"] = input.traceID
+		}
+		var ctx context.Context = context.Background()
+		if runCtx.Context != nil {
+			ctx = runCtx.Context
+		}
+		upstream, err := dispatchExecutorOf(input, rt.deps.Executor).Dispatch(ctx, GenerationDispatchRequest{
+			Path: path, Method: "POST", Headers: headers, Body: payload,
+		})
+		if err != nil {
+			return rt.finalizeGenerationFailure(input, identity, runCtx, &partialContent, err, failureCode)
+		}
+		if upstream == nil || upstream.Status < 200 || upstream.Status >= 300 || upstream.Body == nil {
+			payloadText := ""
+			if upstream != nil && upstream.Body != nil {
+				raw, readErr := io.ReadAll(io.LimitReader(upstream.Body, 64*1024))
+				_ = upstream.Body.Close()
+				if readErr == nil {
+					payloadText = string(raw)
 				}
-				return ChatToolModelTurn{}, errors.New(upstreamMessagePayload(payloadText, "模型请求失败（HTTP "+itoa(statusOrZero(upstream))+")"))
 			}
-			failureCode = GenErrUpstreamStream
-			// BUG-0223 防御收口：Body.Close 移入 defer——Collect 内部 panic
-			// （由上层 safego 恢复）时本 defer 仍执行，保证上游连接释放；
-			// 正常路径的 Close 错误依旧忽略（读取已完成后关闭失败无补救动作）。
-			defer func() { _ = upstream.Body.Close() }()
-			collected, collectErr := CollectOpenAIChatSse(upstream.Body, maxMessageBytes, func(delta string) {
+			return rt.finalizeGenerationFailure(input, identity, runCtx, &partialContent,
+				errors.New(upstreamMessagePayload(payloadText, "模型请求失败（HTTP "+itoa(statusOrZero(upstream))+"）")), failureCode)
+		}
+		failureCode = GenErrUpstreamStream
+		// BUG-0223 防御收口：Body.Close 移入 defer——Collect 内部 panic
+		// （由上层 safego 恢复）时本 defer 仍执行，保证上游连接释放；
+		// 正常路径的 Close 错误依旧忽略（读取已完成后关闭失败无补救动作）。
+		defer func() { _ = upstream.Body.Close() }()
+		var collected upstreamModelResult
+		var collectErr error
+		if input.protocol == ProtocolResponses {
+			var responsesResult OpenAIResponsesSseResult
+			responsesResult, collectErr = CollectOpenAIResponsesSse(upstream.Body, maxMessageBytes, func(delta string) {
 				partialContent.WriteString(delta)
 				runCtx.Publish("message.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ContentTextDelta: &delta})
 			}, func(delta string) {
 				runCtx.Publish("reasoning.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ReasoningTextDelta: &delta})
 			}, 0)
-			if collectErr != nil {
-				return ChatToolModelTurn{}, collectErr
+			collected = upstreamModelResult{
+				Content:      responsesResult.Content,
+				FinishReason: responsesResult.FinishReason,
+				InputTokens:  responsesResult.InputTokens,
+				OutputTokens: responsesResult.OutputTokens,
 			}
-			return ChatToolModelTurn{
-				Content:           collected.Content,
-				FinishReason:      collected.FinishReason,
-				ContinuationItems: collected.ContinuationItems,
-				ToolCalls:         collected.ToolCalls,
-				InputTokens:       collected.InputTokens,
-				OutputTokens:      collected.OutputTokens,
-			}, nil
-		}
-
-		publishTool := func(event ChatToolExecutionEvent) {
-			publishApplicationToolEvent(runCtx.Publish, messageID, event)
-		}
-		var toolContext *chatToolExecutionContext
-		toolContext = &chatToolExecutionContext{
-			OwnerID:            identity.OwnerID,
-			ConversationID:     input.conversation.ID,
-			TurnID:             turnID,
-			AssistantMessageID: messageID,
-			TraceID:            input.traceID,
-			APIKey:             input.apiKey.Secret,
-			DefaultImageModel:  input.defaultImageModel,
-			Aborted:            runCtx.Aborted,
-			LoadImageEditReferences: func(assetIDs []string) ([]ChatImageEditReference, error) {
-				return loadImageEditReferences(rt.deps.AssetEditReferences, rt.deps.ObjectStore, assetIDs, identity.OwnerID, input.conversation.ID, rt.now())
-			},
-			ConstrainImageModel: func(model string) string {
-				bindings := input.toolBindings
-				if bindings == nil {
-					return model
-				}
-				return constrainChatImageModel(model, bindings.ImageAccountID, input.defaultImageModel, bindings.ImageCandidates)
-			},
-			DefaultVideoModel: string(input.conversation.DefaultVideoModel),
-			DefaultAudioModel: string(input.conversation.DefaultAudioModel),
-			ConstrainVideoModel: func(model string) string {
-				bindings := input.toolBindings
-				if bindings == nil {
-					return model
-				}
-				return constrainChatMediaModel(model, bindings.VideoAccountID, string(input.conversation.DefaultVideoModel), bindings.VideoCandidates)
-			},
-			ConstrainAudioModel: func(model string) string {
-				bindings := input.toolBindings
-				if bindings == nil {
-					return model
-				}
-				return constrainChatMediaModel(model, bindings.AudioAccountID, string(input.conversation.DefaultAudioModel), bindings.AudioCandidates)
-			},
-			VideoGeneration: func(request ChatVideoCreationRequest) (ChatVideoCreationResult, error) {
-				// M7 视频工具（问答音视频工具设计 §4.4）：未绑定账户 →
-				// binding_required 引导；已绑定 → 经 /v1 链固定派发绑定账户创建
-				// 任务（立即返回，等待由 media-tasks 轮询驱动）。
-				bindings := input.toolBindings
-				if bindings == nil || bindings.VideoAccountID == "" {
-					return ChatVideoCreationResult{}, &chatToolBindingRequiredError{ToolName: "generate_video", UserHint: chatVideoBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "generate_video")}
-				}
-				request.Model = constrainChatMediaModel(request.Model, bindings.VideoAccountID, string(input.conversation.DefaultVideoModel), bindings.VideoCandidates)
-				if request.Model == "" {
-					return ChatVideoCreationResult{}, errors.New("视频生成模型不能为空")
-				}
-				var ctx context.Context = context.Background()
-				if runCtx.Context != nil {
-					ctx = runCtx.Context
-				}
-				return CreateChatVideo(ctx, bindings.VideoExecutor, request, input.apiKey.Secret, input.traceID)
-			},
-			AudioGeneration: func(request ChatAudioGenerationRequest) (ChatMediaArtifactResult, error) {
-				// M7 音频工具（TTS 同步）：未绑定 → binding_required 引导；
-				// 已绑定 → 经 /v1 链固定派发绑定账户合成。
-				bindings := input.toolBindings
-				if bindings == nil || bindings.AudioAccountID == "" {
-					return ChatMediaArtifactResult{}, &chatToolBindingRequiredError{ToolName: "generate_audio", UserHint: chatAudioBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "generate_audio")}
-				}
-				request.Model = constrainChatMediaModel(request.Model, bindings.AudioAccountID, string(input.conversation.DefaultAudioModel), bindings.AudioCandidates)
-				if request.Model == "" {
-					return ChatMediaArtifactResult{}, errors.New("语音合成模型不能为空")
-				}
-				var ctx context.Context = context.Background()
-				if runCtx.Context != nil {
-					ctx = runCtx.Context
-				}
-				return GenerateChatAudio(ctx, bindings.AudioExecutor, request, input.apiKey.Secret, input.traceID)
-			},
-			ImageGeneration: func(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
-				// 生图模型工具（契约 §6.2）：未绑定账户 → binding_required 引导；
-				// 已绑定 → 经 /v1 链固定派发绑定账户（不做旧路由派发兼容）。
-				bindings := input.toolBindings
-				if bindings == nil || bindings.ImageAccountID == "" {
-					return ChatImageGenerationToolResult{}, &chatToolBindingRequiredError{ToolName: "generate_image", UserHint: chatImageBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "generate_image")}
-				}
-				failureCode = GenErrImageFailed
-				var ctx context.Context = context.Background()
-				if runCtx.Context != nil {
-					ctx = runCtx.Context
-				}
-				// url 回退下载按绑定账户的 proxy_profile 出站（端口 nil 或
-				// 账户未绑代理时返回 nil，走直连默认）。
-				var downloadClient *http.Client
-				if rt.deps.ImageDownloadProxy != nil {
-					downloadClient = rt.deps.ImageDownloadProxy(bindings.ImageAccountID)
-				}
-				generated, err := GenerateChatImage(ctx, bindings.ImageExecutor, request, input.apiKey.Secret, input.traceID, downloadClient)
-				if err != nil {
-					return ChatImageGenerationToolResult{}, err
-				}
-				if generated.MimeType == "" || generated.Width == 0 || generated.Height == 0 {
-					return ChatImageGenerationToolResult{}, errors.New("生成图片缺少有效 MIME 或尺寸")
-				}
-				return generated, nil
-			},
-			WebSearch: func(query string) (chatToolExecutionResult, error) {
-				// web_search 模型工具（契约 §6.1）：未绑定 → binding_required
-				// 引导；已绑定 → 子代理经 /v1 链固定派发绑定「账户+模型」。
-				bindings := input.toolBindings
-				if bindings == nil || bindings.SearchAccountID == "" || bindings.SearchModelID == "" {
-					return chatToolExecutionResult{}, &chatToolBindingRequiredError{ToolName: "web_search", UserHint: chatWebSearchBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "web_search")}
-				}
-				// 过程增量经 context.ToolProgress 渐进上报（闭包引用预声明的
-				// toolContext 变量，调用发生在构造完成后）。
-				var progress func(chatWebSearchProgress)
-				if toolContext != nil {
-					progress = toolContext.ToolProgress
-				}
-				return executeChatWebSearch(runCtx, bindings.SearchExecutor, input.apiKey.Secret, input.traceID, bindings.SearchModelID, query, progress)
-			},
-		}
-		if rt.deps.ObjectStore != nil {
-			toolContext.ArtifactSink = &storeGeneratedImageSink{
-				routes:             rt,
-				ownerID:            identity.OwnerID,
-				conversationID:     input.conversation.ID,
-				turnID:             turnID,
-				assistantMessageID: messageID,
-				nextContentOrder:   func() int64 { return int64(len(runCtx.SnapshotBlocks())) },
-			}
-			toolContext.MediaArtifactSink = &storeGeneratedMediaSink{
-				routes:             rt,
-				ownerID:            identity.OwnerID,
-				conversationID:     input.conversation.ID,
-				turnID:             turnID,
-				assistantMessageID: messageID,
-				nextContentOrder:   func() int64 { return int64(len(runCtx.SnapshotBlocks())) },
+		} else {
+			var chatResult OpenAIChatSseResult
+			chatResult, collectErr = CollectOpenAIChatSse(upstream.Body, maxMessageBytes, func(delta string) {
+				partialContent.WriteString(delta)
+				runCtx.Publish("message.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ContentTextDelta: &delta})
+			}, func(delta string) {
+				runCtx.Publish("reasoning.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ReasoningTextDelta: &delta})
+			}, 0)
+			collected = upstreamModelResult{
+				Content:      chatResult.Content,
+				FinishReason: chatResult.FinishReason,
+				InputTokens:  chatResult.InputTokens,
+				OutputTokens: chatResult.OutputTokens,
 			}
 		}
-		orchestrator := newChatInternalToolOrchestrator(input.internalToolRegistry, input.internalTools, toolContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8, MaxImageCalls: 2}, publishTool)
+		if collectErr != nil {
+			return rt.finalizeGenerationFailure(input, identity, runCtx, &partialContent, collectErr, failureCode)
+		}
+		if runCtx.Aborted() {
+			return rt.finalizeGenerationFailure(input, identity, runCtx, &partialContent, &PreparationCanceledError{}, GenErrInternal)
+		}
 		failureCode = GenErrInternal
-		result, execErr := func() (result ChatToolOrchestratorResult, err error) {
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					err = errors.New("generation panicked")
+		finishReason := collected.FinishReason
+		if finishReason == "" {
+			finishReason = "stop"
+		}
+		assistantContent := partialContent.String()
+		if assistantContent == "" {
+			assistantContent = collected.Content
+		}
+		persisted := terminalizeAssistantBlocks(runCtx.SnapshotBlocks(), "completed")
+		if _, err := rt.deps.Store.CompleteChatTurn(CompleteTurnInput{
+			ConversationID:   input.conversation.ID,
+			SystemAccountID:  identity.OwnerID,
+			TurnID:           turnID,
+			AssistantContent: assistantContent,
+			FinishReason:     finishReason,
+			TraceID:          input.traceID,
+			ContentBlocksRaw: persisted,
+			Now:              rt.now(),
+		}); err != nil {
+			// 成功路径落库失败（如 jobs 中断清理已清 active_turn_id）：与失败
+			// 路径同型走恢复收口，按权威侧状态收敛轮次并发终止事件，不再
+			// 裸 return err 丢弃已生成内容与终止事件。恢复收口按 §13.3 携带
+			// 已生成的 assistantContent 落库。
+			recovered := rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, assistantContent, err)
+			switch recovered {
+			case "completed":
+				// 权威侧已并发收口为 completed：继续成功收尾，保证 usage
+				// 记账与 message.completed 终止事件不缺失。
+			case "canceled":
+				return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
+			default:
+				publicError := classifyGenerationError(err, GenErrInternal)
+				failureMessage := publicError.Message
+				if assistantContent != "" {
+					failureMessage = ChatGenerationContinuationMessage(publicError.Code)
 				}
-			}()
-			return orchestrator.Run(invokeModel)
-		}()
-		if execErr == nil {
-			failureCode = GenErrInternal
-			finishReason := result.FinishReason
-			if finishReason == "" {
-				finishReason = "stop"
+				data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": failureMessage}
+				if input.traceID != "" {
+					data["traceId"] = input.traceID
+				}
+				return ChatGenerationTerminalResult{Status: "failed", Data: data}, nil
 			}
-			assistantContent := partialContent.String()
-			if assistantContent == "" {
-				assistantContent = result.Content
+		}
+		upstreamUsageAvailable := collected.InputTokens != nil
+		var activeContextTokens int64
+		if upstreamUsageAvailable {
+			activeContextTokens = *collected.InputTokens
+			if collected.OutputTokens != nil {
+				activeContextTokens += *collected.OutputTokens
+			} else {
+				activeContextTokens += int64(rt.tokenCount(assistantContent))
 			}
-			if runCtx.Aborted() {
-				return ChatGenerationTerminalResult{}, &PreparationCanceledError{}
+		} else {
+			activeContextTokens = input.estimatedRequestTokens + int64(rt.tokenCount(assistantContent)) + 12
+		}
+		_, _ = rt.deps.Store.RecordContextUsage(RecordContextUsageInput{
+			ConversationID:              input.conversation.ID,
+			SystemAccountID:             identity.OwnerID,
+			ExpectedContextRevision:     headRevision(rt, input.conversation.ID, identity.OwnerID),
+			ActiveContextTokens:         activeContextTokens,
+			EffectiveContextLimitTokens: input.effectiveContextLimitTokens,
+			UsageEstimated:              !upstreamUsageAvailable,
+			Now:                         rt.now(),
+		})
+		if len(input.resolvedInput.AssetIDs) > 0 {
+			targets := make([]ObservationTarget, 0, len(input.resolvedInput.AssetIDs))
+			for _, assetID := range input.resolvedInput.AssetIDs {
+				targets = append(targets, ObservationTarget{AssetID: assetID, ExpectedTurnID: turnID, ExpectedMessageID: input.userMessageID})
 			}
-			persisted := terminalizeAssistantBlocks(runCtx.SnapshotBlocks(), "completed")
-			if _, err := rt.deps.Store.CompleteChatTurn(CompleteTurnInput{
+			rt.scheduleImageObservations(ScheduleObservationInput{
+				Targets:          targets,
 				ConversationID:   input.conversation.ID,
 				SystemAccountID:  identity.OwnerID,
-				TurnID:           turnID,
+				APIKeySecret:     input.apiKey.Secret,
+				Model:            input.body.Model,
+				Protocol:         input.protocol,
+				UserContent:      input.body.Content,
 				AssistantContent: assistantContent,
-				FinishReason:     finishReason,
-				TraceID:          input.traceID,
-				ContentBlocksRaw: persisted,
-				Now:              rt.now(),
-			}); err != nil {
-				// 成功路径落库失败（如 jobs 中断清理已清 active_turn_id）：与失败
-				// 路径同型走恢复收口，按权威侧状态收敛轮次并发终止事件，不再
-				// 裸 return err 丢弃已生成内容与终止事件。恢复收口按 §13.3 携带
-				// 已生成的 assistantContent 落库。
-				recovered := rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, assistantContent, err)
-				switch recovered {
-				case "completed":
-					// 权威侧已并发收口为 completed：继续成功收尾，保证 usage
-					// 记账与 message.completed 终止事件不缺失。
-				case "canceled":
-					return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
-				default:
-					publicError := classifyGenerationError(err, GenErrInternal)
-					failureMessage := publicError.Message
-					if assistantContent != "" {
-						failureMessage = ChatGenerationContinuationMessage(publicError.Code)
-					}
-					data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": failureMessage}
-					if input.traceID != "" {
-						data["traceId"] = input.traceID
-					}
-					return ChatGenerationTerminalResult{Status: "failed", Data: data}, nil
-				}
-			}
-			upstreamUsageAvailable := result.InputTokens != nil
-			var activeContextTokens int64
-			if upstreamUsageAvailable {
-				activeContextTokens = *result.InputTokens
-				if result.OutputTokens != nil {
-					activeContextTokens += *result.OutputTokens
-				} else {
-					activeContextTokens += int64(rt.tokenCount(assistantContent))
-				}
-			} else {
-				activeContextTokens = input.estimatedRequestTokens + int64(rt.tokenCount(assistantContent)) + 12
-			}
-			_, _ = rt.deps.Store.RecordContextUsage(RecordContextUsageInput{
-				ConversationID:              input.conversation.ID,
-				SystemAccountID:             identity.OwnerID,
-				ExpectedContextRevision:     headRevision(rt, input.conversation.ID, identity.OwnerID),
-				ActiveContextTokens:         activeContextTokens,
-				EffectiveContextLimitTokens: input.effectiveContextLimitTokens,
-				UsageEstimated:              !upstreamUsageAvailable,
-				Now:                         rt.now(),
 			})
-			if len(input.resolvedInput.AssetIDs) > 0 {
-				targets := make([]ObservationTarget, 0, len(input.resolvedInput.AssetIDs))
-				for _, assetID := range input.resolvedInput.AssetIDs {
-					targets = append(targets, ObservationTarget{AssetID: assetID, ExpectedTurnID: turnID, ExpectedMessageID: input.userMessageID})
-				}
-				rt.scheduleImageObservations(ScheduleObservationInput{
-					Targets:          targets,
-					ConversationID:   input.conversation.ID,
-					SystemAccountID:  identity.OwnerID,
-					APIKeySecret:     input.apiKey.Secret,
-					Model:            input.body.Model,
-					UserContent:      input.body.Content,
-					AssistantContent: assistantContent,
+		}
+		if input.effectiveContextLimitTokens != nil && *input.effectiveContextLimitTokens != 0 &&
+			activeContextTokens >= int64(0.7*float64(*input.effectiveContextLimitTokens)) {
+			if rt.deps.Compactions != nil {
+				rt.deps.Compactions.Schedule(context.Background(), CompactionInput{
+					ConversationID:              input.conversation.ID,
+					SystemAccountID:             identity.OwnerID,
+					APIKeySecret:                input.apiKey.Secret,
+					Model:                       input.body.Model,
+					EffectiveContextLimitTokens: input.effectiveContextLimitTokens,
 				})
 			}
-			if input.effectiveContextLimitTokens != nil && *input.effectiveContextLimitTokens != 0 &&
-				activeContextTokens >= int64(0.7*float64(*input.effectiveContextLimitTokens)) {
-				if rt.deps.Compactions != nil {
-					rt.deps.Compactions.Schedule(context.Background(), CompactionInput{
-						ConversationID:              input.conversation.ID,
-						SystemAccountID:             identity.OwnerID,
-						APIKeySecret:                input.apiKey.Secret,
-						Model:                       input.body.Model,
-						EffectiveContextLimitTokens: input.effectiveContextLimitTokens,
-					})
-				}
-			}
-			data := map[string]any{"messageId": messageID, "finishReason": finishReason}
-			if input.traceID != "" {
-				data["traceId"] = input.traceID
-			}
-			return ChatGenerationTerminalResult{Status: "completed", Data: data}, nil
 		}
-
-		// Failure path (mirrors the execute catch block).
-		canceled := runCtx.Aborted() || isPreparationCanceled(execErr)
-		publicError := classifyGenerationError(execErr, failureCode)
-		// 失败文案按该轮是否已流出半截内容动态选择（AI问答设计 §11.1/§13.1）：
-		// 非取消失败且错误码存在续写引导变体时改用变体（§14.1 续写可用），
-		// 否则保持原始重试引导；落库 ErrorMessage 与下发 data["message"] 使用
-		// 同一值。取消轮以 message.canceled 终态收口、无失败文案，变体仅
-		// 作用于失败终态。
-		failureMessage := publicError.Message
-		if !canceled && partialContent.Len() > 0 {
-			if _, ok := continuationGuidanceMessages[publicError.Code]; ok {
-				failureMessage = ChatGenerationContinuationMessage(publicError.Code)
-			}
-		}
-		finalizedStatus := "failed"
-		if canceled {
-			finalizedStatus = "canceled"
-		}
-		persisted := terminalizeAssistantBlocks(runCtx.SnapshotBlocks(), finalizedStatus)
-		var tracePtr *string
+		data := map[string]any{"messageId": messageID, "finishReason": finishReason}
 		if input.traceID != "" {
-			tracePtr = &input.traceID
+			data["traceId"] = input.traceID
 		}
-		var finalizeErr error
-		if canceled {
-			_, finalizeErr = rt.deps.Store.CancelChatTurn(CancelTurnInput{
-				ConversationID:   input.conversation.ID,
-				SystemAccountID:  identity.OwnerID,
-				TurnID:           turnID,
-				AssistantContent: partialContent.String(),
-				TraceID:          tracePtr,
-				ContentBlocksRaw: persisted,
-				Now:              rt.now(),
-			})
-		} else {
-			_, finalizeErr = rt.deps.Store.FailChatTurn(FailTurnInput{
-				ConversationID:   input.conversation.ID,
-				SystemAccountID:  identity.OwnerID,
-				TurnID:           turnID,
-				AssistantContent: partialContent.String(),
-				ErrorCode:        string(publicError.Code),
-				ErrorMessage:     failureMessage,
-				TraceID:          tracePtr,
-				ContentBlocksRaw: persisted,
-				Now:              rt.now(),
-			})
-		}
-		status := finalizedStatus
-		if finalizeErr != nil {
-			status = rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, partialContent.String(), finalizeErr)
-		}
-		switch status {
-		case "canceled":
-			return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
-		case "completed":
-			return ChatGenerationTerminalResult{Status: "completed", Data: map[string]any{"messageId": messageID}}, nil
-		default:
-			data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": failureMessage}
-			if input.traceID != "" {
-				data["traceId"] = input.traceID
-			}
-			return ChatGenerationTerminalResult{Status: "failed", Data: data}, nil
+		return ChatGenerationTerminalResult{Status: "completed", Data: data}, nil
+	}
+}
+
+// finalizeGenerationFailure 收口失败/取消路径（原 execute catch 块）：按取消
+// 语义或失败语义终结轮次并返回终态结果。
+func (rt *chatRoutes) finalizeGenerationFailure(input generationExecuteInput, identity ChatGenerationIdentity, runCtx *ChatGenerationExecutionContext, partialContent *strings.Builder, execErr error, failureCode PublicChatGenerationErrorCode) (ChatGenerationTerminalResult, error) {
+	messageID := identity.AssistantMessageID
+	turnID := identity.TurnID
+	canceled := runCtx.Aborted() || isPreparationCanceled(execErr)
+	publicError := classifyGenerationError(execErr, failureCode)
+	// 失败文案按该轮是否已流出半截内容动态选择（AI问答设计 §11.1/§13.1）：
+	// 非取消失败且错误码存在续写引导变体时改用变体（§14.1 续写可用），
+	// 否则保持原始重试引导；落库 ErrorMessage 与下发 data["message"] 使用
+	// 同一值。取消轮以 message.canceled 终态收口、无失败文案，变体仅
+	// 作用于失败终态。
+	failureMessage := publicError.Message
+	if !canceled && partialContent.Len() > 0 {
+		if _, ok := continuationGuidanceMessages[publicError.Code]; ok {
+			failureMessage = ChatGenerationContinuationMessage(publicError.Code)
 		}
 	}
+	finalizedStatus := "failed"
+	if canceled {
+		finalizedStatus = "canceled"
+	}
+	persisted := terminalizeAssistantBlocks(runCtx.SnapshotBlocks(), finalizedStatus)
+	var tracePtr *string
+	if input.traceID != "" {
+		tracePtr = &input.traceID
+	}
+	var finalizeErr error
+	if canceled {
+		_, finalizeErr = rt.deps.Store.CancelChatTurn(CancelTurnInput{
+			ConversationID:   input.conversation.ID,
+			SystemAccountID:  identity.OwnerID,
+			TurnID:           turnID,
+			AssistantContent: partialContent.String(),
+			TraceID:          tracePtr,
+			ContentBlocksRaw: persisted,
+			Now:              rt.now(),
+		})
+	} else {
+		_, finalizeErr = rt.deps.Store.FailChatTurn(FailTurnInput{
+			ConversationID:   input.conversation.ID,
+			SystemAccountID:  identity.OwnerID,
+			TurnID:           turnID,
+			AssistantContent: partialContent.String(),
+			ErrorCode:        string(publicError.Code),
+			ErrorMessage:     failureMessage,
+			TraceID:          tracePtr,
+			ContentBlocksRaw: persisted,
+			Now:              rt.now(),
+		})
+	}
+	status := finalizedStatus
+	if finalizeErr != nil {
+		status = rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, partialContent.String(), finalizeErr)
+	}
+	switch status {
+	case "canceled":
+		return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
+	case "completed":
+		return ChatGenerationTerminalResult{Status: "completed", Data: map[string]any{"messageId": messageID}}, nil
+	default:
+		data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": failureMessage}
+		if input.traceID != "" {
+			data["traceId"] = input.traceID
+		}
+		return ChatGenerationTerminalResult{Status: "failed", Data: data}, nil
+	}
+}
+
+// upstreamModelResult 是主轮模型调用的统一结果视图（Chat / Responses 两个
+// collector 投影到同一形状）。
+type upstreamModelResult struct {
+	Content      string
+	FinishReason string
+	InputTokens  *int64
+	OutputTokens *int64
 }
 
 func statusOrZero(response *GenerationDispatchResponse) int {
@@ -491,100 +367,6 @@ func isPreparationCanceled(err error) bool {
 	return errors.As(err, &canceled)
 }
 
-// publishApplicationToolEvent mirrors publishApplicationToolEvent. Status
-// "binding_required" 渲染为 tool.binding_required 引导事件（契约 §8.4，纯事件
-// 不驱动内容块投影——tool_call 块状态机不含该状态）。
-func publishApplicationToolEvent(publish func(string, map[string]any, ChatGenerationProjectionUpdate) bool, messageID string, event ChatToolExecutionEvent) {
-	item := map[string]any{"type": event.ToolName, "executionOwner": "application"}
-	for key, value := range event.PublicResult {
-		item[key] = value
-	}
-	if event.Reused {
-		item["reused"] = true
-	}
-	if event.ErrorCode != "" {
-		item["errorCode"] = event.ErrorCode
-	}
-	if event.ErrorMessage != "" {
-		item["errorMessage"] = event.ErrorMessage
-	}
-	if event.Status == "binding_required" {
-		callItem := map[string]any{"callId": event.CallID}
-		for key, value := range item {
-			callItem[key] = value
-		}
-		publish("tool.binding_required", map[string]any{"messageId": messageID, "item": callItem}, ChatGenerationProjectionUpdate{})
-		return
-	}
-	projection := ChatGenerationProjectionUpdate{ToolEvent: &ChatGenerationToolEvent{
-		ID: event.CallID, ToolType: event.ToolName, Status: event.Status, Item: item,
-	}}
-	assetID := ""
-	if value, ok := event.PublicResult["assetId"].(string); ok {
-		assetID = value
-	}
-	if event.Status == "completed" && event.ToolName == "generate_image" && assetID != "" {
-		projection.ImageEvent = &ChatGenerationImageEvent{
-			ID:     event.CallID,
-			Status: "completed",
-			Item: map[string]any{
-				"assetId":       assetID,
-				"mimeType":      event.PublicResult["mimeType"],
-				"width":         event.PublicResult["width"],
-				"height":        event.PublicResult["height"],
-				"revisedPrompt": event.PublicResult["revisedPrompt"],
-			},
-		}
-	}
-	// M7 媒体块投影（问答音视频工具设计 §3）：generate_audio 完成 → output_audio
-	//（按 assetId）；generate_video 完成 → output_media_task（按 jobId，任务状态
-	// 原样携带——异步任务在轮次结束后仍由 media-tasks 轮询结算推进）。
-	if event.Status == "completed" && event.ToolName == "generate_audio" && assetID != "" {
-		projection.MediaEvent = &ChatGenerationMediaEvent{
-			Block:  "audio",
-			ID:     event.CallID,
-			Status: "completed",
-			Item: map[string]any{
-				"assetId":  assetID,
-				"mimeType": event.PublicResult["mimeType"],
-			},
-		}
-	}
-	if event.Status == "completed" && event.ToolName == "generate_video" {
-		jobID := ""
-		if value, ok := event.PublicResult["jobId"].(string); ok {
-			jobID = value
-		}
-		if jobID != "" {
-			taskStatus := "queued"
-			if value, ok := event.PublicResult["status"].(string); ok && value != "" {
-				taskStatus = value
-			}
-			mediaTaskItem := map[string]any{
-				"jobId":         jobID,
-				"kind":          "video",
-				"status":        taskStatus,
-				"model":         event.PublicResult["model"],
-				"promptSummary": event.PublicResult["promptSummary"],
-			}
-			if progress, ok := event.PublicResult["progress"]; ok && progress != nil {
-				mediaTaskItem["progress"] = progress
-			}
-			projection.MediaEvent = &ChatGenerationMediaEvent{
-				Block:  "media_task",
-				ID:     event.CallID,
-				Status: taskStatus,
-				Item:   mediaTaskItem,
-			}
-		}
-	}
-	callItem := map[string]any{"callId": event.CallID}
-	for key, value := range item {
-		callItem[key] = value
-	}
-	publish("tool."+event.Status, map[string]any{"messageId": messageID, "item": callItem}, projection)
-}
-
 // upstreamMessagePayload mirrors upstreamMessage.
 func upstreamMessagePayload(payload, fallback string) string {
 	var parsed struct {
@@ -606,10 +388,6 @@ func upstreamMessagePayload(payload, fallback string) string {
 
 // classifyGenerationError mirrors classifyChatGenerationError(error, failureCode).
 func classifyGenerationError(err error, failureCode PublicChatGenerationErrorCode) PublicChatGenerationError {
-	var imageErr *ChatImageGenerationRequestError
-	if errors.As(err, &imageErr) {
-		return PublicChatGenerationError{Code: imageErr.Code, Message: ChatGenerationErrorMessage(imageErr.Code)}
-	}
 	unknown := ClassifyUnknownChatGenerationError(err)
 	if failureCode != GenErrInternal && unknown.Code == GenErrInternal {
 		return PublicChatGenerationError{Code: failureCode, Message: ChatGenerationErrorMessage(failureCode)}
@@ -651,95 +429,4 @@ func (rt *chatRoutes) recoverChatTurnFinalization(conversationID, ownerID, turnI
 	}
 	_ = lastError
 	return "failed"
-}
-
-// storeGeneratedImageSink mirrors createChatGeneratedImageArtifactSink.
-type storeGeneratedImageSink struct {
-	routes             *chatRoutes
-	ownerID            string
-	conversationID     string
-	turnID             string
-	assistantMessageID string
-	nextContentOrder   func() int64
-}
-
-// CommitGeneratedImage writes the original + preview objects and commits the
-// asset row (original + preview stored through the ObjectStore port).
-func (s *storeGeneratedImageSink) CommitGeneratedImage(input GeneratedImageCommitInput) (GeneratedImageCommitResult, error) {
-	result := GeneratedImageCommitResult{}
-	if s.routes.deps.ObjectStore == nil || s.routes.deps.ImageProcessor == nil {
-		return result, errors.New("图片工具运行时未配置图像适配器或资产接收器")
-	}
-	preview, err := s.routes.deps.ImageProcessor.CreatePreview(input.Result.Data)
-	if err != nil {
-		var processingErr *ImageProcessingError
-		if errors.As(err, &processingErr) {
-			return result, err
-		}
-		return result, &ImageProcessingError{Message: "生成图片预览失败，请重试"}
-	}
-	assetID := s.routes.deps.Store.newID("asset")
-	originalKey := StorageKeyForChatAsset(assetID, input.Result.SHA256, input.Result.MimeType, "original")
-	previewKey := StorageKeyForChatAsset(assetID, preview.SHA256, preview.MimeType, "preview")
-	if err := s.routes.deps.ObjectStore.Write(originalKey, input.Result.Data, chatAssetGeneratedMaxBytes, input.Result.SHA256); err != nil {
-		return result, err
-	}
-	if err := s.routes.deps.ObjectStore.Write(previewKey, preview.Buffer, chatAssetPreviewMaxBytes, preview.SHA256); err != nil {
-		_ = s.routes.deps.ObjectStore.Delete([]string{originalKey})
-		return result, err
-	}
-	nowValue := s.routes.now()
-	asset, err := s.routes.deps.Store.CommitChatGeneratedAsset(GeneratedAssetCommitInput{
-		ID:                assetID,
-		SystemAccountID:   s.ownerID,
-		ConversationID:    s.conversationID,
-		TurnID:            s.turnID,
-		MessageID:         s.assistantMessageID,
-		ContentOrder:      s.nextContentOrder(),
-		MimeType:          input.Result.MimeType,
-		Width:             input.Result.Width,
-		Height:            input.Result.Height,
-		Bytes:             input.Result.Bytes,
-		Sha256:            input.Result.SHA256,
-		StorageKey:        originalKey,
-		PreviewMimeType:   preview.MimeType,
-		PreviewWidth:      preview.Width,
-		PreviewHeight:     preview.Height,
-		PreviewBytes:      preview.ByteSize,
-		PreviewSha256:     preview.SHA256,
-		PreviewStorageKey: previewKey,
-		Now:               nowValue,
-		RetentionDays:     s.routes.deps.RetentionDays,
-		Generation: GeneratedImageGenerationRecord{
-			Operation:      input.Operation,
-			Model:          input.Model,
-			Prompt:         input.Prompt,
-			SourceAssetIDs: input.SourceAssetIDs,
-			Size:           input.Size,
-			Quality:        input.Quality,
-			OutputFormat:   input.OutputFormat,
-		},
-	})
-	if err != nil {
-		_ = s.routes.deps.ObjectStore.Delete([]string{originalKey, previewKey})
-		return result, err
-	}
-	return GeneratedImageCommitResult{
-		AssetID:         asset.ID,
-		MimeType:        derefString(asset.ProcessedMimeType),
-		Width:           derefAssistantI64(asset.ProcessedWidth),
-		Height:          derefAssistantI64(asset.ProcessedHeight),
-		Bytes:           derefAssistantI64(asset.ProcessedBytes),
-		PreviewMimeType: derefString(asset.PreviewMimeType),
-		PreviewWidth:    derefAssistantI64(asset.PreviewWidth),
-		PreviewHeight:   derefAssistantI64(asset.PreviewHeight),
-		PreviewBytes:    derefAssistantI64(asset.PreviewBytes),
-	}, nil
-}
-
-func derefAssistantI64(value *int64) int64 {
-	if value == nil {
-		return 0
-	}
-	return *value
 }

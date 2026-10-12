@@ -290,12 +290,6 @@ func TestW1SQLiteGuardWrappersPreserveDDLFailure(t *testing.T) {
 			ensure: ensureSQLiteChatAccountBindingColumns,
 			prefix: "ensure chat_conversations.bind_account_id",
 		},
-		{
-			name:   "chat media tool columns",
-			view:   "CREATE VIEW chat_conversations AS SELECT 1 AS id",
-			ensure: ensureSQLiteChatMediaToolColumns,
-			prefix: "ensure chat_conversations.video_account_id",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -604,34 +598,12 @@ func TestW1SQLiteEnsureWrappersPreserveGuardFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("chat media-tool guard ALTER", func(t *testing.T) {
-		rec := &wmSchemaRecorder{failExecAfter: len(sqliteChatScript)}
-		bindingRows := make([][]driver.Value, 0, len(sqliteChatAccountBindingColumns)+1)
-		bindingRows = append(bindingRows, w1SQLiteTableInfoRow("id", "TEXT", 0, nil))
-		for _, target := range sqliteChatAccountBindingColumns {
-			bindingRows = append(bindingRows, w1SQLiteTableInfoRow(target.column, "TEXT", 0, nil))
-		}
-		for range sqliteChatAccountBindingColumns {
-			rec.script("PRAGMA table_info(chat_conversations)", nil, bindingRows)
-		}
-		rec.script("PRAGMA table_info(chat_conversations)", nil, [][]driver.Value{w1SQLiteTableInfoRow("id", "TEXT", 0, nil)})
-		db := openWMSchemaFakeDB(rec)
-		defer db.Close()
-		_, err := EnsureSQLiteChat(ctx, db)
-		if err == nil || !strings.Contains(err.Error(), "ensure sqlite chat media-tool columns") || !strings.Contains(err.Error(), "wm schema fake: 注入执行失败") {
-			t.Fatalf("chat ensure error = %v, want media-tool guard context and original DDL error", err)
-		}
-	})
-
 	t.Run("chat asset migration metadata error", func(t *testing.T) {
 		rec := &wmSchemaRecorder{
-			failExecAfter: len(sqliteChatScript) + len(sqliteChatAccountBindingColumns) + len(sqliteChatMediaToolColumns),
+			failExecAfter: len(sqliteChatScript) + len(sqliteChatAccountBindingColumns),
 		}
 		for range sqliteChatAccountBindingColumns {
 			rec.script("PRAGMA table_info(chat_conversations)", nil, [][]driver.Value{w1SQLiteTableInfoRow("id", "TEXT", 0, nil)})
-		}
-		for _, target := range sqliteChatMediaToolColumns {
-			rec.script("PRAGMA table_info("+target.table+")", nil, [][]driver.Value{w1SQLiteTableInfoRow("id", "TEXT", 0, nil)})
 		}
 		rec.script("SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_assets'", nil,
 			[][]driver.Value{{sqliteChatAssetsLegacyMimeCheckText}})

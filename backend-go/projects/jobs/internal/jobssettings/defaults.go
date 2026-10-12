@@ -38,7 +38,6 @@ var DefaultSystemSettings = map[string]any{
 	"imageStreamIdleTimeoutSeconds":              float64(120),
 	"imageUncommittedAttemptMaxLifetimeSeconds":  float64(3600),
 	"imageRequestWallTimeoutSeconds":             float64(3600),
-	"chatImageGenerationTotalTimeoutSeconds":     float64(900),
 	// 媒体车道独立超时档位（音频视频模型接入设计 §3，与 maintenance 种子同步）。
 	"audioFirstResponseTimeoutSeconds": float64(120),
 	"videoCreateTimeoutSeconds":        float64(60),

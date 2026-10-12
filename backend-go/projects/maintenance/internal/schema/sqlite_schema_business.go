@@ -1222,7 +1222,14 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       is_default INTEGER NOT NULL DEFAULT 0,
-      purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat')),
+      -- 媒体工作室（媒体工作室设计 §3.5）：purpose CHECK 词表扩展 'studio'，
+      -- 对齐 chat 专用 Key 先例；存量库由 EnsureSQLiteBusiness 的
+      -- ensureSQLiteBusinessAPIKeysPurposeCheck 整表重建交付（SQLite 不能改
+      -- 列级 CHECK，schedule-interval 先例）。studio_domains_json 域授权列
+      --（§3.5，仅 purpose='studio' 行使用，授权数据不是功能开关）同样由
+      -- 守卫 ALTER 补齐存量库，新库在此内联声明。
+      purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
+      studio_domains_json TEXT,
       scheduling_preference_id TEXT REFERENCES scheduling_preferences(id),
       expires_at TEXT,
       quota_limits_json TEXT,
@@ -1387,6 +1394,83 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       params_applied_json TEXT NOT NULL DEFAULT '[]',
       params_ignored_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    -- 媒体工作室 P0 四表（媒体工作室设计 §3.1-§3.4）：与 PG 版同构，引用列
+    -- 不加外键（media_jobs 记录表先例：资产删除后任务行保留悬空引用，不反向
+    -- 阻断清理）。列集按契约 DDL 精确落列（bigint 走 SQLite INTEGER，与
+    -- openai_compatible_files.bytes 同惯例）。
+    -- studio_assets 产品域资产表（§3.1）：全行带 system_account_id 强制归属；
+    -- storage_key 复用 chat_assets 同源对象存储端口语义。
+    CREATE TABLE IF NOT EXISTS studio_assets (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('image', 'audio', 'video')),
+      mime TEXT NOT NULL,
+      storage_key TEXT NOT NULL UNIQUE,
+      bytes INTEGER NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      duration_ms INTEGER,
+      sha256 TEXT NOT NULL,
+      source_task_id TEXT,
+      params_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    -- studio_tasks 用户归属生成任务表（§3.2）：status 六值词表同 media_jobs；
+    -- settlement 与 status 正交（§6 状态机）；account_id / provider_code /
+    -- upstream_job_id 是受理时写入的账户亲和三元组（受理前为 NULL）；
+    -- poll_bookmark_json 是 jobs 续轮询的上游书签（与分页无关）；lease_* 列
+    -- 族承载 jobs 租约领取；client_operation_id 用户范围唯一。
+    CREATE TABLE IF NOT EXISTS studio_tasks (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      client_operation_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('image', 'video')),
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN
+          ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
+      settlement TEXT NOT NULL DEFAULT 'pending_settled' CHECK (settlement IN
+          ('pending_settled', 'settled', 'failed')),
+      account_id TEXT,
+      provider_code TEXT,
+      upstream_job_id TEXT,
+      request_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      error_json TEXT NOT NULL DEFAULT '{}',
+      asset_id TEXT,
+      poll_bookmark_json TEXT NOT NULL DEFAULT '{}',
+      lease_owner TEXT,
+      lease_expires_at TEXT,
+      lease_attempt_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (system_account_id, client_operation_id)
+    );
+
+    -- studio_operations 同步生成幂等收据表（§3.3）：TTS / STT 是同步端点、
+    -- 不产生 studio_tasks 行（任务 kind 词表仅 image/video），幂等映射由本表
+    -- 承载；asset_id 可空（transcription 为 NULL），收据随结果长期保留。
+    CREATE TABLE IF NOT EXISTS studio_operations (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      client_operation_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('audio_speech', 'audio_transcription')),
+      asset_id TEXT,
+      result_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (system_account_id, client_operation_id)
+    );
+
+    -- studio_user_asset_usage 每用户资产配额账本（§3.4）：沿
+    -- chat_user_asset_usage 先例，入库/删除在事务内以 advisory 锁串行化增减，
+    -- 账本与行数以事务一致性维护，不做后台对账补偿。
+    CREATE TABLE IF NOT EXISTS studio_user_asset_usage (
+      system_account_id TEXT PRIMARY KEY,
+      asset_bytes INTEGER NOT NULL DEFAULT 0,
+      asset_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
 
@@ -1689,6 +1773,12 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique
       ON api_keys(system_account_id)
       WHERE purpose = 'chat';
+    -- api_keys 每用户 purpose='studio' 唯一 partial index（媒体工作室设计
+    -- §3.5）：对齐 idx_api_keys_chat_purpose_unique 先例；存量库重建表后由
+    -- ensureSQLiteBusinessAPIKeysPurposeCheck 的索引清单复建。
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_studio_purpose_unique
+      ON api_keys(system_account_id)
+      WHERE purpose = 'studio';
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name, id);
     CREATE INDEX IF NOT EXISTS idx_request_quota_hourly_scope_bindings_window
@@ -1769,6 +1859,16 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE INDEX IF NOT EXISTS idx_media_jobs_api_key_created ON media_jobs(api_key_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_media_jobs_account ON media_jobs(account_id);
     CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_jobs(status);
+    -- studio 索引（媒体工作室设计 §3.1/§3.2）：owner 列表排序、同用户 sha256
+    -- 查重辅助（跨用户同 hash 不构成任何匹配依据）、source_task 生成产物幂等
+    -- 结算闸（§5.4：同一任务的产物行全库唯一，上传行不受约束）、jobs 领取谓词
+    -- 扫描。与 PG 同构（pg_schema_business_indexes.go studio-indexes）。
+    CREATE INDEX IF NOT EXISTS idx_studio_assets_owner_created ON studio_assets(system_account_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_studio_assets_owner_sha256 ON studio_assets(system_account_id, sha256);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_assets_owner_source_task
+      ON studio_assets(system_account_id, source_task_id) WHERE source_task_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_studio_tasks_owner_created ON studio_tasks(system_account_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_studio_tasks_claim ON studio_tasks(status, settlement, lease_expires_at);
 `
 const sqliteBusinessCircuitControlPlaneIndexDDL = `    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_circuit_incidents_key_model_capability
       ON account_circuit_incidents(scope_kind, capability_hash)

@@ -44,7 +44,6 @@ var maintenanceSeedSystemSettingsJSON = map[string]string{
 	"imageStreamIdleTimeoutSeconds":              "120",
 	"imageUncommittedAttemptMaxLifetimeSeconds":  "3600",
 	"imageRequestWallTimeoutSeconds":             "3600",
-	"chatImageGenerationTotalTimeoutSeconds":     "900",
 	"audioFirstResponseTimeoutSeconds":           "120",
 	"videoCreateTimeoutSeconds":                  "60",
 	"realtimeIdleTimeoutSeconds":                 "120",
@@ -97,8 +96,8 @@ var maintenanceSeedSystemSettingsJSON = map[string]string{
 // TestDefaultSystemSettingsMatchMaintenanceSeed 逐键对照：键集合与解码后的值
 // 都必须一致（数值键解出 float64，字符串键解出 string）。任一侧漂移即失败。
 func TestDefaultSystemSettingsMatchMaintenanceSeed(t *testing.T) {
-	if len(maintenanceSeedSystemSettingsJSON) != 72 {
-		t.Fatalf("镜像表键数=%d，want 72（与 pgSeedSystemSettings 一致；M5b realtime 三键 + 客户端版本自动层键）", len(maintenanceSeedSystemSettingsJSON))
+	if len(maintenanceSeedSystemSettingsJSON) != 71 {
+		t.Fatalf("镜像表键数=%d，want 71（与 pgSeedSystemSettings 一致；M5b realtime 三键 + 客户端版本自动层键；2026-10-12 AI 问答简化批生图总超时键退场）", len(maintenanceSeedSystemSettingsJSON))
 	}
 	seeded := make(map[string]any, len(maintenanceSeedSystemSettingsJSON))
 	for key, valueJSON := range maintenanceSeedSystemSettingsJSON {

@@ -91,8 +91,6 @@ describe('chatApi 请求形状', () => {
     await chatApi.listChatAccounts()
     await chatApi.createConversation()
     await chatApi.getConversation('conv-1')
-    await chatApi.getToolBindings('conv-1')
-    await chatApi.getToolPreferences()
     await chatApi.listMessages('conv-1')
     await chatApi.getConversationSync('conv-1')
     await chatApi.getSubmissionStatus('conv-1', 'cm-1')
@@ -111,8 +109,6 @@ describe('chatApi 请求形状', () => {
       ['GET', '/my-chat/accounts'],
       ['POST', '/my-chat/conversations'],
       ['GET', '/my-chat/conversations/conv-1'],
-      ['GET', '/my-chat/conversations/conv-1/tool-bindings'],
-      ['GET', '/my-chat/tool-preferences'],
       ['GET', '/my-chat/conversations/conv-1/messages'],
       ['GET', '/my-chat/conversations/conv-1/sync'],
       ['GET', '/my-chat/conversations/conv-1/submissions/cm-1'],
@@ -145,33 +141,9 @@ describe('chatApi 请求形状', () => {
     expect(payloadOf(requests[1])).toEqual({ accountId: 'account-1' })
   })
 
-  it('工具绑定 PATCH：searchBinding 二元组 / imageBinding 账户 / null 解绑', async () => {
-    await chatApi.updateConversation('conv-1', { searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
-    expect(payloadOf(requests[0])).toEqual({ searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
-    await chatApi.updateConversation('conv-1', { imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
-    expect(payloadOf(requests[1])).toEqual({ imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
-    await chatApi.updateConversation('conv-1', { searchBinding: null })
-    expect(payloadOf(requests[2])).toEqual({ searchBinding: null })
-  })
-
-  it('M7 媒体绑定 PATCH 与 mediaTask 任务查询（问答音视频工具设计 §3）', async () => {
-    await chatApi.updateConversation('conv-1', { videoBinding: { accountId: 'account-1', modelId: 'sora-2' }, audioBinding: null })
-    expect(payloadOf(requests[0])).toEqual({ videoBinding: { accountId: 'account-1', modelId: 'sora-2' }, audioBinding: null })
-    await chatApi.updateToolPreferences({ audioBinding: { accountId: 'account-2', modelId: 'gpt-audio' } })
-    expect(requestShapes()[1]).toEqual(['PATCH', '/my-chat/tool-preferences'])
-    expect(payloadOf(requests[1])).toEqual({ audioBinding: { accountId: 'account-2', modelId: 'gpt-audio' } })
-    await chatApi.mediaTask('conv-1', 'video/abc?d')
-    expect(requestShapes()[2]).toEqual(['GET', '/my-chat/conversations/conv-1/media-tasks/video%2Fabc%3Fd'])
-  })
-
-  it('工具偏好 PATCH：严格键集打到 /my-chat/tool-preferences，null 清除默认', async () => {
-    await chatApi.updateToolPreferences({ searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
-    expect(requestShapes()[0]).toEqual(['PATCH', '/my-chat/tool-preferences'])
-    expect(payloadOf(requests[0])).toEqual({ searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
-    await chatApi.updateToolPreferences({ imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
-    expect(payloadOf(requests[1])).toEqual({ imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
-    await chatApi.updateToolPreferences({ searchBinding: null })
-    expect(payloadOf(requests[2])).toEqual({ searchBinding: null })
+  it('PATCH 会话仅收敛 title/isPinned/accountId 键（AI 问答简化设计 D2）', async () => {
+    await chatApi.updateConversation('conv-1', { title: '新标题', isPinned: true, accountId: 'account-1' })
+    expect(payloadOf(requests[0])).toEqual({ title: '新标题', isPinned: true, accountId: 'account-1' })
   })
 
   it('getConversationSync 默认 knownRevision=0，传入时使用实际值', async () => {
@@ -274,6 +246,23 @@ describe('streamChatMessage', () => {
       content: 'x',
       model: 'gpt-4o',
       reasoningEffort: 'low'
+    })
+  })
+
+  it('enableWebSearch 勾选时随请求体下发，未勾选不带该字段（AI 问答简化设计 D3）', async () => {
+    fetchMock.mockResolvedValue(sseResponse(['event: message.completed\ndata: {"messageId":"m-1","eventVersion":1}\n\n']))
+    await streamChatMessage({ conversationId: 'conv-1', clientMessageId: 'cm-1', content: 'x', model: 'gpt-4o', enableWebSearch: true, onEvent: vi.fn() })
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({
+      clientMessageId: 'cm-1',
+      content: 'x',
+      model: 'gpt-4o',
+      enableWebSearch: true
+    })
+    await streamChatMessage({ conversationId: 'conv-1', clientMessageId: 'cm-2', content: 'y', model: 'gpt-4o', onEvent: vi.fn() })
+    expect(JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body))).toEqual({
+      clientMessageId: 'cm-2',
+      content: 'y',
+      model: 'gpt-4o'
     })
   })
 

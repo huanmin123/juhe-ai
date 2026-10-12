@@ -129,7 +129,9 @@ func TestWMMockdataReportAndCoverageOutput(t *testing.T) {
 	if report.SummaryPath != filepath.Join(root, mockdata.SummaryFilename) {
 		t.Fatalf("summary path = %q", report.SummaryPath)
 	}
-	if len(report.Domains) != 5 {
+	// 域清单 = mockdata.domainSeeds 注册表（business / usage / stats /
+	// observability / chat_codex_model_check / studio，媒体工作室设计 §9）。
+	if len(report.Domains) != 6 {
 		t.Fatalf("domains = %+v", report.Domains)
 	}
 	// 进度日志只写 stderr，stdout 保持单条 JSON。

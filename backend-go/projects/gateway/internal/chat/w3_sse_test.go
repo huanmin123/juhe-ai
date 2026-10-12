@@ -511,55 +511,12 @@ func TestStreamExecuteHelpersW3(t *testing.T) {
 	if got := upstreamMessagePayload("not-json", "兜底"); got != "兜底" {
 		t.Fatalf("非 JSON 应回兜底: %q", got)
 	}
-	classified := classifyGenerationError(&ChatImageGenerationRequestError{Code: GenErrImageRateLimited, Message: "限流"}, GenErrInternal)
-	if classified.Code != GenErrImageRateLimited {
-		t.Fatalf("图片错误应按专用分类: %+v", classified)
-	}
 	fallback := classifyGenerationError(errors.New("boom"), GenErrUpstreamHTTP)
 	if fallback.Code != GenErrUpstreamHTTP {
 		t.Fatalf("非 internal 失败码应保留: %+v", fallback)
 	}
 }
 
-// TestPublishApplicationToolEventW3 覆盖应用侧工具事件广播。
-func TestPublishApplicationToolEventW3(t *testing.T) {
-	var events []string
-	var lastData map[string]any
-	publish := func(eventType string, data map[string]any, update ChatGenerationProjectionUpdate) bool {
-		events = append(events, eventType)
-		lastData = data
-		if update.ImageEvent == nil && update.ToolEvent == nil {
-			t.Fatalf("投影更新不应为空")
-		}
-		return true
-	}
-	publishApplicationToolEvent(publish, "m1", ChatToolExecutionEvent{
-		Status: "failed", CallID: "c1", ToolName: "diagnostic_echo", Reused: true,
-		ErrorCode: "tool_timeout", ErrorMessage: "超时", PublicResult: map[string]any{"echoedText": "x"},
-	})
-	if len(events) != 1 || events[0] != "tool.failed" {
-		t.Fatalf("事件类型不正确: %v", events)
-	}
-	item := lastData["item"].(map[string]any)
-	if item["reused"] != true || item["errorCode"] != "tool_timeout" || item["executionOwner"] != "application" {
-		t.Fatalf("事件载荷不正确: %v", item)
-	}
-	// generate_image 完成事件额外广播 image 投影。
-	var imageUpdate *ChatGenerationImageEvent
-	imagePublish := func(eventType string, data map[string]any, update ChatGenerationProjectionUpdate) bool {
-		imageUpdate = update.ImageEvent
-		return true
-	}
-	publishApplicationToolEvent(imagePublish, "m1", ChatToolExecutionEvent{
-		Status: "completed", CallID: "c2", ToolName: "generate_image",
-		PublicResult: map[string]any{"assetId": "asset-1", "mimeType": "image/png", "width": 8, "height": 8},
-	})
-	if imageUpdate == nil || imageUpdate.Item["assetId"] != "asset-1" {
-		t.Fatalf("图片投影不正确: %+v", imageUpdate)
-	}
-}
-
-// TestHeadRevisionW3 覆盖上下文版本读取的空值契约。
 func TestHeadRevisionW3(t *testing.T) {
 	fixture := newChatFixture(t)
 	rt := &chatRoutes{deps: &Deps{Store: fixture.store}}

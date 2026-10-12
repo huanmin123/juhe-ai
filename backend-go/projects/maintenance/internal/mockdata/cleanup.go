@@ -77,6 +77,15 @@ func cleanupRules() []cleanupRule {
 		// mockdata_ 标识，经 api_key / account 父键子查询定位清理；必须排在
 		// api_keys / accounts 删除之前，否则父行已删、子查询落空。
 		{Store: StoreBusiness, Table: "media_jobs", Query: "DELETE FROM media_jobs WHERE api_key_id IN (SELECT id FROM api_keys WHERE id LIKE ?) OR account_id IN (SELECT id FROM accounts WHERE id LIKE ?)", Args: []any{id, id}},
+		// 媒体工作室样本（媒体工作室设计 §9）：对外 id 用 stasset_/stask_/
+		// stoper_ 契约前缀 + mockdata 标识段，按 id 前缀定位清理；表族引用列
+		// 无外键，删除顺序不构成约束，按收据 → 任务 → 资产 → 账本的语义顺序
+		// 排列。账本行按「owner 已无资产行」回收：admin 的样本资产删除后其
+		// 账本行一并回收，真实用户（仍有资产行）的账本不受影响。
+		{Store: StoreBusiness, Table: "studio_operations", Query: "DELETE FROM studio_operations WHERE id LIKE 'stoper_mockdata_%'", Args: nil},
+		{Store: StoreBusiness, Table: "studio_tasks", Query: "DELETE FROM studio_tasks WHERE id LIKE 'stask_mockdata_%'", Args: nil},
+		{Store: StoreBusiness, Table: "studio_assets", Query: "DELETE FROM studio_assets WHERE id LIKE 'stasset_mockdata_%'", Args: nil},
+		{Store: StoreBusiness, Table: "studio_user_asset_usage", Query: "DELETE FROM studio_user_asset_usage WHERE NOT EXISTS (SELECT 1 FROM studio_assets WHERE studio_assets.system_account_id = studio_user_asset_usage.system_account_id)", Args: nil},
 		// 路由族：API Key → 绑定 → 策略。
 		{Store: StoreBusiness, Table: "api_keys", Query: "DELETE FROM api_keys WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "route_strategy_groups", Query: "DELETE FROM route_strategy_groups WHERE route_strategy_id IN (SELECT id FROM route_strategies WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},

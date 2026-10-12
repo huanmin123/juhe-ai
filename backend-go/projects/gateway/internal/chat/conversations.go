@@ -30,122 +30,31 @@ const (
 	StatusCanceled  ChatMessageStatus = "canceled"
 )
 
-// ChatImageModel mirrors ChatImageModel.
-type ChatImageModel string
-
-const (
-	ImageModelGPTImage2          ChatImageModel = "gpt-image-2"
-	ImageModelGrokImagineImage   ChatImageModel = "grok-imagine-image"
-	ImageModelGrokImagineQuality ChatImageModel = "grok-imagine-image-quality"
-)
-
-// supportedChatImageModels is the chat image model registry. Order is the
-// public enum order (gpt-image-2 stays first); new conversations keep
-// defaulting to gpt-image-2.
-var supportedChatImageModels = []ChatImageModel{
-	ImageModelGPTImage2,
-	ImageModelGrokImagineImage,
-	ImageModelGrokImagineQuality,
-}
-
-// SupportedChatImageModels returns the registry in stable display order.
-func SupportedChatImageModels() []ChatImageModel {
-	out := make([]ChatImageModel, len(supportedChatImageModels))
-	copy(out, supportedChatImageModels)
-	return out
-}
-
-// IsSupportedChatImageModel reports whether model is in the registry.
-func IsSupportedChatImageModel(model string) bool {
-	for _, candidate := range supportedChatImageModels {
-		if string(candidate) == model {
-			return true
-		}
-	}
-	return false
-}
-
-// chatImageModelEnumValues renders the registry as plain strings for schema
-// enums and error copy.
-func chatImageModelEnumValues() []string {
-	models := SupportedChatImageModels()
-	out := make([]string, 0, len(models))
-	for _, model := range models {
-		out = append(out, string(model))
-	}
-	return out
-}
-
-// chatImageModelEnumHint renders the registry as a quoted list for the PATCH
-// defaultImageModel enum error copy.
-func chatImageModelEnumHint() string {
-	values := chatImageModelEnumValues()
-	quoted := make([]string, 0, len(values))
-	for _, value := range values {
-		quoted = append(quoted, "'"+value+"'")
-	}
-	return strings.Join(quoted, ", ")
-}
-
-// chatImageModelProfile is the per-model upstream parameter profile.
-// 来源：2026-09-19 对 https://api.shenwenai.com/v1 的实测——grok 两个生图模型
-// 收到 quality=auto 返回 HTTP 400，且仅显式 response_format=b64_json 时才返回
-// 内联数据（默认只给 data[0].url 临时链接）；gpt-image-2 两者相反。
-type chatImageModelProfile struct {
-	// SupportsAutoQuality：上游接受 quality=auto；false 时请求需省略 quality 字段。
-	SupportsAutoQuality bool
-	// RequiresB64JSONFormat：请求需携带 response_format=b64_json。
-	RequiresB64JSONFormat bool
-}
-
-var chatImageModelProfiles = map[ChatImageModel]chatImageModelProfile{
-	ImageModelGPTImage2:          {SupportsAutoQuality: true},
-	ImageModelGrokImagineImage:   {SupportsAutoQuality: false, RequiresB64JSONFormat: true},
-	ImageModelGrokImagineQuality: {SupportsAutoQuality: false, RequiresB64JSONFormat: true},
-}
-
-// chatImageModelProfileFor resolves the profile for a (possibly unregistered)
-// model. Unregistered models keep the legacy request shape (always send
-// quality, never send response_format).
-func chatImageModelProfileFor(model string) chatImageModelProfile {
-	if profile, ok := chatImageModelProfiles[ChatImageModel(model)]; ok {
-		return profile
-	}
-	return chatImageModelProfile{SupportsAutoQuality: true}
-}
-
 // Conversation mirrors ChatConversation (route response shape). 会话绑定收敛
 // 为仅 account（AI 问答会话账户唯一绑定设计）：bindAccountId 为空即「未选账户」
 // 状态；archived=1 是存量旧模式（api_key/group）会话的一次性迁移只读标记。
-// searchAccountId/searchModelId/imageAccountId 是模型工具的会话级绑定列
-// （工具体系设计 §7：空 = 未绑定，绑定语义见 tool_bindings.go）；video/audio
-// 四列是问答音视频工具（问答音视频工具设计 §3，2026-10-04）的会话级绑定列
-// （空 = 未绑定；默认模型列无注册表兜底，空串 = 未设默认）。
+// 八个工具绑定列（search_account_id/search_model_id/image_account_id/
+// default_image_model/video_account_id/default_video_model/audio_account_id/
+// default_audio_model）已随站内工具体系退役（PLAN-20261012T121500000Z D2/D7），
+// 结构与读写不再投影。lastModel 语义为「会话锁定模型」（D5）：首轮接受写入，
+// 此后不可变；空值 = 未锁定。
 type Conversation struct {
-	ID                      string         `json:"id"`
-	SystemAccountID         string         `json:"systemAccountId"`
-	APIKeyID                *string        `json:"apiKeyId,omitempty"`
-	APIKeyNameSnapshot      string         `json:"apiKeyNameSnapshot"`
-	BindAccountID           *string        `json:"bindAccountId,omitempty"`
-	BindAccountNameSnapshot string         `json:"bindAccountName,omitempty"`
-	Archived                bool           `json:"archived"`
-	SearchAccountID         *string        `json:"searchAccountId,omitempty"`
-	SearchModelID           *string        `json:"searchModelId,omitempty"`
-	ImageAccountID          *string        `json:"imageAccountId,omitempty"`
-	VideoAccountID          *string        `json:"videoAccountId,omitempty"`
-	DefaultVideoModel       string         `json:"defaultVideoModel"`
-	AudioAccountID          *string        `json:"audioAccountId,omitempty"`
-	DefaultAudioModel       string         `json:"defaultAudioModel"`
-	Title                   string         `json:"title"`
-	IsPinned                bool           `json:"isPinned"`
-	LastModel               *string        `json:"lastModel,omitempty"`
-	DefaultImageModel       ChatImageModel `json:"defaultImageModel"`
-	ActiveTurnID            *string        `json:"activeTurnId,omitempty"`
-	UserTurnCount           int64          `json:"userTurnCount"`
-	MessageRevision         int64          `json:"messageRevision"`
-	LastMessageAt           string         `json:"lastMessageAt"`
-	CreatedAt               string         `json:"createdAt"`
-	UpdatedAt               string         `json:"updatedAt"`
+	ID                      string  `json:"id"`
+	SystemAccountID         string  `json:"systemAccountId"`
+	APIKeyID                *string `json:"apiKeyId,omitempty"`
+	APIKeyNameSnapshot      string  `json:"apiKeyNameSnapshot"`
+	BindAccountID           *string `json:"bindAccountId,omitempty"`
+	BindAccountNameSnapshot string  `json:"bindAccountName,omitempty"`
+	Archived                bool    `json:"archived"`
+	Title                   string  `json:"title"`
+	IsPinned                bool    `json:"isPinned"`
+	LastModel               *string `json:"lastModel,omitempty"`
+	ActiveTurnID            *string `json:"activeTurnId,omitempty"`
+	UserTurnCount           int64   `json:"userTurnCount"`
+	MessageRevision         int64   `json:"messageRevision"`
+	LastMessageAt           string  `json:"lastMessageAt"`
+	CreatedAt               string  `json:"createdAt"`
+	UpdatedAt               string  `json:"updatedAt"`
 }
 
 // ContentBlock is the union of ChatMessageContentBlock variants. Stored and
@@ -205,8 +114,8 @@ type Message struct {
 
 // conversationRow is the raw scan target with the full chat_conversations
 // column list（账户唯一绑定形状：无 bind_mode/bind_group_id/
-// bind_group_name_snapshot，含 archived 与工具绑定三列——工具三列本阶段仅
-// 落列与读取，候选校验与写入在工具阶段接入）。
+// bind_group_name_snapshot，含 archived；工具绑定八列已退役不投影——列仍在
+// 存量 schema 中且可空，读写不再触碰）。
 type conversationRow struct {
 	id                          string
 	systemAccountID             string
@@ -215,18 +124,10 @@ type conversationRow struct {
 	bindAccountID               sql.NullString
 	bindAccountNameSnapshot     sql.NullString
 	archived                    int64
-	searchAccountID             sql.NullString
-	searchModelID               sql.NullString
-	imageAccountID              sql.NullString
-	videoAccountID              sql.NullString
-	defaultVideoModel           sql.NullString
-	audioAccountID              sql.NullString
-	defaultAudioModel           sql.NullString
 	title                       string
 	titleSourceMessageID        sql.NullString
 	isPinned                    int64
 	lastModel                   sql.NullString
-	defaultImageModel           string
 	nextSequenceNo              int64
 	userTurnCount               int64
 	messageRevision             int64
@@ -254,10 +155,9 @@ type conversationRow struct {
 }
 
 const conversationColumns = `id, system_account_id, api_key_id, api_key_name_snapshot,
-	bind_account_id, bind_account_name_snapshot, archived, search_account_id, search_model_id, image_account_id,
-	video_account_id, default_video_model, audio_account_id, default_audio_model,
+	bind_account_id, bind_account_name_snapshot, archived,
 	title, title_source_message_id,
-	is_pinned, last_model, default_image_model, next_sequence_no, user_turn_count, message_revision,
+	is_pinned, last_model, next_sequence_no, user_turn_count, message_revision,
 	active_turn_id, active_started_at, context_revision, active_checkpoint_id, compacted_through_sequence,
 	context_state, active_context_tokens, effective_context_limit_tokens, context_usage_estimated,
 	context_claim_id, context_claim_revision, context_claim_through_sequence, context_claimed_at,
@@ -268,10 +168,8 @@ func scanConversationRow(scan func(...any) error) (conversationRow, error) {
 	var row conversationRow
 	err := scan(&row.id, &row.systemAccountID, &row.apiKeyID, &row.apiKeyNameSnapshot,
 		&row.bindAccountID, &row.bindAccountNameSnapshot, &row.archived,
-		&row.searchAccountID, &row.searchModelID, &row.imageAccountID,
-		&row.videoAccountID, &row.defaultVideoModel, &row.audioAccountID, &row.defaultAudioModel,
 		&row.title,
-		&row.titleSourceMessageID, &row.isPinned, &row.lastModel, &row.defaultImageModel,
+		&row.titleSourceMessageID, &row.isPinned, &row.lastModel,
 		&row.nextSequenceNo, &row.userTurnCount, &row.messageRevision, &row.activeTurnID,
 		&row.activeStartedAt, &row.contextRevision, &row.activeCheckpointID,
 		&row.compactedThroughSequence, &row.contextState, &row.activeContextTokens,
@@ -283,18 +181,7 @@ func scanConversationRow(scan func(...any) error) (conversationRow, error) {
 	return row, err
 }
 
-func normalizedImageModel(value string) (ChatImageModel, error) {
-	if IsSupportedChatImageModel(value) {
-		return ChatImageModel(value), nil
-	}
-	return "", &DomainError{Message: "聊天会话默认图像模型无效"}
-}
-
 func mapConversation(row conversationRow) (*Conversation, error) {
-	model, err := normalizedImageModel(row.defaultImageModel)
-	if err != nil {
-		return nil, err
-	}
 	if _, err := requireRFC3339Instant(row.lastMessageAt, "聊天会话 last_message_at"); err != nil {
 		return nil, err
 	}
@@ -318,17 +205,9 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 		BindAccountID:           nullText(row.bindAccountID),
 		BindAccountNameSnapshot: row.bindAccountNameSnapshot.String,
 		Archived:                row.archived == 1,
-		SearchAccountID:         nullText(row.searchAccountID),
-		SearchModelID:           nullText(row.searchModelID),
-		ImageAccountID:          nullText(row.imageAccountID),
-		VideoAccountID:          nullText(row.videoAccountID),
-		DefaultVideoModel:       row.defaultVideoModel.String,
-		AudioAccountID:          nullText(row.audioAccountID),
-		DefaultAudioModel:       row.defaultAudioModel.String,
 		Title:                   row.title,
 		IsPinned:                row.isPinned == 1,
 		LastModel:               nullText(row.lastModel),
-		DefaultImageModel:       model,
 		ActiveTurnID:            nullText(row.activeTurnID),
 		UserTurnCount:           row.userTurnCount,
 		MessageRevision:         row.messageRevision,
@@ -341,9 +220,7 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 // CreateConversationInput mirrors the createChatConversation input object.
 // 会话绑定收敛为仅 account（AI 问答会话账户唯一绑定设计）：创建即空会话
 // （bind_account_id NULL，未选账户），账户选定后经 UpdateConversation 写入。
-// 四个工具偏好继承列（工具体系设计 §2.11，2026-10-02）：用户工具偏好继承，
-// 创建时不校验候选，失效组合由读取侧 valid=false 兜底；绑定三列空串 = 未
-// 绑定（NULL），DefaultImageModel 空串维持现默认 gpt-image-2。
+// 工具偏好继承列已随工具体系退役（PLAN-20261012T121500000Z D2/D7）。
 type CreateConversationInput struct {
 	ID                      string
 	SystemAccountID         string
@@ -351,24 +228,14 @@ type CreateConversationInput struct {
 	APIKeyNameSnapshot      string
 	BindAccountID           string
 	BindAccountNameSnapshot string
-	SearchAccountID         string
-	SearchModelID           string
-	ImageAccountID          string
-	DefaultImageModel       string
-	// M7 问答音视频工具继承列（问答音视频工具设计 §3）：空 = 未绑定/未设默认。
-	VideoAccountID    string
-	DefaultVideoModel string
-	AudioAccountID    string
-	DefaultAudioModel string
-	Now               string
+	Now                     string
 	MaxConversationsPerUser int
 }
 
 // CreateConversation mirrors createChatConversation: per-user policy lock,
 // per-user conversation-count guard, insert with 新对话 defaults. last_model
-// 落 NULL：空会话未选账户，无默认模型（选定账户后由模型列表首项联动）。
-// 工具绑定三列与 default_image_model 初值来自用户工具偏好继承（空偏好 =
-// NULL / gpt-image-2，与既有行为一致）。
+// 落 NULL：空会话未锁定（D5）。工具绑定八列不再写入（存量 schema 列可空，
+// default_image_model 沿 schema 默认值）。
 func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation, error) {
 	now, err := requireRFC3339Instant(input.Now, "聊天会话 now")
 	if err != nil {
@@ -377,10 +244,6 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	id := input.ID
 	if id == "" {
 		id = s.newID("conv")
-	}
-	defaultImageModel := input.DefaultImageModel
-	if defaultImageModel == "" {
-		defaultImageModel = string(ImageModelGPTImage2)
 	}
 	release := s.lockUserPolicy(input.SystemAccountID)
 	defer release()
@@ -403,17 +266,11 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	_, err = tx.Exec(s.bind(`INSERT INTO `+s.table("chat_conversations")+` (
 		id, system_account_id, api_key_id, api_key_name_snapshot,
 		bind_account_id, bind_account_name_snapshot,
-		search_account_id, search_model_id, image_account_id,
-		video_account_id, default_video_model, audio_account_id, default_audio_model,
-		title, last_model, default_image_model,
+		title, last_model,
 		next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '新对话', NULL, ?, 1, 0, ?, ?, ?)`),
+	) VALUES (?, ?, ?, ?, ?, ?, '新对话', NULL, 1, 0, ?, ?, ?)`),
 		id, input.SystemAccountID, input.APIKeyID, input.APIKeyNameSnapshot,
-		sqlText(optString(input.BindAccountID)), input.BindAccountNameSnapshot,
-		optSQLText(input.SearchAccountID), optSQLText(input.SearchModelID), optSQLText(input.ImageAccountID),
-		optSQLText(input.VideoAccountID), optSQLText(input.DefaultVideoModel),
-		optSQLText(input.AudioAccountID), optSQLText(input.DefaultAudioModel),
-		defaultImageModel,
+		optString(input.BindAccountID), input.BindAccountNameSnapshot,
 		now, now, now)
 	if err != nil {
 		return nil, err
@@ -548,8 +405,8 @@ func (s *Store) queryConversationRows(query string, args ...any) ([]conversation
 
 // UpdateConversation mirrors updateChatConversation: partial assignments and
 // the changes-!==1 → undefined → 404 contract. BindAccountID 写入/切换会话绑定
-// 账户（handler 已完成数据范围与启用校验并解析名称快照）；ClearLastModel 是
-// 切换账户的联动清空臂（当前 lastModel 不在新账户可路由范围时由 handler 判定）。
+// 账户（handler 已完成数据范围校验与锁定裁决并解析名称快照）；工具绑定键与
+// ClearLastModel 已随工具体系/锁定语义退役（PLAN-20261012T121500000Z D2/D5）。
 func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation, error) {
 	now, err := requireRFC3339Instant(input.Now, "聊天会话 now")
 	if err != nil {
@@ -565,40 +422,9 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 		assignments = append(assignments, "is_pinned = ?")
 		params = append(params, boolToInt(*input.IsPinned))
 	}
-	if input.DefaultImageModel != nil {
-		model, err := normalizedImageModel(*input.DefaultImageModel)
-		if err != nil {
-			return nil, err
-		}
-		assignments = append(assignments, "default_image_model = ?")
-		params = append(params, string(model))
-	}
 	if input.BindAccountID != nil {
 		assignments = append(assignments, "bind_account_id = ?", "bind_account_name_snapshot = ?")
 		params = append(params, *input.BindAccountID, input.BindAccountNameSnapshot)
-	}
-	// 工具绑定三列（工具体系设计 §8.2）：searchBinding 二元组一体写入（nil 列
-	// 集 NULL 解绑）；imageBinding 只带账户（生图模型沿用 defaultImageModel）。
-	if input.SearchAccountID != nil {
-		assignments = append(assignments, "search_account_id = ?", "search_model_id = ?")
-		params = append(params, optSQLText(*input.SearchAccountID), optSQLText(input.SearchModelID))
-	}
-	if input.ImageAccountID != nil {
-		assignments = append(assignments, "image_account_id = ?")
-		params = append(params, optSQLText(*input.ImageAccountID))
-	}
-	// M7 问答音视频工具绑定列（问答音视频工具设计 §3）：videoBinding/audioBinding
-	// 各为「账户+默认模型」二元组一体写入（nil 列集 = 本次不改，非 nil 空串 = 解绑）。
-	if input.VideoAccountID != nil {
-		assignments = append(assignments, "video_account_id = ?", "default_video_model = ?")
-		params = append(params, optSQLText(*input.VideoAccountID), optSQLText(input.DefaultVideoModel))
-	}
-	if input.AudioAccountID != nil {
-		assignments = append(assignments, "audio_account_id = ?", "default_audio_model = ?")
-		params = append(params, optSQLText(*input.AudioAccountID), optSQLText(input.DefaultAudioModel))
-	}
-	if input.ClearLastModel {
-		assignments = append(assignments, "last_model = NULL")
 	}
 	assignments = append(assignments, "updated_at = ?")
 	params = append(params, now, input.ConversationID, input.SystemAccountID)
@@ -614,35 +440,6 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 	return s.GetConversation(input.ConversationID, input.SystemAccountID)
 }
 
-// optSQLText 把可选列值转换为 SQL 参数（空串 = NULL）。
-func optSQLText(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
-
-type UpdateConversationInput struct {
-	ConversationID          string
-	SystemAccountID         string
-	Title                   *string
-	IsPinned                *bool
-	DefaultImageModel       *string
-	BindAccountID           *string
-	BindAccountNameSnapshot string
-	// SearchAccountID/SearchModelID 成对携带（nil = 本次不改；非 nil 时空串 =
-	// 解绑，一体写两列）。Video/Audio 同为二元组一体写入。
-	SearchAccountID *string
-	SearchModelID   string
-	ImageAccountID  *string
-	VideoAccountID  *string
-	DefaultVideoModel string
-	AudioAccountID    *string
-	DefaultAudioModel string
-	ClearLastModel    bool
-	Now               string
-}
-
 func joinAssignments(assignments []string) string {
 	out := ""
 	for i, assignment := range assignments {
@@ -652,6 +449,16 @@ func joinAssignments(assignments []string) string {
 		out += assignment
 	}
 	return out
+}
+
+type UpdateConversationInput struct {
+	ConversationID          string
+	SystemAccountID         string
+	Title                   *string
+	IsPinned                *bool
+	BindAccountID           *string
+	BindAccountNameSnapshot string
+	Now                     string
 }
 
 // DeleteConversation mirrors deleteChatConversation: quota lock, row lock,
@@ -748,8 +555,6 @@ func (s *Store) ClearConversation(input ClearConversationInput) (*Conversation, 
 		sql  string
 		args []any
 	}{
-		{s.bind(`DELETE FROM ` + s.table("chat_image_generations") + ` WHERE conversation_id = ? AND system_account_id = ?`),
-			[]any{input.ConversationID, input.SystemAccountID}},
 		{s.bind(`DELETE FROM ` + s.table("chat_asset_references") + ` WHERE conversation_id = ?`),
 			[]any{input.ConversationID}},
 		{s.bind(`DELETE FROM ` + s.table("chat_message_idempotency") + ` WHERE conversation_id = ? AND system_account_id = ?`),

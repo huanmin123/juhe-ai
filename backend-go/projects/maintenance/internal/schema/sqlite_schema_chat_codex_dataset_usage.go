@@ -15,18 +15,10 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       bind_account_id TEXT,
       bind_account_name_snapshot TEXT,
       archived INTEGER NOT NULL DEFAULT 0,
-      search_account_id TEXT,
-      search_model_id TEXT,
-      image_account_id TEXT,
-      video_account_id TEXT,
-      default_video_model TEXT,
-      audio_account_id TEXT,
-      default_audio_model TEXT,
       title TEXT NOT NULL DEFAULT '新对话',
       title_source_message_id TEXT,
       is_pinned INTEGER NOT NULL DEFAULT 0,
       last_model TEXT,
-      default_image_model TEXT NOT NULL DEFAULT 'gpt-image-2',
       next_sequence_no INTEGER NOT NULL DEFAULT 1,
       user_turn_count INTEGER NOT NULL DEFAULT 0,
       message_revision INTEGER NOT NULL DEFAULT 0,
@@ -344,40 +336,6 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       CHECK (content_order >= 0)
     );
 
-    CREATE TABLE IF NOT EXISTS chat_image_generations (
-      asset_id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      system_account_id TEXT NOT NULL,
-      operation TEXT NOT NULL,
-      model TEXT NOT NULL,
-      prompt TEXT NOT NULL,
-      source_asset_ids_json TEXT NOT NULL DEFAULT '[]',
-      root_asset_id TEXT NOT NULL,
-      size TEXT NOT NULL,
-      quality TEXT NOT NULL,
-      output_format TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      FOREIGN KEY (asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
-      FOREIGN KEY (root_asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
-      FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-      CHECK (operation IN ('generate', 'edit')),
-      CHECK (json_valid(source_asset_ids_json) AND json_type(source_asset_ids_json) = 'array')
-    );
-
-    CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
-      system_account_id TEXT PRIMARY KEY,
-      search_account_id TEXT,
-      search_model_id TEXT,
-      image_account_id TEXT,
-      default_image_model TEXT,
-      video_account_id TEXT,
-      default_video_model TEXT,
-      audio_account_id TEXT,
-      default_audio_model TEXT,
-      updated_at TEXT NOT NULL
-    );
-
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_recent
       ON chat_conversations(system_account_id, last_message_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_pinned_recent
@@ -428,10 +386,6 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       ON chat_asset_references(asset_id, expires_at);
     CREATE INDEX IF NOT EXISTS idx_chat_asset_references_cleanup
       ON chat_asset_references(expires_at, asset_id, message_id);
-    CREATE INDEX IF NOT EXISTS idx_chat_image_generations_conversation_recent
-      ON chat_image_generations(conversation_id, created_at DESC, asset_id DESC);
-    CREATE INDEX IF NOT EXISTS idx_chat_image_generations_expiry
-      ON chat_image_generations(expires_at, asset_id);
 `
 
 const sqliteCodexContextDDL = `    CREATE TABLE IF NOT EXISTS codex_context_sessions (

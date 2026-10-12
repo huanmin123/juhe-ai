@@ -292,7 +292,7 @@ type imageOnlyCatalogW13B struct{}
 
 func (imageOnlyCatalogW13B) ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []ChatTransportAccount {
 	enabled := true
-	return []ChatTransportAccount{{ID: "a1", Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: requestedModel, SourceEndpointFamily: endpointFamily}}}}
+	return []ChatTransportAccount{{ID: "a1", Type: "api_key", ProviderCode: "deepseek", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: requestedModel, SourceEndpointFamily: endpointFamily}}}}
 }
 
 // ListChatPinnedAccountsForGroup 仅 a1 可直取（对齐生产 pinned 直取语义）。
@@ -304,7 +304,7 @@ func (imageOnlyCatalogW13B) ListChatPinnedAccountsForGroup(groupID, systemAccoun
 }
 
 func (imageOnlyCatalogW13B) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
-	return []ProviderModelCatalogItem{{Model: "gpt-image-2", ProviderCode: "openai", SupportedAPIProtocols: []string{"images"}}}
+	return []ProviderModelCatalogItem{{Model: "gpt-image-2", ProviderCode: "deepseek", SupportedAPIProtocols: []string{"images"}}}
 }
 
 type emptyCatalogW13B struct{}
@@ -318,7 +318,7 @@ func (emptyCatalogW13B) ListChatPinnedAccountsForGroup(groupID, systemAccountID,
 }
 
 func (emptyCatalogW13B) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
-	return []ProviderModelCatalogItem{{Model: "gpt-5", ProviderCode: "openai", SupportedAPIProtocols: []string{"chat_completions"}}}
+	return []ProviderModelCatalogItem{{Model: "gpt-5", ProviderCode: "deepseek", SupportedAPIProtocols: []string{"chat_completions"}}}
 }
 
 func TestW13BSubmissionStatusMatrix(t *testing.T) {
@@ -950,7 +950,7 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 	// resolveChatModelOptionsFromAccountSnapshot：无协议跳过。
 	options := []*ChatModelOption{{ID: "a", SupportedAPIProtocols: nil}, {ID: "b", SupportedAPIProtocols: []string{"chat_completions"}}}
 	reachable := resolveChatModelOptionsFromAccountSnapshot([]ChatTransportAccount{
-		{Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "b", SourceEndpointFamily: "chat_completions"}}},
+		{Type: "api_key", ProviderCode: "deepseek", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "b", SourceEndpointFamily: "chat_completions"}}},
 	}, options)
 	if len(reachable) != 1 || reachable[0] != "b" {
 		t.Fatalf("可达模型过滤失败: %v", reachable)
@@ -958,7 +958,7 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 	// loadChatModelListsForScope 目录去重（重复 provider 调用不产生重复模型）。
 	seen := map[string]bool{}
 	models, _, err := rt.loadChatModelListsForScope(&chatBindingScope{accounts: []ChatTransportAccount{
-		{Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}},
+		{Type: "api_key", ProviderCode: "deepseek", SupportedEndpointModes: []string{"chat_sse"}},
 	}}, routeTestOwner)
 	if err != nil {
 		t.Fatal(err)

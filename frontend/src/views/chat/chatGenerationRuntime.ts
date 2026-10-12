@@ -52,6 +52,8 @@ export interface ChatGenerationRuntimeStartInput {
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
   generationParameters?: ChatGenerationParameters
+  /** 本轮启用上游内置联网搜索（模型 builtinWebSearch 支持时前端才提供该选项）。 */
+  enableWebSearch?: boolean
 }
 
 export interface ChatGenerationRuntimeAttachInput {
@@ -415,6 +417,7 @@ export class ChatGenerationRuntime {
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
         generationParameters: input.generationParameters,
+        enableWebSearch: input.enableWebSearch,
         signal: controller.signal,
         onActivity: () => this.handleTransportActivity(key, turn),
         onEvent: (event) => this.handleEvent(key, turn, event)

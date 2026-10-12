@@ -796,6 +796,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		}
 		// D-192/D-146：链条停机时释放上游 keep-alive 传输的空闲连接。
 		upstreamClientPool.CloseIdleConnections()
+		// 停掉共享 JSON 解析池的常驻 worker，防止多次组合（测试全量/链重建）泄漏 goroutine。
+		chainBodyParser.Stop()
 	}
 	return chain, shutdown, nil
 }

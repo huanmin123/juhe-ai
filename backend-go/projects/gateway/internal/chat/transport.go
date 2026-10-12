@@ -4,23 +4,19 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"regexp"
 	"sort"
 	"strings"
 )
 
-// Transport plumbing ported from chat-transport.ts, chat-tools.ts,
-// chat-system-instructions.ts, chat-prompt-cache.ts and the parameter slices
-// of chat-generation-parameters.ts.
+// Transport plumbing ported from chat-transport.ts, chat-system-instructions.ts,
+// chat-prompt-cache.ts and the parameter slices of
+// chat-generation-parameters.ts.
 //
-// 工具体系设计（docs/functions/AI问答工具体系与主子模型设计.md §11）：主对话
-// 协议恒 chat_completions——工具驱动的协议偏好与 Responses 传输分支已整体
-// 删除，联网搜索/生图改为会话级绑定的子模型经进程内 /v1 链执行（见
-// generation_websearch.go 与 stream_execute.go 的组装）。
+// 主对话协议按绑定账户供应商主推直连（PLAN-20261012T121500000Z D4）：
+// responses 与 chat_completions 两形态并存，解析入口见 request_protocol.go；
+// 站内模型工具体系已整体退场（同计划 D2），无 function tools 注入。
 
-// ChatTransportProtocol mirrors ChatTransportProtocol. 主对话恒
-// chat_completions；responses 仅作为工具绑定候选过滤的目录矩阵键保留
-// （supportedToolsByProtocol 的协议枚举）。
+// ChatTransportProtocol mirrors ChatTransportProtocol.
 type ChatTransportProtocol string
 
 const (
@@ -42,14 +38,18 @@ type ChatTransportInputBlock struct {
 }
 
 // ChatTransportAccount mirrors ChatTransportAccount (runtime account snapshot
-// subset consumed by the transport selection).
+// subset consumed by the transport selection). ProviderProtocolProfileID /
+// ProtocolCode 是协议解析（request_protocol.go）的最小必要投影：按账户真实
+// protocol profile 选择请求形态，不按供应商名字猜测。
 type ChatTransportAccount struct {
-	ID                     string                      `json:"id"`
-	Type                   string                      `json:"type"`
-	ProviderCode           string                      `json:"providerCode"`
-	SupportedEndpointModes []string                    `json:"supportedEndpointModes,omitempty"`
-	SupportedModels        []string                    `json:"supportedModels,omitempty"`
-	ModelMappings          []ChatTransportModelMapping `json:"modelMappings,omitempty"`
+	ID                         string                      `json:"id"`
+	Type                       string                      `json:"type"`
+	ProviderCode               string                      `json:"providerCode"`
+	ProviderProtocolProfileID  string                      `json:"providerProtocolProfileId,omitempty"`
+	ProtocolCode               string                      `json:"protocolCode,omitempty"`
+	SupportedEndpointModes     []string                    `json:"supportedEndpointModes,omitempty"`
+	SupportedModels            []string                    `json:"supportedModels,omitempty"`
+	ModelMappings              []ChatTransportModelMapping `json:"modelMappings,omitempty"`
 }
 
 // ChatTransportModelMapping mirrors the account model mapping subset.
@@ -59,62 +59,6 @@ type ChatTransportModelMapping struct {
 	UpstreamModel          string `json:"upstreamModel,omitempty"`
 	SourceEndpointFamily   string `json:"sourceEndpointFamily,omitempty"`
 	UpstreamEndpointFamily string `json:"upstreamEndpointFamily,omitempty"`
-}
-
-// chatTransportAccountSupportsProtocol mirrors chatTransportAccountSupportsProtocol.
-func chatTransportAccountSupportsProtocol(account ChatTransportAccount, model string, protocol ChatTransportProtocol) bool {
-	var mapping *ChatTransportModelMapping
-	for index := range account.ModelMappings {
-		item := &account.ModelMappings[index]
-		if item.Enabled != nil && !*item.Enabled {
-			continue
-		}
-		if item.SourceModel == model && (item.SourceEndpointFamily == "" || item.SourceEndpointFamily == string(protocol)) {
-			mapping = item
-			break
-		}
-	}
-	supportedModels := account.SupportedModels
-	if len(supportedModels) > 0 {
-		routedModel := model
-		if mapping != nil && mapping.UpstreamModel != "" {
-			routedModel = mapping.UpstreamModel
-		}
-		found := false
-		for _, candidate := range supportedModels {
-			if candidate == routedModel {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	upstreamProtocol := protocol
-	if mapping != nil && mapping.UpstreamEndpointFamily != "" {
-		upstreamProtocol = ChatTransportProtocol(mapping.UpstreamEndpointFamily)
-	}
-	requiredMode := ""
-	switch upstreamProtocol {
-	case ProtocolResponses:
-		requiredMode = "responses_sse"
-	case ProtocolChatCompletions:
-		requiredMode = "chat_sse"
-	case "messages":
-		requiredMode = "messages_sse"
-	case "generate_content":
-		requiredMode = "generate_content_sse"
-	}
-	if requiredMode == "" {
-		return false
-	}
-	for _, mode := range account.SupportedEndpointModes {
-		if mode == requiredMode {
-			return true
-		}
-	}
-	return false
 }
 
 // ChatGenerationParameters mirrors ChatGenerationParameters.
@@ -148,105 +92,12 @@ func transportGenerationParameters(input *ChatGenerationParameters) map[string]a
 	return out
 }
 
-// toolDefinition mirrors ChatInternalToolDefinition minus the executor (the
-// executor lives in generation_tools.go). Kind 区分执行方式（契约 §5）：
-// code=后端代码直接执行；model=会话级绑定的子模型执行（web_search /
-// generate_image）。两类工具对主模型的注入完全一致（function 定义），主模型
-// 不感知后端执行方式。
-type toolDefinition struct {
-	ID          string
-	Version     string
-	ModelName   string
-	Kind        string // "code" | "model"
-	Description string
-	InputSchema map[string]any
-	// MaxArgumentBytes / MaxResultBytes / TimeoutMs bound one call（模型工具的
-	// TimeoutMs 是子调用整体超时上限，执行侧另有 context 超时）。
-	MaxArgumentBytes               int
-	MaxResultBytes                 int
-	TimeoutMs                      int64
-	RequiresInternalToolsEnabled   bool
-	RequiresImageGenerationEnabled bool
-	Environments                   []string
-	DuplicatePolicy                string // reuse_exact | allow_repeat
-	Execute                        func(input map[string]any, ctx *chatToolExecutionContext) (chatToolExecutionResult, error)
-}
-
-// chatToolExecutionContext mirrors ChatToolExecutionContext (transport subset).
-type chatToolExecutionContext struct {
-	OwnerID                 string
-	ConversationID          string
-	TurnID                  string
-	AssistantMessageID      string
-	TraceID                 string
-	APIKey                  string
-	DefaultImageModel       string
-	Aborted                 func() bool
-	LoadImageEditReferences func(assetIDs []string) ([]ChatImageEditReference, error)
-	// ConstrainImageModel 把主模型自选的生图模型收敛到会话生图绑定账户实际
-	// 可路由的集合内（BUG-0230）：组装侧按 bindings 注入；nil 表示无约束
-	//（未绑定等场景由发送预检拦截）。
-	ConstrainImageModel func(model string) string
-	ImageGeneration     func(input ChatImageGenerationRequest) (ChatImageGenerationToolResult, error)
-	ArtifactSink        ChatGeneratedImageArtifactSink
-	// WebSearch 是 web_search 模型工具的执行端口：组装侧（stream_execute）按
-	// 会话绑定解析——未绑定返回 chatToolBindingRequiredError，已绑定经进程内
-	// /v1 链固定派发到绑定「账户+模型」（generation_websearch.go）。
-	WebSearch func(query string) (chatToolExecutionResult, error)
-	// M7 问答音视频工具（问答音视频工具设计 §4，2026-10-04）：VideoGeneration
-	// 创建异步视频任务（POST /v1/videos，立即返回 jobId）；AudioGeneration 同步
-	// 合成音频并落资产（POST /v1/audio/speech）；组装侧（stream_execute）按会话
-	// 绑定解析——未绑定返回 chatToolBindingRequiredError；Constrain*Model 沿
-	// BUG-0230 模式把主模型自选模型收敛到绑定账户可路由集合。
-	DefaultVideoModel   string
-	DefaultAudioModel   string
-	ConstrainVideoModel func(model string) string
-	ConstrainAudioModel func(model string) string
-	VideoGeneration     func(input ChatVideoCreationRequest) (ChatVideoCreationResult, error)
-	AudioGeneration     func(input ChatAudioGenerationRequest) (ChatMediaArtifactResult, error)
-	MediaArtifactSink   ChatMediaArtifactSink
-	// ToolProgress 是当前工具调用的过程增量端口（契约 §10.3 子代理过程区）：
-	// orchestrator 在每次 executeCall 前按 callID 绑定（经内容块投影通道以
-	// item.progress 渐进下发），执行器（web_search 流式解析器）节流上报；
-	// 串行执行无并发。
-	ToolProgress func(progress chatWebSearchProgress)
-}
-
-// compileChatInternalTools mirrors compileChatInternalTools（恒 chat_completions
-// 形状：{type:"function", function:{...}}）。
-func compileChatInternalTools(tools []*toolDefinition) []map[string]any {
-	out := []map[string]any{}
-	for _, tool := range tools {
-		out = append(out, map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        tool.ModelName,
-				"description": tool.Description,
-				"parameters":  tool.InputSchema,
-				"strict":      false,
-			},
-		})
-	}
-	return out
-}
-
-// buildChatToolContinuation mirrors buildChatToolContinuation（恒 chat_completions
-// 形状：tool 角色消息）。
-func buildChatToolContinuation(continuationItems []any, outputs []ChatToolExecutionOutput) []any {
-	out := append([]any{}, continuationItems...)
-	for _, output := range outputs {
-		out = append(out, map[string]any{
-			"role":         "tool",
-			"tool_call_id": output.CallID,
-			"content":      output.ModelOutput,
-		})
-	}
-	return out
-}
+// toolDefinition 已随站内模型工具体系退场（PLAN-20261012T121500000Z D2）：
+// 无 function tools 注入，工具上下文/编排器/工具续答一并删除。
 
 // chatContentPart 渲染 Chat Completions 多模态 content 数组块：文本块与图片
-// 输入块（image_url，data URL）。契约 §11.3：图片输入从 Responses 迁到 Chat
-// Completions 多模态格式。
+// 输入块（image_url，data URL）。契约 §11.3：图片输入按请求形态渲染，Chat 形态
+// 用 image_url，Responses 形态用 input_image（responsesInputItems）。
 func chatContentParts(blocks []ChatTransportInputBlock) []map[string]any {
 	out := make([]map[string]any, 0, len(blocks))
 	for _, block := range blocks {
@@ -262,8 +113,9 @@ func chatContentParts(blocks []ChatTransportInputBlock) []map[string]any {
 	return out
 }
 
-// buildChatTransportRequest mirrors buildChatTransportRequest（恒
-// chat_completions）。当前输入含图片块时 user content 渲染为多模态数组。
+// buildChatTransportRequest mirrors buildChatTransportRequest（chat_completions
+// 形态）。当前输入含图片块时 user content 渲染为多模态数组；system 提示进首条
+// system message。
 func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[string]any) {
 	messages := []any{map[string]any{"role": "system", "content": input.Instructions}}
 	for _, message := range input.History {
@@ -274,8 +126,6 @@ func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[str
 	} else {
 		messages = append(messages, map[string]any{"role": "user", "content": input.CurrentContent})
 	}
-	messages = append(messages, input.ToolContinuation...)
-	internalTools := compileChatInternalTools(input.InternalTools)
 	body := map[string]any{
 		"model":          input.Model,
 		"messages":       messages,
@@ -294,23 +144,134 @@ func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[str
 	if input.PromptCacheKey != "" {
 		body["prompt_cache_key"] = input.PromptCacheKey
 	}
-	if len(internalTools) > 0 {
-		body["tools"] = internalTools
-		body["tool_choice"] = "auto"
-		body["parallel_tool_calls"] = false
+	if len(input.HostedTools) > 0 {
+		body["tools"] = input.HostedTools
 	}
 	return "/v1/chat/completions", body
 }
 
-// ChatTransportRequestInput mirrors buildChatTransportRequest input.
+// buildResponsesTransportRequest 构造 Responses 请求体（D4 请求构造契约）：
+// 顶层 `instructions` 承载 system 提示（chat-system 注入既有契约），`input`
+// 承载历史 + 当前轮的 input_text/input_image 内容块数组，顺序与 Chat 形态的
+// messages 完全一致（历史图片说明、压缩 checkpoint 均以文本形式保序进入）。
+// 流式 + reasoning summary 与既有契约一致；hosted tools（web_search）仅在
+// 调用方携带时注入（D3，请求级联网开关）。
+func buildResponsesTransportRequest(input ChatTransportRequestInput) (string, map[string]any) {
+	inputItems := []any{}
+	for _, message := range input.History {
+		inputItems = append(inputItems, responsesInputItem(message.Role, message.Content))
+	}
+	if len(input.CurrentBlocks) > 0 {
+		inputItems = append(inputItems, responsesInputItem("user", responsesUserContentFromBlocks(input.CurrentBlocks)))
+	} else {
+		inputItems = append(inputItems, responsesInputItem("user", input.CurrentContent))
+	}
+	body := map[string]any{
+		"model":        input.Model,
+		"instructions": input.Instructions,
+		"input":        inputItems,
+		"stream":       true,
+		"reasoning":    map[string]any{"summary": "auto"},
+	}
+	if input.ReasoningEffort != "" {
+		body["reasoning_effort"] = input.ReasoningEffort
+	}
+	if input.ServiceTier != "" {
+		body["service_tier"] = input.ServiceTier
+	}
+	for key, value := range transportGenerationParameters(input.GenerationParameters) {
+		body[key] = value
+	}
+	if input.PromptCacheKey != "" {
+		body["prompt_cache_key"] = input.PromptCacheKey
+	}
+	if len(input.HostedTools) > 0 {
+		body["tools"] = input.HostedTools
+	}
+	return "/v1/responses", body
+}
+
+// responsesInputItem 把中性历史消息渲染为 Responses input 项：字符串 content
+// 直接作为 text，多模态数组按既有形态映射为 input_text/input_image 内容块。
+func responsesInputItem(role string, content any) map[string]any {
+	return map[string]any{"role": role, "content": responsesContentValue(content)}
+}
+
+// responsesContentValue 折叠中性 content 为 Responses 形态：字符串原样；
+// Chat 多模态数组（text/image_url）转 input_text/input_image；其他 JSON 值
+// 序列化为文本（checkpoint 载荷等纯数据）。
+func responsesContentValue(content any) any {
+	switch typed := content.(type) {
+	case string:
+		return typed
+	case []map[string]any:
+		return responsesBlocksFromGeneric(typed)
+	case []any:
+		parts := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if block, ok := item.(map[string]any); ok {
+				parts = append(parts, responsesContentPartFromGeneric(block))
+			}
+		}
+		return parts
+	default:
+		payload, err := json.Marshal(content)
+		if err != nil {
+			return ""
+		}
+		return string(payload)
+	}
+}
+
+// responsesUserContentFromBlocks 把当前轮输入块渲染为 Responses 内容数组：
+// input_text 保持文本，input_image 用 data URL（序与 Chat 形态一致）。
+func responsesUserContentFromBlocks(blocks []ChatTransportInputBlock) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "input_image" {
+			out = append(out, map[string]any{"type": "input_image", "image_url": block.DataURL, "detail": "auto"})
+			continue
+		}
+		out = append(out, map[string]any{"type": "input_text", "text": block.Text})
+	}
+	return out
+}
+
+// responsesBlocksFromGeneric 把历史里已存的 Chat 多模态块（map 形态）映射为
+// Responses 内容块。
+func responsesBlocksFromGeneric(blocks []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		out = append(out, responsesContentPartFromGeneric(block))
+	}
+	return out
+}
+
+func responsesContentPartFromGeneric(block map[string]any) map[string]any {
+	blockType, _ := block["type"].(string)
+	if blockType == "image_url" {
+		imageURL := ""
+		if wrapper, ok := block["image_url"].(map[string]any); ok {
+			imageURL, _ = wrapper["url"].(string)
+		} else if value, ok := block["image_url"].(string); ok {
+			imageURL = value
+		}
+		return map[string]any{"type": "input_image", "image_url": imageURL, "detail": "auto"}
+	}
+	text, _ := block["text"].(string)
+	return map[string]any{"type": "input_text", "text": text}
+}
+
+// ChatTransportRequestInput mirrors buildChatTransportRequest input（两形态
+// 共用：InternalTools/ToolContinuation 已随工具体系退场，HostedTools 是 D3
+// 请求级联网开关注入的 hosted 工具载荷）。
 type ChatTransportRequestInput struct {
 	Instructions         string
 	Model                string
 	History              []ChatTransportMessage
 	CurrentContent       string
 	CurrentBlocks        []ChatTransportInputBlock
-	InternalTools        []*toolDefinition
-	ToolContinuation     []any
+	HostedTools          []map[string]any
 	ReasoningEffort      string
 	ServiceTier          string
 	GenerationParameters *ChatGenerationParameters
@@ -319,7 +280,7 @@ type ChatTransportRequestInput struct {
 
 // --- system instructions (chat-system-instructions.ts) ---
 
-const chatSystemInstructionsVersion = "chat-system-v4"
+const chatSystemInstructionsVersion = "chat-system-v5"
 
 const instructionPriority = "用户明确要求的语言、格式、长度和交付形态优先于以下默认偏好。"
 const responseDefaults = "默认使用用户当前使用的语言回答；无法判断时使用简体中文。仅在有助于阅读时使用 Markdown，简单回答不强制使用标题、表格或代码块。"
@@ -329,25 +290,12 @@ const reliability = "所有结论只依据用户提供的信息、当前对话�
 const missingInformation = "若信息不全、缺少关键条件或无法据此产出有效结果：明确告知信息不足、当前无法完成需求；逐项列明缺失的具体信息和其影响；引导用户补齐对应内容。不得强行拼凑、模糊敷衍作答或把未经确认的假设写成事实；在关键信息补齐前，只能交付明确标注边界的部分结果。"
 const richOutput = "用户未指定冲突格式且图形确实提升理解时，关系、流程与结构优先使用 Mermaid，数学表达使用 LaTeX；用户要求视觉原型或矢量图时可输出完整 fenced `svg`，不把裸 HTML 当作 SVG 预览。"
 const imagePreference = "用户要求生成位图且当前提供真实图像工具时优先调用该工具，不用 ASCII 文本画图代替；普通解释请求不强制生成图片。"
-const imageGenerationPreference = "调用图片生成工具时，如果用户没有明确指定宽高或分辨率，应根据图片用途、内容和构图需要自行选择合适的常规尺寸与宽高比例，不得自行选择 2K、4K 或其他超大尺寸。用户明确指定宽高、分辨率、画面比例或输出格式时应优先遵循；“高清、精致、细节丰富”等质量描述不等于要求更大的图片尺寸。用户要求基于既有图片进行二次编辑时，必须从当前输入图片标记或会话图像谱系索引中选择明确的 assetId，并用 reference_asset_ids 调用图片工具；如果存在多张候选图且无法唯一判断，先询问用户，不得猜测目标图片。"
-const toolDiscipline = "避免重复调用名称相同且参数等价的工具；前次调用失败、结果可能过期或用户明确要求刷新时允许再次调用。"
 
-// buildChatSystemInstructions mirrors buildChatSystemInstructions.
-func buildChatSystemInstructions(internalToolNames []string) (version, text, hash string) {
-	internalNames := map[string]bool{}
-	for _, name := range internalToolNames {
-		trimmed := trimSpace(name)
-		if trimmed != "" {
-			internalNames[trimmed] = true
-		}
-	}
+// buildChatSystemInstructions mirrors buildChatSystemInstructions. 生图偏好段
+// 与工具纪律段已随站内工具体系退场（PLAN-20261012T121500000Z D2），版本升级
+// 为 chat-system-v5（Prompt Cache 稳定前缀随之自然切换）。
+func buildChatSystemInstructions() (version, text, hash string) {
 	blocks := []string{instructionPriority, responseDefaults, strictFormats, truthfulness, reliability, missingInformation, richOutput, imagePreference}
-	if internalNames["generate_image"] {
-		blocks = append(blocks, imageGenerationPreference)
-	}
-	if len(internalNames) > 0 {
-		blocks = append(blocks, toolDiscipline)
-	}
 	text = strings.Join(blocks, "\n\n")
 	digest := sha256.Sum256([]byte(text))
 	hash = hexEncode(digest[:])
@@ -381,19 +329,6 @@ type ChatModelOption struct {
 	// 已随阶段 2 退场，能力判定一律按矩阵读取。
 	SupportedToolsByProtocol map[string][]string
 	GenerationParameters     []ChatGenerationParameterCapability
-}
-
-// supportsTool 报告矩阵任一协议下是否声明了 tool（function_calling 判定口径：
-// 主对话恒 chat_completions，但目录矩阵可能只在 responses 键下声明
-// function_calling——按「任一协议」口径判定，避免误杀仅声明在 responses 下的
-// 能力）。
-func (o *ChatModelOption) supportsTool(tool string) bool {
-	for _, tools := range o.SupportedToolsByProtocol {
-		if containsString(tools, tool) {
-			return true
-		}
-	}
-	return false
 }
 
 // ChatGenerationParameterCapability mirrors ChatGenerationParameterCapability.
@@ -641,4 +576,3 @@ func sortCatalogModels(models []string) []string {
 	return out
 }
 
-var sizePattern = regexp.MustCompile(`^(\d{2,4})x(\d{2,4})$`)

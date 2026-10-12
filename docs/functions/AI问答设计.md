@@ -2,8 +2,8 @@
 
 > **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 DB service 承载 chat 存储 / 聊天库等拓扑的段落为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
 
-> 本文定义 `juhe-ai` 第一版 AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
-> 当前状态：AI 问答 MVP、Tiptap 输入、Responses/Chat Completions 双协议、有序助手时间线、版本化系统提示、Markdown/代码高亮/LaTeX/Mermaid/SVG、multipart 图片资产、按需会话加载、统一内部工具 Registry/Orchestrator、development/test Demo、`generate_image` 生成/编辑、图像谱系和 WebP 原图/预览双资产均已在隔离工作树实现；本地专项与真实浏览器验收由 [PLAN-20260722T022751000Z](../plans/计划-20260722T022751000Z-AI问答有序过程生图与按需加载.md) 追踪。真实账户与 Codex 浏览器验收只在本地进行，禁止未经用户批准上线。详细上下文验收见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 和 PLAN-0104。
+> 本文定义 `juhe-ai` AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
+> 当前状态（2026-10-12 简化裁决，[PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md)）：AI 问答定位收敛为登录用户的**文本与图片识别客户端**（账户/模型测试 + 日常简单询问）；站内模型工具体系（`web_search` / `generate_image` / `generate_video` / `generate_audio` 子代理、工具绑定与用户级偏好）整体退场，联网改为上游内置 hosted `web_search` 透传（默认不勾选的请求级选项）；主对话协议按绑定账户供应商主推直连（Responses / Chat Completions / 既有桥接），废除恒 Chat Completions；会话首轮接受后锁定「账户 + 模型」。用户图片上传与图片识别链保留。音视频/生图媒体生产规划见 [PLAN-20261012T123000000Z 媒体工作室规划建议](../plans/计划-20261012T123000000Z-媒体工作室规划建议.md)。早期 MVP、Tiptap 输入与按需加载的本地专项验收由 [PLAN-20260722T022751000Z](../plans/计划-20260722T022751000Z-AI问答有序过程生图与按需加载.md) 追踪（历史记录）。详细上下文验收见 [AI 问答上下文管理设计](AI问答上下文管理设计.md)。
 
 ## 1. 功能定位
 
@@ -23,15 +23,15 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 | 事项 | 决策 |
 | --- | --- |
 | 后端范围 | 第一版只在现有 Node 后端实现，不等待 Go 迁移，也不为 Go 写兼容分支 |
-| 模型协议 | 普通模型按能力使用 Chat Completions 或 Responses；站内工具循环协议无关，`generate_image` 执行器通过本机 `/v1/images/generations` 使用固定 `gpt-image-2` provider |
-| API Key / 绑定 | 会话唯一绑定一个 AI 账户（`account`）；创建免请求体直进空会话，进入后先选账户再选模型；账户可切换（见 [AI 问答会话账户唯一绑定设计](AI问答会话账户唯一绑定设计.md)） |
-| 模型 | 每轮都可以切换，但只能选择当前绑定作用域内的可用模型 |
+| 模型协议 | 按绑定账户供应商主推协议直连：openai（API Key）/ gpt / codex（OAuth）走 Responses 原生直连，deepseek / glm / xai 等 OpenAI 兼容供应商走 Chat Completions 原生直连，anthropic / gemini 经既有桥接（`responses -> messages` / `chat -> generate_content`）；废除主对话恒 Chat Completions（2026-10-12，PLAN-20261012T121500000Z） |
+| API Key / 绑定 | 会话唯一绑定一个 AI 账户（`account`）并锁定模型；创建免请求体直进空会话，进入后先选账户再选模型；首轮接受后账户与模型一并锁定，锁定后拒绝切账户与改模型，切换需求以新会话表达（见 [AI 问答会话账户唯一绑定设计](AI问答会话账户唯一绑定设计.md)） |
+| 模型 | 空会话（未产生轮次）可自由选择绑定账户作用域内模型；首轮接受后 `last_model` 写入为会话锁定模型，不可逐轮切换 |
 | 上下文 | 服务端使用独立 checkpoint + recent suffix；软水位异步压缩、硬水位发送前压缩，并始终使用模型目录最大有效输入窗口 |
 | 上游缓存 | 首期只为模型目录明确支持的 OpenAI 请求生成会话级稳定 opaque `prompt_cache_key`；保持 canonical prefix，并复用网关软亲和，未知兼容上游不发送 |
 | 输入 | 使用 Tiptap 3 最小编辑器，支持 Markdown 文本、撤销/重做、图片粘贴预览和 `/` 命令入口 |
 | 输出 | 支持 Markdown、列表、表格、代码块、LaTeX、Mermaid、fenced SVG 隔离预览、HTTPS Markdown 图片和私有生成图片 |
 | 消息列表 | 必须使用支持动态高度的虚拟列表和游标分页 |
-| 工具 | 上游联网等原生工具按协议透传；本站工具统一经过 Registry/Orchestrator，串行执行、有限轮次/调用数/结果大小、取消和精确重复调用复用 |
+| 工具 | 站内模型工具体系（Registry/Orchestrator、工具绑定、用户级偏好）退场；联网 = 上游内置 hosted `web_search` 透传，仅 Responses 原生直连账户提供默认不勾选的请求级选项（见 8.6） |
 | 历史操作 | 只支持重新编辑最近一个完整用户轮次；不支持任意历史分支、分享或多人会话 |
 | 数据模式 | standalone 使用独立 `juhe-ai-chat.sqlite3`，performance 使用独立 `juhe_chat` schema；两者使用同一业务契约 |
 | 会话门禁 | 每用户最多 50 个现存会话，每会话最多接受 50 个用户轮次；均可通过运行配置调整，达到上限返回稳定 409 机器码 |
@@ -44,9 +44,9 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 - 用户侧菜单“AI 问答”和路由 `/my-chat`。
 - 新建、查看、分页加载和删除自己的会话。
 - 会话绑定自己的一个 API Key，绑定后不可更换。（历史 MVP 契约，先后被 §5.2 三绑定模式与 §5.2 现行「仅账户」唯一绑定取代；现行行为以 §5.2 与 [AI 问答会话账户唯一绑定设计](AI问答会话账户唯一绑定设计.md) 为准）
-- 按 API Key 获取可用模型，并允许每轮切换模型。（同上，现行模型作用域按会话绑定模式解析）
+- 按 API Key 获取可用模型，空会话可自由选择；首轮接受后锁定为会话模型（现行锁定语义按 §5.3）。
 - Markdown 编辑、撤销/重做、图片原位粘贴与 multipart 上传、图文提问、流式回答、停止生成和中文错误提示。
-- Responses 内置工具事件透传与工具过程展示；站内 `diagnostic_echo` 仅在 development/test 显式开关下可用，`generate_image` 只有图像权限、provider 和可调度模型账户同时满足时才注入。
+- 联网搜索为上游内置 hosted `web_search` 透传：仅具原生搜索能力的 Responses 直连账户提供默认不勾选的请求级选项，事件按真实投影展示（见 8.6）。
 - 当前配置保留期（默认 3 天）的渲染历史、图片资产、上下文 checkpoint 和后台有界清理。
 - 上游真实 input usage、本地 tokenizer 兜底、最终 JSON 字节预检和只读上下文圆环。
 - Markdown、GFM 列表 / 表格、代码高亮、LaTeX、Mermaid 和 HTTPS 图片展示。
@@ -55,17 +55,16 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 
 ### 3.2 本次不包含
 
-- 文件附件、知识库、本站自建联网搜索和语音输入；Responses 可使用上游实际支持的 Hosted Web Search。
-- MCP、Skill、第三方工具热加载和完整工具审批平台；PLAN-20260722T022751000Z 只包含受控的本站 function tool 首段、开发 Demo、图片执行器和 worker 可迁移边界。
+- 文件附件、知识库、站内自建联网搜索和语音输入；联网仅限上游内置 hosted `web_search` 透传（§8.6）。
+- MCP、Skill、第三方工具热加载和完整工具审批平台；站内模型工具体系（function tool 首段、开发 Demo、图片执行器）已随 PLAN-20261012T121500000Z 整体退场（见 8.6）。
+- 媒体工作室（音视频/生图内容生产独立菜单）：见 [PLAN-20261012T123000000Z 媒体工作室规划建议](../plans/计划-20261012T123000000Z-媒体工作室规划建议.md)，另行立项。
 - system prompt 不开放给用户编辑；生成参数仅开放温度、Top P、频率惩罚、存在惩罚、最大输出 Tokens 与随机种子，且必须由当前模型、协议和候选路由共同明确支持。
 - 跨会话长期记忆和超过当前配置保留期的聊天保留；当前结构化摘要只服务当前会话的 当前配置保留边界。
 - 任意历史消息编辑、消息分支、指定旧回答重新生成、会话分享、多人协作。
 - 管理员读取其他用户聊天正文的管理页面或接口。
 - Go 后端实现或 Node / Go 双写。
 
-站内工具的通用执行边界与首个图片工具已由 [内部工具运行时与生图设计](../superpowers/specs/2026-07-20-AI问答内部工具运行时与生图设计.md) 固化并落地。Chat/Responses 都使用同一编排器，模型继续通过真实 API Key 进入现有网关；MCP、Skill 和第三方 Agent 运行时仍是独立范围。
-
-图片二次编辑采用“主会话 + 有界图像谱系索引”，不创建供应商私有的长期子会话，也不提供把生成图重新插入输入框的专用编辑流程。用户只需在原会话继续输入普通文本；主模型读取完整文本上下文和最近 12 条不可信谱系元数据，选择明确的 `assetId` 后调用内部图像工具。`chat_conversations.default_image_model` 保存会话默认图像模型，当前只允许 `gpt-image-2`；`chat_image_generations` 为每个助手生成资产保存 `generate/edit`、模型、提示词、来源 `assetId`、根图、尺寸、质量和格式。主上下文不注入图片 Base64；工具执行时才按同会话 `assetId` 读取最多 5 张、合计最多 48 MiB 的有效处理后图片。生成使用 JSON `/v1/images/generations`，编辑使用 multipart `/v1/images/edits` 和重复 `image[]`；网关从 multipart 受限解析 `model` 用于模型感知路由，正文仍原样透传。生成图在聊天页内预览原图并支持下载，不跳离当前页面。完整决策见 [图像编辑与子上下文设计](../superpowers/specs/2026-07-20-AI问答图像编辑与子上下文设计.md)。
+站内模型工具体系（`web_search` / `generate_image` / `generate_video` / `generate_audio` 子代理、工具绑定与 `chat_user_tool_preferences`）已随 [PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md) 整体退场，历史契约见 [AI 问答工具体系与主子模型设计](AI问答工具体系与主子模型设计.md)（历史截面归档）与 [问答音视频工具设计](问答音视频工具设计.md)（历史截面归档）。存量生成媒体块与站内工具过程块按占位降级渲染（仅用于读取短期存量内容），用户 `input_image` 和图片观察结果正常展示。
 
 ## 4. 总体架构
 
@@ -118,19 +117,25 @@ flowchart LR
 
 - 创建会话免请求体：`POST /my-chat/conversations` 直接创建空会话并进入，服务端忽略任何请求体内容；进入会话后先选 AI 账户（输入区上方引导条 + 账户选择器），再选模型，才能发送。
 - 会话唯一绑定一个 AI 账户（`bindAccountId` + `bindAccountNameSnapshot`），可选范围按角色两档：普通用户可选自有账户，`admin` / `super_admin` 见全量号池；范围内全部未删除账户（含禁用、错误、限流、冷却、过期、禁调度等全部状态）均可选可绑，不设可用性过滤（2026-10-10 修订：账户被禁用时正是不稳定、需要测试的场景，绑定不再要求生效 `active`）。
-- 账户绑定可在会话内切换（`PATCH /conversations/{id}` 携带 `accountId`）：切换视为新语境，当前 `lastModel` 不在新账户可路由范围时服务端联动清空（响应 `lastModel` 为空），前端提示重选模型。
+- 账户绑定在会话未锁定（无已接受轮次）时可切换（`PATCH /conversations/{id}` 携带 `accountId`）；首轮接受并提交后账户与模型一并锁定，实际改变或清空 `accountId` 返回 409 `chat_conversation_locked`（重复提交相同账户不算切换），变更账户或模型须新建会话（见 §5.3）。
 - 鉴权与计费主体是当前用户的 `purpose = chat` 专用对话 Key，由服务端幂等确保；它只承载 Bearer 鉴权、额度和使用记录归属，不参与调度与模型作用域。专用 Key 仍禁止删除或改名。
-- 归档（存量旧模式）会话只读：发送、切换账户与工具绑定修改返回 403 `chat_conversation_archived`；标题、置顶、默认图像模型等展示字段保持可改；历史消息可读。
+- 归档（存量旧模式）会话只读：发送与绑定修改返回 403 `chat_conversation_archived`；标题、置顶等展示字段保持可改；历史消息可读（存量生成媒体块按占位渲染，见 §3.2）。
 - 绑定账户删除或改名后，详情回退显示名称快照；账户删除时历史消息仍可读，但不能继续发送。账户停用、限流、冷却或过期仍可正常绑定与发送测试（2026-10-10 修订：绑定与发送/模型列表不再因账户生效状态拒绝）。
 - 发送时网关侧的 chat-pinned 派发按绑定账户 ID 直取运行时快照（专用查询路径，绕过 /v1 常规候选窗的可用性窗口，含禁用、限流、冷却、过期与禁调度账户），仍只收敛到绑定账户单元素，并沿用「按启用分组解析承载分组、分组禁用/未命中时空候选回落既有『无可用账户』语义」的既有 chat 侧约束；外部 /v1 请求的共享候选窗与可用性语义保持现状（2026-10-10 修订）。
 - 旧 `bind_mode` / `bind_group_id` / `bind_group_name_snapshot` 三列已物理删除（maintenance `--migrate-chat-account-only-binding` 一次性迁移，副表 `chat_conversations_bind_legacy_backup` 全量备份，报告含 rollbackSql）。
 
-### 5.3 模型规则
+### 5.3 模型规则（会话锁定模型）
 
 - 模型下拉数据按会话绑定账户聚合当前供应商动态模型目录，与认证 `/v1/models` 共用目录事实：按绑定账户的 provider 目录并与 `account_supported_models` 取交集。列表项只返回 `id` 和 `name`；未绑定账户的会话返回空列表（引导先选账户）。
-- 会话创建后模型选择由用户完成（账户选定后展开模型下拉按需加载 `id/name` 列表），切换模型时按 ID 读取能力；服务端不再持久化默认模型引用。
-- 模型可以逐轮切换，`chat_conversations.last_model` 用于恢复界面当前/最近选择，不锁定会话模型；切换后能力由独立模型 ID 接口按需读取。
-- 发送时由网关对模型、绑定作用域和候选账户做最终校验；Chat 模块不维护第二份长期模型缓存。绑定作用域按绑定账户 ID 直取运行时快照（含非 active 账户，见 §5.2），模型限制与协议能力仍由网关最终裁决。
+- 会话创建后模型选择由用户完成（账户选定后展开模型下拉按需加载 `id/name` 列表），空会话可自由更换账户与模型；切换模型时按 ID 读取能力。
+- `chat_conversations.last_model` 语义为**会话锁定模型**（2026-10-12，PLAN-20261012T121500000Z）：首轮通过校验、被接受并与消息同事务提交时写入，此后不可变；空值 = 未锁定（未产生任何轮次）。未接受的请求不锁定；接受后上游失败或用户停止仍保留锁定，可按原模型重试。
+- 锁定后行为：
+  - 发送请求 `model` ≠ `last_model` → 400 `chat_model_locked`（中文提示「当前会话已绑定模型 X，如需更换请新建会话」），前端不自动改写请求。
+  - `PATCH /conversations/:id` 实际改变或清空 `accountId` → 409 `chat_conversation_locked`；重复提交相同账户不算切换，`title` / `isPinned` 等其他偏好正常修改。
+  - 预检与接受之间绑定被并发改变 → 409 `chat_conversation_binding_changed`，提示刷新会话后重试。
+  - 前端锁定后账户选择器与模型选择器均禁用（tooltip 说明），发送正常；`/clear` 只清空消息、checkpoint 和用户资产引用，保留账户与模型锁定。
+- 主对话协议按绑定账户与锁定模型解析供应商主推协议（Responses / Chat Completions 直连或既有桥接，见 §2 模型协议行）；辅助请求（压缩、图片观察）使用同一解析结果。
+- 发送时由网关对模型、绑定作用域和候选账户做最终校验；Chat 模块不维护第二份长期模型缓存。绑定作用域按绑定账户 ID 直取运行时快照（含非 active 账户，见 §5.2），模型限制与协议能力仍由网关最终裁决。绑定账户不可用时不切换其他账户或模型，提示新建会话。
 - 模型已下线或当前绑定作用域不能承接时返回网关错误，不悄悄换成其他模型。
 
 ## 6. 用户体验与页面设计
@@ -155,7 +160,7 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 
 1. 用户点击"新建对话"免弹窗直接创建空会话并进入（`POST /conversations` 免请求体）；进入后输入区上方显示「先在下方选择 AI 账户」引导条，模型选择器与发送按钮保持禁用。
 2. 账户选择器位于输入框底部（模型选择器左侧）：展开时按需读取 `/my-chat/accounts`（登录用户授权范围内全部未删除账户的最小 id/name/provider/status 摘要；含全部状态与冷却/过期账户，status 为真实生效状态投影、供前端状态标注；范围按角色两档：普通用户仅见自有账户，`admin`/`super_admin` 见全量号池）；选中后 `PATCH /conversations/{id}` 携带 `accountId` 完成绑定，引导条消失、模型选择器解锁。
-3. 账户绑定后用户首次展开模型下拉时读取 `id/name` 列表，切换模型时再按 ID 读取能力；切换账户导致 `lastModel` 联动清空时提示重选模型。
+3. 账户绑定后用户首次展开模型下拉时读取 `id/name` 列表，切换模型时再按 ID 读取能力。空会话（未产生轮次）可自由更换账户与模型；首轮接受后账户与模型锁定，选择器禁用，更换须新建会话（§5.3）。
 4. 空会话属于正常可删除会话，不为其引入请求路径扫描或特殊兼容逻辑。
 
 ### 6.3 发送与停止
@@ -259,7 +264,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 文本以 Markdown 语义输入；在块首输入 `- `、`1. `、`> `、代码围栏等 Markdown 前缀时由 StarterKit 输入规则创建真实列表、引用或代码块，后续 `Enter` 按该块的编辑器规则处理。图片是行内编辑节点，保持“文字、图片、文字”的原始顺序。
 - 图片选择或粘贴后立即使用原始 Blob URL 显示本地预览，压缩准备最多并发 2 张，再走 multipart 资产上传；编辑器节点只保存 `assetId` 和私有预览 URL，发送请求只传资产引用，不把 Data URL 放入聊天 JSON。删除图片会取消排队、压缩或上传任务；被取消的 active 任务继续占物理并发槽直至真实结束，但不阻塞新会话发送，被取消的 queued 任务不得保留原图强引用。迟到结果只有在节点仍属于当前文档且任务代次未失效时才能写回。提交成功后释放原始 `File`、压缩结果与临时 Blob URL，暂存记录同时按原图和压缩文件计入内存边界。
 - 同一次富文本粘贴同时含文字和图片时，必须使用浏览器 DOM 结构按“文字、图片、文字”的原顺序插入，不能把全部文字移到图片前面；图片大小/数量过滤保留原剪贴板文件槽位，远程装饰图不消耗本地图片槽位，避免后一张合法图片错绑到前一个 HTML 图片位置。只有剪贴板没有 HTML 图片位置时才回退为文字后追加图片。图片节点通过 Backspace/Delete 或按钮离开文档后统一取消仍在进行的上传；切换会话、清空或离开页面会删除已上传但未提交的资产，上传响应晚于卸载时也要补偿删除。有序列表编号和嵌套层级在 Tiptap JSON 转 Markdown 时必须保持，并通过标准 Markdown 解析器验证。
-- `/` 只在当前普通文本块的光标前触发命令建议菜单；命令固定包含 `/image` 添加图片、`/参数`（兼容 `/parameters`）打开生成参数弹窗、`/tool-defaults` 打开「工具模型绑定」统一弹窗（设置网页搜索与图像生成的全局默认绑定，见 8.6）、`/compact` 手动压缩上下文和 `/clear` 清空当前对话。不提供 `/clear-input` 或 `/code`：清空草稿使用编辑器原生选中删除，代码块通过 Markdown 输入规则或直接输入/粘贴完成。`/tool-defaults` 弹窗一次保存全局偏好并同步当前会话（见 8.6）；`/参数` 只在模型存在实际可调的生成参数时打开弹窗，否则提示且不产生消息内容；`/compact` 与 `/clear` 是页面级动作，必须确认并等待服务端接受，不能作为文本插入或乐观完成。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
+- `/` 只在当前普通文本块的光标前触发命令建议菜单；命令固定包含 `/image` 添加图片、`/参数`（兼容 `/parameters`）打开生成参数弹窗、`/compact` 手动压缩上下文和 `/clear` 清空当前对话。不提供 `/clear-input` 或 `/code`：清空草稿使用编辑器原生选中删除，代码块通过 Markdown 输入规则或直接输入/粘贴完成。`/参数` 只在模型存在实际可调的生成参数时打开弹窗，否则提示且不产生消息内容；`/compact` 与 `/clear` 是页面级动作，必须确认并等待服务端接受，不能作为文本插入或乐观完成。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
 - 斜杠查询没有候选项时，Enter 回到普通发送语义，不能被空命令菜单吞掉。
 - 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
@@ -267,34 +272,31 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 模型、思考级别和服务等级放在输入框底部左侧，发送/停止放在右侧。选项只来自服务端模型目录；未知能力不按模型名猜测，也不补“自动”选项。
 - 思考级别不提供“无思考”和“自动”；目录默认值只用于能力说明，页面初始不选择任何档位。用户可以清除已选值回到空状态；未显式选择时不发送思考级别。
 - 服务等级不提供“自动”；模型声明服务等级能力时显示真实可选项，但页面初始不选择任何档位。用户可以清除已选值回到空状态；未显式选择时省略 `service_tier` 并由上游决定。
-- 思考级别、服务等级、输入/输出模态和工具按“上游可用模型 ID 与本地官方能力快照”返回；同名模型存在多个可达供应商候选时取共同能力。模型未声明对应能力时不显示控件，也不发送字段。“本地官方能力快照”是数据源口径而非运行时探测结果：数据库内置模型目录行本无 `supported_tools` / `input_modalities` / `output_modalities` 列，目录行未声明工具与模态能力时按静态定价表兜底填充，与管理面目录同一份静态来源；兜底后仍未声明的模型才视为无该能力。
+- 思考级别、服务等级、输入/输出模态和内置联网能力（`builtinWebSearch`）按“上游可用模型 ID 与本地官方能力快照”返回；同名模型存在多个可达供应商候选时取共同能力。模型未声明对应能力时不显示控件，也不发送字段。“本地官方能力快照”是数据源口径而非运行时探测结果：数据库内置模型目录行本无 `supported_tools` / `input_modalities` / `output_modalities` 列，目录行未声明联网与模态能力时按静态定价表兜底填充，与管理面目录同一份静态来源；兜底后仍未声明的模型才视为无该能力。
 - 图片命令、粘贴提示和服务端验收同时读取模型 `inputModalities`；仅凭 Responses 协议可用不能推导图片能力。
 - 上下文不再由客户端提交 `contextWindowTokens`；服务端区分模型目录的总窗口、最大输入和最大输出。官方没有独立最大输入时，按 `contextWindowTokens - maxOutputTokens` 派生保守输入预算。
 
-### 8.6 工具体系与主子模型（主对话恒 Chat Completions）
+### 8.6 联网搜索（上游内置工具透传）
 
-> 状态（2026-09-28 已实施）：工具体系按 [AI 问答工具体系与主子模型设计](AI问答工具体系与主子模型设计.md) 落地——主对话恒走 Chat Completions，联网搜索与图片生成为「模型工具」（会话级绑定「AI 账号 + 模型」二元组的受限子代理），旧「工具能力驱动协议偏好 + hosted 工具注入」路径已删除。本节为当前行为契约摘要，完整契约以设计文档为准。
+> 退场说明（2026-10-12，[PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md)）：站内模型工具体系与主子模型编排——`web_search` / `generate_image` / `generate_video` / `generate_audio` 子代理、会话级与用户级工具绑定（`chat_user_tool_preferences`）、`tool.binding_required` 引导——已整体退场，不再是行为契约；历史契约见 [AI 问答工具体系与主子模型设计](AI问答工具体系与主子模型设计.md)（历史截面归档）与 [问答音视频工具设计](问答音视频工具设计.md)（历史截面归档）。
 
-- 主对话协议恒为 `chat_completions`，不再由工具能力驱动协议选择；模型目录里的原生协议用于能力说明，不能覆盖显式的 source endpoint mapping。
-- Chat Completions 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段（function tools），由网关做协议适配和安全校验。
+联网能力回归上游协议原生形态，本站不做站内搜索执行：
+
+- 仅 Responses 协议且模型目录声明内置搜索能力（`supportedToolsByProtocol["responses"]` 含 `web_search`）的模型可用：本轮勾选后请求直接携带 `tools: [{"type":"web_search"}]` 透传，上游自行执行；站内只展示真实事件投影（Responses hosted 工具事件经既有 `content_block.*` 通道下发，不伪造、不重复执行）。
+- 请求选项：输入框提供「联网」勾选项，默认不勾选；本轮勾选时 stream 请求携带 `enableWebSearch: true`（§10.4）。能力接口 `builtinWebSearch` 决定是否提供该选项；不新增会话列、部署配置或 feature flag，搜索能力交付后始终可用，用户选择的只是本轮是否调用上游工具。能力不支持却提交 `true` 时明确拒绝，不静默忽略；上游搜索失败保留原始错误，不自动转为离线回答。
+- Chat Completions 协议供应商（DeepSeek、GLM、xAI、MiniMax 等）目录未声明内置搜索的，前端不显示联网控件，请求不携带工具——即「内置不支持就搜索不了」。
+- 桥接账户口径：联网开关仅对原生 Responses 直连账户可见。anthropic（responses 请求形态经桥接）与 gemini（chat 形态桥接）账户不提供联网控件——桥接层对 hosted 工具按 guidance 降级、不真实执行搜索，若提供控件会造成「开关可见但静默不生效」。目录能力查询按上游原生协议键执行，不按请求形态键。
+- 只注入已验证的 hosted `web_search`；不注入 `image_generation`、音视频生成或站内 function tools，避免删除生成工具后又从 Responses hosted 工具重新引入图片/图标生成。
 - 用户选择 reasoning effort 时按所选协议发送对应 reasoning 参数；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
-- Chat 模块将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块；上游自行执行的内置工具只展示状态和结果，Chat 模块不重复执行、不伪造工具结果。
-- **联网搜索（`web_search` 模型工具）**：未绑定时仍注入工具定义；主模型发起调用后返回 `tool.binding_required` SSE 引导事件（含候选列表与用户提示），主轮继续；已绑定时由子代理以绑定「账号 + 模型」发起**流式**子调用（按绑定模型与账号实际协议执行，典型为 Responses + hosted `web_search`，`x-juhe-ai-purpose: chat_web_search`），过程经内容块投影通道渐进下发（见设计文档 §6.1），经网关 /v1 链固定派发绑定账户，结果与来源 URL 裁剪后回喂主模型。绑定候选 = 全部授权可派发账户 × 目录「协议 × 工具」矩阵声明 `web_search` 的 responses 可派发模型（跨账户合法，如 GPT 对话 + Grok 搜索；工具候选按既有「可派发」口径仍只取生效 `active` 账户，2026-10-10 会话绑定口径放开不影响工具候选口径）。
-- **图片生成（`generate_image` 模型工具）**：绑定粒度为账户，生效模型沿会话 `defaultImageModel`（枚举白名单 GPT 系 `gpt-image-2` 与 Grok 系 `grok-imagine-image` / `grok-imagine-image-quality`）；候选 = 可路由注册图像模型的 api_key 型账户。文本模型明确需要位图时调用 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败。工具循环上限见设计文档（`MaxModelRounds=4`、`MaxToolCalls=8`、`MaxImageCalls=2`）。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照。通用边界见 [AI 工具创建规范](AI工具创建规范.md)。
-- 会话详情内嵌的 `toolCapabilities`（`web_search` / `generate_image` 的 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）按候选口径聚合（见《AI 问答工具体系与主子模型设计》§8）；会话绑定候选不随主对话账户收敛（跨账户组合合法）。前端会话详情弹窗不展示该字段（2026-10-03 起「工具能力」行已移除，见 8.10）。
-- **用户级默认工具绑定（2026-10-02；2026-10-03 入口收敛）**：搜索与生图的默认绑定按登录用户服务端存储（`chat_user_tool_preferences`，跨设备生效）；新建会话由服务端以默认值初始化绑定三列与 `defaultImageModel`（失效组合沿「已失效，请重设」引导，不静默漂移）；任一会话显式保存/解绑 `searchBinding`/`imageBinding` 后服务端回写全局默认（解绑置空；best-effort 不阻断会话保存）。`GET/PATCH /my-chat/tool-preferences`（PATCH 严格键 `searchBinding`/`imageBinding`/`defaultImageModel`，候选校验同会话 PATCH，只改用户默认不触碰会话）；入口为输入框 `/` 单一命令 `/tool-defaults`（「工具模型绑定」统一弹窗：一次展示网页搜索与图像生成各一区，候选来自偏好端点响应、无前端硬编码图像模型枚举，一次 PATCH 携带全部键；保存成功后存在未归档当前会话时按 UI 最终值再 PATCH 该会话三键，使当前会话立即同步为全局值，无会话或已归档则仅全局生效）；旧「搜索默认绑定」/「生图默认绑定」双命令与会话详情工具能力入口已删除。完整契约见设计文档 §2.11/§7/§8.5-8.6/§10.6-10.7。
-- 模型目录能力为「协议 × 工具」二维矩阵（`supportedToolsByProtocol`）：内置行未声明时按 8.5 节静态快照兜底填充，custom 目录行按本节末「custom 目录行能力继承」继承声明；一维 `supportedTools` 已退场。
-- 图像账户需显式声明 Images 端点能力（`supported_endpoint_modes` 含 `images_json`，非默认项）；图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求。
-- `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`。下载和复制都位于助手消息底部工具栏：下载通过 fetch + blob 保存本地文件，复制在用户点击时把原图转换为 PNG 并写入真实图片 ClipboardItem，不能复制 `attachment://` Markdown。内部附件 Markdown 已由结构化图片块渲染，渲染器必须忽略它的 alt/书签名称。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
+- 上游自行执行的内置工具只展示真实状态和结果，Chat 模块不重复执行、不伪造工具结果；hosted 工具是否真正重复执行仍由上游模型决定，本站无法在工具已由上游执行后追回成本，只能用提示降低概率并在展示层聚合真实事件。
 - Images、Chat Completions、Responses 和前端 SSE 的 body reader 在协议错误、大小拒绝、回调异常或消费者提前结束时必须调用 `cancel()`；只有自然读到 `done` 才直接释放 reader lock，避免旧连接在重附着或失败后继续占用资源。
 - OpenAI Chat / Responses 映射到 Gemini native 时，思考级别转换为 `generationConfig.thinkingConfig.thinkingLevel`，服务等级转换为 Gemini 顶层 `service_tier`；不能只在下游请求保留无效的 OpenAI 字段。
-- 模型要求本地未注册的 function tool 时，返回明确的“不支持此工具”状态并结束本轮，不能静默当作普通文本。
-- 工具调用参数、结果和错误均有字节上限、超时和审计 trace；不得把工具原始 JSON 无界写入 SSE 或聊天正文。
+- 聊天资产内容端点响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304。原 `generate_image` 生成产物的 artifact sink original/preview 双对象写入随工具退场停止新写入；存量生成资产读取按占位降级渲染（§3.2），用户上传图片资产的读取、引用与配额路径保留。
 
-**custom 目录行能力继承**（2026-09-28，BUG-0229）：
+**custom 目录行能力继承**（2026-09-28，BUG-0229；现行有效，服务于 `builtinWebSearch` 联网能力判定与模态能力）：
 
-- 目标：`custom_provider_models` 表没有 `supported_tools` / `input_modalities` / `output_modalities` 列，custom（`global` / `personal`）目录行按 scope 优先级整行替换内置 `provider_model_catalog` 行后，不能让被覆盖模型的能力三键恒空——否则 `web_search` / `generate_image` / 诊断工具永不注入、带图输入被服务端 400、前端隐藏上传按钮、`toolCapabilities` 恒不可用、协议偏好退化。
-- 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，空能力键 `supportedToolsByProtocol`（「协议 × 工具」二维矩阵）/ `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这些能力列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）；一维 `supportedTools` 投影已退场，仅继承二维矩阵。
+- 目标：`custom_provider_models` 表没有 `supported_tools` / `input_modalities` / `output_modalities` 列，custom（`global` / `personal`）目录行按 scope 优先级整行替换内置 `provider_model_catalog` 行后，不能让被覆盖模型的能力三键恒空——否则内置联网能力（`builtinWebSearch`）判定失效、带图输入被服务端 400、前端隐藏上传按钮。
+- 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，空能力键 `supportedToolsByProtocol`（「协议 × 工具」二维矩阵，现行为联网能力 `builtinWebSearch` 的数据基础）/ `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这些能力列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）。
 - 边界：仅“覆盖内置行”的场景继承；全新自定义模型（内置无对应行）三键保持空，不得用静态定价表的别名/前缀匹配规则回填（日期后缀剥离与前缀别名会对 `gpt-5.5-my` 这类自有命名误配能力）。生成参数能力（`generationParameterCapabilities`）不在此继承范围，仍按 custom 行自身的 provider+model 生成。
 
 ### 8.7 消息信息层级
@@ -305,9 +307,9 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 助手消息不使用气泡、卡片、边框或背景，正文占用消息列可用宽度；长代码、表格和图表不再被窄气泡二次压缩。
 - 最终回答始终是视觉主体。列表、表格、代码、公式和 Mermaid 按正文语义渲染，不降级为纯文本。
 - 思考块在流式期间默认展开、实时显示思考文本并自动滚动到底部，完成后自动折叠为一行"已深度思考"，可点击展开回看；失败/停止后默认展开。思考文本按 Markdown 渲染（上游摘要自带 `**强调**` 等标记，不显示原始星号；chat completions 渠道多段摘要可能无分隔直接拼接，渲染层原样按 Markdown 处理）。工具过程块在执行时渐进展开、完成后自动折叠。不能把完整内部推理当正文展示，上游未返回思考文本时不虚构内容。思考文本来源：Responses 渠道的 reasoning summary 增量（无显式 effort 时，名称判定为推理模型——gpt-5 前缀、o1/o3/o4 系列、codex、reasoning|think——的请求自动携带 `reasoning.summary=auto`，非推理模型不带 `reasoning` 参数避免 400），以及 chat completions 渠道的 `delta.reasoning_content` 增量。
-- 助手按照 `content_blocks_json` 的首次观察顺序渲染思考、联网搜索 1、联网搜索 2、正文、其他工具和图片；同一工具 ID 的 updated/completed 只更新原位置。只有相邻工具块进入同一投影段，正文、思考或图片会切断聚合边界，禁止为去重而全局重排时间线。
-- 实际助手消息树必须挂载低噪工具投影；展开工具过程只显示去重后的查询摘要、重复次数和失败状态，不直接展示 call ID 或原始 JSON。未知工具没有可读摘要时只显示不可展开状态行，完整事实保存在有界结构化内容和审计链路中。
-- 流式工具和思考事件直接更新当前助手消息，不刷新整个消息列表；完成后保持折叠状态。
+- 助手按照 `content_blocks_json` 的首次观察顺序渲染思考、联网搜索、正文和图片（存量生成媒体块与站内工具过程块按占位降级渲染，见 §3.2）；同一内容块 ID 的 updated/completed 只更新原位置。只有相邻过程块进入同一投影段，正文、思考或图片会切断聚合边界，禁止为去重而全局重排时间线。
+- 助手消息树的联网搜索过程按上游真实事件投影展示：展开只显示去重后的查询摘要与失败状态，不直接展示 call ID 或原始 JSON；完整事实保存在有界结构化内容和审计链路中。
+- 流式过程和思考事件直接更新当前助手消息，不刷新整个消息列表；完成后保持折叠状态。
 - Markdown 普通 HTML 仍禁止 `javascript:`、`data:`、`file:`、表单和外部资源；fenced `svg` 使用隔离 iframe `srcdoc` 预览，按用户决策允许 SVG 原型脚本和事件在 iframe 沙箱内运行，不进入聊天主 DOM。`srcdoc` 是内联统一滚动条样式的最小 HTML 包装（`chatSvgPreview.ts` 的 `buildChatSvgPreviewDocument`）：滚动条与全项目一致；有 viewBox 时 SVG 等比缩放撑满视口（`svg{width:100%;height:100%}`）完整可见、无滚动条，无 viewBox 退回自然尺寸避免截断，iframe 按内容比例自适应容器宽度。预览右上角的"新窗口打开完整预览"悬浮按钮默认隐藏，鼠标悬浮预览时才显示（不遮挡画面），触屏设备无 hover 时常显低透明度兜底：点击经 `postMessage` 请求父页开窗（沙箱 iframe 不直接写弹窗 document，不透明源会被浏览器拒访），父页写入仅含全屏 sandbox srcdoc iframe 的包装页，生成内容仍只在沙箱内运行；iframe sandbox 为 `allow-scripts allow-popups`。
 - fenced `html`（含 `htm`）代码块在围栏闭合后于头部提供"预览"按钮：点击在代码块内切换为隔离 sandbox iframe 预览（仅 `allow-scripts`），再点"源码"切回；预览读取 `textContent` 源码并用 `srcdoc` 加载，不进入聊天主 DOM，流式重渲染会把预览态重置回源码。预览文档注入统一滚动条样式和 `html,body{height:auto!important;min-height:100%!important}`（中和生成页 `height:100%` 加居中布局在固定高度下的顶部裁剪），预览是固定高度缩略盒（`min(60vh, 520px)`，无高度上报、无预览抖动）：头部脚本先在 body 解析前隐藏文档，body 结束前的测量脚本在沙箱内先还原缩放再测量内容包围盒，内容超高或超宽时按比例 `zoom` 等比缩小到完整可见（无滚动条、不截断），随后立即恢复显示——用户只看到最终缩放状态，无二次缩放过程；隐藏与恢复脚本同源注入，内联脚本被拦截时都不执行，不会白屏；`zoom` 不受支持时回落预览内部滚动。"打开"按钮在代码块工具栏（预览/源码旁），点击由父页写入仅含全屏 sandbox srcdoc iframe 的包装页并在新窗口按自然尺寸渲染，包装页自身不含生成内容，iframe 内不叠加打开按钮。预览脚本可运行依赖管理面 CSP `script-src 'self' 'unsafe-inline'`（2026-09-21 用户决策，见 `docs/functions/安全与日志策略.md`），隔离边界仍是 iframe sandbox 不透明源与 HttpOnly 会话 Cookie。
 - Mermaid 使用安全模式并关闭 HTML 标签，输出原生 SVG 文本，避免 `foreignObject` 经严格清洗后丢失节点标签；fenced SVG 仅在围栏闭合后渲染，失败时显示转义源码和中文失败状态。
@@ -317,15 +319,15 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 ### 8.8 默认 Markdown 回答提示
 
-本轮改造为聊天请求增加代码内版本化的产品提示，不再完全依赖模型自行选择回答格式。当前版本固定为 `chat-system-v2`，由纯函数按实际能力组合以下小模块：
+本轮改造为聊天请求增加代码内版本化的产品提示，不再完全依赖模型自行选择回答格式。提示内容由纯函数按实际能力组合以下小模块；版本号按实现维护，提示内容变化时升级版本号（当前为 `chat-system-v2`），并记录内容 hash 供回归与排障使用：
 
 1. **指令优先级**：用户明确要求的语言、格式、长度和交付形态优先于默认偏好。
 2. **默认回答**：使用用户当前语言；无法判断时使用简体中文。在有助于阅读时使用 Markdown，简单回答不强制标题、表格或代码块。
 3. **严格格式**：用户明确要求 JSON、CSV、XML、YAML、纯文本、仅代码、完整文件或补丁时严格按该格式输出，不增加无关说明，也不擅自套 Markdown 围栏。
 4. **可靠性**：所有结论只依据当前对话、用户提供信息、可用工具或环境证据以及可验证可靠知识；严格区分事实、推断、假设和未知，禁止猜测、伪造或脑补未知内容。
 5. **信息不足**：缺少关键条件时明确说明无法完成，逐条列明缺失信息及影响，引导用户补齐；不得强行拼凑、模糊敷衍或把未经确认的假设写成事实。
-6. **图形偏好**：流程、时序、状态和结构关系优先 Mermaid，数学表达使用 LaTeX；需要矢量原型时输出 fenced SVG，需要位图时优先调用真实图片工具，不用文本字符画替代。
-7. **工具纪律**：仅在本轮实际启用工具时加入；联网和生图过程必须按真实事件顺序展示，不伪造工具结果。
+6. **图形偏好**：流程、时序、状态和结构关系优先 Mermaid，数学表达使用 LaTeX；需要矢量原型时输出 fenced SVG，不用文本字符画替代。
+7. **工具纪律**：仅在本轮实际启用联网时加入；联网过程必须按真实事件顺序展示，不伪造工具结果。
 
 - Chat Completions 把该提示作为第一条 `system` message。
 - Responses 使用顶层 `instructions`，历史 `input` 仍只包含用户和助手消息。
@@ -363,7 +365,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 - 对话主区不显示会话标题、API Key 快照和顶部模型工具条，垂直空间全部让给消息窗口。
 - 会话列表每项只显示一行标题，超长省略；重命名、置顶/取消置顶、详情和删除放在右键菜单。
-- 会话详情按需展示会话 ID、标题、账户唯一绑定、API Key 快照、最近模型、活动状态、置顶状态、创建时间和更新时间，不在列表重复展示；不展示「工具能力」绑定状态与「默认图像模型」行（2026-10-03 移除，工具绑定查看与设置统一经 `/tool-defaults` 命令与「工具模型绑定」弹窗）。
+- 会话详情按需展示会话 ID、标题、账户唯一绑定、API Key 快照、锁定模型、活动状态、置顶状态、创建时间和更新时间，不在列表重复展示；「工具能力」绑定状态与「默认图像模型」行已随站内工具体系退场（2026-10-12，PLAN-20261012T121500000Z）。
 - 重命名和置顶 / 取消置顶允许先更新当前列表，再以服务端返回覆盖；失败时只在当前值仍等于本次乐观值时回滚，避免旧请求覆盖用户后续操作。创建、删除、手动压缩和清空会话继续等待服务端成功，不伪造完成态。
 - 用户位于底部附近时，文本、工具、思考和异步高度变化自动跟随；用户向上滚轮、触摸、键盘或拖动滚动条离开底部后立即解除跟随，流式输出不得抢回滚动位置。
 - 距离底部超过 72px 时，在输入框上方中央显示“回到底部”按钮；点击后恢复跟随并滚到最新消息。
@@ -419,17 +421,15 @@ PATCH /__aisys__/api/my-chat/conversations/:id
 GET /__aisys__/api/my-chat/conversations/:id/models
 DELETE /__aisys__/api/my-chat/conversations/:id
 GET /__aisys__/api/my-chat/accounts
-GET /__aisys__/api/my-chat/tool-preferences
-PATCH /__aisys__/api/my-chat/tool-preferences
 POST /__aisys__/api/my-chat/conversations/:id/context/compactions
 ```
 
-- 创建免请求体（服务端忽略任何请求体内容，直进空会话）；进入会话后 `PATCH /conversations/:id` 携带 `accountId` 完成账户绑定，可重复切换（切换视为新语境，`lastModel` 不可路由时联动清空）。鉴权主体由服务端幂等确保为专用对话 Key。归档（存量旧模式）会话的发送与绑定修改返回 403。
-- 账户下拉读 `/my-chat/accounts`（登录用户数据范围内全部未删除账户、返回最小 id/name/providerCode/status 摘要，仅服务会话绑定与工具绑定下拉；status 投影为生效状态表达式原值——`active` / `pending_test` / `disabled` / `error` / `rate_limited` / `temporary_unavailable` / `quality_isolated`，供前端状态标注，不设可用性过滤，2026-10-10 修订）。下拉范围按角色两档：普通用户仅返回自有账户（口径同 §5.2），`admin`/`super_admin` 返回全量号池；该范围与绑定校验、发送前复核、模型列表、模型能力详情与手动压缩强制同口径（存在性口径：数据范围内未删除，越权绑定与"对象不存在"同型返回 400）。下拉为空时显示空态"暂无可绑定对象"，不渲染空白列表。该端点响应带 `Cache-Control: no-store`，账户摘要不落浏览器或任何中间层缓存。
+- 创建免请求体（服务端忽略任何请求体内容，直进空会话）；进入会话后 `PATCH /conversations/:id` 携带 `accountId` 完成账户绑定；未锁定空会话可重复切换，首轮接受并提交后账户与模型锁定（§5.3）。鉴权主体由服务端幂等确保为专用对话 Key。归档（存量旧模式）会话的发送与绑定修改返回 403。
+- 账户下拉读 `/my-chat/accounts`（登录用户数据范围内全部未删除账户、返回最小 id/name/providerCode/status 摘要，仅服务会话绑定下拉；status 投影为生效状态表达式原值——`active` / `pending_test` / `disabled` / `error` / `rate_limited` / `temporary_unavailable` / `quality_isolated`，供前端状态标注，不设可用性过滤，2026-10-10 修订）。下拉范围按角色两档：普通用户仅返回自有账户（口径同 §5.2），`admin`/`super_admin` 返回全量号池；该范围与绑定校验、发送前复核、模型列表、模型能力详情与手动压缩强制同口径（存在性口径：数据范围内未删除，越权绑定与"对象不存在"同型返回 400）。下拉为空时显示空态"暂无可绑定对象"，不渲染空白列表。该端点响应带 `Cache-Control: no-store`，账户摘要不落浏览器或任何中间层缓存。
 - 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
-- PATCH 接受 `title`、`isPinned`、`defaultImageModel`、`accountId`（账户绑定切换）与工具绑定键 `searchBinding` / `imageBinding`（见 8.6），至少提供一个字段；标题最长 60 字符。
+- PATCH 接受 `title`、`isPinned`、`accountId`（未锁定会话的账户绑定写入/切换），至少提供一个字段；标题最长 60 字符。锁定后实际改变或清空 `accountId` 返回 409 `chat_conversation_locked`（§5.3）；原工具绑定键（`searchBinding` / `imageBinding` / `videoBinding` / `audioBinding` / `defaultImageModel`）已随工具体系退场删除（2026-10-12，PLAN-20261012T121500000Z）。
 - 模型列表先校验会话归属与绑定账户存在性（不因账户生效状态拒绝，2026-10-10 修订），再按绑定账户聚合供应商：按该账户 provider 目录并与 `account_supported_models` 取交集；未绑定账户的会话返回空列表。聚合后调用客户端动态模型目录服务；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数有关，不随账户数增长。目录聚合包含未定价模型（对齐 Node `includeUnpriced` 语义，chat 面与计费解耦），不能因静态定价表缺记录把模型从 chat 模型列表过滤掉；计费事实仍由网关使用记录链路维护。
-- 模型能力使用 `/conversations/:conversationId/models/:modelId` 按相同供应商合集从当前目录定点读取，同名模型能力取保守交集；运行路径不读取 `chat_list:*` 或 `chat_model:*` 发布快照。
+- 模型能力使用 `/conversations/:conversationId/models/:modelId` 按相同供应商合集从当前目录定点读取，同名模型能力取保守交集；能力载荷包含 `builtinWebSearch`（按最终上游原生协议声明的内置搜索能力，决定前端是否提供「联网」选项，见 8.6）。运行路径不读取 `chat_list:*` 或 `chat_model:*` 发布快照。
 - `gateway_model_catalog_snapshots` 中的旧聊天快照属于可清理历史数据，不再是发布门禁、模型列表或能力详情的事实来源。
 - 模型列表表达稳定配置能力，不因账户临时冷却、并发占满、短时不可用或生效状态（禁用/错误/限流/过期）而抖动；实际发送按绑定账户直取运行时快照（含非 active 账户，2026-10-10 修订）进入既有候选管线，模型限制与协议能力仍由网关完成最终校验与调度。
 - 前端首屏不加载模型列表；只有用户展开模型下拉时才按会话缓存轻量列表。当前模型能力按会话和模型 ID 缓存、并发去重，切换模型、切换会话或卸载页面会取消旧请求。未重新选择时优先沿用会话 `lastModel`（归档只读会话不预填模型）。
@@ -461,11 +461,12 @@ Content-Type: application/json
   "replaceTurnId": "turn_xxx",
   "content": "用户问题",
   "contentBlocks": [{ "type": "input_text", "text": "用户问题" }],
-  "model": "gpt-xxx"
+  "model": "gpt-xxx",
+  "enableWebSearch": false
 }
 ```
 
-`reasoningEffort` 与 `serviceTier` 都是可选字段，仅在用户明确选择后提交。
+`reasoningEffort` 与 `serviceTier` 都是可选字段，仅在用户明确选择后提交。`enableWebSearch` 是可选的请求级选项，默认不生效（请求不携带工具）；仅当能力接口 `builtinWebSearch` 为真（Responses 原生直连账户）时允许为 `true` 并透传 `tools: [{"type":"web_search"}]`，能力不支持却提交 `true` 时明确拒绝（§8.6）。
 
 - `clientMessageId` 必填且最长 100 字符；重复 ID 返回 `409 chat_message_already_exists`，不得再次请求上游。
 - `replaceTurnId` 可选，只允许最近完整成功、失败或已停止的成对轮次；生成中或旧轮次冲突返回 `409 chat_replace_conflict`。
@@ -533,16 +534,16 @@ event: message.canceled
 data: {"messageId":"msg_xxx"}
 ```
 
-- 事件族以 wire 为准（2026-09-28 回正修订）：Go 实现将 Node 的 text delta 投影为内容块事件——线上事件族只有 `message.started`、`message.snapshot`（重附着建立 SSE 时的首个事件，权威全量投影）、`content_block.*`、`tool.binding_required`（模型工具未绑定的纯引导事件，不驱动内容块投影，见 8.6）、`message.completed` / `message.failed` / `message.canceled` 与 comment heartbeat。文本、reasoning 与工具过程增量都经 `content_block.*` 承载（reasoning 是内容块类型之一）；旧清单中的 `message.delta`、`reasoning.delta`、`tool.started/updated/completed` 是内部投影事件，不上行 wire，前端不得依赖。
-- `message.failed` 的失败文案按该轮是否有已流出内容动态选择：`upstream_stream_failed`、`internal_generation_failed`、`upstream_http_error`、`image_generation_failed` 四码在该轮已有部分内容时携带续写引导变体（示例即变体形态，配合 §14.1 尾部中断轮续写），否则为原始重试引导；落库 `error_message` 与下发 `message` 使用同一动态文案，回显以存储的 `error_message` 为准。
+- 事件族以 wire 为准（2026-09-28 回正修订；2026-10-12 随 PLAN-20261012T121500000Z 删除 `tool.binding_required`）：Go 实现将 Node 的 text delta 投影为内容块事件——线上事件族只有 `message.started`、`message.snapshot`（重附着建立 SSE 时的首个事件，权威全量投影）、`content_block.*`、`message.completed` / `message.failed` / `message.canceled` 与 comment heartbeat。文本、reasoning 与联网搜索过程增量都经 `content_block.*` 承载（reasoning 是内容块类型之一）；旧清单中的 `message.delta`、`reasoning.delta`、`tool.started/updated/completed` 是内部投影事件，不上行 wire，前端不得依赖。原 `tool.binding_required`（模型工具未绑定的纯引导事件）已随站内工具体系退场删除。
+- `message.failed` 的失败文案按该轮是否有已流出内容动态选择：`upstream_stream_failed`、`internal_generation_failed`、`upstream_http_error` 三码在该轮已有部分内容时携带续写引导变体（示例即变体形态，配合 §14.1 尾部中断轮续写），否则为原始重试引导；落库 `error_message` 与下发 `message` 使用同一动态文案，回显以存储的 `error_message` 为准。原 `image_generation_failed` 码随生图工具退场停止产生（存量历史消息按存储文案回显）。
 - SSE 建立后每 5 秒发送 comment heartbeat；初次流与重附着流复用同一实现。前端把任意 chunk 和 comment 记为传输活动，但 heartbeat 不进入业务事件、`eventVersion` 或消息内容。
 - 从请求开始 10 秒没有传输活动时，前端只进入“正在确认生成状态”并查询 submission status；`preparing` 继续等待，runner 存活时重附着同一轮，权威终态刷新当前消息，runner 缺失时由服务端收口为 `stream_interrupted`。10 秒静默本身不能直接标记失败。
 - `not_found` 必须连续确认 3 次且跨越至少 1 秒 grace 才能结束未接受请求；submission status 连续 5 次网络失败后停止自动查询并请求页面权威同步，新传输活动会重置计数。前台 watchdog 默认最多 180 次，页面级待确认最多 8 轮，普通 runtime reconciliation 最多 4 次，watchdog 耗尽后的最终权威同步最多 1 次；达到上限后停止定时器并保留人工操作，禁止永久轮询。
 - Chat Completions 以 `[DONE]` 与 finish reason 收口；Responses 必须收到 `response.completed` 才能成功。HTTP EOF 不能替代协议终态。
-- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`；图像最终结果走独立分块临时文件路径，共享的单轮事件预算默认 `65536`，可通过 `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` 在 `2048..262144` 内调整。Responses reasoning/tool 辅助过程累计最大 `192 KiB`。collector 只保留事件计数和既有有界内容，空间复杂度不随事件数量增长；收集器增量解析，事件在整段响应结束前即转发下游，不能先全量缓冲（如 `io.ReadAll`）再统一处理。任一边界超限都进入失败终态，不能把无界过程写入内存或消息结构。
+- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`，共享的单轮事件预算默认 `65536`，可通过 `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` 在 `2048..262144` 内调整。Responses reasoning 与联网搜索辅助过程累计最大 `192 KiB`。collector 只保留事件计数和既有有界内容，空间复杂度不随事件数量增长；收集器增量解析，事件在整段响应结束前即转发下游，不能先全量缓冲（如 `io.ReadAll`）再统一处理。任一边界超限都进入失败终态，不能把无界过程写入内存或消息结构。
 - 非 SSE 的模型目录响应最大 `4 MiB`，上游错误响应最大 `64 KiB`；必须边读流边计数并在超限时取消 reader，不能先完整 `response.text()` 后再截断。
 - 用户主动取消后浏览器连接已经关闭，不依赖 `message.canceled` 送达；服务端落库状态为 `canceled`，页面刷新后以存储状态为准。
-- 工具过程只持久化有界、可展示的结构化投影；原始上游 payload 不进入浏览器缓存或普通消息正文，审计链路按现有权限保留必要排障事实。读取投影必须完整恢复内容块字段——`output_text` / `reasoning` / `tool_call` 的 `order`、`tool_call` 的 `item` / `blockId`、`output_image` 的 `mimeType` / `width` / `height` / `revisedPrompt`；前端本地缓存（IndexedDB 克隆）保留同一字段集，刷新或缓存命中后不得比实时 SSE 链路少字段。
+- 上游工具事件（Responses hosted `web_search` 等）只持久化有界、可展示的结构化投影；原始上游 payload 不进入浏览器缓存或普通消息正文，审计链路按现有权限保留必要排障事实。存量站内工具过程块与生成媒体块（`output_image` / `output_audio` / `output_media_task`）按占位降级渲染（§3.2），读取投影仍须完整恢复内容块字段——`output_text` / `reasoning` / `tool_call` 的 `order`、`tool_call` 的 `item` / `blockId`、`output_image` 的 `mimeType` / `width` / `height` / `revisedPrompt`；前端本地缓存（IndexedDB 克隆）保留同一字段集，刷新或缓存命中后不得比实时 SSE 链路少字段。
 - 模型、内部工具、流式解析、编排和持久化失败都必须把真实 `Error.message` 或上游错误消息经过统一脱敏、单行化和长度限制后返回前端；API Key、Authorization、Cookie、Token、URL 凭据参数和服务端绝对路径必须替换。服务端日志继续记录完整异常对象，并携带 conversation/turn/trace 定位字段。
 
 ### 11.2 解析要求
@@ -555,7 +556,7 @@ data: {"messageId":"msg_xxx"}
 
 ## 12. 数据模型与存储拓扑
 
-当前聊天存储包含会话、消息、发送幂等登记、紧凑容量窗口、用户上传资产和助手生成资产引用；不新增站内工具执行 worker 或永久产物库。聊天正文属于高增长、短保留数据，不能继续放入 `juhe_business`：
+当前聊天存储包含会话、消息、发送幂等登记、紧凑容量窗口和用户上传图片资产及其引用；不新增站内工具执行 worker 或永久产物库。工具体系专属结构已按 [PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md) 决策 F 从**当前 schema 物理删除**（实际存量库备份与结构同步在维护窗口另行安排，不做运行时迁移）：`chat_conversations` 的八个工具绑定列（`search_account_id` / `search_model_id` / `image_account_id` / `default_image_model` / `video_account_id` / `default_video_model` / `audio_account_id` / `default_audio_model`）、`chat_user_tool_preferences` 与 `chat_image_generations` 两张工具专属表。`chat_assets` 仅保留用户上传（`user_upload`）路径，存量助手生成资产（`assistant_generated`）停止新写入；共享 `chat_asset_references` / `chat_user_asset_usage` 的引用释放与容量结算路径保留。聊天正文属于高增长、短保留数据，不能继续放入 `juhe_business`：
 
 - standalone：新增独立 `juhe-ai-chat.sqlite3`，由 DB service 维持单写者边界；不得因为上线重建其他非业务数据库。
 - performance：在现有 PostgreSQL 集群新增独立 `juhe_chat` schema；会话元数据使用普通表，消息事实表按 UTC `created_at` 日分区。
@@ -573,12 +574,10 @@ data: {"messageId":"msg_xxx"}
 | `api_key_name_snapshot` | 鉴权 Key 删除或改名后的历史展示兜底，非敏感 |
 | `bind_account_id`、`bind_account_name_snapshot` | 会话唯一绑定的 AI 账户及其名称快照；空 = 未选账户（直进空会话） |
 | `archived` | 存量旧模式（`api_key`/`group`）会话的一次性迁移只读标记；true 时发送与绑定修改被拒 |
-| `search_account_id`、`search_model_id` | `web_search` 模型工具的会话级绑定「账户 + 模型」二元组（见 8.6），空 = 未绑定 |
-| `image_account_id` | `generate_image` 模型工具的会话级绑定账户（生效模型沿 `default_image_model`），空 = 未绑定 |
 | `title` | 当前标题，默认“新对话” |
 | `title_source_message_id` | 当前标题来源用户消息，可空 |
 | `is_pinned` | 当前用户是否置顶，默认 false |
-| `last_model` | 当前/最近一次已接受发送所选模型；切换账户不可路由时联动清空 |
+| `last_model` | **会话锁定模型**：首轮接受并提交时写入，此后不可变；空 = 未锁定（未产生任何轮次）。原「每轮覆盖的最近模型」语义已废弃（2026-10-12，PLAN-20261012T121500000Z） |
 | `next_sequence_no` | 下一消息序号，默认 1 |
 | `user_turn_count` | 已接受的普通用户轮次数，默认 0；替换不增加，失败和取消仍计数 |
 | `active_turn_id` | 当前生成轮次；空表示无生成任务 |
@@ -670,21 +669,7 @@ PostgreSQL 约束：
 
 不保存 token、成本、命中账户或分组快照，这些事实继续由网关使用记录维护，聊天消息只通过 `trace_id` 关联。
 
-### 12.5 `chat_user_tool_preferences`（2026-10-02）
-
-搜索与生图模型工具的用户级默认绑定（见 8.6「用户级默认工具绑定」与《AI 问答工具体系与主子模型设计》§7/§8）：
-
-| 字段 | 规则 |
-| --- | --- |
-| `system_account_id` | 登录用户 ID，主键，每用户一行 |
-| `search_account_id`、`search_model_id` | `web_search` 默认绑定「账户 + 模型」二元组，空 = 未设默认 |
-| `image_account_id` | `generate_image` 默认绑定账户（生效模型沿 `default_image_model`），空 = 未设默认 |
-| `default_image_model` | 新会话 `default_image_model` 的创建初值来源，空 = 未设（沿用服务端默认 `gpt-image-2`） |
-| `updated_at` | UTC 时间 |
-
-- 新建会话由服务端读取该行并把非空列写入会话绑定三列与 `default_image_model` 初值；创建时不做候选校验，失效组合沿既有 valid=false / `tool.binding_required` 引导兜底。
-- 会话内显式保存/解绑 `searchBinding`/`imageBinding` 后服务端 best-effort 回写该行（解绑置空；生图回写含联动后 `default_image_model`）；回写失败仅记日志。
-- 建表经 `maintenance --ensure-schema` 幂等生效，无存量回填、无一次性迁移。
+原 `chat_user_tool_preferences`（用户级默认工具绑定表，2026-10-02 引入）已随站内工具体系退场从当前 schema 物理删除（2026-10-12，PLAN-20261012T121500000Z，决策 F）；原「新建会话继承默认绑定、会话内改绑定回写全局默认」行为一并退场。
 
 ## 13. 消息事务、幂等与并发
 
@@ -693,7 +678,7 @@ PostgreSQL 约束：
 1. 校验登录用户、会话归属、API Key 当前状态和输入大小。
 2. 在 DB service 单个事务中检查 `active_turn_id` 和 `clientMessageId`。
 3. 按当前配置保留窗口的 `content_bytes + reserved_bytes` 检查硬配额；在同一事务中分配两个连续 `sequence_no`，写入已完成用户消息和带 448 KiB reservation 的 `streaming` 助手占位消息。
-4. 设置会话 `active_turn_id`、`active_started_at`、`last_model` 和 `last_message_at`。
+4. 设置会话 `active_turn_id`、`active_started_at` 和 `last_message_at`；首轮接受时在同一事务写入锁定模型 `last_model` 并锁定账户与模型（§5.3），后续轮次不覆盖。
 5. 按完整成功轮次与至多一个尾部中断轮组装上下文（§14.1）。
 6. 使用绑定的真实 API Key 调用本机网关。
 7. delta 在内存中有界合批并向页面流式发送，不按 token 写数据库。
@@ -755,7 +740,7 @@ checkpoint 安装不删除或改写 当前保留期页面历史；重复压缩�
 
 ### 14.3 当前 Token 预算与替换目标
 
-每轮按当前选择模型重新计算预算：
+会话锁定单一模型（§5.3，模型会话内不变），预算按锁定模型计算：
 
 ```text
 可用历史输入预算 = 有效模型最大输入窗口
@@ -847,8 +832,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - `finish_reason=length` 显示“回答达到长度限制”。
 - 内容策略终止显示明确中文状态，但不暴露上游敏感正文。
 - 助手失败消息优先显示服务端白名单 `errorMessage`，缺失时才回退错误码映射。未被服务端接受的乐观失败轮次使用新 `clientMessageId` 重新提交，不发送本地 `optimistic-turn`；只有已接受的失败或停止尾轮才携带真实 `replaceTurnId` 原位替换。模型目录仍在加载时隐藏并拒绝重试。
-- 内部工具不得把具体失败统一压成“工具执行失败”或“图片生成失败”。稳定错误码负责分类，统一脱敏后的真实错误消息负责诊断；工具事件、模型纠错续答、聊天终态、SSE、提交状态查询和持久化消息必须沿用同一诊断文本。例如图片候选耗尽时使用 `image_generation_not_enabled`，并保留脱敏后的上游说明。未知失败也展示脱敏后的 `Error.message`，只有完全无法提取详情时才回退通用文案。
-- 图片请求仍先完整经过网关账户切换。单个账户返回可切换失败时不得由 Chat 模块提前终止；只有网关耗尽候选并返回最终失败后，Chat 模块才归类和展示该终态原因。
+- 内部失败不得把具体失败统一压成笼统文案。稳定错误码负责分类，统一脱敏后的真实错误消息负责诊断；聊天终态、SSE、提交状态查询和持久化消息必须沿用同一诊断文本。未知失败也展示脱敏后的 `Error.message`，只有完全无法提取详情时才回退通用文案。原 `image_generation_failed` / `image_generation_not_enabled` 等生图工具错误码随工具退场停止产生（2026-10-12，PLAN-20261012T121500000Z），存量历史消息按存储文案回显。
 
 ## 18. 性能与容量边界
 
@@ -870,7 +854,8 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 - 用户只能读取、发送和删除自己的会话。
 - 管理角色使用个人接口时也不能读取他人会话。
-- 新建会话免请求体直进；`PATCH accountId` 绑定账户（可切换），越权账户与不存在同型返回 400；模型列表等于绑定账户 provider 目录（含 `account_supported_models` 交集），未绑定返回空列表；归档会话发送/切账户/工具绑定修改返回 403。
+- 新建会话免请求体直进；`PATCH accountId` 绑定账户（未锁定空会话可切换），越权账户与不存在同型返回 400；模型列表等于绑定账户 provider 目录（含 `account_supported_models` 交集），未绑定返回空列表；归档会话发送与绑定修改返回 403。
+- 锁定（2026-10-12，PLAN-20261012T121500000Z）：首轮接受并提交后 `last_model` 落库；换模型发送返回 400 `chat_model_locked`，实际切账户（含清空）返回 409 `chat_conversation_locked`，重复提交相同账户的 PATCH 正常；未接受的失败不锁定，接受后失败/停止保持锁定；双首轮、并发切账户与幂等重放无交错覆盖；`/clear` 后保持锁定，空会话自由选择账户与模型。
 - `account` 模式发送命中指定账户且分组记账按该账户所属分组；`group` 模式发送始终落在指定分组；外部 HTTP 请求无法构造调度目标，无内部 context 的请求调度行为与现状一致。
 - 进入页面不自动选中会话，删除当前会话后回到空状态；待确认提交仍可回到原会话恢复。
 - 会话创建后不能修改绑定；`api_key` 模式 Key 删除后历史只读；`group`/`account` 模式对象被禁用后不能继续发送；存量越权绑定的会话视为绑定对象不可用，同样历史可读、不能继续发送。
@@ -887,13 +872,15 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 ### 19.2 网关链路
 
-- 使用真实本地 API Key 进入 `/v1/models` 和 `/v1/chat/completions`。
+- 使用真实本地 API Key 进入 `/v1/models` 和按供应商主推协议入口（`/v1/chat/completions` 或 `/v1/responses`）。
+- 协议直连（2026-10-12，PLAN-20261012T121500000Z）：GPT OAuth（Responses-only）账户会话上游请求为 `/v1/responses` 原生形态；DeepSeek 等 OpenAI 兼容供应商为 `/v1/chat/completions`；anthropic / gemini 账户经既有桥接成功且内部 SSE 事件族不变。主轮、压缩与图片观察共用同一协议解析结果，不向 Responses-only 账户发 Chat 压缩请求、也不向 Chat-only 账户发 Responses 图片观察请求。
 - Chat Completions 收到首条 Markdown 默认 `system` message，Responses 收到等价 `instructions`；两者不写入聊天消息历史。
-- 用户明确要求完整文件时不被 Markdown 默认偏好覆盖；相同工具参数的重复调用提示只降低概率，不伪造执行结果。
-- `chat-system-v1` 构建结果稳定且有 hash；Chat-only 请求不含工具纪律段，Responses 工具请求只注入一次。
+- 用户明确要求完整文件时不被 Markdown 默认偏好覆盖；hosted 工具是否重复执行只降低概率，不伪造执行结果。
+- chat-system 构建结果稳定且有 hash；未启用联网的请求不含工具纪律段，启用联网的请求只注入一次。
 - 严格 JSON、CSV、XML、YAML、纯文本、仅代码和补丁请求保持用户原文与格式优先级，不被默认 Markdown 偏好覆盖。
 - API Key 对应路由策略、分组和账户命中正常。
-- 模型逐轮切换不改变会话 API Key 和网关调度边界。
+- 会话锁定模型后不再存在逐轮切换；发送模型与锁定模型不一致被 400 `chat_model_locked` 拒绝，不改变会话 API Key 和网关调度边界。
+- 联网透传：具备内置搜索能力的 Responses 直连模型勾选后请求携带 `tools:[web_search]`，上游真实执行事件与来源引用可见；未勾选不携带工具；能力不支持时明确拒绝；chat 协议模型与桥接账户无联网控件。
 - 账户代理、错误切换、额度、并发和响应检查继续生效。
 - 使用记录包含正确用户、Key、分组、账户、模型和 trace；MVP 不伪造独立 `ai_chat` 来源字段。
 - Chat 模块不存在直接请求公共上游的代码路径。
@@ -953,11 +940,13 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 同步实现渲染历史与模型上下文隔离、主动压缩和圆形上下文状态。
 - 直接使用当前最优字段结构，不为旧 Data URL 请求写兼容分支。
 
-### 第三版：受控工具
+### 第三版：受控工具（历史记录：已随 2026-10-12 简化裁决整体退场）
 
-- 已完成：协议无关 Registry、Responses/Chat Completions 工具循环、明确工具调用状态和有界结果回灌。
-- 已完成：development/test `diagnostic_echo` Demo，以及通过现有网关执行的 `generate_image` 图片工具。
-- 已完成：权限与 provider/账户能力门禁、超时、大小、并发、取消、精确去重、审计摘要、原图/预览双对象、WebP 优化图、ETag/304 缓存和失败恢复。
+> 本节为历史实施记录。站内模型工具体系（Registry/Orchestrator、`generate_image`、`diagnostic_echo`）已随 [PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md) 整体退场，不再构成现行契约；现行联网口径见 §8.6。
+
+- 已完成（历史）：协议无关 Registry、Responses/Chat Completions 工具循环、明确工具调用状态和有界结果回灌。
+- 已完成（历史）：development/test `diagnostic_echo` Demo，以及通过现有网关执行的 `generate_image` 图片工具。
+- 已完成（历史）：权限与 provider/账户能力门禁、超时、大小、并发、取消、精确去重、审计摘要、原图/预览双对象、WebP 优化图、ETag/304 缓存和失败恢复。
 - PDF、Word、Excel 后续按相同执行器契约进入独立子计划，不在本阶段预先实现业务工具。
 
 ### 第四版：MCP 与 Skill

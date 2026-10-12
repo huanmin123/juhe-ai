@@ -8,8 +8,11 @@
 //   - the three legacy columns bind_mode / bind_group_id /
 //     bind_group_name_snapshot are backed up into
 //     chat_conversations_bind_legacy_backup and then dropped (不留停用列);
-//   - the new columns archived / search_account_id / search_model_id /
-//     image_account_id are ensured on every run (ADD COLUMN, idempotent);
+//   - the new columns archived / bind_account_id / bind_account_name_snapshot
+//     are ensured on every run (ADD COLUMN, idempotent); the tool binding
+//     columns (search/image/video/audio) are NOT ensured — they were retired
+//     from the current schema with PLAN-20261012T121500000Z 决策 F, and the
+//     rebuild below drops them along with default_image_model;
 //   - PostgreSQL drops the columns with ALTER TABLE ... DROP COLUMN IF EXISTS
 //     (the table CHECK on bind_mode is dropped automatically with it);
 //     SQLite cannot DROP COLUMN while a table CHECK references the column
@@ -167,9 +170,6 @@ func ensureColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			{"bind_account_id", "TEXT"},
 			{"bind_account_name_snapshot", "TEXT"},
 			{"archived", "INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))"},
-			{"search_account_id", "TEXT"},
-			{"search_model_id", "TEXT"},
-			{"image_account_id", "TEXT"},
 		}
 		for _, target := range columns {
 			exists, err := sqliteColumnExists(ctx, db, "chat_conversations", target.column)
@@ -189,9 +189,6 @@ func ensureColumns(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		`ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS bind_account_id text`,
 		`ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS bind_account_name_snapshot text`,
 		`ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS archived integer NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))`,
-		`ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS search_account_id text`,
-		`ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS search_model_id text`,
-		`ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS image_account_id text`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
@@ -285,12 +282,14 @@ func runSQLite(ctx context.Context, db *sql.DB, report *Report, now time.Time) e
 }
 
 // retainedConversationColumns is the post-migration chat_conversations column
-// list in storage order (the rebuild INSERT ... SELECT column list).
+// list in storage order (the rebuild INSERT ... SELECT column list). The tool
+// binding columns (search/image/video/audio, incl. default_image_model) are
+// not in the list: the rebuild drops them (PLAN-20261012T121500000Z 决策 F).
 var retainedConversationColumns = []string{
 	"id", "system_account_id", "api_key_id", "api_key_name_snapshot",
 	"bind_account_id", "bind_account_name_snapshot",
 	"title", "title_source_message_id",
-	"is_pinned", "last_model", "default_image_model", "next_sequence_no",
+	"is_pinned", "last_model", "next_sequence_no",
 	"user_turn_count", "message_revision",
 	"active_turn_id", "active_started_at", "context_revision", "active_checkpoint_id",
 	"compacted_through_sequence", "context_state", "active_context_tokens",
@@ -343,16 +342,9 @@ func rebuildSQLiteConversations(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, sqliteRebuildConversationDDL); err != nil {
 		return fmt.Errorf("创建重建目标表失败: %w", err)
 	}
-	copyColumns := append(append([]string{}, retainedConversationColumns...),
-		"archived", "search_account_id", "search_model_id", "image_account_id",
-		// 媒体账户四列（chat schema 24d40743c 起）：legacy 表无这些列，重建按
-		// 可空缺省回填 NULL，与 ensure-schema 的 chat 形状对齐。
-		"video_account_id", "default_video_model", "audio_account_id", "default_audio_model")
+	copyColumns := append(append([]string{}, retainedConversationColumns...), "archived")
 	selectColumns := append(append([]string{}, retainedConversationColumns...),
-		"CASE WHEN bind_mode IS NULL OR bind_mode <> 'account' THEN 1 ELSE 0 END AS archived",
-		"NULL AS search_account_id", "NULL AS search_model_id", "NULL AS image_account_id",
-		"NULL AS video_account_id", "NULL AS default_video_model",
-		"NULL AS audio_account_id", "NULL AS default_audio_model")
+		"CASE WHEN bind_mode IS NULL OR bind_mode <> 'account' THEN 1 ELSE 0 END AS archived")
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 		"INSERT INTO chat_conversations_migrating (%s)\nSELECT %s FROM chat_conversations",
 		strings.Join(copyColumns, ", "), strings.Join(selectColumns, ", "))); err != nil {
@@ -383,18 +375,10 @@ const sqliteRebuildConversationDDL = `CREATE TABLE chat_conversations_migrating 
       bind_account_id TEXT,
       bind_account_name_snapshot TEXT,
       archived INTEGER NOT NULL DEFAULT 0,
-      search_account_id TEXT,
-      search_model_id TEXT,
-      image_account_id TEXT,
-      video_account_id TEXT,
-      default_video_model TEXT,
-      audio_account_id TEXT,
-      default_audio_model TEXT,
       title TEXT NOT NULL DEFAULT '新对话',
       title_source_message_id TEXT,
       is_pinned INTEGER NOT NULL DEFAULT 0,
       last_model TEXT,
-      default_image_model TEXT NOT NULL DEFAULT 'gpt-image-2',
       next_sequence_no INTEGER NOT NULL DEFAULT 1,
       user_turn_count INTEGER NOT NULL DEFAULT 0,
       message_revision INTEGER NOT NULL DEFAULT 0,

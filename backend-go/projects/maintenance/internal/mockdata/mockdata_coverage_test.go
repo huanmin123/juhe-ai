@@ -393,7 +393,7 @@ func TestCoverageAssertionInventoryPinsVerifiedTables(t *testing.T) {
 		seen[assertion.Name] = true
 		perDomain[assertion.Domain]++
 	}
-	for _, domain := range []string{DomainBusiness, DomainUsage, DomainStats, DomainObservability, DomainChatCodexModelCheck} {
+	for _, domain := range []string{DomainBusiness, DomainUsage, DomainStats, DomainObservability, DomainChatCodexModelCheck, DomainStudio} {
 		if perDomain[domain] == 0 {
 			t.Fatalf("domain %s has no coverage assertion", domain)
 		}

@@ -1464,6 +1464,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, accountStore, accountStore); chatErr != nil {
 			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
 		}
+		// 媒体工作室路由族（媒体工作室设计 §4）：资产/账户/模型/生成/任务面挂载
+		// ${systemApiPrefix}/my-studio（资产仓库落业务库，对象存储与 chat 同
+		// 源；generations/tasks 受理执行器经进程内网关链直驱）。
+		if _, studioErr := composeStudioFamily(composed, cfg, chainServices, accountStore, chain); studioErr != nil {
+			return nil, fmt.Errorf("compose my-studio family: %w", studioErr)
+		}
 		// cacheDriver==='redis': the system-api limiter switches onto the
 		// shared fixed-window redis store (task item 9); memory driver keeps
 		// the in-process store built above.

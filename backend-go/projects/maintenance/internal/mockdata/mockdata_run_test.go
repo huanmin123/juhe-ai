@@ -111,7 +111,7 @@ func TestRunOnEmptyDataRootWritesReportAndSummary(t *testing.T) {
 	if document.MockUsers == nil || document.APIKeys == nil || document.Counts == nil {
 		t.Fatalf("summary collections must be non-nil: %+v", document)
 	}
-	// 域占位实现：五个域都出现在报告里且计数为空。
+	// 域占位实现：全部注册域都出现在报告里且计数为空。
 	if len(report.Domains) != len(domainSeeds) {
 		t.Fatalf("domains = %+v", report.Domains)
 	}

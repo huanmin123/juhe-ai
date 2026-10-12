@@ -38,6 +38,11 @@ type AcceptTurnInput struct {
 	UserContent             string
 	ContentBlocks           []InputContentBlock
 	Model                   string
+	// ExpectedBindAccountID 是发送预检（stream_route）读取的会话绑定账户：
+	// AcceptTurn 持会话行锁后复核事务内实际值，期间被并发 PATCH 改变则拒绝
+	//（409 chat_conversation_binding_changed），不能拿旧账户 executor 写入
+	// 新绑定会话（D5 并发边界）。
+	ExpectedBindAccountID   string
 	Now                     string
 	StorageQuotaBytes       int64
 	RetentionDays           int
@@ -143,6 +148,20 @@ func (s *Store) AcceptTurn(input AcceptTurnInput) (*AcceptTurnResult, error) {
 	conversation, err := s.lockedConversation(tx, input.ConversationID, input.SystemAccountID)
 	if err != nil {
 		return nil, err
+	}
+	// 锁定语义（PLAN-20261012T121500000Z D5，事务内复核）：
+	//  - last_model 非空即锁定：body.model 不同 → 400 chat_model_locked；
+	//  - 绑定账户与预检读取值不一致（并发 PATCH 改变绑定）→ 409
+	//    chat_conversation_binding_changed；
+	//  - last_model 为空（未锁定）时本轮接受后随消息同事务写入锁定模型，
+	//    UPDATE 用 CASE 保证并发双首轮只有首个空值被写入。
+	lockedModel := nullText(conversation.lastModel)
+	if lockedModel != nil && *lockedModel != input.Model {
+		return nil, &ModelLockedError{LockedModel: *lockedModel}
+	}
+	if input.ExpectedBindAccountID != "" && nullText(conversation.bindAccountID) != nil &&
+		*nullText(conversation.bindAccountID) != input.ExpectedBindAccountID {
+		return nil, &ConflictError{Code: ConflictConversationBindingChanged}
 	}
 	existing, err := s.findIdempotencyTx(tx, input.ConversationID, input.SystemAccountID, input.ClientMessageID)
 	if err != nil {
@@ -375,7 +394,9 @@ func (s *Store) AcceptTurn(input AcceptTurnInput) (*AcceptTurnResult, error) {
 				context_retry_at = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_retry_at END,
 				context_error_code = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_error_code END,
 				context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
-				active_turn_id = ?, active_started_at = ?, last_model = ?, last_message_at = ?, updated_at = ?
+				active_turn_id = ?, active_started_at = ?,
+				last_model = CASE WHEN last_model IS NULL THEN ? ELSE last_model END,
+				last_message_at = ?, updated_at = ?
 			WHERE id = ? AND system_account_id = ?`),
 			replacedUserMessageID, title, replacedUserMessageID, userMessageID, turnID, now,
 			input.Model, now, now, input.ConversationID, input.SystemAccountID); err != nil {
@@ -394,7 +415,8 @@ func (s *Store) AcceptTurn(input AcceptTurnInput) (*AcceptTurnResult, error) {
 				context_error_code = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_error_code END,
 				context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
 				next_sequence_no = ?, user_turn_count = user_turn_count + 1, active_turn_id = ?, active_started_at = ?,
-				last_model = ?, last_message_at = ?, updated_at = ?
+				last_model = CASE WHEN last_model IS NULL THEN ? ELSE last_model END,
+				last_message_at = ?, updated_at = ?
 			WHERE id = ? AND system_account_id = ?`),
 			title, userMessageID, assistantSequence+1, turnID, now, input.Model, now, now,
 			input.ConversationID, input.SystemAccountID); err != nil {

@@ -71,7 +71,6 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"imageStreamIdleTimeoutSeconds":              "30",
 		"imageUncommittedAttemptMaxLifetimeSeconds":  "300",
 		"imageRequestWallTimeoutSeconds":             "600",
-		"chatImageGenerationTotalTimeoutSeconds":     "900",
 		"audioFirstResponseTimeoutSeconds":           "120",
 		"videoCreateTimeoutSeconds":                  "60",
 		"noAvailableAccountWaitTimeoutSeconds":       "30",

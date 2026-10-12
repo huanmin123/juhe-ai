@@ -216,9 +216,10 @@ func (c *wmPGConn) QueryContext(_ context.Context, query string, args []driver.N
 		return nil, err
 	}
 	// 全新空库自动封存（capabilitydomain.SealFreshInstall，SeedPostgres 种子
-	// 后挂点）的 accounts 计数探针按空库应答（0 行账户）；其余查询保持零行
-	// 结果（QueryRow().Scan() 语义等价 sql.ErrNoRows）。
-	if strings.Contains(query, "COUNT(*)") && strings.Contains(query, `juhe_business"."accounts`) {
+	// 后挂点）的 accounts/api_keys 计数探针按空库应答（0 行）；其余查询保持
+	// 零行结果（QueryRow().Scan() 语义等价 sql.ErrNoRows）。
+	if strings.Contains(query, "COUNT(*)") &&
+		(strings.Contains(query, `juhe_business"."accounts`) || strings.Contains(query, `juhe_business"."api_keys`)) {
 		return &wmPGRows{columns: []string{"c0"}, values: []driver.Value{int64(0)}}, nil
 	}
 	// 阶段记录读取：按捕获的写入值应答（未写过=零行，等价 sql.ErrNoRows）。

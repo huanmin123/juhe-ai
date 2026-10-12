@@ -403,8 +403,10 @@ func (s *AssetStore) QueryUserInputAssetIDs(tx queryer, conversationID, messageI
 }
 
 // CommitChatAssetsToMessage mirrors commitChatAssetsToMessageInClient: turn
-// binding, ready-state validation, per-kind expiry update, image-generation
-// root lineage retention and user_input reference inserts.
+// binding, ready-state validation, per-kind expiry update and user_input
+// reference inserts. 生图谱系臂（ImageGenerationRootAssetIDs 查询与
+// chat_image_generations 续期）已随生图工具退场（PLAN-20261012T121500000Z
+// D2/D6）；上传校验、引用提交与容量结算保留。
 func (s *AssetStore) CommitChatAssetsToMessage(tx queryer, rawAssetIDs []string, ownerID, conversationID, messageID, now string, retentionDays int) error {
 	normalizedNow, err := s.ports.RequireRFC3339Instant(now, "聊天资产 now")
 	if err != nil {
@@ -493,37 +495,6 @@ func (s *AssetStore) CommitChatAssetsToMessage(tx queryer, rawAssetIDs []string,
 			return s.ports.DomainError("聊天资产绑定消息时发生并发冲突")
 		}
 	}
-	rootAssetIDs, err := s.ImageGenerationRootAssetIDs(tx, assetIDs, conversationID, ownerID)
-	if err != nil {
-		return err
-	}
-	filteredRoots := []string{}
-	for _, root := range rootAssetIDs {
-		if _, ok := byID[root]; !ok {
-			filteredRoots = append(filteredRoots, root)
-		}
-	}
-	if len(filteredRoots) > 0 {
-		result, err := tx.Exec(s.ports.Bind(`UPDATE `+s.ports.Table("chat_assets")+`
-			SET expires_at = CASE WHEN expires_at < ? THEN ? ELSE expires_at END,
-				updated_at = CASE WHEN expires_at < ? THEN ? ELSE updated_at END
-			WHERE id IN (`+s.ports.Placeholders(len(filteredRoots))+`)
-				AND system_account_id = ? AND conversation_id = ?
-				AND source_kind = 'assistant_generated' AND processing_status = 'ready' AND cleanup_status = 'active'`),
-			append([]any{expiresAt, expiresAt, expiresAt, normalizedNow}, append(ToAnySlice(filteredRoots), ownerID, conversationID)...)...)
-		if err != nil {
-			return err
-		}
-		if affected, _ := result.RowsAffected(); affected != int64(len(filteredRoots)) {
-			return s.ports.DomainError("聊天图片根谱系保留期限更新失败")
-		}
-	}
-	if err := s.renewImageGenerationExpiry(tx, assetIDs, conversationID, ownerID, expiresAt); err != nil {
-		return err
-	}
-	if err := s.renewImageGenerationExpiry(tx, filteredRoots, conversationID, ownerID, expiresAt); err != nil {
-		return err
-	}
 	for contentOrder, assetID := range assetIDs {
 		if _, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_asset_references")+` (
 			asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
@@ -534,51 +505,4 @@ func (s *AssetStore) CommitChatAssetsToMessage(tx queryer, rawAssetIDs []string,
 		}
 	}
 	return nil
-}
-
-// ImageGenerationRootAssetIDs mirrors listChatImageGenerationRootAssetIdsInClient.
-func (s *AssetStore) ImageGenerationRootAssetIDs(q queryer, assetIDs []string, conversationID, ownerID string) ([]string, error) {
-	ids := s.ports.UniqueStrings(assetIDs)
-	if len(ids) == 0 {
-		return []string{}, nil
-	}
-	rows, err := q.Query(s.ports.Bind(`SELECT root_asset_id FROM `+s.ports.Table("chat_image_generations")+`
-		WHERE asset_id IN (`+s.ports.Placeholders(len(ids))+`)
-			AND conversation_id = ? AND system_account_id = ?`),
-		append(ToAnySlice(ids), conversationID, ownerID)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var root string
-		if err := rows.Scan(&root); err != nil {
-			return nil, err
-		}
-		normalized, err := s.normalizedAssetID(root)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, normalized)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return s.ports.UniqueStrings(out), nil
-}
-
-// renewImageGenerationExpiry mirrors renewChatImageGenerationExpiryInClient.
-func (s *AssetStore) renewImageGenerationExpiry(q queryer, assetIDs []string, conversationID, ownerID, expiresAt string) error {
-	ids := s.ports.UniqueStrings(assetIDs)
-	if len(ids) == 0 {
-		return nil
-	}
-	args := append([]any{expiresAt, expiresAt}, ToAnySlice(ids)...)
-	args = append(args, conversationID, ownerID)
-	_, err := q.Exec(s.ports.Bind(`UPDATE `+s.ports.Table("chat_image_generations")+`
-		SET expires_at = CASE WHEN expires_at < ? THEN ? ELSE expires_at END
-		WHERE asset_id IN (`+s.ports.Placeholders(len(ids))+`)
-			AND conversation_id = ? AND system_account_id = ?`), args...)
-	return err
 }

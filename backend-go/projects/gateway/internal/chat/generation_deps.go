@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -214,13 +213,21 @@ func (rt *chatRoutes) loadChatModelCatalogForScope(scope *chatBindingScope, syst
 }
 
 // loadChatModelListsForScope mirrors loadChatModelListsFromAccountSnapshot
-// over the binding scope; 排序与 defaultModel=排序第一项 规则不变。
+// over the binding scope; 排序与 defaultModel=排序第一项 规则不变。目录先按
+// 绑定账户解析出的原生上游协议过滤（D4 模型列表口径），再做账户可达性投影。
 func (rt *chatRoutes) loadChatModelListsForScope(scope *chatBindingScope, systemAccountID string) ([]ChatModelListOption, *ChatModelListOption, error) {
 	accounts, catalog := rt.loadChatModelCatalogForScope(scope, systemAccountID, "")
 	modelIDs := make([]string, 0, len(catalog))
 	seen := map[string]bool{}
 	for _, item := range catalog {
 		if seen[item.Model] {
+			continue
+		}
+		route, err := chatScopeRequestProtocol(accounts, item.Model)
+		if err != nil {
+			continue
+		}
+		if !containsString(item.SupportedAPIProtocols, string(route.catalogFilterProtocol())) {
 			continue
 		}
 		seen[item.Model] = true
@@ -240,12 +247,13 @@ func (rt *chatRoutes) loadChatModelListsForScope(scope *chatBindingScope, system
 	return list, defaultModel, nil
 }
 
-// scopeSupportedProtocols 在收敛后的单账户视图上按固定顺序判定双协议。
+// scopeSupportedProtocols 在收敛后的单账户视图上按固定顺序判定双协议（模型
+// 列表口径沿用）。
 func (rt *chatRoutes) scopeSupportedProtocols(scope *chatBindingScope, systemAccountID, model string) []ChatTransportProtocol {
 	supported := []ChatTransportProtocol{}
 	for _, protocol := range []ChatTransportProtocol{ProtocolChatCompletions, ProtocolResponses} {
 		for _, account := range scope.accounts {
-			if chatTransportAccountSupportsProtocol(account, model, protocol) {
+			if chatAccountSupportsRequestProtocol(account, model, protocol) {
 				supported = append(supported, protocol)
 				break
 			}
@@ -255,9 +263,10 @@ func (rt *chatRoutes) scopeSupportedProtocols(scope *chatBindingScope, systemAcc
 }
 
 // constrainChatModelOptionForAccounts mirrors constrainChatModelOptionForAccounts
-// (chat.routes.ts:1669-1689): the protocol filter narrows to routes with at
-// least one supporting account, and the generation parameter capabilities are
-// the per-protocol route constraint intersection (BUG-0175 D-185).
+// (chat.routes.ts): the protocol filter narrows to routes with at least one
+// supporting account, and the generation parameter capabilities are the
+// per-protocol route constraint intersection (BUG-0175 D-185). 协议支持判定走
+// request_protocol.go 的 resolver（账户真实 profile 决定请求形态）。
 func constrainChatModelOptionForAccounts(option *ChatModelOption, model string, accounts []ChatTransportAccount, requestedProtocols []ChatTransportProtocol) *ChatModelOption {
 	protocols := option.SupportedAPIProtocols
 	if requestedProtocols != nil {
@@ -274,7 +283,7 @@ func constrainChatModelOptionForAccounts(option *ChatModelOption, model string, 
 		}
 		routeAccounts := []ChatTransportAccount{}
 		for _, account := range accounts {
-			if chatTransportAccountSupportsProtocol(account, model, ChatTransportProtocol(protocol)) {
+			if chatAccountSupportsRequestProtocol(account, model, ChatTransportProtocol(protocol)) {
 				routeAccounts = append(routeAccounts, account)
 			}
 		}
@@ -299,6 +308,7 @@ type ChatModelListOption struct {
 
 // resolveChatModelOptionsFromAccountSnapshot mirrors
 // resolveChatModelOptionsFromAccountSnapshot (chat-model-availability.ts).
+// 可达性判定走 resolver：账户解析出的主推请求形态必须命中选项声明的协议之一。
 func resolveChatModelOptionsFromAccountSnapshot(accounts []ChatTransportAccount, options []*ChatModelOption) []string {
 	out := []string{}
 	for _, option := range options {
@@ -308,7 +318,7 @@ func resolveChatModelOptionsFromAccountSnapshot(accounts []ChatTransportAccount,
 		reachable := false
 		for _, protocol := range option.SupportedAPIProtocols {
 			for _, account := range accounts {
-				if chatTransportAccountSupportsProtocol(account, option.ID, ChatTransportProtocol(protocol)) {
+				if chatAccountSupportsRequestProtocol(account, option.ID, ChatTransportProtocol(protocol)) {
 					reachable = true
 					break
 				}
@@ -357,19 +367,6 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 		APIKeyNameSnapshot:      apiKey.Name,
 		Now:                     rt.now(),
 		MaxConversationsPerUser: rt.deps.maxConversationsPerUser(),
-	}
-	if pref, prefErr := rt.deps.Store.GetUserToolPreferences(ownerID); prefErr != nil {
-		log.Printf("chat: 读取用户工具偏好失败（创建按无偏好继续）owner=%s: %v", ownerID, prefErr)
-	} else if pref != nil {
-		input.SearchAccountID = pref.SearchAccountID
-		input.SearchModelID = pref.SearchModelID
-		input.ImageAccountID = pref.ImageAccountID
-		input.DefaultImageModel = pref.DefaultImageModel
-		// M7 媒体偏好继承（问答音视频工具设计 §3）：非空列随创建写入。
-		input.VideoAccountID = pref.VideoAccountID
-		input.DefaultVideoModel = pref.DefaultVideoModel
-		input.AudioAccountID = pref.AudioAccountID
-		input.DefaultAudioModel = pref.DefaultAudioModel
 	}
 	conversation, err := rt.deps.Store.CreateConversation(input)
 	if err != nil {
@@ -436,7 +433,9 @@ func derefString(value *string) string {
 }
 
 // listConversationModels mirrors GET /conversations/{id}/models: 候选=会话
-// 绑定账户可路由模型；未选账户返回空列表（设计 §5.3）。
+// 绑定账户可路由模型；未选账户返回空列表（设计 §5.3）。模型可见性按绑定账户
+// 解析出的原生上游协议过滤目录（D4：Claude 目录声明 messages 即可见；OpenAI
+// 原生 Responses 账户仅 Chat 模型不可见），再按请求形态投影可达性。
 func (rt *chatRoutes) listConversationModels(w http.ResponseWriter, r *http.Request) {
 	bindScope, err := rt.requireChatBindScope(r)
 	if err != nil {
@@ -462,7 +461,8 @@ func (rt *chatRoutes) listConversationModels(w http.ResponseWriter, r *http.Requ
 }
 
 // getConversationModel mirrors GET /conversations/{id}/models/{modelId}.
-// 未选账户的会话无候选模型，一律 404 chat_model_not_found。
+// 未选账户的会话无候选模型，一律 404 chat_model_not_found。按主推协议定点
+// 返回（D4 模型能力接口）：解析失败或目录未声明原生上游协议 → 404。
 func (rt *chatRoutes) getConversationModel(w http.ResponseWriter, r *http.Request) {
 	bindScope, err := rt.requireChatBindScope(r)
 	if err != nil {
@@ -480,13 +480,23 @@ func (rt *chatRoutes) getConversationModel(w http.ResponseWriter, r *http.Reques
 		writeMessageCode(w, http.StatusNotFound, "当前会话没有可用的该模型", "chat_model_not_found")
 		return
 	}
+	notFound := func() {
+		writeMessageCode(w, http.StatusNotFound, "当前会话没有可用的该模型", "chat_model_not_found")
+	}
+	resolvedRoute, err := chatScopeRequestProtocol(scope.accounts, modelID)
+	if err != nil {
+		notFound()
+		return
+	}
 	accounts, catalog := rt.loadChatModelCatalogForScope(scope, ownerID, modelID)
+	// 目录按上游原生协议键过滤（桥接账户按上游原生协议判定目录声明）。
+	filterProtocol := string(resolvedRoute.catalogFilterProtocol())
 	catalogItems := []ProviderModelCatalogItem{}
 	for _, item := range catalog {
 		if item.Model != modelID {
 			continue
 		}
-		if !containsAny(item.SupportedAPIProtocols, []string{"chat_completions", "responses"}) {
+		if !containsString(item.SupportedAPIProtocols, filterProtocol) {
 			continue
 		}
 		catalogItems = append(catalogItems, item)
@@ -495,29 +505,20 @@ func (rt *chatRoutes) getConversationModel(w http.ResponseWriter, r *http.Reques
 	if len(catalogItems) > 0 {
 		options := buildChatModelOptions([]string{modelID}, catalogItems)
 		if len(options) > 0 {
-			option = constrainChatModelOptionForAccounts(options[0], modelID, accounts, nil)
+			option = constrainChatModelOptionForAccounts(options[0], modelID, accounts, []ChatTransportProtocol{resolvedRoute.RequestProtocol})
 		}
 	}
 	if option == nil || len(option.SupportedAPIProtocols) == 0 {
-		writeMessageCode(w, http.StatusNotFound, "当前会话没有可用的该模型", "chat_model_not_found")
+		notFound()
 		return
 	}
-	writeOK(w, chatModelCapabilitiesPayload(option))
-}
-
-func containsAny(values []string, candidates []string) bool {
-	for _, value := range values {
-		if containsString(candidates, value) {
-			return true
-		}
-	}
-	return false
+	writeOK(w, chatModelCapabilitiesPayload(option, chatHostedWebSearchSupported(resolvedRoute, catalogItems, modelID)))
 }
 
 // chatModelCapabilitiesPayload mirrors { ...modelOption, name: modelOption.id }.
-// 工具能力按「协议 × 工具」矩阵返回（supportedToolsByProtocol）；一维
-// supportedTools 已退场（工具体系设计 6.4）。
-func chatModelCapabilitiesPayload(option *ChatModelOption) map[string]any {
+// 工具能力按「协议 × 工具」矩阵返回（supportedToolsByProtocol）；builtinWebSearch
+// 是 D3 联网能力布尔（=请求形态 responses 且原生直连且目录声明 web_search）。
+func chatModelCapabilitiesPayload(option *ChatModelOption, builtinWebSearch bool) map[string]any {
 	payload := map[string]any{
 		"id":                        option.ID,
 		"name":                      option.ID,
@@ -528,6 +529,7 @@ func chatModelCapabilitiesPayload(option *ChatModelOption) map[string]any {
 		"inputModalities":           nilToEmpty(option.InputModalities),
 		"outputModalities":          nilToEmpty(option.OutputModalities),
 		"supportedToolsByProtocol":  option.SupportedToolsByProtocol,
+		"builtinWebSearch":          builtinWebSearch,
 		"generationParameters":      generationParametersPayload(option.GenerationParameters),
 	}
 	if option.DefaultReasoningEffort != "" {
@@ -672,8 +674,8 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 
 // resolveChatCompactionInput mirrors resolveChatCompactionInput. 鉴权主体恒
 // 为会话 api_key_id；绑定对象按请求者数据范围复核，模型能力按绑定作用域收敛。
-// 压缩调用恒 chat_completions（工具体系设计 §11.3：上下文压缩的协议偏好
-// 随主对话协议偏好一并删除）。
+// 压缩调用按绑定账户主推协议构造（D4 辅助请求统一）：Protocol 经 resolver
+// 解析后随输入注入，CompactionService 按该形态构造请求与消费响应。
 func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bindScope ChatBindScope, model string) (CompactionInput, error) {
 	ownerID := bindScope.ViewerID
 	input := CompactionInput{ConversationID: conversation.ID, SystemAccountID: ownerID, Model: model}
@@ -686,6 +688,11 @@ func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bin
 	if err != nil {
 		return input, err
 	}
+	resolvedRoute, err := chatScopeRequestProtocol(scope.accounts, model)
+	if err != nil {
+		return input, &ModelCapabilityError{Message: err.Error()}
+	}
+	input.Protocol = resolvedRoute.RequestProtocol
 	_, catalog := rt.loadChatModelCatalogForScope(scope, ownerID, model)
 	options := buildChatModelOptions([]string{model}, catalog)
 	var option *ChatModelOption
@@ -695,15 +702,15 @@ func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bin
 	if option == nil || containsString(option.SupportedAPIProtocols, "images") {
 		return input, &ModelCapabilityError{Message: "当前模型不支持上下文压缩，请切换对话模型"}
 	}
-	routeAccounts := rt.scopeRouteAccounts(scope, ownerID, model, string(ProtocolChatCompletions))
-	chatReachable := false
+	routeAccounts := rt.scopeRouteAccounts(scope, ownerID, model, string(input.Protocol))
+	reachable := false
 	for _, account := range routeAccounts {
-		if chatTransportAccountSupportsProtocol(account, model, ProtocolChatCompletions) {
-			chatReachable = true
+		if chatAccountSupportsRequestProtocol(account, model, input.Protocol) {
+			reachable = true
 			break
 		}
 	}
-	if !chatReachable {
+	if !reachable {
 		return input, &ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由"}
 	}
 	if option.MaxInputTokens != nil {

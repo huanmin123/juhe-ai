@@ -80,7 +80,6 @@ var SystemSettingKeys = []string{
 	"imageStreamIdleTimeoutSeconds",
 	"imageUncommittedAttemptMaxLifetimeSeconds",
 	"imageRequestWallTimeoutSeconds",
-	"chatImageGenerationTotalTimeoutSeconds",
 	"audioFirstResponseTimeoutSeconds",
 	"videoCreateTimeoutSeconds",
 	"realtimeIdleTimeoutSeconds",
@@ -176,7 +175,6 @@ var systemSettingSpecs = map[string]settingSpec{
 	"imageStreamIdleTimeoutSeconds":              {integer: true, min: 1, max: 3600},
 	"imageUncommittedAttemptMaxLifetimeSeconds":  {integer: true, min: 60, max: 86400},
 	"imageRequestWallTimeoutSeconds":             {integer: true, min: 60, max: 86400},
-	"chatImageGenerationTotalTimeoutSeconds":     {integer: true, min: 60, max: 86400},
 	"audioFirstResponseTimeoutSeconds":           {integer: true, min: 10, max: 3600},
 	"videoCreateTimeoutSeconds":                  {integer: true, min: 10, max: 3600},
 	// M5b realtime 会话生命周期键（Realtime 设计 §3；消费面随 M5b2 WS
@@ -320,7 +318,6 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 		"imageStreamIdleTimeoutSeconds",
 		"imageUncommittedAttemptMaxLifetimeSeconds",
 		"imageRequestWallTimeoutSeconds",
-		"chatImageGenerationTotalTimeoutSeconds",
 		"audioFirstResponseTimeoutSeconds",
 		"videoCreateTimeoutSeconds",
 		"realtimeIdleTimeoutSeconds",

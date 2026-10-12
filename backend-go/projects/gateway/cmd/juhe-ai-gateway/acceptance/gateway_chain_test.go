@@ -45,7 +45,10 @@ func startChainFixture(t *testing.T) *chainFixture {
 	var upstreamHits atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits.Add(1)
-		if r.URL.Path != "/v1/chat/completions" {
+		// D4 协议按供应商主推直连：profile_gpt_openai_v1 账户（gpt）在 chat
+		// 会话链以 /v1/responses 直连派发；/v1/chat/completions 服务既有
+		// /v1 链透传场景，两入口形态都在 mock 上游提供。
+		if r.URL.Path != "/v1/chat/completions" && r.URL.Path != "/v1/responses" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -55,9 +58,16 @@ func startChainFixture(t *testing.T) *chainFixture {
 			return
 		}
 		body := readRequestBody(r)
+		isResponses := r.URL.Path == "/v1/responses"
 		if strings.Contains(body, `"stream":true`) {
 			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
+			if isResponses {
+				_, _ = w.Write([]byte("data: " + sseChunk(`{"type":"response.output_text.delta","delta":"验收"}`) + "\n\n"))
+				_, _ = w.Write([]byte("data: " + sseChunk(`{"type":"response.output_text.delta","delta":"直通"}`) + "\n\n"))
+				_, _ = w.Write([]byte("data: " + sseChunk(`{"type":"response.completed","response":{"id":"resp_acc_1","status":"completed","usage":{"input_tokens":3,"output_tokens":2}}}`) + "\n\n"))
+				return
+			}
 			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"role":"assistant","content":"验收"},"finish_reason":null}]}`) + "\n\n"))
 			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{"content":"直通"},"finish_reason":null}]}`) + "\n\n"))
 			_, _ = w.Write([]byte("data: " + sseChunk(`{"id":"chatcmpl-acc-1","object":"chat.completion.chunk","model":"`+acceptanceModel+`","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`) + "\n\n"))
@@ -65,6 +75,10 @@ func startChainFixture(t *testing.T) *chainFixture {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if isResponses {
+			_, _ = w.Write([]byte(`{"id":"resp_acc","object":"response","status":"completed","model":"` + acceptanceModel + `","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"验收直通内容"}]}],"usage":{"input_tokens":3,"output_tokens":2}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-acc","object":"chat.completion","model":"` + acceptanceModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"验收直通内容"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
 	}))
 	t.Cleanup(upstream.Close)

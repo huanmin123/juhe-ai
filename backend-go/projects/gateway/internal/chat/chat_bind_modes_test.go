@@ -7,7 +7,6 @@ package chat
 
 import (
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -52,7 +51,7 @@ func (m mockAccountLookup) FindChatAccount(scope ChatBindScope, accountID string
 		if m.groupsOfAccount != nil {
 			groups = m.groupsOfAccount[accountID]
 		}
-		return &ChatAccountRef{ID: accountID, Name: "账户 " + accountID, ProviderCode: "openai", Enabled: true, EnabledGroupIDs: groups}, nil
+		return &ChatAccountRef{ID: accountID, Name: "账户 " + accountID, ProviderCode: "deepseek", Enabled: true, EnabledGroupIDs: groups}, nil
 	case "account-disabled":
 		return &ChatAccountRef{ID: accountID, Name: "停用账户", Enabled: false, EnabledGroupIDs: []string{"group-a"}}, nil
 	}
@@ -178,17 +177,16 @@ func TestPatchAccountIdFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("切换账户联动清空不可路由模型", func(t *testing.T) {
+	t.Run("锁定会话切账户拒绝且同账户幂等", func(t *testing.T) {
 		env := newGenerationEnv(t)
-		// account-1（group-a）仅 gpt-5-mini 可路由；account-2（group-b）仅 gpt-5。
 		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 			"group-a": {
-				ID: "account-1", Type: "api_key", ProviderCode: "openai",
+				ID: "account-1", Type: "api_key", ProviderCode: "deepseek",
 				SupportedEndpointModes: []string{"chat_sse"},
 				SupportedModels:        []string{"gpt-5-mini"},
 			},
 			"group-b": {
-				ID: "account-2", Type: "api_key", ProviderCode: "openai",
+				ID: "account-2", Type: "api_key", ProviderCode: "deepseek",
 				SupportedEndpointModes: []string{"chat_sse"},
 				SupportedModels:        []string{"gpt-5"},
 			},
@@ -202,23 +200,19 @@ func TestPatchAccountIdFlow(t *testing.T) {
 		})
 		setConversationLastModel(t, env.fixture, conversation.ID, "gpt-5")
 
-		// 切到 account-1：gpt-5 不在 [gpt-5-mini] → 清空。
+		// 锁定（last_model 非空）后切账户 → 409 chat_conversation_locked。
 		switched := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-1"}`)
-		if switched.status != http.StatusOK {
-			t.Fatalf("switch = %d %s", switched.status, switched.rawString())
-		}
-		if data := switched.dataMap(); data["lastModel"] != nil {
-			t.Fatalf("切换后 lastModel = %v, want null", data["lastModel"])
+		if switched.status != http.StatusConflict || switched.code() != "chat_conversation_locked" {
+			t.Fatalf("locked switch = %d %s", switched.status, switched.rawString())
 		}
 
-		// 切回 account-2 前先恢复 last_model=gpt-5：范围内 → 保留。
-		setConversationLastModel(t, env.fixture, conversation.ID, "gpt-5")
+		// 相同账户重复提交幂等通过，lastModel 保持。
 		kept := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-2"}`)
 		if kept.status != http.StatusOK {
-			t.Fatalf("switch back = %d %s", kept.status, kept.rawString())
+			t.Fatalf("same account = %d %s", kept.status, kept.rawString())
 		}
 		if data := kept.dataMap(); data["lastModel"] != "gpt-5" {
-			t.Fatalf("范围内切换 lastModel = %v, want gpt-5", data["lastModel"])
+			t.Fatalf("同账户 PATCH lastModel = %v, want gpt-5", data["lastModel"])
 		}
 	})
 
@@ -241,34 +235,34 @@ func TestPatchAccountIdFlow(t *testing.T) {
 	t.Run("失败臂", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.deps.AccountLookup = mockAccountLookup{}
-		env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
 		conversation := createBoundConversation(t, env.fixture, "patch_fail_conv", routeTestOwner, CreateConversationInput{})
 		cases := []struct {
 			name    string
 			body    string
 			message string
+			code    string
 		}{
-			{"账户不存在", `{"accountId":"missing"}`, "绑定的账户不存在"},
-			{"空白账户", `{"accountId":"  "}`, "请选择会话绑定的账户"},
-			// 工具绑定键（阶段 2 接入）：二元组不在候选内 → 400 + 候选返回
-			//（mock 账户 a1 无可派发视图，候选为空）。
-			{"搜索绑定不在候选", `{"searchBinding":{"accountId":"a1","modelId":"gpt-5"}}`, "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）"},
-			{"生图绑定不在候选", `{"imageBinding":{"accountId":"a1"}}`, "生图绑定必须在候选列表内（账户可路由当前默认图像模型；如需切换模型请同时提交 defaultImageModel）"},
-			{"搜索绑定缺模型", `{"searchBinding":{"accountId":"a1"}}`, "请选择工具绑定的模型"},
+			{"账户不存在", `{"accountId":"missing"}`, "绑定的账户不存在", ""},
+			{"空白账户", `{"accountId":"  "}`, "请选择会话绑定的账户", ""},
+			// 工具绑定键已退役（PLAN-20261012T121500000Z D2）→ 未知键 400。
+			// HTTP 层把解码细节统一包装为「请求参数无效」，按 code 断言。
+			{"退役搜索绑定键", `{"searchBinding":{"accountId":"a1","modelId":"gpt-5"}}`, "", "chat_invalid_request"},
+			{"退役生图绑定键", `{"imageBinding":{"accountId":"a1"}}`, "", "chat_invalid_request"},
 		}
 		for _, item := range cases {
 			response := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, item.body)
 			if response.status != http.StatusBadRequest {
 				t.Fatalf("%s = %d %s", item.name, response.status, response.rawString())
 			}
+			if item.code != "" {
+				if got := response.code(); got != item.code {
+					t.Fatalf("%s code = %q, want %q", item.name, got, item.code)
+				}
+				continue
+			}
 			if got := response.message(); got != item.message {
 				t.Fatalf("%s message = %q, want %q", item.name, got, item.message)
 			}
-		}
-		// 候选校验失败的负载携带候选数组与 toolId。
-		invalid := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"searchBinding":{"accountId":"a1","modelId":"gpt-5"}}`)
-		if invalid.code() != "chat_tool_binding_invalid" || !strings.Contains(invalid.rawString(), `"toolId":"web_search"`) || !strings.Contains(invalid.rawString(), `"candidates":[]`) {
-			t.Fatalf("chat_tool_binding_invalid 负载 = %s", invalid.rawString())
 		}
 	})
 }
@@ -405,7 +399,7 @@ func TestAccountBindingModelListSources(t *testing.T) {
 		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 			// account-1 的运行时视图：openai、仅 gpt-5-mini。
 			"group-a": {
-				ID: "account-1", Type: "api_key", ProviderCode: "openai",
+				ID: "account-1", Type: "api_key", ProviderCode: "deepseek",
 				SupportedEndpointModes: []string{"chat_sse"},
 				SupportedModels:        []string{"gpt-5-mini"},
 			},
@@ -423,8 +417,8 @@ func TestAccountBindingModelListSources(t *testing.T) {
 		if len(groups) != 1 || groups[0] != "group-a" {
 			t.Fatalf("group calls = %v, want [group-a]", groups)
 		}
-		if len(providers) != 1 || providers[0] != "openai" {
-			t.Fatalf("provider calls = %v, want [openai]", providers)
+		if len(providers) != 1 || providers[0] != "deepseek" {
+			t.Fatalf("provider calls = %v, want [deepseek]", providers)
 		}
 		models := modelIDsFromList(t, list)
 		if len(models) != 1 || !models["gpt-5-mini"] {
@@ -444,7 +438,7 @@ func TestAccountBindingModelListSources(t *testing.T) {
 	t.Run("绑定账户不在快照中为空作用域", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
-			"group-a": {ID: "account-9", Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}},
+			"group-a": {ID: "account-9", Type: "api_key", ProviderCode: "deepseek", SupportedEndpointModes: []string{"chat_sse"}},
 		}}
 		env.deps.ModelCatalog = catalog
 		env.deps.AccountLookup = mockAccountLookup{}

@@ -51,13 +51,15 @@ type CompactionResult struct {
 	AfterBytes            int64
 }
 
-// CompactionInput mirrors the compactChatContextOnce input（压缩调用恒
-// chat_completions，工具体系设计 §11.3——Protocol 字段随协议偏好删除）。
+// CompactionInput mirrors the compactChatContextOnce input（压缩调用按绑定
+// 账户主推协议构造，PLAN-20261012T121500000Z D4 辅助请求统一：Protocol 由
+// 调用方经 resolver 解析后注入，responses / chat_completions 两形态）。
 type CompactionInput struct {
 	ConversationID              string
 	SystemAccountID             string
 	APIKeySecret                string
 	Model                       string
+	Protocol                    ChatTransportProtocol
 	EffectiveContextLimitTokens *int64
 }
 
@@ -409,6 +411,10 @@ func (s *CompactionService) runClaimedCompaction(input CompactionInput, ctx cont
 		return s.failClaim(input, claim, errors.New("chat_context_source_expiry_missing"))
 	}
 	digest := sha256.Sum256(payload)
+	installProtocol := input.Protocol
+	if installProtocol != ProtocolResponses {
+		installProtocol = ProtocolChatCompletions
+	}
 	installed, err := s.Store.InstallContextCheckpoint(InstallCheckpointInput{
 		ClaimID:                     claim.ClaimID,
 		ConversationID:              input.ConversationID,
@@ -422,7 +428,7 @@ func (s *CompactionService) runClaimedCompaction(input CompactionInput, ctx cont
 		EffectiveContextLimitTokens: input.EffectiveContextLimitTokens,
 		RequestBodyBytes:            afterBytes,
 		ModelID:                     input.Model,
-		EndpointFamily:              string(ProtocolChatCompletions),
+		EndpointFamily:              string(installProtocol),
 		PromptVersion:               compactionPromptVersion,
 		Entries:                     entries,
 		Now:                         s.Now(),
@@ -615,16 +621,17 @@ func (s *CompactionService) summarizePage(ctx context.Context, input CompactionI
 	if err != nil {
 		return memorySnapshot{}, errors.New("chat_context_summary_invalid_json")
 	}
-	body := map[string]any{
-		"model":    input.Model,
-		"messages": []any{map[string]any{"role": "system", "content": instructions}, map[string]any{"role": "user", "content": string(payload)}},
-		"stream":   false,
+	// 辅助请求统一（D4）：按绑定账户主推协议构造请求体与 /v1 入口；响应按
+	// 账户真实形态消费（OAuth 强制流式 → 有界 SSE 聚合，否则普通 JSON）。
+	protocol := input.Protocol
+	if protocol != ProtocolResponses {
+		protocol = ProtocolChatCompletions
 	}
-	bodyJSON, err := json.Marshal(body)
+	path, bodyMap := BuildAuxiliaryModelRequest(protocol, input.Model, instructions, string(payload))
+	bodyJSON, err := json.Marshal(bodyMap)
 	if err != nil {
 		return memorySnapshot{}, err
 	}
-	path := "/v1/chat/completions"
 	timeoutCtx := context.Background()
 	if ctx != nil {
 		var cancel context.CancelFunc
@@ -648,22 +655,17 @@ func (s *CompactionService) summarizePage(ctx context.Context, input CompactionI
 	if err != nil {
 		return memorySnapshot{}, err
 	}
-	if response == nil {
-		return memorySnapshot{}, errors.New("chat_gateway_dispatch_missing")
+	text, consumeErr := ConsumeAuxiliaryModelText(response, protocol, compactionResponseBytes)
+	if response != nil {
+		_ = response.Body.Close()
 	}
-	bodyBytes, readErr := readBoundedAll(response.Body, compactionResponseBytes)
-	_ = response.Body.Close()
-	if readErr != nil {
-		return memorySnapshot{}, errors.New("chat_context_summary_missing_response")
+	if consumeErr != nil {
+		var httpErr *AuxiliaryHTTPStatusError
+		if errors.As(consumeErr, &httpErr) {
+			return memorySnapshot{}, fmt.Errorf("chat_context_model_http_%d", httpErr.Status)
+		}
+		return memorySnapshot{}, consumeErr
 	}
-	if response.Status < 200 || response.Status >= 300 {
-		return memorySnapshot{}, fmt.Errorf("chat_context_model_http_%d", response.Status)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
-		return memorySnapshot{}, errors.New("chat_context_summary_missing_response")
-	}
-	text := extractCompactionResponseText(parsed)
 	value, err := parseJSONObjectLoose(text)
 	if err != nil {
 		return memorySnapshot{}, err

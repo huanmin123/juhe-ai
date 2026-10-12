@@ -146,8 +146,7 @@ func TestW13G4StreamTurnContextBudgetArms(t *testing.T) {
 	}
 }
 
-// TestW13G4StreamTurnSuccessWithoutCompactions 覆盖 ToolEnvironment 缺省与
-// Compactions==nil 的成功流（467-469、520-521）。
+// TestW13G4StreamTurnSuccessWithoutCompactions 覆盖 Compactions==nil 的成功流。
 func TestW13G4StreamTurnSuccessWithoutCompactions(t *testing.T) {
 	env := newGenerationEnv(t)
 	conversationID := "chat_conv_w13g4_plain"
@@ -159,7 +158,6 @@ func TestW13G4StreamTurnSuccessWithoutCompactions(t *testing.T) {
 		},
 	})
 	env.deps.Compactions = nil
-	env.deps.ToolEnvironment = ""
 	rt := newChatRoutesForTest(env.deps)
 	recorder := w13g4StreamPost(rt, conversationID, routeTestOwner, streamPayload("w13g4-s1", "你好", "gpt-5"))
 	if recorder.Code != http.StatusOK {

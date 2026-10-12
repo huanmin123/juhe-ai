@@ -347,15 +347,16 @@ func TestW9FSubmissionStatusValidation(t *testing.T) {
 	}
 }
 
-func TestW9FGetConversationToolCapabilities(t *testing.T) {
+func TestW9FGetConversationAndPatchValidation(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_tool", routeTestOwner)
 	response := env.do("GET", w9fPrefix+"/conversations/chat_conv_tool", routeTestOwner, "")
-	if response.status != http.StatusOK || !strings.Contains(response.rawString(), "toolCapabilities") {
-		t.Fatalf("tool capabilities = %d %s", response.status, response.rawString())
+	if response.status != http.StatusOK || !strings.Contains(response.rawString(), "lastModel") {
+		t.Fatalf("conversation = %d %s", response.status, response.rawString())
 	}
-	if response := env.do("PATCH", w9fPrefix+"/conversations/chat_conv_tool", routeTestOwner, `{"defaultImageModel":5}`); response.status != http.StatusBadRequest {
-		t.Fatalf("bad image model = %d %s", response.status, response.rawString())
+	// 工具绑定键已退役 → 未知键 400（chat_invalid_request）。
+	if response := env.do("PATCH", w9fPrefix+"/conversations/chat_conv_tool", routeTestOwner, `{"defaultImageModel":"gpt-image-2"}`); response.status != http.StatusBadRequest {
+		t.Fatalf("retired key = %d %s", response.status, response.rawString())
 	}
 	if response := env.do("PATCH", w9fPrefix+"/conversations/chat_conv_tool", routeTestOwner, `{bad`); response.status != http.StatusBadRequest {
 		t.Fatalf("patch bad json = %d", response.status)
