@@ -121,8 +121,8 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 		VALUES ('rs_minimax_media', ?, 'minimax媒体', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_minimax_media', 'rs_minimax_media', ?, 'group_minimax_media', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_minimax_media', ?, 'rs_minimax_media', 'minimax媒体Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_minimax_media', ?, 'rs_minimax_media', 'minimax媒体Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
 	return keySecret
 }

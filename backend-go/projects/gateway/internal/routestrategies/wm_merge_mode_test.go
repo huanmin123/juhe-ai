@@ -183,8 +183,10 @@ func TestWMMergeHTTPBindingRules(t *testing.T) {
 	}
 }
 
-// TestWMMergeSchedulingPreferenceMatrix：merge 的 speed_first/cost_first 落盘、
-// 渲染与五种调度模式间的 feed-forward（设计 B4/B6，模式矩阵补齐）。
+// TestWMMergeSchedulingPreferenceMatrix：merge 存量 speed_first 行（store 直
+// 建，回滚 oracle）的落盘、渲染与五种调度模式间的 feed-forward（设计 B4/B6，
+// 模式矩阵补齐）；P2 起 HTTP 写入口拒绝调度字段，cost_first 创建与 mode 裸
+// 切仍走 HTTP。
 func TestWMMergeSchedulingPreferenceMatrix(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -192,22 +194,12 @@ func TestWMMergeSchedulingPreferenceMatrix(t *testing.T) {
 	groupB := env.createGroup(t, adminID, "bravo", true)
 	path := "/__aisys__/api/route-strategies"
 
-	// speed_first：201 + config_json 落盘 + 响应渲染 normalRoutingConfig。
-	code, created := env.createStrategy(t, path,
-		`{"name":"msf","mode":"merge","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000,"speedFirstConfig":{"slowTriggerCount":4}},"groupBindings":[`+bindingJSON(groupA, 0)+`,`+bindingJSON(groupB, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("merge speed_first create: %d %v", code, created)
-	}
-	createdData := dataMap(t, created)
-	config, ok := createdData["normalRoutingConfig"].(map[string]any)
-	if !ok || config["schedulingPreference"] != "speed_first" || config["firstByteDeadlineMs"] != float64(30000) {
-		t.Fatalf("merge speed_first 响应渲染: %v", createdData["normalRoutingConfig"])
-	}
-	speedFirst := config["speedFirstConfig"].(map[string]any)
-	if speedFirst["slowTriggerCount"] != float64(4) || speedFirst["probeIntervalSeconds"] != float64(30) {
-		t.Fatalf("merge speedFirstConfig: %v", speedFirst)
-	}
-	mergeID := createdData["id"].(string)
+	// speed_first（store 直建）：config_json 落盘 + 响应渲染 normalRoutingConfig。
+	mergeID := env.createStrategyViaStore(t, adminID, "msf", ModeMerge, []string{groupA, groupB}, map[string]any{
+		"schedulingPreference": "speed_first",
+		"firstByteDeadlineMs":  30000,
+		"speedFirstConfig":     map[string]any{"slowTriggerCount": 4},
+	})
 	var configJSON sql.NullString
 	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, mergeID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
@@ -216,6 +208,18 @@ func TestWMMergeSchedulingPreferenceMatrix(t *testing.T) {
 		t.Fatalf("merge speed_first config_json 必须落盘: %v", configJSON)
 	}
 	beforeJSON := configJSON.String
+	code, detail := env.do(t, http.MethodGet, path+"/"+mergeID, "")
+	if code != http.StatusOK {
+		t.Fatalf("detail: %d %v", code, detail)
+	}
+	speedConfig, ok := dataMap(t, detail)["normalRoutingConfig"].(map[string]any)
+	if !ok || speedConfig["schedulingPreference"] != "speed_first" || speedConfig["firstByteDeadlineMs"] != float64(30000) {
+		t.Fatalf("merge speed_first detail 渲染: %v", dataMap(t, detail)["normalRoutingConfig"])
+	}
+	speedFirst, ok := speedConfig["speedFirstConfig"].(map[string]any)
+	if !ok || speedFirst["slowTriggerCount"] != float64(4) || speedFirst["probeIntervalSeconds"] != float64(30) {
+		t.Fatalf("merge speedFirstConfig: %v", speedFirst)
+	}
 
 	// cost_first：渲染默认对象、config_json 保持 NULL。
 	code, payload := env.createStrategy(t, path,
@@ -249,7 +253,7 @@ func TestWMMergeSchedulingPreferenceMatrix(t *testing.T) {
 	if !configJSON.Valid || configJSON.String != beforeJSON {
 		t.Fatalf("weighted 切换不得改写 config_json: before=%s after=%v", beforeJSON, configJSON)
 	}
-	code, detail := env.do(t, http.MethodGet, path+"/"+mergeID, "")
+	code, detail = env.do(t, http.MethodGet, path+"/"+mergeID, "")
 	if code != http.StatusOK {
 		t.Fatalf("detail: %d %v", code, detail)
 	}
@@ -271,17 +275,30 @@ func TestWMMergeSchedulingPreferenceMatrix(t *testing.T) {
 	if !configJSON.Valid || configJSON.String != beforeJSON {
 		t.Fatalf("merge 切回不得改写 config_json: before=%s after=%v", beforeJSON, configJSON)
 	}
-	// merge + normalRoutingConfig 输入的 patch 照常接受（speed_first → cost_first）。
+	// P2：携带调度键的 patch 被拒绝（退场契约），存量配置不被剥离。
 	updatedAt = env.strategyUpdatedAt(t, mergeID)
 	code, patched = env.do(t, http.MethodPatch, path+"/"+mergeID,
 		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":{"schedulingPreference":"cost_first"}}`)
+	if code != http.StatusBadRequest || patched["message"] != LegacySchedulingConfigRejectedMessage {
+		t.Fatalf("merge cost_first patch must be rejected: %d %v", code, patched)
+	}
+	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, mergeID).Scan(&configJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !configJSON.Valid || configJSON.String != beforeJSON {
+		t.Fatalf("被拒绝的 patch 不得改写 config_json: before=%s after=%v", beforeJSON, configJSON)
+	}
+	// null/空对象输入仍可清配（P2 唯一合法 normalRoutingConfig 写形态）。
+	updatedAt = env.strategyUpdatedAt(t, mergeID)
+	code, patched = env.do(t, http.MethodPatch, path+"/"+mergeID,
+		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":null}`)
 	if code != http.StatusOK {
-		t.Fatalf("merge cost_first patch: %d %v", code, patched)
+		t.Fatalf("merge null config patch: %d %v", code, patched)
 	}
 	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, mergeID).Scan(&configJSON); err != nil {
 		t.Fatal(err)
 	}
 	if configJSON.Valid {
-		t.Fatalf("cost_first patch 后 config_json 必须清为 NULL: %v", configJSON)
+		t.Fatalf("null patch 后 config_json 必须清为 NULL: %v", configJSON)
 	}
 }

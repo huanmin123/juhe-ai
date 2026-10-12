@@ -252,6 +252,10 @@ type PGSeedResult struct {
 	//（固定 8 题；冲突时按内置行恢复 seed 权威题面，详见
 	// pgSeedBuiltinQuestionUpsert）。
 	BuiltinQuestionRows int
+	// SchedulingPreferenceMigrationSealed 是本次 seed 触发「全新空库自动写调
+	// 度偏好迁移完成记录」的结果（调度偏好独立实体 P2 设计门裁决②；仅记录不
+	// 存在且 api_keys 无行时为 true）。
+	SchedulingPreferenceMigrationSealed bool
 }
 
 // pgSeedSystemAccountsInsert seeds the default super admin account with

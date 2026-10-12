@@ -1011,7 +1011,8 @@ function defaultQualityPolicy(): ModelQualityPolicy {
     manualEnforcementEnabled: true,
     penaltyThreshold: 70,
     penaltyAction: 'fallback',
-    recoveryIntervalMinutes: 10
+    recoveryIntervalMinutes: 10,
+    timeoutPenaltyEnabled: false
   }
 }
 
@@ -1019,6 +1020,7 @@ function qualityPolicyPatch(policy: ModelQualityPolicy, input: ModelQualityPolic
   const patch: ModelQualityPolicyUpdateInput = { expectedRevision: input.expectedRevision }
   if (input.profile !== undefined && policy.profile !== input.profile) patch.profile = input.profile
   if (input.manualEnforcementEnabled !== undefined && policy.manualEnforcementEnabled !== input.manualEnforcementEnabled) patch.manualEnforcementEnabled = input.manualEnforcementEnabled
+  if (input.timeoutPenaltyEnabled !== undefined && policy.timeoutPenaltyEnabled !== input.timeoutPenaltyEnabled) patch.timeoutPenaltyEnabled = input.timeoutPenaltyEnabled
   if (input.penaltyThreshold !== undefined && policy.penaltyThreshold !== input.penaltyThreshold) patch.penaltyThreshold = input.penaltyThreshold
   if (input.penaltyAction !== undefined && policy.penaltyAction !== input.penaltyAction) patch.penaltyAction = input.penaltyAction
   if (input.recoveryIntervalMinutes !== undefined && policy.recoveryIntervalMinutes !== input.recoveryIntervalMinutes) patch.recoveryIntervalMinutes = input.recoveryIntervalMinutes
@@ -1034,6 +1036,7 @@ function qualitySchedulePatch(schedule: ModelQualitySchedule, input: ModelQualit
   if (schedule.penaltyThreshold !== input.penaltyThreshold) patch.penaltyThreshold = input.penaltyThreshold
   if (schedule.penaltyAction !== input.penaltyAction) patch.penaltyAction = input.penaltyAction
   if (schedule.recoveryIntervalMinutes !== input.recoveryIntervalMinutes) patch.recoveryIntervalMinutes = input.recoveryIntervalMinutes
+  if (schedule.timeoutPenaltyEnabled !== input.timeoutPenaltyEnabled) patch.timeoutPenaltyEnabled = input.timeoutPenaltyEnabled
   if (schedule.enabled !== (input.enabled !== false)) patch.enabled = input.enabled !== false
   if (input.customQuestionIds !== undefined && !sameStringArray(schedule.customQuestionIds, input.customQuestionIds)) patch.customQuestionIds = input.customQuestionIds
   return patch

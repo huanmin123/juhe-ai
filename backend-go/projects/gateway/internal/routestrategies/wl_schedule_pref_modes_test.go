@@ -3,6 +3,7 @@
 package routestrategies
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -129,20 +130,20 @@ func TestWlSchedulePrefNormalInput(t *testing.T) {
 	}
 }
 
-// TestWlSchedulePrefPatchFeedForward：normal(speed_first) → weighted patch 保留
-// 调度配置（config_json 不变）。
+// TestWlSchedulePrefPatchFeedForward：存量行（store 直建，代表迁移完成世界
+// 的旧数据/回滚 oracle）speed_first 配置在 mode 裸切时 feed-forward 保留
+// （config_json 逐字节不变、detail 照常渲染）；HTTP payload 不携带调度字段，
+// 不触发退场拒绝——存储 oracle 契约（D7 第 6 条：其他合法数据不可整列误删）。
 func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	groupA := env.createGroup(t, adminID, "alpha", true)
 	path := "/__aisys__/api/route-strategies"
 
-	code, created := env.createStrategy(t, path,
-		`{"name":"ff","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":25000},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("create: %d %v", code, created)
-	}
-	strategyID := dataMap(t, created)["id"].(string)
+	strategyID := env.createStrategyViaStore(t, adminID, "ff", ModeNormal, []string{groupA}, map[string]any{
+		"schedulingPreference": "speed_first",
+		"firstByteDeadlineMs":  25000,
+	})
 
 	var configJSON sql.NullString
 	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
@@ -183,10 +184,25 @@ func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	if !ok || detailConfig["schedulingPreference"] != "speed_first" {
 		t.Fatalf("weighted detail 必须保留 speed_first: %v", dataMap(t, detail)["normalRoutingConfig"])
 	}
+
+	// 无关字段 PATCH（名称）同理逐字节保持存量调度键（oracle 钉住）。
+	updatedAt = env.strategyUpdatedAt(t, strategyID)
+	code, patched = env.do(t, http.MethodPatch, path+"/"+strategyID,
+		`{"expectedUpdatedAt":"`+updatedAt+`","name":"ff-renamed"}`)
+	if code != http.StatusOK {
+		t.Fatalf("name patch: %d %v", code, patched)
+	}
+	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !configJSON.Valid || configJSON.String != beforeJSON {
+		t.Fatalf("无关字段 PATCH 不得改写 config_json: before=%s after=%v", beforeJSON, configJSON)
+	}
 }
 
-// TestWlSchedulePrefHTTPModeMatrix：三种新模式 speed_first/cost_first 的
-// 创建、落盘与渲染。
+// TestWlSchedulePrefHTTPModeMatrix：P2 五模式写入口一律拒绝旧调度字段；
+// 不携带调度字段的 cost_first 创建臂保持原有行为（渲染默认对象、config_json
+// NULL）。速度配置的落盘/回读语义由存储层测试覆盖（回滚 oracle）。
 func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -194,9 +210,9 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	groupB := env.createGroup(t, adminID, "bravo", true)
 	path := "/__aisys__/api/route-strategies"
 
-	// failover 需要主备两个启用分组，其余模式单绑定即可。
+	// failover/merge 需要两个启用分组，其余模式单绑定即可。
 	bindingsFor := func(mode string) string {
-		if mode == ModeFailover {
+		if mode == ModeFailover || mode == ModeMerge {
 			return bindingJSON(groupA, 0) + "," + bindingJSON(groupB, 0)
 		}
 		return bindingJSON(groupA, 0)
@@ -204,40 +220,25 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	speedBody := func(mode, name string) string {
 		return `{"name":"` + name + `","mode":"` + mode + `","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000,"speedFirstConfig":{"slowTriggerCount":4}},"groupBindings":[` + bindingsFor(mode) + `]}`
 	}
-	for _, mode := range []string{ModeWeighted, ModeFailover, ModeRoundRobin} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
 		code, payload := env.createStrategy(t, path, speedBody(mode, "sf-"+mode))
-		if code != http.StatusCreated {
-			t.Fatalf("%s create: %d %v", mode, code, payload)
-		}
-		created := dataMap(t, payload)
-		config, ok := created["normalRoutingConfig"].(map[string]any)
-		if !ok || config["schedulingPreference"] != "speed_first" || config["firstByteDeadlineMs"] != float64(30000) {
-			t.Fatalf("%s 响应渲染: %v", mode, created["normalRoutingConfig"])
-		}
-		speedFirst := config["speedFirstConfig"].(map[string]any)
-		if speedFirst["slowTriggerCount"] != float64(4) || speedFirst["probeIntervalSeconds"] != float64(30) {
-			t.Fatalf("%s speedFirstConfig: %v", mode, speedFirst)
-		}
-		strategyID := created["id"].(string)
-		var configJSON sql.NullString
-		if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
-			t.Fatal(err)
-		}
-		if !configJSON.Valid || !contains(configJSON.String, "speed_first") {
-			t.Fatalf("%s config_json 必须落盘: %v", mode, configJSON)
+		if code != http.StatusBadRequest || payload["message"] != LegacySchedulingConfigRejectedMessage {
+			t.Fatalf("%s speed_first create must be rejected: %d %v", mode, code, payload)
 		}
 
-		// 同模式 cost_first：响应渲染默认对象，库中 config_json 为 NULL。
+		// cost_first（无 normalRoutingConfig）：照常创建，渲染默认对象，库中
+		// config_json 为 NULL。
 		code, payload = env.createStrategy(t, path,
 			`{"name":"cf-`+mode+`","mode":"`+mode+`","groupBindings":[`+bindingsFor(mode)+`]}`)
 		if code != http.StatusCreated {
 			t.Fatalf("%s cost_first create: %d %v", mode, code, payload)
 		}
-		created = dataMap(t, payload)
-		config, ok = created["normalRoutingConfig"].(map[string]any)
+		created := dataMap(t, payload)
+		config, ok := created["normalRoutingConfig"].(map[string]any)
 		if !ok || config["schedulingPreference"] != "cost_first" {
 			t.Fatalf("%s cost_first 响应: %v", mode, created["normalRoutingConfig"])
 		}
+		var configJSON sql.NullString
 		if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, created["id"].(string)).Scan(&configJSON); err != nil {
 			t.Fatal(err)
 		}
@@ -247,9 +248,10 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	}
 }
 
-// TestWlSchedulePrefRuntimeCleanupAndEnrich：failover 的 cost_first →
-// speed_first patch 触发 runtime cleanup；weighted speed_first 行获得列表
-// runtime 富化与 speed-first-runtime 端点 enabled:true。
+// TestWlSchedulePrefRuntimeCleanupAndEnrich：存量 speed_first 行（store 直建，
+// 回滚 oracle 世界）获得列表 runtime 富化与 speed-first-runtime 端点
+// enabled:true；normalRoutingConfig 输入（P2 唯一合法形态为 null/空对象）改写
+// 配置时仍触发 runtime cleanup。
 func TestWlSchedulePrefRuntimeCleanupAndEnrich(t *testing.T) {
 	facade := &fakeSpeedFirstFacade{available: true}
 	env := newTestEnvFull(t, facade)
@@ -258,35 +260,15 @@ func TestWlSchedulePrefRuntimeCleanupAndEnrich(t *testing.T) {
 	groupB := env.createGroup(t, adminID, "bravo", true)
 	path := "/__aisys__/api/route-strategies"
 
-	// failover 需要主备两个启用分组。
-	code, created := env.createStrategy(t, path,
-		`{"name":"fo","mode":"failover","groupBindings":[`+bindingJSON(groupA, 0)+`,`+bindingJSON(groupB, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("failover create: %d %v", code, created)
-	}
-	failoverID := dataMap(t, created)["id"].(string)
-
-	// cost_first → speed_first 的 patch 触发 cleanup（参照 bug0164 断言方式）。
-	updatedAt := env.strategyUpdatedAt(t, failoverID)
-	code, patched := env.do(t, http.MethodPatch, path+"/"+failoverID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000}}`)
-	if code != http.StatusOK {
-		t.Fatalf("speed_first patch: %d %v", code, patched)
-	}
-	facade.mu.Lock()
-	cleared := append([]string{}, facade.cleared...)
-	facade.mu.Unlock()
-	if len(cleared) != 1 || cleared[0] != failoverID {
-		t.Fatalf("normalRoutingConfig patch 必须清理 runtime: %v", cleared)
-	}
-
-	// weighted speed_first：列表富化 + speed-first-runtime 端点 enabled。
-	code, created = env.createStrategy(t, path,
-		`{"name":"wsf","mode":"weighted","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("weighted speed_first create: %d %v", code, created)
-	}
-	weightedID := dataMap(t, created)["id"].(string)
+	// 存量 speed_first 行：failover（主备两组）与 weighted 各一。
+	failoverID := env.createStrategyViaStore(t, adminID, "fo", ModeFailover, []string{groupA, groupB}, map[string]any{
+		"schedulingPreference": "speed_first",
+		"firstByteDeadlineMs":  30000,
+	})
+	weightedID := env.createStrategyViaStore(t, adminID, "wsf", ModeWeighted, []string{groupA}, map[string]any{
+		"schedulingPreference": "speed_first",
+		"firstByteDeadlineMs":  20000,
+	})
 	facade.mu.Lock()
 	facade.items = []SpeedFirstRuntimeItem{{
 		AccountID:     "acc-1",
@@ -321,48 +303,64 @@ func TestWlSchedulePrefRuntimeCleanupAndEnrich(t *testing.T) {
 		t.Fatalf("weighted speed-first-runtime: %v", runtime)
 	}
 
-	// weighted speed_first → cost_first 的 patch 同样触发 cleanup。
-	updatedAt = env.strategyUpdatedAt(t, weightedID)
-	code, patched = env.do(t, http.MethodPatch, path+"/"+weightedID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":{"schedulingPreference":"cost_first"}}`)
+	// normalRoutingConfig 输入（null：归一为 cost_first）改写配置 → cleanup。
+	updatedAt := env.strategyUpdatedAt(t, weightedID)
+	code, patched := env.do(t, http.MethodPatch, path+"/"+weightedID,
+		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":null}`)
 	if code != http.StatusOK {
-		t.Fatalf("cost_first patch: %d %v", code, patched)
+		t.Fatalf("null config patch: %d %v", code, patched)
+	}
+	facade.mu.Lock()
+	cleared := append([]string{}, facade.cleared...)
+	facade.mu.Unlock()
+	if len(cleared) != 1 || cleared[0] != weightedID {
+		t.Fatalf("normalRoutingConfig patch 必须清理 runtime: %v", cleared)
+	}
+
+	// failover speed_first 行同样经 null 输入清配 → 再次 cleanup。
+	updatedAt = env.strategyUpdatedAt(t, failoverID)
+	code, patched = env.do(t, http.MethodPatch, path+"/"+failoverID,
+		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("empty object config patch: %d %v", code, patched)
 	}
 	facade.mu.Lock()
 	cleared = append([]string{}, facade.cleared...)
 	facade.mu.Unlock()
-	if len(cleared) != 2 || cleared[1] != weightedID {
-		t.Fatalf("改回 cost_first 必须再次清理 runtime: %v", cleared)
+	if len(cleared) != 2 || cleared[1] != failoverID {
+		t.Fatalf("清回 cost_first 必须再次清理 runtime: %v", cleared)
 	}
 }
 
-// TestWlSchedulePrefPatchIdenticalConfigNoOp：三种新模式行 patch 提交与存量
-// 相同的 speed_first 配置 → changedFields 为空、config_json 逐字节不变、
-// updated_at 不变（与 normal 行为对称；修复前 currentJSON 被渲染成 NULL，
-// 会追加逐字节相同的 config_json 赋值并轮换 updated_at）。
+// TestWlSchedulePrefPatchIdenticalConfigNoOp：三种新模式存量行（store 直建）
+// 经 store patch 提交与存量相同的 speed_first 配置 → changedFields 为空、
+// config_json 逐字节不变、updated_at 不变（与 normal 行为对称；修复前
+// currentJSON 被渲染成 NULL，会追加逐字节相同的 config_json 赋值并轮换
+// updated_at）。P2 起 HTTP 载荷不再接受调度字段，同值 no-op 语义留在存储层
+//（回滚 oracle 契约）。
 func TestWlSchedulePrefPatchIdenticalConfigNoOp(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	groupA := env.createGroup(t, adminID, "alpha", true)
 	groupB := env.createGroup(t, adminID, "bravo", true)
-	path := "/__aisys__/api/route-strategies"
 
 	// failover 需要主备两个启用分组，其余模式单绑定即可。
-	bindingsFor := func(mode string) string {
+	bindingsFor := func(mode string) []string {
 		if mode == ModeFailover {
-			return bindingJSON(groupA, 0) + "," + bindingJSON(groupB, 0)
+			return []string{groupA, groupB}
 		}
-		return bindingJSON(groupA, 0)
+		return []string{groupA}
 	}
-	speedConfig := `{"schedulingPreference":"speed_first","firstByteDeadlineMs":35000,"speedFirstConfig":{"slowTriggerCount":4}}`
+	speedRaw := func() map[string]any {
+		return map[string]any{
+			"schedulingPreference": "speed_first",
+			"firstByteDeadlineMs":  35000,
+			"speedFirstConfig":     map[string]any{"slowTriggerCount": 4},
+		}
+	}
 	for _, mode := range []string{ModeWeighted, ModeFailover, ModeRoundRobin} {
 		t.Run(mode, func(t *testing.T) {
-			code, created := env.createStrategy(t, path,
-				`{"name":"noop-`+mode+`","mode":"`+mode+`","normalRoutingConfig":`+speedConfig+`,"groupBindings":[`+bindingsFor(mode)+`]}`)
-			if code != http.StatusCreated {
-				t.Fatalf("%s create: %d %v", mode, code, created)
-			}
-			strategyID := dataMap(t, created)["id"].(string)
+			strategyID := env.createStrategyViaStore(t, adminID, "noop-"+mode, mode, bindingsFor(mode), speedRaw())
 
 			var beforeJSON sql.NullString
 			if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&beforeJSON); err != nil {
@@ -373,15 +371,15 @@ func TestWlSchedulePrefPatchIdenticalConfigNoOp(t *testing.T) {
 			}
 			beforeUpdatedAt := env.strategyUpdatedAt(t, strategyID)
 
-			// PATCH 只带 expectedUpdatedAt 与完全相同的 normalRoutingConfig。
-			code, patched := env.do(t, http.MethodPatch, path+"/"+strategyID,
-				`{"expectedUpdatedAt":"`+beforeUpdatedAt+`","normalRoutingConfig":`+speedConfig+`}`)
-			if code != http.StatusOK {
-				t.Fatalf("%s identical patch: %d %v", mode, code, patched)
+			// store patch 提交完全相同的 normalRoutingConfig。
+			result, err := env.store.Patch(context.Background(), strategyID,
+				MutationInput{HasNormalConfig: true, NormalConfigRaw: speedRaw()}, beforeUpdatedAt,
+				AccessScope{ViewerID: adminID, IsAdmin: true})
+			if err != nil {
+				t.Fatalf("%s identical patch: %v", mode, err)
 			}
-			changed := changedSet(t, patched)
-			if changed["normalRoutingConfig"] || len(changed) != 0 {
-				t.Fatalf("%s 零变更 patch 不得产生 changedFields: %v", mode, changed)
+			if len(result.ChangedFields) != 0 {
+				t.Fatalf("%s 零变更 patch 不得产生 changedFields: %v", mode, result.ChangedFields)
 			}
 
 			var afterJSON sql.NullString

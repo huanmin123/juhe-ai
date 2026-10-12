@@ -363,6 +363,10 @@ func parseStrategyAddBody(body map[string]any) (*strategyAddBody, string) {
 	parsed.Bindings, parsed.HasBindings = bindings, true
 	if value, exists := body["normalRoutingConfig"]; exists {
 		if value == nil || isPlainObject(value) {
+			// P2 契约：公开 add 的 payload 携带退场调度字段显式拒绝（不静默忽略）。
+			if routestrategies.DetectRetiredSchedulingConfigPayload(value) {
+				return nil, routestrategies.LegacySchedulingConfigRejectedMessage
+			}
 			parsed.NormalConfig, parsed.HasNormalConfig = value, true
 		} else {
 			return nil, zodInvalidType("object", value)
@@ -540,6 +544,10 @@ func parseStrategyUpdateBody(body map[string]any) (*strategyUpdateBody, string) 
 	}
 	if value, exists := body["normalRoutingConfig"]; exists {
 		if value == nil || isPlainObject(value) {
+			// P2 契约：公开 update 的 payload 携带退场调度字段显式拒绝（不静默忽略）。
+			if routestrategies.DetectRetiredSchedulingConfigPayload(value) {
+				return nil, routestrategies.LegacySchedulingConfigRejectedMessage
+			}
 			parsed.NormalConfig, parsed.HasNormalConfig = value, true
 		} else {
 			return nil, zodInvalidType("object", value)

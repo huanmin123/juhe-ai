@@ -523,3 +523,48 @@ func TestSummarizeChecksIgnoresNestedPrefixQuizItems(t *testing.T) {
 		t.Fatalf("nested quiz items must not touch the main score: %+v", got)
 	}
 }
+
+// 超时处罚端到端：题库跳真实超时（本级预算到点，error=TimeoutPenaltyProbeError）
+// 触发家族终态后，失败项必须携带题目权重，SummarizeChecksWithTimeoutPenalty
+// 开启时按权重全额扣减（1 题扣 31、2 题首题超时扣 16），关闭时不扣。
+func TestRunQuizFamilyTimeoutCarriesWeightAndPenaltyDeducts(t *testing.T) {
+	t.Run("单题超时扣31", func(t *testing.T) {
+		transport := &bug0292QuizTransport{answerTruncations: 99}
+		suite := bug0292QuizSuite(transport)
+		suite.QuizQuestions = quizTestQuestions()[:1]
+		items, err := RunQuizFamily(context.Background(), suite, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].Status != "skipped" || items[0].MaxScore != QuizMaxPool || items[0].Score != 0 {
+			t.Fatalf("超时失败项必须携带全额权重: %+v", items)
+		}
+		if items[0].Evidence["error"] != TimeoutPenaltyProbeError {
+			t.Fatalf("必须是超时口径证据: %+v", items[0].Evidence)
+		}
+		checks := append(quizBaseChecks(), items...)
+		if got := SummarizeChecksWithTimeoutPenalty(checks, false, "full", true); got.Score != 100-QuizMaxPool {
+			t.Fatalf("开启超时处罚必须扣全额权重 31: %+v", got)
+		}
+		if got := SummarizeChecksWithTimeoutPenalty(checks, false, "full", false); got.Score != 100 {
+			t.Fatalf("关闭超时处罚维持不扣分: %+v", got)
+		}
+	})
+	t.Run("两题首题裁判超时扣16", func(t *testing.T) {
+		transport := &bug0292QuizTransport{gradeTruncations: 99, gradeOutput: `{"verdict":"pass","reason":"结论一致"}`}
+		suite := bug0292QuizSuite(transport)
+		suite.QuizQuestions = quizTestQuestions()
+		items, err := RunQuizFamily(context.Background(), suite, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 首题裁判跳超时即家族终态：仅产出首题失败项，权重为 weights[0]=16。
+		if len(items) != 1 || items[0].Status != "skipped" || items[0].MaxScore != 16 {
+			t.Fatalf("两题家族首题超时项必须携带首题权重 16: %+v", items)
+		}
+		checks := append(quizBaseChecks(), items...)
+		if got := SummarizeChecksWithTimeoutPenalty(checks, false, "full", true); got.Score != 84 {
+			t.Fatalf("开启超时处罚必须扣首题权重 16: %+v", got)
+		}
+	})
+}

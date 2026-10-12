@@ -441,6 +441,13 @@ func TestMergeRouteAuditAttemptGroupIdentity(t *testing.T) {
 func TestMergeRouteSpeedFirstSlowSampleScopeFollowsAccountGroup(t *testing.T) {
 	compat := mergeSecondGroup{groupID: "group_compat", accountID: "acc_compat"}
 	fixture := mergeSeedFixture(t, compat, false)
+	// P2：普通键派发配置来自偏好合成，策略 config 的调度维度只剩 purpose=chat
+	// 键消费（v1 速度键命名空间语义保持不变）；本测试的 30ms 截止 + 单样本触
+	// 发为越界值（只能经裸 SQL 存量配置承载，读取解码不做范围校验），故键转
+	// 为 chat 承载原断言。
+	if _, err := fixture.db.Exec(`UPDATE api_keys SET purpose = 'chat' WHERE id = 'key_1'`); err != nil {
+		t.Fatalf("set chat purpose: %v", err)
+	}
 	// merge 策略配置速度优先（首字截止 30ms + 单样本触发降级）。
 	if _, err := fixture.db.Exec(`UPDATE route_strategies SET config_json = ? WHERE id = 'rs_merge'`,
 		`{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30,"speedFirstConfig":{"slowTriggerCount":1}}}`); err != nil {

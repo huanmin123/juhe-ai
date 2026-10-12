@@ -11,7 +11,19 @@ type SummaryResult struct {
 	Message  string
 }
 
+// SummarizeChecks 以关闭超时处罚的既有口径汇总：与
+// SummarizeChecksWithTimeoutPenalty 的 timeoutPenalty=false 逐字节等价。
 func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string) SummaryResult {
+	return SummarizeChecksWithTimeoutPenalty(checks, trustedComparison, profile, false)
+}
+
+// SummarizeChecksWithTimeoutPenalty 在 SummarizeChecks 既有口径之上叠加
+// 超时处罚开关。timeoutPenalty=false 时与原实现逐字节等价；true 时超时项
+// （IsTimeoutPenaltyEvidence 口径）按“该环节判 failed”参与评分：非题库项
+// 进入归一化分母、得 0 分并计入 failed 计数；题库项按判 failed 等价扣
+// MaxScore-Score（requestFailure/excludedFromScoring 排除对超时项不再
+// 适用，权重全额扣减）。
+func SummarizeChecksWithTimeoutPenalty(checks []Evaluation, trustedComparison bool, profile string, timeoutPenalty bool) SummaryResult {
 	maxScore, rawScore, failed, quizDeduction := 0, 0, 0, 0
 	for _, item := range checks {
 		originalKind := item.Kind
@@ -19,24 +31,37 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 		if strings.HasPrefix(originalKind, "trusted_comparison.") && item.Kind != "comparison" && item.Kind != "distribution_similarity" {
 			continue
 		}
+		timeoutItem := timeoutPenalty && IsTimeoutPenaltyEvidence(originalKind, item.Evidence)
 		if item.Kind == "custom_quiz" {
 			// Custom quiz items never enter the shared denominator. A graded
 			// failure deducts its full remaining weight from the normalized
 			// score instead; terminal/request-failure items stay excluded.
-			if item.Status == "failed" {
+			// 超时处罚开启时超时项例外：按判 failed 等价扣分，排除标志不再
+			// 豁免（关闭时豁免语义不变）。
+			if item.Status == "failed" || timeoutItem {
 				failed++
-				if item.MaxScore > 0 && !evidenceBool(item.Evidence, "excludedFromScoring") && !evidenceBool(item.Evidence, "requestFailure") {
+				excluded := evidenceBool(item.Evidence, "excludedFromScoring") || evidenceBool(item.Evidence, "requestFailure")
+				if item.MaxScore > 0 && (!excluded || timeoutItem) {
 					quizDeduction += item.MaxScore - item.Score
 				}
 			}
 			continue
 		}
-		if item.MaxScore <= 0 || item.Status == "skipped" {
+		if (item.MaxScore <= 0 || item.Status == "skipped") && !timeoutItem {
 			continue
 		}
-		maxScore += item.MaxScore
+		// 非题库超时项按“该环节判 failed”参与评分：家族失败项按 requestFailure
+		// 约定不带满分（MaxScore=0），超时处罚下按 Kind 取规范分值进分母、得
+		// 0 分（identity_selfreport/identity_extraction 等证据性家族与未知
+		// Kind 规范分值为 0，不稀释但 failed 计数照常）。非超时路径不动原值，
+		// 与关闭口径逐字节等价。
+		denominator := item.MaxScore
+		if timeoutItem && denominator <= 0 {
+			denominator = timeoutFamilyMaxScore(item.Kind)
+		}
+		maxScore += denominator
 		rawScore += item.Score
-		if item.Status == "failed" {
+		if item.Status == "failed" || timeoutItem {
 			failed++
 		}
 	}
@@ -219,6 +244,25 @@ func hasStatusAny(items []Evaluation, status string, kinds ...string) bool {
 }
 
 func evidenceBool(e map[string]any, key string) bool { v, _ := e[key].(bool); return v }
+
+// TimeoutPenaltyProbeError 是 probe.go 传输与读取两级超时分类写入证据 error
+// 键的原文；超时处罚口径以它判定超时项，避免多处字面量漂移。
+const TimeoutPenaltyProbeError = "J3b probe timed out"
+
+// IsTimeoutPenaltyEvidence 判断检测项证据是否属于超时处罚口径：同时满足
+// terminalFailure=true 且 error==TimeoutPenaltyProbeError；trusted_comparison.
+// 前缀环节（未去 scope 前的 Kind）一律排除——对照账户证据不属于目标处罚，
+// 也保持其既有终端证据语义。开关关闭时没有任何路径调用本谓词。
+func IsTimeoutPenaltyEvidence(kind string, evidence map[string]any) bool {
+	if strings.HasPrefix(kind, "trusted_comparison.") {
+		return false
+	}
+	if !evidenceBool(evidence, "terminalFailure") {
+		return false
+	}
+	errText, _ := evidence["error"].(string)
+	return errText == TimeoutPenaltyProbeError
+}
 
 // hasSamplingShortCircuitReason 检查 sampling_statistics 证据中的
 // reasonCodes 是否包含任一整轮短路码（§17 评分契约；token_distribution

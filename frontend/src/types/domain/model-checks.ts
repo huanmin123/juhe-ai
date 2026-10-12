@@ -98,6 +98,7 @@ export interface ModelQualityPolicy {
   penaltyThreshold: number
   penaltyAction: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
+  timeoutPenaltyEnabled: boolean
   customQuestionIds?: string[]
   createdAt?: string
   updatedAt?: string
@@ -110,6 +111,7 @@ export interface ModelQualityPolicyUpdateInput {
   penaltyThreshold?: number
   penaltyAction?: ModelQualityPenaltyAction
   recoveryIntervalMinutes?: number
+  timeoutPenaltyEnabled?: boolean
   customQuestionIds?: string[]
 }
 
@@ -125,6 +127,7 @@ export interface ModelQualitySchedule {
   penaltyThreshold: number
   penaltyAction: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
+  timeoutPenaltyEnabled: boolean
   enabled: boolean
   executionState: ModelQualityScheduleExecutionState
   /** 触发 executionState=blocked_account 时的账户状态快照（如 disabled/quality_isolated） */
@@ -185,6 +188,7 @@ export interface ModelQualityPolicySnapshot {
   configSource?: 'manual' | 'schedule'
   profile: ModelCheckProfile
   manualEnforcementEnabled: boolean
+  timeoutPenaltyEnabled: boolean
   threshold: number
   action: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
@@ -196,6 +200,8 @@ export interface ModelQualityDecision {
   triggerKind: ModelCheckTriggerKind
   triggered: boolean
   hardFailure: boolean
+  timeoutPenaltyEnabled?: boolean
+  timeoutPenaltyTriggered?: boolean
   threshold: number
   score: number
   configuredAction: ModelQualityPenaltyAction
@@ -234,6 +240,7 @@ export interface ModelQualityScheduleMutationInput {
   penaltyThreshold: number
   penaltyAction: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
+  timeoutPenaltyEnabled: boolean
   customQuestionIds?: string[]
   enabled?: boolean
   expectedRevision?: number
@@ -242,7 +249,7 @@ export interface ModelQualityScheduleMutationInput {
 export type ModelQualitySchedulePatchInput = {
   expectedRevision: number
 } & Partial<Pick<ModelQualityScheduleMutationInput,
-  'model' | 'intervalMinutes' | 'profile' | 'penaltyThreshold' | 'penaltyAction' | 'recoveryIntervalMinutes' | 'customQuestionIds' | 'enabled'>>
+  'model' | 'intervalMinutes' | 'profile' | 'penaltyThreshold' | 'penaltyAction' | 'recoveryIntervalMinutes' | 'timeoutPenaltyEnabled' | 'customQuestionIds' | 'enabled'>>
 
 export type ModelCheckQuestionStatus = 'pending' | 'approved' | 'rejected'
 

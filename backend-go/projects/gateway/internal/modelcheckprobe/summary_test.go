@@ -279,3 +279,156 @@ func TestSummarizeChecksRequiresTrustedComparisonAggregateForHighConfidence(t *t
 		t.Fatalf("summary=%+v", got)
 	}
 }
+
+// timeoutPenaltyQuizEvidence 复刻 quizRequestFailureEvaluation + 家族终端
+// 包装后的超时证据形状（terminalFailure + error 原文 + 排除标志）；weight
+// 形态与生产一致（quiz.go 已把题目权重落在 MaxScore 上，超时处罚按判
+// failed 等价扣 MaxScore-Score 即权重全额）。
+func timeoutPenaltyQuizEvidence() map[string]any {
+	return map[string]any{
+		"questionId":           "q1",
+		"requestFailure":       true,
+		"excludedFromScoring":  true,
+		"evidenceInsufficient": true,
+		"terminalFailure":      true,
+		"error":                TimeoutPenaltyProbeError,
+	}
+}
+
+// 开关关闭（默认）：题库超时项维持现状——不扣分、不影响分数。
+func TestSummarizeChecksTimeoutPenaltyOffKeepsQuizTimeoutExcluded(t *testing.T) {
+	checks := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "custom_quiz", Status: "skipped", Score: 0, MaxScore: 16, Evidence: timeoutPenaltyQuizEvidence()},
+	}
+	got := SummarizeChecks(checks, false, "quick")
+	if got.Score != 100 {
+		t.Fatalf("关闭超时处罚时题库超时项不得扣分: %+v", got)
+	}
+}
+
+// 开关关闭（默认）：请求失败证据仍按现状抑制——非题库超时项不进分母、
+// 不计 failed，题库 requestFailure 项仍豁免扣分。
+func TestSummarizeChecksTimeoutPenaltyOffKeepsRequestFailureSuppressed(t *testing.T) {
+	checks := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "structured_output", Status: "skipped", Score: 0, MaxScore: 15, Evidence: terminalCoreEvidence()},
+		{Kind: "custom_quiz", Status: "skipped", Score: 0, MaxScore: 16, Evidence: map[string]any{"requestFailure": true, "excludedFromScoring": true}},
+	}
+	got := SummarizeChecks(checks, false, "quick")
+	if got.Score != 100 {
+		t.Fatalf("关闭超时处罚时请求失败项不得进分母或扣分: %+v", got)
+	}
+}
+
+// 开关开启：题库超时项按判 failed 等价扣分（MaxScore-Score 即权重全额），
+// 并计入 failed 计数；MaxScore=0 的防御形态（无权重可扣）不产生负向影响。
+func TestSummarizeChecksWithTimeoutPenaltyDeductsQuizWeight(t *testing.T) {
+	checks := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "custom_quiz", Status: "skipped", Score: 0, MaxScore: 16, Evidence: timeoutPenaltyQuizEvidence()},
+	}
+	got := SummarizeChecksWithTimeoutPenalty(checks, false, "quick", true)
+	if got.Score != 84 {
+		t.Fatalf("开启超时处罚时题库超时项应扣权重 16: %+v", got)
+	}
+	// 权重未落在项上（MaxScore=0）时不产生负扣分。
+	flat := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "custom_quiz", Status: "skipped", Score: 0, MaxScore: 0, Evidence: timeoutPenaltyQuizEvidence()},
+	}
+	if got := SummarizeChecksWithTimeoutPenalty(flat, false, "quick", true); got.Score != 100 {
+		t.Fatalf("MaxScore=0 的超时项无权重可扣，不得产生负向影响: %+v", got)
+	}
+}
+
+// timeoutPenaltyFamilyEvidence 复刻非题库家族 requestFailure 项的超时证据
+// 形状（生产形态 MaxScore=0，满分由 summary 按规范分值补齐）。
+func timeoutPenaltyFamilyEvidence() map[string]any {
+	return map[string]any{
+		"requestFailure":       true,
+		"excludedFromScoring":  true,
+		"evidenceInsufficient": true,
+		"terminalFailure":      true,
+		"error":                TimeoutPenaltyProbeError,
+	}
+}
+
+// 开关开启：非题库超时项在 MaxScore=0（requestFailure 生产形态）时按 Kind
+// 取规范分值进分母、得 0 分——structured_output 规范 15（10/25=40）、
+// behavior_probe 规范 35（10/45）；证据性/未知 Kind 规范分值为 0，不稀释但
+// failed 计数照常。关闭开关时全部维持排除现状。
+func TestSummarizeChecksWithTimeoutPenaltyNormalizesZeroWeightNonQuizTimeout(t *testing.T) {
+	structured := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "structured_output", Status: "skipped", Score: 0, MaxScore: 0, Evidence: timeoutPenaltyFamilyEvidence()},
+	}
+	if got := SummarizeChecksWithTimeoutPenalty(structured, false, "quick", true); got.Score != 40 {
+		t.Fatalf("structured_output 超时项应按规范分值 15 进分母（10/25）: %+v", got)
+	}
+	if got := SummarizeChecksWithTimeoutPenalty(structured, false, "quick", false); got.Score != 100 {
+		t.Fatalf("关闭开关时 MaxScore=0 的超时项必须维持排除现状: %+v", got)
+	}
+	behavior := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "behavior_probe", Status: "skipped", Score: 0, MaxScore: 0, Evidence: timeoutPenaltyFamilyEvidence()},
+	}
+	wantBehavior := (10*100 + 45/2) / 45
+	if got := SummarizeChecksWithTimeoutPenalty(behavior, false, "quick", true); got.Score != wantBehavior {
+		t.Fatalf("behavior_probe 超时项应按规范分值 35 进分母（10/45=%d）: %+v", wantBehavior, got)
+	}
+	zeroWeight := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "identity_selfreport", Status: "skipped", Score: 0, MaxScore: 0, Evidence: timeoutPenaltyFamilyEvidence()},
+		{Kind: "some_future_family", Status: "skipped", Score: 0, MaxScore: 0, Evidence: timeoutPenaltyFamilyEvidence()},
+	}
+	if got := SummarizeChecksWithTimeoutPenalty(zeroWeight, false, "quick", true); got.Score != 100 {
+		t.Fatalf("规范分值为 0 的证据性/未知超时项不得稀释分数: %+v", got)
+	}
+}
+
+// 开关开启：非题库超时项按“该环节判 failed”参与——进归一化分母、得 0 分、
+// 计入 failed 计数；非超时的普通 requestFailure 项仍按现状排除。
+func TestSummarizeChecksWithTimeoutPenaltyCountsNonQuizTimeoutInDenominator(t *testing.T) {
+	checks := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "structured_output", Status: "skipped", Score: 0, MaxScore: 15, Evidence: map[string]any{"requestFailure": true, "terminalFailure": true, "excludedFromScoring": true, "error": TimeoutPenaltyProbeError}},
+	}
+	got := SummarizeChecksWithTimeoutPenalty(checks, false, "quick", true)
+	if got.Score != 40 {
+		t.Fatalf("开启超时处罚时非题库超时项应进分母得 0 分（10/25）: %+v", got)
+	}
+	// 同一形态关闭开关时维持现状（10/10=100）。
+	if got := SummarizeChecksWithTimeoutPenalty(checks, false, "quick", false); got.Score != 100 {
+		t.Fatalf("关闭开关时超时项必须维持排除现状: %+v", got)
+	}
+	// 非超时请求失败（无超时 error）在开启时仍排除，不进分母。
+	nonTimeout := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "structured_output", Status: "skipped", Score: 0, MaxScore: 15, Evidence: map[string]any{"requestFailure": true, "terminalFailure": true, "excludedFromScoring": true, "error": "J3b upstream returned HTTP 503"}},
+	}
+	if got := SummarizeChecksWithTimeoutPenalty(nonTimeout, false, "quick", true); got.Score != 100 {
+		t.Fatalf("非超时终端失败不得按超时口径计分: %+v", got)
+	}
+}
+
+// 超时处罚谓词：同时要求 terminalFailure 与精确 error 原文；trusted_comparison.
+// 前缀环节（未去 scope 的 Kind）一律排除。
+func TestIsTimeoutPenaltyEvidence(t *testing.T) {
+	evidence := timeoutPenaltyQuizEvidence()
+	if !IsTimeoutPenaltyEvidence("custom_quiz", evidence) {
+		t.Fatal("terminalFailure + 超时 error 必须判为超时证据")
+	}
+	if IsTimeoutPenaltyEvidence("custom_quiz", map[string]any{"terminalFailure": true}) {
+		t.Fatal("缺少超时 error 不得判为超时证据")
+	}
+	if IsTimeoutPenaltyEvidence("custom_quiz", map[string]any{"error": TimeoutPenaltyProbeError}) {
+		t.Fatal("缺少 terminalFailure 不得判为超时证据")
+	}
+	if IsTimeoutPenaltyEvidence("trusted_comparison.protocol_basic", evidence) {
+		t.Fatal("trusted_comparison 前缀环节必须排除")
+	}
+	if IsTimeoutPenaltyEvidence("structured_output", map[string]any{"terminalFailure": true, "error": "J3b probe canceled"}) {
+		t.Fatal("非超时错误原文不得判为超时证据")
+	}
+}

@@ -3,7 +3,9 @@ package gatewayruntimecache
 // 合并路由（merge 模式）B8 回归：NormalizeRouteStrategyMode 白名单放行
 // merge，merge 策略行经 SQL runtime cache 读取（ReadGatewayRuntimeByKeyHash）
 // 后 RouteStrategyMode 保持 "merge"——修复前未知值静默回退 normal；统一解码
-// 门覆盖 merge，speed_first 的 normalRoutingConfig 照常解码。
+// 门覆盖 merge，speed_first 的 normalRoutingConfig 照常解码。P2 起策略
+// config 的调度维度只剩 purpose=chat 键消费（普通 Key 派发配置来自偏好合
+// 成），故本测试键用 purpose=chat 承载原断言。
 
 import (
 	"context"
@@ -35,12 +37,12 @@ func TestWMSQLMergeModeRoundTrip(t *testing.T) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g2', 'sys_owner', 'gpt', 1, 'personal')`,
 		// merge 策略（双绑定 + speed_first 配置）+ 绑定 API Key。
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_wm_merge', 'sys_owner', 'merge', '` + speedConfig + `', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key_wm_merge', 'sys_owner', 'rs_wm_merge', '` + HashSecret("sk-wm-merge") + `', 'active')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_wm_merge', 'sys_owner', 'rs_wm_merge', '` + HashSecret("sk-wm-merge") + `', 'active', 'chat')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_wm_merge_1', 'rs_wm_merge', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_wm_merge_2', 'rs_wm_merge', 'sys_owner', 'g2', 2, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		// merge + 无 config_json：mode 保持 merge、调度配置保持 nil。
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_wm_merge_noconf', 'sys_owner', 'merge', NULL, 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key_wm_merge_noconf', 'sys_owner', 'rs_wm_merge_noconf', '` + HashSecret("sk-wm-merge-noconf") + `', 'active')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_wm_merge_noconf', 'sys_owner', 'rs_wm_merge_noconf', '` + HashSecret("sk-wm-merge-noconf") + `', 'active', 'chat')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_wm_merge_noconf', 'rs_wm_merge_noconf', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {

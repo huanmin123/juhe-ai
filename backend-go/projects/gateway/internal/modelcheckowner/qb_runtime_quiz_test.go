@@ -95,7 +95,9 @@ func TestBuildCustomQuizSummary(t *testing.T) {
 			t.Fatalf("item %d verdict=%s, want %s (%+v)", index, summary.Items[index].Verdict, expect, summary.Items[index])
 		}
 	}
-	if summary.Items[3].Reason != "" || summary.Items[3].QuestionID != "q4" {
+	// q4 请求失败且无 error 证据：reason 固定为"请求未完成"（无短语、无重试
+	// 后缀），身份字段保留。
+	if summary.Items[3].Reason != "请求未完成" || summary.Items[3].QuestionID != "q4" {
 		t.Fatalf("request failure item keeps its identity: %+v", summary.Items[3])
 	}
 	// 空题库：家族产出单条 skipped unavailable 行；未作答任何题，score=0
@@ -125,6 +127,78 @@ func TestBuildCustomQuizSummary(t *testing.T) {
 	negative, _ := buildCustomQuizSummary([]modelcheckprobe.Evaluation{{Kind: "custom_quiz", Status: "failed", Score: 0, MaxScore: 40, Evidence: map[string]any{"questionId": "q", "verdict": "fail"}}}, true)
 	if negative.Score != 0 || !negative.Executed {
 		t.Fatalf("clamped score=%d executed=%v", negative.Score, negative.Executed)
+	}
+}
+
+// TestBuildCustomQuizSummaryRequestFailureReason 钉死请求失败形态的中文
+// reason 契约：error 短语映射、"请求未完成"兜底与重试尝试后缀；数字证据
+// 同时覆盖运行时 int 与 JSON 还原 float64 两种形态。
+func TestBuildCustomQuizSummaryRequestFailureReason(t *testing.T) {
+	cases := []struct {
+		name     string
+		evidence map[string]any
+		want     string
+	}{
+		{name: "timeout with retries", evidence: map[string]any{"questionId": "q1", "questionTitle": "题一", "requestFailure": true, "excludedFromScoring": true, "error": "J3b probe timed out", "retryAttemptCount": 2, "retryMaxAttempts": 3}, want: "请求未完成：上游超时（尝试 3/3 次）"},
+		{name: "timeout retries from json", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b probe timed out", "retryAttemptCount": float64(2), "retryMaxAttempts": float64(3)}, want: "请求未完成：上游超时（尝试 3/3 次）"},
+		{name: "upstream request failed keeps detail", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b upstream request failed: dial timeout"}, want: "请求未完成：上游请求失败：dial timeout"},
+		{name: "upstream http status", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b upstream returned HTTP 429"}, want: "请求未完成：上游返回 HTTP 429"},
+		{name: "response read failed", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b upstream response read failed"}, want: "请求未完成：上游响应读取失败"},
+		{name: "response exceeded limit", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b upstream response exceeded limit"}, want: "请求未完成：上游响应超限"},
+		{name: "oauth codex stream incomplete", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b OAuth Codex response stream incomplete"}, want: "请求未完成：OAuth Codex 响应流未完成"},
+		{name: "error without retry keys has no attempt suffix", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b probe canceled"}, want: "请求未完成：探针已取消"},
+		{name: "unknown error keeps original text", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b something else"}, want: "请求未完成：J3b something else"},
+		{name: "empty error falls back", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "excludedFromScoring": true}, want: "请求未完成"},
+		{name: "zero max attempts has no suffix", evidence: map[string]any{"questionId": "q1", "requestFailure": true, "error": "J3b probe timed out", "retryAttemptCount": 2, "retryMaxAttempts": 0}, want: "请求未完成：上游超时"},
+	}
+	for _, testCase := range cases {
+		summary, present := buildCustomQuizSummary([]modelcheckprobe.Evaluation{{Kind: "custom_quiz", Status: "skipped", Evidence: testCase.evidence}}, true)
+		if !present || len(summary.Items) != 1 {
+			t.Fatalf("%s: summary=%+v present=%v", testCase.name, summary, present)
+		}
+		if summary.Items[0].Reason != testCase.want {
+			t.Fatalf("%s: reason=%q, want %q", testCase.name, summary.Items[0].Reason, testCase.want)
+		}
+		if summary.Items[0].Verdict != "unavailable" {
+			t.Fatalf("%s: request failure verdict=%s, want unavailable", testCase.name, summary.Items[0].Verdict)
+		}
+	}
+}
+
+// TestBuildCustomQuizSummaryTerminalWrappedItem 钉死家族终端包装与已完成判定
+// 共存时的 reason 契约：同族后续题请求失败触发家族终端包装
+// （terminalFamilyEvaluation）时，已完成题的证据会被追加 requestFailure 等
+// 标志，但其 verdict/reason 保留原判定——reason 非空永远优先，不得把已判
+// 完的题覆盖成"请求未完成"；reason 为空字符串时才按请求失败组装（trim 语义：
+// 纯空白同样视为空）。
+func TestBuildCustomQuizSummaryTerminalWrappedItem(t *testing.T) {
+	terminalWrapped := modelcheckprobe.Evaluation{
+		Kind: "custom_quiz", Status: "warning", Score: 16, MaxScore: 16,
+		Evidence: map[string]any{
+			"questionId": "q1", "questionTitle": "题一", "verdict": "pass",
+			"reason":         "模型自对比判定通过",
+			"requestFailure": true, "evidenceInsufficient": true,
+			"excludedFromScoring": true, "terminalFailure": true,
+		},
+	}
+	summary, present := buildCustomQuizSummary([]modelcheckprobe.Evaluation{terminalWrapped}, true)
+	if !present || len(summary.Items) != 1 {
+		t.Fatalf("summary=%+v present=%v", summary, present)
+	}
+	if summary.Items[0].Reason != "模型自对比判定通过" {
+		t.Fatalf("terminal-wrapped completed item must keep its reason: %+v", summary.Items[0])
+	}
+	if summary.Items[0].Verdict != "passed" {
+		t.Fatalf("terminal-wrapped completed item must keep verdict=passed: %+v", summary.Items[0])
+	}
+	// reason 为空字符串 + requestFailure：按纯请求失败形态组装"请求未完成"。
+	blankReason := modelcheckprobe.Evaluation{
+		Kind: "custom_quiz", Status: "skipped",
+		Evidence: map[string]any{"questionId": "q2", "reason": "", "requestFailure": true, "excludedFromScoring": true},
+	}
+	summary, _ = buildCustomQuizSummary([]modelcheckprobe.Evaluation{blankReason}, true)
+	if summary.Items[0].Reason != "请求未完成" {
+		t.Fatalf("blank reason with requestFailure must assemble request-failure reason: %+v", summary.Items[0])
 	}
 }
 

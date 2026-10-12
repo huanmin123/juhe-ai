@@ -285,6 +285,88 @@ export function progressItemTitle(itemKey: string, itemType?: string): string {
   return checkTitleByType(itemType ?? itemKey.split('.').pop() ?? itemKey, itemKey)
 }
 
+// trustReport.reasonCodes 分组：后端 trust.go 会把「证据覆盖缺口」类码与真正的异常码
+// 混在同一数组输出。缺口码形态：裸族名（该族完全未覆盖）、<family>_partial（该族证据
+// 不完整）、<family>_evidence_insufficient（该族证据不足）、<family>_not_applicable
+// （该族不适用），以及 model_response_evidence_unavailable（没有模型响应可取证）。
+// 展示时拆成两组，避免把覆盖缺口误读成异常原因。
+const trustCoverageFamilies: readonly string[] = [
+  'token_integrity',
+  'stability',
+  'distribution',
+  'usage_shape',
+  'behavior_probe',
+  'long_context',
+  'sampling_statistics',
+  'cross_model'
+]
+
+export function splitTrustReasonCodes(codes: readonly string[]): { anomalies: string[]; coverage: string[] } {
+  const anomalies: string[] = []
+  const coverage: string[] = []
+  for (const code of codes) {
+    const isCoverage = code.endsWith('_partial')
+      || code.endsWith('_evidence_insufficient')
+      || code.endsWith('_not_applicable')
+      || code === 'model_response_evidence_unavailable'
+      || trustCoverageFamilies.includes(code)
+    if (isCoverage) coverage.push(code)
+    else anomalies.push(code)
+  }
+  return { anomalies, coverage }
+}
+
+// 覆盖缺口码的中文文案：按族名 + 后缀形态归位；族名不在表内的带后缀码与未知码
+// 回退「未知原因码」，不静默吞掉。
+export function trustCoverageCodeText(code: string): string {
+  const familyLabels: Record<string, string> = {
+    token_integrity: 'Token 用量诊断',
+    stability: '稳定性探针',
+    distribution: '分布对照',
+    usage_shape: 'Usage 字段',
+    behavior_probe: '行为探针',
+    long_context: '长上下文找针',
+    sampling_statistics: '采样统计分析',
+    cross_model: '辅助模型对照'
+  }
+  if (code === 'model_response_evidence_unavailable') return '模型响应证据不可用'
+  const familyText = (suffix: string, text: (familyLabel: string) => string): string | undefined => {
+    if (!code.endsWith(suffix)) return undefined
+    const familyLabel = familyLabels[code.slice(0, code.length - suffix.length)]
+    return familyLabel === undefined ? undefined : text(familyLabel)
+  }
+  return familyText('_evidence_insufficient', (familyLabel) => `${familyLabel}证据不足`)
+    ?? familyText('_partial', (familyLabel) => `${familyLabel}未形成完整证据`)
+    ?? familyText('_not_applicable', (familyLabel) => `${familyLabel}不适用`)
+    ?? (familyLabels[code] !== undefined ? `${familyLabels[code]}未覆盖` : undefined)
+    ?? `未知原因码：${code}`
+}
+
+// 异常原因码中文映射：自 Drawer 内联表迁出，内容保持不变（空数组的占位文案由
+// 分组拼接处负责）。
+export function trustReasonCodeText(code: string): string {
+  return ({
+    proportional_padding: '差分斜率疑似比例灌水',
+    slope_warning: '差分斜率偏离待复核',
+    bucket_rounding: '上游用量疑似分桶取整',
+    fixed_intercept_padding: '固定输入 Token 开销超过已校准强判阈值',
+    fixed_intercept_calibration_pending: '固定输入 Token 开销基线等待真实样本校准',
+    reported_usage_missing: '上游未返回完整输入 Token',
+    reported_usage_incompatible: '上游 usage 口径与总输入不兼容',
+    configured_model_mapping: '已配置模型映射',
+    undeclared_response_model_mismatch: '响应模型与请求不一致',
+    protocol_check_failed: '协议探针未通过',
+    tokenizer_calibration_unavailable: '尚无 Tokenizer 校准结果',
+    population_baseline_unavailable: '群体基线尚未形成',
+    paired_models_collapsed: '配对模型行为距离异常收缩，疑似同源',
+    closer_to_lower_model_baseline: '行为特征更接近较低版本模型基线',
+    identity_population_outlier: '身份特征偏离 leave-one-upstream-out 群体基线',
+    population_drift_protected: '群体发生共同漂移，已暂停强身份结论',
+    cross_model_mismatch: '辅助模型对照不一致',
+    token_integrity_anomaly: 'Token 用量诊断异常'
+  } as Record<string, string>)[code] ?? `未知原因码：${code}`
+}
+
 export function terminalLevelForCheckStatus(status: ModelCheckCheckResult['status']): ModelCheckTerminalLineLevel {
   if (status === 'passed') return 'success'
   if (status === 'warning') return 'warning'
@@ -292,9 +374,33 @@ export function terminalLevelForCheckStatus(status: ModelCheckCheckResult['statu
   return 'muted'
 }
 
+// 检测项消息翻译：后端 modelcheckprobe 探针失败时写入的是英文原始消息（probe.go），
+// 展示层精确匹配已知形态翻译为中文；未匹配的消息原样保留，不吞错误细节。
+export function translateProbeMessage(message: string): string {
+  if (message === 'J3b probe timed out') return '探针请求超时（上游未在预算内完成响应）'
+  if (message === 'J3b probe canceled') return '探针已取消'
+  const requestFailedPrefix = 'J3b upstream request failed: '
+  if (message.startsWith(requestFailedPrefix)) return `上游请求失败：${message.slice(requestFailedPrefix.length)}`
+  if (message === 'J3b upstream response read failed') return '上游响应读取失败'
+  if (message === 'J3b upstream response exceeded limit') return '上游响应超过大小上限'
+  if (message === 'J3b OAuth Codex response stream incomplete') return 'OAuth Codex 响应流未完成'
+  const httpMatch = /^J3b upstream returned HTTP (\d+)$/.exec(message)
+  if (httpMatch) return `上游返回 HTTP ${httpMatch[1]}`
+  return message
+}
+
+function nonEmptyText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+// 消息三级回退：evidenceSummary.message → evidenceSummary.error（custom_quiz 失败证据
+// 把错误放在 error 键）→ check.errorMessage，全部为空才视为无消息；结果统一过
+// translateProbeMessage，已知探针英文消息翻译为中文。
 export function checkMessage(check: ModelCheckCheckResult): string | undefined {
-  const message = check.evidenceSummary.message
-  return typeof message === 'string' && message.trim() ? message.trim() : check.errorMessage
+  const message = nonEmptyText(check.evidenceSummary.message)
+    ?? nonEmptyText(check.evidenceSummary.error)
+    ?? nonEmptyText(check.errorMessage)
+  return message === undefined ? undefined : translateProbeMessage(message)
 }
 
 export function hasCheckExtra(check: ModelCheckCheckResult): boolean {

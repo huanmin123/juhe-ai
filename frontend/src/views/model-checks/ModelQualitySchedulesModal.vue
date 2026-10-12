@@ -96,6 +96,15 @@
               <a-form-item label="处理方式" name="penaltyAction" :rules="[{ required: true, message: '请选择处理方式' }]">
                 <a-select v-model:value="form.penaltyAction" :options="penaltyOptions" />
               </a-form-item>
+              <a-form-item class="schedule-timeout-field">
+                <div class="schedule-switch-row">
+                  <div>
+                    <strong>超时处罚</strong>
+                    <span>开启后，检测环节超时按该环节失败计分；核心环节超时导致整轮不可用时按处理方式处罚。默认关闭。</span>
+                  </div>
+                  <a-switch v-model:checked="form.timeoutPenaltyEnabled" />
+                </div>
+              </a-form-item>
               <a-form-item
                 v-if="form.penaltyAction === 'quality_isolate'"
                 label="恢复检查间隔"
@@ -180,7 +189,7 @@
               </div>
               <div class="schedule-metric">
                 <span>不达标处理</span>
-                <strong>低于 {{ item.penaltyThreshold }} 分 · {{ penaltyActionText(item.penaltyAction) }}</strong>
+                <strong>低于 {{ item.penaltyThreshold }} 分 · {{ penaltyActionText(item.penaltyAction) }}<template v-if="item.timeoutPenaltyEnabled === true"> · 超时处罚</template></strong>
                 <small v-if="item.penaltyAction === 'quality_isolate'">每 {{ item.recoveryIntervalMinutes }} 分钟恢复检查</small>
               </div>
               <div class="schedule-metric">
@@ -268,6 +277,7 @@ const form = reactive<ModelQualityScheduleMutationInput>({
   penaltyThreshold: 70,
   penaltyAction: 'fallback',
   recoveryIntervalMinutes: 10,
+  timeoutPenaltyEnabled: false,
   customQuestionIds: [],
   enabled: true
 })
@@ -366,6 +376,7 @@ function edit(item: ModelQualitySchedule) {
   form.penaltyThreshold = item.penaltyThreshold
   form.penaltyAction = item.penaltyAction
   form.recoveryIntervalMinutes = item.recoveryIntervalMinutes
+  form.timeoutPenaltyEnabled = item.timeoutPenaltyEnabled
   form.customQuestionIds = [...(item.customQuestionIds ?? [])]
   form.enabled = item.enabled
   form.expectedRevision = item.revision
@@ -423,6 +434,7 @@ function resetForm() {
   form.penaltyThreshold = 70
   form.penaltyAction = 'fallback'
   form.recoveryIntervalMinutes = 10
+  form.timeoutPenaltyEnabled = false
   form.customQuestionIds = []
   form.enabled = true
   delete form.expectedRevision
@@ -854,6 +866,7 @@ function lastRunText(item: ModelQualitySchedule): string {
   }
 
   .schedule-state-field,
+  .schedule-timeout-field,
   .schedule-policy-hint {
     grid-column: 1 / -1;
   }
@@ -920,6 +933,7 @@ function lastRunText(item: ModelQualitySchedule): string {
   }
 
   .schedule-state-field,
+  .schedule-timeout-field,
   .schedule-policy-hint {
     grid-column: auto;
   }

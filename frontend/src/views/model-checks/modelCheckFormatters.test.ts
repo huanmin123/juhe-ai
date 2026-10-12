@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
+import type { ModelCheckCheckResult } from '../../types/domain'
 import {
+  checkMessage,
   modelCheckQuizSummary,
   questionBankDateTimeText,
   questionCreatorText,
   questionDraftKey,
   questionTestVerdictColor,
-  questionTestVerdictText
+  questionTestVerdictText,
+  splitTrustReasonCodes,
+  translateProbeMessage,
+  trustCoverageCodeText,
+  trustReasonCodeText
 } from './modelCheckFormatters'
 
 describe('modelCheckQuizSummary 未执行判定', () => {
@@ -156,5 +162,109 @@ describe('questionDraftKey 提交门禁内容指纹', () => {
   it('题面与参考答案的首尾空白差异归一，不触发重测', () => {
     expect(questionDraftKey('  q  ', 'a', [])).toBe(questionDraftKey('q', 'a', []))
     expect(questionDraftKey('q', '\n a \t', [])).toBe(questionDraftKey('q', 'a', []))
+  })
+})
+
+describe('splitTrustReasonCodes 覆盖缺口与异常码分组', () => {
+  it('生产真实覆盖缺口数组全部归入 coverage，anomalies 为空', () => {
+    const codes = ['stability', 'distribution', 'behavior_probe', 'long_context', 'sampling_statistics', 'token_integrity_partial', 'token_integrity_evidence_insufficient']
+    const split = splitTrustReasonCodes(codes)
+    expect(split.anomalies).toEqual([])
+    expect(split.coverage).toEqual(codes)
+  })
+
+  it('异常码与未知码归入 anomalies，缺口码归入 coverage，保持输入顺序且不去重', () => {
+    const split = splitTrustReasonCodes([
+      'proportional_padding',
+      'token_integrity_partial',
+      'totally_unknown',
+      'token_integrity_not_applicable',
+      'model_response_evidence_unavailable',
+      'cross_model',
+      'proportional_padding'
+    ])
+    expect(split.anomalies).toEqual(['proportional_padding', 'totally_unknown', 'proportional_padding'])
+    expect(split.coverage).toEqual(['token_integrity_partial', 'token_integrity_not_applicable', 'model_response_evidence_unavailable', 'cross_model'])
+  })
+})
+
+describe('trustCoverageCodeText 覆盖缺口文案', () => {
+  it('各后缀与裸族名按族名标签生成中文文案', () => {
+    expect(trustCoverageCodeText('stability')).toBe('稳定性探针未覆盖')
+    expect(trustCoverageCodeText('token_integrity_partial')).toBe('Token 用量诊断未形成完整证据')
+    expect(trustCoverageCodeText('token_integrity_evidence_insufficient')).toBe('Token 用量诊断证据不足')
+    expect(trustCoverageCodeText('sampling_statistics_not_applicable')).toBe('采样统计分析不适用')
+    expect(trustCoverageCodeText('cross_model')).toBe('辅助模型对照未覆盖')
+  })
+
+  it('模型响应证据不可用与未知码兜底', () => {
+    expect(trustCoverageCodeText('model_response_evidence_unavailable')).toBe('模型响应证据不可用')
+    expect(trustCoverageCodeText('totally_unknown')).toBe('未知原因码：totally_unknown')
+  })
+})
+
+describe('trustReasonCodeText 异常原因码文案', () => {
+  it('既有映射保持不变', () => {
+    expect(trustReasonCodeText('proportional_padding')).toBe('差分斜率疑似比例灌水')
+    expect(trustReasonCodeText('undeclared_response_model_mismatch')).toBe('响应模型与请求不一致')
+    expect(trustReasonCodeText('protocol_check_failed')).toBe('协议探针未通过')
+  })
+
+  it('生成侧真实异常码全量映射（trust.go cross_model_mismatch / token_integrity_anomaly）', () => {
+    expect(trustReasonCodeText('cross_model_mismatch')).toBe('辅助模型对照不一致')
+    expect(trustReasonCodeText('token_integrity_anomaly')).toBe('Token 用量诊断异常')
+  })
+
+  it('未知码回退未知原因码', () => {
+    expect(trustReasonCodeText('totally_unknown')).toBe('未知原因码：totally_unknown')
+  })
+})
+
+describe('translateProbeMessage 探针消息翻译', () => {
+  it('七类后端英文消息映射为中文', () => {
+    expect(translateProbeMessage('J3b probe timed out')).toBe('探针请求超时（上游未在预算内完成响应）')
+    expect(translateProbeMessage('J3b probe canceled')).toBe('探针已取消')
+    expect(translateProbeMessage('J3b upstream request failed: dial tcp 10.0.0.1:443: connect refused')).toBe('上游请求失败：dial tcp 10.0.0.1:443: connect refused')
+    expect(translateProbeMessage('J3b upstream response read failed')).toBe('上游响应读取失败')
+    expect(translateProbeMessage('J3b upstream returned HTTP 429')).toBe('上游返回 HTTP 429')
+    expect(translateProbeMessage('J3b upstream response exceeded limit')).toBe('上游响应超过大小上限')
+    expect(translateProbeMessage('J3b OAuth Codex response stream incomplete')).toBe('OAuth Codex 响应流未完成')
+  })
+
+  it('不匹配的消息原样返回', () => {
+    expect(translateProbeMessage('some future english message')).toBe('some future english message')
+    expect(translateProbeMessage('J3b upstream returned HTTP')).toBe('J3b upstream returned HTTP')
+  })
+})
+
+describe('checkMessage 检测项消息三级回退', () => {
+  const baseCheck: ModelCheckCheckResult = {
+    id: 'c1',
+    runId: 'r1',
+    itemKey: 'custom_quiz.q1',
+    itemType: 'custom_quiz',
+    status: 'failed',
+    score: 0,
+    maxScore: 1,
+    evidenceSummary: {},
+    createdAt: '2026-10-12T00:00:00Z',
+    updatedAt: '2026-10-12T00:00:00Z'
+  }
+  const makeCheck = (overrides: Partial<ModelCheckCheckResult>): ModelCheckCheckResult => ({ ...baseCheck, ...overrides })
+
+  it('message 非空时优先消费并翻译探针英文消息', () => {
+    expect(checkMessage(makeCheck({ evidenceSummary: { message: 'J3b probe timed out' } }))).toBe('探针请求超时（上游未在预算内完成响应）')
+    expect(checkMessage(makeCheck({ evidenceSummary: { message: 'J3b probe timed out', error: 'J3b probe canceled' } }))).toBe('探针请求超时（上游未在预算内完成响应）')
+  })
+
+  it('message 空白时回退 error 键（custom_quiz 失败证据）且英文 error 被翻译', () => {
+    expect(checkMessage(makeCheck({ evidenceSummary: { error: 'J3b upstream returned HTTP 401' } }))).toBe('上游返回 HTTP 401')
+    expect(checkMessage(makeCheck({ evidenceSummary: { message: '   ', error: 'J3b upstream request failed: connect refused' } }))).toBe('上游请求失败：connect refused')
+  })
+
+  it('evidence 两级皆空时回退 check.errorMessage，全部为空返回 undefined', () => {
+    expect(checkMessage(makeCheck({ evidenceSummary: {}, errorMessage: 'J3b probe canceled' }))).toBe('探针已取消')
+    expect(checkMessage(makeCheck({ evidenceSummary: { message: '   ', error: '  ' }, errorMessage: '   ' }))).toBeUndefined()
+    expect(checkMessage(makeCheck({ evidenceSummary: {} }))).toBeUndefined()
   })
 })

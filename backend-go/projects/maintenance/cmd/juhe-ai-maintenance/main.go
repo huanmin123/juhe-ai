@@ -90,6 +90,9 @@ func runMaintenance(argv []string) int {
 	verifyAccountCapabilityDomain := fs.Bool("verify-account-capability-domain", false, "read-only AI account capability-domain verification: requires --account-capability-domain-stage=m1|m2-cutover and --account-capability-domain-check=preflight|postflight (preflight tolerates a missing column, postflight requires it)")
 	accountCapabilityDomainStage := fs.String("account-capability-domain-stage", "", "migration target for --migrate-account-capability-domain/--verify-account-capability-domain: m1 or m2-cutover")
 	accountCapabilityDomainCheck := fs.String("account-capability-domain-check", "", "verification mode for --verify-account-capability-domain: preflight or postflight")
+	migrateSchedulingPreferences := fs.Bool("migrate-scheduling-preferences", false, "scheduling-preferences one-shot migration (PLAN-20261012T033000000Z P2): requires --node-stopped --go-stopped --backup-confirmed; storage via --driver plus --paths/--dsn; resumable (rerun continues, NULL judgment is idempotent)")
+	verifySchedulingPreferences := fs.Bool("verify-scheduling-preferences", false, "read-only scheduling-preferences verification: requires --scheduling-preferences-check=preflight (pre-migration report, exit 0) or postflight (completed-state check)")
+	schedulingPreferencesCheck := fs.String("scheduling-preferences-check", "", "verification mode for --verify-scheduling-preferences: preflight or postflight")
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -101,7 +104,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "capability-domain migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences {
 			fmt.Fprintln(os.Stderr, "capability domain migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -109,6 +112,20 @@ func runMaintenance(argv []string) int {
 			return accountCapabilityDomainMigrateResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret, *accountCapabilityDomainStage, *nodeStopped, *goStopped, *backupConfirmed)
 		}
 		return accountCapabilityDomainVerifyResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret, *accountCapabilityDomainStage, *accountCapabilityDomainCheck)
+	}
+	if *migrateSchedulingPreferences || *verifySchedulingPreferences {
+		if *migrateSchedulingPreferences && *verifySchedulingPreferences {
+			fmt.Fprintln(os.Stderr, "scheduling-preferences migrate and verify flags are mutually exclusive")
+			return 2
+		}
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill {
+			fmt.Fprintln(os.Stderr, "scheduling preferences migration flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		if *migrateSchedulingPreferences {
+			return schedulingPreferencesMigrateResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
+		}
+		return schedulingPreferencesVerifyResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *schedulingPreferencesCheck)
 	}
 	if *migrateChatBinding {
 		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {

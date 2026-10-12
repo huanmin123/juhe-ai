@@ -82,7 +82,8 @@
         <a-descriptions-item label="Token 差分">{{ tokenDifferentialText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="固定开销基线">{{ interceptBaselineText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="Tokenizer">{{ trustReport.tokenizerVersion || '尚无可用结果' }}</a-descriptions-item>
-        <a-descriptions-item label="诊断依据">{{ reasonCodesText(trustReport.reasonCodes) }}</a-descriptions-item>
+        <a-descriptions-item label="诊断依据">{{ trustAnomaliesText }}</a-descriptions-item>
+        <a-descriptions-item label="证据覆盖缺口">{{ trustCoverageText }}</a-descriptions-item>
         <a-descriptions-item label="请求 / 上游 / 响应模型">
           {{ trustReport.requestedModel || '-' }} / {{ trustReport.mappedUpstreamModel || '-' }} / {{ trustReport.observedModel || '-' }}
         </a-descriptions-item>
@@ -130,8 +131,11 @@ import {
   quizVerdictColor,
   quizVerdictText,
   runTrustedComparison,
+  splitTrustReasonCodes,
   statusColor,
   statusText,
+  trustCoverageCodeText,
+  trustReasonCodeText,
   triggerKindText,
   visibleModelCheckChecks
 } from './modelCheckFormatters'
@@ -158,6 +162,20 @@ const quizSummary = computed(() => modelCheckQuizSummary(props.run?.resultSummar
 // detectionScope 由后端在目录外（账户支持）模型的检测报告与请求快照中写入；
 // protocol_consistency 表示该次检测只覆盖协议一致性探针子集。
 const protocolConsistencyScope = computed(() => props.run?.resultSummary?.detectionScope === 'protocol_consistency')
+// trustReport.reasonCodes 中「证据覆盖缺口」类码（裸族名 / *_partial / *_evidence_insufficient /
+// *_not_applicable / model_response_evidence_unavailable）与真正的异常码混在同一数组，
+// 拆成两行展示：诊断依据只保留异常码，覆盖缺口单独归位，避免语义错位。
+const trustReasonSplit = computed(() => splitTrustReasonCodes(trustReport.value?.reasonCodes ?? []))
+const trustAnomaliesText = computed(() => {
+  const { anomalies } = trustReasonSplit.value
+  return anomalies.length ? anomalies.map((code) => trustReasonCodeText(code)).join('；') : '未发现已知异常原因'
+})
+const trustCoverageText = computed(() => {
+  const { coverage } = trustReasonSplit.value
+  if (!coverage.length) return '无'
+  const text = coverage.map((code) => trustCoverageCodeText(code)).join('；')
+  return protocolConsistencyScope.value ? `${text}；本次为协议一致性子集检测，其余维度由深度检测覆盖` : text
+})
 
 const identityStatusText = (value: ModelCheckTrustReport['identityStatus']) => ({
   consistent: '当前受控探针一致', suspected_downgrade: '疑似降级', suspected_same_source: '疑似同源', population_outlier: '群体离群', insufficient_evidence: '证据不足'
@@ -189,26 +207,6 @@ const pairedDistanceText = (report: ModelCheckTrustReport) => report.pairedDista
 const baselineVersionText = (report: ModelCheckTrustReport) => report.baselineVersion === undefined
   ? '尚未形成版本化基线'
   : `v${report.baselineVersion} / ${{ active: '生效中', drift_protected: '群体漂移保护', retired: '已退役' }[report.baselineVersionStatus ?? 'active']} / ${report.featureVersion || '未知特征版本'}`
-const reasonCodesText = (codes: string[]) => codes.length
-  ? codes.map((code) => ({
-      proportional_padding: '差分斜率疑似比例灌水',
-      slope_warning: '差分斜率偏离待复核',
-      bucket_rounding: '上游用量疑似分桶取整',
-      fixed_intercept_padding: '固定输入 Token 开销超过已校准强判阈值',
-      fixed_intercept_calibration_pending: '固定输入 Token 开销基线等待真实样本校准',
-      reported_usage_missing: '上游未返回完整输入 Token',
-      reported_usage_incompatible: '上游 usage 口径与总输入不兼容',
-      configured_model_mapping: '已配置模型映射',
-      undeclared_response_model_mismatch: '响应模型与请求不一致',
-      protocol_check_failed: '协议探针未通过',
-      tokenizer_calibration_unavailable: '尚无 Tokenizer 校准结果',
-      population_baseline_unavailable: '群体基线尚未形成',
-      paired_models_collapsed: '配对模型行为距离异常收缩，疑似同源',
-      closer_to_lower_model_baseline: '行为特征更接近较低版本模型基线',
-      identity_population_outlier: '身份特征偏离 leave-one-upstream-out 群体基线',
-      population_drift_protected: '群体发生共同漂移，已暂停强身份结论'
-    }[code] ?? `未知原因码：${code}`)).join('；')
-  : '未发现已知异常原因'
 
 // 旧记录不回填 qualityDecision 字段：任一关键字段缺失时显示"未记录"，不输出假值文案。
 // 缺失判据用 == null：JSON null 与 undefined 同视为未记录（后端序列化缺失字段可为 null）。

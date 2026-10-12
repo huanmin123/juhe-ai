@@ -48,7 +48,7 @@ func TestW12GSeedPostgresDefaultsExecInjectFailures(t *testing.T) {
 			// 注入点已越过会失败的语句（流末尾的 off-by-one 或耗尽），结束扫描。
 			return
 		}
-		if !strings.Contains(err.Error(), "postgres seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) {
+		if !strings.Contains(err.Error(), "postgres seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) && !strings.Contains(err.Error(), "postgres seed seal scheduling preferences fresh install") {
 			t.Fatalf("failAfter=%d 错误异常: %v", failAfter, err)
 		}
 	}
@@ -66,7 +66,10 @@ func TestW12GSeedSQLiteDefaultsExecInjectFailures(t *testing.T) {
 			// 注入点已越过会失败的语句（流末尾的 off-by-one 或耗尽），结束扫描。
 			return
 		}
-		if !strings.Contains(err.Error(), "sqlite seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) {
+		// 语句流尾段是调度偏好迁移完成记录封存（schedprefdomain.SealFreshInstall，
+		// P2 设计门裁决②），其注入失败包装为「sqlite seed seal scheduling
+		// preferences fresh install」，与 seed statement 包装并存为合法错误形态。
+		if !strings.Contains(err.Error(), "sqlite seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) && !strings.Contains(err.Error(), "sqlite seed seal scheduling preferences fresh install") {
 			t.Fatalf("failAfter=%d 错误异常: %v", failAfter, err)
 		}
 	}

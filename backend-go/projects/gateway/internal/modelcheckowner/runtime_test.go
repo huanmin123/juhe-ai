@@ -56,6 +56,42 @@ func TestHasTerminalEvidenceCoversNonBasicCoreProbes(t *testing.T) {
 	}
 }
 
+// 超时处罚口径：超时证据不再计入“未形成质量判定证据”抑制；非超时传输
+// 失败终端证据仍抑制；trusted_comparison. 前缀项被超时口径排除，保持其
+// 既有终端证据语义；token_integrity 既有豁免不变。
+func TestHasTerminalEvidenceExcludingTimeout(t *testing.T) {
+	timeoutEvidence := func(kind string) []map[string]any {
+		return []map[string]any{{"kind": kind, "evidence": map[string]any{"requestFailure": true, "terminalFailure": true, "error": "J3b probe timed out"}}}
+	}
+	items := timeoutEvidence("structured_output")
+	if !hasTerminalEvidence(items) {
+		t.Fatal("既有口径下超时终端证据仍抑制")
+	}
+	if hasTerminalEvidenceExcludingTimeout(items) {
+		t.Fatal("超时处罚口径下超时证据不得抑制质量判定")
+	}
+	mixed := append(append([]map[string]any(nil), items...), map[string]any{"kind": "tool_calling", "evidence": map[string]any{"requestFailure": true, "terminalFailure": true, "error": "J3b upstream returned HTTP 503"}})
+	if !hasTerminalEvidenceExcludingTimeout(mixed) {
+		t.Fatal("非超时传输失败终端证据必须仍然抑制")
+	}
+	trusted := timeoutEvidence("trusted_comparison.structured_output")
+	if !hasTerminalEvidenceExcludingTimeout(trusted) {
+		t.Fatal("trusted_comparison 项不在超时口径内，保持终端证据语义")
+	}
+	if hasTerminalEvidenceExcludingTimeout(timeoutEvidence("token_integrity")) {
+		t.Fatal("token_integrity 豁免不受超时口径影响")
+	}
+	if !hasTimeoutPenaltyEvidence(items) {
+		t.Fatal("超时证据存在性判定错误")
+	}
+	if hasTimeoutPenaltyEvidence(mixed[1:]) {
+		t.Fatal("非超时终端失败不得判为超时证据")
+	}
+	if hasTimeoutPenaltyEvidence([]map[string]any{{"kind": "structured_output", "evidence": map[string]any{"terminalFailure": true, "error": "J3b probe canceled"}}}) {
+		t.Fatal("非超时错误不得判为超时证据")
+	}
+}
+
 // BUG-0259 / §1.2：核心协议探针（tool）第三次仍非 HTTP 200 时整轮判
 // unavailable，且必须抑制质量判定（not_triggered、不处罚、不写健康事实），
 // 不得按部分证据正常计分为达标。
@@ -303,6 +339,73 @@ func TestRuntimeWritesQualityDecisionV2Fields(t *testing.T) {
 	}
 	if enforcement.calls != 1 {
 		t.Fatalf("enforcement calls=%d", enforcement.calls)
+	}
+}
+
+// 超时处罚审计契约：quality_decision_json 始终写入 timeoutPenaltyEnabled /
+// timeoutPenaltyTriggered 两键（关闭或无超时证据时为 false）。无超时证据时
+// 开关本身不改变任何判定（分数、层级、处罚均与关闭时同形）。
+func TestRuntimeWritesTimeoutPenaltyDecisionKeys(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	store.HealthStatHour = mustHealthStatHourFunc(t, "UTC")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","output_text":"WRONG-CONTENT","usage":{"total_tokens":2}}`))
+	}))
+	defer server.Close()
+	enforcement := &countingEnforcement{}
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-timeout-penalty",
+		Now:     func() time.Time { return time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC) },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", DispatchRevision: 1}, nil
+		},
+		Projector: &QualityProjector{Store: store, Enforcement: enforcement},
+	}
+	readDecision := func(t *testing.T, runID string) map[string]any {
+		t.Helper()
+		var decision string
+		if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, runID).Scan(&decision); err != nil {
+			t.Fatal(err)
+		}
+		fields := map[string]any{}
+		if err := json.Unmarshal([]byte(decision), &fields); err != nil {
+			t.Fatalf("decision=%s err=%v", decision, err)
+		}
+		return fields
+	}
+	readPolicySnapshot := func(t *testing.T, runID string) map[string]any {
+		t.Helper()
+		var snapshot string
+		if err := store.db.QueryRow(`SELECT policy_snapshot_json FROM model_check_runs WHERE id=?`, runID).Scan(&snapshot); err != nil {
+			t.Fatal(err)
+		}
+		fields := map[string]any{}
+		if err := json.Unmarshal([]byte(snapshot), &fields); err != nil {
+			t.Fatalf("policy snapshot=%s err=%v", snapshot, err)
+		}
+		return fields
+	}
+	for _, enabled := range []bool{false, true} {
+		result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ProviderCode: "openai", Threshold: 80, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TimeoutPenaltyEnabled: enabled})
+		if err != nil || result.Status != string(RunCompleted) {
+			t.Fatalf("enabled=%v result=%+v err=%v", enabled, result, err)
+		}
+		fields := readDecision(t, result.RunID)
+		if fields["timeoutPenaltyEnabled"] != enabled {
+			t.Fatalf("enabled=%v timeoutPenaltyEnabled=%v", enabled, fields["timeoutPenaltyEnabled"])
+		}
+		// 本次运行没有超时证据：触发标记必须为 false。
+		if fields["timeoutPenaltyTriggered"] != false {
+			t.Fatalf("enabled=%v timeoutPenaltyTriggered=%v", enabled, fields["timeoutPenaltyTriggered"])
+		}
+		// 不可变策略快照必须记录同一开关现值。
+		policy := readPolicySnapshot(t, result.RunID)
+		if policy["timeoutPenaltyEnabled"] != enabled {
+			t.Fatalf("enabled=%v policy snapshot timeoutPenaltyEnabled=%v", enabled, policy["timeoutPenaltyEnabled"])
+		}
 	}
 }
 

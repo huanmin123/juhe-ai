@@ -89,8 +89,10 @@ assert(routeStrategiesViewSource.includes(':max="bindingWeightMax(index)"'), '�
 assert(routeStrategiesViewSource.includes('weightedBindingTotal.value >= 100'), '权重调度路由总权重达到 100 后必须禁止继续添加分组')
 assert(routeStrategiesViewSource.includes('权重调度路由的分组权重总和不能超过 100'), '权重调度路由保存前必须校验总权重不超过 100')
 assert(routeStrategiesViewSource.includes('status: \'active\' | \'disabled\''), '策略路由分组绑定必须支持启停状态')
-assert(routeStrategiesViewSource.includes('v-if="form.normal.schedulingPreference === \'speed_first\'" label="首字截止"'), '调度偏好表单必须仅为速度优先展示首字截止')
-assert(routeStrategiesViewSource.includes("return { schedulingPreference: 'cost_first' }"), '成本优先 payload 不得写入首字截止字段')
+// P2 策略路由瘦身：调度偏好配置迁往调度偏好页，编辑器不再绑定调度表单字段、
+// 也不再组装调度 payload；速度运行态入口与 Drawer 保持不变。
+assert(!routeStrategiesViewSource.includes('form.normal'), '策略路由编辑器不得再绑定调度偏好表单字段（已迁往调度偏好页）')
+assert(!routeStrategiesViewSource.includes("return { schedulingPreference: 'cost_first' }") && !routeStrategiesViewSource.includes("schedulingPreference: 'speed_first'"), '策略路由保存 payload 不得再组装调度形态字段（写侧调度字段退场）')
 assert(!routeStrategiesViewSource.includes('firstByteThresholdMs'), '策略路由前端不得继续把旧速度模式首字阈值作为事实字段')
 assert(accessTypesSource.includes('firstByteDeadlineMs: number'), '前端领域类型必须声明公共首字截止字段')
 assert(!accessTypesSource.includes('firstByteThresholdMs'), '前端领域类型不得声明旧速度模式首字阈值字段')

@@ -530,7 +530,11 @@ type HealthSyncRetry struct {
 	ObservedAt                                                                                   time.Time
 	EvidenceFormed, TrustFormed                                                                  bool
 	HardQualityFailure                                                                           bool
-	EnforcementAllowed                                                                           bool
+	// TimeoutPenaltyTriggered 从已落库 quality_decision_json 的
+	// timeoutPenaltyTriggered 键读回（finalize 恒写该键），健康重试重建
+	// HealthFact 时透传，unavailable 超时处罚的重试才不丢触发标记。
+	TimeoutPenaltyTriggered bool
+	EnforcementAllowed      bool
 }
 
 // ListHealthSyncRetries re-discovers Node-equivalent failed health
@@ -579,15 +583,17 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 			continue
 		}
 		var decisionFields struct {
-			EvidenceFormed     bool  `json:"evidenceFormed"`
-			TrustFormed        bool  `json:"trustFormed"`
-			HardQualityFailure bool  `json:"hardQualityFailure"`
-			EnforcementAllowed *bool `json:"enforcementAllowed"`
+			EvidenceFormed          bool  `json:"evidenceFormed"`
+			TrustFormed             bool  `json:"trustFormed"`
+			HardQualityFailure      bool  `json:"hardQualityFailure"`
+			TimeoutPenaltyTriggered bool  `json:"timeoutPenaltyTriggered"`
+			EnforcementAllowed      *bool `json:"enforcementAllowed"`
 		}
 		if err := json.Unmarshal([]byte(decision), &decisionFields); err != nil {
 			continue
 		}
 		retry.HardQualityFailure = decisionFields.HardQualityFailure
+		retry.TimeoutPenaltyTriggered = decisionFields.TimeoutPenaltyTriggered
 		retry.Threshold = int(threshold)
 		qualityFailure := retry.Score < retry.Threshold || retry.Level == "suspicious" || retry.HardQualityFailure
 		// Full diagnostics still require their formed/trusted aggregate. Quick

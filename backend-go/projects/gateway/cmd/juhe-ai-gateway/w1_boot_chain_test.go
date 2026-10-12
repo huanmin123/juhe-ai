@@ -230,8 +230,8 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 		if encryptErr != nil {
 			t.Fatalf("加密 API Key %s 密文失败: %v", strategy.keyID, encryptErr)
 		}
-		seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, created_at, updated_at)
-			VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+		seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, scheduling_preference_id, created_at, updated_at)
+			VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, ?, 'active', 'schpref-builtin-chat-cost-first', ?, ?)`,
 			strategy.keyID, strategy.id, strategy.name+" Key",
 			gatewayruntimecache.HashSecret(secret), secret[:8], secret[len(secret)-8:],
 			keySecretEncrypted, now, now)

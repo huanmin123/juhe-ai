@@ -31,14 +31,19 @@ type RunService interface {
 }
 
 type RunRequest struct {
-	TargetType, TargetID, Model, Profile                                                          string
-	SystemAccountID, ActorSystemAccountID                                                         string
-	TriggerKind, ScheduleID                                                                       string
-	ProviderCode                                                                                  string
-	Threshold                                                                                     int
-	PenaltyAction                                                                                 string
-	RecoveryIntervalMinutes                                                                       int
-	ManualEnforcementEnabled, OwnPhysicalAccount                                                  bool
+	TargetType, TargetID, Model, Profile         string
+	SystemAccountID, ActorSystemAccountID        string
+	TriggerKind, ScheduleID                      string
+	ProviderCode                                 string
+	Threshold                                    int
+	PenaltyAction                                string
+	RecoveryIntervalMinutes                      int
+	ManualEnforcementEnabled, OwnPhysicalAccount bool
+	// TimeoutPenaltyEnabled 冻结自质量策略/计划行的 timeout_penalty_enabled
+	// （模型检测超时处罚开关）：开启后检测环节超时按该环节失败计分/处罚；
+	// 默认关闭维持现状。随 ScheduledPayload/run-now 快照冻结，运行中配置
+	// 变更不影响本次执行。
+	TimeoutPenaltyEnabled                                                                         bool
 	IdentityKey, ConfigRevision, SourceConfigRevision, PolicyRevision, ProbeSetVersion            string
 	SourceDispatchRevision                                                                        int64
 	DispatchRevision                                                                              int64

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 )
 
@@ -101,7 +103,9 @@ func TestWhSQLReadGatewayRuntimeByKeyHash(t *testing.T) {
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs1', 'sys_owner', 'normal', '{"schedulingPreference":"speed_first","firstByteDeadlineMs":2500}', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-hash1") + `', 'active')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-hash1") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	}
 	for _, statement := range seed {
@@ -156,9 +160,11 @@ func TestWhSQLReadGatewayRuntimeGates(t *testing.T) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_normal', 'sys_owner', 'normal', '{}', 'active')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_weighted', 'sys_owner', 'weighted', '{}', 'active')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_expired', 'sys_owner', 'rs_normal', '` + HashSecret("sk-expired") + `', 'active', '2000-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_disabled', 'sys_owner', 'rs_normal', '` + HashSecret("sk-disabled") + `', 'disabled', NULL)`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_dynamic', 'sys_owner', 'rs_weighted', '` + HashSecret("sk-dynamic") + `', 'active', NULL)`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_dynamic', 'sys_owner', 'rs_weighted', '` + HashSecret("sk-dynamic") + `', 'active', NULL, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bh', 'rs_weighted', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_nobinding', 'sys_owner', 'rs_normal', '` + HashSecret("sk-nobinding") + `', 'active', NULL)`,
 	}

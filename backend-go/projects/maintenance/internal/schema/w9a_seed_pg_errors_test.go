@@ -175,7 +175,7 @@ func TestW9ASeedPostgresDefaultsWithFullScriptInjectFailures(t *testing.T) {
 		if err == nil {
 			continue
 		}
-		if !strings.Contains(err.Error(), "postgres seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) {
+		if !strings.Contains(err.Error(), "postgres seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) && !strings.Contains(err.Error(), "postgres seed seal scheduling preferences fresh install") {
 			t.Fatalf("failAfter=%d 错误异常: %v", failAfter, err)
 		}
 	}

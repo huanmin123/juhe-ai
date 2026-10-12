@@ -405,12 +405,11 @@ func TestRouteStrategySpeedFirstRuntimeEndpoint(t *testing.T) {
 		t.Fatalf("disabled runtime items: %v", runtime["items"])
 	}
 
-	code, speed := env.createStrategy(t, path,
-		`{"name":"sf","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("speed create: %d %v", code, speed)
-	}
-	speedID := dataMap(t, speed)["id"].(string)
+	// 存量 speed_first 行（store 直建，回滚 oracle；P2 起 HTTP 写入口拒绝调度字段）。
+	speedID := env.createStrategyViaStore(t, adminID, "sf", ModeNormal, []string{groupA}, map[string]any{
+		"schedulingPreference": "speed_first",
+		"firstByteDeadlineMs":  20000,
+	})
 
 	facade.mu.Lock()
 	facade.items = []SpeedFirstRuntimeItem{{
@@ -463,6 +462,24 @@ func TestRouteStrategySpeedFirstRuntimeEndpoint(t *testing.T) {
 	facade.failReads = false
 	facade.mu.Unlock()
 
+	// List enrichment marks speed-first rows only (before the null-config
+	// patch below turns the row cost_first).
+	code, listPayload := env.do(t, http.MethodGet, path, "")
+	if code != 200 {
+		t.Fatalf("list: %d %v", code, listPayload)
+	}
+	for _, raw := range items(t, listPayload) {
+		listItem := raw.(map[string]any)
+		summary, has := listItem["speedFirstLatencyRuntime"]
+		if listItem["id"] == speedID {
+			if !has || summary.(map[string]any)["runtimeAvailable"] != true {
+				t.Fatalf("speed-first list enrichment: %v", listItem)
+			}
+		} else if has {
+			t.Fatalf("non-speed-first rows must not carry runtime summary: %v", listItem)
+		}
+	}
+
 	// PATCH touching only the description must not clear the runtime.
 	updatedAt := env.strategyUpdatedAt(t, speedID)
 	code, patched := env.do(t, http.MethodPatch, path+"/"+speedID,
@@ -477,10 +494,11 @@ func TestRouteStrategySpeedFirstRuntimeEndpoint(t *testing.T) {
 		t.Fatalf("description-only patch must not clear runtime: %v", facade.cleared)
 	}
 
-	// PATCH touching normalRoutingConfig triggers the cleanup hook.
+	// PATCH touching normalRoutingConfig triggers the cleanup hook. P2 载荷
+	// 唯一合法形态为 null（归一为 cost_first，配置清 NULL），同样命中清理。
 	updatedAt = env.strategyUpdatedAt(t, speedID)
 	code, patched = env.do(t, http.MethodPatch, path+"/"+speedID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000}}`)
+		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":null}`)
 	if code != 200 {
 		t.Fatalf("config patch: %d %v", code, patched)
 	}
@@ -501,23 +519,6 @@ func TestRouteStrategySpeedFirstRuntimeEndpoint(t *testing.T) {
 	facade.mu.Unlock()
 	if len(clearedDelete) != 2 || clearedDelete[1] != weightedID {
 		t.Fatalf("delete must clear runtime: %v", clearedDelete)
-	}
-
-	// List enrichment marks speed-first rows only.
-	code, listPayload := env.do(t, http.MethodGet, path, "")
-	if code != 200 {
-		t.Fatalf("list: %d %v", code, listPayload)
-	}
-	for _, raw := range items(t, listPayload) {
-		listItem := raw.(map[string]any)
-		summary, has := listItem["speedFirstLatencyRuntime"]
-		if listItem["id"] == speedID {
-			if !has || summary.(map[string]any)["runtimeAvailable"] != true {
-				t.Fatalf("speed-first list enrichment: %v", listItem)
-			}
-		} else if has {
-			t.Fatalf("non-speed-first rows must not carry runtime summary: %v", listItem)
-		}
 	}
 
 	// 404 for unknown ids.

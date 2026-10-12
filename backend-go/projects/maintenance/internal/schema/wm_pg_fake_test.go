@@ -209,7 +209,13 @@ func (c *wmSchemaConn) QueryContext(_ context.Context, query string, args []driv
 		}
 		return &wmSchemaRows{columns: columns, rows: rows, nextErrAt: scripted.nextErrAt}, nil
 	}
-	// 默认零行结果：QueryRow().Scan() 语义等价 sql.ErrNoRows。
+	// 默认零行结果：QueryRow().Scan() 语义等价 sql.ErrNoRows。COUNT 查询在真
+	// 实 PG 上永远返回一行（空表计数 0，不会 ErrNoRows），默认按 0 行返回，供
+	// seed 链的 fresh 封存探测（调度偏好迁移完成记录 SealFreshInstall）等计数
+	// 读取使用。
+	if strings.HasPrefix(strings.TrimSpace(strings.ToUpper(query)), "SELECT COUNT") {
+		return &wmSchemaRows{columns: []string{"c0"}, rows: [][]driver.Value{{int64(0)}}}, nil
+	}
 	return &wmSchemaRows{columns: []string{"c0"}}, nil
 }
 

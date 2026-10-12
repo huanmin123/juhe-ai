@@ -133,6 +133,7 @@ func w15bCoverPostgresDB(t *testing.T) *sql.DB {
 			penalty_threshold int,
 			penalty_action text,
 			recovery_interval_minutes int,
+			timeout_penalty_enabled boolean NOT NULL DEFAULT false,
 			custom_question_ids text,
 			enabled int,
 			next_run_at text,

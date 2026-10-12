@@ -636,11 +636,212 @@ func TestHealthSyncRetryExecutorReplaysFailedRun(t *testing.T) {
 	}
 }
 
+// F4 健康重试透传：HealthSyncRetryExecutor 重建 HealthFact 时从已落库
+// quality_decision_json 读回 timeoutPenaltyTriggered——unavailable + 分数
+// 达标 + 标记为真的失败发布经重试仍执行处罚；无标记的同形态 run 重试后
+// 保持不处罚。
+func TestHealthSyncRetryExecutorRestoresTimeoutPenaltyTriggered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retry-timeout.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finished := "2026-08-27T10:15:00Z"
+	insertRun := func(runID, accountID, decision string) {
+		if _, err := db.Exec(`INSERT INTO model_check_runs(id,status,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at,quality_health_sync_status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			runID, "completed", accountID, "sys-1", "openai", "gpt-5.6-sol", "quick", "unavailable", 100, nil,
+			`{"revision":"policy-7","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
+			decision,
+			`{"configRevision":"3"}`,
+			finished, "failed", finished); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertRun("run-timeout-retry", "acct-timeout", `{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true,"timeoutPenaltyTriggered":true,"result":"not_triggered"}`)
+	insertRun("run-plain-retry", "acct-plain", `{"evidenceFormed":true,"trustFormed":true,"enforcementAllowed":true,"result":"not_triggered"}`)
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	// 读回核对：ListHealthSyncRetries 按已落库 decision 还原触发标记。
+	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 2 {
+		t.Fatalf("retries=%#v err=%v", retries, err)
+	}
+	marked := map[string]bool{}
+	for _, retry := range retries {
+		marked[retry.RunID] = retry.TimeoutPenaltyTriggered
+	}
+	if !marked["run-timeout-retry"] || marked["run-plain-retry"] {
+		t.Fatalf("timeoutPenaltyTriggered 读回不符: %+v", marked)
+	}
+	enforcement := &countingEnforcement{}
+	executor := &HealthSyncRetryExecutor{Projector: &QualityProjector{Store: store, Enforcement: enforcement}}
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerHealthRetry, Payload: []byte(`{"runId":"run-timeout-retry"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if enforcement.calls != 1 {
+		t.Fatalf("unavailable + 分数达标 + 超时标记重试必须执行处罚, calls=%d", enforcement.calls)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-timeout-retry'`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "applied" {
+		t.Fatalf("timeout retry health sync state=%q, want applied", state)
+	}
+	if decision := readMergedDecision(t, db, "run-timeout-retry"); decision["result"] != "applied" {
+		t.Fatalf("timeout retry decision=%+v", decision)
+	}
+	// 无标记的同形态 run：重试照常补写健康事实，但不处罚。
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerHealthRetry, Payload: []byte(`{"runId":"run-plain-retry"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if enforcement.calls != 1 {
+		t.Fatalf("无超时标记的 unavailable 重试不得处罚, calls=%d", enforcement.calls)
+	}
+	if decision := readMergedDecision(t, db, "run-plain-retry"); decision["result"] != "not_triggered" {
+		t.Fatalf("plain retry decision=%+v", decision)
+	}
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-plain-retry'`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "applied" {
+		t.Fatalf("plain retry health sync state=%q, want applied", state)
+	}
+}
+
 func TestCompareLatestWinsRejectsScopeMismatch(t *testing.T) {
 	base := HealthFact{AccountID: "a", StatHour: "hour", RunID: "run", ObservedAt: time.Now()}
 	other := base
 	other.AccountID = "b"
 	if _, err := CompareLatestWins(other, base); err == nil {
 		t.Fatal("scope mismatch must fail closed")
+	}
+}
+
+// 超时处罚契约：unavailable 且超时触发标记为真即按配置处罚方式执行处罚
+// （既有链路里 unavailable 永不授权处罚；本用例为质量不达标形态）。
+func TestQualityProjectorUnavailableWithTimeoutPenaltyEnforces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unavailable-timeout.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-timeout','pending_retry','{"triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &recordingEnforcement{}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-timeout", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", TimeoutPenaltyTriggered: true, EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("unavailable + 超时触发必须执行处罚, calls=%d", recorder.calls)
+	}
+	decision := readMergedDecision(t, db, "run-timeout")
+	if decision["result"] != "applied" || decision["healthSyncResult"] != "applied" || decision["afterStatus"] != "quality_isolated" {
+		t.Fatalf("unavailable timeout decision=%+v", decision)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("health fact rows=%d err=%v", count, err)
+	}
+}
+
+// 超时处罚契约不以分数低于阈值为前提：unavailable + 超时触发 + 分数达标
+// （核心超时截断后剩余探针全对，qualityFailure=false）仍按处罚方式执行。
+func TestQualityProjectorUnavailableTimeoutPenaltyEnforcesAtFullScore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unavailable-timeout-pass.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-timeout-pass','pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &countingEnforcement{}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", StatHour: "2026-08-27T10:00:00Z", RunID: "run-timeout-pass", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 100, Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", TimeoutPenaltyTriggered: true, EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.calls != 1 {
+		t.Fatalf("超时触发时处罚不看分数：分数达标的 unavailable 也必须处罚, calls=%d", recorder.calls)
+	}
+	if decision := readMergedDecision(t, db, "run-timeout-pass"); decision["result"] != "applied" || decision["healthSyncResult"] != "applied" || decision["afterStatus"] != "quality_isolated" {
+		t.Fatalf("unavailable timeout full-score decision=%+v", decision)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("health fact rows=%d err=%v", count, err)
+	}
+}
+
+// 非超时的 unavailable 保持“永不授权处罚”：无超时触发标记时无论分数是否
+// 达标（质量不达标或完全无质量信号）都不得处罚。
+func TestQualityProjectorUnavailableWithoutTimeoutNeverEnforces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unavailable-no-timeout.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, run := range []string{"run-unavailable-low", "run-unavailable-full"} {
+		if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES (?,'pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := &countingEnforcement{}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: recorder}
+	base := HealthFact{SystemAccountID: "sys", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", Threshold: 70, Level: "unavailable", PenaltyAction: "quality_isolate", EnforcementAllowed: true, ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), StatHour: "2026-08-27T10:00:00Z"}
+	for _, fact := range []HealthFact{
+		func() HealthFact { fact := base; fact.AccountID, fact.RunID, fact.Score = "acct-low", "run-unavailable-low", 30; return fact }(),
+		func() HealthFact { fact := base; fact.AccountID, fact.RunID, fact.Score = "acct-full", "run-unavailable-full", 100; return fact }(),
+	} {
+		if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recorder.calls != 0 {
+		t.Fatalf("无超时触发的 unavailable 不得处罚（含质量不达标形态）, calls=%d", recorder.calls)
+	}
+	for _, runID := range []string{"run-unavailable-low", "run-unavailable-full"} {
+		if decision := readMergedDecision(t, db, runID); decision["result"] != "not_triggered" || decision["healthSyncResult"] != "applied" {
+			t.Fatalf("%s decision=%+v", runID, decision)
+		}
 	}
 }

@@ -263,7 +263,8 @@ func bug0292QuizSuite(transport http.RoundTripper) Suite {
 
 // 题库层：作答跳三轮截断 → 家族 terminal → skipped + excludedFromScoring，
 // 部分作答文本只作证据留存，绝不进入裁判，也不扣分（与既有扣 31 用例形成
-// 红绿对照）。
+// 红绿对照）。超时处罚契约后该项携带题目权重（MaxScore=31）供开关开启时
+// 全额扣减；requestFailure/excludedFromScoring 使关闭口径扣分豁免不变。
 func TestBug0292QuizAnswerHopTruncationIsTerminalWithoutDeduction(t *testing.T) {
 	transport := &bug0292QuizTransport{answerTruncations: 99}
 	suite := bug0292QuizSuite(transport)
@@ -276,8 +277,8 @@ func TestBug0292QuizAnswerHopTruncationIsTerminalWithoutDeduction(t *testing.T) 
 		t.Fatalf("作答跳终态必须终止家族: %+v", items)
 	}
 	item := items[0]
-	if item.Status != "skipped" || item.MaxScore != 0 || item.Score != 0 {
-		t.Fatalf("截断终态项不得计分: %+v", item)
+	if item.Status != "skipped" || item.MaxScore != QuizMaxPool || item.Score != 0 {
+		t.Fatalf("截断终态项不得计分且必须携带题目权重: %+v", item)
 	}
 	if item.Evidence["requestFailure"] != true || item.Evidence["excludedFromScoring"] != true || item.Evidence["evidenceInsufficient"] != true || item.Evidence["terminalFailure"] != true {
 		t.Fatalf("terminal evidence=%+v", item.Evidence)
@@ -331,8 +332,8 @@ func TestBug0292QuizGradeHopTruncationIsTerminalWithoutDeduction(t *testing.T) {
 		t.Fatalf("裁判跳终态必须终止家族: %+v", items)
 	}
 	item := items[0]
-	if item.Status != "skipped" || item.MaxScore != 0 || item.Score != 0 {
-		t.Fatalf("裁判跳截断终态不得计分: %+v", item)
+	if item.Status != "skipped" || item.MaxScore != QuizMaxPool || item.Score != 0 {
+		t.Fatalf("裁判跳截断终态不得计分且必须携带题目权重: %+v", item)
 	}
 	if item.Evidence["terminalFailure"] != true || item.Evidence["excludedFromScoring"] != true || item.Evidence["error"] != "J3b probe timed out" {
 		t.Fatalf("grade hop truncation evidence=%+v", item.Evidence)

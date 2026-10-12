@@ -97,8 +97,8 @@ func seedMediaQwenASRAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 		VALUES ('rs_qwen_asr', ?, 'qwen长转写', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_qwen_asr', 'rs_qwen_asr', ?, 'group_qwen_asr', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_qwen_asr', ?, 'rs_qwen_asr', 'qwen长转写Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_qwen_asr', ?, 'rs_qwen_asr', 'qwen长转写Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
 	return keySecret
 }
@@ -402,8 +402,8 @@ func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL,
 		VALUES ('rs_glm_speech', ?, 'glm语音', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_glm_speech', 'rs_glm_speech', ?, 'group_glm_speech', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_glm_speech', ?, 'rs_glm_speech', 'glm语音Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_glm_speech', ?, 'rs_glm_speech', 'glm语音Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
 	return keySecret
 }
@@ -529,8 +529,8 @@ func seedMediaVolcengineSpeechAccount(t *testing.T, fixture *chainFixture, id, b
 		VALUES ('rs_volcengine_speech', ?, 'volcengine语音', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_volcengine_speech', 'rs_volcengine_speech', ?, 'group_volcengine_speech', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_volcengine_speech', ?, 'rs_volcengine_speech', 'volcengine语音Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_volcengine_speech', ?, 'rs_volcengine_speech', 'volcengine语音Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
 	return keySecret
 }

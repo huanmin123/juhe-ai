@@ -18,9 +18,58 @@ type Evaluation struct {
 	Evidence map[string]any
 }
 
+// 探针家族规范满分（评分契约单源）：本文件的 Evaluate* 与超时处罚分母映射
+// timeoutFamilyMaxScore 共用同一组常量，防止字面量漂移。满分锚定在其他实现
+// 文件的家族（identityprobe/behavior/longcontext/stability）也在此登记常量，
+// 供 timeoutFamilyMaxScore 引用；改动这些家族的满分时必须同步本处。
+const (
+	ProbeMaxScoreProtocolBasic    = 10
+	ProbeMaxScoreStream           = 15 // protocol_stream / responses_stream 共用
+	ProbeMaxScoreStructuredOutput = 15
+	ProbeMaxScoreToolCalling      = 15
+	ProbeMaxScoreUsageShape       = 10
+	ProbeMaxScoreIdentityAnchor   = 10 // 满分锚定 identityprobe.go
+	ProbeMaxScoreStability        = 15 // 满分锚定 stability.go
+	ProbeMaxScoreBehaviorProbe    = 35 // 满分锚定 behavior.go
+	ProbeMaxScoreLongContext      = 15 // 满分锚定 longcontext.go
+)
+
+// timeoutFamilyMaxScore 返回非题库家族超时项进入归一化分母的规范满分
+// （超时处罚契约：开关开启时非题库超时项进分母、得 0 分）。家族失败项按
+// requestFailure 约定不带满分（MaxScore=0），summary 据此取规范值。取值与
+// 各 Evaluate* 的 MaxScore 原值一一对应；"responses_basic" 与 protocol_basic
+// 同为 10（owner 核心探针清单中的别名，探针层 basic 项恒为 protocol_basic）。
+// 证据性家族（sampling_statistics、identity_selfreport、identity_extraction）
+// 与动态满分家族（token_integrity）规范分值为 0，未知 Kind 一律 0：这些超时
+// 项不稀释分数，但 failed 计数与 unavailable 处罚触发链路照常生效。
+func timeoutFamilyMaxScore(kind string) int {
+	switch kind {
+	case "protocol_basic", "responses_basic":
+		return ProbeMaxScoreProtocolBasic
+	case "protocol_stream", "responses_stream":
+		return ProbeMaxScoreStream
+	case "structured_output":
+		return ProbeMaxScoreStructuredOutput
+	case "tool_calling":
+		return ProbeMaxScoreToolCalling
+	case "usage_shape":
+		return ProbeMaxScoreUsageShape
+	case "identity_anchor":
+		return ProbeMaxScoreIdentityAnchor
+	case "stability":
+		return ProbeMaxScoreStability
+	case "behavior_probe":
+		return ProbeMaxScoreBehaviorProbe
+	case "long_context":
+		return ProbeMaxScoreLongContext
+	default:
+		return 0
+	}
+}
+
 func EvaluateBasic(result Result, expectedModel string) Evaluation {
 	if !result.Success {
-		return requestFailureEvaluation("protocol_basic", result, expectedModel, 10)
+		return requestFailureEvaluation("protocol_basic", result, expectedModel, ProbeMaxScoreProtocolBasic)
 	}
 	responseModel, matched, modelMismatch := matchProbeResponseModel(result, expectedModel)
 	outputMatches := strings.TrimSpace(result.Output) == "OK-MODEL-CHECK"
@@ -50,7 +99,7 @@ func EvaluateBasic(result Result, expectedModel string) Evaluation {
 	}
 	evidence := probeModelEvidence(result, expectedModel, responseModel, matched, modelMismatch)
 	evidence["success"], evidence["outputMatches"] = result.Success, outputMatches
-	return withRetryEvidence(Evaluation{Kind: "protocol_basic", Status: status, Score: score, MaxScore: 10, Evidence: evidence}, result)
+	return withRetryEvidence(Evaluation{Kind: "protocol_basic", Status: status, Score: score, MaxScore: ProbeMaxScoreProtocolBasic, Evidence: evidence}, result)
 }
 
 // EvaluateProtocolStream evaluates the independent STREAM-OK probe that is
@@ -63,7 +112,7 @@ func EvaluateProtocolStream(result Result, expectedModel string, protocol modelc
 		kind = "responses_stream"
 	}
 	if !result.Success {
-		return requestFailureEvaluation(kind, result, expectedModel, 15)
+		return requestFailureEvaluation(kind, result, expectedModel, ProbeMaxScoreStream)
 	}
 	responseModel, matchedModel, modelMismatch := matchProbeResponseModel(result, expectedModel)
 	outputMatches := strings.TrimSpace(result.Output) == "STREAM-OK"
@@ -90,7 +139,7 @@ func EvaluateProtocolStream(result Result, expectedModel string, protocol modelc
 	}
 	evidence := probeModelEvidence(result, expectedModel, responseModel, matchedModel, modelMismatch)
 	evidence["success"], evidence["expectedOutput"], evidence["outputMatches"] = result.Success, "STREAM-OK", outputMatches
-	return withRetryEvidence(Evaluation{Kind: kind, Status: status, Score: score, MaxScore: 15, Evidence: evidence}, result)
+	return withRetryEvidence(Evaluation{Kind: kind, Status: status, Score: score, MaxScore: ProbeMaxScoreStream, Evidence: evidence}, result)
 }
 
 // EvaluateStream is retained as the Responses-specific convenience used by
@@ -101,7 +150,7 @@ func EvaluateStream(result Result, expectedModel string) Evaluation {
 
 func EvaluateStructured(result Result, expectedModel string) Evaluation {
 	if !result.Success {
-		return requestFailureEvaluation("structured_output", result, expectedModel, 15)
+		return requestFailureEvaluation("structured_output", result, expectedModel, ProbeMaxScoreStructuredOutput)
 	}
 	value := safeStructured(parseJSONObject(result.Output))
 	valid := value["status"] == "ok" && value["value"] == float64(7)
@@ -133,12 +182,12 @@ func EvaluateStructured(result Result, expectedModel string) Evaluation {
 	}
 	evidence := probeModelEvidence(result, expectedModel, responseModel, matched, modelMismatch)
 	evidence["success"], evidence["outputJson"], evidence["valid"] = result.Success, value, valid
-	return withRetryEvidence(Evaluation{Kind: "structured_output", Status: status, Score: score, MaxScore: 15, Evidence: evidence}, result)
+	return withRetryEvidence(Evaluation{Kind: "structured_output", Status: status, Score: score, MaxScore: ProbeMaxScoreStructuredOutput, Evidence: evidence}, result)
 }
 
 func EvaluateTool(result Result, expectedModel string) Evaluation {
 	if !result.Success {
-		return requestFailureEvaluation("tool_calling", result, expectedModel, 15)
+		return requestFailureEvaluation("tool_calling", result, expectedModel, ProbeMaxScoreToolCalling)
 	}
 	called := hasFunctionCall(result.JSON, "record_model_check")
 	responseModel, matched, modelMismatch := matchProbeResponseModel(result, expectedModel)
@@ -169,13 +218,13 @@ func EvaluateTool(result Result, expectedModel string) Evaluation {
 	}
 	evidence := probeModelEvidence(result, expectedModel, responseModel, matched, modelMismatch)
 	evidence["success"], evidence["called"] = result.Success, called
-	return withRetryEvidence(Evaluation{Kind: "tool_calling", Status: status, Score: score, MaxScore: 15, Evidence: evidence}, result)
+	return withRetryEvidence(Evaluation{Kind: "tool_calling", Status: status, Score: score, MaxScore: ProbeMaxScoreToolCalling, Evidence: evidence}, result)
 }
 
 func EvaluateUsage(results []Result) Evaluation {
 	for _, result := range results {
 		if result.Success && len(result.Usage) > 0 {
-			return Evaluation{Kind: "usage_shape", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true, "usage": safeUsage(result.Usage)}}
+			return Evaluation{Kind: "usage_shape", Status: "passed", Score: ProbeMaxScoreUsageShape, MaxScore: ProbeMaxScoreUsageShape, Evidence: map[string]any{"success": true, "usage": safeUsage(result.Usage)}}
 		}
 	}
 	return Evaluation{Kind: "usage_shape", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true}}

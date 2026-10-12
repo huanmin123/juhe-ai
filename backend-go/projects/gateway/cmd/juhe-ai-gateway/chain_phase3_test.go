@@ -174,8 +174,8 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 	}
 	if _, err := composed.DB.Exec(`INSERT INTO api_keys (
 			id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix,
-			key_secret_encrypted, status, is_default, created_at, updated_at
-		) VALUES ('key_compat', 'sys_admin', ?, '兼容探测', ?, 'sk-compose', 'compat', ?, 'active', 0, ?, ?)`,
+			key_secret_encrypted, status, is_default, scheduling_preference_id, created_at, updated_at
+		) VALUES ('key_compat', 'sys_admin', ?, '兼容探测', ?, 'sk-compose', 'compat', ?, 'active', 0, 'schpref-builtin-chat-cost-first', ?, ?)`,
 		strategyID, gatewayruntimecache.HashSecret(secret), sealed, "2026-09-04T00:00:00.000Z", "2026-09-04T00:00:00.000Z"); err != nil {
 		t.Fatalf("seed compat api key: %v", err)
 	}

@@ -4,7 +4,9 @@ package gatewayruntimecache
 // normalRoutingConfig 键是调度模式共享的组内调度配置键（历史命名）：同一
 // config_json 在 normal/weighted/failover/round_robin/merge 模式下都解码
 // 出 speed_first 配置；无/空 config_json 回落 nil、空对象回落 cost_first
-// 的既有行为不变。
+// 的既有行为不变。P2 起策略 config 的调度维度只剩 purpose=chat 键消费
+// （普通 Key 的派发配置来自偏好合成，NULL 绑定显式错误），故本测试键全部
+// 用 purpose=chat 承载原断言。
 
 import (
 	"context"
@@ -41,20 +43,20 @@ func TestW17ASQLSchedulingModeDecode(t *testing.T) {
 	for _, m := range modes {
 		seed = append(seed,
 			`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('`+m.strategyID+`', 'sys_owner', '`+m.mode+`', '`+speedConfig+`', 'active')`,
-			`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key_`+m.strategyID+`', 'sys_owner', '`+m.strategyID+`', '`+HashSecret(m.keyHash)+`', 'active')`,
+			`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_`+m.strategyID+`', 'sys_owner', '`+m.strategyID+`', '`+HashSecret(m.keyHash)+`', 'active', 'chat')`,
 			`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_`+m.strategyID+`', '`+m.strategyID+`', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		)
 	}
 	seed = append(seed,
 		// 无 config_json / 空 config_json / 空对象 config_json。
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_noconf', 'sys_owner', 'weighted', NULL, 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key_w17a_noconf', 'sys_owner', 'rs_w17a_noconf', '`+HashSecret("sk-w17a-noconf")+`', 'active')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_noconf', 'sys_owner', 'rs_w17a_noconf', '`+HashSecret("sk-w17a-noconf")+`', 'active', 'chat')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_noconf', 'rs_w17a_noconf', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_empty', 'sys_owner', 'weighted', '', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key_w17a_empty', 'sys_owner', 'rs_w17a_empty', '`+HashSecret("sk-w17a-empty")+`', 'active')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_empty', 'sys_owner', 'rs_w17a_empty', '`+HashSecret("sk-w17a-empty")+`', 'active', 'chat')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_empty', 'rs_w17a_empty', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_w17a_emptyobj', 'sys_owner', 'weighted', '{}', 'active')`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status) VALUES ('key_w17a_emptyobj', 'sys_owner', 'rs_w17a_emptyobj', '`+HashSecret("sk-w17a-emptyobj")+`', 'active')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_w17a_emptyobj', 'sys_owner', 'rs_w17a_emptyobj', '`+HashSecret("sk-w17a-emptyobj")+`', 'active', 'chat')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b_w17a_emptyobj', 'rs_w17a_emptyobj', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 	)
 	for _, statement := range seed {

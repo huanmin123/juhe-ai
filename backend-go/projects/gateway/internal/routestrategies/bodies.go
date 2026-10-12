@@ -24,6 +24,40 @@ var normalRoutingConfigKeys = map[string]bool{
 	"speedFirstConfig":     true,
 }
 
+// LegacySchedulingConfigRejectedMessage 是策略写入口拒绝旧调度字段的稳定错
+// 误文案（P2 契约：调度偏好已独立为调度偏好实体，策略路由不再是调度配置来
+// 源；写侧显式报错，不静默忽略、不剥离后继续）。管理/个人 POST/PATCH 与公开
+// add|update 共用同一文案，响应形态为 400 { message }。
+const LegacySchedulingConfigRejectedMessage = "调度偏好已独立为调度偏好实体，请在 API Key 上绑定调度偏好；策略路由不再接受调度配置字段（schedulingPreference / speedFirstConfig / firstByteDeadlineMs / firstByteThresholdMs）"
+
+// retiredSchedulingConfigPayloadKeys 是 normalRoutingConfig payload 中已退场
+// 的调度配置键（以 config.go 的 NormalRoutingConfig 结构体字段为准，含
+// speedFirstConfig 内已知旧别名 firstByteThresholdMs；该别名出现在顶层或嵌
+// 套对象内同样命中，speedFirstConfig 整键存在时已先行命中）。
+var retiredSchedulingConfigPayloadKeys = []string{
+	"schedulingPreference",
+	"speedFirstConfig",
+	"firstByteDeadlineMs",
+	"firstByteThresholdMs",
+}
+
+// DetectRetiredSchedulingConfigPayload 判定请求 payload 的 normalRoutingConfig
+// 是否携带任一退场调度键。判定对象是请求 payload（map 形态的 JSON object）；
+// 存储值不走本判定（存储解析保持完全宽容，回滚 oracle）。非 object 形态交由
+// 既有类型校验处理，不在本判定范围。
+func DetectRetiredSchedulingConfigPayload(normalConfig any) bool {
+	record, ok := normalConfig.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, key := range retiredSchedulingConfigPayloadKeys {
+		if _, present := record[key]; present {
+			return true
+		}
+	}
+	return false
+}
+
 var speedFirstConfigKeys = map[string]bool{
 	"firstByteThresholdMs":               true,
 	"slowTriggerCount":                   true,
@@ -152,6 +186,11 @@ func parseMutationFields(body map[string]any, requireName bool) (MutationInput, 
 	}
 	if raw, present := body["normalRoutingConfig"]; present {
 		if raw != nil {
+			// P2 契约：请求 payload 携带退场调度字段显式拒绝（先于严格键校验，
+			// 旧别名 firstByteThresholdMs 同样命中专用文案）。
+			if DetectRetiredSchedulingConfigPayload(raw) {
+				return input, LegacySchedulingConfigRejectedMessage
+			}
 			record, ok := strictObject(raw, normalRoutingConfigKeys)
 			if !ok {
 				return input, invalidMutationMessage

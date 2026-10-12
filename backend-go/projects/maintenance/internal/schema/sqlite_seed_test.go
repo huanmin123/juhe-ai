@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -197,8 +199,11 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// +chat_completions）/ groups 1（2026-10-07 默认资源收口：仅 GPT）；
 	// 默认分组派生 route_strategies 与 bindings 1（仅 GPT）、api_keys 1
 	//（1 默认；admin chat 不再预置，由会话创建链按需 Ensure）。
+	// global_settings 2 行种子 + 1 行调度偏好迁移完成记录（PLAN-20261012T033000000Z
+	// P2 设计门裁决②：fresh 空库 seed 链经 schedprefdomain.SealFreshInstall 自动
+	// 封存 scheduling_preferences_migration，stage=completed、counts 全零）。
 	expectCounts := map[string]int{
-		"global_settings":                     2,
+		"global_settings":                     3,
 		"request_quota_hourly_window_configs": 8,
 		"providers":                           11,
 		"protocols":                           3,
@@ -218,6 +223,24 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {
 			t.Fatalf("table %s rows = %d, want %d", table, got, want)
 		}
+	}
+
+	// 调度偏好迁移完成记录（P2 设计门裁决②）：fresh 空库 seed 链自动封存
+	// stage=completed、ruleVersion 一致、counts 全零；记录落库后重复 seed 不改写。
+	var recordJSON string
+	if err := db.QueryRowContext(ctx, `SELECT value_json FROM global_settings WHERE key = ?`,
+		schedprefdomain.MigrationSettingKey).Scan(&recordJSON); err != nil {
+		t.Fatalf("fresh seed 必须封存调度偏好迁移记录: %v", err)
+	}
+	record, err := schedprefdomain.ParseRecord(recordJSON)
+	if err != nil {
+		t.Fatalf("parse scheduling preferences migration record: %v", err)
+	}
+	if record.Stage != schedprefdomain.StageCompleted || record.RuleVersion != schedprefdomain.RuleVersion {
+		t.Fatalf("fresh seed 封存记录 stage/ruleVersion 异常: %+v", record)
+	}
+	if record.Counts != (schedprefdomain.Counts{}) {
+		t.Fatalf("fresh seed 封存 counts 必须全零: %+v", record.Counts)
 	}
 
 	// Every default group is default for sys_admin, exactly the single GPT

@@ -22,7 +22,13 @@ type HealthFact struct {
 	// It is only supplied by the owning runtime; incomplete evidence without an
 	// explicit hard failure remains fail-closed below.
 	HardQualityFailure bool
-	EnforcementAllowed bool
+	// TimeoutPenaltyTriggered 表示本次运行开启了超时处罚且存在超时证据
+	// （runtime 传入：开关开启 && 存在超时证据）。该标记为真时 unavailable
+	// 也按配置处罚方式执行处罚（超时处罚契约：不以分数低于阈值为前提——
+	// 核心超时截断后剩余探针全对时 score 仍可达标）；其余 unavailable 保持
+	// 既有语义（永不授权处罚）。
+	TimeoutPenaltyTriggered bool
+	EnforcementAllowed      bool
 }
 
 // HealthReader is the narrow read-only contract that a future J3c consumer
@@ -114,7 +120,7 @@ func (e *HealthSyncRetryExecutor) Execute(ctx context.Context, task ScheduleTask
 		if retry.RunID != payload.RunID {
 			continue
 		}
-		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, EnforcementAllowed: retry.EnforcementAllowed, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level, HardQualityFailure: retry.HardQualityFailure})
+		return e.Projector.Project(ctx, retry.RunID, EvidenceAggregate{Formed: retry.EvidenceFormed, TrustFormed: retry.TrustFormed}, HealthFact{AccountID: retry.AccountID, SystemAccountID: retry.SystemAccountID, StatHour: retry.StatHour, RunID: retry.RunID, ProviderCode: retry.ProviderCode, Model: retry.Model, Profile: retry.Profile, ScheduleID: retry.ScheduleID, PolicyRevision: retry.PolicyRevision, AccountConfigRevision: retry.AccountConfigRevision, PenaltyAction: retry.PenaltyAction, RecoveryIntervalMinutes: retry.RecoveryIntervalMinutes, EnforcementAllowed: retry.EnforcementAllowed, ObservedAt: retry.ObservedAt, Score: retry.Score, Threshold: retry.Threshold, Level: retry.Level, HardQualityFailure: retry.HardQualityFailure, TimeoutPenaltyTriggered: retry.TimeoutPenaltyTriggered})
 	}
 	return fmt.Errorf("J3b health retry run %s not found", payload.RunID)
 }
@@ -149,14 +155,20 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 	if fact.Score >= fact.Threshold && fact.Level != "unavailable" && fact.Level != "suspicious" && !fact.HardQualityFailure {
 		return errors.New("J3b health projection requires a quality failure or unavailable result")
 	}
-	if fact.Level == "unavailable" {
+	// 超时处罚例外：unavailable 且开关开启且存在超时证据时按配置处罚方式
+	// 执行处罚，不以分数低于阈值为前提（核心超时截断后剩余探针全对时
+	// qualityFailure 可为 false，不得漏罚）；其余 unavailable 保持“永不授权
+	// 处罚”（标记不豁免 EnforcementAllowed 置零，不扩大 unavailable 的处罚面）。
+	timeoutPenaltyEligible := fact.Level == "unavailable" && fact.TimeoutPenaltyTriggered
+	if fact.Level == "unavailable" && !timeoutPenaltyEligible {
 		fact.EnforcementAllowed = false
 	}
 	// 处罚与健康事实解耦（J3B 修复）：处罚结果只记入 quality_decision_json
 	// 的结果字段，不再阻断 ApplyHealthFact，也不再注册无限重试；stale 类
 	// 配置漂移明确不重试。unavailable 只是可用性事实，不构成质量不达标
-	// 判定，保持 finalize 写入的 not_triggered 不被改写。
-	triggered := fact.Level != "unavailable" && qualityFailure
+	// 判定，保持 finalize 写入的 not_triggered 不被改写；超时处罚例外见上
+	// （eligible 时无视分数执行，非 unavailable 的 qualityFailure 口径不变）。
+	triggered := (qualityFailure || timeoutPenaltyEligible) && (fact.Level != "unavailable" || timeoutPenaltyEligible)
 	enforcementResult, enforcementMessage := "", ""
 	var outcome EnforcementOutcome
 	if triggered && fact.EnforcementAllowed {

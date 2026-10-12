@@ -1250,8 +1250,8 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 	if err != nil {
 		t.Fatalf("encrypt key secret: %v", err)
 	}
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, created_at, updated_at)
-		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', ?, ?, ?, ?, 'active', ?, ?)`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, scheduling_preference_id, created_at, updated_at)
+		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', ?, ?, ?, ?, 'active', 'schpref-builtin-chat-cost-first', ?, ?)`,
 		gatewayruntimecache.HashSecret(secret), secret[:8], secret[len(secret)-8:], secretEncrypted, now, now)
 	// openai 兼容目录源扩展后内置目录不含 openai 自身行；gpt-test 目录行
 	// 改种 custom_provider_models（global scope，带价格），与生产 openai

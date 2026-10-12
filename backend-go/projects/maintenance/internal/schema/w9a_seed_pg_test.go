@@ -63,7 +63,9 @@ func TestW9ASeedPostgresDefaultsStatementFailures(t *testing.T) {
 		if err == nil {
 			t.Fatalf("failExecAfter=%d 必须失败", failAfter)
 		}
-		if !strings.Contains(err.Error(), "postgres seed statement") {
+		// 调度偏好迁移完成记录的 fresh 封存 INSERT（2026-10-12）不走语句包装
+		// 器，命中注入时错误是封存定位而不是语句序号。
+		if !strings.Contains(err.Error(), "postgres seed statement") && !strings.Contains(err.Error(), "postgres seed seal scheduling preferences fresh install") {
 			t.Fatalf("failExecAfter=%d 错误必须带语句定位: %v", failAfter, err)
 		}
 	}

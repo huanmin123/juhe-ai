@@ -10,6 +10,7 @@ import {
 
 const viewSource = readFileSync(fileURLToPath(new URL('../../views/route-strategies/RouteStrategiesView.vue', import.meta.url)), 'utf8')
 const apiSource = readFileSync(fileURLToPath(new URL('../../api/domains/routeStrategies.ts', import.meta.url)), 'utf8')
+const mutationSource = readFileSync(fileURLToPath(new URL('../../views/route-strategies/routeStrategyMutation.ts', import.meta.url)), 'utf8')
 const typesSource = readFileSync(fileURLToPath(new URL('../../types/domain/access.ts', import.meta.url)), 'utf8')
 const modelOptionsSource = readFileSync(fileURLToPath(new URL('../../composables/useProviderModelSelectOptions.ts', import.meta.url)), 'utf8')
 
@@ -93,19 +94,20 @@ assert.match(apiSource, /create: .*unwrap<RouteStrategyListItem>/, '创建 API �
 assert.match(deleteSource, /items\.value\.splice\(index, 1\)[\s\S]*total\.value = Math\.max/, '删除成功必须直接移除当前列表行并收敛总数')
 assert.doesNotMatch(deleteSource, /loadRouteStrategies\(/, '删除成功不得重新加载策略路由列表')
 
+// P2 策略路由瘦身：写侧 payload 不再承载调度字段，基线/行 fixture 与 PATCH 契约同步收敛为纯拓扑字段。
 const baseline = {
   name: '基线路由',
   description: null,
   mode: 'normal' as const,
   status: 'active' as const,
-  groupBindings: [{ groupId: 'group-1', priority: 1, weight: 1, status: 'active' as const }],
-  normalRoutingConfig: { schedulingPreference: 'cost_first' as const }
+  groupBindings: [{ groupId: 'group-1', priority: 1, weight: 1, status: 'active' as const }]
 }
 assert.deepEqual(buildRouteStrategyMutationPatch(baseline, { ...baseline }), {}, '未修改策略路由不得生成 PATCH 字段')
 assert.deepEqual(buildRouteStrategyMutationPatch(baseline, { ...baseline, description: '仅修改说明' }), {
   description: '仅修改说明'
 }, '策略路由编辑只应提交实际变化字段')
 assert.equal(hasRouteStrategyMutationChanges({}), false, '空策略路由 PATCH 必须识别为 no-op')
+assert.doesNotMatch(mutationSource, /normalRoutingConfig|schedulingPreference|firstByteDeadline|speedFirstConfig/, '策略路由 PATCH 组装与本地合并不得再引用任何调度字段（P2 写侧退场）')
 
 const listItem = {
   id: 'route-1',
@@ -114,7 +116,6 @@ const listItem = {
   mode: 'normal' as const,
   status: 'active' as const,
   isDefault: false,
-  normalRoutingConfig: { schedulingPreference: 'cost_first' as const },
   bindingCount: 1,
   apiKeyCount: 7,
   groupBindingPreview: [{
@@ -130,13 +131,12 @@ const listItem = {
 }
 const mergedListItem = mergeRouteStrategyMutationResult(listItem, {
   id: listItem.id,
-  changedFields: ['name', 'description', 'mode', 'status', 'normalRoutingConfig', 'groupBindings'],
+  changedFields: ['name', 'description', 'mode', 'status', 'groupBindings'],
   rowPatch: {
     name: '本地合并路由',
     description: null,
     mode: 'weighted',
     status: 'disabled',
-    normalRoutingConfig: null,
     bindingCount: 2,
     groupBindingPreview: [{
       id: 'binding-2',
@@ -151,7 +151,6 @@ const mergedListItem = mergeRouteStrategyMutationResult(listItem, {
 })
 assert.equal(mergedListItem.name, '本地合并路由')
 assert.equal('description' in mergedListItem, false, '服务端返回 null 时本地行必须清除可选说明字段')
-assert.equal('normalRoutingConfig' in mergedListItem, false, '服务端清除普通路由配置时本地行不得保留旧配置')
 assert.equal(mergedListItem.bindingCount, 2)
 assert.equal(mergedListItem.groupBindingPreview[0]?.groupId, 'group-2')
 assert.equal(mergedListItem.apiKeyCount, listItem.apiKeyCount, '最小 mutation result 未涉及的列表字段必须原样保留')

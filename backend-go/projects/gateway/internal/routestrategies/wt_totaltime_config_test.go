@@ -83,8 +83,9 @@ func TestWtTotalTimeNormalizeKeepsValidValues(t *testing.T) {
 }
 
 func TestWtTotalTimeParseStrictKeys(t *testing.T) {
-	// 新键放行：parse 层 strictObject 不拒绝两个新键。
-	input, message := parseMutationFields(map[string]any{
+	// P2（D6）：payload 携带 speedFirstConfig 即拒绝（新键/未知键都到不了
+	// strictObject，退场判定先行）；速度参数键表校验只存在于存储 normalize 层。
+	_, message := parseMutationFields(map[string]any{
 		"normalRoutingConfig": map[string]any{
 			"schedulingPreference": "speed_first",
 			"speedFirstConfig": map[string]any{
@@ -93,18 +94,12 @@ func TestWtTotalTimeParseStrictKeys(t *testing.T) {
 			},
 		},
 	}, false)
-	if message != "" {
-		t.Fatalf("新键必须放行 message=%q", message)
+	if message != LegacySchedulingConfigRejectedMessage {
+		t.Fatalf("speedFirstConfig payload 必须退场拒绝 message=%q", message)
 	}
-	if !input.HasNormalConfig || input.NormalConfigRaw == nil {
-		t.Fatalf("input=%+v", input)
-	}
-	// 未知键仍拒绝。
+	// 不含退场键时未知键仍按 strictObject 拒绝（策略路由参数无效）。
 	if _, message := parseMutationFields(map[string]any{
-		"normalRoutingConfig": map[string]any{
-			"schedulingPreference": "speed_first",
-			"speedFirstConfig":     map[string]any{"totalTimeDeadlineSecondsTypo": 120},
-		},
+		"normalRoutingConfig": map[string]any{"unknownKey": 1},
 	}, false); message != invalidMutationMessage {
 		t.Fatalf("未知键必须拒绝 message=%q", message)
 	}

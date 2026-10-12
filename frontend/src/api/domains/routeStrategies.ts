@@ -1,7 +1,6 @@
 import type {
   RouteStrategyEditBasicDetail,
   RouteStrategyListItem,
-  RouteStrategyNormalRoutingConfig,
   RouteStrategyListResult,
   RouteStrategyMutationResult,
   RouteStrategyMode,
@@ -41,7 +40,9 @@ export interface RouteStrategyMutationPayload {
     weight?: number
     status?: RouteStrategyGroupBindingStatus
   }>
-  normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
+  // 调度偏好独立实体（P2）后策略路由写侧只承载拓扑字段；旧调度字段
+  // （normalRoutingConfig/schedulingPreference/firstByteDeadlineMs/speedFirstConfig）
+  // 由调度偏好页维护，后端将拒绝携带这些字段的写入。
 }
 
 export interface RouteStrategyPatchPayload extends RouteStrategyMutationPayload {

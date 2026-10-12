@@ -89,7 +89,7 @@ func RunQuizFamily(ctx context.Context, input Suite, timeout time.Duration) ([]E
 			return nil, answerExecuteErr
 		}
 		if familyTerminal() {
-			return appendTerminalQuizItems(items, quizRequestFailureEvaluation(question, answerResult)), nil
+			return appendTerminalQuizItems(items, quizRequestFailureEvaluation(question, weights[index], answerResult)), nil
 		}
 		gradeRequest, gradeErr := input.quizGradingRequest(question, answerResult.Output, upstreamProtocol, upstreamMode, stream)
 		if gradeErr != nil {
@@ -101,7 +101,7 @@ func RunQuizFamily(ctx context.Context, input Suite, timeout time.Duration) ([]E
 			return nil, gradeExecuteErr
 		}
 		if familyTerminal() {
-			return appendTerminalQuizItems(items, quizRequestFailureEvaluation(question, gradeResult)), nil
+			return appendTerminalQuizItems(items, quizRequestFailureEvaluation(question, weights[index], gradeResult)), nil
 		}
 		verdict, judgeReason, valid := parseQuizVerdict(gradeResult.Output)
 		items = append(items, quizEvaluation(question, weights[index], answerResult.Output, verdict, judgeReason, valid))
@@ -224,8 +224,12 @@ func quizEvaluation(question QuizQuestion, weight int, answer, verdict, judgeRea
 
 // quizRequestFailureEvaluation keeps the request-failure convention for a hop
 // that exhausted the retry boundary: skipped, request-failure evidence, never
-// a scored failure.
-func quizRequestFailureEvaluation(question QuizQuestion, result Result) Evaluation {
+// a scored failure. The question's pool weight still rides on MaxScore so the
+// timeout-penalty summary can deduct it in full (MaxScore-Score) when the
+// penalty switch is on; with the switch off the requestFailure/
+// excludedFromScoring evidence keeps the item out of both the deduction and
+// the denominator, exactly as before.
+func quizRequestFailureEvaluation(question QuizQuestion, weight int, result Result) Evaluation {
 	evidence := map[string]any{
 		"questionId":           question.ID,
 		"questionTitle":        question.Title,
@@ -244,7 +248,7 @@ func quizRequestFailureEvaluation(question QuizQuestion, result Result) Evaluati
 	if strings.TrimSpace(result.Output) != "" {
 		evidence["answerExcerpt"] = answerExcerpt(result.Output)
 	}
-	return withRetryEvidence(Evaluation{Kind: "custom_quiz", Status: "skipped", Evidence: evidence}, result)
+	return withRetryEvidence(Evaluation{Kind: "custom_quiz", Status: "skipped", Score: 0, MaxScore: weight, Evidence: evidence}, result)
 }
 
 func answerExcerpt(answer string) string {

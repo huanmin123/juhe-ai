@@ -98,10 +98,15 @@ func TestW9EUpdateBranches(t *testing.T) {
 		t.Fatalf("status = %d", c)
 	}
 	updatedAt = env.strategyUpdatedAt(t, id)
-	// 仅配置更新（normal）。
+	// 配置更新入口（P2）：携带退场调度键 → 400 专用文案；空对象仍可达 store
+	//（归一为 cost_first，无存量配置时零变更）。
+	if c, payload := env.do(t, http.MethodPatch, "/__aisys__/api/route-strategies/"+id,
+		`{"normalRoutingConfig":{"schedulingPreference":"speed_first"},"expectedUpdatedAt":"`+updatedAt+`"}`); c != http.StatusBadRequest || payload["message"] != LegacySchedulingConfigRejectedMessage {
+		t.Fatalf("normal config retired key must reject = %d %v", c, payload)
+	}
 	if c, _ := env.do(t, http.MethodPatch, "/__aisys__/api/route-strategies/"+id,
-		`{"normalRoutingConfig":{"schedulingPreference":"speed_first"},"expectedUpdatedAt":"`+updatedAt+`"}`); c != http.StatusOK {
-		t.Fatalf("normal config = %d", c)
+		`{"normalRoutingConfig":{},"expectedUpdatedAt":"`+updatedAt+`"}`); c != http.StatusOK {
+		t.Fatalf("normal config empty object = %d", c)
 	}
 	updatedAt = env.strategyUpdatedAt(t, id)
 	// 版本冲突：旧 expectedUpdatedAt。

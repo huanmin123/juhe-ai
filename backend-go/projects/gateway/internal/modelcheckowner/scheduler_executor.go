@@ -40,6 +40,10 @@ type ScheduledPayload struct {
 	// 行冻结进 payload，运行中题目被删/被驳回只影响后续运行；本份 payload
 	// 的解析结果不受影响（不可变契约）。空 = 不执行题库家族。
 	CustomQuestionIds []string `json:"customQuestionIds,omitempty"`
+	// TimeoutPenaltyEnabled 是 claim 时从 schedule 行冻结的超时处罚开关：
+	// 开启后检测环节超时按该环节失败计分/处罚；默认关闭（omitempty）维持
+	// 现状。恢复 payload（quality_recovery）不携带本开关。
+	TimeoutPenaltyEnabled bool `json:"timeoutPenaltyEnabled,omitempty"`
 }
 
 // SchedulerRunBuilder resolves a durable scheduled payload to a complete
@@ -69,7 +73,7 @@ func buildFailureRunRecord(runID string, kind SchedulerKind, payload ScheduledPa
 	if payload.ScheduleID != "" {
 		summary["scheduleId"] = payload.ScheduleID
 	}
-	policy := map[string]any{"revision": payload.PolicyRevision, "threshold": payload.Threshold, "action": payload.PenaltyAction, "recoveryIntervalMinutes": payload.RecoveryIntervalMinutes}
+	policy := map[string]any{"revision": payload.PolicyRevision, "threshold": payload.Threshold, "action": payload.PenaltyAction, "recoveryIntervalMinutes": payload.RecoveryIntervalMinutes, "timeoutPenaltyEnabled": payload.TimeoutPenaltyEnabled}
 	request, _ := json.Marshal(summary)
 	policySnapshot, _ := json.Marshal(policy)
 	accountID := ""
@@ -207,6 +211,9 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.IdentityKey = payload.IdentityKey
 	// 题库配置随 payload 冻结传递（scheduled 与 quality_recovery 同源同语义）。
 	request.CustomQuestionIds = payload.CustomQuestionIds
+	// 超时处罚开关只由 scheduled payload 携带；恢复 payload 不携带（零值
+	// false），与"恢复运行不改写处罚语义"的既有契约一致。
+	request.TimeoutPenaltyEnabled = payload.TimeoutPenaltyEnabled
 	// The budget deliberately wraps only the probe run. The terminal CAS
 	// writes below must keep the scheduler's undeadlined context: an expired
 	// budget context would otherwise prevent the very completion/failure

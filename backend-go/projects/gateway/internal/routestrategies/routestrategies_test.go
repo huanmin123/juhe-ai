@@ -229,6 +229,29 @@ func (e *testEnv) createStrategy(t *testing.T, path, body string) (int, map[stri
 	return e.do(t, http.MethodPost, path, body)
 }
 
+// createStrategyViaStore 直接经 Store 建策略（绕过 HTTP payload 解析层）。
+// P2 起策略写入口拒绝旧调度字段，含调度配置的存量行只能由此构造——它代表
+// 迁移完成世界的存量数据与回滚 oracle 语义（存储层保持完全宽容），不是放行
+// HTTP 写入。
+func (e *testEnv) createStrategyViaStore(t *testing.T, ownerID, name, mode string, bindings []string, normalRaw any) string {
+	t.Helper()
+	input := MutationInput{Name: &name, Mode: &mode}
+	for index, groupID := range bindings {
+		priority := index + 1
+		input.Bindings = append(input.Bindings, BindingInput{GroupID: groupID, Priority: &priority, Weight: ptrInt(1), Status: "active"})
+	}
+	input.HasBindings = len(input.Bindings) > 0
+	input.HasNormalConfig = true
+	input.NormalConfigRaw = normalRaw
+	item, err := e.store.Create(context.Background(), input, AccessScope{ViewerID: ownerID, IsAdmin: true})
+	if err != nil {
+		t.Fatalf("store create %s: %v", name, err)
+	}
+	return item.ID
+}
+
+func ptrInt(value int) *int { return &value }
+
 // bindingJSON renders one binding entry for request bodies.
 func bindingJSON(groupID string, priority int) string {
 	if priority > 0 {
@@ -517,26 +540,22 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 		t.Fatalf("normal two bindings: %d %v", code, payload)
 	}
 
-	// speed_first normal config ok; deadline range enforced.
+	// P2（D6）：策略写入口拒绝旧调度字段（schedulingPreference/speedFirstConfig/
+	// firstByteDeadlineMs，含旧别名 firstByteThresholdMs），显式 400，不静默忽略。
 	code, speedPayload := env.createStrategy(t, path,
 		`{"name":"sf","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":5}},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("speed_first create: %d %v", code, speedPayload)
+	if code != http.StatusBadRequest || speedPayload["message"] != LegacySchedulingConfigRejectedMessage {
+		t.Fatalf("speed_first create must be rejected: %d %v", code, speedPayload)
 	}
-	speed := dataMap(t, speedPayload)
-	config := speed["normalRoutingConfig"].(map[string]any)
-	if config["firstByteDeadlineMs"] != float64(20000) {
-		t.Fatalf("deadline: %v", config)
+	code, aliasPayload := env.createStrategy(t, path,
+		`{"name":"sf-alias","normalRoutingConfig":{"firstByteThresholdMs":20000},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
+	if code != http.StatusBadRequest || aliasPayload["message"] != LegacySchedulingConfigRejectedMessage {
+		t.Fatalf("legacy alias must be rejected with the dedicated message: %d %v", code, aliasPayload)
 	}
-	speedFirst := config["speedFirstConfig"].(map[string]any)
-	if speedFirst["slowTriggerCount"] != float64(5) || speedFirst["slowWindowSeconds"] != float64(120) {
-		t.Fatalf("speedFirst defaults: %v", speedFirst)
-	}
-	code, badDeadline := env.createStrategy(t, path,
-		`{"name":"sf2","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":9999},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || badDeadline["message"] != "首字截止时间必须是 10000-60000 毫秒" {
-		t.Fatalf("bad deadline: %d %v", code, badDeadline)
-	}
+	speedID := env.createStrategyViaStore(t, adminID, "sf-store", ModeNormal, []string{groupA}, map[string]any{
+		"schedulingPreference": "speed_first",
+		"firstByteDeadlineMs":  20000,
+	})
 
 	// failover rules: primary + backup.
 	code, payload = env.createStrategy(t, path,
@@ -620,7 +639,7 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 
 	// Mode switch without bindings must satisfy the new mode: normal →
 	// failover fails while only one binding exists.
-	normalID := speed["id"].(string)
+	normalID := speedID
 	updatedAt = env.strategyUpdatedAt(t, normalID)
 	code, payload = env.do(t, http.MethodPatch, path+"/"+normalID,
 		`{"expectedUpdatedAt":"`+updatedAt+`","mode":"failover"}`)

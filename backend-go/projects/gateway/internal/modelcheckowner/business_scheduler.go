@@ -120,7 +120,7 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 	if s.Postgres {
 		lock = " FOR UPDATE OF mqs SKIP LOCKED"
 	}
-	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.custom_question_ids,a.config_revision,a.dispatch_revision,a.provider_code FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.custom_question_ids,a.config_revision,a.dispatch_revision,a.provider_code FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b schedules: %w", err)
 	}
@@ -132,12 +132,15 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 	type claimedScheduleRow struct {
 		id, systemID, accountID, model, profile, action, provider                         string
 		revision, interval, recoveryInterval, threshold, configRevision, dispatchRevision int
-		customQuestionIds                                                                 sql.NullString
+		// timeoutPenalty 在 SQLite 为 INTEGER 0/1、PG 为 boolean，两种驱动
+		// 取值都可扫描进 bool（readPolicy 同语义）。
+		timeoutPenalty    bool
+		customQuestionIds sql.NullString
 	}
 	scanned := make([]claimedScheduleRow, 0, limit)
 	for rows.Next() {
 		var row claimedScheduleRow
-		if err := rows.Scan(&row.id, &row.revision, &row.systemID, &row.accountID, &row.model, &row.interval, &row.profile, &row.threshold, &row.action, &row.recoveryInterval, &row.customQuestionIds, &row.configRevision, &row.dispatchRevision, &row.provider); err != nil {
+		if err := rows.Scan(&row.id, &row.revision, &row.systemID, &row.accountID, &row.model, &row.interval, &row.profile, &row.threshold, &row.action, &row.recoveryInterval, &row.timeoutPenalty, &row.customQuestionIds, &row.configRevision, &row.dispatchRevision, &row.provider); err != nil {
 			return nil, err
 		}
 		scanned = append(scanned, row)
@@ -155,9 +158,9 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
-		// claim 时冻结：题库 id 取自 schedule 行并写入不可变 payload，运行中
-		// 的配置变更不影响本次执行。
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: row.systemID, ActorSystemAccountID: row.systemID, TargetType: "account", TargetID: row.accountID, Model: row.model, Profile: row.profile, ProviderCode: row.provider, Threshold: row.threshold, PenaltyAction: row.action, ConfigRevision: strconv.Itoa(row.configRevision), DispatchRevision: int64(row.dispatchRevision), SourceConfigRevision: strconv.Itoa(row.configRevision), SourceDispatchRevision: int64(row.dispatchRevision), PolicyRevision: strconv.Itoa(row.revision), ProbeSetVersion: probeSetForProfile(row.profile), IdentityKey: row.systemID + ":" + row.accountID + ":" + row.model, ScheduleID: row.id, OwnerID: s.OwnerID, ScheduleRevision: row.revision, IntervalMinutes: row.interval, RecoveryIntervalMinutes: row.recoveryInterval, CustomQuestionIds: qualityCustomQuestionIds(row.customQuestionIds)})
+		// claim 时冻结：题库 id 与超时处罚开关取自 schedule 行并写入不可变
+		// payload，运行中的配置变更不影响本次执行。
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: row.systemID, ActorSystemAccountID: row.systemID, TargetType: "account", TargetID: row.accountID, Model: row.model, Profile: row.profile, ProviderCode: row.provider, Threshold: row.threshold, PenaltyAction: row.action, ConfigRevision: strconv.Itoa(row.configRevision), DispatchRevision: int64(row.dispatchRevision), SourceConfigRevision: strconv.Itoa(row.configRevision), SourceDispatchRevision: int64(row.dispatchRevision), PolicyRevision: strconv.Itoa(row.revision), ProbeSetVersion: probeSetForProfile(row.profile), IdentityKey: row.systemID + ":" + row.accountID + ":" + row.model, ScheduleID: row.id, OwnerID: s.OwnerID, ScheduleRevision: row.revision, IntervalMinutes: row.interval, RecoveryIntervalMinutes: row.recoveryInterval, CustomQuestionIds: qualityCustomQuestionIds(row.customQuestionIds), TimeoutPenaltyEnabled: row.timeoutPenalty})
 		if err != nil {
 			return nil, err
 		}
@@ -253,12 +256,15 @@ type ScheduleRunNowSnapshot struct {
 	Threshold                              int
 	IntervalMinutes                        int
 	RecoveryIntervalMinutes                int
-	Revision                               int
-	Enabled                                bool
-	CustomQuestionIds                      []string
-	LeaseUntil                             string
-	ProviderCode                           string
-	ConfigRevision, DispatchRevision       int
+	// TimeoutPenaltyEnabled 是受理瞬间从计划行冻结的超时处罚开关（默认
+	// 关闭）；执行期内的计划编辑不再影响本次运行。
+	TimeoutPenaltyEnabled            bool
+	Revision                         int
+	Enabled                          bool
+	CustomQuestionIds                []string
+	LeaseUntil                       string
+	ProviderCode                     string
+	ConfigRevision, DispatchRevision int
 }
 
 // ScheduleForRunNow 读取计划行现值（join 账户行取 revision/供应商）。账户已
@@ -269,9 +275,10 @@ func (s *BusinessSchedulerSource) ScheduleForRunNow(ctx context.Context, systemI
 	}
 	var snap ScheduleRunNowSnapshot
 	var enabled int
+	var timeoutPenaltyEnabled bool
 	var customQuestionIds sql.NullString
 	var leaseUntil sql.NullString
-	err := s.Business.QueryRowContext(ctx, s.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,mqs.model,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.interval_minutes,mqs.recovery_interval_minutes,mqs.revision,mqs.enabled,mqs.custom_question_ids,mqs.lease_until,a.provider_code,a.config_revision,a.dispatch_revision FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL WHERE mqs.id=? AND mqs.system_account_id=?`), scheduleID, systemID).Scan(&snap.ScheduleID, &snap.SystemAccountID, &snap.AccountID, &snap.Model, &snap.Profile, &snap.Threshold, &snap.PenaltyAction, &snap.IntervalMinutes, &snap.RecoveryIntervalMinutes, &snap.Revision, &enabled, &customQuestionIds, &leaseUntil, &snap.ProviderCode, &snap.ConfigRevision, &snap.DispatchRevision)
+	err := s.Business.QueryRowContext(ctx, s.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,mqs.model,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.interval_minutes,mqs.recovery_interval_minutes,mqs.revision,mqs.enabled,mqs.timeout_penalty_enabled,mqs.custom_question_ids,mqs.lease_until,a.provider_code,a.config_revision,a.dispatch_revision FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL WHERE mqs.id=? AND mqs.system_account_id=?`), scheduleID, systemID).Scan(&snap.ScheduleID, &snap.SystemAccountID, &snap.AccountID, &snap.Model, &snap.Profile, &snap.Threshold, &snap.PenaltyAction, &snap.IntervalMinutes, &snap.RecoveryIntervalMinutes, &snap.Revision, &enabled, &timeoutPenaltyEnabled, &customQuestionIds, &leaseUntil, &snap.ProviderCode, &snap.ConfigRevision, &snap.DispatchRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScheduleRunNowSnapshot{}, false, nil
 	}
@@ -279,6 +286,7 @@ func (s *BusinessSchedulerSource) ScheduleForRunNow(ctx context.Context, systemI
 		return ScheduleRunNowSnapshot{}, false, fmt.Errorf("read J3b run-now schedule: %w", err)
 	}
 	snap.Enabled = enabled == 1
+	snap.TimeoutPenaltyEnabled = timeoutPenaltyEnabled
 	snap.CustomQuestionIds = qualityCustomQuestionIds(customQuestionIds)
 	if leaseUntil.Valid {
 		snap.LeaseUntil = leaseUntil.String
@@ -759,6 +767,7 @@ func (s *ScheduleRunNowService) execute(snapshot ScheduleRunNowSnapshot, runID c
 	request.Threshold = snapshot.Threshold
 	request.PenaltyAction = snapshot.PenaltyAction
 	request.RecoveryIntervalMinutes = snapshot.RecoveryIntervalMinutes
+	request.TimeoutPenaltyEnabled = snapshot.TimeoutPenaltyEnabled
 	request.PolicyRevision = strconv.Itoa(snapshot.Revision)
 	request.ProbeSetVersion = probeSetForProfile(snapshot.Profile)
 	request.IdentityKey = snapshot.SystemAccountID + ":" + snapshot.AccountID + ":" + snapshot.Model
@@ -839,7 +848,7 @@ func (s *ScheduleRunNowService) mergeRestoreDecision(runID string, outcome Sched
 // 语义：last_run_id 必须指向可查详情）。
 func (snapshot ScheduleRunNowSnapshot) failureRunRecord(runID string, cause error) RunRecord {
 	summary := map[string]any{"targetType": "account", "targetId": snapshot.AccountID, "model": snapshot.Model, "profile": snapshot.Profile, "configRevision": strconv.Itoa(snapshot.ConfigRevision), "policyRevision": strconv.Itoa(snapshot.Revision), "scheduleId": snapshot.ScheduleID}
-	policy := map[string]any{"revision": strconv.Itoa(snapshot.Revision), "threshold": snapshot.Threshold, "action": snapshot.PenaltyAction, "recoveryIntervalMinutes": snapshot.RecoveryIntervalMinutes}
+	policy := map[string]any{"revision": strconv.Itoa(snapshot.Revision), "threshold": snapshot.Threshold, "action": snapshot.PenaltyAction, "recoveryIntervalMinutes": snapshot.RecoveryIntervalMinutes, "timeoutPenaltyEnabled": snapshot.TimeoutPenaltyEnabled}
 	requestSummary, _ := json.Marshal(summary)
 	policySnapshot, _ := json.Marshal(policy)
 	provider := snapshot.ProviderCode

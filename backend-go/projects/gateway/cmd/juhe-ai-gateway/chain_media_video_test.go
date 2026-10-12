@@ -560,8 +560,8 @@ func TestChainMediaVideoCancelSemantics(t *testing.T) {
 
 	// 非本人任务 404（归属校验；不存在同形）。种第二把有效 Key（他人归属）。
 	otherSecret := "sk-chain-other-owner"
-	if _, err := fixture.db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_other', ?, 'rs_1', '他人 Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+	if _, err := fixture.db.Exec(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_other', ?, 'rs_1', '他人 Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(otherSecret)); err != nil {
 		t.Fatalf("seed other api key: %v", err)
 	}
@@ -1161,8 +1161,8 @@ func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, bas
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES ('rs_hyb_vid', ?, '混合媒体', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_hyb_vid', 'rs_hyb_vid', ?, 'group_hyb_vid', 0, 1, 'active', ?)`, fixture.systemAccount, now)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_hyb_vid', ?, 'rs_hyb_vid', '混合媒体Key', ?, 'active', ?)`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_hyb_vid', ?, 'rs_hyb_vid', '混合媒体Key', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now)
 	return secret
 }

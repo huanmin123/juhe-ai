@@ -21,6 +21,8 @@ interface CapturedRequest {
 
 const systemAccountId = 'system_account_route_strategy_regression'
 const routeStrategyId = 'route_strategy_update_regression'
+// P2 策略路由瘦身：写侧 payload 回归纯拓扑字段，不再携带任何调度字段
+// （normalRoutingConfig/schedulingPreference/firstByteDeadlineMs/speedFirstConfig 由调度偏好页维护）。
 const payload: RouteStrategyMutationPayload = {
   name: '策略路由创建 HTTP 契约回归',
   description: null,
@@ -39,45 +41,24 @@ const payload: RouteStrategyMutationPayload = {
       weight: 30,
       status: 'disabled'
     }
-  ],
-  normalRoutingConfig: null
+  ]
 }
-
-const costFirstNormalRoutingConfig = {
-  schedulingPreference: 'cost_first'
-} as const
-const speedFirstNormalRoutingConfig = {
-  schedulingPreference: 'speed_first',
-  firstByteDeadlineMs: 30000,
-  speedFirstConfig: {
-    slowTriggerCount: 3,
-    slowWindowSeconds: 120,
-    recoverySuccessCount: 3,
-    probeIntervalSeconds: 30,
-    degradedTtlSeconds: 300,
-    maxFirstByteRetriesPerRequest: 2
-  }
-} as const
 
 const weightedCreatePayload: RouteStrategyMutationPayload = {
   ...payload,
-  mode: 'weighted',
-  normalRoutingConfig: costFirstNormalRoutingConfig
+  mode: 'weighted'
 }
 const failoverCreatePayload: RouteStrategyMutationPayload = {
   ...payload,
-  mode: 'failover',
-  normalRoutingConfig: speedFirstNormalRoutingConfig
+  mode: 'failover'
 }
 const roundRobinCreatePayload: RouteStrategyMutationPayload = {
   ...payload,
-  mode: 'round_robin',
-  normalRoutingConfig: costFirstNormalRoutingConfig
+  mode: 'round_robin'
 }
 const mergeCreatePayload: RouteStrategyMutationPayload = {
   ...payload,
-  mode: 'merge',
-  normalRoutingConfig: speedFirstNormalRoutingConfig
+  mode: 'merge'
 }
 const patchPayload: RouteStrategyPatchPayload = {
   description: '仅更新说明',
@@ -162,12 +143,12 @@ assertManagementDelete(
 )
 assertPersonalDelete(capturedRequests[12], 'useScopedRouteStrategiesApi 个人作用域 delete')
 
-assertSchedulingPreferenceModeCreate(capturedRequests[13], weightedCreatePayload, 'weighted')
-assertSchedulingPreferenceModeCreate(capturedRequests[14], failoverCreatePayload, 'failover')
-assertSchedulingPreferenceModeCreate(capturedRequests[15], roundRobinCreatePayload, 'round_robin')
-assertSchedulingPreferenceModeCreate(capturedRequests[16], mergeCreatePayload, 'merge')
+assertRouteStrategyModeCreate(capturedRequests[13], weightedCreatePayload, 'weighted')
+assertRouteStrategyModeCreate(capturedRequests[14], failoverCreatePayload, 'failover')
+assertRouteStrategyModeCreate(capturedRequests[15], roundRobinCreatePayload, 'round_robin')
+assertRouteStrategyModeCreate(capturedRequests[16], mergeCreatePayload, 'merge')
 
-console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及五种模式调度偏好提交正确')
+console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及五种模式纯拓扑 payload（不含调度字段）正确')
 
 function assertManagementCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
@@ -243,12 +224,14 @@ function assertMutationBody(body: unknown, source: string, action: '创建' | '�
   assert.deepEqual(body, payload, `${source} 必须原样发送策略路由${action} body`)
   assert.ok(isRecord(body), `${source} body 必须是对象`)
   assert.equal(body.mode, 'normal', `${source} 固定 body 契约必须锁定 normal 模式`)
-  assert.ok(Object.hasOwn(body, 'normalRoutingConfig'), `${source} 必须保留 normalRoutingConfig 字段`)
+  for (const legacyField of ['normalRoutingConfig', 'schedulingPreference', 'firstByteDeadlineMs', 'speedFirstConfig']) {
+    assert.ok(!Object.hasOwn(body, legacyField), `${source} 不得再携带已退场的调度字段 ${legacyField}（P2 后端将拒绝）`)
+  }
   assert.ok(!Object.hasOwn(body, 'hybridRoutingConfig'), `${source} 不得再携带已删除的 hybridRoutingConfig 字段`)
   assert.deepEqual(body.groupBindings, payload.groupBindings, `${source} 必须原样保留 groupBindings`)
 }
 
-function assertSchedulingPreferenceModeCreate(
+function assertRouteStrategyModeCreate(
   request: CapturedRequest,
   expectedPayload: RouteStrategyMutationPayload,
   mode: 'weighted' | 'failover' | 'round_robin' | 'merge'
@@ -257,7 +240,11 @@ function assertSchedulingPreferenceModeCreate(
   assert.equal(request.url, '/route-strategies', `${mode} 模式创建必须请求 /route-strategies`)
   assert.deepEqual(request.body, expectedPayload, `${mode} 模式创建必须原样发送 body`)
   assert.ok(isRecord(request.body), `${mode} 模式创建 body 必须是对象`)
-  assert.notEqual(request.body.normalRoutingConfig, null, `${mode} 模式创建必须提交真实 normalRoutingConfig 调度偏好`)
+  assert.equal(request.body.mode, mode, `${mode} 模式创建必须锁定对应路由模式`)
+  assert.ok(
+    !Object.hasOwn(request.body, 'normalRoutingConfig'),
+    `${mode} 模式创建不得再提交 normalRoutingConfig 调度字段（P2 写侧退场）`
+  )
 }
 
 function parseRequestBody(data: AxiosRequestConfig['data']): unknown {

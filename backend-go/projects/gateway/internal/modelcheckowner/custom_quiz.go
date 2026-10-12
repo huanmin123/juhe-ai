@@ -2,6 +2,7 @@ package modelcheckowner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
@@ -66,7 +67,12 @@ func customQuizAwareItemKey(evaluation modelcheckprobe.Evaluation) string {
 
 // quizAggregateItem 是 resultSummary.customQuiz.items[] 的元素契约
 // （前端 model-checks 类型已按此实现）：verdict 取 passed/failed/
-// unavailable，reason 与证据一致（中文）。
+// unavailable，reason 与证据一致（中文）。reason 组装前提：纯请求失败
+// 证据（quizRequestFailureEvaluation 生成）没有 reason 键，reason 由
+// error/重试证据现场翻译为"请求未完成：…"，不再留空导致前端只能显示
+// "-"；家族终端包装（terminalFamilyEvaluation）会给已完成题的证据追加
+// requestFailure 等标志但保留其 reason/verdict，reason 非空时永远优先
+// 于请求失败组装，不产生 verdict=passed 而 reason="请求未完成"的矛盾。
 type quizAggregateItem struct {
 	QuestionID string `json:"questionId"`
 	Title      string `json:"title"`
@@ -107,7 +113,19 @@ func buildCustomQuizSummary(evaluations []modelcheckprobe.Evaluation, quizReques
 		if evaluation.Evidence != nil {
 			item.QuestionID, _ = evaluation.Evidence["questionId"].(string)
 			item.Title, _ = evaluation.Evidence["questionTitle"].(string)
-			item.Reason, _ = evaluation.Evidence["reason"].(string)
+			reason, _ := evaluation.Evidence["reason"].(string)
+			if requestFailure, _ := evaluation.Evidence["requestFailure"].(bool); requestFailure && strings.TrimSpace(reason) == "" {
+				// 纯请求失败形态（quizRequestFailureEvaluation）没有 reason 键，
+				// 由 error/重试证据翻译中文 reason；verdict 键在该形态下不
+				// 存在，下方映射保持 unavailable，不影响扣分豁免口径。
+				item.Reason = quizRequestFailureReason(evaluation.Evidence)
+			} else {
+				// reason 非空（trim 后）永远优先：家族终端包装
+				// （terminalFamilyEvaluation）会给已判完题的证据追加
+				// requestFailure 等标志但保留其原 reason/verdict，套用
+				// "请求未完成"组装会与 verdict 仍为 passed/failed 自相矛盾。
+				item.Reason = reason
+			}
 			if verdict, ok := evaluation.Evidence["verdict"].(string); ok {
 				switch verdict {
 				case "pass":
@@ -145,4 +163,61 @@ func quizEvidenceExcludesScoring(evidence map[string]any) bool {
 	excluded, _ := evidence["excludedFromScoring"].(bool)
 	requestFailure, _ := evidence["requestFailure"].(bool)
 	return excluded || requestFailure
+}
+
+// quizRequestFailureReason 把请求失败形态的证据组装为中文 reason：error 先
+// 经 quizRequestFailurePhrase 翻译为短语，无短语时固定"请求未完成"；有重试
+// 证据（retryMaxAttempts>0）时追加"（尝试 N/M 次）"，N=已试次数+1（最后一次
+// 失败也计入），M=配置的最大尝试次数。
+func quizRequestFailureReason(evidence map[string]any) string {
+	reason := "请求未完成"
+	if phrase := quizRequestFailurePhrase(evidence); phrase != "" {
+		reason = "请求未完成：" + phrase
+	}
+	if maxAttempts := quizEvidenceNumber(evidence, "retryMaxAttempts"); maxAttempts > 0 {
+		attempts := quizEvidenceNumber(evidence, "retryAttemptCount") + 1
+		reason += fmt.Sprintf("（尝试 %d/%d 次）", attempts, maxAttempts)
+	}
+	return reason
+}
+
+// quizRequestFailurePhrase 把 modelcheckprobe 生成的 error 原文（probe.go 的
+// "J3b ..." 分类）翻译为用户可读中文短语；error 缺失或为空返回空短语，未知
+// 非空 error 保留原文，不吞掉上游信息。
+func quizRequestFailurePhrase(evidence map[string]any) string {
+	message, _ := evidence["error"].(string)
+	switch message {
+	case "":
+		return ""
+	case "J3b probe timed out":
+		return "上游超时"
+	case "J3b probe canceled":
+		return "探针已取消"
+	case "J3b upstream response read failed":
+		return "上游响应读取失败"
+	case "J3b upstream response exceeded limit":
+		return "上游响应超限"
+	case "J3b OAuth Codex response stream incomplete":
+		return "OAuth Codex 响应流未完成"
+	}
+	if rest, ok := strings.CutPrefix(message, "J3b upstream request failed: "); ok {
+		return "上游请求失败：" + rest
+	}
+	if rest, ok := strings.CutPrefix(message, "J3b upstream returned HTTP "); ok {
+		return "上游返回 HTTP " + rest
+	}
+	return message
+}
+
+// quizEvidenceNumber 安全读取证据中的数字：withRetryEvidence 运行时直写 int，
+// JSON 还原后为 float64，两者都覆盖；缺失或非数字返回 0。
+func quizEvidenceNumber(evidence map[string]any, key string) int {
+	switch value := evidence[key].(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }

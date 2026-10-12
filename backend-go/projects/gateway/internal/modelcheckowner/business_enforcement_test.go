@@ -14,10 +14,10 @@ func businessEnforcementTestDDL() []string {
 	return []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,deleted_at TEXT,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,model TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,model TEXT,custom_question_ids TEXT)`,
 		// 无 ScheduleID 的 Apply 走全局策略路径，configurationMatches 读取
 		// model_quality_policies；列集与真实 schema 的查询投影保持一致。
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0)`,
 	}
 }
 
@@ -35,7 +35,7 @@ func TestBusinessEnforcementApplierUsesRevisionCASAndAtomicUpsert(t *testing.T) 
 	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch-1','sys-1','acct-1',7,'full',70,'quality_isolate',15,'gpt-5.6-sol',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch-1','sys-1','acct-1',7,'full',70,'quality_isolate',15,0,'gpt-5.6-sol',NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	applier, err := NewBusinessEnforcementApplier(db, false)
@@ -102,7 +102,7 @@ func TestBusinessEnforcementApplierAcceptsHardFailureAboveThresholdAndStoresReco
 	}
 	// 全局策略行需与冻结的策略快照一致（revision/profile/threshold/action/
 	// recovery），否则 Apply 判定配置过期。
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-2',0,'quick',70,'quality_isolate',10)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-2',0,'quick',70,'quality_isolate',10,0)`); err != nil {
 		t.Fatal(err)
 	}
 	applier, err := NewBusinessEnforcementApplier(db, false)
@@ -153,7 +153,7 @@ func TestBusinessEnforcementApplierSameActionIsAlreadyEffective(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,before_status,after_status,recovery_due_at) VALUES ('acct-3','sys-3','enf-old',3,'active','quality_isolate','run-old','active','quality_isolated','2026-09-01T10:10:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-3',0,'quick',70,'quality_isolate',10)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-3',0,'quick',70,'quality_isolate',10,0)`); err != nil {
 		t.Fatal(err)
 	}
 	applier, err := NewBusinessEnforcementApplier(db, false)

@@ -116,8 +116,8 @@ func seedMediaGlmVideoAccount(t *testing.T, fixture *chainFixture, id, baseURL, 
 		VALUES ('rs_glm_video', ?, 'glm视频', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_glm_video', 'rs_glm_video', ?, 'group_glm_video', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
-		VALUES ('key_glm_video', ?, 'rs_glm_video', 'glm视频Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_glm_video', ?, 'rs_glm_video', 'glm视频Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-04T00:00:00.000Z')`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
 	return keySecret
 }

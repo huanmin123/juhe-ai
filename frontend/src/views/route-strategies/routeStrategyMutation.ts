@@ -6,8 +6,7 @@ const editableFields = [
   'description',
   'mode',
   'status',
-  'groupBindings',
-  'normalRoutingConfig'
+  'groupBindings'
 ] as const
 
 export function buildRouteStrategyMutationPatch(
@@ -41,10 +40,6 @@ export function mergeRouteStrategyMutationResult(
   }
   if (patch.mode !== undefined) next.mode = patch.mode
   if (patch.status !== undefined) next.status = patch.status
-  if (Object.prototype.hasOwnProperty.call(patch, 'normalRoutingConfig')) {
-    if (patch.normalRoutingConfig === null || patch.normalRoutingConfig === undefined) delete next.normalRoutingConfig
-    else next.normalRoutingConfig = patch.normalRoutingConfig
-  }
   if (patch.bindingCount !== undefined) next.bindingCount = patch.bindingCount
   if (patch.groupBindingPreview !== undefined) next.groupBindingPreview = [...patch.groupBindingPreview]
   if (patch.updatedAt !== undefined) next.updatedAt = patch.updatedAt

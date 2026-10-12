@@ -29,6 +29,13 @@
             </div>
             <a-switch v-model:checked="form.manualEnforcementEnabled" :disabled="saving" />
           </div>
+          <div class="quality-config-row">
+            <div>
+              <div class="quality-config-label">超时处罚</div>
+              <div class="quality-config-help">开启后，检测环节超时（重试耗尽仍无完整响应）按该环节失败计分；核心环节超时导致整轮不可用时直接按下方处罚方式执行。默认关闭，超时不处罚。</div>
+            </div>
+            <a-switch v-model:checked="form.timeoutPenaltyEnabled" :disabled="saving" />
+          </div>
           <label class="quality-config-field">
             <span>处罚阈值</span>
             <a-input-number v-model:value="form.penaltyThreshold" :min="40" :max="100" :precision="0" :disabled="saving" addon-after="分" />
@@ -85,6 +92,7 @@ const open = ref(false)
 const form = reactive({
   deepDetection: false,
   manualEnforcementEnabled: true,
+  timeoutPenaltyEnabled: false,
   penaltyThreshold: 70,
   penaltyAction: 'fallback' as ModelQualityPenaltyAction,
   recoveryIntervalMinutes: 10,
@@ -99,6 +107,7 @@ const penaltyOptions = [
 watch(() => props.policy, (policy) => {
   form.deepDetection = policy.profile === 'full'
   form.manualEnforcementEnabled = policy.manualEnforcementEnabled
+  form.timeoutPenaltyEnabled = policy.timeoutPenaltyEnabled
   form.penaltyThreshold = policy.penaltyThreshold
   form.penaltyAction = policy.penaltyAction
   form.recoveryIntervalMinutes = policy.recoveryIntervalMinutes
@@ -110,6 +119,7 @@ function save() {
     expectedRevision: props.policy.revision,
     profile: form.deepDetection ? 'full' : 'quick',
     manualEnforcementEnabled: form.manualEnforcementEnabled,
+    timeoutPenaltyEnabled: form.timeoutPenaltyEnabled,
     penaltyThreshold: Math.trunc(form.penaltyThreshold),
     penaltyAction: form.penaltyAction,
     recoveryIntervalMinutes: Math.trunc(form.recoveryIntervalMinutes),
