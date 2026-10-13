@@ -45,6 +45,45 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-studio/images',
+    component: () => import('@/views/my-studio/studioImages/StudioImagesView.vue'),
+    meta: {
+      title: '图像生成',
+      description: '在媒体工作室生成图像：按模型能力配置参数，任务队列与作品画廊长期保留。',
+      menuGroup: 'studio',
+      menuGroupTitle: '媒体工作室',
+      viewScope: 'self',
+      keepAlive: true,
+      heavy: true
+    }
+  },
+  {
+    path: '/my-studio/audio',
+    component: () => import('@/views/my-studio/studioAudio/StudioAudioView.vue'),
+    meta: {
+      title: '音频生成',
+      description: '在媒体工作室合成语音或转写音频：文本转语音同步入素材库，转写结果可复制。',
+      menuGroup: 'studio',
+      menuGroupTitle: '媒体工作室',
+      viewScope: 'self',
+      keepAlive: true,
+      heavy: true
+    }
+  },
+  {
+    path: '/my-studio/video',
+    component: () => import('@/views/my-studio/studioVideo/StudioVideoView.vue'),
+    meta: {
+      title: '视频生成',
+      description: '在媒体工作室发起单镜视频生成：按模型能力配置首帧、时长与画幅，任务完成后回看与下载。',
+      menuGroup: 'studio',
+      menuGroupTitle: '媒体工作室',
+      viewScope: 'self',
+      keepAlive: true,
+      heavy: true
+    }
+  },
+  {
     path: '/my-stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {

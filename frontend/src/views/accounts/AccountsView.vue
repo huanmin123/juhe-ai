@@ -330,7 +330,9 @@ import {
   accountColumnSortOrder as resolveAccountColumnSortOrder,
   tableColumnKey,
 } from './accountTableColumns'
-import { ACCOUNT_CAPABILITY_DOMAINS, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { ACCOUNT_CAPABILITY_DOMAINS, DOMAIN_MODEL_MODES, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { providerModelsForProtocolProfile } from './accountEditFormPayload'
+import { loadAccountProviderModelOptionsResource } from './useAccountProviderModelOptions'
 import {
   accountMenuItems,
   canBatchEditAccount,
@@ -944,6 +946,7 @@ const {
   loadAccountApiKeyRuntimeDetails,
   loadCurrentProviderModelOptions,
   loadMappingSourceModelOptions,
+  allProviderModelScopeParams,
   providerName,
   providerModelOptions,
   strategyModelsLoading,
@@ -1042,13 +1045,31 @@ async function refreshAccountModelCatalog(): Promise<void> {
       ? await api.accounts.refreshModelCatalog(payload, accountScopeParams.value, { signal: controller.signal })
       : await api.myAccounts.refreshModelCatalog(payload, { signal: controller.signal })
     if (requestId !== modelCatalogSyncRequestId || requestKey !== currentModelCatalogDiscoveryRequestKey()) return
+    // v8-C：新增模型合并前过域过滤（mode + 协议双层）——服务端按账户域目录
+    // mode 过滤取回新增行的候选（selectedIds 携带 addedModels 以穿透 50 条
+    // 窗口），再按当前协议档案过滤协议层；不在过滤后集合内的新增模型不合并。
+    const allowedDomainOptions = await loadAccountProviderModelOptionsResource({
+      isManagementView: isManagementView.value,
+      providerCode: form.providerCode,
+      scopeParams: allProviderModelScopeParams.value,
+      modes: [...DOMAIN_MODEL_MODES[form.capabilityDomain]],
+      selectedIds: result.addedModels
+    })
+    const allowedProtocolModels = new Set(providerModelsForProtocolProfile(
+      allowedDomainOptions.data,
+      selectedProtocolProfile.value
+    ).map((option) => option.value))
+    const allowedAddedModels = result.addedModels.filter((model) => allowedProtocolModels.has(model))
     form.supportedModels = [...new Set([
       ...form.supportedModels.map((model) => model.trim()).filter(Boolean),
-      ...result.addedModels
+      ...allowedAddedModels
     ])]
-    if (!form.healthCheckModel.trim() && result.recommendedHealthCheckModel) form.healthCheckModel = result.recommendedHealthCheckModel
-    message.success(result.addedModels.length
-      ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
+    // 推荐检查模型不在过滤后集合内时不自动选中（保持现有值）。
+    if (!form.healthCheckModel.trim() && result.recommendedHealthCheckModel && allowedProtocolModels.has(result.recommendedHealthCheckModel)) {
+      form.healthCheckModel = result.recommendedHealthCheckModel
+    }
+    message.success(allowedAddedModels.length
+      ? `已新增 ${allowedAddedModels.length} 个上游支持模型，手动选择已保留`
       : '上游目录已同步，手动选择已保留')
   } catch (error) {
     if (requestId === modelCatalogSyncRequestId && !controller.signal.aborted) {

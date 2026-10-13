@@ -121,6 +121,7 @@ import {
   ProfileOutlined,
   SafetyCertificateOutlined,
   SettingOutlined,
+  SoundOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UserSwitchOutlined,
@@ -246,6 +247,10 @@ const ApiKeyMenuIcon = () =>
 
 const menuIconMap = {
   '/my-chat': MessageOutlined,
+  // 媒体工作室三工作台（媒体工作室设计 §1）。
+  '/my-studio/images': PictureOutlined,
+  '/my-studio/audio': SoundOutlined,
+  '/my-studio/video': VideoCameraOutlined,
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
   // AI 账户四域菜单（M2）：对话/视频/音频/图像图标区分，双面共用同一组图标。
@@ -309,6 +314,8 @@ const menuGroupIconMap = {
   'log-management': ProfileOutlined,
   // 用户面「AI 账户」分组沿用原 /my-accounts 的 UserSwitchOutlined。
   'my-accounts': UserSwitchOutlined,
+  // 媒体工作室分组图标（规划 F1 三处接线）。
+  studio: AppstoreOutlined,
   'my-authorization': SafetyCertificateOutlined,
   'system-operations': SettingOutlined
 }

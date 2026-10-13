@@ -142,6 +142,7 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 列表“测试”是面向用户的自由模型诊断工具，不属于账户健康检查：
 
 - 模型候选来自该账户供应商、协议档案和当前账户所有者作用域可见的启用可测试模型目录；普通生成模型和图像模型都必须匹配其实际请求协议能力。
+- 能力域拆分 v8-C 对话协议面排除：目录 mode ∈ {`image_generation`, `video`} 的行不得经对话协议族（chat_completions/responses/messages/generate_content/interactions）进入对话测试候选或获得对话测试形态（mode=`audio` 行整体排除维持既有契约）；图像行只经 images_json 测试面的图像分支（`images` 协议 + api_key 门）保持可测，且测试形态只余 `images_json`。据此对话账户的测试下拉不再把生图/视频模型当作对话协议测试目标；`images_json` 测试面的图像模型分支不受影响（图像域账户继续经它选择图像模型）。
 - 不受账户 `supportedModels` 限制，允许用户验证尚未加入账户支持模型的供应商模型。
 - 默认选中账户 `healthCheckModel`，但用户可以为本次测试自由切换其他候选模型。
 - 后端固定命中当前账户并绕过账户 `supportedModels` 调度过滤，只验证该账户凭据、Base URL、代理、协议和指定模型的实际响应。

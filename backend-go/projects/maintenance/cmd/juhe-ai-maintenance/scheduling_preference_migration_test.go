@@ -43,8 +43,8 @@ func seedSchedulingPreferenceMigrationFixture(t *testing.T, pathsFlag string) {
 	defer func() { _, _ = db.Exec("PRAGMA foreign_keys=ON") }()
 	statements := []string{
 		`INSERT INTO scheduling_preferences
-			(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-			VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`,
+			(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+			VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`,
 		`INSERT INTO route_strategies
 			(id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at)
 			VALUES ('st-cli-speed', 'sys-cli', '策略CLI', NULL, 'normal', 'active', 0,

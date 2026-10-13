@@ -15,8 +15,8 @@ import (
 // 户以实例行落地且实例戳行本就被现有排除条件挡住）。账户不存在或范围外
 // （含软删、授权实例戳行）时返回 (nil, nil)。2026-10-10 修订：绑定与发送
 // 不再因账户生效状态拒绝（禁用/限流/冷却/过期账户均可测试），Enabled 沿用
-// 生效 active 口径仅供工具绑定候选计算消费（tool_bindings 的候选过滤），
-// 会话绑定与发送/模型列表链路不消费该字段。
+// 生效 active 口径为账户状态投影的保留语义，会话绑定与发送/模型列表链路
+// 不消费该字段（站内工具绑定候选机制已随 2026-10-12 简化退场）。
 func (s *Store) FindChatAccount(bindScope chat.ChatBindScope, accountID string) (*chat.ChatAccountRef, error) {
 	now := sqlQuoteISO(isoMillis(s.now()))
 	effective := ownerEffectiveStatusSQL("accounts", now)

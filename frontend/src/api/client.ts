@@ -22,6 +22,7 @@ import { myStatsApi, statsApi, tableMonitorApi } from './domains/stats'
 import { systemAccountsApi } from './domains/systemAccounts'
 import { myTeamsApi, systemTeamsApi } from './domains/systemTeams'
 import { chatApi } from './domains/chat'
+import { studioApi } from './domains/studio'
 import { myUsageRecordsApi, usageRecordsApi } from './domains/usageRecords'
 import { mediaJobsApi } from './domains/mediaJobs'
 import { myUiBootstrapApi, uiBootstrapApi } from './domains/userReferenceData'
@@ -76,5 +77,6 @@ export const api = {
   myModelChecks: myModelChecksApi,
   myStats: myStatsApi,
   settings: settingsApi,
-  chat: chatApi
+  chat: chatApi,
+  studio: studioApi
 }

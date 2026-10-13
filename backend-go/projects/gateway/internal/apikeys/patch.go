@@ -185,8 +185,8 @@ func parsePatchBody(body map[string]any) (*PatchInput, string) {
 			input.SchedulingPreferenceID = nil
 		} else {
 			text, isString := value.(string)
-			// 契约：非法类型、空字符串与不存在/跨 owner/停用统一 400，不区分
-			// 提示（zod 类型文案被绑定契约显式覆盖）。
+			// 契约：非法类型、空字符串与不存在/跨 owner 统一 400，不区分提示
+			// （zod 类型文案被绑定契约显式覆盖；停用分支已随 v2 第 4 条退役）。
 			if !isString {
 				return nil, SchedulingPreferenceUnavailableMessage
 			}

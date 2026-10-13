@@ -20,6 +20,8 @@ export interface ProviderModelOptionsParams extends ListParams {
   keyword?: string
   limit?: number
   selectedIds?: string[]
+  /** 目录 mode 白名单（词表六值）；缺省不过滤（服务端按 mode IN 过滤）。 */
+  modes?: string[]
 }
 
 export const providersApi = {

@@ -180,6 +180,8 @@ export interface ProviderModelPricing {
 export interface ProviderModelOption {
   id: string
   name: string
+  /** 目录 mode（provider_model_catalog.mode 词表六值）；custom 空 mode 行缺省。 */
+  mode?: string
   providerCode?: ProviderCode
   supportedApiProtocols: ProviderModelApiProtocol[]
   supportedServiceTiers: ProviderModelServiceTier[]

@@ -30,10 +30,10 @@ function defaultAccess(): SettingsDisplayAccess {
 }
 
 describe('组覆盖完整性（防字段漏挂）', () => {
-  it('7 组共 46 个可编辑字段', () => {
+  it('7 组共 45 个可编辑字段', () => {
     expect(settingGroups).toHaveLength(7)
-    expect(settingsTotalItemCount).toBe(46)
-    expect(settingGroups.reduce((sum, g) => sum + groupFieldKeys(g).length, 0)).toBe(46)
+    expect(settingsTotalItemCount).toBe(45)
+    expect(settingGroups.reduce((sum, g) => sum + groupFieldKeys(g).length, 0)).toBe(45)
   })
 
   it('组字段的 section 归属并集 === section 契约字段（overrides 按子键展开）', () => {

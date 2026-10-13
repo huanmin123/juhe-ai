@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -262,6 +263,11 @@ func normalizeModelOptionQuery(r *http.Request) (ModelOptionQuery, string) {
 	}
 	query.Protocol = protocol
 	query.Keyword = strings.TrimSpace(firstQueryValue(r, "keyword"))
+	modes, modesMessage := normalizeModelOptionModes(r)
+	if modesMessage != "" {
+		return query, modesMessage
+	}
+	query.Modes = modes
 	if limitText := strings.TrimSpace(firstQueryValue(r, "limit")); limitText != "" {
 		limit, parseErr := strconv.ParseFloat(limitText, 64)
 		if parseErr != nil || limit != float64(int64(limit)) || limit < 1 || limit > 50 {
@@ -271,6 +277,30 @@ func normalizeModelOptionQuery(r *http.Request) (ModelOptionQuery, string) {
 	}
 	query.SelectedIDs = normalizeSelectedIDs(r)
 	return query, ""
+}
+
+// normalizeModelOptionModes normalizes the modes / modes[] union: each value
+// is comma-split, trimmed, lower-cased and deduped, then validated against the
+// catalog mode word list; any unknown value rejects the request with a 400
+// message. An absent or empty parameter yields no modes (no filtering).
+func normalizeModelOptionModes(r *http.Request) ([]string, string) {
+	values := append(append([]string{}, r.URL.Query()["modes"]...), r.URL.Query()["modes[]"]...)
+	seen := map[string]bool{}
+	output := []string{}
+	for _, raw := range values {
+		for _, piece := range strings.Split(raw, ",") {
+			trimmed := strings.ToLower(strings.TrimSpace(piece))
+			if trimmed == "" || seen[trimmed] {
+				continue
+			}
+			if !slices.Contains(ProviderCatalogModeValues, trimmed) {
+				return nil, "modes 必须是 chat、responses、embedding、audio、video 或 image_generation"
+			}
+			seen[trimmed] = true
+			output = append(output, trimmed)
+		}
+	}
+	return output, ""
 }
 
 // normalizeSelectedIDs mirrors the selectedIds / selectedIds[] union with

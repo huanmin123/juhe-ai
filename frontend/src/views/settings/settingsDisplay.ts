@@ -185,7 +185,7 @@ export const settingGroups: readonly SettingGroupDef[] = [
     title: '请求与限流',
     hint: '13 项 · 网关吞吐 / 用户配额 / 后台接口保护',
     sectionKeys: ['gateway-core', 'user-request-limit', 'api-rate-limit'],
-    itemCount: 13,
+    itemCount: 12,
     fields: [
       { divider: '网关请求' },
       { key: 'gatewayTextRawBodyLimitMegabytes', label: '文本请求体上限', kind: 'number', unit: 'MB', min: 1, max: 64, tip: '可设置 1 到 64；调大可承载更长上下文，也会增加单请求内存压力' },
@@ -306,7 +306,6 @@ export const settingGroups: readonly SettingGroupDef[] = [
       { key: 'imageStreamIdleTimeoutSeconds', label: '流式停顿', kind: 'number', unit: '秒', min: 1, max: 3600, tip: '收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试' },
       { key: 'imageUncommittedAttemptMaxLifetimeSeconds', label: '未提交尝试寿命', kind: 'number', unit: '秒', min: 60, max: 86400, tip: '当前账号尚未产生模型语义输出时的单次尝试最大存活时间' },
       { key: 'imageRequestWallTimeoutSeconds', label: '整请求总时限', kind: 'number', unit: '秒', min: 60, max: 86400, tip: '从接收到候选切换决策的总墙钟；失败后只有总墙钟仍有余量才继续后备候选' },
-      { key: 'chatImageGenerationTotalTimeoutSeconds', label: 'AI 对话生图总超时', kind: 'number', unit: '秒', min: 60, max: 86400, tip: '一次 generate_image 工具调用的整体时限，包含网关选号、账户切换、上游生成与资产保存' },
       { divider: '等待' },
       { key: 'noAvailableAccountWaitTimeoutSeconds', label: '无可用账号等待', kind: 'number', unit: '秒', min: 10, max: 3600, tip: '只在没有可立即派发账号时累计；当前账号仍在执行或存在可派发候选时不停止服务端接管' }
     ],
@@ -335,10 +334,9 @@ export const settingGroups: readonly SettingGroupDef[] = [
             { key: 'imageStreamIdleTimeoutSeconds', text: displayNumber(num(access, 'imageStreamIdleTimeoutSeconds'), '秒') },
             { key: 'imageUncommittedAttemptMaxLifetimeSeconds', text: displayNumber(num(access, 'imageUncommittedAttemptMaxLifetimeSeconds'), '秒') }
           ], access, '默认 600 秒 · 120 秒 · 3600 秒'),
-          mergedRow('image-wall', '整请求总时限 · 对话生图总超时', [
-            { key: 'imageRequestWallTimeoutSeconds', text: displayNumber(num(access, 'imageRequestWallTimeoutSeconds'), '秒') },
-            { key: 'chatImageGenerationTotalTimeoutSeconds', text: displayNumber(num(access, 'chatImageGenerationTotalTimeoutSeconds'), '秒') }
-          ], access, '默认 3600 秒 · 900 秒')
+          mergedRow('image-wall', '整请求总时限', [
+            { key: 'imageRequestWallTimeoutSeconds', text: displayNumber(num(access, 'imageRequestWallTimeoutSeconds'), '秒') }
+          ], access, '默认 3600 秒')
         ]
       },
       {
@@ -456,7 +454,7 @@ export const settingsTotalItemCount = settingGroups.reduce((sum, group) => sum +
  */
 export const settingsSectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds', 'upstreamClientVersionOverrides'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds', 'upstreamClientVersionOverrides'],
   'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],

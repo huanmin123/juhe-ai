@@ -28,7 +28,6 @@ const schedulingPreferenceCorrectTableDDL = `CREATE TABLE scheduling_preferences
 	chat_mode TEXT NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
 	chat_speed_first_config_json TEXT,
 	built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-	enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`
@@ -78,12 +77,13 @@ func schedulingPreferenceCompletedRecordJSON(t *testing.T) string {
 	return string(payload)
 }
 
-// seedSchedulingPreferenceBuiltinRow 按契约权威值插入内置行。
+// seedSchedulingPreferenceBuiltinRow 按契约权威值插入内置行（enabled 已随
+// v2 用户裁决修订第 4 条退役，行不再携带该列）。
 func seedSchedulingPreferenceBuiltinRow(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, built_in, enabled, created_at, updated_at)
-		VALUES (?, NULL, ?, 'cost_first', 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`,
-		schedulingPreferenceBuiltinID, "对话·成本优先"); err != nil {
+	if _, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, built_in, created_at, updated_at)
+		VALUES (?, NULL, ?, 'cost_first', 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`,
+		schedulingPreferenceBuiltinID, "默认调度偏好"); err != nil {
 		t.Fatalf("seed builtin row: %v", err)
 	}
 }
@@ -192,7 +192,7 @@ func TestSchedulingPreferenceSchemaSQLiteFailureArms(t *testing.T) {
 		wantErr       string
 	}{
 		{"missing-table", "", schedulingPreferenceCorrectAPIKeysDDL, false, "", "表缺失"},
-		{"missing-column", strings.Replace(schedulingPreferenceCorrectTableDDL, "enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),\n", "", 1), schedulingPreferenceCorrectAPIKeysDDL, false, "", "缺列 enabled"},
+		{"missing-column", strings.Replace(schedulingPreferenceCorrectTableDDL, "built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),\n", "", 1), schedulingPreferenceCorrectAPIKeysDDL, false, "", "缺列 built_in"},
 		{"missing-check", `CREATE TABLE scheduling_preferences (
 	id TEXT PRIMARY KEY,
 	system_account_id TEXT,
@@ -200,7 +200,6 @@ func TestSchedulingPreferenceSchemaSQLiteFailureArms(t *testing.T) {
 	chat_mode TEXT NOT NULL,
 	chat_speed_first_config_json TEXT,
 	built_in INTEGER NOT NULL DEFAULT 0,
-	enabled INTEGER NOT NULL DEFAULT 1,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`, schedulingPreferenceCorrectAPIKeysDDL, true, "", "CHECK"},
@@ -208,8 +207,6 @@ func TestSchedulingPreferenceSchemaSQLiteFailureArms(t *testing.T) {
 		{"builtin-row-missing", schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, false, "", "内置调度偏好行"},
 		{"builtin-built-in-zero", schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, true,
 			`UPDATE scheduling_preferences SET built_in = 0 WHERE id = '` + builtinID + `'`, "built_in=0"},
-		{"builtin-enabled-zero", schedulingPreferenceCorrectTableDDL, schedulingPreferenceCorrectAPIKeysDDL, true,
-			`UPDATE scheduling_preferences SET enabled = 0 WHERE id = '` + builtinID + `'`, "enabled=0"},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -337,7 +334,6 @@ func TestSchedulingPreferenceSchemaPostgresArms(t *testing.T) {
 	chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
 	chat_speed_first_config_json text,
 	built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-	enabled integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 	created_at text NOT NULL,
 	updated_at text NOT NULL
 )`
@@ -347,8 +343,8 @@ func TestSchedulingPreferenceSchemaPostgresArms(t *testing.T) {
 	// 失败（该臂必须由守卫因「表缺失」失败，而非夹具建表失败）。占位符个数
 	// 不一（1 或 2 个 %s），统一下方以 ReplaceAll 注入 schema。
 	const apiKeysNoReferenceDDL = `CREATE TABLE %s.api_keys (id text PRIMARY KEY, scheduling_preference_id text)`
-	const builtinInsert = `INSERT INTO %s.scheduling_preferences (id, system_account_id, name, chat_mode, built_in, enabled, created_at, updated_at)
-		VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`
+	const builtinInsert = `INSERT INTO %s.scheduling_preferences (id, system_account_id, name, chat_mode, built_in, created_at, updated_at)
+		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`
 
 	scenarios := []struct {
 		name        string

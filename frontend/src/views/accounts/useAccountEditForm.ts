@@ -76,6 +76,7 @@ import {
 import { buildAccountSavePayload, type AccountSavePayload } from './accountSavePayload'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
+import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia } from './accountCapabilityDomains'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
 import type { AccountGroupOptionsLoadOptions, AccountGroupOptionsScope } from './useAccountGroupOptions'
@@ -204,11 +205,17 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       ?? selectedProvider.value.protocolProfiles.find((profile) => profile.id === selectedProvider.value?.defaultProtocolProfileId)
       ?? selectedProvider.value.protocolProfiles[0]
     : undefined)
-  const providerModelOptions = computed(() => providerModelsForProtocolProfile(
-    loadedProviderModelOptions.value,
-    selectedProtocolProfile.value,
-    form.type
-  ))
+  // v8-C：目录 mode 服务端已按账户能力域过滤。对话域再叠协议层过滤
+  // （providerModelsForProtocolProfile，gpt images 分支已随对话域纯粹化删除）；
+  // 媒体域旁路聊天档案协议过滤——媒体行的协议 token（video/audio_speech/images）
+  // 与对话档案 endpointFamilies 不相交，经其过滤会把域内模型清空，媒体域的协议
+  // 正确性由 AccountMediaForm 的域 token 过滤承担。
+  const providerModelOptions = computed(() => capabilityDomainIsMedia(form.capabilityDomain)
+    ? loadedProviderModelOptions.value
+    : providerModelsForProtocolProfile(
+      loadedProviderModelOptions.value,
+      selectedProtocolProfile.value
+    ))
   const mappingCurrentProviderSourceModelOptions = computed(() => loadedProviderModelOptions.value)
   const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
   const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
@@ -658,6 +665,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function loadCurrentProviderModelOptions(keyword = ''): Promise<void> {
     await loadProviderModelOptions(form.providerCode, {
       keyword,
+      // v8-C：模型候选按账户能力域过滤目录 mode（对话账户选不出非对话模型）。
+      modes: [...DOMAIN_MODEL_MODES[form.capabilityDomain]],
       selectedIds: [
         ...form.supportedModels,
         ...form.modelMappings.map((mapping) => mapping.sourceModel)
@@ -998,6 +1007,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     availableProviders,
     cloningSourceId,
     createScopeParams,
+    allProviderModelScopeParams,
     lastValidationFailure,
     editingId,
     editingAccountDetail,

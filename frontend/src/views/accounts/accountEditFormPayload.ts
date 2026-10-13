@@ -1,5 +1,4 @@
 import type {
-  AccountType,
   AccountSummary,
   ProviderProtocolProfileDefinition,
   ProviderModelApiProtocol,
@@ -7,7 +6,6 @@ import type {
   ProviderModelReasoningEffort,
   ProviderModelServiceTier
 } from '@/types/domain'
-import { isGptVendorCode } from '@/shared/providerProtocol'
 import { asString } from './accountBasicFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 
@@ -33,13 +31,12 @@ export function providerModelsToOptions(models: ProviderModelPricing[]): Account
 
 export function providerModelsForProtocolProfile(
   models: AccountModelSelectOption[],
-  profile?: ProviderProtocolProfileDefinition,
-  accountType?: AccountType
+  profile?: ProviderProtocolProfileDefinition
 ): AccountModelSelectOption[] {
+  // v8-C：仅保留协议层过滤（域 mode 过滤之后的协议正确性）。gpt api_key 追加
+  // 'images' 的分支已随对话域纯粹化（v8-A）删除——对话账户不再经此放行
+  // image-only 模型，图像域账户由域 mode 过滤 + 媒体域 token 过滤承担。
   const allowedProtocols = providerProfileModelProtocols(profile)
-  if (accountType === 'api_key' && isGptVendorCode(profile?.providerCode)) {
-    allowedProtocols.add('images')
-  }
   if (!allowedProtocols.size) return models
   return models.filter((item) => {
     const protocols = item.supportedApiProtocols ?? []

@@ -96,8 +96,12 @@ const imageEndpointModes = accountTestEndpointModesForModel({
   credentials: { supported_endpoint_modes: ['responses_json', 'responses_sse'] }
 }, undefined, { supportedApiProtocols: ['images'] })
 assert.deepEqual(imageEndpointModes, ['images_json'], '纯图片模型必须直接收口到 Images API')
+// v8-C 对话域纯粹化：providerModelsForProtocolProfile 不再为 gpt api_key 追加
+// 'images'——对话账户的模型选项（域 mode 过滤后的协议层）必须排除 image-only 模型；
+// 图像域账户的候选由域 mode 过滤 + 媒体域 token 过滤承担，不经此协议层放行。
 assert.deepEqual(providerModelsForProtocolProfile([
-  { label: 'gpt-image-2', value: 'gpt-image-2', supportedApiProtocols: ['images'] }
+  { label: 'gpt-image-2', value: 'gpt-image-2', supportedApiProtocols: ['images'] },
+  { label: 'gpt-5.2', value: 'gpt-5.2', supportedApiProtocols: ['responses'] }
 ], {
   id: 'profile_gpt_openai_v1',
   providerCode: 'gpt',
@@ -110,7 +114,7 @@ assert.deepEqual(providerModelsForProtocolProfile([
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['responses', 'chat'],
   endpointFamilies: [{ code: 'responses', name: 'Responses' }]
-}, 'api_key').map((option) => option.value), ['gpt-image-2'], 'GPT API Key 模型选项必须保留 image-only 模型及其协议')
+}).map((option) => option.value), ['gpt-5.2'], 'GPT 模型选项必须排除 image-only 模型（对话域无 images lane）')
 
 const healthCheckFieldSource = readFileSync(
   new URL('../../views/accounts/AccountHealthCheckModelField.vue', import.meta.url),

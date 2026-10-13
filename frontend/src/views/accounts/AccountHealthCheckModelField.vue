@@ -93,6 +93,11 @@ const selectedModelEndpointModes = computed(() => accountTestEndpointModesForMod
   healthCheckEndpointMode: props.form.healthCheckEndpointMode,
   credentials: { supported_endpoint_modes: props.form.supportedEndpointModes }
 }, undefined, selectedModelOption.value))
+// v8-C 评估结论：保留 imageOnlyModel→images_json 分支。新建对话账户在
+// 域 mode + 协议双层过滤后已选不到纯生图模型，但存量对话账户的
+// supportedModels 可能仍含图像模型（v8-A「存量共享、新增隔离」历史数据）；
+// 删除分支会把这类账户的检查形态错误归位到对话形态，激活检查直接失败。
+// 该分支只依据「当前已选模型的能力」收口检查形态，对媒体域账户同样无害。
 const imageOnlyModel = computed(() => (
   selectedModelEndpointModes.value.length === 1
   && selectedModelEndpointModes.value[0] === 'images_json'

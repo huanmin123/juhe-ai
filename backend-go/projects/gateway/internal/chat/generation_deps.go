@@ -340,10 +340,8 @@ func resolveChatModelOptionsFromAccountSnapshot(accounts []ChatTransportAccount,
 // 创建即空会话（bind_account_id NULL），任何请求体内容（含历史 bindMode/
 // apiKeyId/groupId/accountId 字段）按兼容口径忽略；鉴权主体仍是自动创建/复用
 // 的 chat 专用 Key（EnsureChatAPIKey 幂等不变）。账户选定经 PATCH accountId
-// 写入，模型默认推举由前端在账户选定后从模型列表取首项。用户工具偏好继承
-// （工具体系设计 §2.11，2026-10-02）：创建时把偏好行非空列写入绑定三列与
-// default_image_model 初值——创建时不校验候选，失效组合由读取侧 valid=false /
-// tool.binding_required 引导兜底；读偏好失败不阻断创建（按无偏好继续）。
+// 写入，模型默认推举由前端在账户选定后从模型列表取首项（站内工具偏好继承
+// 机制已随 2026-10-12 简化退场）。
 func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.Request) {
 	// 兼容忽略历史字段：仅做 JSON 合法性与大小校验（Express json() 同款），
 	// 内容不参与创建。

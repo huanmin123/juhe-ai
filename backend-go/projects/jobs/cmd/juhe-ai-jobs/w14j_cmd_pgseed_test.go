@@ -57,8 +57,8 @@ func w14jPGSeedStatements() []string {
       created_at text NOT NULL,
       updated_at text NOT NULL)`,
 		`ALTER TABLE juhe_business.api_keys ADD COLUMN IF NOT EXISTS scheduling_preference_id text REFERENCES juhe_business.scheduling_preferences(id)`,
-		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, built_in, enabled, created_at, updated_at)
-      VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
+		`INSERT INTO juhe_business.scheduling_preferences (id, system_account_id, name, chat_mode, built_in, created_at, updated_at)
+      VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
       ON CONFLICT (id) DO NOTHING`,
 		`CREATE TABLE IF NOT EXISTS juhe_business.system_teams (
       id text PRIMARY KEY, name text NOT NULL, description text, status text NOT NULL DEFAULT 'active',

@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "render:help": "node scripts/render-help-docs.mjs",
     "test:help-content": "tsx --tsconfig tsconfig.json src/scripts/regression/help-content-regression.ts",
+    "test:studio-workbench": "tsx --tsconfig tsconfig.json src/scripts/regression/studio-workbench-regression.ts",
     "test:dynamic-data-cache-boundary": "tsx --tsconfig tsconfig.json src/scripts/regression/dynamic-data-cache-boundary-regression.ts",
     "test:no-auto-data-refresh": "tsx --tsconfig tsconfig.json src/scripts/regression/no-auto-data-refresh-regression.ts",
     "test:user-reference-data": "tsx --tsconfig tsconfig.json src/scripts/regression/user-reference-data-cache-regression.ts",

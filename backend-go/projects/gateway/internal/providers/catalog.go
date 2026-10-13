@@ -107,15 +107,24 @@ type ModelCatalogItem struct {
 	CatalogDisplay *[]catalogDisplaySection `json:"catalogDisplay,omitempty"`
 }
 
-// ModelSelectionOption mirrors ProviderModelSelectionOption.
+// ModelSelectionOption mirrors ProviderModelSelectionOption. Mode carries the
+// winning catalog row's directory mode (built-in rows always declare one;
+// custom rows may be empty) so callers can apply a client-side second gate.
 type ModelSelectionOption struct {
 	ID                        string   `json:"id"`
 	Name                      string   `json:"name"`
+	Mode                      string   `json:"mode,omitempty"`
 	SupportedAPIProtocols     []string `json:"supportedApiProtocols"`
 	SupportedServiceTiers     []string `json:"supportedServiceTiers"`
 	SupportedReasoningEfforts []string `json:"supportedReasoningEfforts"`
 	DefaultReasoningEffort    *string  `json:"defaultReasoningEffort,omitempty"`
 }
+
+// ProviderCatalogModeValues mirrors the provider_model_catalog.mode /
+// custom_provider_models.mode word list (model_catalog_data_gen.go seed and
+// the custom-model write path): six values. The /models/options `modes`
+// parameter validates against this list.
+var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "audio", "video", "image_generation"}
 
 // ModelCapabilities mirrors the findProviderModelCapabilitiesAsync payload.
 type ModelCapabilities struct {
@@ -136,6 +145,9 @@ type ModelOptionQuery struct {
 	Limit           int
 	SelectedIDs     []string
 	SystemAccountID string
+	// Modes is the validated catalog-mode whitelist; empty means no filtering
+	// (backward compatible for existing callers).
+	Modes []string
 }
 
 const catalogScopeBuiltIn = "built_in"
@@ -909,6 +921,7 @@ type modelOptionRow struct {
 	ProviderCode              string
 	Model                     string
 	Scope                     string
+	Mode                      string
 	ReleaseDate               *string
 	SupportedAPIProtocols     []string
 	SupportedServiceTiers     []string
@@ -929,6 +942,7 @@ func (s *Store) listBuiltInModelOptions(ctx context.Context, providerCodes []str
 	}
 	args := append([]any{}, stringSliceToAny(codes)...)
 	args = appendOptionTextFilter(&clauses, args, query)
+	args = appendCatalogModeFilter(&clauses, args, query.Modes)
 	args = appendSelectedOrderArgs(args, query)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model, mode, release_date,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
@@ -951,6 +965,7 @@ func (s *Store) listBuiltInModelOptions(ctx context.Context, providerCodes []str
 			return nil, err
 		}
 		row.Scope = catalogScopeBuiltIn
+		row.Mode = strings.TrimSpace(mode.String)
 		row.ReleaseDate = textPtr(releaseDate)
 		row.SupportedAPIProtocols = parseJSONArray(protocols)
 		row.SupportedServiceTiers = parseJSONArray(tiers)
@@ -979,6 +994,7 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
 	args = appendOptionTextFilter(&clauses, args, query)
+	args = appendCatalogModeFilter(&clauses, args, query.Modes)
 	args = appendSelectedOrderArgs(args, query)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model, scope, mode, release_date,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
@@ -1000,6 +1016,7 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 		if err := rows.Scan(&row.ProviderCode, &row.Model, &row.Scope, &mode, &releaseDate, &protocols, &tiers, &efforts, &defaultEffort); err != nil {
 			return nil, err
 		}
+		row.Mode = strings.TrimSpace(mode.String)
 		row.ReleaseDate = textPtr(releaseDate)
 		row.SupportedAPIProtocols = parseJSONArray(protocols)
 		row.SupportedServiceTiers = parseJSONArray(tiers)
@@ -1008,6 +1025,19 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 		items = append(items, row)
 	}
 	return items, rows.Err()
+}
+
+// appendCatalogModeFilter adds the directory `mode IN (...)` clause when the
+// query carries validated modes. Rows with NULL/empty mode (custom models
+// without a declared mode) never match an IN list, so they are excluded under
+// domain filtering by design; without modes the clause is skipped and the
+// behavior stays backward compatible.
+func appendCatalogModeFilter(clauses *[]string, args []any, modes []string) []any {
+	if len(modes) == 0 {
+		return args
+	}
+	*clauses = append(*clauses, "mode IN ("+placeholders(len(modes))+")")
+	return append(args, stringSliceToAny(modes)...)
 }
 
 // appendOptionTextFilter mirrors the WHERE side of the options queries: the
@@ -1127,6 +1157,7 @@ func mergeProviderModelOptionRows(rows []modelOptionRow, query ModelOptionQuery)
 		options = append(options, ModelSelectionOption{
 			ID:                        row.Model,
 			Name:                      row.Model,
+			Mode:                      row.Mode,
 			SupportedAPIProtocols:     copyStringSlice(row.SupportedAPIProtocols),
 			SupportedServiceTiers:     copyStringSlice(row.SupportedServiceTiers),
 			SupportedReasoningEfforts: copyStringSlice(row.SupportedReasoningEfforts),

@@ -265,10 +265,10 @@ async function verifySupportedModelSearchBeyondFirstPage(): Promise<void> {
       supportedReasoningEfforts: []
     }
   })
-  const queries: Array<{ keyword?: string; limit?: number }> = []
+  const queries: Array<{ keyword?: string; limit?: number; modes?: string[] }> = []
   try {
     api.providers.modelOptions = async (params) => {
-      queries.push({ keyword: params?.keyword, limit: params?.limit })
+      queries.push({ keyword: params?.keyword, limit: params?.limit, modes: params?.modes })
       const keyword = params?.keyword?.trim().toLowerCase()
       return catalog
         .filter((item) => !keyword || item.id.includes(keyword))
@@ -287,10 +287,18 @@ async function verifySupportedModelSearchBeyondFirstPage(): Promise<void> {
       keyword: 'catalog-model-075'
     })
     assert.deepEqual(searched.data.map((item) => item.value), ['catalog-model-075'], '服务端搜索必须能够取到首批 50 条以后的模型')
+    // 批量编辑仅覆盖对话域账户：模型候选必须携带对话域目录 mode 白名单。
+    const withModes = await loadAccountProviderModelOptionsResource({
+      isManagementView: false,
+      providerCode: 'gpt',
+      modes: ['chat', 'responses']
+    })
+    assert.equal(withModes.data.length, 50, '携带 modes 时仍保持 50 条窗口')
     assert.deepEqual(queries, [
-      { keyword: undefined, limit: 50 },
-      { keyword: 'catalog-model-075', limit: 50 }
-    ], '批量编辑模型目录必须保持 50 条窗口并把搜索词发送到服务端')
+      { keyword: undefined, limit: 50, modes: undefined },
+      { keyword: 'catalog-model-075', limit: 50, modes: undefined },
+      { keyword: undefined, limit: 50, modes: ['chat', 'responses'] }
+    ], '批量编辑模型目录必须保持 50 条窗口、把搜索词与对话域 modes 发送到服务端')
   } finally {
     api.providers.modelOptions = originalModelOptions
   }

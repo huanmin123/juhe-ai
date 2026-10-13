@@ -256,6 +256,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 					SystemAccountID:             identity.OwnerID,
 					APIKeySecret:                input.apiKey.Secret,
 					Model:                       input.body.Model,
+					Protocol:                    input.protocol,
 					EffectiveContextLimitTokens: input.effectiveContextLimitTokens,
 				})
 			}

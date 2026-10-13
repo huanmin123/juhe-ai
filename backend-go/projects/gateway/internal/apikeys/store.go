@@ -603,7 +603,8 @@ type ListItem struct {
 	QuotaLimits          QuotaLimits           `json:"quotaLimits"`
 	AvailabilitySchedule *AvailabilitySchedule `json:"availabilitySchedule,omitempty"`
 	// 调度偏好绑定投影（P1）：null = 历史「沿用策略路由（迁移期）」，前端
-	// 不得回显为成本优先；绑定行（含停用）回显 id/name/builtIn。
+	// 不得回显为成本优先；绑定行回显 id/name/builtIn（enabled 已随 v2 第 4 条
+	// 退役，无停用行）。
 	SchedulingPreferenceID      *string `json:"schedulingPreferenceId"`
 	SchedulingPreferenceName    *string `json:"schedulingPreferenceName"`
 	SchedulingPreferenceBuiltIn *bool   `json:"schedulingPreferenceBuiltIn"`
@@ -734,8 +735,8 @@ func apiKeyJoin(s *Store) string {
 	return ` INNER JOIN ` + s.table("route_strategies") + ` route_strategies
 		ON route_strategies.id = api_keys.route_strategy_id
 		AND route_strategies.system_account_id = api_keys.system_account_id` +
-		// 调度偏好绑定投影 join：绑定行按 id 直连（含停用行照常回显；删除被
-		// 引用偏好被 409 挡住，绑定悬空不在写入口契约内）。
+		// 调度偏好绑定投影 join：绑定行按 id 直连（删除偏好改为同事务内自动
+		// 解绑回内置默认——v2 用户裁决修订第 5 条，绑定不会悬空）。
 		` LEFT JOIN ` + s.table("scheduling_preferences") + ` scheduling_preferences
 		ON scheduling_preferences.id = api_keys.scheduling_preference_id`
 }

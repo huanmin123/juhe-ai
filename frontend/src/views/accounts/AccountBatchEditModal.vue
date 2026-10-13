@@ -451,6 +451,7 @@ import {
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
+import { DOMAIN_MODEL_MODES } from './accountCapabilityDomains'
 import { providerModelsForProtocolProfile, type AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountModelMappingSourceModelOptions,
@@ -747,6 +748,9 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
       scopeParams: scope,
+      // 批量编辑仅覆盖对话域账户（媒体域账户不进入批量编辑），模型候选同样
+      // 按对话域目录 mode 过滤（v8-C）。
+      modes: [...DOMAIN_MODEL_MODES.chat],
       selectedIds: [
         ...effectiveBatchModels.value,
         ...form.modelMappings.flatMap((mapping) => [mapping.sourceModel, mapping.upstreamModel])
@@ -755,7 +759,7 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
     })
     if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
     currentProviderModelOptions.value = models.data
-    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value, account.type)
+    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
   } finally {
     if (token === loadToken && requestId === modelOptionsRequestId) modelsLoading.value = false
   }

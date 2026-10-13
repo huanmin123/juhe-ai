@@ -18,6 +18,8 @@ interface ProviderAccountModelResourceOptions {
   scopeParams?: AccountScopeParams
   selectedIds?: string[]
   keyword?: string
+  /** 目录 mode 白名单（DOMAIN_MODEL_MODES[域]）；缺省不过滤。 */
+  modes?: string[]
 }
 
 export async function loadAccountProviderModelOptionsResource(
@@ -32,7 +34,8 @@ export async function loadAccountProviderModelOptionsResource(
       code,
       scopeParams,
       selectedIds,
-      options.keyword?.trim() || undefined
+      options.keyword?.trim() || undefined,
+      normalizedModes(options.modes)
     )
   }
 }
@@ -61,7 +64,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     loadingPromise = undefined
   }
 
-  async function loadProviderModelOptions(providerCode: string, request: { keyword?: string; selectedIds?: string[] } = {}): Promise<void> {
+  async function loadProviderModelOptions(providerCode: string, request: { keyword?: string; selectedIds?: string[]; modes?: string[] } = {}): Promise<void> {
     const code = providerCode.trim()
     if (!code) {
       resetProviderModelOptions()
@@ -69,6 +72,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     }
     const selectedIds = normalizedSelectedModelIds(request.selectedIds)
     const keyword = request.keyword?.trim() || undefined
+    const modes = normalizedModes(request.modes)
     const scopeParams = options.modelScopeParams.value
       ? { ...options.modelScopeParams.value }
       : undefined
@@ -77,7 +81,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       scopeParams,
       code
     )
-    const requestKey = providerModelRequestKey(requestCatalogScopeKey, keyword, selectedIds)
+    const requestKey = providerModelRequestKey(requestCatalogScopeKey, keyword, selectedIds, modes)
     if (loadingKey === requestKey && loadingPromise) return loadingPromise
 
     const requestId = latestRequestId + 1
@@ -88,7 +92,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelsLoading.value = true
     const promise = (async () => {
       try {
-        const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword)
+        const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword, modes)
         if (isCurrentRequest(requestId, requestCatalogScopeKey)) {
           providerModelOptions.value = modelOptions
         }
@@ -109,11 +113,12 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     return promise
   }
 
-  function providerModelRequestKey(catalogScopeKey: string, keyword?: string, selectedIds: string[] = []): string {
+  function providerModelRequestKey(catalogScopeKey: string, keyword?: string, selectedIds: string[] = [], modes: string[] = []): string {
     return JSON.stringify([
       catalogScopeKey,
       keyword ?? '',
-      selectedIds
+      selectedIds,
+      modes
     ])
   }
 
@@ -154,7 +159,8 @@ async function loadAccountModelOptions(
   providerCode: string,
   scopeParams: AccountScopeParams | undefined,
   selectedIds: string[],
-  keyword?: string
+  keyword?: string,
+  modes: string[] = []
 ): Promise<AccountModelSelectOption[]> {
   const selectedIdBatches = chunkedSelectedModelIds(selectedIds)
   const models = (await Promise.all((selectedIdBatches.length ? selectedIdBatches : [[]]).map((batch) => (
@@ -163,6 +169,7 @@ async function loadAccountModelOptions(
       providerCode,
       limit: 50,
       ...(keyword ? { keyword } : {}),
+      ...(modes.length ? { modes } : {}),
       ...(batch.length ? { selectedIds: batch } : {})
     })
   )))).flat()
@@ -176,6 +183,10 @@ async function loadAccountModelOptions(
       defaultReasoningEffort: item.defaultReasoningEffort
     }
   }))
+}
+
+function normalizedModes(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))]
 }
 
 function normalizedSelectedModelIds(values: string[] | undefined): string[] {

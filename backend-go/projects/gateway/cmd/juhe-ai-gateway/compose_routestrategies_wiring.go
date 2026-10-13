@@ -130,8 +130,8 @@ func (f routeStrategySpeedFirstFacade) ClearDegradedRuntime(ctx context.Context,
 }
 
 // newSchedulingPreferenceNameLookup 构造运行态条目的偏好名批量解析闭包：
-// 按主键直查 scheduling_preferences（不过滤 enabled——停用偏好的运行态条目
-// 仍要显示其名，与"绑定保留"语义一致）；PG 方言带 juhe_business 前缀并使用
+// 按主键直查 scheduling_preferences（enabled 已随 v2 用户裁决修订第 4 条退
+// 役，无停用态，主键直查即全部行）；PG 方言带 juhe_business 前缀并使用
 // $n 占位（pgpool 无驱动层 ? -> $n 改写，BUG-0219），sqlite 用 ? 占位。
 func newSchedulingPreferenceNameLookup(composed *composition) func(ctx context.Context, ids []string) (map[string]string, error) {
 	if composed == nil || composed.db == nil {

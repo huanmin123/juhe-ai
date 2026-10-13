@@ -29,11 +29,10 @@ type ObjectStore interface {
 	Delete(storageKeys []string) error
 }
 
-// studioAssetMaxBytes 是单资产大小上限（本批任务约束：512 MiB；契约 §4.2
-// P0 上传口径为 25MB——按任务指令放宽，差异已登记交付报告）。超限属 400
+// studioAssetMaxBytes 是单资产大小上限（契约 §4.2 P0 口径 25MB）。超限属 400
 // studio_invalid_request（§4.2 错误表把"超限"归入上传参数错误；413 两码保
 // 留给配额越界）。
-const studioAssetMaxBytes = int64(512) << 20
+const studioAssetMaxBytes = int64(25) << 20
 
 // Deps 携带路由协作端口。
 type Deps struct {

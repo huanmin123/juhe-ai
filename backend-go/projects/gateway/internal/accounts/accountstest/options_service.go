@@ -1077,6 +1077,7 @@ func (s *Service) AccountManualTestOptions(ctx context.Context, account *ManualT
 	for _, option := range options {
 		modes, err := s.manualTestEndpointModesForTargetModel(ctx, source, TestCatalogItem{
 			Model:                 option.Model,
+			Mode:                  option.Mode,
 			SupportedAPIProtocols: option.Protocols,
 		}, systemAccountID, cache)
 		if err != nil {
@@ -1109,6 +1110,7 @@ func (a *ManualTestContext) ModeSource() ManualTestModeSource {
 // （原根包私有类型 mergedTestOption，字段随子域化导出）.
 type MergedTestOption struct {
 	Model     string
+	Mode      string
 	Protocols []string
 }
 
@@ -1177,7 +1179,7 @@ func MergeTestOptionRows(rows []TestOptionRow, query ManualTestOptionsQuery) []M
 		if !visible[model] {
 			continue
 		}
-		options = append(options, MergedTestOption{Model: model, Protocols: byModel[model].SupportedAPIProtocols})
+		options = append(options, MergedTestOption{Model: model, Mode: byModel[model].Mode, Protocols: byModel[model].SupportedAPIProtocols})
 	}
 	return options
 }
@@ -1277,35 +1279,44 @@ func (s *Service) ResolveAccountManualTestSelection(ctx context.Context, account
 // accountManualTestEndpointModesForTargetModelAsync.
 func (s *Service) manualTestEndpointModesForTargetModel(ctx context.Context, source ManualTestModeSource, item TestCatalogItem, systemAccountID string, cache map[string]*TestCatalogItem) ([]string, error) {
 	out := []string{}
-	for _, mode := range AccountManualTestEndpointModes(source) {
-		if mode == "interactions_json" || mode == "interactions_sse" {
-			if testModelSupportsProtocol(item, "interactions") {
-				out = append(out, mode)
+	// v8-C 对话协议面排除：图像/视频目录行（mode ∈ {image_generation, video}）
+	// 不参与 chat_completions/responses/messages/generate_content 族（含
+	// interactions）测试形态；images_json 测试面的图像模型分支不受影响。
+	// AccountManualTestEndpointModes 只产出对话族模式（hybrid 词表也不含
+	// video/audio 值），整段跳过等价于逐族排除。
+	itemMode := strings.ToLower(strings.TrimSpace(item.Mode))
+	itemModeBlocksChatFace := itemMode == "image_generation" || itemMode == "video"
+	if !itemModeBlocksChatFace {
+		for _, mode := range AccountManualTestEndpointModes(source) {
+			if mode == "interactions_json" || mode == "interactions_sse" {
+				if testModelSupportsProtocol(item, "interactions") {
+					out = append(out, mode)
+				}
+				continue
 			}
-			continue
-		}
-		sourceFamily, err := EndpointModeProtocolFamily(mode)
-		if err != nil {
-			return nil, err
-		}
-		mapping := ResolveTestAccountModelMapping(source, item.Model, sourceFamily)
-		if mapping == nil {
-			if testModelSupportsProtocol(item, sourceFamily) {
-				out = append(out, mode)
-			}
-			continue
-		}
-		upstream := cache[mapping.UpstreamModel]
-		if upstream == nil {
-			loaded, err := s.FindTestCatalogItem(ctx, source.ProviderCode, systemAccountID, mapping.UpstreamModel)
+			sourceFamily, err := EndpointModeProtocolFamily(mode)
 			if err != nil {
 				return nil, err
 			}
-			cache[mapping.UpstreamModel] = loaded
-			upstream = loaded
-		}
-		if upstream != nil && testModelSupportsProtocol(*upstream, mapping.UpstreamEndpointFamily) {
-			out = append(out, mode)
+			mapping := ResolveTestAccountModelMapping(source, item.Model, sourceFamily)
+			if mapping == nil {
+				if testModelSupportsProtocol(item, sourceFamily) {
+					out = append(out, mode)
+				}
+				continue
+			}
+			upstream := cache[mapping.UpstreamModel]
+			if upstream == nil {
+				loaded, err := s.FindTestCatalogItem(ctx, source.ProviderCode, systemAccountID, mapping.UpstreamModel)
+				if err != nil {
+					return nil, err
+				}
+				cache[mapping.UpstreamModel] = loaded
+				upstream = loaded
+			}
+			if upstream != nil && testModelSupportsProtocol(*upstream, mapping.UpstreamEndpointFamily) {
+				out = append(out, mode)
+			}
 		}
 	}
 	if testModelSupportsImagesProtocol(item, source) {
@@ -1347,23 +1358,31 @@ func testModelSupportsImagesProtocol(item TestCatalogItem, source ManualTestMode
 // IsAccountManualTestModel mirrors the same-named helper
 // （原根包私有函数，根包测试经由转发访问）.
 func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource) bool {
-	if strings.ToLower(strings.TrimSpace(item.Mode)) == "audio" {
+	// v8-C：目录行模式词表六值（chat/responses/embedding/audio/video/
+	// image_generation）。audio 行仍整体排除（既有契约）；image_generation/video
+	// 行只能经 images_json 测试面的图像分支（images 协议 + api_key 门）或启用
+	// 的模型映射进入候选，对话协议族（chat_completions/responses/messages/
+	// generate_content/interactions）与空协议默认放行不再接纳它们。
+	itemMode := strings.ToLower(strings.TrimSpace(item.Mode))
+	if itemMode == "audio" {
 		return false
 	}
+	itemModeBlocksChatFace := itemMode == "image_generation" || itemMode == "video"
 	if HasEnabledTestModelMapping(source.ModelMappings, item.Model) {
 		return true
 	}
 	protocols := item.SupportedAPIProtocols
 	if len(protocols) == 0 {
-		mode := strings.ToLower(strings.TrimSpace(item.Mode))
-		return mode != "image_generation" && mode != "image"
+		return !itemModeBlocksChatFace && itemMode != "image"
 	}
 	switch {
 	case accountscore.IsHybridProviderCodeToken(source.ProviderCode):
 		for _, protocol := range protocols {
 			switch protocol {
 			case "chat_completions", "responses", "messages", "generate_content", "stream_generate_content":
-				return true
+				if !itemModeBlocksChatFace {
+					return true
+				}
 			case "images":
 				if source.AccountType == "api_key" {
 					return true
@@ -1375,7 +1394,9 @@ func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource)
 		for _, protocol := range protocols {
 			switch protocol {
 			case "chat_completions", "responses":
-				return true
+				if !itemModeBlocksChatFace {
+					return true
+				}
 			case "images":
 				if source.AccountType == "api_key" {
 					return true
@@ -1384,8 +1405,11 @@ func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource)
 		}
 		return false
 	case accountscore.IsAnthropicProtocolProfileOf(source.predicate()):
-		return accountscore.ContainsString(protocols, "messages")
+		return !itemModeBlocksChatFace && accountscore.ContainsString(protocols, "messages")
 	case accountscore.IsGeminiProtocolProfileOf(source.predicate()):
+		if itemModeBlocksChatFace {
+			return false
+		}
 		for _, protocol := range protocols {
 			if protocol == "generate_content" || protocol == "stream_generate_content" || protocol == "interactions" {
 				return true

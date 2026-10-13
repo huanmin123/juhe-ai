@@ -109,11 +109,11 @@ func TestRunStorageBootstrapEnsureArmSeedsBuiltinSchedulingPreference(t *testing
 		t.Cleanup(func() { _ = db.Close() })
 		return db
 	}
-	readRow := func(t *testing.T) (name, chatMode string, builtIn, enabled int, updatedAt string) {
+	readRow := func(t *testing.T) (name, chatMode string, builtIn int, updatedAt string) {
 		t.Helper()
 		db := openBusiness(t)
-		err := db.QueryRow(`SELECT name, chat_mode, built_in, enabled, updated_at FROM scheduling_preferences WHERE id = ?`,
-			schema.BuiltinSchedulingPreferenceID).Scan(&name, &chatMode, &builtIn, &enabled, &updatedAt)
+		err := db.QueryRow(`SELECT name, chat_mode, built_in, updated_at FROM scheduling_preferences WHERE id = ?`,
+			schema.BuiltinSchedulingPreferenceID).Scan(&name, &chatMode, &builtIn, &updatedAt)
 		if err != nil {
 			t.Fatalf("query builtin scheduling preference after ensure-only run: %v", err)
 		}
@@ -123,14 +123,14 @@ func TestRunStorageBootstrapEnsureArmSeedsBuiltinSchedulingPreference(t *testing
 	if code := runStorageBootstrap(true, false, "sqlite", paths, "", ""); code != 0 {
 		t.Fatalf("ensure-only exit = %d, want 0", code)
 	}
-	name, chatMode, builtIn, enabled, updatedAt := readRow(t)
-	if name != schema.BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || enabled != 1 {
-		t.Fatalf("builtin row = %q %q built_in=%d enabled=%d", name, chatMode, builtIn, enabled)
+	name, chatMode, builtIn, updatedAt := readRow(t)
+	if name != schema.BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 {
+		t.Fatalf("builtin row = %q %q built_in=%d", name, chatMode, builtIn)
 	}
 	if code := runStorageBootstrap(true, false, "sqlite", paths, "", ""); code != 0 {
 		t.Fatalf("second ensure-only exit = %d, want 0", code)
 	}
-	_, _, _, _, updatedAtAfterRerun := readRow(t)
+	_, _, _, updatedAtAfterRerun := readRow(t)
 	if updatedAtAfterRerun != updatedAt {
 		t.Fatalf("updated_at drifted on ensure rerun: %s -> %s", updatedAt, updatedAtAfterRerun)
 	}
