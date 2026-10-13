@@ -8,7 +8,9 @@ package accounts
 //   - legacy credentials 显式数组同样放行缩小；
 //   - 批量编辑路径逐账户缩小 + 审计；
 //   - 清理并发 CAS 409 不变；
-//   - 列表 legacyCapabilityModes 提示列（对话域遗留 + 媒体域容错）。
+//   - 列表 legacyCapabilityModes 提示列（对话域遗留 + 媒体域容错）；
+//   - v8-A 锚集收缩场景：存量对话账户声明被移出三项（images_json /
+//     audio_transcription_json / realtime_session）按 D6 机制兜底。
 
 import (
 	"net/http"
@@ -198,6 +200,69 @@ func TestM3BatchCleanupLegacyCapabilities(t *testing.T) {
 		"updates":{"supportedEndpointModes":{"enabled":true,"value":["chat_json","chat_sse","video_cancel"]}}}`)
 	if code != http.StatusBadRequest || m2Message(payload) != "域外能力不可变更（仅可通过显式清理缩小）" {
 		t.Fatalf("批量扩大应整批 400：%d %v", code, payload)
+	}
+}
+
+// TestM3CleanupV8AChatAnchorShrink：v8-A 对话域纯粹化的锚集收缩场景——存量
+// 对话账户声明被移出三项（images_json / audio_transcription_json /
+// realtime_session）成为域外遗留值，D6 机制自动兜底：普通编辑遗留集合相等
+// 放行、显式清理缩小成功 + 单独审计、清理后以新基准扩大拒绝。
+func TestM3CleanupV8AChatAnchorShrink(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	m2SeedAccountWithModes(t, env, "acc-m3-v8a", adminID, "m3-v8a",
+		[]string{"chat_json", "images_json", "audio_transcription_json", "realtime_session"})
+
+	// 列表提示列：三项全部按域外遗留回显。
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts?keyword=m3-v8a", "")
+	if code != http.StatusOK {
+		t.Fatalf("列表应 200：%d %v", code, payload)
+	}
+	row := dataMap(t, payload)["items"].([]any)[0].(map[string]any)
+	legacy, ok := row["legacyCapabilityModes"].([]any)
+	if !ok || len(legacy) != 3 {
+		t.Fatalf("v8-A 存量行应回显 3 个域外能力：%v", row["legacyCapabilityModes"])
+	}
+
+	// 普通编辑遗留集合逐项相等（域内无改动 + 三项原样保留）→ 200。
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-m3-v8a",
+		`{"expectedConfigRevision":1,"credentialsPatch":{"api_key":"sk-v8a-rotated","supported_endpoint_modes":["chat_json","images_json","audio_transcription_json","realtime_session"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("遗留集合相等放行应 200：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, "acc-m3-v8a"); !unorderedStringListEqual(modes,
+		[]string{"chat_json", "images_json", "audio_transcription_json", "realtime_session"}) {
+		t.Fatalf("普通编辑不得触碰遗留集合：%v", modes)
+	}
+	if entries := m3SinkEntries(env, "cleanup_capability_legacy"); len(entries) != 0 {
+		t.Fatalf("普通编辑不得落清理审计：%v", env.sink.actions())
+	}
+
+	// 显式清理：只保留 chat_json → 200 + 三项全部清理 + 单独审计。
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-m3-v8a",
+		`{"expectedConfigRevision":2,"credentialsPatch":{"supported_endpoint_modes":["chat_json"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("锚集收缩清理应 200：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, "acc-m3-v8a"); !unorderedStringListEqual(modes, []string{"chat_json"}) {
+		t.Fatalf("被移出三项应全部清理：%v", modes)
+	}
+	entries := m3SinkEntries(env, "cleanup_capability_legacy")
+	if len(entries) != 1 {
+		t.Fatalf("清理应落一条单独审计：%v", env.sink.actions())
+	}
+	for _, removed := range []string{"images_json", "audio_transcription_json", "realtime_session"} {
+		if !strings.Contains(entries[0].Summary, removed) {
+			t.Fatalf("审计 Summary 应含被移除值 %s：%s", removed, entries[0].Summary)
+		}
+	}
+
+	// 清理后以新基准扩大（重新声明任一移出项）→ 400。
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-m3-v8a",
+		`{"expectedConfigRevision":3,"credentialsPatch":{"supported_endpoint_modes":["chat_json","audio_transcription_json"]}}`)
+	if code != http.StatusBadRequest || m2Message(payload) != "域外能力不可变更（仅可通过显式清理缩小）" {
+		t.Fatalf("清理后扩大应 400：%d %v", code, payload)
 	}
 }
 

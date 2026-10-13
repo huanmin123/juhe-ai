@@ -4,7 +4,7 @@
 //
 // 表 owner 边界：studio_tasks / studio_assets / studio_user_asset_usage 的
 // 写面 owner 是 gateway（§4 API 与受理结算）；jobs 仅按 §5 领取与结算
-//（lease 列族、settlement、asset_id、error_json、poll_bookmark_json 与结算
+// （lease 列族、settlement、asset_id、error_json、poll_bookmark_json 与结算
 // 产物行），不触碰 media_jobs（gateway 任务面 owner，jobs 只读关联）。jobs
 // 不 import gateway 模块：表名/列名/状态词表/openai 轮询形态在此镜像（与
 // maintenance 已落地 DDL 一致）。
@@ -38,7 +38,7 @@ const (
 
 // ErrSettleConflict 是结算条件 UPDATE 未命中（任务已被并发方收口，或取消
 // 竞态先落 cancelled）的哨兵错误：调用方据此回收已写对象、不落库不虚计
-//（§5.4 闸 1 / §4.4 迟到成功语义；gateway studio.ErrTaskSettleConflict 同义镜像）。
+// （§5.4 闸 1 / §4.4 迟到成功语义；gateway studio.ErrTaskSettleConflict 同义镜像）。
 var ErrSettleConflict = errors.New("studiosettle: 任务终态/结算已被并发方收口")
 
 // ErrQuotaExceeded / ErrCountExceeded 是配额越界的领域错误（§3.6：生成任务
@@ -183,7 +183,7 @@ func (s *TaskStore) GetByID(ctx context.Context, id string) (*TaskRow, error) {
 // ClaimBatch 原子领取一批可结算任务（§5.1 原子领取：单条条件 UPDATE 写
 // lease_owner / lease_expires_at / lease_attempt_count+1，RowsAffected=1 才算
 // 领到，抢占式不依赖应用锁）。候选按 (created_at ASC, id ASC) 有界预选
-//（limit*4 上限吸收并发竞争误判，未领满由下一轮继续），每轮领取 ≤ limit 行。
+// （limit*4 上限吸收并发竞争误判，未领满由下一轮继续），每轮领取 ≤ limit 行。
 func (s *TaskStore) ClaimBatch(ctx context.Context, now string, leaseUntil string, leaseOwner string, limit, maxAttempts int) ([]*TaskRow, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -376,13 +376,14 @@ func (s *TaskStore) ExpireUnreachable(ctx context.Context, taskID, ownerID, erro
 	return affected == 1, nil
 }
 
-// MarkSettlementFailed 结算失败迁移（pending_settled → failed，§6 可重新领取
-// 重试，上限内；attempt 上限收口由 ExhaustAttempts 承担）。返回是否由本次
-// 落定。
+// MarkSettlementFailed 结算失败迁移（pending_settled → failed；已 failed 行
+// 幂等改写错误原因，§6 可重新领取重试，上限内；attempt 上限收口由
+// ExhaustAttempts 承担）。条件 UPDATE 限定 settlement 未 settled（并发收口
+// 0 行），返回是否由本次落定。
 func (s *TaskStore) MarkSettlementFailed(ctx context.Context, taskID, ownerID, errorJSON, now string) (bool, error) {
 	result, err := s.DB.ExecContext(ctx, s.bind(`UPDATE `+s.table("studio_tasks")+` SET
 		settlement = 'failed', error_json = ?, updated_at = ?
-		WHERE id = ? AND system_account_id = ? AND settlement = 'pending_settled'`),
+		WHERE id = ? AND system_account_id = ? AND settlement IN ('pending_settled','failed')`),
 		errorJSON, now, taskID, ownerID)
 	if err != nil {
 		return false, fmt.Errorf("迁移 studio 任务结算失败态失败: %w", err)
@@ -518,11 +519,14 @@ func (s *TaskStore) SettleWithAsset(ctx context.Context, input SettleAssetInput)
 		}
 	}
 
-	// 闸 1：终态唯一性（status 未终态或 completed 且 settlement 未 settled；
-	// failed → settled 是 §6 重领取重试收口臂）。
+	// 闸 1：终态唯一性（settlement 未 settled；pending→settled 是正常产物收
+	// 口，failed→settled 是 §6 重领取重试收口臂）。status 迁移沿 §6 状态机：
+	// 未终态/未完成 → completed；status='failed'（gateway 结算终局失败的残
+	// 留行）保持 failed（状态机无 failed→completed 边），仅 settlement 收口。
 	result, err := tx.Exec(s.bind(`UPDATE `+s.table("studio_tasks")+` SET
-		status = 'completed', settlement = 'settled', asset_id = ?, updated_at = ?
-		WHERE id = ? AND system_account_id = ? AND status IN ('queued','in_progress','completed')
+		status = CASE WHEN status = 'failed' THEN 'failed' ELSE 'completed' END,
+		settlement = 'settled', asset_id = ?, updated_at = ?
+		WHERE id = ? AND system_account_id = ? AND status IN ('queued','in_progress','completed','failed')
 		  AND settlement IN ('pending_settled','failed')`),
 		assetID, input.Now, input.TaskID, input.OwnerID)
 	if err != nil {

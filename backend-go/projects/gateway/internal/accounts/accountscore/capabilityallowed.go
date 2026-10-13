@@ -22,14 +22,19 @@ import (
 //     编辑按「遗留集合只缩不扩」校验（AssertCapabilityLegacyShrinkOnly，M3
 //     放开缩小分支；清理动作单独审计）。
 
-// 域 lane 集（计划 §域模型设计）：chat = 平台包「对话 modes」15 值锚集 +
-// images_json（对话与图像两域有意共享的 lane，D2）；video = 视频任务四值；
-// audio = 语音合成 + 长音频任务四值；image = images_json。
+// 域 lane 集（计划 §域模型设计 + §对话域纯粹化 v8-A）：chat = 平台包
+// 「对话 modes」13 值锚集（v8-A 后不再追加 images_json——图像 lane 移出对话
+// 域，存量共享、新增隔离，遗留值由 D6 三集合机制承载）；video = 视频任务
+// 四值；audio = 语音合成 + 长音频任务四值 + 短转写 + 实时会话（v8-A 自对话
+// 域移入）；image = images_json。
 var (
 	videoDomainLaneModes = []string{"video_create", "video_get", "video_content", "video_cancel"}
 	audioJobLaneModes    = []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}
 	audioSpeechLaneModes = []string{"audio_speech"}
-	imageDomainLaneModes = []string{"images_json"}
+	// v8-A 对话域纯粹化：短转写与实时会话归音频域 lane 集。
+	audioTranscriptionLaneModes = []string{"audio_transcription_json"}
+	realtimeSessionLaneModes    = []string{"realtime_session"}
+	imageDomainLaneModes        = []string{"images_json"}
 )
 
 // CapabilityDomainLabels 是四个域的用户可见名称（错误文案用）。
@@ -48,9 +53,10 @@ func CapabilityDomainLabel(domain string) string {
 	return domain
 }
 
-// chatDomainLaneModes 返回对话域 lane 集（平台包 15 值锚集 + images_json）。
+// chatDomainLaneModes 返回对话域 lane 集（平台包 13 值锚集；v8-A 后不追加
+// images_json，图像 lane 新增声明只走图像域，对话域存量声明成为域外遗留值）。
 func chatDomainLaneModes() []string {
-	return append(capabilitydomain.ChatModes(), imageDomainLaneModes...)
+	return capabilitydomain.ChatModes()
 }
 
 // domainLaneModes 返回域 lane 集；未知/空域返回 nil。
@@ -61,7 +67,9 @@ func domainLaneModes(domain string) []string {
 	case CapabilityDomainVideo:
 		return append([]string{}, videoDomainLaneModes...)
 	case CapabilityDomainAudio:
-		return append(append([]string{}, audioSpeechLaneModes...), audioJobLaneModes...)
+		return append(append(append(append([]string{},
+			audioSpeechLaneModes...), audioJobLaneModes...),
+			audioTranscriptionLaneModes...), realtimeSessionLaneModes...)
 	case CapabilityDomainImage:
 		return append([]string{}, imageDomainLaneModes...)
 	}
@@ -268,7 +276,10 @@ func AllowedEndpointModes(domain, providerCode, accountType string, profile Prot
 // chat 域=现行默认（逐项不变，I3）；video=四值组；audio=audio_speech
 // （无 audio_speech 词表的供应商退为长音频四值，如 qwen）；image=
 // images_json——经同一矩阵门与写侧词表求交（与 AllowedEndpointModes 单收敛
-// 点），空集视为该供应商不支持该域。
+// 点），空集视为该供应商不支持该域。v8-A：音频域默认集维持现状语义，不含
+// 新移入的 audio_transcription_json / realtime_session（默认集不收，显式
+// 勾选承担，契约 §媒体域表单完整性升级 v8-B 联动明文），纯转写账户显式选
+// audio_transcription_json。
 func DefaultEndpointModesForDomain(domain, providerCode, accountType string, profile ProtocolPredicate) []string {
 	row, vocabulary := resolveCapabilityWriteContext(providerCode, accountType, profile)
 	if len(vocabulary) == 0 {

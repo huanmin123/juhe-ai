@@ -1193,11 +1193,13 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     );
 
     -- scheduling_preferences 调度偏好独立实体（调度偏好独立实体
-    -- PLAN-20261012T033000000Z P1，接口契约「调度偏好」章）：对话域组内调度
-    -- （成本优先 / 速度优先）与路由策略并列为 API Key 的两项绑定配置。
-    -- system_account_id 内置行恒 NULL（全局只读例外，供所有 owner 读取与绑定）；
-    -- built_in/enabled 走 0/1 词表；置于 api_keys 之前，api_keys 建表 DDL 的
-    -- 列级 REFERENCES 需要目标表先存在。CREATE TABLE IF NOT EXISTS 幂等。
+    -- PLAN-20261012T033000000Z P1，接口契约「调度偏好」章；v2 用户裁决修订
+    -- 第 4 条）：对话域组内调度（成本优先 / 速度优先）与路由策略并列为
+    -- API Key 的两项绑定配置。system_account_id 内置行恒 NULL（全局只读例外，
+    -- 供所有 owner 读取与绑定）；built_in 走 0/1 词表；enabled 已随 v2 第 4 条
+    -- 退役（创建即启用，无停用态），存量库由 EnsureSQLiteBusiness 守卫链的
+    -- 幂等 DROP COLUMN 收敛。置于 api_keys 之前，api_keys 建表 DDL 的列级
+    -- REFERENCES 需要目标表先存在。CREATE TABLE IF NOT EXISTS 幂等。
     CREATE TABLE IF NOT EXISTS scheduling_preferences (
       id TEXT PRIMARY KEY,
       system_account_id TEXT,
@@ -1205,7 +1207,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       chat_mode TEXT NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
       chat_speed_first_config_json TEXT,
       built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

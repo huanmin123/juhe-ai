@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
@@ -38,17 +39,20 @@ type PatchResult struct {
 	Changes              []Change `json:"-"`
 }
 
-// DeleteResult mirrors the delete outcome for the operation log.
+// DeleteResult is the delete outcome: the operation log fields plus
+// resetBindings（同一事务内被重置回内置默认的绑定 Key 数，响应 data 原样透出）.
 type DeleteResult struct {
 	Deleted              bool
 	OwnerSystemAccountID string
 	Name                 string
+	ResetBindings        int
 }
 
 // Create mirrors the contract create: owner stamping (admin 面 query 必填
 // owner；个人面 owner=会话), strict name/mode validation, speed config via the
-// shared normalize, owner-unique name and the created row projection. enabled
-// 创建固定为 1、built_in 固定 0.
+// shared normalize, owner-unique name and the created row projection.
+// built_in 固定 0；enabled 已随 v2 用户裁决修订第 4 条退役（创建即启用，无停
+// 用态，行不再携带该状态）。
 func (s *Store) Create(ctx context.Context, input MutationInput, access AccessScope) (*ListItem, error) {
 	ctx = ensureCtx(ctx)
 	ownerID, err := access.writeSystemAccountID()
@@ -74,8 +78,8 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("scheduling_preferences")+`
-		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`),
+		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?)`),
 		id, ownerID, name, chatMode, nullString(configJSON), now, now); err != nil {
 		if duplicate := duplicateNameError(err, name); duplicate != nil {
 			return nil, duplicate
@@ -94,7 +98,6 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 		ChatMode:             chatMode,
 		ChatSpeedFirstConfig: document,
 		BuiltIn:              false,
-		Enabled:              true,
 		BoundAPIKeyCount:     0,
 		UpdatedAt:            now,
 	}
@@ -275,17 +278,6 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		}
 	}
 
-	if input.Enabled != nil && *input.Enabled != current.enabled {
-		nextEnabled := 0
-		if *input.Enabled {
-			nextEnabled = 1
-		}
-		assignments = append(assignments, "enabled = ?")
-		updateArgs = append(updateArgs, nextEnabled)
-		addChange("enabled", current.enabled, *input.Enabled)
-		rowPatch["enabled"] = *input.Enabled
-	}
-
 	if len(assignments) == 0 {
 		// 同值 no-op：零 DML、不推进 updatedAt、不写操作日志、不发失效。
 		return &PatchResult{
@@ -350,9 +342,13 @@ func speedConfigDocumentsEqual(left, right *SpeedFirstConfigDocument) bool {
 	return sameNullString(leftJSON, rightJSON)
 }
 
-// Delete mirrors the contract delete: builtin 403, still-bound 409 +
-// referenceCount, otherwise hard delete + the global runtime invalidation.
-// Deleted=false renders 404 调度偏好不存在.
+// Delete mirrors the v2 用户裁决修订第 5 条契约：删除总是成功——同一事务内先
+// 把绑定该偏好的 API Key 的 scheduling_preference_id 重置为内置默认 ID（等价
+// 「显式回默认」；绑定 Key 必与偏好同 owner，写入口矩阵天然成立），再删偏好
+// 行，然后计数随 DeleteResult 透出供操作日志与响应体使用；数据库侧
+// RESTRICT/NO ACTION 保留为兜底（先重置绑定再删行）。内置行 403 不变；
+// Deleted=false 渲染 404 调度偏好不存在。提交后照常发布全局 runtime 失效
+// （重置与删除都改变绑定 Key 的有效配置来源）。
 func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*DeleteResult, error) {
 	ctx = ensureCtx(ctx)
 	var name string
@@ -392,13 +388,16 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 			return nil, lockErr
 		}
 	}
-	var referenceCount int
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT COUNT(1) FROM `+s.table("api_keys")+`
-		WHERE scheduling_preference_id = ?`), id).Scan(&referenceCount); err != nil {
+	// 先重置绑定回内置默认（固定 ID 契约锚点，跨包常量复用），再删偏好行：
+	// 两步同事务，SQLite 外键与 PG NO ACTION 都满足「删行时无引用」。
+	reset, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("api_keys")+` SET scheduling_preference_id = ?
+		WHERE scheduling_preference_id = ?`), apikeys.BuiltinSchedulingPreferenceID, id)
+	if err != nil {
 		return nil, err
 	}
-	if referenceCount > 0 {
-		return nil, &ReferenceConflictError{Message: "调度偏好仍被 API Key 绑定，不能删除", ReferenceCount: referenceCount}
+	resetBindings, err := reset.RowsAffected()
+	if err != nil {
+		return nil, err
 	}
 	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("scheduling_preferences")+`
 		WHERE id = ? AND system_account_id = ?`), id, owner)
@@ -413,7 +412,7 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		return nil, err
 	}
 	s.invalidateRuntime("scheduling_preference_deleted")
-	return &DeleteResult{Deleted: true, OwnerSystemAccountID: owner, Name: name}, nil
+	return &DeleteResult{Deleted: true, OwnerSystemAccountID: owner, Name: name, ResetBindings: int(resetBindings)}, nil
 }
 
 // nextPreferenceUpdatedAt mirrors nextStrategyUpdatedAt: monotonic RFC3339

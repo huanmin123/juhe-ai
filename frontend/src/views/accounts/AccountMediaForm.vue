@@ -41,7 +41,7 @@
         :is-open-a-i="false"
         :is-google-o-auth="form.type === 'google_oauth'"
         :is-management-view="isManagementView"
-        :model-options="modelOptions"
+        :model-options="domainModelOptions"
         :models-loading="modelsLoading"
         :model-syncing="modelSyncing"
         :profile-default-endpoint-modes="[]"
@@ -131,6 +131,60 @@
         </div>
       </a-form-item>
 
+      <!-- v8-B A组①：上游接口能力域内勾选（与 chat AccountStrategySection 同一底层
+           逻辑：allowedEndpointModesFor 域允许集渲染 + 域外遗留只读徽标 + M3 清理）。
+           OAuth（gemini native google_oauth）按来源能力只读，与 chat OAuth 表单同规。 -->
+      <a-form-item v-if="form.type" class="media-capability-field">
+        <template #label>
+          <div class="media-speech-label">
+            <span>上游接口能力</span>
+            <a-tooltip title="声明这个账号真实上游支持的接口形态；未勾选的上游请求不会进入该账号候选。默认为能力域默认集，可在域允许集内收窄。">
+              <QuestionCircleOutlined class="media-speech-help" />
+            </a-tooltip>
+          </div>
+        </template>
+        <div class="media-capability-grid">
+          <a-checkbox
+            v-for="option in mediaEndpointModeOptions"
+            :key="option.value"
+            :checked="form.supportedEndpointModes.includes(option.value)"
+            :disabled="capabilityModesDisabled"
+            @change="setMediaModeEnabled(option.value, $event.target.checked)"
+          >
+            {{ option.label }}
+          </a-checkbox>
+        </div>
+        <!-- 域外遗留声明（D6 三集合）：不进勾选集、编辑装载不裁剪，提交时随完整
+             声明集原样带回；只能经 M3 显式清理动作缩小。 -->
+        <div v-if="outOfDomainMediaModes.length" class="media-out-of-domain-modes">
+          <span class="media-out-of-domain-label">域外能力（保留）</span>
+          <a-tooltip
+            v-for="mode in outOfDomainMediaModes"
+            :key="mode"
+            title="该能力超出当前能力域允许集，属于存量账户的遗留声明：此处不可勾选或修改，保存时原样保留，不影响现有派发。"
+          >
+            <a-tag class="media-out-of-domain-tag">{{ mediaModeLabel(mode) }}</a-tag>
+          </a-tooltip>
+          <a-popconfirm
+            v-if="!capabilityModesDisabled"
+            title="清理域外能力"
+            ok-text="确认清理"
+            cancel-text="取消"
+            @confirm="cleanupMediaOutOfDomainModes"
+          >
+            <template #title>
+              <div class="media-out-of-domain-confirm">
+                <p>将从声明集中移除以下域外遗留能力（保存后生效，不影响域内能力）：</p>
+                <p class="media-out-of-domain-confirm-modes">{{ outOfDomainCleanupSummary }}</p>
+              </div>
+            </template>
+            <a-button class="media-out-of-domain-cleanup" danger size="small" type="link">
+              清理域外能力
+            </a-button>
+          </a-popconfirm>
+        </div>
+      </a-form-item>
+
       <a-form-item v-if="isHybridMappingDomain" class="media-mapping-field">
         <template #label>
           <div class="media-speech-label">
@@ -184,12 +238,23 @@
     <section class="media-form-section">
       <div class="media-section-label">
         <span class="media-section-name">调度与运维</span>
-        <span class="media-section-hint">并发 · 状态 · 代理 · 归属</span>
+        <span class="media-section-hint">并发 · 优先级 · 代理 · 归属 · 高级配置</span>
         <span class="media-section-line" />
       </div>
       <div class="media-dispatch-grid">
         <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
           <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
+        </a-form-item>
+        <!-- v8-B A组②：派发优先级分层与特权（超级优先/降级备用）与 chat 调度字段同源。 -->
+        <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。">
+          <a-input-number v-model:value="form.priority" :disabled="authorizedEditing" :min="0" style="width: 100%" />
+        </a-form-item>
+        <a-form-item label="特权">
+          <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
+            <a-select-option value="normal">无</a-select-option>
+            <a-select-option value="super_priority">超级优先</a-select-option>
+            <a-select-option value="fallback">降级备用</a-select-option>
+          </a-select>
         </a-form-item>
         <a-form-item v-if="!editing" class="media-status-field" label="状态">
           <a-radio-group v-model:value="form.status" :disabled="authorizedEditing" @change="form.statusSelectionExplicit = true">
@@ -241,13 +306,49 @@
           @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
         />
       </div>
+      <!-- v8-B A组④-⑦：低频项收进「高级配置」折叠卡（复用 chat AccountAdvancedCard 壳）：
+           到期时间 / 余额查询 / 时间计划 / 错误处理策略。C 组（请求覆盖、响应检查策略、
+           周期探活与特供恢复、账户锁死）按契约「对话专属语义媒体不渲染」明确不出现。 -->
+      <AccountAdvancedCard
+        class="media-advanced-card"
+        :open="advancedCardOpen"
+        :count="advancedCardCount"
+        :icon="SettingOutlined"
+        name="高级配置"
+        :summary="advancedCardSummary"
+        @toggle="toggleMediaAdvancedCard"
+      >
+        <div v-if="editing && advancedLoading" class="media-advanced-loading">
+          <a-spin tip="正在加载高级配置" />
+        </div>
+        <div v-else-if="advancedPending" class="media-advanced-loading">
+          <a-button type="primary" @click="$emit('advanced-open')">加载高级配置</a-button>
+        </div>
+        <div v-else class="media-advanced-stack">
+          <AccountExtraInfoSection :form="form" :readonly="authorizedEditing" />
+          <AccountBalanceQuerySection
+            :can-query="balanceQueryCanRun"
+            :form="form"
+            :query-loading="balanceQueryLoading"
+            :readonly="authorizedEditing"
+            @query="$emit('balance-query')"
+          />
+          <AccountAvailabilityScheduleSection :form="form" :readonly="authorizedEditing" />
+          <AccountErrorPolicyCard
+            v-model:error-handling-rule-overrides="form.errorHandlingRuleOverrides"
+            v-model:rules="errorPolicyRules"
+            :inherited-error-policy-rules="inheritedErrorPolicyRules"
+            :readonly="authorizedEditing"
+          />
+        </div>
+      </AccountAdvancedCard>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
-import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SwapRightOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { computed, ref, watch } from 'vue'
+import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SettingOutlined, SwapRightOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
@@ -258,7 +359,12 @@ import {
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
 import type { AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import AccountAdvancedCard from './AccountAdvancedCard.vue'
+import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
+import AccountBalanceQuerySection from './AccountBalanceQuerySection.vue'
+import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
@@ -267,7 +373,15 @@ import {
   mediaDomainModelProtocolTokens
 } from './accountCapabilityDomains'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
+import {
+  mediaAdvancedCardConfiguredCount,
+  mediaAdvancedCardSummary,
+  mediaCapabilityModeOptions,
+  mediaEndpointModeLabel,
+  mediaOutOfDomainDeclaredModes
+} from './accountMediaFormBlocks'
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
+import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 import {
@@ -289,6 +403,11 @@ const props = withDefaults(defineProps<{
   authLoading?: boolean
   authResult?: OAuthAuthURLResult
   authorizedEditing?: boolean
+  /** v8-B A组：高级详情加载状态（编辑态高级配置卡体加载/待加载分支，chat 同规）。 */
+  advancedLoaded?: boolean
+  advancedLoading?: boolean
+  balanceQueryCanRun?: boolean
+  balanceQueryLoading?: boolean
   baseUrlPlaceholder: string
   capabilityDomain: AccountCapabilityDomain
   credentialTitle: string
@@ -315,8 +434,12 @@ const props = withDefaults(defineProps<{
   tagOptions: AccountTagSummary[]
   tagOptionsLoading: boolean
 }>(), {
+  advancedLoaded: false,
+  advancedLoading: false,
   authorizedEditing: false,
   authLoading: false,
+  balanceQueryCanRun: false,
+  balanceQueryLoading: false,
   mappingAnthropicSourceModelOptions: () => [],
   mappingCurrentProviderSourceModelOptions: () => [],
   mappingGeminiSourceModelOptions: () => [],
@@ -326,7 +449,14 @@ const props = withDefaults(defineProps<{
   proxyOptionsLoading: false
 })
 
+// v8-B A组⑦：错误处理策略规则（编辑态由 useAccountEditForm 装载，卡片内编辑，
+// 保存时经 buildAccountCredentials 写入凭据 error_handling_rules）。
+const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
+const inheritedErrorPolicyRules = defineModel<AccountErrorPolicyInheritedRule[]>('inheritedErrorPolicyRules', { default: () => [] })
+
 const emit = defineEmits<{
+  (event: 'advanced-open'): void
+  (event: 'balance-query'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'delete-tag', tagId: string): void
   (event: 'generate-auth-url'): void
@@ -348,6 +478,80 @@ const emit = defineEmits<{
 const isTokenCredentialForm = computed(() => ['oauth', 'google_oauth'].includes(props.form.type))
 const isVolcengineAudio = computed(() =>
   props.capabilityDomain === 'audio' && isVolcengineProviderCode(props.form.providerCode))
+
+// ---- v8-B A组①：上游接口能力域内勾选（chat AccountStrategySection 同一底层逻辑） ----
+
+const mediaEndpointModeOptions = computed(() => mediaCapabilityModeOptions({
+  capabilityDomain: props.capabilityDomain,
+  providerCode: props.form.providerCode,
+  profile: props.selectedProtocolProfile,
+  accountType: props.form.type
+}))
+
+// 实际声明集中超出域允许集的遗留值（D6）：只读徽标行，不进勾选集，提交原样带回。
+const outOfDomainMediaModes = computed(() =>
+  mediaOutOfDomainDeclaredModes(props.form.supportedEndpointModes, mediaEndpointModeOptions.value))
+const outOfDomainCleanupSummary = computed(() =>
+  outOfDomainMediaModes.value.map((mode) => mediaModeLabel(mode)).join('、'))
+
+// 与 chat 同规：授权实例（凭据面 403）与 OAuth 表单（gemini native google_oauth，
+// modes 按来源能力只读）不可勾选。
+const capabilityModesDisabled = computed(() => props.authorizedEditing || props.form.type === 'google_oauth')
+
+function mediaModeLabel(mode: AccountFormModel['supportedEndpointModes'][number]): string {
+  return mediaEndpointModeLabel(mode, props.selectedProtocolProfile)
+}
+
+function setMediaModeEnabled(
+  mode: AccountFormModel['supportedEndpointModes'][number],
+  enabled: boolean
+): void {
+  props.form.supportedEndpointModes = enabled
+    ? [...new Set([...props.form.supportedEndpointModes, mode])]
+    : props.form.supportedEndpointModes.filter((item) => item !== mode)
+}
+
+// M3 显式清理（D6 只缩不扩）：确认后从声明集移除全部域外遗留值，保存时提交
+// 不含被清理值的完整 modes 数组，服务端放行缩小并单独审计。
+function cleanupMediaOutOfDomainModes(): void {
+  const removing = new Set(outOfDomainMediaModes.value)
+  props.form.supportedEndpointModes = props.form.supportedEndpointModes.filter((mode) => !removing.has(mode))
+}
+
+// ---- v8-B A组④-⑦：高级配置折叠卡（到期/余额/时间计划/错误策略） ----
+
+const advancedCardOpen = ref(false)
+// 编辑态高级详情未就绪时卡体显示加载/待加载分支（chat 编辑态摘要卡同规）。
+const advancedPending = computed(() => props.editing && !props.authorizedEditing && !props.advancedLoaded)
+const advancedCardState = computed(() => ({
+  accountExpiresAt: props.form.accountExpiresAt,
+  balanceQueryEnabled: props.form.balanceQueryEnabled,
+  scheduleEnabled: props.form.availabilitySchedule.enabled,
+  scheduleWindowCount: props.form.availabilitySchedule.windows.length,
+  errorPolicyRuleCount: errorPolicyRules.value.length
+}))
+const advancedCardSummary = computed(() => mediaAdvancedCardSummary(advancedCardState.value))
+const advancedCardCount = computed(() => mediaAdvancedCardConfiguredCount(advancedCardState.value))
+
+function toggleMediaAdvancedCard(): void {
+  advancedCardOpen.value = !advancedCardOpen.value
+  // 双保险：编辑态首次展开触发高级详情加载（chat advancedActiveKeys watch 同规；
+  // 已加载时 loadAdvancedAccountDetail 幂等早退）。
+  if (advancedCardOpen.value) emit('advanced-open')
+}
+
+// 授权实例打开即展开（只读通览）；普通打开默认收起，摘要可见当前值。
+watch(
+  () => [props.open, props.authorizedEditing] as const,
+  ([open, authorizedEditing]) => {
+    if (!open) {
+      advancedCardOpen.value = false
+      return
+    }
+    advancedCardOpen.value = authorizedEditing
+  },
+  { immediate: true }
+)
 
 // ---- 段1：供应商 × 类型按域矩阵过滤 ----
 
@@ -382,15 +586,16 @@ const oauthProxyRequired = computed(() =>
 
 // ---- 段2：支持模型按域 modes 过滤 + hybrid 域内映射 ----
 
-// 目录协议 token 过滤（mediaDomainModelProtocolTokens 与 model_catalog 种子同源）；
-// 目录未携带协议声明或声明 token 与域词表尚未对齐时不硬过滤（导入模型目录能力以
-// 服务端校验为准，前端不新增本地推导）。
+// 目录协议 token 过滤（mediaDomainModelProtocolTokens 与 model_catalog 种子同源）。
+// v8-C：服务端已按账户域目录 mode 过滤（模型候选加载传 DOMAIN_MODEL_MODES[域]），
+// 此处仅作域内协议 token 二次保险；不再保留「过滤结果为空回退全量」的旁路——
+// 服务端 mode 过滤后空结果即该供应商在域内确无目录模型，属预期而非异常。
+// custom 手加模型行未声明 mode 时会被服务端过滤排除，同属预期。
 const domainModelOptions = computed(() => {
   const tokens = new Set(mediaDomainModelProtocolTokens(props.capabilityDomain))
   if (!tokens.size) return props.modelOptions
-  const filtered = props.modelOptions.filter((option) =>
+  return props.modelOptions.filter((option) =>
     option.supportedApiProtocols?.some((protocol) => tokens.has(protocol)))
-  return filtered.length ? filtered : props.modelOptions
 })
 
 const isHybridAccount = computed(() => isHybridProviderCode(props.form.providerCode))
@@ -590,11 +795,77 @@ watch(
 
 .media-dispatch-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(96px, 132px)) minmax(200px, 1fr);
+  grid-template-columns: repeat(4, minmax(96px, 132px)) minmax(200px, 1fr);
   gap: 0 18px;
 }
 
 .media-dispatch-grid > * {
+  min-width: 0;
+}
+
+/* v8-B A组①：上游接口能力域内勾选（chat endpoint-mode-grid 同款排版） */
+.media-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
+  align-items: center;
+}
+
+.media-capability-grid :deep(.ant-checkbox-wrapper) {
+  min-width: 0;
+  white-space: normal;
+}
+
+.media-capability-grid :deep(.ant-checkbox + span) {
+  min-width: 0;
+  line-height: 1.5;
+}
+
+/* 域外遗留能力（D6 存量兼容）：只读徽标行 + M3 清理入口 */
+.media-out-of-domain-modes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.media-out-of-domain-label {
+  color: var(--juhe-muted);
+  font-size: 12px;
+}
+
+.media-out-of-domain-tag {
+  cursor: help;
+}
+
+.media-out-of-domain-cleanup {
+  margin-left: 4px;
+  padding-inline: 4px;
+}
+
+.media-out-of-domain-confirm p {
+  margin: 0 0 4px;
+}
+
+.media-out-of-domain-confirm-modes {
+  font-weight: 600;
+}
+
+/* v8-B A组④-⑦：高级配置折叠卡（chat bench-cards 同款壳的媒体段内间距） */
+.media-advanced-card {
+  margin-top: 8px;
+}
+
+.media-advanced-loading {
+  display: grid;
+  place-items: center;
+  padding: 24px 0;
+}
+
+.media-advanced-stack {
+  display: grid;
+  gap: 4px;
   min-width: 0;
 }
 

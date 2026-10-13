@@ -279,8 +279,8 @@ func TestW11DLoadGatewayAPIKeyByHashArms(t *testing.T) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g2', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_badexp', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-badexp") + `', 'active', 'not-a-time', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at, scheduling_preference_id) VALUES ('key_ok', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-ok") + `', 'active', NULL, '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bw0', 'rs1', 'sys_owner', 'g1', 1, 0, 'active', '2026-01-01T00:00:00.000Z')`,

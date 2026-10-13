@@ -32,12 +32,6 @@
           :options="chatModeFilterOptions"
           @change="applyFilters"
         />
-        <a-select
-          v-model:value="statusFilter"
-          class="toolbar-select responsive-list-inline-filter"
-          :options="statusFilterOptions"
-          @change="applyFilters"
-        />
       </template>
       <template #actions>
         <a-button type="primary" @click="openCreate">
@@ -64,10 +58,6 @@
         <label class="mobile-filter-field">
           <span>对话形态</span>
           <a-select v-model:value="chatModeFilter" :options="chatModeFilterOptions" />
-        </label>
-        <label class="mobile-filter-field">
-          <span>状态</span>
-          <a-select v-model:value="statusFilter" :options="statusFilterOptions" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -97,20 +87,17 @@
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ schedulingPreferenceSystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'chatMode'">
-          <a-tag :color="schedulingPreferenceChatModeColor(record.chatMode)">{{ schedulingPreferenceChatModeText(record.chatMode) }}</a-tag>
+          <span class="scheduling-preference-domain-summary">
+            <span>对话：{{ schedulingPreferenceChatModeText(record.chatMode) }}</span>
+            <span class="scheduling-preference-domain-empty">｜视频：无｜音频：无｜图像：无</span>
+          </span>
         </template>
         <template v-else-if="column.key === 'builtIn'">
           <a-tag v-if="record.builtIn" color="gold">内置</a-tag>
           <span v-else class="muted-cell">-</span>
         </template>
-        <template v-else-if="column.key === 'status'">
-          <a-tag :color="schedulingPreferenceStatusColor(record.enabled)">{{ schedulingPreferenceStatusText(record.enabled) }}</a-tag>
-        </template>
         <template v-else-if="column.key === 'boundApiKeyCount'">
           <a-tag>{{ formatNumber(record.boundApiKeyCount) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'updatedAt'">
-          <span class="muted-cell">{{ formatDateTime(record.updatedAt) }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <span v-if="record.builtIn" class="muted-cell">内置只读</span>
@@ -127,8 +114,10 @@
               </div>
             </div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="schedulingPreferenceChatModeColor(record.chatMode)">{{ schedulingPreferenceChatModeText(record.chatMode) }}</a-tag>
-              <a-tag :color="schedulingPreferenceStatusColor(record.enabled)">{{ schedulingPreferenceStatusText(record.enabled) }}</a-tag>
+              <span class="scheduling-preference-domain-summary">
+                <span>对话：{{ schedulingPreferenceChatModeText(record.chatMode) }}</span>
+                <span class="scheduling-preference-domain-empty">｜视频：无｜音频：无｜图像：无</span>
+              </span>
             </div>
           </div>
           <div class="mobile-list-meta-grid">
@@ -139,10 +128,6 @@
             <div class="mobile-list-meta-item">
               <span>绑定 API Key</span>
               <strong>{{ formatNumber(record.boundApiKeyCount) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>更新时间</span>
-              <strong>{{ formatDateTime(record.updatedAt) }}</strong>
             </div>
           </div>
           <div v-if="!record.builtIn" class="mobile-list-card-actions">
@@ -159,28 +144,13 @@
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑调度偏好' : '新建调度偏好'" width="720px" :confirm-loading="saving" destroy-on-close @ok="saveSchedulingPreference">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical" class="scheduling-preference-modal-form">
+        <div class="modal-section-title">对话域</div>
         <a-form-item label="名称" required tooltip="用于在 API Key 绑定调度偏好时识别这套对话调度方式。">
           <a-input v-model:value="form.name" placeholder="请输入调度偏好名称" />
         </a-form-item>
-        <a-row :gutter="12">
-          <a-col :span="12">
-            <a-form-item label="对话形态" required tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。作用域为当前请求所落分组内的账号调度。">
-              <a-segmented v-model:value="form.chatMode" block :options="chatModeOptions" />
-            </a-form-item>
-          </a-col>
-          <a-col v-if="editingId" :span="12">
-            <a-form-item label="状态" required tooltip="停用后，绑定保留，期间回落系统默认（对话·成本优先）。">
-              <a-select v-model:value="form.enabled" :options="enabledOptions" />
-            </a-form-item>
-          </a-col>
-        </a-row>
-        <a-alert
-          v-if="editingId && !form.enabled"
-          class="modal-alert"
-          type="warning"
-          show-icon
-          :message="`停用后绑定保留，期间回落系统默认（对话·成本优先）。当前有 ${formatNumber(editingBoundApiKeyCount)} 个 API Key 绑定此偏好。`"
-        />
+        <a-form-item label="对话形态" required tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。作用域为当前请求所落分组内的账号调度。">
+          <a-segmented v-model:value="form.chatMode" block :options="chatModeOptions" />
+        </a-form-item>
         <template v-if="form.chatMode === 'speed_first'">
           <div class="modal-section-title">
             <span>速度优先参数</span>
@@ -265,6 +235,12 @@
             </a-form-item>
           </div>
         </template>
+        <div class="modal-section-title">视频域</div>
+        <div class="scheduling-preference-domain-placeholder">该域暂无调度偏好</div>
+        <div class="modal-section-title">音频域</div>
+        <div class="scheduling-preference-domain-placeholder">该域暂无调度偏好</div>
+        <div class="modal-section-title">图像域</div>
+        <div class="scheduling-preference-domain-placeholder">该域暂无调度偏好</div>
       </a-form>
     </a-modal>
   </a-card>
@@ -288,13 +264,12 @@ import { useScopedSchedulingPreferencesApi } from '@/composables/useScopedDomain
 import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import {
   buildSchedulingPreferenceFormPayload,
   buildSchedulingPreferenceMutationPatch,
   defaultSpeedFirstParamsForm,
-  extractSchedulingPreferenceReferenceCount,
   hasSchedulingPreferenceMutationChanges,
   mergeSchedulingPreferenceMutationResult,
   schedulingPreferenceSpeedFirstBounds,
@@ -316,7 +291,6 @@ interface SchedulingPreferencesPageState {
     current: number
     pageSize: number
   }
-  statusFilter: 'enabled' | 'disabled' | 'all'
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
 }
@@ -333,7 +307,6 @@ const keyword = ref(initialPageState.keyword)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const chatModeFilter = ref<SchedulingPreferenceChatMode | 'all'>(initialPageState.chatModeFilter)
-const statusFilter = ref<'enabled' | 'disabled' | 'all'>(initialPageState.statusFilter)
 const loading = ref(false)
 const saving = ref(false)
 const modalOpen = ref(false)
@@ -341,7 +314,6 @@ const editingId = ref<string>()
 const editingBuiltIn = ref(false)
 const editingSystemAccountId = ref<string>()
 const editingExpectedUpdatedAt = ref<string>()
-const editingBoundApiKeyCount = ref(0)
 let editingBaseline: SchedulingPreferenceFormPayload | undefined
 let listRequestGeneration = 0
 const items = ref<SchedulingPreferenceSummary[]>([])
@@ -369,7 +341,6 @@ const {
 const form = reactive({
   name: '',
   chatMode: 'cost_first' as SchedulingPreferenceChatMode,
-  enabled: true,
   speedFirst: defaultSpeedFirstParamsForm() as SpeedFirstParamsForm
 })
 
@@ -378,30 +349,17 @@ const chatModeOptions: Array<{ label: string; value: SchedulingPreferenceChatMod
   { label: '速度优先', value: 'speed_first' }
 ]
 
-const enabledOptions: Array<{ label: string; value: boolean }> = [
-  { label: '启用', value: true },
-  { label: '停用', value: false }
-]
-
 const chatModeFilterOptions = [
   { label: '全部形态', value: 'all' },
   ...chatModeOptions
 ]
 
-const statusFilterOptions = [
-  { label: '全部状态', value: 'all' },
-  { label: '启用', value: 'enabled' },
-  { label: '停用', value: 'disabled' }
-]
-
 const columns = computed<Array<Record<string, unknown>>>(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', key: 'name', width: 240 },
-    { title: '对话形态', key: 'chatMode', width: 130 },
+    { title: '四域概览', key: 'chatMode', width: 300 },
     { title: '内置', key: 'builtIn', width: 90 },
-    { title: '状态', key: 'status', width: 100 },
     { title: '绑定 API Key', key: 'boundApiKeyCount', width: 130 },
-    { title: '更新时间', dataIndex: 'updatedAt', key: 'updatedAt', width: 180 },
     { title: '操作', key: 'actions', width: 104, fixed: 'right' }
   ]
   return isManagementView.value
@@ -412,8 +370,7 @@ const columns = computed<Array<Record<string, unknown>>>(() => {
 const activeFilterCount = computed(() => [
   keyword.value.trim(),
   isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue,
-  chatModeFilter.value !== 'all',
-  statusFilter.value !== 'all'
+  chatModeFilter.value !== 'all'
 ].filter(Boolean).length)
 
 const pagination = computed<TablePaginationConfig>(() => ({
@@ -460,7 +417,6 @@ async function loadSchedulingPreferences(): Promise<boolean> {
     pageSize: pageSize.value,
     keyword: keyword.value.trim() || undefined,
     chatMode: chatModeFilter.value,
-    status: statusFilter.value,
     systemAccountId: requestScopeParams?.systemAccountId
   }
   loading.value = true
@@ -513,7 +469,6 @@ function resetFilters() {
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   chatModeFilter.value = defaults.chatModeFilter
-  statusFilter.value = defaults.statusFilter
   resetSchedulingPreferenceListForScopeChange()
   resetSystemAccountOptionsSearch()
   page.value = defaults.pagination.current
@@ -553,7 +508,6 @@ function defaultSchedulingPreferencesPageState(): SchedulingPreferencesPageState
     keyword: '',
     chatModeFilter: 'all',
     pagination: { current: 1, pageSize: schedulingPreferencesPageSize },
-    statusFilter: 'all',
     systemAccountFilter: allSystemAccountsValue,
     systemAccountFilterSelection: undefined
   }
@@ -572,7 +526,6 @@ function sanitizeSchedulingPreferencesPageState(value: unknown, fallback: Schedu
       current: sanitizePositiveInteger(pagination.current, fallback.pagination.current),
       pageSize: sanitizePositiveInteger(pagination.pageSize, fallback.pagination.pageSize, 200)
     },
-    statusFilter: isStatusFilter(source.statusFilter) ? source.statusFilter : fallback.statusFilter,
     systemAccountFilter: typeof source.systemAccountFilter === 'string' && source.systemAccountFilter.trim()
       ? source.systemAccountFilter
       : fallback.systemAccountFilter,
@@ -582,10 +535,6 @@ function sanitizeSchedulingPreferencesPageState(value: unknown, fallback: Schedu
 
 function isChatModeFilter(value: unknown): value is SchedulingPreferenceChatMode | 'all' {
   return value === 'all' || value === 'cost_first' || value === 'speed_first'
-}
-
-function isStatusFilter(value: unknown): value is 'enabled' | 'disabled' | 'all' {
-  return value === 'all' || value === 'enabled' || value === 'disabled'
 }
 
 function sanitizePositiveInteger(value: unknown, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
@@ -610,7 +559,6 @@ function snapshotPageState(): SchedulingPreferencesPageState {
       current: page.value,
       pageSize: pageSize.value
     },
-    statusFilter: statusFilter.value,
     systemAccountFilter: systemAccountFilter.value,
     systemAccountFilterSelection: systemAccountFilterSelection.value
   }
@@ -625,11 +573,9 @@ function openCreate() {
   editingBuiltIn.value = false
   editingSystemAccountId.value = undefined
   editingExpectedUpdatedAt.value = undefined
-  editingBoundApiKeyCount.value = 0
   editingBaseline = undefined
   form.name = ''
   form.chatMode = 'cost_first'
-  form.enabled = true
   form.speedFirst = defaultSpeedFirstParamsForm()
   modalOpen.value = true
 }
@@ -647,10 +593,8 @@ function openEdit(record: SchedulingPreferenceSummary) {
   editingBuiltIn.value = record.builtIn
   editingSystemAccountId.value = record.systemAccountId
   editingExpectedUpdatedAt.value = record.updatedAt
-  editingBoundApiKeyCount.value = record.boundApiKeyCount
   form.name = record.name
   form.chatMode = record.chatMode
-  form.enabled = record.enabled
   form.speedFirst = record.chatMode === 'speed_first'
     ? speedFirstParamsFormFromConfig(record.chatSpeedFirstConfig)
     : defaultSpeedFirstParamsForm()
@@ -742,8 +686,6 @@ function matchesCurrentFilters(record: SchedulingPreferenceSummary): boolean {
   const namePrefix = keyword.value.trim()
   return (!namePrefix || record.name.startsWith(namePrefix))
     && (chatModeFilter.value === 'all' || record.chatMode === chatModeFilter.value)
-    && (statusFilter.value === 'all'
-      || (statusFilter.value === 'enabled' ? record.enabled : !record.enabled))
 }
 
 async function deleteSchedulingPreference(record: SchedulingPreferenceSummary) {
@@ -753,19 +695,16 @@ async function deleteSchedulingPreference(record: SchedulingPreferenceSummary) {
     return
   }
   try {
-    await schedulingPreferencesApi.delete(record.id, operationScopeParams)
+    const { resetBindings } = await schedulingPreferencesApi.delete(record.id, operationScopeParams)
     const index = items.value.findIndex((item) => item.id === record.id)
     if (index >= 0) {
       items.value.splice(index, 1)
       total.value = Math.max(0, total.value - 1)
     }
-    message.success('调度偏好已删除')
+    message.success(resetBindings > 0
+      ? `调度偏好已删除，已将 ${formatNumber(resetBindings)} 个 API Key 重置为默认调度偏好`
+      : '调度偏好已删除')
   } catch (error) {
-    const referenceCount = extractSchedulingPreferenceReferenceCount(error)
-    if (referenceCount !== undefined) {
-      message.warning(`调度偏好仍被 ${referenceCount} 个 API Key 绑定，请先调整绑定后再删除`)
-      return
-    }
     message.error(extractApiErrorMessage(error, '调度偏好删除失败'))
   }
 }
@@ -787,9 +726,7 @@ function schedulingPreferenceActions(record: SchedulingPreferenceSummary): RowAc
     label: '删除',
     icon: 'delete',
     tone: 'danger',
-    confirmTitle: record.boundApiKeyCount > 0
-      ? `确认删除调度偏好「${record.name}」？该偏好正被 ${record.boundApiKeyCount} 个 API Key 绑定，需先调整绑定。`
-      : `确认删除调度偏好「${record.name}」？`,
+    confirmTitle: `确认删除调度偏好「${record.name}」？将删除该偏好，并把 ${formatNumber(record.boundApiKeyCount)} 个已绑定 API Key 重置为默认调度偏好。`,
     confirmOkText: '删除'
   })
   return actions
@@ -811,18 +748,6 @@ function schedulingPreferenceSystemAccountText(record: SchedulingPreferenceSumma
 
 function schedulingPreferenceChatModeText(chatMode: SchedulingPreferenceChatMode): string {
   return chatMode === 'speed_first' ? '速度优先' : '成本优先'
-}
-
-function schedulingPreferenceChatModeColor(chatMode: SchedulingPreferenceChatMode): string {
-  return chatMode === 'speed_first' ? 'blue' : 'green'
-}
-
-function schedulingPreferenceStatusText(enabled: boolean): string {
-  return enabled ? '启用' : '停用'
-}
-
-function schedulingPreferenceStatusColor(enabled: boolean): string {
-  return enabled ? 'green' : 'default'
 }
 </script>
 
@@ -862,6 +787,22 @@ function schedulingPreferenceStatusColor(enabled: boolean): string {
   color: var(--juhe-fg);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.scheduling-preference-domain-summary {
+  white-space: nowrap;
+}
+
+.scheduling-preference-domain-empty {
+  color: var(--juhe-faint);
+}
+
+.scheduling-preference-domain-placeholder {
+  padding: 10px 12px;
+  border: 1px dashed var(--juhe-border);
+  border-radius: 8px;
+  color: var(--juhe-faint);
+  font-size: 13px;
 }
 
 .mobile-list-card-title,

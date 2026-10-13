@@ -1,8 +1,9 @@
 // 调度偏好独立实体 P2——派发读取链六态解析测试（接口契约「读取分阶段契约」
-// P2 形态）：purpose=chat 沿用策略 config；普通 Key 绑定 NULL 属未迁移/数据
-// 不一致，显式错误失败；绑定内置/启用偏好经 routestrategies 既有 normalize
-// 合成；停用回落内置合成；引用损坏/配置损坏显式错误上抛；fingerprint 只依
-// 赖规范化参数（同参不同名相同、改名不变）。
+// P2 形态；v2 用户裁决修订 2026-10-13 后停用回落态不存在）：purpose=chat 沿用
+// 策略 config；普通 Key 绑定 NULL 属未迁移/数据不一致，显式错误失败；绑定内置
+// /自定义偏好经 routestrategies 既有 normalize 合成（策略调度字段不再影响普通
+// Key 派发）；引用损坏/配置损坏显式错误上抛；fingerprint 只依赖规范化参数
+// （同参不同名相同、改名不变）。
 package gatewayruntimecache
 
 import (
@@ -40,11 +41,11 @@ func spc1SeedEnabledKey(t *testing.T, db *sql.DB, keyID, keyHash, purpose string
 	}
 }
 
-func spc1SeedPreference(t *testing.T, db *sql.DB, id, ownerID, chatMode, configJSON string, builtIn, enabled int) {
+func spc1SeedPreference(t *testing.T, db *sql.DB, id, ownerID, chatMode, configJSON string, builtIn int) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerID, "偏好-"+id, chatMode, configJSON, builtIn, enabled, now, now)
+	_, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerID, "偏好-"+id, chatMode, configJSON, builtIn, now, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +72,8 @@ func TestSPC2HistoricalNullFailsAndChatKeysKeepStrategyConfig(t *testing.T) {
 	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
 		t.Fatal(err)
 	}
-	// 内置行已由 seedGatewayKeyFixture 提供；启用偏好存在但普通 NULL 键也必须显式失败。
-	spc1SeedPreference(t, db, "sp-enabled", "sys_owner", "cost_first", "", 0, 1)
+	// 内置行已由 seedGatewayKeyFixture 提供；自定义偏好存在但普通 NULL 键也必须显式失败。
+	spc1SeedPreference(t, db, "sp-enabled", "sys_owner", "cost_first", "", 0)
 	spc1SeedEnabledKey(t, db, "key-hist", HashSecret("sk-hist"), "", sql.NullString{})
 	spc1SeedEnabledKey(t, db, "key-chat", HashSecret("sk-chat"), "chat", sql.NullString{String: apikeys.BuiltinSchedulingPreferenceID, Valid: true})
 	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
@@ -100,7 +101,7 @@ func TestSPC1BoundEnabledPreferenceSynthesizesConfig(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
 	seedGatewayKeyFixture(t, db)
-	spc1SeedPreference(t, db, "sp-speed", "sys_owner", "speed_first", spc1SpeedFirstConfigJSON, 0, 1)
+	spc1SeedPreference(t, db, "sp-speed", "sys_owner", "speed_first", spc1SpeedFirstConfigJSON, 0)
 	spc1SeedEnabledKey(t, db, "key-speed", HashSecret("sk-speed"), "", sql.NullString{String: "sp-speed", Valid: true})
 	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
@@ -157,8 +158,13 @@ func TestSPC1BoundCostFirstCollapsesAndFingerprintIgnoresName(t *testing.T) {
 	db := newSQLTestDB(t)
 	seedGatewaySettingsKeys(t, db)
 	seedGatewayKeyFixture(t, db)
-	spc1SeedPreference(t, db, "sp-cost-a", "sys_owner", "cost_first", "", 0, 1)
-	spc1SeedPreference(t, db, "sp-cost-b", "other_owner", "cost_first", "", 0, 1)
+	// 策略带 speed_first 配置：绑定 cost_first 偏好的普通 Key 派发配置必须来
+	// 自偏好合成（裸 cost_first），策略调度字段不再影响派发（P2 读取收敛）。
+	if _, err := db.Exec(`UPDATE route_strategies SET config_json = '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}' WHERE id = 'rs1'`); err != nil {
+		t.Fatal(err)
+	}
+	spc1SeedPreference(t, db, "sp-cost-a", "sys_owner", "cost_first", "", 0)
+	spc1SeedPreference(t, db, "sp-cost-b", "other_owner", "cost_first", "", 0)
 	spc1SeedEnabledKey(t, db, "key-cost", HashSecret("sk-cost"), "", sql.NullString{String: "sp-cost-a", Valid: true})
 	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
@@ -170,7 +176,8 @@ func TestSPC1BoundCostFirstCollapsesAndFingerprintIgnoresName(t *testing.T) {
 		t.Fatalf("cost snapshot: %+v", row)
 	}
 	if row.NormalRoutingConfig == nil || row.NormalRoutingConfig.SchedulingPreference != "cost_first" || row.NormalRoutingConfig.Raw != nil {
-		t.Fatalf("cost_first must collapse to the bare shape: %+v", row.NormalRoutingConfig)
+		// 策略 speed_first 配置不得穿透：派发配置一律来自偏好合成覆盖。
+		t.Fatalf("strategy scheduling fields must not affect dispatch; cost_first must collapse to the bare shape: %+v", row.NormalRoutingConfig)
 	}
 	// 同参数不同名/不同 owner 偏好 → 同 fingerprint；改名不改 fingerprint。
 	costSnapshot, err := synthesizeSchedulingPreferenceSnapshot("sp-cost-a", "cost_first", "")
@@ -206,27 +213,6 @@ func TestSPC1BoundCostFirstCollapsesAndFingerprintIgnoresName(t *testing.T) {
 	}
 }
 
-func TestSPC1DisabledPreferenceFallsBackToBuiltinSynthesis(t *testing.T) {
-	db := newSQLTestDB(t)
-	seedGatewaySettingsKeys(t, db)
-	seedGatewayKeyFixture(t, db)
-	spc1SeedPreference(t, db, "sp-disabled-speed", "sys_owner", "speed_first", spc1SpeedFirstConfigJSON, 0, 0)
-	spc1SeedEnabledKey(t, db, "key-disabled", HashSecret("sk-disabled"), "", sql.NullString{String: "sp-disabled-speed", Valid: true})
-	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	row := spc1ReadRow(t, models, "sk-disabled")
-	// 绑定保留、有效来源内置（对话·成本优先）。
-	if row.SchedulingPreferenceID != "sp-disabled-speed" || row.SchedulingPreferenceChatMode != "cost_first" {
-		t.Fatalf("disabled fallback snapshot: %+v", row)
-	}
-	if row.NormalRoutingConfig == nil || row.NormalRoutingConfig.SchedulingPreference != "cost_first" || row.NormalRoutingConfig.Raw != nil {
-		t.Fatalf("disabled fallback config: %+v", row.NormalRoutingConfig)
-	}
-}
-
 func TestSPC1BrokenBindingOrConfigFailsExplicitly(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -243,27 +229,27 @@ func TestSPC1BrokenBindingOrConfigFailsExplicitly(t *testing.T) {
 		{
 			name:         "cross-owner",
 			preferenceID: "sp-foreign",
-			seedPrefs:    []string{"sp-foreign|stranger|speed_first|" + spc1SpeedFirstConfigJSON + "|0|1"},
+			seedPrefs:    []string{"sp-foreign|stranger|speed_first|" + spc1SpeedFirstConfigJSON + "|0"},
 			wantFragment: "绑定引用不存在",
 		},
 		{
 			name:          "broken-json",
 			preferenceID:  "sp-broken",
-			seedPrefs:     []string{"sp-broken|sys_owner|speed_first|{not-json|0|1"},
+			seedPrefs:     []string{"sp-broken|sys_owner|speed_first|{not-json|0"},
 			seedSpeedJSON: "{not-json",
 			wantFragment:  "JSON 损坏",
 		},
 		{
 			name:          "illegal-chat-mode",
 			preferenceID:  "sp-illegal",
-			seedPrefs:     []string{"sp-illegal|sys_owner|hybrid|" + spc1SpeedFirstConfigJSON + "|0|1"},
+			seedPrefs:     []string{"sp-illegal|sys_owner|hybrid|" + spc1SpeedFirstConfigJSON + "|0"},
 			seedSpeedJSON: spc1SpeedFirstConfigJSON,
 			wantFragment:  "调度偏好无效",
 		},
 		{
 			name:          "out-of-range-param",
 			preferenceID:  "sp-range",
-			seedPrefs:     []string{"sp-range|sys_owner|speed_first|{\"slowTriggerCount\":99}|0|1"},
+			seedPrefs:     []string{"sp-range|sys_owner|speed_first|{\"slowTriggerCount\":99}|0"},
 			seedSpeedJSON: `{"slowTriggerCount":99}`,
 			wantFragment:  "速度优先触发次数",
 		},
@@ -275,7 +261,7 @@ func TestSPC1BrokenBindingOrConfigFailsExplicitly(t *testing.T) {
 			seedGatewayKeyFixture(t, db)
 			for _, spec := range testCase.seedPrefs {
 				parts := strings.Split(spec, "|")
-				spc1SeedPreference(t, db, parts[0], parts[1], parts[2], parts[3], 0, 1)
+				spc1SeedPreference(t, db, parts[0], parts[1], parts[2], parts[3], 0)
 			}
 			spc1SeedEnabledKey(t, db, "key-broken", HashSecret("sk-broken"), "", sql.NullString{String: testCase.preferenceID, Valid: true})
 			models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)

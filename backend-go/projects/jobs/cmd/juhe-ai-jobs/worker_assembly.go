@@ -259,6 +259,9 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 	if err := a.wireRetentionFamily(ctx); err != nil {
 		return err
 	}
+	if err := a.wireStudioSettleFamily(ctx); err != nil {
+		return err
+	}
 	if err := a.wireProbeFamily(ctx); err != nil {
 		return err
 	}

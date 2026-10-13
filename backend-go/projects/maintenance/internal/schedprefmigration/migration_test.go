@@ -51,10 +51,11 @@ func openMigrationDB(t *testing.T) *sql.DB {
 	if _, err := schema.EnsureSQLiteBusiness(context.Background(), db); err != nil {
 		t.Fatalf("ensure business schema: %v", err)
 	}
-	// ensure 只建表不种子：迁移前置条件（内置行）按契约权威值补种。
+	// ensure 只建表不种子：迁移前置条件（内置行）按契约权威值补种（enabled
+	// 已随 v2 用户裁决修订第 4 条退役，行不再携带该列）。
 	if _, err := db.Exec(`INSERT INTO scheduling_preferences
-		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
+		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
 		ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatalf("seed builtin scheduling preference: %v", err)
 	}
@@ -85,8 +86,8 @@ func seedPreferenceFixture(t *testing.T, db *sql.DB, id, owner, name, chatMode, 
 		config = configJSON
 	}
 	if _, err := db.Exec(`INSERT INTO scheduling_preferences
-		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
 		id, owner, name, chatMode, config, fixtureTimestamp, fixtureTimestamp); err != nil {
 		t.Fatalf("seed preference %s: %v", id, err)
 	}
@@ -793,8 +794,8 @@ func TestPostgresSchedulingPreferencesMigrationLiveSmoke(t *testing.T) {
 		t.Fatalf("ensure postgres: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO "juhe_business"."scheduling_preferences"
-		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
+		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')
 		ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatalf("seed builtin row: %v", err)
 	}

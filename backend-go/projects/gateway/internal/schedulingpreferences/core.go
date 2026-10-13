@@ -1,16 +1,19 @@
 // Package schedulingpreferences owns the P1 vertical slice of the independent
 // scheduling-preference entity (调度偏好独立实体 PLAN-20261012T033000000Z，
-// 接口契约「调度偏好」章): the dual-surface CRUD route family —
-// /__aisys__/api/scheduling-preferences (admin) and /__aisys__/api/
-// my-scheduling-preferences (self) — over the scheduling_preferences table
-// delivered by maintenance (schema + builtin row seed). The slice mirrors the
-// internal/routestrategies template: owner-scoped list/options/detail with the
-// builtin-row global read exception, guarded create with strict body
-// whitelist, optimistic-lock PATCH (expectedUpdatedAt CAS, equal-value no-op)
-// and delete protection for referenced rows, with operation logging and the
-// global gateway-runtime invalidation hook. Config normalization reuses
+// 接口契约「调度偏好」章；v2 用户裁决修订 2026-10-13): the dual-surface CRUD
+// route family — /__aisys__/api/scheduling-preferences (admin) and
+// /__aisys__/api/my-scheduling-preferences (self) — over the
+// scheduling_preferences table delivered by maintenance (schema + builtin row
+// seed). The slice mirrors the internal/routestrategies template: owner-scoped
+// list/options/detail with the builtin-row global read exception, guarded
+// create with strict body whitelist, optimistic-lock PATCH (expectedUpdatedAt
+// CAS, equal-value no-op) and always-success delete that first resets bound
+// API keys to the builtin default in the same transaction (v2 第 5 条，不再
+// 409 拒绝), with operation logging and the global gateway-runtime
+// invalidation hook. Config normalization reuses
 // routestrategies.NormalizeNormalRoutingConfig so the speed-parameter
 // defaults, ranges and Chinese validation messages stay single-sourced.
+// enabled 已随 v2 第 4 条退役：创建即启用，无停用态。
 package schedulingpreferences
 
 import (
@@ -38,16 +41,6 @@ const (
 type BuiltinWriteError struct{ Message string }
 
 func (e *BuiltinWriteError) Error() string { return e.Message }
-
-// ReferenceConflictError marks a delete of a still-bound preference — the
-// route renders 409 {message, referenceCount}（不依赖 DB 级 RESTRICT，不静默
-// 清空引用）.
-type ReferenceConflictError struct {
-	Message        string
-	ReferenceCount int
-}
-
-func (e *ReferenceConflictError) Error() string { return e.Message }
 
 // AccessScope mirrors the routestrategies owner-view subset: admins see every
 // owner unless a filter narrows the view; the self surface is pinned to the
@@ -206,9 +199,9 @@ func intQueryValue(raw string) (int, bool) {
 // invalidateRuntime mirrors the route-strategy invalidation hook
 // (routestrategies core.go notifyGatewayRuntimeCacheInvalidation): the global
 // gateway-runtime topic with a slice-specific reason. 绑定 Key 的合成配置依赖
-// 偏好内容/状态（speed 参数变更产生新指纹、停用回退内置行、删除使绑定失效），
-// 提交成功后必须全清运行态缓存，让全部绑定 Key 下次加载重建快照（接口契约
-// 「失效契约」章：全局 runtime 代际与跨实例 topic，不做逐 Key N+1 失效）。
+// 偏好内容（speed 参数变更产生新指纹、删除使绑定回默认），提交成功后必须全
+// 清运行态缓存，让全部绑定 Key 下次加载重建快照（接口契约「失效契约」章：
+// 全局 runtime 代际与跨实例 topic，不做逐 Key N+1 失效）。
 func (s *Store) invalidateRuntime(reason string) {
 	if s.inval != nil {
 		s.inval.Invalidate(routestrategies.TopicGatewayRuntime, reason)

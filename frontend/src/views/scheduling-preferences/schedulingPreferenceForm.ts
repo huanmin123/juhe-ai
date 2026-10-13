@@ -34,16 +34,15 @@ export const schedulingPreferenceSpeedFirstBounds = {
 
 export type SpeedFirstParamKey = keyof typeof schedulingPreferenceSpeedFirstBounds
 
-/** 编辑弹窗表单模型：name/chatMode/enabled 为公共字段；speed_first 时消费 speedFirst。 */
+/** 编辑弹窗表单模型：name/chatMode 为公共字段；speed_first 时消费 speedFirst。 */
 export interface SchedulingPreferenceFormModel {
   name: string
   chatMode: SchedulingPreferenceChatMode
-  enabled: boolean
   speedFirst: SpeedFirstParamsForm
 }
 
 /** 构建提交 payload 形状的完整表单值：cost_first 不携带 chatSpeedFirstConfig（契约禁止）。 */
-export type SchedulingPreferenceFormPayload = Pick<SchedulingPreferenceFormModel, 'name' | 'chatMode' | 'enabled'> & {
+export type SchedulingPreferenceFormPayload = Pick<SchedulingPreferenceFormModel, 'name' | 'chatMode'> & {
   chatSpeedFirstConfig?: SchedulingPreferenceSpeedFirstConfig
 }
 
@@ -89,8 +88,7 @@ export function boundedSpeedFirstParam(key: SpeedFirstParamKey, value: unknown):
 export function buildSchedulingPreferenceFormPayload(form: SchedulingPreferenceFormModel): SchedulingPreferenceFormPayload {
   const payload: SchedulingPreferenceFormPayload = {
     name: form.name.trim(),
-    chatMode: form.chatMode,
-    enabled: form.enabled
+    chatMode: form.chatMode
   }
   if (form.chatMode === 'speed_first') {
     payload.chatSpeedFirstConfig = buildSpeedFirstConfigPayload(form.speedFirst)
@@ -117,8 +115,7 @@ function buildSpeedFirstConfigPayload(form: SpeedFirstParamsForm): SchedulingPre
 const editableFields = [
   'name',
   'chatMode',
-  'chatSpeedFirstConfig',
-  'enabled'
+  'chatSpeedFirstConfig'
 ] as const
 
 /** 相对打开时 baseline 构建 PATCH delta；cost_first 分支不携带 chatSpeedFirstConfig，由服务端清空存储配置。 */
@@ -157,16 +154,8 @@ export function mergeSchedulingPreferenceMutationResult(
     if (patch.chatSpeedFirstConfig === null || patch.chatSpeedFirstConfig === undefined) delete next.chatSpeedFirstConfig
     else next.chatSpeedFirstConfig = patch.chatSpeedFirstConfig
   }
-  if (patch.enabled !== undefined) next.enabled = patch.enabled
   next.updatedAt = result.updatedAt
   return next
-}
-
-/** 删除被引用 409 时从响应体提取 referenceCount；非该场景返回 undefined。 */
-export function extractSchedulingPreferenceReferenceCount(error: unknown): number | undefined {
-  const data = (error as { response?: { data?: { referenceCount?: unknown } } } | undefined)?.response?.data
-  const count = (data as { referenceCount?: unknown } | undefined)?.referenceCount
-  return typeof count === 'number' && Number.isInteger(count) && count >= 0 ? count : undefined
 }
 
 function stableValue(value: unknown): string {

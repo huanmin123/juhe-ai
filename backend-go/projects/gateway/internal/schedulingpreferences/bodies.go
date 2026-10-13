@@ -1,8 +1,10 @@
 // Request body validation for the scheduling-preference family (契约「调度偏
-// 好」章)：POST 严格只允许 name/chatMode/chatSpeedFirstConfig，PATCH 白名单
-// name/chatMode/chatSpeedFirstConfig/enabled/expectedUpdatedAt。范围与默认值
-// 校验不在本层——统一走 routestrategies.NormalizeNormalRoutingConfig（单一来
-// 源），这里只做键白名单与形状检查。
+// 好」章；v2 用户裁决修订第 4 条)：POST 严格只允许 name/chatMode/
+// chatSpeedFirstConfig，PATCH 白名单 name/chatMode/chatSpeedFirstConfig/
+// expectedUpdatedAt。enabled 已退役（创建即启用，无停用态），携带者由严格键
+// 校验拒绝。范围与默认值校验不在本层——统一走
+// routestrategies.NormalizeNormalRoutingConfig（单一来源），这里只做键白名单
+// 与形状检查。
 package schedulingpreferences
 
 // invalidMutationMessage 是通用 schema 失败文案（路由族惯例：策略路由侧为
@@ -19,7 +21,6 @@ var preferencePatchKeys = map[string]bool{
 	"name":                 true,
 	"chatMode":             true,
 	"chatSpeedFirstConfig": true,
-	"enabled":              true,
 }
 
 // preferenceSpeedConfigKeys 是 chatSpeedFirstConfig 的外层键（D2 形状）.
@@ -47,7 +48,6 @@ var preferenceSpeedInnerKeys = map[string]bool{
 type MutationInput struct {
 	Name      *string
 	ChatMode  *string
-	Enabled   *bool
 	HasConfig bool
 	ConfigRaw any
 }
@@ -55,7 +55,7 @@ type MutationInput struct {
 // Empty reports whether no patchable field is present beyond
 // expectedUpdatedAt (契约：空变更 400 请提供要修改的调度偏好内容).
 func (m MutationInput) Empty() bool {
-	return m.Name == nil && m.ChatMode == nil && m.Enabled == nil && !m.HasConfig
+	return m.Name == nil && m.ChatMode == nil && !m.HasConfig
 }
 
 // parseCreateBody mirrors the strict create schema: name/chatMode required,
@@ -102,13 +102,6 @@ func parseMutationFields(body map[string]any, requireAll bool) (MutationInput, s
 		input.ChatMode = &text
 	} else if requireAll {
 		return input, "调度偏好对话形态无效"
-	}
-	if raw, present := body["enabled"]; present {
-		value, ok := raw.(bool)
-		if !ok {
-			return input, invalidMutationMessage
-		}
-		input.Enabled = &value
 	}
 	if raw, present := body["chatSpeedFirstConfig"]; present {
 		input.HasConfig = true

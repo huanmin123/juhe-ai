@@ -212,6 +212,15 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if _, err := db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)"); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure idx_api_keys_scheduling_preference: %w", err)
 	}
+	// 调度偏好 enabled 列退役（v2 用户裁决修订第 4 条）：存量库守卫删列，新库
+	// 建表 DDL 已无该列（守卫早退）。enabled 列级 CHECK 只引用本列、无索引引
+	// 用，SQLite DROP COLUMN（3.35+，驱动 modernc.org/sqlite v1.58.0 内嵌
+	// SQLite 3.53）随列删除 CHECK，存量行原样保留；列值恒为种子 DEFAULT 1，
+	// 删列无数据损失。维护链一次性执行（BUG-0307 纪律），PRAGMA 读完再执行
+	// ALTER（BUG-0308 纪律）。
+	if err := ensureSQLiteSchedulingPreferenceEnabledRetired(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure scheduling_preferences.enabled retirement: %w", err)
+	}
 	// 媒体工作室（媒体工作室设计 §3.5）：api_keys.purpose CHECK 词表扩展
 	// 'studio'——存量库 SQLite 不能改列级 CHECK，按 schedule-interval /
 	// chat-assets media 先例整表重建；新库由建表 DDL 直接声明三值词表，守卫
@@ -760,6 +769,43 @@ func ensureSQLiteTableColumn(ctx context.Context, db *sql.DB, table, column, dec
 		return nil
 	}
 	_, err = db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+decl)
+	return err
+}
+
+// ensureSQLiteSchedulingPreferenceEnabledRetired 把存量库的
+// scheduling_preferences.enabled 列（调度偏好独立实体 v2 用户裁决修订第 4 条
+// 退役）幂等删除：PRAGMA table_info 早退守卫（新库无该列、或表尚未建时零操
+// 作），缺列即目标形状。DROP COLUMN 语句本身幂等场景由存在性守卫保证（SQLite
+// 无 DROP COLUMN IF EXISTS）。调用面是 maintenance --ensure-schema 一次性维
+// 护链，不进 gateway/jobs 热路径（BUG-0307）。
+func ensureSQLiteSchedulingPreferenceEnabledRetired(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(scheduling_preferences)")
+	if err != nil {
+		return err
+	}
+	tableExists, columnExists := false, false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, declaredType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		tableExists = true
+		if name == "enabled" {
+			columnExists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !tableExists || !columnExists {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, "ALTER TABLE scheduling_preferences DROP COLUMN enabled")
 	return err
 }
 

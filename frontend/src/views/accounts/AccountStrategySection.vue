@@ -196,8 +196,10 @@ const modelMappingTooltip = computed(() => (
     : '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
-  // M2 能力域收口（D6）：chat 域允许集 =（15 值对话锚集合 + images_json）∩
-  // 供应商写侧词表——视频/音频任务组不再出现在对话表单（媒体域走独立精简表单）。
+  // M2 能力域收口（D6）+ v8-A 对话域纯粹化：chat 域允许集 = 13 值对话锚集合 ∩
+  // 供应商写侧词表——媒体任务组与被移出三项（images_json /
+  // audio_transcription_json / realtime_session）不再出现在对话表单勾选区
+  // （存量遗留值走下方只读徽标行，媒体域走独立精简表单）。
   const allowedModes = new Set(allowedEndpointModesFor({
     capabilityDomain: 'chat',
     providerCode: props.form.providerCode,

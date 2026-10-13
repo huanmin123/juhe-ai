@@ -469,16 +469,18 @@ func scanPreferences(ctx context.Context, db *sql.DB, dialect capabilitydomain.D
 	return nil
 }
 
-// scanBuiltin 校验内置行存在且合规（built_in=1、cost_first、enabled=1）；缺失
-// 或不符记入 failures——回填内置 ID 之前必须保证内置行可用，先 --ensure-schema。
+// scanBuiltin 校验内置行存在且合规（built_in=1、cost_first/speed_first）；
+// 缺失或不符记入 failures——回填内置 ID 之前必须保证内置行可用，先
+// --ensure-schema。enabled 已随 v2 用户裁决修订第 4 条退役（创建即启用），
+// 内置行合规性不再读取该列。
 func scanBuiltin(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, result *scanResult) error {
-	query := `SELECT built_in, chat_mode, enabled FROM scheduling_preferences WHERE id = ?`
+	query := `SELECT built_in, chat_mode FROM scheduling_preferences WHERE id = ?`
 	if dialect == capabilitydomain.DialectPostgres {
-		query = `SELECT built_in, chat_mode, enabled FROM "juhe_business"."scheduling_preferences" WHERE id = $1`
+		query = `SELECT built_in, chat_mode FROM "juhe_business"."scheduling_preferences" WHERE id = $1`
 	}
-	var builtIn, enabled int
+	var builtIn int
 	var chatMode string
-	err := db.QueryRowContext(ctx, query, builtinID).Scan(&builtIn, &chatMode, &enabled)
+	err := db.QueryRowContext(ctx, query, builtinID).Scan(&builtIn, &chatMode)
 	if errors.Is(err, sql.ErrNoRows) {
 		result.failures = append(result.failures, Failure{
 			Kind:   "builtin_row_missing",
@@ -489,11 +491,11 @@ func scanBuiltin(ctx context.Context, db *sql.DB, dialect capabilitydomain.Diale
 	if err != nil {
 		return fmt.Errorf("读取内置调度偏好行失败: %w", err)
 	}
-	if builtIn != 1 || (chatMode != "cost_first" && chatMode != "speed_first") || enabled != 1 {
+	if builtIn != 1 || (chatMode != "cost_first" && chatMode != "speed_first") {
 		result.failures = append(result.failures, Failure{
 			Kind: "builtin_row_invalid",
-			Detail: fmt.Sprintf("内置调度偏好行结构不符（built_in=%d chat_mode=%q enabled=%d，期望 built_in=1、cost_first/speed_first、enabled=1），先运行 juhe-ai-maintenance --ensure-schema 修复",
-				builtIn, chatMode, enabled),
+			Detail: fmt.Sprintf("内置调度偏好行结构不符（built_in=%d chat_mode=%q，期望 built_in=1、cost_first/speed_first），先运行 juhe-ai-maintenance --ensure-schema 修复",
+				builtIn, chatMode),
 		})
 		return nil
 	}
@@ -996,15 +998,17 @@ func fillReport(report *Report, scanned *scanResult, plan *planOutput) {
 // api_keys.scheduling_preference_id 列，不触碰策略 config_json 与 Key 其他列。
 func writePlan(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, plan *planOutput, now time.Time) (created int, reused int, backfilled int64, err error) {
 	timestamp := now.UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	// enabled 已随 v2 用户裁决修订第 4 条退役：等值偏好行不再写该列（创建即
+	// 启用，无停用态）。
 	insertSQL := `INSERT INTO scheduling_preferences
-		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, 'speed_first', ?, 0, 1, ?, ?) ON CONFLICT (id) DO NOTHING`
+		(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES (?, ?, ?, 'speed_first', ?, 0, ?, ?) ON CONFLICT (id) DO NOTHING`
 	updateSQL := `UPDATE api_keys SET scheduling_preference_id = ?
 		WHERE id = ? AND scheduling_preference_id IS NULL AND purpose = 'general'`
 	if dialect == capabilitydomain.DialectPostgres {
 		insertSQL = `INSERT INTO "juhe_business"."scheduling_preferences"
-			(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-			VALUES ($1, $2, $3, 'speed_first', $4, 0, 1, $5, $6) ON CONFLICT (id) DO NOTHING`
+			(id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+			VALUES ($1, $2, $3, 'speed_first', $4, 0, $5, $6) ON CONFLICT (id) DO NOTHING`
 		updateSQL = `UPDATE "juhe_business"."api_keys" SET scheduling_preference_id = $1
 			WHERE id = $2 AND scheduling_preference_id IS NULL AND purpose = 'general'`
 	}

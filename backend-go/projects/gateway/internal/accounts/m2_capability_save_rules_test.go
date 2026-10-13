@@ -294,6 +294,27 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("chat 域越界声明应 400：%d %v", code, payload)
 	}
 
+	// v8-A 对话域纯粹化：新建对话账户声明被移出三项（images_json /
+	// audio_transcription_json / realtime_session）→ 400 列出全部越界值；
+	// 音频域承载同一声明则放行（归属迁移，新增隔离只约束对话域）。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		m2CreateBody("m2-chat-outlier-v8a", "gpt", "prof-gpt", "api_key", "chat", apiKeyCredentials(),
+			[]string{"chat_json", "images_json", "audio_transcription_json", "realtime_session"}))
+	if code != http.StatusBadRequest {
+		t.Fatalf("v8-A 新建对话账户声明移出三项应 400：%d %v", code, payload)
+	}
+	for _, outlier := range []string{"images_json", "audio_transcription_json", "realtime_session"} {
+		if !strings.Contains(m2Message(payload), outlier) {
+			t.Fatalf("越界消息应列出 %s：%v", outlier, payload)
+		}
+	}
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		m2CreateBody("m2-audio-v8a", "gpt", "prof-gpt", "api_key", "audio", apiKeyCredentials(),
+			[]string{"audio_transcription_json", "realtime_session"}))
+	if code != http.StatusCreated {
+		t.Fatalf("v8-A 音频域声明短转写+实时会话应 201（按词表求交）：%d %v", code, payload)
+	}
+
 	// modes 显式 null / 空数组：与现状逐项一致（基线探针证实：写侧归一化
 	// 对 null/空数组返回普通 error，HTTP 面现状即 500「服务器内部错误」；
 	// 本切片不改变该路径，文案与状态码原样保留）。

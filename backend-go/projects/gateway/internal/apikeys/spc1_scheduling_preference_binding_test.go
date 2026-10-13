@@ -1,9 +1,9 @@
 // 调度偏好独立实体 P1——API Key 绑定五写入口矩阵测试（接口契约「API Key
-// 绑定契约（五写入口矩阵）」）。覆盖：管理/个人创建（缺省/null/显式/非法/
-// 跨 owner/停用/不存在/空字符串）、管理/个人 PATCH（缺失保持/显式 null 回默
-// 认/显式 ID/同值 no-op/chat 拒绝/默认 Key 可换偏好）、公开面 add/update 的
-// body 解析同规则。运行态六态解析与 preauth 投影在 gatewayruntimecache /
-// gatewaypreauth 各自包内覆盖。
+// 绑定契约（五写入口矩阵）」；v2 用户裁决修订 2026-10-13 后无停用态）。
+// 覆盖：管理/个人创建（缺省/null/显式/非法/跨 owner/不存在/空字符串）、
+// 管理/个人 PATCH（缺失保持/显式 null 回默认/显式 ID/同值 no-op/chat 拒绝/
+// 默认 Key 可换偏好）、公开面 add/update 的 body 解析同规则。运行态六态解析
+// 与 preauth 投影在 gatewayruntimecache / gatewaypreauth 各自包内覆盖。
 package apikeys
 
 import (
@@ -12,12 +12,13 @@ import (
 	"time"
 )
 
-// seedSchedulingPreference 插入一条调度偏好行（built_in/enabled 可控）。
-func seedSchedulingPreference(t *testing.T, env *testEnv, id, ownerID, name, chatMode, configJSON string, builtIn, enabled int) {
+// seedSchedulingPreference 插入一条调度偏好行（built_in 可控；enabled 已随
+// v2 用户裁决修订第 4 条退役，行不再携带该列）。
+func seedSchedulingPreference(t *testing.T, env *testEnv, id, ownerID, name, chatMode, configJSON string, builtIn int) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerID, name, chatMode, configJSON, builtIn, enabled, now, now)
+	env.exec(t, `INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerID, name, chatMode, configJSON, builtIn, now, now)
 }
 
 // seededSpeedFirstConfig 是启用速度偏好的典型配置（合法范围值）。
@@ -37,7 +38,7 @@ func TestSPC1CreateDefaultsToBuiltinPreference(t *testing.T) {
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
 	// 内置行由 maintenance seed/ensure-schema 恢复式补种、gateway 启动三臂校
 	// 验兜底；测试库按同一权威值补种，供绑定投影 join 回显。
-	seedSchedulingPreference(t, env, BuiltinSchedulingPreferenceID, "", BuiltinSchedulingPreferenceName, "cost_first", "", 1, 1)
+	seedSchedulingPreference(t, env, BuiltinSchedulingPreferenceID, "", BuiltinSchedulingPreferenceName, "cost_first", "", 1)
 
 	// 缺省 → 内置固定 ID。
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"absent"}`)
@@ -76,9 +77,8 @@ func TestSPC1CreateExplicitPreferenceArms(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	seedSchedulingPreference(t, env, "sp-own-speed", adminID, "自有速度", "speed_first", seededSpeedFirstConfig, 0, 1)
-	seedSchedulingPreference(t, env, "sp-own-disabled", adminID, "自有停用", "speed_first", seededSpeedFirstConfig, 0, 0)
-	seedSchedulingPreference(t, env, "sp-foreign", "other-owner", "他人偏好", "speed_first", seededSpeedFirstConfig, 0, 1)
+	seedSchedulingPreference(t, env, "sp-own-speed", adminID, "自有速度", "speed_first", seededSpeedFirstConfig, 0)
+	seedSchedulingPreference(t, env, "sp-foreign", "other-owner", "他人偏好", "speed_first", seededSpeedFirstConfig, 0)
 
 	// 同 owner 启用自定义偏好 → 持久化。
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", `{"name":"speed","schedulingPreferenceId":"sp-own-speed"}`)
@@ -91,11 +91,10 @@ func TestSPC1CreateExplicitPreferenceArms(t *testing.T) {
 	}
 
 	for name, body := range map[string]string{
-		"empty-string":  `{"name":"bad-empty","schedulingPreferenceId":"  "}`,
-		"number":        `{"name":"bad-number","schedulingPreferenceId":42}`,
-		"missing-row":   `{"name":"bad-missing","schedulingPreferenceId":"sp-nope"}`,
-		"cross-owner":   `{"name":"bad-foreign","schedulingPreferenceId":"sp-foreign"}`,
-		"disabled-flag": `{"name":"bad-disabled","schedulingPreferenceId":"sp-own-disabled"}`,
+		"empty-string": `{"name":"bad-empty","schedulingPreferenceId":"  "}`,
+		"number":       `{"name":"bad-number","schedulingPreferenceId":42}`,
+		"missing-row":  `{"name":"bad-missing","schedulingPreferenceId":"sp-nope"}`,
+		"cross-owner":  `{"name":"bad-foreign","schedulingPreferenceId":"sp-foreign"}`,
 	} {
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/api-keys", body)
 		if code != http.StatusBadRequest {
@@ -111,8 +110,7 @@ func TestSPC1PatchPreferenceArms(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	seedSchedulingPreference(t, env, "sp-patch-speed", adminID, "补丁速度", "speed_first", seededSpeedFirstConfig, 0, 1)
-	seedSchedulingPreference(t, env, "sp-patch-disabled", adminID, "补丁停用", "speed_first", seededSpeedFirstConfig, 0, 0)
+	seedSchedulingPreference(t, env, "sp-patch-speed", adminID, "补丁速度", "speed_first", seededSpeedFirstConfig, 0)
 
 	// 历史 NULL Key：PATCH 缺失字段 → 保持 NULL（显式 null → 内置）。
 	env.exec(t, `INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix,
@@ -193,10 +191,9 @@ func TestSPC1PatchPreferenceArms(t *testing.T) {
 		t.Fatalf("same-value patch invalidated validation cache")
 	}
 
-	// 非法目标统一 400。
+	// 非法目标统一 400（停用目标分支已随 v2 第 4 条退役）。
 	for name, value := range map[string]string{
 		"missing":   `"sp-nope"`,
-		"disabled":  `"sp-patch-disabled"`,
 		"empty":     `" "`,
 		"nonstring": `7`,
 	} {
@@ -214,7 +211,7 @@ func TestSPC1PatchChatKeyRejectsPreferenceAndDefaultKeyAllowsIt(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedDefaultRouteStrategy(t, adminID, "rs-default")
-	seedSchedulingPreference(t, env, "sp-chat-target", adminID, "聊天目标", "speed_first", seededSpeedFirstConfig, 0, 1)
+	seedSchedulingPreference(t, env, "sp-chat-target", adminID, "聊天目标", "speed_first", seededSpeedFirstConfig, 0)
 
 	seedGuardKey(t, env, "key-chat", adminID, "AI 对话", "chat", 0)
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-chat", patchPreferenceBody("2020-01-01T00:00:00.000Z", `"sp-chat-target"`))

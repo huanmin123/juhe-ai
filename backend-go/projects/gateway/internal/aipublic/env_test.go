@@ -118,7 +118,6 @@ var aipublicSchema = []string{
 		chat_mode TEXT NOT NULL,
 		chat_speed_first_config_json TEXT,
 		built_in INTEGER NOT NULL DEFAULT 0,
-		enabled INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`,

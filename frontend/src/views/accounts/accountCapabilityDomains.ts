@@ -29,6 +29,9 @@ export const ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION = 1
 
 // 「对话 modes 集合」（锚定义，前后端镜像）：命中任一值即视为具备对话能力，
 // 规则②③④的前置条件「不含对话 modes」被否决，账户归入对话域。
+// v8-A 对话域纯粹化：audio_transcription_json 与 realtime_session 移出对话域
+// （归音频域），锚集合 15 值收敛为 13 值；images_json 本就不在锚集且 v8-A 后
+// 对话域不再追加共享（存量共享、新增隔离）。
 export const DOMAIN_ENDPOINT_MODES_CHAT: readonly AccountSupportedEndpointMode[] = [
   'chat_json',
   'chat_sse',
@@ -42,12 +45,12 @@ export const DOMAIN_ENDPOINT_MODES_CHAT: readonly AccountSupportedEndpointMode[]
   'interactions_sse',
   'count_tokens',
   'embed_content',
-  'message_token_counting',
-  'realtime_session',
-  'audio_transcription_json'
+  'message_token_counting'
 ]
 
 // 规则②③④的媒体触发集合（整组声明语义：视频四值、长音频四值按组出现）。
+// v8-A：音频域触发集补短转写 audio_transcription_json 与实时会话
+// realtime_session（自对话域移入，只声明其一的包归音频域）。
 export const DOMAIN_ENDPOINT_MODES_VIDEO: readonly AccountSupportedEndpointMode[] = [
   'video_create',
   'video_get',
@@ -59,19 +62,27 @@ export const DOMAIN_ENDPOINT_MODES_AUDIO: readonly AccountSupportedEndpointMode[
   'audio_job_create',
   'audio_job_get',
   'audio_job_content',
-  'audio_job_cancel'
-]
-export const DOMAIN_ENDPOINT_MODES_IMAGE: readonly AccountSupportedEndpointMode[] = ['images_json']
-
-// 对话域协议面可选项（域模型设计「对话」行：协议面可选 images_json /
-// audio_transcription_json / realtime_session）。后两项已含于对话 modes 锚集合，
-// images_json 是对话域内唯一锚外的协议面可选能力。M2「上游接口能力」域内单项
-// 勾选按对话族（档案过滤）+ 本集合渲染；M1 仅落常量。
-export const CHAT_DOMAIN_PROTOCOL_FACE_OPTIONAL_MODES: readonly AccountSupportedEndpointMode[] = [
-  'images_json',
+  'audio_job_cancel',
   'audio_transcription_json',
   'realtime_session'
 ]
+export const DOMAIN_ENDPOINT_MODES_IMAGE: readonly AccountSupportedEndpointMode[] = ['images_json']
+
+/**
+ * 域→目录 mode 白名单（v8-C 模型选择器按域过滤根治）：四域允许选出的
+ * `provider_model_catalog.mode` / `custom_provider_models.mode` 词表值。
+ * 词表实况六值 chat/responses/embedding/audio/video/image_generation（与
+ * model_catalog_data_gen.go 种子及服务端 `ProviderCatalogModeValues` 同源）：
+ * chat={chat,responses}；video={video}；audio={audio}（含 TTS/转写/realtime，
+ * 目录统一 mode=audio）；image={image_generation}。embedding 行不属于任何
+ * 账户域，任何域都不放行。
+ */
+export const DOMAIN_MODEL_MODES: Record<AccountCapabilityDomain, readonly string[]> = {
+  chat: ['chat', 'responses'],
+  video: ['video'],
+  audio: ['audio'],
+  image: ['image_generation']
+}
 
 /**
  * 按 modes 推导能力域。与 maintenance capabilitydomain 包 ruleVersion=1 镜像，
@@ -79,7 +90,9 @@ export const CHAT_DOMAIN_PROTOCOL_FACE_OPTIONAL_MODES: readonly AccountSupported
  *
  * ① 授权实例 → 继承源账户域（前端无此场景，镜像省略）；
  * ② 不含对话 modes 且含任一 `video_create/get/content/cancel` → `video`；
- * ③ 不含对话 modes 且含 `audio_speech` 或任一 `audio_job_create/get/content/cancel` → `audio`；
+ * ③ 不含对话 modes 且含 `audio_speech`、`audio_transcription_json`、
+ *    `realtime_session` 或任一 `audio_job_create/get/content/cancel` → `audio`
+ *    （v8-A：短转写与实时会话自对话域移入）；
  * ④ 不含对话 modes 且含 `images_json` → `image`；
  * ⑤ 其余 → `chat`（modes 全量保留，域外值由三集合保存契约承载）。
  *
@@ -120,13 +133,13 @@ export type AccountCapabilityDeclaredSet = {
   modes: AccountFormModel['supportedEndpointModes']
 }
 
-// ---- 档案×域清单表定案（v7）镜像：域 modes 集 × 供应商写侧词表求交 ----
+// ---- 档案×域清单表定案（v7；v8-A 对话域纯粹化修订）镜像：域 modes 集 × 供应商写侧词表求交 ----
 //
 // 媒体域（video/audio/image）的域 modes 集按「域×供应商合法矩阵」显式枚举，
 // 不依赖词表推断——矩阵依据是媒体设计供应商盘点表的「已实施」adapter + 写侧校验
 // + 凭据要求（计划 §域×供应商合法矩阵）。chat 域不枚举供应商：允许集 =
-// （对话 modes 锚集合 + images_json）∩ 供应商词表，minimax 等纯媒体词表求交后
-// 自然为空集（无 chat 域）。
+// 13 值对话 modes 锚集合 ∩ 供应商词表（v8-A 后不追加 images_json，存量共享、
+// 新增隔离），minimax 等纯媒体词表求交后自然为空集（无 chat 域）。
 
 /** 媒体域供应商矩阵行（与计划矩阵行一一对应；deepseek/anthropic 与 gemini OpenAI Chat 档案无媒体行）。 */
 type MediaDomainMatrixRow = {
@@ -138,23 +151,33 @@ type MediaDomainMatrixRow = {
 const VIDEO_GROUP: readonly AccountSupportedEndpointMode[] = ['video_create', 'video_get', 'video_content', 'video_cancel']
 const AUDIO_JOB_GROUP: readonly AccountSupportedEndpointMode[] = ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel']
 const AUDIO_SPEECH: readonly AccountSupportedEndpointMode[] = ['audio_speech']
+// v8-A 音频域新增 lane：短转写与实时会话（自对话域移入；各供应商行按写侧
+// 词表实际支持情况取舍，qwen/gemini/minimax/volcengine 词表无则不进行值）。
+const AUDIO_TRANSCRIPTION_JSON: readonly AccountSupportedEndpointMode[] = ['audio_transcription_json']
+const REALTIME_SESSION: readonly AccountSupportedEndpointMode[] = ['realtime_session']
 const IMAGES_JSON: readonly AccountSupportedEndpointMode[] = ['images_json']
 
-// qwen 音频域仅长音频任务四值（CosyVoice TTS 契约未回填，audio_speech 不进允许集）。
+// qwen 音频域仅长音频任务四值（CosyVoice TTS 契约未回填，audio_speech 不进允许集；
+// 词表亦无短转写/实时会话值）。
 const QWEN_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] }
 // xai：视频（grok imagine）已实施；语音/图像待契约回填，不做预留占位。
 const XAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [], image: [] }
-// glm：视频（CogVideoX）+ 语音（cogtts 透传 audio_speech）；写侧词表不含 images_json → 无 image 域。
-const GLM_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
-// gemini native：Veo adapter（视频）+ TTS adapter（audio_speech）；gemini 图像域另行立项。
+// glm：视频（CogVideoX）+ 语音（cogtts 透传 audio_speech）+ STT 透传
+// （audio_transcription_json，M6）；词表无 realtime_session。写侧词表不含
+// images_json → 无 image 域。
+const GLM_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON], image: [] }
+// gemini native：Veo adapter（视频）+ TTS adapter（audio_speech）；词表无
+// 短转写/实时会话。gemini 图像域另行立项。
 const GEMINI_NATIVE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
-// openai/gpt 本体直连：sora（视频）+ tts（audio_speech）+ images；STT 短转写属对话域协议面。
-const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: IMAGES_JSON }
-// hybrid：媒体映射面已实施，域内允许集含视频四值/audio_speech/images_json（映射模型另算，D7）。
-const HYBRID_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: IMAGES_JSON }
-// minimax：hailuo（视频）+ t2a_v2（audio_speech）；无 chat/image 域。
+// openai/gpt 本体直连：sora（视频）+ tts（audio_speech）+ images；v8-A 后
+// 短转写与实时会话归音频域。
+const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
+// hybrid：媒体映射面已实施，域内允许集含视频四值/audio_speech/images_json
+// （映射模型另算，D7）；v8-A 音频域同 openai 行补短转写与实时会话。
+const HYBRID_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
+// minimax：hailuo（视频）+ t2a_v2（audio_speech）；无 chat/image 域，词表无新值。
 const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
-// volcengine：seedance（视频）+ 豆包 TTS（audio_speech，speech_appid/speech_token 双值凭据）。
+// volcengine：seedance（视频）+ 豆包 TTS（audio_speech，speech_appid/speech_token 双值凭据）；词表无新值。
 const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
 
 function mediaMatrixRowForProfile(input: {
@@ -218,10 +241,12 @@ export function capabilityDomainAccountTypes(input: {
 }
 
 /**
- * 允许能力集（allowed）镜像：域 modes 集 × 供应商写侧词表求交（§D6 / §档案×域清单表定案）。
+ * 允许能力集（allowed）镜像：域 modes 集 × 供应商写侧词表求交（§D6 / §档案×域清单表定案；
+ * v8-A 对话域纯粹化：chat 域不再含 images_json / audio_transcription_json / realtime_session，
+ * 音频域补后两项）。
  *
- * - chat 域 =（15 值对话锚集合 + 协议面可选 `images_json`）∩ 供应商词表；纯媒体词表
- *   （minimax 等）求交后为空集，即该供应商无 chat 域。
+ * - chat 域 = 13 值对话锚集合 ∩ 供应商词表；纯媒体词表（minimax 等）求交后为
+ *   空集，即该供应商无 chat 域；被移出三项只作为存量对话账户的域外遗留值回显。
  * - 媒体域按域×供应商矩阵取域 modes 集，再与词表求交；gpt/xai/anthropic 系 oauth
  *   不可媒体（账户类型门），gemini native `google_oauth` 在 video/audio 域可用。
  * - 账户类型不在域允许集合内（媒体域传 `oauth`，或 google_oauth 非 gemini native）
@@ -237,7 +262,7 @@ export function allowedEndpointModesFor(input: {
   const profile = input.profile
   if (capabilityDomain === 'chat') {
     return intersectWithProviderVocabulary(
-      [...DOMAIN_ENDPOINT_MODES_CHAT, 'images_json'],
+      [...DOMAIN_ENDPOINT_MODES_CHAT],
       profile
     )
   }
@@ -257,7 +282,9 @@ export function allowedEndpointModesFor(input: {
  * 默认能力集（default）按域收窄：chat 域逐项复用现行 `defaultEndpointModesForAccount`
  * （对话域行为零变化，I3）；video 域 = 视频四值组；audio 域 = 音频组按供应商实际接入
  * （qwen 长音频四值，其余 audio_speech）；image 域 = `images_json`。媒体域默认集
- * 与「服务端统一校验」节的后端缺省解析镜像。
+ * 与「服务端统一校验」节的后端缺省解析镜像。v8-A：音频域默认集维持现状语义，
+ * 不含新移入的 audio_transcription_json / realtime_session（默认集不收，显式
+ * 勾选承担，契约 §媒体域表单完整性升级 v8-B 联动明文）。
  */
 export function defaultEndpointModesForCapabilityDomain(input: {
   capabilityDomain: AccountCapabilityDomain
@@ -317,11 +344,12 @@ export function capabilityDomainIsMedia(capabilityDomain: AccountCapabilityDomai
 /**
  * 媒体域支持模型选项的目录协议 token（模型目录 `supported_api_protocols` 词表，
  * 与 model_catalog_data_gen.go 种子数据同源）：video→`video`；audio→`audio_speech`
- * （TTS）∪ `audio_transcription`（长转写任务）；image→`images`。
+ * （TTS）∪ `audio_transcription`（长转写任务）∪ `realtime`（实时语音会话，v8 起
+ * audio 域承载 realtime_session lane）；image→`images`。
  */
 export function mediaDomainModelProtocolTokens(capabilityDomain: AccountCapabilityDomain): readonly string[] {
   if (capabilityDomain === 'video') return ['video']
-  if (capabilityDomain === 'audio') return ['audio_speech', 'audio_transcription']
+  if (capabilityDomain === 'audio') return ['audio_speech', 'audio_transcription', 'realtime']
   if (capabilityDomain === 'image') return ['images']
   return []
 }

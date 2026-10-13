@@ -43,17 +43,23 @@
       <AccountMediaForm
         v-else-if="isMediaDomain"
         :account-type-choices="accountTypeChoices"
+        :advanced-loaded="advancedLoaded"
+        :advanced-loading="advancedLoading"
         :auth-loading="authLoading"
         :auth-result="authResult"
         :authorized-editing="authorizedEditing"
+        :balance-query-can-run="balanceQueryCanRun"
+        :balance-query-loading="balanceQueryLoading"
         :base-url-placeholder="baseUrlPlaceholder"
         :capability-domain="capabilityDomain"
         :credential-title="credentialTitle"
         :deleting-tag-id="deletingTagId"
         :editing="editing"
+        v-model:error-policy-rules="errorPolicyRules"
         :form="form"
         :group-options="groupOptions"
         :group-options-loading="groupOptionsLoading"
+        :inherited-error-policy-rules="inheritedErrorPolicyRules"
         :is-management-view="isManagementView"
         :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
         :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
@@ -71,6 +77,8 @@
         :selected-provider="selectedProvider"
         :tag-options="tagOptions"
         :tag-options-loading="tagOptionsLoading"
+        @advanced-open="$emit('advanced-open')"
+        @balance-query="$emit('balance-query')"
         @copy-auth-url="$emit('copy-auth-url', $event)"
         @delete-tag="$emit('delete-tag', $event)"
         @generate-auth-url="$emit('generate-auth-url')"
@@ -958,7 +966,8 @@ const stabilityCardCount = computed(() => [
 
 const balanceCardSummary = computed(() => {
   const expiresAt = props.form.accountExpiresAt
-  const expiryText = expiresAt ? `到期 ${formatDateTime(expiresAt.format('YYYY-MM-DD HH:mm:ss'))}` : '未设置到期'
+  // 到期用 toISOString 命中 serverDateTimePattern；空格分隔的本地格式会被 parseStrictServerDateTime 拒绝。
+  const expiryText = expiresAt ? `到期 ${formatDateTime(expiresAt.toDate().toISOString())}` : '未设置到期'
   return `${expiryText} · 余额查询${props.form.balanceQueryEnabled ? '开' : '关'}`
 })
 const balanceCardCount = computed(() => [

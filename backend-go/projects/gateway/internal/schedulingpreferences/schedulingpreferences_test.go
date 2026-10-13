@@ -23,7 +23,7 @@ import (
 )
 
 const builtinID = "schpref-builtin-chat-cost-first"
-const builtinName = "对话·成本优先"
+const builtinName = "默认调度偏好"
 
 const (
 	adminBase = "/__aisys__/api/scheduling-preferences"
@@ -32,17 +32,17 @@ const (
 
 // seedBuiltinUpsert 与 maintenance 内置行种子同构的恢复式 upsert（固定 id 冲
 // 突时仅在内置行上恢复权威值），供夹具初始化与「恢复 seed 后可见」用例复用。
+// enabled 已随 v2 用户裁决修订第 4 条退役，语句与夹具 DDL 均不再携带该列。
 const seedBuiltinUpsert = `
     INSERT INTO scheduling_preferences
-      (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-    VALUES (?, NULL, ?, 'cost_first', NULL, 1, 1, ?, ?)
+      (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+    VALUES (?, NULL, ?, 'cost_first', NULL, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       system_account_id=excluded.system_account_id,
       name=excluded.name,
       chat_mode=excluded.chat_mode,
       chat_speed_first_config_json=excluded.chat_speed_first_config_json,
-      built_in=excluded.built_in,
-      enabled=excluded.enabled
+      built_in=excluded.built_in
       WHERE scheduling_preferences.built_in=1
   `
 
@@ -116,7 +116,6 @@ func newTestEnv(t *testing.T) *testEnv {
 			chat_mode TEXT NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
 			chat_speed_first_config_json TEXT,
 			built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -170,7 +169,7 @@ func (e *testEnv) do(t *testing.T, method, path, body string) (int, map[string]a
 	return status, payload
 }
 
-// doRaw 返回原始响应体（409 referenceCount 等形状断言用）。
+// doRaw 返回原始响应体（删除 resetBindings 等形状断言用）。
 func (e *testEnv) doRaw(t *testing.T, method, path, body string) (int, []byte) {
 	t.Helper()
 	var reader io.Reader
@@ -358,8 +357,11 @@ func TestSchedulingPreferenceBuiltinVisibilityAndWriteGuard(t *testing.T) {
 				t.Fatalf("builtin row missing in %s: %v", path, dataItems(t, payload))
 			}
 			if builtin["name"] != builtinName || builtin["chatMode"] != "cost_first" ||
-				builtin["builtIn"] != true || builtin["enabled"] != true {
+				builtin["builtIn"] != true {
 				t.Fatalf("builtin projection wrong: %v", builtin)
+			}
+			if _, hasEnabled := builtin["enabled"]; hasEnabled {
+				t.Fatalf("builtin row must not carry the retired enabled flag: %v", builtin)
 			}
 			if _, hasOwner := builtin["systemAccountId"]; hasOwner {
 				t.Fatalf("builtin row must not carry an owner summary: %v", builtin)
@@ -516,6 +518,7 @@ func TestSchedulingPreferenceCreateMatrix(t *testing.T) {
 			// speed_first 缺省/显式 null 配置不再是 400：按 D2 缺省表补齐，
 			// 断言见 create_speed_first_default_config 子测试。
 			{"unknown_top_key", "?systemAccountId=" + ownerID, `{"name":"v-unknown-top","chatMode":"cost_first","enabled":true}`, "调度偏好参数无效"},
+			{"enabled_retired_rejected", "?systemAccountId=" + ownerID, `{"name":"v-enabled-retired","chatMode":"cost_first","enabled":false}`, "调度偏好参数无效"},
 			{"unknown_speed_key", "?systemAccountId=" + ownerID, `{"name":"v-unknown-speed","chatMode":"speed_first","chatSpeedFirstConfig":{"mystery":1}}`, "速度优先配置无效"},
 			{"speed_inner_unknown_key", "?systemAccountId=" + ownerID, `{"name":"v-unknown-inner","chatMode":"speed_first","chatSpeedFirstConfig":{"speedFirstConfig":{"mystery":1}}}`, "速度优先配置无效"},
 			{"dual_deadline_rejected", "?systemAccountId=" + ownerID, `{"name":"v-dual-deadline","chatMode":"speed_first","chatSpeedFirstConfig":{"firstByteDeadlineMs":30000,"speedFirstConfig":{"firstByteThresholdMs":30000}}}`, "首字截止时间不能同时配置 firstByteDeadlineMs 和旧 firstByteThresholdMs"},
@@ -540,8 +543,11 @@ func TestSchedulingPreferenceCreateMatrix(t *testing.T) {
 			t.Fatalf("create: %d %v", code, payload)
 		}
 		data, _ := payload["data"].(map[string]any)
-		if data["enabled"] != true || data["builtIn"] != false {
-			t.Fatalf("created row enabled/builtIn: %v", data)
+		if data["builtIn"] != false {
+			t.Fatalf("created row builtIn: %v", data)
+		}
+		if _, hasEnabled := data["enabled"]; hasEnabled {
+			t.Fatalf("created row must not carry the retired enabled flag: %v", data)
 		}
 		if fmt.Sprint(data["boundApiKeyCount"]) != "0" {
 			t.Fatalf("created boundApiKeyCount = %v", data["boundApiKeyCount"])
@@ -799,7 +805,6 @@ func TestSchedulingPreferenceListScopeFiltersAndCounts(t *testing.T) {
 	speedRow := env.createViaAPI(t, ownerA, `{"name":"A-speed","chatMode":"speed_first","chatSpeedFirstConfig":{}}`)
 	costRow := env.createViaAPI(t, ownerA, `{"name":"A-cost","chatMode":"cost_first"}`)
 	otherRow := env.createViaAPI(t, ownerB, `{"name":"B-cost","chatMode":"cost_first"}`)
-	env.exec(t, `UPDATE scheduling_preferences SET enabled = 0 WHERE id = ?`, costRow["id"])
 	env.bindAPIKey(t, "key-1", ownerA, speedRow["id"].(string), "active")
 	env.bindAPIKey(t, "key-2", ownerA, speedRow["id"].(string), "disabled")
 
@@ -872,7 +877,8 @@ func TestSchedulingPreferenceListScopeFiltersAndCounts(t *testing.T) {
 			wantLen int
 		}{
 			{"chat_mode", "?chatMode=speed_first", []string{speedRow["id"].(string)}, 1},
-			{"status_disabled", "?status=disabled", []string{costRow["id"].(string)}, 1},
+			// status 启停过滤已随 v2 第 4 条退役：查询参数按未知参数忽略。
+			{"status_filter_retired", "?status=disabled", nil, 4},
 			{"keyword_prefix", "?keyword=A-", []string{speedRow["id"].(string), costRow["id"].(string)}, 2},
 			{"keyword_literal_percent", "?keyword=%25", nil, 0},
 			{"invalid_filters_ignored", "?chatMode=balanced&status=weird", nil, 4},
@@ -981,8 +987,6 @@ func TestSchedulingPreferenceOptionsQuery(t *testing.T) {
 
 	rowA := env.createViaAPI(t, ownerA, `{"name":"A-pref","chatMode":"cost_first"}`)
 	rowB := env.createViaAPI(t, ownerB, `{"name":"B-pref","chatMode":"cost_first"}`)
-	rowDisabled := env.createViaAPI(t, ownerA, `{"name":"A-off","chatMode":"cost_first"}`)
-	env.exec(t, `UPDATE scheduling_preferences SET enabled = 0 WHERE id = ?`, rowDisabled["id"])
 
 	t.Run("ids_serialization_forms", func(t *testing.T) {
 		cases := []struct {
@@ -1020,7 +1024,9 @@ func TestSchedulingPreferenceOptionsQuery(t *testing.T) {
 			})
 		}
 	})
-	t.Run("active_only_and_builtin", func(t *testing.T) {
+	t.Run("builtin_visible_without_retired_active_only", func(t *testing.T) {
+		// activeOnly 启停过滤已随 v2 第 4 条退役：查询参数按未知参数忽略，
+		// 全部行（含内置行）恒可选。
 		code, payload := env.do(t, http.MethodGet, adminBase+"/options", "")
 		if code != http.StatusOK {
 			t.Fatalf("options: %d %v", code, payload)
@@ -1029,11 +1035,8 @@ func TestSchedulingPreferenceOptionsQuery(t *testing.T) {
 		for _, item := range dataRows(t, payload) {
 			ids[item["id"].(string)] = true
 		}
-		if ids[rowDisabled["id"].(string)] {
-			t.Fatalf("activeOnly default must hide disabled rows: %v", ids)
-		}
 		if !ids[builtinID] || !ids[rowA["id"].(string)] || !ids[rowB["id"].(string)] {
-			t.Fatalf("activeOnly default must keep enabled + builtin rows: %v", ids)
+			t.Fatalf("options must keep builtin + custom rows: %v", ids)
 		}
 		code, payload = env.do(t, http.MethodGet, adminBase+"/options?activeOnly=false", "")
 		if code != http.StatusOK {
@@ -1043,18 +1046,20 @@ func TestSchedulingPreferenceOptionsQuery(t *testing.T) {
 		for _, item := range dataRows(t, payload) {
 			ids[item["id"].(string)] = true
 		}
-		if !ids[rowDisabled["id"].(string)] {
-			t.Fatalf("activeOnly=false must include disabled rows: %v", ids)
+		if !ids[builtinID] || !ids[rowA["id"].(string)] || !ids[rowB["id"].(string)] {
+			t.Fatalf("retired activeOnly param must be ignored: %v", ids)
 		}
-		// 非法值按 true。
+		// 非法值同样忽略（全部行可选）。
 		code, payload = env.do(t, http.MethodGet, adminBase+"/options?activeOnly=weird", "")
 		if code != http.StatusOK {
 			t.Fatalf("activeOnly=weird: %d %v", code, payload)
 		}
+		ids = map[string]bool{}
 		for _, item := range dataRows(t, payload) {
-			if item["id"] == rowDisabled["id"] {
-				t.Fatalf("invalid activeOnly must behave as true: %v", payload)
-			}
+			ids[item["id"].(string)] = true
+		}
+		if !ids[builtinID] || !ids[rowA["id"].(string)] || !ids[rowB["id"].(string)] {
+			t.Fatalf("invalid activeOnly must be ignored: %v", ids)
 		}
 	})
 	t.Run("limit_clamped", func(t *testing.T) {
@@ -1166,7 +1171,7 @@ func TestSchedulingPreferencePatchMatrix(t *testing.T) {
 		before := expectedOf(costID)
 		reasonsBefore := env.inval.count()
 		logsBefore := len(env.sink.all())
-		code, payload := patch(adminBase, costID, `{"name":"A-cost","chatMode":"cost_first","enabled":true,"expectedUpdatedAt":"`+before+`"}`)
+		code, payload := patch(adminBase, costID, `{"name":"A-cost","chatMode":"cost_first","expectedUpdatedAt":"`+before+`"}`)
 		if code != http.StatusOK {
 			t.Fatalf("no-op: %d %v", code, payload)
 		}
@@ -1269,24 +1274,25 @@ func TestSchedulingPreferencePatchMatrix(t *testing.T) {
 			t.Fatalf("switch to speed must fill defaults, got %v", stored)
 		}
 	})
-	t.Run("enabled_toggle", func(t *testing.T) {
+	t.Run("enabled_write_retired", func(t *testing.T) {
+		// v2 用户裁决修订第 4 条：不设停用态，enabled 从写入口白名单退役——
+		// 携带者由严格键校验拒绝（400），不产生 DML、不失效、不写日志。
 		reasonsBefore := env.inval.count()
-		code, payload := patch(adminBase, costID, `{"enabled":false,"expectedUpdatedAt":"`+expectedOf(costID)+`"}`)
-		if code != http.StatusOK {
-			t.Fatalf("disable: %d %v", code, payload)
+		logsBefore := len(env.sink.all())
+		for _, body := range []string{
+			`{"enabled":false,"expectedUpdatedAt":"` + expectedOf(costID) + `"}`,
+			`{"enabled":true,"expectedUpdatedAt":"` + expectedOf(costID) + `"}`,
+		} {
+			code, payload := patch(adminBase, costID, body)
+			if code != http.StatusBadRequest || message(t, payload) != "调度偏好参数无效" {
+				t.Fatalf("enabled write must be rejected: %d %v", code, payload)
+			}
 		}
-		data, _ := payload["data"].(map[string]any)
-		rowPatch, _ := data["rowPatch"].(map[string]any)
-		if rowPatch["enabled"] != false {
-			t.Fatalf("rowPatch enabled = %v", rowPatch["enabled"])
+		if env.inval.count() != reasonsBefore {
+			t.Fatalf("retired enabled write must not publish invalidation: %v", env.inval.reasonsSnapshot())
 		}
-		changed, _ := data["changedFields"].([]any)
-		if len(changed) != 1 || changed[0] != "enabled" {
-			t.Fatalf("changedFields = %v", changed)
-		}
-		// 启停触发全局失效。
-		if env.inval.count() != reasonsBefore+1 {
-			t.Fatalf("enabled toggle must publish invalidation: %v", env.inval.reasonsSnapshot())
+		if len(env.sink.all()) != logsBefore {
+			t.Fatalf("retired enabled write must not write operation logs")
 		}
 	})
 	t.Run("invalid_mode_rejected", func(t *testing.T) {
@@ -1330,41 +1336,81 @@ func TestSchedulingPreferencePatchMatrix(t *testing.T) {
 	})
 }
 
-// TestSchedulingPreferenceDeleteMatrix 覆盖 DELETE 契约：被引用 409 +
-// referenceCount、无引用 204、内置 403、404 与失效/日志。
+// TestSchedulingPreferenceDeleteMatrix 覆盖 v2 用户裁决修订第 5 条 DELETE 契
+// 约：删除总是成功并在同事务内把绑定 Key 重置回内置默认（响应 data 携带
+// resetBindings、失效发布、审计落库），内置 403、404 与自删不变。
 func TestSchedulingPreferenceDeleteMatrix(t *testing.T) {
 	env := newTestEnv(t)
 	ownerA := env.login(t, "alice", "alice-password", "user")
 	env.login(t, "bob", "bob-password", "user")
 	env.login(t, "root", "root-password", "admin")
 
-	referenced := env.createViaAPI(t, ownerA, `{"name":"del-referenced","chatMode":"cost_first"}`)
+	referenced := env.createViaAPI(t, ownerA, `{"name":"del-referenced","chatMode":"speed_first","chatSpeedFirstConfig":{"firstByteDeadlineMs":45000}}`)
 	free := env.createViaAPI(t, ownerA, `{"name":"del-free","chatMode":"cost_first"}`)
 	env.bindAPIKey(t, "key-del-1", ownerA, referenced["id"].(string), "active")
+	env.bindAPIKey(t, "key-del-2", ownerA, referenced["id"].(string), "disabled")
 
-	t.Run("referenced_409_with_reference_count", func(t *testing.T) {
+	t.Run("referenced_delete_resets_bindings_and_succeeds", func(t *testing.T) {
+		reasonsBefore := env.inval.count()
+		logsBefore := len(env.sink.all())
+		// 删除总是成功：被引用行不再 409，响应 data 携带受影响 Key 数。
 		status, raw := env.doRaw(t, http.MethodDelete, adminBase+"/"+referenced["id"].(string), "")
-		if status != http.StatusConflict {
+		if status != http.StatusOK {
 			t.Fatalf("referenced delete: %d %s", status, raw)
 		}
 		var payload map[string]any
 		_ = json.Unmarshal(raw, &payload)
-		if payload["message"] != "调度偏好仍被 API Key 绑定，不能删除" {
-			t.Fatalf("message = %v", payload["message"])
+		data, _ := payload["data"].(map[string]any)
+		if data == nil || fmt.Sprint(data["resetBindings"]) != "2" {
+			t.Fatalf("resetBindings = %v want 2", data)
 		}
-		if fmt.Sprint(payload["referenceCount"]) != "1" {
-			t.Fatalf("referenceCount = %v want 1", payload["referenceCount"])
+		if env.count(t, `SELECT COUNT(1) FROM scheduling_preferences WHERE id = ?`, referenced["id"]) != 0 {
+			t.Fatalf("referenced row must be hard-deleted")
 		}
-		if env.count(t, `SELECT COUNT(1) FROM scheduling_preferences WHERE id = ?`, referenced["id"]) != 1 {
-			t.Fatalf("referenced row must remain")
+		// 两个绑定 Key（含停用 Key）都在同事务内重置回内置默认 ID。
+		for _, keyID := range []string{"key-del-1", "key-del-2"} {
+			if got := env.scalarText(t, `SELECT scheduling_preference_id FROM api_keys WHERE id = ?`, keyID); got.String != builtinID {
+				t.Fatalf("%s binding after reset = %v want builtin", keyID, got)
+			}
+		}
+		// 提交后发布全局失效（重置与删除都改变绑定 Key 的有效配置来源）。
+		if env.inval.count() != reasonsBefore+1 || env.inval.reasonsSnapshot()[len(env.inval.reasonsSnapshot())-1] != "scheduling_preference_deleted" {
+			t.Fatalf("delete must publish invalidation: %v", env.inval.reasonsSnapshot())
+		}
+		// 审计落库：action 含 binding_reset 语义，changes 记录受影响 Key 数。
+		logs := env.sink.all()
+		if len(logs) != logsBefore+1 {
+			t.Fatalf("operation logs = %d want +1", len(logs))
+		}
+		entry := logs[len(logs)-1]
+		if entry.Action != "delete_binding_reset" || entry.OperationKey != "scheduling_preferences.delete" {
+			t.Fatalf("delete log identity: %+v", entry)
+		}
+		if entry.Summary != "删除调度偏好：del-referenced（2 个绑定 Key 重置为默认调度偏好）" {
+			t.Fatalf("delete log summary = %q", entry.Summary)
+		}
+		foundReset := false
+		for _, change := range entry.Changes {
+			if change.Field == "resetBindings" && change.After == "2" {
+				foundReset = true
+			}
+		}
+		if !foundReset {
+			t.Fatalf("delete log must record resetBindings: %+v", entry.Changes)
 		}
 	})
-	t.Run("unreferenced_204", func(t *testing.T) {
+	t.Run("unreferenced_200_zero_reset", func(t *testing.T) {
 		reasonsBefore := env.inval.count()
 		logsBefore := len(env.sink.all())
 		status, raw := env.doRaw(t, http.MethodDelete, adminBase+"/"+free["id"].(string), "")
-		if status != http.StatusNoContent || len(raw) != 0 {
+		if status != http.StatusOK {
 			t.Fatalf("free delete: %d %s", status, raw)
+		}
+		var payload map[string]any
+		_ = json.Unmarshal(raw, &payload)
+		data, _ := payload["data"].(map[string]any)
+		if data == nil || fmt.Sprint(data["resetBindings"]) != "0" {
+			t.Fatalf("resetBindings = %v want 0", data)
 		}
 		if env.count(t, `SELECT COUNT(1) FROM scheduling_preferences WHERE id = ?`, free["id"]) != 0 {
 			t.Fatalf("row must be hard-deleted")
@@ -1377,7 +1423,7 @@ func TestSchedulingPreferenceDeleteMatrix(t *testing.T) {
 			t.Fatalf("operation logs = %d want +1", len(logs))
 		}
 		entry := logs[len(logs)-1]
-		if entry.Action != "delete" || entry.OperationKey != "scheduling_preferences.delete" ||
+		if entry.Action != "delete_binding_reset" || entry.OperationKey != "scheduling_preferences.delete" ||
 			entry.Summary != "删除调度偏好：del-free" {
 			t.Fatalf("delete log: %+v", entry)
 		}
@@ -1407,7 +1453,7 @@ func TestSchedulingPreferenceDeleteMatrix(t *testing.T) {
 		restore := env.switchUser(t, "alice", "alice-password")
 		code, payload := env.do(t, http.MethodDelete, selfBase+"/"+owned["id"].(string), "")
 		restore()
-		if code != http.StatusNoContent {
+		if code != http.StatusOK {
 			t.Fatalf("self delete own: %d %v", code, payload)
 		}
 		if env.count(t, `SELECT COUNT(1) FROM scheduling_preferences WHERE id = ?`, owned["id"]) != 0 {

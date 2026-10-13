@@ -25,16 +25,16 @@ type SpeedFirstConfigDocument struct {
 
 // ListItem mirrors the list/detail/create row projection: 列表 / 详情字段
 // `id`、`name`、`chatMode`、`chatSpeedFirstConfig`（仅 speed_first 出现）、
-// `builtIn`、`enabled`、`boundApiKeyCount`、`updatedAt`；管理侧行附加
-// systemAccountId / systemAccountName owner 摘要（内置行 owner NULL 自然缺
-// 席），个人侧不返回管理 owner 字段。
+// `builtIn`、`boundApiKeyCount`、`updatedAt`；管理侧行附加 systemAccountId /
+// systemAccountName owner 摘要（内置行 owner NULL 自然缺席），个人侧不返回
+// 管理 owner 字段。enabled 已随 v2 用户裁决修订第 4 条退役（创建即启用），
+// 投影不再返回启用状态。
 type ListItem struct {
 	ID                   string                    `json:"id"`
 	Name                 string                    `json:"name"`
 	ChatMode             string                    `json:"chatMode"`
 	ChatSpeedFirstConfig *SpeedFirstConfigDocument `json:"chatSpeedFirstConfig,omitempty"`
 	BuiltIn              bool                      `json:"builtIn"`
-	Enabled              bool                      `json:"enabled"`
 	BoundAPIKeyCount     int                       `json:"boundApiKeyCount"`
 	UpdatedAt            string                    `json:"updatedAt"`
 	SystemAccountID      *string                   `json:"systemAccountId,omitempty"`
@@ -54,13 +54,12 @@ type ListPageResult struct {
 }
 
 // ListOptions mirrors the route-level normalized list query (keyword trimmed;
-// chatMode/status 非法值按未传处理).
+// chatMode 非法值按未传处理；status 启停过滤随 enabled 退役移除).
 type ListOptions struct {
 	Page     int
 	PageSize int
 	Keyword  string
 	ChatMode string
-	Status   string
 }
 
 // preferenceRow is the shared scan target for list/detail rows.
@@ -71,26 +70,24 @@ type preferenceRow struct {
 	chatMode        string
 	configJSON      sql.NullString
 	builtIn         bool
-	enabled         bool
 	updatedAt       string
 }
 
 const preferenceRowColumns = `scheduling_preferences.id, scheduling_preferences.system_account_id, scheduling_preferences.name,
 	scheduling_preferences.chat_mode, scheduling_preferences.chat_speed_first_config_json,
-	scheduling_preferences.built_in, scheduling_preferences.enabled, scheduling_preferences.updated_at`
+	scheduling_preferences.built_in, scheduling_preferences.updated_at`
 
 func scanPreferenceRow(scan func(...any) error) (preferenceRow, error) {
 	row := preferenceRow{}
-	var builtIn, enabled int
+	var builtIn int
 	// owner 走 NullString：内置行 system_account_id 恒 NULL（全局只读例外）。
 	var owner sql.NullString
 	if err := scan(&row.id, &owner, &row.name, &row.chatMode, &row.configJSON,
-		&builtIn, &enabled, &row.updatedAt); err != nil {
+		&builtIn, &row.updatedAt); err != nil {
 		return preferenceRow{}, err
 	}
 	row.systemAccountID = owner.String
 	row.builtIn = builtIn == 1
-	row.enabled = enabled == 1
 	return row, nil
 }
 
@@ -170,10 +167,6 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 		clauses = append(clauses, "scheduling_preferences.chat_mode = ?")
 		args = append(args, options.ChatMode)
 	}
-	if options.Status != "" {
-		clauses = append(clauses, "scheduling_preferences.enabled = ?")
-		args = append(args, enabledFlag(options.Status))
-	}
 	where := ""
 	if len(clauses) > 0 {
 		where = " WHERE " + strings.Join(clauses, " AND ")
@@ -221,13 +214,6 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	return result, nil
 }
 
-func enabledFlag(status string) int {
-	if status == "disabled" {
-		return 0
-	}
-	return 1
-}
-
 func (s *Store) emptyPage(page, pageSize int) *ListPageResult {
 	return &ListPageResult{Items: []ListItem{}, Page: page, PageSize: pageSize}
 }
@@ -265,7 +251,6 @@ func (s *Store) newListItems(ctx context.Context, rows []preferenceRow, includeO
 			ChatMode:             row.chatMode,
 			ChatSpeedFirstConfig: document,
 			BuiltIn:              row.builtIn,
-			Enabled:              row.enabled,
 			BoundAPIKeyCount:     counts[row.id],
 			UpdatedAt:            row.updatedAt,
 		}
@@ -430,29 +415,27 @@ func (s *Store) Find(ctx context.Context, id string, access AccessScope) (*ListI
 
 // OptionSummary mirrors the options row: admin rows add the owner summary
 // (builtin rows absent), self rows stay owner-free; options 不返回配置 JSON、
-// 绑定数量或 AI 账号信息.
+// 绑定数量或 AI 账号信息。enabled 已退役，options 行不再携带启用状态，
+// ActiveOnly 过滤随之移除（全部行可选）.
 type OptionSummary struct {
 	ID                string  `json:"id"`
 	Name              string  `json:"name"`
 	ChatMode          string  `json:"chatMode"`
 	BuiltIn           bool    `json:"builtIn"`
-	Enabled           bool    `json:"enabled"`
 	SystemAccountID   *string `json:"systemAccountId,omitempty"`
 	SystemAccountName *string `json:"systemAccountName,omitempty"`
 }
 
 // OptionsQuery mirrors the /options query parsing (ids 去重封顶 50、keyword
-// 名称前缀、limit 1..100、activeOnly 默认 true).
+// 名称前缀、limit 1..100；activeOnly 启停过滤随 enabled 退役移除).
 type OptionsQuery struct {
-	IDs        []string
-	Keyword    string
-	Limit      int
-	ActiveOnly bool
+	IDs     []string
+	Keyword string
+	Limit   int
 }
 
 // ListOptionsPage mirrors the options read: owner-scoped summaries + the
-// builtin exception; activeOnly=true keeps enabled rows (内置行 seed 恒启用，
-// 自然通过启用过滤).
+// builtin exception（全部行可选，无启停过滤）.
 func (s *Store) ListOptionsPage(ctx context.Context, access AccessScope, query OptionsQuery) ([]OptionSummary, error) {
 	ctx = ensureCtx(ctx)
 	limit := query.Limit
@@ -484,16 +467,13 @@ func (s *Store) ListOptionsPage(ctx context.Context, access AccessScope, query O
 		clauses = append(clauses, clause)
 		args = append(args, clauseArgs...)
 	}
-	if query.ActiveOnly {
-		clauses = append(clauses, "scheduling_preferences.enabled = 1")
-	}
 	where := ""
 	if len(clauses) > 0 {
 		where = " WHERE " + strings.Join(clauses, " AND ")
 	}
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT scheduling_preferences.id, scheduling_preferences.system_account_id,
-		scheduling_preferences.name, scheduling_preferences.chat_mode, scheduling_preferences.built_in, scheduling_preferences.enabled
+		scheduling_preferences.name, scheduling_preferences.chat_mode, scheduling_preferences.built_in
 		FROM `+s.table("scheduling_preferences")+` scheduling_preferences`+where+preferenceOrderBy+`
 		LIMIT ?`), args...)
 	if err != nil {
@@ -503,18 +483,17 @@ func (s *Store) ListOptionsPage(ctx context.Context, access AccessScope, query O
 	type optionRow struct {
 		id, name, chatMode string
 		systemAccountID    sql.NullString
-		builtIn, enabled   bool
+		builtIn            bool
 	}
 	parsed := []optionRow{}
 	var accountIDs []string
 	for rows.Next() {
 		row := optionRow{}
-		var builtIn, enabled int
-		if err := rows.Scan(&row.id, &row.systemAccountID, &row.name, &row.chatMode, &builtIn, &enabled); err != nil {
+		var builtIn int
+		if err := rows.Scan(&row.id, &row.systemAccountID, &row.name, &row.chatMode, &builtIn); err != nil {
 			return nil, err
 		}
 		row.builtIn = builtIn == 1
-		row.enabled = enabled == 1
 		parsed = append(parsed, row)
 		accountIDs = append(accountIDs, row.systemAccountID.String)
 	}
@@ -535,7 +514,6 @@ func (s *Store) ListOptionsPage(ctx context.Context, access AccessScope, query O
 			Name:     row.name,
 			ChatMode: row.chatMode,
 			BuiltIn:  row.builtIn,
-			Enabled:  row.enabled,
 		}
 		if access.canAccessAll() {
 			summary.SystemAccountID = ptrString(row.systemAccountID.String)

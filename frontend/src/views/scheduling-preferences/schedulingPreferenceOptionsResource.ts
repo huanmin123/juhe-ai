@@ -19,7 +19,7 @@ interface SchedulingPreferenceOptionsResourceOptions {
   systemAccountId?: string
 }
 
-/** options 窗口按需加载：先取名称窗口，再补齐已选缺失 ID（activeOnly=false 保证停用/历史绑定仍可回显）。 */
+/** options 窗口按需加载：先取名称窗口，再补齐已选缺失 ID（activeOnly=false 保证历史绑定仍可回显）。 */
 export async function loadSchedulingPreferenceOptionsResource(options: SchedulingPreferenceOptionsResourceOptions): Promise<SchedulingPreferenceOptionSummary[]> {
   const keyword = options.keyword?.trim() || undefined
   const selectedIds = [...new Set((options.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].sort()

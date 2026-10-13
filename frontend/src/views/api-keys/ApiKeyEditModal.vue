@@ -29,14 +29,13 @@
           @update:value="markRouteStrategyTouched"
         />
       </a-form-item>
-      <a-form-item v-if="schedulingPreferenceSelectorVisible" label="调度偏好" tooltip="影响 API Key 在既定路由分组内的对话调度方式（成本优先 / 速度优先）；不改变路由层级，媒体请求不使用调度偏好。">
+      <a-form-item v-if="schedulingPreferenceSelectorVisible" label="调度偏好" required tooltip="影响 API Key 在既定路由分组内的对话调度方式（成本优先 / 速度优先）；不改变路由层级，媒体请求不使用调度偏好。">
         <CachedSelect
           v-model:value="form.schedulingPreferenceId"
           :options="visibleSchedulingPreferenceOptions"
           :selected-options="schedulingPreferenceSelectedOptions"
           cache-key="scheduling-preferences"
           :loading="schedulingPreferenceOptionsLoading"
-          allow-clear
           :placeholder="schedulingPreferencePlaceholder"
           @dropdown-visible-change="handleSchedulingPreferenceDropdown"
           @search="handleSchedulingPreferenceSearch"
@@ -220,10 +219,10 @@ const schedulingPreferencePlaceholder = computed(() => (
 ))
 
 function schedulingPreferenceSelectOption(option: SchedulingPreferenceOptionSummary): SelectOption {
+  // 内置行显示名「默认调度偏好」由后端 options/name 下发，前端直接展示 option.name。
   return {
-    label: option.builtIn ? `系统默认（${option.name}）` : option.name,
-    value: option.id,
-    disabled: option.enabled === false
+    label: option.name,
+    value: option.id
   }
 }
 
@@ -327,6 +326,10 @@ const saveApiKey = submitAction('api_keys.save', async () => {
   }
   if (!editingId.value && routeStrategyTouched.value && !form.routeStrategyId.trim()) {
     message.warning('请选择策略路由')
+    return
+  }
+  if (schedulingPreferenceSelectorVisible.value && !form.schedulingPreferenceId?.trim()) {
+    message.warning('请选择调度偏好')
     return
   }
   try {

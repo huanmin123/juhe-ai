@@ -33,8 +33,13 @@ func TestDeriveDomainTable(t *testing.T) {
 		{"gemini openai chat 档案", []string{"chat_json"}, DomainChat},
 		{"gemini native 全套", []string{"generate_content_json", "generate_content_sse", "count_tokens", "embed_content", "interactions_json", "interactions_sse"}, DomainChat},
 		{"anthropic 仅辅助计数", []string{"message_token_counting"}, DomainChat},
-		{"realtime 协议面", []string{"realtime_session"}, DomainChat},
-		{"短转写协议面", []string{"audio_transcription_json"}, DomainChat},
+
+		// v8-A 对话域纯粹化：短转写与实时会话不再是对话锚集成员，只声明
+		// 其一即命中音频域（规则 ③）；images_json 锚外归属不变。
+		{"短转写协议面（v8-A 归音频域）", []string{"audio_transcription_json"}, DomainAudio},
+		{"realtime 协议面（v8-A 归音频域）", []string{"realtime_session"}, DomainAudio},
+		{"短转写+实时会话", []string{"audio_transcription_json", "realtime_session"}, DomainAudio},
+		{"短转写+语音合成", []string{"audio_transcription_json", "audio_speech"}, DomainAudio},
 
 		// 混合账户：含对话 modes → 一律 chat（规则 ②-④ 被前提挡住）。
 		{"volcengine 混合（对话+视频+tts）", []string{"chat_json", "video_create", "video_get", "video_content", "video_cancel", "audio_speech"}, DomainChat},
@@ -169,15 +174,16 @@ func TestParseEndpointModesTable(t *testing.T) {
 }
 
 // TestKnownModesClosure 断言已知词表与对话锚集合的闭合关系：已知 25 值 =
-// 对话 15 + 媒体 10，对话集合与媒体集合不相交。
+// 对话 13 + 媒体 12（v8-A 只移动成员，并集不变），对话集合与媒体集合不相交；
+// 对话域纯粹化移动的三项归属同时钉住。
 func TestKnownModesClosure(t *testing.T) {
 	chat := ChatModes()
 	known := KnownModes()
-	if len(chat) != 15 {
-		t.Fatalf("对话 modes 锚集合必须为 15 值，实际 %d", len(chat))
+	if len(chat) != 13 {
+		t.Fatalf("对话 modes 锚集合必须为 13 值（v8-A 移出三项），实际 %d", len(chat))
 	}
 	if len(known) != 25 {
-		t.Fatalf("已知词表必须为 25 值（对话 15 + 媒体 10），实际 %d", len(known))
+		t.Fatalf("已知词表必须为 25 值（对话 13 + 媒体 12），实际 %d", len(known))
 	}
 	chatSet := map[string]bool{}
 	for _, mode := range chat {
@@ -189,9 +195,9 @@ func TestKnownModesClosure(t *testing.T) {
 			overlap++
 		}
 	}
-	// known 内落在对话锚集合的值应恰为 15（媒体 10 值不在对话集合内）。
-	if overlap != 15 {
-		t.Fatalf("known ∩ chat 应为 15 值，实际 %d", overlap)
+	// known 内落在对话锚集合的值应恰为 13（媒体 12 值不在对话集合内）。
+	if overlap != 13 {
+		t.Fatalf("known ∩ chat 应为 13 值，实际 %d", overlap)
 	}
 	for _, mode := range mediaModes {
 		if chatSet[mode] {
@@ -202,6 +208,25 @@ func TestKnownModesClosure(t *testing.T) {
 		if !knownModeSet[mode] {
 			t.Fatalf("词表值 %q 未登记进 knownModeSet", mode)
 		}
+	}
+	// v8-A 锚集收缩归属钉住：三项全部移出对话域；前两项与 realtime_session
+	// 归音频域命中集，images_json 留在图像域命中集。
+	for _, mode := range []string{"images_json", "audio_transcription_json", "realtime_session"} {
+		if chatSet[mode] {
+			t.Fatalf("v8-A 后 %q 不得再出现在对话锚集合", mode)
+		}
+	}
+	audioSet := map[string]bool{}
+	for _, mode := range audioModes {
+		audioSet[mode] = true
+	}
+	for _, mode := range []string{"audio_transcription_json", "realtime_session"} {
+		if !audioSet[mode] {
+			t.Fatalf("v8-A 后 %q 必须在音频域命中集内", mode)
+		}
+	}
+	if len(imageModes) != 1 || imageModes[0] != "images_json" {
+		t.Fatalf("images_json 命中集归属不得变化：%v", imageModes)
 	}
 }
 

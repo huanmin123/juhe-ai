@@ -141,11 +141,12 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT,
 			expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT,
 			scheduling_preference_id TEXT, created_at TEXT, updated_at TEXT)`,
-		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
+		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）；
+		// enabled 已随 v2 用户裁决修订第 4 条退役，夹具与权威 DDL 同构 8 列。
 		`CREATE TABLE scheduling_preferences (
 			id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL,
 			chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0,
-			enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
+			created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
 			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT NOT NULL,
@@ -316,8 +317,8 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		VALUES ('rsg_1', 'rs_1', ?, ?, 0, 1, 'active', ?)`, fixture.systemAccount, fixture.groupID, now)
 	// 调度偏好 P2 迁移完成世界：内置行存在，普通 Key 一律绑定（NULL 属未迁移
 	// 错误，读取链显式失败）。
-	seed(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-		VALUES ('schpref-builtin-chat-cost-first', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, ?, ?)`, now, now)
+	seed(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, ?, ?)`, now, now)
 	secret := "sk-chain-test-key"
 	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
 		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`,

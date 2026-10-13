@@ -28,11 +28,11 @@ import {
   ACCOUNT_CAPABILITY_DOMAINS,
   ACCOUNT_CAPABILITY_DOMAIN_LABELS,
   ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION,
-  CHAT_DOMAIN_PROTOCOL_FACE_OPTIONAL_MODES,
   DOMAIN_ENDPOINT_MODES_AUDIO,
   DOMAIN_ENDPOINT_MODES_CHAT,
   DOMAIN_ENDPOINT_MODES_IMAGE,
   DOMAIN_ENDPOINT_MODES_VIDEO,
+  DOMAIN_MODEL_MODES,
   accountCapabilityDomainLabel,
   allowedEndpointModesFor,
   capabilityDomainAccountTypes,
@@ -68,7 +68,7 @@ describe('能力域枚举与标签', () => {
 })
 
 describe('对话 modes 集合完整性', () => {
-  it('锚集合恰为 15 值且顺序与计划锚定义一致', () => {
+  it('锚集合恰为 13 值（v8-A 移出三项）且顺序与计划锚定义一致', () => {
     expect([...DOMAIN_ENDPOINT_MODES_CHAT]).toEqual([
       'chat_json',
       'chat_sse',
@@ -82,9 +82,7 @@ describe('对话 modes 集合完整性', () => {
       'interactions_sse',
       'count_tokens',
       'embed_content',
-      'message_token_counting',
-      'realtime_session',
-      'audio_transcription_json'
+      'message_token_counting'
     ])
   })
 
@@ -99,9 +97,17 @@ describe('对话 modes 集合完整性', () => {
     }
   })
 
-  it('媒体触发集合取值与顺序固定', () => {
+  it('媒体触发集合取值与顺序固定（v8-A 音频域补短转写与实时会话）', () => {
     expect([...DOMAIN_ENDPOINT_MODES_VIDEO]).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
-    expect([...DOMAIN_ENDPOINT_MODES_AUDIO]).toEqual(['audio_speech', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'])
+    expect([...DOMAIN_ENDPOINT_MODES_AUDIO]).toEqual([
+      'audio_speech',
+      'audio_job_create',
+      'audio_job_get',
+      'audio_job_content',
+      'audio_job_cancel',
+      'audio_transcription_json',
+      'realtime_session'
+    ])
     expect([...DOMAIN_ENDPOINT_MODES_IMAGE]).toEqual(['images_json'])
   })
 
@@ -112,12 +118,14 @@ describe('对话 modes 集合完整性', () => {
     }
   })
 
-  it('对话域协议面可选项恰为 images_json、audio_transcription_json、realtime_session', () => {
-    expect([...CHAT_DOMAIN_PROTOCOL_FACE_OPTIONAL_MODES]).toEqual(['images_json', 'audio_transcription_json', 'realtime_session'])
+  it('v8-A 对话域纯粹化：被移出三项不得再出现在对话锚集合', () => {
     const chatModes = new Set<string>(DOMAIN_ENDPOINT_MODES_CHAT)
-    expect(chatModes.has('images_json')).toBe(false)
-    expect(chatModes.has('audio_transcription_json')).toBe(true)
-    expect(chatModes.has('realtime_session')).toBe(true)
+    for (const mode of ['images_json', 'audio_transcription_json', 'realtime_session'] as const) {
+      expect(chatModes.has(mode), `v8-A 后 ${mode} 不得再出现在对话锚集合`).toBe(false)
+    }
+    const audioModes = new Set<string>(DOMAIN_ENDPOINT_MODES_AUDIO)
+    expect(audioModes.has('audio_transcription_json')).toBe(true)
+    expect(audioModes.has('realtime_session')).toBe(true)
   })
 })
 
@@ -139,8 +147,23 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
       expected: 'chat'
     },
     {
-      name: '对话协议面：realtime_session 与 audio_transcription_json 均在对话锚集合内',
+      name: 'v8-A 对话域纯粹化：只声明短转写/实时会话归音频域（不再是对话锚集成员）',
       modes: ['realtime_session', 'audio_transcription_json'],
+      expected: 'audio'
+    },
+    {
+      name: 'v8-A：短转写单值归音频域',
+      modes: ['audio_transcription_json'],
+      expected: 'audio'
+    },
+    {
+      name: 'v8-A：实时会话单值归音频域',
+      modes: ['realtime_session'],
+      expected: 'audio'
+    },
+    {
+      name: 'v8-A：对话 + 短转写混合仍归 chat（含对话 modes 即停，遗留机制兜底）',
+      modes: ['chat_json', 'audio_transcription_json'],
       expected: 'chat'
     },
     {
@@ -271,16 +294,13 @@ const qwenProfile = mediaVendorProfile({
   families: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_VIDEO_GENERATION_FAMILY, 'audio_transcription']
 })
 
-describe('allowedEndpointModesFor：chat 域允许集 =（对话锚集合 + images_json）∩ 供应商词表', () => {
-  it('gpt：对话对 + realtime + 短转写 + images_json，媒体任务值不出现', () => {
+describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 ∩ 供应商词表（v8-A）', () => {
+  it('gpt：恰为 chat×2+responses×2（v8-A 移出 realtime/短转写/images_json）', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: gptProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
       'chat_sse',
       'responses_json',
-      'responses_sse',
-      'realtime_session',
-      'audio_transcription_json',
-      'images_json'
+      'responses_sse'
     ])
   })
 
@@ -292,25 +312,21 @@ describe('allowedEndpointModesFor：chat 域允许集 =（对话锚集合 + imag
     ])
   })
 
-  it('deepseek / glm / xai / gemini OpenAI Chat：对话族 + 协议面可选项', () => {
+  it('deepseek / glm / xai / gemini OpenAI Chat：v8-A 后收敛对话族', () => {
     const deepseekAllowed = allowedEndpointModesFor({ capabilityDomain: 'chat', profile: deepseekProfile, accountType: 'api_key' })
     expect(deepseekAllowed).toContain('responses_json')
-    expect(deepseekAllowed).toContain('images_json')
+    expect(deepseekAllowed).not.toContain('images_json')
+    expect(deepseekAllowed).not.toContain('audio_transcription_json')
+    expect(deepseekAllowed).not.toContain('realtime_session')
     expect(deepseekAllowed).not.toContain('video_create')
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: glmProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
-      'chat_sse',
-      'realtime_session',
-      'audio_transcription_json',
-      'images_json'
+      'chat_sse'
     ])
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: xaiProfile, accountType: 'api_key' })).toContain('responses_sse')
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: geminiOpenAIChatProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
-      'chat_sse',
-      'realtime_session',
-      'audio_transcription_json',
-      'images_json'
+      'chat_sse'
     ])
   })
 
@@ -325,10 +341,9 @@ describe('allowedEndpointModesFor：chat 域允许集 =（对话锚集合 + imag
     ])
   })
 
-  it('hybrid：15 值对话锚集合 + images_json 全量可用', () => {
+  it('hybrid：13 值对话锚集合全量可用（v8-A 后不再追加 images_json）', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: hybridProfile, accountType: 'api_key' })).toEqual([
-      ...DOMAIN_ENDPOINT_MODES_CHAT,
-      'images_json'
+      ...DOMAIN_ENDPOINT_MODES_CHAT
     ])
   })
 
@@ -351,12 +366,14 @@ describe('allowedEndpointModesFor：chat 域允许集 =（对话锚集合 + imag
 
 describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供应商写侧词表）', () => {
   it.each([
-    { name: 'gpt', profile: gptProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: ['images_json'] },
-    { name: 'openai 兼容', profile: openaiCompatibleProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: ['images_json'] },
+    // v8-A：音频域允许集补 audio_transcription_json / realtime_session（按
+    // 各供应商词表实际支持取舍；qwen/gemini/minimax/volcengine 词表无则不行值）。
+    { name: 'gpt', profile: gptProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
+    { name: 'openai 兼容', profile: openaiCompatibleProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
     { name: 'xai', profile: xaiProfile, video: VIDEO_GROUP, audio: [], image: [] },
-    { name: 'glm', profile: glmProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
+    { name: 'glm', profile: glmProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json'], image: [] },
     { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    { name: 'hybrid', profile: hybridProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: ['images_json'] },
+    { name: 'hybrid', profile: hybridProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
     { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
@@ -370,7 +387,10 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
   })
 
   it('qwen 音频域 audio_speech 不进允许集（CosyVoice TTS 契约未回填）', () => {
-    expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile: qwenProfile, accountType: 'api_key' })).not.toContain('audio_speech')
+    const qwenAudio = allowedEndpointModesFor({ capabilityDomain: 'audio', profile: qwenProfile, accountType: 'api_key' })
+    expect(qwenAudio).not.toContain('audio_speech')
+    expect(qwenAudio).not.toContain('audio_transcription_json')
+    expect(qwenAudio).not.toContain('realtime_session')
   })
 
   it('矩阵结果与媒体触发集合一致：视频域允许集恒为视频四值组', () => {
@@ -433,10 +453,13 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'video', profile, type })).toEqual(expected)
   })
 
-  it('audio 域默认按供应商：audio_speech（qwen 除外）与 qwen 长音频四值', () => {
+  it('audio 域默认按供应商：audio_speech（qwen 除外）与 qwen 长音频四值；v8-A 默认集不含新移入两项', () => {
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineProfile, type: 'api_key' })).toEqual(['audio_speech'])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: qwenProfile, type: 'api_key' })).toEqual([...AUDIO_JOB_GROUP])
     expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: xaiProfile, type: 'api_key' })).toEqual([])
+    // v8-A：gpt 词表含 audio_transcription_json / realtime_session，但音频域
+    // 默认集维持现状语义只落 audio_speech（默认集不收，显式勾选承担）。
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: gptProfile, type: 'api_key' })).toEqual(['audio_speech'])
   })
 
   it('image 域默认 = images_json（glm 无 image 域为空）', () => {
@@ -468,8 +491,23 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
       expect(capabilityDomainIsMedia(domain)).toBe(true)
     }
     expect(mediaDomainModelProtocolTokens('video')).toEqual(['video'])
-    expect(mediaDomainModelProtocolTokens('audio')).toEqual(['audio_speech', 'audio_transcription'])
+    expect(mediaDomainModelProtocolTokens('audio')).toEqual(['audio_speech', 'audio_transcription', 'realtime'])
     expect(mediaDomainModelProtocolTokens('image')).toEqual(['images'])
     expect(mediaDomainModelProtocolTokens('chat')).toEqual([])
+  })
+
+  it('v8-C 域→目录 mode 白名单：四域取值与目录词表六值对齐，embedding 不属于任何域', () => {
+    expect(DOMAIN_MODEL_MODES.chat).toEqual(['chat', 'responses'])
+    expect(DOMAIN_MODEL_MODES.video).toEqual(['video'])
+    expect(DOMAIN_MODEL_MODES.audio).toEqual(['audio'])
+    expect(DOMAIN_MODEL_MODES.image).toEqual(['image_generation'])
+    // 四域 mode 值互不相交，且全部落在目录 mode 词表内（embedding 仅目录存在，
+    // 不放行给任何账户域）；词表与服务端 ProviderCatalogModeValues 同源。
+    const domainModes = ACCOUNT_CAPABILITY_DOMAINS.flatMap((domain) => [...DOMAIN_MODEL_MODES[domain]])
+    expect(new Set(domainModes).size).toBe(domainModes.length)
+    const catalogModeValues = ['chat', 'responses', 'embedding', 'audio', 'video', 'image_generation']
+    for (const mode of domainModes) {
+      expect(catalogModeValues).toContain(mode)
+    }
   })
 })

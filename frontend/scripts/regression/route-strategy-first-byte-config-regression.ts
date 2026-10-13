@@ -41,7 +41,7 @@ assert(
   '首字截止输入必须绑定调度偏好表单并按契约边界限制'
 )
 assert.equal(schedulingPreferenceSpeedFirstBounds.firstByteDeadlineMs.fallback, 30000, '前端默认首字截止必须为 30000 毫秒（等价旧默认 30 秒）')
-const costFirstPayload = buildSchedulingPreferenceFormPayload({ name: '成本优先', chatMode: 'cost_first', enabled: true, speedFirst: defaultSpeedFirstParamsForm() })
+const costFirstPayload = buildSchedulingPreferenceFormPayload({ name: '成本优先', chatMode: 'cost_first', speedFirst: defaultSpeedFirstParamsForm() })
 assert.equal('chatSpeedFirstConfig' in costFirstPayload, false, '成本优先提交体不得携带 chatSpeedFirstConfig（等价旧「成本优先 payload 不携带首字截止」契约）')
 
 // —— 类型与 API 写侧（P2 旧调度字段退场）。——

@@ -46,19 +46,20 @@ import (
 // Regenerate them when either source changes.
 // 调度偏好独立实体（PLAN-20261012T033000000Z P1）批次 +7：scheduling_preferences
 // 建表、api_keys.scheduling_preference_id 幂等 ALTER、scheduling_preferences
-// 四枚索引与 api_keys 绑定列索引。
+// 四枚索引与 api_keys 绑定列索引。v2 用户裁决修订（2026-10-13）第 4 条批次 +1：
+// scheduling_preferences.enabled 存量库幂等 DROP COLUMN（列退役，创建即启用）。
 // 模型检测超时处罚开关批次 +2：model_quality_policies /
 // model_quality_schedules 各一条 timeout_penalty_enabled 幂等 ALTER。
 // 媒体工作室 P0 批次（媒体工作室设计 §3）+12：studio_assets / studio_tasks /
 // studio_operations / studio_user_asset_usage 四张建表、api_keys.studio_
 // domains_json 幂等 ALTER、api_keys purpose CHECK 迁移 DO 块，以及
 // idx_api_keys_studio_purpose_unique 与 studio 五枚索引（business indexes）。
-const goldenPostgresSchemaStatementCount = 713
+const goldenPostgresSchemaStatementCount = 714
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      345,
+	"juhe_business":      346,
 	"juhe_chat":          37,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
@@ -118,7 +119,7 @@ func TestPostgresSchemaStatementCountsPerSchema(t *testing.T) {
 }
 
 func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
-	var doBlocks, alterColumns, extensions, triggerBlocks, triggers, droppedTriggers int
+	var doBlocks, alterColumns, droppedColumns, extensions, triggerBlocks, triggers, droppedTriggers int
 	for i, statement := range postgresSchemaStatements {
 		trimmed := strings.TrimSpace(statement.SQL)
 		upper := strings.ToUpper(trimmed)
@@ -132,10 +133,16 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			t.Fatalf("statement %d (%s) lacks IF EXISTS: %.80s", i, statement.Source, trimmed)
 		}
 		if strings.HasPrefix(upper, "ALTER TABLE") {
-			if !strings.Contains(upper, "ADD COLUMN IF NOT EXISTS") {
+			// 幂等守卫双形态：加列走 ADD COLUMN IF NOT EXISTS；删列（调度偏好
+			// enabled 退役，v2 用户裁决修订第 4 条）走 DROP COLUMN IF EXISTS。
+			switch {
+			case strings.Contains(upper, "ADD COLUMN IF NOT EXISTS"):
+				alterColumns++
+			case strings.Contains(upper, "DROP COLUMN IF EXISTS"):
+				droppedColumns++
+			default:
 				t.Fatalf("statement %d (%s) is an unguarded ALTER TABLE: %.120s", i, statement.Source, trimmed)
 			}
-			alterColumns++
 		}
 		if strings.HasPrefix(upper, "DO ") {
 			doBlocks++
@@ -161,6 +168,9 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// api_keys.studio_domains_json 幂等 ALTER（媒体工作室设计 §3.5）。
 	if alterColumns != 88 {
 		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 88", alterColumns)
+	}
+	if droppedColumns != 1 {
+		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 1", droppedColumns)
 	}
 	if doBlocks != 5 {
 		t.Fatalf("DO block count = %d, want 5", doBlocks)

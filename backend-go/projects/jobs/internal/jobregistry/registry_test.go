@@ -71,9 +71,11 @@ var goAddedAfterBalanceDetectJobNames = []string{
 
 // goAddedAfterRetentionJobNames 是插在 expired-deleted-account-cleanup
 // 登记位置之后的 Go 附加条目（retention 家族同族登记：media_jobs TTL 保留
-// 清理，媒体设计 §8.2 M2；归档无对应 scheduled job）。
+// 清理，媒体设计 §8.2 M2；工作室任务结算 worker，媒体工作室设计 §5——归档
+// 无对应 scheduled job）。
 var goAddedAfterRetentionJobNames = []string{
 	"media-jobs-retention",
+	"studio-tasks-settle",
 }
 
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
@@ -209,6 +211,51 @@ func TestMediaJobsRetentionRegistered(t *testing.T) {
 	}
 	if schedule.Lane != "storage-maintenance" || schedule.LeaseTTL <= 0 {
 		t.Fatalf("media-jobs-retention lane/lease 错误: %+v", schedule)
+	}
+}
+
+// TestStudioTasksSettleRegistered 显式锁定 studio 任务结算 worker 注册（媒体
+// 工作室设计 §5）：GoWired、独立 studio-settle lane、30s fixedDelay 节拍、
+// 写面限定 studio 三表。
+func TestStudioTasksSettleRegistered(t *testing.T) {
+	entry, ok := Find("studio-tasks-settle")
+	if !ok {
+		t.Fatal("studio-tasks-settle 未注册")
+	}
+	if entry.GoStatus != GoWired {
+		t.Fatalf("studio-tasks-settle GoStatus = %s, want go-wired", entry.GoStatus)
+	}
+	if entry.Category != CategoryScheduled || !entry.LeaseRequired || !entry.SingleOwner {
+		t.Fatalf("studio-tasks-settle 登记形态错误: %+v", entry)
+	}
+	if !entry.BlocksUserVisibleFreshness {
+		t.Fatal("studio-tasks-settle 应登记 BlocksUserVisibleFreshness（产物结算收敛用户可见）")
+	}
+	wantWrites := map[string]bool{
+		"business:studio_tasks":            true,
+		"business:studio_assets":           true,
+		"business:studio_user_asset_usage": true,
+	}
+	if len(entry.Writes) != len(wantWrites) {
+		t.Fatalf("studio-tasks-settle 写面登记 = %v, want studio 三表", entry.Writes)
+	}
+	for _, write := range entry.Writes {
+		if !wantWrites[write] {
+			t.Fatalf("studio-tasks-settle 写面越界: %s", write)
+		}
+	}
+	schedule, ok := ScheduleFor("studio-tasks-settle")
+	if !ok {
+		t.Fatal("studio-tasks-settle 缺少调度参数")
+	}
+	if schedule.Interval != 30*time.Second {
+		t.Fatalf("studio-tasks-settle interval = %v, want 30s", schedule.Interval)
+	}
+	if schedule.ScheduleMode != "fixedDelay" {
+		t.Fatalf("studio-tasks-settle scheduleMode = %q, want fixedDelay", schedule.ScheduleMode)
+	}
+	if schedule.Lane != "studio-settle" || schedule.LeaseTTL <= 0 || schedule.Timeout <= 0 {
+		t.Fatalf("studio-tasks-settle lane/lease/timeout 错误: %+v", schedule)
 	}
 }
 

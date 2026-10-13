@@ -1,17 +1,20 @@
 // Route family: /scheduling-preferences (admin) + /my-scheduling-preferences
 // (self via RequireSession). Mirrors the routestrategies dual-surface Mount:
 // pagination with bound-key counts, options with ids[] array parsing, guarded
-// create, optimistic-lock patch and referenced-delete protection, with
-// operation logs (Module=scheduling_preferences) and the post-commit gateway
-// runtime invalidation handled in the store (接口契约「调度偏好」章 12 端点).
+// create, optimistic-lock patch and always-success delete with same-transaction
+// binding reset to the builtin default (v2 用户裁决修订第 5 条), with operation
+// logs (Module=scheduling_preferences) and the post-commit gateway runtime
+// invalidation handled in the store (接口契约「调度偏好」章 12 端点).
 package schedulingpreferences
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
@@ -146,10 +149,8 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	case ChatModeCostFirst, ChatModeSpeedFirst:
 		options.ChatMode = strings.TrimSpace(r.URL.Query().Get("chatMode"))
 	}
-	switch strings.TrimSpace(r.URL.Query().Get("status")) {
-	case "enabled", "disabled":
-		options.Status = strings.TrimSpace(r.URL.Query().Get("status"))
-	}
+	// status（enabled/disabled）启停过滤已随 v2 用户裁决修订第 4 条退役：查询
+	// 参数不再读取（无停用态，全部行可见）。
 	result, err := d.Store.ListPage(r.Context(), access, options)
 	if err != nil {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
@@ -160,11 +161,11 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 
 // optionsQuery mirrors the /options query parsing: comma-separated and
 // repeated `ids`/`ids[]` params (axios 默认数组序列化 ids[]=a&ids[]=b，去空白、
-// 去重、最多 50), trimmed keyword, integer limit clamped 1..100 (default 50),
-// boolean activeOnly (default true；`0/false/no` 表示包含停用行，非法值按
-// true).
+// 去重、最多 50), trimmed keyword and integer limit clamped 1..100 (default
+// 50). activeOnly 启停过滤已随 v2 用户裁决修订第 4 条退役：查询参数不再读取
+// （无停用态，全部行可选）.
 func optionsQuery(r *http.Request) OptionsQuery {
-	query := OptionsQuery{Limit: 50, ActiveOnly: true}
+	query := OptionsQuery{Limit: 50}
 	if raw := r.URL.Query().Get("keyword"); strings.TrimSpace(raw) != "" {
 		query.Keyword = strings.TrimSpace(raw)
 	}
@@ -187,10 +188,6 @@ func optionsQuery(r *http.Request) OptionsQuery {
 	}
 	for _, rawID := range r.URL.Query()["ids[]"] {
 		appendID(rawID)
-	}
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("activeOnly"))) {
-	case "0", "false", "no":
-		query.ActiveOnly = false
 	}
 	return query
 }
@@ -284,7 +281,6 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 					Field: "chatSpeedFirstConfig", Label: "速度参数", After: changeText(item.ChatSpeedFirstConfig),
 				})
 			}
-			changes = append(changes, authsys.OperationLogChange{Field: "enabled", Label: "启用状态", After: "true"})
 			d.Sink.Record(authsys.OperationLogEntry{
 				ActorSystemAccountID:          auth.SystemAccountID,
 				ActorUsername:                 auth.Username,
@@ -414,6 +410,19 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 		resourceName = id
 	}
 	if d.Sink != nil {
+		// v2 用户裁决修订第 5 条：删除总是成功并自动解绑——操作日志记录受影
+		// 响 Key 数（resetBindings，语义=这些 Key 的绑定已在同事务内重置回内
+		// 置默认「默认调度偏好」）。
+		changes := []authsys.OperationLogChange{
+			{Field: "deleted", Label: "删除状态", After: "true"},
+		}
+		summary := "删除调度偏好：" + resourceName
+		if result.ResetBindings > 0 {
+			changes = append(changes, authsys.OperationLogChange{
+				Field: "resetBindings", Label: "重置绑定 Key 数", After: strconv.Itoa(result.ResetBindings),
+			})
+			summary += fmt.Sprintf("（%d 个绑定 Key 重置为默认调度偏好）", result.ResetBindings)
+		}
 		d.Sink.Record(authsys.OperationLogEntry{
 			ActorSystemAccountID:          auth.SystemAccountID,
 			ActorUsername:                 auth.Username,
@@ -422,21 +431,20 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 			OperationScopeSystemAccountID: ownerID,
 			Mode:                          operationMode(access),
 			Module:                        "scheduling_preferences",
-			Action:                        "delete",
+			Action:                        "delete_binding_reset",
 			OperationKey:                  "scheduling_preferences.delete",
 			ResourceType:                  "scheduling_preference",
 			ResourceID:                    id,
 			ResourceName:                  resourceName,
-			Summary:                       "删除调度偏好：" + resourceName,
-			Changes: []authsys.OperationLogChange{
-				{Field: "deleted", Label: "删除状态", After: "true"},
-			},
+			Summary:                       summary,
+			Changes:                       changes,
 			Viewers: []authsys.OperationLogViewer{
 				{SystemAccountID: ownerID, Reason: "resource_owner"},
 			},
 		}, r)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// v2 用户裁决修订第 5 条：删除总是成功，响应 data 携带受影响 Key 数。
+	kernel.WriteOK(w, map[string]any{"resetBindings": result.ResetBindings}, "")
 }
 
 // PreferenceName returns the visible name for the delete operation log (the
@@ -450,22 +458,15 @@ func (s *Store) PreferenceName(ctx context.Context, id string, access AccessScop
 }
 
 // writeMutationError maps store errors onto the contract: builtin write → 403;
-// referenced delete → 409 {message, referenceCount}; version conflict → 409 +
-// currentUpdatedAt; duplicate name (已存在) → 409; validation messages → 400;
-// everything else → 400 with the raw message (Log 非 nil 时补一条 WARN 保留
-// 原始文本，localize 中间件会把非中文兜底文案改写为「请求参数无效」).
+// version conflict → 409 + currentUpdatedAt; duplicate name (已存在) → 409;
+// validation messages → 400; everything else → 400 with the raw message
+// (Log 非 nil 时补一条 WARN 保留原始文本，localize 中间件会把非中文兜底文案
+// 改写为「请求参数无效」). 删除 409 referenceCount 拒绝路径已随 v2 用户裁决修
+// 订第 5 条移除（删除总是成功并自动解绑）.
 func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
 	var builtin *BuiltinWriteError
 	if errors.As(err, &builtin) {
 		kernel.WriteError(w, http.StatusForbidden, builtin.Message)
-		return
-	}
-	var reference *ReferenceConflictError
-	if errors.As(err, &reference) {
-		kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-			"message":        reference.Message,
-			"referenceCount": reference.ReferenceCount,
-		})
 		return
 	}
 	var conflict *routestrategies.VersionConflictError
@@ -509,8 +510,6 @@ func patchFieldLabel(field string) string {
 		return "对话形态"
 	case "chatSpeedFirstConfig":
 		return "速度参数"
-	case "enabled":
-		return "启用状态"
 	default:
 		return field
 	}

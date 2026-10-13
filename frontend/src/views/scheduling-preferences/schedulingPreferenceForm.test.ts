@@ -6,7 +6,6 @@ import {
   buildSchedulingPreferenceMutationPatch,
   boundedSpeedFirstParam,
   defaultSpeedFirstParamsForm,
-  extractSchedulingPreferenceReferenceCount,
   hasSchedulingPreferenceMutationChanges,
   mergeSchedulingPreferenceMutationResult,
   schedulingPreferenceSpeedFirstBounds,
@@ -17,18 +16,16 @@ import {
 const speedFirstForm = defaultSpeedFirstParamsForm()
 
 function costFirstPayload(overrides: Partial<SchedulingPreferenceFormPayload> = {}): SchedulingPreferenceFormPayload {
-  return { name: '偏好 A', chatMode: 'cost_first', enabled: true, ...overrides }
+  return { name: '偏好 A', chatMode: 'cost_first', ...overrides }
 }
 
 function speedFirstPayload(overrides: Partial<SchedulingPreferenceFormPayload> = {}): SchedulingPreferenceFormPayload {
   return {
     name: '偏好 A',
     chatMode: 'speed_first',
-    enabled: true,
     chatSpeedFirstConfig: buildSchedulingPreferenceFormPayload({
       name: '偏好 A',
       chatMode: 'speed_first',
-      enabled: true,
       speedFirst: speedFirstForm
     }).chatSpeedFirstConfig,
     ...overrides
@@ -79,15 +76,14 @@ describe('九字段范围与默认值', () => {
 
 describe('buildSchedulingPreferenceFormPayload', () => {
   it('cost_first 不携带 chatSpeedFirstConfig', () => {
-    const payload = buildSchedulingPreferenceFormPayload({ name: ' A ', chatMode: 'cost_first', enabled: true, speedFirst: speedFirstForm })
-    expect(payload).toEqual({ name: 'A', chatMode: 'cost_first', enabled: true })
+    const payload = buildSchedulingPreferenceFormPayload({ name: ' A ', chatMode: 'cost_first', speedFirst: speedFirstForm })
+    expect(payload).toEqual({ name: 'A', chatMode: 'cost_first' })
   })
 
   it('speed_first 携带九字段全量配置并收敛范围', () => {
     const payload = buildSchedulingPreferenceFormPayload({
       name: 'B',
       chatMode: 'speed_first',
-      enabled: false,
       speedFirst: { ...speedFirstForm, firstByteDeadlineMs: 99999, slowTriggerCount: 1 }
     })
     expect(payload.chatSpeedFirstConfig?.firstByteDeadlineMs).toBe(schedulingPreferenceSpeedFirstBounds.firstByteDeadlineMs.max)
@@ -120,11 +116,6 @@ describe('buildSchedulingPreferenceMutationPatch', () => {
     expect(patch).toEqual({ chatMode: 'cost_first' })
   })
 
-  it('停用切换只发送 enabled', () => {
-    expect(buildSchedulingPreferenceMutationPatch(costFirstPayload(), costFirstPayload({ enabled: false })))
-      .toEqual({ enabled: false })
-  })
-
   it('配置值变化发送整体 chatSpeedFirstConfig', () => {
     const current = speedFirstPayload()
     const changed = speedFirstPayload({
@@ -145,7 +136,6 @@ describe('mergeSchedulingPreferenceMutationResult', () => {
     name: '旧名',
     chatMode: 'cost_first',
     builtIn: false,
-    enabled: true,
     boundApiKeyCount: 2,
     updatedAt: '2026-01-01T00:00:00Z'
   }
@@ -153,13 +143,12 @@ describe('mergeSchedulingPreferenceMutationResult', () => {
   it('应用 rowPatch 并推进 updatedAt', () => {
     const result: SchedulingPreferenceMutationResult = {
       id: 'sp-1',
-      changedFields: ['name', 'enabled'],
-      rowPatch: { name: '新名', enabled: false },
+      changedFields: ['name'],
+      rowPatch: { name: '新名' },
       updatedAt: '2026-02-02T00:00:00Z'
     }
     const merged = mergeSchedulingPreferenceMutationResult(row, result)
     expect(merged.name).toBe('新名')
-    expect(merged.enabled).toBe(false)
     expect(merged.updatedAt).toBe('2026-02-02T00:00:00Z')
     expect(merged.chatMode).toBe('cost_first')
   })
@@ -203,19 +192,6 @@ describe('mergeSchedulingPreferenceMutationResult', () => {
       updatedAt: '2026-05-05T00:00:00Z'
     })
     expect(merged.name).toBe('旧名')
-  })
-})
-
-describe('extractSchedulingPreferenceReferenceCount', () => {
-  it('从 axios 错误响应体提取 referenceCount', () => {
-    const error = { response: { data: { message: '调度偏好仍被 API Key 绑定，不能删除', referenceCount: 3 } } }
-    expect(extractSchedulingPreferenceReferenceCount(error)).toBe(3)
-  })
-
-  it('非 409 场景或非法值返回 undefined', () => {
-    expect(extractSchedulingPreferenceReferenceCount(new Error('boom'))).toBeUndefined()
-    expect(extractSchedulingPreferenceReferenceCount({ response: { data: { referenceCount: 'x' } } })).toBeUndefined()
-    expect(extractSchedulingPreferenceReferenceCount(undefined)).toBeUndefined()
   })
 })
 

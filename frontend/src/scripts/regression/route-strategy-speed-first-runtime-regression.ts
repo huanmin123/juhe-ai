@@ -98,7 +98,6 @@ assert.equal(partialFallbackSpeedFirstForm.compactionTotalTimeDeadlineSeconds, 3
 const clampedSpeedFirstPayload = buildSchedulingPreferenceFormPayload({
   name: '速度优先夹紧校验',
   chatMode: 'speed_first',
-  enabled: true,
   speedFirst: { ...defaultSpeedFirstParamsForm(), totalTimeDeadlineSeconds: 9999, compactionTotalTimeDeadlineSeconds: -1 }
 })
 assert.equal(clampedSpeedFirstPayload.chatSpeedFirstConfig?.speedFirstConfig.totalTimeDeadlineSeconds, 270, '提交体必须携带请求总时间截止并夹紧到 60-270 秒')

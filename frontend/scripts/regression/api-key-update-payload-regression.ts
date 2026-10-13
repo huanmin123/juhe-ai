@@ -86,7 +86,7 @@ const defaultCreatePayload = buildApiKeyCreatePayload({
 assert.deepEqual(defaultCreatePayload, {
   name: 'Key B',
   schedulingPreferenceId: 'schpref-builtin-chat-cost-first'
-}, '新建必须携带显式调度偏好 ID：未选择时提交内置默认（对话·成本优先）')
+}, '新建必须携带显式调度偏好 ID：未选择时提交内置默认调度偏好')
 assert.deepEqual(buildApiKeyCreatePayload({
   ...baseline,
   description: '  configured  '
@@ -126,7 +126,7 @@ const result: ApiKeyMutationResult = {
     description: null,
     availabilitySchedule: null,
     schedulingPreferenceId: 'schpref-builtin-chat-cost-first',
-    schedulingPreferenceName: '对话·成本优先',
+    schedulingPreferenceName: '默认调度偏好',
     schedulingPreferenceBuiltIn: true
   }
 }
@@ -135,7 +135,7 @@ assert.equal(merged.revision, 'revision-2', '最小 mutation result 必须推进
 assert.equal(merged.description, undefined, 'rowPatch null 必须在列表行归一化为缺失值')
 assert.equal(merged.availabilitySchedule, undefined, '清空时间计划后列表行不得保留旧值')
 assert.equal(merged.schedulingPreferenceId, 'schpref-builtin-chat-cost-first', 'rowPatch 必须回写调度偏好绑定 ID')
-assert.equal(merged.schedulingPreferenceName, '对话·成本优先', 'rowPatch 必须回写调度偏好名称供回显')
+assert.equal(merged.schedulingPreferenceName, '默认调度偏好', 'rowPatch 必须回写调度偏好名称供回显')
 assert.equal(merged.schedulingPreferenceBuiltIn, true, 'rowPatch 必须回写内置标识')
 assert.deepEqual(merged.usage, current.usage, '最小 mutation result 不得覆盖未返回的 usage')
 
@@ -179,8 +179,15 @@ assert(
 assert.match(modalSource, /schedulingPreferencesApi:\s*Pick<ScopedSchedulingPreferencesApi,\s*'options'>/, '弹窗必须声明调度偏好 options 依赖')
 assert.match(modalSource, /v-if="schedulingPreferenceSelectorVisible"[^>]*label="调度偏好"/, '调度偏好选择器必须按可见性条件渲染')
 assert.match(modalSource, /editingPurpose\.value === 'chat'\) return undefined/, 'purpose=chat 的快照必须强制缺失偏好 ID，任何路径不提交')
-assert.match(sourceBetween(modalSource, 'function openCreate', 'function openEdit'), /schedulingPreferenceId:\s*SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID/, '新建必须预选内置默认（对话·成本优先）')
+assert.match(sourceBetween(modalSource, 'function openCreate', 'function openEdit'), /schedulingPreferenceId:\s*SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID/, '新建必须预选内置默认调度偏好')
 assert.match(sourceBetween(modalSource, 'function openEdit', 'function apiKeyOperationScopeParams'), /schedulingPreferenceId:\s*apiKey\.schedulingPreferenceId \?\? ''/, '编辑必须从列表行回填调度偏好绑定（历史 NULL 显示占位）')
+
+// 调度偏好 v2 用户裁决：偏好必选无空态；内置行显示名「默认调度偏好」由后端 options/name 下发。
+const schedulingPreferenceField = sourceBetween(modalSource, 'label="调度偏好"', '</a-form-item>')
+assert.match(schedulingPreferenceField, /required/, '调度偏好选择器必须标记必选')
+assert.doesNotMatch(schedulingPreferenceField, /allow-clear/, '调度偏好选择器必选，不得提供清空入口（无空态）')
+assert.match(modalSource, /请选择调度偏好/, '编辑保存必须校验调度偏好必选（无「未选择」可提交态）')
+assert.doesNotMatch(modalSource, /系统默认（/, '内置行显示名由后端下发，前端不得拼装「系统默认（…）」包装')
 
 console.log('API Key delta PATCH 与最小 mutation result 回归测试通过')
 

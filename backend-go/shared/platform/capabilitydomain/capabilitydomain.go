@@ -40,12 +40,16 @@ func (d Domain) Valid() bool {
 }
 
 // RuleVersion 是推导规则的固定版本（PLAN §阶段记录与重跑边界）：阶段记录
-// 与本版本不一致的行视为记录损坏，拒绝执行。
+// 与本版本不一致的行视为记录损坏，拒绝执行。v8-A 对话域纯粹化只移动规则
+// ①-⑤ 的命中集成员、不改版本号：存量域已物化落库、不重推导（契约明文），
+// 语义差异仅影响导入/批量新建户，由计划 §对话域纯粹化记录该裁量。
 const RuleVersion = 1
 
-// chatModes 是「对话 modes」锚集合（15 值，计划 §推导规则；前端
-// accountProviderCapabilities.ts 与网关词表镜像，本包不 import 两侧实现，
-// 以计划文本为唯一事实源）。
+// chatModes 是「对话 modes」锚集合（v8-A 对话域纯粹化后 13 值，计划
+// §推导规则 + §对话域纯粹化；前端 accountCapabilityDomains.ts 与网关词表
+// 镜像，本包不 import 两侧实现，以计划文本为唯一事实源）。v8-A 把
+// audio_transcription_json 与 realtime_session 移出对话域（归音频域）；
+// images_json 本就不在锚集（v8-A 后对话域不再追加共享，存量共享、新增隔离）。
 var chatModes = []string{
 	"chat_json",
 	"chat_sse",
@@ -60,14 +64,14 @@ var chatModes = []string{
 	"count_tokens",
 	"embed_content",
 	"message_token_counting",
-	"realtime_session",
-	"audio_transcription_json",
 }
 
-// mediaModes 是全部媒体 lane 值：图像共享 lane、语音合成、视频任务四值与
-// 长音频任务四值。KnownModes = chatModes ∪ mediaModes，与网关四档案族词表
-// 并集闭合（chainOpenAIEndpointModeValues / chainAnthropicEndpointModes /
-// chainGeminiDefaultModes / chainHybridEndpointModes 的并集恰为这 25 值）。
+// mediaModes 是媒体侧全部 lane 值：图像 lane、语音合成、视频任务四值、
+// 长音频任务四值与 v8-A 自对话域移入的短转写/实时会话。KnownModes =
+// chatModes ∪ mediaModes，与网关四档案族词表并集闭合
+// （chainOpenAIEndpointModeValues / chainAnthropicEndpointModes /
+// chainGeminiDefaultModes / chainHybridEndpointModes 的并集恰为这 25 值；
+// v8-A 只在对话/媒体两侧间移动成员，并集不变）。
 var mediaModes = []string{
 	"images_json",
 	"audio_speech",
@@ -79,12 +83,24 @@ var mediaModes = []string{
 	"audio_job_get",
 	"audio_job_content",
 	"audio_job_cancel",
+	"audio_transcription_json",
+	"realtime_session",
 }
 
-// videoModes / audioModes / imageModes 是推导规则 ②③④ 的命中集。
+// videoModes / audioModes / imageModes 是推导规则 ②③④ 的命中集。v8-A 后
+// audioModes 含 audio_transcription_json 与 realtime_session（只声明短转写
+// 或实时会话的包归音频域）。
 var (
 	videoModes = []string{"video_create", "video_get", "video_content", "video_cancel"}
-	audioModes = []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}
+	audioModes = []string{
+		"audio_speech",
+		"audio_job_create",
+		"audio_job_get",
+		"audio_job_content",
+		"audio_job_cancel",
+		"audio_transcription_json",
+		"realtime_session",
+	}
 	imageModes = []string{"images_json"}
 )
 
@@ -106,7 +122,8 @@ func ChatModes() []string {
 	return append([]string{}, chatModes...)
 }
 
-// KnownModes 返回全部已知 endpoint mode 值的副本（对话 15 + 媒体 10）。
+// KnownModes 返回全部已知 endpoint mode 值的副本（对话 13 + 媒体 12，
+// 并集恒为 25 值）。
 func KnownModes() []string {
 	return append(append([]string{}, chatModes...), mediaModes...)
 }
@@ -114,7 +131,9 @@ func KnownModes() []string {
 // DeriveDomain 按 ruleVersion=1 对已验证声明集推导域（按序命中即停）：
 //  1. 含对话 modes → chat（规则 ②③④ 均要求不含对话 modes）；
 //  2. 不含对话 modes 且含任一 video_create/get/content/cancel → video；
-//  3. 不含对话 modes 且含 audio_speech 或任一 audio_job_* → audio；
+//  3. 不含对话 modes 且含 audio_speech、audio_transcription_json、
+//     realtime_session 或任一 audio_job_* → audio（v8-A：短转写与实时会话
+//     自对话域移入音频域命中集）；
 //  4. 不含对话 modes 且含 images_json → image；
 //  5. 其余 → chat（modes 全量保留，域外值由三集合保存契约承载）。
 //

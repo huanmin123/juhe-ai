@@ -35,7 +35,7 @@ func VideoContentPath(rawUpstreamJobID string) (method, path string) {
 }
 
 // NormalizeOpenAIStatus 把 openai 视频任务状态字面量归一为统一 status
-//（gateway gatewaymedia.NormalizeOpenAIStatus 镜像）：queued/in_progress/
+// （gateway gatewaymedia.NormalizeOpenAIStatus 镜像）：queued/in_progress/
 // completed/failed；未知值（含空串）归 in_progress 并返回 false，不猜失败
 // 不伪造终态。cancelled/expired 是本地终态，不在归一词表内。
 func NormalizeOpenAIStatus(value string) (status string, known bool) {
@@ -150,7 +150,7 @@ type AccountRuntime struct {
 }
 
 // AccountResolver 按账户 id 水合账户亲和运行时。返回错误表示读库/解密失败
-//（结算失败可重试，attempt 上限收口）；Reachable=false 与错误是两个语义面，
+// （结算失败可重试，attempt 上限收口）；Reachable=false 与错误是两个语义面，
 // 不混用（不可达 → 任务 expired 收口）。
 type AccountResolver interface {
 	Resolve(ctx context.Context, accountID string) (AccountRuntime, error)
@@ -171,7 +171,7 @@ type UpstreamClient struct {
 // 限读 1MiB）。返回归一结果；上游非 2xx 经归一器以 *UpstreamStatusError 报出。
 func (c *UpstreamClient) PollVideo(ctx context.Context, account AccountRuntime, rawUpstreamJobID string) (*VideoPoll, error) {
 	method, path := VideoPollPath(rawUpstreamJobID)
-	body, status, err := c.fetch(ctx, account, method, path, maxPollObjectBytes)
+	body, status, _, err := c.fetch(ctx, account, method, path, maxPollObjectBytes)
 	if err != nil {
 		return nil, err
 	}

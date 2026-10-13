@@ -26,7 +26,7 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 0, request_limits_json TEXT)`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, key_hash TEXT NOT NULL, status TEXT NOT NULL, expires_at TEXT, quota_limits_json TEXT, purpose TEXT, scheduling_preference_id TEXT)`,
 		// 调度偏好独立实体 P1（loadGatewayAPIKeyRow 六态解析的引用目标）。
-		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
@@ -172,8 +172,8 @@ func seedGatewayKeyFixture(t *testing.T, db *sql.DB) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g1', 'sys_owner', 'gpt', 1)`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g2', 'sys_owner', 'gpt', 1)`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-fixture") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 2, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, NULL, 'active', '2026-01-01T00:00:00.000Z')`,
@@ -466,8 +466,8 @@ func TestSQLReadGatewayRuntimeComposition(t *testing.T) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g2', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key1', 'sys_owner', 'rs1', '` + HashSecret("sk-comp") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b1', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b2', 'rs1', 'sys_owner', 'g2', 2, 1, 'active', '2026-01-01T00:00:00.000Z')`,

@@ -249,7 +249,6 @@ export interface SchedulingPreferenceSummary {
   /** 仅 chatMode=speed_first 出现（规范化后对象）。 */
   chatSpeedFirstConfig?: SchedulingPreferenceSpeedFirstConfig
   builtIn: boolean
-  enabled: boolean
   /** 未删除且绑定该偏好的 API Key 精确计数（含停用 Key；purpose=chat Key 无绑定）。 */
   boundApiKeyCount: number
   createdAt?: string
@@ -264,7 +263,6 @@ export interface SchedulingPreferenceOptionSummary {
   name: string
   chatMode: SchedulingPreferenceChatMode
   builtIn: boolean
-  enabled: boolean
   /** 管理面 options 返回 owner；个人面无 owner 字段。 */
   systemAccountId?: string
   systemAccountName?: string
@@ -282,7 +280,6 @@ export interface SchedulingPreferenceRowPatch {
   name?: string
   chatMode?: SchedulingPreferenceChatMode
   chatSpeedFirstConfig?: SchedulingPreferenceSpeedFirstConfig | null
-  enabled?: boolean
 }
 
 export interface SchedulingPreferenceMutationResult {

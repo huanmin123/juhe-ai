@@ -880,8 +880,8 @@ func TestW11DSQLRuntimeCompositionTailArms(t *testing.T) {
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g1', 'sys_owner', 'gpt', 1)`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g2', 'sys_owner', 'gpt', 1)`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
-		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, enabled, created_at, updated_at)
-			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '对话·成本优先', 'cost_first', NULL, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
+			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, scheduling_preference_id) VALUES ('key4', 'sys_owner', 'rs1', '` + HashSecret("sk-w11d-sql4") + `', 'active', '` + apikeys.BuiltinSchedulingPreferenceID + `')`,
 		// 单绑定：空账户也会走到检查策略扇出（多候选时空账户组会被跳过）。
 		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('b41', 'rs1', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,

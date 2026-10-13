@@ -64,29 +64,33 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		// 词表交集为空的矩阵外组合（矩阵内行 + 类型/词表收窄）。
 		{name: "qwen audio 无 audio_speech", domain: "audio", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}},
 
-		// 矩阵内组合。
-		{name: "gpt chat 含对话锚与共享 lane", domain: "chat", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session", "audio_transcription_json", "images_json"}},
+		// 矩阵内组合。v8-A 对话域纯粹化：chat 域允许集 = 13 值锚集 ∩ 词表
+		// （openai 族 api_key 恰为 chat×2+responses×2）；images_json /
+		// audio_transcription_json / realtime_session 移出对话域。
+		{name: "gpt chat 恰为对话两对（v8-A）", domain: "chat", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "gpt audio 含 v8-A 新移入两项", domain: "audio", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
+			want: []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "audio_transcription_json", "realtime_session"}},
 		{name: "gpt oauth chat 只剩 responses 对", domain: "chat", providerCode: "gpt", accountType: "oauth", profile: gptOpenAI,
 			want: []string{"responses_json", "responses_sse"}},
 		{name: "gpt video 四值组", domain: "video", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
 		{name: "anthropic chat", domain: "chat", providerCode: "anthropic", accountType: "api_key", profile: anthropicV1,
 			want: []string{"messages_json", "messages_sse", "message_token_counting"}},
-		{name: "deepseek openai chat 矩阵内", domain: "chat", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session", "audio_transcription_json", "images_json"}},
+		{name: "deepseek openai chat 矩阵内（v8-A 收敛对话两对）", domain: "chat", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
 		{name: "xai video 矩阵内", domain: "video", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
-		{name: "xai chat 矩阵内", domain: "chat", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session", "audio_transcription_json", "images_json"}},
-		{name: "gemini openai-chat chat 矩阵内", domain: "chat", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session", "audio_transcription_json", "images_json"}},
-		{name: "glm chat 含 STT 透传", domain: "chat", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
-			want: []string{"chat_json", "chat_sse", "audio_transcription_json"}},
+		{name: "xai chat 矩阵内（v8-A 收敛对话两对）", domain: "chat", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "gemini openai-chat chat 矩阵内（v8-A 收敛对话两对）", domain: "chat", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "glm chat 对（v8-A STT 透传移出对话域）", domain: "chat", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
+			want: []string{"chat_json", "chat_sse"}},
 		{name: "glm video", domain: "video", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
-		{name: "glm audio_speech", domain: "audio", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
-			want: []string{"audio_speech"}},
+		{name: "glm audio 含 STT 透传（v8-A 归音频域）", domain: "audio", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
+			want: []string{"audio_speech", "audio_transcription_json"}},
 		{name: "glm-coding-anthropic chat", domain: "chat", providerCode: "glm", accountType: "api_key", profile: glmCodingAnthropic,
 			want: []string{"messages_json", "messages_sse"}},
 		{name: "gemini native video", domain: "video", providerCode: "gemini", accountType: "api_key", profile: geminiNative,
@@ -99,6 +103,8 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
 		{name: "minimax audio 矩阵内", domain: "audio", providerCode: "minimax", accountType: "api_key", profile: minimax,
 			want: []string{"audio_speech"}},
+		{name: "hybrid audio 含 v8-A 新移入两项（词表全支持）", domain: "audio", providerCode: "hybrid", accountType: "api_key", profile: hybrid,
+			want: []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "audio_transcription_json", "realtime_session"}},
 		{name: "hybrid 四域非空", domain: "chat", providerCode: "hybrid", accountType: "api_key", profile: hybrid,
 			want: nil}, // 非空断言走下方分支
 	}
@@ -133,6 +139,11 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 	}
 	if got := DefaultEndpointModesForDomain("audio", "volcengine", "api_key", volcengine); !reflect.DeepEqual(got, []string{"audio_speech"}) {
 		t.Fatalf("volcengine audio 默认集应为 audio_speech：%v", got)
+	}
+	// v8-A：音频域默认集维持现状语义，不含新移入的短转写/实时会话（默认集
+	// 不收，显式勾选承担；gpt 词表含两项但默认集仍只落 audio_speech）。
+	if got := DefaultEndpointModesForDomain("audio", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"audio_speech"}) {
+		t.Fatalf("gpt audio 默认集应为 audio_speech（v8-A 不收新移入两项）：%v", got)
 	}
 	if got := DefaultEndpointModesForDomain("image", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"images_json"}) {
 		t.Fatalf("gpt image 默认集应为 images_json：%v", got)

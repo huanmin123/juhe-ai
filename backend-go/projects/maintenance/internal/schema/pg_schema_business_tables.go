@@ -1293,12 +1293,14 @@ var postgresSchemaBusinessTables = []PGStatement{
 	},
 	{
 		// scheduling_preferences 调度偏好独立实体（调度偏好独立实体
-		// PLAN-20261012T033000000Z P1，接口契约「调度偏好」章）：与 SQLite 版
-		// 同构（sqlite_schema_business.go scheduling_preferences DDL）。
-		// system_account_id 内置行恒 NULL（全局只读例外）；不加 owner 外键——
-		// 契约只要求 api_keys 侧引用声明，自定义行 owner 非空由写入口事务内
-		// 校验。置于 api_keys 之前：下方 api_keys 存量库 ALTER 与新库语义
-		// 均要求目标表先存在。CREATE TABLE IF NOT EXISTS 幂等。
+		// PLAN-20261012T033000000Z P1，接口契约「调度偏好」章；v2 用户裁决修订
+		// 第 4 条）：与 SQLite 版同构（sqlite_schema_business.go
+		// scheduling_preferences DDL）。system_account_id 内置行恒 NULL（全局
+		// 只读例外）；不加 owner 外键——契约只要求 api_keys 侧引用声明，自定义
+		// 行 owner 非空由写入口事务内校验。enabled 已随 v2 第 4 条退役（创建即
+		// 启用，无停用态），存量库由下方幂等 DROP COLUMN 收敛。置于 api_keys
+		// 之前：下方 api_keys 存量库 ALTER 与新库语义均要求目标表先存在。
+		// CREATE TABLE IF NOT EXISTS 幂等。
 		SchemaName: "juhe_business",
 		Source:     "scheduling-preferences-table",
 		SQL: `CREATE TABLE IF NOT EXISTS scheduling_preferences (
@@ -1308,10 +1310,18 @@ var postgresSchemaBusinessTables = []PGStatement{
       chat_mode text NOT NULL CHECK (chat_mode IN ('cost_first', 'speed_first')),
       chat_speed_first_config_json text,
       built_in integer NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
-      enabled integer NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       created_at text NOT NULL,
       updated_at text NOT NULL
     )`,
+	},
+	{
+		// enabled 列退役（v2 用户裁决修订第 4 条）：存量库幂等删列（列级 CHECK
+		// 随列删除，无索引引用）。P1 迁移未在任何库执行过停用语义，列值恒为
+		// 种子 DEFAULT 1，删列无数据损失。维护链一次性执行（BUG-0307 纪律：
+		// schema 保证收敛到 maintenance，ACCESS EXCLUSIVE 不进热路径）。
+		SchemaName: "juhe_business",
+		Source:     "scheduling-preferences-enabled-retirement",
+		SQL:        `ALTER TABLE juhe_business.scheduling_preferences DROP COLUMN IF EXISTS enabled`,
 	},
 	{
 		SchemaName: "juhe_business",

@@ -37,10 +37,11 @@ func openSchedulingPreferenceSQLite(t *testing.T) *sql.DB {
 func TestSchedulingPreferencesTableShape(t *testing.T) {
 	db := openSchedulingPreferenceSQLite(t)
 
-	// 列集：9 列精确集合。
+	// 列集：8 列精确集合（enabled 已随 v2 用户裁决修订第 4 条退役，存量库由
+	// EnsureSQLiteBusiness 守卫链幂等 DROP COLUMN 收敛——见 retirement 用例）。
 	required := map[string]bool{
 		"id": true, "system_account_id": true, "name": true, "chat_mode": true,
-		"chat_speed_first_config_json": true, "built_in": true, "enabled": true,
+		"chat_speed_first_config_json": true, "built_in": true,
 		"created_at": true, "updated_at": true,
 	}
 	for column := range required {
@@ -56,22 +57,22 @@ func TestSchedulingPreferencesTableShape(t *testing.T) {
 		t.Fatalf("scheduling_preferences columns = %d, want %d", columns, len(required))
 	}
 
-	// 合法自定义行：built_in/enabled 默认值落库（0/1）。
+	// 合法自定义行：built_in 默认值落库（0）。
 	if _, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, created_at, updated_at)
 	      VALUES ('sp_user_1', 'owner_1', '我的偏好', 'speed_first', '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')`); err != nil {
 		t.Fatalf("insert valid custom preference: %v", err)
 	}
-	var builtIn, enabled int
+	var builtIn int
 	var configJSON sql.NullString
-	if err := db.QueryRow(`SELECT built_in, enabled, chat_speed_first_config_json
-	      FROM scheduling_preferences WHERE id = 'sp_user_1'`).Scan(&builtIn, &enabled, &configJSON); err != nil {
+	if err := db.QueryRow(`SELECT built_in, chat_speed_first_config_json
+	      FROM scheduling_preferences WHERE id = 'sp_user_1'`).Scan(&builtIn, &configJSON); err != nil {
 		t.Fatal(err)
 	}
-	if builtIn != 0 || enabled != 1 || configJSON.Valid {
-		t.Fatalf("defaults = built_in %d enabled %d config %v, want 0/1/NULL", builtIn, enabled, configJSON)
+	if builtIn != 0 || configJSON.Valid {
+		t.Fatalf("defaults = built_in %d config %v, want 0/NULL", builtIn, configJSON)
 	}
 
-	// CHECK 词表：非法 chat_mode / built_in / enabled 拒绝。
+	// CHECK 词表：非法 chat_mode / built_in 拒绝（enabled 词表已随列退役）。
 	for _, tc := range []struct {
 		name string
 		dml  string
@@ -80,8 +81,6 @@ func TestSchedulingPreferencesTableShape(t *testing.T) {
 		      VALUES ('sp_bad_mode', 'owner_1', '坏形态', 'balanced', '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')`},
 		{"invalid-built-in", `INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, built_in, created_at, updated_at)
 		      VALUES ('sp_bad_builtin', 'owner_1', '坏内置位', 'cost_first', 2, '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')`},
-		{"invalid-enabled", `INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, enabled, created_at, updated_at)
-		      VALUES ('sp_bad_enabled', 'owner_1', '坏启用位', 'cost_first', 2, '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')`},
 	} {
 		if _, err := db.Exec(tc.dml); err == nil {
 			t.Fatalf("%s must be rejected by CHECK", tc.name)
@@ -222,11 +221,11 @@ func assertSchedulingPreferenceAPIKeyIndex(t *testing.T, db *sql.DB, want bool) 
 	}
 }
 
-func readBuiltinSchedulingPreference(t *testing.T, db *sql.DB) (systemAccountID sql.NullString, name, chatMode string, builtIn, enabled int, createdAt, updatedAt string) {
+func readBuiltinSchedulingPreference(t *testing.T, db *sql.DB) (systemAccountID sql.NullString, name, chatMode string, builtIn int, createdAt, updatedAt string) {
 	t.Helper()
-	err := db.QueryRow(`SELECT system_account_id, name, chat_mode, built_in, enabled, created_at, updated_at
+	err := db.QueryRow(`SELECT system_account_id, name, chat_mode, built_in, created_at, updated_at
 	      FROM scheduling_preferences WHERE id = ?`, BuiltinSchedulingPreferenceID).
-		Scan(&systemAccountID, &name, &chatMode, &builtIn, &enabled, &createdAt, &updatedAt)
+		Scan(&systemAccountID, &name, &chatMode, &builtIn, &createdAt, &updatedAt)
 	if err != nil {
 		t.Fatalf("read builtin scheduling preference: %v", err)
 	}
@@ -244,10 +243,11 @@ func TestSeedSQLiteDefaultsSeedsBuiltinSchedulingPreference(t *testing.T) {
 		t.Fatalf("first SeedSQLiteDefaults: %v", err)
 	}
 
-	// 权威值：NULL owner、cost_first、built_in=1、enabled=1、config NULL。
-	_, name, chatMode, builtIn, enabled, createdAt, updatedAt := readBuiltinSchedulingPreference(t, db)
-	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || enabled != 1 || createdAt != updatedAt {
-		t.Fatalf("builtin row = %q %q built_in=%d enabled=%d created=%s updated=%s", name, chatMode, builtIn, enabled, createdAt, updatedAt)
+	// 权威值：NULL owner、cost_first、built_in=1、config NULL、名称=「默认调度
+	// 偏好」（v2 用户裁决修订第 2 条更名）。
+	_, name, chatMode, builtIn, createdAt, updatedAt := readBuiltinSchedulingPreference(t, db)
+	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || createdAt != updatedAt {
+		t.Fatalf("builtin row = %q %q built_in=%d created=%s updated=%s", name, chatMode, builtIn, createdAt, updatedAt)
 	}
 
 	// 重复执行幂等：updated_at 不漂移；换时钟同样不漂移（恢复式 upsert 的
@@ -255,7 +255,7 @@ func TestSeedSQLiteDefaultsSeedsBuiltinSchedulingPreference(t *testing.T) {
 	if _, err := SeedSQLiteDefaults(ctx, db, options); err != nil {
 		t.Fatalf("second SeedSQLiteDefaults: %v", err)
 	}
-	_, _, _, _, _, _, updatedAtAfterRerun := readBuiltinSchedulingPreference(t, db)
+	_, _, _, _, _, updatedAtAfterRerun := readBuiltinSchedulingPreference(t, db)
 	if updatedAtAfterRerun != updatedAt {
 		t.Fatalf("updated_at drifted on rerun: %s -> %s", updatedAt, updatedAtAfterRerun)
 	}
@@ -263,7 +263,7 @@ func TestSeedSQLiteDefaultsSeedsBuiltinSchedulingPreference(t *testing.T) {
 	if _, err := SeedSQLiteDefaults(ctx, db, laterClock); err != nil {
 		t.Fatalf("third SeedSQLiteDefaults (later clock): %v", err)
 	}
-	_, _, _, _, _, _, updatedAtAfterLaterClock := readBuiltinSchedulingPreference(t, db)
+	_, _, _, _, _, updatedAtAfterLaterClock := readBuiltinSchedulingPreference(t, db)
 	if updatedAtAfterLaterClock != updatedAt {
 		t.Fatalf("updated_at drifted on later-clock rerun: %s -> %s", updatedAt, updatedAtAfterLaterClock)
 	}
@@ -285,21 +285,34 @@ func TestSeedSQLiteDefaultsSeedsBuiltinSchedulingPreference(t *testing.T) {
 	if _, err := SeedSQLiteDefaults(ctx, db, laterClock); err != nil {
 		t.Fatalf("SeedSQLiteDefaults after delete: %v", err)
 	}
-	_, name, chatMode, builtIn, enabled, _, _ = readBuiltinSchedulingPreference(t, db)
-	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || enabled != 1 {
-		t.Fatalf("restored builtin row = %q %q built_in=%d enabled=%d", name, chatMode, builtIn, enabled)
+	_, name, chatMode, builtIn, _, _ = readBuiltinSchedulingPreference(t, db)
+	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 {
+		t.Fatalf("restored builtin row = %q %q built_in=%d", name, chatMode, builtIn)
+	}
+
+	// 存量库更名钉住（v2 用户裁决修订第 2 条）：P1 旧行名「对话·成本优先」经
+	// 恢复式 upsert 自动拉回新权威名「默认调度偏好」——升级 = 跑 seed/ensure。
+	if _, err := db.Exec(`UPDATE scheduling_preferences SET name = '对话·成本优先' WHERE id = ?`, BuiltinSchedulingPreferenceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SeedSQLiteDefaults(ctx, db, laterClock); err != nil {
+		t.Fatalf("SeedSQLiteDefaults after rename drift: %v", err)
+	}
+	_, name, chatMode, builtIn, _, _ = readBuiltinSchedulingPreference(t, db)
+	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 {
+		t.Fatalf("renamed builtin row must be restored to %q, got %q", BuiltinSchedulingPreferenceName, name)
 	}
 
 	// 内置行被外部改动后重跑拉回权威值（恢复式 upsert 的 DO UPDATE 臂）。
-	if _, err := db.Exec(`UPDATE scheduling_preferences SET name = '被改动', chat_mode = 'speed_first', enabled = 0 WHERE id = ?`, BuiltinSchedulingPreferenceID); err != nil {
+	if _, err := db.Exec(`UPDATE scheduling_preferences SET name = '被改动', chat_mode = 'speed_first' WHERE id = ?`, BuiltinSchedulingPreferenceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SeedSQLiteDefaults(ctx, db, laterClock); err != nil {
 		t.Fatalf("SeedSQLiteDefaults after drift: %v", err)
 	}
-	_, name, chatMode, builtIn, enabled, _, _ = readBuiltinSchedulingPreference(t, db)
-	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || enabled != 1 {
-		t.Fatalf("drifted builtin row must be restored, got %q %q built_in=%d enabled=%d", name, chatMode, builtIn, enabled)
+	_, name, chatMode, builtIn, _, _ = readBuiltinSchedulingPreference(t, db)
+	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 {
+		t.Fatalf("drifted builtin row must be restored, got %q %q built_in=%d", name, chatMode, builtIn)
 	}
 
 	// 固定 id 被自定义行（built_in=0）占用时不触碰（WHERE built_in=1 守卫）。
@@ -313,16 +326,16 @@ func TestSeedSQLiteDefaultsSeedsBuiltinSchedulingPreference(t *testing.T) {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, built_in, enabled, created_at, updated_at)
-	      VALUES (?, 'owner_1', '占用者', 'speed_first', 0, 0, '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')`, BuiltinSchedulingPreferenceID); err != nil {
+	if _, err := db.Exec(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, built_in, created_at, updated_at)
+	      VALUES (?, 'owner_1', '占用者', 'speed_first', 0, '2026-10-12T00:00:00.000Z', '2026-10-12T00:00:00.000Z')`, BuiltinSchedulingPreferenceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SeedSQLiteDefaults(ctx, db, laterClock); err != nil {
 		t.Fatalf("SeedSQLiteDefaults with custom row occupying the fixed id: %v", err)
 	}
-	_, name, chatMode, builtIn, enabled, _, _ = readBuiltinSchedulingPreference(t, db)
-	if name != "占用者" || chatMode != "speed_first" || builtIn != 0 || enabled != 0 {
-		t.Fatalf("custom row occupying the fixed id must stay untouched, got %q %q built_in=%d enabled=%d", name, chatMode, builtIn, enabled)
+	_, name, chatMode, builtIn, _, _ = readBuiltinSchedulingPreference(t, db)
+	if name != "占用者" || chatMode != "speed_first" || builtIn != 0 {
+		t.Fatalf("custom row occupying the fixed id must stay untouched, got %q %q built_in=%d", name, chatMode, builtIn)
 	}
 }
 
@@ -347,11 +360,11 @@ func TestSeedBuiltinSchedulingPreferenceSQLiteEnsureArm(t *testing.T) {
 	if err := SeedBuiltinSchedulingPreferenceSQLite(ctx, db); err != nil {
 		t.Fatalf("ensure-arm seeding: %v", err)
 	}
-	_, _, _, _, _, _, updatedAt := readBuiltinSchedulingPreference(t, db)
+	_, _, _, _, _, updatedAt := readBuiltinSchedulingPreference(t, db)
 	if err := SeedBuiltinSchedulingPreferenceSQLite(ctx, db); err != nil {
 		t.Fatalf("ensure-arm reseeding: %v", err)
 	}
-	_, _, _, _, _, _, updatedAtAfterRerun := readBuiltinSchedulingPreference(t, db)
+	_, _, _, _, _, updatedAtAfterRerun := readBuiltinSchedulingPreference(t, db)
 	if updatedAtAfterRerun != updatedAt {
 		t.Fatalf("ensure-arm updated_at drifted: %s -> %s", updatedAt, updatedAtAfterRerun)
 	}
@@ -360,9 +373,9 @@ func TestSeedBuiltinSchedulingPreferenceSQLiteEnsureArm(t *testing.T) {
 	if _, err := SeedSQLiteDefaults(ctx, db, SeedOptions{Now: func() time.Time { return schedulingPreferenceTestClock }, Secret: "juhe-ai-seed-test-secret"}); err != nil {
 		t.Fatalf("full seed after ensure-arm: %v", err)
 	}
-	_, name, chatMode, builtIn, enabled, _, updatedAtAfterFullSeed := readBuiltinSchedulingPreference(t, db)
-	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 || enabled != 1 {
-		t.Fatalf("builtin row after full seed = %q %q built_in=%d enabled=%d", name, chatMode, builtIn, enabled)
+	_, name, chatMode, builtIn, _, updatedAtAfterFullSeed := readBuiltinSchedulingPreference(t, db)
+	if name != BuiltinSchedulingPreferenceName || chatMode != "cost_first" || builtIn != 1 {
+		t.Fatalf("builtin row after full seed = %q %q built_in=%d", name, chatMode, builtIn)
 	}
 	if updatedAtAfterFullSeed != updatedAt {
 		t.Fatalf("full seed drifted the ensure-arm row: %s -> %s", updatedAt, updatedAtAfterFullSeed)
