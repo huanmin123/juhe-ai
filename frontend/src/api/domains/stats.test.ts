@@ -2,7 +2,7 @@ import type { InternalAxiosRequestConfig } from 'axios'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { http } from '../http'
-import { myStatsApi, statsApi, tableMonitorApi } from './stats'
+import { myStatsApi, statsApi } from './stats'
 
 interface CapturedRequest {
   method: string
@@ -34,10 +34,6 @@ function installCaptureAdapter(data: unknown = {}): void {
 
 function requestShapes(): Array<[string, string]> {
   return requests.map((request) => [request.method, request.url])
-}
-
-function payloadOf(request: CapturedRequest): Record<string, unknown> {
-  return JSON.parse(String(request.data)) as Record<string, unknown>
 }
 
 beforeEach(() => installCaptureAdapter())
@@ -109,32 +105,6 @@ describe('statsApi 请求形状', () => {
     expect(requests[0].params).toEqual({ systemAccountId: 'sa-1', startDate: '2026-01-01', endDate: '2026-01-02' })
   })
 
-  it('系统指标运行态方法发出正确的 method 与 URL 并透传 signal', async () => {
-    const controller = new AbortController()
-    await statsApi.goRuntimeTrend({ startDate: 's', endDate: 'e' }, { signal: controller.signal })
-    await statsApi.systemMetricsHealthSnapshot({ signal: controller.signal })
-    await statsApi.systemMetricsRuntimeJobs({ page: 1, pageSize: 10 }, { signal: controller.signal })
-    expect(requestShapes()).toEqual([
-      ['GET', '/stats/system-metrics/go-runtime-trend'],
-      ['GET', '/stats/system-metrics/health-snapshot'],
-      ['GET', '/stats/system-metrics/runtime/jobs']
-    ])
-    expect(requests[0].params).toEqual({ startDate: 's', endDate: 'e' })
-    expect(requests[0].signal).toBe(controller.signal)
-    expect(requests[2].params).toEqual({ page: 1, pageSize: 10 })
-    expect(requests[2].signal).toBe(controller.signal)
-  })
-
-  it('systemMetricsRuntimeJobs 透传可选 status 过滤参数', async () => {
-    const controller = new AbortController()
-    await statsApi.systemMetricsRuntimeJobs({ page: 2, pageSize: 10, status: 'failed' }, { signal: controller.signal })
-    expect(requests[0].url).toBe('/stats/system-metrics/runtime/jobs')
-    expect(requests[0].params).toEqual({ page: 2, pageSize: 10, status: 'failed' })
-    expect(requests[0].signal).toBe(controller.signal)
-    await statsApi.systemMetricsRuntimeJobs({ page: 1, pageSize: 10 })
-    expect(requests[1].params).toEqual({ page: 1, pageSize: 10 })
-  })
-
   it('健康监控方法透传 signal', async () => {
     const controller = new AbortController()
     await statsApi.aiHealth(undefined, { signal: controller.signal })
@@ -143,26 +113,6 @@ describe('statsApi 请求形状', () => {
     await statsApi.aiHealthHourDetail({ accountId: 'a-1', statHour: 'h' } as never, { signal: controller.signal })
     expect(requests[1].url).toBe('/stats/ai-health/hour-detail')
     expect(requests[1].signal).toBe(controller.signal)
-  })
-})
-
-describe('tableMonitorApi 请求形状', () => {
-  it('各方法发出正确的 method 与 URL', async () => {
-    await tableMonitorApi.overview()
-    await tableMonitorApi.history({ databaseRole: 'business', tableName: 'accounts' } as never)
-    await tableMonitorApi.databaseHistory()
-    await tableMonitorApi.cleanupNonBusinessData({ confirm: true } as never)
-    expect(requestShapes()).toEqual([
-      ['GET', '/table-monitor/overview'],
-      ['GET', '/table-monitor/history'],
-      ['GET', '/table-monitor/database-history'],
-      ['POST', '/table-monitor/non-business-data/cleanup']
-    ])
-  })
-
-  it('cleanupNonBusinessData 携带确认 payload', async () => {
-    await tableMonitorApi.cleanupNonBusinessData({ confirm: true } as never)
-    expect(payloadOf(requests[0])).toEqual({ confirm: true })
   })
 })
 

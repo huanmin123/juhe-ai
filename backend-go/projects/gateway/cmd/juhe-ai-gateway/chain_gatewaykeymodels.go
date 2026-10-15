@@ -225,7 +225,8 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 func (l chainGroupModelUnionLoader) listUnionCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now string) ([]chainCandidateRow, error) {
 	s := l.selector
 	const unionStatusSet = "'active', 'rate_limited', 'temporary_unavailable'"
-	where := strings.NewReplacer("{statusSet}", unionStatusSet).Replace(chainCandidateWhere)
+	where := strings.NewReplacer(append([]string{"{statusSet}", unionStatusSet},
+		chainMediaArmReplacement(false)...)...).Replace(chainCandidateWhere)
 	query := strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),

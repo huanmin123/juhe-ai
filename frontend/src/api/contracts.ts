@@ -13,7 +13,6 @@ import type {
   ModelCheckRunListParams,
   MediaJobKind,
   MediaJobStatus,
-  MonitoredDatabaseRole,
   PublicApiLogResultFilter,
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyMatch,
@@ -345,28 +344,6 @@ export interface OperationLogListParams {
   actorSystemAccountId?: string
   affectedSystemAccountId?: string
   operationScopeSystemAccountId?: string
-}
-
-export interface TableMonitorOverviewParams {
-  page?: number
-  pageSize?: number
-  keyword?: string
-  refresh?: boolean
-}
-
-export interface TableMonitorDatabaseHistoryParams {
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
-export interface TableMonitorHistoryParams extends TableMonitorDatabaseHistoryParams {
-  databaseRole: MonitoredDatabaseRole
-  tableName: string
-}
-
-export interface NonBusinessDataCleanupPayload {
-  cutoffAt: string
 }
 
 export interface ClientIpStatsListParams {

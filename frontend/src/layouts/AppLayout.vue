@@ -247,10 +247,7 @@ const ApiKeyMenuIcon = () =>
 
 const menuIconMap = {
   '/my-chat': MessageOutlined,
-  // 媒体工作室三工作台（媒体工作室设计 §1）。
-  '/my-studio/images': PictureOutlined,
-  '/my-studio/audio': SoundOutlined,
-  '/my-studio/video': VideoCameraOutlined,
+  // 媒体工作室（媒体工作室形态设计 §2/§4）：素材库/视频项目。
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
   // AI 账户四域菜单（M2）：对话/视频/音频/图像图标区分，双面共用同一组图标。
@@ -298,8 +295,6 @@ const menuIconMap = {
   '/public-api-logs': ApiOutlined,
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
-  '/table-monitor': DatabaseOutlined,
-  '/system-metrics-stats': BarChartOutlined,
   '/ip-stats': GlobalOutlined,
   '/response-inspection-policies': FilterOutlined,
   '/external-integration-sources': LinkOutlined,
@@ -315,7 +310,6 @@ const menuGroupIconMap = {
   // 用户面「AI 账户」分组沿用原 /my-accounts 的 UserSwitchOutlined。
   'my-accounts': UserSwitchOutlined,
   // 媒体工作室分组图标（规划 F1 三处接线）。
-  studio: AppstoreOutlined,
   'my-authorization': SafetyCertificateOutlined,
   'system-operations': SettingOutlined
 }

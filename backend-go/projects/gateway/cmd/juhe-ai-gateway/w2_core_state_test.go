@@ -219,6 +219,7 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"imageStreamIdleTimeoutSeconds":              "60",
 		"imageUncommittedAttemptMaxLifetimeSeconds":  "300",
 		"imageRequestWallTimeoutSeconds":             "600",
+		"chatImageGenerationTotalTimeoutSeconds":     "300",
 		// M5b realtime 会话生命周期三键（Realtime 设计 §3）：夹具值与
 		// pg_schema 种子默认同源（120/1800/5）。
 		"realtimeIdleTimeoutSeconds":           "120",
@@ -238,8 +239,6 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"statsAggregationMaxBatchesPerRun":           "10",
 		"usageHotWindowRefreshIntervalSeconds":       "60",
 		"groupAccountStatsRefreshIntervalSeconds":    "60",
-		"systemMetricsSampleIntervalSeconds":         "60",
-		"tableMonitorMaxTablesPerRun":                "10",
 		"accountQualityRefreshIntervalSeconds":       "300",
 		"accountQualityWindowMinutes":                "15",
 		"accountHealthCheckIntervalHours":            "1",
@@ -262,8 +261,6 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"usageStatsWeeklyRetentionWeeks":             "52",
 		"usageStatsMonthlyRetentionMonths":           "12",
 		"usageRankSnapshotRetentionDays":             "30",
-		"systemMetricsRetentionDays":                 "3",
-		"systemMetricsHourlyRetentionDays":           "7",
 	}
 	now := "2026-09-14T00:00:00.000Z"
 	for _, key := range settings.SystemSettingKeys {

@@ -137,7 +137,6 @@ func w1oRedirectDatabasePaths(t *testing.T, stack *w1oComposeStack) {
 	stack.cfg.ChatDatabasePath = filepath.Join(root, "chat.sqlite3")
 	stack.cfg.DatasetDatabasePath = filepath.Join(root, "dataset.sqlite3")
 	stack.cfg.RuntimeLogDatabasePath = filepath.Join(root, "runtime-log.sqlite3")
-	stack.cfg.TableMonitorDatabasePath = filepath.Join(root, "table-monitor.sqlite3")
 	stack.cfg.UsageCatalogDatabasePath = filepath.Join(root, "usage-catalog.sqlite3")
 	stack.cfg.CodexContextShardRoot = filepath.Join(root, "codex-context")
 	stack.cfg.ChatAssetsRoot = filepath.Join(root, "chat-assets")
@@ -149,9 +148,6 @@ func TestW1OComposeSystemAPISQLitePathFailureArms(t *testing.T) {
 		mutate func(t *testing.T, stack *w1oComposeStack)
 		want   string
 	}{
-		{"缺表监控库路径", func(_ *testing.T, stack *w1oComposeStack) {
-			stack.cfg.TableMonitorDatabasePath = ""
-		}, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH"},
 		{"缺审计库路径", func(_ *testing.T, stack *w1oComposeStack) {
 			stack.auditConfig.AuditDatabasePath = ""
 		}, "JUHE_AI_AUDIT_LOG_DATABASE_PATH"},

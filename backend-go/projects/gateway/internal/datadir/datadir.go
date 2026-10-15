@@ -32,7 +32,6 @@ const (
 	RuntimeLogDatabase         = "runtime-log.sqlite3"
 	UsageCatalogDatabase       = "usage-catalog.sqlite3"
 	StatsDatabase              = "stats.sqlite3"
-	TableMonitorDatabase       = "table-monitor.sqlite3"
 	UsageShardRoot             = "usage-shards"
 	CodexContextRoot           = "codex-context"
 	CodexContextStateShardRoot = "codex-context/state-shards"

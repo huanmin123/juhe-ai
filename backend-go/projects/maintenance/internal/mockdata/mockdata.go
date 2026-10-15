@@ -25,7 +25,6 @@ const (
 	// DomainChatCodexModelCheck 拥有 chat 库、codex context state 分片、
 	// J3b 模型检测专库、后台任务运行库与账户健康库。
 	DomainChatCodexModelCheck = "chat_codex_model_check"
-	// DomainStudio 声明在 domain_studio_sample.go（域实现者只改自己域文件）。
 )
 
 // 参数边界（docs/functions/Mockdata造数设计.md「命令」小节的表格）：
@@ -102,9 +101,6 @@ var domainSeeds = []struct {
 	{Name: DomainStats, Run: seedStatsRaw},
 	{Name: DomainObservability, Run: seedObservability},
 	{Name: DomainChatCodexModelCheck, Run: seedChatCodexModelCheck},
-	// studio 排在 business 之后：样本引用 business 域的 admin 账户、分组、
-	// 路由与 media_jobs 样本行。
-	{Name: DomainStudio, Run: seedStudio},
 }
 
 // Report 是 --mockdata 的 stdout JSON，也是库调用方的返回值。

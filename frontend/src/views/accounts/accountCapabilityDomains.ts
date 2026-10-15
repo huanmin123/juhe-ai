@@ -313,21 +313,20 @@ export function defaultEndpointModesForCapabilityDomain(input: {
     : [...allowed]
 }
 
-/** 媒体域新建账户 `health_check_endpoint_mode` 默认落值（生命周期定案表 v7）：image→images_json、audio→audio_speech（无则首个域内值）、video→video_create。 */
+/**
+ * 媒体域新建账户 `health_check_endpoint_mode` 默认落值（生命周期定案表 v7）：
+ * image→images_json、audio→audio_speech、video→video_create。各分支均为纯域
+ * 常量（镜像后端 DefaultHealthCheckEndpointModeForDomain）：chat/image 域具备
+ * 后台探针，音频/视频域账户无后台探针、该字段仅为记录值，一律不随域内默认集
+ * 首值漂移——qwen 长音频默认集首值 audio_job_create 不是合法检查形态词表值，
+ * 取它会导致保存被「已启用能力交集」校验阻断（R5）。
+ */
 export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
   capabilityDomain: AccountCapabilityDomain
-  defaultModes: readonly AccountSupportedEndpointMode[]
 }): AccountFormModel['healthCheckEndpointMode'] {
   if (input.capabilityDomain === 'image') return 'images_json'
   if (input.capabilityDomain === 'video') return 'video_create'
-  if (input.capabilityDomain === 'audio') {
-    // 域内默认集的首值：qwen 长音频四值（audio_job_create）均为合法检查形态值；
-    // 空集兜底 audio_speech（写侧对不在 enabledModes 内的显式值会拒绝，域内默认集
-    // 非空由 allowedEndpointModesFor 保证）。
-    return (input.defaultModes.includes('audio_speech')
-      ? 'audio_speech'
-      : input.defaultModes[0] ?? 'audio_speech') as AccountFormModel['healthCheckEndpointMode']
-  }
+  if (input.capabilityDomain === 'audio') return 'audio_speech'
   return 'chat_json'
 }
 

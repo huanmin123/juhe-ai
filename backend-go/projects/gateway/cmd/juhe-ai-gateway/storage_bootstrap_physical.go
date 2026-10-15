@@ -14,9 +14,10 @@
 //     Windows os.Stat carries no link count, so hardlink duplicates are still
 //     caught pairwise through os.SameFile (volume serial + file id), but a
 //     hardlink to a file outside the gated set is not refused (deviation);
-//   - the two log-side paths (runtime-log / table-monitor) stay optional as
-//     in the current Go composition: they join the pairwise gate only when
-//     configured, instead of becoming new hard requirements.
+//   - the runtime-log side path stays optional as in the current Go
+//     composition: it joins the pairwise gate only when configured, instead
+//     of becoming a new hard requirement (the former table-monitor output
+//     database left with the deleted table-monitor face).
 
 package main
 
@@ -58,7 +59,6 @@ func assertDistinctSQLiteStoragePaths(cfg runtimeConfig) error {
 		// Log-side databases join the gate only when configured (see the
 		// file header for the requiredness deviation).
 		{role: "运行日志索引库", path: cfg.RuntimeLogDatabasePath},
-		{role: "表存储监控输出库", path: cfg.TableMonitorDatabasePath},
 	}
 	for shardIndex := 0; shardIndex < cfg.CodexContextShardCount; shardIndex++ {
 		targets = append(targets, sqliteStorageTarget{
@@ -163,7 +163,7 @@ func sqliteStoragePathKey(path string) string {
 }
 
 func throwDuplicateSQLiteStoragePathError(role, existingRole string) error {
-	return fmt.Errorf("%s 与 %s 指向同一个 SQLite 物理文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_TABLE_MONITOR_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT", role, existingRole)
+		return fmt.Errorf("%s 与 %s 指向同一个 SQLite 物理文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_RUNTIME_LOG_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT", role, existingRole)
 }
 
 // codexContextShardPath mirrors the shard layout the preflight opens.

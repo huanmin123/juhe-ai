@@ -1,9 +1,10 @@
 // 调度偏好独立实体 P2——派发读取链六态解析测试（接口契约「读取分阶段契约」
-// P2 形态；v2 用户裁决修订 2026-10-13 后停用回落态不存在）：purpose=chat 沿用
-// 策略 config；普通 Key 绑定 NULL 属未迁移/数据不一致，显式错误失败；绑定内置
-// /自定义偏好经 routestrategies 既有 normalize 合成（策略调度字段不再影响普通
-// Key 派发）；引用损坏/配置损坏显式错误上抛；fingerprint 只依赖规范化参数
-// （同参不同名相同、改名不变）。
+// P2 形态；v2 用户裁决修订 2026-10-13 后停用回落态不存在）：purpose=chat Key
+// 旁路调度解析（2026-10-14 媒体工作室退场裁决后 purpose 词表收窄为
+// general|chat，读取链只豁免 chat）沿用策略 config；普通 Key 绑定 NULL 属未迁移/数据不一致，显式错误失败；绑
+// 定内置/自定义偏好经 routestrategies 既有 normalize 合成（策略调度字段不再
+// 影响普通 Key 派发）；引用损坏/配置损坏显式错误上抛；fingerprint 只依赖规范
+// 化参数（同参不同名相同、改名不变）。
 package gatewayruntimecache
 
 import (

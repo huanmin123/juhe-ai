@@ -57,6 +57,27 @@ func (e *w1FakeExecutor) Dispatch(_ context.Context, req chat.GenerationDispatch
 	return &chat.GenerationDispatchResponse{Status: e.status, Body: io.NopCloser(strings.NewReader(e.body))}, nil
 }
 
+func TestW1ChatResponsesOutputText(t *testing.T) {
+	if got := chatResponsesOutputText(map[string]any{"output_text": "直接文本"}); got != "直接文本" {
+		t.Fatalf("output_text 分支 = %q", got)
+	}
+	nested := map[string]any{"output": []any{
+		map[string]any{"content": []any{
+			map[string]any{"text": "第一段"},
+			map[string]any{"text": ""},
+			map[string]any{"text": "第二段"},
+			"非对象元素",
+		}},
+		"非对象条目",
+	}}
+	if got := chatResponsesOutputText(nested); got != "第一段\n第二段" {
+		t.Fatalf("output 数组分支 = %q，want 第一段\n第二段", got)
+	}
+	if got := chatResponsesOutputText(map[string]any{}); got != "" {
+		t.Fatalf("空 payload = %q，want 空串", got)
+	}
+}
+
 func TestW1ParseChatImageObservation(t *testing.T) {
 	observation, err := parseChatImageObservation("```json\n{\"summary\":\"图片里有猫\",\"ocr\":[\"文字\"],\"objects\":[\"猫\"]}\n```")
 	if err != nil {

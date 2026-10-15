@@ -179,81 +179,6 @@ func TestW13g5AddPostgresAggregatedAccountHealthEntryExistingBranch(t *testing.T
 	}
 }
 
-func TestW13g5StableWatermarkRowsMultiRowAndEscapes(t *testing.T) {
-	rows := []rawRow{
-		{columns: []string{"b", "a"}, values: map[string]any{"a": "x\n\"quote\"", "b": int64(3)}},
-		{columns: []string{"k"}, values: map[string]any{"k": 1.5}},
-		{columns: []string{"u"}, values: map[string]any{"u": nil}},
-		{columns: []string{"c"}, values: map[string]any{"c": "\x01"}},
-	}
-	out := stableWatermarkRows("w13g5-table", rows)
-	if len(out) == 0 {
-		t.Fatal("序列化输出不能为空")
-	}
-	// 控制字符走 \u00xx 转义分支。
-	if got := jsonEscape("\x01"); got != `\u0001` {
-		t.Fatalf("控制字符必须转义: %q", got)
-	}
-	if got := stableWatermarkValue(true); got != "true" {
-		t.Fatalf("布尔序列化: %s", got)
-	}
-	if got := stableWatermarkValue(7.0); got != "7" {
-		t.Fatalf("整数值浮点必须无小数点: %s", got)
-	}
-	if got := stableWatermarkValue(1e20); got == "7" || len(got) == 0 {
-		t.Fatalf("超大浮点走最短表示: %s", got)
-	}
-}
-
-func TestW13g5AggregateTrendRowsBranches(t *testing.T) {
-	system := aggregateSystemMetricsRows([]systemMetricsTrendHourlyRow{
-		{StatHour: "2026-09-18T00", SampleCount: 1, CPUPercentMax: w13g5f(10)},
-		{StatHour: "2026-09-18T01", SampleCount: 2, CPUPercentMax: w13g5f(30)},
-		{StatHour: "2026-09-17T23", SampleCount: 3, CPUPercentMax: w13g5f(20)},
-	}, 24)
-	if len(system) != 2 {
-		t.Fatalf("24h 桶必须按日聚合: %+v", system)
-	}
-	process := aggregateProcessEventLoopRows([]processEventLoopTrendHourlyRow{
-		{StatHour: "2026-09-18T00", ProcessRole: "server", SampleCount: 1, EventLoopLagMsMax: w13g5f(5)},
-		{StatHour: "2026-09-18T01", ProcessRole: "server", SampleCount: 1, EventLoopLagMsMax: w13g5f(9)},
-		{StatHour: "2026-09-18T01", ProcessRole: "w13g5-bogus-role", SampleCount: 1},
-	}, 24)
-	if len(process) != 1 || process[0].SampleCount != 2 {
-		t.Fatalf("进程趋势聚合必须合并同桶且跳过非法角色: %+v", process)
-	}
-}
-
-func TestW13g5SumMaxMergeProcessMemoryArms(t *testing.T) {
-	bucket := &processEventLoopTrendHourlyRow{StatHour: "2026-09-18T00", ProcessRole: "server"}
-	row := processEventLoopTrendHourlyRow{
-		StatHour: "2026-09-18T00", ProcessRole: "server",
-		ProcessRssBytesSum: 10, ProcessRssBytesMax: w13g5f(10),
-		ProcessHeapUsedBytesSum: 11, ProcessHeapUsedBytesMax: w13g5f(11),
-		ProcessHeapTotalBytesSum: 12, ProcessHeapTotalBytesMax: w13g5f(12),
-		ProcessExternalBytesSum: 13, ProcessExternalBytesMax: w13g5f(13),
-		ProcessArrayBuffersBytesSum: 14, ProcessArrayBuffersBytesMax: w13g5f(14),
-	}
-	for _, metric := range []string{"ProcessRssBytes", "ProcessHeapUsedBytes", "ProcessHeapTotalBytes", "ProcessExternalBytes", "ProcessArrayBuffersBytes"} {
-		sumMaxMergeProcessMemory(bucket, row, metric)
-	}
-	if bucket.ProcessRssBytesSum != 10 || bucket.ProcessArrayBuffersBytesMax == nil || *bucket.ProcessArrayBuffersBytesMax != 14 {
-		t.Fatalf("内存指标合并失败: %+v", bucket)
-	}
-}
-
-func TestW13g5ProcessEventLoopRoleValidation(t *testing.T) {
-	if !isValidProcessEventLoopRole("gateway:worker-1") {
-		t.Fatal("gateway: 前缀角色必须合法")
-	}
-	if !isValidProcessEventLoopRole("stats-worker:3") {
-		t.Fatal("worker 副本角色必须合法")
-	}
-	if isValidProcessEventLoopRole("") || isValidProcessEventLoopRole("gateway:") || isValidProcessEventLoopRole(string(make([]byte, 97))) {
-		t.Fatal("空/空前缀/超长角色必须非法")
-	}
-}
-
 func TestW13g5StageSourceTablesUnknownStage(t *testing.T) {
 	if tables := stageSourceTables("w13g5-unknown-stage"); tables != nil {
 		t.Fatal("未知 stage 必须返回 nil")
@@ -272,9 +197,6 @@ func TestW13g5ScanWindowRowsErrorArms(t *testing.T) {
 	}
 	if _, err := scanHourlyWindowRows(nil, w13g5StatsInjectedErr()); err == nil {
 		t.Fatal("hourly 扫描必须传播错误")
-	}
-	if _, err := scanSystemMetricsHourlyRows(nil, w13g5StatsInjectedErr()); err == nil {
-		t.Fatal("系统指标扫描必须传播错误")
 	}
 }
 

@@ -15,6 +15,8 @@ export interface ChatToolProcessGroup {
   key: string
   type: string
   status: ChatToolStatus
+  /** 摘要行补充（如「N 个来源」），跟随状态文案展示。 */
+  statusDetail?: string
   /** 执行中子代理过程（思考摘要/搜索动作/回答摘要），仅活跃分组保留。 */
   progress?: ChatToolProgress
   callCount: number
@@ -33,6 +35,7 @@ interface LifecycleTool {
 interface CanonicalToolAction {
   key: string
   summaries: string[]
+  statusDetail?: string
 }
 
 const summaryLimit = 160
@@ -114,7 +117,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     })
   })
 
-  const grouped = new Map<string, { type: string; statuses: ChatToolStatus[]; callIds: Set<string>; summaries: Set<string>; progress?: ChatToolProgress }>()
+  const grouped = new Map<string, { type: string; statuses: ChatToolStatus[]; callIds: Set<string>; summaries: Set<string>; statusDetail?: string; progress?: ChatToolProgress }>()
   for (const tool of lifecycle.values()) {
     const canonical = canonicalizeToolAction(tool)
     const existing = grouped.get(canonical.key) ?? {
@@ -126,7 +129,8 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     existing.statuses.push(tool.status)
     existing.callIds.add(tool.callId || `event-${tool.fallbackIndex}`)
     canonical.summaries.forEach((summary) => existing.summaries.add(limitSummary(summary)))
-    // progress 快照在终态/历史回看时同样读取（快照随终态 item 落库）。
+    if (canonical.statusDetail) existing.statusDetail = canonical.statusDetail
+    // progress 快照在终态/历史回看时同样读取（契约 §10.3：快照随终态 item 落库）。
     existing.progress = readToolProgress(tool.item)
     grouped.set(canonical.key, existing)
   }
@@ -135,6 +139,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     key,
     type: group.type,
     status: resolveGroupStatus(group.statuses),
+    ...(group.statusDetail ? { statusDetail: group.statusDetail } : {}),
     ...(group.progress ? { progress: group.progress } : {}),
     callCount: group.callIds.size,
     duplicateCount: Math.max(0, group.callIds.size - 1),
@@ -187,9 +192,34 @@ function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
       summaries: [errorMessage || chatErrorMessage(errorCode)]
     }
   }
-  // 上游真实工具事件（AI 问答简化设计 D3）：web_search_call / file_search_call /
-  // function_call / computer_call 等上游内置工具动作描述保留；其余未知类型走
-  // 通用 fail-open 投影（仅状态条目），失败事件统一走失败摘要分支。
+  // 应用层模型工具（工具体系设计 §10 时间线）：web_search 展示查询与来源
+  //（来源可展开）；generate_image 仅状态条目（图片走 output_image 块）。
+  if (tool.type === 'web_search') {
+    const query = normalizeWhitespace(readString(item.query))
+    const sourceCount = typeof item.sourceCount === 'number' && Number.isFinite(item.sourceCount) ? item.sourceCount : undefined
+    const sources = Array.isArray(item.sources)
+      ? item.sources.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).slice(0, 8)
+      : []
+    return {
+      key: stableJson([tool.type, { query, sourceCount }]),
+      summaries: [...(query ? [query] : []), ...sources],
+      ...(sourceCount !== undefined ? { statusDetail: `${sourceCount} 个来源` } : {})
+    }
+  }
+  if (tool.type === 'generate_image') {
+    return {
+      key: stableJson([tool.type, { callId: tool.callId || `event-${tool.fallbackIndex}` }]),
+      summaries: []
+    }
+  }
+  // M7 媒体工具（问答音视频工具设计 §5）：与 generate_image 同口径——仅状态条
+  // 目（产物走 output_audio / output_media_task 块），摘要不落 callId。
+  if (tool.type === 'generate_video' || tool.type === 'generate_audio') {
+    return {
+      key: stableJson([tool.type, { callId: tool.callId || `event-${tool.fallbackIndex}` }]),
+      summaries: []
+    }
+  }
   if (tool.type === 'web_search_call' || tool.type === 'file_search_call') {
     const action = canonicalizeSearchAction(item)
     if (action) return { key: stableJson([tool.type, action]), summaries: describeSearchAction(tool.type, action) }

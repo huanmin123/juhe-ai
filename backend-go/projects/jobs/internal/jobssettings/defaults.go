@@ -56,8 +56,6 @@ var DefaultSystemSettings = map[string]any{
 	"statsAggregationMaxBatchesPerRun":           float64(5),
 	"usageHotWindowRefreshIntervalSeconds":       float64(600),
 	"groupAccountStatsRefreshIntervalSeconds":    float64(60),
-	"systemMetricsSampleIntervalSeconds":         float64(30),
-	"tableMonitorMaxTablesPerRun":                float64(4),
 	"accountQualityRefreshIntervalSeconds":       float64(600),
 	"accountQualityWindowMinutes":                float64(10),
 	"accountHealthCheckIntervalHours":            float64(1),
@@ -84,8 +82,6 @@ var DefaultSystemSettings = map[string]any{
 	"usageStatsWeeklyRetentionWeeks":             float64(104),
 	"usageStatsMonthlyRetentionMonths":           float64(24),
 	"usageRankSnapshotRetentionDays":             float64(30),
-	"systemMetricsRetentionDays":                 float64(7),
-	"systemMetricsHourlyRetentionDays":           float64(30),
 	// upstreamClientVersionOverrides 是 JSON 对象默认值（空对象 = 全部使用
 	// 内置客户端版本），与 maintenance 种子的 "{}" 对应；镜像表以解码后的
 	// map[string]any{} 对照（seed_consistency_test）。

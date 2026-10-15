@@ -148,7 +148,8 @@ func buildDispatchSegments(
 	if len(accounts) == 0 {
 		return nil
 	}
-	segments := make([]DispatchSegment, 0)
+	// 段数上限为账户数（每个账户至少可自成一 run），预分配消除 growth 复制。
+	segments := make([]DispatchSegment, 0, len(accounts))
 	runStarted := false
 	runTier := DispatchPriorityTier{}
 	runClass := ""

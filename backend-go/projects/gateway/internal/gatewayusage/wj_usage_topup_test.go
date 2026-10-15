@@ -123,13 +123,7 @@ func TestWJFinalizationClockAndRecovery(t *testing.T) {
 	// nil logger 不panic。
 	nilLogger := NewGatewayUsageFinalizationQueue(2, 1)
 	nilLogger.logError(errors.New("swallowed"), "event")
-	// histogram 排序与 maxInt64 的直调契约。
-	entries := sortedHistogramEntries(map[string]*prometheusHistogram{
-		"b": {}, "a": {},
-	})
-	if len(entries) != 2 || entries[0].key > entries[1].key {
-		t.Fatalf("直方图排序不符: %+v", entries)
-	}
+	// maxInt64 的直调契约（直方图桶渲染已交由 client_golang，排序直调面消失）。
 	if maxInt64(1, 2) != 2 || maxInt64(5, 2) != 5 {
 		t.Fatal("maxInt64 不符")
 	}

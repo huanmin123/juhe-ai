@@ -707,15 +707,13 @@ func orderResultForScope(
 		modelRankByAccountID = modelPriority.RankByAccountID
 	}
 	ordered := append(append([]gatewayruntimecache.OpenAIAccountSecret(nil), ordering.freshAccounts...), ordering.avoidedAccounts...)
-	view := func(account gatewayruntimecache.OpenAIAccountSecret) DispatchPriorityAccountView {
+	view := func(account *gatewayruntimecache.OpenAIAccountSecret) DispatchPriorityAccountView {
 		priority := float64(account.Priority)
-		super := account.SuperPriorityEnabled
-		fallback := account.FallbackEnabled
 		return DispatchPriorityAccountView{
 			ID:                   account.ID,
 			Priority:             &priority,
-			SuperPriorityEnabled: &super,
-			FallbackEnabled:      &fallback,
+			SuperPriorityEnabled: &account.SuperPriorityEnabled,
+			FallbackEnabled:      &account.FallbackEnabled,
 		}
 	}
 	ordered = PreserveGatewayAccountDispatchPriorityTiers(accounts, ordered, view, DispatchPriorityOrderOptions{ModelRankByAccountID: modelRankByAccountID})

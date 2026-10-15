@@ -30,7 +30,6 @@ var jobsScheduleIntervalSpecs = map[string]struct {
 	// （background-jobs.ts:97 + :453-458）。
 	OnlineFreshnessCap int
 }{
-	"system-metrics-sample":             {Min: 5, Max: 3600},
 	"usage-stats-aggregation":           {Min: 5, Max: 3600, OnlineFreshnessCap: 60},
 	"client-ip-stats-aggregation":       {Min: 5, Max: 3600},
 	"group-account-stats-refresh":       {Min: 5, Max: 3600},

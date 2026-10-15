@@ -80,6 +80,7 @@ func autofillTable(ctx context.Context, e *env, target store, table string, now 
 		}
 	}
 	rowCount := autofillRowCount(table)
+	jsonShapes := sampleJSONColumnShapes(ctx, db, table, columns)
 	for rowIndex := 0; rowIndex < rowCount; rowIndex++ {
 		values := map[string]any{}
 		autoIncrement := hasIntegerPrimaryKey(columns)
@@ -94,7 +95,7 @@ func autofillTable(ctx context.Context, e *env, target store, table string, now 
 				// 可空且无默认值：留空比塞占位值更安全（不会撞 CHECK/UNIQUE）。
 				continue
 			}
-			values[column.Name] = autofillValue(table, column, checks[column.Name], rowIndex, now)
+			values[column.Name] = autofillValue(table, column, checks[column.Name], rowIndex, now, jsonShapes)
 		}
 		if len(values) == 0 {
 			return 0, fmt.Errorf("表 %s 没有必填列，跳过以免插入无意义空行", table)
@@ -158,8 +159,38 @@ func hasIntegerPrimaryKey(columns []tableColumn) bool {
 	return single == 1 && strings.Contains(strings.ToUpper(pk.Type), "INT")
 }
 
+// sampleJSONColumnShapes 对表内既有行的 *_json 列各取一个非空样本，按其
+// JSON 形态返回「列名 → "array"|"object"」。消费方按 Go 结构体反序列化这些
+// 列，占位值形态必须与真实数据同型（如 supported_api_protocols_json 是
+// 字符串数组，写 "{}" 会让 studio 模型目录整体 500）；无样本或解析失败的
+// 列不出现在结果里，由 autofillValue 取缺省占位。
+func sampleJSONColumnShapes(ctx context.Context, db *sql.DB, table string, columns []tableColumn) map[string]string {
+	shapes := map[string]string{}
+	for _, column := range columns {
+		if !strings.HasSuffix(strings.ToLower(column.Name), "_json") {
+			continue
+		}
+		if _, done := shapes[column.Name]; done {
+			continue
+		}
+		var sample sql.NullString
+		query := fmt.Sprintf(`SELECT "%s" FROM "%s" WHERE "%s" IS NOT NULL LIMIT 1`, column.Name, table, column.Name)
+		if err := db.QueryRowContext(ctx, query).Scan(&sample); err != nil || !sample.Valid {
+			continue
+		}
+		trimmed := strings.TrimSpace(sample.String)
+		switch {
+		case strings.HasPrefix(trimmed, "["):
+			shapes[column.Name] = "array"
+		case strings.HasPrefix(trimmed, "{"):
+			shapes[column.Name] = "object"
+		}
+	}
+	return shapes
+}
+
 // autofillValue 按列名与声明类型给出一个结构合法的占位值。
-func autofillValue(table string, column tableColumn, checkValues []string, rowIndex int, now time.Time) any {
+func autofillValue(table string, column tableColumn, checkValues []string, rowIndex int, now time.Time, jsonShapes map[string]string) any {
 	lower := strings.ToLower(column.Name)
 	// CHECK IN 约束优先：能解析出允许值时取第一个，避免直接撞约束。
 	if len(checkValues) > 0 {
@@ -172,6 +203,11 @@ func autofillValue(table string, column tableColumn, checkValues []string, rowIn
 	case strings.HasSuffix(lower, "_at") || lower == "time" || strings.HasSuffix(lower, "_time"):
 		return now.Add(-time.Duration(rowIndex) * time.Minute).UTC().Format(isoMillisLayout)
 	case strings.HasSuffix(lower, "_json"):
+		// 形态跟随表内既有数据（见 sampleJSONColumnShapes）：数组列必须占位
+		// "[]"，只有无样本可循时才退回对象占位。
+		if jsonShapes[column.Name] == "array" {
+			return "[]"
+		}
 		return "{}"
 	case strings.Contains(lower, "sha256") || strings.Contains(lower, "hash") || strings.Contains(lower, "digest") || strings.Contains(lower, "hmac") || strings.Contains(lower, "fingerprint") || strings.Contains(lower, "checksum"):
 		sum := sha256.Sum256([]byte(table + "." + column.Name + "." + strconv.Itoa(rowIndex)))
@@ -422,9 +458,6 @@ var autofillSkipPrefixes = []string{
 	"usage_latency_",
 	"account_quality_",
 	"client_ip_",
-	"system_metrics_",
-	"process_event_loop_",
-	"go_runtime_metrics_",
 	"usage_overview_",
 	"usage_quota_hourly_",
 	"usage_scope_",
@@ -533,8 +566,6 @@ var autofillSkipExactTables = map[string]string{
 	"client_ip_policies":              "域业务表：seedStatsRaw 写入 IP 封禁策略",
 	"client_ip_policy_hits":           "域业务表：seedStatsRaw 写入策略命中",
 	"background_task_runs":            "域业务表：seedStatsRaw 写入后台任务运行",
-	"system_metrics_samples":          "域业务表：seedStatsRaw 写入系统指标样本",
-	"process_event_loop_samples":      "域业务表：seedStatsRaw 写入事件循环样本",
 	"public_api_logs":                 "域业务表：seedObservability 写入公开接口日志",
 	"audit_logs":                      "域业务表：seedObservability 写入审计日志",
 	"operation_logs":                  "域业务表：seedObservability 写入操作日志",
@@ -542,7 +573,6 @@ var autofillSkipExactTables = map[string]string{
 	"runtime_log_facet_summary":       "域业务表：seedObservability 写入运行日志分面",
 	"runtime_log_level_facets":        "域业务表：seedObservability 写入日志级别分面",
 	"runtime_log_event_facets":        "域业务表：seedObservability 写入日志事件分面",
-	"table_storage_snapshots":         "域业务表：seedObservability 写入表空间监控快照",
 	"record_maintenance_jobs":         "域业务表：seedObservability 写入记录清理任务",
 	"account_record_cleanup_targets":  "域业务表：seedObservability 写入账户清理目标",
 	"api_key_record_cleanup_targets":  "域业务表：seedObservability 写入 Key 清理目标",
@@ -612,7 +642,7 @@ func autofillSkipReason(storeName, table string) (string, bool) {
 	if storeName == StoreModelCheck || storeName == StoreTaskRuns || storeName == StoreAccountHealth {
 		return "J3b/任务/健康专库的表由对应域或 owner 写入", true
 	}
-	if storeName == StoreRuntimeLog || storeName == StoreAuditLog || storeName == StoreOperationLog || storeName == StoreTableMonitor {
+	if storeName == StoreRuntimeLog || storeName == StoreAuditLog || storeName == StoreOperationLog {
 		return "日志/监控专库的表由可观测域写入", true
 	}
 	return "", false

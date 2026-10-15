@@ -30,7 +30,6 @@ const (
 	StoreUsageCatalog  = "usage-catalog"
 	StoreStats         = "stats"
 	StoreRuntimeLog    = "runtime-log"
-	StoreTableMonitor  = "table-monitor"
 	StoreAuditLog      = "audit-log"
 	StoreOperationLog  = "operation-log"
 	StoreModelCheck    = "model-check"
@@ -50,7 +49,6 @@ const (
 	fixedUsageCatalogDatabase  = "usage-catalog.sqlite3"
 	fixedStatsDatabase         = "stats.sqlite3"
 	fixedRuntimeLogDatabase    = "runtime-log.sqlite3"
-	fixedTableMonitorDatabase  = "table-monitor.sqlite3"
 	fixedModelCheckDatabase    = "model-check.sqlite3"
 	fixedTaskRunsDatabase      = "task-runs.sqlite3"
 	fixedAccountHealthDatabase = "account-health.sqlite3"
@@ -95,7 +93,6 @@ type Paths struct {
 	UsageCatalog                string
 	Stats                       string
 	RuntimeLog                  string
-	TableMonitor                string
 	AuditLog                    string
 	OperationLog                string
 	ModelCheck                  string
@@ -161,7 +158,6 @@ func ResolvePaths(dataDir, logDir string, getenv func(string) string) (Paths, er
 		UsageCatalog: path("JUHE_AI_USAGE_CATALOG_DATABASE_PATH", fixedUsageCatalogDatabase),
 		Stats:        path("JUHE_AI_STATS_DATABASE_PATH", fixedStatsDatabase),
 		RuntimeLog:   path("JUHE_AI_RUNTIME_LOG_DATABASE_PATH", fixedRuntimeLogDatabase),
-		TableMonitor: path("JUHE_AI_TABLE_MONITOR_DATABASE_PATH", fixedTableMonitorDatabase),
 		AuditLog:     path("JUHE_AI_AUDIT_LOG_DATABASE_PATH", fixedAuditLogDatabase),
 		OperationLog: path("JUHE_AI_OPERATION_LOG_DATABASE_PATH", fixedOperationLogDatabase),
 		// model-check 是 J3b owner 的专库；env 名沿用 gateway
@@ -227,7 +223,6 @@ func (p Paths) fixedStores() []store {
 		{Name: StoreUsageCatalog, Path: p.UsageCatalog, Domain: DomainUsage},
 		{Name: StoreStats, Path: p.Stats, Domain: DomainStats},
 		{Name: StoreRuntimeLog, Path: p.RuntimeLog, Domain: DomainObservability},
-		{Name: StoreTableMonitor, Path: p.TableMonitor, Domain: DomainObservability},
 		{Name: StoreAuditLog, Path: p.AuditLog, Domain: DomainObservability},
 		{Name: StoreOperationLog, Path: p.OperationLog, Domain: DomainObservability},
 		{Name: StoreModelCheck, Path: p.ModelCheck, Domain: DomainChatCodexModelCheck},

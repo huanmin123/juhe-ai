@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
@@ -33,6 +34,13 @@ import (
 // business database). The ensure order mirrors the Node dependency order
 // (business, stats, chat, codex-context shards, dataset, usage-catalog).
 func ensureGatewaySQLiteStoragePreflight(ctx context.Context, cfg runtimeConfig, businessDB *sql.DB) error {
+	// preflight 是启动路径的一次性 ensure+seed：给它一个有界上限。SQLite 驱动
+	// 在个别环境下（如 Windows 实时扫描短暂独占新库文件）可能长时间自旋等待，
+	// 无界等待会把启动变成永久挂起；有界后最坏情况是显式启动失败（可诊断、
+	// 可重试），而不是无输出挂死。
+	preflightCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	ctx = preflightCtx
 	if _, err := bootstrap.EnsureSQLiteSchema(ctx, bootstrap.SQLiteSchemaBusiness, businessDB); err != nil {
 		return fmt.Errorf("ensure business sqlite schema: %w", err)
 	}

@@ -17,7 +17,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 )
 
 // composeTestConfig builds the sqlite-mode composition config over a temp
@@ -48,7 +47,6 @@ func composeTestConfig(t *testing.T) runtimeConfig {
 		ChatDatabasePath:              filepath.Join(root, "chat.sqlite3"),
 		DatasetDatabasePath:           filepath.Join(root, "dataset.sqlite3"),
 		RuntimeLogDatabasePath:        filepath.Join(root, "runtime-log.sqlite3"),
-		TableMonitorDatabasePath:      filepath.Join(root, "table-monitor.sqlite3"),
 		UsageCatalogDatabasePath:      filepath.Join(root, "usage-catalog.sqlite3"),
 		CodexContextShardRoot:         filepath.Join(root, "codex-context"),
 		CodexContextShardCount:        1,
@@ -362,6 +360,7 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 		"imageStreamIdleTimeoutSeconds":              120,
 		"imageUncommittedAttemptMaxLifetimeSeconds":  3600,
 		"imageRequestWallTimeoutSeconds":             3600,
+		"chatImageGenerationTotalTimeoutSeconds":     900,
 		"audioFirstResponseTimeoutSeconds":           120,
 		"videoCreateTimeoutSeconds":                  60,
 		"noAvailableAccountWaitTimeoutSeconds":       270,
@@ -374,8 +373,6 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 		"statsAggregationMaxBatchesPerRun":           5,
 		"usageHotWindowRefreshIntervalSeconds":       600,
 		"groupAccountStatsRefreshIntervalSeconds":    60,
-		"systemMetricsSampleIntervalSeconds":         30,
-		"tableMonitorMaxTablesPerRun":                4,
 		"accountQualityRefreshIntervalSeconds":       600,
 		"accountQualityWindowMinutes":                10,
 		"accountHealthCheckIntervalHours":            1,
@@ -398,8 +395,6 @@ func seedSystemSettings(t *testing.T, db *sql.DB) {
 		"usageStatsWeeklyRetentionWeeks":             104,
 		"usageStatsMonthlyRetentionMonths":           24,
 		"usageRankSnapshotRetentionDays":             30,
-		"systemMetricsRetentionDays":                 7,
-		"systemMetricsHourlyRetentionDays":           30,
 	}
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
@@ -648,29 +643,3 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 	}
 }
 
-// TestJobsHealthListenAddressDefaultResolution 覆盖 2026-09-28 默认开启整改的
-// jobs 健康抓取地址装配：未配置默认 127.0.0.1:3305（与 jobs 进程默认健康
-// 监听对齐）；"disabled" 字面量（大小写不敏感）显式关闭；显式地址 TrimSpace
-// 后原样优先。
-func TestJobsHealthListenAddressDefaultResolution(t *testing.T) {
-	// 未配置 → 默认回环地址，JobsHealthURL 拼出 loopback /health。
-	if got := jobsHealthListenAddress(func(string) string { return "" }); got != "127.0.0.1:3305" {
-		t.Fatalf("未配置必须默认 127.0.0.1:3305（statreads.DefaultJobsHealthListenAddress）, got %q", got)
-	}
-	if url := statreads.JobsHealthURL(jobsHealthListenAddress(func(string) string { return "" })); url != "http://127.0.0.1:3305/health" {
-		t.Fatalf("默认地址必须拼出 %q, got %q", "http://127.0.0.1:3305/health", url)
-	}
-
-	// disabled 字面量 → 显式关闭（空串，Deps 层降级）。
-	for _, raw := range []string{"disabled", "DISABLED", " disabled "} {
-		if got := jobsHealthListenAddress(func(string) string { return raw }); got != "" {
-			t.Fatalf("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS=%q 必须显式关闭（空串）, got %q", raw, got)
-		}
-	}
-
-	// 显式地址（含容器名视角）TrimSpace 后原样优先。
-	env := map[string]string{"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS": " juhe-ai-go-jobs:3305 "}
-	if got := jobsHealthListenAddress(func(key string) string { return env[key] }); got != "juhe-ai-go-jobs:3305" {
-		t.Fatalf("显式地址必须原样生效, got %q", got)
-	}
-}

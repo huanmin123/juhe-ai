@@ -1,6 +1,6 @@
 // Package recordmaintenance 消费 gateway cleanup POST 写入的
 // record_maintenance_jobs 持久交接表。表结构与写入语义的契约在 gateway
-// internal/tablemonitor/enqueue.go 包文档：列即 Node RecordMaintenanceJob
+// internal/recordmaintenance 包文档：列即 Node RecordMaintenanceJob
 // union 中 non_business_data_cleanup 与 account_usage_snapshot_upsert 两个
 // 变体的规范化字段并集（id/type/cutoff_at/batch_size/max_batches/created_at
 // + v2 扩展 account_id/kind/source/snapshot_json/updated_at），gateway 侧
@@ -34,8 +34,8 @@ const TableName = "record_maintenance_jobs"
 // 同款 juhe_dataset 前缀）。
 const PGSchema = "juhe_dataset"
 
-// schemaSQL 按方言返回建表语句：列定义与 gateway internal/tablemonitor/
-// enqueue.go recordMaintenanceSchema 逐字一致（CREATE IF NOT EXISTS 幂等；
+// schemaSQL 按方言返回建表语句：列定义与 gateway internal/recordmaintenance/
+// dispatch.go recordMaintenanceSchema 逐字一致（CREATE IF NOT EXISTS 幂等；
 // 不占用生产 migration catalog）。表名经 Table() 方言限定——w12b 门控实测
 // 修复前 PG 侧建到 search_path 默认 schema，juhe_dataset 全限定名随后 42P01。
 func (s *Store) schemaSQL() string {

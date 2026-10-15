@@ -469,12 +469,13 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
 })
 
 describe('媒体生命周期定案（v7）辅助语义', () => {
-  it('health_check_endpoint_mode 默认落值：image→images_json、audio→audio_speech（qwen 回落首个域内值）、video→video_create、chat→chat_json', () => {
-    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'image', defaultModes: ['images_json'] })).toBe('images_json')
-    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio', defaultModes: ['audio_speech'] })).toBe('audio_speech')
-    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio', defaultModes: [...AUDIO_JOB_GROUP] })).toBe('audio_job_create')
-    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'video', defaultModes: [...VIDEO_GROUP] })).toBe('video_create')
-    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'chat', defaultModes: ['chat_json', 'chat_sse'] })).toBe('chat_json')
+  it('health_check_endpoint_mode 默认落值为纯域常量：image→images_json、audio→audio_speech（含 qwen 长音频）、video→video_create、chat→chat_json', () => {
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'image' })).toBe('images_json')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).toBe('audio_speech')
+    // qwen 长音频默认集首值是 audio_job_create（非检查形态词表值），不得作为记录值兜底。
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).not.toBe('audio_job_create')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'video' })).toBe('video_create')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'chat' })).toBe('chat_json')
   })
 
   it('新建表单默认 status：chat=pending_test（现行），媒体域=active', () => {

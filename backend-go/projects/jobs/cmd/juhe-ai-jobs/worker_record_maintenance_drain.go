@@ -14,7 +14,7 @@ import (
 
 // record_maintenance_jobs 交接表 drain 接线。
 //
-// gateway cleanup POST（internal/tablemonitor/enqueue.go）把 Node 形状的
+// gateway cleanup POST（internal/recordmaintenance）把 Node 形状的
 // non_business_data_cleanup 任务写入该表：SQLite 落业务库文件
 // （JUHE_AI_DATABASE_PATH，与 api_key_record_cleanup_targets 同放置约定）、
 // PostgreSQL 落 juhe_dataset schema。jobs 侧按同源读取：

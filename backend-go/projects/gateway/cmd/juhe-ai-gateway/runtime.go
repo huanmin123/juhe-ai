@@ -11,7 +11,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
@@ -66,7 +65,6 @@ type runtimeConfig struct {
 	RuntimeLogDatabasePath   string
 	UsageCatalogDatabasePath string
 	StatsDatabasePath        string
-	TableMonitorDatabasePath string
 	// AccountBalanceDatabasePath 是余额手动刷新租约库路径（SQLite 模式
 	// gateway 独占的 account-balance.sqlite3；JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH
 	// 显式配置优先）。PG 模式不打开该文件（租约四表在 juhe_jobs schema）。
@@ -164,16 +162,6 @@ type runtimeConfig struct {
 	// DNS resolve-all + 钉扎策略的组合根配置。
 	UpstreamURLSecurity UpstreamURLSecurityConfig
 
-	// Read-face collaborators (X04 404 项补齐):
-	// GoRuntimeMetrics is the shared sampler/store env family
-	// (JUHE_AI_GO_RUNTIME_METRICS_*): the gateway self-samples its Go runtime
-	// (role default gateway) and serves the go-runtime-trend route by querying
-	// the same store in-process. Enabled by default since 2026-09-27 (the
-	// store follows JUHE_AI_DATABASE_DRIVER when
-	// JUHE_AI_GO_RUNTIME_METRICS_STORE is unset); only the explicit "disabled"
-	// store value turns sampling off, which keeps the route on the empty-items
-	// degradation.
-	GoRuntimeMetrics gometrics.Config
 	// AccountHealthProbeDeadlineMS is the probe deadline window the gateway
 	// writes into every account_health_probe_request_outbox row
 	// (JUHE_AI_BACKGROUND_ACCOUNT_HEALTH_CHECK_PROBE_DEADLINE_MS, the same env
@@ -435,7 +423,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.RuntimeLogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", datadir.RuntimeLogDatabase)
 	cfg.UsageCatalogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase)
 	cfg.StatsDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase)
-	cfg.TableMonitorDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", datadir.TableMonitorDatabase)
 	// 余额租约库（共享核心 accountbalance 的 SQLite 模式四表自建于该文件；
 	// gateway 独占，与 jobs 的 task-runs 租约/直写 stats 链路无文件级交集）。
 	cfg.AccountBalanceDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH", datadir.AccountBalanceDatabase)
@@ -691,17 +678,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 	cfg.UpstreamURLSecurity = upstreamSecurity
 
-	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标并直接查库提供
-	// go-runtime-trend（同名 JUHE_AI_GO_RUNTIME_METRICS_* env 家族，role 默认
-	// gateway；原跨进程 metrics 代理 env 已删除）。2026-09-27 起默认跟随主库
-	// 驱动（JUHE_AI_GO_RUNTIME_METRICS_STORE 未配置时派生自
-	// JUHE_AI_DATABASE_DRIVER），仅 store=disabled 显式关闭；关闭时采样器不
-	// 装配、路由回空 items。
-	goRuntimeMetrics, err := gometrics.LoadConfig(getenv, "gateway")
-	if err != nil {
-		return runtimeConfig{}, fmt.Errorf("load Go runtime metrics config: %w", err)
-	}
-	cfg.GoRuntimeMetrics = goRuntimeMetrics
 	// 健康检查派发 outbox 行的探针 deadline 窗口（原 jobs 侧发布器读取的同名
 	// env；范围 [1000, 600000] 对齐 Node integerConfig。默认原为 65000（Node
 	// 60s 阶梯 + 5s 余量）；2026-10-07 诊断阶梯统一上调为 20s/30s/40s（90s
@@ -759,9 +735,8 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// JUHE_AI_LOG_DIR 未配置时派生 <DATA_DIR>/logs（固定名见 internal/datadir，
 	// 与 jobs 侧派生对称，零配置部署下 gateway 写侧/grep 面与 jobs 索引器/
 	// 保留清理共享同一目录）；显式配置路径优先；"disabled" 字面量（大小写
-	// 不敏感，对齐 gometrics 关闭约定）= 显式关闭文件日志写侧与 grep 面，
-	// LogDir 保持空。目录由写侧 NewFileSink 代建（BUG-0195），无目录派生
-	// 副作用。
+	// 不敏感）= 显式关闭文件日志写侧与 grep 面，LogDir 保持空。目录由写侧
+	// NewFileSink 代建（BUG-0195），无目录派生副作用。
 	cfg.LogDir = datadir.Path(getenv, dataDir, "JUHE_AI_LOG_DIR", datadir.RuntimeLogsDirectory)
 	if strings.EqualFold(cfg.LogDir, "disabled") {
 		cfg.LogDir = ""

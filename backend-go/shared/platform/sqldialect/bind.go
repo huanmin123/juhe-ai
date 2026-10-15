@@ -4,7 +4,7 @@
 // `?`→`$n` 改写，方言共享 SQL 在 PG 模式必须先经本改写。2026-09-30 起
 // driver 层兜底改写（driver.go 的 Driver/WrapDriver/OpenDB，清理批次 C5 自
 // gateway/jobs pgpool 双副本收敛）也归本包，供 pgpool 装配与
-// accountbalance/gometrics 裸开 pgx 路径统一接线。
+// accountbalance 裸开 pgx 路径统一接线。
 package sqldialect
 
 import (

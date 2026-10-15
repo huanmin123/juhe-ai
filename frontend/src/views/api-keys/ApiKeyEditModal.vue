@@ -152,6 +152,10 @@ const editingId = ref<string>()
 const editingIsDefault = ref(false)
 const editingNameLocked = ref(false)
 const editingPurpose = ref<'general' | 'chat'>('general')
+/** 调度偏好豁免用途（与后端 schedulingPreferenceExemptPurpose 同源，只豁免 chat）：chat Key 不建绑定、列恒 NULL。 */
+function schedulingPreferencePurposeExempt(purpose: 'general' | 'chat'): boolean {
+  return purpose === 'chat'
+}
 const editingOriginalSchedulingPreferenceId = ref('')
 const editingOriginalSchedulingPreferenceName = ref('')
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
@@ -195,7 +199,7 @@ const visibleRouteStrategyOptions = computed(() => (
     : []
 ))
 
-const schedulingPreferenceSelectorVisible = computed(() => editingPurpose.value !== 'chat')
+const schedulingPreferenceSelectorVisible = computed(() => !schedulingPreferencePurposeExempt(editingPurpose.value))
 
 const visibleSchedulingPreferenceOptions = computed<SelectOption[]>(() => (
   activeModalSession.value
@@ -401,7 +405,7 @@ function currentApiKeyEditableSnapshot(
 
 /** purpose=chat 的 Key 不消费调度偏好，快照恒为缺失（历史 NULL），任何路径都不提交偏好 ID。 */
 function schedulingPreferenceSnapshotId(): string | undefined {
-  if (editingPurpose.value === 'chat') return undefined
+  if (schedulingPreferencePurposeExempt(editingPurpose.value)) return undefined
   return form.schedulingPreferenceId?.trim() || undefined
 }
 

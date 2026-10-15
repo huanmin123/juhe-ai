@@ -119,8 +119,6 @@ func TestWdMountRegistersRouteFamiliesWithAuthGates(t *testing.T) {
 		{"my 账户用量", "/__aisys__/api/my-stats/account-usage"},
 		{"admin 用量记录", "/__aisys__/api/usage-records"},
 		{"my 用量记录", "/__aisys__/api/my-usage-records"},
-		{"运行时快照", "/__aisys__/api/stats/system-metrics/runtime/summary"},
-		{"Go 运行时趋势", "/__aisys__/api/stats/system-metrics/go-runtime-trend"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -484,105 +482,6 @@ func TestWdAiPerformanceScopedKeywordGroupVisibility(t *testing.T) {
 	options := wdDataArray(t, recorder)
 	if len(options) != 1 || options[0].(map[string]any)["id"] != "acct-vis" {
 		t.Fatalf("分组授权可见账户应命中关键字选项: %#v", options)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// system-metrics
-// ---------------------------------------------------------------------------
-
-func TestWdSystemMetricsTrendHandler(t *testing.T) {
-	fixture := newWdFixture(t)
-	fixture.exec(t,
-		`INSERT INTO system_metrics_trend_windows (window_key, start_date, end_date, bucket_key, sample_count, cpu_percent_sum, memory_used_percent_sum, network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_count, network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_count)
-			VALUES ('2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04T10', 2, 88.4, 55.0, 2000, 2, 4000, 2)`,
-		// 最新样本：须落在 latest 新鲜窗（now-2min）内；server 两条较新者胜出，
-		// 另有一个非法角色样本被读侧过滤。
-		`INSERT INTO process_event_loop_samples (id, process_role, process_pid, sampled_at, event_loop_lag_ms, process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes)
-			VALUES ('s1', 'server', 100, '2026-09-04T11:59:00.000Z', 12, 1, 2, 3)`,
-		`INSERT INTO process_event_loop_samples (id, process_role, process_pid, sampled_at, event_loop_lag_ms, process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes)
-			VALUES ('s2', 'server', 100, '2026-09-04T11:59:30.000Z', 20, 5, 6, 7)`,
-		`INSERT INTO process_event_loop_samples (id, process_role, process_pid, sampled_at, event_loop_lag_ms, process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes)
-			VALUES ('s3', 'bogus-role', 7, '2026-09-04T11:59:40.000Z', 999, 0, 0, 0)`,
-		// 峰值样本（lag 最大）。
-		`INSERT INTO process_event_loop_samples (id, process_role, process_pid, sampled_at, event_loop_lag_ms)
-			VALUES ('s4', 'stats-worker', 200, '2026-09-04T10:00:00.000Z', 80)`,
-		// 趋势窗口行。
-		`INSERT INTO process_event_loop_trend_windows (window_key, start_date, end_date, bucket_key, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum, process_heap_used_bytes_max, process_heap_total_bytes_sum, process_heap_total_bytes_max)
-			VALUES ('2026-09-04:2026-09-04', '2026-09-04', '2026-09-04', '2026-09-04T10', 'server', 2, 30, 2, 18, 6, 4, 8, 5, 10, 6)`,
-		// 峰值窗口之外但 24h 内的样本由 latest/peak 读取；趋势窗口只导出行内角色。
-	)
-	recorder := wdGet(t, fixture.deps.systemMetricsTrendHandler, "/?startDate=2026-09-04&endDate=2026-09-04", adminAuth(""))
-	payload := wdData(t, recorder)
-	hourly := wdJSONArray(t, payload["hourlyTrend"], "hourlyTrend")
-	if len(hourly) != 1 {
-		t.Fatalf("系统指标小时趋势错误: %#v", hourly)
-	}
-	point := hourly[0].(map[string]any)
-	if point["statHour"] != "2026-09-04T10" || point["cpuPercentAvg"] != float64(44) || point["networkRxBytesPerSecondAvg"] != float64(1000) {
-		t.Fatalf("系统指标聚合错误: %#v", point)
-	}
-	latest := wdJSONArray(t, payload["processEventLoopLatestStatus"], "latest")
-	if len(latest) != len(standaloneProcessRoles) {
-		t.Fatalf("standalone 模式应导出固定角色表: %d", len(latest))
-	}
-	// server 最新样本是 s2（11:30），非法角色不出现在状态里。
-	serverStatus := map[string]any{}
-	for _, item := range latest {
-		status := item.(map[string]any)
-		if status["processRole"] == "server" {
-			serverStatus = status
-		}
-	}
-	if serverStatus["sampleAvailable"] != true || serverStatus["eventLoopLagMs"] != float64(20) || serverStatus["processPid"] != float64(100) {
-		t.Fatalf("server 最新状态错误: %#v", serverStatus)
-	}
-	peak := wdJSONArray(t, payload["processEventLoopPeakStatus"], "peak")
-	statsPeak := map[string]any{}
-	for _, item := range peak {
-		status := item.(map[string]any)
-		if status["processRole"] == "stats-worker" {
-			statsPeak = status
-		}
-	}
-	if statsPeak["eventLoopLagMs"] != float64(80) {
-		t.Fatalf("stats-worker 峰值错误: %#v", statsPeak)
-	}
-	trend := wdJSONArray(t, payload["processEventLoopTrend"], "trend")
-	if len(trend) != 1 {
-		t.Fatalf("进程趋势行错误: %#v", trend)
-	}
-	trendPoint := trend[0].(map[string]any)
-	if trendPoint["eventLoopLagMsAvg"] != float64(15) || trendPoint["processRssBytesAvg"] != float64(3) || trendPoint["processRole"] != "server" {
-		t.Fatalf("进程趋势聚合错误: %#v", trendPoint)
-	}
-	// 日期契约 400。
-	if recorder := wdGet(t, fixture.deps.systemMetricsTrendHandler, "/?startDate=2026/09/04", adminAuth("")); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("非法日期应 400: %d", recorder.Code)
-	}
-}
-
-func TestWdRuntimeSnapshotRoutesServeDegradation(t *testing.T) {
-	fixture := newWdFixture(t)
-	recorder := wdGet(t, fixture.deps.runtimeSummaryHandler, "/", adminAuth(""))
-	payload := wdData(t, recorder)
-	if payload["runtimeSnapshotAvailable"] != false || payload["queuesAvailable"] != false || payload["jobsAvailable"] != false {
-		t.Fatalf("运行时快照应保持不可用降级: %#v", payload)
-	}
-	if recorder.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("运行时快照应带 no-store")
-	}
-	recorder = wdGet(t, fixture.deps.runtimeJobsHandler, "/?page=2&pageSize=20", adminAuth(""))
-	jobs := wdData(t, recorder)
-	if jobs["page"] != float64(2) || jobs["pageSize"] != float64(20) || jobs["total"] != float64(0) {
-		t.Fatalf("jobs 分页契约错误: %#v", jobs)
-	}
-	recorder = wdGet(t, fixture.deps.runtimeQueuesHandler, "/?page=0", adminAuth(""))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("page=0 应 400: %d %s", recorder.Code, recorder.Body.String())
-	}
-	if got := decodeBody(t, recorder)["message"]; got != "后台任务分页参数不合法" {
-		t.Fatalf("400 消息错误: %#v", got)
 	}
 }
 

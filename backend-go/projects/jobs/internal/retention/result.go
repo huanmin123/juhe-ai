@@ -46,12 +46,6 @@ type CleanupResult struct {
 	ClientIpAccountUsageRangeWindows   int64
 	ClientIpAccountRangeWindowDirtyIps int64
 	AccountUsageSnapshots              int64
-	SystemMetricsSamples               int64
-	SystemMetricsHourly                int64
-	SystemMetricsTrendWindows          int64
-	ProcessEventLoopSamples            int64
-	ProcessEventLoopHourly             int64
-	ProcessEventLoopTrendWindows       int64
 	SystemSessions                     int64
 	CodexContextSessions               int64
 	CodexContextResponses              int64
@@ -106,12 +100,6 @@ func (r *CleanupResult) Add(other CleanupResult) {
 	r.ClientIpAccountUsageRangeWindows += other.ClientIpAccountUsageRangeWindows
 	r.ClientIpAccountRangeWindowDirtyIps += other.ClientIpAccountRangeWindowDirtyIps
 	r.AccountUsageSnapshots += other.AccountUsageSnapshots
-	r.SystemMetricsSamples += other.SystemMetricsSamples
-	r.SystemMetricsHourly += other.SystemMetricsHourly
-	r.SystemMetricsTrendWindows += other.SystemMetricsTrendWindows
-	r.ProcessEventLoopSamples += other.ProcessEventLoopSamples
-	r.ProcessEventLoopHourly += other.ProcessEventLoopHourly
-	r.ProcessEventLoopTrendWindows += other.ProcessEventLoopTrendWindows
 	r.SystemSessions += other.SystemSessions
 	r.CodexContextSessions += other.CodexContextSessions
 	r.CodexContextResponses += other.CodexContextResponses
@@ -164,17 +152,6 @@ func (r *CleanupResult) AddUsageStats(counts UsageStatsRetentionCounts) {
 	r.AccountUsageSnapshots += counts.AccountUsageSnapshots
 }
 
-// AddSystemMetrics mirrors addCleanupResult over a stats-writer
-// cleanup_system_metrics_retention result.
-func (r *CleanupResult) AddSystemMetrics(counts SystemMetricsRetentionCounts) {
-	r.SystemMetricsSamples += counts.SystemMetricsSamples
-	r.SystemMetricsHourly += counts.SystemMetricsHourly
-	r.SystemMetricsTrendWindows += counts.SystemMetricsTrendWindows
-	r.ProcessEventLoopSamples += counts.ProcessEventLoopSamples
-	r.ProcessEventLoopHourly += counts.ProcessEventLoopHourly
-	r.ProcessEventLoopTrendWindows += counts.ProcessEventLoopTrendWindows
-}
-
 // Sum mirrors sumDeleted: the total number of deleted entities across all
 // counters. Batch loops compare it against zero to decide whether to stop.
 func (r CleanupResult) Sum() int64 {
@@ -221,12 +198,6 @@ func (r CleanupResult) Sum() int64 {
 	sum += r.ClientIpAccountUsageRangeWindows
 	sum += r.ClientIpAccountRangeWindowDirtyIps
 	sum += r.AccountUsageSnapshots
-	sum += r.SystemMetricsSamples
-	sum += r.SystemMetricsHourly
-	sum += r.SystemMetricsTrendWindows
-	sum += r.ProcessEventLoopSamples
-	sum += r.ProcessEventLoopHourly
-	sum += r.ProcessEventLoopTrendWindows
 	sum += r.SystemSessions
 	sum += r.CodexContextSessions
 	sum += r.CodexContextResponses
@@ -281,12 +252,6 @@ func (r CleanupResult) Values() []any {
 		"clientIpAccountUsageRangeWindows", r.ClientIpAccountUsageRangeWindows,
 		"clientIpAccountRangeWindowDirtyIps", r.ClientIpAccountRangeWindowDirtyIps,
 		"accountUsageSnapshots", r.AccountUsageSnapshots,
-		"systemMetricsSamples", r.SystemMetricsSamples,
-		"systemMetricsHourly", r.SystemMetricsHourly,
-		"systemMetricsTrendWindows", r.SystemMetricsTrendWindows,
-		"processEventLoopSamples", r.ProcessEventLoopSamples,
-		"processEventLoopHourly", r.ProcessEventLoopHourly,
-		"processEventLoopTrendWindows", r.ProcessEventLoopTrendWindows,
 		"systemSessions", r.SystemSessions,
 		"codexContextSessions", r.CodexContextSessions,
 		"codexContextResponses", r.CodexContextResponses,
@@ -395,28 +360,5 @@ func (c UsageStatsRetentionCounts) Sum() int64 {
 	sum += c.ClientIpAccountUsageRangeWindows
 	sum += c.ClientIpAccountRangeWindowDirtyIps
 	sum += c.AccountUsageSnapshots
-	return sum
-}
-
-// SystemMetricsRetentionCounts mirrors SystemMetricsRetentionCleanupResult,
-// the stats-writer result of cleanup_system_metrics_retention.
-type SystemMetricsRetentionCounts struct {
-	SystemMetricsSamples         int64
-	SystemMetricsHourly          int64
-	SystemMetricsTrendWindows    int64
-	ProcessEventLoopSamples      int64
-	ProcessEventLoopHourly       int64
-	ProcessEventLoopTrendWindows int64
-}
-
-// Sum mirrors sumNumbers over the system-metrics result.
-func (c SystemMetricsRetentionCounts) Sum() int64 {
-	var sum int64
-	sum += c.SystemMetricsSamples
-	sum += c.SystemMetricsHourly
-	sum += c.SystemMetricsTrendWindows
-	sum += c.ProcessEventLoopSamples
-	sum += c.ProcessEventLoopHourly
-	sum += c.ProcessEventLoopTrendWindows
 	return sum
 }

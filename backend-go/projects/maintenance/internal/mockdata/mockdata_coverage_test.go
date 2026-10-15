@@ -173,10 +173,6 @@ func TestCoverageAllowEmptyRules(t *testing.T) {
 		{"record_maintenance_jobs", true},
 		{"account_health_probe_request_outbox", true},
 		{"account_health_direct_input_suppressions", true},
-		{"system_metrics_hourly", true},
-		{"process_event_loop_hourly", true},
-		{"system_metrics_trend_windows", true},
-		{"process_event_loop_trend_windows", true},
 		{"anything_owner_leases", true},
 		{"anything_key_cursors", true},
 		{"anything_projection_cursors", true},
@@ -393,7 +389,7 @@ func TestCoverageAssertionInventoryPinsVerifiedTables(t *testing.T) {
 		seen[assertion.Name] = true
 		perDomain[assertion.Domain]++
 	}
-	for _, domain := range []string{DomainBusiness, DomainUsage, DomainStats, DomainObservability, DomainChatCodexModelCheck, DomainStudio} {
+	for _, domain := range []string{DomainBusiness, DomainUsage, DomainStats, DomainObservability, DomainChatCodexModelCheck} {
 		if perDomain[domain] == 0 {
 			t.Fatalf("domain %s has no coverage assertion", domain)
 		}

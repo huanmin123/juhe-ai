@@ -3,11 +3,12 @@
 // 环境变量 JUHE_AI_SCHEDPREF_MIGRATION_PG_SMOKE_URL 指向一次性隔离库时才运
 // 行，口径同 capabilitydomain）：
 //   - 预检报告：五种模式各自有效调度参数、坏配置清单（JSON 损坏/非法值/越界/
-//     未知模式）、显式绑定/NULL 普通/chat 计数、重名冲突预测、Blocking；
+//     未知模式）、显式绑定/NULL 普通/chat/studio 计数、重名冲突预测、Blocking；
 //   - 执行：等值偏好生成（键序不同与旧 firstByteThresholdMs 别名均按规范化参
 //     数等值迁移）、owner 内重名自动加序号 -2、cost_first/缺省回填内置 ID、
-//     显式绑定与 chat Key 一律不动、route_strategies.config_json 逐字节不变
-//     （回滚 oracle）、按 owner 分批短事务、完成记录计数；
+//     显式绑定与 chat / studio Key 一律不动（studio NULL Key 与 chat 同规，
+//     2026-10-13 主代理裁决 B1 修复）、route_strategies.config_json 逐字节不
+//     变（回滚 oracle）、按 owner 分批短事务、完成记录计数；
 //   - 断点恢复：running 记录续跑、确定性 ID 复用不重复建行、名称占用联动加
 //     序号；复用行配置不等值 fail-closed；
 //   - 坏数据阻断：零写入、无完成记录，修复后同命令重跑收敛；
@@ -240,6 +241,8 @@ func seedEndToEndFixtures(t *testing.T, db *sql.DB) {
 	seedKeyFixture(t, db, "k4", "sys-a", "st-default", "general", "")
 	seedKeyFixture(t, db, "k5", "sys-a", "st-speed-1", "general", "pref-p0")
 	seedKeyFixture(t, db, "k6", "sys-a", "st-speed-1", "chat", "")
+	// studio NULL Key（EnsureStudioKey 形态：绑定列 NULL）：与 chat 同规排除。
+	seedKeyFixture(t, db, "k-studio", "sys-a", "st-cost", "studio", "")
 	// sys-b
 	seedStrategyFixture(t, db, "st-b-speed", "sys-b", "策略B", "failover", "active",
 		`{"normalRoutingConfig":{"schedulingPreference":"speed_first"}}`)
@@ -266,8 +269,9 @@ func TestRunEndToEnd(t *testing.T) {
 	if report.APIKeysNullGeneral != 5 || report.APIKeysBackfilled != 5 {
 		t.Fatalf("回填计数异常: nullGeneral=%d backfilled=%d", report.APIKeysNullGeneral, report.APIKeysBackfilled)
 	}
-	if report.APIKeysChat != 1 || report.APIKeysExplicitBound != 1 {
-		t.Fatalf("chat/显式绑定计数异常: chat=%d explicit=%d", report.APIKeysChat, report.APIKeysExplicitBound)
+	if report.APIKeysChat != 1 || report.APIKeysStudioExcluded != 1 || report.APIKeysExplicitBound != 1 {
+		t.Fatalf("chat/studio/显式绑定计数异常: chat=%d studio=%d explicit=%d",
+			report.APIKeysChat, report.APIKeysStudioExcluded, report.APIKeysExplicitBound)
 	}
 
 	// 等值偏好：派生名被既有偏好行占用时自动加序号 -2（pref-occupy 占用
@@ -303,7 +307,8 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 
 	// 回填目标：speed_first → 确定性 ID；cost_first/缺省 → 内置 ID；显式与
-	// chat Key 一律不动。
+	// chat / studio Key 一律不动（studio NULL Key 与 chat 同规：绑定列保持
+	// NULL，B1 修复——不进回填、不阻断完成记录）。
 	for keyID, want := range map[string]string{
 		"k1": "schpref-mig-st-speed-1", "k2": "schpref-mig-st-speed-2",
 		"k3": builtinID, "k4": builtinID, "kb": "schpref-mig-st-b-speed",
@@ -317,6 +322,9 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 	if got := storedKeyBinding(t, db, "k6"); got.Valid {
 		t.Fatalf("chat Key 被改动: %v", got)
+	}
+	if got := storedKeyBinding(t, db, "k-studio"); got.Valid {
+		t.Fatalf("studio Key 被改动: %v", got)
 	}
 
 	// 回滚 oracle：route_strategies.config_json 逐字节不变。
@@ -387,6 +395,7 @@ func TestPreflightReport(t *testing.T) {
 	seedKeyFixture(t, db, "k-a1", "sys-a", "st-normal-speed", "general", "")
 	seedKeyFixture(t, db, "k-explicit", "sys-a", "st-normal-speed", "general", "pref-p0")
 	seedKeyFixture(t, db, "k-chat", "sys-a", "st-normal-speed", "chat", "")
+	seedKeyFixture(t, db, "k-studio", "sys-a", "st-normal-speed", "studio", "")
 	seedKeyFixture(t, db, "k-cost", "sys-a", "st-failover-default", "general", "")
 	seedKeyFixture(t, db, "k-bad", "sys-a", "st-bad-json", "general", "")
 	toggleForeignKeys(t, db, true)
@@ -416,8 +425,10 @@ func TestPreflightReport(t *testing.T) {
 		t.Fatalf("未知模式必须计入坏数据: %+v", got)
 	}
 
-	// Key 计数：显式 1、NULL 普通 3、chat 1。
-	if report.APIKeysTotal != 5 || report.APIKeysGeneral != 4 || report.APIKeysChat != 1 ||
+	// Key 计数：显式 1、NULL 普通 3、chat 1、studio 1（studio 不计入普通 Key，
+	// B1 修复后 apiKeysGeneral 只含 purpose=general）。
+	if report.APIKeysTotal != 6 || report.APIKeysGeneral != 4 || report.APIKeysChat != 1 ||
+		report.APIKeysStudioExcluded != 1 ||
 		report.APIKeysExplicitBound != 1 || report.APIKeysNullGeneral != 3 {
 		t.Fatalf("Key 计数异常: %+v", report)
 	}

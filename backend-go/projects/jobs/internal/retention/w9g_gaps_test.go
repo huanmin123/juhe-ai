@@ -85,18 +85,6 @@ func (c *w9gCancelAfterStats) CleanupUsageStatsRetention(ctx context.Context, in
 	return counts, err
 }
 
-// w9gCancelAfterMetrics 在 CleanupSystemMetricsRetention 返回前取消 ctx。
-type w9gCancelAfterMetrics struct {
-	*fakeStatsWriter
-	cancel context.CancelFunc
-}
-
-func (c *w9gCancelAfterMetrics) CleanupSystemMetricsRetention(ctx context.Context, input SystemMetricsRetentionInput) (SystemMetricsRetentionCounts, error) {
-	counts, err := c.fakeStatsWriter.CleanupSystemMetricsRetention(ctx, input)
-	c.cancel()
-	return counts, err
-}
-
 // w9gCancelAfterCodexStorage 在 ProcessBatch 返回前取消 ctx。
 type w9gCancelAfterCodexStorage struct {
 	inner  *fakeCodexStorage
@@ -113,7 +101,6 @@ func (c *w9gCancelAfterCodexStorage) ProcessBatch(ctx context.Context, keys []st
 type w9gFailingStats struct {
 	*fakeStatsWriter
 	usageErr   error
-	metricsErr error
 	upsertErr  error
 	nonBizErr  error
 }
@@ -123,13 +110,6 @@ func (f *w9gFailingStats) CleanupUsageStatsRetention(ctx context.Context, input 
 		return UsageStatsRetentionCounts{}, f.usageErr
 	}
 	return f.fakeStatsWriter.CleanupUsageStatsRetention(ctx, input)
-}
-
-func (f *w9gFailingStats) CleanupSystemMetricsRetention(ctx context.Context, input SystemMetricsRetentionInput) (SystemMetricsRetentionCounts, error) {
-	if f.metricsErr != nil {
-		return SystemMetricsRetentionCounts{}, f.metricsErr
-	}
-	return f.fakeStatsWriter.CleanupSystemMetricsRetention(ctx, input)
 }
 
 func (f *w9gFailingStats) UpsertAccountUsageSnapshots(ctx context.Context, inputs []AccountUsageSnapshotUpsertInput) error {
@@ -179,9 +159,6 @@ func TestW9GMissingPortsFailClosed(t *testing.T) {
 
 	if _, err := job.stats().CleanupUsageStatsRetention(ctx, UsageStatsRetentionInput{}); err == nil {
 		t.Fatal("missingStatsWriter.CleanupUsageStatsRetention 必须 fail-closed")
-	}
-	if _, err := job.stats().CleanupSystemMetricsRetention(ctx, SystemMetricsRetentionInput{}); err == nil {
-		t.Fatal("missingStatsWriter.CleanupSystemMetricsRetention 必须 fail-closed")
 	}
 	if _, err := job.stats().CleanupNonBusinessStatsData(ctx, "c", 1); err == nil {
 		t.Fatal("missingStatsWriter.CleanupNonBusinessStatsData 必须 fail-closed")
@@ -407,17 +384,6 @@ func TestW9GSQLiteStageFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("system metrics 清理失败上抛", func(t *testing.T) {
-		stats := &fakeStatsWriter{}
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
-			j.Stats = &w9gFailingStats{fakeStatsWriter: stats, metricsErr: errors.New("metrics down")}
-		})
-		_, err := job.CleanupExpiredRetainedData(ctx)
-		if err == nil || err.Error() != "metrics down" {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
 	t.Run("system sessions 清理失败上抛", func(t *testing.T) {
 		job, _, _, _, db, _ := w9gBaseJob(t, nil)
 		db.sessionsErr = sessionsErr
@@ -552,16 +518,6 @@ func TestW9GBatchLoopAbortAndRhythm(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics 满批进入睡眠后失败上抛", func(t *testing.T) {
-		sleeper := &countingSleeper{err: errors.New("pause aborted")}
-		job, _, _, stats, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) { j.Sleep = sleeper.sleep })
-		stats.metricsScript = []SystemMetricsRetentionCounts{{SystemMetricsSamples: CleanupBatchSize}}
-		_, err := job.CleanupExpiredRetainedData(ctx)
-		if err == nil || err.Error() != "pause aborted" {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
 	t.Run("codex 满批续跑进入睡眠后失败上抛", func(t *testing.T) {
 		sleeper := &countingSleeper{err: errors.New("pause aborted")}
 		job, _, _, _, db, _ := w9gBaseJob(t, func(j *DataRetentionJob) { j.Sleep = sleeper.sleep })
@@ -588,24 +544,6 @@ func TestW9GBatchLoopAbortAndRhythm(t *testing.T) {
 		}
 		if result.UsageStatsMinute != int64(CleanupMaxBatchesPerRun) {
 			t.Fatalf("minute counter = %d", result.UsageStatsMinute)
-		}
-	})
-
-	t.Run("metrics 满批耗尽配额", func(t *testing.T) {
-		job, _, _, stats, _, _ := w9gBaseJob(t, nil)
-		stats.metricsScript = make([]SystemMetricsRetentionCounts, CleanupMaxBatchesPerRun)
-		for index := range stats.metricsScript {
-			stats.metricsScript[index] = SystemMetricsRetentionCounts{SystemMetricsSamples: 1}
-		}
-		result, err := job.CleanupExpiredRetainedData(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if stats.metricsCalls != CleanupMaxBatchesPerRun {
-			t.Fatalf("metrics calls = %d, want %d", stats.metricsCalls, CleanupMaxBatchesPerRun)
-		}
-		if result.SystemMetricsSamples != int64(CleanupMaxBatchesPerRun) {
-			t.Fatalf("samples counter = %d", result.SystemMetricsSamples)
 		}
 	})
 
@@ -655,30 +593,6 @@ func TestW9GBatchLoopAbortAndRhythm(t *testing.T) {
 		}
 		if stats.usageCalls != 1 {
 			t.Fatalf("stats calls = %d, want 1", stats.usageCalls)
-		}
-	})
-
-	t.Run("metrics 调用期间取消在 yield 捕获", func(t *testing.T) {
-		job, _, _, stats, _, _ := w9gBaseJob(t, nil)
-		cancelCtx, cancel := context.WithCancel(ctx)
-		job.Stats = &w9gCancelAfterMetrics{fakeStatsWriter: stats, cancel: cancel}
-		_, err := job.CleanupExpiredRetainedData(cancelCtx)
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("metrics 满批后取消在循环顶部捕获", func(t *testing.T) {
-		job, _, _, stats, _, _ := w9gBaseJob(t, nil)
-		cancelCtx, cancel := context.WithCancel(ctx)
-		job.Sleep = w9gCancelSleeper(cancel)
-		stats.metricsScript = []SystemMetricsRetentionCounts{{SystemMetricsSamples: 1}}
-		_, err := job.CleanupExpiredRetainedData(cancelCtx)
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("err = %v", err)
-		}
-		if stats.metricsCalls != 1 {
-			t.Fatalf("metrics calls = %d, want 1", stats.metricsCalls)
 		}
 	})
 
@@ -788,17 +702,6 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics 清理失败上抛", func(t *testing.T) {
-		stats := &fakeStatsWriter{}
-		job, _, _, _, _, _ := w9gBaseJob(t, func(j *DataRetentionJob) {
-			j.Mode = ModePostgres
-			j.Stats = &w9gFailingStats{fakeStatsWriter: stats, metricsErr: errors.New("pg metrics down")}
-		})
-		if _, err := job.Run(ctx); err == nil || err.Error() != "pg metrics down" {
-			t.Fatalf("err = %v", err)
-		}
-	})
-
 	t.Run("sessions 清理失败上抛", func(t *testing.T) {
 		job, _, _, _, db, _ := w9gBaseJob(t, func(j *DataRetentionJob) { j.Mode = ModePostgres })
 		db.sessionsErr = errors.New("pg sessions down")
@@ -843,7 +746,6 @@ func TestW9GPostgresStageFailures(t *testing.T) {
 		})
 		public.script = []int64{0}
 		stats.usageScript = []UsageStatsRetentionCounts{{}}
-		stats.metricsScript = []SystemMetricsRetentionCounts{{}}
 		db.sessionsScript = []int64{0}
 		db.codexScript = []*CodexContextExpiredCleanup{{DeletedSessions: CleanupBatchSize, StorageKeys: []string{"k"}, HasMore: true}}
 		if _, err := job.Run(ctx); err == nil || err.Error() != "pause aborted" {

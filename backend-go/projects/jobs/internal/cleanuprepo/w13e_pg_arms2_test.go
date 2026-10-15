@@ -134,13 +134,6 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 	}
 	{
 		rec := newPGRecorder()
-		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats.system_metrics_samples"}})}
-		if _, err := store.CleanupSystemMetricsRetention(ctx, retention.SystemMetricsRetentionInput{SamplesCutoffIso: kitUpdatedAt}); err == nil {
-			t.Fatalf("PG system metrics 清理失败应透传")
-		}
-	}
-	{
-		rec := newPGRecorder()
 		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(t, rec, w13ePGOptions{})}
 		counts, err := store.CleanupNonBusinessStatsData(ctx, kitUpdatedAt, 1, pgTestZone)
 		if err != nil || !counts.HasMore {

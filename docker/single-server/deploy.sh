@@ -17,6 +17,17 @@
 #      重建时后端发版会把旧前端再次烤进新镜像）：发布前探测线上前端 buildId，
 #      前端相对该版本有任何改动（已提交或工作区未提交）即自动 pnpm build + 上传
 #      dist，且校验产物 buildId 等于 HEAD、产物内容新于全部前端改动，否则中止。
+#   6. 迁移前置核验（2026-10-14 起，只读）：组装镜像前用 maintenance 只读
+#      verify 命令核验两条新版 gateway/jobs 启动门禁——capability domain 阶段
+#      记录已封存 m2_finalized、调度偏好迁移 stage=completed，任一未就绪立即
+#      中止并指向维护窗口文档（此前先 build+up 后才提示迁移，顺序倒置会让
+#      新版进程 fail-fast 循环）；maintenance 单独发布不核验（维护窗口的既定
+#      顺序是先更 CLI 镜像、后跑迁移，此时门禁未就绪属预期）。
+#   7. 部署配置同步（2026-10-14 起）：compose.yml / Caddyfile /
+#      Dockerfile.runtime 与远端逐文件 md5 比对，漂移即自动同步上传（tar
+#      管道，仅这三个文件，不触碰 .env），上传后复核；失败中止发布。远端
+#      compose 的资源契约（gateway mem_limit/GOMEMLIMIT、jobs mem_limit）
+#      不再依赖人工记忆补传。
 #
 # 红线：本机构建（服务器严禁编译，仅 docker compose build 组装镜像），见同目录 README 与
 # .local/project-resources/prod/runbooks/国内单机Docker部署与运维.md。
@@ -58,6 +69,17 @@ case "$TARGET" in
 esac
 
 cd "$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
+# 主机层优化自检（BUG-0313，2026-10-14 起，幂等）：swap 兜底 / 防冻结 sysctl /
+# journald 容量上限。每次发布自动执行一次，已收敛的机器秒级跳过；单项失败仅
+# 告警不阻塞发布（与二进制发布正交，见 host-init.sh 头注）。新机初始化除本步
+# 外的完整序列见 docs/deploy/部署指南.md 第 1、2 节。
+# ---------------------------------------------------------------------------
+echo "== 前置：主机层优化自检（幂等，BUG-0313）=="
+if ! $SSH "$SERVER" 'bash -s' < "$SCRIPT_DIR/host-init.sh"; then
+  echo "[WARN] 主机层优化存在未收敛项（上方输出），不影响本次发布；新机初始化请先单独修复重跑。" >&2
+fi
 
 # ---------------------------------------------------------------------------
 # 前端漏发门禁（2026-10-08 起）。
@@ -167,6 +189,68 @@ for p in "${TARGETS[@]}"; do
   echo "  juhe-ai-$p  OK"
 done
 
+# ---------------------------------------------------------------------------
+# 部署配置同步（2026-10-14 起）：compose.yml / Caddyfile / Dockerfile.runtime
+# 此前只在初装时上传，发布脚本不校验远端副本——远端 compose 的资源契约变更
+# （gateway mem_limit=3g / GOMEMLIMIT=2300MiB、jobs mem_limit=1g 等）只能靠
+# 人工记忆补传（部署指南旧表述"deploy.sh 只上传二进制"自证）。本步逐文件
+# 比对本地与远端 md5（仿上方三点校验），不一致即自动同步上传：tar 管道只传
+# 这三个文件（不触碰 .env），上传后复核，失败中止发布。
+# ---------------------------------------------------------------------------
+echo "== 部署配置同步检查（compose.yml / Caddyfile / Dockerfile.runtime）=="
+CONFIG_FILES=(compose.yml Caddyfile Dockerfile.runtime)
+CONFIG_DRIFTED=()
+for f in "${CONFIG_FILES[@]}"; do
+  LOCAL_CFG_MD5=$(md5sum "$SCRIPT_DIR/$f" | awk '{print $1}')
+  REMOTE_CFG_MD5=$($SSH "$SERVER" "md5sum $SERVER_DIR/$f" 2>/dev/null | awk '{print $1}') || REMOTE_CFG_MD5=""
+  if [ "$LOCAL_CFG_MD5" != "$REMOTE_CFG_MD5" ]; then
+    CONFIG_DRIFTED+=("$f")
+    echo "  $f 漂移：本地 $LOCAL_CFG_MD5 vs 远端 ${REMOTE_CFG_MD5:-<文件缺失>}"
+  fi
+done
+if [ ${#CONFIG_DRIFTED[@]} -gt 0 ]; then
+  echo "  漂移文件：${CONFIG_DRIFTED[*]}，自动同步上传（仅上述清单内文件，不触碰 .env）"
+  tar czf - -C "$SCRIPT_DIR" "${CONFIG_FILES[@]}" | $SSH "$SERVER" "tar xzf - -C $SERVER_DIR"
+  for f in "${CONFIG_FILES[@]}"; do
+    LOCAL_CFG_MD5=$(md5sum "$SCRIPT_DIR/$f" | awk '{print $1}')
+    REMOTE_CFG_MD5=$($SSH "$SERVER" "md5sum $SERVER_DIR/$f" 2>/dev/null | awk '{print $1}') || REMOTE_CFG_MD5=""
+    if [ "$LOCAL_CFG_MD5" != "$REMOTE_CFG_MD5" ]; then
+      echo "  [FAIL] $f 同步上传后 md5 仍不一致: 本地 $LOCAL_CFG_MD5 vs 远端 ${REMOTE_CFG_MD5:-<文件缺失>}" >&2
+      echo "         远端目录可能不可写或上传通道异常，发布中止；手工检查 $SERVER_DIR 后重试。" >&2
+      exit 1
+    fi
+  done
+  echo "  配置同步完成并复核一致：${CONFIG_DRIFTED[*]}"
+else
+  echo "  compose.yml / Caddyfile / Dockerfile.runtime 远端副本与本地一致"
+fi
+
+# ---------------------------------------------------------------------------
+# 迁移前置核验（2026-10-14 起，只读零写入）：新版 gateway/jobs 启动门禁要求
+# capability domain 阶段记录已封存 m2_finalized（AI 账户能力域 M2）与调度偏好
+# 迁移 stage=completed（P2），任一缺失都会 fail-fast 循环。此前流程先
+# build+up、发布后才提示跑迁移，顺序倒置。这里在组装镜像前用 maintenance 的
+# 只读 verify 命令核验（未就绪分别 exit 3/2，均按失败处理）。maintenance 的
+# verify 路径无 env 回退，--driver/--dsn 必须显式传参：非交互 SSH 命令先
+# source 服务器 .env，DSN 以远端展开的 "$JUHE_AI_POSTGRES_URL" 传入（与
+# README「拓扑」节一次性命令同源；deploy.sh 本地变量用 $SERVER_DIR 前缀区分）。
+# maintenance 单独发布不核验：维护窗口的既定顺序是先更 CLI 镜像、后跑迁移
+# （README「更新发布」节），此时门禁未就绪属预期，前置核验会让窗口流程死锁。
+# ---------------------------------------------------------------------------
+if [ "$TARGET" != "maintenance" ]; then
+  echo "== 迁移前置核验（只读；未就绪先完成维护窗口再发布）=="
+  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-account-capability-domain --account-capability-domain-stage=m2-cutover --account-capability-domain-check=postflight --driver postgres --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
+    echo "[FAIL] 账户能力域迁移未就绪（要求 global_settings 阶段记录已封存 m2_finalized），新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
+    echo "       先按 docker/single-server/README.md「账户能力域迁移维护窗口」完成停写窗口迁移并以 postflight 核验通过，再重新发布。" >&2
+    exit 1
+  fi
+  if ! $SSH "$SERVER" "cd $SERVER_DIR && set -a && . ./.env && set +a && docker compose --profile tool run --rm --no-deps maintenance --verify-scheduling-preferences --scheduling-preferences-check=postflight --driver postgres --dsn \"\$JUHE_AI_POSTGRES_URL\""; then
+    echo "[FAIL] 调度偏好迁移未完成（scheduling_preferences_migration stage != completed），新版 gateway/jobs 启动会 fail-fast 循环，发布中止。" >&2
+    echo "       先按 docker/single-server/README.md「调度偏好迁移维护窗口」完成停写窗口迁移并以 postflight 核验通过，再重新发布。" >&2
+    exit 1
+  fi
+fi
+
 echo "== [4/6] 服务器组装镜像并滚动更新 =="
 # maintenance 只重建镜像不 up：一次性 CLI 容器 up -d 会等待入口进程退出而
 # 挂起（2026-10-03 实测）；常驻进程照常滚动。
@@ -218,6 +302,7 @@ for p in "${TARGETS[@]}"; do
   done
   if [ -z "$ok" ]; then
     echo "  [FAIL] $p 5 分钟内未 healthy，回滚请用 build/bin/*.bak-* 产物重新发布" >&2
+    echo "         若为启动门禁失败（capability domain 未封存 m2_finalized / 调度偏好迁移未完成），先按 docker/single-server/README.md「更新发布」节维护窗口完成迁移再重试。" >&2
     exit 1
   fi
   CONTAINER_MD5=$($SSH "$SERVER" "docker exec juhe-ai-go-$p md5sum /usr/local/bin/juhe-ai-go-project" | awk '{print $1}')
@@ -254,4 +339,4 @@ if ! $SSH "$SERVER" "cd $SERVER_DIR && bash verify-release.sh"; then
 fi
 
 echo "== 发布完成：${TARGETS[*]}，公网健康 $CODE，发布后验证通过 =="
-echo "提示：发布后按运维手册跑一次 maintenance --ensure-schema（幂等加法）。"
+echo "提示：发布后按运维手册跑一次 maintenance --ensure-schema（已恢复幂等加法；studio 退场清理已移出普通 ensure，走显式 --apply-studio-retirement；含删列等破坏性收敛的 ensure 步骤必须在写者停止后执行——先看 docker/single-server/README.md「更新发布」节维护窗口，勿在 gateway/jobs 运行时直接跑）。"

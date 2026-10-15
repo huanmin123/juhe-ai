@@ -1,6 +1,7 @@
 package gatewaygemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -58,6 +59,7 @@ type StreamUsageFallbackResult struct {
 }
 
 const (
+	streamInspectorMaxLineBytes     = 256 * 1024
 	streamInspectorMaxEventBytes    = 256 * 1024
 	streamInspectorRecentEventTypes = 8
 	geminiStreamSkipReasonTooLarge  = "gemini_stream_event_too_large"
@@ -65,11 +67,14 @@ const (
 
 // StreamInspector 对齐 GeminiStreamInspector。
 type StreamInspector struct {
-	inspection            StreamInspection
-	eventName             string
-	dataLines             []string
-	dataBytes             int
-	pendingLine           strings.Builder
+	inspection StreamInspection
+	eventName  string
+	dataLines  []string
+	dataBytes  int
+	// pendingLine 是当前未完结行的字节缓冲（容量跨 chunk 复用），替代
+	// strings.Builder：每个 chunk 快照的 PendingEvent 判定可走字节前缀比较，
+	// 不再为读一行而复制。
+	pendingLine           []byte
 	pendingEventSummaries []StreamEventSummary
 }
 
@@ -78,31 +83,50 @@ func NewStreamInspector() *StreamInspector {
 	return &StreamInspector{inspection: StreamInspection{EventTypeCounts: map[string]int{}, Usage: EmptyUsage()}}
 }
 
-// PushChunk 对齐 pushChunk。
+// PushChunk 对齐 pushChunk：字节入参直达行扫描，避免整块 string 拷贝。
 func (s *StreamInspector) PushChunk(chunk []byte) StreamInspection {
-	return s.PushText(string(chunk))
+	return s.pushBytes(chunk)
 }
 
 // PushText 对齐 pushText。
 func (s *StreamInspector) PushText(text string) StreamInspection {
+	return s.pushBytes([]byte(text))
+}
+
+func (s *StreamInspector) pushBytes(chunk []byte) StreamInspection {
 	if s.inspection.Skipped {
 		return s.Snapshot()
 	}
 	offset := 0
-	for offset < len(text) {
-		newlineIndex := strings.IndexByte(text[offset:], '\n')
+	for offset < len(chunk) {
+		newlineIndex := bytes.IndexByte(chunk[offset:], '\n')
 		var segmentEnd int
 		if newlineIndex < 0 {
-			segmentEnd = len(text)
+			segmentEnd = len(chunk)
 		} else {
 			segmentEnd = offset + newlineIndex
 		}
-		s.pendingLine.WriteString(strings.TrimSuffix(text[offset:segmentEnd], "\r"))
+		// 对齐原 TrimSuffix(segment, "\r")：每个分段（含未完结尾段）剥一个行尾 \r。
+		segment := chunk[offset:segmentEnd]
+		if len(segment) > 0 && segment[len(segment)-1] == '\r' {
+			segment = segment[:len(segment)-1]
+		}
+		// 行级上限（对齐 openai 侧 streamInspectorMaxLineBytes）：未完结行缓冲
+		// 不得随无换行输入无上限累积；单行超限与事件超限同语义，整流跳过并
+		// 报告原因，缓冲随跳过后释放。
+		if len(s.pendingLine)+len(segment) > streamInspectorMaxLineBytes {
+			s.inspection.Skipped = true
+			s.inspection.SkipReason = geminiStreamSkipReasonTooLarge
+			s.pendingLine = nil
+			s.resetEvent()
+			return s.Snapshot()
+		}
+		s.pendingLine = append(s.pendingLine, segment...)
 		if newlineIndex < 0 {
 			break
 		}
-		s.processLine(s.pendingLine.String())
-		s.pendingLine.Reset()
+		s.processLine(string(s.pendingLine))
+		s.pendingLine = s.pendingLine[:0]
 		offset = segmentEnd + 1
 	}
 	return s.Snapshot()
@@ -129,9 +153,9 @@ func (s *StreamInspector) Finish() StreamInspection {
 	if s.inspection.Skipped {
 		return s.Snapshot()
 	}
-	if s.pendingLine.Len() > 0 {
-		s.processLine(s.pendingLine.String())
-		s.pendingLine.Reset()
+	if len(s.pendingLine) > 0 {
+		s.processLine(string(s.pendingLine))
+		s.pendingLine = s.pendingLine[:0]
 	}
 	s.flushEvent()
 	if s.inspection.OutputReceived && !s.inspection.FailedReceived {
@@ -154,7 +178,7 @@ func (s *StreamInspector) Snapshot() StreamInspection {
 		s.eventName,
 		len(s.dataLines),
 		s.dataBytes,
-		s.pendingLine.String(),
+		s.pendingLine,
 	)
 	return snapshot
 }

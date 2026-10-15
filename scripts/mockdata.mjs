@@ -35,17 +35,15 @@ export class MockdataUsageError extends Error {}
 // 威；Go 侧注册表变化时需同步本表）。go-equivalent 的任务由其他组件/进程接
 // 管，不在 worker 组合根 wiredTasks 清单里。
 const scheduledEntriesSnapshot = [
-  { name: 'system-metrics-sample', status: 'go-equivalent' },
-  { name: 'system-metrics-trend-windows-refresh', status: 'go-wired' },
+  // 2026-10-14 监控改造：system-metrics-sample / system-metrics-trend-windows-refresh
+  // 已随 gometrics 采样链删除从注册表退役，--run-jobs-once 任务清单不再引用。
   { name: 'usage-stats-aggregation', status: 'go-wired' },
   { name: 'usage-hot-window-refresh', status: 'go-wired' },
   { name: 'client-ip-stats-aggregation', status: 'go-wired' },
   { name: 'group-account-stats-refresh', status: 'go-wired' },
   { name: 'usage-rank-snapshots-refresh', status: 'go-wired' },
-  { name: 'ai-performance-summary-windows-refresh', status: 'go-wired' },
   { name: 'usage-overview-windows-refresh', status: 'go-wired' },
   { name: 'usage-scope-range-windows-refresh', status: 'go-wired' },
-  { name: 'authorization-usage-range-windows-refresh', status: 'go-wired' },
   { name: 'usage-quota-hourly-windows-refresh', status: 'go-wired' },
   { name: 'usage-stats-consistency-check', status: 'go-wired' },
   { name: 'background-task-run-reconcile', status: 'go-wired' },
@@ -435,8 +433,9 @@ export async function runMockdataPipeline(options = {}) {
         env: runtime.env,
       })
       if (exitCodes.verify === 3) {
-        // exit 3 的两类主因要分开说：专库缺文件（audit/operation/runtime-log/table-monitor/task-runs/account-health
-        // 由 gateway/jobs 首次启动建库，--ensure-schema 不建）与派生表未重建（--skip-rebuild 或常驻 jobs 未跑完）。
+        // exit 3 的两类主因要分开说：专库缺文件（audit/operation/runtime-log/task-runs/account-health
+        // 由 gateway/jobs 首次启动建库，--ensure-schema 不建；原 table-monitor
+        // 专库已随 2026-10-14 监控改造删除）与派生表未重建（--skip-rebuild 或常驻 jobs 未跑完）。
         console.error('[mockdata] 覆盖校验未 Ready（exit 3）：剩余空表与缺库清单见上方 JSON。')
         console.error('[mockdata] 若清单是「存储文件不存在」类 errors：先 pnpm dev 启动一次（随后停止）再重跑造数；若是派生聚合空表：启动常驻 jobs 后自动补齐。')
         printSummary(parsed, runtime, exitCodes)

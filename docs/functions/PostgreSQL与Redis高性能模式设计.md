@@ -101,11 +101,11 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 | `juhe_business` | 业务库 | 系统账户、会话、供应商、账号、分组、API Key、授权、代理、设置、公告 |
 | `juhe_dataset` | 数据集目录库 | 审计元数据、操作日志、公开接口日志、模型检测、记录清理目标；运行日志索引表由 jobs 的 F1 索引器唯一写入 |
 | `juhe_usage` | 使用记录目录库 + usage shard | `usage_records`、使用记录列表索引、账号 / API Key scope catalog |
-| `juhe_stats` | 统计结果库 | 用量桶、额度窗口、范围窗口、排行、账号质量、系统监控、表监控、`stats_job_state` |
+| `juhe_stats` | 统计结果库 | 用量桶、额度窗口、范围窗口、排行、账号质量、`stats_job_state` |
 | `juhe_codex_context` | Responses 桥接状态索引 | Responses session / response / compact 索引 |
 
 表名保留当前语义，schema 归属由各进程 store 包固化，不把 schema 名散落进业务逻辑。
-表监控在 PostgreSQL 模式下按这 5 个 schema 采样 relation size、估算行数和 1 小时 / 24 小时增长，结果统一写入 `juhe_stats.database_storage_snapshots` 与 `juhe_stats.table_storage_snapshots`，不回读 SQLite 文件路径。
+表 / 数据库容量观测由 postgres_exporter 直接抓取生产 PostgreSQL 承担（原"按 5 个 schema 采样 relation size 写入 `juhe_stats.database_storage_snapshots` / `juhe_stats.table_storage_snapshots`"的应用内表监控已随 2026-10-14 监控改造删除，两张快照表退役），见 [Prometheus 指标暴露设计](Prometheus指标暴露设计.md)。
 
 schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/internal/schema/pg_schema*.go`），由 `juhe-ai-maintenance --ensure-schema` 幂等执行（Node 时代的 `postgres-schema.ts` / `postgres:init-schema` 已随迁移删除）。生产单库除上表 5 个 schema 外，另有 `juhe_chat`（同由 `--ensure-schema` 预置）与 `juhe_jobs`、`juhe_j3b`（需手工预置 schema 后由 maintenance `--apply-*` 建表），以 `docker/single-server/README.md` 的拓扑节为准。
 

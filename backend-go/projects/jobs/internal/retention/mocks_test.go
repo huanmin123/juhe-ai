@@ -71,11 +71,8 @@ func (f *fakeUsageRecords) CleanupProcessedBefore(_ context.Context, cutoffCreat
 type fakeStatsWriter struct {
 	mutex             sync.Mutex
 	usageScript       []UsageStatsRetentionCounts
-	metricsScript     []SystemMetricsRetentionCounts
 	usageInputs       []UsageStatsRetentionInput
-	metricsInputs     []SystemMetricsRetentionInput
 	usageCalls        int
-	metricsCalls      int
 	nonBusinessCalls  int
 	nonBusinessInputs []string
 	err               error
@@ -92,21 +89,6 @@ func (f *fakeStatsWriter) CleanupUsageStatsRetention(_ context.Context, input Us
 	f.usageCalls++
 	if f.err != nil {
 		return UsageStatsRetentionCounts{}, f.err
-	}
-	return counts, nil
-}
-
-func (f *fakeStatsWriter) CleanupSystemMetricsRetention(_ context.Context, input SystemMetricsRetentionInput) (SystemMetricsRetentionCounts, error) {
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
-	f.metricsInputs = append(f.metricsInputs, input)
-	counts := SystemMetricsRetentionCounts{}
-	if f.metricsCalls < len(f.metricsScript) {
-		counts = f.metricsScript[f.metricsCalls]
-	}
-	f.metricsCalls++
-	if f.err != nil {
-		return SystemMetricsRetentionCounts{}, f.err
 	}
 	return counts, nil
 }

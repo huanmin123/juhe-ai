@@ -47,8 +47,7 @@ export function applyMediaCreateDefaults(
   if (declared.length > 0 && declared.every((mode) => allowed.has(mode))) {
     if (!allowed.has(form.healthCheckEndpointMode)) {
       form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
-        capabilityDomain: context.capabilityDomain,
-        defaultModes: declared
+        capabilityDomain: context.capabilityDomain
       })
     }
   } else {
@@ -60,8 +59,7 @@ export function applyMediaCreateDefaults(
     })
     if (modes.length) form.supportedEndpointModes = [...modes]
     form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
-      capabilityDomain: context.capabilityDomain,
-      defaultModes: form.supportedEndpointModes
+      capabilityDomain: context.capabilityDomain
     })
   }
   form.status = defaultStatusForCapabilityDomain(context.capabilityDomain)

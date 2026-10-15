@@ -102,7 +102,14 @@ type HandleUpstreamResponseInput struct {
 	MarkFirstOutput            func()
 	DownstreamCommitState      *DownstreamCommitState
 	Driver                     ResponseDriverPort
-	Deps                       *FinalizationDeps
+	// InteractionAffinityRemember 在 Gemini interactions 创建的下游提交前写入
+	// 账号亲和（Node finalization.ts:483 流式 beforeDownstreamCommit / :1054
+	// 非流式 res.send 前 rememberGeminiInteractionBeforeDownstreamCommit）。
+	// 返回错误阻断下游提交（流式丢弃预提交缓冲），chain 按
+	// AffinityUnavailableError 渲染 503 interaction_affinity_unavailable。
+	// nil = 未接线（非 interactions create / 非 2xx / 测试路径）。
+	InteractionAffinityRemember func(responseResourceId string) error
+	Deps                        *FinalizationDeps
 }
 
 func (input *HandleUpstreamResponseInput) nowMs() func() int64 {
@@ -308,9 +315,13 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 				prepareUpstreamResponseForDownstream(input.Downstream, input.UpstreamResponse, true)
 			},
 			DownstreamCommitState: input.DownstreamCommitState,
-			Driver:                driver.StreamDriver(),
-			Logger:                logger,
-			NowMs:                 input.nowMs(),
+			// Gemini interactions 创建流：首个下游写入前的亲和写入（Node
+			// finalization.ts:483 beforeDownstreamCommit）；nil = 未接线
+			// （非 create / 非 2xx），ensureBeforeDownstreamCommit 直接放行。
+			BeforeDownstreamCommit: input.InteractionAffinityRemember,
+			Driver:                 driver.StreamDriver(),
+			Logger:                 logger,
+			NowMs:                  input.nowMs(),
 		},
 	})
 	if pipeErr != nil {

@@ -1121,8 +1121,6 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "statsAggregationMaxBatchesPerRun", ValueJSON: "5"},
 	{Key: "usageHotWindowRefreshIntervalSeconds", ValueJSON: "600"},
 	{Key: "groupAccountStatsRefreshIntervalSeconds", ValueJSON: "60"},
-	{Key: "systemMetricsSampleIntervalSeconds", ValueJSON: "30"},
-	{Key: "tableMonitorMaxTablesPerRun", ValueJSON: "4"},
 	{Key: "accountQualityRefreshIntervalSeconds", ValueJSON: "600"},
 	{Key: "accountQualityWindowMinutes", ValueJSON: "10"},
 	{Key: "accountHealthCheckIntervalHours", ValueJSON: "1"},
@@ -1145,8 +1143,6 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "usageStatsWeeklyRetentionWeeks", ValueJSON: "104"},
 	{Key: "usageStatsMonthlyRetentionMonths", ValueJSON: "24"},
 	{Key: "usageRankSnapshotRetentionDays", ValueJSON: "30"},
-	{Key: "systemMetricsRetentionDays", ValueJSON: "7"},
-	{Key: "systemMetricsHourlyRetentionDays", ValueJSON: "30"},
 	{Key: "upstreamClientVersionOverrides", ValueJSON: "{}"},
 	// 客户端版本自动层键（客户端版本自动跟版设计 §3）：与手动键同结构同默认，
 	// 由 jobs 跟版任务独占写入、gateway/jobs 只读消费。

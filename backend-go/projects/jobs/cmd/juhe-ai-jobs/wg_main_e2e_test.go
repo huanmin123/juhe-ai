@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"golang.org/x/sys/windows"
 )
@@ -80,10 +79,6 @@ func TestMain(m *testing.M) {
 	// go test 合并。非零返回码等价原 fail() 的 os.Exit（runtime 钩子此时
 	// 写 GOCOVERDIR）。
 	childArgs := []string{"-health-listen-address=" + os.Getenv(wgChildEnvHealthAddr)}
-	if os.Getenv(wgChildEnvScenario) == "once" {
-		// --once 走 F2 单轮采样后直接返回（不进 supervisor 循环）。
-		childArgs = append(childArgs, "-once")
-	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -225,10 +220,6 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 		t.Fatal(err)
 	}
 	env["JUHE_AI_LOG_DIR"] = logsDirectory
-	// F2 table-monitor。
-	env["JUHE_AI_TABLE_MONITOR_INSTANCE_ID"] = "wg-main-e2e"
-	env["JUHE_AI_TABLE_MONITOR_STORE"] = "sqlite"
-	env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = filepath.Join(root, "table-monitor.sqlite3")
 	// F1 runtime store 会校验只读数据源文件存在，先建全部 SQLite 文件。
 	for _, name := range []string{
 		"business.sqlite3", "stats.sqlite3", "dataset.sqlite3", "usage-catalog.sqlite3",
@@ -366,36 +357,14 @@ func TestMainPassiveModeServesStandbyHealth(t *testing.T) {
 	wgInterruptAndWait(t, cmd)
 }
 
-// wgScenarioOnce 标记 --once 单轮采样场景。
-const wgScenarioOnce = "once"
-
-// TestMainGoRuntimeMetricsEnabledComponent 验证 gometrics 采样组件装配后
-// 健康监听与 /__aisys__/metrics 同时可用（覆盖 main 的 metrics 装配分支）。
-func TestMainGoRuntimeMetricsEnabledComponent(t *testing.T) {
+// TestMainGoRuntimeMetricsEnabledComponent 的继任：完整 owner 装配下健康
+// 监听与 /__aisys__/metrics（prommetrics）同时可用。
+func TestMainPromMetricsEndpointServesOwnerAssembly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("main e2e skipped in -short mode")
 	}
 	root := t.TempDir()
 	env := wgOwnerModeMainEnv(t, root)
-	metricsPath := filepath.Join(root, "metrics.sqlite3")
-	env["JUHE_AI_GO_RUNTIME_METRICS_STORE"] = "sqlite"
-	env["JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH"] = metricsPath
-	// gometrics 的 EnsureReady 只校验不建表（生产 DDL 归 maintenance）；
-	// 用包自身的 EnsureSchema 初始化 fixture。
-	metricsDB, dbErr := sql.Open("sqlite", metricsPath)
-	if dbErr != nil {
-		t.Fatal(dbErr)
-	}
-	metricsStore, storeErr := gometrics.NewStore(metricsDB, gometrics.DialectSQLite)
-	if storeErr != nil {
-		t.Fatal(storeErr)
-	}
-	if err := metricsStore.EnsureSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := metricsDB.Close(); err != nil {
-		t.Fatal(err)
-	}
 	port := wgFreePort(t)
 	cmd := wgSpawnMainChild(t, env, wgScenarioOwner, port)
 	wgPollHealthPayload(t, port, wgChildReadyTimeout, func(current map[string]any) bool {
@@ -411,29 +380,6 @@ func TestMainGoRuntimeMetricsEnabledComponent(t *testing.T) {
 		t.Fatalf("metrics 端点必须 200，得到 %d", response.StatusCode)
 	}
 	wgInterruptAndWait(t, cmd)
-}
-
-// TestMainOnceModeRunsSingleTableMonitorCycle 验证 --once 走 F2 单轮采样后
-// 干净退出（覆盖 main 的 once 分支）。
-func TestMainOnceModeRunsSingleTableMonitorCycle(t *testing.T) {
-	if testing.Short() {
-		t.Skip("main e2e skipped in -short mode")
-	}
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
-	port := wgFreePort(t)
-	cmd := wgSpawnMainChild(t, env, wgScenarioOnce, port)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("--once 子进程必须干净退出: %v", err)
-		}
-	case <-time.After(wgChildGracefulTimeout):
-		_ = cmd.Process.Kill()
-		t.Fatal("--once 子进程未在限期内退出")
-	}
 }
 
 // TestMainFlagEarlyReturnPaths 进程内覆盖 --version 与 --check-boundary 的
@@ -477,7 +423,6 @@ func TestRunRuntimeLegacyMigrationCompletes(t *testing.T) {
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      filepath.Join(root, "runtime-log.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_OWNER_LEASE":        "15s",
 		"JUHE_AI_LOG_DIR":                        filepath.Join(root, "logs"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    filepath.Join(root, "table-monitor.sqlite3"),
 		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":            filepath.Join(root, "stats.sqlite3"),
@@ -532,21 +477,22 @@ func TestRunRuntimeLegacyMigrationCompletes(t *testing.T) {
 	}
 }
 
-// TestHealthHandlerFallbackSlotsAndNotFound 覆盖 healthHandler 的默认槽位
-// （j2 参数不足时全部回落禁用态）与非 GET/health 请求的 404 分支。
+// TestHealthHandlerFallbackSlotsAndNotFound 覆盖 healthHandler 的默认依赖
+// 回落（未显式提供的探针全部回落禁用态/恒就绪）与非 GET/health 请求的 404
+// 分支。
 func TestHealthHandlerFallbackSlotsAndNotFound(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true })
+	handler := healthHandler(healthDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
 	if record.Code != http.StatusOK || json.Unmarshal(record.Body.Bytes(), &payload) != nil {
-		t.Fatalf("无附加槽位的 /health 必须 200: %d %s", record.Code, record.Body.String())
+		t.Fatalf("无附加依赖的 /health 必须 200: %d %s", record.Code, record.Body.String())
 	}
 	if payload["accountBalanceEnabled"] != false || payload["proxyLatencyEnabled"] != false ||
-		payload["workerEnabled"] != false || payload["ready"] != true {
-		t.Fatalf("未启用组件必须回落禁用默认: %v", payload)
+		payload["workerEnabled"] != true || payload["ready"] != true {
+		t.Fatalf("未启用组件必须回落禁用默认（worker 恒开）: %v", payload)
 	}
 	notFound := httptest.NewRecorder()
 	handler.ServeHTTP(notFound, httptest.NewRequest(http.MethodPost, "/health", nil))
@@ -579,9 +525,5 @@ func TestProxylatencyTimeFormatsAndZero(t *testing.T) {
 	stamp := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	if got := proxylatencyTime(stamp); got != "2026-09-10T12:00:00Z" {
 		t.Fatalf("RFC3339Nano 序列化错误: %q", got)
-	}
-	// gometrics collector 仅验证构造路径（metrics 面由既有测试覆盖）。
-	if gometrics.New("juhe-ai", "jobs") == nil {
-		t.Fatal("collector 构造不得为 nil")
 	}
 }

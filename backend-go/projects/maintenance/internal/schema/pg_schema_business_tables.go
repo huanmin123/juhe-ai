@@ -1338,6 +1338,11 @@ var postgresSchemaBusinessTables = []PGStatement{
       key_secret_encrypted text NOT NULL,
       status text NOT NULL DEFAULT 'active',
       is_default integer NOT NULL DEFAULT 0,
+      -- purpose 词表固定三值 legacy 形状（2026-10-14 studio 退场契约修订）：
+      -- 'studio' 仅为存量遗留词表值（写路径已在应用层拒绝新建 studio Key），
+      -- 双方言（SQLite 同步在 sqlite_schema_business.go）与一切存量 CHECK
+      -- 迁移逻辑保持一致；存量 studio 行/列/表由显式维护命令
+      -- juhe-ai-maintenance --apply-studio-retirement 清理，不在 ensure 内。
       purpose text NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat', 'studio')),
       expires_at text,
       quota_limits_json text,
@@ -2470,124 +2475,24 @@ $$`,
 		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scheduling_preference_id text REFERENCES scheduling_preferences(id)`,
 	},
 	{
-		// 媒体工作室 P0（媒体工作室设计 §3.1）：studio_assets 产品域资产表。
-		// 全行带 system_account_id 强制归属；引用列（source_task_id）沿
-		// media_jobs 记录表先例不加外键（§3：资产删除后任务行保留悬空引用，
-		// 不反向阻断清理）。列集按契约 §3.1 DDL 精确落列；storage_key 复用
-		// chat_assets 同源对象存储端口语义。CREATE TABLE IF NOT EXISTS 幂等。
+		// api_keys.purpose CHECK 三值 legacy 词表收敛（2026-10-14 studio 退场
+		// 契约修订，取代原「收窄回 ('general', 'chat')」的二值退场批）：词表
+		// 统一 ('general', 'chat', 'studio')——'studio' 仅为存量遗留词表值，
+		// 新建库由上方建表 DDL 内联声明。本 DO 块只做加法式修复：约束定义含
+		// 'studio' 的 purpose CHECK（现网旧内联约束本就是三值）一律不动；发现
+		// 二值 purpose CHECK（定义不含 'studio'，在途批次引入）先删除，仅当库
+		// 内不存在任何 purpose CHECK 时补三值具名约束。幂等：三值库两步均无
+		// 操作，二值库收敛一次后重跑无副作用。studio 行 / 列 / 表的清理不在
+		// ensure 内（破坏性动作收敛到 --apply-studio-retirement 显式维护命令）。
 		SchemaName: "juhe_business",
-		Source:     "studio-assets-table",
-		SQL: `CREATE TABLE IF NOT EXISTS studio_assets (
-      id text PRIMARY KEY,
-      system_account_id text NOT NULL,
-      kind text NOT NULL CHECK (kind IN ('image', 'audio', 'video')),
-      mime text NOT NULL,
-      storage_key text NOT NULL UNIQUE,
-      bytes bigint NOT NULL,
-      width integer,
-      height integer,
-      duration_ms bigint,
-      sha256 text NOT NULL,
-      source_task_id text,
-      params_json text NOT NULL DEFAULT '{}',
-      created_at text NOT NULL,
-      updated_at text NOT NULL
-    )`,
-	},
-	{
-		// 媒体工作室 P0（媒体工作室设计 §3.2）：studio_tasks 用户归属生成任务
-		// 表。status 六值词表同 media_jobs；settlement 与 status 正交
-		//（§6 状态机）；account_id / provider_code / upstream_job_id 是受理时
-		// 写入的账户亲和三元组（受理前为 NULL）；poll_bookmark_json 是 jobs
-		// 续轮询的上游书签（与分页无关）；lease_* 列族承载 jobs 租约领取。
-		// client_operation_id 用户范围唯一（§3.2 UNIQUE）。引用列不加外键
-		//（studio_assets 同款裁决）。CREATE TABLE IF NOT EXISTS 幂等。
-		SchemaName: "juhe_business",
-		Source:     "studio-tasks-table",
-		SQL: `CREATE TABLE IF NOT EXISTS studio_tasks (
-      id text PRIMARY KEY,
-      system_account_id text NOT NULL,
-      client_operation_id text NOT NULL,
-      kind text NOT NULL CHECK (kind IN ('image', 'video')),
-      status text NOT NULL DEFAULT 'queued' CHECK (status IN
-          ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
-      settlement text NOT NULL DEFAULT 'pending_settled' CHECK (settlement IN
-          ('pending_settled', 'settled', 'failed')),
-      account_id text,
-      provider_code text,
-      upstream_job_id text,
-      request_snapshot_json text NOT NULL DEFAULT '{}',
-      error_json text NOT NULL DEFAULT '{}',
-      asset_id text,
-      poll_bookmark_json text NOT NULL DEFAULT '{}',
-      lease_owner text,
-      lease_expires_at text,
-      lease_attempt_count integer NOT NULL DEFAULT 0,
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
-      UNIQUE (system_account_id, client_operation_id)
-    )`,
-	},
-	{
-		// 媒体工作室 P0（媒体工作室设计 §3.3）：studio_operations 同步生成幂等
-		// 收据表。TTS / STT 是同步端点、不产生 studio_tasks 行（任务 kind 词表
-		// 仅 image/video），幂等映射由本表承载；asset_id 可空（transcription
-		// 为 NULL），收据随结果长期保留（P0 无 TTL）。CREATE TABLE IF NOT EXISTS
-		// 幂等。
-		SchemaName: "juhe_business",
-		Source:     "studio-operations-table",
-		SQL: `CREATE TABLE IF NOT EXISTS studio_operations (
-      id text PRIMARY KEY,
-      system_account_id text NOT NULL,
-      client_operation_id text NOT NULL,
-      kind text NOT NULL CHECK (kind IN ('audio_speech', 'audio_transcription')),
-      asset_id text,
-      result_json text NOT NULL DEFAULT '{}',
-      created_at text NOT NULL,
-      updated_at text NOT NULL,
-      UNIQUE (system_account_id, client_operation_id)
-    )`,
-	},
-	{
-		// 媒体工作室 P0（媒体工作室设计 §3.4）：studio_user_asset_usage 每用户
-		// 资产配额账本。沿 chat_user_asset_usage 先例（§3.4）：入库/删除在事务
-		// 内以 advisory 锁串行化增减，账本与行数以事务一致性维护，不做后台对账
-		// 补偿。列集按契约 §3.4 DDL 精确落列。CREATE TABLE IF NOT EXISTS 幂等。
-		SchemaName: "juhe_business",
-		Source:     "studio-user-asset-usage-table",
-		SQL: `CREATE TABLE IF NOT EXISTS studio_user_asset_usage (
-      system_account_id text PRIMARY KEY,
-      asset_bytes bigint NOT NULL DEFAULT 0,
-      asset_count bigint NOT NULL DEFAULT 0,
-      updated_at text NOT NULL
-    )`,
-	},
-	{
-		// api_keys.studio_domains_json 域授权列（媒体工作室设计 §3.5）：仅
-		// purpose='studio' 行使用，P0 ensured Key 恒写
-		// ["text","image","audio","video"] 四域；该列是授权数据不是功能开关。
-		// 与上方建表 DDL 未内联该列（Node 先例保持不动）一致，新库与历史库
-		// 统一由幂等 ALTER 补列（scheduling-preferences-api-keys-column 先例）。
-		SchemaName: "juhe_business",
-		Source:     "studio-api-keys-domains-column",
-		SQL:        `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS studio_domains_json text`,
-	},
-	{
-		// api_keys.purpose CHECK 词表扩展 'studio'（媒体工作室设计 §3.5）：
-		// 对齐 chat 专用 Key 先例。幂等迁移沿 accounts-health-check-endpoint-
-		// mode-pg-check 先例：按表 + conkey 列 + 约束定义文本定位——存量表上缺
-		// 'studio' 的旧 CHECK（建表内联约束被 PG 自动命名为 api_keys_purpose_
-		// check）先删除，再按名字补上含新值的具名约束。上方建表 DDL 已含新值的
-		// 新库：内联约束的 PG 自动名与具名约束同名，第二步 IF NOT EXISTS 直接
-		// 命中跳过，不会产生重复约束；重复执行无副作用。
-		SchemaName: "juhe_business",
-		Source:     "api-keys-purpose-studio-pg-check",
+		Source:     "api-keys-purpose-studio-retirement-pg-check",
 		SQL: `DO $$
 DECLARE
-  legacy_constraint text;
+  binary_constraint text;
+  purpose_check_count bigint;
 BEGIN
   IF to_regclass('juhe_business.api_keys') IS NOT NULL THEN
-    SELECT c.conname INTO legacy_constraint
+    SELECT c.conname INTO binary_constraint
     FROM pg_constraint AS c
     JOIN pg_class AS relation ON relation.oid = c.conrelid
     JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
@@ -2602,17 +2507,24 @@ BEGIN
           AND a.attname = 'purpose'
           AND a.attnum = ANY(c.conkey)
       );
-    IF legacy_constraint IS NOT NULL THEN
-      EXECUTE format('ALTER TABLE juhe_business.api_keys DROP CONSTRAINT %I', legacy_constraint);
+    IF binary_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.api_keys DROP CONSTRAINT %I', binary_constraint);
     END IF;
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_constraint AS c
-      JOIN pg_class AS relation ON relation.oid = c.conrelid
-      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-      WHERE namespace.nspname = 'juhe_business'
-        AND relation.relname = 'api_keys'
-        AND c.conname = 'api_keys_purpose_check'
-    ) THEN
+    SELECT count(*) INTO purpose_check_count
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'api_keys'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%purpose%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'purpose'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF purpose_check_count = 0 THEN
       EXECUTE 'ALTER TABLE juhe_business.api_keys ADD CONSTRAINT api_keys_purpose_check CHECK (purpose IN (''general'', ''chat'', ''studio''))';
     END IF;
   END IF;

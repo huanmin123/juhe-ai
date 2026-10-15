@@ -330,7 +330,7 @@ func TestResolveScheduleSettingsInterval(t *testing.T) {
 		t.Fatalf("缺行默认间隔必须是 60s: %v %v", interval, ok)
 	}
 	// 无 OnlineFreshnessCap 的 job：显式行值原样生效。
-	insertSetting(t, "systemMetricsSampleIntervalSeconds", "120")
+	insertSetting(t, "statsAggregationIntervalSeconds", "120")
 	interval, ok = resolveScheduleSettingsInterval(ctx, source, nil, "system-metrics-sample")
 	if !ok || interval != 120*time.Second {
 		t.Fatalf("显式设置值必须生效: %v %v", interval, ok)

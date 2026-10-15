@@ -2,15 +2,17 @@ package chatassets
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 )
 
 // Asset subdomain persistence for the generation wave: upload pipeline
 // persistence (createChatAsset / completeChatAssetProcessing /
-// assertChatAssetUploadSlotAvailable). 生成图片/媒体产物提交与图像谱系读取
-// 已随站内工具体系退场（PLAN-20261012T121500000Z D2/D7）。The compaction
-// source page loader stayed in the facade root (context.go vocabulary).
-// SQL semantics and Chinese error strings mirror the Node repositories.
+// assertChatAssetUploadSlotAvailable), generated-image commits
+// (commitChatGeneratedAsset) and image lineage reads
+// (listRecentChatImageGenerations). The compaction source page loader
+// stayed in the facade root (context.go vocabulary). SQL semantics and
+// Chinese error strings mirror the Node repositories.
 
 const MaxChatAssetsPerMessage = 5
 const ChatAssetUserMaxBytes = int64(2 * 1024 * 1024 * 1024)
@@ -235,3 +237,337 @@ func (s *AssetStore) incrementAssetUserUsage(tx queryer, ownerID string, quotaBy
 }
 
 // GeneratedAssetCommitInput mirrors ChatGeneratedAssetCommitInput.
+type GeneratedAssetCommitInput struct {
+	ID                string
+	SystemAccountID   string
+	ConversationID    string
+	TurnID            string
+	MessageID         string
+	ContentOrder      int64
+	MimeType          string
+	Width             int64
+	Height            int64
+	Bytes             int64
+	Sha256            string
+	StorageKey        string
+	PreviewMimeType   string
+	PreviewWidth      int64
+	PreviewHeight     int64
+	PreviewBytes      int64
+	PreviewSha256     string
+	PreviewStorageKey string
+	Now               string
+	RetentionDays     int
+	Generation        GeneratedImageGenerationRecord
+}
+
+// GeneratedImageGenerationRecord mirrors the generation lineage payload.
+type GeneratedImageGenerationRecord struct {
+	Operation      string
+	Model          string
+	Prompt         string
+	SourceAssetIDs []string
+	RootAssetID    string
+	Size           string
+	Quality        string
+	OutputFormat   string
+}
+
+// CommitChatGeneratedAsset mirrors commitChatGeneratedAsset: assistant
+// message binding, quota guard, ready asset insert, assistant_output
+// reference, image-generation lineage row and usage increment.
+func (s *AssetStore) CommitChatGeneratedAsset(input GeneratedAssetCommitInput) (*Asset, error) {
+	now, err := s.ports.RequireRFC3339Instant(input.Now, "聊天资产 now")
+	if err != nil {
+		return nil, err
+	}
+	id := input.ID
+	if id == "" {
+		id = s.ports.NewID("asset")
+	}
+	quotaBytes := input.Bytes + input.PreviewBytes
+	expiresAt, err := s.ports.AddDays(now, input.RetentionDays, "聊天资产 expiresAt 基准时间")
+	if err != nil {
+		return nil, err
+	}
+	sourceAssetIDs := s.ports.UniqueStrings(input.Generation.SourceAssetIDs)
+	sourceAssetIDsJSON, err := json.Marshal(sourceAssetIDs)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := s.LockAssetUserQuota(tx, input.SystemAccountID); err != nil {
+		return nil, err
+	}
+	var turnID string
+	err = tx.QueryRow(s.ports.Bind(`SELECT turn_id FROM `+s.ports.Table("chat_messages")+`
+		WHERE id = ? AND conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant'
+		LIMIT 1`+s.ports.LockSuffix()), input.MessageID, input.ConversationID, input.SystemAccountID, input.TurnID).Scan(&turnID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errors.New("生成图片只能绑定到当前助手消息")
+	}
+	if err != nil {
+		return nil, err
+	}
+	var assetBytes, assetCount int64
+	err = tx.QueryRow(s.ports.Bind(`SELECT asset_bytes, asset_count FROM `+s.ports.Table("chat_user_asset_usage")+`
+		WHERE system_account_id = ?`), input.SystemAccountID).Scan(&assetBytes, &assetCount)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if assetBytes+quotaBytes > ChatAssetUserMaxBytes || assetCount+1 > ChatAssetUserMaxCount {
+		return nil, &AssetQuotaExceededError{}
+	}
+	originalFilename := input.ID
+	if originalFilename == "" {
+		originalFilename = id
+	}
+	originalFilename += GeneratedAssetExtension(input.MimeType)
+	result, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_assets")+` (
+		id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
+		original_width, original_height, original_bytes, original_sha256,
+		processed_mime_type, processed_width, processed_height, processed_bytes, processed_sha256, storage_key,
+		preview_mime_type, preview_width, preview_height, preview_bytes, preview_sha256, preview_storage_key,
+		processing_status, observation_status, observation_revision, quota_bytes,
+		turn_id, message_id, committed_at, cleanup_status, cleanup_attempt_count, created_at, updated_at, expires_at
+	) VALUES (?, ?, ?, 'assistant_generated', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 'not_requested', 0, ?, ?, ?, ?, 'active', 0, ?, ?, ?)`),
+		id, input.SystemAccountID, input.ConversationID, originalFilename, input.MimeType,
+		input.Width, input.Height, input.Bytes, input.Sha256, input.MimeType,
+		input.Width, input.Height, input.Bytes, input.Sha256, input.StorageKey,
+		input.PreviewMimeType, input.PreviewWidth, input.PreviewHeight, input.PreviewBytes,
+		input.PreviewSha256, input.PreviewStorageKey,
+		quotaBytes, input.TurnID, input.MessageID, now, now, now, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return nil, errors.New("生成图片资产写入失败")
+	}
+	if _, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_asset_references")+` (
+		asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
+	) VALUES (?, ?, ?, ?, 'assistant_output', ?, ?, ?)`),
+		id, input.ConversationID, input.TurnID, input.MessageID, input.ContentOrder, now, expiresAt); err != nil {
+		return nil, err
+	}
+	rootAssetID := input.Generation.RootAssetID
+	if rootAssetID == "" && len(sourceAssetIDs) > 0 {
+		rootAssetID = sourceAssetIDs[0]
+	}
+	if rootAssetID == "" {
+		rootAssetID = id
+	}
+	if _, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_image_generations")+` (
+		asset_id, conversation_id, system_account_id, operation, model, prompt,
+		source_asset_ids_json, root_asset_id, size, quality, output_format, created_at, expires_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		id, input.ConversationID, input.SystemAccountID, input.Generation.Operation, input.Generation.Model,
+		input.Generation.Prompt, string(sourceAssetIDsJSON), rootAssetID,
+		input.Generation.Size, input.Generation.Quality, input.Generation.OutputFormat, now, expiresAt); err != nil {
+		return nil, err
+	}
+	if err := s.incrementAssetUserUsage(tx, input.SystemAccountID, quotaBytes, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetAssetNoExpiryGuard(id, input.SystemAccountID, input.ConversationID)
+}
+
+func GeneratedAssetExtension(mimeType string) string {
+	switch mimeType {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	// M7 问答音视频工具（问答音视频工具设计 §3）：媒体产物扩展名。
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
+		return ".m4a"
+	case "video/webm":
+		return ".webm"
+	case "video/mp4":
+		return ".mp4"
+	}
+	return ".webp"
+}
+
+// MediaAssetCommitInput 是 M7 问答音视频工具产物落 chat_assets 的输入
+//（问答音视频工具设计 §2.1：与 generate_image 同一落库模式，original 对象即
+// 唯一对象，媒体行无预览变体/无宽高）。视频结算（media-tasks 轮询触达终态）
+// 与音频同步落库共用本入口。
+type MediaAssetCommitInput struct {
+	ID              string
+	SystemAccountID string
+	ConversationID  string
+	TurnID          string
+	MessageID       string
+	ContentOrder    int64
+	MimeType        string
+	Bytes           int64
+	Sha256          string
+	StorageKey      string
+	Kind            string // audio|video（谱系与排查用途）
+	Model           string
+	Prompt          string
+	SourceJobID     string
+	Now             string
+	RetentionDays   int
+}
+
+// CommitChatGeneratedMediaAsset 把媒体产物提交为 ready 资产：助手消息绑定、
+// 配额守卫、资产行（source_kind=assistant_generated、无预览列）、
+// assistant_output 引用与用量递增。与 CommitChatGeneratedAsset 的差异：无预览
+// 变体、无 chat_image_generations 谱系行（图像谱系表 operation CHECK 限图像），
+// 谱系信息（kind/model/prompt/sourceJobId）不另立表，随任务块与审计携带。
+func (s *AssetStore) CommitChatGeneratedMediaAsset(input MediaAssetCommitInput) (*Asset, error) {
+	now, err := s.ports.RequireRFC3339Instant(input.Now, "聊天资产 now")
+	if err != nil {
+		return nil, err
+	}
+	id := input.ID
+	if id == "" {
+		id = s.ports.NewID("asset")
+	}
+	quotaBytes := input.Bytes
+	expiresAt, err := s.ports.AddDays(now, input.RetentionDays, "聊天资产 expiresAt 基准时间")
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := s.LockAssetUserQuota(tx, input.SystemAccountID); err != nil {
+		return nil, err
+	}
+	var turnID string
+	err = tx.QueryRow(s.ports.Bind(`SELECT turn_id FROM `+s.ports.Table("chat_messages")+`
+		WHERE id = ? AND conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant'
+		LIMIT 1`+s.ports.LockSuffix()), input.MessageID, input.ConversationID, input.SystemAccountID, input.TurnID).Scan(&turnID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errors.New("生成媒体只能绑定到当前助手消息")
+	}
+	if err != nil {
+		return nil, err
+	}
+	var assetBytes, assetCount int64
+	err = tx.QueryRow(s.ports.Bind(`SELECT asset_bytes, asset_count FROM `+s.ports.Table("chat_user_asset_usage")+`
+		WHERE system_account_id = ?`), input.SystemAccountID).Scan(&assetBytes, &assetCount)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if assetBytes+quotaBytes > ChatAssetUserMaxBytes || assetCount+1 > ChatAssetUserMaxCount {
+		return nil, &AssetQuotaExceededError{}
+	}
+	originalFilename := id + GeneratedAssetExtension(input.MimeType)
+	result, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_assets")+` (
+		id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
+		original_bytes, original_sha256,
+		processed_mime_type, processed_bytes, processed_sha256, storage_key,
+		processing_status, observation_status, observation_revision, quota_bytes,
+		turn_id, message_id, committed_at, cleanup_status, cleanup_attempt_count, created_at, updated_at, expires_at
+	) VALUES (?, ?, ?, 'assistant_generated', ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 'not_requested', 0, ?, ?, ?, ?, 'active', 0, ?, ?, ?)`),
+		id, input.SystemAccountID, input.ConversationID, originalFilename, input.MimeType,
+		input.Bytes, input.Sha256,
+		input.MimeType, input.Bytes, input.Sha256, input.StorageKey,
+		quotaBytes, input.TurnID, input.MessageID, now, now, now, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return nil, errors.New("生成媒体资产写入失败")
+	}
+	if _, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_asset_references")+` (
+		asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
+	) VALUES (?, ?, ?, ?, 'assistant_output', ?, ?, ?)`),
+		id, input.ConversationID, input.TurnID, input.MessageID, input.ContentOrder, now, expiresAt); err != nil {
+		return nil, err
+	}
+	if err := s.incrementAssetUserUsage(tx, input.SystemAccountID, quotaBytes, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetAssetNoExpiryGuard(id, input.SystemAccountID, input.ConversationID)
+}
+
+// FindGeneratedAssetByDigest 按 processed digest 查重（M7 视频结算幂等的资产
+// 查重闸：同 job 产物重复结算/同字节重复落库时复用既有资产行）。
+func (s *AssetStore) FindGeneratedAssetByDigest(ownerID, conversationID, sha256Value string) (*Asset, error) {
+	assets, err := s.QueryAssets(s.db, s.ports.Bind(`SELECT `+AssetColumns+` FROM `+s.ports.Table("chat_assets")+`
+		WHERE system_account_id = ? AND conversation_id = ? AND source_kind = 'assistant_generated'
+			AND processed_sha256 = ? AND cleanup_status = 'active'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`), ownerID, conversationID, sha256Value)
+	if err != nil {
+		return nil, err
+	}
+	if len(assets) == 0 {
+		return nil, nil
+	}
+	return assets[0], nil
+}
+
+// ImageGenerationRecord mirrors ChatImageGenerationRecord.
+type ImageGenerationRecord struct {
+	AssetID        string
+	Operation      string
+	Model          string
+	Prompt         string
+	SourceAssetIDs []string
+	RootAssetID    string
+	Size           string
+	Quality        string
+	OutputFormat   string
+	CreatedAt      string
+	ExpiresAt      string
+}
+
+// ListRecentImageGenerations mirrors listRecentChatImageGenerations.
+func (s *AssetStore) ListRecentImageGenerations(conversationID, ownerID, nowValue string, limit int) ([]ImageGenerationRecord, error) {
+	now, err := s.ports.RequireRFC3339Instant(nowValue, "聊天上下文 now")
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 12 {
+		limit = 12
+	}
+	rows, err := s.db.Query(s.ports.Bind(`SELECT asset_id, operation, model, prompt, source_asset_ids_json,
+			root_asset_id, size, quality, output_format, created_at, expires_at
+		FROM `+s.ports.Table("chat_image_generations")+`
+		WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?
+		ORDER BY created_at DESC, asset_id DESC LIMIT ?`), conversationID, ownerID, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ImageGenerationRecord{}
+	for rows.Next() {
+		var record ImageGenerationRecord
+		var sourceJSON string
+		if err := rows.Scan(&record.AssetID, &record.Operation, &record.Model, &record.Prompt, &sourceJSON,
+			&record.RootAssetID, &record.Size, &record.Quality, &record.OutputFormat,
+			&record.CreatedAt, &record.ExpiresAt); err != nil {
+			return nil, err
+		}
+		record.SourceAssetIDs = []string{}
+		_ = json.Unmarshal([]byte(sourceJSON), &record.SourceAssetIDs)
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}

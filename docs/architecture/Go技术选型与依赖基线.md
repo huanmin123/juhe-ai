@@ -36,7 +36,7 @@
 | Redis client | PostgreSQL/Redis adapter 的可选依赖 `github.com/redis/go-redis/v9` | cache、state、counter 和既有跨实例运行态 | SQLite profile 不依赖它；新 Go 功能默认不使用 Redis 队列 |
 | 直接异步执行 | Go 标准库 goroutine、`context`、`errgroup` 等价实现 | 功能内 fan-out、取消、结果汇总和按资源维度并发 | 不引入通用队列或业务限速；SQLite 单 writer、PG pool 和外部 I/O 预算仍必须保留 |
 | Job / queue | 本轮不引入 | 直接异步工作必须直接提交 Store，并从持久事实重新发现未完成工作 | Asynq / Redis Streams 仅是 Node 历史实现或历史规划，不能作为新 Go 功能依赖 |
-| 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang` | Go runtime、HTTP、PG、Redis、直接异步任务、网关指标 | `/metrics` 必须受部署边界保护；内部系统监控读取 PG 窗口表；不首批引入 Prometheus API client |
+| 指标 | `github.com/prometheus/client_golang v1.23.2` | Go runtime（`go_*` / `process_*` 默认收集器）、HTTP、网关上游失败、jobs 任务指标 | 已引入；只允许 `backend-go/shared/platform/prommetrics` 包 import client_golang，业务模块不得直接依赖；`/metrics` 走 gateway/jobs 健康监听 pull 暴露并受部署边界（回环发布 + SSH 隧道）保护，契约见 `docs/functions/Prometheus指标暴露设计.md`；不引入 Pushgateway 与 Prometheus API client |
 | pprof | 标准库 `net/http/pprof` | CPU、heap、goroutine、block profile | 只能挂在受保护的 debug/admin 入口 |
 | OAuth | `golang.org/x/oauth2` | OpenAI OAuth token 交换 / 刷新辅助 | HTTP client、代理、超时和响应上限仍由项目封装控制 |
 | 测试断言 | `github.com/stretchr/testify/require` | 测试断言和失败中止 | 不默认使用 testify mock；优先手写 fake / testkit |
@@ -112,7 +112,7 @@ B0 不能只创建空 Go 工程，必须证明两个 profile 的 adapter 能在�
 | PostgreSQL | `github.com/jackc/pgx/v5 v5.10.0` | health adapter、goose baseline / W1a / W1b migration、sqlc catalog / W1b auth-log 查询已落地；integration 用例已补，当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑 |
 | Redis | `github.com/redis/go-redis/v9 v9.21.0` | 历史 PostgreSQL/Redis adapter 候选记录；不适用于 SQLite profile，P0 需重新验证 |
 | Job / queue | `github.com/hibiken/asynq v0.26.0` | 历史 PostgreSQL/Redis adapter 候选记录；不表示当前直接异步架构会引入该依赖，B0 仅验证 SQLite / PostgreSQL adapter 与 goroutine 生命周期 |
-| 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过；Go runtime / PG / Redis / worker lag 的完整采样口径原定于「Go 迁移指标与观测规划」（已随迁移记录清退，git 历史可溯） |
+| 指标 | `github.com/prometheus/client_golang v1.23.2` | 已引入（仅 `backend-go/shared/platform/prommetrics` 允许 import）；`/__aisys__/metrics` 健康监听暴露已落地。早期「内部系统监控读取 PG 窗口表」的 gometrics 自采样口径已随 2026-10-14 监控改造删除，现行契约见 `docs/functions/Prometheus指标暴露设计.md` |
 | SQL CLI | `sqlc v1.31.1` | CLI 已安装，已生成 `internal/store/postgres/postgresqueries` |
 | Migration CLI / lib | `github.com/pressly/goose/v3 v3.27.2` | CLI 已安装；integration 测试通过 goose 执行 baseline DDL |
 | Testcontainers | `github.com/testcontainers/testcontainers-go v0.43.0` | `go test -tags=integration ./internal/testkit/integration -count=1` 当前主线程因 Docker 不可用输出 `SKIP`；Docker/testcontainers 健康环境必须复跑，覆盖 PostgreSQL / Redis / Asynq / W1a / W1b foundation / W1b public API log queue / public group / public route strategy / public API Key / public account smoke 与 shell E2E |

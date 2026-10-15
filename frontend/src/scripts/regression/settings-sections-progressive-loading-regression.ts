@@ -31,7 +31,7 @@ assert(view.includes('authState.revision.value'), 'section 请求签名必须包
 assert(view.includes('viewerId: viewer?.id'), 'section 请求签名必须包含 viewer id')
 assert(view.includes('sectionRequestGate.isCurrent'), '迟到成功、失败和 finally 都必须经过 generation/signature 门禁')
 assert(view.includes('for (const key of Object.keys(dirty)) responseValues[key] = current[key]'), 'ready section 重载不得覆盖 dirty 编辑')
-assert(settingsForm.includes("'AI 对话生图总超时', 60, 86400"), '前端必须校验 AI 对话生图总超时范围')
+assert(!settingsForm.includes('生图'), '生图设置已删除，前端设置表单不得残留生图校验字段')
 assert(!view.includes('systemForm.cooldownAccountRetestConcurrency'), '冷却复测并发必须只由环境变量控制，不能保留失效管理页字段')
 assert(display.includes("'cooldown-retest': ['cooldownAccountRetestMaxBackoffHours']"), '冷却复测 section 只能提交仍支持热更新的退避阈值')
 assert(!settingsForm.includes('cooldownAccountRetestConcurrency'), '前端表单不得保留失效的冷却复测并发')

@@ -189,15 +189,18 @@ func TestW16KManualBridgeTriggerDefaultArm(t *testing.T) {
 
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, nil,
-		true, func() bool { return true },
-		service, "w16k-manual-secret-0123456789abcdef",
-		false, func() bool { return true },
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		nil, nil,
-		false, func() bool { return true }, func() map[string]any { return nil },
-	)
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:                  ownermode.Active,
+		RuntimeRunning:             &running,
+		AccountBalanceEnabled:      true,
+		AccountBalanceReady:        func() bool { return true },
+		AccountBalanceService:      service,
+		AccountBalanceManualSecret: "w16k-manual-secret-0123456789abcdef",
+		ProxyLatencyReady:          func() bool { return true },
+		ProxyLatencyStatus:         func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
+		ProxyLatencySnapshot:       func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
+		WorkerReady:                func() bool { return true },
+	})
 	request := httptest.NewRequest(http.MethodPost, "/account-balance/manual",
 		strings.NewReader(`{"input":{"account_id":"w16k-missing","system_account_id":"sys_admin","config_revision":1}}`))
 	request.Header.Set("Authorization", "Bearer w16k-manual-secret-0123456789abcdef")

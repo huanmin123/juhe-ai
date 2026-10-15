@@ -48,11 +48,15 @@ type CoverageReport struct {
 //     「未发生请求或处理完成后允许为空」，造数不为满足非空断言伪造瞬时队列；
 //   - codex_context_storage_cleanup_queue：storage 清理任务消费的瞬时队列。
 var coverageAllowEmptyExactTables = map[string]string{
-	"background_job_leases":               "owner 租约族：由运行时任务持有，造数不伪造持有者",
-	"stats_job_state":                     "owner 状态族：统计任务游标由运行时维护",
-	"account_health_current_state":        "owner 状态族：账户健康当前态由探针 owner 维护",
-	"usage_range_window_requests":         "设计文档明确允许为空：瞬时自定义范围请求队列",
-	"codex_context_storage_cleanup_queue": "瞬时清理队列：由 storage 清理任务消费",
+	// —— 2026-10-13 补：授权用量窗口两表随任务消灭（registry 注释：authorization-usage-range-windows-refresh
+	// 已按设计消灭），聚合器不再写入。
+	"authorization_team_usage_range_windows": "派生聚合族：写入任务已消灭，聚合器不再产出（同 autofill 豁免）",
+	"authorization_user_usage_range_windows": "派生聚合族：写入任务已消灭，聚合器不再产出（同 autofill 豁免）",
+	"background_job_leases":                  "owner 租约族：由运行时任务持有，造数不伪造持有者",
+	"stats_job_state":                        "owner 状态族：统计任务游标由运行时维护",
+	"account_health_current_state":           "owner 状态族：账户健康当前态由探针 owner 维护",
+	"usage_range_window_requests":            "设计文档明确允许为空：瞬时自定义范围请求队列",
+	"codex_context_storage_cleanup_queue":    "瞬时清理队列：由 storage 清理任务消费",
 	// —— 2026-09 收尾盘点新增：以下全部是 owner 运行态/运行时建表，造数按裁决
 	// 不伪造，行由常驻进程写入；域断言与业务表的非空硬门槛不受影响。
 	"account_health_outcomes":                           "J1 owner 运行态：探针结果由 jobs 健康owner 运行时建表写入",
@@ -77,10 +81,6 @@ var coverageAllowEmptyExactTables = map[string]string{
 	"record_maintenance_jobs":                  "business 运行时队列：记录维护任务由 jobs 消费后为空",
 	"account_health_probe_request_outbox":      "business 运行时 outbox：探针请求由 jobs 消费后为空",
 	"account_health_direct_input_suppressions": "J1 运行态：直接输入抑制窗口由账户健康运行时维护",
-	"system_metrics_hourly":                    "采样→小时聚合管线无生产写入方（InsertSystemMetricsSampleBatch 无调用方），Node 遗留读取面，造数只能写 samples 层",
-	"process_event_loop_hourly":                "采样→小时聚合管线无生产写入方（InsertSystemMetricsSampleBatch 无调用方），Node 遗留读取面，造数只能写 samples 层",
-	"system_metrics_trend_windows":             "依赖 system_metrics_hourly 的趋势窗口，聚合管线无生产写入方，造数不能伪造派生面",
-	"process_event_loop_trend_windows":         "依赖 process_event_loop_hourly 的趋势窗口，聚合管线无生产写入方，造数不能伪造派生面",
 }
 
 // coverageAllowEmptySuffixes 是同上规则里以族后缀表达的部分。
@@ -144,9 +144,6 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "media_jobs.video_status_distribution", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", Min: 4},
 		// 媒体工作室域（媒体工作室设计 §9）：任务状态种类、资产三 kind、
 		// 未结算态样本（§9 的三条覆盖断言，纳入 --verify-mockdata-coverage）。
-		{Name: "studio_tasks.status_distribution", Domain: DomainStudio, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM studio_tasks", Min: 5},
-		{Name: "studio_assets.kind_distribution", Domain: DomainStudio, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT kind) FROM studio_assets", Min: 3},
-		{Name: "studio_tasks.unsettled_sample", Domain: DomainStudio, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM studio_tasks WHERE settlement <> 'settled'", Min: 1},
 		// 用量域：图片 token、模型映射命中、上游响应模型一致 / 不一致样本、
 		// M1 同步音频计量（TTS 字符 / STT 秒，媒体契约 §3.4）。
 		{Name: "usage_records.image_tokens", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE input_image_tokens IS NOT NULL OR output_image_tokens IS NOT NULL", Min: 1},
@@ -164,7 +161,6 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "operation_logs", Domain: DomainObservability, Store: StoreOperationLog, Query: "SELECT COUNT(*) FROM operation_logs", Min: 1},
 		{Name: "runtime_logs", Domain: DomainObservability, Store: StoreRuntimeLog, Query: "SELECT COUNT(*) FROM runtime_logs", Min: 1},
 		{Name: "public_api_logs", Domain: DomainObservability, Store: StoreDataset, Query: "SELECT COUNT(*) FROM public_api_logs", Min: 1},
-		{Name: "table_storage_snapshots", Domain: DomainObservability, Store: StoreTableMonitor, Query: "SELECT COUNT(*) FROM table_storage_snapshots", Min: 1},
 		// chat / codex / model-check 域：会话与消息、J3b 运行与 observation。
 		// chat 域媒体块断言（output_media_task / output_audio / 媒体资产）已随
 		// 2026-10-12 AI 问答简化批（决策 A/F）退役。

@@ -393,8 +393,8 @@ assert.match(
 )
 assert.match(
   accountsViewSource,
-  /if \(!form\.healthCheckModel\.trim\(\) && result\.recommendedHealthCheckModel\) form\.healthCheckModel = result\.recommendedHealthCheckModel/,
-  '同步上游目录只可在检查模型为空时采用推荐值，不能覆盖用户手动选择'
+  /if \(!form\.healthCheckModel\.trim\(\) && result\.recommendedHealthCheckModel && allowedProtocolModels\.has\(result\.recommendedHealthCheckModel\)\) \{\s*form\.healthCheckModel = result\.recommendedHealthCheckModel/,
+  '同步上游目录只可在检查模型为空且推荐值在域内协议集合时采用推荐值，不能覆盖用户手动选择'
 )
 assert.match(
   accountsViewSource,

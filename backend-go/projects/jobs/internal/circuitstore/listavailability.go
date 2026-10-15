@@ -264,13 +264,14 @@ func (r *ListAvailabilityRepo) markDirtyTx(ctx context.Context, tx txLike, accou
 // lockDirtyWritesInTx 取 dirty 写序列化 advisory 锁（问题-0184）：dirty 的
 // 写入方包括并行 batch worker 的 Enqueue*/Claim/Apply/Release、gateway 脏
 // 标记、以及 proxy_profiles UPDATE 触发器的隐式写入，行序互异，交叉持锁
-// 形成 40P01 死锁环。必须在事务首条语句调用；非 PG 方言 no-op。
+// 形成 40P01 死锁环。必须在事务首条取锁语句调用；非 PG 方言 no-op。
+// BUG-0313：取锁等待受事务级 lock_timeout 约束，超时 55P03 失败本轮——
+// dirty 行持久留表，任务下轮重试自愈，不再随持锁方被主机饿死而无限排队。
 func (r *ListAvailabilityRepo) lockDirtyWritesInTx(ctx context.Context, tx txLike) error {
 	if !r.postgres {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisorylock.AccountListDirty)
-	return err
+	return advisorylock.LockAccountListDirty(ctx, tx)
 }
 
 // EnqueueMissing 对齐 enqueueMissing...InClient（worker 专属 bootstrap 扫描）。

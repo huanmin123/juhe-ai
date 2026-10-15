@@ -102,7 +102,6 @@ func w1mAuditEnvPairs(t *testing.T, root, instanceID string) []string {
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(root, "usage-catalog.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(root, "stats.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite3"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH=" + filepath.Join(root, "table-monitor.sqlite3"),
 		"JUHE_AI_CHAT_DATABASE_PATH=" + filepath.Join(root, "chat.sqlite3"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(root, "codex-context"),
 		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(root, "usage-shards"),

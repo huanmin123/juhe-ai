@@ -295,7 +295,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		"JUHE_AI_CHAT_DATABASE_PATH":          filepath.Join(root, "storage", "chat.sqlite3"),
 		"JUHE_AI_DATASET_DATABASE_PATH":       filepath.Join(root, "storage", "dataset.sqlite3"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH": filepath.Join(root, "storage", "usage-catalog.sqlite3"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": filepath.Join(root, "storage", "table-monitor.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":   filepath.Join(root, "storage", "runtime-log.sqlite3"),
 	}
 	codexRoot := filepath.Join(root, "storage", "codex-context")

@@ -543,7 +543,6 @@ func TestLoadConfigRejectsEachInvalidEnv(t *testing.T) {
 		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
 		"JUHE_AI_DATASET_DATABASE_PATH":          "dataset.sqlite",
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      "runtime-log.sqlite",
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    "table-monitor.sqlite",
 		"JUHE_AI_DATABASE_PATH":                  "business.sqlite",
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    "usage-catalog.sqlite",
 		"JUHE_AI_STATS_DATABASE_PATH":            "stats.sqlite",

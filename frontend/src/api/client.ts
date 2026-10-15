@@ -18,11 +18,10 @@ import { proxiesApi } from './domains/proxies'
 import { responseInspectionPoliciesApi } from './domains/responseInspectionPolicies'
 import { myRouteStrategiesApi, routeStrategiesApi } from './domains/routeStrategies'
 import { settingsApi } from './domains/settings'
-import { myStatsApi, statsApi, tableMonitorApi } from './domains/stats'
+import { myStatsApi, statsApi } from './domains/stats'
 import { systemAccountsApi } from './domains/systemAccounts'
 import { myTeamsApi, systemTeamsApi } from './domains/systemTeams'
 import { chatApi } from './domains/chat'
-import { studioApi } from './domains/studio'
 import { myUsageRecordsApi, usageRecordsApi } from './domains/usageRecords'
 import { mediaJobsApi } from './domains/mediaJobs'
 import { myUiBootstrapApi, uiBootstrapApi } from './domains/userReferenceData'
@@ -70,7 +69,6 @@ export const api = {
   publicApiLogs: publicApiLogsApi,
   myOperationLogs: myOperationLogsApi,
   stats: statsApi,
-  tableMonitor: tableMonitorApi,
   ipStats: ipStatsApi,
   externalIntegrationSources: externalIntegrationSourcesApi,
   modelChecks: modelChecksApi,
@@ -78,5 +76,4 @@ export const api = {
   myStats: myStatsApi,
   settings: settingsApi,
   chat: chatApi,
-  studio: studioApi
 }

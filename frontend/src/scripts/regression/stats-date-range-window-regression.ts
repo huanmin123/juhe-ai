@@ -4,13 +4,11 @@ import assert from 'node:assert/strict'
 
 const frontendRoot = resolve(import.meta.dirname, '..', '..')
 const statsViewSource = readFileSync(resolve(frontendRoot, 'views', 'stats', 'StatsView.vue'), 'utf8')
-const systemMetricsViewSource = readFileSync(resolve(frontendRoot, 'views', 'stats', 'SystemMetricsStatsView.vue'), 'utf8')
 const usageStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'usage-stats', 'UsageStatsView.vue'), 'utf8')
 const usageStatsPageConfigSource = readFileSync(resolve(frontendRoot, 'views', 'usage-stats', 'usageStatsPageConfig.ts'), 'utf8')
 const aiPerformanceViewSource = readFileSync(resolve(frontendRoot, 'views', 'ai-performance', 'AiPerformanceView.vue'), 'utf8')
 const ipStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
 const usageStatsWindowSource = readFileSync(resolve(frontendRoot, 'composables', 'useUsageStatsWindow.ts'), 'utf8')
-const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'backend-go', 'projects', 'gateway', 'internal', 'statreads', 'usageoverview.go'), 'utf8')
 
 assert.match(
   usageStatsWindowSource,
@@ -54,45 +52,10 @@ assert.match(
   'stats overview quick ranges must resolve the shared window before calculating today'
 )
 
-for (const [name, source] of [
-  ['stats overview', statsViewSource],
-  ['system metrics', systemMetricsViewSource]
-] as const) {
-  assert.match(
-    source,
-    /:value="quickRangeValue \?\? ''"/,
-    `${name} must pass an empty string instead of undefined when no quick range matches`
-  )
-}
-
 assert.match(
-  systemMetricsViewSource,
-  /async\s+function\s+loadPageData\(options: \{ forceUsageWindow\?: boolean \} = \{\}\)[\s\S]*loadUsageStatsWindow\(\{ force: options\.forceUsageWindow === true, viewScope: 'admin' \}\)[\s\S]*return\s+loadTrendData\(\)/,
-  'system metrics must resolve the scoped stats window before recalculating a dynamic range'
-)
-
-assert.match(
-  systemMetricsViewSource,
-  /api\.stats\.goRuntimeTrend\(rangeParams,\s*\{\s*signal:\s*controller\.signal\s*\}\)/,
-  'system metrics must load the Go runtime trend endpoint with cancellation'
-)
-
-assert.match(
-  systemMetricsViewSource,
-  /function\s+selectedRangeParams\(\):\s*\{ startDate\?: string; endDate\?: string \}\s*\{[\s\S]*if\s*\(!dateRangeExplicit\.value\)\s*return\s*\{\}/,
-  'system metrics must omit browser-local dates when the range is not explicit'
-)
-
-assert.match(
-  systemMetricsViewSource,
-  /syncImplicitDateRangeToStatsWindow\(\)[\s\S]*goRuntimeTrend\.value = result/,
-  'system metrics must align the displayed implicit range after the server window is available'
-)
-
-assert.match(
-  statsRoutesSource,
-  /func \(d \*Deps\) normalizeSystemMetricsDateRange[\s\S]*dateKeyIn\(d\.Now\(\), location\)[\s\S]*startDate = endDate[\s\S]*startDate = todayKey[\s\S]*endDate = startDate[\s\S]*endDate = todayKey/,
-  'system metrics omitted dates must resolve to one server-timezone day'
+  statsViewSource,
+  /:value="quickRangeValue \?\? ''"/,
+  'stats overview must pass an empty string instead of undefined when no quick range matches'
 )
 
 assert.match(
@@ -149,13 +112,12 @@ assert.doesNotMatch(aiPerformanceViewSource, /didUsageStatsWindowLoadFail\(windo
 assert.match(ipStatsViewSource, /didUsageStatsWindowLoadFail\('admin'\)/, 'IP stats must stop before using a failed server window')
 
 for (const [name, source, version] of [
-  ['stats overview', statsViewSource, 6],
-  ['system metrics', systemMetricsViewSource, 4]
+  ['stats overview', statsViewSource, 6]
 ] as const) {
   assert.match(source, /type\s+RangeMode\s*=\s*'auto'\s*\|\s*QuickRange\s*\|\s*'custom'/, `${name} must persist the range semantic`)
   assert.match(source, /rangeMode:\s*RangeMode/, `${name} page-state cache must require range mode`)
   assert.match(source, new RegExp(`usePageStateCache<[\\s\\S]*version: ${version}`), `${name} must bump its cache version`)
-  assert.doesNotMatch(source, /readLegacy(?:Stats|SystemMetrics)PageState/, `${name} must not read retired page-state cache versions`)
+  assert.doesNotMatch(source, /readLegacyStatsPageState/, `${name} must not read retired page-state cache versions`)
   assert.match(source, /rangeMode\.value = 'custom'[\s\S]*dateRangeExplicit\.value = true/, `${name} manual date selection must become custom`)
   assert.match(source, /rangeMode\.value = 'auto'[\s\S]*dateRangeExplicit\.value = false/, `${name} reset must restore auto mode`)
   assert.match(source, /async\s+function\s+handleQuickRangeChange\(value: string \| number\)[\s\S]*loadUsageStatsWindow\(\{ force: true, viewScope:/, `${name} quick selection must refresh the server window`)
@@ -171,20 +133,9 @@ assert.match(
   /const mode = quickRangeModeForSelection\(rangeMode\.value\)[\s\S]*if \(!mode\) return undefined[\s\S]*if \(didUsageStatsWindowLoadFail\(isManagementView\.value \? 'admin' : 'self'\)\) return undefined[\s\S]*const range = quickRangeDateRange\(mode\)[\s\S]*if \(!range\) return undefined[\s\S]*return startDate === formatDateKey\(range\[0\]\) && endDate === formatDateKey\(range\[1\]\) \? mode : undefined/,
   'stats overview quick selection must remain empty when the server window fails and otherwise require the mapped server window to match exactly'
 )
-assert.match(
-  systemMetricsViewSource,
-  /if \(!isQuickRangeMode\(rangeMode\.value\)\) return undefined[\s\S]*return startDate === formatDateKey\(range\[0\]\) && endDate === formatDateKey\(range\[1\]\) \? rangeMode\.value : undefined/,
-  'system metrics quick selection must require both mode and the current server window'
-)
-
 assert.doesNotMatch(statsViewSource, /document\.addEventListener\('visibilitychange'/, 'stats overview must not refresh when a browser tab becomes visible')
 assert.doesNotMatch(statsViewSource, /window\.addEventListener\('focus'/, 'stats overview must not refresh when the browser window regains focus')
 assert.doesNotMatch(statsViewSource, /millisecondsUntilNextStatsDay|dynamicRangeRolloverTimer/, 'stats overview must not schedule automatic cross-day refreshes')
 assert.match(statsViewSource, /function isDynamicRangeMode\(value: RangeMode\): value is Exclude<RangeMode, 'custom'>\s*\{\s*return value !== 'custom'/, 'stats overview manual refresh must keep auto and quick ranges dynamic while custom remains fixed')
 assert.match(statsViewSource, /function refreshData\(\): void \{[\s\S]*force: true,[\s\S]*forceUsageWindow: isDynamicRangeMode\(rangeMode\.value\)/, 'stats overview manual refresh must update dynamic date windows')
 assert.match(statsViewSource, /<a-button\b(?=[^>]*\s:loading="loading")(?=[^>]*\s@click="refreshData")[^>]*>/, 'stats overview refresh button must invoke manual refresh while loading state is wired')
-
-assert.doesNotMatch(systemMetricsViewSource, /visibilitychange|window\.addEventListener\('focus'|millisecondsUntilNextStatsDay|dynamicRangeRolloverTimer/, 'system metrics must not refresh loaded data from visibility, focus, or date-boundary lifecycle events')
-const systemMetricsActivatedSource = systemMetricsViewSource.match(/onActivated\(async \(\) => \{[\s\S]*?\n\}\)/)?.[0] ?? ''
-assert.match(systemMetricsActivatedSource, /setupRuntimeObservers\(\)/, 'system metrics KeepAlive activation must restore runtime observation')
-assert.doesNotMatch(systemMetricsActivatedSource, /loadPageData|loadUsageStatsWindow|forceUsageWindow/, 'system metrics KeepAlive activation must not request business data')

@@ -295,7 +295,6 @@ func TestW1BOwnerFullBoot(t *testing.T) {
 		"JUHE_AI_DATASET_DATABASE_PATH="+filepath.Join(root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH="+filepath.Join(root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH="+filepath.Join(root, "stats.sqlite"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH="+filepath.Join(root, "table-monitor.sqlite"),
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+runtimeLogPath,
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT="+filepath.Join(root, "codex-shards"),
 		// business owner handoff（businessOwnerGate + 证据）

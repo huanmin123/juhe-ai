@@ -14,8 +14,7 @@ export const moduleOptions = [
   { label: '代理', value: 'proxies' },
   { label: '系统设置', value: 'settings' },
   { label: '公告中心', value: 'announcements' },
-  { label: 'OpenAI OAuth', value: 'openai_oauth' },
-  { label: '表监控', value: 'table_monitor' }
+  { label: 'OpenAI OAuth', value: 'openai_oauth' }
 ]
 
 export const actionOptions = [

@@ -1664,7 +1664,6 @@ func sqliteEnv(root string) map[string]string {
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":      filepath.Join(root, "usage.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":              filepath.Join(root, "stats.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":        filepath.Join(root, "runtime.sqlite3"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":      filepath.Join(root, "table.sqlite3"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":   filepath.Join(root, "codex-shards"),
 		"JUHE_AI_USAGE_SHARD_ROOT":                 filepath.Join(root, "usage-shards"),
 	}

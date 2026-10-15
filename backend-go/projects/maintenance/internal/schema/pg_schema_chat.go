@@ -21,10 +21,18 @@ var postgresSchemaChat = []PGStatement{
       bind_account_id text,
       bind_account_name_snapshot text,
       archived integer NOT NULL DEFAULT 0,
+      search_account_id text,
+      search_model_id text,
+      image_account_id text,
+      video_account_id text,
+      default_video_model text,
+      audio_account_id text,
+      default_audio_model text,
       title text NOT NULL DEFAULT '新对话',
       title_source_message_id text,
       is_pinned integer NOT NULL DEFAULT 0,
       last_model text,
+      default_image_model text NOT NULL DEFAULT 'gpt-image-2',
       next_sequence_no bigint NOT NULL DEFAULT 1,
       user_turn_count bigint NOT NULL DEFAULT 0,
       message_revision bigint NOT NULL DEFAULT 0,
@@ -171,6 +179,26 @@ var postgresSchemaChat = []PGStatement{
       updated_at text NOT NULL,
       CHECK (asset_bytes >= 0),
       CHECK (asset_count >= 0)
+    )`,
+	},
+	// 用户级默认工具绑定表（AI 问答工具体系与主子模型设计 §2.11/§7，2026-10-02）：
+	// 每用户一行（system_account_id 主键），列均可空（空 = 未设默认）；
+	// 无存量回填，建表经 --ensure-schema 幂等生效。M7 问答音视频工具（2026-10-04，
+	// docs/functions/问答音视频工具设计.md §3）增 video/audio 四列。
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat",
+		SQL: `CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
+      system_account_id text PRIMARY KEY,
+      search_account_id text,
+      search_model_id text,
+      image_account_id text,
+      default_image_model text,
+      video_account_id text,
+      default_video_model text,
+      audio_account_id text,
+      default_audio_model text,
+      updated_at timestamptz NOT NULL DEFAULT now()
     )`,
 	},
 	{
@@ -370,6 +398,30 @@ var postgresSchemaChat = []PGStatement{
 	{
 		SchemaName: "juhe_chat",
 		Source:     "chat",
+		SQL: `CREATE TABLE IF NOT EXISTS chat_image_generations (
+      asset_id text PRIMARY KEY,
+      conversation_id text NOT NULL,
+      system_account_id text NOT NULL,
+      operation text NOT NULL,
+      model text NOT NULL,
+      prompt text NOT NULL,
+      source_asset_ids_json text NOT NULL DEFAULT '[]',
+      root_asset_id text NOT NULL,
+      size text NOT NULL,
+      quality text NOT NULL,
+      output_format text NOT NULL,
+      created_at text NOT NULL,
+      expires_at text NOT NULL,
+      FOREIGN KEY (asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
+      FOREIGN KEY (root_asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
+      FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+      CHECK (operation IN ('generate', 'edit')),
+      CHECK (jsonb_typeof(source_asset_ids_json::jsonb) = 'array')
+    )`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_recent
       ON chat_conversations(system_account_id, last_message_at DESC, id DESC)`,
 	},
@@ -513,14 +565,25 @@ var postgresSchemaChat = []PGStatement{
 		SQL: `CREATE INDEX IF NOT EXISTS idx_chat_asset_references_cleanup
       ON chat_asset_references(expires_at, asset_id, message_id)`,
 	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat",
+		SQL: `CREATE INDEX IF NOT EXISTS idx_chat_image_generations_conversation_recent
+      ON chat_image_generations(conversation_id, created_at DESC, asset_id DESC)`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat",
+		SQL: `CREATE INDEX IF NOT EXISTS idx_chat_image_generations_expiry
+      ON chat_image_generations(expires_at, asset_id)`,
+	},
 	// 会话账户唯一绑定列（AI 问答会话账户唯一绑定设计，2026-09-28）：新库由
 	// 上方 CREATE TABLE 直接声明；既有库经下列幂等 ALTER 补齐（列存在即
 	// no-op）。bind_mode/bind_group_id/bind_group_name_snapshot 三列已由一次性
 	// 迁移命令 --migrate-chat-account-only-binding 删除（先备份到
 	// chat_conversations_bind_legacy_backup 再 DROP），ensure 不再重建旧列。
 	// archived 带 IN (0,1) 值域 CHECK，ADD COLUMN 时存量行取 DEFAULT 0 恒满足
-	// 约束。工具绑定八列（search/image/video/audio）已随 AI 问答简化设计
-	// （PLAN-20261012T121500000Z 决策 F）从当前 schema 退役，ensure 不再补齐。
+	// 约束。
 	{
 		SchemaName: "juhe_chat",
 		Source:     "chat-conversation-account-binding-pg-columns",
@@ -535,6 +598,63 @@ var postgresSchemaChat = []PGStatement{
 		SchemaName: "juhe_chat",
 		Source:     "chat-conversation-account-binding-pg-columns",
 		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS archived integer NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-account-binding-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS search_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-account-binding-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS search_model_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-account-binding-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS image_account_id text`,
+	},
+	// M7 问答音视频工具绑定列（问答音视频工具设计 §3，2026-10-04）：新库由上方
+	// CREATE TABLE 直接声明；既有库经幂等 ALTER 补齐（列存在即 no-op）。
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS video_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS default_video_model text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS audio_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS default_audio_model text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS video_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS default_video_model text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS audio_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS default_audio_model text`,
 	},
 	// M7 chat_assets 媒体 MIME 词表扩展（问答音视频工具设计 §3，2026-10-04）：
 	// 新库由上方 CREATE TABLE 直接声明新约束；既有库的三条内联无名 CHECK

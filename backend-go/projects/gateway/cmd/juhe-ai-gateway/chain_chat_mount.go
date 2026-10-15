@@ -8,15 +8,19 @@ package main
 // (Node chat.routes.ts router mount).
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
@@ -76,13 +80,24 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		// GET /my-chat/accounts 的账户列表查询端口（同一 accounts.Store 的
 		// ListChatAccountOptions）。
 		AccountOptionsLookup: accountOptionsLookup,
-		ObjectStore:      objectStore,
-		ImageProcessor:   newChatImageProcessor(),
-		ImageObservation: newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
-		Compactions:              compactions,
-		TokenCount:               tokenCount,
-		MaxTurnsPerConversation:  cfg.ChatMaxTurnsPerConversation,
-		RetentionDays:            cfg.ChatRetentionDays,
+		ObjectStore:          objectStore,
+		// 生图 URL 下载按绑定账户的 proxy_profile 出站（BUG-0232 关联：
+		// grok /v1/images/edits 只回 imgen.x.ai 临时链接）；guard 与 /v1 链
+		// 同用部署级 UpstreamURLSecurity 配置；解析失败回落直连。
+		ImageDownloadProxy: newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, cfg.UpstreamURLSecurity, func(message string) { slog.Warn(message) }),
+		ImageProcessor:     newChatImageProcessor(),
+		ImageObservation:   newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
+		// M7 问答音视频工具的 media_jobs 只读端口（问答音视频工具设计 §4：
+		// 任务面归属校验与终态快照；gatewaymedia 仓储适配——internal/chat 不
+		// 直接依赖 gatewaymedia，沿组合根注入先例）。媒体任务面未装配（组合
+		// 测试）保持 nil，media-tasks 端点显式降级。
+		MediaJobs:               newChatMediaJobsLookup(chain),
+		Compactions:             compactions,
+		TokenCount:              tokenCount,
+		MaxTurnsPerConversation: cfg.ChatMaxTurnsPerConversation,
+		RetentionDays:           cfg.ChatRetentionDays,
+		DiagnosticToolEnabled:   cfg.ChatDiagnosticToolEnabled,
+		ToolEnvironment:         cfg.ChatToolEnvironment,
 	}
 	// AI 问答调度覆盖通道（设计 §6）：account 模式承载分组解析端口，域 A 同
 	// 口径（FindChatAccount 的 EnabledGroupIDs，enabled=1 分组绑定）。生产组合
@@ -111,6 +126,42 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	composed.shutdowns = append(composed.shutdowns, func() { hub.Shutdown(chatGenerationHubDrainTimeout) })
 	deps.Register(composed.kernel, systemAPIPrefix+"/my-chat")
 	return deps, nil
+}
+
+// chatMediaJobsLookupAdapter 把 gatewaymedia.MediaJobsRepo 适配为 chat 侧的
+// media_jobs 只读端口（FindChatMediaJob；GetByIDAndAPIKey 的归属校验语义
+// 原样透传——未命中/非本 Key 任务统一 not found，归属信息不泄露）。
+type chatMediaJobsLookupAdapter struct {
+	repo *gatewaymedia.MediaJobsRepo
+}
+
+// newChatMediaJobsLookup 从链上的媒体任务面运行时解析端口；任务面未装配
+// （组合测试）返回 nil。
+func newChatMediaJobsLookup(chain *gatewayChain) chat.ChatMediaJobsLookup {
+	if chain == nil || chain.mediaJobs == nil || chain.mediaJobs.repo == nil {
+		return nil
+	}
+	return &chatMediaJobsLookupAdapter{repo: chain.mediaJobs.repo}
+}
+
+// FindChatMediaJob implements chat.ChatMediaJobsLookup.
+func (a *chatMediaJobsLookupAdapter) FindChatMediaJob(jobID, apiKeyID string) (chat.ChatMediaJobSnapshot, bool, error) {
+	record, err := a.repo.GetByIDAndAPIKey(context.Background(), jobID, apiKeyID)
+	if err != nil {
+		if errors.Is(err, gatewaymedia.ErrMediaJobNotFound) {
+			return chat.ChatMediaJobSnapshot{}, false, nil
+		}
+		return chat.ChatMediaJobSnapshot{}, false, err
+	}
+	if record == nil {
+		return chat.ChatMediaJobSnapshot{}, false, nil
+	}
+	return chat.ChatMediaJobSnapshot{
+		ID:            record.ID,
+		Kind:          string(record.Kind),
+		Status:        string(record.Status),
+		UpstreamJobID: record.UpstreamJobID,
+	}, true, nil
 }
 
 // chatAttachStreamHandler builds the Node responseSubscriber equivalent over

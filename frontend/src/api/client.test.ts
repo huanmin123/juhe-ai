@@ -47,10 +47,8 @@ describe('api 客户端 barrel', () => {
       'runtimeLogs',
       'settings',
       'stats',
-      'studio',
       'systemAccounts',
       'systemTeams',
-      'tableMonitor',
       'uiBootstrap',
       'usageRecords'
     ].sort())

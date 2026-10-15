@@ -2446,10 +2446,6 @@ type observabilityTaskRunSample struct {
 // 与 stats-worker / ops-worker / ingest-worker 三种角色。
 var observabilityTaskRunSamples = []observabilityTaskRunSample{
 	{
-		JobName: "system-metrics-sample", JobType: "sample", WorkerRole: "stats-worker", Status: "completed",
-		Result: map[string]any{"sampled": 1, "samples": 4}, ExitCode: 0,
-	},
-	{
 		JobName: "usage-stats-aggregation", JobType: "stats", WorkerRole: "stats-worker", Status: "completed",
 		Result: map[string]any{"aggregated": 12, "windows": 3}, ExitCode: 0,
 	},
@@ -2479,10 +2475,9 @@ var observabilityTaskRunSamples = []observabilityTaskRunSample{
 
 // seedBackgroundTaskRuns 写 task-runs 库的 background_task_runs。
 //
-// 注意：系统指标页的「后台任务」区块读的是 stats 库里的同名表
-// （gateway/internal/statreads/systemmetrics.go 用 statsTable("background_task_runs")），
-// 按 autofill.go 的登记该表归 seedStatsRaw；本域只写 jobs 自己的 task-runs 库，
-// 不重复占位另一个域的写入面（差异见交付报告）。
+// 注意：stats 库里的同名表（原系统指标页「后台任务」区块读面，随 2026-10-14
+// 监控改造删除）按 autofill.go 的登记归 seedStatsRaw；本域只写 jobs 自己的
+// task-runs 库，不重复占位另一个域的写入面（差异见交付报告）。
 func seedBackgroundTaskRuns(ctx context.Context, e *env, refs observabilityReferences, now time.Time, counts map[string]int) error {
 	_ = refs
 	ready, err := observabilityTableReady(ctx, e, StoreTaskRuns, "background_task_runs")

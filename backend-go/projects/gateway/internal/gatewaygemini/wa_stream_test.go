@@ -109,6 +109,106 @@ func TestWAStreamInspectorOversizeSkip(t *testing.T) {
 	}
 }
 
+// 持续无换行输入契约：未完结行缓冲受 256KB 行上限约束，不随输入无上限增长；
+// 超过行上限即按事件超限语义整流跳过并报告原因（资源边界回归）。
+func TestWAStreamInspectorNoNewlineLineCap(t *testing.T) {
+	const lineCap = 256 * 1024
+	inspector := NewStreamInspector()
+	inspector.PushChunk([]byte("data: "))
+	chunk := []byte(strings.Repeat("x", 4096))
+	for total := len("data: "); total <= 2*lineCap; total += len(chunk) {
+		inspector.PushChunk(chunk)
+		if len(inspector.pendingLine) > lineCap {
+			t.Fatalf("pendingLine 越界累积: %d", len(inspector.pendingLine))
+		}
+	}
+	snapshot := inspector.Snapshot()
+	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
+		t.Fatalf("持续无换行输入应超限跳过: %+v", snapshot)
+	}
+	if snapshot.PendingEvent {
+		t.Fatal("跳过状态不应报告 pending")
+	}
+}
+
+// 行上限边界：恰为上限的未完结行保留，超出 1 字节即跳过。
+func TestWAStreamInspectorLineCapBoundary(t *testing.T) {
+	const lineCap = 256 * 1024
+	atLimit := NewStreamInspector()
+	atLimit.PushChunk([]byte("data: " + strings.Repeat("x", lineCap-len("data: "))))
+	if snapshot := atLimit.Snapshot(); snapshot.Skipped {
+		t.Fatalf("上限内未完结行不应跳过: %+v", snapshot)
+	}
+	overLimit := NewStreamInspector()
+	overLimit.PushChunk([]byte("data: " + strings.Repeat("x", lineCap-len("data: ")+1)))
+	if snapshot := overLimit.Snapshot(); !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
+		t.Fatalf("超出上限 1 字节应跳过: %+v", snapshot)
+	}
+}
+
+// 行上限跨 chunk：多段推入累计恰达上限不跳过，再来 1 字节即跳过且缓冲释放。
+func TestWAStreamInspectorLineCapCrossChunk(t *testing.T) {
+	const lineCap = 256 * 1024
+	inspector := NewStreamInspector()
+	inspector.PushChunk([]byte("data: "))
+	total := len("data: ")
+	fill := []byte(strings.Repeat("x", 4096))
+	for total < lineCap {
+		size := len(fill)
+		if remaining := lineCap - total; remaining < size {
+			size = remaining
+		}
+		inspector.PushChunk(fill[:size])
+		total += size
+	}
+	if len(inspector.pendingLine) != lineCap {
+		t.Fatalf("跨 chunk 累计应恰达上限: %d", len(inspector.pendingLine))
+	}
+	if snapshot := inspector.Snapshot(); snapshot.Skipped {
+		t.Fatalf("恰达上限不应跳过: %+v", snapshot)
+	}
+	inspector.PushChunk([]byte("x"))
+	snapshot := inspector.Snapshot()
+	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
+		t.Fatalf("跨 chunk 超出上限 1 字节应跳过: %+v", snapshot)
+	}
+	if len(inspector.pendingLine) != 0 {
+		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
+	}
+}
+
+// 超限行在同 chunk 内带换行完结：预追加检查先于行处理触发，整流跳过且不分类事件。
+func TestWAStreamInspectorOversizedLineWithNewline(t *testing.T) {
+	const lineCap = 256 * 1024
+	inspector := NewStreamInspector()
+	inspector.PushChunk([]byte("data: " + strings.Repeat("x", lineCap) + "\n\n"))
+	snapshot := inspector.Snapshot()
+	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" || snapshot.EventCount != 0 {
+		t.Fatalf("同 chunk 超限行应整流跳过且不分类: %+v", snapshot)
+	}
+	if len(inspector.pendingLine) != 0 {
+		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
+	}
+}
+
+// event 前缀行与其他前缀同判（上限检查在预追加阶段，与行前缀无关）；跳过后短路。
+func TestWAStreamInspectorOversizedEventPrefixLine(t *testing.T) {
+	const lineCap = 256 * 1024
+	inspector := NewStreamInspector()
+	inspector.PushChunk([]byte("event: " + strings.Repeat("x", lineCap)))
+	snapshot := inspector.Snapshot()
+	if !snapshot.Skipped || snapshot.SkipReason != "gemini_stream_event_too_large" {
+		t.Fatalf("event 前缀超限行应跳过: %+v", snapshot)
+	}
+	if len(inspector.pendingLine) != 0 {
+		t.Fatalf("跳过后未完结行缓冲应释放: %d", len(inspector.pendingLine))
+	}
+	inspector.PushChunk([]byte("data: {\"type\":\"finish\"}\n\n"))
+	if snapshot := inspector.Snapshot(); snapshot.EventCount != 0 || !snapshot.Skipped {
+		t.Fatalf("跳过后应短路不再分类: %+v", snapshot)
+	}
+}
+
 // PushChunk / PushParsedEvent / 解析失败 summary。
 func TestWAStreamInspectorPushVariants(t *testing.T) {
 	inspector := NewStreamInspector()
@@ -239,16 +339,16 @@ func TestWAEstimateTokenCountFromTextGemini(t *testing.T) {
 }
 
 func TestWAHasPendingSSEProtocolEventGemini(t *testing.T) {
-	if hasPendingSSEProtocolEvent(true, "", 0, 0, "data: x") {
+	if hasPendingSSEProtocolEvent(true, "", 0, 0, []byte("data: x")) {
 		t.Fatal("skipped 应为 false")
 	}
-	if !hasPendingSSEProtocolEvent(false, "evt", 0, 0, "") {
+	if !hasPendingSSEProtocolEvent(false, "evt", 0, 0, nil) {
 		t.Fatal("事件名应 pending")
 	}
-	if !hasPendingSSEProtocolEvent(false, "", 0, 0, "data: {") {
+	if !hasPendingSSEProtocolEvent(false, "", 0, 0, []byte("data: {")) {
 		t.Fatal("pending data 行应 pending")
 	}
-	if hasPendingSSEProtocolEvent(false, "", 0, 0, "") {
+	if hasPendingSSEProtocolEvent(false, "", 0, 0, nil) {
 		t.Fatal("空状态不 pending")
 	}
 }

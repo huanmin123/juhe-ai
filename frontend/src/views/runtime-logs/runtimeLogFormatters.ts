@@ -21,8 +21,6 @@ export const runtimeLogEventTextMap: Record<string, string> = {
   background_proxy_latency_refresh_failed: '后台代理延迟刷新失败',
   background_resource_authorization_expiry_sweep_failed: '后台资源授权过期扫描失败',
   background_runtime_log_index_maintenance_failed: '后台运行日志索引维护失败',
-  background_system_metrics_sample_failed: '后台系统指标采样失败',
-  background_table_storage_monitor_failed: '后台表空间监控失败',
   background_usage_rank_snapshots_refresh_failed: '后台用量排行快照刷新失败',
   background_usage_stats_aggregation_failed: '后台用量统计聚合失败',
   background_usage_stats_consistency_check_failed: '后台用量统计一致性检查失败',

@@ -75,7 +75,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 
 	_ "modernc.org/sqlite"
 )
@@ -163,8 +162,7 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(f.root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(f.root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(f.root, "stats.sqlite"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH=" + filepath.Join(f.root, "table-monitor.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + runtimeLog,
+				"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + runtimeLog,
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(f.root, "codex-shards"),
 		"JUHE_AI_BUSINESS_OWNER=gateway",
 		"JUHE_AI_BUSINESS_DATABASE_PATH=" + f.businessPath,
@@ -360,33 +358,14 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 		t.Fatalf("关闭业务库失败: %v", err)
 	}
 
-	// 场景 A：不设 JUHE_AI_AUTH_CAPTCHA_DISABLED（336-338 captcha 臂）+
-	// sqlite Go 运行时指标 store（569-574 采样器组件臂）。采样器只做
-	// CheckSchema（schema 归 maintenance 预建），组合根要求库已就绪，
-	// 因此先按 gometrics.OpenStore 的 DDL 形态补建 schema。
-	metricsPath := filepath.Join(f.root, "go-metrics.sqlite")
-	metricsDB, err := sql.Open("sqlite", "file:"+filepath.ToSlash(metricsPath)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
-	if err != nil {
-		t.Fatalf("打开 Go 运行时指标库失败: %v", err)
-	}
-	metricsStore, err := gometrics.NewStore(metricsDB, gometrics.DialectSQLite)
-	if err != nil {
-		t.Fatalf("创建 Go 运行时指标 store 失败: %v", err)
-	}
-	if err := metricsStore.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("补建 Go 运行时指标 schema 失败: %v", err)
-	}
-	if err := metricsDB.Close(); err != nil {
-		t.Fatalf("关闭 Go 运行时指标库失败: %v", err)
-	}
+	// 场景 A：不设 JUHE_AI_AUTH_CAPTCHA_DISABLED（336-338 captcha 臂）。
+	// （Go 运行时指标采样器组件臂已随监控改造删除：gometrics 采样与
+	// JUHE_AI_GO_RUNTIME_METRICS_* env 家族整体退役，promhttp /metrics 取代。）
 	coverageDir := w1bCoverageDir(t, "W1W-owner-tail-boot")
 	env := w1wOwnerEnv(t, coverageDir, f,
 		// 置空覆盖基线的 captcha 关闭项：envBool("") = false → 子进程装配
 		// captcha 服务（main.go 336-338）。
 		"JUHE_AI_AUTH_CAPTCHA_DISABLED=",
-		"JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite",
-		"JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH="+metricsPath,
-		"JUHE_AI_GO_RUNTIME_METRICS_INTERVAL=1s",
 	)
 	cmd, done, stdout, stderr, cancel := w1wStartOwner(t, exe, env, 120*time.Second)
 	if !w1wPollReady(t, f.healthAddr, done, cancel, stdout, stderr, 45*time.Second) {
@@ -413,7 +392,7 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 		}
 		_ = taskDB.Close()
 	}
-	t.Logf("场景 A/D 完成: captcha 臂 + 采样器组件 + 调度闭包（health=%s main=%s j3b=%s）", f.healthAddr, f.mainAddr, f.j3bAddr)
+	t.Logf("场景 A/D 完成: captcha 臂 + 调度闭包（health=%s main=%s j3b=%s）", f.healthAddr, f.mainAddr, f.j3bAddr)
 }
 
 // ---------------------------------------------------------------------------
@@ -667,8 +646,7 @@ func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(root, "stats.sqlite"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH=" + filepath.Join(root, "table-monitor.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
+				"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(root, "codex-shards"),
 		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(root, "usage-shards"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(root, "usage-spool"),
@@ -1026,8 +1004,7 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 		"JUHE_AI_DATASET_DATABASE_PATH="+filepath.Join(root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH="+filepath.Join(root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH="+filepath.Join(root, "stats.sqlite"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH="+filepath.Join(root, "table-monitor.sqlite"),
-		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+filepath.Join(root, "runtime-log.sqlite"),
+				"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+filepath.Join(root, "runtime-log.sqlite"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT="+filepath.Join(root, "codex-shards"),
 		"JUHE_AI_USAGE_SHARD_ROOT="+filepath.Join(root, "usage-shards"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY="+filepath.Join(root, "usage-spool"),

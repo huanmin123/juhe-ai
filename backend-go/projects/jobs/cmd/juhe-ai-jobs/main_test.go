@@ -12,8 +12,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
 )
 
 func TestValidateHealthListenAddress(t *testing.T) {
@@ -57,7 +57,7 @@ func TestListenLoopbackUsesValidatedAddress(t *testing.T) {
 func TestAccountBalanceManualBridgeRequiresService(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running, AccountBalanceEnabled: true, AccountBalanceReady: func() bool { return true }})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil))
 	if record.Code != http.StatusNotFound {
@@ -68,10 +68,14 @@ func TestAccountBalanceManualBridgeRequiresService(t *testing.T) {
 func TestAccountBalanceManualBridgeRequiresAuthorization(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(
-		ownermode.Active, &running, func() bool { return true }, false, func() bool { return true },
-		true, func() bool { return true }, &accountbalance.Service{}, "0123456789abcdef0123456789abcdef",
-	)
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:                  ownermode.Active,
+		RuntimeRunning:             &running,
+		AccountBalanceEnabled:      true,
+		AccountBalanceReady:        func() bool { return true },
+		AccountBalanceService:      &accountbalance.Service{},
+		AccountBalanceManualSecret: "0123456789abcdef0123456789abcdef",
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/account-balance/manual", nil))
 	if record.Code != http.StatusUnauthorized {
@@ -106,6 +110,9 @@ func TestPassiveJobsHealthNeverClaimsOwnerReadiness(t *testing.T) {
 	if payload["ready"] != false || payload["ownerReady"] != false || payload["ownerMode"] != "standby" || payload["accountBalanceReady"] != false {
 		t.Fatalf("passive health claimed owner readiness: %#v", payload)
 	}
+	if _, ok := payload["tableMonitorReady"]; ok {
+		t.Fatalf("retired tableMonitorReady field must be gone: %#v", payload)
+	}
 }
 
 func TestHealthWiresProxyLatencyStatus(t *testing.T) {
@@ -115,7 +122,13 @@ func TestHealthWiresProxyLatencyStatus(t *testing.T) {
 	status := func() proxylatency.RunnerStatus {
 		return proxylatency.RunnerStatus{OwnerHeld: true, LastCycleAt: now, LastSuccess: now, Inputs: 2, Executed: 2}
 	}
-	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, status)
+	handler := healthHandler(healthDeps{
+		OwnerMode:             ownermode.Active,
+		RuntimeRunning:        &running,
+		ProxyLatencyEnabled:   true,
+		ProxyLatencyReady:     func() bool { return true },
+		ProxyLatencyStatus:    status,
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
@@ -131,7 +144,13 @@ func TestHealthKeepsProxyLatencyFailureVisible(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
 	status := func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{LastError: "owner lease lost"} }
-	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return false }, status)
+	handler := healthHandler(healthDeps{
+		OwnerMode:           ownermode.Active,
+		RuntimeRunning:      &running,
+		ProxyLatencyEnabled: true,
+		ProxyLatencyReady:   func() bool { return false },
+		ProxyLatencyStatus:  status,
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
@@ -146,7 +165,12 @@ func TestHealthKeepsProxyLatencyFailureVisible(t *testing.T) {
 func TestHealthDisabledProxyLatencyDoesNotBlock(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, false, func() bool { return false }, func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} })
+	handler := healthHandler(healthDeps{
+		OwnerMode:           ownermode.Active,
+		RuntimeRunning:      &running,
+		ProxyLatencyReady:   func() bool { return false },
+		ProxyLatencyStatus:  func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
@@ -163,7 +187,14 @@ func TestHealthUsesAtomicProxyLatencySnapshot(t *testing.T) {
 	running.Store(true)
 	status := func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{LastError: "owner lease lost"} }
 	snapshot := func() (proxylatency.RunnerStatus, bool) { return status(), false }
-	handler := healthHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, true, func() bool { return true }, status, snapshot)
+	handler := healthHandler(healthDeps{
+		OwnerMode:            ownermode.Active,
+		RuntimeRunning:       &running,
+		ProxyLatencyEnabled:  true,
+		ProxyLatencyReady:    func() bool { return true },
+		ProxyLatencyStatus:   status,
+		ProxyLatencySnapshot: snapshot,
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
@@ -178,7 +209,7 @@ func TestHealthUsesAtomicProxyLatencySnapshot(t *testing.T) {
 func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodPost, "/proxy-latency/manual", nil))
 	if record.Code != http.StatusNotFound {
@@ -186,23 +217,28 @@ func TestJobsHTTPHandlerDoesNotExposeRetiredProxyLatencyBridge(t *testing.T) {
 	}
 }
 
-func TestJobsHTTPHandlerExposesGoRuntimeMetrics(t *testing.T) {
+func TestJobsHTTPHandlerExposesPromMetrics(t *testing.T) {
 	var running atomic.Bool
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	registry := prommetrics.NewRegistry()
+	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running, MetricsHandler: registry.Handler()})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/metrics", nil))
-	if record.Code != http.StatusOK || !strings.Contains(record.Body.String(), `runtimeKind="go"`) {
+	if record.Code != http.StatusOK {
 		t.Fatalf("metrics status=%d body=%s", record.Code, record.Body.String())
+	}
+	// Go + process 收集器随 NewRegistry 注册：至少暴露 go_* 与 process_* 序列。
+	if !strings.Contains(record.Body.String(), "go_goroutines") || !strings.Contains(record.Body.String(), "process_start_time_seconds") {
+		t.Fatalf("metrics body must expose go/process collectors: %s", record.Body.String())
 	}
 }
 
 // TestJobsHTTPHandlerDoesNotExposeGoRuntimeTrend is the 去跨进程战役第三刀
 // regression: the TrendHandler route disappears from the jobs health listener
-// together with the gometricsstore package; the trend read moves in-process
-// into the gateway statreads store query.
+// together with the gometricsstore package; 2026-10-14 起 go-runtime-trend 读族
+// 与 gometrics 采样链一并退役（无 in-process 回读，进程指标走 Prometheus）。
 func TestJobsHTTPHandlerDoesNotExposeGoRuntimeTrend(t *testing.T) {
 	var running atomic.Bool
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true }, false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/__aisys__/api/stats/go-runtime-trend?from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z", nil))
 	if record.Code != http.StatusNotFound {
@@ -210,24 +246,19 @@ func TestJobsHTTPHandlerDoesNotExposeGoRuntimeTrend(t *testing.T) {
 	}
 }
 
-// TestJobsHTTPHandlerForwardsWorkerFieldsToHealth is the X05 defect-4
-// regression: the goMetrics slots must not shift the worker fields inside the
-// healthHandler variadic layout — /health must report workerEnabled=true, the
-// worker readiness gate and the worker snapshot, while the /__aiinternal__
-// dispatch route stays gone (去跨进程战役第二刀：健康检查派发改走 DB outbox).
+// TestJobsHTTPHandlerForwardsWorkerFieldsToHealth 锁定显式依赖集重写后的
+// readiness 直达语义：workerEnabled 恒 true，worker readiness gate 与快照
+// 到达 /health；/__aiinternal__ 派发路由保持消失（去跨进程战役第二刀：
+// 健康检查派发改走 DB outbox）。
 func TestJobsHTTPHandlerForwardsWorkerFieldsToHealth(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true },
-		false, func() bool { return true },
-		false, func() bool { return true },
-		nil, "",
-		false, func() bool { return true },
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		gometrics.New("juhe-ai", "jobs"), (*gometrics.Sampler)(nil),
-		true, func() bool { return false },
-		func() map[string]any { return map[string]any{"wiredJobs": []string{"account-balance-refresh"}} })
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:      ownermode.Active,
+		RuntimeRunning: &running,
+		WorkerReady:    func() bool { return false },
+		WorkerStatus:   func() map[string]any { return map[string]any{"wiredJobs": []string{"account-balance-refresh"}} },
+	})
 
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))

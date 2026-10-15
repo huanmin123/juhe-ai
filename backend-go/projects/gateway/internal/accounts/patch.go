@@ -346,12 +346,18 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 人工恢复目标状态（BUG-0288）：clearFailureState 是显式人工确认——冷却态
 	// 直接恢复调度（与授权实例 patchAuthorizedDispatchTx 的 clearFailure→
 	// active+schedulable 同语义），error 进入待检查复检；目标仍受时间计划与
-	// 套餐到期约束，由既有状态机统一裁定。
+	// 套餐到期约束，由既有状态机统一裁定。媒体域（audio/video）不参与对话
+	// 健康检查状态机（无后台探针复检），error 人工恢复直达 active——落
+	// pending_test 会因永远等不到探针而滞留。
 	clearFailureRestoreTarget := ""
 	if input.ClearFailureState {
 		switch row.status {
 		case "error":
-			clearFailureRestoreTarget = "pending_test"
+			if accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
+				clearFailureRestoreTarget = "active"
+			} else {
+				clearFailureRestoreTarget = "pending_test"
+			}
 		case "temporary_unavailable", "rate_limited":
 			clearFailureRestoreTarget = "active"
 		}
@@ -980,7 +986,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		scheduledStatus = "disabled"
 	}
 	nextStatus := scheduledStatus
-	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput {
+	// 连接变化降级臂按域守卫（媒体账户生命周期定案表）：audio/video 域不参
+	// 与对话健康检查状态机，凭据/代理编辑保持 scheduledStatus（active 保持
+	// active），不落 pending_test——否则同样因无探针复检而永久滞留。chat/
+	// image 域行为不变。
+	if connectionChanged && scheduledStatus != "disabled" && !hasStatusInput &&
+		!accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
 		nextStatus = "pending_test"
 	}
 	statusChanged := row.status != nextStatus
@@ -1298,8 +1309,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Health state reset (Node :677-694): any health-relevant change clears
 	// the next scheduled check; a connection change also wipes the persisted
 	// health projection so the next probe starts clean.
-	healthCheckRequired := connectionChanged || supportedModelsChanged || modelMappingsChanged ||
-		healthCheckModelChanged || healthCheckEndpointModeChanged || endpointModesChanged
+	healthCheckRequired := !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) &&
+		(connectionChanged || supportedModelsChanged || modelMappingsChanged ||
+			healthCheckModelChanged || healthCheckEndpointModeChanged || endpointModesChanged)
 	if healthCheckRequired {
 		sets = append(sets, "next_health_check_at = NULL")
 	}
@@ -1310,7 +1322,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if clearFailurePendingTest {
 		sets = append(sets, "next_health_check_at = NULL")
 	}
-	if connectionChanged {
+	if connectionChanged && !accountscore.SkipsConversationHealthStateMachine(row.capabilityDomain) {
 		sets = append(sets,
 			"last_health_check_at = NULL",
 			"last_health_success_at = NULL",

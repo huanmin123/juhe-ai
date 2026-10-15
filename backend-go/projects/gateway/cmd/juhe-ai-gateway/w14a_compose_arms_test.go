@@ -46,7 +46,6 @@ func w14aComposeTestConfig(t *testing.T) runtimeConfig {
 	cfg.ChatDatabasePath = filepath.Join(root, "chat.sqlite3")
 	cfg.DatasetDatabasePath = filepath.Join(root, "dataset.sqlite3")
 	cfg.RuntimeLogDatabasePath = filepath.Join(root, "runtime-log.sqlite3")
-	cfg.TableMonitorDatabasePath = filepath.Join(root, "table-monitor.sqlite3")
 	cfg.UsageCatalogDatabasePath = filepath.Join(root, "usage-catalog.sqlite3")
 	cfg.CodexContextShardRoot = filepath.Join(root, "codex-context")
 	cfg.BusinessCutoverEvidencePath = filepath.Join(root, "evidence.json")
@@ -54,19 +53,14 @@ func w14aComposeTestConfig(t *testing.T) runtimeConfig {
 }
 
 // TestW14aComposeSystemAPIMissingPathArms 收割 preflight 不校验的路径缺失臂
-// （table-monitor / runtime-log；stats 与 usage-catalog / dataset 缺失被
-// preflight 先行拦截，见文件头清单）。
+// （runtime-log；stats 与 usage-catalog / dataset 缺失被 preflight 先行拦截，
+// 见文件头清单；表监控库已随表监控读面删除）。
 func TestW14aComposeSystemAPIMissingPathArms(t *testing.T) {
 	cases := []struct {
 		name    string
 		mutate  func(cfg *runtimeConfig)
 		wantErr string
 	}{
-		{
-			name:    "table-monitor-path-missing",
-			mutate:  func(cfg *runtimeConfig) { cfg.TableMonitorDatabasePath = "" },
-			wantErr: "sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH",
-		},
 		{
 			name:    "runtime-log-path-missing",
 			mutate:  func(cfg *runtimeConfig) { cfg.RuntimeLogDatabasePath = "" },
@@ -85,22 +79,6 @@ func TestW14aComposeSystemAPIMissingPathArms(t *testing.T) {
 				t.Fatalf("期望错误含 %q, got %v", item.wantErr, err)
 			}
 		})
-	}
-}
-
-// TestW14aComposeSystemAPITableMonitorConfigureArm 收割六库物理身份门禁的
-// 「不是常规文件」臂（storage_bootstrap_physical.go）：路径指向目录时
-// preflight 的 assertDistinctSQLiteStoragePaths 先行拒绝（compose 的
-// table-monitor configure 错误臂被该门禁遮蔽，进程内不可达）。
-func TestW14aComposeSystemAPITableMonitorConfigureArm(t *testing.T) {
-	cfg := w14aComposeTestConfig(t)
-	cfg.TableMonitorDatabasePath = filepath.Dir(cfg.TableMonitorDatabasePath)
-	store := openComposeOperationStore(t)
-	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
-	defer closeAudit()
-	_, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
-	if err == nil || !strings.Contains(err.Error(), "的 SQLite 路径不是常规文件") {
-		t.Fatalf("期望物理身份门禁「不是常规文件」错误, got %v", err)
 	}
 }
 

@@ -80,9 +80,9 @@ describe('schedulingPreferencesApi 请求形状', () => {
     expect(requests[0].params).toEqual({ page: 2, pageSize: 50, keyword: 'k', chatMode: 'speed_first', systemAccountId: 'sa-1' })
   })
 
-  it('options 透传 ids、keyword、limit、activeOnly', async () => {
-    await schedulingPreferencesApi.options({ ids: ['a', 'b'], keyword: 'k', limit: 50, activeOnly: false })
-    expect(requests[0].params).toEqual({ ids: ['a', 'b'], keyword: 'k', limit: 50, activeOnly: false })
+  it('options 透传 ids、keyword、limit', async () => {
+    await schedulingPreferencesApi.options({ ids: ['a', 'b'], keyword: 'k', limit: 50 })
+    expect(requests[0].params).toEqual({ ids: ['a', 'b'], keyword: 'k', limit: 50 })
   })
 
   it('create 携带目标 owner 查询参数与业务 payload', async () => {
@@ -113,7 +113,7 @@ describe('schedulingPreferencesApi 请求形状', () => {
 describe('mySchedulingPreferencesApi 请求形状', () => {
   it('各方法指向 my- 前缀路径并剥离伪造 systemAccountId', async () => {
     await mySchedulingPreferencesApi.list({ page: 1, keyword: 'k', chatMode: 'all' } as Parameters<typeof mySchedulingPreferencesApi.list>[0])
-    await mySchedulingPreferencesApi.options({ keyword: 'k', limit: 50, activeOnly: true } as Parameters<typeof mySchedulingPreferencesApi.options>[0])
+    await mySchedulingPreferencesApi.options({ keyword: 'k', limit: 50 })
     await mySchedulingPreferencesApi.detail('sp-1')
     await mySchedulingPreferencesApi.create({ name: '偏好', chatMode: 'cost_first' })
     await mySchedulingPreferencesApi.update('sp-1', { expectedUpdatedAt: 'ts', chatMode: 'cost_first' })
@@ -127,6 +127,6 @@ describe('mySchedulingPreferencesApi 请求形状', () => {
       ['DELETE', '/my-scheduling-preferences/sp-1']
     ])
     expect(requests[0].params).toEqual({ page: 1, keyword: 'k', chatMode: 'all' })
-    expect(requests[1].params).toEqual({ keyword: 'k', limit: 50, activeOnly: true })
+    expect(requests[1].params).toEqual({ keyword: 'k', limit: 50 })
   })
 })

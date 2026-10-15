@@ -40,15 +40,15 @@ assert.equal(triggerKindText('scheduled'), '定时检查', 'scheduled 文案保�
 assert.equal(triggerKindText('quality_recovery'), '质量恢复', 'quality_recovery 文案保持不变')
 assert.ok(triggerKindColor('schedule_now') !== triggerKindColor('manual'), 'schedule_now 标签色必须与 manual 区分')
 
-// —— 检查间隔下限收敛到 1，恢复检查间隔维持 10 ——
-assert.match(schedulesModalSource, /v-model:value="form\.intervalMinutes" :min="1" :max="10080"/, '检查间隔输入框 min 必须为 1')
-assert.match(schedulesModalSource, /value >= 1 && value <= 10080/, '检查间隔校验必须允许 1 到 10080 的整数')
-assert.match(schedulesModalSource, /请输入 1 到 10080 的整数/, '检查间隔校验文案必须为 1 到 10080')
+// —— 检查间隔下限收敛到 5，恢复检查间隔维持 10 ——
+assert.match(schedulesModalSource, /v-model:value="form\.intervalMinutes" :min="5" :max="10080"/, '检查间隔输入框 min 必须为 5')
+assert.match(schedulesModalSource, /value >= 5 && value <= 10080/, '检查间隔校验必须允许 5 到 10080 的整数')
+assert.match(schedulesModalSource, /请输入 5 到 10080 的整数/, '检查间隔校验文案必须为 5 到 10080')
 assert.match(schedulesModalSource, /intervalMinutes: 60/, '检查间隔默认值必须保持 60')
 assert.match(schedulesModalSource, /v-model:value="form\.recoveryIntervalMinutes" :min="10" :max="10080"/, '恢复检查间隔输入框 min 必须维持 10')
 assert.match(schedulesModalSource, /value >= 10 && value <= 10080/, '恢复检查间隔校验必须维持 10 到 10080')
 assert.match(schedulesModalSource, /请输入 10 到 10080 的整数/, '恢复检查间隔校验文案必须维持 10 到 10080')
-assert.match(schedulesModalSource, /Number\.isInteger\(form\.intervalMinutes\) \|\| form\.intervalMinutes < 1 \|\| form\.intervalMinutes > 10080/, 'save() 必须防御检查间隔超出 1 到 10080')
+assert.match(schedulesModalSource, /Number\.isInteger\(form\.intervalMinutes\) \|\| form\.intervalMinutes < 5 \|\| form\.intervalMinutes > 10080/, 'save() 必须防御检查间隔超出 5 到 10080')
 
 // —— 计划列表五状态标签与 lastRunScore ——
 assert.match(schedulesModalSource, /:color="executionStateColor\(item\.executionState\)"/, '计划状态标签必须使用 executionState 颜色映射')
@@ -136,4 +136,4 @@ assert.match(formattersSource, /value\.executed === false/, '题库小计必须�
 assert.match(formattersSource, /items\.some\(\(item\) => item\.verdict === 'passed' \|\| item\.verdict === 'failed'\)/, '历史数据无 executed 字段时必须以 passed/failed 判定兜底（unavailable 全请求失败形态同为未执行）')
 assert.match(drawerSource, /quizSummary\.executed === false \? '未执行题库测试'/, '题库未执行时小计必须显示未执行而非 31/31 满分误导')
 
-console.log('模型质量计划回归通过：间隔下限 1、五状态标签、lastRunScore、run-now 单条/批量、未记录兜底与 schedule_now 文案')
+console.log('模型质量计划回归通过：间隔下限 5、五状态标签、lastRunScore、run-now 单条/批量、未记录兜底与 schedule_now 文案')

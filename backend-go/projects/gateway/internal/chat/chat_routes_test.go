@@ -180,6 +180,16 @@ func TestRouteConversationCRUDMatrix(t *testing.T) {
 	if got.status != http.StatusOK || got.dataMap()["id"] != "chat_conv_a" {
 		t.Fatalf("get failed: %s", got.rawString())
 	}
+	tools, _ := got.dataMap()["toolCapabilities"].(map[string]any)
+	if tools == nil {
+		t.Fatal("toolCapabilities missing")
+	}
+	toolList, _ := tools["tools"].([]any)
+	// 兜底形状：候选端口未接线（routeEnv 无 AccountOptionsLookup）→ 四节模型
+	// 工具（M7 媒体两节随问答音视频工具设计 §3 加入）。
+	if len(toolList) != 4 {
+		t.Fatalf("expected fallback tool list, got %v", tools)
+	}
 	missing := env.do("GET", prefix+"/conversations/chat_conv_missing", routeTestOwner, "")
 	if missing.status != http.StatusNotFound || missing.rawString() != `{"message":"会话不存在"}` {
 		t.Fatalf("expected bare 404, got %s", missing.rawString())

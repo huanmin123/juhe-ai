@@ -39,7 +39,6 @@ func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 		cfg.RuntimeLogDatabasePath:   filepath.Join(root, "runtime-log.sqlite3"),
 		cfg.UsageCatalogDatabasePath: filepath.Join(root, "usage-catalog.sqlite3"),
 		cfg.StatsDatabasePath:        filepath.Join(root, "stats.sqlite3"),
-		cfg.TableMonitorDatabasePath: filepath.Join(root, "table-monitor.sqlite3"),
 		cfg.BusinessDatabasePath:     filepath.Join(root, "business.sqlite3"),
 		cfg.ChatAssetsRoot:           filepath.Join(root, "chat-assets"),
 		cfg.CodexContextShardRoot:    filepath.Join(root, "codex-context", "state-shards"),

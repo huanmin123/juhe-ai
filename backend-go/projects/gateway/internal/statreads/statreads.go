@@ -4,12 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // GLOBALStats* mirror usage-stats-types.ts GLOBAL_STATS_SYSTEM_ACCOUNT_ID /
@@ -18,16 +16,6 @@ const (
 	globalStatsSystemAccountID = "global"
 	globalStatsScopeID         = "global"
 )
-
-// DefaultJobsHealthListenAddress is the default loopback address the gateway
-// health-snapshot jobs section fetches when JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS
-// is unset (2026-09-28 default-on rectification): it matches the jobs
-// process' own default health listen (cmd/juhe-ai-jobs main.go
-// envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305")), so a
-// same-host bare-process deployment works without any configuration. The
-// composition root resolves the env (including the explicit "disabled"
-// opt-out); this constant only pins the shared default.
-const DefaultJobsHealthListenAddress = "127.0.0.1:3305"
 
 // Deps bundles the statreads collaborators. Business reaches the business
 // database (accounts / system_accounts / groups ...), Stats reaches the stats
@@ -46,57 +34,14 @@ type Deps struct {
 	// only); the shard walk for /usage-records reads the registered files
 	// through it. Nil disables shard discovery (empty results).
 	UsageCatalog DB
-	// GoRuntimeMetrics is the in-process Go runtime metrics store (the shared
-	// platform gometrics Store over the same go_runtime_metrics_* tables the
-	// gateway and jobs samplers persist into). Nil keeps the go-runtime-trend
-	// route on the samplingEnabled:false empty-items 200 degradation (sampling
-	// is enabled by default since 2026-09-27; nil is the explicitly-disabled
-	// or assembly-degraded path) — the former jobs trend HTTP proxy is gone
-	// (去跨进程战役第三刀).
-	GoRuntimeMetrics *gometrics.Store
-	// GoRuntimeMetricsService is the service label the trend query filters on
-	// (the samplers' configured service, default juhe-ai). The trend envelope
-	// answers one {role, items} group per fixed gateway+jobs role; every item
-	// keeps its own service/role fields.
-	GoRuntimeMetricsService string
 	// HealthOutcomes optionally points at the J1 account-health outcome
 	// store (Node runtimeConfig.accountHealthJobs.outcomeSqlitePath); nil
 	// keeps the merge absent exactly like an unconfigured Node source.
 	HealthOutcomes *HealthOutcomeSource
 	// RuntimeMode mirrors runtimeConfig.runtimeMode ('standalone' |
-	// 'performance'); empty keeps the standalone contract (fixed role list
-	// exports for the system-metrics trend statuses).
+	// 'performance'); empty keeps the standalone contract.
 	RuntimeMode string
-	// GatewayReadiness exposes this process' owner readiness probe (the
-	// gatewayOwnerHealth.readiness source the /health routes use). The
-	// health-snapshot route embeds its payload verbatim; nil degrades the
-	// gateway section to an unavailable marker.
-	GatewayReadiness func() (int, map[string]any)
-	// JobsHealthURL is the jobs process' loopback /health URL derived from
-	// JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS (JobsHealthURL helper; the
-	// composition root defaults an unset env to
-	// DefaultJobsHealthListenAddress since 2026-09-28). The health-snapshot
-	// route fetches it per request (2s timeout) and embeds the payload
-	// verbatim; empty (explicit "disabled" opt-out at the composition root)
-	// or unreachable degrades the jobs section to available:false + reason.
-	JobsHealthURL string
 }
-
-// JobsHealthURL turns the jobs loopback health listen address
-// (JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS) into the /health URL; an empty or
-// blank address keeps the health-snapshot jobs section on the unconfigured
-// degradation (production assemblies only reach it via the explicit
-// "disabled" opt-out — see DefaultJobsHealthListenAddress).
-func JobsHealthURL(listenAddress string) string {
-	address := strings.TrimSpace(listenAddress)
-	if address == "" {
-		return ""
-	}
-	return "http://" + address + "/health"
-}
-
-// runtimeStandalone mirrors runtimeConfig.runtimeMode === 'standalone'.
-func (d *Deps) runtimeStandalone() bool { return d.RuntimeMode != "performance" }
 
 // Mount wires the statreads route families:
 //
@@ -139,14 +84,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		k.Register("GET "+base+"/account-usage/options", surface.wrap(http.HandlerFunc(d.accountUsageOptionsHandler(selfOnly))))
 		k.Register("GET "+base+"/account-usage/summary", surface.wrap(http.HandlerFunc(d.accountUsageSummaryHandler(selfOnly))))
 		k.Register("GET "+base+"/account-usage/trend", surface.wrap(http.HandlerFunc(d.accountUsageTrendHandler(selfOnly))))
-		// Router-internal requireAdmin: on the my-stats mount Node wraps the
-		// ALS role down to "user" first, so these answer 403 there.
-		k.Register("GET "+base+"/system-metrics/trend", surface.wrap(d.requireAdminInternal(d.systemMetricsTrendHandler)))
-		k.Register("GET "+base+"/system-metrics/go-runtime-trend", surface.wrap(d.requireAdminInternal(d.goRuntimeTrendHandler)))
-		k.Register("GET "+base+"/system-metrics/runtime/summary", surface.wrap(d.requireAdminInternal(d.runtimeSummaryHandler)))
-		k.Register("GET "+base+"/system-metrics/runtime/jobs", surface.wrap(d.requireAdminInternal(d.runtimeJobsHandler)))
-		k.Register("GET "+base+"/system-metrics/runtime/queues", surface.wrap(d.requireAdminInternal(d.runtimeQueuesHandler)))
-		k.Register("GET "+base+"/system-metrics/health-snapshot", surface.wrap(d.requireAdminInternal(d.healthSnapshotHandler)))
 	}
 
 	k.Register("GET "+prefix+"/usage-records", admin(http.HandlerFunc(d.usageRecordsListHandler(false))))
@@ -179,24 +116,6 @@ func downgradeRole(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
-	})
-}
-
-// requireAdminInternal mirrors the router-internal requireAdmin middleware:
-// the my-* surfaces downgrade the role to "user" before the router runs, so
-// the gate denies them with the requireRole message.
-func (d *Deps) requireAdminInternal(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
-		if auth.Role != "admin" && auth.Role != "super_admin" {
-			kernel.WriteError(w, http.StatusForbidden, "需要管理员权限")
-			return
-		}
-		next(w, r)
 	})
 }
 

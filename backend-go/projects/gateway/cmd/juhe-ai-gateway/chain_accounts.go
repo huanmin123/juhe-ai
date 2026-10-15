@@ -37,6 +37,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -240,15 +241,17 @@ const chainCandidateModelTail = `,
 			COALESCE(source_accounts.provider_code, accounts.provider_code) AS model_resource_provider_code`
 
 // chainCandidateWhere mirrors the shared candidate window predicates (the
-// availability belt both windows repeat verbatim).
+// availability belt both windows repeat verbatim). {mediaStatusArm} 与
+// {mediaCooldownArm} 是冷却到期媒体准入臂占位（chainMediaArmReplacement：
+// 非媒体请求恒展开空串，SQL 与实参序列和既有形态逐字节一致）。
 const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 			AND group_accounts.system_account_id = ?
 			AND group_accounts.enabled = 1
 			AND accounts.provider_code = ?
 			AND accounts.deleted_at IS NULL
-			AND accounts.status IN ({statusSet})
+			AND (accounts.status IN ({statusSet}){mediaStatusArm})
 			AND accounts.schedulable = 1
-			AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
+			AND ((? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?){mediaCooldownArm})
 			AND (
 				(accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
 				OR (
@@ -264,6 +267,33 @@ const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 				)
 			)
 			AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)`
+
+// chainMediaAdmissionStatusArm 冷却到期视频异步任务准入臂的 status 扩展：
+// 仅 video_create 账户在四个可调度 status 上可被视频创建请求选中。
+const chainMediaAdmissionStatusArm = ` OR (accounts.health_check_endpoint_mode = 'video_create'
+				AND accounts.status IN ('active', 'pending_test', 'rate_limited', 'temporary_unavailable'))`
+
+// chainMediaAdmissionCooldownArm 准入臂的冷却门：媒体账户要求冷却已过期或为
+// 空（NULL 视为过期）。占位展开自带 `<= ?` 一个占位符，实参由调用方按
+// mediaAdmission 追加一个 now。
+const chainMediaAdmissionCooldownArm = ` OR (accounts.health_check_endpoint_mode = 'video_create'
+				AND accounts.status IN ('active', 'pending_test', 'rate_limited', 'temporary_unavailable')
+				AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?))`
+
+// chainMediaAdmissionArmed 仅为视频异步任务创建请求武装恢复准入；TTS 与
+// 长音频转写均不经 video 任务轮询与 CAS，不开放此恢复态准入。
+func chainMediaAdmissionArmed(requestedEndpointFamily string) bool {
+	return strings.TrimSpace(requestedEndpointFamily) == gatewayopenai.FamilyVideoGeneration
+}
+
+// chainMediaArmReplacement 展开准入臂占位：armed=false 时两个占位都是空串
+// （默认形态），armed=true 时携带对应 OR 臂。
+func chainMediaArmReplacement(armed bool) []string {
+	if !armed {
+		return []string{"{mediaStatusArm}", "", "{mediaCooldownArm}", ""}
+	}
+	return []string{"{mediaStatusArm}", chainMediaAdmissionStatusArm, "{mediaCooldownArm}", chainMediaAdmissionCooldownArm}
+}
 
 // chainCandidateFrom unlocks the index-free variant of the Node candidate
 // window (the INDEXED BY hint is SQLite-specific tuning and omitted here).
@@ -302,16 +332,19 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 	// Model candidate window (requested model only) + base window merged in
 	// Node order (mergeOpenAIGroupAccountRowsForDispatch).
 	requestedModel := strings.TrimSpace(opts.RequestedModel)
+	// 冷却到期恢复准入只在 video_generation 的选择查询上生效；其余请求
+	// （含同步 TTS、chat/images 与空族）的候选行为不变。
+	mediaAdmission := chainMediaAdmissionArmed(opts.RequestedEndpointFamily)
 	var modelRows []chainCandidateRow
 	var modelRanks map[string]int
 	if requestedModel != "" {
-		rows, ranks, err := s.listModelCandidateRows(ctx, groupID, groupAccess, now, opts.RequestedModel, opts.RequestedEndpointFamily, opts.IncludeUnavailable)
+		rows, ranks, err := s.listModelCandidateRows(ctx, groupID, groupAccess, now, opts.RequestedModel, opts.RequestedEndpointFamily, opts.IncludeUnavailable, mediaAdmission)
 		if err != nil {
 			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
 		}
 		modelRows, modelRanks = rows, ranks
 	}
-	baseRows, err := s.listCandidateRows(ctx, groupID, groupAccess, now, opts.IncludeUnavailable)
+	baseRows, err := s.listCandidateRows(ctx, groupID, groupAccess, now, opts.IncludeUnavailable, mediaAdmission)
 	if err != nil {
 		return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
 	}
@@ -321,7 +354,7 @@ func (s *chainAccountsSelector) ListOpenAIAccountsForGroupResult(ctx context.Con
 	}
 
 	availabilityGate := func(row *chainCandidateRow) (bool, error) {
-		return chainAccountAvailableForSelection(row, now, opts.IncludeUnavailable)
+		return chainAccountAvailableForSelection(row, now, opts.IncludeUnavailable, mediaAdmission)
 	}
 	return s.assembleOpenAIAccountsForGroupResult(ctx, groupAccess, groupAccountRows, modelRanks, systemAccountID, qualityFreshAfter, availabilityGate)
 }
@@ -577,8 +610,9 @@ func candidateScanDest(row *chainCandidateRow) []any {
 	}
 }
 
-// listCandidateRows ports listGatewayDispatchCandidateRows.
-func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now string, includeUnavailable bool) ([]chainCandidateRow, error) {
+// listCandidateRows ports listGatewayDispatchCandidateRows. mediaAdmission
+// 仅由 video_generation 请求武装视频恢复准入臂。
+func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now string, includeUnavailable bool, mediaAdmission bool) ([]chainCandidateRow, error) {
 	statusSet := "'active'"
 	if includeUnavailable {
 		statusSet = "'active', 'rate_limited', 'temporary_unavailable'"
@@ -587,7 +621,8 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 	if includeUnavailable {
 		includeFlag = 1
 	}
-	where := strings.NewReplacer("{statusSet}", statusSet).Replace(chainCandidateWhere)
+	replacements := append([]string{"{statusSet}", statusSet}, chainMediaArmReplacement(mediaAdmission)...)
+	where := strings.NewReplacer(replacements...).Replace(chainCandidateWhere)
 	query := strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),
@@ -602,8 +637,13 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 				group_accounts.created_at ASC,
 				group_accounts.account_id ASC
 			LIMIT ?`)
-	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode,
-		includeFlag, now, groupAccess.ProviderCode, includeFlag, now, now, now, s.candidateScanLimit)
+	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode, includeFlag, now}
+	if mediaAdmission {
+		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
+		args = append(args, now)
+	}
+	args = append(args, groupAccess.ProviderCode, includeFlag, now, now, now, s.candidateScanLimit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -624,8 +664,9 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 
 // listModelCandidateRows ports listGatewayDispatchModelCandidateRows: the
 // CTE model-rank window (0 = direct supported model, 1 = enabled mapping,
-// 2 = no supported-model list, everything else dropped).
-func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now, requestedModel, requestedEndpointFamily string, includeUnavailable bool) ([]chainCandidateRow, map[string]int, error) {
+// 2 = no supported-model list, everything else dropped). mediaAdmission 仅由
+// video_generation 请求武装视频恢复准入臂。
+func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now, requestedModel, requestedEndpointFamily string, includeUnavailable bool, mediaAdmission bool) ([]chainCandidateRow, map[string]int, error) {
 	model := strings.TrimSpace(requestedModel)
 	if model == "" {
 		return []chainCandidateRow{}, map[string]int{}, nil
@@ -638,7 +679,8 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 	if includeUnavailable {
 		includeFlag = 1
 	}
-	where := strings.NewReplacer("{statusSet}", statusSet).Replace(chainCandidateWhere)
+	replacements := append([]string{"{statusSet}", statusSet}, chainMediaArmReplacement(mediaAdmission)...)
+	where := strings.NewReplacer(replacements...).Replace(chainCandidateWhere)
 	tables := fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts"))
 	supportedModelsTable := s.table("account_supported_models")
 	mappingsTable := s.table("account_model_mappings")
@@ -705,9 +747,14 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 			binding_created_at ASC,
 			account_id ASC
 		LIMIT ?`)
-	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode,
-		includeFlag, now, groupAccess.ProviderCode, includeFlag, now, now, now,
+	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode, includeFlag, now}
+	if mediaAdmission {
+		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
+		args = append(args, now)
+	}
+	args = append(args, groupAccess.ProviderCode, includeFlag, now, now, now,
 		model, model, requestedEndpointFamily, s.candidateScanLimit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1261,13 +1308,14 @@ func (row *chainCandidateRow) resourceConcurrencyLimit() int {
 
 // chainAccountAvailableForSelection mirrors isOpenAIAccountAvailableForSelection
 // (physical gates + resource-account gates; the authorized-binding gate runs
-// in the eligibility loop where the access object is known).
-func chainAccountAvailableForSelection(row *chainCandidateRow, now string, includeUnavailable bool) (bool, error) {
+// in the eligibility loop where the access object is known). mediaAdmission
+// 武装视频异步任务恢复臂，与候选窗口 SQL 谓词对应。
+func chainAccountAvailableForSelection(row *chainCandidateRow, now string, includeUnavailable bool, mediaAdmission bool) (bool, error) {
 	nowMillis, err := chainRFC3339Millis(now)
 	if err != nil {
 		return false, fmt.Errorf("账户选择当前时间必须是带 Z 或数值 offset 的 RFC3339 时间")
 	}
-	physical, err := chainPhysicalAccountAvailable(row, nowMillis, includeUnavailable)
+	physical, err := chainPhysicalAccountAvailable(row, nowMillis, includeUnavailable, mediaAdmission)
 	if err != nil {
 		return false, err
 	}
@@ -1277,7 +1325,38 @@ func chainAccountAvailableForSelection(row *chainCandidateRow, now string, inclu
 	return chainResourceAccountAvailable(row, nowMillis, includeUnavailable)
 }
 
-func chainPhysicalAccountAvailable(row *chainCandidateRow, nowMillis int64, includeUnavailable bool) (bool, error) {
+// chainMediaAdmissionAccountEligible 是冷却到期视频准入臂的行级判定（与
+// chainMediaAdmissionStatusArm/CooldownArm 的 SQL 谓词镜像）：video_create
+// 账户处于四个可调度
+// status 且冷却已过期或为空（NULL 视为过期）。套餐过期与 schedulable 门不
+// 在本判定内——由调用方的既有闸先行裁定，准入臂不豁免它们。
+//
+// 与 SQL 臂的镜像边界：includeUnavailable=true 的恢复专用读（preflight 等
+// 待）若与准入臂组合，SQL status 臂会先放行 pending_test 等行、冷却门由本
+// 判定最终裁定——行级为契约语义权威，SQL 臂仅作候选预过滤。
+func chainMediaAdmissionAccountEligible(row *chainCandidateRow, nowMillis int64) bool {
+	if !row.HealthCheckEndpointMode.Valid {
+		return false
+	}
+	if strings.TrimSpace(row.HealthCheckEndpointMode.String) != "video_create" {
+		return false
+	}
+	switch row.Status {
+	case "active", "pending_test", "rate_limited", "temporary_unavailable":
+	default:
+		return false
+	}
+	if !row.CooldownUntil.Valid || strings.TrimSpace(row.CooldownUntil.String) == "" {
+		return true
+	}
+	cooldown, err := chainRFC3339Millis(row.CooldownUntil.String)
+	if err != nil {
+		return false
+	}
+	return cooldown <= nowMillis
+}
+
+func chainPhysicalAccountAvailable(row *chainCandidateRow, nowMillis int64, includeUnavailable bool, mediaAdmission bool) (bool, error) {
 	if row.AccountExpiresAt.Valid && strings.TrimSpace(row.AccountExpiresAt.String) != "" {
 		expires, err := chainRFC3339Millis(row.AccountExpiresAt.String)
 		if err != nil {
@@ -1289,6 +1368,11 @@ func chainPhysicalAccountAvailable(row *chainCandidateRow, nowMillis int64, incl
 	}
 	if row.Schedulable != 1 {
 		return false, nil
+	}
+	// 冷却到期视频恢复臂：armed 的视频创建查询上，冷却已过期/为空的
+	// video_create 账户直接可用——不改变套餐过期与 schedulable 门。
+	if mediaAdmission && chainMediaAdmissionAccountEligible(row, nowMillis) {
+		return true, nil
 	}
 	if includeUnavailable {
 		return row.Status == "active" || row.Status == "rate_limited" || row.Status == "temporary_unavailable", nil

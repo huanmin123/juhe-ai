@@ -58,7 +58,7 @@
 | AI 管理 | 供应商、代理、账户、分组、策略、Key、模型检测、用量与账户监控 | [AI 账户](/__aisys__/accounts)、[策略路由](/__aisys__/route-strategies) |
 | 统一授权管理 | 授权关系、团队、授权消耗 | [统一授权](/__aisys__/authorizations) |
 | 日志管理 | 六类证据页 | [使用记录](/__aisys__/usage-records)、[操作日志](/__aisys__/operation-logs) |
-| 系统运维 | 设置、表监控、系统指标、IP、公告、系统账户 | [系统设置](/__aisys__/settings) |
+| 系统运维 | 设置、IP、公告、系统账户 | [系统设置](/__aisys__/settings) |
 
 ## 第一次接入的最短路径（五步）
 

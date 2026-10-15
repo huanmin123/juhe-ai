@@ -7,7 +7,6 @@ package main
 // compose.go 560 语句 / 83 语句零计数）为准，逐块 rg 对照当前源码核过可达性：
 //
 //	直接驱动（本文件）：
-//	  899  GoRuntimeMetrics 开启且 store schema 校验失败（垃圾 sqlite 文件）
 //	真实 dev PG 门禁（复用 w1g2CoverPostgres / w1g2OpenApp）：
 //	  394  PG 模式缺 F3 audit 数据集连接池守卫臂
 //	  995  链条开启且 spool 目录缺失的组合根 fail-fast 臂
@@ -53,45 +52,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
-
-// ---------------------------------------------------------------------------
-// compose.go —— GoRuntimeMetrics 开启且 sqlite 建表自举（EnsureSchema）失败
-// ---------------------------------------------------------------------------
-
-func TestW1UComposeFinalGoMetricsBootstrapArm(t *testing.T) {
-	stack := w1oNewComposeStack(t)
-	// 失败臂不回收已打开的 SQLite 句柄（Windows 句柄锁会破坏 t.TempDir
-	// 清理），与其他失败臂用例一致改走手管目录 + 尽力清理。
-	w1oRedirectDatabasePaths(t, stack)
-	garbage := filepath.Join(t.TempDir(), "w1u-final-gometrics.sqlite3")
-	if err := os.WriteFile(garbage, []byte("w1u-final: this is not a sqlite database"), 0o644); err != nil {
-		t.Fatalf("写入垃圾 metrics 文件失败: %v", err)
-	}
-	stack.cfg.GoRuntimeMetrics = gometrics.Config{
-		Enabled:       true,
-		Store:         gometrics.DialectSQLite,
-		DatabasePath:  garbage,
-		Service:       "juhe-ai",
-		Role:          "gateway",
-		Interval:      time.Second,
-		RetentionDays: 30,
-	}
-	composed, err := stack.compose(t)
-	if err == nil {
-		if composed != nil {
-			composed.Shutdown()
-		}
-		t.Fatal("垃圾 Go metrics 库必须使组合根 fail-fast，实际 err=nil")
-	}
-	if composed != nil {
-		t.Fatalf("失败臂不得返回组合根")
-	}
-	if !strings.Contains(err.Error(), "bootstrap Go runtime metrics schema") {
-		t.Fatalf("错误 = %v，want 包含 %q", err, "bootstrap Go runtime metrics schema")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // compose.go:394 / 995 —— PG 模式守卫臂 + juhe_jobs 四表驱动的余额 wire 成功路径

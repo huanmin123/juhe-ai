@@ -212,7 +212,6 @@ func TestW14QPGMainFullAssemblySmoke(t *testing.T) {
 			current["accountBalanceEnabled"] == true &&
 			current["proxyLatencyEnabled"] == true &&
 			current["runtimeLogOwnerHeld"] == true &&
-			current["tableMonitorReady"] == true &&
 			workerReady && worker != nil
 	})
 	// 装配证据断言：PG 直连 J1/J2/J3a 全部注册进健康载荷（runner Ready 依赖

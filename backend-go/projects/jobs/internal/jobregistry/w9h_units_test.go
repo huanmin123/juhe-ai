@@ -17,18 +17,15 @@ func TestW9HWiredJobNamesAndModeConstraints(t *testing.T) {
 	}
 
 	names := SettingsIntervalJobNames()
-	if _, ok := names["system-metrics-sample"]; !ok {
-		t.Fatalf("system-metrics-sample missing: %v", names)
-	}
-	if names["system-metrics-sample"] != "systemMetricsSampleIntervalSeconds" {
-		t.Fatalf("settings key=%q", names["system-metrics-sample"])
+	if names["usage-stats-aggregation"] != "statsAggregationIntervalSeconds" {
+		t.Fatalf("settings key=%q", names["usage-stats-aggregation"])
 	}
 	if names["usage-stats-aggregation"] != names["client-ip-stats-aggregation"] {
 		t.Fatal("both stats jobs share the aggregation interval key")
 	}
 
-	if constraint, ok := ModeConstraintFor("system-metrics-sample"); ok {
-		t.Fatalf("system-metrics-sample must not carry a constraint: %+v", constraint)
+	if constraint, ok := ModeConstraintFor("usage-stats-aggregation"); ok {
+		t.Fatalf("usage-stats-aggregation must not carry a constraint: %+v", constraint)
 	}
 	found := false
 	for name := range modeConstraints() {
@@ -56,19 +53,19 @@ func TestW9HResolveScheduleArms(t *testing.T) {
 	if _, ok := ResolveSchedule("w9h-unknown", nil); ok {
 		t.Fatal("unknown job must not resolve")
 	}
-	schedule, ok := ResolveSchedule("system-metrics-sample", w9hSettingsInterval(123*time.Second))
+	schedule, ok := ResolveSchedule("usage-stats-aggregation", w9hSettingsInterval(123*time.Second))
 	if !ok || schedule.Interval != 123*time.Second {
 		t.Fatalf("override schedule=%+v ok=%v", schedule, ok)
 	}
-	schedule, ok = ResolveSchedule("system-metrics-sample", w9hNeverMatches())
+	schedule, ok = ResolveSchedule("usage-stats-aggregation", w9hNeverMatches())
 	if !ok || schedule.Interval <= 0 {
 		t.Fatalf("default schedule=%+v ok=%v", schedule, ok)
 	}
-	schedule, ok = ResolveSchedule("system-metrics-sample", w9hSettingsInterval(-5*time.Second))
+	schedule, ok = ResolveSchedule("usage-stats-aggregation", w9hSettingsInterval(-5*time.Second))
 	if !ok || schedule.Interval <= 0 {
 		t.Fatalf("ignored override schedule=%+v ok=%v", schedule, ok)
 	}
-	if _, ok := ResolveSchedule("system-metrics-sample", nil); !ok {
+	if _, ok := ResolveSchedule("usage-stats-aggregation", nil); !ok {
 		t.Fatal("nil settings must still resolve")
 	}
 }

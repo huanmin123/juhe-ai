@@ -47,11 +47,14 @@ func GatewayAccountDispatchPriorityTier(account DispatchPriorityAccountView, opt
 // preserveGatewayAccountDispatchPriorityTiers: the reordered accounts keep the
 // base account tier sequence; accounts whose tier is unknown to the base
 // preserve their relative order at the tail. view projects each element onto
-// DispatchPriorityAccountView.
+// DispatchPriorityAccountView; 指针入参避免按值视图复制整个账户（dispatch
+// 分配画像：视图副本逃逸 + 按 tier append 增长占该函数 88MB/3000 次）。
+// view 返回的字段指针只在 GatewayAccountDispatchPriorityTier 的同步调用内
+// 解引用，函数返回后不得保留。
 func PreserveGatewayAccountDispatchPriorityTiers[T any](
 	baseAccounts []T,
 	reorderedAccounts []T,
-	view func(T) DispatchPriorityAccountView,
+	view func(*T) DispatchPriorityAccountView,
 	options DispatchPriorityOrderOptions,
 ) []T {
 	if len(baseAccounts) < 2 || len(reorderedAccounts) < 2 {
@@ -60,8 +63,8 @@ func PreserveGatewayAccountDispatchPriorityTiers[T any](
 
 	baseTierOrder := make([]string, 0, len(baseAccounts))
 	seenBaseTiers := make(map[string]struct{}, len(baseAccounts))
-	for _, account := range baseAccounts {
-		tier := GatewayAccountDispatchPriorityTier(view(account), options)
+	for i := range baseAccounts {
+		tier := GatewayAccountDispatchPriorityTier(view(&baseAccounts[i]), options)
 		if _, seen := seenBaseTiers[tier]; seen {
 			continue
 		}
@@ -69,22 +72,26 @@ func PreserveGatewayAccountDispatchPriorityTiers[T any](
 		baseTierOrder = append(baseTierOrder, tier)
 	}
 
-	reorderedByTier := make(map[string][]T)
-	var unknownTierAccounts []T
-	for _, account := range reorderedAccounts {
-		tier := GatewayAccountDispatchPriorityTier(view(account), options)
-		if _, known := seenBaseTiers[tier]; !known {
-			unknownTierAccounts = append(unknownTierAccounts, account)
-			continue
-		}
-		reorderedByTier[tier] = append(reorderedByTier[tier], account)
+	// 单次投影各账户 tier，再按基准 tier 序列分组输出：不再用
+	// map[tier][]T 按 tier append（增长复制实测该项目 31.6MB）。
+	tierOf := make([]string, len(reorderedAccounts))
+	for i := range reorderedAccounts {
+		tierOf[i] = GatewayAccountDispatchPriorityTier(view(&reorderedAccounts[i]), options)
 	}
 
 	output := make([]T, 0, len(reorderedAccounts))
 	for _, tier := range baseTierOrder {
-		output = append(output, reorderedByTier[tier]...)
+		for i := range reorderedAccounts {
+			if tierOf[i] == tier {
+				output = append(output, reorderedAccounts[i])
+			}
+		}
 	}
-	output = append(output, unknownTierAccounts...)
+	for i := range reorderedAccounts {
+		if _, known := seenBaseTiers[tierOf[i]]; !known {
+			output = append(output, reorderedAccounts[i])
+		}
+	}
 	return output
 }
 

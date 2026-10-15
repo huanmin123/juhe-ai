@@ -19,7 +19,11 @@ type StreamInspection struct {
 	SkipReason            string
 	ErrorCode             string
 	ErrorMessage          string
-	Usage                 ParsedUsage
+	// ResponseResourceID 是 Gemini interactions 创建流的资源 ID（inspector 从
+	// interaction.* 事件提取的协议内部元数据）；其余协议恒空。亲和写入
+	// （提交前 Remember）与后续资源路由依赖本字段的全链回带。
+	ResponseResourceID string
+	Usage              ParsedUsage
 }
 
 // ProtocolComplete reports whether a stream terminal (e.g. [DONE] or a
@@ -90,6 +94,29 @@ func HasPendingSseProtocolEvent(state SsePendingEventState) bool {
 	}
 	pendingLine := stripTrailingCarriageReturn(state.PendingLine)
 	return startsWithField(pendingLine, "event:") || startsWithField(pendingLine, "data:")
+}
+
+// HasPendingSseProtocolEventBytes 与 HasPendingSseProtocolEvent 同语义，但允许
+// 调用方直接传入 pending 行字节视图：流式 inspector 每个 chunk 都要出快照，
+// 字节入参避免只为前缀判定而复制整行。两处判定逻辑必须同步修改。
+func HasPendingSseProtocolEventBytes(state SsePendingEventState, pendingLine []byte) bool {
+	if state.Skipped {
+		return false
+	}
+	if state.OversizedEvent ||
+		state.EventName != "" ||
+		state.DataLineCount > 0 ||
+		state.DataBytes > 0 {
+		return true
+	}
+	if len(pendingLine) > 0 && pendingLine[len(pendingLine)-1] == '\r' {
+		pendingLine = pendingLine[:len(pendingLine)-1]
+	}
+	return startsWithFieldBytes(pendingLine, "event:") || startsWithFieldBytes(pendingLine, "data:")
+}
+
+func startsWithFieldBytes(value []byte, field string) bool {
+	return len(value) >= len(field) && string(value[:len(field)]) == field
 }
 
 func stripTrailingCarriageReturn(value string) string {

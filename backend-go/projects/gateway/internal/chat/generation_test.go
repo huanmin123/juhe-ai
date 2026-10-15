@@ -114,22 +114,12 @@ func chatCompletionsToolSSE(callID, name, args string) string {
 
 const testTinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
-var testTinyPNGBytesW3 = mustDecodeBase64W3(testTinyPNGBase64)
-
-func mustDecodeBase64W3(value string) []byte {
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		panic(err)
-	}
-	return decoded
-}
-
 type mockModelCatalog struct{}
 
 func (mockModelCatalog) ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []ChatTransportAccount {
 	enabled := true
 	return []ChatTransportAccount{{
-		ID: "account-1", Type: "api_key", ProviderCode: "deepseek",
+		ID: "account-1", Type: "api_key", ProviderCode: "openai",
 		SupportedEndpointModes: []string{"chat_sse", "responses_sse"},
 		ModelMappings: []ChatTransportModelMapping{{
 			Enabled: &enabled, SourceModel: requestedModel, SourceEndpointFamily: endpointFamily,
@@ -151,7 +141,7 @@ func (m mockModelCatalog) ListChatPinnedAccountsForGroup(groupID, systemAccountI
 func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
 	return []ProviderModelCatalogItem{
 		{
-			Model: "gpt-5", ProviderCode: "deepseek",
+			Model: "gpt-5", ProviderCode: "openai",
 			SupportedReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: strPtrT("low"),
 			SupportedServiceTiers: []string{"priority"},
 			ContextWindowTokens:   int64PtrT(100000), MaxOutputTokens: int64PtrT(20000),
@@ -161,7 +151,7 @@ func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string
 			SupportedToolsByProtocol: map[string][]string{"chat_completions": {"function_calling"}},
 		},
 		{
-			Model: "gpt-5-mini", ProviderCode: "deepseek",
+			Model: "gpt-5-mini", ProviderCode: "openai",
 			SupportedReasoningEfforts: []string{"low"},
 			SupportedAPIProtocols:     []string{"chat_completions"},
 			InputModalities:           []string{"text"},
@@ -213,7 +203,7 @@ func (stubImageProcessor) ProcessUpload(data []byte, declaredMimeType string) (*
 		return nil, &ImageProcessingError{Message: "图片无法解码、像素过大或文件已损坏"}
 	}
 	digest := sha256.Sum256(data)
-	width, height := testImageDimensionsFromBytes(data)
+	width, height := imageDimensionsFromBytes(data)
 	return &ProcessedImage{
 		Buffer: data, OriginalMimeType: declaredMimeType,
 		OriginalWidth: width, OriginalHeight: height,
@@ -224,22 +214,13 @@ func (stubImageProcessor) ProcessUpload(data []byte, declaredMimeType string) (*
 
 func (stubImageProcessor) CreatePreview(data []byte) (*ProcessedImage, error) {
 	digest := sha256.Sum256(data)
-	width, height := testImageDimensionsFromBytes(data)
+	width, height := imageDimensionsFromBytes(data)
 	return &ProcessedImage{
 		Buffer: data, OriginalMimeType: "image/webp",
 		OriginalWidth: width, OriginalHeight: height,
 		MimeType: "image/webp", Width: width, Height: height,
 		ByteSize: int64(len(data)), SHA256: hexEncode(digest[:]),
 	}, nil
-}
-
-// testImageDimensionsFromBytes 是测试图像处理桩的尺寸探测：真实的 webp/png
-// 尺寸解码在 cmd 组合根（chain_chat_images.go）；chat 包测试只需一致性尺寸。
-func testImageDimensionsFromBytes(data []byte) (int64, int64) {
-	if len(data) == 0 {
-		return 0, 0
-	}
-	return 8, 8
 }
 
 type generationEnv struct {
@@ -294,6 +275,8 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 		Compactions:                compactions,
 		TokenCount:                 func(text string) int { return len(text) / 4 },
 		RetentionDays:              30,
+		DiagnosticToolEnabled:      true,
+		ToolEnvironment:            "test",
 		MaxConversationsPerUserInt: func() int { return 30 },
 	}
 	deps.RequireSession = func(next http.Handler) http.Handler {
@@ -518,6 +501,149 @@ func TestStreamHappyPathChatCompletions(t *testing.T) {
 	}
 	if head.UsageEstimated {
 		t.Fatal("usage must not be estimated when upstream reported tokens")
+	}
+}
+
+func TestStreamResponsesWithDiagnosticTool(t *testing.T) {
+	env := newGenerationEnv(t)
+	env.fixture.createConversation("chat_conv_t", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_t")
+	round := 0
+	var roundMu sync.Mutex
+	env.executor.steps = []scriptStep{{
+		match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			roundMu.Lock()
+			round++
+			current := round
+			roundMu.Unlock()
+			if current == 1 {
+				return sseResponse(chatCompletionsToolSSE("call_1", "diagnostic_echo", `{"text":"ping"}`))
+			}
+			return sseResponse(chatCompletionsSSE("工具已完成", true))
+		},
+	}}
+	response := env.streamPost("chat_conv_t", routeTestOwner, streamPayload("cmid-tool", "调用工具", "gpt-5"))
+	if response.status != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.status, response.rawString())
+	}
+	events := sseEvents(response.rawString())
+	// Internal tool execution surfaces as content_block.* timeline events
+	// (publish carries a toolEvent projection, so Node never emits the raw
+	// tool.* event to the SSE stream).
+	var sawToolStarted, sawToolCompleted, sawCompleted bool
+	for _, event := range events {
+		switch event.event {
+		case "content_block.started":
+			if strings.Contains(event.data, "diagnostic_echo") {
+				sawToolStarted = true
+			}
+		case "content_block.completed":
+			if strings.Contains(event.data, "diagnostic_echo") && strings.Contains(event.data, "echoedText") {
+				sawToolCompleted = true
+			}
+		case "message.completed":
+			sawCompleted = true
+		}
+	}
+	if !sawToolStarted || !sawToolCompleted || !sawCompleted {
+		t.Fatalf("tool event sequence incomplete: %+v", events)
+	}
+	if env.executor.callCount() != 2 {
+		t.Fatalf("dispatch calls = %d, want 2", env.executor.callCount())
+	}
+	messages, err := env.fixture.store.ListMessages(ListMessagesInput{ConversationID: "chat_conv_t", SystemAccountID: routeTestOwner, Now: env.fixture.nowISO, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant := messages[len(messages)-1]
+	if assistant.ContentText != "工具已完成" {
+		t.Fatalf("assistant content = %s", assistant.ContentText)
+	}
+	hasToolBlock := false
+	for _, block := range assistant.ContentBlocks {
+		if block.Type == "tool_call" && block.Status != nil && *block.Status == "completed" {
+			hasToolBlock = true
+		}
+	}
+	if !hasToolBlock {
+		t.Fatalf("assistant blocks missing completed tool_call: %+v", assistant.ContentBlocks)
+	}
+}
+
+func TestStreamImageGenerationPipeline(t *testing.T) {
+	env := newGenerationEnv(t)
+	env.fixture.createConversation("chat_conv_i", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_i")
+	// 生图为模型工具（契约 §6.2）：管线测试需已绑定生图账户，否则收到
+	// tool.binding_required 引导而非生成事件。
+	if _, err := env.fixture.db.Exec(`UPDATE chat_conversations SET image_account_id = 'account-1' WHERE id = 'chat_conv_i'`); err != nil {
+		t.Fatal(err)
+	}
+	modelRound := 0
+	var roundMu sync.Mutex
+	env.executor.steps = []scriptStep{
+		{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				roundMu.Lock()
+				modelRound++
+				current := modelRound
+				roundMu.Unlock()
+				if current == 1 {
+					return sseResponse(chatCompletionsToolSSE("call_img", "generate_image", `{"prompt":"一只猫"}`))
+				}
+				return sseResponse(chatCompletionsSSE("图片已生成", false))
+			},
+		},
+		{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`","revised_prompt":"a cat"}]}`)
+			},
+		},
+	}
+	response := env.streamPost("chat_conv_i", routeTestOwner, streamPayload("cmid-img", "画一只猫", "gpt-5"))
+	if response.status != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.status, response.rawString())
+	}
+	events := sseEvents(response.rawString())
+	var sawImageCompleted bool
+	for _, event := range events {
+		if event.event != "content_block.completed" {
+			continue
+		}
+		var payload struct {
+			Block map[string]any `json:"block"`
+		}
+		_ = json.Unmarshal([]byte(event.data), &payload)
+		if payload.Block["type"] == "output_image" {
+			sawImageCompleted = true
+			if payload.Block["assetId"] == nil || payload.Block["status"] != "completed" {
+				t.Fatalf("image block = %v", payload.Block)
+			}
+		}
+	}
+	if !sawImageCompleted {
+		t.Fatalf("image completion event missing: %+v", events)
+	}
+	assets, err := env.fixture.store.queryAssets(env.fixture.store.db, env.fixture.store.bind(`SELECT `+assetColumns+` FROM chat_assets WHERE conversation_id = ?`), "chat_conv_i")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 || assets[0].SourceKind != "assistant_generated" {
+		t.Fatalf("assets = %+v", assets)
+	}
+	if assets[0].ProcessingStatus != "ready" || assets[0].StorageKey == nil {
+		t.Fatalf("asset not ready: %+v", assets[0])
+	}
+	store, err := NewLocalObjectStore(env.objectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := store.Open(*assets[0].StorageKey, chatAssetGeneratedMaxBytes)
+	if err != nil || len(data) == 0 {
+		t.Fatalf("stored object missing: %v", err)
 	}
 }
 

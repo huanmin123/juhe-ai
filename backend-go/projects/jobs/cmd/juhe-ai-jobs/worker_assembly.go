@@ -259,9 +259,6 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 	if err := a.wireRetentionFamily(ctx); err != nil {
 		return err
 	}
-	if err := a.wireStudioSettleFamily(ctx); err != nil {
-		return err
-	}
 	if err := a.wireProbeFamily(ctx); err != nil {
 		return err
 	}
@@ -574,7 +571,6 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			"默认/SQLite 分支不独立注册（Node background-jobs.ts:310 该 stage 并入 usage-rank-snapshots-refresh）")
 	}
 	a.scheduleWiredJob("usage-rank-snapshots-refresh", windowTask("usage-rank-snapshots-refresh", rankSnapshotCoreStages(postgres)))
-	a.scheduleWiredJob("system-metrics-trend-windows-refresh", windowTask("system_metrics_trend_windows", []statsagg.WindowStageName{statsagg.StageSystemMetricsTrendWindows}))
 	a.scheduleWiredJob("usage-overview-windows-refresh", windowTask("usage_overview_windows", []statsagg.WindowStageName{statsagg.StageUsageOverviewWindows}))
 	if postgres {
 		// Node PG 高性能分支跳过在线冷历史范围窗口重刷（:296-300 原文案）。

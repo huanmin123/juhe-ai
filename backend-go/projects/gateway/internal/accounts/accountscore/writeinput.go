@@ -42,16 +42,20 @@ type CreateInput struct {
 	ModelMappings             []ModelMapping
 	Tags                      []string
 	Status                    CreationStatus
-	ConcurrencyLimit          *int
-	Priority                  *int
-	SuperPriorityEnabled      *bool
-	FallbackEnabled           *bool
-	ProxyProfileID            *string
-	GroupID                   *string
-	AccountExpiresAt          *string
-	AvailabilitySchedule      any
-	Notes                     *string
-	BalanceQueryEnabled       bool
+	// PreservePendingTest keeps an import's explicit pending_test state. Normal
+	// media creation uses the domain default active; import is the deliberate
+	// exception because imported credentials have not been checked locally.
+	PreservePendingTest  bool
+	ConcurrencyLimit     *int
+	Priority             *int
+	SuperPriorityEnabled *bool
+	FallbackEnabled      *bool
+	ProxyProfileID       *string
+	GroupID              *string
+	AccountExpiresAt     *string
+	AvailabilitySchedule any
+	Notes                *string
+	BalanceQueryEnabled  bool
 	// BalanceQueryConfigCanonical carries the normalized config JSON (the
 	// create body parser already ran normalizeAccountBalanceConfig, exactly
 	// like the Node route); nil means the request did not include a config.

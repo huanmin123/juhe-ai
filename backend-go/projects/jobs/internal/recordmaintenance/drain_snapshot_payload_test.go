@@ -28,10 +28,6 @@ func (w *recordingStatsWriter) CleanupUsageStatsRetention(context.Context, reten
 	return retention.UsageStatsRetentionCounts{}, nil
 }
 
-func (w *recordingStatsWriter) CleanupSystemMetricsRetention(context.Context, retention.SystemMetricsRetentionInput) (retention.SystemMetricsRetentionCounts, error) {
-	return retention.SystemMetricsRetentionCounts{}, nil
-}
-
 func (w *recordingStatsWriter) CleanupNonBusinessStatsData(context.Context, string, int) (retention.NonBusinessDataCleanupCounts, error) {
 	return retention.NonBusinessDataCleanupCounts{}, nil
 }

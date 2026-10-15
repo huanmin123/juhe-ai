@@ -724,7 +724,6 @@ func TestLoadConfigAcceptsInstanceWithoutNodeGoOwnerSwitch(t *testing.T) {
 		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
 		"JUHE_AI_DATASET_DATABASE_PATH":          "dataset.sqlite",
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      "runtime-log.sqlite",
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    "table-monitor.sqlite",
 		"JUHE_AI_DATABASE_PATH":                  "business.sqlite",
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    "usage-catalog.sqlite",
 		"JUHE_AI_STATS_DATABASE_PATH":            "stats.sqlite",
@@ -772,30 +771,9 @@ func TestLoadConfigRejectsSharedBusinessAndRuntimeLogSQLitePath(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsSharedTableMonitorAndRuntimeLogSQLitePath(t *testing.T) {
-	_, values := runtimeLogSQLiteConfigValues(t)
-	values["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") {
-		t.Fatalf("运行日志 SQLite 不能与 F2 表监控文件共用，实际为 %v", err)
-	}
-}
-
-func TestLoadConfigRejectsHardLinkedTableMonitorAndRuntimeLogSQLitePath(t *testing.T) {
-	root, values := runtimeLogSQLiteConfigValues(t)
-	runtimeLogPath := values["JUHE_AI_RUNTIME_LOG_DATABASE_PATH"]
-	tableMonitorPath := filepath.Join(root, "table-monitor.sqlite")
-	if err := os.Link(runtimeLogPath, tableMonitorPath); err != nil {
-		t.Fatalf("创建 F1/F2 硬链接 fixture 失败: %v", err)
-	}
-	values["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = tableMonitorPath
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") {
-		t.Fatalf("F1/F2 硬链接 SQLite 文件必须拒绝启动，实际为 %v", err)
-	}
-}
-
 func TestLoadConfigRejectsDanglingSQLiteAliasFailClosed(t *testing.T) {
 	root, values := runtimeLogSQLiteConfigValues(t)
-	dangling := filepath.Join(root, "dangling-table-monitor.sqlite")
+	dangling := filepath.Join(root, "dangling-business.sqlite")
 	target := filepath.Join(root, "missing-target.sqlite")
 	if err := os.Symlink(target, dangling); err != nil {
 		t.Skipf("当前环境不能创建悬空 SQLite symlink fixture: %v", err)
@@ -806,7 +784,7 @@ func TestLoadConfigRejectsDanglingSQLiteAliasFailClosed(t *testing.T) {
 		_ = os.WriteFile(target, []byte("cleanup"), 0o600)
 		_ = os.Remove(dangling)
 	}()
-	values["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = dangling
+	values["JUHE_AI_DATABASE_PATH"] = dangling
 	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "隔离失败") {
 		t.Fatalf("悬空 SQLite symlink 必须 fail-closed 拒绝启动，实际为 %v", err)
 	}
@@ -860,7 +838,6 @@ func runtimeLogSQLiteConfigValues(t *testing.T) (string, map[string]string) {
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":        "test-instance",
 		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      runtimePath,
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    filepath.Join(root, "table-monitor.sqlite"),
 		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite"),
 		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":    filepath.Join(root, "usage-catalog.sqlite"),

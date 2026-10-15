@@ -664,7 +664,6 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 		"JUHE_AI_DATASET_DATABASE_PATH":           gw.storage["dataset"],
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":     gw.storage["usage-catalog"],
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":       gw.storage["runtime-log"],
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":     filepath.Join(root, "storage", "table-monitor.sqlite3"),
 		"JUHE_AI_TASK_RUNS_DATABASE_PATH":         filepath.Join(root, "storage", "task-runs.sqlite3"),
 		"JUHE_AI_CHAT_DATABASE_PATH":              gw.storage["chat"],
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  gw.storage["codex-root"],
@@ -680,8 +679,6 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID":         "fullchain-jobs",
 		"JUHE_AI_RUNTIME_LOG_STORE":               "sqlite",
 		"JUHE_AI_LOG_DIR":                         gw.storage["logs"],
-		"JUHE_AI_TABLE_MONITOR_INSTANCE_ID":       "fullchain-jobs",
-		"JUHE_AI_TABLE_MONITOR_STORE":             "sqlite",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "5000",
 	}
 	jobs := startProcess(t, "fullchain-jobs", jobsBinary, envMapToSlice(env))

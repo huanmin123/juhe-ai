@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/goruntimemetrics"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -52,47 +51,11 @@ func w14kMaintenancePostgresURL(t *testing.T) string {
 	return coverageURL
 }
 
-// TestW14KPgGateBootstrapChecks 对 w1cover 覆盖库执行 bootstrap runner 的
-// check 模式。覆盖库不含维护 schema，预期走未就绪出口 3；同时断言退出码与
-// stdout 报告的就绪状态一致（exit 0 ⇔ Ready，exit 3 ⇔ 未就绪），无论共享库
-// 将来是否被其他授权流程建过 schema，断言都保持行为一致。
-func TestW14KPgGateBootstrapChecks(t *testing.T) {
-	coverageURL := w14kMaintenancePostgresURL(t)
-
-	assertExitMatchesReport := func(t *testing.T, name string, code int, stdout string, ready func() bool) {
-		t.Helper()
-		var generic map[string]any
-		if err := json.Unmarshal([]byte(stdout), &generic); err != nil {
-			t.Fatalf("%s: stdout 必须是 JSON 报告: %v\n%s", name, err, stdout)
-		}
-		if code == 0 && !ready() {
-			t.Fatalf("%s: exit 0 但报告未就绪: %s", name, stdout)
-		}
-		if code == 3 && ready() {
-			t.Fatalf("%s: exit 3 但报告已就绪: %s", name, stdout)
-		}
-		if code != 0 && code != 3 {
-			t.Fatalf("%s: check 模式对真实库不应出现其他退出码: %d\n%s", name, code, stdout)
-		}
-	}
-
-	t.Run("go runtime metrics check", func(t *testing.T) {
-		var got int
-		stdout := wmCaptureStdout(t, func() {
-			got = goRuntimeMetricsBootstrapResult(false, coverageURL, false, false, false)
-		})
-		db, err := goruntimemetrics.Open(coverageURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		report, err := goruntimemetrics.Run(context.Background(), db, false)
-		if err != nil {
-			t.Skipf("w1cover check 执行失败，跳过: %v", err)
-		}
-		assertExitMatchesReport(t, "metrics", got, stdout, report.Ready)
-	})
-}
+// TestW14KPgGateBootstrapChecks 历史上覆盖 go-runtime-metrics bootstrap 的
+// check 模式与退出码/报告一致性；该命令族已随 internal/goruntimemetrics 包
+// 删除（退役监控表清退改由 --drop-retired-monitoring-tables 承担，存储链路
+// 由 monitoringretirement 包测试覆盖），本用例仅保留 schema snapshot 的 PG
+// 门控（见下）。
 
 // TestW14KPgGateSchemaSnapshotSuccess 对 w1cover 库执行完整只读 schema 快照
 // （REPEATABLE READ READ ONLY 事务 + catalog 采集 + stdout JSON）。

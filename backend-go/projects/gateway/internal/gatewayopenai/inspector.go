@@ -1,6 +1,7 @@
 package gatewayopenai
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 
@@ -28,10 +29,13 @@ type StreamEventSummary = gatewayproto.StreamEventSummary
 type StreamInspector struct {
 	inspection gatewayproto.StreamInspection
 
-	eventName             string
-	dataLines             []string
-	dataBytes             int
-	pendingLine           string
+	eventName string
+	dataLines []string
+	dataBytes int
+	// pendingLine 是当前未完结行的字节缓冲（容量跨 chunk 复用）；容量上限
+	// streamInspectorMaxLineBytes+1，越过即 pendingLineExceeded，字节只进
+	// pendingLineBytes 计数与 pendingLineTail 滚动尾窗。
+	pendingLine           []byte
 	pendingLineBytes      int
 	pendingLineExceeded   bool
 	pendingLineTail       string
@@ -53,27 +57,32 @@ func NewStreamInspector() *StreamInspector {
 	}
 }
 
-// PushChunk mirrors pushChunk for byte chunks.
+// PushChunk mirrors pushChunk for byte chunks：字节入参直达行扫描，避免
+// 整块 string 拷贝（每 chunk 一次的分配热源）。
 func (i *StreamInspector) PushChunk(chunk []byte) {
-	i.PushText(string(chunk))
+	i.pushBytes(chunk)
 }
 
 // PushText mirrors pushText: split into lines, keeping the tail in the
 // pending line buffer.
 func (i *StreamInspector) PushText(text string) {
+	i.pushBytes([]byte(text))
+}
+
+func (i *StreamInspector) pushBytes(chunk []byte) {
 	if i.inspection.Skipped {
 		return
 	}
 	offset := 0
-	for offset < len(text) {
-		newlineIndex := strings.IndexByte(text[offset:], '\n')
+	for offset < len(chunk) {
+		newlineIndex := bytes.IndexByte(chunk[offset:], '\n')
 		var segmentEnd int
 		if newlineIndex < 0 {
-			segmentEnd = len(text)
+			segmentEnd = len(chunk)
 		} else {
 			segmentEnd = offset + newlineIndex
 		}
-		i.appendPendingLineSegment(text[offset:segmentEnd])
+		i.appendPendingLineSegment(chunk[offset:segmentEnd])
 		if newlineIndex < 0 {
 			break
 		}
@@ -114,14 +123,13 @@ func (i *StreamInspector) Snapshot() gatewayproto.StreamInspection {
 	snapshot := i.inspection
 	snapshot.EventTypeCounts = copyCounts(i.inspection.EventTypeCounts)
 	snapshot.RecentEventTypes = append([]string(nil), i.inspection.RecentEventTypes...)
-	snapshot.PendingEvent = gatewayproto.HasPendingSseProtocolEvent(gatewayproto.SsePendingEventState{
+	snapshot.PendingEvent = gatewayproto.HasPendingSseProtocolEventBytes(gatewayproto.SsePendingEventState{
 		Skipped:        i.inspection.Skipped,
 		OversizedEvent: i.oversizedEvent,
 		EventName:      i.eventName,
 		DataLineCount:  len(i.dataLines),
 		DataBytes:      i.dataBytes,
-		PendingLine:    i.pendingLine,
-	})
+	}, i.pendingLine)
 	snapshot.Usage = *usageCopy(&i.inspection.Usage)
 	return snapshot
 }
@@ -243,7 +251,7 @@ func (i *StreamInspector) inspectParsedEvent(event ParsedStreamEvent, dataBytes 
 }
 
 func (i *StreamInspector) skipParsing(reason string) {
-	i.pendingLine = ""
+	i.pendingLine = nil
 	i.eventName = ""
 	i.dataLines = nil
 	i.dataBytes = 0
@@ -269,14 +277,14 @@ func (i *StreamInspector) recordEventSummary(summary gatewayproto.StreamEventSum
 	i.pendingEventSummaries = append(i.pendingEventSummaries, summary)
 }
 
-func (i *StreamInspector) appendPendingLineSegment(segment string) {
+func (i *StreamInspector) appendPendingLineSegment(segment []byte) {
 	if len(segment) == 0 {
 		return
 	}
 	segmentBytes := len(segment)
 	if i.pendingLineExceeded {
 		i.pendingLineBytes += segmentBytes
-		i.pendingLineTail = appendRollingTextTail(i.pendingLineTail, segment, streamInspectorUsageTailBytes)
+		i.pendingLineTail = appendRollingTextTail(i.pendingLineTail, string(segment), streamInspectorUsageTailBytes)
 		return
 	}
 	if i.pendingLineBytes+segmentBytes > streamInspectorMaxLineBytes {
@@ -284,21 +292,21 @@ func (i *StreamInspector) appendPendingLineSegment(segment string) {
 		if prefixChars < 0 {
 			prefixChars = 0
 		}
-		if prefixChars > len(segment) {
-			prefixChars = len(segment)
+		if prefixChars > segmentBytes {
+			prefixChars = segmentBytes
 		}
-		i.pendingLineTail = appendRollingTextTail("", i.pendingLine+segment, streamInspectorUsageTailBytes)
-		i.pendingLine += segment[:prefixChars]
+		i.pendingLineTail = appendRollingTextTail("", string(i.pendingLine)+string(segment), streamInspectorUsageTailBytes)
+		i.pendingLine = append(i.pendingLine, segment[:prefixChars]...)
 		i.pendingLineBytes += segmentBytes
 		i.pendingLineExceeded = true
 		return
 	}
-	i.pendingLine += segment
+	i.pendingLine = append(i.pendingLine, segment...)
 	i.pendingLineBytes += segmentBytes
 }
 
 func (i *StreamInspector) flushPendingLine() {
-	line := i.pendingLine
+	line := string(i.pendingLine)
 	if strings.HasSuffix(line, "\r") {
 		line = line[:len(line)-1]
 	}
@@ -308,7 +316,7 @@ func (i *StreamInspector) flushPendingLine() {
 		lineTail = lineTail[:len(lineTail)-1]
 	}
 	exceeded := i.pendingLineExceeded
-	i.pendingLine = ""
+	i.pendingLine = i.pendingLine[:0]
 	i.pendingLineBytes = 0
 	i.pendingLineExceeded = false
 	i.pendingLineTail = ""

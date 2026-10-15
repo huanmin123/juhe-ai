@@ -152,37 +152,6 @@ func TestSeedStatsRawSampleMatrix(t *testing.T) {
 		t.Fatalf("business 库应已存在: %v", err)
 	}
 
-	t.Run("system_metrics_samples", func(t *testing.T) {
-		rows := statsScalarInt(t, db, "SELECT COUNT(*) FROM system_metrics_samples")
-		// 30 分钟间隔 × days 天 ≥ days*48 个采样点；宽容下限取 days*24 防止
-		// 未来调整间隔时误报，但仍保证趋势窗口无空洞。
-		if rows < days*24 {
-			t.Errorf("system_metrics_samples %d 行，至少 %d（days×24）", rows, days*24)
-		}
-		if got := statsScalarInt(t, db, "SELECT COUNT(*) FROM system_metrics_samples WHERE id NOT LIKE ?", CleanupIDPrefix+"%"); got != 0 {
-			t.Errorf("%d 行的 id 不带造数标识前缀", got)
-		}
-		if got := statsScalarInt(t, db, "SELECT COUNT(*) FROM system_metrics_samples WHERE cpu_percent IS NULL OR memory_used_percent IS NULL OR sampled_at IS NULL"); got != 0 {
-			t.Errorf("%d 行缺核心指标列", got)
-		}
-	})
-
-	t.Run("process_event_loop_samples", func(t *testing.T) {
-		for _, role := range statsProcessRoles {
-			if rows := statsScalarInt(t, db, "SELECT COUNT(*) FROM process_event_loop_samples WHERE process_role = ?", role); rows == 0 {
-				t.Errorf("process_role 缺样本 %q", role)
-			}
-		}
-		// 每个角色的样本数应与系统指标采样点数同栅格（同步采样）。
-		metricRows := statsScalarInt(t, db, "SELECT COUNT(*) FROM system_metrics_samples")
-		for _, role := range statsProcessRoles {
-			rows := statsScalarInt(t, db, "SELECT COUNT(*) FROM process_event_loop_samples WHERE process_role = ?", role)
-			if rows < metricRows {
-				t.Errorf("process_role %q 样本 %d 行少于系统指标 %d 行（未同步采样）", role, rows, metricRows)
-			}
-		}
-	})
-
 	t.Run("background_task_runs", func(t *testing.T) {
 		distinct := statsScalarInt(t, db, "SELECT COUNT(DISTINCT job_name) FROM background_task_runs")
 		if distinct < 6 {
@@ -375,7 +344,7 @@ func TestSeedStatsRawIdempotentAcrossRuns(t *testing.T) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	for _, table := range []string{"system_metrics_samples", "process_event_loop_samples", "background_task_runs", "account_usage_snapshots", "client_ip_registry", "client_ip_policies", "client_ip_policy_hits"} {
+	for _, table := range []string{"background_task_runs", "account_usage_snapshots", "client_ip_registry", "client_ip_policies", "client_ip_policy_hits"} {
 		rows := statsScalarInt(t, db, "SELECT COUNT(*) FROM "+table)
 		if rows == 0 {
 			t.Errorf("%s 第二次运行后为空", table)

@@ -175,6 +175,14 @@ func (p *streamPipe) updateStreamInspectionProgress(inspection gatewayproto.Stre
 }
 
 func (p *streamPipe) publishInspection(inspection gatewayproto.StreamInspection) gatewayproto.StreamInspection {
+	// Gemini interactions 创建流的资源 ID 回带（对齐 Node stream.ts:389
+	// updateStreamInspectionProgress 的 responseResourceId ??= inspection.responseResourceId；
+	// Go 放在快照唯一漏斗处，额外覆盖 Finish 冲刷快照）。首个非空值落
+	// p.responseResourceId，供提交前亲和写入（BeforeDownstreamCommit 钩子）
+	// 与 StreamPipeResult 结果回带消费。
+	if p.responseResourceId == "" && inspection.ResponseResourceID != "" {
+		p.responseResourceId = inspection.ResponseResourceID
+	}
 	p.lastInspection = inspection
 	return inspection
 }

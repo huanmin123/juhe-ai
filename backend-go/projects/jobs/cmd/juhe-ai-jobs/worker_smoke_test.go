@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
@@ -190,13 +189,12 @@ func TestWorkerHealthExposesWorkerFields(t *testing.T) {
 	}
 	defer assembly.closeStores()
 	var running atomic.Bool
-	handler := healthHandler(ownermode.Active, &running,
-		func() bool { return true }, false, func() bool { return true },
-		false, func() bool { return true },
-		false, func() bool { return true },
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		true, func() bool { return running.Load() }, assembly.statusPayload)
+	handler := healthHandler(healthDeps{
+		OwnerMode:      ownermode.Active,
+		RuntimeRunning: &running,
+		WorkerReady:    func() bool { return running.Load() },
+		WorkerStatus:   assembly.statusPayload,
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	var payload map[string]any
@@ -224,8 +222,7 @@ func TestWorkerHealthExposesWorkerFields(t *testing.T) {
 // 监听 mux 上整体消失（去跨进程战役第二刀：账户健康检查派发改走 DB outbox
 // 通道，jobs 不再持有任何 /__aiinternal__ handler）。
 func TestInternalDispatchRouteAbsent(t *testing.T) {
-	handler := jobsHTTPHandler(ownermode.Active, &atomic.Bool{}, func() bool { return true },
-		false, func() bool { return true }, false, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &atomic.Bool{}})
 	for _, path := range []string{
 		"/__aiinternal__/v1/account-health-check/dispatch",
 		"/__aiinternal__/v1/account-test/dispatch",

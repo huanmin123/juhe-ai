@@ -133,12 +133,11 @@ func TestRunJobsOnceDispatchUnknownTaskExits2(t *testing.T) {
 	}
 }
 
-// TestRunJobsOnceMutuallyExclusiveFlags：--run-jobs-once 与 --once /
+// TestRunJobsOnceMutuallyExclusiveFlags：--run-jobs-once 与
 // --migrate-runtime-log-legacy-sqlite 互斥，exit 2（经 run() 的 flag 校验臂）。
 func TestRunJobsOnceMutuallyExclusiveFlags(t *testing.T) {
 	for _, args := range [][]string{
-		{"-once", "-run-jobs-once=usage-stats-aggregation"},
-		{"-run-jobs-once=usage-stats-aggregation", "-once"},
+		{"-run-jobs-once=usage-stats-aggregation", "-migrate-runtime-log-legacy-sqlite"},
 		{"-migrate-runtime-log-legacy-sqlite", "-run-jobs-once=usage-stats-aggregation"},
 	} {
 		var stdout bytes.Buffer

@@ -197,7 +197,7 @@ func preserveDispatchPriorityTiers(before, after []AccountCandidate, modelPriori
 	return gatewayproxyhealth.PreserveGatewayAccountDispatchPriorityTiers(before, after, dispatchPriorityView, options)
 }
 
-func dispatchPriorityView(account AccountCandidate) gatewayproxyhealth.DispatchPriorityAccountView {
+func dispatchPriorityView(account *AccountCandidate) gatewayproxyhealth.DispatchPriorityAccountView {
 	return gatewayproxyhealth.DispatchPriorityAccountView{
 		ID:                   account.ID,
 		Priority:             newFloat64(float64(account.Priority)),

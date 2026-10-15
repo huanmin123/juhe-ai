@@ -181,6 +181,7 @@ func convertGeminiInspection(inspection gatewaygemini.StreamInspection) gatewayp
 		SkipReason:            inspection.SkipReason,
 		ErrorCode:             inspection.ErrorCode,
 		ErrorMessage:          inspection.ErrorMessage,
+		ResponseResourceID:    inspection.ResponseResourceID,
 		Usage:                 geminiUsageValueToProto(inspection.Usage),
 	}
 }

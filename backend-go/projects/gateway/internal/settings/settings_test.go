@@ -113,8 +113,6 @@ var seedSystemSettings = map[string]any{
 	"statsAggregationMaxBatchesPerRun":           5,
 	"usageHotWindowRefreshIntervalSeconds":       600,
 	"groupAccountStatsRefreshIntervalSeconds":    60,
-	"systemMetricsSampleIntervalSeconds":         30,
-	"tableMonitorMaxTablesPerRun":                4,
 	"accountQualityRefreshIntervalSeconds":       600,
 	"accountQualityWindowMinutes":                10,
 	"accountHealthCheckIntervalHours":            1,
@@ -137,8 +135,6 @@ var seedSystemSettings = map[string]any{
 	"usageStatsWeeklyRetentionWeeks":             104,
 	"usageStatsMonthlyRetentionMonths":           24,
 	"usageRankSnapshotRetentionDays":             30,
-	"systemMetricsRetentionDays":                 7,
-	"systemMetricsHourlyRetentionDays":           30,
 }
 
 func newTestEnv(t *testing.T) *testEnv {

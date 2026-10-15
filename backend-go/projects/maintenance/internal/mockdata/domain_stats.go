@@ -4,19 +4,15 @@ package mockdata
 //
 // 为什么只写样本与脏标记：统计页读的是派生窗口族（usage_stats_*、usage_model_*、
 // usage_error_*、usage_latency_*、usage_rank_snapshots、*_windows、*_hourly、
-// client_ip_*_daily、account_quality_*、group_account_stats、
-// system_metrics_hourly / _trend_windows …），它们的口径必须与线上读路径一致，
-// 只能由 jobs 的聚合器从明细重建（autofill.go 已把整族排除在自动补全之外）。
-// 造数直接塞派生行会让页面口径与真实聚合分叉，所以本域只保证「明细输入足够」+
-// 「派生窗口被显式标脏」，由 jobs 的聚合 / 窗口任务按真实口径重建。
+// client_ip_*_daily、account_quality_*、group_account_stats …），它们的口径必须
+// 与线上读路径一致，只能由 jobs 的聚合器从明细重建（autofill.go 已把整族排除在
+// 自动补全之外）。造数直接塞派生行会让页面口径与真实聚合分叉，所以本域只保证
+// 「明细输入足够」+「派生窗口被显式标脏」，由 jobs 的聚合 / 窗口任务按真实口径
+// 重建。
 //
 // 写什么（列名逐字对齐 internal/schema/sqlite_schema_stats.go 与
 // internal/schema/sqlite_schema_business.go）：
-//   - stats.system_metrics_samples：监控趋势窗口族的唯一输入；
-//   - stats.process_event_loop_samples：进程事件循环样本（读面按 process_role
-//     取最新值与峰值）；
-//   - stats.background_task_runs：系统指标页 runtime/jobs 列表的历史行
-//     （gateway statreads.runtimeJobsHandler 直接读它）；
+//   - stats.background_task_runs：后台任务运行历史样本；
 //   - stats.account_usage_snapshots（kind='openai_codex'）：账户列表的 5h / 7d
 //     用量窗口（gateway accountsbalance.OAuthUsageWindowFromSnapshot 的读面键）；
 //   - stats.client_ip_registry / client_ip_policies / client_ip_policy_hits：
@@ -41,17 +37,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	// statsSampleInterval 是系统指标与事件循环样本的采样间隔。设计文档要求
-	// 30~60 分钟 1 条；取 30 分钟让近 31 天有 1489 个采样点，趋势窗口（小时 /
-	// 天）在任意日期范围内都不会出现空洞。
-	statsSampleInterval = 30 * time.Minute
 	// statsClientIPRegistryBucketCount 与 jobs statsverify / gateway gatewayclientip
 	// 的 ClientIPRegistryBucketCount 同值：bucket_no 由 ip_hash 前 8 位十六进制取模。
 	statsClientIPRegistryBucketCount = 4096
@@ -68,12 +59,6 @@ const (
 // 取值落在使用记录的 10.10.x.x / 10.20.x.x 网段内，保证 IP 页面样本与用量记录的
 // 客户端 IP 家族一致（不做地址推断，只是同一网段的固定样本）。
 var statsFallbackClientIPs = []string{"10.10.0.1", "10.10.0.2", "10.20.0.1"}
-
-// statsProcessRoles 是 process_event_loop_samples 覆盖的进程角色值域
-// （gateway statreads 的 validProcessRoles + worker 副本族正则）。
-var statsProcessRoles = []string{
-	"server", "ingest-worker", "stats-worker", "ops-worker", "db-service", "gateway:1",
-}
 
 // statsBackgroundTaskSample 是一条后台任务运行样本。job_name / job_type /
 // worker_role 逐字取自 jobs/internal/jobregistry 的 ScheduledEntries 条目
@@ -92,7 +77,6 @@ type statsBackgroundTaskSample struct {
 }
 
 var statsBackgroundTaskSamples = []statsBackgroundTaskSample{
-	{jobName: "system-metrics-sample", jobType: "sample", workerRole: "stats-worker", status: "completed", attempt: 1, durationMs: 420, ageMinutes: 12},
 	{jobName: "usage-stats-aggregation", jobType: "stats", workerRole: "stats-worker", status: "completed", attempt: 1, durationMs: 1560, ageMinutes: 30},
 	{jobName: "usage-hot-window-refresh", jobType: "snapshot", workerRole: "stats-worker", status: "completed", attempt: 2, durationMs: 2380, ageMinutes: 45},
 	{jobName: "group-account-stats-refresh", jobType: "stats", workerRole: "stats-worker", status: "completed", attempt: 1, durationMs: 780, ageMinutes: 75},
@@ -103,22 +87,6 @@ var statsBackgroundTaskSamples = []statsBackgroundTaskSample{
 	{jobName: "account-balance-refresh", jobType: "probe", workerRole: "ops-worker", status: "running", attempt: 1, ageMinutes: 4},
 	{jobName: "oauth-keepalive-token-refresh", jobType: "probe", workerRole: "ops-worker", status: "running", attempt: 2, ageMinutes: 8},
 	{jobName: "account-quality-refresh", jobType: "stats", workerRole: "stats-worker", status: "queued", attempt: 1, ageMinutes: 2},
-}
-
-// statsMetricColumns 是 system_metrics_samples 的写入列。
-var statsMetricColumns = []string{
-	"id", "sampled_at", "cpu_percent", "memory_used_percent", "memory_total_bytes",
-	"memory_free_bytes", "process_rss_bytes", "process_heap_used_bytes",
-	"process_heap_total_bytes", "event_loop_lag_ms", "network_rx_bytes_per_sec",
-	"network_tx_bytes_per_sec", "network_rx_total_bytes", "network_tx_total_bytes",
-	"db_file_bytes", "stats_lag_seconds", "created_at",
-}
-
-// statsProcessSampleColumns 是 process_event_loop_samples 的写入列。
-var statsProcessSampleColumns = []string{
-	"id", "sampled_at", "process_role", "process_pid", "event_loop_lag_ms",
-	"process_rss_bytes", "process_heap_used_bytes", "process_heap_total_bytes",
-	"process_external_bytes", "process_array_buffers_bytes", "created_at",
 }
 
 // statsBackgroundTaskColumns 是 background_task_runs 的写入列。
@@ -193,8 +161,6 @@ func seedStatsRaw(ctx context.Context, e *env) (DomainResult, error) {
 	w := &statsWriter{ctx: ctx, e: e, now: e.options.clock().UTC(), counts: map[string]int{}}
 	w.clientIPs = w.loadClientIPs()
 	steps := []statsStep{
-		{name: "系统指标样本", run: w.seedSystemMetricsSamples},
-		{name: "进程事件循环样本", run: w.seedProcessEventLoopSamples},
 		{name: "后台任务运行", run: w.seedBackgroundTaskRuns},
 		{name: "账户用量快照", run: w.seedAccountUsageSnapshots},
 		{name: "IP 统计样本", run: w.seedClientIPSamples},
@@ -232,105 +198,6 @@ func (w *statsWriter) requireStatsTable(table string) (bool, error) {
 		w.e.logger.Warn("mockdata 统计域跳过：stats 库缺表", "table", table)
 	}
 	return exists, nil
-}
-
-// seedSystemMetricsSamples 写近 Days 天、每 statsSampleInterval 一条的系统指标样本。
-func (w *statsWriter) seedSystemMetricsSamples() error {
-	exists, err := w.requireStatsTable("system_metrics_samples")
-	if err != nil || !exists {
-		return err
-	}
-	instants := statsSampleInstants(w.now, w.e.options.Days)
-	rows := make([]map[string]any, 0, len(instants))
-	for index, instant := range instants {
-		createdAt := instant.Format(isoMillisLayout)
-		cpu := 6 + mockPseudoRandom(index, 11)*46
-		if index%89 == 0 {
-			// 峰值样本：趋势页的「最近峰值」需要有可解释的高点。
-			cpu = 88 + mockPseudoRandom(index, 12)*10
-		}
-		memory := 32 + mockPseudoRandom(index, 13)*44
-		if index%131 == 0 {
-			memory = 76 + mockPseudoRandom(index, 14)*18
-		}
-		eventLoopLag := 2 + mockPseudoRandom(index, 15)*14
-		if index%97 == 0 {
-			eventLoopLag = 90 + mockPseudoRandom(index, 16)*120
-		}
-		statsLag := index % 13
-		if index%211 == 0 {
-			statsLag = 42
-		}
-		const memoryTotalBytes = int64(16) << 30
-		memoryFreeBytes := int64(float64(memoryTotalBytes) * (1 - memory/100))
-		heapUsed := int64((90 + mockPseudoRandom(index, 17)*140) * float64(int64(1)<<20))
-		rows = append(rows, map[string]any{
-			"id":                       fmt.Sprintf("%sstats_metric_%s", CleanupIDPrefix, instant.Format("20060102150405")),
-			"sampled_at":               createdAt,
-			"cpu_percent":              statsRounded(cpu),
-			"memory_used_percent":      statsRounded(memory),
-			"memory_total_bytes":       memoryTotalBytes,
-			"memory_free_bytes":        memoryFreeBytes,
-			"process_rss_bytes":        int64((180 + mockPseudoRandom(index, 18)*260) * float64(int64(1)<<20)),
-			"process_heap_used_bytes":  heapUsed,
-			"process_heap_total_bytes": int64(float64(heapUsed) * 1.6),
-			"event_loop_lag_ms":        statsRounded(eventLoopLag),
-			"network_rx_bytes_per_sec": statsRounded(120000 + mockPseudoRandom(index, 19)*6800000),
-			"network_tx_bytes_per_sec": statsRounded(90000 + mockPseudoRandom(index, 20)*5200000),
-			"network_rx_total_bytes":   int64(index+1) * 380_000_000,
-			"network_tx_total_bytes":   int64(index+1) * 290_000_000,
-			"db_file_bytes":            (140 << 20) + int64(index)*196_608,
-			"stats_lag_seconds":        statsLag,
-			"created_at":               createdAt,
-		})
-	}
-	inserted, err := w.insertRows("system_metrics_samples", statsMetricColumns, rows)
-	if err != nil {
-		return err
-	}
-	w.add("systemMetricsSamples", inserted)
-	return nil
-}
-
-// seedProcessEventLoopSamples 与系统指标同栅格采样，逐进程角色各写一行：
-// 读面对同一角色取最新值与峰值，缺角色会让「进程状态」面板缺卡片。
-func (w *statsWriter) seedProcessEventLoopSamples() error {
-	exists, err := w.requireStatsTable("process_event_loop_samples")
-	if err != nil || !exists {
-		return err
-	}
-	instants := statsSampleInstants(w.now, w.e.options.Days)
-	rows := make([]map[string]any, 0, len(instants)*len(statsProcessRoles))
-	for roleIndex, role := range statsProcessRoles {
-		for index, instant := range instants {
-			createdAt := instant.Format(isoMillisLayout)
-			seed := index + roleIndex*1000
-			lag := 1 + mockPseudoRandom(seed, 21)*9
-			if index%127 == 0 {
-				lag = 60 + mockPseudoRandom(seed, 22)*180
-			}
-			heapUsed := int64((48 + mockPseudoRandom(seed, 23)*70) * float64(int64(1)<<20))
-			rows = append(rows, map[string]any{
-				"id":                          fmt.Sprintf("%sstats_loop_%s_%s", CleanupIDPrefix, statsRoleSlug(role), instant.Format("20060102150405")),
-				"sampled_at":                  createdAt,
-				"process_role":                role,
-				"process_pid":                 4200 + roleIndex*16,
-				"event_loop_lag_ms":           statsRounded(lag),
-				"process_rss_bytes":           int64((160 + mockPseudoRandom(seed, 24)*120) * float64(int64(1)<<20)),
-				"process_heap_used_bytes":     heapUsed,
-				"process_heap_total_bytes":    int64(float64(heapUsed) * 1.8),
-				"process_external_bytes":      int64((12 + mockPseudoRandom(seed, 25)*40) * float64(int64(1)<<20)),
-				"process_array_buffers_bytes": int64((2 + mockPseudoRandom(seed, 26)*18) * float64(int64(1)<<20)),
-				"created_at":                  createdAt,
-			})
-		}
-	}
-	inserted, err := w.insertRows("process_event_loop_samples", statsProcessSampleColumns, rows)
-	if err != nil {
-		return err
-	}
-	w.add("processEventLoopSamples", inserted)
-	return nil
 }
 
 // seedBackgroundTaskRuns 写后台任务运行样本。
@@ -942,28 +809,6 @@ func statsInsertRows(ctx context.Context, e *env, storeName, table string, colum
 		return affected, fmt.Errorf("%s commit: %w", table, err)
 	}
 	return affected, nil
-}
-
-// statsSampleInstants 返回近 days 天、间隔 statsSampleInterval 的采样时刻，
-// 末尾对齐 now（截断到采样栅格）：同一 Now 下逐字节可复现。
-func statsSampleInstants(now time.Time, days int) []time.Time {
-	interval := statsSampleInterval
-	end := now.UTC().Truncate(interval)
-	count := days * 24 * 60 / int(interval.Minutes())
-	if count < 1 {
-		count = 1
-	}
-	start := end.Add(-time.Duration(count) * interval)
-	instants := make([]time.Time, 0, count+1)
-	for index := 0; index <= count; index++ {
-		instants = append(instants, start.Add(time.Duration(index)*interval))
-	}
-	return instants
-}
-
-// statsRounded 保留两位小数：浮点尾差会让「同一 Now 同一结果」的比对不稳定。
-func statsRounded(value float64) float64 {
-	return math.Round(value*100) / 100
 }
 
 // statsRoleSlug 把角色 / 任务名转成可读的标识片段（去掉冒号等非标识字符）。

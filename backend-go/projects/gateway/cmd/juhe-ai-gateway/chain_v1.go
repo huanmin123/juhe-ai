@@ -34,6 +34,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
@@ -631,7 +632,10 @@ func (c *gatewayChain) handleUpstreamResponse(
 		ClientStrategy:             clientStrategyViewOf(context),
 		ResponseInspectionPolicies: context.ResponseInspectionPolicies,
 		MarkFirstOutput:            firstOutputMetricMarkOf(dispatched.MarkFirstOutput, startedAt, req.MethodUpper()),
-		DownstreamCommitState:      commitState,
+		// Gemini interactions 创建成功的提交前亲和写入回调（Node
+		// finalization.ts:483/:1054）；非 create / 非 2xx / 非 gemini 时 nil。
+		InteractionAffinityRemember: c.interactionAffinityRememberBeforeCommit(ctx, req, context, dispatched, auditCapture),
+		DownstreamCommitState:       commitState,
 		Deps: &gatewayresponse.FinalizationDeps{
 			UsageRecords: &chainFinalizationUsage{
 				recorder:           c.finalizationUsage,
@@ -694,7 +698,12 @@ func (c *gatewayChain) handleUpstreamResponse(
 		handling gatewayresponse.UpstreamResponseHandlingResult
 		err      error
 	)
-	if handleAsStream {
+	// Gemini interactions DELETE 2xx 的提交前亲和移除（Node finalization.ts:905
+	// deleteGeminiInteractionBeforeDownstreamCommit）：先于响应体处理执行；
+	// 写失败以 AffinityUnavailableError 进入下方 503 分支（下游未提交）。
+	if affinityErr := c.deleteInteractionAffinityBeforeCommit(ctx, req, context, dispatched, auditCapture); affinityErr != nil {
+		err = affinityErr
+	} else if handleAsStream {
 		handling, err = gatewayresponse.HandleStreamUpstreamResponse(*input)
 	} else {
 		handling, err = gatewayresponse.HandleNonStreamUpstreamResponse(*input)
@@ -721,6 +730,20 @@ func (c *gatewayChain) handleUpstreamResponse(
 				ErrorCode:                firstByteTimeoutErr.Code(),
 				Message:                  firstByteTimeoutErr.Message,
 			}
+		}
+		// Gemini Interaction 亲和写失败的 503 契约（Node routes.ts:1621-1624
+		// GeminiInteractionAffinityUnavailableError rethrow）：statusCode 503 /
+		// type service_unavailable / code interaction_affinity_unavailable，按亲和
+		// 错误自身文案渲染；写面先于首个下游写，正常必未提交（已提交保持裸断开）。
+		// 结算口径与下方中性臂一致（AlreadyFinalized + GatewayLocalFailure）。
+		var affinityUnavailableErr *gatewaygemini.AffinityUnavailableError
+		if errors.As(err, &affinityUnavailableErr) {
+			if !res.HeadersSent() && !commitState.TransportCommitted {
+				gatewaypreauth.SendGatewayJSONError(res, affinityUnavailableErr.StatusCode(),
+					gatewaypreauth.GatewayErrorPayloadOf(affinityUnavailableErr.Error(), affinityUnavailableErr.ErrorType(), affinityUnavailableErr.Code()),
+					gatewaypreauth.SendGatewayErrorOptions{Protocol: clientErrorProtocol(req)})
+			}
+			return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 		}
 		// Node has no dedicated response-handler error exit: the failure
 		// falls through to the top-level catch contract. A committed

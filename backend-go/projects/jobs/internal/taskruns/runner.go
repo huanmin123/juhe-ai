@@ -222,7 +222,32 @@ func boundedFinishContext(parent context.Context) (context.Context, context.Canc
 // 旧进程留下的 queued/running 行由 ReconcileStale 收口为 failed，
 // 新进程用新的 runID 重新走 queued→running；过期租约由 AcquireLease 的
 // `lease_until <= now` CAS 被新 owner 接管。
+// 本函数同时是任务指标的唯一埋点：CreateTaskRun 成功后必产出一个
+// juhe_ai_jobs_task_runs_total / task_run_duration_seconds 样本（status
+// 取终态运行记录，收口自身失败时按 err 推导），completed 另 Set
+// last_success gauge；CreateTaskRun 失败（无运行记录）不产生样本。
 func RunWithTaskRun(
+	ctx context.Context,
+	store *Store,
+	opts TaskRunRunnerOptions,
+	fn func(runCtx context.Context, fence LeaseFence, run TaskRun) (TaskRunResult, error),
+) (TaskRun, ScheduledLeaseOutcome, error) {
+	startedAt := store.now()
+	run, outcome, err := runWithTaskRun(ctx, store, opts, fn)
+	if run.RunID != "" {
+		status := string(run.Status)
+		if status == "" {
+			status = string(StatusFailed)
+			if err == nil {
+				status = string(StatusCompleted)
+			}
+		}
+		recordTaskRun(opts.JobName, opts.JobType, status, startedAt)
+	}
+	return run, outcome, err
+}
+
+func runWithTaskRun(
 	ctx context.Context,
 	store *Store,
 	opts TaskRunRunnerOptions,
@@ -270,7 +295,7 @@ func RunWithTaskRun(
 				"runId", run.RunID, "error", getErr)
 		}
 		finishCancel()
-		return derefRun(updated), ScheduledLeaseOutcome{
+		return withRunID(updated, run.RunID), ScheduledLeaseOutcome{
 			Outcome:    OutcomeSkipped,
 			Warning:    "lease_busy:run_not_queued",
 			LeaseState: LeaseStateBusy,
@@ -367,7 +392,7 @@ func RunWithTaskRun(
 	})
 	updated, getErr := store.GetTaskRun(finishCtx, run.RunID)
 	finishCancel()
-	finalRun := derefRun(updated)
+	finalRun := withRunID(updated, run.RunID)
 	if getErr != nil {
 		return finalRun, ScheduledLeaseOutcome{LeaseState: LeaseStateAcquired}, getErr
 	}
@@ -383,11 +408,23 @@ func RunWithTaskRun(
 	return finalRun, ScheduledLeaseOutcome{Outcome: OutcomeSuccess, LeaseState: LeaseStateAcquired}, nil
 }
 
+// derefRun 兜底 nil 运行记录。
 func derefRun(run *TaskRun) TaskRun {
 	if run == nil {
 		return TaskRun{}
 	}
 	return *run
+}
+
+// withRunID 是 derefRun 的埋点保形变体：GetTaskRun 失败（行收口失败等）
+// 时返回值仍携带 RunID，RunWithTaskRun 的指标埋点据此确认运行记录已创建，
+// 不丢样本（status 由 err 推导补齐）。
+func withRunID(run *TaskRun, runID string) TaskRun {
+	final := derefRun(run)
+	if final.RunID == "" {
+		final.RunID = runID
+	}
+	return final
 }
 
 // RecoverOnStartup 是 kill-restart 恢复入口：进程启动时把上一进程留下的

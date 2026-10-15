@@ -41,7 +41,6 @@ assert.match(apiKeyListSource, /<UsageSummaryTags :usage="record\.usage" \/>/, '
 assert.match(apiKeyListSource, /<strong>\{\{ formatUsageSummary\(record\.usage\) \}\}<\/strong>/, '移动列表应直接展示列表项用量')
 assert.doesNotMatch(apiKeyListSource, /usageState|usageErrors|retry-usage|用量加载失败/, '列表组件不得保留用量加载占位或重试状态')
 assert.match(apiKeysViewSource, /onDeactivated\(\(\) => \{[\s\S]*invalidatePendingLoads\(\)/, 'KeepAlive 失活时必须使列表请求失效')
-assert.match(apiKeysViewSource, /onActivated\(\(\) => \{\s*pageActive = true\s*\}\)/, 'KeepAlive 激活时只能恢复页面可用状态')
 assert.doesNotMatch(apiKeysViewSource, /pageWasDeactivated/, 'API Key 页面不得在重新激活后自动重载列表')
 assert.match(
   apiKeysViewSource,

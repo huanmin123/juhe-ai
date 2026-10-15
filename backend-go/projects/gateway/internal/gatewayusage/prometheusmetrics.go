@@ -1,36 +1,45 @@
 package gatewayusage
 
 import (
-	"fmt"
-	"io"
-	"runtime"
-	"sort"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
 )
 
-// Prometheus HTTP / gateway metrics family, line-by-line port of
-// Node 归档 shared/prometheus-metrics.ts
-// (archive moved out of the repo; retrievable from git history).
+// Prometheus HTTP / gateway metrics family, migrated from the line-by-line
+// port of Node 归档 shared/prometheus-metrics.ts
+// (archive moved out of the repo; retrievable from git history) onto the
+// shared platform prommetrics surface (github.com/prometheus/client_golang
+// behind the platform wrapper). Metric names and label sets stay frozen —
+// including the fixed service="juhe-ai" label the former renderer merged
+// into every series; exposition rendering and the standard go_*/process_*
+// families now come from client_golang, and the Node-compat juhe_ai_process_*,
+// juhe_ai_redis_stream_queue_enabled and juhe_ai_http_failure_scope_metrics_enabled
+// families are gone.
+//
 // Labels stay bounded (route group / method / status class / outcome /
 // failure scope); no paths, identifiers or error text are ever attached.
 //
 // D-190 (BUG-0175 wave 4 W4-E): the classifier (classifier.go) and the
-// UpstreamFailureMetricRecorder port (ports.go:185-189) existed without a
-// production registry; this file supplies the registry and the render surface
-// the /__aisys__/metrics endpoint serves.
+// UpstreamFailureMetricRecorder port (ports.go:185-189) are wired here into
+// the registry the /__aisys__/metrics endpoint serves.
 
 const prometheusServiceName = "juhe-ai"
 
-// Duration buckets mirror durationBuckets (seconds).
-var prometheusDurationBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, positiveInf}
+// prometheusServiceLabels pins the fixed service label every gateway metric
+// family carries (the former renderPrometheusLabels merge).
+var prometheusServiceLabels = map[string]string{"service": prometheusServiceName}
+
+// Duration buckets mirror durationBuckets (seconds). client_golang appends
+// the +Inf bucket itself.
+var prometheusDurationBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10}
 
 // First-output buckets mirror firstOutputDurationBuckets (seconds).
-var prometheusFirstOutputBuckets = []float64{0.25, 0.5, 1, 2, 5, 10, 30, 60, positiveInf}
-
-const positiveInf = float64(9223372036854775807) // renders as "+Inf" via prometheusBucketLE
+var prometheusFirstOutputBuckets = []float64{0.25, 0.5, 1, 2, 5, 10, 30, 60}
 
 // HTTPMetricRouteGroup mirrors HttpMetricRouteGroup.
 type HTTPMetricRouteGroup = string
@@ -92,36 +101,49 @@ func ClassifyHTTPMetricRoute(path string) HTTPMetricRouteGroup {
 	return HTTPMetricRouteOther
 }
 
-// prometheusRegistry holds the process-wide metric state. Node used module
-// singletons; Go keeps one shared registry guarded by a single mutex (the
-// critical sections are map increments on the request path).
-type prometheusRegistry struct {
-	mu                sync.Mutex
-	startedAt         time.Time
-	requestCounters   map[string]int64
-	requestHistograms map[string]*prometheusHistogram
-	firstOutput       map[string]*prometheusHistogram
-	inFlight          map[string]int64
-	upstreamFailures  map[string]int64
+// prometheusMetrics owns one registry and its registered families. The
+// process singleton is prometheusDefault; tests build isolated instances
+// (client_golang counters cannot be reset, so per-test construction replaces
+// the former global reset seam).
+type prometheusMetrics struct {
+	registry         *prommetrics.Registry
+	requestsTotal    prommetrics.CounterVec
+	requestDuration  prommetrics.HistogramVec
+	inFlight         prommetrics.GaugeVec
+	upstreamFailures prommetrics.CounterVec
+	firstOutput      prommetrics.HistogramVec
+
+	auditDropOnce     sync.Once
+	auditDropSlot     atomic.Pointer[func() int64]
+	operationDropOnce sync.Once
+	operationDropSlot atomic.Pointer[func() int64]
 }
 
-type prometheusHistogram struct {
-	count   int64
-	sum     float64
-	buckets map[float64]int64
+func newPrometheusMetrics() *prometheusMetrics {
+	registry := prommetrics.NewRegistry()
+	metrics := &prometheusMetrics{
+		registry:         registry,
+		requestsTotal:    prommetrics.NewCounterVec(registry, "juhe_ai_http_requests_total", "Completed HTTP requests grouped without paths, identifiers, or error text.", prometheusServiceLabels, []string{"route_group", "method", "status_class", "outcome", "failure_scope"}),
+		requestDuration:  prommetrics.NewHistogramVec(registry, "juhe_ai_http_request_duration_seconds", "HTTP request duration grouped without paths, identifiers, or error text.", prometheusServiceLabels, []string{"route_group", "method", "status_class", "outcome", "failure_scope"}, prometheusDurationBuckets),
+		inFlight:         prommetrics.NewGaugeVec(registry, "juhe_ai_http_requests_in_flight", "In-flight HTTP requests grouped without paths or identifiers.", prometheusServiceLabels, []string{"route_group", "method"}),
+		upstreamFailures: prommetrics.NewCounterVec(registry, "juhe_ai_gateway_upstream_failures_total", "Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.", prometheusServiceLabels, []string{"failure_class", "reason_class", "status_class"}),
+		firstOutput:      prommetrics.NewHistogramVec(registry, "juhe_ai_gateway_first_output_duration_seconds", "Time to first upstream output for gateway requests, excluding full stream duration.", prometheusServiceLabels, []string{"method"}, prometheusFirstOutputBuckets),
+	}
+	// The upstream-failure capability gauges keep the D-190 contract
+	// declaration series (client_golang gauges stay resident at their set
+	// value). service stays a dynamic label here (one child per service).
+	prommetrics.NewGaugeVec(registry, "juhe_ai_gateway_upstream_failure_metrics_enabled", "Whether this process exposes the gateway upstream failure metric contract.", nil, []string{"service"}).WithLabelValues(prometheusServiceName).Set(1)
+	prommetrics.NewGaugeVec(registry, "juhe_ai_gateway_upstream_failure_reason_metrics_enabled", "Whether this process exposes bounded gateway upstream failure reason classes.", nil, []string{"service"}).WithLabelValues(prometheusServiceName).Set(1)
+	return metrics
 }
 
-func newPrometheusHistogram() *prometheusHistogram {
-	return &prometheusHistogram{buckets: map[float64]int64{}}
-}
+var prometheusDefault = newPrometheusMetrics()
 
-var prometheusDefault = &prometheusRegistry{
-	startedAt:         time.Now(),
-	requestCounters:   map[string]int64{},
-	requestHistograms: map[string]*prometheusHistogram{},
-	firstOutput:       map[string]*prometheusHistogram{},
-	inFlight:          map[string]int64{},
-	upstreamFailures:  map[string]int64{},
+// MetricsHandler returns the exposition handler for the process registry
+// (promhttp rendering). The composition root mounts it on the health
+// listener's /__aisys__/metrics route.
+func MetricsHandler() http.Handler {
+	return prometheusDefault.registry.Handler()
 }
 
 // HTTPMetrics is the process-wide registry handle. It implements
@@ -134,262 +156,131 @@ func (HTTPMetrics) RecordUpstreamFailure(failureClass string, statusCode *int, r
 	RecordGatewayUpstreamFailureMetric(failureClass, statusCode, reasonClass)
 }
 
-// StartHTTPMetricRequest mirrors startHttpMetricRequest: observability routes
-// are not measured and a nil request is the accepted no-op shape.
-func StartHTTPMetricRequest(path string, method string, startedAtMs int64) *HTTPMetricRequest {
+// recordUpstreamFailureOn drives an isolated metrics instance (tests bind a
+// dedicated registry instead of resetting the process singleton).
+func (HTTPMetrics) recordUpstreamFailureOn(metrics *prometheusMetrics, failureClass string, statusCode *int, reasonClass string) {
+	metrics.recordUpstreamFailure(failureClass, statusCode, reasonClass)
+}
+
+// startRequest mirrors startHttpMetricRequest: observability routes are not
+// measured and a nil request is the accepted no-op shape.
+func (m *prometheusMetrics) startRequest(path string, method string, startedAtMs int64) *HTTPMetricRequest {
 	routeGroup := ClassifyHTTPMetricRoute(path)
 	if routeGroup == HTTPMetricRouteObservability {
 		return nil
 	}
 	normalized := normalizeHTTPMetricMethod(method)
-	key := httpMetricLabelsKey(map[string]string{
-		"route_group": routeGroup,
-		"method":      normalized,
-	})
-	prometheusDefault.mu.Lock()
-	prometheusDefault.inFlight[key]++
-	prometheusDefault.mu.Unlock()
+	m.inFlight.WithLabelValues(routeGroup, normalized).Inc()
 	return &HTTPMetricRequest{RouteGroup: routeGroup, Method: normalized, StartedAtMs: startedAtMs}
+}
+
+// finishRequest mirrors finishHttpMetricRequest. A nil or already finished
+// request is a no-op, so the deferred call stays single-shot.
+func (m *prometheusMetrics) finishRequest(request *HTTPMetricRequest, statusCode *int, outcome HTTPMetricOutcome, finishedAtMs int64, failureScope HTTPMetricFailureScope) {
+	if request == nil || request.Finished {
+		return
+	}
+	request.Finished = true
+	statusClass := classifyHTTPMetricStatus(statusCode)
+	failureScopeValue := classifyHTTPMetricFailureScope(statusCode, outcome, failureScope)
+	durationSeconds := float64(maxInt64(0, finishedAtMs-request.StartedAtMs)) / 1_000
+	m.inFlight.WithLabelValues(request.RouteGroup, request.Method).Dec()
+	labels := []string{request.RouteGroup, request.Method, statusClass, outcome, failureScopeValue}
+	m.requestsTotal.WithLabelValues(labels...).Inc()
+	m.requestDuration.WithLabelValues(labels...).Observe(durationSeconds)
+}
+
+// recordUpstreamFailure mirrors recordGatewayUpstreamFailureMetric.
+func (m *prometheusMetrics) recordUpstreamFailure(failureClass string, statusCode *int, reasonClass string) {
+	m.upstreamFailures.WithLabelValues(failureClass, reasonClass, classifyHTTPMetricStatus(statusCode)).Inc()
+}
+
+// recordFirstOutput mirrors recordGatewayFirstOutputMetric.
+func (m *prometheusMetrics) recordFirstOutput(durationMs int64, method string) {
+	if durationMs < 0 {
+		return
+	}
+	m.firstOutput.WithLabelValues(normalizeHTTPMetricMethod(method)).Observe(float64(durationMs) / 1_000)
+}
+
+// gatherText renders the instance registry in the classic exposition format
+// (tests make content-level assertions through it; a gather error surfaces as
+// the rendered text so content assertions fail with the cause attached).
+func (m *prometheusMetrics) gatherText() string {
+	text, err := m.registry.GatherText()
+	if err != nil {
+		return "<prometheus gather error: " + err.Error() + ">"
+	}
+	return text
+}
+
+// StartHTTPMetricRequest mirrors startHttpMetricRequest: observability routes
+// are not measured and a nil request is the accepted no-op shape.
+func StartHTTPMetricRequest(path string, method string, startedAtMs int64) *HTTPMetricRequest {
+	return prometheusDefault.startRequest(path, method, startedAtMs)
 }
 
 // FinishHTTPMetricRequest mirrors finishHttpMetricRequest. A nil or already
 // finished request is a no-op, so the deferred call stays single-shot.
 func FinishHTTPMetricRequest(request *HTTPMetricRequest, statusCode *int, outcome HTTPMetricOutcome, finishedAtMs int64, failureScope HTTPMetricFailureScope) {
-	if request == nil || request.Finished {
-		return
-	}
-	request.Finished = true
-	labels := map[string]string{
-		"route_group":   request.RouteGroup,
-		"method":        request.Method,
-		"status_class":  classifyHTTPMetricStatus(statusCode),
-		"outcome":       outcome,
-		"failure_scope": classifyHTTPMetricFailureScope(statusCode, outcome, failureScope),
-	}
-	key := httpMetricLabelsKey(labels)
-	durationSeconds := float64(maxInt64(0, finishedAtMs-request.StartedAtMs)) / 1_000
-	prometheusDefault.mu.Lock()
-	prometheusDefault.inFlight[keyInFlightOf(request)]--
-	if prometheusDefault.inFlight[keyInFlightOf(request)] <= 0 {
-		delete(prometheusDefault.inFlight, keyInFlightOf(request))
-	}
-	prometheusDefault.requestCounters[key]++
-	histogram := prometheusDefault.requestHistograms[key]
-	if histogram == nil {
-		histogram = newPrometheusHistogram()
-		prometheusDefault.requestHistograms[key] = histogram
-	}
-	histogram.count++
-	histogram.sum += durationSeconds
-	for _, bucket := range prometheusDurationBuckets {
-		if durationSeconds <= bucket {
-			histogram.buckets[bucket]++
-		}
-	}
-	prometheusDefault.mu.Unlock()
-}
-
-func keyInFlightOf(request *HTTPMetricRequest) string {
-	return httpMetricLabelsKey(map[string]string{
-		"route_group": request.RouteGroup,
-		"method":      request.Method,
-	})
+	prometheusDefault.finishRequest(request, statusCode, outcome, finishedAtMs, failureScope)
 }
 
 // RecordGatewayUpstreamFailureMetric mirrors recordGatewayUpstreamFailureMetric.
 func RecordGatewayUpstreamFailureMetric(failureClass string, statusCode *int, reasonClass string) {
-	key := httpMetricLabelsKey(map[string]string{
-		"failure_class": failureClass,
-		"reason_class":  reasonClass,
-		"status_class":  classifyHTTPMetricStatus(statusCode),
-	})
-	prometheusDefault.mu.Lock()
-	prometheusDefault.upstreamFailures[key]++
-	prometheusDefault.mu.Unlock()
+	prometheusDefault.recordUpstreamFailure(failureClass, statusCode, reasonClass)
 }
 
 // RecordGatewayFirstOutputMetric mirrors recordGatewayFirstOutputMetric.
 func RecordGatewayFirstOutputMetric(durationMs int64, method string) {
-	if durationMs < 0 {
-		return
-	}
-	key := httpMetricLabelsKey(map[string]string{"method": normalizeHTTPMetricMethod(method)})
-	durationSeconds := float64(durationMs) / 1_000
-	prometheusDefault.mu.Lock()
-	histogram := prometheusDefault.firstOutput[key]
-	if histogram == nil {
-		histogram = newPrometheusHistogram()
-		prometheusDefault.firstOutput[key] = histogram
-	}
-	histogram.count++
-	histogram.sum += durationSeconds
-	for _, bucket := range prometheusFirstOutputBuckets {
-		if durationSeconds <= bucket {
-			histogram.buckets[bucket]++
-		}
-	}
-	prometheusDefault.mu.Unlock()
+	prometheusDefault.recordFirstOutput(durationMs, method)
 }
-
-// ResetPrometheusMetricsForTest mirrors resetPrometheusMetricsForTest.
-func ResetPrometheusMetricsForTest() {
-	prometheusDefault.mu.Lock()
-	defer prometheusDefault.mu.Unlock()
-	prometheusDefault.requestCounters = map[string]int64{}
-	prometheusDefault.requestHistograms = map[string]*prometheusHistogram{}
-	prometheusDefault.firstOutput = map[string]*prometheusHistogram{}
-	prometheusDefault.inFlight = map[string]int64{}
-	prometheusDefault.upstreamFailures = map[string]int64{}
-}
-
-// auditCapturedDroppedTotal 由组合根注入 F3 审计 producer 的丢弃计数访问器
-// （SetAuditCapturedDroppedTotal，启动期一次）；nil 时该指标族不输出。
-var auditCapturedDroppedTotal func() int64
 
 // SetAuditCapturedDroppedTotal wires the F3 audit producer drop counter into
-// the exposition. Call once during composition, before the HTTP server starts.
+// the exposition as a scrape-time CounterFunc. Call once during composition,
+// before the HTTP server starts; the first call registers the family (an
+// unset accessor keeps the family absent exactly like the former render-side
+// branch).
 func SetAuditCapturedDroppedTotal(fn func() int64) {
-	auditCapturedDroppedTotal = fn
+	prometheusDefault.setAuditCapturedDroppedTotal(fn)
 }
 
-// operationLogDroppedTotal 由组合根注入 F4 操作日志 producer 的丢弃计数访问器
-// （SetOperationLogDroppedTotal，启动期一次）；nil 时该指标族不输出。
-var operationLogDroppedTotal func() int64
+// setAuditCapturedDroppedTotal is the per-instance seam (tests bind isolated
+// instances; the package-level entry drives the process singleton).
+func (m *prometheusMetrics) setAuditCapturedDroppedTotal(fn func() int64) {
+	m.setDroppedTotalFunc(&m.auditDropOnce, &m.auditDropSlot,
+		"juhe_ai_audit_log_captured_dropped_total",
+		"Audit captures dropped because the bounded F3 producer queue was full.", fn)
+}
 
 // SetOperationLogDroppedTotal wires the F4 operation-log producer drop counter
-// into the exposition. Call once during composition, before the HTTP server
-// starts (mirror of the F3 audit seam).
+// into the exposition as a scrape-time CounterFunc. Call once during
+// composition, before the HTTP server starts (mirror of the F3 audit seam).
 func SetOperationLogDroppedTotal(fn func() int64) {
-	operationLogDroppedTotal = fn
+	prometheusDefault.setOperationLogDroppedTotal(fn)
 }
 
-// RenderPrometheusMetrics mirrors renderPrometheusMetrics: the exposition
-// order and the HELP/TYPE lines follow the Node contract. The Redis Stream
-// queue family renders the disabled gauge only — the Node queue monitor has
-// no Go counterpart yet, and the Node default (snapshot unset) renders
-// exactly this shape.
-func RenderPrometheusMetrics() string {
-	var builder strings.Builder
-	renderPrometheusMetricsTo(&builder)
-	return builder.String()
+// setOperationLogDroppedTotal is the per-instance seam (mirror of the F3
+// audit instance seam).
+func (m *prometheusMetrics) setOperationLogDroppedTotal(fn func() int64) {
+	m.setDroppedTotalFunc(&m.operationDropOnce, &m.operationDropSlot,
+		"juhe_ai_operation_log_dropped_total",
+		"Operation log records dropped because the bounded F4 producer queue was full.", fn)
 }
 
-func renderPrometheusMetricsTo(w io.Writer) {
-	prometheusDefault.mu.Lock()
-	requestCounters := sortedIntEntries(prometheusDefault.requestCounters)
-	requestHistograms := sortedHistogramEntries(prometheusDefault.requestHistograms)
-	firstOutput := sortedHistogramEntries(prometheusDefault.firstOutput)
-	inFlight := sortedIntEntries(prometheusDefault.inFlight)
-	upstreamFailures := sortedIntEntries(prometheusDefault.upstreamFailures)
-	prometheusDefault.mu.Unlock()
-
-	write := func(format string, args ...any) {
-		_, _ = fmt.Fprintf(w, format, args...)
-	}
-	write("# HELP juhe_ai_http_requests_total Completed HTTP requests grouped without paths, identifiers, or error text.\n")
-	write("# TYPE juhe_ai_http_requests_total counter\n")
-	for _, entry := range requestCounters {
-		write("juhe_ai_http_requests_total{%s} %d\n", renderPrometheusLabels(parsePrometheusLabels(entry.key)), entry.value)
-	}
-	write("# HELP juhe_ai_http_failure_scope_metrics_enabled Whether this process exposes bounded HTTP failure scope labels.\n")
-	write("# TYPE juhe_ai_http_failure_scope_metrics_enabled gauge\n")
-	write("juhe_ai_http_failure_scope_metrics_enabled{service=%q} 1\n", prometheusServiceName)
-
-	if auditCapturedDroppedTotal != nil {
-		write("# HELP juhe_ai_audit_log_captured_dropped_total Audit captures dropped because the bounded F3 producer queue was full.\n")
-		write("# TYPE juhe_ai_audit_log_captured_dropped_total counter\n")
-		write("juhe_ai_audit_log_captured_dropped_total{service=%q} %d\n", prometheusServiceName, auditCapturedDroppedTotal())
-	}
-
-	if operationLogDroppedTotal != nil {
-		write("# HELP juhe_ai_operation_log_dropped_total Operation log records dropped because the bounded F4 producer queue was full.\n")
-		write("# TYPE juhe_ai_operation_log_dropped_total counter\n")
-		write("juhe_ai_operation_log_dropped_total{service=%q} %d\n", prometheusServiceName, operationLogDroppedTotal())
-	}
-
-	write("# HELP juhe_ai_gateway_upstream_failures_total Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.\n")
-	write("# TYPE juhe_ai_gateway_upstream_failures_total counter\n")
-	for _, entry := range upstreamFailures {
-		write("juhe_ai_gateway_upstream_failures_total{%s} %d\n", renderPrometheusLabels(parsePrometheusLabels(entry.key)), entry.value)
-	}
-	write("# HELP juhe_ai_gateway_upstream_failure_metrics_enabled Whether this process exposes the gateway upstream failure metric contract.\n")
-	write("# TYPE juhe_ai_gateway_upstream_failure_metrics_enabled gauge\n")
-	write("juhe_ai_gateway_upstream_failure_metrics_enabled{service=%q} 1\n", prometheusServiceName)
-	write("# HELP juhe_ai_gateway_upstream_failure_reason_metrics_enabled Whether this process exposes bounded gateway upstream failure reason classes.\n")
-	write("# TYPE juhe_ai_gateway_upstream_failure_reason_metrics_enabled gauge\n")
-	write("juhe_ai_gateway_upstream_failure_reason_metrics_enabled{service=%q} 1\n", prometheusServiceName)
-
-	write("# HELP juhe_ai_gateway_first_output_duration_seconds Time to first upstream output for gateway requests, excluding full stream duration.\n")
-	write("# TYPE juhe_ai_gateway_first_output_duration_seconds histogram\n")
-	for _, entry := range firstOutput {
-		labels := parsePrometheusLabels(entry.key)
-		for _, bucket := range prometheusFirstOutputBuckets {
-			write("juhe_ai_gateway_first_output_duration_seconds_bucket{%s} %d\n",
-				renderPrometheusLabelsWithLe(labels, bucket), entry.value.buckets[bucket])
-		}
-		write("juhe_ai_gateway_first_output_duration_seconds_sum{%s} %s\n", renderPrometheusLabels(labels), prometheusFloat(entry.value.sum))
-		write("juhe_ai_gateway_first_output_duration_seconds_count{%s} %d\n", renderPrometheusLabels(labels), entry.value.count)
-	}
-
-	write("# HELP juhe_ai_http_request_duration_seconds HTTP request duration grouped without paths, identifiers, or error text.\n")
-	write("# TYPE juhe_ai_http_request_duration_seconds histogram\n")
-	for _, entry := range requestHistograms {
-		labels := parsePrometheusLabels(entry.key)
-		for _, bucket := range prometheusDurationBuckets {
-			write("juhe_ai_http_request_duration_seconds_bucket{%s} %d\n",
-				renderPrometheusLabelsWithLe(labels, bucket), entry.value.buckets[bucket])
-		}
-		write("juhe_ai_http_request_duration_seconds_sum{%s} %s\n", renderPrometheusLabels(labels), prometheusFloat(entry.value.sum))
-		write("juhe_ai_http_request_duration_seconds_count{%s} %d\n", renderPrometheusLabels(labels), entry.value.count)
-	}
-
-	write("# HELP juhe_ai_http_requests_in_flight In-flight HTTP requests grouped without paths or identifiers.\n")
-	write("# TYPE juhe_ai_http_requests_in_flight gauge\n")
-	for _, entry := range inFlight {
-		write("juhe_ai_http_requests_in_flight{%s} %d\n", renderPrometheusLabels(parsePrometheusLabels(entry.key)), entry.value)
-	}
-
-	// Node process gauges; Go approximates RSS with the runtime Sys figure
-	// (memory reserved from the OS) and heapUsed with HeapAlloc.
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-	write("# HELP juhe_ai_process_resident_memory_bytes Node process resident memory.\n")
-	write("# TYPE juhe_ai_process_resident_memory_bytes gauge\n")
-	write("juhe_ai_process_resident_memory_bytes{service=%q} %d\n", prometheusServiceName, memStats.Sys)
-	write("# HELP juhe_ai_process_heap_used_bytes Node process heap currently used.\n")
-	write("# TYPE juhe_ai_process_heap_used_bytes gauge\n")
-	write("juhe_ai_process_heap_used_bytes{service=%q} %d\n", prometheusServiceName, memStats.HeapAlloc)
-	write("# HELP juhe_ai_process_uptime_seconds Node process uptime.\n")
-	write("# TYPE juhe_ai_process_uptime_seconds gauge\n")
-	write("juhe_ai_process_uptime_seconds{service=%q} %s\n", prometheusServiceName, prometheusFloat(time.Since(prometheusDefault.startedAt).Seconds()))
-
-	write("# HELP juhe_ai_redis_stream_queue_enabled Whether Redis Stream queue monitoring is enabled for this process.\n")
-	write("# TYPE juhe_ai_redis_stream_queue_enabled gauge\n")
-	write("juhe_ai_redis_stream_queue_enabled{service=%q} 0\n", prometheusServiceName)
-}
-
-// prometheusBucketLE renders the le label; +Inf mirrors Number.POSITIVE_INFINITY.
-func prometheusBucketLE(bucket float64) string {
-	if bucket == positiveInf {
-		return "+Inf"
-	}
-	return strconv.FormatFloat(bucket, 'g', -1, 64)
-}
-
-// renderPrometheusLabelsWithLe mirrors renderLabels({ ...labels, le }): the le
-// label joins the map before the alphabetical sort, not as a trailing entry.
-func renderPrometheusLabelsWithLe(labels map[string]string, bucket float64) string {
-	merged := make(map[string]string, len(labels)+1)
-	for key, value := range labels {
-		merged[key] = value
-	}
-	merged["le"] = prometheusBucketLE(bucket)
-	return renderPrometheusLabels(merged)
-}
-
-// prometheusFloat renders sums like Node's default number interpolation.
-func prometheusFloat(value float64) string {
-	return strconv.FormatFloat(value, 'g', -1, 64)
+// setDroppedTotalFunc stores the accessor and lazily registers the scrape-time
+// counter exactly once per family (client_golang registrations are permanent;
+// later calls only swap the accessor, mirroring the former var override).
+func (m *prometheusMetrics) setDroppedTotalFunc(once *sync.Once, slot *atomic.Pointer[func() int64], name, help string, fn func() int64) {
+	slot.Store(&fn)
+	once.Do(func() {
+		prommetrics.NewCounterFunc(m.registry, name, help, prometheusServiceLabels, func() float64 {
+			if accessor := slot.Load(); accessor != nil && *accessor != nil {
+				return float64((*accessor)())
+			}
+			return 0
+		})
+	})
 }
 
 func normalizeHTTPMetricMethod(method string) string {
@@ -420,80 +311,6 @@ func classifyHTTPMetricFailureScope(statusCode *int, outcome HTTPMetricOutcome, 
 		return failureScope
 	}
 	return HTTPMetricFailureScopeNone
-}
-
-// httpMetricLabelsKey mirrors labelsKey: sorted "key=value" joined with '|'.
-func httpMetricLabelsKey(labels map[string]string) string {
-	keys := make([]string, 0, len(labels))
-	for key := range labels {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+labels[key])
-	}
-	return strings.Join(parts, "|")
-}
-
-func parsePrometheusLabels(key string) map[string]string {
-	labels := map[string]string{}
-	for _, entry := range strings.Split(key, "|") {
-		if index := strings.IndexByte(entry, '='); index >= 0 {
-			labels[entry[:index]] = entry[index+1:]
-		}
-	}
-	return labels
-}
-
-// renderPrometheusLabels mirrors renderLabels: the service label joins first,
-// entries sort by key and values escape backslash and quote.
-func renderPrometheusLabels(labels map[string]string) string {
-	merged := make(map[string]string, len(labels)+1)
-	for key, value := range labels {
-		merged[key] = value
-	}
-	merged["service"] = prometheusServiceName
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		value := strings.ReplaceAll(merged[key], `\`, `\\`)
-		value = strings.ReplaceAll(value, `"`, `\"`)
-		parts = append(parts, key+"=\""+value+"\"")
-	}
-	return strings.Join(parts, ",")
-}
-
-type prometheusIntEntry struct {
-	key   string
-	value int64
-}
-
-func sortedIntEntries(source map[string]int64) []prometheusIntEntry {
-	entries := make([]prometheusIntEntry, 0, len(source))
-	for key, value := range source {
-		entries = append(entries, prometheusIntEntry{key: key, value: value})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
-	return entries
-}
-
-type prometheusHistogramEntry struct {
-	key   string
-	value *prometheusHistogram
-}
-
-func sortedHistogramEntries(source map[string]*prometheusHistogram) []prometheusHistogramEntry {
-	entries := make([]prometheusHistogramEntry, 0, len(source))
-	for key, value := range source {
-		entries = append(entries, prometheusHistogramEntry{key: key, value: value})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
-	return entries
 }
 
 func maxInt64(a, b int64) int64 {

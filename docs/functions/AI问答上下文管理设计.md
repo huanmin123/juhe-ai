@@ -3,8 +3,6 @@
 > 本文定义站内 AI 问答的渲染历史、模型上下文、附件资产、主动压缩和请求体预算。本文是 [AI 问答设计](AI问答设计.md) 的第二阶段专题设计；网关级 Responses compact 继续以 [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md) 为准。
 >
 > 当前状态：multipart 图片资产、服务端缩放、隐藏图片说明、checkpoint + recent suffix、结构化主动压缩、真实流式 usage、本地 tokenizer 兜底、请求体字节预检、只读圆环和上游 Prompt Cache 稳定前缀均已在隔离分支实现，并通过 Mock、真实模型、真实 PostgreSQL/Redis 和浏览器验收。真实连续轮次第二轮缓存读取占输入 token 约 `90.0%`；见 [BUG-0111](../bug/问题-0111-AI问答破坏上游前缀缓存.md)。实施追踪见 [PLAN-20260713T150309000Z](../plans/计划-20260713T150309000Z-AI问答上下文与多模态降负.md)。
->
-> 2026-10-12 修订（[PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md)）：会话锁定「账户 + 模型」，§6.2 改为单模型契约——模型会话内不变，有效窗口按锁定模型计算，不存在会话内切换与重算；§7.2 压缩降负顺序中性化（站内搜索/生图过程随工具体系退场，仅存量历史块保留）。
 
 ## 1. 目标与边界
 
@@ -184,12 +182,12 @@ historyBudget = effectiveInputLimit
 
 未知模型不能静默按 16K 长期运行；应优先刷新模型目录或使用协议档案的保守窗口，并在 UI 标注“估算”。
 
-会话锁定单一模型（2026-10-12，[PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md)；锁定语义见《AI 问答设计》§5.3）：模型会话内不变，不存在会话内切换，有效窗口、tokenizer 与 system instructions 均按锁定模型一次性确定：
+切换模型时必须重新计算有效窗口、tokenizer、system instructions 和工具 schema：
 
-- 上下文窗口按锁定模型计算；结构化 checkpoint 按锁定模型计数并在整个会话生命周期持续使用。
-- 官方 opaque compact 只有 provider、protocol profile、endpoint family、模型兼容组和 compact capability 与锁定账户/模型全部匹配时才能继续使用。
-- 不兼容的 opaque compact 不得发送；应从仍在保留期内的 render history 重建结构化 checkpoint。
-- 变更账户或模型的需求以新建会话表达（`/clear` 也不解锁）；新会话按新绑定重新组装上下文，不在旧会话内重算或重压缩。
+- 新模型窗口更小时，在发送前完成一次有界重压缩。
+- 结构化 checkpoint 可以按新模型重新计数并继续使用。
+- 官方 opaque compact 只有 provider、protocol profile、endpoint family、模型兼容组和 compact capability 全部匹配时才能继续使用。
+- 不兼容的 opaque compact 不得发给新上游；应从仍在保留期内的 render history 重建结构化 checkpoint。无法重建时明确提示该会话不能安全切换模型。
 
 ### 6.3 请求体字节预算
 
@@ -221,7 +219,7 @@ historyBudget = effectiveInputLimit
 ### 7.2 分阶段降负顺序
 
 1. 图片二进制替换为已有 `image_observation`。
-2. 删除旧 reasoning、重复过程性输出和无长期价值的过程日志（历史存量站内工具过程块随工具体系退场仅占位保留，不再是新增压缩来源）。
+2. 删除旧 reasoning、重复搜索过程和无长期价值的工具日志。
 3. 将大型工具输出替换为结构化结果摘要和可追溯引用。
 4. 按 token share 分块压缩中段历史，不能拆开 tool call/result。
 5. 合并长期记忆、任务状态、旧摘要和新的部分摘要。

@@ -1412,49 +1412,9 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		Source:     "scheduling-preferences-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_api_keys_scheduling_preference ON api_keys(scheduling_preference_id)`,
 	},
-	{
-		// api_keys 每用户 purpose='studio' 唯一 partial index（媒体工作室设计
-		// §3.5）：对齐 idx_api_keys_chat_purpose_unique 先例，EnsureStudioKey
-		// 并发竞态由撞该唯一索引后重探复用收敛。
-		SchemaName: "juhe_business",
-		Source:     "studio-api-keys-purpose-unique-index",
-		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_studio_purpose_unique
-      ON api_keys(system_account_id)
-      WHERE purpose = 'studio'`,
-	},
-	{
-		// studio_assets 查询与幂等结算索引（媒体工作室设计 §3.1）：owner 列表
-		// 排序、同用户 sha256 查重辅助（跨用户同 hash 不构成任何匹配依据）、
-		// source_task 生成产物幂等结算闸（§5.4：同一任务的产物行全库唯一，
-		// 上传行 source_task_id 为 NULL 不受约束）。与 SQLite 同构
-		//（sqlite_schema_business.go 索引区）。
-		SchemaName: "juhe_business",
-		Source:     "studio-indexes",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_studio_assets_owner_created
-      ON studio_assets(system_account_id, created_at DESC, id DESC)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "studio-indexes",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_studio_assets_owner_sha256 ON studio_assets(system_account_id, sha256)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "studio-indexes",
-		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_assets_owner_source_task
-      ON studio_assets(system_account_id, source_task_id) WHERE source_task_id IS NOT NULL`,
-	},
-	{
-		// studio_tasks 查询与领取索引（媒体工作室设计 §3.2）：owner 列表排序、
-		// jobs 领取谓词扫描（status 未终态或 settlement 未结算 + 租约到期）。
-		SchemaName: "juhe_business",
-		Source:     "studio-indexes",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_studio_tasks_owner_created
-      ON studio_tasks(system_account_id, created_at DESC, id DESC)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "studio-indexes",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_studio_tasks_claim ON studio_tasks(status, settlement, lease_expires_at)`,
-	},
+	// 媒体工作室退场（2026-10-14 契约修订）：本清单从不为新建库创建任何
+	// studio 索引（studio 表已从建表清单移除；idx_api_keys_studio_purpose_
+	// unique 也不在创建清单）。存量库遗留的 idx_api_keys_studio_purpose_
+	// unique 由显式维护命令 juhe-ai-maintenance --apply-studio-retirement
+	// 删除，ensure 不再携带任何破坏性 studio 退场语句。
 }

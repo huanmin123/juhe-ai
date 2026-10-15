@@ -10,12 +10,49 @@ import (
 // 交集与请求体装配的契约必须与 Node chat-transport.ts / chat-model-options.ts
 // 一致。本文件覆盖 transport.go、generation_parameters.go 的纯函数面。
 
+func testToolW3(name string) *toolDefinition {
+	return &toolDefinition{ID: name, Version: "1.0.0", ModelName: name, Description: "测试工具", InputSchema: map[string]any{"type": "object"}, MaxArgumentBytes: 1024, MaxResultBytes: 1024, TimeoutMs: 1000, Environments: []string{"development", "test"}, DuplicatePolicy: "reuse_exact"}
+}
+
+// TestChatTransportAccountSupportsProtocolW3 表驱动覆盖账户映射匹配。
+func TestChatTransportAccountSupportsProtocolW3(t *testing.T) {
+	enabled := true
+	disabled := false
+	cases := []struct {
+		name    string
+		account ChatTransportAccount
+		model   string
+		proto   ChatTransportProtocol
+		want    bool
+	}{
+		{"直连匹配", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5"}}}, "gpt-5", ProtocolChatCompletions, true},
+		// 映射不命中时模型直通：仅凭 endpoint mode 也可服务该协议。
+		{"endpoint family 不匹配仍直通", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", SourceEndpointFamily: "responses"}}}, "gpt-5", ProtocolChatCompletions, true},
+		{"禁用映射被跳过后直通", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &disabled, SourceModel: "gpt-5"}}}, "gpt-5", ProtocolChatCompletions, true},
+		{"supportedModels 不含上游模型", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, SupportedModels: []string{"other"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", UpstreamModel: "up-1"}}}, "gpt-5", ProtocolChatCompletions, false},
+		{"supportedModels 含上游模型", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, SupportedModels: []string{"up-1"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", UpstreamModel: "up-1"}}}, "gpt-5", ProtocolChatCompletions, true},
+		{"上游协议改写需要对应模式", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", UpstreamEndpointFamily: "responses"}}}, "gpt-5", ProtocolChatCompletions, false},
+		{"上游协议改写命中", ChatTransportAccount{SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", UpstreamEndpointFamily: "responses"}}}, "gpt-5", ProtocolChatCompletions, true},
+		{"messages 桥", ChatTransportAccount{SupportedEndpointModes: []string{"messages_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", UpstreamEndpointFamily: "messages"}}}, "gpt-5", ProtocolChatCompletions, true},
+		{"未知上游协议拒绝", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", UpstreamEndpointFamily: "bogus"}}}, "gpt-5", ProtocolChatCompletions, false},
+		{"无 requiredMode 拒绝", ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse"}}, "gpt-5", "bogus", false},
+		{"模式缺失拒绝", ChatTransportAccount{SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5"}}}, "gpt-5", ProtocolChatCompletions, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := chatTransportAccountSupportsProtocol(testCase.account, testCase.model, testCase.proto); got != testCase.want {
+				t.Fatalf("结果 = %v, 期望 %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestTransportPlumbingW3 覆盖协议可用性、参数映射与工具编译的纯函数契约
+// （主对话恒 chat_completions：协议偏好与 hosted 工具注入已删除）。
 func TestTransportPlumbingW3(t *testing.T) {
-	// 主推协议解析（request_protocol.go）：openai/gpt 档案方向 responses，
-	// 映射 UpstreamEndpointFamily 缺省时按账户档案推导。
 	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{
-		{ID: "a1", ProviderCode: "deepseek", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
-		{ID: "a2", ProviderCode: "gpt", SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
+		{ID: "a1", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
+		{ID: "a2", SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
 	}}, "o", "gpt-5")
 	if len(protocols) != 2 || protocols[0] != ProtocolChatCompletions || protocols[1] != ProtocolResponses {
 		t.Fatalf("scopeSupportedProtocols = %v", protocols)
@@ -25,6 +62,13 @@ func TestTransportPlumbingW3(t *testing.T) {
 	}
 	if got := transportGenerationParameters(nil); len(got) != 0 {
 		t.Fatalf("nil 参数应返回空 map: %v", got)
+	}
+	if got := compileChatInternalTools([]*toolDefinition{testToolW3("t")}); got[0]["function"] == nil || got[0]["function"].(map[string]any)["name"] != "t" {
+		t.Fatalf("chat 工具编译不正确: %v", got)
+	}
+	chatContinuation := buildChatToolContinuation([]any{"keep"}, []ChatToolExecutionOutput{{CallID: "c1", ModelOutput: "out"}})
+	if chatContinuation[0] != "keep" || chatContinuation[1].(map[string]any)["role"] != "tool" || chatContinuation[1].(map[string]any)["tool_call_id"] != "c1" {
+		t.Fatalf("chat 续答装配不正确: %v", chatContinuation)
 	}
 	// 多模态 content 块：文本与 image_url（data URL）。
 	parts := chatContentParts([]ChatTransportInputBlock{{Type: "input_text", Text: "看图"}, {Type: "input_image", DataURL: "data:image/webp;base64,x"}})
@@ -58,6 +102,7 @@ func TestBuildChatTransportRequestW3(t *testing.T) {
 		Instructions: "sys", Model: "gpt-5",
 		History:        []ChatTransportMessage{{Role: "user", Content: "历史"}},
 		CurrentContent: "问题", CurrentBlocks: []ChatTransportInputBlock{{Type: "input_text", Text: "看图"}, {Type: "input_image", DataURL: "data:img"}},
+		InternalTools:   []*toolDefinition{testToolW3("diagnostic_echo")},
 		ReasoningEffort: "low", ServiceTier: "priority",
 		GenerationParameters: &ChatGenerationParameters{Temperature: floatPtrW3(0.3)}, PromptCacheKey: "cache-1",
 	})
@@ -80,8 +125,12 @@ func TestBuildChatTransportRequestW3(t *testing.T) {
 	if body["service_tier"] != "priority" || body["temperature"] != 0.3 || body["prompt_cache_key"] != "cache-1" {
 		t.Fatalf("chat 请求体字段不正确: %v", body)
 	}
-	if body["stream_options"] == nil {
-		t.Fatalf("流式 usage 字段不正确: %v", body)
+	tools := body["tools"].([]map[string]any)
+	if len(tools) != 1 || tools[0]["function"].(map[string]any)["name"] != "diagnostic_echo" {
+		t.Fatalf("chat 工具装配不正确: %v", tools)
+	}
+	if body["parallel_tool_calls"] != false || body["tool_choice"] != "auto" || body["stream_options"] == nil {
+		t.Fatalf("工具控制字段不正确: %v", body)
 	}
 	// 纯文本输入：user content 保持字符串。
 	_, textBody := buildChatTransportRequest(ChatTransportRequestInput{Model: "gpt-5", CurrentContent: "问题"})
@@ -95,15 +144,15 @@ func TestBuildChatTransportRequestW3(t *testing.T) {
 func TestBuildChatModelOptionsW3(t *testing.T) {
 	yes := true
 	catalog := []ProviderModelCatalogItem{
-		{Model: "gpt-5", ProviderCode: "deepseek", SupportsPromptCaching: &yes,
+		{Model: "gpt-5", ProviderCode: "openai", SupportsPromptCaching: &yes,
 			SupportedReasoningEfforts: []string{"low", "high", "bogus"}, DefaultReasoningEffort: strPtrT("low"),
 			SupportedServiceTiers: []string{"priority"}, ContextWindowTokens: int64PtrT(100000), MaxOutputTokens: int64PtrT(20000),
 			SupportedAPIProtocols: []string{"chat_completions", "responses"}, InputModalities: []string{"text"}, OutputModalities: []string{"text"}, SupportedToolsByProtocol: map[string][]string{"chat_completions": {"function_calling"}}},
-		{Model: "gpt-5", ProviderCode: "deepseek", SupportsPromptCaching: &yes,
+		{Model: "gpt-5", ProviderCode: "openai", SupportsPromptCaching: &yes,
 			SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: strPtrT("low"),
 			SupportedServiceTiers: []string{"priority"},
 			SupportedAPIProtocols: []string{"chat_completions"}},
-		{Model: "gpt-5-mini", ProviderCode: "deepseek",
+		{Model: "gpt-5-mini", ProviderCode: "openai",
 			SupportedAPIProtocols: []string{"chat_completions", "responses"}},
 	}
 	options := buildChatModelOptions([]string{"gpt-5", "gpt-5", "", "gpt-5-mini"}, catalog)
@@ -154,6 +203,9 @@ func TestBuildChatModelOptionsW3(t *testing.T) {
 	if got := sortCatalogModels([]string{"b", "a"}); !equalStringsW3(got, []string{"a", "b"}) {
 		t.Fatalf("sortCatalogModels = %v", got)
 	}
+	if got := containsAny([]string{"x", "responses"}, []string{"chat_completions", "responses"}); !got {
+		t.Fatalf("containsAny 命中失败")
+	}
 	if got := intersectStringCapabilityLists([][]string{{"a", "b"}, {"b", "c"}}); !equalStringsW3(got, []string{"b"}) {
 		t.Fatalf("交集 = %v", got)
 	}
@@ -170,6 +222,9 @@ func TestBuildChatModelOptionsW3(t *testing.T) {
 	}
 	if got := matrix.SupportedToolsByProtocol["chat_completions"]; len(got) != 0 {
 		t.Fatalf("单行缺失的协议键应被剔除: %v", matrix.SupportedToolsByProtocol)
+	}
+	if !matrix.supportsTool("web_search") || matrix.supportsTool("function_calling") || matrix.supportsTool("file_search") {
+		t.Fatalf("supportsTool 应按保守交集结果的任一协议口径: %v", matrix.SupportedToolsByProtocol)
 	}
 }
 
@@ -277,13 +332,12 @@ func TestConstrainChatModelOptionForAccountsW3(t *testing.T) {
 		t.Fatalf("oauth 账户应收窄掉全部参数: %v", constrained.GenerationParameters)
 	}
 	plain := []ChatTransportAccount{{
-		ID: "a2", ProviderCode: "deepseek", Type: "api_key",
+		ID: "a2", ProviderCode: "gpt", Type: "api_key",
 		SupportedEndpointModes: []string{"chat_sse"},
 		ModelMappings:          []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "gpt-5", SourceEndpointFamily: "chat_completions"}},
 	}}
 	kept := constrainChatModelOptionForAccounts(option, "gpt-5", plain, nil)
-	// 请求协议为 nil 时按 option 自身协议过滤：deepseek 档案解析为 chat 直连，
-	// responses 无可达账户被剔除。
+	// 请求协议为 nil 时按 option 自身协议过滤：responses 无可达账户被剔除。
 	if !equalStringsW3(kept.SupportedAPIProtocols, []string{"chat_completions"}) || len(kept.GenerationParameters) != 2 {
 		t.Fatalf("普通账户应保留能力: %v %v", kept.SupportedAPIProtocols, kept.GenerationParameters)
 	}
@@ -414,9 +468,13 @@ func TestResolveChatModelRequestOptionsW3(t *testing.T) {
 
 // TestSystemInstructionsAndCacheKeyW3 覆盖系统指令装配与缓存键派生。
 func TestSystemInstructionsAndCacheKeyW3(t *testing.T) {
-	version, text, hash := buildChatSystemInstructions()
-	if version != "chat-system-v5" || strings.Contains(text, "图片生成工具") || strings.Contains(text, "避免重复调用") || len(hash) != 64 {
+	version, text, hash := buildChatSystemInstructions([]string{"generate_image"})
+	if version != "chat-system-v4" || !strings.Contains(text, "图片生成工具") || !strings.Contains(text, "避免重复调用") || len(hash) != 64 {
 		t.Fatalf("系统指令装配不正确: %s %d", version, len(hash))
+	}
+	_, plain, _ := buildChatSystemInstructions(nil)
+	if strings.Contains(plain, "图片生成工具") || strings.Contains(plain, "避免重复调用") {
+		t.Fatalf("无工具时不应包含工具段落")
 	}
 	key1 := buildChatPromptCacheKey("owner", "key", "conv")
 	key2 := buildChatPromptCacheKey("owner", "key", "conv2")

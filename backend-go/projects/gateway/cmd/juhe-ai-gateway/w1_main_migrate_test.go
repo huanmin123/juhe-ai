@@ -171,7 +171,7 @@ func w1SetOperationMigrationEnv(t *testing.T, root string) {
 	t.Setenv("JUHE_AI_OPERATION_LOG_DATABASE_PATH", filepath.Join(root, "target-operation.sqlite3"))
 	t.Setenv("JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH", filepath.Join(root, "business-settings.sqlite3"))
 	t.Setenv("JUHE_AI_USAGE_SHARD_ROOT", filepath.Join(root, "usage-shards"))
-	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
+	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
 		t.Setenv(key, filepath.Join(root, "isolation", strings.ToLower(strings.TrimPrefix(key, "JUHE_AI_"))+".sqlite3"))
 	}
 }

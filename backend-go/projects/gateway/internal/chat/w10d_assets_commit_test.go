@@ -4,6 +4,7 @@ package chat
 // 资产绑定链路的真实错误臂（经 AcceptTurn 与真实资产驱动）。
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -25,7 +26,7 @@ func TestW10DCommitChatAssetsViaAcceptTurn(t *testing.T) {
 		{"轮次查询失败", "SELECT turn_id FROM chat_messages"},
 		{"资产查询失败", "WHERE id IN ("},
 		{"用户资产更新失败", "SET turn_id = ?, message_id = ?, committed_at = COALESCE"},
-		// 图片谱系臂（FROM chat_image_generations）已随生图退场（D2）删除。
+		{"图片谱系查询失败", "FROM chat_image_generations"},
 		{"引用写入失败", "INSERT INTO chat_asset_references"},
 	} {
 		item := item
@@ -86,6 +87,50 @@ func w10dLatestAssetID(f *chatFixture) string {
 	return id
 }
 
+// TestW10DCommitGeneratedAssetFaultArms 覆盖 CommitChatGeneratedAsset 错误臂。
+func TestW10DCommitGeneratedAssetFaultArms(t *testing.T) {
+	cases := []struct {
+		name   string
+		substr string
+	}{
+		{"助手绑定查询失败", "AND turn_id = ? AND role = 'assistant'"},
+		{"用量读取失败", "FROM chat_user_asset_usage"},
+		{"资产写入失败", "'ready', 'not_requested', 0, ?"},
+		{"引用写入失败", "'assistant_output', ?, ?, ?)"},
+		{"谱系写入失败", "INSERT INTO chat_image_generations"},
+		{"用量递增失败", "chat_user_asset_usage"},
+		{"提交失败", commitFaultKeyW10D},
+	}
+	for _, item := range cases {
+		item := item
+		var turnID, msgID string
+		runRecoverableFaultCaseW10D(t, "CommitGeneratedAsset/"+item.name, func(f *chatFixture, script *faultScriptW10D) {
+			f.createConversation("conv_w10d_gen", routeTestOwner)
+			turn := f.accept(routeTestOwner, "conv_w10d_gen", "cmid-gen", "问题")
+			turnID = turn.TurnID
+			msgID = turn.AssistantMessage.ID
+			script.failOnce(item.substr)
+		}, func(f *chatFixture) error {
+			_, err := f.store.CommitChatGeneratedAsset(generatedCommitInputW10D(f, "conv_w10d_gen", turnID, msgID))
+			return err
+		})
+	}
+}
+
+// generatedCommitInputW10D 构造合法生成资产提交输入。
+func generatedCommitInputW10D(f *chatFixture, conversationID, turnID, msgID string) GeneratedAssetCommitInput {
+	return GeneratedAssetCommitInput{
+		SystemAccountID: routeTestOwner, ConversationID: conversationID, TurnID: turnID, MessageID: msgID,
+		ContentOrder: 0, MimeType: "image/webp", Width: 8, Height: 8, Bytes: 64,
+		Sha256: strings.Repeat("a", 64), StorageKey: "gen", PreviewBytes: 0,
+		Now: f.nowISO, RetentionDays: 30,
+		Generation: GeneratedImageGenerationRecord{
+			Operation: "generate", Model: "gpt-image-2", Prompt: "画",
+		},
+	}
+}
+
+// TestW10DLoadCompactionSourcePageValidation 覆盖 LoadCompactionSourcePage 纯校验臂。
 func TestW10DLoadCompactionSourcePageValidation(t *testing.T) {
 	fixture, _ := newFaultChatFixtureW10D(t)
 	seedCompactionClaimW10D(t, fixture, "conv_w10d_src")

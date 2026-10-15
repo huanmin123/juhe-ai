@@ -14,7 +14,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/chatbindingmigration"
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/goruntimemetrics"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/mockdata"
@@ -45,13 +44,12 @@ func runMaintenance(argv []string) int {
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	version := fs.Bool("version", false, "print the maintenance project contract version")
 	check := fs.Bool("check-boundary", false, "verify the scaffold boundary")
-	goRuntimeMetricsCheck := fs.Bool("check-go-runtime-metrics", false, "read-only verify independent Go runtime metrics PostgreSQL schema")
-	goRuntimeMetricsApply := fs.Bool("apply-go-runtime-metrics", false, "add missing Go runtime metrics PostgreSQL tables after explicit stop and backup confirmations")
-	goRuntimeMetricsURL := fs.String("go-runtime-metrics-postgres-url", "", "explicit maintenance-scoped PostgreSQL URL for Go runtime metrics (or JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL)")
 	j3Apply := fs.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL)")
 	j3bApply := fs.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL)")
 	j3bSQLiteApply := fs.Bool("apply-j3b-model-check-sqlite", false, "bootstrap dedicated J3b SQLite schema after stop and backup confirmations (reads JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
 	accountBalanceApply := fs.Bool("apply-account-balance-postgres", false, "add missing J2 account-balance PostgreSQL juhe_jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL)")
+	applyStudioRetirement := fs.Bool("apply-studio-retirement", false, "explicit cleanup of legacy media-studio artifacts after stop and backup confirmations; refuses before writes while studio API Keys still own OpenAI-compatible files/vector resources; storage via --driver plus --paths/--dsn")
+	dropRetiredMonitoringTables := fs.Bool("drop-retired-monitoring-tables", false, "one-shot idempotent DROP of the 12 retired monitoring tables (9 stats tables + 3 table-monitor tables) after stop and backup confirmations; storage via --driver plus --paths/--dsn")
 	nodeStopped := fs.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
 	goStopped := fs.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
 	backupConfirmed := fs.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
@@ -99,12 +97,20 @@ func runMaintenance(argv []string) int {
 		}
 		return 2
 	}
+	if *applyStudioRetirement && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *dropRetiredMonitoringTables) {
+		fmt.Fprintln(os.Stderr, "studio retirement is mutually exclusive with other maintenance commands")
+		return 2
+	}
+	if *dropRetiredMonitoringTables && (*version || *check || *backfillDryRun || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *applyStudioRetirement) {
+		fmt.Fprintln(os.Stderr, "drop-retired-monitoring-tables is mutually exclusive with other maintenance commands")
+		return 2
+	}
 	if *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain {
 		if *migrateAccountCapabilityDomain && *verifyAccountCapabilityDomain {
 			fmt.Fprintln(os.Stderr, "capability-domain migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "capability domain migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -118,7 +124,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "scheduling-preferences migrate and verify flags are mutually exclusive")
 			return 2
 		}
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "scheduling preferences migration flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -128,21 +134,21 @@ func runMaintenance(argv []string) int {
 		return schedulingPreferencesVerifyResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *schedulingPreferencesCheck)
 	}
 	if *migrateChatBinding {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "chat account-only binding migration flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return chatAccountOnlyBindingMigrationResult(*bootstrapDriver, *chatSQLitePath, *bootstrapDSN)
 	}
 	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
+		if *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return postgresSchemaSnapshotResult()
 	}
 	if *businessDatasetExport || *businessDatasetImport {
-		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
+		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "business dataset export/import flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -152,29 +158,18 @@ func runMaintenance(argv []string) int {
 		return businessDatasetImportResultWithReplace(*businessDatasetURL, *businessDatasetDir, businessDatasetAllowMissing, *businessDatasetExpectedTargetDB, *businessDatasetExpectedSourceDB, *businessDatasetReplaceExisting)
 	}
 	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
+		if *postgresSchemaSnapshot || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return runStorageBootstrap(*ensureSchema, *seedDefaults, *bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret)
-	}
-	if *goRuntimeMetricsCheck || *goRuntimeMetricsApply {
-		if *goRuntimeMetricsCheck && *goRuntimeMetricsApply {
-			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
-			return 2
-		}
-		if *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill {
-			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
-			return 2
-		}
-		return goRuntimeMetricsBootstrapResult(*goRuntimeMetricsApply, *goRuntimeMetricsURL, *nodeStopped, *goStopped, *backupConfirmed)
 	}
 	if *mockdataRun || *mockdataVerifyCoverage {
 		if *mockdataRun && *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "mockdata seeding and mockdata coverage verification flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "mockdata flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -190,14 +185,14 @@ func runMaintenance(argv []string) int {
 		})
 	}
 	if *rebuildUsageStats {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *migrateChatBinding || *applySuccessCostBackfill || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "rebuild-usage-stats flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return rebuildUsageStatsResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *rebuildBatchSize, *rebuildMaxBatches, *confirmOffline)
 	}
 	if *applySuccessCostBackfill {
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *dropRetiredMonitoringTables {
 			fmt.Fprintln(os.Stderr, "apply-success-cost-backfill flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -213,7 +208,9 @@ func runMaintenance(argv []string) int {
 	}
 	// J3a/J3b/J2 account-balance 一次性 bootstrap：dispatch 顺序与基线一致
 	// （SQLite 优先于 PG，PG 优先于 J3a，J2 account-balance 随 J3 族之后），
-	// apply flag 互斥由上游各命令分支的互斥链承载。
+	// apply flag 互斥由上游各命令分支的互斥链承载。studio 退场显式清理
+	// （2026-10-14 契约）排在 J2 之后；退役监控表清退（--drop-retired-
+	// monitoring-tables）与 studio 清理同模式，互斥同链。
 	if *j3bSQLiteApply {
 		return j3bModelCheckSQLiteBootstrapResult(*j3bSQLiteApply, *nodeStopped, *goStopped, *backupConfirmed)
 	}
@@ -226,63 +223,14 @@ func runMaintenance(argv []string) int {
 	if *accountBalanceApply {
 		return accountBalanceBootstrapResult()
 	}
+	if *applyStudioRetirement {
+		return studioRetirementResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
+	}
+	if *dropRetiredMonitoringTables {
+		return dropRetiredMonitoringTablesResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
+	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	return 2
-}
-
-// goRuntimeMetricsBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
-func goRuntimeMetricsBootstrapResult(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		rawURL = strings.TrimSpace(os.Getenv(goruntimemetrics.BootstrapEnv))
-	}
-	if goRuntimeMetricsURLRequiredExitCode(rawURL) != 0 {
-		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap requires --go-runtime-metrics-postgres-url or %s\n", goruntimemetrics.BootstrapEnv)
-		return 2
-	}
-	if apply && goRuntimeMetricsApplyPreflightExitCode(rawURL, nodeStopped, goStopped, backupConfirmed) != 0 {
-		fmt.Fprintln(os.Stderr, "Go runtime metrics apply requires --node-stopped --go-stopped --backup-confirmed")
-		return 2
-	}
-	db, err := goruntimemetrics.Open(rawURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open Go runtime metrics PostgreSQL connection: %v\n", err)
-		return 2
-	}
-	defer db.Close()
-	report, runErr := goruntimemetrics.Run(context.Background(), db, apply)
-	return goRuntimeMetricsOutcomeExitCode(report, runErr)
-}
-
-// goRuntimeMetricsOutcomeExitCode renders the bootstrap report and maps the
-// outcome to the maintenance exit-code contract.
-func goRuntimeMetricsOutcomeExitCode(report goruntimemetrics.Report, runErr error) int {
-	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "Go runtime metrics bootstrap failed: %v\n", runErr)
-		return 1
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
-		fmt.Fprintf(os.Stderr, "encode Go runtime metrics bootstrap report: %v\n", err)
-		return 1
-	}
-	if !report.Ready() {
-		return 3
-	}
-	return 0
-}
-
-func goRuntimeMetricsURLRequiredExitCode(rawURL string) int {
-	if strings.TrimSpace(rawURL) == "" {
-		return 2
-	}
-	return 0
-}
-
-func goRuntimeMetricsApplyPreflightExitCode(rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
-	if goRuntimeMetricsURLRequiredExitCode(rawURL) != 0 || !nodeStopped || !goStopped || !backupConfirmed {
-		return 2
-	}
-	return 0
 }
 
 // chatAccountOnlyBindingMigrationResult returns the CLI exit code;

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,7 +38,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
@@ -854,15 +852,6 @@ func main() {
 		if chain := composed.chainServices; chain != nil && chain.KeyModelMemoryRecovery.Run != nil {
 			components = append(components, chain.KeyModelMemoryRecovery)
 		}
-		// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标（role 默认
-		// gateway，读 jobs+gateway 同一份共享 trend 库）。store 未启用（默认）
-		// 时组合根不装配采样器；store 句柄由 composed.Shutdown 关闭。
-		if composed.GoRuntimeSampler != nil {
-			components = append(components, supervisor.Component{
-				Name: "Go runtime metrics sampler",
-				Run:  composed.GoRuntimeSampler.Run,
-			})
-		}
 		mainListener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", runtimeCfg.Host, runtimeCfg.Port))
 		if err != nil {
 			fail(fmt.Errorf("listen gateway system api endpoint %s:%d: %w", runtimeCfg.Host, runtimeCfg.Port, err))
@@ -946,7 +935,6 @@ func main() {
 		})
 	}
 
-	collector := gometrics.New("juhe-ai", "gateway")
 	healthHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
@@ -962,10 +950,10 @@ func main() {
 	healthServer := &http.Server{
 		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if request.Method == http.MethodGet && request.URL.Path == "/__aisys__/metrics" {
-				collector.Handler().ServeHTTP(response, request)
-				// D-190（BUG-0175）：prometheus HTTP/网关指标族追加在 Go 运行时
-				// 指标之后，同一 text/plain exposition 内完成两次写入。
-				_, _ = io.WriteString(response, gatewayusage.RenderPrometheusMetrics())
+				// D-190（BUG-0175）指标端点：promhttp HandlerFor 渲染进程
+				// Registry（标准 go_*/process_* 收集器 + HTTP/网关指标族），
+				// 挂健康监听；Node 兼容族已删除，无 Pushgateway。
+				gatewayusage.MetricsHandler().ServeHTTP(response, request)
 				return
 			}
 			healthHandler.ServeHTTP(response, request)

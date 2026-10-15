@@ -59,8 +59,6 @@ var maintenanceSeedSystemSettingsJSON = map[string]string{
 	"statsAggregationMaxBatchesPerRun":           "5",
 	"usageHotWindowRefreshIntervalSeconds":       "600",
 	"groupAccountStatsRefreshIntervalSeconds":    "60",
-	"systemMetricsSampleIntervalSeconds":         "30",
-	"tableMonitorMaxTablesPerRun":                "4",
 	"accountQualityRefreshIntervalSeconds":       "600",
 	"accountQualityWindowMinutes":                "10",
 	"accountHealthCheckIntervalHours":            "1",
@@ -83,8 +81,6 @@ var maintenanceSeedSystemSettingsJSON = map[string]string{
 	"usageStatsWeeklyRetentionWeeks":             "104",
 	"usageStatsMonthlyRetentionMonths":           "24",
 	"usageRankSnapshotRetentionDays":             "30",
-	"systemMetricsRetentionDays":                 "7",
-	"systemMetricsHourlyRetentionDays":           "30",
 	"upstreamClientVersionOverrides":             "{}",
 	"upstreamClientVersionAutoOverrides":         "{}",
 	"auditLogSuccessRetentionDays":               "3",
@@ -96,8 +92,8 @@ var maintenanceSeedSystemSettingsJSON = map[string]string{
 // TestDefaultSystemSettingsMatchMaintenanceSeed 逐键对照：键集合与解码后的值
 // 都必须一致（数值键解出 float64，字符串键解出 string）。任一侧漂移即失败。
 func TestDefaultSystemSettingsMatchMaintenanceSeed(t *testing.T) {
-	if len(maintenanceSeedSystemSettingsJSON) != 71 {
-		t.Fatalf("镜像表键数=%d，want 71（与 pgSeedSystemSettings 一致；M5b realtime 三键 + 客户端版本自动层键；2026-10-12 AI 问答简化批生图总超时键退场）", len(maintenanceSeedSystemSettingsJSON))
+	if len(maintenanceSeedSystemSettingsJSON) != 67 {
+		t.Fatalf("镜像表键数=%d，want 67（与 pgSeedSystemSettings 一致；M5b realtime 三键 + 客户端版本自动层键；2026-10-12 AI 问答简化批生图总超时键退场；2026-10-14 表监控/系统指标四键随子系统下线退场）", len(maintenanceSeedSystemSettingsJSON))
 	}
 	seeded := make(map[string]any, len(maintenanceSeedSystemSettingsJSON))
 	for key, valueJSON := range maintenanceSeedSystemSettingsJSON {

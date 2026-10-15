@@ -125,7 +125,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       mappingCurrentProviderSourceModelOptions: options.mappingCurrentProviderSourceModelOptions.value,
       mappingGeminiSourceModelOptions: options.mappingGeminiSourceModelOptions.value,
       mappingSourceModelOptions: options.mappingSourceModelOptions.value,
-      mappingUpstreamModelOptions: options.providerModelOptions.value
+      mappingUpstreamModelOptions: options.providerModelOptions.value,
+      // 完整编辑保存基线（R6）：存量模型映射与存量模型清单按加载基线放行，
+      // 仅新增/变更行按候选窗口校验（后端 PATCH 本就「映射未变不校验」）。
+      editingAdvancedBaseline: options.editingAdvancedBaseline.value
     })
     if (validationMessage) {
       reportValidationFailure(validationMessage)

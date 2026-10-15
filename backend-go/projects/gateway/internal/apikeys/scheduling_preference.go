@@ -28,6 +28,17 @@ const BuiltinSchedulingPreferenceName = "默认调度偏好"
 // 目标已随 v2 用户裁决修订第 4 条退役，不设停用态）。
 const SchedulingPreferenceUnavailableMessage = "调度偏好不存在或不可用"
 
+// schedulingPreferenceExemptPurpose 报告 Key purpose 是否豁免调度偏好绑定
+// （现状：仅 purpose='chat' 的内部用途 Key 豁免——绑定列恒 NULL、不建立绑
+// 定，经普通 HTTP 写入口提交 schedulingPreferenceId（非空 ID 或显式 null）
+// 一律统一同型 400，不走普通 Key 的「显式 null 回默认内置 ID」矩阵。实现载
+// 体是 EnsureChatAPIKey 的裸 INSERT（不含该列 → NULL），公开面 add 与内面
+// Create 的 purpose 恒 'general' 不涉及本分支。词表锚点与 gatewayruntimecache
+// 读取链旁路（schedulingPurposeChat）同源，改动即两处同改）。
+func schedulingPreferenceExemptPurpose(purpose sql.NullString) bool {
+	return purpose.Valid && purpose.String == "chat"
+}
+
 // schedulingPreferenceBinding 是一次绑定校验通过后的权威值（id 落列，name/
 // builtIn 进 rowPatch 投影）。
 type schedulingPreferenceBinding struct {

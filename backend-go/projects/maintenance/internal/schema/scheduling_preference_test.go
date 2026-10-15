@@ -210,6 +210,41 @@ func TestEnsureSQLiteBusinessDeliversAPIKeySchedulingPreferenceColumn(t *testing
 	})
 }
 
+func TestEnsureSQLiteBusinessPreservesLegacyStudioAPIKeyAndArtifacts(t *testing.T) {
+	db := openSharedMemorySQLite(t, "authsys-schema-test-studio-preserved")
+	legacyDDL := strings.Replace(legacyAPIKeysDDL,
+		"CHECK (purpose IN ('general', 'chat'))",
+		"CHECK (purpose IN ('general', 'chat', 'studio'))", 1)
+	legacyDDL = strings.Replace(legacyDDL,
+		"      expires_at TEXT,",
+		"      studio_domains_json TEXT,\n      expires_at TEXT,", 1)
+	if _, err := db.Exec(legacyDDL); err != nil {
+		t.Fatalf("seed legacy api_keys DDL: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE studio_assets (id TEXT PRIMARY KEY); INSERT INTO studio_assets(id) VALUES ('studio-asset')`); err != nil {
+		t.Fatalf("seed legacy studio table: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (
+		id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix,
+		key_secret_encrypted, purpose, studio_domains_json, created_at, updated_at
+	) VALUES ('studio-key', 'owner', 'route', 'studio', 'hash', 'prefix', 'suffix', 'secret', 'studio', '[]', 'now', 'now')`); err != nil {
+		t.Fatalf("seed legacy studio api key: %v", err)
+	}
+	if _, err := EnsureSQLiteBusiness(context.Background(), db); err != nil {
+		t.Fatalf("EnsureSQLiteBusiness: %v", err)
+	}
+	var keyRows, assetRows int
+	if err := db.QueryRow(`SELECT count(*) FROM api_keys WHERE id = 'studio-key' AND purpose = 'studio'`).Scan(&keyRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM studio_assets WHERE id = 'studio-asset'`).Scan(&assetRows); err != nil {
+		t.Fatal(err)
+	}
+	if keyRows != 1 || assetRows != 1 || !sqliteTableHasColumn(t, db, "api_keys", "studio_domains_json") {
+		t.Fatalf("normal ensure must preserve studio key, legacy column, and table: keys=%d assets=%d legacyColumn=%v", keyRows, assetRows, sqliteTableHasColumn(t, db, "api_keys", "studio_domains_json"))
+	}
+}
+
 func assertSchedulingPreferenceAPIKeyIndex(t *testing.T, db *sql.DB, want bool) {
 	t.Helper()
 	var exists int

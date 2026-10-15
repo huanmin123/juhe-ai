@@ -1915,6 +1915,7 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 		status = "pending_test"
 	}
 	input.Status = accountscore.AccountCreationStatusInput(status)
+	input.PreservePendingTest = input.Status.Status == "pending_test"
 	if source.concurrencyLimit > 0 {
 		limit := source.concurrencyLimit
 		input.ConcurrencyLimit = &limit

@@ -300,7 +300,7 @@ assert.match(composerSource, /function retryImageUpload\(localId: string\): void
 assert.match(composerSource, /for \(const item of pending\) patchImageNode[\s\S]{0,80}pruneDetachedImageRecords\(\)/, '普通 Tiptap 文档更新必须执行脱离图片记录清理')
 assert.match(composerSource, /const canSubmit = computed\(\(\) => Boolean\(hasContent\.value && props\.accountValue && props\.modelValue && props\.modelCapabilities && !props\.modelsLoading && !props\.modelCapabilitiesLoading && imagesReady\.value/, '模型未选中、能力仍在加载或图片未上传完成时不得清空并提交草稿')
 assert.match(chatViewSource, /contentBlocks: blocks\.map\(\(block\) => block\.type === 'input_image' \? \{ type: block\.type, assetId: block\.assetId \}/, '聊天提交必须只携带图片 assetId')
-assert.match(chatViewSource, /function handleComposerSubmit[\s\S]{0,900}!selectedModel\.value[\s\S]{0,220}composer\.value\?\.restore\(payload\.snapshot\)/, '页面发送边界必须在模型不可用时恢复已清空快照')
+assert.match(chatViewSource, /function handleComposerSubmit[\s\S]{0,500}!selectedModel\.value[\s\S]{0,220}composer\.value\?\.restore\(payload\.snapshot\)/, '页面发送边界必须在模型不可用时恢复已清空快照')
 assert.match(composerSource, /import \{[^\n]*findChatComposerCommandQuery[^\n]*\} from '\.\/chatComposerCommands'/, 'AIComposer 必须接入基于 EditorState 的命令查询')
 assert.match(composerSource, /import \{[^\n]*createChatComposerKeyDownHandler[^\n]*\} from '\.\/chatComposerKeyDownHandler'/, 'AIComposer 必须接入基于事件 EditorState 的键盘处理器')
 assert.match(composerSource, /onUpdate: \(\{ editor: nextEditor \}\) => \{[\s\S]{0,220}syncCommandQuery\(nextEditor\)/, '文档更新必须通过统一函数同步命令查询')

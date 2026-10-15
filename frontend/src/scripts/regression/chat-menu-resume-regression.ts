@@ -44,7 +44,7 @@ assert.match(viewSource, /state === 'superseded'[\s\S]{0,300}chatGenerationRunti
 assert.match(viewSource, /turn\.turnId[\s\S]{0,60}&& turn\.clientMessageId[\s\S]{0,900}activeStopTarget = active/, '返回旧会话时必须从 runtime 重建精确停止目标')
 assert.match(mainSource, /chatGenerationRuntime[\s\S]{0,500}(?:activateAccount|switchAccount)/, '应用入口必须根据登录账户切换 runtime 身份')
 assert.match(mainSource, /activateChatConversationSyncAccount/, '应用入口必须同步切换会话 sync 身份栅栏')
-assert.match(authSource, /export async function logout\(\)[\s\S]{0,500}clearCurrentAccountChatState\(systemAccountId\)[\s\S]{0,100}clearAuthState\(\)/, '明确退出登录必须清理当前账户聊天状态与登录态')
+assert.match(authSource, /export async function logout\(\)[\s\S]{0,500}clearCurrentAccountChatState\(systemAccountId\)[\s\S]{0,300}clearAuthState\(\)/, '明确退出登录必须清理当前账户聊天状态与登录态')
 assert.match(authSource, /invalidateChatConversationSyncAccount[\s\S]{0,400}drainChatConversationSyncAccount[\s\S]{0,400}clearAccount/, '退出必须先失效并排空旧账户同步，再清理缓存')
 assert.match(layoutSource, /event\.key === 'logout'[\s\S]{0,160}await logout\(\)/, '应用壳退出入口必须调用统一 logout 清理链路')
 assert.doesNotMatch(layoutSource, /SessionManagementModal|key="sessions"|会话管理|api\.auth\.(?:sessions|revokeSession)/, '应用壳不应保留登录会话管理能力')

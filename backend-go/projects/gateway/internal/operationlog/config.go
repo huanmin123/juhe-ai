@@ -85,7 +85,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("F4 PostgreSQL 连接池配置无效: %w", err)
 		}
 	}
-	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
+	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
 		// 未配置的隔离路径按 datadir 固定名表派生后并入隔离清单（2026-09-19）。
 		value := getenv(key)
 		if strings.TrimSpace(value) == "" {
@@ -139,8 +139,6 @@ func isolationFixedName(envName string) string {
 		return datadir.DatasetDatabase
 	case "JUHE_AI_RUNTIME_LOG_DATABASE_PATH":
 		return datadir.RuntimeLogDatabase
-	case "JUHE_AI_TABLE_MONITOR_DATABASE_PATH":
-		return datadir.TableMonitorDatabase
 	case "JUHE_AI_AUDIT_LOG_DATABASE_PATH":
 		return datadir.AuditLogDatabase
 	case "JUHE_AI_USAGE_CATALOG_DATABASE_PATH":

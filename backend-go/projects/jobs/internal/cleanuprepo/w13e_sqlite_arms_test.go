@@ -1019,16 +1019,6 @@ func TestW13eStatsRetentionArms(t *testing.T) {
 			t.Fatalf("usage stats 清理失败应透传: %v", err)
 		}
 	}
-	// CleanupSystemMetricsRetention 失败。
-	{
-		f := newKitSQLiteStageFixture(t, "system_metrics_samples")
-		store := &StatsRetentionStore{DB: f.stats}
-		if _, err := store.CleanupSystemMetricsRetention(ctx, retention.SystemMetricsRetentionInput{
-			SamplesCutoffIso: cutoffKit, HourlyCutoffHour: "2026091000", TrendWindowCutoffDate: "2026-09-10",
-		}); err == nil {
-			t.Fatalf("system metrics 清理失败应透传")
-		}
-	}
 	// CleanupNonBusinessStatsData 失败与 HasMore。
 	{
 		f := w13eFixture(t, "")

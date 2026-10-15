@@ -22,7 +22,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	_ "modernc.org/sqlite"
 )
@@ -121,18 +120,17 @@ func TestW16DScanNullTimeArms(t *testing.T) {
 }
 
 func TestW16DHealthHandlerSlotDefaultsInvoked(t *testing.T) {
-	// enabled=true 而对应 ready 槽位缺省/类型错误时，默认 ready 字面量必须被
-	// 调用（ab/proxyLatency/worker 禁用语义分支）且健康计算按禁用语义聚合。
+	// enabled=true 而对应 ready 槽位为 nil 时，默认 ready 字面量必须被调用
+	// （ab/proxyLatency/worker 的 nil 回落分支）且健康计算按就绪语义聚合。
 	runtimeRunning := &atomic.Bool{}
 	runtimeRunning.Store(true)
-	handler := healthHandler(ownermode.Active, runtimeRunning, func() bool { return true }, false, nil,
-		true, "not-a-func",
-		true, "not-a-func",
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		true, "not-a-func",
-		"not-a-map",
-	)
+	handler := healthHandler(healthDeps{
+		OwnerMode:             ownermode.Active,
+		RuntimeRunning:        runtimeRunning,
+		AccountHealthEnabled:  true,
+		AccountBalanceEnabled: true,
+		ProxyLatencyEnabled:   true,
+	})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if response.Code != http.StatusOK {

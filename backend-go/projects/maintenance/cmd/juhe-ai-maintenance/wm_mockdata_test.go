@@ -25,7 +25,7 @@ func wmBootstrapMockdataStores(t *testing.T, paths mockdata.Paths) {
 	t.Helper()
 	targets := []string{
 		paths.Business, paths.Chat, paths.Dataset, paths.UsageCatalog, paths.Stats,
-		paths.RuntimeLog, paths.TableMonitor, paths.AuditLog, paths.OperationLog,
+		paths.RuntimeLog, paths.AuditLog, paths.OperationLog,
 		paths.ModelCheck, paths.TaskRuns, paths.AccountHealth,
 	}
 	for index := 0; index < paths.CodexContextShardCount; index++ {
@@ -130,8 +130,9 @@ func TestWMMockdataReportAndCoverageOutput(t *testing.T) {
 		t.Fatalf("summary path = %q", report.SummaryPath)
 	}
 	// 域清单 = mockdata.domainSeeds 注册表（business / usage / stats /
-	// observability / chat_codex_model_check / studio，媒体工作室设计 §9）。
-	if len(report.Domains) != 6 {
+	// observability / chat_codex_model_check；studio 域已随媒体工作室退场
+	// 从注册表删除）。
+	if len(report.Domains) != 5 {
 		t.Fatalf("domains = %+v", report.Domains)
 	}
 	// 进度日志只写 stderr，stdout 保持单条 JSON。

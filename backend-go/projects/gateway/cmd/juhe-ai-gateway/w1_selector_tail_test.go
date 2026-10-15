@@ -189,7 +189,7 @@ func TestW1NNewChainAccountsSelectorWithStatsGuards(t *testing.T) {
 func TestW1NListModelCandidateRowsBlankModelEarlyExit(t *testing.T) {
 	fixture := newChainFixture(t)
 	rows, ranks, err := fixture.selector.listModelCandidateRows(context.Background(),
-		fixture.groupID, w1nOwnerGroupAccess(), "2026-09-04T00:00:00.000Z", "   ", "chat_completions", false)
+		fixture.groupID, w1nOwnerGroupAccess(), "2026-09-04T00:00:00.000Z", "   ", "chat_completions", false, false)
 	if err != nil {
 		t.Fatalf("空白模型必须早退且无错误: %v", err)
 	}

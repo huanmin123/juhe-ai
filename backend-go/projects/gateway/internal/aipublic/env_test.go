@@ -143,6 +143,14 @@ var aipublicSchema = []string{
 		last_blocked_reason TEXT,
 		last_error_message TEXT
 	)`,
+	// accounts fixture 列集对齐 maintenance 权威 SQLite DDL
+	// （sqlite_schema_business.go accounts 建表）。expedited_recovery_enabled
+	// （AI 账户特供快速恢复通道，5d1fe3e0d）与 capability_domain（AI 账户能力域
+	// 拆分 M1 读通道，59dfd527a）被 accounts 写链 INSERT 与读链
+	// listItemColumns SELECT 直接引用；authorization_instance_owner_system_
+	// account_id 是授权实例归属列（权威 DDL 同形）。缺列会让账号读写报
+	// no such column，英文错误经 kernel localize 改写成「请求参数无效」，
+	// 账号族用例连锁失败。
 	`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		config_revision INTEGER NOT NULL DEFAULT 1,
@@ -191,9 +199,11 @@ var aipublicSchema = []string{
 		last_health_check_status_code INTEGER,
 		last_health_check_error_code TEXT,
 last_health_check_error_message TEXT,
-			last_health_check_trace_id TEXT,
-			temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
-			stream_failure_count INTEGER NOT NULL DEFAULT 0,
+		last_health_check_trace_id TEXT,
+		temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1,
+		expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
+		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
+		stream_failure_count INTEGER NOT NULL DEFAULT 0,
 			stream_failure_window_started_at TEXT,
 			next_health_check_at TEXT,
 			balance_query_enabled INTEGER NOT NULL DEFAULT 0,
@@ -201,6 +211,7 @@ last_health_check_error_message TEXT,
 			balance_query_config_json TEXT NOT NULL DEFAULT '{}',
 		authorization_instance_source_account_id TEXT,
 		authorization_instance_authorization_id TEXT,
+		authorization_instance_owner_system_account_id TEXT,
 		deleted_at TEXT,
 		deleted_by TEXT,
 		created_at TEXT NOT NULL,

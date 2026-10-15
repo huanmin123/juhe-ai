@@ -1,8 +1,6 @@
 package gatewayresponse
 
 import (
-	"bytes"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -22,7 +20,9 @@ type OpenAIStreamInterceptor struct {
 	endpointFamily     gatewayproto.ResponseEndpointFamily
 	compactionExpected bool
 
-	pending           bytes.Buffer
+	// pending 是未分帧完的 SSE 字节缓冲：append 追加 + consume 原地前移压缩，
+	// 容量跨 chunk/事件复用（原 bytes.Buffer 每事件一次 make+copy）。
+	pending           []byte
 	downstreamWritten bool
 	observations      []ResponseInspectionDecision
 	seenData          bool
@@ -51,7 +51,7 @@ func NewOpenAIStreamInterceptor(options OpenAIStreamInterceptorOptions) *OpenAIS
 
 // PushChunk 对齐 pushChunk：逐事件提取语义帧并运行策略；未命中则原样透传。
 func (i *OpenAIStreamInterceptor) PushChunk(chunk []byte) StreamInterceptorSseResult {
-	i.pending.Write(chunk)
+	i.pending = append(i.pending, chunk...)
 	var result StreamInterceptorSseResult
 	for {
 		rawEvent := i.shiftEvent()
@@ -95,7 +95,7 @@ func (i *OpenAIStreamInterceptor) PushChunk(chunk []byte) StreamInterceptorSseRe
 			result.Chunks = nil
 			result.Observations = append(result.Observations, *inspection.Decision)
 			result.Intercepted = inspection.Decision
-			result.PendingEvent = i.pending.Len() > 0
+			result.PendingEvent = len(i.pending) > 0
 			return result
 		}
 		if len(frames) > 0 {
@@ -103,18 +103,17 @@ func (i *OpenAIStreamInterceptor) PushChunk(chunk []byte) StreamInterceptorSseRe
 		}
 		result.Chunks = append(result.Chunks, rawEvent)
 	}
-	result.PendingEvent = i.pending.Len() > 0
+	result.PendingEvent = len(i.pending) > 0
 	return result
 }
 
 // FlushPendingOnEOF 对齐 flushPendingOnEof。
 func (i *OpenAIStreamInterceptor) FlushPendingOnEOF() StreamInterceptorSseResult {
-	if i.pending.Len() == 0 {
+	if len(i.pending) == 0 {
 		return StreamInterceptorSseResult{}
 	}
-	remaining := make([]byte, i.pending.Len())
-	copy(remaining, i.pending.Bytes())
-	i.pending.Reset()
+	remaining := append([]byte(nil), i.pending...)
+	i.pending = i.pending[:0]
 	return StreamInterceptorSseResult{Chunks: [][]byte{remaining}}
 }
 
@@ -169,9 +168,11 @@ func mountResponseInspectionInterceptor(options StreamPipeOptions, driver Stream
 	})
 }
 
-// shiftEvent 取出一个完整 SSE 事件（含边界空行）；未完则返回 nil。
+// shiftEvent 取出一个完整 SSE 事件（含边界空行）；未完则返回 nil。事件字节
+// 在返回前复制——透传 chunk 会被捕获器/预提交缓冲持有到流结束，不能引用
+// 本缓冲。
 func (i *OpenAIStreamInterceptor) shiftEvent() []byte {
-	data := i.pending.Bytes()
+	data := i.pending
 	if len(data) == 0 {
 		return nil
 	}
@@ -199,12 +200,10 @@ func (i *OpenAIStreamInterceptor) shiftEvent() []byte {
 	return nil
 }
 
+// consume 原地把已取走事件之后的剩余字节前移（memmove 语义），容量复用、
+// 零分配。
 func (i *OpenAIStreamInterceptor) consume(count int) {
-	remaining := i.pending.Bytes()[count:]
-	next := make([]byte, len(remaining))
-	copy(next, remaining)
-	i.pending.Reset()
-	i.pending.Write(next)
+	i.pending = append(i.pending[:0], i.pending[count:]...)
 }
 
 // openAIEndpointFamilyOrUnknown 对齐 gatewayopenai 的 family 归一。

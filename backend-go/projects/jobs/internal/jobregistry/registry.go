@@ -64,23 +64,6 @@ type Entry struct {
 func ScheduledEntries() []Entry {
 	return []Entry{
 		{
-			JobName: "system-metrics-sample", Category: CategoryScheduled, Kind: "sample", DefaultRole: "stats-worker",
-			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes: []string{"stats:system_metrics_samples", "stats:process_event_loop_samples"},
-			// Node 采样写 stats 库 system_metrics_samples；Go 采样器写
-			// go-runtime-metrics（共享 platform/gometrics Sampler），是 F 系列
-			// 确定的等价接管。
-			GoStatus: GoEquivalent, GoPackage: "platform/gometrics",
-			GoBinding: "由 jobs 组件 Go runtime metrics sampler 等价接管（自有 ticker）",
-		},
-		{
-			JobName: "system-metrics-trend-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
-			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"stats:system_metrics_trend_windows"},
-			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([system_metrics_trend_windows])",
-		},
-		{
 			JobName: "usage-stats-aggregation", Category: CategoryScheduled, Kind: "stats", DefaultRole: "stats-worker",
 			Hotspot: true, SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:usage_stats_*", "stats:usage_model_*", "stats:usage_error_*", "stats:usage_latency_*"},
@@ -352,27 +335,6 @@ func ScheduledEntries() []Entry {
 			GoStatus: GoWired, GoPackage: "retention",
 			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄双模复用；未终态置 expired → 全部超期行删除，id 子查询 LIMIT 500 限流）",
 		},
-		{
-			// Go 新增条目：studio 任务结算 worker（媒体工作室设计 §5，归档
-			// Node 无对应 scheduled job——媒体域新表）。§5.2 通信身份为待定案
-			// 项，本批按任务裁决实现"直接读库 + HTTP 调上游"形态：领取谓词
-			//（status 未终态 OR settlement<>'settled'，租约可用且 attempt<5）
-			// 原子领取（≤20 行/轮，60s 租约、抢占式）；kind=video 按
-			// studio_tasks.upstream_job_id（=media_jobs.id）回读账户亲和三元
-			// 组直连上游轮询（gateway 任务面同 URL 形态，单领取 5s×60 有界窗
-			// 口 + 续租）；kind=image 按 request_snapshot.url 重下载一次；产物
-			// 经幂等三道闸单事务落 studio_assets + settlement='settled' +
-			// 配额增量（终态唯一性/分条互斥/digest 同用户查重）；取消迟到成
-			// 功不轮询直接无产物收口；media_jobs 关联缺席/账户不可达 →
-			// expired；attempt 上限（5）终局 failed 不再领取。业务库
-			// studio_tasks/studio_assets/studio_user_asset_usage（jobs 仅领取
-			// 与结算写面；media_jobs 只读）。
-			JobName: "studio-tasks-settle", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
-			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"business:studio_tasks", "business:studio_assets", "business:studio_user_asset_usage"},
-			GoStatus: GoWired, GoPackage: "studiosettle + cmd/juhe-ai-jobs（worker_studio_settle.go 组合根适配器）",
-			GoBinding: "wireStudioSettleFamily 经组合根接线：TaskStore 双模直查业务库 + AccountResolver（accounts 凭据封套解密，gateway hydrateAccount 同语义）+ UpstreamClient（openai 任务面 URL 形态镜像）+ LocalObjectWriter（chat_assets 同根对象存储，SHA-256 写守卫）；表缺席按零任务快速返回",
-		},
 	}
 }
 
@@ -394,7 +356,7 @@ func QueueEntries() []Entry {
 			"W7 已随 gateway 进程内写路径接管"),
 		{JobName: "background_worker_record_maintenance", Category: CategoryIPCQueue, Kind: "maintenance", DefaultRole: "ingest-worker",
 			Writes: []string{"dataset:*", "stats:*", "usage-shards:usage_records"}, GoStatus: GoWired, GoPackage: "cleanuprepo + retention + recordmaintenance",
-			GoBinding: "recordmaintenance runner + cleanuprepo 执行器 + 组合根本地队列 flush 循环 + record_maintenance_jobs 交接表 drain（gateway cleanup POST 落行：ORDER BY created_at、成功删行、失败保留；Redis Stream/IPC 按 Go 总设计消灭）。通道已扩展 v2 契约：record_maintenance_jobs 在既有 6 清理列上加快照列 account_id/kind/source/snapshot_json/updated_at（清理行与快照行互斥填充各自列组，gateway/jobs 两侧按列名幂等 ALTER ADD），gateway tablemonitor.DurableDispatch 快照行投递（含 codex 用量响应头快照通道 compose_codex_usage_headers.go），jobs drain 读 v2 列并把 account_usage_snapshot_upsert 连续段合并为一次批量 upsert"},
+			GoBinding: "recordmaintenance runner + cleanuprepo 执行器 + 组合根本地队列 flush 循环 + record_maintenance_jobs 交接表 drain（gateway cleanup POST 落行：ORDER BY created_at、成功删行、失败保留；Redis Stream/IPC 按 Go 总设计消灭）。通道已扩展 v2 契约：record_maintenance_jobs 在既有 6 清理列上加快照列 account_id/kind/source/snapshot_json/updated_at（清理行与快照行互斥填充各自列组，gateway/jobs 两侧按列名幂等 ALTER ADD），gateway recordmaintenance.DurableDispatch 快照行投递（含 codex 用量响应头快照通道 compose_codex_usage_headers.go），jobs drain 读 v2 列并把 account_usage_snapshot_upsert 连续段合并为一次批量 upsert"},
 		batch("background_worker_account_test_tasks", []string{"business:account_test_tasks"}, GoOwnedElsewhere, "gateway（共享 backend-go-platform/accounttest）",
 			"去跨进程战役：手动测试执行链（shared accounttest 的 ManualTestQueue + manualtestrepo + manualtest + accountprobe）随 gateway 进程内装配单持有者运行，jobs 不再 sweep，internalapi 账户测试派发/取消路由已删除"),
 		control("background_worker_account_test_cancel", "ops-worker", GoOwnedElsewhere, "取消随执行权移交 gateway 进程内队列（ManualTestQueue.CancelLocal 进程内适配器；jobs internalapi 取消路由已删除，DB 侧 cancel_requested 语义不变）"),
@@ -483,7 +445,6 @@ func WiredJobNames() map[string]bool {
 // （schema-defaults.ts DEFAULT_SYSTEM_SETTINGS）。
 const (
 	StatsAggregationInterval     = 60 * time.Second
-	SystemMetricsSampleInterval  = 30 * time.Second
 	GroupAccountStatsInterval    = 60 * time.Second
 	UsageHotWindowInterval       = 600 * time.Second
 	CooldownRetestInterval       = 3 * time.Second

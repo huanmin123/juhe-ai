@@ -17,8 +17,6 @@ func validPolicySettings() map[string]any {
 		SettingUsageStatsWeeklyRetentionWeeks:   52,
 		SettingUsageStatsMonthlyRetentionMonths: 24,
 		SettingUsageRankSnapshotRetentionDays:   180,
-		SettingSystemMetricsRetentionDays:       3,
-		SettingSystemMetricsHourlyRetentionDays: 15,
 	}
 }
 
@@ -75,8 +73,7 @@ func TestLoadPolicyFixedFields(t *testing.T) {
 	}
 	if policy.PublicApiLogDays != 30 || policy.UsageRecordDays != 14 || policy.StatsMinuteHours != 48 ||
 		policy.StatsHourlyDays != 60 || policy.StatsDailyDays != 90 || policy.StatsWeeklyWeeks != 52 ||
-		policy.StatsMonthlyMonths != 24 || policy.RankSnapshotDays != 180 ||
-		policy.SystemMetricsSampleDays != 3 || policy.SystemMetricsHourlyDays != 15 {
+		policy.StatsMonthlyMonths != 24 || policy.RankSnapshotDays != 180 {
 		t.Fatalf("policy fields not loaded as configured: %+v", policy)
 	}
 }
@@ -96,8 +93,6 @@ func TestLoadPolicyBounds(t *testing.T) {
 		{SettingUsageStatsWeeklyRetentionWeeks, statsWeeklyRetentionMaxWeeks},
 		{SettingUsageStatsMonthlyRetentionMonths, statsMonthlyRetentionMaxMonths},
 		{SettingUsageRankSnapshotRetentionDays, rankSnapshotRetentionMaxDays},
-		{SettingSystemMetricsRetentionDays, systemMetricsRawRetentionMaxDays},
-		{SettingSystemMetricsHourlyRetentionDays, statsRetentionMaxDays},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {

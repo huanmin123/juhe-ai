@@ -160,30 +160,6 @@ func TestCleanupUsageStatsRetentionSQLite(t *testing.T) {
 	}
 }
 
-// TestCleanupSystemMetricsRetention：六表映射。
-func TestCleanupSystemMetricsRetention(t *testing.T) {
-	db := openKitSQLite(t, "metrics_retention")
-	for _, spec := range []struct{ table, column string }{
-		{"system_metrics_samples", "sampled_at"}, {"system_metrics_hourly", "stat_hour"},
-		{"system_metrics_trend_windows", "end_date"}, {"process_event_loop_samples", "sampled_at"},
-		{"process_event_loop_hourly", "stat_hour"}, {"process_event_loop_trend_windows", "end_date"},
-	} {
-		createKitMinimalTable(t, db.DB, spec.table, spec.column)
-	}
-	mustExecKit(t, db, `INSERT INTO "system_metrics_samples" ("sampled_at") VALUES ('2020-01-01T00:00:00.000Z'), ('2020-06-01T00:00:00.000Z')`)
-	store := &StatsRetentionStore{DB: db}
-	counts, err := store.CleanupSystemMetricsRetention(context.Background(), retention.SystemMetricsRetentionInput{
-		SamplesCutoffIso: "2026-01-01T00:00:00.000Z", Limit: 10,
-	})
-	if err != nil {
-		t.Fatalf("CleanupSystemMetricsRetention: %v", err)
-	}
-	if counts.SystemMetricsSamples != 2 || counts.SystemMetricsHourly != 0 || counts.ProcessEventLoopSamples != 0 {
-		t.Fatalf("counts = %+v", counts)
-	}
-	store.AfterDelete(context.Background()) // nil Checkpoint 不应 panic
-}
-
 // TestCleanupNonBusinessStatsData：cutoff 键计算 + 全表批删 + HasMore 语义。
 func TestCleanupNonBusinessStatsData(t *testing.T) {
 	db := openKitSQLite(t, "non_business_stats")
@@ -191,17 +167,16 @@ func TestCleanupNonBusinessStatsData(t *testing.T) {
 		createKitMinimalTable(t, db.DB, rule.TableName, rule.TimeColumnName)
 	}
 	mustExecKit(t, db, `INSERT INTO "usage_stats_totals" ("updated_at") VALUES ('2026-01-01T00:00:00.000Z'), ('2026-02-01T00:00:00.000Z')`)
-	mustExecKit(t, db, `INSERT INTO "system_metrics_samples" ("sampled_at") VALUES ('2026-01-01T00:00:00.000Z')`)
 	store := &StatsRetentionStore{DB: db}
 
 	counts, err := store.CleanupNonBusinessStatsData(context.Background(), kitUpdatedAt, 10, kitZone())
 	if err != nil {
 		t.Fatalf("CleanupNonBusinessStatsData: %v", err)
 	}
-	if counts.DeletedRows != 3 {
+	if counts.DeletedRows != 2 {
 		t.Fatalf("DeletedRows = %d", counts.DeletedRows)
 	}
-	if counts.TableRows["juhe_stats.usage_stats_totals"] != 2 || counts.TableRows["juhe_stats.system_metrics_samples"] != 1 {
+	if counts.TableRows["juhe_stats.usage_stats_totals"] != 2 {
 		t.Fatalf("TableRows = %v", counts.TableRows)
 	}
 	if counts.HasMore {

@@ -62,6 +62,10 @@ type AffinityUnavailableError struct {
 	Err error
 }
 
+// InteractionAffinityUnavailableCode 对齐错误信封 code
+// 'interaction_affinity_unavailable'（Node GeminiInteractionAffinityUnavailableError）。
+const InteractionAffinityUnavailableCode = "interaction_affinity_unavailable"
+
 func (e *AffinityUnavailableError) Error() string {
 	if e.Op == "remember" {
 		return "Gemini Interaction 账号亲和记录暂时不可用，请重试"
@@ -77,6 +81,9 @@ func (e *AffinityUnavailableError) StatusCode() int { return http.StatusServiceU
 // ErrorType 对齐 type 'service_unavailable'（code 为
 // 'interaction_affinity_unavailable'）。
 func (e *AffinityUnavailableError) ErrorType() string { return "service_unavailable" }
+
+// Code 对齐错误信封 code（InteractionAffinityUnavailableCode）。
+func (e *AffinityUnavailableError) Code() string { return InteractionAffinityUnavailableCode }
 
 // AffinityStateStore 是运行时状态存储的注入接口（生产环境由 Redis 实现
 // 注入，测试可用内存实现）。

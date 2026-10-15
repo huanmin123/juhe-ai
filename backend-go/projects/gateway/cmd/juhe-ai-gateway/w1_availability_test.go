@@ -10,57 +10,57 @@ import (
 func TestW1ChainPhysicalAccountAvailable(t *testing.T) {
 	now := int64(1_800_000_000_000)
 	healthy := &chainCandidateRow{ID: "a", Status: "active", Schedulable: 1}
-	ok, err := chainPhysicalAccountAvailable(healthy, now, false)
+	ok, err := chainPhysicalAccountAvailable(healthy, now, false, false)
 	if err != nil || !ok {
 		t.Fatalf("healthy = %v, %v", ok, err)
 	}
 	// 过期账户。
 	expired := &chainCandidateRow{ID: "b", Status: "active", Schedulable: 1,
 		AccountExpiresAt: sql.NullString{String: "2020-01-01T00:00:00.000Z", Valid: true}}
-	if ok, _ := chainPhysicalAccountAvailable(expired, now, false); ok {
+	if ok, _ := chainPhysicalAccountAvailable(expired, now, false, false); ok {
 		t.Fatal("过期账户必须不可用")
 	}
 	// 非法 expires 格式：错误。
 	badTime := &chainCandidateRow{ID: "c", Status: "active", Schedulable: 1,
 		AccountExpiresAt: sql.NullString{String: "not-a-time", Valid: true}}
-	if _, err := chainPhysicalAccountAvailable(badTime, now, false); err == nil {
+	if _, err := chainPhysicalAccountAvailable(badTime, now, false, false); err == nil {
 		t.Fatal("非法 expires 必须报错")
 	}
 	// 不可调度。
 	unschedulable := &chainCandidateRow{ID: "d", Status: "active", Schedulable: 0}
-	if ok, _ := chainPhysicalAccountAvailable(unschedulable, now, false); ok {
+	if ok, _ := chainPhysicalAccountAvailable(unschedulable, now, false, false); ok {
 		t.Fatal("不可调度必须 false")
 	}
 	// includeUnavailable：rate_limited/temporary_unavailable 可见，cooldown 不生效。
 	for _, status := range []string{"active", "rate_limited", "temporary_unavailable"} {
 		row := &chainCandidateRow{ID: "e", Status: status, Schedulable: 1}
-		if ok, _ := chainPhysicalAccountAvailable(row, now, true); !ok {
+		if ok, _ := chainPhysicalAccountAvailable(row, now, true, false); !ok {
 			t.Fatalf("includeUnavailable 下 %s 必须可见", status)
 		}
 	}
-	if ok, _ := chainPhysicalAccountAvailable(&chainCandidateRow{ID: "f", Status: "disabled", Schedulable: 1}, now, true); ok {
+	if ok, _ := chainPhysicalAccountAvailable(&chainCandidateRow{ID: "f", Status: "disabled", Schedulable: 1}, now, true, false); ok {
 		t.Fatal("disabled 即使 includeUnavailable 也不可见")
 	}
 	// 冷却中（严格模式）。
 	cooldown := &chainCandidateRow{ID: "g", Status: "active", Schedulable: 1,
 		CooldownUntil: sql.NullString{String: "2099-01-01T00:00:00.000Z", Valid: true}}
-	if ok, _ := chainPhysicalAccountAvailable(cooldown, now, false); ok {
+	if ok, _ := chainPhysicalAccountAvailable(cooldown, now, false, false); ok {
 		t.Fatal("冷却中必须不可用")
 	}
 	// 冷却已过。
 	cooldownPast := &chainCandidateRow{ID: "h", Status: "active", Schedulable: 1,
 		CooldownUntil: sql.NullString{String: "2020-01-01T00:00:00.000Z", Valid: true}}
-	if ok, _ := chainPhysicalAccountAvailable(cooldownPast, now, false); !ok {
+	if ok, _ := chainPhysicalAccountAvailable(cooldownPast, now, false, false); !ok {
 		t.Fatal("冷却已过必须可用")
 	}
 	// 非法 cooldown 格式：错误。
 	badCooldown := &chainCandidateRow{ID: "i", Status: "active", Schedulable: 1,
 		CooldownUntil: sql.NullString{String: "junk", Valid: true}}
-	if _, err := chainPhysicalAccountAvailable(badCooldown, now, false); err == nil {
+	if _, err := chainPhysicalAccountAvailable(badCooldown, now, false, false); err == nil {
 		t.Fatal("非法 cooldown 必须报错")
 	}
 	// 非 active 严格模式。
-	if ok, _ := chainPhysicalAccountAvailable(&chainCandidateRow{ID: "j", Status: "rate_limited", Schedulable: 1}, now, false); ok {
+	if ok, _ := chainPhysicalAccountAvailable(&chainCandidateRow{ID: "j", Status: "rate_limited", Schedulable: 1}, now, false, false); ok {
 		t.Fatal("rate_limited 严格模式不可用")
 	}
 }

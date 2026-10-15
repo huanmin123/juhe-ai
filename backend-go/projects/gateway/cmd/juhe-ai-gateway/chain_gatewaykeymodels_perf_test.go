@@ -490,7 +490,8 @@ func TestUnionPerfManual(t *testing.T) {
 		}
 	}
 	now := chainNowISO(time.Now)
-	where := strings.NewReplacer("{statusSet}", "'active', 'rate_limited', 'temporary_unavailable'").Replace(chainCandidateWhere)
+	where := strings.NewReplacer(append([]string{"{statusSet}", "'active', 'rate_limited', 'temporary_unavailable'"},
+		chainMediaArmReplacement(false)...)...).Replace(chainCandidateWhere)
 	candidateQuery := strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, selector.table("group_accounts"), selector.table("accounts"), selector.table("accounts")),

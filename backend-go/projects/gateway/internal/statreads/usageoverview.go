@@ -86,29 +86,6 @@ func (d *Deps) normalizeStatsDateRange(ctx context.Context, startDate, endDate s
 	return normalizeRange(startDate, endDate, todayKey), nil
 }
 
-// normalizeSystemMetricsDateRange mirrors normalizeSystemMetricsDateRangeAsync
-// (default: today..today).
-func (d *Deps) normalizeSystemMetricsDateRange(ctx context.Context, startDate, endDate string) (Range, error) {
-	location, err := d.timezoneLocation(ctx)
-	if err != nil {
-		return Range{}, err
-	}
-	todayKey := dateKeyIn(d.Now(), location)
-	if startDate == "" {
-		startDate = endDate
-	}
-	if startDate == "" {
-		startDate = todayKey
-	}
-	if endDate == "" {
-		endDate = startDate
-	}
-	if endDate == "" {
-		endDate = todayKey
-	}
-	return normalizeRange(startDate, endDate, todayKey), nil
-}
-
 // overviewSectionHandler routes the five usage-overview sections by the
 // request path suffix (one Node handler family, one Go registration helper).
 func (d *Deps) overviewSectionHandler(selfOnly bool) http.HandlerFunc {

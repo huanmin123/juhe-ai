@@ -36,7 +36,7 @@ assertLauncherForwardsGatewayOwnershipGates()
 assertLauncherForwardsGatewayJobsOrigins()
 assertLauncherForwardsGatewayRuntimeConfig()
 assertLauncherForwardsJ2PathsAndOwner()
-assertLauncherForwardsGoRuntimeMetricsConfig()
+assertLauncherDropsRetiredMonitoringEnv()
 assertReleaseScriptsCreateGoOnlyBackendRoot()
 
 console.log('release Go project launcher regression passed')
@@ -64,7 +64,7 @@ function assertLauncherStartsWithoutProjectIdentity() {
     assert.equal(result.childEnvironment.JUHE_AI_RUNTIME_LOG_INSTANCE_ID, undefined,
       'the launcher must not inject F1 instance identity (Go defaults to the hostname)')
     assert.equal(result.childEnvironment.JUHE_AI_TABLE_MONITOR_INSTANCE_ID, undefined,
-      'the launcher must not inject F2 instance identity (Go defaults to the hostname)')
+      'the retired F2 table monitor env family must not be forwarded (2026-10-14 monitoring rework)')
     for (const name of [
       'JUHE_AI_JOBS_STATS_ENABLED', 'JUHE_AI_JOBS_OAUTH_ENABLED', 'JUHE_AI_JOBS_TASK_RUNS_ENABLED',
       'JUHE_AI_JOBS_USAGE_WRITER_ENABLED', 'JUHE_AI_JOBS_BALANCE_DETECT_ENABLED',
@@ -147,6 +147,8 @@ function assertLauncherForwardsProjectScopedPaths() {
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_DATA_DIR=./data',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+    // 2026-10-14 监控改造回归注入：历史 .env 残留的 F2 表监控 env 必须被
+    // launcher 按前缀显式 drop，不得进入 jobs 子进程。
     'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3'
   ].join('\n'))
   const gateway = runLauncher('gateway', {
@@ -155,6 +157,8 @@ function assertLauncherForwardsProjectScopedPaths() {
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
     'JUHE_AI_RUNTIME_LOG_DATABASE_PATH=./data/runtime-log.sqlite3',
+    // 2026-10-14 监控改造回归注入：历史 .env 残留的 F2 表监控 env 必须被
+    // launcher 按前缀显式 drop，不得进入 gateway 子进程。
     'JUHE_AI_TABLE_MONITOR_DATABASE_PATH=./data/table-monitor.sqlite3',
     'JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/audit-log.sqlite3',
     'JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY=./data/audit-payload-blobs',
@@ -166,7 +170,8 @@ function assertLauncherForwardsProjectScopedPaths() {
     // 2026-09-19 零配置收口：SQLite 路径注入表删除，显式值原样透传，
     // 相对路径由 Go 子进程按 cwd/语义自行解析。
     assert.equal(jobs.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/runtime-log.sqlite3')
-    assert.equal(jobs.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/table-monitor.sqlite3')
+    assert.equal(jobs.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, undefined,
+      'the retired JUHE_AI_TABLE_MONITOR_DATABASE_PATH must not be forwarded to the jobs child')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH, './data/account-health.sqlite3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, './data/account-health-inputs')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY, j1InputSigningKey)
@@ -192,7 +197,8 @@ function assertLauncherForwardsProjectScopedPaths() {
     }
     assert.equal(gateway.status, 0, `gateway launcher failed: ${gateway.output}`)
     assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/runtime-log.sqlite3')
-    assert.equal(gateway.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/table-monitor.sqlite3')
+    assert.equal(gateway.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, undefined,
+      'the retired JUHE_AI_TABLE_MONITOR_DATABASE_PATH must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_AUDIT_LOG_DATABASE_PATH, './data/audit-log.sqlite3')
     assert.equal(gateway.childEnvironment.JUHE_AI_OPERATION_LOG_DATABASE_PATH, './data/operation-log.sqlite3')
     assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3306')
@@ -252,6 +258,8 @@ function assertLauncherForwardsGatewayJobsOrigins() {
     JUHE_AI_OPERATION_LOG_INSTANCE_ID: 'f4-owner'
   }, [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
+    // 2026-10-14 监控改造回归注入：历史 .env 残留的 gometrics env 必须被
+    // launcher 按前缀显式 drop，不得进入 gateway 子进程。
     'JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite',
     'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH=./data/go-runtime-metrics.sqlite3',
     // 去跨进程战役第二刀：健康检查派发改走 DB outbox，launcher 不得再转发
@@ -272,8 +280,11 @@ function assertLauncherForwardsGatewayJobsOrigins() {
   ].join('\n'))
   try {
     assert.equal(gateway.status, 0, `gateway jobs-origin launcher failed: ${gateway.output}`)
-    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'sqlite')
-    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, './data/go-runtime-metrics.sqlite3')
+    // 2026-10-14 监控改造：gometrics 两家族整体退役，残留值按前缀 drop。
+    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_STORE, undefined,
+      'the retired JUHE_AI_GO_RUNTIME_METRICS_STORE must not be forwarded to the gateway child')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, undefined,
+      'the retired JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_URL, undefined,
       'the removed JUHE_AI_GO_RUNTIME_METRICS_URL must not be forwarded to the gateway child')
     assert.equal(gateway.childEnvironment.JUHE_AI_JOBS_INTERNAL_URL, undefined,
@@ -367,12 +378,17 @@ function assertLauncherForwardsJ2PathsAndOwner() {
       'the removed J2 manual-bridge secret must not be forwarded to the jobs child')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE, '3')
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET, '40s')
+    assert.equal(jobs.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, undefined,
+      'the retired JUHE_AI_TABLE_MONITOR_DATABASE_PATH must not be forwarded to the jobs child')
   } finally {
     jobs.cleanup()
   }
 }
 
-function assertLauncherForwardsGoRuntimeMetricsConfig() {
+function assertLauncherDropsRetiredMonitoringEnv() {
+  // 2026-10-14 监控改造：gometrics 采样链与 F2 表监控组件整体删除，
+  // JUHE_AI_GO_RUNTIME_METRICS_* / JUHE_AI_TABLE_MONITOR_* 两家族 env 全部
+  // 退役——进程环境与 .env 残留值必须按前缀 drop，launcher 启动仍成功。
   const jobs = runLauncher('jobs', {
     JUHE_AI_GO_RUNTIME_METRICS_STORE: 'sqlite',
     JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH: './data/go-runtime-metrics.sqlite3',
@@ -389,15 +405,20 @@ function assertLauncherForwardsGoRuntimeMetricsConfig() {
     'JUHE_AI_TABLE_MONITOR_POSTGRES_URL=postgres://table-monitor'
   ].join('\n'))
   try {
-    assert.equal(jobs.status, 0, `Go runtime metrics launcher failed: ${jobs.output}`)
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_STORE, 'sqlite')
-    // 2026-09-19 零配置收口：metrics 库路径不再被 launcher 绝对化，原样透传。
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, './data/go-runtime-metrics.sqlite3')
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, '15s')
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS, '30')
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_SERVICE, 'juhe-ai')
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_ROLE, undefined,
-      'the removed JUHE_AI_GO_RUNTIME_METRICS_ROLE must not be forwarded to the jobs child')
+    assert.equal(jobs.status, 0, `retired monitoring env launcher failed: ${jobs.output}`)
+    for (const name of [
+      'JUHE_AI_GO_RUNTIME_METRICS_STORE',
+      'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH',
+      'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL',
+      'JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS',
+      'JUHE_AI_GO_RUNTIME_METRICS_SERVICE',
+      'JUHE_AI_GO_RUNTIME_METRICS_ROLE',
+      'JUHE_AI_TABLE_MONITOR_STORE',
+      'JUHE_AI_TABLE_MONITOR_POSTGRES_URL'
+    ]) {
+      assert.equal(jobs.childEnvironment[name], undefined,
+        `the retired monitoring env ${name} must not be forwarded to the jobs child`)
+    }
   } finally {
     jobs.cleanup()
   }

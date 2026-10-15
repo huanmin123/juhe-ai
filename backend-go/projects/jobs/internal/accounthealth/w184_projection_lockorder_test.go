@@ -159,31 +159,35 @@ func w184RecordedProjector(t *testing.T, postgres bool) []w184RecordedStatement 
 }
 
 // TestW184ProjectionDualAdvisoryLockOrderContract 断言 PG 方言下 projectOutcome
-// 事务的前两条语句分别是 7001001 与 health-projection 键（顺序不可倒置），
-// 且任何表访问语句不得先于两把锁。
+// 事务以 SET LOCAL lock_timeout（BUG-0313 取锁等待上限）开头，随后前两条取锁
+// 语句分别是 7001001 与 health-projection 键（顺序不可倒置），且任何表访问
+// 语句不得先于两把锁。
 func TestW184ProjectionDualAdvisoryLockOrderContract(t *testing.T) {
 	statements := w184RecordedProjector(t, true)
-	if len(statements) < 4 {
+	if len(statements) < 5 {
 		t.Fatalf("录制语句过少: %+v", statements)
 	}
-	if !strings.Contains(statements[0].query, "pg_advisory_xact_lock($1)") || strings.Contains(statements[0].query, "hashtextextended") {
-		t.Fatalf("首语句必须是 pg_advisory_xact_lock($1)（7001001），实际: %q", statements[0].query)
+	if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
+		t.Fatalf("首语句必须是 SET LOCAL lock_timeout（BUG-0313 取锁等待上限），实际: %q", statements[0].query)
 	}
-	if len(statements[0].args) != 1 || statements[0].args[0] != int64(7001001) {
-		t.Fatalf("首语句参数必须是 7001001，实际: %v", statements[0].args)
+	if !strings.Contains(statements[1].query, "pg_advisory_xact_lock($1)") || strings.Contains(statements[1].query, "hashtextextended") {
+		t.Fatalf("首条取锁语句必须是 pg_advisory_xact_lock($1)（7001001），实际: %q", statements[1].query)
 	}
-	if !strings.Contains(statements[1].query, "pg_advisory_xact_lock(hashtextextended($1, 0))") {
-		t.Fatalf("次语句必须是 health-projection 键锁，实际: %q", statements[1].query)
+	if len(statements[1].args) != 1 || statements[1].args[0] != int64(7001001) {
+		t.Fatalf("首条取锁语句参数必须是 7001001，实际: %v", statements[1].args)
 	}
-	if len(statements[1].args) != 1 || statements[1].args[0] != accountHealthProjectionAdvisoryLockKey {
-		t.Fatalf("次语句参数必须是 %q，实际: %v", accountHealthProjectionAdvisoryLockKey, statements[1].args)
+	if !strings.Contains(statements[2].query, "pg_advisory_xact_lock(hashtextextended($1, 0))") {
+		t.Fatalf("次条取锁语句必须是 health-projection 键锁，实际: %q", statements[2].query)
 	}
-	for index, statement := range statements[2:] {
+	if len(statements[2].args) != 1 || statements[2].args[0] != accountHealthProjectionAdvisoryLockKey {
+		t.Fatalf("次条取锁语句参数必须是 %q，实际: %v", accountHealthProjectionAdvisoryLockKey, statements[2].args)
+	}
+	for index, statement := range statements[3:] {
 		if strings.Contains(statement.query, "pg_advisory_xact_lock") {
-			t.Fatalf("两把锁之后不应再出现 advisory 语句，第 %d 条: %q", index+2, statement.query)
+			t.Fatalf("两把锁之后不应再出现 advisory 语句，第 %d 条: %q", index+3, statement.query)
 		}
 		if index == 0 && !strings.Contains(statement.query, "account_health_projection_receipts") {
-			t.Fatalf("第三条语句应是 receipt 幂等查询，实际: %q", statement.query)
+			t.Fatalf("锁后第一条语句应是 receipt 幂等查询，实际: %q", statement.query)
 		}
 	}
 }

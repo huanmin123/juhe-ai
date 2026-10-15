@@ -929,16 +929,6 @@ func TestObservabilityAuditUpstreamResponsePayload(t *testing.T) {
 func TestSeedObservabilitySatisfiesCoverageAssertions(t *testing.T) {
 	e := observabilityTestEnv(t, 5, observabilityTestNow)
 	observabilitySeedTestBusiness(t, e)
-	// 表空间监控快照属 F2 owner（gateway/internal/tablemonitor）；这里造一行夹具
-	// 模拟 owner 的输出，验证本域接线后 DomainObservability 的断言全部通过。
-	createTestTable(t, e, StoreTableMonitor, `CREATE TABLE table_storage_snapshots (
-	  id TEXT PRIMARY KEY, role TEXT NOT NULL, table_name TEXT NOT NULL, sampled_at TEXT NOT NULL
-	)`)
-	if err := e.insertMap(context.Background(), StoreTableMonitor, "table_storage_snapshots", map[string]any{
-		"id": "f2-owner-fixture", "role": "dataset", "table_name": "public_api_logs", "sampled_at": observabilityFormatTime(observabilityTestNow),
-	}); err != nil {
-		t.Fatal(err)
-	}
 	result, err := seedObservability(context.Background(), e)
 	if err != nil {
 		t.Fatalf("seedObservability: %v", err)
@@ -951,8 +941,7 @@ func TestSeedObservabilitySatisfiesCoverageAssertions(t *testing.T) {
 	// 本域断言不得进 NotCovered（只有未接线的域才允许）。
 	for _, item := range notCovered {
 		if strings.HasPrefix(item, "audit_logs") || strings.HasPrefix(item, "operation_logs") ||
-			strings.HasPrefix(item, "runtime_logs") || strings.HasPrefix(item, "public_api_logs") ||
-			strings.HasPrefix(item, "table_storage_snapshots") {
+			strings.HasPrefix(item, "runtime_logs") || strings.HasPrefix(item, "public_api_logs") {
 			t.Fatalf("已接线域断言不得为 not-covered: %s", item)
 		}
 	}

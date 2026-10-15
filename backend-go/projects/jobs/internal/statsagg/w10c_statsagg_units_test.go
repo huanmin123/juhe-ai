@@ -417,81 +417,6 @@ func TestW10CPostgresUsageErrorEntries(t *testing.T) {
 	}
 }
 
-// ---- 稳定水印序列化 ----
-
-func TestW10CStableWatermarkSerialization(t *testing.T) {
-	// stableWatermarkValue 全类型臂。
-	cases := []struct {
-		value any
-		want  string
-	}{
-		{nil, "null"},
-		{true, "true"},
-		{false, "false"},
-		{int64(42), "42"},
-		{int(7), "7"},
-		{float64(3), "3"},
-		{float64(-3.5), "-3.5"},
-		{float64(1e16), "1e+16"},
-		{"plain", `"plain"`},
-		{`a"b\c` + "\n\r\t" + "\x01", `"a\"b\\c\n\r\t\u0001"`},
-		{struct{ X int }{X: 1}, "null"},
-	}
-	for _, testCase := range cases {
-		if got := stableWatermarkValue(testCase.value); got != testCase.want {
-			t.Fatalf("stableWatermarkValue(%v) = %s want %s", testCase.value, got, testCase.want)
-		}
-	}
-
-	// normalizeRawValue：[]byte → string、time.Time → RFC3339 毫秒。
-	if got := normalizeRawValue([]byte("text")); got != "text" {
-		t.Fatalf("normalizeRawValue []byte = %v", got)
-	}
-	stamp := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
-	if got := normalizeRawValue(stamp); got != "2026-04-18T10:00:00.000Z" {
-		t.Fatalf("normalizeRawValue time = %v", got)
-	}
-	if got := normalizeRawValue(float64(1.5)); got != float64(1.5) {
-		t.Fatalf("normalizeRawValue 透传臂 = %v", got)
-	}
-
-	// abs 双臂。
-	if abs(-2.5) != 2.5 || abs(2.5) != 2.5 {
-		t.Fatalf("abs 断言失败")
-	}
-
-	// requireSystemMetricsTrendSourceVersion。
-	digest := strings.Repeat("a", 64)
-	if err := requireSystemMetricsTrendSourceVersion("v2:" + digest); err != nil {
-		t.Fatalf("合法 sourceVersion 报错: %v", err)
-	}
-	for _, bad := range []string{"v2:", "v1:" + digest, "v2:" + strings.Repeat("g", 64), "v2:" + digest + "extra"} {
-		if err := requireSystemMetricsTrendSourceVersion(bad); err == nil {
-			t.Fatalf("非法 sourceVersion %q 应报错", bad)
-		}
-	}
-}
-
-func TestW10CProcessEventLoopRoleValidation(t *testing.T) {
-	// 固定角色与 worker:replica 白名单。
-	for _, valid := range []string{"server", "ingest-worker", "stats-worker", "ops-worker", "db-service", "usage-worker:3", "log-worker:8", "gateway:edge-1", "control-replica:main"} {
-		if !isValidProcessEventLoopRole(valid) {
-			t.Fatalf("角色 %q 应合法", valid)
-		}
-	}
-	// 非法：空、超长、纯前缀、随机串、副本超界。
-	longRole := strings.Repeat("x", 97)
-	for _, invalid := range []string{"", longRole, "gateway:", "random-role", "ingest-worker:9", "ingest-worker:99"} {
-		if isValidProcessEventLoopRole(invalid) {
-			t.Fatalf("角色 %q 应非法", invalid)
-		}
-	}
-	// 96 字符以内随机前缀臂。
-	if isValidProcessEventLoopRole(strings.Repeat("x", 96)) {
-		t.Fatalf("96 字符非前缀角色应非法")
-	}
-}
-
 // ---- RFC3339 工具长尾臂 ----
 
 func TestW10CRFC3339Helpers(t *testing.T) {
@@ -767,134 +692,49 @@ func TestW10CRankJobStateLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	// 无状态行 → nil。
-	state, err := refresher.rankRefreshJobState(ctx, "w10c-job", false)
+	state, err := refresher.rankRefreshJobState(ctx, "w10c-job")
 	if err != nil || state != nil {
 		t.Fatalf("无状态行应返回 nil, got %+v err=%v", state, err)
 	}
 
 	// 合法水位行。
 	w10cSeedJobState(t, env, "w10c-job", "2026-04-18T10:00:00.000Z", "2026-04-18")
-	state, err = refresher.rankRefreshJobState(ctx, "w10c-job", false)
+	state, err = refresher.rankRefreshJobState(ctx, "w10c-job")
 	if err != nil || state == nil || state.cursorCreatedAt == nil || *state.cursorCreatedAt != "2026-04-18T10:00:00.000Z" || state.cursorID == nil || *state.cursorID != "2026-04-18" {
 		t.Fatalf("合法水位解析错误: %+v err=%v", state, err)
 	}
 
-	// 非法水位（无 legacy 分支）→ 错误。
+	// 非法水位 → 错误。
 	w10cSeedJobState(t, env, "w10c-bad", "garbage", "")
-	if _, err := refresher.rankRefreshJobState(ctx, "w10c-bad", false); err == nil {
+	if _, err := refresher.rankRefreshJobState(ctx, "w10c-bad"); err == nil {
 		t.Fatalf("非法水位应报错")
 	}
 
 	// legacy 空水位。
 	w10cSeedJobState(t, env, "w10c-legacy-empty", LegacyEmptySourceWatermark, "")
-	state, err = refresher.rankRefreshJobState(ctx, "w10c-legacy-empty", false)
+	state, err = refresher.rankRefreshJobState(ctx, "w10c-legacy-empty")
 	if err != nil || state == nil || !state.legacyEmptySourceWatermark {
 		t.Fatalf("legacy 空水位解析错误: %+v err=%v", state, err)
 	}
 
-	// legacy "wm|ver"：allowLegacy=true 拆分；非法水位报错。
-	w10cSeedJobState(t, env, "w10c-legacy", "2026-04-17T10:00:00.000Z|v2:"+strings.Repeat("a", 64), "")
-	state, err = refresher.rankRefreshJobState(ctx, "w10c-legacy", true)
-	if err != nil || state == nil || state.legacySourceVersion == "" || state.cursorCreatedAt == nil || *state.cursorCreatedAt != "2026-04-17T10:00:00.000Z" {
-		t.Fatalf("legacy 拆分错误: %+v err=%v", state, err)
-	}
-	w10cSeedJobState(t, env, "w10c-legacy-bad", "garbage|v2:"+strings.Repeat("a", 64), "")
-	if _, err := refresher.rankRefreshJobState(ctx, "w10c-legacy-bad", true); err == nil {
-		t.Fatalf("legacy 非法水位应报错")
-	}
-	// allowLegacy=false 时 legacy 复合值无法规范化 → 错误。
-	if _, err := refresher.rankRefreshJobState(ctx, "w10c-legacy", false); err == nil {
-		t.Fatalf("非 legacy 模式应拒绝复合值")
-	}
-
-	// previousSourceVersion：状态全缺省 → 空。
-	emptyState, err := refresher.previousSourceVersion(ctx, "w10c-job", nil)
-	if err != nil || emptyState != "" {
-		t.Fatalf("无状态 previousSourceVersion = %s err=%v", emptyState, err)
-	}
-	// 主状态缺失但 sourceVersion 行存在 → 错误。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-main-missing', '2026-04-18T10:00:00.000Z', ?, '2026-04-18T12:00:00.000Z')`,
-		RankSnapshotSourceVersionScopeType, "v2:"+strings.Repeat("b", 64))
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-main-missing", nil); err == nil || !strings.Contains(err.Error(), "主刷新状态") {
-		t.Fatalf("主状态缺失应报错, got %v", err)
-	}
-	// 主状态 cursorCreatedAt 缺失 → 错误。
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-job", &rankRefreshJobState{}); err == nil || !strings.Contains(err.Error(), "主刷新状态缺少 sourceWatermark") {
-		t.Fatalf("主状态缺水位应报错, got %v", err)
-	}
-	// legacy version：无 sourceVersion 行 → 透传 legacy 值。
-	legacyState := &rankRefreshJobState{cursorCreatedAt: strPtr("2026-04-17T10:00:00.000Z"), legacySourceVersion: "legacy-ver"}
-	if got, err := refresher.previousSourceVersion(ctx, "w10c-no-version-row", legacyState); err != nil || got != "legacy-ver" {
-		t.Fatalf("legacy 无 version 行应透传, got %s err=%v", got, err)
-	}
-	// legacy version 与 version 行一致 → 透传。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-legacy-match', '2026-04-17T10:00:00.000Z', 'legacy-ver', '2026-04-18T12:00:00.000Z')`, RankSnapshotSourceVersionScopeType)
-	if got, err := refresher.previousSourceVersion(ctx, "w10c-legacy-match", legacyState); err != nil || got != "legacy-ver" {
-		t.Fatalf("legacy 一致应透传, got %s err=%v", got, err)
-	}
-	// legacy version 不一致 → 错误。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-legacy-mismatch', '2026-04-17T10:00:00.000Z', 'other-ver', '2026-04-18T12:00:00.000Z')`, RankSnapshotSourceVersionScopeType)
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-legacy-mismatch", legacyState); err == nil || !strings.Contains(err.Error(), "不一致") {
-		t.Fatalf("legacy 不一致应报错, got %v", err)
-	}
-	// 非 legacy：sourceVersion 行缺失 → 错误。
-	plainState := &rankRefreshJobState{cursorCreatedAt: strPtr("2026-04-18T10:00:00.000Z")}
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-no-version-row-2", plainState); err == nil || !strings.Contains(err.Error(), "缺失") {
-		t.Fatalf("version 行缺失应报错, got %v", err)
-	}
-	// 非 legacy：水位不一致 → 错误。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-ver', '2026-04-18T09:00:00.000Z', ?, '2026-04-18T12:00:00.000Z')`,
-		RankSnapshotSourceVersionScopeType, "v2:"+strings.Repeat("c", 64))
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-ver", plainState); err == nil || !strings.Contains(err.Error(), "水位不一致") {
-		t.Fatalf("水位不一致应报错, got %v", err)
-	}
-	// 非 legacy：一致 → 返回 version。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-ver-ok', '2026-04-18T10:00:00.000Z', ?, '2026-04-18T12:00:00.000Z')`,
-		RankSnapshotSourceVersionScopeType, "v2:"+strings.Repeat("d", 64))
-	if got, err := refresher.previousSourceVersion(ctx, "w10c-ver-ok", plainState); err != nil || got != "v2:"+strings.Repeat("d", 64) {
-		t.Fatalf("一致应返回 version, got %s err=%v", got, err)
-	}
-	// version 行缺 cursor_created_at / cursor_id → 错误臂。
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-ver-empty-wm', NULL, 'x', '2026-04-18T12:00:00.000Z')`, RankSnapshotSourceVersionScopeType)
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-ver-empty-wm", nil); err == nil || !strings.Contains(err.Error(), "缺少 sourceWatermark") {
-		t.Fatalf("version 行缺水位应报错, got %v", err)
-	}
-	env.exec(`INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, updated_at)
-		VALUES (?, '', 'w10c-ver-empty-ver', '2026-04-18T10:00:00.000Z', NULL, '2026-04-18T12:00:00.000Z')`, RankSnapshotSourceVersionScopeType)
-	if _, err := refresher.previousSourceVersion(ctx, "w10c-ver-empty-ver", nil); err == nil || !strings.Contains(err.Error(), "缺少 sourceVersion") {
-		t.Fatalf("version 行缺 version 应报错, got %v", err)
-	}
-
 	// rankSnapshotSourceUnchanged 全臂。
-	sourceState := &rankSnapshotSourceState{sourceWatermark: "2026-04-18T10:00:00.000Z", sourceVersion: "v2:" + strings.Repeat("d", 64)}
-	if rankSnapshotSourceUnchanged(nil, sourceState, "2026-04-18", "") {
+	sourceState := &rankSnapshotSourceState{sourceWatermark: "2026-04-18T10:00:00.000Z"}
+	if rankSnapshotSourceUnchanged(nil, sourceState, "2026-04-18") {
 		t.Fatalf("previousState 缺失应视为变化")
 	}
-	if rankSnapshotSourceUnchanged(plainState, nil, "2026-04-18", "") {
+	if rankSnapshotSourceUnchanged(&rankRefreshJobState{}, nil, "2026-04-18") {
 		t.Fatalf("sourceState 缺失应视为变化")
 	}
-	if rankSnapshotSourceUnchanged(&rankRefreshJobState{legacyEmptySourceWatermark: true, cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18", "") {
+	if rankSnapshotSourceUnchanged(&rankRefreshJobState{legacyEmptySourceWatermark: true, cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18") {
 		t.Fatalf("legacy 空水位应视为变化")
 	}
-	if rankSnapshotSourceUnchanged(&rankRefreshJobState{legacySourceVersion: "x", cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18", "") {
-		t.Fatalf("legacy version 应视为变化（迁移强制刷新）")
-	}
-	if rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr("other"), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18", sourceState.sourceVersion) {
+	if rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr("other"), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18") {
 		t.Fatalf("水位不一致应视为变化")
 	}
-	if rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr(sourceState.sourceWatermark)}, sourceState, "2026-04-18", sourceState.sourceVersion) {
+	if rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr(sourceState.sourceWatermark)}, sourceState, "2026-04-18") {
 		t.Fatalf("refreshDate 不一致应视为变化")
 	}
-	if rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18", "stale-version") {
-		t.Fatalf("sourceVersion 不一致应视为变化")
-	}
-	if !rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18", sourceState.sourceVersion) {
+	if !rankSnapshotSourceUnchanged(&rankRefreshJobState{cursorCreatedAt: strPtr(sourceState.sourceWatermark), cursorID: strPtr("2026-04-18")}, sourceState, "2026-04-18") {
 		t.Fatalf("全部一致应视为未变化")
 	}
 
@@ -908,11 +748,6 @@ func TestW10CRankJobStateLifecycle(t *testing.T) {
 	if err := refresher.updateRankRefreshJobState(ctx, "w10c-job", rankRefreshStateInput{SourceWatermark: "garbage", LastSuccessAt: "2026-04-18T12:00:00.000Z"}); err == nil {
 		t.Fatalf("非法水位应报错")
 	}
-	if err := refresher.updateRankRefreshJobState(ctx, "w10c-job", rankRefreshStateInput{
-		SourceWatermark: "2026-04-18T10:00:00.000Z", SourceVersion: "bad-version", LastSuccessAt: "2026-04-18T12:00:00.000Z",
-	}); err == nil {
-		t.Fatalf("非法 sourceVersion 应报错")
-	}
 	if err := refresher.updateRankRefreshJobState(ctx, "w10c-job", rankRefreshStateInput{SourceWatermark: "2026-04-18T10:00:00.000Z", LastSuccessAt: "garbage"}); err == nil {
 		t.Fatalf("非法 lastSuccessAt 应报错")
 	}
@@ -922,29 +757,25 @@ func TestW10CUpdateRankRefreshJobStateRoundtrip(t *testing.T) {
 	env := newTestEnv(t)
 	refresher := env.refresher()
 	ctx := context.Background()
-	version := "v2:" + strings.Repeat("e", 64)
 
-	// 带 sourceVersion → 主行 + version 行。
+	// 主状态行写入后读回。
 	if err := refresher.updateRankRefreshJobState(ctx, "w10c-rt", rankRefreshStateInput{
-		SourceWatermark: "2026-04-18T10:00:00.000Z", SourceVersion: version, RefreshDate: "2026-04-18", LastSuccessAt: "2026-04-18T12:00:00.000Z",
+		SourceWatermark: "2026-04-18T10:00:00.000Z", RefreshDate: "2026-04-18", LastSuccessAt: "2026-04-18T12:00:00.000Z",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if got := env.queryString(`SELECT cursor_id FROM stats_job_state WHERE scope_type='global' AND job_name='w10c-rt'`); len(got) != 1 || got[0] != "2026-04-18" {
 		t.Fatalf("主状态行错误: %v", got)
 	}
-	if got := env.queryString(`SELECT cursor_id FROM stats_job_state WHERE scope_type=? AND job_name='w10c-rt'`, RankSnapshotSourceVersionScopeType); len(got) != 1 || got[0] != version {
-		t.Fatalf("sourceVersion 行错误: %v", got)
-	}
 
-	// 不带 sourceVersion → version 行删除。
+	// 二次 upsert 覆盖主状态行（冲突臂）。
 	if err := refresher.updateRankRefreshJobState(ctx, "w10c-rt", rankRefreshStateInput{
 		SourceWatermark: "2026-04-18T11:00:00.000Z", RefreshDate: "2026-04-18", LastSuccessAt: "2026-04-18T12:00:00.000Z",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := env.queryRowFloats(`SELECT COUNT(*) FROM stats_job_state WHERE scope_type=? AND job_name='w10c-rt'`, RankSnapshotSourceVersionScopeType); got[0] != 0 {
-		t.Fatalf("sourceVersion 行应删除: %v", got)
+	if got := env.queryString(`SELECT cursor_created_at FROM stats_job_state WHERE scope_type='global' AND job_name='w10c-rt'`); len(got) != 1 || got[0] != "2026-04-18T11:00:00.000Z" {
+		t.Fatalf("主状态行应覆盖: %v", got)
 	}
 }
 
@@ -966,21 +797,21 @@ func TestW10CRunStagesOrchestration(t *testing.T) {
 	if err := refresher.runStage(ctx, "nope", refreshStageContext{timezone: env.zone}); err == nil {
 		t.Fatalf("runStage 未知阶段应报错")
 	}
-	// DefaultJobName：9 阶段主名 vs 单阶段复合名（授权范围窗口 stage 已停用）。
+	// DefaultJobName：8 阶段主名 vs 单阶段复合名（授权范围窗口 stage 已停用）。
 	allStages := []WindowStageName{
 		StageAccountLast7dRequestRank, StageCallerAccountLast7dRequestRank, StageApiKeyCurrentMonthCostRank,
 		StageAccountAuthorizationCurrentMonthRank, StageGroupAuthorizationCurrentMonthRank, StageUsageOverviewWindows,
-		StageAiPerformanceSummaryWindows, StageSystemMetricsTrendWindows, StageUsageScopeRangeWindows,
+		StageAiPerformanceSummaryWindows, StageUsageScopeRangeWindows,
 	}
 	if got := DefaultJobName(allStages); got != "usage_rank_snapshots_refresh" {
-		t.Fatalf("9 阶段默认名错误: %s", got)
+		t.Fatalf("8 阶段默认名错误: %s", got)
 	}
 	if got := DefaultJobName([]WindowStageName{StageUsageOverviewWindows, StageUsageScopeRangeWindows}); got != "usage_rank_snapshots_refresh:usage_overview_windows+usage_scope_range_windows" {
 		t.Fatalf("单阶段默认名错误: %s", got)
 	}
 	// selectStages nil → 全部阶段；已停用的授权范围窗口 stage 不再可选。
 	selected, err := refresher.selectStages(nil)
-	if err != nil || len(selected) != 9 {
+	if err != nil || len(selected) != 8 {
 		t.Fatalf("nil 阶段应选全部: %d err=%v", len(selected), err)
 	}
 	if _, err := refresher.selectStages([]WindowStageName{StageAuthorizationUsageRangeWindows}); err == nil {
@@ -1003,16 +834,6 @@ func TestW10CRunStagesOrchestration(t *testing.T) {
 	bare := &WindowRefresher{DB: env.db, Dialect: env.dialect, Clock: StaticTimezoneSource{env.zone}}
 	if _, err := bare.RunStages(ctx, []WindowStageName{StageApiKeyCurrentMonthCostRank}, RefreshOptions{}); err != nil {
 		t.Fatal(err)
-	}
-
-	// refreshSystemMetricsTrendWindowsStage：非法 todayKey 早退臂（直接调用）。
-	tx, err := env.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := refresher.refreshSystemMetricsTrendWindowsStage(ctx, tx, refreshStageContext{todayKey: "not-a-date"}); err != nil {
-		t.Fatalf("非法 todayKey 应早退, got %v", err)
 	}
 }
 

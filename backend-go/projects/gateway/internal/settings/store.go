@@ -95,8 +95,6 @@ var SystemSettingKeys = []string{
 	"statsAggregationMaxBatchesPerRun",
 	"usageHotWindowRefreshIntervalSeconds",
 	"groupAccountStatsRefreshIntervalSeconds",
-	"systemMetricsSampleIntervalSeconds",
-	"tableMonitorMaxTablesPerRun",
 	"accountQualityRefreshIntervalSeconds",
 	"accountQualityWindowMinutes",
 	"accountHealthCheckIntervalHours",
@@ -119,8 +117,6 @@ var SystemSettingKeys = []string{
 	"usageStatsWeeklyRetentionWeeks",
 	"usageStatsMonthlyRetentionMonths",
 	"usageRankSnapshotRetentionDays",
-	"systemMetricsRetentionDays",
-	"systemMetricsHourlyRetentionDays",
 	"upstreamClientVersionOverrides",
 	"upstreamClientVersionAutoOverrides",
 }
@@ -196,8 +192,6 @@ var systemSettingSpecs = map[string]settingSpec{
 	"statsAggregationMaxBatchesPerRun":           {integer: true, min: 1, max: 100},
 	"usageHotWindowRefreshIntervalSeconds":       {integer: true, min: 60, max: 3600},
 	"groupAccountStatsRefreshIntervalSeconds":    {integer: true, min: 5, max: 3600},
-	"systemMetricsSampleIntervalSeconds":         {integer: true, min: 5, max: 3600},
-	"tableMonitorMaxTablesPerRun":                {integer: true, min: 0, max: 100},
 	"accountQualityRefreshIntervalSeconds":       {integer: true, min: 60, max: 3600},
 	"accountQualityWindowMinutes":                {integer: true, min: 1, max: 60},
 	"accountHealthCheckIntervalHours":            {integer: true, min: 1, max: 168},
@@ -220,8 +214,6 @@ var systemSettingSpecs = map[string]settingSpec{
 	"usageStatsWeeklyRetentionWeeks":             {integer: true, min: 1, max: 260},
 	"usageStatsMonthlyRetentionMonths":           {integer: true, min: 1, max: 60},
 	"usageRankSnapshotRetentionDays":             {integer: true, min: 1, max: 365},
-	"systemMetricsRetentionDays":                 {integer: true, min: 1, max: 7},
-	"systemMetricsHourlyRetentionDays":           {integer: true, min: 1, max: 30},
 	"upstreamClientVersionOverrides":             {clientVersionsJSON: true},
 	// upstreamClientVersionAutoOverrides 是 jobs 自动跟版任务独占写入的自动层
 	//（管理端 v1 不可写，见客户端版本自动跟版设计 §3/§7）：与手动键同结构同
@@ -415,7 +407,6 @@ var usageStatsDataTables = []string{
 	"ai_performance_summary_windows",
 	"usage_quota_hourly_windows",
 	"usage_scope_range_windows",
-	"system_metrics_trend_windows",
 }
 
 // Store is the dual-mode settings persistence behind the M12 route family.

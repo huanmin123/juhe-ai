@@ -56,7 +56,6 @@ type Config struct {
 	UsageCatalogPath         string
 	StatsPath                string
 	RuntimeLogDatabasePath   string
-	TableMonitorDatabasePath string
 	CodexShardRoot           string
 	UsageShardRoot           string
 }
@@ -101,7 +100,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		UsageCatalogPath:         datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase),
 		StatsPath:                datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase),
 		RuntimeLogDatabasePath:   datadir.Path(getenv, dataDir, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", datadir.RuntimeLogDatabase),
-		TableMonitorDatabasePath: datadir.Path(getenv, dataDir, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", datadir.TableMonitorDatabase),
 		CodexShardRoot:           datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", datadir.CodexContextStateShardRoot),
 		UsageShardRoot:           datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_SHARD_ROOT", datadir.UsageShardRoot),
 	}
@@ -189,7 +187,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		{"JUHE_AI_USAGE_CATALOG_DATABASE_PATH", cfg.UsageCatalogPath},
 		{"JUHE_AI_STATS_DATABASE_PATH", cfg.StatsPath},
 		{"JUHE_AI_RUNTIME_LOG_DATABASE_PATH", cfg.RuntimeLogDatabasePath},
-		{"JUHE_AI_TABLE_MONITOR_DATABASE_PATH", cfg.TableMonitorDatabasePath},
 	} {
 		if candidate.path == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 %s，无法验证 F3 专库隔离", candidate.name)

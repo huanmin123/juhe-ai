@@ -28,7 +28,6 @@ export interface SchedulingPreferenceOptionsParams {
   ids?: string[]
   keyword?: string
   limit?: number
-  activeOnly?: boolean
 }
 
 export interface SchedulingPreferenceScopeParams {

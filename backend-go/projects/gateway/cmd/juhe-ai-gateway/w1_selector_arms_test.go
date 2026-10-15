@@ -388,7 +388,7 @@ func TestW1ListAccountsHydrationDroppedCount(t *testing.T) {
 
 func TestW1ChainAccountAvailableForSelectionBadTimeFormat(t *testing.T) {
 	row := &chainCandidateRow{Schedulable: 1, Status: "active"}
-	if _, err := chainAccountAvailableForSelection(row, "invalid-time", false); err == nil {
+	if _, err := chainAccountAvailableForSelection(row, "invalid-time", false, false); err == nil {
 		t.Fatal("bad time format must return error")
 	}
 }
@@ -396,7 +396,7 @@ func TestW1ChainAccountAvailableForSelectionBadTimeFormat(t *testing.T) {
 func TestW1ChainPhysicalAccountAvailableBadExpiresAt(t *testing.T) {
 	row := &chainCandidateRow{Schedulable: 1, Status: "active",
 		AccountExpiresAt: sql.NullString{String: "bad-time", Valid: true}}
-	if _, err := chainPhysicalAccountAvailable(row, 0, false); err == nil {
+	if _, err := chainPhysicalAccountAvailable(row, 0, false, false); err == nil {
 		t.Fatal("bad expires_at must return error")
 	}
 }
@@ -404,7 +404,7 @@ func TestW1ChainPhysicalAccountAvailableBadExpiresAt(t *testing.T) {
 func TestW1ChainPhysicalAccountAvailableExpired(t *testing.T) {
 	row := &chainCandidateRow{Schedulable: 1, Status: "active",
 		AccountExpiresAt: sql.NullString{String: "2020-01-01T00:00:00.000Z", Valid: true}}
-	available, err := chainPhysicalAccountAvailable(row, 1700000000000, false)
+	available, err := chainPhysicalAccountAvailable(row, 1700000000000, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestW1ChainPhysicalAccountAvailableExpired(t *testing.T) {
 
 func TestW1ChainPhysicalAccountAvailableNotSchedulable(t *testing.T) {
 	row := &chainCandidateRow{Schedulable: 0, Status: "active"}
-	available, err := chainPhysicalAccountAvailable(row, 0, false)
+	available, err := chainPhysicalAccountAvailable(row, 0, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestW1ChainPhysicalAccountAvailableNotSchedulable(t *testing.T) {
 func TestW1ChainPhysicalAccountAvailableIncludeUnavailable(t *testing.T) {
 	for _, status := range []string{"active", "rate_limited", "temporary_unavailable"} {
 		row := &chainCandidateRow{Schedulable: 1, Status: status}
-		available, err := chainPhysicalAccountAvailable(row, 0, true)
+		available, err := chainPhysicalAccountAvailable(row, 0, true, false)
 		if err != nil {
 			t.Fatalf("status=%s unexpected error: %v", status, err)
 		}
@@ -440,7 +440,7 @@ func TestW1ChainPhysicalAccountAvailableIncludeUnavailable(t *testing.T) {
 func TestW1ChainPhysicalAccountAvailableBadCooldown(t *testing.T) {
 	row := &chainCandidateRow{Schedulable: 1, Status: "active",
 		CooldownUntil: sql.NullString{String: "bad-time", Valid: true}}
-	if _, err := chainPhysicalAccountAvailable(row, 0, false); err == nil {
+	if _, err := chainPhysicalAccountAvailable(row, 0, false, false); err == nil {
 		t.Fatal("bad cooldown must return error")
 	}
 }

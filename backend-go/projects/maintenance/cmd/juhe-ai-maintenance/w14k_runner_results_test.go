@@ -25,18 +25,16 @@ package main
 // --postgres-schema-snapshot 必失败；详见 w14k_pg_gate_test.go 注释。
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/goruntimemetrics"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 )
 
 // wm14kWithClosedStdout 用已关闭的管道替换 os.Stdout，使 json 编码写入必然
-// 失败，从而覆盖各 report 层的 encode 错误分支。
+// 失败，从而覆盖各 report 层的 encode 错误分支（w1/w14k 存储链路测试共用）。
 func wm14kWithClosedStdout(t *testing.T, fn func()) {
 	t.Helper()
 	reader, writer, err := os.Pipe()
@@ -55,24 +53,8 @@ func wm14kWithClosedStdout(t *testing.T, fn func()) {
 	fn()
 }
 
-// wm14kUnreachableURL 形状合法（有主机/库/角色）但主机不可达的维护 DSN。
-const wm14kUnreachableURL = "postgres://w14k@127.0.0.1:1/w14k-none"
-
 func TestW14KRunnerUsageGates(t *testing.T) {
 	root := t.TempDir()
-	t.Run("go runtime metrics", func(t *testing.T) {
-		t.Setenv(goruntimemetrics.BootstrapEnv, "")
-		if got := goRuntimeMetricsBootstrapResult(false, "  ", false, false, false); got != 2 {
-			t.Fatalf("空 URL 必须返回 2: %d", got)
-		}
-		if got := goRuntimeMetricsBootstrapResult(true, "postgres://w14k@127.0.0.1:5432/db", false, false, false); got != 2 {
-			t.Fatalf("apply 无确认必须返回 2: %d", got)
-		}
-		// Open 的 URL 校验：缺主机必须被拒绝。
-		if got := goRuntimeMetricsBootstrapResult(false, "postgres://@/", false, false, false); got != 2 {
-			t.Fatalf("缺主机 URL 必须返回 2: %d", got)
-		}
-	})
 	t.Run("schema snapshot env gates", func(t *testing.T) {
 		t.Setenv("JUHE_AI_SCHEMA_SNAPSHOT_TARGET", "")
 		if got := postgresSchemaSnapshotResult(); got != 2 {
@@ -127,34 +109,11 @@ func TestW14KRunnerUsageGates(t *testing.T) {
 	})
 }
 
-func TestW14KRunnerRuntimeFailures(t *testing.T) {
-	t.Run("go runtime metrics unreachable", func(t *testing.T) {
-		if got := goRuntimeMetricsBootstrapResult(false, wm14kUnreachableURL, false, false, false); got != 1 {
-			t.Fatalf("不可达主机必须返回 1: %d", got)
-		}
-	})
-}
-
-// TestW14KOutcomeExitCodeHelpers 直调 report 层映射函数，覆盖 err / encode /
-// 未就绪 / 成功四类出口（不含 DB 依赖）。
-func TestW14KOutcomeExitCodeHelpers(t *testing.T) {
-	t.Run("go runtime metrics", func(t *testing.T) {
-		if got := goRuntimeMetricsOutcomeExitCode(goruntimemetrics.Report{}, context.DeadlineExceeded); got != 1 {
-			t.Fatalf("err 必须返回 1: %d", got)
-		}
-		wm14kWithClosedStdout(t, func() {
-			if got := goRuntimeMetricsOutcomeExitCode(goruntimemetrics.Report{}, nil); got != 1 {
-				t.Fatalf("encode 失败必须返回 1: %d", got)
-			}
-		})
-		if got := goRuntimeMetricsOutcomeExitCode(goruntimemetrics.Report{MissingTables: []string{"w14k-table"}}, nil); got != 3 {
-			t.Fatalf("未就绪必须返回 3: %d", got)
-		}
-		if got := goRuntimeMetricsOutcomeExitCode(goruntimemetrics.Report{}, nil); got != 0 {
-			t.Fatalf("就绪必须返回 0: %d", got)
-		}
-	})
-}
+// TestW14KRunnerRuntimeFailures 历史上覆盖 go-runtime-metrics 不可达主机出
+// 口 1；该命令族已随 internal/goruntimemetrics 包删除，退役监控表清退的
+// 不可达出口由 monitoringretirement 包测试覆盖
+// （TestRunPostgresUnreachableTargetFailsClosed），此处无剩余分支。
+// TestW14KOutcomeExitCodeHelpers（report 层出口映射直调）同因整体删除。
 
 func TestW14KRunnerRemainingBranches(t *testing.T) {
 	t.Run("parse paths tolerates empty entries", func(t *testing.T) {

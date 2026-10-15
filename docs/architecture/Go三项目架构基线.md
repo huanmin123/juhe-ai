@@ -2,7 +2,7 @@
 
 > 状态：架构落地第一阶段（项目边界与工程骨架），不代表三个项目已经完成业务接管或生产切流。
 >
-> 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与 Business SQLite owner 同进程落在 `gateway`。当前 Gateway 已具备 J3b 的实现装配基线，但 Business SQLite 全量 handoff、三库回填、切换/回滚与 Node active-path-zero 尚未通过，不代表 J3b 已完成接管。
+> 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`（原 F2 表监控组件已于 2026-10-14 随监控改造删除，jobs 域仅余 J3a，见 [Prometheus 指标暴露设计](../functions/Prometheus指标暴露设计.md)）；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与 Business SQLite owner 同进程落在 `gateway`。当前 Gateway 已具备 J3b 的实现装配基线，但 Business SQLite 全量 handoff、三库回填、切换/回滚与 Node active-path-zero 尚未通过，不代表 J3b 已完成接管。
 >
 > **终局补记（2026-09-30）**：上述迁移已全部完成——Node 后端已于 2026-09-05 全量清零（归档已移出仓库，git 历史可溯），Go 三项目为唯一后端实现，现行生产形态为国内单机 Docker go-only（部署配置见 `docker/single-server/`）。本文的项目边界、依赖方向、运行数据边界、并发任务优先级、发布配置契约与验收门（§1-§4、§6-§7）继续作为现行契约生效；§5"定时迁移顺序"是迁移期的历史规划存档，仅作过程溯源，不再是执行计划；文中其余 Node 共存期措辞（如"Node 尚未迁移时"）按历史背景理解。
 
@@ -103,7 +103,6 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 | P0 实时 | `ops-worker` 账号复制、账号健康探活、冷却复测 | `jobs` | 先冻结状态机、lease、取消和上游超时；按账户/上游直接 fan-out，单账户失败隔离。模型检测按 J3b 方案 A 由 gateway 单进程 owner 承担 |
 | P0 实时 | OAuth token 保活、授权到期扫描 | `jobs` | token/授权事实必须幂等；外部 I/O 与数据库写入分 lane，不能阻塞探活 |
 | P1 批处理 | `stats-worker` 用量聚合、IP/分组统计、趋势和窗口刷新 | `jobs` | 以 cursor/window 增量读取，统计写入独立 owner；按窗口并发，不回请求路径实时汇总 |
-| P1 批处理 | 系统指标和表监控采样 | `jobs` | F2 已物理归入 jobs；后续按完整功能继续收敛 Node owner，禁止双写 |
 | P2 冷任务 | retention、历史扫描、索引/派生数据重建 | `jobs` 或 `maintenance` | 周期清理进入 jobs；一次性重建/回填进入 maintenance；大批次可慢但必须可恢复、可报告 |
 
 下列内容暂不随本次项目骨架迁移：F3/F4 已上线或切换前实现的主链路、网关请求处理、管理 API、AI 上游桥接和历史 Node 业务 worker。它们必须分别按照完整功能契约和 L1-L4 门禁迁移，不能把“已经有 jobs 模块”当作接管证据。
@@ -113,7 +112,7 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 - 配置按项目命名空间隔离：`JUHE_AI_GATEWAY_*`、`JUHE_AI_JOBS_*`、`JUHE_AI_MAINTENANCE_*`。共享数据库连接只在明确 owner 的项目中配置，不能通过“默认共享全部 env”隐藏依赖。
 - 每个项目有独立 release、日志目录、健康/就绪端点、进程身份和重启策略。部署编排可以放在同一机器，但不能以同一进程或同一 supervisor 作为运行前提。
 - `gateway` 的健康检查覆盖 HTTP/API 和上游桥接依赖；`jobs` 的健康检查覆盖 scheduler、lease、任务滞后和关键 Store；`maintenance` 以退出码和报告文件验收，不伪造长驻 health。
-- 当前源码已将 F1/F2 放入 `jobs`、F3/F4 放入 `gateway`；J3b 的目标 owner 由方案 A 改为 gateway。历史注记：原「由部署、健康、读回和回滚证据确认实际常驻 owner」的 Node→Go 切流门禁（business/J3b 切流语义 env 家族 + cutover evidence/readback 校验）已于 2026-09-30 随迁移完成整体退役，gateway 与 J3b 启动一律 auto-claim 业务库 owner，历史机制见 git 历史；除 J3b 外不把新定时功能放入 gateway。
+- 当前源码已将 F1/F2 放入 `jobs`、F3/F4 放入 `gateway`（原 F2 表监控组件已于 2026-10-14 随监控改造删除）；J3b 的目标 owner 由方案 A 改为 gateway。历史注记：原「由部署、健康、读回和回滚证据确认实际常驻 owner」的 Node→Go 切流门禁（business/J3b 切流语义 env 家族 + cutover evidence/readback 校验）已于 2026-09-30 随迁移完成整体退役，gateway 与 J3b 启动一律 auto-claim 业务库 owner，历史机制见 git 历史；除 J3b 外不把新定时功能放入 gateway。
 
 ## 7. 验收门
 

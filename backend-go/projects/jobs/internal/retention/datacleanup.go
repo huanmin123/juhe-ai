@@ -184,11 +184,6 @@ func (j *DataRetentionJob) runSQLiteStages(ctx context.Context) (CleanupResult, 
 		}); err != nil {
 			return result, err
 		}
-		if err := j.cleanupRetentionInBatchesSystemMetrics(ctx, &result, maxBatches, func(ctx context.Context) (SystemMetricsRetentionCounts, error) {
-			return j.stats().CleanupSystemMetricsRetention(ctx, systemMetricsRetentionInput(nowMillis, policy, statsLocation, batchSize))
-		}); err != nil {
-			return result, err
-		}
 		systemSessions, err := j.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
 			return j.db().CleanupExpiredSystemSessions(ctx, ISOString(time.UnixMilli(nowMillis)), batchSize)
 		})
@@ -284,10 +279,6 @@ type missingStatsWriter struct{}
 
 func (missingStatsWriter) CleanupUsageStatsRetention(context.Context, UsageStatsRetentionInput) (UsageStatsRetentionCounts, error) {
 	return UsageStatsRetentionCounts{}, errors.New("retention stats writer 未初始化")
-}
-
-func (missingStatsWriter) CleanupSystemMetricsRetention(context.Context, SystemMetricsRetentionInput) (SystemMetricsRetentionCounts, error) {
-	return SystemMetricsRetentionCounts{}, errors.New("retention stats writer 未初始化")
 }
 
 func (missingStatsWriter) CleanupNonBusinessStatsData(context.Context, string, int) (NonBusinessDataCleanupCounts, error) {
@@ -458,32 +449,6 @@ func (j *DataRetentionJob) cleanupRetentionInBatches(ctx context.Context, result
 	return nil
 }
 
-func (j *DataRetentionJob) cleanupRetentionInBatchesSystemMetrics(ctx context.Context, result *CleanupResult, maxBatches int, cleanupBatch func(ctx context.Context) (SystemMetricsRetentionCounts, error)) error {
-	for index := 0; index < maxBatches; index++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		deleted, err := cleanupBatch(ctx)
-		if err != nil {
-			return err
-		}
-		result.AddSystemMetrics(deleted)
-		if err := yieldToEventLoop(ctx); err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if deleted.Sum() == 0 {
-			return nil
-		}
-		if err := j.sleep(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // cleanupCodexContextStatesInBatches mirrors
 // cleanupCodexContextStatesInBatches: each batch deletes expired state rows
 // then settles the storage file deletions before deciding to continue.
@@ -620,16 +585,6 @@ func (j *DataRetentionJob) runPostgresStages(ctx context.Context) (CleanupResult
 			return 0, err
 		}
 		result.AddUsageStats(deleted)
-		return deleted.Sum(), nil
-	}, j.sleep); err != nil {
-		return result, err
-	}
-	if err := runRetentionBatches(ctx, maxBatches, 1, func(ctx context.Context) (int64, error) {
-		deleted, err := j.stats().CleanupSystemMetricsRetention(ctx, systemMetricsRetentionInput(nowMillis, policy, statsLocation, batchSize))
-		if err != nil {
-			return 0, err
-		}
-		result.AddSystemMetrics(deleted)
 		return deleted.Sum(), nil
 	}, j.sleep); err != nil {
 		return result, err
@@ -778,14 +733,5 @@ func usageStatsRetentionInput(nowMillis int64, policy Policy, location *time.Loc
 		WindowCutoffDate:                 cutoffDateKey(nowMillis, policy.FixedWindowDays, location),
 		WindowCutoffIso:                  cutoffISO(nowMillis, policy.AccountUsageSnapshotDays),
 		Limit:                            batchSize,
-	}
-}
-
-func systemMetricsRetentionInput(nowMillis int64, policy Policy, location *time.Location, batchSize int) SystemMetricsRetentionInput {
-	return SystemMetricsRetentionInput{
-		SamplesCutoffIso:      cutoffISO(nowMillis, policy.SystemMetricsSampleDays),
-		HourlyCutoffHour:      cutoffHourKey(nowMillis, policy.SystemMetricsHourlyDays, location),
-		TrendWindowCutoffDate: cutoffDateKey(nowMillis, policy.FixedWindowDays, location),
-		Limit:                 batchSize,
 	}
 }

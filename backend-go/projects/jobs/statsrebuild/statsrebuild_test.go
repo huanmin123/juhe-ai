@@ -123,8 +123,8 @@ func TestRebuildSQLiteDrainsAndRebuilds(t *testing.T) {
 	if result.ProcessedRows != 3 || result.Batches != 2 {
 		t.Fatalf("ProcessedRows/Batches = %d/%d, want 3/2（batchSize=2）", result.ProcessedRows, result.Batches)
 	}
-	if len(result.WindowStages) != 9 {
-		t.Fatalf("窗口阶段数 = %d, want 9", len(result.WindowStages))
+	if len(result.WindowStages) != 8 {
+		t.Fatalf("窗口阶段数 = %d, want 8", len(result.WindowStages))
 	}
 	if len(result.ClearedTables) != len(rebuildClearedStatsTables) {
 		t.Fatalf("ClearedTables 长度 = %d, want %d", len(result.ClearedTables), len(rebuildClearedStatsTables))

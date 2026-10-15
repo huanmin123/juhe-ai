@@ -55,7 +55,6 @@ const (
 	statsWeeklyRetentionMaxWeeks       = 260
 	statsMonthlyRetentionMaxMonths     = 60
 	rankSnapshotRetentionMaxDays       = 365
-	systemMetricsRawRetentionMaxDays   = 7
 	statsRetentionMaxDays              = 30
 	snapshotRetentionMaxDays           = 30
 	publicApiLogRetentionMaxDays       = 365
@@ -71,8 +70,6 @@ const (
 	SettingUsageStatsWeeklyRetentionWeeks   = "usageStatsWeeklyRetentionWeeks"
 	SettingUsageStatsMonthlyRetentionMonths = "usageStatsMonthlyRetentionMonths"
 	SettingUsageRankSnapshotRetentionDays   = "usageRankSnapshotRetentionDays"
-	SettingSystemMetricsRetentionDays       = "systemMetricsRetentionDays"
-	SettingSystemMetricsHourlyRetentionDays = "systemMetricsHourlyRetentionDays"
 	SettingUsageStatsTimezone               = "usageStatsTimezone"
 )
 
@@ -88,8 +85,6 @@ type Policy struct {
 	StatsWeeklyWeeks         int64
 	StatsMonthlyMonths       int64
 	RankSnapshotDays         int64
-	SystemMetricsSampleDays  int64
-	SystemMetricsHourlyDays  int64
 	AccountUsageSnapshotDays int64
 	FixedWindowDays          int64
 }
@@ -122,12 +117,6 @@ func LoadPolicy(settings map[string]any) (Policy, error) {
 		return Policy{}, err
 	}
 	if policy.RankSnapshotDays, err = SettingNumber(settings, SettingUsageRankSnapshotRetentionDays, 1, rankSnapshotRetentionMaxDays); err != nil {
-		return Policy{}, err
-	}
-	if policy.SystemMetricsSampleDays, err = SettingNumber(settings, SettingSystemMetricsRetentionDays, 1, systemMetricsRawRetentionMaxDays); err != nil {
-		return Policy{}, err
-	}
-	if policy.SystemMetricsHourlyDays, err = SettingNumber(settings, SettingSystemMetricsHourlyRetentionDays, 1, statsRetentionMaxDays); err != nil {
 		return Policy{}, err
 	}
 	policy.AccountUsageSnapshotDays = snapshotRetentionMaxDays

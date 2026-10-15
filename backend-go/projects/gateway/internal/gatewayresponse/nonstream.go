@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -265,8 +266,14 @@ func SendFullyBufferedNonStreamBody(input NonStreamPipeInput, body []byte) error
 	if input.PrepareDownstream != nil {
 		input.PrepareDownstream()
 	}
-	if _, err := input.Downstream.Res.Write(body); err != nil {
-		return err
+	// 空正文不调 Write：net/http（含测试用 httptest.ResponseRecorder）对不可
+	// 带体状态（204/304/1xx）的 Write 一律返回 ErrBodyNotAllowed，即使零长度，
+	// 会把 DELETE interactions 204 这类零 usage 成功误判为本地失败；Node
+	// res.send(空体) 亦只提交状态不写体（《Gemini账号接入.md》:189）。
+	if len(body) > 0 {
+		if _, err := input.Downstream.Res.Write(body); err != nil {
+			return err
+		}
 	}
 	FlushGateway(input.Downstream.Res)
 	if input.OnChunkWritten != nil {
@@ -676,8 +683,25 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		}
 		if protocolValidationEnabled {
 			parsedForValidation := ParseGatewayNonStreamJsonBody(responseBodyText, len(responseBodyText) > 0, input.UpstreamResponse.Header)
-			if failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, false, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery())); failure != nil {
-				return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
+			// DELETE interactions 空成功体（204/205）在第二道协议校验同样放行
+			// （《Gemini账号接入.md》:189 契约；与 inspectBufferedGatewayJSONResponse
+			// 的空体放行同源——两道校验例外必须一致，否则 204 空体被判
+			// 「不是有效 JSON」502，存量缺陷）。
+			emptySuccessAllowed := parsedForValidation.Status == NonStreamJSONStatusEmpty &&
+				input.UpstreamResponse.OK() && input.successfulEmptyUpstreamAllowed()
+			if !emptySuccessAllowed {
+				if failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, false, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery())); failure != nil {
+					return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
+				}
+			}
+		}
+		// Gemini interactions 创建成功的提交前亲和写入（Node finalization.ts
+		// :1009-1060：从解析后的响应体提取 ID 后、res.send 之前
+		// rememberGeminiInteractionBeforeDownstreamCommit）。写失败阻断提交，
+		// chain 按 503 interaction_affinity_unavailable 收尾。
+		if input.InteractionAffinityRemember != nil {
+			if err := input.InteractionAffinityRemember(gatewaygemini.InteractionIDFromParsedResponse(parsedForInspection.Value)); err != nil {
+				return UpstreamResponseHandlingResult{}, err
 			}
 		}
 		// 检查通过（或校验关闭）：发送完整正文（Node res.send(downstreamBody)）。

@@ -6,13 +6,14 @@
 // package's store helpers mirroring the Node repository SQL
 // (usage-stats.repository.ts, usage-stats-ai-performance.repository.ts,
 // account-usage.repository.ts, account-health-monitor.repository.ts,
-// system-metrics.repository.ts, usage-records.repository.ts).
+// usage-records.repository.ts). The former /system-metrics/* read family has
+// been removed together with the Node-compat metrics face it ported.
 //
 // Access scope semantics mirror storage/access-scope.ts: admins see global
 // aggregate rows unless a systemAccountId filter narrows the view; the my-*
 // surfaces pin every request to the caller (Node forceSelfAccessScope also
-// downgrades the ALS role to "user", which keeps the requireAdmin-gated
-// /system-metrics/* routes returning 403 inside /my-stats).
+// downgrades the ALS role to "user", which keeps requireAdmin-gated routes
+// returning 403 inside /my-stats).
 package statreads
 
 import (

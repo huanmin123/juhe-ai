@@ -15,22 +15,16 @@ const (
 	ConflictReplaceConflict      ConflictCode = "chat_replace_conflict"
 	ConflictConversationLimit    ConflictCode = "chat_conversation_limit_exceeded"
 	ConflictTurnLimitExceeded    ConflictCode = "chat_turn_limit_exceeded"
-	// 锁定语义（PLAN-20261012T121500000Z D5）：patchConversation 在锁定会话上
-	// 实际切换账户；AcceptTurn 事务内发现预检读取的绑定账户已被并发改变。
-	ConflictConversationLocked    ConflictCode = "chat_conversation_locked"
-	ConflictConversationBindingChanged ConflictCode = "chat_conversation_binding_changed"
 )
 
 var conflictMessages = map[ConflictCode]string{
-	ConflictMessageInProgress:                "当前会话正在生成回答",
-	ConflictContextCompacting:                "当前会话正在压缩上下文",
-	ConflictConversationClearing:             "当前会话正在清空",
-	ConflictStorageQuotaExceeded:             "聊天容量已达到上限，请先删除部分会话",
-	ConflictReplaceConflict:                  "最近一轮已变化，请重新确认后再编辑",
-	ConflictConversationLimit:                "会话数量已达到上限，请先删除部分会话",
-	ConflictTurnLimitExceeded:                "当前会话轮次已达到上限，请新建会话继续提问",
-	ConflictConversationLocked:               "会话已绑定账户与模型，更换请新建会话",
-	ConflictConversationBindingChanged:       "会话绑定已变化，请刷新后重试",
+	ConflictMessageInProgress:    "当前会话正在生成回答",
+	ConflictContextCompacting:    "当前会话正在压缩上下文",
+	ConflictConversationClearing: "当前会话正在清空",
+	ConflictStorageQuotaExceeded: "聊天容量已达到上限，请先删除部分会话",
+	ConflictReplaceConflict:      "最近一轮已变化，请重新确认后再编辑",
+	ConflictConversationLimit:    "会话数量已达到上限，请先删除部分会话",
+	ConflictTurnLimitExceeded:    "当前会话轮次已达到上限，请新建会话继续提问",
 }
 
 // ConflictError maps to Node ChatConflictError → 409 {message, code}.
@@ -69,16 +63,9 @@ func (e *ContextBudgetError) Error() string {
 type RequestErrorCode string
 
 const (
-	RequestImageNotSupported  RequestErrorCode = "chat_image_not_supported"
-	RequestBodyTooLarge       RequestErrorCode = "chat_request_body_too_large"
-	// RequestWebSearchUnsupported 是联网开关能力不满足的拒绝码（D3）：chat
-	// 形态、桥接账户或目录未声明内置搜索却传 enableWebSearch=true → 422。
-	RequestWebSearchUnsupported RequestErrorCode = "chat_web_search_unsupported"
+	RequestImageNotSupported RequestErrorCode = "chat_image_not_supported"
+	RequestBodyTooLarge      RequestErrorCode = "chat_request_body_too_large"
 )
-
-// HostedWebSearchToolKey 是 Responses hosted web_search 工具键（D3）：请求级
-// 联网开启时注入 tools: [{"type":"web_search"}]，上游真实执行。
-const HostedWebSearchToolKey = "web_search"
 
 // RequestError maps to Node ChatRequestError → 422 {message, code}.
 type RequestError struct {
@@ -87,14 +74,6 @@ type RequestError struct {
 }
 
 func (e *RequestError) Error() string { return e.Message }
-
-// ModelLockedError 是锁定会话上发送了不同模型的发送预检错误（PLAN-20261012
-// D5）：→ 400 {message, code: chat_model_locked}。
-type ModelLockedError struct{ LockedModel string }
-
-func (e *ModelLockedError) Error() string {
-	return "当前会话已绑定模型 " + e.LockedModel + "，如需更换请新建会话"
-}
 
 // ModelCapabilityError maps to ChatModelCapabilityError → 422
 // {message, code: chat_model_capability_unavailable}.

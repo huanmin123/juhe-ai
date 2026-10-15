@@ -355,7 +355,7 @@ watch(() => form.accountId, () => ensureSelectedModel())
 watch(() => props.accountOptions, () => ensureSelectedModel(), { deep: true })
 
 function save() {
-  if (!form.accountId || !form.model || !Number.isInteger(form.intervalMinutes) || form.intervalMinutes < 1 || form.intervalMinutes > 10080) return
+  if (!form.accountId || !form.model || !Number.isInteger(form.intervalMinutes) || form.intervalMinutes < 5 || form.intervalMinutes > 10080) return
   if (!selectedModelOptions.value.some((item) => item.value === form.model)) return
   if (!Number.isInteger(form.penaltyThreshold) || form.penaltyThreshold < 40 || form.penaltyThreshold > 100) return
   if (form.penaltyAction === 'quality_isolate' && (!Number.isInteger(form.recoveryIntervalMinutes) || form.recoveryIntervalMinutes < 10 || form.recoveryIntervalMinutes > 10080)) return

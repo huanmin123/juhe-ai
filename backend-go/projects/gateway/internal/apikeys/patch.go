@@ -431,7 +431,7 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	// schedulingPreferenceId（非空 ID 或显式 null）一律统一同型 400，不走
 	// 普通 Key 的「显式 null 回默认内置 ID」矩阵。
 	if input.HasSchedulingPreferenceID {
-		if purpose.Valid && purpose.String == "chat" {
+		if schedulingPreferenceExemptPurpose(purpose) {
 			return nil, &ValidationError{Message: SchedulingPreferenceUnavailableMessage}
 		}
 		// 期望存储值：显式 null/缺省提交位 → 内置固定 ID；非空 ID → trim 后

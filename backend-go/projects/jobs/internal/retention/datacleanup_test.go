@@ -55,10 +55,6 @@ func TestSQLiteHappyPath(t *testing.T) {
 		{UsageStatsMinute: CleanupBatchSize, UsageStatsDaily: 5},
 		{},
 	}
-	stats.metricsScript = []SystemMetricsRetentionCounts{
-		{SystemMetricsSamples: 10},
-		{},
-	}
 	db.sessionsScript = []int64{CleanupBatchSize, 700}
 	db.codexScript = []*CodexContextExpiredCleanup{
 		{DeletedSessions: CleanupBatchSize, DeletedResponses: 3, DeletedCompacts: 2, StorageKeys: []string{"k1"}, HasMore: true},
@@ -78,9 +74,6 @@ func TestSQLiteHappyPath(t *testing.T) {
 	}
 	if result.UsageStatsMinute != CleanupBatchSize || result.UsageStatsDaily != 5 {
 		t.Fatalf("usage stats counters not accumulated: %+v", result)
-	}
-	if result.SystemMetricsSamples != 10 {
-		t.Fatalf("systemMetricsSamples = %d, want 10", result.SystemMetricsSamples)
 	}
 	if result.SystemSessions != CleanupBatchSize+700 {
 		t.Fatalf("systemSessions = %d, want %d", result.SystemSessions, CleanupBatchSize+700)
@@ -141,9 +134,9 @@ func TestSQLiteHappyPath(t *testing.T) {
 		t.Fatalf("codex storage batches = %+v", codex.keys)
 	}
 	// Pauses: publicApiLogs(1 full) + usageRecords(1 full) + stats(1 full) +
-	// metrics(1 full) + sessions(1 full) + codex(1 full).
-	if sleeper.pauses != 6 {
-		t.Fatalf("pauses = %d, want 6", sleeper.pauses)
+	// sessions(1 full) + codex(1 full).
+	if sleeper.pauses != 5 {
+		t.Fatalf("pauses = %d, want 5", sleeper.pauses)
 	}
 }
 
@@ -158,9 +151,9 @@ func TestSQLiteEmptySet(t *testing.T) {
 	if result.Sum() != 0 {
 		t.Fatalf("result not empty: %+v", result)
 	}
-	if publicApiLogs.calls != 1 || usageRecords.calls != 1 || stats.usageCalls != 1 || stats.metricsCalls != 1 || db.sessionCalls != 1 || db.codexCalls != 1 || codex.calls != 1 {
-		t.Fatalf("empty set must call each domain once: public=%d usage=%d usageStats=%d metrics=%d sessions=%d codex=%d storage=%d",
-			publicApiLogs.calls, usageRecords.calls, stats.usageCalls, stats.metricsCalls, db.sessionCalls, db.codexCalls, codex.calls)
+	if publicApiLogs.calls != 1 || usageRecords.calls != 1 || stats.usageCalls != 1 || db.sessionCalls != 1 || db.codexCalls != 1 || codex.calls != 1 {
+		t.Fatalf("empty set must call each domain once: public=%d usage=%d usageStats=%d sessions=%d codex=%d storage=%d",
+			publicApiLogs.calls, usageRecords.calls, stats.usageCalls, db.sessionCalls, db.codexCalls, codex.calls)
 	}
 	if sleeper.pauses != 0 {
 		t.Fatalf("pauses = %d, want 0", sleeper.pauses)
@@ -354,7 +347,6 @@ func TestRunDispatchesByMode(t *testing.T) {
 		})
 		publicApiLogs.script = []int64{CleanupBatchSize, 0}
 		stats.usageScript = []UsageStatsRetentionCounts{{UsageStatsMinute: 1}, {}}
-		stats.metricsScript = []SystemMetricsRetentionCounts{{}}
 		db.sessionsScript = []int64{CleanupBatchSize, 0}
 		db.codexScript = []*CodexContextExpiredCleanup{
 			{DeletedSessions: CleanupBatchSize, StorageKeys: []string{"k"}, HasMore: true},

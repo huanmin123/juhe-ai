@@ -20,7 +20,7 @@ package main
 // 场景清单：
 //   A+E TestW1G2ComposeSystemAPIPostgresSuccess
 //       composeSystemAPI 的 DatabaseDriver=postgres 成功臂：业务/chat/stats/
-//       usage-catalog/table-monitor/三个数据集读面全部走临时库共享池，链条
+//       usage-catalog/三个数据集读面全部走临时库共享池，链条
 //       开启（performance + dev Redis cache/state，namespace=juhe-ai:dev:
 //       w1cover），my-chat 家族挂载；openChatDatabase PG 分支返回共享池句柄
 //       且可真实 Query（场景 E 并入此处）；/health 与 auth 面 HTTP 契约；
@@ -73,7 +73,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -374,21 +373,6 @@ func w1g2EnsureJ3bSchema(t *testing.T, db *sql.DB) {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("执行 juhe_j3b 补建 DDL 失败: %v, statement=%s", err, statement)
 		}
-	}
-}
-
-// w1g2EnsureGoRuntimeMetricsSchema 2026-09-27 起 Go runtime 指标默认开启
-// （跟随 JUHE_AI_DATABASE_DRIVER=postgres），全栈启动会只读校验
-// juhe_stats.go_runtime_metrics_* 三表；PG 模式 DDL 维护 owned，测试作为
-// 受控流程在启动前先行建表（与真实部署的 maintenance --apply 顺序契约一致）。
-func w1g2EnsureGoRuntimeMetricsSchema(t *testing.T, db *sql.DB) {
-	t.Helper()
-	store, err := gometrics.NewStore(db, gometrics.DialectPostgres)
-	if err != nil {
-		t.Fatalf("打开 Go runtime metrics store 失败: %v", err)
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("补建 Go runtime metrics 三表失败: %v", err)
 	}
 }
 
@@ -804,7 +788,6 @@ func TestW1G2OwnerFullBootPostgresBusinessMode(t *testing.T) {
 	}
 	db := w1g2OpenApp(t, tempAppURL)
 	w1g2EnsureJ3bSchema(t, db)
-	w1g2EnsureGoRuntimeMetricsSchema(t, db)
 
 	exe := w1bBuildCoverBinary(t)
 	root := t.TempDir()

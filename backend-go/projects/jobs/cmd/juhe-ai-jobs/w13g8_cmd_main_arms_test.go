@@ -87,20 +87,6 @@ func w13g8WorkerAssemblyFailEnv(t *testing.T) map[string]string {
 	return env
 }
 
-// w13g8GarbageMetricsEnv 构造 gometrics OpenStore 失败臂的 env：metrics 库
-// 路径指向非 SQLite 垃圾文件（LoadConfig 通过，OpenStore 失败）。
-func w13g8GarbageMetricsEnv(t *testing.T) map[string]string {
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
-	garbage := filepath.Join(root, "w13g8-garbage-metrics.sqlite3")
-	if err := os.WriteFile(garbage, []byte("w13g8 not a sqlite database"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	env["JUHE_AI_GO_RUNTIME_METRICS_STORE"] = "sqlite"
-	env["JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH"] = garbage
-	return env
-}
-
 // w13g8GarbageRuntimeEnv 构造 F1 OpenStore 失败臂的 env：运行日志库路径指向
 // 非 SQLite 垃圾文件（隔离校验通过，OpenStore 的 PRAGMA 失败）。
 func w13g8GarbageRuntimeEnv(t *testing.T) map[string]string {
@@ -142,7 +128,7 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 	}{
 		// flag 早失败臂（os.Exit(2)）。
 		{"多余位置参数", []string{"w13g8-positional"}, workerSmokeTestEnv, nil, false, 2},
-		{"once 与 migrate 互斥", []string{"-once", "-migrate-runtime-log-legacy-sqlite"}, workerSmokeTestEnv, nil, false, 2},
+		{"run-jobs-once 与 migrate 互斥", []string{"-run-jobs-once=usage-stats-aggregation", "-migrate-runtime-log-legacy-sqlite"}, workerSmokeTestEnv, nil, false, 2},
 		// 配置加载失败臂（fail → exit 1）。
 		{"无效日志级别", nil, workerSmokeTestEnv, map[string]string{"JUHE_AI_LOG_LEVEL": "w13g8-bogus"}, false, 1},
 		{"owner 模式非法", nil, workerSmokeTestEnv, map[string]string{"JUHE_AI_BLUE_GREEN_OWNER_MODE": "w13g8"}, false, 1},
@@ -150,9 +136,6 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		// 中深度臂：以 wgOwnerModeMainEnv 为基座（F1 数据源文件已存在、隔离
 		// 校验通过），fail 前置点之后才命中目标分支。
 		{"runtime log ONCE 不支持", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}, false, 1},
-		{"table monitor 配置缺失", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_TABLE_MONITOR_STORE": "w13g8-bogus"}, false, 1},
-		{"table monitor PG 缺连接串", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_TABLE_MONITOR_STORE": "postgres", "JUHE_AI_TABLE_MONITOR_POSTGRES_URL": ""}, false, 1},
-		{"table monitor SQLite 路径非法", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": "."}, false, 1},
 		{"J1 owner 非 go", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "w13g8-not-go"}, false, 1},
 		{"model-recovery 非法 namespace", nil, w13g8FullOwnerEnv, map[string]string{
 			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/9",
@@ -163,19 +146,13 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 			"JUHE_AI_REDIS_NAMESPACE": "w13g8",
 		}, false, 1},
 		{"J3a 管理接口守卫", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED": "true"}, false, 1},
-		{"gometrics 配置非法", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "w13g8-bogus"}, false, 1},
-		{"gometrics OpenStore 失败", nil, w13g8GarbageMetricsEnv, nil, false, 1},
 		{"F1 OpenStore 失败", nil, w13g8GarbageRuntimeEnv, nil, false, 1},
-		{"F2 PG acquire 失败", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_TABLE_MONITOR_STORE":        "postgres",
-			"JUHE_AI_TABLE_MONITOR_POSTGRES_URL": "pgx://w13g8-invalid-url",
-		}, false, 1},
 		{"J3b 由网关持有", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_MODEL_CHECK_ENABLED": "true"}, false, 1},
 		{"worker 配置 fail closed", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_DATABASE_DRIVER": "postgres"}, false, 1},
 		{"worker 装配失败", nil, w13g8WorkerAssemblyFailEnv, nil, false, 1},
 		// migrate flag 分发臂（102-105）：迁移链路成功或失败均可，仅要求退出。
 		{"migrate 完整分发", []string{"-migrate-runtime-log-legacy-sqlite"}, w13g8FullOwnerEnv, nil, true, 0},
-		// 监听失败臂（F1/F2 SQLite 全部成功后 listen 校验失败）。
+		// 监听失败臂（F1 SQLite 全部成功后 listen 校验失败）。
 		{"健康监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8FullOwnerEnv, map[string]string{}, false, 1},
 		// passive standby 模式的监听失败臂（runPassiveJobs listen fail）。
 		{"passive 监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8PassiveEnv, nil, false, 1},
@@ -246,17 +223,20 @@ func w13g8SpawnAndAssertExit(t *testing.T, env map[string]string, args []string)
 	}
 }
 
-// TestW13G8HealthHandlerPartialSlots 覆盖 healthHandler 仅前 6 个 j2 槽位时
-// 的 worker 默认值分支。
-func TestW13G8HealthHandlerPartialSlots(t *testing.T) {
+// TestW13G8HealthHandlerPartialDeps 覆盖 healthHandler 未显式提供 worker
+// 依赖时的回落分支（worker 恒开，未提供的探针回落恒就绪）。
+func TestW13G8HealthHandlerPartialDeps(t *testing.T) {
 	runtimeRunning := &atomic.Bool{}
 	runtimeRunning.Store(true)
-	handler := healthHandler(ownermode.Active, runtimeRunning, func() bool { return true }, false, nil,
-		true, func() bool { return true },
-		true, func() bool { return true },
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-	)
+	handler := healthHandler(healthDeps{
+		OwnerMode:            ownermode.Active,
+		RuntimeRunning:       runtimeRunning,
+		AccountBalanceReady:  func() bool { return true },
+		ProxyLatencyEnabled:  true,
+		ProxyLatencyReady:    func() bool { return true },
+		ProxyLatencyStatus:   func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
+		ProxyLatencySnapshot: func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
+	})
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -267,9 +247,10 @@ func TestW13G8HealthHandlerPartialSlots(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	// worker 槽位缺失时必须回落禁用默认。
+	// worker 依赖缺失时 readiness 仍由恒开语义收口（workerEnabled=true 且
+	// 默认探针就绪）。
 	for key, want := range map[string]any{
-		"workerEnabled": false,
+		"workerEnabled": true,
 		"ready":         true,
 	} {
 		if payload[key] != want {

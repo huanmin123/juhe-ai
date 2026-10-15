@@ -1,0 +1,926 @@
+package chat
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// 内部工具注册表/编排器与图片生成传输是工具往返的核心：参数校验、去重缓存、
+// 失败纠错、错误码归类和 b64 解码契约必须与 Node 一致。执行器与资产接收器
+// 全部用 Mock 替换，不触达真实上游。
+
+type stubImageGenerationW3 struct {
+	calls     int
+	fail      error
+	result    ChatImageGenerationToolResult
+	lastModel string
+}
+
+func (s *stubImageGenerationW3) generate(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
+	s.calls++
+	s.lastModel = request.Model
+	if s.fail != nil {
+		return ChatImageGenerationToolResult{}, s.fail
+	}
+	return s.result, nil
+}
+
+var testTinyPNGBytesW3 = mustDecodeBase64W3(testTinyPNGBase64)
+
+func mustDecodeBase64W3(value string) []byte {
+	decoded, err := decodeBase64Payload(value, 1<<20)
+	if err != nil {
+		panic(err)
+	}
+	return decoded
+}
+
+func toolContextW3(image *stubImageGenerationW3) *chatToolExecutionContext {
+	return &chatToolExecutionContext{
+		DefaultImageModel: "gpt-image-2",
+		ImageGeneration: func(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
+			return image.generate(request)
+		},
+		ArtifactSink: stubSinkW3{},
+	}
+}
+
+type stubSinkW3 struct{ calls int }
+
+func (s stubSinkW3) CommitGeneratedImage(input GeneratedImageCommitInput) (GeneratedImageCommitResult, error) {
+	return GeneratedImageCommitResult{AssetID: "asset-1", MimeType: input.Result.MimeType, Width: input.Result.Width, Height: input.Result.Height, Bytes: input.Result.Bytes}, nil
+}
+
+// TestChatInternalToolRegistryW3 覆盖注册表的装配与参数归一。
+func TestChatInternalToolRegistryW3(t *testing.T) {
+	dev := newChatInternalToolRegistry("development", true, false)
+	if _, ok := dev.definitions["diagnostic_echo"]; !ok {
+		t.Fatalf("development 环境应有 diagnostic_echo")
+	}
+	if _, ok := dev.definitions["generate_image"]; ok {
+		t.Fatalf("图片未开通时不应有 generate_image")
+	}
+	imageOn := newChatInternalToolRegistry("production", false, true)
+	if _, ok := imageOn.definitions["diagnostic_echo"]; ok {
+		t.Fatalf("production 不应有 diagnostic_echo")
+	}
+	if _, ok := imageOn.definitions["generate_image"]; !ok {
+		t.Fatalf("图片开通后应有 generate_image")
+	}
+	if tools := dev.resolveTools(false); len(tools) != 0 {
+		t.Fatalf("function calling 关闭时应返回空: %d", len(tools))
+	}
+	// web_search 是常驻模型工具（契约 §6.1），不随环境/图片开关变化；M7
+	// generate_video/generate_audio 同为常驻注册（问答音视频工具设计 §4.1，
+	// 媒体域无全局开关，仅 generate_image 受图片门控）。
+	devTools := dev.resolveTools(true)
+	if len(devTools) != 4 || devTools[0].ModelName != "diagnostic_echo" || devTools[1].ModelName != "web_search" ||
+		devTools[2].ModelName != "generate_video" || devTools[3].ModelName != "generate_audio" {
+		names := make([]string, 0, len(devTools))
+		for _, tool := range devTools {
+			names = append(names, tool.ModelName)
+		}
+		t.Fatalf("resolveTools 应含 diagnostic_echo+web_search+媒体两工具: %v", names)
+	}
+	if _, err := dev.definition("bogus"); err == nil {
+		t.Fatalf("未知工具应报错")
+	}
+	if _, err := dev.normalizeArguments("diagnostic_echo", strings.Repeat("a", 5000), 4096); err == nil {
+		t.Fatalf("超限参数应报错")
+	}
+	if _, err := dev.normalizeArguments("diagnostic_echo", "{bad", 4096); err == nil {
+		t.Fatalf("非法 JSON 应报错")
+	}
+	if _, err := dev.normalizeArguments("diagnostic_echo", "[1]", 4096); err == nil {
+		t.Fatalf("非对象根值应报错")
+	}
+	value, err := dev.normalizeArguments("diagnostic_echo", `{"text":"hi"}`, 4096)
+	if err != nil || value["text"] != "hi" {
+		t.Fatalf("合法参数解析失败: %v %v", value, err)
+	}
+	if chatToolErrorMessage("bogus") != "工具执行失败" || chatToolErrorMessage("tool_timeout") != "工具执行超时" {
+		t.Fatalf("chatToolErrorMessage 契约不正确")
+	}
+}
+
+// TestDiagnosticEchoToolW3 覆盖回显工具的执行契约。
+func TestDiagnosticEchoToolW3(t *testing.T) {
+	tool := newDiagnosticEchoTool()
+	result, err := tool.Execute(map[string]any{"text": "ping"}, nil)
+	if err != nil || result.PublicResult["echoedText"] != "ping" {
+		t.Fatalf("回显失败: %+v err=%v", result, err)
+	}
+	nonString, err := tool.Execute(map[string]any{"text": 42}, nil)
+	if err != nil || nonString.PublicResult["echoedText"] != "42" {
+		t.Fatalf("非字符串应 fmt.Sprint: %+v", nonString)
+	}
+	empty, err := tool.Execute(nil, nil)
+	if err != nil || empty.PublicResult["echoedText"] != "" {
+		t.Fatalf("空输入应回显空: %+v", empty)
+	}
+}
+
+// TestExecuteGenerateImageToolW3 覆盖图片工具的参数分支与成功路径。
+func TestExecuteGenerateImageToolW3(t *testing.T) {
+	image := &stubImageGenerationW3{result: ChatImageGenerationToolResult{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), MimeType: "image/png", Width: 1, Height: 1}}
+	context := toolContextW3(image)
+
+	t.Run("运行时未配置", func(t *testing.T) {
+		if _, err := executeGenerateImageTool(map[string]any{"prompt": "x"}, &chatToolExecutionContext{}); err == nil {
+			t.Fatalf("未配置运行时应报错")
+		}
+	})
+	t.Run("提示词为空", func(t *testing.T) {
+		if _, err := executeGenerateImageTool(map[string]any{}, context); err == nil || !strings.Contains(err.Error(), "提示词不能为空") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("引用 ID 非法", func(t *testing.T) {
+		_, err := executeGenerateImageTool(map[string]any{"prompt": "p", "reference_asset_ids": []any{"bad-id"}}, context)
+		if err == nil || !strings.Contains(err.Error(), "assetId 无效") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("操作类型无效", func(t *testing.T) {
+		_, err := executeGenerateImageTool(map[string]any{"prompt": "p", "action": "bogus"}, context)
+		if err == nil || !strings.Contains(err.Error(), "操作类型无效") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("edit 缺引用", func(t *testing.T) {
+		_, err := executeGenerateImageTool(map[string]any{"prompt": "p", "action": "edit"}, context)
+		if err == nil || !strings.Contains(err.Error(), "至少引用一张来源图片") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("generate 携带引用", func(t *testing.T) {
+		_, err := executeGenerateImageTool(map[string]any{"prompt": "p", "action": "generate", "reference_asset_ids": []any{"chat_asset_" + strings.Repeat("a", 32)}}, context)
+		if err == nil || !strings.Contains(err.Error(), "生成图片不能携带来源图片") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("模型不受支持", func(t *testing.T) {
+		_, err := executeGenerateImageTool(map[string]any{"prompt": "p", "model": "dall-e-9"}, context)
+		if err == nil || !strings.Contains(err.Error(), "不受支持") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("参数归一失败", func(t *testing.T) {
+		if _, err := executeGenerateImageTool(map[string]any{"prompt": "p", "size": "100x100"}, context); err == nil {
+			t.Fatalf("非 16 倍数尺寸应报错")
+		}
+		if _, err := executeGenerateImageTool(map[string]any{"prompt": "p", "quality": "ultra"}, context); err == nil {
+			t.Fatalf("非法质量应报错")
+		}
+		if _, err := executeGenerateImageTool(map[string]any{"prompt": "p", "output_format": "gif"}, context); err == nil {
+			t.Fatalf("非法输出格式应报错")
+		}
+	})
+	t.Run("成功生成", func(t *testing.T) {
+		result, err := executeGenerateImageTool(map[string]any{"prompt": " 一只猫 ", "size": "auto", "quality": "high"}, context)
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		if result.PublicResult["assetId"] != "asset-1" || result.PublicResult["operation"] != "generate" || result.PublicResult["size"] != "auto" {
+			t.Fatalf("公共结果不正确: %v", result.PublicResult)
+		}
+		if image.calls != 1 {
+			t.Fatalf("图片生成应调用一次: %d", image.calls)
+		}
+	})
+	t.Run("auto + 引用即编辑", func(t *testing.T) {
+		editContext := toolContextW3(&stubImageGenerationW3{result: ChatImageGenerationToolResult{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), MimeType: "image/png", Width: 1, Height: 1}})
+		loaded := false
+		editContext.LoadImageEditReferences = func(assetIDs []string) ([]ChatImageEditReference, error) {
+			loaded = true
+			return []ChatImageEditReference{{AssetID: assetIDs[0], Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), MimeType: "image/png", Filename: "a.png"}}, nil
+		}
+		result, err := executeGenerateImageTool(map[string]any{"prompt": "p", "reference_asset_ids": []any{"chat_asset_" + strings.Repeat("b", 32)}}, editContext)
+		if err != nil || result.PublicResult["operation"] != "edit" || !loaded {
+			t.Fatalf("auto+引用应走编辑: %+v err=%v", result.PublicResult, err)
+		}
+	})
+}
+
+// TestNormalizeChatImagePolicyW3 覆盖尺寸/质量/格式归一与引用 ID 校验。
+func TestNormalizeChatImagePolicyW3(t *testing.T) {
+	if size, err := normalizeChatImageSize(nil); err != nil || size != "auto" {
+		t.Fatalf("nil 尺寸应为 auto: %s %v", size, err)
+	}
+	if _, err := normalizeChatImageSize("4000x4000"); err == nil {
+		t.Fatalf("超 3840 长边应报错")
+	}
+	if _, err := normalizeChatImageSize("3840x960"); err == nil {
+		t.Fatalf("超 3:1 比例应报错")
+	}
+	// 恰好 3:1 允许。
+	if _, err := normalizeChatImageSize("3072x1024"); err != nil {
+		t.Fatalf("3:1 尺寸应允许: %v", err)
+	}
+	if _, err := normalizeChatImageSize("16x16"); err == nil {
+		t.Fatalf("低于最小像素应报错")
+	}
+	if _, err := normalizeChatImageSize("99999999x16"); err == nil {
+		t.Fatalf("超最大像素应报错")
+	}
+	if size, err := normalizeChatImageSize(" 1024X1024 "); err != nil || size != "1024x1024" {
+		t.Fatalf("合法尺寸归一失败: %s %v", size, err)
+	}
+	if quality, err := normalizeChatImageQuality(nil); err != nil || quality != "auto" {
+		t.Fatalf("nil 质量应为 auto")
+	}
+	if _, err := normalizeChatImageQuality("ultra"); err == nil {
+		t.Fatalf("非法质量应报错")
+	}
+	if format, err := normalizeChatImageOutputFormat(nil); err != nil || format != "webp" {
+		t.Fatalf("nil 格式应为 webp")
+	}
+	if _, err := normalizeChatImageOutputFormat("gif"); err == nil {
+		t.Fatalf("非法格式应报错")
+	}
+	if _, err := normalizeReferenceAssetIDs("not-array"); err == nil {
+		t.Fatalf("非数组引用应报错")
+	}
+	if _, err := normalizeReferenceAssetIDs([]any{1}); err == nil {
+		t.Fatalf("非字符串项应归一为字符串并校验")
+	}
+	if _, err := normalizeReferenceAssetIDs([]any{"chat_asset_" + strings.Repeat("a", 32), "chat_asset_" + strings.Repeat("a", 32)}); err == nil {
+		t.Fatalf("重复引用应报错")
+	}
+	if _, err := normalizeReferenceAssetIDs(make([]any, 6)); err == nil {
+		t.Fatalf("超 5 个引用应报错")
+	}
+	if ids, err := normalizeReferenceAssetIDs(nil); err != nil || len(ids) != 0 {
+		t.Fatalf("nil 引用应为空数组: %v %v", ids, err)
+	}
+	if err := validateChatImageEditReferenceLimits(nil); err == nil {
+		t.Fatalf("空引用应报错")
+	}
+	if err := validateChatImageEditReferenceLimits(make([]ChatImageEditReference, 6)); err == nil {
+		t.Fatalf("超 5 个引用应报错")
+	}
+	if err := validateChatImageEditReferenceLimits([]ChatImageEditReference{{Bytes: 0}}); err == nil {
+		t.Fatalf("非法字节应报错")
+	}
+	if err := validateChatImageEditReferenceLimits([]ChatImageEditReference{{Bytes: 1}}); err != nil {
+		t.Fatalf("合法引用不应报错: %v", err)
+	}
+}
+
+// TestChatInternalToolOrchestratorW3 覆盖编排器的轮次、缓存与失败纠错。
+func TestChatInternalToolOrchestratorW3(t *testing.T) {
+	registry := newChatInternalToolRegistry("development", true, true)
+
+	t.Run("无工具调用直接返回", func(t *testing.T) {
+		orchestrator := newChatInternalToolOrchestrator(registry, registry.resolveTools(true), &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 2, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
+		result, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
+			if round != 1 || len(continuation) != 0 {
+				t.Errorf("首轮参数不正确: %d %v", round, continuation)
+			}
+			return ChatToolModelTurn{Content: "回答", FinishReason: "stop", InputTokens: int64PtrT(3)}, nil
+		})
+		if err != nil || result.Content != "回答" || result.ModelRounds != 1 || result.InputTokens == nil {
+			t.Fatalf("结果不正确: %+v err=%v", result, err)
+		}
+	})
+	t.Run("工具轮次与精确去重", func(t *testing.T) {
+		var events []ChatToolExecutionEvent
+		orchestrator := newChatInternalToolOrchestrator(registry, registry.resolveTools(true), &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 4, MaxImageCalls: 2}, func(event ChatToolExecutionEvent) {
+			events = append(events, event)
+		})
+		round := 0
+		result, err := orchestrator.Run(func(r int, continuation []any) (ChatToolModelTurn, error) {
+			round++
+			if r == 1 {
+				return ChatToolModelTurn{ToolCalls: []ChatToolCall{
+					{CallID: "c2", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"hi"}`, SourceOrder: 1},
+					{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"hi"}`, SourceOrder: 0},
+				}}, nil
+			}
+			if len(continuation) != 2 {
+				t.Errorf("续答项目数量 = %d, 期望 2", len(continuation))
+			}
+			return ChatToolModelTurn{Content: "完成"}, nil
+		})
+		if err != nil || result.ToolCalls != 2 || result.ModelRounds != 2 || round != 2 {
+			t.Fatalf("结果不正确: %+v err=%v round=%d", result, err, round)
+		}
+		// SourceOrder 排序后 c1 先执行；相同参数第二次命中复用。
+		reused := false
+		for _, event := range events {
+			if event.Reused {
+				reused = true
+			}
+		}
+		if !reused {
+			t.Fatalf("相同参数应命中 reuse_exact: %+v", events)
+		}
+	})
+	t.Run("取消传播", func(t *testing.T) {
+		aborted := false
+		context := &chatToolExecutionContext{Aborted: func() bool { return aborted }}
+		orchestrator := newChatInternalToolOrchestrator(registry, registry.resolveTools(true), context, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
+		_, err := orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
+			aborted = true
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"x"}`}}}, nil
+		})
+		if err == nil || err.Error() != "工具执行已取消" {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("工具失败纠错一次", func(t *testing.T) {
+		var events []ChatToolExecutionEvent
+		emptyRegistry := &chatInternalToolRegistry{definitions: map[string]*toolDefinition{}}
+		orchestrator := newChatInternalToolOrchestrator(emptyRegistry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 4, MaxImageCalls: 2}, func(event ChatToolExecutionEvent) {
+			events = append(events, event)
+		})
+		result, err := orchestrator.Run(func(r int, continuation []any) (ChatToolModelTurn, error) {
+			if r == 1 {
+				return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "missing_tool", ArgumentsJSON: `{}`}}}, nil
+			}
+			if len(continuation) != 1 {
+				t.Errorf("失败载荷应进入续答: %d", len(continuation))
+			}
+			return ChatToolModelTurn{Content: " recovered"}, nil
+		})
+		if err != nil {
+			t.Fatalf("可纠正失败不应中断: %v", err)
+		}
+		if len(events) != 2 || events[0].Status != "started" || events[1].Status != "failed" {
+			t.Fatalf("事件序列不正确: %+v", events)
+		}
+		if events[1].ErrorCode != "tool_not_available" {
+			t.Fatalf("错误码不正确: %s", events[1].ErrorCode)
+		}
+		if !strings.Contains(result.Content, "recovered") {
+			t.Fatalf("应继续完成: %+v", result)
+		}
+	})
+	t.Run("第二次失败直接失败", func(t *testing.T) {
+		emptyRegistry := &chatInternalToolRegistry{definitions: map[string]*toolDefinition{}}
+		orchestrator := newChatInternalToolOrchestrator(emptyRegistry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 9, MaxImageCalls: 2}, nil)
+		_, err := orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "missing_tool", ArgumentsJSON: `{}`}}}, nil
+		})
+		if err == nil {
+			t.Fatalf("第二次失败应直接报错")
+		}
+	})
+	t.Run("轮次与次数上限", func(t *testing.T) {
+		limits := newChatInternalToolOrchestrator(registry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 1, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
+		if _, err := limits.Run(func(int, []any) (ChatToolModelTurn, error) {
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{}`}}}, nil
+		}); err == nil {
+			t.Fatalf("轮次上限应报错")
+		}
+		fewCalls := newChatInternalToolOrchestrator(registry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 0, MaxImageCalls: 2}, nil)
+		_, err := fewCalls.Run(func(int, []any) (ChatToolModelTurn, error) {
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"x"}`}}}, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "tool_call_limit_exceeded") == false {
+			t.Fatalf("工具次数上限应报错: %v", err)
+		}
+	})
+	t.Run("中断错误不进入纠错", func(t *testing.T) {
+		abortError := &abortTestErrorW3{}
+		failing := &toolDefinition{ID: "t", Version: "1", ModelName: "diagnostic_echo", MaxArgumentBytes: 1024, MaxResultBytes: 1024, TimeoutMs: 1, DuplicatePolicy: "allow_repeat", Execute: func(map[string]any, *chatToolExecutionContext) (chatToolExecutionResult, error) {
+			return chatToolExecutionResult{}, abortError
+		}}
+		registryOne := &chatInternalToolRegistry{definitions: map[string]*toolDefinition{"diagnostic_echo": failing}}
+		orchestrator := newChatInternalToolOrchestrator(registryOne, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
+		_, err := orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{}`}}}, nil
+		})
+		if err != abortError {
+			t.Fatalf("中断错误应原样透传: %v", err)
+		}
+	})
+	t.Run("panic 向外传播", func(t *testing.T) {
+		// 契约：编排器自身不 recover，panic 由 buildGenerationExecute 的
+		// defer/recover 包装层统一转为内部错误。
+		panicking := &toolDefinition{ID: "t", Version: "1", ModelName: "diagnostic_echo", MaxArgumentBytes: 1024, MaxResultBytes: 1024, TimeoutMs: 1, DuplicatePolicy: "allow_repeat", Execute: func(map[string]any, *chatToolExecutionContext) (chatToolExecutionResult, error) {
+			panic("工具崩溃")
+		}}
+		registryOne := &chatInternalToolRegistry{definitions: map[string]*toolDefinition{"diagnostic_echo": panicking}}
+		orchestrator := newChatInternalToolOrchestrator(registryOne, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
+		defer func() {
+			recovered := recover()
+			if recovered != "工具崩溃" {
+				t.Fatalf("panic 应原样透传: %v", recovered)
+			}
+		}()
+		_, _ = orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
+			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{}`}}}, nil
+		})
+		t.Fatalf("应发生 panic")
+	})
+}
+
+type abortTestErrorW3 struct{}
+
+func (e *abortTestErrorW3) Error() string    { return "aborted" }
+func (e *abortTestErrorW3) AbortError() bool { return true }
+
+// TestGenerateChatImageW3 用 Mock 执行器覆盖图片生成传输的完整链路。
+func TestGenerateChatImageW3(t *testing.T) {
+	t.Run("入参校验", func(t *testing.T) {
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Prompt: "p"}, "key", "", nil); err == nil {
+			t.Fatalf("空模型应报错")
+		}
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "gpt-image-2"}, "key", "", nil); err == nil {
+			t.Fatalf("空提示词应报错")
+		}
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Size: "10x10"}, "key", "", nil); err == nil {
+			t.Fatalf("非法尺寸应报错")
+		}
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Quality: "ultra"}, "key", "", nil); err == nil {
+			t.Fatalf("非法质量应报错")
+		}
+		if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", OutputFormat: "gif"}, "key", "", nil); err == nil {
+			t.Fatalf("非法格式应报错")
+		}
+	})
+	t.Run("生成成功并提取修订提示词", func(t *testing.T) {
+		body := `{"data":[{"b64_json":"` + testTinyPNGBase64 + `"}],"revised_prompt":"一只猫"}`
+		var dispatched dispatchCall
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				dispatched = call
+				return jsonStatusResponse(200, body)
+			},
+		}}}
+		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: " gpt-image-2 ", Prompt: " 猫 "}, "secret", "trace-1", nil)
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		if result.MimeType != "image/png" || result.Width != 1 || result.Height != 1 || result.RevisedPrompt != "一只猫" {
+			t.Fatalf("结果不正确: %+v", result)
+		}
+		if !strings.Contains(dispatched.Body, `"prompt":"猫"`) || !strings.Contains(dispatched.Body, `"quality":"auto"`) {
+			t.Fatalf("请求体不正确: %s", dispatched.Body)
+		}
+		if dispatched.Headers["x-trace-id"] != "trace-1" || dispatched.Headers["authorization"] != "Bearer secret" {
+			t.Fatalf("请求头不正确: %v", dispatched.Headers)
+		}
+	})
+	t.Run("编辑走 multipart", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/edits" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				if !strings.Contains(call.Body, `name="image[]"`) || !strings.Contains(call.Headers["content-type"], "multipart/form-data") {
+					t.Errorf("编辑请求应为 multipart: %s", call.Body)
+				}
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{
+			Model: "m", Prompt: "p", References: []ChatImageEditReference{{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), Filename: "a.png"}},
+		}, "key", "", nil)
+		if err != nil {
+			t.Fatalf("编辑失败: %v", err)
+		}
+	})
+	t.Run("上游失败映射", func(t *testing.T) {
+		cases := []struct {
+			status int
+			body   string
+			code   PublicChatGenerationErrorCode
+		}{
+			{403, `{"error":{"message":"image generation is not enabled for the group","type":"permission_error"}}`, GenErrImageNotEnabled},
+			{401, `{"error":{"message":"bad key","type":"invalid_request_error"}}`, GenErrImagePermissionDenied},
+			{429, `{"error":{"message":"slow down"}}`, GenErrImageRateLimited},
+			{400, `{"error":{"message":"bad size"}}`, GenErrImageRequestRejected},
+			{500, `{}`, GenErrImageFailed},
+		}
+		for _, testCase := range cases {
+			executor := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(testCase.status, testCase.body)
+			}}}}
+			_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil)
+			var imageErr *ChatImageGenerationRequestError
+			if !errorsAs(err, &imageErr) {
+				t.Fatalf("status %d 应返回图片请求错误: %v", testCase.status, err)
+			}
+			if imageErr.Code != testCase.code {
+				t.Fatalf("status %d code = %s, 期望 %s", testCase.status, imageErr.Code, testCase.code)
+			}
+			if imageErr.StatusCode != testCase.status {
+				t.Fatalf("statusCode = %d", imageErr.StatusCode)
+			}
+		}
+	})
+	t.Run("响应载荷异常", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
+			return jsonStatusResponse(200, `{"data":[]}`)
+		}}}}
+		if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
+			t.Fatalf("缺 b64_json 应报错: %v", err)
+		}
+		badBase64 := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
+			return jsonStatusResponse(200, `{"data":[{"b64_json":"!!!"}]}`)
+		}}}}
+		if _, err := GenerateChatImage(context.Background(), &badBase64, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "无法解码") {
+			t.Fatalf("非法 base64 应报错: %v", err)
+		}
+		unknownBytes := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
+			return jsonStatusResponse(200, `{"data":[{"b64_json":"`+base64.StdEncoding.EncodeToString([]byte("hello"))+`"}]}`)
+		}}}}
+		if _, err := GenerateChatImage(context.Background(), &unknownBytes, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); err == nil {
+			t.Fatalf("未知图片字节应报错")
+		}
+	})
+	t.Run("执行器错误", func(t *testing.T) {
+		executor := failingExecutorW3{}
+		if _, err := GenerateChatImage(context.Background(), executor, ChatImageGenerationRequest{Model: "m", Prompt: "p"}, "key", "", nil); !errors.Is(err, errExecutorFailedW3) {
+			t.Fatalf("执行器错误应透传: %v", err)
+		}
+	})
+}
+
+type failingExecutorW3 struct{}
+
+var errExecutorFailedW3 = errors.New("dispatch 失败")
+
+func (failingExecutorW3) Dispatch(ctx context.Context, req GenerationDispatchRequest) (*GenerationDispatchResponse, error) {
+	return nil, errExecutorFailedW3
+}
+
+// TestImageBytesW3 覆盖 MIME 嗅探与尺寸解析。
+func TestImageBytesW3(t *testing.T) {
+	if got := imageMimeTypeFromBytes(testTinyPNGBytesW3); got != "image/png" {
+		t.Fatalf("PNG 嗅探失败: %s", got)
+	}
+	// 完整 JPEG 段结构：SOI + APP0(长度16) + SOF0（高 0x20 宽 0x40）。
+	jpeg := []byte{
+		0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+		0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x20, 0x00, 0x40, 0x00,
+	}
+	if got := imageMimeTypeFromBytes(jpeg); got != "image/jpeg" {
+		t.Fatalf("JPEG 嗅探失败: %s", got)
+	}
+	width, height := imageDimensionsFromBytes(jpeg)
+	if width != 64 || height != 32 {
+		t.Fatalf("JPEG 尺寸 = %dx%d", width, height)
+	}
+	if got := imageMimeTypeFromBytes([]byte("plain text")); got != "" {
+		t.Fatalf("未知字节应返回空 MIME: %s", got)
+	}
+	if width, height := imageDimensionsFromBytes([]byte("short")); width != 0 || height != 0 {
+		t.Fatalf("未知字节尺寸应为 0")
+	}
+	// WebP VP8 简单损耗格式。
+	webp := make([]byte, 30)
+	copy(webp[0:4], "RIFF")
+	copy(webp[8:12], "WEBP")
+	copy(webp[12:16], "VP8 ")
+	if got := imageMimeTypeFromBytes(webp); got != "image/webp" {
+		t.Fatalf("WebP 嗅探失败: %s", got)
+	}
+	copy(webp[12:16], "VP8L")
+	if _, _ = imageDimensionsFromBytes(webp); false {
+		t.Fatalf("占位")
+	}
+	copy(webp[12:16], "VP8X")
+	webp[24] = 15
+	webp[27] = 15
+	if width, height := webpDimensions(webp); width != 16 || height != 16 {
+		t.Fatalf("VP8X 尺寸 = %dx%d", width, height)
+	}
+	copy(webp[12:16], "XXXX")
+	if width, height := webpDimensions(webp); width != 0 || height != 0 {
+		t.Fatalf("未知 chunk 尺寸应为 0")
+	}
+	if width, height := webpDimensions(nil); width != 0 || height != 0 {
+		t.Fatalf("短数据应为 0")
+	}
+}
+
+// TestStorageKeysAndObjectStoreW3 覆盖存储键派生与本地对象存储契约。
+func TestStorageKeysAndObjectStoreW3(t *testing.T) {
+	key := StorageKeyForChatAsset("chat_asset_1", strings.Repeat("A", 64), "image/png", "preview")
+	if !strings.HasPrefix(key, "aa/aa/") || !strings.HasSuffix(key, "-preview-aaaaaaaaaaaaaaaa.png") {
+		t.Fatalf("存储键不正确: %s", key)
+	}
+	if got := chatAssetObjectExtension("image/jpeg"); got != ".jpg" {
+		t.Fatalf("jpeg 扩展名不正确: %s", got)
+	}
+	if got := chatAssetObjectExtension("bogus"); got != ".bin" {
+		t.Fatalf("未知 MIME 扩展名不正确: %s", got)
+	}
+	// 路径分隔符被清洗为下划线；目录穿越由 LocalObjectStore.path 兜底。
+	if got := safeStorageSegment("../evil", 120); strings.Contains(got, "/") || got != ".._evil" {
+		t.Fatalf("路径段应被清洗: %q", got)
+	}
+	if got := safeStorageSegment("", 10); got != "_" {
+		t.Fatalf("空段应为下划线: %q", got)
+	}
+	if got := normalizedSHA256(strings.ToUpper(strings.Repeat("a", 64))); got != strings.Repeat("a", 64) {
+		t.Fatalf("哈希应小写归一: %s", got)
+	}
+	if got := normalizedSHA256("short"); got != strings.Repeat("0", 64) {
+		t.Fatalf("非法哈希应替换为全 0: %s", got)
+	}
+
+	store, err := NewLocalObjectStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("创建对象存储失败: %v", err)
+	}
+	data := []byte("图片数据")
+	digest := hexEncode(mustSum256W3(data))
+	if err := store.Write("aa/bb/object.bin", data, 100, digest); err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if err := store.Write("aa/bb/object.bin", data, 100, "wrong"); err == nil {
+		t.Fatalf("哈希不一致应报错")
+	}
+	if err := store.Write("aa/bb/object.bin", make([]byte, 101), 100, ""); err == nil {
+		t.Fatalf("超限应报错")
+	}
+	if err := store.Write("aa/bb/object.bin", nil, 100, ""); err == nil {
+		t.Fatalf("空数据应报错")
+	}
+	if err := store.Write("../escape", data, 100, ""); err == nil {
+		t.Fatalf("越界键应报错")
+	}
+	read, size, err := store.Open("aa/bb/object.bin", 100)
+	if err != nil || size != int64(len(data)) || string(read) != string(data) {
+		t.Fatalf("读取失败: %v %d", err, size)
+	}
+	if _, _, err := store.Open("aa/bb/missing.bin", 100); err == nil {
+		t.Fatalf("缺失文件应报错")
+	}
+	if _, _, err := store.Open("aa/bb/object.bin", 2); err == nil {
+		t.Fatalf("超读取上限应报错")
+	}
+	if _, _, err := store.Open("../escape", 100); err == nil {
+		t.Fatalf("越界读取应报错")
+	}
+	if err := store.Delete([]string{"aa/bb/object.bin", "", "../escape"}); err != nil {
+		t.Fatalf("删除失败: %v", err)
+	}
+	if _, _, err := store.Open("aa/bb/object.bin", 100); err == nil {
+		t.Fatalf("删除后读取应报错")
+	}
+}
+
+func mustSum256W3(data []byte) []byte {
+	sum := sha256.Sum256(data)
+	return sum[:]
+}
+
+// TestChatImageModelRegistryW3 覆盖图像模型注册表：稳定顺序、成员判断与会话归一。
+func TestChatImageModelRegistryW3(t *testing.T) {
+	models := SupportedChatImageModels()
+	if len(models) != 3 || models[0] != ImageModelGPTImage2 || models[1] != ImageModelGrokImagineImage || models[2] != ImageModelGrokImagineQuality {
+		t.Fatalf("注册表顺序错误: %v", models)
+	}
+	for _, model := range []string{"gpt-image-2", "grok-imagine-image", "grok-imagine-image-quality"} {
+		if !IsSupportedChatImageModel(model) {
+			t.Fatalf("%s 应在注册表内", model)
+		}
+		if _, err := normalizedImageModel(model); err != nil {
+			t.Fatalf("%s 归一失败: %v", model, err)
+		}
+	}
+	for _, model := range []string{"", "dall-e-3", "GPT-IMAGE-2", " grok-imagine-image "} {
+		if IsSupportedChatImageModel(model) {
+			t.Fatalf("%q 不应在注册表内", model)
+		}
+	}
+	if _, err := normalizedImageModel("dall-e-3"); err == nil {
+		t.Fatalf("未登记模型应报错")
+	}
+}
+
+// TestGenerateChatImageGrokProfileW3 覆盖 grok 参数画像（quality=auto 省略、
+// 显式 response_format=b64_json；生成与 edits 两条路径）与 b64_json 缺失时
+// data[0].url 回退下载。画像来源：2026-09-19 对上游实测。
+func TestGenerateChatImageGrokProfileW3(t *testing.T) {
+	grokModels := []string{"grok-imagine-image", "grok-imagine-image-quality"}
+
+	t.Run("grok 生成请求体画像", func(t *testing.T) {
+		var bodies []string
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				bodies = append(bodies, call.Body)
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		for _, model := range grokModels {
+			if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: model, Prompt: "猫"}, "key", "", nil); err != nil {
+				t.Fatalf("%s 生成失败: %v", model, err)
+			}
+		}
+		if len(bodies) != len(grokModels) {
+			t.Fatalf("dispatch 次数 = %d", len(bodies))
+		}
+		for _, body := range bodies {
+			if strings.Contains(body, `"quality"`) {
+				t.Fatalf("grok auto 应省略 quality: %s", body)
+			}
+			if !strings.Contains(body, `"response_format":"b64_json"`) {
+				t.Fatalf("grok 应显式请求 b64_json: %s", body)
+			}
+			if !strings.Contains(body, `"size":"auto"`) || !strings.Contains(body, `"output_format":"webp"`) {
+				t.Fatalf("grok 请求体缺 size/output_format: %s", body)
+			}
+		}
+	})
+
+	t.Run("grok 指定 quality 仍透传", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫", Quality: "low"}, "key", "", nil)
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		body := executor.calls[0].Body
+		if !strings.Contains(body, `"quality":"low"`) {
+			t.Fatalf("low quality 应透传: %s", body)
+		}
+	})
+
+	t.Run("gpt-image-2 请求体保持恒带 quality 且不带 response_format", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "gpt-image-2", Prompt: "猫"}, "key", "", nil)
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		body := executor.calls[0].Body
+		if !strings.Contains(body, `"quality":"auto"`) {
+			t.Fatalf("gpt-image-2 应保留 quality=auto: %s", body)
+		}
+		if strings.Contains(body, "response_format") {
+			t.Fatalf("gpt-image-2 不应携带 response_format: %s", body)
+		}
+	})
+
+	t.Run("grok edits multipart 画像", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/edits" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{
+			Model: "grok-imagine-image", Prompt: "改猫",
+			References: []ChatImageEditReference{{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), Filename: "a.png"}},
+		}, "key", "", nil)
+		if err != nil {
+			t.Fatalf("编辑失败: %v", err)
+		}
+		body := executor.calls[0].Body
+		if !strings.Contains(body, `name="response_format"`) {
+			t.Fatalf("grok edits 应带 response_format 字段: %s", body)
+		}
+		if strings.Contains(body, `name="quality"`) {
+			t.Fatalf("grok edits auto 应省略 quality 字段: %s", body)
+		}
+	})
+
+	t.Run("b64_json 缺失回退下载 url", func(t *testing.T) {
+		// 注入 server.Client() 而非 nil：httptest 监听 127.0.0.1，nil 回落的
+		// 默认客户端现按 SSRF 防护拒绝私网目标（语义钉在
+		// TestChatImageURLDownloadRejectsPrivateTargets），本用例只钉 URL
+		// 下载管道本身。
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(testTinyPNGBytesW3)
+		}))
+		defer server.Close()
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/img","mime_type":"image/png"}]}`)
+			},
+		}}}
+		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", server.Client())
+		if err != nil {
+			t.Fatalf("url 回退失败: %v", err)
+		}
+		if result.MimeType != "image/png" || result.Width != 1 || result.Height != 1 || result.Bytes != int64(len(testTinyPNGBytesW3)) {
+			t.Fatalf("url 回退结果不正确: %+v", result)
+		}
+	})
+
+	t.Run("url 下载失败与双缺失", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+		notFound := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/missing"}]}`)
+			},
+		}}}
+		// 注入 server.Client()：httptest 地址被回退默认客户端的 SSRF 防护拒
+		// 绝，本用例需真实命中 404 才能钉 HTTP 状态收敛语义。
+		if _, err := GenerateChatImage(context.Background(), &notFound, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", server.Client()); err == nil || !strings.Contains(err.Error(), "下载失败") {
+			t.Fatalf("url 下载失败应报错: %v", err)
+		}
+		missing := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"mime_type":"image/png"}]}`)
+			},
+		}}}
+		if _, err := GenerateChatImage(context.Background(), &missing, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "", nil); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
+			t.Fatalf("双缺失应报错: %v", err)
+		}
+	})
+}
+
+// TestConstrainChatImageModelW3 覆盖 BUG-0230 收敛：主模型自选生图模型超出
+// 绑定账户可路由集合时折回会话默认模型（默认亦不可路由时取该账户候选首项），
+// 集合内 / 无候选 / 未绑定原样返回；收敛结果贯通子调用请求与工具结果。
+func TestConstrainChatImageModelW3(t *testing.T) {
+	candidates := []ChatToolBindingCandidate{
+		{AccountID: "acc-a", ModelID: "gpt-image-2"},
+		{AccountID: "acc-b", ModelID: "grok-imagine-image"},
+		{AccountID: "acc-b", ModelID: "grok-imagine-quality"},
+	}
+	if got := constrainChatImageModel("gpt-image-2", "acc-b", "grok-imagine-image", candidates); got != "grok-imagine-image" {
+		t.Fatalf("越界选择应回退默认模型: %s", got)
+	}
+	if got := constrainChatImageModel("grok-imagine-quality", "acc-b", "grok-imagine-image", candidates); got != "grok-imagine-quality" {
+		t.Fatalf("集合内选择应原样: %s", got)
+	}
+	if got := constrainChatImageModel("gpt-image-2", "acc-b", "gpt-image-2", candidates); got != "grok-imagine-image" {
+		t.Fatalf("默认亦不可路由应取候选首项: %s", got)
+	}
+	if got := constrainChatImageModel("gpt-image-2", "acc-none", "grok-imagine-image", candidates); got != "gpt-image-2" {
+		t.Fatalf("绑定账户无候选不约束: %s", got)
+	}
+	if got := constrainChatImageModel("gpt-image-2", "", "grok-imagine-image", candidates); got != "gpt-image-2" {
+		t.Fatalf("未绑定不约束: %s", got)
+	}
+	if got := constrainChatImageModel("grok-imagine-image", "acc-b", "grok-imagine-image", nil); got != "grok-imagine-image" {
+		t.Fatalf("候选为空不约束: %s", got)
+	}
+
+	t.Run("收敛贯通子调用与工具结果", func(t *testing.T) {
+		image := &stubImageGenerationW3{result: ChatImageGenerationToolResult{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), MimeType: "image/png", Width: 1, Height: 1}}
+		context := toolContextW3(image)
+		context.DefaultImageModel = "grok-imagine-image"
+		context.ConstrainImageModel = func(model string) string {
+			return constrainChatImageModel(model, "acc-b", context.DefaultImageModel, candidates)
+		}
+		result, err := executeGenerateImageTool(map[string]any{"prompt": "猫", "model": "gpt-image-2"}, context)
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		if image.lastModel != "grok-imagine-image" {
+			t.Fatalf("子调用模型应收敛为 grok-imagine-image: %s", image.lastModel)
+		}
+		if result.PublicResult["model"] != "grok-imagine-image" {
+			t.Fatalf("工具结果模型应收敛: %v", result.PublicResult["model"])
+		}
+	})
+}
+
+// TestGenerateChatImageDownloadClientInjection 验证 BUG-0232 关联的代理下载
+// 注入：上游只回 url 时下载走注入客户端（绑定账户的 proxy_profile 出站），
+// nil 注入回落直连默认。
+func TestGenerateChatImageDownloadClientInjection(t *testing.T) {
+	downloaded := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downloaded++
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(testTinyPNGBytesW3)
+	}))
+	defer server.Close()
+	executor := mockExecutor{steps: []scriptStep{{
+		match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/img"}]}`)
+		},
+	}}}
+	request := ChatImageGenerationRequest{Model: "gpt-image-2", Prompt: "猫"}
+	if _, err := GenerateChatImage(context.Background(), &executor, request, "key", "", server.Client()); err != nil {
+		t.Fatalf("注入客户端下载失败: %v", err)
+	}
+	if downloaded != 1 {
+		t.Fatalf("注入客户端应被使用: downloaded=%d", downloaded)
+	}
+	// nil 注入回落的默认客户端已按 SSRF 防护收紧（拒绝私网目标、不跟随重定
+	// 向），无法再对 127.0.0.1 的 httptest 服务器做下载 e2e；契约钉在
+	// TestChatImageURLDownloadRejectsPrivateTargets 与
+	// TestChatImageURLDownloadClientContract。
+}

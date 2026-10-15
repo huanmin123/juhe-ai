@@ -31,7 +31,6 @@ func TestW9HMainFailFastArms(t *testing.T) {
 		{"owner-mode-invalid", map[string]string{"JUHE_AI_BLUE_GREEN_OWNER_MODE": "bogus-mode"}},
 		{"runtime-store-invalid", map[string]string{"JUHE_AI_RUNTIME_LOG_STORE": "bogus-store"}},
 		{"runtime-once-unsupported", map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}},
-		{"table-monitor-store-invalid", map[string]string{"JUHE_AI_TABLE_MONITOR_STORE": "bogus-store"}},
 		// J1 开启但 owner 未声明为 go → accounthealth.LoadConfig 失败。
 		// OWNER 缺省视为 go（不再报错）；显式非 go 值仍 fail-fast。
 		{"account-health-owner-not-go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}},
@@ -123,24 +122,25 @@ func TestW9HManualOutcomeAndHandover(t *testing.T) {
 	}
 }
 
-// jobsHTTPHandler 全量槽位装配的健康响应臂（worker 槽位此前只在部分组合下
-// 被覆盖）。
+// jobsHTTPHandler 全量依赖装配的健康响应臂（worker 槽位此前只在部分组合下
+// 被覆盖；not-ready 各臂经显式 deps 字段锁定）。
 func TestW9HJobsHTTPHandlerFieldArms(t *testing.T) {
 	running := &atomic.Bool{}
 	running.Store(true)
-	handler := jobsHTTPHandler(
-		ownermode.Active, running,
-		func() bool { return true },        // tableMonitorReady
-		true, func() bool { return false }, // accountHealth enabled + not ready
-		true, func() bool { return true }, nil, "", // accountBalance enabled + ready, no service
-		// j3: proxyLatency / goMetrics / worker slots.
-		true, func() bool { return false }, // [0][1] proxyLatency enabled + not ready
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },                // [2] status
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, false }, // [3] snapshot
-		nil, nil, // [4][5] goMetrics collector/sampler slots (jobsHTTPHandler-only)
-		true, func() bool { return false }, // [6][7] worker enabled + not ready
-		func() map[string]any { return map[string]any{"cycle": "w9h"} }, // [8] worker status
-	)
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:             ownermode.Active,
+		RuntimeRunning:        running,
+		AccountHealthEnabled:  true,
+		AccountHealthReady:    func() bool { return false }, // accountHealth enabled + not ready
+		AccountBalanceEnabled: true,
+		AccountBalanceReady:   func() bool { return true }, // accountBalance enabled + ready, no service
+		ProxyLatencyEnabled:   true,
+		ProxyLatencyReady:     func() bool { return false }, // proxyLatency enabled + not ready
+		ProxyLatencyStatus:    func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
+		ProxyLatencySnapshot:  func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, false },
+		WorkerReady:           func() bool { return false }, // worker not ready
+		WorkerStatus:          func() map[string]any { return map[string]any{"cycle": "w9h"} },
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if record.Code != http.StatusOK {

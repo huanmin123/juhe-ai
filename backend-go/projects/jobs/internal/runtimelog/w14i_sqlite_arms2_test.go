@@ -493,7 +493,7 @@ func TestW14iValidateIsolationRejectsDanglingShardSymlink(t *testing.T) {
 		RuntimeLogDatabasePath: filepath.Join(dir, "runtime-log.sqlite3"),
 		CodexShardRoot:         shardRoot,
 	}
-	err := validateSQLiteIsolation(config, filepath.Join(dir, "table-monitor.sqlite3"))
+	err := validateSQLiteIsolation(config)
 	if err == nil {
 		t.Fatalf("悬空 shard symlink 应使隔离校验失败")
 	}

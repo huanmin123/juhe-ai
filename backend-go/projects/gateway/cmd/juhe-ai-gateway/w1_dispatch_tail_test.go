@@ -500,7 +500,7 @@ func TestW1XAccountAvailabilityGatesArms(t *testing.T) {
 	future := "2999-01-01T00:00:00.000Z"
 
 	// 非法当前时间：直接报错。
-	if _, err := chainAccountAvailableForSelection(&chainCandidateRow{}, "bad-time", false); err == nil {
+	if _, err := chainAccountAvailableForSelection(&chainCandidateRow{}, "bad-time", false, false); err == nil {
 		t.Fatal("非法 now 必须报错")
 	}
 
@@ -520,23 +520,23 @@ func TestW1XAccountAvailabilityGatesArms(t *testing.T) {
 	}
 	for _, testCase := range physicalCases {
 		t.Run("物理门/"+testCase.name, func(t *testing.T) {
-			got, err := chainPhysicalAccountAvailable(&testCase.row, nowMillis, false)
+			got, err := chainPhysicalAccountAvailable(&testCase.row, nowMillis, false, false)
 			if err != nil || got != testCase.want {
 				t.Fatalf("physical = (%v, %v), want (%v, nil)", got, err, testCase.want)
 			}
 		})
 	}
 	if _, err := chainPhysicalAccountAvailable(&chainCandidateRow{Schedulable: 1, Status: "active",
-		CooldownUntil: sql.NullString{String: "bad-date", Valid: true}}, nowMillis, false); err == nil {
+		CooldownUntil: sql.NullString{String: "bad-date", Valid: true}}, nowMillis, false, false); err == nil {
 		t.Fatal("非法冷却时间必须报错")
 	}
 	// includeUnavailable 放行三种运行态。
 	for _, status := range []string{"active", "rate_limited", "temporary_unavailable"} {
-		if got, err := chainPhysicalAccountAvailable(&chainCandidateRow{Schedulable: 1, Status: status}, nowMillis, true); err != nil || !got {
+		if got, err := chainPhysicalAccountAvailable(&chainCandidateRow{Schedulable: 1, Status: status}, nowMillis, true, false); err != nil || !got {
 			t.Fatalf("includeUnavailable 下 %s 应可用: (%v, %v)", status, got, err)
 		}
 	}
-	if got, err := chainPhysicalAccountAvailable(&chainCandidateRow{Schedulable: 1, Status: "disabled"}, nowMillis, true); err != nil || got {
+	if got, err := chainPhysicalAccountAvailable(&chainCandidateRow{Schedulable: 1, Status: "disabled"}, nowMillis, true, false); err != nil || got {
 		t.Fatalf("includeUnavailable 下 disabled 仍应拒绝: (%v, %v)", got, err)
 	}
 
@@ -2026,7 +2026,7 @@ func TestW1XCanScheduleAndPhysicalFallbackArms(t *testing.T) {
 
 	// chainAccountAvailableForSelection：物理门拒绝短路（不触资源门）。
 	available, err := chainAccountAvailableForSelection(&chainCandidateRow{Schedulable: 0, Status: "active"},
-		"2026-01-01T00:00:00.000Z", false)
+		"2026-01-01T00:00:00.000Z", false, false)
 	if err != nil || available {
 		t.Fatalf("物理门拒绝 = (%v, %v), want (false, nil)", available, err)
 	}

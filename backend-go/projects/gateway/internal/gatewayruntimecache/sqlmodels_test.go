@@ -87,8 +87,6 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"statsAggregationMaxBatchesPerRun":           "5",
 		"usageHotWindowRefreshIntervalSeconds":       "600",
 		"groupAccountStatsRefreshIntervalSeconds":    "60",
-		"systemMetricsSampleIntervalSeconds":         "30",
-		"tableMonitorMaxTablesPerRun":                "4",
 		"accountQualityRefreshIntervalSeconds":       "600",
 		"accountQualityWindowMinutes":                "10",
 		"accountHealthCheckIntervalHours":            "1",
@@ -111,8 +109,6 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"usageStatsWeeklyRetentionWeeks":             "104",
 		"usageStatsMonthlyRetentionMonths":           "24",
 		"usageRankSnapshotRetentionDays":             "30",
-		"systemMetricsRetentionDays":                 "7",
-		"systemMetricsHourlyRetentionDays":           "30",
 		// 上游客户端版本覆盖（613f2c618 新增键）：空对象是校验器认可的合法默认。
 		// 自动跟版键（2026-10-08）同形态默认。
 		"upstreamClientVersionOverrides":     "{}",

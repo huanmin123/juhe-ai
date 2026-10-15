@@ -404,7 +404,7 @@ func (p healthProbeOutboxPruner) pruneOnce(ctx context.Context, now time.Time) (
 }
 
 // Run 常驻 prune 循环：启动先跑一轮（J1 关闭部署的既有堆积在启动即开始
-// 收敛），随后按 passive jitter 节拍重复（tablemonitor Runner 同款模式）。
+// 收敛），随后按 passive jitter 节拍重复（既有常驻组件同款模式）。
 // 单轮失败记 warn 不终止循环，下一节拍重试。
 func (p healthProbeOutboxPruner) Run(ctx context.Context) error {
 	p.pruneCycle(ctx)

@@ -6,7 +6,7 @@
 ## 1. 目标
 
 - 一条命令在指定 SQLite 数据根上生成完整业务闭环数据，覆盖管理端与公开面的全部页面数据来源。
-- 覆盖 business 库（系统账户与配套用户、AI 账户、分组、路由策略与分组绑定、API Key、授权与授权来源、团队、代理、公告、自定义模型目录、响应检查策略、外部来源系统、模型检测题库、账户测试任务、异步媒体任务（`media_jobs`）、媒体工作室（`studio_*`，purpose=studio Key / 资产 / 任务 / 收据 / 配额账本）、熔断与时间计划样本）、usage 分片与分片登记、stats 原始采样、observability（审计、操作、运行日志、公开接口日志、后台清理目标）、chat/codex-context/J3b 模型检测。
+- 覆盖 business 库（系统账户与配套用户、AI 账户、分组、路由策略与分组绑定、API Key、授权与授权来源、团队、代理、公告、自定义模型目录、响应检查策略、外部来源系统、模型检测题库、账户测试任务、异步媒体任务（`media_jobs`）、熔断与时间计划样本）、usage 分片与分片登记、stats 原始采样、observability（审计、操作、运行日志、公开接口日志、后台清理目标）、chat/codex-context/J3b 模型检测。
 - 覆盖 OpenAI OAuth、OpenAI API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、冷却、错误、不可调度和时间计划等状态 / 类型样本；覆盖 API Key 的优先级故障转移、轮询、加权轮询、绑定禁用、额度窗口、过期、停用和时间计划样本。
 - 默认生成近 31 天明细与监控样本；派生表（`usage_stats_*`、`*_windows`、排行、健康小时、账号质量等）不伪造，全部由 jobs 聚合 / 窗口任务重建。
 - 可重复执行：每次先按固定清理标识删除上一批数据，再重新插入；执行结束时做只读覆盖校验。
@@ -34,14 +34,13 @@ Mockdata 是项目里「可复用本地造数」的唯一职责入口：
 | `backend-go/projects/maintenance/internal/mockdata/cleanup.go` | 清理标识常量与幂等清理（含外键子表的显式清理规则） |
 | `backend-go/projects/maintenance/internal/mockdata/summary.go` | `mockdata-summary.json` 摘要写出与读取 |
 | `backend-go/projects/maintenance/internal/mockdata/coverage.go` | 只读覆盖校验：全存储全表枚举、空表白名单、关键状态硬断言 |
-| `backend-go/projects/maintenance/internal/mockdata/autofill.go` | 自动补全集合：对无业务域写入的表插入 1..3 行结构合法占位行 |
+| `backend-go/projects/maintenance/internal/mockdata/autofill.go` | 自动补全集合：对无业务域写入的表插入 1..3 行结构合法占位行；`*_json` 占位值按表内既有行取样定形态（数组列占位 `[]`，`supported_api_protocols_json` 写 `{}` 曾致模型目录整体 500）；跳过清单登记域显式写入表与运行态表（运行态占位行会被 jobs worker 真实领取结算，BUG-0183 同族毒丸） |
 | `backend-go/projects/maintenance/internal/mockdata/domain_business.go` | business 库造数域 |
 | `backend-go/projects/maintenance/internal/mockdata/domain_usage.go` | usage-catalog 库与 usage 分片造数域 |
 | `backend-go/projects/maintenance/internal/mockdata/domain_stats.go` | stats 库原始写入面造数域（派生聚合调用既有聚合器重建） |
 | `backend-go/projects/maintenance/internal/mockdata/domain_observability.go` | 运行日志、审计、操作日志、公开接口日志、后台清理目标等 observability 造数域 |
 | `backend-go/projects/maintenance/internal/mockdata/domain_chat_codex_modelcheck.go` | chat 库、codex context 分片、J3b 模型检测造数域 |
 | `backend-go/projects/maintenance/internal/mockdata/domain_chat_media_sample.go` | chat 域媒体样本：问答域媒体工具样本（`generate_video`/`generate_audio` 消息块、演示会话）已随 [PLAN-20261012T121500000Z](../plans/计划-20261012T121500000Z-AI问答简化设计.md) 退役删除；保留 `/v1` 任务面六状态样本与用户图片样本 |
-| `backend-go/projects/maintenance/internal/mockdata/domain_studio_sample.go` | studio 域造数（[媒体工作室设计](媒体工作室设计.md) §9）：purpose=studio Key、`studio_assets` / `studio_tasks` / `studio_operations` / `studio_user_asset_usage` 样本与三条覆盖断言 |
 | `backend-go/projects/jobs/cmd/juhe-ai-jobs/run_jobs_once.go` | jobs `-run-jobs-once` 一次性执行入口（脚本第 5 步用它重建派生表） |
 
 ## 3. 命令
@@ -107,7 +106,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 | --- | --- |
 | `business.sqlite3` | 配套用户 7 个（1 个普通管理员 + 普通用户）、分组（含个人分组与高并发分组）、31 个 AI 账户样本（含状态与类型覆盖）、路由策略与 API Key（含本地网关明文 Key）、38 条授权样本、团队、代理、公告、自定义模型目录、响应检查策略、外部来源系统、模型检测题库、账户测试任务、熔断与时间计划样本 |
 | `usage-shards/` + `usage-catalog.sqlite3` | 按 `<root>/usage-shards/<YYYY>/<MM>/<DD>/usage-YYYYMMDD-sNN.sqlite3` 三级布局写入分片，并在 catalog 四表登记；默认 31 天约 1.5 万条量级，含健康检查逐账户逐小时样本、三条上游响应模型定向样本 |
-| `stats.sqlite3` | 原始写入面：系统指标与事件循环采样、`background_task_runs`、`account_usage_snapshots`、dirty 标记；派生聚合表不在此伪造 |
+| `stats.sqlite3` | 原始写入面：`background_task_runs`、`account_usage_snapshots`、dirty 标记；派生聚合表不在此伪造（原系统指标与事件循环采样已随 2026-10-14 监控改造删除，不再造数） |
 | observability 各专库 | 审计日志（含 payload blob）、操作日志、运行日志索引 + JSONL 文件（写 `--log-dir`）、公开接口日志、后台记录清理目标 |
 | `chat.sqlite3` | 会话、消息、图片资产文件、上下文与图像生成样本；「媒体工具演示」会话含 `output_media_task` 三状态任务块与 `output_audio` 播放块，挂真实落盘的 MP4/WAV 媒体资产 |
 | `codex-context/state-shards/` | Codex context 状态分片；分片数与 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 对齐（脚本已处理） |
@@ -115,10 +114,9 @@ pnpm mockdata -- --days 31 --daily-requests 120
 
 补充约束：
 
-- 派生表不造假：`usage_stats_*`、各 `*_windows`、`usage_rank_snapshots`、`account_health_hourly`、`group_account_stats`、`client_ip_*`、`authorization_*_usage_*`、`account_quality_*`、`system_metrics_*` / `process_event_loop_*` 的小时与趋势表，全部由脚本第 4 步的 jobs `-run-jobs-once` 或常驻 jobs 启动后重建；页面读取路径与真实数据一致。
+- 派生表不造假：`usage_stats_*`、各 `*_windows`、`usage_rank_snapshots`、`account_health_hourly`、`group_account_stats`、`client_ip_*`、`authorization_*_usage_*`、`account_quality_*` 的小时与趋势表，全部由脚本第 4 步的 jobs `-run-jobs-once` 或常驻 jobs 启动后重建；页面读取路径与真实数据一致（原 `system_metrics_*` / `process_event_loop_*` 派生表已随 2026-10-14 监控改造删除）。
 - 上游响应模型定向样本固定三条：trace 分别为 `mockdata-usage-coverage_upstream_response_model_match`、`mockdata-usage-coverage_upstream_response_model_mismatch`、`mockdata-usage-coverage_upstream_response_model_unmapped_mismatch`，摘要 `upstreamResponseModelSamples` 提供 ID、trace 与相关原始字段，供覆盖断言与页面检索。
 - 媒体域样本（M2 起，媒体契约 §3.4）：business 库由 `seedMediaJobs` 写入 `media_jobs` kind=video 六状态样本行（`queued/in_progress/completed/failed/cancelled/expired`，completed 行带 usage（`output_video_seconds`）与 `cost_usd`，failed 行带 error；模型取目录 video 分类、回落 sora-2，账户亲和外键指向 `acc_media` 媒体样本账户——该账户同时引用 audio/video 分类模型）；usage 分片含 `tts_input_chars`/`audio_input_seconds` 音频计量样本行与 `output_video_seconds` 视频计量列；observability 审计含 `/v1/audio/speech`、`/v1/videos` 媒体端点样本行。覆盖断言三条已内置：`media_jobs.video_status_distribution`（video 状态种类 ≥4）、`usage_records.audio_metering`、`audit_logs.media_endpoints`。
-- studio 域样本（2026-10-13，媒体工作室 P0，[媒体工作室设计](媒体工作室设计.md) §9）：business 库由 `domain_studio_sample.go` 写入——purpose=studio Key 1 条（`EnsureStudioKey` 同构落行：`studio_domains_json` 四域 + 专属路由策略，撞唯一索引保留胜者行）、`studio_assets` 4 行（image 含宽高与 `params_json` 快照及 `source_task_id` 回填、audio TTS 产物、video 含 `duration_ms`、1 行上传来源行 `source_task_id IS NULL`）、`studio_tasks` 9 行（六状态 × settlement 关键组合：`queued+pending_settled`、`in_progress+pending_settled`、图像/视频 `completed+settled`（带 `asset_id` 与亲和三元组）、`failed+settled`（带 error）、`cancelled+settled`、`expired+settled`、**`completed+pending_settled` 未结算态样本**、`completed+failed` 结算终局失败样本；`upstream_job_id` 指向既有 `media_jobs` 样本行）、`studio_operations` 2 行（speech 收据带 `asset_id`、transcription 收据带 `result_json` 文本）、`studio_user_asset_usage` 账本 1 行。覆盖断言三条：`studio_tasks.status_distribution`（状态种类 ≥5）、`studio_assets.kind_distribution`（三 kind 齐全）、`studio_tasks.unsettled_sample`（存在 `settlement<>'settled'` 行）；usage 分片补 studio Key 维度样本行，审计含 `/__aisys__/api/my-studio/generations/*` 入口行，summary `domains` 快照登记 studio 域产出计数。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求外部服务。
 - mock 用户明文口令固定为 `mockdata123456`，只用于本地登录联调；摘要同时记录各 API Key 明文。
 - 身份归属：主数据归属 seed 超管 `admin`（`sys_admin`，账户/分组/API Key/标签的主体），免登录联调推荐 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin`；`mockdata_admin` 是普通管理员（admin 角色）视角样本，名下有自有账户、标签与团队成员，用于管理员自有资源与 owner 作用域页面验收。
@@ -126,8 +124,8 @@ pnpm mockdata -- --days 31 --daily-requests 120
 已知边界：
 
 - SQLite-only：PostgreSQL 部署形态在脚本与 CLI 两层都被显式拒绝，不做静默造数。
-- 表监控快照（F2）与 Go runtime metrics（opt-in 功能）不造数：F2 快照由 jobs 常驻采样产生，Go runtime metrics 需要显式 opt-in 的独立建表与开关，均不属于造数范围。
-- 审计、操作日志、运行日志、表监控等专库文件在「从未启动过后端」的全新数据根不存在；首次 `pnpm dev` 启动后由各 owner 建库，之后再执行 `pnpm mockdata` 即可填充。
+- 表监控快照（F2）与 Go runtime metrics 已随 2026-10-14 监控改造整体删除（gometrics 采样链、F2 表监控组件与 12 张退役表退役，监控走 Prometheus），均不再属于造数范围。
+- 审计、操作日志、运行日志等专库文件在「从未启动过后端」的全新数据根不存在；首次 `pnpm dev` 启动后由各 owner 建库，之后再执行 `pnpm mockdata` 即可填充。
 - `--mockdata` 与 `--verify-mockdata-coverage` 互斥；造数与校验通过脚本顺序编排，不合并成一条命令。
 - 覆盖校验对空表有白名单（owner 运行态 / 运行时表，如 `background_job_leases`、`stats_job_state`、`account_health_current_state`、`usage_range_window_requests`、`codex_context_storage_cleanup_queue` 等），白名单外的空表或关键状态断言未过都会让校验 exit 3。
 
@@ -145,9 +143,9 @@ pnpm mockdata -- --days 31 --daily-requests 120
 
 ## 6. 验证点
 
-`pnpm mockdata` 退出码为 0 即视为编排成功；exit 3 表示覆盖校验未 Ready（剩余空表与缺库清单见脚本输出的 JSON）。常见原因按处置方式分三类：一是审计、操作日志、运行日志、表监控、任务运行、账户健康六个专库文件尚不存在——它们由 gateway/jobs 首次启动时建库，`--ensure-schema` 不建，全新数据根请先 `pnpm dev` 启动一次（随后停止）再执行造数，停止常驻进程无法解决这一类；二是派生聚合表尚未重建（使用 `--skip-rebuild`、jobs 重建未跑完或尚未启动常驻 jobs），启动常驻 jobs 后会自动补齐；三是真实断言未过，按清单修复后重跑。执行完成后建议检查：
+`pnpm mockdata` 退出码为 0 即视为编排成功；exit 3 表示覆盖校验未 Ready（剩余空表与缺库清单见脚本输出的 JSON）。常见原因按处置方式分三类：一是审计、操作日志、运行日志、任务运行、账户健康五个专库文件尚不存在——它们由 gateway/jobs 首次启动时建库，`--ensure-schema` 不建，全新数据根请先 `pnpm dev` 启动一次（随后停止）再执行造数，停止常驻进程无法解决这一类；二是派生聚合表尚未重建（使用 `--skip-rebuild`、jobs 重建未跑完或尚未启动常驻 jobs），启动常驻 jobs 后会自动补齐；三是真实断言未过，按清单修复后重跑。执行完成后建议检查：
 
-- 各页面应有可见数据：AI 账户、分组、API Key、路由策略、授权、团队、代理、公告、供应商与模型目录、响应检查、外部来源、公开接口日志、使用记录、统计概览、用量统计、AI 性能、AI 健康、模型检测、审计、操作、运行日志、IP 统计、系统指标、表监控、后台任务、聊天、题库。
+- 各页面应有可见数据：AI 账户、分组、API Key、路由策略、授权、团队、代理、公告、供应商与模型目录、响应检查、外部来源、公开接口日志、使用记录、统计概览、用量统计、AI 性能、AI 健康、模型检测、审计、操作、运行日志、IP 统计、后台任务、聊天、题库（原系统指标、表监控两页已随 2026-10-14 监控改造下线）。
 - 使用记录、审计日志、操作日志、运行日志均可按 `mockdata` 或 `造数` 关键字检索；三条上游响应模型样本可分别按 `mockdata-usage-coverage_upstream_response_model_match`、`mockdata-usage-coverage_upstream_response_model_mismatch`、`mockdata-usage-coverage_upstream_response_model_unmapped_mismatch` 的 trace 检索。
 - `<数据根>/mockdata-summary.json` 中的 mock 用户口令与 API Key 明文可用于本地登录和网关请求验证。
 - 派生页面（用量统计、AI 性能、AI 健康、IP 统计等）有数据的前提是第 4 步派生重建成功；用 `--skip-rebuild` 跳过或常驻 jobs 尚未重建完成时，这些页面可能暂时为空，等待重建完成后刷新即可。

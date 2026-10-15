@@ -7,8 +7,9 @@
 // 派生 helper 在 jobs 模块内本地实现，不放 backend-go/shared：该约定只服务
 // 空环境可启动的组合根默认值，不是平台级通用能力。
 //
-// gometrics/config.go 于 2026-09-27 在 shared 侧按同语义本地实现了数据根派生
-// （shared 不得 import jobs 内部包），两处约定需同步维护。
+// 同语义副本还有 gateway/internal/datadir（跨进程不得 import 对方内部包）；
+// 原 shared 侧第三份副本（gometrics/config.go）已随 2026-10-14 监控改造删除，
+// 现存两处约定需同步维护。
 package datadir
 
 import (

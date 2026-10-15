@@ -185,11 +185,8 @@ const EmptySourceWatermark = "0001-01-01T00:00:00.000Z"
 // LegacyEmptySourceWatermark mirrors USAGE_RANK_SNAPSHOT_LEGACY_EMPTY_SOURCE_WATERMARK。
 const LegacyEmptySourceWatermark = "0000-00-00T00:00:00.000Z"
 
-// RankSnapshotJobStateScopeType/ID 与 SourceVersionScopeType/ID 对齐
-// usage-stats.repository.ts 的常量。
+// RankSnapshotJobStateScopeType/ID 对齐 usage-stats.repository.ts 的常量。
 const (
-	RankSnapshotJobStateScopeType      = "global"
-	RankSnapshotJobStateScopeID        = ""
-	RankSnapshotSourceVersionScopeType = "usage_rank_snapshot_source_version"
-	RankSnapshotSourceVersionScopeID   = ""
+	RankSnapshotJobStateScopeType = "global"
+	RankSnapshotJobStateScopeID   = ""
 )

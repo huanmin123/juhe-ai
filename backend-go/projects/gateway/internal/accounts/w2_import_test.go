@@ -600,6 +600,28 @@ func TestW2ImportConfirmExecutesPlan(t *testing.T) {
 	}
 }
 
+func TestW2ImportMediaDomainPreservesPendingTest(t *testing.T) {
+	env := newTestEnv(t)
+	seedOpenAICompatibleProvider(t, env)
+	env.login(t, "root", "root-pass", "super_admin")
+	body := `{"data":{"type":"` + accountImportProtocolType + `","version":1,"accounts":[{"ref":"video-import","name":"导入视频账户","providerCode":"openai","providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active","groupName":"导入视频分组","credentials":{"api_key":"sk-import-video-1","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["video_create"]}}]},"options":{"createMissingGroups":true,"createMissingProxies":false,"skipDuplicates":true}}`
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", body)
+	if code != http.StatusOK {
+		t.Fatalf("媒体账户导入确认失败：%d %v", code, payload)
+	}
+	item := dataMap(t, payload)["accounts"].([]any)[0].(map[string]any)
+	if messages := item["messages"].([]any); len(messages) != 1 || messages[0] != "已创建账户，媒体账户无后台激活检查，请手动启用" {
+		t.Fatalf("媒体账户导入消息不一致：%v", messages)
+	}
+	id := item["accountId"].(string)
+	if status := env.queryCell(t, `SELECT status FROM accounts WHERE id = ?`, id); status != "pending_test" {
+		t.Fatalf("媒体账户导入应保留 pending_test，实际 %s", status)
+	}
+	if schedulable := env.queryCell(t, `SELECT schedulable FROM accounts WHERE id = ?`, id); schedulable != "0" {
+		t.Fatalf("媒体账户导入 pending_test 不应可调度，实际 %s", schedulable)
+	}
+}
+
 func w2ToStrings(values []any) []string {
 	out := []string{}
 	for _, value := range values {

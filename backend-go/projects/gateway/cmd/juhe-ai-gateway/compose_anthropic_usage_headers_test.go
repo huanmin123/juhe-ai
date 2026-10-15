@@ -17,7 +17,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 )
 
 // TestAnthropicUsageHeadersChannelDispatcherJobShape：合格 anthropic OAuth 头
@@ -58,7 +58,7 @@ func TestAnthropicUsageHeadersChannelDispatcherJobShape(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if rowType != tablemonitor.RecordMaintenanceJobTypeAccountUsageSnapshotUpsert {
+	if rowType != recordmaintenance.RecordMaintenanceJobTypeAccountUsageSnapshotUpsert {
 		t.Fatalf("job type = %q", rowType)
 	}
 	if accountID != "acc_claude" || kind != "anthropic_claude" || source != gatewaycodex.AnthropicUsageSnapshotSource {

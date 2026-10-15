@@ -48,7 +48,7 @@ func TestW1ComposeSystemAPIErrorArms(t *testing.T) {
 	if _, err := composeSystemAPI(badBizCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("业务库路径不可创建必须拒绝")
 	}
-	// 说明：usage-catalog/table-monitor/runtime-log/audit/dataset 的缺失
+	// 说明：usage-catalog/runtime-log/audit/dataset 的缺失
 	// 分支在错误返回时不关闭 composed.db，Windows 下泄漏句柄会阻塞
 	// t.TempDir 清理——这些分支由 w1_main_boot_test.go 的进程级场景收割
 	//（子进程自然释放句柄）。

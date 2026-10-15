@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// 组合根级测试：gateway 形状写入（手工 INSERT 模拟 internal/tablemonitor
+// 组合根级测试：gateway 形状写入（手工 INSERT 模拟 internal/recordmaintenance
 // DurableDispatch 落行）→ jobs drain 循环一轮 → retention 执行器副作用断言
 // → 交接行删除。
 //

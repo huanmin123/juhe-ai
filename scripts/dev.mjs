@@ -49,6 +49,11 @@ const removedInputServerEnvNames = [
   'JUHE_AI_OPERATION_LOG_INPUT_URL'
 ]
 
+// 2026-10-14 监控改造：gometrics 采样链与 F2 表监控组件整体删除，
+// JUHE_AI_GO_RUNTIME_METRICS_* 与 JUHE_AI_TABLE_MONITOR_* 两家族 env 全部
+// 退役——按前缀拒转，残留值不得进入 Go 子进程。声明必须先于顶层 try。
+const removedMonitoringEnvPrefixes = ['JUHE_AI_GO_RUNTIME_METRICS_', 'JUHE_AI_TABLE_MONITOR_']
+
 process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
 process.on('SIGHUP', () => shutdown(129))
@@ -153,9 +158,10 @@ function leaseWaitNotice(chunk) {
   }
 }
 
-// jobsLeaseRetryNotice 识别 jobs 日志里 supervisor 对 F1/F2 的"租约被他人
+// jobsLeaseRetryNotice 识别 jobs 日志里 supervisor 对 F1 等任务的"租约被他人
 // 持有"ERROR 重试行（"获取…失败"等真实 DB 错误行不含该短语，不会误触发），
-// 返回带组件名的用户提示；其余行返回 undefined。
+// 返回带组件名的用户提示；其余行返回 undefined。（原 F2 table-monitor 已随
+// 2026-10-14 监控改造删除，不会再出现在日志中；匹配逻辑保持组件名泛化。）
 function jobsLeaseRetryNotice(chunk) {
   const text = chunk.toString()
   if (!text.includes('owner lease 已由另一个 Go 实例持有')) return undefined
@@ -246,13 +252,17 @@ function resolveGoProjectEnv() {
   // 租是每 TTL/3 一次的单行 UPDATE，压力可忽略。用户显式配置时不覆盖。
   childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
-  // jobs 侧 F1/F2 同样会被强杀残留租约卡住：F1 runtime-log 生产默认 30s、
-  // F2 table-monitor 生产默认 5 分钟，且没有 F3/F4 的有界等待——supervisor
-  // 直接按 1s~30s 退避重试并逐次打 ERROR，F2 最长持续 5 分钟才接管。dev
-  // 统一收紧到 10s，让重试窗口以秒计。用户显式配置时不覆盖。
+  // jobs 侧 F1 同样会被强杀残留租约卡住：F1 runtime-log 生产默认 30s，
+  // 且没有 F3/F4 的有界等待——supervisor 直接按 1s~30s 退避重试并逐次打
+  // ERROR。dev 统一收紧到 10s，让重试窗口以秒计。用户显式配置时不覆盖。
+  // （原 F2 table-monitor 租约注入已随 2026-10-14 监控改造删除。）
   childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
-  childEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, '10s')
   for (const name of removedInputServerEnvNames) delete childEnv[name]
+  for (const prefix of removedMonitoringEnvPrefixes) {
+    for (const name of Object.keys(childEnv)) {
+      if (name.startsWith(prefix)) delete childEnv[name]
+    }
+  }
   return childEnv
 }
 

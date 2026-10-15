@@ -701,6 +701,9 @@ async function deleteSchedulingPreference(record: SchedulingPreferenceSummary) {
       items.value.splice(index, 1)
       total.value = Math.max(0, total.value - 1)
     }
+    // 重置绑定改变了存量 Key 的绑定计数：按当前筛选与分页重拉列表，让
+    // 「绑定 API Key」计数回到服务端事实（行移除逻辑保留，重拉覆盖计数）。
+    if (resetBindings > 0) void loadSchedulingPreferences()
     message.success(resetBindings > 0
       ? `调度偏好已删除，已将 ${formatNumber(resetBindings)} 个 API Key 重置为默认调度偏好`
       : '调度偏好已删除')

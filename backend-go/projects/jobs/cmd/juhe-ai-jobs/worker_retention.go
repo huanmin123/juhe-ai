@@ -409,7 +409,8 @@ func (f *retentionFamily) retentionStats() *cleanuprepo.StatsRetentionStore {
 // taskRunsRetentionDays 是 background_task_runs / background_job_leases 的
 // 滚动保留窗口。此前两表全仓无删除路径（PG 模式 GoWired 任务每轮写运行
 // 历史，1s 投影任务日增 8 万+ 行，表无限膨胀）。两表无聚合游标依赖，不挂
-// 游标放行门；gateway 侧 systemmetrics 只读近期样本，30 天窗口远超其消费面。
+// 游标放行门；窗口深度取 30 天（原「gateway 侧只读近期样本」论证随
+// 2026-10-14 监控改造删除，窗口值保持不变）。
 const taskRunsRetentionDays = 30
 
 // taskRunsRetentionBatchSize / taskRunsRetentionMaxPasses 是单轮清理的批次
@@ -505,8 +506,6 @@ var retentionPolicySettingKeys = []string{
 	"usageStatsWeeklyRetentionWeeks",
 	"usageStatsMonthlyRetentionMonths",
 	"usageRankSnapshotRetentionDays",
-	"systemMetricsRetentionDays",
-	"systemMetricsHourlyRetentionDays",
 }
 
 func newRetentionSettingsRuntime(business *sql.DB, postgres bool, logger *slog.Logger) *retentionSettingsRuntime {
@@ -719,10 +718,6 @@ func (w *familyStatsWriter) store() *cleanuprepo.StatsRetentionStore { return ni
 
 func (w *familyStatsWriter) CleanupUsageStatsRetention(ctx context.Context, input retention.UsageStatsRetentionInput) (retention.UsageStatsRetentionCounts, error) {
 	return w.family.retentionStats().CleanupUsageStatsRetention(ctx, input)
-}
-
-func (w *familyStatsWriter) CleanupSystemMetricsRetention(ctx context.Context, input retention.SystemMetricsRetentionInput) (retention.SystemMetricsRetentionCounts, error) {
-	return w.family.retentionStats().CleanupSystemMetricsRetention(ctx, input)
 }
 
 func (w *familyStatsWriter) CleanupNonBusinessStatsData(ctx context.Context, cutoffAt string, limit int) (retention.NonBusinessDataCleanupCounts, error) {

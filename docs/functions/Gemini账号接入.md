@@ -190,7 +190,8 @@ Gemini native 入口使用 Google Gemini API 路径，不复用 OpenAI Chat / Re
 - Interactions 请求未显式提供 `Api-Revision` 时，上游默认使用 `2026-05-20`；客户端显式值保持不变。POST body 的 `stream: true` 会强制上游 `Accept: text/event-stream`，反过来 SSE Accept 也会在上游 body 补 `stream: true`。
 - 创建成功后，网关只提取 Interaction ID 作为协议内部元数据，不依赖成功响应审计正文是否开启；映射按系统账户和 API Key 隔离，并记录实际分组、provider、协议档案和创建账号。普通模式使用最多 20000 条、7 天 TTL 的进程内 LRU，进程重启会丢失该亲和状态；performance 模式使用 Redis runtime state 并在资源访问时续期，Redis 状态保留时可跨网关进程重启继续命中。
 - `GET`、`cancel` 和 `DELETE` 必须命中创建该资源的账号；亲和记录缺失（包括普通模式进程重启后）返回 `404 interaction_affinity_not_found`，创建账号不可用返回 `interaction_affinity_account_unavailable`，不能切换到其他账号或后备分组。DELETE 成功后移除映射；通过其他 API Key 创建或直接在上游创建的资源不能由当前 API Key 猜测账号访问。
-- 本地错误使用 Google API error shape：`{ "error": { "code": number, "message": string, "status": string, "details": [] } }`。
+- 亲和写入在响应提交下游之前完成：创建成功（响应体含 Interaction ID）时先写入映射再提交成功响应；DELETE 命中创建账号且上游 2xx 时先移除映射再提交响应。写入或移除失败时该请求以 `503 interaction_affinity_unavailable` 失败收尾、响应不提交，不降级为透传成功；失败记录 `gateway_gemini_interaction_affinity_update_failed` 日志与 `gemini_interaction_account_affinity_update_failed` 审计元数据，成功记录 `gemini_interaction_account_affinity_update`（`commitPhase: before_downstream_commit`）。创建 2xx 但响应体不含 Interaction ID 时跳过写入（`action: none`），不写空键。
+- 本地错误信封：`{ "error": { "message": string, "status": string, "code": string } }`——`status` 为 Google 状态名（由错误类型映射：`rate_limit_exceeded` → `RESOURCE_EXHAUSTED`、`service_unavailable` → `UNAVAILABLE`、超时/截止类码 → `DEADLINE_EXCEEDED`、其余按 `INVALID_ARGUMENT`/`UNAUTHENTICATED`/`PERMISSION_DENIED`/`NOT_FOUND`/`INTERNAL` 族），`code` 为字符串错误码、为空时省略该字段（如亲和写失败为 `interaction_affinity_unavailable`）；Google 官方错误体的数字 `code` 与 `details` 不出现在本地错误信封中。
 
 ## gemini-cli 兼容方式
 

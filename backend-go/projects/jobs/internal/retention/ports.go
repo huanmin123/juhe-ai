@@ -76,14 +76,6 @@ type UsageStatsRetentionInput struct {
 	Limit                            int
 }
 
-// SystemMetricsRetentionInput mirrors systemMetricsRetentionInput.
-type SystemMetricsRetentionInput struct {
-	SamplesCutoffIso      string
-	HourlyCutoffHour      string
-	TrendWindowCutoffDate string
-	Limit                 int
-}
-
 // AccountUsageSnapshotUpsertInput mirrors AccountUsageSnapshotUpsertInput.
 type AccountUsageSnapshotUpsertInput struct {
 	AccountID string
@@ -97,7 +89,6 @@ type AccountUsageSnapshotUpsertInput struct {
 // retention family.
 type StatsWriter interface {
 	CleanupUsageStatsRetention(ctx context.Context, input UsageStatsRetentionInput) (UsageStatsRetentionCounts, error)
-	CleanupSystemMetricsRetention(ctx context.Context, input SystemMetricsRetentionInput) (SystemMetricsRetentionCounts, error)
 	CleanupNonBusinessStatsData(ctx context.Context, cutoffAt string, limit int) (NonBusinessDataCleanupCounts, error)
 	CleanupDeletedApiKeyRecordStats(ctx context.Context, input DeletedApiKeyRecordStatsCleanupInput) error
 	CleanupDeletedAccountRecordStats(ctx context.Context, input DeletedAccountRecordStatsCleanupInput) error

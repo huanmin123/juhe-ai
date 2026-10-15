@@ -411,15 +411,6 @@ func TestDataRetentionPGErrorStages(t *testing.T) {
 			return err
 		})
 	})
-	t.Run("metrics retention", func(t *testing.T) {
-		rec := newPGRecorder()
-		store := &StatsRetentionStore{DB: openKitFailingRecorderPG(rec, "juhe_stats.system_metrics_samples")}
-		if _, err := store.CleanupSystemMetricsRetention(context.Background(), retention.SystemMetricsRetentionInput{
-			SamplesCutoffIso: kitUpdatedAt, Limit: 5,
-		}); err == nil {
-			t.Fatalf("注入失败应报错")
-		}
-	})
 	t.Run("public api logs", func(t *testing.T) {
 		rec := newPGRecorder()
 		store := &PublicApiLogsStore{DB: openKitFailingRecorderPG(rec, "juhe_dataset.public_api_logs")}

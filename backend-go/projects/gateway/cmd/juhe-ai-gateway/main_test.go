@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
@@ -95,16 +93,5 @@ func TestListenLoopbackPrivateBindRequiresOptIn(t *testing.T) {
 		t.Fatalf("listenLoopback 回环冒烟: %v", err)
 	} else {
 		_ = listener.Close()
-	}
-}
-
-func TestGatewayGoRuntimeCollectorExposesRuntimeKind(t *testing.T) {
-	collector := gometrics.New("juhe-ai", "gateway")
-	var output strings.Builder
-	if err := collector.Write(&output); err != nil {
-		t.Fatalf("write metrics: %v", err)
-	}
-	if !strings.Contains(output.String(), `runtimeKind="go"`) {
-		t.Fatal("gateway collector missing runtimeKind label")
 	}
 }

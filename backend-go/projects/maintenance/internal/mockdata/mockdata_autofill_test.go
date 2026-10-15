@@ -242,9 +242,6 @@ func TestAutofillSkipReasonCategories(t *testing.T) {
 		{StoreBusiness, "usage_latency_weekly", "派生聚合族前缀 usage_latency_"},
 		{StoreBusiness, "account_quality_scores", "派生聚合族前缀 account_quality_"},
 		{StoreBusiness, "client_ip_stats_daily", "派生聚合族前缀 client_ip_"},
-		{StoreBusiness, "system_metrics_hourly", "派生聚合族前缀 system_metrics_"},
-		{StoreBusiness, "process_event_loop_trend_windows", "派生聚合族前缀 process_event_loop_"},
-		{StoreBusiness, "go_runtime_metrics_samples", "派生聚合族前缀 go_runtime_metrics_"},
 		{StoreBusiness, "some_thing_windows", "运行时状态族后缀 _windows"},
 		{StoreBusiness, "anything_projection_cursors", "运行时状态族后缀 _projection_cursors"},
 		// 域业务表的精确登记优先于专库兜底，因此这里用未登记的表名验证兜底规则。
@@ -256,8 +253,6 @@ func TestAutofillSkipReasonCategories(t *testing.T) {
 		{StoreRuntimeLog, "unregistered_log_table", "可观测域"},
 		{StoreAuditLog, "audit_logs", "域业务表"},
 		{StoreOperationLog, "operation_logs", "域业务表"},
-		{StoreTableMonitor, "table_storage_snapshots", "域业务表"},
-		{StoreTableMonitor, "unregistered_snapshot_table", "可观测域"},
 		{StoreChat, "chat_conversations", "域业务表"},
 		{StoreUsageCatalog, "usage_record_shards", "域业务表"},
 		// 2026-09 收尾盘点新增：域写入表与运行时投影/游标族。
@@ -321,11 +316,13 @@ func TestAutofillValueHeuristics(t *testing.T) {
 		column   tableColumn
 		checks   []string
 		contains string
+		shapes   map[string]string
 	}{
 		{name: "check wins", column: tableColumn{Name: "status", Type: "TEXT"}, checks: []string{"pending", "approved"}, contains: "pending"},
 		{name: "foreign key", column: tableColumn{Name: "account_id", Type: "TEXT"}, contains: CleanupIDPrefix + "autofill_"},
 		{name: "timestamp", column: tableColumn{Name: "created_at", Type: "TEXT"}, contains: "2026-09-22T10:30:00.000Z"},
 		{name: "json", column: tableColumn{Name: "metadata_json", Type: "TEXT"}, contains: "{}"},
+		{name: "json array shape", column: tableColumn{Name: "supported_api_protocols_json", Type: "TEXT"}, contains: "[]", shapes: map[string]string{"supported_api_protocols_json": "array"}},
 		{name: "digest", column: tableColumn{Name: "sha256", Type: "TEXT"}, contains: "a"},
 		{name: "ip", column: tableColumn{Name: "client_ip", Type: "TEXT"}, contains: "10.10.0.1"},
 		{name: "email", column: tableColumn{Name: "email", Type: "TEXT"}, contains: "@example.invalid"},
@@ -336,14 +333,14 @@ func TestAutofillValueHeuristics(t *testing.T) {
 		{name: "generic", column: tableColumn{Name: "note", Type: "TEXT"}, contains: CleanupIDPrefix + "autofill_"},
 	}
 	for _, testCase := range cases {
-		got := autofillValue("t", testCase.column, testCase.checks, 0, now)
+		got := autofillValue("t", testCase.column, testCase.checks, 0, now, testCase.shapes)
 		if !strings.Contains(toString(got), testCase.contains) {
 			t.Fatalf("%s: value = %v, want substring %q", testCase.name, got, testCase.contains)
 		}
 	}
 	// 时间列随行号回退，保证同一表内多行时间不重复。
-	first := autofillValue("t", tableColumn{Name: "created_at", Type: "TEXT"}, nil, 0, now)
-	second := autofillValue("t", tableColumn{Name: "created_at", Type: "TEXT"}, nil, 1, now)
+	first := autofillValue("t", tableColumn{Name: "created_at", Type: "TEXT"}, nil, 0, now, nil)
+	second := autofillValue("t", tableColumn{Name: "created_at", Type: "TEXT"}, nil, 1, now, nil)
 	if first == second {
 		t.Fatalf("timestamps should differ per row: %v", first)
 	}

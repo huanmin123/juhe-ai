@@ -74,12 +74,6 @@ var nonBusinessStatsCleanupTables = []statsTableRule{
 	{"client_ip_account_usage_range_windows", "end_date", "date"},
 	{"client_ip_account_range_window_dirty_ips", "updated_at", "iso"},
 	{"usage_record_cleanup_deductions", "updated_at", "iso"},
-	{"system_metrics_samples", "sampled_at", "iso"},
-	{"system_metrics_hourly", "stat_hour", "hour"},
-	{"system_metrics_trend_windows", "end_date", "date"},
-	{"process_event_loop_samples", "sampled_at", "iso"},
-	{"process_event_loop_hourly", "stat_hour", "hour"},
-	{"process_event_loop_trend_windows", "end_date", "date"},
 }
 
 var nonBusinessDatasetCleanupTables = []statsTableRule{
@@ -208,8 +202,8 @@ func (s *SystemSessionsStore) CleanupExpired(ctx context.Context, expiredBefore 
 }
 
 // StatsRetentionStore 是 stats 库保留/硬清理入口
-// （cleanupUsageStatsBucketsBefore / cleanupSystemMetricsBefore /
-// cleanupNonBusinessDataBeforeWithResult 的 stats 半区）。
+// （cleanupUsageStatsBucketsBefore / cleanupNonBusinessDataBeforeWithResult 的
+// stats 半区）。
 type StatsRetentionStore struct {
 	DB *DB
 	// Checkpoint 照 cleanupStatsDatabaseAfterDelete：SQLite 模式删除后做 WAL
@@ -388,33 +382,6 @@ func statsCountField(counts *retention.UsageStatsRetentionCounts, tableName stri
 		return &counts.AccountUsageSnapshots
 	}
 	return nil
-}
-
-// CleanupSystemMetricsRetention 照 cleanupSystemMetricsBefore（Async 变体）。
-func (s *StatsRetentionStore) CleanupSystemMetricsRetention(ctx context.Context, input retention.SystemMetricsRetentionInput) (retention.SystemMetricsRetentionCounts, error) {
-	counts := retention.SystemMetricsRetentionCounts{}
-	specs := []struct {
-		table  string
-		column string
-		cutoff string
-		target *int64
-	}{
-		{"system_metrics_samples", "sampled_at", input.SamplesCutoffIso, &counts.SystemMetricsSamples},
-		{"system_metrics_hourly", "stat_hour", input.HourlyCutoffHour, &counts.SystemMetricsHourly},
-		{"system_metrics_trend_windows", "end_date", input.TrendWindowCutoffDate, &counts.SystemMetricsTrendWindows},
-		{"process_event_loop_samples", "sampled_at", input.SamplesCutoffIso, &counts.ProcessEventLoopSamples},
-		{"process_event_loop_hourly", "stat_hour", input.HourlyCutoffHour, &counts.ProcessEventLoopHourly},
-		{"process_event_loop_trend_windows", "end_date", input.TrendWindowCutoffDate, &counts.ProcessEventLoopTrendWindows},
-	}
-	for _, spec := range specs {
-		deleted, err := deleteRowsBefore(ctx, s.DB, s.schemaForStats(), spec.table, spec.column, spec.cutoff, batchLimit(input.Limit))
-		if err != nil {
-			return counts, err
-		}
-		*spec.target += deleted
-	}
-	s.AfterDelete(ctx)
-	return counts, nil
 }
 
 // hardCleanupCutoffs 照 hardCleanupCutoffs：iso + 业务时区 minute/hour/date/week/month。

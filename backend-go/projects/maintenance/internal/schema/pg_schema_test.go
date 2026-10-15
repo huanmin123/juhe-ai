@@ -54,13 +54,17 @@ import (
 // studio_operations / studio_user_asset_usage 四张建表、api_keys.studio_
 // domains_json 幂等 ALTER、api_keys purpose CHECK 迁移 DO 块，以及
 // idx_api_keys_studio_purpose_unique 与 studio 五枚索引（business indexes）。
-const goldenPostgresSchemaStatementCount = 714
+// studio 退场契约修订（2026-10-14）批次 -2：破坏性 studio-retirement-tables
+// 与 studio-retirement-api-keys-column 两条退出当前 schema（破坏性清理收敛到
+// 显式维护命令 --apply-studio-retirement）；purpose CHECK 迁移 DO 块改写为
+// 三值 legacy 词表的加法式修复（二值存量库修回三值），语句仍在。
+const goldenPostgresSchemaStatementCount = 718
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      346,
-	"juhe_chat":          37,
+	"juhe_business":      335,
+	"juhe_chat":          52,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
 	"juhe_stats":         256,
@@ -164,10 +168,12 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 以及 chat_user_tool_preferences 的 video/audio 四列）；其余仍为原
 	// 清单 + api_keys.scheduling_preference_id 守卫加列（调度偏好独立实体
 	// PLAN-20261012T033000000Z）+ 模型检测超时处罚开关两表
-	// timeout_penalty_enabled 幂等 ALTER 各一条 + 媒体工作室批
-	// api_keys.studio_domains_json 幂等 ALTER（媒体工作室设计 §3.5）。
-	if alterColumns != 88 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 88", alterColumns)
+	// timeout_penalty_enabled 幂等 ALTER 各一条。媒体工作室退场批的
+	// api_keys.studio_domains_json 幂等 DROP COLUMN 已随 studio 退场契约修订
+	// （2026-10-14）移出 ensure（破坏性清理收敛到 --apply-studio-retirement），
+	// 仅剩调度偏好 enabled 列退役一条 DROP COLUMN。
+	if alterColumns != 98 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 98", alterColumns)
 	}
 	if droppedColumns != 1 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 1", droppedColumns)

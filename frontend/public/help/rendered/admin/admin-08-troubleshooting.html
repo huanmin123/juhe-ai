@@ -103,12 +103,6 @@
 <td>现值与变更原因已记录、影响面已明确</td>
 <td>小步改，一次一个值，按记录回退</td>
 </tr>
-<tr>
-<td>表监控维护动作</td>
-<td>直接触碰数据库表</td>
-<td>精确表名与影响范围</td>
-<td>动作前备份确认</td>
-</tr>
 </tbody></table>
 <h2>处置手段从轻到重</h2>
 <p>定位到层之后，按影响半径从小到大选处置动作，能用轻的不用重的：</p>
@@ -180,7 +174,7 @@
 </ul>
 <h3>3. 性能异常</h3>
 <ul>
-<li><strong>先看证据</strong>：<a href="/__aisys__/ai-performance">AI 性能监控</a>按账户/模型的趋势；<a href="/__aisys__/system-metrics-stats">系统指标统计</a>的进程与队列。</li>
+<li><strong>先看证据</strong>：<a href="/__aisys__/ai-performance">AI 性能监控</a>按账户/模型的趋势。</li>
 <li><strong>可能原因</strong>：个别账户持续变慢；高并发分组排队等待；上游整体波动。</li>
 <li><strong>处置</strong>：单次慢请求不是调整全局超时的充分证据；先缩小到账户和模型，确认是普遍现象再针对性处理。</li>
 <li><strong>常见误判</strong>：把一次长尾请求当成全局变慢，直接调大全局超时。</li>

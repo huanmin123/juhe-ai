@@ -48,16 +48,29 @@ func TestW16CCollectOpenAIChatSseLimits(t *testing.T) {
 	}
 }
 
-// TestW16CTransportAccountProtocolModes 覆盖 resolver 的上游端点模式校验：
-// 映射 UpstreamEndpointFamily 决定账户必须声明的 SSE 模式，缺失即失败。
+// TestW16CStripImageResultStringsScannerArms 覆盖扫描器空白与无名冒号臂。
+func TestW16CStripImageResultStringsScannerArms(t *testing.T) {
+	// ':' 前无字符串 token。
+	stripped, values, err := stripImageResultStrings(`{ : 1, "result": "abc" }`, "result")
+	if err != nil {
+		t.Fatalf("扫描失败: %v", err)
+	}
+	if len(values) != 1 || values[0] != "abc" {
+		t.Fatalf("result 值 = %v", values)
+	}
+	if strings.Contains(stripped, "abc") || !strings.Contains(stripped, `"result"`) {
+		t.Fatalf("结果值应被剔除且保留键名: %q", stripped)
+	}
+}
+
+// TestW16CTransportAccountProtocolModes 覆盖上游协议映射到 messages/generate_content 的判定臂。
 func TestW16CTransportAccountProtocolModes(t *testing.T) {
 	cases := []struct {
 		upstreamFamily string
-		request        ChatTransportProtocol
 		requiredMode   string
 	}{
-		{"messages", ProtocolResponses, "messages_sse"},
-		{"generate_content", ProtocolChatCompletions, "generate_content_sse"},
+		{"messages", "messages_sse"},
+		{"generate_content", "generate_content_sse"},
 	}
 	for _, item := range cases {
 		account := ChatTransportAccount{
@@ -65,20 +78,21 @@ func TestW16CTransportAccountProtocolModes(t *testing.T) {
 			SupportedEndpointModes: []string{item.requiredMode},
 			ModelMappings: []ChatTransportModelMapping{{
 				SourceModel:            "m",
+				SourceEndpointFamily:   string(ProtocolChatCompletions),
 				UpstreamEndpointFamily: item.upstreamFamily,
 			}},
 		}
-		route, err := resolveChatRequestProtocol(account, "m")
-		if err != nil || route.RequestProtocol != item.request {
-			t.Fatalf("映射到 %s 的账户应解析为 %s: %+v %v", item.requiredMode, item.request, route, err)
+		if !chatTransportAccountSupportsProtocol(account, "m", ProtocolChatCompletions) {
+			t.Fatalf("映射到 %s 的账户应支持 chat 协议入口", item.requiredMode)
 		}
 		account.SupportedEndpointModes = []string{"chat_sse"}
-		if _, err := resolveChatRequestProtocol(account, "m"); err == nil {
-			t.Fatalf("缺少 %s 模式应失败", item.requiredMode)
+		if chatTransportAccountSupportsProtocol(account, "m", ProtocolChatCompletions) {
+			t.Fatalf("缺少 %s 模式应不支持", item.requiredMode)
 		}
 	}
 }
 
+// TestW16CTransportRequestPromptCacheKey 覆盖 chat 请求体 prompt_cache_key 与生成参数字段。
 func TestW16CTransportRequestPromptCacheKey(t *testing.T) {
 	temperature := 0.5
 	_, body := buildChatTransportRequest(ChatTransportRequestInput{
@@ -131,6 +145,27 @@ func TestW16CBuildChatModelOptionsDerivedInputTokens(t *testing.T) {
 	}
 }
 
+// TestW16CRunnerImageProjectionArms 覆盖 runner 图像投影的空资产、无变化与完成臂。
+func TestW16CRunnerImageProjectionArms(t *testing.T) {
+	runner := newTestRunnerW3(func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
+		return ChatGenerationTerminalResult{}, nil
+	})
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	// 空资产 ID → UpdateImage 返回 nil → 直接返回。
+	runner.updateImageLocked(&assistantBlock{Type: "output_image", AssetID: " ", Status: asstStarted}, asstCompleted, map[string]any{})
+	// 建立图像块后：无变化 → 不发事件。
+	width := int64(8)
+	runner.timeline.StartImage(StartImageInput{AssetID: "a1", MimeType: "image/webp", Width: &width, Height: &width})
+	existing := &assistantBlock{Type: "output_image", AssetID: "a1", Status: asstStarted, MimeType: "image/webp", Width: &width, Height: &width}
+	before := len(runner.subscribers)
+	runner.updateImageLocked(existing, asstStarted, map[string]any{"mimeType": "image/webp", "width": float64(8), "height": float64(8)})
+	// 完成并携带 patch 字段 → completed 事件。
+	runner.updateImageLocked(existing, asstCompleted, map[string]any{"mimeType": "image/png", "width": float64(16), "height": float64(16), "revisedPrompt": "更好"})
+	_ = before
+}
+
+// TestW16CRunnerAppendEmptyDeltas 覆盖空增量直接返回臂。
 func TestW16CRunnerAppendEmptyDeltas(t *testing.T) {
 	runner := newTestRunnerW3(func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
 		return ChatGenerationTerminalResult{}, nil

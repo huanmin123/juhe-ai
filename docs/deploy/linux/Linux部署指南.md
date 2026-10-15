@@ -40,11 +40,10 @@ cp -n backend/.env.example backend/.env
 nano backend/.env
 ```
 
-首次启动前，`backend/.env` 除 Node 配置外还必须填写稳定的 F1/F2/F3/F4 owner 与 F3/F4 独立 HMAC 输入配置。`start.sh` 不会生成任一 Go owner ID 或 F3/F4 secret：
+首次启动前，`backend/.env` 除 Node 配置外还必须填写稳定的 F1/F3/F4 owner 与 F3/F4 独立 HMAC 输入配置。`start.sh` 不会生成任一 Go owner ID 或 F3/F4 secret：
 
 ```env
 JUHE_AI_RUNTIME_LOG_INSTANCE_ID=juhe-ai-go-jobs-runtime-log
-JUHE_AI_TABLE_MONITOR_INSTANCE_ID=juhe-ai-go-jobs-table-monitor
 JUHE_AI_AUDIT_LOG_INSTANCE_ID=juhe-ai-go-gateway-audit-log
 JUHE_AI_AUDIT_LOG_STORE=sqlite
 JUHE_AI_AUDIT_LOG_DATABASE_PATH=./data/juhe-ai-audit-log.sqlite3

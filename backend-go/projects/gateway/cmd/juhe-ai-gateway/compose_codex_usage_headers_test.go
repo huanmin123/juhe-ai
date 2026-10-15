@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 )
 
-func newCodexUsageHeadersTestChannel(t *testing.T) (*sql.DB, *tablemonitor.DurableDispatch) {
+func newCodexUsageHeadersTestChannel(t *testing.T) (*sql.DB, *recordmaintenance.DurableDispatch) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "codex-usage.sqlite3"))
 	if err != nil {
@@ -29,7 +29,7 @@ func newCodexUsageHeadersTestChannel(t *testing.T) (*sql.DB, *tablemonitor.Durab
 	// 串行化语义）。
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	dispatch, err := tablemonitor.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
+	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
 	if err != nil {
 		t.Fatalf("create durable dispatch: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCodexUsageHeadersChannelDispatcherJobShape(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if rowType != tablemonitor.RecordMaintenanceJobTypeAccountUsageSnapshotUpsert {
+	if rowType != recordmaintenance.RecordMaintenanceJobTypeAccountUsageSnapshotUpsert {
 		t.Fatalf("job type = %q", rowType)
 	}
 	if accountID != "acc_codex" || kind != "openai_codex" || source != "gateway_error" {

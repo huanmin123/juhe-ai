@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -904,13 +905,10 @@ func TestW11FRouteFaults(t *testing.T) {
 	_ = fmt.Sprint
 }
 
-// w11fDBSequence 保证同一测试内多次建 env 的 DSN 唯一。
+// w11fDBSequence 保证同一测试内多次建 env 的 DSN 唯一：原子真递增，叠加
+// UnixNano 的单调时钟基线，避免同一纳秒内两次建库撞名。
 var w11fDBSequence int64
 
 func w11fNextDBName() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano()+atomicAdd())
-}
-
-func atomicAdd() int64 {
-	return w11fDBSequence + 1
+	return fmt.Sprintf("%d", time.Now().UnixNano()+atomic.AddInt64(&w11fDBSequence, 1))
 }

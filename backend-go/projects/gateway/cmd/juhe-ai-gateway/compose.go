@@ -45,14 +45,13 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/proxyprofiles"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/publicapilogs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/schedulingpreferences"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/systemteams"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
@@ -100,9 +99,6 @@ const (
 //	/__aisys__/api/usage-records + /my-*           -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/authorization-options + /my-*   -> authz.Deps.MountAuthorizationOptions (X04)
 //	/__aisys__/api/proxies (CRUD/options/test; J3a jobs cutover pending) -> proxyprofiles.Mount (X04)
-//	/__aisys__/api/table-monitor (3 GET + cleanup POST) -> tablemonitor.Deps.Mount
-//	  (the cleanup POST enqueues the Node-shaped job through the durable
-//	  record_maintenance_jobs channel; the jobs wave drains it)
 //	/__aisys__/api/ui-bootstrap + /my-*            -> uibootstrap.Deps.Mount (X04)
 //	/__aisys__/help (static help center)           -> helpweb.Deps.Mount (X04; disabled
 //	  unless JUHE_AI_FRONTEND_DIST_PATH points at the frontend dist)
@@ -183,14 +179,6 @@ type composition struct {
 	// AuthzStore retains the authorization store so main can attach the
 	// T6d gateway-side expiry reconciliation component (compose_authz_expiry_sync.go).
 	AuthzStore *authz.Store
-	// GoRuntimeSampler is the in-process Go runtime metrics sampler
-	// (shared platform/gometrics; role default gateway). main runs it as a
-	// supervisor component; the opened store handle is closed via shutdowns.
-	// Nil only for the explicit JUHE_AI_GO_RUNTIME_METRICS_STORE=disabled
-	// opt-out — sampling is enabled by default since 2026-09-27 (store follows
-	// the main database driver), and the go-runtime-trend route serves empty
-	// items only in the nil / assembly-degraded path.
-	GoRuntimeSampler *gometrics.Sampler
 	// teamStore retains the system-teams store so the assembly tests can drive
 	// the committed-write side effects directly (the routes family shares it).
 	teamStore *systemteams.Store
@@ -447,28 +435,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		usageCatalogDB = catalog
 		composed.shutdowns = append(composed.shutdowns, func() { _ = catalog.Close() })
-	}
-	var tableMonitorDB *sql.DB
-	if composed.pgDialect {
-		tableMonitorDB = composed.db
-	} else {
-		if cfg.TableMonitorDatabasePath == "" {
-			closeOwnedBusiness()
-			return nil, errors.New("sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH，无法打开表监控快照数据库")
-		}
-		monitorDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.TableMonitorDatabasePath))
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open table monitor sqlite database: %w", err)
-		}
-		monitorDB.SetMaxOpenConns(1)
-		if err := configureSQLiteConnection(monitorDB); err != nil {
-			_ = monitorDB.Close()
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("configure table monitor sqlite database: %w", err)
-		}
-		tableMonitorDB = monitorDB
-		composed.shutdowns = append(composed.shutdowns, func() { _ = monitorDB.Close() })
 	}
 
 	// X04 404 项补齐 (logreads three-family reads): the audit F3 dataset, the
@@ -1097,57 +1063,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	}
 	proxyprofiles.Mount(kern, authDeps, proxyStore, sink)
 	(&uibootstrap.Deps{DB: composed.db, PGDialect: composed.pgDialect, Auth: authDeps}).Mount(kern)
-	tableMonitorStore, err := tablemonitor.NewStore(tableMonitorDB, composed.pgDialect)
-	if err != nil {
-		return nil, fmt.Errorf("create table monitor store: %w", err)
-	}
-	recordMaintenanceDispatch, err := tablemonitor.NewDurableRecordMaintenanceDispatch(composed.db, composed.pgDialect, time.Now)
+	// record_maintenance_jobs 持久交接通道（internal/recordmaintenance）：
+	// codex / anthropic 用量快照 job 由组合根写入业务库（SQLite）或
+	// juhe_dataset（PostgreSQL），jobs 侧 drain（表监控清理 POST 路由族已
+	// 随其读面删除，通道仅承载快照行家族）。
+	recordMaintenanceDispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(composed.db, composed.pgDialect, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create record maintenance dispatch: %w", err)
-	}
-	tableMonitorDeps := &tablemonitor.Deps{
-		Store:    tableMonitorStore,
-		Cache:    tablemonitor.NewOverviewCache(),
-		Dispatch: recordMaintenanceDispatch,
-		Sink:     sink,
-	}
-	tableMonitorDeps.Mount(kern, authDeps)
-	// D-102（BUG-0175）：启动预热对齐 Node prewarmTableStorageOverview——
-	// 首个管理端概览请求命中缓存而非冷扫描；失败仅记日志，不留退避条目。
-	go tableMonitorDeps.Prewarm(context.Background())
-	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标，并把共享 Store
-	// 直接交给 statreads 的 go-runtime-trend 读侧（不再代理 jobs 的 trend
-	// HTTP 面）。store=disabled 显式关闭时既不打开句柄也不装配采样器。
-	var goRuntimeStore *gometrics.Store
-	if cfg.GoRuntimeMetrics.Enabled {
-		openedStore, goRuntimeDB, openErr := gometrics.OpenStore(cfg.GoRuntimeMetrics)
-		if openErr != nil {
-			return nil, fmt.Errorf("open Go runtime metrics store: %w", openErr)
-		}
-		// 建表语义按 dialect 分派：sqlite 模式启动自举建表（CREATE TABLE IF
-		// NOT EXISTS 幂等 + busy_timeout/WAL；ADD COLUMN 检查-后-行动竞态已做
-		// 幂等容错；唯 dual-process 同时建首连的 WAL 翻转可能一次性 SQLITE_BUSY，
-		// 顺序拉起或容器重启自愈，见系统指标统计设计.md 已知边界），零配置
-		// standalone 新库开箱即用；postgres 模式 DDL 仍由 maintenance 显式
-		// 执行，启动只读校验、缺表 fail-fast（项目契约不变）。
-		if cfg.GoRuntimeMetrics.Store == gometrics.DialectSQLite {
-			if err := openedStore.EnsureSchema(context.Background()); err != nil {
-				_ = goRuntimeDB.Close()
-				return nil, fmt.Errorf("bootstrap Go runtime metrics schema: %w", err)
-			}
-		} else if err := gometrics.EnsureReady(context.Background(), openedStore); err != nil {
-			_ = goRuntimeDB.Close()
-			return nil, fmt.Errorf("verify Go runtime metrics schema: %w", err)
-		}
-		sampler, samplerErr := gometrics.NewSampler(gometrics.New(cfg.GoRuntimeMetrics.Service, cfg.GoRuntimeMetrics.Role), openedStore, cfg.GoRuntimeMetrics.Interval)
-		if samplerErr != nil {
-			_ = goRuntimeDB.Close()
-			return nil, fmt.Errorf("initialize Go runtime metrics sampler: %w", samplerErr)
-		}
-		sampler.Retention = time.Duration(cfg.GoRuntimeMetrics.RetentionDays) * 24 * time.Hour
-		composed.shutdowns = append(composed.shutdowns, func() { _ = goRuntimeDB.Close() })
-		goRuntimeStore = openedStore
-		composed.GoRuntimeSampler = sampler
 	}
 	var healthOutcomes *statreads.HealthOutcomeSource
 	if cfg.AccountHealthOutcomeSQLitePath != "" {
@@ -1160,26 +1082,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// Postgres database (juhe_jobs); the SQLite path above stays the
 	// standalone-mode source. Mirrors Node readPostgresOutcomesForAccounts.
 	healthOutcomes.PostgresURL = cfg.AccountHealthOutcomePostgresURL
-	// health-snapshot 数据源：gateway 段进程内直读 owner readiness（与
-	// /__aisys__/health 同源）；jobs 段按 JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS
-	// 拉取 loopback /health（2026-09-28 默认开启整改：未配置时默认
-	// 127.0.0.1:3305——与 jobs 进程默认健康监听对齐，同主机裸跑形态直接
-	// 可用；显式 "disabled" 关闭该段抓取；跨容器 compose 形态仍需显式容器
-	// 名视角地址覆盖）。
 	(&statreads.Deps{
-		Business:                composed.db,
-		Stats:                   composed.statsDB,
-		UsageCatalog:            usageCatalogDB,
-		PGDialect:               composed.pgDialect,
-		Auth:                    authDeps,
-		Now:                     time.Now,
-		Timezone:                statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
-		GoRuntimeMetrics:        goRuntimeStore,
-		GoRuntimeMetricsService: cfg.GoRuntimeMetrics.Service,
-		HealthOutcomes:          healthOutcomes,
-		RuntimeMode:             cfg.RuntimeMode,
-		GatewayReadiness:        ownerHealth.readiness,
-		JobsHealthURL:           statreads.JobsHealthURL(jobsHealthListenAddress(os.Getenv)),
+		Business:       composed.db,
+		Stats:          composed.statsDB,
+		UsageCatalog:   usageCatalogDB,
+		PGDialect:      composed.pgDialect,
+		Auth:           authDeps,
+		Now:            time.Now,
+		Timezone:       statreads.NewSystemSettingsTimezoneSource(composed.db, composed.pgDialect),
+		HealthOutcomes: healthOutcomes,
+		RuntimeMode:    cfg.RuntimeMode,
 	}).Mount(kern)
 	// M2 媒体任务管理面（媒体设计 §8.2 只读列表）：GET /__aisys__/api/media-jobs，
 	// 权限沿使用记录列表（requireAdmin）；与 /v1 任务面同源业务库（repo 只读
@@ -1464,12 +1376,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, accountStore, accountStore); chatErr != nil {
 			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
 		}
-		// 媒体工作室路由族（媒体工作室设计 §4）：资产/账户/模型/生成/任务面挂载
-		// ${systemApiPrefix}/my-studio（资产仓库落业务库，对象存储与 chat 同
-		// 源；generations/tasks 受理执行器经进程内网关链直驱）。
-		if _, studioErr := composeStudioFamily(composed, cfg, chainServices, accountStore, chain); studioErr != nil {
-			return nil, fmt.Errorf("compose my-studio family: %w", studioErr)
-		}
 		// cacheDriver==='redis': the system-api limiter switches onto the
 		// shared fixed-window redis store (task item 9); memory driver keeps
 		// the in-process store built above.
@@ -1610,25 +1516,6 @@ func settingsTimezone(read SettingValueFunc) ipstats.TimezoneSource {
 	return func(context.Context) (string, error) {
 		return read("usageStatsTimezone")
 	}
-}
-
-// jobsHealthListenAddress resolves the gateway-side jobs health fetch address
-// (JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, 2026-09-28 default-on rectification):
-// unset/blank defaults to statreads.DefaultJobsHealthListenAddress
-// (127.0.0.1:3305, aligned with the jobs process' own default health listen
-// so a same-host bare-process deployment works with zero configuration); the
-// literal "disabled" (case-insensitive, the gometrics opt-out convention)
-// explicitly turns the health-snapshot jobs section off (empty address → the
-// Deps-level degradation); any explicit address wins verbatim.
-func jobsHealthListenAddress(getenv func(string) string) string {
-	address := strings.TrimSpace(getenv("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS"))
-	if strings.EqualFold(address, "disabled") {
-		return ""
-	}
-	if address == "" {
-		return statreads.DefaultJobsHealthListenAddress
-	}
-	return address
 }
 
 // apiKeyCleanupSubmitter adapts the apikeys after-commit maintenance handoff

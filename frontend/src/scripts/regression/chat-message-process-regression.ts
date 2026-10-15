@@ -6,10 +6,6 @@ function message(toolEvents: ChatMessage['toolEvents'], reasoningText = '先分�
   return { toolEvents, reasoningText } as ChatMessage
 }
 
-// 上游真实工具事件（AI 问答简化设计 D3）：web_search_call 等上游内置工具动作
-// 描述保留；站内子代理（web_search/generate_*）投影分支已删除，其历史条目走
-// 通用 fail-open 与失败摘要分支。
-
 const lifecycle = projectChatMessageProcess(message([
   { id: 'search_1', type: 'web_search_call', status: 'started', item: { action: { query: ' 北京   天气 ' } } },
   { id: 'search_1', type: 'web_search_call', status: 'updated', item: { action: { query: '北京 天气' } } },
@@ -40,17 +36,15 @@ assert.equal(persistedTerminalFunction.toolGroups[0]?.callCount, 1)
 assert.equal(persistedTerminalFunction.toolGroups[0]?.status, 'completed', '后置 updated 不能把已完成生命周期降级')
 assert.match(persistedTerminalFunction.toolGroups[0]?.summaries[0] ?? '', /^lookup/, '终态合并后必须保留原函数摘要')
 
-// 通用 progress 快照读取（历史落库 item.progress）：站内编排删除后仍按通用
-// 字段投影，供历史回看重建过程区。
-const persistedProgressSnapshot = projectChatMessageProcess({
+const persistedSearchSnapshot = projectChatMessageProcess({
   contentBlocks: [
-    { type: 'tool_call', id: 'search_hist', toolType: 'web_search_call', status: 'completed', item: { action: { query: '上海 天气' }, progress: { stage: 'answering', reasoning: '已找到结果', actions: ['搜索「上海 天气」'], answer: '上海今天小雨' } } }
+    { type: 'tool_call', id: 'search_hist', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '上海 天气', sources: ['https://example.com/a'], sourceCount: 1, progress: { stage: 'answering', reasoning: '已找到结果', actions: ['搜索「上海 天气」'], answer: '上海今天小雨' } } }
   ]
 } as ChatMessage)
-assert.ok(persistedProgressSnapshot.toolGroups[0]?.progress, '终态落库块的 progress 快照必须被读取（历史回看重建过程区）')
-assert.equal(persistedProgressSnapshot.toolGroups[0]?.progress?.reasoning, '已找到结果')
-assert.deepEqual(persistedProgressSnapshot.toolGroups[0]?.progress?.actions, ['搜索「上海 天气」'])
-assert.equal(persistedProgressSnapshot.toolGroups[0]?.progress?.answer, '上海今天小雨')
+assert.ok(persistedSearchSnapshot.toolGroups[0]?.progress, '终态落库块的 progress 快照必须被读取（历史回看重建过程区，契约 §10.3）')
+assert.equal(persistedSearchSnapshot.toolGroups[0]?.progress?.reasoning, '已找到结果')
+assert.deepEqual(persistedSearchSnapshot.toolGroups[0]?.progress?.actions, ['搜索「上海 天气」'])
+assert.equal(persistedSearchSnapshot.toolGroups[0]?.progress?.answer, '上海今天小雨')
 
 const duplicateSearch = projectChatMessageProcess(message([
   { id: 'search_a', type: 'web_search_call', status: 'completed', item: { action: { queries: [' 上海 天气 ', '北京   天气', '北京 天气'] } } },
@@ -120,16 +114,7 @@ const failedPriority = projectChatMessageProcess(message([
 ]))
 assert.equal(failedPriority.toolGroups[0]?.status, 'failed', '任一调用失败时整组必须显示失败')
 
-// 失败摘要：上游错误码走公开映射；已退场站内工具码回退安全兜底文案。
-const upstreamFailure = projectChatMessageProcess(message([
-  { id: 'upstream_failed', type: 'web_search_call', status: 'failed', item: { errorCode: 'upstream_stream_failed' } }
-]))
-assert.deepEqual(
-  upstreamFailure.toolGroups[0]?.summaries,
-  ['模型响应中断，请重新发送'],
-  '上游工具失败必须把稳定错误码映射成可见原因'
-)
-const retiredToolFailure = projectChatMessageProcess({
+const imagePermissionFailure = projectChatMessageProcess({
   contentBlocks: [{
     type: 'tool_call',
     blockId: 'image-permission-failure',
@@ -141,9 +126,9 @@ const retiredToolFailure = projectChatMessageProcess({
   }]
 } as ChatMessage)
 assert.deepEqual(
-  retiredToolFailure.toolGroups[0]?.summaries,
-  ['生成任务异常结束，请重新发送'],
-  '已退场站内工具的失败码映射必须回退安全兜底文案，不得恢复已删映射'
+  imagePermissionFailure.toolGroups[0]?.summaries,
+  ['图片生成失败：可用上游分组未开通图片生成功能'],
+  '图片工具失败必须把稳定错误码映射成可见原因，不能只显示“图片生成失败”'
 )
 
 const canceledOnly = projectChatMessageProcess(message([
@@ -185,39 +170,66 @@ assert.equal(persisted.toolGroups[0]?.summaries[0], '历史', '历史 contentBlo
 
 assert(duplicateSearch.toolGroups.every((group) => group.summaries.every((summary) => summary.length <= 160)), '摘要必须有长度上限')
 
-// 站内工具投影退场（AI 问答简化设计 D2）：web_search / generate_* 条目走通用
-// fail-open——摘要为空、无来源计数；item.progress 仍按通用字段读取。
-const retiredSearchEntry = projectChatMessageProcess({
+const subagentProgressing = projectChatMessageProcess({
   contentBlocks: [
-    { type: 'tool_call', id: 'call_ws_legacy', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '北京天气', sourceCount: 2 } }
+    { type: 'tool_call', id: 'call_ws_prog', toolType: 'web_search', status: 'updated', item: { type: 'web_search', executionOwner: 'application', query: '北京天气', progress: { stage: 'searching', reasoning: '先查天气', actions: ['搜索「北京天气」'], answer: '' } } }
   ]
 } as ChatMessage)
-assert.equal(retiredSearchEntry.toolGroups.length, 1)
-assert.deepEqual(retiredSearchEntry.toolGroups[0]?.summaries, [], '站内 web_search 条目不得再投影查询与来源')
-assert.equal(retiredSearchEntry.toolGroups[0]?.statusDetail, undefined, '站内 web_search 条目不得再展示来源计数')
-assert.equal(retiredSearchEntry.toolGroups[0]?.status, 'completed')
+assert.equal(subagentProgressing.toolGroups.length, 1)
+assert.equal(subagentProgressing.toolGroups[0]?.progress?.stage, 'searching', '执行中的子代理过程快照必须投影到分组')
+assert.deepEqual(subagentProgressing.toolGroups[0]?.progress?.actions, ['搜索「北京天气」'])
+assert.equal(subagentProgressing.toolGroups[0]?.progress?.reasoning, '先查天气')
+assert.equal(subagentProgressing.toolGroups[0]?.status, 'updated', '执行中分组保持活跃状态驱动过程区展开')
 
-const legacyProgressEntry = projectChatMessageProcess({
+const subagentSettled = projectChatMessageProcess({
   contentBlocks: [
-    { type: 'tool_call', id: 'call_legacy_prog', toolType: 'generate_image', status: 'started', item: { type: 'generate_image', progress: { stage: 'generating' } } }
+    { type: 'tool_call', id: 'call_ws_done', toolType: 'web_search', status: 'completed', item: { type: 'web_search', executionOwner: 'application', query: '北京天气', sourceCount: 2 } }
   ]
 } as ChatMessage)
-assert.equal(legacyProgressEntry.toolGroups[0]?.progress?.stage, 'generating', '通用 progress 快照读取必须保留（历史回看）')
-assert.deepEqual(legacyProgressEntry.toolGroups[0]?.summaries, [], '站内媒体工具条目摘要必须保持为空')
+assert.equal(subagentSettled.toolGroups[0]?.progress, undefined, '终态分组不得保留瞬态过程快照')
+assert.equal(subagentSettled.toolGroups[0]?.status, 'completed', '终态分组收敛驱动过程区折叠')
+assert.equal(subagentSettled.toolGroups[0]?.statusDetail, '2 个来源')
+
+const generatingImage = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_img_prog', toolType: 'generate_image', status: 'started', item: { type: 'generate_image', executionOwner: 'application', progress: { stage: 'generating' } } }
+  ]
+} as ChatMessage)
+assert.equal(generatingImage.toolGroups[0]?.progress?.stage, 'generating', '生图 started 阶段提示必须投影')
+
+// M7 媒体工具（问答音视频工具设计 §4.1/§5）：generate_video started 带 submitting
+// 阶段、generate_audio started 带 synthesizing 阶段；两者与 generate_image 同口径
+// ——仅状态条目，摘要不落 callId（产物走 output_media_task/output_audio 块）。
+const submittingVideo = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_video_submit', toolType: 'generate_video', status: 'started', item: { type: 'generate_video', executionOwner: 'application', progress: { stage: 'submitting' } } }
+  ]
+} as ChatMessage)
+assert.equal(submittingVideo.toolGroups[0]?.progress?.stage, 'submitting', '视频生成 started 阶段提示必须投影')
+assert.equal(submittingVideo.toolGroups[0]?.status, 'started')
+assert.deepEqual(submittingVideo.toolGroups[0]?.summaries, [], '视频生成工具条目不得在摘要中泄露 callId（任务卡走 output_media_task 块）')
+
+const synthesizingAudio = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_audio_synth', toolType: 'generate_audio', status: 'started', item: { type: 'generate_audio', executionOwner: 'application', progress: { stage: 'synthesizing' } } }
+  ]
+} as ChatMessage)
+assert.equal(synthesizingAudio.toolGroups[0]?.progress?.stage, 'synthesizing', '语音合成 started 阶段提示必须投影')
+assert.deepEqual(synthesizingAudio.toolGroups[0]?.summaries, [], '语音合成工具条目不得在摘要中泄露 callId（音频走 output_audio 块）')
 
 const settledWithStageTimings = projectChatMessageProcess({
   contentBlocks: [
-    { type: 'tool_call', id: 'call_timings', toolType: 'web_search_call', status: 'completed', item: { action: { query: '北京天气' }, progress: { stage: 'answering', stageTimings: { reasoning: 8400, searching: 41000, answering: 12000 } } } }
+    { type: 'tool_call', id: 'call_ws_timings', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '北京天气', sourceCount: 1, progress: { stage: 'answering', stageTimings: { reasoning: 8400, searching: 41000, answering: 12000 } } } }
   ]
 } as ChatMessage)
 assert.deepEqual(
   settledWithStageTimings.toolGroups[0]?.progress?.stageTimings,
   { reasoning: 8400, searching: 41000, answering: 12000 },
-  '终态落库快照必须携带 stageTimings 供折叠行展示阶段耗时时间线'
+  '终态落库快照必须携带 stageTimings 供折叠行展示阶段耗时时间线（契约 §10.3）'
 )
 const timingsOnlyProgress = projectChatMessageProcess({
   contentBlocks: [
-    { type: 'tool_call', id: 'call_timings_only', toolType: 'web_search_call', status: 'completed', item: { action: { query: '上海天气' }, progress: { stageTimings: { searching: 5000 } } } }
+    { type: 'tool_call', id: 'call_ws_timings_only', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '上海天气', progress: { stageTimings: { searching: 5000 } } } }
   ]
 } as ChatMessage)
 assert.deepEqual(timingsOnlyProgress.toolGroups[0]?.progress?.stageTimings, { searching: 5000 }, '仅 stageTimings 的快照也必须保留，不得因无 stage/reasoning 被丢弃')

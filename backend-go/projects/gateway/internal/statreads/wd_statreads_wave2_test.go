@@ -1,23 +1,20 @@
 package statreads
 
 // statreads 第二轮补充（wd_ 前缀，独占新增文件）：读错误→500 的降级契约、
-// PG 入口在无 PG 环境下的失败面、requireAdminInternal 门禁、分页 hasMore、
-// 损坏 shard 的容错与系统账户名回退。全部使用确定性 SQLite/httptest。
+// PG 入口在无 PG 环境下的失败面、分页 hasMore、损坏 shard 的容错与系统账户
+// 名回退。全部使用确定性 SQLite/httptest。
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	_ "modernc.org/sqlite"
 )
 
@@ -90,13 +87,6 @@ func TestWdReadErrorsSurfaceAs500(t *testing.T) {
 			t.Fatalf("ai-health 详情读错误应 500: %d", recorder.Code)
 		}
 	})
-	t.Run("system-metrics 趋势", func(t *testing.T) {
-		deps := wdUTCOnlyDeps(t)
-		recorder := wdGet(t, deps.systemMetricsTrendHandler, "/?startDate=2026-09-04&endDate=2026-09-04", adminAuth(""))
-		if recorder.Code != http.StatusInternalServerError {
-			t.Fatalf("系统指标读错误应 500: %d %s", recorder.Code, recorder.Body.String())
-		}
-	})
 	t.Run("usage-records 参数解析", func(t *testing.T) {
 		// 日期窗口解析依赖时区，时区失败时解析错误应呈现为 500。
 		deps := &Deps{Timezone: wdErrTimezone(), Now: func() time.Time { return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC) }}
@@ -113,7 +103,6 @@ func TestWdReadErrorsSurfaceAs500(t *testing.T) {
 			"accountTrend": deps.accountUsageTrendHandler(false),
 			"perfBase":     deps.aiPerformanceBaseHandler(false),
 			"perfSeries":   deps.aiPerformanceSeriesHandler(false),
-			"goRuntime":    deps.goRuntimeTrendHandler,
 		} {
 			target := "/?startDate=2026-09-04&endDate=2026-09-04"
 			if name == "perfSeries" {
@@ -162,36 +151,6 @@ func TestWdAiPerformanceKeywordNoMatchYieldsEmptyOptions(t *testing.T) {
 	options := wdDataArray(t, recorder)
 	if len(options) != 0 {
 		t.Fatalf("无命中关键字应得空选项: %#v", options)
-	}
-}
-
-func TestWdRequireAdminInternalGate(t *testing.T) {
-	deps := &Deps{}
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	gate := deps.requireAdminInternal(next)
-	// 无认证上下文 → 401。
-	recorder := httptest.NewRecorder()
-	gate.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if recorder.Code != http.StatusUnauthorized || decodeBody(t, recorder)["message"] != "请先登录" {
-		t.Fatalf("无认证应 401: %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 普通用户（my-stats 降级后）→ 403。
-	recorder = httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	request = request.WithContext(authsys.WithAuthContext(request.Context(), userAuth()))
-	gate.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden || decodeBody(t, recorder)["message"] != "需要管理员权限" {
-		t.Fatalf("普通用户应 403: %d %s", recorder.Code, recorder.Body.String())
-	}
-	// admin → 放行。
-	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodGet, "/", nil)
-	request = request.WithContext(authsys.WithAuthContext(request.Context(), adminAuth("")))
-	gate.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("admin 应放行: %d", recorder.Code)
 	}
 }
 
@@ -281,37 +240,5 @@ func TestWdUsageRecordsSystemAccountNameUsernameFallback(t *testing.T) {
 	row := items[0].(map[string]any)
 	if row["systemAccountId"] != "sys-nodisplay" || row["systemAccountName"] != "fallbackname" {
 		t.Fatalf("display_name 缺失应回退 username: %#v", row)
-	}
-}
-
-func TestWdGoRuntimeTrendDateContractAndQueryFailure(t *testing.T) {
-	fixture := newWdFixture(t)
-	// 日期契约 400。
-	recorder := wdGet(t, fixture.deps.goRuntimeTrendHandler, "/?startDate=nope", adminAuth(""))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("非法日期应 400: %d", recorder.Code)
-	}
-	if got := decodeBody(t, recorder)["message"]; got != "Go 运行时指标日期范围不合法" {
-		t.Fatalf("400 消息错误: %#v", got)
-	}
-	// 查询失败（store 底层库已关闭）→ 读错误 500。
-	broken, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "broken.sqlite3"))
-	if err != nil {
-		t.Fatalf("open broken: %v", err)
-	}
-	store, err := gometrics.NewStore(broken, gometrics.DialectSQLite)
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		t.Fatalf("ensure schema: %v", err)
-	}
-	if err := broken.Close(); err != nil {
-		t.Fatalf("close broken: %v", err)
-	}
-	fixture.deps.GoRuntimeMetrics = store
-	recorder = wdGet(t, fixture.deps.goRuntimeTrendHandler, "/?startDate=2026-09-04&endDate=2026-09-04", adminAuth(""))
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("store 查询失败应 500: %d %s", recorder.Code, recorder.Body.String())
 	}
 }

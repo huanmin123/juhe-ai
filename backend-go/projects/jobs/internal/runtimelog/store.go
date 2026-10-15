@@ -56,12 +56,12 @@ type postgresStore struct {
 	pool *pgxpool.Pool
 }
 
-// rollbackPostgresTx must not reuse the caller's context.  F1/F2 database
+// rollbackPostgresTx must not reuse the caller's context.  F1 database
 // operations are bounded by a short cycle context; when that context expires,
 // pgx will otherwise reject Rollback as already canceled and return the pooled
 // connection with an open transaction.  The leaked transaction can retain
-// relation locks and make the other owner (notably F2 table-monitor) fail
-// readiness indefinitely.
+// relation locks on the F1 tables and block concurrent maintenance
+// indefinitely.
 func rollbackPostgresTx(tx pgx.Tx) {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

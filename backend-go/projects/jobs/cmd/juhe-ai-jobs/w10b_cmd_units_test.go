@@ -1,8 +1,8 @@
 package main
 
 // w10b in-process coverage for jobs cmd pure-Go surfaces that the existing
-// suite leaves uncovered: jobsHTTPHandler full j3 slot assembly (collector in
-// slot 4 + worker fields), healthHandler full typed slot population, the
+// suite leaves uncovered: jobsHTTPHandler full deps assembly (prommetrics
+// handler + worker fields), healthHandler full typed deps population, the
 // account-balance manual bridge 404 arms, manualHandoverResult/manualOutcome
 // helpers, and worker_assembly root helpers (ownerID, token, acquirePool
 // fail-closed arm, nil-logger default).
@@ -18,30 +18,34 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
 )
 
 func w10bRunnerStatus(owner bool) proxylatency.RunnerStatus {
 	return proxylatency.RunnerStatus{OwnerHeld: owner, LastCycleAt: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)}
 }
 
-func TestW10BJobsHTTPHandlerFullSlotAssembly(t *testing.T) {
+func TestW10BJobsHTTPHandlerFullDepsAssembly(t *testing.T) {
 	var runtimeRunning atomic.Bool
 	runtimeRunning.Store(true)
-	collector := gometrics.New("juhe-ai", "jobs")
 	workerPayload := map[string]any{"workerEnabled": true, "workerWiredJobs": []string{"task-a"}}
-	handler := jobsHTTPHandler(ownermode.Active, &runtimeRunning,
-		func() bool { return true },
-		true, func() bool { return true },
-		true, func() bool { return true },
-		nil, "0123456789abcdef0123456789abcdef",
-		true, func() bool { return true },
-		func() proxylatency.RunnerStatus { return w10bRunnerStatus(true) },
-		func() (proxylatency.RunnerStatus, bool) { return w10bRunnerStatus(true), true },
-		collector, nil,
-		true, func() bool { return true }, func() map[string]any { return workerPayload },
-	)
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:                  ownermode.Active,
+		RuntimeRunning:             &runtimeRunning,
+		MetricsHandler:             prommetrics.NewRegistry().Handler(),
+		AccountHealthEnabled:       true,
+		AccountHealthReady:         func() bool { return true },
+		AccountBalanceEnabled:      true,
+		AccountBalanceReady:        func() bool { return true },
+		AccountBalanceManualSecret: "0123456789abcdef0123456789abcdef",
+		ProxyLatencyEnabled:        true,
+		ProxyLatencyReady:          func() bool { return true },
+		ProxyLatencyStatus:         func() proxylatency.RunnerStatus { return w10bRunnerStatus(true) },
+		ProxyLatencySnapshot:       func() (proxylatency.RunnerStatus, bool) { return w10bRunnerStatus(true), true },
+		WorkerReady:                func() bool { return true },
+		WorkerStatus:               func() map[string]any { return workerPayload },
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if record.Code != http.StatusOK {
@@ -58,36 +62,40 @@ func TestW10BJobsHTTPHandlerFullSlotAssembly(t *testing.T) {
 			t.Fatalf("/health 载荷缺少 %s:\n%s", want, body)
 		}
 	}
-	// metrics 路由由 collector 槽位提供。
+	// metrics 路由由 MetricsHandler 依赖提供（prommetrics Go/process 收集器）。
 	metrics := httptest.NewRecorder()
 	handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/__aisys__/metrics", nil))
-	if metrics.Code != http.StatusOK {
-		t.Fatalf("metrics=%d", metrics.Code)
+	if metrics.Code != http.StatusOK || !strings.Contains(metrics.Body.String(), "go_goroutines") {
+		t.Fatalf("metrics=%d body=%s", metrics.Code, metrics.Body.String())
 	}
 }
 
-func TestW10BHealthHandlerFullSlots(t *testing.T) {
+func TestW10BHealthHandlerFullDeps(t *testing.T) {
 	var running atomic.Bool
 	running.Store(true)
-	handler := healthHandler(ownermode.Active, &running,
-		func() bool { return true },
-		true, func() bool { return false },
-		true, func() bool { return true },
-		true, func() bool { return false },
-		func() proxylatency.RunnerStatus { return w10bRunnerStatus(false) },
-		func() (proxylatency.RunnerStatus, bool) { return w10bRunnerStatus(false), false },
-		true, func() bool { return true },
-		func() map[string]any { return map[string]any{"k": "v"} },
-	)
+	handler := healthHandler(healthDeps{
+		OwnerMode:             ownermode.Active,
+		RuntimeRunning:        &running,
+		AccountHealthEnabled:  true,
+		AccountHealthReady:    func() bool { return false },
+		AccountBalanceEnabled: true,
+		AccountBalanceReady:   func() bool { return true },
+		ProxyLatencyEnabled:   true,
+		ProxyLatencyReady:     func() bool { return false },
+		ProxyLatencyStatus:    func() proxylatency.RunnerStatus { return w10bRunnerStatus(false) },
+		ProxyLatencySnapshot:  func() (proxylatency.RunnerStatus, bool) { return w10bRunnerStatus(false), false },
+		WorkerReady:           func() bool { return true },
+		WorkerStatus:          func() map[string]any { return map[string]any{"k": "v"} },
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if record.Code != http.StatusOK {
 		t.Fatalf("/health=%d", record.Code)
 	}
 	body := record.Body.String()
-	// 槽位类型断言全部命中：worker 快照必须出现在载荷（有值 → 写入 payload["worker"]）。
+	// 显式依赖全部命中：worker 快照必须出现在载荷（有值 → 写入 payload["worker"]）。
 	if !strings.Contains(body, `"worker"`) || !strings.Contains(body, `"k":"v"`) {
-		t.Fatalf("worker 快照槽位缺失:\n%s", body)
+		t.Fatalf("worker 快照缺失:\n%s", body)
 	}
 	// accountHealthReady=false 但 enabled=true → 不 ready。
 	if !strings.Contains(body, `"ready":false`) {
@@ -97,9 +105,7 @@ func TestW10BHealthHandlerFullSlots(t *testing.T) {
 
 func TestW10BJobsHTTPHandlerManualBridgeNotFound(t *testing.T) {
 	var running atomic.Bool
-	handler := jobsHTTPHandler(ownermode.Active, &running,
-		func() bool { return true }, false, func() bool { return true },
-		false, func() bool { return true }, nil, "")
+	handler := jobsHTTPHandler(jobsHTTPDeps{OwnerMode: ownermode.Active, RuntimeRunning: &running})
 	// 非 POST → 404。
 	get := httptest.NewRecorder()
 	handler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/account-balance/manual", nil))

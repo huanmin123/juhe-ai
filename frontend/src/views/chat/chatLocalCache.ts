@@ -20,6 +20,7 @@ export interface ChatCacheConversationHead {
   title?: string
   isPinned?: boolean
   lastModel?: string
+  defaultImageModel?: ChatConversation['defaultImageModel']
   activeTurnId?: string
   userTurnCount?: number
   lastMessageAt?: string
@@ -148,9 +149,6 @@ function cloneContentBlock(value: unknown): ChatMessageContentBlock | undefined 
       ...(isPlainRecord(value.item) ? { item: value.item } : {})
     }
   }
-  // 存量生成媒体块中仅 output_image 保留（历史占位渲染需要）；output_audio /
-  // output_media_task 类型已随媒体工具退役（AI 问答简化设计 D2/D7），缓存克隆
-  // 不再放行，权威历史内容由服务端消息列表渲染占位。
   if (value.type === 'output_image' && typeof value.assetId === 'string' && integerValue(value.order) !== undefined && isProcessStatus(value.status)) {
     const width = positiveIntegerValue(value.width)
     const height = positiveIntegerValue(value.height)
@@ -162,11 +160,36 @@ function cloneContentBlock(value: unknown): ChatMessageContentBlock | undefined 
       ...(optionalSafeString(value.revisedPrompt) ? { revisedPrompt: value.revisedPrompt as string } : {})
     }
   }
+  // M7 媒体块（问答音视频工具设计 §3）：output_audio / output_media_task 与既有
+  // 块同口径克隆，缓存恢复不得丢失媒体块。
+  if (value.type === 'output_audio' && typeof value.assetId === 'string' && integerValue(value.order) !== undefined) {
+    const durationHint = positiveIntegerValue(value.durationHint)
+    return {
+      type: 'output_audio', blockId: typeof value.blockId === 'string' && safeString(value.blockId) ? value.blockId : `cached-audio-${value.order}`,
+      order: value.order as number, assetId: value.assetId,
+      ...(isProcessStatus(value.status) ? { status: value.status } : {}),
+      ...(optionalSafeString(value.mimeType) ? { mimeType: value.mimeType as string } : {}),
+      ...(durationHint ? { durationHint } : {})
+    }
+  }
+  if (value.type === 'output_media_task' && typeof value.jobId === 'string' && safeString(value.jobId) && value.kind === 'video' && isMediaTaskStatus(value.status) && integerValue(value.order) !== undefined) {
+    const progress = (() => { const bounded = integerValue(value.progress); return bounded !== undefined && bounded >= 0 && bounded <= 100 ? bounded : undefined })()
+    return {
+      type: 'output_media_task', blockId: typeof value.blockId === 'string' && safeString(value.blockId) ? value.blockId : `cached-media-task-${value.order}`,
+      order: value.order as number, jobId: value.jobId, kind: 'video', status: value.status,
+      ...(progress !== undefined ? { progress } : {}),
+      ...(optionalSafeString(value.model) ? { model: value.model as string } : {}),
+      ...(optionalSafeString(value.promptSummary) ? { promptSummary: value.promptSummary as string } : {}),
+      ...(optionalSafeString(value.assetId) ? { assetId: value.assetId as string } : {}),
+      ...(optionalSafeString(value.error) ? { error: value.error as string } : {})
+    }
+  }
   return undefined
 }
 
 function isProcessStatus(value: unknown): value is 'started' | 'completed' | 'failed' | 'canceled' { return value === 'started' || value === 'completed' || value === 'failed' || value === 'canceled' }
 function isToolStatus(value: unknown): value is 'started' | 'updated' | 'completed' | 'failed' | 'canceled' { return isProcessStatus(value) || value === 'updated' }
+function isMediaTaskStatus(value: unknown): value is 'queued' | 'in_progress' | 'completed' | 'failed' { return value === 'queued' || value === 'in_progress' || value === 'completed' || value === 'failed' }
 
 function canonicalServerDateTime(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
@@ -353,7 +376,7 @@ export class ChatLocalCache {
 
 function pickHeadFields(conversation: Partial<ChatConversation>): Partial<ChatCacheConversationHead> {
   const output: Partial<ChatCacheConversationHead> = {}
-  for (const key of ['title', 'isPinned', 'lastModel', 'activeTurnId', 'userTurnCount', 'lastMessageAt', 'createdAt', 'updatedAt'] as const) if (conversation[key] !== undefined) Object.assign(output, { [key]: conversation[key] })
+  for (const key of ['title', 'isPinned', 'lastModel', 'defaultImageModel', 'activeTurnId', 'userTurnCount', 'lastMessageAt', 'createdAt', 'updatedAt'] as const) if (conversation[key] !== undefined) Object.assign(output, { [key]: conversation[key] })
   return output
 }
 

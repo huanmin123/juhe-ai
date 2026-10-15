@@ -37,7 +37,6 @@ export interface SystemSettings {
   statsAggregationMaxBatchesPerRun: number
   usageHotWindowRefreshIntervalSeconds: number
   groupAccountStatsRefreshIntervalSeconds: number
-  tableMonitorMaxTablesPerRun: number
   accountQualityRefreshIntervalSeconds: number
   accountQualityWindowMinutes: number
   accountHealthCheckIntervalHours: number

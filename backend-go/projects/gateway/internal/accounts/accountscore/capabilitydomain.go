@@ -34,3 +34,18 @@ func NormalizeAccountCapabilityDomain(value string) (domain string, ok bool) {
 	}
 	return trimmed, AccountCapabilityDomainSet[trimmed]
 }
+
+// SkipsConversationHealthStateMachine 报告能力域是否不参与对话健康检查状态
+// 机（媒体账户生命周期定案表）：audio/video 域账户无后台探针执行、不产生
+// 上游计费，health_check_endpoint_mode 仅为记录值（见
+// DefaultHealthCheckEndpointModeForDomain）——创建默认 active、编辑连接变化
+// 不降级 pending_test、人工恢复（ClearFailureState）直达 active、冷却到期后
+// 媒体请求可再次准入。image 与 chat 域返回 false（现行状态机行为不变；image
+// 虽属媒体域，仍走对话健康检查生命周期）。
+func SkipsConversationHealthStateMachine(domain string) bool {
+	switch domain {
+	case CapabilityDomainAudio, CapabilityDomainVideo:
+		return true
+	}
+	return false
+}

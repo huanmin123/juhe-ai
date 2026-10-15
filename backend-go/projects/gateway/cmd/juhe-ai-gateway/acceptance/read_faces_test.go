@@ -1,14 +1,13 @@
-// X04 404 项补齐：七个轻量读/管理面的进程级 200 探测。共享同一 fresh
+// X04 404 项补齐：轻量读/管理面的进程级 200 探测。共享同一 fresh
 // gateway 实例（subtests 顺序执行）：stats 与 my-stats 概览/窗口、
 // usage-records 与 my-usage-records、authorization-options 与 my-*、
-// proxies options/创建/编辑/删除、table-monitor 三面、ui-bootstrap 与 my-*。
+// proxies options/创建/编辑/删除、ui-bootstrap 与 my-*。
 // help 静态面依赖前端 dist 目录，缺省构建不挂载，走 404 JSON 契约（本文件
-// 同时验证该缺省行为）。
+// 同时验证该缺省行为）。表监控三面已随表监控读面删除，不再探测。
 package acceptance
 
 import (
 	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -33,11 +32,6 @@ func TestAcceptanceReadFaces(t *testing.T) {
 	t.Run("my-stats self surface", func(t *testing.T) {
 		client.do(http.MethodGet, "/__aisys__/api/my-stats/usage-window", nil, wantStatus(http.StatusOK))
 		client.do(http.MethodGet, "/__aisys__/api/my-stats/usage-overview/summary", nil, wantStatus(http.StatusOK))
-		// my-stats 上的 router 内 requireAdmin 面（forceSelfAccessScope 角色降
-		// 级后）保持 403。
-		client.do(http.MethodGet, "/__aisys__/api/my-stats/system-metrics/trend", nil, wantStatus(http.StatusForbidden))
-		// admin 面正常。
-		client.do(http.MethodGet, "/__aisys__/api/stats/system-metrics/trend", nil, wantStatus(http.StatusOK))
 	})
 
 	t.Run("ai-performance and ai-health", func(t *testing.T) {
@@ -103,35 +97,6 @@ func TestAcceptanceReadFaces(t *testing.T) {
 		client.do(http.MethodPost, "/__aisys__/api/proxies", map[string]any{
 			"name": "坏代理", "type": "http", "host": "", "port": 8080,
 		}, wantStatus(http.StatusBadRequest))
-	})
-
-	t.Run("table-monitor read faces", func(t *testing.T) {
-
-		// fresh boot 快照表未建（采样 owner 是 jobs）：W6 typed unavailable 503，
-		// 不伪造空结果。
-		client.do(http.MethodGet, "/__aisys__/api/table-monitor/overview", nil, wantStatus(http.StatusServiceUnavailable))
-		client.do(http.MethodGet, "/__aisys__/api/table-monitor/database-history", nil, wantStatus(http.StatusServiceUnavailable))
-		client.do(http.MethodGet, "/__aisys__/api/table-monitor/history?databaseRole=business&tableName=accounts", nil, wantStatus(http.StatusServiceUnavailable))
-		// 非法角色 → 400。
-		client.do(http.MethodGet, "/__aisys__/api/table-monitor/history?databaseRole=ghost&tableName=accounts", nil, wantStatus(http.StatusBadRequest))
-		// cleanup POST 已迁移：经 record_maintenance_jobs 持久任务表入队
-		// （Node 回执形状；jobs 侧 drain 由 jobs wave 消费）。成功回执
-		// queued=true + jobId；未来截止 / 缺参 → 400；同 fingerprint 重复
-		// 提交 → 409（mutationGuard）。
-		_, receipt := client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
-			map[string]any{"cutoffAt": "2026-09-01T00:00:00.000Z"}, wantStatus(http.StatusOK))
-		if data(receipt)["queued"] != true {
-			t.Fatalf("cleanup receipt wrong: %#v", receipt)
-		}
-		if jobId := dataString(receipt, "jobId"); !strings.HasPrefix(jobId, "recmaint_") {
-			t.Fatalf("cleanup jobId wrong: %q", jobId)
-		}
-		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
-			map[string]any{"cutoffAt": "2026-09-01T00:00:00.000Z"}, wantStatus(http.StatusConflict))
-		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
-			map[string]any{"cutoffAt": "2099-01-01T00:00:00.000Z"}, wantStatus(http.StatusBadRequest))
-		client.do(http.MethodPost, "/__aisys__/api/table-monitor/non-business-data/cleanup",
-			map[string]any{}, wantStatus(http.StatusBadRequest))
 	})
 
 	t.Run("ui-bootstrap both surfaces", func(t *testing.T) {

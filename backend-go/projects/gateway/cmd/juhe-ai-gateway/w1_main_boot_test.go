@@ -66,7 +66,6 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":      filepath.Join(root, "usage-catalog.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":              filepath.Join(root, "stats.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":        filepath.Join(root, "runtime-log.sqlite3"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":      filepath.Join(root, "table-monitor.sqlite3"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":   filepath.Join(root, "codex-shards"),
 		"JUHE_AI_USAGE_SHARD_ROOT":                 filepath.Join(root, "usage-shards"),
 		"JUHE_AI_AUDIT_LOG_DATABASE_PATH":          filepath.Join(root, "audit.sqlite3"),
@@ -286,7 +285,6 @@ func TestW1BusinessBootGatewayCoverage(t *testing.T) {
 	// 前置拦截，不可达。
 	composeFailCases := []struct{ label, envKey, wantErr string }{
 		{"usage-catalog", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH"},
-		{"table-monitor", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH"},
 		{"runtime-log", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH"},
 		{"stats", "JUHE_AI_STATS_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"},
 		{"dataset", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH"},

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -14,8 +13,7 @@ import (
 //   - source watermark：源表 updated_at 最大值（空表用 0001-01-01T00:00:00.000Z）；
 //   - job state：stats_job_state(scope_type='global', scope_id='', job_name=?)，
 //     cursor_created_at=watermark、cursor_id=refreshDate（todayKey）；
-//   - skipIfUnchanged：watermark 与 refreshDate 都未变化则整轮跳过；
-//   - system_metrics_trend 阶段额外带 sourceVersion 状态行。
+//   - skipIfUnchanged：watermark 与 refreshDate 都未变化则整轮跳过。
 
 // WindowStageName 对齐 UsageRankSnapshotStageName。
 type WindowStageName string
@@ -28,7 +26,6 @@ const (
 	StageGroupAuthorizationCurrentMonthRank   WindowStageName = "group_authorization_current_month_cost_rank"
 	StageUsageOverviewWindows                 WindowStageName = "usage_overview_windows"
 	StageAiPerformanceSummaryWindows          WindowStageName = "ai_performance_summary_windows"
-	StageSystemMetricsTrendWindows            WindowStageName = "system_metrics_trend_windows"
 	StageUsageScopeRangeWindows               WindowStageName = "usage_scope_range_windows"
 	// StageAuthorizationUsageRangeWindows 已随授权消耗明细改为日摘要表现场
 	// 聚合而停用：不再注册进刷新编排（selectStages/runStage 均不认领），组合
@@ -48,8 +45,6 @@ func stageSourceTables(stage WindowStageName) []string {
 		return []string{"usage_stats_monthly"}
 	case StageUsageOverviewWindows:
 		return []string{"usage_stats_totals", "usage_stats_daily", "usage_stats_hourly", "usage_model_daily", "usage_error_daily"}
-	case StageSystemMetricsTrendWindows:
-		return []string{"system_metrics_hourly", "process_event_loop_hourly"}
 	case StageUsageScopeRangeWindows:
 		return []string{"usage_stats_daily"}
 	}
@@ -74,9 +69,9 @@ type UsageRankStageRun struct {
 }
 
 // WindowRefresher 执行窗口刷新 job（usage-rank-snapshots-refresh、
-// usage-overview-windows-refresh、system-metrics-trend-windows-refresh、
-// ai-performance-summary-windows-refresh、usage-scope-range-windows-refresh、
-// usage-hot-window-refresh、usage-quota-hourly-windows-refresh）。授权范围
+// usage-overview-windows-refresh、ai-performance-summary-windows-refresh、
+// usage-scope-range-windows-refresh、usage-hot-window-refresh、
+// usage-quota-hourly-windows-refresh）。授权范围
 // 窗口刷新（authorization-usage-range-windows-refresh）已停用：授权消耗明细
 // 读端改为按日范围直读 authorization_*_usage_summary_daily。
 type WindowRefresher struct {
@@ -110,7 +105,6 @@ func (w *WindowRefresher) selectStages(stageNames []WindowStageName) ([]WindowSt
 		StageGroupAuthorizationCurrentMonthRank,
 		StageUsageOverviewWindows,
 		StageAiPerformanceSummaryWindows,
-		StageSystemMetricsTrendWindows,
 		StageUsageScopeRangeWindows,
 	}
 	if stageNames == nil {
@@ -135,7 +129,7 @@ func (w *WindowRefresher) selectStages(stageNames []WindowStageName) ([]WindowSt
 
 // DefaultJobName mirrors usageRankSnapshotDefaultJobName。
 func DefaultJobName(stages []WindowStageName) string {
-	if len(stages) == 9 {
+	if len(stages) == 8 {
 		return "usage_rank_snapshots_refresh"
 	}
 	result := "usage_rank_snapshots_refresh:"
@@ -171,21 +165,13 @@ func (w *WindowRefresher) RunStages(ctx context.Context, stageNames []WindowStag
 		return UsageRankSnapshotRefreshResult{}, err
 	}
 	var previousState *rankRefreshJobState
-	var previousSourceVersion string
 	if options.SkipIfUnchanged && sourceState != nil {
-		allowLegacy := len(stages) == 1 && stages[0] == StageSystemMetricsTrendWindows
-		previousState, err = w.rankRefreshJobState(ctx, jobName, allowLegacy)
+		previousState, err = w.rankRefreshJobState(ctx, jobName)
 		if err != nil {
 			return UsageRankSnapshotRefreshResult{}, err
 		}
-		if allowLegacy && sourceState.sourceVersion != "" {
-			previousSourceVersion, err = w.previousSourceVersion(ctx, jobName, previousState)
-			if err != nil {
-				return UsageRankSnapshotRefreshResult{}, err
-			}
-		}
 	}
-	sourceUnchanged := rankSnapshotSourceUnchanged(previousState, sourceState, todayKey, previousSourceVersion)
+	sourceUnchanged := rankSnapshotSourceUnchanged(previousState, sourceState, todayKey)
 	if sourceUnchanged {
 		return UsageRankSnapshotRefreshResult{
 			DurationMs:      w.now().Sub(startedAt).Milliseconds(),
@@ -214,7 +200,6 @@ func (w *WindowRefresher) RunStages(ctx context.Context, stageNames []WindowStag
 	if options.SkipIfUnchanged && sourceState != nil {
 		if err := w.updateRankRefreshJobState(ctx, jobName, rankRefreshStateInput{
 			SourceWatermark: sourceState.sourceWatermark,
-			SourceVersion:   sourceState.sourceVersion,
 			RefreshDate:     todayKey,
 			LastSuccessAt:   FormatRFC3339Millis(w.now()),
 		}); err != nil {
@@ -270,8 +255,6 @@ func (w *WindowRefresher) runStage(ctx context.Context, stage WindowStageName, s
 		err = w.refreshUsageOverviewWindowSnapshots(ctx, tx, stageContext)
 	case StageAiPerformanceSummaryWindows:
 		err = w.refreshAiPerformanceSummaryWindows(ctx, tx, stageContext)
-	case StageSystemMetricsTrendWindows:
-		err = w.refreshSystemMetricsTrendWindowsStage(ctx, tx, stageContext)
 	case StageUsageScopeRangeWindows:
 		err = w.refreshUsageScopeRangeWindows(ctx, tx, stageContext)
 	default:
@@ -287,7 +270,6 @@ func (w *WindowRefresher) runStage(ctx context.Context, stage WindowStageName, s
 
 type rankSnapshotSourceState struct {
 	sourceWatermark string
-	sourceVersion   string
 }
 
 func (s *rankSnapshotSourceState) sourceWatermarkOrEmpty() string {
@@ -297,8 +279,7 @@ func (s *rankSnapshotSourceState) sourceWatermarkOrEmpty() string {
 	return s.sourceWatermark
 }
 
-// sourceState mirrors usageRankSnapshotSourceState（system_metrics_trend
-// 单阶段时附加 sourceVersion）。
+// sourceState mirrors usageRankSnapshotSourceState。
 func (w *WindowRefresher) sourceState(ctx context.Context, stages []WindowStageName) (*rankSnapshotSourceState, error) {
 	sourceTablesSet := map[string]struct{}{}
 	for _, stage := range stages {
@@ -349,26 +330,17 @@ func (w *WindowRefresher) sourceState(ctx context.Context, stages []WindowStageN
 		}
 		rows.Close()
 	}
-	state := &rankSnapshotSourceState{sourceWatermark: watermark}
-	if len(stages) == 1 && stages[0] == StageSystemMetricsTrendWindows {
-		version, err := systemMetricsTrendSourceVersion(ctx, w.DB, w.Dialect)
-		if err != nil {
-			return nil, err
-		}
-		state.sourceVersion = version
-	}
-	return state, nil
+	return &rankSnapshotSourceState{sourceWatermark: watermark}, nil
 }
 
 type rankRefreshJobState struct {
 	cursorCreatedAt            *string
 	cursorID                   *string
 	legacyEmptySourceWatermark bool
-	legacySourceVersion        string
 }
 
 // rankRefreshJobState mirrors usageRankSnapshotRefreshJobState。
-func (w *WindowRefresher) rankRefreshJobState(ctx context.Context, jobName string, allowLegacySourceWatermark bool) (*rankRefreshJobState, error) {
+func (w *WindowRefresher) rankRefreshJobState(ctx context.Context, jobName string) (*rankRefreshJobState, error) {
 	query := w.Dialect.bind(`SELECT cursor_created_at, cursor_id FROM ` + w.Dialect.StatsTable("stats_job_state") +
 		` WHERE scope_type = ? AND scope_id = ? AND job_name = ?`)
 	var cursorCreatedAt, cursorID sql.NullString
@@ -385,21 +357,6 @@ func (w *WindowRefresher) rankRefreshJobState(ctx context.Context, jobName strin
 		if value == LegacyEmptySourceWatermark {
 			state.legacyEmptySourceWatermark = true
 			state.cursorCreatedAt = &value
-		} else if allowLegacySourceWatermark {
-			separator := strings.Index(value, "|")
-			if separator >= 0 {
-				watermark := value[:separator]
-				if _, ok := CanonicalizeRFC3339Instant(watermark); !ok {
-					return nil, errors.New("用量排行快照 sourceWatermark必须是带 Z 或数值 offset 的 RFC3339 时间")
-				}
-				state.cursorCreatedAt = &watermark
-				state.legacySourceVersion = value[separator+1:]
-			} else {
-				if _, ok := CanonicalizeRFC3339Instant(value); !ok {
-					return nil, errors.New("用量排行快照 sourceWatermark必须是带 Z 或数值 offset 的 RFC3339 时间")
-				}
-				state.cursorCreatedAt = &value
-			}
 		} else {
 			if _, ok := CanonicalizeRFC3339Instant(value); !ok {
 				return nil, errors.New("用量排行快照 sourceWatermark必须是带 Z 或数值 offset 的 RFC3339 时间")
@@ -413,63 +370,12 @@ func (w *WindowRefresher) rankRefreshJobState(ctx context.Context, jobName strin
 	return state, nil
 }
 
-// previousSourceVersion mirrors usageRankSnapshotPreviousSourceVersionFromState。
-func (w *WindowRefresher) previousSourceVersion(ctx context.Context, jobName string, previousState *rankRefreshJobState) (string, error) {
-	query := w.Dialect.bind(`SELECT cursor_created_at, cursor_id FROM ` + w.Dialect.StatsTable("stats_job_state") +
-		` WHERE scope_type = ? AND scope_id = ? AND job_name = ?`)
-	var cursorCreatedAt, cursorID sql.NullString
-	err := w.DB.QueryRowContext(ctx, query, RankSnapshotSourceVersionScopeType, RankSnapshotSourceVersionScopeID, jobName).Scan(&cursorCreatedAt, &cursorID)
-	var versionState *rankSnapshotSourceState
-	if !errors.Is(err, sql.ErrNoRows) {
-		if err != nil {
-			return "", err
-		}
-		if !cursorCreatedAt.Valid || cursorCreatedAt.String == "" {
-			return "", fmt.Errorf("用量排行快照 sourceVersion 状态缺少 sourceWatermark: %s", jobName)
-		}
-		if !cursorID.Valid || cursorID.String == "" {
-			return "", fmt.Errorf("用量排行快照 sourceVersion 状态缺少 sourceVersion: %s", jobName)
-		}
-		versionState = &rankSnapshotSourceState{sourceWatermark: cursorCreatedAt.String, sourceVersion: cursorID.String}
-	}
-	// usageRankSnapshotPreviousSourceVersionFromState
-	if previousState == nil {
-		if versionState != nil {
-			return "", fmt.Errorf("用量排行快照 sourceVersion 状态缺少主刷新状态: %s", jobName)
-		}
-		return "", nil
-	}
-	if previousState.cursorCreatedAt == nil || *previousState.cursorCreatedAt == "" {
-		return "", fmt.Errorf("用量排行快照主刷新状态缺少 sourceWatermark: %s", jobName)
-	}
-	if previousState.legacySourceVersion != "" {
-		if versionState == nil {
-			return previousState.legacySourceVersion, nil
-		}
-		if versionState.sourceWatermark == *previousState.cursorCreatedAt && versionState.sourceVersion == previousState.legacySourceVersion {
-			return previousState.legacySourceVersion, nil
-		}
-		return "", fmt.Errorf("用量排行快照 legacy sourceVersion 状态与当前状态不一致: %s", jobName)
-	}
-	if versionState == nil {
-		return "", fmt.Errorf("用量排行快照 sourceVersion 状态缺失: %s", jobName)
-	}
-	if versionState.sourceWatermark != *previousState.cursorCreatedAt {
-		return "", fmt.Errorf("用量排行快照 sourceVersion 状态与主刷新水位不一致: %s", jobName)
-	}
-	return versionState.sourceVersion, nil
-}
-
 // rankSnapshotSourceUnchanged mirrors usageRankSnapshotSourceUnchanged。
-func rankSnapshotSourceUnchanged(previousState *rankRefreshJobState, sourceState *rankSnapshotSourceState, refreshDate, previousSourceVersion string) bool {
+func rankSnapshotSourceUnchanged(previousState *rankRefreshJobState, sourceState *rankSnapshotSourceState, refreshDate string) bool {
 	if previousState == nil || sourceState == nil {
 		return false
 	}
 	if previousState.legacyEmptySourceWatermark {
-		return false
-	}
-	// 旧布局将时间戳与版本存同一字段，强制刷新一次以迁移到双行形态。
-	if previousState.legacySourceVersion != "" {
 		return false
 	}
 	if previousState.cursorCreatedAt == nil || *previousState.cursorCreatedAt != sourceState.sourceWatermark {
@@ -478,30 +384,21 @@ func rankSnapshotSourceUnchanged(previousState *rankRefreshJobState, sourceState
 	if previousState.cursorID == nil || *previousState.cursorID != refreshDate {
 		return false
 	}
-	if sourceState.sourceVersion != "" && previousSourceVersion != sourceState.sourceVersion {
-		return false
-	}
 	return true
 }
 
 type rankRefreshStateInput struct {
 	SourceWatermark string
-	SourceVersion   string
 	RefreshDate     string
 	LastSuccessAt   string
 }
 
 // updateRankRefreshJobState mirrors updateUsageRankSnapshotRefreshJobState：
-// 主状态 upsert；sourceVersion 存在时同步 sourceVersion 状态行，否则删除。
+// 主状态 upsert。
 func (w *WindowRefresher) updateRankRefreshJobState(ctx context.Context, jobName string, input rankRefreshStateInput) error {
 	sourceWatermark, err := RequiredRFC3339Instant(input.SourceWatermark, "用量排行快照 sourceWatermark")
 	if err != nil {
 		return err
-	}
-	if input.SourceVersion != "" {
-		if err := requireSystemMetricsTrendSourceVersion(input.SourceVersion); err != nil {
-			return err
-		}
 	}
 	lastSuccessAt, err := RequiredRFC3339Instant(input.LastSuccessAt, "用量排行快照 lastSuccessAt")
 	if err != nil {
@@ -528,18 +425,6 @@ func (w *WindowRefresher) updateRankRefreshJobState(ctx context.Context, jobName
 		RankSnapshotJobStateScopeType, RankSnapshotJobStateScopeID, jobName,
 		sourceWatermark, input.RefreshDate, lastSuccessAt, updatedAt); err != nil {
 		return err
-	}
-	deleteVersion := w.Dialect.bind(`DELETE FROM ` + w.Dialect.StatsTable("stats_job_state") + ` WHERE scope_type = ? AND scope_id = ? AND job_name = ?`)
-	if input.SourceVersion == "" {
-		if _, err := tx.ExecContext(ctx, deleteVersion, RankSnapshotSourceVersionScopeType, RankSnapshotSourceVersionScopeID, jobName); err != nil {
-			return err
-		}
-	} else {
-		if _, err := tx.ExecContext(ctx, upsert,
-			RankSnapshotSourceVersionScopeType, RankSnapshotSourceVersionScopeID, jobName,
-			sourceWatermark, input.SourceVersion, lastSuccessAt, updatedAt); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

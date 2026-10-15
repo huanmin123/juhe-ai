@@ -8,13 +8,6 @@ import type {
   AiPerformanceSeriesResult,
   AiHealthListResult,
   AiHealthHourDetail,
-  DatabaseStorageHistoryPoint,
-  NonBusinessDataCleanupResult,
-  SystemMetricsHealthSnapshot,
-  SystemMetricsRuntimeJobsResult,
-  GoRuntimeTrendOverview,
-  TableStorageHistoryPoint,
-  TableStorageOverview,
   UsageStatsWindow,
   UsageStatsOverviewDailyTrendResult,
   UsageStatsOverviewErrorsResult,
@@ -30,10 +23,6 @@ import type {
   AiPerformanceSeriesParams,
   AiHealthParams,
   AiHealthHourDetailParams,
-  NonBusinessDataCleanupPayload,
-  TableMonitorDatabaseHistoryParams,
-  TableMonitorHistoryParams,
-  TableMonitorOverviewParams,
   UsageOverviewParams
 } from '../contracts'
 import { http, unwrap } from '../http'
@@ -54,17 +43,7 @@ export const statsApi = {
   aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceBaseResult>(http.get('/stats/ai-performance', { params: aiPerformanceParams(params) })),
   aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/stats/ai-performance/series', { params: aiPerformanceSeriesParams(params) })),
   aiHealth: (params?: AiHealthParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthListResult>(http.get('/stats/ai-health', { params, signal: options?.signal })),
-  aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/stats/ai-health/hour-detail', { params, signal: options?.signal })),
-  goRuntimeTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>, options?: { signal?: AbortSignal }) => unwrap<GoRuntimeTrendOverview>(http.get('/stats/system-metrics/go-runtime-trend', { params, signal: options?.signal })),
-  systemMetricsHealthSnapshot: (options?: { signal?: AbortSignal }) => unwrap<SystemMetricsHealthSnapshot>(http.get('/stats/system-metrics/health-snapshot', { signal: options?.signal })),
-  systemMetricsRuntimeJobs: (params: { page: number; pageSize: number; status?: string }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeJobsResult>(http.get('/stats/system-metrics/runtime/jobs', { params, signal: options?.signal }))
-}
-
-export const tableMonitorApi = {
-  overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
-  history: (params: TableMonitorHistoryParams) => unwrap<TableStorageHistoryPoint[]>(http.get('/table-monitor/history', { params })),
-  databaseHistory: (params?: TableMonitorDatabaseHistoryParams) => unwrap<DatabaseStorageHistoryPoint[]>(http.get('/table-monitor/database-history', { params })),
-  cleanupNonBusinessData: (payload: NonBusinessDataCleanupPayload) => unwrap<NonBusinessDataCleanupResult>(http.post('/table-monitor/non-business-data/cleanup', payload))
+  aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/stats/ai-health/hour-detail', { params, signal: options?.signal }))
 }
 
 export const myStatsApi = {

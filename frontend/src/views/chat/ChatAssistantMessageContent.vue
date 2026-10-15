@@ -20,8 +20,25 @@
         v-else-if="entry.kind === 'tools'"
         :message="entry.message"
       />
-      <!-- 存量生成媒体块占位（AI 问答简化设计 D2）：output_image/output_audio/output_media_task -->
-      <span v-else-if="entry.kind === 'block' && isRetiredMediaBlock(entry.block)" class="chat-media-retired-placeholder">（媒体生成工具已下线）</span>
+      <ChatGeneratedImage
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_image'"
+        :conversation-id="message.conversationId"
+        :block="entry.block"
+      />
+      <ChatGeneratedAudio
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_audio'"
+        :conversation-id="message.conversationId"
+        :block="entry.block"
+      />
+      <ChatGeneratedVideo
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_media_task' && entry.block.assetId && entry.block.status === 'completed'"
+        :conversation-id="message.conversationId"
+        :block="entry.block"
+      />
+      <ChatMediaTask
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_media_task'"
+        :block="entry.block"
+      />
     </template>
   </div>
 </template>
@@ -29,7 +46,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatMessageContentBlock, ChatToolStatus } from '@/types/domain/chat'
+import ChatGeneratedAudio from './ChatGeneratedAudio.vue'
+import ChatGeneratedImage from './ChatGeneratedImage.vue'
+import ChatGeneratedVideo from './ChatGeneratedVideo.vue'
 import ChatMarkdown from './ChatMarkdown.vue'
+import ChatMediaTask from './ChatMediaTask.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
@@ -68,13 +89,6 @@ const timelineEntries = computed<TimelineEntry[]>(() => {
 function blockKey(block: ChatMessageContentBlock): string {
   return `${props.message.id}:${('blockId' in block && block.blockId) || `${block.type}:${'order' in block ? block.order : 0}`}`
 }
-// 存量生成媒体块（AI 问答简化设计 D2）：output_image 保留在类型中用于占位；
-// output_audio / output_media_task 类型已删但短期保留期内的历史数据仍会出现，
-// 运行时按 type 字符串识别后统一占位，不报错。
-const retiredMediaBlockTypes: ReadonlySet<string> = new Set(['output_image', 'output_audio', 'output_media_task'])
-function isRetiredMediaBlock(block: ChatMessageContentBlock): boolean {
-  return retiredMediaBlockTypes.has(block.type)
-}
 function isReasoningExpanded(block: Extract<ChatMessageContentBlock, { type: 'reasoning' }>): boolean {
   const manual = manuallyToggled.value.get(blockKey(block))
   return manual ?? block.status === 'started'
@@ -102,7 +116,6 @@ function rememberReasoningToggleIntent(block: Extract<ChatMessageContentBlock, {
 
 <style scoped>
 .chat-assistant-content { min-width: 0; }
-.chat-media-retired-placeholder { display: inline-block; margin: 4px 0; padding: 1px 8px; color: var(--juhe-muted); font-size: 12px; background: var(--juhe-surface-soft); border: 1px solid var(--juhe-border); border-radius: 999px; }
 .chat-process-block { margin: 7px 0; color: var(--juhe-muted); font-size: 12px; }
 .chat-process-block summary { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
 .chat-process-status { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--juhe-muted); }

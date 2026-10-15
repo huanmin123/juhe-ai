@@ -78,10 +78,16 @@ CREATE INDEX IF NOT EXISTS idx_audit_payload_blob_gc_scheduled ON juhe_dataset.a
 // serialize around the sole lease row.  The final predicate is a no-op UPDATE
 // immediately before Commit; it evaluates clock_timestamp() while taking the
 // row lock, which holds any successor handoff until this commit resolves.
+//
+// The acquire conflict branch takes over an expired row OR an unexpired row
+// owned by the same owner_id. owner_id 是进程身份（DefaultInstanceID →
+// hostname，同一容器跨整机重启不变），同一 owner 的再获取只可能来自本实例
+// 自己的重启/失租恢复：fence_token 自增把旧世代写入挡在外面，语义与过期接管
+// 完全一致。跨 owner 仍必须等过期（BUG-0228 发布窗口等待契约不变）。
 const postgresAcquireLeaseSQL = `INSERT INTO juhe_dataset.audit_log_owner_leases (lease_key, owner_id, fence_token, lease_until, updated_at)
 VALUES (?, ?, 1, clock_timestamp() + (? * INTERVAL '1 millisecond'), clock_timestamp())
 ON CONFLICT (lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id, fence_token=juhe_dataset.audit_log_owner_leases.fence_token+1, lease_until=EXCLUDED.lease_until, updated_at=clock_timestamp()
-WHERE juhe_dataset.audit_log_owner_leases.lease_until <= clock_timestamp() RETURNING fence_token`
+WHERE juhe_dataset.audit_log_owner_leases.lease_until <= clock_timestamp() OR juhe_dataset.audit_log_owner_leases.owner_id = EXCLUDED.owner_id RETURNING fence_token`
 
 const postgresRenewLeaseSQL = `UPDATE juhe_dataset.audit_log_owner_leases SET lease_until=clock_timestamp() + (? * INTERVAL '1 millisecond'),updated_at=clock_timestamp() WHERE lease_key=? AND owner_id=? AND fence_token=? AND lease_until > clock_timestamp()`
 
@@ -270,7 +276,7 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, ownerID string, durati
 	query := `INSERT INTO ` + s.leaseTable() + ` (lease_key, owner_id, fence_token, lease_until, updated_at)
 VALUES (?, ?, 1, ?, ?) ON CONFLICT (lease_key) DO UPDATE SET owner_id=excluded.owner_id,
 fence_token=` + s.leaseTable() + `.fence_token + 1, lease_until=excluded.lease_until, updated_at=excluded.updated_at
-WHERE ` + s.leaseTable() + `.lease_until <= ? RETURNING fence_token`
+WHERE ` + s.leaseTable() + `.lease_until <= ? OR ` + s.leaseTable() + `.owner_id = excluded.owner_id RETURNING fence_token`
 	var token int64
 	err := s.db.QueryRowContext(ctx, s.bind(query), "f3-audit-log-persistence", ownerID, dbTime(s.mode, until), dbTime(s.mode, now), dbTime(s.mode, now)).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {

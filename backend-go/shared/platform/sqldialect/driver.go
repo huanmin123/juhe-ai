@@ -16,7 +16,7 @@ import (
 // SQLite driver 不经过此路径。
 //
 // 2026-09-30（清理批次 C5）：自 gateway/jobs pgpool 的双副本 rewrite.go
-// 逐字节等价收敛而来；accountbalance/gometrics 的裸开 pgx 路径同批接入。
+// 逐字节等价收敛而来；accountbalance 的裸开 pgx 路径同批接入。
 //
 // 幂等双保险与共存关系：各 chain 文件的手动 bind() 保留不动——bind() 先把
 // SQL 改写为 `$n`，到达本层的 SQL 不含 `?`，驱动层无可改写、原样透传；遗漏

@@ -151,6 +151,8 @@ export function validateAccountSaveForm(input: {
   mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
   mappingSourceModelOptions?: ModelMappingProtocolOption[]
   mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
+  /** 完整编辑保存基线：映射与基线一致的存量行放行候选窗口校验（后端 PATCH「映射未变不校验」，前端对齐）。 */
+  editingAdvancedBaseline?: AccountSavePayload
 }): string | undefined {
   const { editingId, form } = input
   if (!form.providerCode) return '请先选择供应商'
@@ -224,8 +226,14 @@ export function validateAccountSaveForm(input: {
   const healthCheckModel = form.healthCheckModel.trim()
   if (!healthCheckModel && !oauthDefaultsAllowed) return '请选择检查模型'
   if (healthCheckModel && !supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
+  // 音频/视频域账户无后台探针，health_check_endpoint_mode 仅为记录值（域常量，
+  // 见 defaultHealthCheckEndpointModeForCapabilityDomain），不参与「已启用能力
+  // 交集」校验——qwen 长音频声明集没有任何检查形态词表值，按交集校验会被阻断
+  // 保存（R5）；chat/image 域行为不变。
   if (
-    form.healthCheckEndpointMode !== 'images_json'
+    form.capabilityDomain !== 'audio'
+    && form.capabilityDomain !== 'video'
+    && form.healthCheckEndpointMode !== 'images_json'
     && !accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)
   ) {
     return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
@@ -264,7 +272,8 @@ export function validateAccountSaveForm(input: {
       mappingGeminiSourceModelOptions: input.mappingGeminiSourceModelOptions,
       mappingSourceModelOptions: input.mappingSourceModelOptions,
       mappingUpstreamModelOptions: input.mappingUpstreamModelOptions,
-      providerCode: form.providerCode
+      providerCode: form.providerCode,
+      baselineMappings: input.editingAdvancedBaseline?.modelMappings
     }
   )
 }
@@ -524,10 +533,20 @@ export function validateAccountModelMappings(
     mappingSourceModelOptions?: ModelMappingProtocolOption[]
     mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
     providerCode?: string
+    /** 编辑保存基线中的存量映射：行键与上游都未变的原样行放行，仅「基线中不存在或已变更」的行做候选窗口与支持模型校验（R6）。 */
+    baselineMappings?: AccountFormModel['modelMappings']
   } = {}
 ): string | undefined {
   const seenSources = new Set<string>()
   const supportedModelSet = new Set(supportedModels.map((model) => model.trim()).filter(Boolean))
+  // 存量基线放行（R6）：加载基线里未变化的行不再拿当前候选窗口当完整事实拒绝，
+  // 只有新增/变更行按候选窗口与支持模型集合校验；新增域外模型仍走完整校验被拒。
+  const baselineRowsByKey = new Map<string, AccountFormModel['modelMappings'][number]>()
+  for (const baselineItem of options.baselineMappings ?? []) {
+    const baselineSourceModel = baselineItem.sourceModel.trim()
+    if (!baselineSourceModel) continue
+    baselineRowsByKey.set(`${baselineItem.sourceEndpointFamily}\n${baselineSourceModel}`, baselineItem)
+  }
   for (const item of value ?? []) {
     const sourceModel = item.sourceModel.trim()
     const upstreamModel = item.upstreamModel.trim()
@@ -549,29 +568,31 @@ export function validateAccountModelMappings(
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
-    const providerCode = options.providerCode ?? formProviderCode(providerProfile)
-    const sourceModelOptions = accountModelMappingSourceModelOptions({
-      providerCode,
-      sourceEndpointFamily,
-      currentProviderOptions: options.mappingCurrentProviderSourceModelOptions ?? [],
-      openAIProtocolOptions: options.mappingSourceModelOptions ?? [],
-      anthropicProtocolOptions: options.mappingAnthropicSourceModelOptions ?? [],
-      geminiProtocolOptions: options.mappingGeminiSourceModelOptions ?? []
-    })
-    if (!modelExistsInOptions(sourceModel, sourceModelOptions)) {
-      return `客户端模型 ${sourceModel} 不在当前可选模型目录中`
-    }
-    if (
-      isHybridProviderCode(providerCode)
-      && !modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
-    ) {
-      return `客户端模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
-    }
-    if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
-      return `上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
-    }
-    if (!supportedModelSet.has(upstreamModel)) {
-      return `模型映射的上游模型必须从支持模型中选择：${upstreamModel}`
+    if (!isPristineBaselineMappingRow(item, baselineRowsByKey)) {
+      const providerCode = options.providerCode ?? formProviderCode(providerProfile)
+      const sourceModelOptions = accountModelMappingSourceModelOptions({
+        providerCode,
+        sourceEndpointFamily,
+        currentProviderOptions: options.mappingCurrentProviderSourceModelOptions ?? [],
+        openAIProtocolOptions: options.mappingSourceModelOptions ?? [],
+        anthropicProtocolOptions: options.mappingAnthropicSourceModelOptions ?? [],
+        geminiProtocolOptions: options.mappingGeminiSourceModelOptions ?? []
+      })
+      if (!modelExistsInOptions(sourceModel, sourceModelOptions)) {
+        return `客户端模型 ${sourceModel} 不在当前可选模型目录中`
+      }
+      if (
+        isHybridProviderCode(providerCode)
+        && !modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
+      ) {
+        return `客户端模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
+      }
+      if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
+        return `上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
+      }
+      if (!supportedModelSet.has(upstreamModel)) {
+        return `模型映射的上游模型必须从支持模型中选择：${upstreamModel}`
+      }
     }
     const sourceKey = `${sourceEndpointFamily}\n${sourceModel}`
     if (seenSources.has(sourceKey)) {
@@ -580,6 +601,22 @@ export function validateAccountModelMappings(
     seenSources.add(sourceKey)
   }
   return undefined
+}
+
+/**
+ * 行与编辑基线一致的判定（R6）：行键（下游端点族+下游模型）在基线中存在且上游
+ * 模型、上游端点族也未变，才视为「基线原样行」放行候选窗口校验；新增行、只换
+ * 上游行与键变化行都不属于基线原样。
+ */
+function isPristineBaselineMappingRow(
+  item: AccountFormModel['modelMappings'][number],
+  baselineRowsByKey: Map<string, AccountFormModel['modelMappings'][number]>
+): boolean {
+  const baseline = baselineRowsByKey.get(`${item.sourceEndpointFamily}\n${item.sourceModel.trim()}`)
+  if (!baseline) return false
+  return baseline.upstreamModel.trim() === item.upstreamModel.trim()
+    && baseline.upstreamEndpointFamily === item.upstreamEndpointFamily
+    && baseline.enabled === item.enabled
 }
 
 function modelOptionSupportsProtocol(

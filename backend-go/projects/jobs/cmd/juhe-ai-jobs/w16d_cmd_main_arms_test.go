@@ -98,8 +98,6 @@ func TestW16DMainFailFastArms(t *testing.T) {
 			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":       w16dClosedPortURL(),
 			"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL": "pgx://w16d-invalid-url",
 		})},
-		// gometrics：库文件存在但无 schema → EnsureReady 失败（469-472）。
-		{"gometrics-ensure-ready-fail", nil, w13g8GarbageRuntimeEnv, nil},
 		// migrate 分发 + 运行日志库不可写 → OpenStore 失败（1007-1009）。
 		{"migrate-open-store-fail", []string{"-migrate-runtime-log-legacy-sqlite"}, w13g8FullOwnerEnv, map[string]string{
 			"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": ".",

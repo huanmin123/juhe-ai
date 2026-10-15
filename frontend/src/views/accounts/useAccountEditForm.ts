@@ -76,7 +76,7 @@ import {
 import { buildAccountSavePayload, type AccountSavePayload } from './accountSavePayload'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
-import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia } from './accountCapabilityDomains'
+import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultHealthCheckEndpointModeForCapabilityDomain } from './accountCapabilityDomains'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
 import type { AccountGroupOptionsLoadOptions, AccountGroupOptionsScope } from './useAccountGroupOptions'
@@ -405,6 +405,16 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     () => {
       const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
       if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
+      // 音频/视频域账户无后台探针，health_check_endpoint_mode 仅为记录值：失效时
+      // 兜底域常量（镜像 DefaultHealthCheckEndpointModeForDomain），不得落 chat 族
+      // 默认——qwen 长音频声明集没有任何检查形态词表值，落 chat_json 会被保存校验
+      // 拒绝（R5）。
+      if (form.capabilityDomain === 'audio' || form.capabilityDomain === 'video') {
+        form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
+          capabilityDomain: form.capabilityDomain
+        })
+        return
+      }
       form.healthCheckEndpointMode = defaultAccountHealthCheckEndpointMode(
         form.providerCode,
         form.providerProtocolProfileId,

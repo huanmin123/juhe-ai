@@ -122,8 +122,6 @@ func e2eEnsureTempDatabase(t *testing.T) string {
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 	os.Setenv("JUHE_AI_RUNTIME_LOG_STORE", "postgres")
 	os.Setenv("JUHE_AI_RUNTIME_LOG_POSTGRES_URL", appDSN)
-	os.Setenv("JUHE_AI_TABLE_MONITOR_STORE", "postgres")
-	os.Setenv("JUHE_AI_TABLE_MONITOR_POSTGRES_URL", appDSN)
 	if os.Getenv("E2E_USE_DEV_REDIS") == "1" {
 		for _, key := range []string{"JUHE_AI_REDIS_CACHE_URL", "JUHE_AI_REDIS_STATE_URL", "JUHE_AI_REDIS_QUEUE_URL"} {
 			if value := e2eSharedEnv(key); value != "" {

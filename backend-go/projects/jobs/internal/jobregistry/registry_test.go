@@ -9,11 +9,11 @@ import (
 // nodeScheduledJobNames 是 Node background-job-registry.entries.ts 的
 // backgroundScheduledJobs 全量名单（31 项）扣除已按设计消灭的
 // authorization-usage-range-windows-refresh（授权消耗明细改为日摘要表现场
-// 聚合，范围窗口表不再刷新）后的 30 项，顺序一致。注册表覆盖测试保证 Go 侧
-// 登记不缺项：缺失即测试失败，不允许静默跳过。
+// 聚合，范围窗口表不再刷新）与 system-metrics-sample /
+// system-metrics-trend-windows-refresh（表监控/系统指标子系统 2026-10-14
+// 下线）后的 28 项，顺序一致。注册表覆盖测试保证 Go 侧登记不缺项：缺失即
+// 测试失败，不允许静默跳过。
 var nodeScheduledJobNames = []string{
-	"system-metrics-sample",
-	"system-metrics-trend-windows-refresh",
 	"usage-stats-aggregation",
 	"usage-hot-window-refresh",
 	"client-ip-stats-aggregation",
@@ -75,7 +75,6 @@ var goAddedAfterBalanceDetectJobNames = []string{
 // 无对应 scheduled job）。
 var goAddedAfterRetentionJobNames = []string{
 	"media-jobs-retention",
-	"studio-tasks-settle",
 }
 
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
@@ -211,51 +210,6 @@ func TestMediaJobsRetentionRegistered(t *testing.T) {
 	}
 	if schedule.Lane != "storage-maintenance" || schedule.LeaseTTL <= 0 {
 		t.Fatalf("media-jobs-retention lane/lease 错误: %+v", schedule)
-	}
-}
-
-// TestStudioTasksSettleRegistered 显式锁定 studio 任务结算 worker 注册（媒体
-// 工作室设计 §5）：GoWired、独立 studio-settle lane、30s fixedDelay 节拍、
-// 写面限定 studio 三表。
-func TestStudioTasksSettleRegistered(t *testing.T) {
-	entry, ok := Find("studio-tasks-settle")
-	if !ok {
-		t.Fatal("studio-tasks-settle 未注册")
-	}
-	if entry.GoStatus != GoWired {
-		t.Fatalf("studio-tasks-settle GoStatus = %s, want go-wired", entry.GoStatus)
-	}
-	if entry.Category != CategoryScheduled || !entry.LeaseRequired || !entry.SingleOwner {
-		t.Fatalf("studio-tasks-settle 登记形态错误: %+v", entry)
-	}
-	if !entry.BlocksUserVisibleFreshness {
-		t.Fatal("studio-tasks-settle 应登记 BlocksUserVisibleFreshness（产物结算收敛用户可见）")
-	}
-	wantWrites := map[string]bool{
-		"business:studio_tasks":            true,
-		"business:studio_assets":           true,
-		"business:studio_user_asset_usage": true,
-	}
-	if len(entry.Writes) != len(wantWrites) {
-		t.Fatalf("studio-tasks-settle 写面登记 = %v, want studio 三表", entry.Writes)
-	}
-	for _, write := range entry.Writes {
-		if !wantWrites[write] {
-			t.Fatalf("studio-tasks-settle 写面越界: %s", write)
-		}
-	}
-	schedule, ok := ScheduleFor("studio-tasks-settle")
-	if !ok {
-		t.Fatal("studio-tasks-settle 缺少调度参数")
-	}
-	if schedule.Interval != 30*time.Second {
-		t.Fatalf("studio-tasks-settle interval = %v, want 30s", schedule.Interval)
-	}
-	if schedule.ScheduleMode != "fixedDelay" {
-		t.Fatalf("studio-tasks-settle scheduleMode = %q, want fixedDelay", schedule.ScheduleMode)
-	}
-	if schedule.Lane != "studio-settle" || schedule.LeaseTTL <= 0 || schedule.Timeout <= 0 {
-		t.Fatalf("studio-tasks-settle lane/lease/timeout 错误: %+v", schedule)
 	}
 }
 

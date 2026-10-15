@@ -278,7 +278,7 @@ func validateSQLiteIsolation(storePath, inputDirectory string, getenv func(strin
 	if err != nil {
 		return fmt.Errorf("解析 J1 SQLite store 路径失败: %w", err)
 	}
-	for _, name := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH"} {
+	for _, name := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH"} {
 		other := strings.TrimSpace(getenv(name))
 		if other == "" {
 			continue

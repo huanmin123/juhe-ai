@@ -213,7 +213,13 @@ func (p *streamPipe) loop() (*StreamPipeResult, error) {
 			p.logger.Info("gateway_response_inspection_parser_skipped", nil, "网关流式事件过大，兜底拦截停止解析并继续原样转发")
 		}
 		p.recordResponseInspectionObservations(interceptResult.Observations)
-		latestInspection = p.inspector.Snapshot()
+		// 该快照只有拦截决策路径消费（handleInterceptedBeforeWrite 对 nil 决策
+		// 直接返回）；无决策时出站循环内每个 chunk 还会各出一次快照，这里省去
+		// 每读一次的整状态拷贝。Chunks 为空且无决策时检查器状态未变，后续读到
+		// 的旧快照与现值等价。
+		if interceptResult.Intercepted != nil {
+			latestInspection = p.inspector.Snapshot()
+		}
 		if len(interceptResult.Chunks) == 0 && interceptResult.Intercepted == nil {
 			p.settleStreamFirstByteDeadlineReadDecision(false)
 		}

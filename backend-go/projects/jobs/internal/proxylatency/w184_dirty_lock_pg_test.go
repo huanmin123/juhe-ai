@@ -407,12 +407,15 @@ func TestW184ResultProjectorTxsTakeDirtyLockFirst(t *testing.T) {
 			t.Fatalf("录制投影结果=%+v err=%v", result, err)
 		}
 		statements := rec.all()
-		advisory := w184StatementIndex(statements, advisoryQuery)
-		if advisory != 0 {
-			t.Fatalf("projectStored 事务首语句必须是 advisory 7001001，实际下标=%d 语句=%q", advisory, statements[0].query)
+		if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
+			t.Fatalf("projectStored 事务首语句必须是取锁等待上限 SET LOCAL lock_timeout（BUG-0313），实际: %q", statements[0].query)
 		}
-		if len(statements[0].args) != 1 || statements[0].args[0] != int64(7001001) {
-			t.Fatalf("advisory 参数必须是 7001001，实际: %v", statements[0].args)
+		advisory := w184StatementIndex(statements, advisoryQuery)
+		if advisory != 1 {
+			t.Fatalf("projectStored 事务首条取锁语句必须是 advisory 7001001，实际下标=%d 语句=%q", advisory, statements[1].query)
+		}
+		if len(statements[1].args) != 1 || statements[1].args[0] != int64(7001001) {
+			t.Fatalf("advisory 参数必须是 7001001，实际: %v", statements[1].args)
 		}
 		for _, required := range []string{fenceQuery, "UPDATE juhe_business.proxy_profiles SET test_status=$1"} {
 			if index := w184StatementIndex(statements, required); index < 0 || index < advisory {
@@ -434,10 +437,13 @@ func TestW184ResultProjectorTxsTakeDirtyLockFirst(t *testing.T) {
 			t.Fatalf("录制 no-targets 结果=%+v err=%v", result, err)
 		}
 		statements := rec.all()
-		if advisory := w184StatementIndex(statements, advisoryQuery); advisory != 0 {
-			t.Fatalf("ProjectManualNoTargets 事务首语句必须是 advisory 7001001，实际下标=%d", advisory)
+		if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
+			t.Fatalf("ProjectManualNoTargets 事务首语句必须是 SET LOCAL lock_timeout（BUG-0313），实际: %q", statements[0].query)
 		}
-		if fence := w184StatementIndex(statements, fenceQuery); fence != 1 {
+		if advisory := w184StatementIndex(statements, advisoryQuery); advisory != 1 {
+			t.Fatalf("ProjectManualNoTargets 事务首条取锁语句必须是 advisory 7001001，实际下标=%d", advisory)
+		}
+		if fence := w184StatementIndex(statements, fenceQuery); fence != 2 {
 			t.Fatalf("ProjectManualNoTargets 的 FOR UPDATE 必须紧跟 advisory 之后，下标=%d", fence)
 		}
 	}(t)
@@ -453,10 +459,13 @@ func TestW184ResultProjectorTxsTakeDirtyLockFirst(t *testing.T) {
 			t.Fatalf("录制 outbound 失败: %v", err)
 		}
 		statements := rec.all()
-		if advisory := w184StatementIndex(statements, advisoryQuery); advisory != 0 {
-			t.Fatalf("ProjectManualOutbound 事务首语句必须是 advisory 7001001，实际下标=%d", advisory)
+		if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
+			t.Fatalf("ProjectManualOutbound 事务首语句必须是 SET LOCAL lock_timeout（BUG-0313），实际: %q", statements[0].query)
 		}
-		if cas := w184StatementIndex(statements, "SET outbound_ip=$1,outbound_region=$2"); cas != 1 {
+		if advisory := w184StatementIndex(statements, advisoryQuery); advisory != 1 {
+			t.Fatalf("ProjectManualOutbound 事务首条取锁语句必须是 advisory 7001001，实际下标=%d", advisory)
+		}
+		if cas := w184StatementIndex(statements, "SET outbound_ip=$1,outbound_region=$2"); cas != 2 {
 			t.Fatalf("outbound CAS 必须紧跟 advisory 之后，下标=%d", cas)
 		}
 	}(t)

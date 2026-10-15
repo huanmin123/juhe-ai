@@ -16,8 +16,8 @@ assert.match(
   /copyTextToClipboard\(detailConversation\.id,\s*'会话 ID 已复制'\)/,
   '复制会话 ID 必须复用公共剪贴板能力并提供成功反馈'
 )
-assert.doesNotMatch(source, /<a-descriptions-item label="工具能力">/, '会话详情必须保持无工具能力区（工具体系已随 AI 问答简化设计 D2 退场）')
-assert.doesNotMatch(source, /label="默认图像模型"/, '会话详情必须保持无默认图像模型行（生图工具已退场）')
+assert.doesNotMatch(source, /<a-descriptions-item label="工具能力">/, '会话详情必须移除工具能力区（入口统一为 /tool-defaults 命令 + 统一弹窗）')
+assert.doesNotMatch(source, /label="默认图像模型"/, '会话详情必须移除默认图像模型行（默认图像模型经统一弹窗的生图候选设置）')
 assert.match(
   source,
   /async function openDetails[\s\S]{0,500}chatApi\.getConversation\(item\.id\)/,

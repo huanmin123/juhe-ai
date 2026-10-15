@@ -22,7 +22,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	capdomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // w16hApplyEnv 把 env 逐键 t.Setenv（测试结束自动恢复）。
@@ -130,9 +129,9 @@ func w16hSeedCapabilityDomainStageRecord(t *testing.T, db *sql.DB) {
 	}
 }
 
-// w16hBaseEnv 构造 F1+F2+J1+worker 恒开装配成功的 owner env 基底（J1 与
+// w16hBaseEnv 构造 F1+J1+worker 恒开装配成功的 owner env 基底（J1 与
 // worker 家族恒开后的必填项由基底统一提供，错误臂按需单项覆盖），用于驱动
-// J1/mR/J2/J3a/J3b/listener/goMetrics/worker 各加载臂与 listener 臂。
+// J1/mR/J2/J3a/J3b/listener/worker 各加载臂与 listener 臂。
 //
 // 根目录用自管理目录 + 尽力清理（不使用 t.TempDir）：恒开语义下 J1 store 与
 // worker 各库会在多数错误臂返回前打开，而 run() 的组件错误出口不回收它们
@@ -164,9 +163,6 @@ func w16hBaseEnv(t *testing.T) map[string]string {
 		"JUHE_AI_RUNTIME_LOG_STORE":              "sqlite",
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      filepath.Join(root, "runtime-log.sqlite3"),
 		"JUHE_AI_LOG_DIR":                        logsDirectory,
-		"JUHE_AI_TABLE_MONITOR_INSTANCE_ID":      "w16h-run",
-		"JUHE_AI_TABLE_MONITOR_STORE":            "sqlite",
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    filepath.Join(root, "table-monitor.sqlite3"),
 		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":            filepath.Join(root, "stats.sqlite3"),
@@ -211,8 +207,8 @@ func w16hRunArms(t *testing.T, args []string, wantCode int, stderrContains strin
 }
 
 // TestW16HRunFlagArms 覆盖 run() 头部 flag 臂：未知 flag（rc=2）、-h（rc=0）、
-// 位置参数（rc=2）、--once 与迁移互斥（rc=2）。FlagSet 的错误与 usage 输出
-// 目标是全局 os.Stderr（与原全局 flag.Parse 行为逐字节一致），用 pipe 捕获。
+// 位置参数（rc=2）、--run-jobs-once 与迁移互斥（rc=2）。FlagSet 的错误与 usage
+// 输出目标是全局 os.Stderr（与原全局 flag.Parse 行为逐字节一致），用 pipe 捕获。
 func TestW16HRunFlagArms(t *testing.T) {
 	captureOSStderr := func(t *testing.T, invoke func()) string {
 		t.Helper()
@@ -263,9 +259,9 @@ func TestW16HRunFlagArms(t *testing.T) {
 			t.Fatalf("stderr 逐字节断言失败：want %q got %q", want+"\n", stderr)
 		}
 	})
-	t.Run("once 与迁移互斥返回 2", func(t *testing.T) {
-		w16hRunArms(t, []string{"-once", "-migrate-runtime-log-legacy-sqlite"}, 2,
-			"--once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
+	t.Run("run-jobs-once 与迁移互斥返回 2", func(t *testing.T) {
+		w16hRunArms(t, []string{"-run-jobs-once=usage-stats-aggregation", "-migrate-runtime-log-legacy-sqlite"}, 2,
+			"--run-jobs-once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
 	})
 }
 
@@ -325,39 +321,8 @@ func TestW16HRunStartupFailArms(t *testing.T) {
 	})
 }
 
-// TestW16HRunTableMonitorArms 覆盖 F2 链错误臂与 --once 单轮分支。
-func TestW16HRunTableMonitorArms(t *testing.T) {
-	t.Run("F2 配置非法返回 1", func(t *testing.T) {
-		env := w16hBaseEnv(t)
-		// 零配置决策下 TABLE_MONITOR_INSTANCE_ID 缺省取 hostname，「配置缺失」
-		// 不再 fail-fast；保留 F2 配置链的确定性失败臂：store 模式非法在
-		// LoadConfig 处拒绝。
-		env["JUHE_AI_TABLE_MONITOR_STORE"] = "w16h-bogus"
-		w16hApplyEnv(t, env)
-		w16hRunArms(t, nil, 1, "load F2 table-monitor config")
-	})
-	t.Run("F2 store 打开失败返回 1", func(t *testing.T) {
-		env := w16hBaseEnv(t)
-		garbage := filepath.Join(t.TempDir(), "w16h-garbage-tablemonitor.sqlite3")
-		if err := os.WriteFile(garbage, []byte("w16h not a sqlite database"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = garbage
-		w16hApplyEnv(t, env)
-		w16hRunArms(t, nil, 1, "open F2 table-monitor store")
-	})
-	t.Run("once 单轮采样后返回 0", func(t *testing.T) {
-		w16hApplyEnv(t, w16hBaseEnv(t))
-		stdout, _ := w16hRunArms(t, []string{"-once"}, 0, "")
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
-			t.Fatalf("--once 必须向 stdout 输出单个 JSON 结果: %v stdout=%q", err, stdout)
-		}
-	})
-}
-
 // TestW16HRunComponentConfigArms 覆盖 J1/model-recovery/J2/J3a/管理接口守卫/
-// J3b/worker/gometrics 各加载错误臂（基底 F1+F2 成功，组件其余全禁用）。
+// J3b/worker 各加载错误臂（基底 F1 成功，组件其余全禁用）。
 func TestW16HRunComponentConfigArms(t *testing.T) {
 	t.Run("J1 配置错误返回 1", func(t *testing.T) {
 		w16hApplyEnv(t, w16hBaseEnv(t))
@@ -432,13 +397,6 @@ func TestW16HRunComponentConfigArms(t *testing.T) {
 		w16hApplyEnv(t, env)
 		w16hRunArms(t, []string{"-health-listen-address=10.0.0.8:3305"}, 1,
 			"listen jobs health endpoint")
-	})
-	t.Run("goMetrics 配置错误返回 1", func(t *testing.T) {
-		w16hApplyEnv(t, w16hBaseEnv(t))
-		w16hApplyEnv(t, map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "w16h-garbage"})
-		port := wgFreePort(t)
-		w16hRunArms(t, []string{"-health-listen-address=127.0.0.1:" + itoa(port)}, 1,
-			"load Go runtime metrics config")
 	})
 }
 
@@ -515,16 +473,16 @@ func TestW16HRunFlagOutputs(t *testing.T) {
 	})
 	t.Run("--check-boundary", func(t *testing.T) {
 		stdout, _ := w16hRunArms(t, []string{"--check-boundary"}, 0, "")
-		want := "juhe-ai-jobs boundary=ready runtime=table-monitor-owner\n"
+		want := "juhe-ai-jobs boundary=ready runtime=worker-owner\n"
 		if stdout != want {
 			t.Fatalf("--check-boundary stdout 逐字节断言失败：want %q got %q", want, stdout)
 		}
 	})
 }
 
-// TestW16HRunDeepFailArms 覆盖 F1/F2 PG 池、J1 store/input/ping、J2/J3a 池
-// 与 store、goMetrics store 等深层错误臂（坏 DSN / 合法不可达 DSN / 垃圾
-// SQLite 文件注入，全部无需真实 PG）。
+// TestW16HRunDeepFailArms 覆盖 F1 PG 池、J1 store/input/ping、J2/J3a 池与
+// store 等深层错误臂（坏 DSN / 合法不可达 DSN / 垃圾 SQLite 文件注入，全部
+// 无需真实 PG）。
 func TestW16HRunDeepFailArms(t *testing.T) {
 	const garbageDSN = "w16h-not-a-postgres-url"
 	const unreachableDSN = "postgres://w16h:w16h@127.0.0.1:1/w16h"
@@ -537,14 +495,6 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 		}
 		w16hApplyEnv(t, env)
 		w16hRunArms(t, nil, 1, "open F1 runtime-log-indexer store")
-	})
-	t.Run("F2 PG 模式 schema 校验失败返回 1", func(t *testing.T) {
-		env := w16hBaseEnv(t)
-		env["JUHE_AI_TABLE_MONITOR_STORE"] = "postgres"
-		env["JUHE_AI_TABLE_MONITOR_POSTGRES_URL"] = garbageDSN
-		w16hApplyEnv(t, env)
-		// pgx sql.Open 惰性解析：坏 DSN 在 schema 初始化时才暴露。
-		w16hRunArms(t, nil, 1, "initialize F2 table-monitor schema")
 	})
 	t.Run("J1 PG store schema 初始化失败返回 1", func(t *testing.T) {
 		env := w16hBaseEnv(t)
@@ -678,23 +628,6 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 			t.Fatalf("stderr 必须含 J3a store/schema 失败文案，得到 %q", stderr.String())
 		}
 	})
-	t.Run("goMetrics 自举建表失败返回 1", func(t *testing.T) {
-		env := w16hBaseEnv(t)
-		garbage := filepath.Join(t.TempDir(), "w16h-garbage-metrics.sqlite3")
-		if err := os.WriteFile(garbage, []byte("w16h not a sqlite database"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		w16hApplyEnv(t, env)
-		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_GO_RUNTIME_METRICS_ENABLED":       "true",
-			"JUHE_AI_GO_RUNTIME_METRICS_STORE":         "sqlite",
-			"JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH": garbage,
-		})
-		port := wgFreePort(t)
-		// sql.Open 惰性：垃圾文件由 EnsureSchema（sqlite 启动自举建表）暴露。
-		w16hRunArms(t, []string{"-health-listen-address=127.0.0.1:" + itoa(port)}, 1,
-			"bootstrap Go runtime metrics schema")
-	})
 }
 
 // w16hRunUntilReadyAndCancel 在 goroutine 启动 run()，轮询 /health 至就绪；
@@ -754,41 +687,6 @@ func w16hRunUntilReadyAndCancel(t *testing.T, env map[string]string, ready func(
 	}
 }
 
-// TestW16HRunOwnerShutdownWithMetrics 覆盖 F1+F2+J1+worker+goMetrics 的完整
-// owner 装配（恒开终态）：默认 ready 闭包、goMetrics 采样组件注册与 Close、
-// 全默认健康槽位与优雅停机。
-func TestW16HRunOwnerShutdownWithMetrics(t *testing.T) {
-	if testing.Short() {
-		t.Skip("最小 owner 停机链路 skipped in -short mode")
-	}
-	env := w16hBaseEnv(t)
-	env["JUHE_AI_GO_RUNTIME_METRICS_ENABLED"] = "true"
-	env["JUHE_AI_GO_RUNTIME_METRICS_STORE"] = "sqlite"
-	metricsPath := filepath.Join(t.TempDir(), "go-metrics.sqlite3")
-	env["JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH"] = metricsPath
-	// sqlite 模式启动自举建表（EnsureSchema 幂等，postgres 的 DDL 仍由
-	// maintenance 维护 owned）。fixture 预建同一 DDL 形态，覆盖"已有表再
-	// 启动"的幂等重跑路径。
-	if db, err := sql.Open("sqlite", metricsPath); err != nil {
-		t.Fatal(err)
-	} else {
-		store, err := gometrics.NewStore(db, gometrics.DialectSQLite)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.EnsureSchema(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if err := db.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	w16hRunUntilReadyAndCancel(t, env, func(payload map[string]any) bool {
-		ready, _ := payload["ready"].(bool)
-		return ready
-	}, "完整 owner")
-}
-
 // TestW16HRunLegacyMigrationFailArms 覆盖 runRuntimeLegacyMigration 的迁移
 // 执行失败臂：dataset 旧库缺 runtime-log schema 时 MigrateLegacySQLite 报错，
 // RunWithOwnerLease 传播为退出码 1。
@@ -811,7 +709,6 @@ func TestW16HRunLegacyMigrationFailArms(t *testing.T) {
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":      filepath.Join(root, "runtime-log.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_OWNER_LEASE":        "15s",
 		"JUHE_AI_LOG_DIR":                        logsDirectory,
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":    filepath.Join(root, "table-monitor.sqlite3"),
 		"JUHE_AI_DATABASE_PATH":                  filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_DATASET_DATABASE_PATH":          filepath.Join(root, "dataset.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":            filepath.Join(root, "stats.sqlite3"),

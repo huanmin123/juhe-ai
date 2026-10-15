@@ -19,12 +19,17 @@ import (
 
 func TestW9FMapConversationValidation(t *testing.T) {
 	base := conversationRow{
-		id: "c1", systemAccountID: "o",
+		id: "c1", systemAccountID: "o", defaultImageModel: "gpt-image-2",
 		lastMessageAt: "2026-03-10T08:00:00.000Z", createdAt: "2026-03-10T08:00:00.000Z",
 		updatedAt: "2026-03-10T08:00:00.000Z",
 	}
 	if _, err := mapConversation(base); err != nil {
 		t.Fatalf("base row: %v", err)
+	}
+	badModel := base
+	badModel.defaultImageModel = "dall-e"
+	if _, err := mapConversation(badModel); err == nil {
+		t.Fatal("bad image model must fail")
 	}
 	for name, mutate := range map[string]func(*conversationRow){
 		"lastMessageAt":   func(r *conversationRow) { r.lastMessageAt = "x" },
@@ -38,6 +43,12 @@ func TestW9FMapConversationValidation(t *testing.T) {
 		if _, err := mapConversation(row); err == nil {
 			t.Fatalf("%s must fail", name)
 		}
+	}
+	if _, err := normalizedImageModel("gpt-image-2"); err != nil {
+		t.Fatalf("valid model: %v", err)
+	}
+	if _, err := normalizedImageModel("other"); err == nil {
+		t.Fatal("invalid model must fail")
 	}
 	if optString("") != nil {
 		t.Fatal("empty string is absent")

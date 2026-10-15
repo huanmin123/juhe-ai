@@ -399,6 +399,8 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 		Secret:                      "w1h-secret",
 		ChatMaxTurnsPerConversation: 7,
 		ChatRetentionDays:           3,
+		ChatDiagnosticToolEnabled:   true,
+		ChatToolEnvironment:         "w1h-env",
 	}
 	deps, err := composeChatFamily(composed, cfg, db, services, &gatewayChain{}, w1hAccountLookup{}, w1hAccountOptionsLookup{})
 	if err != nil {
@@ -432,6 +434,12 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 	}
 	if deps.RetentionDays != 3 {
 		t.Errorf("RetentionDays = %d, want 3", deps.RetentionDays)
+	}
+	if !deps.DiagnosticToolEnabled {
+		t.Errorf("DiagnosticToolEnabled = false, want true")
+	}
+	if deps.ToolEnvironment != "w1h-env" {
+		t.Errorf("ToolEnvironment = %q, want w1h-env", deps.ToolEnvironment)
 	}
 }
 

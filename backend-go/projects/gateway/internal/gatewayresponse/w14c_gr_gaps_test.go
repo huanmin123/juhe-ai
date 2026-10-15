@@ -25,7 +25,6 @@ import (
 // 清理从 codexcontract.go 删除（唯一实现 gatewaycodex.CodexCompactionExpected
 // ForRequest，边界行为由 gatewaycodex 包测试锁定）；原直驱用例一并移除。
 
-
 // ---- convert.go ----
 
 func TestW14CGeminiStringErrorFieldFloat(t *testing.T) {
@@ -128,12 +127,12 @@ func TestW14CGatewayErrorBodyMapExtra(t *testing.T) {
 
 func TestW14CInterceptorShiftEventCRLF(t *testing.T) {
 	interceptor := &OpenAIStreamInterceptor{}
-	interceptor.pending.Write([]byte("data: {\"a\":1}\r\r"))
+	interceptor.pending = append(interceptor.pending, []byte("data: {\"a\":1}\r\r")...)
 	event := interceptor.shiftEvent()
 	if event == nil || !strings.Contains(string(event), "data:") {
 		t.Fatalf("边界必须出事件: %v", event)
 	}
-	interceptor.pending.Write([]byte("data: {\"b\":2}\n\n"))
+	interceptor.pending = append(interceptor.pending, []byte("data: {\"b\":2}\n\n")...)
 	event = interceptor.shiftEvent()
 	if event == nil || !strings.Contains(string(event), "b") {
 		t.Fatalf("边界必须出事件: %v", event)

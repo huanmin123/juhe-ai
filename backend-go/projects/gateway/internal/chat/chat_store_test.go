@@ -321,6 +321,18 @@ CREATE TABLE IF NOT EXISTS chat_image_generations (
   expires_at TEXT NOT NULL,
   CHECK (operation IN ('generate', 'edit'))
 );
+CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
+  system_account_id TEXT PRIMARY KEY,
+  search_account_id TEXT,
+  search_model_id TEXT,
+  image_account_id TEXT,
+  default_image_model TEXT,
+  video_account_id TEXT,
+  default_video_model TEXT,
+  audio_account_id TEXT,
+  default_audio_model TEXT,
+  updated_at TEXT NOT NULL
+);
 `
 
 // chatFixture bundles one store test environment.
@@ -469,7 +481,7 @@ func userBytesFor(t *testing.T, db *sql.DB, messageID, content string) int64 {
 func TestCreateConversationAndDefaults(t *testing.T) {
 	f := newChatFixture(t)
 	conversation := f.createConversation("chat_conv_a", "owner-1")
-	if conversation.Title != "新对话" {
+	if conversation.Title != "新对话" || conversation.DefaultImageModel != ImageModelGPTImage2 {
 		t.Fatalf("unexpected defaults: %+v", conversation)
 	}
 	if nextSequenceNo(t, f.db, "chat_conv_a") != 1 || conversation.UserTurnCount != 0 {
@@ -624,6 +636,12 @@ func TestUpdateConversationPartialAnd404(t *testing.T) {
 	})
 	if err != nil || missing != nil {
 		t.Fatalf("expected nil conversation + nil err, got %v %v", missing, err)
+	}
+	if _, err := f.store.UpdateConversation(UpdateConversationInput{
+		ConversationID: "chat_conv_a", SystemAccountID: "owner-1",
+		DefaultImageModel: stringPtr("dall-e-3"), Now: f.nowISO,
+	}); err == nil {
+		t.Fatal("expected invalid image model error")
 	}
 }
 

@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,19 +10,11 @@ import (
 	"time"
 )
 
-type failingExecutorW3 struct{}
-
-var errExecutorFailedW3 = errors.New("dispatch 失败")
-
-func (failingExecutorW3) Dispatch(ctx context.Context, req GenerationDispatchRequest) (*GenerationDispatchResponse, error) {
-	return nil, errExecutorFailedW3
-}
-
 // 最后一批高价值分支：压缩总结链路（两种协议 + 失败路径）、runner 订阅者
 // 裁剪与时间线补发、流式路由的 Hub 冲突/超大消息/替换链路、deps 参数守卫、
 // ETag 匹配表与 Windows 锁重入。
 
-// TestSummarizePageW3 直接驱动压缩总结（按输入协议构造）与失败路径。
+// TestSummarizePageW3 直接驱动压缩总结（恒 chat 协议）与失败路径。
 func TestSummarizePageW3(t *testing.T) {
 	_, clock := fixedChatClock()
 	newService := func(executor GenerationExecutor) *CompactionService {
@@ -74,7 +65,7 @@ func TestSummarizePageW3(t *testing.T) {
 			t.Fatalf("非 2xx 应报错: %v", err)
 		}
 		badBody := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse { return jsonStatusResponse(200, `not-json`) }}}}
-		if _, err := newService(&badBody).summarizePage(context.Background(), input, emptySnapshot(), messages); err == nil || !strings.Contains(err.Error(), "chat_auxiliary_model_missing_response") {
+		if _, err := newService(&badBody).summarizePage(context.Background(), input, emptySnapshot(), messages); err == nil || !strings.Contains(err.Error(), "summary_missing_response") {
 			t.Fatalf("非法 JSON 应报错: %v", err)
 		}
 		badSummary := mockExecutor{steps: []scriptStep{{respond: func(dispatchCall) *GenerationDispatchResponse {
@@ -153,9 +144,10 @@ func TestRunnerSubscriberLifecycleW3(t *testing.T) {
 			}
 		}
 	})
-	t.Run("终态后订阅收到快照", func(t *testing.T) {
+	t.Run("订阅快照携带工具事件", func(t *testing.T) {
 		runner := newTestRunnerW3(func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
-			ctx.Publish("message.delta", nil, ChatGenerationProjectionUpdate{ContentTextDelta: strPtrW3("hi")})
+			toolEvent := &ChatGenerationToolEvent{ID: "call_1", ToolType: "web_search", Status: "completed", Item: map[string]any{"ok": 1}}
+			ctx.Publish("tool.completed", nil, ChatGenerationProjectionUpdate{ToolEvent: toolEvent})
 			return ChatGenerationTerminalResult{Status: "completed"}, nil
 		})
 		runner.Start(nil)
@@ -169,14 +161,15 @@ func TestRunnerSubscriberLifecycleW3(t *testing.T) {
 			t.Fatalf("应先发快照")
 		}
 		assistant := snapshot.Data["assistant"].(map[string]any)
+		events := assistant["toolEvents"].([]any)
+		if len(events) != 1 {
+			t.Fatalf("快照应包含工具事件: %v", events)
+		}
 		if assistant["status"] != "completed" {
 			t.Fatalf("快照状态 = %v", assistant["status"])
 		}
 	})
 }
-
-
-func strPtrW3(value string) *string { return &value }
 
 // nilResponseExecutorW3 返回 (nil, nil) 响应，用于触发 dispatch_missing 分支
 // （mockExecutor 对 nil 响应会阻塞等待取消，不能用于该路径）。
@@ -345,6 +338,13 @@ func TestDepsGuardsW3(t *testing.T) {
 	if _, err := (&chatRoutes{deps: &Deps{AccountLookup: mockAccountLookup{}}}).resolveChatBindingScope(unbound, ChatBindScope{ViewerID: "o"}); err == nil || !strings.Contains(err.Error(), "请先选择") {
 		t.Fatalf("未选账户应报引导错误: %v", err)
 	}
+	// 空作用域（无账户视图）不支持生图路由。
+	if (&chatRoutes{deps: &Deps{ModelCatalog: mockModelCatalog{}}}).scopeHasImageGenerationRoute(&chatBindingScope{}, "owner") {
+		t.Fatalf("无账户不应支持图片路由")
+	}
+	if !(&chatRoutes{deps: &Deps{ModelCatalog: mockModelCatalog{}}}).scopeHasImageGenerationRoute(&chatBindingScope{accounts: []ChatTransportAccount{{Type: "api_key"}}}, "owner") {
+		t.Fatalf("api_key 账户应支持图片路由")
+	}
 	if got := normalizeProviderToken("  OpenAI "); got != "openai" {
 		t.Fatalf("normalizeProviderToken = %q", got)
 	}
@@ -356,8 +356,8 @@ func TestDepsGuardsW3(t *testing.T) {
 		ID: "gpt-5", SupportsPromptCaching: true, DefaultReasoningEffort: "low",
 		ContextWindowTokens: int64PtrT(100), MaxInputTokens: int64PtrT(80), MaxOutputTokens: int64PtrT(20),
 		SupportedReasoningEfforts: []string{"low"},
-	}, true)
-	if payload["defaultReasoningEffort"] != "low" || payload["contextWindowTokens"] != int64(100) || payload["maxInputTokens"] != int64(80) || payload["builtinWebSearch"] != true {
+	})
+	if payload["defaultReasoningEffort"] != "low" || payload["contextWindowTokens"] != int64(100) || payload["maxInputTokens"] != int64(80) {
 		t.Fatalf("能力载荷不正确: %v", payload)
 	}
 }
@@ -434,6 +434,32 @@ func TestAssetRouteRuntimeGapsW3(t *testing.T) {
 	rt := newChatRoutesForTest(env.deps)
 	if got := rt.releaseRetryAt(); got == "" {
 		t.Fatalf("重试时间不应为空")
+	}
+}
+
+// TestImageHelpersW3 覆盖图片解码 helper 的边界。
+func TestImageHelpersW3(t *testing.T) {
+	if _, err := decodeBase64Payload(strings.Repeat("Q", 200), 8); err == nil || !strings.Contains(err.Error(), "16 MiB") {
+		t.Fatalf("超限应报错（文案固定）: %v", err)
+	}
+	if _, err := decodeBase64Payload("", 8); err == nil || !strings.Contains(err.Error(), "不能为空") {
+		t.Fatalf("空载荷应报错: %v", err)
+	}
+	if got := extractImageResultChunksWithFields(`{"b64_json":"QUJD"}`, "b64_json"); !equalStringsW3(got, []string{"QUJD"}) {
+		t.Fatalf("抽取失败: %v", got)
+	}
+	// 该抽取器不做 base64 校验（校验在 decodeBase64Payload）。
+	if got := extractImageResultChunksWithFields(`{"b64_json":"!!"}`, "b64_json"); !equalStringsW3(got, []string{"!!"}) {
+		t.Fatalf("抽取结果不正确: %v", got)
+	}
+	if message, errorType := readImageGenerationErrorPayload(`{"error":{"message":"具体","type":"t"}}`, "兜底"); message != "具体" || errorType != "t" {
+		t.Fatalf("错误载荷解析失败: %q %q", message, errorType)
+	}
+	if message, errorType := readImageGenerationErrorPayload(`{"error":{}}`, "兜底"); message != "兜底" || errorType != "" {
+		t.Fatalf("空错误应回兜底: %q %q", message, errorType)
+	}
+	if message, _ := readImageGenerationErrorPayload(`not-json`, "兜底"); message != "兜底" {
+		t.Fatalf("非 JSON 应回兜底: %q", message)
 	}
 }
 

@@ -6,7 +6,7 @@ package main
 // IfNeeded 的 AnthropicUsageHeadersDispatcher 窄口，AI账户Grok用量快照设计
 // §8.2：失败面 chain_ports.go / 成功面 chain_v1.go 调用）接到
 // record_maintenance_jobs 持久交接表的 account_usage_snapshot_upsert 行
-// （gateway internal/tablemonitor 写入 → jobs internal/recordmaintenance
+// （gateway internal/recordmaintenance 写入 → jobs internal/recordmaintenance
 // drain → 执行器 account_usage_snapshots upsert）。
 //
 // Node 契约逐段对照：
@@ -27,7 +27,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -35,12 +35,12 @@ import (
 // 与 gatewaycodex.AnthropicUsageHeadersDispatcher：复用既有
 // recordMaintenanceDispatch 通道把 codex / anthropic 快照 job 落到交接表。
 type codexUsageHeadersChannelDispatcher struct {
-	dispatch *tablemonitor.DurableDispatch
+	dispatch *recordmaintenance.DurableDispatch
 }
 
 // newCodexUsageHeadersChannelDispatcher 构造派发适配器（dispatch 为 nil 时
 // 返回 nil，链条侧对 nil 派发器保持静默契约）。
-func newCodexUsageHeadersChannelDispatcher(dispatch *tablemonitor.DurableDispatch) gatewaycodex.CodexUsageHeadersDispatcher {
+func newCodexUsageHeadersChannelDispatcher(dispatch *recordmaintenance.DurableDispatch) gatewaycodex.CodexUsageHeadersDispatcher {
 	if dispatch == nil {
 		return nil
 	}
@@ -49,7 +49,7 @@ func newCodexUsageHeadersChannelDispatcher(dispatch *tablemonitor.DurableDispatc
 
 // newAnthropicUsageHeadersChannelDispatcher 构造 anthropic 侧的同一通道适配
 // 器（nil 契约同上；两个窄口共享同一 recordMaintenanceDispatch 实例）。
-func newAnthropicUsageHeadersChannelDispatcher(dispatch *tablemonitor.DurableDispatch) gatewaycodex.AnthropicUsageHeadersDispatcher {
+func newAnthropicUsageHeadersChannelDispatcher(dispatch *recordmaintenance.DurableDispatch) gatewaycodex.AnthropicUsageHeadersDispatcher {
 	if dispatch == nil {
 		return nil
 	}
@@ -87,7 +87,7 @@ func (d codexUsageHeadersChannelDispatcher) enqueueUsageSnapshotJob(ctx context.
 	dispatchCtx := context.WithoutCancel(ctx)
 	go func() {
 		defer safego.Recover("juheai.compose_codex_usage_headers.persist")
-		result := d.dispatch.EnqueueAccountUsageSnapshotUpsert(dispatchCtx, tablemonitor.RecordMaintenanceSnapshotJob{
+		result := d.dispatch.EnqueueAccountUsageSnapshotUpsert(dispatchCtx, recordmaintenance.RecordMaintenanceSnapshotJob{
 			AccountID: job.AccountID,
 			Kind:      job.Kind,
 			Source:    job.Source,

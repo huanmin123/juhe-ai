@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { chatGenerationParameterDescription, defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls, reasoningEffortLabel, selectableChatReasoningEfforts } from '../../views/chat/composer/chatModelControls'
 
 const composerSource = readFileSync(new URL('../../views/chat/composer/AIComposer.vue', import.meta.url), 'utf8')
-const capabilityBase = { supportedApiProtocols: ['responses'], inputModalities: ['text'], outputModalities: ['text'], builtinWebSearch: false, generationParameters: [] }
+const capabilityBase = { supportedApiProtocols: ['responses'], inputModalities: ['text'], outputModalities: ['text'], supportedToolsByProtocol: {}, generationParameters: [] }
 
 assert.equal(reasoningEffortLabel('medium'), '中')
 assert.match(chatGenerationParameterDescription('temperature'), /随机性/, '温度必须有可理解的参数说明')
@@ -56,9 +56,4 @@ assert.match(composerSource, /return `\$\{used\} \/ \$\{limit\}\$\{state\}`/, '�
 assert.doesNotMatch(composerSource, /return `上下文|上游用量|usageEstimated === false \? '上游用量' : '估算'/, '正常 tooltip 不得显示来源或重复上下文标题')
 assert.match(composerSource, /:aria-label="`上下文用量 \$\{contextTooltip\}`"/, '圆环无障碍名称必须保留完整上下文语义')
 assert.equal((composerSource.match(/<a-tooltip :title="contextTooltip">/g) ?? []).length, 1, '页面只能挂载一个上下文 tooltip')
-// 联网开关（AI 问答简化设计 D3）：仅 builtinWebSearch 模型渲染，勾选随提交下发。
-assert.match(composerSource, /<a-checkbox v-if="webSearchAvailable"[^>]*@update:checked="toggleWebSearch">联网<\/a-checkbox>/, '联网开关必须仅在模型声明内置搜索时渲染')
-assert.match(composerSource, /webSearchAvailable = computed\(\(\) => selectedModelOption\.value\?\.builtinWebSearch === true\)/, '联网开关显隐必须只依据模型 builtinWebSearch 能力')
-assert.match(composerSource, /if \(!available\) webSearchEnabled\.value = false/, '能力不支持时联网开关必须复位为未勾选')
-assert.match(composerSource, /enableWebSearch: webSearchEnabled\.value \|\| undefined/, '提交载荷必须携带联网开关状态，未勾选不带该字段')
 console.log('chat model controls regression passed')

@@ -5,6 +5,8 @@
 #   --ensure-schema 建（business/usage/stats/chat/dataset/codex_context），juhe_jobs、juhe_j3b
 #   需手工 CREATE SCHEMA 后由 maintenance --apply-* 建表（完整序列见同目录 README.md）。
 # - gateway 以本机 80 端口经 Caddy 对外，管理 SPA 挂 /__aisys__/，/v1 为 OpenAI 兼容入口。
+# - gateway(3306)/jobs(3305) 健康监听经宿主回环端口映射发布，仅 127.0.0.1 可达，
+#   供 infra 机 Prometheus 经既有 SSH 隧道抓取（接入说明见 monitoring/README.md）。
 # - 镜像来自本地交叉编译二进制（Dockerfile.runtime），服务器上不做源码构建。
 # - 密钥与连接串全部在 .env（同目录，不入库）；.env 生成方式见 README.md。
 name: juhe-ai
@@ -93,6 +95,9 @@ services:
         TARGET_BINARY: juhe-ai-gateway
     image: juhe-ai-single-server:gateway
     container_name: juhe-ai-go-gateway
+    # BUG-0313 内存治理：GOMEMLIMIT 软限（见 environment）让 GC 封顶堆增长（流量高峰 RSS 曾冲
+    # 3.56GiB 挤爆整机页缓存引发僵死），mem_limit 3g 为最后防线——超限只杀 gateway 自身，不拖整机。
+    mem_limit: "3g"
     restart: unless-stopped
     # datadir/日志等相对路径约定以进程 cwd 为基准（缺省 ./data 相对 cwd）；
     # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
@@ -103,6 +108,10 @@ services:
     networks:
       default:
         ipv4_address: 172.18.0.10
+    ports:
+      # 健康监听宿主回环发布：仅 127.0.0.1 可达（部署层必须拒绝公网入口、只允许
+      # 受限 Prometheus 抓取），供 infra 机经 SSH 隧道抓取 /__aisys__/metrics。
+      - "127.0.0.1:3306:3306"
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,6 +120,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       NODE_ENV: production
+      # Go 堆软限制（BUG-0313）：接近 2300MiB 时 GC 激进回收，RSS 实际封顶约 2.5GiB，把页缓存还给系统。
+      GOMEMLIMIT: 2300MiB
       JUHE_AI_HOST: 0.0.0.0
       JUHE_AI_PORT: 3000
       # 不显式指向 dist 就不挂管理 SPA（代码默认空）
@@ -120,10 +131,11 @@ services:
       # 但派生目录可能与 jobs 显式目录不同源、破坏三方同目录契约，故此处显式配置
       # （显式 disabled 字面量才关闭，完整契约见 README.md ".env 契约"节）
       JUHE_AI_LOG_DIR: /app/backend/logs
-      # 系统指标页 jobs 健康段抓取地址（gateway 视角：跨容器用容器名）；
-      # 未配置时默认 127.0.0.1:3305（同主机裸跑形态可用，跨容器不可达，BUG-0226）。
-      # jobs 侧同名变量配 0.0.0.0
-      JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: juhe-ai-go-jobs:3305
+      # gateway 健康监听绑全接口（代码默认 127.0.0.1:3306）：compose healthcheck
+      # 仍走容器内 127.0.0.1，绑 0.0.0.0 只为让 ports 的宿主回环映射可达，供
+      # infra 机 Prometheus 经既有 SSH 隧道抓取 GET /__aisys__/metrics
+      # （抓取配置、面板导入与告警迁移见 monitoring/README.md）。
+      JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3306
       # F3/F4 owner 租约启动获取等待（BUG-0228，2026-09-28 起）：compose recreate
       # 先 stop 旧容器（SIGTERM 10s 宽限后 SIGKILL），旧 gateway 优雅关闭预算
       # （10s+5s+5s 串行 HTTP shutdown + defer 链）超 10s 被强杀时 defer 租约
@@ -169,10 +181,16 @@ services:
         TARGET_BINARY: juhe-ai-jobs
     image: juhe-ai-single-server:jobs
     container_name: juhe-ai-go-jobs
+    # BUG-0313 内存治理：jobs 当前 RSS ~114MiB，硬限防异常扩散。
+    mem_limit: "1g"
     restart: unless-stopped
     # 与 gateway 同理：spool drain 目录按相对路径派生，必须锚定 /app/backend
     # 才能与网关共享宿主机挂载的 data 目录（两侧同源才能完成用量交接）。
     working_dir: /app/backend
+    ports:
+      # 健康监听宿主回环发布：仅 127.0.0.1 可达（部署层必须拒绝公网入口、只允许
+      # 受限 Prometheus 抓取），供 infra 机经 SSH 隧道抓取指标。
+      - "127.0.0.1:3305:3305"
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,8 +203,10 @@ services:
       # 与 gateway 同目录：F1 索引器按文件 cursor 消费 juhe-ai.log 与轮转文件，
       # 保留清理也只删该目录下的 rotated 文件
       JUHE_AI_LOG_DIR: /app/backend/logs
-      # jobs 健康监听绑全接口供 gateway 跨容器抓取（BUG-0226：代码默认仍是
-      # 127.0.0.1；容器网络无公网映射，不构成暴露）。gateway 侧同名变量配容器名
+      # jobs 健康监听绑全接口（BUG-0226：代码默认仍是 127.0.0.1；容器网络无公网
+      # 映射，不构成暴露）。原「gateway 跨容器抓取 jobs 健康段」接线已随系统指标
+      # 统计功能下线删除；该端口现经上方 ports 宿主回环映射，供 infra 机
+      # Prometheus 经 SSH 隧道抓取。
       JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3305
       # 主库 URL 按 service 追加 application_name（与 gateway 同理，见 gateway 注释）
       JUHE_AI_POSTGRES_URL: ${JUHE_AI_POSTGRES_URL}?application_name=juhe-ai-jobs

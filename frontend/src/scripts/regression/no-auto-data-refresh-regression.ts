@@ -9,12 +9,6 @@ assert.match(remoteAuthorizationPrincipalOptions, /function invalidate\(\): void
 assert.match(authorizationUsageResourceFilters, /function invalidate\(\): void \{[\s\S]*clearSearchTimer\(\)[\s\S]*requestId \+= 1[\s\S]*loadingKey = undefined[\s\S]*loadingPromise = undefined[\s\S]*resourceOptionsLoading\.value = false[\s\S]*accounts\.value = \[\][\s\S]*groups\.value = \[\]/, '授权资源候选项失效必须清理搜索、在途请求、加载态和旧选项')
 assert.match(authorizationUsageResourceFilters, /const baseOptions = await[\s\S]*if \(currentRequestId !== requestId\) return \[\][\s\S]*await ensureSelected/, '授权资源候选项在补齐已选项前必须复核请求代次')
 
-const systemMetrics = source('views/stats/SystemMetricsStatsView.vue')
-assert.doesNotMatch(systemMetrics, /dynamicRangeRollover|visibilitychange|window\.addEventListener\('focus'/, '系统指标不得因日期、可见性或焦点自动刷新')
-assert.doesNotMatch(activated(systemMetrics), /loadPageData|loadUsageStatsWindow|forceUsageWindow/, '系统指标重新激活不得加载数据')
-assert.doesNotMatch(authRevisionWatcher(systemMetrics), /\b(?:loadPageData|loadUsageStatsWindow|loadBackgroundJobs|loadHealthSnapshot)\s*\(/, '系统指标身份变化不得加载业务数据')
-assert.match(authRevisionWatcher(systemMetrics), /\.abort\(\)[\s\S]*goRuntimeTrend\.value = undefined/, '系统指标身份变化必须取消并清空旧数据')
-
 const usageRecords = source('views/usage-records/UsageRecordsView.vue')
 const usageRecordGroupOptions = source('views/usage-records/useUsageRecordGroupOptions.ts')
 assert.doesNotMatch(usageRecords, /visibilitychange|window\.addEventListener\('focus'/, '使用记录不得因可见性或焦点自动刷新')
@@ -27,12 +21,6 @@ assert.match(usageRecords, /requestAuthRevision !== authState\.revision\.value/,
 assert.doesNotMatch(authRevisionWatcher(usageRecords), /\bloadData\s*\(/, '使用记录身份变化不得加载业务数据')
 assert.match(authRevisionWatcher(usageRecords), /invalidatePendingLoads\(\)[\s\S]*invalidateGroupOptions\(\)[\s\S]*records\.value = \[\][\s\S]*systemAccounts\.value = \[\]/, '使用记录身份变化必须取消并清空列表和选项')
 assert.match(usageRecordGroupOptions, /function invalidate\(\): void \{[\s\S]*clearSearchTimer\(\)[\s\S]*requestId \+= 1[\s\S]*loadingKey = undefined[\s\S]*loadingPromise = undefined/, '分组选项身份失效必须取消搜索并推进请求代次')
-
-const systemMetricsPageLoad = sourceBetween(systemMetrics, 'async function loadPageData', 'function setupRuntimeObservers')
-assert.match(systemMetricsPageLoad, /const currentPageLoadGeneration = \+\+pageLoadGeneration/, '系统指标页面加载必须拥有独立 generation')
-assert.match(systemMetricsPageLoad, /await windowLoad\s+if \(currentPageLoadGeneration !== pageLoadGeneration\) return[\s\S]*syncDynamicDateRangeToStatsWindow\(\)/, '系统指标等待 usage-window 后必须先校验 generation')
-assert.match(authRevisionWatcher(systemMetrics), /pageLoadGeneration \+= 1/, '系统指标身份变化必须使等待 usage-window 的旧页面加载失效')
-assert.match(sourceBetween(systemMetrics, 'watch(() => backgroundJobsResult.value?.total', 'onBeforeUnmount'), /typeof total !== 'number'.*Number\.isFinite\(total\).*total < 0\) return[\s\S]*void loadBackgroundJobs\(\)/, '后台任务分页只能由有效响应 total 触发回页加载')
 
 const statsView = source('views/stats/StatsView.vue')
 assert.match(activated(statsView), /initialLoadInterrupted[\s\S]*!usageOverview\.value[\s\S]*loadData\(\{ forceUsageWindow:/, '统计概览仅能在初始请求失活中断且无首个结果时恢复一次加载')

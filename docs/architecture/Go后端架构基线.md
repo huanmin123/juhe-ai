@@ -113,7 +113,7 @@ Go 目标不是复制当前 Node 进程树。
 | --- | --- | --- | --- |
 | `juhe-ai server` | HTTP API、静态资源、公开接口、网关入口、轻量 supervisor 和 readiness；W1b `/__aipublic__` 仅在 `JUHE_AI_PUBLIC_API_ENABLED=true` 时 opt-in 挂载，W2 管理端辅助、标签和 operation log 读路径以及 W3 `auth/captcha`、`auth/login`、`auth/me`、`auth/change-password`、`auth/logout`、`POST system-accounts`、`PATCH system-accounts/{id}` 完整 mixed PATCH 仅在 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 时 opt-in 挂载；登录会话列表和按 ID 撤销不注册；系统账户列表 / options 保持非敏感字段白名单，完整 PATCH 已覆盖 `super_admin` 权限、Node 兼容密码 hash、session 撤销、最后一个启用 `super_admin` 保护、gateway runtime cache / API Key validation cache 清理和密码日志脱敏；相关开关默认关闭，不代表生产接管 | HTTP health、PG/Redis 基础连通、网关运行态只读检查；W1b 开启时检查 Redis cache/state/queue 和 `JUHE_AI_SECRET`；W2/W3 全量管理开关开启时检查管理端会话 store、session schema、Redis cache/state/queue 和稳定 `JUHE_AI_SECRET`，任一缺失或不可用均在监听前 fail-fast；已删除登录会话专用窄开关及其专用依赖分支 | 优雅关闭 HTTP、取消请求 context，不吞 worker 失败；W1b / W2 / W3 回滚优先关闭开关并恢复路径 owner |
 | `juhe-ai-worker ingest` | 已完整接管的记录型功能的独立命令 | 直接异步运行数、写入延迟、游标推进、失败与重启恢复 | 取消正在运行的 context；未完成工作从功能自身持久事实重新发现 |
-| `juhe-ai-worker stats` | 统计窗口、额度窗口、TopN、趋势、系统监控和表监控 | job state、统计滞后、PG 写入延迟 | 持有租约或单 owner，退出时释放租约 |
+| `juhe-ai-worker stats` | 统计窗口、额度窗口、TopN、趋势（原"系统监控和表监控"职责已于 2026-10-14 下线，监控收敛 Prometheus，见 [Prometheus 指标暴露设计](../functions/Prometheus指标暴露设计.md)） | job state、统计滞后、PG 写入延迟 | 持有租约或单 owner，退出时释放租约 |
 | `juhe-ai-worker ops` | 账号测试、健康检测、OAuth token 保活、授权到期扫描 | 任务队列、租约、外部 I/O 并发和错误率 | 取消外部请求，记录未完成任务，等待下轮重试；J3a 代理延迟检测不在此表的 Node 迁移目标内，已由 `juhe-ai-jobs` 独占 |
 | `juhe-ai-maintenance` | 离线导出、导入、重建、清理和诊断 | 一次性命令退出码和报告文件 | 必须支持 dry run 或明确影响范围 |
 
@@ -194,7 +194,7 @@ Go 运行边界矩阵：
 - `node:sqlite` 能力预检和 Node 版本分支。
 - SQLite standalone、SQLite 多库拆分、usage shard 文件写入、SQLite read worker、SQLite writer owner 和相关测试矩阵：**B0 / L1-L4 不整体删除**，它们是 SQLite profile 的现行边界；只有已接管完整功能的专属 Node 文件可在 L4 归档。
 - DB service HTTP/IPC 代理层：**B0 / L1-L4 不整体删除**，未接管的 legacy SQLite profile 可继续通过它保持单 writer / typed command 正确性；方案 A 的 J3b 明确禁止通过该层，必须切至 Gateway 单 owner 后才可下线其 Node 路径。
-- Node 专属系统指标：`eventLoopLagMs`、`process_event_loop_*`、V8 `processHeap*` / `external` / `arrayBuffers`、DB service 运行态、SQLite 文件体积、usage shard 文件路径和 IPC pending 队列指标。
+- Node 专属系统指标：`eventLoopLagMs`、`process_event_loop_*`、V8 `processHeap*` / `external` / `arrayBuffers`、DB service 运行态、SQLite 文件体积、usage shard 文件路径和 IPC pending 队列指标。（该域连同 Go 侧 gometrics 采样链已于 2026-10-14 整体下线，应用进程监控与容量观测改由 Prometheus / postgres_exporter 承担，见 [Prometheus 指标暴露设计](../functions/Prometheus指标暴露设计.md)，不再存在"未来评估收敛"问题。）
 - worker thread 大 JSON 解析边界，改为 Go 请求 goroutine + 有界解析策略。
 - `p-limit` 等为 Node 并发协调补出来的通用胶水，不作为 Go 的通用队列或业务限流复刻；Go 以 context、连接池、SQLite owner 和直接 goroutine 生命周期保证正确性。
 - `tsx` 开发运行链路和后端 TypeScript 编译链路。

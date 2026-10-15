@@ -124,7 +124,6 @@ func ResolveScheduleForDriver(jobName string, settings SettingsInterval, databas
 // SettingsIntervalJobNames 列出间隔来自系统设置的 job（供组合根解析）。
 func SettingsIntervalJobNames() map[string]string {
 	return map[string]string{
-		"system-metrics-sample":             "systemMetricsSampleIntervalSeconds",
 		"usage-stats-aggregation":           "statsAggregationIntervalSeconds",
 		"client-ip-stats-aggregation":       "statsAggregationIntervalSeconds",
 		"group-account-stats-refresh":       "groupAccountStatsRefreshIntervalSeconds",
@@ -147,10 +146,6 @@ func schedules() map[string]Schedule {
 			Interval: 5 * minute, InitialDelay: 2 * second, PassiveJitter: true,
 			ScheduleMode: "fixedDelay", Timeout: 2 * minute,
 			BackoffBase: 5 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
-		},
-		"system-metrics-sample": {
-			Interval: SystemMetricsSampleInterval, InitialDelay: 4 * second, PassiveJitter: true,
-			OverlapCoalesce: true, Timeout: 20 * second, LeaseTTL: 15 * second,
 		},
 		"usage-stats-aggregation": {
 			Interval: StatsAggregationInterval, InitialDelay: 3 * second, StablePhaseWindow: 2 * second,
@@ -181,11 +176,6 @@ func schedules() map[string]Schedule {
 			Interval: 5 * minute, InitialDelay: 3 * minute, StablePhaseWindow: 30 * second,
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "stats-heavy", Timeout: minute,
 			BackoffBase: 15 * second, BackoffMax: 5 * minute, LeaseTTL: 5 * minute,
-		},
-		"system-metrics-trend-windows-refresh": {
-			Interval: rankInterval, InitialDelay: 3*minute + 20*second, StablePhaseWindow: 30 * second,
-			PassiveJitter: true, OverlapCoalesce: true, Lane: "stats-heavy", Timeout: 10 * minute,
-			BackoffBase: 30 * second, BackoffMax: 10 * minute, LeaseTTL: 15 * minute,
 		},
 		"usage-overview-windows-refresh": {
 			Interval: 5 * minute, InitialDelay: 4*minute + 10*second, StablePhaseWindow: 30 * second,
@@ -254,22 +244,6 @@ func schedules() map[string]Schedule {
 			Interval: hour, InitialDelay: 9 * minute, StablePhaseWindow: 30 * second,
 			PassiveJitter: true, ScheduleMode: "fixedDelay", Lane: "storage-maintenance", Timeout: 2 * minute,
 			BackoffBase: 30 * second, BackoffMax: 10 * minute, LeaseTTL: 5 * minute,
-		},
-		// studio-tasks-settle：Go 新增任务（媒体工作室设计 §5；归档无对应
-		// scheduled job 可对照）。工作室任务结算对用户可见新鲜度敏感
-		//（BlocksUserVisibleFreshness）：interval 30s 驱动"上游 completed →
-		// 资产可看"收敛；fixedDelay + OverlapCoalesce 防轮次重叠；独立
-		// lane=studio-settle——单轮可能包含 5 分钟级上游轮询窗口与视频下载，
-		// 不与 storage-maintenance 的本地清理族争抢 lane 并发槽；timeout 6min
-		// 覆盖单领取窗口（studiosettle.DefaultMaxPollsPerClaim=60×5s）+ 产物
-		// 下载余量；initial delay 37s 与探针/余额族（20s/25s/30s/35s）错峰；
-		// LeaseTTL 2min 同 OAuth/xai 家族（PG 调度租约 + 运行历史；任务行租
-		// 约 60s 由 worker 自身领取谓词承担，与本调度租约正交）。
-		"studio-tasks-settle": {
-			Interval: 30 * second, InitialDelay: 37 * second, StablePhaseWindow: 5 * second,
-			PassiveJitter: true, ScheduleMode: "fixedDelay", OverlapCoalesce: true,
-			Lane: "studio-settle", Timeout: 6 * minute,
-			BackoffBase: 15 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
 		},
 
 		// ops-worker（探针与恢复）

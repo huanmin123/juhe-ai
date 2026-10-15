@@ -27,7 +27,6 @@
     "test:ai-performance-progressive-loading": "pnpm --filter juhe-ai-frontend test:ai-performance-progressive-loading",
     "test:app-brand-singleflight": "pnpm --filter juhe-ai-frontend test:app-brand-singleflight",
     "test:stats-overview-progressive-loading": "pnpm --filter juhe-ai-frontend test:stats-overview-progressive-loading",
-    "test:system-metrics-progressive-loading": "pnpm --filter juhe-ai-frontend test:system-metrics-progressive-loading",
     "test:provider-catalog-progressive-loading": "pnpm --filter juhe-ai-frontend test:provider-catalog-progressive-loading",
     "test:settings-sections-progressive-loading": "pnpm --filter juhe-ai-frontend test:settings-sections-progressive-loading",
     "test:announcement-progressive-loading": "pnpm --filter juhe-ai-frontend test:announcement-progressive-loading",

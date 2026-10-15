@@ -110,7 +110,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/recordmaintenance"
 	platformaccountbalance "github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -522,7 +522,7 @@ func TestW2BAccountBalanceHealthURLErrorArms(t *testing.T) {
 // 关闭句柄 → Queued=false → catch-warn 契约（不静默）。
 func TestW2BCodexUsageHeadersDispatchFailure(t *testing.T) {
 	db := w1uOpenPlainSQLite(t, "w2b-codex-closed.sqlite3")
-	dispatch, err := tablemonitor.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
+	dispatch, err := recordmaintenance.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
 	if err != nil {
 		t.Fatalf("create dispatch: %v", err)
 	}

@@ -42,7 +42,6 @@ const moduleTextMap: Record<string, string> = {
   openai_oauth: 'OpenAI OAuth',
   proxies: '代理',
   settings: '系统设置',
-  table_monitor: '表监控',
   system_accounts: '系统账户',
   system_teams: '系统团队'
 }

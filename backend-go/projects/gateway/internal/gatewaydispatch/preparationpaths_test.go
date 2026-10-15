@@ -328,7 +328,7 @@ func TestPrepareDispatchAccountsHighConcurrencyBusyCompletes429(t *testing.T) {
 	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
 		t.Fatalf("outcome = %s", result.Outcome)
 	}
-	if coordinator.failure == nil || coordinator.failure.Message != "分组繁忙，请稍后重试" {
+	if coordinator.failure == nil || coordinator.failure.Message != "当前分组繁忙，请稍后重试或增加可用账户。" {
 		t.Fatalf("failure = %#v", coordinator.failure)
 	}
 }

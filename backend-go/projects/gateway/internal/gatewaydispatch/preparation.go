@@ -1198,7 +1198,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		releaseClientIPConcurrencyOnce()
 		if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
 			StatusCode:         429,
-			Message:            "分组繁忙，请稍后重试",
+			Message:            "当前分组繁忙，请稍后重试或增加可用账户。",
 			ErrorType:          "rate_limit_exceeded",
 			ErrorCode:          "rate_limit_exceeded",
 			ErrorPhase:         "dispatch",

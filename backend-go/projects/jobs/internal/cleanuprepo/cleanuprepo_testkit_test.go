@@ -520,10 +520,6 @@ func (f *kitStatsWriter) CleanupUsageStatsRetention(context.Context, retention.U
 	return retention.UsageStatsRetentionCounts{}, nil
 }
 
-func (f *kitStatsWriter) CleanupSystemMetricsRetention(context.Context, retention.SystemMetricsRetentionInput) (retention.SystemMetricsRetentionCounts, error) {
-	return retention.SystemMetricsRetentionCounts{}, nil
-}
-
 func (f *kitStatsWriter) CleanupNonBusinessStatsData(_ context.Context, cutoffAt string, _ int) (retention.NonBusinessDataCleanupCounts, error) {
 	return retention.NonBusinessDataCleanupCounts{CutoffAt: cutoffAt, TableRows: map[string]int64{}, FileDeletes: map[string]int64{}}, nil
 }

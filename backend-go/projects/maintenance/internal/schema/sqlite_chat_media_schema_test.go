@@ -1,9 +1,8 @@
 package schema
 
 // M7 chat 媒体资产约束迁移的 SQLite 覆盖（问答音视频工具设计 §3）：
-// chat_assets 词表/ready/preview 三条 CHECK 的重建守卫。M7 的工具绑定四列
-// 幂等补齐已随 2026-10-12 AI 问答简化批（PLAN-20261012T121500000Z 决策 F）
-// 退役，对应覆盖一并移除。
+// chat_assets 词表/ready/preview 三条 CHECK 的重建守卫 + 媒体工具四列的
+// 幂等补齐。模式沿 TestEnsureSQLiteBusinessScheduleIntervalCheckMigration。
 
 import (
 	"context"
@@ -71,6 +70,56 @@ const legacyChatAssetsMediaDDL = `CREATE TABLE chat_assets (
           AND storage_key IS NOT NULL
         )
       )
+    )`
+
+// legacyChatConversationsPreMediaDDL 是 M7 之前的 chat_conversations 完整
+// 形状（无媒体四列；后续 CREATE INDEX 引用的列全部在场）。
+const legacyChatConversationsPreMediaDDL = `CREATE TABLE chat_conversations (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT,
+      api_key_name_snapshot TEXT NOT NULL,
+      bind_account_id TEXT,
+      bind_account_name_snapshot TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
+      search_account_id TEXT,
+      search_model_id TEXT,
+      image_account_id TEXT,
+      title TEXT NOT NULL DEFAULT '新对话',
+      title_source_message_id TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
+      last_model TEXT,
+      default_image_model TEXT NOT NULL DEFAULT 'gpt-image-2',
+      next_sequence_no INTEGER NOT NULL DEFAULT 1,
+      user_turn_count INTEGER NOT NULL DEFAULT 0,
+      message_revision INTEGER NOT NULL DEFAULT 0,
+      active_turn_id TEXT,
+      active_started_at TEXT,
+      context_revision INTEGER NOT NULL DEFAULT 0,
+      active_checkpoint_id TEXT,
+      compacted_through_sequence INTEGER NOT NULL DEFAULT 0,
+      context_state TEXT NOT NULL DEFAULT 'ready',
+      active_context_tokens INTEGER,
+      effective_context_limit_tokens INTEGER,
+      context_usage_estimated INTEGER NOT NULL DEFAULT 1,
+      context_claim_id TEXT,
+      context_claim_revision INTEGER,
+      context_claim_through_sequence INTEGER,
+      context_claimed_at TEXT,
+      context_retry_at TEXT,
+      context_attempt_count INTEGER NOT NULL DEFAULT 0,
+      context_error_code TEXT,
+      context_progress_sequence INTEGER NOT NULL DEFAULT 0,
+      context_progress_earliest_expires_at TEXT,
+      last_message_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (next_sequence_no >= 1),
+      CHECK (user_turn_count >= 0),
+      CHECK (message_revision >= 0),
+      CHECK (is_pinned IN (0, 1)),
+      CHECK (archived IN (0, 1)),
+      CHECK (context_state IN ('ready', 'compact_pending', 'compacting', 'compact_failed'))
     )`
 
 // insertMediaTestAsset 直插一行资产（dimension>0 时带宽高；previewKey 非空
@@ -167,5 +216,39 @@ func TestEnsureSQLiteChatAssetsMediaCheckMigration(t *testing.T) {
 			t.Fatalf("fresh DDL must declare the media word list:\n%s", ddl)
 		}
 		insertMediaTestAsset(t, db, "asset-media-fresh", "video/mp4", 0, "")
+	})
+
+	t.Run("chat media tool columns are delivered to legacy tables", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "schema-test-chat-media-columns-legacy")
+		if _, err := db.Exec(legacyChatConversationsPreMediaDDL); err != nil {
+			t.Fatalf("seed legacy conversations DDL: %v", err)
+		}
+		if _, err := db.Exec(`CREATE TABLE chat_user_tool_preferences (
+      system_account_id TEXT PRIMARY KEY, search_account_id TEXT, search_model_id TEXT,
+      image_account_id TEXT, default_image_model TEXT, updated_at TEXT NOT NULL
+    )`); err != nil {
+			t.Fatalf("seed legacy preferences DDL: %v", err)
+		}
+		if _, err := EnsureSQLiteChat(context.Background(), db); err != nil {
+			t.Fatalf("EnsureSQLiteChat over legacy columns: %v", err)
+		}
+		for _, target := range []struct{ table, column string }{
+			{"chat_conversations", "video_account_id"},
+			{"chat_conversations", "default_video_model"},
+			{"chat_conversations", "audio_account_id"},
+			{"chat_conversations", "default_audio_model"},
+			{"chat_user_tool_preferences", "video_account_id"},
+			{"chat_user_tool_preferences", "default_video_model"},
+			{"chat_user_tool_preferences", "audio_account_id"},
+			{"chat_user_tool_preferences", "default_audio_model"},
+		} {
+			columns, err := sqliteTableColumnSet(context.Background(), db, target.table)
+			if err != nil {
+				t.Fatalf("table_info %s: %v", target.table, err)
+			}
+			if !columns[target.column] {
+				t.Fatalf("%s.%s 未由 ensure 补齐", target.table, target.column)
+			}
+		}
 	})
 }

@@ -523,8 +523,18 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if err != nil {
 		return nil, err
 	}
+	// 初始状态按域分流（媒体账户生命周期定案表）：audio/video 域账户不参与
+	// 对话健康检查状态机（无后台探针执行），创建默认落 active——显式 disabled
+	// 仍 disabled，其余入参（含缺省 pending_test 哨兵值）一律 active；
+	// health_check_endpoint_mode 仅为记录值（DefaultHealthCheckEndpointModeFor
+	// Domain）。chat/image 域行为不变：仅 active+SkipInitialHealthCheck 才
+	// active，否则非 disabled 一律 pending_test 等待后台健康检查。
 	initialStatus := input.Status.Status
-	if input.Status.Status == "active" && input.Status.SkipInitialHealthCheck {
+	if accountscore.SkipsConversationHealthStateMachine(domain) {
+		if input.Status.Status != "disabled" && !(input.PreservePendingTest && input.Status.Status == "pending_test") {
+			initialStatus = "active"
+		}
+	} else if input.Status.Status == "active" && input.Status.SkipInitialHealthCheck {
 		initialStatus = "active"
 	} else if input.Status.Status != "disabled" {
 		initialStatus = "pending_test"
@@ -538,7 +548,15 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	} else {
 		nextStatus = "disabled"
 	}
+	// 媒体域 schedulable 跟随派生状态：入参 status 缺省时 CreationStatus 的
+	// Schedulable 哨兵为 false（对应 chat 的 pending_test 暂停调度），媒体域
+	// 派生为 active 后必须可调度，否则产生「active 却禁调度」的滞留行；显式
+	// disabled 仍由哨兵落 false。套餐过期臂不变。
 	schedulable := input.Status.Schedulable
+	if accountscore.SkipsConversationHealthStateMachine(domain) && input.Status.Status != "disabled" &&
+		!(input.PreservePendingTest && input.Status.Status == "pending_test") {
+		schedulable = true
+	}
 	if expiredByPackage {
 		schedulable = false
 	}
@@ -851,8 +869,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// gpt/openai api_key/oauth accounts reserve input version 1 and land the
 	// pending snapshot intent (reason 'account_created') in the same
 	// transaction, which is what puts the new account into the probe
-	// candidate join.
-	if (providerCode == "gpt" || providerCode == "openai") && (accountType == "api_key" || accountType == "oauth") {
+	// candidate join. Media domains have no conversation probe path.
+	if !accountscore.SkipsConversationHealthStateMachine(domain) &&
+		(providerCode == "gpt" || providerCode == "openai") && (accountType == "api_key" || accountType == "oauth") {
 		if err := s.reserveAndEnqueueAccountHealthSnapshot(ctx, tx, id, configRevision, dispatchRevision, nowISO); err != nil {
 			return nil, err
 		}
@@ -861,11 +880,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// account-health-check-dispatch.service.ts): a pending_test account always
 	// probes once; a freshly saved active single-Key API Key account without
 	// balance query probes once so the balance detector can classify it.
-	initialHealthCheck := nextStatus == "pending_test" ||
+	initialHealthCheck := !accountscore.SkipsConversationHealthStateMachine(domain) && (nextStatus == "pending_test" ||
 		(nextStatus == "active" && accountType == "api_key" &&
 			EffectiveAccountApiKeyCount(credentials) == 1 &&
 			balanceQueryEnabledInt != 1 &&
-			balanceQueryConfigJSON == "{}")
+			balanceQueryConfigJSON == "{}"))
 	return &CreateResult{
 		ID: id, Status: nextStatus, ConfigRevision: configRevision, DispatchRevision: dispatchRevision,
 		OwnerSystemAccountID: systemAccountID, Name: strings.TrimSpace(input.Name),

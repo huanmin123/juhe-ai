@@ -196,7 +196,10 @@ func (s *Service) cloneOpenAIAccountsWithCurrentConcurrency(ctx context.Context,
 // currentConcurrency stamp: runtime-unusable accounts drop out of dispatch.
 func (s *Service) applyConcurrencyOverlay(accounts []OpenAIAccountSecret, concurrency map[string]int) ([]OpenAIAccountSecret, error) {
 	nowMs := s.nowMs()
-	out := []OpenAIAccountSecret{}
+	// 预分配结果容量：账户结构体很大，从空 append 的倍增复制会额外产生约
+	// 一倍的垃圾字节（50 账户隔离实测 122KB→65KB，读路径 131KB→73KB，见
+	// docs/reports 热路径分配画像报告）。
+	out := make([]OpenAIAccountSecret, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		usable, err := isOpenAIAccountRuntimeUsableAt(account, nowMs)
@@ -252,7 +255,7 @@ func gatewayAccountConcurrencyAccountID(account *OpenAIAccountSecret) string {
 // gatewayAccountConcurrencyAccountIDs mirrors gatewayAccountConcurrencyAccountIds.
 func gatewayAccountConcurrencyAccountIDs(accounts []OpenAIAccountSecret) []string {
 	seen := map[string]bool{}
-	out := []string{}
+	out := make([]string, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		id := gatewayAccountConcurrencyAccountID(account)

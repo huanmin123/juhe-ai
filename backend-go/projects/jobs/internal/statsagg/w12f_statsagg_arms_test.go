@@ -130,7 +130,6 @@ func TestW12fStatsRunStagesEachClosedDB(t *testing.T) {
 		StageGroupAuthorizationCurrentMonthRank,
 		StageUsageOverviewWindows,
 		StageAiPerformanceSummaryWindows,
-		StageSystemMetricsTrendWindows,
 	}
 	for _, stage := range stages {
 		if _, err := refresher.RunStages(context.Background(), []WindowStageName{stage}, RefreshOptions{}); err == nil {

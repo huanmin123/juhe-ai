@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 
 	"github.com/alicebob/miniredis/v2"
@@ -571,19 +570,15 @@ func TestW12CMinimalAssemblyFenceSettlerStandaloneNotWarn(t *testing.T) {
 }
 
 func TestW12CJobsHTTPHandlerSupplementalArms(t *testing.T) {
-	// worker 就绪但 wired 清单为空：健康载荷仍带 worker 对象。
+	// worker 就绪但 wired 清单为空：健康载荷仍带 workerEnabled 字段。
 	var running atomic.Bool
 	running.Store(true)
-	handler := jobsHTTPHandler(ownermode.Active, &running, func() bool { return true },
-		false, func() bool { return true },
-		false, func() bool { return true },
-		nil, "",
-		false, func() bool { return true },
-		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
-		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		gometrics.New("juhe-ai", "jobs"), (*gometrics.Sampler)(nil),
-		true, func() bool { return true },
-		nil)
+	handler := jobsHTTPHandler(jobsHTTPDeps{
+		OwnerMode:            ownermode.Active,
+		RuntimeRunning:       &running,
+		ProxyLatencySnapshot: func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
+		WorkerReady:          func() bool { return true },
+	})
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if record.Code != http.StatusOK {

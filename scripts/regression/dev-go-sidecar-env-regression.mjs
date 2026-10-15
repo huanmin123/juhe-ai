@@ -16,12 +16,10 @@ const environmentKeys = [
   'JUHE_AI_LOG_DIR',
   'JUHE_AI_DATABASE_DRIVER',
   'JUHE_AI_POSTGRES_URL',
-  'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL',
   'JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT',
   'JUHE_AI_AUDIT_LOG_OWNER_LEASE',
   'JUHE_AI_OPERATION_LOG_OWNER_LEASE',
   'JUHE_AI_RUNTIME_LOG_OWNER_LEASE',
-  'JUHE_AI_TABLE_MONITOR_OWNER_LEASE',
   'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
   'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS',
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
@@ -38,7 +36,10 @@ try {
   // fixture（旧式注入会与 Go 固定名表脱节，破坏 gateway 零配置自举建库）。
   writeFileSync(join(fixtureRoot, '.env'), [
     'JUHE_AI_DATABASE_DRIVER=sqlite',
+    // 2026-10-14 监控改造回归注入：历史 .env 残留的 gometrics / F2 表监控两
+    // 家族 env 必须被 dev 启动器按前缀显式 drop，不得进入 Go 子进程。
     'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL=15s',
+    'JUHE_AI_TABLE_MONITOR_OWNER_LEASE=15s',
     // 去跨进程战役第四刀回归注入：历史 .env 残留的 F3/F4 loopback input env
     // 必须被 dev 启动器显式 drop，不得进入 Go 子进程。
     'JUHE_AI_AUDIT_LOG_INPUT_SECRET=dev-audit-log-input-secret-with-32-bytes',
@@ -55,7 +56,6 @@ try {
 
   // .env 值原样转发（零配置下不再改写逐库路径）。
   assert.equal(sidecarEnv.JUHE_AI_DATABASE_DRIVER, 'sqlite')
-  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, '15s')
   // 数据/日志根钉住 dev 专属目录并确保存在（SQLite 无法在不存在的目录建库，
   // 删库冷启动必须自愈）。
   assert.equal(sidecarEnv.JUHE_AI_DATA_DIR, join(fixtureRoot, '.local', 'dev', 'data'))
@@ -64,14 +64,16 @@ try {
   assert.ok(existsSync(sidecarEnv.JUHE_AI_LOG_DIR), 'dev log root must exist before gateway cold start')
   // owner 租约启动参数默认注入：旧进程被强杀（taskkill /f、关终端窗口、
   // Windows 8s 宽限兜底）后租约未释放；gateway F3/F4 注入有界等待让立即重
-  // 启自动接管而不是 fail-fast，jobs F1/F2 靠 supervisor 重试。dev TTL 统一
-  // 收紧到 10s（F3/F4 与 F1 生产默认 30s、F2 生产默认 5 分钟）让接管等待以
-  // 秒计。
+  // 启自动接管而不是 fail-fast，jobs F1 靠 supervisor 重试。dev TTL 统一
+  // 收紧到 10s（F3/F4 与 F1 生产默认 30s）让接管等待以秒计。
   assert.equal(sidecarEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
   assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
-  assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, '10s')
+  // 2026-10-14 监控改造：gometrics / F2 表监控两家族 env 整体退役，残留值
+  // 必须按前缀 drop（不得转发，也不再注入租约默认值）。
+  assert.equal(sidecarEnv.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, undefined, 'the retired Go runtime metrics env must not be forwarded')
+  assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, undefined, 'the retired table monitor env must not be forwarded')
   // 去跨进程战役第四刀：F3/F4 loopback input env 必须显式 drop（不得转发）。
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, undefined, 'the removed audit input listen address must not be forwarded')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, undefined, 'the removed audit input secret must not be forwarded')
@@ -92,9 +94,10 @@ try {
   process.env.JUHE_AI_AUDIT_LOG_OWNER_LEASE = '7s'
   const explicitProcessEnv = module.resolveGoProjectEnv()
   assert.equal(explicitProcessEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '7s')
+  // 退役家族即使经父进程环境显式配置也必须被前缀拒转覆盖。
   process.env.JUHE_AI_TABLE_MONITOR_OWNER_LEASE = '15s'
-  const explicitJobsLeaseEnv = module.resolveGoProjectEnv()
-  assert.equal(explicitJobsLeaseEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, '15s')
+  const explicitRetiredEnv = module.resolveGoProjectEnv()
+  assert.equal(explicitRetiredEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, undefined, 'an explicitly configured retired env must still be dropped')
   delete process.env.JUHE_AI_AUDIT_LOG_OWNER_LEASE
   delete process.env.JUHE_AI_TABLE_MONITOR_OWNER_LEASE
   writeFileSync(join(fixtureRoot, '.env'), readFileSync(join(fixtureRoot, '.env'), 'utf8')
@@ -112,14 +115,15 @@ try {
 
   // jobs 租约重试的人话提示：supervisor 的 ERROR 重试行触发并携带组件名；
   // 普通日志行与"获取…失败"的真实 DB 错误行（不含"已由另一个 Go 实例持有"）
-  // 不触发。
-  const retryLine = '{"time":"2026-09-23T21:21:41.7498865+08:00","level":"ERROR","msg":"sidecar component failed; retrying","component":"F2 table-monitor","cause":"表监控 owner lease 已由另一个 Go 实例持有","consecutiveFailures":1,"retryDelay":"1s"}'
+  // 不触发。（原 F2 table-monitor fixture 已随 2026-10-14 监控改造退役，
+  // 改用仍在服役的 J3a proxy-latency 组件名验证泛化匹配。）
+  const retryLine = '{"time":"2026-09-23T21:21:41.7498865+08:00","level":"ERROR","msg":"sidecar component failed; retrying","component":"J3a proxy-latency","cause":"代理延迟检测 owner lease 已由另一个 Go 实例持有","consecutiveFailures":1,"retryDelay":"1s"}'
   const jobsNotice = module.jobsLeaseRetryNotice(retryLine)
-  assert.ok(jobsNotice?.note.includes('F2 table-monitor'), 'the retry log line must produce a user note naming the component')
+  assert.ok(jobsNotice?.note.includes('J3a proxy-latency'), 'the retry log line must produce a user note naming the component')
   const f1RetryLine = '{"level":"ERROR","msg":"sidecar component failed; retrying","component":"F1 runtime-log-indexer","cause":"运行日志 owner lease 已由另一个 Go 实例持有","consecutiveFailures":2,"retryDelay":"2s"}'
   assert.ok(module.jobsLeaseRetryNotice(f1RetryLine)?.note.includes('F1 runtime-log-indexer'))
-  assert.equal(module.jobsLeaseRetryNotice('{"level":"INFO","msg":"F2 table-monitor sample complete"}'), undefined)
-  assert.equal(module.jobsLeaseRetryNotice('{"level":"ERROR","msg":"sidecar component failed; retrying","component":"F2 table-monitor","cause":"获取表监控 owner lease 失败: open db"}'), undefined, 'the db failure line must not produce the lease retry note')
+  assert.equal(module.jobsLeaseRetryNotice('{"level":"INFO","msg":"J3a proxy-latency sample complete"}'), undefined)
+  assert.equal(module.jobsLeaseRetryNotice('{"level":"ERROR","msg":"sidecar component failed; retrying","component":"J3a proxy-latency","cause":"获取代理延迟 owner lease 失败: open db"}'), undefined, 'the db failure line must not produce the lease retry note')
 } finally {
   for (const [key, value] of previousEnvironment) {
     if (value === undefined) delete process.env[key]

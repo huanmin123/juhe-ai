@@ -58,7 +58,7 @@ func TestGatewayAccountDispatchPriorityTier(t *testing.T) {
 func float64Ptr(v float64) *float64 { return &v }
 
 func TestPreserveGatewayAccountDispatchPriorityTiers(t *testing.T) {
-	makeView := func(a accountFixture) DispatchPriorityAccountView {
+	makeView := func(a *accountFixture) DispatchPriorityAccountView {
 		priority := float64(a.priority)
 		super := a.superPriority
 		fallback := a.fallbackEnabled
@@ -93,6 +93,30 @@ func TestPreserveGatewayAccountDispatchPriorityTiers(t *testing.T) {
 	out := PreserveGatewayAccountDispatchPriorityTiers(single, singleReordered, makeView, DispatchPriorityOrderOptions{})
 	if len(out) != 2 || out[0].id != "b" || out[1].id != "a" {
 		t.Fatalf("short-circuit order = %v", ids(out))
+	}
+
+	// 基准 tier 内保持重排相对顺序；基准未见的 tier 按原相对顺序落在尾部。
+	baseWithGap := []accountFixture{
+		{id: "a", priority: 10},
+		{id: "b", priority: 5},
+	}
+	reorderedWithUnknown := []accountFixture{
+		{id: "u2", priority: 1},
+		{id: "a2", priority: 10},
+		{id: "u1", priority: 2},
+		{id: "a1", priority: 10},
+		{id: "b1", priority: 5},
+	}
+	merged := PreserveGatewayAccountDispatchPriorityTiers(baseWithGap, reorderedWithUnknown, makeView, DispatchPriorityOrderOptions{})
+	wantMerged := []string{"a2", "a1", "b1", "u2", "u1"}
+	if gotIDs := ids(merged); len(gotIDs) != len(wantMerged) {
+		t.Fatalf("unknown-tier order = %v, want %v", gotIDs, wantMerged)
+	} else {
+		for i, id := range wantMerged {
+			if gotIDs[i] != id {
+				t.Fatalf("unknown-tier order = %v, want %v", gotIDs, wantMerged)
+			}
+		}
 	}
 }
 

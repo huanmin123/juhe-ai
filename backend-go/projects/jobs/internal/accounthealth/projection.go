@@ -588,8 +588,10 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	// applyOneClaim 等批量 dirty 写事务）交叉持锁形成 40P01 死锁环。因此固定
 	// 顺序：先 7001001（dirty 写全局串行化），再 health-projection 键（本投影
 	// 器互斥），最后才取 accounts/input_versions 行锁。仅 PG 方言执行。
+	// BUG-0313：7001001 的取锁等待受事务级 lock_timeout 约束，超时 55P03
+	// 失败本轮——J1 投影 receipt 未落库，下轮重放同一 outcome，不无限排队。
 	if p.business.postgres {
-		if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(?)"), advisorylock.AccountListDirty); err != nil {
+		if err := advisorylock.LockAccountListDirty(ctx, tx); err != nil {
 			return base, err
 		}
 		if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))"), accountHealthProjectionAdvisoryLockKey); err != nil {

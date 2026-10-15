@@ -20,6 +20,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
@@ -76,17 +78,18 @@ const (
 	ProtocolGemini    DiagnosticProtocol = "gemini"
 )
 
-// 账户探针常量（Node account-test-request.ts；outputChallengePrompt 为有意
-// 偏离，见注释）。
+// 账户探针常量（Node account-test-request.ts；挑战报文为有意偏离，见注释）。
 const (
-	outputChallengeExpected = "juhe"
-	// 说明测试用途并要求原样输出：推理模型（GLM 思考模式、o 系列等）遇到无
-	// 解释的"只能回复：juhe00649"会在思考阶段纠结内容用途与安全疑虑，明确
-	// 用途可显著缩短思考。
-	outputChallengePrompt = "接口连通性自动测试：请原样输出 " + outputChallengeExpected
-	anthropicBuildID      = "eb7"
-	anthropicDeviceID     = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
-	clientProfileHeader   = "x-juhe-client-profile"
+	// outputChallengePromptFormat 是探针挑战报文格式串（两个十进制操作数）。
+	// 2026-10-15 停用历史固定令牌形态（"接口连通性自动测试：请原样输出
+	// juhe<随机数字>"）：上游 api.shenwenai.com 等内容审核把「请原样输出
+	// 令牌」判为可疑请求并整段返回 HTTP 403（生产实测 14 次中 13 次被拒，
+	// 探针失败把正常账户打成临时不可调用）；随机算术题实测 19/19 通过，
+	// 且模型必须真实推理才能答对。
+	outputChallengePromptFormat = "接口连通性自动测试：请计算 %d+%d，只回复数字"
+	anthropicBuildID            = "eb7"
+	anthropicDeviceID           = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
+	clientProfileHeader         = "x-juhe-client-profile"
 )
 
 // probeInstructionsPool 是 responses 形态 system 指令的轮换池，用于消除固
@@ -108,12 +111,51 @@ type OutputChallenge struct {
 }
 
 // CreateOutputChallenge 等价 createAccountTestOutputChallenge，但有意偏离
-// Node 的固定报文：2026-09 起上游风控按固定报文指纹封号，请求侧在固定前缀
-// （outputChallengePrompt）后追加 3~6 位随机数字；验证侧保持宽松——回复包
-// 含 ExpectedOutput（juhe）即通过，不要求包含随机数字（见 probe.go 的
-// challengeMatched）。
+// Node 的固定报文：2026-09 起上游风控按固定报文指纹封号，请求侧在固定前缀后
+// 追加随机成分；2026-10-15 起固定前缀改为随机算术题（操作数 CSPRNG 随机，
+// 期望输出为两数之和），兼取打散固定指纹与真实推理证据——模型必须实际计算
+// 才能给出期望数字。验证侧保持宽松：可见输出包含该数字（数字边界匹配）即通过。
 func CreateOutputChallenge() OutputChallenge {
-	return OutputChallenge{ExpectedOutput: outputChallengeExpected, Prompt: outputChallengePrompt + challengeDigits()}
+	left, right := challengeOperands()
+	return OutputChallenge{
+		ExpectedOutput: strconv.Itoa(left + right),
+		Prompt:         fmt.Sprintf(outputChallengePromptFormat, left, right),
+	}
+}
+
+// challengeOperands 生成两个 10~89 的十进制操作数：按 256 均匀映射到 80 个
+// 取值，无模偏差（同 challengeDigits 的 256%4=0 先例）。
+func challengeOperands() (int, int) {
+	buf := make([]byte, 2)
+	randomBytes(buf)
+	return 10 + int(buf[0])*80/256, 10 + int(buf[1])*80/256
+}
+
+// challengeAnswerMatched 判定可见输出是否包含期望的十进制答案：命中数字的
+// 两侧都不得是数字，避免匹配到更长数字内部的片段（如期望 405 命中 "17940576"）。
+func challengeAnswerMatched(visible, expected string) bool {
+	if expected == "" {
+		return false
+	}
+	for searchFrom := 0; searchFrom+len(expected) <= len(visible); {
+		index := strings.Index(visible[searchFrom:], expected)
+		if index < 0 {
+			return false
+		}
+		begin := searchFrom + index
+		end := begin + len(expected)
+		leftOK := begin == 0 || !isASCIIDigit(visible[begin-1])
+		rightOK := end == len(visible) || !isASCIIDigit(visible[end])
+		if leftOK && rightOK {
+			return true
+		}
+		searchFrom = begin + 1
+	}
+	return false
+}
+
+func isASCIIDigit(char byte) bool {
+	return char >= '0' && char <= '9'
 }
 
 // randomBytes 用 crypto/rand 填充 buf；读取失败时按 idgen.RandomHex 先例回

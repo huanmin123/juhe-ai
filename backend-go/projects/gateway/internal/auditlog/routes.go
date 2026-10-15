@@ -4,9 +4,9 @@ package auditlog
 // 以当前生效保留配置（DB 行 → env 固化值 → 代码默认的优先级链，与后台自动
 // 轮共用 EffectiveRetentionSettings 同一合成函数）立即执行一轮
 // CleanupRetention——有界批次 + owner lease 事务内校验，与后台自动轮共用
-// 同一 lease 与 SQLite 写锁，天然串行安全。防护参照 tablemonitor cleanup
-// 先例：auth.RequireAdmin + kernel.MutationGuardMiddleware（防重放指纹）+
-// 操作日志 Sink.Record（契约见 docs/functions/日志与审计设置设计.md）。
+// 同一 lease 与 SQLite 写锁，天然串行安全。防护顺序：auth.RequireAdmin +
+// kernel.MutationGuardMiddleware（防重放指纹）+ 操作日志 Sink.Record
+// （契约见 docs/functions/日志与审计设置设计.md）。
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 // auditCleanupOperationKey 是手动清理的防重放操作键（mutation guard）。
 const auditCleanupOperationKey = "auditLogs.cleanup"
 
-// auditCleanupPrefix 与 tablemonitor 路由族一致的系统 API 前缀挂载点。
+// auditCleanupPrefix 是系统 API 前缀下的审计清理挂载点。
 const auditCleanupPrefix = "/__aisys__/api/audit-logs"
 
 // CleanupStore 是清理路由需要的最小 store 端口（*sqlStore 实现）。
@@ -48,7 +48,7 @@ type Deps struct {
 }
 
 // Mount wires the audit-log cleanup route：requireAdmin 家族，mutationGuard
-// 包裹 cleanup POST（tablemonitor cleanup 先例的同款防护顺序）。
+// 包裹 cleanup POST（防重放 + 操作日志的同款防护顺序）。
 func (d *Deps) Mount(k *kernel.Kernel, auth *authsys.Deps) {
 	if auth == nil {
 		auth = d.Auth

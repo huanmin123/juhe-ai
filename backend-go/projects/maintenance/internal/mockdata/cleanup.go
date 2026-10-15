@@ -82,10 +82,6 @@ func cleanupRules() []cleanupRule {
 		// 无外键，删除顺序不构成约束，按收据 → 任务 → 资产 → 账本的语义顺序
 		// 排列。账本行按「owner 已无资产行」回收：admin 的样本资产删除后其
 		// 账本行一并回收，真实用户（仍有资产行）的账本不受影响。
-		{Store: StoreBusiness, Table: "studio_operations", Query: "DELETE FROM studio_operations WHERE id LIKE 'stoper_mockdata_%'", Args: nil},
-		{Store: StoreBusiness, Table: "studio_tasks", Query: "DELETE FROM studio_tasks WHERE id LIKE 'stask_mockdata_%'", Args: nil},
-		{Store: StoreBusiness, Table: "studio_assets", Query: "DELETE FROM studio_assets WHERE id LIKE 'stasset_mockdata_%'", Args: nil},
-		{Store: StoreBusiness, Table: "studio_user_asset_usage", Query: "DELETE FROM studio_user_asset_usage WHERE NOT EXISTS (SELECT 1 FROM studio_assets WHERE studio_assets.system_account_id = studio_user_asset_usage.system_account_id)", Args: nil},
 		// 路由族：API Key → 绑定 → 策略。
 		{Store: StoreBusiness, Table: "api_keys", Query: "DELETE FROM api_keys WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "route_strategy_groups", Query: "DELETE FROM route_strategy_groups WHERE route_strategy_id IN (SELECT id FROM route_strategies WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},
@@ -126,8 +122,6 @@ func cleanupRules() []cleanupRule {
 		{Store: StoreStats, Table: "usage_record_cleanup_deductions", Query: "DELETE FROM usage_record_cleanup_deductions WHERE usage_id LIKE ? OR record_json LIKE ?", Args: []any{id, "%" + CleanupIDPrefix + "%"}},
 		{Store: StoreStats, Table: "background_job_leases", Query: "DELETE FROM background_job_leases WHERE lease_key LIKE ? OR owner_id LIKE ? OR run_id LIKE ?", Args: []any{id, id, id}},
 		{Store: StoreStats, Table: "background_task_runs", Query: "DELETE FROM background_task_runs WHERE run_id LIKE ? OR lease_key LIKE ? OR owner_id LIKE ? OR params_json LIKE ? OR result_json LIKE ?", Args: []any{id, id, id, "%" + CleanupIDPrefix + "%", "%" + CleanupIDPrefix + "%"}},
-		{Store: StoreStats, Table: "system_metrics_samples", Query: "DELETE FROM system_metrics_samples WHERE id LIKE ?", Args: []any{id}},
-		{Store: StoreStats, Table: "process_event_loop_samples", Query: "DELETE FROM process_event_loop_samples WHERE id LIKE ?", Args: []any{id}},
 		// chat：消息 → 会话（消息带 trace 前缀，会话带 ID 前缀）。
 		{Store: StoreChat, Table: "chat_messages", Query: "DELETE FROM chat_messages WHERE id LIKE ? OR trace_id LIKE ? OR conversation_id LIKE ?", Args: []any{id, trace, id}},
 		{Store: StoreChat, Table: "chat_conversations", Query: "DELETE FROM chat_conversations WHERE id LIKE ?", Args: []any{id}},
@@ -210,7 +204,6 @@ var aggregationResetTables = []string{
 	"ai_performance_summary_windows",
 	"usage_quota_hourly_windows", "usage_scope_range_windows",
 	"authorization_team_usage_range_windows", "authorization_user_usage_range_windows",
-	"system_metrics_trend_windows", "process_event_loop_trend_windows",
 	"group_account_stats",
 	// 队列与账本：脏队列由域重写；扣减账指向的桶已被重置，残留会让 jobs
 	// 清理重试扣减新桶。

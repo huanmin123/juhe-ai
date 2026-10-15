@@ -939,15 +939,15 @@ type mockAccountSeed struct {
 	extraModels   []string
 	// mediaModels 让 accountModels 追加目录里 audio / video 分类的模型引用
 	//（媒体契约 §3.4：business 域样本引用 audio 分类模型目录行）。
-	mediaModels  bool
-	expiresIn    time.Duration
-	cooldownIn   time.Duration
-	errorCode    string
-	errorMsg     string
-	keyPool      int
-	keyStrategy  string
-	mappings     []mockMappingSeed
-	oauth        bool
+	mediaModels bool
+	expiresIn   time.Duration
+	cooldownIn  time.Duration
+	errorCode   string
+	errorMsg    string
+	keyPool     int
+	keyStrategy string
+	mappings    []mockMappingSeed
+	oauth       bool
 }
 
 // seedAccounts 写入 AI 账户及其分组绑定、支持模型、标签与模型映射。
@@ -2730,7 +2730,7 @@ func (w *businessWriter) seedCustomProviderModels(tx *sql.Tx, guard businessGuar
 		{id: CleanupIDPrefix + "model_global_audio", model: mockCustomModelAudio,
 			scope: "global", status: "active", mode: "audio",
 			protocol: []string{"audio_speech"},
-			audIn: 0.6, audOut: 12,
+			audIn:    0.6, audOut: 12,
 			cap:   "Mockdata 全局音频模型（TTS），用于音频分类目录与同步音频用量验收",
 			notes: "Mockdata 全局音频模型样本"},
 		{id: CleanupIDPrefix + "model_personal_codex", model: "mockdata-personal-codex",
@@ -2803,7 +2803,7 @@ func nullInt(value int) any {
 // §8.2）：kind=video 各 status 覆盖，模型取目录 video 分类（回落 sora-2），
 // completed 行带 usage/cost，failed 行带 error，账户亲和外键取 acc_media 的
 // 真实行（provider 三元组与账户一致）。id 用 video_ 前缀的对外 job id 形态
-//（表注释契约），清理经 api_key/account 父键子查询定位（cleanupRules）。
+// （表注释契约），清理经 api_key/account 父键子查询定位（cleanupRules）。
 func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts []mockAccountSeed, keys map[string]string) error {
 	if len(accounts) == 0 {
 		return nil
@@ -2904,8 +2904,8 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 			"id": id, "kind": "video",
 			"api_key_id": apiKeyID, "account_id": accountID,
 			"provider_code": providerCode, "provider_protocol_profile_id": nullString(profileID),
-			"upstream_job_id": "video_" + CleanupIDPrefix + "upstream_" + seed.suffix,
-			"status":           seed.status,
+			"upstream_job_id":       "video_" + CleanupIDPrefix + "upstream_" + seed.suffix,
+			"status":                seed.status,
 			"request_snapshot_json": requestJSON, "artifact_json": artifactJSON,
 			"error_json": errorJSON, "usage_json": usageJSON, "cost_usd": cost,
 			"params_applied_json": appliedJSON, "params_ignored_json": ignoredJSON,

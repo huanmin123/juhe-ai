@@ -710,8 +710,8 @@ func sqliteDirectInputCandidatesQuery(suppressions []DirectInputSuppression) (st
 // sqliteDirectInputCandidatesSQL 以 directInputCandidatesSQL 为唯一语义基准，
 // 仅做方言翻译：
 //   - 去 juhe_business./juhe_stats. 前缀；时间参数绑定固定毫秒文本。
-//   - binding/mapping LATERAL → 窗口 CTE（先例 gateway list.go 与 tablemonitor
-//     store.go）。binding 用两层分区还原 PG LATERAL 的恒定单行语义：第一层
+//   - binding/mapping LATERAL → 窗口 CTE（先例 gateway list.go 同款方言翻译）。
+//     binding 用两层分区还原 PG LATERAL 的恒定单行语义：第一层
 //     ranked_group_bindings 按 (account, system_account, auth) 取各授权分区
 //     顶行（授权绑定臂：auth=X 账户取 X 分区内顶行）；第二层
 //     selected_group_bindings 对 rank=1 集合按 (account, system_account) 再取

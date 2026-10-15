@@ -44,46 +44,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       immersive: true
     }
   },
-  {
-    path: '/my-studio/images',
-    component: () => import('@/views/my-studio/studioImages/StudioImagesView.vue'),
-    meta: {
-      title: '图像生成',
-      description: '在媒体工作室生成图像：按模型能力配置参数，任务队列与作品画廊长期保留。',
-      menuGroup: 'studio',
-      menuGroupTitle: '媒体工作室',
-      viewScope: 'self',
-      keepAlive: true,
-      heavy: true
-    }
-  },
-  {
-    path: '/my-studio/audio',
-    component: () => import('@/views/my-studio/studioAudio/StudioAudioView.vue'),
-    meta: {
-      title: '音频生成',
-      description: '在媒体工作室合成语音或转写音频：文本转语音同步入素材库，转写结果可复制。',
-      menuGroup: 'studio',
-      menuGroupTitle: '媒体工作室',
-      viewScope: 'self',
-      keepAlive: true,
-      heavy: true
-    }
-  },
-  {
-    path: '/my-studio/video',
-    component: () => import('@/views/my-studio/studioVideo/StudioVideoView.vue'),
-    meta: {
-      title: '视频生成',
-      description: '在媒体工作室发起单镜视频生成：按模型能力配置首帧、时长与画幅，任务完成后回看与下载。',
-      menuGroup: 'studio',
-      menuGroupTitle: '媒体工作室',
-      viewScope: 'self',
-      keepAlive: true,
-      heavy: true
-    }
-  },
-  {
+        {
     path: '/my-stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
@@ -594,33 +555,6 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '索引查询检索最近 3 天运行日志，关键字只模糊匹配消息列；grep 模式由后端 rg 按任意关键字扫描文件日志。',
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/table-monitor',
-    component: () => import('@/views/table-monitor/TableMonitorView.vue'),
-    meta: {
-      title: '表监控',
-      description: '查看业务库、数据集目录库、使用记录目录库和统计结果库的表大小、行数、文件空闲空间和近期增长；usage shard 文件集合观测仍在后续增强阶段。',
-      menuGroup: 'system-operations',
-      menuGroupTitle: '系统运维',
-      viewScope: 'admin',
-      roles: managementRoles,
-      keepAlive: true,
-      heavy: true
-    }
-  },
-  {
-    path: '/system-metrics-stats',
-    component: () => import('@/views/stats/SystemMetricsStatsView.vue'),
-    meta: {
-      title: '系统指标统计',
-      description: '查看 Go Runtime 并发与内存趋势、gateway / jobs 双进程运行状态和后台任务执行历史。',
-      menuGroup: 'system-operations',
-      menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true

@@ -106,11 +106,7 @@ func TestW14CStreamRouteConflictPrologue(t *testing.T) {
 
 // TestW14CStreamRouteImageNotSupported 覆盖模型不支持图片输入的分支。
 func TestW14CStreamRouteImageNotSupported(t *testing.T) {
-	rt, env, conversationID := w14cStreamRoutes(t)
-
-	// 夹具默认锁定 gpt-5；D5 锁定预检先于模态校验，这里把锁定模型对齐到
-	// 发送模型（gpt-5-mini 仅文本且走 chat_completions），使其命中图片拒绝。
-	setConversationLastModel(t, env.fixture, conversationID, "gpt-5-mini")
+	rt, _, conversationID := w14cStreamRoutes(t)
 
 	// gpt-5-mini 仅文本且走 chat_completions → 携带图片输入必须拒绝。
 	recorder := w14cStreamPost(rt, conversationID, routeTestOwner,

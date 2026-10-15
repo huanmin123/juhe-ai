@@ -129,7 +129,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if config.RuntimeLogDatabasePath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
 		}
-		if err := validateSQLiteIsolation(config, datadir.Path(getenv, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "table-monitor.sqlite3")); err != nil {
+		if err := validateSQLiteIsolation(config); err != nil {
 			return Config{}, err
 		}
 	case ModePostgres:
@@ -140,12 +140,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	return config, nil
 }
 
-func validateSQLiteIsolation(config Config, tableMonitorPath string) error {
+func validateSQLiteIsolation(config Config) error {
 	candidates := []struct {
 		name string
 		path string
 	}{
-		{name: "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", path: tableMonitorPath},
 		{name: "JUHE_AI_DATABASE_PATH", path: config.BusinessPath},
 		{name: "JUHE_AI_DATASET_DATABASE_PATH", path: config.DatasetPath},
 		{name: "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", path: config.UsageCatalogPath},

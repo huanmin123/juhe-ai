@@ -178,7 +178,8 @@ assert(
 // 调度偏好绑定（PLAN-20261012T033000000Z P1）：弹窗选择器与快照接入。
 assert.match(modalSource, /schedulingPreferencesApi:\s*Pick<ScopedSchedulingPreferencesApi,\s*'options'>/, '弹窗必须声明调度偏好 options 依赖')
 assert.match(modalSource, /v-if="schedulingPreferenceSelectorVisible"[^>]*label="调度偏好"/, '调度偏好选择器必须按可见性条件渲染')
-assert.match(modalSource, /editingPurpose\.value === 'chat'\) return undefined/, 'purpose=chat 的快照必须强制缺失偏好 ID，任何路径不提交')
+assert.match(modalSource, /schedulingPreferencePurposeExempt\(editingPurpose\.value\)\) return undefined/, 'purpose=chat 的快照必须强制缺失偏好 ID，任何路径不提交')
+assert.doesNotMatch(modalSource, /'studio'/, '调度偏好豁免只接受 chat，API Key 词表不得残留已下线的 studio 用途')
 assert.match(sourceBetween(modalSource, 'function openCreate', 'function openEdit'), /schedulingPreferenceId:\s*SCHEDULING_PREFERENCE_BUILTIN_CHAT_COST_FIRST_ID/, '新建必须预选内置默认调度偏好')
 assert.match(sourceBetween(modalSource, 'function openEdit', 'function apiKeyOperationScopeParams'), /schedulingPreferenceId:\s*apiKey\.schedulingPreferenceId \?\? ''/, '编辑必须从列表行回填调度偏好绑定（历史 NULL 显示占位）')
 

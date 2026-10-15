@@ -2,13 +2,11 @@ package statreads
 
 // W17a 覆盖率补缺（statreads ≥95% 硬门）。补纯函数守卫臂与时区解析错误
 // 臂：nullText 扫描 []byte、toFloat 的 int/float32 分支、startOfZonedDateKeyIso
-// 的极值时区守卫（DST 安全二分的 guard 循环与不可解析返回）、
-// truncateHealthReason 截断臂、normalizeRange 起点越界钳制臂，以及
-// Timezone source 失败时 usageOverviewSummary / isCurrentUsageStatsDay 的
-// 错误透传臂。全部测试串行（无 t.Parallel）。
+// 的极值时区守卫（DST 安全二分的 guard 循环与不可解析返回）、normalizeRange
+// 起点越界钳制臂，以及 Timezone source 失败时 usageOverviewSummary /
+// isCurrentUsageStatsDay 的错误透传臂。全部测试串行（无 t.Parallel）。
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http/httptest"
@@ -54,12 +52,7 @@ func TestW17aSrStartOfZonedDateKeyIsoGuardLoops(t *testing.T) {
 	}
 }
 
-func TestW17aSrTruncateHealthReasonAndNormalizeRange(t *testing.T) {
-	// 截断臂：超过 200 字符的原文被裁剪。
-	long := bytes.Repeat([]byte("x"), healthSnapshotJobsReasonLimit+50)
-	if got := truncateHealthReason(long); len(got) != healthSnapshotJobsReasonLimit {
-		t.Fatalf("截断长度 = %d", len(got))
-	}
+func TestW17aSrNormalizeRangeClamps(t *testing.T) {
 	// normalizeRange：起点早于支持窗口 → 钳制到最早支持日。
 	rng := normalizeRange("2020-01-01", "2099-01-01", "2026-09-21")
 	if rng.StartDate != "2026-08-22" || rng.EndDate != "2026-09-21" {

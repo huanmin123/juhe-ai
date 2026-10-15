@@ -27,9 +27,6 @@ func TestW10DStreamTurnImageModalityMismatch(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_r", routeTestOwner)
 	bindStreamConversation(t, env, "conv_w10d_r")
-	// 夹具默认锁定 gpt-5；D5 锁定预检先于模态校验，把锁定模型对齐到发送模型
-	// （gpt-5-mini 仅文本），使请求命中 input_image 拒绝分支。
-	setConversationLastModel(t, env.fixture, "conv_w10d_r", "gpt-5-mini")
 	rt := newChatRoutesForTest(env.deps)
 	payload := `{"clientMessageId":"img-1","content":"看图","model":"gpt-5-mini","contentBlocks":[{"type":"input_text","text":"看图"},{"type":"input_image","assetId":"` + w9fHexAssetID(1) + `"}]}`
 	recorder := w9fInvokeStream(rt, "conv_w10d_r", payload)

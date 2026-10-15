@@ -155,6 +155,294 @@ func (t *assistantTimeline) lastBlock() *assistantBlock {
 	return t.blocks[len(t.blocks)-1]
 }
 
+func findToolBlock(blocks []*assistantBlock, callID string) *assistantBlock {
+	for _, block := range blocks {
+		if block.Type == "tool_call" && block.CallID == callID {
+			return block
+		}
+	}
+	return nil
+}
+
+func findImageBlock(blocks []*assistantBlock, assetID string) *assistantBlock {
+	for _, block := range blocks {
+		if block.Type == "output_image" && block.AssetID == assetID {
+			return block
+		}
+	}
+	return nil
+}
+
+// findAudioBlock 按 assetID 定位 output_audio 块（M7 媒体块，沿 findImageBlock
+// 模式）。
+func findAudioBlock(blocks []*assistantBlock, assetID string) *assistantBlock {
+	for _, block := range blocks {
+		if block.Type == "output_audio" && block.AssetID == assetID {
+			return block
+		}
+	}
+	return nil
+}
+
+// findMediaTaskBlock 按 jobId 定位 output_media_task 块（M7 异步视频任务块）。
+func findMediaTaskBlock(blocks []*assistantBlock, jobID string) *assistantBlock {
+	for _, block := range blocks {
+		if block.Type == "output_media_task" && block.JobID == jobID {
+			return block
+		}
+	}
+	return nil
+}
+
+// StartTool mirrors startTool.
+func (t *assistantTimeline) StartTool(callID, toolType string, item map[string]any) (*assistantBlock, error) {
+	if err := t.ensureMutable(); err != nil {
+		return nil, err
+	}
+	if trimSpace(callID) == "" {
+		return nil, errors.New("助手工具 callId 不能为空")
+	}
+	if trimSpace(toolType) == "" {
+		return nil, errors.New("助手工具 toolType 不能为空")
+	}
+	nextItem := cloneJSONMap(item)
+	if existing := findToolBlock(t.blocks, callID); existing != nil {
+		if existing.ToolType != toolType {
+			return nil, errors.New("助手工具类型不一致: " + callID)
+		}
+		if !isTerminalProcessStatus(existing.Status) && nextItem != nil && existing.Item == nil {
+			existing.Item = nextItem
+		}
+		return cloneAssistantBlock(existing), nil
+	}
+	block := &assistantBlock{Type: "tool_call", BlockID: t.nextBlockID(), Order: int64(len(t.blocks) + 1), CallID: callID, ToolType: toolType, Status: asstStarted, Item: nextItem}
+	t.blocks = append(t.blocks, block)
+	return cloneAssistantBlock(block), nil
+}
+
+// UpdateTool mirrors updateTool.
+func (t *assistantTimeline) UpdateTool(callID, status string, item map[string]any) (*assistantBlock, error) {
+	if err := t.ensureMutable(); err != nil {
+		return nil, err
+	}
+	block := findToolBlock(t.blocks, callID)
+	if block == nil {
+		return nil, errors.New("未知的助手工具调用: " + callID)
+	}
+	nextItem := cloneJSONMap(item)
+	if isTerminalProcessStatus(block.Status) {
+		return cloneAssistantBlock(block), nil
+	}
+	if status != asstStarted || block.Status == asstStarted {
+		block.Status = status
+	}
+	if nextItem != nil {
+		block.Item = nextItem
+	}
+	return cloneAssistantBlock(block), nil
+}
+
+// StartImageInput mirrors AssistantOutputImageStartInput.
+type StartImageInput struct {
+	AssetID       string
+	MimeType      string
+	Width         *int64
+	Height        *int64
+	RevisedPrompt string
+}
+
+// StartImage mirrors startImage.
+func (t *assistantTimeline) StartImage(input StartImageInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	if trimSpace(input.AssetID) == "" {
+		return nil
+	}
+	if existing := findImageBlock(t.blocks, input.AssetID); existing != nil {
+		return cloneAssistantBlock(existing)
+	}
+	block := &assistantBlock{Type: "output_image", BlockID: t.nextBlockID(), Order: int64(len(t.blocks) + 1), AssetID: input.AssetID, Status: asstStarted}
+	if input.MimeType != "" {
+		block.MimeType = input.MimeType
+	}
+	if input.Width != nil {
+		block.Width = input.Width
+	}
+	if input.Height != nil {
+		block.Height = input.Height
+	}
+	if input.RevisedPrompt != "" {
+		block.RevisedPrompt = input.RevisedPrompt
+	}
+	t.blocks = append(t.blocks, block)
+	return cloneAssistantBlock(block)
+}
+
+// UpdateImage mirrors updateImage.
+func (t *assistantTimeline) UpdateImage(input StartImageInput, status string) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	block := findImageBlock(t.blocks, input.AssetID)
+	if block == nil {
+		created := t.StartImage(input)
+		if created == nil {
+			return nil
+		}
+		if status == asstStarted {
+			return created
+		}
+		return t.UpdateImage(input, status)
+	}
+	if isTerminalProcessStatus(block.Status) {
+		return cloneAssistantBlock(block)
+	}
+	block.Status = status
+	if input.MimeType != "" {
+		block.MimeType = input.MimeType
+	}
+	if input.Width != nil {
+		block.Width = input.Width
+	}
+	if input.Height != nil {
+		block.Height = input.Height
+	}
+	if input.RevisedPrompt != "" {
+		block.RevisedPrompt = input.RevisedPrompt
+	}
+	return cloneAssistantBlock(block)
+}
+
+// StartAudioInput 是 M7 output_audio 块的创建输入（沿 StartImageInput 模式，
+// 无尺寸字段）。
+type StartAudioInput struct {
+	AssetID  string
+	MimeType string
+}
+
+// StartAudio 创建/复用 output_audio 块（按 assetId 幂等）。
+func (t *assistantTimeline) StartAudio(input StartAudioInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	if trimSpace(input.AssetID) == "" {
+		return nil
+	}
+	if existing := findAudioBlock(t.blocks, input.AssetID); existing != nil {
+		return cloneAssistantBlock(existing)
+	}
+	block := &assistantBlock{Type: "output_audio", BlockID: t.nextBlockID(), Order: int64(len(t.blocks) + 1), AssetID: input.AssetID, Status: asstStarted}
+	if input.MimeType != "" {
+		block.MimeType = input.MimeType
+	}
+	t.blocks = append(t.blocks, block)
+	return cloneAssistantBlock(block)
+}
+
+// UpdateAudio 更新 output_audio 块状态（终态幂等：已终态的块不再改写）。
+func (t *assistantTimeline) UpdateAudio(input StartAudioInput, status string) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	block := findAudioBlock(t.blocks, input.AssetID)
+	if block == nil {
+		created := t.StartAudio(input)
+		if created == nil {
+			return nil
+		}
+		if status == asstStarted {
+			return created
+		}
+		return t.UpdateAudio(input, status)
+	}
+	if isTerminalProcessStatus(block.Status) {
+		return cloneAssistantBlock(block)
+	}
+	block.Status = status
+	if input.MimeType != "" {
+		block.MimeType = input.MimeType
+	}
+	return cloneAssistantBlock(block)
+}
+
+// MediaTaskBlockInput 是 M7 output_media_task 块的创建/更新输入（状态为
+// media_jobs 任务状态词表，非过程状态词表）。
+type MediaTaskBlockInput struct {
+	JobID         string
+	Kind          string
+	Status        string
+	Progress      *int64
+	Model         string
+	PromptSummary string
+	AssetID       string
+	Error         string
+}
+
+// applyMediaTaskFields 把输入的非零字段套到块上（状态原样携带任务状态）。
+func applyMediaTaskFields(block *assistantBlock, input MediaTaskBlockInput) {
+	if input.Status != "" {
+		block.Status = input.Status
+	}
+	if input.Progress != nil {
+		block.Progress = input.Progress
+	}
+	if input.Model != "" {
+		block.Model = input.Model
+	}
+	if input.PromptSummary != "" {
+		block.PromptSummary = input.PromptSummary
+	}
+	if input.AssetID != "" {
+		block.AssetID = input.AssetID
+	}
+	if input.Error != "" {
+		block.MediaError = input.Error
+	}
+}
+
+// StartMediaTask 创建/复用 output_media_task 块（按 jobId 幂等）。
+func (t *assistantTimeline) StartMediaTask(input MediaTaskBlockInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	if trimSpace(input.JobID) == "" {
+		return nil
+	}
+	if existing := findMediaTaskBlock(t.blocks, input.JobID); existing != nil {
+		return cloneAssistantBlock(existing)
+	}
+	status := input.Status
+	if status == "" {
+		status = "queued"
+	}
+	kind := input.Kind
+	if kind == "" {
+		kind = "video"
+	}
+	block := &assistantBlock{Type: "output_media_task", BlockID: t.nextBlockID(), Order: int64(len(t.blocks) + 1), JobID: input.JobID, MediaKind: kind, Status: status}
+	applyMediaTaskFields(block, input)
+	t.blocks = append(t.blocks, block)
+	return cloneAssistantBlock(block)
+}
+
+// UpdateMediaTask 更新 output_media_task 块（终态幂等：已终态的块不再改写；
+// 未终态更新按快照全量覆盖状态相关字段）。
+func (t *assistantTimeline) UpdateMediaTask(input MediaTaskBlockInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	block := findMediaTaskBlock(t.blocks, input.JobID)
+	if block == nil {
+		return t.StartMediaTask(input)
+	}
+	if chatMediaJobStatusTerminal(block.Status) {
+		return cloneAssistantBlock(block)
+	}
+	applyMediaTaskFields(block, input)
+	return cloneAssistantBlock(block)
+}
+
 // CompleteBlock mirrors completeBlock.
 func (t *assistantTimeline) CompleteBlock(blockID string) (*assistantBlock, error) {
 	if err := t.ensureMutable(); err != nil {
@@ -165,6 +453,9 @@ func (t *assistantTimeline) CompleteBlock(blockID string) (*assistantBlock, erro
 			continue
 		}
 		if block.Type == "reasoning" && block.Status == asstStarted {
+			block.Status = asstCompleted
+		}
+		if block.Type == "tool_call" && (block.Status == asstStarted || block.Status == asstUpdated) {
 			block.Status = asstCompleted
 		}
 		return cloneAssistantBlock(block), nil
@@ -184,8 +475,15 @@ func (t *assistantTimeline) Finalize(status string) assistantTimelineSnapshot {
 		if block.Type == "tool_call" && (block.Status == asstStarted || block.Status == asstUpdated) {
 			block.Status = status
 		}
-		// output_image / output_audio / output_media_task 等生成媒体块已随
-		// 站内工具体系退场，不再有新建写入路径；存量块由读取侧占位降级。
+		if block.Type == "output_image" && block.Status == asstStarted {
+			block.Status = status
+		}
+		// M7 output_audio 与图像块同族终态收敛；output_media_task 的状态是
+		// media_jobs 任务状态词表（queued/in_progress 语义上跨越轮次存续），
+		// 不随轮次终态改写——终态定格由 media-tasks 结算补丁完成。
+		if block.Type == "output_audio" && block.Status == asstStarted {
+			block.Status = status
+		}
 	}
 	t.status = status
 	return t.Snapshot()
@@ -225,17 +523,46 @@ type ChatGenerationEvent struct {
 	Data         map[string]any
 }
 
+// ChatGenerationToolEvent mirrors ChatGenerationToolEvent.
+type ChatGenerationToolEvent struct {
+	ID       string
+	ToolType string
+	Status   string // started|updated|completed|failed|canceled
+	Item     map[string]any
+}
+
+// ChatGenerationImageEvent mirrors ChatGenerationImageEvent.
+type ChatGenerationImageEvent struct {
+	ID     string
+	Status string
+	Item   map[string]any
+}
+
+// ChatGenerationMediaEvent 是 M7 媒体块投影事件（问答音视频工具设计 §3）：
+// Block 区分目标块形——"audio"（output_audio，键=item.assetId，Status 为过程
+// 状态词表）与 "media_task"（output_media_task，键=item.jobId，Status 为
+// media_jobs 任务状态词表）。
+type ChatGenerationMediaEvent struct {
+	Block  string
+	ID     string
+	Status string
+	Item   map[string]any
+}
+
 // ChatGenerationProjectionUpdate mirrors ChatGenerationProjectionUpdate.
 type ChatGenerationProjectionUpdate struct {
 	ContentTextDelta   *string
 	ReasoningTextDelta *string
 	ReasoningCompleted bool
+	ToolEvent          *ChatGenerationToolEvent
+	ImageEvent         *ChatGenerationImageEvent
+	MediaEvent         *ChatGenerationMediaEvent
 }
 
 func (u ChatGenerationProjectionUpdate) hasUpdate() bool {
 	return (u.ContentTextDelta != nil && *u.ContentTextDelta != "") ||
 		(u.ReasoningTextDelta != nil && *u.ReasoningTextDelta != "") ||
-		u.ReasoningCompleted
+		u.ReasoningCompleted || u.ToolEvent != nil || u.ImageEvent != nil || u.MediaEvent != nil
 }
 
 // ChatGenerationSubscriber mirrors ChatGenerationSubscriber.
@@ -613,6 +940,15 @@ func (r *ChatGenerationRunner) applyProjectionUpdateLocked(update ChatGeneration
 	if update.ReasoningCompleted {
 		r.completeReasoningLocked()
 	}
+	if update.ToolEvent != nil {
+		r.applyToolEventLocked(update.ToolEvent)
+	}
+	if update.ImageEvent != nil {
+		r.applyImageEventLocked(update.ImageEvent)
+	}
+	if update.MediaEvent != nil {
+		r.applyMediaEventLocked(update.MediaEvent)
+	}
 }
 
 func remainingTextBytes(blocks []*assistantBlock, blockType string, maxBytes int) int {
@@ -700,6 +1036,257 @@ func jsonRawBlock(block *assistantBlock) map[string]any {
 	return out
 }
 
+func (r *ChatGenerationRunner) applyToolEventLocked(input *ChatGenerationToolEvent) {
+	event := sanitizeToolEvent(input)
+	snapshot := r.timeline.Snapshot()
+	existing := findToolBlock(snapshot.ContentBlocks, event.ID)
+	if existing == nil {
+		item := toolItemWithinBudget(snapshot.ContentBlocks, &assistantBlock{
+			Type: "tool_call", CallID: event.ID, ToolType: event.ToolType, Status: asstStarted, Item: event.Item,
+		})
+		candidate := &assistantBlock{
+			Type: "tool_call", BlockID: "assistant_block_" + itoa(len(snapshot.ContentBlocks)+1), Order: int64(len(snapshot.ContentBlocks) + 1),
+			CallID: event.ID, ToolType: event.ToolType, Status: asstStarted, Item: item,
+		}
+		if !canAppendBlock(snapshot.ContentBlocks, candidate) || !toolBlocksWithinBudget(appendBlockCopy(snapshot.ContentBlocks, candidate)) {
+			return
+		}
+		started, err := r.timeline.StartTool(event.ID, event.ToolType, item)
+		if err != nil {
+			return
+		}
+		r.emitEventLocked("content_block.started", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(started)})
+		if event.Status != asstStarted {
+			r.updateToolLocked(started, event.Status, event.Item)
+		}
+		return
+	}
+	if existing.ToolType != event.ToolType {
+		// Node throws inside publish; mirror the no-op contract here.
+		return
+	}
+	if event.Status == asstStarted {
+		if existing.Item != nil {
+			return
+		}
+		item := toolItemWithinBudget(snapshot.ContentBlocks, &assistantBlock{Type: "tool_call", CallID: existing.CallID, ToolType: existing.ToolType, Status: existing.Status, Item: event.Item})
+		if item == nil {
+			return
+		}
+		block, err := r.timeline.StartTool(event.ID, event.ToolType, item)
+		if err != nil {
+			return
+		}
+		r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "patch": map[string]any{"item": jsonRawMap(block.Item)}})
+		return
+	}
+	r.updateToolLocked(existing, event.Status, event.Item)
+}
+
+func jsonRawMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	return cloneJSONMap(value)
+}
+
+func (r *ChatGenerationRunner) applyImageEventLocked(input *ChatGenerationImageEvent) {
+	event := sanitizeImageEvent(input)
+	assetID := ""
+	if event.Item != nil {
+		if value, ok := event.Item["assetId"].(string); ok {
+			assetID = value
+		}
+	}
+	if assetID == "" {
+		return
+	}
+	snapshot := r.timeline.Snapshot()
+	existing := findImageBlock(snapshot.ContentBlocks, assetID)
+	if existing == nil {
+		if event.Status == asstFailed || event.Status == asstCanceled {
+			return
+		}
+		block := r.timeline.StartImage(StartImageInput{
+			AssetID:       assetID,
+			MimeType:      stringItem(event.Item, "mimeType"),
+			Width:         positiveIntegerItem(event.Item, "width"),
+			Height:        positiveIntegerItem(event.Item, "height"),
+			RevisedPrompt: stringItem(event.Item, "revisedPrompt"),
+		})
+		if block == nil {
+			return
+		}
+		r.emitEventLocked("content_block.started", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+		if event.Status != asstStarted {
+			r.updateImageLocked(block, event.Status, event.Item)
+		}
+		return
+	}
+	if event.Status == asstStarted {
+		return
+	}
+	r.updateImageLocked(existing, event.Status, event.Item)
+}
+
+// applyMediaEventLocked 投影 M7 媒体块事件（问答音视频工具设计 §3）：
+// audio → output_audio（沿 applyImageEventLocked 模式，无尺寸字段）；media_task
+// → output_media_task（按 jobId 幂等，状态原样携带任务状态词表）。
+func (r *ChatGenerationRunner) applyMediaEventLocked(input *ChatGenerationMediaEvent) {
+	switch input.Block {
+	case "audio":
+		assetID := stringItem(input.Item, "assetId")
+		if assetID == "" {
+			return
+		}
+		snapshot := r.timeline.Snapshot()
+		existing := findAudioBlock(snapshot.ContentBlocks, assetID)
+		if existing == nil {
+			if input.Status == asstFailed || input.Status == asstCanceled {
+				return
+			}
+			block := r.timeline.StartAudio(StartAudioInput{AssetID: assetID, MimeType: stringItem(input.Item, "mimeType")})
+			if block == nil {
+				return
+			}
+			r.emitEventLocked("content_block.started", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+			if input.Status != asstStarted {
+				r.updateAudioLocked(block, input.Status, input.Item)
+			}
+			return
+		}
+		if input.Status == asstStarted {
+			return
+		}
+		r.updateAudioLocked(existing, input.Status, input.Item)
+	case "media_task":
+		jobID := stringItem(input.Item, "jobId")
+		if jobID == "" {
+			return
+		}
+		progress := nonNegativeIntegerItem(input.Item, "progress")
+		taskInput := MediaTaskBlockInput{
+			JobID:         jobID,
+			Kind:          stringItem(input.Item, "kind"),
+			Status:        input.Status,
+			Progress:      progress,
+			Model:         stringItem(input.Item, "model"),
+			PromptSummary: stringItem(input.Item, "promptSummary"),
+			AssetID:       stringItem(input.Item, "assetId"),
+			Error:         stringItem(input.Item, "error"),
+		}
+		snapshot := r.timeline.Snapshot()
+		existing := findMediaTaskBlock(snapshot.ContentBlocks, jobID)
+		if existing == nil {
+			block := r.timeline.StartMediaTask(taskInput)
+			if block == nil {
+				return
+			}
+			r.emitEventLocked("content_block.started", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+			return
+		}
+		block := r.timeline.UpdateMediaTask(taskInput)
+		if block == nil {
+			return
+		}
+		r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "block": jsonRawBlock(block)})
+	}
+}
+
+func (r *ChatGenerationRunner) updateAudioLocked(existing *assistantBlock, status string, item map[string]any) {
+	normalized := status
+	if normalized == asstUpdated {
+		normalized = asstStarted
+	}
+	block := r.timeline.UpdateAudio(StartAudioInput{
+		AssetID:  existing.AssetID,
+		MimeType: stringItem(item, "mimeType"),
+	}, normalized)
+	if block == nil {
+		return
+	}
+	if block.Status == existing.Status && block.MimeType == existing.MimeType {
+		return
+	}
+	if block.Status == asstCompleted {
+		r.emitEventLocked("content_block.completed", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+		return
+	}
+	patch := map[string]any{"status": block.Status}
+	if block.MimeType != "" {
+		patch["mimeType"] = block.MimeType
+	}
+	r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "patch": patch})
+}
+
+func (r *ChatGenerationRunner) updateImageLocked(existing *assistantBlock, status string, item map[string]any) {
+	normalized := status
+	if normalized == asstUpdated {
+		normalized = asstStarted
+	}
+	block := r.timeline.UpdateImage(StartImageInput{
+		AssetID:       existing.AssetID,
+		MimeType:      stringItem(item, "mimeType"),
+		Width:         positiveIntegerItem(item, "width"),
+		Height:        positiveIntegerItem(item, "height"),
+		RevisedPrompt: stringItem(item, "revisedPrompt"),
+	}, normalized)
+	if block == nil {
+		return
+	}
+	if block.Status == existing.Status && block.MimeType == existing.MimeType &&
+		intPtrEqual(block.Width, existing.Width) && intPtrEqual(block.Height, existing.Height) &&
+		block.RevisedPrompt == existing.RevisedPrompt {
+		return
+	}
+	if block.Status == asstCompleted {
+		r.emitEventLocked("content_block.completed", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+		return
+	}
+	patch := map[string]any{"status": block.Status}
+	if block.MimeType != "" {
+		patch["mimeType"] = block.MimeType
+	}
+	if block.Width != nil {
+		patch["width"] = *block.Width
+	}
+	if block.Height != nil {
+		patch["height"] = *block.Height
+	}
+	if block.RevisedPrompt != "" {
+		patch["revisedPrompt"] = block.RevisedPrompt
+	}
+	r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "patch": patch})
+}
+
+func (r *ChatGenerationRunner) updateToolLocked(existing *assistantBlock, status string, inputItem map[string]any) {
+	normalized := status
+	if normalized == asstUpdated {
+		normalized = asstStarted
+	}
+	var item map[string]any
+	if inputItem != nil {
+		item = toolItemWithinBudget(r.timeline.Snapshot().ContentBlocks, &assistantBlock{Type: "tool_call", CallID: existing.CallID, ToolType: existing.ToolType, Status: normalized, Item: inputItem})
+	}
+	block, err := r.timeline.UpdateTool(existing.CallID, normalized, item)
+	if err != nil {
+		return
+	}
+	if block.Status == existing.Status && jsonMapEqual(block.Item, existing.Item) {
+		return
+	}
+	if block.Status == asstCompleted {
+		r.emitEventLocked("content_block.completed", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+		return
+	}
+	patch := map[string]any{"status": block.Status}
+	if item != nil {
+		patch["item"] = jsonRawMap(block.Item)
+	}
+	r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "patch": patch})
+}
+
+// finalizeTimelineLocked mirrors finalizeTimeline.
 func (r *ChatGenerationRunner) finalizeTimelineLocked(status string) {
 	before := r.timeline.Snapshot()
 	after := r.timeline.Finalize(status)
@@ -734,6 +1321,17 @@ func (r *ChatGenerationRunner) snapshotAssistantLocked() map[string]any {
 			reasoningText += block.Text
 		}
 	}
+	toolEvents := []any{}
+	for _, block := range snapshot.ContentBlocks {
+		if block.Type != "tool_call" {
+			continue
+		}
+		event := map[string]any{"id": block.CallID, "type": block.ToolType, "status": block.Status}
+		if block.Item != nil {
+			event["item"] = jsonRawMap(block.Item)
+		}
+		toolEvents = append(toolEvents, event)
+	}
 	assistantStatus := "streaming"
 	if isTerminalProcessStatus(r.currentState) {
 		assistantStatus = r.currentState
@@ -743,6 +1341,7 @@ func (r *ChatGenerationRunner) snapshotAssistantLocked() map[string]any {
 		"status":        assistantStatus,
 		"contentText":   snapshot.ContentText,
 		"reasoningText": reasoningText,
+		"toolEvents":    toolEvents,
 		"contentBlocks": rawBlocksSlice(snapshot.ContentBlocks),
 	}
 }
@@ -773,12 +1372,123 @@ func canAppendBlock(blocks []*assistantBlock, block *assistantBlock) bool {
 	return jsonBytesOf(rawBlocksSlice(appendBlockCopy(blocks, block))) <= maxTimelineTotalBytes
 }
 
+func toolItemWithinBudget(blocks []*assistantBlock, candidate *assistantBlock) map[string]any {
+	if candidate.Item == nil {
+		return nil
+	}
+	next := make([]*assistantBlock, 0, len(blocks)+1)
+	replaced := false
+	for _, block := range blocks {
+		if block.Type == "tool_call" && block.CallID == candidate.CallID {
+			next = append(next, candidate)
+			replaced = true
+			continue
+		}
+		next = append(next, block)
+	}
+	if !replaced {
+		next = append(next, candidate)
+	}
+	if !toolBlocksWithinBudget(next) {
+		return nil
+	}
+	return candidate.Item
+}
+
+func toolBlocksWithinBudget(blocks []*assistantBlock) bool {
+	toolBlocks := []*assistantBlock{}
+	for _, block := range blocks {
+		if block.Type == "tool_call" {
+			toolBlocks = append(toolBlocks, block)
+		}
+	}
+	return jsonBytesOf(rawBlocksSlice(toolBlocks)) <= chatGenerationToolJSONMaxBytes
+}
+
 func jsonBytesOf(value any) int {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return math.MaxInt32
 	}
 	return len(raw)
+}
+
+func jsonMapEqual(left, right map[string]any) bool {
+	if left == nil && right == nil {
+		return true
+	}
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return string(leftJSON) == string(rightJSON)
+}
+
+func sanitizeToolEvent(input *ChatGenerationToolEvent) *ChatGenerationToolEvent {
+	base := &ChatGenerationToolEvent{
+		ID:       truncateUTF8(input.ID, 512),
+		ToolType: truncateUTF8(input.ToolType, 512),
+		Status:   input.Status,
+	}
+	if input.Item == nil {
+		return base
+	}
+	item := cloneJSONMap(input.Item)
+	if item == nil {
+		return base
+	}
+	withItem := &ChatGenerationToolEvent{ID: base.ID, ToolType: base.ToolType, Status: base.Status, Item: item}
+	if jsonBytesOf(item) <= chatGenerationToolJSONMaxBytes {
+		return withItem
+	}
+	return base
+}
+
+var imageEventRedactKeys = []string{"result", "b64_json", "partial_image", "partial_image_b64", "image"}
+
+func sanitizeImageEvent(input *ChatGenerationImageEvent) *ChatGenerationImageEvent {
+	var item map[string]any
+	if input.Item != nil {
+		item = cloneJSONMap(input.Item)
+		for _, key := range imageEventRedactKeys {
+			delete(item, key)
+		}
+	}
+	return &ChatGenerationImageEvent{ID: truncateUTF8(input.ID, 512), Status: input.Status, Item: item}
+}
+
+func stringItem(item map[string]any, key string) string {
+	if item == nil {
+		return ""
+	}
+	if value, ok := item[key].(string); ok && trimSpace(value) != "" {
+		return trimSpace(value)
+	}
+	return ""
+}
+
+func positiveIntegerItem(item map[string]any, key string) *int64 {
+	if item == nil {
+		return nil
+	}
+	number, ok := numericValue(item[key])
+	if !ok || number <= 0 || number != truncF(number) || number > 1<<53 {
+		return nil
+	}
+	value := int64(number)
+	return &value
+}
+
+// nonNegativeIntegerItem 读取非负整数字段（output_media_task.progress：0-100
+// 百分比语义）。
+func nonNegativeIntegerItem(item map[string]any, key string) *int64 {
+	if item == nil {
+		return nil
+	}
+	number, ok := numericValue(item[key])
+	if !ok || number < 0 || number > 100 || number != truncF(number) {
+		return nil
+	}
+	value := int64(number)
+	return &value
 }
 
 func numericValue(value any) (float64, bool) {
@@ -796,6 +1506,16 @@ func numericValue(value any) (float64, bool) {
 		return parsed, err == nil
 	}
 	return 0, false
+}
+
+func intPtrEqual(left, right *int64) bool {
+	if left == nil && right == nil {
+		return true
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	return *left == *right
 }
 
 // terminalizeAssistantBlocks mirrors terminalizeChatContentBlocksForPersistence

@@ -756,11 +756,11 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 	}
 	challengeMatched := mode == ModeImagesJSON || mode.audio()
 	if !challengeMatched {
-		challengeMatched = rawVisibleOK && strings.Contains(rawVisible, challenge.ExpectedOutput)
+		challengeMatched = rawVisibleOK && challengeAnswerMatched(rawVisible, challenge.ExpectedOutput)
 	}
 	outputChallengeError := ""
 	if httpSucceeded && streamFailure == "" && protocolEvidence && !challengeMatched {
-		outputChallengeError = "上游返回 HTTP 2xx 且协议完成，但输出未包含预期令牌"
+		outputChallengeError = "上游返回 HTTP 2xx 且协议完成，但输出未包含预期答案"
 	}
 	success := httpSucceeded && streamFailure == "" && protocolEvidence && challengeMatched
 	protocolEvidenceError := ""

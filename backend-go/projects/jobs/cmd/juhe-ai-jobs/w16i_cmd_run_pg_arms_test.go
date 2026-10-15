@@ -107,7 +107,6 @@ func TestW16HIPGFullChainOwnerShutdown(t *testing.T) {
 			payload["accountBalanceEnabled"] == true &&
 			payload["proxyLatencyEnabled"] == true &&
 			payload["runtimeLogOwnerHeld"] == true &&
-			payload["tableMonitorReady"] == true &&
 			workerReady && worker != nil
 	}, "w16i PG 全链", func(port int) {
 		w16iProbeManualBridge(t, port)

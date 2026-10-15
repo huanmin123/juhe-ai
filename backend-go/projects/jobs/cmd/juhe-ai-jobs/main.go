@@ -30,11 +30,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/proxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/runtimelog"
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/taskruns"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/processlog"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/prommetrics"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -61,7 +61,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	version := flags.Bool("version", false, "print the jobs project contract version")
 	check := flags.Bool("check-boundary", false, "verify the scaffold boundary")
-	once := flags.Bool("once", false, "run one F2 table-monitor sampling cycle and exit")
 	runtimeLegacyMigration := flags.Bool("migrate-runtime-log-legacy-sqlite", false, "offline F1 legacy SQLite migration")
 	runJobsOnce := flags.String("run-jobs-once", "", "run wired worker jobs once (comma-separated task names), print a JSON result array and exit")
 	healthAddress := flags.String("health-listen-address", envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305"), "loopback health listen address")
@@ -76,19 +75,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	if *check {
-		fmt.Fprintln(stdout, "juhe-ai-jobs boundary=ready runtime=table-monitor-owner")
+		fmt.Fprintln(stdout, "juhe-ai-jobs boundary=ready runtime=worker-owner")
 		return 0
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintf(stderr, "unsupported jobs arguments: %v\n", flags.Args())
 		return 2
 	}
-	if *once && *runtimeLegacyMigration {
-		fmt.Fprintln(stderr, "--once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
-		return 2
-	}
-	if *runJobsOnce != "" && (*once || *runtimeLegacyMigration) {
-		fmt.Fprintln(stderr, "--run-jobs-once is mutually exclusive with --once and --migrate-runtime-log-legacy-sqlite")
+	if *runJobsOnce != "" && *runtimeLegacyMigration {
+		fmt.Fprintln(stderr, "--run-jobs-once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
 		return 2
 	}
 
@@ -101,16 +96,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: logLevel}))
 	// --run-jobs-once 的 stdout 契约是仅输出结果 JSON 数组：该模式下进程
 	// logger（含装配期与任务执行期经 worker logger 的全部汇总/告警日志）
-	// 重建为写 stderr 的 JSON logger，日志与结果彻底分流；--once 与守护
-	// 路径不受影响，继续写 stdout。
+	// 重建为写 stderr 的 JSON logger，日志与结果彻底分流；守护路径不受
+	// 影响，继续写 stdout。
 	if *runJobsOnce != "" {
 		logger = slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: logLevel}))
 	}
 	// 2026-09-28 日志治理：safego 等以 slog.Default() 兜底的组件统一走进程
-	// JSON logger。SetDefault 不在此处安装：--once 与 --run-jobs-once 分支的
-	// 契约是向 stdout 输出单个 JSON 结果，SetDefault 会安装 std log → slog
-	// 桥接，任何后台组件经 std log 的输出都会混入结果流；这两个分支的全部
-	// 出口都在下方守护路径之前提前 return，slog.Default() 保持 std 默认
+	// JSON logger。SetDefault 不在此处安装：--run-jobs-once 分支的契约是向
+	// stdout 输出单个 JSON 结果，SetDefault 会安装 std log → slog 桥接，任何
+	// 后台组件经 std log 的输出都会混入结果流；该分支的全部出口都在下方守护
+	// 路径之前提前 return（迁移分支同理），slog.Default() 保持 std 默认
 	// （stderr 文本），与改造前 log.Printf 走 stderr 的行为一致——有意保持
 	// once 契约。SetDefault 延后到守护路径安装（run-jobs-once 分支之后）。
 	processlog.CatchPanic(logger)
@@ -163,33 +158,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if err := runtimeStore.CheckSchema(context.Background()); err != nil {
 		return failWith(stderr, fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
-	}
-	cfg, err := tablemonitor.LoadConfig(os.Getenv)
-	if err != nil {
-		return failWith(stderr, fmt.Errorf("load F2 table-monitor config: %w", err))
-	}
-	if cfg.Mode == tablemonitor.ModePostgres {
-		cfg.PostgresPool, err = postgresPools.Acquire("pgx", cfg.PostgresURL, "jobs-store", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
-		if err != nil {
-			return failWith(stderr, fmt.Errorf("open F2 shared PostgreSQL pool: %w", err))
-		}
-	}
-	store, err := tablemonitor.OpenStore(cfg)
-	if err != nil {
-		return failWith(stderr, fmt.Errorf("open F2 table-monitor store: %w", err))
-	}
-	defer store.Close()
-	if err := store.EnsureSchema(context.Background()); err != nil {
-		return failWith(stderr, fmt.Errorf("initialize F2 table-monitor schema: %w", err))
-	}
-	if *once {
-		result, err := tablemonitor.RunSingleCycle(context.Background(), cfg, store)
-		if err != nil {
-			return failWith(stderr, fmt.Errorf("run F2 table-monitor sampling cycle: %w", err))
-		}
-		// 死臂已删（w16j 证据：Encode 到进程内内存 buffer 恒成功）
-		_ = json.NewEncoder(stdout).Encode(result)
-		return 0
 	}
 	accountHealthConfig, err := accounthealth.LoadConfig(os.Getenv)
 	if err != nil {
@@ -622,42 +590,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return failWith(stderr, fmt.Errorf("listen jobs health endpoint %q: %w", *healthAddress, err))
 	}
 	defer listener.Close()
-	tableRunner := tablemonitor.NewRunner(cfg, store, logger)
-	// go-runtime-metrics 采样器来自共享 platform/gometrics（去跨进程战役第三
-	// 刀：Sampler/config 迁入共享包，gateway 进程内自采样 role=gateway，jobs
-	// 继续自采样 role=jobs；跨进程 trend HTTP 面已删除）。
-	goMetricsConfig, err := gometrics.LoadConfig(os.Getenv, "jobs")
-	if err != nil {
-		return failWith(stderr, fmt.Errorf("load Go runtime metrics config: %w", err))
-	}
-	goMetricsCollector := gometrics.New(goMetricsConfig.Service, goMetricsConfig.Role)
-	var goMetricsStore *gometrics.Store
-	var goMetricsDB *sql.DB
-	var goMetricsSampler *gometrics.Sampler
-	if goMetricsConfig.Enabled {
-		goMetricsStore, goMetricsDB, err = gometrics.OpenStore(goMetricsConfig)
-		if err != nil {
-			return failWith(stderr, fmt.Errorf("open Go runtime metrics store: %w", err))
-		}
-		// 建表语义按 dialect 分派（与 gateway 组合根一致）：sqlite 模式启动
-		// 自举建表（CREATE TABLE IF NOT EXISTS 幂等，双进程并发安全）；postgres
-		// 模式保持 EnsureReady 只读校验，DDL 仍由 maintenance 显式执行。
-		if goMetricsConfig.Store == gometrics.DialectSQLite {
-			if err := goMetricsStore.EnsureSchema(context.Background()); err != nil {
-				_ = goMetricsDB.Close()
-				return failWith(stderr, fmt.Errorf("bootstrap Go runtime metrics schema: %w", err))
-			}
-		} else if err := gometrics.EnsureReady(context.Background(), goMetricsStore); err != nil {
-			_ = goMetricsDB.Close()
-			return failWith(stderr, fmt.Errorf("verify Go runtime metrics schema: %w", err))
-		}
-		goMetricsSampler, err = gometrics.NewSampler(goMetricsCollector, goMetricsStore, goMetricsConfig.Interval)
-		if err != nil {
-			_ = goMetricsDB.Close()
-			return failWith(stderr, fmt.Errorf("initialize Go runtime metrics sampler: %w", err))
-		}
-		goMetricsSampler.Retention = time.Duration(goMetricsConfig.RetentionDays) * 24 * time.Hour
-	}
+	// Prometheus 指标面（唯一注册表）：Go + process 收集器随 NewRegistry
+	// 注册，taskruns runner 埋点与 /__aisys__/metrics 暴露共用同一 registry。
+	promRegistry := prommetrics.NewRegistry()
+	taskruns.BindMetrics(promRegistry)
 	runtimeIndexer := runtimelog.NewIndexer(runtimeConfig, runtimeStore)
 	var runtimeRunning atomic.Bool
 	components := []supervisor.Component{
@@ -670,11 +606,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			},
 			Close: runtimeStore.Close,
 		},
-		{
-			Name:  "F2 table-monitor",
-			Run:   tableRunner.Run,
-			Close: store.Close,
-		},
 	}
 	if probeOutboxPruner != nil {
 		// 业务库句柄的关闭由 worker 组件 Close（closeStores）承担；
@@ -682,18 +613,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		components = append(components, supervisor.Component{
 			Name: "account-health probe-outbox prune",
 			Run:  probeOutboxPruner.Run,
-		})
-	}
-	if goMetricsSampler != nil {
-		components = append(components, supervisor.Component{
-			Name: "Go runtime metrics sampler",
-			Run:  goMetricsSampler.Run,
-			Close: func() error {
-				if goMetricsDB == nil {
-					return nil
-				}
-				return goMetricsDB.Close()
-			},
 		})
 	}
 	accountHealthReady := func() bool { return true }
@@ -827,25 +746,40 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		})
 	}
 	healthServer := &http.Server{
-		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, true, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
-			if j3Runner == nil {
-				return proxylatency.RunnerStatus{}
-			}
-			return j3Runner.Status()
-		}, func() (proxylatency.RunnerStatus, bool) {
-			if j3Runner == nil {
-				return proxylatency.RunnerStatus{}, true
-			}
-			return j3Runner.Snapshot()
-		}, goMetricsCollector, goMetricsSampler,
-			true, workerReady, workerStatus),
+		Handler: jobsHTTPHandler(jobsHTTPDeps{
+			OwnerMode:                  ownerMode,
+			RuntimeRunning:             &runtimeRunning,
+			MetricsHandler:             promRegistry.Handler(),
+			AccountHealthEnabled:       true,
+			AccountHealthReady:         accountHealthReady,
+			AccountBalanceEnabled:      accountBalanceConfig.Enabled,
+			AccountBalanceReady:        accountBalanceReady,
+			AccountBalanceService:      accountBalanceService,
+			AccountBalanceManualSecret: accountBalanceConfig.ManualHTTPSecret,
+			ProxyLatencyEnabled:        j3Config.Enabled,
+			ProxyLatencyReady:          j3Ready,
+			ProxyLatencyStatus: func() proxylatency.RunnerStatus {
+				if j3Runner == nil {
+					return proxylatency.RunnerStatus{}
+				}
+				return j3Runner.Status()
+			},
+			ProxyLatencySnapshot: func() (proxylatency.RunnerStatus, bool) {
+				if j3Runner == nil {
+					return proxylatency.RunnerStatus{}, true
+				}
+				return j3Runner.Snapshot()
+			},
+			WorkerReady:  workerReady,
+			WorkerStatus: workerStatus,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", true, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "accountHealthEnabled", true, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
 	components = append(components, worker.components()...)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -853,7 +787,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	shutdownCancel()
 	serveResult := <-serveErr
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		return failWith(stderr, fmt.Errorf("F2 table-monitor runner stopped: %w", runErr))
+		return failWith(stderr, fmt.Errorf("jobs supervisor component stopped: %w", runErr))
 	}
 	if shutdownErr != nil {
 		return failWith(stderr, fmt.Errorf("shutdown jobs health endpoint: %w", shutdownErr))
@@ -941,7 +875,6 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 			"ownerReady":            false,
 			"ownerMode":             ownerMode,
 			"runtimeLogOwnerHeld":   false,
-			"tableMonitorReady":     false,
 			"accountHealthEnabled":  false,
 			"accountHealthReady":    false,
 			"accountBalanceEnabled": false,
@@ -952,45 +885,71 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 	})
 }
 
-func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
-	mux := http.NewServeMux()
-	goCollector := gometrics.New("juhe-ai", "jobs")
-	if len(j3) > 4 {
-		if collector, ok := j3[4].(*gometrics.Collector); ok && collector != nil {
-			goCollector = collector
-		}
+// jobsHTTPDeps 是 jobsHTTPHandler 的显式依赖集。原 variadic any 槽位布局
+// （j3[4]/j3[5] 曾是 gometrics Collector/Sampler 占位）已在表监控与
+// go-runtime-metrics 采样器下线时消除：readiness 载荷的每个开关/探针都是
+// 具名字段，不存在对象漂移进 readiness 参数的通道（X05 缺陷根因）。
+type jobsHTTPDeps struct {
+	OwnerMode                  ownermode.Mode
+	RuntimeRunning             *atomic.Bool
+	// MetricsHandler 是 /__aisys__/metrics 的暴露 handler（prommetrics）。
+	MetricsHandler             http.Handler
+	AccountHealthEnabled       bool
+	AccountHealthReady         func() bool
+	AccountBalanceEnabled      bool
+	AccountBalanceReady        func() bool
+	AccountBalanceService      *accountbalance.Service
+	AccountBalanceManualSecret string
+	ProxyLatencyEnabled        bool
+	ProxyLatencyReady          func() bool
+	ProxyLatencyStatus         func() proxylatency.RunnerStatus
+	ProxyLatencySnapshot       func() (proxylatency.RunnerStatus, bool)
+	// worker 机制强制常开（2026-09-19 决策），无 Enabled 开关。
+	WorkerReady  func() bool
+	WorkerStatus func() map[string]any
+}
+
+// metricsHandlerOrDefault 返回注入的 /__aisys__/metrics handler；未注入时
+// （最小 deps 的进程内单测）回退到独立默认 registry，端点仍暴露标准
+// go_*/process_* 族而不是让 ServeMux 因 nil handler panic。生产组合根显式
+// 注入已 BindMetrics 的进程 registry，任务指标族只在组合根路径出现。
+func metricsHandlerOrDefault(handler http.Handler) http.Handler {
+	if handler != nil {
+		return handler
 	}
-	mux.Handle("/__aisys__/metrics", goCollector.Handler())
-	// 去跨进程战役第三刀：/__aisys__/api/stats/go-runtime-trend 路由已删除
-	// （TrendHandler 随 gometricsstore 包一起消失；trend 读取改由 gateway
-	// 进程内直查共享 Store）。j3[5] 的 *gometrics.Sampler 槽位保留占位，避免
-	// 后续 worker 槽位漂移。
-	// 去跨进程战役第四刀：/account-balance/manual 手动桥已删除（Node 时代
-	// 的手动触发入口，全仓无生产调用方；J2 余额刷新走周期调度与恢复扫描）。
+	return prommetrics.NewRegistry().Handler()
+}
+
+func jobsHTTPHandler(deps jobsHTTPDeps) http.Handler {
+	mux := http.NewServeMux()
 	// 健康监听只剩 /health 与 /__aisys__/metrics（健康探测属编排语义，
 	// gateway 蓝绿 readiness 探测与 Prometheus 抓取仍依赖，保留）。
+	// 去跨进程战役第四刀：/account-balance/manual 手动桥已删除（Node 时代
+	// 的手动触发入口，全仓无生产调用方；J2 余额刷新走周期调度与恢复扫描）。
 	// 去跨进程战役第二刀：/__aiinternal__ 路由整体消失（原账户测试派发与
 	// 账户健康检查派发 handler 已删除；健康检查派发改走 DB outbox 通道，
 	// 见 worker_health_probe_outbox.go）。
-	// readinessArgs mirrors the healthHandler j2 layout:
-	// [accountBalanceEnabled, accountBalanceReady, proxyLatencyEnabled,
-	// proxyLatencyReady, proxyLatencyStatus, proxyLatencySnapshot,
-	// workerEnabled, workerReady, workerStatus]. The goMetrics slots
-	// (j3[4]/j3[5]) are jobsHTTPHandler-only surface and must NOT leak into
-	// the readiness args — a leaked *gometrics.Collector would shift the
-	// worker fields into the wrong slots and /health would always report
-	// workerEnabled=false with no worker snapshot (X05 defect).
-	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3[:min(len(j3), 4)]...)
-	if len(j3) > 6 {
-		readinessArgs = append(readinessArgs, j3[6:min(len(j3), 9)]...)
-	}
-	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
+	mux.Handle("/__aisys__/metrics", metricsHandlerOrDefault(deps.MetricsHandler))
+	mux.Handle("/health", healthHandler(healthDeps{
+		OwnerMode:             deps.OwnerMode,
+		RuntimeRunning:        deps.RuntimeRunning,
+		AccountHealthEnabled:  deps.AccountHealthEnabled,
+		AccountHealthReady:    deps.AccountHealthReady,
+		AccountBalanceEnabled: deps.AccountBalanceEnabled,
+		AccountBalanceReady:   deps.AccountBalanceReady,
+		ProxyLatencyEnabled:   deps.ProxyLatencyEnabled,
+		ProxyLatencyReady:     deps.ProxyLatencyReady,
+		ProxyLatencyStatus:    deps.ProxyLatencyStatus,
+		ProxyLatencySnapshot:  deps.ProxyLatencySnapshot,
+		WorkerReady:           deps.WorkerReady,
+		WorkerStatus:          deps.WorkerStatus,
+	}))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || accountBalanceService == nil {
+		if request.Method != http.MethodPost || deps.AccountBalanceService == nil {
 			http.NotFound(response, request)
 			return
 		}
-		if !matchesAccountBalanceManualSecret(request, accountBalanceManualSecret) {
+		if !matchesAccountBalanceManualSecret(request, deps.AccountBalanceManualSecret) {
 			response.Header().Set("WWW-Authenticate", `Bearer realm="juhe-ai-jobs"`)
 			http.Error(response, "J2 manual bridge 未授权", http.StatusUnauthorized)
 			return
@@ -1013,7 +972,7 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 		if envelope.Input.Trigger == "" {
 			envelope.Input.Trigger = accountbalance.TriggerManual
 		}
-		record, _, err := accountBalanceService.RunManual(request.Context(), envelope.Input)
+		record, _, err := deps.AccountBalanceService.RunManual(request.Context(), envelope.Input)
 		if err != nil {
 			status := http.StatusBadGateway
 			if errors.Is(err, accountbalance.ErrAccountLeaseHeld) {
@@ -1078,90 +1037,79 @@ func manualOutcome(status accountbalance.Status) string {
 	return "failed"
 }
 
-func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, j2 ...any) http.Handler {
-	accountBalanceEnabled := false
-	accountBalanceReady := func() bool { return true }
-	proxyLatencyEnabled := false
-	proxyLatencyReady := func() bool { return true }
-	proxyLatencyStatus := func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} }
-	proxyLatencySnapshot := func() (proxylatency.RunnerStatus, bool) {
-		return proxyLatencyStatus(), proxyLatencyReady()
+// healthDeps 是 healthHandler 的显式依赖集（worker 机制强制常开，payload
+// 的 workerEnabled 恒为 true）。
+type healthDeps struct {
+	OwnerMode             ownermode.Mode
+	RuntimeRunning        *atomic.Bool
+	AccountHealthEnabled  bool
+	AccountHealthReady    func() bool
+	AccountBalanceEnabled bool
+	AccountBalanceReady   func() bool
+	ProxyLatencyEnabled   bool
+	ProxyLatencyReady     func() bool
+	ProxyLatencyStatus    func() proxylatency.RunnerStatus
+	ProxyLatencySnapshot  func() (proxylatency.RunnerStatus, bool)
+	WorkerReady           func() bool
+	WorkerStatus          func() map[string]any
+}
+
+func healthHandler(deps healthDeps) http.Handler {
+	accountHealthReady := deps.AccountHealthReady
+	if accountHealthReady == nil {
+		accountHealthReady = func() bool { return true }
 	}
-	workerEnabled := false
-	workerReady := func() bool { return true }
-	workerStatus := func() map[string]any { return nil }
-	if len(j2) > 0 {
-		if value, ok := j2[0].(bool); ok {
-			accountBalanceEnabled = value
+	accountBalanceReady := deps.AccountBalanceReady
+	if accountBalanceReady == nil {
+		accountBalanceReady = func() bool { return true }
+	}
+	proxyLatencyReady := deps.ProxyLatencyReady
+	if proxyLatencyReady == nil {
+		proxyLatencyReady = func() bool { return true }
+	}
+	proxyLatencyStatus := deps.ProxyLatencyStatus
+	if proxyLatencyStatus == nil {
+		proxyLatencyStatus = func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} }
+	}
+	proxyLatencySnapshot := deps.ProxyLatencySnapshot
+	if proxyLatencySnapshot == nil {
+		proxyLatencySnapshot = func() (proxylatency.RunnerStatus, bool) {
+			return proxyLatencyStatus(), proxyLatencyReady()
 		}
 	}
-	if len(j2) > 1 {
-		if value, ok := j2[1].(func() bool); ok {
-			accountBalanceReady = value
-		}
+	workerReady := deps.WorkerReady
+	if workerReady == nil {
+		workerReady = func() bool { return true }
 	}
-	if len(j2) > 2 {
-		if value, ok := j2[2].(bool); ok {
-			proxyLatencyEnabled = value
-		}
-	}
-	if len(j2) > 3 {
-		if value, ok := j2[3].(func() bool); ok {
-			proxyLatencyReady = value
-		}
-	}
-	if len(j2) > 4 {
-		if value, ok := j2[4].(func() proxylatency.RunnerStatus); ok {
-			proxyLatencyStatus = value
-		}
-	}
-	if len(j2) > 5 {
-		if value, ok := j2[5].(func() (proxylatency.RunnerStatus, bool)); ok {
-			proxyLatencySnapshot = value
-		}
-	}
-	if len(j2) > 6 {
-		if value, ok := j2[6].(bool); ok {
-			workerEnabled = value
-		}
-	}
-	if len(j2) > 7 {
-		if value, ok := j2[7].(func() bool); ok {
-			workerReady = value
-		}
-	}
-	if len(j2) > 8 {
-		if value, ok := j2[8].(func() map[string]any); ok {
-			workerStatus = value
-		}
+	workerStatus := deps.WorkerStatus
+	if workerStatus == nil {
+		workerStatus = func() map[string]any { return nil }
 	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/health" {
 			http.NotFound(response, request)
 			return
 		}
-		runtimeLogOwnerHeld := runtimeRunning.Load()
-		tableMonitorIsReady := tableMonitorReady()
-		accountHealthIsReady := !accountHealthEnabled || accountHealthReady()
-		accountBalanceIsReady := !accountBalanceEnabled || accountBalanceReady()
+		runtimeLogOwnerHeld := deps.RuntimeRunning.Load()
+		accountHealthIsReady := !deps.AccountHealthEnabled || accountHealthReady()
+		accountBalanceIsReady := !deps.AccountBalanceEnabled || accountBalanceReady()
 		proxyStatus, proxyReady := proxyLatencySnapshot()
-		proxyLatencyIsReady := !proxyLatencyEnabled || proxyReady
-		workerIsReady := !workerEnabled || workerReady()
+		proxyLatencyIsReady := !deps.ProxyLatencyEnabled || proxyReady
+		workerIsReady := workerReady()
 		response.Header().Set("Content-Type", "application/json")
-		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && workerIsReady
+		ready := runtimeLogOwnerHeld && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && workerIsReady
 		payload := map[string]any{
 			"ready":                         ready,
 			"ownerReady":                    ready,
-			"ownerMode":                     ownerMode,
+			"ownerMode":                     deps.OwnerMode,
 			"runtimeLogOwnerHeld":           runtimeLogOwnerHeld,
-			"tableMonitorReady":             tableMonitorIsReady,
-			"accountHealthEnabled":          accountHealthEnabled,
+			"accountHealthEnabled":          deps.AccountHealthEnabled,
 			"accountHealthReady":            accountHealthIsReady,
-			"accountBalanceEnabled":         accountBalanceEnabled,
+			"accountBalanceEnabled":         deps.AccountBalanceEnabled,
 			"accountBalanceReady":           accountBalanceIsReady,
-			"proxyLatencyEnabled":           proxyLatencyEnabled,
+			"proxyLatencyEnabled":           deps.ProxyLatencyEnabled,
 			"proxyLatencyReady":             proxyLatencyIsReady,
-			"workerEnabled":                 workerEnabled,
+			"workerEnabled":                 true,
 			"workerReady":                   workerIsReady,
 			"proxyLatencyOwnerHeld":         proxyStatus.OwnerHeld,
 			"proxyLatencyLastCycleAt":       proxylatencyTime(proxyStatus.LastCycleAt),

@@ -1,6 +1,7 @@
 package gatewayanthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -188,14 +189,17 @@ func trimStart(text string) string {
 }
 
 // hasPendingSSEProtocolEvent 对齐 _shared/sse-pending-event.ts 的
-// hasPendingSseProtocolEvent。
-func hasPendingSSEProtocolEvent(skipped bool, eventName string, dataLineCount, dataBytes int, pendingLine string) bool {
+// hasPendingSseProtocolEvent。pendingLine 取字节视图：调用方（快照）每个
+// chunk 都要判一次，避免为前缀检查复制缓冲。
+func hasPendingSSEProtocolEvent(skipped bool, eventName string, dataLineCount, dataBytes int, pendingLine []byte) bool {
 	if skipped {
 		return false
 	}
 	if eventName != "" || dataLineCount > 0 || dataBytes > 0 {
 		return true
 	}
-	pendingLine = strings.TrimSuffix(pendingLine, "\r")
-	return strings.HasPrefix(pendingLine, "event:") || strings.HasPrefix(pendingLine, "data:")
+	if len(pendingLine) > 0 && pendingLine[len(pendingLine)-1] == '\r' {
+		pendingLine = pendingLine[:len(pendingLine)-1]
+	}
+	return bytes.HasPrefix(pendingLine, []byte("event:")) || bytes.HasPrefix(pendingLine, []byte("data:"))
 }

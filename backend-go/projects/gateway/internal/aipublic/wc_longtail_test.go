@@ -290,10 +290,12 @@ func TestWCUpdateMappingLongTail(t *testing.T) {
 		t.Fatalf("quotaLimits 校验: %d %v", status, payload)
 	}
 
-	// 策略：绑定替换 + normal 配置 + 描述。
+	// 策略：绑定替换 + normal 配置 + 描述。normalRoutingConfig 只放非退场键
+	// （调度偏好独立实体 P2 契约：schedulingPreference 等调度字段在公开
+	// add/update 显式 400，由 TestSPC2PublicStrategyUpdateRejectsRetiredSchedulingFields 锁定）。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/route-strategy/update",
 		`{"routeStrategyId":"`+strategyID+`","mode":"normal","groupBindings":[{"groupId":"`+secondGroup+`","weight":70}],`+
-			`"normalRoutingConfig":{"schedulingPreference":"cost_first"},"description":"新描述"}`, wcLifeToken)
+			`"normalRoutingConfig":{"keys":["a"]},"description":"新描述"}`, wcLifeToken)
 	if status != http.StatusOK {
 		t.Fatalf("策略 update: %d %v", status, payload)
 	}

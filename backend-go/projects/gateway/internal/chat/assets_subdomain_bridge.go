@@ -20,6 +20,10 @@ type (
 	AssetCountExceededError        = chatassets.AssetCountExceededError
 	CreateChatAssetInput           = chatassets.CreateChatAssetInput
 	CompleteAssetProcessingInput   = chatassets.CompleteAssetProcessingInput
+	GeneratedAssetCommitInput      = chatassets.GeneratedAssetCommitInput
+	MediaAssetCommitInput          = chatassets.MediaAssetCommitInput
+	GeneratedImageGenerationRecord = chatassets.GeneratedImageGenerationRecord
+	ImageGenerationRecord          = chatassets.ImageGenerationRecord
 )
 
 // 常量别名（资产配额与列清单，单一事实源在 chatassets）。
@@ -69,6 +73,10 @@ func toAnySlice(values []string) []any {
 	return chatassets.ToAnySlice(values)
 }
 
+func generatedAssetExtension(mimeType string) string {
+	return chatassets.GeneratedAssetExtension(mimeType)
+}
+
 // Store 公有方法转发（一行直调；路由/压缩/生成家族调用面零改动）。
 
 func (s *Store) GetAsset(assetID, ownerID, conversationID, now string) (*Asset, error) {
@@ -111,6 +119,26 @@ func (s *Store) FailChatAssetProcessing(assetID, ownerID, conversationID, errorC
 	return s.assets.FailChatAssetProcessing(assetID, ownerID, conversationID, errorCode, nowValue)
 }
 
+func (s *Store) CommitChatGeneratedAsset(input GeneratedAssetCommitInput) (*Asset, error) {
+	return s.assets.CommitChatGeneratedAsset(input)
+}
+
+// CommitChatGeneratedMediaAsset 把 M7 问答音视频工具产物提交为 ready 资产
+//（媒体行无预览/无宽高；见 chatassets.MediaAssetCommitInput）。
+func (s *Store) CommitChatGeneratedMediaAsset(input MediaAssetCommitInput) (*Asset, error) {
+	return s.assets.CommitChatGeneratedMediaAsset(input)
+}
+
+// FindGeneratedAssetByDigest 按 processed digest 查重（视频结算幂等的资产
+// 查重闸）。
+func (s *Store) FindGeneratedAssetByDigest(ownerID, conversationID, sha256Value string) (*Asset, error) {
+	return s.assets.FindGeneratedAssetByDigest(ownerID, conversationID, sha256Value)
+}
+
+func (s *Store) ListRecentImageGenerations(conversationID, ownerID, nowValue string, limit int) ([]ImageGenerationRecord, error) {
+	return s.assets.ListRecentImageGenerations(conversationID, ownerID, nowValue, limit)
+}
+
 // Store 私有方法转发（生产调用点：windows.go / turns.go；其余为测试原位保持）。
 
 func (s *Store) expireChatAssetsForConversation(tx queryer, conversationID, ownerID, now string) error {
@@ -139,4 +167,8 @@ func (s *Store) getClaimedAsset(assetID, claimID string) (*Asset, error) {
 
 func (s *Store) lockAssetUserQuota(tx queryer, ownerID string) error {
 	return s.assets.LockAssetUserQuota(tx, ownerID)
+}
+
+func (s *Store) imageGenerationRootAssetIDs(q queryer, assetIDs []string, conversationID, ownerID string) ([]string, error) {
+	return s.assets.ImageGenerationRootAssetIDs(q, assetIDs, conversationID, ownerID)
 }

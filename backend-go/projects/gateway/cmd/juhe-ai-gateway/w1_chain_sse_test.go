@@ -541,6 +541,11 @@ func TestW1VChainSpeedFirstAdmissionArms(t *testing.T) {
 		var enteredOnce sync.Once
 		entered := make(chan struct{})
 		releaseUpstream := make(chan struct{})
+		// release 幂等且挂 defer（先于 hang.Close 的 LIFO 顺序执行）：
+		// 断言失败走 FailNow 时也必须放行挂着的上游请求，否则
+		// hang.Close 等待请求结束、请求等待 release，包级测试被拖到超时。
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(releaseUpstream) }) }
 		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			enteredOnce.Do(func() { close(entered) })
 			<-releaseUpstream
@@ -548,6 +553,7 @@ func TestW1VChainSpeedFirstAdmissionArms(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-w1v-hang","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hang"},"finish_reason":"stop"}]}`))
 		}))
 		defer hang.Close()
+		defer release()
 		secret := w1vSeedSpeedFirstStack(t, fixture, "queue", `{"maxQueueWaitMs":1}`, 1, hang)
 		firstDone := make(chan int, 1)
 		go func() {
@@ -566,7 +572,7 @@ func TestW1VChainSpeedFirstAdmissionArms(t *testing.T) {
 		if !strings.Contains(body, "当前分组繁忙") {
 			t.Fatalf("body=%q", body)
 		}
-		close(releaseUpstream)
+		release()
 		if first := <-firstDone; first != http.StatusOK {
 			t.Fatalf("第一个请求 status=%d want 200", first)
 		}

@@ -346,22 +346,18 @@ func TestMyStatsPinsScopeAndBlocksAdminRoutes(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("my summary not 200: %d %s", recorder.Code, recorder.Body.String())
 	}
-	// forceSelfAccessScope downgrades the role, so the router-internal
-	// requireAdmin answers 403 on /my-stats/system-metrics/* (the composed
-	// self wrapper downgrades before the internal gate runs).
-	gate := fixture.deps.selfScopeSession()(fixture.deps.requireAdminInternal(fixture.deps.systemMetricsTrendHandler))
-	recorder = invoke(t, gate.ServeHTTP, http.MethodGet, "/__aisys__/api/my-stats/system-metrics/trend", adminAuth("super_admin"))
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("my-stats system-metrics not 403: %d %s", recorder.Code, recorder.Body.String())
-	}
-	if got := decodeBody(t, recorder)["message"]; got != "需要管理员权限" {
-		t.Fatalf("403 message wrong: %#v", got)
-	}
-	// The admin surface still passes the internal gate.
-	adminGate := fixture.deps.requireAdminInternal(fixture.deps.systemMetricsTrendHandler)
-	recorder = invoke(t, adminGate.ServeHTTP, http.MethodGet, "/__aisys__/api/stats/system-metrics/trend", adminAuth(""))
+	// forceSelfAccessScope downgrades the role to "user"（路由内部
+	// requireAdmin 的面已随 /system-metrics/* 家族删除，降级语义仍由
+	// selfScopeSession 保持）。
+	gate := fixture.deps.selfScopeSession()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := authsys.AuthContextFrom(r); auth == nil || auth.Role == "admin" || auth.Role == "super_admin" {
+			t.Errorf("selfScopeSession 必须把角色降级为 user，实际 %#v", auth)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	recorder = invoke(t, gate.ServeHTTP, http.MethodGet, "/__aisys__/api/my-stats/usage-overview/summary", adminAuth("super_admin"))
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("admin system-metrics trend not 200: %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("downgraded self request not 200: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

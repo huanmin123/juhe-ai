@@ -40,13 +40,8 @@
 </tr>
 <tr>
 <td>后台任务与健康</td>
-<td><a href="/__aisys__/system-metrics-stats">系统指标统计</a> / <a href="/__aisys__/ai-health">AI 健康监控</a></td>
+<td><a href="/__aisys__/ai-health">AI 健康监控</a></td>
 <td>任务仍正常执行</td>
-</tr>
-<tr>
-<td>表增长趋势</td>
-<td><a href="/__aisys__/table-monitor">表监控</a></td>
-<td>保留期调整后增长符合预期</td>
 </tr>
 </tbody></table>
 <h2>设置分区逐项说明</h2>
@@ -244,16 +239,6 @@
 </tr>
 </thead>
 <tbody><tr>
-<td><a href="/__aisys__/table-monitor">表监控</a></td>
-<td>业务库、数据集目录库、使用记录目录库和统计结果库的表大小、行数、文件空闲空间和近期增长</td>
-<td>执行维护动作前确认精确表和影响范围</td>
-</tr>
-<tr>
-<td><a href="/__aisys__/system-metrics-stats">系统指标统计</a></td>
-<td>Go Runtime 并发与内存趋势、gateway / jobs 双进程运行状态和后台任务执行历史</td>
-<td>容量评估与异常排查的第一站</td>
-</tr>
-<tr>
 <td><a href="/__aisys__/ip-stats">IP 管理</a></td>
 <td>来源 IP 的请求、Token、成本、失败率、活跃天数、封禁和白名单状态</td>
 <td>规则变更会改变客户端访问结果</td>
@@ -341,18 +326,6 @@
 <td><a href="/__aisys__/ai-health">AI 健康监控</a></td>
 <td>无账户长期停留在运行状态</td>
 <td>持续失败的账户进入处置：先查证据，再决定重新检查、避让或停用</td>
-</tr>
-<tr>
-<td>每周</td>
-<td><a href="/__aisys__/table-monitor">表监控</a></td>
-<td>表大小与增长趋势符合预期，磁盘空闲空间充足</td>
-<td>增长异常时核对保留期设置与写入来源</td>
-</tr>
-<tr>
-<td>每周</td>
-<td><a href="/__aisys__/system-metrics-stats">系统指标统计</a></td>
-<td>双进程运行状态正常；后台任务执行历史无连续失败</td>
-<td>任务连续失败先看任务日志，不重启进程碰运气</td>
 </tr>
 <tr>
 <td>每周</td>

@@ -279,7 +279,7 @@ runApiKeyRecoveryProbe()
 | `pending_test` | 激活检查；任务 unknown 有界顺延，完整 framing 协议失败或 `transport_incomplete` 后每 1 小时重试，首次可用性失败满 24 小时后仍有独立失败才进入 `error` |
 | `temporary_unavailable` | 账号级冷却恢复 |
 | `rate_limited` | 限流恢复 |
-| `error` | 人工“异常恢复”只原子重置为 `pending_test` 并立即投递激活检查，不能直接恢复为 `active` |
+| `error` | 人工“异常恢复”只原子重置为 `pending_test` 并立即投递激活检查，不能直接恢复为 `active`（媒体域账户除外：2026-10-14 媒体域状态机下 `error` 人工清除直接恢复 `active`，不经 `pending_test` 与后台激活检查——见《核心功能设计》媒体域账户状态机） |
 | `disabled` | 不主动探测，尊重人工停用 |
 
 人工测试默认只诊断，不能直接成为任何已保存账户的状态恢复入口；新增或编辑草稿协议成功后仅在浏览器本地预选“可调度”，不写库、不清理运行态，必须由用户保存后才生效。
@@ -319,7 +319,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 - 修改模型目录默认检查模型只影响后续新账户初始化，不改变已有账户。
 - 多 Key 人工测试不写 Key 状态，后台激活和 Key 恢复探针可以按职责写入 Key 状态。
 - 模型级失败不把账户整体标记为不可用，账户级故障达到策略条件后才进入保护状态。
-- 能力域拆分后（v7 定案）：新建媒体账户 `health_check_endpoint_mode` 按域默认落值，媒体域新建默认「可调度」，导入的媒体账户保持 `pending_test` 并在预览提示手动启用；存量账户全部域的激活、周期与恢复检查行为零变化。
+- 能力域拆分后（v7 定案）：新建媒体账户 `health_check_endpoint_mode` 按域默认落值，媒体域新建默认「可调度」，导入的媒体账户保持 `pending_test` 并在预览提示手动启用；存量账户全部域的激活、周期与恢复检查行为零变化。2026-10-14 媒体域状态机定案后，滞留 `pending_test` 的音频 / 视频域账户还可经候选窗口媒体准入臂被媒体请求选中，媒体任务成功后 CAS 回写 `active`（手动启用不再是唯一恢复路径）。
 
 ## 16. 媒体账户检查边界（能力域拆分 v7 定案）
 
@@ -327,7 +327,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 
 - **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_json`（现行硬编码不变）、图像 `images_json`、音频 `audio_speech`、视频 `video_create`（写侧落值白名单已增补该值，DB CHECK 此前已允许）。仅影响新建账户，存量账户库中现值一个不改。
 - **后台周期检查（J1）参与范围**：后台候选白名单只含对话族 + `images_json` 形态，不含 `audio_speech` / `audio_transcription_json` / `video_create`——音频、视频域账户天然不排入周期检查；图像域沿用既有 images 特殊门（`active` 状态不排入周期检查）。
-- **激活检查（pending_test 首检）**：媒体域没有后台激活检查途径（域内默认 mode 不在候选白名单），`pending_test` 只会停在不可调度态。因此新建媒体账户表单默认预选「可调度」（`active`，创建语义即跳过首检直接可调度，真实验证靠人工测试与 Mock 链）；导入仍统一落 `pending_test`，此类媒体账户需手动启用，导入预览提示该点。图像域 `images_json` 的人工测试与既有引擎检查语义不变。
+- **激活检查（pending_test 首检）**：媒体域没有后台激活检查途径（域内默认 mode 不在候选白名单），后台不会把媒体账户的 `pending_test` 推进为 `active`。因此新建媒体账户表单默认预选「可调度」（`active`，创建语义即跳过首检直接可调度，真实验证靠人工测试与 Mock 链）；导入仍统一落 `pending_test`，此类媒体账户需手动启用，导入预览提示该点（2026-10-14 媒体域状态机定案后，滞留的音频 / 视频域 `pending_test` 行也可经候选窗口媒体准入臂被媒体请求选中，媒体任务成功后 CAS 回写 `active`——准入臂限 `audio_speech` / `video_create` 检查模式账户）。图像域 `images_json` 的人工测试与既有引擎检查语义不变。
 - **模型检测（J3b）参与范围**：按账户 endpoint mode 与 profile 协议兼容性判定参与资格，媒体形态天然不满足对话族候选条件，媒体域账户不参与模型检测（详见《模型检测设计》）。
 - **检查失败对派发的影响（现状事实，零改动）**：媒体同步 lane 受候选窗健康门（status / schedulable / cooldown + endpoint mode 门）；任务面（videos / audio jobs 查询、下载）账户亲和直连不查健康。
 - **存量零变化**：以上只约束新建账户的默认落值；存量账户全部域的激活、周期、恢复检查行为零变化。

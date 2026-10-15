@@ -229,9 +229,9 @@ func TestWdConvertFramesAndInspections(t *testing.T) {
 		t.Fatalf("anthropic inspection 转换错误: %+v", anthropicInspection)
 	}
 	geminiInspection := convertGeminiInspection(gatewaygemini.StreamInspection{
-		FailedReceived: true, SkipReason: "truncated",
+		FailedReceived: true, SkipReason: "truncated", ResponseResourceID: "ix_conv",
 	})
-	if !geminiInspection.FailedReceived || geminiInspection.SkipReason != "truncated" {
+	if !geminiInspection.FailedReceived || geminiInspection.SkipReason != "truncated" || geminiInspection.ResponseResourceID != "ix_conv" {
 		t.Fatalf("gemini inspection 转换错误: %+v", geminiInspection)
 	}
 }

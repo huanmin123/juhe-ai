@@ -14,9 +14,13 @@
 //     规范化 JSON，重跑按确定性 ID schpref-mig-<策略ID> 复用并做规范化等值比
 //     较，不比键序）；cost_first/缺省策略不建偏好（NULL 普通 Key 回填内置
 //     ID）；仅更新 scheduling_preference_id IS NULL AND purpose='general' 的
-//     Key，显式绑定与 chat Key 一律不动；只写 api_keys.scheduling_preference_id
-//     一列，不触碰 updated_at/revision 与 route_strategies.config_json
-//     （BUG-0308 同源纪律）；速度运行态不转移（裁决①，瞬态自愈）。
+//     Key，显式绑定与 chat Key 一律不动；存量 legacy studio Key（2026-10-14
+//     退场裁决：purpose 词表收窄为 general|chat，存量行保留至显式清理命令
+//     --apply-studio-retirement 执行）按 B1 排除臂处理：绑定列恒 NULL 不回
+//     填、单独计数 apiKeysStudioExcluded；只
+//     写 api_keys.scheduling_preference_id 一列，不触碰 updated_at/revision
+//     与 route_strategies.config_json（BUG-0308 同源纪律）；速度运行态不转
+//     移（裁决①，瞬态自愈）。
 //   - 后检（Run 内）：全库无 NULL 普通 Key 残留、绑定引用完整、计数核对；残
 //     留非零 → 拒绝写完成记录、报告不就绪；后检与 running→completed 条件更新
 //     处于同一事务（capabilitydomain 先例）。
@@ -143,6 +147,7 @@ type PreflightReport struct {
 	APIKeysTotal            int                      `json:"apiKeysTotal"`
 	APIKeysGeneral          int                      `json:"apiKeysGeneral"`
 	APIKeysChat             int                      `json:"apiKeysChat"`
+	APIKeysStudioExcluded   int                      `json:"apiKeysStudioExcluded"`
 	APIKeysExplicitBound    int                      `json:"apiKeysExplicitBound"`
 	APIKeysNullGeneral      int                      `json:"apiKeysNullGeneral"`
 	PlannedPreferences      []PlannedPreference      `json:"plannedPreferences"`
@@ -155,26 +160,27 @@ type PreflightReport struct {
 
 // Report 是 migrate 命令的 JSON 报告。
 type Report struct {
-	Driver               string                  `json:"driver"`
-	RuleVersion          int                     `json:"ruleVersion"`
-	Record               *schedprefdomain.Record `json:"record"`
-	AlreadyComplete      bool                    `json:"alreadyComplete"`
-	OwnersTotal          int                     `json:"ownersTotal"`
-	StrategiesTotal      int                     `json:"strategiesTotal"`
-	StrategiesSpeedFirst int                     `json:"strategiesSpeedFirst"`
-	StrategiesCostFirst  int                     `json:"strategiesCostFirst"`
-	PreferencesExisting  int                     `json:"preferencesExisting"`
-	PreferencesCreated   int                     `json:"preferencesCreated"`
-	PreferencesReused    int                     `json:"preferencesReused"`
-	APIKeysTotal         int                     `json:"apiKeysTotal"`
-	APIKeysNullGeneral   int                     `json:"apiKeysNullGeneral"`
-	APIKeysBackfilled    int64                   `json:"apiKeysBackfilled"`
-	APIKeysExplicitBound int                     `json:"apiKeysExplicitBound"`
-	APIKeysChat          int                     `json:"apiKeysChat"`
-	SpeedRuntimeNote     string                  `json:"speedRuntimeNote"`
-	Failures             []Failure               `json:"failures"`
-	CompletedStage       string                  `json:"completedStage,omitempty"`
-	CompletedAt          string                  `json:"completedAt,omitempty"`
+	Driver                string                  `json:"driver"`
+	RuleVersion           int                     `json:"ruleVersion"`
+	Record                *schedprefdomain.Record `json:"record"`
+	AlreadyComplete       bool                    `json:"alreadyComplete"`
+	OwnersTotal           int                     `json:"ownersTotal"`
+	StrategiesTotal       int                     `json:"strategiesTotal"`
+	StrategiesSpeedFirst  int                     `json:"strategiesSpeedFirst"`
+	StrategiesCostFirst   int                     `json:"strategiesCostFirst"`
+	PreferencesExisting   int                     `json:"preferencesExisting"`
+	PreferencesCreated    int                     `json:"preferencesCreated"`
+	PreferencesReused     int                     `json:"preferencesReused"`
+	APIKeysTotal          int                     `json:"apiKeysTotal"`
+	APIKeysNullGeneral    int                     `json:"apiKeysNullGeneral"`
+	APIKeysBackfilled     int64                   `json:"apiKeysBackfilled"`
+	APIKeysExplicitBound  int                     `json:"apiKeysExplicitBound"`
+	APIKeysChat           int                     `json:"apiKeysChat"`
+	APIKeysStudioExcluded int                     `json:"apiKeysStudioExcluded"`
+	SpeedRuntimeNote      string                  `json:"speedRuntimeNote"`
+	Failures              []Failure               `json:"failures"`
+	CompletedStage        string                  `json:"completedStage,omitempty"`
+	CompletedAt           string                  `json:"completedAt,omitempty"`
 }
 
 // Ready 报告后置条件：失败清单清零且完成记录已落库为 completed（或此前已完
@@ -361,8 +367,9 @@ func scanStrategies(ctx context.Context, db *sql.DB, dialect capabilitydomain.Di
 	return nil
 }
 
-// scanKeys 分批只读扫描全部 API Key（含 chat 与停用 Key：显式绑定与 chat 一律
-// 不动，但须纳入计数与保护断言）。
+// scanKeys 分批只读扫描全部 API Key（含 chat、legacy studio 与停用 Key：显
+// 式绑定与 chat 一律不动，legacy studio 保持 B1 排除臂——恒 NULL、单独计数，
+// 但须纳入计数与保护断言）。
 func scanKeys(ctx context.Context, db *sql.DB, dialect capabilitydomain.Dialect, batchSize int, result *scanResult) error {
 	query := `SELECT id, system_account_id, route_strategy_id, purpose, scheduling_preference_id FROM api_keys
 		WHERE (? = '' OR id > ?) ORDER BY id LIMIT ?`
@@ -536,6 +543,7 @@ type planOutput struct {
 	nameConflictPredictions []NameConflictPrediction
 	builtinBindings         int
 	nullGeneral             int
+	studioExcluded          int // studio NULL Key 排除计数（与 chat 同规，不进回填）
 	speedFirstStrategies    int
 	costFirstStrategies     int
 	reused                  int // 计划级复用（确定性 ID 命中既有行，不再 INSERT）
@@ -548,7 +556,9 @@ type planOutput struct {
 //   - cost_first/缺省策略 → 不建偏好；
 //   - NULL 普通 Key 按其策略回填（生成偏好 ID 或内置 ID）；策略行缺失 → 失败
 //     条目（fail-closed，不猜目标）；
-//   - 显式绑定与 chat Key 一律不动。
+//   - 显式绑定与 chat / studio Key 一律不动（studio NULL Key 与 chat 同规：
+//     2026-10-13 主代理裁决，绑定列恒 NULL 不回填，单独计数保证规划计数与
+//     purpose='general' 回填 SQL / 后检残留判定一致，否则完成记录永拒）。
 func buildPlan(input planInput) *planOutput {
 	output := &planOutput{perOwner: map[string]*ownerStrategyPlans{}}
 	byID := make(map[string]scannedStrategy, len(input.strategies))
@@ -648,8 +658,16 @@ func buildPlan(input planInput) *planOutput {
 
 	// 2) NULL 普通 Key → 目标绑定（生成偏好 / 内置）。
 	for _, key := range input.keys {
-		if key.purpose == "chat" {
+		switch key.purpose {
+		case "chat":
 			continue // chat Key 恒 NULL，一律不动
+		case "studio":
+			// studio Key 与 chat 同规（2026-10-13 主代理裁决）：媒体工作室
+			// Key 绑定列恒 NULL、不建立绑定，不进 keyUpdates 也不进 nullGeneral；
+			// 单独计数进预检/执行报告（B1 修复：原实现把 studio NULL Key 计入
+			// 回填对象，与 purpose='general' 回填 SQL 计数不匹配，完成记录永拒）。
+			output.studioExcluded++
+			continue
 		}
 		if key.bound.Valid && strings.TrimSpace(key.bound.String) != "" {
 			continue // 显式绑定一律不动
@@ -825,6 +843,9 @@ func collectPreflight(report *PreflightReport, scanned *scanResult, plan *planOu
 		switch {
 		case key.purpose == "chat":
 			report.APIKeysChat++
+		case key.purpose == "studio":
+			// studio Key 与 chat 同规，单独计数；不再计入普通 Key 总数。
+			report.APIKeysStudioExcluded++
 		default:
 			report.APIKeysGeneral++
 		}
@@ -984,8 +1005,11 @@ func fillReport(report *Report, scanned *scanResult, plan *planOutput) {
 	report.APIKeysNullGeneral = plan.nullGeneral
 	for _, key := range scanned.keys {
 		report.APIKeysTotal++
-		if key.purpose == "chat" {
+		switch {
+		case key.purpose == "chat":
 			report.APIKeysChat++
+		case key.purpose == "studio":
+			report.APIKeysStudioExcluded++
 		}
 		if key.bound.Valid && strings.TrimSpace(key.bound.String) != "" {
 			report.APIKeysExplicitBound++
@@ -1097,7 +1121,9 @@ func readInsertedPreference(ctx context.Context, tx *sql.Tx, dialect capabilityd
 }
 
 // postcheck 只读核对：全库无 NULL 普通 Key 残留、绑定引用完整、回填计数与计划
-// 一致。残留非零 → 拒绝写完成记录。
+// 一致。残留非零 → 拒绝写完成记录。残留谓词固定 purpose='general'：studio
+// Key 的 NULL 不是残留（与 chat 同规，绑定列恒 NULL，见 buildPlan 排除臂），
+// 也不参与回填计数核对。
 func postcheck(ctx context.Context, q interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }, dialect capabilitydomain.Dialect, plan *planOutput, keysBackfilled int64) ([]Failure, error) {
@@ -1174,6 +1200,8 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+apiKeys+` WHERE scheduling_preference_id IS NULL AND purpose = 'general'`).Scan(&report.APIKeysNullGeneralResidual); err != nil {
 		return report, fmt.Errorf("核验统计 NULL 普通 Key 残留失败: %w", err)
 	}
+	// 谓词 purpose='general' 已排除 studio：studio Key 的 NULL 不是残留（与
+	// chat 同规，绑定列恒 NULL），不触发未迁移失败。
 	if report.APIKeysNullGeneralResidual > 0 {
 		report.Failures = append(report.Failures, Failure{
 			Kind:   FailureResidualNullKeys,

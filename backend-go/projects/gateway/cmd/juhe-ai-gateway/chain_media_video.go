@@ -738,6 +738,9 @@ type chainMediaJobAccount struct {
 	ProtocolVersion           string
 	Type                      string
 	Status                    string
+	CapabilityDomain          string
+	HealthCheckEndpointMode   string
+	CooldownUntil             string
 	Deleted                   bool
 	BaseURL                   string
 	Credential                string
@@ -755,11 +758,13 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	)
 	row := m.db.QueryRowContext(ctx, `SELECT id, system_account_id, provider_code,
 		COALESCE(provider_protocol_profile_id, ''), COALESCE(protocol_code, ''), COALESCE(protocol_version, ''),
-		type, status, COALESCE(credentials_encrypted, ''), COALESCE(deleted_at, '')
+		type, status, COALESCE(capability_domain, 'chat'), COALESCE(health_check_endpoint_mode, ''),
+		COALESCE(cooldown_until, ''), COALESCE(credentials_encrypted, ''), COALESCE(deleted_at, '')
 		FROM `+m.mediaAccountsTable()+` WHERE id = ?`, accountID)
 	if err := row.Scan(&account.ID, &account.OwnerSystemAccountID, &account.ProviderCode,
 		&account.ProviderProtocolProfileID, &account.ProtocolCode, &account.ProtocolVersion,
-		&account.Type, &account.Status, &credentialsEncrypted, &deletedAt); err != nil {
+		&account.Type, &account.Status, &account.CapabilityDomain, &account.HealthCheckEndpointMode,
+		&account.CooldownUntil, &credentialsEncrypted, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -785,6 +790,56 @@ func (m *mediaJobsRuntime) mediaAccountsTable() string {
 		return "juhe_business.accounts"
 	}
 	return "accounts"
+}
+
+// markMediaAccountActiveAfterJobSuccess 是视频异步任务成功落定后的账户状态回写
+// （媒体账户生命周期定案表·成功回写臂）：视频域账户不参与对话健康检查状态机
+// （无后台探针），视频任务轮询推进到 completed 即等价一次成功的上游
+// 健康观测——CAS 把滞留在 pending_test/rate_limited/temporary_unavailable 的
+// 账户搬回 active；冷却门（cooldown_until 已过期或为空）与候选窗口准入臂
+// （chain_accounts.go chainMediaAdmission*）同一谓词。长音频转写不使用该 CAS。
+// 投影镜像 jobs
+// accounthealth 的 cooldown_success/activation_success 臂（schedulable=1、
+// cooldown_until/next_health_check_at/last_error_*/retest 观察列/失败计数
+// 清空；不写 last_health_*——媒体域无探针语义）；不加 config/dispatch
+// revision 与时间计划门，按定案 CAS 谓词单语句执行。active 行不在 WHERE
+// status 集内（已是 active 的成功任务零写入）。失败静默容忍——回写失败不
+// 影响已成功的媒体响应，warn 日志留痕供排查；占位符裸 `?` 与 hydrateAccount
+// 同先例（PG 侧由 sqldialect driver 兜底改写 $n）。
+func (m *mediaJobsRuntime) markMediaAccountActiveAfterJobSuccess(ctx context.Context, accountID string) {
+	now := time.Now().UTC().Format(chainTimeLayout)
+	exec, err := m.db.ExecContext(ctx, `UPDATE `+m.mediaAccountsTable()+` SET
+		status = 'active',
+		schedulable = 1,
+		cooldown_until = NULL,
+		next_health_check_at = NULL,
+		last_error_code = NULL,
+		last_error_message = NULL,
+		last_error_trace_id = NULL,
+		cooldown_retest_failure_count = 0,
+		cooldown_retest_observation_started_at = NULL,
+		cooldown_retest_generation = NULL,
+		cooldown_retest_last_at = NULL,
+		cooldown_retest_last_status_code = NULL,
+		health_check_failure_count = 0,
+		health_check_failure_started_at = NULL,
+		last_health_check_error_code = NULL,
+		last_health_check_error_message = NULL,
+		updated_at = ?
+		WHERE id = ?
+			AND capability_domain = 'video'
+			AND health_check_endpoint_mode = 'video_create'
+			AND status IN ('pending_test', 'rate_limited', 'temporary_unavailable')
+			AND (cooldown_until IS NULL OR cooldown_until <= ?)`, now, accountID, now)
+	if err != nil {
+		slog.Warn("媒体任务成功后账户状态回写失败（不影响本次媒体响应）",
+			"event", "media_job_account_reactivate_failed", "accountId", accountID, "error", err.Error())
+		return
+	}
+	if affected, _ := exec.RowsAffected(); affected > 0 {
+		slog.Info("媒体任务成功后账户状态回写为 active",
+			"event", "media_job_account_reactivated", "accountId", accountID)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,7 +1147,7 @@ func (c *gatewayChain) loadMediaVideoAccount(ctx context.Context, res *gatewaypr
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "水合媒体任务账户失败", "internal_error")
 		return nil
 	}
-	if account == nil || account.Deleted || !strings.EqualFold(account.Status, "active") {
+	if account == nil || account.Deleted || !chainMediaJobAccountPollEligible(account, record, time.Now().UTC()) {
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务账户不可用（已删除或禁用）", "media_job_unreachable")
 		return nil
 	}
@@ -1101,6 +1156,34 @@ func (c *gatewayChain) loadMediaVideoAccount(ctx context.Context, res *gatewaypr
 		return nil
 	}
 	return account
+}
+
+// Recovery-state hydration is limited to asynchronous video jobs. Long audio
+// transcription remains active-only, and a future cooldown blocks polling.
+func chainMediaJobAccountPollEligible(account *chainMediaJobAccount, record *gatewaymedia.MediaJobRecord, now time.Time) bool {
+	if account == nil || record == nil {
+		return false
+	}
+	if strings.EqualFold(account.Status, "active") {
+		return true
+	}
+	if record.Kind != gatewaymedia.JobKindVideo ||
+		account.CapabilityDomain != "video" || account.HealthCheckEndpointMode != "video_create" {
+		return false
+	}
+	switch account.Status {
+	case "pending_test", "rate_limited", "temporary_unavailable":
+	default:
+		return false
+	}
+	if strings.TrimSpace(account.CooldownUntil) == "" {
+		return true
+	}
+	cooldown, err := chainRFC3339Millis(account.CooldownUntil)
+	if err != nil {
+		return false
+	}
+	return cooldown <= now.UnixMilli()
 }
 
 // serveMediaJobList GET /v1/videos 与 GET /v1/audio/jobs：本地行列表（按归属
@@ -1207,6 +1290,13 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		if updated == 1 {
 			record.CostUsd = costUsd
 			c.enqueueMediaJobTerminalUsage(ctx, traceID, apiKeyOwnerSystemAccountIDOf(req), record, account, ir, costUsd)
+			// 成功回写臂（媒体账户生命周期定案表）：视频任务 completed 是视频
+			// 域账户的真实上游成功观测，CAS 把滞留 pending_test/冷却态搬回
+			// active（失败静默容忍，方法内留日志）。挂在 updated==1 之后：
+			// 并发重复终态只回写一次。
+			if record.Kind == gatewaymedia.JobKindVideo && ir.Status == gatewaymedia.JobStatusCompleted && c.mediaJobs != nil {
+				c.mediaJobs.markMediaAccountActiveAfterJobSuccess(ctx, record.AccountID)
+			}
 		}
 	} else if ir.Status != record.Status {
 		// 0 行 = 行已被并发方终态化（UpdateStatus 的非终态守卫），非终态
@@ -1448,7 +1538,7 @@ func chainQwenVideoUpstreamURL(baseURL, path string) (string, error) {
 }
 
 // chainQwenChatServiceRoot 是 qwen 对话出站的官方 OpenAI 兼容模式服务根
-//（契约 §10：dashscope.aliyuncs.com/compatible-mode/v1/chat/completions）
+// （契约 §10：dashscope.aliyuncs.com/compatible-mode/v1/chat/completions）
 // ——与媒体任务面的 /api/v1 服务根（qwenVideoServiceRoot）不同域，不可混用。
 const chainQwenChatServiceRoot = "/compatible-mode/v1"
 
@@ -1635,7 +1725,7 @@ func chainMediaJobVideoPerCallCostUsd(record *gatewaymedia.MediaJobRecord) float
 // 自算口径；2026-10-05 请求参数自算批）：上游轮询回报优先（IR
 // OutputVideoSeconds）；上游无回报且创建请求 seconds 生效（进
 // ParamsApplied）时按创建请求参数自算——计量来源 = 创建请求参数自算
-//（usage_source=request 语义；usage_records/IR 无来源字段，来源以本注释与
+// （usage_source=request 语义；usage_records/IR 无来源字段，来源以本注释与
 // 链级测试钉住，不加 schema 列），请求快照创建时已冻结。ignored 的 seconds
 // 不构成计量基源（§2.4 规则 1/3：不支持时该模型用厂商默认时长、用户值不
 // 生效，网关不猜测默认值——Veo 先例）。两者都缺返回 nil，调用方落
@@ -1715,7 +1805,7 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 // 空）。cancelled/expired 是本地终态，不产生 usage 行（清理不产生计费；
 // 取消按上游实际计量为准）。CostUsd 在 enqueue 前已可算（计量/模型/供应商
 // 都在行上），直接带值落 usage 行——不存在"已 enqueue 留空回追"的窗口
-//（usage 行只在终态轮询时入队一次）；0 成本（usage_missing/未命中）不设
+// （usage 行只在终态轮询时入队一次）；0 成本（usage_missing/未命中）不设
 // CostUsd，与完成尝试记录"估算不出保持 NULL"的既有语义一致。记账 scope
 // 五元组从行内 request_snapshot 投影（创建时冻结，
 // chainMediaJobSnapshotScopeOf）。

@@ -62,13 +62,11 @@ assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s
 assert.match(viewSource, /:turn-limit-reached="turnLimitReached && !editingTurn"/, '编辑最近一轮时 Composer 必须放开 replace 提交')
 assert.match(viewSource, /const activeEdit =[\s\S]{0,300}canSubmitChatTurn\(\{[\s\S]{0,300}replaceTurnId: activeEdit\?\.replaceTurnId/, '发送前必须用权威 count 再检查；仅服务端已接受轮次的 activeEdit 才使用替换例外')
 const handleFailureSource = viewSource.slice(viewSource.indexOf('async function handleSubmitFailure'), viewSource.indexOf('async function applySubmissionOutcome'))
-assert.ok(handleFailureSource.includes('if (replaceConflict || bindingChanged || isDefinitiveChatRejection(error))'), '确定性拒绝（含绑定并发变化 409）必须进入本地结算分支')
+assert.ok(handleFailureSource.includes('if (replaceConflict || isDefinitiveChatRejection(error))'), '确定性拒绝必须进入本地结算分支')
 assert.ok(handleFailureSource.includes('await applySubmissionOutcome({'), '确定性拒绝必须应用草稿恢复决策，不得进入待确认重试')
 const settlementIndex = handleFailureSource.indexOf('await applySubmissionOutcome({')
 const localGateIndex = handleFailureSource.indexOf('markChatConversationTurnLimitReached')
-// 绑定并发变化（D5）分支在函数前部也有同型后台刷新，这里必须取轮次上限路径
-// 自己的最后一次后台刷新做顺序断言。
-const backgroundRefreshIndex = handleFailureSource.lastIndexOf('void refreshConversationSummary(request.conversationId).catch(() => undefined)')
+const backgroundRefreshIndex = handleFailureSource.indexOf('void refreshConversationSummary(request.conversationId).catch(() => undefined)')
 assert.ok(settlementIndex >= 0 && localGateIndex > settlementIndex, '第 51 次竞态拒绝必须先恢复 snapshot，再设置本地 reached gate')
 assert.ok(backgroundRefreshIndex > localGateIndex, '本地 reached gate 必须在启动权威摘要刷新前生效')
 assert.doesNotMatch(handleFailureSource, /await refreshConversationSummary\(request\.conversationId\)/, '轮次上限摘要刷新不得阻塞 snapshot 恢复最多 15 秒')

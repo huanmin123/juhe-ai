@@ -329,8 +329,14 @@ func TestW13G8BuildWorkerAssemblySQLiteStoreFailArms(t *testing.T) {
 func TestW13G8JobsHTTPHandlerManualBridgeArms(t *testing.T) {
 	const secret = "w13g8-manual-secret-0123456789abcdef"
 	newHandler := func(service *accountbalance.Service) http.Handler {
-		return jobsHTTPHandler(ownermode.Mode("owner"), &atomic.Bool{}, func() bool { return true },
-			false, nil, true, func() bool { return true }, service, secret)
+		return jobsHTTPHandler(jobsHTTPDeps{
+			OwnerMode:                  ownermode.Mode("owner"),
+			RuntimeRunning:             &atomic.Bool{},
+			AccountBalanceEnabled:      true,
+			AccountBalanceReady:        func() bool { return true },
+			AccountBalanceService:      service,
+			AccountBalanceManualSecret: secret,
+		})
 	}
 	do := func(handler http.Handler, method string, body string, header map[string]string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(method, "/account-balance/manual", strings.NewReader(body))
@@ -373,13 +379,13 @@ func TestW13G8JobsHTTPHandlerManualBridgeArms(t *testing.T) {
 	}
 }
 
-// TestW13G8HealthHandlerDefaultSlots 覆盖 healthHandler 无 j2 槽位时的
-// 默认值分支（J2/J3a/worker 全部未启用）。
+// TestW13G8HealthHandlerDefaultSlots 覆盖 healthHandler 无附加依赖时的
+// 默认值分支（J2/J3a 未启用，worker 恒开）。
 func TestW13G8HealthHandlerDefaultSlots(t *testing.T) {
 	// healthHandler 的 ready 依赖 runtimeLogOwnerHeld（F1 owner lease 持有）。
 	runtimeRunning := &atomic.Bool{}
 	runtimeRunning.Store(true)
-	handler := healthHandler(ownermode.Mode("owner"), runtimeRunning, func() bool { return true }, false, nil)
+	handler := healthHandler(healthDeps{OwnerMode: ownermode.Mode("owner"), RuntimeRunning: runtimeRunning})
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -393,7 +399,7 @@ func TestW13G8HealthHandlerDefaultSlots(t *testing.T) {
 	for key, want := range map[string]any{
 		"accountBalanceEnabled": false,
 		"proxyLatencyEnabled":   false,
-		"workerEnabled":         false,
+		"workerEnabled":         true,
 		"ready":                 true,
 	} {
 		if payload[key] != want {

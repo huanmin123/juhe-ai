@@ -116,7 +116,12 @@ test('sqliteApplicableWiredJobNames 快照：SQLite 适用集合', () => {
   // SQLite 分支不注册的 PG-only 物化器剔除。
   assert.ok(!names.includes('account-list-availability-projection-maintenance'))
   // go-equivalent（其他组件/进程接管）剔除。
-  for (const name of ['system-metrics-sample', 'account-balance-refresh', 'key-model-memory-recovery']) {
+  for (const name of ['account-balance-refresh', 'key-model-memory-recovery']) {
+    assert.ok(!names.includes(name), name)
+  }
+  // 2026-10-14 监控改造：两条 system-metrics 注册条目已从注册表与快照退役，
+  // 任务清单不得再引用。
+  for (const name of ['system-metrics-sample', 'system-metrics-trend-windows-refresh']) {
     assert.ok(!names.includes(name), name)
   }
   // 缺 Redis 时由组合根登记 disabled、--run-jobs-once 按 skipped 计入成功
@@ -128,7 +133,7 @@ test('sqliteApplicableWiredJobNames 快照：SQLite 适用集合', () => {
   ]) {
     assert.ok(names.includes(name), name)
   }
-  assert.equal(names.length, 28)
+  assert.equal(names.length, 26)
 })
 
 // recordingSpawnStep 记录每次注入的调用；codeFor 按调用返回退出码。调用分
@@ -172,17 +177,19 @@ test('runMockdataPipeline：先编译二进制再顺序执行四步并透传数�
   try {
     const code = await runMockdataPipeline(options)
     assert.equal(code, 0)
-    // 两次 go build（maintenance + jobs）+ 四步运行。
+    // 两次 go build（maintenance + jobs）+ 五步运行：
+    // ensure → mockdata → drain 第一轮（游标型聚合）→ rest 任务清单 → verify。
     assert.deepEqual(recorder.calls.map((call) => `${call.kind}:${call.binary}`), [
       'build:juhe-ai-maintenance',
       'run:juhe-ai-maintenance',
       'run:juhe-ai-maintenance',
       'build:juhe-ai-jobs',
       'run:juhe-ai-jobs',
+      'run:juhe-ai-jobs',
       'run:juhe-ai-maintenance',
     ])
 
-    const [ensure, mockdata, rebuild, verify] = runCalls(recorder)
+    const [ensure, mockdata, drain, rest, verify] = runCalls(recorder)
     assert.ok(ensure.args.includes('--ensure-schema'))
     assert.ok(ensure.args.includes('--seed'))
     const pathsValue = ensure.args[ensure.args.indexOf('--paths') + 1]
@@ -193,12 +200,18 @@ test('runMockdataPipeline：先编译二进制再顺序执行四步并透传数�
     assert.equal(mockdata.args[mockdata.args.indexOf('--mockdata-days') + 1], '7')
     assert.equal(mockdata.args[mockdata.args.indexOf('--mockdata-daily-requests') + 1], '20')
 
-    assert.match(path.basename(rebuild.command), /^juhe-ai-jobs(\.exe)?$/)
-    assert.match(rebuild.args[0], /^-run-jobs-once=system-metrics-trend-windows-refresh,/)
-    assert.ok(rebuild.args[0].includes('usage-scope-range-windows-refresh'))
-    assert.ok(!rebuild.args[0].includes('ai-performance-summary-windows-refresh'))
-    assert.equal(rebuild.options.env.JUHE_AI_DATA_DIR, path.join(tempDir, 'data'))
-    assert.equal(rebuild.options.env.JUHE_AI_LOG_DIR, path.join(tempDir, 'logs'))
+    // 排空轮固定先跑游标型聚合；2026-10-14 监控改造后任务清单不得再引用
+    // 两条已退役的 system-metrics 任务。
+    assert.match(path.basename(drain.command), /^juhe-ai-jobs(\.exe)?$/)
+    assert.equal(drain.args[0], '-run-jobs-once=usage-stats-aggregation,client-ip-stats-aggregation')
+    assert.match(path.basename(rest.command), /^juhe-ai-jobs(\.exe)?$/)
+    assert.ok(rest.args[0].startsWith('-run-jobs-once='))
+    assert.ok(rest.args[0].includes('usage-scope-range-windows-refresh'))
+    assert.ok(!rest.args[0].includes('ai-performance-summary-windows-refresh'))
+    assert.ok(!rest.args[0].includes('system-metrics-sample'))
+    assert.ok(!rest.args[0].includes('system-metrics-trend-windows-refresh'))
+    assert.equal(drain.options.env.JUHE_AI_DATA_DIR, path.join(tempDir, 'data'))
+    assert.equal(drain.options.env.JUHE_AI_LOG_DIR, path.join(tempDir, 'logs'))
 
     assert.ok(verify.args.includes('--verify-mockdata-coverage'))
   } finally {
@@ -244,7 +257,8 @@ test('runMockdataPipeline：--skip-rebuild/--skip-verify 跳步、失败即停',
   try {
     const notReadyCode = await runMockdataPipeline(notReadyOptions.options)
     assert.equal(notReadyCode, 3)
-    assert.equal(runCalls(notReady).length, 4)
+    // ensure → mockdata → drain → rest → verify（校验失败时五步全部走完）。
+    assert.equal(runCalls(notReady).length, 5)
   } finally {
     await rm(notReadyTemp, { recursive: true, force: true })
   }

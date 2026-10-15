@@ -128,7 +128,7 @@ func createLegacyRecordMaintenanceTable(t *testing.T, db *sql.DB) {
 	}
 }
 
-// seedGatewaySnapshotRow 按 gateway internal/tablemonitor
+// seedGatewaySnapshotRow 按 gateway internal/recordmaintenance
 // DurableDispatch.EnqueueAccountUsageSnapshotUpsert 的落行形状逐列写入
 // （同列集、同哨兵值、同规范化 updatedAt），作为消费侧契约的输入。
 func seedGatewaySnapshotRow(t *testing.T, db *sql.DB, id, accountID, snapshotJSON, updatedAt string) {

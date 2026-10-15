@@ -62,7 +62,6 @@ func TestW16BInProcessBootCoverage(t *testing.T) {
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH":      filepath.Join(root, "usage-catalog.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":              filepath.Join(root, "stats.sqlite3"),
 		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH":        filepath.Join(root, "runtime-log.sqlite3"),
-		"JUHE_AI_TABLE_MONITOR_DATABASE_PATH":      filepath.Join(root, "table-monitor.sqlite3"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":   filepath.Join(root, "codex-shards"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT":  "2",
 		"JUHE_AI_USAGE_SHARD_ROOT":                 filepath.Join(root, "usage-shards"),

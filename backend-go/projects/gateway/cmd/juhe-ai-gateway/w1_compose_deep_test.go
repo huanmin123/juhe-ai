@@ -34,7 +34,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,7 +52,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
 
 // ---------------------------------------------------------------------------
@@ -102,26 +100,6 @@ func TestW1QComposeSystemAPIStorageFailureArms(t *testing.T) {
 		// 由组合根打开 stats 数据库前的守卫指名拒绝。
 		if !strings.Contains(err.Error(), "JUHE_AI_STATS_DATABASE_PATH") {
 			t.Fatalf("错误 = %v，want 组合根守卫指名统计库路径", err)
-		}
-	})
-
-	t.Run("表监控库路径指向非SQLite文件configure失败", func(t *testing.T) {
-		stack := w1oNewComposeStack(t)
-		w1oRedirectDatabasePaths(t, stack)
-		garbage := filepath.Join(filepath.Dir(stack.cfg.BusinessDatabasePath), "w1q-table-monitor-garbage.sqlite3")
-		if err := os.WriteFile(garbage, bytes.Repeat([]byte{0x51}, 512), 0o644); err != nil {
-			t.Fatalf("写入非 SQLite 垃圾文件: %v", err)
-		}
-		stack.cfg.TableMonitorDatabasePath = garbage
-		composed, err := stack.compose(t)
-		if err == nil {
-			if composed != nil {
-				composed.Shutdown()
-			}
-			t.Fatal("表监控库路径为非 SQLite 文件必须 fail-fast")
-		}
-		if !strings.Contains(err.Error(), "configure table monitor sqlite database") {
-			t.Fatalf("错误 = %v，want 包含 configure table monitor sqlite database", err)
 		}
 	})
 
@@ -194,32 +172,6 @@ func TestW1QComposeSystemAPIAuthDriverArms(t *testing.T) {
 }
 
 func TestW1QComposeSystemAPIMetricsAndHealthOutcomeArms(t *testing.T) {
-	t.Run("Go运行时指标库打开失败臂", func(t *testing.T) {
-		stack := w1oNewComposeStack(t)
-		w1oRedirectDatabasePaths(t, stack)
-		blocker := filepath.Join(filepath.Dir(stack.cfg.BusinessDatabasePath), "w1q-blocker-file")
-		if err := os.WriteFile(blocker, nil, 0o644); err != nil {
-			t.Fatalf("create blocker file: %v", err)
-		}
-		stack.cfg.GoRuntimeMetrics = gometrics.Config{
-			Enabled:      true,
-			Store:        gometrics.DialectSQLite,
-			DatabasePath: filepath.Join(blocker, "metrics.sqlite3"),
-			Service:      "juhe-ai",
-			Role:         "gateway",
-		}
-		composed, err := stack.compose(t)
-		if err == nil {
-			if composed != nil {
-				composed.Shutdown()
-			}
-			t.Fatal("metrics 库路径父级为文件必须 fail-fast")
-		}
-		if !strings.Contains(err.Error(), "open Go runtime metrics store") {
-			t.Fatalf("错误 = %v，want 包含 open Go runtime metrics store", err)
-		}
-	})
-
 	t.Run("健康结果SQLite路径变体组装成功", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
 		stack.cfg.AccountHealthOutcomeSQLitePath = filepath.Join(filepath.Dir(stack.cfg.DatasetDatabasePath), "w1q-outcomes.sqlite3")
@@ -853,7 +805,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		// 原「链条缺系统API开关」联动校验臂与「显式关闭」断言随之消失。
 		{"候选上限非整数", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "abc"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数"},
 		{"候选上限越界", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "0"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内"},
-		{"Go运行时指标store非法", map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "memory"}, "JUHE_AI_GO_RUNTIME_METRICS_STORE 必须为 sqlite、postgres 或 disabled"},
 	}
 	for _, tc := range errorCases {
 		t.Run("错误_"+tc.name, func(t *testing.T) {
