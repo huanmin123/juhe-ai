@@ -136,6 +136,10 @@ services:
       # infra 机 Prometheus 经既有 SSH 隧道抓取 GET /__aisys__/metrics
       # （抓取配置、面板导入与告警迁移见 monitoring/README.md）。
       JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS: 0.0.0.0:3306
+      # 健康监听默认 fail-closed 只允许回环地址；容器内需要绑 0.0.0.0 才能被
+      # ports 的宿主回环映射（127.0.0.1:3306:3306）转发。该开关只放行私网与
+      # 未指定地址，公网地址任何情况拒绝（见 gateway main.go validateHealthListenHost）。
+      JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK: "true"
       # F3/F4 owner 租约启动获取等待（BUG-0228，2026-09-28 起）：compose recreate
       # 先 stop 旧容器（SIGTERM 10s 宽限后 SIGKILL），旧 gateway 优雅关闭预算
       # （10s+5s+5s 串行 HTTP shutdown + defer 链）超 10s 被强杀时 defer 租约

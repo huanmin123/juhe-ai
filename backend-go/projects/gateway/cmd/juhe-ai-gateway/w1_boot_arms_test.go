@@ -317,10 +317,12 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 		}
 	}
 
-	// 进程 2：独立 F3 审计库 + 复用进程 1 的 F4 库 → F4 专有租约被持有。
-	// 契约：supervisor 对组件失败按有界退避无限重试而非进程停机，因此
-	// F4 owner Run 闭包的专有租约 !ok 分支表现为 stderr 持续出现租约冲突
-	// 文案；断言后优雅关闭进程 2 以收割其覆盖数据。
+	// 进程 2：独立 F3 审计库 + 复用进程 1 的 F4 库，但换一个 F4 实例 ID →
+	// F4 专有租约被跨 owner 持有。同 owner_id 的未过期行会被直接接管
+	// （operationlog store 的 owner_id = excluded.owner_id 分支），只有跨
+	// owner 才走冲突文案。契约：supervisor 对组件失败按有界退避无限重试
+	// 而非进程停机，因此 F4 owner Run 闭包的专有租约 !ok 分支表现为
+	// stderr 持续出现租约冲突文案；断言后优雅关闭进程 2 以收割其覆盖数据。
 	root2 := w1mAuditRoot(t, "m1-owner2")
 	coverageDir2 := w1bCoverageDir(t, "M1-f4-lease-conflict")
 	env2 := w1bScenarioEnv(t, coverageDir2, append(
@@ -331,6 +333,11 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 			filepath.Join(root2, "usage-shards"),
 		)...,
 	)...)
+	for i, pair := range env2 {
+		if pair == "JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1m-f4" {
+			env2[i] = "JUHE_AI_OPERATION_LOG_INSTANCE_ID=w1m-f4-rival"
+		}
+	}
 	// 同进程 1：health 监听用空闲端口，避免与本机开发实例默认端口冲突。
 	env2 = append(env2,
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
@@ -366,9 +373,15 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	}
 	w1bAppendCoverageManifest(t, coverageDir2)
 
-	// 进程 3：复用进程 1 的 F3 审计库 → F3 租约被持有快速失败。
+	// 进程 3：复用进程 1 的 F3 审计库 + 换一个 audit 实例 ID → F3 租约被
+	// 跨 owner 持有快速失败。实例 ID 必须与进程 1 不同：F3 获取的冲突分支
+	// 对同 owner_id（进程身份）的未过期租约直接接管（store.go
+	// AcquireOwnerLease 的 owner_id = excluded.owner_id 分支），只有跨 owner
+	// 才走 fail-fast 原文案。health 监听同进程 2 显式用空闲端口，避免与本机
+	// 默认端口（127.0.0.1:3306）上的既有实例冲突。
 	coverageDir3 := w1bCoverageDir(t, "M1-f3-lease-conflict")
-	env3 := w1bScenarioEnv(t, coverageDir3, w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1")...)
+	env3 := w1bScenarioEnv(t, coverageDir3, w1mAuditEnvPairs(t, root1, "w1m-m1-audit-1-rival")...)
+	env3 = append(env3, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
 	_, stderr3, code3 := w1bRunScenario(t, "M1-f3-lease-conflict", env3)
 	w1bRequireExitCode(t, "M1-f3-lease-conflict", code3, 1)
 	w1bRequireContains(t, "M1-f3-lease-conflict", stderr3, "F3 audit owner lease held by another owner process")

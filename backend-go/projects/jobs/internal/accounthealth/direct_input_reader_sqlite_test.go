@@ -680,7 +680,7 @@ func TestSQLiteDirectInputReaderRunnerCycleActivatesPendingAccount(t *testing.T)
 		probeRequests++
 		// 直读输入带协议 profile，探针校验完整 Chat Completions 语义：
 		// finish_reason 非空且响应回显挑战值 "juhe"。
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	candidate := newSQLiteDirectCandidateSeed("wsql-cycle")

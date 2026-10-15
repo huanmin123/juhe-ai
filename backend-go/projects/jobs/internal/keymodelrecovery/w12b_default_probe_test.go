@@ -8,14 +8,32 @@ package keymodelrecovery
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
+
+// w12bProbeChallengePattern 匹配 J1 探针算术挑战（2026-10-15 起取代固定令牌）。
+var w12bProbeChallengePattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
+
+// w12bProbeAnswer 从探针请求体解析算术挑战并返回两数之和，供假上游回显。
+func w12bProbeAnswer(request *http.Request) string {
+	body, _ := io.ReadAll(request.Body)
+	match := w12bProbeChallengePattern.FindSubmatch(body)
+	if match == nil {
+		return ""
+	}
+	left, _ := strconv.Atoi(string(match[1]))
+	right, _ := strconv.Atoi(string(match[2]))
+	return strconv.Itoa(left + right)
+}
 
 const w12bProbeSecret = "w12b-probe-secret"
 
@@ -64,7 +82,7 @@ func TestW12bDefaultProbeSuccess(t *testing.T) {
 			t.Errorf("意外 Authorization: %q", got)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + w12bProbeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 

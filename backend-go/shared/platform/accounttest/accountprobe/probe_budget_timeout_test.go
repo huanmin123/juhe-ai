@@ -17,13 +17,15 @@ import (
 )
 
 // w287BudgetTransport 按请求序次返回预置响应体工厂；attempt 记录真实尝试次数。
+// 工厂同时接收请求体，使假上游能读取探针挑战并给出对应答案。
 type w287BudgetTransport struct {
 	mu      sync.Mutex
 	attempt int
-	bodies  []func(requestCtx context.Context) io.ReadCloser
+	bodies  []func(requestCtx context.Context, requestBody string) io.ReadCloser
 }
 
 func (t *w287BudgetTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	requestBody, _ := io.ReadAll(request.Body)
 	t.mu.Lock()
 	index := t.attempt
 	if index >= len(t.bodies) {
@@ -33,7 +35,7 @@ func (t *w287BudgetTransport) RoundTrip(request *http.Request) (*http.Response, 
 	t.mu.Unlock()
 	return &http.Response{
 		StatusCode:    http.StatusOK,
-		Body:          t.bodies[index](request.Context()),
+		Body:          t.bodies[index](request.Context(), string(requestBody)),
 		Header:        http.Header{},
 		ContentLength: -1,
 		Request:       request,
@@ -79,8 +81,8 @@ func w287Service(t *testing.T, transport http.RoundTripper, timeouts []time.Dura
 	return service, view
 }
 
-func w287DeadlineBodyFactory(head string) func(context.Context) io.ReadCloser {
-	return func(ctx context.Context) io.ReadCloser {
+func w287DeadlineBodyFactory(head string) func(context.Context, string) io.ReadCloser {
+	return func(ctx context.Context, _ string) io.ReadCloser {
 		return io.NopCloser(&w287DeadlineBody{ctx: ctx, head: head})
 	}
 }
@@ -89,7 +91,7 @@ func w287DeadlineBodyFactory(head string) func(context.Context) io.ReadCloser {
 // 部分响应作为诊断（HTTP 200 + 已读正文）。
 func TestBug287BudgetDeadlineMidBodyEscalatesToTimeout(t *testing.T) {
 	head := `{"choices":[{"delta":{"content":"juhe"}}]}`
-	transport := &w287BudgetTransport{bodies: []func(context.Context) io.ReadCloser{
+	transport := &w287BudgetTransport{bodies: []func(context.Context, string) io.ReadCloser{
 		w287DeadlineBodyFactory(head),
 	}}
 	service, view := w287Service(t, transport, []time.Duration{40 * time.Millisecond, 60 * time.Millisecond, 80 * time.Millisecond})
@@ -120,11 +122,10 @@ func TestBug287BudgetDeadlineMidBodyEscalatesToTimeout(t *testing.T) {
 // 慢上游在第二轮预算内完成：阶梯必须治愈用户场景（流开始但 10s 内读不完），
 // 不再 10s 一票终审。
 func TestBug287EscalationRecoversSlowUpstream(t *testing.T) {
-	complete := `{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`
-	transport := &w287BudgetTransport{bodies: []func(context.Context) io.ReadCloser{
+	transport := &w287BudgetTransport{bodies: []func(context.Context, string) io.ReadCloser{
 		w287DeadlineBodyFactory(`{"choices":[{"delta":{"content":"ju"}`),
-		func(context.Context) io.ReadCloser {
-			return io.NopCloser(strings.NewReader(complete))
+		func(_ context.Context, requestBody string) io.ReadCloser {
+			return io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"` + challengeAnswerFromBody([]byte(requestBody)) + `"},"finish_reason":"stop"}]}`))
 		},
 	}}
 	service, view := w287Service(t, transport, []time.Duration{40 * time.Millisecond, 5 * time.Second})
@@ -147,8 +148,8 @@ func TestBug287EscalationRecoversSlowUpstream(t *testing.T) {
 // 上游真实读取中断（非超时错误）保持 read_incomplete 终审，不晋级。
 func TestBug287RealReadInterruptionStaysReadIncomplete(t *testing.T) {
 	head := `{"choices":[{"delta":{"content":"juhe"}}]}`
-	transport := &w287BudgetTransport{bodies: []func(context.Context) io.ReadCloser{
-		func(context.Context) io.ReadCloser {
+	transport := &w287BudgetTransport{bodies: []func(context.Context, string) io.ReadCloser{
+		func(context.Context, string) io.ReadCloser {
 			return io.NopCloser(io.MultiReader(strings.NewReader(head), &w12hFailReader{}))
 		},
 	}}
@@ -173,7 +174,7 @@ func TestBug287RealReadInterruptionStaysReadIncomplete(t *testing.T) {
 // read_incomplete 终审（对外错误码沿用 classifyResponse 既有口径）。
 func TestBug287UpstreamErrorSemanticSurvivesDeadlineCut(t *testing.T) {
 	head := `{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`
-	transport := &w287BudgetTransport{bodies: []func(context.Context) io.ReadCloser{
+	transport := &w287BudgetTransport{bodies: []func(context.Context, string) io.ReadCloser{
 		w287DeadlineBodyFactory(head),
 	}}
 	service, view := w287Service(t, transport, []time.Duration{40 * time.Millisecond, 60 * time.Millisecond, 80 * time.Millisecond})
@@ -196,7 +197,7 @@ func TestBug287UpstreamErrorSemanticSurvivesDeadlineCut(t *testing.T) {
 // limited（冷却复测）口径：终审错误码与晋级证据保留，文案统一脱敏。
 func TestBug287LimitedMaskingKeepsTimeoutEvidence(t *testing.T) {
 	head := `{"choices":[{"delta":{"content":"juhe"}}]}`
-	transport := &w287BudgetTransport{bodies: []func(context.Context) io.ReadCloser{
+	transport := &w287BudgetTransport{bodies: []func(context.Context, string) io.ReadCloser{
 		w287DeadlineBodyFactory(head),
 	}}
 	service, view := w287Service(t, transport, []time.Duration{40 * time.Millisecond, 60 * time.Millisecond, 80 * time.Millisecond})

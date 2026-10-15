@@ -565,7 +565,11 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 			return OwnerLease{}, false, err
 		}
 		defer tx.Rollback()
-		q := `INSERT INTO juhe_dataset.operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,clock_timestamp()+(? * INTERVAL '1 millisecond'),clock_timestamp()) ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_dataset.operation_log_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=clock_timestamp() WHERE juhe_dataset.operation_log_owner_leases.lease_until<=clock_timestamp() RETURNING fence_token`
+		// 冲突分支接管已过期行，或未过期但 owner_id 相同的行。owner_id 是进程身份
+		// （hostname，同一容器跨整机重启不变），同 owner 再获取只可能来自本实例自己的
+		// 重启/失租恢复：fence_token 自增把旧世代写入挡在外面。跨 owner 仍必须等过期
+		// （BUG-0228 发布窗口等待契约不变）。与 F3 audit 同键同语义。
+		q := `INSERT INTO juhe_dataset.operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,clock_timestamp()+(? * INTERVAL '1 millisecond'),clock_timestamp()) ON CONFLICT(lease_key) DO UPDATE SET owner_id=EXCLUDED.owner_id,fence_token=juhe_dataset.operation_log_owner_leases.fence_token+1,lease_until=EXCLUDED.lease_until,updated_at=clock_timestamp() WHERE juhe_dataset.operation_log_owner_leases.lease_until<=clock_timestamp() OR juhe_dataset.operation_log_owner_leases.owner_id=EXCLUDED.owner_id RETURNING fence_token`
 		var token int64
 		err = tx.QueryRowContext(ctx, s.bind(q), owner, d.Milliseconds()).Scan(&token)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -580,7 +584,7 @@ func (s *sqlStore) AcquireOwnerLease(ctx context.Context, owner string, d time.D
 		return OwnerLease{owner, token}, true, nil
 	}
 	now := time.Now()
-	q := `INSERT INTO operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,?,?) ON CONFLICT(lease_key) DO UPDATE SET owner_id=excluded.owner_id,fence_token=operation_log_owner_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at WHERE operation_log_owner_leases.lease_until<=? RETURNING fence_token`
+	q := `INSERT INTO operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at) VALUES ('f4-operation-log-persistence',?,1,?,?) ON CONFLICT(lease_key) DO UPDATE SET owner_id=excluded.owner_id,fence_token=operation_log_owner_leases.fence_token+1,lease_until=excluded.lease_until,updated_at=excluded.updated_at WHERE operation_log_owner_leases.lease_until<=? OR operation_log_owner_leases.owner_id=excluded.owner_id RETURNING fence_token`
 	var token int64
 	err := s.db.QueryRowContext(ctx, q, owner, storageTime(now.Add(d)), storageTime(now), storageTime(now)).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -52,6 +52,11 @@ const RecordMaintenanceJobTypeAccountUsageSnapshotUpsert = "account_usage_snapsh
 // recordMaintenanceTableName 是 gateway 写入、jobs 消费的交接表。
 const recordMaintenanceTableName = "record_maintenance_jobs"
 
+// recordMaintenancePGSchema 是 PostgreSQL 方言下交接表所在 schema（jobs 侧
+// internal/recordmaintenance/queue.go 的 PGSchema 同值；两项目各自持有常量，
+// 改动需双端同步）。
+const recordMaintenancePGSchema = "juhe_dataset"
+
 // recordMaintenanceSchema 运行时建表（accounttesttask.Schema 先例：Go-owned
 // 交接关系不占用生产 migration catalog）。列即 Node RecordMaintenanceJob
 // union 的 non_business_data_cleanup + account_usage_snapshot_upsert 两个
@@ -109,7 +114,7 @@ func NewDurableRecordMaintenanceDispatch(db *sql.DB, pgDialect bool, now func() 
 
 func (d *DurableDispatch) table() string {
 	if d.pg {
-		return "juhe_dataset." + recordMaintenanceTableName
+		return recordMaintenancePGSchema + "." + recordMaintenanceTableName
 	}
 	return recordMaintenanceTableName
 }
@@ -187,9 +192,9 @@ func (d *DurableDispatch) existingColumns(ctx context.Context) (map[string]bool,
 		}
 		return columns, rows.Err()
 	}
-	rows, err := d.db.QueryContext(ctx,
-		`SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?`,
-		"juhe_dataset", recordMaintenanceTableName)
+	rows, err := d.db.QueryContext(ctx, d.bind(
+		`SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?`),
+		recordMaintenancePGSchema, recordMaintenanceTableName)
 	if err != nil {
 		return nil, err
 	}

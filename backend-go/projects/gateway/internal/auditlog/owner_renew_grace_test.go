@@ -271,3 +271,26 @@ func TestRunOwnerRestartReacquiresFreshLease(t *testing.T) {
 		t.Fatalf("重取后终态必须清空: %v", err)
 	}
 }
+
+// TestLostKeeperLeaseIsZero 覆盖 2026-10-14 生产死锁：终态 keeper 的 Lease()
+// 必须返回零租约。采集路径按每条记录用该快照续约，返回旧 owner/fence 会把
+// 已丢失的行永久续活，入口重取永远等不到过期。
+func TestLostKeeperLeaseIsZero(t *testing.T) {
+	store := &renewGraceFakeStore{renewFunc: func(int) (bool, error) {
+		return false, nil
+	}}
+	keeper := startRenewGraceKeeper(t, store)
+	defer keeper.Close()
+	held := keeper.Lease()
+	if held.OwnerID == "" || held.FenceToken <= 0 {
+		t.Fatalf("失租前必须持有真实租约: %+v", held)
+	}
+	select {
+	case <-keeper.Lost():
+	case <-time.After(3 * time.Second):
+		t.Fatal("0 行更新后未放弃所有权")
+	}
+	if got := keeper.Lease(); got.OwnerID != "" || got.FenceToken != 0 {
+		t.Fatalf("失租后 Lease() 必须为零租约，不得继续发放可续约快照: %+v", got)
+	}
+}

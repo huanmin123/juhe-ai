@@ -74,6 +74,8 @@
 - 非发布场景（误起第二个 gateway 进程）：等待 45s 后仍 fail-fast 退出，行为可预期、可观测。
 - 默认空/未配置：与既有 fail-fast 契约完全一致（compose 显式值只影响本生产实例）。
 
+后续契约演进（2026-10-15，非本 bug 修复范围，登记防误读）：F3 与 F4 获取冲突分支新增同 owner 快速路径——未过期租约的 owner_id（进程身份，默认主机名）与获取方相同时直接接管并自增 fence_token，不消耗等待预算（`internal/auditlog/store.go` 与 `internal/operationlog/store.go` 的 `owner_id = excluded.owner_id` 分支）。依据是同 owner 的再获取只可能来自本实例自己的重启/失租恢复，旧世代写入由 fence 挡在外面，语义与过期接管一致。跨 owner 仍必须等过期——本文"双 owner 场景不被吞掉"的保证不变。失租后的 keeper 不再发放旧快照，采集路径不能把已丢失的行续活（BUG-0317）。
+
 发布异常处理：
 
 - 回滚 = 服务器 `/opt/juhe-ai/compose.yml` 回退上一版（该 env 与 start_period 同文件），行为即回到 fail-fast + 重启循环（TTL 过期自愈）。

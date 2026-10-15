@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,6 +191,53 @@ func TestW14EBridgeWorkerAndScheduleGuards(t *testing.T) {
 	bridge.scheduleScopeRetry(scopeKey)
 	bridge.Close()
 	bridge.scheduleScopeRetry(scopeKey)
+}
+
+// TestScopeRetryBackoffSurvivesTimerFire 锁定外层重试退避：定时器触发后只摘掉
+// timerStop，已翻倍的 backoff 必须留下。整条删除会让下一次 scheduleScopeRetry
+// 从 retryDelayMs 重新开始，冲突写入方按基础间隔持续打 CAS。
+func TestScopeRetryBackoffSurvivesTimerFire(t *testing.T) {
+	store := newNonExpiringMemoryStore(t)
+	db := &mockControlPlaneDB{casErrs: []error{errors.New("cas conflict persists")}}
+	fired := make(chan struct{})
+	var once sync.Once
+	bridge := w14eNewBridge(t, store, db, func(o *BridgeOptions) {
+		o.RetryDelayMs = 1_000
+		o.MaxPersistAttempts = 1
+		o.NewTimer = func(time.Duration) (<-chan struct{}, func()) {
+			done := make(chan struct{})
+			once.Do(func() { close(done); close(fired) })
+			return done, func() {}
+		}
+	})
+	scope := protocolScope("w14e-backoff")
+	scopeKey := MustScopeKey(scope)
+	bridge.mu.Lock()
+	bridge.pending[scopeKey] = observeInput{scope: scope, state: ClosedState(scope, "7", 1, "t1", 900)}
+	bridge.mu.Unlock()
+
+	bridge.scheduleScopeRetry(scopeKey)
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry timer 未触发")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		bridge.mu.Lock()
+		retry, ok := bridge.retryBackoffs[scopeKey]
+		bridge.mu.Unlock()
+		// 首次布防把 1000 翻到 2000。定时器触发后若把这条状态删掉，失败后的
+		// 再次布防会从 1000 重新翻到 2000；保留后会从 2000 翻到 4000。
+		if ok && retry.backoff == 4_000 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	bridge.mu.Lock()
+	retry, ok := bridge.retryBackoffs[scopeKey]
+	bridge.mu.Unlock()
+	t.Fatalf("失败重试没有沿用已翻倍的 backoff: ok=%v state=%+v", ok, retry)
 }
 
 func TestW14EBridgeRetryPendingImmediatelyArms(t *testing.T) {

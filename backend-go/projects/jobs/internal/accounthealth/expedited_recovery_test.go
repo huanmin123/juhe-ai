@@ -201,9 +201,9 @@ func (f *fakeFreshnessReader) LoadAccountConfigRevision(_ context.Context, accou
 func TestFreshnessGateRejectsStaleScheduledInputBeforeDispatch(t *testing.T) {
 	secret := "freshness-gate-scheduled-secret"
 	var hits atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		hits.Add(1)
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 	store, lease := openSQLiteStoreWithLease(t)

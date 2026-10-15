@@ -72,7 +72,7 @@ func TestProbeAccountViewPinsRequestModel(t *testing.T) {
 		}
 		seenModel, _ = payload["model"].(string)
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromBody(body) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -122,7 +122,7 @@ func TestProbeAccountViewPinsRequestModel(t *testing.T) {
 }
 
 // TestProbeChatJSONSuccess 验证 OpenAI chat_json 完整成功路径：
-// finish_reason + 输出包含预期令牌 → success；证据 framing_complete。
+// finish_reason + 输出包含预期答案 → success；证据 framing_complete。
 func TestProbeChatJSONSuccess(t *testing.T) {
 	var seenPath, seenAuth, seenUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +138,7 @@ func TestProbeChatJSONSuccess(t *testing.T) {
 			t.Errorf("chat_json 不得流式: %v", payload["stream"])
 		}
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromBody(body) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -177,7 +177,7 @@ func TestProbeGLMCodingUsesZCodeIdentityAndDoesNotLeakInternalProfile(t *testing
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured = r.Header.Clone()
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -203,7 +203,7 @@ func TestProbeGLMCodingAnthropicUsesBearerAndZCodeIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured = r.Header.Clone()
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"` + challengeAnswerFromRequest(r) + `"}],"stop_reason":"end_turn"}`))
 	}))
 	defer server.Close()
 
@@ -296,7 +296,7 @@ func TestProbeAnthropicMessages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"` + challengeAnswerFromRequest(r) + `"}],"stop_reason":"end_turn"}`))
 	}))
 	defer server.Close()
 
@@ -329,7 +329,7 @@ func TestProbeGeminiGenerateContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"juhe"}]},"finishReason":"STOP"}]}`))
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"` + challengeAnswerFromRequest(r) + `"}]},"finishReason":"STOP"}]}`))
 	}))
 	defer server.Close()
 
@@ -362,13 +362,14 @@ func TestProbeHybridMappingUsesAnthropicRequest(t *testing.T) {
 		seenPath = r.URL.Path
 		seenAPIKey = r.Header.Get("x-api-key")
 		seenAuthorization = r.Header.Get("authorization")
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Errorf("body must be JSON: %v", err)
 		}
 		seenModel, _ = body["model"].(string)
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"` + challengeAnswerFromBody(raw) + `"}],"stop_reason":"end_turn"}`))
 	}))
 	defer server.Close()
 
@@ -409,7 +410,7 @@ func TestProbeHybridMappingUsesGeminiRequest(t *testing.T) {
 		seenPath = r.URL.Path
 		seenAPIKey = r.Header.Get("x-goog-api-key")
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"juhe"}]},"finishReason":"STOP"}]}`))
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"` + challengeAnswerFromRequest(r) + `"}]},"finishReason":"STOP"}]}`))
 	}))
 	defer server.Close()
 
@@ -456,7 +457,7 @@ func TestProbeChatSSEStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured = r.Header.Clone()
 		w.Header().Set("content-type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"juhe\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + challengeAnswerFromRequest(r) + "\"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -489,7 +490,7 @@ func TestProbeChatSSEStreaming(t *testing.T) {
 // （framing_complete_neutral：不得写入失败状态）。
 func TestProbeHTTP2xxWithoutProtocolEvidence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"}}]}`))
 	}))
 	defer server.Close()
 

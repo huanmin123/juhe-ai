@@ -12,12 +12,33 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
+
+// probeChallengeAnswerPattern 匹配 J1 探针算术挑战（exactkeyprobe 的
+// probeChallengePromptFormat，2026-10-15 起取代固定令牌）。
+var probeChallengeAnswerPattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
+
+// probeChallengeAnswer 从探针请求体解析算术挑战并返回两数之和的十进制文本，
+// 供假上游回显；请求不含算术挑战时返回空串。
+func probeChallengeAnswer(request *http.Request) string {
+	body, _ := io.ReadAll(request.Body)
+	match := probeChallengeAnswerPattern.FindSubmatch(body)
+	if match == nil {
+		return ""
+	}
+	left, _ := strconv.Atoi(string(match[1]))
+	right, _ := strconv.Atoi(string(match[2]))
+	return strconv.Itoa(left + right)
+}
 
 func testInput(baseURL, mode string) exactkeyprobe.Input {
 	now := time.Now().UTC()

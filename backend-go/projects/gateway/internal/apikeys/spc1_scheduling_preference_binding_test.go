@@ -237,6 +237,25 @@ func TestSPC1PatchChatKeyRejectsPreferenceAndDefaultKeyAllowsIt(t *testing.T) {
 	if got := env.queryCell(t, `SELECT scheduling_preference_id FROM api_keys WHERE id = 'key-chat'`); got != "" {
 		t.Fatalf("chat key column must stay NULL after null rejection, got %q", got)
 	}
+
+	// 存量遗留 purpose='studio' Key 与 chat 同矩阵：非空 ID 与显式 null 一律
+	// 同型 400，绑定列保持 NULL，不推进 revision。
+	seedGuardKey(t, env, "key-studio", adminID, "工作室遗留", "studio", 0)
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-studio", patchPreferenceBody("2020-01-01T00:00:00.000Z", `"sp-chat-target"`))
+	if code != http.StatusBadRequest {
+		t.Fatalf("studio patch: %d %v", code, payload)
+	}
+	if message, _ := payload["message"].(string); message != SchedulingPreferenceUnavailableMessage {
+		t.Fatalf("studio patch message: %q", message)
+	}
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/api-keys/key-studio", patchPreferenceBody("2020-01-01T00:00:00.000Z", `null`))
+	if code != http.StatusBadRequest {
+		t.Fatalf("studio patch null: %d %v", code, payload)
+	}
+	if got := env.queryCell(t, `SELECT scheduling_preference_id FROM api_keys WHERE id = 'key-studio'`); got != "" {
+		t.Fatalf("studio key column must stay NULL, got %q", got)
+	}
+
 	// 两次拒绝都不推进 revision（无任何写入），同版本仍可用。
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/api-keys/key-chat", "")
 	if code != http.StatusOK {

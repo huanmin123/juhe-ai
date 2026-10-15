@@ -68,7 +68,7 @@ func TestW7CManualDiagnosticsDispatch(t *testing.T) {
 	var seenAuthorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenAuthorization = r.Header.Get("authorization")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	ctx := context.Background()

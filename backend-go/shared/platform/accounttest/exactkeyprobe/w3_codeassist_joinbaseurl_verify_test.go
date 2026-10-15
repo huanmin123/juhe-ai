@@ -63,7 +63,7 @@ func TestW3CodeAssistJoinBaseURLSlashSemantics(t *testing.T) {
 			input.OAuthProjectID = "w3-project"
 			expiresAt := time.Now().UTC().Add(time.Hour)
 			input.OAuthExpiresAt = &expiresAt
-			request, err := buildProbeRequest(context.Background(), base, input, "w3-token")
+			request, err := buildProbeRequest(context.Background(), base, input, "w3-token", testChallenge)
 			if err != nil {
 				t.Fatalf("buildProbeRequest 构造失败: %v", err)
 			}

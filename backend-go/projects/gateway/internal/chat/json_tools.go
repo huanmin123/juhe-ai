@@ -8,17 +8,23 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 )
 
-var jsonStringFieldPatterns = map[string]*regexp.Regexp{}
+// jsonStringFieldPatterns 缓存按字段名编译的取值正则。并发写面：生图响应
+// 解析在每轮请求的 goroutine 内执行，同名字段的首次未命中会并发进入编译
+// 分支；普通 map 在此处未加锁写入会触发 fatal error: concurrent map writes
+// （进程级不可恢复退出），因此用 sync.Map 承载（仓库既有范式）。
+var jsonStringFieldPatterns sync.Map
 
 func fieldPattern(field, suffix string) *regexp.Regexp {
-	pattern := jsonStringFieldPatterns[field+suffix]
-	if pattern == nil {
-		pattern = regexp.MustCompile(`"` + regexp.QuoteMeta(field) + `"\s*:\s*` + suffix)
-		jsonStringFieldPatterns[field+suffix] = pattern
+	key := field + suffix
+	if cached, ok := jsonStringFieldPatterns.Load(key); ok {
+		return cached.(*regexp.Regexp)
 	}
-	return pattern
+	pattern := regexp.MustCompile(`"` + regexp.QuoteMeta(field) + `"\s*:\s*` + suffix)
+	actual, _ := jsonStringFieldPatterns.LoadOrStore(key, pattern)
+	return actual.(*regexp.Regexp)
 }
 
 func extractJSONStringField(data, field string) string {

@@ -65,6 +65,11 @@ func startLegacyLeaseRenewer(ctx context.Context, store Store, lease OwnerLease,
 				return
 			case <-ticker.C:
 				ok, err := store.RenewOwnerLease(renewCtx, lease, duration)
+				if renewCtx.Err() != nil {
+					// Stop 取消上下文时在途续租会带着 context.Canceled 返回，
+					// 那是主动停止不是租约失败，不能记成 Err 让迁移误判租约丢失。
+					return
+				}
 				if err == nil && !ok {
 					err = ErrOwnerLeaseLost
 				}

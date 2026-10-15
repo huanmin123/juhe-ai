@@ -141,7 +141,7 @@ func (d *AnthropicResponseDriver) ParseErrorPayloadFromJSONValue(value any) gate
 }
 
 func (d *AnthropicResponseDriver) NewStreamInspector() gatewayproto.StreamInspector {
-	return anthropicInspectorAdapter{inner: gatewayanthropic.NewStreamInspector()}
+	return newAnthropicInspectorAdapter()
 }
 
 func (d *AnthropicResponseDriver) StreamDriver() StreamDriver { return anthropicStreamDriver{} }
@@ -187,42 +187,74 @@ func (d *GeminiResponseDriver) ParseErrorPayloadFromJSONValue(value any) gateway
 }
 
 func (d *GeminiResponseDriver) NewStreamInspector() gatewayproto.StreamInspector {
-	return geminiInspectorAdapter{inner: gatewaygemini.NewStreamInspector()}
+	return newGeminiInspectorAdapter()
 }
 
 func (d *GeminiResponseDriver) StreamDriver() StreamDriver { return geminiStreamDriver{} }
 
 // ---- inspector 适配（剥掉包内返回值以满足窄接口） ----
+//
+// 快照缓存：anthropic/gemini 内层 PushChunk/PushText/Finish 已计算并返回一份
+// 完整快照，适配器此前直接丢弃，管道随后又调 Snapshot() 重算——每 chunk 双份
+// 整状态拷贝（EventTypeCounts map 重建 + RecentEventTypes 切片拷贝 + usage
+// 合并）。此处缓存变更操作产出的快照，Snapshot() 在两次变更之间直接复用：
+// 无变更时状态未动，复用值与实时重算等价；每次变更都会覆盖缓存，不存在陈旧
+// 窗口。快照内容由内层 Snapshot() 独立拷贝，调用方（pipe）只读不改。
 
 type anthropicInspectorAdapter struct {
-	inner *gatewayanthropic.StreamInspector
+	inner  *gatewayanthropic.StreamInspector
+	cached gatewayproto.StreamInspection
 }
 
-func (a anthropicInspectorAdapter) PushChunk(chunk []byte) { a.inner.PushChunk(chunk) }
-func (a anthropicInspectorAdapter) PushText(text string)   { a.inner.PushText(text) }
-func (a anthropicInspectorAdapter) Finish() gatewayproto.StreamInspection {
-	return convertAnthropicInspection(a.inner.Finish())
+// newAnthropicInspectorAdapter 以初始快照起步：首次变更前调用 Snapshot()
+// 必须与内层实时快照等价（零值 StreamInspection 与初始状态不等价）。
+func newAnthropicInspectorAdapter() *anthropicInspectorAdapter {
+	inner := gatewayanthropic.NewStreamInspector()
+	return &anthropicInspectorAdapter{inner: inner, cached: convertAnthropicInspection(inner.Snapshot())}
 }
-func (a anthropicInspectorAdapter) Snapshot() gatewayproto.StreamInspection {
-	return convertAnthropicInspection(a.inner.Snapshot())
+
+func (a *anthropicInspectorAdapter) PushChunk(chunk []byte) {
+	a.cached = convertAnthropicInspection(a.inner.PushChunk(chunk))
 }
-func (a anthropicInspectorAdapter) DrainEventSummariesCanEndStream() bool {
+func (a *anthropicInspectorAdapter) PushText(text string) {
+	a.cached = convertAnthropicInspection(a.inner.PushText(text))
+}
+func (a *anthropicInspectorAdapter) Finish() gatewayproto.StreamInspection {
+	a.cached = convertAnthropicInspection(a.inner.Finish())
+	return a.cached
+}
+func (a *anthropicInspectorAdapter) Snapshot() gatewayproto.StreamInspection {
+	return a.cached
+}
+func (a *anthropicInspectorAdapter) DrainEventSummariesCanEndStream() bool {
 	return a.inner.DrainEventSummariesCanEndStream()
 }
 
 type geminiInspectorAdapter struct {
-	inner *gatewaygemini.StreamInspector
+	inner  *gatewaygemini.StreamInspector
+	cached gatewayproto.StreamInspection
 }
 
-func (g geminiInspectorAdapter) PushChunk(chunk []byte) { g.inner.PushChunk(chunk) }
-func (g geminiInspectorAdapter) PushText(text string)   { g.inner.PushText(text) }
-func (g geminiInspectorAdapter) Finish() gatewayproto.StreamInspection {
-	return convertGeminiInspection(g.inner.Finish())
+// newGeminiInspectorAdapter 同 newAnthropicInspectorAdapter：初始快照起步。
+func newGeminiInspectorAdapter() *geminiInspectorAdapter {
+	inner := gatewaygemini.NewStreamInspector()
+	return &geminiInspectorAdapter{inner: inner, cached: convertGeminiInspection(inner.Snapshot())}
 }
-func (g geminiInspectorAdapter) Snapshot() gatewayproto.StreamInspection {
-	return convertGeminiInspection(g.inner.Snapshot())
+
+func (g *geminiInspectorAdapter) PushChunk(chunk []byte) {
+	g.cached = convertGeminiInspection(g.inner.PushChunk(chunk))
 }
-func (g geminiInspectorAdapter) DrainEventSummariesCanEndStream() bool {
+func (g *geminiInspectorAdapter) PushText(text string) {
+	g.cached = convertGeminiInspection(g.inner.PushText(text))
+}
+func (g *geminiInspectorAdapter) Finish() gatewayproto.StreamInspection {
+	g.cached = convertGeminiInspection(g.inner.Finish())
+	return g.cached
+}
+func (g *geminiInspectorAdapter) Snapshot() gatewayproto.StreamInspection {
+	return g.cached
+}
+func (g *geminiInspectorAdapter) DrainEventSummariesCanEndStream() bool {
 	return g.inner.DrainEventSummariesCanEndStream()
 }
 
@@ -234,7 +266,7 @@ func (anthropicStreamDriver) ClientErrorProtocol() string {
 	return gatewayanthropic.ClientErrorProtocol
 }
 func (anthropicStreamDriver) NewStreamInspector() gatewayproto.StreamInspector {
-	return anthropicInspectorAdapter{inner: gatewayanthropic.NewStreamInspector()}
+	return newAnthropicInspectorAdapter()
 }
 func (anthropicStreamDriver) ResponseInspectionEndpointFamily(family gatewayproto.ResponseEndpointFamily) gatewayproto.ResponseEndpointFamily {
 	return gatewayproto.ResponseEndpointFamily(gatewayanthropic.AnthropicV1Driver.ResponseInspectionEndpointFamily(string(family)))
@@ -250,7 +282,7 @@ type geminiStreamDriver struct{}
 
 func (geminiStreamDriver) ClientErrorProtocol() string { return "gemini" }
 func (geminiStreamDriver) NewStreamInspector() gatewayproto.StreamInspector {
-	return geminiInspectorAdapter{inner: gatewaygemini.NewStreamInspector()}
+	return newGeminiInspectorAdapter()
 }
 
 // ResponseInspectionEndpointFamily：G04 未冻结该映射；识别的 Gemini family

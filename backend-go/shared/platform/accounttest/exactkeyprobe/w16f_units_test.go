@@ -52,7 +52,7 @@ func TestW16fBuildProbeRequestArms(t *testing.T) {
 	// 未知 endpoint mode → 请求构造失败臂。
 	unknown := testInput("https://api.example.com", "chat_json")
 	unknown.EndpointMode = "w16f-unknown"
-	if _, err := buildProbeRequest(context.Background(), base, unknown, "token"); err == nil || !strings.Contains(err.Error(), "未冻结的 endpoint mode") {
+	if _, err := buildProbeRequest(context.Background(), base, unknown, "token", testChallenge); err == nil || !strings.Contains(err.Error(), "未冻结的 endpoint mode") {
 		t.Fatalf("未知 mode 必须报错: %v", err)
 	}
 	// codeAssist 包装：gemini 协议 + google_oauth code_assist。
@@ -62,7 +62,7 @@ func TestW16fBuildProbeRequestArms(t *testing.T) {
 	assist.Type = "google_oauth"
 	assist.OAuthType = "code_assist"
 	assist.OAuthProjectID = "w16f-project"
-	request, err := buildProbeRequest(context.Background(), base, assist, "token")
+	request, err := buildProbeRequest(context.Background(), base, assist, "token", testChallenge)
 	if err != nil {
 		t.Fatalf("codeAssist 请求必须构造成功: %v", err)
 	}
@@ -84,15 +84,15 @@ func TestW16fProbeTransportBadProxy(t *testing.T) {
 // 与 images data 非法/url 臂。
 func TestW16fVerifyResponseArms(t *testing.T) {
 	// profile 非空 + images_json。
-	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "images_json"}, []byte(`{"data":[{"b64_json":"dzE2Zg=="}]}`)); err != nil {
+	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "images_json"}, testChallenge, []byte(`{"data":[{"b64_json":"dzE2Zg=="}]}`)); err != nil {
 		t.Fatalf("profile images 必须通过: %v", err)
 	}
 	// profile 非空 + 未知 mode + 含挑战 → default 成功臂。
-	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "w16f-custom"}, []byte(`{"note":"JUHE"}`)); err != nil {
+	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "w16f-custom"}, testChallenge, []byte(`{"note":"46"}`)); err != nil {
 		t.Fatalf("default 含挑战必须通过: %v", err)
 	}
 	// default 无挑战 → 失败臂。
-	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "w16f-custom"}, []byte(`{"note":"none"}`)); err == nil {
+	if err := verifyResponse(Input{ProtocolProfileID: "profile_openai_openai_v1", EndpointMode: "w16f-custom"}, testChallenge, []byte(`{"note":"none"}`)); err == nil {
 		t.Fatal("default 无挑战必须报错")
 	}
 	// images data 元素非对象 → continue 后报缺少有效图片。
@@ -110,7 +110,7 @@ func TestW16fVerifyResponseArms(t *testing.T) {
 func TestW16fResponsesSSEArms(t *testing.T) {
 	// completed 事件但输出不含挑战。
 	body := []byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
-	if err := verifyResponsesSSE(body); err == nil || !strings.Contains(err.Error(), "未包含挑战值") {
+	if err := verifyResponsesSSE(testChallenge, body); err == nil || !strings.Contains(err.Error(), "未包含挑战值") {
 		t.Fatalf("缺挑战必须报错: %v", err)
 	}
 	// [DONE] 数据行短路臂。
@@ -120,10 +120,10 @@ func TestW16fResponsesSSEArms(t *testing.T) {
 		t.Fatalf("[DONE] 必须短路: %v completed=%t", err, completed)
 	}
 	// output_text.done 聚合臂。
-	if err := consumeResponsesSSEEvent("data: {\"type\":\"response.output_text.done\",\"text\":\"juhe\"}", &output, &completed); err != nil {
+	if err := consumeResponsesSSEEvent("data: {\"type\":\"response.output_text.done\",\"text\":\"46\"}", &output, &completed); err != nil {
 		t.Fatalf("output_text.done 必须聚合: %v", err)
 	}
-	if !strings.Contains(output.String(), "juhe") {
+	if !strings.Contains(output.String(), "46") {
 		t.Fatalf("输出必须包含聚合文本: %q", output.String())
 	}
 }

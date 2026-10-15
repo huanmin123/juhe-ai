@@ -73,7 +73,7 @@ func TestRunnerPersistsDirectProbeOutcomeInJobsStore(t *testing.T) {
 		if request.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 	root := t.TempDir()
@@ -173,7 +173,7 @@ func TestRunnerRenewsOwnerLeaseWhileLongCycleRuns(t *testing.T) {
 		select {
 		case <-time.After(2500 * time.Millisecond):
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 		case <-request.Context().Done():
 			return
 		}
@@ -335,9 +335,9 @@ func TestRunnerPersistsTimeoutOutcomeAfterCursorPersistence(t *testing.T) {
 
 func TestRunnerLostLeaseFailsClosedWithoutCursorOrOutcome(t *testing.T) {
 	secret := "lost-lease-outcome-secret"
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite")})
@@ -404,7 +404,7 @@ func TestRunnerDirectPostgresInputLoadsExplicitRequestEvenWhenNotDue(t *testing.
 		if request.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 
@@ -493,7 +493,7 @@ func TestRunnerDirectInputRefreshesDueFenceAfterRead(t *testing.T) {
 		if request.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 	start := time.Now().UTC().Truncate(time.Millisecond)
@@ -532,8 +532,8 @@ func TestRunnerDirectInputRefreshesDueFenceAfterRead(t *testing.T) {
 
 func TestRunnerDirectInputFailureIsDurableIdempotentAndDoesNotBlockOtherCandidates(t *testing.T) {
 	secret := "direct-failure-isolation-secret"
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 	store, lease := openSQLiteStoreWithLease(t)

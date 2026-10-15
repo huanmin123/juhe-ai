@@ -39,8 +39,10 @@ import (
 )
 
 // w4CaptureTransport 记录出站请求 URL 并返回罐装 body（评分跟随测试）。
+// bodyFunc 非空时按请求惰性构造 body（假上游需读挑战题作答的场景）。
 type w4CaptureTransport struct {
 	body       string
+	bodyFunc   func(request *http.Request) string
 	capturedOn bool
 	url        string
 }
@@ -48,15 +50,19 @@ type w4CaptureTransport struct {
 func (t *w4CaptureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	t.url = request.URL.String()
 	t.capturedOn = true
+	body := t.body
+	if t.bodyFunc != nil {
+		body = t.bodyFunc(request)
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(t.body)),
+		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{},
 	}, nil
 }
 
-// w4Challenge 是参数化的探针挑战（出站形状断言不依赖随机后缀）。
-var w4Challenge = OutputChallenge{ExpectedOutput: "juhe", Prompt: "接口连通性自动测试：请原样输出 juhe424"}
+// w4Challenge 是参数化的探针挑战（出站形状断言不依赖随机性）。
+var w4Challenge = OutputChallenge{ExpectedOutput: "46", Prompt: "接口连通性自动测试：请计算 12+34，只回复数字"}
 
 // w4BuildRequest 构造单次出站请求并读出 body（身份值参数化：不比具体 UUID，
 // 比存在性与互相派生关系）。凭据取 view.SelectedAPIKey（生产同源），未设置时
@@ -725,10 +731,13 @@ func TestW4CodeAssistShape(t *testing.T) {
 func TestW4ClassifyModeFollowsWireForm(t *testing.T) {
 	t.Run("A 形态 responses_json 按 SSE 评分", func(t *testing.T) {
 		transport := &w4CaptureTransport{
-			body: "event: response.output_text.delta\n" +
-				`data: {"type":"response.output_text.delta","delta":"juhe"}` + "\n\n" +
-				"event: response.completed\n" +
-				`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n",
+			bodyFunc: func(request *http.Request) string {
+				body, _ := io.ReadAll(request.Body)
+				return "event: response.output_text.delta\n" +
+					`data: {"type":"response.output_text.delta","delta":"` + challengeAnswerFromBody(body) + `"}` + "\n\n" +
+					"event: response.completed\n" +
+					`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n"
+			},
 		}
 		view := probeView("https://ignored.example.com")
 		view.Type = "oauth"
@@ -750,7 +759,10 @@ func TestW4ClassifyModeFollowsWireForm(t *testing.T) {
 	})
 	t.Run("Code Assist generate_content_json 按 SSE 评分", func(t *testing.T) {
 		transport := &w4CaptureTransport{
-			body: "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"juhe\"}]}}]}\n\n",
+			bodyFunc: func(request *http.Request) string {
+				body, _ := io.ReadAll(request.Body)
+				return "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"" + challengeAnswerFromBody(body) + "\"}]}}]}\n\n"
+			},
 		}
 		view := probeView("https://cloudcode-pa.googleapis.com")
 		view.ProtocolCode = "gemini"

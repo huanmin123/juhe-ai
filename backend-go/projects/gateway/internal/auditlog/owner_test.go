@@ -131,6 +131,38 @@ func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	}
 }
 
+// TestSameOwnerReacquiresUnexpiredLease 覆盖 2026-10-14 生产死锁的获取侧：
+// 未过期租约的 owner_id 与获取方相同时直接接管并递增 fence；异 owner 的未过期
+// 行仍必须拒绝。同 owner 再获取只来自本实例自己的重启/失租恢复。
+func TestSameOwnerReacquiresUnexpiredLease(t *testing.T) {
+	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
+	defer store.Close()
+	ctx := context.Background()
+
+	first, ok, err := store.AcquireOwnerLease(ctx, "same-owner", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("首次获取失败: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.AcquireOwnerLease(ctx, "other-owner", time.Minute); err != nil || ok {
+		t.Fatalf("异 owner 未过期行必须拒绝: ok=%v err=%v", ok, err)
+	}
+	second, ok, err := store.AcquireOwnerLease(ctx, "same-owner", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("同 owner 未过期行必须接管: ok=%v err=%v", ok, err)
+	}
+	if second.FenceToken <= first.FenceToken {
+		t.Fatalf("同 owner 接管必须递增 fence: first=%d second=%d", first.FenceToken, second.FenceToken)
+	}
+	renewed, err := store.RenewOwnerLease(ctx, first, time.Minute)
+	if err != nil || renewed {
+		t.Fatalf("旧 fence 续约必须被拒绝: renewed=%v err=%v", renewed, err)
+	}
+	renewed, err = store.RenewOwnerLease(ctx, second, time.Minute)
+	if err != nil || !renewed {
+		t.Fatalf("新 fence 续约必须成功: renewed=%v err=%v", renewed, err)
+	}
+}
+
 // TestRunOwnerRunsRetentionPass pins the cadence transfer: the retention pass
 // scheduled by the resident owner executes within the configured interval and
 // deletes an expired success log exactly like the retired listener loop.

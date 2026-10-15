@@ -215,20 +215,20 @@ Gemini streaming 使用 SSE。每个有效事件的 `data:` 是 Gemini response 
 
 ### 本地错误
 
-Gemini native 本地错误统一渲染为 Google API error shape：
+Gemini native 本地错误统一渲染为 Google 风格信封（`message` + `status` + 可选字符串 `code`，字段级契约见《Gemini账号接入.md》响应体「本地错误信封」条目）：
 
 ```json
 {
   "error": {
-    "code": 400,
     "message": "模型不可用或当前 API Key 的路由策略未绑定 Gemini 分组",
-    "status": "INVALID_ARGUMENT",
-    "details": []
+    "status": "INVALID_ARGUMENT"
   }
 }
 ```
 
-错误 status 建议：
+`status` 由错误类型映射（`rate_limit_exceeded` → `RESOURCE_EXHAUSTED`、`service_unavailable`/`server_overloaded` → `UNAVAILABLE`、`invalid_request_error` → `INVALID_ARGUMENT`/`UNAUTHENTICATED`、超时与截止类码 → `DEADLINE_EXCEEDED`、未匹配类型 → `INTERNAL`）；`code` 为字符串错误码，为空时省略字段。数字 `code` 与 `details` 属 Google 上游错误体形状，不出现在本地错误信封中。
+
+错误 status 建议（设计建议值；当前实现的 `status` 只由上述错误类型映射产出，`FAILED_PRECONDITION` 与 `BAD_GATEWAY` 暂无产出路径，未匹配类型回退 `INTERNAL`）：
 
 | 场景 | status | HTTP |
 | --- | --- | --- |

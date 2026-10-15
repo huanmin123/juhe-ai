@@ -6,14 +6,33 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 )
+
+// w14qProbeChallengePattern 匹配探针算术挑战（accountprobe 的
+// outputChallengePromptFormat，2026-10-15 起取代固定令牌）。
+var w14qProbeChallengePattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
+
+// w14qProbeAnswer 从探针请求体解析算术挑战并返回两数之和，供假上游回显。
+func w14qProbeAnswer(request *http.Request) string {
+	body, _ := io.ReadAll(request.Body)
+	match := w14qProbeChallengePattern.FindSubmatch(body)
+	if match == nil {
+		return ""
+	}
+	left, _ := strconv.Atoi(string(match[1]))
+	right, _ := strconv.Atoi(string(match[2]))
+	return strconv.Itoa(left + right)
+}
 
 // w14qSeedProbeHTTPAccount 在 probe fixture 上补一个指向本地 httptest 上游的
 // chat_json 账户（凭据 base_url 直接写回环地址，探针不出本机）。
@@ -66,7 +85,7 @@ func TestW14QSpeedFirstProbeFuncSuccessPath(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenPath = r.URL.Path
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + w14qProbeAnswer(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	if seenPath != "" {
@@ -95,7 +114,7 @@ func TestW14QSpeedFirstProbeFuncSuccessPath(t *testing.T) {
 func TestW14QCircuitRecoveryTransportProbeSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + w14qProbeAnswer(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	handle, service := w14qProbeStoreFixture(t)

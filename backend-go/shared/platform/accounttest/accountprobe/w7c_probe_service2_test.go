@@ -33,14 +33,14 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/v1/messages" {
-			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"` + challengeAnswerFromRequest(r) + `"}],"stop_reason":"end_turn"}`))
 			return
 		}
 		if strings.Contains(r.URL.Path, "generateContent") {
-			_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"juhe"}]}}]}`))
+			_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"` + challengeAnswerFromRequest(r) + `"}]}}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	ctx := context.Background()
@@ -111,10 +111,13 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 		// A 形态恒 SSE（§9.1-A）：罐装响应必须是 SSE 完成事件——评分跟随请求
 		// 编码形态（§9.4 W3 裁决），迁移前的 JSON 罐装体不再满足探活语义。
 		var captured http.Header
-		transport := &w7cCaptureTransport{capture: &captured, body: "event: response.output_text.delta\n" +
-			`data: {"type":"response.output_text.delta","delta":"juhe"}` + "\n\n" +
-			"event: response.completed\n" +
-			`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n"}
+		transport := &w7cCaptureTransport{capture: &captured, bodyFunc: func(req *http.Request) string {
+			body, _ := io.ReadAll(req.Body)
+			return "event: response.output_text.delta\n" +
+				`data: {"type":"response.output_text.delta","delta":"` + challengeAnswerFromBody(body) + `"}` + "\n\n" +
+				"event: response.completed\n" +
+				`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\n"
+		}}
 		view := probeView("https://ignored.example.com")
 		view.HealthCheckEndpointMode = string(ModeResponsesJSON)
 		view.Type = "oauth"
@@ -166,18 +169,24 @@ func TestW7CExecuteAttemptProtocolAuthArms(t *testing.T) {
 }
 
 // w7cCaptureTransport records the dispatched request and returns a canned
-// body, keeping OAuth-profile probes off the real network.
+// body, keeping OAuth-profile probes off the real network. bodyFunc 非空时
+// 按请求惰性构造 body（假上游需读挑战题作答的场景）。
 type w7cCaptureTransport struct {
-	capture *http.Header
-	body    string
+	capture  *http.Header
+	body     string
+	bodyFunc func(req *http.Request) string
 }
 
 func (t *w7cCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	*t.capture = req.Header
 	t.capture.Set("request-url", req.URL.String())
+	body := t.body
+	if t.bodyFunc != nil {
+		body = t.bodyFunc(req)
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(t.body)),
+		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{},
 	}, nil
 }
@@ -192,7 +201,7 @@ func openImageServer(t *testing.T, body string) *httptest.Server {
 func TestW7CAttemptStagedAndReadArms(t *testing.T) {
 	// attemptStaged returns the first success and skips later stages.
 	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer okServer.Close()
 	view := probeView(okServer.URL)
@@ -330,7 +339,7 @@ func TestW7CHybridAndLimitedArms(t *testing.T) {
 
 	// ProbeAccountView happy path.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	poolView := probeView(server.URL)
@@ -373,7 +382,7 @@ func TestW7CHybridAndLimitedArms(t *testing.T) {
 	}
 	// A limited success keeps the success message.
 	full := classifyResponse(probeView("https://upstream.example.com"), ProtocolOpenAI, ModeChatJSON,
-		`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`, nil, http.StatusOK, 1, 2, challenge, true)
+		`{"choices":[{"message":{"content":"`+challenge.ExpectedOutput+`"},"finish_reason":"stop"}]}`, nil, http.StatusOK, 1, 2, challenge, true)
 	if !full.Result.Success || full.Result.Message != "OpenAI Chat Completions 测试通过" {
 		t.Fatalf("full success: %+v", full.Result)
 	}

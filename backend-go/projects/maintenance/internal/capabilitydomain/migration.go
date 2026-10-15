@@ -375,9 +375,20 @@ func verifyDomains(ctx context.Context, q querier, dialect capdomain.Dialect, ac
 		sealedStoredByID = make(map[string]string)
 	}
 	for {
-		query := fmt.Sprintf(`SELECT id, capability_domain, authorization_instance_source_account_id FROM %s
-			WHERE (%s = '' OR id > %s) ORDER BY id LIMIT %s`, table, placeholder(dialect, 1), placeholder(dialect, 2), placeholder(dialect, 3))
-		rows, err := q.QueryContext(ctx, query, after, "", batchSize)
+			// PG 复用 $1（与 accountRowQuery 同款写法）：此前写成
+			// `id > $2` 并把空串绑到 $2，keyset 游标恒不前进，核验在第二批
+			// 触发死循环保护（2026-10-15 生产 M1 迁移实测）。
+			cursorCmp := placeholder(dialect, 2)
+			limitPh := placeholder(dialect, 3)
+			args := []any{after, "", batchSize}
+			if dialect == capdomain.DialectPostgres {
+				cursorCmp = placeholder(dialect, 1)
+				limitPh = placeholder(dialect, 2)
+				args = []any{after, batchSize}
+			}
+			query := fmt.Sprintf(`SELECT id, capability_domain, authorization_instance_source_account_id FROM %s
+				WHERE (%s = '' OR id > %s) ORDER BY id LIMIT %s`, table, placeholder(dialect, 1), cursorCmp, limitPh)
+			rows, err := q.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("核验 accounts 域值失败: %w", err)
 		}
@@ -780,9 +791,17 @@ func countPendingMigration(ctx context.Context, db *sql.DB, dialect capdomain.Di
 	after := ""
 	batchSize := DefaultBatchSize
 	for {
+		cursorCmp := placeholder(dialect, 2)
+		limitPh := placeholder(dialect, 3)
+		args := []any{after, "", batchSize}
+		if dialect == capdomain.DialectPostgres {
+			cursorCmp = placeholder(dialect, 1)
+			limitPh = placeholder(dialect, 2)
+			args = []any{after, batchSize}
+		}
 		query := fmt.Sprintf(`SELECT id, capability_domain FROM %s WHERE (%s = '' OR id > %s) ORDER BY id LIMIT %s`,
-			table, placeholder(dialect, 1), placeholder(dialect, 2), placeholder(dialect, 3))
-		rows, err := db.QueryContext(ctx, query, after, "", batchSize)
+			table, placeholder(dialect, 1), cursorCmp, limitPh)
+		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return 0, 0, fmt.Errorf("统计待迁移行失败: %w", err)
 		}

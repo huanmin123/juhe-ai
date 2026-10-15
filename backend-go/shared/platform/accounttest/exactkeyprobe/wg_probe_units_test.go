@@ -25,24 +25,24 @@ func wgSSEInput(mode, provider, profile string) Input {
 // TestVerifyOpenAIChatSSE 覆盖 Chat Completions SSE 验证的成功、缺 DONE、
 // 缺挑战与非法 data 分支。
 func TestVerifyOpenAIChatSSE(t *testing.T) {
-	good := "data: {\"choices\":[{\"delta\":{\"content\":\"JUHE\"}}]}\n\n" +
-		"data: {\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"juhe\"}}]}\n\n" +
+	good := "data: {\"choices\":[{\"delta\":{\"content\":\"46\"}}]}\n\n" +
+		"data: {\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"46\"}}]}\n\n" +
 		"data: [DONE]\n\n"
-	if err := verifyOpenAIChatSSE([]byte(good)); err != nil {
+	if err := verifyOpenAIChatSSE(testChallenge, []byte(good)); err != nil {
 		t.Fatalf("完整 Chat SSE 必须通过: %v", err)
 	}
-	if err := verifyOpenAIChatSSE([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"juhe\"}}]}\n\n")); err == nil {
+	if err := verifyOpenAIChatSSE(testChallenge, []byte("data: {\"choices\":[{\"delta\":{\"content\":\"46\"}}]}\n\n")); err == nil {
 		t.Fatal("缺 [DONE] 必须失败")
 	}
 	noChallenge := "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
-	if err := verifyOpenAIChatSSE([]byte(noChallenge)); err == nil {
+	if err := verifyOpenAIChatSSE(testChallenge, []byte(noChallenge)); err == nil {
 		t.Fatal("缺挑战值必须失败")
 	}
-	if err := verifyOpenAIChatSSE([]byte("data: not-json\n\n")); err == nil {
+	if err := verifyOpenAIChatSSE(testChallenge, []byte("data: not-json\n\n")); err == nil {
 		t.Fatal("非法 data 必须报错")
 	}
 	// CRLF 归一。
-	if err := verifyOpenAIChatSSE([]byte(strings.ReplaceAll(good, "\n\n", "\r\n\r\n"))); err != nil {
+	if err := verifyOpenAIChatSSE(testChallenge, []byte(strings.ReplaceAll(good, "\n\n", "\r\n\r\n"))); err != nil {
 		t.Fatalf("CRLF 流必须通过: %v", err)
 	}
 }
@@ -50,18 +50,18 @@ func TestVerifyOpenAIChatSSE(t *testing.T) {
 // TestVerifyAnthropicSSE 覆盖 Messages SSE 的成功、缺 message_stop、
 // 非 JSON data 与事件类型内嵌分支。
 func TestVerifyAnthropicSSE(t *testing.T) {
-	good := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"juhe\"}}\n\n" +
+	good := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"46\"}}\n\n" +
 		"data: {\"type\":\"message_stop\"}\n\n"
-	if err := verifyAnthropicSSE([]byte(good)); err != nil {
+	if err := verifyAnthropicSSE(testChallenge, []byte(good)); err != nil {
 		t.Fatalf("完整 Messages SSE 必须通过: %v", err)
 	}
-	if err := verifyAnthropicSSE([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"juhe\"}}\n\n")); err == nil {
+	if err := verifyAnthropicSSE(testChallenge, []byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"46\"}}\n\n")); err == nil {
 		t.Fatal("缺 message_stop 必须失败")
 	}
-	if err := verifyAnthropicSSE([]byte("data: not-json\n\n")); err == nil {
+	if err := verifyAnthropicSSE(testChallenge, []byte("data: not-json\n\n")); err == nil {
 		t.Fatal("非法 data 必须报错")
 	}
-	if err := verifyAnthropicSSE([]byte("event: ping\n\n")); err == nil {
+	if err := verifyAnthropicSSE(testChallenge, []byte("event: ping\n\n")); err == nil {
 		t.Fatal("无 data 块不得视为完成")
 	}
 }
@@ -69,40 +69,40 @@ func TestVerifyAnthropicSSE(t *testing.T) {
 // TestVerifyGeminiSSE 覆盖 Gemini SSE 的直接/嵌套 response、[DONE] 与
 // 非法 data 分支。
 func TestVerifyGeminiSSE(t *testing.T) {
-	good := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"juhe\"}]},\"finishReason\":\"STOP\"}]}\n\n"
-	if err := verifyGeminiSSE([]byte(good)); err != nil {
+	good := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"46\"}]},\"finishReason\":\"STOP\"}]}\n\n"
+	if err := verifyGeminiSSE(testChallenge, []byte(good)); err != nil {
 		t.Fatalf("完整 Gemini SSE 必须通过: %v", err)
 	}
-	nested := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"JUHE\"}]},\"finishReason\":\"STOP\"}]}}\n\ndata: [DONE]\n\n"
-	if err := verifyGeminiSSE([]byte(nested)); err != nil {
+	nested := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"46\"}]},\"finishReason\":\"STOP\"}]}}\n\ndata: [DONE]\n\n"
+	if err := verifyGeminiSSE(testChallenge, []byte(nested)); err != nil {
 		t.Fatalf("嵌套 response 流必须通过: %v", err)
 	}
-	if err := verifyGeminiSSE([]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"juhe\"}]}}]}\n\n")); err == nil {
+	if err := verifyGeminiSSE(testChallenge, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"46\"}]}}]}\n\n")); err == nil {
 		t.Fatal("缺 finishReason 必须失败")
 	}
-	if err := verifyGeminiSSE([]byte("data: not-json\n\n")); err == nil {
+	if err := verifyGeminiSSE(testChallenge, []byte("data: not-json\n\n")); err == nil {
 		t.Fatal("非法 data 必须报错")
 	}
 }
 
 // TestVerifyInteractionsSSE 覆盖 Interactions SSE 的三种完成信号分支。
 func TestVerifyInteractionsSSE(t *testing.T) {
-	direct := "data: {\"status\":\"completed\",\"output_text\":\"juhe\"}\n\n"
-	if err := verifyInteractionsSSE([]byte(direct)); err != nil {
+	direct := "data: {\"status\":\"completed\",\"output_text\":\"46\"}\n\n"
+	if err := verifyInteractionsSSE(testChallenge, []byte(direct)); err != nil {
 		t.Fatalf("status=completed 必须通过: %v", err)
 	}
 	typed := "data: {\"type\":\"interaction.completed\"}\n\ndata: {\"status\":\"completed\"}\n\n"
-	if err := verifyInteractionsSSE([]byte(typed)); err == nil {
+	if err := verifyInteractionsSSE(testChallenge, []byte(typed)); err == nil {
 		t.Fatal("completed 事件缺挑战值必须失败")
 	}
-	nested := "data: {\"interaction\":{\"status\":\"completed\"}}\n\ndata: {\"interaction\":{\"output\":\"juhe\"}}\n\ndata: [DONE]\n\n"
-	if err := verifyInteractionsSSE([]byte(nested)); err != nil {
+	nested := "data: {\"interaction\":{\"status\":\"completed\"}}\n\ndata: {\"interaction\":{\"output\":\"46\"}}\n\ndata: [DONE]\n\n"
+	if err := verifyInteractionsSSE(testChallenge, []byte(nested)); err != nil {
 		t.Fatalf("嵌套 interaction 完成必须通过: %v", err)
 	}
-	if err := verifyInteractionsSSE([]byte("data: not-json\n\n")); err == nil {
+	if err := verifyInteractionsSSE(testChallenge, []byte("data: not-json\n\n")); err == nil {
 		t.Fatal("非法 data 必须报错")
 	}
-	if err := verifyInteractionsSSE([]byte("data: {\"status\":\"in_progress\"}\n\n")); err == nil {
+	if err := verifyInteractionsSSE(testChallenge, []byte("data: {\"status\":\"in_progress\"}\n\n")); err == nil {
 		t.Fatal("未完成流必须失败")
 	}
 }
@@ -110,13 +110,13 @@ func TestVerifyInteractionsSSE(t *testing.T) {
 // TestVerifyResponsesSSEFailures 覆盖 Responses SSE 的失败事件、非法 data
 // 与空流分支。
 func TestVerifyResponsesSSEFailures(t *testing.T) {
-	if err := verifyResponsesSSE([]byte("event: response.failed\ndata: {\"type\":\"response.failed\"}\n\n")); err == nil {
+	if err := verifyResponsesSSE(testChallenge, []byte("event: response.failed\ndata: {\"type\":\"response.failed\"}\n\n")); err == nil {
 		t.Fatal("response.failed 必须报错")
 	}
-	if err := verifyResponsesSSE([]byte("data: not-json\n\n")); err == nil {
+	if err := verifyResponsesSSE(testChallenge, []byte("data: not-json\n\n")); err == nil {
 		t.Fatal("非法 data 必须报错")
 	}
-	if err := verifyResponsesSSE([]byte(": comment only\n\n")); err == nil {
+	if err := verifyResponsesSSE(testChallenge, []byte(": comment only\n\n")); err == nil {
 		t.Fatal("无 data 流必须失败")
 	}
 }
@@ -131,23 +131,23 @@ func TestVerifyResponseJSONDispatch(t *testing.T) {
 		wantErr bool
 	}{
 		{"chat_json 完成", wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"),
-			`{"choices":[{"finish_reason":"stop","message":{"content":"juhe"}}]}`, false},
+			`{"choices":[{"finish_reason":"stop","message":{"content":"46"}}]}`, false},
 		{"chat_json 未完成", wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"),
-			`{"choices":[{"delta":{"content":"juhe"}}]}`, true},
+			`{"choices":[{"delta":{"content":"46"}}]}`, true},
 		{"responses_json 完成", wgSSEInput("responses_json", "openai", "profile_openai_openai_v1"),
-			`{"status":"completed","object":"response","output":[{"content":"juhe"}]}`, false},
+			`{"status":"completed","object":"response","output":[{"content":"46"}]}`, false},
 		{"responses_json 未完成", wgSSEInput("responses_json", "openai", "profile_openai_openai_v1"),
-			`{"status":"in_progress","output":[{"content":"juhe"}]}`, true},
+			`{"status":"in_progress","output":[{"content":"46"}]}`, true},
 		{"messages_json 完成", wgSSEInput("messages_json", "anthropic", "profile_anthropic_anthropic_v1"),
-			`{"type":"message","stop_reason":"end_turn","content":[{"text":"juhe"}]}`, false},
+			`{"type":"message","stop_reason":"end_turn","content":[{"text":"46"}]}`, false},
 		{"messages_json 缺 stop_reason", wgSSEInput("messages_json", "anthropic", "profile_anthropic_anthropic_v1"),
-			`{"type":"message","content":[{"text":"juhe"}]}`, true},
+			`{"type":"message","content":[{"text":"46"}]}`, true},
 		{"generate_content_json 完成", wgSSEInput("generate_content_json", "gemini", "profile_gemini_native_v1beta"),
-			`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"juhe"}]}}]}`, false},
+			`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"46"}]}}]}`, false},
 		{"generate_content_json 未完成", wgSSEInput("generate_content_json", "gemini", "profile_gemini_native_v1beta"),
-			`{"candidates":[{"content":{"parts":[{"text":"juhe"}]}}]}`, true},
+			`{"candidates":[{"content":{"parts":[{"text":"46"}]}}]}`, true},
 		{"interactions_json 完成", wgSSEInput("interactions_json", "gemini", "profile_gemini_native_v1beta"),
-			`{"status":"completed","output":"juhe"}`, false},
+			`{"status":"completed","output":"46"}`, false},
 		{"images_json 有效图", wgSSEInput("images_json", "openai", ""),
 			`{"data":[{"b64_json":"AAAA"}]}`, false},
 		{"images_json 缺图", wgSSEInput("images_json", "openai", ""),
@@ -155,27 +155,27 @@ func TestVerifyResponseJSONDispatch(t *testing.T) {
 		{"images_json 缺 data", wgSSEInput("images_json", "openai", ""),
 			`{}`, true},
 		{"无 profile 默认分支含挑战", wgSSEInput("chat_json", "openai", ""),
-			`{"anything":"juhe"}`, false},
+			`{"anything":"46"}`, false},
 		{"无 profile 默认分支缺挑战", wgSSEInput("chat_json", "openai", ""),
 			`{"anything":"nope"}`, true},
 	}
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
-			err := verifyResponse(item.input, []byte(item.body))
+			err := verifyResponse(item.input, testChallenge, []byte(item.body))
 			if (err != nil) != item.wantErr {
 				t.Fatalf("wantErr=%v, err=%v", item.wantErr, err)
 			}
 		})
 	}
 	// 非 JSON 响应。
-	if err := verifyResponse(wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"), []byte("<html>")); err == nil {
+	if err := verifyResponse(wgSSEInput("chat_json", "openai", "profile_openai_openai_v1"), testChallenge, []byte("<html>")); err == nil {
 		t.Fatal("非 JSON 响应必须报错")
 	}
 	// codeAssist 分支（gemini oauth → verifyGeminiSSE）。
 	codeAssist := wgSSEInput("generate_content_json", "gemini", "profile_gemini_native_v1beta")
 	codeAssist.Type = "google_oauth"
 	codeAssist.OAuthType = "code_assist"
-	if err := verifyResponse(codeAssist, []byte("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"juhe\"}]}}]}\n\n")); err != nil {
+	if err := verifyResponse(codeAssist, testChallenge, []byte("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"46\"}]}}]}\n\n")); err != nil {
 		t.Fatalf("codeAssist 分支必须走 Gemini SSE 验证: %v", err)
 	}
 }
@@ -203,10 +203,10 @@ func TestChatCompletedAndGeminiCandidateHelpers(t *testing.T) {
 // 参数缺失与非 API Key 分支。
 func TestProbeExactKeyModelRoutesToSelectedKey(t *testing.T) {
 	secret := "exact-key-secret"
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
-	}))
+		upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(request) + `"}}]}`))
+		}))
 	defer upstream.Close()
 	input := testInput(upstream.URL, "chat_json")
 	input.APIKeys = []APIKeyInput{

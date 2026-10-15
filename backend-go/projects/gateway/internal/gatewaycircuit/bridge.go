@@ -1433,7 +1433,11 @@ func (b *Bridge) scheduleScopeRetry(scopeKey string) {
 		}
 		b.mu.Lock()
 		if retry, ok := b.retryBackoffs[scopeKey]; ok && retry.timerStop != nil {
-			delete(b.retryBackoffs, scopeKey)
+			// 只摘掉已触发的定时器。backoff 必须留下：下一次持久化仍失败时，
+			// scheduleScopeRetry 读它继续翻倍，直到 30s 上限。整条删除会让
+			// 每次外层重试都从 retryDelayMs 重新开始，冲突写入方会按 1s
+			// 一轮持续打 CAS。
+			retry.timerStop = nil
 		}
 		stopped := b.stopped
 		b.mu.Unlock()

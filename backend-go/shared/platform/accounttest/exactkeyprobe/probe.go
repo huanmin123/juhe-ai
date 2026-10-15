@@ -733,8 +733,10 @@ func verifyResponsesSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	completed := false
+	chunkMatched := false
 	var protocolErr error
 	for _, block := range strings.Split(text, "\n\n") {
+		before := output.Len()
 		if err := consumeResponsesSSEEvent(block, &output, &completed); err != nil {
 			var failure *responsesSSEFailure
 			if errors.As(err, &failure) {
@@ -744,6 +746,9 @@ func verifyResponsesSSE(challenge probeChallenge, body []byte) error {
 				protocolErr = err
 			}
 		}
+		if output.Len() > before {
+			chunkMatched = chunkMatched || challengeAnswerMatched(output.String()[before:], challenge.Expected)
+		}
 	}
 	if protocolErr != nil {
 		return protocolErr
@@ -751,7 +756,7 @@ func verifyResponsesSSE(challenge probeChallenge, body []byte) error {
 	if !completed {
 		return errors.New("SSE 缺少 response.completed")
 	}
-	if !challengeAnswerMatched(output.String(), challenge.Expected) {
+	if !(chunkMatched || challengeAnswerMatched(output.String(), challenge.Expected)) {
 		return errors.New("SSE 输出未包含挑战值")
 	}
 	return nil
@@ -761,6 +766,7 @@ func verifyOpenAIChatSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	done := false
+	chunkMatched := false
 	for _, block := range strings.Split(text, "\n\n") {
 		for _, line := range strings.Split(block, "\n") {
 			if !strings.HasPrefix(line, "data:") {
@@ -782,15 +788,21 @@ func verifyOpenAIChatSSE(challenge probeChallenge, body []byte) error {
 					done = true
 				}
 				if delta, _ := choice["delta"].(map[string]any); delta != nil {
-					output.WriteString(textField(delta, "content"))
+					content := textField(delta, "content")
+					output.WriteString(content)
+					chunkMatched = chunkMatched || challengeAnswerMatched(content, challenge.Expected)
 				}
 				if message, _ := choice["message"].(map[string]any); message != nil {
-					output.WriteString(textField(message, "content"))
+					content := textField(message, "content")
+					output.WriteString(content)
+					chunkMatched = chunkMatched || challengeAnswerMatched(content, challenge.Expected)
 				}
 			}
 		}
 	}
-	if !done || !challengeAnswerMatched(output.String(), challenge.Expected) {
+	// 单块命中与拼接命中都算通过：部分上游在末包回放全文，拼接后会
+	// 变成 "4646" 这类重复，边界匹配会误杀。
+	if !done || !(chunkMatched || challengeAnswerMatched(output.String(), challenge.Expected)) {
 		return errors.New("Chat SSE 未完成挑战")
 	}
 	return nil
@@ -800,6 +812,7 @@ func verifyAnthropicSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	stopped := false
+	chunkMatched := false
 	for _, block := range strings.Split(text, "\n\n") {
 		var eventName string
 		var data string
@@ -823,23 +836,26 @@ func verifyAnthropicSSE(challenge probeChallenge, body []byte) error {
 		}
 		if eventName == "content_block_delta" {
 			if delta, _ := payload["delta"].(map[string]any); delta != nil {
-				output.WriteString(textField(delta, "text"))
+				content := textField(delta, "text")
+				output.WriteString(content)
+				chunkMatched = chunkMatched || challengeAnswerMatched(content, challenge.Expected)
 			}
 		}
 		if eventName == "message_stop" {
 			stopped = true
 		}
 	}
-	if !stopped || !challengeAnswerMatched(output.String(), challenge.Expected) {
+	if !stopped || !(chunkMatched || challengeAnswerMatched(output.String(), challenge.Expected)) {
 		return errors.New("Messages SSE 未完成挑战")
 	}
 	return nil
 }
 
-func verifyGeminiSSE(body []byte) error {
+func verifyGeminiSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	finished := false
+	challengeSeen := false
 	for _, block := range strings.Split(text, "\n\n") {
 		for _, line := range strings.Split(block, "\n") {
 			if !strings.HasPrefix(line, "data:") {
@@ -873,21 +889,22 @@ func verifyGeminiSSE(body []byte) error {
 					}
 				}
 			}
-			if containsChallenge(payload) {
-				output.WriteString(probeChallenge)
+			if containsChallengeValue(payload, challenge.Expected) {
+				challengeSeen = true
 			}
 		}
 	}
-	if !finished || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+	if !finished || !(challengeSeen || challengeAnswerMatched(output.String(), challenge.Expected)) {
 		return errors.New("Gemini SSE 未完成挑战")
 	}
 	return nil
 }
 
-func verifyInteractionsSSE(body []byte) error {
+func verifyInteractionsSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	completed := false
+	challengeSeen := false
 	for _, block := range strings.Split(text, "\n\n") {
 		for _, line := range strings.Split(block, "\n") {
 			if !strings.HasPrefix(line, "data:") {
@@ -908,12 +925,12 @@ func verifyInteractionsSSE(body []byte) error {
 			if interaction, _ := payload["interaction"].(map[string]any); interaction != nil && textField(interaction, "status") == "completed" {
 				completed = true
 			}
-			if containsChallenge(payload) {
-				output.WriteString(probeChallenge)
+			if containsChallengeValue(payload, challenge.Expected) {
+				challengeSeen = true
 			}
 		}
 	}
-	if !completed || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+	if !completed || !(challengeSeen || challengeAnswerMatched(output.String(), challenge.Expected)) {
 		return errors.New("Interactions SSE 未完成挑战")
 	}
 	return nil
@@ -1017,19 +1034,21 @@ func consumeResponsesSSEEvent(block string, output *strings.Builder, completed *
 	return nil
 }
 
-func containsChallenge(value any) bool {
+// containsChallengeValue 判定 JSON 树里任一字符串是否含期望答案（含边界，
+// 见 challengeAnswerMatched）。JSON 形态保持整响应宽松扫描的历史语义。
+func containsChallengeValue(value any, expected string) bool {
 	switch item := value.(type) {
 	case string:
-		return strings.Contains(strings.ToLower(item), probeChallenge)
+		return challengeAnswerMatched(item, expected)
 	case []any:
 		for _, child := range item {
-			if containsChallenge(child) {
+			if containsChallengeValue(child, expected) {
 				return true
 			}
 		}
 	case map[string]any:
 		for _, child := range item {
-			if containsChallenge(child) {
+			if containsChallengeValue(child, expected) {
 				return true
 			}
 		}

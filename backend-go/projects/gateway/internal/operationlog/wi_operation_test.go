@@ -127,19 +127,59 @@ func TestWIRunOwnerContract(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("取消后 RunOwner 未退出")
 	}
-	// lease 丢失后 RunOwner 再进入：入口 reacquire 必须先触库重取——行仍被
-	// wi-owner 自己持有（未过期）时重取被拒，fail-closed 返回错误而非继续
-	// 服务（2026-09-28 修订：不再无限回放旧 keeper 的存储错误）。
+	// lease 丢失后 RunOwner 再进入：入口 reacquire 必须先触库重取，不再回放
+	// 旧 keeper 的存储错误（2026-09-28 修订）。2026-10-15 起获取冲突分支对同
+	// owner_id 的未过期行直接接管并自增 fence（store.go AcquireOwnerLease），
+	// 所以行仍被 wi-owner 自己持有时重取成功、终态清空；跨 owner 持有才被拒。
+	lostFence := keeper.Lease().FenceToken
 	keeper.fatal(ErrOwnerLeaseLost)
-	lostDone := make(chan error, 1)
-	go func() { lostDone <- RunOwner(ctx, store, keeper, Config{}, slog.Default()) }()
+	// 重取成功后 RunOwner 进入保留循环，零值间隔下不会自行返回，所以带取消
+	// 跑并断言它以 nil 退出（重取失败会在进入循环前直接返回错误）。
+	sameOwnerCtx, sameOwnerCancel := context.WithCancel(ctx)
+	sameOwnerDone := make(chan error, 1)
+	go func() { sameOwnerDone <- RunOwner(sameOwnerCtx, store, keeper, Config{}, slog.Default()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for keeper.LostError() != nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	sameOwnerCancel()
 	select {
-	case err := <-lostDone:
-		if err == nil {
-			t.Fatal("行仍被持有时入口重取必须失败")
+	case err := <-sameOwnerDone:
+		if err != nil {
+			t.Fatalf("同 owner 未过期行的入口重取必须接管成功: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunOwner 未报告入口重取失败")
+		t.Fatal("同 owner 重取后 RunOwner 未随取消退出")
+	}
+	if keeper.LostError() != nil {
+		t.Fatal("同 owner 接管后终态必须清空")
+	}
+	if got := keeper.Lease().FenceToken; got <= lostFence {
+		t.Fatalf("同 owner 接管必须递增 fence: before=%d after=%d", lostFence, got)
+	}
+	keeper.fatal(ErrOwnerLeaseLost)
+	// 同 owner 重取刚把 lease_until 续到未来，先把行置为过期，rival 才能按
+	// 跨 owner 契约拿到行（未过期的跨 owner 获取本来就应被拒）。
+	if _, err := store.(*sqlStore).db.Exec(
+		`UPDATE operation_log_owner_leases SET lease_until=? WHERE lease_key='f4-operation-log-persistence'`,
+		storageTime(time.Now().Add(-time.Minute)),
+	); err != nil {
+		t.Fatalf("置过期 rival 前置行: %v", err)
+	}
+	rival, ok, err := StartLeaseKeeper(ctx, store, "wi-owner-rival", time.Minute, slog.Default())
+	if err != nil || !ok {
+		t.Fatalf("rival 获取=%v err=%v", ok, err)
+	}
+	defer rival.Close()
+	rivalDone := make(chan error, 1)
+	go func() { rivalDone <- RunOwner(ctx, store, keeper, Config{}, slog.Default()) }()
+	select {
+	case err := <-rivalDone:
+		if err == nil {
+			t.Fatal("跨 owner 持有行时入口重取必须失败")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunOwner 未报告跨 owner 入口重取失败")
 	}
 }
 

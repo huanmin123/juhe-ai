@@ -427,7 +427,6 @@ var wgAllWiredJobNames = []string{
 	"group-account-stats-refresh",
 	"usage-stats-consistency-check",
 	"usage-rank-snapshots-refresh",
-	"system-metrics-trend-windows-refresh",
 	"usage-overview-windows-refresh",
 	"usage-scope-range-windows-refresh",
 	"usage-hot-window-refresh",

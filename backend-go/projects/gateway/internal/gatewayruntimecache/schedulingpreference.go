@@ -24,15 +24,18 @@ import (
 // 纹截取长度（SP-C2 速度运行态 v2 键的冻结键材料）。
 const schedulingPreferenceFingerprintHexLen = 12
 
-// 读取链旁路的内部用途 Key 词表：purpose='chat' 的绑定列恒 NULL、不建立绑
-// 定，读取链直接旁路调度解析（返回 nil 快照，三字段保持空；保持现有覆盖/
-// lane 行为）。词表锚点与 apikeys 包 PATCH 拒绝矩阵
+// 读取链旁路的豁免词表：purpose='chat'（内部用途）与存量遗留
+// purpose='studio' 的绑定列恒 NULL、不建立绑定，读取链直接旁路调度解析
+// （返回 nil 快照，三字段保持空；保持现有覆盖/lane 行为，不按普通 Key 的
+// 「未迁移/数据不一致」失败）。studio 已随媒体工作室退场收窄为 legacy 存量
+// 值，退场清理命令执行前仍可能存在。词表锚点与 apikeys 包 PATCH 拒绝矩阵
 // （schedulingPreferenceExemptPurpose）同源，改动即两处同改。
 const schedulingPurposeChat = "chat"
+const schedulingPurposeStudio = "studio"
 
 // schedulingPreferencePurposeExempt 报告 purpose 是否旁路调度偏好解析。
 func schedulingPreferencePurposeExempt(purpose sql.NullString) bool {
-	return purpose.Valid && purpose.String == schedulingPurposeChat
+	return purpose.Valid && (purpose.String == schedulingPurposeChat || purpose.String == schedulingPurposeStudio)
 }
 
 // schedulingPreferenceSnapshot 是一次绑定解析通过后的快照增量：config 覆盖
@@ -59,9 +62,10 @@ func (s schedulingPreferenceSnapshot) fingerprint() (string, error) {
 
 // resolveSchedulingPreferenceSnapshot 按读取分阶段契约 P2 形态解析 api_keys
 // 行的调度偏好绑定（输入为 loadGatewayAPIKeyRow 的 JOIN 扫描值）：
-//   - purpose='chat'（内部用途词表，见 schedulingPurposeChat）：完全旁路调
-//     度解析，返回 nil（快照三字段保持空，运行时不消费偏好配置；沿用策略
-//     config 保持现状，绑定列恒 NULL 不按「未迁移/数据不一致」失败）；
+//   - purpose='chat' / 存量遗留 purpose='studio'（豁免词表，见
+//     schedulingPurposeChat / schedulingPurposeStudio）：完全旁路调度解析，
+//     返回 nil（快照三字段保持空，运行时不消费偏好配置；沿用策略 config
+//     保持现状，绑定列恒 NULL 不按「未迁移/数据不一致」失败）；
 //   - scheduling_preference_id IS NULL（普通 Key）：迁移完成后不允许存在，
 //     属未迁移或数据不一致，显式错误（不回落策略、不回落内置）；
 //   - 绑定内置或自定义行：合成完整配置（enabled 已随 v2 用户裁决修订第 4 条

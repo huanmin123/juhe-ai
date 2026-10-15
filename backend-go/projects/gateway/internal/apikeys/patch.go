@@ -427,9 +427,9 @@ func (s *Store) Patch(ctx context.Context, id string, input *PatchInput, access 
 	}
 
 	// 调度偏好绑定（P1 Has 语义）。「默认 Key 不允许更换策略路由」限制不扩
-	// 展到本字段（契约明示）；purpose=chat Key 保持列恒 NULL 强不变量：提交
-	// schedulingPreferenceId（非空 ID 或显式 null）一律统一同型 400，不走
-	// 普通 Key 的「显式 null 回默认内置 ID」矩阵。
+	// 展到本字段（契约明示）；purpose=chat Key 与存量遗留 purpose='studio'
+	// Key 保持列恒 NULL 强不变量：提交 schedulingPreferenceId（非空 ID 或显式
+	// null）一律统一同型 400，不走普通 Key 的「显式 null 回默认内置 ID」矩阵。
 	if input.HasSchedulingPreferenceID {
 		if schedulingPreferenceExemptPurpose(purpose) {
 			return nil, &ValidationError{Message: SchedulingPreferenceUnavailableMessage}

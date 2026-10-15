@@ -68,9 +68,11 @@ scrape_configs:
 - **增补不覆盖**：不得删除或改写现有 `juhe_app_*` 等任何既有查询；键冲突时以现网为准并停下确认。
 - 合并后重载/重启 postgres_exporter，用 `curl 127.0.0.1:<exporter 端口>/metrics | grep juhe_postgres_` 验证三个指标出现。
 
-## 告警规则迁移建议（不自动执行）
+## 告警规则迁移（2026-10-15 已执行）
 
-现有告警（维护侧规则文件，含 `AppGoroutinesHigh` / `AppJobStalled` / `AppStatsCursorStalled`）基于自维护系统指标统计/表监控的 DB 快照，随功能下线数据源消失。迁移建议：
+`AppGoroutinesHigh` 已于 2026-10-15 生产维护窗口迁移完成：表达式改为 `go_goroutines{job=~"juhe-ai-(gateway|jobs)"} > 1500`（阈值与 for 窗口沿用原口径，正常基线 gateway ~100 / jobs ~110），同步了 `F:\服务部署\alert-rules\juhe-app-alerts.yml` 与 `juhe-app-alerts.grafana.md`，并 reload Prometheus 生效。同窗口清理了 `queries.yaml` 的 `juhe_app_runtime` 块与 `system_metrics_trend_windows` 排除段，12 张退役监控表已清退。
+
+其余建议（未执行，按需新增）：
 
 | 现告警 | 建议 |
 | --- | --- |
@@ -79,4 +81,4 @@ scrape_configs:
 | 失联（新增） | `up{job=~"juhe-ai-(gateway|jobs)"} == 0`，配 `for: 5m`（60s 采样下 5 个点确认，兼顾隧道抖动不误报） |
 | `AppJobStalled` / `AppStatsCursorStalled` | **口径核查后再迁移**：先核对现规则表达式与其消费的快照表（`*_storage_snapshots` / 统计游标）是否已无数据，再逐条映射到新指标（任务停滞用上式；统计游标类按新指标体系重新裁决口径，无对应指标时先降级为人工巡检并记录）。 |
 
-本目录只提供建议；**不修改维护侧现有告警规则文件**（`F:\服务部署` 侧由维护者按上表另行迁移）。迁移完成前，旧告警将因数据源下线而失效/静默，属预期，需在迁移窗口内完成切换。
+上表「其余建议」为可选新增项，未执行；已执行的迁移见本节首段。

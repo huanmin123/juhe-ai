@@ -1,43 +1,49 @@
-# juhe-ai 单机部署 postgres_exporter 增补查询（additive，2026-10-14 起）。
+# juhe-ai 单机部署 postgres_exporter 增补查询（additive，2026-10-14 起；2026-10-15 修命名）。
 #
 # 用途：替代已下线的「表监控」自维护采样（JUHE_AI_TABLE_MONITOR_* 子系统），
 # 在既有 postgres_exporter 上补齐库/表容量与行数观测，供 Grafana 面板
 # 「存储（postgres_exporter 数据源）」行消费（juhe-ai-app-overview.json）。
 #
 # 合并方式（additive，勿整体替换）：
-#   把下方三个顶层键追加进生产机既有 /opt/juhe-monitoring/queries.yaml 的
+#   把下方两个顶层键追加进生产机既有 /opt/juhe-monitoring/queries.yaml 的
 #   顶层映射（与现有查询并列），**不得覆盖或删除现有 juhe_app_* 等任何既有查询**；
 #   若键名冲突，以现网既有内容为准并停下确认，禁止静默覆盖。
 #   合并后按既有方式重载/重启 postgres_exporter（--extend.query-path 指向该文件）生效。
 #
-# 命名约定：三个键名与导出指标名一致（列别名 = 指标名），便于面板直接引用，
-# 也避免与其他查询的列名冲突。标签统一带 schemaname/relname/datname。
+# 命名约定：postgres_exporter 导出指标名 = 查询键名 + "_" + 列别名。
+# 面板与文档契约引用 `juhe_postgres_db_size_bytes` / `juhe_postgres_table_size_bytes`
+# / `juhe_postgres_table_rows`（见 docs/functions/Prometheus指标暴露设计.md），
+# 因此查询键承担前缀、列别名补全后半段——禁止把列别名写成完整指标名，
+# 那会导出双前缀名（2026-10-15 生产实测教训）。
 #
 # 权限：查询只读 pg_database / pg_stat_user_tables；postgres_exporter 现用
 # 连接角色须有对应系统表读权限（现有 juhe_app_* 查询可跑即满足）。
 
-juhe_postgres_db_size_bytes:
+juhe_postgres_db_size:
   # 各库磁盘总大小；排除模板库。库大小含全部 schema（juhe_ai 单库 8 schema 汇总视图）。
   query: |
     SELECT datname,
-           pg_database_size(datname) AS juhe_postgres_db_size_bytes
+           pg_database_size(datname) AS bytes
     FROM pg_database
     WHERE datistemplate = false
   metrics:
     - datname:
         usage: "LABEL"
         description: "数据库名"
-    - juhe_postgres_db_size_bytes:
+    - bytes:
         usage: "GAUGE"
-        description: "库总大小（字节，pg_database_size）"
+        description: "库总大小（字节，pg_database_size）→ juhe_postgres_db_size_bytes"
 
-juhe_postgres_table_size_bytes:
-  # 用户表总大小（heap + 索引 + TOAST，pg_total_relation_size）。
+juhe_postgres_table:
+  # 用户表总大小（heap + 索引 + TOAST，pg_total_relation_size）与存活行数估算
+  # （n_live_tup 为统计估算值，依赖 autovacuum/ANALYZE 刷新，非精确计数；
+  # 用于趋势观察，不用于精确对账）。一次扫描同时出两族。
   # 不含视图/物化视图（pg_stat_user_tables 仅用户表）。
   query: |
     SELECT schemaname,
            relname,
-           pg_total_relation_size(relid) AS juhe_postgres_table_size_bytes
+           pg_total_relation_size(relid) AS size_bytes,
+           n_live_tup AS rows
     FROM pg_stat_user_tables
   metrics:
     - schemaname:
@@ -46,25 +52,9 @@ juhe_postgres_table_size_bytes:
     - relname:
         usage: "LABEL"
         description: "表名"
-    - juhe_postgres_table_size_bytes:
+    - size_bytes:
         usage: "GAUGE"
-        description: "表总大小（字节，含索引与 TOAST）"
-
-juhe_postgres_table_rows:
-  # 表存活行数估算（n_live_tup 为统计估算值，依赖 autovacuum/ANALYZE 刷新，
-  # 非精确计数；用于趋势观察，不用于精确对账）。
-  query: |
-    SELECT schemaname,
-           relname,
-           n_live_tup AS juhe_postgres_table_rows
-    FROM pg_stat_user_tables
-  metrics:
-    - schemaname:
-        usage: "LABEL"
-        description: "schema 名"
-    - relname:
-        usage: "LABEL"
-        description: "表名"
-    - juhe_postgres_table_rows:
+        description: "表总大小（字节，含索引与 TOAST）→ juhe_postgres_table_size_bytes"
+    - rows:
         usage: "GAUGE"
-        description: "表存活行数估算（pg_stat_user_tables.n_live_tup）"
+        description: "表存活行数估算（pg_stat_user_tables.n_live_tup）→ juhe_postgres_table_rows"

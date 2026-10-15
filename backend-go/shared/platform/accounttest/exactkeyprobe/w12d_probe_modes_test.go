@@ -25,11 +25,11 @@ func w12dProbeInput(baseURL, mode, protocol string) Input {
 // TestW12dProbeEndpointModeMatrix 逐个 endpoint mode 走真实探针执行路径。
 func TestW12dProbeEndpointModeMatrix(t *testing.T) {
 	var seenPath string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		seenPath = request.URL.Path
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
-	}))
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			seenPath = request.URL.Path
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(request) + `"}}]}`))
+		}))
 	defer server.Close()
 	cases := []struct {
 		mode     string
@@ -116,7 +116,7 @@ func TestW12dProbeTransportAndVerifyArms(t *testing.T) {
 	}
 	// MaxResponseBytes 不足 → 响应过大失败。
 	huge := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + strings.Repeat("juhe", 4096) + `"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + strings.Repeat("46", 4096) + `"}}]}`))
 	}))
 	defer huge.Close()
 	capped := w12dProbeInput(huge.URL, "chat_json", "openai")

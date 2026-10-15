@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func newDispatchSQLite(t *testing.T) (*DurableDispatch, *sql.DB) {

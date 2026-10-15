@@ -1,7 +1,7 @@
 // 调度偏好独立实体 P2——派发读取链六态解析测试（接口契约「读取分阶段契约」
 // P2 形态；v2 用户裁决修订 2026-10-13 后停用回落态不存在）：purpose=chat Key
-// 旁路调度解析（2026-10-14 媒体工作室退场裁决后 purpose 词表收窄为
-// general|chat，读取链只豁免 chat）沿用策略 config；普通 Key 绑定 NULL 属未迁移/数据不一致，显式错误失败；绑
+// 与存量遗留 purpose='studio' Key 旁路调度解析（studio 已收窄为 legacy 存量
+// 值，退场清理前仍可能存在）沿用策略 config；普通 Key 绑定 NULL 属未迁移/数据不一致，显式错误失败；绑
 // 定内置/自定义偏好经 routestrategies 既有 normalize 合成（策略调度字段不再
 // 影响普通 Key 派发）；引用损坏/配置损坏显式错误上抛；fingerprint 只依赖规范
 // 化参数（同参不同名相同、改名不变）。
@@ -77,6 +77,7 @@ func TestSPC2HistoricalNullFailsAndChatKeysKeepStrategyConfig(t *testing.T) {
 	spc1SeedPreference(t, db, "sp-enabled", "sys_owner", "cost_first", "", 0)
 	spc1SeedEnabledKey(t, db, "key-hist", HashSecret("sk-hist"), "", sql.NullString{})
 	spc1SeedEnabledKey(t, db, "key-chat", HashSecret("sk-chat"), "chat", sql.NullString{String: apikeys.BuiltinSchedulingPreferenceID, Valid: true})
+	spc1SeedEnabledKey(t, db, "key-studio", HashSecret("sk-studio"), "studio", sql.NullString{})
 	models, err := NewSQLReadModels(db, false, nil, seamAccountsSelector{results: map[string]OpenAIAccountsForGroupResult{}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +96,15 @@ func TestSPC2HistoricalNullFailsAndChatKeysKeepStrategyConfig(t *testing.T) {
 	}
 	if chat.NormalRoutingConfig == nil || chat.NormalRoutingConfig.SchedulingPreference != "speed_first" {
 		t.Fatalf("chat key must keep strategy config: %+v", chat.NormalRoutingConfig)
+	}
+	// 存量遗留 studio Key 绑定列恒 NULL，与 chat 同旁路：不按普通 Key 的
+	// 「未迁移/数据不一致」失败，也不消费偏好配置。
+	studio := spc1ReadRow(t, models, "sk-studio")
+	if studio.SchedulingPreferenceID != "" || studio.SchedulingPreferenceFingerprint != "" || studio.SchedulingPreferenceChatMode != "" {
+		t.Fatalf("studio key must not consume preference config: %+v", studio)
+	}
+	if studio.NormalRoutingConfig == nil || studio.NormalRoutingConfig.SchedulingPreference != "speed_first" {
+		t.Fatalf("studio key must keep strategy config: %+v", studio.NormalRoutingConfig)
 	}
 }
 

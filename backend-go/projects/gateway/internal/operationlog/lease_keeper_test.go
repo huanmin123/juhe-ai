@@ -249,3 +249,33 @@ func TestProducerFollowsRotatedFence(t *testing.T) {
 	waitKeeperPersisted(t, store, second.ID)
 	assertKeeperLeaseValid(t, store, keeper.Lease(), keeper.TTL())
 }
+
+// TestSameOwnerReacquiresUnexpiredLease 覆盖 2026-10-14 生产死锁的 F4 获取侧：
+// 未过期租约的 owner_id 与获取方相同时直接接管并递增 fence；异 owner 仍拒绝。
+func TestSameOwnerReacquiresUnexpiredLease(t *testing.T) {
+	store := openKeeperTestStore(t)
+	ctx := context.Background()
+
+	first, ok, err := store.AcquireOwnerLease(ctx, "same-owner", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("首次获取失败: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.AcquireOwnerLease(ctx, "other-owner", time.Minute); err != nil || ok {
+		t.Fatalf("异 owner 未过期行必须拒绝: ok=%v err=%v", ok, err)
+	}
+	second, ok, err := store.AcquireOwnerLease(ctx, "same-owner", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("同 owner 未过期行必须接管: ok=%v err=%v", ok, err)
+	}
+	if second.FenceToken <= first.FenceToken {
+		t.Fatalf("同 owner 接管必须递增 fence: first=%d second=%d", first.FenceToken, second.FenceToken)
+	}
+	renewed, err := store.RenewOwnerLease(ctx, first, time.Minute)
+	if err != nil || renewed {
+		t.Fatalf("旧 fence 续约必须被拒绝: renewed=%v err=%v", renewed, err)
+	}
+	renewed, err = store.RenewOwnerLease(ctx, second, time.Minute)
+	if err != nil || !renewed {
+		t.Fatalf("新 fence 续约必须成功: renewed=%v err=%v", renewed, err)
+	}
+}

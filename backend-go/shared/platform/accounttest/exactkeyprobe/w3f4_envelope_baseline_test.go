@@ -43,7 +43,7 @@ func w3BaselineRequest(t *testing.T, baseURL string, mutate func(*Input)) (*http
 	if mutate != nil {
 		mutate(&input)
 	}
-	request, err := buildProbeRequest(context.Background(), base, input, "w3-token")
+	request, err := buildProbeRequest(context.Background(), base, input, "w3-token", testChallenge)
 	if err != nil {
 		t.Fatal(err)
 	}

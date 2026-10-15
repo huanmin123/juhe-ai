@@ -229,6 +229,23 @@ docker compose start gateway jobs
 
 `purpose` CHECK 在清理前允许保留历史形状：新库三值；PostgreSQL ensure 会把旧二值扩为三值；SQLite 普通 ensure 不重建 `api_keys`，旧二值 CHECK 保持不变。应用写路径已拒绝新建 studio Key，显式清理后 studio Key 行随之删除。两方言在旧库上的 CHECK 形状可以不同。回滚 = 恢复发布前备份。
 
+**退役监控表清退维护窗口（2026-10-14 起，一次性命令）**：系统指标统计与表监控子系统下线后，12 张退役监控表由一次性显式命令 `--drop-retired-monitoring-tables` 幂等清退（探测 + `DROP TABLE IF EXISTS`）：统计库 9 张（`system_metrics_*` / `process_event_loop_*` 6 张 + `go_runtime_metrics_*` 3 张）+ 表监控库 3 张（`database_storage_snapshots`、`table_storage_snapshots`、`table_monitor_owner_leases`）。命令本身不负责停进程，三确认门禁缺一拒绝（exit 2）；退出码 0 含重跑的「只报告已清退」，1 为运行失败（任一表失败或目标库不可达，stdout 报告始终列出已成功与已缺席清单）。
+
+```sh
+cd /opt/juhe-ai
+# 1) 停写窗口：停 gateway/jobs，完成并验证可恢复备份（DROP 不可逆，
+#    无备份表可回填，回滚唯一路径是整体恢复该备份）
+docker compose stop gateway jobs
+# 2) 清退（--node-stopped --go-stopped --backup-confirmed 三确认缺一拒绝；
+#    PG 单 --dsn 覆盖 juhe_stats schema 全部 12 张，历史独立 metrics 库
+#    以该库为 --dsn 重跑本命令即可，缺席表是良性 no-op；幂等可重入）
+docker compose run --rm maintenance --drop-retired-monitoring-tables --node-stopped --go-stopped --backup-confirmed --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
+# 3) 命令成功后核对 stdout 报告，再启动 gateway/jobs
+docker compose start gateway jobs
+```
+
+SQLite 存储形态走 `--driver sqlite --paths`，必填 `stats=` / `go-runtime-metrics=` / `table-monitor=` 三个键（其余键接受并忽略，可复用 `--ensure-schema` 的完整 `--paths`）。窗口纪律与 studio 退场窗口相同：先停写、后备份、再执行。stdout 保持单条 Report JSON，回滚指引同时落 stderr；回滚 = 用 `--backup-confirmed` 验证过的外部备份整体恢复对应数据库。生产执行需用户另行授权。
+
 ## .env 契约（当前实例全集见服务器 /opt/juhe-ai/.env）
 
 ### Compose 与 deploy 脚本级必含变量（BUG-0225 实例事实变量化）
@@ -250,6 +267,7 @@ docker compose start gateway jobs
 - `JUHE_AI_LOG_MAX_FILE_MB`（gateway 写侧轮转阈值，2026-09-28 随 BUG-0195 恢复——Node 既有 env，同名同默认同范围）：默认 `100`，合法 `1..1024`，越界启动失败；另有 `JUHE_AI_LOG_MAX_FILES`（默认 `500`）/ `JUHE_AI_LOG_RETENTION_DAYS`（默认 `30`，1..30）为轮转文件保留参数，由 jobs 索引器按此清理 rotated 文件（**jobs 长期停机期间 gateway 持续写不受 500×30 约束，目录会继续增长，需关注磁盘**）。注意区分：索引**行**保留是独立参数 `JUHE_AI_RUNTIME_LOG_RETENTION_DAYS`（默认 `14`，1..90，可被 system_settings `runtimeLogIndexRetentionDays` 覆盖），索引查询读窗默认最近 3 天——500×30 只约束文件，不约束索引行。
 - `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS`（BUG-0226，2026-09-28；**2026-10-14 起仅 jobs 使用**）：jobs 健康监听地址，compose 显式配 `0.0.0.0:3305`（代码默认 `127.0.0.1:3305`，容器形态必须显式覆盖为 0.0.0.0 才能经 ports 的宿主回环映射 `"127.0.0.1:3305:3305"` 对宿主可达）——现供 infra 机 Prometheus 经 SSH 隧道抓取（见 `monitoring/README.md`）；值非法（主机名/坏端口）会启动失败。原 gateway 侧同名变量（系统指标页 jobs 健康段抓取地址，曾配容器名视角 `juhe-ai-go-jobs:3305`）随「系统指标统计」子系统下线从 compose gateway 服务删除，`.env` 中若有该变量整行移除（见下"部署时需同步从 .env 移除的行"）。
 - `JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS`（2026-10-14 起 compose 显式配置）：gateway 健康监听地址，compose 配 `0.0.0.0:3306`（代码默认 `127.0.0.1:3306`；compose healthcheck 仍走容器内 `127.0.0.1:3306/health` 不受影响）。绑全接口只为让 ports 的宿主回环映射 `"127.0.0.1:3306:3306"` 可达，承载 `GET /__aisys__/metrics` 供 infra 机 Prometheus 抓取；端口仅发布到宿主回环，**部署层必须拒绝公网入口、只允许受限 Prometheus 抓取**（接入细节见 `monitoring/README.md`）。
+- `JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK`（2026-10-15 起 compose 显式配置 `"true"`）：健康监听 fail-closed 校验的放行开关。代码默认只允许 localhost/回环地址，`0.0.0.0:3306` 会启动失败（2026-10-15 发布实测重启循环）；设 `true` 放行私网（RFC1918）与未指定地址（`0.0.0.0`），**公网地址任何情况下仍拒绝**（见 gateway `main.go` `validateHealthListenHost`）。jobs 侧无该校验、无对应变量。
 - `JUHE_AI_CHAT_*`（AI 问答子系统，gateway/jobs 双进程，越界均启动失败）：
   - `JUHE_AI_CHAT_RETENTION_DAYS`：默认 `3`，合法 `1..365`；gateway 读取保留窗口与 jobs retention 清理按它取值，**双进程必须同值**，否则清理窗口与读取保留不一致（消息先被读不到或超期残留）。
   - `JUHE_AI_CHAT_ASSETS_ROOT`：chat 资产对象根目录，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/chat-assets`；gateway 资产写入与 jobs 资产清理**双进程必须同值**（同卷同目录）。
@@ -257,6 +275,7 @@ docker compose start gateway jobs
   - `JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION`：单会话最大轮次，默认 `50`，合法 `1..1000`。
   - `JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER`：单用户最大会话数，默认 `50`，合法 `1..1000`。
   - `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS`：单轮上游 SSE 事件预算，默认 `65536`，合法 `2048..262144`（调高只为容纳合法长输出，不解除单事件/累计内容等 DoS 防护）。
+  - `JUHE_AI_CHAT_WEB_SEARCH_TIMEOUT_MS`（2026-10-14 起，gateway 单进程）：联网搜索子调用整体超时，默认 `120000`（120 秒），合法 `1000..600000`；非整数或越界启动失败。仅 gateway 消费，jobs 不读。
 - `JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH`（余额手动刷新租约库，2026-10-04 起双方言装配）：仅 sqlite 模式生效——gateway 进程内余额手动刷新执行器的租约四表文件，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/account-balance.sqlite3`；gateway 独占、启动期幂等自建四表，无需预处理；生产 PG 模式（同构四表在 `juhe_jobs` schema）不配置、不打开该文件。路径不得与其他 SQLite 库文件共用。
 - `JUHE_AI_CODEX_CONTEXT_ROOT`（Codex Responses↔Chat 桥 segments 根，gateway/jobs 双进程；2026-10-03 起 gateway 组合根装配该状态，gateway 现亦消费本 env）：可选，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/codex-context`。gateway 桥 segment 写入与 jobs retention segment 文件清理**双进程必须同值**（同卷同目录）——根不同源时清理按「文件不存在=成功」落账而文件永不删除（存储泄漏）。PG 模式另要求 `juhe_codex_context` schema（`juhe-ai-maintenance --ensure-schema` 预置六个 schema 之一）：缺失时 gateway 启动期 schema 探针 fail-fast（错误含 `codex context postgres schema 探针失败`），属部署错误，先补 schema 再启动，无静默降级。
 - `JUHE_AI_REDIS_STATE_URL`：Redis 运行态键空间连接串（cache/state/queue 三实例约定中的 state 实例）。**依赖门禁非开关**：未配置时 jobs 的账户恢复探针、速度优先运行态、电路控制面 reconcile 等族按 disabled 登记（`/health` 的 `workerWired`/`workerJobs` 与任务登记可见缺席），配置后自动启用；gateway 主链运行态也按它归一。生产 compose 三容器共享同值。
@@ -265,7 +284,7 @@ docker compose start gateway jobs
 - `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=postgres`（+ INPUT_POSTGRES_URL）：PG 模式按运维手册显式化。
 - `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`（**2026-09-28 默认开启整改起默认 `1`**——成功正文默认全量，原默认 0.1 采样已废除；显式 `0..1` 仍生效，`0` 须与 `JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS=0` 联动）与 `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）：成功请求正文长期采样率与热保留窗口（失败/问题请求恒全量保留 7 天，成功正文长期保留 3 天）。当前生产显式配 `1`——与新的出厂默认一致（BUG-0198）。
 - `JUHE_AI_MAINTENANCE_J3A/J3B/ACCOUNT_BALANCE_POSTGRES_URL`：`--apply-*` 预置命令的 maintenance 专用 URL（`ACCOUNT_BALANCE` 为 2026-10-02 新增成员，值通常与 J3A 相同——目标都是 `juhe_ai` 库且当前 role 拥有 `juhe_jobs` schema）。
-- `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT`（compose 为 gateway 显式配 `45s`，BUG-0228，2026-09-28 起）：F3 audit 与 F4 operation-log 两个启动获取点共用的 owner 租约有界等待——被前任进程持有时按 1s 间隔重试到 deadline，超时仍维持 fail-fast 原文案退出（不静默排队活 owner 并存场景）。作用：发布 recreate 窗口旧容器被 SIGKILL 截断 `defer` 租约释放时，新 gateway 在启动期等待 DB 租约 TTL（默认 30s）过期后接管，替代原来的 fail-fast 重启循环。默认空/0 = 既有 fail-fast 契约不变；生产取 `45s`（> 30s TTL）。gateway healthcheck `start_period` 相应配 `75s`（等待发生在 health server 监听之前：45s 等待 + 启动余量）。jobs 无启动 fail-fast 租约（F1/F2/J1/J3a 均为运行期 supervisor 重试），不配置该变量。
+- `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT`（compose 为 gateway 显式配 `45s`，BUG-0228，2026-09-28 起）：F3 audit 与 F4 operation-log 两个启动获取点共用的 owner 租约有界等待——被前任进程持有时按 1s 间隔重试到 deadline，超时仍维持 fail-fast 原文案退出（不静默排队活 owner 并存场景）。作用：发布 recreate 窗口旧容器被 SIGKILL 截断 `defer` 租约释放时，新 gateway 在启动期等待 DB 租约 TTL（默认 30s）过期后接管，替代原来的 fail-fast 重启循环。默认空/0 = 既有 fail-fast 契约不变；生产取 `45s`（> 30s TTL）。gateway healthcheck `start_period` 相应配 `75s`（等待发生在 health server 监听之前：45s 等待 + 启动余量）。jobs 无启动 fail-fast 租约（F1/F2/J1/J3a 均为运行期 supervisor 重试），不配置该变量。2026-10-15 起 F3 与 F4 获取冲突分支均有同 owner 快速路径：未过期租约的 owner_id（进程身份，默认主机名）与获取方相同时直接接管并自增 fence_token，不消耗等待预算——同 owner 的再获取只可能来自本实例自己的重启/失租恢复，旧世代写入由 fence 挡在外面；跨 owner 仍必须等过期（BUG-0228 契约不变）。失租后的 keeper 不再发放旧 owner/fence 快照，采集路径不能把已丢失的行续活。
 - `JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL`（**测试 seam，生产不配置**；2026-10-04 M6 火山语音批引入）：火山豆包 TTS 出站服务根覆盖（缺省恒官方 `https://openspeech.bytedance.com`，与账户 ark base_url 无关的 URL 构造特例）。仅验收 E2E 把 gateway 子进程出站指回本机 mock 上游时注入；**不是功能开关**（语音能力恒生效），生产/compose/直跑均不配置，误配置会把语音流量指向错误上游。
 - `JUHE_AI_ALLOWED_ORIGINS`：生产必填、逗号分隔、拒绝 `*`；当前为 `https://aijh.huanmin.top` 加 `http://<生产服务器公网 IP>`（实例值见服务器 `/opt/juhe-ai/.env` 与 `.local` 资产）。
 - `JUHE_AI_COOKIE_SECURE=true`（HTTPS 已启用）；`JUHE_AI_TRUST_PROXY=true`（经 Caddy）。

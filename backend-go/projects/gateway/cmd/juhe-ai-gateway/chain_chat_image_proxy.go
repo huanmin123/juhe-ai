@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
@@ -91,6 +92,11 @@ func (t *targetGuardRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 // 本身（池条目被共享借用方共用）。池 client 的 CheckRedirect 恒为
 // http.ErrUseLastResponse（NewClientWithTransport），浅拷贝直接继承两条
 // 下载路径"禁跟随重定向"的既有契约。
+//
+// Timeout 必须显式设置：SharedClient 池条目不设超时（长连接网关链按请求
+// context 收敛），而生图下载链的请求 context 只有 runner 的 WithCancel
+// （generation_runner.go 每轮取消），代理不可达/半开连接会让下载悬挂到
+// 客户端断连。60s 与直连回退 chatImageURLDownloadClient 的超时逐字一致。
 func newTargetGuardProxyClient(proxyURL *url.URL, guard *upstreamhttp.DialGuard) (*http.Client, error) {
 	client, err := upstreamhttp.SharedClient(proxyURL.String(), upstreamhttp.TransportOptions{DialGuard: guard})
 	if err != nil {
@@ -98,6 +104,7 @@ func newTargetGuardProxyClient(proxyURL *url.URL, guard *upstreamhttp.DialGuard)
 	}
 	wrapped := *client
 	wrapped.Transport = &targetGuardRoundTripper{base: client.Transport, guard: guard}
+	wrapped.Timeout = 60 * time.Second
 	return &wrapped, nil
 }
 

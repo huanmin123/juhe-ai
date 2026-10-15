@@ -14,10 +14,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,7 +94,8 @@ func TestInProcessAccountTestDispatchEndToEnd(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"juhe"}}]}`))
+		body, _ := io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"` + composeProbeAnswer(body) + `"}}]}`))
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -226,4 +230,23 @@ func waitForComposeTaskStatus(t *testing.T, db *sql.DB, taskID string, statuses 
 	}
 	t.Fatalf("任务 %s 未到达 %v（当前 %q，result=%q）", taskID, statuses, status, resultJSON.String)
 	return "", ""
+}
+
+// composeProbeChallengePattern 匹配探针算术挑战报文（accountprobe
+// CreateOutputChallenge 的 prompt 格式："请计算 A+B，只回复数字"；2026-10-15
+// 起该算术题取代历史固定令牌 "juhe"）。
+var composeProbeChallengePattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
+
+// composeProbeAnswer 从探针请求体解析算术挑战并返回两数之和的十进制文本：
+// 探针期望输出是随机两数之和，假上游必须真实作答才能通过输出校验（返回固定
+// 令牌会落到 invalid_probe_output）。无匹配时回退历史固定令牌，让请求形态
+// 漂移在断言处显式失败而不是静默通过。
+func composeProbeAnswer(body []byte) string {
+	match := composeProbeChallengePattern.FindSubmatch(body)
+	if match == nil {
+		return "juhe"
+	}
+	left, _ := strconv.Atoi(string(match[1]))
+	right, _ := strconv.Atoi(string(match[2]))
+	return strconv.Itoa(left + right)
 }

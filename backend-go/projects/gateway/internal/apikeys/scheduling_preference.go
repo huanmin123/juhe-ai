@@ -29,14 +29,17 @@ const BuiltinSchedulingPreferenceName = "默认调度偏好"
 const SchedulingPreferenceUnavailableMessage = "调度偏好不存在或不可用"
 
 // schedulingPreferenceExemptPurpose 报告 Key purpose 是否豁免调度偏好绑定
-// （现状：仅 purpose='chat' 的内部用途 Key 豁免——绑定列恒 NULL、不建立绑
-// 定，经普通 HTTP 写入口提交 schedulingPreferenceId（非空 ID 或显式 null）
-// 一律统一同型 400，不走普通 Key 的「显式 null 回默认内置 ID」矩阵。实现载
-// 体是 EnsureChatAPIKey 的裸 INSERT（不含该列 → NULL），公开面 add 与内面
+// （契约「API Key 绑定契约」：purpose='chat' 内部用途 Key 与存量遗留
+// purpose='studio' Key 绑定列恒 NULL、不建立绑定，经普通 HTTP 写入口提交
+// schedulingPreferenceId（非空 ID 或显式 null）一律统一同型 400，不走普通
+// Key 的「显式 null 回默认内置 ID」矩阵。chat 的实现载体是 EnsureChatAPIKey
+// 的裸 INSERT（不含该列 → NULL）；studio 已随媒体工作室退场收窄为 legacy
+// 存量值，写路径拒绝新值，退场清理命令执行前仍可能存在。公开面 add 与内面
 // Create 的 purpose 恒 'general' 不涉及本分支。词表锚点与 gatewayruntimecache
-// 读取链旁路（schedulingPurposeChat）同源，改动即两处同改）。
+// 读取链旁路（schedulingPurposeChat / schedulingPurposeStudio）同源，改动即
+// 两处同改）。
 func schedulingPreferenceExemptPurpose(purpose sql.NullString) bool {
-	return purpose.Valid && purpose.String == "chat"
+	return purpose.Valid && (purpose.String == "chat" || purpose.String == "studio")
 }
 
 // schedulingPreferenceBinding 是一次绑定校验通过后的权威值（id 落列，name/

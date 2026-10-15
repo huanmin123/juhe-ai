@@ -80,10 +80,16 @@ func StartLeaseKeeper(ctx context.Context, store Store, owner string, ttl time.D
 	return keeper, true, nil
 }
 
-// Lease returns the currently held lease (owner + fence token).
+// Lease returns the currently held lease (owner + fence token). A terminal
+// keeper returns a zero lease so a lost generation cannot keep renewing the
+// row it no longer owns; fenced write paths already reject an empty owner
+// or non-positive fence. Same contract as the F3 audit keeper.
 func (k *LeaseKeeper) Lease() OwnerLease {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
+	if k.lostErr != nil {
+		return OwnerLease{}
+	}
 	return k.lease
 }
 

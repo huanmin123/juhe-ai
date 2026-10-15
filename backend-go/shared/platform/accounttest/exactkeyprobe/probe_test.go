@@ -40,16 +40,16 @@ func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
 		if body["model"] != "gpt-test" || body["stream"] != false || body["max_tokens"] != float64(probeOutputTokenLimit) {
 			t.Fatalf("unexpected direct request body: %#v", body)
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
-	}))
-	defer server.Close()
-
-	result := ProbeOpenAI(context.Background(), testInput(server.URL, "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
-	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected probe result: %#v", result)
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromDecoded(body) + `"}}]}`))
+		}))
+		defer server.Close()
+	
+		result := ProbeOpenAI(context.Background(), testInput(server.URL, "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+		if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+			t.Fatalf("unexpected probe result: %#v", result)
+		}
 	}
-}
 
 func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 	secret := "test-secret"
@@ -67,12 +67,12 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 		if body["model"] != "gpt-test" || body["stream"] != true || body["max_output_tokens"] != float64(probeOutputTokenLimit) {
 			t.Fatalf("unexpected SSE request body: %#v", body)
 		}
-		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
-	}))
-	defer server.Close()
-
-	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + challengeAnswerFromDecoded(body) + "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+		}))
+		defer server.Close()
+	
+		result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_sse"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected SSE probe result: %#v", result)
 	}
@@ -107,12 +107,12 @@ func TestProbeOpenAICodexResponsesMatchesManualCompatibilityContract(t *testing.
 		if !ok || metadata["x-codex-window-id"] != sessionID+":0" || metadata["session_id"] != sessionID || metadata["x-codex-turn-metadata"] != request.Header.Get("X-Codex-Turn-Metadata") {
 			t.Fatalf("unexpected Codex metadata: %#v", body["client_metadata"])
 		}
-		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
-	}))
-	defer server.Close()
-
-	input := testInput(server.URL, "responses_sse")
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = writer.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + challengeAnswerFromDecoded(body) + "\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))
+		}))
+		defer server.Close()
+	
+		input := testInput(server.URL, "responses_sse")
 	input.ClientCompatibility = "codex_responses"
 	input.HealthModel = "gpt-5.6-terra"
 	result := ProbeOpenAI(context.Background(), input, CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
@@ -134,7 +134,7 @@ func TestProbeGPTOAuthResponsesSSEUsesCodexShape(t *testing.T) {
 	input.Type = "oauth"
 	input.ProtocolProfileID = "profile_gpt_openai_v1"
 	input.ProtocolCode = "openai"
-	request, err := buildProbeRequest(context.Background(), base, input, "oauth-token")
+	request, err := buildProbeRequest(context.Background(), base, input, "oauth-token", testChallenge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,11 +166,11 @@ func TestProbeGPTOAuthResponsesSSEUsesCodexShape(t *testing.T) {
 	}
 	// 评分承接（§9.4 裁决）：响应按请求编码形态统一走 verifyResponsesSSE，
 	// SSE body 照旧 success。
-	sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
-	if err := verifyResponse(input, sseBody); err != nil {
-		t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
+		sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		if err := verifyResponse(input, testChallenge, sseBody); err != nil {
+			t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
+		}
 	}
-}
 
 func TestProbeOpenAIResponsesSSERequiresCompletionEvent(t *testing.T) {
 	secret := "test-secret"
@@ -190,7 +190,7 @@ func TestProbeOpenAIResponsesSSERejectsJSONImposter(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"type":"response.completed","output_text":"juhe"}`))
+		_, _ = writer.Write([]byte(`{"type":"response.completed","output_text":"46"}`))
 	}))
 	defer server.Close()
 
@@ -239,11 +239,11 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	}
 }
 
-// 挑战报文自 2026-09 起带 3~6 位随机数字后缀：上游风控按固定报文指纹封号。
-// 以下正则锁定请求侧报文形态；验证侧仍宽松匹配挑战词，不要求包含后缀。
+	// 挑战报文自 2026-10-15 起为每次请求独立的随机算术题（停用「请原样输出
+	// juhe<数字>」令牌形态，上游内容审核会整段 403）。以下正则锁定请求侧报文形态。
 var (
 	challengeDigitsPattern  = regexp.MustCompile(`^\d{3,6}$`)
-	challengeMessagePattern = regexp.MustCompile(`^接口连通性自动测试：请原样输出 juhe\d{3,6}$`)
+	challengeMessagePattern = regexp.MustCompile(`^接口连通性自动测试：请计算 \d+\+\d+，只回复数字$`)
 )
 
 func TestProbeOpenAIChatSendsRandomizedChallengeMessage(t *testing.T) {
@@ -262,9 +262,9 @@ func TestProbeOpenAIChatSendsRandomizedChallengeMessage(t *testing.T) {
 		}
 		message, _ := messages[0].(map[string]any)
 		content, _ := message["content"].(string)
-		messageCh <- content
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+			messageCh <- content
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromDecoded(body) + `"}}]}`))
 	}))
 	defer server.Close()
 
@@ -292,9 +292,9 @@ func TestProbeOpenAIResponsesJSONKeepsInstructionsInRotationPool(t *testing.T) {
 			return
 		}
 		instructions, _ := body["instructions"].(string)
-		instructionsCh <- instructions
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"juhe"}]}]}`))
+			instructionsCh <- instructions
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"` + challengeAnswerFromDecoded(body) + `"}]}]}`))
 	}))
 	defer server.Close()
 
@@ -325,8 +325,8 @@ func TestProbeAnthropicMessagesUsesNativeHeadersAndCompletion(t *testing.T) {
 		if request.URL.Path != "/v1/messages" || request.Header.Get("x-api-key") != "anthropic-key" || request.Header.Get("anthropic-version") != "2023-06-01" {
 			t.Fatalf("unexpected Anthropic request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"juhe"}]}`))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"` + challengeAnswerFromRequest(request) + `"}]}`))
 	}))
 	defer server.Close()
 	input := testInput(server.URL, "messages_json")
@@ -345,8 +345,8 @@ func TestProbeGeminiNativeUsesGoogleOAuthHeadersAndCompletion(t *testing.T) {
 		if request.URL.Path != "/v1beta/models/gemini-test:generateContent" || request.Header.Get("Authorization") != "Bearer google-token" || request.Header.Get("x-goog-user-project") != "quota-1" {
 			t.Fatalf("unexpected Gemini request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"juhe"}]}}]}`))
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"` + challengeAnswerFromRequest(request) + `"}]}}]}`))
 	}))
 	defer server.Close()
 	input := testInput(server.URL, "generate_content_json")
@@ -371,8 +371,8 @@ func TestProbeGeminiInteractionsSSERequiresCompletedEvent(t *testing.T) {
 		if request.URL.Path != "/v1beta/interactions" || request.Header.Get("api-revision") != "2026-05-20" || request.Header.Get("Accept") != "application/json, text/event-stream" {
 			t.Fatalf("unexpected Gemini Interactions request: path=%s headers=%#v", request.URL.Path, request.Header)
 		}
-		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte("data: {\"type\":\"interaction.delta\",\"text\":\"juhe\"}\n\ndata: {\"type\":\"interaction.completed\",\"status\":\"completed\"}\n\n"))
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = writer.Write([]byte("data: {\"type\":\"interaction.delta\",\"text\":\"" + challengeAnswerFromRequest(request) + "\"}\n\ndata: {\"type\":\"interaction.completed\",\"status\":\"completed\"}\n\n"))
 	}))
 	defer server.Close()
 	input := testInput(server.URL, "interactions_sse")
@@ -486,7 +486,7 @@ func TestProbeOpenAIOAuthUsesCodexEndpointAndIdentity(t *testing.T) {
 	input := testInput(base.String(), "responses_json")
 	input.Type = "oauth"
 	input.OAuthAccountID = "chatgpt-account-1"
-	request, err := buildProbeRequest(context.Background(), base, input, "oauth-token")
+	request, err := buildProbeRequest(context.Background(), base, input, "oauth-token", testChallenge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,12 +514,12 @@ func TestProbeOpenAIOAuthUsesCodexEndpointAndIdentity(t *testing.T) {
 		t.Fatalf("A 形态 BudgetNone 不得携带 max_output_tokens: %#v", body)
 	}
 	// 评分承接：SSE body 照旧 success。
-	sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"juhe\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
-	if err := verifyResponse(input, sseBody); err != nil {
-		t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
-	}
+		sseBody := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"46\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		if err := verifyResponse(input, testChallenge, sseBody); err != nil {
+			t.Fatalf("A 形态 SSE 响应必须承接评分: %v", err)
+		}
 	// JSON body 不再满足 A 形态探活语义（评分跟随请求编码形态，无 fallback）。
-	if err := verifyResponse(input, []byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"juhe"}]}]}`)); err == nil {
+	if err := verifyResponse(input, testChallenge, []byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"46"}]}]}`)); err == nil {
 		t.Fatal("A 形态请求发 SSE 后 JSON 响应不得被判 success")
 	}
 }
@@ -644,7 +644,7 @@ func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
 		HealthModel:         "gpt-test",
 		ClientCompatibility: "codex_responses",
 	}
-	request, err := buildProbeRequest(context.Background(), base, oauthInput, "oauth-token")
+	request, err := buildProbeRequest(context.Background(), base, oauthInput, "oauth-token", testChallenge)
 	if err != nil {
 		t.Fatalf("build oauth probe request: %v", err)
 	}
@@ -655,7 +655,7 @@ func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
 	apiKeyInput := oauthInput
 	apiKeyInput.Type = "api_key"
 	apiKeyInput.ClientCompatibility = ""
-	request, err = buildProbeRequest(context.Background(), base, apiKeyInput, "sk-test")
+	request, err = buildProbeRequest(context.Background(), base, apiKeyInput, "sk-test", testChallenge)
 	if err != nil {
 		t.Fatalf("build api-key probe request: %v", err)
 	}
@@ -685,7 +685,7 @@ func TestBuildProbeRequestGLMCodingUsesZCodeIdentityForBothProtocols(t *testing.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			input := Input{Type: "api_key", Provider: tc.provider, ProtocolProfileID: tc.profileID, EndpointMode: tc.mode, HealthModel: "glm-5.3"}
-			request, err := buildProbeRequest(context.Background(), base, input, "glm-key")
+			request, err := buildProbeRequest(context.Background(), base, input, "glm-key", testChallenge)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -743,7 +743,7 @@ func TestBuildProbeRequestGLMOpenAIUsesManualCompatibleBasePaths(t *testing.T) {
 				EndpointMode:      "chat_json",
 				HealthModel:       "glm-5.3-flash",
 			}
-			request, err := buildProbeRequest(context.Background(), base, input, "glm-key")
+			request, err := buildProbeRequest(context.Background(), base, input, "glm-key", testChallenge)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -784,7 +784,7 @@ func TestBuildProbeRequestProviderBasePathsRemainAligned(t *testing.T) {
 				EndpointMode:      tc.mode,
 				HealthModel:       "gemini-test",
 			}
-			request, err := buildProbeRequest(context.Background(), base, input, "test-key")
+			request, err := buildProbeRequest(context.Background(), base, input, "test-key", testChallenge)
 			if err != nil {
 				t.Fatal(err)
 			}

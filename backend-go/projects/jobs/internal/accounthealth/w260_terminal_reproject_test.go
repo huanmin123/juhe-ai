@@ -52,7 +52,7 @@ func newW260Fixture(t *testing.T, businessSeed map[string]any) *w260Fixture {
 	result.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		result.probes.Add(1)
 		writer.WriteHeader(http.StatusOK)
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	t.Cleanup(result.server.Close)
 	if businessSeed != nil {

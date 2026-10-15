@@ -34,7 +34,7 @@ func TestM3EnvelopeMigrationAnchor(t *testing.T) {
 		EndpointMode:      "chat_json",
 		HealthModel:       "anchor-model",
 	}
-	request, err := buildProbeRequest(context.Background(), base, glmInput, "anchor-key")
+	request, err := buildProbeRequest(context.Background(), base, glmInput, "anchor-key", testChallenge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestM3EnvelopeMigrationAnchor(t *testing.T) {
 	// SSE 纯流式，线上头与同名能力输出一致。
 	apiKeyBase, _ := url.Parse("https://upstream.test")
 	apiKeyInput := Input{Type: "api_key", Provider: "openai", EndpointMode: "responses_sse", HealthModel: "anchor-model"}
-	apiKeyRequest, err := buildProbeRequest(context.Background(), apiKeyBase, apiKeyInput, "anchor-key")
+	apiKeyRequest, err := buildProbeRequest(context.Background(), apiKeyBase, apiKeyInput, "anchor-key", testChallenge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestM3EnvelopeMigrationAnchor(t *testing.T) {
 	}
 	oauthInput := apiKeyInput
 	oauthInput.Type = "oauth"
-	oauthRequest, err := buildProbeRequest(context.Background(), apiKeyBase, oauthInput, "anchor-key")
+	oauthRequest, err := buildProbeRequest(context.Background(), apiKeyBase, oauthInput, "anchor-key", testChallenge)
 	if err != nil {
 		t.Fatal(err)
 	}

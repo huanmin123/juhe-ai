@@ -59,7 +59,7 @@ func TestW12HProbeCancellationArms(t *testing.T) {
 func TestW12HAttemptStagedEscalation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"` + challengeAnswerFromRequest(r) + `"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	service := w7cService(t, &fakeSource{}, []time.Duration{60 * time.Millisecond, 5 * time.Second}, 0)
@@ -172,17 +172,18 @@ func TestW12HProbeHeaderArms(t *testing.T) {
 	}
 }
 
-// w12hRawResponse 模拟底层传输：自定义状态、响应体与头部。
+// w12hRawTransport 模拟底层传输：自定义状态、响应体与头部。响应体按请求
+// 惰性构造，使假上游能读取探针挑战并给出对应答案。
 type w12hRawTransport struct {
 	status  int
-	body    io.ReadCloser
+	body    func(request *http.Request) io.ReadCloser
 	headers http.Header
 }
 
 func (t *w12hRawTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode:    t.status,
-		Body:          t.body,
+		Body:          t.body(request),
 		Header:        t.headers,
 		ContentLength: -1,
 		Request:       request,
@@ -191,7 +192,7 @@ func (t *w12hRawTransport) RoundTrip(request *http.Request) (*http.Response, err
 
 // 读循环边界：超大响应截断、取消中断、零字节读取。
 func TestW12HReadLoopArms(t *testing.T) {
-	build := func(body io.ReadCloser) *Service {
+	build := func(body func(*http.Request) io.ReadCloser) *Service {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
 		}))
@@ -210,21 +211,25 @@ func TestW12HReadLoopArms(t *testing.T) {
 	ctx := context.Background()
 
 	// 超过 256KB 的响应体在截断后仍按协议分类（视为失败但必须返回）。
-	big := build(io.NopCloser(strings.NewReader(strings.Repeat("x", 300*1024))))
+	big := build(func(*http.Request) io.ReadCloser {
+		return io.NopCloser(strings.NewReader(strings.Repeat("x", 300*1024)))
+	})
 	observation := big.attemptStaged(ctx, view(), &view().APIKeyEntries[0])
 	if observation == nil {
 		t.Fatal("超大响应必须返回观测")
 	}
 
 	// 读取器返回 (0, nil)：循环零字节跳出。
-	zero := build(io.NopCloser(&w12hZeroReader{}))
+	zero := build(func(*http.Request) io.ReadCloser { return io.NopCloser(&w12hZeroReader{}) })
 	if observation := zero.attemptStaged(ctx, view(), &view().APIKeyEntries[0]); observation == nil {
 		t.Fatal("零字节读取必须返回观测")
 	}
 
 	// 响应体带尾部读取错误但协议完整：语义成功保留。
-	combined := io.MultiReader(strings.NewReader(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`), &w12hFailReader{})
-	withErr := build(io.NopCloser(combined))
+	withErr := build(func(request *http.Request) io.ReadCloser {
+		body, _ := io.ReadAll(request.Body)
+		return io.NopCloser(io.MultiReader(strings.NewReader(`{"choices":[{"message":{"content":"`+challengeAnswerFromBody(body)+`"},"finish_reason":"stop"}]}`), &w12hFailReader{}))
+	})
 	observation = withErr.attemptStaged(ctx, view(), &view().APIKeyEntries[0])
 	if observation == nil || !observation.Result.Success {
 		t.Fatalf("尾部读取错误不得覆盖语义成功: %+v", observation)
@@ -255,7 +260,7 @@ func TestW12HClassifyResponseArms(t *testing.T) {
 
 	// 完整成功。
 	observation = classifyResponse(view, protocol, ModeChatJSON,
-		`{"choices":[{"message":{"content":"juhe `+challenge.ExpectedOutput+`"},"finish_reason":"stop"}]}`,
+		`{"choices":[{"message":{"content":"`+challenge.ExpectedOutput+`"},"finish_reason":"stop"}]}`,
 		map[string]string{}, 200, 1, 2, challenge, false)
 	if !observation.Result.Success {
 		t.Fatalf("挑战匹配必须成功: %+v", observation.Result)

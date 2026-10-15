@@ -173,7 +173,7 @@ func TestDrainProbeOutboxInScopeRunsExplicitRequest(t *testing.T) {
 		mu.Lock()
 		probeHits++
 		mu.Unlock()
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"` + probeChallengeAnswer(request) + `"}}]}`))
 	}))
 	defer server.Close()
 

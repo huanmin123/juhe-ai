@@ -329,15 +329,17 @@ func TestResolveScheduleSettingsInterval(t *testing.T) {
 	if !ok || interval != 60*time.Second {
 		t.Fatalf("缺行默认间隔必须是 60s: %v %v", interval, ok)
 	}
-	// 无 OnlineFreshnessCap 的 job：显式行值原样生效。
-	insertSetting(t, "statsAggregationIntervalSeconds", "120")
-	interval, ok = resolveScheduleSettingsInterval(ctx, source, nil, "system-metrics-sample")
-	if !ok || interval != 120*time.Second {
-		t.Fatalf("显式设置值必须生效: %v %v", interval, ok)
+	// 无 OnlineFreshnessCap 的 job：显式行值原样生效（statsAggregationIntervalSeconds
+	// 同键的 client-ip 族不受 usage-stats 在线新鲜度上限约束）。Source 带 60s
+	// per-key TTL 缓存，插入新行后必须换新实例才能读到（同上文失败分支）。
+	insertSetting(t, "statsAggregationIntervalSeconds", "3600")
+	rowSource := jobssettings.NewSource(jobssettings.Options{DB: db, Mode: jobssettings.SQLite})
+	interval, ok = resolveScheduleSettingsInterval(ctx, rowSource, nil, "client-ip-stats-aggregation")
+	if !ok || interval != 3600*time.Second {
+		t.Fatalf("无上限的 job 必须原样使用显式设置值: %v %v", interval, ok)
 	}
-	// OnlineFreshnessCap：超大值收敛到 60s。
-	insertSetting(t, "usageStatsAggregationIntervalSeconds", "3600")
-	interval, ok = resolveScheduleSettingsInterval(ctx, source, nil, "usage-stats-aggregation")
+	// OnlineFreshnessCap：同键超大值对 usage-stats-aggregation 收敛到 60s。
+	interval, ok = resolveScheduleSettingsInterval(ctx, rowSource, nil, "usage-stats-aggregation")
 	if !ok || interval != 60*time.Second {
 		t.Fatalf("在线新鲜度上限必须收敛到 60s: %v %v", interval, ok)
 	}
