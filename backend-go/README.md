@@ -91,7 +91,7 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 
 - 稳定且唯一的 `JUHE_AI_RUNTIME_LOG_INSTANCE_ID`；它用于 Go 多实例 fencing，不是 Node/Go 选择开关。
 - `JUHE_AI_RUNTIME_LOG_STORE=sqlite` 或 `postgres`；必须显式设置，不再从通用数据库变量回退。
-- SQLite 提供 F1 专用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，以及业务、数据集目录、usage catalog、stats 和 Codex Context shard 的路径。F1 会拒绝这些任一路径、F2 专用库或任一 shard 与 F1 指向同一个物理 SQLite 文件；只读业务库的 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 必须提供专用 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
+- SQLite 提供 F1 专用 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`，以及业务、数据集目录、usage catalog、stats 和 Codex Context shard 的路径。F1 会拒绝这些任一路径或任一 shard 与 F1 指向同一个物理 SQLite 文件；只读业务库的 `system_settings.runtimeLogIndexRetentionDays`。PostgreSQL 必须提供专用 `JUHE_AI_RUNTIME_LOG_POSTGRES_URL`，并从 `juhe_business.system_settings` 读取同一设置。
 - 两种模式均提供 `JUHE_AI_LOG_DIR`；Go 启动时初始化并验证自己的 F1 schema。
 
 示例：
@@ -100,7 +100,6 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 $env:JUHE_AI_RUNTIME_LOG_INSTANCE_ID = 'go-jobs-runtime-log-a'
 $env:JUHE_AI_RUNTIME_LOG_STORE = 'sqlite'
 $env:JUHE_AI_RUNTIME_LOG_DATABASE_PATH = 'F:\temp\juhe-ai\runtime-log.sqlite'
-$env:JUHE_AI_TABLE_MONITOR_DATABASE_PATH = 'F:\temp\juhe-ai\table-monitor.sqlite'
 $env:JUHE_AI_DATABASE_PATH = 'F:\temp\juhe-ai\business.sqlite'
 $env:JUHE_AI_DATASET_DATABASE_PATH = 'F:\temp\juhe-ai\dataset.sqlite'
 $env:JUHE_AI_USAGE_CATALOG_DATABASE_PATH = 'F:\temp\juhe-ai\usage-catalog.sqlite'
@@ -140,21 +139,10 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 
 完整边界、归档和 PostgreSQL smoke 记录见 F1 运行日志索引与保留。
 
-## F2：表存储监控采样与保留
+## F2：表存储监控（2026-10-14 退役）
 
-F2 默认并发为 `512`，`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 可配置上限为 `5096`；PostgreSQL pool 默认 `16`。实际值必须与 PostgreSQL `max_connections` 和 PgBouncer `MAX_CLIENT_CONN`/`DEFAULT_POOL_SIZE` 一起调整。
-实时锁等待、长事务和 firing 告警仍属于发布稳定性门禁（历史注记：共存期仓库内 Jenkins 仅构建并写入 release state，Jenkinsfile 已于 2026-09-30 随归档删除）。现行生产为国内单机 Docker 形态（部署配置见 `docker/single-server/`）；J3a 管理入口现行契约见 `docker/single-server/README.md` 的 `JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`（默认 `127.0.0.1:0` 随机回环端口，`/health` payload 报告实际监听地址）。
+F2 表存储监控采样与保留（表级快照、owner lease、历史保留）已于 2026-10-14 随监控改造整体下线：
 
-`jobs` 内的 F2 是唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
-
-运行前必须满足：
-
-- 稳定且唯一的 `JUHE_AI_TABLE_MONITOR_INSTANCE_ID`；它用于 owner lease fencing，不是 Node/Go 选择开关。
-- `JUHE_AI_TABLE_MONITOR_STORE=sqlite` 或 `postgres`；必须显式设置，不再从通用数据库变量回退。
-- SQLite 提供 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH` 作为 F2 专用输出文件，`JUHE_AI_RUNTIME_LOG_DATABASE_PATH` 用于验证 F1/F2 物理隔离，以及 `JUHE_AI_DATABASE_PATH`、`JUHE_AI_DATASET_DATABASE_PATH`、`JUHE_AI_USAGE_CATALOG_DATABASE_PATH`、`JUHE_AI_STATS_DATABASE_PATH` 和 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 作为只读采样源；输出文件不得与 F1、任何源库或 shard 共用。PostgreSQL 必须提供专用 `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`，快照写入 `juhe_stats`。
-- `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` 默认 `5m`；同一事实库同一时间只允许一个 Go owner，第二实例拒绝启动，失去 lease 后采样和保留清理拒写。
-- `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1h`（2026-10-08 起，原 `1m`），单轮 `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` 默认 `45s`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `512`（范围 `1..5096`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `512`（范围 `1..5096`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `512`（范围 `1..5096`）。达到 retention 批次数上限后仍有过期数据才显式失败，不静默遗漏。
-
-Node 侧的表监控 HTTP 读取、scheduler、stats writer 和 retention 已随 2026-09-05 的 Node 清零全部退出；SQLite 读取只打开 F2 专用输出文件。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
-
-SQLite 定向测试覆盖采样、快照写入和保留清理。2026-08-09 开发 PostgreSQL/PgBouncer 可连通性已确认；共享开发库已有 F2 快照，smoke 对该库按空库保护拒绝写入。经用户明确授权创建一次性空库后，强制 smoke 已通过真实 adapter、lease takeover、relation-size 快照、五个 schema 的 `RunOnce` 采样和 retention 清理，测试库已删除。生产发布生命周期、Docker 实启动和 listener 仍未验证，不能据此称生产运行通过。完整边界见 F2 表存储监控采样与保留功能冻结。
+- `jobs` 侧 `internal/tablemonitor` 组件、`JUHE_AI_TABLE_MONITOR_*` env 家族与统计库 3 张表（`database_storage_snapshots` / `table_storage_snapshots` / `table_monitor_owner_leases`）全部删除；存量库表经 maintenance `--drop-retired-monitoring-tables` 一次性清退（幂等；生产执行需用户另行授权）。
+- F2 职责收窄后仅保留 J3a 代理延迟管理面（现行契约见 `docker/single-server/README.md` 的 `JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`，默认 `127.0.0.1:0` 随机回环端口，`/health` payload 报告实际监听地址）。
+- 应用进程与数据库容量观测改由 Prometheus `GET /__aisys__/metrics` 与 postgres_exporter 承担（权威设计见 `docs/functions/Prometheus指标暴露设计.md`）；实时锁等待、长事务等发布稳定性门禁改由 Grafana 面板与告警规则承接（历史注记：共存期仓库内 Jenkins 仅构建并写入 release state，Jenkinsfile 已于 2026-09-30 随归档删除）。

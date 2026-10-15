@@ -729,7 +729,7 @@ func geminiCandidateComplete(response map[string]any) bool {
 	return false
 }
 
-func verifyResponsesSSE(body []byte) error {
+func verifyResponsesSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	completed := false
@@ -751,13 +751,13 @@ func verifyResponsesSSE(body []byte) error {
 	if !completed {
 		return errors.New("SSE 缺少 response.completed")
 	}
-	if !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+	if !challengeAnswerMatched(output.String(), challenge.Expected) {
 		return errors.New("SSE 输出未包含挑战值")
 	}
 	return nil
 }
 
-func verifyOpenAIChatSSE(body []byte) error {
+func verifyOpenAIChatSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	done := false
@@ -790,13 +790,13 @@ func verifyOpenAIChatSSE(body []byte) error {
 			}
 		}
 	}
-	if !done || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+	if !done || !challengeAnswerMatched(output.String(), challenge.Expected) {
 		return errors.New("Chat SSE 未完成挑战")
 	}
 	return nil
 }
 
-func verifyAnthropicSSE(body []byte) error {
+func verifyAnthropicSSE(challenge probeChallenge, body []byte) error {
 	text := strings.ReplaceAll(string(body), "\r\n", "\n")
 	var output strings.Builder
 	stopped := false
@@ -830,7 +830,7 @@ func verifyAnthropicSSE(body []byte) error {
 			stopped = true
 		}
 	}
-	if !stopped || !strings.Contains(strings.ToLower(output.String()), probeChallenge) {
+	if !stopped || !challengeAnswerMatched(output.String(), challenge.Expected) {
 		return errors.New("Messages SSE 未完成挑战")
 	}
 	return nil
