@@ -22,7 +22,7 @@
 
 | 观测对象 | 承担方 | 说明 |
 | --- | --- | --- |
-| 应用进程指标（HTTP、上游失败、任务、go_*/process_*） | gateway / jobs 的 `GET /__aisys__/metrics` | 本文契约；`github.com/prometheus/client_golang v1.23.2`，只允许 `backend-go/shared/platform/prommetrics` 包 import client_golang |
+| 应用进程指标（HTTP、上游失败、任务、主业务池、go_*/process_*） | gateway / jobs 的 `GET /__aisys__/metrics` | 本文契约；`github.com/prometheus/client_golang v1.23.2`，只允许 `backend-go/shared/platform/prommetrics` 包 import client_golang |
 | 表 / 数据库容量 | postgres_exporter | `juhe_postgres_db_size_bytes`、`juhe_postgres_table_size_bytes`、`juhe_postgres_table_rows`（增补查询在 `docker/single-server/monitoring/`） |
 | 主机资源（CPU / 内存 / 磁盘 / 文件系统） | node_exporter | 既有 infra；SQLite standalone 形态的文件容量观测也走主机层文件系统指标，应用不再自采样库文件大小 |
 | 容器资源 | cadvisor | 既有 infra |
@@ -42,13 +42,21 @@
 
 | 指标 | 类型 | 标签 | 含义 |
 | --- | --- | --- | --- |
-| `juhe_ai_http_requests_total` | counter | `route_group`、`method`、`status_class`、`outcome`、`failure_scope` | 管理面 / 公开面 / `/v1` 网关链 HTTP 请求计数；`status_class` 为 `2xx/4xx/5xx/499` 等状态分类，`outcome` 区分完成 / 中断 / 失败，`failure_scope` 归因本地 / 上游 / 下游 |
+| `juhe_ai_http_requests_total` | counter | `route_group`、`method`、`status_class`、`outcome`、`failure_scope` | 管理面 / 公开面 / `/v1` 网关链 HTTP 请求计数。`status_class` 按状态码百位归类为 `1xx/2xx/3xx/4xx/5xx/unknown` 六类（无 `499` 等单码，状态码缺失或越界归 `unknown`）；`outcome` 只有 `completed`（正常返回）/ `aborted`（请求上下文取消）两值；`failure_scope` 只有 `none/gateway/upstream` 三值，仅 `completed` 且 `5xx` 时可取非 `none`（未给出时归 `gateway`），其余组合恒为 `none` |
 | `juhe_ai_http_request_duration_seconds` | histogram | 同 `juhe_ai_http_requests_total` | 同一标签集的请求耗时直方图 |
 | `juhe_ai_http_requests_in_flight` | gauge | `route_group`、`method` | 当前在途请求数 |
 | `juhe_ai_gateway_upstream_failures_total` | counter | `failure_class`、`reason_class`、`status_class` | 网关上游失败分类计数，用于区分"尚无失败"与"实现未暴露"的恒定契约信号保留在该族暴露面内 |
 | `juhe_ai_gateway_first_output_duration_seconds` | histogram | `method` | 首输出（首 token / 首响应）耗时直方图 |
 | `juhe_ai_audit_log_captured_dropped_total` | counter | `service` | 审计日志捕获丢弃计数（活跃捕获超限等），只暴露丢弃事实，不承载正文 |
 | `juhe_ai_operation_log_dropped_total` | counter | `service` | 操作日志投递丢弃计数 |
+| `juhe_ai_gateway_db_pool_open_connections` | gauge | 无 | 主业务 PG 池当前已建立连接数（`sql.DBStats.OpenConnections`，抓取时读取） |
+| `juhe_ai_gateway_db_pool_in_use_connections` | gauge | 无 | 主业务 PG 池使用中连接数（`InUse`） |
+| `juhe_ai_gateway_db_pool_idle_connections` | gauge | 无 | 主业务 PG 池空闲连接数（`Idle`） |
+| `juhe_ai_gateway_db_pool_max_open_connections` | gauge | 无 | 主业务 PG 池最大打开连接上限（`MaxOpenConnections`） |
+| `juhe_ai_gateway_db_pool_wait_count_total` | counter | 无 | 等待空闲连接的累计次数（`WaitCount`；单调累计，必须按 counter 查询 `rate()/increase()`） |
+| `juhe_ai_gateway_db_pool_wait_duration_seconds_total` | counter | 无 | 等待空闲连接的累计时长秒数（`WaitDuration`；单调累计，必须按 counter 查询） |
+
+连接池族的暴露范围（2026-10-16 登记）：只暴露**主业务池**——组合根 role `gateway-system-api`（URL 来源 `JUHE_AI_BUSINESS_POSTGRES_URL`，唯一；codex context store 是同 role 同 URL 的引用共享，同属该池）。池去重键是 `{URL, role}`，因此 `gateway-chat`（同 URL、role `gateway-chat`）是**独立池实例**，其连接不体现在本族序列中；`gateway-store` role（F3 审计 / F4 操作日志池）在配置独立 URL 时同样会出现多个池实例。这些池不纳入暴露，避免同 role 多 URL 或同 URL 多 role 产生无法区分的重复序列；纳入新池前必须先在本文登记 role 与实例区分规则。抓取时读 `database/sql.DBStats`，无 provider 注入时整族缺席（与审计 / 操作日志丢弃计数同模式）。
 
 标准运行时族由 client_golang 默认收集器提供（`go_goroutines`、`go_memstats_*` 等 `go_*` 与 `process_resident_memory_bytes`、`process_cpu_seconds_total`、`process_open_fds` 等 `process_*`），应用不自建等价指标。
 
@@ -58,13 +66,29 @@
 | --- | --- | --- | --- |
 | `juhe_ai_jobs_task_runs_total` | counter | `job_name`、`job_type`、`status` | 按 jobregistry 任务名 / 类型 / 执行结局（成功、失败、跳过等）计数的任务执行累计 |
 | `juhe_ai_jobs_task_run_duration_seconds` | histogram | `job_name`、`job_type` | 任务单轮执行耗时直方图 |
-| `juhe_ai_jobs_task_last_success_timestamp_seconds` | gauge | `job_name`、`job_type` | 每个任务最近一次成功执行的 Unix 时间戳，用于"任务停摆"类告警（`time() - 指标值 > 预期间隔 × 容忍倍数`） |
+| `juhe_ai_jobs_task_last_success_timestamp_seconds` | gauge | `job_name`、`job_type` | 每个任务最近一次成功执行的 Unix 时间戳，用于"任务停摆"类告警（`time() - 指标值 > 预期间隔 × 容忍倍数`；适用边界见下） |
+
+任务指标适用边界（2026-10-16 登记）：
+
+- 埋点唯一入口是 taskruns `RunWithTaskRun` 的终态收口，只覆盖「PostgreSQL 驱动 + 经任务调度器（租约 + 运行历史包裹）注册的任务」。SQLite / 非 PostgreSQL 装配、租约未启用、`runWiredJobOnce` 单轮直调与 once/migration 短命进程均不产生任务指标。
+- 驻留型组件（runtime-log-indexer、account-health 探活、outcome projection、business-result-projector、proxy-latency）不经过调度器收口，没有 `juhe_ai_jobs_task_*` 序列。
+- `juhe_ai_jobs_task_last_success_timestamp_seconds` 子序列在任务首次 `completed` 时才创建：**从未成功的任务没有该序列**，纯 `time() - 指标值` 查询会漏掉"从未成功"。停摆告警需配合 `absent(...)` 或以 `juhe_ai_jobs_task_runs_total` 的存在性兜底。
+- 生产当前为 PostgreSQL 单机形态，经调度器注册的定时任务覆盖基本可用；SQLite 形态下任务指标整体缺席属预期。
 
 ### 基数约束
 
 - 自定义族标签只允许上表枚举值；禁止把路由路径、模型名、账户 / 用户 / API Key ID、上游地址、错误正文等高基数或敏感值放入标签。
-- `route_group` 为固定路由分组枚举（管理面 / 公开面 / `/v1` 网关链等有限集合）；`reason_class` / `failure_class` 为固定分类词表。新增标签值前必须先在本文登记基数上界。
+- `route_group` 枚举为 `health` / `management` / `public_api` / `gateway` / `other` / `observability` 六值；`/__aisys__/metrics` 自身归 `observability` 且**不参与计量**（双重排除：分类器短路 + 端点挂健康监听不经指标中间件），因此有效 `route_group` 为五类。`method` 归一化为七个标准 HTTP 方法 + `OTHER`；`status_class` / `outcome` / `failure_scope` 取值见指标族表；`reason_class`（九值：`quota`/`rate_limit`/`authorization`/`protocol`/`timeout`/`transport`/`upstream_5xx`/`upstream_4xx`/`unknown`）与 `failure_class`（三值：`opaque_upstream_response`/`transport`/`unknown`）为固定分类词表。新增标签值前必须先在本文登记基数上界。
+- 单实例序列上界（标签笛卡尔积理论值，实际受语义约束更小）：
+  - `juhe_ai_http_requests_total`：5 类有效 `route_group` × 8 `method` × 13 个有效 (status_class, outcome, failure_scope) 组合（12 个 (status_class, outcome) 组合中 11 个恒配 `none`，`5xx`+`completed` 发射 `gateway/upstream` 两值——`none` 在该组合被归一为 `gateway`，不可达）= **520**。
+  - `juhe_ai_http_request_duration_seconds`：同标签集，每组合 8 桶 + `+Inf` + `_sum` + `_count` = 11 序列，上界 **5720**。
+  - `juhe_ai_http_requests_in_flight`：5 × 8 = **40**。
+  - `juhe_ai_gateway_upstream_failures_total`：3 `failure_class` × 9 `reason_class` × 6 `status_class` = **162**。
+  - `juhe_ai_gateway_first_output_duration_seconds`：8 `method` × 11 = **88**。
+  - `juhe_ai_gateway_db_pool_*`：主业务池固定 **6** 序列（无标签）。
+  - `juhe_ai_jobs_task_runs_total`：注册任务数 × 状态数（3 终态）；`juhe_ai_jobs_task_last_success_timestamp_seconds`：注册任务数（仅出现过的 job_name/job_type 组合）。
 - 指标不含任何请求内容、追踪号或凭据；错误正文只允许进入分类词表，不允许进入标签或指标名。
+- 队列深度类指标（2026-10-16 裁决）**暂缓**：队列对象、生命周期与既有原子计数 seam 未登记前不新增族；明确后按本节流程补登基数与语义再实现。
 
 ### 已删除的 Node 兼容族
 
@@ -96,6 +120,19 @@
 
 `.env` 清理清单：生产与开发环境删除上述两家族全部变量与 gateway 侧 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS`；无需新增任何变量。
 
+端点抓取开销实测（2026-10-16，生产宿主 103.36.63.105 回环，命令 `for i in 1 2 3 4 5; do curl -sS -o /dev/null -w "%{time_total} %{size_download}\n" http://127.0.0.1:<port>/__aisys__/metrics; done`，5 次连续采样）：gateway `3306` 单次 0.0017–0.0032s、约 16KB、45 族 / 87 样本；jobs `3305` 单次 0.0030–0.271s（中位 0.0034s）、约 70KB、41 族 / 472 样本。抓取预算评估以此实测为准，不以其他未存档数字为准。
+
+## 失联告警（2026-10-16 起执行）
+
+进程失联（进程退出、隧道中断、端口失监听、target 从抓取配置消失）由 infra Prometheus 规则承载，权威文件 `F:\服务部署\alert-rules\juhe-app-alerts.yml`（与 `AppGoroutinesHigh` 等同组管理，修改后同步 infra rules 目录热加载；Grafana 侧仅做呈现，无 Grafana-managed 规则）：
+
+| 规则 | 表达式 | for | 说明 |
+| --- | --- | --- | --- |
+| `AppScrapeDown` | `up{job=~"juhe-ai-(gateway\|jobs)"} == 0` | 5m | target 存在但抓取失败；60s 采样下 5 个点确认，兼顾隧道抖动不误报 |
+| `AppScrapeTargetMissing` | `absent(up{job="juhe-ai-gateway"}) or absent(up{job="juhe-ai-jobs"})` | 5m | target 从抓取配置消失（`up` 序列不复存在，`== 0` 不会触发，需 `absent` 兜底） |
+
+告警呈现在 Grafana Alerting；通知仍按既有裁定走巡检模式，不接入主动通知渠道。
+
 ## 已删除功能 → 新方案映射
 
 | 已删除能力（页面 / 面板） | 新方案（Grafana 面板 / exporter 查询） |
@@ -120,5 +157,6 @@
 
 1. **curl 冒核**：生产宿主机 `curl -fsS http://127.0.0.1:3306/__aisys__/metrics` 与 `curl -fsS http://127.0.0.1:3305/__aisys__/metrics` 返回 Prometheus text exposition，可见 `go_*` / `process_*` 与对应 `juhe_ai_*` 族；从宿主回环以外地址访问 3306/3305 被拒绝（端口仅回环发布）。
 2. **抓取与面板**：infra Prometheus 两个 target UP（`scrape_interval=60s`，经 SSH 隧道）；Grafana 导入 monitoring/ 面板后可见网关请求 / 上游失败 / 首输出、jobs 任务运行与最近成功时间、`go_*` / `process_*` 运行时和 postgres_exporter 容量序列。
-3. **告警口径迁移**：原表监控告警判断（索引放大、异常增长）与系统指标页人工巡检改为 Prometheus 告警规则 / Grafana 面板表达；运维文档不再指向已删除页面。
+3. **告警口径迁移**：原表监控告警判断（索引放大、异常增长）与系统指标页人工巡检改为 Prometheus 告警规则 / Grafana 面板表达；运维文档不再指向已删除页面。失联告警（`AppScrapeDown` / `AppScrapeTargetMissing`，2026-10-16 起）随 `juhe-app-alerts.yml` 同步 infra 后热加载生效，Grafana Alerting 可见规则状态。
 4. **减法回归**：启动器 / sidecar env 回归确认两家族 env 与 gateway 侧 `JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS` 不再转发（残留值被拒转清单剥离）；mockdata 任务清单不再引用 `system-metrics-sample` / `system-metrics-trend-windows-refresh`；`__aisys__` 前端路由不再包含已删除两页。
+5. **主业务池指标**（2026-10-16 起）：PostgreSQL 形态的 gateway `/__aisys__/metrics` 暴露 `juhe_ai_gateway_db_pool_*` 六序列且值与真实池一致（`wait_*` 两项为 counter 类型）；SQLite 形态整族缺席。

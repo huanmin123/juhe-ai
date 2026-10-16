@@ -1024,6 +1024,18 @@ func (s *auditLogSQLReader) GetAuditLogDetail(ctx context.Context, id string) (*
 		if err != nil {
 			return nil, err
 		}
+		// 去重样本按窗口移交后，事件自身窗口组行的 sample_event_id 可能仍指向
+		// 上一次移交的旧样本；跳转语义是"该指纹当前保留原文的那条"，统一解析
+		// 最新窗口组行的样本事件，任意历史条目一步直达。
+		if group.Fingerprint != "" {
+			latest, err := s.latestErrorGroupSampleEventID(ctx, group.Fingerprint)
+			if err != nil {
+				return nil, err
+			}
+			if latest != "" {
+				group.SampleEventID = latest
+			}
+		}
 		detail.ErrorGroup = group
 	}
 	return detail, nil
@@ -1111,6 +1123,18 @@ func (s *auditLogSQLReader) findErrorGroup(ctx context.Context, id string) (*Aud
 	}
 	group := auditErrorGroupFromRow(row)
 	return &group, nil
+}
+
+// latestErrorGroupSampleEventID returns the retained sample of a fingerprint's
+// newest window row — under per-window sample handover it is the only event
+// still holding full payloads. Empty when the fingerprint has no group rows.
+func (s *auditLogSQLReader) latestErrorGroupSampleEventID(ctx context.Context, fingerprint string) (string, error) {
+	query := `SELECT sample_event_id FROM ` + s.mode.table("audit_error_groups") + ` WHERE fingerprint = ? ORDER BY window_started_at DESC, id DESC LIMIT 1`
+	row, err := readQueryOneMap(ctx, s.db, s.mode, query, fingerprint)
+	if err != nil || row == nil {
+		return "", err
+	}
+	return readOptionalText(row["sample_event_id"]), nil
 }
 
 func auditLogListItemFromRow(row map[string]any) AuditLogListItem {

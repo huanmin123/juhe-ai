@@ -452,12 +452,6 @@ type fakeAuditSettings struct{ enabled bool }
 
 func (f *fakeAuditSettings) AuditLogEnabled() bool { return f.enabled }
 
-type fakeAuditDispatcher struct{ dispatched []DispatchedAuditLogInput }
-
-func (f *fakeAuditDispatcher) Dispatch(input DispatchedAuditLogInput) {
-	f.dispatched = append(f.dispatched, input)
-}
-
 type fakeAPIKeyValidator struct {
 	row *gatewayruntimecache.GatewayAPIKeyRow
 }
@@ -508,7 +502,6 @@ func newTestService(t *testing.T, mutate func(*Service)) (*Service, *fakeObserva
 		Responses:          sink,
 		Recoverable:        &fakeRecoverable{},
 		AuditSettings:      &fakeAuditSettings{enabled: true},
-		AuditDispatch:      &fakeAuditDispatcher{},
 		Observability:      obs,
 		RouteResolver:      &fakeRouteResolver{},
 		AccountAvoidance:   &fakeAccountAvoidance{},

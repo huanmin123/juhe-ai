@@ -1343,6 +1343,9 @@ type localSessionAffinity struct {
 type localAffinityEntry struct {
 	accountID string
 	scopeKey  string
+	// apiKeyFingerprint 是账户内 Key 会话黏性绑定的上游 Key 指纹（64 位小写
+	// hex，最终协议成功写回）；仅同 owner 记住/claim 保留，owner 被替换时清除。
+	apiKeyFingerprint string
 }
 
 func newLocalSessionAffinity() *localSessionAffinity {
@@ -1415,7 +1418,57 @@ func (a *localSessionAffinity) RememberAsync(_ context.Context, sessionAffinityK
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.keys[sessionAffinityKey] = localAffinityEntry{accountID: accountID, scopeKey: scope.GroupID}
+	// 账户内 Key 会话亲和：同 owner 记住保留已有 Key 指纹；owner 被替换时
+	// 清除旧 owner 的 Key 指纹（不得带到新 owner）。缺失/过期记录没有旧指纹。
+	fingerprint := ""
+	if !a.expired(sessionAffinityKey) {
+		if entry, ok := a.keys[sessionAffinityKey]; ok && entry.accountID == accountID {
+			fingerprint = entry.apiKeyFingerprint
+		}
+	}
+	a.keys[sessionAffinityKey] = localAffinityEntry{accountID: accountID, scopeKey: scope.GroupID, apiKeyFingerprint: fingerprint}
+	a.ttls[sessionAffinityKey] = time.Now().Add(localSessionAffinityTTL)
+}
+
+// StickyApiKeyFingerprintAsync 返回会话黏住的上游 Key 指纹：记录缺失、过期或
+// owner 不匹配返回空串（降级为无黏性）；读不刷新 TTL（与 Redis 路径一致）。
+func (a *localSessionAffinity) StickyApiKeyFingerprintAsync(_ context.Context, sessionAffinityKey, accountID string) string {
+	if sessionAffinityKey == "" || accountID == "" {
+		return ""
+	}
+	a.once.Do(func() {
+		slog.Warn("网关链端口显式降级", "port", "gatewaydispatch.SessionAffinityPort", "effect", "会话亲和保持进程内记忆")
+	})
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.expired(sessionAffinityKey) {
+		return ""
+	}
+	entry, ok := a.keys[sessionAffinityKey]
+	if !ok || entry.accountID != accountID {
+		return ""
+	}
+	return entry.apiKeyFingerprint
+}
+
+// RememberApiKeyFingerprintAsync 在最终协议成功后把上游 Key 指纹写回现存同
+// owner 记录：不创建记录、不改 owner；记录缺失、过期或异 owner 跳过；写回
+// 刷新 TTL（与 Redis 路径一致）。指纹格式非法（非 64 位小写 hex）时拒绝。
+func (a *localSessionAffinity) RememberApiKeyFingerprintAsync(_ context.Context, sessionAffinityKey, accountID, upstreamApiKeyFingerprint string) {
+	if sessionAffinityKey == "" || accountID == "" || !gatewaysession.ValidUpstreamApiKeyFingerprint(upstreamApiKeyFingerprint) {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.expired(sessionAffinityKey) {
+		return
+	}
+	entry, ok := a.keys[sessionAffinityKey]
+	if !ok || entry.accountID != accountID {
+		return
+	}
+	entry.apiKeyFingerprint = upstreamApiKeyFingerprint
+	a.keys[sessionAffinityKey] = entry
 	a.ttls[sessionAffinityKey] = time.Now().Add(localSessionAffinityTTL)
 }
 
@@ -2158,47 +2211,6 @@ func (a codexPreflightAdapter) ApplyChatBridgeCompactPreflight(ctx context.Conte
 // ---------------------------------------------------------------------------
 // audit plumbing
 // ---------------------------------------------------------------------------
-
-// auditDispatchAdapter implements gatewaypreauth.AuditDispatcher: finalized
-// dropped captures go straight to the in-process F3 audit producer (Node
-// dispatchAuditLogToGo; the loopback HMAC POST to the retired F3 input server
-// is deleted since 去跨进程战役第四刀 — and that POST never carried the
-// mandatory HMAC signature, so chain audit capture silently lost every entry
-// with a 401; the producer is the defect fix that makes the write path live).
-type auditDispatchAdapter struct {
-	producer *auditlog.Producer
-}
-
-// nilProducerAdapter keeps the retired target=="" degrade branch: a missing
-// producer (test / degraded assembly) silently drops the capture.
-func (a auditDispatchAdapter) Dispatch(input gatewaypreauth.DispatchedAuditLogInput) {
-	if a.producer == nil {
-		return
-	}
-	status := input.FinalStatusCode
-	a.producer.Capture(auditlog.AuditLogInput{
-		ID:              input.ID,
-		LifecycleStatus: auditlog.LifecycleStatus(input.LifecycleStatus),
-		TraceID:         input.TraceID,
-		TrafficSource:   auditlog.TrafficSource(input.TrafficSource),
-		AuditOutcome:    auditlog.AuditOutcome(input.AuditOutcome),
-		Success:         input.Success,
-		Method:          input.Method,
-		Path:            input.Path,
-		QueryString:     input.QueryString,
-		ClientIP:        input.ClientIP,
-		UserAgent:       input.UserAgent,
-		FinalStatusCode: &status,
-		ErrorPhase:      input.ErrorPhase,
-		ErrorCode:       input.ErrorCode,
-		ErrorMessage:    input.ErrorMessage,
-		SampleBucket:    input.SampleBucket,
-		SampleReason:    input.SampleReason,
-		CaptureStatus:   auditlog.AuditCaptureStatus(input.CaptureStatus),
-		StartedAt:       input.StartedAt,
-		EndedAt:         input.EndedAt,
-	})
-}
 
 // auditUsageDispatcher implements gatewayusage.AuditDispatcher against the
 // in-process F3 producer. The retired wire hop serialized the usage DTO to

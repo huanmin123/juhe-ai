@@ -220,7 +220,7 @@ func (f *fullchainFixture) fullchainCreateGlmSpeechAccount(name, upstreamKey, gr
 // 归一、Bearer 认证；provider_options.glm 的 ref_audio/ref_text 深合并由链级
 // 测试断言，E2E 侧以 mock 按请求 response_format 协商回 wav 佐证透传面）→
 // 客户端收到 wav 二进制（RIFF magic bytes）；usage 按请求字符自算落账
-//（透传面无上游回报）。
+// （透传面无上游回报）。
 func TestFullchainMediaSpeechGlmTTS(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
@@ -310,10 +310,10 @@ func (f *fullchainFixture) fullchainEnsureVolcengineTTSCatalogModel(model string
 // fullchainCreateVolcengineSpeechAccount 经管理面创建指向 mock 上游的
 // volcengine api_key 语音账户并绑定分组（volcengine 供应商 + 媒体档案
 // profile_volcengine_openai_v1，M6 起声明 tts family）；凭据显式声明
-// audio_speech 端点模式 + **语音应用双值 speech_appid/speech_token**（M6
-// 凭据归一化放行键；语音 token 是上游鉴权 key——mock 上游按它归因）。
-// 模型约束种统一面占位名（自定义目录行，见 fullchainEnsureVolcengine-
-// TTSCatalogModel）。
+// audio_speech 端点模式 + **单值 speech_token**（2026-10-17 TTS 迁移批
+// 语义 = 新版语音控制台 API Key；语音 token 是上游鉴权 key——mock 上游
+// 按它归因）。模型约束种统一面占位名（自定义目录行，见
+// fullchainEnsureVolcengineTTSCatalogModel）。
 func (f *fullchainFixture) fullchainCreateVolcengineSpeechAccount(name, arkKey, speechToken, groupID string) string {
 	f.t.Helper()
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
@@ -323,9 +323,8 @@ func (f *fullchainFixture) fullchainCreateVolcengineSpeechAccount(name, arkKey, 
 		"type":                      "api_key",
 		"capabilityDomain":          "audio",
 		"credentials": map[string]any{
-			"api_key":     arkKey,
-			"base_url":    f.mock.server.URL,
-			"speech_appid": "app-voice-777",
+			"api_key":      arkKey,
+			"base_url":     f.mock.server.URL,
 			"speech_token": speechToken,
 			"supported_endpoint_modes": []string{
 				"audio_speech",
@@ -342,13 +341,13 @@ func (f *fullchainFixture) fullchainCreateVolcengineSpeechAccount(name, arkKey, 
 	return accountID
 }
 
-// TestFullchainMediaSpeechVolcengineTTS 验证 M6 火山 TTS adapter 链（契约
-// §9.2）：管理面配置（volcengine 分组 + 语音双值凭据账户 + 自定义占位目录
-// 行 + audio_speech 端点模式写侧门禁）→ POST /v1/audio/speech → 出站
-// POST /api/v3/tts（固定语音服务域——测试 seam env 把网关出站指回 mock；
-// `Authorization: Bearer;<speech_token>` 分号鉴权特例）→ 客户端收到 base64
-// 解码后的 mp3 二进制（frame sync magic bytes）；usage 按请求字符自算落账
-//（V3 响应无字符回报）。
+// TestFullchainMediaSpeechVolcengineTTS 验证火山 TTS adapter 链（契约
+// §9.2，2026-10-17 迁移批 /api/v3/tts/create 面）：管理面配置（volcengine
+// 分组 + 语音单值凭据账户 + 自定义占位目录行 + audio_speech 端点模式写侧
+// 门禁）→ POST /v1/audio/speech → 出站 POST /api/v3/tts/create（固定语音
+// 服务域——测试 seam env 把网关出站指回 mock；`X-Api-Key: <speech_token>`
+// 单头鉴权，Authorization 不出站）→ 客户端收到 base64 解码后的 mp3 二进制
+// （frame sync magic bytes）；usage 按请求字符自算落账（上游无字符回报）。
 func TestFullchainMediaSpeechVolcengineTTS(t *testing.T) {
 	requireFullchainGate(t)
 	// 组装顺序：mock 先于网关（extraEnv 回调拿 mock URL——火山语音出站
@@ -386,22 +385,32 @@ func TestFullchainMediaSpeechVolcengineTTS(t *testing.T) {
 		t.Fatalf("MV volcengine tts 响应不是解码后的 mp3 载荷（frame sync 缺失）: % x", payload[:min(4, len(payload))])
 	}
 
-	// 账户亲和 + 出站形态：语音 token key 命中 POST /api/v3/tts 一次，
-	// `Bearer;<token>` 分号鉴权特例；ark key（视频面凭据）无流量。
+	// 账户亲和 + 出站形态：语音 token key 命中 POST /api/v3/tts/create 一次，
+	// `X-Api-Key` 单头鉴权（Authorization 已被网关删除，不出站）；ark key
+	//（视频面凭据）无流量。
 	calls := f.mock.callsByKey(speechToken)
 	if len(calls) != 1 {
 		t.Fatalf("MV volcengine tts 语音 token 上游命中 %d 次, want 1: %+v", len(calls), calls)
 	}
-	if calls[0].Method != http.MethodPost || calls[0].Path != "/api/v3/tts" {
+	if calls[0].Method != http.MethodPost || calls[0].Path != "/api/v3/tts/create" {
 		t.Fatalf("MV volcengine tts 出站请求形态错误: %#v", calls[0])
 	}
-	if calls[0].AuthHeader != "Bearer;"+speechToken {
-		t.Fatalf("MV volcengine tts Authorization=%q, want Bearer;%s（分号特例）", calls[0].AuthHeader, speechToken)
+	if calls[0].APIKeyHeader != speechToken {
+		t.Fatalf("MV volcengine tts X-Api-Key=%q, want speech_token（单头单值）", calls[0].APIKeyHeader)
 	}
-	// T5 appid 鉴权字段：出站报文 user.uid = 账户 speech_appid（链级
+	if calls[0].AuthHeader != "" {
+		t.Fatalf("MV volcengine tts Authorization=%q, want 空（语音面不得携带 ark Bearer 出站）", calls[0].AuthHeader)
+	}
+	// 出站报文（迁移批形态）：占位名 doubao-tts 归一映射为 seed-audio-1.0
+	// 出站 + text_prompt/speaker/audio_config 映射（链级
 	// TestChainMediaVolcengineSpeechFullChain 的同款断言在真实 /v1 链复核）。
-	if !strings.Contains(calls[0].Body, `"uid":"app-voice-777"`) {
-		t.Fatalf("MV volcengine tts 出站报文缺少 user.uid=speech_appid: %s", calls[0].Body)
+	for _, fragment := range []string{`"model":"seed-audio-1.0"`, `"text_prompt":"你好火山"`, `"speaker":"BV700_streaming"`, `"format":"mp3"`, `"speech_rate":1.5`} {
+		if !strings.Contains(calls[0].Body, fragment) {
+			t.Fatalf("MV volcengine tts 出站报文缺少 %s: %s", fragment, calls[0].Body)
+		}
+	}
+	if strings.Contains(calls[0].Body, "req_params") || strings.Contains(calls[0].Body, "doubao-tts") {
+		t.Fatalf("MV volcengine tts 出站报文残留旧版骨架或占位名: %s", calls[0].Body)
 	}
 	if len(f.mock.callsByKey(arkKey)) != 0 {
 		t.Fatalf("MV volcengine tts 不得经 ark 凭据出站: %+v", f.mock.callsByKey(arkKey))

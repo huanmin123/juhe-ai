@@ -81,9 +81,12 @@ type fullchainUpstreamCall struct {
 	Path     string
 	Model    string
 	Scenario platformmock.Scenario
-	// AuthHeader 是该次上游请求的原始 Authorization 头（M6 火山语音
-	// `Bearer;<token>` 分号特例断言面；空串=无认证头）。
+	// AuthHeader 是该次上游请求的原始 Authorization 头（空串=无认证头；
+	// 火山语音迁移批起网关出站删除 Authorization，恒空）。
 	AuthHeader string
+	// APIKeyHeader 是该次上游请求的原始 X-Api-Key 头（2026-10-17 火山语音
+	// 迁移批鉴权面断言：key=新版语音控制台 API Key，即账户 speech_token）。
+	APIKeyHeader string
 	// Body 是该次上游请求的原始请求体（能力域拆分 T5 验收：火山语音
 	// user.uid=speech_appid 注入断言面；透传面为原始 JSON 文本）。
 	Body string
@@ -263,10 +266,10 @@ func (m *fullchainMockUpstream) nextScenario(key string, scriptable bool) platfo
 	return m.globalDefault
 }
 
-func (m *fullchainMockUpstream) record(key, method, path, model, authHeader, body string, scenario platformmock.Scenario) {
+func (m *fullchainMockUpstream) record(key, method, path, model, authHeader, apiKeyHeader, body string, scenario platformmock.Scenario) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, Body: body, At: time.Now()})
+	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, APIKeyHeader: apiKeyHeader, Body: body, At: time.Now()})
 }
 
 // fullchainScriptableRequest 判定该请求是否参与场景队列消费（媒体契约
@@ -433,19 +436,16 @@ func fullchainMediaScriptable(method, path string) bool {
 func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	// 上游 key 身份按协议头提取：openai 族走 Authorization Bearer；gemini
 	// 账户（M3 veo）走 X-Goog-Api-Key（网关任务面/创建链沿 gemini 认权分支）；
-	// 火山语音（M6 TTS）走 `Authorization: Bearer;<token>` 分号特例（契约
-	// §9.2，key=语音 speech_token——与账户 ark API Key 是两套凭据）。
+	// 火山语音（2026-10-17 迁移批 TTS）走 `X-Api-Key` 单头（契约 §9.2，
+	// key=新版语音控制台 API Key——与账户 ark API Key 是两套凭据；旧
+	// `Authorization: Bearer;<token>` 分号形态随旧端点废弃）。
 	authorization := r.Header.Get("Authorization")
-	// 分号形态先行判别：`Bearer;xxx` 不以 "Bearer "（带空格）开头，先做
-	// 空格 TrimPrefix 会把整串当 key 短路后续分支。
-	key := ""
-	if rest, ok := strings.CutPrefix(authorization, "Bearer;"); ok {
-		key = rest
-	} else {
-		key = strings.TrimPrefix(authorization, "Bearer ")
-	}
+	key := strings.TrimPrefix(authorization, "Bearer ")
 	if key == "" {
 		key = r.Header.Get("X-Goog-Api-Key")
+	}
+	if key == "" {
+		key = r.Header.Get("X-Api-Key")
 	}
 	raw, _ := io.ReadAll(r.Body)
 	_ = r.Body.Close()
@@ -456,7 +456,7 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &parsed)
 	scriptable := fullchainScriptableRequest(r, parsed.Model)
 	scenario := m.nextScenario(key, scriptable)
-	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, string(raw), scenario)
+	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, r.Header.Get("X-Api-Key"), string(raw), scenario)
 	if scenario == fullchainHoldScenario {
 		m.mu.Lock()
 		waiter, ok := m.holdWaiters[key]
@@ -596,7 +596,7 @@ func startFullchainFixture(t *testing.T) *fullchainFixture {
 }
 
 // startFullchainFixtureExtraEnv 是 startFullchainFixture 的 extraEnv 变体
-//（M6 火山 TTS E2E：把 JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL 测试
+// （M6 火山 TTS E2E：把 JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL 测试
 // seam 指向本夹具 mock——env 值依赖夹具 mock URL，故以回调在 mock 就绪
 // 后、网关启动前求值）。
 func startFullchainFixtureExtraEnv(t *testing.T, extraEnv func(mockURL string) map[string]string) *fullchainFixture {

@@ -69,13 +69,19 @@ const (
 	PayloadCaptureExpired     PayloadCaptureStatus = "expired"
 	PayloadCaptureOverflow    PayloadCaptureStatus = "overflow"
 	PayloadCaptureDropped     PayloadCaptureStatus = "dropped"
+	// PayloadCaptureDeduped is an internal downgrade product of error-group
+	// storage dedup: the same fingerprint keeps only the newest event's full
+	// payloads. validateInput intentionally rejects it on the Persist input
+	// path; only the writer's own dedup step may set it.
+	PayloadCaptureDeduped PayloadCaptureStatus = "deduped"
 )
 
 type PayloadDropReason string
 
 const (
-	PayloadDropTransportBudget PayloadDropReason = "transport_budget"
-	PayloadDropCapacityLimit   PayloadDropReason = "capacity_limit"
+	PayloadDropTransportBudget   PayloadDropReason = "transport_budget"
+	PayloadDropCapacityLimit     PayloadDropReason = "capacity_limit"
+	PayloadDropErrorGroupDeduped PayloadDropReason = "error_group_deduped"
 )
 
 type AuditCaptureStatus string

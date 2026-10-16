@@ -647,7 +647,7 @@ Node 时代 `PLAN-0115` 页面统一确认与 revision / epoch 契约为历史�
 - `compressed_payload_bytes`：实际落盘 blob 字节，summary-only 时只计算摘要 blob 的落盘大小
 - `compression_saved_bytes`：原始逻辑字节减实际落盘字节，用于容量报表
 - `error_group_id`
-- `capture_status`：`complete`、`dropped`、`overflow`
+- `capture_status`：`complete`、`metadata_only`、`dropped`、`overflow`
 - `started_at`
 - `ended_at`
 - `duration_ms`
@@ -690,7 +690,7 @@ Node 时代 `PLAN-0115` 页面统一确认与 revision / epoch 契约为历史�
 - `body_sha256`
 - `raw_size_bytes`
 - `compressed_size_bytes`
-- `capture_status`：`complete`、`summary_only`、`hash_only`、`expired`、`dropped`
+- `capture_status`：`complete`、`summary_only`、`hash_only`、`expired`、`overflow`、`dropped`、`deduped`（refs 级错误组去重降级值，见《原始审计日志设计.md》错误组存储去重节）
 - `created_at`
 
 当前 `audit_payload_blobs` 表：

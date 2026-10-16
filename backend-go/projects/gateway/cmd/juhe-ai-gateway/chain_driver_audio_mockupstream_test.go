@@ -170,3 +170,36 @@ func TestChainDriverGeminiSpeechFormatGateIsLocal400(t *testing.T) {
 		t.Fatalf("parts format gate error must be a GatewayRequestValidationError, got %T: %v", err, err)
 	}
 }
+
+// TestChainDriverGeminiSpeechMissingVoiceLocal400 是 gemini speech 分派四值化
+// 的负例钉（2026-10-17 同构修复，契约 §5.1/§9.2 分派语义同款）：gemini 账户 +
+// speech 路径 + 缺 voice 的合法 JSON body → 本地 400 校验错误、零上游出站
+// （capability 链对 speech 路径豁免 native 门，四值化前该组合静默落通用透传
+// 链打向 generativelanguage 404 后伪装 503）。
+func TestChainDriverGeminiSpeechMissingVoiceLocal400(t *testing.T) {
+	driver := newChainProviderDriver()
+	account := gatewaydispatch.AccountCandidate{
+		ID:           "acc_gem_tts_no_voice",
+		ProviderCode: "gemini",
+		ProtocolCode: "gemini",
+		Type:         "api_key",
+		BaseURL:      "https://generativelanguage.googleapis.invalid",
+		APIKey:       "gk-1",
+	}
+	req := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",
+		`{"model":"gemini-2.5-flash-preview-tts","input":"hi"}`)
+	if _, err := driver.BuildGatewayUpstreamURLsForAccount(context.Background(), account, req); err == nil {
+		t.Fatal("缺 voice 必须在 URL 构造消费点报校验错误")
+	} else {
+		var validation *gatewaypreauth.GatewayRequestValidationError
+		if !errors.As(err, &validation) {
+			t.Fatalf("错误必须是 GatewayRequestValidationError: %T %v", err, err)
+		}
+		if !strings.Contains(err.Error(), "voice") {
+			t.Fatalf("错误消息必须透传 voice 校验原文: %v", err)
+		}
+	}
+	if _, err := driver.buildGatewayUpstreamRequestParts(context.Background(), req, account, gatewaydispatch.UsageIdentity{}, ""); err == nil {
+		t.Fatal("parts 构造消费点同样必须报校验错误")
+	}
+}

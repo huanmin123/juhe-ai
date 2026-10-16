@@ -243,6 +243,13 @@ func (f *fakeAffinity) ForgetAsync(ctx context.Context, sessionAffinityKey, acco
 	return nil
 }
 
+func (f *fakeAffinity) StickyApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID string) string {
+	return ""
+}
+
+func (f *fakeAffinity) RememberApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID, upstreamApiKeyFingerprint string) {
+}
+
 func (f *fakeAffinity) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error) {
 	return f.busy, nil
 }

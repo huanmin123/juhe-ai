@@ -3,6 +3,9 @@ package main
 // 对话批（火山方舟/通义百炼对话承接）chat 出站 URL 归一钉值：官方 OpenAI
 // 兼容端点服务根（ark /api/v3、百炼 compatible-mode /compatible-mode/v1）
 // 插入与去重、非 chat 路径维持 openai /v1 归一、模型映射改写后路径一并覆盖。
+// 2026-10-17 补 Agent Plan 专属端点（base=/api/plan/v3 显式完整服务根直拼）
+// 与 volcengine 图像面（chainVolcengineImagesUpstreamURL）、媒体任务面
+//（chainVolcengineVideoUpstreamURL）的三形态钉值。
 
 import (
 	"context"
@@ -74,6 +77,20 @@ func TestChainVolcengineChatUpstreamURL(t *testing.T) {
 			pathAndQuery: "/chat/completions",
 			want:         "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
 		},
+		{
+			// Agent Plan 专属端点（2026-10-17 显式服务根语义）：非空非 /api/v3
+			// 路径视为用户显式指定的完整服务根，直拼不再插入第二个服务根。
+			name:         "agent plan explicit service root kept",
+			base:         "https://ark.cn-beijing.volces.com/api/plan/v3",
+			pathAndQuery: "/v1/chat/completions",
+			want:         "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
+		},
+		{
+			name:         "agent plan trailing slash kept",
+			base:         "https://ark.cn-beijing.volces.com/api/plan/v3/",
+			pathAndQuery: "/v1/chat/completions",
+			want:         "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,6 +143,103 @@ func TestChainQwenChatUpstreamURL(t *testing.T) {
 		})
 	}
 	if _, err := chainQwenChatUpstreamURL("https://[bad", "/v1/chat/completions"); err == nil || !strings.Contains(err.Error(), "base_url 无效") {
+		t.Fatalf("无效 base_url 应报错：%v", err)
+	}
+}
+
+func TestChainVolcengineImagesUpstreamURL(t *testing.T) {
+	// 图像出站 URL 三形态钉值（2026-10-17 图像域开通 + Agent Plan 专属端点
+	// 修复）：ark 官方 OpenAI 兼容图像端点 /api/v3/images/generations 与
+	// chat 共用服务根；base=/api/plan/v3 是用户显式完整服务根，直拼不插根。
+	cases := []struct {
+		name, base, pathAndQuery, want string
+	}{
+		{
+			name:         "official root inserts api v3",
+			base:         "https://ark.cn-beijing.volces.com",
+			pathAndQuery: "/v1/images/generations",
+			want:         "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+		},
+		{
+			name:         "base with api v3 dedups",
+			base:         "https://ark.cn-beijing.volces.com/api/v3",
+			pathAndQuery: "/v1/images/generations",
+			want:         "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+		},
+		{
+			name:         "agent plan explicit service root kept",
+			base:         "https://ark.cn-beijing.volces.com/api/plan/v3",
+			pathAndQuery: "/v1/images/generations",
+			want:         "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations",
+		},
+		{
+			name:         "query preserved",
+			base:         "https://ark.cn-beijing.volces.com/api/plan/v3",
+			pathAndQuery: "/v1/images/generations?beta=true",
+			want:         "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations?beta=true",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := chainVolcengineImagesUpstreamURL(tc.base, tc.pathAndQuery)
+			if err != nil {
+				t.Fatalf("chainVolcengineImagesUpstreamURL: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("chainVolcengineImagesUpstreamURL(%q, %q) = %q, want %q", tc.base, tc.pathAndQuery, got, tc.want)
+			}
+		})
+	}
+	if _, err := chainVolcengineImagesUpstreamURL("://bad", "/v1/images/generations"); err == nil || !strings.Contains(err.Error(), "base_url 无效") {
+		t.Fatalf("无效 base_url 应报错：%v", err)
+	}
+}
+
+func TestChainVolcengineVideoUpstreamURL(t *testing.T) {
+	// 媒体任务面出站 URL 三形态钉值：adapter 出站路径自带 /api/v3 服务根
+	//（契约 §9.1 /api/v3/contents/generations/tasks 族）；base 为官方裸域名
+	// 直拼、base 已含 /api/v3 去重、base=/api/plan/v3 显式完整服务根剥前缀
+	// 直拼（/api/plan/v3 + /contents/generations/tasks）。
+	cases := []struct {
+		name, base, path, want string
+	}{
+		{
+			name: "official root keeps adapter service root",
+			base: "https://ark.cn-beijing.volces.com",
+			path: "/api/v3/contents/generations/tasks",
+			want: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
+		},
+		{
+			name: "base with api v3 dedups adapter prefix",
+			base: "https://ark.cn-beijing.volces.com/api/v3",
+			path: "/api/v3/contents/generations/tasks",
+			want: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
+		},
+		{
+			name: "agent plan explicit service root strips adapter prefix",
+			base: "https://ark.cn-beijing.volces.com/api/plan/v3",
+			path: "/api/v3/contents/generations/tasks",
+			want: "https://ark.cn-beijing.volces.com/api/plan/v3/contents/generations/tasks",
+		},
+		{
+			name: "agent plan poll path strips adapter prefix",
+			base: "https://ark.cn-beijing.volces.com/api/plan/v3/",
+			path: "/api/v3/contents/generations/tasks/job-1",
+			want: "https://ark.cn-beijing.volces.com/api/plan/v3/contents/generations/tasks/job-1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := chainVolcengineVideoUpstreamURL(tc.base, tc.path)
+			if err != nil {
+				t.Fatalf("chainVolcengineVideoUpstreamURL: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("chainVolcengineVideoUpstreamURL(%q, %q) = %q, want %q", tc.base, tc.path, got, tc.want)
+			}
+		})
+	}
+	if _, err := chainVolcengineVideoUpstreamURL("https://[bad", "/api/v3/contents/generations/tasks"); err == nil || !strings.Contains(err.Error(), "base_url 无效") {
 		t.Fatalf("无效 base_url 应报错：%v", err)
 	}
 }

@@ -84,13 +84,6 @@ func TestW14HAbortAndErrorClassifyArms(t *testing.T) {
 	}
 }
 
-func TestW14HRecordEarlyFailureBeforeHeaders(t *testing.T) {
-	service, _, _ := newTestService(t, nil)
-	request, _, writer := newTestRequest("POST", "/v1/chat/completions")
-	// 头未发出 → 直接返回，不派发审计。
-	service.recordEarlyGatewayAuthFailure(writer, request)
-}
-
 func TestW14HAfterRuntimeBlacklistArms(t *testing.T) {
 	ctx := context.Background()
 	blockedPolicy := ClientIPPolicyDecision{

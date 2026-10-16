@@ -2,11 +2,13 @@ package pricing
 
 // Volcengine pricing snapshot。M3 媒体供应商新增（媒体设计 §9/契约 §9.1，
 // curated 2026-10-04，接入核对于火山方舟官方文档与定价检索）；A2 批模型
-// 目录补全扩至 14 行（curated 2026-10-05）：6 行 chat（doubao-seed 系，
+// 目录补全扩至 14 行（curated 2026-10-05）：6 行 chat（doubao-seed 系,
 // OpenAI 兼容 /api/v3）+ 4 行 video（seedance 系，含既有
 // doubao-seedance-1-0-pro-250528）+ 3 行 image（seedream 系）；2026-10-05
 // 占位行批再 +1 行 doubao-tts 语音合成占位行（非官方模型 ID，见行注释）
-// → 现 15 行。计价落法
+// → 现 15 行；2026-10-17 TTS 迁移批再 +1 行 seed-audio-1.0（豆包音频生成
+// 现役官方模型 ID，/api/v3/tts/create 面，字符价沿用语音 2.0 口径、官方
+// 单价待计费文档复核）→ 现 16 行。计价落法
 // （人民币换算裁决，计划 §2.1/§2.6；2026-10-05 A3 批用户裁决：不允许无价）：
 //   - 火山官方计费口径为人民币且无官方 USD 价（模型列表页
 //     docs.volcengine.com/docs/82379/1330310、价格页
@@ -40,9 +42,13 @@ package pricing
 // docs.byteplus.com/docs/ModelArk/1099320 USD 明文覆盖）：7 行落官方 USD
 // 明文价并删除换算三件套（SourcePricingCurrency/Rate/Date）——chat 3 行
 // （2-1-turbo $0.5/$2.5/$0.1、2-0-lite $0.25/$2.00/$0.05+音频 $3.75、
-// 2-0-mini $0.10/$0.40/$0.02+音频 $1.50）、video 4 行（seedance-2-5
-// $0.231/秒、2-0 $0.15/秒、fast $0.12/秒、mini $0.08/秒，官方每秒示例价
-// 720p 16:9 5s 口径）；SourcePricingNote 改为国际站明文 + 国内人民币原句
-// 留档。doubao-seed-evolving / 2-1-pro-260915 / 2-1-lite-260915 国际站
+// 2-0-mini $0.10/$0.40/$0.02+音频 $1.50）、video 4 行；2026-10-17 国内价
+// 口径批：video 秒价从国际站 BytePlus 示例价（2-5 $0.231/秒、2-0 $0.15/秒、
+// fast $0.12/秒、mini $0.08/秒）改为国内明文 ÷ 7.0（720p 16:9 5s 主档：
+// 2-5 $0.2157、2-0 $0.1414、fast $0.1143、mini $0.0714——账户为国内方舟、
+// 账单人民币，与 seedream 图像行同口径；token 分档牌价注记留档，官方计费
+// =token×completion_tokens、引擎只消费秒价）；seed-audio-1.0 同批落
+// AudioInputCostPerSecond $0.00238095/秒（1 元/分钟 ÷ 60 ÷ 7.0）并撤除占位
+// 字符价（维度修正批，锚点测试 TestVolcengineCatalogPriceAnchors 钉住）。doubao-seed-evolving / 2-1-pro-260915 / 2-1-lite-260915 国际站
 // 未售，保留约定汇率换算（行注释注明）。
 var volcengineModelPricingData = mustLoadProviderCatalogModels("volcengine")

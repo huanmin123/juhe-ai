@@ -192,13 +192,14 @@ func (e *Engine) SelectAccountApiKeyForDispatch(ctx context.Context, account Acc
 
 	runtimeStates := append(append([]gatewayruntimecache.AccountAPIKeyRuntimeSelectionState{}, account.APIKeyRuntimeStates...), transientStates...)
 	selected, err := selectAccountRuntimeApiKeyEntry(ctx, apiKeySelectionInput{
-		AccountID:                accountID,
-		credentials:              credentials,
-		ExcludeFingerprints:      options.ExcludeFingerprints,
-		ContinueAfterFingerprint: options.ContinueAfterFingerprint,
-		RuntimeStates:            runtimeStates,
-		entries:                  apiKeyEntries,
-		counter:                  e.keyRotationOf(),
+		AccountID:                  accountID,
+		credentials:                credentials,
+		ExcludeFingerprints:        options.ExcludeFingerprints,
+		ContinueAfterFingerprint:   options.ContinueAfterFingerprint,
+		PreferredApiKeyFingerprint: options.PreferredApiKeyFingerprint,
+		RuntimeStates:              runtimeStates,
+		entries:                    apiKeyEntries,
+		counter:                    e.keyRotationOf(),
 	})
 	if err != nil {
 		return AccountCandidate{}, false, err
@@ -231,11 +232,14 @@ func (e *Engine) SelectAccountApiKeyForDispatch(ctx context.Context, account Acc
 	return accountWithSelectedApiKey(account, selected.key, fingerprintOut, &indexOut, transientGeneration, recoveryStartedAt), true, nil
 }
 
-// SelectApiKeyOptions mirrors the selection options.
+// SelectApiKeyOptions mirrors the selection options. PreferredApiKeyFingerprint
+// 是账户内 Key 会话黏性的首轮首选指纹（空串 = 无黏性）：仅在健康候选集内匹配，
+// 由 dispatchSingleAccount 每调用至多读取一次并只传给首轮选择。
 type SelectApiKeyOptions struct {
-	ExcludeFingerprints      map[string]struct{}
-	ContinueAfterFingerprint string
-	AllowExcludedFingerprint string
+	ExcludeFingerprints        map[string]struct{}
+	ContinueAfterFingerprint   string
+	AllowExcludedFingerprint   string
+	PreferredApiKeyFingerprint string
 }
 
 type apiKeyEntry struct {
@@ -420,9 +424,12 @@ type apiKeySelectionInput struct {
 	credentials              map[string]any
 	ExcludeFingerprints      map[string]struct{}
 	ContinueAfterFingerprint string
-	RuntimeStates            []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState
-	entries                  []apiKeyEntry
-	counter                  APIKeyRotationCounter
+	// PreferredApiKeyFingerprint 是账户内 Key 会话黏性的首选指纹（空串 = 无黏性）：
+	// 仅在健康候选集内匹配，命中即直选，优先于单候选直选 / continuation / 策略。
+	PreferredApiKeyFingerprint string
+	RuntimeStates              []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState
+	entries                    []apiKeyEntry
+	counter                    APIKeyRotationCounter
 }
 
 type selectedApiKeyEntry struct {

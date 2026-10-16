@@ -232,6 +232,13 @@ type StreamPipeOptions struct {
 	Driver      StreamDriver
 	Interceptor StreamInterceptor
 	Logger      StreamLogger
+	// SuppressGatewayInjectedUsageChunk 置位时（网关在出站 body 注入了
+	// stream_options.include_usage、客户端未显式要求，见
+	// gatewayInjectedChatStreamUsage），写下游前剥除 usage-only SSE data 帧
+	//（choices 空数组 + usage 非空对象）：inspector 仍消费原始分片（计量提取
+	// 照常），仅下游字节不含该帧。客户端显式要求 include_usage 的流不置位，
+	// chunk 照旧透传。
+	SuppressGatewayInjectedUsageChunk bool
 	// NowMs 注入时钟（Date.now 等价物）；nil 用真实时间。
 	NowMs func() int64
 }

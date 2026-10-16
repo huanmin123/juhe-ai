@@ -35,6 +35,9 @@ export function payloadCaptureStatusDescription(record: AuditPayloadRow): string
   if (record.captureStatus === 'expired') {
     return `原始请求已按保留策略过期。${suffix}`
   }
+  if (record.captureStatus === 'deduped') {
+    return `响应/错误正文已按错误组去重：同组仅保留最新样本的原文；请求原文不受影响。${suffix}`
+  }
   return suffix
 }
 
@@ -74,6 +77,9 @@ export function payloadBodyUnavailableText(payload: AuditPayloadRow): string {
       return '正文已按传输容量裁剪：该链路 tombstone 保留了裁剪原因和大小。'
     }
     return '正文未保存：该 payload 被审计保护裁剪，只保留大小、状态和可用的 Headers。'
+  }
+  if (payload.captureStatus === 'deduped') {
+    return '响应/错误正文已按错误组去重：同组仅保留最新样本的原文，请求原文不受影响。'
   }
   return '正文未保存或该部分没有正文。'
 }

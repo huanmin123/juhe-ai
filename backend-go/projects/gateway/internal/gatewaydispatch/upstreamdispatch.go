@@ -52,6 +52,11 @@ type UpstreamDispatchResult struct {
 	// recordGatewayAccountApiKeySuccess 的触发点——协议成功后在链上消费一次，
 	// guard 复位 + Redis 瞬态避让清理 + 合并持久成功写。nil = 效果链未装配。
 	ConfirmAccountAPIKeySuccess func() error
+	// ConfirmSessionApiKeyFingerprint 是账户内 Key 会话亲和的最终成功写回句柄：
+	// 链面仅在最终协议成功结算（confirmProtocolSuccessSideEffects）消费一次，
+	// 把本尝试选中的上游 Key 指纹写回现存同 owner 会话绑定（不创建、不改
+	// owner）；2xx 响应头阶段不执行。nil = 无会话键 / 无选中指纹 / 端口未装配。
+	ConfirmSessionApiKeyFingerprint func()
 	// ConfirmAccountLockSuccess 镜像 completeAccountLockSuccessAsync：上游响应
 	// 协议成功后，把 ENGAGED 账户锁 CAS 复位为 LOCKED_IDLE（Node
 	// account-lock.repository.ts:completeAccountLockSuccessAsync,

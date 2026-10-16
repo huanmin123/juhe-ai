@@ -9,7 +9,8 @@
 //   - 失败清单（缺省/空数组/null/非数组/未知模式/解密失败/源缺失）不猜域、
 //     不写完成阶段，修复后同阶段恢复重跑；
 //   - 授权实例继承（源在/源软删除/源缺失/源失败）与软删除行保域；
-//   - I1：迁移前后 credentials_encrypted 密文逐字节不变；
+//   - 赋域 + 声明裁剪：域内行 credentials_encrypted 密文逐字节不变，混合
+//     声明行被裁剪至落域 lane 且报告含脱敏明细（含被裁值建议归属域）；
 //   - 并行单执行者（SQLite 条件更新：完成阶段恰好写入一次）；
 //   - 列形状：缺列补齐、错误形状拒绝。
 
@@ -184,7 +185,7 @@ func migrationOptions(dialect capdomain.Dialect, target capdomain.Target) Option
 
 // TestRunM1EndToEnd 覆盖成功迁移主路径：失败清单阻断完成 → 修复后同阶段
 // 恢复重跑收敛 m1_complete；多域推导、实例继承（源在/源软删除）、软删除
-// 保域、I1 凭据不变、重复执行只报告完成。
+// 保域、域内行凭据不变（I1）、混合声明裁剪 + 报告明细、重复执行只报告完成。
 func TestRunM1EndToEnd(t *testing.T) {
 	db := openMigrationDB(t)
 	seedFixtures(t, db, []accountFixture{
@@ -233,7 +234,7 @@ func TestRunM1EndToEnd(t *testing.T) {
 		t.Fatal("失败清单非空时不得写入任何域（存量行保持 DEFAULT 'chat'）")
 	}
 
-	// I1：凭据密文逐字节不变。
+	// I1：域内行凭据密文逐字节不变（失败路径零写入）。
 	for id, before := range credentialFingerprint {
 		var sealed string
 		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
@@ -296,6 +297,136 @@ func TestRunM1EndToEnd(t *testing.T) {
 	}
 	if got := accountDomain(t, db, "inst-orphan"); got != "video" {
 		t.Fatalf("已完成阶段不得重算窗口期数据：inst-orphan domain = %q, want video", got)
+	}
+
+	// 赋域 + 声明裁剪：混合行 acct-mixed-volc 裁剪至落域 lane（保留
+	// chat_json，裁掉 video_create/audio_speech），报告含脱敏明细与建议归属
+	// 域；纯域内行密文在写入轮次同样逐字节不变（I1）。
+	if modes := storedModes(t, db, "acct-mixed-volc"); !unorderedModesEqual(modes, []string{"chat_json"}) {
+		t.Fatalf("混合行应被裁剪至落域 lane：%v", modes)
+	}
+	if modes := storedModes(t, db, "acct-chat-gpt"); !unorderedModesEqual(modes, []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}) {
+		t.Fatalf("域内行声明不得被裁剪改动：%v", modes)
+	}
+	for id, before := range credentialFingerprint {
+		var sealed string
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+			t.Fatalf("re-read credentials of %s: %v", id, err)
+		}
+		if sealed != before {
+			t.Fatalf("I1 违规：域内行 %s 凭据密文在迁移写入中变化", id)
+		}
+	}
+	if len(report.Trimmed) != 0 {
+		t.Fatalf("m1_complete 重复执行不得新增裁剪明细：%+v", report.Trimmed)
+	}
+}
+
+// storedModes 解密库内凭据并返回 supported_endpoint_modes（裁剪断言用）。
+func storedModes(t *testing.T, db *sql.DB, id string) []string {
+	t.Helper()
+	var sealed string
+	if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+		t.Fatalf("read credentials of %s: %v", id, err)
+	}
+	var credentials map[string]any
+	if err := accountcrypto.DecryptJSON(testSecret, sealed, &credentials); err != nil {
+		t.Fatalf("decrypt credentials of %s: %v", id, err)
+	}
+	raw, _ := credentials["supported_endpoint_modes"].([]any)
+	modes := []string{}
+	for _, item := range raw {
+		if text, ok := item.(string); ok {
+			modes = append(modes, text)
+		}
+	}
+	return modes
+}
+
+// unorderedModesEqual 判定两个声明集合无序相等。
+func unorderedModesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, mode := range right {
+		seen[mode] = true
+	}
+	for _, mode := range left {
+		if !seen[mode] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestRunTrimsMixedDeclarationAndReports 覆盖混合声明裁剪主用例（D6 废除后
+// 的严格不变式）：chat_json+images_json → chat 域、裁掉 images_json、报告
+// 建议归属 image 域；授权实例行按最终落域同样裁剪；其余凭据键原样保留；
+// 重复执行（m1_complete）零改动。
+func TestRunTrimsMixedDeclarationAndReports(t *testing.T) {
+	db := openMigrationDB(t)
+	seedFixtures(t, db, []accountFixture{
+		{id: "acct-mixed-image", modesJSON: `["chat_json","images_json"]`},
+		{id: "acct-chat-source", modesJSON: `["chat_json"]`},
+		{id: "inst-of-chat", sourceID: "acct-chat-source", modesJSON: `["chat_json","images_json"]`},
+	})
+	report, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	if err != nil {
+		t.Fatalf("Run m1: %v", err)
+	}
+	if !report.Ready() || report.CompletedStage != capdomain.StageM1Complete {
+		t.Fatalf("m1 not complete: %+v", report.Failures)
+	}
+	if accountDomain(t, db, "acct-mixed-image") != "chat" ||
+		accountDomain(t, db, "inst-of-chat") != "chat" {
+		t.Fatalf("混合行与实例行都应落 chat 域")
+	}
+	// 裁剪明细：源行与实例行各一条，账户 ID 排序稳定。
+	if len(report.Trimmed) != 2 {
+		t.Fatalf("报告应含 2 条裁剪明细：%+v", report.Trimmed)
+	}
+	first, second := report.Trimmed[0], report.Trimmed[1]
+	if first.AccountID != "acct-mixed-image" || second.AccountID != "inst-of-chat" {
+		t.Fatalf("裁剪明细应按账户 ID 排序：%+v", report.Trimmed)
+	}
+	for _, trimmed := range []TrimmedDeclaration{first, second} {
+		if trimmed.Domain != "chat" || len(trimmed.Removed) != 1 {
+			t.Fatalf("裁剪明细形状不符：%+v", trimmed)
+		}
+		if trimmed.Removed[0].Mode != "images_json" || trimmed.Removed[0].SuggestedDomain != "image" {
+			t.Fatalf("被裁值应建议归属 image 域：%+v", trimmed.Removed[0])
+		}
+	}
+	// 库内声明被裁剪至落域 lane；其余凭据键（api_key）原样保留。
+	for _, id := range []string{"acct-mixed-image", "inst-of-chat"} {
+		if modes := storedModes(t, db, id); !unorderedModesEqual(modes, []string{"chat_json"}) {
+			t.Fatalf("%s 声明应被裁剪为 [chat_json]：%v", id, modes)
+		}
+		var apiKey string
+		var sealed string
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+			t.Fatal(err)
+		}
+		var credentials map[string]any
+		if err := accountcrypto.DecryptJSON(testSecret, sealed, &credentials); err != nil {
+			t.Fatal(err)
+		}
+		apiKey, _ = credentials["api_key"].(string)
+		if apiKey != "sk-"+id {
+			t.Fatalf("裁剪不得触碰其余凭据键：%s api_key = %q", id, apiKey)
+		}
+	}
+	// m1_complete 重复执行：只报告完成，零改动（无新增裁剪明细）。
+	rerun, err := Run(context.Background(), db, migrationOptions(capdomain.DialectSQLite, capdomain.TargetM1))
+	if err != nil {
+		t.Fatalf("rerun m1: %v", err)
+	}
+	if !rerun.AlreadyComplete || len(rerun.Trimmed) != 0 {
+		t.Fatalf("重复执行不得重算：%+v", rerun)
+	}
+	if modes := storedModes(t, db, "acct-mixed-image"); !unorderedModesEqual(modes, []string{"chat_json"}) {
+		t.Fatalf("重复执行不得再改声明：%v", modes)
 	}
 }
 

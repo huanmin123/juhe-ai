@@ -12,13 +12,6 @@
     </span>
   </div>
   <a-tag v-else-if="columnKey === 'type'" :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
-  <!-- M3「域外能力」提示列：仅存在域外遗留声明的行显示徽标，tooltip 列出具体 modes。 -->
-  <template v-else-if="columnKey === 'capabilityLegacy'">
-    <a-tooltip v-if="capabilityLegacyText" :title="capabilityLegacyText">
-      <a-tag color="warning">域外 {{ account.legacyCapabilityModes?.length ?? 0 }} 项</a-tag>
-    </a-tooltip>
-    <span v-else class="muted-cell">-</span>
-  </template>
   <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">{{ account.providerName || providerName(account.providerCode) }}</a-tag>
   <span v-else-if="columnKey === 'systemAccount'" :class="account.systemAccountName ? 'name-cell' : 'muted-cell'">
     {{ account.systemAccountName || '-' }}
@@ -150,12 +143,6 @@ const props = defineProps<{
 
 const currentGroupName = computed(() => props.groupName(props.account.id))
 
-// M3 域外能力提示列文案（空 = 无遗留，渲染 muted '-'）。
-const capabilityLegacyText = computed(() => {
-  const modes = props.account.legacyCapabilityModes ?? []
-  if (!modes.length) return ''
-  return `域外遗留能力（保留）：${modes.join('、')}；可在编辑弹窗中显式清理`
-})
 const currentProxy = computed(() => accountProxyDisplay(props.account, props.proxy(props.account.proxyProfileId)))
 
 const proxyText = computed(() => {

@@ -136,7 +136,7 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     apiKeys: accountApiKeysForForm(credentials),
     apiKeyStrategy: parseAccountApiKeyStrategy(credentials),
     apiKeyWeights: accountApiKeyWeightsForForm(credentials),
-    // 火山方舟语音应用双值凭据：编辑装载原样回填，保存时仅 volcengine 提交（域外遗留凭据不静默丢失）。
+    // 火山方舟语音应用双值凭据（speech_appid/speech_token）：编辑装载原样回填，保存时仅 volcengine 提交。
     speechAppId: asString(credentials.speech_appid) ?? '',
     speechToken: asString(credentials.speech_token) ?? '',
     baseUrl: credentialBaseUrlForForm(credentials, '账户详情凭据', input.allowMissingBaseUrl),

@@ -198,6 +198,26 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	skipAccount := false
 	var accountScopedResult *UpstreamDispatchResult
 
+	// 会话黏性（账户内 Key 会话亲和，设计 §5）：每次 dispatchSingleAccount 调用
+	// 至多读取一次，且仅在会话键非空、账户满足池隔离边界时读取；只作用于首轮
+	// 普通 Key 选择，后续轮换由排除集与 ContinueAfterFingerprint 接管。读取失败
+	// 端口内降级为空串（无黏性），不影响请求。
+	stickyLookupDone := false
+	resolvePreferredApiKeyFingerprint := func(account AccountCandidate) string {
+		if stickyLookupDone {
+			return ""
+		}
+		stickyLookupDone = true
+		if in.args.SessionAffinityKey == "" || e.Affinity == nil {
+			return ""
+		}
+		entries := accountApiKeyEntries(e.Config.Secret, accountApiKeySelectionCredentials(account))
+		if !isAccountApiKeyPoolIsolationEnabled(account, entries) {
+			return ""
+		}
+		return e.Affinity.StickyApiKeyFingerprintAsync(ctx, in.args.SessionAffinityKey, account.ID)
+	}
+
 rotationLoop:
 	for {
 		retryAccountApiKey = false
@@ -299,8 +319,9 @@ rotationLoop:
 			accountForApiKeySelection = stripped
 		}
 		selectedAccount, selected, selectErr := e.SelectAccountApiKeyForDispatch(ctx, accountForApiKeySelection, SelectApiKeyOptions{
-			ExcludeFingerprints:      excludedApiKeyFingerprints,
-			ContinueAfterFingerprint: previousSelectedApiKeyFingerprint,
+			ExcludeFingerprints:        excludedApiKeyFingerprints,
+			ContinueAfterFingerprint:   previousSelectedApiKeyFingerprint,
+			PreferredApiKeyFingerprint: resolvePreferredApiKeyFingerprint(account),
 			AllowExcludedFingerprint: func() string {
 				if sameAccountRetrySelectionActive && in.coordination.SameAccountRetry.Account.SelectedAPIKeyFingerprint != nil {
 					return *in.coordination.SameAccountRetry.Account.SelectedAPIKeyFingerprint

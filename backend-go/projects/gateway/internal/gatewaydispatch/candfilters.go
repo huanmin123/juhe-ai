@@ -23,11 +23,13 @@ type AccountSkip struct {
 }
 
 // 候选过滤跳过原因的稳定常量。模型过滤三个 continue 分支一一对应
-// （dispatch/model-filter.ts 语义）；能力过滤的 driver 端口
-// （AccountSupportsGatewayRequest）只有布尔粒度，拿不到单账户细分，
-// 统一记 capability_mismatch。
+// （dispatch/model-filter.ts 语义）；能力过滤自 BUG-0325 起带出逐账户真实
+// driver reason（model_unsupported / endpoint_mode_unsupported 等），
+// capability_mismatch 降级为 driver 单账户 reason 判空时的回退常量
+// （client-compatibility 门在复数 reason 端口里以空兼容类判定，可能判空）。
 const (
-	// CapabilitySkipReasonMismatch：driver 判定该账户不支持本次请求能力。
+	// CapabilitySkipReasonMismatch：driver 单账户 reason 判空时的能力拒绝
+	// 回退标记（BUG-0325 前为唯一折叠值，保留以兼容既有消费点）。
 	CapabilitySkipReasonMismatch = "capability_mismatch"
 	// ModelSkipReasonUnsupportedConstraint：账户未配置支持模型约束
 	// （SupportedModels 为空，invalidModelConstraint 分支）。
@@ -94,7 +96,10 @@ func FilterGatewayAccountsByRequestCapability(
 			filtered = append(filtered, account)
 			continue
 		}
-		skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: CapabilitySkipReasonMismatch})
+		// BUG-0325：带出逐账户真实 driver reason，混编能力域分组全拒时聚合
+		// 处可分辨模型拒绝与路径/协议拒绝（此前折叠为 capability_mismatch，
+		// model_unsupported 特判文案永远轮不到）。
+		skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: capabilitySkipReasonForAccount(driver, capabilityReq, account)})
 	}
 	skippedCount := len(accounts) - len(filtered)
 	result := CapabilityFilterResult{Accounts: filtered, SkippedCount: skippedCount, Skipped: skipped}
@@ -102,6 +107,19 @@ func FilterGatewayAccountsByRequestCapability(
 		result.Reason = driver.GatewayRequestCapabilityMismatchReason(capabilityReq, accounts)
 	}
 	return result
+}
+
+// capabilitySkipReasonForAccount 解析单账户能力拒绝的真实 driver reason
+// （BUG-0325）：ProviderDriver 端口只暴露复数版
+// GatewayRequestCapabilityMismatchReason，单账户形态经单元素切片复用
+// （chain driver 的复数版对单元素即逐账户判定），接口签名与 cmd 实现不动。
+// client-compatibility 门在复数形态里以空兼容类判定，账户可能判空；空时
+// 回退 CapabilitySkipReasonMismatch，保证审计明细 reason 恒非空。
+func capabilitySkipReasonForAccount(driver ProviderDriver, req *gatewaypreauth.GatewayRequest, account AccountCandidate) string {
+	if reason := trimString(driver.GatewayRequestCapabilityMismatchReason(req, []AccountCandidate{account})); reason != "" {
+		return reason
+	}
+	return CapabilitySkipReasonMismatch
 }
 
 // gatewayRequestWithModelOverride mirrors gatewayRequestWithModelOverride: a
@@ -302,24 +320,30 @@ func GatewayAccountModelPriorityFor(accountID string, priority *gatewayrouting.G
 	return ModelPriorityRankUnsupported
 }
 
+// isMappingAllowedBySupportedModels 判定映射产出的上游模型是否在账户声明
+// supportedModels 内：严格相等之外，volcengine TTS 占位名↔现役名等价组
+// （modelalias.go）同样放行；等价组之外的匹配行为不变。
 func isMappingAllowedBySupportedModels(upstreamModel string, supportedModels []string) bool {
 	if len(supportedModels) == 0 {
 		return false
 	}
 	for _, model := range supportedModels {
-		if model == upstreamModel {
+		if gatewayDispatchModelNamesMatch(upstreamModel, model) {
 			return true
 		}
 	}
 	return false
 }
 
+// resolveGatewayAccountModelMatch 判定请求模型是否被账户声明 supportedModels
+// 直接持有：严格相等之外，volcengine TTS 占位名↔现役名等价组（modelalias.go）
+// 同样命中；等价组之外的匹配行为不变。
 func resolveGatewayAccountModelMatch(requestedModel string, supportedModels []string) bool {
 	if requestedModel == "" {
 		return false
 	}
 	for _, model := range supportedModels {
-		if model == requestedModel {
+		if gatewayDispatchModelNamesMatch(requestedModel, model) {
 			return true
 		}
 	}

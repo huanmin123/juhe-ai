@@ -1231,7 +1231,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// 去跨进程战役第四刀：审计派发走进程内 F3 producer（原 loopback
 			// input URL/POST 面，且从未携带强制 HMAC 签名头 → 现网审计派发
 			// 全部 401 被吞）。nil 适配器保留空目标降级分支。
-			AuditDispatch:      auditDispatchAdapter{producer: auditProducer},
 			AuditUsageDispatch: auditUsageDispatcher{producer: auditProducer},
 			QueueDefaults: gatewayclientip.HighConcurrencyPolicyDefaults{
 				MaxQueueSize:        cfg.ConcurrencyGlobalMax,
@@ -1382,7 +1381,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if chainServices.RateLimitStore != nil {
 			limiter.Store = chainServices.RateLimitStore
 		}
-		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", auditProducer != nil, "chatFamily", "mounted")
+		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditUsageDispatch", auditProducer != nil, "chatFamily", "mounted")
 	}
 
 	// M06 speed-first 运行态接线：facade 读取链条的时延降级服务（Node

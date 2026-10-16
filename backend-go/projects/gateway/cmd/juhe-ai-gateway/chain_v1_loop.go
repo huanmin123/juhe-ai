@@ -1473,6 +1473,11 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 			}, "账户 API Key 成功结算未完成")
 		}
 	}
+	// 账户内 Key 会话亲和（设计 §6）：最终协议成功把本尝试选中的上游 Key 指纹
+	// 写回现存同 owner 会话绑定；nil = 无会话键 / 无选中指纹 / 端口未装配。
+	if dispatched.ConfirmSessionApiKeyFingerprint != nil {
+		dispatched.ConfirmSessionApiKeyFingerprint()
+	}
 	// 成功侧结算：把 ENGAGED 锁复位为 LOCKED_IDLE
 	// 与 Node routes.ts:2481-2483 completeAccountLockSuccessAsync 行为一致。
 	if dispatched.ConfirmAccountLockSuccess != nil {

@@ -129,10 +129,11 @@
             </a-button>
           </a-tooltip>
         </div>
+        <div v-if="domainModelAvailabilityHint" class="media-domain-model-empty-hint">{{ domainModelAvailabilityHint }}</div>
       </a-form-item>
 
       <!-- v8-B A组①：上游接口能力域内勾选（与 chat AccountStrategySection 同一底层
-           逻辑：allowedEndpointModesFor 域允许集渲染 + 域外遗留只读徽标 + M3 清理）。
+           逻辑：allowedEndpointModesFor 域允许集渲染，声明集必须 ⊆ 域允许集）。
            OAuth（gemini native google_oauth）按来源能力只读，与 chat OAuth 表单同规。 -->
       <a-form-item v-if="form.type" class="media-capability-field">
         <template #label>
@@ -153,35 +154,6 @@
           >
             {{ option.label }}
           </a-checkbox>
-        </div>
-        <!-- 域外遗留声明（D6 三集合）：不进勾选集、编辑装载不裁剪，提交时随完整
-             声明集原样带回；只能经 M3 显式清理动作缩小。 -->
-        <div v-if="outOfDomainMediaModes.length" class="media-out-of-domain-modes">
-          <span class="media-out-of-domain-label">域外能力（保留）</span>
-          <a-tooltip
-            v-for="mode in outOfDomainMediaModes"
-            :key="mode"
-            title="该能力超出当前能力域允许集，属于存量账户的遗留声明：此处不可勾选或修改，保存时原样保留，不影响现有派发。"
-          >
-            <a-tag class="media-out-of-domain-tag">{{ mediaModeLabel(mode) }}</a-tag>
-          </a-tooltip>
-          <a-popconfirm
-            v-if="!capabilityModesDisabled"
-            title="清理域外能力"
-            ok-text="确认清理"
-            cancel-text="取消"
-            @confirm="cleanupMediaOutOfDomainModes"
-          >
-            <template #title>
-              <div class="media-out-of-domain-confirm">
-                <p>将从声明集中移除以下域外遗留能力（保存后生效，不影响域内能力）：</p>
-                <p class="media-out-of-domain-confirm-modes">{{ outOfDomainCleanupSummary }}</p>
-              </div>
-            </template>
-            <a-button class="media-out-of-domain-cleanup" danger size="small" type="link">
-              清理域外能力
-            </a-button>
-          </a-popconfirm>
         </div>
       </a-form-item>
 
@@ -377,8 +349,7 @@ import {
   mediaAdvancedCardConfiguredCount,
   mediaAdvancedCardSummary,
   mediaCapabilityModeOptions,
-  mediaEndpointModeLabel,
-  mediaOutOfDomainDeclaredModes
+  mediaDomainModelAvailabilityHint
 } from './accountMediaFormBlocks'
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -424,6 +395,8 @@ const props = withDefaults(defineProps<{
   mappingUpstreamModelOptions?: AccountModelSelectOption[]
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
+  /** 当前目录 scope 下候选是否完成过至少一次加载（v8-D 空态提示判据）。 */
+  modelsSettled?: boolean
   modelSyncing?: boolean
   open: boolean
   providers: ProviderDefinition[]
@@ -488,19 +461,9 @@ const mediaEndpointModeOptions = computed(() => mediaCapabilityModeOptions({
   accountType: props.form.type
 }))
 
-// 实际声明集中超出域允许集的遗留值（D6）：只读徽标行，不进勾选集，提交原样带回。
-const outOfDomainMediaModes = computed(() =>
-  mediaOutOfDomainDeclaredModes(props.form.supportedEndpointModes, mediaEndpointModeOptions.value))
-const outOfDomainCleanupSummary = computed(() =>
-  outOfDomainMediaModes.value.map((mode) => mediaModeLabel(mode)).join('、'))
-
 // 与 chat 同规：授权实例（凭据面 403）与 OAuth 表单（gemini native google_oauth，
 // modes 按来源能力只读）不可勾选。
 const capabilityModesDisabled = computed(() => props.authorizedEditing || props.form.type === 'google_oauth')
-
-function mediaModeLabel(mode: AccountFormModel['supportedEndpointModes'][number]): string {
-  return mediaEndpointModeLabel(mode, props.selectedProtocolProfile)
-}
 
 function setMediaModeEnabled(
   mode: AccountFormModel['supportedEndpointModes'][number],
@@ -509,13 +472,6 @@ function setMediaModeEnabled(
   props.form.supportedEndpointModes = enabled
     ? [...new Set([...props.form.supportedEndpointModes, mode])]
     : props.form.supportedEndpointModes.filter((item) => item !== mode)
-}
-
-// M3 显式清理（D6 只缩不扩）：确认后从声明集移除全部域外遗留值，保存时提交
-// 不含被清理值的完整 modes 数组，服务端放行缩小并单独审计。
-function cleanupMediaOutOfDomainModes(): void {
-  const removing = new Set(outOfDomainMediaModes.value)
-  props.form.supportedEndpointModes = props.form.supportedEndpointModes.filter((mode) => !removing.has(mode))
 }
 
 // ---- v8-B A组④-⑦：高级配置折叠卡（到期/余额/时间计划/错误策略） ----
@@ -603,6 +559,17 @@ const isHybridMappingDomain = computed(() =>
   isHybridAccount.value
   && !props.authorizedEditing
   && (props.capabilityDomain === 'video' || props.capabilityDomain === 'audio'))
+
+// v8-D：选中供应商在当前域目录候选「加载后确认为空」时的引导提示。候选是
+// 懒加载（弹窗打开加载一次、切供应商即清空、下拉展开/搜索再加载），未加载
+// 的空不是真没有货，settled 前不提示（hybrid 映射域上游模型来自映射面，恒不提示）。
+const domainModelAvailabilityHint = computed(() => mediaDomainModelAvailabilityHint({
+  capabilityDomain: props.capabilityDomain,
+  optionCount: domainModelOptions.value.length,
+  loading: props.modelsLoading,
+  settled: props.modelsSettled === true,
+  hybridMappingDomain: isHybridMappingDomain.value
+}))
 const mediaMappingFamily = computed(() =>
   props.capabilityDomain === 'video' ? OPENAI_VIDEO_GENERATION_FAMILY : OPENAI_TTS_FAMILY)
 const mediaMappingTooltip = computed(() => (
@@ -653,9 +620,9 @@ const domainModelSectionHint = computed(() => {
   return '支持模型必选 · 图像模型'
 })
 
-// ---- 新建态域默认值（生命周期定案 v7 + D6 默认集）：打开弹窗或切换供应商/类型时重放 ----
+// ---- 新建态域默认值（生命周期定案 v7 域默认集）：打开弹窗或切换供应商/类型时重放 ----
 //
-// 编辑态不重放：装载契约保证完整声明集（含域外遗留值）不被裁剪（D6）。
+// 编辑态不重放：装载契约保证完整声明集不被裁剪，域边界以服务端为准。
 watch(
   () => [props.open, props.editing, props.form.providerCode, props.form.providerProtocolProfileId, props.form.type] as const,
   ([open, editing]) => {
@@ -821,35 +788,12 @@ watch(
   line-height: 1.5;
 }
 
-/* 域外遗留能力（D6 存量兼容）：只读徽标行 + M3 清理入口 */
-.media-out-of-domain-modes {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.media-out-of-domain-label {
+/* v8-D：选中供应商域内无在售目录模型的引导提示 */
+.media-domain-model-empty-hint {
+  margin-top: 8px;
   color: var(--juhe-muted);
   font-size: 12px;
-}
-
-.media-out-of-domain-tag {
-  cursor: help;
-}
-
-.media-out-of-domain-cleanup {
-  margin-left: 4px;
-  padding-inline: 4px;
-}
-
-.media-out-of-domain-confirm p {
-  margin: 0 0 4px;
-}
-
-.media-out-of-domain-confirm-modes {
-  font-weight: 600;
+  line-height: 1.5;
 }
 
 /* v8-B A组④-⑦：高级配置折叠卡（chat bench-cards 同款壳的媒体段内间距） */

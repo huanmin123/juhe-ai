@@ -727,7 +727,7 @@
       },
       "id": 20,
       "panels": [],
-      "title": "Go Runtime",
+      "title": "Go Runtime 与主业务池",
       "type": "row"
     },
     {
@@ -1071,7 +1071,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "GC 暂停 P99（go_gc_duration_seconds 为 summary，quantile=\"0.99\" 直取）。",
+      "description": "GC 暂停 P100（client_golang summary 分位为 0/0.25/0.5/0.75/1，无 0.99）（go_gc_duration_seconds 为 summary，quantile=\"0.99\" 直取）。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1141,13 +1141,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "go_gc_duration_seconds{job=~\"$job\", quantile=\"0.99\"}",
+          "expr": "go_gc_duration_seconds{job=~\"$job\", quantile=~\"1(\\\\.0)?\"}",
           "legendFormat": "{{job}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "GC 暂停 P99",
+      "title": "GC 暂停最长（P100）",
       "type": "timeseries"
     },
     {
@@ -1316,6 +1316,207 @@
         }
       ],
       "title": "OS 线程数",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "主业务 PostgreSQL 池（组合根 role gateway-system-api）的 sql.DBStats 瞬时值；open = in-use + idle。gateway-chat 与审计/操作日志池是独立池实例，不在本族。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 47
+      },
+      "id": 45,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "juhe_ai_gateway_db_pool_open_connections{job=~\"$job\"}",
+          "legendFormat": "open",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "juhe_ai_gateway_db_pool_in_use_connections{job=~\"$job\"}",
+          "legendFormat": "in-use",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "juhe_ai_gateway_db_pool_idle_connections{job=~\"$job\"}",
+          "legendFormat": "idle",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "主业务池连接数（open / in-use / idle）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "等待空闲连接的次数与时长增速（5m 窗口）。健康态应恒为 0；持续大于 0 说明池容量不足或慢查询占用连接，结合池连接数与 PG 侧活动排查。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 47
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(juhe_ai_gateway_db_pool_wait_count_total{job=~\"$job\"}[5m])",
+          "legendFormat": "waits/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "rate(juhe_ai_gateway_db_pool_wait_duration_seconds_total{job=~\"$job\"}[5m])",
+          "legendFormat": "wait-seconds/s",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "池等待速率（连接不足信号）",
       "type": "timeseries"
     },
     {

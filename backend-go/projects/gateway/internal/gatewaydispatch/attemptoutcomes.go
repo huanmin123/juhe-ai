@@ -14,6 +14,26 @@ import (
 // / failed-response / error branches of the attempt loop
 // (dispatch/upstream-dispatch.ts).
 
+// newConfirmSessionApiKeyFingerprintFunc 构造账户内 Key 会话黏性的最终成功写回
+// 闭包：把本尝试选中的上游 Key 指纹写回现存同 owner 会话绑定（服务端语义只
+// 更新、不创建、不改 owner）。无会话键、无选中指纹（非池隔离开启路径不导出
+// 指纹）或端口未装配时返回 nil，链面 nil 检查自然跳过。捕获 WithoutCancel
+// 上下文：写回发生在响应完成之后，请求 ctx 可能已被取消。
+func newConfirmSessionApiKeyFingerprintFunc(port SessionAffinityPort, ctx context.Context, sessionAffinityKey string, account AccountCandidate) func() {
+	if port == nil || sessionAffinityKey == "" || account.SelectedAPIKeyFingerprint == nil {
+		return nil
+	}
+	fingerprint := trimString(*account.SelectedAPIKeyFingerprint)
+	if fingerprint == "" {
+		return nil
+	}
+	writeCtx := context.WithoutCancel(ctx)
+	accountID := account.ID
+	return func() {
+		port.RememberApiKeyFingerprintAsync(writeCtx, sessionAffinityKey, accountID, fingerprint)
+	}
+}
+
 // handleUpstreamAttemptResponse mirrors the `if (response.ok) {...}` block
 // plus the failed-response tail of the attempt loop.
 func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAttemptResponseContext) (responseKind, responseStopKind, error) {
@@ -87,6 +107,10 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			ConfirmAccountAPIKeySuccess: func() error {
 				return e.recordAccountAPIKeySuccess(ctx, c.account, usageContext)
 			},
+			// 账户内 Key 会话亲和（设计 §5/§6）：闭包携带本尝试选中的上游 Key
+			// 指纹，链面仅在最终协议成功结算消费一次；2xx 响应头阶段不执行，
+			// 写回失败只告警、不改写已完成响应。
+			ConfirmSessionApiKeyFingerprint: newConfirmSessionApiKeyFingerprintFunc(e.Affinity, ctx, in.args.SessionAffinityKey, c.account),
 			// 成功侧结算：ENGAGED 锁复位（Node 完全成功后调用
 			// completeAccountLockSuccessAsync，routes.ts:2481-2483）。
 			ConfirmAccountLockSuccess: func() error {

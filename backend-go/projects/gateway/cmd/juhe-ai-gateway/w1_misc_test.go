@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
@@ -234,11 +233,6 @@ func TestW1ComposeSmallHelpers(t *testing.T) {
 	// 空 Path 时回落 RequestURI 的去问号前缀（当前实现行为为 "/"）。
 	if got := pathWithoutQueryOf(emptyRequest); got != "/" {
 		t.Fatalf("空 path 回落 = %q", got)
-	}
-	first := chainNewAuditID(gatewaypreauth.SystemClock{})
-	second := chainNewAuditID(gatewaypreauth.SystemClock{})
-	if first == "" || second == "" || first == second {
-		t.Fatalf("audit id 必须唯一: %q vs %q", first, second)
 	}
 	if got := minOf(3, 7); got != 3 {
 		t.Fatalf("minOf(3,7) = %d", got)

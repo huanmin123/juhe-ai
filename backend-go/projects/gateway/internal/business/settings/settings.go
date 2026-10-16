@@ -271,11 +271,7 @@ func (s *Store) ReplaceProviderCatalog(ctx context.Context, input CatalogReplace
 		return err
 	}
 	for _, model := range input.Models {
-		visible := 0
-		if model.CatalogVisible {
-			visible = 1
-		}
-		_, err = tx.ExecContext(ctx, s.bind("INSERT INTO "+s.table("provider_model_catalog")+"(id,provider_code,model,status,mode,catalog_order,supported_api_protocols_json,context_window_tokens,max_input_tokens,max_output_tokens,catalog_visible,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), model.ID, input.ProviderCode, model.Model, model.Status, nullableString(model.Mode), model.CatalogOrder, model.SupportedAPIProtocolsJSON, model.ContextWindowTokens, model.MaxInputTokens, model.MaxOutputTokens, visible, model.Source, now, now)
+		_, err = tx.ExecContext(ctx, s.bind("INSERT INTO "+s.table("provider_model_catalog")+"(id,provider_code,model,status,mode,catalog_order,supported_api_protocols_json,context_window_tokens,max_input_tokens,max_output_tokens,catalog_visible,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), model.ID, input.ProviderCode, model.Model, model.Status, nullableString(model.Mode), model.CatalogOrder, model.SupportedAPIProtocolsJSON, model.ContextWindowTokens, model.MaxInputTokens, model.MaxOutputTokens, s.boolBind(model.CatalogVisible), model.Source, now, now)
 		if err != nil {
 			return err
 		}
@@ -288,6 +284,18 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+// boolBind 返回 catalog_visible 的方言绑定值：该列在 PG 为 boolean、
+// 在 SQLite 为 INTEGER 0/1，pgx 无法把整数编码进 boolean 列。
+func (s *Store) boolBind(v bool) any {
+	if s.mode == Postgres {
+		return v
+	}
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // Port keeps future Gateway management handlers from acquiring raw SQL.

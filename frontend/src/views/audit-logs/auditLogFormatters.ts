@@ -1,5 +1,7 @@
 import type { AuditOutcome, AuditPayloadPartType, AuditTrafficSource } from '@/types/domain'
+import { accountLabelForId } from '@/shared/accountLabelCache'
 import { displayGroupName } from '@/shared/groupLabelCache'
+import { principalLabelForId } from '@/shared/principalLabelCache'
 import { formatMillisecondsAsSeconds } from '@/shared/formatters'
 
 export { formatDateTime } from '@/shared/formatters'
@@ -70,6 +72,20 @@ export function displayAuditGroupName(name?: string, id?: string): string {
   return displayGroupName(name, id)
 }
 
+export function displayAuditAccountName(name?: string, id?: string): string {
+  if (name?.trim()) return name
+  const cached = accountLabelForId(id)
+  if (cached) return cached
+  return id ? '已删除或未知' : '-'
+}
+
+export function displayAuditSystemAccountName(name?: string, id?: string): string {
+  if (name?.trim()) return name
+  const cached = principalLabelForId('system_account', id)
+  if (cached) return cached
+  return id ? '已删除或未知' : '-'
+}
+
 export function formatDuration(value?: number): string {
   return formatMillisecondsAsSeconds(value)
 }
@@ -116,7 +132,8 @@ export function captureStatusText(value?: string): string {
     hash_only: '仅 Hash',
     expired: '已过期',
     overflow: '超限丢弃',
-    dropped: '已裁剪'
+    dropped: '已裁剪',
+    deduped: '已去重'
   }[value || ''] ?? (value || '-')
 }
 

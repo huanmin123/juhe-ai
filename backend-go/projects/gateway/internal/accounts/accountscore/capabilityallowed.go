@@ -8,25 +8,28 @@ import (
 	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
-// AI 账户能力域拆分 M2（PLAN-20261011T141004000Z）：服务端统一保存规则的
-// 允许集计算（计划 §服务端统一校验 + §关键决策与理由 D6 三集合模型）。
+// AI 账户能力域拆分（PLAN-20261011T141004000Z）：服务端统一保存规则的
+// 允许集计算（计划 §服务端统一校验）。
 //
 //   - 允许能力集（allowed）＝ 域 lane 集 × 显式供应商矩阵门（
 //     capabilityDomainMatrix，计划《域 × 供应商合法矩阵》的常量实现）×
 //     既有写侧 per-provider×type 词表。词表只复用 endpointmodes.go 的既有
 //     集合与门面 driver 路由语义（resolveCapabilityWriteContext），不定义
 //     任何新模式值（禁止新造词表）。
-//   - 默认能力集（default）＝ 新建账户 modes 缺省时按域落默认集；chat 域与
-//     现行归一化默认逐项一致（I3），由测试钉住。
-//   - 实际声明集（declared）的域外遗留集合以服务端数据库现值为准（I7），
-//     编辑按「遗留集合只缩不扩」校验（AssertCapabilityLegacyShrinkOnly，M3
-//     放开缩小分支；清理动作单独审计）。
+//   - 默认能力集（default）＝ 新建账户 modes 缺省时按域落默认集；chat 域缺省
+//     ⊆ 域允许集（BUG-0323 根治口径）：现行默认本就域内的供应商（openai 族/
+//     gemini/anthropic/glm）逐项不变，媒体优先供应商（volcengine/qwen 缺省
+//     video_get、hybrid 全词表并集）落词表内基础对话对，由测试钉住。
+//   - 严格不变式：账户声明集（credentials JSON 的 supported_endpoint_modes）
+//     必须 ⊆ 所在域允许集，全链路强制——新建/导入/克隆/编辑/批量同一规则，
+//     越界一律拒绝（CapabilityDomainOutlierError），不存在任何跨域保留
+//     状态；声明集裁剪由 maintenance 迁移命令一次性完成。
 
 // 域 lane 集（计划 §域模型设计 + §对话域纯粹化 v8-A）：chat = 平台包
-// 「对话 modes」13 值锚集（v8-A 后不再追加 images_json——图像 lane 移出对话
-// 域，存量共享、新增隔离，遗留值由 D6 三集合机制承载）；video = 视频任务
-// 四值；audio = 语音合成 + 长音频任务四值 + 短转写 + 实时会话（v8-A 自对话
-// 域移入）；image = images_json。
+// 「对话 modes」13 值锚集（v8-A 后不追加 images_json——图像 lane 移出对话
+// 域，新增声明一律隔离在各域之内）；video = 视频任务四值；audio = 语音合成
+// + 长音频任务四值 + 短转写 + 实时会话（v8-A 自对话域移入）；image =
+// images_json。
 var (
 	videoDomainLaneModes = []string{"video_create", "video_get", "video_content", "video_cancel"}
 	audioJobLaneModes    = []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}
@@ -54,7 +57,7 @@ func CapabilityDomainLabel(domain string) string {
 }
 
 // chatDomainLaneModes 返回对话域 lane 集（平台包 13 值锚集；v8-A 后不追加
-// images_json，图像 lane 新增声明只走图像域，对话域存量声明成为域外遗留值）。
+// images_json，图像 lane 声明只走图像域）。
 func chatDomainLaneModes() []string {
 	return capabilitydomain.ChatModes()
 }
@@ -128,7 +131,12 @@ var capabilityDomainMatrix = map[string]map[string]bool{
 	capabilityMatrixGeminiOpenAIChat: {CapabilityDomainChat: true, CapabilityDomainVideo: false, CapabilityDomainAudio: false, CapabilityDomainImage: false},
 	capabilityMatrixHybrid:           {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
 	capabilityMatrixMinimax:          {CapabilityDomainChat: false, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
-	capabilityMatrixVolcengine:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
+	// volcengine 行图像格 2026-10-17 开通（真实上游取证：ark 官方 OpenAI
+	// 兼容图像端点 /api/v3/images/generations 实测出图成功
+	//（doubao-seedream-5-0-flash-260915，OpenAI images 形态响应 data[].url +
+	// usage）；Agent Plan 专属端点 /api/plan/v3/images/generations 实测可用，
+	// 出站 URL 由链上 chainVolcengineImagesUpstreamURL 服务根归一承接）。
+	capabilityMatrixVolcengine:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
 	capabilityMatrixQwen:             {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
 }
 
@@ -273,7 +281,9 @@ func AllowedEndpointModes(domain, providerCode, accountType string, profile Prot
 }
 
 // DefaultEndpointModesForDomain 返回新建账户 modes 缺省时按域落下的默认集：
-// chat 域=现行默认（逐项不变，I3）；video=四值组；audio=audio_speech
+// chat 域=现行默认与域 lane 集、词表求交（BUG-0323 根治：缺省恒 ⊆ 域允许集；
+// 现行默认本就域内的供应商逐项不变，媒体优先供应商缺省不含对话值时落词表内
+// 基础对话对）；video=四值组；audio=audio_speech
 // （无 audio_speech 词表的供应商退为长音频四值，如 qwen）；image=
 // images_json——经同一矩阵门与写侧词表求交（与 AllowedEndpointModes 单收敛
 // 点），空集视为该供应商不支持该域。v8-A：音频域默认集维持现状语义，不含
@@ -290,7 +300,14 @@ func DefaultEndpointModesForDomain(domain, providerCode, accountType string, pro
 	}
 	switch domain {
 	case CapabilityDomainChat:
-		return intersectLaneModes(legacyDefaultEndpointModes(providerCode, accountType, profile), vocabulary)
+		inDomain := intersectLaneModes(intersectLaneModes(legacyDefaultEndpointModes(providerCode, accountType, profile), vocabulary), chatDomainLaneModes())
+		if len(inDomain) > 0 {
+			return inDomain
+		}
+		// 现行默认不含对话值（媒体优先供应商，如 volcengine/qwen 缺省
+		// video_get）：落词表内基础对话对，保证 chat 域缺省恒 ⊆ 允许集
+		// （BUG-0323 根治）。
+		return intersectLaneModes([]string{"chat_json", "chat_sse"}, vocabulary)
 	case CapabilityDomainVideo:
 		return intersectLaneModes(videoDomainLaneModes, vocabulary)
 	case CapabilityDomainAudio:
@@ -359,70 +376,4 @@ func CapabilityDomainUnsupportedError(providerCode, domain string) error {
 func CapabilityDomainOutlierError(domain string, outliers []string) error {
 	return &ValidationError{Message: fmt.Sprintf("账户能力域%s不支持上游接口能力：%s",
 		CapabilityDomainLabel(domain), strings.Join(outliers, "、"))}
-}
-
-// CapabilityDomainLegacyDriftError 渲染编辑遗留集合变化的 400（D6：域外
-// 能力不可变更，显式清理是 M3 提示动作）。
-func CapabilityDomainLegacyDriftError() error {
-	return &ValidationError{Message: "域外能力不可变更（仅可通过显式清理缩小）"}
-}
-
-// AssertCapabilityLegacyShrinkOnly 执行 D6 保存规则的 M3 放开分支（计划
-// §D6 显式清理）：newDeclared−allowed ⊆ oldDeclared−allowed 时放行并返回被
-// 清理的遗留值（oldLegacy−newLegacy，排序去重；空切片 = 无清理）；扩大或
-// 换元（减一加一）一律拒绝。allowed 为 nil 时按空集处理。调用方必须以
-// 「请求显式携带 supported_endpoint_modes 数组」为放行前提（清理动作的提交
-// 形态）；删键（null）路径走归一化默认集重置，默认集不含遗留值会借归一化
-// 静默删除遗留能力（I7），必须改走 AssertCapabilityLegacySetsEqual 逐项相等
-// 拦截。清理动作由调用方落单独审计（操作日志「清理域外能力」）。
-func AssertCapabilityLegacyShrinkOnly(oldDeclared, newDeclared, allowed []string) (removed []string, err error) {
-	oldLegacy := sortedDifference(oldDeclared, allowed)
-	newLegacy := sortedDifference(newDeclared, allowed)
-	newSet := StringSet(newLegacy)
-	oldSet := StringSet(oldLegacy)
-	for _, mode := range oldLegacy {
-		if !newSet[mode] {
-			removed = append(removed, mode)
-		}
-	}
-	for _, mode := range newLegacy {
-		if !oldSet[mode] {
-			return nil, CapabilityDomainLegacyDriftError()
-		}
-	}
-	return removed, nil
-}
-
-// AssertCapabilityLegacySetsEqual 执行 D6 普通编辑保存规则（M2 基线，M3 仍
-// 约束非显式提交路径）：newDeclared−allowed 与 oldDeclared−allowed 两个遗留
-// 集合排序后逐项相等，不等即拒绝（既不扩大也不缩小）。allowed 为 nil 时按
-// 空集处理。
-func AssertCapabilityLegacySetsEqual(oldDeclared, newDeclared, allowed []string) error {
-	oldLegacy := sortedDifference(oldDeclared, allowed)
-	newLegacy := sortedDifference(newDeclared, allowed)
-	if len(oldLegacy) != len(newLegacy) {
-		return CapabilityDomainLegacyDriftError()
-	}
-	for index := range oldLegacy {
-		if oldLegacy[index] != newLegacy[index] {
-			return CapabilityDomainLegacyDriftError()
-		}
-	}
-	return nil
-}
-
-// sortedDifference 返回 values − allowed 的排序去重结果。
-func sortedDifference(values, allowed []string) []string {
-	permitted := StringSet(allowed)
-	out := []string{}
-	seen := map[string]bool{}
-	for _, value := range values {
-		if permitted[value] || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
 }

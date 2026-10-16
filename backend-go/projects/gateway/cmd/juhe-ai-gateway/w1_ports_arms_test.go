@@ -1351,14 +1351,6 @@ func TestW1PAuditSettingsAndUsageModelResolver(t *testing.T) {
 // 真实持久化断言需要等待 Capture 的 fire-and-forget goroutine，按“禁止并发
 // 等待类测试”约束跳过，仅覆盖静默丢弃契约。
 func TestW1PAuditDispatchAdapters(t *testing.T) {
-	input := gatewaypreauth.DispatchedAuditLogInput{
-		ID: "audit-1", LifecycleStatus: "final", TraceID: "trace-1", TrafficSource: "gateway",
-		AuditOutcome: "sampled", Success: true, Method: http.MethodPost, Path: "/v1/chat/completions",
-		QueryString: "", ClientIP: "127.0.0.1", UserAgent: "w1p-ua", FinalStatusCode: 200,
-	}
-	(auditDispatchAdapter{}).Dispatch(input)
-	(auditDispatchAdapter{producer: &auditlog.Producer{}}).Dispatch(input)
-
 	(auditUsageDispatcher{}).DispatchAuditLog(context.Background(), gatewayusage.AuditLogInput{
 		ID: "audit-2", TraceID: "trace-2", Method: http.MethodPost, Path: "/v1/responses",
 	})

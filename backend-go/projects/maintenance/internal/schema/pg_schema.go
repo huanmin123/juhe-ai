@@ -684,14 +684,22 @@ var pgSeedProviders = []pgSeedProvider{
 		// M3 媒体新增供应商（媒体设计 §9/契约 §9）：火山方舟声明视频能力
 		//（豆包 Seedance 系 contents/generations/tasks）；M6 补 TTS（豆包
 		// openspeech /api/v3/tts）；对话批补聊天（ark OpenAI 兼容端点
-		// /api/v3/chat/completions，豆包 doubao 对话模型面）。
+		// /api/v3/chat/completions，豆包 doubao 对话模型面）；2026-10-17 补
+		// 图像生成（豆包 seedream 系 OpenAI 兼容图像端点
+		// /api/v3/images/generations，实测出图成功；Agent Plan 专属端点
+		// /api/plan/v3/images/generations 实测可用）。
+		//
+		// DefaultSupportedModelsJSON 换为现役视频模型
+		// doubao-seedance-2-0-mini-260615（既有 doubao-seedance-1-0-pro-250528
+		// 官方「即将下线」）。注意 seed upsert 只在新建库生效（既有库不回填
+		// 默认支持模型，属预期；运营可按需在管理面调整）。
 		ID:                         "volcengine",
 		Code:                       "volcengine",
 		Name:                       "火山方舟",
-		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）与语音合成（豆包 TTS openspeech /api/v3/tts）能力",
+		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts）与图像生成（豆包 seedream 系 images/generations）能力",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"doubao-seedance-1-0-pro-250528\"]",
+		DefaultSupportedModelsJSON: "[\"doubao-seedance-2-0-mini-260615\"]",
 	},
 	{
 		// M3 媒体新增供应商（媒体设计 §9/契约 §10）：通义百炼声明视频能力
@@ -996,19 +1004,38 @@ var pgSeedProfiles = []pgSeedProfile{
 		// completions 承接豆包对话模型，与媒体面共享 base_url 与 Bearer 凭据
 		//——出站 chat 请求按 /api/v3 服务根归一（服务根去重，不走 openai /v1
 		// 强制补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
+		// 2026-10-17 图像域开通：豆包 seedream 系图像模型经 ark OpenAI 兼容
+		// 图像端点 /api/v3/images/generations 承接（实测出图成功；Agent Plan
+		// 专属端点 /api/plan/v3/images/generations 实测可用），与 chat 同
+		// base_url/Bearer 凭据——能力域矩阵 accountscore.capabilityMatrix
+		// Volcengine 行 image 格与词表 images_json 开通，出站 URL 由链上
+		// chainVolcengineImagesUpstreamURL 服务根归一（三形态语义同 chat）。
+		// 写侧校验不读档案 Capabilities/EndpointFamilies（读取面为协议对与
+		// provider token，见 accounts.write requireEnabledProviderProtocol
+		// Profile 与 accounts.model_mapping_protocol_matrix
+		// providerModelSupportsProtocolProfile），故 Capability arrays 不加
+		// images 值、EndpointFamilies 不新增图像族（避免为展示面引入
+		// protocol_endpoint_families 新行与 family 绑定计数漂移）。
 		// BaseURL 为官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/
-		// contents/generations/tasks 与 /api/v3/chat/completions 由链上
-		// chainVolcengineVideoUpstreamURL / volcengine chat 归一拼缀，TTS 出站
-		// host 恒 openspeech.bytedance.com（URL 构造特例）。
+		// contents/generations/tasks、/api/v3/chat/completions 与
+		// /api/v3/images/generations 由链上 chainVolcengineVideoUpstreamURL /
+		// volcengine chat/images 归一拼缀，TTS 出站 host 恒
+		// openspeech.bytedance.com（URL 构造特例）。
+		//
+		// DefaultHealthCheckModel 换为现役视频模型
+		// doubao-seedance-2-0-mini-260615（既有 doubao-seedance-1-0-pro-250528
+		// 官方「即将下线」；图像域账户检查模型由运营按 seedream 行配置，
+		// images_json 检查形态要求检查模型被目录证实 images 协议）。注意
+		// seed upsert 只在新建库生效（既有库不回填档案行，属预期）。
 		ID:                      "profile_volcengine_openai_v1",
 		ProviderCode:            "volcengine",
 		Name:                    "火山方舟 / OpenAI v1 媒体",
-		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）与语音合成（豆包 TTS openspeech /api/v3/tts，语音应用凭据）能力",
+		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts，语音应用凭据）与图像生成（豆包 seedream 系 /api/v3/images/generations OpenAI 兼容图像端点）能力",
 		Enabled:                 1,
 		ProtocolCode:            "openai",
 		ProtocolVersion:         "v1",
 		BaseURL:                 "https://ark.cn-beijing.volces.com",
-		DefaultHealthCheckModel: "doubao-seedance-1-0-pro-250528",
+		DefaultHealthCheckModel: "doubao-seedance-2-0-mini-260615",
 		AccountTypes:            []string{"api_key"},
 		Capabilities:            []string{"chat", "video_generation", "tts"},
 		EndpointFamilies:        []string{"chat_completions", "video_generation", "tts"},

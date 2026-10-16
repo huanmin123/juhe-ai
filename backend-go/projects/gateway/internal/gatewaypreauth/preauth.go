@@ -75,7 +75,6 @@ func (s *Service) PreResolveGatewayRuntime(ctx context.Context, res GatewayRespo
 	if runtime == nil || runtime.APIKey == nil {
 		resolutionOutcome = "expected_failure"
 		resolutionReason = "runtime_unresolved"
-		s.recordEarlyGatewayAuthFailure(res, req)
 		return nil
 	}
 	if IsImageGenerationDisabledForAPIKey(runtime.APIKey, ResolveOpenAIGatewayRequestLane(req)) {
@@ -473,43 +472,6 @@ func (s *Service) setGatewayAuthFailureAudit(req *GatewayRequest, input auditFai
 	req.AuthFailureErrorCode = input.errorCode
 }
 
-// recordEarlyGatewayAuthFailure mirrors recordEarlyGatewayAuthFailure: emit a
-// dropped audit capture when a response already went out.
-func (s *Service) recordEarlyGatewayAuthFailure(res GatewayResponseWriter, req *GatewayRequest) {
-	if !res.HeadersSent() {
-		return
-	}
-	authErrorMessage := req.AuthFailureErrorMessage
-	if authErrorMessage == "" {
-		if _, ok := ExtractBearerToken(req.Header("authorization")); ok {
-			authErrorMessage = "API Key 无效"
-		} else {
-			authErrorMessage = "缺少访问令牌"
-		}
-	}
-	authErrorCode := req.AuthFailureErrorCode
-	if authErrorCode == "" {
-		authErrorCode = "invalid_request_error"
-	}
-	s.dispatchDroppedAuditCapture(droppedCaptureInput{
-		traceID:       s.observedTraceID(req),
-		trafficSource: "gateway",
-		auditOutcome:  "gateway_failed",
-		success:       false,
-		bytes:         0,
-		reason:        "gateway_auth_rejected",
-		method:        req.MethodUpper(),
-		path:          requestPathOnly(req),
-		queryString:   requestQueryString(req),
-		statusCode:    res.StatusCode(),
-		errorPhase:    "auth",
-		errorCode:     authErrorCode,
-		errorMessage:  authErrorMessage,
-		clientIP:      s.observedClientIP(req),
-		userAgent:     req.Header("user-agent"),
-	})
-}
-
 // sendEarlyImageGenerationDisabledResponse mirrors
 // sendEarlyImageGenerationDisabledResponse.
 func (s *Service) sendEarlyImageGenerationDisabledResponse(ctx context.Context, res GatewayResponseWriter, req *GatewayRequest) {
@@ -518,23 +480,6 @@ func (s *Service) sendEarlyImageGenerationDisabledResponse(ctx context.Context, 
 			GatewayErrorPayloadOf(ImageGenerationDisabledMessage, "forbidden", ImageGenerationDisabledCode),
 			SendGatewayErrorOptions{Protocol: s.clientErrorProtocolOrOpenAI(req)})
 	}
-	s.dispatchDroppedAuditCapture(droppedCaptureInput{
-		traceID:       s.observedTraceID(req),
-		trafficSource: "gateway",
-		auditOutcome:  "gateway_failed",
-		success:       false,
-		bytes:         0,
-		reason:        "gateway_permission_rejected",
-		method:        req.MethodUpper(),
-		path:          requestPathOnly(req),
-		queryString:   requestQueryString(req),
-		statusCode:    http.StatusForbidden,
-		errorPhase:    "authorization",
-		errorCode:     ImageGenerationDisabledCode,
-		errorMessage:  ImageGenerationDisabledMessage,
-		clientIP:      s.observedClientIP(req),
-		userAgent:     req.Header("user-agent"),
-	})
 }
 
 // sendUserRequestLimitExceededResponse mirrors sendUserRequestLimitExceededResponse.
@@ -554,23 +499,6 @@ func (s *Service) sendUserRequestLimitExceededResponse(ctx context.Context, res 
 	SendGatewayJSONError(res, http.StatusTooManyRequests,
 		GatewayErrorPayloadOf(message, "rate_limit_exceeded", "user_request_limit_exceeded"),
 		SendGatewayErrorOptions{Protocol: s.clientErrorProtocolOrOpenAI(req)})
-	s.dispatchDroppedAuditCapture(droppedCaptureInput{
-		traceID:       s.observedTraceID(req),
-		trafficSource: "gateway",
-		auditOutcome:  "gateway_failed",
-		success:       false,
-		bytes:         0,
-		reason:        "user_request_limit_exceeded",
-		method:        req.MethodUpper(),
-		path:          requestPathOnly(req),
-		queryString:   requestQueryString(req),
-		statusCode:    http.StatusTooManyRequests,
-		errorPhase:    "authorization",
-		errorCode:     "user_request_limit_exceeded",
-		errorMessage:  message,
-		clientIP:      s.observedClientIP(req),
-		userAgent:     req.Header("user-agent"),
-	})
 }
 
 // userRequestLimitWindowLabel mirrors userRequestLimitWindowLabel.
@@ -585,79 +513,6 @@ func userRequestLimitWindowLabel(window UserRequestLimitWindow) string {
 	default:
 		return "每月"
 	}
-}
-
-// droppedCaptureInput mirrors dispatchDroppedAuditCapture's input.
-type droppedCaptureInput struct {
-	traceID       string
-	trafficSource string
-	auditOutcome  string
-	success       bool
-	bytes         int
-	reason        string
-	method        string
-	path          string
-	queryString   string
-	statusCode    int
-	errorPhase    string
-	errorCode     string
-	errorMessage  string
-	clientIP      string
-	userAgent     string
-}
-
-// dispatchDroppedAuditCapture mirrors dispatchDroppedAuditCapture: gate on
-// the audit settings, build the finalized envelope and hand it to the Go
-// audit writer.
-func (s *Service) dispatchDroppedAuditCapture(input droppedCaptureInput) {
-	if s.AuditSettings == nil || !s.AuditSettings.AuditLogEnabled() {
-		return
-	}
-	timestamp := s.Clock.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	rawPath := strings.TrimSpace(input.path)
-	if rawPath == "" {
-		rawPath = "unknown"
-	}
-	target := rawPath
-	if input.queryString != "" {
-		target = rawPath + "?" + input.queryString
-	}
-	sanitized := s.Observability.SanitizeURLForLog(target)
-	parts := strings.Split(sanitized, "?")
-	path := parts[0]
-	queryString := ""
-	if len(parts) > 1 {
-		queryString = strings.Join(parts[1:], "?")
-	}
-	if path == "" {
-		path = "unknown"
-	}
-	method := strings.ToUpper(input.method)
-	if method == "" {
-		method = "UNKNOWN"
-	}
-	s.AuditDispatch.Dispatch(DispatchedAuditLogInput{
-		ID:              s.newAuditID(),
-		LifecycleStatus: "finalized",
-		TraceID:         input.traceID,
-		TrafficSource:   input.trafficSource,
-		AuditOutcome:    input.auditOutcome,
-		Success:         input.success,
-		Method:          method,
-		Path:            path,
-		QueryString:     queryString,
-		ClientIP:        input.clientIP,
-		UserAgent:       input.userAgent,
-		FinalStatusCode: input.statusCode,
-		ErrorPhase:      input.errorPhase,
-		ErrorCode:       input.errorCode,
-		ErrorMessage:    input.errorMessage,
-		SampleBucket:    0,
-		SampleReason:    input.reason,
-		CaptureStatus:   "complete",
-		StartedAt:       timestamp,
-		EndedAt:         timestamp,
-	})
 }
 
 // observedClientIP mirrors `context?.clientIp ?? extractClientIp(req)`.
@@ -692,25 +547,6 @@ func (s *Service) observedTraceID(req *GatewayRequest) string {
 // requestEndpointForLog mirrors `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`.
 func (s *Service) requestEndpointForLog(req *GatewayRequest) string {
 	return req.MethodUpper() + " " + s.Observability.SanitizeURLForLog(req.PathAndQuery())
-}
-
-// requestPathOnly mirrors req.originalUrl.split('?')[0] || req.path.
-func requestPathOnly(req *GatewayRequest) string {
-	path := strings.SplitN(req.PathAndQuery(), "?", 2)[0]
-	if path == "" {
-		path = req.Path()
-	}
-	return path
-}
-
-// requestQueryString mirrors the originalUrl query reconstruction.
-func requestQueryString(req *GatewayRequest) string {
-	originalURL := req.PathAndQuery()
-	if !strings.Contains(originalURL, "?") {
-		return ""
-	}
-	parts := strings.SplitN(originalURL, "?", 2)
-	return parts[1]
 }
 
 // clientErrorProtocolOrOpenAI mirrors gatewayErrorProtocolForRequest with the

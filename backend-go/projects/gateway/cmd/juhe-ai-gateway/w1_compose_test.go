@@ -81,8 +81,8 @@ func TestW1ClientCatalogSelection(t *testing.T) {
 }
 
 func TestW1BodyRejectionRecorderGuards(t *testing.T) {
-	// 缺席审计：仅解析请求面，不写审计/用量，也不 panic。
-	recorder := &chainBodyRejectionRecorder{clock: gatewaypreauth.SystemClock{}}
+	// 缺席 usage：仅解析请求面，不写用量，也不 panic（请求体拒绝不再落审计）。
+	recorder := &chainBodyRejectionRecorder{}
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?beta=1", nil)
 	recorder.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{
 		StatusCode: http.StatusRequestEntityTooLarge, Reason: "payload_too_large",
@@ -90,13 +90,6 @@ func TestW1BodyRejectionRecorderGuards(t *testing.T) {
 		RawBodyBytes:    2048,
 		ResponsePayload: gatewaybody.ErrorPayload{},
 	})
-	// 审计已装配但设置关闭：同样丢弃。
-	disabled := &chainBodyRejectionRecorder{
-		audit:        nopAuditDispatcher{},
-		auditEnabled: func() bool { return false },
-		clock:        gatewaypreauth.SystemClock{},
-	}
-	disabled.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{Reason: "lane_full"})
 	// pathWithoutQueryOf：常规 path 原样返回（查询串不并入）。
 	if got := pathWithoutQueryOf(httptest.NewRequest(http.MethodGet, "/some/path?x=2", nil)); got != "/some/path" {
 		t.Fatalf("path = %q", got)
@@ -117,11 +110,6 @@ func TestW1BodyRejectionRecorderGuards(t *testing.T) {
 	limit := chainTextRawBodyLimitOf(nil)
 	if value, ok := limit(); ok || value != 0 {
 		t.Fatalf("nil cache limit = %d, %v", value, ok)
-	}
-	// 审计 ID 形状：audit_ 前缀 + 时间戳 + uuid。
-	auditID := chainNewAuditID(gatewaypreauth.SystemClock{})
-	if !strings.HasPrefix(auditID, "audit_") || len(auditID) < len("audit_1728000000000_")+8 {
-		t.Fatalf("audit id = %q", auditID)
 	}
 	// gatewaybodyLogger：四级日志走 slog。
 	var buffer bytes.Buffer

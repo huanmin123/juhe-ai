@@ -219,6 +219,9 @@ func TestPendingBlobGCNewReferencePreservesCanonicalFile(t *testing.T) {
 
 	newInput := fixture("pending-gc-new", LifecycleFinalized)
 	newInput.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, Body: PayloadBody{Bytes: []byte("shared canonical blob"), Present: true}}}
+	// 换 Path 拉开错误指纹，避开错误组窗口内去重（否则新引用不落盘，
+	// GC 会把这个仍在被引用的 canonical blob 判为可回收）。
+	newInput.Path = "/v1/pending-gc-new"
 	if _, err := store.Persist(ctx, lease, newInput); err != nil {
 		t.Fatal(err)
 	}

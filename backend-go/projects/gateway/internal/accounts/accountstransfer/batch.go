@@ -310,8 +310,6 @@ type BatchUpdateItem struct {
 	ID             string   `json:"id"`
 	ConfigRevision int64    `json:"configRevision"`
 	ChangedFields  []string `json:"changedFields"`
-	// M3 显式清理：本账户被批量覆盖清理的域外遗留能力（omitempty = 无清理）。
-	CapabilityLegacyCleanup []string `json:"capabilityLegacyCleanup,omitempty"`
 }
 
 // BatchUpdateResult mirrors the route response payload (the owner scope stays
@@ -378,10 +376,6 @@ type batchPreparedAccount struct {
 	dispatchRevisionChanged bool
 	groupStatsAffected      bool
 	gatewayRuntimeAffected  bool
-	// M3 显式清理审计载荷（D6 只缩不扩）：本次批量覆盖中被该账户清理的域外
-	// 遗留能力（排序去重，空 = 无清理），透传到 BatchUpdateItem 供路由面落
-	// 单独审计。
-	capabilityLegacyCleanupRemoved []string
 }
 
 // batchCredentialFieldMap mirrors the Node credentialFieldMap: batch update
@@ -392,23 +386,6 @@ var batchCredentialFieldMap = [][2]string{
 	{"supportedEndpointModes", "supported_endpoint_modes"},
 	{"serviceTierOverride", "service_tier_override"},
 	{"reasoningEffortOverride", "reasoning_effort_override"},
-}
-
-// batchModesExplicitlyDeclared 判定批量覆盖是否显式携带 supportedEndpointModes
-// 数组（M3 只缩不扩的放行前提，与单账户 PATCH 的
-// credentialModesExplicitlyDeclared 同一语义）：nil（删键）走归一化默认集
-// 重置，由调用方维持逐项相等拦截（I7）。HTTP 面数组解码为 []any；[]string
-// 兼容 service 层直调。
-func batchModesExplicitlyDeclared(updates map[string]BatchUpdateField) bool {
-	update, ok := updates["supportedEndpointModes"]
-	if !ok || !update.Enabled || update.Value == nil {
-		return false
-	}
-	switch update.Value.(type) {
-	case []any, []string:
-		return true
-	}
-	return false
 }
 
 type batchDispatchBinding struct {
@@ -549,7 +526,6 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 			item.ChangedFields = append(item.ChangedFields, field)
 			changedFields[field] = true
 		}
-		item.CapabilityLegacyCleanup = account.capabilityLegacyCleanupRemoved
 		items = append(items, item)
 		changedAccountIDs = append(changedAccountIDs, account.accountID)
 		if account.groupStatsAffected {
@@ -986,12 +962,14 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			}
 			setColumn("credentials_encrypted", sealed)
 		}
-		// M2 三集合保存规则 + M3 放开分支（D6 显式清理，逐账户以各自库中
-		// 现值为基准）：supportedEndpointModes 参与覆盖且显式携带数组时，按
-		// 「只缩不扩」放行缩小并记录被清理值（批量路由按账户落清理审计）；
-		// 删键（null）走归一化默认集重置，维持逐项相等拦截——默认集不含遗留
-		// 值，放开会借归一化静默删除遗留能力（I7）。扩大或换元 → 整批回滚。
-		// modes 键未覆盖时合并结果 = 现值，天然通过。
+		// 严格声明校验（账户能力域不变式，与单账户 PATCH 同一规则，逐账户以
+		// 各自库中现值为基准）：supportedEndpointModes 参与覆盖时，归一化后的
+		// 最终声明集必须 ⊆ 该账户域允许集（按行内 capability_domain/provider/
+		// type/协议档案现算），任一账户越界即整批 400（批量原子语义）。唯一
+		// 触发路径是显式数组提交越界值；删键（present-null）不重置默认集——
+		// merged 记录携带显式 null 进入写侧归一化时即被「上游接口能力必须是
+		// 数组」拒绝（normalizeEndpointModeList 的数组断言），到不了本校验；
+		// 域内值增减照常。
 		if hasOwn("supportedEndpointModes") {
 			allowedModes := accountscore.AllowedEndpointModes(account.capabilityDomain, account.providerCode, account.accountType, accountscore.ProtocolPredicate{
 				ProviderCode:              account.providerCode,
@@ -999,16 +977,8 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 				ProtocolVersion:           account.protocolVersion,
 				ProviderProtocolProfileID: account.providerProtocolProfileID,
 			})
-			oldDeclared := StoredEndpointModes(account.credentials["supported_endpoint_modes"])
-			newDeclared := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
-			if batchModesExplicitlyDeclared(updates) {
-				removed, err := accountscore.AssertCapabilityLegacyShrinkOnly(oldDeclared, newDeclared, allowedModes)
-				if err != nil {
-					return result, err
-				}
-				result.capabilityLegacyCleanupRemoved = removed
-			} else if err := accountscore.AssertCapabilityLegacySetsEqual(oldDeclared, newDeclared, allowedModes); err != nil {
-				return result, err
+			if outliers := accountscore.OutOfDomainModes(StoredEndpointModes(nextCredentials["supported_endpoint_modes"]), allowedModes); len(outliers) > 0 {
+				return result, accountscore.CapabilityDomainOutlierError(account.capabilityDomain, outliers)
 			}
 		}
 	}

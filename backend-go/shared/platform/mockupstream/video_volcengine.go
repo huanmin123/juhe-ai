@@ -10,7 +10,10 @@ package mockupstream
 //     credential is the id field)
 //   - GET  /api/v3/contents/generations/tasks/{id}          poll
 //     ({"id","status":"queued|running|succeeded|failed",
-//     "content":{"video_url":...} | "error":{code,message}})
+//     "content":{"video_url":...} | "error":{code,message}}; the succeeded
+//     shape also carries the real-upstream-measured 2026-10-17 top-level
+//     "duration" (generated seconds) and "usage":
+//     {"completion_tokens","total_tokens"} billing metadata)
 //   - GET  /api/v3/contents/generations/tasks/{id}/content  artifact download
 //     (video/mp4 binary channel; the succeeded video_url points here)
 //
@@ -185,7 +188,11 @@ func (m *Server) volcengineTaskBodyLocked(task *volcengineVideoTask) string {
 		return fmt.Sprintf(`{"id":%q,"status":"failed","error":{"code":"InternalServiceError","message":"mock video generation failed"}}`, task.id)
 	case task.done:
 		url, _ := json.Marshal(m.volcengineArtifactURLLocked(task))
-		return fmt.Sprintf(`{"id":%q,"status":"succeeded","content":{"video_url":%s}}`, task.id, string(url))
+		// succeeded shape mirrors the 2026-10-17 real-upstream measurement
+		// (720p 5s sample): top-level duration (generated seconds) + usage
+		// token counts, so the gateway's upstream-sourced second metering
+		// has a live wire source in every succeeded scenario.
+		return fmt.Sprintf(`{"id":%q,"status":"succeeded","content":{"video_url":%s},"duration":5,"usage":{"completion_tokens":108900,"total_tokens":108900}}`, task.id, string(url))
 	case task.pollCount <= 1:
 		return fmt.Sprintf(`{"id":%q,"status":"queued"}`, task.id)
 	default:
@@ -248,14 +255,16 @@ func (m *Server) serveVolcengineVideoContent(w http.ResponseWriter, id string) {
 	_, _ = w.Write(mp4Payload())
 }
 
-// serveVolcengineTTS implements POST /api/v3/tts (contract §9.2, M6): the OK
-// scenario answers HTTP 200 {"reqid","code":3000,"message","data":<base64>} —
-// data carries a payload selected by the request's audio_params.format
-// (mp3 default / pcm / ogg_opus / wav — the adapter MUST base64-decode before
-// forwarding; the chain tests assert the decoded magic bytes). The failure
-// scenario answers 200 with code 3001 (contract: code!=3000 即失败——the
-// gateway surfaces it as an upstream protocol error, not a silent audio
-// passthrough). Out-of-word-list formats 400 like the real upstream.
+// serveVolcengineTTS implements POST /api/v3/tts/create (contract §9.2,
+// 2026-10-17 migration batch): the OK scenario answers HTTP 200
+// {"audio":<base64>,"duration","original_duration","url"} — audio carries a
+// payload selected by the request's audio_config.format (mp3 default /
+// wav / ogg_opus / opus; pcm dropped — the real upstream hangs on it — the
+// adapter MUST base64-decode before forwarding; the chain tests assert the
+// decoded magic bytes). The failure scenario answers 401 with the flat
+// {"code","message"} envelope shape the real upstream uses for auth
+// failures (the chain surfaces non-200 as an upstream error). Out-of-word-
+// list formats 400 like the real upstream.
 func (m *Server) serveVolcengineTTS(w http.ResponseWriter, idx int, scenario Scenario) {
 	// Read the recorded body under the Server mutex: concurrent requests
 	// append to m.seenReqs and an unlocked read races the writer.
@@ -263,42 +272,40 @@ func (m *Server) serveVolcengineTTS(w http.ResponseWriter, idx int, scenario Sce
 	requestBody := m.seenReqs[idx].Body
 	m.mu.Unlock()
 	var req struct {
-		ReqParams struct {
-			Text    string `json:"text"`
-			Speaker string `json:"speaker"`
-			AudioParams struct {
-				Format string `json:"format"`
-			} `json:"audio_params"`
-		} `json:"req_params"`
+		Model      string `json:"model"`
+		TextPrompt string `json:"text_prompt"`
+		Speaker    string `json:"speaker"`
+		AudioConfig struct {
+			Format string `json:"format"`
+		} `json:"audio_config"`
 	}
 	_ = json.Unmarshal([]byte(requestBody), &req)
 
 	if scenario == ScenarioMediaVolcengineTTSFailed {
-		writeJSONStatus(w, http.StatusOK, `{"reqid":"mock-volc-tts-failed","code":3001,"message":"mock tts synthesis failed","data":""}`)
+		writeJSONStatus(w, http.StatusUnauthorized, `{"code":45000010,"message":"mock tts invalid X-Api-Key"}`)
 		return
 	}
 	// media_volcengine_tts_ok (unknown scenarios default OK): base64(audio
-	// payload) + code 3000. Format negotiation stays inside the §9.2 word
-	// list (mp3 default / pcm / ogg_opus / wav).
+	// payload) + duration. Format negotiation stays inside the §9.2 word
+	// list (mp3 default / wav / ogg_opus / opus — opus serves the OggS
+	// container like the real upstream).
 	var payload []byte
-	switch req.ReqParams.AudioParams.Format {
+	switch req.AudioConfig.Format {
 	case "", "mp3":
 		payload = mp3Payload()
 	case "wav":
 		payload = wavPayload()
-	case "pcm":
-		payload = silencePCM()
-	case "ogg_opus":
+	case "ogg_opus", "opus":
 		payload = oggOpusPayload()
 	default:
-		writeJSONStatus(w, http.StatusBadRequest, `{"reqid":"mock-volc-tts-400","code":3002,"message":"audio_params.format not supported","data":""}`)
+		writeJSONStatus(w, http.StatusBadRequest, `{"code":45000001,"message":"audio_config.format not supported"}`)
 		return
 	}
 	body, _ := json.Marshal(map[string]any{
-		"reqid":   "mock-volc-tts-ok",
-		"code":    3000,
-		"message": "success",
-		"data":    base64.StdEncoding.EncodeToString(payload),
+		"audio":             base64.StdEncoding.EncodeToString(payload),
+		"duration":          1.23,
+		"original_duration": 1.23,
+		"url":               "https://mock.invalid/volcengine-speech/mock-tts-signed",
 	})
 	writeJSONStatus(w, http.StatusOK, string(body))
 }

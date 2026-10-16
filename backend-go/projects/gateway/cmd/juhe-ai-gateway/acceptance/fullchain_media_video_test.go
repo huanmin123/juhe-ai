@@ -974,8 +974,9 @@ func (f *fullchainFixture) fullchainCreateVolcengineVideoAccount(name, upstreamK
 // job 对象、provider=volcengine、params 回显 negative_prompt/audio 进 ignored /
 // provider_options_applied 命中）→ 轮询 queued → in_progress → completed
 //（status 归一 + content.video_url 冻结）→ content 经绝对 URL 无凭据直连下载
-// mp4 → 管理面 media-jobs 行终态（usage_missing 口径 cost=0，不虚计）→ 账户
-// 亲和（上游命中只打 volcengine 账户 key 的 tasks 创建/轮询端点）。
+// mp4 → 管理面 media-jobs 行终态（duration 秒计量照抽，目录无秒价 cost=0
+// 不虚计）→ 账户亲和（上游命中只打 volcengine 账户 key 的 tasks 创建/轮询
+// 端点）。
 func TestFullchainMediaVideoVolcengineSeedance(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
@@ -1055,9 +1056,11 @@ func TestFullchainMediaVideoVolcengineSeedance(t *testing.T) {
 		t.Fatalf("MV volcengine content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
 	}
 
-	// 管理面 media-jobs：行终态 completed 归因 volcengine 账户；请求 seconds=5
-	// 生效、上游无回报 → usage 行按请求参数自算计量（usage_source=request，
-	// 2026-10-05 批）；seedance 目录未落秒价 → cost_usd=0（计量照落成本不虚计）。
+	// 管理面 media-jobs：行终态 completed 归因 volcengine 账户；轮询 succeeded
+	// 顶层 duration=5 回报照抽秒计量（usage_source=upstream，2026-10-17 实测
+	// 回填批——管理面行投影无 outputVideoSeconds 字段，秒值断言由链级测试
+	// chain_media_video_volcengine_test.go 的 spool 记录钉住）；seedance 目录
+	// 未落秒价 → cost_usd=0（计量照落成本不虚计）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
@@ -1065,7 +1068,7 @@ func TestFullchainMediaVideoVolcengineSeedance(t *testing.T) {
 		t.Fatalf("MV volcengine row accountId=%s, want %s", row.AccountID, accountID)
 	}
 	if row.CostUsd != 0 {
-		t.Fatalf("MV volcengine row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+		t.Fatalf("MV volcengine row costUsd=%v, want 0（目录无秒价，计量照落成本 0 不虚计）", row.CostUsd)
 	}
 
 	// 账户亲和 + 出站形态：volcengine key 命中创建（POST /api/v3/contents/

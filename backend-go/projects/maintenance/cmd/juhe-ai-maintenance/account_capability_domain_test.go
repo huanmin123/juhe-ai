@@ -139,6 +139,40 @@ func TestCapabilityDomainSQLiteEndToEnd(t *testing.T) {
 			t.Fatalf("%s domain = %q, want %q", id, got, domain)
 		}
 	}
+	// 赋域 + 声明裁剪：混合行 acct-volc 裁剪至落域 lane（保留 chat_json，
+	// 裁掉 video_create/audio_speech）；纯域内行声明原样保留。
+	assertModes := func(id string, wantModes []string) {
+		t.Helper()
+		var sealed string
+		if err := db.QueryRow(`SELECT credentials_encrypted FROM accounts WHERE id = ?`, id).Scan(&sealed); err != nil {
+			t.Fatal(err)
+		}
+		var credentials map[string]any
+		if err := accountcrypto.DecryptJSON(capabilityDomainTestSecret, sealed, &credentials); err != nil {
+			t.Fatalf("decrypt %s: %v", id, err)
+		}
+		raw, _ := credentials["supported_endpoint_modes"].([]any)
+		got := []string{}
+		for _, item := range raw {
+			if text, ok := item.(string); ok {
+				got = append(got, text)
+			}
+		}
+		if len(got) != len(wantModes) {
+			t.Fatalf("%s modes = %v, want %v", id, got, wantModes)
+		}
+		seen := map[string]bool{}
+		for _, mode := range wantModes {
+			seen[mode] = true
+		}
+		for _, mode := range got {
+			if !seen[mode] {
+				t.Fatalf("%s modes = %v, want %v", id, got, wantModes)
+			}
+		}
+	}
+	assertModes("acct-volc", []string{"chat_json"})
+	assertModes("acct-chat", []string{"chat_json", "chat_sse"})
 
 	// 重复 migrate m1：只报告完成，退出码 0。
 	if code := runMaintenance(append(append([]string{"--migrate-account-capability-domain", "--account-capability-domain-stage=m1"}, common...), gates...)); code != 0 {

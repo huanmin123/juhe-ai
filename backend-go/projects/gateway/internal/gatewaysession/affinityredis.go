@@ -477,13 +477,17 @@ func redisBooleanResult(value any) bool {
 
 // Binding / preference JSON codecs ------------------------------------------
 // Field order and optionality mirror JSON.stringify of the Node objects:
-// { accountId, scope?, trafficMigrationPreferred? } with scope written as
-// { systemAccountId, apiKeyId?, groupId }.
+// { accountId, scope?, trafficMigrationPreferred?, upstreamApiKeyFingerprint? }
+// with scope written as { systemAccountId, apiKeyId?, groupId }.
+// upstreamApiKeyFingerprint 是账户内 Key 会话黏性的 Go 侧追加可选字段：
+// 仅非空时写入，解析端只接受恰好 64 位小写 hex，其他类型或格式丢弃该字段、
+// 保留绑定其余部分（存量记录天然兼容）。
 
 type sessionBindingJSON struct {
 	AccountID                 string                                 `json:"accountId"`
 	Scope                     *openAIGatewaySessionAffinityScopeJSON `json:"scope,omitempty"`
 	TrafficMigrationPreferred *bool                                  `json:"trafficMigrationPreferred,omitempty"`
+	UpstreamApiKeyFingerprint *string                                `json:"upstreamApiKeyFingerprint,omitempty"`
 }
 
 // openAIGatewaySessionAffinityScopeJSON keeps the explicit field order.
@@ -510,6 +514,10 @@ func marshalSessionBinding(binding SessionBinding) string {
 		flag := true
 		payload.TrafficMigrationPreferred = &flag
 	}
+	if binding.UpstreamApiKeyFingerprint != "" {
+		fingerprint := binding.UpstreamApiKeyFingerprint
+		payload.UpstreamApiKeyFingerprint = &fingerprint
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		// A struct payload cannot fail marshaling.
@@ -526,6 +534,7 @@ func parseRedisSessionBinding(rawValue string) *SessionBinding {
 		AccountID                 json.RawMessage `json:"accountId"`
 		Scope                     json.RawMessage `json:"scope"`
 		TrafficMigrationPreferred json.RawMessage `json:"trafficMigrationPreferred"`
+		UpstreamApiKeyFingerprint json.RawMessage `json:"upstreamApiKeyFingerprint"`
 	}
 	if err := json.Unmarshal([]byte(rawValue), &parsed); err != nil {
 		return nil
@@ -548,6 +557,15 @@ func parseRedisSessionBinding(rawValue string) *SessionBinding {
 		var flag any
 		if err := json.Unmarshal(parsed.TrafficMigrationPreferred, &flag); err == nil && flag == true {
 			binding.TrafficMigrationPreferred = true
+		}
+	}
+	// 指纹字段只接受合法 64 位小写 hex；其他类型或格式仅丢弃该字段。
+	if len(parsed.UpstreamApiKeyFingerprint) > 0 {
+		var fingerprint any
+		if err := json.Unmarshal(parsed.UpstreamApiKeyFingerprint, &fingerprint); err == nil {
+			if value, ok := stringValueFromAny(fingerprint); ok && validUpstreamApiKeyFingerprint(value) {
+				binding.UpstreamApiKeyFingerprint = value
+			}
 		}
 	}
 	return binding

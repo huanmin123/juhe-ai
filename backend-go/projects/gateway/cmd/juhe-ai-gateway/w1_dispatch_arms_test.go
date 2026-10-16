@@ -88,6 +88,13 @@ func (p *w1fAffinityPort) ForgetAsync(_ context.Context, sessionKey, accountID s
 	return nil
 }
 
+func (p *w1fAffinityPort) StickyApiKeyFingerprintAsync(context.Context, string, string) string {
+	return ""
+}
+
+func (p *w1fAffinityPort) RememberApiKeyFingerprintAsync(context.Context, string, string, string) {
+}
+
 func (p *w1fAffinityPort) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []gatewaydispatch.AccountCandidate, gatewaydispatch.HighConcurrencyBusyOptions) (bool, error) {
 	return false, nil
 }

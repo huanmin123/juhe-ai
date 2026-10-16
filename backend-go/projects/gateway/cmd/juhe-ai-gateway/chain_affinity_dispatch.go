@@ -7,9 +7,10 @@ package main
 // preauth 读不到、preauth 的 Redis 亲和 dispatch 也不用，读写两个数据面。
 //
 // chainSessionAffinityDispatchPort 把 gatewaydispatch.SessionAffinityPort 的
-// 绑定读写四方法（Order/Claim/Remember/Forget）接到与 preauth 同一
-// AffinityService 实例上；高并发忙判定（AreHighConcurrencyAccountsBusyForLane
-// Async）继续走 localSessionAffinity：该维度是 F13 确立的「与 engine 并发槽 /
+// 绑定读写面（Order/Claim/Remember/Forget + 账户内 Key 黏性读/最终成功 Key
+// 写回）接到与 preauth 同一 AffinityService 实例上；高并发忙判定
+// （AreHighConcurrencyAccountsBusyForLaneAsync）继续走 localSessionAffinity：
+// 该维度是 F13 确立的「与 engine 并发槽 /
 // high-concurrency 队列共用同一活计数 tracker」同源接线，而
 // AffinityService.cfg.Concurrency 生产未装配（nil，Redis runtime-state 下恒
 // 不忙），为不回退既有忙判定语义，此维度保持本进程事实源。
@@ -64,6 +65,19 @@ func (p *chainSessionAffinityDispatchPort) RememberAsync(ctx context.Context, se
 // warn 后吞错返回 nil，Node catch 分叉；失败派发链不因 forget 失败重试）。
 func (p *chainSessionAffinityDispatchPort) ForgetAsync(ctx context.Context, sessionAffinityKey, accountID string) error {
 	return p.service.ForgetOpenAIAccountForSessionAsync(ctx, sessionAffinityKey, accountID)
+}
+
+// StickyApiKeyFingerprintAsync 委托 AffinityService 的账户内 Key 黏性读：
+// 绑定缺失、过期、owner 不匹配或读取失败在服务内降级为空串并告警，读不刷 TTL。
+func (p *chainSessionAffinityDispatchPort) StickyApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID string) string {
+	return p.service.StickyOpenAIApiKeyFingerprintAsync(ctx, sessionAffinityKey, accountID)
+}
+
+// RememberApiKeyFingerprintAsync 委托 AffinityService 的最终协议成功 Key 写回：
+// 只更新现存同 owner 绑定（不创建、不改 owner）；记录缺失 / 过期 / 异 owner /
+// 非法指纹在服务内跳过，Redis 侧最多两轮 GET + CAS。
+func (p *chainSessionAffinityDispatchPort) RememberApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID, upstreamApiKeyFingerprint string) {
+	p.service.RememberOpenAIApiKeyFingerprintAsync(ctx, sessionAffinityKey, accountID, upstreamApiKeyFingerprint)
 }
 
 // AreHighConcurrencyAccountsBusyForLaneAsync 委托 localSessionAffinity 的

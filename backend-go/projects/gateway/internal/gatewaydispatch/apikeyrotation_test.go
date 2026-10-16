@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -492,5 +493,157 @@ func TestInProcessAPIKeyRotationCounter(t *testing.T) {
 	}
 	if got, _ := counter.NextIndex(context.Background(), "acc-1", apiKeyRotationScopeWeighted, 5); got != 0 {
 		t.Fatalf("不同 strategy 键域应独立，实际 %d", got)
+	}
+}
+
+// —— 账户内 API Key 会话黏性（账户内APIKey会话亲和设计 §5/§9）——
+
+// TestSelectAccountAPIKeyStickyHitBypassesStrategy：黏性指纹命中健康候选时
+// 直选该 Key，不走策略、不消费计数器（设计 §5「黏住不调用计数器」）。
+func TestSelectAccountAPIKeyStickyHitBypassesStrategy(t *testing.T) {
+	credentials := poolCredentials([]string{"k0", "k1", "k2"}, accountAPIKeyStrategyRoundRobin, nil)
+	entries := accountApiKeyEntries(testRotationSecret, credentials)
+	fingerprintOf := func(key string) string { return apiKeyFingerprint(testRotationSecret, key) }
+
+	counter := &scriptCounter{}
+	selected, err := selectAccountRuntimeApiKeyEntry(context.Background(), apiKeySelectionInput{
+		AccountID:                  "acc-sticky",
+		credentials:                credentials,
+		PreferredApiKeyFingerprint: fingerprintOf("k2"),
+		entries:                    entries,
+		counter:                    counter,
+	})
+	if err != nil {
+		t.Fatalf("sticky hit: %v", err)
+	}
+	if selected == nil || selected.key != "k2" {
+		t.Fatalf("黏性命中应直选 k2，实际 %+v", selected)
+	}
+	if len(counter.calls) != 0 {
+		t.Fatalf("黏性命中不应消费轮转计数器，实际 %v", counter.calls)
+	}
+}
+
+// TestSelectAccountAPIKeyStickyMissFallsBackToStrategy：黏性失配矩阵——
+// disabled / 冷却（有健康候选）/ 本请求排除 / 指纹不在池，均落入既有策略
+// 管线（rr 计数器 index=0 → k0）。
+func TestSelectAccountAPIKeyStickyMissFallsBackToStrategy(t *testing.T) {
+	credentials := poolCredentials([]string{"k0", "k1", "k2"}, accountAPIKeyStrategyRoundRobin, nil)
+	entries := accountApiKeyEntries(testRotationSecret, credentials)
+	fingerprintOf := func(key string) string { return apiKeyFingerprint(testRotationSecret, key) }
+	cooldown := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+
+	cases := []struct {
+		name      string
+		stickyKey string
+		states    []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState
+		exclude   map[string]struct{}
+	}{
+		{name: "disabled", stickyKey: "k1", states: []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState{
+			{Fingerprint: fingerprintOf("k1"), Disabled: true},
+		}},
+		{name: "cooldown_with_healthy", stickyKey: "k1", states: []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState{
+			{Fingerprint: fingerprintOf("k1"), CooldownUntil: &cooldown},
+		}},
+		{name: "excluded_this_request", stickyKey: "k1", exclude: map[string]struct{}{fingerprintOf("k1"): {}}},
+		{name: "fingerprint_not_in_pool", stickyKey: "missing", states: nil},
+	}
+	for _, testCase := range cases {
+		counter := &scriptCounter{}
+		selected, err := selectAccountRuntimeApiKeyEntry(context.Background(), apiKeySelectionInput{
+			AccountID:                  "acc-sticky-miss",
+			credentials:                credentials,
+			PreferredApiKeyFingerprint: fingerprintOf(testCase.stickyKey),
+			ExcludeFingerprints:        testCase.exclude,
+			RuntimeStates:              testCase.states,
+			entries:                    entries,
+			counter:                    counter,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", testCase.name, err)
+		}
+		if selected == nil || selected.key != "k0" {
+			t.Fatalf("%s: 黏性失配应落回策略选 k0，实际 %+v", testCase.name, selected)
+		}
+		if len(counter.calls) == 0 {
+			t.Fatalf("%s: 失配后应进入策略（消费计数器），实际未消费", testCase.name)
+		}
+	}
+}
+
+// TestSelectAccountAPIKeyStickyIgnoredWhenOnlyRecovery：健康候选为空、全部
+// 未排除 Key 冷却时按现行 recovery 规则返回池序首项，黏性不改 recovery 次序
+// （设计 §5 recovery 兜底）。
+func TestSelectAccountAPIKeyStickyIgnoredWhenOnlyRecovery(t *testing.T) {
+	credentials := poolCredentials([]string{"k0", "k1", "k2"}, accountAPIKeyStrategyRoundRobin, nil)
+	entries := accountApiKeyEntries(testRotationSecret, credentials)
+	fingerprintOf := func(key string) string { return apiKeyFingerprint(testRotationSecret, key) }
+	cooldown := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+
+	states := []gatewayruntimecache.AccountAPIKeyRuntimeSelectionState{
+		{Fingerprint: fingerprintOf("k0"), CooldownUntil: &cooldown},
+		{Fingerprint: fingerprintOf("k1"), CooldownUntil: &cooldown},
+		{Fingerprint: fingerprintOf("k2"), CooldownUntil: &cooldown},
+	}
+	counter := &scriptCounter{}
+	selected, err := selectAccountRuntimeApiKeyEntry(context.Background(), apiKeySelectionInput{
+		AccountID:                  "acc-sticky-recovery",
+		credentials:                credentials,
+		PreferredApiKeyFingerprint: fingerprintOf("k1"),
+		RuntimeStates:              states,
+		entries:                    entries,
+		counter:                    counter,
+	})
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if selected == nil || selected.key != "k0" {
+		t.Fatalf("全冷却应按池序返回首项 k0，实际 %+v", selected)
+	}
+	if len(counter.calls) != 0 {
+		t.Fatalf("recovery 兜底不应消费计数器，实际 %v", counter.calls)
+	}
+}
+
+// TestSelectAccountAPIKeyStickyPrecedesContinuation：黏性优先于 continuation
+// （设计 §5 管线顺序：黏性 → 单候选 → continuation → 策略）。
+func TestSelectAccountAPIKeyStickyPrecedesContinuation(t *testing.T) {
+	credentials := poolCredentials([]string{"k0", "k1", "k2"}, accountAPIKeyStrategyRoundRobin, nil)
+	entries := accountApiKeyEntries(testRotationSecret, credentials)
+	fingerprintOf := func(key string) string { return apiKeyFingerprint(testRotationSecret, key) }
+
+	selected, err := selectAccountRuntimeApiKeyEntry(context.Background(), apiKeySelectionInput{
+		AccountID:                  "acc-sticky-cont",
+		credentials:                credentials,
+		PreferredApiKeyFingerprint: fingerprintOf("k0"),
+		ContinueAfterFingerprint:   fingerprintOf("k1"),
+		entries:                    entries,
+		counter:                    newInProcessAPIKeyRotationCounter(),
+	})
+	if err != nil {
+		t.Fatalf("sticky vs continuation: %v", err)
+	}
+	if selected == nil || selected.key != "k0" {
+		t.Fatalf("黏性应优先于 continuation 选 k0，实际 %+v", selected)
+	}
+}
+
+// TestSelectAccountApiKeyForDispatchStickyFixedBranchPriority：账户级 fixed
+// 钉住（SameAccountRetry 生效中等）优先于会话黏性，语义不变（设计 §5）。
+func TestSelectAccountApiKeyForDispatchStickyFixedBranchPriority(t *testing.T) {
+	engine := newRotationTestEngine()
+	credentials := poolCredentials([]string{"k0", "k1"}, accountAPIKeyStrategyRoundRobin, nil)
+	account := poolAccount("acc-sticky-fixed", "deepseek", "", "", credentials)
+	pinned := apiKeyFingerprint(testRotationSecret, "k1")
+	account.SelectedAPIKeyFingerprint = &pinned
+
+	selected, ok, err := engine.SelectAccountApiKeyForDispatch(context.Background(), account, SelectApiKeyOptions{
+		PreferredApiKeyFingerprint: apiKeyFingerprint(testRotationSecret, "k0"),
+	})
+	if err != nil || !ok {
+		t.Fatalf("fixed 优先: ok=%v err=%v", ok, err)
+	}
+	if selected.APIKey != "k1" {
+		t.Fatalf("fixed 钉住应胜过会话黏性选 k1，实际 %s", selected.APIKey)
 	}
 }

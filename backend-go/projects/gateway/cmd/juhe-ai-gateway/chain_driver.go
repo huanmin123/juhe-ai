@@ -9,6 +9,7 @@ package main
 // accountSupportsGatewayRequest / gatewayRequestCapabilityMismatchReason.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
@@ -243,7 +245,9 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// M1 同步音频（音频设计 §5/契约 §5.1）：gemini 账户的 speech 请求由
 		// gatewaymedia 注册表的 gemini TTS adapter 承载（URL/body 改写 +
 		// 响应转换），不进入原生路由 helper；模型直达（映射面 M1 不介入）。
-		if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
+		if adapter, ir, ok, speechErr := d.geminiSpeechRequest(req, account); speechErr != nil {
+			return nil, speechErr
+		} else if ok {
 			path, _, err := adapter.BuildRequest(ir)
 			if err != nil {
 				return nil, geminiSpeechAdapterBoundaryError(err)
@@ -366,18 +370,19 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				return []string{upstreamURL}, nil
 			}
 		}
-		// M6 同步音频（契约 §9.2）：volcengine 账户的 speech 请求由
-		// gatewaymedia 注册表的火山 TTS adapter 承载（body 改写 + 响应 base64
-		// 解码转换）。URL 构造特例：host 恒 openspeech.bytedance.com（语音
-		// 服务域，与账户 ark base_url 无关），凭据是语音应用双值
-		//（speech_appid/speech_token）——缺失即无 audio_speech 能力，显式
-		// 失败不静默回退（沿 videoCreateRequest 能力缺失语义）。
-		if adapter, ir, ok := d.volcengineSpeechRequest(req, account); ok {
-			appid, _, credErr := chainVolcengineSpeechCredentials(account)
-			if credErr != nil {
+		// M6 同步音频（契约 §9.2；2026-10-17 迁移批 /api/v3/tts/create 面）：
+		// volcengine 账户的 speech 请求由 gatewaymedia 注册表的火山 TTS
+		// adapter 承载（body 改写 + 响应 base64 解码转换）。URL 构造特例：
+		// host 恒 openspeech.bytedance.com（语音服务域，与账户 ark base_url
+		// 无关），凭据是新版语音控制台 API Key 单值（speech_token）——缺失
+		// 即无 audio_speech 能力，显式失败不静默回退（沿 videoCreateRequest
+		// 能力缺失语义）。
+		if adapter, ir, ok, speechErr := d.volcengineSpeechRequest(req, account); speechErr != nil {
+			return nil, speechErr
+		} else if ok {
+			if _, credErr := chainVolcengineSpeechCredentials(account); credErr != nil {
 				return nil, credErr
 			}
-			ir.AccountVendorRefs = map[string]string{"speech_appid": appid}
 			path, _, err := adapter.BuildRequest(ir)
 			if err != nil {
 				return nil, geminiSpeechAdapterBoundaryError(err)
@@ -388,7 +393,9 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// 注册表的 minimax t2a_v2 adapter 承载（URL/body 改写 + 响应 hex 解码
 		// 转换），/v1/t2a_v2 是 /v1 前缀形态，走 openai 归一；openai 族其它
 		// provider 的 speech 维持直连透传。
-		if adapter, ir, ok := d.minimaxSpeechRequest(req, account); ok {
+		if adapter, ir, ok, speechErr := d.minimaxSpeechRequest(req, account); speechErr != nil {
+			return nil, speechErr
+		} else if ok {
 			path, _, err := adapter.BuildRequest(ir)
 			if err != nil {
 				return nil, geminiSpeechAdapterBoundaryError(err)
@@ -416,6 +423,19 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// chainQwenChatUpstreamURL）。仅 chat 路径进本归一：模型映射与
 		// responses→chat 桥改写后的路径同为 /chat/completions，一并覆盖；
 		// 其余路径（媒体面有专用 adapter 分支承接）维持 openai 归一不变。
+		// 图像批（火山方舟图像承接，2026-10-17）：官方 OpenAI 兼容图像端点
+		// 自带 /api/v3 服务根（ark /api/v3/images/generations，Agent Plan 为
+		// /api/plan/v3/images/generations），不得走 openai /v1 强制补缀归一
+		//（会把官方根错拼 /v1/images/generations）——沿 chat 面同构的服务根
+		// 归一先例（chainVolcengineImagesUpstreamURL 显式路径模式）。
+		if chainNormalizeProviderToken(account.ProviderCode) == "volcengine" &&
+			chainIsImagesGenerationsPathAndQuery(pathAndQuery) {
+			upstreamURL, urlErr := chainVolcengineImagesUpstreamURL(account.BaseURL, pathAndQuery)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{upstreamURL}, nil
+		}
 		if chainIsChatCompletionsPathAndQuery(pathAndQuery) {
 			switch chainNormalizeProviderToken(account.ProviderCode) {
 			case "volcengine":
@@ -488,7 +508,9 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		return gatewaydispatch.PreparedRequestParts{}, audioErr
 	}
 	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
-	if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
+	if adapter, ir, ok, speechErr := d.geminiSpeechRequest(req, account); speechErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, speechErr
+	} else if ok {
 		_, body, err := adapter.BuildRequest(ir)
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
@@ -499,7 +521,9 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	}
 	// M3 同步音频：minimax t2a_v2 adapter 分派（URL/body 同源 BuildRequest，
 	// 契约 §8.2；provider_options 已投影进 SpeechRequest）。
-	if adapter, ir, ok := d.minimaxSpeechRequest(req, account); ok {
+	if adapter, ir, ok, speechErr := d.minimaxSpeechRequest(req, account); speechErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, speechErr
+	} else if ok {
 		_, body, err := adapter.BuildRequest(ir)
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
@@ -519,23 +543,28 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		headers.Set("Content-Type", "application/json")
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
-	// M6 同步音频（契约 §9.2）：volcengine 账户的 speech 请求经火山 TTS
-	// adapter 改写报文；鉴权特例 `Authorization: Bearer;<token>`（分号分隔，
-	// 火山语音服务域独有——凭据为语音应用 speech_token，不能复用 openai 族
-	// Bearer 空格形态，故在 upstreamHeadersOf 之后覆盖该头）。
-	if adapter, ir, ok := d.volcengineSpeechRequest(req, account); ok {
-		appid, token, credErr := chainVolcengineSpeechCredentials(account)
+	// M6 同步音频（契约 §9.2；2026-10-17 迁移批 /api/v3/tts/create 面）：
+	// volcengine 账户的 speech 请求经火山 TTS adapter 改写报文；鉴权
+	// `X-Api-Key: <speech_token>` 单头单值（新版语音控制台 API Key——与
+	// ark API Key 独立，不能复用 openai 族 Bearer 形态，故在
+	// upstreamHeadersOf 之后覆盖该头；旧 `Bearer;` 分号形态随旧端点废弃）。
+	if adapter, ir, ok, speechErr := d.volcengineSpeechRequest(req, account); speechErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, speechErr
+	} else if ok {
+		token, credErr := chainVolcengineSpeechCredentials(account)
 		if credErr != nil {
 			return gatewaydispatch.PreparedRequestParts{}, credErr
 		}
-		ir.AccountVendorRefs = map[string]string{"speech_appid": appid}
 		_, body, err := adapter.BuildRequest(ir)
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
 		}
 		headers := upstreamHeadersOf(req, account)
 		headers.Set("Content-Type", "application/json")
-		headers.Set("Authorization", "Bearer;"+token)
+		// X-Api-Key 是语音服务域的独立鉴权面：删掉通用透传预设的
+		// Authorization（ark Bearer），不得让两个鉴权头并存出站。
+		headers.Del("Authorization")
+		headers.Set("X-Api-Key", token)
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	if normalizeProtocol(account.ProtocolCode) == driverProtocolGemini && geminiAccountUsesCodeAssistRuntime(account) {
@@ -647,7 +676,141 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		}
 	}
 	body = gatewaydispatch.NormalizeOpenAIReasoningFieldsForUpstream(reasoningPath, body)
+	// 流式零计费修复：openai 协议标准账户的 chat completions 流式出站补
+	// stream_options.include_usage（见 chainMaybeInjectChatStreamUsageOption）。
+	// 注入发生在全部既有 body 组装/改写（兼容体、模型映射、gpt 覆盖、reasoning
+	// 归一）之后、发出之前，不回写请求级 body 缓存（候选轮换语义不变）。
+	body = chainMaybeInjectChatStreamUsageOption(req, account, modelMapping, body)
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+}
+
+// chainMaybeInjectChatStreamUsageOption 判定本次出站是否满足注入条件并注入
+// stream_options.include_usage=true（流式零计费修复）。触发条件（全部满足）：
+// openai 协议标准账户（codex OAuth / gemini code assist / 媒体 adapter 分支
+// 均已在本函数更早分支短路返回）；最终出站路径为 chat completions——客户端
+// chat 路径，或模型映射 / responses→chat 桥改写后的最终出站路径（改写规则与
+// BuildGatewayUpstreamURLsForAccount 的 pathAndQuery 改写逐点一致：映射改写仅
+// 在账户无原生 Responses 端点模式时生效，chat→responses 等其它族出站不注入）；
+// 请求 body stream == true（stream 读取复用 ingress BodyState 已解析结果，
+// 不重复解析）；body 缺少 stream_options 或 stream_options.include_usage !=
+// true。非流式与非 chat 出站零改动。注入对 body 的改写是字节级最小 splice
+// （快路径）或罕见形态下的整体重序列化（stream_options 已存在但未带
+// include_usage=true；与模型映射改写同源的序列化适配），见
+// chainInjectChatStreamUsageOption。
+func chainMaybeInjectChatStreamUsageOption(
+	req *gatewaypreauth.GatewayRequest,
+	account gatewaydispatch.AccountCandidate,
+	modelMapping *gatewayproto.ResolvedModelMapping,
+	body []byte,
+) []byte {
+	if req == nil || len(body) == 0 {
+		return body
+	}
+	if normalizeProtocol(account.ProtocolCode) != driverProtocolOpenAI {
+		return body
+	}
+	if !gatewaypreauth.RequestStream(req) {
+		return body
+	}
+	outboundPathAndQuery := req.PathAndQuery()
+	if modelMapping != nil && !accountHasNativeResponsesModes(account) {
+		if rewritten, ok := gatewayopenai.ModelMappedUpstreamPathAndQuery(outboundPathAndQuery, modelMapping); ok {
+			outboundPathAndQuery = rewritten
+		}
+	}
+	if !chainIsChatCompletionsPathAndQuery(outboundPathAndQuery) {
+		return body
+	}
+	return chainInjectChatStreamUsageOption(body)
+}
+
+// chainStreamOptionsPropertyName 是顶层 stream_options 属性名的字节形态
+// （快路径预筛：body 完全不含该片段时可直接字节级 splice，零解析）。
+var chainStreamOptionsPropertyName = []byte(`"stream_options"`)
+
+// chainInjectChatStreamUsageOption 把 "stream_options":{"include_usage":true}
+// 注入 chat completions 出站 body。选择依据：出站点可能只有原始 body 字节
+// （零解析大 body 契约），因此主路径不做任何 JSON 解析——body 不含
+// "stream_options" 片段时，在顶层对象首键前做字节级 splice（除插入片段外
+// 客户端字节逐字节保留，浮点精度/键序/未知字段零扰动）；body 含该片段时
+// （罕见形态）才解析做语义判定：include_usage 已为 true 保持原样（客户端
+// 显式要求），否则克隆顶层与 stream_options 子对象整体重序列化（不改
+// 请求级解析缓存；json.Unmarshal 产物 + 纯 JSON 值注入，Marshal 恒成功）。
+// 判定失败（非 JSON 对象）维持原样不注入，不改变既有失败语义。
+func chainInjectChatStreamUsageOption(body []byte) []byte {
+	objectStart := bytes.IndexByte(body, '{')
+	if objectStart < 0 {
+		return body
+	}
+	if !bytes.Contains(body, chainStreamOptionsPropertyName) {
+		return chainSpliceStreamUsageOptionAt(body, objectStart)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil || root == nil {
+		return body
+	}
+	raw, exists := root["stream_options"]
+	if !exists {
+		// 片段命中来自嵌套键或字符串值：顶层无 stream_options，同快路径 splice。
+		return chainSpliceStreamUsageOptionAt(body, objectStart)
+	}
+	options, ok := raw.(map[string]any)
+	if !ok {
+		// stream_options 存在但不是对象（null 等）：整体重序列化替换为注入形态。
+		next := chainCloneJSONObject(root)
+		next["stream_options"] = map[string]any{"include_usage": true}
+		return chainMarshalUpstreamJSONBody(next)
+	}
+	if requested, _ := options["include_usage"].(bool); requested {
+		return body
+	}
+	next := chainCloneJSONObject(root)
+	optionsCopy := make(map[string]any, len(options)+1)
+	for key, value := range options {
+		optionsCopy[key] = value
+	}
+	optionsCopy["include_usage"] = true
+	next["stream_options"] = optionsCopy
+	return chainMarshalUpstreamJSONBody(next)
+}
+
+// chainSpliceStreamUsageOptionAt 在 body 的顶层对象起始 `{`（objectStart）后
+// 插入 stream_options 注入片段：非空对象插入 `"stream_options":{...},`，
+// 空对象（`{}`）直接替换为注入形态，避免产生尾逗号非法 JSON。
+func chainSpliceStreamUsageOptionAt(body []byte, objectStart int) []byte {
+	const injected = `"stream_options":{"include_usage":true}`
+	rest := body[objectStart+1:]
+	index := 0
+	for index < len(rest) && (rest[index] == ' ' || rest[index] == '\t' || rest[index] == '\n' || rest[index] == '\r') {
+		index++
+	}
+	out := make([]byte, 0, len(body)+len(injected)+1)
+	out = append(out, body[:objectStart+1]...)
+	if index < len(rest) && rest[index] == '}' {
+		out = append(out, injected...)
+	} else {
+		out = append(out, injected...)
+		out = append(out, ',')
+	}
+	out = append(out, body[objectStart+1:]...)
+	return out
+}
+
+// chainCloneJSONObject 浅拷贝顶层对象（值与请求级解析缓存共享，注入路径不
+// 改写任何既有键值）。
+func chainCloneJSONObject(root map[string]any) map[string]any {
+	next := make(map[string]any, len(root)+1)
+	for key, value := range root {
+		next[key] = value
+	}
+	return next
+}
+
+// chainMarshalUpstreamJSONBody 复用 gatewaybody 序列化设施（SetEscapeHTML(false)
+// 对齐 JSON.stringify 的既有适配）；根对象来自 json.Unmarshal 产物加纯 JSON
+// 值注入，Encode 恒成功。
+func chainMarshalUpstreamJSONBody(body map[string]any) []byte {
+	return gatewaybody.SerializeGatewayJSONObject(body).Raw
 }
 
 // buildGeminiCodeAssistRequestParts 对齐 Node buildGeminiCodeAssistRequestParts
@@ -808,6 +971,16 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	}
 	if containsTrimmed(account.SupportedModels, requestedModel) {
 		return ""
+	}
+	// volcengine TTS 占位名↔现役名等价组（契约 §9.2「派发匹配等价」，2026-10-17
+	// 实测回填批）：声明任一名字的账户承接任一名字的请求——与候选窗口 SQL
+	// （chain_accounts.go direct 谓词展开）、路由选组、派发候选过滤三层同构；
+	// 缺本判定时声明占位名的账户会被能力链以 model_unsupported 拒绝，整组
+	// 候选清空后表现为 503 endpoint_mode_unsupported 通用文案。
+	for _, supported := range account.SupportedModels {
+		if gatewayrouting.VolcengineTTSModelNamesMatch(requestedModel, supported) {
+			return ""
+		}
 	}
 	if d.resolveAccountModelMapping(account, req, requestClientCompatibility) != nil {
 		return ""
@@ -1469,43 +1642,56 @@ func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, accoun
 	}
 }
 
-// geminiSpeechRequest 解析“gemini 账户 + speech 请求”的 adapter 分派三元组
-// （M1 同步音频，音频设计 §5）。ok=false 表示本请求不走媒体 adapter（原生
-// gemini 或 openai 族路径）。SpeechIR 从请求体解析（模型映射面 M1 不介入：
-// 请求模型直达上游；账户 canonical 拼写优先）；请求体未解析/不完整返回
-// ok=false 并由 capability/url 链路以各自错误语义拒绝，不在此静默改道。
-func (d *chainProviderDriver) geminiSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool) {
+// geminiSpeechRequest 解析“gemini 账户 + speech 请求”的 adapter 分派四元组
+// （M1 同步音频，音频设计 §5；2026-10-17 四值化同构修复——沿
+// volcengineSpeechRequest/minimaxSpeechRequest 同一批次语义）。语义分层：
+// 非 gemini 协议 / code assist 运行时 / 非 speech 路径 / adapter 注册缺失 →
+// ok=false（非本 provider 的请求，保持既有语义）；请求体非 JSON 对象或
+// ParseSpeechRequest 失败（voice 必填缺失等 L1 面）→ 返回校验错误—— capability
+// 链对 speech 路径豁免 native 门（gatewayRequestCapabilityMismatchReasonFor
+// 的 IsSpeechPath 豁免臂），静默 false 会把参数错误送通用透传链打向
+// generativelanguage 404 后伪装成 503 可重试上游故障（与 volcengine 修复前
+// 同病，契约 §5.1/§9.2 分派语义同款）。SpeechIR 从请求体解析（模型映射面
+// M1 不介入：请求模型直达上游；账户 canonical 拼写优先）。
+func (d *chainProviderDriver) geminiSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
 	if req == nil || req.HTTP == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if normalizeProtocol(account.ProtocolCode) != driverProtocolGemini {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if geminiAccountUsesCodeAssistRuntime(account) {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	adapter := gatewaymedia.SpeechAdapterForProvider("gemini")
 	if adapter == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	body := req.ParsedJSONObjectBody()
 	if body == nil {
 		body = d.materializedParsedJSONObjectBody(req)
 	}
 	if body == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, gatewaymediaSpeechBodyValidationError()
 	}
 	ir, err := gatewaymedia.ParseSpeechRequest(body)
 	if err != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, geminiSpeechAdapterBoundaryError(err)
 	}
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
-	return adapter, ir, true
+	return adapter, ir, true, nil
+}
+
+// gatewaymediaSpeechBodyValidationError 构造「speech 请求体不是 JSON 对象」
+// 的本地 400 校验错误（volcengine/minimax/gemini 三个 speech 分派判定共用
+// 语义；文案与 gatewaymedia.ParseSpeechRequest 的 nil 分支一致）。
+func gatewaymediaSpeechBodyValidationError() error {
+	return gatewaypreauth.NewGatewayRequestValidationError("语音合成请求体必须是 JSON 对象")
 }
 
 // geminiSpeechAdapterBoundaryError 把 speech adapter 的能力边界错误（契约
@@ -1528,89 +1714,108 @@ func geminiSpeechAdapterBoundaryError(err error) error {
 }
 
 // minimaxSpeechRequest 解析"minimax 账户 + speech 请求"的 adapter 分派
-// 三元组（M3 同步音频，契约 §8.2；沿 geminiSpeechRequest 同模式）。ok=false
-// 表示本请求不走 minimax adapter（openai 族直连透传或其它 provider）。
-// SpeechIR 从请求体解析（模型映射面不介入：请求模型直达上游；账户
-// canonical 拼写优先）；provider_options 命中 minimax 的子对象投影进
-// SpeechRequest.ProviderOptions（vol/pitch 等厂商个例参数，契约 §2.1 L3）。
-func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool) {
+// 三元组（M3 同步音频，契约 §8.2）。ok=false 表示本请求不走 minimax adapter
+// （openai 族直连透传或其它 provider：providerCode 非 minimax / 路径非
+// speech / adapter 注册缺失，保持既有"非本 provider"语义）。error 返回承载
+// 分派语义（与 volcengineSpeechRequest 同根因同构修复，2026-10-17 实测回填
+// 批）：minimax 账户 + speech 路径成立后，请求体不是 JSON 对象、或 JSON
+// 对象经 ParseSpeechRequest 校验失败（voice/model/input 必填缺失等 L1 面）、
+// 或 provider_options 形态非法 → GatewayRequestValidationError（400
+// invalid_gateway_request，消息透传校验原文）——不得静默 ok=false 落 openai
+// 通用透传链，否则参数错误会被送上游 /v1/audio/speech 404 后以 503
+// upstream_retryable_error 伪装（minimax 官方语音面是 /v1/t2a_v2，透传链
+// URL 本就打不中）。SpeechIR 从请求体解析（模型映射面不介入：请求模型直达
+// 上游；账户 canonical 拼写优先）；provider_options 命中 minimax 的子对象
+// 投影进 SpeechRequest.ProviderOptions（vol/pitch 等厂商个例参数，契约
+// §2.1 L3）。
+func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
 	if req == nil || req.HTTP == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if chainNormalizeProviderToken(account.ProviderCode) != "minimax" {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	adapter := gatewaymedia.SpeechAdapterForProvider("minimax")
 	if adapter == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	body := req.ParsedJSONObjectBody()
 	if body == nil {
 		body = d.materializedParsedJSONObjectBody(req)
 	}
 	if body == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, gatewaypreauth.NewGatewayRequestValidationError(
+			"语音合成请求体必须是 JSON 对象")
 	}
 	ir, err := gatewaymedia.ParseSpeechRequest(body)
 	if err != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, geminiSpeechAdapterBoundaryError(err)
 	}
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
 	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
 	if optionsErr != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, optionsErr
 	}
 	ir.ProviderOptions = providerOptions
-	return adapter, ir, true
+	return adapter, ir, true, nil
 }
 
 // volcengineSpeechRequest 解析"volcengine 账户 + speech 请求"的 adapter 分派
-// 三元组（M6 同步音频，契约 §9.2；沿 minimaxSpeechRequest 同模式）。ok=false
-// 表示本请求不走火山 TTS adapter（openai 族直连透传或其它 provider）。
+// 三元组（M6 同步音频，契约 §9.2）。ok=false 表示本请求不走火山 TTS adapter
+// （openai 族直连透传或其它 provider：providerCode 非 volcengine / 路径非
+// speech / adapter 注册缺失，保持既有"非本 provider"语义）。error 返回承载
+// 分派语义（契约 §9.2，2026-10-17 实测回填批）：volcengine 账户 + speech
+// 路径成立后，请求体不是 JSON 对象、或 JSON 对象经 ParseSpeechRequest 校验
+// 失败（voice/model/input 必填缺失等 L1 面）、或 provider_options 形态非法
+// → GatewayRequestValidationError（400 invalid_gateway_request，消息透传
+// 校验原文）——不得静默 ok=false 落 openai 通用透传链，否则参数错误会被
+// BuildUpstreamURL(base, /v1/audio/speech) 送上游 404 后以 503
+// upstream_retryable_error 伪装（错误语义与可重试性双重错乱）。
 // SpeechIR 从请求体解析（模型映射面不介入：请求模型直达上游；账户 canonical
 // 拼写优先）；provider_options 命中 volcengine 的子对象投影进
 // SpeechRequest.ProviderOptions（emotion 等厂商个例参数，契约 §2.1 L3）。
-// 语音凭据（speech_appid/speech_token）不在此分支承载——由
+// 语音凭据（speech_token 单值）不在此分支承载——由
 // chainVolcengineSpeechCredentials 在 URL/parts 两个消费点先行校验注入。
-func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool) {
+func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool, error) {
 	if req == nil || req.HTTP == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if chainNormalizeProviderToken(account.ProviderCode) != "volcengine" {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	adapter := gatewaymedia.SpeechAdapterForProvider("volcengine")
 	if adapter == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	body := req.ParsedJSONObjectBody()
 	if body == nil {
 		body = d.materializedParsedJSONObjectBody(req)
 	}
 	if body == nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, gatewaypreauth.NewGatewayRequestValidationError(
+			"语音合成请求体必须是 JSON 对象")
 	}
 	ir, err := gatewaymedia.ParseSpeechRequest(body)
 	if err != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, geminiSpeechAdapterBoundaryError(err)
 	}
 	if canonical := canonicalAccountModel(req, account); canonical != "" {
 		ir.Model = canonical
 	}
 	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
 	if optionsErr != nil {
-		return nil, gatewaymedia.SpeechRequest{}, false
+		return nil, gatewaymedia.SpeechRequest{}, false, optionsErr
 	}
 	ir.ProviderOptions = providerOptions
-	return adapter, ir, true
+	return adapter, ir, true, nil
 }
 
 // glmSpeechUpstreamPathOf 把 glm 账户的同步音频请求路径改写为官方通用根
@@ -1664,19 +1869,33 @@ func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayR
 	return encoded, true
 }
 
-// chainVolcengineSpeechCredentials 提取火山语音应用双值凭据（契约 §9.2：
-// speech_appid + speech_token，与账户 ark API Key 独立——语音服务域
-// openspeech.bytedance.com 的鉴权面）。任一缺失返回原生错误（该账户无
-// audio_speech 能力，显式失败不静默回退；audio_speech 端点模式本身是
-// opt-in，凭据缺失属于配置缺位而非客户端参数错误）。
-func chainVolcengineSpeechCredentials(account gatewaydispatch.AccountCandidate) (string, string, error) {
-	appid := accountCredentialText(account, "speech_appid")
+// chainVolcengineSpeechCredentials 提取火山语音凭据（契约 §9.2，2026-10-17
+// 迁移批：单值 speech_token = 新版语音控制台 API Key，与账户 ark API Key
+// 独立——语音服务域 openspeech.bytedance.com 的鉴权面；旧版语音应用
+// appid+token 双值随旧端点 /api/v3/tts 404 下线一并废弃，speech_appid 退役
+// 为可选遗留键不再消费）。缺失返回
+// GatewayRequestValidationError（code speech_credentials_missing / 400 /
+// invalid_request_error）：凭据缺失是确定性账户配置缺位，不是可重试的上游
+// 临时故障——裸 error 会沿两条消费点通路落入未预期异常渲染（503
+// upstream_retryable_error + gateway_request_unexpected_error 日志），把配置
+// 错误伪装成上游故障。包装后 URL/parts 两消费点同语义：dispatch 错误分类
+// 对非账户级 validation rethrow 直接终态上抛（不进候选切换），由
+// HandleGatewayRequestKnownErrorResponse 按已知错误渲染 400；成功路径零改动。
+func chainVolcengineSpeechCredentials(account gatewaydispatch.AccountCandidate) (string, error) {
 	token := accountCredentialText(account, "speech_token")
-	if appid == "" || token == "" {
-		return "", "", fmt.Errorf("账户 %s 缺少火山语音凭据（speech_appid/speech_token 双值），不能承接 audio_speech 请求", account.ID)
+	if token == "" {
+		return "", gatewaypreauth.NewGatewayRequestValidationError(
+			fmt.Sprintf("账户 %s 缺少火山语音凭据（speech_token = 新版语音控制台 API Key），不能承接 audio_speech 请求", account.ID),
+			gatewaypreauth.WithValidationErrorCode(chainSpeechCredentialsMissingErrorCode),
+			gatewaypreauth.WithValidationErrorStatusCode(http.StatusBadRequest),
+		)
 	}
-	return appid, token, nil
+	return token, nil
 }
+
+// chainSpeechCredentialsMissingErrorCode 是火山语音凭据缺失错误的稳定客户端
+// 错误码（网关本地确定性配置错误，非上游错误透传）。
+const chainSpeechCredentialsMissingErrorCode = "speech_credentials_missing"
 
 // chainVolcengineSpeechUpstreamBaseURLDefault 是火山同步语音出站的官方服务
 // 根（契约 §9.2：openspeech.bytedance.com 语音服务域——与账户 ark base_url
@@ -1689,7 +1908,8 @@ const chainVolcengineSpeechUpstreamBaseURLDefault = "https://openspeech.bytedanc
 const chainVolcengineSpeechUpstreamEnv = "JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL"
 
 // chainVolcengineSpeechUpstreamURL 拼接火山 TTS 出站 URL：固定语音服务域根
-// + adapter 出站路径（/api/v3/tts）。不经账户 base_url（ark 域与语音域是
+// + adapter 出站路径（2026-10-17 迁移批起为 /api/v3/tts/create；旧
+// /api/v3/tts 已 404 下线）。不经账户 base_url（ark 域与语音域是
 // 两个服务面），也不走 gatewayopenai.BuildUpstreamURL（/v1 强制补缀契约）。
 func chainVolcengineSpeechUpstreamURL(path string) string {
 	base := strings.TrimSpace(os.Getenv(chainVolcengineSpeechUpstreamEnv))

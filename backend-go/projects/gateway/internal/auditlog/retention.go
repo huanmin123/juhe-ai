@@ -342,6 +342,27 @@ func (s *sqlStore) unreferencedBlobRows(ctx context.Context, tx *sql.Tx, ids []s
 	return result, rows.Err()
 }
 
+// blobRowsByID loads storage keys for explicitly known blob ids so callers
+// can reuse scheduleUnreferencedBlobGC's per-blob lock + NOT EXISTS recheck
+// path outside a retention sweep.
+func (s *sqlStore) blobRowsByID(ctx context.Context, tx *sql.Tx, ids []string) ([]retentionBlobRow, error) {
+	query := `SELECT id,storage_key FROM ` + s.table("audit_payload_blobs") + ` WHERE id IN (` + placeholders(len(ids)) + `)`
+	rows, err := tx.QueryContext(ctx, s.bind(query), stringArgs(ids)...)
+	if err != nil {
+		return nil, fmt.Errorf("查询 F3 blob 元数据失败: %w", err)
+	}
+	defer rows.Close()
+	result := make([]retentionBlobRow, 0, len(ids))
+	for rows.Next() {
+		var row retentionBlobRow
+		if err := rows.Scan(&row.id, &row.storageKey); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
 // scheduleUnreferencedBlobGC commits a durable cleanup intent before any
 // physical file mutation. PostgreSQL uses the same per-blob advisory lock as
 // Persist, so a new reference either cancels this intent or waits until the

@@ -10,8 +10,6 @@ package gatewaypreauth
 //     427-429、437-439、447-449）：入参均为 map/payload 结构体，恒可序列化。
 //   - errorresponse.go writeGuidanceJSON/mustJSON 的 json.Marshal 错误臂
 //     （282-284、589-591）：入参均为 map[string]any，恒可序列化。
-//   - service.go newAuditID 的 rand.Read 错误臂（121-123）：crypto/rand 在
-//     常规进程内不失败。
 
 import (
 	"context"
@@ -132,10 +130,6 @@ func TestW14HMetadataArms(t *testing.T) {
 	}
 	if _, ok := queryParamFirstValue("a=1", "b"); ok {
 		t.Fatal("缺键必须失败")
-	}
-	// requestPathOnly。
-	if got := requestPathOnly(NewGatewayRequest(httptest.NewRequest("GET", "/x/y?z=1", nil))); got != "/x/y" {
-		t.Fatalf("requestPathOnly=%q", got)
 	}
 }
 
@@ -346,58 +340,6 @@ func TestW14HRetryBudgetArms(t *testing.T) {
 		t.Fatalf("观察者切换 paused=%d started=%d", paused, started)
 	}
 	budget.PauseNoAvailableWait(nil)
-}
-
-func TestW14HServiceAuditHelperArms(t *testing.T) {
-	service, _, _ := newTestService(t, nil)
-	// newAuditID 形状。
-	auditID := service.newAuditID()
-	if !strings.HasPrefix(auditID, "audit_") {
-		t.Fatalf("audit id=%q", auditID)
-	}
-	// dispatchDroppedAuditCapture：settings 缺失/关闭直接返回。
-	nilSettings := &Service{AuditDispatch: &fakeAuditDispatcher{}}
-	nilSettings.dispatchDroppedAuditCapture(droppedCaptureInput{})
-	dispatcher := &fakeAuditDispatcher{}
-	disabled, _, _ := newTestService(t, func(s *Service) {
-		s.AuditSettings = &fakeAuditSettings{enabled: false}
-		s.AuditDispatch = dispatcher
-	})
-	disabled.dispatchDroppedAuditCapture(droppedCaptureInput{})
-	if len(dispatcher.dispatched) != 0 {
-		t.Fatal("关闭审计不应派发")
-	}
-	// 正常派发：空 path/method 回退。
-	enabledDispatcher := &fakeAuditDispatcher{}
-	enabled, _, _ := newTestService(t, func(s *Service) {
-		s.AuditDispatch = enabledDispatcher
-	})
-	enabled.dispatchDroppedAuditCapture(droppedCaptureInput{
-		method:      "get",
-		path:        " ",
-		queryString: "a=1",
-		statusCode:  502,
-	})
-	if len(enabledDispatcher.dispatched) != 1 {
-		t.Fatalf("派发条数=%d", len(enabledDispatcher.dispatched))
-	}
-	dispatched := enabledDispatcher.dispatched[0]
-	if dispatched.Path != "unknown" || dispatched.Method != "GET" || dispatched.QueryString != "a=1" {
-		t.Fatalf("派发内容=%+v", dispatched)
-	}
-	recorder := httptest.NewRecorder()
-	writer := NewTrackingWriter(recorder)
-	// recordEarlyGatewayAuthFailure：带 bearer 与不带 bearer 的两条消息臂。
-	writer.WriteHeader(http.StatusUnauthorized)
-	noBearer := NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat", nil))
-	service.recordEarlyGatewayAuthFailure(writer, noBearer)
-	withBearer := NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat", nil))
-	withBearer.HTTP.Header.Set("authorization", "Bearer sk-w14h")
-	service.recordEarlyGatewayAuthFailure(writer, withBearer)
-	withMessage := NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat", nil))
-	withMessage.AuthFailureErrorMessage = "自定义失败"
-	withMessage.AuthFailureErrorCode = "custom_code"
-	service.recordEarlyGatewayAuthFailure(writer, withMessage)
 }
 
 func TestW14HObservedContextArms(t *testing.T) {
@@ -731,19 +673,6 @@ func TestW14HResponsePayloadExtraArms(t *testing.T) {
 	wrapper.MarkUpstreamError()
 	if !marker.marked {
 		t.Fatal("上游标记必须转发")
-	}
-	// dispatchDroppedAuditCapture：空 path 与空 method 回退臂。
-	dispatcher := &fakeAuditDispatcher{}
-	service, _, _ := newTestService(t, func(s *Service) {
-		s.AuditDispatch = dispatcher
-	})
-	service.dispatchDroppedAuditCapture(droppedCaptureInput{path: "?a=1"})
-	if len(dispatcher.dispatched) != 1 {
-		t.Fatalf("派发条数=%d", len(dispatcher.dispatched))
-	}
-	sent := dispatcher.dispatched[0]
-	if sent.Path != "unknown" || sent.Method != "UNKNOWN" || sent.QueryString != "a=1" {
-		t.Fatalf("空值回退=%+v", sent)
 	}
 }
 

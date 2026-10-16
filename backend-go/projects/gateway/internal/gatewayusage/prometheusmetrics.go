@@ -1,6 +1,7 @@
 package gatewayusage
 
 import (
+	"database/sql"
 	"net/http"
 	"strconv"
 	"strings"
@@ -117,6 +118,8 @@ type prometheusMetrics struct {
 	auditDropSlot     atomic.Pointer[func() int64]
 	operationDropOnce sync.Once
 	operationDropSlot atomic.Pointer[func() int64]
+	dbPoolOnce        sync.Once
+	dbPoolSlot        atomic.Pointer[func() sql.DBStats]
 }
 
 func newPrometheusMetrics() *prometheusMetrics {
@@ -277,6 +280,55 @@ func (m *prometheusMetrics) setDroppedTotalFunc(once *sync.Once, slot *atomic.Po
 		prommetrics.NewCounterFunc(m.registry, name, help, prometheusServiceLabels, func() float64 {
 			if accessor := slot.Load(); accessor != nil && *accessor != nil {
 				return float64((*accessor)())
+			}
+			return 0
+		})
+	})
+}
+
+// SetDBPoolStats wires the main business PostgreSQL pool stats into the
+// exposition as six fixed, label-free series read at scrape time (four
+// instantaneous gauges plus the two monotonic WaitCount/WaitDuration
+// accumulators, which must stay counters). Call once during composition,
+// before the HTTP server starts; composition roots without a managed pool
+// (SQLite mode) skip the call and the family stays absent. Later calls only
+// swap the provider (client_golang registrations are permanent).
+func SetDBPoolStats(provider func() sql.DBStats) {
+	prometheusDefault.setDBPoolStats(provider)
+}
+
+// setDBPoolStats is the per-instance seam (tests bind isolated instances; the
+// package-level entry drives the process singleton).
+func (m *prometheusMetrics) setDBPoolStats(provider func() sql.DBStats) {
+	m.dbPoolSlot.Store(&provider)
+	m.dbPoolOnce.Do(func() {
+		read := func() (sql.DBStats, bool) {
+			if accessor := m.dbPoolSlot.Load(); accessor != nil && *accessor != nil {
+				return (*accessor)(), true
+			}
+			return sql.DBStats{}, false
+		}
+		gauge := func(name, help string, value func(sql.DBStats) float64) {
+			prommetrics.NewGaugeFunc(m.registry, name, help, nil, func() float64 {
+				if stats, ok := read(); ok {
+					return value(stats)
+				}
+				return 0
+			})
+		}
+		gauge("juhe_ai_gateway_db_pool_open_connections", "Open connections in the main business PostgreSQL pool.", func(stats sql.DBStats) float64 { return float64(stats.OpenConnections) })
+		gauge("juhe_ai_gateway_db_pool_in_use_connections", "Connections in use in the main business PostgreSQL pool.", func(stats sql.DBStats) float64 { return float64(stats.InUse) })
+		gauge("juhe_ai_gateway_db_pool_idle_connections", "Idle connections in the main business PostgreSQL pool.", func(stats sql.DBStats) float64 { return float64(stats.Idle) })
+		gauge("juhe_ai_gateway_db_pool_max_open_connections", "Max open connections allowed in the main business PostgreSQL pool.", func(stats sql.DBStats) float64 { return float64(stats.MaxOpenConnections) })
+		prommetrics.NewCounterFunc(m.registry, "juhe_ai_gateway_db_pool_wait_count_total", "Cumulative count of waits for a free main business PostgreSQL pool connection.", nil, func() float64 {
+			if stats, ok := read(); ok {
+				return float64(stats.WaitCount)
+			}
+			return 0
+		})
+		prommetrics.NewCounterFunc(m.registry, "juhe_ai_gateway_db_pool_wait_duration_seconds_total", "Cumulative time spent waiting for a free main business PostgreSQL pool connection.", nil, func() float64 {
+			if stats, ok := read(); ok {
+				return stats.WaitDuration.Seconds()
 			}
 			return 0
 		})

@@ -169,24 +169,6 @@ func w1tSetupRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 	return mr, client
 }
 
-// w1tPanicAudit 是 Dispatch 必然 panic 的审计桩（驱动 recover 分支）。
-type w1tPanicAudit struct{}
-
-func (w1tPanicAudit) Dispatch(gatewaypreauth.DispatchedAuditLogInput) { panic("w1t audit boom") }
-
-// w1tCaptureAudit 记录 Dispatch 次数。
-type w1tCaptureAudit struct {
-	mu  sync.Mutex
-	got int
-}
-
-func (a *w1tCaptureAudit) Dispatch(input gatewaypreauth.DispatchedAuditLogInput) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.got++
-	_ = input
-}
-
 // ---------------------------------------------------------------------------
 // chain_driver.go：目录适配、请求构建臂、端点模式桥、纯 helper
 // ---------------------------------------------------------------------------
@@ -767,27 +749,9 @@ func w1tNewUsageService() *gatewayusage.Service {
 }
 
 func TestW1TBodyRejectionRecorderArms(t *testing.T) {
-	fixedClock := gatewaypreauth.Clock(gatewaypreauth.SystemClock{})
-
-	t.Run("审计桩 panic 被 recover 吞掉", func(t *testing.T) {
+	t.Run("用量失败记录（请求体拒绝不再落审计）", func(t *testing.T) {
 		recorder := &chainBodyRejectionRecorder{
-			audit: w1tPanicAudit{}, auditEnabled: func() bool { return true },
-			usage: w1tNewUsageService(), clock: fixedClock,
-		}
-		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				t.Fatalf("RecordGatewayBodyRejection 必须 recover 审计 panic: %v", recovered)
-			}
-		}()
-		recorder.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{StatusCode: http.StatusRequestEntityTooLarge, Reason: "payload_too_large"})
-	})
-
-	t.Run("UNKNOWN method / 空 path / payload 文案 / 用量失败记录", func(t *testing.T) {
-		audit := &w1tCaptureAudit{}
-		recorder := &chainBodyRejectionRecorder{
-			audit: audit, auditEnabled: func() bool { return true },
-			usage: w1tNewUsageService(), clock: fixedClock,
+			usage: w1tNewUsageService(),
 		}
 		runtime := &gatewayruntimecache.GatewayRuntime{
 			APIKey:      &gatewayruntimecache.GatewayAPIKeyRow{ID: "key-w1t", SystemAccountID: "sys-w1t", SelectedGroupID: "grp-w1t"},
@@ -800,48 +764,16 @@ func TestW1TBodyRejectionRecorderArms(t *testing.T) {
 			Reason:          "backpressure",
 			ResponsePayload: gatewaybody.GatewayErrorPayload("payload 文案", "gateway_error", ""),
 		})
-		audit.mu.Lock()
-		got := audit.got
-		audit.mu.Unlock()
-		if got != 1 {
-			t.Fatalf("dropped audit 派发次数 = %d, want 1", got)
-		}
 	})
 
 	t.Run("usage 缺失时用量失败记录早退", func(t *testing.T) {
-		audit := &w1tCaptureAudit{}
-		recorder := &chainBodyRejectionRecorder{
-			audit: audit, auditEnabled: func() bool { return true },
-			usage: nil, clock: fixedClock,
-		}
+		recorder := &chainBodyRejectionRecorder{usage: nil}
 		runtime := &gatewayruntimecache.GatewayRuntime{
 			APIKey: &gatewayruntimecache.GatewayAPIKeyRow{ID: "key-w1t", SystemAccountID: "sys-w1t", SelectedGroupID: "grp-w1t"},
 		}
 		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 		request = request.WithContext(context.WithValue(request.Context(), chainGatewayRuntimeKey{}, runtime))
 		recorder.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{StatusCode: http.StatusTooManyRequests, Reason: "backpressure"})
-		audit.mu.Lock()
-		got := audit.got
-		audit.mu.Unlock()
-		if got != 1 {
-			t.Fatalf("dropped audit 派发次数 = %d, want 1", got)
-		}
-	})
-
-	t.Run("审计关闭时不派发", func(t *testing.T) {
-		audit := &w1tCaptureAudit{}
-		recorder := &chainBodyRejectionRecorder{
-			audit: audit, auditEnabled: func() bool { return false },
-			usage: w1tNewUsageService(), clock: fixedClock,
-		}
-		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		recorder.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{StatusCode: http.StatusServiceUnavailable})
-		audit.mu.Lock()
-		got := audit.got
-		audit.mu.Unlock()
-		if got != 0 {
-			t.Fatalf("审计关闭时派发次数 = %d, want 0", got)
-		}
 	})
 }
 

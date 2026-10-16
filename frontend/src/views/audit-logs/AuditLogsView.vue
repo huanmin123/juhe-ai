@@ -97,6 +97,7 @@
       :payload-loading-id="payloadLoadingId"
       :selected-payload="selectedPayload"
       @load-payload="loadPayload"
+      @open-sample-event="openSampleEvent"
     />
   </a-card>
 </template>
@@ -137,6 +138,7 @@ import { useAuditLogAccountOptions } from './useAuditLogAccountOptions'
 import { useAuditLogDetailPayload } from './useAuditLogDetailPayload'
 import { useAuditLogHotSearchState } from './useAuditLogHotSearchState'
 import { useAuditLogModeBridge } from './useAuditLogModeBridge'
+import { createAuditLogEntityLabelHydrator } from './auditLogEntityLabels'
 import { auditLogEmptyDescription } from './auditLogRetentionText'
 import {
   auditLogRouteTraceId,
@@ -152,9 +154,15 @@ const {
   detailOpen,
   loadPayload,
   openDetail,
-  payloadLoadingId,
-  selectedPayload
+  openDetailById,
+    payloadLoadingId,
+    selectedPayload
 } = useAuditLogDetailPayload()
+
+// 错误组去重提示的跳转：按样本事件 ID 直开保留响应原文的那条详情。
+function openSampleEvent(auditLogId: string): void {
+  void openDetailById(auditLogId)
+}
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -303,10 +311,16 @@ const currentFilterValues = computed(() => ({
 const filterCounts = computed(() => auditLogFilterCounts(currentFilterValues.value))
 const activeFilterCount = computed(() => filterCounts.value.active)
 const advancedFilterCount = computed(() => filterCounts.value.advanced)
-watch(records, rememberAuditRecordGroupLabels, { immediate: true })
-watch(hotSearchRecords, rememberAuditRecordGroupLabels, { immediate: true })
+const hydrateAuditLogEntityLabels = createAuditLogEntityLabelHydrator({
+  accountOptions: async (ids) => await api.accounts.options({ ids, limit: 50 }),
+  groupOptions: async (ids) => await api.groups.options({ ids, limit: 50 }),
+  systemAccountOptions: async (ids) => await api.systemAccounts.options({ ids, limit: 50 }).then((options) => options.map(({ id, displayName: name }) => ({ id, name })))
+})
+watch(records, rememberAuditRecordEntityLabels, { immediate: true })
+watch(hotSearchRecords, rememberAuditRecordEntityLabels, { immediate: true })
 watch(detail, (nextDetail) => {
   rememberGroupLabel(nextDetail?.groupId, nextDetail?.groupName)
+  if (nextDetail) hydrateAuditLogEntityLabels([nextDetail, ...nextDetail.attempts])
 })
 watch(systemAccountFilter, () => {
   accountIdFilter.value = ''
@@ -408,10 +422,11 @@ function auditLogRequestParams(pageState: { current: number; pageSize: number })
   return auditLogListParams(currentFilterValues.value, pageState)
 }
 
-function rememberAuditRecordGroupLabels(items: AuditLogListItem[]): void {
+function rememberAuditRecordEntityLabels(items: AuditLogListItem[]): void {
   for (const item of items) {
     rememberGroupLabel(item.groupId, item.groupName)
   }
+  hydrateAuditLogEntityLabels(items)
 }
 
 function snapshotPageState(): AuditLogsPageState {

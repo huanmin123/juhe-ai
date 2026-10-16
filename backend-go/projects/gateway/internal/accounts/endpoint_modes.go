@@ -82,16 +82,20 @@ var glmSpeechEndpointModeSet = accountscore.StringSet(accountscore.GlmSpeechEndp
 var minimaxMediaEndpointModeSet = accountscore.StringSet(accountscore.MinimaxMediaEndpointModeValues)
 
 // volcengineEndpointModeSet 是 volcengine 档案（profile_volcengine_openai_v1）
-// 可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat）：chat 对
-// （豆包对话 OpenAI 兼容端点 ark /api/v3/chat/completions，出站按 /api/v3
-// 服务根归一）+ video_* 四值（video_generation）+ audio_speech（豆包 TTS
-// openspeech /api/v3/tts adapter，语音应用双值凭据 speech_appid/speech_token
-// ——缺失即该账户无该能力，派发时显式失败）。全部 opt-in；默认集 video_get
-// （只读任务查询形态——volcengine 无零费用健康检查面，视频/语音均按量计费
-// 不做自动真实生成探针（媒体设计 §11.9），video_get 是唯一零费用档的合法
-// 默认；chat_json/chat_sse 与创建 video_create / 语音 audio_speech 均需显式
-// 开启——chat 探针同为真实计费请求，且档案 DefaultHealthCheckModel 仍为
-// 媒体模型，chat 进默认集会让直建账户默认形态与检查模型错配）。
+// 可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat +
+// 2026-10-17 图像域开通）：chat 对（豆包对话 OpenAI 兼容端点 ark
+// /api/v3/chat/completions，出站按 /api/v3 服务根归一）+ video_* 四值
+//（video_generation）+ audio_speech（豆包 TTS openspeech /api/v3/tts adapter，
+// 语音应用双值凭据 speech_appid/speech_token——缺失即该账户无该能力，派发时
+// 显式失败）+ images_json（豆包 seedream 系图像端点 ark
+// /api/v3/images/generations，出站按 /api/v3 服务根归一）。全部 opt-in；
+// 写侧缺省集 video_get（只读任务查询形态——volcengine 无零费用健康检查面，
+// 视频/语音均按量计费不做自动真实生成探针（媒体设计 §11.9），video_get 是
+// 唯一零费用档的合法默认；chat_json/chat_sse 与创建 video_create / 语音
+// audio_speech 均需显式开启——chat 探针同为真实计费请求，且档案
+// DefaultHealthCheckModel 仍为媒体模型，chat 进默认集会让直建账户默认形态
+// 与检查模型错配）；images_json 不进写侧缺省集，仅作为图像域（image lane）
+// 的允许/默认集成员经 capabilityallowed.go 求交落值。
 var volcengineEndpointModeSet = accountscore.StringSet(accountscore.VolcengineEndpointModeValues)
 
 // qwenEndpointModeSet 是 qwen 档案（profile_qwen_openai_v1）可声明的全部
@@ -567,11 +571,13 @@ func normalizeMinimaxEndpointModesForWrite(value optionalValue, context endpoint
 }
 
 // normalizeVolcengineEndpointModesForWrite 是 volcengine 档案的写侧归一化
-// （M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat；沿 minimax driver 结构）：值域
-// 校验用 openai 族词表（chat 对/video_*/audio_speech 是跨协议共享 token），
-// 再收敛到 volcengine 集——responses_json/responses_sse 等模式对 volcengine
-// 账户报错（档案 Capabilities 声明 chat+视频+语音，无原生 Responses 面）。
-// chat 对 opt-in 可勾选（豆包对话 /api/v3/chat/completions）；默认集
+// （M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat + 2026-10-17 图像域开通；沿
+// minimax driver 结构）：值域校验用 openai 族词表（chat 对/video_*/audio_
+// speech/images_json 是跨协议共享 token），再收敛到 volcengine 集——
+// responses_json/responses_sse 等模式对 volcengine 账户报错（档案
+// Capabilities 声明 chat+视频+语音+图像，无原生 Responses 面）。chat 对
+// opt-in 可勾选（豆包对话 /api/v3/chat/completions）；images_json opt-in
+// 可勾选（豆包 seedream 系 /api/v3/images/generations）；写侧缺省集
 // video_get（只读任务查询，零费用档）不变。
 func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	pinned := context
@@ -587,7 +593,7 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*) 或语音合成端点 (audio_speech)：%s",
+		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*)、语音合成端点 (audio_speech) 或图像生成端点 (images_json)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil

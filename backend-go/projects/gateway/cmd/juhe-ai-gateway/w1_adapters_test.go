@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
@@ -99,7 +98,7 @@ func TestW1ChainBodyRejectionRecorderGated(t *testing.T) {
 	recorder := &chainBodyRejectionRecorder{}
 	request := httptest.NewRequest("POST", "/v1/chat/completions?q=1", nil)
 	payload := gatewaybody.GatewayErrorPayload("请求过大", "request_too_large", "")
-	// audit / usage 全 nil：走门控早退，不 panic。
+	// usage 缺席：惰性早退，不 panic。请求体拒绝属网关拦截面，不再落审计。
 	recorder.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{
 		StatusCode:      413,
 		ResponsePayload: payload,
@@ -107,21 +106,5 @@ func TestW1ChainBodyRejectionRecorderGated(t *testing.T) {
 		ErrorCode:       "request_body_too_large",
 		ErrorMessage:    "",
 	})
-	// nil auditEnabled：同样早退。
-	recorder2 := &chainBodyRejectionRecorder{audit: nopAuditDispatcher{}}
-	recorder2.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{
-		StatusCode: 413, ResponsePayload: payload,
-	})
-	// auditEnabled false：早退。
-	recorder3 := &chainBodyRejectionRecorder{audit: nopAuditDispatcher{}, auditEnabled: func() bool { return false }}
-	recorder3.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{StatusCode: 413, ResponsePayload: payload})
-	// auditEnabled true：dispatchDroppedAudit 走完（audit sink 是 no-op）。
-	recorder4 := &chainBodyRejectionRecorder{audit: nopAuditDispatcher{}, auditEnabled: func() bool { return true }, clock: gatewaypreauth.SystemClock{}}
-	recorder4.RecordGatewayBodyRejection(request, nil, gatewaybody.RejectionInput{StatusCode: 413, ResponsePayload: payload})
 	_ = errors.New
 }
-
-// nopAuditDispatcher 是 gatewaypreauth.AuditDispatcher 的 no-op 实现。
-type nopAuditDispatcher struct{}
-
-func (nopAuditDispatcher) Dispatch(input gatewaypreauth.DispatchedAuditLogInput) {}

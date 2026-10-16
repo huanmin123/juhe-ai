@@ -1,5 +1,7 @@
 // AI 账户能力域拆分（PLAN-20261011T141004000Z）maintenance 命令薄壳：
-//   - --migrate-account-capability-domain：执行迁移；必须显式携带
+//   - --migrate-account-capability-domain：执行迁移（赋域 + 声明裁剪：把
+//     ModesOK 行的 supported_endpoint_modes 裁剪至落域 lane 集，同语句回写
+//     凭据；报告含脱敏裁剪明细）；必须显式携带
 //     --account-capability-domain-stage=m1|m2-cutover 与停写/备份确认门禁
 //     （--node-stopped --go-stopped --backup-confirmed），缺确认即拒绝；
 //   - --verify-account-capability-domain：只读核验；必须显式携带

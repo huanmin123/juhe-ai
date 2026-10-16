@@ -833,6 +833,13 @@ func main() {
 		// F4 队列丢弃计数出口（F3 同款 seam，main.go 上方）：producer 在组合
 		// 根内构造，这里在 Server 启动前注入访问器，先于任何 scrape 读取。
 		gatewayusage.SetOperationLogDroppedTotal(composed.producer.DroppedTotal)
+		// 主业务池 DBStats 进 Prometheus（2026-10-16：六序列无标签，四 gauge +
+		// 两累计 counter）。F3/F4 同款 seam：Server 启动前注入，先于任何
+		// scrape 读取。SQLite 形态 composed.db 是单写句柄而非池化对象，不注
+		// 入、整族缺席。
+		if composed.pgDialect {
+			gatewayusage.SetDBPoolStats(func() sql.DBStats { return composed.db.Stats() })
+		}
 		// T6d gateway-side consumption: re-project the runtime rows and quota
 		// scope bindings the jobs expiry sweep cannot touch (jobregistry
 		// GoBinding freeze). Best-effort compensator: failures never stop the

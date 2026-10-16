@@ -142,6 +142,8 @@ export interface AuditLogDetailSupplement extends Pick<AuditLogSummary,
   conversationKey?: string
   attempts: AuditLogDetailAttemptSupplement[]
   payloads: AuditLogDetailPayloadSupplement[]
+  /** 错误组聚合（含 sampleEventId：组内保留响应原文的样本事件）；非错误行缺省。 */
+  errorGroup?: AuditErrorGroupSummary
 }
 
 export interface AuditLogDisplayDetail extends AuditLogListItem, AuditLogDetailSupplement {}

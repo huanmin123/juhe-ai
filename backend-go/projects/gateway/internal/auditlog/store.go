@@ -30,10 +30,11 @@ import (
 const sqliteBusyTimeoutMS = 5000
 
 const (
-	auditBlobCompressionThresholdBytes = 4 * 1024
-	auditBlobCompressionMaxBytes       = 1024 * 1024
-	postgresBlobLifecycleLockSeed      = 763847294
-	postgresAuditLogLifecycleLockSeed  = 763847295
+	auditBlobCompressionThresholdBytes    = 4 * 1024
+	auditBlobCompressionMaxBytes          = 1024 * 1024
+	postgresBlobLifecycleLockSeed         = 763847294
+	postgresAuditLogLifecycleLockSeed     = 763847295
+	postgresErrorGroupFingerprintLockSeed = 763847296
 )
 
 var ErrOwnerLeaseLost = errors.New("F3 audit owner lease 已失效或已移交")
@@ -379,6 +380,10 @@ func (s *sqlStore) Persist(ctx context.Context, lease OwnerLease, input AuditLog
 	if err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
+	prepared, plans, err = s.stripErrorGroupWindowDuplicates(ctx, tx, input, prepared, plans)
+	if err != nil {
+		return PersistResult{}, errors.Join(err, tx.Rollback())
+	}
 	if err := s.lockBlobLifecyclePlans(ctx, tx, plans); err != nil {
 		return PersistResult{}, errors.Join(err, tx.Rollback())
 	}
@@ -453,6 +458,24 @@ func (s *sqlStore) lockAuditLogLifecycleIDs(ctx context.Context, tx *sql.Tx, aud
 		if err := s.lockAuditLogLifecycleTx(ctx, tx, id); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// lockErrorGroupFingerprintTx serializes same-fingerprint persists in
+// PostgreSQL so the per-window sample classification (strip) and the
+// cross-window handover (dedupe) read a stable latest window row: without it,
+// concurrent producer workers could both materialize payloads for one window
+// and leave the duplicate's blobs stored until retention trims the row.
+// SQLite is serialized by writeMu. It must be taken before any blob lifecycle
+// lock — the fingerprint gate joins the audit-ID gate at the head of the
+// persist lock order (retention takes neither, so no new lock cycles).
+func (s *sqlStore) lockErrorGroupFingerprintTx(ctx context.Context, tx *sql.Tx, fingerprint string) error {
+	if s.mode != ModePostgres || fingerprint == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`SELECT pg_advisory_xact_lock(hashtextextended(?, `+strconv.FormatInt(postgresErrorGroupFingerprintLockSeed, 10)+`::bigint))`), fingerprint); err != nil {
+		return fmt.Errorf("获取 F3 错误组指纹串行锁失败: %w", err)
 	}
 	return nil
 }
@@ -1057,6 +1080,11 @@ func attachBlobRecords(payloads []preparedPayload, plans []blobPlan) []preparedP
 }
 
 func recomputePreparedCompressedSize(payload *preparedPayload) {
+	// 窗口内重复的降级部件在剥离时冻结尺寸：blob 指针清空后 SHA 与大小仍保留，
+	// 与跨窗口降级后的 refs 语义一致；按空指针重算会错误归零。
+	if payload.input.CaptureStatus == PayloadCaptureDeduped {
+		return
+	}
 	payload.compressedSize = 0
 	if payload.headers != nil {
 		payload.compressedSize += payload.headers.compressedSize
@@ -1237,7 +1265,15 @@ func (s *sqlStore) upsertErrorGroup(ctx context.Context, tx *sql.Tx, input Audit
 	eventAt := input.CreatedAt
 	eventTime := nullableTime(s.mode, eventAt)
 	table := s.table("audit_error_groups")
-	query := `INSERT INTO ` + table + ` (id,fingerprint,window_started_at,window_ended_at,system_account_id,api_key_id,group_id,account_id,provider_code,path,model,status_code,error_phase,error_code,error_type,request_fingerprint,error_fingerprint,count,first_event_id,last_event_id,sample_event_id,last_message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?, ?,?,?) ON CONFLICT(fingerprint,window_started_at) DO UPDATE SET count=` + table + `.count+1,window_ended_at=CASE WHEN excluded.window_ended_at > ` + table + `.window_ended_at THEN excluded.window_ended_at ELSE ` + table + `.window_ended_at END,first_event_id=CASE WHEN excluded.created_at < ` + table + `.created_at OR (excluded.created_at = ` + table + `.created_at AND excluded.first_event_id < ` + table + `.first_event_id) THEN excluded.first_event_id ELSE ` + table + `.first_event_id END,last_event_id=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_event_id ELSE ` + table + `.last_event_id END,sample_event_id=COALESCE(` + table + `.sample_event_id, excluded.sample_event_id),last_message=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_message ELSE ` + table + `.last_message END,created_at=CASE WHEN excluded.created_at < ` + table + `.created_at THEN excluded.created_at ELSE ` + table + `.created_at END,updated_at=CASE WHEN excluded.updated_at > ` + table + `.updated_at THEN excluded.updated_at ELSE ` + table + `.updated_at END RETURNING id`
+	// 错误组存储去重：fingerprint 不含窗口，样本只在跨窗口时移交；窗口内重复
+	// 事件的响应部件已在 stripErrorGroupWindowDuplicates 出生即降级（不落盘、
+	// 零 GC 往返），窗口首条保持样本身份。必须在 upsert 之前读取最近窗口组的
+	// 保留样本（含当前窗口行更新前的值）；幂等重放（旧样本即本事件）直接跳过，
+	// 跨窗口时在同一事务内降级旧样本并登记 GC。
+	if err := s.dedupePreviousErrorGroupSample(ctx, tx, group.fingerprint, group.windowStartedAt, input.ID); err != nil {
+		return err
+	}
+	query := `INSERT INTO ` + table + ` (id,fingerprint,window_started_at,window_ended_at,system_account_id,api_key_id,group_id,account_id,provider_code,path,model,status_code,error_phase,error_code,error_type,request_fingerprint,error_fingerprint,count,first_event_id,last_event_id,sample_event_id,last_message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?, ?,?,?) ON CONFLICT(fingerprint,window_started_at) DO UPDATE SET count=` + table + `.count+1,window_ended_at=CASE WHEN excluded.window_ended_at > ` + table + `.window_ended_at THEN excluded.window_ended_at ELSE ` + table + `.window_ended_at END,first_event_id=CASE WHEN excluded.created_at < ` + table + `.created_at OR (excluded.created_at = ` + table + `.created_at AND excluded.first_event_id < ` + table + `.first_event_id) THEN excluded.first_event_id ELSE ` + table + `.first_event_id END,last_event_id=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_event_id ELSE ` + table + `.last_event_id END,last_message=CASE WHEN excluded.updated_at > ` + table + `.updated_at OR (excluded.updated_at = ` + table + `.updated_at AND excluded.last_event_id > ` + table + `.last_event_id) THEN excluded.last_message ELSE ` + table + `.last_message END,created_at=CASE WHEN excluded.created_at < ` + table + `.created_at THEN excluded.created_at ELSE ` + table + `.created_at END,updated_at=CASE WHEN excluded.updated_at > ` + table + `.updated_at THEN excluded.updated_at ELSE ` + table + `.updated_at END RETURNING id`
 	var returned string
 	if err := tx.QueryRowContext(ctx, s.bind(query), id, group.fingerprint, dbTimeText(group.windowStartedAt), dbTimeText(group.windowEndedAt), nullText(input.SystemAccountID), nullText(input.APIKeyID), nullText(input.GroupID), nullText(input.AccountID), nullText(input.ProviderCode), input.Path, nullText(input.Model), input.FinalStatusCode, nullText(input.ErrorPhase), nullText(input.ErrorCode), string(input.AuditOutcome), group.requestFingerprint, group.errorFingerprint, input.ID, input.ID, input.ID, nullText(input.ErrorMessage), eventTime, eventTime).Scan(&returned); err != nil {
 		return fmt.Errorf("写入 audit_error_groups 失败: %w", err)
@@ -1248,12 +1284,216 @@ func (s *sqlStore) upsertErrorGroup(ctx context.Context, tx *sql.Tx, input Audit
 	return nil
 }
 
-const auditErrorGroupWindow = 5 * time.Minute
+// latestErrorGroupSample returns the most recent window row's group id, window
+// and retained sample for one fingerprint, across any window and including the
+// current one: read before the upsert above, the row still carries its
+// pre-upsert sample, which covers both the cross-window and the same-window
+// predecessor in one query.
+func (s *sqlStore) latestErrorGroupSample(ctx context.Context, tx *sql.Tx, fingerprint string) (string, string, string, error) {
+	query := `SELECT id,window_started_at,sample_event_id FROM ` + s.table("audit_error_groups") + ` WHERE fingerprint=? ORDER BY window_started_at DESC,id DESC LIMIT 1`
+	var groupID, windowText string
+	var sampleEventID sql.NullString
+	err := tx.QueryRowContext(ctx, s.bind(query), fingerprint).Scan(&groupID, &windowText, &sampleEventID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", nil
+	}
+	if err != nil {
+		return "", "", "", fmt.Errorf("查询错误组当前保留样本失败: %w", err)
+	}
+	// 列值经 dbTimeText（RFC3339Nano）写出，整秒的 .000 毫秒被省略；统一回
+	// nodeISOString 形态，与内存中的 group.windowStartedAt 同形比较，窗口
+	// 不可解析时返回空串（按未知窗口处理）。
+	windowStartedAt := ""
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(windowText)); parseErr == nil {
+		windowStartedAt = nodeISOString(parsed)
+	}
+	return groupID, windowStartedAt, sampleEventID.String, nil
+}
 
-// derivedErrorGroup mirrors the current Node writer's error grouping identity:
-// non-"success" outcomes are grouped into fixed five-minute UTC windows from
-// stable request and normalized error fingerprints. Callers need not fabricate
-// an ErrorGroup payload merely to preserve the existing audit contract.
+// dedupePreviousErrorGroupSample implements error-group storage dedup: the
+// fingerprint spans windows, so a persistent failure hands its retained sample
+// over only when a new window opens — the previous window's sample keeps the
+// payloads until then. The handover downgrades the previous sample in the same
+// transaction (blob ids NULLed, capture_status='deduped', drop_reason
+// 'error_group_deduped', SHA256 values kept), released blobs decrement the
+// SQLite ref counter and receive a durable GC intent through the retention
+// scheduling path, and the previous window row follows the sample pointer to
+// the new event. Same-window duplicates never reach the downgrade: their own
+// response parts were born deduped in stripErrorGroupWindowDuplicates, and the
+// window's first event stays the sample. Success events never enter this path.
+// dedupeDowngradedParts 是错误组去重的降级范围：组内内容随时间漂移、跨记录
+// 复用会串样本的响应/错误类部件。请求侧（client_request/upstream_request）与
+// gateway_metadata 不降级——fingerprint 含 client_request 的 bodySha256，同组
+// 请求体必然一致并共享 canonical blob，保留引用零额外存储，且历史记录的请求
+// 原文打开即可见（BUG-0320 用户裁决：去重对前端读侧无感）。
+var dedupeDowngradedParts = [3]PayloadPartType{PayloadPartUpstreamResponse, PayloadPartGatewayResponse, PayloadPartGatewayError}
+
+func (s *sqlStore) dedupePreviousErrorGroupSample(ctx context.Context, tx *sql.Tx, fingerprint, currentWindow, currentEventID string) error {
+	previousGroupID, previousWindow, previousSampleID, err := s.latestErrorGroupSample(ctx, tx, fingerprint)
+	if err != nil {
+		return err
+	}
+	if previousSampleID == "" || previousSampleID == currentEventID {
+		return nil
+	}
+	if previousWindow == currentWindow {
+		// 同窗口重复：样本不跨窗口不移交，窗口首条保持样本身份，无降级写。
+		return nil
+	}
+	// 跨事件变更遵循既有 per-audit-ID 生命周期门契约：先取旧样本事件的门，
+	// 再触碰它的引用行或 blob 生命周期锁。Persist 自身 blob 通知锁在此前已
+	// 持有，与 retention（audit 门 → blob 锁）在该窄窗口构成局部逆序，本序
+	// 只缩小而未消除互锁窗口（旧样本与新事件共享 canonical blob 的并发删除
+	// 场景，PG 死锁检测兜底，见 BUG-0321）。
+	if err := s.lockAuditLogLifecycleTx(ctx, tx, previousSampleID); err != nil {
+		return err
+	}
+	// UPDATE ... RETURNING 只返回置空后的新值，旧 blob id 必须先读出来。
+	// 降级仅覆盖 dedupeDowngradedParts；请求侧引用原样保留。
+	query := `SELECT headers_blob_id,body_blob_id FROM ` + s.table("audit_payload_refs") + ` WHERE audit_log_id=? AND part_type IN (?,?,?) AND (headers_blob_id IS NOT NULL OR body_blob_id IS NOT NULL)`
+	rows, err := tx.QueryContext(ctx, s.bind(query), previousSampleID, string(dedupeDowngradedParts[0]), string(dedupeDowngradedParts[1]), string(dedupeDowngradedParts[2]))
+	if err != nil {
+		return fmt.Errorf("查询错误组旧样本 payload 引用失败: %w", err)
+	}
+	releasedBlobIDs := make([]string, 0)
+	for rows.Next() {
+		var headers, body sql.NullString
+		if err := rows.Scan(&headers, &body); err != nil {
+			rows.Close()
+			return err
+		}
+		if headers.Valid {
+			releasedBlobIDs = append(releasedBlobIDs, headers.String)
+		}
+		if body.Valid {
+			releasedBlobIDs = append(releasedBlobIDs, body.String)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("遍历错误组旧样本 payload 引用失败: %w", err)
+	}
+	downgrade := `UPDATE ` + s.table("audit_payload_refs") + ` SET headers_blob_id=NULL,body_blob_id=NULL,capture_status=?,drop_reason=? WHERE audit_log_id=? AND part_type IN (?,?,?) AND (headers_blob_id IS NOT NULL OR body_blob_id IS NOT NULL)`
+	if _, err := tx.ExecContext(ctx, s.bind(downgrade), string(PayloadCaptureDeduped), string(PayloadDropErrorGroupDeduped), previousSampleID, string(dedupeDowngradedParts[0]), string(dedupeDowngradedParts[1]), string(dedupeDowngradedParts[2])); err != nil {
+		return fmt.Errorf("降级错误组历史样本失败: %w", err)
+	}
+	if shouldMaintainBlobRefCount(s.mode) {
+		// SQLite keeps a local ref counter aligned with incrementRefs; every
+		// released reference decrements once, clamped at zero.
+		for _, blobID := range releasedBlobIDs {
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_payload_blobs")+` SET ref_count=MAX(ref_count-1,0) WHERE id=?`), blobID); err != nil {
+				return fmt.Errorf("递减错误组旧样本 blob 引用计数失败: %w", err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("audit_error_groups")+` SET sample_event_id=? WHERE id=?`), currentEventID, previousGroupID); err != nil {
+		return fmt.Errorf("移交错误组样本事件失败: %w", err)
+	}
+	releasedBlobIDs = uniqueStrings(releasedBlobIDs)
+	if len(releasedBlobIDs) == 0 {
+		return nil
+	}
+	blobRows, err := s.blobRowsByID(ctx, tx, releasedBlobIDs)
+	if err != nil {
+		return err
+	}
+	// Reuse the retention GC scheduling path verbatim: per-blob advisory lock
+	// first (PostgreSQL), then the NOT EXISTS recheck — a blob still shared
+	// with the new event is never scheduled — and the durable
+	// audit_payload_blob_gc intent for the owner retention tick.
+	return s.scheduleUnreferencedBlobGC(ctx, tx, blobRows)
+}
+
+const auditErrorGroupWindow = 10 * time.Minute
+
+// stripErrorGroupWindowDuplicates is the write-side half of per-window sample
+// handover: when the fingerprint's most recent window row already covers this
+// event's window, the event is a within-window duplicate — its response/error
+// parts are born deduped (SHA256 and sizes frozen, blob ids never materialize,
+// no blob files, lifecycle locks or GC churn) and the window's first event
+// stays the sample without any downgrade write. Cross-window and first-ever
+// events return unchanged; their handover runs in upsertErrorGroup. Must run
+// between planPayloads and lockBlobLifecyclePlans so stripped blobs never take
+// locks or files.
+func (s *sqlStore) stripErrorGroupWindowDuplicates(ctx context.Context, tx *sql.Tx, input AuditLogInput, prepared []preparedPayload, plans []blobPlan) ([]preparedPayload, []blobPlan, error) {
+	if input.AuditOutcome == AuditOutcomeSuccess || normalizeLifecycle(input.LifecycleStatus) != LifecycleFinalized {
+		return prepared, plans, nil
+	}
+	group, err := derivedErrorGroup(input, prepared)
+	if err != nil {
+		return nil, nil, err
+	}
+	// 同指纹并发写先在此串行化（PG；SQLite 已由 writeMu 串行）：strip 分类与
+	// 同事务稍后的 dedupe 移交读到稳定的最近窗口行，"窗口内仅首条保留"按提交
+	// 顺序确定生效。
+	if err := s.lockErrorGroupFingerprintTx(ctx, tx, group.fingerprint); err != nil {
+		return nil, nil, err
+	}
+	_, latestWindow, latestSample, err := s.latestErrorGroupSample(ctx, tx, group.fingerprint)
+	if err != nil {
+		return nil, nil, err
+	}
+	if latestSample == "" || latestWindow != group.windowStartedAt {
+		return prepared, plans, nil
+	}
+	// 未剥离部件仍引用的 blob 键从剥离集合扣除：同事件内响应/错误部件与请求
+	// 侧部件内容共键（同 sha+contentType）时，误删保留侧计划会让其引用指向
+	// 一个从不解析的 canonical 行（不存在时 FK 违例，整条 Persist 失败）。
+	retained := make(map[string]struct{})
+	for index := range prepared {
+		part := prepared[index].input.PartType
+		if part == dedupeDowngradedParts[0] || part == dedupeDowngradedParts[1] || part == dedupeDowngradedParts[2] {
+			continue
+		}
+		for _, blob := range []*blobRecord{prepared[index].headers, prepared[index].body} {
+			if blob != nil {
+				retained[blob.sha256+"\x00"+blob.contentType] = struct{}{}
+			}
+		}
+	}
+	stripped := make(map[string]struct{})
+	for index := range prepared {
+		part := prepared[index].input.PartType
+		if part != dedupeDowngradedParts[0] && part != dedupeDowngradedParts[1] && part != dedupeDowngradedParts[2] {
+			continue
+		}
+		// 仅剥离真实持有 blob 引用的部件：hash_only/dropped 等本无正文的部件
+		// 保持原捕获语义，不被改标 deduped。
+		if prepared[index].headers == nil && prepared[index].body == nil {
+			continue
+		}
+		prepared[index].input.CaptureStatus = PayloadCaptureDeduped
+		prepared[index].input.DropReason = PayloadDropErrorGroupDeduped
+		for _, blob := range []*blobRecord{prepared[index].headers, prepared[index].body} {
+			if blob == nil {
+				continue
+			}
+			key := blob.sha256 + "\x00" + blob.contentType
+			if _, shared := retained[key]; !shared {
+				stripped[key] = struct{}{}
+			}
+		}
+		prepared[index].headers = nil
+		prepared[index].body = nil
+	}
+	if len(stripped) == 0 {
+		return prepared, plans, nil
+	}
+	kept := plans[:0]
+	for _, plan := range plans {
+		if _, ok := stripped[plan.record.sha256+"\x00"+plan.record.contentType]; ok {
+			continue
+		}
+		kept = append(kept, plan)
+	}
+	return prepared, kept, nil
+}
+
+// derivedErrorGroup keeps the Node writer's grouping identity — stable request
+// and normalized error fingerprints. The window length is owned by
+// auditErrorGroupWindow（存储去重样本移交周期，2026-10-16 用户裁决自 5 分钟放宽
+// 为 10 分钟：窗口内连续相同错误视为一致）. Callers need not fabricate an
+// ErrorGroup payload merely to preserve the existing audit contract.
 type derivedAuditErrorGroup struct {
 	fingerprint, windowStartedAt, windowEndedAt, requestFingerprint, errorFingerprint string
 }

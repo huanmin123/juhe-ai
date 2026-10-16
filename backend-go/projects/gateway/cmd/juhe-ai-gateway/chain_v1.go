@@ -294,20 +294,19 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// GET/DELETE /v1/videos* 与 /v1/audio/jobs* 是受理后操作，不走派发循环
 	// ——preauth 认证完成后短路到账户亲和直连（查表定位原账户原上游）。
 	// 创建请求（POST /v1/videos 与 POST /v1/audio/jobs）继续走下方完整派发
-	// 链（受理边界生效）。auditCapture 是上方已构造的请求级捕获：任务面短路
-	// 路径在 serveMediaJobTaskPlane 内做最小审计收尾（身份 + 任务 id + 状态码
-	// Finalize）。
+	// 链（受理边界生效）。任务面是网关本地应答（零上游尝试），2026-10-16
+	// 收窄后不再落审计。
 	// M5b realtime ephemeral token 签发面（Realtime 设计 §2/§4）：POST
 	// /v1/realtime/client_secrets 是无上游签发请求，不走派发循环——preauth
-	// 认证（含用户请求限流消费）与 body 管道完成后短路到 token 服务。审计
-	// 沿任务面最小收尾（身份 + 状态码 Finalize，token 值不进审计）。
+	// 认证（含用户请求限流消费）与 body 管道完成后短路到 token 服务，同样
+	// 不再落审计。
 	if chainIsRealtimeClientSecretsPath(req) {
-		c.serveRealtimeClientSecrets(ctx, req, res, auditCapture)
+		c.serveRealtimeClientSecrets(ctx, req, res)
 		return
 	}
 
 	if chainIsMediaJobTaskPlaneRequest(req) {
-		c.serveMediaJobTaskPlane(ctx, req, res, traceID, auditCapture)
+		c.serveMediaJobTaskPlane(ctx, req, res, traceID)
 		return
 	}
 
@@ -316,11 +315,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// 体不是 JSON 对象（multipart 文件输入）本地 400，不进派发链。不在此拦截
 	// 会落入 preflight 模型门的 missing_model 503，把客户端输入形态错误误报成
 	// 上游不可用（视频创建面无此门：报文本身必含 model，形态错误上游 400 透
-	// 传短路承载）。审计沿任务面最小收尾（身份 + 状态码 Finalize，不记 body）。
+	// 传短路承载）。该 400 属网关拦截面，不落审计。
 	if chainIsAudioJobCreateRequest(req) && chainVideoRequestBodyOf(req) == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusBadRequest,
 			"长音频任务请求体必须是 JSON 对象（唯一输入形态 input_url 公网音频 URL，不支持 multipart 文件输入）", "invalid_request_body")
-		c.finalizeMediaJobTaskPlaneAudit(auditCapture, req, res, "")
 		return
 	}
 

@@ -33,13 +33,17 @@ import (
 // 项：支持模型声明 gpt-realtime（maintenance 种子目录行）+ 凭据显式声明
 // realtime_session 端点模式（候选过滤 opt-in）+ base_url 直指引擎。
 func realtimeAccountExtra(baseURL string) map[string]any {
+	// v8-A 域语义：realtime_session 自对话域移入音频域——realtime 账户显式
+	// 声明 audio 域 + realtime_session 单模式（对话四值在 audio 域越界，
+	// realtime 派发只按 realtime_session 端点模式过滤候选）。
 	return map[string]any{
+		"capabilityDomain": "audio",
 		"supportedModels":  []string{"gpt-realtime"},
 		"healthCheckModel": "gpt-realtime",
 		"credentials": map[string]any{
 			"base_url": baseURL,
 			"supported_endpoint_modes": []string{
-				"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session",
+				"realtime_session",
 			},
 		},
 	}

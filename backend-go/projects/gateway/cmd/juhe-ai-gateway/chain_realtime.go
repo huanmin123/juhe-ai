@@ -968,6 +968,16 @@ func (c *gatewayChain) finalizeRealtimeUpgradeAudit(capture gatewaypreauth.Audit
 	})
 }
 
+// chainRealtimeSecretsAuditOutcomeOf 归一 realtime 面状态码到审计 Outcome
+// 词表（签发短路面已删审计；会话收尾是真实上游流量仍落审计，4xx/5xx 统一
+// gateway_failed）。
+func chainRealtimeSecretsAuditOutcomeOf(status int) gatewayusage.AuditOutcome {
+	if status >= http.StatusOK && status < http.StatusBadRequest {
+		return gatewayusage.AuditOutcomeSuccess
+	}
+	return gatewayusage.AuditOutcomeGatewayFailed
+}
+
 // enqueueRealtimeTerminalUsage 终态落账（设计 §5）：endpoint=/v1/realtime、
 // audio token 计量、text token 仅目录行有文本价时同报（当前 realtime 行无文
 // 本价——契约 §4.4 不编造）；无 usage 事件（空会话）0 计费 + usage_missing。

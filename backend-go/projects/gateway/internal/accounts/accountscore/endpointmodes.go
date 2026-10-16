@@ -84,11 +84,15 @@ var (
 		"audio_speech", "video_create", "video_get", "video_content", "video_cancel",
 	}
 	// VolcengineEndpointModeValues 是 volcengine 档案可声明的全部端点模式
-	// （M3 §9.1 + M6 TTS §9.2 + 对话批 chat）：chat 对 + video_* 四值 +
-	// audio_speech。全部 opt-in；默认集 video_get（零费用档）。
+	// （M3 §9.1 + M6 TTS §9.2 + 对话批 chat + 2026-10-17 图像域开通）：chat 对
+	// + video_* 四值 + audio_speech + images_json（图像域 lane，ark 官方
+	// OpenAI 兼容图像端点 /api/v3/images/generations 实测出图成功）。全部
+	// opt-in；写侧缺省集 video_get（零费用档）不变，images_json 只经图像域
+	//（capabilityallowed.go imageDomainLaneModes 求交）成为图像域默认/允许集。
 	VolcengineEndpointModeValues = []string{
 		"chat_json", "chat_sse",
 		"video_create", "video_get", "video_content", "video_cancel", "audio_speech",
+		"images_json",
 	}
 	// QwenEndpointModeValues 是 qwen 档案可声明的全部端点模式（M3 §10.1 +
 	// M3f 长音频 §10.2 + 对话批 chat）：chat 对 + video_* 四值 + audio_job_*

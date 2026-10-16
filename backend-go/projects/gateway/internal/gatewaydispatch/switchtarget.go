@@ -134,6 +134,14 @@ func accountServesSwitchTarget(account AccountCandidate, in SwitchTargetFilterIn
 	if target.UpstreamEndpointFamily != in.ClientSourceEndpointFamily {
 		return false
 	}
+	// volcengine TTS 占位名↔现役名等价组（契约 §9.2「派发匹配等价」）：切号
+	// 承接检查与首次派发同构，声明任一名字的候选账户都能承接等价组内模型的
+	// 冻结目标。
+	for _, supported := range account.SupportedModels {
+		if gatewayrouting.VolcengineTTSModelNamesMatch(target.UpstreamModel, supported) {
+			return true
+		}
+	}
 	return accountSupportsUpstreamModelEqualFold(account.SupportedModels, target.UpstreamModel)
 }
 

@@ -45,7 +45,9 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		{name: "anthropic+video 空", domain: "video", providerCode: "anthropic", accountType: "api_key", profile: anthropicV1, want: []string{}},
 		{name: "gpt oauth+video 空", domain: "video", providerCode: "gpt", accountType: "oauth", profile: gptOpenAI, want: []string{}},
 		{name: "glm+image 空", domain: "image", providerCode: "glm", accountType: "api_key", profile: glmOpenAI, want: []string{}},
-		{name: "volcengine+image 空", domain: "image", providerCode: "volcengine", accountType: "api_key", profile: volcengine, want: []string{}},
+		// volcengine+image 2026-10-17 随矩阵开通（ark /api/v3/images/generations
+		// 实测取证）：允许集 = 图像域 lane 集 × 词表 = images_json 单值。
+		{name: "volcengine+image 开通", domain: "image", providerCode: "volcengine", accountType: "api_key", profile: volcengine, want: []string{"images_json"}},
 		{name: "minimax+chat 矩阵拒绝", domain: "chat", providerCode: "minimax", accountType: "api_key", profile: minimax, want: []string{}},
 		{name: "gemini native+image 空", domain: "image", providerCode: "gemini", accountType: "api_key", profile: geminiNative, want: []string{}},
 		{name: "deepseek openai+video 矩阵拒绝", domain: "video", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI, want: []string{}},
@@ -127,6 +129,7 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 func TestDefaultEndpointModesForDomain(t *testing.T) {
 	volcengine := capabilityAllowedPredicate("volcengine", "openai", "v1", VolcengineOpenAIV1ProfileID)
 	qwen := capabilityAllowedPredicate("qwen", "openai", "v1", QwenOpenAIV1ProfileID)
+	hybrid := capabilityAllowedPredicate("hybrid", "", "", "")
 	gptOpenAI := capabilityAllowedPredicate("gpt", "openai", "v1", GptOpenAIV1ProfileID)
 	geminiNative := capabilityAllowedPredicate("gemini", "gemini", "v1beta", "profile_gemini_native_v1beta")
 	deepSeekOpenAI := capabilityAllowedPredicate("deepseek", "openai", "v1", DeepSeekOpenAIV1ProfileID)
@@ -148,8 +151,11 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 	if got := DefaultEndpointModesForDomain("image", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"images_json"}) {
 		t.Fatalf("gpt image 默认集应为 images_json：%v", got)
 	}
-	if got := DefaultEndpointModesForDomain("image", "volcengine", "api_key", volcengine); len(got) != 0 {
-		t.Fatalf("volcengine image 默认集应为空（矩阵拒绝该域）：%v", got)
+	// volcengine image 默认集 2026-10-17 随矩阵开通：图像域 lane 集与词表求交
+	// = images_json 单值（opt-in 词表成员经域 lane 求交成为域内默认，写侧缺省
+	// 集 video_get 不变）。
+	if got := DefaultEndpointModesForDomain("image", "volcengine", "api_key", volcengine); !reflect.DeepEqual(got, []string{"images_json"}) {
+		t.Fatalf("volcengine image 默认集应为 images_json（矩阵已开通图像域）：%v", got)
 	}
 	if got := DefaultEndpointModesForDomain("video", "deepseek", "api_key", deepSeekOpenAI); len(got) != 0 {
 		t.Fatalf("deepseek video 默认集应为空（矩阵拒绝该域）：%v", got)
@@ -164,10 +170,30 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 	if got := DefaultEndpointModesForDomain("bogus", "gpt", "api_key", gptOpenAI); len(got) != 0 {
 		t.Fatalf("非法域默认集应为空：%v", got)
 	}
-	// chat 域默认集 = 现行默认（逐项不变，I3；与归一化路径的全量对照在
-	// 门面测试 m2_capability_save_rules_test.go 钉住）。
+	// chat 域默认集（BUG-0323 根治口径）：缺省恒 ⊆ chat 域允许集；现行默认
+	// 本就域内的供应商逐项不变（gpt 四值，与归一化路径的全量对照在门面测试
+	// m2_capability_save_rules_test.go 钉住）；媒体优先供应商落词表内基础
+	// 对话对。
 	if got := DefaultEndpointModesForDomain("chat", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}) {
 		t.Fatalf("gpt chat 默认集应与现行一致：%v", got)
+	}
+	// volcengine/qwen 现行缺省 video_get 与 chat lane 集交集为空 → 落词表内
+	// 基础对话对（词表核对：Volcengine/QwenEndpointModeValues 均含 chat 对）。
+	if got := DefaultEndpointModesForDomain("chat", "volcengine", "api_key", volcengine); !reflect.DeepEqual(got, []string{"chat_json", "chat_sse"}) {
+		t.Fatalf("volcengine chat 默认集应落词表内基础对话对：%v", got)
+	}
+	if got := DefaultEndpointModesForDomain("chat", "qwen", "api_key", qwen); !reflect.DeepEqual(got, []string{"chat_json", "chat_sse"}) {
+		t.Fatalf("qwen chat 默认集应落词表内基础对话对：%v", got)
+	}
+	// hybrid 现行缺省为全词表并集 → 与 chat lane 集求交收敛为非空域内子集
+	// （词表并集覆盖 13 值锚集全部成员，当前实现恰为全 13 值；断言契约口径
+	// =非空且 ⊆ chat 域 lane 集，不 pin 顺序）。
+	hybridChat := DefaultEndpointModesForDomain("chat", "hybrid", "api_key", hybrid)
+	if len(hybridChat) == 0 {
+		t.Fatalf("hybrid chat 默认集不应为空：%v", hybridChat)
+	}
+	if outliers := OutOfDomainModes(hybridChat, chatDomainLaneModes()); len(outliers) > 0 {
+		t.Fatalf("hybrid chat 默认集应 ⊆ chat 域 lane 集，越界=%v：%v", outliers, hybridChat)
 	}
 }
 

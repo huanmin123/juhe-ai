@@ -3,20 +3,38 @@ import type { Dayjs } from 'dayjs'
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountSupportedEndpointMode, AccountType, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
-import { allowedEndpointModesFor } from './accountCapabilityDomains'
-import { accountEndpointModeLabel, accountEndpointModeOptionsForProfile } from './accountEndpointModes'
+import { allowedEndpointModesFor, capabilityDomainIsMedia } from './accountCapabilityDomains'
+import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import type { AccountProviderProfileLike } from './accountProviderCapabilities'
 
 /**
  * v8-B 媒体域表单完整性升级（A 组）的纯逻辑块：媒体三段式表单的
  * 「上游接口能力域内勾选」与「高级配置折叠卡」头部摘要。
  *
- * 勾选与 chat `AccountStrategySection.vue` 同一底层逻辑（D6 三集合）：
- * 选项 = 域允许集 × 供应商词表求交后的端点 modes 选项；域外遗留声明
- * 只读展示、不进勾选集、提交时随完整声明集原样带回，只能经 M3 清理缩小。
+ * 勾选与 chat `AccountStrategySection.vue` 同一底层逻辑：选项 = 域允许集 ×
+ * 供应商词表求交后的端点 modes 选项；账户声明集必须 ⊆ 所在域允许集。
  */
 
 export type MediaCapabilityModeOption = { label: string; value: AccountSupportedEndpointMode }
+
+/**
+ * v8-D 域内空模型列表提示：选中供应商在当前能力域的目录候选「加载后确认为
+ * 空」（settled 且非加载中）时给出引导文案。候选是懒加载，弹窗打开加载一次、
+ * 切供应商即清空、下拉展开/搜索再加载——未加载的空不是真没有货，settled 前
+ * 返回 undefined。hybrid 映射域的上游模型来自映射面（不依赖目录候选）、对话
+ * 域不适用本提示，两者恒返回 undefined。
+ */
+export function mediaDomainModelAvailabilityHint(input: {
+  capabilityDomain: AccountCapabilityDomain
+  optionCount: number
+  loading: boolean
+  settled: boolean
+  hybridMappingDomain: boolean
+}): string | undefined {
+  if (!capabilityDomainIsMedia(input.capabilityDomain)) return undefined
+  if (input.hybridMappingDomain || input.loading || !input.settled || input.optionCount > 0) return undefined
+  return '该供应商在此域暂无可用目录模型，可切换供应商，或先在模型目录中为该供应商添加此域模型'
+}
 
 /** 媒体域内可勾选的上游接口能力选项：域允许集 ∩ 供应商写侧词表。 */
 export function mediaCapabilityModeOptions(input: {
@@ -32,32 +50,6 @@ export function mediaCapabilityModeOptions(input: {
     accountType: input.accountType
   }))
   return accountEndpointModeOptionsForProfile(input.profile).filter((option) => allowed.has(option.value))
-}
-
-/**
- * 实际声明集中超出当前域允许集的遗留值（D6 存量兼容）：保持声明顺序去重，
- * 只读展示，提交时原样带回，不经 M3 清理不消失。
- */
-export function mediaOutOfDomainDeclaredModes(
-  declaredModes: readonly AccountSupportedEndpointMode[],
-  options: readonly MediaCapabilityModeOption[]
-): AccountSupportedEndpointMode[] {
-  const selectable = new Set(options.map((option) => option.value))
-  const output: AccountSupportedEndpointMode[] = []
-  const seen = new Set<AccountSupportedEndpointMode>()
-  for (const mode of declaredModes) {
-    if (selectable.has(mode) || seen.has(mode)) continue
-    seen.add(mode)
-    output.push(mode)
-  }
-  return output
-}
-
-export function mediaEndpointModeLabel(
-  mode: AccountSupportedEndpointMode,
-  profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
-): string {
-  return accountEndpointModeLabel(mode, profile)
 }
 
 export interface MediaAdvancedCardState {

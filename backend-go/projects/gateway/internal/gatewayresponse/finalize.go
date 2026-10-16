@@ -321,7 +321,12 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 			BeforeDownstreamCommit: input.InteractionAffinityRemember,
 			Driver:                 driver.StreamDriver(),
 			Logger:                 logger,
-			NowMs:                  input.nowMs(),
+			// 流式零计费修复：出站 body 由网关注入 stream_options.include_usage
+			// （客户端未显式要求）的流，写下游前剥除 usage-only chunk；计量提取
+			// 由 inspector 消费原始分片照常生效。判定依据本次 attempt 实际发送
+			// 体（RequestBody）与客户端请求视图（Req），零跨包新增请求标记。
+			SuppressGatewayInjectedUsageChunk: gatewayInjectedChatStreamUsage(input.Req, input.RequestBody, input.Account),
+			NowMs:                             input.nowMs(),
 		},
 	})
 	if pipeErr != nil {

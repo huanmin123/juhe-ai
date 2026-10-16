@@ -68,17 +68,22 @@ scrape_configs:
 - **增补不覆盖**：不得删除或改写现有 `juhe_app_*` 等任何既有查询；键冲突时以现网为准并停下确认。
 - 合并后重载/重启 postgres_exporter，用 `curl 127.0.0.1:<exporter 端口>/metrics | grep juhe_postgres_` 验证三个指标出现。
 
-## 告警规则迁移（2026-10-15 已执行）
+## 告警规则（权威：`F:\服务部署\alert-rules\juhe-app-alerts.yml`）
 
 `AppGoroutinesHigh` 已于 2026-10-15 生产维护窗口迁移完成：表达式改为 `go_goroutines{job=~"juhe-ai-(gateway|jobs)"} > 1500`（阈值与 for 窗口沿用原口径，正常基线 gateway ~100 / jobs ~110），同步了 `F:\服务部署\alert-rules\juhe-app-alerts.yml` 与 `juhe-app-alerts.grafana.md`，并 reload Prometheus 生效。同窗口清理了 `queries.yaml` 的 `juhe_app_runtime` 块与 `system_metrics_trend_windows` 排除段，12 张退役监控表已清退。
+
+失联告警已于 2026-10-16 新增（同文件，severity critical / alert_family app，同步 infra 后热加载）：
+
+| 规则 | 表达式 | for | 覆盖 |
+| --- | --- | --- | --- |
+| `AppScrapeDown` | `up{job=~"juhe-ai-(gateway\|jobs)"} == 0` | 5m | target 存在但抓取失败（进程退出 / 隧道中断 / 端口失监听）；60s 采样 5 点确认，容忍隧道抖动与重启间隙 |
+| `AppScrapeTargetMissing` | `absent(up{job="juhe-ai-gateway"}) or absent(up{job="juhe-ai-jobs"})` | 5m | target 从抓取配置消失（`up` 序列不存在，`== 0` 不触发，`absent` 兜底） |
 
 其余建议（未执行，按需新增）：
 
 | 现告警 | 建议 |
 | --- | --- |
-| `AppGoroutinesHigh` | 改用 `go_goroutines{job="juhe-ai-gateway"} > <阈值>`；阈值先用观察期数据（面板「Go Runtime」行）重定，不直接沿用旧口径数值 |
-| 任务停滞（新增） | `time() - juhe_ai_jobs_task_last_success_timestamp_seconds{job="juhe-ai-jobs"} > <阈值>`；阈值按任务周期定（如 `max(3×周期, 1h)`），配 `for: 10m` 防抖 |
-| 失联（新增） | `up{job=~"juhe-ai-(gateway|jobs)"} == 0`，配 `for: 5m`（60s 采样下 5 个点确认，兼顾隧道抖动不误报） |
+| 任务停滞（新增） | `time() - juhe_ai_jobs_task_last_success_timestamp_seconds{job="juhe-ai-jobs"} > <阈值>`；阈值按任务周期定（如 `max(3×周期, 1h)`），配 `for: 10m` 防抖。注意该序列在任务首次成功前不存在（从未成功无序列），需配合 `absent(...)` 或 `juhe_ai_jobs_task_runs_total` 存在性兜底；另该指标只覆盖 PostgreSQL 形态下经调度器注册的任务（适用边界见 [Prometheus 指标暴露设计](../../../docs/functions/Prometheus指标暴露设计.md)） |
 | `AppJobStalled` / `AppStatsCursorStalled` | **口径核查后再迁移**：先核对现规则表达式与其消费的快照表（`*_storage_snapshots` / 统计游标）是否已无数据，再逐条映射到新指标（任务停滞用上式；统计游标类按新指标体系重新裁决口径，无对应指标时先降级为人工巡检并记录）。 |
 
-上表「其余建议」为可选新增项，未执行；已执行的迁移见本节首段。
+上表「其余建议」为可选新增项，未执行；已执行的迁移（AppGoroutinesHigh、失联两规则）见本节上文。

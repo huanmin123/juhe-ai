@@ -6,7 +6,8 @@ package gatewaymedia
 // 形态直传、size→resolution+ratio 档位换算与词表外 400、seconds→duration
 // 数值直传、seed 直传、provider_options 合并）、轮询请求构造与产物定位/
 // 取消声明、轮询响应归一（queued/running/succeeded/failed、succeeded 缺
-// video_url 的协议违约、未知状态 RawStatus、非 2xx）。
+// video_url 的协议违约、未知状态 RawStatus、非 2xx）、duration 秒计量抽取
+//（2026-10-17 实测回填：succeeded 正值照抽、缺失/0 不猜测、非终态不抽）。
 import (
 	"context"
 	"encoding/json"
@@ -24,8 +25,9 @@ const volcengineCreateAcceptedFixture = `{"id":"cgt-20261004101122abcdef","statu
 const volcenginePollRunningFixture = `{"id":"cgt-20261004101122abcdef","status":"running"}`
 
 // volcenginePollSucceededFixture 对齐 succeeded 形态（content.video_url 为
-// 绝对下载 URL）。
-const volcenginePollSucceededFixture = `{"id":"cgt-20261004101122abcdef","status":"succeeded","content":{"video_url":"https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/cgt-20261004101122abcdef/content"}}`
+// 绝对下载 URL；duration/usage 为 2026-10-17 真实上游实测回填字段，与
+// mockupstream succeeded 轮询响应同源）。
+const volcenginePollSucceededFixture = `{"id":"cgt-20261004101122abcdef","status":"succeeded","content":{"video_url":"https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/cgt-20261004101122abcdef/content"},"duration":5,"usage":{"completion_tokens":108900,"total_tokens":108900}}`
 
 // volcenginePollFailedFixture 对齐 failed 形态（error{code,message}）。
 const volcenginePollFailedFixture = `{"id":"cgt-20261004101122abcdef","status":"failed","error":{"code":"InternalServiceError","message":"video generation failed"}}`
@@ -224,7 +226,9 @@ func TestVolcengineVideoAdapterParsePollResponse(t *testing.T) {
 		t.Fatalf("running parse status = %s, want in_progress", ir.Status)
 	}
 
-	// succeeded → completed，content.video_url 冻结进 Artifact.ContentURL。
+	// succeeded → completed，content.video_url 冻结进 Artifact.ContentURL；
+	// duration=5（2026-10-17 实测回填字段）正值 → OutputVideoSeconds 指针
+	// 非 nil 且值为 5（usage_source=upstream）。
 	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(volcenginePollSucceededFixture))
 	if err != nil {
 		t.Fatalf("succeeded parse: %v", err)
@@ -232,6 +236,9 @@ func TestVolcengineVideoAdapterParsePollResponse(t *testing.T) {
 	if ir.Status != JobStatusCompleted ||
 		ir.Artifact.ContentURL != "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/cgt-20261004101122abcdef/content" {
 		t.Fatalf("succeeded parse = %s/%s", ir.Status, ir.Artifact.ContentURL)
+	}
+	if ir.Usage.OutputVideoSeconds == nil || *ir.Usage.OutputVideoSeconds != 5 {
+		t.Fatalf("succeeded duration 抽秒 = %#v, want *5（usage_source=upstream）", ir.Usage.OutputVideoSeconds)
 	}
 
 	// failed → failed，错误摘要取 error{code,message}。
@@ -282,5 +289,67 @@ func TestVolcengineVideoAdapterParsePollResponse(t *testing.T) {
 	// 未知形态防御：succeeded 带 video_url 空白串同样拒绝。
 	if _, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"succeeded","content":{"video_url":"  "}}`)); err == nil || !strings.Contains(err.Error(), "video_url") {
 		t.Fatalf("空白 video_url 应报协议违约: %v", err)
+	}
+}
+
+// TestVolcengineVideoAdapterParsePollResponseDurationSeconds 覆盖 duration 秒
+// 计量抽取的边界路径（2026-10-17 实测回填批）：仅 succeeded 终态抽正值；
+// 缺失/0 不猜测（保持 nil，链上按契约 §2.8 兜底）；queued/running/failed
+// 非 completed 终态即使携带 duration 也不抽。
+func TestVolcengineVideoAdapterParsePollResponseDurationSeconds(t *testing.T) {
+	adapter := volcengineVideoAdapter{}
+
+	// succeeded 无 duration：OutputVideoSeconds 保持 nil（不猜测）。
+	ir, err := adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"succeeded","content":{"video_url":"https://example.invalid/v.mp4"}}`))
+	if err != nil {
+		t.Fatalf("succeeded 无 duration parse: %v", err)
+	}
+	if ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("succeeded 无 duration 应保持 nil: %#v", ir.Usage.OutputVideoSeconds)
+	}
+
+	// succeeded duration=0：同样保持 nil（0 值不构成计量）。
+	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"succeeded","content":{"video_url":"https://example.invalid/v.mp4"},"duration":0}`))
+	if err != nil {
+		t.Fatalf("succeeded duration=0 parse: %v", err)
+	}
+	if ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("succeeded duration=0 应保持 nil: %#v", ir.Usage.OutputVideoSeconds)
+	}
+
+	// succeeded duration 负值：与 0 同分支（>0 才构成计量），保持 nil。
+	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"succeeded","content":{"video_url":"https://example.invalid/v.mp4"},"duration":-1}`))
+	if err != nil {
+		t.Fatalf("succeeded duration=-1 parse: %v", err)
+	}
+	if ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("succeeded duration=-1 应保持 nil: %#v", ir.Usage.OutputVideoSeconds)
+	}
+
+	// running（in_progress 非终态）带 duration：不抽。
+	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"running","duration":5}`))
+	if err != nil {
+		t.Fatalf("running 带 duration parse: %v", err)
+	}
+	if ir.Status != JobStatusInProgress || ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("running 带 duration 不应抽秒: %s/%#v", ir.Status, ir.Usage.OutputVideoSeconds)
+	}
+
+	// queued 带 duration：不抽。
+	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"queued","duration":5}`))
+	if err != nil {
+		t.Fatalf("queued 带 duration parse: %v", err)
+	}
+	if ir.Status != JobStatusQueued || ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("queued 带 duration 不应抽秒: %s/%#v", ir.Status, ir.Usage.OutputVideoSeconds)
+	}
+
+	// failed（failed 终态）带 duration：不抽（失败任务不虚计）。
+	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-x","status":"failed","duration":5,"error":{"code":"InternalServiceError","message":"boom"}}`))
+	if err != nil {
+		t.Fatalf("failed 带 duration parse: %v", err)
+	}
+	if ir.Status != JobStatusFailed || ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("failed 带 duration 不应抽秒: %s/%#v", ir.Status, ir.Usage.OutputVideoSeconds)
 	}
 }

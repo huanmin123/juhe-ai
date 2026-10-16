@@ -237,10 +237,10 @@ func (m *BusinessQualityManager) PatchPolicy(ctx context.Context, systemID strin
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if current.Revision == 0 {
-		_, err = tx.ExecContext(ctx, m.bind(`INSERT INTO `+m.table("model_quality_policies")+` (system_account_id,revision,profile,manual_enforcement_enabled,timeout_penalty_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids,created_at,updated_at) VALUES (?,1,?,?,?,?,?,?,?,?,?)`), systemID, next.Profile, boolIntQuality(next.ManualEnforcementEnabled), boolIntQuality(next.TimeoutPenaltyEnabled), next.PenaltyThreshold, next.PenaltyAction, next.RecoveryIntervalMinutes, qualityQuestionIdsJSONValue(next.CustomQuestionIds), now, now)
+		_, err = tx.ExecContext(ctx, m.bind(`INSERT INTO `+m.table("model_quality_policies")+` (system_account_id,revision,profile,manual_enforcement_enabled,timeout_penalty_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids,created_at,updated_at) VALUES (?,1,?,?,?,?,?,?,?,?,?)`), systemID, next.Profile, boolIntQuality(next.ManualEnforcementEnabled), m.boolBind(next.TimeoutPenaltyEnabled), next.PenaltyThreshold, next.PenaltyAction, next.RecoveryIntervalMinutes, qualityQuestionIdsJSONValue(next.CustomQuestionIds), now, now)
 		next.Revision = 1
 	} else {
-		res, e := tx.ExecContext(ctx, m.bind(`UPDATE `+m.table("model_quality_policies")+` SET profile=?,manual_enforcement_enabled=?,timeout_penalty_enabled=?,penalty_threshold=?,penalty_action=?,recovery_interval_minutes=?,custom_question_ids=?,revision=revision+1,updated_at=? WHERE system_account_id=? AND revision=?`), next.Profile, boolIntQuality(next.ManualEnforcementEnabled), boolIntQuality(next.TimeoutPenaltyEnabled), next.PenaltyThreshold, next.PenaltyAction, next.RecoveryIntervalMinutes, qualityQuestionIdsJSONValue(next.CustomQuestionIds), now, systemID, current.Revision)
+		res, e := tx.ExecContext(ctx, m.bind(`UPDATE `+m.table("model_quality_policies")+` SET profile=?,manual_enforcement_enabled=?,timeout_penalty_enabled=?,penalty_threshold=?,penalty_action=?,recovery_interval_minutes=?,custom_question_ids=?,revision=revision+1,updated_at=? WHERE system_account_id=? AND revision=?`), next.Profile, boolIntQuality(next.ManualEnforcementEnabled), m.boolBind(next.TimeoutPenaltyEnabled), next.PenaltyThreshold, next.PenaltyAction, next.RecoveryIntervalMinutes, qualityQuestionIdsJSONValue(next.CustomQuestionIds), now, systemID, current.Revision)
 		err = e
 		if err == nil {
 			n, _ := res.RowsAffected()
@@ -339,7 +339,7 @@ func (m *BusinessQualityManager) CreateSchedule(ctx context.Context, systemID st
 	now := time.Now().UTC()
 	enabled := input.Enabled == nil || *input.Enabled
 	id := newID("mqs")
-	res, err := m.db.ExecContext(ctx, m.bind(`INSERT INTO `+m.table("model_quality_schedules")+` (id,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,enabled,revision,custom_question_ids,next_run_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?) ON CONFLICT(system_account_id,account_id) DO NOTHING`), id, systemID, input.AccountID, input.Model, input.IntervalMinutes, input.Profile, input.PenaltyThreshold, input.PenaltyAction, input.RecoveryIntervalMinutes, boolIntQuality(input.TimeoutPenaltyEnabled), boolIntQuality(enabled), qualityQuestionIdsJSONValue(input.CustomQuestionIds), now.Add(time.Duration(input.IntervalMinutes)*time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	res, err := m.db.ExecContext(ctx, m.bind(`INSERT INTO `+m.table("model_quality_schedules")+` (id,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,timeout_penalty_enabled,enabled,revision,custom_question_ids,next_run_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?) ON CONFLICT(system_account_id,account_id) DO NOTHING`), id, systemID, input.AccountID, input.Model, input.IntervalMinutes, input.Profile, input.PenaltyThreshold, input.PenaltyAction, input.RecoveryIntervalMinutes, m.boolBind(input.TimeoutPenaltyEnabled), boolIntQuality(enabled), qualityQuestionIdsJSONValue(input.CustomQuestionIds), now.Add(time.Duration(input.IntervalMinutes)*time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return QualityScheduleView{}, err
 	}
@@ -401,7 +401,7 @@ func (m *BusinessQualityManager) PatchSchedule(ctx context.Context, systemID, id
 		return QualityScheduleView{}, err
 	}
 	now := time.Now().UTC()
-	res, err := m.db.ExecContext(ctx, m.bind(`UPDATE `+m.table("model_quality_schedules")+` SET model=?,interval_minutes=?,profile=?,penalty_threshold=?,penalty_action=?,recovery_interval_minutes=?,timeout_penalty_enabled=?,enabled=?,custom_question_ids=?,next_run_at=?,revision=revision+1,updated_at=? WHERE id=? AND system_account_id=? AND revision=?`), next.Model, next.IntervalMinutes, next.Profile, next.PenaltyThreshold, next.PenaltyAction, next.RecoveryIntervalMinutes, boolIntQuality(next.TimeoutPenaltyEnabled), boolIntQuality(next.Enabled), qualityQuestionIdsJSONValue(next.CustomQuestionIds), now.Add(time.Duration(next.IntervalMinutes)*time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), id, systemID, current.Revision)
+	res, err := m.db.ExecContext(ctx, m.bind(`UPDATE `+m.table("model_quality_schedules")+` SET model=?,interval_minutes=?,profile=?,penalty_threshold=?,penalty_action=?,recovery_interval_minutes=?,timeout_penalty_enabled=?,enabled=?,custom_question_ids=?,next_run_at=?,revision=revision+1,updated_at=? WHERE id=? AND system_account_id=? AND revision=?`), next.Model, next.IntervalMinutes, next.Profile, next.PenaltyThreshold, next.PenaltyAction, next.RecoveryIntervalMinutes, m.boolBind(next.TimeoutPenaltyEnabled), boolIntQuality(next.Enabled), qualityQuestionIdsJSONValue(next.CustomQuestionIds), now.Add(time.Duration(next.IntervalMinutes)*time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), id, systemID, current.Revision)
 	if err != nil {
 		return QualityScheduleView{}, err
 	}
@@ -778,4 +778,13 @@ func boolIntQuality(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+// boolBind 返回 timeout_penalty_enabled 的方言绑定值：该列在 SQLite 为
+// INTEGER 0/1、在 PG 为 boolean，pgx 无法把整数编码进 boolean 列。
+func (m *BusinessQualityManager) boolBind(v bool) any {
+	if m.postgres {
+		return v
+	}
+	return boolIntQuality(v)
 }

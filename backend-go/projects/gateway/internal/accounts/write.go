@@ -400,7 +400,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, &ValidationError{Message: "供应商协议档案 " + profile.name + " 不支持账户类型 " + accountType}
 	}
 
-	// M2 能力域保存规则（计划 §服务端统一校验，D6 三集合）：域由请求显式
+	// 能力域保存规则（计划 §服务端统一校验）：域由请求显式
 	// 携带（camelCase capabilityDomain，缺省 chat，创建后不可更改 D3）。
 	// 新建不允许任何域外声明：最终声明集 ⊆ allowed；allowed 为空 = 该供应
 	// 商不支持该域。
@@ -435,7 +435,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		ProtocolVersion:           profile.protocolVersion,
 		ProviderProtocolProfileID: profile.id,
 	})
-	// modes 缺省（键不存在）时按域落默认集（D6 默认能力集；chat 域与现行
+	// modes 缺省（键不存在）时按域落默认集（按域默认能力集；chat 域与现行
 	// 默认逐项一致——I3）。显式 null/非数组/空数组不注入，走既有归一化错误
 	// 文案（行为与现状一致）。显式提供的 modes 原样进入归一化，越界值由
 	// 归一化后的 ⊆ allowed 校验拒绝（新建不允许任何域外声明）。

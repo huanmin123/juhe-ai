@@ -72,3 +72,22 @@ func TestReplaceProviderCatalogCASAndCleanup(t *testing.T) {
 		t.Fatalf("want CAS %v", e)
 	}
 }
+
+// TestStoreBoolBindDialect 锁定 catalog_visible 的方言绑定契约：PG 绑 Go
+// bool（pgx 拒绝整数编码 boolean 列），SQLite 绑 INTEGER 0/1。
+func TestStoreBoolBindDialect(t *testing.T) {
+	pg := &Store{mode: Postgres}
+	if v, ok := pg.boolBind(true).(bool); !ok || !v {
+		t.Fatalf("PG true 绑定=%#v, want bool true", pg.boolBind(true))
+	}
+	if v, ok := pg.boolBind(false).(bool); !ok || v {
+		t.Fatalf("PG false 绑定=%#v, want bool false", pg.boolBind(false))
+	}
+	sqliteStore := &Store{mode: SQLite}
+	if v, ok := sqliteStore.boolBind(true).(int); !ok || v != 1 {
+		t.Fatalf("SQLite true 绑定=%#v, want int 1", sqliteStore.boolBind(true))
+	}
+	if v, ok := sqliteStore.boolBind(false).(int); !ok || v != 0 {
+		t.Fatalf("SQLite false 绑定=%#v, want int 0", sqliteStore.boolBind(false))
+	}
+}

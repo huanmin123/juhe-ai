@@ -151,7 +151,7 @@ func isMappingAllowedBySupportedModels(upstreamModel string, supportedModels []s
 		return false
 	}
 	for _, model := range supportedModels {
-		if model == upstreamModel {
+		if VolcengineTTSModelNamesMatch(upstreamModel, model) {
 			return true
 		}
 	}
@@ -165,7 +165,7 @@ func resolveGatewayAccountModelMatch(requestedModel string, supportedModels []st
 		return false
 	}
 	for _, model := range supportedModels {
-		if model == requestedModel {
+		if VolcengineTTSModelNamesMatch(requestedModel, model) {
 			return true
 		}
 	}

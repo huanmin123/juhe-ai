@@ -212,3 +212,23 @@ func TestBusinessQualityManagerTimeoutPenaltySwitch(t *testing.T) {
 		}
 	})
 }
+
+// TestBusinessQualityManagerBoolBindDialect 锁定 timeout_penalty_enabled 的
+// 方言绑定契约：SQLite 绑 INTEGER 0/1，PG 必须绑 Go bool——pgx 拒绝把整数
+// 编码进 boolean 列，回归整数绑定会让策略/计划的全部写路径失败。
+func TestBusinessQualityManagerBoolBindDialect(t *testing.T) {
+	pg := &BusinessQualityManager{postgres: true}
+	if v, ok := pg.boolBind(true).(bool); !ok || !v {
+		t.Fatalf("PG true 绑定=%#v, want bool true", pg.boolBind(true))
+	}
+	if v, ok := pg.boolBind(false).(bool); !ok || v {
+		t.Fatalf("PG false 绑定=%#v, want bool false", pg.boolBind(false))
+	}
+	sqliteMgr := &BusinessQualityManager{}
+	if v, ok := sqliteMgr.boolBind(true).(int); !ok || v != 1 {
+		t.Fatalf("SQLite true 绑定=%#v, want int 1", sqliteMgr.boolBind(true))
+	}
+	if v, ok := sqliteMgr.boolBind(false).(int); !ok || v != 0 {
+		t.Fatalf("SQLite false 绑定=%#v, want int 0", sqliteMgr.boolBind(false))
+	}
+}

@@ -120,10 +120,12 @@ type ModelSelectionOption struct {
 	DefaultReasoningEffort    *string  `json:"defaultReasoningEffort,omitempty"`
 }
 
-// ProviderCatalogModeValues mirrors the provider_model_catalog.mode /
-// custom_provider_models.mode word list (model_catalog_data_gen.go seed and
-// the custom-model write path): six values. The /models/options `modes`
-// parameter validates against this list.
+// ProviderCatalogModeValues mirrors the provider_model_catalog.mode word list
+// (model_catalog_data_gen.go seed): six values. The /models/options `modes`
+// parameter validates against this list. custom_provider_models.mode is a
+// different four-value UI-category vocabulary (text/image/audio/video, fixed
+// by the custom-model write path), so the custom-table filter translates the
+// whitelist via appendCustomCatalogModeFilter (BUG-0324).
 var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "audio", "video", "image_generation"}
 
 // ModelCapabilities mirrors the findProviderModelCapabilitiesAsync payload.
@@ -883,6 +885,88 @@ func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query Mod
 	return mergeProviderModelOptionRows(append(builtIn, custom...), query), nil
 }
 
+// ListProviderModelOptionProviderCodes aggregates the distinct provider codes
+// that carry at least one in-catalog model option under the query filter
+// (v8-D media-domain default-provider convergence). The predicate set mirrors
+// ListProviderModelSelectionOptions exactly (active + catalog-visible + not
+// shutdown, builtin ∪ custom rows, hybrid excluded via modelOptionSourceCodes),
+// so the aggregation can never list a provider whose options call would come
+// back empty; only the shape differs — DISTINCT provider_code instead of
+// option rows, so the result is not subject to the options endpoint's
+// LIMIT 50 truncation.
+func (s *Store) ListProviderModelOptionProviderCodes(ctx context.Context, query ModelOptionQuery) ([]string, error) {
+	sourceCodes, builtInCodes, err := s.modelOptionSourceCodes(ctx, query.ProviderCode, query.Protocol)
+	if err != nil {
+		return nil, err
+	}
+	codes := map[string]bool{}
+	if len(builtInCodes) > 0 {
+		clauses := []string{
+			"provider_code IN (" + placeholders(len(builtInCodes)) + ")",
+			"status = 'active'",
+			s.visibleTruePredicate("catalog_visible"),
+			"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
+		}
+		args := append([]any{}, stringSliceToAny(builtInCodes)...)
+		args = appendCatalogModeFilter(&clauses, args, query.Modes)
+		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT provider_code
+			FROM `+s.table("provider_model_catalog")+`
+			WHERE `+strings.Join(clauses, " AND ")+`
+			ORDER BY provider_code ASC`), args...)
+		if err != nil {
+			return nil, err
+		}
+		if err := collectDistinctProviderCodes(rows, codes); err != nil {
+			return nil, err
+		}
+	}
+	if len(sourceCodes) > 0 {
+		clauses := []string{
+			"provider_code IN (" + placeholders(len(sourceCodes)) + ")",
+			"status = 'active'",
+			"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
+		}
+		args := append([]any{}, stringSliceToAny(sourceCodes)...)
+		if trimmedAccount := strings.TrimSpace(query.SystemAccountID); trimmedAccount != "" {
+			clauses = append(clauses, "((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
+			args = append(args, trimmedAccount)
+		} else {
+			clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
+		}
+		args = appendCustomCatalogModeFilter(&clauses, args, query.Modes)
+		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT provider_code
+			FROM `+s.table("custom_provider_models")+`
+			WHERE `+strings.Join(clauses, " AND ")+`
+			ORDER BY provider_code ASC`), args...)
+		if err != nil {
+			return nil, err
+		}
+		if err := collectDistinctProviderCodes(rows, codes); err != nil {
+			return nil, err
+		}
+	}
+	output := make([]string, 0, len(codes))
+	for code := range codes {
+		output = append(output, code)
+	}
+	sort.Strings(output)
+	return output, nil
+}
+
+func collectDistinctProviderCodes(rows *sql.Rows, codes map[string]bool) error {
+	defer rows.Close()
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			return err
+		}
+		if trimmed := strings.TrimSpace(code); trimmed != "" {
+			codes[trimmed] = true
+		}
+	}
+	return rows.Err()
+}
+
 // modelOptionSourceCodes mirrors providerModelSourceCodesAsync.
 func (s *Store) modelOptionSourceCodes(ctx context.Context, providerCode, protocol string) (sourceCodes, builtInCodes []string, err error) {
 	if providerCode != "" {
@@ -994,7 +1078,7 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
 	args = appendOptionTextFilter(&clauses, args, query)
-	args = appendCatalogModeFilter(&clauses, args, query.Modes)
+	args = appendCustomCatalogModeFilter(&clauses, args, query.Modes)
 	args = appendSelectedOrderArgs(args, query)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model, scope, mode, release_date,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
@@ -1028,16 +1112,66 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 }
 
 // appendCatalogModeFilter adds the directory `mode IN (...)` clause when the
-// query carries validated modes. Rows with NULL/empty mode (custom models
-// without a declared mode) never match an IN list, so they are excluded under
-// domain filtering by design; without modes the clause is skipped and the
-// behavior stays backward compatible.
+// query carries validated modes. Rows with NULL/empty mode never match an IN
+// list, so they are excluded under domain filtering by design; without modes
+// the clause is skipped and the behavior stays backward compatible. This raw
+// six-value form applies to the built-in catalog table; the custom table goes
+// through appendCustomCatalogModeFilter.
 func appendCatalogModeFilter(clauses *[]string, args []any, modes []string) []any {
 	if len(modes) == 0 {
 		return args
 	}
 	*clauses = append(*clauses, "mode IN ("+placeholders(len(modes))+")")
 	return append(args, stringSliceToAny(modes)...)
+}
+
+// customVocabularyModes translates a validated directory-mode whitelist into
+// the custom_provider_models vocabulary. The custom write path only ever
+// stores the four UI-category values text/image/audio/video
+// (parseCustomModelBody), so chat/responses map to text, image_generation
+// maps to image, audio/video are shared by both word lists, and embedding has
+// no custom equivalent (it maps to nothing).
+func customVocabularyModes(modes []string) []string {
+	output := make([]string, 0, len(modes))
+	seen := make(map[string]bool, len(modes))
+	for _, mode := range modes {
+		var mapped string
+		switch mode {
+		case "chat", "responses":
+			mapped = "text"
+		case "image_generation":
+			mapped = "image"
+		case "audio":
+			mapped = "audio"
+		case "video":
+			mapped = "video"
+		default:
+			continue
+		}
+		if !seen[mapped] {
+			seen[mapped] = true
+			output = append(output, mapped)
+		}
+	}
+	return output
+}
+
+// appendCustomCatalogModeFilter is the custom_provider_models counterpart of
+// appendCatalogModeFilter and the BUG-0324 root fix: the raw six-value IN
+// list never matched the custom rows' text/image values, hiding every
+// chat/image custom model from the domain-filtered model selectors. A
+// whitelist with no custom equivalent (e.g. modes=embedding) matches nothing,
+// rendered as a constant-false clause valid in both SQL dialects.
+func appendCustomCatalogModeFilter(clauses *[]string, args []any, modes []string) []any {
+	if len(modes) == 0 {
+		return args
+	}
+	customModes := customVocabularyModes(modes)
+	if len(customModes) == 0 {
+		*clauses = append(*clauses, "1 = 0")
+		return args
+	}
+	return appendCatalogModeFilter(clauses, args, customModes)
 }
 
 // appendOptionTextFilter mirrors the WHERE side of the options queries: the

@@ -325,7 +325,7 @@ for p in "${TARGETS[@]}"; do
   fi
 done
 
-CODE=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL" || true)
+CODE=$(curl -fsS --ssl-no-revoke -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL" || true)
 if [ "$CODE" != "200" ]; then
   echo "[FAIL] 公网健康检查 $HEALTH_URL 返回 $CODE（期望 200）" >&2
   exit 1

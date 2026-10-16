@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -337,25 +336,13 @@ func TestW1CChainTextRawBodyLimitOf(t *testing.T) {
 	}
 }
 
-func TestW1CChainNewAuditID(t *testing.T) {
-	clock := w1cFixedClock{now: time.UnixMilli(1720000000000)}
-	id := chainNewAuditID(clock)
-	pattern := regexp.MustCompile(`^audit_1720000000000_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	if !pattern.MatchString(id) {
-		t.Fatalf("审计 ID 形状不符（audit_毫秒_UUIDv4）：%q", id)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // chain_compose.go：body 拒绝记录器（协作者缺席时保持惰性）
 // ---------------------------------------------------------------------------
 
 func TestW1CChainBodyRejectionRecorderInertWithoutCollaborators(t *testing.T) {
 	recorder := &chainBodyRejectionRecorder{
-		audit:        nil,
-		auditEnabled: func() bool { return true },
-		usage:        nil,
-		clock:        w1cFixedClock{now: time.UnixMilli(1720000000000)},
+		usage: nil,
 	}
 	req := (&http.Request{
 		Method: http.MethodPost,

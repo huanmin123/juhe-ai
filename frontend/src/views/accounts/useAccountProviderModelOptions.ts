@@ -43,6 +43,10 @@ export async function loadAccountProviderModelOptionsResource(
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
   const providerModelOptions = ref<AccountModelSelectOption[]>([])
   const providerModelsLoading = ref(false)
+  // 当前目录 scope 下是否完成过至少一次候选加载（v8-D）：模型候选是懒加载
+  // （弹窗打开/下拉展开/搜索时请求，切供应商即 reset 清空），“未加载”与
+  // “加载后确认为空”必须区分，空态提示只允许在 settled 后出现。
+  const providerModelOptionsSettled = ref(false)
   let latestRequestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
@@ -60,6 +64,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     latestRequestId += 1
     providerModelOptions.value = []
     providerModelsLoading.value = false
+    providerModelOptionsSettled.value = false
     loadingKey = undefined
     loadingPromise = undefined
   }
@@ -103,6 +108,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       } finally {
         if (requestId === latestRequestId) {
           providerModelsLoading.value = false
+          providerModelOptionsSettled.value = true
           loadingKey = undefined
           loadingPromise = undefined
         }
@@ -139,6 +145,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     loadProviderModelOptions,
     providerModelOptions,
     providerModelsLoading,
+    providerModelOptionsSettled,
     resetProviderModelOptions
   }
 }

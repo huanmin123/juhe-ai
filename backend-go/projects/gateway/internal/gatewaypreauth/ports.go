@@ -551,36 +551,6 @@ type AuditSettings interface {
 	AuditLogEnabled() bool
 }
 
-// AuditDispatcher mirrors dispatchAuditLogToGo (audit-logs go input service).
-type AuditDispatcher interface {
-	Dispatch(input DispatchedAuditLogInput)
-}
-
-// DispatchedAuditLogInput mirrors the AuditLogInput fields the dropped
-// capture fills.
-type DispatchedAuditLogInput struct {
-	ID              string
-	LifecycleStatus string
-	TraceID         string
-	TrafficSource   string
-	AuditOutcome    string
-	Success         bool
-	Method          string
-	Path            string
-	QueryString     string
-	ClientIP        string
-	UserAgent       string
-	FinalStatusCode int
-	ErrorPhase      string
-	ErrorCode       string
-	ErrorMessage    string
-	SampleBucket    int
-	SampleReason    string
-	CaptureStatus   string
-	StartedAt       string
-	EndedAt         string
-}
-
 // NormalRouteSpeedFirstRuntimeConfig mirrors NormalRouteSpeedFirstRuntimeConfig.
 type NormalRouteSpeedFirstRuntimeConfig struct {
 	SchedulingPreference string

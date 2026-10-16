@@ -426,7 +426,6 @@ func TestW1AdapterGuardsAndIdentity(t *testing.T) {
 		t.Fatal("必须回退到适配器")
 	}
 	// 审计适配器：producer 缺席静默丢弃。
-	auditDispatchAdapter{}.Dispatch(gatewaypreauth.DispatchedAuditLogInput{})
 	auditUsageDispatcher{}.DispatchAuditLog(nil, gatewayusage.AuditLogInput{})
 	// auditSettingsSource：nil enabled 函数 → 关闭；零值构造采样字段保持 0。
 	settings := (auditSettingsSourceAdapter{}).ReadAuditLogSettings()

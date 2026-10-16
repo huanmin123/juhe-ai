@@ -984,6 +984,7 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 	gatewayContext := c.gatewayContext
 	retainedAttempts := make([]AuditLogAttemptInput, len(c.attempts))
 	copy(retainedAttempts, c.attempts)
+	totalAttempts := len(c.attempts)
 	retainedPayloads := make([]AuditLogPayloadInput, len(c.payloads))
 	copy(retainedPayloads, c.payloads)
 	c.mu.Unlock()
@@ -992,6 +993,21 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 	}
 	if cancel != nil {
 		cancel()
+	}
+	// 收录范围（2026-10-16 收窄）：网关拦截面（认证失败、权限/限流拒绝、
+	// 调度无可用上游账户、preflight 校验拒绝等，统一为 gateway_failed 且零
+	// 上游账户尝试）不再落审计，只在运行日志与 usage 侧记账保留事实。账户级
+	// 连接前失败（代理不可用、并发满）走 RecordFailedDispatchAttempt 计入
+	// attempts，仍然保留。真实尝试数在加锁段读取，不受成功未采样信封清空
+	// retainedAttempts 的影响。
+	if outcome == AuditOutcomeGatewayFailed && totalAttempts == 0 {
+		if c.input.StageLogger != nil {
+			c.input.StageLogger.LogRequestStage("audit.finalize", map[string]any{
+				"traceId":                  c.traceID,
+				"droppedNoUpstreamAttempt": true,
+			}, "skipped")
+		}
+		return
 	}
 
 	if shouldAddResponsePayload {

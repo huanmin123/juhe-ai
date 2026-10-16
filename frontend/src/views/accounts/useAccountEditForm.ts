@@ -76,7 +76,8 @@ import {
 import { buildAccountSavePayload, type AccountSavePayload } from './accountSavePayload'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
-import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultHealthCheckEndpointModeForCapabilityDomain } from './accountCapabilityDomains'
+import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultHealthCheckEndpointModeForCapabilityDomain, preferredMediaDomainProviderCode, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { cachedMediaDomainModelAvailability } from './mediaDomainModelAvailability'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
 import type { AccountGroupOptionsLoadOptions, AccountGroupOptionsScope } from './useAccountGroupOptions'
@@ -88,6 +89,8 @@ type ReadonlyValue<T> = {
 export interface UseAccountEditFormOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   accounts: ReadonlyValue<AccountListItem[]>
+  /** 当前路由能力域（v8-D 媒体域新建默认供应商收敛依据；四域路由共用本组合式）。 */
+  capabilityDomain: ComputedRef<AccountCapabilityDomain>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   groupIdForAccount: (accountId: string) => string | undefined
   groups: ReadonlyValue<GroupOptionSummary[]>
@@ -134,6 +137,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     loadProviderModelOptions,
     providerModelOptions: loadedProviderModelOptions,
     providerModelsLoading,
+    providerModelOptionsSettled,
     resetProviderModelOptions
   } = useAccountProviderModelOptions({
     currentProviderCode: () => form.providerCode,
@@ -380,11 +384,32 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningScheduleFingerprint.value = undefined
     creatingAccountScopeParams.value = undefined
     if (!isCurrentFormOpenRequest(requestToken)) return
-    resetForm('', '')
+    resetForm(mediaDomainDefaultProviderCode(), '')
     applyCachedDefaultGroup()
     accountAdvancedDetailLoaded.value = true
     accountAdvancedDetailLoading.value = false
     modalOpen.value = true
+  }
+
+  // v8-D 媒体域新建默认供应商收敛：预取就绪且既有默认供应商在当前域无在售
+  // 目录模型时，返回域内首个「启用且有货」供应商（候选序同列表页供应商清单），
+  // 由 resetForm 一次性落值。预取未就绪或交集为空时返回空串——表单回退既有
+  // 全局默认（GPT 优先），不做打开后异步改选，避免默认值跳变与用户已输入被
+  // 重置；对话域行为零变化。
+  function mediaDomainDefaultProviderCode(): string {
+    const capabilityDomain = options.capabilityDomain.value
+    if (!capabilityDomainIsMedia(capabilityDomain)) return ''
+    const availability = cachedMediaDomainModelAvailability({
+      capabilityDomain,
+      isManagementView: options.isManagementView.value,
+      systemAccountId: createScopeParams.value?.systemAccountId
+    })
+    if (!availability) return ''
+    return preferredMediaDomainProviderCode({
+      capabilityDomain,
+      providers: mergedProviderDefinitions(),
+      providerCodesWithDomainModels: availability
+    }) ?? ''
   }
 
   watch(
@@ -1058,6 +1083,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerName,
     providerModelOptions,
     providerModelsLoading,
+    providerModelOptionsSettled,
     currentDraftTestPayload,
     saveAccount,
     selectAccountType,

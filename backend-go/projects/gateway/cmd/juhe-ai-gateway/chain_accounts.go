@@ -38,6 +38,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -684,6 +685,32 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 	tables := fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts"))
 	supportedModelsTable := s.table("account_supported_models")
 	mappingsTable := s.table("account_model_mappings")
+	// direct 档模型谓词：请求模型命中 volcengine TTS 占位名↔现役名等价组时
+	// 展开为组内全部成员（IN (?, ...)），账户声明任一名字都命中 direct 档
+	//（契约 §9.2「派发匹配等价」的候选窗口层——选组/派发两层 Go 匹配与
+	// adapter 归一共用该等价事实，本查询是 preflight 选组的候选窗口，若只
+	// 精确匹配会在两层匹配之前就把账户滤空）；等价组外维持 `= ?` 精确匹配。
+	directModelArgs := gatewayrouting.VolcengineTTSModelAliasVariantsOf(model)
+	directModelPredicate := "direct_models.model = ?"
+	mappedAliasPredicate := "mapped_supported.model = model_mappings.upstream_model"
+	var mappedAliasArgs []any
+	if len(directModelArgs) > 1 {
+		directModelPredicate = fmt.Sprintf("direct_models.model IN (%s)", strings.TrimSuffix(strings.Repeat("?, ", len(directModelArgs)), ", "))
+		// 映射档 mapped_supported 检查与 Go 映射门同构展开：映射产出模型与
+		// 账户声明模型只要都落等价组即视为一致（否则「映射 upstream=现役名、
+		// 声明=占位名」的账户在本窗口即被剔成 rank 3，Go 层已钉住的映射放行
+		// 行为到不了生产）。谓词仅在请求模型命中组时替换，组外 SQL 与参数
+		// 数量维持原形态。
+		variantPlaceholders := strings.TrimSuffix(strings.Repeat("?, ", len(directModelArgs)), ", ")
+		mappedAliasPredicate = "mapped_supported.model = model_mappings.upstream_model OR (model_mappings.upstream_model IN (" +
+			variantPlaceholders + ") AND mapped_supported.model IN (" + variantPlaceholders + "))"
+		for _, variant := range directModelArgs {
+			mappedAliasArgs = append(mappedAliasArgs, variant)
+		}
+		for _, variant := range directModelArgs {
+			mappedAliasArgs = append(mappedAliasArgs, variant)
+		}
+	}
 	query := strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{tail}", chainCandidateModelTail,
@@ -691,6 +718,8 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		"{where}", where,
 		"{supportedModels}", supportedModelsTable,
 		"{mappings}", mappingsTable,
+		"{directModelPredicate}", directModelPredicate,
+		"{mappedAliasPredicate}", mappedAliasPredicate,
 	).Replace(`WITH eligible_rows AS (
 		SELECT {columns}{tail}
 		{tables} {where}
@@ -702,7 +731,7 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 						SELECT 1 FROM {supportedModels} direct_models
 						WHERE direct_models.account_id = eligible_rows.model_resource_account_id
 							AND direct_models.provider_code = eligible_rows.model_resource_provider_code
-							AND direct_models.model = ?
+							AND {directModelPredicate}
 					) THEN 0
 					WHEN EXISTS (
 						SELECT 1 FROM {mappings} model_mappings
@@ -724,7 +753,7 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 									SELECT 1 FROM {supportedModels} mapped_supported
 									WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
 										AND mapped_supported.provider_code = eligible_rows.model_resource_provider_code
-										AND mapped_supported.model = model_mappings.upstream_model
+										AND ({mappedAliasPredicate})
 								)
 							)
 					) THEN 1
@@ -752,8 +781,15 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
 		args = append(args, now)
 	}
-	args = append(args, groupAccess.ProviderCode, includeFlag, now, now, now,
-		model, model, requestedEndpointFamily, s.candidateScanLimit)
+	args = append(args, groupAccess.ProviderCode, includeFlag, now, now, now)
+	for _, variant := range directModelArgs {
+		args = append(args, variant)
+	}
+	args = append(args, model, requestedEndpointFamily)
+	for _, variant := range mappedAliasArgs {
+		args = append(args, variant)
+	}
+	args = append(args, s.candidateScanLimit)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return nil, nil, err

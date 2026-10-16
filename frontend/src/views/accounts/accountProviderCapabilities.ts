@@ -356,10 +356,15 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     // openspeech /api/v3/tts adapter，凭据双值 speech_appid/speech_token）。
     // chat 可勾选但不进新账户默认集（探针真实计费 + 档案健康检查模型为
     // 媒体模型，见 defaultEndpointModesForAccount）；video_* 四值与
-    // audio_speech 同为显式可选能力。
+    // audio_speech 同为显式可选能力。2026-10-17 图像域开通：images_json 照
+    // gpt 等图像供应商的推导来源（openai 族固定可选项，不依赖 images
+    // endpoint family——档案族表与写侧校验均不按图像族读取）挂为显式可选
+    // 能力（豆包 seedream 系 ark /api/v3/images/generations，出站由链上
+    // volcengine images 服务根归一承接），只进图像域声明、不进默认集
+    //（defaultEndpointModesForAccount 过滤）。
     if (isVolcengineProviderCode(profile?.providerCode ?? profile?.code)) {
       const families = new Set(endpointFamilyCodes(profile))
-      const modes: AccountSupportedEndpointMode[] = []
+      const modes: AccountSupportedEndpointMode[] = ['images_json']
       if (families.has(OPENAI_CHAT_COMPLETIONS_FAMILY)) {
         modes.push(...chatEndpointModes)
       }

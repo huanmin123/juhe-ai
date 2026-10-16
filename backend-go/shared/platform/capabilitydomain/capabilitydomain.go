@@ -14,8 +14,8 @@
 // 解析语义只此一份，maintenance 的迁移执行器（分批事务、失败清单、两遍法
 // 实例继承）仍留在 maintenance internal/capabilitydomain。
 //
-// 一次客户端命令一个阶段跃迁；写入口约束（D6 三集合）与网关派发零改动属于
-// gateway/jobs 侧交付，不在本包范围。
+// 一次客户端命令一个阶段跃迁；网关写入口的严格声明校验（声明集必须 ⊆ 域
+// 允许集）与网关派发零改动属于 gateway/jobs 侧交付，不在本包范围。
 package capabilitydomain
 
 import "fmt"
@@ -49,7 +49,7 @@ const RuleVersion = 1
 // §推导规则 + §对话域纯粹化；前端 accountCapabilityDomains.ts 与网关词表
 // 镜像，本包不 import 两侧实现，以计划文本为唯一事实源）。v8-A 把
 // audio_transcription_json 与 realtime_session 移出对话域（归音频域）；
-// images_json 本就不在锚集（v8-A 后对话域不再追加共享，存量共享、新增隔离）。
+// images_json 本就不在锚集（v8-A 后对话域不再追加，图像 lane 一律归图像域）。
 var chatModes = []string{
 	"chat_json",
 	"chat_sse",
@@ -135,7 +135,8 @@ func KnownModes() []string {
 //     realtime_session 或任一 audio_job_* → audio（v8-A：短转写与实时会话
 //     自对话域移入音频域命中集）；
 //  4. 不含对话 modes 且含 images_json → image；
-//  5. 其余 → chat（modes 全量保留，域外值由三集合保存契约承载）。
+//  5. 其余 → chat（对话域零命中；声明集中落域 lane 之外的值由迁移命令裁剪
+//     至域内）。
 //
 // 输入必须已通过 ParseEndpointModes 的 ModesOK 校验（元素全部在词表内）；
 // 授权实例继承（规则 ①）在迁移器层按源账户域落列，不进本函数。
@@ -152,6 +153,24 @@ func DeriveDomain(modes []string) Domain {
 		}
 	}
 	return DomainChat
+}
+
+// LaneModesForDomain 返回域 lane 集的副本（chat=对话 13 值锚集、video=视频
+// 四值、audio=语音合成+长音频四值+短转写+实时会话、image=images_json）；
+// 未知域返回 nil。迁移命令用它把声明集裁剪至落域 lane 内，网关侧允许集另经
+// 供应商矩阵与写侧词表求交（在 accountscore，本包不复制那份语义）。
+func LaneModesForDomain(d Domain) []string {
+	switch d {
+	case DomainChat:
+		return ChatModes()
+	case DomainVideo:
+		return append([]string{}, videoModes...)
+	case DomainAudio:
+		return append([]string{}, audioModes...)
+	case DomainImage:
+		return append([]string{}, imageModes...)
+	}
+	return nil
 }
 
 // ModesStatus 是 supported_endpoint_modes 声明的解析结果分类。缺省、空数组、

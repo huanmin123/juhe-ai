@@ -318,7 +318,7 @@ func TestPreResolveGatewayRuntime_UserRequestLimitAndImageDisabled(t *testing.T)
 			t.Fatal("models 快路只调用 next")
 		}
 	})
-	t.Run("runtime 未解析记录早失败审计", func(t *testing.T) {
+	t.Run("runtime 未解析直接 401", func(t *testing.T) {
 		service, _, _ := newTestService(t, func(s *Service) {
 			s.RuntimeCache = &fakeRuntimeCache{}
 		})
@@ -330,37 +330,8 @@ func TestPreResolveGatewayRuntime_UserRequestLimitAndImageDisabled(t *testing.T)
 		if recorder.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d", recorder.Code)
 		}
-		// recordEarlyGatewayAuthFailure 只在 headersSent 后生效；此处尚未发送，故无 audit 派发。
+		// 拦截请求（零上游尝试）不再落审计：排障事实由网关运行日志覆盖。
 	})
-}
-
-func TestDispatchDroppedAuditCapture(t *testing.T) {
-	dispatcher := &fakeAuditDispatcher{}
-	service, _, _ := newTestService(t, func(s *Service) {
-		s.AuditDispatch = dispatcher
-	})
-	req, recorder, writer := newTestRequest("POST", "/v1/chat/completions?apiKey=secret")
-	// 模拟响应已写出（headersSent）。
-	recorder.WriteHeader(http.StatusUnauthorized)
-	writer.WriteHeader(http.StatusUnauthorized)
-	req.AuthFailureErrorMessage = "API Key 无效"
-	service.recordEarlyGatewayAuthFailure(writer, req)
-	if len(dispatcher.dispatched) != 1 {
-		t.Fatalf("dispatched = %d", len(dispatcher.dispatched))
-	}
-	capture := dispatcher.dispatched[0]
-	if capture.AuditOutcome != "gateway_failed" || capture.ErrorCode != "invalid_request_error" {
-		t.Fatalf("capture = %+v", capture)
-	}
-	if capture.Path != "/v1/chat/completions" {
-		t.Fatalf("path = %q", capture.Path)
-	}
-	if capture.QueryString != "apiKey=secret" {
-		t.Fatalf("queryString = %q", capture.QueryString)
-	}
-	if capture.ErrorMessage != "API Key 无效" || capture.ErrorPhase != "auth" {
-		t.Fatalf("error copy = %+v", capture)
-	}
 }
 
 func TestIsImageGenerationDisabledForAPIKey(t *testing.T) {

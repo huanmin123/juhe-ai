@@ -482,33 +482,6 @@ func (d *Deps) runPatch(w http.ResponseWriter, r *http.Request, auth *authsys.Au
 			}, r)
 		}
 	}
-	// M3 显式清理单独审计（D6 只缩不扩 + 计划 §M3）：PATCH 缩小域外遗留集合
-	// 时补记一条「清理域外能力」动作，含账户与被移除值列表；普通编辑不缩小
-	// 时不产生该条目。与上面的常规 update 条目并存（凭据变化已在其中体现）。
-	if d.Sink != nil && len(result.CapabilityLegacyCleanupRemoved) > 0 {
-		access := requestScope(r)
-		d.Sink.Record(authsys.OperationLogEntry{
-			ActorSystemAccountID:          auth.SystemAccountID,
-			ActorUsername:                 auth.Username,
-			ActorDisplayName:              auth.DisplayName,
-			ActorRole:                     auth.Role,
-			OperationScopeSystemAccountID: result.OwnerSystemAccountID,
-			Mode:                          operationMode(access),
-			Module:                        "accounts",
-			Action:                        "cleanup_capability_legacy",
-			OperationKey:                  "accounts.cleanup_capability_legacy",
-			ResourceType:                  "account",
-			ResourceID:                    result.ID,
-			ResourceName:                  result.Name,
-			Summary:                       "清理域外能力：" + result.Name + "（移除 " + strings.Join(result.CapabilityLegacyCleanupRemoved, "、") + "）",
-			Changes: []authsys.OperationLogChange{
-				safeChange("capabilityLegacyModes", "域外能力", result.CapabilityLegacyCleanupRemoved, nil),
-			},
-			Viewers: []authsys.OperationLogViewer{
-				{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},
-			},
-		}, r)
-	}
 	// Node PATCH route tail (accounts.routes.ts:367-369): a health-relevant
 	// change dispatches the post-commit configuration probe. The
 	// tags-only surface never carries those fields, so the check is harmless

@@ -8,9 +8,9 @@
             <template #content>
               <div class="api-key-help-content">
                 <div><strong>单 Key</strong><span>直接使用当前唯一 Key。</span></div>
-                <div><strong>轮询</strong><span>新请求按 Key 顺序轮流选择，持续均衡使用。</span></div>
-                <div><strong>权重</strong><span>按每个 Key 的权重选择，权重越高使用越频繁。</span></div>
-                <div><strong>主备</strong><span>第一行是主 Key，后续是备用 Key；主 Key 失败时，本次请求按顺序切换备用 Key。</span></div>
+                <div><strong>轮询</strong><span>首次选择或会话 Key 黏性失配后，按 Key 顺序轮流选择；命中会话黏性时复用上次协议成功的 Key。</span></div>
+                <div><strong>权重</strong><span>首次选择或会话 Key 黏性失配后，按配置权重选择；命中会话黏性时复用上次协议成功的 Key。</span></div>
+                <div><strong>主备</strong><span>第一行是主 Key，后续是备用 Key；主 Key 失败时，本次请求按顺序切换备用 Key。会话切换到备用 Key 后，在绑定失效前不自动回切主 Key。</span></div>
                 <div><strong>状态</strong><span>输入框前缀显示当前 Key 的运行状态；不可调度的 Key 会被自动跳过。</span></div>
                 <div><strong>排序</strong><span>只有主备模式支持拖拽，调整顺序即可调整主备优先级。</span></div>
               </div>

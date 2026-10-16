@@ -143,6 +143,16 @@ func selectAccountRuntimeApiKeyEntry(ctx context.Context, input apiKeySelectionI
 		selected := recovery[0]
 		return &selectedApiKeyEntry{key: selected.key, fingerprint: selected.fingerprint, index: selected.index}, nil
 	}
+	// 会话黏性（账户内 Key 会话亲和，仅首轮普通选择传入）：只在健康候选集内
+	// 匹配——禁用、请求内排除、冷却（存在健康候选时）的黏住 Key 在候选构建
+	// 阶段已自然失配；命中时不走策略、不消费轮转计数器，失配落入既有管线。
+	if input.PreferredApiKeyFingerprint != "" {
+		for _, entry := range candidates {
+			if entry.fingerprint == input.PreferredApiKeyFingerprint {
+				return selectedOf(entry), nil
+			}
+		}
+	}
 	// 3. 单候选直选（归档 :74）。
 	if len(candidates) == 1 {
 		selected := candidates[0]

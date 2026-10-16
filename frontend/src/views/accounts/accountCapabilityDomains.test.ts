@@ -11,14 +11,13 @@ import {
   MINIMAX_OPENAI_V1_PROFILE_ID,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  OPENAI_RESPONSES_FAMILY,
   OPENAI_TTS_FAMILY,
   OPENAI_VIDEO_GENERATION_FAMILY,
   QWEN_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
   XAI_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
-import type { AccountSupportedEndpointMode } from '@/types/domain'
+import type { AccountSupportedEndpointMode, ProviderDefinition } from '@/types/domain'
 import {
   allAccountEndpointModes,
   defaultEndpointModesForAccount,
@@ -41,7 +40,8 @@ import {
   defaultHealthCheckEndpointModeForCapabilityDomain,
   defaultStatusForCapabilityDomain,
   deriveCapabilityDomain,
-  mediaDomainModelProtocolTokens
+  mediaDomainModelProtocolTokens,
+  preferredMediaDomainProviderCode
 } from './accountCapabilityDomains'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 
@@ -162,7 +162,7 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
       expected: 'audio'
     },
     {
-      name: 'v8-A：对话 + 短转写混合仍归 chat（含对话 modes 即停，遗留机制兜底）',
+      name: 'v8-A：对话 + 短转写混合仍归 chat（含对话 modes 即停）',
       modes: ['chat_json', 'audio_transcription_json'],
       expected: 'chat'
     },
@@ -241,7 +241,7 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
   })
 })
 
-// ---- M2 允许集/默认集镜像（§D6 三集合 + §档案×域清单表定案 v7） ----
+// ---- M2 允许集/默认集镜像（声明集 ⊆ 域允许集不变式 + §档案×域清单表定案 v7） ----
 
 const VIDEO_GROUP: AccountSupportedEndpointMode[] = ['video_create', 'video_get', 'video_content', 'video_cancel']
 const AUDIO_JOB_GROUP: AccountSupportedEndpointMode[] = ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel']
@@ -375,7 +375,7 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
     { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'hybrid', profile: hybridProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
     { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
+    { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: ['images_json'] },
     { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
     { name: 'deepseek', profile: deepseekProfile, video: [], audio: [], image: [] },
     { name: 'anthropic', profile: anthropicProfile, video: [], audio: [], image: [] },
@@ -426,7 +426,7 @@ describe('allowedEndpointModesFor：账户类型门（清单表：媒体域 = ap
 })
 
 describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () => {
-  it('chat 域默认集与现行 defaultEndpointModesForAccount 逐项一致', () => {
+  it('chat 域默认集：现行默认本就域内的供应商与 defaultEndpointModesForAccount 逐项一致（BUG-0323 根治 I3 新口径）', () => {
     const cases: Array<{ profile: AccountProviderProfileLike; type: 'api_key' | 'oauth' | 'google_oauth' }> = [
       { profile: gptProfile, type: 'api_key' },
       { profile: gptProfile, type: 'oauth' },
@@ -434,15 +434,25 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
       { profile: anthropicProfile, type: 'api_key' },
       { profile: geminiNativeProfile, type: 'api_key' },
       { profile: geminiNativeProfile, type: 'google_oauth' },
-      { profile: hybridProfile, type: 'api_key' },
-      { profile: volcengineProfile, type: 'api_key' },
-      { profile: qwenProfile, type: 'api_key' },
       { profile: minimaxProfile, type: 'api_key' }
     ]
     for (const item of cases) {
       expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: item.profile, type: item.type }))
         .toEqual(defaultEndpointModesForAccount({ profile: item.profile, type: item.type }))
     }
+  })
+
+  it('chat 域默认集：BUG-0323 根治——现行默认不含对话值的供应商落词表内基础对话对，hybrid 收敛为域内允许集', () => {
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: volcengineProfile, type: 'api_key' }))
+      .toEqual(['chat_json', 'chat_sse'])
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: qwenProfile, type: 'api_key' }))
+      .toEqual(['chat_json', 'chat_sse'])
+    const hybridAllowed = allowedEndpointModesFor({ capabilityDomain: 'chat', profile: hybridProfile, accountType: 'api_key' })
+    expect(hybridAllowed.length).toBeGreaterThan(0)
+    // hybrid 现行默认为全词表并集，求交结果按并集序保序（与后端 intersectLaneModes
+    // 同语义），与锚集序的允许集集合相同、排序不同，按集合比较。
+    const hybridChat = defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'chat', profile: hybridProfile, type: 'api_key' })
+    expect([...hybridChat].sort()).toEqual([...hybridAllowed].sort())
   })
 
   it.each([
@@ -510,5 +520,62 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
     for (const mode of domainModes) {
       expect(catalogModeValues).toContain(mode)
     }
+  })
+})
+
+describe('preferredMediaDomainProviderCode：媒体域新建默认供应商收敛（v8-D）', () => {
+  const providerByCode = (code: string, overrides: Partial<ProviderDefinition> = {}): ProviderDefinition => {
+    const provider = FALLBACK_PROVIDERS.find((item) => item.code === code)
+    expect(provider, `FALLBACK_PROVIDERS 缺少供应商 ${code}`).toBeTruthy()
+    return { ...provider!, ...overrides }
+  }
+
+  it('video 域：清单序里首个「启用 + 域矩阵放行 + 有在售目录」的供应商胜出', () => {
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'video',
+      providers: [providerByCode('gpt'), providerByCode('glm')],
+      providerCodesWithDomainModels: new Set(['gpt', 'glm'])
+    })).toBe('gpt')
+    // gpt 无货（sora-2/sora-2-pro 已下线场景）→ 收敛到 glm。
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'video',
+      providers: [providerByCode('gpt'), providerByCode('glm')],
+      providerCodesWithDomainModels: new Set(['glm'])
+    })).toBe('glm')
+  })
+
+  it('禁用供应商跳过；全无货返回 undefined（调用方保持既有默认值，不做异步改选）', () => {
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'video',
+      providers: [providerByCode('gpt', { enabled: false }), providerByCode('glm')],
+      providerCodesWithDomainModels: new Set(['gpt', 'glm'])
+    })).toBe('glm')
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'video',
+      providers: [providerByCode('gpt')],
+      providerCodesWithDomainModels: new Set(['glm', 'qwen'])
+    })).toBeUndefined()
+  })
+
+  it('chat 域不适用（对话域默认供应商行为零变化）；gemini 仅 native 档案放行', () => {
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'chat',
+      providers: [providerByCode('gpt')],
+      providerCodesWithDomainModels: new Set(['gpt'])
+    })).toBeUndefined()
+    // gemini OpenAI Chat 档案无媒体域（矩阵无行）：不参与媒体域收敛。
+    const geminiOpenAIChat = providerByCode('gemini', { protocolProfiles: [geminiOpenAIChatProfile as never] })
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'video',
+      providers: [geminiOpenAIChat],
+      providerCodesWithDomainModels: new Set(['gemini'])
+    })).toBeUndefined()
+    // native 档案放行（Veo）。
+    const geminiNative = providerByCode('gemini', { protocolProfiles: [geminiNativeProfile as never] })
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'video',
+      providers: [geminiNative],
+      providerCodesWithDomainModels: new Set(['gemini'])
+    })).toBe('gemini')
   })
 })

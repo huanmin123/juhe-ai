@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeModelCheckRunModelOptions, modelCheckModelsForAccount } from './modelCheckProviderCapabilities'
+import { canSelectTrustedModelCheckAccount, mergeModelCheckRunModelOptions, modelCheckModelsForAccount } from './modelCheckProviderCapabilities'
 import type { ModelCheckOption } from '@/types/domain/model-checks'
 
 const supportedModels: ModelCheckOption[] = [
@@ -81,5 +81,58 @@ describe('modelCheckModelsForAccount', () => {
       'gpt-5.5',
       'gpt-5.4'
     ])
+  })
+})
+
+describe('canSelectTrustedModelCheckAccount', () => {
+  const target = {
+    id: 'target',
+    name: '目标账户',
+    providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
+    modelCheckModels: ['gpt-5.6-sol', 'gpt-6.1-sol']
+  }
+  const catalogModel = 'gpt-5.6-sol'
+  const outOfCatalogModel = 'gpt-6.1-sol'
+
+  it('admits a same-profile candidate with unknown models (list responses carry no modelCheckModels)', () => {
+    const candidate = {
+      id: 'peer',
+      name: '对比账户',
+      providerCode: 'openai',
+      providerProtocolProfileId: 'profile_openai_openai_v1'
+    }
+    expect(canSelectTrustedModelCheckAccount(candidate, {
+      targetAccount: target,
+      model: outOfCatalogModel,
+      excludedAccountId: target.id
+    })).toBe(true)
+  })
+
+  it('keeps the precise model gate once the candidate models are known', () => {
+    const supporting = { ...target, id: 'peer-known-support', name: '已支持对比' }
+    const lacking = { ...target, id: 'peer-known-lacking', name: '不支持对比', modelCheckModels: ['gpt-5.6-sol'] }
+    expect(canSelectTrustedModelCheckAccount(supporting, {
+      targetAccount: target, model: outOfCatalogModel, excludedAccountId: target.id
+    })).toBe(true)
+    expect(canSelectTrustedModelCheckAccount(lacking, {
+      targetAccount: target, model: outOfCatalogModel, excludedAccountId: target.id
+    })).toBe(false)
+  })
+
+  it('still rejects cross-profile candidates and the target itself', () => {
+    const crossProfile = {
+      id: 'peer-cross',
+      name: '跨档案账户',
+      providerCode: 'glm',
+      providerProtocolProfileId: 'profile_glm_general_openai_v1'
+    }
+    const self = { ...target, id: target.id }
+    expect(canSelectTrustedModelCheckAccount(crossProfile, {
+      targetAccount: target, model: catalogModel, excludedAccountId: target.id
+    })).toBe(false)
+    expect(canSelectTrustedModelCheckAccount(self, {
+      targetAccount: target, model: catalogModel, excludedAccountId: target.id
+    })).toBe(false)
   })
 })

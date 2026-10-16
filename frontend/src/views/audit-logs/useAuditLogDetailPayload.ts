@@ -25,6 +25,12 @@ export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDepe
   let payloadRequestId = 0
 
   async function openDetail(record: AuditLogListItem): Promise<void> {
+    await openDetailById(record.id, record)
+  }
+
+  // openDetailById 支持从错误组样本事件等场景按 ID 直开详情；record 仅用于
+  // 补充列表行字段，detail 接口返回的同名字段始终覆盖它。
+  async function openDetailById(id: string, record?: AuditLogListItem): Promise<void> {
     const requestId = detailRequestId + 1
     detailRequestId = requestId
     payloadRequestId += 1
@@ -34,9 +40,11 @@ export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDepe
     detailLoading.value = true
     selectedPayload.value = undefined
     try {
-      const nextDetail = await (dependencies.loadDetail?.(record.id) ?? api.auditLogs.detail(record.id))
+      const nextDetail = await (dependencies.loadDetail?.(id) ?? api.auditLogs.detail(id))
       if (requestId === detailRequestId) {
-        detail.value = { ...record, ...nextDetail }
+        // 后端 detail 实际返回完整 AuditLogSummary 字段（DTO 类型面按 UI 消费
+        // 收窄为 Supplement），按 ID 直开时无列表行兜底，合并后显式断言。
+        detail.value = { ...record, ...nextDetail } as AuditLogDisplayDetail
       }
     } catch (error) {
       if (requestId === detailRequestId) {
@@ -96,6 +104,7 @@ export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDepe
     detailOpen,
     loadPayload,
     openDetail,
+    openDetailById,
     payloadLoadingId,
     selectedPayload
   }

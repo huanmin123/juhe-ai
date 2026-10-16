@@ -1,4 +1,4 @@
-import type { AccountSupportedEndpointMode, AccountType } from '@/types/domain'
+import type { AccountSupportedEndpointMode, AccountType, ProviderDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { GEMINI_NATIVE_V1BETA_PROFILE_ID, isGeminiProviderCode, isGlmProviderCode, isGptVendorCode, isHybridProviderCode, isMinimaxProviderCode, isOpenAICompatibleProviderCode, isQwenProviderCode, isVolcengineProviderCode, isXaiProviderCode } from '@/shared/providerProtocol'
 import { defaultEndpointModesForAccount, endpointModesForProfile, type AccountProviderProfileLike } from './accountProviderCapabilities'
@@ -70,12 +70,14 @@ export const DOMAIN_ENDPOINT_MODES_IMAGE: readonly AccountSupportedEndpointMode[
 
 /**
  * 域→目录 mode 白名单（v8-C 模型选择器按域过滤根治）：四域允许选出的
- * `provider_model_catalog.mode` / `custom_provider_models.mode` 词表值。
- * 词表实况六值 chat/responses/embedding/audio/video/image_generation（与
- * model_catalog_data_gen.go 种子及服务端 `ProviderCatalogModeValues` 同源）：
- * chat={chat,responses}；video={video}；audio={audio}（含 TTS/转写/realtime，
- * 目录统一 mode=audio）；image={image_generation}。embedding 行不属于任何
- * 账户域，任何域都不放行。
+ * `provider_model_catalog.mode` 六值词表值（与 model_catalog_data_gen.go
+ * 种子及服务端 `ProviderCatalogModeValues` 同源）：chat={chat,responses}；
+ * video={video}；audio={audio}（含 TTS/转写/realtime，目录统一 mode=audio）；
+ * image={image_generation}。embedding 行不属于任何账户域，任何域都不放行。
+ * 自定义表 `custom_provider_models.mode` 是另一套四值 UI 分类词表
+ * （text/image/audio/video，写入枚举固定），服务端按表翻译后过滤
+ * （chat/responses→text、image_generation→image、audio/video 同形，
+ * BUG-0324）：调用方始终传本表六值，不做本地换算。
  */
 export const DOMAIN_MODEL_MODES: Record<AccountCapabilityDomain, readonly string[]> = {
   chat: ['chat', 'responses'],
@@ -94,7 +96,7 @@ export const DOMAIN_MODEL_MODES: Record<AccountCapabilityDomain, readonly string
  *    `realtime_session` 或任一 `audio_job_create/get/content/cancel` → `audio`
  *    （v8-A：短转写与实时会话自对话域移入）；
  * ④ 不含对话 modes 且含 `images_json` → `image`；
- * ⑤ 其余 → `chat`（modes 全量保留，域外值由三集合保存契约承载）。
+ * ⑤ 其余 → `chat`（未命中媒体触发集合的 modes 全量保留，域边界以服务端校验为准）。
  *
  * 入参接受原始字符串数组以对齐迁移读取口径；未知模式不命中任何媒体触发集合、
  * 也不做通配符推断（对齐迁移契约「不能用通配符把未知 video_* 自动视为合法能力」），
@@ -109,10 +111,10 @@ export function deriveCapabilityDomain(modes: ReadonlyArray<AccountSupportedEndp
   return 'chat'
 }
 
-// 三集合模型（§D6）。allowed =「域 modes 集 × 供应商写侧词表」求交（本文件底部矩阵），
-// default = defaultEndpointModesForAccount 按域收窄，declared = 账户当前 modes（可含域外遗留值）。
+// 三集合模型。allowed =「域 modes 集 × 供应商写侧词表」求交（本文件底部矩阵），
+// default = defaultEndpointModesForAccount 按域收窄，declared = 账户当前 modes（必须 ⊆ allowed）。
 
-/** 允许能力集（allowed）：新建及普通编辑可新增声明的上限；不包含仅为兼容保留的遗留值。 */
+/** 允许能力集（allowed）：声明集的上限——账户声明集必须 ⊆ 所在域允许集。 */
 export type AccountCapabilityAllowedSet = {
   capabilityDomain: AccountCapabilityDomain
   providerCode?: string
@@ -127,7 +129,7 @@ export type AccountCapabilityDefaultSet = {
   modes: readonly AccountSupportedEndpointMode[]
 }
 
-/** 实际声明集（declared）：账户当前生效 modes，可含域外遗留值（存量兼容）；遗留集合以服务端数据库现值为准。 */
+/** 实际声明集（declared）：账户当前生效 modes，必须 ⊆ 所在域允许集；域边界以服务端为准。 */
 export type AccountCapabilityDeclaredSet = {
   capabilityDomain: AccountCapabilityDomain
   modes: AccountFormModel['supportedEndpointModes']
@@ -177,8 +179,10 @@ const OPENAI_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...
 const HYBRID_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_TRANSCRIPTION_JSON, ...REALTIME_SESSION], image: IMAGES_JSON }
 // minimax：hailuo（视频）+ t2a_v2（audio_speech）；无 chat/image 域，词表无新值。
 const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
-// volcengine：seedance（视频）+ 豆包 TTS（audio_speech，speech_appid/speech_token 双值凭据）；词表无新值。
-const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
+// volcengine：seedance（视频）+ 豆包音频生成 TTS（audio_speech，新版语音
+// 控制台 API Key 单值凭据 speech_token）+ seedream 图像（images_json，
+// 2026-10-17 图像批开闸，词表新值与后端写侧同批）；无 chat 域新值。
+const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: IMAGES_JSON }
 
 function mediaMatrixRowForProfile(input: {
   providerCode?: string
@@ -246,7 +250,7 @@ export function capabilityDomainAccountTypes(input: {
  * 音频域补后两项）。
  *
  * - chat 域 = 13 值对话锚集合 ∩ 供应商词表；纯媒体词表（minimax 等）求交后为
- *   空集，即该供应商无 chat 域；被移出三项只作为存量对话账户的域外遗留值回显。
+ *   空集，即该供应商无 chat 域；被移出三项不属于对话域允许集。
  * - 媒体域按域×供应商矩阵取域 modes 集，再与词表求交；gpt/xai/anthropic 系 oauth
  *   不可媒体（账户类型门），gemini native `google_oauth` 在 video/audio 域可用。
  * - 账户类型不在域允许集合内（媒体域传 `oauth`，或 google_oauth 非 gemini native）
@@ -293,11 +297,23 @@ export function defaultEndpointModesForCapabilityDomain(input: {
   type: AccountType
 }): AccountSupportedEndpointMode[] {
   if (input.capabilityDomain === 'chat') {
-    return defaultEndpointModesForAccount({
+    // BUG-0323 根治镜像（与后端 DefaultEndpointModesForDomain chat 分支同一收
+    // 敛点）：chat 域缺省恒 ⊆ 域允许集——现行默认与域内允许集求交非空则原样
+    // 保留（openai 族/gemini/anthropic/glm 逐项不变）；现行默认不含对话值
+    // （volcengine/qwen 缺省 video_get）落词表内基础对话对。
+    const allowed = allowedEndpointModesFor({
+      capabilityDomain: 'chat',
+      providerCode: input.providerCode,
+      profile: input.profile,
+      accountType: input.type
+    })
+    const inDomain = defaultEndpointModesForAccount({
       provider: undefined,
       profile: input.profile,
       type: input.type
-    })
+    }).filter((mode) => allowed.includes(mode))
+    if (inDomain.length > 0) return inDomain
+    return allowed.filter((mode) => mode === 'chat_json' || mode === 'chat_sse')
   }
   const allowed = allowedEndpointModesFor({
     capabilityDomain: input.capabilityDomain,
@@ -351,4 +367,33 @@ export function mediaDomainModelProtocolTokens(capabilityDomain: AccountCapabili
   if (capabilityDomain === 'audio') return ['audio_speech', 'audio_transcription', 'realtime']
   if (capabilityDomain === 'image') return ['images']
   return []
+}
+
+/**
+ * 媒体域新建默认供应商收敛（v8-D）：在域过滤（与媒体表单供应商下拉同一判据，
+ * `capabilityDomainAccountTypes` 按档案求非空允许集）后的启用供应商里，返回
+ * 首个「该域有在售目录模型」的供应商编码；候选顺序与传入清单一致（列表页
+ * 供应商序）。交集为空或传入对话域时返回 undefined——对话域默认供应商行为
+ * 零变化（全局规则「GPT 优先、否则首个启用」），调用方对 undefined 保持既有
+ * 默认值，不做打开后异步改选。
+ */
+export function preferredMediaDomainProviderCode(input: {
+  capabilityDomain: AccountCapabilityDomain
+  providers: ReadonlyArray<Pick<ProviderDefinition, 'code' | 'enabled' | 'protocolProfiles'>>
+  providerCodesWithDomainModels: ReadonlySet<string>
+}): string | undefined {
+  if (input.capabilityDomain === 'chat') return undefined
+  for (const provider of input.providers) {
+    if (!provider.enabled) continue
+    if (!input.providerCodesWithDomainModels.has(provider.code)) continue
+    const inDomain = provider.protocolProfiles.some((profile) => (
+      capabilityDomainAccountTypes({
+        capabilityDomain: input.capabilityDomain,
+        providerCode: provider.code,
+        profile
+      }).length > 0
+    ))
+    if (inDomain) return provider.code
+  }
+  return undefined
 }

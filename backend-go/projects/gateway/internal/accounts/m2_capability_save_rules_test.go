@@ -1,13 +1,15 @@
 package accounts
 
 // AI 账户能力域拆分 M2 服务端统一保存规则（A2）行为级测试（T4，计划
-// §服务端统一校验 + §关键决策与理由 D6）：
+// §服务端统一校验；D6 三集合已废除，声明集严格 ⊆ 域允许集全链路强制）：
 //   - 创建 ⊆ allowed 正/负例（矩阵外组合拒绝、默认集按域、健康检查默认落值）；
-//   - 编辑三集合规则（遗留集合保号/缩小/扩大、modes 未携带不重置、域不可变、
-//     显式 null/空数组文案不变、gemini chat 对话能力）；
+//   - 编辑严格声明校验（显式数组含域外值拒绝、域内缩小按普通编辑放行、
+//     modes 未携带不重置、删键按域默认集重置且重置结果 ⊆ 域允许集（BUG-0323
+//     根治后按域默认集恒域内）、域不可变、显式 null/空数组文案不变、gemini
+//     chat 对话能力）；
 //   - 克隆契约（404/403/域不等/回显）；
 //   - 导入严格校验（混合包冲突 + 预览回显推导域 + 执行落域）；
-//   - 批量同域整批拒绝；
+//   - 批量同域整批拒绝 + 越界整批 400；
 //   - 导出 domain 过滤映射。
 
 import (
@@ -63,6 +65,27 @@ func m2SeedAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name string
 		health_check_model, created_at, updated_at)
 		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
 		id, ownerID, name, sealed, now, now)
+}
+
+// m2SeedDomainAccountWithModes 直插一个指定供应商档案与能力域的存量账户
+// （M2 删键默认集用例夹具；与 m2SeedAccountWithModes 同款直插手法，绕过写
+// 校验构造任意域 × 供应商组合）。
+func m2SeedDomainAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name, providerCode, profileID, domain string, modes []string) {
+	t.Helper()
+	credentials := Credentials{"api_key": "sk-domain-" + id, "base_url": "https://upstream.example.com/v1"}
+	if modes != nil {
+		credentials["supported_endpoint_modes"] = anyStrings(modes)
+	}
+	sealed, err := EncryptJSON(testSecret, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
+		health_check_model, capability_domain, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'm-default', ?, ?, ?)`,
+		id, ownerID, providerCode, profileID, name, sealed, domain, now, now)
 }
 
 // m2CreateBody 构造 POST /accounts 负载。
@@ -126,7 +149,8 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		return map[string]any{"api_key": "sk-live-m2-" + strings.ToLower(t.Name()), "base_url": "https://api.openai.com/v1"}
 	}
 
-	// chat 缺省（域与 modes 都缺省）= 现行行为逐项不变（I3）。
+	// chat 缺省（域与 modes 都缺省）= 现行行为逐项不变（openai 族现行默认
+	// 本就域内，BUG-0323 根治口径下逐项 pin）。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-chat-absent", "gpt", "prof-gpt", "api_key", "", apiKeyCredentials(), nil))
 	if code != http.StatusCreated {
@@ -195,6 +219,19 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("volcengine audio 创建应 201：%d", code)
 	}
 
+	// chat 域 modes 缺省 → 按域默认集播种（BUG-0323 已根治：媒体优先供应商
+	// 现行缺省 video_get 不在对话域，缺省落词表内基础对话对，声明 ⊆ chat
+	// 允许集，不再与严格校验冲突 400）。
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		m2CreateBody("m2-volc-chat-absent", "volcengine", volcengineOpenAIV1ProfileID, "api_key", "chat",
+			map[string]any{"api_key": "ak-volc-m2", "base_url": "https://ark.example.com/api/v3"}, nil))
+	if code != http.StatusCreated {
+		t.Fatalf("volcengine chat 缺省 modes 创建应 201：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, dataMap(t, payload)["id"].(string)); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse"}) {
+		t.Fatalf("volcengine chat 缺省 modes 应播种词表内基础对话对：%v", modes)
+	}
+
 	// image 域 modes 缺省 → images_json + 健康检查 images_json。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-image-absent", "gpt", "prof-gpt", "api_key", "image", apiKeyCredentials(), nil))
@@ -210,11 +247,21 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	}
 
 	// 矩阵外组合：allowed 为空 → 「{供应商} 不支持{域}账户」。
+	// volcengine+image 2026-10-17 随矩阵开通（ark /api/v3/images/generations
+	// 实测取证），原「volcengine 不支持图像账户」400 转为创建成功：modes 缺省
+	// → 图像域默认集 images_json + 健康检查 images_json。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-volc-image", "volcengine", volcengineOpenAIV1ProfileID, "api_key", "image",
 			map[string]any{"api_key": "ak-volc-m2", "base_url": "https://ark.example.com/api/v3"}, nil))
-	if code != http.StatusBadRequest || m2Message(payload) != "volcengine 不支持图像账户" {
-		t.Fatalf("volcengine+image 应 400 不支持：%d %v", code, payload)
+	if code != http.StatusCreated {
+		t.Fatalf("volcengine image 创建应 201（矩阵已开通图像域）：%d %v", code, payload)
+	}
+	volcImageID := dataMap(t, payload)["id"].(string)
+	if modes := m2AccountModes(t, env, volcImageID); !unorderedStringListEqual(modes, []string{"images_json"}) {
+		t.Fatalf("volcengine image 域缺省 modes 应落 images_json：%v", modes)
+	}
+	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, volcImageID); mode != "images_json" {
+		t.Fatalf("volcengine image 域健康检查默认应为 images_json：%s", mode)
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-anthropic-video", "anthropic", "profile_anthropic_v1", "api_key", "video",
@@ -349,8 +396,10 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	}
 }
 
-// TestM2ChatDomainLegacyDefaultsPin 把 chat 域默认集与现行归一化缺省逐上下文
-// 全等钉住（I3：差量语义与默认集一个不改）。
+// TestM2ChatDomainLegacyDefaultsPin 把 chat 域默认集按 BUG-0323 根治口径钉住：
+// 现行默认本就域内的供应商（openai 族/gemini/anthropic/glm）与现行归一化缺省
+// 逐项全等；媒体优先供应商（volcengine/qwen/hybrid）改为域内断言——缺省恒 ⊆
+// chat 域允许集，volcengine/qwen 落词表内基础对话对。
 func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 	contexts := []struct {
 		name         string
@@ -366,15 +415,12 @@ func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 		{name: "glm openai", providerCode: "glm", accountType: "api_key", profile: protocolPredicateInput{providerCode: "glm", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: glmGeneralOpenAIV1ProfileID}},
 		{name: "glm anthropic", providerCode: "glm", accountType: "api_key", profile: protocolPredicateInput{providerCode: "glm", protocolCode: "anthropic", protocolVersion: "v1", providerProtocolProfileID: glmCodingAnthropicV1ProfileID}},
 		{name: "gemini native", providerCode: "gemini", accountType: "api_key", profile: protocolPredicateInput{providerCode: "gemini", protocolCode: "gemini", protocolVersion: "v1beta", providerProtocolProfileID: "profile_gemini_native_v1beta"}},
+		{name: "xai api_key", providerCode: "xai", accountType: "api_key", profile: protocolPredicateInput{providerCode: "xai", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: xaiOpenAIV1ProfileID}},
 		// minimax 不进本对照：其 chat 域被矩阵门关闭（计划矩阵 minimax 行
 		// chat = ✗），DefaultEndpointModesForDomain(chat, minimax) 恒为空集；
 		// 其 chat 建户在现状下本就被写侧归一化拒绝（「MiniMax 账户上游接口
 		// 能力只支持语音合成 (audio_speech) 或视频生成端点 (video_*)」），无
-		// 可失去的成功路径，I3 零变化不受影响。
-		{name: "volcengine", providerCode: "volcengine", accountType: "api_key", profile: protocolPredicateInput{providerCode: "volcengine", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: volcengineOpenAIV1ProfileID}},
-		{name: "qwen", providerCode: "qwen", accountType: "api_key", profile: protocolPredicateInput{providerCode: "qwen", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: qwenOpenAIV1ProfileID}},
-		{name: "hybrid", providerCode: "hybrid", accountType: "api_key", profile: protocolPredicateInput{providerCode: "hybrid"}},
-		{name: "xai api_key", providerCode: "xai", accountType: "api_key", profile: protocolPredicateInput{providerCode: "xai", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: xaiOpenAIV1ProfileID}},
+		// 可失去的成功路径，零变化不受影响。
 	}
 	for _, tc := range contexts {
 		t.Run(tc.name, func(t *testing.T) {
@@ -390,9 +436,40 @@ func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 			}
 			domainDefault := accountscoreDefaultForTest(tc.providerCode, tc.accountType, tc.profile)
 			if !stringSlicesEqual(legacy, domainDefault) {
-				t.Fatalf("chat 域默认集必须与现行缺省逐项一致（I3）：现行=%v 按域=%v", legacy, domainDefault)
+				t.Fatalf("现行默认本就域内，chat 域默认集必须逐项不变：现行=%v 按域=%v", legacy, domainDefault)
 			}
 		})
+	}
+	// 媒体优先供应商（BUG-0323 根治口径）：现行默认不含对话值或为全词表并集，
+	// 不再逐项 pin 现行值，改为域内断言。volcengine/qwen 现行缺省 video_get
+	// 与 chat lane 集交集为空 → 落词表内基础对话对（Volcengine/Qwen
+	// EndpointModeValues 均含 chat 对）。
+	for _, tc := range []struct {
+		name         string
+		providerCode string
+		profile      protocolPredicateInput
+	}{
+		{name: "volcengine", providerCode: "volcengine", profile: protocolPredicateInput{providerCode: "volcengine", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: volcengineOpenAIV1ProfileID}},
+		{name: "qwen", providerCode: "qwen", profile: protocolPredicateInput{providerCode: "qwen", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: qwenOpenAIV1ProfileID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			domainDefault := accountscoreDefaultForTest(tc.providerCode, "api_key", tc.profile)
+			if !stringSlicesEqual(domainDefault, []string{"chat_json", "chat_sse"}) {
+				t.Fatalf("%s chat 默认集应落词表内基础对话对：%v", tc.providerCode, domainDefault)
+			}
+		})
+	}
+	// hybrid 现行缺省为全词表并集 → 与 chat lane 集求交收敛为非空域内子集。
+	hybridProfile := protocolPredicateInput{providerCode: "hybrid"}
+	hybridDefault := accountscoreDefaultForTest("hybrid", "api_key", hybridProfile)
+	hybridAllowed := accountscore.AllowedEndpointModes(accountscore.CapabilityDomainChat, "hybrid", "api_key", toProtocolPredicate(hybridProfile))
+	if len(hybridDefault) == 0 {
+		t.Fatalf("hybrid chat 默认集不应为空：%v", hybridDefault)
+	}
+	for _, mode := range hybridDefault {
+		if !containsString(hybridAllowed, mode) {
+			t.Fatalf("hybrid chat 默认集应 ⊆ chat 允许集，越界值 %s：%v（允许集 %v）", mode, hybridDefault, hybridAllowed)
+		}
 	}
 	// 矩阵关闭格（2026-10-12 裁决）：minimax chat 域的允许集与默认集恒空。
 	minimaxProfile := protocolPredicateInput{providerCode: "minimax", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: minimaxOpenAIV1ProfileID}
@@ -404,12 +481,19 @@ func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 	}
 }
 
-func TestM2PatchLegacyMixedAccountThreeSetRule(t *testing.T) {
+// TestM2PatchStrictDeclarationSubset 覆盖编辑面严格声明校验（账户能力域
+// 不变式：声明集必须 ⊆ 所在域允许集，全链路同一规则）：直插带域外值的存量
+// 行后，显式数组仍含域外值一律 400（扩大/换元/域内扩展混带越界值同判）；
+// 显式数组只含域内值（含缩小遗留值）按普通编辑放行；modes 键缺省不重置
+// 声明集；删键（null）在补丁准备处替换为按域默认集数组后走同一严格校验
+// ——BUG-0323 根治后按域默认集恒 ⊆ 域允许集，删键一律 200 域内重置生效，
+// 不再静默回写。
+func TestM2PatchStrictDeclarationSubset(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 
-	// 存量混合账户（chat 域 + 域外 video_create 遗留值）。
+	// 存量混合账户（chat 域 + 域外 video_create 遗留值，直插绕过写校验）。
 	m2SeedAccountWithModes(t, env, "acc-m2-mixed", adminID, "m2-mixed", []string{"chat_json", "video_create"})
 	revision := int64(1)
 
@@ -421,7 +505,7 @@ func TestM2PatchLegacyMixedAccountThreeSetRule(t *testing.T) {
 		return string(raw)
 	}
 
-	// 仅改名：modes 未携带 → 不重置、不拒绝（遗留集合原样保留，I7 正例）。
+	// 仅改名：modes 未携带 → 不重置声明集（存量声明原样保留）。
 	code, payload := patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"name":"m2-mixed-renamed"}`)
 	if code != http.StatusOK {
 		t.Fatalf("仅改名应 200：%d %v", code, payload)
@@ -431,41 +515,57 @@ func TestM2PatchLegacyMixedAccountThreeSetRule(t *testing.T) {
 		t.Fatalf("仅改名不得触碰声明集：%v", modes)
 	}
 
-	// 扩大遗留集合 → 400。
+	// 显式数组扩大（加入 video_get）→ 400 严格拒绝并列出全部越界值。
 	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":`+modesJSON("chat_json", "video_create", "video_get")+`}}`)
-	if code != http.StatusBadRequest || m2Message(payload) != "域外能力不可变更（仅可通过显式清理缩小）" {
-		t.Fatalf("扩大遗留集合应 400：%d %v", code, payload)
+	if code != http.StatusBadRequest || m2Message(payload) != "账户能力域对话不支持上游接口能力：video_create、video_get" {
+		t.Fatalf("扩大越界应 400：%d %v", code, payload)
 	}
 
-	// 遗留集合保号（域内改动 + 域外原样保留）→ 200。
-	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"api_key":"sk-mixed-rotated","supported_endpoint_modes":`+modesJSON("chat_json", "video_create")+`}}`)
+	// 显式数组域内扩展混带域外值 → 同一规则 400（换元与混带无特殊分支）。
+	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":`+modesJSON("chat_json", "chat_sse", "video_create")+`}}`)
+	if code != http.StatusBadRequest || m2Message(payload) != "账户能力域对话不支持上游接口能力：video_create" {
+		t.Fatalf("混带越界应 400：%d %v", code, payload)
+	}
+
+	// 显式数组只含域内值（缩小遗留值）→ 200：清理退化为普通编辑，无特殊
+	// 分支、无单独审计。
+	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"api_key":"sk-mixed-rotated","supported_endpoint_modes":`+modesJSON("chat_json")+`}}`)
 	if code != http.StatusOK {
-		t.Fatalf("遗留集合保号应 200：%d %v", code, payload)
+		t.Fatalf("域内缩小应 200：%d %v", code, payload)
 	}
 	revision++
-	if modes := m2AccountModes(t, env, "acc-m2-mixed"); !unorderedStringListEqual(modes, []string{"chat_json", "video_create"}) {
-		t.Fatalf("遗留值应原样保留：%v", modes)
+	if modes := m2AccountModes(t, env, "acc-m2-mixed"); !unorderedStringListEqual(modes, []string{"chat_json"}) {
+		t.Fatalf("域外遗留值应被裁掉：%v", modes)
 	}
 	if key := env.queryCell(t, `SELECT credential_mask FROM accounts WHERE id = 'acc-m2-mixed'`); key == "sk-***" {
 		t.Fatalf("凭据应已轮换：%s", key)
 	}
+	for _, action := range env.sink.actions() {
+		if action == "cleanup_capability_legacy" {
+			t.Fatalf("清理已退化为普通编辑，不得再落清理审计：%v", env.sink.actions())
+		}
+	}
 
-	// 域内扩展 + 遗留保留 → 200。
-	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":`+modesJSON("chat_json", "chat_sse", "video_create")+`}}`)
+	// 域内扩展 → 200。
+	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":`+modesJSON("chat_json", "chat_sse")+`}}`)
 	if code != http.StatusOK {
 		t.Fatalf("域内扩展应 200：%d %v", code, payload)
 	}
 	revision++
-	if modes := m2AccountModes(t, env, "acc-m2-mixed"); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse", "video_create"}) {
-		t.Fatalf("域内扩展应生效且遗留保留：%v", modes)
+	if modes := m2AccountModes(t, env, "acc-m2-mixed"); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse"}) {
+		t.Fatalf("域内扩展应生效：%v", modes)
 	}
 
-	// 显式 null（credentialsPatch 删键）→ 归一化按现行默认集重置，但默认集
-	// 会静默丢弃遗留集合 → 被三集合规则拦截（D6：删除键不得借默认归一化
-	// 绕过保存规则）。
+	// 显式 null（credentialsPatch 删键）→ 补丁准备处替换为按域默认集数组，
+	// 走同一显式数组严格校验：gpt chat 按域默认集与现行默认集逐项一致（现行
+	// 默认本就域内）域内，重置生效（严格不变式下声明重置即域内集合）。
 	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":null}}`)
-	if code != http.StatusBadRequest || m2Message(payload) != "域外能力不可变更（仅可通过显式清理缩小）" {
-		t.Fatalf("删键重置遗留集合应被三集合规则拒绝：%d %v", code, payload)
+	if code != http.StatusOK {
+		t.Fatalf("删键默认集重置应 200：%d %v", code, payload)
+	}
+	revision++
+	if modes := m2AccountModes(t, env, "acc-m2-mixed"); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}) {
+		t.Fatalf("删键应重置为现行默认集：%v", modes)
 	}
 	// 显式空数组（credentialsPatch）：与现状一致——写侧归一化按普通 error
 	// 拒绝（基线探针证实现状即 500），本切片不改变该路径。
@@ -477,6 +577,60 @@ func TestM2PatchLegacyMixedAccountThreeSetRule(t *testing.T) {
 	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentials":{"supported_endpoint_modes":null}}`)
 	if code != http.StatusOK {
 		t.Fatalf("legacy null 恢复现值应 200（现状语义）：%d %v", code, payload)
+	}
+	if got := env.queryCell(t, `SELECT config_revision FROM accounts WHERE id = 'acc-m2-mixed'`); got != itoa64(revision) {
+		t.Fatalf("无变化提交不得推进版本：got %s want %s", got, itoa64(revision))
+	}
+
+	// 删键（null）按域默认集收敛（D6 废除后静默击穿口的回归钉）：BUG-0323
+	// 根治后按域默认集恒 ⊆ 域允许集（chat 分支与域 lane 集求交 + 媒体优先
+	// 供应商落词表内基础对话对），替换后经同一严格校验一律 200 重置生效；
+	// 写侧供应商缺省集不再有任何直通路径。
+	patchAccount := func(accountID, body string) (int, map[string]any) {
+		return env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+accountID, body)
+	}
+
+	// minimax×video：写侧缺省集 audio_speech 对 video 域越界（直通归一化会
+	// 静默回写域外声明）→ 替换后的按域默认集 = 视频四值组 → 200，持久化
+	// 声明 = DefaultEndpointModesForDomain(video, minimax)，不含 audio_speech。
+	m2SeedProvider(t, env, adminID, "minimax", minimaxOpenAIV1ProfileID, "openai", "v1", []string{"api_key"})
+	m2SeedDomainAccountWithModes(t, env, "acc-m2-minimax-video", adminID, "m2-minimax-video",
+		"minimax", minimaxOpenAIV1ProfileID, "video", []string{"audio_speech"})
+	code, payload = patchAccount("acc-m2-minimax-video", `{"expectedConfigRevision":1,"credentialsPatch":{"supported_endpoint_modes":null}}`)
+	if code != http.StatusOK {
+		t.Fatalf("minimax video 删键应按域默认集重置 200：%d %v", code, payload)
+	}
+	minimaxVideoDefaults := accountscore.DefaultEndpointModesForDomain(accountscore.CapabilityDomainVideo, "minimax", "api_key", accountscore.ProtocolPredicate{
+		ProviderCode:              "minimax",
+		ProtocolCode:              "openai",
+		ProtocolVersion:           "v1",
+		ProviderProtocolProfileID: minimaxOpenAIV1ProfileID,
+	})
+	if len(minimaxVideoDefaults) == 0 {
+		t.Fatalf("minimax video 按域默认集不应为空：%v", minimaxVideoDefaults)
+	}
+	for _, mode := range minimaxVideoDefaults {
+		if mode == "audio_speech" {
+			t.Fatalf("video 域按域默认集不应含 audio_speech：%v", minimaxVideoDefaults)
+		}
+	}
+	if modes := m2AccountModes(t, env, "acc-m2-minimax-video"); !unorderedStringListEqual(modes, minimaxVideoDefaults) {
+		t.Fatalf("minimax video 删键应落按域默认集：%v want %v", modes, minimaxVideoDefaults)
+	}
+
+	// volcengine×chat：删键重置为按域默认集。BUG-0323 已根治：chat 分支与
+	// 域 lane 集求交后现行缺省 video_get 交集为空，落词表内基础对话对
+	// （chat_json、chat_sse）→ 200 重置生效且声明 ⊆ chat 允许集（修复前
+	// 该路径返回 400「video_get 越界」）。
+	m2SeedProvider(t, env, adminID, "volcengine", volcengineOpenAIV1ProfileID, "openai", "v1", []string{"api_key"})
+	m2SeedDomainAccountWithModes(t, env, "acc-m2-volc-chat", adminID, "m2-volc-chat",
+		"volcengine", volcengineOpenAIV1ProfileID, "chat", []string{"chat_json"})
+	code, payload = patchAccount("acc-m2-volc-chat", `{"expectedConfigRevision":1,"credentialsPatch":{"supported_endpoint_modes":null}}`)
+	if code != http.StatusOK {
+		t.Fatalf("volcengine chat 删键应按域默认集重置 200：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, "acc-m2-volc-chat"); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse"}) {
+		t.Fatalf("volcengine chat 删键应重置为词表内基础对话对：%v", modes)
 	}
 
 	// 域不可变：携带 ≠ 现值 → 400「能力域不可更改」。
@@ -494,22 +648,6 @@ func TestM2PatchLegacyMixedAccountThreeSetRule(t *testing.T) {
 		t.Fatalf("携带相同域应 200：%d %v", code, payload)
 	}
 	revision++
-
-	// M3 放开分支收尾（D6 只缩不扩）：缩小遗留集合 → 200 且遗留值被清理，
-	// 清理后再扩大以新基准拒绝。单独审计条目在 m3_capability_cleanup_test.go
-	// 覆盖。
-	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":`+modesJSON("chat_json", "chat_sse")+`}}`)
-	if code != http.StatusOK {
-		t.Fatalf("缩小遗留集合应 200（M3 只缩不扩）：%d %v", code, payload)
-	}
-	revision++
-	if modes := m2AccountModes(t, env, "acc-m2-mixed"); !unorderedStringListEqual(modes, []string{"chat_json", "chat_sse"}) {
-		t.Fatalf("域外遗留值应被清理：%v", modes)
-	}
-	code, payload = patch(t, `{"expectedConfigRevision":`+itoa64(revision)+`,"credentialsPatch":{"supported_endpoint_modes":`+modesJSON("chat_json", "chat_sse", "video_create")+`}}`)
-	if code != http.StatusBadRequest || m2Message(payload) != "域外能力不可变更（仅可通过显式清理缩小）" {
-		t.Fatalf("清理后以新基准扩大应 400：%d %v", code, payload)
-	}
 }
 
 func TestM2PatchGeminiChatConversationRequirement(t *testing.T) {
@@ -746,6 +884,34 @@ func TestM2BatchSameDomain(t *testing.T) {
 			map[string]any{"notes": map[string]any{"enabled": true, "value": "批量备注"}}))
 	if code != http.StatusBadRequest || m2Message(payload) != "批量编辑仅支持同一能力域的账户" {
 		t.Fatalf("跨域普通字段批量应整批拒绝：%d %v", code, payload)
+	}
+
+	// 严格声明校验（批量与 PATCH 同一规则）：直插带域外遗留值的存量行，
+	// 覆盖数组含越界值 → 整批 400 并列出越界值；只含域内值 → 200（缩小遗留
+	// 值退化为普通编辑，无特殊分支）。
+	m2SeedAccountWithModes(t, env, "acc-m2-batch-legacy", adminID, "m2-batch-legacy", []string{"chat_json", "video_create"})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES ('acc-m2-batch-legacy', 'gpt', 'm-default', ?)`, now)
+
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update",
+		batchBody([]map[string]any{target(chatA, revisionA+1), target("acc-m2-batch-legacy", 1)},
+			map[string]any{"supportedEndpointModes": map[string]any{"enabled": true, "value": []any{"chat_json", "video_cancel"}}}))
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "video_cancel") {
+		t.Fatalf("越界批量应整批 400：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, "acc-m2-batch-legacy"); !unorderedStringListEqual(modes, []string{"chat_json", "video_create"}) {
+		t.Fatalf("整批失败后遗留行声明不得变化：%v", modes)
+	}
+
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update",
+		batchBody([]map[string]any{target(chatA, revisionA+1), target("acc-m2-batch-legacy", 1)},
+			map[string]any{"supportedEndpointModes": map[string]any{"enabled": true, "value": []any{"chat_json", "responses_sse"}}}))
+	if code != http.StatusOK {
+		t.Fatalf("域内缩小批量应 200：%d %v", code, payload)
+	}
+	if modes := m2AccountModes(t, env, "acc-m2-batch-legacy"); !unorderedStringListEqual(modes, []string{"chat_json", "responses_sse"}) {
+		t.Fatalf("遗留行应缩小至域内集：%v", modes)
 	}
 }
 

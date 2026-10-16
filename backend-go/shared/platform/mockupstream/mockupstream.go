@@ -125,14 +125,18 @@ type Server struct {
 // otherwise); RawQuery keeps the full query string so the recorded
 // request-target can be reconstructed.
 type Request struct {
-	Method      string
-	Path        string
-	RawQuery    string
-	Body        string
-	AuthHeader  string
-	Model       string
-	StreamField string
-	Aborted     bool
+	Method     string
+	Path       string
+	RawQuery   string
+	Body       string
+	AuthHeader string
+	// APIKeyHeader records the raw X-Api-Key header (volcengine TTS
+	// migration batch: the speech domain authenticates via X-Api-Key and
+	// the gateway strips Authorization before dispatch).
+	APIKeyHeader string
+	Model        string
+	StreamField  string
+	Aborted      bool
 }
 
 // endpoint is one exact method+path pair accepted by the mock, mirroring
@@ -276,13 +280,14 @@ func (m *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	m.seenReqs = append(m.seenReqs, Request{
-		Method:      r.Method,
-		Path:        r.URL.Path,
-		RawQuery:    r.URL.RawQuery,
-		Body:        string(raw),
-		AuthHeader:  r.Header.Get("Authorization"),
-		Model:       parsed.Model,
-		StreamField: streamField,
+		Method:       r.Method,
+		Path:         r.URL.Path,
+		RawQuery:     r.URL.RawQuery,
+		Body:         string(raw),
+		AuthHeader:   r.Header.Get("Authorization"),
+		APIKeyHeader: r.Header.Get("X-Api-Key"),
+		Model:        parsed.Model,
+		StreamField:  streamField,
 	})
 	idx := len(m.seenReqs) - 1
 	m.mu.Unlock()
@@ -377,13 +382,13 @@ func (m *Server) serve2(w http.ResponseWriter, r *http.Request, idx int, bodyStr
 		}
 		return
 	}
-		if scenario == ScenarioChatEcho && !stream {
-			// 回显最后一条 user 消息内容：J1 探活响应必须包含请求中的挑战
-			// 答案（containsChallengeValue），固定罐头响应无法通过。算术挑战
-			// （「请计算 A+B」）回数字答案，其余消息原文回显。
-			writeJSONStatus(w, http.StatusOK, chatEchoCompletionBody(m.seenReqs[idx].Body))
-			return
-		}
+	if scenario == ScenarioChatEcho && !stream {
+		// 回显最后一条 user 消息内容：J1 探活响应必须包含请求中的挑战
+		// 答案（containsChallengeValue），固定罐头响应无法通过。算术挑战
+		// （「请计算 A+B」）回数字答案，其余消息原文回显。
+		writeJSONStatus(w, http.StatusOK, chatEchoCompletionBody(m.seenReqs[idx].Body))
+		return
+	}
 	if !stream {
 		writeJSONStatus(w, http.StatusOK, chatCompletionBody(scenario))
 		return
@@ -417,10 +422,10 @@ func chatCompletionBody(scenario Scenario) string {
 	return `{"id":"chatcmpl-mock-ok","object":"chat.completion","created":1700000000,"model":"gpt-mock","choices":[{"index":0,"message":{"role":"assistant","content":"MOCK-OK reply"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`
 }
 
-	// chatEchoCompletionBody 用请求体里的最后一条 user 消息内容构造一个
-	// 完成的 chat completion（J1 探活挑战回显场景）。消息是算术挑战时回数字
-	// 答案，否则原文回显。解析失败时回落罐头 OK。
-	func chatEchoCompletionBody(requestBody string) string {
+// chatEchoCompletionBody 用请求体里的最后一条 user 消息内容构造一个
+// 完成的 chat completion（J1 探活挑战回显场景）。消息是算术挑战时回数字
+// 答案，否则原文回显。解析失败时回落罐头 OK。
+func chatEchoCompletionBody(requestBody string) string {
 	content := "MOCK-OK reply"
 	var parsed struct {
 		Messages []struct {
@@ -465,31 +470,31 @@ func chatCompletionBody(scenario Scenario) string {
 			content = strings.ReplaceAll(content, `"`, `"`)
 		}
 	}
-		model := "gpt-mock"
-		if parsed.Model != "" {
-			model = parsed.Model
-		}
-		if answer := chatEchoChallengeAnswer(content); answer != "" {
-			content = answer
-		}
-		return fmt.Sprintf(`{"id":"chatcmpl-mock-echo","object":"chat.completion","created":1700000000,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`, model, content)
+	model := "gpt-mock"
+	if parsed.Model != "" {
+		model = parsed.Model
 	}
-
-	// chatEchoChallengePattern 匹配 J1 探活算术挑战（exactkeyprobe 的
-	// probeChallengePromptFormat）。
-	var chatEchoChallengePattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
-
-	// chatEchoChallengeAnswer 从回显文本里解算术挑战，返回两数之和的十进制
-	// 文本；不是算术挑战时返回空串，调用方保持原文回显。
-	func chatEchoChallengeAnswer(content string) string {
-		match := chatEchoChallengePattern.FindStringSubmatch(content)
-		if match == nil {
-			return ""
-		}
-		left, _ := strconv.Atoi(match[1])
-		right, _ := strconv.Atoi(match[2])
-		return strconv.Itoa(left + right)
+	if answer := chatEchoChallengeAnswer(content); answer != "" {
+		content = answer
 	}
+	return fmt.Sprintf(`{"id":"chatcmpl-mock-echo","object":"chat.completion","created":1700000000,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`, model, content)
+}
+
+// chatEchoChallengePattern 匹配 J1 探活算术挑战（exactkeyprobe 的
+// probeChallengePromptFormat）。
+var chatEchoChallengePattern = regexp.MustCompile(`请计算 (\d+)\+(\d+)`)
+
+// chatEchoChallengeAnswer 从回显文本里解算术挑战，返回两数之和的十进制
+// 文本；不是算术挑战时返回空串，调用方保持原文回显。
+func chatEchoChallengeAnswer(content string) string {
+	match := chatEchoChallengePattern.FindStringSubmatch(content)
+	if match == nil {
+		return ""
+	}
+	left, _ := strconv.Atoi(match[1])
+	right, _ := strconv.Atoi(match[2])
+	return strconv.Itoa(left + right)
+}
 
 // responsesBody mirrors the archived Node non-stream Responses fixture:
 // object "response", a message output with output_text parts, and

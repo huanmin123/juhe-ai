@@ -373,11 +373,8 @@ func TestWhExtractGatewayAPIKey(t *testing.T) {
 	if got := service.clientErrorProtocolOrOpenAI(whNewRequest("POST", "/unknown")); got != GatewayErrorProtocolOpenAI {
 		t.Fatalf("未知路径回退 = %v", got)
 	}
-	// 路径与追踪视图。
+	// 追踪视图。
 	WithPath := whNewRequest("GET", "/v1/models?x=1")
-	if got := requestPathOnly(WithPath); got != "/v1/models" {
-		t.Fatalf("路径 = %q", got)
-	}
 	if trace := service.observedTraceID(WithPath); !strings.HasPrefix(trace, "trace_fixed") && trace == "" {
 		t.Fatalf("追踪 ID = %q", trace)
 	}

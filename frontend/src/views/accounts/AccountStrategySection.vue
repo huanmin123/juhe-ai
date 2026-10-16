@@ -12,37 +12,6 @@
           {{ option.label }}
         </a-checkbox>
       </div>
-      <!-- 存量混合账户的域外遗留声明（D6 三集合）：不进勾选集、编辑装载不裁剪，
-           提交时随完整声明集原样带回；只能经 M3 显式清理动作缩小。 -->
-      <div v-if="outOfDomainDeclaredModes.length" class="out-of-domain-modes">
-        <span class="out-of-domain-label">域外能力（保留）</span>
-        <a-tooltip
-          v-for="mode in outOfDomainDeclaredModes"
-          :key="mode"
-          title="该能力超出当前能力域允许集，属于存量账户的遗留声明：此处不可勾选或修改，保存时原样保留，不影响现有派发。"
-        >
-          <a-tag class="out-of-domain-tag">{{ endpointModeLabel(mode) }}</a-tag>
-        </a-tooltip>
-        <!-- M3 显式清理动作（D6 只缩不扩）：确认后从声明集移除全部域外遗留值，
-             保存时提交不含被清理值的完整 modes 数组，服务端放行缩小并单独审计。 -->
-        <a-popconfirm
-          v-if="!endpointModesDisabled"
-          title="清理域外能力"
-          ok-text="确认清理"
-          cancel-text="取消"
-          @confirm="cleanupOutOfDomainModes"
-        >
-          <template #title>
-            <div class="out-of-domain-confirm">
-              <p>将从声明集中移除以下域外遗留能力（保存后生效，不影响域内能力）：</p>
-              <p class="out-of-domain-confirm-modes">{{ outOfDomainCleanupSummary }}</p>
-            </div>
-          </template>
-          <a-button class="out-of-domain-cleanup" danger size="small" type="link">
-            清理域外能力
-          </a-button>
-        </a-popconfirm>
-      </div>
     </a-form-item>
     <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
@@ -145,7 +114,7 @@ import {
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
-import { accountEndpointModeLabel, accountEndpointModeOptionsForProfile } from './accountEndpointModes'
+import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import {
   allowedEndpointModesFor
 } from './accountCapabilityDomains'
@@ -196,10 +165,10 @@ const modelMappingTooltip = computed(() => (
     : '只在当前供应商和当前协议内做模型名改写；OpenAI v1 可显式配置 Responses 到 Chat Completions；右侧上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
-  // M2 能力域收口（D6）+ v8-A 对话域纯粹化：chat 域允许集 = 13 值对话锚集合 ∩
+  // M2 能力域收口 + v8-A 对话域纯粹化：chat 域允许集 = 13 值对话锚集合 ∩
   // 供应商写侧词表——媒体任务组与被移出三项（images_json /
   // audio_transcription_json / realtime_session）不再出现在对话表单勾选区
-  // （存量遗留值走下方只读徽标行，媒体域走独立精简表单）。
+  // （媒体域走独立精简表单）。
   const allowedModes = new Set(allowedEndpointModesFor({
     capabilityDomain: 'chat',
     providerCode: props.form.providerCode,
@@ -208,35 +177,6 @@ const endpointModeOptions = computed(() => {
   }))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
 })
-
-// 实际声明集中超出 chat 域允许集的遗留值（存量混合账户兼容，D4/D6）：
-// 只读展示，不进勾选集，提交时原样带回。
-const outOfDomainDeclaredModes = computed(() => {
-  const allowed = new Set(endpointModeOptions.value.map((option) => option.value))
-  const output: AccountSupportedEndpointMode[] = []
-  const seen = new Set<AccountSupportedEndpointMode>()
-  for (const mode of props.form.supportedEndpointModes) {
-    if (allowed.has(mode) || seen.has(mode)) continue
-    seen.add(mode)
-    output.push(mode)
-  }
-  return output
-})
-
-// M3 显式清理：将全部域外遗留值从声明集中移除（确认框列明将移除的 modes）。
-// 表单变更后由既有保存差量链路提交不含被清理值的完整 modes 数组；服务端
-// 「只缩不扩」规则放行该缩小分支。授权实例（凭据面 403）与 OAuth 表单
-// （modes 面只读）经 endpointModesDisabled 隐藏入口。
-const outOfDomainCleanupSummary = computed(() => outOfDomainDeclaredModes.value.map((mode) => endpointModeLabel(mode)).join('、'))
-
-function cleanupOutOfDomainModes(): void {
-  const removing = new Set(outOfDomainDeclaredModes.value)
-  props.form.supportedEndpointModes = props.form.supportedEndpointModes.filter((mode) => !removing.has(mode))
-}
-
-function endpointModeLabel(mode: AccountSupportedEndpointMode): string {
-  return accountEndpointModeLabel(mode, activeProfile.value)
-}
 
 const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
 
@@ -511,37 +451,5 @@ function modelMappingProtocolContext() {
 
 .endpoint-mode-group {
   min-width: 0;
-}
-
-/* M3 清理动作：徽标行内文字按钮与确认框排版 */
-.out-of-domain-cleanup {
-  margin-left: 4px;
-  padding-inline: 4px;
-}
-
-.out-of-domain-confirm p {
-  margin: 0 0 4px;
-}
-
-.out-of-domain-confirm-modes {
-  font-weight: 600;
-}
-
-/* 域外遗留能力（D6 存量兼容）：只读徽标行，跟随勾选区展示 */
-.out-of-domain-modes {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.out-of-domain-label {
-  color: var(--juhe-muted);
-  font-size: 12px;
-}
-
-.out-of-domain-tag {
-  cursor: help;
 }
 </style>

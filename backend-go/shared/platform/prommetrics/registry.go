@@ -145,6 +145,18 @@ func NewCounterFunc(registry *Registry, name, help string, constLabels map[strin
 	registry.inner.MustRegister(prometheus.NewCounterFunc(options, fn))
 }
 
+// NewGaugeFunc registers a single-series gauge whose value is read through fn
+// at scrape time (mirror of NewCounterFunc for instantaneous values; monotonic
+// accumulations must stay on NewCounterFunc so rate()/increase() semantics
+// hold). constLabels pins the fixed label set; fn is invoked on every scrape.
+func NewGaugeFunc(registry *Registry, name, help string, constLabels map[string]string, fn func() float64) {
+	options := prometheus.GaugeOpts{Name: name, Help: help}
+	if len(constLabels) > 0 {
+		options.ConstLabels = prometheus.Labels(constLabels)
+	}
+	registry.inner.MustRegister(prometheus.NewGaugeFunc(options, fn))
+}
+
 type counterVec struct {
 	inner *prometheus.CounterVec
 }

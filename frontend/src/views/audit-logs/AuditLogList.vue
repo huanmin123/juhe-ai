@@ -61,7 +61,7 @@
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
       </template>
       <template v-else-if="column.key === 'account'">
-        <span>{{ displayName(record.accountName, record.accountId) }}</span>
+        <span>{{ displayAuditAccountName(record.accountName, record.accountId) }}</span>
       </template>
       <template v-else-if="column.key === 'apiKey'">
         <span>{{ displayName(record.apiKeyName, record.apiKeyId) }}</span>
@@ -70,7 +70,7 @@
         <span>{{ displayAuditGroupName(record.groupName, record.groupId) }}</span>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
-        <span>{{ displayName(record.systemAccountName, record.systemAccountId) }}</span>
+        <span>{{ displayAuditSystemAccountName(record.systemAccountName, record.systemAccountId) }}</span>
       </template>
       <template v-else-if="column.key === 'duration'">
         <a-tooltip :title="auditDurationLabel(record)">
@@ -117,7 +117,7 @@
           </div>
           <div class="mobile-list-meta-item">
             <span>AI账户</span>
-            <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
+            <strong>{{ displayAuditAccountName(record.accountName, record.accountId) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
             <span>{{ auditDurationLabel(record) }}</span>
@@ -144,7 +144,9 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { AuditLogListItem } from '@/types/domain'
 import {
+  displayAuditAccountName,
   displayAuditGroupName,
+  displayAuditSystemAccountName,
   displayName,
   formatSessionIdPreview,
   formatDateTime,

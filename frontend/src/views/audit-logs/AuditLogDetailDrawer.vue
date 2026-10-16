@@ -29,10 +29,10 @@
           </a-descriptions-item>
           <a-descriptions-item label="结果状态">{{ detail.lifecycleStatus === 'in_progress' ? '进行中' : statusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
           <a-descriptions-item label="HTTP 状态">{{ transportStatusText(detail.finalStatusCode, detail.success) }}</a-descriptions-item>
-          <a-descriptions-item label="AI账户">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
+          <a-descriptions-item label="AI账户">{{ displayAuditAccountName(detail.accountName, detail.accountId) }}</a-descriptions-item>
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
           <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
-          <a-descriptions-item label="系统账户">{{ displayName(detail.systemAccountName, detail.systemAccountId) }}</a-descriptions-item>
+          <a-descriptions-item label="系统账户">{{ displayAuditSystemAccountName(detail.systemAccountName, detail.systemAccountId) }}</a-descriptions-item>
           <a-descriptions-item v-if="detail.httpCompletedAt" label="返回客户端">
             {{ detail.httpCompletedAt ? formatDateTime(detail.httpCompletedAt) : '-' }} · {{ formatDuration(detail.httpDurationMs) }}
           </a-descriptions-item>
@@ -152,7 +152,14 @@
                 :show-toolbar="false"
                 :text="selectedPayloadCurrentText"
               />
-              <a-empty v-else class="payload-empty" :description="selectedPayloadEmptyText" />
+              <template v-else>
+                <a-empty class="payload-empty" :description="selectedPayloadEmptyText" />
+                <div v-if="selectedPayload?.captureStatus === 'deduped' && retainedSampleEventId" class="payload-dedup-jump">
+                  <a-button type="link" size="small" @click="emit('open-sample-event', retainedSampleEventId)">
+                    打开保留响应原文的那条（同错误组最新一条）→
+                  </a-button>
+                </div>
+              </template>
           </div>
         </section>
       </template>
@@ -177,7 +184,9 @@ import type {
 } from '@/types/domain'
 import {
   captureStatusText,
+  displayAuditAccountName,
   displayAuditGroupName,
+  displayAuditSystemAccountName,
   displayName,
   formatBytes,
   formatDateTime,
@@ -205,8 +214,17 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'load-payload', payloadId: string): void
+  (event: 'open-sample-event', auditLogId: string): void
   (event: 'update:open', value: boolean): void
 }>()
+
+// 错误组去重后，保留响应原文的是组内最新一条（sampleEventId）；当前详情
+// 就是样本本身时不显示跳转。
+const retainedSampleEventId = computed(() => {
+  const sample = props.detail?.errorGroup?.sampleEventId?.trim()
+  if (!sample || sample === props.detail?.id) return undefined
+  return sample
+})
 
 interface RequestChainRow {
   id: string
@@ -699,6 +717,12 @@ function handleRequestChainAction(record: RequestChainRow): void {
   border: 1px dashed var(--juhe-border-strong);
   border-radius: 8px;
   background: var(--juhe-surface-soft);
+}
+
+.payload-dedup-jump {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
 }
 
 .payload-mobile-card {

@@ -473,6 +473,11 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		// 协议模型（豆包 doubao 对话行，对话批）走基础集 chat_completions，
 		// 无需本分支追加——ark OpenAI 兼容端点 /api/v3/chat/completions 与
 		// chat 同 base_url/凭据，出站 URL 由链上 volcengine chat 服务根归一。
+		// images 协议模型（豆包 seedream 系图像行，2026-10-17 图像域开通）
+		// 走基础集 "images"——ark OpenAI 兼容图像端点 /api/v3/images/
+		// generations 与 chat 同 base_url/凭据（openai 族基础承接集已含
+		// "images"，本分支无需追加），出站 URL 由链上
+		// chainVolcengineImagesUpstreamURL 服务根归一。
 		if isVolcengineProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video", "audio_speech")
 		}

@@ -68,6 +68,7 @@
         :mapping-upstream-model-options="mappingUpstreamModelOptions"
         :model-options="modelOptions"
         :models-loading="modelsLoading"
+        :models-settled="modelsSettled"
         :model-syncing="modelSyncing"
         :open="open"
         :providers="mediaProviders"
@@ -763,6 +764,8 @@ const props = withDefaults(defineProps<{
   mappingSourceModelOptions: SelectOption[]
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
+  /** 当前目录 scope 下候选是否完成过至少一次加载（v8-D 空态提示判据；懒加载下「未加载」与「确认为空」必须区分）。 */
+  modelsSettled?: boolean
   modelSyncing?: boolean
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]

@@ -7,7 +7,6 @@
       :comparison-options="comparisonOptions"
       :comparison-options-loading="comparisonOptionsLoading"
       :comparison-select-placeholder="comparisonSelectPlaceholder"
-      :deep-detection="deepDetection"
       :is-management-view="isManagementView"
       :model="runModelSelectValue"
       :model-options="runModelOptions"
@@ -56,7 +55,7 @@
       @update:selected-target-account="selectedTargetAccount = $event"
       @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
       @update:system-account-filter-selection="systemAccountFilterSelection = $event"
-      @update:trusted-comparison-account-id="form.trustedComparisonAccountId = $event"
+      @update:trusted-comparison-account-id="handleComparisonAccountIdUpdate"
     />
 
     <ModelCheckRunHistoryList
@@ -131,7 +130,7 @@
       @save="saveSchedule"
     />
 
-    <QuestionBankModal v-model:open="questionBankOpen" :is-management-view="isManagementView" :model-check-scope-params="modelCheckScopeParams" />
+    <QuestionBankModal v-model:open="questionBankOpen" :is-management-view="isManagementView" :model-check-scope-params="modelCheckScopeParams" :external-test-target="questionBankExternalTarget" />
   </div>
 </template>
 
@@ -357,7 +356,6 @@ function modelCheckRunListParams(pageState: { current: number; pageSize: number 
     triggerKind: filters.triggerKind
   }
 }
-const deepDetection = computed(() => form.profile === 'full')
 const accountSelectDisabled = computed(() => submitting.value)
 const comparisonSelectDisabled = computed(() => submitting.value)
 const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
@@ -384,6 +382,7 @@ const {
   handleTargetDropdownVisibleChange,
   handleTargetSearch,
   handleTargetValueUpdate,
+  loadAccountModelOptions,
   loadTargetModelOptions,
   resetAccountOptionsState,
   resetRunAccountSelection,
@@ -872,6 +871,24 @@ function clearIncompatibleComparisonAccount() {
   form.trustedComparisonAccountId = undefined
   selectedComparisonAccount.value = undefined
 }
+
+// 对比账户选定后定点补拉其精确可检模型（候选列表不携带），补拉完成后再做
+// 一次兼容校验：实际不支持目标模型的候选会被自动清除。
+function handleComparisonAccountIdUpdate(value?: string) {
+  form.trustedComparisonAccountId = value
+  const id = value?.trim()
+  if (!id) return
+  void loadAccountModelOptions(id).then(() => clearIncompatibleComparisonAccount())
+}
+
+// 题库弹窗的测试目标：统一复用 run 面板上方已选定的检测账户与模型；
+// 未选齐时弹窗内点击测试会给出提示，不发起请求。
+const questionBankExternalTarget = computed(() => {
+  const accountId = form.targetId.trim()
+  const model = form.model
+  if (!accountId || !model) return undefined
+  return { accountId, accountName: selectedTargetAccount.value?.name ?? accountId, model }
+})
 
 async function submitRun() {
   if (modelCheckRunSession.submitting) {

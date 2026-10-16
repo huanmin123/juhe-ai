@@ -63,7 +63,7 @@ func TestWIDerivedErrorGroup(t *testing.T) {
 	if group.fingerprint == "" || group.requestFingerprint == "" || group.errorFingerprint == "" {
 		t.Fatalf("group=%+v", group)
 	}
-	// 窗口按 5 分钟 UTC 对齐。
+	// 窗口按 auditErrorGroupWindow（现为 10 分钟）UTC 对齐。
 	when, _ := time.Parse(time.RFC3339Nano, input.CreatedAt)
 	windowStart := when.UTC().Truncate(auditErrorGroupWindow)
 	// Node ISO 格式固定毫秒精度。

@@ -5,8 +5,13 @@
 //     分批赋值 → 授权实例分批继承（两遍法：先只读推导全部账户，再分批
 //     写入，实例域取源账户推导结果）；
 //   - 每批短事务；批间只读扫描完整读取（rows.Err + Close）后再进入写事务
-//     （BUG-0308）；迁移命令只更新 capability_domain 列与迁移记录，不碰
-//     credentials/config_revision/dispatch_revision/updated_at；
+//     （BUG-0308）；迁移命令执行「赋域 + 声明裁剪」：写 capability_domain
+//     的同时把 ModesOK 行的 supported_endpoint_modes 裁剪至落域 lane 集
+//     （kept = declared ∩ lane，保序去重，仅替换该键、其余凭据键原样保留）
+//     并同语句回写 credentials_encrypted——账户声明集必须 ⊆ 所在域允许集，
+//     不存在任何跨域保留状态。config_revision/dispatch_revision/updated_at
+//     一律不动：--node-stopped --go-stopped 门禁保证停写窗口内无并发写，
+//     版本列无增量含义，改动反而会伪造配置变更；
 //   - 解密失败、声明格式错误或缺失源账户不猜域，计入失败清单；失败清单
 //     非空或任一批失败都返回非零结果且不写完成阶段；最终落库核验与完成
 //     记录提交处于同一事务，核验或阶段提交失败都保留 running。
@@ -107,18 +112,35 @@ type DomainCounts map[string]int
 
 // Report 是 migrate 命令的 JSON 报告。
 type Report struct {
-	Driver          string              `json:"driver"`
-	Target          string              `json:"target"`
-	RuleVersion     int                 `json:"ruleVersion"`
-	Record          *capdomain.Record   `json:"record"`
-	AlreadyComplete bool                `json:"alreadyComplete"`
-	ColumnEnsured   bool                `json:"columnEnsured"`
-	AccountsTotal   int                 `json:"accountsTotal"`
-	UpdatedRows     int64               `json:"updatedRows"`
-	DomainsAssigned DomainCounts        `json:"domainsAssigned"`
-	Failures        []capdomain.Failure `json:"failures"`
-	CompletedStage  capdomain.Stage     `json:"completedStage,omitempty"`
-	CompletedAt     string              `json:"completedAt,omitempty"`
+	Driver          string               `json:"driver"`
+	Target          string               `json:"target"`
+	RuleVersion     int                  `json:"ruleVersion"`
+	Record          *capdomain.Record    `json:"record"`
+	AlreadyComplete bool                 `json:"alreadyComplete"`
+	ColumnEnsured   bool                 `json:"columnEnsured"`
+	AccountsTotal   int                  `json:"accountsTotal"`
+	UpdatedRows     int64                `json:"updatedRows"`
+	DomainsAssigned DomainCounts         `json:"domainsAssigned"`
+	Trimmed         []TrimmedDeclaration `json:"trimmedDeclarations,omitempty"`
+	Failures        []capdomain.Failure  `json:"failures"`
+	CompletedStage  capdomain.Stage      `json:"completedStage,omitempty"`
+	CompletedAt     string               `json:"completedAt,omitempty"`
+}
+
+// TrimmedModeRecommendation 是单个被裁值的建议归属域明细（按
+// DeriveDomain([]string{被裁值}) 单值推导），供操作者为被裁能力另建归属域
+// 正确的账户。
+type TrimmedModeRecommendation struct {
+	Mode            string `json:"mode"`
+	SuggestedDomain string `json:"suggestedDomain"`
+}
+
+// TrimmedDeclaration 是报告的声明裁剪明细行：账户 ID、落域与被裁剪值列表。
+// 报告继续脱敏：不含任何凭据内容。
+type TrimmedDeclaration struct {
+	AccountID string                      `json:"accountId"`
+	Domain    string                      `json:"domain"`
+	Removed   []TrimmedModeRecommendation `json:"removed"`
 }
 
 // Ready 报告后置条件：失败清单清零且阶段推进到完成（或此前已完成）。
@@ -126,14 +148,19 @@ func (r Report) Ready() bool {
 	return len(r.Failures) == 0 && r.CompletedStage != capdomain.StageNone
 }
 
-// scannedAccount 是扫描阶段的一行内存投影（只含推导所需列，不保留凭据）。
+// scannedAccount 是扫描阶段的一行内存投影（推导列 + 裁剪面：解密后的凭据
+// 记录在写入阶段重加密回填，报告只输出脱敏明细）。
 type scannedAccount struct {
 	id            string
 	isInstance    bool
 	sourceID      string // 仅实例行非空
 	reading       capdomain.ModesReading
-	domain        capdomain.Domain // 非实例行推导结果（reading 为 ModesOK 时有效）
+	domain        capdomain.Domain // 非实例行推导结果、实例行继承结果（reading 为 ModesOK 时有效）
 	decryptFailed bool
+	// credentials 是解密后的凭据记录（仅解密成功行携带）；trimTo 非 nil =
+	// 声明集越出落域 lane，写入阶段按 kept 集裁剪后重加密回写。
+	credentials map[string]any
+	trimTo      []string
 }
 
 // accountRowQuery 返回扫描投影 SQL（含软删除账户，按 id keyset 分批）。
@@ -159,8 +186,9 @@ func scanArgs(dialect capdomain.Dialect, after string, batchSize int) []any {
 	return []any{after, after, batchSize}
 }
 
-// scanAccounts 分批只读扫描全部账户（含软删除），推导源账户域并记录实例
-// 行。每批先完整读取（rows.Err + Close）再处理下一批，全程不开写事务。
+// scanAccounts 分批只读扫描全部账户（含软删除），解密凭据、解析声明并推导
+// 源账户域，实例行另解密自身凭据以支撑声明裁剪。每批先完整读取（rows.Err +
+// Close）再处理下一批，全程不开写事务。
 func scanAccounts(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, secret string, batchSize int) ([]scannedAccount, []capdomain.Failure, error) {
 	var (
 		all      []scannedAccount
@@ -187,11 +215,27 @@ func scanAccounts(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, se
 			if source.Valid && strings.TrimSpace(source.String) != "" {
 				item.isInstance = true
 				item.sourceID = strings.TrimSpace(source.String)
+				// 实例行解密自身凭据以支撑声明裁剪；解密失败阻断该阶段（失败
+				// 清单语义不变），声明解析非 ModesOK 维持既有宽松语义（实例
+				// 声明不参与域推导，无可裁集即不裁剪）。
+				var credentialsMap map[string]any
+				if err := accountcrypto.DecryptJSON(secret, credentials, &credentialsMap); err != nil {
+					item.decryptFailed = true
+					failures = append(failures, capdomain.Failure{
+						AccountID: item.id,
+						Kind:      capdomain.FailureCredentialsDecrypt,
+						Detail:    "credentials_encrypted 不是合法 v1 信封或解密失败（授权实例行）",
+					})
+				} else {
+					item.credentials = credentialsMap
+					item.reading = capdomain.ParseEndpointModes(credentialsMap)
+				}
 			} else {
 				var credentialsMap map[string]any
 				if err := accountcrypto.DecryptJSON(secret, credentials, &credentialsMap); err != nil {
 					item.decryptFailed = true
 				} else {
+					item.credentials = credentialsMap
 					item.reading = capdomain.ParseEndpointModes(credentialsMap)
 				}
 			}
@@ -287,12 +331,66 @@ func resolveInstances(accounts []scannedAccount) []capdomain.Failure {
 	return failures
 }
 
+// planDeclarationTrims 对每个 ModesOK 行按落域 lane 集裁剪声明（kept =
+// declared ∩ lane，保序去重），标记需回写的行并返回报告明细（按账户 ID 排序）。
+// 授权实例行按其最终落域同样裁剪；声明非 ModesOK 的行不裁剪（失败清单已
+// 覆盖源行格式错误，实例行维持既有宽松语义）。kept 与 declared 同长即同序
+// 同值（kept 恒为 declared 的保序子集），零改动行不产生明细。
+func planDeclarationTrims(accounts []scannedAccount) []TrimmedDeclaration {
+	trims := []TrimmedDeclaration{}
+	for index := range accounts {
+		item := &accounts[index]
+		if !item.domain.Valid() || item.credentials == nil || item.reading.Status != capdomain.ModesOK {
+			continue
+		}
+		lanes := capdomain.LaneModesForDomain(item.domain)
+		kept := make([]string, 0, len(item.reading.Modes))
+		seen := map[string]bool{}
+		for _, mode := range item.reading.Modes {
+			if seen[mode] {
+				continue
+			}
+			for _, lane := range lanes {
+				if mode == lane {
+					seen[mode] = true
+					kept = append(kept, mode)
+					break
+				}
+			}
+		}
+		if len(kept) == len(item.reading.Modes) {
+			continue
+		}
+		trimmed := TrimmedDeclaration{AccountID: item.id, Domain: string(item.domain), Removed: []TrimmedModeRecommendation{}}
+		counted := map[string]bool{}
+		for _, mode := range item.reading.Modes {
+			if seen[mode] || counted[mode] {
+				continue
+			}
+			counted[mode] = true
+			trimmed.Removed = append(trimmed.Removed, TrimmedModeRecommendation{
+				Mode:            mode,
+				SuggestedDomain: string(capdomain.DeriveDomain([]string{mode})),
+			})
+		}
+		item.trimTo = kept
+		trims = append(trims, trimmed)
+	}
+	sort.Slice(trims, func(i, j int) bool { return trims[i].AccountID < trims[j].AccountID })
+	return trims
+}
+
 // writeDomains 分批短事务写入推导结果。每批一个事务，批内只有 UPDATE；
-// 只更新 capability_domain，不触碰凭据与任何版本列。
-func writeDomains(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, accounts []scannedAccount, batchSize int) (int64, error) {
+// 声明越出落域 lane 的行在同一语句内回写裁剪后的凭据（赋域 + 声明裁剪原子
+// 生效，仅替换 supported_endpoint_modes 键、其余凭据键原样保留），不触碰
+// config_revision/dispatch_revision/updated_at（停写窗口内无并发写，版本列
+// 无增量含义）。
+func writeDomains(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, secret string, accounts []scannedAccount, batchSize int) (int64, error) {
 	updateSQL := `UPDATE accounts SET capability_domain = ? WHERE id = ?`
+	updateWithModesSQL := `UPDATE accounts SET capability_domain = ?, credentials_encrypted = ? WHERE id = ?`
 	if dialect == capdomain.DialectPostgres {
 		updateSQL = `UPDATE "juhe_business"."accounts" SET capability_domain = $1 WHERE id = $2`
+		updateWithModesSQL = `UPDATE "juhe_business"."accounts" SET capability_domain = $1, credentials_encrypted = $2 WHERE id = $3`
 	}
 	var updated int64
 	for start := 0; start < len(accounts); start += batchSize {
@@ -310,14 +408,32 @@ func writeDomains(ctx context.Context, db *sql.DB, dialect capdomain.Dialect, ac
 				_ = tx.Rollback()
 				return updated, fmt.Errorf("账户 %s 缺少可写域（内部错误，拒绝提交批次）", item.id)
 			}
-			result, err := tx.ExecContext(ctx, updateSQL, string(item.domain), item.id)
+			var err error
+			var affected int64
+			if item.trimTo != nil {
+				item.credentials["supported_endpoint_modes"] = item.trimTo
+				sealed, sealErr := accountcrypto.EncryptJSON(secret, item.credentials)
+				if sealErr != nil {
+					_ = tx.Rollback()
+					return updated, fmt.Errorf("重加密账户 %s 的裁剪后凭据失败: %w", item.id, sealErr)
+				}
+				result, execErr := tx.ExecContext(ctx, updateWithModesSQL, string(item.domain), sealed, item.id)
+				err = execErr
+				if execErr == nil {
+					affected, _ = result.RowsAffected()
+				}
+			} else {
+				result, execErr := tx.ExecContext(ctx, updateSQL, string(item.domain), item.id)
+				err = execErr
+				if execErr == nil {
+					affected, _ = result.RowsAffected()
+				}
+			}
 			if err != nil {
 				_ = tx.Rollback()
 				return updated, fmt.Errorf("写入账户 %s 的 capability_domain 失败: %w", item.id, err)
 			}
-			if affected, err := result.RowsAffected(); err == nil {
-				batchUpdated += affected
-			}
+			batchUpdated += affected
 		}
 		if err := tx.Commit(); err != nil {
 			return updated, fmt.Errorf("提交 capability_domain 批次失败: %w", err)
@@ -375,20 +491,20 @@ func verifyDomains(ctx context.Context, q querier, dialect capdomain.Dialect, ac
 		sealedStoredByID = make(map[string]string)
 	}
 	for {
-			// PG 复用 $1（与 accountRowQuery 同款写法）：此前写成
-			// `id > $2` 并把空串绑到 $2，keyset 游标恒不前进，核验在第二批
-			// 触发死循环保护（2026-10-15 生产 M1 迁移实测）。
-			cursorCmp := placeholder(dialect, 2)
-			limitPh := placeholder(dialect, 3)
-			args := []any{after, "", batchSize}
-			if dialect == capdomain.DialectPostgres {
-				cursorCmp = placeholder(dialect, 1)
-				limitPh = placeholder(dialect, 2)
-				args = []any{after, batchSize}
-			}
-			query := fmt.Sprintf(`SELECT id, capability_domain, authorization_instance_source_account_id FROM %s
+		// PG 复用 $1（与 accountRowQuery 同款写法）：此前写成
+		// `id > $2` 并把空串绑到 $2，keyset 游标恒不前进，核验在第二批
+		// 触发死循环保护（2026-10-15 生产 M1 迁移实测）。
+		cursorCmp := placeholder(dialect, 2)
+		limitPh := placeholder(dialect, 3)
+		args := []any{after, "", batchSize}
+		if dialect == capdomain.DialectPostgres {
+			cursorCmp = placeholder(dialect, 1)
+			limitPh = placeholder(dialect, 2)
+			args = []any{after, batchSize}
+		}
+		query := fmt.Sprintf(`SELECT id, capability_domain, authorization_instance_source_account_id FROM %s
 				WHERE (%s = '' OR id > %s) ORDER BY id LIMIT %s`, table, placeholder(dialect, 1), cursorCmp, limitPh)
-			rows, err := q.QueryContext(ctx, query, args...)
+		rows, err := q.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("核验 accounts 域值失败: %w", err)
 		}
@@ -492,10 +608,11 @@ func finalizeCompletedStage(target capdomain.Target) capdomain.Stage {
 //  1. 读取阶段记录并按状态机判定（损坏/拒绝/已完成直接返回，零写入）；
 //  2. 条件更新领取阶段（首次 INSERT 或跃迁/续约 UPDATE），竞争失败即拒绝；
 //  3. 加列并校验形状（schema 包专用入口，只承载 capability_domain 一列）；
-//  4. 只读扫描推导（含实例继承）；
+//  4. 只读扫描推导（含实例继承）与声明裁剪计划（ModesOK 行按落域 lane 集
+//     保序去重）；
 //  5. 失败清单非空 → 返回 Ready=false 报告（已提交批次保留，修复后同阶段
 //     重跑），不写完成阶段；
-//  6. 分批写入 → 最终核验与完成阶段记录同事务提交。
+//  6. 分批写入（赋域 + 声明裁剪同语句）→ 最终核验与完成阶段记录同事务提交。
 func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 	report := Report{
 		Driver:          options.Dialect.String(),
@@ -596,14 +713,17 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 			report.DomainsAssigned[string(item.domain)]++
 		}
 	}
+	// 声明裁剪计划（严格不变式：账户声明集必须 ⊆ 落域 lane 集，不存在任何
+	// 跨域保留状态）。
+	report.Trimmed = planDeclarationTrims(accounts)
 	if len(failures) > 0 {
 		sortFailures(failures)
 		report.Failures = failures
 		return report, nil
 	}
 
-	// 分批短事务写入。
-	updated, err := writeDomains(ctx, db, options.Dialect, accounts, batchSize)
+	// 分批短事务写入（赋域 + 声明裁剪）。
+	updated, err := writeDomains(ctx, db, options.Dialect, options.Secret, accounts, batchSize)
 	if err != nil {
 		return report, err
 	}

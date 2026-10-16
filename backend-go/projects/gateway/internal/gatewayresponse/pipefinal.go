@@ -37,8 +37,16 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 	eofWroteDownstream := false
 	eofCanEndAfterTerminal := false
 	for _, outbound := range eofInterceptResult.Chunks {
-		if !p.preCommitSseEvidence.DataEventObserved && !p.downstreamCommit.SemanticCommitted {
-			p.preCommitSseEvidence.Push(outbound)
+		// 与主循环同语义：网关注入 include_usage 的流在 inspector 消费原始分片
+		// 之后剥除 usage-only 帧；整片命中时下游零写入、不进预提交缓冲。
+		downstreamChunk := outbound
+		if p.suppressInjectedUsageChunk {
+			if filtered, dropped := filterGatewayInjectedUsageOnlySseFrames(outbound); dropped {
+				downstreamChunk = filtered
+			}
+		}
+		if !p.preCommitSseEvidence.DataEventObserved && !p.downstreamCommit.SemanticCommitted && len(downstreamChunk) > 0 {
+			p.preCommitSseEvidence.Push(downstreamChunk)
 		}
 		p.inspector.PushChunk(outbound)
 		latestInspection = p.publishInspection(p.inspector.Snapshot())
@@ -59,11 +67,15 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 			value := p.lastUpstreamActivityAt
 			p.lastSseEventActivityAt = &value
 		}
-		if p.canKeepPreCommitBuffered(latestInspection, outbound) {
-			p.appendPreCommitChunk(outbound)
+		if len(downstreamChunk) == 0 && len(outbound) > 0 {
+			// 整片为被剥除的 usage-only 帧：inspector 已消费计量，下游零写入。
 			continue
 		}
-		if p.shouldRejectOversizedUncommittedSseFraming(latestInspection, outbound) {
+		if p.canKeepPreCommitBuffered(latestInspection, downstreamChunk) {
+			p.appendPreCommitChunk(downstreamChunk)
+			continue
+		}
+		if p.shouldRejectOversizedUncommittedSseFraming(latestInspection, downstreamChunk) {
 			return nil, &StreamPreCommitBufferExceededError{}
 		}
 		if p.shouldKeepNonSemanticSseFramingPrivate() {
@@ -76,7 +88,7 @@ func (p *streamPipe) eofFlushPhase() (*StreamPipeResult, error) {
 		if err := p.flushPreCommitChunks(); err != nil {
 			return nil, err
 		}
-		if _, err := p.writeDownstreamChunk(outbound, streamSemanticResultReceived(latestInspection) || p.preCommitSseEvidence.DataPayloadStarted); err != nil {
+		if _, err := p.writeDownstreamChunk(downstreamChunk, streamSemanticResultReceived(latestInspection) || p.preCommitSseEvidence.DataPayloadStarted); err != nil {
 			return nil, err
 		}
 		if latestInspection.TerminalReceived && !p.interpretedProtocolFailure(latestInspection) {

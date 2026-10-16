@@ -51,11 +51,37 @@ type OpenAIGatewaySessionAffinityScope struct {
 	GroupID         string
 }
 
-// SessionBinding mirrors the internal SessionBinding.
+// SessionBinding mirrors the internal SessionBinding. UpstreamApiKeyFingerprint
+// 是账户内 Key 会话黏性的可选扩展（上游 Key 明文的 HMAC-SHA256 指纹，64 位
+// 小写 hex）；仅最终协议成功后经 RememberOpenAIApiKeyFingerprintAsync 写入，
+// 不参与亲和索引键，也不随账户迁移保留（迁移写回为字段级重建）。
 type SessionBinding struct {
 	AccountID                 string
 	Scope                     *OpenAIGatewaySessionAffinityScope
 	TrafficMigrationPreferred bool
+	UpstreamApiKeyFingerprint string
+}
+
+// validUpstreamApiKeyFingerprint 报告值是否为合法指纹：恰好 64 个 [0-9a-f]
+// 字符（与 apiKeyFingerprint 的 hex.EncodeToString 输出同形）。绑定 JSON 解析
+// 与 Key 指纹写回入口共用该判据。
+func validUpstreamApiKeyFingerprint(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidUpstreamApiKeyFingerprint 是 validUpstreamApiKeyFingerprint 的导出镜像：
+// cmd 侧 localSessionAffinity 的 Key 写回入口与测试共用同一指纹格式判据。
+func ValidUpstreamApiKeyFingerprint(value string) bool {
+	return validUpstreamApiKeyFingerprint(value)
 }
 
 // redisSessionBindingRecord mirrors the internal RedisSessionBindingRecord.
@@ -286,6 +312,106 @@ func (s *AffinityService) RememberOpenAIAccountForSession(sessionAffinityKey str
 // RememberOpenAIAccountForSessionAsync mirrors rememberOpenAIAccountForSessionAsync.
 func (s *AffinityService) RememberOpenAIAccountForSessionAsync(ctx context.Context, sessionAffinityKey string, accountID string, scope *OpenAIGatewaySessionAffinityScope) {
 	_, _ = s.ClaimOpenAIAccountForSessionAsync(ctx, sessionAffinityKey, accountID, scope)
+}
+
+// StickyOpenAIApiKeyFingerprintAsync 返回会话绑定中属于 accountID 的上游 Key
+// 指纹（账户内 Key 会话黏性读）。绑定缺失、过期、属于其他账户或读取失败均
+// 返回空串——降级为无黏性；读取失败按既有亲和读取失败路径告警。读取不刷新
+// 绑定 TTL（刷新责任归排序读 / claim / 成功写回）。
+func (s *AffinityService) StickyOpenAIApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey string, accountID string) string {
+	if sessionAffinityKey == "" || accountID == "" {
+		return ""
+	}
+	if !s.shouldUseRedisSessionAffinity() {
+		if !s.canUseProcessLocalSessionAffinity() {
+			return ""
+		}
+		return s.stickyOpenAIApiKeyFingerprintLocal(sessionAffinityKey, accountID)
+	}
+	record, err := s.getRedisSessionAffinityRecord(ctx, sessionAffinityKey, false)
+	if err != nil {
+		s.warn("redis_openai_session_affinity_read_failed", err, nil, "Redis 会话亲和绑定读取失败，已跳过本次 Key 黏性读取")
+		return ""
+	}
+	if record == nil || record.binding.AccountID != accountID {
+		return ""
+	}
+	return record.binding.UpstreamApiKeyFingerprint
+}
+
+// stickyOpenAIApiKeyFingerprintLocal 是黏性读的进程内路径。Caller 无需持锁。
+func (s *AffinityService) stickyOpenAIApiKeyFingerprintLocal(sessionAffinityKey string, accountID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding := s.sessionAffinityCacheGetLocked(sessionAffinityKey)
+	if binding == nil || binding.AccountID != accountID {
+		return ""
+	}
+	return binding.UpstreamApiKeyFingerprint
+}
+
+// RememberOpenAIApiKeyFingerprintAsync 把最终协议成功使用的上游 Key 指纹写回
+// 现存同 owner 绑定（成功者赢）：不创建绑定、不改账户 owner；记录缺失、过期、
+// owner 不匹配或指纹格式非法时跳过。同指纹重复写回等价 TTL 刷新。
+func (s *AffinityService) RememberOpenAIApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey string, accountID string, fingerprint string) {
+	if sessionAffinityKey == "" || accountID == "" || !validUpstreamApiKeyFingerprint(fingerprint) {
+		return
+	}
+	if !s.shouldUseRedisSessionAffinity() {
+		if !s.canUseProcessLocalSessionAffinity() {
+			return
+		}
+		s.rememberOpenAIApiKeyFingerprintLocal(sessionAffinityKey, accountID, fingerprint)
+		return
+	}
+	s.rememberOpenAIApiKeyFingerprintRedis(ctx, sessionAffinityKey, accountID, fingerprint)
+}
+
+// rememberOpenAIApiKeyFingerprintLocal 是 Key 指纹写回的进程内路径：互斥锁内
+// 校验现存未过期同 owner 记录后原位更新；TTLCache.Set 重置过期时间即刷新 TTL。
+func (s *AffinityService) rememberOpenAIApiKeyFingerprintLocal(sessionAffinityKey string, accountID string, fingerprint string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding := s.sessionAffinityCacheGetLocked(sessionAffinityKey)
+	if binding == nil || binding.AccountID != accountID {
+		return
+	}
+	updated := *binding
+	updated.UpstreamApiKeyFingerprint = fingerprint
+	s.setSessionAffinityBindingLocked(sessionAffinityKey, updated)
+}
+
+// rememberOpenAIApiKeyFingerprintRedis 是 Key 指纹写回的 Redis 路径：最多两轮
+// GET + CAS（expected=该轮 GET 的 rawValue）；每轮 GET 后记录缺失或 owner 不
+// 匹配即停止，不创建绑定；第二轮仍冲突则告警放弃。set 脚本同时维护索引与 TTL。
+func (s *AffinityService) rememberOpenAIApiKeyFingerprintRedis(ctx context.Context, sessionAffinityKey string, accountID string, fingerprint string) {
+	for attempt := 0; attempt < 2; attempt++ {
+		record, err := s.getRedisSessionAffinityRecord(ctx, sessionAffinityKey, false)
+		if err != nil {
+			s.warn("redis_openai_session_affinity_api_key_write_failed", err, map[string]any{
+				"accountId": accountID,
+			}, "Redis 会话 Key 指纹写回失败，已跳过本次写回")
+			return
+		}
+		if record == nil || record.binding.AccountID != accountID {
+			return
+		}
+		updated := record.binding
+		updated.UpstreamApiKeyFingerprint = fingerprint
+		written, err := s.setRedisSessionAffinityBinding(ctx, sessionAffinityKey, updated, record)
+		if err != nil {
+			s.warn("redis_openai_session_affinity_api_key_write_failed", err, map[string]any{
+				"accountId": accountID,
+			}, "Redis 会话 Key 指纹写回失败，已跳过本次写回")
+			return
+		}
+		if written {
+			return
+		}
+	}
+	s.warn("redis_openai_session_affinity_api_key_cas_conflict", nil, map[string]any{
+		"accountId": accountID,
+	}, "Redis 会话 Key 指纹写回连续 CAS 冲突，已跳过本次写回")
 }
 
 // ClaimOpenAIAccountForSessionAsync mirrors claimOpenAIAccountForSessionAsync:

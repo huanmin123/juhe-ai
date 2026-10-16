@@ -98,7 +98,13 @@ export function canSelectTrustedModelCheckAccount(
 ): boolean {
   if (!canSelectModelCheckAccount(account, { excludedAccountId: options.excludedAccountId })) return false
   if (!options.targetAccount) return true
-  return sameModelCheckAccountProfile(account, options.targetAccount) && canUseModelCheckModelForAccount(account, options.model)
+  if (!sameModelCheckAccountProfile(account, options.targetAccount)) return false
+  // 候选的精确可检模型未知（账户候选列表不携带 modelCheckModels，目录外模型
+  // 只在按账户定点查询时返回）时不做模型维度预筛：目标模型可能来自账户支持
+  // 模型，静态目录表会误拒实际可用的候选。选定后会定点补拉并清除不兼容项，
+  // 发起运行时后端也会对对比账户按模型/协议强校验。
+  if (account.modelCheckModels === undefined) return true
+  return canUseModelCheckModelForAccount(account, options.model)
 }
 
 export function sameModelCheckAccountProfile(left: ModelCheckAccountProfile | undefined, right: ModelCheckAccountProfile | undefined): boolean {

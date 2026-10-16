@@ -227,6 +227,7 @@
       :mapping-source-model-options="mappingSourceModelOptions"
       :model-options="providerModelOptions"
       :models-loading="strategyModelsLoading"
+      :models-settled="providerModelOptionsSettled"
       :model-syncing="modelCatalogSyncing"
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
@@ -330,7 +331,8 @@ import {
   accountColumnSortOrder as resolveAccountColumnSortOrder,
   tableColumnKey,
 } from './accountTableColumns'
-import { ACCOUNT_CAPABILITY_DOMAINS, DOMAIN_MODEL_MODES, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { ACCOUNT_CAPABILITY_DOMAINS, DOMAIN_MODEL_MODES, capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { prefetchMediaDomainModelAvailability } from './mediaDomainModelAvailability'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
 import { loadAccountProviderModelOptionsResource } from './useAccountProviderModelOptions'
 import {
@@ -454,6 +456,23 @@ watch(
   ([managementView, systemAccountId]) => {
     if (!managementView || !systemAccountId) return
     void loadUserReferenceData({ viewScope: 'admin', systemAccountId }).catch(() => undefined)
+  },
+  { immediate: true }
+)
+
+// v8-D 媒体域新建默认供应商收敛：列表页挂载/切域时预取域内在售目录供应商
+// 聚合，打开新建弹窗时同步读取收敛默认供应商。失败只记录不提示——预取是
+// 收敛的前置数据，失败时新建弹窗回退既有默认值（GPT 优先），行为退回 v8-D
+// 之前，模型选择器自身的加载失败有各自的报错路径。
+watch(
+  capabilityDomain,
+  (domain) => {
+    if (!capabilityDomainIsMedia(domain)) return
+    void prefetchMediaDomainModelAvailability({
+      capabilityDomain: domain,
+      isManagementView: isManagementView.value,
+      systemAccountId: accountScopeParams.value?.systemAccountId
+    }).catch((error) => { console.error(error) })
   },
   { immediate: true }
 )
@@ -949,6 +968,7 @@ const {
   allProviderModelScopeParams,
   providerName,
   providerModelOptions,
+  providerModelOptionsSettled,
   strategyModelsLoading,
   currentDraftTestPayload,
   saveAccount,
@@ -961,6 +981,7 @@ const {
 } = useAccountEditForm({
   accountScopeParams,
   accounts,
+  capabilityDomain,
   extractApiErrorMessage,
   groupIdForAccount,
   groups,

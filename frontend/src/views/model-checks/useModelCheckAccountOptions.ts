@@ -132,7 +132,10 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     const identityKey = input.identityKey.value
     const targetId = input.form.targetId
     const model = input.form.model
-    const selectedIds = [input.form.targetId, input.form.trustedComparisonAccountId ?? ''].filter(Boolean).sort()
+    // selectedIds 只承担「已选对比账户在重载时保持可解析」；目标账户本就被
+    // excludedAccountId 排除，放进 selectedIds 会让空 keyword 查询（selectedIds
+    // 与 keyword 是 OR 语义）只返回目标自身，列表被过滤成空。
+    const selectedIds = [input.form.trustedComparisonAccountId ?? ''].filter(Boolean)
     const requestId = ++comparisonOptionsRequestId
     comparisonAbortController?.abort()
     const controller = new AbortController()
@@ -214,36 +217,49 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   }
 
   async function loadTargetModelOptions(): Promise<void> {
-    const accountId = input.form.targetId.trim()
-    if (!accountId || accountProfilesById.value[accountId]?.modelCheckModels !== undefined) return
+    await loadAccountModelOptions(input.form.targetId.trim())
+  }
+
+  // 按账户定点补拉可检模型（目录可检 ∪ 账户支持模型）。run 目标账户补拉驱动
+  // 模型下拉的加载态；对比账户选定后的补拉用于精确校验（View 层随后清除不
+  // 兼容选择）。账户候选列表不携带 modelCheckModels，目录外模型只有该查询返回。
+  async function loadAccountModelOptions(accountId: string): Promise<void> {
+    const id = accountId.trim()
+    if (!id || accountProfilesById.value[id]?.modelCheckModels !== undefined) return
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
     const identityKey = input.identityKey.value
-    const requestKey = JSON.stringify([identityKey, systemAccountId ?? '', 'run', accountId])
-    targetModelOptionsLoading.value = true
+    const requestKey = JSON.stringify([identityKey, systemAccountId ?? '', 'run', id])
+    const drivesRunTargetLoading = id === input.form.targetId.trim()
+    if (drivesRunTargetLoading) targetModelOptionsLoading.value = true
     try {
       const items = await targetModelRequestCoordinator.run(requestKey, (signal) => input.accountsApi.options({
         purpose: 'run',
         systemAccountId,
-        accountId,
+        accountId: id,
         limit: 1
       }, { signal }))
       if (!items
-        || accountId !== input.form.targetId.trim()
+        || !isAccountStillSelected(id)
         || identityKey !== input.identityKey.value
         || systemAccountId !== input.modelCheckScopeParams.value?.systemAccountId) return
-      const account = items.find((item) => item.id === accountId)
+      const account = items.find((item) => item.id === id)
       if (!account) throw new Error('当前检测账户不可用')
       rememberAccountProfile(account)
     } catch (error) {
       if (isAbortError(error)) return
-      if (accountId !== input.form.targetId.trim() || identityKey !== input.identityKey.value) return
+      if (!isAccountStillSelected(id) || identityKey !== input.identityKey.value) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载检查模型失败'))
     } finally {
-      if (accountId === input.form.targetId.trim() && identityKey === input.identityKey.value) {
+      if (drivesRunTargetLoading && id === input.form.targetId.trim() && identityKey === input.identityKey.value) {
         targetModelOptionsLoading.value = false
       }
     }
+  }
+
+  function isAccountStillSelected(id: string): boolean {
+    return id === input.form.targetId.trim()
+      || id === (input.form.trustedComparisonAccountId ?? '').trim()
   }
 
   function resetAccountOptionsState() {
@@ -296,6 +312,9 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     if (previousTargetId !== input.form.targetId) {
       targetModelRequestCoordinator.invalidate()
       targetModelOptionsLoading.value = false
+      // 选定后立即定点补拉该账户的可检模型：账户候选列表不携带
+      // modelCheckModels，不补拉的话模型下拉会一直停留在加载占位。
+      void loadAccountModelOptions(input.form.targetId)
     }
     selectedTargetAccount.value = selectedAccountForId(input.form.targetId, targetOptions.value)
   }
@@ -434,6 +453,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     handleTargetDropdownVisibleChange,
     handleTargetSearch,
     handleTargetValueUpdate,
+    loadAccountModelOptions,
     loadComparisonOptions,
     loadHistoryTargetOptions,
     loadTargetOptions,

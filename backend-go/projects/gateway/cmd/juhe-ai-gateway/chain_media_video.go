@@ -745,6 +745,9 @@ type chainMediaJobAccount struct {
 	BaseURL                   string
 	Credential                string
 	Credentials               map[string]any
+	// ProxyProfileID 是账户行自身绑定的代理档案 id（出站代理消费键；NULL
+	// 经 COALESCE 扫成空串 = 直连）。
+	ProxyProfileID string
 }
 
 // hydrateAccount 按 account_id 水合账户凭据（媒体设计 §7 账户亲和）。返回
@@ -759,12 +762,13 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	row := m.db.QueryRowContext(ctx, `SELECT id, system_account_id, provider_code,
 		COALESCE(provider_protocol_profile_id, ''), COALESCE(protocol_code, ''), COALESCE(protocol_version, ''),
 		type, status, COALESCE(capability_domain, 'chat'), COALESCE(health_check_endpoint_mode, ''),
-		COALESCE(cooldown_until, ''), COALESCE(credentials_encrypted, ''), COALESCE(deleted_at, '')
+		COALESCE(cooldown_until, ''), COALESCE(credentials_encrypted, ''), COALESCE(deleted_at, ''),
+		COALESCE(proxy_profile_id, '')
 		FROM `+m.mediaAccountsTable()+` WHERE id = ?`, accountID)
 	if err := row.Scan(&account.ID, &account.OwnerSystemAccountID, &account.ProviderCode,
 		&account.ProviderProtocolProfileID, &account.ProtocolCode, &account.ProtocolVersion,
 		&account.Type, &account.Status, &account.CapabilityDomain, &account.HealthCheckEndpointMode,
-		&account.CooldownUntil, &credentialsEncrypted, &deletedAt); err != nil {
+		&account.CooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -790,6 +794,60 @@ func (m *mediaJobsRuntime) mediaAccountsTable() string {
 		return "juhe_business.accounts"
 	}
 	return "accounts"
+}
+
+// mediaJobProxyUnavailableError 标记任务面出站代理解析失败（档案缺失/停用/
+// 凭据不可解密）：渲染层按 503 回带原文（含「代理不可用」与档案 id，不含
+// 代理凭据），对应同步 lane 的 proxy_unavailable 语义——绝不静默回落直连。
+type mediaJobProxyUnavailableError struct{ message string }
+
+func (e *mediaJobProxyUnavailableError) Error() string { return e.message }
+
+// resolveMediaJobAccountProxyURL 解析任务面出站代理 URL（与同步 lane 同源的
+// 账户绑定代理消费：账户行自身 proxy_profile_id → proxy_profiles 档案 →
+// proxy_url，socks5→socks5h 归一与 AES-GCM 密码解封沿 chainProxyURLFromRow
+// —— resolveProxyURLsForProfiles 的单账户等价面）。资源覆盖语义不在任务面
+// 范围：授权实例按记录绑定账户行自身的 proxy_profile_id 解析，不读取任何
+// 实例覆盖/池化代理配置。id 空 → ("", nil)（直连；空 ProxyURL 走池构建的
+// 显式禁环境代理直连 transport，未配代理账户的行为与改动前逐字一致）；
+// 档案缺失/停用/凭据不可解密 → *mediaJobProxyUnavailableError（调用方失败
+// 出站，不回落直连）。占位符裸 `?` 与 hydrateAccount 同先例（PG 侧由
+// sqldialect driver 兜底改写 $n）；表前缀 PG 方言为 juhe_business.
+// proxy_profiles。enabled 列 NullBool 扫描沿 resolveProxyURLsForProfiles 的
+// 既有注释（PG boolean / sqlite INTEGER 双方言可扫）。
+func (m *mediaJobsRuntime) resolveMediaJobAccountProxyURL(ctx context.Context, proxyProfileID string) (string, error) {
+	profileID := strings.TrimSpace(proxyProfileID)
+	if profileID == "" {
+		return "", nil
+	}
+	table := "proxy_profiles"
+	if m.postgres {
+		table = "juhe_business.proxy_profiles"
+	}
+	var (
+		proxyType, host, username, passwordEncrypted sql.NullString
+		port                                         sql.NullInt64
+		enabled                                      sql.NullBool
+	)
+	query := `SELECT type, host, port, username, password_encrypted, enabled
+		FROM ` + table + ` WHERE id = ? LIMIT 1`
+	err := m.db.QueryRowContext(ctx, query, profileID).
+		Scan(&proxyType, &host, &port, &username, &passwordEncrypted, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理档案不存在或已停用: " + profileID + "）"}
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询媒体任务账户代理档案失败: %w", err)
+	}
+	if !enabled.Valid || !enabled.Bool {
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理档案不存在或已停用: " + profileID + "）"}
+	}
+	proxyURL, err := chainProxyURLFromRow(m.secret, proxyType.String, host.String, int(port.Int64), username.String, passwordEncrypted.String)
+	if err != nil {
+		// 不透传解密错误细节（可能含密文形态信息），归一为不可用语义。
+		return "", &mediaJobProxyUnavailableError{message: "代理不可用（代理凭据不可解密: " + profileID + "）"}
+	}
+	return proxyURL, nil
 }
 
 // markMediaAccountActiveAfterJobSuccess 是视频异步任务成功落定后的账户状态回写
@@ -1044,20 +1102,16 @@ func newChainMediaJobID(kind gatewaymedia.MediaJobKind) string {
 
 // serveMediaJobTaskPlane 处理任务面请求（chain_v1.go 入口短路分支：preauth
 // 认证完成之后、派发预检之前；M3f 起按 kind 泛化覆盖 /v1/videos* 与
-// /v1/audio/jobs* 两族）。auditCapture 是链入口已构造的 G17 审计捕获
-// （chain_v1 newAuditCapture）：任务面短路路径不经派发引擎的 attempt/finalize
-// 面捕获不会自然 Finalize，这里接最小审计——绑定 API Key 身份 + 任务 id 元数
-// 据 + 请求级 Finalize（方法/路径/状态码；不记请求/响应 body，媒体设计 §8.1.4
-// 零资源存储：任务面 GET/DELETE 无 body，content 产物字节不进审计）。
-func (c *gatewayChain) serveMediaJobTaskPlane(ctx context.Context, req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter, traceID string, auditCapture gatewaypreauth.AuditCaptureContext) {
+// /v1/audio/jobs* 两族）。任务面是网关本地应答（不发起上游账户尝试），按
+// 2026-10-16 审计收录范围收窄不再落审计；链入口 defer 的 CancelAuditCapture
+// 对未 Finalize 的捕获兜底。
+func (c *gatewayChain) serveMediaJobTaskPlane(ctx context.Context, req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter, traceID string) {
 	if c.mediaJobs == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务面未装配", "service_unavailable")
-		c.finalizeMediaJobTaskPlaneAudit(auditCapture, req, res, "")
 		return
 	}
 	if req.Runtime == nil || req.Runtime.APIKey == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusUnauthorized, "缺少网关 API Key 身份", "invalid_api_key")
-		c.finalizeMediaJobTaskPlaneAudit(auditCapture, req, res, "")
 		return
 	}
 	shape, jobID, kind := chainMediaJobRequestShapeOf(req.MethodUpper(), req.PathAndQuery())
@@ -1074,40 +1128,6 @@ func (c *gatewayChain) serveMediaJobTaskPlane(ctx context.Context, req *gatewayp
 	default:
 		c.renderMediaVideoLocalError(res, req, http.StatusNotFound, "资源不存在", "not_found")
 	}
-	c.finalizeMediaJobTaskPlaneAudit(auditCapture, req, res, jobID)
-}
-
-// finalizeMediaJobTaskPlaneAudit 收口任务面短路路径的最小审计：身份绑定
-// （API Key 属主 + Key id）、任务 id 网关元数据与请求级 Finalize。状态码取
-// TrackingWriter 观测值（content 流式转发后仍可观测）；Finalize 幂等，链入口
-// 的 defer CancelAuditCapture 对已 Finalize 的捕获是 no-op。capture 为 nil
-// （组合测试未装配审计面）保持静默。
-func (c *gatewayChain) finalizeMediaJobTaskPlaneAudit(capture gatewaypreauth.AuditCaptureContext, req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter, jobID string) {
-	if capture == nil {
-		return
-	}
-	capture.BindContext(gatewaypreauth.AuditGatewayContext{
-		SystemAccountID: apiKeyOwnerSystemAccountIDOf(req),
-		APIKeyID:        apiKeyIDOfGatewayRequest(req),
-	})
-	if jobID != "" {
-		capture.AddGatewayMetadata("media_job_task_plane", map[string]any{"jobId": jobID})
-	}
-	status := res.StatusCode()
-	capture.Finalize(gatewaypreauth.AuditFinalizeInput{
-		Success:    status >= http.StatusOK && status < http.StatusBadRequest,
-		Outcome:    chainMediaJobAuditOutcomeOf(status),
-		StatusCode: status,
-	})
-}
-
-// chainMediaJobAuditOutcomeOf 归一任务面状态码到审计 Outcome 词表：4xx/5xx
-// 是网关本地裁决（任务面无派发引擎 upstream attempt 面），统一 gateway_failed。
-func chainMediaJobAuditOutcomeOf(status int) gatewayusage.AuditOutcome {
-	if status >= http.StatusOK && status < http.StatusBadRequest {
-		return gatewayusage.AuditOutcomeSuccess
-	}
-	return gatewayusage.AuditOutcomeGatewayFailed
 }
 
 // apiKeyIDOfGatewayRequest 取网关 API Key id（任务面认证后可得；缺身份时空）。
@@ -1348,7 +1368,7 @@ func (c *gatewayChain) serveMediaJobContent(ctx context.Context, res *gatewaypre
 			c.renderMediaVideoLocalError(res, req, http.StatusGone, chainMediaJobLabelOf(record)+"产物已过期或已被上游清除", "media_artifact_expired")
 			return
 		}
-		response, upstreamErr = c.mediaJobArtifactRequestUpstream(ctx, artifactURL)
+		response, upstreamErr = c.mediaJobArtifactRequestUpstream(ctx, account, artifactURL)
 	} else {
 		method, path := adapter.BuildContentRequest(record.UpstreamJobID)
 		response, upstreamErr = c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, nil)
@@ -1474,15 +1494,29 @@ func chainGlmVideoUpstreamURL(baseURL, path string) (string, error) {
 
 // volcengineVideoServiceRoot 是 volcengine 媒体出站路径自带的服务根（契约
 // §9.1：ark.cn-beijing.volces.com 官方端点 /api/v3/contents/generations/
-// tasks 族）。
+// tasks 族）；对话（/api/v3/chat/completions）与图像（/api/v3/images/
+// generations）OpenAI 兼容端点共用该服务根。
 const volcengineVideoServiceRoot = "/api/v3"
 
 // chainVolcengineVideoUpstreamURL 归一 volcengine 媒体任务面的上游 URL：base
-// + adapter 出站路径做直拼，base 已含 /api/v3 服务根时去重（镜像
-// chainGlmVideoUpstreamURL 的 /api/paas/v4 去重先例）。不得走 gatewayopenai.
-// BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1（endpoint_test.go 钉
-// 住的 openai 族契约），会把官方根 https://ark.cn-beijing.volces.com 错拼
-// /v1/api/v3/...。
+// + adapter 出站路径做直拼。base 路径判定（2026-10-17 Agent Plan 专属端点
+// 修复，仅 volcengine 归一路径；glm/qwen 共用的去重先例不变）：
+//   - base 为官方裸域名（路径为空）：adapter 出站路径自带 /api/v3 服务根，
+//     直拼不变；
+//   - base 以 /api/v3 结尾：去重——剥 adapter 出站路径的 /api/v3 前缀直拼
+//    （镜像 chainGlmVideoUpstreamURL 的 /api/paas/v4 去重先例）；
+//   - base 为其他非空路径：视为用户显式指定的完整服务根（如火山 Agent Plan
+//     专属端点 https://ark.cn-beijing.volces.com/api/plan/v3，实测
+//     /api/plan/v3/contents/generations/tasks 可用）——同样剥 adapter 出站
+//     路径的 /api/v3 前缀后直拼（/api/plan/v3 + /contents/generations/tasks），
+//     不再插入第二个服务根（旧行为会把 /api/plan/v3 错拼成
+//     /api/plan/v3/api/v3/... 404）。
+//
+// 合规提示：Agent Plan 专属端点官方条款为文本模型不可用于通用 API 调用，仅
+// 图像/视频/语音面开放 API（docs/functions/火山方舟账号接入.md 将同步）。
+// 不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
+//（endpoint_test.go 钉住的 openai 族契约），会把官方根
+// https://ark.cn-beijing.volces.com 错拼 /v1/api/v3/...。
 func chainVolcengineVideoUpstreamURL(baseURL, path string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
@@ -1493,7 +1527,10 @@ func chainVolcengineVideoUpstreamURL(baseURL, path string) (string, error) {
 	if !strings.HasPrefix(suffix, "/") {
 		suffix = "/" + suffix
 	}
-	if suffix != volcengineVideoServiceRoot && strings.HasSuffix(strings.ToLower(basePath), volcengineVideoServiceRoot) {
+	// base 路径非空（/api/v3 结尾或其他显式服务根）→ 剥 adapter 出站路径的
+	// /api/v3 前缀直拼；base 为官方裸域名（路径为空）→ 自带服务根原样直拼。
+	// suffix 恰为服务根本身的守卫沿旧实现保留（CutPrefix 空串不裁剪）。
+	if suffix != volcengineVideoServiceRoot && basePath != "" {
 		if trimmed, ok := strings.CutPrefix(suffix, volcengineVideoServiceRoot); ok && trimmed != "" {
 			suffix = trimmed
 		}
@@ -1550,32 +1587,88 @@ func chainIsChatCompletionsPathAndQuery(pathAndQuery string) bool {
 	return strings.Contains(strings.ToLower(path), "/chat/completions")
 }
 
+// chainIsImagesGenerationsPathAndQuery 报告路径是否图像生成面
+//（POST /v1/images/generations 统一面；query 剥离后大小写不敏感匹配）。
+func chainIsImagesGenerationsPathAndQuery(pathAndQuery string) bool {
+	path, _ := gatewayopenai.SplitPathAndQuery(pathAndQuery)
+	return strings.Contains(strings.ToLower(path), "/images/generations")
+}
+
 // chainVolcengineChatUpstreamURL 归一 volcengine 对话（chat completions）的
-// 上游 URL：官方 OpenAI 兼容端点 /api/v3/chat/completions 与媒体任务面共用
-// /api/v3 服务根（volcengineVideoServiceRoot），base + 客户端版本剥离后的
-// chat 路径直拼，base 已含 /api/v3 服务根时去重（镜像 chainVolcengineVideo
-// UpstreamURL 先例）。不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1
-// 结尾的 base 强制补 /v1（endpoint_test.go 钉住的 openai 族契约），会把官方
-// 根 https://ark.cn-beijing.volces.com 错拼 /v1/chat/completions。
+// 上游 URL：官方 OpenAI 兼容端点 /api/v3/chat/completions 与媒体任务面、图像
+// 面共用 /api/v3 服务根（volcengineVideoServiceRoot），base + 客户端版本剥离
+// 后的 chat 路径直拼；服务根判定走显式路径模式（chainChatServiceRootExplicit
+// Path，见 chainChatServiceRootUpstreamURL 三形态注释）。不得走
+// gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
+//（endpoint_test.go 钉住的 openai 族契约），会把官方根
+// https://ark.cn-beijing.volces.com 错拼 /v1/chat/completions。
 func chainVolcengineChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
-	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine")
+	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine", chainChatServiceRootExplicitPath)
+}
+
+// chainVolcengineImagesUpstreamURL 归一 volcengine 图像（images generations）
+// 的上游 URL：ark 官方 OpenAI 兼容图像端点 /api/v3/images/generations 与
+// chat/媒体任务面共用 /api/v3 服务根（volcengineVideoServiceRoot），base +
+// 客户端版本剥离后的图像路径直拼；服务根三形态与 chainVolcengineChatUpstream
+// URL 同构（官方裸域名插 /api/v3；base 已含 /api/v3 去重；其他非空路径视为
+// 用户显式指定的完整服务根直拼——如火山 Agent Plan 专属端点
+// https://ark.cn-beijing.volces.com/api/plan/v3，实测
+// /api/plan/v3/images/generations 出图可用；官方条款 Agent Plan 文本模型不可
+// 用于通用 API 调用，仅图像/视频/语音面开放 API，docs/functions/火山方舟账号
+// 接入.md 将同步）。不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾
+// 的 base 强制补 /v1（endpoint_test.go 钉住的 openai 族契约），会把官方根
+// https://ark.cn-beijing.volces.com 错拼 /v1/images/generations。调用方按
+// /images/generations 图像路径判定进本归一（客户端路径 /v1/images/generations
+// 剥 /v1 后为 /images/generations；与 chain_driver.go chat 分支的接入先例同构，
+// 由链上图像分支接线调用）。
+func chainVolcengineImagesUpstreamURL(baseURL, pathAndQuery string) (string, error) {
+	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine", chainChatServiceRootExplicitPath)
 }
 
 // chainQwenChatUpstreamURL 归一 qwen 对话（chat completions）的上游 URL：
 // 官方 OpenAI 兼容模式端点 /compatible-mode/v1/chat/completions（服务根
 // chainQwenChatServiceRoot），base + 客户端版本剥离后的 chat 路径直拼，base
 // 已含 /compatible-mode/v1 服务根时去重（镜像 chainQwenVideoUpstreamURL 的
-// /api/v1 去重先例，服务根不同）。不得走 gatewayopenai.BuildUpstreamURL
-// ——它会把官方根 https://dashscope.aliyuncs.com 错拼 /v1/chat/completions。
+// /api/v1 去重先例，服务根不同；严格后缀判定模式不放宽——DashScope 无
+// Agent Plan 式替代服务根形态，qwen 归一行为维持不变）。不得走
+// gatewayopenai.BuildUpstreamURL——它会把官方根
+// https://dashscope.aliyuncs.com 错拼 /v1/chat/completions。
 func chainQwenChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
-	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, chainQwenChatServiceRoot, "qwen")
+	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, chainQwenChatServiceRoot, "qwen", chainChatServiceRootStrictSuffix)
 }
 
-// chainChatServiceRootUpstreamURL 是 volcengine/qwen 对话出站的服务根归一
-// 主体：解析并校验 base_url，剥离客户端 /v1 版本前缀，base 未携带服务根时
-// 插入服务根、已携带时去重，最后拼回 query（镜像 chainVolcengineVideo
-// UpstreamURL 的解析与去重结构）。
-func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label string) (string, error) {
+// chainChatServiceRootPathMode 区分服务根「base 已携带服务根」判定的两种模式
+// （2026-10-17 火山 Agent Plan 专属端点修复引入，仅 volcengine 归一路径放宽，
+// qwen 共用主体保持历史行为）：
+//   - chainChatServiceRootStrictSuffix（qwen 沿用）：仅当 base 路径以服务根
+//     结尾才去重，其余一律插入服务根（DashScope 兼容模式历史契约）。
+//   - chainChatServiceRootExplicitPath（volcengine）：base 路径为空（官方裸
+//     域名）插服务根；以 /api/v3 结尾去重；其他非空路径是用户显式指定的完整
+//     服务根（如 /api/plan/v3），直拼不改写。
+type chainChatServiceRootPathMode int
+
+const (
+	chainChatServiceRootStrictSuffix chainChatServiceRootPathMode = iota
+	chainChatServiceRootExplicitPath
+)
+
+// chainChatServiceRootUpstreamURL 是 volcengine/qwen（及 volcengine 图像面）
+// 对话出站的服务根归一主体：解析并校验 base_url，剥离客户端 /v1 版本前缀，
+// base 未携带服务根时插入服务根、已携带时去重，最后拼回 query（镜像
+// chainVolcengineVideoUpstreamURL 的解析与去重结构）。base 路径三形态×模式：
+//   - 路径为空（官方裸域名）：插入服务根（chat 由本函数插 /api/v3；两种模式
+//     一致）；
+//   - 路径以服务根结尾：去重直拼（两种模式一致）；
+//   - 路径为其他非空路径：strict 模式（qwen）插入服务根（历史行为，
+//     https://dashscope.aliyuncs.com/api/v1 → /api/v1/compatible-mode/v1/...）；
+//     explicit 模式（volcengine）视为显式完整服务根直拼（
+//     https://ark.cn-beijing.volces.com/api/plan/v3 → /api/plan/v3/chat/
+//     completions，不再插入第二个服务根——旧行为会拼出 /api/plan/v3/api/v3/
+//     ... 404）。
+//
+// 合规提示：Agent Plan 专属端点官方条款为文本模型不可用于通用 API 调用，仅
+// 图像/视频/语音面开放 API（docs/functions/火山方舟账号接入.md 将同步）。
+func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label string, mode chainChatServiceRootPathMode) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
 		return "", fmt.Errorf("%s 账户 base_url 无效: %q", label, baseURL)
@@ -1587,7 +1680,9 @@ func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label s
 		suffix = "/" + suffix
 	}
 	if suffix != serviceRoot && !strings.HasSuffix(strings.ToLower(basePath), strings.ToLower(serviceRoot)) {
-		suffix = serviceRoot + suffix
+		if mode == chainChatServiceRootStrictSuffix || basePath == "" {
+			suffix = serviceRoot + suffix
+		}
 	}
 	parsed.Path = basePath + suffix
 	return parsed.String() + query, nil
@@ -1613,7 +1708,9 @@ func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label s
 // API Key，契约 §7.1/§9.1/§10.1/§10.2）；传输复用引擎 TransportDeps
 // （URL 安全策略 / 全局并发槽 / keep-alive 池）。qwen 的 X-DashScope-Async
 // 头只在万相视频创建面需要（DashScope 异步任务约定；paraformer 长转写天然
-// 异步不需要），任务面轮询仅需 Authorization，不在此注入。
+// 异步不需要），任务面轮询仅需 Authorization，不在此注入。出站代理消费账户
+// 绑定档案（resolveMediaJobAccountProxyURL：未配代理直连行为不变，缺失/停用
+// 失败出站不回落直连）。
 func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *chainMediaJobAccount, kind gatewaymedia.MediaJobKind, method, path string, body []byte) (*gatewayupstream.GatewayUpstreamResponse, error) {
 	adapterKey := ""
 	if kind == gatewaymedia.JobKindAudioTranscription {
@@ -1662,22 +1759,38 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 		headers.Set("Authorization", "Bearer "+account.Credential)
 	}
 	headers.Set("Accept", "application/json")
+	// 出站代理与同步 lane 同源：账户配了代理档案 → 任务面出站走该代理；
+	// 未配代理（id 空）→ ProxyURL 零值直连（行为不变）；档案缺失/停用 →
+	// 失败出站（不允许回落直连），错误沿调用方 renderMediaVideoTransportError
+	// 收敛为 503 proxy_unavailable 语义。
+	proxyURL, proxyErr := c.mediaJobs.resolveMediaJobAccountProxyURL(ctx, account.ProxyProfileID)
+	if proxyErr != nil {
+		return nil, proxyErr
+	}
 	return gatewayupstream.RequestUpstream(ctx, upstreamURL, gatewayupstream.UpstreamRequestOptions{
-		Method: method,
-		Header: headers,
-		Body:   body,
-		Signal: ctx,
+		Method:   method,
+		Header:   headers,
+		Body:     body,
+		ProxyURL: proxyURL,
+		Signal:   ctx,
 	}, c.mediaJobs.transport)
 }
 
 // mediaJobArtifactRequestUpstream 直连 completed 任务的产物 URL（M3 gemini：
 // Veo 的 GCS 签名 URL，凭据内嵌于 URL，契约 §5.2——不携带任何账户认证头，
-// 带 Authorization 反而会被 GCS 拒绝）；传输复用引擎 TransportDeps（URL
-// 安全策略与任务面直连同源）。
-func (c *gatewayChain) mediaJobArtifactRequestUpstream(ctx context.Context, artifactURL string) (*gatewayupstream.GatewayUpstreamResponse, error) {
+// 带 Authorization 反而会被 GCS 拒绝）；出站代理消费任务账户绑定档案（与
+// 轮询/取消同一 resolveMediaJobAccountProxyURL 语义：未配代理直连、缺失/
+// 停用失败出站不回落）；传输复用引擎 TransportDeps（URL 安全策略与任务面
+// 直连同源）。不设 client 总超时——产物是流式下载，总超时会截断长下载。
+func (c *gatewayChain) mediaJobArtifactRequestUpstream(ctx context.Context, account *chainMediaJobAccount, artifactURL string) (*gatewayupstream.GatewayUpstreamResponse, error) {
+	proxyURL, proxyErr := c.mediaJobs.resolveMediaJobAccountProxyURL(ctx, account.ProxyProfileID)
+	if proxyErr != nil {
+		return nil, proxyErr
+	}
 	return gatewayupstream.RequestUpstream(ctx, artifactURL, gatewayupstream.UpstreamRequestOptions{
-		Method: http.MethodGet,
-		Signal: ctx,
+		Method:   http.MethodGet,
+		ProxyURL: proxyURL,
+		Signal:   ctx,
 	}, c.mediaJobs.transport)
 }
 
@@ -1936,8 +2049,15 @@ func (c *gatewayChain) renderMediaVideoLocalError(res *gatewaypreauth.TrackingWr
 }
 
 // renderMediaVideoTransportError 渲染任务面直连的传输失败（网络错误族：503
-// 可重试语义；受理后故障只报错不换账户）。
+// 可重试语义；受理后故障只报错不换账户）。代理解析失败（档案缺失/停用/凭据
+// 不可解密）按原文 503 proxy_unavailable 渲染（与同步 lane 失败语义同码），
+// 不回落直连；其余维持既有通用文案。
 func (c *gatewayChain) renderMediaVideoTransportError(res *gatewaypreauth.TrackingWriter, req *gatewaypreauth.GatewayRequest, err error) {
+	var proxyErr *mediaJobProxyUnavailableError
+	if errors.As(err, &proxyErr) {
+		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, proxyErr.Error(), "proxy_unavailable")
+		return
+	}
 	c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "上游暂时不可用，请重试", "upstream_unavailable")
 }
 

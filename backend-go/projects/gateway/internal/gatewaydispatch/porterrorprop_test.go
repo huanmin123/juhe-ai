@@ -89,6 +89,12 @@ func (e *errorAffinityPort) RememberAsync(context.Context, string, string, Affin
 
 func (e *errorAffinityPort) ForgetAsync(context.Context, string, string) error { return nil }
 
+func (e *errorAffinityPort) StickyApiKeyFingerprintAsync(context.Context, string, string) string {
+	return ""
+}
+
+func (e *errorAffinityPort) RememberApiKeyFingerprintAsync(context.Context, string, string, string) {}
+
 func (e *errorAffinityPort) AreHighConcurrencyAccountsBusyForLaneAsync(context.Context, []AccountCandidate, HighConcurrencyBusyOptions) (bool, error) {
 	if e.busyError {
 		return false, errPortBoom

@@ -849,6 +849,9 @@ func TestCanonicalBlobMissingFileFailsWithoutRecompression(t *testing.T) {
 	}
 	second := fixture("audit-canonical-missing", LifecycleFinalized)
 	second.Payloads = first.Payloads
+	// 换 Path 拉开错误指纹：本测试只验证 canonical 文件缺失检测，不得被
+	// 错误组窗口内去重（出生即降级、不落盘）提前短路。
+	second.Path = "/v1/canonical-missing"
 	if _, err := store.Persist(context.Background(), lease, second); err == nil || !strings.Contains(err.Error(), "缺少物理文件") {
 		t.Fatalf("missing canonical gzip file must fail instead of Go recompression: %v", err)
 	}
@@ -880,6 +883,8 @@ func TestAttemptTempIDNeverCrossesAuditLogAndBlobConflictUsesCanonicalID(t *test
 	second := fixture("audit-second", LifecycleFinalized)
 	second.Attempts = []AuditLogAttemptInput{{ID: "shared-attempt", TempID: "second", AttemptIndex: 0, UpstreamMethod: "POST", UpstreamURL: "https://two", StartedAt: second.StartedAt}}
 	second.Payloads = []AuditLogPayloadInput{{AttemptTempID: "second", PartType: PayloadPartUpstreamResponse, Body: PayloadBody{Bytes: []byte("same"), Present: true}}}
+	// 换 Path 拉开错误指纹，避开错误组窗口内去重（否则第二条不落盘）。
+	second.Path = "/v1/attempt-conflict"
 	if _, err := store.Persist(context.Background(), lease, second); err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1076,7 @@ func TestPostgresLeaseSmokeWhenExplicitlyConfigured(t *testing.T) {
 	}
 	assertDestructivePostgresSmokeTarget(t, postgresURL)
 	blobRoot := t.TempDir()
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PayloadBlobDirectory: blobRoot})
+	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1262,6 +1267,9 @@ func TestPostgresLeaseSmokeWhenExplicitlyConfigured(t *testing.T) {
 
 	gcNew := fixture(runID+"-gc-new", LifecycleFinalized)
 	gcNew.Payloads = []AuditLogPayloadInput{{PartType: PayloadPartGatewayResponse, ContentType: "text/plain", Body: PayloadBody{Bytes: []byte("postgres gc interleave"), Present: true}}}
+	// 换 Path 拉开错误指纹：同指纹同窗口会被错误组去重"出生即降级"（正文不
+	// 落盘、无新引用），本段的 GC 交错断言依赖新引用真实物化。
+	gcNew.Path = "/v1/gc-interleave-new"
 	interleaveCtx, cancelInterleave := context.WithTimeout(ctx, 15*time.Second)
 	defer cancelInterleave()
 	startInterleave := make(chan struct{})
@@ -1355,7 +1363,7 @@ func TestPostgresRetentionSameIDPersistLockOrderSmokeWhenExplicitlyConfigured(t 
 	}
 	assertDestructivePostgresSmokeTarget(t, postgresURL)
 	blobRoot := t.TempDir()
-	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PayloadBlobDirectory: blobRoot})
+	store, err := OpenStore(Config{Mode: ModePostgres, PostgresURL: postgresURL, PostgresMaxOpenConns: 4, PostgresMaxIdleConns: 2, PayloadBlobDirectory: blobRoot})
 	if err != nil {
 		t.Fatal(err)
 	}

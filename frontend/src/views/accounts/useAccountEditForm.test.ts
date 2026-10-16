@@ -1,5 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, createApp, defineComponent, h, nextTick, ref, watch, type Ref } from 'vue'
+
+// v8-D 收敛链路只依赖预取缓存的同步读取：mock 掉 IO 层，缓存命中场景由用例注入。
+const { cachedAvailabilityMock } = vi.hoisted(() => ({
+  cachedAvailabilityMock: vi.fn<(input: unknown) => ReadonlySet<string> | undefined>()
+}))
+vi.mock('./mediaDomainModelAvailability', () => ({
+  cachedMediaDomainModelAvailability: (input: unknown) => cachedAvailabilityMock(input)
+}))
 
 import {
   MINIMAX_OPENAI_V1_PROFILE_ID,
@@ -123,7 +131,8 @@ function racingDefinitionLoader(definitions: ProviderDefinition[]) {
 type EditFormContext = ReturnType<typeof useAccountEditForm>
 
 function mountMediaEditForm(
-  buildEnsure: (providerDefinitions: Ref<ProviderDefinition[]>) => UseAccountEditFormOptions['ensureProviderDefinition']
+  buildEnsure: (providerDefinitions: Ref<ProviderDefinition[]>) => UseAccountEditFormOptions['ensureProviderDefinition'],
+  capabilityDomain: Ref<'chat' | 'video' | 'audio' | 'image'> = ref('chat')
 ) {
   const providers = ref<ProviderDefinition[]>([])
   const providerDefinitions = ref<ProviderDefinition[]>([])
@@ -136,6 +145,7 @@ function mountMediaEditForm(
       context = useAccountEditForm({
         accountScopeParams: computed(() => undefined),
         accounts,
+        capabilityDomain: computed(() => capabilityDomain.value),
         extractApiErrorMessage: (_error, fallback) => fallback,
         groupIdForAccount: () => undefined,
         groups,
@@ -183,6 +193,10 @@ async function flushTicks(times = 3): Promise<void> {
     await nextTick()
   }
 }
+
+beforeEach(() => {
+  cachedAvailabilityMock.mockReset()
+})
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -338,5 +352,52 @@ describe('applyProviderDefinitionDefaultsAfterLoad（B3③：definition 缺失�
     expect(calls).toBe(1)
     expect(form.type).toBe('')
     expect(form.providerProtocolProfileId).toBe('')
+  })
+})
+
+describe('useAccountEditForm.openCreate（v8-D：媒体域新建默认供应商同步收敛）', () => {
+  it('视频域预取就绪且 GPT 无货：打开弹窗默认供应商直接落在首个有货供应商（glm）', async () => {
+    cachedAvailabilityMock.mockReturnValue(new Set(['glm']))
+    const { ctx, unmount } = mountMediaEditForm(() => async () => undefined, ref('video'))
+    try {
+      await ctx.openCreate()
+      expect(cachedAvailabilityMock).toHaveBeenCalledWith(expect.objectContaining({
+        capabilityDomain: 'video',
+        isManagementView: false
+      }))
+      expect(ctx.form.providerCode).toBe('glm')
+      expect(ctx.modalOpen.value).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('预取未就绪与全无货：回退既有全局默认（GPT 优先），对话域行为零变化', async () => {
+    // 未就绪（undefined）。
+    const pending = mountMediaEditForm(() => async () => undefined)
+    try {
+      await pending.ctx.openCreate()
+      expect(pending.ctx.form.providerCode).toBe('gpt')
+    } finally {
+      pending.unmount()
+    }
+    // 交集为空（有货集合不含任何域内供应商）。
+    cachedAvailabilityMock.mockReturnValue(new Set(['qwen']))
+    const empty = mountMediaEditForm(() => async () => undefined)
+    try {
+      await empty.ctx.openCreate()
+      expect(empty.ctx.form.providerCode).toBe('gpt')
+    } finally {
+      empty.unmount()
+    }
+    // chat 域不适用收敛（即使缓存命中）——对话域默认供应商行为零变化。
+    cachedAvailabilityMock.mockReturnValue(new Set(['glm']))
+    const chat = mountMediaEditForm(() => async () => undefined)
+    try {
+      await chat.ctx.openCreate()
+      expect(chat.ctx.form.providerCode).toBe('gpt')
+    } finally {
+      chat.unmount()
+    }
   })
 })

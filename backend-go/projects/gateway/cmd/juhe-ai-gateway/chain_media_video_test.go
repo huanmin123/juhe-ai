@@ -31,7 +31,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
 )
 
@@ -1009,113 +1008,6 @@ func TestChainMediaVideoConcurrentTerminalSingleUsage(t *testing.T) {
 	}
 	if usageCount != 1 {
 		t.Fatalf("终态 usage 记录 = %d 条, want 1（并发终态只入队一次）", usageCount)
-	}
-}
-
-// mediaJobAuditDispatcher 收集 Finalize flush 的审计行（任务面最小审计测试）。
-type mediaJobAuditDispatcher struct {
-	inputs []gatewayusage.AuditLogInput
-}
-
-func (d *mediaJobAuditDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gatewayusage.AuditLogInput) {
-	d.inputs = append(d.inputs, input)
-}
-
-// TestChainMediaJobTaskPlaneAuditMinimal 任务面审计捕获（媒体设计 §8.1.4：
-// 只记元数据不记 body）：Finalize 落一行 method/path/statusCode/outcome +
-// jobId 网关元数据；payloads 无请求/响应 body（零存储原则）。
-func TestChainMediaJobTaskPlaneAuditMinimal(t *testing.T) {
-	dispatcher := &mediaJobAuditDispatcher{}
-	concrete := gatewayusage.NewAuditCaptureContext(gatewayusage.AuditCaptureInput{
-		TraceID: "trace-media-audit", StartedAtMs: 1700000000000,
-		TrafficSource: gatewayTrafficSource, Method: http.MethodGet,
-		Path: "/v1/videos/video_audit1", OriginalURL: "/v1/videos/video_audit1",
-		Settings: gatewayusage.FixedAuditLogSettingsSource{Settings: gatewayusage.AuditLogSettings{
-			Enabled: true, FullBodyCaptureEnabled: true, SuccessSampleRate: 0,
-			ActiveCaptureMaxBytes:     gatewayusage.DefaultAuditCaptureHardLimitBytes,
-			SuccessFullBodyLimitBytes: 1024, ProblemFullBodyLimitBytes: 2048,
-			SuccessRetentionDays: 30, ProblemRetentionDays: 90,
-		}},
-		Dispatcher: dispatcher,
-	})
-	request, err := http.NewRequest(http.MethodGet, "/v1/videos/video_audit1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := gatewaypreauth.NewGatewayRequest(request)
-	req.Runtime = &gatewayruntimecache.GatewayRuntime{
-		APIKey: &gatewayruntimecache.GatewayAPIKeyRow{ID: "key_audit", SystemAccountID: "sys_audit"},
-	}
-	recorder := httptest.NewRecorder()
-	res := gatewaypreauth.NewTrackingWriter(recorder)
-
-	chain := &gatewayChain{}
-	chain.finalizeMediaJobTaskPlaneAudit(preauthAuditCapture{inner: concrete}, req, res, "video_audit1")
-
-	if len(dispatcher.inputs) != 1 {
-		t.Fatalf("dispatched = %d, want 1", len(dispatcher.inputs))
-	}
-	row := dispatcher.inputs[0]
-	if row.Method != http.MethodGet || row.Path != "/v1/videos/video_audit1" {
-		t.Fatalf("method/path = %s %s", row.Method, row.Path)
-	}
-	if row.FinalStatusCode == nil || *row.FinalStatusCode != http.StatusOK {
-		t.Fatalf("finalStatusCode = %v, want 200", row.FinalStatusCode)
-	}
-	if row.AuditOutcome != gatewayusage.AuditOutcomeSuccess || !row.Success {
-		t.Fatalf("outcome/success = %s %v", row.AuditOutcome, row.Success)
-	}
-	if row.APIKeyID != "key_audit" || row.SystemAccountID != "sys_audit" {
-		t.Fatalf("身份绑定缺失: apiKey=%s systemAccount=%s", row.APIKeyID, row.SystemAccountID)
-	}
-	// 零存储（媒体设计 §8.1.4）：未采样成功行走 envelope-only（payloads 清空，
-	// Node 语义），任务 id 由 Path 承载（/v1/videos/video_audit1）；无任何
-	// 请求/响应 body part。
-	if !strings.Contains(row.Path, "video_audit1") {
-		t.Fatalf("path 缺少任务 id: %s", row.Path)
-	}
-	for _, payload := range row.Payloads {
-		if payload.PartType != gatewayusage.AuditPartGatewayMetadata {
-			t.Fatalf("任务面审计不得记录非元数据 payload: %+v", payload)
-		}
-	}
-
-	// 失败路径：410（产物过期）→ gateway_failed outcome。
-	dispatcher2 := &mediaJobAuditDispatcher{}
-	concrete2 := gatewayusage.NewAuditCaptureContext(gatewayusage.AuditCaptureInput{
-		TraceID: "trace-media-audit-2", StartedAtMs: 1700000000000,
-		TrafficSource: gatewayTrafficSource, Method: http.MethodGet,
-		Path: "/v1/videos/video_audit1/content",
-		Settings: gatewayusage.FixedAuditLogSettingsSource{Settings: gatewayusage.AuditLogSettings{
-			Enabled: true, ActiveCaptureMaxBytes: gatewayusage.DefaultAuditCaptureHardLimitBytes,
-			SuccessFullBodyLimitBytes: 1024, ProblemFullBodyLimitBytes: 2048,
-			SuccessRetentionDays: 30, ProblemRetentionDays: 90,
-		}},
-		Dispatcher: dispatcher2,
-	})
-	recorder2 := httptest.NewRecorder()
-	res2 := gatewaypreauth.NewTrackingWriter(recorder2)
-	res2.WriteHeader(http.StatusGone)
-	chain.finalizeMediaJobTaskPlaneAudit(preauthAuditCapture{inner: concrete2}, req, res2, "video_audit1")
-	if len(dispatcher2.inputs) != 1 {
-		t.Fatalf("dispatched = %d, want 1", len(dispatcher2.inputs))
-	}
-	failed := dispatcher2.inputs[0]
-	if failed.AuditOutcome != gatewayusage.AuditOutcomeGatewayFailed {
-		t.Fatalf("410 outcome = %s, want gateway_failed", failed.AuditOutcome)
-	}
-	// 问题行保留 gateway_metadata：jobId 元数据可见，且无请求/响应 body part。
-	jobIDSeen := false
-	for _, payload := range failed.Payloads {
-		if payload.PartType != gatewayusage.AuditPartGatewayMetadata {
-			t.Fatalf("问题行不得记录非元数据 payload: %+v", payload)
-		}
-		if strings.Contains(string(payload.Body), "video_audit1") {
-			jobIDSeen = true
-		}
-	}
-	if !jobIDSeen {
-		t.Fatalf("问题行 jobId 元数据缺失: %#v", failed.Payloads)
 	}
 }
 

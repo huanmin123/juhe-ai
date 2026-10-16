@@ -192,6 +192,9 @@ func TestW11EBlobPhysicalConsistencyArms(t *testing.T) {
 	second.Success = false
 	second.ErrorMessage = "w11e failure"
 	second.Payloads = first.Payloads
+	// 换 Path 拉开错误指纹：本测试只验证 blob 物理一致性臂，不得被错误组
+	// 窗口内去重（出生即降级、跳过文件校验）提前短路。
+	second.Path = "/v1/w11e-blob-second"
 	if _, err := store.Persist(ctx, lease, second); err == nil || !strings.Contains(err.Error(), "不一致") {
 		t.Fatalf("物理不一致必须拒绝: %v", err)
 	}

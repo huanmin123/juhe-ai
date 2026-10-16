@@ -24,7 +24,7 @@ import {
   mediaAdvancedCardConfiguredCount,
   mediaAdvancedCardSummary,
   mediaCapabilityModeOptions,
-  mediaOutOfDomainDeclaredModes
+  mediaDomainModelAvailabilityHint
 } from './accountMediaFormBlocks'
 
 // v8-B 媒体域表单完整性升级（A 组）契约：
@@ -148,22 +148,6 @@ describe('mediaCapabilityModeOptions（域允许集 × 供应商词表）', () =
       accountType: 'api_key'
     })
     expect(imageOptions.map((option) => option.value)).toEqual(['images_json'])
-  })
-})
-
-describe('mediaOutOfDomainDeclaredModes（D6 域外遗留）', () => {
-  it('声明集中超出域允许集的值按声明顺序去重返回，域内值不出现', () => {
-    const options = mediaCapabilityModeOptions({
-      capabilityDomain: 'audio',
-      providerCode: 'openai',
-      profile: openAiMediaProvider.protocolProfiles[0],
-      accountType: 'api_key'
-    })
-    const legacy = mediaOutOfDomainDeclaredModes(
-      ['chat_json', 'audio_speech', 'chat_json', 'responses_sse', 'audio_transcription_json'],
-      options
-    )
-    expect(legacy).toEqual(['chat_json', 'responses_sse'])
   })
 })
 
@@ -448,9 +432,6 @@ describe('AccountMediaForm.vue v8-B 渲染契约（源码级）', () => {
     expect(templateSource).toContain('v-for="option in mediaEndpointModeOptions"')
     expect(templateSource).toContain(':checked="form.supportedEndpointModes.includes(option.value)"')
     expect(templateSource).toContain(':disabled="capabilityModesDisabled"')
-    expect(templateSource).toContain('outOfDomainMediaModes')
-    expect(templateSource).toContain('域外能力（保留）')
-    expect(templateSource).toContain('清理域外能力')
   })
 
   it('段3：优先级与特权控件位于并发上限旁，绑定 chat 同源表单字段', () => {
@@ -514,5 +495,30 @@ describe('AccountEditModal.vue 媒体分支接线契约（源码级）', () => {
     expect(mediaBranch).toContain(':inherited-error-policy-rules="inheritedErrorPolicyRules"')
     expect(mediaBranch).toContain('@advanced-open="$emit(\'advanced-open\')"')
     expect(mediaBranch).toContain('@balance-query="$emit(\'balance-query\')"')
+  })
+})
+
+describe('mediaDomainModelAvailabilityHint：域内空目录模型提示（v8-D）', () => {
+  const base = {
+    capabilityDomain: 'video' as AccountCapabilityDomain,
+    optionCount: 0,
+    loading: false,
+    settled: true,
+    hybridMappingDomain: false
+  }
+
+  it('候选加载后确认为空（settled 且非加载中）时提示；有候选或加载中不提示', () => {
+    expect(mediaDomainModelAvailabilityHint(base)).toContain('暂无可用目录模型')
+    expect(mediaDomainModelAvailabilityHint({ ...base, optionCount: 2 })).toBeUndefined()
+    expect(mediaDomainModelAvailabilityHint({ ...base, loading: true })).toBeUndefined()
+  })
+
+  it('懒加载下未加载的空不是真没有货：settled 前不提示', () => {
+    expect(mediaDomainModelAvailabilityHint({ ...base, settled: false })).toBeUndefined()
+  })
+
+  it('hybrid 映射域（上游模型来自映射面）与对话域不提示', () => {
+    expect(mediaDomainModelAvailabilityHint({ ...base, hybridMappingDomain: true })).toBeUndefined()
+    expect(mediaDomainModelAvailabilityHint({ ...base, capabilityDomain: 'chat' })).toBeUndefined()
   })
 })

@@ -14,9 +14,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -79,11 +77,6 @@ type chainRuntimeDeps struct {
 	// 采样率恒 0，成功信封 attempts 永远被写侧清空。
 	AuditLogSuccessSampleRate        float64
 	AuditLogSuccessHotRetentionHours int
-	// AuditDispatch carries the in-process F3 audit producer adapter
-	// (去跨进程战役第四刀: the loopback audit input URL/POST is gone; the
-	// producer persists finalized dropped captures directly). Nil adapters
-	// keep the retired empty-target degrade branch (silent drop).
-	AuditDispatch gatewaypreauth.AuditDispatcher
 	// AuditUsageDispatch carries the same producer behind the usage-face
 	// audit port (gatewayusage.AuditDispatcher). Nil degrades identically.
 	AuditUsageDispatch gatewayusage.AuditDispatcher
@@ -404,16 +397,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	observability := newSlogObservability(logger, clock)
 
 	// ---- body pipeline (request/body-middleware.ts) ----
-	// D-119（BUG-0175）：拒绝记录 Recorder 与文本 lane 的 settings 覆盖装配。
-	// Recorder 落 dropped audit + usage failure（Node recordGatewayBodyRejection，
-	// 413/503/429 拒绝面此前不写任何审计/用量）；TextRawBodyLimitMegabytes 读
-	// 运行时快照（req.gatewayRuntime.settings.gatewayTextRawBodyLimitMegabytes），
-	// 读取失败回落 16 MiB 默认。
+	// D-119（BUG-0175）：拒绝记录 Recorder 落 usage failure（Node
+	// recordGatewayBodyRejection）；TextRawBodyLimitMegabytes 读运行时快照
+	// （req.gatewayRuntime.settings.gatewayTextRawBodyLimitMegabytes），读取
+	// 失败回落 16 MiB 默认。
 	rejectionRecorder := &chainBodyRejectionRecorder{
-		audit:        deps.AuditDispatch,
-		auditEnabled: deps.AuditLogEnabled,
-		usage:        usageService,
-		clock:        clock,
+		usage: usageService,
 	}
 	// One shared bounded JSON parser for the whole chain: the body pipeline's
 	// materialization jobs and the dispatch driver's once-per-request body
@@ -728,8 +717,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		SessionAffinity:    sessionAffinityAdapter{services: deps.Identity},
 		Codex:              chainCodexBridgePreflight(codexBridge),
 		Recoverable:        deps.Recoverable,
-		AuditSettings:      auditSettingsAdapter{enabled: deps.AuditLogEnabled},
-		AuditDispatch:      deps.AuditDispatch,
 	})
 	if err != nil {
 		recorder.Close()
@@ -996,14 +983,12 @@ func rawMessageString(raw json.RawMessage) string {
 // ---------------------------------------------------------------------------
 
 // chainBodyRejectionRecorder 把 body 拒绝面（413 尺寸 / 503 in-flight 与
-// worker / 429 speed-first 背压）落成 dropped audit + usage failure。审计按
-// 审计设置门控；usage failure 仅在 runtime 快照已解析出 API Key 时写（Node
-// !apiKey early return）。记录失败只告警，不改变原始拒绝响应。
+// worker / 429 speed-first 背压）落成 usage failure。请求体拒绝属于网关拦截
+// 面（零上游尝试），2026-10-16 收窄后不再落审计；usage failure 仅在 runtime
+// 快照已解析出 API Key 时写（Node !apiKey early return）。记录失败只告警，
+// 不改变原始拒绝响应。
 type chainBodyRejectionRecorder struct {
-	audit        gatewaypreauth.AuditDispatcher
-	auditEnabled func() bool
-	usage        *gatewayusage.Service
-	clock        gatewaypreauth.Clock
+	usage *gatewayusage.Service
 }
 
 var _ gatewaybody.RejectionRecorder = (*chainBodyRejectionRecorder)(nil)
@@ -1019,59 +1004,13 @@ func (r *chainBodyRejectionRecorder) RecordGatewayBodyRejection(req *http.Reques
 	}()
 	requestCtx := kernel.Context(req)
 	traceID := requestCtx.TraceID
-	method := strings.ToUpper(req.Method)
-	if method == "" {
-		method = "UNKNOWN"
-	}
-	originalURL := req.URL.RequestURI()
-	// RequestURI() 对空 Path 恒返回 "/"，strings.Cut 的前段恒非空，
-	// 空路径兜底已按 w2 登记删除。
-	path, queryString, _ := strings.Cut(originalURL, "?")
 	message := input.ErrorMessage
 	if message == "" {
 		message = input.ResponsePayload.Error.Message
 	}
-	// Node: limitBytes + limitScope 存在时审计消息追加尺寸标注。
-	auditErrorMessage := message
-	if input.LimitBytes > 0 && input.LimitScope != "" {
-		auditErrorMessage = fmt.Sprintf("%s（rawBodyBytes=%d, limitBytes=%d, limitScope=%s）",
-			message, input.RawBodyBytes, input.LimitBytes, input.LimitScope)
-	}
-	r.dispatchDroppedAudit(req, requestCtx, traceID, method, path, queryString, auditErrorMessage, input)
 	if runtime := chainGatewayRuntimeOf(req); runtime != nil && runtime.APIKey != nil {
 		r.recordUsageFailure(requestCtx, req, traceID, message, input, runtime)
 	}
-}
-
-// dispatchDroppedAudit 对齐 dispatchDroppedAuditCapture：审计设置门控 +
-// finalized dropped envelope（reason 'gateway_body_rejected'）。
-func (r *chainBodyRejectionRecorder) dispatchDroppedAudit(req *http.Request, requestCtx *kernel.RequestContext, traceID string, method string, path string, queryString string, auditErrorMessage string, input gatewaybody.RejectionInput) {
-	if r.audit == nil || r.auditEnabled == nil || !r.auditEnabled() {
-		return
-	}
-	timestamp := r.clock.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	r.audit.Dispatch(gatewaypreauth.DispatchedAuditLogInput{
-		ID:              chainNewAuditID(r.clock),
-		LifecycleStatus: "finalized",
-		TraceID:         traceID,
-		TrafficSource:   gatewayTrafficSource,
-		AuditOutcome:    gatewaypreauth.AuditOutcomeGatewayFailed,
-		Success:         false,
-		Method:          method,
-		Path:            path,
-		QueryString:     queryString,
-		ClientIP:        requestCtx.ClientIP,
-		UserAgent:       req.Header.Get("User-Agent"),
-		FinalStatusCode: input.StatusCode,
-		ErrorPhase:      "gateway",
-		ErrorCode:       input.ErrorCode,
-		ErrorMessage:    auditErrorMessage,
-		SampleBucket:    0,
-		SampleReason:    "gateway_body_rejected",
-		CaptureStatus:   "complete",
-		StartedAt:       timestamp,
-		EndedAt:         timestamp,
-	})
 }
 
 // recordUsageFailure 对齐 recordGatewayFailure 的 body 拒绝分支：身份取自
@@ -1173,26 +1112,4 @@ func chainTextRawBodyLimitOf(cache *gatewayruntimecache.Service) gatewaybody.Tex
 		}
 		return int(settings.GatewayTextRawBodyLimitMegabytes), true
 	}
-}
-
-// chainNewAuditID mirrors `audit_${Date.now()}_${randomUUID()}`（gateway
-// preauth 的审计 ID 形状，供组合根的 dropped audit 面复用）。
-func chainNewAuditID(clock gatewaypreauth.Clock) string {
-	var buf [16]byte
-	// Go 1.24+ crypto/rand.Read 文档契约：never returns an error（w2 登记），
-	// 降级臂已删。
-	_, _ = rand.Read(buf[:])
-	buf[6] = (buf[6] & 0x0f) | 0x40
-	buf[8] = (buf[8] & 0x3f) | 0x80
-	dst := make([]byte, 36)
-	hex.Encode(dst, buf[:4])
-	dst[8] = '-'
-	hex.Encode(dst[9:13], buf[4:6])
-	dst[13] = '-'
-	hex.Encode(dst[14:18], buf[6:8])
-	dst[18] = '-'
-	hex.Encode(dst[19:23], buf[8:10])
-	dst[23] = '-'
-	hex.Encode(dst[24:], buf[10:])
-	return fmt.Sprintf("audit_%d_%s", clock.Now().UnixMilli(), string(dst))
 }

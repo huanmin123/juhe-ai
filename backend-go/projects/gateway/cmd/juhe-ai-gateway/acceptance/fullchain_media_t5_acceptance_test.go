@@ -4,28 +4,30 @@
 // fullchain_media_video_test.go）之上补齐三块缺口，全部跑在隔离临时目录 +
 // 空闲端口 + 全 Mock 上游（不触真实付费上游、不触开发库）：
 //
-//  1. TestFullchainT5VolcengineSpeechMissingDualCredentials：volcengine
-//     audio_speech 双值凭据缺失负例——管理面创建 audio_speech 模式但缺
-//     speech_appid/speech_token 的账户（写侧双值可选、能力由派发显式失败
-//     表达，internal/accounts/credentials_normalize.go 契约），真实 /v1
-//     请求链显式 5xx 失败且零上游出站（对齐链级
+//  1. TestFullchainT5VolcengineSpeechMissingCredentials：volcengine
+//     audio_speech 语音凭据缺失负例——管理面创建 audio_speech 模式但缺
+//     speech_token 的账户（写侧单值可选、能力由派发显式失败表达，
+//     internal/accounts/credentials_normalize.go 契约），真实 /v1
+//     请求链显式 400 失败（speech_credentials_missing，账户级配置缺位的
+//     确定性错误，不静默回退）且零上游出站（对齐链级
 //     TestChainMediaVolcengineSpeechMissingCredentials 语义）；
 //  2. TestFullchainT5QwenAudioJobCancel：qwen 长音频任务型能力的取消链
 //     ——§10.2 面无上游取消 API，DELETE /v1/audio/jobs/{id} 本地收敛
 //     cancelled + 204，零上游出站，终态轮询回本地对象（补齐
 //     TestFullchainMediaAudioJobParaformer 覆盖的创建/查询/内容之外的
 //     第四个任务型操作）；
-//  3. TestFullchainT5ImagesSharedLaneCoCandidates：images_json 是 chat 与
-//     image 两域有意共享的 lane（计划 D2 共享 lane 表述）——同分组内
-//     chat 模式账户与 images_json-only 账户对 POST /v1/images/generations
-//     共同候选（A 429 换 B 成功，两账户各收到创建请求），出站路径/鉴权/
-//     模型名与响应透传逐项核对。mock 上游 images 端点为本次补的依赖边界
-//     （mockupstream/images.go）。
+//  3. TestFullchainT5ImagesSharedLaneCoCandidates：图像请求的共同候选与
+//     换户链（v8 后语义：images_json 声明隔离在 image 域内，chat 域新增
+//     声明不再携带图像 lane——原 D2 跨域共享 lane 对照随域纯粹化裁撤，
+//     本测试保留其派发行为面：同分组内两个 images_json-only 账户对
+//     POST /v1/images/generations 按候选顺序共同候选，A 429 换 B 成功，
+//     两账户各收到创建请求），出站路径/鉴权/模型名与响应透传逐项核对。
+//     mock 上游 images 端点为本次补的依赖边界（mockupstream/images.go）。
 //
 // capability_domain 不参与派发的对照说明（D2 零改动裁决）：本文件与既有
 // 媒体矩阵按 M2 写侧契约显式声明能力域（audio/video/image/chat），而网关
 // 派发代码不读取 capability_domain 列——chat 域账户承接 images 请求
-//（本文件第 3 条 A 账户）、image 域账户与 chat 域账户共同候选同一图像请求
+// （本文件第 3 条 A 账户）、image 域账户与 chat 域账户共同候选同一图像请求
 // 即域不参与派发的行为级证据；媒体 lane（audio/video 域账户）的正常派发
 // 由本文件第 1/2 条与既有媒体矩阵共同覆盖。
 package acceptance
@@ -39,15 +41,16 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 1. volcengine audio_speech 双值凭据缺失负例
+// 1. volcengine audio_speech 语音凭据缺失负例
 // ---------------------------------------------------------------------------
 
-// TestFullchainT5VolcengineSpeechMissingDualCredentials 验证 T5 volcengine
-// 语音双值凭据的失败面：管理面创建 audio_speech 模式但缺
-// speech_appid/speech_token 的账户（双值写入面可选）→ POST /v1/audio/speech
-// 经真实网关链显式失败（5xx，账户级能力缺失，非客户端 400、不静默回退），
-// mock 上游零出站（无 /api/v3/tts 流量）。
-func TestFullchainT5VolcengineSpeechMissingDualCredentials(t *testing.T) {
+// TestFullchainT5VolcengineSpeechMissingCredentials 验证 T5 volcengine
+// 语音凭据的失败面：管理面创建 audio_speech 模式但缺 speech_token 的账户
+// （单值写入面可选，2026-10-17 TTS 迁移批语义——speech_token = 新版语音
+// 控制台 API Key）→ POST /v1/audio/speech 经真实网关链显式 400 失败
+// （speech_credentials_missing：账户级配置缺位的确定性错误，非可重试上游
+// 故障、不静默回退），mock 上游零出站（无 /api/v3/tts/create 流量）。
+func TestFullchainT5VolcengineSpeechMissingCredentials(t *testing.T) {
 	requireFullchainGate(t)
 	// 火山语音出站 host 恒固定语音服务域（生产缺省 openspeech.bytedance.com
 	// 不经 base_url），测试 seam env 指回本夹具 mock——负例断言「零出站」
@@ -60,13 +63,13 @@ func TestFullchainT5VolcengineSpeechMissingDualCredentials(t *testing.T) {
 
 	arkKey := fullchainUpstreamKey(t, "t5-vnc")
 	f.fullchainEnsureVolcengineTTSCatalogModel("doubao-tts")
-	groupID := f.createGroupWithProvider("T5火山双值缺失组", "volcengine")
+	groupID := f.createGroupWithProvider("T5火山凭据缺失组", "volcengine")
 	// 管理面创建：credentials 只带 api_key/base_url + audio_speech 端点模式，
-	// 不带 speech_appid/speech_token（写侧契约：双值可选，不在写入面强制）。
+	// 不带 speech_token（写侧契约：单值可选，不在写入面强制）。
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
 		"providerCode":              "volcengine",
 		"providerProtocolProfileId": "profile_volcengine_openai_v1",
-		"name":                      "全链路-T5火山缺双值账户",
+		"name":                      "全链路-T5火山缺凭据账户",
 		"type":                      "api_key",
 		"capabilityDomain":          "audio",
 		"credentials": map[string]any{
@@ -81,24 +84,24 @@ func TestFullchainT5VolcengineSpeechMissingDualCredentials(t *testing.T) {
 		"groupId":         groupID,
 	}, wantStatus(http.StatusCreated))
 	if str(data(created)["id"]) == "" {
-		t.Fatalf("T5 volcengine 缺双值账户创建载荷异常: %#v", created)
+		t.Fatalf("T5 volcengine 缺凭据账户创建载荷异常: %#v", created)
 	}
-	strategyID := f.createStrategy("T5火山双值缺失策略", "normal", []map[string]any{
+	strategyID := f.createStrategy("T5火山凭据缺失策略", "normal", []map[string]any{
 		{"groupId": groupID, "priority": 1, "weight": 100},
 	}, nil)
-	apiKey := f.createAPIKey("T5火山双值缺失-Key", strategyID)
+	apiKey := f.createAPIKey("T5火山凭据缺失-Key", strategyID)
 
 	response := f.videoT(t, apiKey, http.MethodPost, "/v1/audio/speech",
 		`{"model":"doubao-tts","input":"你好火山","voice":"BV700_streaming","response_format":"mp3"}`)
-	if response.Status < 500 {
-		t.Fatalf("T5 volcengine 缺双值 speech status=%d, want 5xx（账户级能力缺失显式失败，非客户端 400）body=%s", response.Status, response.Body)
+	if response.Status != http.StatusBadRequest {
+		t.Fatalf("T5 volcengine 缺凭据 speech status=%d, want 400（speech_credentials_missing 确定性配置错误，非 5xx 上游故障）body=%s", response.Status, response.Body)
 	}
-	if strings.TrimSpace(response.Body) == "" {
-		t.Fatalf("T5 volcengine 缺双值 speech 响应体为空，缺少错误语义")
+	if !strings.Contains(response.Body, "speech_credentials_missing") {
+		t.Fatalf("T5 volcengine 缺凭据响应缺少稳定错误码 speech_credentials_missing: %s", response.Body)
 	}
-	// 零上游出站：双值缺失在出站构造期失败，不打 mock（含语音域 seam 面）。
+	// 零上游出站：凭据缺失在出站构造期失败，不打 mock（含语音域 seam 面）。
 	if calls := f.mock.callsByKey(arkKey); len(calls) != 0 {
-		t.Fatalf("T5 volcengine 缺双值不得出站: %+v", calls)
+		t.Fatalf("T5 volcengine 缺凭据不得出站: %+v", calls)
 	}
 }
 
@@ -202,8 +205,8 @@ func (f *fullchainFixture) fullchainT5CreateImageOnlyAccount(name, upstreamKey, 
 }
 
 // fullchainT5EnsureImageCatalogModel 确保 gpt-image-1 在 gpt 供应商目录可用
-//（mode=image + images 协议声明过档案协议承接校验）：先查目录已有该模型
-//（含未定价/未启用行）则跳过创建；缺失时沿 ensureProbeModelInCatalog 先例
+// （mode=image + images 协议声明过档案协议承接校验）：先查目录已有该模型
+// （含未定价/未启用行）则跳过创建；缺失时沿 ensureProbeModelInCatalog 先例
 // 补零价自定义行（outputUsdPerImage=0 满足启用态价格校验，零价不虚计）。
 func (f *fullchainFixture) fullchainT5EnsureImageCatalogModel(model string) {
 	f.t.Helper()
@@ -227,7 +230,7 @@ func (f *fullchainFixture) fullchainT5EnsureImageCatalogModel(model string) {
 }
 
 // fullchainT5EnableOwnerImageGeneration 打开 sys_admin 的图像生成开关
-//（seed 默认 0，LaneImage 预检 403 gate）：PATCH 走管理面 CAS 契约——
+// （seed 默认 0，LaneImage 预检 403 gate）：PATCH 走管理面 CAS 契约——
 // 先从列表行读 editVersion（= updated_at）作 expectedUpdatedAt，再携带
 // imageGenerationEnabled 提交；PATCH 后 AccountCacheInvalidator 双通道失效
 // 运行缓存，派发侧即时可见。
@@ -253,12 +256,13 @@ func (f *fullchainFixture) fullchainT5EnableOwnerImageGeneration() {
 	}, wantStatus(http.StatusOK))
 }
 
-// TestFullchainT5ImagesSharedLaneCoCandidates 验证 T5/D2 共享 lane 对照：
-// 同分组内 chat 形态账户（chat 四模式 + images_json）与 image 形态账户
-//（images_json-only）对 POST /v1/images/generations 共同候选——A 先尝试
-//（mock 429 可切换故障）→ 换 B 成功受理；断言两账户各收到出站创建请求
-//（共同候选证据）、出站路径 /v1/images/generations、Bearer 鉴权、模型名
-// gpt-image-1、客户端响应为 mock images url 形态透传。
+// TestFullchainT5ImagesSharedLaneCoCandidates 验证图像请求的共同候选与
+// 换户链（v8 后语义：images_json 声明隔离在 image 域内，原 D2 跨域共享
+// lane 对照随域纯粹化裁撤）：同分组内两个 image 形态账户（images_json-only）
+// 对 POST /v1/images/generations 按候选顺序共同候选——A 先尝试（mock 429
+// 可切换故障）→ 换 B 成功受理；断言两账户各收到出站创建请求（共同候选
+// 证据）、出站路径 /v1/images/generations、Bearer 鉴权、模型名 gpt-image-1、
+// 客户端响应为 mock images url 形态透传。
 func TestFullchainT5ImagesSharedLaneCoCandidates(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
@@ -266,23 +270,14 @@ func TestFullchainT5ImagesSharedLaneCoCandidates(t *testing.T) {
 	f.fullchainT5EnableOwnerImageGeneration()
 	f.fullchainT5EnsureImageCatalogModel("gpt-image-1")
 
-	// A：chat 形态账户（既有对话模式集 + images_json opt-in；chat 域 lanes
-	// 含 images_json——D2 共享 lane 的写侧表达）。B：image 域 images_json-only
-	// 图像形态账户。组内同优先级按既定候选顺序，A 先尝试（429 可切换）→
-	// B 受理成功；两域账户共同候选同一图像请求，域不参与派发。
+	// A/B 均为 image 域 images_json-only 图像形态账户。组内同优先级按既定
+	// 候选顺序，A 先尝试（429 可切换）→ B 受理成功；派发按端点模式过滤，
+	// 域不参与派发。
 	keyA := fullchainUpstreamKey(t, "t5-img-a")
 	keyB := fullchainUpstreamKey(t, "t5-img-b")
 	groupID := f.createGroupWithProvider("T5图像共享组", "gpt")
-	f.createAccount("全链路-T5图像共享-chat账户", keyA, groupID, map[string]any{
-		"capabilityDomain": "chat",
-		"supportedModels":  []string{acceptanceModel, fullchainProbeModel, "gpt-image-1"},
-		"credentials": map[string]any{
-			"supported_endpoint_modes": []string{
-				"chat_json", "chat_sse", "responses_json", "responses_sse", "images_json",
-			},
-		},
-	})
-	f.fullchainT5CreateImageOnlyAccount("全链路-T5图像共享-image账户", keyB, groupID)
+	f.fullchainT5CreateImageOnlyAccount("全链路-T5图像共享-image账户A", keyA, groupID)
+	f.fullchainT5CreateImageOnlyAccount("全链路-T5图像共享-image账户B", keyB, groupID)
 	f.mock.setDefault(keyA, platformmock.ScenarioStatus429)
 	f.mock.setDefault(keyB, platformmock.ScenarioMediaImagesOK)
 	strategyID := f.createStrategy("T5图像共享策略", "normal", []map[string]any{

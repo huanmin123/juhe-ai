@@ -595,6 +595,14 @@ type SessionAffinityPort interface {
 	RememberAsync(ctx context.Context, sessionAffinityKey, accountID string, scope AffinityScope)
 	// ForgetAsync mirrors forgetOpenAIAccountForSessionAsync.
 	ForgetAsync(ctx context.Context, sessionAffinityKey, accountID string) error
+	// StickyApiKeyFingerprintAsync 返回会话绑定中属于 accountID 的上游 Key 指纹
+	// （账户内 Key 会话黏性读）：绑定缺失、过期、owner 不匹配或读取失败均返回
+	// 空串（降级为无黏性），读取失败按既有亲和读取失败路径告警；读不刷新 TTL。
+	StickyApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID string) string
+	// RememberApiKeyFingerprintAsync 在最终协议成功后把该次使用的上游 Key 指纹
+	// 写回现存同 owner 绑定：不创建绑定、不改 owner；记录缺失/过期/owner 不匹配
+	// 或指纹非法时跳过；写回刷新绑定 TTL。
+	RememberApiKeyFingerprintAsync(ctx context.Context, sessionAffinityKey, accountID, upstreamApiKeyFingerprint string)
 	// AreHighConcurrencyAccountsBusyForLaneAsync mirrors
 	// areOpenAIHighConcurrencyAccountsBusyForLaneAsync.
 	AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error)

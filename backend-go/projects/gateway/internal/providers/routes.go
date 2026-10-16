@@ -48,6 +48,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/providers/options", read(http.HandlerFunc(d.options)))
 	k.Register("GET "+prefix+"/providers/definitions", read(http.HandlerFunc(d.definitions)))
 	k.Register("GET "+prefix+"/providers/models/options", read(http.HandlerFunc(d.modelOptions)))
+	k.Register("GET "+prefix+"/providers/models/options/provider-codes", read(http.HandlerFunc(d.modelOptionProviderCodes)))
 	k.Register("GET "+prefix+"/providers/{code}", read(http.HandlerFunc(d.find)))
 	k.Register("GET "+prefix+"/providers/{code}/models", read(http.HandlerFunc(d.models)))
 	k.Register("GET "+prefix+"/providers/{code}/models/{modelId}/capabilities", read(http.HandlerFunc(d.modelCapabilities)))
@@ -250,6 +251,27 @@ func (d *Deps) modelOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kernel.WriteOK(w, providerModelOptions, "")
+}
+
+// modelOptionProviderCodes serves GET /models/options/provider-codes (v8-D
+// media-domain default-provider convergence): the distinct provider codes
+// carrying at least one in-catalog option under the same filter semantics as
+// modelOptions (modes word-list validation included). The account list view
+// prefetches it per capability domain so the media create form can converge
+// its default provider synchronously.
+func (d *Deps) modelOptionProviderCodes(w http.ResponseWriter, r *http.Request) {
+	query, message := normalizeModelOptionQuery(r)
+	if message != "" {
+		kernel.WriteBadRequest(w, message)
+		return
+	}
+	query.SystemAccountID = requestSystemAccountID(r)
+	codes, err := d.Store.ListProviderModelOptionProviderCodes(r.Context(), query)
+	if err != nil {
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		return
+	}
+	kernel.WriteOK(w, map[string]any{"providerCodes": codes}, "")
 }
 
 // normalizeModelOptionQuery mirrors normalizeProviderModelOptionQuery and

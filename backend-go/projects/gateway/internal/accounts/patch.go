@@ -46,10 +46,6 @@ type PatchResult struct {
 	// :744-761)：余额查询身份（开关/配置/Key 指纹/base URL/代理）发生变化，
 	// 提交后触发余额快照旧代次清理端口。
 	BalanceIdentityChanged bool `json:"-"`
-	// M3 显式清理审计载荷（D6 只缩不扩）：CapabilityLegacyCleanupRemoved 是
-	// 本次被清理的域外遗留能力（排序去重，空 = 无清理）；路由面据此落单独
-	// 的「清理域外能力」操作日志（含账户与被移除值列表）。JSON 不外发。
-	CapabilityLegacyCleanupRemoved []string `json:"-"`
 }
 
 // PatchInput is the validated basic-edit payload: the account-edit-basic
@@ -112,11 +108,12 @@ type PatchInput struct {
 }
 
 // credentialModesExplicitlyDeclared 判定本次补丁是否显式携带
-// supported_endpoint_modes 数组（M3 只缩不扩的放行前提，计划 §D6 显式清理）：
-// 显式数组 = 清理动作的提交形态，允许缩小遗留集合；删键（null/缺省）走
-// 归一化默认集重置，默认集不含遗留值，放开会借归一化静默删除遗留能力
-// （I7），由调用方维持逐项相等拦截。HTTP 面数组解码为 []any；[]string 兼容
-// store 层直调。
+// supported_endpoint_modes 数组（严格声明校验的触发前提）：显式数组 = 声明集
+// 的直接提交，归一化结果必须 ⊆ 域允许集；credentialsPatch 删键（present-null）
+// 已在补丁准备处就地替换为按域默认集数组（DefaultEndpointModesForDomain），
+// 到这里同样以显式数组出现——按域默认集并不保证 ⊆ 域允许集，越界组合由同一
+// 严格校验响亮 400；键缺省（absent）= 不重置声明集，不触发本判定。HTTP 面
+// 数组解码为 []any；[]string 兼容 store 层直调。
 func credentialModesExplicitlyDeclared(input PatchInput) bool {
 	if !input.CredentialsPresent {
 		return false
@@ -727,6 +724,28 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &current); err != nil {
 			return nil, err
 		}
+		// credentialsPatch 删键（present-null）的按域默认集收敛（M2 严格不变
+		// 式）：删键若直通归一化，会落入写侧供应商缺省默认集，而该缺省集对
+		// 多个合法组合并不 ⊆ 域允许集（minimax 缺省 audio_speech 对 video 域
+		// 越界；volcengine/qwen 缺省 video_get 对 chat/audio 域越界；hybrid
+		// 缺省为全词表并集对任意单一域越界），D6 域外遗留兼容废除后曾是静默
+		// 击穿口。这里在合并前就地把它替换为 DefaultEndpointModesForDomain 的
+		// 按域默认集数组（谓词与下方 allowedModes 计算同源，与新建缺省播种
+		// write.go 同一收敛点），后续流程把它当显式数组走严格 ⊆ allowed 校验
+		// 与持久化，越界组合自然 400 响亮拒绝。legacy credentials 的显式 null
+		// （恢复现值语义）不在此列，键缺省（absent）不重置声明集。
+		if input.CredentialsPatch {
+			if raw, present := input.Credentials["supported_endpoint_modes"]; present && raw == nil {
+				input.Credentials["supported_endpoint_modes"] = anyStrings(accountscore.DefaultEndpointModesForDomain(
+					row.capabilityDomain, row.providerCode, row.accountType,
+					accountscore.ProtocolPredicate{
+						ProviderCode:              row.providerCode,
+						ProtocolCode:              row.protocolCode,
+						ProtocolVersion:           row.protocolVersion,
+						ProviderProtocolProfileID: row.providerProtocolProfileID,
+					}))
+			}
+		}
 		// 归档 patchOwnerAccountInTransaction（account-management-patch
 		// .repository.ts:338-345）：credentialsPatch 走 null=删键合并，
 		// legacy credentials 走 mergeAccountCredentialsForUpdate 预合并
@@ -778,35 +797,28 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
-	// M2 三集合保存规则 + M3 放开分支（D6 显式清理，计划 §M3 配套适配）：
-	// 合并后最终声明集与库中现值（事务内已读行）各自减去允许集（allowed 按
-	// 库中现存 domain/provider/type 计算）。显式携带 supported_endpoint_modes
-	// 数组的提交按「只缩不扩」放行缩小并记录被清理值（清理动作由路由面落
-	// 单独审计）；删键（null）等非显式路径走归一化默认集重置，维持逐项相等
-	// 拦截——默认集不含遗留值，放开会借归一化静默删除遗留能力（I7）。modes
-	// 键未携带时合并结果 = 现值，天然通过；旧集合一律服务端读库，不信任客户
-	// 端「遗留」标记（I7）。
-	var capabilityLegacyCleanupRemoved []string
-	if input.CredentialsPresent {
+	// 严格声明校验（账户能力域不变式，全链路同一规则）：请求显式携带
+	// supported_endpoint_modes 数组时，归一化后的最终声明集必须 ⊆ 域允许集
+	// （allowed 按库中行现值 capability_domain/provider/type/协议档案现算），
+	// 越界一律 400 并列出越界值，不存在任何跨域保留状态。modes 键缺省 =
+	// 不重置声明集（合并结果 = 现值，域内行天然通过）；credentialsPatch 删键
+	// （null）已在补丁准备处替换为按域默认集数组，到这里按显式数组参与校验
+	// ——按域默认集不保证 ⊆ allowed（volcengine chat 缺省 video_get 等越界
+	// 组合在此响亮 400，不再静默回写）。旧声明一律服务端读库，不信任客户端
+	// 标记（I7）。
+	if input.CredentialsPresent && credentialModesExplicitlyDeclared(input) {
+		declared := credentialEndpointModes(currentCredentials)
+		if credentialsChanged {
+			declared = credentialEndpointModes(nextCredentials)
+		}
 		allowedModes := accountscore.AllowedEndpointModes(row.capabilityDomain, row.providerCode, row.accountType, accountscore.ProtocolPredicate{
 			ProviderCode:              row.providerCode,
 			ProtocolCode:              row.protocolCode,
 			ProtocolVersion:           row.protocolVersion,
 			ProviderProtocolProfileID: row.providerProtocolProfileID,
 		})
-		oldDeclared := credentialEndpointModes(currentCredentials)
-		newDeclared := oldDeclared
-		if credentialsChanged {
-			newDeclared = credentialEndpointModes(nextCredentials)
-		}
-		if credentialModesExplicitlyDeclared(input) {
-			removed, err := accountscore.AssertCapabilityLegacyShrinkOnly(oldDeclared, newDeclared, allowedModes)
-			if err != nil {
-				return nil, err
-			}
-			capabilityLegacyCleanupRemoved = removed
-		} else if err := accountscore.AssertCapabilityLegacySetsEqual(oldDeclared, newDeclared, allowedModes); err != nil {
-			return nil, err
+		if outliers := accountscore.OutOfDomainModes(declared, allowedModes); len(outliers) > 0 {
+			return nil, accountscore.CapabilityDomainOutlierError(row.capabilityDomain, outliers)
 		}
 	}
 
@@ -1335,14 +1347,13 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 
 	result := &PatchResult{
-		ID:                             row.id,
-		ConfigRevision:                 row.configRevision,
-		ChangedFields:                  []string{},
-		Name:                           row.name,
-		OwnerSystemAccountID:           row.systemAccountID,
-		Changes:                        changes,
-		BalanceIdentityChanged:         balanceIdentityChangedFlag,
-		CapabilityLegacyCleanupRemoved: capabilityLegacyCleanupRemoved,
+		ID:                     row.id,
+		ConfigRevision:         row.configRevision,
+		ChangedFields:          []string{},
+		Name:                   row.name,
+		OwnerSystemAccountID:   row.systemAccountID,
+		Changes:                changes,
+		BalanceIdentityChanged: balanceIdentityChangedFlag,
 	}
 	if len(changes) == 0 {
 		return result, nil

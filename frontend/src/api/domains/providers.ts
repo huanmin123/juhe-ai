@@ -31,6 +31,7 @@ export const providersApi = {
   options: (params?: ListParams) => unwrap<ProviderOption[]>(http.get('/providers/options', { params })),
   definitions: (params?: ListParams) => unwrap<ProviderDefinition[]>(http.get('/providers/definitions', { params })),
   modelOptions: (params?: ProviderModelOptionsParams) => unwrap<ProviderModelOption[]>(http.get('/providers/models/options', { params })),
+  modelOptionProviderCodes: (params?: ProviderModelOptionsParams) => unwrap<{ providerCodes: string[] }>(http.get('/providers/models/options/provider-codes', { params })),
   modelCapabilities: (code: string, modelId: string, params?: ListParams) => unwrap<ProviderModelCapabilities>(http.get(`/providers/${code}/models/${encodeURIComponent(modelId)}/capabilities`, { params })),
   models: (code: string, params?: ProviderModelsParams) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`, { params })),
   setDefaultHealthCheckModel: async (code: string, model: string, params?: ListParams) => {

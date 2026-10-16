@@ -133,36 +133,6 @@ func (d *Deps) runBatchUpdate(w http.ResponseWriter, r *http.Request, access Acc
 			},
 		}, r)
 	}
-	// M3 显式清理单独审计（D6 只缩不扩 + 计划 §M3）：批量覆盖中发生域外遗留
-	// 清理的账户，逐账户补记一条「清理域外能力」动作（与单账户 PATCH 的清理
-	// 审计同 action），Summary 含被移除值列表；普通批量覆盖不产生该条目。
-	if d.Sink != nil {
-		for _, item := range result.Items {
-			if len(item.CapabilityLegacyCleanup) == 0 {
-				continue
-			}
-			d.Sink.Record(authsys.OperationLogEntry{
-				ActorSystemAccountID:          auth.SystemAccountID,
-				ActorUsername:                 auth.Username,
-				ActorDisplayName:              auth.DisplayName,
-				ActorRole:                     auth.Role,
-				OperationScopeSystemAccountID: result.OwnerSystemAccountID,
-				Mode:                          operationMode(access),
-				Module:                        "accounts",
-				Action:                        "cleanup_capability_legacy",
-				OperationKey:                  "accounts.cleanup_capability_legacy",
-				ResourceType:                  "account",
-				ResourceID:                    item.ID,
-				Summary:                       "批量清理域外能力：" + item.ID + "（移除 " + strings.Join(item.CapabilityLegacyCleanup, "、") + "）",
-				Changes: []authsys.OperationLogChange{
-					safeChange("capabilityLegacyModes", "域外能力", item.CapabilityLegacyCleanup, nil),
-				},
-				Viewers: []authsys.OperationLogViewer{
-					{SystemAccountID: result.OwnerSystemAccountID, Reason: "resource_owner"},
-				},
-			}, r)
-		}
-	}
 	setNoStoreHeaders(w)
 	kernel.WriteOK(w, result, "")
 }

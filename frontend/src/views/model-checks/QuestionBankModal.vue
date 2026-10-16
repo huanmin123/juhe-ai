@@ -54,40 +54,8 @@
             </a-form-item>
           </div>
 
-          <section class="question-test-section">
-            <div class="question-test-head">
-              <h4>题目可用性测试</h4>
-              <p>选择账户与模型试答本题，模型答对（通过）后才能提交；修改题目内容后需重新测试。</p>
-            </div>
-            <div class="question-test-grid">
-              <a-select
-                v-model:value="testAccountId"
-                class="question-test-account"
-                show-search
-                allow-clear
-                :filter-option="false"
-                :loading="testAccountOptionsLoading"
-                :options="testAccountOptions"
-                placeholder="选择用于测试的账户"
-                @change="handleTestAccountChange"
-                @dropdown-visible-change="handleTestAccountDropdownVisibleChange"
-                @search="handleTestAccountSearch"
-              />
-              <a-select
-                v-model:value="testModel"
-                class="question-test-model"
-                :loading="testModelOptionsLoading"
-                :options="testModelOptions"
-                :disabled="!testAccountId || testModelOptions.length === 0"
-                :placeholder="testModelPlaceholder"
-              />
-              <a-button class="question-test-run" :loading="testing" @click="runQuestionTest">测试题目</a-button>
-            </div>
-            <p v-if="editingItem?.lastTest && !lastTestResult" class="question-test-history">
-              上次通过测试：{{ editingItem.lastTest.accountName }} · {{ editingItem.lastTest.model }} · {{ questionBankDateTimeText(editingItem.lastTest.passedAt) }}；修改内容后需重新测试。
-            </p>
-            <p v-if="!lastTestResult" class="question-test-placeholder">{{ testPlaceholderText }}</p>
-            <div v-else class="question-test-result">
+          <section v-if="lastTestResult" ref="questionTestSectionRef" class="question-test-section">
+            <div class="question-test-result">
               <div class="question-test-status">
                 <a-tag :color="questionTestVerdictColor(lastTestResult.verdict)">{{ questionTestVerdictText(lastTestResult.verdict) }}</a-tag>
                 <span class="question-test-status-meta">
@@ -119,11 +87,36 @@
           </section>
 
           <footer class="question-form-actions">
-            <span v-if="submitHint" class="question-test-submit-hint">{{ submitHint }}</span>
             <a-button v-if="editingItem" :disabled="submitting" @click="resetForm">取消编辑</a-button>
+            <a-button :loading="testing" @click="handleRunFormTest">测试题目</a-button>
             <a-button type="primary" html-type="submit" :loading="submitting" :disabled="!testPassed">
               {{ editingItem ? '保存修改' : '提交题目' }}
             </a-button>
+            <div class="question-test-target-selects">
+              <a-select
+                :value="testAccountId"
+                :options="testAccountSelectOptions"
+                show-search
+                allow-clear
+                :filter-option="false"
+                :loading="testAccountOptionsLoading"
+                placeholder="检测账户"
+                class="question-test-account-select"
+                @dropdown-visible-change="handleTestAccountDropdownVisibleChange"
+                @search="handleTestAccountSearch"
+                @change="handleTestAccountChange"
+              />
+              <a-select
+                :value="testModel"
+                :options="testModelOptions"
+                :loading="testModelOptionsLoading"
+                :disabled="!testAccountId"
+                :placeholder="testModelPlaceholder"
+                class="question-test-model-select"
+                @dropdown-visible-change="handleTestModelDropdownVisibleChange"
+                @update:value="handleTestModelValueUpdate"
+              />
+            </div>
           </footer>
         </section>
       </a-form>
@@ -277,6 +270,7 @@ import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { ModelCheckAccountOption, ModelCheckQuestionBankItem, ModelCheckQuestionBankTestResult, ModelCheckQuestionStatus } from '@/types/domain'
+import { canSelectModelCheckAccount, modelCheckModelsForAccount, type ModelCheckAccountProfile } from './modelCheckProviderCapabilities'
 import {
   formatModelCheckDuration,
   questionBankDateTimeText,
@@ -287,13 +281,14 @@ import {
   questionTestVerdictColor,
   questionTestVerdictText
 } from './modelCheckFormatters'
-import { canSelectModelCheckAccount, modelCheckModelsForAccount, type ModelCheckAccountProfile } from './modelCheckProviderCapabilities'
 
 const props = defineProps<{
   isManagementView: boolean
   open: boolean
   /** 管理面系统账户过滤范围，与检测页 run 面板的 scope 保持一致；自助面忽略 */
   modelCheckScopeParams?: { systemAccountId?: string }
+  /** 页面上方（run 面板）当前选定的检测账户与模型；题目可用性测试统一用它，未选时不发起测试 */
+  externalTestTarget?: { accountId: string; accountName: string; model: string }
 }>()
 const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
@@ -334,32 +329,27 @@ const reviewSubmitting = ref(false)
 
 // ---- 题目可用性测试 + 提交门禁状态机 ----
 // 门禁契约：仅当「最近一次测试 verdict=pass 且当前表单内容指纹与测试时一致」才解锁提交。
-const testAccountId = ref('')
-const testModel = ref('')
+// 测试目标用弹窗 footer 右侧的检测账户/模型下拉（弹窗内自治）；页面上方的
+// externalTestTarget 只在打开弹窗时回填一次初始值，之后以弹窗内选择为准。
 const testing = ref(false)
 const lastTestResult = ref<ModelCheckQuestionBankTestResult>()
 // 测试通过时的内容指纹；与当前指纹不一致说明内容已改，门禁重新上锁
 const lastTestDraftKey = ref('')
+const testAnswerExpanded = ref(false)
+// 结果区锚点：列表行测试后滚动到这里展示结果
+const questionTestSectionRef = ref<HTMLElement>()
+
+// ---- 弹窗内测试目标选择（footer 右侧） ----
+const testAccountId = ref('')
+const testModel = ref('')
 const testAccountOptions = ref<ModelCheckAccountOption[]>([])
 const testAccountProfilesById = ref<Record<string, ModelCheckAccountProfile>>({})
 const testAccountOptionsLoading = ref(false)
 const testModelOptionsLoading = ref(false)
-const testAnswerExpanded = ref(false)
 let testAccountOptionsRequestId = 0
 let testAccountOptionsTimer: ReturnType<typeof setTimeout> | undefined
 let testAccountOptionsAbortController: AbortController | undefined
 let testModelOptionsRequestId = 0
-
-const currentTestDraftKey = computed(() => questionDraftKey(form.questionText, form.referenceAnswer, form.keyPoints))
-const testPassed = computed(() => {
-  const result = lastTestResult.value
-  return result?.verdict === 'pass' && lastTestDraftKey.value === currentTestDraftKey.value
-})
-const submitHint = computed(() => {
-  if (testPassed.value) return ''
-  if (lastTestResult.value?.verdict === 'pass') return '内容已修改，请重新测试'
-  return '测试通过后才能提交'
-})
 
 const testAccountSelectOptions = computed(() => testAccountOptions.value
   .filter((account) => canSelectModelCheckAccount(account))
@@ -374,12 +364,13 @@ const testModelOptions = computed(() => modelCheckModelsForAccount(selectedTestA
 
 const testModelPlaceholder = computed(() => {
   if (!testAccountId.value) return '先选择账户'
-  return testModelOptions.value.length ? '选择测试模型' : '该账户暂无可用检测模型'
+  return testModelOptions.value.length ? '检测模型' : '该账户暂无可用检测模型'
 })
 
-const testPlaceholderText = computed(() => {
-  if (!form.questionText.trim() || !form.referenceAnswer.trim()) return '填写题目内容与参考答案后即可测试。'
-  return '选择账户与模型，点击「测试题目」开始可用性测试。'
+const currentTestDraftKey = computed(() => questionDraftKey(form.questionText, form.referenceAnswer, form.keyPoints))
+const testPassed = computed(() => {
+  const result = lastTestResult.value
+  return result?.verdict === 'pass' && lastTestDraftKey.value === currentTestDraftKey.value
 })
 
 interface QuestionTestNote {
@@ -430,6 +421,61 @@ const testPointRows = computed<Array<{ point: string; met?: boolean; note?: stri
   return form.keyPoints.map((point) => ({ point }))
 })
 
+function requireTestTarget(): { accountId: string; model: string } | undefined {
+  if (!testAccountId.value || !testModel.value) {
+    message.warning('请先在右下角选择检测账户与检测模型，再进行题目测试')
+    return undefined
+  }
+  return { accountId: testAccountId.value, model: testModel.value }
+}
+
+async function runQuestionTest(content: { questionText: string; referenceAnswer: string; keyPoints: string[] }) {
+  const target = requireTestTarget()
+  if (!target) return
+  // 指纹在请求前捕获：测试期间改动内容，结果也不会解锁门禁
+  const draftKey = questionDraftKey(content.questionText, content.referenceAnswer, content.keyPoints)
+  testing.value = true
+  try {
+    const result = await scopedApi.questionBankTest({
+      questionText: content.questionText,
+      referenceAnswer: content.referenceAnswer,
+      keyPoints: content.keyPoints.length ? [...content.keyPoints] : undefined,
+      accountId: target.accountId,
+      model: target.model
+    }, props.modelCheckScopeParams)
+    lastTestResult.value = result
+    lastTestDraftKey.value = draftKey
+    testAnswerExpanded.value = false
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '题目可用性测试失败'))
+  } finally {
+    testing.value = false
+  }
+}
+
+function handleRunFormTest() {
+  const questionText = form.questionText.trim()
+  const referenceAnswer = form.referenceAnswer.trim()
+  if (!questionText || !referenceAnswer) {
+    message.warning('请先填写题目内容与参考答案')
+    return
+  }
+  void runQuestionTest({ questionText, referenceAnswer, keyPoints: form.keyPoints })
+}
+
+// 列表行「测试」：测已保存的题目原文，结果展示在测试区并滚动到可见。
+async function testListItem(item: ModelCheckQuestionBankItem) {
+  await runQuestionTest({ questionText: item.questionText, referenceAnswer: item.referenceAnswer, keyPoints: [...item.keyPoints] })
+  void nextTick(() => questionTestSectionRef.value?.scrollIntoView({ block: 'start' }))
+}
+
+function resetTestState() {
+  lastTestResult.value = undefined
+  lastTestDraftKey.value = ''
+  testAnswerExpanded.value = false
+}
+
 function rememberTestAccountProfile(account: ModelCheckAccountOption) {
   const existing = testAccountProfilesById.value[account.id]
   const profile: ModelCheckAccountProfile = {
@@ -466,7 +512,7 @@ async function loadTestAccountOptions(keyword = '') {
   } catch (error) {
     if (requestId !== testAccountOptionsRequestId || controller.signal.aborted) return
     console.error(error)
-    message.error(extractApiErrorMessage(error, '加载测试账户失败'))
+    message.error(extractApiErrorMessage(error, '加载检测账户失败'))
   } finally {
     if (requestId === testAccountOptionsRequestId) testAccountOptionsLoading.value = false
   }
@@ -505,10 +551,19 @@ function handleTestAccountChange(value: unknown) {
   if (accountId) void ensureTestAccountModels(accountId)
 }
 
+function handleTestModelValueUpdate(value: unknown) {
+  if (typeof value === 'string') testModel.value = value
+}
+
 function handleTestAccountDropdownVisibleChange(open: boolean) {
   if (!open) return
   clearTimeout(testAccountOptionsTimer)
   void loadTestAccountOptions()
+}
+
+function handleTestModelDropdownVisibleChange(open: boolean) {
+  if (!open) return
+  if (testAccountId.value) void ensureTestAccountModels(testAccountId.value)
 }
 
 function handleTestAccountSearch(keyword: string) {
@@ -516,55 +571,8 @@ function handleTestAccountSearch(keyword: string) {
   testAccountOptionsTimer = setTimeout(() => void loadTestAccountOptions(keyword), 250)
 }
 
-async function runQuestionTest() {
-  if (testing.value) return
-  const questionText = form.questionText.trim()
-  const referenceAnswer = form.referenceAnswer.trim()
-  if (!testAccountId.value) {
-    message.warning('请先选择测试账户')
-    return
-  }
-  if (!testModel.value) {
-    message.warning('请先选择测试模型')
-    return
-  }
-  if (!questionText || !referenceAnswer) {
-    message.warning('请先填写题目内容与参考答案')
-    return
-  }
-  // 指纹在请求前捕获：测试期间改动内容，结果也不会解锁门禁
-  const draftKey = questionDraftKey(form.questionText, form.referenceAnswer, form.keyPoints)
-  testing.value = true
-  try {
-    const result = await scopedApi.questionBankTest({
-      questionText,
-      referenceAnswer,
-      keyPoints: form.keyPoints.length ? [...form.keyPoints] : undefined,
-      accountId: testAccountId.value,
-      model: testModel.value
-    }, props.modelCheckScopeParams)
-    lastTestResult.value = result
-    lastTestDraftKey.value = draftKey
-    testAnswerExpanded.value = false
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '题目可用性测试失败'))
-  } finally {
-    testing.value = false
-  }
-}
-
-function resetTestState() {
-  lastTestResult.value = undefined
-  lastTestDraftKey.value = ''
-  testAnswerExpanded.value = false
-}
-
 onBeforeUnmount(() => {
-  clearTimeout(testAccountOptionsTimer)
-  testAccountOptionsRequestId += 1
-  testAccountOptionsAbortController?.abort()
-  testModelOptionsRequestId += 1
+  clearTimeout(keywordTimer)
 })
 
 const statusFilterOptions = computed(() => {
@@ -579,12 +587,76 @@ const statusFilterOptions = computed(() => {
 
 const canReview = computed(() => props.isManagementView)
 
+// ---- 弹窗草稿暂存 ----
+// 关闭弹窗时未提交的表单内容（含编辑态与仍有效的测试门禁结果）暂存在内存，
+// 重新打开时恢复；提交成功或内容为空则不保留。仅内存态，刷新页面即清空。
+interface QuestionBankDraft {
+  form: { title: string; questionText: string; referenceAnswer: string; keyPoints: string[] }
+  editingItem?: ModelCheckQuestionBankItem
+  lastTestResult?: ModelCheckQuestionBankTestResult
+  lastTestDraftKey: string
+  testAccountId: string
+  testModel: string
+}
+let pendingDraft: QuestionBankDraft | undefined
+
+function hasUnsavedDraft(): boolean {
+  return Boolean(editingItem.value
+    || form.title.trim()
+    || form.questionText.trim()
+    || form.referenceAnswer.trim()
+    || form.keyPoints.length)
+}
+
+function captureDraft(): QuestionBankDraft {
+  return {
+    form: {
+      title: form.title,
+      questionText: form.questionText,
+      referenceAnswer: form.referenceAnswer,
+      keyPoints: [...form.keyPoints]
+    },
+    editingItem: editingItem.value,
+    lastTestResult: lastTestResult.value,
+    lastTestDraftKey: lastTestDraftKey.value,
+    testAccountId: testAccountId.value,
+    testModel: testModel.value
+  }
+}
+
+function restoreDraft(draft: QuestionBankDraft) {
+  form.title = draft.form.title
+  form.questionText = draft.form.questionText
+  form.referenceAnswer = draft.form.referenceAnswer
+  form.keyPoints = [...draft.form.keyPoints]
+  editingItem.value = draft.editingItem
+  lastTestResult.value = draft.lastTestResult
+  lastTestDraftKey.value = draft.lastTestDraftKey
+  testAccountId.value = draft.testAccountId
+  testModel.value = draft.testModel
+  if (testAccountId.value) void ensureTestAccountModels(testAccountId.value)
+  // 恢复的测试结果沿用测试时的内容指纹：内容未改则门禁仍开，改了自动上锁
+}
+
+// 外部目标只在打开弹窗且弹窗内尚未选择时回填一次（页面上方配过就不必重复选）；
+// 之后以弹窗内 footer 右侧的选择为准。回填后立即拉取账户选项以显示账户名。
+function syncExternalTestTarget() {
+  if (testAccountId.value) return
+  const target = props.externalTestTarget
+  if (!target?.accountId || !target.model) return
+  testAccountId.value = target.accountId
+  testModel.value = target.model
+  void ensureTestAccountModels(testAccountId.value)
+  void loadTestAccountOptions()
+}
+
 watch(() => props.open, (open) => {
   if (!open) {
     clearTimeout(keywordTimer)
     listRequestId += 1
     loading.value = false
-    resetForm()
+    // 未提交内容暂存；空白表单（含提交成功后的已清空状态）不保留
+    pendingDraft = hasUnsavedDraft() ? captureDraft() : undefined
     detailOpen.value = false
     rejectOpen.value = false
     return
@@ -592,12 +664,21 @@ watch(() => props.open, (open) => {
   page.value = 1
   keyword.value = ''
   statusFilter.value = props.isManagementView ? 'pending' : ''
-  resetForm()
+  if (pendingDraft) {
+    restoreDraft(pendingDraft)
+    pendingDraft = undefined
+  } else {
+    resetForm()
+  }
+  syncExternalTestTarget()
   void loadQuestions()
 })
 
 function rowActionsFor(item: ModelCheckQuestionBankItem): RowActionItem[] {
-  const actions: RowActionItem[] = [{ key: 'detail', label: '详情', icon: 'detail' }]
+  const actions: RowActionItem[] = [
+    { key: 'detail', label: '详情', icon: 'detail' },
+    { key: 'test', label: '测试', icon: 'test' }
+  ]
   if (item.isBuiltin) return actions
   if (canEdit(item)) {
     actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
@@ -635,6 +716,7 @@ function canDelete(item: ModelCheckQuestionBankItem): boolean {
 
 function handleRowAction(action: string, item: ModelCheckQuestionBankItem) {
   if (action === 'detail') void openDetail(item)
+  if (action === 'test') void testListItem(item)
   if (action === 'edit') startEdit(item)
   if (action === 'delete') void removeQuestion(item)
   if (action === 'approve') void approveQuestion(item)
@@ -714,6 +796,7 @@ async function submitForm() {
       message.success('题目已提交，等待管理员审核')
     }
     resetForm()
+    pendingDraft = undefined
     page.value = 1
     await loadQuestions()
   } catch (error) {
@@ -742,7 +825,6 @@ function resetForm() {
   form.referenceAnswer = ''
   form.keyPoints = []
   formRef.value?.clearValidate()
-  // 重置测试状态；账户与模型选择保留，便于连续提交多道题目
   resetTestState()
 }
 
@@ -916,11 +998,21 @@ async function confirmReject() {
   border-top: 1px solid var(--juhe-border);
 }
 
-.question-test-submit-hint {
-  margin-right: auto;
-  color: var(--juhe-muted);
-  font-size: 12px;
-  line-height: 20px;
+/* 测试目标下拉贴 footer 最右侧：弹窗内测试直接用，不必依赖页面上方配置。
+   加 .question-form-actions 前缀压过表单区 .question-bank-form .ant-select 的 width:100%。 */
+.question-test-target-selects {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.question-form-actions .question-test-account-select {
+  width: 210px;
+}
+
+.question-form-actions .question-test-model-select {
+  width: 170px;
 }
 
 .question-test-section {
@@ -929,52 +1021,9 @@ async function confirmReject() {
   border-top: 1px solid var(--juhe-border);
 }
 
-.question-test-head h4 {
-  margin: 0;
-  color: var(--juhe-fg);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 22px;
-}
-
-.question-test-head p {
-  margin: 3px 0 0;
-  color: var(--juhe-muted);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.question-test-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  margin-top: 10px;
-}
-
-.question-test-grid :deep(.ant-select) {
-  width: 100%;
-}
-
-.question-test-history,
-.question-test-placeholder {
-  margin: 10px 0 0;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.question-test-history {
-  color: var(--juhe-faint);
-}
-
-.question-test-placeholder {
-  color: var(--juhe-muted);
-}
-
 .question-test-result {
   display: grid;
   gap: 10px;
-  margin-top: 10px;
 }
 
 .question-test-status {
@@ -1323,8 +1372,16 @@ async function confirmReject() {
     max-width: calc(100vw - 100px);
   }
 
-  .question-test-grid {
-    grid-template-columns: 1fr;
+  .question-test-target-selects {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .question-form-actions .question-test-account-select,
+  .question-form-actions .question-test-model-select {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
   }
 
   :global(.question-bank-modal-wrap .ant-modal) {

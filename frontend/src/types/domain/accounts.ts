@@ -521,9 +521,6 @@ export interface AccountListItem {
   type: AccountType
   /** 账户能力域（M1 读通道回显）：四域菜单按域请求，响应域与请求一致；缺省视作对话域。 */
   capabilityDomain?: AccountCapabilityDomain
-  /** 域外遗留能力（M3 提示列，D6 存量兼容 + I7）：实际声明集中域允许集之外
-   * 的值（排序去重）；无遗留时字段缺席。显式清理动作经编辑弹窗提交。 */
-  legacyCapabilityModes?: string[]
   status: AccountStatus
   apiKeyRuntime?: AccountApiKeyRuntimePublicSummary
   concurrencyLimit: number

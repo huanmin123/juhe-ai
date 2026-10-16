@@ -30,9 +30,17 @@ func w14hPayloadInput(id string, body string) AuditLogInput {
 	input := fixture(id, LifecycleFinalized)
 	input.CreatedAt = now
 	input.EndedAt = now
+	// 部件取 gateway_error（错误组去重的降级范围内）：BUG-0320 裁决后请求侧
+	// （client_request/upstream_request）不再降级，降级生命周期用错误部件覆盖。
+	input.Attempts = []AuditLogAttemptInput{{
+		TempID: "attempt-" + id, AttemptIndex: 0,
+		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
+		Success: &[]bool{false}[0],
+	}}
 	input.Payloads = []AuditLogPayloadInput{{
 		ID:            "payload-" + id,
-		PartType:      PayloadPartUpstreamRequest,
+		AttemptTempID: "attempt-" + id,
+		PartType:      PayloadPartGatewayError,
 		ContentType:   "application/json",
 		Body:          PayloadBody{Bytes: []byte(body), Present: true},
 		CaptureStatus: PayloadCaptureComplete,
@@ -48,8 +56,12 @@ func TestW14HPersistPayloadBlobLifecycle(t *testing.T) {
 	if _, err := store.Persist(ctx, lease, w14hPayloadInput("w14h-pl-1", body)); err != nil {
 		t.Fatal(err)
 	}
-	// 复用相同 body 的第二个日志 → 走既有 blob 引用计数分支。
-	if _, err := store.Persist(ctx, lease, w14hPayloadInput("w14h-pl-2", body)); err != nil {
+	// 复用相同 body 的第二个日志 → 走既有 blob 引用计数分支；Created/EndedAt
+	// 推入下一窗口触发样本移交（同窗口会被出生即降级，blob 根本不落盘）。
+	second := w14hPayloadInput("w14h-pl-2", body)
+	second.CreatedAt = time.Date(2026, 8, 9, 12, 11, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	second.EndedAt = second.CreatedAt
+	if _, err := store.Persist(ctx, lease, second); err != nil {
 		t.Fatal(err)
 	}
 	// 重复 ID → 幂等忽略。
@@ -57,13 +69,23 @@ func TestW14HPersistPayloadBlobLifecycle(t *testing.T) {
 	if err != nil || !result.Ignored {
 		t.Fatalf("重复持久化=%+v/%v", result, err)
 	}
-	// blob 元数据存在且引用计数为 2。
+	// blob 元数据存在。2026-10-16 错误组存储去重后：两条输入非 success、同错误
+	// 指纹（同 body 同 outcome），第二条跨窗口写入把第一条样本移交降级为 deduped
+	// 并释放其引用；共享 canonical blob 由最新事件继续引用，ref_count 收敛为 1
+	// 且不登记 GC。
 	var refCount int
 	if err := store.db.QueryRow(`SELECT ref_count FROM audit_payload_blobs LIMIT 1`).Scan(&refCount); err != nil {
 		t.Fatal(err)
 	}
-	if refCount != 2 {
+	if refCount != 1 {
 		t.Fatalf("引用计数=%d", refCount)
+	}
+	var supersededCapture string
+	if err := store.db.QueryRow(`SELECT capture_status FROM audit_payload_refs WHERE audit_log_id='w14h-pl-1'`).Scan(&supersededCapture); err != nil {
+		t.Fatal(err)
+	}
+	if supersededCapture != string(PayloadCaptureDeduped) {
+		t.Fatalf("同指纹旧样本应降级=%q", supersededCapture)
 	}
 	// retention：删除两条日志并调度 + 执行 blob 文件 GC。
 	config := RetentionConfig{

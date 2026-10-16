@@ -224,12 +224,23 @@ func (volcengineVideoAdapter) SupportsCancel() bool { return false }
 
 // volcengineVideoObject 是契约 §9.1 任务响应对象的消费面：创建响应携带
 // id + status（queued）；轮询响应携带 status 词表与 succeeded 形态的
-// content.video_url、failed 形态的 error{code,message}。
+// content.video_url、duration、usage，failed 形态的 error{code,message}。
 type volcengineVideoObject struct {
-	ID      string                  `json:"id"`
-	Status  string                  `json:"status"`
-	Content *volcengineVideoContent `json:"content"`
-	Error   *volcengineVideoError   `json:"error"`
+	ID       string                  `json:"id"`
+	Status   string                  `json:"status"`
+	Content  *volcengineVideoContent `json:"content"`
+	Duration float64                 `json:"duration"`
+	Usage    *volcengineVideoUsage   `json:"usage,omitempty"`
+	Error    *volcengineVideoError   `json:"error"`
+}
+
+// volcengineVideoUsage 是 succeeded 轮询响应的 usage 计量对象（2026-10-17
+// 真实上游实测形态：{"completion_tokens":108900,"total_tokens":108900}）。
+// 当前仅随 duration 旁证上游回报在场；成本计算维持契约 §9.1 计费条既有
+// 规则（目录计费层秒价落值前成本 0 不虚计），token 口径不作折算猜测。
+type volcengineVideoUsage struct {
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // volcengineVideoContent 是 succeeded 状态的产物定位（content.video_url）。
@@ -275,10 +286,14 @@ func volcengineTaskStatusOf(status string) (MediaJobStatus, bool) {
 //   - failed → failed（错误摘要取 error{code,message}；error 对象缺席属
 //     协议违约，以 status 原值兜底，不丢弃终态）。
 //
-// usage：官方创建文档明示查询 API 返回 duration（"视频时长与计费相关"）
-// 与 usage 字段，但字段名未回填契约（§9.1/§2.8"字段回填"）——M3 保守不
-// 抽秒，不填 OutputVideoSeconds，终态计费由链上按契约 §2.8 兜底（0 计费 +
-// usage_missing 标记，同 glm/minimax 先例）；字段回填后再启用。
+// usage（2026-10-17 真实上游实测回填）：succeeded 终态响应顶层携带
+// `duration`（生成秒数，数值形态——上游当前为整数但按 float64 解析防档位
+// 变化）与 `usage`（completion_tokens/total_tokens）等元数据。duration 正值
+// → ir.Usage.OutputVideoSeconds（usage_source=upstream，替换 M3 的保守不抽
+// 秒/请求参数自算兜底；链上层 1847 行现成消费落 usage 行）；缺失/0/负值不
+// 填（保持 nil，不猜测），仅 succeeded 终态抽取（queued/running/failed 带
+// duration 不抽）。成本计算维持契约 §9.1 计费条既有规则：目录计费层秒价落
+// 值前成本 0 不虚计，token 口径不作折算猜测，不编造价。
 func (volcengineVideoAdapter) ParsePollResponse(statusCode int, body []byte) (*MediaJobIR, error) {
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, &UpstreamStatusError{StatusCode: statusCode, Body: string(body)}
@@ -309,6 +324,13 @@ func (volcengineVideoAdapter) ParsePollResponse(statusCode int, body []byte) (*M
 			return nil, fmt.Errorf("volcengine 视频任务 succeeded 但缺少 content.video_url 产物定位（id=%s）", obj.ID)
 		}
 		ir.Artifact.ContentURL = url
+		// usage（2026-10-17 实测回填）：仅 succeeded 终态抽 duration 正值 →
+		// OutputVideoSeconds（usage_source=upstream，xai video.duration 同构
+		// 先例）；缺失/0/负值保持 nil，不猜测。
+		if obj.Duration > 0 {
+			seconds := obj.Duration
+			ir.Usage.OutputVideoSeconds = &seconds
+		}
 	case JobStatusFailed:
 		code, message := "failed", "volcengine 视频任务 status=failed"
 		if obj.Error != nil {

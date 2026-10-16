@@ -169,4 +169,10 @@ onBeforeUnmount(() => {
   width: 100%;
   padding-inline-end: 22px;
 }
+
+/* tag 文本层 white-space:pre 且 flex 子项默认 min-width:auto，长标题的
+   min-content 会沿 select 一路撑爆外层网格轨道；置 0 后 ellipsis 才生效。 */
+.question-bank-select :deep(.ant-select-selection-item-content) {
+  min-width: 0;
+}
 </style>

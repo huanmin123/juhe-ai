@@ -8,7 +8,7 @@ package main
 //     duration、seed 直传 + Bearer 认证 + /api/v3 服务根 URL 归一 + params
 //     回显）→ 轮询 queued → in_progress → completed（content.video_url 冻结
 //     进 artifact）→ content 经绝对 URL 无凭据直连下载 mp4 + 终态 usage
-//     spool（请求参数自算计量口径：usage 行落自算秒数、无价 cost 0）；
+//     spool（上游回报计量口径：usage 行落上游 duration 秒数、无价 cost 0）；
 //  2. status=failed + error{code,message} → failed 终态（code 透传 + cost 0）；
 //  3. DELETE 取消（volcengine §9.1 面无取消 API → 不发上游请求，本地收敛
 //     cancelled）；
@@ -128,9 +128,9 @@ func seedMediaVolcengineAccount(t *testing.T, fixture *chainFixture, id, baseURL
 //（contents/generations/tasks 报文改写 + Bearer 认证头 + /api/v3 服务根 URL +
 // applied/ignored 回显）→ 轮询 queued → in_progress（running 归一）→
 // completed（content.video_url 进 artifact）→ content 绝对 URL 无凭据直连
-// mp4 → 终态 usage（请求参数自算计量：请求 seconds=5 生效、上游无回报 →
-// usage 行落自算秒数、不打 usage_missing；目录无 USD 秒价 → cost 0，契约
-// §2.8 网关自算口径，2026-10-05 请求参数自算批）。
+// mp4 → 终态 usage（上游回报计量：mock 轮询 succeeded 顶层 duration=5 →
+// OutputVideoSeconds 照抽、不打 usage_missing；目录无 USD 秒价 → cost 0，契约
+// §2.8 上游回报优先口径，2026-10-17 实测回填批 usage_source=upstream）。
 func TestChainMediaVolcengineVideoFullFlowLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, mock, upstreamURL := newVolcengineRecordedUpstream(t)
@@ -270,14 +270,14 @@ func TestChainMediaVolcengineVideoFullFlowLifecycle(t *testing.T) {
 		}
 	}
 
-	// 终态 usage：spool 链异步落盘，completed 按请求参数自算计量（2026-10-05
-	// 请求参数自算批）：请求 seconds=5 生效、上游 usage/duration 字段未回填 →
-	// usage 行落自算秒数 outputVideoSeconds=5（usage_source=request 语义），
+	// 终态 usage：spool 链异步落盘，completed 按上游回报计量（2026-10-17
+	// 实测回填批）：mock 轮询 succeeded 顶层 duration=5 → OutputVideoSeconds
+	// 照抽 → usage 行落 outputVideoSeconds=5（usage_source=upstream 语义），
 	// 不打 usage_missing；目录无 USD 秒价 → 无 costUsd（usage_source 无
 	// schema 字段，来源以本断言与结算注释钉住）。
 	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
 		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"outputVideoSeconds":5`)
-	}, "volcengine completed 请求自算计量终态记录")
+	}, "volcengine completed 上游回报计量终态记录")
 	if strings.Contains(record, "usageMissing") {
 		t.Fatalf("volcengine 请求自算计量 usage 行不得打 usage_missing（有生效请求参数）: %s", record)
 	}
