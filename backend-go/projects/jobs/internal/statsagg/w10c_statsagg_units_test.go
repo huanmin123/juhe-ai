@@ -794,7 +794,7 @@ func TestW10CRunStagesOrchestration(t *testing.T) {
 		t.Fatalf("未知阶段应报错")
 	}
 	// runStage 未知阶段 default 臂（直接调用）。
-	if err := refresher.runStage(ctx, "nope", refreshStageContext{timezone: env.zone}); err == nil {
+	if _, _, err := refresher.runStage(ctx, "nope", refreshStageContext{timezone: env.zone}); err == nil {
 		t.Fatalf("runStage 未知阶段应报错")
 	}
 	// DefaultJobName：8 阶段主名 vs 单阶段复合名（授权范围窗口 stage 已停用）。

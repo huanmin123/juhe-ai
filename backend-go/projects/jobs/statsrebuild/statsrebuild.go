@@ -25,10 +25,11 @@
 //     源表（SQLite standalone 的聚合事实源是 stats 库内 usage_records
 //     镜像，PG 是 juhe_usage.usage_records，两者都只读）。
 //
-// dirty 队列处置（显式契约，见 BUG-0182 验收记录）：
+// dirty 队列处置（显式契约，见 BUG-0182 验收记录；2026-10-17 起两表在线
+// 消费方为窗口刷新 job 的同日增量轮，见 BUG-0327）：
 //   - usage_overview_dirty_scopes / ai_performance_summary_dirty_system_accounts：
-//     重放会再生标记，但窗口阶段已在同一次执行内全量重建，标记失去语义且
-//     Go 侧无增量消费者——完成路径末尾清空；
+//     重放会再生标记，但窗口阶段已在同一次执行内按当前口径全量重建，标记
+//     失去语义——完成路径末尾清空；
 //   - usage_quota_hourly_window_dirty_scopes：保留重放再生的标记。离线不重刷
 //     配额小时窗（SQLite 全量重建需要业务库绑定表输入且在线任务每轮全量重建；
 //     PG 增量路径消费这些标记即可把清空后的 usage_quota_hourly_windows 补建），
@@ -138,7 +139,8 @@ var rebuildResetJobStateNames = []string{
 }
 
 // completionClearedDirtyTables 在窗口阶段全量重建完成后清空的脏队列
-// （标记已失去语义且 Go 侧无增量消费者；保留只会误导排障）。
+// （离线重建已在同一执行内按当前口径全量重建窗口，标记失去语义；在线
+// 消费方是窗口刷新 job 的同日增量轮，见 BUG-0327；保留只会误导排障）。
 var completionClearedDirtyTables = []string{
 	"usage_overview_dirty_scopes",
 	"ai_performance_summary_dirty_system_accounts",

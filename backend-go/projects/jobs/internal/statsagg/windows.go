@@ -51,6 +51,18 @@ func stageSourceTables(stage WindowStageName) []string {
 	return nil
 }
 
+// 窗口 stage 刷新模式（UsageRankStageRun.Mode 取值，契约见
+// 《统计指标与分层聚合设计》「概览与 AI 性能窗口的脏范围增量重建」）：
+//   - full：todayKey 与 lastFullRebuildDayKey 不同（含启动首轮）的天滚动
+//     全量重建；
+//   - incremental：同日内按脏表 generation CAS 消费并逐账户重建；
+//   - noop：增量轮脏表为空，零 DELETE 零 INSERT。
+const (
+	WindowRefreshModeFull        = "full"
+	WindowRefreshModeIncremental = "incremental"
+	WindowRefreshModeNoop        = "noop"
+)
+
 // UsageRankSnapshotRefreshResult mirrors UsageRankSnapshotRefreshResult。
 type UsageRankSnapshotRefreshResult struct {
 	DurationMs      int64               `json:"durationMs"`
@@ -66,6 +78,10 @@ type UsageRankSnapshotRefreshResult struct {
 type UsageRankStageRun struct {
 	Name       string `json:"name"`
 	DurationMs int64  `json:"durationMs"`
+	// Mode 记录本轮刷新模式（常量 WindowRefreshMode*）；仅
+	// StageUsageOverviewWindows / StageAiPerformanceSummaryWindows 两个
+	// stage 填充，其余 stage 恒全量语义，字段省略。
+	Mode string `json:"mode,omitempty"`
 }
 
 // WindowRefresher 执行窗口刷新 job（usage-rank-snapshots-refresh、
@@ -87,6 +103,14 @@ type WindowRefresher struct {
 	// ScopeLimit 覆盖配额小时窗单轮消费的脏 scope 上限（归档 :1871 固定
 	// 128）；0 用默认值，测试可调小以覆盖分页续跑。
 	ScopeLimit int
+	// overviewFullRebuildDayKey / aiPerformanceFullRebuildDayKey 是两个窗口
+	// stage 各自的全量重建日键（进程内内存态，不持久化、无配置项）：
+	// todayKey 与记录值不同（含零值 = 进程启动后首轮）时该 stage 走全量
+	// 重建并在事务提交成功后记录当日键，同一天内的后续轮走脏范围增量。
+	// 组合根共享同一 WindowRefresher 实例，字段随实例在 job 间自然共享；
+	// 离线重建进程一次性 RunStages(nil) 首轮即全量。
+	overviewFullRebuildDayKey      string
+	aiPerformanceFullRebuildDayKey string
 }
 
 func (w *WindowRefresher) now() time.Time {
@@ -185,19 +209,25 @@ func (w *WindowRefresher) RunStages(ctx context.Context, stageNames []WindowStag
 	}
 
 	stageRuntimes := []UsageRankStageRun{}
+	// dirtyRemaining 汇总各 stage 的事务内脏表剩余标记：任一 stage 报告有
+	// 残留（含 CAS miss 与并发再打脏）时本轮不推进 job 水位，确保下轮
+	// watermark-skip 不会把残留脏行跳过去。
+	dirtyRemaining := false
 	for _, stage := range stages {
 		stageStartedAt := w.now()
-		if err := w.runStage(ctx, stage, refreshStageContext{
+		mode, stageDirtyRemaining, err := w.runStage(ctx, stage, refreshStageContext{
 			timezone:   timezone,
 			updatedAt:  FormatRFC3339Millis(now),
 			snapshotAt: FormatRFC3339Millis(now),
 			todayKey:   todayKey,
-		}); err != nil {
+		})
+		if err != nil {
 			return UsageRankSnapshotRefreshResult{}, err
 		}
-		stageRuntimes = append(stageRuntimes, UsageRankStageRun{Name: string(stage), DurationMs: w.now().Sub(stageStartedAt).Milliseconds()})
+		stageRuntimes = append(stageRuntimes, UsageRankStageRun{Name: string(stage), DurationMs: w.now().Sub(stageStartedAt).Milliseconds(), Mode: mode})
+		dirtyRemaining = dirtyRemaining || stageDirtyRemaining
 	}
-	if options.SkipIfUnchanged && sourceState != nil {
+	if options.SkipIfUnchanged && sourceState != nil && !dirtyRemaining {
 		if err := w.updateRankRefreshJobState(ctx, jobName, rankRefreshStateInput{
 			SourceWatermark: sourceState.sourceWatermark,
 			RefreshDate:     todayKey,
@@ -234,12 +264,18 @@ type refreshStageContext struct {
 	todayKey   string
 }
 
-func (w *WindowRefresher) runStage(ctx context.Context, stage WindowStageName, stageContext refreshStageContext) error {
+// runStage 执行单个 stage（既有 BeginTx/Commit 边界不变），返回该 stage 的
+// 刷新模式（无模式语义的 stage 返回空串）与"事务内脏表是否仍有剩余行"：
+// 后者为 true 时 RunStages 保留该 job 的 stats_job_state 水位不推进，防止
+// 下轮 watermark-skip 把残留脏行跳过去。
+func (w *WindowRefresher) runStage(ctx context.Context, stage WindowStageName, stageContext refreshStageContext) (string, bool, error) {
 	tx, err := w.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var mode string
+	var dirtyRemaining bool
 	switch stage {
 	case StageAccountLast7dRequestRank:
 		err = refreshAccountLast7dRequestRankSnapshot(ctx, tx, w.Dialect, stageContext.snapshotAt, stageContext.updatedAt, stageContext.timezone, w.now())
@@ -252,18 +288,32 @@ func (w *WindowRefresher) runStage(ctx context.Context, stage WindowStageName, s
 	case StageGroupAuthorizationCurrentMonthRank:
 		err = refreshAuthorizationCurrentMonthCostRankSnapshot(ctx, tx, w.Dialect, "group_authorization", stageContext.snapshotAt, stageContext.updatedAt, stageContext.timezone, w.now())
 	case StageUsageOverviewWindows:
-		err = w.refreshUsageOverviewWindowSnapshots(ctx, tx, stageContext)
+		mode, dirtyRemaining, err = w.refreshUsageOverviewWindowSnapshots(ctx, tx, stageContext)
 	case StageAiPerformanceSummaryWindows:
-		err = w.refreshAiPerformanceSummaryWindows(ctx, tx, stageContext)
+		mode, dirtyRemaining, err = w.refreshAiPerformanceSummaryWindows(ctx, tx, stageContext)
 	case StageUsageScopeRangeWindows:
 		err = w.refreshUsageScopeRangeWindows(ctx, tx, stageContext)
 	default:
 		err = fmt.Errorf("未知用量排行快照刷新阶段: %s", stage)
 	}
 	if err != nil {
-		return err
+		return "", false, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", false, err
+	}
+	// 全量重建日键在事务提交成功后才记录：回滚不得推进内存游标。
+	switch stage {
+	case StageUsageOverviewWindows:
+		if mode == WindowRefreshModeFull {
+			w.overviewFullRebuildDayKey = stageContext.todayKey
+		}
+	case StageAiPerformanceSummaryWindows:
+		if mode == WindowRefreshModeFull {
+			w.aiPerformanceFullRebuildDayKey = stageContext.todayKey
+		}
+	}
+	return mode, dirtyRemaining, nil
 }
 
 // ---- source watermark / job state ----

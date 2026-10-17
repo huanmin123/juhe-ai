@@ -15,6 +15,15 @@ type usageOverviewScope struct {
 
 const maxUsageOverviewSnapshotScopes = 5000
 
+// overviewWindowTableNames 是 StageUsageOverviewWindows 的 4 张目标窗口表
+// （全量清空、增量逐账户删除与孤儿清理共用同一清单）。
+var overviewWindowTableNames = []string{
+	"usage_overview_summary_windows",
+	"usage_overview_trend_windows",
+	"usage_model_rank_windows",
+	"usage_error_rank_windows",
+}
+
 // usageOverviewSnapshotScopes mirrors usageOverviewSnapshotScopes：
 // usage_stats_totals 中 system_account scope 的 (system, scope) 列表，
 // 末尾补 global（若缺）。
@@ -57,14 +66,248 @@ func (w *WindowRefresher) usageOverviewSnapshotScopes(ctx context.Context, tx *s
 	return scopes, nil
 }
 
-// refreshUsageOverviewWindowSnapshots mirrors refreshUsageOverviewWindowSnapshots
-// （SQLite 全量重建路径；PG 增量 dirty 队列是等价优化，最终行集一致，
-// 见包注释「行为差异」）。
-func (w *WindowRefresher) refreshUsageOverviewWindowSnapshots(ctx context.Context, tx *sql.Tx, stageContext refreshStageContext) error {
-	scopes, err := w.usageOverviewSnapshotScopes(ctx, tx)
+// usageOverviewScopesForAccount 读取单账户在 usage_stats_totals 的
+// (system, scope) 清单（排序与 LIMIT 语义与 usageOverviewSnapshotScopes
+// 一致）；空清单 = 该账户在 totals 已无 system_account scope 行，不参与
+// 增量重建（窗口残留由孤儿清理删除）。
+func (w *WindowRefresher) usageOverviewScopesForAccount(ctx context.Context, tx *sql.Tx, systemAccountID string) ([]usageOverviewScope, error) {
+	query := w.Dialect.bind(`
+		SELECT system_account_id, scope_id
+		FROM ` + w.Dialect.StatsTable("usage_stats_totals") + `
+		WHERE scope_type = 'system_account' AND system_account_id = ?
+		ORDER BY updated_at DESC, system_account_id ASC, scope_id ASC
+		LIMIT ?
+	`)
+	rows, err := tx.QueryContext(ctx, query, systemAccountID, maxUsageOverviewSnapshotScopes)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer rows.Close()
+	scopes := []usageOverviewScope{}
+	for rows.Next() {
+		var accountID, scopeID sql.NullString
+		if err := rows.Scan(&accountID, &scopeID); err != nil {
+			return nil, err
+		}
+		if accountID.String == "" || scopeID.String == "" {
+			continue
+		}
+		scopes = append(scopes, usageOverviewScope{accountID.String, scopeID.String})
+	}
+	return scopes, rows.Err()
+}
+
+// hasUsageStatsTotalsSystemAccount 判断账户在 usage_stats_totals 是否仍有
+// system_account scope 行（ai-performance 增量的 claimed ∩ totals 交集判定；
+// overview 增量经 usageOverviewScopesForAccount 同源判定）。
+func (w *WindowRefresher) hasUsageStatsTotalsSystemAccount(ctx context.Context, tx *sql.Tx, systemAccountID string) (bool, error) {
+	query := w.Dialect.bind(`SELECT 1 FROM ` + w.Dialect.StatsTable("usage_stats_totals") + `
+		WHERE scope_type = 'system_account' AND system_account_id = ?
+		LIMIT 1`)
+	rows, err := tx.QueryContext(ctx, query, systemAccountID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	return rows.Next(), rows.Err()
+}
+
+// windowDirtyRow 是两张窗口脏标记表（PK system_account_id，generation 冲突
+// 自增）的消费行形态。
+type windowDirtyRow struct {
+	systemAccountID string
+	generation      int64
+}
+
+// claimUsageOverviewDirtyRows 读取 usage_overview_dirty_scopes 全部脏行
+// （表体量 ≈ 账户数，无需分页）。
+func (w *WindowRefresher) claimUsageOverviewDirtyRows(ctx context.Context, tx *sql.Tx) ([]windowDirtyRow, error) {
+	query := w.Dialect.bind(`SELECT system_account_id, generation FROM ` +
+		w.Dialect.StatsTable("usage_overview_dirty_scopes") + ` ORDER BY system_account_id ASC`)
+	return scanWindowDirtyRows(tx.QueryContext(ctx, query))
+}
+
+// claimAiPerformanceDirtyRows 读取 ai_performance_summary_dirty_system_accounts
+// 全部脏行。
+func (w *WindowRefresher) claimAiPerformanceDirtyRows(ctx context.Context, tx *sql.Tx) ([]windowDirtyRow, error) {
+	query := w.Dialect.bind(`SELECT system_account_id, generation FROM ` +
+		w.Dialect.StatsTable("ai_performance_summary_dirty_system_accounts") + ` ORDER BY system_account_id ASC`)
+	return scanWindowDirtyRows(tx.QueryContext(ctx, query))
+}
+
+func scanWindowDirtyRows(rows *sql.Rows, err error) ([]windowDirtyRow, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []windowDirtyRow{}
+	for rows.Next() {
+		var row windowDirtyRow
+		if err := rows.Scan(&row.systemAccountID, &row.generation); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+// consumeUsageOverviewDirtyRows 逐行按 (system_account_id, generation) CAS
+// 消费脏行（镜像 deleteConsumedQuotaHourlyWindowDirtyScopes 的双方言 CAS
+// 谓词），返回实际消费成功的行；generation 已被并发聚合推进的行未命中保留，
+// 留给下轮消费。
+func (w *WindowRefresher) consumeUsageOverviewDirtyRows(ctx context.Context, tx *sql.Tx, rows []windowDirtyRow) ([]windowDirtyRow, error) {
+	return consumeWindowDirtyRows(ctx, tx, w.Dialect, "usage_overview_dirty_scopes", rows)
+}
+
+// consumeAiPerformanceDirtyRows 语义同 consumeUsageOverviewDirtyRows，消费
+// ai_performance_summary_dirty_system_accounts。
+func (w *WindowRefresher) consumeAiPerformanceDirtyRows(ctx context.Context, tx *sql.Tx, rows []windowDirtyRow) ([]windowDirtyRow, error) {
+	return consumeWindowDirtyRows(ctx, tx, w.Dialect, "ai_performance_summary_dirty_system_accounts", rows)
+}
+
+func consumeWindowDirtyRows(ctx context.Context, tx *sql.Tx, dialect Dialect, tableName string, rows []windowDirtyRow) ([]windowDirtyRow, error) {
+	query := dialect.bind(`DELETE FROM ` + dialect.StatsTable(tableName) + ` WHERE system_account_id = ? AND generation = ?`)
+	consumed := make([]windowDirtyRow, 0, len(rows))
+	for _, row := range rows {
+		result, err := tx.ExecContext(ctx, query, row.systemAccountID, row.generation)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected > 0 {
+			consumed = append(consumed, row)
+		}
+	}
+	return consumed, nil
+}
+
+// usageWindowDirtyRemaining 检查脏表在事务内是否仍有剩余行（含 CAS miss 与
+// 并发再打脏）：true 时调用方保留该 job 的 stats_job_state 水位不推进。
+func usageWindowDirtyRemaining(ctx context.Context, tx *sql.Tx, dialect Dialect, tableName string) (bool, error) {
+	query := dialect.bind(`SELECT 1 FROM ` + dialect.StatsTable(tableName) + ` LIMIT 1`)
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	return rows.Next(), rows.Err()
+}
+
+// deleteOrphanUsageWindowRows 反连接删除孤儿窗口行：system_account_id 不在
+// usage_stats_totals（scope_type='system_account'）且不是 global 的行
+// （global 永远豁免孤儿清理）。
+func deleteOrphanUsageWindowRows(ctx context.Context, tx *sql.Tx, dialect Dialect, tableName string) error {
+	query := dialect.bind(`DELETE FROM ` + dialect.StatsTable(tableName) + `
+		WHERE system_account_id <> 'global'
+		  AND system_account_id NOT IN (
+			SELECT system_account_id FROM ` + dialect.StatsTable("usage_stats_totals") + `
+			WHERE scope_type = 'system_account'
+		  )`)
+	_, err := tx.ExecContext(ctx, query)
+	return err
+}
+
+// refreshUsageOverviewWindowSnapshots 刷新 4 张 overview 窗口表：todayKey
+// 与 overviewFullRebuildDayKey 不同（含启动首轮）→ 天滚动全量重建（原实现）；
+// 同一天 → 脏范围增量（读 usage_overview_dirty_scopes 全部行，空 → noop
+// 零 DELETE；非空 → 逐行 generation CAS 消费后按 claimed ∩ totals 逐账户
+// 重建 + global 无条件重建 + 反连接孤儿清理，消费/重建/清理同一事务）。
+// 返回本轮模式与事务内脏表剩余行标记（true 时调用方保留 watermark）。
+func (w *WindowRefresher) refreshUsageOverviewWindowSnapshots(ctx context.Context, tx *sql.Tx, stageContext refreshStageContext) (string, bool, error) {
+	mode := WindowRefreshModeFull
+	if w.overviewFullRebuildDayKey == stageContext.todayKey {
+		var err error
+		mode, err = w.rebuildUsageOverviewWindowsIncremental(ctx, tx, stageContext)
+		if err != nil {
+			return mode, false, err
+		}
+	} else {
+		scopes, err := w.usageOverviewSnapshotScopes(ctx, tx)
+		if err != nil {
+			return mode, false, err
+		}
+		for _, tableName := range overviewWindowTableNames {
+			if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable(tableName))); err != nil {
+				return mode, false, err
+			}
+		}
+		if err := w.rebuildUsageOverviewWindowsForScopes(ctx, tx, scopes, stageContext); err != nil {
+			return mode, false, err
+		}
+	}
+	remaining, err := usageWindowDirtyRemaining(ctx, tx, w.Dialect, "usage_overview_dirty_scopes")
+	if err != nil {
+		return mode, false, err
+	}
+	return mode, remaining, nil
+}
+
+// rebuildUsageOverviewWindowsIncremental 是同日增量轮：消费 overview 脏行并
+// 只重建受影响账户与 global，返回实际模式（incremental 或 noop）。
+func (w *WindowRefresher) rebuildUsageOverviewWindowsIncremental(ctx context.Context, tx *sql.Tx, stageContext refreshStageContext) (string, error) {
+	claimed, err := w.claimUsageOverviewDirtyRows(ctx, tx)
+	if err != nil {
+		return WindowRefreshModeIncremental, err
+	}
+	if len(claimed) == 0 {
+		// 脏表为空：本轮 no-op，不 DELETE 任何窗口表行。
+		return WindowRefreshModeNoop, nil
+	}
+	consumed, err := w.consumeUsageOverviewDirtyRows(ctx, tx, claimed)
+	if err != nil {
+		return WindowRefreshModeIncremental, err
+	}
+	// claimed ∩ totals：totals 已无对应行的账户不重建（孤儿清理负责删残留）。
+	scopes := []usageOverviewScope{}
+	rebuildAccounts := make([]string, 0, len(consumed))
+	for _, row := range consumed {
+		accountScopes, err := w.usageOverviewScopesForAccount(ctx, tx, row.systemAccountID)
+		if err != nil {
+			return WindowRefreshModeIncremental, err
+		}
+		if len(accountScopes) == 0 {
+			continue
+		}
+		rebuildAccounts = append(rebuildAccounts, row.systemAccountID)
+		scopes = append(scopes, accountScopes...)
+	}
+	hasGlobal := false
+	for _, account := range rebuildAccounts {
+		if account == GlobalStatsSystemAccountID {
+			hasGlobal = true
+		}
+	}
+	// 任一 claimed 非空即重建 global 行（与全量的 global 兜底同形）。
+	if !hasGlobal {
+		rebuildAccounts = append(rebuildAccounts, GlobalStatsSystemAccountID)
+		scopes = append(scopes, usageOverviewScope{GlobalStatsSystemAccountID, GlobalStatsScopeID})
+	}
+	for _, tableName := range overviewWindowTableNames {
+		for _, systemAccountID := range rebuildAccounts {
+			if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable(tableName)+` WHERE system_account_id = ?`), systemAccountID); err != nil {
+				return WindowRefreshModeIncremental, err
+			}
+		}
+	}
+	if err := w.rebuildUsageOverviewWindowsForScopes(ctx, tx, scopes, stageContext); err != nil {
+		return WindowRefreshModeIncremental, err
+	}
+	for _, tableName := range overviewWindowTableNames {
+		if err := deleteOrphanUsageWindowRows(ctx, tx, w.Dialect, tableName); err != nil {
+			return WindowRefreshModeIncremental, err
+		}
+	}
+	return WindowRefreshModeIncremental, nil
+}
+
+// rebuildUsageOverviewWindowsForScopes 是 4 张 overview 窗口表的行构建共享
+// 路径（全量与增量共用同一份行构建代码）：summary/trend 按 scopes 清单逐
+// (system, scope) 对重建，model/error rank 按 unique system + global 重建；
+// 调用方负责先删除待重建行集。
+func (w *WindowRefresher) rebuildUsageOverviewWindowsForScopes(ctx context.Context, tx *sql.Tx, scopes []usageOverviewScope, stageContext refreshStageContext) error {
 	ranges := FixedUsageStatsRanges(stageContext.todayKey)
 	earliestDate := stageContext.todayKey
 	if len(ranges) > 0 {
@@ -74,11 +317,6 @@ func (w *WindowRefresher) refreshUsageOverviewWindowSnapshots(ctx context.Contex
 	for _, scope := range scopes {
 		if scope.systemAccountID != GlobalStatsSystemAccountID {
 			uniqueSystemAccountIDs[scope.systemAccountID] = struct{}{}
-		}
-	}
-	for _, tableName := range []string{"usage_overview_summary_windows", "usage_overview_trend_windows", "usage_model_rank_windows", "usage_error_rank_windows"} {
-		if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable(tableName))); err != nil {
-			return err
 		}
 	}
 	// summary：scope × range 汇总 usage_stats_daily（每 scope 合并为一条多行
@@ -570,52 +808,140 @@ func (w *WindowRefresher) refreshUsageErrorRankWindows(ctx context.Context, tx *
 	return execOverviewWindowInsertRows(ctx, tx, w.Dialect, errorRankInsert, 11, rankRows)
 }
 
-// refreshAiPerformanceSummaryWindows mirrors
-// refreshAiPerformanceSummaryWindowSnapshots（SQLite 全量重建路径）：
-// DELETE 全表后按 uniqueSystemAccountIds + global 重建 31 天固定窗口。
-func (w *WindowRefresher) refreshAiPerformanceSummaryWindows(ctx context.Context, tx *sql.Tx, stageContext refreshStageContext) error {
-	if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable("ai_performance_summary_windows"))); err != nil {
-		return err
+// refreshAiPerformanceSummaryWindows 刷新 ai_performance_summary_windows：
+// todayKey 与 aiPerformanceFullRebuildDayKey 不同（含启动首轮）→ 天滚动
+// 全量重建（全表 DELETE + 全账户重插）；同一天 → 脏范围增量
+// （ai_performance_summary_dirty_system_accounts 全行读取，空 → noop 零
+// DELETE；非空 → 逐行 generation CAS 消费后按 claimed ∩ totals 逐账户 +
+// global 重建 + 反连接孤儿清理）。全量与增量共用同一行构建代码：多行
+// VALUES INSERT（12 列、200 行/片），行集/行值/行序与逐行单条 INSERT
+// 时代一致。返回本轮模式与事务内脏表剩余行标记。
+func (w *WindowRefresher) refreshAiPerformanceSummaryWindows(ctx context.Context, tx *sql.Tx, stageContext refreshStageContext) (string, bool, error) {
+	mode := WindowRefreshModeFull
+	var accounts []string
+	if w.aiPerformanceFullRebuildDayKey == stageContext.todayKey {
+		var err error
+		mode, accounts, err = w.rebuildAiPerformanceSummaryWindowsIncremental(ctx, tx)
+		if err != nil {
+			return mode, false, err
+		}
+		if mode == WindowRefreshModeNoop {
+			remaining, err := usageWindowDirtyRemaining(ctx, tx, w.Dialect, "ai_performance_summary_dirty_system_accounts")
+			if err != nil {
+				return WindowRefreshModeNoop, false, err
+			}
+			return WindowRefreshModeNoop, remaining, nil
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable("ai_performance_summary_windows"))); err != nil {
+			return mode, false, err
+		}
+		scopes, err := w.usageOverviewSnapshotScopes(ctx, tx)
+		if err != nil {
+			return mode, false, err
+		}
+		uniqueSystemAccountIDs := map[string]struct{}{}
+		for _, scope := range scopes {
+			if scope.systemAccountID != GlobalStatsSystemAccountID {
+				uniqueSystemAccountIDs[scope.systemAccountID] = struct{}{}
+			}
+		}
+		accounts = append(mapKeyList(uniqueSystemAccountIDs), GlobalStatsSystemAccountID)
 	}
-	scopes, err := w.usageOverviewSnapshotScopes(ctx, tx)
+	rows, err := w.aiPerformanceSummaryRows(ctx, tx, accounts, stageContext)
 	if err != nil {
-		return err
+		return mode, false, err
 	}
-	uniqueSystemAccountIDs := map[string]struct{}{}
-	for _, scope := range scopes {
-		if scope.systemAccountID != GlobalStatsSystemAccountID {
-			uniqueSystemAccountIDs[scope.systemAccountID] = struct{}{}
+	aiInsert := `
+		INSERT INTO ` + w.Dialect.StatsTable("ai_performance_summary_windows") + ` (
+		  system_account_id, window_key, start_date, end_date, request_count, duration_ms_sum, duration_ms_count,
+		  duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max, updated_at)
+		VALUES `
+	if err := execOverviewWindowInsertRows(ctx, tx, w.Dialect, aiInsert, 12, rows); err != nil {
+		return mode, false, err
+	}
+	remaining, err := usageWindowDirtyRemaining(ctx, tx, w.Dialect, "ai_performance_summary_dirty_system_accounts")
+	if err != nil {
+		return mode, false, err
+	}
+	return mode, remaining, nil
+}
+
+// rebuildAiPerformanceSummaryWindowsIncremental 是同日增量轮：消费
+// ai-performance 脏行并只重建受影响账户与 global 的窗口行，返回实际模式
+// （incremental 或 noop）与重建账户清单（含 global，升序 global 末位）。
+func (w *WindowRefresher) rebuildAiPerformanceSummaryWindowsIncremental(ctx context.Context, tx *sql.Tx) (string, []string, error) {
+	claimed, err := w.claimAiPerformanceDirtyRows(ctx, tx)
+	if err != nil {
+		return WindowRefreshModeIncremental, nil, err
+	}
+	if len(claimed) == 0 {
+		// 脏表为空：本轮 no-op，不 DELETE 任何窗口表行。
+		return WindowRefreshModeNoop, nil, nil
+	}
+	consumed, err := w.consumeAiPerformanceDirtyRows(ctx, tx, claimed)
+	if err != nil {
+		return WindowRefreshModeIncremental, nil, err
+	}
+	// claimed ∩ totals：totals 已无对应行的账户不重建（孤儿清理负责删残留）。
+	accounts := make([]string, 0, len(consumed))
+	for _, row := range consumed {
+		has, err := w.hasUsageStatsTotalsSystemAccount(ctx, tx, row.systemAccountID)
+		if err != nil {
+			return WindowRefreshModeIncremental, nil, err
+		}
+		if !has {
+			continue
+		}
+		accounts = append(accounts, row.systemAccountID)
+	}
+	hasGlobal := false
+	for _, account := range accounts {
+		if account == GlobalStatsSystemAccountID {
+			hasGlobal = true
 		}
 	}
+	// 任一 claimed 非空即重建 global 行。
+	if !hasGlobal {
+		accounts = append(accounts, GlobalStatsSystemAccountID)
+	}
+	for _, systemAccountID := range accounts {
+		if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable("ai_performance_summary_windows")+` WHERE system_account_id = ?`), systemAccountID); err != nil {
+			return WindowRefreshModeIncremental, nil, err
+		}
+	}
+	if err := deleteOrphanUsageWindowRows(ctx, tx, w.Dialect, "ai_performance_summary_windows"); err != nil {
+		return WindowRefreshModeIncremental, nil, err
+	}
+	return WindowRefreshModeIncremental, accounts, nil
+}
+
+// aiPerformanceSummaryRows 按 (account, range) 顺序构建 AI 性能摘要行
+// （全量与增量共用；行集/行值/行序与逐行单条 INSERT 时代一致）。
+func (w *WindowRefresher) aiPerformanceSummaryRows(ctx context.Context, tx *sql.Tx, systemAccountIDs []string, stageContext refreshStageContext) ([][]any, error) {
 	ranges := FixedUsageStatsRanges(stageContext.todayKey)
 	earliestDate := stageContext.todayKey
 	if len(ranges) > 0 {
 		earliestDate = ranges[0].StartDate
 	}
-	for _, systemAccountID := range append(mapKeyList(uniqueSystemAccountIDs), GlobalStatsSystemAccountID) {
-		rows, err := w.loadAiPerformanceSourceRows(ctx, tx, systemAccountID, earliestDate, stageContext.todayKey)
+	rows := make([][]any, 0, len(systemAccountIDs)*len(ranges))
+	for _, systemAccountID := range systemAccountIDs {
+		source, err := w.loadAiPerformanceSourceRows(ctx, tx, systemAccountID, earliestDate, stageContext.todayKey)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		rowsByDate := RowsByStatDate(rows, func(r DailyWindowRow) string { return r.StatDate })
+		rowsByDate := RowsByStatDate(source, func(r DailyWindowRow) string { return r.StatDate })
 		for _, rangeValue := range ranges {
 			aggregate := AggregateUsageRowsForRange(rowsByDate, rangeValue)
-			insert := w.Dialect.bind(`
-				INSERT INTO ` + w.Dialect.StatsTable("ai_performance_summary_windows") + ` (
-				  system_account_id, window_key, start_date, end_date, request_count, duration_ms_sum, duration_ms_count,
-				  duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max, updated_at)
-				VALUES (` + placeholders(12) + `)
-			`)
-			if _, err := tx.ExecContext(ctx, insert,
+			rows = append(rows, []any{
 				systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate,
 				aggregate.RequestCount, aggregate.DurationMsSum, aggregate.DurationMsCount,
 				aggregate.DurationMsMax, aggregate.FirstTokenMsSum, aggregate.FirstTokenMsCount, aggregate.FirstTokenMsMax,
-				stageContext.updatedAt); err != nil {
-				return err
-			}
+				stageContext.updatedAt,
+			})
 		}
 	}
-	return nil
+	return rows, nil
 }
 
 func (w *WindowRefresher) loadAiPerformanceSourceRows(ctx context.Context, tx *sql.Tx, systemAccountID, earliestDate, todayKey string) ([]DailyWindowRow, error) {
