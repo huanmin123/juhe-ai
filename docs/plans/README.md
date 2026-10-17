@@ -1,5 +1,9 @@
 # 计划目录
 
+- [PLAN-20261017T030349000Z](计划-20261017T030349000Z-库端dirty触发器有界等待.md)：BUG-0313 护航队治理批次 1-3——库端 23 个 dirty 触发器（18 业务 + 5 quota crossing）唯一汇聚函数 `account_list_availability_mark_dirty_accounts` 的 7001001 advisory 取锁改为「保存 → 限 2s → 取锁 → 恢复」包裹（零外溢、无 EXCEPTION 捕获、与 Go 侧 `ListDirtyLockWaitTimeout` 同口径），消除管理面写与 stats 聚合写宿主事务无界等锁的最后暴露面；随 ensure-schema 序列交付，部署文档无需同步。
+
+- [PLAN-20261016T235628000Z](计划-20261016T235628000Z-供应商卡片选择与图标实施.md)：添加账户「先选供应商再建账户」——新建向导第 1 步重构为供应商卡片墙（图标/接入方式/账户数/搜索，复用 `selectProvider` 流程与懒加载契约），`ProviderIcon` 本地内联 SVG 图标映射（品牌 path 与登录页同源 + minimax/xai 补录，fallback 字母圆标）接入账户列表、供应商表名称列、模型目录弹窗标题与模型下拉。纯前端零后端零 schema；**已实施完成（2026-10-17：W1 图标基座 + W2 卡片墙 + W3 五处接入，typecheck/单测 1099/回归 12 条/build 全绿，独立复审 pass 无 blocker）**。
+
 - [PLAN-20261012T121500000Z](计划-20261012T121500000Z-AI问答简化设计.md)：**已实施后整体回退（2026-10-14 用户裁决：媒体工作室移除后简化失去前提，问答域还原至工具体系形态——恒 Chat 协议 + 会话绑定账户 + 站内搜索/生图/音视频工具，代码已按 9debb8eff 基线恢复）。**原简化内容：问答保留文本与图片识别，删除站内搜索/生图/音视频模型工具及绑定；主轮、压缩、图片观察按供应商主推协议统一，首轮接受后锁定账户+模型（含前端交互状态表与三错误码文案），清空不解锁；保留 anthropic/gemini 桥接，联网为默认不勾选的请求选项（`enableWebSearch` + `builtinWebSearch` 能力接口）。schema 曾退役八个工具绑定列与两张专属表（回退后由 chatbindingmigration / EnsureSQLiteChat 守卫幂等补回）。/v1 媒体能力独立保留。
 
 

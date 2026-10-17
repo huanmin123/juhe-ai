@@ -1582,6 +1582,7 @@ SET search_path = juhe_business, public
 AS $function$
 DECLARE
   v_now_ms bigint;
+  v_prev_lock_timeout text := current_setting('lock_timeout', true);
 BEGIN
   IF COALESCE(array_length(p_account_ids, 1), 0) = 0 THEN
     RETURN;
@@ -1590,7 +1591,13 @@ BEGIN
   -- dirty 写事务（Go advisorylock.AccountListDirty = 7001001）共用 advisory 锁，
   -- 使触发器路径也纳入 dirty 写串行化，消除与批量写事务的锁序死锁（40P01）。
   -- pg_advisory_xact_lock 事务级可重入：已持锁事务经触发器再次取锁无阻塞。
+  -- 问题-0313 后续（PLAN-20261017T030349000Z）：仅本次 advisory 等待有界，
+  -- 与 Go 侧 advisorylock.ListDirtyLockWaitTimeout 同口径 2s；包裹+恢复使宿主
+  -- 事务其余锁等待行为不变（零外溢）。55P03 中止宿主事务——「触发变更提交
+  -- ⇔ dirty 行写入」同生共死，不做捕获跳过（捕获=静默漂移，禁止）。
+  PERFORM set_config('lock_timeout', '2s', true);
   PERFORM pg_advisory_xact_lock(7001001);
+  PERFORM set_config('lock_timeout', COALESCE(v_prev_lock_timeout, '0'), true);
   v_now_ms := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
   WITH requested_accounts AS (
     SELECT DISTINCT requested.account_id
