@@ -68,9 +68,9 @@ func (s *Service) ClearGatewayRuntimeCacheLocal(options ClearOptions) {
 		s.pendingCatalogLoads = map[string]*catalogLoad{}
 		s.mu.Unlock()
 		s.catalogCache.clear()
-		s.routeIdxCache.clear()
+		s.modelsDirCache.clear()
 		s.clearSharedCatalog(clearCtx)
-		s.clearSharedRouteIndex(clearCtx)
+		s.clearSharedModelsDirectory(clearCtx)
 	}
 
 	clearSettings := options.ClearSettings == nil || *options.ClearSettings
@@ -150,11 +150,11 @@ func (s *Service) clearSharedCatalog(ctx context.Context) {
 	}
 }
 
-func (s *Service) clearSharedRouteIndex(ctx context.Context) {
-	if s.sharedRouteIdx == nil {
+func (s *Service) clearSharedModelsDirectory(ctx context.Context) {
+	if s.sharedModelsDir == nil {
 		return
 	}
-	if err := s.sharedRouteIdx.Clear(ctx); err != nil {
-		s.logSharedFailure("gateway_provider_model_route_index_shared_cache_clear_failed", err)
+	if err := s.sharedModelsDir.Clear(ctx); err != nil {
+		s.logSharedFailure("gateway_models_directory_shared_cache_clear_failed", err)
 	}
 }

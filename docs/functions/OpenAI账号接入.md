@@ -88,7 +88,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - `refresh_token`
 - 支持模型（必选；新建时从供应商默认支持模型回填）
 - 检查模型（必选；从支持模型中选择，新建时按有效默认检查模型初始化）
-- 服务等级覆盖、思考级别覆盖（可选；配置选项由支持模型精确能力并集决定）
+- 服务等级覆盖、思考级别覆盖（可选；选项为 openai 协议族全集，按供应商级能力决定字段显示）
 - 账户标签（可选，可输入新标签）
 - 代理
 - 并发上限
@@ -126,7 +126,7 @@ OAuth 运行时修复口径：
 - `base_url`
 - 支持模型（必选；新建时从供应商默认支持模型回填）
 - 检查模型（必选；从支持模型中选择，新建时按有效默认检查模型初始化）
-- 服务等级覆盖、思考级别覆盖（可选；配置选项由支持模型精确能力并集决定）
+- 服务等级覆盖、思考级别覆盖（可选；选项为 openai 协议族全集，按供应商级能力决定字段显示）
 - 账户标签（可选，可输入新标签）
 - 代理
 - 并发上限
@@ -161,9 +161,9 @@ OAuth 运行时修复口径：
 
 ### GPT 请求覆盖
 
-GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；保存选项取账户已选模型精确能力的合集，未知模型不清空已知模型能力，API Key 与 OAuth 不因认证方式区分 Flex。运行时在模型映射后按最终上游模型逐字段判断：精确支持配置值时才覆盖，不支持或能力未知时保留对应客户端字段，不能向下降级，也不能因另一覆盖项不适用而跳过本项。后端拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交。
+GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`（openai 协议族全集）。空值表示完全保留客户端请求；保存校验只做 token 形状与族集校验，不再要求已选模型在目录声明该值，API Key 与 OAuth 不因认证方式区分 Flex。运行时在模型映射后按最终上游模型逐字段判断：思考级别不被最终模型支持时按档位序向下兼容降级到声明值中不高于配置值的最高档，无可用档位时保留对应客户端字段；服务等级不降级，`default` 恒删除客户端 `service_tier`，`priority`/`flex` 仅在最终模型声明支持时写入；一个字段无法应用不影响另一项。后端拒绝 `fast`、`auto`、`ultra`。
 
-覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 在最终模型支持时改写 `service_tier` 与 `reasoning.effort`，Chat Completions 在最终模型支持时改写 `service_tier` 与顶层 `reasoning_effort`；受支持的 `default` 删除客户端 `service_tier`。API Key 大请求只有至少一个覆盖可能生效时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
+覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 按最终模型能力改写 `service_tier` 与 `reasoning.effort`（effort 不被支持时降级到不高于配置值的最高可用档），Chat Completions 同理改写 `service_tier` 与顶层 `reasoning_effort`；`default` 恒删除客户端 `service_tier`。API Key 大请求只有至少一个覆盖可能生效时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
 
 ## 账户分组绑定
 

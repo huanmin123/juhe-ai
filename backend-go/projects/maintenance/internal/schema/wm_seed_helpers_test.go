@@ -81,9 +81,6 @@ func TestWMSeedNullableAndBoolProjections(t *testing.T) {
 	if seedBoolInt(true) != 1 || seedBoolInt(false) != 0 {
 		t.Fatal("seedBoolInt 应映射 1/0")
 	}
-	if pgNullableText("") != nil || pgNullableText("gpt") != "gpt" {
-		t.Fatal("pgNullableText 空串必须映射 NULL")
-	}
 }
 
 func TestWMSeedTimestampAndSecretResolution(t *testing.T) {
@@ -197,7 +194,7 @@ func TestWMSeedSQLiteRecoversStaleGeneratedModels(t *testing.T) {
 		t.Fatalf("首次 seed: %v", err)
 	}
 	// 插入一行非内置的生成模型：下一次 seed 必须把它当作陈旧生成行停用。
-	if _, err := db.ExecContext(ctx, "INSERT INTO provider_model_catalog (id, provider_code, model, status, catalog_visible, source, created_at, updated_at) VALUES ('provider_model_wm_stale','gpt','wm-stale-custom-model','active',1,'generated','2026-09-04T08:00:00.000Z','2026-09-04T08:00:00.000Z')"); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, source, created_at, updated_at) VALUES ('provider_model_wm_stale','gpt','wm-stale-custom-model','wm-stale-custom-model','builtin','active',1,'generated','2026-09-04T08:00:00.000Z','2026-09-04T08:00:00.000Z')"); err != nil {
 		t.Fatalf("插入陈旧生成模型: %v", err)
 	}
 	staleID := "provider_model_wm_stale"
@@ -206,7 +203,7 @@ func TestWMSeedSQLiteRecoversStaleGeneratedModels(t *testing.T) {
 	}
 	var status string
 	var visible int
-	if err := db.QueryRowContext(ctx, "SELECT status, catalog_visible FROM provider_model_catalog WHERE id=?", staleID).Scan(&status, &visible); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT status, catalog_visible FROM models WHERE id=?", staleID).Scan(&status, &visible); err != nil {
 		t.Fatal(err)
 	}
 	if status != "disabled" || visible != 0 {
@@ -225,12 +222,12 @@ func TestWMSeedSQLiteStripsCodexAutoReviewFromGPTDefaults(t *testing.T) {
 		t.Fatalf("首次 seed: %v", err)
 	}
 	// 模拟老库残留：把 GPT 默认清单替换为含已退役模型的旧列表。
-	if _, err := db.ExecContext(ctx, `UPDATE providers SET default_supported_models_json = ? WHERE code = ?`,
+	if _, err := db.ExecContext(ctx, `UPDATE vendors SET default_supported_models_json = ? WHERE code = ?`,
 		`["codex-auto-review","gpt-5.5","gpt-5.4"]`, gptVendorCode); err != nil {
 		t.Fatalf("注入残留清单: %v", err)
 	}
-	var openaiList string
-	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = 'openai'`).Scan(&openaiList); err != nil {
+	var minimaxList string
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM vendors WHERE code = 'minimax'`).Scan(&minimaxList); err != nil {
 		t.Fatal(err)
 	}
 	// 清洗语句与共享常量必须指向同一退役模型，防止字面量漂移。
@@ -241,24 +238,24 @@ func TestWMSeedSQLiteStripsCodexAutoReviewFromGPTDefaults(t *testing.T) {
 		t.Fatalf("二次 seed（含残留清单）: %v", err)
 	}
 	var gptList string
-	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = ?`, gptVendorCode).Scan(&gptList); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM vendors WHERE code = ?`, gptVendorCode).Scan(&gptList); err != nil {
 		t.Fatal(err)
 	}
 	if gptList != `["gpt-5.5","gpt-5.4"]` {
 		t.Fatalf("残留 codex-auto-review 必须被剔除: %s", gptList)
 	}
-	var openaiAfter string
-	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = 'openai'`).Scan(&openaiAfter); err != nil {
+	var minimaxAfter string
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM vendors WHERE code = 'minimax'`).Scan(&minimaxAfter); err != nil {
 		t.Fatal(err)
 	}
-	if openaiAfter != openaiList {
-		t.Fatalf("清洗步只允许作用于 GPT 供应商行: %s -> %s", openaiList, openaiAfter)
+	if minimaxAfter != minimaxList {
+		t.Fatalf("清洗步只允许作用于 GPT vendor 行: %s -> %s", minimaxList, minimaxAfter)
 	}
 	// 幂等：清洗后的库再跑一次 seed，清单保持不变。
 	if _, err := SeedSQLiteDefaults(ctx, db, options); err != nil {
 		t.Fatalf("三次 seed（幂等）: %v", err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = ?`, gptVendorCode).Scan(&gptList); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM vendors WHERE code = ?`, gptVendorCode).Scan(&gptList); err != nil {
 		t.Fatal(err)
 	}
 	if gptList != `["gpt-5.5","gpt-5.4"]` {
@@ -293,6 +290,6 @@ func TestWMSeedSQLiteInsertsBuiltInGroupsForNewAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after != len(pgSeedGroups) {
-		t.Fatalf("新账户应获得每个 provider 一个内置分组: got %d want %d", after, len(pgSeedGroups))
+		t.Fatalf("新账户应获得内置默认分组（每 owner 一个）: got %d want %d", after, len(pgSeedGroups))
 	}
 }

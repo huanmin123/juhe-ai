@@ -48,17 +48,89 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       CHECK (window_hours BETWEEN 1 AND 720)
     );
 
-    CREATE TABLE IF NOT EXISTS providers (
+    -- vendors（供应商与上游协议面重构设计 §9.1）：providers 更名收敛，删除
+    -- parent_code 自引用层级；只承载设计 §1.1 的九个真实厂商。存量 providers
+    -- 表由后续迁移命令处理，ensure 不写 DROP。
+    CREATE TABLE IF NOT EXISTS vendors (
       id TEXT PRIMARY KEY,
       code TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       description TEXT,
-      parent_code TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       default_supported_models_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    -- models（供应商与上游协议面重构设计 §3）：provider_model_catalog 与
+    -- custom_provider_models 合并为唯一物理表；非价格列 31 + 价格列 17，与 PG
+    -- 版（pg_schema_business_tables.go models-table）同构：REAL 价格/倍率 13
+    -- 列、threshold 单独 nullable INTEGER、bool 列 INTEGER CHECK IN (0,1)、
+    -- json_valid/json_type array|object CHECK、scope 三值且 personal↔
+    -- system_account_id 联动 CHECK。身份唯一索引 idx_models_identity_unique
+    -- 见下方索引区。存量两旧表由后续迁移命令处理，ensure 不写 DROP。
+    CREATE TABLE IF NOT EXISTS models (
+      id TEXT PRIMARY KEY,
+      vendor_code TEXT,
+      public_model TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      system_account_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      catalog_visible INTEGER NOT NULL DEFAULT 1 CHECK (catalog_visible IN (0, 1)),
+      catalog_order INTEGER,
+      release_date TEXT,
+      shutdown_date TEXT,
+      supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
+      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+      default_reasoning_effort TEXT,
+      codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
+      codex_default_reasoning_level TEXT,
+      codex_multi_agent_version TEXT,
+      context_window_tokens INTEGER,
+      max_input_tokens INTEGER,
+      max_output_tokens INTEGER,
+      max_tokens INTEGER,
+      supports_prompt_caching INTEGER NOT NULL DEFAULT 0 CHECK (supports_prompt_caching IN (0, 1)),
+      source TEXT,
+      pricing_notes TEXT,
+      capability_notes TEXT,
+      notes TEXT,
+      created_by TEXT,
+      updated_by TEXT,
+      created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (parent_code) REFERENCES providers(code)
+      input_usd_per_1m REAL,
+      output_usd_per_1m REAL,
+      cached_input_usd_per_1m REAL,
+      cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      cache_storage_usd_per_1m_per_hour REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+      long_context_input_token_threshold INTEGER,
+      long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0 CHECK (long_context_input_token_threshold_inclusive IN (0, 1)),
+      long_context_input_cost_multiplier REAL,
+      long_context_output_cost_multiplier REAL,
+      image_input_usd_per_1m REAL,
+      image_output_usd_per_1m REAL,
+      audio_input_usd_per_1m REAL,
+      audio_output_usd_per_1m REAL,
+      output_usd_per_image REAL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      FOREIGN KEY (vendor_code) REFERENCES vendors(code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      CHECK (status IN ('draft', 'active', 'disabled')),
+      CHECK (scope IN ('builtin', 'global', 'personal')),
+      CHECK (json_valid(supported_endpoint_modes_json) AND json_type(supported_endpoint_modes_json) = 'array'),
+      CHECK (json_valid(supported_service_tiers_json) AND json_type(supported_service_tiers_json) = 'array'),
+      CHECK (json_valid(supported_reasoning_efforts_json) AND json_type(supported_reasoning_efforts_json) = 'array'),
+      CHECK (json_valid(codex_supported_reasoning_levels_json) AND json_type(codex_supported_reasoning_levels_json) = 'array'),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object'),
+      CHECK (
+        (scope = 'personal' AND system_account_id IS NOT NULL)
+        OR (scope IN ('builtin', 'global') AND system_account_id IS NULL)
+      )
     );
 
     CREATE TABLE IF NOT EXISTS protocols (
@@ -85,154 +157,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       updated_at TEXT NOT NULL,
       UNIQUE (protocol_code, protocol_version, family_code),
       FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
-    );
-
-    CREATE TABLE IF NOT EXISTS provider_protocol_profiles (
-      id TEXT PRIMARY KEY,
-      provider_code TEXT NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      protocol_code TEXT NOT NULL,
-      protocol_version TEXT NOT NULL,
-      base_url TEXT NOT NULL,
-      default_health_check_model TEXT NOT NULL,
-      account_types_json TEXT NOT NULL,
-      capabilities_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code),
-      FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
-    );
-
-    CREATE TABLE IF NOT EXISTS provider_protocol_profile_families (
-      profile_id TEXT NOT NULL,
-      family_code TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      default_health_check_model TEXT,
-      capabilities_json TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (profile_id, family_code),
-      FOREIGN KEY (profile_id) REFERENCES provider_protocol_profiles(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS provider_model_catalog (
-      id TEXT PRIMARY KEY,
-      provider_code TEXT NOT NULL,
-      model TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      mode TEXT,
-      catalog_order INTEGER,
-      release_date TEXT,
-      shutdown_date TEXT,
-      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
-      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
-      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
-      default_reasoning_effort TEXT,
-      codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
-      codex_default_reasoning_level TEXT,
-      codex_multi_agent_version TEXT,
-      context_window_tokens INTEGER,
-      max_input_tokens INTEGER,
-      max_output_tokens INTEGER,
-      max_tokens INTEGER,
-      input_usd_per_1m REAL,
-      output_usd_per_1m REAL,
-      cached_input_usd_per_1m REAL,
-      cache_write_usd_per_1m REAL,
-      cache_write_1h_usd_per_1m REAL,
-      cache_storage_usd_per_1m_per_hour REAL,
-      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-      long_context_input_token_threshold INTEGER,
-      long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
-      long_context_input_cost_multiplier REAL,
-      long_context_output_cost_multiplier REAL,
-      image_input_usd_per_1m REAL,
-      image_output_usd_per_1m REAL,
-      audio_input_usd_per_1m REAL,
-      audio_output_usd_per_1m REAL,
-      output_usd_per_image REAL,
-      supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
-      catalog_visible INTEGER NOT NULL DEFAULT 1,
-      source TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE (provider_code, model),
-      FOREIGN KEY (provider_code) REFERENCES providers(code),
-      CHECK (status IN ('active', 'disabled')),
-      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object')
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_provider_model_catalog_lookup
-      ON provider_model_catalog(provider_code, status, catalog_visible, catalog_order, model);
-
-    CREATE TABLE IF NOT EXISTS custom_provider_models (
-      id TEXT PRIMARY KEY,
-      provider_code TEXT NOT NULL,
-      model TEXT NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'personal',
-      system_account_id TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      catalog_visible INTEGER NOT NULL DEFAULT 1,
-      mode TEXT,
-      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
-      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
-      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
-      default_reasoning_effort TEXT,
-      release_date TEXT,
-      shutdown_date TEXT,
-      context_window_tokens INTEGER,
-      max_input_tokens INTEGER,
-      max_output_tokens INTEGER,
-      input_usd_per_1m REAL,
-      output_usd_per_1m REAL,
-      cached_input_usd_per_1m REAL,
-      cache_write_usd_per_1m REAL,
-      cache_write_1h_usd_per_1m REAL,
-      cache_storage_usd_per_1m_per_hour REAL,
-      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-      image_input_usd_per_1m REAL,
-      image_output_usd_per_1m REAL,
-      audio_input_usd_per_1m REAL,
-      audio_output_usd_per_1m REAL,
-      output_usd_per_image REAL,
-      currency TEXT NOT NULL DEFAULT 'USD',
-      pricing_notes TEXT,
-      capability_notes TEXT,
-      notes TEXT,
-      created_by TEXT NOT NULL,
-      updated_by TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code),
-      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
-      CHECK (scope IN ('personal', 'global')),
-      CHECK (status IN ('draft', 'active', 'disabled')),
-      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object'),
-      CHECK (
-        (scope = 'personal' AND system_account_id IS NOT NULL)
-        OR (scope = 'global' AND system_account_id IS NULL)
-      )
-    );
-
-    CREATE TABLE IF NOT EXISTS provider_default_health_check_models (
-      system_account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
-      model TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, provider_code),
-      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (provider_code) REFERENCES providers(code)
-    );
-
-    CREATE TABLE IF NOT EXISTS provider_system_default_health_check_models (
-      provider_code TEXT PRIMARY KEY,
-      model TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
     CREATE TABLE IF NOT EXISTS proxy_profiles (
@@ -328,14 +252,54 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       FOREIGN KEY (source_ref_id) REFERENCES external_integration_sources(id) ON DELETE CASCADE
     );
 
+    -- account_connections / account_endpoint_modes（供应商与上游协议面重构
+    -- 设计 §2.1）：与 PG 版同构，建表顺序同为 account_connections 先于
+    -- accounts（accounts 的复合外键引用其 (account_id, id) 唯一键；SQLite
+    -- 外键目标惰性解析，顺序对齐 PG 仅为双方言一致）。反向 account_id →
+    -- accounts 外键直接内联声明（SQLite 无 PG 的「外键目标必须已存在」
+    -- 限制）。endpoint_mode CHECK 固定 §2.2 的 25 值，与 PG 版词表一致。
+    CREATE TABLE IF NOT EXISTS account_connections (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      connection_preset_code TEXT NOT NULL,
+      protocol_surface_code TEXT,
+      base_url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (account_id, connection_preset_code),
+      UNIQUE (account_id, id),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS account_endpoint_modes (
+      connection_id TEXT NOT NULL,
+      endpoint_mode TEXT NOT NULL,
+      PRIMARY KEY (connection_id, endpoint_mode),
+      FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE,
+      CHECK (endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session'))
+    );
+
+    -- accounts 目标形态（设计 §2.1，本批切片）：与 PG 版同构——删除
+    -- provider_code / provider_protocol_profile_id / client_compatibility，
+    -- 新增 vendor_code / connection_driver_code / oauth_type 与
+    -- health_check_connection_id（与 health_check_endpoint_mode /
+    -- health_check_model 同为 nullable 列 + 复合外键；设计 §10 硬规则：
+    -- 三字段不得 NOT NULL，创建事务先插 accounts（三字段暂 NULL）、再写
+    -- connection/mode/model 关系，最后同一条 UPDATE 补齐；SQLite 对复合
+    -- 外键任一列为 NULL 的行跳过 MATCH 检查，NULL 暂存语义正确）。
+    -- health_check_endpoint_mode CHECK 固定 §2.2 的 25 值（不得沿用旧
+    -- 22 值）。保留 type 列名不改（account_type 重命名属第 3 步），
+    -- protocol_code / protocol_version 本批不动。
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       config_revision INTEGER NOT NULL DEFAULT 1,
       dispatch_revision INTEGER NOT NULL DEFAULT 1 CHECK (dispatch_revision >= 1),
       circuit_projection_revision INTEGER NOT NULL DEFAULT 0 CHECK (circuit_projection_revision >= 0 AND circuit_projection_revision <= dispatch_revision),
       system_account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
-      provider_protocol_profile_id TEXT NOT NULL,
+      vendor_code TEXT,
+      connection_driver_code TEXT NOT NULL,
+      oauth_type TEXT,
       protocol_code TEXT NOT NULL,
       protocol_version TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -351,7 +315,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       priority INTEGER NOT NULL DEFAULT 0,
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       fallback_enabled INTEGER NOT NULL DEFAULT 0,
-      client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
       schedulable INTEGER NOT NULL DEFAULT 1,
       availability_schedule_json TEXT,
       availability_schedule_next_check_at TEXT,
@@ -370,8 +333,9 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled INTEGER NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
       capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
-      health_check_model TEXT NOT NULL,
-      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
+      health_check_connection_id TEXT,
+      health_check_model TEXT,
+      health_check_endpoint_mode TEXT CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
@@ -393,11 +357,11 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       deleted_by TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code),
-      FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id),
+      FOREIGN KEY (vendor_code) REFERENCES vendors(code),
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
       FOREIGN KEY (authorization_instance_source_account_id) REFERENCES accounts(id),
-      FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
+      FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id),
+      FOREIGN KEY (id, health_check_connection_id) REFERENCES account_connections(account_id, id)
     );
 
     CREATE TABLE IF NOT EXISTS account_lock_states (
@@ -775,29 +739,33 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       CHECK ((observed_at IS NULL AND outcome_id IS NULL) OR (observed_at IS NOT NULL AND outcome_id IS NOT NULL))
     );
 
+    -- account_supported_models 目标形态（设计 §4）与 account_entry_mappings
+    -- （设计 §5.1）：与 PG 版同构；models 物理删除 RESTRICT，映射 target 全部
+    -- 复合外键 ID 化。旧 account_model_mappings 由后续迁移命令处理，不写 DROP。
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
-      model TEXT NOT NULL,
+      model_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, model),
+      PRIMARY KEY (account_id, model_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (provider_code) REFERENCES providers(code)
+      FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
     );
 
-    CREATE TABLE IF NOT EXISTS account_model_mappings (
+    CREATE TABLE IF NOT EXISTS account_entry_mappings (
+      id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       source_model TEXT NOT NULL,
       source_endpoint_family TEXT NOT NULL,
-      upstream_model TEXT NOT NULL,
-      upstream_endpoint_family TEXT NOT NULL,
+      target_connection_id TEXT NOT NULL,
+      target_model_id TEXT NOT NULL,
+      target_endpoint_family TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, source_model, source_endpoint_family),
+      UNIQUE (account_id, source_model, source_endpoint_family),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (provider_code) REFERENCES providers(code)
+      FOREIGN KEY (account_id, target_connection_id) REFERENCES account_connections(account_id, id),
+      FOREIGN KEY (account_id, target_model_id) REFERENCES account_supported_models(account_id, model_id)
     );
 
     CREATE TABLE IF NOT EXISTS account_tags (
@@ -823,6 +791,8 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     -- The management-list projection moves availability filtering and paging off
     -- the request path. SQLite keeps the schema for contract parity; only the
     -- PostgreSQL performance path will consume it after migration cutover.
+    -- 本批只退役 provider_protocol_profile_id → provider_protocol_profiles 的
+    -- 外键（目标表已从建表清单删除，与 PG 版同口径）；两列本身随第 3 步批处理。
     CREATE TABLE IF NOT EXISTS account_list_availability_projections (
       viewer_system_account_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
@@ -850,8 +820,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       FOREIGN KEY (viewer_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (source_account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
-      FOREIGN KEY (provider_protocol_profile_id) REFERENCES provider_protocol_profiles(id)
+      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE
     );
 
     -- Keeps only predicate and ordering fields. Request-time paging must not
@@ -1111,19 +1080,20 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       FOREIGN KEY (grantee_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
     );
 
+    -- groups 目标形态（设计 §8，本批切片）：删除 provider_code 列与 providers
+    -- 外键；owner 内名称唯一与「每 owner 至多一个默认组」的唯一索引见索引区
+    -- （idx_groups_owner_name_unique / idx_groups_owner_default_unique）。
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,
       group_type TEXT NOT NULL DEFAULT 'personal',
       scheduling_policy_json TEXT,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (provider_code) REFERENCES providers(code)
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS group_authorization_settings (
@@ -1397,9 +1367,12 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     );
 
 
-    CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status);
-    CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_status ON accounts(provider_protocol_profile_id, status);
-    CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);
+    -- models 身份唯一索引（设计 §3 :201）：四元组表达式唯一索引，与 PG 版
+    -- idx_models_identity_unique 同名同列集；COALESCE 空串归一 vendor 与
+    -- owner 空值，SQLite 表达式索引对 COALESCE 原生支持。
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_models_identity_unique
+      ON models(COALESCE(vendor_code, ''), scope, COALESCE(system_account_id, ''), upstream_model);
+
     CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
@@ -1510,10 +1483,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE INDEX IF NOT EXISTS idx_account_list_availability_runtime_overlay_due
       ON account_list_availability_runtime_overlays(next_reconcile_at ASC, account_id ASC)
       WHERE next_reconcile_at IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_lookup ON accounts(provider_protocol_profile_id, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_system_account_protocol_profile_lookup ON accounts(system_account_id, provider_protocol_profile_id, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_type_lookup ON accounts(system_account_id, type, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
@@ -1540,11 +1509,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       WHERE availability_schedule_json IS NOT NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
-    CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due
-      ON accounts(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_pg_due
-      ON accounts(provider_protocol_profile_id, type, oauth_refresh_token_present, (oauth_access_token_expires_at IS NOT NULL), oauth_access_token_expires_at ASC, updated_at ASC, id ASC)
-      WHERE authorization_instance_authorization_id IS NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_health_check_due
       ON accounts(status, next_health_check_at, updated_at, id)
       WHERE deleted_at IS NULL;
@@ -1618,21 +1582,6 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       WHERE next_probe_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_owner
       ON account_api_key_runtime_states(system_account_id, account_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique
-      ON custom_provider_models(provider_code, system_account_id, model)
-      WHERE scope = 'personal';
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique
-      ON custom_provider_models(provider_code, model)
-      WHERE scope = 'global';
-    CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
-      ON custom_provider_models(provider_code, status, catalog_visible, scope, system_account_id, model);
-    CREATE INDEX IF NOT EXISTS idx_provider_default_health_check_models_model
-      ON provider_default_health_check_models(provider_code, model, system_account_id);
-    CREATE INDEX IF NOT EXISTS idx_provider_system_default_health_check_models_model
-      ON provider_system_default_health_check_models(model, provider_code);
-    CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
-    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, source_endpoint_family, account_id);
-    CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, upstream_endpoint_family, account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique ON account_tags(system_account_id, name);
     CREATE INDEX IF NOT EXISTS idx_account_tags_owner_name_lookup ON account_tags(system_account_id, name, id);
     CREATE INDEX IF NOT EXISTS idx_account_tag_bindings_owner_tag ON account_tag_bindings(system_account_id, tag_id, account_id);
@@ -1648,12 +1597,15 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique ON groups(system_account_id, provider_code, name);
+    -- groups 目标唯一索引（设计 §8，本批切片）：owner 内 binary
+    -- (system_account_id, name) 唯一取代 (system_account_id, provider_code,
+    -- name)；(system_account_id) WHERE is_default = 1 部分唯一索引固定
+    -- 「每 owner 至多一个默认组」。四个 provider 维度 groups 索引随
+    -- provider_code 列退役一并删除，与 PG 版同名同形。
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name);
     CREATE INDEX IF NOT EXISTS idx_groups_name_lookup ON groups(name, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_name_lookup ON groups(system_account_id, name, id);
-    CREATE INDEX IF NOT EXISTS idx_groups_provider_name_lookup ON groups(provider_code, name, id);
-    CREATE INDEX IF NOT EXISTS idx_groups_system_account_provider_name_lookup ON groups(system_account_id, provider_code, name, id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups(system_account_id, provider_code) WHERE is_default = 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON groups(system_account_id) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);
     CREATE INDEX IF NOT EXISTS idx_system_teams_name_lookup ON system_teams(name, id);

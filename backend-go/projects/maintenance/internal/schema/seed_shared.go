@@ -33,15 +33,15 @@ const seedDefaultRuntimeSecret = "juhe-ai-dev-secret-change-me"
 
 // Provider and external integration constants mirrored from Node
 // src/domain/provider-protocol.ts and
-// src/storage/external-integration-source-constants.ts.
+// src/storage/external-integration-source-constants.ts. 供应商与上游协议面
+// 重构后 vendors 只保留 9 个真实厂商（hybrid 随旧供应商维度退役）。
 const (
 	gptVendorCode                    = "gpt"
-	hybridProviderCode               = "hybrid"
 	externalIntegrationTestTokenID   = "exttok_builtin_test"
 	externalIntegrationTestTokenName = "内置测试 Token"
 
 	// retiredCodexAutoReviewModel is the retired GPT vendor default model the
-	// seed strips from providers.default_supported_models_json on old
+	// seed strips from vendors.default_supported_models_json on old
 	// databases (sqSeedGPTVendorCodexAutoReviewRemoval carries the same
 	// literal inside its SQL).
 	retiredCodexAutoReviewModel = "codex-auto-review"
@@ -248,32 +248,10 @@ func providerModelCatalogID(providerCode, model string) string {
 	return "provider_model_" + trimmed + "_" + hex.EncodeToString(sum[:])[:12]
 }
 
-// activeModelCatalogSeedRows mirrors the Node hasModelShutdown filter inside
-// listProviderModelPricing: rows with shutdown_date <= the current UTC date
-// are excluded from the seed. asOfUTCDate has the Node currentUtcDate shape
-// (YYYY-MM-DD).
-func activeModelCatalogSeedRows(asOfUTCDate string) []modelCatalogSeedRow {
-	active := make([]modelCatalogSeedRow, 0, len(modelCatalogSeedRows))
-	for _, row := range modelCatalogSeedRows {
-		if row.ShutdownDate != nil && *row.ShutdownDate <= asOfUTCDate {
-			continue
-		}
-		active = append(active, row)
-	}
-	return active
-}
-
-// ActiveModelCatalogSeedRowCount exports the shutdown filter of
-// activeModelCatalogSeedRows as a row count: the rows the SQLite/PostgreSQL
-// seeds upsert into provider_model_catalog must equal this count for the same
-// UTC date. The maintenance-internal test
-// TestActiveModelCatalogSeedRowCountMatchesSeed locks that equality against a
-// real seed run; external same-source consumers (the gateway storage bootstrap
-// test) read the same count through bootstrap.SQLiteSeedResult.ModelCatalogRows
-// because maintenance internal is not importable across modules.
-func ActiveModelCatalogSeedRowCount(asOfUTCDate string) int {
-	return len(activeModelCatalogSeedRows(asOfUTCDate))
-}
+// activeModelCatalogSeedRows / ActiveModelCatalogSeedRowCount 已随 models 表
+// 收敛退役：seed 现在全量写入目录快照行，ShutdownDate 已过的行直接以
+// status='disabled' 落库（判定收敛到 modelSeedRowStatus），不再需要写入前的
+// shutdown 过滤。
 
 // defaultRouteStrategyIDForGroup mirrors defaultRouteStrategyIdForGroup.
 func defaultRouteStrategyIDForGroup(groupID string) string {

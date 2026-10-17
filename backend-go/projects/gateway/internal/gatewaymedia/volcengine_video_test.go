@@ -353,3 +353,37 @@ func TestVolcengineVideoAdapterParsePollResponseDurationSeconds(t *testing.T) {
 		t.Fatalf("failed 带 duration 不应抽秒: %s/%#v", ir.Status, ir.Usage.OutputVideoSeconds)
 	}
 }
+
+// TestVolcengineVideoAdapterParsePollResponse3DFileURL 钉住同任务族 3D 生成
+// 的产物解析（2026-10-17 3D 承接批）：seed3d 系 succeeded 产物落
+// content.file_url（.zip 3D 资产，官方查询 API 文档形态），adapter 先 video
+// 后 file 兜底；3D 终态无 duration → OutputVideoSeconds 保持 nil 不猜测。
+func TestVolcengineVideoAdapterParsePollResponse3DFileURL(t *testing.T) {
+	adapter := volcengineVideoAdapter{}
+	ir, err := adapter.ParsePollResponse(http.StatusOK, []byte(
+		`{"id":"cgt-3d-1","status":"succeeded","content":{"file_url":"https://example.com/3d.zip"},"usage":{"completion_tokens":4096,"total_tokens":4096}}`))
+	if err != nil {
+		t.Fatalf("3d succeeded parse: %v", err)
+	}
+	if ir.Status != JobStatusCompleted || ir.Artifact.ContentURL != "https://example.com/3d.zip" {
+		t.Fatalf("3d parse = %s/%s", ir.Status, ir.Artifact.ContentURL)
+	}
+	if ir.Usage.OutputVideoSeconds != nil {
+		t.Fatalf("3d 无 duration 应保持 nil，got %#v", ir.Usage.OutputVideoSeconds)
+	}
+
+	// video_url 与 file_url 同场时 video 优先（既有视频形态零变化）。
+	ir, err = adapter.ParsePollResponse(http.StatusOK, []byte(
+		`{"id":"cgt-3d-2","status":"succeeded","content":{"video_url":"https://example.com/a.mp4","file_url":"https://example.com/a.zip"}}`))
+	if err != nil {
+		t.Fatalf("dual url parse: %v", err)
+	}
+	if ir.Artifact.ContentURL != "https://example.com/a.mp4" {
+		t.Fatalf("dual url = %s, want video_url 优先", ir.Artifact.ContentURL)
+	}
+
+	// 双字段均缺席：协议违约报错（不猜测产物可达性）。
+	if _, err := adapter.ParsePollResponse(http.StatusOK, []byte(`{"id":"cgt-3d-3","status":"succeeded","content":{}}`)); err == nil {
+		t.Fatalf("双字段缺席应报错")
+	}
+}

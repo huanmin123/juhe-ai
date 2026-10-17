@@ -33,6 +33,17 @@ const managementRoles: SystemAccountRole[] = ['super_admin', 'admin']
 
 export const menuRoutes: RouteRecordRaw[] = [
   {
+    path: '/my-stats',
+    component: () => import('@/views/stats/StatsView.vue'),
+    meta: {
+      title: '统计概览',
+      description: '查看自己的请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和成本概览。',
+      viewScope: 'self',
+      keepAlive: true,
+      heavy: true
+    }
+  },
+  {
     path: '/my-chat',
     component: () => import('@/views/chat/ChatView.vue'),
     meta: {
@@ -45,17 +56,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
         {
-    path: '/my-stats',
-    component: () => import('@/views/stats/StatsView.vue'),
-    meta: {
-      title: '统计概览',
-      description: '查看自己的请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和成本概览。',
-      viewScope: 'self',
-      keepAlive: true,
-      heavy: true
-    }
-  },
-  {
     path: '/my-accounts/chat',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
@@ -101,6 +101,18 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '图像账户',
       description: '创建和维护自己的图像生成 AI 账户。',
       capabilityDomain: 'image',
+      menuGroup: 'my-accounts',
+      menuGroupTitle: 'AI 账户',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
+    path: '/my-media-jobs',
+    component: () => import('@/views/media-jobs/MyMediaJobsView.vue'),
+    meta: {
+      title: '任务中心',
+      description: '查看自己名下的异步媒体任务类型、状态、成本与返回内容定位。',
       menuGroup: 'my-accounts',
       menuGroupTitle: 'AI 账户',
       viewScope: 'self',
@@ -248,6 +260,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的使用记录',
       description: '查看自己的网关请求、命中账户、Token 用量、成本和错误状态。',
+      menuGroup: 'my-accounts',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'self',
       heavy: true
     }
@@ -275,27 +289,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/providers',
-    component: () => import('@/views/providers/ProvidersView.vue'),
+    path: '/api-keys',
+    component: () => import('@/views/api-keys/ApiKeysView.vue'),
     meta: {
-      title: '供应商',
-      description: '管理当前支持的供应商能力与模型定价，当前启用 GPT / OpenAI v1。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      title: 'API Key 管理',
+      description: '按系统账户管理 API Key，并为 API Key 选择策略路由。',
+      menuGroup: 'ai-dispatch',
+      menuGroupTitle: '密钥与调度',
       viewScope: 'admin',
-      roles: managementRoles
-    }
-  },
-  {
-    path: '/proxies',
-    component: () => import('@/views/proxies/ProxiesView.vue'),
-    meta: {
-      title: '代理管理',
-      description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
-      viewScope: 'admin',
-      roles: managementRoles
+      roles: managementRoles,
+      heavy: true
     }
   },
   {
@@ -305,8 +308,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '对话账户',
       description: '按系统账户管理对话 AI 账户，统一查看状态、并发、代理和错误策略。',
       capabilityDomain: 'chat',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -319,8 +322,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '视频账户',
       description: '按系统账户管理视频生成 AI 账户，统一查看状态、并发和代理。',
       capabilityDomain: 'video',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -333,8 +336,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '音频账户',
       description: '按系统账户管理音频生成 AI 账户，统一查看状态、并发和代理。',
       capabilityDomain: 'audio',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -347,23 +350,11 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '图像账户',
       description: '按系统账户管理图像生成 AI 账户，统一查看状态、并发和代理。',
       capabilityDomain: 'image',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
-    }
-  },
-  {
-    path: '/groups',
-    component: () => import('@/views/groups/GroupsView.vue'),
-    meta: {
-      title: 'AI 分组管理',
-      description: '按系统账户管理账户分组、授权分组和调度边界。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
-      viewScope: 'admin',
-      roles: managementRoles
     }
   },
   {
@@ -418,26 +409,13 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/api-keys',
-    component: () => import('@/views/api-keys/ApiKeysView.vue'),
-    meta: {
-      title: 'API Key 管理',
-      description: '按系统账户管理 API Key，并为 API Key 选择策略路由。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
     path: '/model-checks',
     component: () => import('@/views/model-checks/ModelChecksView.vue'),
     meta: {
       title: '模型检测',
       description: '对 AI 账户发起目标模型可信度检测，并查看历史检测结果。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -449,8 +427,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '用量统计管理',
       description: '按系统账户查看可使用账户的每日消耗趋势，仅统计所选用户发起的调用。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-observability',
+      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -462,8 +440,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI性能监控',
       description: '按系统账户查看其可使用 AI 账户的小时级性能趋势，包含授权实例。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-observability',
+      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -475,8 +453,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI健康监控',
       description: '按账户查看最近一个月逐小时的健康检查结果。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-observability',
+      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -488,8 +466,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '使用记录管理',
       description: '按系统账户查看网关请求、命中账户、Token 用量、成本和错误状态。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -501,8 +479,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '媒体任务',
       description: '查看异步媒体任务的类型、状态、归属 API Key / AI 账户、成本和错误摘要。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-observability',
+      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
@@ -561,6 +539,30 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/providers',
+    component: () => import('@/views/providers/ProvidersView.vue'),
+    meta: {
+      title: '供应商',
+      description: '管理当前支持的供应商能力与模型定价，当前启用 GPT / OpenAI v1。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles
+    }
+  },
+  {
+    path: '/proxies',
+    component: () => import('@/views/proxies/ProxiesView.vue'),
+    meta: {
+      title: '代理管理',
+      description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
+      viewScope: 'admin',
+      roles: managementRoles
+    }
+  },
+  {
     path: '/ip-stats',
     component: () => import('@/views/ip-stats/IpStatsView.vue'),
     meta: {
@@ -592,11 +594,23 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '策略路由',
       description: '按系统账户管理策略路由，配置普通、混合、权重、故障回退和轮询路由。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-dispatch',
+      menuGroupTitle: '密钥与调度',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true
+    }
+  },
+  {
+    path: '/groups',
+    component: () => import('@/views/groups/GroupsView.vue'),
+    meta: {
+      title: 'AI 分组管理',
+      description: '按系统账户管理账户分组、授权分组和调度边界。',
+      menuGroup: 'ai-dispatch',
+      menuGroupTitle: '密钥与调度',
+      viewScope: 'admin',
+      roles: managementRoles
     }
   },
   {
@@ -605,8 +619,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '调度偏好',
       description: '按系统账户管理对话域调度偏好（成本优先 / 速度优先），供 API Key 绑定。',
-      menuGroup: 'ai-management',
-      menuGroupTitle: 'AI 管理',
+      menuGroup: 'ai-dispatch',
+      menuGroupTitle: '密钥与调度',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true

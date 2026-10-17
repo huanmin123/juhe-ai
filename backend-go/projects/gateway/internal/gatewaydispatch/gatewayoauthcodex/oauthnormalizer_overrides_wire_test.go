@@ -26,11 +26,11 @@ func TestApplyGptAccountRequestOverridesBodyAnthropicWire(t *testing.T) {
 	if !ok || outputConfig["effort"] != "high" {
 		t.Fatalf("output_config = %v", out["output_config"])
 	}
-	// 已有 output_config 键合并而不是覆盖。
+	// 已有 output_config 键合并而不是覆盖（规范族名 anthropic_messages）。
 	body = map[string]any{"output_config": map[string]any{"existing": 1}}
 	out, err = ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
 		Credentials:    map[string]any{"reasoning_effort_override": "low"},
-		EndpointFamily: "messages",
+		EndpointFamily: "anthropic_messages",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{
 			SupportedReasoningEfforts: []string{"low"},
 		},
@@ -64,7 +64,8 @@ func TestApplyGptAccountRequestOverridesBodyGeminiWire(t *testing.T) {
 	if thinkingConfig["thinkingLevel"] != "medium" {
 		t.Fatalf("thinkingLevel = %v", thinkingConfig["thinkingLevel"])
 	}
-	// stored row vocabulary + 已有 thinkingConfig 键合并。
+	// stored row vocabulary + 已有 thinkingConfig 键合并（规范流式族名
+	// gemini_stream_generate）。
 	body = map[string]any{
 		"generationConfig": map[string]any{
 			"thinkingConfig": map[string]any{"includeThoughts": true},
@@ -73,7 +74,7 @@ func TestApplyGptAccountRequestOverridesBodyGeminiWire(t *testing.T) {
 	}
 	out, err = ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
 		Credentials:    map[string]any{"reasoning_effort_override": "xhigh"},
-		EndpointFamily: "stream_generate_content",
+		EndpointFamily: "gemini_stream_generate",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{
 			SupportedReasoningEfforts: []string{"xhigh"},
 		},

@@ -321,7 +321,7 @@ DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混�
 - `providerCode = deepseek`
 - `model` 使用 DeepSeek 官方模型 ID，小写和连字符按官方写法保留
 - `supportedApiProtocols` 对 `deepseek-v4-flash` 覆盖 `chat_completions`、`responses`、`messages`；`deepseek-v4-pro` 也按预兼容策略覆盖 `responses`，并保留 `completions`，仍归属 `providerCode=deepseek`
-- 服务等级和思考级别只复用模型行现有 `supportedServiceTiers`、`supportedReasoningEfforts` 和账户现有 `service_tier_override`、`reasoning_effort_override`。DeepSeek 当前没有可登记的请求级服务档位，`supportedServiceTiers` 保持空数组；思考级别只登记已核验的离散值，其他 thinking 字段继续按目标 driver 的现有白名单透传或明确拒绝，模型能力继续直接维护在当前模型行。
+- DeepSeek 属 openai 协议族：账户 `service_tier_override` / `reasoning_effort_override` 按族全集校验（服务等级 `default|priority|flex`，思考级别 `none|minimal|low|medium|high|xhigh|max`），保存不再要求已选模型在目录声明该值。模型行现有 `supportedServiceTiers`、`supportedReasoningEfforts` 只用于运行时降级与供应商级字段显示：DeepSeek 当前没有可登记的请求级服务档位，`supportedServiceTiers` 保持空数组；思考级别只登记已核验的离散值，最终模型不支持配置值时按档位序向下兼容降级到不高于配置值的最高可用档。其他 thinking 字段继续按目标 driver 的现有白名单透传或明确拒绝，模型能力继续直接维护在当前模型行。
 - `contextWindowTokens` 和 `releaseDate` 以官方模型页或官方文档为准；同一发布日期的模型使用内置目录顺序字段保持下拉框稳定
 - 价格只采信 DeepSeek 官方文档或官方 API 文档；第三方价格库和社区表格只能作为线索
 

@@ -71,7 +71,7 @@ func IsProtocolRequestPath(originalPathAndQuery string) bool {
 		return true
 	case normalized == "/images", strings.HasPrefix(normalized, "/images/"):
 		return true
-	case normalized == "/embeddings":
+	case normalized == "/embeddings", strings.HasPrefix(normalized, "/embeddings/"):
 		return true
 	case normalized == "/audio", strings.HasPrefix(normalized, "/audio/"):
 		return true

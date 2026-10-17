@@ -222,7 +222,8 @@ func BenchmarkDispatchNormalizeOpenAIReasoningFieldsPassthrough(b *testing.B) {
 }
 
 // BenchmarkDispatchApplyGptAccountRequestOverridesBody 量化账户请求覆盖层：
-// credentials 覆盖读取 → 值断言 → 能力门控 → clone 后 chat 分支改写。
+// credentials 覆盖读取 → 值断言 → 有效值降级解析（ResolveEffectiveOverrides）
+// → clone 后 chat 分支改写。
 // 函数内部 cloneJSONObject，固定输入 map 复用安全。
 func BenchmarkDispatchApplyGptAccountRequestOverridesBody(b *testing.B) {
 	body := map[string]any{
@@ -232,6 +233,8 @@ func BenchmarkDispatchApplyGptAccountRequestOverridesBody(b *testing.B) {
 		"reasoning": map[string]any{"effort": "low"},
 	}
 	input := GptAccountOverrideInput{
+		// ProviderCode gpt 保持基准继续覆盖值断言阶段（gpt 专属枚举）。
+		ProviderCode:   "gpt",
 		Credentials:    map[string]any{"service_tier_override": "priority", "reasoning_effort_override": "high"},
 		EndpointFamily: "chat_completions",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{

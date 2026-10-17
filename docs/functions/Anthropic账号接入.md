@@ -137,7 +137,7 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 可选高级字段：
 
 - `request_timeout_seconds`：可沿用当前账户或网关超时配置，不为 Anthropic 单独新增重型超时体系。
-- `service_tier`、`inference_geo`、`speed` 等 Anthropic 原生字段默认由请求体透传。当前模型目录不把 `auto` / `standard_only` 或 `fast` 映射为本站 `priority` / `flex`，因此不提供 Anthropic 账户服务等级选项；模型明确声明 effort 时，用户显式配置的账户思考级别覆盖是唯一现有请求体改写例外，会写入 `output_config.effort`。
+- `service_tier`、`inference_geo`、`speed` 等 Anthropic 原生字段默认由请求体透传。Anthropic 协议族不提供账户服务等级选项：原生 `auto` / `standard_only` 或 `fast` 不映射为本站 `priority` / `flex`，该族服务等级覆盖为空集。思考级别覆盖值域为 `low|medium|high|xhigh|max`；模型明确声明 effort 时，用户显式配置的账户思考级别覆盖是唯一现有请求体改写例外，会写入 `output_config.effort`，最终模型不支持配置值时按档位序向下兼容降级到不高于配置值的最高可用档。
 
 ### Anthropic OAuth 托管与直贴模式
 
@@ -210,7 +210,7 @@ Anthropic 接入必须复用项目现有网关流水线，不能新增一套按�
 
 当前兼容策略收敛为“原生透传 + API Key 上游认证 + 显式本地边界”：
 
-- 官方 Anthropic 直连请求默认 raw passthrough，只做本地认证、路径归一、header 过滤、上游认证替换和 Base URL 拼接；账户显式配置且最终模型支持的思考级别覆盖会在发送前改写 `output_config.effort`。
+- 官方 Anthropic 直连请求默认 raw passthrough，只做本地认证、路径归一、header 过滤、上游认证替换和 Base URL 拼接；账户显式配置的思考级别覆盖会在发送前按最终模型能力改写 `output_config.effort`（不支持配置值时降级到不高于配置值的最高可用档，无可用档位时保留客户端原值）。
 - 账户测试由后端生成无工具 Claude Code Messages 健康探针；Anthropic native 真实客户端请求不自动补齐 `max_tokens`、不自动移动 system message。OpenAI Chat / Responses 请求转成 Messages 只允许在显式 bridge 命中时发生。
 - `anthropic-version` 默认值和 `anthropic-beta` 客户端 header 透传属于上游请求准备，不属于失败后的请求改写。
 - WIF、Claude.ai / Claude Code 订阅 OAuth、Setup Token / Claude Code token 账号链路不进入请求准备、调度和返回侧流程；不能在运行时通过状态码或错误类型临时推断并切到这些认证行为。Claude Code 下游客户端画像只通过显式本地 header 或官方 CLI 多信号识别，不改变 Anthropic API Key 上游认证。
@@ -222,7 +222,7 @@ Anthropic API Key 账户按原生 Messages API 透传，不走 OpenAI v1 adapter
 
 请求体：
 
-- 除账户模型映射改写顶层 `model`，以及用户显式配置、最终模型明确支持时将账户思考级别覆盖写入 `output_config.effort` 外，默认 raw body passthrough，保留 Anthropic 原生字段：`max_tokens`、`messages`、`system`、`tools`、`tool_choice`、`thinking`、`stop_sequences`、`stream`、`metadata`、`service_tier`、`container`、`context_management`、`mcp_servers`、`output_format`、`output_config`、`cache_control` 等。
+- 除账户模型映射改写顶层 `model`，以及用户显式配置、运行时按最终模型能力（含向下兼容降级）将账户思考级别覆盖写入 `output_config.effort` 外，默认 raw body passthrough，保留 Anthropic 原生字段：`max_tokens`、`messages`、`system`、`tools`、`tool_choice`、`thinking`、`stop_sequences`、`stream`、`metadata`、`service_tier`、`container`、`context_management`、`mcp_servers`、`output_format`、`output_config`、`cache_control` 等。
 - 模型映射必须复用现有大 body JSON 解析边界，只在 JSON body 顶层 `model` 命中映射时改写；不解析或改写 `messages`、`tools`、`thinking` 等嵌套字段。
 - Anthropic native 客户端应按 Anthropic 格式提交；只有 OpenAI -> Anthropic bridge 命中时，才把 OpenAI `messages[].role = system/developer` 转成 Anthropic 顶层 `system`。
 - `/v1/chat/completions`、`/v1/responses` 不由普通 Anthropic native 账号承接；只有命中混合供应商账户且该账户声明 OpenAI -> Anthropic Messages 转换时才改写为 `/v1/messages`。如果 API Key 绑定的策略路由只进入 Anthropic native 普通分组，应在本地请求能力过滤阶段返回明确不兼容错误，错误码为 `anthropic_native_group_openai_compatible_request`，并提示改用混合供应商账户或 Anthropic `/v1/messages`。

@@ -323,6 +323,7 @@
                         :form="form"
                         :model-options="modelOptions"
                         :models-loading="modelsLoading"
+                        :protocol-code="selectedProtocolProfile?.protocolCode"
                         :readonly="authorizedEditing"
                       />
 
@@ -509,6 +510,7 @@
                       :form="form"
                       :model-options="modelOptions"
                       :models-loading="modelsLoading"
+                      :protocol-code="selectedProtocolProfile?.protocolCode"
                       :readonly="authorizedEditing"
                     />
 
@@ -661,7 +663,7 @@
         <a-button v-if="!oauthCreateTestHidden && !isMediaDomain" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
         <template v-if="!editing && !isMediaDomain">
           <a-button v-if="wizardStep > 1" @click="wizardStep -= 1">上一步</a-button>
-          <a-button v-if="wizardStep < 3" @click="wizardStep += 1">下一步</a-button>
+          <a-button v-if="wizardStep < 3" @click="goToNextWizardStep">下一步</a-button>
         </template>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
@@ -677,6 +679,7 @@
 import { FlagOutlined, HeartOutlined, QuestionCircleOutlined, ScheduleOutlined, SlidersOutlined, SwapOutlined, WalletOutlined } from '@ant-design/icons-vue'
 import { computed, ref, watch } from 'vue'
 
+import { message } from '@/lib/antd'
 import { formatDateTime } from '@/shared/formatters'
 import { api } from '@/api/client'
 import { defaultAccountNameFromBaseUrl } from './accountNameSuggestion'
@@ -702,7 +705,7 @@ import {
   endpointModesEqual
 } from './accountEndpointModes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
-import { accountValidationErrorStep } from './accountSavePayload'
+import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -1039,10 +1042,36 @@ watch(advancedActiveKeys, (keys) => {
 // 编辑单列形态不适用（全部分区同屏可见）。toast 由 save 流程提示，这里只做步骤回跳。
 watch(() => props.validationFailure?.seq, (seq) => {
   if (!seq || props.editing || !open.value) return
-  const message = props.validationFailure?.message ?? ''
-  const step = accountValidationErrorStep(message)
+  const failureMessage = props.validationFailure?.message ?? ''
+  const step = accountValidationErrorStep(failureMessage)
   if (wizardStep.value !== step) wizardStep.value = step
 })
+
+// 「下一步」必填门禁：必填项集中在第 1 步（供应商/类型、名称、凭证、Base URL、
+// 支持模型、检查模型等），复用「创建」同源的 validateAccountSaveForm 校验——失败
+// 消息按 accountValidationErrorStep 归属第 1 步的拦截前进并 toast 原因，归属第
+// 2/3 步的不拦（那两步全可跳过，仍由「创建」统一拦截）；第 2 → 3 步保持纯导航。
+function goToNextWizardStep(): void {
+  if (wizardStep.value === 1) {
+    const failure = validateAccountSaveForm({
+      form: props.form,
+      hasAuthSession: Boolean(props.authResult?.sessionId),
+      errorPolicyRules: errorPolicyRules.value,
+      responseInspectionRules: responseInspectionRules.value,
+      providers: props.providers,
+      mappingAnthropicSourceModelOptions: props.mappingAnthropicSourceModelOptions,
+      mappingCurrentProviderSourceModelOptions: props.mappingCurrentProviderSourceModelOptions,
+      mappingGeminiSourceModelOptions: props.mappingGeminiSourceModelOptions,
+      mappingSourceModelOptions: props.mappingSourceModelOptions,
+      mappingUpstreamModelOptions: props.modelOptions
+    })
+    if (failure && accountValidationErrorStep(failure) === 1) {
+      message.warning(failure)
+      return
+    }
+  }
+  wizardStep.value += 1
+}
 
 function credentialItem(key: string, label: string, value: unknown): { key: string; label: string; value: string } | undefined {
   if (typeof value !== 'string') return undefined

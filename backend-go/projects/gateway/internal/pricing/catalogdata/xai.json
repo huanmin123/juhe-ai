@@ -490,7 +490,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方美元价 输出分档 480p $0.08 / 720p $0.14（目录主档）/1080p $0.25 每秒；图生视频输入 $0.01/img 留档；旧 grok-imagine-video（480p $0.05/720p $0.07）目录未收录；grok-imagine-video-1.5-lite 已单独补录（见该行）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.08 / 720p $0.14（目录主档）/1080p $0.25 每秒；图生视频输入 $0.01/img 留档；旧 grok-imagine-video（480p $0.05/720p $0.07）已单独补录（见该行）；grok-imagine-video-1.5-lite 已单独补录（见该行）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -595,6 +595,31 @@
       ],
       "supportsPromptCaching": false,
       "ttsInputCostPerChar": 1.5e-05
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "grok-imagine-video",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.05 / 720p $0.07（目录主档，沿 video-1.5 非最低档主档先例）每秒；图生视频输入 $0.002/img、视频输入 $0.01/sec 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；旧版发布日期官方页未给（公开发布时间线 2025-10 Imagine 上线，晚于 2025-01 收录下限），releaseDate 留空",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.07
     }
   ],
   "provider": "xai"

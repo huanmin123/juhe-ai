@@ -498,6 +498,91 @@
         "images"
       ],
       "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "doubao-seed3d-2-0-260328",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-03-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价（火山方舟价格页 docs.volcengine.com/docs/82379/1544106 3D 段计费维度明文「按成功输出 3D 文件数计费」）：doubao-seed3d-2.0 按成功输出 2.40 元/次 ÷7.0 = $0.342857/次（videoOutputCostPerCall，成功输出才计费——failed 任务 0 成本不虚计，与网关 failed 不落成本语义一致）；2.40 元/次单价经上线定价公告多源一致（sagacior 388/804）；usage.completion_tokens 为官方对账字段不参与折算；2026-10-17 3D 承接批实弹（19.8MB zip PBR GLB 产物）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerCall": 0.34285714285714286,
+      "videoOutputCostPerSecond": null
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1e-07,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "embedding",
+      "model": "doubao-embedding-vision-251215",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-12-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价（火山方舟价格页 docs.volcengine.com/docs/82379/1544106 向量段，2026-10-17 检索摘要直取明文）：文本向量 0.0007 元/千 tokens = 0.7 元/百万 tokens ÷7.0 = $0.1/百万（inputCostPerToken）；图像向量分档 1.8 元/百万 tokens（$0.2571/百万）留档——网关 usage 现按 prompt_tokens 整体折算（图像 token 暉文本价，与视觉对话图像 token 既有计费口径一致），分档精确计费（prompt_tokens_details.image_tokens 拆分）随专门批；50 万 tokens 免费额度留档；2026-10-17 方舟全能力覆盖批实弹（multimodal 面三形态 200）",
+      "supportedAPIProtocols": [
+        "embed_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00238095,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "seed-tts-2.0",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "responseFormats": [
+        "mp3",
+        "pcm",
+        "ogg_opus",
+        "wav"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价（豆包语音计费页 docs.volcengine.com/docs/DoubaoVoice/Billinginstructions-21，取证指南数据源表在册）：语音合成 2.0 按字符 3 元/万字符，除以 7.0 = $4.285714285714286e-05/字符（ttsInputCostPerChar，minimax speech 行同字段先例）；响应为 NDJSON 流式分块（/api/v3/tts/unidirectional，X-Api-Key 单头与 speech_token 同凭据——2026-10-18 桥接实测穿过鉴权层，55000000=音色未授权待开通）；2026-10-18 火山流式语音桥接 V1a 落行",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 4.2857142857142856e-05
     }
   ],
   "provider": "volcengine"

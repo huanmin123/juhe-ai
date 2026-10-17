@@ -968,6 +968,8 @@ func TestW13g3GptOverrideTokenValidation(t *testing.T) {
 		}
 	})
 	t.Run("assert values", func(t *testing.T) {
+		// AssertGptAccountRequestOverrideValues 现语义收窄为 gpt 专属枚举断言
+		// （等价 AssertGptAccountRequestOverrideValuesForProvider(_, "gpt")）。
 		if err := AssertGptAccountRequestOverrideValues(GptAccountRequestOverrides{ServiceTier: "super"}); err == nil {
 			t.Fatal("invalid service tier must fail")
 		}
@@ -989,26 +991,54 @@ func TestW13g3GptOverrideTokenValidation(t *testing.T) {
 			t.Fatal("reasoning effort is inert on compact requests")
 		}
 	})
-	t.Run("effective overrides honor capabilities", func(t *testing.T) {
-		if effective := EffectiveGptAccountRequestOverrides(GptAccountRequestOverrides{}, nil); effective != (GptAccountRequestOverrides{}) {
+	t.Run("effective overrides degrade to declared tiers", func(t *testing.T) {
+		// ResolveEffectiveOverrides 取代旧 EffectiveGptAccountRequestOverrides：
+		// tier 走「default 恒为强制标准档 / 其它档不降级」，effort 走档位序
+		// 向下兼容降级（requestoverride.DegradeReasoningEffort）。
+		if effective := ResolveEffectiveOverrides(GptAccountRequestOverrides{}, nil); effective != (GptAccountRequestOverrides{}) {
 			t.Fatalf("empty overrides = %#v", effective)
 		}
-		if effective := EffectiveGptAccountRequestOverrides(GptAccountRequestOverrides{ServiceTier: "priority"}, nil); effective != (GptAccountRequestOverrides{}) {
-			t.Fatalf("nil capabilities keep overrides inert: %#v", effective)
+		if effective := ResolveEffectiveOverrides(GptAccountRequestOverrides{ServiceTier: "priority"}, nil); effective != (GptAccountRequestOverrides{}) {
+			t.Fatalf("nil capabilities keep non-default tier inert: %#v", effective)
 		}
-		effective := EffectiveGptAccountRequestOverrides(
+		effective := ResolveEffectiveOverrides(
 			GptAccountRequestOverrides{ServiceTier: "priority", ReasoningEffort: "high"},
 			&GptRequestOverrideModelCapabilities{SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"high"}},
 		)
 		if effective.ServiceTier != "priority" || effective.ReasoningEffort != "high" {
 			t.Fatalf("effective = %#v", effective)
 		}
-		defaultTier := EffectiveGptAccountRequestOverrides(
+		defaultTier := ResolveEffectiveOverrides(
 			GptAccountRequestOverrides{ServiceTier: "default"},
 			&GptRequestOverrideModelCapabilities{SupportedServiceTiers: []string{"flex"}},
 		)
 		if defaultTier.ServiceTier != "default" {
-			t.Fatalf("default tier requires any supported tier list: %#v", defaultTier)
+			t.Fatalf("default tier must stay force-standard: %#v", defaultTier)
+		}
+		// 新语义：default 无任何档位声明（nil capabilities）也生效。
+		defaultWithoutDeclarations := ResolveEffectiveOverrides(
+			GptAccountRequestOverrides{ServiceTier: "default"},
+			nil,
+		)
+		if defaultWithoutDeclarations.ServiceTier != "default" {
+			t.Fatalf("default tier must survive without declarations: %#v", defaultWithoutDeclarations)
+		}
+		// 降级：配置 max、声明 low,medium → 取不高于 max 的最高档 medium。
+		degraded := ResolveEffectiveOverrides(
+			GptAccountRequestOverrides{ReasoningEffort: "max"},
+			&GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"low", "medium"}},
+		)
+		if degraded.ReasoningEffort != "medium" {
+			t.Fatalf("degraded effort = %#v, want medium", degraded)
+		}
+		// 无可用档位：配置 minimal、声明 high（全部高于配置值）→ 空串，
+		// 调用方保留客户端原值。
+		noTarget := ResolveEffectiveOverrides(
+			GptAccountRequestOverrides{ReasoningEffort: "minimal"},
+			&GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"high"}},
+		)
+		if noTarget.ReasoningEffort != "" {
+			t.Fatalf("no degrade target = %#v, want empty", noTarget)
 		}
 	})
 }
@@ -1021,7 +1051,9 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{}`), bad, "responses", false, "gpt-test"); err == nil {
 			t.Fatal("invalid credential token must fail")
 		}
-		invalidTier := AccountCandidate{ID: "a-1", Credentials: map[string]any{"service_tier_override": "super"}}
+		// gpt 账户保留专属枚举硬失败（其它供应商/空 providerCode 由目录能力
+		// 门兜底，不再请求级报错）。
+		invalidTier := AccountCandidate{ID: "a-1", ProviderCode: "gpt", Credentials: map[string]any{"service_tier_override": "super"}}
 		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{}`), invalidTier, "responses", false, "gpt-test"); err == nil {
 			t.Fatal("invalid tier value must fail")
 		}

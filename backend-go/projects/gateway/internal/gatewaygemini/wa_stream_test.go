@@ -83,6 +83,32 @@ func TestWAStreamInspectorFailedStream(t *testing.T) {
 	}
 }
 
+// 顶层 error 对象形态（无 event 名、无 type 字段）正是 Gemini streamGenerate
+// 的标准流式错误形态；共享 ExtractStreamEventError 不放宽，检查器判定独立补齐。
+func TestWAStreamInspectorTopLevelErrorObject(t *testing.T) {
+	inspection := InspectStreamText("data: {\"error\":{\"code\":400,\"message\":\"upstream sent an error event\",\"status\":\"INVALID_ARGUMENT\"}}\n\n")
+	if !inspection.FailedReceived || !inspection.TerminalReceived {
+		t.Fatalf("顶层 error 对象应失败且终止: %+v", inspection)
+	}
+	if inspection.ErrorCode != "INVALID_ARGUMENT" {
+		t.Fatalf("ErrorCode = %q", inspection.ErrorCode)
+	}
+	if inspection.ErrorMessage != "upstream sent an error event" {
+		t.Fatalf("ErrorMessage = %q", inspection.ErrorMessage)
+	}
+}
+
+// 标准形态回归：type=error 的显式失败帧维持既有判定与错误提取。
+func TestWAStreamInspectorExplicitTypeErrorEvent(t *testing.T) {
+	inspection := InspectStreamText("data: {\"type\":\"error\",\"error\":{\"code\":\"server_error\",\"message\":\"boom\"}}\n\n")
+	if !inspection.FailedReceived || !inspection.TerminalReceived {
+		t.Fatalf("type=error 帧应失败且终止: %+v", inspection)
+	}
+	if inspection.ErrorCode != "server_error" || inspection.ErrorMessage != "boom" {
+		t.Fatalf("错误字段 = %q/%q", inspection.ErrorCode, inspection.ErrorMessage)
+	}
+}
+
 // 显式 finish/done/[DONE] 事件类型是终止事件。
 func TestWAStreamInspectorTerminalEventTypes(t *testing.T) {
 	for _, eventType := range []string{"finish", "done", "[DONE]"} {

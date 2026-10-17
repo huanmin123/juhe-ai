@@ -164,6 +164,10 @@ func endpointModes(value any) ([]any, bool) {
 }
 
 // parseOpenAICredentialsPatch mirrors the openai oauthCredentialsPatchSchema.
+// service_tier_override / reasoning_effort_override 只做「非空字符串（trim
+// 后）」形状放行（2026-10-18 简化定案，与 anthropic/gemini/grok parser 同
+// 构）：值域（协议族全集）交由账户写入面凭据归一化判定，本层不再做枚举
+// 预检。
 func parseOpenAICredentialsPatch(patch map[string]any) (map[string]any, bool) {
 	output := map[string]any{}
 	for key, value := range patch {
@@ -174,32 +178,12 @@ func parseOpenAICredentialsPatch(patch map[string]any) (map[string]any, bool) {
 				return nil, false
 			}
 			output[key] = modes
-		case "service_tier_override":
-			if text, ok := value.(string); !ok {
-				return nil, false
-			} else if text = strings.TrimSpace(text); text != "" {
-				switch text {
-				case "default", "priority", "flex":
-					output[key] = text
-				default:
-					return nil, false
-				}
-			} else {
+		case "service_tier_override", "reasoning_effort_override":
+			text, ok := value.(string)
+			if !ok || strings.TrimSpace(text) == "" {
 				return nil, false
 			}
-		case "reasoning_effort_override":
-			if text, ok := value.(string); !ok {
-				return nil, false
-			} else if text = strings.TrimSpace(text); text != "" {
-				switch text {
-				case "none", "minimal", "low", "medium", "high", "xhigh", "max":
-					output[key] = text
-				default:
-					return nil, false
-				}
-			} else {
-				return nil, false
-			}
+			output[key] = strings.TrimSpace(text)
 		case "error_handling_rules", "response_inspection_rules", "quota_recovery_policy":
 			output[key] = value
 		default:
@@ -268,12 +252,15 @@ func parseGeminiCredentialsPatch(patch map[string]any) (map[string]any, bool) {
 	return output, true
 }
 
-// parseGrokCredentialsPatch mirrors the grok patch schema.
+// parseGrokCredentialsPatch mirrors the grok patch schema: base_url plus the
+// service_tier_override / reasoning_effort_override request override tokens
+// (trim-only non-empty strings, same shape as the anthropic/gemini parsers),
+// endpoint modes and the free-form policy keys.
 func parseGrokCredentialsPatch(patch map[string]any) (map[string]any, bool) {
 	output := map[string]any{}
 	for key, value := range patch {
 		switch key {
-		case "base_url":
+		case "base_url", "service_tier_override", "reasoning_effort_override":
 			text, ok := value.(string)
 			if !ok || strings.TrimSpace(text) == "" {
 				return nil, false

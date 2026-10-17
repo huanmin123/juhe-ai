@@ -309,16 +309,30 @@ func TestWhCatalogSharedPaths(t *testing.T) {
 	if models.catalogCalls["gpt"] != before {
 		t.Fatal("冷进程必须命中共享目录")
 	}
-	// 路由索引共享 entry 的序列化往返（toEntry 容错分支）。
-	roundTrip := sharedProviderModelRouteIndexEntry{Entries: [][2]any{
-		{"m1", []any{"gpt", "gpt2"}}, {"bad", "not-array"}, {42, []any{"x"}},
-	}}.toEntry()
-	if len(roundTrip.index) != 1 || len(roundTrip.index["m1"]) != 2 {
-		t.Fatalf("索引往返 = %+v", roundTrip.index)
+	// models 目录可见性集合共享载荷的 JSON 往返（共享缓存 decode 形态，trim 归
+	// 一 + (scope, owner) 随行保留）。
+	encoded, err := json.Marshal(sharedModelsDirectoryActiveSet{Models: []sharedModelsDirectoryEntry{
+		{Model: "m1", Scope: "builtin"},
+		{Model: " m1 ", Scope: "builtin"},
+		{Model: "m2", Scope: "personal", SystemAccountID: "sys_owner"},
+	}})
+	if err != nil {
+		t.Fatalf("共享集合编码: %v", err)
 	}
-	sharedOut := providerModelRouteIndexToShared(providerModelRouteIndexCacheEntry{index: map[string][]string{"m1": {"gpt"}}})
-	if len(sharedOut.Entries) != 1 {
-		t.Fatalf("共享索引 = %+v", sharedOut.Entries)
+	var decoded sharedModelsDirectoryActiveSet
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("共享集合解码: %v", err)
+	}
+	set := modelsDirectoryActiveSet{models: make(map[string][]modelsDirectoryEntry, len(decoded.Models))}
+	for _, model := range decoded.Models {
+		key := normalizeProviderModelRouteKey(model.Model)
+		if key == "" {
+			continue
+		}
+		set.models[key] = append(set.models[key], modelsDirectoryEntry{scope: model.Scope, systemAccountID: model.SystemAccountID})
+	}
+	if len(set.models) != 2 || !set.IsModelVisibleInDirectory("", "m1") || !set.IsModelVisibleInDirectory("sys_owner", "m2") || set.IsModelVisibleInDirectory("sys_other", "m2") {
+		t.Fatalf("共享集合往返 = %+v", set.models)
 	}
 }
 

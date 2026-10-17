@@ -248,6 +248,7 @@ func TestW1GChainPricingScalarHelpers(t *testing.T) {
 		items := []gatewayruntimecache.ProviderModelCatalogItem{
 			w1gCatalogItem(" padded ", nil),
 			w1gCatalogItem("other", nil),
+			w1gCatalogItem("seed-audio-1.0", nil),
 		}
 		found := findChainCatalogItem(items, "padded")
 		if found == nil || found.Model != " padded " {
@@ -258,6 +259,16 @@ func TestW1GChainPricingScalarHelpers(t *testing.T) {
 		}
 		if findChainCatalogItem(nil, "missing") != nil {
 			t.Fatal("空目录必须返回 nil")
+		}
+		// TTS 占位名↔现役名等价组（计价解析第六消费点）：doubao-tts 命中
+		// seed-audio-1.0 目录行；等价组之外的 miss 行为零变化。
+		alias := findChainCatalogItem(items, "doubao-tts")
+		if alias == nil || alias.Model != "seed-audio-1.0" {
+			t.Fatalf("doubao-tts 应按等价组命中 seed-audio-1.0, got %#v", alias)
+		}
+		reverse := findChainCatalogItem(items, "DOUBAO-TTS ")
+		if reverse == nil || reverse.Model != "seed-audio-1.0" {
+			t.Fatalf("等价组按 EqualFold 语义命中, got %#v", reverse)
 		}
 	})
 }

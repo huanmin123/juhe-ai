@@ -85,8 +85,8 @@ func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service, bodyPar
 		// ResolveGptRequestOverrideModelCapabilities 读的是 gatewayoauthcodex
 		// 的进程级目录端口；此前本构造器只把适配器挂在 driver 私有字段
 		// gptOverrideCatalog 上（引擎经 ProviderDriver 接口访问，无任何读取
-		// 点），端口保持 nil → 能力解析恒 nil → EffectiveGptAccountRequestOverrides
-		// 返回空 → 管理面配置的 service_tier / reasoning_effort 覆盖在运行面
+		// 点），端口保持 nil → 能力解析恒 nil → ResolveEffectiveOverrides
+		// 无降级候选 → 管理面配置的 service_tier / reasoning_effort 覆盖在运行面
 		// 整段惰性（oauth codex 分支与 api-key 覆盖应用两处消费点同盲）。
 		//
 		// 数据源选 runtimecache 而非每次直查 SQL：端口在每请求构建上游请求时
@@ -1345,11 +1345,15 @@ func isCodexOAuthAccount(account gatewaydispatch.AccountCandidate) bool {
 	return account.Type == "oauth" && normalizeProtocol(account.ProtocolCode) == driverProtocolOpenAI
 }
 
+// codexAccountOf 裁剪运行时账户候选为 codex 归一化输入；ProviderCode 随
+// 请求覆盖 hook 进入供应商感知值域断言（gpt 专属枚举只对 gpt 账户生效，
+// 其它供应商的值域由模型目录能力门决定）。
 func codexAccountOf(account gatewaydispatch.AccountCandidate) gatewaydispatch.OpenAIOAuthCodexAccount {
 	return gatewaydispatch.OpenAIOAuthCodexAccount{
-		ID:          account.ID,
-		APIKey:      account.APIKey,
-		Credentials: account.Credentials,
+		ID:           account.ID,
+		APIKey:       account.APIKey,
+		ProviderCode: account.ProviderCode,
+		Credentials:  account.Credentials,
 	}
 }
 

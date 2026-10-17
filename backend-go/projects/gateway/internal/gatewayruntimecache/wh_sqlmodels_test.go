@@ -101,7 +101,7 @@ func TestWhSQLReadGatewayRuntimeByKeyHash(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs1', 'sys_owner', 'normal', '{"schedulingPreference":"speed_first","firstByteDeadlineMs":2500}', 'active')`,
 		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
@@ -157,7 +157,7 @@ func TestWhSQLReadGatewayRuntimeGates(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_normal', 'sys_owner', 'normal', '{}', 'active')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_weighted', 'sys_owner', 'weighted', '{}', 'active')`,
 		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)

@@ -58,16 +58,43 @@ import (
 // 与 studio-retirement-api-keys-column 两条退出当前 schema（破坏性清理收敛到
 // 显式维护命令 --apply-studio-retirement）；purpose CHECK 迁移 DO 块改写为
 // 三值 legacy 词表的加法式修复（二值存量库修回三值），语句仍在。
-const goldenPostgresSchemaStatementCount = 718
+// 718→700：2026-10-14 监控改造退役系统指标六表（system_metrics_*×3、
+// process_event_loop_*×3，各 1 TABLE+2 INDEX=18 条 stats DDL）——实现随
+// f1991b708 删除，本金数漏改（2026-10-17 专门批取证回正）。
+// 700→678：供应商与上游协议面重构批（设计 §9 一次性裁决第 2 步切片，
+// juhe_business 335→313）——-9 旧建表（providers、provider_protocol_
+// profiles、profile families、provider_model_catalog、custom_provider_
+// models、两张 provider default health-check、旧 account_supported_models、
+// account_model_mappings）+7 新增（vendors、models、account_connections、
+// account_endpoint_modes、account_supported_models 新形态、
+// account_entry_mappings、account_connections 反向外键守卫 DO 块）、-23/+3
+// 索引（删 provider/profile 维度 accounts 六枚与 oauth refresh 两枚、trigram
+// 一枚，groups 四枚，旧表五枚目录/唯一索引与 supported_models/mappings 三枚；
+// 加 idx_models_identity_unique、idx_groups_owner_name_unique、
+// idx_groups_owner_default_unique）、-1/+0 触发器（profiles 脏标记触发器与
+// mark_dirty_profile/profile_dirty_trigger 两函数随 provider_protocol_profiles
+// 退役，CREATE/DROP 成对移除）。
+// 678（±0）：2026-10-17 复审 blocker 修复批——accounts 健康检查三列
+// （health_check_connection_id / health_check_endpoint_mode /
+// health_check_model）转 nullable、health_check_endpoint_mode CHECK
+// 22→25 值（建表内联与 accounts-health-check-endpoint-mode-pg-check DO 块
+// 重建均原位改写、不新增语句），account-list-projection-pg-dirty-triggers
+// 的 ROW() 比较纳入 vendor_code / connection_driver_code / oauth_type /
+// health_check_connection_id；语句总数与 DO 块数不变。
+// Regenerate them when either source changes.
+const goldenPostgresSchemaStatementCount = 678
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      335,
-	"juhe_chat":          52,
-	"juhe_dataset":       7,
-	"juhe_usage":         52,
-	"juhe_stats":         256,
+	// 335→313：供应商与上游协议面重构批（见上方 golden 总数注释的 -9+7/-23+3
+	// 明细，全部落在 juhe_business）。
+	"juhe_business": 313,
+	"juhe_chat":     52,
+	"juhe_dataset":  7,
+	"juhe_usage":    52,
+	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
+	"juhe_stats":         238,
 	"juhe_codex_context": 16,
 }
 
@@ -172,14 +199,23 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// api_keys.studio_domains_json 幂等 DROP COLUMN 已随 studio 退场契约修订
 	// （2026-10-14）移出 ensure（破坏性清理收敛到 --apply-studio-retirement），
 	// 仅剩调度偏好 enabled 列退役一条 DROP COLUMN。
+	// DO 块 5→6：供应商与上游协议面重构批新增 account_connections 反向外键
+	// 守卫 DO 块（account-connections-account-fk，具名约束幂等补挂；PG 外键
+	// 目标必须已存在，双方互引只能单边内联，同 api-keys-purpose DO 块守卫
+	// 模式）。2026-10-17 复审 blocker 修复批复用既有
+	// accounts-health-check-endpoint-mode-pg-check DO 块原位改写（词表
+	// 22→25 值），块数保持 6。其余口径不变：98 条 ADD COLUMN IF NOT EXISTS、
+	// 1 条 DROP COLUMN
+	// IF EXISTS（调度偏好 enabled 退役）、1 条 CREATE EXTENSION、2 个含
+	// CREATE TRIGGER 的语句块。
 	if alterColumns != 98 {
 		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 98", alterColumns)
 	}
 	if droppedColumns != 1 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 1", droppedColumns)
 	}
-	if doBlocks != 5 {
-		t.Fatalf("DO block count = %d, want 5", doBlocks)
+	if doBlocks != 6 {
+		t.Fatalf("DO block count = %d, want 6", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
@@ -187,8 +223,12 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	if triggerBlocks != 2 {
 		t.Fatalf("trigger block count = %d, want 2", triggerBlocks)
 	}
-	if triggers != droppedTriggers {
-		t.Fatalf("CREATE TRIGGER count %d does not match DROP TRIGGER IF EXISTS count %d; trigger creation would not be idempotent", triggers, droppedTriggers)
+	// proxy_profiles 触发器随 2026-10-17 触发器治理（PLAN-20261017T035500000Z）
+	// 有意单向移除：CREATE 定义删除、块尾保留 legacy DROP IF EXISTS 清理存量库
+	//（随 ensure-schema 重放生效）——允许 DROP 比 CREATE 多（legacy 清理尾巴），
+	// 但 CREATE 不得多于 DROP（那是幂等性破坏）。
+	if triggers > droppedTriggers {
+		t.Fatalf("CREATE TRIGGER count %d exceeds DROP TRIGGER IF EXISTS count %d; trigger creation would not be idempotent", triggers, droppedTriggers)
 	}
 }
 
@@ -254,6 +294,97 @@ func TestPostgresQualityScheduleIntervalCheckContract(t *testing.T) {
 			t.Fatalf("account_quality_enforcements must keep the 10-minute recovery floor")
 		}
 	}
+}
+
+// TestPostgresAccountsHealthCheckContract pins 复审 blocker B-1/B-2（设计 §10
+// 与 :114 硬规则）：accounts 的 health_check_connection_id /
+// health_check_endpoint_mode / health_check_model 三列 nullable（NOT NULL +
+// 复合外键会让 fresh 库任何插入顺序都无法创建账户；创建事务先插 accounts 暂
+// NULL、事务内同一条 UPDATE 补齐）、health_check_endpoint_mode 列级 CHECK
+// 精确覆盖 §2.2 的 25 值、复合外键 (id, health_check_connection_id) 保留，
+// CHECK 迁移 DO 块按 message_token_counting 判别旧 22 值（及更早）约束。
+// DO 块无法在无服务环境下执行，与 interval CHECK 契约测试同口径只断言 SQL
+// 文本；三列 nullable 的实际插入顺序行为由 SQLite 同构 DDL 测试
+// （TestSQLiteAccountsHealthCheckNullabilityAndForeignKey）覆盖。
+func TestPostgresAccountsHealthCheckContract(t *testing.T) {
+	var createAccounts, modeMigration, dirtyTriggers string
+	for _, statement := range postgresSchemaStatements {
+		switch {
+		case statement.Source == "business" && strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS accounts ("):
+			createAccounts = statement.SQL
+		case statement.Source == "accounts-health-check-endpoint-mode-pg-check":
+			modeMigration = statement.SQL
+		case statement.Source == "account-list-projection-pg-dirty-triggers":
+			dirtyTriggers = statement.SQL
+		}
+	}
+	if createAccounts == "" || modeMigration == "" || dirtyTriggers == "" {
+		t.Fatalf("missing accounts CREATE TABLE, endpoint-mode migration or dirty trigger statement")
+	}
+	// B-1：三列必须 nullable，不得保留 NOT NULL。
+	for _, fragment := range []string{
+		"health_check_connection_id text NOT NULL",
+		"health_check_model text NOT NULL",
+		"health_check_endpoint_mode text NOT NULL",
+	} {
+		if strings.Contains(createAccounts, fragment) {
+			t.Fatalf("accounts CREATE TABLE must keep %q nullable (设计 §10 硬规则)", fragment)
+		}
+	}
+	if !strings.Contains(createAccounts, "health_check_connection_id text,") ||
+		!strings.Contains(createAccounts, "health_check_model text,") ||
+		!strings.Contains(createAccounts, "health_check_endpoint_mode text CHECK (") {
+		t.Fatalf("accounts CREATE TABLE missing the nullable health-check triple declarations")
+	}
+	// 复合外键保留（PG MATCH SIMPLE：任一列为 NULL 跳过检查，NULL 暂存语义正确）。
+	if !strings.Contains(createAccounts, "FOREIGN KEY (id, health_check_connection_id) REFERENCES account_connections(account_id, id)") {
+		t.Fatalf("accounts CREATE TABLE must keep the composite health-check FK")
+	}
+	// B-2：建表内联 CHECK 覆盖 §2.2 全 25 值（accounts 语句中 mode 值只出现在
+	// health_check_endpoint_mode CHECK 词表内）。
+	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
+		if !strings.Contains(createAccounts, "'"+mode+"'") {
+			t.Fatalf("accounts health_check_endpoint_mode CHECK must cover %q (25 值词表)", mode)
+		}
+	}
+	// DO 块：判别谓词改为按 25 值新值定位旧约束，具名重建同样覆盖 25 值。
+	if !strings.Contains(modeMigration, `NOT LIKE '%message_token_counting%'`) {
+		t.Fatalf("endpoint-mode migration must locate legacy 22-value CHECKs via message_token_counting")
+	}
+	if strings.Contains(modeMigration, `NOT LIKE '%realtime_session%'`) {
+		t.Fatalf("endpoint-mode migration must drop the retired realtime-only legacy predicate")
+	}
+	for _, mode := range sqliteHealthCheckEndpointModeVocabulary {
+		if !strings.Contains(modeMigration, "''"+mode+"''") {
+			t.Fatalf("endpoint-mode migration named CHECK must cover %q (25 值词表)", mode)
+		}
+	}
+	// 顺手项：dirty 触发器 ROW() 比较纳入协议面新列与健康检查连接列。
+	for _, fragment := range []string{
+		"new_accounts.vendor_code", "old_accounts.vendor_code",
+		"new_accounts.connection_driver_code", "old_accounts.connection_driver_code",
+		"new_accounts.oauth_type", "old_accounts.oauth_type",
+		"new_accounts.health_check_connection_id", "old_accounts.health_check_connection_id",
+	} {
+		if !strings.Contains(dirtyTriggers, fragment) {
+			t.Fatalf("accounts update dirty trigger ROW() comparison must include %s", fragment)
+		}
+	}
+}
+
+// sqliteHealthCheckEndpointModeVocabulary 是设计 §2.2 的 25 值全词表
+// （与 account_endpoint_modes CHECK、accounts.health_check_endpoint_mode
+// CHECK、registry capabilityDomainLanes 并集同源）。
+var sqliteHealthCheckEndpointModeVocabulary = []string{
+	"images_json", "chat_json", "chat_sse",
+	"responses_json", "responses_sse",
+	"messages_json", "messages_sse", "message_token_counting",
+	"generate_content_json", "generate_content_sse",
+	"interactions_json", "interactions_sse", "count_tokens", "embed_content",
+	"audio_speech", "audio_transcription_json",
+	"video_create", "video_get", "video_content", "video_cancel",
+	"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+	"realtime_session",
 }
 
 func TestPostgresSeedPasswordHashFormat(t *testing.T) {
@@ -341,27 +472,29 @@ func TestSeedPasswordHashMatchesNodeVerifySemantics(t *testing.T) {
 
 func TestPostgresSeedDataParity(t *testing.T) {
 	// The default seed data must stay aligned with the schema objects it feeds.
-	// 2026-10-04 M3 minimax 增补（媒体设计 §9/契约 §8）：providers 8→9、
-	// endpoint families 10→12（openai_v1_video_generation/tts）、profiles
-	// 13→14（profile_minimax_openai_v1）、groups 8→9、profile family 绑定
-	// 30→32（minimax 档案挂 2 个媒体族）。同日 M3 第四批 volcengine 增补
-	//（媒体设计 §9/契约 §9）：providers 9→10、profiles 14→15
-	//（profile_volcengine_openai_v1）、groups 9→10、profile family 绑定
-	// 32→33（volcengine 档案只挂 video_generation 1 个媒体族——复用既有
-	// openai_v1_video_generation 族，endpoint families 维持 12）。同日 M3
-	// 第五批 qwen 增补（契约 §10）：providers 10→11、profiles 15→16
-	//（profile_qwen_openai_v1）、groups 10→11、profile family 绑定 33→34
-	//（qwen 档案只挂 video_generation 1 个媒体族，families 维持 12）。
-	// 同日 M3f 长音频批 + M4b hybrid 媒体映射（契约 §10.2/媒体设计 §9
-	// hybrid 行）：families 12→13（新增 openai_v1_audio_transcription 族）、
-	// profile family 绑定 34→37（qwen 档案 +audio_transcription、hybrid
-	// 档案 +video_generation+tts）；M6 语音批 volcengine 档案 +tts → 38。
-	// 对话批 volcengine/qwen 档案 +chat_completions（复用既有
-	// openai_v1_chat_completions 族，不新增 family 行）→ 40。
-	// 2026-10-17 语音识别承接批 volcengine 档案 +audio_transcription（复用
-	// 既有 openai_v1_audio_transcription 族，不新增 family 行）→ 41。
-	if len(pgSeedProviders) != 11 {
-		t.Fatalf("provider seeds = %d, want 11", len(pgSeedProviders))
+	// 供应商与上游协议面重构（设计 §1.1/§8/§9）：vendors 恰为 9 个真实厂商
+	//（openai 兼容行与 hybrid 行随旧供应商维度删除）；provider_protocol_
+	// profiles 及其 family 绑定 seed 随旧表退役；默认分组无供应商维度，组名
+	// 收敛为「默认分组」。
+	if len(pgSeedProviders) != 9 {
+		t.Fatalf("vendor seeds = %d, want 9", len(pgSeedProviders))
+	}
+	wantVendors := map[string]bool{
+		"gpt": true, "xai": true, "deepseek": true, "anthropic": true, "gemini": true,
+		"glm": true, "minimax": true, "volcengine": true, "qwen": true,
+	}
+	seenVendors := map[string]bool{}
+	for _, vendor := range pgSeedProviders {
+		if seenVendors[vendor.Code] {
+			t.Fatalf("duplicate vendor seed %q", vendor.Code)
+		}
+		seenVendors[vendor.Code] = true
+		if !wantVendors[vendor.Code] {
+			t.Fatalf("unexpected vendor seed %q (must be one of the §1.1 nine)", vendor.Code)
+		}
+	}
+	if len(seenVendors) != len(wantVendors) {
+		t.Fatalf("vendor seeds %v miss §1.1 codes", seenVendors)
 	}
 	if len(pgSeedProtocols) != 3 {
 		t.Fatalf("protocol seeds = %d, want 3", len(pgSeedProtocols))
@@ -369,35 +502,28 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedEndpointFamilies) != 13 {
 		t.Fatalf("endpoint family seeds = %d, want 13", len(pgSeedEndpointFamilies))
 	}
-	if len(pgSeedProfiles) != 16 {
-		t.Fatalf("profile seeds = %d, want 16", len(pgSeedProfiles))
-	}
-	// 2026-10-07 默认资源收口：默认分组 seed 收敛为仅 GPT 一项（其余
-	// provider 分组与 hybrid 分组不再随 seed 创建；admin chat Key 同步
-	// 移除，改由会话创建链按需 Ensure）。
+	// 2026-10-07 默认资源收口：默认分组 seed 收敛为一项；供应商维度删除后
+	// 组名收敛为「默认分组」。
 	if len(pgSeedGroups) != 1 {
 		t.Fatalf("group seeds = %d, want 1", len(pgSeedGroups))
 	}
-	if pgSeedGroups[0].ProviderCode != "gpt" || pgSeedGroups[0].Name != "默认 GPT 分组" {
-		t.Fatalf("sole group seed = %+v, want the GPT default", pgSeedGroups[0])
+	if pgSeedGroups[0].SystemAccountID != "sys_admin" || pgSeedGroups[0].Name != "默认分组" {
+		t.Fatalf("sole group seed = %+v, want the sys_admin 默认分组", pgSeedGroups[0])
 	}
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
+	// system settings 71→67：-4 来自 2026-10-14 监控改造批删除
+	// systemMetricsSampleIntervalSeconds / tableMonitorMaxTablesPerRun /
+	// systemMetricsRetentionDays / systemMetricsHourlyRetentionDays 四键
+	//（f1991b708 实现侧已删、本计数漏改；2026-10-17 专门批取证回正）。
 	// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
 	// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）；
 	// 71→72：+1 来自 2026-10-08 客户端版本自动跟版键（与 sqlite 侧钉值同源）；
 	// 72→71：-1 来自 2026-10-12 AI 问答简化批——生图总超时键
 	// chatImageGenerationTotalTimeoutSeconds 随生图工具退场。
-	if len(pgSeedSystemSettings) != 71 {
-		t.Fatalf("system settings = %d, want 71", len(pgSeedSystemSettings))
-	}
-	profileFamilyCount := 0
-	for _, profile := range pgSeedProfiles {
-		profileFamilyCount += len(profile.EndpointFamilies)
-	}
-	if profileFamilyCount != 41 {
-		t.Fatalf("profile endpoint family bindings = %d, want 41", profileFamilyCount)
+	if len(pgSeedSystemSettings) != 67 {
+		t.Fatalf("system settings = %d, want 67", len(pgSeedSystemSettings))
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

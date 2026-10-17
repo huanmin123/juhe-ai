@@ -271,6 +271,14 @@ func (s *StreamInspector) classifyEvent(eventType, eventName string, data map[st
 	if data != nil {
 		errorObject = ExtractStreamEventError(data, eventType, eventName)
 	}
+	if errorObject == nil && data != nil {
+		// 顶层 error 对象形态（无 event 名、无 type 字段）正是 Gemini
+		// streamGenerate 的标准流式错误形态；共享 ExtractStreamEventError
+		// 不放宽，检查器判定独立补齐（docs/functions/上游流式失败帧拦截设计.md §3.3）。
+		if topLevelError, ok := data["error"].(map[string]any); ok {
+			errorObject = topLevelError
+		}
+	}
 	failed := errorObject != nil
 	outputText := ""
 	output := false

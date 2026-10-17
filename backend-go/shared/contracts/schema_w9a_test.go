@@ -73,16 +73,25 @@ func TestW9ABusinessSQLiteSchemaContract(t *testing.T) {
 // TestW9ABusinessSQLiteSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
-	if BusinessSQLiteSchemaVersion != "business-sqlite-gateway-v15" {
+	if BusinessSQLiteSchemaVersion != "business-sqlite-gateway-v16" {
 		t.Fatalf("schema version drifted: %q", BusinessSQLiteSchemaVersion)
 	}
 	for _, table := range []string{
 		"system_accounts", "system_sessions", "accounts", "groups",
-		"providers", "provider_protocol_profiles", "announcements",
+		"vendors", "models", "account_connections", "account_endpoint_modes",
+		"account_entry_mappings", "account_supported_models", "announcements",
 		"account_circuit_incidents", "account_circuit_outbox",
 	} {
 		if _, ok := BusinessSQLiteSchema[table]; !ok {
 			t.Fatalf("required table %s missing from contract", table)
+		}
+	}
+	for _, retired := range []string{
+		"providers", "provider_protocol_profiles", "provider_model_catalog",
+		"account_model_mappings",
+	} {
+		if _, ok := BusinessSQLiteSchema[retired]; ok {
+			t.Fatalf("retired table %s must not stay in contract", retired)
 		}
 	}
 	systemAccounts := BusinessSQLiteSchema["system_accounts"]
@@ -96,6 +105,87 @@ func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
 	if incidents.IndexDefinitions[0].Predicate == "" {
 		t.Fatal("account_circuit_incidents partial index must keep its predicate")
 	}
+
+	// v16 冻结：vendor/model 目标形态（provider 面退役、连接/入口关系表、
+	// 复合主键与部分唯一索引）。
+	accounts := BusinessSQLiteSchema["accounts"]
+	for _, retired := range []string{"provider_code", "provider_protocol_profile_id", "client_compatibility"} {
+		for _, column := range accounts.Columns {
+			if column == retired {
+				t.Fatalf("accounts retired column %s must not stay in contract", retired)
+			}
+		}
+	}
+	for _, required := range []string{"vendor_code", "connection_driver_code", "oauth_type", "health_check_connection_id"} {
+		if !containsString(accounts.Columns, required) {
+			t.Fatalf("accounts column %s missing from contract", required)
+		}
+	}
+	compositeHealthCheckFK := false
+	for _, fk := range accounts.ForeignKeys {
+		if strings.Join(fk.Columns, ",") == "id,health_check_connection_id" &&
+			fk.RefTable == "account_connections" && strings.Join(fk.RefColumns, ",") == "account_id,id" {
+			compositeHealthCheckFK = true
+		}
+	}
+	if !compositeHealthCheckFK {
+		t.Fatalf("accounts composite health-check connection foreign key drifted: %+v", accounts.ForeignKeys)
+	}
+	groups := BusinessSQLiteSchema["groups"]
+	for _, column := range groups.Columns {
+		if column == "provider_code" {
+			t.Fatal("groups retired column provider_code must not stay in contract")
+		}
+	}
+	// groups 的唯一性由 PG 目标 DDL 的两条唯一索引承载（表内无 UNIQUE 约束；
+	// CheckBusinessPostgresSchema 只读 pg_constraint，纯唯一索引不产生约束行），
+	// 契约必须与该方言对齐：无 UniqueConstraints，两条唯一索引都在
+	// IndexDefinitions。
+	if len(groups.UniqueConstraints) != 0 {
+		t.Fatalf("groups uniqueness must ride the unique indexes (PG 方言对齐), got %+v", groups.UniqueConstraints)
+	}
+	hasOwnerNameUnique := false
+	hasOwnerDefaultUnique := false
+	for _, def := range groups.IndexDefinitions {
+		switch def.Name {
+		case "idx_groups_owner_name_unique":
+			hasOwnerNameUnique = def.Unique && strings.Join(def.Columns, ",") == "system_account_id,name" && def.Predicate == ""
+		case "idx_groups_owner_default_unique":
+			hasOwnerDefaultUnique = def.Unique && strings.Join(def.Columns, ",") == "system_account_id" && def.Predicate != ""
+		}
+	}
+	if !hasOwnerNameUnique {
+		t.Fatalf("groups idx_groups_owner_name_unique (system_account_id, name) unique index drifted: %+v", groups.IndexDefinitions)
+	}
+	if !hasOwnerDefaultUnique {
+		t.Fatalf("groups default partial unique index drifted: %+v", groups.IndexDefinitions)
+	}
+	supportedModels := BusinessSQLiteSchema["account_supported_models"]
+	if strings.Join(supportedModels.PrimaryKey, ",") != "account_id,model_id" {
+		t.Fatalf("account_supported_models composite primary key drifted: %+v", supportedModels.PrimaryKey)
+	}
+	models := BusinessSQLiteSchema["models"]
+	if len(models.Columns) != 48 {
+		t.Fatalf("models column count drifted: %d", len(models.Columns))
+	}
+	vendorFK := false
+	for _, fk := range models.ForeignKeys {
+		if strings.Join(fk.Columns, ",") == "vendor_code" && fk.RefTable == "vendors" && strings.Join(fk.RefColumns, ",") == "code" {
+			vendorFK = true
+		}
+	}
+	if !vendorFK {
+		t.Fatalf("models vendor_code foreign key drifted: %+v", models.ForeignKeys)
+	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // TestW9AJ3AProxyLatencySchemaContract verifies structural coherence of the

@@ -20,18 +20,16 @@ func w12gScriptedSeedRec(isSQLite bool) *wmSchemaRecorder {
 		rec.script(sqSeedGeneratedModelRowsSelect, nil, [][]driver.Value{
 			{"provider_model_stale", "glm", "removed-model"},
 		})
-		w9aScriptRowsFor(rec, sqSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
-		rec.script(sqSeedDefaultGroupsSelect, nil, [][]driver.Value{{"grp_gpt_default", "gpt默认分组"}})
-		rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default"}})
+		rec.script(sqSeedDefaultGroupsSelect, nil, [][]driver.Value{{"grp_default_gpt_sys_admin", "默认分组"}})
+		rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_default_gpt_sys_admin"}})
 		return rec
 	}
-	w9aScriptRowsFor(rec, pgSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
 	for _, groupSeed := range pgSeedGroups {
-		if groupSeed.SystemAccountID != "sys_admin" || groupSeed.ProviderCode == hybridProviderCode {
+		if groupSeed.SystemAccountID != "sys_admin" {
 			continue
 		}
-		rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{"grp_" + groupSeed.ProviderCode + "_default", groupSeed.Name + "分组"}})
-		rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup("grp_" + groupSeed.ProviderCode + "_default")}})
+		rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{groupSeed.ID, groupSeed.Name}})
+		rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup(groupSeed.ID)}})
 	}
 	return rec
 }

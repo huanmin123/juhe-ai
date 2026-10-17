@@ -20,12 +20,22 @@ import (
 // Go-appended model_check_question_tests table (提交门禁测试记录) and the
 // Go-appended scheduling_preferences table (调度偏好独立实体
 // PLAN-20261012T033000000Z P1).
+// 供应商与上游协议面重构批（设计 §9 一次性裁决第 2 步切片）名单变更
+// -8/+5：删除 providers、provider_protocol_profiles、
+// provider_protocol_profile_families、provider_model_catalog、
+// custom_provider_models、provider_default_health_check_models、
+// provider_system_default_health_check_models、account_model_mappings；
+// 新增 vendors、models、account_connections、account_endpoint_modes、
+// account_entry_mappings（存量库的旧表 DROP 由后续迁移命令处理）。
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
 	"account_balance_projection_cursors",
 	"account_circuit_incidents",
 	"account_circuit_outbox",
+	"account_connections",
+	"account_endpoint_modes",
+	"account_entry_mappings",
 	"account_health_jobs_input_outbox",
 	"account_health_jobs_input_versions",
 	"account_health_projection_cursors",
@@ -39,7 +49,6 @@ var goldenBusinessTables = []string{
 	"account_list_availability_projections",
 	"account_list_availability_runtime_overlays",
 	"account_lock_states",
-	"account_model_mappings",
 	"account_name_search_documents",
 	"account_name_search_terms",
 	"account_quality_enforcements",
@@ -55,7 +64,6 @@ var goldenBusinessTables = []string{
 	"announcements",
 	"api_key_schedule_status_events",
 	"api_keys",
-	"custom_provider_models",
 	"external_integration_source_tokens",
 	"external_integration_sources",
 	"global_settings",
@@ -68,18 +76,13 @@ var goldenBusinessTables = []string{
 	"model_check_question_tests",
 	"model_quality_policies",
 	"model_quality_schedules",
+	"models",
 	"openai_compatible_files",
 	"openai_compatible_vector_store_chunks",
 	"openai_compatible_vector_store_files",
 	"openai_compatible_vector_stores",
 	"protocol_endpoint_families",
 	"protocols",
-	"provider_default_health_check_models",
-	"provider_model_catalog",
-	"provider_protocol_profile_families",
-	"provider_protocol_profiles",
-	"provider_system_default_health_check_models",
-	"providers",
 	"proxy_latency_projection_cursors",
 	"proxy_latency_projection_receipts",
 	"proxy_profiles",
@@ -97,6 +100,7 @@ var goldenBusinessTables = []string{
 	"system_settings",
 	"system_team_members",
 	"system_teams",
+	"vendors",
 }
 
 // goldenStatsTables is the golden table list extracted from the Node
@@ -126,9 +130,9 @@ var goldenStatsTables = []string{
 	"client_ip_registry",
 	"client_ip_stats_daily",
 	"client_ip_usage_range_windows",
-		"group_account_stats",
-		"stats_job_state",
-		"usage_error_daily",
+	"group_account_stats",
+	"stats_job_state",
+	"usage_error_daily",
 	"usage_error_hourly",
 	"usage_error_minute",
 	"usage_error_monthly",
@@ -207,12 +211,22 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	// Business 表 +1（Go-appended scheduling_preferences）、索引 +4
-	//（scheduling_preferences 四枚，均内联于 business 主 DDL）；
-	// api_keys.scheduling_preference_id 的绑定查询索引由 EnsureSQLiteBusiness
-	// 守卫链尾创建（不进 DDL 常量，故不在此计），在 goldenTotalIndexes 计入。
-	Business:     SchemaCounts{Tables: 76, Indexes: 223},
-	Stats:        SchemaCounts{Tables: 65, Indexes: 124},
+	// Business 表 76→73（-9 旧 provider/profile/映射表 +6 vendors/models/
+	// 连接面三表，见 goldenBusinessTables 注释）、索引 223→204（-23：旧表
+	// 三枚 custom_provider_models 唯一/目录索引、两张 provider default
+	// health-check 索引、目录 lookup、accounts 六枚 provider/profile 查询
+	// 索引、两枚 openai oauth refresh 索引、provider_code trigram、四枚
+	// groups provider 索引、supported_models/mappings 三枚 provider 前缀
+	// 索引；+3：idx_models_identity_unique、idx_groups_owner_name_unique、
+	// idx_groups_owner_default_unique）。api_keys.scheduling_preference_id
+	// 的绑定查询索引仍由 EnsureSQLiteBusiness 守卫链尾创建（不进 DDL 常量，
+	// 在 goldenTotalIndexes 计入）。2026-10-17 复审 blocker 修复批仅原位改写
+	// accounts 三列 nullable 与 health_check_endpoint_mode CHECK 词表
+	//（22→25 值），表/索引名单与计数不变。
+	Business: SchemaCounts{Tables: 73, Indexes: 204},
+	// 65/124→59/112：六监控表退役 -6 表 -12 索引（f1991b708 名单已删、
+	// 计数漏改；2026-10-17 专门批取证回正）。
+	Stats:        SchemaCounts{Tables: 59, Indexes: 112},
 	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
 	Dataset:      SchemaCounts{Tables: 3, Indexes: 4},
@@ -221,8 +235,8 @@ var goldenSchemaCounts = SQLiteResult{
 
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
-// verify every schema exactly).
-const goldenTotalTables = 161
+// verify every schema exactly). 155→152：供应商与上游协议面重构批 -8/+5。
+const goldenTotalTables = 152
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
@@ -230,8 +244,9 @@ const goldenTotalTables = 161
 // Go-created indexes outside the DDL constants count too: the
 // scheduling_preferences batch adds four inline business indexes plus the
 // guarded idx_api_keys_scheduling_preference created by EnsureSQLiteBusiness
-// (调度偏好独立实体 PLAN-20261012T033000000Z).
-const goldenTotalIndexes = 397
+// (调度偏好独立实体 PLAN-20261012T033000000Z). 385→366：供应商与上游协议面
+// 重构批 business 索引 -23/+3。
+const goldenTotalIndexes = 366
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {
@@ -743,5 +758,132 @@ func TestEnsureFunctionsCreateExactTableSets(t *testing.T) {
 			}
 			assertExactNameSet(t, "table", querySQLiteMasterNames(t, db, "table"), tc.tables)
 		})
+	}
+}
+
+// insertSchemaTestAccount seeds one minimal resource account with the
+// health-check triple left NULL (fresh DDL leaves PRAGMA foreign_keys = ON;
+// the NULL connection id skips the composite FK until it is backfilled).
+func insertSchemaTestAccount(t *testing.T, db *sql.DB, accountID string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO accounts
+      (id, system_account_id, connection_driver_code, protocol_code, protocol_version, name, type, credentials_encrypted, created_at, updated_at)
+      VALUES (?, 'sys_admin', 'gpt', 'openai', 'v1', ?, 'api_key', '{}', '2026-10-17T00:00:00Z', '2026-10-17T00:00:00Z')`,
+		accountID, "账号-"+accountID); err != nil {
+		t.Fatalf("insert account %s with NULL health-check triple: %v", accountID, err)
+	}
+}
+
+// insertSchemaTestAccountWithConnection seeds one minimal resource account plus
+// one connection for the health-check constraint tests below.
+func insertSchemaTestAccountWithConnection(t *testing.T, db *sql.DB, accountID, connectionID string) {
+	t.Helper()
+	insertSchemaTestAccount(t, db, accountID)
+	if _, err := db.Exec(`INSERT INTO account_connections
+      (id, account_id, connection_preset_code, base_url, created_at, updated_at)
+      VALUES (?, ?, 'gpt_openai_v1', 'https://api.openai.com/v1', '2026-10-17T00:00:00Z', '2026-10-17T00:00:00Z')`,
+		connectionID, accountID); err != nil {
+		t.Fatalf("insert connection %s: %v", connectionID, err)
+	}
+}
+
+// TestSQLiteAccountsHealthCheckNullabilityAndForeignKey pins 复审 blocker B-1
+// （设计 §10 硬规则）：accounts 的 health_check_connection_id /
+// health_check_endpoint_mode / health_check_model 三列不得 NOT NULL——fresh DDL
+// 开启外键下必须允许「先插 accounts（三字段 NULL）→ 再插 connection +
+// endpoint mode → 最后一条 UPDATE 补齐三字段」的创建事务顺序；同时验证复合
+// 外键方向（connection 不能先于其 account 存在）与 (account_id, id) 目标
+// 语义（不能把 health_check_connection_id 指向他人连接）。三列 NOT NULL +
+// 复合外键时 fresh 库任何插入顺序都无法创建账户。
+func TestSQLiteAccountsHealthCheckNullabilityAndForeignKey(t *testing.T) {
+	db := openSharedMemorySQLite(t, "authsys-schema-test-accounts-health-fk")
+	ctx := context.Background()
+	if _, err := EnsureSQLiteBusiness(ctx, db); err != nil {
+		t.Fatalf("EnsureSQLiteBusiness: %v", err)
+	}
+	var foreignKeys int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("read PRAGMA foreign_keys: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("PRAGMA foreign_keys = %d, want 1 (fresh DDL must leave FK enforcement on)", foreignKeys)
+	}
+
+	// 第 1 步：account 先行，health-check 三字段保持 NULL。
+	insertSchemaTestAccount(t, db, "acct-1")
+
+	// FK 方向验证：connection 引用不存在的 account 必须失败。
+	if _, err := db.Exec(`INSERT INTO account_connections
+      (id, account_id, connection_preset_code, base_url, created_at, updated_at)
+      VALUES ('conn-orphan', 'no-such-account', 'gpt_openai_v1', 'https://api.openai.com/v1', '2026-10-17T00:00:00Z', '2026-10-17T00:00:00Z')`); err == nil {
+		t.Fatal("insert connection referencing a missing account must violate the accounts FK")
+	}
+
+	// 第 2 步：connection + endpoint mode（不引入词表外值，另测见词表测试）。
+	if _, err := db.Exec(`INSERT INTO account_connections
+      (id, account_id, connection_preset_code, base_url, created_at, updated_at)
+      VALUES ('conn-1', 'acct-1', 'gpt_openai_v1', 'https://api.openai.com/v1', '2026-10-17T00:00:00Z', '2026-10-17T00:00:00Z')`); err != nil {
+		t.Fatalf("insert connection for acct-1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-1', 'chat_json')`); err != nil {
+		t.Fatalf("insert endpoint mode: %v", err)
+	}
+
+	// 第 3 步：同一条 UPDATE 补齐三字段（设计 §10：三字段必须在同一条
+	// UPDATE 内写入，避免语句级 CHECK 看到半更新）。
+	if _, err := db.Exec(`UPDATE accounts
+      SET health_check_connection_id = 'conn-1', health_check_endpoint_mode = 'chat_json', health_check_model = 'gpt-5.6-sol'
+      WHERE id = 'acct-1'`); err != nil {
+		t.Fatalf("backfill health-check triple on acct-1: %v", err)
+	}
+
+	// 复合外键 (account_id, id) 目标语义：acct-2 不能指向 acct-1 的连接。
+	insertSchemaTestAccount(t, db, "acct-2")
+	if _, err := db.Exec(`UPDATE accounts
+      SET health_check_connection_id = 'conn-1', health_check_endpoint_mode = 'chat_json', health_check_model = 'gpt-5.6-sol'
+      WHERE id = 'acct-2'`); err == nil {
+		t.Fatal("pointing health_check_connection_id at another account's connection must violate the composite FK")
+	}
+}
+
+// TestSQLiteHealthCheckEndpointModeCheckVocabulary pins 复审 blocker B-2
+// （设计 :114）：health_check_endpoint_mode 数据库 CHECK 与
+// account_endpoint_modes.endpoint_mode 词表必须精确覆盖设计 §2.2 的 25 个值，
+// 不得沿用旧的 22 值——message_token_counting / count_tokens / embed_content
+// 三新值各插入通过，词表外值被列级 CHECK 拒绝。
+func TestSQLiteHealthCheckEndpointModeCheckVocabulary(t *testing.T) {
+	db := openSharedMemorySQLite(t, "authsys-schema-test-health-mode-vocab")
+	ctx := context.Background()
+	if _, err := EnsureSQLiteBusiness(ctx, db); err != nil {
+		t.Fatalf("EnsureSQLiteBusiness: %v", err)
+	}
+	insertSchemaTestAccountWithConnection(t, db, "acct-vocab", "conn-vocab")
+
+	// 三新值在 account_endpoint_modes 各自插入通过（真实 connection 满足外键，
+	// 拒绝只可能来自列级 CHECK）。
+	for _, mode := range []string{"message_token_counting", "count_tokens", "embed_content"} {
+		if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-vocab', ?)`, mode); err != nil {
+			t.Fatalf("endpoint mode %q must pass the 25-value CHECK: %v", mode, err)
+		}
+	}
+	// 词表外值拒绝（account_endpoint_modes）。
+	if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-vocab', 'teleport_json')`); err == nil {
+		t.Fatal("out-of-vocabulary endpoint mode must be rejected by account_endpoint_modes CHECK")
+	}
+
+	// 三新值在 accounts.health_check_endpoint_mode 各自通过（连接外键有效，
+	// 三字段同一条 UPDATE 补齐保持行完整）。
+	for _, mode := range []string{"message_token_counting", "count_tokens", "embed_content"} {
+		if _, err := db.Exec(`UPDATE accounts
+      SET health_check_connection_id = 'conn-vocab', health_check_endpoint_mode = ?, health_check_model = 'gpt-5.6-sol'
+      WHERE id = 'acct-vocab'`, mode); err != nil {
+			t.Fatalf("accounts health_check_endpoint_mode %q must pass the 25-value CHECK: %v", mode, err)
+		}
+	}
+	// 词表外值拒绝（accounts 列级 CHECK；复合外键目标有效，拒绝只能来自 CHECK）。
+	if _, err := db.Exec(`UPDATE accounts
+      SET health_check_connection_id = 'conn-vocab', health_check_endpoint_mode = 'teleport_json', health_check_model = 'gpt-5.6-sol'
+      WHERE id = 'acct-vocab'`); err == nil {
+		t.Fatal("out-of-vocabulary health_check_endpoint_mode must be rejected by the accounts CHECK")
 	}
 }

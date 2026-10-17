@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -135,6 +136,18 @@ func w11eNewPlan() w11eSchemaPlan {
 
 func w11eQuoteIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+// w11eBareIntegerComparison 命中契约谓词中的裸整数字面量比较（列 = 123）；
+// 字符串字面量（'key_model'）不匹配。
+var w11eBareIntegerComparison = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)\b`)
+
+// w11ePgFixturePredicate 把契约谓词改写为可在 TEXT 列 fixture 上执行的
+// PostgreSQL 形态：PG 无隐式 text=integer，裸整数比较补 ::integer 转型。
+// 校验侧的谓词等价归一会剥掉括号与 ::type 转型，实际谓词仍与契约谓词
+// 等价（v16 groups 部分唯一索引 is_default = 1 首次引入整数谓词）。
+func w11ePgFixturePredicate(predicate string) string {
+	return w11eBareIntegerComparison.ReplaceAllString(predicate, "${1}::integer = ${2}")
 }
 
 // w11eSchemaDDL 从 contracts.BusinessSQLiteSchema 生成结构等价的 PostgreSQL
@@ -269,7 +282,7 @@ func w11eSchemaDDL(schema string, plan w11eSchemaPlan) []string {
 			columnList := strings.Join(columns, ",")
 			predicate := ""
 			if strings.TrimSpace(definition.Predicate) != "" {
-				predicate = " WHERE " + definition.Predicate
+				predicate = " WHERE " + w11ePgFixturePredicate(definition.Predicate)
 			}
 			switch plan.indexVariant[indexName] {
 			case "expression":
@@ -338,7 +351,7 @@ func TestW11ECheckBusinessPostgresSchemaAcceptsContractShape(t *testing.T) {
 
 	// relkind=p 分区表是合法 BASE TABLE 形态。
 	partitioned := w11eNewPlan()
-	partitioned.partitionTables["providers"] = true
+	partitioned.partitionTables["model_quality_policies"] = true
 	w11eRecreateSchema(t, db, "w11e_bs_part", partitioned)
 	if err := CheckBusinessPostgresSchema(ctx, db, "w11e_bs_part"); err != nil {
 		t.Fatalf("分区表形态必须通过校验: %v", err)
@@ -369,11 +382,11 @@ func TestW11ECheckBusinessPostgresSchemaRejectsDrifts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), w11ePgBudget)
 	defer cancel()
 	missingTable := w11eNewPlan()
-	missingTable.skipTable["providers"] = true
+	missingTable.skipTable["model_quality_policies"] = true
 	asView := w11eNewPlan()
-	asView.viewTables["providers"] = true
+	asView.viewTables["model_quality_policies"] = true
 	missingColumn := w11eNewPlan()
-	missingColumn.missingColumn["providers"] = "enabled"
+	missingColumn.missingColumn["model_quality_policies"] = "profile"
 	missingPK := w11eNewPlan()
 	missingPK.skipPK["account_quality_enforcements"] = true
 	missingUnique := w11eNewPlan()
@@ -399,9 +412,9 @@ func TestW11ECheckBusinessPostgresSchemaRejectsDrifts(t *testing.T) {
 		plan   w11eSchemaPlan
 		want   string
 	}{
-		{schema: "w11e_bs_neg1", plan: missingTable, want: "missing table providers"},
+		{schema: "w11e_bs_neg1", plan: missingTable, want: "missing table model_quality_policies"},
 		{schema: "w11e_bs_neg2", plan: asView, want: "want BASE TABLE"},
-		{schema: "w11e_bs_neg3", plan: missingColumn, want: "missing column providers.enabled"},
+		{schema: "w11e_bs_neg3", plan: missingColumn, want: "missing column model_quality_policies.profile"},
 		{schema: "w11e_bs_neg4", plan: missingPK, want: "missing primary key account_quality_enforcements"},
 		{schema: "w11e_bs_neg5", plan: missingUnique, want: "missing unique constraint system_accounts"},
 		{schema: "w11e_bs_neg6", plan: missingFK, want: "missing foreign key"},
@@ -438,9 +451,9 @@ func TestW11EOpenBusinessTargetConnectionPostgresArms(t *testing.T) {
 
 	// juhe_business 不满足契约时 SchemaReady 必须拒绝。
 	broken := w11eNewPlan()
-	broken.skipTable["providers"] = true
+	broken.skipTable["model_quality_policies"] = true
 	w11eRecreateSchema(t, db, "juhe_business", broken)
-	if _, err := OpenBusinessTargetConnection(ctx, Config{Enabled: true, StoreMode: "postgres", BusinessPostgresURL: coverURL, CredentialSecret: "w11e-secret", SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "missing table providers") {
+	if _, err := OpenBusinessTargetConnection(ctx, Config{Enabled: true, StoreMode: "postgres", BusinessPostgresURL: coverURL, CredentialSecret: "w11e-secret", SchemaReady: true}); err == nil || !strings.Contains(err.Error(), "missing table model_quality_policies") {
 		t.Fatalf("SchemaReady 契约失败必须传播: %v", err)
 	}
 

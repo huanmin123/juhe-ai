@@ -13,7 +13,7 @@
       <img class="brand-icon" :src="appIcon" :alt="`${appName} 图标`" />
       <span class="brand-text">{{ appName }}</span>
     </div>
-    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="light" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
+    <a-menu :open-keys="openKeys" :selected-keys="selectedKeys" theme="light" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @open-change="handleOpenChange" />
     <button class="collapse-toggle" type="button" @click="collapsed = !collapsed">
       <MenuUnfoldOutlined v-if="collapsed" />
       <MenuFoldOutlined v-else />
@@ -33,19 +33,18 @@
       <img class="brand-icon" :src="appIcon" :alt="`${appName} 图标`" />
       <span class="brand-text">{{ appName }}</span>
     </div>
-    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="light" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
+    <a-menu :open-keys="openKeys" :selected-keys="selectedKeys" theme="light" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @open-change="handleOpenChange" />
   </a-drawer>
 </template>
 
 <script setup lang="ts">
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons-vue'
 import type { ItemType } from 'ant-design-vue'
-import { ref, watch } from 'vue'
 
 const open = defineModel<boolean>('open', { required: true })
 const collapsed = defineModel<boolean>('collapsed', { required: true })
 
-const props = defineProps<{
+defineProps<{
   appIcon: string
   appName: string
   isMobile: boolean
@@ -56,22 +55,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }): void
+  (event: 'open-change', keys: string[]): void
 }>()
 
-const menuOpenKeys = ref<string[]>([])
-
+// 展开状态唯一来源是 AppLayout（持久化与路由组并集都在那里）；侧栏只回传用户的手动开合。
 function handleOpenChange(keys: Array<string | number>) {
-  menuOpenKeys.value = keys.map((key) => String(key))
+  emit('open-change', keys.map((key) => String(key)))
 }
-
-watch(
-  () => props.openKeys,
-  (keys) => {
-    if (!keys.length) return
-    menuOpenKeys.value = [...new Set([...menuOpenKeys.value, ...keys])]
-  },
-  { immediate: true }
-)
 </script>
 
 <style scoped>

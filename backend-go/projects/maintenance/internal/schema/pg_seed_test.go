@@ -18,28 +18,36 @@ import (
 var pgSeedTestClock = time.Date(2026, 9, 4, 8, 0, 0, 123456000, time.UTC)
 
 func TestBuildPostgresModelSeedUpsertRendering(t *testing.T) {
-	query, args := buildPostgresModelSeedUpsert(modelCatalogSeedRows, "2026-09-04T08:00:00.123Z")
-	if got := len(modelCatalogSeedRows) * 39; len(args) != got {
+	rows, err := modelSeedTargetRows("2026-09-04")
+	if err != nil {
+		t.Fatalf("modelSeedTargetRows: %v", err)
+	}
+	query, args := buildPostgresModelSeedUpsert(rows, "2026-09-04T08:00:00.123Z")
+	if got := len(rows) * 40; len(args) != got {
 		t.Fatalf("bulk upsert arg count = %d, want %d", len(args), got)
 	}
-	if !strings.Contains(query, `INSERT INTO "juhe_business"."provider_model_catalog"`) {
+	if !strings.Contains(query, `INSERT INTO "juhe_business"."models"`) {
 		t.Fatal("bulk upsert misses the qualified insert target")
 	}
-	if !strings.Contains(query, "ON CONFLICT(provider_code, model) DO UPDATE SET") {
-		t.Fatal("bulk upsert misses the Node conflict clause")
+	if !strings.Contains(query, "ON CONFLICT (coalesce(vendor_code, ''), scope, coalesce(system_account_id, ''), upstream_model) DO UPDATE SET") {
+		t.Fatal("bulk upsert misses the identity-index conflict clause")
 	}
 	for _, guard := range []string{"manual-override", "manual-visibility-override", "excluded.catalog_visible"} {
 		if !strings.Contains(query, guard) {
 			t.Fatalf("bulk upsert misses guard %q", guard)
 		}
 	}
-	// status is the 'active' literal once per row, never a parameter.
-	if got := strings.Count(query, "'active'"); got != len(modelCatalogSeedRows) {
-		t.Fatalf("'active' literal count = %d, want %d", got, len(modelCatalogSeedRows))
+	// scope/system_account_id/currency are per-row literals, never parameters.
+	if got := strings.Count(query, "'builtin'"); got != len(rows) {
+		t.Fatalf("'builtin' literal count = %d, want %d", got, len(rows))
 	}
-	// Row boundaries: second row starts at $40, last row ends at $<args len>.
-	if !strings.Contains(query, "),\n          ($40, $41, $42, 'active'") {
-		t.Fatal("bulk upsert second row does not start at $40")
+	if got := strings.Count(query, "'USD'"); got != len(rows) {
+		t.Fatalf("'USD' literal count = %d, want %d", got, len(rows))
+	}
+	// 第二行行首元素格式校验：每行 40 参数，第二行从 $41 重启，且字面量列序
+	// 与首行一致（'builtin' 后紧跟 system_account_id 的 NULL，再接 status）。
+	if !strings.Contains(query, "),\n          ($41, $42, $43, $44, 'builtin', NULL, $45") {
+		t.Fatal("bulk upsert second row misses the 40-parameter restart with builtin/NULL literals")
 	}
 	if !strings.Contains(query, "$"+strconv.Itoa(len(args))) {
 		t.Fatalf("bulk upsert misses the final placeholder $%d", len(args))
@@ -47,30 +55,206 @@ func TestBuildPostgresModelSeedUpsertRendering(t *testing.T) {
 	if strings.Contains(query, "$"+strconv.Itoa(len(args)+1)) {
 		t.Fatal("bulk upsert has a placeholder beyond the arg count")
 	}
-	// First row args mirror the first static row plus now/now.
-	first := modelCatalogSeedRows[0]
-	if args[0] != first.ID || args[1] != first.ProviderCode || args[2] != first.Model {
-		t.Fatalf("first row identity args = %v/%v/%v", args[0], args[1], args[2])
+	// First row args mirror the first projected row.
+	first := rows[0]
+	if args[0] != first.ID || args[1] != first.VendorCode || args[2] != first.PublicModel || args[3] != first.UpstreamModel {
+		t.Fatalf("first row identity args = %v/%v/%v/%v", args[0], args[1], args[2], args[3])
 	}
-	if args[3] != seedNullableString(first.Mode) {
-		t.Fatalf("first row mode arg = %v, want %v", args[3], seedNullableString(first.Mode))
+	if args[4] != first.Status {
+		t.Fatalf("first row status arg = %v, want %v", args[4], first.Status)
 	}
-	if args[len(args)-1] != "2026-09-04T08:00:00.123Z" || args[len(args)-2] != "2026-09-04T08:00:00.123Z" {
-		t.Fatal("bulk upsert does not end with the seeded timestamps")
+	if args[39] != seedNullableFloat64(first.OutputUsdPerImage) {
+		t.Fatalf("first row final arg = %v, want OutputUsdPerImage %v (currency 是语句内字面量)", args[39], first.OutputUsdPerImage)
+	}
+}
+
+// --- models bulk upsert arity 防线（PG 与 SQLite 双侧）---
+
+// splitSeedUpsertTopLevelCommas 按顶层逗号切分 VALUES 元组体：单引号字符串
+// 字面量内的逗号与 '' 转义不参与切分；$n / ? 占位符按普通 token 返回。
+func splitSeedUpsertTopLevelCommas(body string) []string {
+	var elements []string
+	var current strings.Builder
+	inString := false
+	for index := 0; index < len(body); index++ {
+		switch ch := body[index]; {
+		case inString:
+			current.WriteByte(ch)
+			if ch == '\'' {
+				if index+1 < len(body) && body[index+1] == '\'' {
+					current.WriteByte('\'')
+					index++
+					continue
+				}
+				inString = false
+			}
+		case ch == '\'':
+			inString = true
+			current.WriteByte(ch)
+		case ch == ',':
+			elements = append(elements, strings.TrimSpace(current.String()))
+			current.Reset()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	return append(elements, strings.TrimSpace(current.String()))
+}
+
+// scanSeedUpsertTuples 提取 VALUES 段内全部顶层 (...) 元组（单引号字面量内的
+// 括号与逗号不参与结构计数）。
+func scanSeedUpsertTuples(section string) []string {
+	var tuples []string
+	depth := 0
+	inString := false
+	start := -1
+	for index := 0; index < len(section); index++ {
+		switch ch := section[index]; {
+		case inString:
+			if ch == '\'' {
+				if index+1 < len(section) && section[index+1] == '\'' {
+					index++
+					continue
+				}
+				inString = false
+			}
+		case ch == '\'':
+			inString = true
+		case ch == '(':
+			if depth == 0 {
+				start = index
+			}
+			depth++
+		case ch == ')':
+			depth--
+			if depth == 0 && start >= 0 {
+				tuples = append(tuples, section[start:index+1])
+				start = -1
+			}
+		}
+	}
+	return tuples
+}
+
+// seedUpsertInsertColumnCount 解析 INSERT 语句的目标列清单（首个括号组，列名
+// 是普通标识符），返回列数 N。
+func seedUpsertInsertColumnCount(t *testing.T, insertStatement string) int {
+	t.Helper()
+	open := strings.Index(insertStatement, "(")
+	if open < 0 {
+		t.Fatalf("insert statement misses the column list: %.80s", insertStatement)
+	}
+	depth := 0
+	inString := false
+	for index := open; index < len(insertStatement); index++ {
+		switch ch := insertStatement[index]; {
+		case inString:
+			if ch == '\'' {
+				inString = false
+			}
+		case ch == '\'':
+			inString = true
+		case ch == '(':
+			depth++
+		case ch == ')':
+			depth--
+			if depth == 0 {
+				columns := splitSeedUpsertTopLevelCommas(insertStatement[open+1 : index])
+				if len(columns) == 0 {
+					t.Fatalf("insert statement has an empty column list: %.120s", insertStatement)
+				}
+				return len(columns)
+			}
+		}
+	}
+	t.Fatalf("insert statement has an unterminated column list: %.120s", insertStatement)
+	return 0
+}
+
+// TestPostgresModelSeedUpsertRowArityMatchesTargetColumns 是 PG models 批量
+// upsert 的 arity 防线：目标列数 N 取自 pgSeedModelsColumns 本身，对渲染出的
+// 每一行 VALUES 元组做顶层逗号元素计数，逐行断言 == N，且每行恰有 40 个 $n
+// 占位符（40 参数 + 8 字面量）。历史 blocker：目标列 48 列而每行只渲染 43 值，
+// PG 执行报 42601 且第 25 列起整体错位。
+func TestPostgresModelSeedUpsertRowArityMatchesTargetColumns(t *testing.T) {
+	columnCount := seedUpsertInsertColumnCount(t, pgSeedModelsColumns)
+	rows, err := modelSeedTargetRows("2026-09-04")
+	if err != nil {
+		t.Fatalf("modelSeedTargetRows: %v", err)
+	}
+	query, args := buildPostgresModelSeedUpsert(rows, "2026-09-04T08:00:00.123Z")
+	if len(args) != len(rows)*40 {
+		t.Fatalf("bulk upsert arg count = %d, want %d", len(args), len(rows)*40)
+	}
+	valuesIndex := strings.Index(query, ") VALUES")
+	conflictIndex := strings.Index(query, "ON CONFLICT")
+	if valuesIndex < 0 || conflictIndex < 0 || valuesIndex > conflictIndex {
+		t.Fatalf("bulk upsert misses the VALUES...ON CONFLICT frame: values=%d conflict=%d", valuesIndex, conflictIndex)
+	}
+	tuples := scanSeedUpsertTuples(query[valuesIndex+len(") VALUES") : conflictIndex])
+	if len(tuples) != len(rows) {
+		t.Fatalf("rendered VALUES tuples = %d, want %d", len(tuples), len(rows))
+	}
+	for index, tuple := range tuples {
+		elements := splitSeedUpsertTopLevelCommas(strings.TrimSuffix(strings.TrimPrefix(tuple, "("), ")"))
+		if len(elements) != columnCount {
+			t.Fatalf("VALUES row %d element count = %d, want %d (pgSeedModelsColumns)", index+1, len(elements), columnCount)
+		}
+		placeholders := 0
+		for _, element := range elements {
+			if strings.HasPrefix(element, "$") {
+				placeholders++
+			}
+		}
+		if placeholders != 40 {
+			t.Fatalf("VALUES row %d placeholder count = %d, want 40", index+1, placeholders)
+		}
+	}
+}
+
+// TestSQLiteModelSeedUpsertTupleArityMatchesTargetColumns 对 SQLite 同构实现
+// （sqSeedModelsUpsert，PG 行模板的正确参照）做同样的 arity 断言：静态语句的
+// 目标列数与单个 VALUES 元组元素数必须相等，且恰有 40 个 ? 占位符，防止两侧
+// 行模板再次漂移。
+func TestSQLiteModelSeedUpsertTupleArityMatchesTargetColumns(t *testing.T) {
+	columnCount := seedUpsertInsertColumnCount(t, sqSeedModelsUpsert)
+	const valuesMarker = ") VALUES ("
+	valuesIndex := strings.Index(sqSeedModelsUpsert, valuesMarker)
+	conflictIndex := strings.Index(sqSeedModelsUpsert, "ON CONFLICT")
+	if valuesIndex < 0 || conflictIndex < 0 || valuesIndex > conflictIndex {
+		t.Fatalf("sqSeedModelsUpsert misses the VALUES...ON CONFLICT frame: values=%d conflict=%d", valuesIndex, conflictIndex)
+	}
+	tuples := scanSeedUpsertTuples(sqSeedModelsUpsert[valuesIndex+len(valuesMarker)-1 : conflictIndex])
+	if len(tuples) != 1 {
+		t.Fatalf("sqSeedModelsUpsert VALUES tuples = %d, want 1", len(tuples))
+	}
+	elements := splitSeedUpsertTopLevelCommas(strings.TrimSuffix(strings.TrimPrefix(tuples[0], "("), ")"))
+	if len(elements) != columnCount {
+		t.Fatalf("sqSeedModelsUpsert VALUES element count = %d, want %d (target columns)", len(elements), columnCount)
+	}
+	placeholders := 0
+	for _, element := range elements {
+		if element == "?" {
+			placeholders++
+		}
+	}
+	if placeholders != 40 {
+		t.Fatalf("sqSeedModelsUpsert placeholder count = %d, want 40", placeholders)
 	}
 }
 
 func TestPostgresSeedStatementContracts(t *testing.T) {
-	// The stale disable keeps every Node reference guard.
+	// The stale disable keeps the reference guards translated to the models
+	// target form（支持关系/入口映射按 model_id、健康检查按 upstream_model 名，
+	// manual 覆盖行保留）.
 	for _, fragment := range []string{
-		"jsonb_to_recordset($2::jsonb) AS built_in(provider_code text, model text)",
+		`UPDATE "juhe_business"."models"`,
+		"jsonb_to_recordset($2::jsonb) AS built_in(vendor_code text, upstream_model text)",
 		"source NOT IN ('manual-override', 'manual-visibility-override')",
 		`"juhe_business"."account_supported_models"`,
-		`"juhe_business"."account_model_mappings"`,
-		`"juhe_business"."provider_default_health_check_models"`,
-		`"juhe_business"."provider_system_default_health_check_models"`,
+		`"juhe_business"."account_entry_mappings"`,
 		`"juhe_business"."accounts"`,
-		"account.health_check_model",
+		"account.health_check_model = stale_model.upstream_model",
 	} {
 		if !strings.Contains(pgSeedStaleBuiltInModelsDisable, fragment) {
 			t.Fatalf("stale disable misses %q", fragment)
@@ -95,13 +279,12 @@ func TestPostgresSeedStatementContracts(t *testing.T) {
 			t.Fatalf("%s insert misses ON CONFLICT DO NOTHING", name)
 		}
 	}
-	// The built-in model key list serializes like the Node
-	// JSON.stringify(currentBuiltInModels) payload.
-	encoded, err := json.Marshal([]pgSeedBuiltInModelKey{{ProviderCode: "gpt", Model: "gpt-5.6-sol"}})
+	// The built-in model key list serializes like the identity-key payload.
+	encoded, err := json.Marshal([]pgSeedBuiltInModelKey{{VendorCode: "gpt", UpstreamModel: "gpt-5.6-sol"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(encoded) != `[{"provider_code":"gpt","model":"gpt-5.6-sol"}]` {
+	if string(encoded) != `[{"vendor_code":"gpt","upstream_model":"gpt-5.6-sol"}]` {
 		t.Fatalf("built-in key payload = %s", encoded)
 	}
 }
@@ -150,19 +333,26 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 	if mustChangePassword != 1 {
 		t.Fatalf("seeded admin must_change_password = %d, want 1", mustChangePassword)
 	}
-	var catalogRows int
+	var modelRows int
 	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM "juhe_business"."provider_model_catalog" WHERE status = 'active'`,
-	).Scan(&catalogRows); err != nil {
-		t.Fatalf("count catalog rows: %v", err)
+		`SELECT count(*) FROM "juhe_business"."models"`,
+	).Scan(&modelRows); err != nil {
+		t.Fatalf("count model rows: %v", err)
 	}
-	// pgSeedTestClock 钉在 2026-09-04：2026-10-04 M1 音频 + M2/M3 视频 + M3f
-	// 长音频增补后 seed 数据共 138 行（audio/video 行无 ShutdownDate，含 M3
-	// minimax 2 行、第四批 volcengine 1 行、第五批 qwen 1 行与 M3f paraformer
-	// 1 行），且最早的 ShutdownDate 为 2026-09-10，故该时钟下活跃行数 =
-	// 全量 138（与 sqlite_seed_test.go 的 sqliteSeedTestClock 一致）。
-	if catalogRows != 139 {
-		t.Fatalf("active catalog rows = %d, want 139 (M5b gpt-realtime +1)", catalogRows)
+	// pgSeedTestClock 钉在 2026-09-04：models 表全量落库（disabled 行计入）
+	// = 目录快照 212 行；其中 shutdown 已过的 6 行（xai 2026-05-15 四行 +
+	// gemini veo-3.0 两行 2025-11-12）写 'disabled'。
+	if modelRows != 212 {
+		t.Fatalf("model rows = %d, want 212 (full snapshot, disabled included)", modelRows)
+	}
+	var activeModelRows int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM "juhe_business"."models" WHERE status = 'active'`,
+	).Scan(&activeModelRows); err != nil {
+		t.Fatalf("count active model rows: %v", err)
+	}
+	if activeModelRows != 206 {
+		t.Fatalf("active model rows = %d, want 206 (6 shutdown-expired rows disabled at the pinned clock)", activeModelRows)
 	}
 	var defaultKeys int
 	if err := db.QueryRowContext(ctx,

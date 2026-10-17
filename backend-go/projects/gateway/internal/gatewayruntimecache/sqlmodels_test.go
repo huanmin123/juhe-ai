@@ -29,7 +29,8 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
+		// groups 无 provider_code（供应商与上游协议面重构设计 §8：列已退役）。
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
 		`CREATE TABLE group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)`,
@@ -165,8 +166,8 @@ func seedGatewayKeyFixture(t *testing.T, db *sql.DB) {
 	// 读取链会显式失败），见 spc1 六态测试。
 	statements := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g1', 'sys_owner', 'gpt', 1)`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g2', 'sys_owner', 'gpt', 1)`,
+		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`,
+		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g2', 'sys_owner', 1)`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
 		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
@@ -302,8 +303,8 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 	}
 	ctx := context.Background()
 	statements := []string{
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g_off', 'sys_owner', 'gpt', 0, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g_off', 'sys_owner', 0, 'personal')`,
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, effective_source_type, effective_source_team_id, expires_at, limits_json)
 			VALUES ('auth1', 'group', 'g1', 'sys_peer', 'active', 'team', 'team1', '2099-01-01T00:00:00.000Z', '{"daily":{"enabled":true,"limit":5}}')`,
 	}
@@ -313,12 +314,12 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 		}
 	}
 
-	// owner 短路。
+	// owner 短路。ProviderCode 过渡字段恒空（groups.provider_code 已退役）。
 	owner, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_owner")
 	if err != nil {
 		t.Fatalf("owner read: %v", err)
 	}
-	if owner == nil || owner.GroupAccessType != GroupAccessTypeOwner || owner.ProviderCode != "gpt" {
+	if owner == nil || owner.GroupAccessType != GroupAccessTypeOwner || owner.ProviderCode != "" {
 		t.Fatalf("owner access mismatch: %+v", owner)
 	}
 	// 授权访问。
@@ -435,6 +436,52 @@ func TestSQLInspectionPoliciesForGateway(t *testing.T) {
 	}
 }
 
+// TestSQLVisibleModelsDirectoryEntries 验证 models 目录可见性查询的数据面
+// （设计 §2.1/§6.1）：scope IN ('builtin','global','personal') 且
+// status='active' 行按 (public_model, scope, system_account_id) 三元组返回；
+// 非 active 行与非目录 scope 不返回。
+func TestSQLVisibleModelsDirectoryEntries(t *testing.T) {
+	db := newSQLTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE models (id TEXT PRIMARY KEY, public_model TEXT NOT NULL, scope TEXT NOT NULL, system_account_id TEXT, status TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	seed := []string{
+		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m1', 'gpt-x', 'builtin', NULL, 'active')`,
+		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m2', 'glm-air', 'global', NULL, 'active')`,
+		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m3', 'my-model', 'personal', 'sys_owner', 'active')`,
+		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m4', 'my-model', 'personal', 'sys_peer', 'active')`,
+		`INSERT INTO models (id, public_model, scope, system_account_id, status) VALUES ('m5', 'my-model', 'personal', 'sys_owner', 'inactive')`,
+	}
+	for _, statement := range seed {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("seed models: %v\n%s", err, statement)
+		}
+	}
+	models, err := NewSQLReadModels(db, false, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := models.ListVisibleModelsDirectoryEntries(context.Background())
+	if err != nil {
+		t.Fatalf("ListVisibleModelsDirectoryEntries: %v", err)
+	}
+	type key struct{ model, scope, owner string }
+	want := map[key]bool{
+		{"gpt-x", "builtin", ""}:              true,
+		{"glm-air", "global", ""}:             true,
+		{"my-model", "personal", "sys_owner"}: true,
+		{"my-model", "personal", "sys_peer"}:  true,
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %d 条, want %d: %+v", len(entries), len(want), entries)
+	}
+	for _, entry := range entries {
+		if !want[key{entry.PublicModel, entry.Scope, entry.SystemAccountID}] {
+			t.Fatalf("意外目录行: %+v", entry)
+		}
+	}
+}
+
 // seamAccountsSelector 是 AccountsSelector 的最小替身，用于 runtime 组合验证。
 type seamAccountsSelector struct {
 	results map[string]OpenAIAccountsForGroupResult
@@ -459,8 +506,8 @@ func TestSQLReadGatewayRuntimeComposition(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g2', 'sys_owner', 'gpt', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g2', 'sys_owner', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
 		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,

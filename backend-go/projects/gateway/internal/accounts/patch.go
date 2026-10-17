@@ -823,19 +823,20 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 
 	// Provider model-catalog validations (account-management-patch.repository.ts
-	// :445-452 + :667 + normalizedModelMappingsForPatch): the gpt
-	// request-override assertion rides the final credential record and the
-	// final supported-model set whenever credentials or supportedModels
-	// participate; the mapping assertions ride the final mapping set
-	// when modelMappings are present (with an actual change) or the enabled
-	// endpoint modes changed. Assertion failures roll the transaction back,
-	// so running it after the satellite writes stays observation-equivalent
-	// to the Node pre-write ordering.
+	// :667 + normalizedModelMappingsForPatch): the mapping assertions ride the
+	// final mapping set when modelMappings are present (with an actual change)
+	// or the enabled endpoint modes changed. Assertion failures roll the
+	// transaction back, so running it after the satellite writes stays
+	// observation-equivalent to the Node pre-write ordering. 请求覆盖两字段的
+	// 写入面校验（token 形状 + 协议族值域）在 credentials 参与时由
+	// NormalizeAccountCredentialsForWrite 执行（2026-10-18 起不再有目录断言）；
+	// credentials 未参与时最终凭据为行内存量、写入时已校验，无需重跑。
 	//
 	// finalCredentials lazily resolves the effective credential record behind
-	// those assertions: the normalized next record when the credentials input
-	// changed, the decrypted current record otherwise（归档 nextCredentials
-	// 语义：无 credentials 输入时为行内存量凭据）。
+	// the Gemini compatibility guard and the mapping assertions: the
+	// normalized next record when the credentials input changed, the decrypted
+	// current record otherwise（归档 nextCredentials 语义：无 credentials 输入
+	// 时为行内存量凭据）。
 	finalCredentials := Credentials{}
 	finalCredentialsResolved := false
 	resolveFinalCredentials := func() (Credentials, error) {
@@ -851,6 +852,14 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 		finalCredentialsResolved = true
 		return finalCredentials, nil
+	}
+	// 坏信封早检：请求覆盖目录断言在 2026-10-18 移除，但它顺带提供的
+	// 「凭据或支持模型参与变更时最终凭据必须可解密」契约在这里显式保留
+	// （坏信封仍按 500 报错），避免在凭据不可读的账户上静默改配置。
+	if input.CredentialsPresent || input.SupportedModelsPresent {
+		if _, err := resolveFinalCredentials(); err != nil {
+			return nil, err
+		}
 	}
 	// M2 Gemini 对话域联动（计划 §服务端统一校验）：chat 域 gemini（native
 	// 档案）且 modes 参与变更时保持「至少一种对话能力」；媒体域 gemini 不适
@@ -872,39 +881,6 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				// 文案保持断言族原文。
 				return nil, &ValidationError{Message: err.Error()}
 			}
-		}
-	}
-	if input.CredentialsPresent || input.SupportedModelsPresent {
-		finalCreds, err := resolveFinalCredentials()
-		if err != nil {
-			return nil, err
-		}
-		finalSupportedModels := []string{}
-		modelRows, err := tx.QueryContext(ctx, s.bind(`SELECT model FROM `+s.table("account_supported_models")+`
-			WHERE account_id = ? ORDER BY model ASC`), row.id)
-		if err != nil {
-			return nil, err
-		}
-		for modelRows.Next() {
-			var model string
-			if err := modelRows.Scan(&model); err != nil {
-				modelRows.Close()
-				return nil, err
-			}
-			finalSupportedModels = append(finalSupportedModels, model)
-		}
-		modelRows.Close()
-		if err := modelRows.Err(); err != nil {
-			return nil, err
-		}
-		if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
-			ProviderCode:    row.providerCode,
-			AccountType:     row.accountType,
-			Credentials:     finalCreds,
-			SupportedModels: finalSupportedModels,
-			SystemAccountID: row.systemAccountID,
-		}); err != nil {
-			return nil, err
 		}
 	}
 	mappingValidationSource := []ModelMapping{}

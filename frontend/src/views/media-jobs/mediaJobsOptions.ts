@@ -20,20 +20,17 @@ export const mediaJobKindFilterOptions: Array<{ label: string; value: MediaJobKi
   { label: '长音频合成', value: 'audio_speech' }
 ]
 
+/** 列表只保留通用管理列；供应商/上游任务号/归属账户/时长尺寸/用量/错误等细节入详情抽屉（媒体设计 §8.2）。 */
 export const mediaJobColumns: Array<Record<string, unknown>> = [
   { title: '任务 ID', key: 'id', width: 210 },
   { title: '类型', key: 'kind', width: 116 },
   { title: '状态', key: 'status', width: 96 },
-  { title: '供应商', key: 'providerCode', width: 110 },
-  { title: '模型', key: 'model', minWidth: 190, responsiveFlex: true },
-  { title: '时长', key: 'seconds', width: 92 },
-  { title: '尺寸', key: 'size', width: 100 },
+  { title: '模型', key: 'model', minWidth: 180, responsiveFlex: true },
+  { title: '提示词', key: 'promptSummary', minWidth: 240, responsiveFlex: true },
   { title: 'API Key', key: 'apiKeyId', width: 150 },
-  { title: 'AI 账户', key: 'accountId', width: 150 },
   { title: '成本 USD', key: 'costUsd', width: 110 },
-  { title: '错误', key: 'error', width: 150 },
   { title: '创建时间', key: 'createdAt', width: 170 },
-  { title: '更新时间', key: 'updatedAt', width: 170 }
+  { title: '操作', key: 'actions', width: 88, fixed: 'right', align: 'left' }
 ]
 
-export const mediaJobTableScrollX = 1818
+export const mediaJobTableScrollX = 1310

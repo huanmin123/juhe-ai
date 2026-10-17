@@ -1109,14 +1109,16 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	assertImportCapabilityDomainBounds(source, planCtx.providers)
 
 	// The endpoint-mode compatibility asserts stay with the model-validation
-	// companion slice; the gpt request-override catalog validation and the
-	// mapping catalog checks landed with the model-catalog-validation slice
-	// (model_catalog_validation.go).
+	// companion slice; the mapping catalog checks landed with the
+	// model-catalog-validation slice (model_catalog_validation.go). 请求覆盖
+	// 两字段（service_tier_override / reasoning_effort_override）无独立导入
+	// 断言臂（2026-10-18 简化定案）：normalizeImportAccountCredentials 的
+	// 写入面归一化已执行 token 形状 + 协议族值域校验，执行链经 Store.Create
+	// 重验。
 
 	if err := s.validateImportModelCatalogFields(ctx, source, planCtx); err != nil {
 		return plan, err
 	}
-	s.validateImportGptRequestOverrides(ctx, source, planCtx)
 	if err := s.resolveImportAccountGroup(ctx, &plan, planCtx, groupIDsByKey, groupNamesToCreate); err != nil {
 		return plan, err
 	}
@@ -1373,29 +1375,6 @@ func (s *Service) validateImportModelCatalogFields(ctx context.Context, source *
 // 不携带该后缀，仅导入计划的 per-account message 生效。
 func importCatalogGuidance(err error) string {
 	return err.Error() + "。请先在模型目录创建这些模型并配置价格后再导入"
-}
-
-// validateImportGptRequestOverrides mirrors
-// validateImportAccountGptRequestOverridesAsync
-// (account-import-account-plan.ts): the catalog-backed assertion with the
-// import fallback to the provider default supported models; failures land as
-// per-account messages exactly like the Node plan helper.
-func (s *Service) validateImportGptRequestOverrides(ctx context.Context, source *NormalizedImportAccount, planCtx *importPlanContext) {
-	supportedModels := source.supportedModels
-	if len(supportedModels) == 0 {
-		if provider := planCtx.providers[source.providerCode]; provider != nil {
-			supportedModels = provider.defaultSupportedModels
-		}
-	}
-	if err := s.deps.AssertGptRequestOverridesSupported(ctx,
-		source.providerCode,
-		source.accountType,
-		source.credentials,
-		supportedModels,
-		planCtx.access.EffectiveViewerID(),
-	); err != nil {
-		source.Push(err.Error())
-	}
 }
 
 // resolveImportAccountGroup mirrors resolveAccountGroupAsync.

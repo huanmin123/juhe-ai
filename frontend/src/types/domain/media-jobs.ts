@@ -33,6 +33,45 @@ export interface MediaJobListResult {
   total: number
 }
 
+/** 详情行产物定位面（零资源存储指针，可能已过期；非终态或缺省省略）。 */
+export interface MediaJobDetailArtifact {
+  contentUrl?: string
+  expiresAt?: string
+}
+
+/** 详情行用量面（结构化计量 + 厂商原生用量字段）。 */
+export interface MediaJobDetailUsage {
+  outputVideoSeconds?: number
+  audioInputSeconds?: number
+  raw?: Record<string, unknown>
+}
+
+/** 管理面媒体任务详情行全量（媒体设计 §8.2，列表行字段 + 细节与返回内容定位）。 */
+export interface MediaJobDetail {
+  id: string
+  kind: MediaJobKind
+  status: MediaJobStatus
+  providerCode?: string
+  providerJobId?: string
+  model?: string
+  prompt?: string
+  seconds?: number
+  size?: string
+  n?: number
+  language?: string
+  providerOptionsApplied?: string[]
+  apiKeyId?: string
+  accountId?: string
+  costUsd?: number
+  createdAt: string
+  updatedAt?: string
+  artifact?: MediaJobDetailArtifact
+  usage?: MediaJobDetailUsage
+  paramsApplied?: string[]
+  paramsIgnored?: string[]
+  error?: MediaJobError
+}
+
 export const mediaJobKindLabels: Record<MediaJobKind, string> = {
   video: '视频',
   audio_transcription: '长音频转写',

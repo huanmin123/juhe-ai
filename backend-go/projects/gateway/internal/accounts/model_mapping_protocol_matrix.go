@@ -482,9 +482,14 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		// adapter，契约 §9.2：统一 /v1/audio/jobs 面经 openspeech
 		// /api/v3/auc/bigmodel/submit|query 改写——凭据与 TTS 同为
 		// speech_token 单值，同语音服务域）——供 volcengine 账户声明
-		// volc.seedasr.auc 进入 supportedModels。
+		// volc.seedasr.auc 进入 supportedModels。embed_content 协议模型
+		//（2026-10-17 方舟全能力实测批；现役行 doubao-embedding-vision-251215
+		// ——文本向量系 Retiring 随全能力覆盖批移除）：ark 向量端点与 chat 同
+		// base_url/凭据，/v1/embeddings 与 /v1/embeddings/multimodal（vision
+		// 系独立 API 面）请求臂走 openai 族透传（无独立媒体 adapter）——供
+		// volcengine 账户声明纯向量模型进入 supportedModels。
 		if isVolcengineProviderCodeToken(profile.providerCode) {
-			profileProtocols = append(profileProtocols, "video", "audio_speech", "audio_transcription")
+			profileProtocols = append(profileProtocols, "video", "audio_speech", "audio_transcription", "embed_content")
 		}
 		// xai openai 档案同族承接 video 协议模型（M3 回填批 grok imagine
 		// adapter，契约 §6.1：统一 /v1/videos 面经媒体 adapter 改写，出站

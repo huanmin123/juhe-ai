@@ -272,6 +272,8 @@ export interface MediaJobListParams {
   kind?: MediaJobKind
   api_key_id?: string
   account_id?: string
+  /** 管理面专属：按任务归属 API Key 的属主用户过滤；my 端点不接受该参数（归属恒钉死调用者）。 */
+  system_account_id?: string
 }
 
 export interface AuditLogListParams extends ListParams {

@@ -38,7 +38,7 @@ func TestW17ASQLSchedulingModeDecode(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
 	}
 	for _, m := range modes {
 		seed = append(seed,

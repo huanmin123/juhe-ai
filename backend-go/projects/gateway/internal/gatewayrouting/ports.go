@@ -68,7 +68,10 @@ type RuntimeCacheReader interface {
 	ListCachedOpenAIAccountsForGroupAsync(ctx context.Context, groupID, systemAccountID string, options CachedAccountsForGroupOptions) ([]UpstreamAccount, error)
 
 	// ResolveCachedProviderModelRouteAsync mirrors
-	// resolveCachedProviderModelRouteAsync.
+	// resolveCachedProviderModelRouteAsync. 供应商解耦后内部为 models 单表目
+	// 录语义（设计 §3/§6.1）：matched = 请求模型存在 builtin/active 目录行，
+	// missing = 无可见 active 行；ProviderCodes 是供应商收窄时代的过渡入参，
+	// 不再参与判定。
 	ResolveCachedProviderModelRouteAsync(ctx context.Context, input ProviderModelRouteInput) (ProviderModelRouteResolution, error)
 }
 
@@ -79,7 +82,8 @@ type CachedAccountsForGroupOptions struct {
 }
 
 // ProviderModelRouteInput mirrors resolveCachedProviderModelRouteAsync's
-// input shape.
+// input shape. ProviderCodes 过渡保留（供应商解耦后分组不再携带 provider 身
+// 份，路由侧恒传空集合）。
 type ProviderModelRouteInput struct {
 	Model           string
 	ProviderCodes   []string
@@ -88,17 +92,20 @@ type ProviderModelRouteInput struct {
 }
 
 // Provider model route outcomes (runtime-cache.service.ts
-// ProviderModelRouteResolution).
+// ProviderModelRouteResolution). ambiguous 在 models 单表语义下不再产生，
+// 常量过渡保留。
 const (
 	ProviderModelRouteMatched   = "matched"
 	ProviderModelRouteMissing   = "missing"
 	ProviderModelRouteAmbiguous = "ambiguous"
 )
 
-// ProviderModelRouteResolution mirrors ProviderModelRouteResolution.
+// ProviderModelRouteResolution mirrors ProviderModelRouteResolution. 供应商解
+// 耦后承载 models 单表目录语义：matched/missing 二值，ProviderCode 与
+// MatchedProviderCodes 恒空。
 type ProviderModelRouteResolution struct {
 	Outcome              string
 	ModelKey             string
-	ProviderCode         string // set only for outcome "matched"
+	ProviderCode         string // 供应商目录时代载体，models 语义下恒空
 	MatchedProviderCodes []string
 }

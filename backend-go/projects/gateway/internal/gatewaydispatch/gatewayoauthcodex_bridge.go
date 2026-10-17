@@ -119,7 +119,7 @@ var (
 	ApplyGptAccountRequestOverridesBody           = gatewayoauthcodex.ApplyGptAccountRequestOverridesBody
 	ApplyGptAccountRequestOverridesToUpstreamBody = gatewayoauthcodex.ApplyGptAccountRequestOverridesToUpstreamBody
 	AssertGptAccountRequestOverrideValues         = gatewayoauthcodex.AssertGptAccountRequestOverrideValues
-	EffectiveGptAccountRequestOverrides           = gatewayoauthcodex.EffectiveGptAccountRequestOverrides
+	ResolveEffectiveOverrides                     = gatewayoauthcodex.ResolveEffectiveOverrides
 	HasApplicableGptAccountRequestOverrides       = gatewayoauthcodex.HasApplicableGptAccountRequestOverrides
 	ReadGptAccountRequestOverrides                = gatewayoauthcodex.ReadGptAccountRequestOverrides
 	ResolveGptRequestOverrideModelCapabilities    = gatewayoauthcodex.ResolveGptRequestOverrideModelCapabilities

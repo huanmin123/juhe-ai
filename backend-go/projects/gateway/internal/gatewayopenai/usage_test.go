@@ -180,3 +180,28 @@ func mustParseJSON(t *testing.T, raw string) map[string]any {
 	}
 	return m
 }
+
+func TestParseUsageFromJSONBufferImageOutputCountFromData(t *testing.T) {
+	// images 形：usage 无显式张数键时按 data[] 计数（2026-10-17 volcengine
+	// seedream 实弹取证：上游 usage 只带 token 数，按张价 OutputUsdPerImage
+	// 需要张数计量，缺此推导时按张计费落 0 成本）。
+	images := ParseUsageFromJSONBuffer([]byte(`{"created":1,"data":[{"b64_json":"QUFB"},{"url":"https://img.example/a.png"}],"usage":{"input_tokens":10,"output_tokens":4096,"total_tokens":4106}}`))
+	assertToken(t, images.OutputTokens, 4096, "output tokens")
+	assertToken(t, images.OutputImageCount, 2, "image count from data[]")
+
+	// embeddings 形（条目为 embedding 键）不误判。
+	embeddings := ParseUsageFromJSONBuffer([]byte(`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":3}}`))
+	if embeddings.OutputImageCount != nil {
+		t.Fatalf("embeddings data[] 不得误判为图片张数, got %v", *embeddings.OutputImageCount)
+	}
+
+	// 上游显式张数优先，不覆盖。
+	explicit := ParseUsageFromJSONBuffer([]byte(`{"data":[{"url":"https://img.example/a.png"}],"usage":{"output_tokens":16,"output_image_count":3}}`))
+	assertToken(t, explicit.OutputImageCount, 3, "explicit count wins")
+
+	// 非对象条目门控：整体不推导。
+	mixed := ParseUsageFromJSONBuffer([]byte(`{"data":["junk"],"usage":{"output_tokens":1}}`))
+	if mixed.OutputImageCount != nil {
+		t.Fatalf("非对象条目不得推导张数, got %v", *mixed.OutputImageCount)
+	}
+}

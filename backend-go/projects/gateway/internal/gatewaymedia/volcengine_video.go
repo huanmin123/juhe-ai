@@ -244,8 +244,13 @@ type volcengineVideoUsage struct {
 }
 
 // volcengineVideoContent 是 succeeded 状态的产物定位（content.video_url）。
+// file_url 是同任务族的 3D 生成产物（2026-10-17 3D 承接批：豆包 seed3d 系
+// 走同一 /api/v3/contents/generations/tasks 创建/查询面，succeeded 产物为
+// content.file_url 指向 .zip 打包的 3D 资产文件，官方明示 24 小时清理——
+// 时效由上游裁决语义与 video_url 一致）。
 type volcengineVideoContent struct {
 	VideoURL string `json:"video_url"`
+	FileURL  string `json:"file_url"`
 }
 
 // volcengineVideoError 是 failed 状态的错误对象（code/message 对）。
@@ -316,12 +321,18 @@ func (volcengineVideoAdapter) ParsePollResponse(statusCode int, body []byte) (*M
 	}
 	switch status {
 	case JobStatusCompleted:
+		// 产物定位双形态（2026-10-17 3D 承接批）：视频 succeeded 落
+		// content.video_url，同任务族的 3D 生成落 content.file_url（.zip 3D
+		// 资产）——先 video 后 file 兜底，均缺席属上游协议违约。
 		url := ""
 		if obj.Content != nil {
 			url = strings.TrimSpace(obj.Content.VideoURL)
+			if url == "" {
+				url = strings.TrimSpace(obj.Content.FileURL)
+			}
 		}
 		if url == "" {
-			return nil, fmt.Errorf("volcengine 视频任务 succeeded 但缺少 content.video_url 产物定位（id=%s）", obj.ID)
+			return nil, fmt.Errorf("volcengine 任务 succeeded 但缺少 content.video_url/file_url 产物定位（id=%s）", obj.ID)
 		}
 		ir.Artifact.ContentURL = url
 		// usage（2026-10-17 实测回填）：仅 succeeded 终态抽 duration 正值 →

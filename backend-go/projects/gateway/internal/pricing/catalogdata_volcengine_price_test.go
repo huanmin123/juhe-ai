@@ -35,6 +35,16 @@ func TestVolcengineCatalogPriceAnchors(t *testing.T) {
 	if audio.TtsInputCostPerChar != nil {
 		t.Fatalf("seed-audio-1.0 TtsInputCostPerChar must stay nil (dimension fix), got %v", *audio.TtsInputCostPerChar)
 	}
+	// seed-tts-2.0（流式语音桥接 V1a）：官方按字符 3 元/万字符 ÷ 7.0 =
+	// $4.285714285714286e-05/字符；引擎按 TtsInputChars × TtsInputUsdPer1MChars
+	// 计费（minimax speech 行同字段先例）。
+	stream, ok := rows["seed-tts-2.0"]
+	if !ok {
+		t.Fatalf("seed-tts-2.0 row missing")
+	}
+	if got := floatOf(stream.TtsInputCostPerChar); got != 3.0/10000.0/7.0 {
+		t.Fatalf("seed-tts-2.0 TtsInputCostPerChar = %v, want %v", got, 3.0/10000.0/7.0)
+	}
 	// 历史占位行同规则：请求经 adapter 归一出站均为 seed-audio-1.0。
 	if tts, ok := rows["doubao-tts"]; ok && tts.TtsInputCostPerChar != nil {
 		t.Fatalf("doubao-tts TtsInputCostPerChar must stay nil, got %v", *tts.TtsInputCostPerChar)

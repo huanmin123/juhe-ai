@@ -448,18 +448,26 @@ func TestW14BBatchUpdateParseArms(t *testing.T) {
 	}
 	for field, value := range map[string]any{
 		"tags": 3, "healthCheckModel": " ", "healthCheckEndpointMode": "bogus",
-		"modelMappings": 3, "supportedEndpointModes": []any{3}, "serviceTierOverride": 3,
-		"reasoningEffortOverride": 3,
+		"modelMappings": 3, "supportedEndpointModes": []any{3},
 	} {
 		if validateBatchUpdateValue(field, value) == "" {
 			t.Fatalf("字段 %s 非法值应拒绝", field)
 		}
 	}
+	// 覆盖字段自 2026-10-18 简化定案起无预检臂：任意输入（nil/非字符串/
+	// 形状非法/形状合法）都在预检放行，形状与值域由写入面归一化
+	// NormalizeCredentialsForWrite 在批量事务内判定。
 	if validateBatchUpdateValue("serviceTierOverride", nil) != "" {
 		t.Fatal("serviceTierOverride nil 应放行")
 	}
-	if validateBatchUpdateValue("serviceTierOverride", "bogus") == "" {
-		t.Fatal("serviceTierOverride 非法值应拒绝")
+	if validateBatchUpdateValue("serviceTierOverride", 3) != "" {
+		t.Fatal("serviceTierOverride 非字符串应放行（写入面判定）")
+	}
+	if validateBatchUpdateValue("serviceTierOverride", " flex") != "" {
+		t.Fatal("serviceTierOverride 形状非法值应放行（写入面判定）")
+	}
+	if validateBatchUpdateValue("reasoningEffortOverride", "ultra") != "" {
+		t.Fatal("reasoningEffortOverride 值域外值应放行（写入面判定）")
 	}
 	if validateBatchUpdateValue("reasoningEffortOverride", "low") != "" {
 		t.Fatal("reasoningEffortOverride 合法值应放行")

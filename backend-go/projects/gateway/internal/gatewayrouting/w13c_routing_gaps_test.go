@@ -3,11 +3,8 @@ package gatewayrouting
 // w13c 覆盖率补充测试：补齐 w11d 之后仍 uncovered 的分支。
 //
 // 不可达语句清单（维持守卫、不删除）：
-//   - normalroute.go ResolveNormalGatewayModelRoute 中 199-208（outcome !=
-//     Matched 的兜底失败臂）与 217-227（candidateBindings 为空）：outcome
-//     仅有 matched/missing/ambiguous 三种，missing 在 130 提前返回、ambiguous
-//     在 175/188 提前返回，且 resolveCatalogProviderRoute 已在 Matched 时
-//     校验 providerCode 必然绑定，两处兜底不可达。
+//   - normalroute.go 供应商目录时代的兜底失败臂已随供应商解耦拆除（终态改
+//     models 单表目录 404/503 二分），原 199-208 / 217-227 清单不再适用。
 //   - firstbytedeadline.go ResolveNormalRouteAttemptFirstByteDeadline 的
 //     ClipFirstByteDeadlineMs 错误臂：Clip 的全部错误源（负 configured、
 //     负 reserve、precommit 错误）都在同函数更早处被归一化或先行返回，

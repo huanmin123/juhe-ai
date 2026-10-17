@@ -7,9 +7,10 @@
       :app-name="appBrand.appName"
       :is-mobile="isMobile"
       :menu-items="menuItems"
-      :open-keys="openMenuKeys"
+      :open-keys="menuOpenKeys"
       :selected-keys="selectedKeys"
       @menu-click="handleMenuClick"
+      @open-change="handleMenuOpenChange"
     />
     <a-layout class="main-shell">
       <div v-if="immersiveLayout" id="immersive-mobile-tools" class="immersive-mobile-tool-stack" aria-label="页面工具">
@@ -105,8 +106,8 @@ import {
   GlobalOutlined,
   BarChartOutlined,
   BranchesOutlined,
+  CarryOutOutlined,
   CustomerServiceOutlined,
-  DatabaseOutlined,
   ExperimentOutlined,
   FilterOutlined,
   FundOutlined,
@@ -139,6 +140,8 @@ import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables
 import {
   appMenuMode,
   getDefaultPathForMenuMode,
+  readMenuOpenKeysPreference,
+  saveMenuOpenKeysPreference,
   saveMenuModePreference,
   setMenuModeFromRoute,
   syncMenuModeWithUser,
@@ -190,11 +193,6 @@ interface AnnouncementMarkReadOptions {
 const selectedKeys = computed(() => [pendingRoutePath.value || route.path])
 const routeSwitching = computed(() => Boolean(pendingRoutePath.value && pendingRoutePath.value !== route.path))
 const pendingMenuRoute = computed(() => pendingRoutePath.value ? menuRoutes.find((item) => item.path === pendingRoutePath.value) : undefined)
-const openMenuKeys = computed(() => {
-  const currentPath = pendingRoutePath.value || route.path
-  const currentRoute = visibleMenuRoutes.value.find((item) => item.path === currentPath)
-  return currentRoute?.meta?.menuGroup ? [`group:${currentRoute.meta.menuGroup}`] : []
-})
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
 const immersiveLayout = computed(() => !mustChangePassword.value && route.meta.immersive === true)
@@ -255,6 +253,8 @@ const menuIconMap = {
   '/my-accounts/video': VideoCameraOutlined,
   '/my-accounts/audio': CustomerServiceOutlined,
   '/my-accounts/image': PictureOutlined,
+  // 任务中心（用户面异步媒体任务）：随 AI 账户组呈现，图标取任务语义而非单一媒体域。
+  '/my-media-jobs': CarryOutOutlined,
   '/accounts/chat': MessageOutlined,
   '/accounts/video': VideoCameraOutlined,
   '/accounts/audio': CustomerServiceOutlined,
@@ -304,7 +304,10 @@ const menuIconMap = {
 }
 
 const menuGroupIconMap = {
-  'ai-management': DatabaseOutlined,
+  // 2026-10-17 菜单重组：供应商/代理作为全局配置归入系统运维，AI 账户组与用户侧同名同图标。
+  'ai-assets': UserSwitchOutlined,
+  'ai-dispatch': ApiOutlined,
+  'ai-observability': BarChartOutlined,
   authorization: SafetyCertificateOutlined,
   'log-management': ProfileOutlined,
   // 用户面「AI 账户」分组沿用原 /my-accounts 的 UserSwitchOutlined。
@@ -362,6 +365,43 @@ const menuItems = computed<ItemType[]>(() => {
     group.children.push(routeToMenuItem(item))
   }
   return items
+})
+
+// 二级菜单组展开状态：唯一状态源在布局层。按「用户 + 菜单模式」持久化（useMenuMode），
+// 恢复时过滤菜单重组后已不存在的分组键，并并入当前路由所在组保证选中项始终可见。
+const menuOpenKeys = ref<string[]>([])
+
+function activeMenuGroupKey(): string | null {
+  const currentPath = pendingRoutePath.value || route.path
+  const activeRoute = visibleMenuRoutes.value.find((item) => item.path === currentPath)
+  return activeRoute?.meta?.menuGroup ? `group:${activeRoute.meta.menuGroup}` : null
+}
+
+function restoreMenuOpenKeys(): void {
+  const knownGroupKeys = new Set(
+    menuItems.value.flatMap((item) => (item && String(item.key ?? '').startsWith('group:') ? [String(item.key)] : []))
+  )
+  const persisted = readMenuOpenKeysPreference(currentUser.value, appMenuMode.value).filter((key) => knownGroupKeys.has(key))
+  const activeKey = activeMenuGroupKey()
+  menuOpenKeys.value = activeKey ? [...new Set([...persisted, activeKey])] : persisted
+}
+
+function handleMenuOpenChange(keys: string[]): void {
+  menuOpenKeys.value = keys
+}
+
+watch([currentUser, appMenuMode], () => {
+  restoreMenuOpenKeys()
+}, { immediate: true })
+
+watch(menuOpenKeys, (keys) => {
+  saveMenuOpenKeysPreference(currentUser.value, appMenuMode.value, keys)
+})
+
+watch(activeMenuGroupKey, (activeKey) => {
+  if (activeKey && !menuOpenKeys.value.includes(activeKey)) {
+    menuOpenKeys.value = [...menuOpenKeys.value, activeKey]
+  }
 })
 
 function handleMenuClick(event: { key: string | number }) {

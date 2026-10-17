@@ -141,8 +141,10 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 
 		// 模型事实主体批量装载（并集设计 §4.1/§6.2）。协议档案与 provider 不另
 		// 查库：chainCandidateColumns 已按来源账户取 resource_* 列（实例为来源
-		// 账户档案、直连为 NULL 落回自身列），resourceAccountID()/
-		// resourceProviderCode() 即 COALESCE 语义。
+		// 账户档案、直连为 NULL 落回自身列），resourceAccountID() 即 COALESCE
+		// 语义；provider 身份走组访问元数据的过渡字段——候选行 provider 投影已
+		// 随供应商解耦拆除，而旧候选窗口谓词保证行 provider 与组 provider 一致，
+		// groupAccess.ProviderCode 承载同值。
 		factIDs := make([]string, 0, len(admitted))
 		seenFact := map[string]bool{}
 		for _, row := range admitted {
@@ -164,7 +166,7 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 
 		for _, row := range admitted {
 			factID := row.resourceAccountID()
-			factProvider := row.resourceProviderCode()
+			factProvider := groupAccess.ProviderCode
 			factModels := supportedModels[factID][factProvider]
 			// 直接支持模型并入（空 SM 账户此处天然为空集，不产出任何模型——
 			// 并集设计 §4.3 裁决：空集合不展开"全部模型"，无需特判）。
@@ -219,9 +221,10 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 //
 // 第二个绑定参数传该组 GroupOwnerSystemAccountID（分组属主域，与调度
 // listCandidateRows 实参同源——ga.system_account_id 表达绑定所属属主域，调用方
-// 只进授权门）；provider 参数传该组 ProviderCode。逐条谓词与 chainCandidateWhere
-// 互引：group 域绑定 + ga.enabled + provider 门 + 未删 + 状态白名单 + schedulable
-// + cooldown 门（此处经 includeFlag=1 旁路）+ 直连类型门/实例来源账户门 + 未过期。
+// 只进授权门）。逐条谓词与 chainCandidateWhere 互引：group 域绑定 + ga.enabled
+// + 未删 + 状态白名单 + schedulable + cooldown 门（此处经 includeFlag=1 旁路）
+// + 直连类型门/实例来源账户门 + 未过期。provider 门已随供应商解耦拆除（组内
+// 候选不再按 provider 收窄，见 chainCandidateWhere 注释）。
 func (l chainGroupModelUnionLoader) listUnionCandidateRows(ctx context.Context, groupID string, groupAccess *gatewayruntimecache.GroupUsageAccessMetadata, now string) ([]chainCandidateRow, error) {
 	s := l.selector
 	const unionStatusSet = "'active', 'rate_limited', 'temporary_unavailable'"
@@ -233,8 +236,8 @@ func (l chainGroupModelUnionLoader) listUnionCandidateRows(ctx context.Context, 
 		"{where}", where,
 	).Replace(`SELECT {columns} {from} {where}`)
 	rows, err := s.db.QueryContext(ctx, s.bind(query),
-		groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode,
-		1, now, groupAccess.ProviderCode, 1, now, now, now)
+		groupID, groupAccess.GroupOwnerSystemAccountID,
+		1, now, 1, now, now, now)
 	if err != nil {
 		return nil, err
 	}

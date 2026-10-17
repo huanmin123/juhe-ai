@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
+
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
 )
 
@@ -299,5 +301,72 @@ func TestFullchainGroupSessionAffinity(t *testing.T) {
 	}
 	if got := groupAffinityHits(f, keyM1, keyM2); got[keyM1]+got[keyM2] != 6 {
 		t.Fatalf("验收8：merge 会话 6 请求应全链服务（合计命中 6），命中 %v", got)
+	}
+}
+
+// TestFullchainGroupSessionAffinityRedisDriver 生产数据面的全链黏组证据。
+// 主测试夹具是 standalone memory 驱动（进程内 TTL 24h），生产 performance
+// 模式为 JUHE_AI_CACHE_DRIVER=redis（TTL 1h）——组亲和驱动与账户级同源
+//（chain_runtime.go redisCache 分支）。本测试以 miniredis 起 redis 缓存面
+//（网关子进程经 TCP 直连），验证：同一会话经真实 Redis 读写黏住；TTL 过期
+//（读不刷 TTL，快进即蒸发）后按模式重选一次并协议成功重绑，之后黏新组。
+// 重选落点不断言到具体组（rr 计数器与绑定同库，TTL 归零后轮转位不确定），
+// 黏住不变量以「重选后 5 连击全部同组」表达。
+func TestFullchainGroupSessionAffinityRedisDriver(t *testing.T) {
+	requireFullchainGate(t)
+	cacheRedis := miniredis.RunT(t)
+	f := startFullchainFixtureExtraEnv(t, func(_ string) map[string]string {
+		return map[string]string{
+			"JUHE_AI_CACHE_DRIVER":    "redis",
+			"JUHE_AI_REDIS_CACHE_URL": "redis://" + cacheRedis.Addr(),
+			"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:fullchain-grpaff",
+		}
+	})
+
+	keyR1 := fullchainUpstreamKey(t, "GroupAffinity-r1")
+	keyR2 := fullchainUpstreamKey(t, "GroupAffinity-r2")
+	routeR := f.newRoute("GroupAffinityRedis", "round_robin", []fullchainGroupSpec{
+		{accounts: []fullchainAccountSpec{{key: keyR1}}},
+		{accounts: []fullchainAccountSpec{{key: keyR2}}},
+	}, nil, nil)
+	hitsR := func() map[string]int { return groupAffinityHits(f, keyR1, keyR2) }
+	sessionR := "sess-group-affinity-redis"
+	requireAffinityResponseOK(t, "GR-first", f.chatSessionAsCodex(t, routeR.apiKey, sessionR, responsesSessionBody("组亲和-Redis首绑")))
+	if got := hitsR(); got[keyR1]+got[keyR2] != 1 {
+		t.Fatalf("Redis 面：首请求应正常落组，命中 %v", got)
+	}
+	for i := 0; i < 5; i++ {
+		requireAffinityResponseOK(t, fmt.Sprintf("GR-%d", i),
+			f.chatSessionAsCodex(t, routeR.apiKey, sessionR, responsesSessionBody(fmt.Sprintf("组亲和-Redis%d", i))))
+	}
+	firstGroupKey := keyR1
+	otherGroupKey := keyR2
+	if hitsR()[keyR2] > hitsR()[keyR1] {
+		firstGroupKey, otherGroupKey = keyR2, keyR1
+	}
+	if got := hitsR(); got[firstGroupKey] != 6 || got[otherGroupKey] != 0 {
+		t.Fatalf("Redis 面：同会话应经真实 Redis 读写黏住首绑组，命中 %v", got)
+	}
+
+	// TTL 过期：快进 2h（> 生产 1h TTL），绑定蒸发 → 下一请求按模式重选
+	// 并协议成功重绑。
+	cacheRedis.FastForward(2 * time.Hour)
+	requireAffinityResponseOK(t, "GR-expired",
+		f.chatSessionAsCodex(t, routeR.apiKey, sessionR, responsesSessionBody("组亲和-Redis过期重选")))
+	beforeStick := hitsR()
+	if beforeStick[keyR1]+beforeStick[keyR2] != 7 {
+		t.Fatalf("Redis 面：TTL 过期后应恰好推进一请求（重选），命中 %v", beforeStick)
+	}
+	// 重选落点：过期前 (6,0)，重选后必为 (7,0) 或 (6,1)。
+	reboundGroupKey := keyR1
+	if beforeStick[keyR2] > 0 {
+		reboundGroupKey = keyR2
+	}
+	for i := 0; i < 5; i++ {
+		requireAffinityResponseOK(t, fmt.Sprintf("GR-stick-%d", i),
+			f.chatSessionAsCodex(t, routeR.apiKey, sessionR, responsesSessionBody(fmt.Sprintf("组亲和-Redis新黏%d", i))))
+	}
+	if after := hitsR(); after[reboundGroupKey] != beforeStick[reboundGroupKey]+5 {
+		t.Fatalf("Redis 面：过期重绑后 5 连击应全部黏住重绑组 %s，重选后 %v 最终 %v", reboundGroupKey, beforeStick, after)
 	}
 }

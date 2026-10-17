@@ -44,12 +44,10 @@ type Deps struct {
 	// Store.assertAccountModelMappingsInProviderCatalog
 	// (model_catalog_validation.go).
 	AssertModelMappingsInProviderCatalog func(ctx context.Context, q accountscore.Queryer, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate, mappings []accountscore.ModelMapping, supportedEndpointModes []string) error
-	// AssertGptRequestOverridesSupported mirrors
-	// Store.assertAccountGptRequestOverridesSupported
-	// (model_catalog_validation.go).
-	AssertGptRequestOverridesSupported func(ctx context.Context, providerCode, accountType string, credentials accountscore.Credentials, supportedModels []string, systemAccountID string) error
 	// NormalizeCredentialsForWrite mirrors NormalizeAccountCredentialsForWrite
-	// (credentials_normalize.go stays a facade surface per 设计 v2).
+	// (credentials_normalize.go stays a facade surface per 设计 v2). 请求覆盖
+	// 两字段的值域校验（token 形状 + 协议族全集）在其内部执行，批量域不再有
+	// 独立的覆盖断言端口（2026-10-18 简化定案）。
 	NormalizeCredentialsForWrite func(accountType string, value accountscore.Credentials, defaults *accountscore.EndpointModeDefaultContext) (accountscore.Credentials, error)
 	// NormalizeOpenAIAccountClientCompatibility mirrors
 	// normalizeOpenAIAccountClientCompatibility (client_compatibility.go).

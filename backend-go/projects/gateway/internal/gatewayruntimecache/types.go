@@ -151,8 +151,11 @@ type GatewayAPIKeyGroupBindingRow struct {
 	Priority        int    `json:"priority"`
 	Weight          int    `json:"weight"`
 	Status          string `json:"status"`
-	ProviderCode    string `json:"provider_code"`
-	GroupEnabled    int    `json:"group_enabled"`
+	// ProviderCode 过渡字段：groups.provider_code 已随供应商解耦退役（供应商
+	// 与上游协议面重构设计 §8），SQL 读取不再投影该列，路由语义不消费，读取
+	// 结果恒为零值；字段待组合根切片与消费方一并移除。
+	ProviderCode string `json:"provider_code"`
+	GroupEnabled int    `json:"group_enabled"`
 }
 
 // Clone mirrors the per-binding spread clone.
@@ -387,7 +390,10 @@ type GroupSchedulingPolicy = map[string]any
 // GroupUsageAccessMetadata mirrors GroupUsageAccessMetadata
 // (storage/openai-account-selector.types.ts).
 type GroupUsageAccessMetadata struct {
-	GroupOwnerSystemAccountID      string                 `json:"groupOwnerSystemAccountId"`
+	GroupOwnerSystemAccountID string `json:"groupOwnerSystemAccountId"`
+	// ProviderCode 过渡字段：groups.provider_code 已随供应商解耦退役（供应商
+	// 与上游协议面重构设计 §8），分组访问读取不再返回该身份，值恒为空串；
+	// 字段待组合根切片与 audit 消费方一并移除。
 	ProviderCode                   string                 `json:"providerCode"`
 	GroupAccessType                string                 `json:"groupAccessType"`
 	GroupType                      *string                `json:"groupType,omitempty"`
@@ -506,8 +512,13 @@ func CloneResponseInspectionPolicies(policies []ResponseInspectionPolicySummary)
 	return out
 }
 
-// ProviderModelRouteResolution mirrors ProviderModelRouteResolution: matched
-// carries the single winning provider, missing/ambiguous only the candidates.
+// ProviderModelRouteResolution mirrors ProviderModelRouteResolution. 供应商
+// 解耦后（供应商与上游协议面重构设计 §2.1/§3/§6.1）该分辨率承载 models 单表目
+// 录语义：matched = 请求模型对请求 owner 资源账户可见（builtin/global 全可
+// 见、personal 仅属主可见）且 status='active'，missing = 无任何可见 active 行
+// （终态 404 model_not_found 数据面）。ambiguous 在单表语义下不再产生，常量
+// 仅为兼容保留；ProviderCode/MatchedProviderCodes 是供应商目录时代的载体，
+// models 语义下恒空。
 type ProviderModelRouteResolution struct {
 	Outcome              ProviderModelRouteOutcome `json:"outcome"`
 	ModelKey             string                    `json:"modelKey"`

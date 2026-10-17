@@ -203,11 +203,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 	tests := []struct {
 		name string
 		// inputs
-		apiKey        *APIKeyRow
-		request       RequestView
-		cache         func(*fakeRuntimeCache)
-		capability    AccountCapabilityFilter
-		providerRoute ProviderModelRouteResolution
+		apiKey      *APIKeyRow
+		request     RequestView
+		cache       func(*fakeRuntimeCache)
+		capability  AccountCapabilityFilter
+		modelsRoute ProviderModelRouteResolution
 		// expectations
 		wantOutcome          string
 		wantReason           string
@@ -240,17 +240,29 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			wantReason:  SkipReasonEmptyBinding,
 		},
 		{
-			name: "single provider skips",
+			// 供应商解耦：同 provider 多绑定不再触发 single_provider 短路，
+			// 直接对全部分组做候选过滤。
+			name: "same-provider bindings route without the single-provider shortcut",
 			apiKey: apiKey(
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "openai", 2),
 			),
-			request:     RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
-			wantOutcome: NormalRouteOutcomeSkipped,
-			wantReason:  SkipReasonSingleProvider,
+			request: RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
+			cache: func(f *fakeRuntimeCache) {
+				f.groupAccess["grp_a"] = groupAccess("openai")
+				f.accounts["grp_a"] = []UpstreamAccount{account("acc1", "openai", "gpt-4o")}
+				f.groupAccess["grp_b"] = groupAccess("openai")
+				f.accounts["grp_b"] = []UpstreamAccount{account("acc2", "openai", "other")}
+			},
+			wantOutcome:          NormalRouteOutcomeSelected,
+			wantGroupID:          "grp_a",
+			wantRouteSource:      RouteSourceCatalogProvider,
+			wantMatchedCode:      "",
+			wantAccounts:         []string{"acc1"},
+			wantSelectedBindings: []string{"b1"},
 		},
 		{
-			name: "mapping target selected over catalog match, group_access provider wins for mapping source",
+			name: "direct match selects the first viable group without provider narrowing",
 			apiKey: apiKey(
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "anthropic", 2),
@@ -262,19 +274,19 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				f.groupAccess["grp_b"] = groupAccess("anthropic")
 				f.accounts["grp_b"] = []UpstreamAccount{account("acc2", "anthropic")}
 			},
-			providerRoute: ProviderModelRouteResolution{
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
+				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:          NormalRouteOutcomeSelected,
 			wantGroupID:          "grp_a",
 			wantRouteSource:      RouteSourceCatalogProvider,
-			wantMatchedCode:      "openai",
+			wantMatchedCode:      "",
 			wantAccounts:         []string{"acc1"},
 			wantSelectedBindings: []string{"b1"},
 		},
 		{
-			name: "mapping-only account routes through account_mapping with access provider code",
+			name: "mapping-only account routes through account_mapping",
 			apiKey: apiKey(
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "anthropic", 2),
@@ -294,80 +306,83 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 					SupportedModels: []string{"gpt-4o"},
 				}}
 			},
-			providerRoute: ProviderModelRouteResolution{
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMissing, ModelKey: "my-model",
 				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   400,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotRoutableForAPIKey,
-			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：my-model",
-			wantMatchedCodes: []string{},
+			wantOutcome:          NormalRouteOutcomeSelected,
+			wantGroupID:          "grp_a",
+			wantRouteSource:      RouteSourceAccountMapping,
+			wantMatchedCode:      "",
+			wantAccounts:         []string{"acc1"},
+			wantSelectedBindings: []string{"b1"},
 		},
 		{
-			name: "catalog missing fails model_not_routable_for_api_key",
+			name: "models directory absent fails 404 model_not_found",
+			apiKey: apiKey(
+				binding("b1", "grp_a", "openai", 1),
+				binding("b2", "grp_b", "anthropic", 2),
+			),
+			request:          RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
+			modelsRoute:      ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o"},
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   404,
+			wantType:         "invalid_request_error",
+			wantCode:         FailCodeModelNotFound,
+			wantMessage:      "请求模型不存在或不可用：gpt-4o",
+			wantMatchedCodes: nil,
+		},
+		{
+			name: "models directory present but no group candidate fails 503",
 			apiKey: apiKey(
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "anthropic", 2),
 			),
 			request: RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
-			providerRoute: ProviderModelRouteResolution{
-				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
-			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   400,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotRoutableForAPIKey,
-			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：gpt-4o",
-			wantMatchedCodes: []string{},
-		},
-		{
-			name: "catalog matched but provider unbound downgrades to missing",
-			apiKey: apiKey(
-				binding("b1", "grp_a", "openai", 1),
-				binding("b2", "grp_b", "anthropic", 2),
-			),
-			request: RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
-			providerRoute: ProviderModelRouteResolution{
-				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				ProviderCode: "gemini", MatchedProviderCodes: []string{"gemini"},
-			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   400,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotRoutableForAPIKey,
-			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：gpt-4o",
-			wantMatchedCodes: []string{"gemini"},
-		},
-		{
-			name: "ambiguous catalog with no mapping target fails model_route_ambiguous",
-			apiKey: apiKey(
-				binding("b1", "grp_a", "openai", 1),
-				binding("b2", "grp_b", "anthropic", 2),
-			),
-			request: RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-x"},
 			cache: func(f *fakeRuntimeCache) {
-				// groups exist but no account survives the model filter
+				// 分组可达但账户都不支持请求模型（硬过滤后无候选）。
 				f.groupAccess["grp_a"] = groupAccess("openai")
-				f.accounts["grp_a"] = []UpstreamAccount{account("acc1", "openai", "gpt-4o")}
+				f.accounts["grp_a"] = []UpstreamAccount{account("acc1", "openai", "other")}
 				f.groupAccess["grp_b"] = groupAccess("anthropic")
 				f.accounts["grp_b"] = []UpstreamAccount{account("acc2", "anthropic", "claude")}
 			},
-			providerRoute: ProviderModelRouteResolution{
-				Outcome: ProviderModelRouteAmbiguous, ModelKey: "gpt-x",
-				MatchedProviderCodes: []string{"openai", "anthropic"},
+			modelsRoute: ProviderModelRouteResolution{
+				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
+				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   400,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelRouteAmbiguous,
-			wantMessage:      "请求模型在多个供应商中同时存在，无法确定目标号池：gpt-x",
-			wantMatchedCodes: []string{"openai", "anthropic"},
+			wantStatusCode:   503,
+			wantType:         "service_unavailable",
+			wantCode:         FailCodeModelTargetGroupUnavailable,
+			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
+			wantMatchedCodes: nil,
 		},
 		{
-			name: "missing catalog route short-circuits before target selection",
+			// §6.1：目录可见但分组全部不可访问时，分类仍只取决于目录（503），
+			// 不得因绑定分组不可达降级成 404。
+			name: "directory present with inaccessible groups still fails 503",
+			apiKey: apiKey(
+				binding("b1", "grp_a", "openai", 1),
+				binding("b2", "grp_b", "anthropic", 2),
+			),
+			request: RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
+			cache: func(f *fakeRuntimeCache) {
+				f.missingAccess["grp_a"] = true
+				f.missingAccess["grp_b"] = true
+			},
+			modelsRoute: ProviderModelRouteResolution{
+				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
+				MatchedProviderCodes: []string{},
+			},
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   503,
+			wantType:         "service_unavailable",
+			wantCode:         FailCodeModelTargetGroupUnavailable,
+			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
+			wantMatchedCodes: nil,
+		},
+		{
+			name: "directory absent with no accessible groups fails model_not_found",
 			apiKey: apiKey(
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "anthropic", 2),
@@ -377,19 +392,19 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				f.missingAccess["grp_a"] = true
 				f.missingAccess["grp_b"] = true
 			},
-			providerRoute: ProviderModelRouteResolution{
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-x",
 				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   400,
+			wantStatusCode:   404,
 			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotRoutableForAPIKey,
-			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：gpt-x",
-			wantMatchedCodes: []string{},
+			wantCode:         FailCodeModelNotFound,
+			wantMessage:      "请求模型不存在或不可用：gpt-x",
+			wantMatchedCodes: nil,
 		},
 		{
-			name: "matched provider bound but no usable account fails model_target_group_unavailable",
+			name: "matched directory but no usable account fails model_target_group_unavailable",
 			apiKey: apiKey(
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "anthropic", 2),
@@ -402,16 +417,16 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				f.accounts["grp_b"] = []UpstreamAccount{account("acc2", "anthropic", "claude")}
 			},
 			capability: failingCapabilityFilter{reason: "endpoint_mode_mismatch"},
-			providerRoute: ProviderModelRouteResolution{
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
+				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:      NormalRouteOutcomeFailed,
 			wantStatusCode:   503,
 			wantType:         "service_unavailable",
 			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型对应的供应商分组当前没有可用账号：gpt-4o",
-			wantMatchedCodes: []string{"openai"},
+			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
+			wantMatchedCodes: nil,
 		},
 		{
 			name: "capability probe filtering is applied before the model filter",
@@ -427,14 +442,14 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				f.accounts["grp_b"] = []UpstreamAccount{account("acc2", "anthropic", "gpt-4o")}
 			},
 			capability: &scriptedCapabilityFilter{blocked: map[string]bool{"acc1": true}},
-			providerRoute: ProviderModelRouteResolution{
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
+				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:          NormalRouteOutcomeSelected,
 			wantGroupID:          "grp_b",
 			wantRouteSource:      RouteSourceCatalogProvider,
-			wantMatchedCode:      "openai",
+			wantMatchedCode:      "",
 			wantAccounts:         []string{"acc2"},
 			wantSelectedBindings: []string{"b2"},
 		},
@@ -447,7 +462,7 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				tt.cache(cache)
 			}
 			cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-				return tt.providerRoute, nil
+				return tt.modelsRoute, nil
 			}
 			capability := tt.capability
 			if capability == nil {
@@ -513,9 +528,9 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 	}
 }
 
-// The mapping-hit branch needs at least two provider codes, a mapping-only
-// account, and a catalog provider match on a different binding to exercise
-// the full selected/account_mapping contract.
+// The mapping-hit branch needs a mapping-only account whose group precedes the
+// direct-only group; selection must not consult the models directory at all
+// (the directory only classifies empty candidate pools).
 func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 	cache := newFakeRuntimeCache()
 	mappingAccount := UpstreamAccount{
@@ -565,8 +580,9 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 	if result.GroupID != "grp_a" {
 		t.Fatalf("group id = %q, want grp_a", result.GroupID)
 	}
-	if result.MatchedProviderCode != "openai" {
-		t.Fatalf("matched provider code = %q, want openai", result.MatchedProviderCode)
+	// MatchedProviderCode 过渡字段：供应商解耦后恒空串。
+	if result.MatchedProviderCode != "" {
+		t.Fatalf("matched provider code = %q, want empty (供应商解耦后恒空)", result.MatchedProviderCode)
 	}
 	if got := accountIDs(result.Accounts); !equalStrings(got, []string{"acc1"}) {
 		t.Fatalf("accounts = %v, want [acc1]", got)
@@ -576,15 +592,68 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 		cache.callsAccounts[0].options.RequestedEndpointFamily != EndpointFamilyChatCompletions {
 		t.Fatalf("accounts cache options = %+v", cache.callsAccounts)
 	}
-	// Provider route lookup gets unique provider codes and includeUnpriced.
-	if len(cache.callsRoute) != 1 {
-		t.Fatalf("provider route calls = %d, want 1", len(cache.callsRoute))
+	// 选中路径不再查询模型目录（目录只用于空候选池的终态分类）。
+	if len(cache.callsRoute) != 0 {
+		t.Fatalf("models directory calls = %d, want 0 on the selected path", len(cache.callsRoute))
 	}
-	if !equalStrings(cache.callsRoute[0].ProviderCodes, []string{"openai", "anthropic"}) {
-		t.Fatalf("provider codes = %v", cache.callsRoute[0].ProviderCodes)
+}
+
+// 无候选路径必须查询 models 单表目录并把 IncludeUnpriced 随输入形状传递；
+// 目录结果驱动 404/503 终态二分（设计 §6.1）。
+func TestResolveNormalGatewayModelRouteConsultsModelsDirectoryOnEmptyPool(t *testing.T) {
+	bindings := []GroupBindingRow{
+		{ID: "b1", GroupID: "grp_a", ProviderCode: "", Status: RowStatusActive, GroupEnabled: 1},
+		{ID: "b2", GroupID: "grp_b", ProviderCode: "", Status: RowStatusActive, GroupEnabled: 1},
 	}
-	if !cache.callsRoute[0].IncludeUnpriced {
-		t.Fatal("provider route call must set IncludeUnpriced")
+	apiKey := &APIKeyRow{
+		ID: "key1", SystemAccountID: "owner1",
+		RouteStrategyMode: RouteStrategyModeNormal,
+		Status:            RowStatusActive,
+		GroupBindings:     bindings,
+	}
+	request := RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-x"}
+
+	for _, tc := range []struct {
+		name       string
+		resolution ProviderModelRouteResolution
+		wantStatus int
+		wantCode   string
+		wantType   string
+	}{
+		{name: "directory absent", resolution: ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: "gpt-x"},
+			wantStatus: 404, wantCode: FailCodeModelNotFound, wantType: "invalid_request_error"},
+		{name: "directory present", resolution: ProviderModelRouteResolution{Outcome: ProviderModelRouteMatched, ModelKey: "gpt-x"},
+			wantStatus: 503, wantCode: FailCodeModelTargetGroupUnavailable, wantType: "service_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := newFakeRuntimeCache()
+			cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "owner1", GroupAccessType: GroupAccessTypeOwner}
+			cache.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"other"}}}
+			cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
+				return tc.resolution, nil
+			}
+			service := NewNormalModelRouteService(cache, PassthroughCapabilityFilter{})
+
+			result, err := service.ResolveNormalGatewayModelRoute(context.Background(), ResolveNormalGatewayModelRouteInput{
+				Request:      request,
+				APIKeyRecord: apiKey,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Outcome != NormalRouteOutcomeFailed || result.StatusCode != tc.wantStatus || result.Code != tc.wantCode || result.Type != tc.wantType {
+				t.Fatalf("result = [%s %d %s %s], want [%d %s %s]", result.Outcome, result.StatusCode, result.Code, result.Type, tc.wantStatus, tc.wantCode, tc.wantType)
+			}
+			if len(cache.callsRoute) != 1 {
+				t.Fatalf("models directory calls = %d, want 1", len(cache.callsRoute))
+			}
+			if cache.callsRoute[0].Model != "gpt-x" || !cache.callsRoute[0].IncludeUnpriced {
+				t.Fatalf("directory input = %+v, want model gpt-x + includeUnpriced", cache.callsRoute[0])
+			}
+			if len(result.MatchedProviderCodes) != 0 {
+				t.Fatalf("matched provider codes = %v, want empty (过渡恒空)", result.MatchedProviderCodes)
+			}
+		})
 	}
 }
 

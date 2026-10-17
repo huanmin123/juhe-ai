@@ -9,6 +9,7 @@ import {
   availableAccountGptServiceTierOptions,
   isAccountRequestOverrideProviderSupported
 } from '../../views/accounts/accountGptRequestOverrides'
+import { accountRequestOverrideFamilyOf } from '../../views/accounts/accountRequestOverrideVocab'
 import { buildAccountCredentials } from '../../views/accounts/accountCredentials'
 import { buildAccountDraftTestPayload } from '../../views/accounts/accountDraftTestPayload'
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
@@ -62,29 +63,7 @@ assert.doesNotMatch(modelCatalogModalSource, /codexSupportedReasoningLevels/, '�
 assert.doesNotMatch(modelCatalogModalSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
 const requestOverridesSectionSource = readFileSync(new URL('../../views/accounts/AccountGptRequestOverridesSection.vue', import.meta.url), 'utf8')
 const batchEditModalSource = readFileSync(new URL('../../views/accounts/AccountBatchEditModal.vue', import.meta.url), 'utf8')
-assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, '支持账户覆盖的供应商必须保留配置区')
-assert.doesNotMatch(requestOverridesSectionSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '单账户配置区不能因能力为空整体隐藏')
-assert.doesNotMatch(requestOverridesSectionSource, /<a-form-item v-if=/, '服务等级和思考级别字段不能按选项数量分别隐藏')
-assert.doesNotMatch(requestOverridesSectionSource, /watch\(/, '模型能力变化不能静默清空已保存覆盖')
-assert.match(
-  requestOverridesSectionSource,
-  /requestOverridesSupported[\s\S]+serviceTierOverride \|\| props\.form\.reasoningEffortOverride/,
-  'Interactions-only 账户已有覆盖时必须保留清除入口'
-)
-assert.match(requestOverridesSectionSource, /当前已选模型未声明可用服务等级/, '服务等级无能力时必须显示中文原因')
-assert.match(requestOverridesSectionSource, /当前已选模型未声明可用思考级别/, '思考级别无能力时必须显示中文原因')
-assert.match(batchEditModalSource, /v-if="requestOverridesSupported"/, '批量编辑必须为支持供应商保留请求覆盖字段')
-assert.doesNotMatch(batchEditModalSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '批量编辑不能因能力为空整体隐藏请求覆盖字段')
-assert.equal(isAccountRequestOverrideProviderSupported('gpt'), true, 'GPT 账户必须显示请求覆盖配置区')
-assert.equal(isAccountRequestOverrideProviderSupported('openai'), true, 'OpenAI-compatible 账户必须显示请求覆盖配置区')
-assert.equal(isAccountRequestOverrideProviderSupported('anthropic'), true, 'Anthropic 账户必须显示请求覆盖配置区')
-assert.equal(isAccountRequestOverrideProviderSupported('gemini'), true, 'Gemini 账户必须显示已实现的思考级别覆盖配置区')
-assert.equal(
-  isAccountRequestOverrideProviderSupported('gemini', ['interactions_json', 'interactions_sse']),
-  false,
-  'Interactions-only Gemini 账户不得显示 GenerateContent 请求覆盖配置区'
-)
-assert.equal(isAccountRequestOverrideProviderSupported('deepseek'), false, '没有账户覆盖 wire 映射的供应商不能显示无效配置区')
+const accountSavePayloadSource = readFileSync(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url), 'utf8')
 
 const modelOptions: AccountModelSelectOption[] = [
   {
@@ -105,118 +84,156 @@ const modelOptions: AccountModelSelectOption[] = [
   }
 ]
 
-const apiKeyCapabilities = accountGptRequestOverrideCapabilities({
-  accountType: 'api_key',
-  modelOptions,
-  supportedModels: ['gpt-5.6-sol', 'gpt-5.6-terra']
-})
-assert.deepEqual(apiKeyCapabilities.serviceTiers, ['priority', 'flex'], '配置页服务等级必须取账户支持模型目录能力合集')
-assert.deepEqual(apiKeyCapabilities.reasoningEfforts, ['low', 'medium', 'high', 'max', 'xhigh'], '配置页思考级别必须按模型顺序取能力合集并去重')
+// 单账户配置区：区块按供应商级能力显示，字段按族集 + 声明能力分别显示
+assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, '支持账户覆盖的供应商必须保留配置区')
+assert.doesNotMatch(requestOverridesSectionSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '单账户配置区不能因能力为空整体隐藏')
+assert.match(requestOverridesSectionSource, /<a-form-item v-if="serviceTierFieldVisible"/, '服务等级字段必须按供应商级声明能力显示')
+assert.match(requestOverridesSectionSource, /<a-form-item v-if="reasoningEffortFieldVisible"/, '思考级别字段必须按供应商级声明能力显示')
+assert.doesNotMatch(requestOverridesSectionSource, /watch\(/, '模型能力变化不能静默清空已保存覆盖')
+assert.doesNotMatch(
+  requestOverridesSectionSource,
+  /当前服务等级配置不受已选模型支持|当前思考级别配置不受已选模型支持|当前已选模型未声明可用服务等级|当前已选模型未声明可用思考级别/,
+  '按已选模型判定的警告族必须整体删除'
+)
+assert.match(
+  requestOverridesSectionSource,
+  /requestOverridesSupported = computed\(\(\) => isAccountRequestOverrideProviderSupported\([\s\S]*&& \(serviceTierFieldVisible\.value \|\| reasoningEffortFieldVisible\.value\)\)/,
+  'Interactions-only Gemini 守卫必须绝对生效，且区块按字段可见性显示'
+)
+assert.doesNotMatch(
+  requestOverridesSectionSource,
+  /\|\| Boolean\(props\.form\.serviceTierOverride/,
+  'Interactions-only Gemini 不再因存量覆盖值绕过守卫显示（该协议面覆盖不会生效）'
+)
+assert.doesNotMatch(
+  requestOverridesSectionSource,
+  /:disabled="readonly \|\| modelsLoading/,
+  '下拉不再因能力加载或能力为空而禁用（族集非空即始终可选）'
+)
+// 批量编辑：字段按供应商级能力显示，能力计算不再传 accountType、不再按已选模型
+assert.match(batchEditModalSource, /v-if="requestOverridesSupported"/, '批量编辑必须为支持供应商保留请求覆盖字段')
+assert.match(batchEditModalSource, /v-if="serviceTierOverrideFieldVisible"/, '批量编辑服务等级字段必须按供应商级声明能力显示')
+assert.match(batchEditModalSource, /v-if="reasoningEffortOverrideFieldVisible"/, '批量编辑思考级别字段必须按供应商级声明能力显示')
+assert.doesNotMatch(batchEditModalSource, /当前已选模型未声明可用服务等级|当前已选模型未声明可用思考级别/, '批量编辑不得保留按已选模型判定的说明')
+assert.doesNotMatch(batchEditModalSource, /accountType: homogeneousAccount\.value\?\.type/, '批量编辑能力计算不得再传 accountType')
+assert.match(batchEditModalSource, /protocolCode: homogeneousAccount\.value\?\.protocolCode/, '批量编辑能力计算必须携带协议码用于族判定')
+assert.doesNotMatch(batchEditModalSource, /supportedModels: effectiveBatchModels\.value/, '批量编辑能力计算不得再依赖已选模型')
+// 保存前能力校验删除：值域由后端族集校验负责
+assert.doesNotMatch(accountSavePayloadSource, /validateAccountGptRequestOverrides/, '保存前覆盖能力校验函数必须删除')
+assert.doesNotMatch(accountSavePayloadSource, /所选支持模型中没有模型支持/, '保存前不得再按已选模型拦截覆盖字段')
+assert.equal(isAccountRequestOverrideProviderSupported('gpt'), true, 'GPT 账户必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('openai'), true, 'OpenAI-compatible 账户必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('anthropic'), true, 'Anthropic 账户必须显示请求覆盖配置区（服务等级字段按空族集隐藏）')
+assert.equal(isAccountRequestOverrideProviderSupported('gemini'), true, 'Gemini 账户必须显示已实现的思考级别覆盖配置区')
+assert.equal(
+  isAccountRequestOverrideProviderSupported('gemini', ['interactions_json', 'interactions_sse']),
+  false,
+  'Interactions-only Gemini 账户不得显示 GenerateContent 请求覆盖配置区'
+)
+assert.equal(isAccountRequestOverrideProviderSupported('deepseek'), true, '目录声明能力的供应商必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('glm'), true, '目录声明能力的供应商必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('xai'), true, '目录声明能力的供应商必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('volcengine'), true, '目录声明能力的供应商必须显示请求覆盖配置区')
+
+// 族集全集（前端镜像，单一真源为后端 requestoverride 包）：不随 modelOptions 变化
+const openaiCapabilities = accountGptRequestOverrideCapabilities({ providerCode: 'gpt', modelOptions: [] })
 assert.deepEqual(
-  availableAccountGptServiceTierOptions(apiKeyCapabilities).map((option) => option.value),
+  openaiCapabilities.reasoningEfforts,
+  ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  'openai 族思考级别全集 = none,minimal,low,medium,high,xhigh,max（不含 ultra）'
+)
+assert.deepEqual(openaiCapabilities.serviceTiers, ['default', 'priority', 'flex'], 'openai 族服务等级全集 = default/priority/flex')
+assert.equal(openaiCapabilities.family, 'openai', '未知/默认供应商回落 openai 族')
+assert.deepEqual(
+  accountGptRequestOverrideCapabilities({ providerCode: 'deepseek', modelOptions: [] }).reasoningEfforts,
+  ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  'deepseek 账户思考级别选项 = 不覆盖 + openai 族全集，不再按已选模型过滤'
+)
+assert.equal(
+  accountGptRequestOverrideCapabilities({ providerCode: 'not-a-known-provider', modelOptions: [] }).family,
+  'openai',
+  '未知供应商回落 openai 族'
+)
+const anthropicCapabilities = accountGptRequestOverrideCapabilities({ providerCode: 'anthropic', modelOptions: [] })
+assert.deepEqual(anthropicCapabilities.reasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'], 'anthropic 族思考级别最低档为 low')
+assert.deepEqual(anthropicCapabilities.serviceTiers, [], 'anthropic 族不提供服务等级选项')
+assert.deepEqual(
+  availableAccountGptServiceTierOptions(anthropicCapabilities).map((option) => option.value),
+  [''],
+  'anthropic 服务等级族集为空：只有不覆盖选项，UI 按声明能力隐藏该字段'
+)
+const geminiCapabilities = accountGptRequestOverrideCapabilities({ providerCode: 'gemini', modelOptions: [] })
+assert.deepEqual(geminiCapabilities.reasoningEfforts, ['minimal', 'low', 'medium', 'high'], 'gemini 族思考级别最高档为 high')
+assert.deepEqual(geminiCapabilities.serviceTiers, ['default', 'priority', 'flex'], 'gemini 族服务等级全集与 openai 族一致')
+// FamilyOf 镜像：协议族优先，协议码取不到时回落供应商族
+assert.equal(accountRequestOverrideFamilyOf('gpt', 'anthropic_messages'), 'anthropic', '协议族判定协议码优先')
+assert.equal(accountRequestOverrideFamilyOf('anthropic', 'openai'), 'openai', '协议码 openai 覆盖供应商回落')
+assert.equal(accountRequestOverrideFamilyOf('deepseek', ''), 'openai', '协议码取不到时按供应商码回落')
+assert.equal(accountRequestOverrideFamilyOf('deepseek'), 'openai', '协议码缺省时按供应商码回落')
+// 供应商级声明能力只决定字段显示，不收窄值域
+const declaredFlags = accountGptRequestOverrideCapabilities({
+  providerCode: 'gpt',
+  modelOptions: [{ value: 'm1', supportedReasoningEfforts: ['high'] }]
+})
+assert.equal(declaredFlags.declaredReasoningEfforts, true, '存在声明思考级别的模型时供应商级声明为真')
+assert.equal(declaredFlags.declaredServiceTiers, false, '无模型声明服务档位时供应商级声明为假')
+assert.deepEqual(
+  declaredFlags.reasoningEfforts,
+  ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  '目录声明只影响显示，不收窄协议族值域'
+)
+// Interactions-only Gemini：能力与守卫同时归零
+assert.deepEqual(
+  accountGptRequestOverrideCapabilities({
+    providerCode: 'gemini',
+    modelOptions: [{ value: 'gemini-test', supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['low', 'high'] }],
+    supportedEndpointModes: ['interactions_json', 'interactions_sse']
+  }),
+  { family: 'gemini', serviceTiers: [], reasoningEfforts: [], declaredServiceTiers: false, declaredReasoningEfforts: false },
+  'Interactions-only Gemini 账户不能暴露不会生效的 GenerateContent 覆盖能力'
+)
+
+// 下拉选项：族集全集 + 不覆盖；存量值在族集内时不出现在末尾
+assert.deepEqual(
+  availableAccountGptServiceTierOptions(openaiCapabilities).map((option) => option.value),
   ['', 'default', 'priority', 'flex'],
-  '只要至少一个已选模型支持，非标准服务等级就应开放覆盖配置'
+  'openai 族服务等级选项 = 不覆盖 + default/priority/flex'
 )
 assert.deepEqual(
-  availableAccountGptReasoningEffortOptions(apiKeyCapabilities).map((option) => option.value),
-  ['', 'low', 'medium', 'high', 'max', 'xhigh'],
-  '账户思考级别选项必须包含全部已选模型能力的合集'
+  availableAccountGptReasoningEffortOptions(openaiCapabilities).map((option) => option.value),
+  ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  'openai 族思考级别选项 = 不覆盖 + 族全集'
 )
-
-const unknownCapabilities = accountGptRequestOverrideCapabilities({
-  accountType: 'api_key',
-  modelOptions,
-  supportedModels: ['gpt-5.6-sol', 'gpt-unknown']
-})
+assert.doesNotMatch(
+  availableAccountGptReasoningEffortOptions(openaiCapabilities).map((option) => option.value).join(','),
+  /ultra/,
+  '账户请求覆盖永远不能显示 Ultra'
+)
+// 存量值不在族集内：保留为「当前配置」禁用项，供用户改选或清除
+const staleServiceTierOptions = availableAccountGptServiceTierOptions(openaiCapabilities, 'auto')
 assert.deepEqual(
-  unknownCapabilities,
-  { serviceTiers: ['priority', 'flex'], reasoningEfforts: ['low', 'medium', 'high', 'max'] },
-  '能力未知模型不贡献选项，也不能清空其他已知模型能力'
+  staleServiceTierOptions.map((option) => option.value),
+  ['', 'default', 'priority', 'flex', 'auto'],
+  '族集外服务等级存量值必须保留为当前配置选项'
 )
-
-const geminiCapabilities = accountGptRequestOverrideCapabilities({
-  providerCode: 'gemini',
-  accountType: 'api_key',
-  modelOptions: [{
-    label: 'gemini-test',
-    value: 'gemini-test',
-    supportedServiceTiers: ['priority'],
-    supportedReasoningEfforts: ['low', 'high']
-  }],
-  supportedModels: ['gemini-test']
-})
-assert.deepEqual(geminiCapabilities.serviceTiers, ['priority'], 'Gemini 服务等级控件必须读取官方 service_tier 能力')
-assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
-assert.deepEqual(accountGptRequestOverrideCapabilities({
-  providerCode: 'gemini',
-  accountType: 'google_oauth',
-  modelOptions: geminiCapabilities ? [{
-    label: 'gemini-test', value: 'gemini-test', supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['low', 'high']
-  }] : [],
-  supportedModels: ['gemini-test'],
-  supportedEndpointModes: ['interactions_json', 'interactions_sse']
-}), { serviceTiers: [], reasoningEfforts: [] }, 'Interactions-only Gemini 账户不能暴露不会生效的 GenerateContent 覆盖能力')
-
-const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
-  providerCode: 'deepseek',
-  accountType: 'api_key',
-  modelOptions: [{
-    label: 'deepseek-test',
-    value: 'deepseek-test',
-    supportedServiceTiers: ['priority'],
-    supportedReasoningEfforts: ['high']
-  }],
-  supportedModels: ['deepseek-test']
-})
+assert.equal(staleServiceTierOptions.find((option) => option.value === 'auto')?.disabled, true, '族集外服务等级存量值不能伪装成可用能力')
+assert.match(
+  staleServiceTierOptions.find((option) => option.value === 'auto')?.label ?? '',
+  /不在当前协议族值域内/,
+  '族集外存量值必须以「当前配置：X（不在当前协议族值域内）」呈现'
+)
+const staleReasoningOptions = availableAccountGptReasoningEffortOptions(openaiCapabilities, 'ultra')
 assert.deepEqual(
-  deepSeekCapabilities,
-  { serviceTiers: [], reasoningEfforts: [] },
-  'DeepSeek 没有账户覆盖 driver 时不能因手工目录声明而显示无效控件'
+  staleReasoningOptions.map((option) => option.value),
+  ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  '族集外思考级别存量值（如 ultra）必须保留为当前配置选项'
 )
-
-const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
-  accountType: 'oauth',
-  modelOptions: [{
-    label: 'gpt-flex-only',
-    value: 'gpt-flex-only',
-    supportedServiceTiers: ['flex'],
-    supportedReasoningEfforts: ['high']
-  }],
-  supportedModels: ['gpt-flex-only']
-})
-assert.deepEqual(oauthFlexOnlyCapabilities.serviceTiers, ['flex'], 'OAuth 必须与 API Key 一样使用模型目录声明的 Flex 能力')
+assert.equal(staleReasoningOptions.find((option) => option.value === 'ultra')?.disabled, true, '族集外思考级别存量值不能伪装成可用能力')
 assert.deepEqual(
-  availableAccountGptServiceTierOptions(oauthFlexOnlyCapabilities).map((option) => option.value),
-  ['', 'default', 'flex'],
-  'OAuth Flex 模型必须提供默认和 Flex 覆盖选项'
+  availableAccountGptServiceTierOptions(openaiCapabilities, 'priority').map((option) => option.value),
+  ['', 'default', 'priority', 'flex'],
+  '族集内存量值不再追加「当前配置」项'
 )
-
-const emptyCapabilities = accountGptRequestOverrideCapabilities({
-  accountType: 'api_key',
-  modelOptions: [{
-    label: 'gpt-empty-capabilities',
-    value: 'gpt-empty-capabilities',
-    supportedServiceTiers: [],
-    supportedReasoningEfforts: []
-  }],
-  supportedModels: ['gpt-empty-capabilities']
-})
-assert.deepEqual(
-  availableAccountGptServiceTierOptions(emptyCapabilities).map((option) => option.value),
-  [''],
-  '服务等级能力为空时仍必须提供不覆盖选项，供页面保留禁用字段'
-)
-assert.deepEqual(
-  availableAccountGptReasoningEffortOptions(emptyCapabilities).map((option) => option.value),
-  [''],
-  '思考级别能力为空时仍必须提供不覆盖选项，供页面保留禁用字段'
-)
-const staleServiceTierOptions = availableAccountGptServiceTierOptions(emptyCapabilities, 'flex')
-assert.deepEqual(staleServiceTierOptions.map((option) => option.value), ['', 'flex'], '失效服务等级配置必须保留为当前配置选项并允许用户清除')
-assert.equal(staleServiceTierOptions.find((option) => option.value === 'flex')?.disabled, true, '失效服务等级不能伪装成当前可用能力')
-const staleReasoningOptions = availableAccountGptReasoningEffortOptions(emptyCapabilities, 'max')
-assert.deepEqual(staleReasoningOptions.map((option) => option.value), ['', 'max'], '失效思考级别配置必须保留为当前配置选项并允许用户清除')
-assert.equal(staleReasoningOptions.find((option) => option.value === 'max')?.disabled, true, '失效思考级别不能伪装成当前可用能力')
 
 const apiKeyForm = gptForm('api_key')
 apiKeyForm.serviceTierOverride = 'priority'
@@ -259,7 +276,10 @@ const oauthPayload = buildOAuthCreateCommonPayload({
 assert.equal(oauthPayload.credentialsPatch?.service_tier_override, 'priority', 'OAuth credentialsPatch 必须保留服务等级覆盖')
 assert.equal(oauthPayload.credentialsPatch?.reasoning_effort_override, 'max', 'OAuth credentialsPatch 必须保留思考级别覆盖')
 
+// 保存校验（2026-10-18 简化定案）：前端不再做覆盖字段能力/值域校验，
+// 族内值与族外存量值都放行，值域由后端族集校验负责
 oauthForm.serviceTierOverride = 'flex'
+oauthForm.reasoningEffortOverride = 'max'
 // 国外 OAuth 供应商（gpt 等）的 refresh_token 表单必须绑定出海代理后才能保存，与后端创建拦截一致
 oauthForm.proxyProfileId = 'proxy-overseas-regression'
 assert.equal(
@@ -272,7 +292,21 @@ assert.equal(
     providers: FALLBACK_PROVIDERS
   }),
   undefined,
-  'OAuth 保存前必须按模型目录能力接受 Flex'
+  'OAuth 保存必须接受族内 Flex/Max 覆盖'
+)
+oauthForm.serviceTierOverride = 'auto'
+oauthForm.reasoningEffortOverride = 'ultra'
+assert.equal(
+  validateAccountSaveForm({
+    form: oauthForm,
+    hasAuthSession: true,
+    errorPolicyRules: [],
+    responseInspectionRules: [],
+    mappingUpstreamModelOptions: [],
+    providers: FALLBACK_PROVIDERS
+  }),
+  undefined,
+  '族集外存量覆盖值不再阻止前端保存（值域由后端族集校验负责）'
 )
 
 const customModelForm = {
@@ -366,13 +400,8 @@ assert.doesNotMatch(
   /服务等级|Priority|Flex/,
   '移动端思考级别不能重复展示服务等级'
 )
-assert.doesNotMatch(
-  availableAccountGptReasoningEffortOptions(apiKeyCapabilities).map((option) => option.value).join(','),
-  /ultra/,
-  '账户请求覆盖永远不能显示 Ultra'
-)
 
-console.log('GPT 请求覆盖前端回归通过：模型能力合集、OAuth Flex、常显控件、失效配置保留和持久化均符合契约')
+console.log('GPT 请求覆盖前端回归通过：协议族全集选项、供应商级显示、Interactions-only 守卫、存量值保留和持久化均符合契约')
 
 function gptForm(type: 'api_key' | 'oauth'): AccountFormModel {
   const form = defaultAccountForm('gpt', type, FALLBACK_PROVIDERS)

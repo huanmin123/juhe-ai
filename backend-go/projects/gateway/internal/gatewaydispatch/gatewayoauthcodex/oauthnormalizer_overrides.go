@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
 // GPT account request overrides (BUG-0175 D-151), ported from
@@ -23,6 +25,13 @@ import (
 // port (composition-root handover mirrors Node
 // listCachedProviderModelCatalogAsync); a nil port keeps capability resolution
 // returning undefined (overrides inert) instead of guessing.
+//
+// 值域分层（供应商感知断言）：service_tier / reasoning_effort 的 OpenAI 枚举是
+// gpt 供应商专属的 wire 约束，只对 providerCode 规范化后为 gpt 的账户生效；
+// 其它供应商（含未知/空 providerCode）只保留凭据 token 形状校验。运行时有效值
+// 由 ResolveEffectiveOverrides 按「最终上游模型声明能力」解析（2026-10-18
+// 简化定案）：思考级别按 requestoverride 档位序向下兼容降级，服务等级不降级
+// （default 恒为强制标准档）；未命中的字段保持客户端原值，不产生请求级硬失败。
 
 // GptServiceTierOverride mirrors GptServiceTierOverride.
 type GptServiceTierOverride = string
@@ -79,8 +88,32 @@ func gptCredentialOverrideToken(credentials map[string]any, key string) (string,
 	return "", &GptAccountRequestOverrideError{Message: "账户请求覆盖字段 " + key + " 无效"}
 }
 
-// AssertGptAccountRequestOverrideValues mirrors assertGptAccountRequestOverrideValues.
-func AssertGptAccountRequestOverrideValues(overrides GptAccountRequestOverrides) error {
+// gptOverrideProviderCode 是 gpt 专属 wire 枚举适用的供应商 token（与写入面
+// accounts.gptVendorCode / accountscore.GptVendorCode 同一 token）；dispatch
+// 叶子包不反向依赖 accounts 子域，本地按 lowercase+trim 规范化后比较。
+const gptOverrideProviderCode = "gpt"
+
+// normalizeOverrideProviderCode 与 gatewaypreauth / accountkeystates 的
+// normalizeProviderToken 同一口径。
+func normalizeOverrideProviderCode(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// AssertGptAccountRequestOverrideValuesForProvider 是供应商感知的值域断言：
+// 仅 providerCode 规范化后为 gpt 时执行 gpt 专属 wire 枚举；其它供应商或
+// 未知/空 providerCode 跳过枚举（遗漏传入只会少一层冗余校验，不会把请求
+// 打成硬失败），值域交给目录能力门。
+func AssertGptAccountRequestOverrideValuesForProvider(overrides GptAccountRequestOverrides, providerCode string) error {
+	if normalizeOverrideProviderCode(providerCode) != gptOverrideProviderCode {
+		return nil
+	}
+	return assertGptOverrideEnumValues(overrides)
+}
+
+// assertGptOverrideEnumValues 是唯一的 gpt 枚举表：service_tier 仅
+// default|priority|flex，reasoning_effort 仅
+// none|minimal|low|medium|high|xhigh|max（OpenAI 上游 wire 约束）。
+func assertGptOverrideEnumValues(overrides GptAccountRequestOverrides) error {
 	if overrides.ServiceTier != "" && overrides.ServiceTier != "default" && overrides.ServiceTier != "priority" && overrides.ServiceTier != "flex" {
 		return &GptAccountRequestOverrideError{Message: "GPT 账户请求覆盖字段 service_tier_override 无效"}
 	}
@@ -92,6 +125,13 @@ func AssertGptAccountRequestOverrideValues(overrides GptAccountRequestOverrides)
 	return nil
 }
 
+// AssertGptAccountRequestOverrideValues 保留原函数名，语义收窄为 gpt 专属
+// 枚举断言（gatewayoauthcodex_bridge.go 原样导出，根包测试沿用）：等价于对
+// gpt 供应商调用 AssertGptAccountRequestOverrideValuesForProvider。
+func AssertGptAccountRequestOverrideValues(overrides GptAccountRequestOverrides) error {
+	return assertGptOverrideEnumValues(overrides)
+}
+
 // HasApplicableGptAccountRequestOverrides mirrors hasApplicableGptAccountRequestOverrides.
 func HasApplicableGptAccountRequestOverrides(overrides GptAccountRequestOverrides, endpointFamily string, compact bool) bool {
 	if endpointFamily == "" {
@@ -100,28 +140,31 @@ func HasApplicableGptAccountRequestOverrides(overrides GptAccountRequestOverride
 	return overrides.ServiceTier != "" || (!compact && overrides.ReasoningEffort != "")
 }
 
-// EffectiveGptAccountRequestOverrides mirrors effectiveGptAccountRequestOverrides.
-func EffectiveGptAccountRequestOverrides(overrides GptAccountRequestOverrides, capabilities *GptRequestOverrideModelCapabilities) GptAccountRequestOverrides {
+// ResolveEffectiveOverrides 按「最终上游模型声明能力」解析覆盖的有效值
+// （2026-10-18 简化定案，取代旧 effectiveGptAccountRequestOverrides 的
+// “精确匹配否则丢弃”门，命名与注释反映降级语义）：
+//   - 思考级别向下兼容：声明值精确含配置值 → 原值；否则取声明值中档位序不高于
+//     配置值的最高档（requestoverride.DegradeReasoningEffort）；无可用档位
+//     （声明为空、全部高于配置值或配置值不在档位序内）→ 空串，调用方保留
+//     客户端原值不改写。
+//   - 服务等级不降级：default 恒为「强制标准档」（调用方删除客户端
+//     service_tier，不要求任何档位声明）；priority/flex 仅在声明支持时写入，
+//     否则空串（保留客户端原值）。
+//   - capabilities 为 nil（目录未命中 / 目录端口未注入）等价于无任何声明。
+func ResolveEffectiveOverrides(overrides GptAccountRequestOverrides, capabilities *GptRequestOverrideModelCapabilities) GptAccountRequestOverrides {
 	if overrides.ServiceTier == "" && overrides.ReasoningEffort == "" {
-		return GptAccountRequestOverrides{}
-	}
-	if capabilities == nil {
 		return GptAccountRequestOverrides{}
 	}
 	effective := GptAccountRequestOverrides{}
 	if overrides.ServiceTier != "" {
-		supported := false
 		if overrides.ServiceTier == "default" {
-			supported = len(capabilities.SupportedServiceTiers) > 0
-		} else {
-			supported = gptOverrideListContains(capabilities.SupportedServiceTiers, overrides.ServiceTier)
-		}
-		if supported {
+			effective.ServiceTier = "default"
+		} else if capabilities != nil && gptOverrideListContains(capabilities.SupportedServiceTiers, overrides.ServiceTier) {
 			effective.ServiceTier = overrides.ServiceTier
 		}
 	}
-	if overrides.ReasoningEffort != "" && gptOverrideListContains(capabilities.SupportedReasoningEfforts, overrides.ReasoningEffort) {
-		effective.ReasoningEffort = overrides.ReasoningEffort
+	if overrides.ReasoningEffort != "" && capabilities != nil {
+		effective.ReasoningEffort = requestoverride.DegradeReasoningEffort(overrides.ReasoningEffort, capabilities.SupportedReasoningEfforts)
 	}
 	return effective
 }
@@ -147,10 +190,10 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValues(overrides); err != nil {
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, input.ProviderCode); err != nil {
 		return nil, err
 	}
-	effective := EffectiveGptAccountRequestOverrides(overrides, input.ModelCapabilities)
+	effective := ResolveEffectiveOverrides(overrides, input.ModelCapabilities)
 	if !HasApplicableGptAccountRequestOverrides(effective, input.EndpointFamily, input.Compact) {
 		return inputBody, nil
 	}
@@ -163,6 +206,13 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 	if input.Compact || effective.ReasoningEffort == "" {
 		return body, nil
 	}
+	// endpoint family 只保留规范族名（生产调用方只传规范名：OAuth 路径在
+	// ApplyOpenAIOAuthCodexAccountRequestOverrides 硬编码 responses；api_key
+	// 路径经组合根 gptRequestOverrideEndpointFamily 白名单归一）。
+	// Node wire 分支（provider-request-overrides.ts:62-84）：anthropic_messages
+	// 写 output_config.effort；gemini 两族写
+	// generationConfig.thinkingConfig.thinkingLevel（audit deviation note，
+	// 本任务 B-6 补齐）。
 	switch input.EndpointFamily {
 	case "responses":
 		reasoning := map[string]any{}
@@ -175,18 +225,14 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 	case "chat_completions":
 		body["reasoning_effort"] = effective.ReasoningEffort
 		delete(body, "reasoning")
-	// Node wire 分支（provider-request-overrides.ts:62-84）：anthropic_messages
-	// 写 output_config.effort；gemini_generate_content 写
-	// generationConfig.thinkingConfig.thinkingLevel（audit deviation note，
-	// 本任务 B-6 补齐）。
-	case "anthropic_messages", "messages":
+	case "anthropic_messages":
 		outputConfig := map[string]any{}
 		if existing := bridgeObjectValueOf(body["output_config"]); existing != nil {
 			outputConfig = existing
 		}
 		outputConfig["effort"] = effective.ReasoningEffort
 		body["output_config"] = outputConfig
-	case "gemini_generate_content", "generate_content", "gemini_stream_generate", "stream_generate_content":
+	case "gemini_generate_content", "gemini_stream_generate":
 		generationConfig := map[string]any{}
 		if existing := bridgeObjectValueOf(body["generationConfig"]); existing != nil {
 			generationConfig = existing
@@ -278,7 +324,7 @@ func ResolveGptRequestOverrideModelCapabilities(ctx context.Context, account gat
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValues(overrides); err != nil {
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, account.ProviderCode); err != nil {
 		return nil, err
 	}
 	if overrides.ServiceTier == "" && overrides.ReasoningEffort == "" {
@@ -325,7 +371,7 @@ func ApplyGptAccountRequestOverridesToUpstreamBody(
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValues(overrides); err != nil {
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, account.ProviderCode); err != nil {
 		return nil, err
 	}
 	if !HasApplicableGptAccountRequestOverrides(overrides, endpointFamily, compact) {
@@ -343,7 +389,7 @@ func ApplyGptAccountRequestOverridesToUpstreamBody(
 	if err != nil {
 		return nil, err
 	}
-	effective := EffectiveGptAccountRequestOverrides(overrides, capabilities)
+	effective := ResolveEffectiveOverrides(overrides, capabilities)
 	if !HasApplicableGptAccountRequestOverrides(effective, endpointFamily, compact) {
 		return body, nil
 	}
@@ -353,6 +399,7 @@ func ApplyGptAccountRequestOverridesToUpstreamBody(
 	}
 	overridden, err := ApplyGptAccountRequestOverridesBody(parsed, GptAccountOverrideInput{
 		Credentials:       account.Credentials,
+		ProviderCode:      account.ProviderCode,
 		EndpointFamily:    endpointFamily,
 		Compact:           compact,
 		ModelCapabilities: capabilities,

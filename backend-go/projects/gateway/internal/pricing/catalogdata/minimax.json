@@ -372,6 +372,235 @@
         "images"
       ],
       "supportsPromptCaching": false
+    },
+    {
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 3e-08,
+      "catalogOrder": 13,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2.5",
+      "outputCostPerToken": 1.2e-06,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2.1/8.4 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（定价概览 历史模型-语言模型行，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对）；官方定价页历史模型小节未给发布日期（公开发布时间线 M2 2025-10 起的后续代际，晚于 2025-01 收录下限），releaseDate 留空；上下文窗口官方定价页未给，字段留空不臆造；按约定汇率 7.0 换算 $0.3/$1.2/$0.03/$0.375",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 3e-08,
+      "catalogOrder": 14,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2.5-highspeed",
+      "outputCostPerToken": 2.4e-06,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 4.2/16.8 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（定价概览 历史模型-语言模型行，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对）；发布日期官方页未给，releaseDate 留空；按约定汇率 7.0 换算 $0.6/$2.4/$0.03/$0.375",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 3e-08,
+      "catalogOrder": 15,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2.1",
+      "outputCostPerToken": 1.2e-06,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2.1/8.4 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（定价概览 历史模型-语言模型行，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对）；发布日期官方页未给（公开发布时间线 2025-12），releaseDate 留空；按约定汇率 7.0 换算 $0.3/$1.2/$0.03/$0.375",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 3e-08,
+      "catalogOrder": 16,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2.1-highspeed",
+      "outputCostPerToken": 2.4e-06,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 4.2/16.8 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（定价概览 历史模型-语言模型行，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对）；发布日期官方页未给，releaseDate 留空；按约定汇率 7.0 换算 $0.6/$2.4/$0.03/$0.375",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 3e-08,
+      "catalogOrder": 17,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2",
+      "outputCostPerToken": 1.2e-06,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2.1/8.4 元、缓存读 0.21、缓存写 2.625 元/百万 tokens（定价概览 历史模型-语言模型行，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对）；官方页无 highspeed 行；发布日期官方页未给（公开发布时间线 2025-10-27 开源发布），releaseDate 留空；按约定汇率 7.0 换算 $0.3/$1.2/$0.03/$0.375",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "catalogOrder": 18,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "MiniMax-H3-Regeneration",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 768P→2K 再生成 0.30 元/秒（定价概览 视频再生成行，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对），按约定汇率 7.0 换算 $0.04286/秒（0.3÷7.0）；原 768P 任务的输入素材需重新计费：视频输入 0.30 元/秒、图片 5 张内免费/超出 0.15 元/张、音频免费（官方页明文，目录 schema 无输入素材字段，留档于此）；发布日期官方页未给，releaseDate 留空",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.04285714285714286
+    },
+    {
+      "catalogOrder": 19,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 8.285714285714285e-07,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-H3-Context-IR",
+      "outputCostPerToken": 3.2857142857142857e-06,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 输入 5.80、输出 23.00 元/百万 tokens（定价概览 H3-Context-IR 任务价格小节，列头输入/输出价格，platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 2026-10-17 核对）；任务归属接口官方页未明示，mode 按 token 计价口径归 chat；发布日期官方页未给，releaseDate 留空；按约定汇率 7.0 换算 $0.828571/$3.285714 每百万 tokens",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
     }
   ],
   "provider": "minimax"

@@ -66,6 +66,11 @@ type fakeModels struct {
 	catalogCalls map[string]int
 	catalogErr   error
 
+	// activeModels 是 models 单表目录可见性行 loader 的替身数据
+	// （ListVisibleModelsDirectoryEntries）；nil 即空目录。
+	activeModels    []ModelsDirectoryEntry
+	activeModelsErr error
+
 	concurrency map[string]int
 }
 
@@ -174,6 +179,16 @@ func (f *fakeModels) ListProviderModelCatalog(ctx context.Context, input ModelCa
 		return nil, f.catalogErr
 	}
 	return CloneProviderModelCatalogItems(f.catalog[input.ProviderCode]), nil
+}
+
+// ListVisibleModelsDirectoryEntries 是 models 单表目录可见性行替身。
+func (f *fakeModels) ListVisibleModelsDirectoryEntries(ctx context.Context) ([]ModelsDirectoryEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.activeModelsErr != nil {
+		return nil, f.activeModelsErr
+	}
+	return append([]ModelsDirectoryEntry(nil), f.activeModels...), nil
 }
 
 func (f *fakeModels) LoadAccountCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error) {
@@ -908,7 +923,7 @@ func TestRecoverableUnavailableWindowFilter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// provider model catalog + route index
+// provider model catalog + models 单表目录路由
 // ---------------------------------------------------------------------------
 
 func catalogItem(provider, model string) ProviderModelCatalogItem {
@@ -920,10 +935,17 @@ func catalogItem(provider, model string) ProviderModelCatalogItem {
 	}
 }
 
+// TestProviderModelRouteResolutionOutcomes 覆盖 models 单表目录语义下的二值
+// 结果（供应商与上游协议面重构设计 §2.1/§3/§6.1）：目录存在对请求 owner 可见
+// 的 active 行 → matched；无可见 active 行（不存在/禁用）→ missing；空模型键
+// 短路 missing。providerCodes/includeUnpriced 是供应商收窄时代的过渡载体，
+// 不参与判定；systemAccountID 是可见性 owner。
 func TestProviderModelRouteResolutionOutcomes(t *testing.T) {
 	models := newFakeModels()
-	models.catalog["gpt"] = []ProviderModelCatalogItem{catalogItem("gpt", "gpt-x"), catalogItem("gpt", "shared")}
-	models.catalog["deepseek"] = []ProviderModelCatalogItem{catalogItem("deepseek", "shared")}
+	models.activeModels = []ModelsDirectoryEntry{
+		{PublicModel: " gpt-x ", Scope: "builtin"},
+		{PublicModel: "shared", Scope: "builtin"},
+	}
 	clock := newManualClock()
 	svc := newTestService(t, models, clock, nil)
 	ctx := context.Background()
@@ -932,15 +954,11 @@ func TestProviderModelRouteResolutionOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("matched resolve: %v", err)
 	}
-	if matched.Outcome != ProviderModelRouteMatched || matched.ProviderCode != "gpt" {
+	if matched.Outcome != ProviderModelRouteMatched || matched.ModelKey != "gpt-x" {
 		t.Fatalf("matched outcome mismatch: %+v", matched)
 	}
-	ambiguous, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "shared", []string{"deepseek", "gpt"}, "", false)
-	if err != nil {
-		t.Fatalf("ambiguous resolve: %v", err)
-	}
-	if ambiguous.Outcome != ProviderModelRouteAmbiguous || len(ambiguous.MatchedProviderCodes) != 2 {
-		t.Fatalf("ambiguous outcome mismatch: %+v", ambiguous)
+	if matched.ProviderCode != "" || len(matched.MatchedProviderCodes) != 0 {
+		t.Fatalf("models 语义下供应商载体必须恒空: %+v", matched)
 	}
 	missing, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "unknown", []string{"gpt"}, "", false)
 	if err != nil {
@@ -949,12 +967,110 @@ func TestProviderModelRouteResolutionOutcomes(t *testing.T) {
 	if missing.Outcome != ProviderModelRouteMissing {
 		t.Fatalf("missing outcome mismatch: %+v", missing)
 	}
+	// 目录归一化 TrimSpace 后精确匹配："gpt-x " 行以 "gpt-x" 命中，大小写
+	// 变体不命中（binary 语义）。
+	caseSensitive, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "GPT-X", []string{"gpt"}, "", false)
+	if err != nil || caseSensitive.Outcome != ProviderModelRouteMissing {
+		t.Fatalf("大小写必须按 binary 区分: %+v err=%v", caseSensitive, err)
+	}
 	empty, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "gpt-x", nil, "", false)
 	if err != nil {
-		t.Fatalf("empty providers resolve: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
-	if empty.Outcome != ProviderModelRouteMissing || empty.ModelKey != "gpt-x" {
-		t.Fatalf("empty providers must short-circuit to missing: %+v", empty)
+	// 入参 providerCodes 已不参与判定（供应商解耦）。
+	if empty.Outcome != ProviderModelRouteMatched || empty.ModelKey != "gpt-x" {
+		t.Fatalf("空 providerCodes 不得影响 models 目录判定: %+v", empty)
+	}
+	blank, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "   ", []string{"gpt"}, "", false)
+	if err != nil || blank.Outcome != ProviderModelRouteMissing || blank.ModelKey != "" {
+		t.Fatalf("空模型键必须短路 missing: %+v err=%v", blank, err)
+	}
+}
+
+// TestModelsDirectoryVisibilityByScope 覆盖 §2.1 可见性规则（终态 404/503 二
+// 分的数据面）：builtin/global 对任意 owner（含空串）可见；personal 仅属主精
+// 确匹配可见、owner 不同或 owner 为空不可见；非 active 行不进集合（不可见）。
+func TestModelsDirectoryVisibilityByScope(t *testing.T) {
+	models := newFakeModels()
+	models.activeModels = []ModelsDirectoryEntry{
+		{PublicModel: "m-builtin", Scope: "builtin"},
+		{PublicModel: "m-global", Scope: "global", SystemAccountID: ""},
+		{PublicModel: "m-personal", Scope: "personal", SystemAccountID: "sys_owner"},
+		// scope='personal' 的 inactive 行不会从 SQL 读模型返回（status='active'
+		// 过滤），以缺席表达"非 active 不可见"。
+	}
+	clock := newManualClock()
+	svc := newTestService(t, models, clock, nil)
+	ctx := context.Background()
+
+	resolve := func(owner, model string) (ProviderModelRouteOutcome, error) {
+		resolution, err := svc.ResolveCachedProviderModelRouteAsync(ctx, model, nil, owner, true)
+		if err != nil {
+			return "", err
+		}
+		return resolution.Outcome, nil
+	}
+
+	// builtin/global 对任意资源账户可见（含无属主上下文的空 owner）。
+	for _, owner := range []string{"", "sys_owner", "sys_other"} {
+		for _, model := range []string{"m-builtin", "m-global"} {
+			outcome, err := resolve(owner, model)
+			if err != nil || outcome != ProviderModelRouteMatched {
+				t.Fatalf("owner=%q model=%s 必须 matched（%s 全可见）: %+v err=%v", owner, model, model, outcome, err)
+			}
+		}
+	}
+	// personal 属主匹配可见。
+	if outcome, err := resolve("sys_owner", "m-personal"); err != nil || outcome != ProviderModelRouteMatched {
+		t.Fatalf("personal 属主匹配必须 matched: %+v err=%v", outcome, err)
+	}
+	// personal owner 不同不可见。
+	if outcome, err := resolve("sys_other", "m-personal"); err != nil || outcome != ProviderModelRouteMissing {
+		t.Fatalf("personal 非属主必须 missing: %+v err=%v", outcome, err)
+	}
+	// personal 行对空 owner（无属主上下文）不可见。
+	if outcome, err := resolve("", "m-personal"); err != nil || outcome != ProviderModelRouteMissing {
+		t.Fatalf("personal 对空 owner 必须 missing: %+v err=%v", outcome, err)
+	}
+	// personal 非 active（不在集合内）对属主同样不可见。
+	if outcome, err := resolve("sys_owner", "m-personal-inactive"); err != nil || outcome != ProviderModelRouteMissing {
+		t.Fatalf("personal 非 active 必须 missing: %+v err=%v", outcome, err)
+	}
+}
+
+// TestModelsDirectorySharedCacheRoundTrip 覆盖共享缓存载荷的 (model, scope,
+// owner) 往返：personal 属主信息必须跨序列化保留，owner 判定在共享命中路径
+// 同样生效。
+func TestModelsDirectorySharedCacheRoundTrip(t *testing.T) {
+	models := newFakeModels()
+	models.activeModels = []ModelsDirectoryEntry{
+		{PublicModel: "m-builtin", Scope: "builtin"},
+		{PublicModel: "m-personal", Scope: "personal", SystemAccountID: "sys_owner"},
+	}
+	clock := newManualClock()
+	shared := newFakeSharedFactory()
+	svc := newTestService(t, models, clock, func(o *Options) { o.Shared = shared })
+	ctx := context.Background()
+
+	// 首读装载并写入共享层。
+	if _, err := svc.ResolveCachedGatewayModelsDirectoryActiveAsync(ctx, "sys_owner", "m-personal"); err != nil {
+		t.Fatalf("首读: %v", err)
+	}
+	// 丢弃进程内集合，逼出共享缓存命中路径。
+	svc.modelsDirCache.clear()
+	visible, err := svc.ResolveCachedGatewayModelsDirectoryActiveAsync(ctx, "sys_owner", "m-personal")
+	if err != nil || !visible {
+		t.Fatalf("共享命中 personal 属主必须可见: %+v err=%v", visible, err)
+	}
+	svc.modelsDirCache.clear()
+	visible, err = svc.ResolveCachedGatewayModelsDirectoryActiveAsync(ctx, "sys_other", "m-personal")
+	if err != nil || visible {
+		t.Fatalf("共享命中 personal 非属主必须不可见: %+v err=%v", visible, err)
+	}
+	svc.modelsDirCache.clear()
+	visible, err = svc.ResolveCachedGatewayModelsDirectoryActiveAsync(ctx, "", "m-builtin")
+	if err != nil || !visible {
+		t.Fatalf("共享命中 builtin 必须可见: %+v err=%v", visible, err)
 	}
 }
 

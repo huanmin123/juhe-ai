@@ -211,11 +211,16 @@ const contextFieldPlannerSource = modalSource.slice(
 assert.match(contextFieldPlannerSource, /accountBatchEditContextFieldsForForm\(form, homogeneousAccount\.value\?\.providerCode\)/, '批量弹窗必须复用可执行的字段级上下文规划器')
 verifyModelContextFieldPlanning()
 const requestOverrideVisibilitySource = modalSource.slice(
-  modalSource.indexOf('const requestOverridesSupported'),
-  modalSource.indexOf('const modelConfigurationLoading')
+  modalSource.indexOf('const requestOverrideGuardModes'),
+  modalSource.indexOf('const serviceTierOptions')
 )
 assert.match(requestOverrideVisibilitySource, /loadedModelContextFields\.has\('supportedEndpointModes'\)[\s\S]*: undefined/, 'Gemini 接口能力尚未加载时必须保留请求覆盖入口')
-assert.match(requestOverrideVisibilitySource, /\|\| form\.enabled\.serviceTierOverride[\s\S]*\|\| form\.enabled\.reasoningEffortOverride/, '接口能力加载后即使不支持，也必须保留已启用字段入口供用户取消，不能隐藏仍会提交的值')
+assert.match(requestOverrideVisibilitySource, /\|\| form\.enabled\.serviceTierOverride[\s\S]*\|\| form\.enabled\.reasoningEffortOverride/, '已勾选的覆盖字段必须保留入口供用户取消，不能隐藏仍会提交的值')
+assert.match(
+  requestOverrideVisibilitySource,
+  /isAccountRequestOverrideProviderSupported\(homogeneousAccount\.value\.providerCode, requestOverrideGuardModes\.value\)[\s\S]*&& \(serviceTierOverrideFieldVisible\.value \|\| reasoningEffortOverrideFieldVisible\.value\)/,
+  'Interactions-only Gemini 守卫必须绝对生效，区块按供应商级字段可见性显示'
+)
 assert.match(
   modalSource.slice(
     modalSource.indexOf('function handleMappingModelOptionsOpen'),
@@ -329,11 +334,11 @@ function verifyModelContextFieldPlanning(): void {
     [],
     '三个模型字段都显式覆盖时不得读取任何旧模型上下文'
   )
-  assert.deepEqual(contextFieldsFor(['serviceTierOverride']), ['supportedModels'], 'GPT 服务等级只依赖现有支持模型')
+  assert.deepEqual(contextFieldsFor(['serviceTierOverride']), [], '覆盖字段值域为协议族全集，不再读取现有支持模型')
   assert.deepEqual(
     contextFieldsFor(['reasoningEffortOverride'], 'gemini'),
-    ['supportedModels', 'supportedEndpointModes'],
-    'Gemini 思考级别必须定点补取支持模型和接口能力'
+    ['supportedEndpointModes'],
+    'Gemini 覆盖字段只需定点补取接口能力用于 Interactions-only 守卫'
   )
 }
 

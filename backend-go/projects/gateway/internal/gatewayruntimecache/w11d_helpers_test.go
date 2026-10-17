@@ -194,12 +194,6 @@ func TestW11DCacheKeyHelpers(t *testing.T) {
 	if got := gatewayOpenAIAccountsCacheKey("g1", "sys", "m1", "responses"); got != "g1:sys:model:m1:endpoint:responses" {
 		t.Fatalf("模型+族键 = %q", got)
 	}
-	if got := providerModelRouteIndexCacheKey([]string{"a", "b"}, "sys", false); got != "sys:priced:a,b" {
-		t.Fatalf("路由索引键 = %q", got)
-	}
-	if got := providerModelRouteIndexCacheKey([]string{"a"}, "sys", true); got != "sys:unpriced:a" {
-		t.Fatalf("含未定价键 = %q", got)
-	}
 	if got := providerModelCatalogCacheKey(ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "s1"}); got != "gpt:s1:active:priced" {
 		t.Fatalf("目录键 = %q", got)
 	}
@@ -211,9 +205,6 @@ func TestW11DCacheKeyHelpers(t *testing.T) {
 	}
 	if got := responseInspectionPolicyCacheKey("openai", "gpt"); got != "openai:gpt" {
 		t.Fatalf("检查策略键 = %q", got)
-	}
-	if got := normalizedProviderRouteCodes([]string{" b ", "a", "a", ""}); strings.Join(got, ",") != "a,b" {
-		t.Fatalf("路由代码归一 = %v", got)
 	}
 	values := []string{"c", "a", "b", "a"}
 	sortStrings(values)

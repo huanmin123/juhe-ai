@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
@@ -352,12 +353,28 @@ func chainInt64ToInt(value *int64) *int {
 	return &out
 }
 
-// findChainCatalogItem mirrors findCatalogItem (trim equality).
+// findChainCatalogItem mirrors findCatalogItem（trim 相等），并在其上叠加
+// volcengine TTS 占位名↔现役名等价组（gatewayrouting.VolcengineTTSModelAlias
+// VariantsOf）：先精确匹配（等价组之外行为零变化），未命中再按等价变体匹配。
+// 计价解析是「派发匹配等价」的第六消费点：占位名 doubao-tts 请求的用量按
+// seed-audio-1.0 目录行计费——2026-10-17 实弹取证：无此归一时 usage 计价按
+// 目录 miss 落 0 成本，与接入文档「计费按归一后的 seed-audio-1.0 秒价」不符。
 func findChainCatalogItem(items []gatewayruntimecache.ProviderModelCatalogItem, model string) *gatewayruntimecache.ProviderModelCatalogItem {
 	normalized := strings.TrimSpace(model)
 	for index := range items {
 		if strings.TrimSpace(items[index].Model) == normalized {
 			return &items[index]
+		}
+	}
+	for _, variant := range gatewayrouting.VolcengineTTSModelAliasVariantsOf(normalized) {
+		variant = strings.TrimSpace(variant)
+		if variant == normalized || variant == "" {
+			continue
+		}
+		for index := range items {
+			if strings.TrimSpace(items[index].Model) == variant {
+				return &items[index]
+			}
 		}
 	}
 	return nil

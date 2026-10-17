@@ -351,18 +351,22 @@ func TestW14dCredentialsPatchParsers(t *testing.T) {
 	if !isList || len(modes) != 2 || modes[1] != "responses" {
 		t.Fatalf("parsed endpoint modes: %#v", patch["supported_endpoint_modes"])
 	}
-	// Service tier overrides accept only known tiers.
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "mystery"}); ok {
-		t.Fatal("unknown service tier must fail")
+	// Service tier overrides: 2026-10-18 简化定案起 parser 只做「非空字符串
+	// （trim 后）」形状放行，任意非枚举值（mystery）也在 parser 层放行，
+	// 值域交由账户写入面凭据归一化判定。
+	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "mystery"}); !ok {
+		t.Fatal("non-enum service tier must pass (value domain deferred)")
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "mystery"}); ok {
-		t.Fatal("unknown reasoning effort must fail")
+	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "mystery"}); !ok {
+		t.Fatal("non-enum reasoning effort must pass (value domain deferred)")
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "priority"}); !ok {
-		t.Fatal("known service tier must pass")
+	if patch, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": " priority "}); !ok ||
+		patch["service_tier_override"] != "priority" {
+		t.Fatalf("service tier trim pass-through: %v %v", patch, ok)
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "high"}); !ok {
-		t.Fatal("known reasoning effort must pass")
+	if patch, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": " high "}); !ok ||
+		patch["reasoning_effort_override"] != "high" {
+		t.Fatalf("reasoning effort trim pass-through: %v %v", patch, ok)
 	}
 	// Blank override strings are rejected on every dialect.
 	for _, parse := range []func(map[string]any) (map[string]any, bool){

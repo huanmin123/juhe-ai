@@ -67,6 +67,49 @@ func TestDomesticProviderCatalogPriceAnchors(t *testing.T) {
 	} else if got := floatOf(m27.CacheCreationInputTokenCost); got != 3.75e-07 {
 		t.Fatalf("minimax MiniMax-M2.7 CacheCreationInputTokenCost = %v, want 3.75e-07", got)
 	}
+	// 缺口补录第二批（2026-10-17）：M2 家族历史模型 2.1/8.4 元、缓存读 0.21、
+	// 缓存写 2.625 元/百万（highspeed 4.2/16.8）÷7.0；H3-Context-IR 任务价
+	// 5.80/23.00 元/百万 ÷7.0；H3-Regeneration 768P→2K 再生成 0.30 元/秒 ÷7.0。
+	for model, wants := range map[string][3]float64{
+		"MiniMax-M2.5":           {3e-07, 1.2e-06, 3e-08},
+		"MiniMax-M2.5-highspeed": {6e-07, 2.4e-06, 3e-08},
+		"MiniMax-M2.1":           {3e-07, 1.2e-06, 3e-08},
+		"MiniMax-M2.1-highspeed": {6e-07, 2.4e-06, 3e-08},
+		"MiniMax-M2":             {3e-07, 1.2e-06, 3e-08},
+	} {
+		row, ok := mm[model]
+		if !ok {
+			t.Fatalf("minimax %s row missing", model)
+		}
+		if got := floatOf(row.InputCostPerToken); got != wants[0] {
+			t.Fatalf("minimax %s InputCostPerToken = %v, want %v", model, got, wants[0])
+		}
+		if got := floatOf(row.OutputCostPerToken); got != wants[1] {
+			t.Fatalf("minimax %s OutputCostPerToken = %v, want %v", model, got, wants[1])
+		}
+		if got := floatOf(row.CacheReadInputTokenCost); got != wants[2] {
+			t.Fatalf("minimax %s CacheReadInputTokenCost = %v, want %v", model, got, wants[2])
+		}
+	}
+	if regen, ok := mm["MiniMax-H3-Regeneration"]; !ok {
+		t.Fatal("minimax MiniMax-H3-Regeneration row missing")
+	} else if got := floatOf(regen.VideoOutputCostPerSecond); got != 0.04285714285714286 {
+		t.Fatalf("minimax MiniMax-H3-Regeneration VideoOutputCostPerSecond = %v, want 0.04285714285714286", got)
+	}
+	// H3-Context-IR 任务价：输入/输出 token 价（无缓存价字段，floatOf 缺失哨兵 -1）。
+	if ir, ok := mm["MiniMax-H3-Context-IR"]; !ok {
+		t.Fatal("minimax MiniMax-H3-Context-IR row missing")
+	} else {
+		if got := floatOf(ir.InputCostPerToken); got != 8.285714285714285e-07 {
+			t.Fatalf("minimax MiniMax-H3-Context-IR InputCostPerToken = %v, want 8.285714285714285e-07", got)
+		}
+		if got := floatOf(ir.OutputCostPerToken); got != 3.2857142857142857e-06 {
+			t.Fatalf("minimax MiniMax-H3-Context-IR OutputCostPerToken = %v, want 3.2857142857142857e-06", got)
+		}
+		if got := floatOf(ir.CacheReadInputTokenCost); got != -1 {
+			t.Fatalf("minimax MiniMax-H3-Context-IR CacheReadInputTokenCost = %v, want -1（字段缺失）", got)
+		}
+	}
 
 	// ---- qwen（百炼模型计费页，2026-10-17 浏览器渲染）----
 	qw := rowsFor(qwenModelPricingData)
@@ -191,5 +234,12 @@ func TestDomesticProviderCatalogPriceAnchors(t *testing.T) {
 		t.Fatal("xai grok-tts row missing")
 	} else if got := floatOf(tts.TtsInputCostPerChar); got != 1.5e-05 {
 		t.Fatalf("xai grok-tts TtsInputCostPerChar = %v, want 1.5e-05", got)
+	}
+	// 缺口补录第二批（2026-10-17）：旧版 grok-imagine-video 主档 720p $0.07/s
+	//（480p $0.05 分档留档不落值）。
+	if legacy, ok := xr["grok-imagine-video"]; !ok {
+		t.Fatal("xai grok-imagine-video row missing")
+	} else if got := floatOf(legacy.VideoOutputCostPerSecond); got != 0.07 {
+		t.Fatalf("xai grok-imagine-video VideoOutputCostPerSecond = %v, want 0.07", got)
 	}
 }

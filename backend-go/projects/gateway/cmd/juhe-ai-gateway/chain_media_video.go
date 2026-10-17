@@ -1638,6 +1638,14 @@ func chainIsImagesGenerationsPathAndQuery(pathAndQuery string) bool {
 	return strings.Contains(strings.ToLower(path), "/images/generations")
 }
 
+// chainIsEmbeddingsPathAndQuery 报告路径是否向量面（POST /v1/embeddings 统一
+// 面；query 剥离后大小写不敏感匹配——精确归一后路径即 /embeddings，沿
+// chainIsChatCompletionsPathAndQuery 的包含匹配词表风格）。
+func chainIsEmbeddingsPathAndQuery(pathAndQuery string) bool {
+	path, _ := gatewayopenai.SplitPathAndQuery(pathAndQuery)
+	return strings.Contains(strings.ToLower(path), "/embeddings")
+}
+
 // chainVolcengineChatUpstreamURL 归一 volcengine 对话（chat completions）的
 // 上游 URL：官方 OpenAI 兼容端点 /api/v3/chat/completions 与媒体任务面、图像
 // 面共用 /api/v3 服务根（volcengineVideoServiceRoot），base + 客户端版本剥离

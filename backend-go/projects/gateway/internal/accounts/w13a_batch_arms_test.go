@@ -369,8 +369,11 @@ func TestW13ABatchUpdateBodyAndValueValidation(t *testing.T) {
 		{"healthCheckEndpointMode", "bogus", false}, {"healthCheckEndpointMode", "chat_sse", true},
 		{"modelMappings", "x", false}, {"modelMappings", []any{}, true},
 		{"supportedEndpointModes", []any{}, false}, {"supportedEndpointModes", []any{"x"}, true},
-		{"serviceTierOverride", 3, false}, {"serviceTierOverride", "bogus", false}, {"serviceTierOverride", "flex", true},
-		{"reasoningEffortOverride", 3, false}, {"reasoningEffortOverride", "high", true},
+		// 覆盖字段自 2026-10-18 简化定案起无预检臂：非字符串、首部空白与
+		// 形状合法的非枚举值全部在预检放行，形状与值域由写侧归一化
+		// （NormalizeCredentialsForWrite）判定。
+		{"serviceTierOverride", 3, true}, {"serviceTierOverride", " flex", true}, {"serviceTierOverride", "flex", true},
+		{"reasoningEffortOverride", 3, true}, {"reasoningEffortOverride", "ultra ", true}, {"reasoningEffortOverride", "high", true},
 	}
 	for _, testCase := range cases {
 		if got := validateBatchUpdateValue(testCase.field, testCase.value) == ""; got != testCase.want {

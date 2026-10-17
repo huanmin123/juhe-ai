@@ -116,7 +116,7 @@ GET /api/my-stats/ai-health/hour-detail?accountId=...&statHour=YYYY-MM-DDTHH
 
 ## 6. 页面
 
-菜单位于 AI 管理区域：
+菜单位于管理侧「监控与任务」组（2026-10-17 起由原「AI 管理」组拆分）：
 
 - 管理入口：`/ai-health`
 - 用户入口：`/my-ai-health`

@@ -142,6 +142,49 @@ func (m *SQLReadModels) ListProviderModelCatalog(ctx context.Context, input Mode
 	return m.catalog.ListProviderModelCatalog(ctx, input)
 }
 
+// ModelsDirectoryEntry 是 models 目录可见性行的路由判定子集（供应商与上游协
+// 议面重构设计 §2.1/§6.1）：public_model 原值 + scope + personal 行的属主。
+type ModelsDirectoryEntry struct {
+	PublicModel     string
+	Scope           string
+	SystemAccountID string
+}
+
+// ListVisibleModelsDirectoryEntries 是 models 单表目录的可见性数据面（供应商
+// 与上游协议面重构设计 §2.1/§6.1）：全部 scope IN ('builtin','global',
+// 'personal') 且 status='active' 行的 (public_model, scope,
+// system_account_id) 三元组。可见性判定（builtin/global 对所有资源账户可见、
+// personal 仅属主可见）由目录缓存的 IsModelVisibleInDirectory 在 Go 侧完成；
+// 字符串按值原样返回，binary/case-sensitive 匹配由消费方以精确相等完成，不
+// 依赖数据库 collation。
+func (m *SQLReadModels) ListVisibleModelsDirectoryEntries(ctx context.Context) ([]ModelsDirectoryEntry, error) {
+	ctx = ensureModelCtx(ctx)
+	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT public_model, scope, system_account_id
+		FROM `+m.table("models")+`
+		WHERE scope IN ('builtin', 'global', 'personal') AND status = 'active'`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := []ModelsDirectoryEntry{}
+	for rows.Next() {
+		var publicModel, scope string
+		var systemAccountID sql.NullString
+		if err := rows.Scan(&publicModel, &scope, &systemAccountID); err != nil {
+			return nil, err
+		}
+		entries = append(entries, ModelsDirectoryEntry{
+			PublicModel:     publicModel,
+			Scope:           scope,
+			SystemAccountID: systemAccountID.String,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
 // LoadAccountCurrentConcurrencyByID delegates to the wired
 // ConcurrencySource; without one the overlay reads as zero for every account,
 // matching a Node runtime without concurrency state.
@@ -285,22 +328,24 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 
 // ResolveGroupUsageAccessMetadata mirrors resolveGroupUsageAccessMetadata:
 // owner short-circuit, active group authorization, local authorization
-// settings override.
+// settings override. groups.provider_code 已随供应商解耦退役（供应商与上游协
+// 议面重构设计 §8）：查询不再读取该列，owner/授权维度的既有事实即访问判定，
+// ProviderCode 过渡字段恒为空串。
 func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, groupID, systemAccountID string) (*GroupUsageAccessMetadata, error) {
 	ctx = ensureModelCtx(ctx)
-	var ownerID, providerCode string
+	var ownerID string
 	var enabled int
 	var groupType, schedulingJSON sql.NullString
-	err := m.db.QueryRowContext(ctx, m.bind(`SELECT system_account_id, provider_code, enabled, group_type, scheduling_policy_json
+	err := m.db.QueryRowContext(ctx, m.bind(`SELECT system_account_id, enabled, group_type, scheduling_policy_json
 		FROM `+m.table("groups")+` WHERE id = ?`), groupID).
-		Scan(&ownerID, &providerCode, &enabled, &groupType, &schedulingJSON)
+		Scan(&ownerID, &enabled, &groupType, &schedulingJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if ownerID == "" || providerCode == "" || enabled != 1 {
+	if ownerID == "" || enabled != 1 {
 		return nil, nil
 	}
 	groupTypeValue, err := normalizeGroupTypeValue(groupType)
@@ -314,7 +359,6 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 	if ownerID == systemAccountID {
 		return &GroupUsageAccessMetadata{
 			GroupOwnerSystemAccountID: ownerID,
-			ProviderCode:              providerCode,
 			GroupAccessType:           GroupAccessTypeOwner,
 			GroupType:                 strPtrIfSet(groupTypeValue),
 			SchedulingPolicy:          schedulingPolicy,
@@ -357,7 +401,6 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 	}
 	return &GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      ownerID,
-		ProviderCode:                   providerCode,
 		GroupAccessType:                GroupAccessTypeAuthorized,
 		GroupType:                      strPtrIfSet(effectiveGroupType),
 		SchedulingPolicy:               localPolicy,

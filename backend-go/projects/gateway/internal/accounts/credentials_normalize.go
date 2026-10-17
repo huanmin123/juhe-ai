@@ -3,10 +3,10 @@ package accounts
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
 // Credentials write normalization (第 1 段): the port of
@@ -224,8 +224,10 @@ func normalizeAPIKeyAccountCredentials(input map[string]any, defaults EndpointMo
 // 凭据（M6，契约 §9.2：speech_appid/speech_token，均为可选——缺失即该账户
 // 不承接 audio_speech 请求，能力由派发时显式失败表达，不在写入面强制）。
 // 仅 volcengine provider 消费；其它 provider 的同名字段按无效输入拒绝
-//（allowlist 全局放行 + 此处按 provider 过滤，与 GPT request overrides 的
-// provider 门控同一模式）。
+// （allowlist 全局放行 + 此处按 provider 过滤本 provider 专用凭据字段）。
+// GPT request overrides 的 service_tier_override / reasoning_effort_override
+// 值域由协议族全集（shared/platform requestoverride）在写入面归一化执行，
+// 不再有 provider 门控，与本函数的 provider 过滤无对应关系。
 func normalizeVolcengineSpeechCredentials(input map[string]any, credentials Credentials, defaults EndpointModeDefaultContext) error {
 	if endpointModeContextOf(defaults).providerCode != "volcengine" {
 		if _, hasAppID := input["speech_appid"]; hasAppID {
@@ -555,23 +557,26 @@ func normalizeAccountCredentialPolicies(input map[string]any, credentials Creden
 	return nil
 }
 
-var credentialOverrideTokenPattern = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9._-]{0,63}$`)
-
-// normalizeGPTAccountRequestOverrides mirrors
-// normalizeGptAccountRequestOverrides: the Gemini generate-content guard, the
-// token shape check and the gpt enum whitelist.
+// normalizeGPTAccountRequestOverrides 是 service_tier_override /
+// reasoning_effort_override 的写入面校验（2026-10-18 简化定案）：只做
+// 「凭据 token 形状 + 协议族值域全集」（单一真源 shared/platform
+// requestoverride，值域按账户协议族判定，不读供应商模型目录）——最终上游
+// 模型是否声明该档位由运行时决定（思考级别按档位序向下兼容降级、服务等级
+// 不支持时跳过），模型目录只在运行时参与，本函数不是目录门禁。
+// Gemini Interactions-only 守卫在同处执行：账户最终端点能力显式声明且不含
+// 任何 GenerateContent 形态时请求覆盖不可配置（错误文案与归档目录断言逐字
+// 一致）；service_tier_override=default 是「强制标准档」哨兵，语义族无关，
+// 恒可保存，不要求该族声明任何档位。
 func normalizeGPTAccountRequestOverrides(input map[string]any, credentials Credentials, context EndpointModeDefaultContext) error {
 	_, hasServiceTier := input["service_tier_override"]
 	_, hasReasoningEffort := input["reasoning_effort_override"]
 	if !hasServiceTier && !hasReasoningEffort {
 		return nil
 	}
-	if context.ProviderCode == "gemini" {
-		if modes, ok := credentials["supported_endpoint_modes"].([]string); ok {
-			if !containsString(modes, "generate_content_json") && !containsString(modes, "generate_content_sse") {
-				return nil
-			}
-		}
+	if modes, ok := credentials["supported_endpoint_modes"].([]string); ok &&
+		context.ProviderCode == geminiProviderCode &&
+		!containsString(modes, "generate_content_json") && !containsString(modes, "generate_content_sse") {
+		return &ValidationError{Message: "Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖"}
 	}
 	serviceTier, err := optionalCredentialToken(credentialField(input, "service_tier_override"), "服务等级覆盖")
 	if err != nil {
@@ -581,15 +586,12 @@ func normalizeGPTAccountRequestOverrides(input map[string]any, credentials Crede
 	if err != nil {
 		return err
 	}
-	if context.ProviderCode == gptVendorCode {
-		if serviceTier != "" && serviceTier != "default" && serviceTier != "priority" && serviceTier != "flex" {
-			return &ValidationError{Message: "服务等级覆盖无效"}
-		}
-		switch reasoningEffort {
-		case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
-		default:
-			return &ValidationError{Message: "思考级别覆盖无效"}
-		}
+	family := requestoverride.FamilyOf(context.ProviderCode, context.ProtocolCode)
+	if serviceTier != "" && serviceTier != "default" && !requestoverride.SupportsServiceTier(family, serviceTier) {
+		return &ValidationError{Message: "服务等级覆盖无效"}
+	}
+	if reasoningEffort != "" && !requestoverride.SupportsReasoningEffort(family, reasoningEffort) {
+		return &ValidationError{Message: "思考级别覆盖无效"}
 	}
 	if serviceTier != "" {
 		credentials["service_tier_override"] = serviceTier
@@ -611,7 +613,8 @@ func optionalCredentialToken(value optionalValue, label string) (string, error) 
 		}
 		return "", nil
 	}
-	if text != strings.TrimSpace(text) || !credentialOverrideTokenPattern.MatchString(text) {
+	// 形状单一真源 requestoverride.IsToken（首尾空白非法、长度上限 64）。
+	if !requestoverride.IsToken(text) {
 		return "", &ValidationError{Message: label + "无效"}
 	}
 	return text, nil

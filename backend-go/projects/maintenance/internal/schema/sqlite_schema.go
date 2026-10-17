@@ -163,7 +163,7 @@ type SQLiteResult struct {
 	UsageCatalog SchemaCounts
 }
 
-// EnsureSQLiteBusiness applies the business schema (system accounts, providers, accounts, groups, routing, API keys, authorizations, circuit control plane).
+// EnsureSQLiteBusiness applies the business schema (system accounts, vendors, models, accounts, connections, groups, routing, API keys, authorizations, circuit control plane).
 func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	counts, err := sqliteBusinessScript.ensure(ctx, db)
 	if err != nil {

@@ -77,3 +77,37 @@ export function getDefaultPathForMenuMode(mode: AppMenuMode): string {
 export function getPreferredEntryPath(user?: CurrentUserSummary): string {
   return getDefaultPathForMenuMode(readMenuModePreference(user))
 }
+
+const menuOpenKeysStoragePrefix = 'juhe-ai:menu-open-keys:'
+
+function menuOpenKeysStorageKey(user: CurrentUserSummary, mode: AppMenuMode): string {
+  return `${menuOpenKeysStoragePrefix}${user.id || user.username}:${mode}`
+}
+
+// 二级菜单组展开状态按「用户 + 菜单模式」持久化；只接受 group: 前缀键，
+// 菜单重组后已不存在的分组键由调用方在恢复时按当前菜单结构过滤。
+export function readMenuOpenKeysPreference(user?: CurrentUserSummary, mode: AppMenuMode = 'self'): string[] {
+  if (!user) return []
+  const storage = getStorage()
+  if (!storage) return []
+  try {
+    const raw = storage.getItem(menuOpenKeysStorageKey(user, mode))
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((key): key is string => typeof key === 'string' && key.startsWith('group:'))
+  } catch {
+    return []
+  }
+}
+
+export function saveMenuOpenKeysPreference(user: CurrentUserSummary | undefined, mode: AppMenuMode, keys: string[]): void {
+  if (!user) return
+  const storage = getStorage()
+  if (!storage) return
+  try {
+    storage.setItem(menuOpenKeysStorageKey(user, mode), JSON.stringify(keys))
+  } catch {
+    // 浏览器禁用本地存储时仍允许本次会话内生效，只是不保留下次偏好。
+  }
+}

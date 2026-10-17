@@ -880,7 +880,7 @@ func TestChainMediaVolcengineSpeechAliasModelCrossName(t *testing.T) {
 // opt-in）。模型约束种 volc.seedasr.auc。base_url 种 ark 官方根占位——长
 // 转写出站不经 base_url（openspeech 语音服务域 URL 构造特例），链级经
 // chainVolcengineASRUpstreamEnv seam 指向 mock。
-func seedMediaVolcengineASRAccount(t *testing.T, fixture *chainFixture, id, apiKey string) string {
+func seedMediaVolcengineASRAccount(t *testing.T, fixture *chainFixture, id, apiKey, speechToken string) string {
 	t.Helper()
 	seed := func(query string, args ...any) {
 		t.Helper()
@@ -892,7 +892,7 @@ func seedMediaVolcengineASRAccount(t *testing.T, fixture *chainFixture, id, apiK
 	credentials := map[string]any{
 		"api_key":      apiKey,
 		"base_url":     "https://ark.cn-beijing.volces.com",
-		"speech_token": "ark-test-speech-token",
+		"speech_token": speechToken,
 		"supported_endpoint_modes": []string{
 			"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 		},
@@ -927,7 +927,7 @@ func TestChainMediaVolcengineASRLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	mock := platformmock.New()
 	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
-	apiKey := seedMediaVolcengineASRAccount(t, fixture, "acc_volc_asr", "sk-volc-asr-a")
+	apiKey := seedMediaVolcengineASRAccount(t, fixture, "acc_volc_asr", "sk-volc-asr-a", "ark-test-speech-token")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain := composeMediaVideoChain(t, fixture, spoolDir)
@@ -1055,7 +1055,7 @@ func TestChainMediaVolcengineASRPollFailedTerminal(t *testing.T) {
 	fixture := newChainFixture(t)
 	mock := platformmock.New()
 	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
-	apiKey := seedMediaVolcengineASRAccount(t, fixture, "acc_volc_asr_fail", "sk-volc-asr-f")
+	apiKey := seedMediaVolcengineASRAccount(t, fixture, "acc_volc_asr_fail", "sk-volc-asr-f", "ark-test-speech-token")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain := composeMediaVideoChain(t, fixture, spoolDir)
@@ -1154,5 +1154,102 @@ func TestChainMediaVolcengineASRMissingCredentials(t *testing.T) {
 	}
 	if requests := mock.Requests(); len(requests) != 0 {
 		t.Fatalf("缺凭据不得出站: %+v", requests)
+	}
+}
+
+// TestChainMediaVolcengineSpeechStreamFullChain 覆盖火山流式语音桥接 V1a
+// 全链（seed-tts-2.0 → POST /api/v3/tts/unidirectional NDJSON 分块）：出站
+// 路径与 X-Api-Key 单头（speech_token 沿用，Authorization 不出站）、req_params
+// 报文（text/speaker/audio_params.format）、NDJSON 多分块 base64 拼接后二
+// 进制 mp3 透传（frame sync）、usage 字符口径（ttsInputChars，官方计费维度
+// 为字符——与 1.0 同步面的时长口径按 model 分流）+ 目录字符价成本落库。
+func TestChainMediaVolcengineSpeechStreamFullChain(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
+	apiKey := seedMediaVolcengineSpeechAccount(t, fixture, "acc_volcengine_speech_stream", mock.URL, "ark-key-stream", true)
+	if _, err := fixture.db.Exec(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES ('acc_volcengine_speech_stream', 'volcengine', 'seed-tts-2.0', '2026-10-18T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed stream model: %v", err)
+	}
+	// 目录行（fixture DB 列集无媒体四维——字符价由 go:embed 静态层补齐，
+	// chainCatalogPricing 媒体单价权威源，见 chain_pricing.go）。
+	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
+			id, status, provider_code, model, supported_api_protocols_json, source, created_at, updated_at)
+		VALUES ('cat_volc_seed_tts_2_0', 'active', 'volcengine', 'seed-tts-2.0', '["audio_speech"]', 'builtin',
+			'2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed stream catalog row: %v", err)
+	}
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/speech", apiKey,
+		`{"model":"seed-tts-2.0","input":"你好火山流式","voice":"zh_female_demo_v2","response_format":"mp3"}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcengineTTSStreamOK)})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream speech status=%d body=%s", response.StatusCode, payload)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "audio/mpeg") {
+		t.Fatalf("content-type = %q, want audio/mpeg", got)
+	}
+	if len(payload) < 4 || payload[0] != 0xFF || payload[1] != 0xFB {
+		t.Fatalf("响应不是拼接解码后的 mp3 载荷: % x", payload[:min(4, len(payload))])
+	}
+
+	// 出站断言：POST /api/v3/tts/unidirectional + X-Api-Key 单头 + req_params 报文。
+	requests := mock.Requests()
+	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/api/v3/tts/unidirectional" {
+		t.Fatalf("stream speech 出站请求形态错误: %+v", requests)
+	}
+	if requests[0].APIKeyHeader != "volc-tts-token-a" {
+		t.Fatalf("stream speech X-Api-Key = %q", requests[0].APIKeyHeader)
+	}
+	if requests[0].AuthHeader != "" {
+		t.Fatalf("stream speech Authorization = %q, want 空", requests[0].AuthHeader)
+	}
+	body := requests[0].Body
+	for _, want := range []string{
+		`"req_params"`,
+		`"text":"你好火山流式"`,
+		`"speaker":"zh_female_demo_v2"`,
+		`"audio_params"`,
+		`"format":"mp3"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("出站报文缺少 %s: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{`"text_prompt"`, `"audio_config"`, `"model"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("流式面出站报文不得残留 1.0 同步面/模型键 %s: %s", forbidden, body)
+		}
+	}
+
+	// usage：字符口径（官方计费维度为字符）——6 rune 输入 → ttsInputChars=6；
+	// 成本按目录字符价（3 元/万字符 ÷7.0）落库，不落时长口径。
+	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"ttsInputChars":6`) && strings.Contains(text, `"endpoint":"POST /v1/audio/speech"`)
+	}, "volcengine 流式 tts 字符计量终态记录")
+	if strings.Contains(record, `"audioInputSeconds"`) {
+		t.Fatalf("流式面不得落时长口径: %s", record)
+	}
+	// 成本位说明：链内计价的媒体四维单价权威源是 go:embed 静态层
+	//（chainCatalogPricing），字符价的引擎级断言由 pricing 包
+	// TestVolcengineCatalogPriceAnchors 钉住（fixture 运行时目录列集不含
+	// 媒体四维，与既有语音链测试同口径只断言计量）。
+
+	// 失败臂：上游错误行（55000000 音色未授权实测形态）→ 502 透传 message。
+	errorResponse, errorPayload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/speech", apiKey,
+		`{"model":"seed-tts-2.0","input":"x","voice":"unauthorized"}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcengineTTSStreamFailed)})
+	if errorResponse.StatusCode != http.StatusBadGateway {
+		t.Fatalf("失败臂 status=%d, want 502 body=%s", errorResponse.StatusCode, errorPayload)
+	}
+	if !strings.Contains(string(errorPayload), "speaker related resource") {
+		t.Fatalf("失败臂应透传上游 message: %s", errorPayload)
 	}
 }

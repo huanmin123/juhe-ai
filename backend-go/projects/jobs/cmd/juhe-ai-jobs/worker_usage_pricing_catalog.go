@@ -68,21 +68,49 @@ func newUsagePricingCatalog(db *sql.DB, postgres bool) *usagePricingCatalog {
 	return &usagePricingCatalog{db: db, postgres: postgres, now: time.Now, cache: map[string]usagePricingCatalogEntry{}}
 }
 
+// usageCatalogModelVariants 镜像 gatewayrouting.VolcengineTTSModelAliasVariantsOf
+//（跨 module 不可 import，语义与取值以 gateway 侧为权威、以契约为准）：
+// volcengine TTS 占位名 doubao-tts ↔ 现役名 seed-audio-1.0 等价组（EqualFold
+// 语义）；组外模型返回仅含自身的单元素列表（行为零变化）。计价解析是
+// 「派发匹配等价」的第六消费点：占位名 doubao-tts 请求的用量按 seed-audio-1.0
+// 目录行计费——2026-10-17 实弹取证：无此归一时 usage 冻结按目录 miss 落 0
+// 成本，与接入文档「计费按归一后的 seed-audio-1.0 秒价」不符。
+func usageCatalogModelVariants(model string) []string {
+	trimmed := strings.TrimSpace(model)
+	switch strings.ToLower(trimmed) {
+	case "doubao-tts", "seed-audio-1.0":
+		return []string{"doubao-tts", "seed-audio-1.0"}
+	}
+	return []string{model}
+}
+
+// firstUsageCatalogRow 按「精确优先 + TTS 等价变体回退」在合并目录中找行；
+// 未命中返回 nil。
+func firstUsageCatalogRow(rows map[string]usageCatalogPricingRow, model string) *usageCatalogPricingRow {
+	for _, variant := range usageCatalogModelVariants(model) {
+		if row, ok := rows[strings.TrimSpace(variant)]; ok {
+			return &row
+		}
+	}
+	return nil
+}
+
 // ResolvePricingModel mirrors resolveUsageRecordPricingModel：按
 // （provider, systemAccount）目录解析实际（upstream ?? requested）模型的
-// 目录规范 model id；未解析返回空串。
+// 目录规范 model id（TTS 等价组变体回退见 usageCatalogModelVariants）；
+// 未解析返回空串。
 func (c *usagePricingCatalog) ResolvePricingModel(ctx context.Context, providerCode string, systemAccountID string, upstreamModel string, requestedModel string) string {
 	rows, err := c.lookup(ctx, providerCode, systemAccountID)
 	if err != nil || len(rows) == 0 {
 		return ""
 	}
 	if upstreamModel != "" {
-		if row, ok := rows[strings.TrimSpace(upstreamModel)]; ok {
+		if row := firstUsageCatalogRow(rows, upstreamModel); row != nil {
 			return row.model
 		}
 	}
 	if requestedModel != "" {
-		if row, ok := rows[strings.TrimSpace(requestedModel)]; ok {
+		if row := firstUsageCatalogRow(rows, requestedModel); row != nil {
 			return row.model
 		}
 	}
@@ -92,16 +120,17 @@ func (c *usagePricingCatalog) ResolvePricingModel(ctx context.Context, providerC
 // BuildBreakdown mirrors buildCatalogCostBreakdownFromPricing：已解析目录行 +
 // 冻结输入跑计费引擎；模型不在目录或计费规则不可满足（未知 provider、tier
 // 不支持、用量无定价）时返回 nil（usagewriter 回落确定性 fallback）。
+// 模型查找与 ResolvePricingModel 同用 TTS 等价变体回退。
 func (c *usagePricingCatalog) BuildBreakdown(ctx context.Context, providerCode string, systemAccountID string, model string, serviceTier string, input usagewriter.UsageRecordInput) *usagewriter.CostBreakdown {
 	rows, err := c.lookup(ctx, providerCode, systemAccountID)
 	if err != nil || len(rows) == 0 {
 		return nil
 	}
-	row, ok := rows[strings.TrimSpace(model)]
-	if !ok {
+	row := firstUsageCatalogRow(rows, model)
+	if row == nil {
 		return nil
 	}
-	return buildUsageCatalogCostBreakdown(row, providerCode, serviceTier, input)
+	return buildUsageCatalogCostBreakdown(*row, providerCode, serviceTier, input)
 }
 
 // lookup 返回（provider, systemAccount）目录的合并视图（trim 后 model 为键），
@@ -544,6 +573,15 @@ func (p *usageCatalogBillingPolicy) buildUsageCatalogBreakdown(row usageCatalogP
 		rates.set.ImageOutputUsdPer1M != nil && outputImageTokens == nil {
 		// OpenAI image policy：文本输出流按图片输出 token 计费（调用方未拆分时）。
 		outputImageTokens = input.OutputTokens
+	}
+	if row.mode == "image_generation" &&
+		rates.set.OutputUsdPerImage != nil &&
+		rates.set.OutputUsdPer1M == nil && rates.set.ImageOutputUsdPer1M == nil {
+		// 按张计价策略（seedream/image-01/cogview/grok-imagine-image 族）：上游
+		// usage.output_tokens 是图像内部 token 核算，行上无独立文本输出 token
+		// 价——置零避免 hasUnpricedUsage 拒绝整单计费（与 gateway pricing 引擎
+		// 同一策略镜像；2026-10-17 实弹取证回填）。
+		input.OutputTokens = nil
 	}
 	return buildUsageCatalogTokenBreakdown(row, input, rates, outputImageTokens, p)
 }

@@ -384,13 +384,14 @@ func (m *w11dPolicyRecorder) ListActiveResponseInspectionPolicies(ctx context.Co
 }
 
 // ---------------------------------------------------------------------------
-// catalog.go：pending 路径与共享路由索引命中
+// catalog.go：pending 路径与共享 models 目录命中
 // ---------------------------------------------------------------------------
 
 func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 	ctx := context.Background()
 	models := newFakeModels()
 	models.catalog["gpt"] = []ProviderModelCatalogItem{{ProviderCode: "gpt", Model: "m1"}, {ProviderCode: "gpt", Model: " "}}
+	models.activeModels = []ModelsDirectoryEntry{{PublicModel: "m1", Scope: "builtin"}, {PublicModel: " ", Scope: "builtin"}}
 	clock := newManualClock()
 	shared := newFakeSharedFactory()
 	logger := &whWarnLogger{}
@@ -398,7 +399,7 @@ func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 		o.Shared = shared
 		o.Logger = logger
 	})
-	// 首次解析：构建索引（含空模型跳过）并写共享。
+	// 首次解析：装载活性集合（空名跳过）并写共享。
 	if _, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
 		t.Fatal(err)
 	}
@@ -414,31 +415,22 @@ func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 	}
 	// 共享读失败告警 + 共享目录读失败告警。
 	failing := newTestService(t, models, clock, func(o *Options) { o.Logger = logger })
-	failing.sharedRouteIdx = &whReadErrShared{}
+	failing.sharedModelsDir = &whReadErrShared{}
 	failing.sharedCatalog = &whReadErrShared{}
 	if _, err := failing.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
 		t.Fatal(err)
 	}
 	events := strings.Join(logger.snapshot(), ",")
-	if !strings.Contains(events, "gateway_provider_model_route_index_shared_cache_read_failed") {
-		t.Fatal("路由索引共享读失败告警缺失")
+	if !strings.Contains(events, "gateway_models_directory_shared_cache_read_failed") {
+		t.Fatal("models 目录共享读失败告警缺失")
 	}
+	// 目录共享读失败告警：显式走 catalog 读取路径（路由解析不再消费目录缓存）。
+	if _, err := failing.ListCachedProviderModelCatalogAsync(ctx, ModelCatalogListOptions{ProviderCode: "gpt", SystemAccountID: "sys"}); err != nil {
+		t.Fatal(err)
+	}
+	events = strings.Join(logger.snapshot(), ",")
 	if !strings.Contains(events, "gateway_provider_model_catalog_shared_cache_read_failed") {
 		t.Fatal("目录共享读失败告警缺失")
-	}
-	// toEntry 畸形条目臂。
-	malformed := sharedProviderModelRouteIndexEntry{Entries: [][2]any{{"only-one"}, {"m1", []any{"gpt"}}, {1, []any{"x"}}}}
-	if entry := malformed.toEntry(); len(entry.index) != 1 || len(entry.index["m1"]) != 1 {
-		t.Fatalf("畸形条目收敛 = %v", entry.index)
-	}
-	codesOnly := sharedProviderModelRouteIndexEntry{Entries: [][2]any{{"m1", "not-a-list"}}}
-	if entry := codesOnly.toEntry(); len(entry.index) != 0 {
-		t.Fatal("非列表 codes 必须跳过")
-	}
-	// 混合类型 codes。
-	mixed := sharedProviderModelRouteIndexEntry{Entries: [][2]any{{"m1", []any{"gpt", 1, "anthropic"}}}}
-	if entry := mixed.toEntry(); len(entry.index["m1"]) != 2 {
-		t.Fatalf("混合 codes 收敛 = %v", entry.index)
 	}
 
 	// pending singleflight：blocked loader + 并发第二次读取走 pending 分支。
@@ -820,7 +812,7 @@ func TestW11DSQLAuthorizationFailureArms(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g1', 'sys_owner', 'gpt', 1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_other"); err == nil {
@@ -851,7 +843,7 @@ func TestW11DSQLLocalTypeInvalidArms(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, scheduling_policy_json) VALUES ('g1', 'sys_owner', 'gpt', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g1', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status) VALUES ('auth1', 'group', 'g1', 'sys_other', 'active')`,
 		`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type) VALUES ('auth1', 'sys_other', 'g1', 1, 'weird')`,
 	}
@@ -877,8 +869,8 @@ func TestW11DSQLRuntimeCompositionTailArms(t *testing.T) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g1', 'sys_owner', 'gpt', 1)`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('g2', 'sys_owner', 'gpt', 1)`,
+		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g1', 'sys_owner', 1)`,
+		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('g2', 'sys_owner', 1)`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, status) VALUES ('rs1', 'sys_owner', 'normal', 'active')`,
 		`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 			VALUES ('` + apikeys.BuiltinSchedulingPreferenceID + `', NULL, '` + apikeys.BuiltinSchedulingPreferenceName + `', 'cost_first', NULL, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,

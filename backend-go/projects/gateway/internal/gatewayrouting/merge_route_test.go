@@ -266,10 +266,12 @@ func TestMergeRouteSkipsInaccessibleAndEmptyGroups(t *testing.T) {
 	}
 }
 
-// When every fragment is empty the failure is classified through the catalog
-// route: matched-and-bound provider → 503 model_target_group_unavailable;
-// catalog missing → 400 model_target_group_not_bound; catalog ambiguous must
-// NOT produce model_route_ambiguous (B11/B13).
+// When every fragment is empty the failure is classified through the models
+// 单表目录（B13，设计 §6.1 终态二分）：目录存在 builtin/active 行 →
+// 503 model_target_group_unavailable；目录无可见 active 行 → 404
+// model_not_found。供应商目录的 model_target_group_not_bound 分类已退役；
+// model_route_ambiguous 在 merge 中绝不发出（B11，legacy outcome 值按目录
+// 可见处理）。
 func TestMergeRouteAllEmptyFailureClassification(t *testing.T) {
 	bindings := func() *APIKeyRow {
 		return mergeTestAPIKey(RouteStrategyModeMerge,
@@ -291,7 +293,7 @@ func TestMergeRouteAllEmptyFailureClassification(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		providerRoute    ProviderModelRouteResolution
+		modelsRoute      ProviderModelRouteResolution
 		wantStatusCode   int
 		wantType         string
 		wantCode         string
@@ -299,40 +301,40 @@ func TestMergeRouteAllEmptyFailureClassification(t *testing.T) {
 		wantMatchedCodes []string
 	}{
 		{
-			name: "catalog matched and bound fails model_target_group_unavailable",
-			providerRoute: ProviderModelRouteResolution{
+			name: "models directory present fails model_target_group_unavailable",
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
+				MatchedProviderCodes: []string{},
 			},
 			wantStatusCode:   503,
 			wantType:         "service_unavailable",
 			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型对应的供应商分组当前没有可用账号：gpt-4o",
-			wantMatchedCodes: []string{"openai"},
+			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
+			wantMatchedCodes: nil,
 		},
 		{
-			name: "catalog missing fails model_target_group_not_bound",
-			providerRoute: ProviderModelRouteResolution{
+			name: "models directory absent fails 404 model_not_found",
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o",
 				MatchedProviderCodes: []string{},
 			},
-			wantStatusCode:   400,
+			wantStatusCode:   404,
 			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelTargetGroupNotBound,
-			wantMessage:      "当前 API Key 未绑定请求模型对应的供应商分组：gpt-4o",
-			wantMatchedCodes: []string{},
+			wantCode:         FailCodeModelNotFound,
+			wantMessage:      "请求模型不存在或不可用：gpt-4o",
+			wantMatchedCodes: nil,
 		},
 		{
-			name: "catalog ambiguous never yields model_route_ambiguous (B11)",
-			providerRoute: ProviderModelRouteResolution{
+			name: "legacy ambiguous outcome never yields model_route_ambiguous (B11)",
+			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteAmbiguous, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{"openai", "anthropic"},
+				MatchedProviderCodes: []string{},
 			},
-			wantStatusCode:   400,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelTargetGroupNotBound,
-			wantMessage:      "当前 API Key 未绑定请求模型对应的供应商分组：gpt-4o",
-			wantMatchedCodes: []string{"openai", "anthropic"},
+			wantStatusCode:   503,
+			wantType:         "service_unavailable",
+			wantCode:         FailCodeModelTargetGroupUnavailable,
+			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
+			wantMatchedCodes: nil,
 		},
 	}
 
@@ -340,7 +342,7 @@ func TestMergeRouteAllEmptyFailureClassification(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cache := newCache()
 			cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-				return tt.providerRoute, nil
+				return tt.modelsRoute, nil
 			}
 
 			result := runMergeRouteTest(t, cache, nil, bindings(), mergeTestRequest("gpt-4o"))

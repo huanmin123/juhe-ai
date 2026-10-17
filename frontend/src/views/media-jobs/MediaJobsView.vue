@@ -3,10 +3,16 @@
     <MediaJobsFilterToolbar
       v-model:kind-filter="kindFilter"
       v-model:status-filter="statusFilter"
+      v-model:system-account-id="systemAccountIdFilter"
       :active-filter-count="activeFilterCount"
       :loading="loading"
       :kind-options="mediaJobKindFilterOptions"
       :status-options="mediaJobStatusFilterOptions"
+      show-user-filter
+      :system-accounts="systemAccounts"
+      :system-account-options-loading="systemAccountOptionsLoading"
+      @system-account-options-dropdown="handleSystemAccountOptionsDropdown"
+      @system-account-options-search="handleSystemAccountOptionsSearch"
       @refresh="refreshRecords"
       @reset="resetFilters"
       @search="applyFilters"
@@ -21,9 +27,12 @@
       :pagination="tablePagination"
       @change="handleTableChange"
       @copy-job-id="copyJobId"
+      @open-detail="openDetail"
       @mobile-load-more="loadMoreMobileRecords"
       @mobile-refresh="refreshMobileRecords"
     />
+
+    <MediaJobDetailDrawer v-model:open="detailOpen" :job-id="detailJobId" />
   </a-card>
 </template>
 
@@ -32,10 +41,12 @@ import { computed, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
+import { selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import type { MediaJobListItem } from '@/types/domain'
 import { adaptMediaJobListResult } from './mediaJobsDisplay'
 import {
@@ -45,6 +56,7 @@ import {
   type MediaJobKindFilter,
   type MediaJobStatusFilter
 } from './mediaJobsOptions'
+import MediaJobDetailDrawer from './MediaJobDetailDrawer.vue'
 import MediaJobsFilterToolbar from './MediaJobsFilterToolbar.vue'
 import MediaJobsTable from './MediaJobsTable.vue'
 
@@ -65,6 +77,14 @@ const initialState = pageStateCache.read()
 
 const kindFilter = ref<MediaJobKindFilter>(initialState.kindFilter)
 const statusFilter = ref<MediaJobStatusFilter>(initialState.statusFilter)
+// 管理面专属：按任务归属用户筛选（my 用户面无此筛选，归属恒钉死调用者）。
+const systemAccountIdFilter = ref('all')
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  loading: systemAccountOptionsLoading,
+  systemAccounts
+} = useRemoteSystemAccountOptions()
 
 const {
   items: records,
@@ -89,7 +109,8 @@ const {
       limit: pageState.pageSize,
       offset: (pageState.current - 1) * pageState.pageSize,
       status: statusFilter.value === 'all' ? undefined : statusFilter.value,
-      kind: kindFilter.value === 'all' ? undefined : kindFilter.value
+      kind: kindFilter.value === 'all' ? undefined : kindFilter.value,
+      system_account_id: selectedSystemAccountId(systemAccountIdFilter.value, true)
     })
     return adaptMediaJobListResult(result, pageState)
   },
@@ -99,7 +120,7 @@ const {
   }
 })
 
-const activeFilterCount = computed(() => (kindFilter.value !== 'all' ? 1 : 0) + (statusFilter.value !== 'all' ? 1 : 0))
+const activeFilterCount = computed(() => (kindFilter.value !== 'all' ? 1 : 0) + (statusFilter.value !== 'all' ? 1 : 0) + (systemAccountIdFilter.value !== 'all' && systemAccountIdFilter.value !== '' ? 1 : 0))
 
 function applyFilters(): void {
   resetPagination()
@@ -115,6 +136,7 @@ function resetFilters(): void {
   const defaults = defaultPageState()
   kindFilter.value = defaults.kindFilter
   statusFilter.value = defaults.statusFilter
+  systemAccountIdFilter.value = 'all'
   resetPagination()
   pageStateCache.clear()
   void loadData()
@@ -122,6 +144,14 @@ function resetFilters(): void {
 
 async function copyJobId(jobId: string): Promise<void> {
   await copyTextToClipboard(jobId, '任务 ID 已复制')
+}
+
+const detailJobId = ref<string | null>(null)
+const detailOpen = ref(false)
+
+function openDetail(jobId: string): void {
+  detailJobId.value = jobId
+  detailOpen.value = true
 }
 
 function snapshotPageState(): MediaJobsPageState {

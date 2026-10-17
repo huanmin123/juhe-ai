@@ -46,7 +46,7 @@ const (
 	settingsCacheName                 = "gateway:settings"
 	groupUsageAccessCacheName         = "gateway:group-usage-access"
 	providerModelCatalogCacheName     = "gateway:provider-model-catalog"
-	providerModelRouteIndexCacheName  = "gateway:provider-model-route-index"
+	modelsDirectoryActiveCacheName    = "gateway:models-directory-active"
 	responseInspectionPolicyCacheName = "gateway:response-inspection-policies"
 	runtimeCacheName                  = "gateway:runtime"
 	runtimeAPIKeyIdentityCacheName    = "gateway:runtime-api-key-identity"
@@ -164,6 +164,16 @@ type ReadModels interface {
 	LoadAccountCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error)
 }
 
+// ModelsDirectoryReader 是 models 单表目录可见性的装载端口（供应商与上游协
+// 议面重构设计 §2.1/§6.1）：全部 scope IN ('builtin','global','personal') 且
+// status='active' 行的 (public_model, scope, system_account_id) 三元组，供终
+// 态 404/503 二分判定使用（可见性按 scope 与属主在缓存判定侧完成）。
+// SQLReadModels 是生产实现；未实现该端口的读模型在目录解析时显式报错（与
+// AccountsSelector 未接线的 fail-fast 语义一致，不做静默降级）。
+type ModelsDirectoryReader interface {
+	ListVisibleModelsDirectoryEntries(ctx context.Context) ([]ModelsDirectoryEntry, error)
+}
+
 // HashSecret mirrors storage/crypto.ts hashSecret (sha256 hex): the gateway
 // runtime cache keys are API key hashes, never raw keys.
 func HashSecret(value string) string {
@@ -219,17 +229,17 @@ type Service struct {
 	sharedSettings   SharedCache
 	sharedGroup      SharedCache
 	sharedCatalog    SharedCache
-	sharedRouteIdx   SharedCache
+	sharedModelsDir  SharedCache
 	sharedInspection SharedCache
 
-	runtimeCache  *entryCache[string, gatewayRuntimeCacheEntry]
-	identityCache *entryCache[string, gatewayRuntimeAPIKeyIdentity]
-	settingsCache *entryCache[string, GatewaySettings]
-	groupCache    *entryCache[string, groupUsageAccessCacheEntry]
-	accountsCache *entryCache[string, openAIAccountsCacheEntry]
-	catalogCache  *entryCache[string, []ProviderModelCatalogItem]
-	routeIdxCache *entryCache[string, providerModelRouteIndexCacheEntry]
-	inspectCache  *entryCache[string, responseInspectionPolicyCacheEntry]
+	runtimeCache   *entryCache[string, gatewayRuntimeCacheEntry]
+	identityCache  *entryCache[string, gatewayRuntimeAPIKeyIdentity]
+	settingsCache  *entryCache[string, GatewaySettings]
+	groupCache     *entryCache[string, groupUsageAccessCacheEntry]
+	accountsCache  *entryCache[string, openAIAccountsCacheEntry]
+	catalogCache   *entryCache[string, []ProviderModelCatalogItem]
+	modelsDirCache *entryCache[string, modelsDirectoryActiveSet]
+	inspectCache   *entryCache[string, responseInspectionPolicyCacheEntry]
 
 	// keysByAPIKeyID mirrors gatewayRuntimeCacheKeysByApiKeyId.
 	keysMu         sync.Mutex
@@ -301,11 +311,6 @@ type responseInspectionPolicyCacheEntry struct {
 	revalidateAtMs int64
 }
 
-// providerModelRouteIndexCacheEntry mirrors ProviderModelRouteIndexCacheEntry.
-type providerModelRouteIndexCacheEntry struct {
-	index map[string][]string
-}
-
 // New builds the service and subscribes the invalidation handlers to the bus
 // (Node registerGatewayRuntimeCacheInvalidator /
 // registerGatewayApiKeyValidationCacheInvalidator). models is required.
@@ -331,8 +336,10 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		groupCache:    newEntryCache[string, groupUsageAccessCacheEntry](groupUsageAccessCacheName, 1000, groupUsageAccessRetainTTL, false, enabled, clock, nil, nil),
 		accountsCache: newEntryCache[string, openAIAccountsCacheEntry]("gateway:openai-accounts", 1000, openAIAccountsRetainTTL, false, enabled, clock, nil, nil),
 		catalogCache:  newEntryCache[string, []ProviderModelCatalogItem](providerModelCatalogCacheName, 1000, providerModelCatalogTTL, false, enabled, clock, nil, nil),
-		routeIdxCache: newEntryCache[string, providerModelRouteIndexCacheEntry](providerModelRouteIndexCacheName, 1000, providerModelCatalogTTL, false, enabled, clock, nil, nil),
-		inspectCache:  newEntryCache[string, responseInspectionPolicyCacheEntry](responseInspectionPolicyCacheName, 100, responseInspectionPolicyRetainTTL, false, enabled, clock, nil, nil),
+		// models 单表目录活性集合缓存（供应商与上游协议面重构设计 §3/§6.1）：
+		// TTL 与目录缓存同源（24h），随目录失效代数一并清除。
+		modelsDirCache: newEntryCache[string, modelsDirectoryActiveSet](modelsDirectoryActiveCacheName, 1, providerModelCatalogTTL, false, enabled, clock, nil, nil),
+		inspectCache:   newEntryCache[string, responseInspectionPolicyCacheEntry](responseInspectionPolicyCacheName, 100, responseInspectionPolicyRetainTTL, false, enabled, clock, nil, nil),
 		// 分组模型并集缓存：本地层在 memory/redis 两种模式都启用——载荷只有模
 		// 型名与有效期（无凭据），设计 §6.3 要求共享命中回填进程内、发布写入进
 		// 程内与 Redis 两层。
@@ -360,7 +367,7 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		s.sharedSettings = opts.Shared.Cache(settingsCacheName)
 		s.sharedGroup = opts.Shared.Cache(groupUsageAccessCacheName)
 		s.sharedCatalog = opts.Shared.Cache(providerModelCatalogCacheName)
-		s.sharedRouteIdx = opts.Shared.Cache(providerModelRouteIndexCacheName)
+		s.sharedModelsDir = opts.Shared.Cache(modelsDirectoryActiveCacheName)
 		s.sharedInspection = opts.Shared.Cache(responseInspectionPolicyCacheName)
 	}
 	if opts.Bus != nil {
@@ -504,15 +511,6 @@ func responseInspectionPolicyCacheKey(protocolCode, providerCode string) string 
 	return protocolCode + ":" + providerCode
 }
 
-// providerModelRouteIndexCacheKey mirrors providerModelRouteIndexCacheKey.
-func providerModelRouteIndexCacheKey(providerCodes []string, systemAccountID string, includeUnpriced bool) string {
-	priced := "priced"
-	if includeUnpriced {
-		priced = "unpriced"
-	}
-	return systemAccountID + ":" + priced + ":" + strings.Join(providerCodes, ",")
-}
-
 // providerModelCatalogCacheKey mirrors the Node catalog cache key join.
 func providerModelCatalogCacheKey(input ModelCatalogListOptions) string {
 	inactive := "active"
@@ -529,22 +527,6 @@ func providerModelCatalogCacheKey(input ModelCatalogListOptions) string {
 // normalizeProviderModelRouteKey mirrors normalizeProviderModelRouteKey.
 func normalizeProviderModelRouteKey(model string) string {
 	return strings.TrimSpace(model)
-}
-
-// normalizedProviderRouteCodes mirrors normalizedProviderRouteCodes.
-func normalizedProviderRouteCodes(providerCodes []string) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(providerCodes))
-	for _, code := range providerCodes {
-		trimmed := strings.TrimSpace(code)
-		if trimmed == "" || seen[trimmed] {
-			continue
-		}
-		seen[trimmed] = true
-		out = append(out, trimmed)
-	}
-	sortStrings(out)
-	return out
 }
 
 func sortStrings(values []string) {

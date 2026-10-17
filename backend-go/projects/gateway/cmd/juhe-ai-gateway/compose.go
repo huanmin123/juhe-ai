@@ -1099,10 +1099,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// M2 媒体任务管理面（媒体设计 §8.2 只读列表）：GET /__aisys__/api/media-jobs，
 	// 权限沿使用记录列表（requireAdmin）；与 /v1 任务面同源业务库（repo 只读
 	// 查询，独立实例无共享写状态）。
-	(&mediajobsadmin.Deps{
+	mediaJobsAdminDeps := &mediajobsadmin.Deps{
 		Repo: gatewaymedia.NewMediaJobsRepo(composed.db, composed.pgDialect, time.Now),
 		Auth: authDeps,
-	}).Mount(kern)
+	}
+	mediaJobsAdminDeps.Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).
 	(&helpweb.Deps{
@@ -1360,6 +1361,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		composed.shutdowns = append(composed.shutdowns, chainShutdown)
 		composed.chain = chain
 		composed.chainServices = chainServices
+		// 任务中心内容实时获取面（零资源存储不变）：chain 组装完成后把
+		// /v1 content 同源链路原语以会话/管理员鉴权注入任务中心 content 路由。
+		mediaJobsAdminDeps.ContentHandler = chain.serveMediaJobsCenterContent
 		// The /v1 subtree serves the gateway protocol paths; the
 		// openai-compatible files / vector-stores families mount into the
 		// chain's non-protocol paths (chain_openaicompat.go); everything else

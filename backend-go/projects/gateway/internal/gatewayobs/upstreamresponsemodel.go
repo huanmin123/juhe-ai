@@ -452,6 +452,17 @@ func (reader *observingUpstreamBodyReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Close 向下透传包装体的提前终止：真实上游响应体（slotReleasingBody）持有
+// 全局并发槽，Close 链在本层断流会让槽位只在读尽 EOF 时归还，所有未读尽即
+// 终结的响应（客户端断开、上游中断、看门狗取消、失败体超限截断）各永久
+// 泄漏一个槽（BUG-0328）。
+func (reader *observingUpstreamBodyReader) Close() error {
+	if closer, ok := reader.body.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Node StringDecoder('utf8') 的增量 UTF-8 解码镜像
 // ---------------------------------------------------------------------------

@@ -226,6 +226,32 @@ func TestWAStreamInspectorErrorStream(t *testing.T) {
 	}
 }
 
+// 顶层 error 对象形态（无 event 名、无 type 字段）同样命中失败判定；
+// 共享 ExtractStreamEventError 不放宽，检查器判定独立补齐。
+func TestWAStreamInspectorTopLevelErrorObject(t *testing.T) {
+	inspection := InspectStreamText("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"upstream sent an error event\"}}\n\n")
+	if !inspection.FailedReceived || !inspection.TerminalReceived {
+		t.Fatalf("顶层 error 对象应失败且终止: %+v", inspection)
+	}
+	if inspection.ErrorCode != "upstream_error" {
+		t.Fatalf("ErrorCode = %q", inspection.ErrorCode)
+	}
+	if inspection.ErrorMessage != "upstream sent an error event" {
+		t.Fatalf("ErrorMessage = %q", inspection.ErrorMessage)
+	}
+}
+
+// 标准形态回归：type=error 的纯 data 帧（无 event 名）维持既有失败判定。
+func TestWAStreamInspectorExplicitTypeErrorEvent(t *testing.T) {
+	inspection := InspectStreamText("data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"boom\"}}\n\n")
+	if !inspection.FailedReceived || !inspection.TerminalReceived {
+		t.Fatalf("type=error 帧应失败且终止: %+v", inspection)
+	}
+	if inspection.ErrorCode != "api_error" || inspection.ErrorMessage != "boom" {
+		t.Fatalf("错误字段 = %q/%q", inspection.ErrorCode, inspection.ErrorMessage)
+	}
+}
+
 // 未完结行与 Keep-Alive 注释行：Finish 冲刷 pending 行；非 event/data 行忽略。
 func TestWAStreamInspectorPendingAndComments(t *testing.T) {
 	inspector := NewStreamInspector()

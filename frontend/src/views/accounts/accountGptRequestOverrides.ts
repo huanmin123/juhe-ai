@@ -1,10 +1,16 @@
 import type {
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride,
-  AccountType,
   ProviderModelReasoningEffort,
   ProviderModelServiceTier
 } from '@/types/domain'
+import {
+  accountRequestOverrideFamilyOf,
+  accountRequestOverrideReasoningEfforts,
+  accountRequestOverrideServiceTiers,
+  isAccountRequestOverrideTokenShape,
+  type AccountRequestOverrideFamily
+} from './accountRequestOverrideVocab'
 
 export interface AccountGptModelCapabilityOption {
   value: string
@@ -13,9 +19,16 @@ export interface AccountGptModelCapabilityOption {
   defaultReasoningEffort?: ProviderModelReasoningEffort | null
 }
 
+// 覆盖字段的选项能力（2026-10-18 简化定案）：值域为协议族全集（单一真源见
+// accountRequestOverrideVocab.ts，指向后端 requestoverride 包），不再按账户
+// 「已选模型」求并集；供应商模型目录只决定字段是否显示（declared* 按供应商级
+// “任一模型声明过能力”判断）。
 export interface AccountGptRequestOverrideCapabilities {
-  serviceTiers: ProviderModelServiceTier[]
-  reasoningEfforts: ProviderModelReasoningEffort[]
+  family: AccountRequestOverrideFamily
+  serviceTiers: string[]
+  reasoningEfforts: string[]
+  declaredServiceTiers: boolean
+  declaredReasoningEfforts: boolean
 }
 
 export interface AccountRequestOverrideOption {
@@ -23,9 +36,6 @@ export interface AccountRequestOverrideOption {
   value: string
   disabled?: boolean
 }
-
-const serviceTierOverrideProviders = new Set(['gpt', 'openai', 'anthropic', 'gemini'])
-const reasoningEffortOverrideProviders = new Set(['gpt', 'openai', 'anthropic', 'gemini'])
 
 const localizedCapabilityLabels: Record<string, string> = {
   default: '供应商默认（Default）',
@@ -46,33 +56,37 @@ const localizedCapabilityLabels: Record<string, string> = {
 
 export function accountGptRequestOverrideCapabilities(input: {
   providerCode?: string
-  accountType: AccountType
+  protocolCode?: string
   modelOptions: AccountGptModelCapabilityOption[]
-  supportedModels: string[]
   supportedEndpointModes?: string[]
 }): AccountGptRequestOverrideCapabilities {
   const providerCode = input.providerCode ?? 'gpt'
   if (providerCode === 'gemini' && input.supportedEndpointModes
     && !input.supportedEndpointModes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
-    return { serviceTiers: [], reasoningEfforts: [] }
+    return { family: 'gemini', serviceTiers: [], reasoningEfforts: [], declaredServiceTiers: false, declaredReasoningEfforts: false }
   }
-  const supportedModels = uniqueTextList(input.supportedModels)
-  const serviceTiers = serviceTierOverrideProviders.has(providerCode)
-    ? unionModelCapability(supportedModels, input.modelOptions, (option) => option.supportedServiceTiers)
-    : []
-  const reasoningEfforts = reasoningEffortOverrideProviders.has(providerCode)
-    ? unionModelCapability(supportedModels, input.modelOptions, (option) => option.supportedReasoningEfforts)
-    : []
-  return { serviceTiers, reasoningEfforts }
+  const family = accountRequestOverrideFamilyOf(providerCode, input.protocolCode)
+  return {
+    family,
+    serviceTiers: accountRequestOverrideServiceTiers(family),
+    reasoningEfforts: accountRequestOverrideReasoningEfforts(family),
+    declaredServiceTiers: input.modelOptions.some((option) => Boolean(option.supportedServiceTiers?.length)),
+    declaredReasoningEfforts: input.modelOptions.some((option) => Boolean(option.supportedReasoningEfforts?.length))
+  }
 }
 
+// 判断该账户协议面是否可写入服务等级 / 思考级别覆盖字段。
+// 2026-10-17 去供应商白名单后：是否显示配置区不再按 providerCode 白名单判定；
+// 唯一协议面例外是 Interactions-only Gemini（不走 GenerateContent，覆盖不会生效），
+// 且该例外是绝对的：即使账户已有存量覆盖值也不显示（网关在 Interactions 路径
+// 不应用覆盖，不存在需要保留的清除入口）。
 export function isAccountRequestOverrideProviderSupported(providerCode: string | undefined, supportedEndpointModes?: string[]): boolean {
   const normalized = providerCode?.trim() || 'gpt'
   if (normalized === 'gemini' && supportedEndpointModes
     && !supportedEndpointModes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
     return false
   }
-  return serviceTierOverrideProviders.has(normalized) || reasoningEffortOverrideProviders.has(normalized)
+  return true
 }
 
 export function availableAccountGptServiceTierOptions(
@@ -104,16 +118,6 @@ export function availableAccountGptReasoningEffortOptions(
   return appendUnavailableCurrentOption(options, currentValue)
 }
 
-export function isAccountGptServiceTierOverrideAvailable(value: AccountGptServiceTierOverride, capabilities: AccountGptRequestOverrideCapabilities): boolean {
-  if (!value) return true
-  if (value === 'default') return capabilities.serviceTiers.length > 0
-  return capabilities.serviceTiers.includes(value)
-}
-
-export function isAccountGptReasoningEffortOverrideAvailable(value: AccountGptReasoningEffortOverride, capabilities: AccountGptRequestOverrideCapabilities): boolean {
-  return !value || capabilities.reasoningEfforts.includes(value)
-}
-
 export function accountGptRequestOverridesForForm(
   _providerCode: string,
   credentials: {
@@ -140,32 +144,10 @@ interface AccountGptRequestOverrideForm {
   reasoningEffortOverride: AccountGptReasoningEffortOverride
 }
 
-function unionModelCapability(
-  supportedModels: string[],
-  modelOptions: AccountGptModelCapabilityOption[],
-  readValues: (option: AccountGptModelCapabilityOption) => string[] | undefined
-): string[] {
-  const optionsByModel = new Map(modelOptions.map((option) => [option.value.trim(), option]))
-  const output: string[] = []
-  const seen = new Set<string>()
-  for (const model of supportedModels) {
-    const option = optionsByModel.get(model)
-    if (!option) continue
-    for (const value of normalizeCapabilityTokens(readValues(option))) {
-      if (seen.has(value)) continue
-      seen.add(value)
-      output.push(value)
-    }
-  }
-  return output
-}
-
-function normalizeCapabilityTokens(values: string[] | undefined): string[] {
-  return uniqueTextList(values ?? []).filter((value) => /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value))
-}
-
+// token 形状单一来源：accountRequestOverrideVocab（文本指向后端
+// requestoverride.TokenPattern）。长度上限 64、首尾空白即非法。
 function normalizeCapabilityToken(value: unknown): string {
-  return typeof value === 'string' && value === value.trim() && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value) ? value : ''
+  return typeof value === 'string' && value === value.trim() && isAccountRequestOverrideTokenShape(value) ? value : ''
 }
 
 function capabilityLabel(value: string): string {
@@ -180,21 +162,9 @@ function appendUnavailableCurrentOption(
   return [
     ...options,
     {
-      label: `当前配置：${capabilityLabel(currentValue)}（当前模型不支持）`,
+      label: `当前配置：${capabilityLabel(currentValue)}（不在当前协议族值域内）`,
       value: currentValue,
       disabled: true
     }
   ]
-}
-
-function uniqueTextList(values: string[]): string[] {
-  const output: string[] = []
-  const seen = new Set<string>()
-  for (const value of values) {
-    const normalized = value.trim()
-    if (!normalized || seen.has(normalized)) continue
-    seen.add(normalized)
-    output.push(normalized)
-  }
-  return output
 }

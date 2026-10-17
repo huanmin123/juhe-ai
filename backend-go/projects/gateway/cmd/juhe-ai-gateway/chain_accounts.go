@@ -150,9 +150,14 @@ type chainCandidateRow struct {
 	LocalFallback          sql.NullInt64
 	BindingCreatedAt       sql.NullString // model-candidate window only
 
-	ID                                       string
-	SystemAccountID                          string
+	ID              string
+	SystemAccountID string
+	// ProviderCode / ResourceProviderCode 过渡零值字段：候选窗口投影已随供应商
+	// 解耦拆除 provider_code 列（供应商与上游协议面重构设计 §8），SQL 不再赋值，
+	// 恒为零值；字段待消费方（chain_accounts_secret.go 秘钥投影、并集装载器）
+	// 切片与字段移除同批退役。
 	ProviderCode                             string
+	ResourceProviderCode                     sql.NullString
 	ProviderProtocolProfileID                sql.NullString
 	ProtocolCode                             sql.NullString
 	ProtocolVersion                          sql.NullString
@@ -181,7 +186,6 @@ type chainCandidateRow struct {
 	AuthorizationInstanceOwnerSystemAccountI sql.NullString
 
 	ResourceAccountID                 sql.NullString
-	ResourceProviderCode              sql.NullString
 	ResourceProviderProtocolProfileID sql.NullString
 	ResourceProtocolCode              sql.NullString
 	ResourceProtocolVersion           sql.NullString
@@ -200,16 +204,15 @@ type chainCandidateRow struct {
 	QualityState        *string
 	QualityFirstTokenMs *float64
 
-	modelResourceID       sql.NullString // model-candidate window only
-	modelResourceProvider sql.NullString
-	ModelRank             int // -1 when the row did not come from a ranked window
+	modelResourceID sql.NullString // model-candidate window only
+	ModelRank       int            // -1 when the row did not come from a ranked window
 }
 
 const chainCandidateColumns = `group_accounts.account_id,
 			group_accounts.system_account_id AS binding_system_account_id,
 			group_accounts.group_id, group_accounts.account_authorization_id,
 			group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-			accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id,
+			accounts.id, accounts.system_account_id, accounts.provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status,
 			accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled,
 			accounts.fallback_enabled, accounts.client_compatibility,
@@ -220,7 +223,6 @@ const chainCandidateColumns = `group_accounts.account_id,
 			accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id,
 			accounts.authorization_instance_owner_system_account_id,
 			source_accounts.id AS resource_account_id,
-			source_accounts.provider_code AS resource_provider_code,
 			source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
 			source_accounts.protocol_code AS resource_protocol_code,
 			source_accounts.protocol_version AS resource_protocol_version,
@@ -238,17 +240,17 @@ const chainCandidateColumns = `group_accounts.account_id,
 // chainCandidateModelTail extends the model-candidate window projection.
 const chainCandidateModelTail = `,
 			group_accounts.created_at AS binding_created_at,
-			COALESCE(source_accounts.id, accounts.id) AS model_resource_account_id,
-			COALESCE(source_accounts.provider_code, accounts.provider_code) AS model_resource_provider_code`
+			COALESCE(source_accounts.id, accounts.id) AS model_resource_account_id`
 
 // chainCandidateWhere mirrors the shared candidate window predicates (the
 // availability belt both windows repeat verbatim). {mediaStatusArm} 与
 // {mediaCooldownArm} 是冷却到期媒体准入臂占位（chainMediaArmReplacement：
 // 非媒体请求恒展开空串，SQL 与实参序列和既有形态逐字节一致）。
+// 组内候选不再按 provider 收窄（供应商与上游协议面重构设计 §8；组内模型过滤
+// 由后续 FilterAccountsByRequestedModel 承担）。
 const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 			AND group_accounts.system_account_id = ?
 			AND group_accounts.enabled = 1
-			AND accounts.provider_code = ?
 			AND accounts.deleted_at IS NULL
 			AND (accounts.status IN ({statusSet}){mediaStatusArm})
 			AND accounts.schedulable = 1
@@ -258,7 +260,6 @@ const chainCandidateWhere = `WHERE group_accounts.group_id = ?
 				OR (
 					accounts.authorization_instance_authorization_id IS NOT NULL
 					AND source_accounts.deleted_at IS NULL
-					AND source_accounts.provider_code = ?
 					AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
 					AND source_accounts.status IN ({statusSet})
 					AND source_accounts.schedulable = 1
@@ -578,12 +579,13 @@ func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context,
 // ---------------------------------------------------------------------------
 
 // candidateScanDest builds the scan destination for the base window column
-// order (chainCandidateColumns).
+// order (chainCandidateColumns)。provider_code 投影已拆除，扫描位随之收窄；
+// ProviderCode/ResourceProviderCode 过渡字段不再赋值（恒零值）。
 func candidateScanDest(row *chainCandidateRow) []any {
 	return []any{
 		&row.AccountID, &row.BindingSystemAccountID, &row.GroupID, &row.AccountAuthorizationID,
 		&row.LocalPriority, &row.LocalSuperPriority, &row.LocalFallback,
-		&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID,
+		&row.ID, &row.SystemAccountID, &row.ProviderProtocolProfileID,
 		&row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.Status,
 		&row.Schedulable, &row.ConcurrencyLimit, &row.Priority, &row.SuperPriorityEnabled,
 		&row.FallbackEnabled, &row.ClientCompatibility,
@@ -594,7 +596,6 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.AuthorizationInstanceSourceAccountID, &row.AuthorizationInstanceAuthorizationID,
 		&row.AuthorizationInstanceOwnerSystemAccountI,
 		&row.ResourceAccountID,
-		&row.ResourceProviderCode,
 		&row.ResourceProviderProtocolProfileID,
 		&row.ResourceProtocolCode,
 		&row.ResourceProtocolVersion,
@@ -638,12 +639,12 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 				group_accounts.created_at ASC,
 				group_accounts.account_id ASC
 			LIMIT ?`)
-	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode, includeFlag, now}
+	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, includeFlag, now}
 	if mediaAdmission {
 		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
 		args = append(args, now)
 	}
-	args = append(args, groupAccess.ProviderCode, includeFlag, now, now, now, s.candidateScanLimit)
+	args = append(args, includeFlag, now, now, now, s.candidateScanLimit)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 	if err != nil {
 		return nil, err
@@ -730,13 +731,11 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 					WHEN EXISTS (
 						SELECT 1 FROM {supportedModels} direct_models
 						WHERE direct_models.account_id = eligible_rows.model_resource_account_id
-							AND direct_models.provider_code = eligible_rows.model_resource_provider_code
 							AND {directModelPredicate}
 					) THEN 0
 					WHEN EXISTS (
 						SELECT 1 FROM {mappings} model_mappings
 						WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
-							AND model_mappings.provider_code = eligible_rows.model_resource_provider_code
 							AND model_mappings.source_model = ?
 							AND model_mappings.source_endpoint_family = ?
 							AND model_mappings.enabled = 1
@@ -752,7 +751,6 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 								OR EXISTS (
 									SELECT 1 FROM {supportedModels} mapped_supported
 									WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
-										AND mapped_supported.provider_code = eligible_rows.model_resource_provider_code
 										AND ({mappedAliasPredicate})
 								)
 							)
@@ -776,12 +774,12 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 			binding_created_at ASC,
 			account_id ASC
 		LIMIT ?`)
-	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode, includeFlag, now}
+	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, includeFlag, now}
 	if mediaAdmission {
 		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
 		args = append(args, now)
 	}
-	args = append(args, groupAccess.ProviderCode, includeFlag, now, now, now)
+	args = append(args, includeFlag, now, now, now)
 	for _, variant := range directModelArgs {
 		args = append(args, variant)
 	}
@@ -801,7 +799,7 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 		var modelRank int
 		dest := []any{&modelRank}
 		dest = append(dest, candidateScanDest(&row)...)
-		dest = append(dest, &row.BindingCreatedAt, &row.modelResourceID, &row.modelResourceProvider)
+		dest = append(dest, &row.BindingCreatedAt, &row.modelResourceID)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, nil, err
 		}
@@ -1300,6 +1298,9 @@ func (row *chainCandidateRow) resourceProxyProfileID() string {
 	return ""
 }
 
+// resourceProviderCode 返回模型事实主体的 provider 身份。候选窗口投影已随供
+// 应商解耦拆除 provider_code 列，本读取恒为零值（过渡载体，消费方待后续切片
+// 迁移）；见 chainCandidateRow.ProviderCode 过渡注释。
 func (row *chainCandidateRow) resourceProviderCode() string {
 	if row.ResourceProviderCode.Valid && row.ResourceProviderCode.String != "" {
 		return row.ResourceProviderCode.String

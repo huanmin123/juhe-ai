@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // M09 batch edit slice: the POST /accounts/batch-edit-context +
@@ -1026,20 +1027,10 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		result.supportedModels = nextSupportedModels
 	}
 
-	// Gpt request-override catalog assertion (account-batch-edit.service.ts:203):
-	// 触发条件与归档一致——支持模型实际变化或任一覆盖字段参与时，对最终凭据 +
-	// 最终支持模型断言。
-	if supportedModelsChanged || hasOwn("serviceTierOverride") || hasOwn("reasoningEffortOverride") {
-		if err := s.deps.AssertGptRequestOverridesSupported(ctx,
-			account.providerCode,
-			account.accountType,
-			nextCredentials,
-			nextSupportedModels,
-			account.systemAccountID,
-		); err != nil {
-			return result, err
-		}
-	}
+	// 请求覆盖两字段（serviceTierOverride / reasoningEffortOverride）不再有
+	// 独立的目录断言臂（2026-10-18 简化定案）：值域与形状校验由上方
+	// NormalizeCredentialsForWrite 在批量事务内执行（token 形状 + 协议族值域
+	// 全集），最终上游模型是否支持该档位由运行时降级/跳过。
 
 	// healthCheckModel.
 	nextHealthCheckModel := strings.TrimSpace(account.healthCheckModel)
@@ -1772,33 +1763,11 @@ func ValidateBatchUpdateValue(field string, value any) string {
 				return BatchFieldsPrompt
 			}
 		}
-	case "serviceTierOverride":
-		if value == nil {
-			return ""
-		}
-		text, ok := value.(string)
-		if !ok {
-			return BatchFieldsPrompt
-		}
-		switch text {
-		case "default", "priority", "flex", "":
-		default:
-			return BatchFieldsPrompt
-		}
-	case "reasoningEffortOverride":
-		if value == nil {
-			return ""
-		}
-		text, ok := value.(string)
-		if !ok {
-			return BatchFieldsPrompt
-		}
-		switch text {
-		case "none", "minimal", "low", "medium", "high", "xhigh", "max", "":
-		default:
-			return BatchFieldsPrompt
-		}
 	}
+	// serviceTierOverride / reasoningEffortOverride 无字段预检臂（2026-10-18
+	// 简化定案）：形状与值域全部交由写入面归一化
+	// NormalizeCredentialsForWrite 在批量事务内判定（token 形状 + 协议族值域
+	// 全集），预检层不再保留任何覆盖字段形状/枚举逻辑。
 	return ""
 }
 

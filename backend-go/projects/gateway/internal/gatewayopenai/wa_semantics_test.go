@@ -502,4 +502,45 @@ func TestWAClassifyStreamEvent(t *testing.T) {
 			t.Fatalf("[DONE] 分类 = %+v", classification)
 		}
 	})
+	// 顶层 error 对象形态（无 event 名、无 type）：DeepSeek 生产事故帧锚定。
+	t.Run("顶层 error 对象帧", func(t *testing.T) {
+		event := ParseStreamEventData(`{"error":{"code":"upstream_error","message":"upstream sent an error event"}}`, "", "", 0)
+		classification := ClassifyStreamEvent(event, 0)
+		if !classification.Failed || !classification.Terminal {
+			t.Fatalf("顶层 error 对象帧应失败且终止: %+v", classification)
+		}
+		if classification.ErrorCode != "upstream_error" || classification.ErrorMessage != "upstream sent an error event" {
+			t.Fatalf("错误字段 = %q/%q", classification.ErrorCode, classification.ErrorMessage)
+		}
+	})
+	// 空 error 对象仍是上游失败信号。
+	t.Run("顶层空 error 对象帧", func(t *testing.T) {
+		event := ParseStreamEventData(`{"error":{}}`, "", "", 0)
+		if classification := ClassifyStreamEvent(event, 0); !classification.Failed {
+			t.Fatalf("空 error 对象应失败: %+v", classification)
+		}
+	})
+	// 仅对象形态命中：null 与字符串不判失败。
+	t.Run("error null 与字符串非失败", func(t *testing.T) {
+		for _, payload := range []string{`{"error":null}`, `{"error":"boom"}`} {
+			event := ParseStreamEventData(payload, "", "", 0)
+			if classification := ClassifyStreamEvent(event, 0); classification.Failed {
+				t.Fatalf("%s 不应失败: %+v", payload, classification)
+			}
+		}
+	})
+	// 既有豁免维持：response.mcp_call.failed 不因携带 error 对象判失败。
+	t.Run("mcp_call.failed 豁免维持", func(t *testing.T) {
+		event := ParseStreamEventData(`{"type":"response.mcp_call.failed","error":{"code":"x"}}`, "", "", 0)
+		if classification := ClassifyStreamEvent(event, 0); classification.Failed {
+			t.Fatalf("mcp_call.failed 豁免应维持: %+v", classification)
+		}
+	})
+	// 回归：正常 chat chunk（含 choices，无 error 键）不受影响。
+	t.Run("正常 chat chunk 非失败", func(t *testing.T) {
+		event := ParseStreamEventData(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`, "", "", 0)
+		if classification := ClassifyStreamEvent(event, 0); classification.Failed {
+			t.Fatalf("正常 chat chunk 不应失败: %+v", classification)
+		}
+	})
 }

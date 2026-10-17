@@ -286,6 +286,33 @@ func TestW2BatchUpdateValidationAndAccess(t *testing.T) {
 			t.Fatalf("失败批量不应递增修订号：%d", revision)
 		}
 	})
+	// 覆盖字段值域延后臂：形状合法的非枚举值不再被字段预检拒绝
+	//（见 TestW2ValidateBatchUpdateValueMatrix），gpt 账户（openai 族）的
+	// ultra/turbo 由写入面凭据归一化（normalizeGPTAccountRequestOverrides，
+	// 协议族值域全集）在批量事务内拒绝，原始意图「ultra 不得写入 gpt 账户」
+	// 保持成立；目录未声明档位的值照常保存（2026-10-18 起不再有目录断言，
+	// 运行时才按最终上游模型降级/跳过）。
+	t.Run("覆盖字段 gpt 枚举延后到写侧拒绝", func(t *testing.T) {
+		_, err := w2BatchUpdate(t, env, adminID, BatchUpdateInput{Targets: targets,
+			Updates: w2EnabledFields(map[string]any{"reasoningEffortOverride": "ultra"})})
+		if err == nil || !strings.Contains(err.Error(), "思考级别覆盖无效") {
+			t.Fatalf("gpt 账户 ultra 应被写侧枚举拒绝：%v", err)
+		}
+		// 前一次批量失败已整批回滚，修订号保持可用。
+		_, err = w2BatchUpdate(t, env, adminID, BatchUpdateInput{Targets: targets,
+			Updates: w2EnabledFields(map[string]any{"serviceTierOverride": "turbo"})})
+		if err == nil || !strings.Contains(err.Error(), "服务等级覆盖无效") {
+			t.Fatalf("gpt 账户 turbo 应被写侧枚举拒绝：%v", err)
+		}
+		// 事务回滚：修订号不变。
+		var revision int64
+		if err := env.db.QueryRow(`SELECT config_revision FROM accounts WHERE id = ?`, first).Scan(&revision); err != nil {
+			t.Fatal(err)
+		}
+		if revision != rev1 {
+			t.Fatalf("失败批量不应递增修订号：%d", revision)
+		}
+	})
 }
 
 func TestW2ValidateBatchUpdateValueMatrix(t *testing.T) {
@@ -314,8 +341,14 @@ func TestW2ValidateBatchUpdateValueMatrix(t *testing.T) {
 		{"healthCheckModel 空白", "healthCheckModel", "  ", true},
 		{"healthCheckEndpointMode 非法", "healthCheckEndpointMode", "grpc", true},
 		{"modelMappings 非数组", "modelMappings", "x", true},
-		{"serviceTierOverride 非法", "serviceTierOverride", "bogus", true},
-		{"reasoningEffortOverride 非法", "reasoningEffortOverride", "ultra", true},
+		// 覆盖字段自 2026-10-18 简化定案起无预检臂：形状与值域全部由写入面
+		// 归一化（NormalizeCredentialsForWrite，token 形状 + 协议族值域全集）
+		// 在批量事务内判定，字段预检对任意输入恒放行。
+		{"serviceTierOverride 形状合法值域延后", "serviceTierOverride", "bogus", false},
+		{"reasoningEffortOverride 形状合法值域延后", "reasoningEffortOverride", "ultra", false},
+		{"serviceTierOverride 形状非法延后", "serviceTierOverride", " flex", false},
+		{"reasoningEffortOverride 形状非法延后", "reasoningEffortOverride", "ultra ", false},
+		{"serviceTierOverride 非字符串延后", "serviceTierOverride", 3, false},
 		{"未知字段直通", "mystery", 1, false},
 		{"supportedEndpointModes 值合法性延后", "supportedEndpointModes", []any{"grpc"}, false},
 	}

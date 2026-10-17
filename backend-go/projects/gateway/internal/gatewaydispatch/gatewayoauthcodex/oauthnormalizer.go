@@ -13,9 +13,12 @@ import (
 
 // OpenAIOAuthCodexAccount mirrors OpenAIOAuthCodexAccount.
 type OpenAIOAuthCodexAccount struct {
-	ID          string
-	APIKey      string
-	Credentials map[string]any
+	ID     string
+	APIKey string
+	// ProviderCode 是账户的供应商 token；随覆盖 hook 进入供应商感知值域
+	// 断言（gpt 专属 wire 枚举只对 gpt 账户生效）。
+	ProviderCode string
+	Credentials  map[string]any
 }
 
 // OpenAIOAuthCodexIdentity mirrors OpenAIOAuthCodexIdentity.
@@ -49,7 +52,11 @@ type GptRequestOverrideModelCapabilities struct {
 
 // GptAccountOverrideInput mirrors applyGptAccountRequestOverrides' input.
 type GptAccountOverrideInput struct {
-	Credentials       map[string]any
+	Credentials map[string]any
+	// ProviderCode 决定值域断言层级：规范化后为 gpt 的账户执行 gpt 专属
+	// wire 枚举；其它供应商（含未知/空）只保留 token 形状校验，有效值交给
+	// 降级解析 ResolveEffectiveOverrides。
+	ProviderCode      string
 	EndpointFamily    string
 	Compact           bool
 	ModelCapabilities *GptRequestOverrideModelCapabilities
@@ -247,6 +254,7 @@ func ApplyOpenAIOAuthCodexAccountRequestOverrides(body map[string]any, input Ope
 	}
 	overridden, err := hook(body, GptAccountOverrideInput{
 		Credentials:       input.Account.Credentials,
+		ProviderCode:      input.Account.ProviderCode,
 		EndpointFamily:    "responses",
 		Compact:           input.Compact,
 		ModelCapabilities: input.RequestOverrideModelCapabilities,

@@ -2,7 +2,10 @@
 
 > **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档（归档已移出仓库，git 历史可溯）；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
 
+> **供应商/协议面重构目标（2026-10-17）。** [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) 是 OpenAI-compatible、`hybrid`、供应商、协议档案、模型目录、账户映射和分组边界的唯一目标契约。本文及下列旧文档中与 `providerCode=openai`、`providerCode=hybrid`、普通账户/Hybrid 两套映射语义冲突的内容均标记为实施前基线；代码完成重构前不得把旧内容当作新实现依据。
+
 - [网关模型列表账户并集设计](网关模型列表账户并集设计.md)：`GET /v1/models`（含根形态 `/models`、`/v1beta/models` 等全部端点形态）成员资格从供应商模型目录切换为「Key 激活绑定分组上静态门+授权门的资格主体，其模型事实主体（`COALESCE(来源账户, 账户)`）supportedModels ∪ 有效映射源」的配置能力并集，读时聚合 + 双层缓存（零 schema/jobs/部署变更，不引入冗余表与第二失效链，目录降级为元数据字典，进程内随运行时失效清空，Redis 按启动 token/generation 隔离并尽力清理，失败禁止静默空列表）；含原始 API Key 维度冗余表提案的否决论证。已实施（2026-10-10，随 v4 契约同交付并通过独立复审；实施记录见文档头部）。
+- [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md)：目标架构，固定 `vendor_code` / `connection_driver_code` / `protocol_surface_code`、统一账户入口映射、49 个连接注册组合、162 个单 mode 组合、17 个 mapping family pair、28 个请求形态、目标 schema、确定性迁移和量化验收门；尚未实施。
 - [调度内核通用化设计](调度内核通用化设计.md)：调度内核通用参数与有序分派段契约——段内让位、软避让一次解除、动态翻回、不绕过硬门，保持准备层健康分段与既有候选顺序；超时参数化、三处错误消费和前置/适配器/后置历史策略；全部批次已实施并通过独立复审（2026-10-09，审计门清零）：批次 1 修复跨层降级事故（含整池等待域回炉）、批次 2 超时参数化三轨合一、批次 3 错误契约接口化 + 历史清理门参数化、批次 4 保活判定收敛；历史清理接线缺口（hook 恒 nil、CodexBridge 未装配）已建档于契约 5.4 节，接线立项另行裁决。
 - [上游模型漂移防护与加密上下文失效治理设计](上游模型漂移防护与加密上下文失效治理设计.md)：原生 Responses/compact 响应声明异常观测、完整接纳矩阵、固定状态机参数、attempt 去重与账户版本屏障；管理员当前运行态诊断，不恢复使用记录详情；A/B 文档契约已通过有界独立复审、代码未实施，C 上下文硬过滤继续冻结，未提供密文兼容保证。
 - [客户端版本自动跟版设计](客户端版本自动跟版设计.md)：客户端版本事实单点契约（两键三层合并：手动 `upstreamClientVersionOverrides` > 自动 `upstreamClientVersionAutoOverrides` > 内置）、jobs 每日五源（含 grokCLI）跟版任务契约（codex/claudeCode/geminiCLI/zcode/grokCLI，grokCLI 为第二期追加，随 xai worker 426 触发器落地，见设计 §8.3；写者侧单调与回退拒绝）、消费点收敛清单与 guard、UA 混合身份核实结论（官方 originator 与 UA 后缀同源，原 `Codex Desktop`+`(codex_exec;…)` 组合非官方 surface）与第二期裁决——已按开源源码锚定切换 codex exec surface（`codex_exec/{version} (…) unknown`，无后缀）、抖动审计结论（唯一缺口 key-model-memory-recovery）。
@@ -24,6 +27,7 @@
 - [动态管理数据刷新与缓存边界设计](动态管理数据刷新与缓存边界设计.md)：动态列表每次读取当前事实，手动刷新不得被前后端缓存吞掉，并保留脱敏上游错误用于使用记录诊断。
 - [上游响应模型不一致审计](上游响应模型不一致审计.md)：按实际发送上游模型与原始上游响应模型比较，仅在不一致时在使用记录中提示。
 - [网关与 jobs 全链路轨迹日志设计](网关全链路轨迹日志设计.md)：traceId 统一贯穿审计/日志/响应头，gateway_dispatch_decision 决策日志自含"为什么选它/为什么不选"的逐账户明细，jobsched 逐轮结局 WARN/DEBUG。
+- [上游流式失败帧拦截设计](上游流式失败帧拦截设计.md)：三协议流式检查器在写入下游前识别"JSON 顶层 `error` 对象"形态的带内失败帧（DeepSeek/Gemini streamGenerate 标准错误形态），拦截后走既有失败路径（提交前服务端重试、提交后干净中断/脱敏终态），客户端永不收到上游错误载荷；含三协议语义锁定表、提交后跨 chunk 拆分等已知边界与验收口径。已实施（2026-10-18）。
 
 > 这里集中存放功能说明、专题调研和存储说明。
 
@@ -40,6 +44,7 @@
 - [列表手动刷新完整响应设计](列表手动刷新完整响应设计.md)
 - [动态管理数据刷新与缓存边界设计](动态管理数据刷新与缓存边界设计.md)
 - [上游响应模型不一致审计](上游响应模型不一致审计.md)
+- [上游流式失败帧拦截设计](上游流式失败帧拦截设计.md)（已实施 2026-10-18）
 - [网关与 jobs 全链路轨迹日志设计](网关全链路轨迹日志设计.md)
 - [核心功能设计](核心功能设计.md)
 - [AI 账户错误语义与状态变更边界](AI账户错误语义与状态变更边界.md)
@@ -59,9 +64,10 @@
 - [使用手册页面设计](使用手册页面设计.md)
 - [策略路由设计](策略路由设计.md)
 - [策略路由分组会话亲和设计](策略路由分组会话亲和设计.md)：策略内分组会话黏性；已实施（2026-10-17）。动态路由状态消费前完成组亲和查询（三阶段静态快照 → 身份解析 → 派发终态选择），sticky hit 不推进 RR/weighted 状态，failover 切换后不回切，协议失败随既有响应失败 forget 三层删除。
+- [超级分组设计](超级分组设计.md)：分组域的跨普通分组组合；超级分组作为一个分组目标被四种路由模式绑定，成员约束、展开、记账和旧 merge 迁移以本文为准。
 - [普通路由速度优先延迟切换设计](普通路由速度优先延迟切换设计.md)
 - [缓存率感知调度与用量缓存率展示设计](缓存率感知调度与用量缓存率展示设计.md)
-- [合并路由设计](合并路由设计.md)
+- [合并路由设计-已废止](合并路由设计-已废止.md)：历史设计索引。`merge` 已从路由目标契约废止；旧 Go 实现只作为迁移前基线，迁移目标为绑定超级分组的 `normal` 策略。
 - [AI 账户短窗口热质量与精准切号设计](AI账户短窗口热质量与精准切号设计.md)（2026-10-08 增补 §7.6 本地单机形态恢复驱动：memory 运行态下 gateway 进程内恢复组件契约，与 jobs 恢复职责按"谁拥有运行态谁负责恢复"划分；同日根治阶段增补 §7.6.1 key-model 能力熔断记忆恢复驱动：Target 登记链、窄 InputLoader 职责边界与探针映射）
 - [切号时有效上游目标与上下文迁移设计](切号时有效上游目标与上下文迁移设计.md)
 - [系统团队与统一授权设计](系统团队与统一授权设计.md)
@@ -101,6 +107,7 @@
 - [问答音视频工具设计](问答音视频工具设计.md)（历史截面归档 2026-10-12，随 PLAN-20261012T121500000Z 退场；历史内容：M7 问答 generate_video/generate_audio 两工具、任务卡→播放器渲染与 Mock 可播放载荷。§2.1 的 /v1 域与 chat 域两域边界裁决仍为媒体任务面的有效参考）
 - [流式语音跨协议转换设计](流式语音跨协议转换设计.md)：M6 立项——/v1/realtime 对外面扩展转换型上游（Gemini Live、CosyVoice WS），RealtimeUpstreamConn 抽象 + 事件映射矩阵（未列事件忽略+观测），透传实现零回归护航。
 - [实时语音Realtime网关设计](实时语音Realtime网关设计.md)：M5 期契约——OpenAI Realtime 形态 WebSocket 双向流代理（事件透传）、ephemeral token 面、会话 usage 抽取计费、`realtime` lane、受理边界 WS 语义（101 升级=受理）；Gemini Live 转换独立 M6。
+- [火山流式语音桥接设计](火山流式语音桥接设计.md)：V1 流式 TTS 立项——`/v1/audio/speech` 面承接豆包语音合成 2.0（`POST /api/v3/tts/unidirectional` HTTP chunked，`speech_token` 沿用），字符计量计费；openspeech WS 桥基座（双向流式/实时语音/同传/播客）为 V2 展望。
 - [高并发分组调度设计](高并发分组调度设计.md)
 - [IP 统计与封禁设计](IP统计与封禁设计.md)
 - [IP 级账号回避与自动切号设计](IP级账号回避与自动切号设计.md)
@@ -191,7 +198,7 @@
 - 新增或调整 AI 账户批量编辑字段白名单、权限、乐观锁、事务原子性、模型配置同档案限制、缓存失效或后台复检投递时，优先更新 [AI 账户批量编辑设计](AI账户批量编辑设计.md)，再按影响同步 [核心功能设计](核心功能设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
 - 新增或调整添加账户的供应商卡片墙交互、供应商图标映射、`ProviderIcon` 组件或其接入面时，优先更新 [供应商卡片选择与图标设计](供应商卡片选择与图标设计.md)，再按影响同步 [客户端画像与混合供应商边界设计](客户端画像与混合路由设计.md) 和 [通用组件规范](../architecture/frontend/通用组件规范.md)；不得为图标引入运行时网络请求或数据库字段。
 - 新增或调整同一 API Key 账户内多个上游 Key 的轮询 / 权重、Key 级会话亲和、Key 级故障隔离、Key 冷却探测、Key 池派生可用性或 Key 状态展示时，优先更新 [OpenAI 账号接入](OpenAI账号接入.md)、[账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 和 [账户内 API Key 会话亲和设计](账户内APIKey会话亲和设计.md)；如果影响切号、屏蔽、后台恢复或错误兜底，再同步 [网关错误处理完整链路](网关错误处理完整链路.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。
-- 新增或调整 GPT 账户 `service_tier`、Fast / Priority / Flex、reasoning effort、已选模型能力合集、最终模型逐字段生效、Codex Max / Ultra、Responses Multi-agent Beta、账户强制覆盖或 Codex `/models` reasoning / service tier 能力时，优先更新 [GPT 请求服务等级与思考级别覆盖设计](GPT请求服务等级与思考级别覆盖设计.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[账户模型限制设计](账户模型限制设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。
+- 新增或调整 GPT 账户 `service_tier`、Fast / Priority / Flex、reasoning effort、协议族值域、供应商级显示、思考级别向下兼容降级、Codex Max / Ultra、Responses Multi-agent Beta、账户强制覆盖或 Codex `/models` reasoning / service tier 能力时，优先更新 [GPT 请求服务等级与思考级别覆盖设计](GPT请求服务等级与思考级别覆盖设计.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[账户模型限制设计](账户模型限制设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。
 - 新增或调整 Anthropic 官方直连、API Key 账户类型、Workload Identity 官方能力调研及重新开放条件、Anthropic 订阅 OAuth / Claude Code token 真实验证结论、Claude Code 客户端画像、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 OpenAI Chat / Responses 下游请求到 Anthropic Messages 上游的协议桥接、四类入口 JSON / SSE 响应渲染、混合供应商账户 `chat_completions|responses -> messages`、OpenAI 下游错误渲染或 Responses 状态下 Anthropic 上游模型的承接能力时，优先更新 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)；如果涉及 hosted tools、thinking、图片文件、structured output、MCP、computer、code execution、image_generation 或 compact 高兼容能力，再同步 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)，并按影响同步 [Anthropic 账号接入](Anthropic账号接入.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。如果涉及 OpenAI `file_id`、`/v1/files`、Vector Stores 或 Responses `file_search` 本地承接，还必须同步 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)；如果涉及 `code_interpreter`、`computer`、`mcp`、`shell`、`skills` 或 `tool_search` 真实执行器，还必须同步 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)。
 - 新增或调整 Anthropic Messages 下游请求到 OpenAI Chat Completions 上游的协议桥接、Anthropic JSON / SSE 响应还原、混合供应商账户 `messages -> chat_completions`、Anthropic guidance 渲染或 Claude Code / Anthropic-compatible 客户端访问 Chat-only 上游时，优先更新 [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[AI 账户导入协议](AI账户导入协议.md) 和 [请求处理分层设计](请求处理分层设计.md)。
@@ -213,7 +220,7 @@
 - 新增或调整运行拓扑、进程编排或单机部署形态（现行为国内单机 Docker go-only；Node performance 时代的同机多 Gateway、Usage / Log consumer 副本、Nginx 分流、进程实例 ID、旁路降级或 launchd 编排均为历史截面）时，优先更新 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)与 [部署指南](../deploy/部署指南.md)（原 高性能模式同机多进程拓扑设计 与 后台 Worker 多角色拆分设计 已删除，git 历史可溯）。跨物理主机才进入 [分布式部署与用户分片设计](分布式部署与用户分片设计.md)。
 - 新增或调整后端数据库 / 缓存 / 运行态 / 队列调用边界、Store Port、adapter 装配、SQLite / PostgreSQL 实现收敛、Redis key 封装或禁止业务层直接访问存储基础设施时，优先更新 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)与 [SQLite 存储说明](SQLite存储说明.md)（原 存储适配接口设计 已删除，git 历史可溯），再按影响同步后端架构和验证文档。涉及 Go 迁移后的存储实现时，必须声明 SQLite 与 PostgreSQL/Redis adapter、单 owner 和测试矩阵，以 架构总览 终局声明为准。
 - 新增或调整高增长表索引、用户维度查询前提、日期分区 / shard、热数据在线保留、归档、按需统计窗口或大表默认查询契约时，优先更新 [用户维度热数据分区与归档治理设计](用户维度热数据分区与归档治理设计.md)，再按影响同步 [数据集库分片写入设计](数据集库分片写入设计.md)、[PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)、[统计指标与分层聚合设计](统计指标与分层聚合设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
-- 新增或调整 API Key 选择路由策略、策略路由菜单、调度偏好、普通路由、权重调度路由、故障回退路由、轮询路由、合并路由、路由策略分组绑定或相关缓存失效时，优先更新 [策略路由设计](策略路由设计.md)；合并路由专属语义（全池统一调度、按账号所属组记账、速度优先状态键作用域）同步 [合并路由设计](合并路由设计.md)；如果跨供应商绑定依赖请求 `model` 路由，还必须同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
+- 新增或调整 API Key 选择路由策略、策略路由菜单、调度偏好、普通路由、权重调度路由、故障回退路由、轮询路由、超级分组、路由策略分组绑定或相关缓存失效时，优先更新 [策略路由设计](策略路由设计.md) 和 [超级分组设计](超级分组设计.md)；旧 merge 迁移规则同步 [合并路由设计-已废止](合并路由设计-已废止.md)；如果跨供应商绑定依赖请求 `model` 路由，还必须同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
 - 新增或调整系统团队、授权对象、授权资源、授权统计或团队成员共享语义时，优先更新 [系统团队与统一授权设计](系统团队与统一授权设计.md)。
 - 新增或调整公告展示、公告管理、公告提醒状态或公告权限边界时，优先更新 [公告中心设计](公告中心设计.md)。
 - 新增或调整敏感字段、请求快照、日志、凭据展示、数据保留或备份迁移规则时，优先更新 [安全与日志策略](安全与日志策略.md)。

@@ -237,6 +237,19 @@ func (r *MediaJobsRepo) GetByIDAndAPIKey(ctx context.Context, id, apiKeyID strin
 	return rows[0], nil
 }
 
+// GetManagementByID 按 id 取单行全量（管理面详情端点消费：无归属过滤，
+// 行解码与列表查询同源）。未命中返回 ErrMediaJobNotFound。
+func (r *MediaJobsRepo) GetManagementByID(ctx context.Context, id string) (*MediaJobRecord, error) {
+	rows, err := r.query(ctx, `WHERE id = ?`, id, 1, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, ErrMediaJobNotFound
+	}
+	return rows[0], nil
+}
+
 // ListByAPIKey 按归属 API Key 倒序分页（GET /v1/videos 列表消费；kind 过滤
 // 由 ListByAPIKeyAndKind 承载——/v1/videos 与 /v1/audio/jobs 列表互不混行，
 // M3f 起按 kind 泛化）。
@@ -273,18 +286,21 @@ func (r *MediaJobsRepo) ListExpired(ctx context.Context, before time.Time, limit
 }
 
 // MediaJobListQuery 是管理面任务列表的查询参数（GET /__aisys__/api/media-jobs
-// 消费；空串 = 不过滤）。
+// 消费；空串 = 不过滤）。OwnerSystemAccountID 是按任务归属 API Key 属主
+// （api_keys.system_account_id）的过滤：管理面按用户筛选与用户面钉死调用者
+// 共用同一条件。
 type MediaJobListQuery struct {
-	Status    string
-	Kind      string
-	APIKeyID  string
-	AccountID string
-	Limit     int
-	Offset    int
+	Status               string
+	Kind                 string
+	APIKeyID             string
+	AccountID            string
+	OwnerSystemAccountID string
+	Limit                int
+	Offset               int
 }
 
-// ListManagement 管理面分页查询（状态/种类/归属 Key/归属账户过滤 + 倒序
-// created_at），返回行集与同条件总数（分页 envelope 的 total）。
+// ListManagement 管理面分页查询（状态/种类/归属 Key/归属账户/属主用户过滤 +
+// 倒序 created_at），返回行集与同条件总数（分页 envelope 的 total）。
 func (r *MediaJobsRepo) ListManagement(ctx context.Context, query MediaJobListQuery) ([]*MediaJobRecord, int, error) {
 	if query.Limit <= 0 || query.Limit > 100 {
 		query.Limit = 20
@@ -292,7 +308,7 @@ func (r *MediaJobsRepo) ListManagement(ctx context.Context, query MediaJobListQu
 	if query.Offset < 0 {
 		query.Offset = 0
 	}
-	where, args := mediaJobManagementWhere(query)
+	where, args := r.mediaJobManagementWhere(query)
 	total := 0
 	if err := r.db.QueryRowContext(ctx, r.bind(`SELECT COUNT(*) FROM `+r.table()+` `+where), args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计媒体任务行失败: %w", err)
@@ -304,8 +320,26 @@ func (r *MediaJobsRepo) ListManagement(ctx context.Context, query MediaJobListQu
 	return rows, total, nil
 }
 
+// GetByOwnerAndID 按 id + 归属属主取单行（用户面详情消费：owner 是当前登录
+// 用户，跨属主与未命中同样返回 ErrMediaJobNotFound，不泄露存在性）。
+func (r *MediaJobsRepo) GetByOwnerAndID(ctx context.Context, id, ownerSystemAccountID string) (*MediaJobRecord, error) {
+	owner := strings.TrimSpace(ownerSystemAccountID)
+	if owner == "" {
+		return nil, ErrMediaJobNotFound
+	}
+	where := `WHERE id = ? AND EXISTS (SELECT 1 FROM ` + r.apiKeysTable() + ` ak WHERE ak.id = ` + r.table() + `.api_key_id AND ak.system_account_id = ?)`
+	rows, err := r.query(ctx, where, id, owner, 1, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, ErrMediaJobNotFound
+	}
+	return rows[0], nil
+}
+
 // mediaJobManagementWhere 构造管理面过滤 WHERE 片段（参数顺序与占位一致）。
-func mediaJobManagementWhere(query MediaJobListQuery) (string, []any) {
+func (r *MediaJobsRepo) mediaJobManagementWhere(query MediaJobListQuery) (string, []any) {
 	conditions := []string{}
 	args := []any{}
 	if status := strings.TrimSpace(query.Status); status != "" {
@@ -324,10 +358,22 @@ func mediaJobManagementWhere(query MediaJobListQuery) (string, []any) {
 		conditions = append(conditions, "account_id = ?")
 		args = append(args, accountID)
 	}
+	if owner := strings.TrimSpace(query.OwnerSystemAccountID); owner != "" {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM "+r.apiKeysTable()+" ak WHERE ak.id = "+r.table()+".api_key_id AND ak.system_account_id = ?)")
+		args = append(args, owner)
+	}
 	if len(conditions) == 0 {
 		return "", nil
 	}
 	return "WHERE " + strings.Join(conditions, " AND "), args
+}
+
+// apiKeysTable 是归属子查询的 api_keys 表名（PG 与 media_jobs 同 schema 限定）。
+func (r *MediaJobsRepo) apiKeysTable() string {
+	if r.postgres {
+		return "juhe_business.api_keys"
+	}
+	return "api_keys"
 }
 
 // query 是共用的行读取（WHERE 片段 + 分页；倒序 created_at DESC, id DESC 稳定

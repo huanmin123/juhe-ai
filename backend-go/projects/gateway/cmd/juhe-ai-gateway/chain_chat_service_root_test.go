@@ -335,3 +335,47 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 		t.Fatalf("non-chat url = %#v", urls)
 	}
 }
+
+func TestChainVolcengineEmbeddingsUpstreamURL(t *testing.T) {
+	// 向量出站 URL 钉值（2026-10-17 向量承接批）：ark 官方 OpenAI 兼容向量
+	// 端点 /api/v3/embeddings 与 chat 共用服务根与归一（chainVolcengineChat
+	// UpstreamURL 显式路径模式）；不得走 openai BuildUpstreamURL 的 /v1 强制
+	// 补缀（官方根会错拼 /v1/embeddings——上游 404 实证，vector 批接入前
+	// 网关真实出站日志 chain_driver.go 向量分支注释）。
+	cases := []struct {
+		name, base, pathAndQuery, want string
+	}{
+		{
+			name:         "official root inserts api v3",
+			base:         "https://ark.cn-beijing.volces.com",
+			pathAndQuery: "/v1/embeddings",
+			want:         "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+		},
+		{
+			name:         "base with api v3 dedups",
+			base:         "https://ark.cn-beijing.volces.com/api/v3",
+			pathAndQuery: "/v1/embeddings",
+			want:         "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+		},
+		{
+			name:         "agent plan explicit service root kept",
+			base:         "https://ark.cn-beijing.volces.com/api/plan/v3",
+			pathAndQuery: "/v1/embeddings",
+			want:         "https://ark.cn-beijing.volces.com/api/plan/v3/embeddings",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := chainVolcengineChatUpstreamURL(tc.base, tc.pathAndQuery)
+			if err != nil {
+				t.Fatalf("chainVolcengineChatUpstreamURL: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("chainVolcengineChatUpstreamURL(%q, %q) = %q, want %q", tc.base, tc.pathAndQuery, got, tc.want)
+			}
+		})
+	}
+	if !chainIsEmbeddingsPathAndQuery("/v1/embeddings") || !chainIsEmbeddingsPathAndQuery("/v1/embeddings?x=1") || chainIsEmbeddingsPathAndQuery("/v1/chat/completions") {
+		t.Fatalf("chainIsEmbeddingsPathAndQuery 判定不符")
+	}
+}

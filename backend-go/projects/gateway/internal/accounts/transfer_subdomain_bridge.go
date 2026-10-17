@@ -192,15 +192,6 @@ func (s *Store) transferService() *accountstransfer.Service {
 		AssertModelMappingsInProviderCatalog: func(ctx context.Context, q accountscore.Queryer, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate, mappings []accountscore.ModelMapping, supportedEndpointModes []string) error {
 			return s.assertAccountModelMappingsInProviderCatalog(ctx, q, providerCode, systemAccountID, transferPredicateInput(predicate), mappings, supportedEndpointModes)
 		},
-		AssertGptRequestOverridesSupported: func(ctx context.Context, providerCode, accountType string, credentials accountscore.Credentials, supportedModels []string, systemAccountID string) error {
-			return s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
-				ProviderCode:    providerCode,
-				AccountType:     accountType,
-				Credentials:     credentials,
-				SupportedModels: supportedModels,
-				SystemAccountID: systemAccountID,
-			})
-		},
 		NormalizeCredentialsForWrite: NormalizeAccountCredentialsForWrite,
 		NormalizeOpenAIAccountClientCompatibility: func(providerCode, accountType, value string, predicate accountscore.ProtocolPredicate) (string, error) {
 			return normalizeOpenAIAccountClientCompatibility(providerCode, accountType, value, transferProfileRef(predicate))

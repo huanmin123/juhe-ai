@@ -16,11 +16,9 @@ func TestW9ASeedSQLiteDefaultsFullScriptInjectFailures(t *testing.T) {
 		rec.script(sqSeedGeneratedModelRowsSelect, nil, [][]driver.Value{
 			{"provider_model_stale", "glm", "removed-model"},
 		})
-		// profile account types repair：全部需要合并 → UPDATE。
-		w9aScriptRowsFor(rec, sqSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
 		// 默认分组列表。
-		rec.script(sqSeedDefaultGroupsSelect, nil, [][]driver.Value{{"grp_gpt_default", "gpt默认分组"}})
-		rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_grp_gpt_default"}})
+		rec.script(sqSeedDefaultGroupsSelect, nil, [][]driver.Value{{"grp_default_gpt_sys_admin", "默认分组"}})
+		rec.script(sqSeedRouteStrategyExistsSelect, nil, [][]driver.Value{{"route_strategy_default_gpt_sys_admin"}})
 		return rec
 	}
 
@@ -94,34 +92,6 @@ func TestW9ASeedSQLiteRouteStrategyErrorBranches(t *testing.T) {
 	err = seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx, dbKeyInsert, w9aCountingExec(nil, 2), SeedOptions{}, now)
 	if err == nil {
 		t.Fatalf("api key insert 失败必须上抛: %v", err)
-	}
-}
-
-// TestW9ASeedSQLiteRepairParseError 覆盖 repair 的非法 JSON 跳过分支与
-// UPDATE 失败分支。
-func TestW9ASeedSQLiteRepairParseError(t *testing.T) {
-	ctx := context.Background()
-	recBad := &wmSchemaRecorder{}
-	w9aScriptRowsFor(recBad, sqSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"{bad"})
-	dbBad := openWMSchemaFakeDB(recBad)
-	defer dbBad.Close()
-	var executed []string
-	if err := seedSQLiteRepairProfileAccountTypes(ctx, dbBad, func(query string, _ ...any) error {
-		executed = append(executed, query)
-		return nil
-	}, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("parse 失败必须跳过: %v", err)
-	}
-	if len(executed) != 0 {
-		t.Fatalf("parse 失败路径不应执行 UPDATE: %d", len(executed))
-	}
-
-	recMerge := &wmSchemaRecorder{}
-	w9aScriptRowsFor(recMerge, sqSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
-	dbMerge := openWMSchemaFakeDB(recMerge)
-	defer dbMerge.Close()
-	if err := seedSQLiteRepairProfileAccountTypes(ctx, dbMerge, w9aCountingExec(nil, 0), "2026-09-01T00:00:00.000Z"); err == nil {
-		t.Fatal("UPDATE 失败必须上抛")
 	}
 }
 

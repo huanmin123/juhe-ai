@@ -1187,6 +1187,7 @@ onBeforeUnmount(() => {
 
 watch(
   [
+    () => modalOpen.value,
     () => form.providerCode,
     () => form.providerProtocolProfileId,
     () => form.groupId,
@@ -1205,9 +1206,20 @@ watch(
         : undefined,
       selectedIds: [form.groupId]
     })
+    loadCreateWizardGroupOptions()
   },
   { immediate: true }
 )
+
+// 创建向导主动加载分组选项（编辑态仍按下拉打开时按需加载）：供应商已定即拉取
+// 当前作用域可管理分组，配合 ensureDefaultGroupSelected 把默认/首个可用分组预选
+// 进表单，用户不必先点开下拉才能看到候选。groups 非空说明当前作用域已加载
+// （作用域切换会同步清空后重触发本 watch），跳过避免选后回填引发重复请求。
+function loadCreateWizardGroupOptions(): void {
+  if (!modalOpen.value || editingId.value || !form.providerCode) return
+  if (groups.value.length) return
+  void loadGroupOptions()
+}
 const {
   handleAccountTypeFilterChange,
   handleProviderFilterChange,

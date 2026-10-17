@@ -70,6 +70,10 @@ func mountGatewayRootForms(kern *kernel.Kernel, chain http.Handler) {
 	kern.Register("/chat/completions", v1Adapter)
 	kern.Register("/models", v1Adapter)
 	kern.Register("/embeddings", v1Adapter)
+	// 向量批（2026-10-17）：ark 多模态向量子路径族（/v1/embeddings/multimodal
+	// ——doubao-embedding-vision 系独立 API 面，OpenAI 兼容 /embeddings 面不
+	// 承接该模型）与 /images 同风格整棵子树放行。
+	kern.Register("/embeddings/{rest...}", v1Adapter)
 	kern.Register("/images", v1Adapter)
 	kern.Register("/images/{rest...}", v1Adapter)
 	kern.Register("/audio", v1Adapter)

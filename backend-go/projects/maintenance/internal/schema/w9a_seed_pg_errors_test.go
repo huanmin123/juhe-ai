@@ -52,19 +52,6 @@ func TestW9ASeedFirstStatementFailuresOnClosedDB(t *testing.T) {
 	}
 }
 
-// TestW9ASeedPostgresRepairUpdateError 覆盖 repair 函数的 UPDATE 失败分支。
-func TestW9ASeedPostgresRepairUpdateError(t *testing.T) {
-	rec := &wmSchemaRecorder{}
-	w9aScriptRowsFor(rec, pgSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
-	db := openWMSchemaFakeDB(rec)
-	defer db.Close()
-	err := seedPostgresRepairProfileAccountTypes(context.Background(), &w9aRowsAffectedErrClient{db: db},
-		w9aCountingExec(nil, 0), "2026-09-01T00:00:00.000Z")
-	if err == nil {
-		t.Fatal("UPDATE 失败必须返回错误")
-	}
-}
-
 // TestW9ASeedPostgresRouteStrategyErrorBranches 逐分支注入，覆盖默认路由
 // 策略创建链的全部错误包装。
 func TestW9ASeedPostgresRouteStrategyErrorBranches(t *testing.T) {
@@ -156,13 +143,12 @@ func TestW9ASeedPostgresExternalTokenSelectError(t *testing.T) {
 func TestW9ASeedPostgresDefaultsWithFullScriptInjectFailures(t *testing.T) {
 	buildRec := func() *wmSchemaRecorder {
 		rec := &wmSchemaRecorder{}
-		w9aScriptRowsFor(rec, pgSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
 		for _, groupSeed := range pgSeedGroups {
-			if groupSeed.SystemAccountID != "sys_admin" || groupSeed.ProviderCode == hybridProviderCode {
+			if groupSeed.SystemAccountID != "sys_admin" {
 				continue
 			}
-			rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{"grp_" + groupSeed.ProviderCode + "_default", groupSeed.Name + "分组"}})
-			rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup("grp_" + groupSeed.ProviderCode + "_default")}})
+			rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{groupSeed.ID, groupSeed.Name}})
+			rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup(groupSeed.ID)}})
 		}
 		return rec
 	}
@@ -176,21 +162,6 @@ func TestW9ASeedPostgresDefaultsWithFullScriptInjectFailures(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(err.Error(), "postgres seed statement") && !strings.Contains(err.Error(), errW9AExecFailed.Error()) && !strings.Contains(err.Error(), "postgres seed seal scheduling preferences fresh install") {
-			t.Fatalf("failAfter=%d 错误异常: %v", failAfter, err)
-		}
-	}
-}
-
-// TestW9AEnsurePostgresSeedsRepairUpdateInjectFailures 在 repair 合并路径下
-// 逐条注入失败，覆盖 EnsurePostgresSeeds 的 repair UPDATE 错误分支。
-func TestW9AEnsurePostgresSeedsRepairUpdateInjectFailures(t *testing.T) {
-	for failAfter := 1; failAfter <= 200; failAfter++ {
-		rec := &wmSchemaRecorder{failExecAfter: failAfter}
-		w9aScriptRowsFor(rec, pgSeedProfileAccountTypesSelect, len(pgSeedProfiles), []driver.Value{"[]"})
-		db := openWMSchemaFakeDB(rec)
-		_, err := EnsurePostgresSeeds(context.Background(), db)
-		db.Close()
-		if err != nil && !strings.Contains(err.Error(), "postgres seed statement") {
 			t.Fatalf("failAfter=%d 错误异常: %v", failAfter, err)
 		}
 	}

@@ -16,11 +16,27 @@ const (
 const (
 	SkipReasonMissingRequestedModel = "missing_requested_model"
 	SkipReasonEmptyBinding          = "empty_binding"
-	SkipReasonSingleProvider        = "single_provider"
+
+	// SkipReasonSingleProvider 过渡保留（cmd 测试与 statreads 仍引用常量）：
+	// 单 provider 短路已随供应商解耦拆除（供应商与上游协议面重构设计 §7/§8），
+	// 路由不再发出该原因。
+	SkipReasonSingleProvider = "single_provider"
 )
 
 // Failure codes emitted by resolveNormalGatewayModelRoute.
 const (
+	// FailCodeModelNotFound 是 models 单表目录语义的终态错误（设计 §6.1）：
+	// 请求模型没有一条对当前资源可见且 status=active 的 models 目录行
+	// （不存在、不可见、已禁用或已下线均属此类）→ 404 model_not_found。
+	FailCodeModelNotFound = "model_not_found"
+
+	// 以下错误码随供应商解耦退役，常量过渡保留（消费方仍引用字符串语义），
+	// 路由不再发出：
+	//   - model_not_routable_for_api_key / model_route_unavailable /
+	//     model_target_group_not_bound：供应商目录收窄时代的 400 分类，由
+	//     model_not_found（404）与 model_target_group_unavailable（503）二分
+	//     取代（§6.1：迁移完成后不得再用供应商目录判定）。
+	//   - model_route_ambiguous：单表目录无多供应商歧义，不再发出。
 	FailCodeModelNotRoutableForAPIKey   = "model_not_routable_for_api_key"
 	FailCodeModelRouteAmbiguous         = "model_route_ambiguous"
 	FailCodeModelRouteUnavailable       = "model_route_unavailable"
@@ -50,10 +66,13 @@ type NormalGatewayModelRouteResult struct {
 	RequestedModel string
 
 	// failed
-	StatusCode           int
-	Type                 string
-	Code                 string
-	Message              string
+	StatusCode int
+	Type       string
+	Code       string
+	Message    string
+	// MatchedProviderCodes 过渡字段（供应商解耦后恒空）：字段与 audit 消费方
+	// （gatewaypreauth preflight）保留，赋值点已随供应商目录拆除，待组合根切
+	// 片一并移除。
 	MatchedProviderCodes []string
 
 	// selected
@@ -63,7 +82,10 @@ type NormalGatewayModelRouteResult struct {
 	Accounts                   []UpstreamAccount
 	ResponseInspectionPolicies []ResponseInspectionPolicySummary
 	RouteSource                NormalGatewayModelRouteSource
-	MatchedProviderCode        string
+	// MatchedProviderCode 过渡字段（供应商解耦后恒空串）：字段与 cmd
+	// chain_routing / gatewaypreauth audit 消费方保留，赋值点已随供应商目录
+	// 拆除，待组合根切片一并移除。
+	MatchedProviderCode string
 	// GroupSegments holds the per-binding-group fragments behind the merged
 	// flat pool; filled only when RouteSource == RouteSourceMerged (merge
 	// mode), nil for every other mode. GroupID is the window group (the
@@ -96,21 +118,11 @@ func NewNormalModelRouteService(runtimeCache RuntimeCacheReader, capabilityFilte
 	}
 }
 
-// catalogProviderRoute mirrors the Node CatalogProviderRoute.
-type catalogProviderRoute struct {
-	providerCode         string
-	matchedProviderCodes []string
-}
-
-// catalogRouteResult mirrors the Node resolveCatalogProviderRoute result
-// union.
-type catalogRouteResult struct {
-	outcome              string // ProviderModelRouteMatched | ProviderModelRouteMissing | ProviderModelRouteAmbiguous
-	route                catalogProviderRoute
-	matchedProviderCodes []string
-}
-
-// ResolveNormalGatewayModelRoute mirrors resolveNormalGatewayModelRoute.
+// ResolveNormalGatewayModelRoute mirrors resolveNormalGatewayModelRoute. 供应
+// 商解耦后的 normal 语义：对 API Key 绑定的全部分组直接做候选过滤（无单
+// provider 短路、无目录 provider 收窄），无候选时按 models 单表目录做终态二
+// 分（§6.1）：目录无可见 active 行 → 404 model_not_found；目录可见但分组内
+// 无候选 → 503 model_target_group_unavailable。
 func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Context, input ResolveNormalGatewayModelRouteInput) (NormalGatewayModelRouteResult, error) {
 	apiKeyRecord := input.APIKeyRecord
 
@@ -125,34 +137,9 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 	}
 
 	// Merge mode (合并路由设计 3.1/B9-B13): collect every bound group's
-	// surviving fragment into one flat pool. The single-provider shortcut
-	// below must not apply (B9).
+	// surviving fragment into one flat pool.
 	if apiKeyRecord.RouteStrategyMode == RouteStrategyModeMerge {
 		return s.resolveMergeGatewayModelRoute(ctx, input, apiKeyRecord, bindings, requestedModel)
-	}
-
-	activeProviderCodes := make(map[string]struct{}, len(bindings))
-	for _, binding := range bindings {
-		activeProviderCodes[binding.ProviderCode] = struct{}{}
-	}
-	if len(activeProviderCodes) == 1 {
-		return NormalGatewayModelRouteResult{Outcome: NormalRouteOutcomeSkipped, Reason: SkipReasonSingleProvider, RequestedModel: requestedModel}, nil
-	}
-
-	catalogRoute, err := s.resolveCatalogProviderRoute(ctx, bindings, requestedModel, apiKeyRecord.SystemAccountID)
-	if err != nil {
-		return NormalGatewayModelRouteResult{}, err
-	}
-	if catalogRoute.outcome == ProviderModelRouteMissing {
-		return NormalGatewayModelRouteResult{
-			Outcome:              NormalRouteOutcomeFailed,
-			StatusCode:           400,
-			Type:                 "invalid_request_error",
-			Code:                 FailCodeModelNotRoutableForAPIKey,
-			Message:              fmt.Sprintf("当前 API Key 绑定的供应商中没有可路由模型：%s", requestedModel),
-			RequestedModel:       requestedModel,
-			MatchedProviderCodes: catalogRoute.matchedProviderCodes,
-		}, nil
 	}
 
 	mappingTarget, err := s.TargetGroups.SelectGatewayModelTargetGroup(ctx, ModelTargetGroupInput{
@@ -161,33 +148,22 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 		Bindings:                   bindings,
 		TargetModel:                requestedModel,
 		RequestClientCompatibility: input.RequestClientCompatibility,
-		CandidatePriority: func(candidate ModelTargetGroupCandidate) float64 {
-			catalogProviderMatched := catalogRoute.outcome == ProviderModelRouteMatched &&
-				candidate.Binding.ProviderCode == catalogRoute.route.providerCode
-			return NormalGatewayModelTargetPriority(candidate.ModelFilter, catalogProviderMatched)
-		},
 	})
 	if err != nil {
 		return NormalGatewayModelRouteResult{}, err
 	}
 	if mappingTarget != nil {
 		routeSource := NormalGatewayModelRouteSourceOf(mappingTarget.ModelFilter)
-		selectedProviderBindings := make([]GroupBindingRow, 0)
+		// 供应商解耦后不再按 ProviderCode 收窄：随行绑定收窄为选中分组的绑定。
+		selectedGroupBindings := make([]GroupBindingRow, 0)
 		for _, candidate := range bindings {
-			if candidate.ProviderCode == mappingTarget.Binding.ProviderCode {
-				selectedProviderBindings = append(selectedProviderBindings, candidate)
+			if candidate.GroupID == mappingTarget.GroupID {
+				selectedGroupBindings = append(selectedGroupBindings, candidate)
 			}
 		}
 		updatedRecord := *apiKeyRecord
 		updatedRecord.SelectedGroupID = mappingTarget.GroupID
-		updatedRecord.GroupBindings = selectedProviderBindings
-		matchedProviderCode := ""
-		switch {
-		case routeSource == RouteSourceAccountMapping:
-			matchedProviderCode = mappingTarget.GroupAccess.ProviderCode
-		case catalogRoute.outcome == ProviderModelRouteMatched:
-			matchedProviderCode = catalogRoute.route.providerCode
-		}
+		updatedRecord.GroupBindings = selectedGroupBindings
 		return NormalGatewayModelRouteResult{
 			Outcome:                    NormalRouteOutcomeSelected,
 			APIKeyRecord:               &updatedRecord,
@@ -197,60 +173,69 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 			ResponseInspectionPolicies: mappingTarget.ResponseInspectionPolicies,
 			RequestedModel:             requestedModel,
 			RouteSource:                routeSource,
-			MatchedProviderCode:        matchedProviderCode,
+			MatchedProviderCode:        "",
 		}, nil
 	}
 
-	if catalogRoute.outcome == ProviderModelRouteAmbiguous {
-		return NormalGatewayModelRouteResult{
-			Outcome:              NormalRouteOutcomeFailed,
-			StatusCode:           400,
-			Type:                 "invalid_request_error",
-			Code:                 FailCodeModelRouteAmbiguous,
-			Message:              fmt.Sprintf("请求模型在多个供应商中同时存在，无法确定目标号池：%s", requestedModel),
-			RequestedModel:       requestedModel,
-			MatchedProviderCodes: catalogRoute.matchedProviderCodes,
-		}, nil
+	return s.resolveModelsDirectoryTerminalFailure(ctx, bindings, requestedModel, apiKeyRecord.SystemAccountID)
+}
+
+// resolveModelsDirectoryTerminalFailure 是无候选时的终态二分（设计 §6.1）：
+// 请求模型在 models 目录无对当前资源可见（builtin/global 全可见、personal 属
+// 主精确匹配，owner = apiKeyRecord.SystemAccountID）的 active 行 → 404
+// model_not_found（不得用绑定账户改变该分类）；目录可见但分组内硬过滤后无候
+// 选 → 维持 503 model_target_group_unavailable。
+func (s *NormalModelRouteService) resolveModelsDirectoryTerminalFailure(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
+	present, err := s.requestedModelInModelsDirectory(ctx, bindings, requestedModel, systemAccountID)
+	if err != nil {
+		return NormalGatewayModelRouteResult{}, err
 	}
-	if catalogRoute.outcome != ProviderModelRouteMatched {
+	if present {
 		return NormalGatewayModelRouteResult{
 			Outcome:        NormalRouteOutcomeFailed,
-			StatusCode:     400,
-			Type:           "invalid_request_error",
-			Code:           FailCodeModelRouteUnavailable,
-			Message:        fmt.Sprintf("请求模型无法确定目标号池：%s", requestedModel),
+			StatusCode:     503,
+			Type:           "service_unavailable",
+			Code:           FailCodeModelTargetGroupUnavailable,
+			Message:        fmt.Sprintf("请求模型当前没有可用账号：%s", requestedModel),
 			RequestedModel: requestedModel,
 		}, nil
 	}
-	matchedRoute := catalogRoute.route
-	candidateBindings := make([]GroupBindingRow, 0)
-	for _, binding := range bindings {
-		if binding.ProviderCode == matchedRoute.providerCode {
-			candidateBindings = append(candidateBindings, binding)
-		}
-	}
-
-	if len(candidateBindings) == 0 {
-		return NormalGatewayModelRouteResult{
-			Outcome:              NormalRouteOutcomeFailed,
-			StatusCode:           400,
-			Type:                 "invalid_request_error",
-			Code:                 FailCodeModelTargetGroupNotBound,
-			Message:              fmt.Sprintf("当前 API Key 未绑定请求模型对应的供应商分组：%s", requestedModel),
-			RequestedModel:       requestedModel,
-			MatchedProviderCodes: matchedRoute.matchedProviderCodes,
-		}, nil
-	}
-
 	return NormalGatewayModelRouteResult{
-		Outcome:              NormalRouteOutcomeFailed,
-		StatusCode:           503,
-		Type:                 "service_unavailable",
-		Code:                 FailCodeModelTargetGroupUnavailable,
-		Message:              fmt.Sprintf("请求模型对应的供应商分组当前没有可用账号：%s", requestedModel),
-		RequestedModel:       requestedModel,
-		MatchedProviderCodes: matchedRoute.matchedProviderCodes,
+		Outcome:        NormalRouteOutcomeFailed,
+		StatusCode:     404,
+		Type:           "invalid_request_error",
+		Code:           FailCodeModelNotFound,
+		Message:        fmt.Sprintf("请求模型不存在或不可用：%s", requestedModel),
+		RequestedModel: requestedModel,
 	}, nil
+}
+
+// requestedModelInModelsDirectory 通过 runtime cache 的 models 单表目录判定
+// 请求模型是否对当前资源可见（Outcome matched = 存在对 systemAccountID 资源
+// 账户可见的 active 目录行，systemAccountID 即请求 owner）。入参的
+// ProviderCodes 是供应商收窄时代的过渡载体（解耦后恒空），仅随输入形状传递。
+func (s *NormalModelRouteService) requestedModelInModelsDirectory(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (bool, error) {
+	providerCodes := make([]string, 0, len(bindings))
+	seen := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if _, ok := seen[binding.ProviderCode]; ok {
+			continue
+		}
+		seen[binding.ProviderCode] = struct{}{}
+		providerCodes = append(providerCodes, binding.ProviderCode)
+	}
+	route, err := s.TargetGroups.RuntimeCache.ResolveCachedProviderModelRouteAsync(ctx, ProviderModelRouteInput{
+		Model:           requestedModel,
+		ProviderCodes:   providerCodes,
+		SystemAccountID: systemAccountID,
+		IncludeUnpriced: true,
+	})
+	if err != nil {
+		return false, err
+	}
+	// models 语义下目录只会返回 matched/missing；非 missing 一律按目录可见
+	// 处理（终态 503），不得把异常 outcome 降级成对客户端的 404。
+	return route.Outcome != ProviderModelRouteMissing, nil
 }
 
 // resolveMergeGatewayModelRoute implements the merge-mode branch of
@@ -260,8 +245,8 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 // B9: no single-provider shortcut. B11: no model_route_ambiguous, no single
 // provider narrowing (GroupBindings stay full), RouteSource=merged,
 // MatchedProviderCode empty. B12: duplicate accounts dedupe by binding
-// priority, the first group wins. B13: the catalog route is consulted only
-// to classify the all-fragments-empty failure.
+// priority, the first group wins. B13: the models directory is consulted only
+// to classify the all-fragments-empty failure (404/503 二分).
 func (s *NormalModelRouteService) resolveMergeGatewayModelRoute(ctx context.Context, input ResolveNormalGatewayModelRouteInput, apiKeyRecord *APIKeyRow, bindings []GroupBindingRow, requestedModel string) (NormalGatewayModelRouteResult, error) {
 	// Defensive only (the runtime cache SQL already loads enabled groups):
 	// merge consults enabled bindings exclusively.
@@ -331,42 +316,18 @@ func (s *NormalModelRouteService) resolveMergeGatewayModelRoute(ctx context.Cont
 }
 
 // resolveMergeEmptyPoolFailure classifies the all-fragments-empty merge
-// failure against the catalog route (B13): a matched provider inside the
-// bound set means the bound groups simply hold no usable account
-// (model_target_group_unavailable, 503); anything else means no bound
-// provider group corresponds to the requested model
-// (model_target_group_not_bound, 400). model_route_ambiguous is never
-// emitted in merge (B11).
+// failure against the models 单表目录 (B13, 设计 §6.1 终态二分)：目录存在对当
+// 前资源可见的 active 行（builtin/global 全可见、personal 属主匹配）→ 绑定分
+// 组只是无可用账号（model_target_group_unavailable，503）；目录无可见 active
+// 行 → 404 model_not_found。供应商目录的 model_target_group_not_bound 分类随
+// 供应商解耦退役，model_route_ambiguous 在 merge 中从不发出（B11）。
 func (s *NormalModelRouteService) resolveMergeEmptyPoolFailure(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
-	catalogRoute, err := s.resolveCatalogProviderRoute(ctx, bindings, requestedModel, systemAccountID)
-	if err != nil {
-		return NormalGatewayModelRouteResult{}, err
-	}
-	if catalogRoute.outcome == ProviderModelRouteMatched {
-		return NormalGatewayModelRouteResult{
-			Outcome:              NormalRouteOutcomeFailed,
-			StatusCode:           503,
-			Type:                 "service_unavailable",
-			Code:                 FailCodeModelTargetGroupUnavailable,
-			Message:              fmt.Sprintf("请求模型对应的供应商分组当前没有可用账号：%s", requestedModel),
-			RequestedModel:       requestedModel,
-			MatchedProviderCodes: catalogRoute.route.matchedProviderCodes,
-		}, nil
-	}
-	return NormalGatewayModelRouteResult{
-		Outcome:              NormalRouteOutcomeFailed,
-		StatusCode:           400,
-		Type:                 "invalid_request_error",
-		Code:                 FailCodeModelTargetGroupNotBound,
-		Message:              fmt.Sprintf("当前 API Key 未绑定请求模型对应的供应商分组：%s", requestedModel),
-		RequestedModel:       requestedModel,
-		MatchedProviderCodes: catalogRoute.matchedProviderCodes,
-	}, nil
+	return s.resolveModelsDirectoryTerminalFailure(ctx, bindings, requestedModel, systemAccountID)
 }
 
-// NormalGatewayModelTargetPriority mirrors normalGatewayModelTargetPriority:
-// direct model matches outrank mapping matches, which outrank a bare catalog
-// provider match; anything else is -Infinity.
+// NormalGatewayModelTargetPriority 过渡保留（导出符号，cmd 与测试仍引用）：
+// catalogProviderMatched 维度随供应商目录拆除后不再被路由调用链消费，direct >
+// mapping 的序仍是候选排序的既有语义。
 func NormalGatewayModelTargetPriority(modelFilter GatewayModelAccountFilterResult, catalogProviderMatched bool) float64 {
 	if modelFilter.DirectMatchedCount > 0 {
 		return 2
@@ -400,56 +361,4 @@ func activeGatewayAPIKeyGroupBindings(apiKeyRecord *APIKeyRow) []GroupBindingRow
 		bindings = append(bindings, binding)
 	}
 	return bindings
-}
-
-// resolveCatalogProviderRoute mirrors resolveCatalogProviderRoute: a matched
-// provider outside the bound provider codes downgrades to missing.
-func (s *NormalModelRouteService) resolveCatalogProviderRoute(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (catalogRouteResult, error) {
-	providerCodeSet := make(map[string]struct{}, len(bindings))
-	providerCodes := make([]string, 0, len(bindings))
-	for _, binding := range bindings {
-		if _, ok := providerCodeSet[binding.ProviderCode]; ok {
-			continue
-		}
-		providerCodeSet[binding.ProviderCode] = struct{}{}
-		providerCodes = append(providerCodes, binding.ProviderCode)
-	}
-	route, err := s.TargetGroups.RuntimeCache.ResolveCachedProviderModelRouteAsync(ctx, ProviderModelRouteInput{
-		Model:           requestedModel,
-		ProviderCodes:   providerCodes,
-		SystemAccountID: systemAccountID,
-		IncludeUnpriced: true,
-	})
-	if err != nil {
-		return catalogRouteResult{}, err
-	}
-	if route.Outcome != ProviderModelRouteMatched {
-		return catalogRouteResult{
-			outcome:              route.Outcome,
-			matchedProviderCodes: route.MatchedProviderCodes,
-		}, nil
-	}
-
-	providerCode := route.ProviderCode
-	bound := false
-	for _, binding := range bindings {
-		if binding.ProviderCode == providerCode {
-			bound = true
-			break
-		}
-	}
-	if !bound {
-		return catalogRouteResult{
-			outcome:              ProviderModelRouteMissing,
-			matchedProviderCodes: route.MatchedProviderCodes,
-		}, nil
-	}
-
-	return catalogRouteResult{
-		outcome: ProviderModelRouteMatched,
-		route: catalogProviderRoute{
-			providerCode:         providerCode,
-			matchedProviderCodes: route.MatchedProviderCodes,
-		},
-	}, nil
 }

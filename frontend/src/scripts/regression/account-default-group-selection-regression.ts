@@ -51,6 +51,27 @@ assert.equal(
   '缓存缺失且没有可用候选时必须返回 undefined'
 )
 
+const deepseekFirstGroup = group({ id: 'deepseek-first', name: 'DeepSeek 首个分组', providerCode: 'deepseek' })
+assert.deepEqual(
+  resolveAccountDefaultGroupSelection({
+    groups: [deepseekFirstGroup],
+    providerCode: 'deepseek'
+  }),
+  { id: deepseekFirstGroup.id, name: deepseekFirstGroup.name },
+  '无默认组且无缓存时必须预选首个可管理分组（创建向导默认选中）'
+)
+
+const deepseekCachedDefault = { id: 'deepseek-cached', name: 'DeepSeek 缓存默认分组' }
+assert.deepEqual(
+  resolveAccountDefaultGroupSelection({
+    groups: [deepseekFirstGroup],
+    providerCode: 'deepseek',
+    cachedDefaultGroup: deepseekCachedDefault
+  }),
+  deepseekCachedDefault,
+  '缓存默认组必须仍优先于首个可管理分组兜底'
+)
+
 const formSource = readFileSync(
   fileURLToPath(new URL('../../views/accounts/useAccountEditForm.ts', import.meta.url)),
   'utf8'
@@ -99,7 +120,7 @@ assert.match(
   '作用域切换仍必须清空旧分组选项内容'
 )
 
-console.log('账户默认分组选择回归通过：Anthropic 切换后的空选项窗口会回填当前作用域缓存默认组，已加载手选组与默认组保持既定优先级，旧作用域选项仍同步清空')
+console.log('账户默认分组选择回归通过：Anthropic 切换后的空选项窗口会回填当前作用域缓存默认组，已加载手选组与默认组保持既定优先级，无默认组与缓存时预选首个可管理分组，旧作用域选项仍同步清空')
 
 function group(overrides: Partial<GroupOptionSummary> & Pick<GroupOptionSummary, 'id' | 'name'>): GroupOptionSummary {
   return {

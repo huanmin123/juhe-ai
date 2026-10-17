@@ -47,9 +47,9 @@ func capabilityDomainPrelude(t *testing.T, db *sql.DB, kind string) {
 		t.Fatalf("seed legacy business DDL: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO accounts
-      (id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-       name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
-      VALUES ('acct-legacy', 'sys-1', 'gpt', 'profile-1', 'openai', 'v1', 'legacy', 'api_key', 'enc', 'm', 'chat_json',
+      (id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
+       name, type, credentials_encrypted, health_check_connection_id, health_check_model, health_check_endpoint_mode, created_at, updated_at)
+      VALUES ('acct-legacy', 'sys-1', 'gpt', 'gpt', 'openai', 'v1', 'legacy', 'api_key', 'enc', 'conn-legacy', 'm', 'chat_json',
        '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`); err != nil {
 		t.Fatalf("seed legacy account: %v", err)
 	}
@@ -76,9 +76,9 @@ func TestSQLiteCapabilityDomainFreshDDL(t *testing.T) {
 		t.Fatalf("disable foreign_keys: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO accounts
-		(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		 name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
-		VALUES ('acct-probe', 'sys-1', 'gpt', 'profile-1', 'openai', 'v1', 'probe', 'api_key', 'enc', 'm', 'chat_json',
+		(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
+		 name, type, credentials_encrypted, health_check_connection_id, health_check_model, health_check_endpoint_mode, created_at, updated_at)
+		VALUES ('acct-probe', 'sys-1', 'gpt', 'gpt', 'openai', 'v1', 'probe', 'api_key', 'enc', 'conn-probe', 'm', 'chat_json',
 		 '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`); err != nil {
 		t.Fatalf("seed probe account: %v", err)
 	}

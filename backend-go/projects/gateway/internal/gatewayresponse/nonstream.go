@@ -769,7 +769,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		requestPath := input.Req.PathAndQuery()
 		switch {
 		case gatewaymedia.IsSpeechPath(requestPath):
-			if mediaSpeechTransform.active && mediaSpeechTransform.providerKey == "volcengine" {
+			streamModel := mediaSpeechTransform.active &&
+				gatewaymedia.IsVolcengineTTSStreamModel(mediaSpeechTransform.request.Model)
+			if mediaSpeechTransform.active && mediaSpeechTransform.providerKey == "volcengine" && !streamModel {
 				// volcengine TTS（契约 §9.2/§2.8，2026-10-17 维度修正批）：
 				// 官方计费维度是生成原始时长（响应顶层 duration 秒，精确
 				// 至秒），字符不是计费维度——落 audio_input_seconds 秒计
@@ -782,6 +784,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				}
 				break
 			}
+			// 火山 2.0 流式面（seed-tts-2.0，桥接设计 V1a）落字符口径：
+			// 官方计费维度为字符（3 元/万字符），沿下方 TtsInputChars 既有
+			// 请求自算路径——与 1.0 同步面的时长口径按 model 分流。
 			speechBody := input.Req.ParsedJSONObjectBody()
 			if speechBody == nil && input.Req.Body != nil && len(input.Req.Body.RawBody) > 0 {
 				var parsed map[string]any

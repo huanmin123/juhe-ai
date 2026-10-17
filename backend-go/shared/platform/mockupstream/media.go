@@ -56,6 +56,7 @@ var mediaEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/api/paas/v4/audio/transcriptions"}: true,
 	{http.MethodPost, "/api/paas/v4/audio/translations"}:   true,
 	{http.MethodPost, "/api/v3/tts/create"}:                true,
+	{http.MethodPost, "/api/v3/tts/unidirectional"}:        true,
 	{http.MethodPost, "/api/v3/auc/bigmodel/submit"}:       true,
 	{http.MethodPost, "/api/v3/auc/bigmodel/query"}:        true,
 	{http.MethodPost, "/v1/images/generations"}:            true,
@@ -195,6 +196,12 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 	// 火山音频生成 TTS（契约 §9.2 迁移批）：/api/v3/tts/create 报文面（audio base64 + duration）。
 	if r.URL.Path == "/api/v3/tts/create" {
 		m.serveVolcengineTTS(w, idx, scenario)
+		return
+	}
+	// 火山语音合成 2.0 流式面（桥接设计 V1a）：/api/v3/tts/unidirectional
+	// NDJSON 分块（audio base64 多行 + 错误行形态）。
+	if r.URL.Path == "/api/v3/tts/unidirectional" {
+		m.serveVolcengineTTSStream(w, idx, scenario)
 		return
 	}
 	// images 创建面（能力域拆分 T5 验收；url 形态 OpenAI images 响应）。

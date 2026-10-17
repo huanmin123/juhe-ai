@@ -81,6 +81,11 @@ func (volcengineSpeechAdapter) Provider() string { return "volcengine" }
 //   - speed 超声明区间 0.2–3.0 → 拒绝（公共区间 0.25–4.0 与声明区间的
 //     差集不得静默裁剪）。
 func (a volcengineSpeechAdapter) BuildRequest(ir SpeechRequest) (string, []byte, error) {
+	if IsVolcengineTTSStreamModel(ir.Model) {
+		// 2.0 流式面分支（火山流式语音桥接设计 V1a）：词表/请求体/路径均
+		// 与 1.0 同步面不同构，先行分派（在 1.0 词表校验之前）。
+		return buildVolcengineTTSStreamRequest(ir)
+	}
 	if ir.Model == "" {
 		return "", nil, fmt.Errorf("语音合成请求缺少 model")
 	}
@@ -149,6 +154,11 @@ type volcengineSpeechResponseBody struct {
 // 按 mp3 语义）。audio 缺失/解码失败 → 上游错误上抛（同步面无任务受理语
 // 义，不猜测音频可用性）。
 func (a volcengineSpeechAdapter) TransformResponse(upstreamBody []byte, request SpeechRequest) ([]byte, string, error) {
+	if IsVolcengineTTSStreamModel(request.Model) {
+		// 2.0 流式面分支：NDJSON 分块拼接（同步面的单 JSON base64 解析
+		// 不适用于流式载荷）。
+		return transformVolcengineTTSStreamResponse(upstreamBody, request)
+	}
 	var decoded volcengineSpeechResponseBody
 	if err := json.Unmarshal(upstreamBody, &decoded); err != nil {
 		return nil, "", fmt.Errorf("火山 TTS 响应不是有效 JSON: %w", err)

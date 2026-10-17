@@ -276,6 +276,17 @@ func (p *billingPolicy) buildCostBreakdown(pricing *Pricing, input CostInput) *C
 		// output tokens unless the caller separates them.
 		billable.OutputImageTokens = input.OutputTokens
 	}
+	if pricing.Mode == "image_generation" &&
+		rates.OutputUsdPerImage != nil &&
+		rates.OutputUsdPer1M == nil && rates.ImageOutputUsdPer1M == nil &&
+		input.OutputTokens != nil {
+		// 按张计价策略（seedream/image-01/cogview/grok-imagine-image 族，目录
+		// 槽位 OutputUsdPerImage）：上游 usage.output_tokens 是图像内部 token
+		// 核算（生成尺寸折算），行上没有独立的文本输出 token 价——置零避免
+		// hasUnpricedUsage 以"未定价输出 token"拒绝整单计费。2026-10-17 实弹
+		// 取证：volcengine seedream flash output_tokens=4096 使按张计费落 0 成本。
+		billable.OutputTokens = nil
+	}
 	return buildTokenCostBreakdown(pricing, billable, rates, tokenBillingOptions{
 		cacheReadIncludedInInput: p.cacheReadIncludedInInput,
 		cacheReadFallbackToInput: p.cacheReadFallbackToInput,

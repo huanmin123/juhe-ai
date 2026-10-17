@@ -1,26 +1,24 @@
 package accounts
 
-// Provider 模型目录校验域：补齐此前登记「依赖 provider model catalog」的
-// 两处 M09 deferral（batch.go prepareBatchUpdates 注释、import.go
-// validateImportModelCatalogFields 注释所指的 model-validation companion
-// slice 的目录段）。对照归档实现：
+// Provider 模型目录校验域：modelMappings 来源/目标模型目录校验，对照归档实
+// 现 storage/account-model-normalization.ts
+// (normalizeAccountModelMappingsForProvider(Async) 非 hybrid 分支的
+// upstreamModelPoolForAccount / accountEndpointModelPoolForAccount 段，含
+// isProtocolProviderCode 守卫)。hybrid 分支的矩阵与协议池校验见
+// model_mapping_protocol_matrix.go（assertAccountModelMappingsInProvider
+// Catalog 入口分发）。
 //
-//   - gpt 请求覆盖目录断言：
-//     modules/accounts/account-gpt-request-overrides.validation.ts
-//     (assertAccountGptRequestOverridesSupportedAsync +
-//     assertAccountGptRequestOverridesSupportedByCatalog + the provider
-//     wire-mapping whitelist)。
-//   - modelMappings 来源/目标模型目录校验：
-//     storage/account-model-normalization.ts
-//     (normalizeAccountModelMappingsForProvider(Async) 非 hybrid 分支的
-//     upstreamModelPoolForAccount / accountEndpointModelPoolForAccount 段，
-//     含 isProtocolProviderCode 守卫)。hybrid 分支的矩阵与协议池校验见
-//     model_mapping_protocol_matrix.go（assertAccountModelMappingsInProvider
-//     Catalog 入口分发）。
+// gpt 请求覆盖（service_tier_override / reasoning_effort_override）的目录
+// 断言层（归档 account-gpt-request-overrides.validation.ts）已于 2026-10-18
+// 简化定案删除：值域改为协议族全集（shared/platform requestoverride），在
+// 写入面凭据归一化（credentials_normalize.go
+// normalizeGPTAccountRequestOverrides）执行「token 形状 + 协议族值域」，
+// 最终上游模型是否支持该档位由运行时降级/跳过，模型目录不再参与写入面
+// 判定；Gemini Interactions-only 守卫同步收拢到同一处。
 //
 // 目录读取通过窄接口 AccountModelCatalogReader 注入（组合根把
 // internal/providers Store.ListProviderModelsForRequest 适配上来），nil 端口
-// 保持断言 no-op（与 authorized/testEffects 等既有端口的 self-contained
+// 保持目录段断言 no-op（与 authorized/testEffects 等既有端口的 self-contained
 // 约定一致，既有测试与隔离部署不受影响）。
 
 import (
@@ -31,8 +29,8 @@ import (
 )
 
 // AccountModelCatalogFact mirrors the catalog row fields the accounts
-// validation family consumes: GptAccountOverrideModelFact plus the protocol
-// columns of the mapping pool checks (supportedApiProtocols).
+// validation family consumes: the protocol columns of the mapping pool checks
+// (supportedApiProtocols) plus the capability lists carried by the same row.
 type AccountModelCatalogFact struct {
 	Model                     string
 	SupportedAPIProtocols     []string
@@ -43,177 +41,18 @@ type AccountModelCatalogFact struct {
 // AccountModelCatalogReader ports listProviderModelCatalog(Async)
 // (model-catalog.service.ts) for the accounts validation family.
 // includeUnpriced=false keeps the priced-only default (the mapping pool call
-// sites omit the flag); the gpt request-override call sites pass true
-// (归档 includeUnpriced: true). Inactive rows stay filtered (Node never lifts
+// sites omit the flag). Inactive rows stay filtered (Node never lifts
 // the availability filter on these paths).
 type AccountModelCatalogReader interface {
 	ListAccountModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]AccountModelCatalogFact, error)
 }
 
 // SetModelCatalogReader wires the catalog port (composition-root handover).
-// A nil reader keeps both catalog assertions no-ops so the slice stays
-// self-contained (store-level tests, isolated deployments).
+// A nil reader keeps the catalog segments of the mapping/supported-model
+// assertions no-ops so the slice stays self-contained (store-level tests,
+// isolated deployments).
 func (s *Store) SetModelCatalogReader(reader AccountModelCatalogReader) {
 	s.modelCatalog = reader
-}
-
-// ---- gpt request overrides (account-gpt-request-overrides.validation.ts) ----
-
-// accountGptRequestOverrides mirrors GptAccountRequestOverrides.
-type accountGptRequestOverrides struct {
-	serviceTier     string
-	reasoningEffort string
-}
-
-// readAccountGptRequestOverrides mirrors readGptAccountRequestOverrides
-// (providers/drivers/gpt/request-overrides.ts): the trimmed credential tokens
-// behind service_tier_override / reasoning_effort_override.
-func readAccountGptRequestOverrides(credentials Credentials) accountGptRequestOverrides {
-	return accountGptRequestOverrides{
-		serviceTier:     credentialOverrideTokenText(credentials["service_tier_override"]),
-		reasoningEffort: credentialOverrideTokenText(credentials["reasoning_effort_override"]),
-	}
-}
-
-func credentialOverrideTokenText(value any) string {
-	text, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(text)
-}
-
-// accountGptRequestOverridesNeedModelCatalog mirrors the same-named helper:
-// whether the credential record carries any request override at all.
-func accountGptRequestOverridesNeedModelCatalog(credentials Credentials) bool {
-	overrides := readAccountGptRequestOverrides(credentials)
-	return overrides.serviceTier != "" || overrides.reasoningEffort != ""
-}
-
-// accountGptRequestOverridesInput mirrors the assert input object.
-type accountGptRequestOverridesInput struct {
-	ProviderCode    string
-	AccountType     string
-	Credentials     Credentials
-	SupportedModels []string
-	SystemAccountID string
-}
-
-// assertAccountGptRequestOverridesSupported mirrors
-// assertAccountGptRequestOverridesSupportedAsync: credentials without any
-// override skip the catalog round-trip (归档 readGptAccountRequestOverrides
-// 早退), a nil port keeps the assertion a no-op.
-func (s *Store) assertAccountGptRequestOverridesSupported(ctx context.Context, input accountGptRequestOverridesInput) error {
-	overrides := readAccountGptRequestOverrides(input.Credentials)
-	if overrides.serviceTier == "" && overrides.reasoningEffort == "" {
-		return nil
-	}
-	if s.modelCatalog == nil {
-		return nil
-	}
-	catalog, err := s.modelCatalog.ListAccountModelCatalog(ctx, input.ProviderCode, input.SystemAccountID, true)
-	if err != nil {
-		return err
-	}
-	return assertAccountGptRequestOverridesSupportedByCatalog(accountGptRequestOverridesCatalogInput{
-		ProviderCode:           input.ProviderCode,
-		AccountType:            input.AccountType,
-		Overrides:              overrides,
-		SupportedModels:        input.SupportedModels,
-		Catalog:                catalog,
-		SupportedEndpointModes: credentialEndpointModes(input.Credentials),
-	})
-}
-
-// accountGptRequestOverridesCatalogInput mirrors the
-// assertAccountGptRequestOverridesSupportedByCatalog input object.
-type accountGptRequestOverridesCatalogInput struct {
-	ProviderCode           string
-	AccountType            string
-	Overrides              accountGptRequestOverrides
-	SupportedModels        []string
-	Catalog                []AccountModelCatalogFact
-	SupportedEndpointModes []string
-}
-
-// assertAccountGptRequestOverridesSupportedByCatalog mirrors the same-named
-// function: the provider wire-mapping whitelist, the Interactions-only Gemini
-// guard, the required supported-model set and the per-model service-tier /
-// reasoning-effort capability checks (identical error copy).
-func assertAccountGptRequestOverridesSupportedByCatalog(input accountGptRequestOverridesCatalogInput) error {
-	if err := assertProviderSupportsAccountRequestOverrides(input.ProviderCode); err != nil {
-		return err
-	}
-	// 归档 gemini 分支只在实际读到 endpoint modes 数组时启用；空/缺失数组
-	// (undefined) 不触发该守卫。
-	if input.ProviderCode == geminiProviderCode && input.SupportedEndpointModes != nil &&
-		!containsString(input.SupportedEndpointModes, "generate_content_json") &&
-		!containsString(input.SupportedEndpointModes, "generate_content_sse") {
-		return &ValidationError{Message: "Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖"}
-	}
-	supportedModels := uniqueTextListInOrder(input.SupportedModels)
-	if len(supportedModels) == 0 {
-		return &ValidationError{Message: "请求覆盖要求账户至少配置一个支持模型"}
-	}
-	catalogByModel := map[string]AccountModelCatalogFact{}
-	for _, item := range input.Catalog {
-		catalogByModel[strings.TrimSpace(item.Model)] = item
-	}
-	modelItems := []AccountModelCatalogFact{}
-	for _, model := range supportedModels {
-		if item, ok := catalogByModel[model]; ok {
-			modelItems = append(modelItems, item)
-		}
-	}
-	if input.Overrides.serviceTier != "" {
-		requiredTier := input.Overrides.serviceTier
-		if requiredTier == "default" {
-			requiredTier = ""
-		}
-		supported := false
-		for _, item := range modelItems {
-			if requiredTier != "" {
-				if containsString(item.SupportedServiceTiers, requiredTier) {
-					supported = true
-					break
-				}
-			} else if len(item.SupportedServiceTiers) > 0 {
-				supported = true
-				break
-			}
-		}
-		if !supported {
-			if requiredTier != "" {
-				return &ValidationError{Message: "所选支持模型中没有模型支持服务等级 " + requiredTier}
-			}
-			return &ValidationError{Message: "所选支持模型中没有模型声明服务等级覆盖"}
-		}
-	}
-	if input.Overrides.reasoningEffort != "" {
-		supported := false
-		for _, item := range modelItems {
-			if containsString(item.SupportedReasoningEfforts, input.Overrides.reasoningEffort) {
-				supported = true
-				break
-			}
-		}
-		if !supported {
-			return &ValidationError{Message: "所选支持模型中没有模型支持思考级别 " + input.Overrides.reasoningEffort}
-		}
-	}
-	return nil
-}
-
-// assertProviderSupportsAccountRequestOverrides mirrors the same-named
-// helper: the raw provider code must be one of the four wire-mapped codes
-// (Node checks the un-normalized value against the literal set).
-func assertProviderSupportsAccountRequestOverrides(providerCode string) error {
-	switch providerCode {
-	case gptVendorCode, openAICompatibleProviderCodeConstant, anthropicProviderCode, geminiProviderCode:
-		return nil
-	default:
-		return &ValidationError{Message: "供应商 " + providerCode + " 没有可确认的账户请求覆盖 wire 映射"}
-	}
 }
 
 // credentialEndpointModes mirrors endpointModesFromCredentials: the
@@ -244,22 +83,6 @@ func credentialEndpointModes(credentials Credentials) []string {
 	default:
 		return nil
 	}
-}
-
-// uniqueTextListInOrder mirrors uniqueTextList: trimmed, blanks dropped,
-// duplicates dropped, first-occurrence order preserved.
-func uniqueTextListInOrder(values []string) []string {
-	output := []string{}
-	seen := map[string]bool{}
-	for _, value := range values {
-		normalized := strings.TrimSpace(value)
-		if normalized == "" || seen[normalized] {
-			continue
-		}
-		seen[normalized] = true
-		output = append(output, normalized)
-	}
-	return output
 }
 
 // ---- model mapping catalog checks (account-model-normalization.ts) ----

@@ -47,6 +47,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`,
 		`CREATE TABLE media_jobs (
 			id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, account_id TEXT NOT NULL,
 			provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
@@ -327,5 +328,242 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	_ = postResponse.Body.Close()
 	if postResponse.StatusCode != http.StatusNotFound && postResponse.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d, want 404/405（只读）", postResponse.StatusCode)
+	}
+}
+
+func TestMediaJobsDetailRequiresAdmin(t *testing.T) {
+	env := newTestEnv(t)
+	// 未登录：401。
+	code, _ := env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_detail")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("匿名 status = %d, want 401", code)
+	}
+	// 普通用户：403（requireAdmin，详情与列表同门禁）。
+	env.login(t, "plainuser", "pass-123456", "user")
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_detail")
+	if code != http.StatusForbidden {
+		t.Fatalf("普通用户 status = %d %v, want 403", code, payload)
+	}
+}
+
+func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
+	env := newTestEnv(t)
+	seconds := 8.0
+	expires := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	env.seedJob(t, gatewaymedia.MediaJobRecord{
+		ID: "video_detail_completed", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_detail", AccountID: "acc_detail",
+		ProviderCode: "openai", UpstreamJobID: "up_detail", Status: gatewaymedia.JobStatusQueued,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
+			Model: "sora-2", Prompt: "全量提示词", Seconds: &seconds, Size: "1280x720", N: 1,
+			ProviderOptionsApplied: []string{"resolution"},
+		},
+		ParamsApplied: []string{"seconds", "size"}, ParamsIgnored: []string{"seed"},
+	})
+	artifact := gatewaymedia.MediaJobArtifact{ContentURL: "https://upstream.example/content.mp4", ExpiresAt: &expires}
+	usageSeconds := 8.0
+	if _, err := env.repo.UpdateTerminal(context.Background(), "video_detail_completed", gatewaymedia.JobStatusCompleted,
+		nil, artifact, gatewaymedia.MediaJobUsage{OutputVideoSeconds: &usageSeconds, Raw: map[string]any{"native_seconds": 8}}, 0.8); err != nil {
+		t.Fatalf("update terminal: %v", err)
+	}
+	env.seedJob(t, gatewaymedia.MediaJobRecord{
+		ID: "video_detail_failed", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_detail", AccountID: "acc_detail",
+		ProviderCode: "openai", UpstreamJobID: "up_detail_failed", Status: gatewaymedia.JobStatusQueued,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "失败任务"},
+	})
+	if _, err := env.repo.UpdateTerminal(context.Background(), "video_detail_failed", gatewaymedia.JobStatusFailed,
+		&gatewaymedia.MediaJobError{Code: "upstream_5xx", Message: "上游失败"}, gatewaymedia.MediaJobArtifact{},
+		gatewaymedia.MediaJobUsage{}, 0); err != nil {
+		t.Fatalf("update terminal failed row: %v", err)
+	}
+	env.seedJob(t, gatewaymedia.MediaJobRecord{
+		ID: "audiojob_detail_transcription", Kind: gatewaymedia.JobKindAudioTranscription, APIKeyID: "key_detail", AccountID: "acc_detail",
+		ProviderCode: "qwen", UpstreamJobID: "up_detail_transcription", Status: gatewaymedia.JobStatusQueued,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "paraformer-v2", Language: "zh"},
+	})
+
+	env.login(t, "adminuser", "pass-123456", "admin")
+	// 未命中：404 媒体任务不存在。
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_missing")
+	if code != http.StatusNotFound {
+		t.Fatalf("missing status = %d %v, want 404", code, payload)
+	}
+	// completed 行：全量细节（prompt 全文、快照参数、产物定位、用量、参数回显、成本）。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_detail_completed")
+	if code != http.StatusOK {
+		t.Fatalf("detail status = %d %v", code, payload)
+	}
+	detail := dataMap(t, payload)
+	if detail["prompt"] != "全量提示词" || detail["model"] != "sora-2" || detail["n"] != float64(1) || detail["size"] != "1280x720" {
+		t.Fatalf("detail 请求参数错误: %#v", detail)
+	}
+	if detail["providerJobId"] != "up_detail" || detail["apiKeyId"] != "key_detail" || detail["accountId"] != "acc_detail" || detail["costUsd"] != 0.8 {
+		t.Fatalf("detail 归属/成本错误: %#v", detail)
+	}
+	options, _ := detail["providerOptionsApplied"].([]any)
+	if len(options) != 1 || options[0] != "resolution" {
+		t.Fatalf("providerOptionsApplied 错误: %#v", detail["providerOptionsApplied"])
+	}
+	artifactPayload, _ := detail["artifact"].(map[string]any)
+	if artifactPayload == nil || artifactPayload["contentUrl"] != "https://upstream.example/content.mp4" {
+		t.Fatalf("artifact 定位缺失: %#v", detail["artifact"])
+	}
+	if artifactPayload["expiresAt"] != "2026-10-17T12:00:00.000Z" {
+		t.Fatalf("artifact expiresAt = %v", artifactPayload["expiresAt"])
+	}
+	usagePayload, _ := detail["usage"].(map[string]any)
+	if usagePayload == nil || usagePayload["outputVideoSeconds"] != float64(8) {
+		t.Fatalf("usage 缺失: %#v", detail["usage"])
+	}
+	rawUsage, _ := usagePayload["raw"].(map[string]any)
+	if rawUsage == nil || rawUsage["native_seconds"] != float64(8) {
+		t.Fatalf("usage raw 缺失: %#v", usagePayload)
+	}
+	applied, _ := detail["paramsApplied"].([]any)
+	ignored, _ := detail["paramsIgnored"].([]any)
+	if len(applied) != 2 || len(ignored) != 1 || ignored[0] != "seed" {
+		t.Fatalf("参数回显错误: applied=%v ignored=%v", detail["paramsApplied"], detail["paramsIgnored"])
+	}
+	if _, hasError := detail["error"]; hasError {
+		t.Fatalf("completed 行不应携带 error: %#v", detail)
+	}
+	// failed 行：错误面在场、无产物定位与用量。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/video_detail_failed")
+	if code != http.StatusOK {
+		t.Fatalf("failed detail status = %d", code)
+	}
+	detail = dataMap(t, payload)
+	failureError, _ := detail["error"].(map[string]any)
+	if failureError == nil || failureError["code"] != "upstream_5xx" || failureError["message"] != "上游失败" {
+		t.Fatalf("failed 行 error 错误: %#v", detail["error"])
+	}
+	if _, hasArtifact := detail["artifact"]; hasArtifact {
+		t.Fatalf("failed 行不应携带 artifact: %#v", detail)
+	}
+	if _, hasUsage := detail["usage"]; hasUsage {
+		t.Fatalf("failed 行不应携带 usage: %#v", detail)
+	}
+	// 转写行：language 回显、空 prompt 与缺省参数省略。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs/audiojob_detail_transcription")
+	if code != http.StatusOK {
+		t.Fatalf("transcription detail status = %d", code)
+	}
+	detail = dataMap(t, payload)
+	if detail["language"] != "zh" || detail["model"] != "paraformer-v2" || detail["kind"] != "audio_transcription" {
+		t.Fatalf("transcription 行形状错误: %#v", detail)
+	}
+	if _, hasPrompt := detail["prompt"]; hasPrompt {
+		t.Fatalf("空 prompt 应省略: %#v", detail)
+	}
+	if _, hasN := detail["n"]; hasN {
+		t.Fatalf("缺省 n 应省略: %#v", detail)
+	}
+	if _, hasSeconds := detail["seconds"]; hasSeconds {
+		t.Fatalf("缺省 seconds 应省略: %#v", detail)
+	}
+}
+
+func TestMyMediaJobsScopesToCaller(t *testing.T) {
+	env := newTestEnv(t)
+	// 匿名：401（先于任何登录，jar 为空才成立）。
+	code, _ := env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("匿名 status = %d, want 401", code)
+	}
+	code, _ = env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs/video_owner_a")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("匿名详情 status = %d, want 401", code)
+	}
+	env.login(t, "adminuser", "pass-123456", "admin")
+	userAID := env.login(t, "plainusera", "pass-123456", "user")
+	userBID := env.login(t, "plainuserb", "pass-123456", "user")
+	for _, key := range []struct{ id, owner string }{
+		{id: "key_a1", owner: userAID},
+		{id: "key_b1", owner: userBID},
+	} {
+		if _, err := env.db.Exec(`INSERT INTO api_keys (id, system_account_id) VALUES (?, ?)`, key.id, key.owner); err != nil {
+			t.Fatalf("seed api key: %v", err)
+		}
+	}
+	env.seedJob(t, gatewaymedia.MediaJobRecord{
+		ID: "video_owner_a", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", AccountID: "acc_a",
+		ProviderCode: "openai", UpstreamJobID: "up_a", Status: gatewaymedia.JobStatusQueued,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 A 任务一"},
+	})
+	env.seedJob(t, gatewaymedia.MediaJobRecord{
+		ID: "video_owner_a2", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", AccountID: "acc_a",
+		ProviderCode: "openai", UpstreamJobID: "up_a2", Status: gatewaymedia.JobStatusQueued,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 A 任务二"},
+	})
+	env.seedJob(t, gatewaymedia.MediaJobRecord{
+		ID: "video_owner_b", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_b1", AccountID: "acc_b",
+		ProviderCode: "openai", UpstreamJobID: "up_b", Status: gatewaymedia.JobStatusQueued,
+		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 B 任务"},
+	})
+
+	// 用户 A：列表只见自己 2 行，行不带 providerJobId。
+	env.login(t, "plainusera", "pass-123456", "user")
+	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs")
+	if code != http.StatusOK {
+		t.Fatalf("userA list status = %d %v", code, payload)
+	}
+	data := dataMap(t, payload)
+	if data["total"] != float64(2) {
+		t.Fatalf("userA total = %v, want 2", data["total"])
+	}
+	rows, _ := data["rows"].([]any)
+	for _, row := range rows {
+		object, _ := row.(map[string]any)
+		if object["apiKeyId"] != "key_a1" {
+			t.Fatalf("userA 行跨属主: %#v", object)
+		}
+		if _, has := object["providerJobId"]; has {
+			t.Fatalf("userA 行不应携带 providerJobId: %#v", object)
+		}
+	}
+	// 用户 A：自己的详情可见且省略 providerJobId；他人详情 404；他人 Key 过滤被归属收敛为 0。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs/video_owner_a")
+	if code != http.StatusOK {
+		t.Fatalf("userA detail status = %d %v", code, payload)
+	}
+	detail := dataMap(t, payload)
+	if _, has := detail["providerJobId"]; has {
+		t.Fatalf("userA 详情不应携带 providerJobId: %#v", detail)
+	}
+	if detail["accountId"] != "acc_a" {
+		t.Fatalf("userA 详情缺命中账户: %#v", detail)
+	}
+	code, _ = env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs/video_owner_b")
+	if code != http.StatusNotFound {
+		t.Fatalf("跨属主详情 status = %d, want 404", code)
+	}
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs?api_key_id=key_b1")
+	if code != http.StatusOK || dataMap(t, payload)["total"] != float64(0) {
+		t.Fatalf("跨属主 api_key_id 过滤未收敛: %d %v", code, payload)
+	}
+
+	// 管理员在 my 面同样只看自己（未持有任何 Key → 0 行，不因角色放宽）。
+	env.login(t, "adminuser", "pass-123456", "admin")
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/my-media-jobs")
+	if code != http.StatusOK || dataMap(t, payload)["total"] != float64(0) {
+		t.Fatalf("admin my 面 status = %d %v, want 200/total 0", code, payload)
+	}
+
+	// 管理面列表：无筛选全量 3 行；按属主筛选收敛。
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs")
+	if code != http.StatusOK || dataMap(t, payload)["total"] != float64(3) {
+		t.Fatalf("admin 全量 status = %d %v, want 200/total 3", code, payload)
+	}
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs?system_account_id="+userBID)
+	if code != http.StatusOK {
+		t.Fatalf("admin owner filter status = %d", code)
+	}
+	data = dataMap(t, payload)
+	rows, _ = data["rows"].([]any)
+	if data["total"] != float64(1) || len(rows) != 1 || rows[0].(map[string]any)["id"] != "video_owner_b" {
+		t.Fatalf("admin owner filter 结果错误: total=%v rows=%v", data["total"], rows)
+	}
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/media-jobs?system_account_id="+userAID)
+	if code != http.StatusOK || dataMap(t, payload)["total"] != float64(2) {
+		t.Fatalf("admin owner filter userA status = %d %v", code, payload)
 	}
 }

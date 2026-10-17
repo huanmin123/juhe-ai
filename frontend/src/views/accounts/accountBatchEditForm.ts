@@ -150,11 +150,11 @@ export function accountBatchEditContextFieldsForForm(
   providerCode?: string
 ): AccountBatchEditContextField[] {
   const fields = new Set<AccountBatchEditContextField>()
+  // 服务等级 / 思考级别覆盖（2026-10-18 简化定案）值域为协议族全集，不再依赖
+  // 已选模型；只有检查模型与模型别名仍需要读取现有支持模型。
   if (!form.enabled.supportedModels && (
     form.enabled.healthCheckModel
     || form.enabled.modelMappings
-    || form.enabled.serviceTierOverride
-    || form.enabled.reasoningEffortOverride
   )) {
     fields.add('supportedModels')
   }

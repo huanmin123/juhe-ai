@@ -87,11 +87,13 @@ func TestW13g6CredentialsPatchParsers(t *testing.T) {
 	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "  "}); ok {
 		t.Fatal("openai blank tier must fail")
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "ultra"}); ok {
-		t.Fatal("openai unknown tier must fail")
+	// 覆盖字段自 2026-10-18 简化定案起降为「非空字符串（trim 后）」放行：
+	// 任意非枚举值也在 parser 层放行，值域交由账户写入面判定。
+	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "ultra"}); !ok {
+		t.Fatal("openai non-enum tier must pass (value domain deferred)")
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "mega"}); ok {
-		t.Fatal("openai unknown effort must fail")
+	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "mega"}); !ok {
+		t.Fatal("openai non-enum effort must pass (value domain deferred)")
 	}
 	if _, ok := parseOpenAICredentialsPatch(map[string]any{"unknown": 1}); ok {
 		t.Fatal("openai unknown key must fail")

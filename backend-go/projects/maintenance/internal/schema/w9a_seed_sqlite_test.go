@@ -150,10 +150,6 @@ func TestW9ASeedSQLiteQueryFailuresOnClosedDB(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "select external integration token") {
 		t.Fatalf("external token select 失败必须被包装: %v", err)
 	}
-	// repair 的 QueryRow 错误走 continue 分支，不返回错误。
-	if err := seedSQLiteRepairProfileAccountTypes(ctx, db, exec, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("repair 错误必须按 Node 语义跳过: %v", err)
-	}
 }
 
 // TestW9ASeedSQLiteStaleGeneratedModelsDisable 用脚本化行覆盖 stale 模型

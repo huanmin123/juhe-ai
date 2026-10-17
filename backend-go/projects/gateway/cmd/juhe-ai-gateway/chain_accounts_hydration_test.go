@@ -89,29 +89,19 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 		t.Fatalf("pool account missing from result: %+v", result.Diagnostics)
 	}
 
-	// Rotation pool projection: deduped api keys, fingerprints, runtime
-	// states ride on the secret only when pool isolation is enabled.
+	// Rotation pool projection: deduped api keys ride on the secret from the
+	// credentials alone。APIKeyRuntimeStates 过渡为空：pool isolation 门依赖行内
+	// provider 身份，候选窗口 provider_code 投影拆除后（供应商与上游协议面重构
+	// 设计 §8）该门恒不触发——见 chainCandidateRow.ProviderCode 过渡注释；pool
+	// isolation 的后续归属由组合根切片重定义。
 	if len(pool.APIKeys) != 2 || pool.APIKeys[0] != "sk-pool-key-a" || pool.APIKeys[1] != "sk-pool-key-b" {
 		t.Fatalf("apiKeys = %v", pool.APIKeys)
 	}
 	if pool.APIKey != "sk-pool-key-a" {
 		t.Fatalf("apiKey = %q", pool.APIKey)
 	}
-	if len(pool.APIKeyRuntimeStates) != 1 {
-		t.Fatalf("apiKeyRuntimeStates = %+v", pool.APIKeyRuntimeStates)
-	}
-	state := pool.APIKeyRuntimeStates[0]
-	if state.Fingerprint != chainFingerprintAPIKey("chain-test-secret", "sk-pool-key-b") {
-		t.Fatalf("runtime state fingerprint = %q", state.Fingerprint)
-	}
-	if !state.Disabled {
-		t.Fatalf("runtime state (temporary_unavailable) must map to Disabled")
-	}
-	if state.CooldownUntil == nil || *state.CooldownUntil != "2026-09-04T01:00:00.000Z" {
-		t.Fatalf("runtime state cooldownUntil = %v", state.CooldownUntil)
-	}
-	if state.RecoveryStartedAt == nil || *state.RecoveryStartedAt != "2026-09-03T23:00:00.000Z" {
-		t.Fatalf("runtime state recoveryStartedAt = %v", state.RecoveryStartedAt)
+	if len(pool.APIKeyRuntimeStates) != 0 {
+		t.Fatalf("apiKeyRuntimeStates 过渡恒空 = %+v", pool.APIKeyRuntimeStates)
 	}
 
 	// Proxy profile hydration (Node proxyUrlFromRow).
@@ -162,10 +152,10 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 	if pool.ConfigRevision == nil || *pool.ConfigRevision != 1 {
 		t.Fatalf("configRevision = %v (Node Number(x ?? 1))", pool.ConfigRevision)
 	}
-	// defaultOpenAIEndpointModes: provider 'openai' defaults to the chat
-	// endpoint modes (no credentials.supported_endpoint_modes override).
-	if len(pool.SupportedEndpointModes) != 2 ||
-		pool.SupportedEndpointModes[0] != "chat_json" || pool.SupportedEndpointModes[1] != "chat_sse" {
+	// provider 身份不可读后端点模式归一落到 openai 四模式默认（chat/responses；
+	// 此前 provider 'openai' 收窄为 chat 两模式——供应商身份随 §8 退役后的过渡
+	// 形态，与 chainNormalizeOpenAIEndpointModesForRuntime 空 provider 分支一致）。
+	if len(pool.SupportedEndpointModes) != 4 {
 		t.Fatalf("supportedEndpointModes = %v", pool.SupportedEndpointModes)
 	}
 	if pool.CredentialSourceAccountID != nil {

@@ -84,6 +84,10 @@ func pricingCatalogFixtureSQL(t *testing.T, dir string) *usagePricingCatalog {
          VALUES ('b7', 'gemini', 'gem-test', 'active', 0.5, 1.5, 200000, 2.0, 2.0)`,
 		`INSERT INTO provider_model_catalog (id, provider_code, model, status, input_usd_per_1m, output_usd_per_1m, long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier)
          VALUES ('b8', 'openai', 'gpt-dual', 'active', 0.7, 1.7, 200000, 2.0, 2.0)`,
+		// volcengine TTS 现役行（按秒价：audio_input_usd_per_1m = $2380.95/百万秒
+		// = $0.00238095/秒），供占位名↔现役名等价组计价测试。
+		`INSERT INTO provider_model_catalog (id, provider_code, model, status, mode, audio_input_usd_per_1m)
+         VALUES ('b9', 'volcengine', 'seed-audio-1.0', 'active', 'audio', 2380.95)`,
 		// 自定义目录：global 覆盖内置（gpt-dual，覆盖后长上下文定价被清空——
 		// custom 表无这些列）；personal 命中本账户、不命中他账户。
 		`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, input_usd_per_1m, output_usd_per_1m)
@@ -190,6 +194,18 @@ func TestUsagePricingCatalogResolvePricingModel(t *testing.T) {
 				t.Fatalf("ResolvePricingModel = %q want %q", got, testCase.want)
 			}
 		})
+	}
+	// TTS 占位名↔现役名等价组（volcengine 目录，计价解析第六消费点）：
+	// doubao-tts 按等价组命中 seed-audio-1.0 目录行（2026-10-17 实弹取证：
+	// 无此归一时 usage 冻结按目录 miss 落 0 成本）；跨 provider 不享受等价。
+	if got := catalog.ResolvePricingModel(context.Background(), "volcengine", "sys_a", "doubao-tts", ""); got != "seed-audio-1.0" {
+		t.Fatalf("doubao-tts 等价解析 = %q, want seed-audio-1.0", got)
+	}
+	if got := catalog.ResolvePricingModel(context.Background(), "volcengine", "sys_a", "seed-audio-1.0", "doubao-tts"); got != "seed-audio-1.0" {
+		t.Fatalf("seed-audio-1.0 直查 = %q, want seed-audio-1.0", got)
+	}
+	if got := catalog.ResolvePricingModel(context.Background(), "openai", "sys_a", "doubao-tts", ""); got != "" {
+		t.Fatalf("openai 目录不得享受 volcengine 等价, got %q", got)
 	}
 }
 

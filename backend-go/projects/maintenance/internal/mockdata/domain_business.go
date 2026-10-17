@@ -2800,10 +2800,15 @@ func nullInt(value int) any {
 }
 
 // seedMediaJobs 写入 media_jobs 异步媒体任务样本行（媒体契约 §3.4 / 媒体设计
-// §8.2）：kind=video 各 status 覆盖，模型取目录 video 分类（回落 sora-2），
-// completed 行带 usage/cost，failed 行带 error，账户亲和外键取 acc_media 的
-// 真实行（provider 三元组与账户一致）。id 用 video_ 前缀的对外 job id 形态
-// （表注释契约），清理经 api_key/account 父键子查询定位（cleanupRules）。
+// §8.2）：kind=video 各 status 覆盖 + M3f 音频三样本（合成 completed/failed、
+// 转写 completed），模型取目录 video 分类（回落 sora-2），completed 行带
+// usage/cost，failed 行带 error，账户亲和外键取 acc_media 的真实行（provider
+// 三元组与账户一致）。id 用对外 job id 前缀形态（表注释契约），清理经
+// api_key/account 父键子查询定位（cleanupRules）。artifact_json 的定位指针
+// 键名与 gatewaymedia.MediaJobArtifact 的 Go 字段名逐字一致
+// （ContentURL/ExpiresAt——仓储读回按字段名匹配，snake_case 会被静默丢弃）；
+// 可直接取回的产物用 data URI（复用 chat 域已验证可解码的 MP4/WAV 样本），
+// 网关内容路径样本保留 /v1 相对路径演示"需 API Key 鉴权取回"形态。
 func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts []mockAccountSeed, keys map[string]string) error {
 	if len(accounts) == 0 {
 		return nil
@@ -2832,51 +2837,21 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		}
 	}
 	apiKeyID := keys["main"]
-	model := guard.catalog.videoModelAt(0)
-	type mediaJobSeed struct {
-		suffix   string
-		status   string
-		ageHours int
+	videoModel := guard.catalog.videoModelAt(0)
+	// mediaJobContentDataURI 把内嵌样本字节编码为 data URI：零资源存储下
+	// artifact 只存定位指针，data URI 是自包含指针的合法形态，管理面详情
+	// 抽屉可不经网络直接内嵌预览。
+	mediaJobContentDataURI := func(mimeType string, payload []byte) string {
+		return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(payload)
 	}
-	seeds := []mediaJobSeed{
-		{suffix: "completed", status: "completed", ageHours: 26},
-		{suffix: "failed", status: "failed", ageHours: 20},
-		{suffix: "running", status: "in_progress", ageHours: 2},
-		{suffix: "queued", status: "queued", ageHours: 1},
-		{suffix: "cancelled", status: "cancelled", ageHours: 40},
-		{suffix: "expired", status: "expired", ageHours: 60},
-	}
-	for _, seed := range seeds {
-		id := "video_" + CleanupIDPrefix + seed.suffix
-		createdAt := w.at(-time.Duration(seed.ageHours) * time.Hour)
-		updatedAt := w.at(-time.Duration(seed.ageHours-1) * time.Hour)
-		requestSnapshot := map[string]any{
-			"model": model, "prompt": CleanupNamePrefix + "视频任务样本 " + seed.suffix,
-			"seconds": 4, "size": "1280x720",
+	insertMediaJob := func(rowAPIKeyID, id, kind, model, prompt, status string, ageHours int, snapshotExtras, artifact, jobError, usage map[string]any, cost float64, applied, ignored []string) error {
+		createdAt := w.at(-time.Duration(ageHours) * time.Hour)
+		updatedAt := w.at(-time.Duration(ageHours-1) * time.Hour)
+		snapshot := map[string]any{"model": model, "prompt": prompt}
+		for key, value := range snapshotExtras {
+			snapshot[key] = value
 		}
-		artifact := map[string]any{}
-		jobError := map[string]any{}
-		usage := map[string]any{}
-		cost := 0.0
-		switch seed.status {
-		case "completed":
-			artifact = map[string]any{
-				"content_url": "/v1/videos/" + id + "/content",
-				"expires_at":  w.at(24 * time.Hour),
-			}
-			usage = map[string]any{"output_video_seconds": 4.0}
-			cost = 0.32
-		case "failed":
-			jobError = map[string]any{"code": "upstream_5xx", "message": CleanupNamePrefix + "模拟上游任务失败"}
-		case "expired":
-			artifact = map[string]any{
-				"content_url": "/v1/videos/" + id + "/content",
-				"expires_at":  w.at(-2 * time.Hour),
-			}
-			usage = map[string]any{"output_video_seconds": 4.0}
-			cost = 0.32
-		}
-		requestJSON, err := w.putJSON(requestSnapshot)
+		requestJSON, err := w.putJSON(snapshot)
 		if err != nil {
 			return err
 		}
@@ -2892,25 +2867,125 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		if err != nil {
 			return err
 		}
-		appliedJSON, err := w.putJSON([]string{"seconds", "size"})
+		appliedJSON, err := w.putJSON(applied)
 		if err != nil {
 			return err
 		}
-		ignoredJSON, err := w.putJSON([]string{"n"})
+		ignoredJSON, err := w.putJSON(ignored)
 		if err != nil {
 			return err
 		}
-		if err := w.put(tx, "media_jobs", map[string]any{
-			"id": id, "kind": "video",
-			"api_key_id": apiKeyID, "account_id": accountID,
+		return w.put(tx, "media_jobs", map[string]any{
+			"id": id, "kind": kind,
+			"api_key_id": rowAPIKeyID, "account_id": accountID,
 			"provider_code": providerCode, "provider_protocol_profile_id": nullString(profileID),
-			"upstream_job_id":       "video_" + CleanupIDPrefix + "upstream_" + seed.suffix,
-			"status":                seed.status,
+			"upstream_job_id":       "upstream_" + CleanupIDPrefix + id,
+			"status":                status,
 			"request_snapshot_json": requestJSON, "artifact_json": artifactJSON,
 			"error_json": errorJSON, "usage_json": usageJSON, "cost_usd": cost,
 			"params_applied_json": appliedJSON, "params_ignored_json": ignoredJSON,
 			"created_at": createdAt, "updated_at": updatedAt,
-		}); err != nil {
+		})
+	}
+	type mediaJobSeed struct {
+		suffix   string
+		status   string
+		ageHours int
+	}
+	seeds := []mediaJobSeed{
+		{suffix: "completed", status: "completed", ageHours: 26},
+		{suffix: "failed", status: "failed", ageHours: 20},
+		{suffix: "running", status: "in_progress", ageHours: 2},
+		{suffix: "queued", status: "queued", ageHours: 1},
+		{suffix: "cancelled", status: "cancelled", ageHours: 40},
+		{suffix: "expired", status: "expired", ageHours: 60},
+	}
+	for _, seed := range seeds {
+		id := "video_" + CleanupIDPrefix + seed.suffix
+		artifact := map[string]any{}
+		jobError := map[string]any{}
+		usage := map[string]any{}
+		cost := 0.0
+		switch seed.status {
+		case "completed":
+			artifact = map[string]any{
+				"ContentURL": mediaJobContentDataURI("video/mp4", chatCodexMP4()),
+				"ExpiresAt":  w.at(24 * time.Hour),
+			}
+			usage = map[string]any{"output_video_seconds": 4.0}
+			cost = 0.32
+		case "failed":
+			jobError = map[string]any{"code": "upstream_5xx", "message": CleanupNamePrefix + "模拟上游任务失败"}
+		case "expired":
+			// 过期行保留网关内容相对路径：演示"定位指针存在但需 API Key 鉴权
+			// 实时取回、控制台不内嵌预览"的形态（上游时效已过）。
+			artifact = map[string]any{
+				"ContentURL": "/v1/videos/" + id + "/content",
+				"ExpiresAt":  w.at(-2 * time.Hour),
+			}
+			usage = map[string]any{"output_video_seconds": 4.0}
+			cost = 0.32
+		}
+		if err := insertMediaJob(apiKeyID, id, "video", videoModel, CleanupNamePrefix+"视频任务样本 "+seed.suffix,
+			seed.status, seed.ageHours,
+			map[string]any{"seconds": 4, "size": "1280x720"}, artifact, jobError, usage, cost,
+			[]string{"seconds", "size"}, []string{"n"}); err != nil {
+			return err
+		}
+	}
+	// 音频 kind 样本（M3f 长音频任务面）：合成 completed 挂 WAV data URI 可
+	// 内嵌播放；转写 completed 无产物定位（转写结果走上游实时取回），演示
+	// 抽屉的零资源提示态；合成 failed 演示音频任务错误面。
+	audioSeeds := []struct {
+		id       string
+		kind     string
+		model    string
+		prompt   string
+		status   string
+		ageHours int
+		snapshot map[string]any
+		artifact map[string]any
+		jobError map[string]any
+		usage    map[string]any
+		cost     float64
+		applied  []string
+	}{
+		{id: "audiojob_" + CleanupIDPrefix + "speech_completed", kind: "audio_speech", model: "gpt-4o-mini-tts",
+			prompt: CleanupNamePrefix + "长音频合成任务样本", status: "completed", ageHours: 5,
+			artifact: map[string]any{"ContentURL": mediaJobContentDataURI("audio/wav", chatCodexWAV()), "ExpiresAt": w.at(24 * time.Hour)},
+			usage:    map[string]any{"tts_input_chars": 24}, cost: 0.012, applied: []string{"speed"}},
+		{id: "audiojob_" + CleanupIDPrefix + "transcription_completed", kind: "audio_transcription", model: "gpt-4o-transcribe",
+			prompt: CleanupNamePrefix + "长音频转写任务样本", status: "completed", ageHours: 3,
+			snapshot: map[string]any{"language": "zh"},
+			usage:    map[string]any{"audio_input_seconds": 12.5}, cost: 0.006, applied: []string{"language"}},
+		{id: "audiojob_" + CleanupIDPrefix + "speech_failed", kind: "audio_speech", model: "gpt-4o-mini-tts",
+			prompt: CleanupNamePrefix + "长音频合成失败任务样本", status: "failed", ageHours: 8,
+			jobError: map[string]any{"code": "upstream_timeout", "message": CleanupNamePrefix + "模拟语音合成上游超时"}},
+	}
+	for _, seed := range audioSeeds {
+		if err := insertMediaJob(apiKeyID, seed.id, seed.kind, seed.model, seed.prompt, seed.status, seed.ageHours,
+			seed.snapshot, seed.artifact, seed.jobError, seed.usage, seed.cost, seed.applied, []string{}); err != nil {
+			return err
+		}
+	}
+	// 普通用户名下样本（mockdata_user_ops 的授权调用 Key）：管理面按用户筛选
+	// 与 /my-media-jobs 用户面只读视角的直接演示数据；Key 缺席（老样本表）时
+	// 跳过，媒体行不缺席到不存在的 Key 上。
+	if opsKeyID := strings.TrimSpace(keys["ops_account"]); opsKeyID != "" {
+		if err := insertMediaJob(opsKeyID, "video_"+CleanupIDPrefix+"user_ops_completed", "video", videoModel,
+			CleanupNamePrefix+"运营用户视频任务样本", "completed", 4,
+			map[string]any{"seconds": 4, "size": "1280x720"},
+			map[string]any{"ContentURL": mediaJobContentDataURI("video/mp4", chatCodexMP4()), "ExpiresAt": w.at(24 * time.Hour)},
+			map[string]any{}, map[string]any{"output_video_seconds": 4.0}, 0.32,
+			[]string{"seconds", "size"}, []string{"n"}); err != nil {
+			return err
+		}
+		if err := insertMediaJob(opsKeyID, "audiojob_"+CleanupIDPrefix+"user_ops_speech_completed", "audio_speech", "gpt-4o-mini-tts",
+			CleanupNamePrefix+"运营用户语音合成任务样本", "completed", 6,
+			nil,
+			map[string]any{"ContentURL": mediaJobContentDataURI("audio/wav", chatCodexWAV()), "ExpiresAt": w.at(24 * time.Hour)},
+			map[string]any{}, map[string]any{"tts_input_chars": 18}, 0.012,
+			[]string{"speed"}, []string{}); err != nil {
 			return err
 		}
 	}

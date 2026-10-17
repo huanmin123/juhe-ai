@@ -118,6 +118,11 @@
 
 package schema
 
+import (
+	"fmt"
+	"sort"
+)
+
 // seedStrPtr/seedInt64Ptr/seedFloat64Ptr build the optional seed parameters
 // (the Node "... ?? null" columns).
 func seedStrPtr(value string) *string       { return &value }
@@ -127,7 +132,12 @@ func seedFloat64Ptr(value float64) *float64 { return &value }
 // modelCatalogSeedRow mirrors one provider_model_catalog seed row with the
 // static columns of Node seedDefaults (seed-defaults.ts modelStatement) and
 // seedPostgresDefaults (postgres-seed-defaults.ts modelSeedValues). JSON
-// columns keep the exact Node JSON.stringify output.
+// columns keep the exact Node JSON.stringify output. 自供应商与上游协议面重构
+// （设计 §3）起本 struct 只是目录快照的数据源形态：seed 落库目标已切换为唯一
+// 物理表 models，写入前经 modelSeedTargetRows 投影（vendor_code/public_model/
+// upstream_model/scope/status/supported_endpoint_modes_json/currency 列由
+// 投影规则推导，其余列按名搬运），数据行本体仍冻结在
+// model_catalog_data_gen.go。
 type modelCatalogSeedRow struct {
 	ID                                      string
 	ProviderCode                            string
@@ -173,3 +183,178 @@ type modelCatalogSeedRow struct {
 // 计划-20261005T230500000Z 步骤 4）——手工同步废除。seed 行的 JSON→39 列
 // 投影规则见生成器 seedRowLiteral；种子 helper（seedStrPtr 等）留在本文件。
 // 历史手写批次记录见 git 历史与 docs/functions/厂商模型目录更新与清洗指南.md。
+
+// modelSeedTargetRow 是一条目录快照行向 models 表（供应商与上游协议面重构
+// 设计 §3）的目标投影：identity 列（vendor_code/public_model/upstream_model/
+// scope/status）与 supported_endpoint_modes_json 由投影规则推导，其余列按名
+// 搬运。scope/system_account_id/currency 是语句内字面量，不入 struct。
+type modelSeedTargetRow struct {
+	ID                                      string
+	VendorCode                              string
+	PublicModel                             string
+	UpstreamModel                           string
+	Status                                  string
+	CatalogVisible                          bool
+	CatalogOrder                            *int64
+	ReleaseDate                             *string
+	ShutdownDate                            *string
+	SupportedEndpointModesJSON              string
+	SupportedServiceTiersJSON               string
+	SupportedReasoningEffortsJSON           string
+	DefaultReasoningEffort                  *string
+	CodexSupportedReasoningLevelsJSON       string
+	CodexDefaultReasoningLevel              *string
+	CodexMultiAgentVersion                  *string
+	ContextWindowTokens                     *int64
+	MaxInputTokens                          *int64
+	MaxOutputTokens                         *int64
+	MaxTokens                               *int64
+	SupportsPromptCaching                   bool
+	Source                                  string
+	InputUsdPer1M                           *float64
+	OutputUsdPer1M                          *float64
+	CachedInputUsdPer1M                     *float64
+	CacheWriteUsdPer1M                      *float64
+	CacheWrite1HUsdPer1M                    *float64
+	CacheStorageUsdPer1MPerHour             *float64
+	ServiceTierPricesJSON                   string
+	LongContextInputTokenThreshold          *int64
+	LongContextInputTokenThresholdInclusive bool
+	LongContextInputCostMultiplier          *float64
+	LongContextOutputCostMultiplier         *float64
+	ImageInputUsdPer1M                      *float64
+	ImageOutputUsdPer1M                     *float64
+	AudioInputUsdPer1M                      *float64
+	AudioOutputUsdPer1M                     *float64
+	OutputUsdPerImage                       *float64
+}
+
+// modelSeedStatusActive / modelSeedStatusDisabled 是 models.status 在 seed
+// 路径上会写出的两个枚举值（设计 §3：draft 只能来自应用层，seed 不写）。
+const (
+	modelSeedStatusActive   = "active"
+	modelSeedStatusDisabled = "disabled"
+)
+
+// modelSeedBuiltinScope / modelSeedBuiltinCurrency 是 builtin seed 行的固定
+// scope 与 currency（任务契约：builtin 统一 'USD'；scope='builtin' 且
+// system_account_id=NULL 由 models 表 CHECK 联动校验）。
+const (
+	modelSeedBuiltinScope    = "builtin"
+	modelSeedBuiltinCurrency = "USD"
+)
+
+// modelSeedProtocolEndpointModes 把目录行声明的上游 API 协议名映射到设计
+// §2.2 的 25 值 endpoint mode 词表；map 缺键视为未接入的协议并让 seed 报错
+// （deny-by-default，禁止对未知协议静默产空 mode 集）。"completions" 是旧
+// /v1/completions 遗留声明，目标协议面无对应 mode，显式映射为空集。
+var modelSeedProtocolEndpointModes = map[string][]string{
+	"chat_completions":        {"chat_json", "chat_sse"},
+	"responses":               {"responses_json", "responses_sse"},
+	"messages":                {"messages_json", "messages_sse"},
+	"generate_content":        {"generate_content_json", "generate_content_sse"},
+	"stream_generate_content": {"generate_content_sse"},
+	"interactions":            {"interactions_json", "interactions_sse"},
+	"message_token_counting":  {"message_token_counting"},
+	"count_tokens":            {"count_tokens"},
+	"embed_content":           {"embed_content"},
+	"images":                  {"images_json"},
+	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
+	"realtime":                {"realtime_session"},
+	"audio_speech":            {"audio_speech"},
+	"audio_transcription":     {"audio_transcription_json"},
+	"completions":             {},
+}
+
+// modelSeedEndpointModesJSON 从目录行的 SupportedAPIProtocolsJSON 推导
+// models.supported_endpoint_modes_json（设计 §3：模型真实支持的精确 mode
+// 集合，元素唯一且按 ASCII 升序；active 行至少 1 个 mode）。
+func modelSeedEndpointModesJSON(row modelCatalogSeedRow) (string, error) {
+	protocols, err := parseSeedStringArray(row.SupportedAPIProtocolsJSON)
+	if err != nil {
+		return "", fmt.Errorf("model seed row %s: parse supported_api_protocols_json: %w", row.ID, err)
+	}
+	seen := map[string]bool{}
+	modes := make([]string, 0, 8)
+	for _, protocol := range protocols {
+		declared, known := modelSeedProtocolEndpointModes[protocol]
+		if !known {
+			return "", fmt.Errorf("model seed row %s: unsupported supported API protocol %q", row.ID, protocol)
+		}
+		for _, mode := range declared {
+			if !seen[mode] {
+				seen[mode] = true
+				modes = append(modes, mode)
+			}
+		}
+	}
+	if len(modes) == 0 {
+		return "", fmt.Errorf("model seed row %s: derived empty supported_endpoint_modes_json", row.ID)
+	}
+	sort.Strings(modes)
+	return seedStringify(modes), nil
+}
+
+// modelSeedRowStatus 沿用内置过期模型判定（原 activeModelCatalogSeedRows 的
+// shutdown 过滤方向）：shutdown_date 已过（<= 当前 UTC 日期）写 'disabled'，
+// 否则 'active'。asOfUTCDate 形态为 YYYY-MM-DD。
+func modelSeedRowStatus(row modelCatalogSeedRow, asOfUTCDate string) string {
+	if row.ShutdownDate != nil && *row.ShutdownDate <= asOfUTCDate {
+		return modelSeedStatusDisabled
+	}
+	return modelSeedStatusActive
+}
+
+// modelSeedTargetRows 把全部目录快照行投影为 models 表目标行；目录数据行数
+// 不变（含已过期 disabled 行，设计 §3 允许 disabled 行 mode 为空——但推导
+// 规则保证每行至少 1 个 mode）。
+func modelSeedTargetRows(asOfUTCDate string) ([]modelSeedTargetRow, error) {
+	rows := make([]modelSeedTargetRow, 0, len(modelCatalogSeedRows))
+	for _, source := range modelCatalogSeedRows {
+		modesJSON, err := modelSeedEndpointModesJSON(source)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, modelSeedTargetRow{
+			ID:                                      source.ID,
+			VendorCode:                              source.ProviderCode,
+			PublicModel:                             source.Model,
+			UpstreamModel:                           source.Model,
+			Status:                                  modelSeedRowStatus(source, asOfUTCDate),
+			CatalogVisible:                          source.CatalogVisible,
+			CatalogOrder:                            source.CatalogOrder,
+			ReleaseDate:                             source.ReleaseDate,
+			ShutdownDate:                            source.ShutdownDate,
+			SupportedEndpointModesJSON:              modesJSON,
+			SupportedServiceTiersJSON:               source.SupportedServiceTiersJSON,
+			SupportedReasoningEffortsJSON:           source.SupportedReasoningEffortsJSON,
+			DefaultReasoningEffort:                  source.DefaultReasoningEffort,
+			CodexSupportedReasoningLevelsJSON:       source.CodexSupportedReasoningLevelsJSON,
+			CodexDefaultReasoningLevel:              source.CodexDefaultReasoningLevel,
+			CodexMultiAgentVersion:                  source.CodexMultiAgentVersion,
+			ContextWindowTokens:                     source.ContextWindowTokens,
+			MaxInputTokens:                          source.MaxInputTokens,
+			MaxOutputTokens:                         source.MaxOutputTokens,
+			MaxTokens:                               source.MaxTokens,
+			SupportsPromptCaching:                   source.SupportsPromptCaching,
+			Source:                                  source.Source,
+			InputUsdPer1M:                           source.InputUsdPer1M,
+			OutputUsdPer1M:                          source.OutputUsdPer1M,
+			CachedInputUsdPer1M:                     source.CachedInputUsdPer1M,
+			CacheWriteUsdPer1M:                      source.CacheWriteUsdPer1M,
+			CacheWrite1HUsdPer1M:                    source.CacheWrite1HUsdPer1M,
+			CacheStorageUsdPer1MPerHour:             source.CacheStorageUsdPer1MPerHour,
+			ServiceTierPricesJSON:                   source.ServiceTierPricesJSON,
+			LongContextInputTokenThreshold:          source.LongContextInputTokenThreshold,
+			LongContextInputTokenThresholdInclusive: source.LongContextInputTokenThresholdInclusive,
+			LongContextInputCostMultiplier:          source.LongContextInputCostMultiplier,
+			LongContextOutputCostMultiplier:         source.LongContextOutputCostMultiplier,
+			ImageInputUsdPer1M:                      source.ImageInputUsdPer1M,
+			ImageOutputUsdPer1M:                     source.ImageOutputUsdPer1M,
+			AudioInputUsdPer1M:                      source.AudioInputUsdPer1M,
+			AudioOutputUsdPer1M:                     source.AudioOutputUsdPer1M,
+			OutputUsdPerImage:                       source.OutputUsdPerImage,
+		})
+	}
+	return rows, nil
+}

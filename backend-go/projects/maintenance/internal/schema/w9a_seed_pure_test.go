@@ -66,13 +66,6 @@ func TestW9ASeedPureHelpers(t *testing.T) {
 		t.Fatalf("seedNullableFloat64 nil = %v", got)
 	}
 
-	if got := pgNullableText(""); got != nil {
-		t.Fatalf("pgNullableText(\"\") = %v", got)
-	}
-	if got := pgNullableText("parent"); got != "parent" {
-		t.Fatalf("pgNullableText(parent) = %v", got)
-	}
-
 	if seedHashSecret("a") == "" || len(seedHashSecret("a")) != 64 {
 		t.Fatal("seedHashSecret must return a sha256 hex string")
 	}
@@ -209,31 +202,58 @@ func TestW9ASeedArrayHelpers(t *testing.T) {
 	}
 }
 
-// TestW9AActiveModelCatalogSeedRows 锁定 shutdown 过滤语义：活跃行不得包含
-// shutdown_date 早于截止日的目录项，且过滤结果确定。
-func TestW9AActiveModelCatalogSeedRows(t *testing.T) {
+// TestW9AModelSeedTargetRows 锁定 models 目标投影：全量行参与投影、status
+// 判定与 shutdown 方向一致、推导确定性。
+func TestW9AModelSeedTargetRows(t *testing.T) {
 	if len(modelCatalogSeedRows) == 0 {
 		t.Fatal("model catalog seed data must not be empty")
 	}
-	active := activeModelCatalogSeedRows("2026-09-01")
-	if len(active) == 0 {
-		t.Fatal("active rows must not be empty for the current cutoff")
+	rows, err := modelSeedTargetRows("2026-09-01")
+	if err != nil {
+		t.Fatalf("modelSeedTargetRows: %v", err)
 	}
-	for _, row := range active {
-		if row.ShutdownDate != nil && *row.ShutdownDate <= "2026-09-01" {
-			t.Fatalf("row %s 已停用却仍在活跃集合中", row.ID)
+	if len(rows) != len(modelCatalogSeedRows) {
+		t.Fatalf("projected rows = %d, want %d", len(rows), len(modelCatalogSeedRows))
+	}
+	expiredAt20260901 := 0
+	for i, source := range modelCatalogSeedRows {
+		row := rows[i]
+		if row.ID != source.ID || row.VendorCode != source.ProviderCode || row.UpstreamModel != source.Model || row.PublicModel != source.Model {
+			t.Fatalf("row %s identity projection drifted", source.ID)
+		}
+		want := modelSeedStatusActive
+		if source.ShutdownDate != nil && *source.ShutdownDate <= "2026-09-01" {
+			want = modelSeedStatusDisabled
+			expiredAt20260901++
+		}
+		if row.Status != want {
+			t.Fatalf("row %s status = %s, want %s", source.ID, row.Status, want)
 		}
 	}
-	if got := activeModelCatalogSeedRows("2026-09-01"); len(got) != len(active) {
-		t.Fatal("active rows not deterministic")
+	if expiredAt20260901 == 0 {
+		t.Fatal("cutoff 2026-09-01 should expire at least one row")
 	}
-	// 截止日越大，被过滤的已停用行越多；极早截止日保留全部行。
-	late := activeModelCatalogSeedRows("9999-12-31")
-	if len(late) >= len(active) {
-		t.Fatalf("late cutoff must keep no more rows than the current cutoff: %d vs %d", len(late), len(active))
+	// 截止日越大，disabled 行越多；极早截止日全部 active。
+	late, err := modelSeedTargetRows("9999-12-31")
+	if err != nil {
+		t.Fatalf("modelSeedTargetRows late: %v", err)
 	}
-	earliest := activeModelCatalogSeedRows("0000-01-01")
-	if len(earliest) != len(modelCatalogSeedRows) {
-		t.Fatalf("earliest cutoff must keep every row: %d vs %d", len(earliest), len(modelCatalogSeedRows))
+	lateDisabled := 0
+	for _, row := range late {
+		if row.Status == modelSeedStatusDisabled {
+			lateDisabled++
+		}
+	}
+	if lateDisabled <= expiredAt20260901 {
+		t.Fatalf("late cutoff disabled rows = %d, want more than %d", lateDisabled, expiredAt20260901)
+	}
+	earliest, err := modelSeedTargetRows("0000-01-01")
+	if err != nil {
+		t.Fatalf("modelSeedTargetRows earliest: %v", err)
+	}
+	for _, row := range earliest {
+		if row.Status != modelSeedStatusActive {
+			t.Fatalf("earliest cutoff must keep every row active, row %s = %s", row.ID, row.Status)
+		}
 	}
 }

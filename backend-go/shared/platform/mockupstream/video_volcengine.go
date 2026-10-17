@@ -52,6 +52,8 @@ const (
 	ScenarioMediaVolcenginePollFailedError  Scenario = "media_volcengine_poll_failed_error"
 	ScenarioMediaVolcengineTTSOK            Scenario = "media_volcengine_tts_ok"
 	ScenarioMediaVolcengineTTSFailed        Scenario = "media_volcengine_tts_failed"
+	ScenarioMediaVolcengineTTSStreamOK      Scenario = "media_volcengine_tts_stream_ok"
+	ScenarioMediaVolcengineTTSStreamFailed  Scenario = "media_volcengine_tts_stream_failed"
 )
 
 // volcengineVideoTask is one registered volcengine async video task. The id
@@ -272,9 +274,9 @@ func (m *Server) serveVolcengineTTS(w http.ResponseWriter, idx int, scenario Sce
 	requestBody := m.seenReqs[idx].Body
 	m.mu.Unlock()
 	var req struct {
-		Model      string `json:"model"`
-		TextPrompt string `json:"text_prompt"`
-		Speaker    string `json:"speaker"`
+		Model       string `json:"model"`
+		TextPrompt  string `json:"text_prompt"`
+		Speaker     string `json:"speaker"`
 		AudioConfig struct {
 			Format string `json:"format"`
 		} `json:"audio_config"`
@@ -308,4 +310,60 @@ func (m *Server) serveVolcengineTTS(w http.ResponseWriter, idx int, scenario Sce
 		"url":               "https://mock.invalid/volcengine-speech/mock-tts-signed",
 	})
 	writeJSONStatus(w, http.StatusOK, string(body))
+}
+
+// serveVolcengineTTSStream implements POST /api/v3/tts/unidirectional (火山
+// 流式语音桥接设计 V1a): the OK scenario answers HTTP 200 text/plain NDJSON —
+// start event + two base64 audio chunks (split across lines so the adapter's
+// multi-chunk concatenation is exercised) + done event; the failure scenario
+// answers 200 with the error-frame line the real upstream returns for
+// unauthorized speakers (55000000, 2026-10-18 probe shape). req_params
+// format negotiation mirrors the 2.0 word list (mp3 default / pcm raw bytes
+// / ogg_opus / wav).
+func (m *Server) serveVolcengineTTSStream(w http.ResponseWriter, idx int, scenario Scenario) {
+	m.mu.Lock()
+	requestBody := m.seenReqs[idx].Body
+	m.mu.Unlock()
+	var req struct {
+		ReqParams struct {
+			Text        string `json:"text"`
+			Speaker     string `json:"speaker"`
+			AudioParams struct {
+				Format string `json:"format"`
+			} `json:"audio_params"`
+		} `json:"req_params"`
+	}
+	_ = json.Unmarshal([]byte(requestBody), &req)
+
+	if scenario == ScenarioMediaVolcengineTTSStreamFailed {
+		writeJSONStatus(w, http.StatusOK, `{"reqid":"","code":55000000,"message":"resource ID is mismatched with speaker related resource"}`)
+		return
+	}
+	var payload []byte
+	switch req.ReqParams.AudioParams.Format {
+	case "", "mp3":
+		payload = mp3Payload()
+	case "wav":
+		payload = wavPayload()
+	case "ogg_opus":
+		payload = oggOpusPayload()
+	case "pcm":
+		payload = []byte{0x01, 0x02, 0x03, 0x04}
+	default:
+		writeJSONStatus(w, http.StatusBadRequest, `{"code":45000001,"message":"audio_params.format not supported"}`)
+		return
+	}
+	half := len(payload) / 2
+	if half == 0 {
+		half = len(payload)
+	}
+	lines := []string{
+		`{"event":"start","data":{}}`,
+		`{"event":"audio","data":{"audio":"` + base64.StdEncoding.EncodeToString(payload[:half]) + `"}}`,
+		`{"event":"audio","data":{"audio":"` + base64.StdEncoding.EncodeToString(payload[half:]) + `"}}`,
+		`{"event":"done","data":{}}`,
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(strings.Join(lines, "\n")))
 }

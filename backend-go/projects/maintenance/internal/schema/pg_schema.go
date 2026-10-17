@@ -244,10 +244,6 @@ func quotePGIdentifier(identifier string) string {
 // PGSeedResult summarizes EnsurePostgresSeeds.
 type PGSeedResult struct {
 	StatementCount int
-	// CustomModelOverlapCleaned 是 model catalog seed 在目录 upsert 后删除的
-	// 与本次 seed 运行时可见内置行同名的 custom_provider_models 存量行数
-	// （契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先）。
-	CustomModelOverlapCleaned int
 	// BuiltinQuestionRows 是本次 seed 尝试写入的系统内置题库题行数
 	//（固定 8 题；冲突时按内置行恢复 seed 权威题面，详见
 	// pgSeedBuiltinQuestionUpsert）。
@@ -414,17 +410,18 @@ const pgSeedQuotaScopeBindingsFromTeamGrantsCTE = `
       updated_at = EXCLUDED.updated_at
   `
 
-// pgSeedProviderInsert seeds one providers row.
+// pgSeedProviderInsert seeds one vendors row（设计 §9：providers 由 vendors
+// 取代，无 parent_code 列）。
 const pgSeedProviderInsert = `
-        INSERT INTO "juhe_business"."providers" (
-          id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO "juhe_business"."vendors" (
+          id, code, name, description, enabled, default_supported_models_json, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT DO NOTHING
       `
 
-// pgSeedProviderDefaultModelsRepair refreshes empty provider default model lists.
+// pgSeedProviderDefaultModelsRepair refreshes empty vendor default model lists.
 const pgSeedProviderDefaultModelsRepair = `
-        UPDATE "juhe_business"."providers"
+        UPDATE "juhe_business"."vendors"
         SET default_supported_models_json = $1, updated_at = $2
         WHERE code = $3
           AND (default_supported_models_json IS NULL OR btrim(default_supported_models_json) = '' OR default_supported_models_json = '[]')
@@ -446,58 +443,37 @@ const pgSeedEndpointFamilyInsert = `
         ON CONFLICT DO NOTHING
       `
 
-// pgSeedProfileInsert seeds one provider_protocol_profiles row.
-const pgSeedProfileInsert = `
-        INSERT INTO "juhe_business"."provider_protocol_profiles" (
-          id, provider_code, name, description, enabled, protocol_code, protocol_version,
-          base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-        ON CONFLICT DO NOTHING
-      `
+// provider_protocol_profiles seed（pgSeedProfileInsert/
+// pgSeedProfileAccountTypesSelect/pgSeedProfileAccountTypesUpdate/
+// pgSeedProfileFamilyInsert 与 pgSeedProfiles 数据）随供应商与上游协议面重构
+// 批退役：目标架构中协议档案由 §1.1 连接器注册表（connection preset）承担，
+// DDL 已无 provider_protocol_profiles / provider_protocol_profile_families
+// 两表，seed 不再写任何 profile 行。protocols / protocol_endpoint_families
+// 仍为目标表，其 seed 保留。
 
-// pgSeedProfileAccountTypesSelect reads one profile account_types_json for the repair step.
-const pgSeedProfileAccountTypesSelect = `
-        SELECT account_types_json
-        FROM "juhe_business"."provider_protocol_profiles"
-        WHERE id = $1
-      `
-
-// pgSeedProfileAccountTypesUpdate merges missing built-in account types into one profile (from repairBuiltInProviderProfileAccountTypes).
-const pgSeedProfileAccountTypesUpdate = `
-        UPDATE "juhe_business"."provider_protocol_profiles"
-        SET account_types_json = $1, updated_at = $2
-        WHERE id = $3
-      `
-
-// pgSeedProfileFamilyInsert seeds one provider_protocol_profile_families row.
-const pgSeedProfileFamilyInsert = `
-          INSERT INTO "juhe_business"."provider_protocol_profile_families" (
-            profile_id, family_code, enabled, capabilities_json, created_at, updated_at
-          ) VALUES ($1, $2, 1, '[]', $3, $4)
-          ON CONFLICT DO NOTHING
-        `
-
-// pgSeedGroupDefaultRepair marks the built-in group as default when no default exists.
+// pgSeedGroupDefaultRepair marks the built-in default group when its owner has
+// no default group yet（设计 §8：每 system_account_id 至多一个 is_default=1，
+// 唯一索引 idx_groups_owner_default_unique；判定只按 owner，无供应商维度）。
 const pgSeedGroupDefaultRepair = `
         UPDATE "juhe_business"."groups" AS candidate
         SET is_default = 1
-        WHERE candidate.provider_code = $1
-          AND candidate.is_default = 0
-          AND candidate.system_account_id = $2
-          AND candidate.id = $3
+        WHERE candidate.is_default = 0
+          AND candidate.system_account_id = $1
+          AND candidate.id = $2
           AND NOT EXISTS (
             SELECT 1
             FROM "juhe_business"."groups" AS existing_default
             WHERE existing_default.system_account_id = candidate.system_account_id
-              AND existing_default.provider_code = candidate.provider_code
               AND existing_default.is_default = 1
           )
       `
 
-// pgSeedGroupInsert inserts the built-in default group for every system account that lacks it.
+// pgSeedGroupInsert inserts the built-in default group for every system account
+// that lacks one（缺组判定只按 owner 的 is_default=1，无供应商维度；唯一约束
+// (system_account_id, name) 下的重名回退命名逻辑保持原形态）。
 const pgSeedGroupInsert = `
         INSERT INTO "juhe_business"."groups" (
-          id, system_account_id, name, provider_code,
+          id, system_account_id, name,
           description, enabled, is_default, created_at, updated_at
         )
         SELECT
@@ -508,15 +484,14 @@ const pgSeedGroupInsert = `
               SELECT 1
               FROM "juhe_business"."groups" AS same_name
               WHERE same_name.system_account_id = system_accounts.id
-                AND same_name.provider_code = $4
-                AND lower(same_name.name) = lower($5)
-          ) THEN $6 || '（系统默认：' || system_accounts.id || CASE
+                AND lower(same_name.name) = lower($4)
+          ) THEN $5 || '（系统默认：' || system_accounts.id || CASE
             WHEN candidate_suffix.suffix = 0 THEN ''
             ELSE ' #' || candidate_suffix.suffix
           END || '）'
-          ELSE $5
+          ELSE $4
         END,
-          $4, $7, 1, 1, $8, $9
+          $6, 1, 1, $7, $8
         FROM "juhe_business"."system_accounts" AS system_accounts
         LEFT JOIN LATERAL (
           SELECT candidate_suffix.suffix
@@ -526,17 +501,15 @@ const pgSeedGroupInsert = `
               SELECT COUNT(*)
               FROM "juhe_business"."groups" AS fallback_name
               WHERE fallback_name.system_account_id = system_accounts.id
-                AND fallback_name.provider_code = $4
-                AND lower(fallback_name.name) LIKE lower($6) || '（系统默认：%）'
+                AND lower(fallback_name.name) LIKE lower($5) || '（系统默认：%）'
             )
           ) AS candidate_suffix(suffix)
           WHERE NOT EXISTS (
             SELECT 1
             FROM "juhe_business"."groups" AS existing_fallback_name
             WHERE existing_fallback_name.system_account_id = system_accounts.id
-              AND existing_fallback_name.provider_code = $4
               AND lower(existing_fallback_name.name) = lower(
-                $6 || '（系统默认：' || system_accounts.id || CASE
+                $5 || '（系统默认：' || system_accounts.id || CASE
                   WHEN candidate_suffix.suffix = 0 THEN ''
                   ELSE ' #' || candidate_suffix.suffix
                 END || '）'
@@ -549,7 +522,6 @@ const pgSeedGroupInsert = `
           SELECT 1
           FROM "juhe_business"."groups" AS existing_default
           WHERE existing_default.system_account_id = system_accounts.id
-            AND existing_default.provider_code = $4
             AND existing_default.is_default = 1
         )
         ON CONFLICT DO NOTHING
@@ -593,33 +565,27 @@ var pgSeedGlobalSettings = []pgSeedKeyValue{
 
 var pgSeedRequestQuotaHourlyWindowHours = []int{1, 3, 6, 12, 24, 72, 168, 720}
 
-// pgSeedProvider mirrors DEFAULT_PROVIDER_SEEDS.
+// pgSeedProvider mirrors the §1.1 vendor registry seed (设计 §9 迁移第 1 步:
+// providers 表由 vendors 取代，只保留 9 个真实厂商；parent_code 列与 openai/
+// hybrid 行随旧表退役)。
 type pgSeedProvider struct {
 	ID                         string
 	Code                       string
 	Name                       string
 	Description                string
-	ParentCode                 string
 	Enabled                    int
 	DefaultSupportedModelsJSON string
 }
 
+// pgSeedProviders 恰为设计 §1.1 的 9 个真实厂商；generic_http 连接不建
+// vendor 行（账户 vendor_code 为 NULL）。openai（通用兼容）与 hybrid（混合）
+// 两行随旧供应商维度删除，分组无供应商维度由 groups seed 收敛承担。
 var pgSeedProviders = []pgSeedProvider{
-	{
-		ID:                         "openai",
-		Code:                       "openai",
-		Name:                       "OpenAI 兼容",
-		Description:                "通用 OpenAI-compatible 供应商，用于接入兼容 OpenAI v1 协议的上游服务，默认只提供 API Key 透传能力",
-		ParentCode:                 "",
-		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
-	},
 	{
 		ID:                         "gpt",
 		Code:                       "gpt",
 		Name:                       "GPT",
 		Description:                "GPT 官方供应商，继承通用 OpenAI-compatible 能力，并启用 OAuth、Codex Responses 等 GPT 专属能力",
-		ParentCode:                 "openai",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
 	},
@@ -628,7 +594,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "xai",
 		Name:                       "xAI / Grok",
 		Description:                "xAI 官方供应商，支持 API Key 与 Grok OAuth 接入 OpenAI v1 文本协议；媒体面支持 Grok Imagine Video 视频（契约 §6.1）",
-		ParentCode:                 "openai",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"grok-4.7\",\"grok-4.6\",\"grok-4.5\",\"grok-imagine-video-1.5\"]",
 	},
@@ -637,7 +602,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "deepseek",
 		Name:                       "DeepSeek",
 		Description:                "DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 与 Responses 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"deepseek-flash\",\"deepseek-v4.1-flash\",\"deepseek-v4-pro\"]",
 	},
@@ -646,7 +610,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "anthropic",
 		Name:                       "Anthropic",
 		Description:                "Anthropic 官方供应商，支持 API Key 或 OAuth Access Token（Bearer）接入 Anthropic Messages 原生协议",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"claude-opus-5-5\",\"claude-fable-5-1\",\"claude-opus-5\",\"claude-sonnet-5\"]",
 	},
@@ -655,7 +618,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "gemini",
 		Name:                       "Gemini",
 		Description:                "Google Gemini 官方供应商，支持 API Key 或 Google OAuth 接入 Gemini v1beta Generate Content 与 Interactions；OpenAI 客户端可使用兼容档案",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"gemini-3.8-flash\",\"gemini-3.7-flash\",\"gemini-3.6-flash\",\"gemini-3.5-flash-lite\"]",
 	},
@@ -664,7 +626,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "glm",
 		Name:                       "智谱 GLM",
 		Description:                "智谱 GLM 官方供应商，支持通用 GLM API Key、GLM Coding Plan OpenAI Chat 档案，以及 GLM Coding Anthropic v1 Messages 档案",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"glm-5.3\",\"glm-5.2\",\"glm-5.1\",\"glm-5\",\"glm-5-turbo\",\"glm-4.7-flashx\",\"glm-4.7-flash\"]",
 	},
@@ -676,7 +637,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "minimax",
 		Name:                       "MiniMax",
 		Description:                "MiniMax 官方供应商，支持 API Key 接入视频生成（Hailuo 系 video_generation）与语音合成（speech 系 t2a_v2）媒体能力",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"MiniMax-Hailuo-2.3\",\"speech-2.8-turbo\"]",
 	},
@@ -700,7 +660,6 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "volcengine",
 		Name:                       "火山方舟",
 		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts/create）、图像生成（豆包 seedream 系 images/generations）与语音识别长转写（豆包录音文件识别 2.0 /api/v3/auc/bigmodel/submit|query，语音应用凭据）能力",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"doubao-seedance-2-0-mini-260615\",\"volc.seedasr.auc\"]",
 	},
@@ -713,18 +672,8 @@ var pgSeedProviders = []pgSeedProvider{
 		Code:                       "qwen",
 		Name:                       "通义百炼",
 		Description:                "通义百炼（阿里云 DashScope）官方供应商，支持 API Key 接入对话（qwen 系 OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别）能力",
-		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"wan2.2-t2v-plus\"]",
-	},
-	{
-		ID:                         "hybrid",
-		Code:                       "hybrid",
-		Name:                       "混合供应商",
-		Description:                "混合供应商账户用于创建真实上游账户，并在账户内配置允许的下游协议入口和上游模型映射；不指向其他账户、分组或 API Key",
-		ParentCode:                 "",
-		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"claude-opus-5-5\",\"gemini-3.8-flash\",\"glm-5.3\"]",
 	},
 }
 
@@ -769,328 +718,20 @@ var pgSeedEndpointFamilies = []pgSeedEndpointFamily{
 	{ID: "openai_v1_audio_transcription", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "audio_transcription", Name: "Audio Transcription", Description: "OpenAI v1 统一 /audio/jobs 面承载的厂商原生长音频转写任务形态", Enabled: 1},
 }
 
-// pgSeedProfile mirrors DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS. AccountTypes
-// and Capabilities are kept as slices; the seed parameters are JSON-encoded
-// from them exactly like the Node JSON.stringify calls.
-type pgSeedProfile struct {
-	ID                      string
-	ProviderCode            string
-	Name                    string
-	Description             string
-	Enabled                 int
-	ProtocolCode            string
-	ProtocolVersion         string
-	BaseURL                 string
-	DefaultHealthCheckModel string
-	AccountTypes            []string
-	Capabilities            []string
-	EndpointFamilies        []string
-}
-
-var pgSeedProfiles = []pgSeedProfile{
-	{
-		ID:                      "profile_openai_openai_v1",
-		ProviderCode:            "openai",
-		Name:                    "OpenAI 兼容 / OpenAI v1",
-		Description:             "通用 OpenAI-compatible 供应商的 OpenAI v1 协议档案，仅承载 API Key 透传、模型目录和通用协议策略",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.openai.com/v1",
-		DefaultHealthCheckModel: "gpt-6-sol",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"responses", "chat", "passthrough"},
-		EndpointFamilies:        []string{"chat_completions", "responses"},
-	},
-	{
-		ID:                      "profile_gpt_openai_v1",
-		ProviderCode:            "gpt",
-		Name:                    "GPT / OpenAI v1",
-		Description:             "GPT 供应商的 OpenAI v1 协议档案，支持 OAuth 与 API Key 两种账户接入方式",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.openai.com/v1",
-		DefaultHealthCheckModel: "gpt-6-sol",
-		AccountTypes:            []string{"oauth", "api_key"},
-		Capabilities:            []string{"responses", "chat"},
-		EndpointFamilies:        []string{"chat_completions", "responses"},
-	},
-	{
-		ID:                      "profile_xai_openai_v1",
-		ProviderCode:            "xai",
-		Name:                    "xAI / OpenAI v1",
-		Description:             "xAI 官方协议档案，支持 API Key 与 Grok OAuth，承载 OpenAI v1 Chat Completions 与 Responses 文本接口",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.x.ai/v1",
-		DefaultHealthCheckModel: "grok-4.7",
-		AccountTypes:            []string{"api_key", "oauth"},
-		Capabilities:            []string{"responses", "chat", "passthrough"},
-		EndpointFamilies:        []string{"chat_completions", "responses"},
-	},
-	{
-		ID:                      "profile_deepseek_anthropic_v1",
-		ProviderCode:            "deepseek",
-		Name:                    "DeepSeek / Anthropic v1",
-		Description:             "DeepSeek 供应商的 Anthropic v1 Messages 协议档案，承载 Claude Code 使用的 /v1/messages 与 /v1/models 直连",
-		Enabled:                 1,
-		ProtocolCode:            "anthropic",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.deepseek.com/anthropic",
-		DefaultHealthCheckModel: "deepseek-flash",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"messages", "models", "passthrough"},
-		EndpointFamilies:        []string{"messages", "models"},
-	},
-	{
-		ID:                      "profile_deepseek_openai_v1",
-		ProviderCode:            "deepseek",
-		Name:                    "DeepSeek / OpenAI v1",
-		Description:             "DeepSeek 供应商的 OpenAI-compatible v1 协议档案，承载 API Key、Chat Completions、原生 Responses、DeepSeek 响应扩展字段与 Codex Responses 桥接",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.deepseek.com",
-		DefaultHealthCheckModel: "deepseek-flash",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "responses", "passthrough"},
-		EndpointFamilies:        []string{"chat_completions", "responses"},
-	},
-	{
-		ID:                      "profile_anthropic_anthropic_v1",
-		ProviderCode:            "anthropic",
-		Name:                    "Anthropic / Anthropic v1",
-		Description:             "Anthropic 官方协议档案，支持 API Key 或 OAuth Access Token，承载 anthropic-version 与 Messages 原生协议",
-		Enabled:                 1,
-		ProtocolCode:            "anthropic",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.anthropic.com/v1",
-		DefaultHealthCheckModel: "claude-opus-5-5",
-		AccountTypes:            []string{"api_key", "oauth"},
-		Capabilities:            []string{"messages", "models", "count_tokens", "passthrough"},
-		EndpointFamilies:        []string{"messages", "models", "message_token_counting"},
-	},
-	{
-		ID:                      "profile_gemini_openai_chat_v1beta",
-		ProviderCode:            "gemini",
-		Name:                    "Gemini / OpenAI Chat",
-		Description:             "Gemini 官方 OpenAI Chat Completions 兼容档案，仅用于 OpenAI Chat 直连和 Codex Responses 显式模型映射，不承载 Gemini 原生协议",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://generativelanguage.googleapis.com/v1beta/openai",
-		DefaultHealthCheckModel: "gemini-3.8-flash",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "passthrough"},
-		EndpointFamilies:        []string{"chat_completions"},
-	},
-	{
-		ID:                      "profile_gemini_native_v1beta",
-		ProviderCode:            "gemini",
-		Name:                    "Gemini / Gemini v1beta",
-		Description:             "Gemini 官方 API Key 协议档案，承载 x-goog-api-key 与 Gemini v1beta 原生协议直连",
-		Enabled:                 1,
-		ProtocolCode:            "gemini",
-		ProtocolVersion:         "v1beta",
-		BaseURL:                 "https://generativelanguage.googleapis.com",
-		DefaultHealthCheckModel: "gemini-3.8-flash",
-		AccountTypes:            []string{"api_key", "google_oauth"},
-		Capabilities:            []string{"generate_content", "stream_generate_content", "count_tokens", "embed_content", "interactions", "models", "passthrough"},
-		EndpointFamilies:        []string{"models", "generate_content", "stream_generate_content", "count_tokens", "embed_content", "interactions"},
-	},
-	{
-		ID:                      "profile_glm_coding_openai_v1",
-		ProviderCode:            "glm",
-		Name:                    "智谱 GLM Coding / OpenAI Chat",
-		Description:             "智谱 GLM Coding Plan Key 协议档案，使用 Coding Plan OpenAI Chat Completions 兼容端点",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://open.bigmodel.cn/api/coding/paas/v4",
-		DefaultHealthCheckModel: "glm-5.3",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "passthrough"},
-		EndpointFamilies:        []string{"chat_completions"},
-	},
-	{
-		ID:                      "profile_glm_coding_anthropic_v1",
-		ProviderCode:            "glm",
-		Name:                    "智谱 GLM Coding / Anthropic v1",
-		Description:             "智谱 GLM Coding Plan Key 的 Anthropic v1 Messages 协议档案，面向 Anthropic Messages 客户端直连",
-		Enabled:                 1,
-		ProtocolCode:            "anthropic",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://open.bigmodel.cn/api/anthropic",
-		DefaultHealthCheckModel: "glm-5.3",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"messages", "models", "passthrough"},
-		EndpointFamilies:        []string{"messages", "models"},
-	},
-	{
-		ID:                      "profile_glm_general_openai_v1",
-		ProviderCode:            "glm",
-		Name:                    "智谱 GLM 通用 / OpenAI Chat",
-		Description:             "智谱通用 GLM API Key 协议档案，使用智谱 OpenAI Chat Completions 兼容端点",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://open.bigmodel.cn/api/paas/v4/",
-		DefaultHealthCheckModel: "glm-5.3",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "passthrough"},
-		EndpointFamilies:        []string{"chat_completions"},
-	},
-	{
-		ID:                      "profile_hybrid_openai_chat_v1",
-		ProviderCode:            "hybrid",
-		Name:                    "混合供应商",
-		Description:             "混合供应商通用 API Key 档案；真实上游 Base URL 和目标协议由账户模型映射显式声明",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "",
-		DefaultHealthCheckModel: "",
-		AccountTypes:            []string{"api_key"},
-		// M4b 媒体映射（媒体设计 §9 hybrid 行）：Capabilities/EndpointFamilies
-		// 补媒体族（video_generation/tts，与 schema 端点族 seed
-		// openai_v1_video_generation / openai_v1_tts 同码）——hybrid 聚合中转
-		// 的媒体模型映射（source 对外媒体模型名 → upstream 真实媒体模型名）
-		// 经账号映射的 video_generation/tts 族表达，执行走 openai 形态媒体
-		// 端点（/v1/videos、/v1/audio/speech）直连该中转。
-		Capabilities:     []string{"chat", "responses", "messages", "generate_content", "stream_generate_content", "bridge", "video_generation", "tts"},
-		EndpointFamilies: []string{"chat_completions", "responses", "messages", "generate_content", "stream_generate_content", "video_generation", "tts"},
-	},
-	{
-		ID:                      "profile_hybrid_anthropic_messages_v1",
-		ProviderCode:            "hybrid",
-		Name:                    "混合供应商 Anthropic Messages",
-		Description:             "混合供应商 Anthropic Messages API Key 档案；下游协议由账户模型映射显式声明",
-		Enabled:                 1,
-		ProtocolCode:            "anthropic",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "",
-		DefaultHealthCheckModel: "",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"messages", "bridge"},
-		EndpointFamilies:        []string{"messages"},
-	},
-	{
-		// M3 媒体新增供应商档案（媒体设计 §9/契约 §8）：MiniMax API Key 单
-		// 档案，Capabilities 只声明媒体（video_generation/tts，与
-		// EndpointFamilies 同名）——不声明 chat/responses/passthrough：
-		// MiniMax 聊天端点非 /v1/chat/completions，档案不得让聊天流量路由
-		// 进来（目录亦无 chat 模型行，模型门双保险）。BaseURL 为国内官方根
-		// api.minimax.chat（海外 api.minimaxi.com 由账户 base_url 覆盖）；
-		// 出站路径 /v1/video_generation、/v1/t2a_v2 由链上 openai 归一拼缀。
-		ID:                      "profile_minimax_openai_v1",
-		ProviderCode:            "minimax",
-		Name:                    "MiniMax / OpenAI v1 媒体",
-		Description:             "MiniMax 官方 API Key 协议档案，仅承载视频生成（Hailuo video_generation）与语音合成（speech 系 t2a_v2）媒体能力；MiniMax 聊天端点非 OpenAI Chat 形态，本档案不承接聊天流量",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://api.minimax.chat",
-		DefaultHealthCheckModel: "speech-2.8-turbo",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"video_generation", "tts"},
-		EndpointFamilies:        []string{"video_generation", "tts"},
-	},
-	{
-		// M3 媒体新增供应商档案（媒体设计 §9/契约 §9）：火山方舟 API Key 单
-		// 档案，Capabilities 声明 video_generation + tts（M6，契约 §9.2：豆包
-		// TTS 走 openspeech 语音服务域 /api/v3/tts，复用 openai_v1_tts 族行，
-		// 语音凭据双值 speech_appid/speech_token 见《火山方舟账号接入.md》）。
-		// 对话批补 chat/chat_completions（复用既有 openai_v1_chat_completions
-		// 族行，不新增 family 行）：ark 官方 OpenAI 兼容端点 /api/v3/chat/
-		// completions 承接豆包对话模型，与媒体面共享 base_url 与 Bearer 凭据
-		//——出站 chat 请求按 /api/v3 服务根归一（服务根去重，不走 openai /v1
-		// 强制补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
-		// 2026-10-17 图像域开通：豆包 seedream 系图像模型经 ark OpenAI 兼容
-		// 图像端点 /api/v3/images/generations 承接（实测出图成功；Agent Plan
-		// 专属端点 /api/plan/v3/images/generations 实测可用），与 chat 同
-		// base_url/Bearer 凭据——能力域矩阵 accountscore.capabilityMatrix
-		// Volcengine 行 image 格与词表 images_json 开通，出站 URL 由链上
-		// chainVolcengineImagesUpstreamURL 服务根归一（三形态语义同 chat）。
-		// 写侧校验不读档案 Capabilities/EndpointFamilies（读取面为协议对与
-		// provider token，见 accounts.write requireEnabledProviderProtocol
-		// Profile 与 accounts.model_mapping_protocol_matrix
-		// providerModelSupportsProtocolProfile），故 Capability arrays 不加
-		// images 值、EndpointFamilies 不新增图像族（避免为展示面引入
-		// protocol_endpoint_families 新行与 family 绑定计数漂移）。
-		// BaseURL 为官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/
-		// contents/generations/tasks、/api/v3/chat/completions 与
-		// /api/v3/images/generations 由链上 chainVolcengineVideoUpstreamURL /
-		// volcengine chat/images 归一拼缀，TTS 出站 host 恒
-		// openspeech.bytedance.com（URL 构造特例）。
-		//
-		// DefaultHealthCheckModel 换为现役视频模型
-		// doubao-seedance-2-0-mini-260615（既有 doubao-seedance-1-0-pro-250528
-		// 官方「即将下线」；图像域账户检查模型由运营按 seedream 行配置，
-		// images_json 检查形态要求检查模型被目录证实 images 协议）。注意
-		// seed upsert 只在新建库生效（既有库不回填档案行，属预期）。
-		// 2026-10-17 语音识别承接批：Capabilities/EndpointFamilies 补
-		// audio_transcription（复用 M3f openai_v1_audio_transcription 族行，
-		// 不新增 family 行；对照 qwen 档案同构），豆包录音文件识别 2.0 经
-		// openspeech /api/v3/auc/bigmodel/submit|query 异步两段由
-		// /v1/audio/jobs 统一面承接（契约 §9.2）；audio_job_* 端点模式全
-		// opt-in，默认集维持 video_get 不变（账户 endpoint modes 节）。
-		ID:                      "profile_volcengine_openai_v1",
-		ProviderCode:            "volcengine",
-		Name:                    "火山方舟 / OpenAI v1 媒体",
-		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts/create，语音应用凭据）、图像生成（豆包 seedream 系 /api/v3/images/generations OpenAI 兼容图像端点）与语音识别长转写（豆包录音文件识别 2.0 /api/v3/auc/bigmodel/submit|query，语音应用凭据）能力",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://ark.cn-beijing.volces.com",
-		DefaultHealthCheckModel: "doubao-seedance-2-0-mini-260615",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "video_generation", "tts", "audio_transcription"},
-		EndpointFamilies:        []string{"chat_completions", "video_generation", "tts", "audio_transcription"},
-	},
-	{
-		// M3 媒体新增供应商档案（媒体设计 §9/契约 §10）：通义百炼 API Key 单
-		// 档案，Capabilities 声明 video_generation 与 audio_transcription
-		//（M3f 长转写，契约 §10.2 回填；EndpointFamilies 同名——video_
-		// generation 复用 minimax 批次族行，audio_transcription 复用 M3f 新增
-		// 族行）。对话批补 chat/chat_completions（复用既有
-		// openai_v1_chat_completions 族行，不新增 family 行）：DashScope 官方
-		// OpenAI 兼容模式 /compatible-mode/v1/chat/completions 承接 qwen 对话
-		// 模型，与媒体面共享 base_url 与 Bearer 凭据——出站 chat 请求按
-		// /compatible-mode/v1 服务根归一（服务根去重，不走 openai /v1 强制
-		// 补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
-		// CosyVoice TTS 面（契约 §10.2）未回填不声明。BaseURL 为 DashScope
-		// 官方根 dashscope.aliyuncs.com；出站路径 /api/v1/services/... 与
-		// /api/v1/tasks/{id} 由链上 chainQwenVideoUpstreamURL 归一拼缀；万相
-		// 创建请求头带 X-DashScope-Async: enable（DashScope 异步任务约定），
-		// paraformer 创建无该头（天然异步服务）。
-		ID:                      "profile_qwen_openai_v1",
-		ProviderCode:            "qwen",
-		Name:                    "通义百炼 / OpenAI v1 媒体",
-		Description:             "通义百炼（阿里云 DashScope）官方 API Key 协议档案，承载对话（qwen 系 /compatible-mode/v1/chat/completions OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别异步任务）能力；CosyVoice TTS 面未回填，本档案不声明",
-		Enabled:                 1,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		BaseURL:                 "https://dashscope.aliyuncs.com",
-		DefaultHealthCheckModel: "wan2.2-t2v-plus",
-		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "video_generation", "audio_transcription"},
-		EndpointFamilies:        []string{"chat_completions", "video_generation", "audio_transcription"},
-	},
-}
-
 // pgSeedGroup mirrors the narrowed default-resource family (2026-10-07 默认
-// 资源收口): sys_admin seeds exactly one built-in default group — the GPT one.
-// Other provider groups (and hybrid) are created explicitly by the operator;
-// the sys_admin chat key is no longer seeded here either (the chat-session
-// ensure chain provisions it on demand).
+// 资源收口): sys_admin seeds exactly one built-in default group. 供应商与上游
+// 协议面重构批（设计 §8）去掉组上的供应商维度：组名收敛为「默认分组」，
+// 行内不再有 provider_code；ID 保留 grp_default_gpt_sys_admin 字面值以维持
+// 既有库/网关派生 ID（route_strategy_/key_default_ 前缀替换链）稳定。
+// Other groups are created explicitly by the operator; the sys_admin chat key
+// is not seeded here either (the chat-session ensure chain provisions it on
+// demand).
 type pgSeedGroup struct {
-	ID, SystemAccountID, Name, ProviderCode, Description string
+	ID, SystemAccountID, Name, Description string
 }
 
 var pgSeedGroups = []pgSeedGroup{
-	{ID: "grp_default_gpt_sys_admin", SystemAccountID: "sys_admin", Name: "默认 GPT 分组", ProviderCode: "gpt", Description: ""},
+	{ID: "grp_default_gpt_sys_admin", SystemAccountID: "sys_admin", Name: "默认分组", Description: ""},
 }
 
 // pgSeedExternalIntegrationSource mirrors the built-in external integration
@@ -1193,8 +834,7 @@ type pgSeedKeyValue struct {
 
 // EnsurePostgresSeeds applies the portable subset of seedPostgresDefaults in
 // Node statement order: default admin account, global settings, quota window
-// configs, quota scope binding backfills, providers, protocols, endpoint
-// families, provider protocol profiles (with account-type repair), profile
+// configs, quota scope binding backfills, vendors, protocols, endpoint
 // families, built-in groups, the external integration source row and system
 // settings. Every INSERT uses ON CONFLICT DO NOTHING and every UPDATE is a
 // guarded repair, so repeated calls are idempotent. See the file header for
@@ -1233,7 +873,7 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 		}
 	}
 	for _, provider := range pgSeedProviders {
-		if err := exec(pgSeedProviderInsert, provider.ID, provider.Code, provider.Name, provider.Description, pgNullableText(provider.ParentCode), provider.Enabled, provider.DefaultSupportedModelsJSON, now, now); err != nil {
+		if err := exec(pgSeedProviderInsert, provider.ID, provider.Code, provider.Name, provider.Description, provider.Enabled, provider.DefaultSupportedModelsJSON, now, now); err != nil {
 			return PGSeedResult{}, err
 		}
 		if err := exec(pgSeedProviderDefaultModelsRepair, provider.DefaultSupportedModelsJSON, now, provider.Code); err != nil {
@@ -1250,47 +890,12 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 			return PGSeedResult{}, err
 		}
 	}
-	nowTime, err := time.Parse("2006-01-02T15:04:05.000Z07:00", now)
-	if err != nil {
-		return PGSeedResult{}, fmt.Errorf("parse seed timestamp: %w", err)
-	}
-	for index, profile := range pgSeedProfiles {
-		profileUpdatedAt := nowTime.Add(time.Duration(index) * time.Millisecond).UTC().Format("2006-01-02T15:04:05.000Z07:00")
-		if err := exec(pgSeedProfileInsert, profile.ID, profile.ProviderCode, profile.Name, profile.Description, profile.Enabled, profile.ProtocolCode, profile.ProtocolVersion, profile.BaseURL, profile.DefaultHealthCheckModel, mustJSON(profile.AccountTypes), mustJSON(profile.Capabilities), now, profileUpdatedAt); err != nil {
-			return PGSeedResult{}, err
-		}
-	}
-	for _, profile := range pgSeedProfiles {
-		var accountTypesJSON string
-		err := db.QueryRowContext(ctx, pgSeedProfileAccountTypesSelect, profile.ID).Scan(&accountTypesJSON)
-		if err != nil {
-			continue // missing row or non-text value mirrors the Node repair skip
-		}
-		current, err := parseSeedStringArray(accountTypesJSON)
-		if err != nil {
-			continue
-		}
-		merged := mergeSeedDistinct(current, profile.AccountTypes)
-		if seedStringSlicesEqual(merged, current) {
-			continue
-		}
-		if err := exec(pgSeedProfileAccountTypesUpdate, mustJSON(merged), now, profile.ID); err != nil {
-			return PGSeedResult{}, err
-		}
-	}
-	for _, profile := range pgSeedProfiles {
-		for _, familyCode := range profile.EndpointFamilies {
-			if err := exec(pgSeedProfileFamilyInsert, profile.ID, familyCode, now, now); err != nil {
-				return PGSeedResult{}, err
-			}
-		}
-	}
 	for _, group := range pgSeedGroups {
-		if err := exec(pgSeedGroupDefaultRepair, group.ProviderCode, group.SystemAccountID, group.ID); err != nil {
+		if err := exec(pgSeedGroupDefaultRepair, group.SystemAccountID, group.ID); err != nil {
 			return PGSeedResult{}, err
 		}
-		defaultGroupIDPrefix := "grp_default_" + group.ProviderCode + "_"
-		if err := exec(pgSeedGroupInsert, group.SystemAccountID, group.ID, defaultGroupIDPrefix, group.ProviderCode, group.Name, group.Name, group.Description, now, now); err != nil {
+		defaultGroupIDPrefix := "grp_default_gpt_"
+		if err := exec(pgSeedGroupInsert, group.SystemAccountID, group.ID, defaultGroupIDPrefix, group.Name, group.Name, group.Description, now, now); err != nil {
 			return PGSeedResult{}, err
 		}
 	}
@@ -1332,15 +937,6 @@ func hashSeedPassword(password string) (string, error) {
 		saltText,
 		base64.RawURLEncoding.EncodeToString(derived),
 	}, "$"), nil
-}
-
-// pgNullableText maps the empty string to a SQL NULL like the Node seeds do
-// for optional provider parent codes.
-func pgNullableText(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
 }
 
 func mustJSON(value any) string {

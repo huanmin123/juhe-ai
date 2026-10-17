@@ -366,27 +366,29 @@
               <template v-if="requestOverridesSupported">
                 <div class="batch-edit-two-columns">
                   <AccountBatchEditField
+                    v-if="serviceTierOverrideFieldVisible"
                     v-model:checked="form.enabled.serviceTierOverride"
                     label="服务等级"
-                    :description="serviceTierDescription"
+                    description="不覆盖客户端设置表示清除账户覆盖。"
                   >
                     <template #default="{ disabled }">
                       <a-select
                         v-model:value="form.serviceTierOverride"
-                        :disabled="disabled || modelConfigurationLoading || !gptCapabilities.serviceTiers.length"
+                        :disabled="disabled"
                         :options="serviceTierOptions"
                       />
                     </template>
                   </AccountBatchEditField>
                   <AccountBatchEditField
+                    v-if="reasoningEffortOverrideFieldVisible"
                     v-model:checked="form.enabled.reasoningEffortOverride"
                     label="思考级别"
-                    :description="reasoningEffortDescription"
+                    description="不覆盖客户端设置表示清除账户覆盖。"
                   >
                     <template #default="{ disabled }">
                       <a-select
                         v-model:value="form.reasoningEffortOverride"
-                        :disabled="disabled || modelConfigurationLoading || !gptCapabilities.reasoningEfforts.length"
+                        :disabled="disabled"
                         :options="reasoningEffortOptions"
                       />
                     </template>
@@ -498,6 +500,7 @@ const emit = defineEmits<{
 const activeTab = ref('general')
 const saving = ref(false)
 const modelsLoading = ref(false)
+const modelOptionsLoaded = ref(false)
 const modelContextLoading = ref(false)
 const contextError = ref('')
 const modelContextError = ref('')
@@ -568,36 +571,49 @@ const endpointModeOptions = computed(() => {
   const allowed = new Set(endpointModesForProfile(profile))
   return accountEndpointModeOptionsForProfile(profile).filter((option) => allowed.has(option.value))
 })
+// Gemini Interactions-only 守卫的接口能力输入：尚未按需加载时传 undefined
+//（「未加载」不得当作「确认不支持」），加载后用全部账户交集。
+const requestOverrideGuardModes = computed(() => (
+  form.enabled.supportedEndpointModes || loadedModelContextFields.has('supportedEndpointModes')
+    ? effectiveBatchEndpointModes.value
+    : undefined
+))
+// 覆盖字段值域为协议族全集（accountRequestOverrideVocab，指向后端真源），
+// 不再按已选模型求并集；模型目录只按供应商级「任一模型声明过能力」决定字段显示。
 const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
   providerCode: homogeneousAccount.value?.providerCode,
-  accountType: homogeneousAccount.value?.type ?? 'api_key',
+  protocolCode: homogeneousAccount.value?.protocolCode,
   modelOptions: modelOptions.value,
-  supportedModels: effectiveBatchModels.value,
-  supportedEndpointModes: effectiveBatchEndpointModes.value
+  supportedEndpointModes: requestOverrideGuardModes.value
 }))
-const requestOverridesSupported = computed(() => Boolean(
-  homogeneousAccount.value
-  && (
-    isAccountRequestOverrideProviderSupported(
-      homogeneousAccount.value.providerCode,
-      form.enabled.supportedEndpointModes || loadedModelContextFields.has('supportedEndpointModes')
-        ? effectiveBatchEndpointModes.value
-        : undefined
-    )
-    || form.enabled.serviceTierOverride
-    || form.enabled.reasoningEffortOverride
-  )
-))
 const modelConfigurationLoading = computed(() => modelContextLoading.value || modelsLoading.value)
 const contextErrorMessage = computed(() => contextError.value || modelContextError.value)
+// 批量编辑模型目录是懒加载：本会话尚未完成过一次加载时，供应商级声明能力未知，
+// 字段按「可能存在」显示（与 v8-D「未加载 ≠ 确认为空」同语义）；加载完成后才按
+// 目录声明结果决定显示。已勾选字段始终保留入口供用户取消。
+const serviceTierOverrideFieldVisible = computed(() => Boolean(
+  homogeneousAccount.value
+  && gptCapabilities.value.serviceTiers.length
+  && (modelConfigurationLoading.value
+    || !modelOptionsLoaded.value
+    || gptCapabilities.value.declaredServiceTiers
+    || form.enabled.serviceTierOverride)
+))
+const reasoningEffortOverrideFieldVisible = computed(() => Boolean(
+  homogeneousAccount.value
+  && gptCapabilities.value.reasoningEfforts.length
+  && (modelConfigurationLoading.value
+    || !modelOptionsLoaded.value
+    || gptCapabilities.value.declaredReasoningEfforts
+    || form.enabled.reasoningEffortOverride)
+))
+const requestOverridesSupported = computed(() => Boolean(
+  homogeneousAccount.value
+  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, requestOverrideGuardModes.value)
+  && (serviceTierOverrideFieldVisible.value || reasoningEffortOverrideFieldVisible.value)
+))
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(gptCapabilities.value))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(gptCapabilities.value))
-const serviceTierDescription = computed(() => gptCapabilities.value.serviceTiers.length
-  ? '不覆盖客户端设置表示清除账户覆盖。'
-  : '当前已选模型未声明可用服务等级；仍可批量清除已有覆盖。')
-const reasoningEffortDescription = computed(() => gptCapabilities.value.reasoningEfforts.length
-  ? '不覆盖客户端设置表示清除账户覆盖。'
-  : '当前已选模型未声明可用思考级别；仍可批量清除已有覆盖。')
 const scheduleForm = computed(() => ({ availabilitySchedule: form.availabilitySchedule }))
 const enabledLabels = computed(() => enabledAccountBatchEditFieldLabels(form))
 const saveDisabled = computed(() => (
@@ -660,6 +676,7 @@ async function loadContext(): Promise<void> {
   accountDetails.value = props.accounts.map(accountBatchEditContextFromListItem)
   currentProviderModelOptions.value = []
   modelOptions.value = []
+  modelOptionsLoaded.value = false
   modelOptionsRequestId += 1
   modelsLoading.value = false
   loadedModelContextFields.clear()
@@ -760,6 +777,7 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
     if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
     currentProviderModelOptions.value = models.data
     modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
+    modelOptionsLoaded.value = true
   } finally {
     if (token === loadToken && requestId === modelOptionsRequestId) modelsLoading.value = false
   }

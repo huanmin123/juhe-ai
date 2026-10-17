@@ -248,7 +248,7 @@ min(
 )
 ```
 
-剩余墙钟或首字前预算不足以完成一次有意义的 attempt 时，禁止 confirmation、half-open、探索或快速切号，直接按当前路由模式 handoff 给客户端。账户结果只能推进 cursor：weighted 不能重新抽样或改变本次权重决策，round-robin 不能重建环，failover 不能跳过既有主备顺序，merge 不能重建合并池或改变池内组标。该快照与四类账户结果一起构成 route-coordinator 的实现契约。
+剩余墙钟或首字前预算不足以完成一次有意义的 attempt 时，禁止 confirmation、half-open、探索或快速切号，直接按当前路由模式 handoff 给客户端。账户结果只能推进 cursor：weighted 不能重新抽样或改变本次权重决策，round-robin 不能重建环，failover 不能跳过既有主备顺序；超级分组只在已选目标内部按成员顺序展开，不能改变路由目标序列。该快照与四类账户结果一起构成 route-coordinator 的实现契约。
 
 ## 4. 不跨层探索，同层受控探索
 
@@ -907,7 +907,7 @@ routeCoordinationBudget
 - `retry_next` 是唯一的同账户兄弟 Key 轮换授权；账户级候选切换不依赖用户规则，完整非 `2xx` 在语义未提交时都按统一路径继续。规则命中后可以按用户显式选择建立易失短电路，避免其他请求继续灌入；已提交响应不得因该动作再次执行，未配置规则的完整响应也不得建立共享短电路。
 - `cooldown / disable` 由显式策略推进持久状态，账户短电路只承担状态写回完成前的即时止损，不能覆盖或撤销持久动作。
 - 显式策略 TTL 未到期时，短电路 canary 或普通成功不能提前解除该 TTL。
-- 所有路由模式都可以消费 Key / protocol-model / account 电路给出的账户可执行性，但只能在路由已选分组内过滤候选。weighted、round-robin、failover、merge 等路由仍由各自协调器解释 `dispatchable / temporarily_blocked / request_exhausted / hard_exhausted`，账户层不改变分组顺序和策略算法。
+- 所有路由模式都可以消费 Key / protocol-model / account 电路给出的账户可执行性，但只能在路由已选目标内过滤候选。weighted、round-robin、failover 和超级分组目标仍由各自协调器解释 `dispatchable / temporarily_blocked / request_exhausted / hard_exhausted`；账户层不改变路由目标顺序，超级分组成员展开也不把成员提升为路由目标。
 
 ## 14. 日志与指标
 
@@ -993,7 +993,7 @@ gateway_request_wall_handoff_total
 22. 大量未知模型名统一进入有界 `unknown` 桶；内存 / Redis 高基数保护和退化指标生效。
 23. Redis 不可用：performance 模式记录基础设施故障并保守处理，不回退本机共享假象。
 24. 同一个 confirmation / half-open 结果被重复提交：CAS 只生效一次，due 索引与状态一致，并增加幂等重放指标。
-25. `normal / failover / round_robin / weighted / merge` 分别收到四类账户结果：分组推进、等待和最终错误均由各自路由协调器决定，账户层不能跨分组或重置 `ServerRetryBudget`。
+25. `normal / failover / round_robin / weighted` 分别收到四类账户结果：路由目标推进、等待和最终错误均由各自路由协调器决定；超级分组成员展开属于已选目标内部，账户层不能跨路由目标或重置 `ServerRetryBudget`。
 26. 用户显式 `retry_next` 依次尝试完多个仍为 `CLOSED` 的账号：返回 `request_exhausted`，不重复扫描已尝试账号，也不把这些账号写成共享硬耗尽；副作用 lane 与文本共用统一候选去重和预算门禁。
 27. 旧 generation、错误 leaseId 或重复 transitionId 在新状态提交结果：全部被原子拒绝，不能改写 state、退避、恢复计数或 due 索引。
 28. `OPEN` 到期后两个 server 同时调度 `HALF_OPEN / RECOVERING`：只有一个 matching-generation lease 生效，状态值与 due 索引始终原子一致。

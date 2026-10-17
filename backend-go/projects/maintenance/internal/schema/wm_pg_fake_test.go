@@ -303,7 +303,7 @@ func TestWMQuotePGIdentifierEscapesEmbeddedQuotes(t *testing.T) {
 }
 
 // TestWMEnsurePostgresSeedsRunsPortableSubset 覆盖 EnsurePostgresSeeds 的完整
-// 可移植子集执行（QueryRow 全部 ErrNoRows → 走“全量插入 + 修复跳过”路径）。
+// 可移植子集执行（QueryRow 全部 ErrNoRows → 走“全量插入”路径）。
 func TestWMEnsurePostgresSeedsRunsPortableSubset(t *testing.T) {
 	rec := &wmSchemaRecorder{}
 	db := openWMSchemaFakeDB(rec)
@@ -320,7 +320,7 @@ func TestWMEnsurePostgresSeedsRunsPortableSubset(t *testing.T) {
 	for _, fragment := range []string{
 		`INSERT INTO "juhe_business"."system_accounts"`,
 		`INSERT INTO "juhe_business"."global_settings"`,
-		`INSERT INTO "juhe_business"."providers"`,
+		`INSERT INTO "juhe_business"."vendors"`,
 		`INSERT INTO "juhe_business"."protocols"`,
 		`INSERT INTO "juhe_business"."external_integration_sources"`,
 		`INSERT INTO "juhe_business"."system_settings"`,
@@ -329,13 +329,9 @@ func TestWMEnsurePostgresSeedsRunsPortableSubset(t *testing.T) {
 			t.Fatalf("可移植 seed 缺少语句 %s", fragment)
 		}
 	}
-	// 每个 profile 一次 account_types 修复查询；ErrNoRows 下不产生 UPDATE。
-	if got := rec.queryCount(); got != len(pgSeedProfiles) {
-		t.Fatalf("修复查询次数=%d want %d", got, len(pgSeedProfiles))
-	}
-	for _, query := range queries {
-		if strings.Contains(query, "account_types_json") && strings.HasPrefix(strings.TrimSpace(query), "UPDATE") {
-			t.Fatalf("ErrNoRows 路径不应产生修复 UPDATE: %q", query)
-		}
+	// 目标形态的可移植 seed 不再包含任何 profile 修复查询（provider_protocol_
+	// profiles 随旧供应商维度退役）。
+	if got := rec.queryCount(); got != 0 {
+		t.Fatalf("ErrNoRows 路径不应产生修复查询: %d", got)
 	}
 }

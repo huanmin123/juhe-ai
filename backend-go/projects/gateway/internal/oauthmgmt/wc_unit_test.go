@@ -424,14 +424,17 @@ func TestWCCredentialsPatchParsers(t *testing.T) {
 	if _, ok := parseOpenAICredentialsPatch(map[string]any{"supported_endpoint_modes": []any{}}); ok {
 		t.Fatalf("空 modes 必须拒绝")
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "bogus"}); ok {
-		t.Fatalf("tier 枚举必须拒绝")
+	// 覆盖字段自 2026-10-18 简化定案起降为「非空字符串（trim 后）」放行
+	//（与 anthropic/gemini/grok parser 同构），任意非枚举值也在 parser 层
+	// 放行，值域交由账户写入面凭据归一化判定。
+	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "bogus"}); !ok {
+		t.Fatalf("tier 非空字符串应放行（值域交由写入面）")
 	}
 	if _, ok := parseOpenAICredentialsPatch(map[string]any{"service_tier_override": "  "}); ok {
 		t.Fatalf("空 tier 必须拒绝")
 	}
-	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "bogus"}); ok {
-		t.Fatalf("effort 枚举必须拒绝")
+	if _, ok := parseOpenAICredentialsPatch(map[string]any{"reasoning_effort_override": "bogus"}); !ok {
+		t.Fatalf("effort 非空字符串应放行（值域交由写入面）")
 	}
 	if _, ok := parseOpenAICredentialsPatch(map[string]any{"unknown": 1}); ok {
 		t.Fatalf("openai 未知键必须拒绝")
@@ -463,8 +466,16 @@ func TestWCCredentialsPatchParsers(t *testing.T) {
 	if !ok || patch["base_url"] != "https://g" {
 		t.Fatalf("grok patch: %v %v", patch, ok)
 	}
-	if _, ok := parseGrokCredentialsPatch(map[string]any{"service_tier_override": "x"}); ok {
-		t.Fatalf("grok 不接受 tier 键")
+	// service_tier_override / reasoning_effort_override 接受非空字符串并写回
+	// trim 后的值（与 anthropic/gemini 同构）。
+	patch, ok = parseGrokCredentialsPatch(map[string]any{
+		"service_tier_override": " priority ", "reasoning_effort_override": " high ",
+	})
+	if !ok || patch["service_tier_override"] != "priority" || patch["reasoning_effort_override"] != "high" {
+		t.Fatalf("grok override patch: %v %v", patch, ok)
+	}
+	if _, ok := parseGrokCredentialsPatch(map[string]any{"service_tier_override": "  "}); ok {
+		t.Fatalf("grok 空 tier 必须拒绝")
 	}
 }
 

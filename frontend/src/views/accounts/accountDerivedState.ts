@@ -227,7 +227,11 @@ export function resolveAccountDefaultGroupSelection(input: {
   }
   const defaultGroup = defaultGroupForProvider(input.groups, providerCode)
   if (defaultGroup) return { id: defaultGroup.id, name: defaultGroup.name }
-  return input.cachedDefaultGroup
+  if (input.cachedDefaultGroup) return input.cachedDefaultGroup
+  // 兜底：无系统默认组、无用户引用数据默认组时预选首个可管理分组
+  // （后端 preferDefault 已把默认组排前，此处通常即选项列表第一项）。
+  const firstGroup = manageableGroupsForProvider(input.groups, providerCode)[0]
+  return firstGroup ? { id: firstGroup.id, name: firstGroup.name } : undefined
 }
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountListItem): SelectOption[] {

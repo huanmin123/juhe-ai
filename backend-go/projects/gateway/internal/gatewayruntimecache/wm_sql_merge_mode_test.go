@@ -33,8 +33,8 @@ func TestWMSQLMergeModeRoundTrip(t *testing.T) {
 	const speedConfig = `{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000}}`
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
-		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g2', 'sys_owner', 'gpt', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g1', 'sys_owner', 1, 'personal')`,
+		`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('g2', 'sys_owner', 1, 'personal')`,
 		// merge 策略（双绑定 + speed_first 配置）+ 绑定 API Key。
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_wm_merge', 'sys_owner', 'merge', '` + speedConfig + `', 'active')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, purpose) VALUES ('key_wm_merge', 'sys_owner', 'rs_wm_merge', '` + HashSecret("sk-wm-merge") + `', 'active', 'chat')`,

@@ -1,20 +1,20 @@
 // Port of Node backend/src/storage/schema/seed-defaults.ts (seedDefaults and
 // its private helpers) for the six-database SQLite storage. The SQL statements
-// are byte-for-byte ports of the Node template literals and run in the Node
-// call order. Idempotency mirrors Node: every INSERT is INSERT OR IGNORE,
-// every UPDATE is either guarded (WHERE ...) or the exact same repair Node
-// re-applies on every startup, so with a pinned SeedOptions.Now repeated calls
-// leave identical rows.
+// run in the Node call order, converged to the 供应商与上游协议面重构 target
+// schema: vendors（9 真实厂商，无 parent_code）、groups（无供应商维度）、
+// models（目录快照经 modelSeedTargetRows 投影逐行 upsert，过期行按
+// ShutdownDate 写 'disabled'）。provider_protocol_profiles 及其 family 绑定
+// seed 随旧表退役；custom 模型同名清理随 custom_provider_models 表退役
+// （同名冲突改由 models 身份唯一索引与应用层写事务承接）。
 //
-// The built-in seed constants (providers, protocols, endpoint families,
-// profiles, groups, global/system settings, quota windows, external
-// integration source) are the shared pgSeed* tables declared in pg_schema.go;
-// they are the frozen DEFAULT_* values from Node src/storage/schema-defaults.ts
-// and are reused here so SQLite and PostgreSQL seed exactly the same data.
+// The built-in seed constants (vendors, protocols, endpoint families, groups,
+// global/system settings, quota windows, external integration source) are the
+// shared pgSeed* tables declared in pg_schema.go and reused here so SQLite and
+// PostgreSQL seed exactly the same data.
 //
-// The pricing catalog comes from model_catalog_data.go (generated from the
-// Node pricing modules); this file applies the Node runtime filters on top
-// (shutdown date, hybrid/openai skip).
+// The pricing catalog comes from model_catalog_data_gen.go (generated from the
+// gateway pricing catalog); this file applies the target-form projection
+// (modelSeedTargetRows) on top.
 
 package schema
 
@@ -22,8 +22,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
@@ -32,14 +30,11 @@ import (
 // SQLiteSeedResult summarizes SeedSQLiteDefaults.
 type SQLiteSeedResult struct {
 	StatementCount int
-	// ModelCatalogRows is the number of pricing rows upserted after the
-	// shutdown filter (119 rows in the 2026-09-23 snapshot before any
-	// shutdown date is reached).
+	// ModelCatalogRows 是本次 seed 写入 models 表的目录快照行数（全量行，
+	// 含 ShutdownDate 已过写 'disabled' 的行）。语义随 models 表收敛从「
+	// shutdown 过滤后的可见行数」改为「写入行数」；下游消费方按同源口径
+	// 使用该值（bootstrap.SQLiteSeedResult 出口）。
 	ModelCatalogRows int
-	// CustomModelOverlapCleaned 是 model catalog seed 在目录 upsert 后删除的
-	// 与本次 seed 运行时可见内置行同名的 custom_provider_models 存量行数
-	// （契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先）。
-	CustomModelOverlapCleaned int
 	// BuiltinQuestionRows 是本次 seed 尝试写入的系统内置题库题行数
 	//（固定 8 题；冲突时按内置行恢复 seed 权威题面，详见
 	// sqSeedBuiltinQuestionUpsert）。
@@ -96,7 +91,7 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 
 	for _, provider := range pgSeedProviders {
 		if err := exec(sqSeedProviderInsert,
-			provider.ID, provider.Code, provider.Name, provider.Description, pgNullableText(provider.ParentCode), provider.Enabled, provider.DefaultSupportedModelsJSON, now, now); err != nil {
+			provider.ID, provider.Code, provider.Name, provider.Description, provider.Enabled, provider.DefaultSupportedModelsJSON, now, now); err != nil {
 			return SQLiteSeedResult{}, err
 		}
 		if err := exec(sqSeedProviderDefaultModelsRepair, provider.DefaultSupportedModelsJSON, now, provider.Code); err != nil {
@@ -109,8 +104,8 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 		return SQLiteSeedResult{}, err
 	}
 
-	// Node: provider_model_catalog upsert for every built-in pricing model
-	// (hybrid/openai skipped) plus the stale generated-model disable.
+	// 内置模型目录：models 逐行 upsert（全量目录行，含 disabled）加 stale
+	// builtin disable。
 	builtInModelKeys, err := seedSQLiteModelCatalog(ctx, db, options, now, &result)
 	if err != nil {
 		return SQLiteSeedResult{}, err
@@ -154,26 +149,6 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 	for _, family := range pgSeedEndpointFamilies {
 		if err := exec(sqSeedEndpointFamilyInsert, family.ID, family.ProtocolCode, family.ProtocolVersion, family.Code, family.Name, family.Description, family.Enabled, now, now); err != nil {
 			return SQLiteSeedResult{}, err
-		}
-	}
-
-	baseTime := options.nowTime()
-	for index, profile := range pgSeedProfiles {
-		profileUpdatedAt := seedTimestamp(baseTime.Add(time.Duration(index) * time.Millisecond))
-		if err := exec(sqSeedProfileInsert,
-			profile.ID, profile.ProviderCode, profile.Name, profile.Description, profile.Enabled, profile.ProtocolCode, profile.ProtocolVersion, profile.BaseURL, profile.DefaultHealthCheckModel, seedStringify(profile.AccountTypes), seedStringify(profile.Capabilities), now, profileUpdatedAt); err != nil {
-			return SQLiteSeedResult{}, err
-		}
-	}
-	if err := seedSQLiteRepairProfileAccountTypes(ctx, db, exec, now); err != nil {
-		return SQLiteSeedResult{}, err
-	}
-
-	for _, profile := range pgSeedProfiles {
-		for _, familyCode := range profile.EndpointFamilies {
-			if err := exec(sqSeedProfileFamilyInsert, profile.ID, familyCode, now, now); err != nil {
-				return SQLiteSeedResult{}, err
-			}
 		}
 	}
 
@@ -288,16 +263,17 @@ const sqSeedQuotaScopeBindingsBackfill = `
       AND CAST(json_extract(ra.limits_json, '$.hourly.hours') AS INTEGER) BETWEEN 1 AND 720;
   `
 
-// sqSeedProviderInsert seeds one providers row.
+// sqSeedProviderInsert seeds one vendors row（providers 由 vendors 取代，无
+// parent_code 列）.
 const sqSeedProviderInsert = `
-    INSERT OR IGNORE INTO providers (
-      id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO vendors (
+      id, code, name, description, enabled, default_supported_models_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `
 
-// sqSeedProviderDefaultModelsRepair refreshes empty provider default model lists.
+// sqSeedProviderDefaultModelsRepair refreshes empty vendor default model lists.
 const sqSeedProviderDefaultModelsRepair = `
-    UPDATE providers
+    UPDATE vendors
     SET default_supported_models_json = ?, updated_at = ?
     WHERE code = ?
       AND (default_supported_models_json IS NULL OR trim(default_supported_models_json) = '' OR default_supported_models_json = '[]')
@@ -306,10 +282,10 @@ const sqSeedProviderDefaultModelsRepair = `
 // sqSeedGPTVendorCodexAutoReviewRemoval drops codex-auto-review from the GPT
 // vendor default model list.
 const sqSeedGPTVendorCodexAutoReviewRemoval = `
-    UPDATE providers
+    UPDATE vendors
     SET default_supported_models_json = coalesce((
       SELECT json_group_array(value)
-      FROM json_each(providers.default_supported_models_json)
+      FROM json_each(vendors.default_supported_models_json)
       WHERE value <> 'codex-auto-review'
     ), '[]'), updated_at = ?
     WHERE code = ?
@@ -317,89 +293,94 @@ const sqSeedGPTVendorCodexAutoReviewRemoval = `
       AND json_type(default_supported_models_json) = 'array'
   `
 
-// sqSeedModelCatalogUpsert is the Node provider_model_catalog upsert with the
-// manual-override aware ON CONFLICT clause (seed-defaults.ts modelStatement).
-const sqSeedModelCatalogUpsert = `
-    INSERT INTO provider_model_catalog (
-      id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
-      supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+// sqSeedModelsUpsert 是 models 表的 manual-override 感知 upsert（目标形态承接
+// 旧 provider_model_catalog upsert 语义）；冲突目标与身份唯一索引
+// idx_models_identity_unique 的表达式完全一致（COALESCE 空串归一）。
+const sqSeedModelsUpsert = `
+    INSERT INTO models (
+      id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+      catalog_visible, catalog_order, release_date, shutdown_date,
+      supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
       default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
       codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
+      supports_prompt_caching, source, pricing_notes, capability_notes, notes, created_by, updated_by,
+      created_at, updated_at,
       input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
       cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
       long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
       long_context_input_cost_multiplier, long_context_output_cost_multiplier,
       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-      output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
+      output_usd_per_image, currency
     ) VALUES (
-      ?, ?, ?, 'active',
+      ?, ?, ?, ?, 'builtin', NULL, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
+      ?, NULL, NULL, NULL, NULL, NULL, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
       ?, ?, ?, ?,
-      ?, ?, ?, ?
+      'USD'
     )
-    ON CONFLICT(provider_code, model) DO UPDATE SET
-      status = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override') THEN provider_model_catalog.status ELSE excluded.status END,
-      mode = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.mode ELSE excluded.mode END,
+    ON CONFLICT (COALESCE(vendor_code, ''), scope, COALESCE(system_account_id, ''), upstream_model) DO UPDATE SET
+      status = CASE WHEN models.source IN ('manual-override', 'manual-visibility-override') THEN models.status ELSE excluded.status END,
+      public_model = excluded.public_model,
+      catalog_visible = CASE
+        WHEN models.source IN ('manual-override', 'manual-visibility-override')
+        THEN min(models.catalog_visible, excluded.catalog_visible)
+        ELSE excluded.catalog_visible
+      END,
       catalog_order = excluded.catalog_order,
-      release_date = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.release_date ELSE excluded.release_date END,
-      shutdown_date = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.shutdown_date ELSE excluded.shutdown_date END,
-      supported_api_protocols_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.supported_api_protocols_json ELSE excluded.supported_api_protocols_json END,
-      supported_service_tiers_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.supported_service_tiers_json ELSE excluded.supported_service_tiers_json END,
-      supported_reasoning_efforts_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.supported_reasoning_efforts_json ELSE excluded.supported_reasoning_efforts_json END,
-      default_reasoning_effort = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.default_reasoning_effort ELSE excluded.default_reasoning_effort END,
+      release_date = CASE WHEN models.source = 'manual-override' THEN models.release_date ELSE excluded.release_date END,
+      shutdown_date = CASE WHEN models.source = 'manual-override' THEN models.shutdown_date ELSE excluded.shutdown_date END,
+      supported_endpoint_modes_json = CASE WHEN models.source = 'manual-override' THEN models.supported_endpoint_modes_json ELSE excluded.supported_endpoint_modes_json END,
+      supported_service_tiers_json = CASE WHEN models.source = 'manual-override' THEN models.supported_service_tiers_json ELSE excluded.supported_service_tiers_json END,
+      supported_reasoning_efforts_json = CASE WHEN models.source = 'manual-override' THEN models.supported_reasoning_efforts_json ELSE excluded.supported_reasoning_efforts_json END,
+      default_reasoning_effort = CASE WHEN models.source = 'manual-override' THEN models.default_reasoning_effort ELSE excluded.default_reasoning_effort END,
       codex_supported_reasoning_levels_json = excluded.codex_supported_reasoning_levels_json,
       codex_default_reasoning_level = excluded.codex_default_reasoning_level,
       codex_multi_agent_version = excluded.codex_multi_agent_version,
-      context_window_tokens = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.context_window_tokens ELSE excluded.context_window_tokens END,
-      max_input_tokens = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.max_input_tokens ELSE excluded.max_input_tokens END,
-      max_output_tokens = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.max_output_tokens ELSE excluded.max_output_tokens END,
+      context_window_tokens = CASE WHEN models.source = 'manual-override' THEN models.context_window_tokens ELSE excluded.context_window_tokens END,
+      max_input_tokens = CASE WHEN models.source = 'manual-override' THEN models.max_input_tokens ELSE excluded.max_input_tokens END,
+      max_output_tokens = CASE WHEN models.source = 'manual-override' THEN models.max_output_tokens ELSE excluded.max_output_tokens END,
       max_tokens = excluded.max_tokens,
-      input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.input_usd_per_1m ELSE excluded.input_usd_per_1m END,
-      output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_1m ELSE excluded.output_usd_per_1m END,
-      cached_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cached_input_usd_per_1m ELSE excluded.cached_input_usd_per_1m END,
-      cache_write_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cache_write_usd_per_1m ELSE excluded.cache_write_usd_per_1m END,
-      cache_write_1h_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cache_write_1h_usd_per_1m ELSE excluded.cache_write_1h_usd_per_1m END,
+      input_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.input_usd_per_1m ELSE excluded.input_usd_per_1m END,
+      output_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.output_usd_per_1m ELSE excluded.output_usd_per_1m END,
+      cached_input_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.cached_input_usd_per_1m ELSE excluded.cached_input_usd_per_1m END,
+      cache_write_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.cache_write_usd_per_1m ELSE excluded.cache_write_usd_per_1m END,
+      cache_write_1h_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.cache_write_1h_usd_per_1m ELSE excluded.cache_write_1h_usd_per_1m END,
       cache_storage_usd_per_1m_per_hour = CASE
-        WHEN provider_model_catalog.source = 'manual-override'
-        THEN coalesce(provider_model_catalog.cache_storage_usd_per_1m_per_hour, excluded.cache_storage_usd_per_1m_per_hour)
+        WHEN models.source = 'manual-override'
+        THEN coalesce(models.cache_storage_usd_per_1m_per_hour, excluded.cache_storage_usd_per_1m_per_hour)
         ELSE excluded.cache_storage_usd_per_1m_per_hour
       END,
-      service_tier_prices_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.service_tier_prices_json ELSE excluded.service_tier_prices_json END,
+      service_tier_prices_json = CASE WHEN models.source = 'manual-override' THEN models.service_tier_prices_json ELSE excluded.service_tier_prices_json END,
       long_context_input_token_threshold = excluded.long_context_input_token_threshold,
       long_context_input_token_threshold_inclusive = excluded.long_context_input_token_threshold_inclusive,
       long_context_input_cost_multiplier = excluded.long_context_input_cost_multiplier,
       long_context_output_cost_multiplier = excluded.long_context_output_cost_multiplier,
-      image_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.image_input_usd_per_1m ELSE excluded.image_input_usd_per_1m END,
-      image_output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.image_output_usd_per_1m ELSE excluded.image_output_usd_per_1m END,
-      audio_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.audio_input_usd_per_1m ELSE excluded.audio_input_usd_per_1m END,
-      audio_output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.audio_output_usd_per_1m ELSE excluded.audio_output_usd_per_1m END,
-      output_usd_per_image = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_image ELSE excluded.output_usd_per_image END,
+      image_input_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.image_input_usd_per_1m ELSE excluded.image_input_usd_per_1m END,
+      image_output_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.image_output_usd_per_1m ELSE excluded.image_output_usd_per_1m END,
+      audio_input_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.audio_input_usd_per_1m ELSE excluded.audio_input_usd_per_1m END,
+      audio_output_usd_per_1m = CASE WHEN models.source = 'manual-override' THEN models.audio_output_usd_per_1m ELSE excluded.audio_output_usd_per_1m END,
+      output_usd_per_image = CASE WHEN models.source = 'manual-override' THEN models.output_usd_per_image ELSE excluded.output_usd_per_image END,
       supports_prompt_caching = excluded.supports_prompt_caching,
-      catalog_visible = CASE
-        WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override')
-        THEN min(provider_model_catalog.catalog_visible, excluded.catalog_visible)
-        ELSE excluded.catalog_visible
-      END,
-      source = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override') THEN provider_model_catalog.source ELSE excluded.source END,
+      source = CASE WHEN models.source IN ('manual-override', 'manual-visibility-override') THEN models.source ELSE excluded.source END,
       updated_at = excluded.updated_at
   `
 
-// sqSeedGeneratedModelRowsSelect lists the generated-provider catalog rows for
-// the stale disable.
+// sqSeedGeneratedModelRowsSelect lists the builtin catalog rows for the stale
+// disable.
 const sqSeedGeneratedModelRowsSelect = `
-    SELECT id, provider_code, model FROM provider_model_catalog
-    WHERE provider_code IN ('gpt', 'anthropic', 'gemini', 'deepseek', 'glm', 'xai')
+    SELECT id, vendor_code, upstream_model FROM models
+    WHERE scope = 'builtin'
   `
 
 // sqSeedStaleGeneratedModelDisable hides one stale generated model.
 const sqSeedStaleGeneratedModelDisable = `
-    UPDATE provider_model_catalog
+    UPDATE models
     SET status = 'disabled', catalog_visible = 0, updated_at = ?
     WHERE id = ?
   `
@@ -418,59 +399,29 @@ const sqSeedEndpointFamilyInsert = `
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
 
-// sqSeedProfileInsert seeds one provider_protocol_profiles row.
-const sqSeedProfileInsert = `
-    INSERT OR IGNORE INTO provider_protocol_profiles (
-      id, provider_code, name, description, enabled, protocol_code, protocol_version,
-      base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `
-
-// sqSeedProfileAccountTypesSelect reads one profile account_types_json for the
-// repair step.
-const sqSeedProfileAccountTypesSelect = `
-    SELECT account_types_json
-    FROM provider_protocol_profiles
-    WHERE id = ?
-  `
-
-// sqSeedProfileAccountTypesUpdate merges missing built-in account types.
-const sqSeedProfileAccountTypesUpdate = `
-    UPDATE provider_protocol_profiles
-    SET account_types_json = ?, updated_at = ?
-    WHERE id = ?
-  `
-
-// sqSeedProfileFamilyInsert seeds one provider_protocol_profile_families row.
-const sqSeedProfileFamilyInsert = `
-    INSERT OR IGNORE INTO provider_protocol_profile_families (
-      profile_id, family_code, enabled, capabilities_json, created_at, updated_at
-    ) VALUES (?, ?, 1, '[]', ?, ?)
-  `
-
 // sqSeedGroupDefaultRepair marks the built-in group default when its owner has
-// no default yet.
+// no default yet（设计 §8：判定只按 system_account_id + is_default=1，唯一索引
+// idx_groups_owner_default_unique，无供应商维度）.
 const sqSeedGroupDefaultRepair = `
       UPDATE groups AS candidate
       SET is_default = 1
-      WHERE candidate.provider_code = ?
-        AND candidate.is_default = 0
+      WHERE candidate.is_default = 0
         AND candidate.system_account_id = ?
         AND candidate.id = ?
         AND NOT EXISTS (
           SELECT 1
           FROM groups AS existing_default
           WHERE existing_default.system_account_id = candidate.system_account_id
-            AND existing_default.provider_code = candidate.provider_code
             AND existing_default.is_default = 1
         )
     `
 
 // sqSeedBuiltInGroupInsert inserts the built-in default group for every system
-// account that lacks one (Node fallback-name recursion verbatim).
+// account that lacks one (Node fallback-name recursion verbatim；缺组判定只按
+// owner 的 is_default=1，无供应商维度).
 const sqSeedBuiltInGroupInsert = `
       INSERT OR IGNORE INTO groups (
-        id, system_account_id, name, provider_code,
+        id, system_account_id, name,
         description, enabled, is_default, created_at, updated_at
       )
       SELECT
@@ -481,7 +432,6 @@ const sqSeedBuiltInGroupInsert = `
             SELECT 1
             FROM groups AS same_name
             WHERE same_name.system_account_id = system_accounts.id
-              AND same_name.provider_code = ?
               AND lower(same_name.name) = lower(?)
           ) THEN ? || '（系统默认：' || system_accounts.id || (
             WITH RECURSIVE candidate_suffix(suffix) AS (
@@ -493,7 +443,6 @@ const sqSeedBuiltInGroupInsert = `
                 SELECT COUNT(*)
                 FROM groups AS fallback_name
                 WHERE fallback_name.system_account_id = system_accounts.id
-                  AND fallback_name.provider_code = ?
                   AND lower(fallback_name.name) LIKE lower(?) || '（系统默认：' || system_accounts.id || '%）'
               )
             )
@@ -506,7 +455,6 @@ const sqSeedBuiltInGroupInsert = `
               SELECT 1
               FROM groups AS existing_fallback_name
               WHERE existing_fallback_name.system_account_id = system_accounts.id
-                AND existing_fallback_name.provider_code = ?
                 AND lower(existing_fallback_name.name) = lower(
                   ? || '（系统默认：' || system_accounts.id || CASE
                     WHEN candidate_suffix.suffix = 0 THEN ''
@@ -519,27 +467,25 @@ const sqSeedBuiltInGroupInsert = `
           ) || '）'
           ELSE ?
         END,
-        ?, ?, 1, 1, ?, ?
+        ?, 1, 1, ?, ?
       FROM system_accounts
       WHERE NOT EXISTS (
         SELECT 1
         FROM groups AS existing_default
         WHERE existing_default.system_account_id = system_accounts.id
-          AND existing_default.provider_code = ?
           AND existing_default.is_default = 1
       )
     `
 
-// sqSeedDefaultGroupsSelect lists the admin default GPT group (2026-10-07
-// 默认资源收口: only the GPT family is auto-provisioned, so only it derives a
-// default route strategy here — the PG variant iterates the same narrowed
-// seed list).
+// sqSeedDefaultGroupsSelect lists the admin default group (2026-10-07
+// 默认资源收口: only the built-in default group is auto-provisioned, so only
+// it derives a default route strategy here — the PG variant iterates the same
+// narrowed seed list); 判定只按 owner + is_default=1.
 const sqSeedDefaultGroupsSelect = `
       SELECT id, name
       FROM groups
       WHERE system_account_id = 'sys_admin'
         AND is_default = 1
-        AND provider_code = ?
       ORDER BY created_at ASC, id ASC
     `
 
@@ -672,23 +618,29 @@ func seedSQLiteBuiltinModelCheckQuestions(ctx context.Context, db *sql.DB, now s
 	return nil
 }
 
-// seedSQLiteModelCatalog ports the Node provider_model_catalog upsert loop and
-// returns the built-in (provider \x00 model) key set for the stale disable.
+// seedSQLiteModelCatalog upserts the full models catalog（含 ShutdownDate 已过
+// 写 'disabled' 的行）and returns the built-in (vendor \x00 upstream_model)
+// key set for the stale disable.
 func seedSQLiteModelCatalog(ctx context.Context, db *sql.DB, options SeedOptions, now string, result *SQLiteSeedResult) (map[string]bool, error) {
 	asOfUTCDate := seedTimestamp(options.nowTime())[:10]
-	rows := activeModelCatalogSeedRows(asOfUTCDate)
+	rows, err := modelSeedTargetRows(asOfUTCDate)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite seed model catalog projection: %w", err)
+	}
 	builtInModelKeys := make(map[string]bool, len(rows))
 	for _, model := range rows {
-		builtInModelKeys[model.ProviderCode+"\x00"+model.Model] = true
-		if _, err := db.ExecContext(ctx, sqSeedModelCatalogUpsert,
+		builtInModelKeys[model.VendorCode+"\x00"+model.UpstreamModel] = true
+		if _, err := db.ExecContext(ctx, sqSeedModelsUpsert,
 			model.ID,
-			model.ProviderCode,
-			model.Model,
-			seedNullableString(model.Mode),
+			model.VendorCode,
+			model.PublicModel,
+			model.UpstreamModel,
+			model.Status,
+			seedBoolInt(model.CatalogVisible),
 			seedNullableInt64(model.CatalogOrder),
 			seedNullableString(model.ReleaseDate),
 			seedNullableString(model.ShutdownDate),
-			model.SupportedAPIProtocolsJSON,
+			model.SupportedEndpointModesJSON,
 			model.SupportedServiceTiersJSON,
 			model.SupportedReasoningEffortsJSON,
 			seedNullableString(model.DefaultReasoningEffort),
@@ -699,6 +651,10 @@ func seedSQLiteModelCatalog(ctx context.Context, db *sql.DB, options SeedOptions
 			seedNullableInt64(model.MaxInputTokens),
 			seedNullableInt64(model.MaxOutputTokens),
 			seedNullableInt64(model.MaxTokens),
+			seedBoolInt(model.SupportsPromptCaching),
+			model.Source,
+			now,
+			now,
 			seedNullableFloat64(model.InputUsdPer1M),
 			seedNullableFloat64(model.OutputUsdPer1M),
 			seedNullableFloat64(model.CachedInputUsdPer1M),
@@ -715,62 +671,34 @@ func seedSQLiteModelCatalog(ctx context.Context, db *sql.DB, options SeedOptions
 			seedNullableFloat64(model.AudioInputUsdPer1M),
 			seedNullableFloat64(model.AudioOutputUsdPer1M),
 			seedNullableFloat64(model.OutputUsdPerImage),
-			seedBoolInt(model.SupportsPromptCaching),
-			seedBoolInt(model.CatalogVisible),
-			model.Source,
-			now,
-			now,
 		); err != nil {
-			return nil, fmt.Errorf("sqlite seed statement %d (model catalog %s): %w", result.StatementCount+1, model.ID, err)
+			return nil, fmt.Errorf("sqlite seed statement %d (models %s): %w", result.StatementCount+1, model.ID, err)
 		}
 		result.StatementCount++
 		result.ModelCatalogRows++
-	}
-	// 契约 2026-09-30（docs/functions/自定义模型与模型映射设计.md 第 4 节）：
-	// 目录 upsert 后删除与本次 seed 可见内置行（activeModelCatalogSeedRows
-	// 的 (ProviderCode, Model) 集合）同名的 custom_provider_models 存量行，
-	// 删除行数计入 CustomModelOverlapCleaned。
-	if len(rows) > 0 {
-		valueRows := make([]string, 0, len(rows))
-		args := make([]any, 0, len(rows)*2)
-		for _, model := range rows {
-			valueRows = append(valueRows, "(?, ?)")
-			args = append(args, model.ProviderCode, model.Model)
-		}
-		cleanupResult, err := db.ExecContext(ctx,
-			"DELETE FROM custom_provider_models WHERE (provider_code, model) IN (VALUES "+strings.Join(valueRows, ", ")+")", args...)
-		if err != nil {
-			return nil, fmt.Errorf("sqlite seed statement %d (custom model overlap cleanup): %w", result.StatementCount+1, err)
-		}
-		cleaned, err := cleanupResult.RowsAffected()
-		if err != nil {
-			return nil, fmt.Errorf("sqlite seed custom model overlap cleanup rows affected: %w", err)
-		}
-		result.StatementCount++
-		result.CustomModelOverlapCleaned = int(cleaned)
 	}
 	return builtInModelKeys, nil
 }
 
 // seedSQLiteDisableStaleGeneratedModels ports the Node stale generated-model
-// disable: every catalog row of the six generated providers whose (provider,
-// model) is no longer built-in is disabled and hidden. The SQLite variant has
-// no manual-source or reference guards (that guard set exists only in the
-// Node PostgreSQL seed).
+// disable: every builtin models row whose (vendor, upstream_model) is no
+// longer built-in is disabled and hidden. The SQLite variant has no
+// manual-source or reference guards (that guard set exists only in the
+// PostgreSQL seed).
 func seedSQLiteDisableStaleGeneratedModels(ctx context.Context, db *sql.DB, exec func(string, ...any) error, now string, builtInModelKeys map[string]bool) error {
 	rows, err := db.QueryContext(ctx, sqSeedGeneratedModelRowsSelect)
 	if err != nil {
 		return fmt.Errorf("sqlite seed select generated model rows: %w", err)
 	}
 	defer rows.Close()
-	type generatedModelRow struct{ ID, ProviderCode, Model string }
+	type generatedModelRow struct{ ID, VendorCode, UpstreamModel string }
 	var stale []generatedModelRow
 	for rows.Next() {
 		var row generatedModelRow
-		if err := rows.Scan(&row.ID, &row.ProviderCode, &row.Model); err != nil {
+		if err := rows.Scan(&row.ID, &row.VendorCode, &row.UpstreamModel); err != nil {
 			return fmt.Errorf("sqlite seed scan generated model row: %w", err)
 		}
-		if !builtInModelKeys[row.ProviderCode+"\x00"+row.Model] {
+		if !builtInModelKeys[row.VendorCode+"\x00"+row.UpstreamModel] {
 			stale = append(stale, row)
 		}
 	}
@@ -785,31 +713,6 @@ func seedSQLiteDisableStaleGeneratedModels(ctx context.Context, db *sql.DB, exec
 	return nil
 }
 
-// seedSQLiteRepairProfileAccountTypes ports
-// repairBuiltInProviderProfileAccountTypes: merge the built-in account types
-// into the stored profile row when the stored JSON lacks them.
-func seedSQLiteRepairProfileAccountTypes(ctx context.Context, db *sql.DB, exec func(string, ...any) error, now string) error {
-	for _, profile := range pgSeedProfiles {
-		var accountTypesJSON string
-		err := db.QueryRowContext(ctx, sqSeedProfileAccountTypesSelect, profile.ID).Scan(&accountTypesJSON)
-		if err != nil {
-			continue // missing row or non-text value mirrors the Node repair skip
-		}
-		current, err := parseSeedStringArray(accountTypesJSON)
-		if err != nil {
-			continue
-		}
-		merged := mergeSeedDistinct(current, profile.AccountTypes)
-		if seedStringSlicesEqual(merged, current) {
-			continue
-		}
-		if err := exec(sqSeedProfileAccountTypesUpdate, seedStringify(merged), now, profile.ID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // seedSQLiteBuiltInGroupsForAllSystemAccounts ports
 // seedDefaultBuiltInGroupsForAllSystemAccounts: mark the built-in group
 // default when its owner has no default yet, then insert the built-in group
@@ -817,26 +720,21 @@ func seedSQLiteRepairProfileAccountTypes(ctx context.Context, db *sql.DB, exec f
 // recursion verbatim).
 func seedSQLiteBuiltInGroupsForAllSystemAccounts(exec func(string, ...any) error, now string) error {
 	for _, group := range pgSeedGroups {
-		if err := exec(sqSeedGroupDefaultRepair, group.ProviderCode, group.SystemAccountID, group.ID); err != nil {
+		if err := exec(sqSeedGroupDefaultRepair, group.SystemAccountID, group.ID); err != nil {
 			return err
 		}
 		if err := exec(sqSeedBuiltInGroupInsert,
 			group.SystemAccountID,
 			group.ID,
-			"grp_default_"+group.ProviderCode+"_",
-			group.ProviderCode,
+			"grp_default_gpt_",
 			group.Name,
 			group.Name,
-			group.ProviderCode,
-			group.Name,
-			group.ProviderCode,
 			group.Name,
 			group.Name,
-			group.ProviderCode,
+			group.Name,
 			group.Description,
 			now,
 			now,
-			group.ProviderCode,
 		); err != nil {
 			return err
 		}
@@ -849,7 +747,7 @@ func seedSQLiteBuiltInGroupsForAllSystemAccounts(exec func(string, ...any) error
 // group is read from the groups table ordered by created_at, id — narrowed to
 // gpt with the 2026-10-07 默认资源收口, matching the PG seed list iteration).
 func seedSQLiteAdminDefaultRouteStrategiesAndAPIKeys(ctx context.Context, db *sql.DB, exec func(string, ...any) error, options SeedOptions, now string) error {
-	rows, err := db.QueryContext(ctx, sqSeedDefaultGroupsSelect, gptVendorCode)
+	rows, err := db.QueryContext(ctx, sqSeedDefaultGroupsSelect)
 	if err != nil {
 		return fmt.Errorf("sqlite seed select default groups: %w", err)
 	}

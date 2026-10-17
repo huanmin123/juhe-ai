@@ -27,7 +27,7 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 		Request:      request,
 	}
 
-	// 目录路由解析失败 → 错误上抛（127/296 臂）；目录解析需多供应商绑定。
+	// 目录（models 单表）解析失败 → 错误上抛：无候选路径的终态分类查询失败。
 	bindingAnthropic := binding
 	bindingAnthropic.ID = "b2"
 	bindingAnthropic.GroupID = "g2"
@@ -67,7 +67,8 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 		t.Fatal("账户装载失败必须上抛")
 	}
 
-	// 目录 ambiguous → failed（199 臂）。
+	// 目录 legacy ambiguous outcome → failed（models 语义下按目录可见处理，
+	// 503 model_target_group_unavailable，绝不发出 model_route_ambiguous）。
 	cacheAmbiguous := newFakeRuntimeCache()
 	cacheAmbiguous.groupAccess["g1"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
 	cacheAmbiguous.groupAccess["g2"] = GroupUsageAccessMetadata{ProviderCode: "anthropic", GroupAccessType: GroupAccessTypeOwner}
@@ -85,6 +86,9 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	}
 	if result.Outcome != NormalRouteOutcomeFailed {
 		t.Fatalf("ambiguous outcome = %+v", result)
+	}
+	if result.Code != FailCodeModelTargetGroupUnavailable {
+		t.Fatalf("legacy ambiguous 分类 = %q, want %s", result.Code, FailCodeModelTargetGroupUnavailable)
 	}
 
 	// 候选绑定为空 → failed（217 臂）：唯一绑定分组禁用。
@@ -108,7 +112,8 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 		t.Fatalf("空候选 outcome = %+v", result)
 	}
 
-	// 未知 provider code 的绑定跳过目录匹配（284 臂）。
+	// 供应商解耦：混合 provider code 绑定不再短路目录匹配，无候选时目录
+	// 分类只查询一次。
 	mixed := []GroupBindingRow{binding}
 	other := binding
 	other.ID = "b2"
@@ -131,8 +136,8 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	if _, err := serviceMixed.ResolveNormalGatewayModelRoute(context.Background(), mixedInput); err != nil {
 		t.Fatal(err)
 	}
-	if len(cacheMixed.callsRoute) > 1 {
-		t.Fatalf("未知 provider code 不应进目录匹配: %+v", cacheMixed.callsRoute)
+	if len(cacheMixed.callsRoute) != 1 {
+		t.Fatalf("无候选终态分类必须查询目录一次: %+v", cacheMixed.callsRoute)
 	}
 }
 

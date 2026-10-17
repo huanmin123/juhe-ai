@@ -84,7 +84,7 @@ func TestWMSeedPostgresDefaultsProducesStableStatementStream(t *testing.T) {
 	joined := strings.Join(queries, "\n")
 	for _, fragment := range []string{
 		`INSERT INTO "juhe_business"."system_accounts"`,
-		"provider_model_catalog", // 模型目录 bulk upsert
+		`INSERT INTO "juhe_business"."models"`, // 内置模型目录 bulk upsert
 	} {
 		if !strings.Contains(joined, fragment) {
 			t.Fatalf("完整 seed 缺少语句族 %s", fragment)
@@ -109,70 +109,6 @@ func TestWMSeedPostgresDefaultsProducesStableStatementStream(t *testing.T) {
 	if timestamp, _ := first.args[9].(string); timestamp != "2026-09-04T08:00:00.000Z" {
 		t.Fatalf("seed 时间戳参数应来自注入时钟: %v", first.args[9])
 	}
-}
-
-func TestWMSeedPostgresDefaultsProfileRepairMergesAccountTypes(t *testing.T) {
-	clock := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
-	profile := pgSeedProfiles[0]
-
-	t.Run("current superset skips update", func(t *testing.T) {
-		rec := &wmSchemaRecorder{}
-		db := openWMSchemaFakeDB(rec)
-		defer db.Close()
-		// 只脚本化第一个 profile 的修复查询：返回已包含内置类型的 JSON。
-		rec.script("account_types_json", []string{"c0"}, [][]driver.Value{{seedStringify(profile.AccountTypes)}})
-		client := &wmSeedCaptureClient{db: db, rec: rec}
-		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
-			t.Fatalf("seedPostgresDefaults: %v", err)
-		}
-		for _, statement := range rec.execs {
-			if strings.HasPrefix(strings.TrimSpace(statement.query), "UPDATE") && strings.Contains(statement.query, "account_types_json") {
-				t.Fatalf("已有超集时不应产生修复 UPDATE: %q", statement.query)
-			}
-		}
-	})
-
-	t.Run("missing account type triggers update", func(t *testing.T) {
-		rec := &wmSchemaRecorder{}
-		db := openWMSchemaFakeDB(rec)
-		defer db.Close()
-		// 返回空数组：修复必须合并内置类型并下发 UPDATE。
-		rec.script("account_types_json", []string{"c0"}, [][]driver.Value{{"[]"}})
-		client := &wmSeedCaptureClient{db: db, rec: rec}
-		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
-			t.Fatalf("seedPostgresDefaults: %v", err)
-		}
-		found := false
-		for _, statement := range rec.execs {
-			if strings.HasPrefix(strings.TrimSpace(statement.query), "UPDATE") && strings.Contains(statement.query, "account_types_json") {
-				found = true
-				if statement.args[0] != seedStringify(profile.AccountTypes) {
-					t.Fatalf("修复 UPDATE 应写入合并后的内置类型: %v", statement.args[0])
-				}
-				if statement.args[2] != profile.ID {
-					t.Fatalf("修复 UPDATE 应定位第一个 profile: %v", statement.args[2])
-				}
-			}
-		}
-		if !found {
-			t.Fatal("缺少内置类型时必须产生修复 UPDATE")
-		}
-	})
-
-	t.Run("malformed json skips repair", func(t *testing.T) {
-		rec := &wmSchemaRecorder{}
-		db := openWMSchemaFakeDB(rec)
-		defer db.Close()
-		rec.script("account_types_json", []string{"c0"}, [][]driver.Value{{"not-json"}})
-		client := &wmSeedCaptureClient{db: db, rec: rec}
-		result, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }})
-		if err != nil {
-			t.Fatalf("坏 JSON 应镜像 Node 的跳过语义而不是失败: %v", err)
-		}
-		if result.StatementCount <= 0 {
-			t.Fatalf("语句计数必须为正: %d", result.StatementCount)
-		}
-	})
 }
 
 func TestWMSeedPostgresDefaultsPropagatesFailure(t *testing.T) {
@@ -249,7 +185,7 @@ func TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults(t *testing.T
 		db := openWMSchemaFakeDB(rec)
 		defer db.Close()
 		// 模拟老库残留：GPT 默认列表含已退役的 codex-auto-review。
-		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{`["codex-auto-review","gpt-5.5","gpt-5.4"]`}})
+		rec.script(`FROM "juhe_business"."vendors"`, []string{"c0"}, [][]driver.Value{{`["codex-auto-review","gpt-5.5","gpt-5.4"]`}})
 		client := &wmSeedCaptureClient{db: db, rec: rec}
 		result, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }})
 		if err != nil {
@@ -277,7 +213,7 @@ func TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults(t *testing.T
 		rec := &wmSchemaRecorder{}
 		db := openWMSchemaFakeDB(rec)
 		defer db.Close()
-		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{`["gpt-5.5","gpt-5.4"]`}})
+		rec.script(`FROM "juhe_business"."vendors"`, []string{"c0"}, [][]driver.Value{{`["gpt-5.5","gpt-5.4"]`}})
 		client := &wmSeedCaptureClient{db: db, rec: rec}
 		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
 			t.Fatalf("seedPostgresDefaults: %v", err)
@@ -292,7 +228,7 @@ func TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults(t *testing.T
 		db := openWMSchemaFakeDB(rec)
 		defer db.Close()
 		// json_valid=false 等价：非 JSON 文本跳过修复且不失败。
-		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{"{bad"}})
+		rec.script(`FROM "juhe_business"."vendors"`, []string{"c0"}, [][]driver.Value{{"{bad"}})
 		client := &wmSeedCaptureClient{db: db, rec: rec}
 		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
 			t.Fatalf("坏 JSON 应镜像 SQLite 守卫的跳过语义而不是失败: %v", err)
@@ -307,7 +243,7 @@ func TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults(t *testing.T
 		db := openWMSchemaFakeDB(rec)
 		defer db.Close()
 		// json_type<>'array' 等价：JSON 字符串标量不是模型清单。
-		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{`"gpt-5.5"`}})
+		rec.script(`FROM "juhe_business"."vendors"`, []string{"c0"}, [][]driver.Value{{`"gpt-5.5"`}})
 		client := &wmSeedCaptureClient{db: db, rec: rec}
 		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
 			t.Fatalf("非数组 JSON 应镜像 SQLite 守卫的跳过语义而不是失败: %v", err)
@@ -327,7 +263,7 @@ func TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults(t *testing.T
 			t.Fatalf("seedPostgresDefaults: %v", err)
 		}
 		if _, found := findRemovalUpdate(rec); found {
-			t.Fatal("供应商行缺失时不应产生清洗 UPDATE")
+			t.Fatal("vendor 行缺失时不应产生清洗 UPDATE")
 		}
 	})
 }

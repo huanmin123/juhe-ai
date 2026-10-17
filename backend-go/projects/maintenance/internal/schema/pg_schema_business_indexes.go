@@ -1,9 +1,10 @@
-// Code generated from the Node PostgreSQL storage sources. The statements
-// in this file are a verbatim extract of one schema group from
-// pg_schema.go's postgresSchemaStatements literal (see the header of
-// pg_schema.go for the full provenance and execution model). The
-// statements are data: do not hand-edit them and keep them byte-identical
-// to the Node dump order.
+// PostgreSQL juhe_business 索引语句清单（pg_schema.go
+// postgresSchemaStatements 索引阶段的 business 组切片，执行顺序即本清单顺序）。
+// 本文件源自 Node 存储层 dump，但已随 Go 侧批次就地维护：既有批次会原位改写
+// 或追加语句（每条语句的来源与裁决写在其条目注释内，如供应商与上游协议面
+// 重构批的 idx_models_identity_unique 等），不再与 Node dump 逐字节一致；
+// 修改时保持执行顺序与 golden 计数（pg_schema_test.go）同步，完整出处与
+// 执行模型见 pg_schema.go 头注。
 
 package schema
 
@@ -11,10 +12,15 @@ package schema
 // statements of the index phase in execution order.
 var postgresSchemaBusinessIndexes = []PGStatement{
 	{
+		// models 身份唯一索引（供应商与上游协议面重构设计 §3 :201）：四元组
+		// (COALESCE(vendor_code,''), scope, COALESCE(system_account_id,''),
+		// upstream_model) 表达式唯一索引，PG 与 SQLite 同名同列集；vendor 与
+		// owner 空值归一空串，binary/case-sensitive 比较由列的默认 collation
+		// 承载（模型名比较契约 §3）。
 		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_provider_model_catalog_lookup
-      ON provider_model_catalog(provider_code, status, catalog_visible, catalog_order, model)`,
+		Source:     "models-identity-unique-index",
+		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_models_identity_unique
+      ON models ((COALESCE(vendor_code, '')), scope, (COALESCE(system_account_id, '')), upstream_model)`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -32,21 +38,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		Source:     "business",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_account_health_jobs_input_outbox_account
       ON account_health_jobs_input_outbox(account_id, input_version DESC)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_status ON accounts(provider_protocol_profile_id, status)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code)`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -313,26 +304,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_lookup ON accounts(provider_protocol_profile_id, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_system_account_protocol_profile_lookup ON accounts(system_account_id, provider_protocol_profile_id, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type, id)`,
 	},
 	{
@@ -411,19 +382,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due
-      ON accounts(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_pg_due
-      ON accounts(provider_protocol_profile_id, type, oauth_refresh_token_present, (oauth_access_token_expires_at IS NOT NULL), oauth_access_token_expires_at ASC, updated_at ASC, id ASC)
-      WHERE authorization_instance_authorization_id IS NULL AND deleted_at IS NULL`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -577,53 +535,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_personal_unique
-      ON custom_provider_models(provider_code, system_account_id, model)
-      WHERE scope = 'personal'`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_provider_models_global_unique
-      ON custom_provider_models(provider_code, model)
-      WHERE scope = 'global'`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
-      ON custom_provider_models(provider_code, status, catalog_visible, scope, system_account_id, model)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_provider_default_health_check_models_model
-      ON provider_default_health_check_models(provider_code, model, system_account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_provider_system_default_health_check_models_model
-      ON provider_system_default_health_check_models(model, provider_code)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, source_endpoint_family, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, upstream_endpoint_family, account_id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tags_owner_name_unique ON account_tags(system_account_id, name)`,
 	},
 	{
@@ -697,9 +608,19 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC)`,
 	},
 	{
+		// groups 目标唯一索引（设计 §8，本批切片）：owner 内 binary
+		// (system_account_id, name) 唯一取代 (system_account_id, provider_code,
+		// name)；(system_account_id) WHERE is_default = 1 部分唯一索引固定
+		// 「每 owner 至多一个默认组」。四个 provider 维度 groups 索引随
+		// provider_code 列退役一并删除。
 		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique ON groups(system_account_id, provider_code, name)`,
+		Source:     "groups-target-unique-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "groups-target-unique-indexes",
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON groups(system_account_id) WHERE is_default = 1`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -710,21 +631,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_groups_system_account_name_lookup ON groups(system_account_id, name, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_groups_provider_name_lookup ON groups(provider_code, name, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_groups_system_account_provider_name_lookup ON groups(system_account_id, provider_code, name, id)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups(system_account_id, provider_code) WHERE is_default = 1`,
 	},
 	{
 		SchemaName: "juhe_business",
@@ -1261,11 +1167,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "accounts-pg-trigram-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_name_c_trgm_lookup ON accounts USING gin ((name COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "accounts-pg-trigram-indexes",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_provider_code_c_trgm_lookup ON accounts USING gin ((provider_code COLLATE "C") juhe_business.gin_trgm_ops) WHERE deleted_at IS NULL`,
 	},
 	{
 		SchemaName: "juhe_business",

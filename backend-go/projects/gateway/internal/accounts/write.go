@@ -600,20 +600,13 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		healthCheckEndpointMode = *input.HealthCheckEndpointMode
 	}
 
-	// Gpt request-override catalog assertion (accounts.routes.ts:220): the
-	// request-scope system account feeds the personal catalog scope (Node
-	// effectiveRequestSystemAccountId). The mapping catalog assertion rides
-	// the final owner below (repositories.ts create: the write-side
-	// normalizeAccountModelMappingsForProvider call), after the group switch.
-	if err := s.assertAccountGptRequestOverridesSupported(ctx, accountGptRequestOverridesInput{
-		ProviderCode:    providerCode,
-		AccountType:     accountType,
-		Credentials:     credentials,
-		SupportedModels: supportedModels,
-		SystemAccountID: access.EffectiveViewerID(),
-	}); err != nil {
-		return nil, err
-	}
+	// 请求覆盖两字段（service_tier_override / reasoning_effort_override）的
+	// 写入面校验已在上方 NormalizeAccountCredentialsForWrite 内执行（token
+	// 形状 + 协议族值域全集，credentials_normalize.go
+	// normalizeGPTAccountRequestOverrides；2026-10-18 起不再做供应商模型目录
+	// 断言，档位是否被最终上游模型支持由运行时降级/跳过）。模型映射目录断言
+	// 骑最终 owner：repositories.ts create 的 write-side
+	// normalizeAccountModelMappingsForProvider 调用，在下方分组切换之后。
 
 	// Owner context (the group block below switches the owner for admins
 	// binding an explicit group).

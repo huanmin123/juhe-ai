@@ -35,11 +35,6 @@ import {
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
 import { accountModelMappingEndpointFamilyProtocol, accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
-import {
-  accountGptRequestOverrideCapabilities,
-  isAccountGptReasoningEffortOverrideAvailable,
-  isAccountGptServiceTierOverrideAvailable
-} from './accountGptRequestOverrides'
 import { buildAccountBalancePayload, validateAccountBalanceForm } from './accountBalanceQuery'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import { normalizeGrokSsoTokens } from './grokSsoTokens'
@@ -238,12 +233,8 @@ export function validateAccountSaveForm(input: {
   ) {
     return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
   }
-  const requestOverrideValidation = validateAccountGptRequestOverrides(
-    form,
-    supportedModels,
-    input.mappingUpstreamModelOptions ?? []
-  )
-  if (requestOverrideValidation) return requestOverrideValidation
+  // 服务等级 / 思考级别覆盖（2026-10-18 简化定案）：保存前不再做模型能力校验，
+  // 值域由后端族集校验负责（单一真源 backend-go/shared/platform/requestoverride）。
   const tagValidation = validateAccountTags(form.tags)
   if (tagValidation) return tagValidation
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
@@ -467,27 +458,6 @@ function normalizeSupportedModels(value: AccountFormModel['supportedModels']): s
     output.push(model)
   }
   return output
-}
-
-function validateAccountGptRequestOverrides(
-  form: AccountFormModel,
-  supportedModels: string[],
-  modelOptions: ModelMappingProtocolOption[]
-): string | undefined {
-  const capabilities = accountGptRequestOverrideCapabilities({
-    providerCode: form.providerCode,
-    accountType: form.type,
-    modelOptions,
-    supportedModels,
-    supportedEndpointModes: form.supportedEndpointModes
-  })
-  if (!isAccountGptServiceTierOverrideAvailable(form.serviceTierOverride, capabilities)) {
-    return '所选支持模型中没有模型支持当前服务等级覆盖'
-  }
-  if (!isAccountGptReasoningEffortOverrideAvailable(form.reasoningEffortOverride, capabilities)) {
-    return '所选支持模型中没有模型支持当前思考级别覆盖'
-  }
-  return undefined
 }
 
 function validateAccountTags(value: AccountFormModel['tags']): string | undefined {

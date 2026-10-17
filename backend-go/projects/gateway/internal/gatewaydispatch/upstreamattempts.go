@@ -129,6 +129,10 @@ func (e *Engine) transformUpstreamResponseForAccount(
 			RequestClientCompatibility: input.RequestClientCompatibility,
 		})
 		if err != nil {
+			// 所有权契约：转换器返回错误时响应体归还引擎。attempt 循环错误
+			// 分支只拿得到 err，不关闭这里就会丢掉仍持有全局并发槽的响应体
+			//（Close 幂等，重复调用安全；BUG-0328）。
+			_ = response.Body.Close()
 			return nil, err
 		}
 		if transformed != nil {

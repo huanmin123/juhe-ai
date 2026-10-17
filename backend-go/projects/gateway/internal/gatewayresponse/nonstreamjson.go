@@ -214,7 +214,15 @@ func ValidateBufferedJsonProtocolResponse(parsedJsonBody GatewayNonStreamJsonBod
 			return protocolStructureFailurePtr("上游 Gemini Interactions JSON 响应结构无效：缺少 id 或 name")
 		}
 	case "unknown":
-		if strings.Contains(requestPath, "/embeddings") || strings.Contains(requestPath, "/images") {
+		if strings.Contains(requestPath, "/embeddings/multimodal") {
+			// 向量批（2026-10-17）：ark 多模态向量子路径（doubao-embedding-vision
+			// 系独立 API 面）成功响应 data 为单对象（融合向量 data.embedding），
+			// 与 OpenAI embeddings 的 data 数组不同构——按对象形态校验。
+			dataObject, _ := plainObject(root["data"])
+			if _, hasEmbedding := plainObject(dataObject["embedding"]); !hasEmbedding {
+				return protocolStructureFailurePtr("上游多模态向量 JSON 响应结构无效：缺少 data.embedding")
+			}
+		} else if strings.Contains(requestPath, "/embeddings") || strings.Contains(requestPath, "/images") {
 			if _, ok := root["data"].([]any); !ok {
 				return protocolStructureFailurePtr("上游 JSON 响应结构无效：data 必须是数组")
 			}
@@ -350,6 +358,11 @@ func ProtocolValidatedNonStreamResponse(parsedJsonBody GatewayNonStreamJsonBody,
 		_, nameIsString := root["name"].(string)
 		return idIsString || nameIsString
 	case "unknown":
+		if strings.Contains(requestPath, "/embeddings/multimodal") {
+			dataObject, _ := plainObject(root["data"])
+			_, hasEmbedding := plainObject(dataObject["embedding"])
+			return hasEmbedding
+		}
 		if strings.Contains(requestPath, "/embeddings") || strings.Contains(requestPath, "/images") {
 			_, ok := root["data"].([]any)
 			return ok

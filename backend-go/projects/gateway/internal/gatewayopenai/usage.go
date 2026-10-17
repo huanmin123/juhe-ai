@@ -20,7 +20,9 @@ func ParseUsageFromJSONBuffer(body []byte) gatewayproto.ParsedUsage {
 	text := string(body)
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err == nil && root != nil {
-		return ExtractUsage(root["usage"], normalizeServiceTier(root["service_tier"]))
+		parsed := ExtractUsage(root["usage"], normalizeServiceTier(root["service_tier"]))
+		applyImageOutputCountFromRoot(&parsed, root)
+		return parsed
 	}
 	return ParseUsageFromJSONTextFragment(text)
 }
@@ -31,7 +33,42 @@ func ParseUsageFromJSONValue(value any) gatewayproto.ParsedUsage {
 	if !ok {
 		return gatewayproto.EmptyUsage()
 	}
-	return ExtractUsage(root["usage"], normalizeServiceTier(root["service_tier"]))
+	parsed := ExtractUsage(root["usage"], normalizeServiceTier(root["service_tier"]))
+	applyImageOutputCountFromRoot(&parsed, root)
+	return parsed
+}
+
+// applyImageOutputCountFromRoot 在上游 usage 无显式张数键时，从 openai images
+// 形响应根的 data[] 计数输出图片张数（按张目录价 OutputUsdPerImage 的计量
+// 输入；计量照实，契约 §2.8）。条目形态门控——每个 data 元素必须是对象且含
+// b64_json 或 url 键——embeddings 的 data[]（embedding 键）与 chat/Responses
+// 响应（无 data[]）不误判；上游显式张数（output_image_count 等三键，见
+// outputImageCountValue）优先，本推导不覆盖。2026-10-17 实弹取证：volcengine
+// seedream /api/v3/images/generations 的 usage 只带 token 数、无张数，缺此
+// 计数时按张计费落 0 成本。
+func applyImageOutputCountFromRoot(parsed *gatewayproto.ParsedUsage, root map[string]any) {
+	if parsed.OutputImageCount != nil {
+		return
+	}
+	raw, ok := root["data"].([]any)
+	if !ok || len(raw) == 0 {
+		return
+	}
+	for _, item := range raw {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return
+		}
+		if _, hasB64 := object["b64_json"]; hasB64 {
+			continue
+		}
+		if _, hasURL := object["url"]; hasURL {
+			continue
+		}
+		return
+	}
+	count := len(raw)
+	parsed.OutputImageCount = &count
 }
 
 // ParseUsageFromJSONTextFragment mirrors parseOpenAIUsageFromJsonTextFragment:

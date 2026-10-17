@@ -2,25 +2,17 @@
   <section v-if="requestOverridesSupported" class="form-section gpt-request-overrides-section">
     <h4>上游请求覆盖</h4>
     <div class="gpt-request-overrides-grid">
-      <a-form-item
-        label="服务等级"
-        :help="serviceTierHelp"
-        :validate-status="serviceTierUnavailable ? 'warning' : undefined"
-      >
+      <a-form-item v-if="serviceTierFieldVisible" label="服务等级">
         <a-select
           v-model:value="serviceTierValue"
-          :disabled="readonly || modelsLoading || (!capabilities.serviceTiers.length && !form.serviceTierOverride)"
+          :disabled="readonly"
           :options="serviceTierOptions"
         />
       </a-form-item>
-      <a-form-item
-        label="思考级别"
-        :help="reasoningEffortHelp"
-        :validate-status="reasoningEffortUnavailable ? 'warning' : undefined"
-      >
+      <a-form-item v-if="reasoningEffortFieldVisible" label="思考级别">
         <a-select
           v-model:value="reasoningEffortValue"
-          :disabled="readonly || modelsLoading || (!capabilities.reasoningEfforts.length && !form.reasoningEffortOverride)"
+          :disabled="readonly"
           :options="reasoningEffortOptions"
         />
       </a-form-item>
@@ -41,44 +33,45 @@ import {
   accountGptRequestOverrideCapabilities,
   availableAccountGptReasoningEffortOptions,
   availableAccountGptServiceTierOptions,
-  isAccountRequestOverrideProviderSupported,
-  isAccountGptReasoningEffortOverrideAvailable,
-  isAccountGptServiceTierOverrideAvailable
+  isAccountRequestOverrideProviderSupported
 } from './accountGptRequestOverrides'
 
 const props = withDefaults(defineProps<{
   form: AccountFormModel
   modelOptions: AccountModelSelectOption[]
   modelsLoading?: boolean
+  protocolCode?: string
   readonly?: boolean
 }>(), {
   modelsLoading: false,
   readonly: false
 })
 
+// 值域与选项来自协议族全集（accountRequestOverrideVocab，指向后端
+// requestoverride 真源）；模型目录只按“供应商级是否声明过能力”决定字段显示，
+// 不再按已选模型过滤。协议码由弹窗的所选协议档案传入，取不到时按供应商码回落
+//（与后端 FamilyOf 的回落语义一致）。
 const capabilities = computed(() => accountGptRequestOverrideCapabilities({
   providerCode: props.form.providerCode,
-  accountType: props.form.type,
+  protocolCode: props.protocolCode,
   modelOptions: props.modelOptions,
-  supportedModels: props.form.supportedModels,
   supportedEndpointModes: props.form.supportedEndpointModes
 }))
+const serviceTierFieldVisible = computed(() => Boolean(
+  capabilities.value.serviceTiers.length
+  && (props.modelsLoading || capabilities.value.declaredServiceTiers || props.form.serviceTierOverride)
+))
+const reasoningEffortFieldVisible = computed(() => Boolean(
+  capabilities.value.reasoningEfforts.length
+  && (props.modelsLoading || capabilities.value.declaredReasoningEfforts || props.form.reasoningEffortOverride)
+))
+// Interactions-only Gemini 守卫是绝对的：即使已有存量覆盖值也不显示（该协议面
+// 覆盖不会生效）。其余账户任一字段可见即显示；存量覆盖值会让对应字段保持可见，
+// 保留“不覆盖客户端设置”清除入口。
 const requestOverridesSupported = computed(() => isAccountRequestOverrideProviderSupported(props.form.providerCode, props.form.supportedEndpointModes)
-  || Boolean(props.form.serviceTierOverride || props.form.reasoningEffortOverride))
+  && (serviceTierFieldVisible.value || reasoningEffortFieldVisible.value))
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(capabilities.value, props.form.serviceTierOverride))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(capabilities.value, props.form.reasoningEffortOverride))
-const serviceTierUnavailable = computed(() => !isAccountGptServiceTierOverrideAvailable(props.form.serviceTierOverride, capabilities.value))
-const reasoningEffortUnavailable = computed(() => !isAccountGptReasoningEffortOverrideAvailable(props.form.reasoningEffortOverride, capabilities.value))
-const serviceTierHelp = computed(() => {
-  if (serviceTierUnavailable.value) return '当前服务等级配置不受已选模型支持，请清除或重新选择'
-  if (!props.modelsLoading && !capabilities.value.serviceTiers.length) return '当前已选模型未声明可用服务等级'
-  return undefined
-})
-const reasoningEffortHelp = computed(() => {
-  if (reasoningEffortUnavailable.value) return '当前思考级别配置不受已选模型支持，请清除或重新选择'
-  if (!props.modelsLoading && !capabilities.value.reasoningEfforts.length) return '当前已选模型未声明可用思考级别'
-  return undefined
-})
 
 const serviceTierValue = computed<AccountGptServiceTierOverride>({
   get: () => props.form.serviceTierOverride,

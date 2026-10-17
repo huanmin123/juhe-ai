@@ -247,10 +247,10 @@ func legacyBusinessDDLForExpeditedColumns(t *testing.T) string {
 func insertMinimalAccountLegacy(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
 	_, err := db.Exec(`INSERT INTO accounts
-      (id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-       name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
-      VALUES (?, 'sys-1', 'gpt', 'profile-1', 'openai', 'v1', ?, 'api_key', 'enc', 'gpt-5.6', 'chat_json',
-       '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, id, id)
+      (id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
+       name, type, credentials_encrypted, health_check_connection_id, health_check_model, health_check_endpoint_mode, created_at, updated_at)
+      VALUES (?, 'sys-1', 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'enc', 'conn-'+?, 'gpt-5.6', 'chat_json',
+       '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, id, id, id)
 	if err != nil {
 		t.Fatalf("insert legacy account %s: %v", id, err)
 	}
@@ -310,7 +310,15 @@ func TestEnsureSQLiteBusinessAddsExpeditedRecoveryColumns(t *testing.T) {
 			t.Fatalf("system_accounts.expedited_account_limit meta: notnull=%d dflt=%+v, want nullable without default", notNull, dflt)
 		}
 
-		// 契约清单声明的列必须全部由 fresh DDL 落地（两表）。
+		// 契约清单声明的列必须全部由 fresh DDL 落地（两表）。contracts 包的
+		// accounts 清单仍带三个已退役列（provider_code/
+		// provider_protocol_profile_id/client_compatibility），其收敛属
+		// contracts 包切片，此处跳过；供应商维度新列由下方显式断言兜底。
+		retiredAccountColumns := map[string]bool{
+			"provider_code":                true,
+			"provider_protocol_profile_id": true,
+			"client_compatibility":         true,
+		}
 		for _, target := range []struct {
 			table    string
 			contract contracts.SQLiteTableSpec
@@ -319,9 +327,18 @@ func TestEnsureSQLiteBusinessAddsExpeditedRecoveryColumns(t *testing.T) {
 			{"system_accounts", contracts.BusinessSQLiteSchema["system_accounts"]},
 		} {
 			for _, column := range target.contract.Columns {
+				if target.table == "accounts" && retiredAccountColumns[column] {
+					continue
+				}
 				if !sqliteTableHasColumn(t, db, target.table, column) {
 					t.Errorf("contract column %s.%s missing from fresh schema", target.table, column)
 				}
+			}
+		}
+		// 目标形态的账户身份/健康检查列必须由 fresh DDL 落地。
+		for _, column := range []string{"vendor_code", "connection_driver_code", "oauth_type", "capability_domain", "health_check_connection_id"} {
+			if !sqliteTableHasColumn(t, db, "accounts", column) {
+				t.Errorf("target accounts column %s missing from fresh schema", column)
 			}
 		}
 

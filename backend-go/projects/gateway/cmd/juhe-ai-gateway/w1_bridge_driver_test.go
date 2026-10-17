@@ -31,11 +31,17 @@ func TestW1DriverCodexProjections(t *testing.T) {
 	boundGroup := "grp_1"
 	account := gatewaydispatch.AccountCandidate{
 		ID: "acc_1", APIKey: "sk-codex", SystemAccountID: "sys_1", BoundGroupID: &boundGroup,
-		Credentials: map[string]any{"access_token": "tok"},
+		ProviderCode: "gpt",
+		Credentials:  map[string]any{"access_token": "tok"},
 	}
 	codex := codexAccountOf(account)
 	if codex.ID != "acc_1" || codex.APIKey != "sk-codex" || codex.Credentials == nil {
 		t.Fatalf("codex account = %+v", codex)
+	}
+	// ProviderCode 必须从组合根账户候选透传到 codex 归一化输入：请求覆盖
+	// hook 依赖它区分 gpt 专属枚举与目录能力门（漏传即静默跳过 gpt 枚举）。
+	if codex.ProviderCode != account.ProviderCode {
+		t.Fatalf("codex ProviderCode = %q, want %q", codex.ProviderCode, account.ProviderCode)
 	}
 	identity := codexIdentityOf(account)
 	if identity.SystemAccountID != "sys_1" || identity.APIKeyID != "acc_1" || identity.GroupID != "grp_1" {

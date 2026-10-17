@@ -51,8 +51,7 @@ func seedTestSnapshot(t *testing.T, db *sql.DB) map[string]string {
 	t.Helper()
 	tables := []string{
 		"system_accounts", "global_settings", "request_quota_hourly_window_configs",
-		"providers", "provider_model_catalog", "protocols", "protocol_endpoint_families",
-		"provider_protocol_profiles", "provider_protocol_profile_families",
+		"vendors", "models", "protocols", "protocol_endpoint_families",
 		"groups", "route_strategies", "route_strategy_groups", "api_keys",
 		"external_integration_sources", "external_integration_source_tokens", "system_settings",
 		"model_check_question_bank",
@@ -120,8 +119,9 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 195 {
-		t.Fatalf("first seed model catalog rows = %d, want 195 (目录 201 行——2026-10-17 口径核对批 221 + 2025 前模型清理批两阶段 -15 行 gpt 旧行 -9 行无日期疑似 2024 老模型与弃用 glm-asr-2512 + 同日缺口补录 +3 + 同日火山 ASR 承接批 volc.seedasr.auc +1；按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2025-11-12)", first.ModelCatalogRows)
+	// models 表口径：全量快照行落库（212 行，disabled 计入）。
+	if first.ModelCatalogRows != 212 {
+		t.Fatalf("first seed model catalog rows = %d, want 212 (目录快照全量行数，含 shutdown 已过写 disabled 的 6 行)", first.ModelCatalogRows)
 	}
 	if first.BuiltinQuestionRows != len(builtinModelCheckQuestions) {
 		t.Fatalf("first seed builtin question rows = %d, want %d", first.BuiltinQuestionRows, len(builtinModelCheckQuestions))
@@ -195,7 +195,12 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// JSON 生成器修正 -deepseek-v4-flash 残留行 → 221；2026-10-17 口径核对批
 	// 五家回正（行数不变）+ 2025 前模型清理批两阶段 -15 行 gpt 旧行 -9 行 →
 	// 200（同日缺口补录批 +3）；按种子钟 2026-09-04 过滤 6 行已 shutdown 行 → 194；
-	// 同日火山 ASR 承接批 volc.seedasr.auc +1 → 201 / 可见 195）后
+	// 同日火山 ASR 承接批 volc.seedasr.auc +1 → 201 / 可见 195；同日缺口补录
+	// 第二批 +8（minimax M2 家族五行 + H3-Regeneration + H3-Context-IR + xai
+	// 旧版 grok-imagine-video；speech-02-hd/Music/Hailuo-02 经裁决不收录）→
+	// 209；同日方舟全能力实测批 volc doubao-embedding-large-text-250515 +1 →
+	// 210；同日 seededit 无价行承接批 +1 →
+	// 211；同日 3D 承接批 +1 → 212 / 可见 206）后
 	// providers 11 / families 13 / profiles
 	// 16 / profile 绑定 41（M3f qwen +audio_transcription、M4b hybrid
 	// +video_generation+tts、M6 volcengine +tts、对话批 volcengine/qwen
@@ -206,14 +211,14 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// global_settings 2 行种子 + 1 行调度偏好迁移完成记录（PLAN-20261012T033000000Z
 	// P2 设计门裁决②：fresh 空库 seed 链经 schedprefdomain.SealFreshInstall 自动
 	// 封存 scheduling_preferences_migration，stage=completed、counts 全零）。
+	// 供应商与上游协议面重构（设计 §1.1/§8/§9）：vendors 恰 9 行（openai/
+	// hybrid 删除），profiles 两表随旧供应商维度退役不再 seed。
 	expectCounts := map[string]int{
 		"global_settings":                     3,
 		"request_quota_hourly_window_configs": 8,
-		"providers":                           11,
+		"vendors":                             9,
 		"protocols":                           3,
 		"protocol_endpoint_families":          13,
-		"provider_protocol_profiles":          16,
-		"provider_protocol_profile_families":  41,
 		"groups":                              1,
 		"route_strategies":                    1,
 		"route_strategy_groups":               1,
@@ -222,15 +227,22 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"external_integration_source_tokens":  1,
 		// 72→71：chatImageGenerationTotalTimeoutSeconds 随 2026-10-12 AI 问答
 		// 简化批（生图工具退场）从 seed 删除。
-		// provider_model_catalog 214→195：2026-10-17 口径核对批 221 + 2025 前
+		// 71→67：2026-10-14 监控改造批删 systemMetrics*/tableMonitor* 四键
+		//（f1991b708 实现侧已删、本计数漏改；2026-10-17 专门批取证回正）。
+		// provider_model_catalog 214→203：2026-10-17 口径核对批 221 + 2025 前
 		// 模型清理批两阶段 -24 行（gpt 15 + 无日期疑似 2024 老模型 8 + 弃用
 		// glm-asr-2512 1）→ 197；同日目录缺口补录批 +3（Hailuo-2.3-Fast、
 		// video-1.5-lite、grok-tts 占位行）→ 200；同日火山 ASR 承接批 +1
-		//（volc.seedasr.auc）→ 201；按表内 shutdown 过滤 6 行（原 7 行中的
-		// gpt-3.5-turbo-1106 随清理批移除）：xai 2026-05-15 四行 + gemini
-		// veo-3.0 两行 2025-11-12。
-		"system_settings":        71,
-		"provider_model_catalog": 195,
+		//（volc.seedasr.auc）→ 201；同日缺口补录第二批 +8（minimax M2 家族
+		// 五行 + H3-Regeneration + H3-Context-IR + xai 旧版 grok-imagine-video）
+		// → 209；同日方舟全能力实测批 volc doubao-embedding-large-text-250515
+		// +1 → 210；同日 seededit 无价行承接批 +1 → 211；同日 3D 承接批 +1 →
+		// 212；同日全能力覆盖批终态（并发协调后合并口径）：+1 vision 向量行
+		//（doubao-embedding-vision-251215，现役唯一向量模型，multimodal 面）−2
+		// 官方退役死行（text-250515 Retiring 404 实证、seededit-250628 官方
+		// status=Shutdown，现役图生图由 seedream 原生 image 参数承接）→ 211；同日流式语音桥接批 seed-tts-2.0 +1 → 212。
+		"system_settings": 67,
+		"models":          212,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {
@@ -265,23 +277,32 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if nonDefaultGroups != 0 {
 		t.Fatalf("unexpected group rows: %d", nonDefaultGroups)
 	}
-
-	// The model catalog rows carry recomputable ids and no stale disables.
-	if got := countSeedTestRows(t, db, "SELECT count(*) FROM provider_model_catalog WHERE status <> 'active'"); got != 0 {
-		t.Fatalf("unexpected non-active model catalog rows: %d", got)
+	// 供应商维度删除后内置默认组名收敛为「默认分组」。
+	var groupName string
+	if err := db.QueryRowContext(ctx, "SELECT name FROM groups WHERE system_account_id = 'sys_admin' AND is_default = 1").Scan(&groupName); err != nil {
+		t.Fatal(err)
 	}
-	idRows, err := db.QueryContext(ctx, "SELECT id, provider_code, model FROM provider_model_catalog")
+	if groupName != "默认分组" {
+		t.Fatalf("built-in default group name = %q, want 默认分组", groupName)
+	}
+
+	// The models rows carry recomputable ids; the disabled subset is exactly
+	// the shutdown-expired rows of the pinned clock（6 行）。
+	if got := countSeedTestRows(t, db, "SELECT count(*) FROM models WHERE status <> 'active'"); got != 6 {
+		t.Fatalf("disabled model rows = %d, want 6 (xai 2026-05-15 四行 + gemini veo-3.0 两行 2025-11-12 at the pinned clock)", got)
+	}
+	idRows, err := db.QueryContext(ctx, "SELECT id, vendor_code, upstream_model FROM models")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idRows.Close()
 	for idRows.Next() {
-		var id, providerCode, model string
-		if err := idRows.Scan(&id, &providerCode, &model); err != nil {
+		var id, vendorCode, upstreamModel string
+		if err := idRows.Scan(&id, &vendorCode, &upstreamModel); err != nil {
 			t.Fatal(err)
 		}
-		if want := providerModelCatalogID(providerCode, model); id != want {
-			t.Fatalf("catalog id mismatch for %s/%s: %s != %s", providerCode, model, id, want)
+		if want := providerModelCatalogID(vendorCode, upstreamModel); id != want {
+			t.Fatalf("model id mismatch for %s/%s: %s != %s", vendorCode, upstreamModel, id, want)
 		}
 	}
 	if err := idRows.Err(); err != nil {

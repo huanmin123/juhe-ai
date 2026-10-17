@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { MediaJobListItem } from '@/types/domain'
 import {
   adaptMediaJobListResult,
   formatMediaJobCost,
   formatMediaJobKind,
   formatMediaJobSeconds,
-  formatMediaJobSize,
   formatMediaJobStatus,
-  mediaJobErrorDetail,
-  mediaJobErrorSummary,
   mediaJobStatusColor
 } from './mediaJobsDisplay'
 
@@ -36,36 +32,10 @@ describe('mediaJobsDisplay 数值格式化', () => {
     expect(formatMediaJobSeconds(undefined)).toBe('-')
   })
 
-  it('尺寸：像素串直通显示，缺省显示 -', () => {
-    expect(formatMediaJobSize('1280x720')).toBe('1280x720')
-    expect(formatMediaJobSize('720x1280')).toBe('720x1280')
-    expect(formatMediaJobSize('')).toBe('-')
-    expect(formatMediaJobSize(undefined)).toBe('-')
-  })
-
   it('成本 USD：六位小数，缺省显示 -', () => {
     expect(formatMediaJobCost(0.123456)).toBe('$0.123456')
     expect(formatMediaJobCost(0)).toBe('$0.000000')
     expect(formatMediaJobCost(undefined)).toBe('-')
-  })
-})
-
-describe('mediaJobsDisplay 错误摘要', () => {
-  it('摘要取 error.code，Tooltip 详情拼接 code 与 message', () => {
-    const record = {
-      id: 'job_1',
-      kind: 'video',
-      status: 'failed',
-      error: { code: 'artifact_expired', message: '产物已过期' }
-    } as MediaJobListItem
-    expect(mediaJobErrorSummary(record)).toBe('artifact_expired')
-    expect(mediaJobErrorDetail(record)).toBe('artifact_expired：产物已过期')
-  })
-
-  it('无错误时摘要为占位符、详情为空', () => {
-    const record = { id: 'job_2', kind: 'video', status: 'completed' } as MediaJobListItem
-    expect(mediaJobErrorSummary(record)).toBe('-')
-    expect(mediaJobErrorDetail(record)).toBe('')
   })
 })
 

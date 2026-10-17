@@ -397,12 +397,15 @@ func ClassifyStreamEvent(event ParsedStreamEvent, priorEstimatedOutputTokens int
 			usage = ExtractUsage(usageValue, "")
 		}
 	}
+	// 顶层 error 对象形态（无 event 名、无 type 字段）同样是上游失败信号，
+	// 与 IsStreamFailureEvent 的负载判定对齐（docs/functions/上游流式失败帧拦截设计.md §3.1）。
 	failed := event.EventType == "response.failed" ||
 		event.EventName == "response.failed" ||
 		event.EventType == "image_generation.failed" ||
 		event.EventName == "image_generation.failed" ||
 		event.EventType == "error" ||
-		event.EventName == "error"
+		event.EventName == "error" ||
+		(event.Data != nil && extractStreamEventError(event.Data) != nil)
 	terminal := failed ||
 		event.EventType == "[DONE]" ||
 		event.EventType == "response.completed" ||

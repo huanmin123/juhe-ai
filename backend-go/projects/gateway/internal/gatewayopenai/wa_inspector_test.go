@@ -54,6 +54,58 @@ func TestWAOpenAIStreamInspectorFailedStream(t *testing.T) {
 	}
 }
 
+// 事故同款流：正常 chat chunk + 顶层 error 对象帧（无 event 名、无 type）+
+// 命名 error 帧 + EOF。数据错误帧事件完成即判失败，不给下游透传留窗口。
+func TestWAOpenAIStreamInspectorTopLevelErrorObjectStream(t *testing.T) {
+	chatChunk := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+	dataErrorFrame := "data: {\"error\":{\"code\":\"upstream_error\",\"message\":\"upstream sent an error event\"}}\n\n"
+	namedErrorFrame := "event: error\ndata: {\"code\":\"upstream_stream_truncated\",\"message\":\"上游流被截断\"}\n\n"
+
+	inspector := NewStreamInspector()
+	inspector.PushText(chatChunk + dataErrorFrame)
+	// 数据错误帧事件完成（空行）后立即检查快照：失败与终止都已置位。
+	snapshot := inspector.Snapshot()
+	if !snapshot.FailedReceived || !snapshot.TerminalReceived {
+		t.Fatalf("顶层 error 对象帧应失败且终止: %+v", snapshot)
+	}
+	if snapshot.ErrorCode != "upstream_error" || snapshot.ErrorMessage != "upstream sent an error event" {
+		t.Fatalf("错误字段 = %q/%q", snapshot.ErrorCode, snapshot.ErrorMessage)
+	}
+	// 无事件名的数据错误帧按 message 兜底分类，最近事件类型应含该帧。
+	if snapshot.EventTypeCounts["message"] != 2 {
+		t.Fatalf("message 计数 = %d", snapshot.EventTypeCounts["message"])
+	}
+	found := false
+	for _, eventType := range snapshot.RecentEventTypes {
+		if eventType == "message" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("RecentEventTypes 应含数据错误帧 = %v", snapshot.RecentEventTypes)
+	}
+
+	inspector.PushText(namedErrorFrame)
+	inspector.Finish()
+	if !inspector.DrainEventSummariesCanEndStream() {
+		t.Fatal("失败帧 summary 应可结束流")
+	}
+	// CanEndStream 检查已 drain；用新实例验证逐帧 summary。
+	replay := NewStreamInspector()
+	replay.PushText(chatChunk + dataErrorFrame + namedErrorFrame)
+	replay.Finish()
+	summaries := replay.DrainEventSummaries()
+	if len(summaries) != 3 {
+		t.Fatalf("summary 数 = %d", len(summaries))
+	}
+	if !summaries[1].Failed || !summaries[1].CanEndStream || summaries[1].Type != "message" {
+		t.Fatalf("数据错误帧 summary = %+v", summaries[1])
+	}
+	if !summaries[2].Failed || summaries[2].Type != "error" {
+		t.Fatalf("命名 error 帧 summary = %+v", summaries[2])
+	}
+}
+
 // 图片流：image_generation.partial_image 计入图片输出。
 func TestWAOpenAIStreamInspectorImageStream(t *testing.T) {
 	inspection := InspectStreamText("data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"aGk=\"}\n\n")

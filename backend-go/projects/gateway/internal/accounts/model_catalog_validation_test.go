@@ -1,10 +1,14 @@
 package accounts
 
 // 模型目录校验域测试（model_catalog_validation.go）：目录命中 / 未命中 /
-// 目录异常三条路径，对照归档 account-gpt-request-overrides.validation.ts 与
-// account-model-normalization.ts 的断言文案与触发条件逐条标注。目录读取全部
-// 通过 fakeAccountModelCatalog 注入（Mock 可回放、结果稳定），不依赖真实
-// provider_model_catalog 数据。
+// 目录异常三条路径，对照归档 account-model-normalization.ts 的断言文案与
+// 触发条件逐条标注。目录读取全部通过 fakeAccountModelCatalog 注入（Mock
+// 可回放、结果稳定），不依赖真实 provider_model_catalog 数据。
+//
+// gpt 请求覆盖（service_tier_override / reasoning_effort_override）的目录
+// 断言已于 2026-10-18 简化定案删除，本文件的覆盖段改钉写入面协议族值域：
+// 形状 + 协议族全集（shared/platform requestoverride），目录未声明档位的值
+// 照常保存，运行时才按最终上游模型降级/跳过。
 
 import (
 	"context"
@@ -65,16 +69,6 @@ func gptCatalogFact() AccountModelCatalogFact {
 	}
 }
 
-func overridesInput(providerCode string, credentials Credentials, supportedModels []string) accountGptRequestOverridesInput {
-	return accountGptRequestOverridesInput{
-		ProviderCode:    providerCode,
-		AccountType:     "api_key",
-		Credentials:     credentials,
-		SupportedModels: supportedModels,
-		SystemAccountID: "owner-1",
-	}
-}
-
 func assertValidationError(t *testing.T, err error, message string) {
 	t.Helper()
 	if err == nil {
@@ -89,124 +83,244 @@ func assertValidationError(t *testing.T, err error, message string) {
 	}
 }
 
-// ---- gpt 请求覆盖目录断言 ----
+// ---- 请求覆盖协议族值域（写入面，2026-10-18 简化定案） ----
 
-func TestGptRequestOverridesSkipsCatalogWithoutOverrides(t *testing.T) {
-	store := &Store{}
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store.SetModelCatalogReader(fake)
-	// 归档 readGptAccountRequestOverrides 早退：无任何覆盖时不发起目录读取。
-	if err := store.assertAccountGptRequestOverridesSupported(context.Background(), overridesInput("gpt", Credentials{"api_key": "sk-x"}, []string{"gpt-4o-mini"})); err != nil {
-		t.Fatal(err)
+// requestOverrideNormalize 以给定上下文直连写入面凭据归一化（api_key 形状：
+// base_url + 覆盖字段），返回归一化记录供落库值断言。
+func requestOverrideNormalize(extra Credentials, context *EndpointModeDefaultContext) (Credentials, error) {
+	merged := Credentials{"api_key": "sk-test-0001", "base_url": "https://api.example.com"}
+	for key, value := range extra {
+		merged[key] = value
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("catalog must not be queried without overrides, calls = %d", fake.callCount())
+	return NormalizeAccountCredentialsForWrite("api_key", merged, context)
+}
+
+func TestRequestOverrideFamilyDomainArms(t *testing.T) {
+	anthropic := &EndpointModeDefaultContext{ProviderCode: "anthropic", ProtocolCode: "anthropic", ProtocolVersion: "v1"}
+	gemini := &EndpointModeDefaultContext{ProviderCode: "gemini", ProtocolCode: "gemini", ProtocolVersion: "v1beta"}
+	gpt := w13gOpenAIContext("gpt")
+
+	// anthropic 族：思考级别全集 low..max，xhigh 可配；服务等级为空集，
+	// priority 拒绝；default 哨兵（强制标准档）恒可保存。
+	normalized, err := requestOverrideNormalize(Credentials{"reasoning_effort_override": "xhigh"}, anthropic)
+	if err != nil {
+		t.Fatalf("anthropic xhigh 应通过：%v", err)
 	}
-	// accountGptRequestOverridesNeedModelCatalog 镜像同一判定。
-	if accountGptRequestOverridesNeedModelCatalog(Credentials{"api_key": "sk-x"}) {
-		t.Fatal("no overrides must not need the catalog")
+	if normalized["reasoning_effort_override"] != "xhigh" {
+		t.Fatalf("anthropic xhigh 应落库：%v", normalized["reasoning_effort_override"])
 	}
-	if !accountGptRequestOverridesNeedModelCatalog(Credentials{"reasoning_effort_override": " low "}) {
-		t.Fatal("trimmed override values must count")
+	normalized, err = requestOverrideNormalize(Credentials{"service_tier_override": "default"}, anthropic)
+	if err != nil {
+		t.Fatalf("anthropic default 哨兵应恒可保存：%v", err)
+	}
+	if normalized["service_tier_override"] != "default" {
+		t.Fatalf("anthropic default 应落库：%v", normalized["service_tier_override"])
+	}
+	if _, err := requestOverrideNormalize(Credentials{"service_tier_override": "priority"}, anthropic); err == nil ||
+		err.Error() != "服务等级覆盖无效" {
+		t.Fatalf("anthropic 族服务等级为空集，priority 应拒绝：%v", err)
+	}
+
+	// gemini 族：思考级别 minimal..high，max 拒绝（不在族集）；服务等级
+	// default/priority/flex 可配，bogus 值域拒绝。
+	if _, err := requestOverrideNormalize(Credentials{"reasoning_effort_override": "high"}, gemini); err != nil {
+		t.Fatalf("gemini high 应通过：%v", err)
+	}
+	if _, err := requestOverrideNormalize(Credentials{"reasoning_effort_override": "max"}, gemini); err == nil ||
+		err.Error() != "思考级别覆盖无效" {
+		t.Fatalf("gemini max 不在族集应拒绝：%v", err)
+	}
+	if _, err := requestOverrideNormalize(Credentials{"service_tier_override": "priority"}, gemini); err != nil {
+		t.Fatalf("gemini priority 应通过：%v", err)
+	}
+	if _, err := requestOverrideNormalize(Credentials{"service_tier_override": "bogus"}, gemini); err == nil ||
+		err.Error() != "服务等级覆盖无效" {
+		t.Fatalf("gemini bogus 值域应拒绝：%v", err)
+	}
+
+	// gpt 供应商天然 openai 族：max 可配（族集含 max，不含 ultra）；turbo/
+	// ultra 拒绝。
+	if _, err := requestOverrideNormalize(Credentials{"reasoning_effort_override": "max"}, gpt); err != nil {
+		t.Fatalf("gpt max 应通过：%v", err)
+	}
+	if _, err := requestOverrideNormalize(Credentials{"reasoning_effort_override": "ultra"}, gpt); err == nil ||
+		err.Error() != "思考级别覆盖无效" {
+		t.Fatalf("gpt ultra 应拒绝：%v", err)
+	}
+	if _, err := requestOverrideNormalize(Credentials{"service_tier_override": "turbo"}, gpt); err == nil ||
+		err.Error() != "服务等级覆盖无效" {
+		t.Fatalf("gpt turbo 应拒绝：%v", err)
+	}
+
+	// 形状臂（族集判定之前）：首尾空白即非法，不 trim 后比对。
+	if _, err := requestOverrideNormalize(Credentials{"service_tier_override": " flex"}, gpt); err == nil ||
+		err.Error() != "服务等级覆盖无效" {
+		t.Fatalf("首部空白应按形状拒绝：%v", err)
+	}
+	if _, err := requestOverrideNormalize(Credentials{"reasoning_effort_override": "ultra "}, gpt); err == nil ||
+		err.Error() != "思考级别覆盖无效" {
+		t.Fatalf("尾部空白应按形状拒绝：%v", err)
 	}
 }
 
-func TestGptRequestOverridesNilPortIsNoOp(t *testing.T) {
-	store := &Store{}
-	if err := store.assertAccountGptRequestOverridesSupported(context.Background(), overridesInput("gpt", Credentials{"service_tier_override": "priority"}, []string{"gpt-4o-mini"})); err != nil {
-		t.Fatalf("nil port must keep the assertion a no-op: %v", err)
+func TestRequestOverrideGeminiInteractionsOnlyGuard(t *testing.T) {
+	gemini := &EndpointModeDefaultContext{ProviderCode: "gemini", ProtocolCode: "gemini", ProtocolVersion: "v1beta"}
+	// Interactions-only（端点能力显式声明且不含 GenerateContent）+ 覆盖字段
+	// → 400，文案逐字保留（守卫自 2026-10-18 起收拢在写入面归一化执行）。
+	_, err := requestOverrideNormalize(Credentials{
+		"supported_endpoint_modes": []any{"interactions_json", "interactions_sse"},
+		"service_tier_override":    "priority",
+	}, gemini)
+	assertValidationError(t, err, "Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖")
+	// 含 generate_content 形态时不触发守卫，priority 在 gemini 族集内放行。
+	if _, err := requestOverrideNormalize(Credentials{
+		"supported_endpoint_modes": []any{"generate_content_json"},
+		"service_tier_override":    "priority",
+	}, gemini); err != nil {
+		t.Fatalf("generate_content 形态不应触发守卫：%v", err)
+	}
+	// 无覆盖字段时不触发守卫（写入面早退）。
+	if _, err := requestOverrideNormalize(Credentials{
+		"supported_endpoint_modes": []any{"interactions_json"},
+	}, gemini); err != nil {
+		t.Fatalf("无覆盖字段不应触发守卫：%v", err)
 	}
 }
 
-func TestGptRequestOverridesCatalogHit(t *testing.T) {
+func TestCreateRequestOverridesFamilyDomainWiring(t *testing.T) {
 	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store := &Store{}
-	store.SetModelCatalogReader(fake)
-	// 支持模型去重（归档 uniqueTextList）后逐条命中目录。
-	err := store.assertAccountGptRequestOverridesSupported(context.Background(), overridesInput("gpt",
-		Credentials{"service_tier_override": "priority", "reasoning_effort_override": "high"},
-		[]string{"gpt-4o-mini", " gpt-4o-mini "}))
+	store, scope := newCatalogWiringStore(t, "owner-override-family-create", fake)
+	// priority 覆盖保存成功；目录只被支持模型断言读取一次——覆盖值域不再
+	// 发起目录读取（写入面只做形状 + 协议族值域）。
+	result, err := store.Create(context.Background(), catalogWiringCreateInput("family-hit",
+		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "priority"}, []string{"gpt-4o-mini"}, nil), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 归档 listProviderModelCatalogAsync({includeUnpriced: true})。
-	call := fake.lastCall()
-	if call.providerCode != "gpt" || call.systemAccountID != "owner-1" || !call.includeUnpriced {
-		t.Fatalf("catalog call contract: %+v", call)
+	if result.ID == "" || fake.callCount() != 1 {
+		t.Fatalf("create must not consult the catalog for overrides: id=%q calls=%d", result.ID, fake.callCount())
 	}
-	// serviceTier=default 只要求有模型声明服务等级。
-	if err := store.assertAccountGptRequestOverridesSupported(context.Background(), overridesInput("gpt",
-		Credentials{"service_tier_override": "default"}, []string{"gpt-4o-mini"})); err != nil {
+	if call := fake.lastCall(); call.systemAccountID != scope.EffectiveViewerID() {
+		t.Fatalf("supported-models assertion must use the request scope: %+v", call)
+	}
+	// default 哨兵 + 目录未声明任何档位的思考级别：无任何档位声明也恒可保存
+	//（原「所选支持模型中没有模型支持/声明…」目录门禁语义反转，运行时降级/
+	// 跳过）。
+	bareFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
+		Model:                     "gpt-4o-mini",
+		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
+		SupportedServiceTiers:     []string{},
+		SupportedReasoningEfforts: []string{},
+	}}}
+	store.SetModelCatalogReader(bareFake)
+	if _, err := store.Create(context.Background(), catalogWiringCreateInput("family-bare",
+		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "default", "reasoning_effort_override": "xhigh"},
+		[]string{"gpt-4o-mini"}, nil), scope); err != nil {
+		t.Fatalf("default 与声明外档位应恒可保存：%v", err)
+	}
+	// 值域拒绝（族集之外）：turbo/ultra 仍被写入面拒绝。
+	_, err = store.Create(context.Background(), catalogWiringCreateInput("family-tier-miss",
+		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "turbo"}, []string{"gpt-4o-mini"}, nil), scope)
+	assertValidationError(t, err, "服务等级覆盖无效")
+	_, err = store.Create(context.Background(), catalogWiringCreateInput("family-effort-miss",
+		Credentials{"api_key": "sk-live-secret-1234567890", "reasoning_effort_override": "ultra"}, []string{"gpt-4o-mini"}, nil), scope)
+	assertValidationError(t, err, "思考级别覆盖无效")
+}
+
+func TestPatchRequestOverridesFamilyDomainWiring(t *testing.T) {
+	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
+	store, scope := newCatalogWiringStore(t, "owner-override-family-patch", fake)
+	created, err := store.Create(context.Background(), catalogWiringCreateInput("patch-family-target",
+		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "priority"}, []string{"gpt-4o-mini"}, nil), scope)
+	if err != nil {
 		t.Fatal(err)
+	}
+	// 支持模型换成目录内未声明任何档位的模型 → 通过（原目录门禁在该场景
+	// 报「所选支持模型中没有模型支持服务等级 priority」，语义反转为放行）。
+	bareFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
+		Model:                     "gpt-4o",
+		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
+		SupportedServiceTiers:     []string{},
+		SupportedReasoningEfforts: []string{},
+	}}}
+	store.SetModelCatalogReader(bareFake)
+	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
+		ExpectedConfigRevision: 1,
+		SupportedModels:        []string{"gpt-4o"},
+		SupportedModelsPresent: true,
+	}, scope); err != nil {
+		t.Fatalf("目录未声明档位不得拦截既有覆盖：%v", err)
+	}
+	// 凭据参与时写入面族集校验仍生效：ultra → 400，事务回滚。
+	_, err = store.Patch(context.Background(), created.ID, PatchInput{
+		ExpectedConfigRevision: 2,
+		CredentialsPatch:       true,
+		CredentialsPresent:     true,
+		Credentials:            Credentials{"reasoning_effort_override": "ultra"},
+	}, scope)
+	assertValidationError(t, err, "思考级别覆盖无效")
+	// 回滚后修订号不变，族集内的 xhigh 可保存。
+	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
+		ExpectedConfigRevision: 2,
+		CredentialsPatch:       true,
+		CredentialsPresent:     true,
+		Credentials:            Credentials{"reasoning_effort_override": "xhigh"},
+	}, scope); err != nil {
+		t.Fatalf("族集内档位应可保存：%v", err)
 	}
 }
 
-func TestGptRequestOverridesCatalogMiss(t *testing.T) {
-	store := &Store{}
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}})
-	ctx := context.Background()
-	// 未命中的 tier / effort / 空支持模型集，文案逐字对照归档。
-	assertValidationError(t, store.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("gpt", Credentials{"service_tier_override": "priority"}, []string{"gpt-4o"})),
-		"所选支持模型中没有模型支持服务等级 priority")
-	assertValidationError(t, store.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("gpt", Credentials{"reasoning_effort_override": "xhigh"}, []string{"gpt-4o-mini"})),
-		"所选支持模型中没有模型支持思考级别 xhigh")
-	assertValidationError(t, store.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("gpt", Credentials{"reasoning_effort_override": "high"}, nil)),
-		"请求覆盖要求账户至少配置一个支持模型")
-	// 支持模型全部不在目录 → modelItems 为空 → tier 断言失败。
-	assertValidationError(t, store.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("gpt", Credentials{"service_tier_override": "priority"}, []string{"gpt-o1"})),
-		"所选支持模型中没有模型支持服务等级 priority")
-	// default tier 但目录模型未声明任何服务等级。
-	bare := gptCatalogFact()
-	bare.SupportedServiceTiers = []string{}
-	store2 := &Store{}
-	store2.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{bare}})
-	assertValidationError(t, store2.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("gpt", Credentials{"service_tier_override": "default"}, []string{"gpt-4o-mini"})),
-		"所选支持模型中没有模型声明服务等级覆盖")
-}
-
-func TestGptRequestOverridesWireMappingAndGeminiGuard(t *testing.T) {
-	store := &Store{}
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}})
-	ctx := context.Background()
-	// 归档顺序：先读目录再断言 wire 映射白名单（白名单在 ByCatalog 内）。
-	fake := store.modelCatalog.(*fakeAccountModelCatalog)
-	err := store.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("xai", Credentials{"reasoning_effort_override": "high"}, []string{"gpt-4o-mini"}))
-	assertValidationError(t, err, "供应商 xai 没有可确认的账户请求覆盖 wire 映射")
-	if fake.callCount() != 1 {
-		t.Fatalf("wire-mapping check must run after the catalog read, calls = %d", fake.callCount())
-	}
-	// Interactions-only Gemini 守卫（归档 gemini 分支）。
-	gemini := overridesInput("gemini", Credentials{"service_tier_override": "priority"}, []string{"gpt-4o-mini"})
-	gemini.Credentials["supported_endpoint_modes"] = []string{"interactions_json", "interactions_sse"}
-	assertValidationError(t, store.assertAccountGptRequestOverridesSupported(ctx, gemini),
-		"Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖")
-	// 含 generate_content 形态时不触发该守卫（落到 tier 断言并命中）。
-	geminiOK := overridesInput("gemini", Credentials{"service_tier_override": "priority", "supported_endpoint_modes": []string{"generate_content_json"}}, []string{"gpt-4o-mini"})
-	if err := store.assertAccountGptRequestOverridesSupported(ctx, geminiOK); err != nil {
+func TestBatchUpdateRequestOverridesFamilyDomainWiring(t *testing.T) {
+	// 目录只声明 low/high 档：xhigh 不在任何目录声明中，族集校验放行（原
+	// 「目录不支持 xhigh → 整批失败」语义反转为成功）。
+	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
+	store, scope := newCatalogWiringStore(t, "owner-override-family-batch", fake)
+	first, err := store.Create(context.Background(), catalogWiringCreateInput("batch-family-a",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// endpoint modes 缺失（undefined）不触发守卫。
-	if err := store.assertAccountGptRequestOverridesSupported(ctx,
-		overridesInput("gemini", Credentials{"service_tier_override": "priority"}, []string{"gpt-4o-mini"})); err != nil {
+	second, err := store.Create(context.Background(), catalogWiringCreateInput("batch-family-b",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope)
+	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestGptRequestOverridesCatalogErrorPropagates(t *testing.T) {
-	boom := errors.New("catalog unavailable")
-	store := &Store{}
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{err: boom})
-	err := store.assertAccountGptRequestOverridesSupported(context.Background(),
-		overridesInput("gpt", Credentials{"service_tier_override": "priority"}, []string{"gpt-4o-mini"}))
-	if !errors.Is(err, boom) {
-		t.Fatalf("catalog failure must propagate verbatim, got %v", err)
+	targets := []BatchUpdateTarget{
+		{AccountID: first.ID, ConfigRevision: 1},
+		{AccountID: second.ID, ConfigRevision: 1},
 	}
+	input := BatchUpdateInput{
+		Targets: targets,
+		Updates: map[string]BatchUpdateField{
+			"reasoningEffortOverride": {Enabled: true, Value: "xhigh"},
+		},
+	}
+	if _, err := store.BatchUpdate(context.Background(), input, scope); err != nil {
+		t.Fatalf("族集内档位批量应成功（目录不再门禁）：%v", err)
+	}
+	// 上一次批量已提交，两个账户的修订号各递增一次；后续用例改用新修订号，
+	// 否则失败会停在版本冲突而不是待验证的值域拒绝。失败批次整批回滚，
+	// 修订号不再变化，两个值域臂可共用同一组修订号。
+	targets = []BatchUpdateTarget{
+		{AccountID: first.ID, ConfigRevision: 2},
+		{AccountID: second.ID, ConfigRevision: 2},
+	}
+	// ultra/turbo 不在 openai 族全集 → 写入面归一化在批量事务内拒绝，整批
+	// 回滚（all-or-nothing）。
+	_, err = store.BatchUpdate(context.Background(), BatchUpdateInput{
+		Targets: targets,
+		Updates: map[string]BatchUpdateField{
+			"reasoningEffortOverride": {Enabled: true, Value: "ultra"},
+		},
+	}, scope)
+	assertValidationError(t, err, "思考级别覆盖无效")
+	_, err = store.BatchUpdate(context.Background(), BatchUpdateInput{
+		Targets: targets,
+		Updates: map[string]BatchUpdateField{
+			"serviceTierOverride": {Enabled: true, Value: "turbo"},
+		},
+	}, scope)
+	assertValidationError(t, err, "服务等级覆盖无效")
 }
 
 // ---- modelMappings 目录校验 ----
@@ -340,26 +454,9 @@ func catalogWiringCreateInput(name string, credentials Credentials, supportedMod
 	}
 }
 
-func TestCreateWiresGptRequestOverridesAssertion(t *testing.T) {
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store, scope := newCatalogWiringStore(t, "owner-catalog-create", fake)
-	// 命中：priority 覆盖 + gpt-4o-mini 在目录 → 创建成功且断言查过目录。
-	result, err := store.Create(context.Background(), catalogWiringCreateInput("catalog-hit",
-		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "priority"}, []string{"gpt-4o-mini"}, nil), scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ID == "" || fake.callCount() == 0 {
-		t.Fatalf("create must run the override assertion: id=%q calls=%d", result.ID, fake.callCount())
-	}
-	if call := fake.lastCall(); call.systemAccountID != scope.EffectiveViewerID() {
-		t.Fatalf("override assertion must use the request scope: %+v", call)
-	}
-	// 未命中：支持模型全部不在目录 → modelItems 为空 → tier 断言失败 → 400。
-	_, err = store.Create(context.Background(), catalogWiringCreateInput("catalog-miss",
-		Credentials{"service_tier_override": "priority"}, []string{"gpt-o1"}, nil), scope)
-	assertValidationError(t, err, "所选支持模型中没有模型支持服务等级 priority")
-}
+// TestCreateWiresGptRequestOverridesAssertion 已随 2026-10-18 简化定案删除：
+// 覆盖字段的写入面族集挂接见 TestCreateRequestOverridesFamilyDomainWiring，
+// 支持模型目录断言挂接见 TestCreateWiresSupportedModelsCatalogAssertion。
 
 func TestCreateWiresModelMappingCatalogAssertion(t *testing.T) {
 	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
@@ -384,16 +481,21 @@ func TestCreateWiresModelMappingCatalogAssertion(t *testing.T) {
 	}
 }
 
-func TestPatchWiresGptRequestOverridesAssertion(t *testing.T) {
+// TestPatchWiresGptRequestOverridesAssertion / TestBatchUpdateWires
+// GptRequestOverridesAssertion 已随 2026-10-18 简化定案删除（覆盖字段不再有
+// 目录断言，族集挂接见 TestPatchRequestOverridesFamilyDomainWiring /
+// TestBatchUpdateRequestOverridesFamilyDomainWiring）。patch 链「支持模型
+// 目录外拒绝」的独立臂保留如下。
+
+func TestPatchWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
 	store, scope := newCatalogWiringStore(t, "owner-catalog-patch", fake)
 	created, err := store.Create(context.Background(), catalogWiringCreateInput("patch-target",
-		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "priority"}, []string{"gpt-4o-mini"}, nil), scope)
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// supportedModels 变化触发断言：新集合仍被目录支持 → 通过（无实际变更时
-	// config_revision 不递增，归档/Go 两侧一致）。
+	// supportedModels 无序相等重提交不触发目录校验（config_revision 不递增）。
 	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 1,
 		SupportedModels:        []string{"gpt-4o-mini", "gpt-4o-mini"},
@@ -402,64 +504,14 @@ func TestPatchWiresGptRequestOverridesAssertion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 把支持模型改成目录外的模型 → 支持模型目录校验（patch 链
-	// normalizeAccountSupportedModelsForProviderAsync 目录段，先于 tier 断言）
-	// → 400，文案逐字对照归档。
+	// normalizeAccountSupportedModelsForProviderAsync 目录段）→ 400，文案
+	// 逐字对照归档。
 	_, err = store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 1,
 		SupportedModels:        []string{"gpt-o1"},
 		SupportedModelsPresent: true,
 	}, scope)
 	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：gpt-o1")
-	// 目录内但未声明任何服务等级的模型 → 目录段通过后 tier 断言生效。
-	noTierFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
-		Model:                     "gpt-4o",
-		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
-		SupportedServiceTiers:     []string{},
-		SupportedReasoningEfforts: []string{},
-	}}}
-	store.SetModelCatalogReader(noTierFake)
-	_, err = store.Patch(context.Background(), created.ID, PatchInput{
-		ExpectedConfigRevision: 1,
-		SupportedModels:        []string{"gpt-4o"},
-		SupportedModelsPresent: true,
-	}, scope)
-	assertValidationError(t, err, "所选支持模型中没有模型支持服务等级 priority")
-}
-
-func TestBatchUpdateWiresGptRequestOverridesAssertion(t *testing.T) {
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store, scope := newCatalogWiringStore(t, "owner-catalog-batch", fake)
-	first, err := store.Create(context.Background(), catalogWiringCreateInput("batch-a",
-		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := store.Create(context.Background(), catalogWiringCreateInput("batch-b",
-		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := BatchUpdateInput{
-		Targets: []BatchUpdateTarget{
-			{AccountID: first.ID, ConfigRevision: 1},
-			{AccountID: second.ID, ConfigRevision: 1},
-		},
-		Updates: map[string]BatchUpdateField{
-			// reasoning_effort 归一化接受 high（gpt 枚举），目录仅声明 low/high 之外的
-			// 值由目录断言拒绝：这里用 xhigh（归档 gpt 枚举也接受）。
-			"reasoningEffortOverride": {Enabled: true, Value: "xhigh"},
-		},
-	}
-	// 目录不支持 xhigh → 整批失败（all-or-nothing）。
-	_, err = store.BatchUpdate(context.Background(), input, scope)
-	assertValidationError(t, err, "所选支持模型中没有模型支持思考级别 xhigh")
-	// 目录支持 xhigh → 批量成功。
-	catalog := gptCatalogFact()
-	catalog.SupportedReasoningEfforts = []string{"low", "high", "xhigh"}
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{catalog}})
-	if _, err := store.BatchUpdate(context.Background(), input, scope); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // ---- 支持模型目录校验挂接（normalizeAccountSupportedModelsForProvider 家族） ----

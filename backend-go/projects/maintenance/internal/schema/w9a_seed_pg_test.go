@@ -86,54 +86,6 @@ func TestW9ASeedPostgresModelCatalogRowsAffectedFailure(t *testing.T) {
 	}
 }
 
-// TestW9ASeedPostgresRepairProfileAccountTypes 覆盖 profile account-types 修复
-// 的三条分支：ErrNoRows 跳过、非法 JSON 跳过、需要合并时执行 UPDATE。
-func TestW9ASeedPostgresRepairProfileAccountTypes(t *testing.T) {
-	// ErrNoRows（默认零行）与非法 JSON 都走跳过分支。
-	rec := &wmSchemaRecorder{}
-	db := openWMSchemaFakeDB(rec)
-	defer db.Close()
-	if err := seedPostgresRepairProfileAccountTypes(context.Background(), &w9aRowsAffectedErrClient{db: db},
-		func(string, ...any) error { return nil }, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("repair: %v", err)
-	}
-	if rec.execCount() != 0 {
-		t.Fatalf("跳过路径不应执行 UPDATE: %d", rec.execCount())
-	}
-
-	// 合并路径：stored 为空数组 → 全部内置 account types 需要合并 → UPDATE。
-	recMerge := &wmSchemaRecorder{}
-	for range pgSeedProfiles {
-		recMerge.script(pgSeedProfileAccountTypesSelect, nil, [][]driver.Value{{"[]"}})
-	}
-	dbMerge := openWMSchemaFakeDB(recMerge)
-	defer dbMerge.Close()
-	var mergedUpdates []string
-	if err := seedPostgresRepairProfileAccountTypes(context.Background(), &w9aRowsAffectedErrClient{db: dbMerge},
-		func(query string, _ ...any) error { mergedUpdates = append(mergedUpdates, query); return nil },
-		"2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("repair merge: %v", err)
-	}
-	if got := len(mergedUpdates); got != len(pgSeedProfiles) {
-		t.Fatalf("merge 路径 UPDATE 次数=%d want %d", got, len(pgSeedProfiles))
-	}
-
-	// 相同 account types → equal → 跳过。
-	recEqual := &wmSchemaRecorder{}
-	for _, profile := range pgSeedProfiles {
-		recEqual.script(pgSeedProfileAccountTypesSelect, nil, [][]driver.Value{{mustJSON(profile.AccountTypes)}})
-	}
-	dbEqual := openWMSchemaFakeDB(recEqual)
-	defer dbEqual.Close()
-	if err := seedPostgresRepairProfileAccountTypes(context.Background(), &w9aRowsAffectedErrClient{db: dbEqual},
-		func(string, ...any) error { return nil }, "2026-09-01T00:00:00.000Z"); err != nil {
-		t.Fatalf("repair equal: %v", err)
-	}
-	if got := recEqual.execCount(); got != 0 {
-		t.Fatalf("equal 路径不应执行 UPDATE: %d", got)
-	}
-}
-
 // TestW9ASeedPostgresAdminRouteStrategiesSuccessPath 通过脚本化查询结果覆盖
 // 默认路由策略/API Key/外部集成 Token 的完整创建链（admin chat Key 随
 // 2026-10-07 默认资源收口移除，不再有种子链）。
@@ -141,11 +93,11 @@ func TestW9ASeedPostgresAdminRouteStrategiesSuccessPath(t *testing.T) {
 	rec := &wmSchemaRecorder{}
 	now := "2026-09-01T00:00:00.000Z"
 	for _, groupSeed := range pgSeedGroups {
-		if groupSeed.SystemAccountID != "sys_admin" || groupSeed.ProviderCode == hybridProviderCode {
+		if groupSeed.SystemAccountID != "sys_admin" {
 			continue
 		}
-		rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{"grp_" + groupSeed.ProviderCode + "_default", groupSeed.Name + "分组"}})
-		rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup("grp_" + groupSeed.ProviderCode + "_default")}})
+		rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{groupSeed.ID, groupSeed.Name}})
+		rec.script(pgSeedAdminRouteStrategySelect, nil, [][]driver.Value{{defaultRouteStrategyIDForGroup(groupSeed.ID)}})
 		// existing default api key select 不登记 → ErrNoRows → 创建新 Key。
 	}
 	// external integration token：不存在 → 创建。
@@ -181,7 +133,7 @@ func TestW9ASeedPostgresAdminRouteStrategiesSuccessPath(t *testing.T) {
 func TestW9ASeedPostgresAdminRouteStrategySelectNoRows(t *testing.T) {
 	rec := &wmSchemaRecorder{}
 	for _, groupSeed := range pgSeedGroups {
-		if groupSeed.SystemAccountID != "sys_admin" || groupSeed.ProviderCode == hybridProviderCode {
+		if groupSeed.SystemAccountID != "sys_admin" {
 			continue
 		}
 		rec.script(pgSeedAdminDefaultGroupSelect, nil, [][]driver.Value{{"grp_x", "x分组"}})
@@ -231,39 +183,6 @@ func TestW9AEnsurePostgresSeedsStatementFailures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "postgres seed statement") {
 			t.Fatalf("failExecAfter=%d 错误异常: %v", failAfter, err)
 		}
-	}
-}
-
-// TestW9AEnsurePostgresSeedsRepairJSONBranches 覆盖修复循环的非法 JSON 与
-// equal 跳过分支。
-func TestW9AEnsurePostgresSeedsRepairJSONBranches(t *testing.T) {
-	// 非法 JSON → 解析失败跳过，无 UPDATE。
-	recBad := &wmSchemaRecorder{}
-	for range pgSeedProfiles {
-		recBad.script(pgSeedProfileAccountTypesSelect, nil, [][]driver.Value{{"{bad"}})
-	}
-	dbBad := openWMSchemaFakeDB(recBad)
-	defer dbBad.Close()
-	if _, err := EnsurePostgresSeeds(context.Background(), dbBad); err != nil {
-		t.Fatalf("repair bad json: %v", err)
-	}
-	if recBad.execCount() == 0 {
-		t.Fatal("基础语句必须执行")
-	}
-
-	// equal → 跳过 UPDATE。
-	recEqual := &wmSchemaRecorder{}
-	for _, profile := range pgSeedProfiles {
-		recEqual.script(pgSeedProfileAccountTypesSelect, nil, [][]driver.Value{{mustJSON(profile.AccountTypes)}})
-	}
-	dbEqual := openWMSchemaFakeDB(recEqual)
-	defer dbEqual.Close()
-	result, err := EnsurePostgresSeeds(context.Background(), dbEqual)
-	if err != nil {
-		t.Fatalf("repair equal: %v", err)
-	}
-	if result.StatementCount <= 0 {
-		t.Fatalf("StatementCount 必须为正: %d", result.StatementCount)
 	}
 }
 
