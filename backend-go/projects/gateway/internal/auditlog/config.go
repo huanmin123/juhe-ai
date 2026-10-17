@@ -28,7 +28,12 @@ const (
 	defaultSuccessSampleRate    = 1.0
 	defaultSuccessRetentionDays = 3
 	defaultProblemRetentionDays = 7
-	defaultPostgresPoolSize     = 5096
+	// 2026-10-17 取值收敛 5096→20（BUG-0313 治理批次 3）：5096 对 PG
+	// max_connections=100（与 jobs/maintenance/exporter/超管预留共享）是
+	// 连接风暴隐患——饱和时审计池可尝试数千连接致全库 FATAL too many
+	// clients；审计存储负载形态为异步批量写 + 保留任务 + 管理页查询，
+	// 十级并发规模下 20（=2× 平台 idle 上限 10）已 3 倍以上冗余。
+	defaultPostgresPoolSize     = 20
 	defaultPostgresMaxIdleConns = sqlpool.MaxIdleConns
 )
 
