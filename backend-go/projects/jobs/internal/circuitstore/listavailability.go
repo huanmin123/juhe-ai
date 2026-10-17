@@ -1120,25 +1120,78 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 			return false, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if unchanged, err := r.projectionSearchTermsUnchangedTx(ctx, tx, value); err != nil {
+		return false, err
+	} else if !unchanged {
+		if _, err := tx.ExecContext(ctx, `
     DELETE FROM `+r.table("account_list_availability_projection_search_terms")+`
     WHERE viewer_system_account_id = ? AND account_id = ?`,
-		value.viewerSystemAccountID, value.accountID); err != nil {
-		return false, err
-	}
-	if value.searchIndexComplete {
-		for _, term := range value.searchTerms {
-			if _, err := tx.ExecContext(ctx, `
+			value.viewerSystemAccountID, value.accountID); err != nil {
+			return false, err
+		}
+		if value.searchIndexComplete {
+			for _, term := range value.searchTerms {
+				if _, err := tx.ExecContext(ctx, `
         INSERT INTO `+r.table("account_list_availability_projection_search_terms")+` (
           viewer_system_account_id, account_id, term, name_sort_key, created_at_sort_key
         ) VALUES (?, ?, ?, ?, ?)`,
-				value.viewerSystemAccountID, value.accountID, term, value.nameSortKey, value.createdAtSortKey); err != nil {
-				return false, err
+					value.viewerSystemAccountID, value.accountID, term, value.nameSortKey, value.createdAtSortKey); err != nil {
+					return false, err
+				}
 			}
 		}
 	}
 	if err := r.markViewerHealthStaleTx(ctx, tx, value.viewerSystemAccountID, value.projectedAt); err != nil {
 		return false, err
+	}
+	return true, nil
+}
+
+// projectionSearchTermsUnchangedTx 判断库内 search_terms 行与本次期望行元组
+// 是否完全一致（一致则调用方整体跳过删写）。写放大治理（问题-0313 后续批次
+// 1-4）：健康/额度/运行态变化触发的重投影名称不变，原形态每次 claim 应用固定
+// 1 DELETE + N INSERT（N 为名称 1..3-gram 词数）纯 churn，且全部发生在
+// 7001001 持锁事务内；词集对比以 1 SELECT（≤N 行）替代。对比含 term 行携带
+// 的 name_sort_key/created_at_sort_key，与"无条件重写"语义等价；
+// searchIndexComplete=false 即期望零行，库内有残行时仍走删写清除。
+func (r *ListAvailabilityRepo) projectionSearchTermsUnchangedTx(ctx context.Context, tx txLike, value normalizedProjection) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+    SELECT term, name_sort_key, created_at_sort_key
+    FROM `+r.table("account_list_availability_projection_search_terms")+`
+    WHERE viewer_system_account_id = ? AND account_id = ?`, value.viewerSystemAccountID, value.accountID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	type searchTermRow struct {
+		term             string
+		nameSortKey      string
+		createdAtSortKey string
+	}
+	var existing []searchTermRow
+	for rows.Next() {
+		var row searchTermRow
+		if err := rows.Scan(&row.term, &row.nameSortKey, &row.createdAtSortKey); err != nil {
+			return false, err
+		}
+		existing = append(existing, row)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if len(existing) != len(value.searchTerms) {
+		return false, nil
+	}
+	desired := make([]searchTermRow, 0, len(value.searchTerms))
+	for _, term := range value.searchTerms {
+		desired = append(desired, searchTermRow{term: term, nameSortKey: value.nameSortKey, createdAtSortKey: value.createdAtSortKey})
+	}
+	sort.Slice(existing, func(i, j int) bool { return existing[i].term < existing[j].term })
+	sort.Slice(desired, func(i, j int) bool { return desired[i].term < desired[j].term })
+	for i := range existing {
+		if existing[i] != desired[i] {
+			return false, nil
+		}
 	}
 	return true, nil
 }
