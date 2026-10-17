@@ -361,7 +361,10 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     // endpoint family——档案族表与写侧校验均不按图像族读取）挂为显式可选
     // 能力（豆包 seedream 系 ark /api/v3/images/generations，出站由链上
     // volcengine images 服务根归一承接），只进图像域声明、不进默认集
-    //（defaultEndpointModesForAccount 过滤）。
+    //（defaultEndpointModesForAccount 过滤）。同日语音识别承接批补
+    // audio_transcription（豆包录音文件识别 2.0 openspeech
+    // /api/v3/auc/bigmodel/submit|query，契约 §9.2）——audio_job_* 四值照
+    // qwen 分支同构推导，opt-in 不进默认集。
     if (isVolcengineProviderCode(profile?.providerCode ?? profile?.code)) {
       const families = new Set(endpointFamilyCodes(profile))
       const modes: AccountSupportedEndpointMode[] = ['images_json']
@@ -373,6 +376,9 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       }
       if (families.has(OPENAI_TTS_FAMILY)) {
         modes.push('audio_speech')
+      }
+      if (families.has(OPENAI_AUDIO_TRANSCRIPTION_FAMILY)) {
+        modes.push('audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel')
       }
       return modes
     }

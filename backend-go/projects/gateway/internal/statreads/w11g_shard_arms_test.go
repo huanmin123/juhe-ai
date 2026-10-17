@@ -57,7 +57,7 @@ func TestW11GUsageShardFileReadChain(t *testing.T) {
 	}
 	if _, err := shard.Exec(`CREATE TABLE usage_records (
 		id TEXT PRIMARY KEY, system_account_id TEXT, trace_id TEXT, traffic_source TEXT, client_ip TEXT,
-		api_key_id TEXT, group_id TEXT, account_id TEXT, endpoint TEXT, model TEXT, upstream_model TEXT,
+		api_key_id TEXT, group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT, model TEXT, upstream_model TEXT,
 		upstream_response_model TEXT, billed_service_tier TEXT, effective_reasoning_effort TEXT,
 		model_mapping_applied INTEGER, stream INTEGER, status_code INTEGER, success INTEGER,
 		failure_attribution TEXT, error_code TEXT, error_message TEXT, first_token_ms INTEGER,

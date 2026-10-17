@@ -226,6 +226,26 @@ type AccountFailureEffects interface {
 	// SuppressLocally / SuppressUpstreamBucket 保留给显式策略副作用。
 }
 
+// SessionAffinityLayers 是三层会话绑定的删除上下文（策略路由分组会话亲和设计
+// §3.3/§5.2）：GroupAffinityKey 为空 = 组层缺失（未完成身份解析 / 无会话键 /
+// 模式范围外），实现只删除账户/Key 层，不猜测或派生空键。
+type SessionAffinityLayers struct {
+	GroupAffinityKey   string
+	SessionAffinityKey string
+	AccountID          string
+}
+
+// SessionAffinityLayersPort 是 AccountFailureEffects 的可选三层删除扩展面
+// （§5.2 删除矩阵）：仅在「非流式 2xx 协议校验失败、正文中断等既有响应失败
+// forget」触发类上由 finalization 消费；客户端取消 / 首字超时 / 传输失败 /
+// 请求内重试不消费本面（组绑定保留）。finalization 以类型断言探测，未实现
+// 时回落单层 ForgetSessionAffinity。
+type SessionAffinityLayersPort interface {
+	// ForgetSessionAffinityLayers 按携带的键删除组层（可选）与账户/Key 层；
+	// 失败分类由调用点选择（§5.2 矩阵），实现不重复判定。
+	ForgetSessionAffinityLayers(layers SessionAffinityLayers)
+}
+
 // GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影
 // (GroupID, ProviderCode)。canonical 定义在 gatewaypreauth（
 // ModelsResponseInput 携带 bindings，而本包依赖 gatewaypreauth，不能反向

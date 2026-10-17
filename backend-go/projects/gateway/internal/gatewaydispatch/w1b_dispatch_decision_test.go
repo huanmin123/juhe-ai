@@ -19,7 +19,8 @@ import (
 )
 
 // w1bCapabilityDriver 在 fakeDriver 之上叠加按账户 ID 的能力否定（Mock：
-// 驱动端口只有布尔粒度，测试只需可控的真值表）。
+// bool 判定与 reason 同源——支持 ⟺ reason 空，镜像 chain driver 端口契约；
+// 被拒账户的逐账户 reason 固定回 capability_mismatch 稳定常量）。
 type w1bCapabilityDriver struct {
 	*fakeDriver
 	unsupportedAccountIDs map[string]struct{}
@@ -30,6 +31,15 @@ func (d *w1bCapabilityDriver) AccountSupportsGatewayRequest(req *gatewaypreauth.
 		return false
 	}
 	return d.fakeDriver.AccountSupportsGatewayRequest(req, account, requestClientCompatibility)
+}
+
+func (d *w1bCapabilityDriver) GatewayRequestCapabilityMismatchReason(req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate) string {
+	for _, account := range accounts {
+		if _, unsupported := d.unsupportedAccountIDs[account.ID]; unsupported {
+			return CapabilitySkipReasonMismatch
+		}
+	}
+	return d.fakeDriver.GatewayRequestCapabilityMismatchReason(req, accounts)
 }
 
 // (a) 混合候选（直接命中/映射命中/无 supportedModels/映射后模型被拒/模型
@@ -73,7 +83,9 @@ func TestW1bModelFilterSkippedDetails(t *testing.T) {
 	}
 }
 
-// (a) 能力过滤：driver 端口布尔粒度下，被跳账户明细记 capability_mismatch。
+// (a) 能力过滤：被跳账户明细带出逐账户 driver reason（BUG-0325 起
+// AccountSkip.Reason 不再折叠；本 fixture 的逐账户 reason 即
+// capability_mismatch 常量）。
 func TestW1bCapabilityFilterSkippedDetails(t *testing.T) {
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	driver := &w1bCapabilityDriver{

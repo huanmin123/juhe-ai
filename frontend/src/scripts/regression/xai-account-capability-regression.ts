@@ -63,8 +63,8 @@ assert.deepEqual(
 
 const choices = accountTypeChoicesForProvider(XAI_PROVIDER, FALLBACK_PROVIDERS)
 assert.equal(choices.length, 2)
-assert.equal(choices[0]?.label, 'xAI 官方 API Key')
-assert.equal(choices[0]?.tag, 'OpenAI v1')
+assert.equal(choices[0]?.label, 'xAI / Grok API Key')
+assert.equal(choices[0]?.tag, 'API Key')
 assert.match(choices[0]?.description ?? '', /Chat Completions.*Responses/)
 assert.equal(choices[1]?.label, 'Grok OAuth')
 assert.equal(choices[1]?.tag, 'Grok OAuth')

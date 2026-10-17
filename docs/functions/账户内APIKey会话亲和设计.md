@@ -172,7 +172,7 @@ Redis `AffinityService` 的账户 claim 对已有绑定为 first-binder-wins；c
   - `gatewaydispatch` 覆盖 2xx 头之后不写 Key、final protocol success 才触发回调、失败/取消/重试不触发、最终选中 Key 写回。
   - `chain` 覆盖 `ProtocolValidatedSuccess` 的实际消费点，以及 `chainSessionAffinityDispatchPort` / `localSessionAffinity` 两种 driver 的适配。
 - **回归**：账户亲和排序/claim/forget、Key 轮转、请求内救回、`SameAccountRetry`、流响应最终判定、失败派发清理、授权实例 Key 运行态归属等相关测试通过。
-- **集成**：隔离后端 + mock 多 Key 上游执行验收 1-11；mock 只记录 fixture Key ID，不记录真实凭据。真实供应商联调不是此设计的必要验收条件。执行口径：验收 4（全部未排除 Key 冷却）在黑盒流量下不可达——Key 失败为「确认失败」冲刷语义（全失败请求不写抑制，最后救回成功的 Key 必然健康），该条由单元测试覆盖；其余验收的集成断言以 mock Key 命中序列为 oracle。
+- **集成**：当前全链路 mock 验收执行 §8 的 1、2、3（401 与冷却两变体）和 5；其中冷却变体也验证验收 6 的 cooldown 边界。测试为隔离后端 + mock 多 Key 上游，只记录 fixture Key ID，不记录真实凭据；真实供应商联调不是必要条件。验收 1/2 的集成层计数器证据是间接的：每个会话执行 20 次黏性请求，再以 6 次无会话请求验证轮询从预期 Key 开始；直接断言黏性分支不调用计数器由 `TestSelectAccountAPIKeyStickyHitBypassesStrategy` 覆盖。本次未在集成层重跑完整 1-11 矩阵，其他验收按本节列出的单测、回归或部署检查验证。验收 4（全部未排除 Key 冷却）在新鲜隔离 fixture、仅由网关串行请求驱动且未通过管理面或 jobs 探针预置 Key 运行态时不可构造：同账户 Key 失败待确认项仅在协议成功时冲刷，且同一次结算先确认失败 Key、再记录成功 Key；全冷却 recovery 选择规则由 `TestSelectAccountAPIKeyStickyIgnoredWhenOnlyRecovery` 直接构造状态覆盖。
 
 ## 10. 实施时必须同步修订的文档
 

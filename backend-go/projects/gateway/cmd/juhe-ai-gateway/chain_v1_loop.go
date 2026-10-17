@@ -420,6 +420,8 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			UsageContext:                    current.UsageContext,
 			AuditCapture:                    l.c.engineAuditCapture(l.auditCapture),
 			SessionAffinityKey:              current.SessionAffinityKey,
+			GroupAffinityKey:                current.GroupAffinityKey,
+			RouteStrategyID:                 current.RouteStrategyID,
 			Signal:                          ctx,
 			ClientIPAccountAvoidanceTracker: current.ClientIPAccountAvoidance,
 			RequestLane:                     string(current.RequestLane),
@@ -1121,6 +1123,9 @@ func (l *v1DispatchLoop) actionFallbackOptions(action *gatewaypreauth.RouteActio
 		RequestAttemptTracker:      action.RequestAttemptTracker,
 		DownstreamCommitState:      action.DownstreamCommitState,
 		NormalRouteFirstByteConfig: action.NormalRouteFirstByteConfig,
+		// 组级会话亲和（策略路由分组会话亲和设计 §4 关键点 2）：回退重入不重
+		// 查组亲和，初始查询结果原样种子化供 DispatchContext 带出与写回消费。
+		GroupAffinityKey: action.GroupAffinityKey,
 	}
 }
 
@@ -1473,12 +1478,17 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 			}, "账户 API Key 成功结算未完成")
 		}
 	}
+	// 组级会话亲和（策略路由分组会话亲和设计 §5）：最终协议成功把最终成功派发
+	// 账户所属分组写回/创建组绑定；写回顺序固定为组 → 账户 → Key，本句柄最先
+	// 消费。nil = 无组亲和键（范围外）/ 端口未装配。
+	if dispatched.ConfirmGroupAffinity != nil {
+		dispatched.ConfirmGroupAffinity()
+	}
 	// 账户内 Key 会话亲和（设计 §6）：最终协议成功把本尝试选中的上游 Key 指纹
 	// 写回现存同 owner 会话绑定；nil = 无会话键 / 无选中指纹 / 端口未装配。
 	if dispatched.ConfirmSessionApiKeyFingerprint != nil {
 		dispatched.ConfirmSessionApiKeyFingerprint()
-	}
-	// 成功侧结算：把 ENGAGED 锁复位为 LOCKED_IDLE
+	} // 成功侧结算：把 ENGAGED 锁复位为 LOCKED_IDLE
 	// 与 Node routes.ts:2481-2483 completeAccountLockSuccessAsync 行为一致。
 	if dispatched.ConfirmAccountLockSuccess != nil {
 		if err := dispatched.ConfirmAccountLockSuccess(); err != nil {
@@ -1806,6 +1816,9 @@ func (l *v1DispatchLoop) fallbackOptions(current *gatewaypreauth.DispatchContext
 		RequestAttemptTracker:      current.RequestAttemptTracker,
 		DownstreamCommitState:      current.DownstreamCommitState,
 		NormalRouteFirstByteConfig: current.NormalRouteFirstByteConfig,
+		// 组级会话亲和（策略路由分组会话亲和设计 §4 关键点 2）：回退重入不重
+		// 查组亲和，初始查询结果原样种子化供 DispatchContext 带出与写回消费。
+		GroupAffinityKey: current.GroupAffinityKey,
 	}
 }
 

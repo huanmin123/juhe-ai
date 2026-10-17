@@ -34,7 +34,7 @@
         </div>
       </template>
       <template v-else-if="column.key === 'providerCode'">
-        <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+        <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerName(record.providerCode)" :size="14" /> {{ providerName(record.providerCode) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'groupType'">
         <a-tooltip :title="groupPolicySummary(record)">
@@ -98,7 +98,7 @@
             </div>
           </div>
           <div class="mobile-list-card-tags">
-            <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+            <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerName(record.providerCode)" :size="14" /> {{ providerName(record.providerCode) }}</a-tag>
             <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
             <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
           </div>
@@ -143,6 +143,7 @@
 <script setup lang="ts">
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'

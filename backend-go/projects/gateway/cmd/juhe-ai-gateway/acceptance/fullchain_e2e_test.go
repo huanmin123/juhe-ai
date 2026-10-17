@@ -87,6 +87,11 @@ type fullchainUpstreamCall struct {
 	// APIKeyHeader 是该次上游请求的原始 X-Api-Key 头（2026-10-17 火山语音
 	// 迁移批鉴权面断言：key=新版语音控制台 API Key，即账户 speech_token）。
 	APIKeyHeader string
+	// ResourceIDHeader / RequestIDHeader 是火山长转写头驱动协议的出站头
+	// （2026-10-17 承接批：X-Api-Resource-Id 恒 volc.seedasr.auc、
+	// X-Api-Request-Id=网关生成任务 ID，submit 与 query 同值）。
+	ResourceIDHeader string
+	RequestIDHeader  string
 	// Body 是该次上游请求的原始请求体（能力域拆分 T5 验收：火山语音
 	// user.uid=speech_appid 注入断言面；透传面为原始 JSON 文本）。
 	Body string
@@ -266,10 +271,10 @@ func (m *fullchainMockUpstream) nextScenario(key string, scriptable bool) platfo
 	return m.globalDefault
 }
 
-func (m *fullchainMockUpstream) record(key, method, path, model, authHeader, apiKeyHeader, body string, scenario platformmock.Scenario) {
+func (m *fullchainMockUpstream) record(key, method, path, model, authHeader, apiKeyHeader, resourceIDHeader, requestIDHeader, body string, scenario platformmock.Scenario) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, APIKeyHeader: apiKeyHeader, Body: body, At: time.Now()})
+	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, APIKeyHeader: apiKeyHeader, ResourceIDHeader: resourceIDHeader, RequestIDHeader: requestIDHeader, Body: body, At: time.Now()})
 }
 
 // fullchainScriptableRequest 判定该请求是否参与场景队列消费（媒体契约
@@ -456,7 +461,7 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &parsed)
 	scriptable := fullchainScriptableRequest(r, parsed.Model)
 	scenario := m.nextScenario(key, scriptable)
-	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, r.Header.Get("X-Api-Key"), string(raw), scenario)
+	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, r.Header.Get("X-Api-Key"), r.Header.Get("X-Api-Resource-Id"), r.Header.Get("X-Api-Request-Id"), string(raw), scenario)
 	if scenario == fullchainHoldScenario {
 		m.mu.Lock()
 		waiter, ok := m.holdWaiters[key]
@@ -511,8 +516,12 @@ func (m *fullchainMockUpstream) proxy(w http.ResponseWriter, r *http.Request, sc
 	}
 	// 转发头白名单：通用面（Content-Type/Accept/认证族）+ DashScope 异步
 	// 任务头 X-DashScope-Async（M3 qwen 创建链注入，契约 §10.1——引擎按该
-	// 头门禁创建请求，丢弃会让 qwen 创建被误拒 400）。
-	for _, name := range []string{"Content-Type", "Accept", "Authorization", "X-Goog-Api-Key", "X-DashScope-Async"} {
+	// 头门禁创建请求，丢弃会让 qwen 创建被误拒 400）+ 火山语音域头族
+	// X-Api-Key/X-Api-Resource-Id/X-Api-Request-Id/X-Api-Sequence（2026-10-17
+	// TTS 迁移批与语音识别承接批，契约 §9.2——platformmock 的 asr submit
+	// 按头驱动协议校验三头，丢弃会让 volcengine 创建被误拒 401 → 链上归一
+	// 503）。
+	for _, name := range []string{"Content-Type", "Accept", "Authorization", "X-Goog-Api-Key", "X-DashScope-Async", "X-Api-Key", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence"} {
 		if value := r.Header.Get(name); value != "" {
 			outbound.Header.Set(name, value)
 		}

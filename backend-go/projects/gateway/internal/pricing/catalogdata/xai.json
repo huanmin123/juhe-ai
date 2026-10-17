@@ -1,14 +1,14 @@
 {
   "models": [
     {
-      "cacheReadInputTokenCost": 5e-7,
-      "cacheReadInputTokenCostPriority": 0.000001,
+      "cacheReadInputTokenCost": 5e-07,
+      "cacheReadInputTokenCostPriority": 1e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 500000,
       "defaultReasoningEffort": "high",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenPriority": 0.000004,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenPriority": 4e-06,
       "inputModalities": [
         "text",
         "image"
@@ -19,8 +19,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.7",
-      "outputCostPerToken": 0.000006,
-      "outputCostPerTokenPriority": 0.000012,
+      "outputCostPerToken": 6e-06,
+      "outputCostPerTokenPriority": 1.2e-05,
       "outputModalities": [
         "text"
       ],
@@ -28,7 +28,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 短上下文 $2.00 输入 / $0.50 缓存 / $6.00 输出，长上下文 ≥200k $4/$1/$12 每百万 tokens；优先处理 2 倍（priority 字段）；US 区域端点 1.1 倍留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -54,14 +54,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5e-7,
-      "cacheReadInputTokenCostPriority": 0.000001,
+      "cacheReadInputTokenCost": 5e-07,
+      "cacheReadInputTokenCostPriority": 1e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 500000,
       "defaultReasoningEffort": "high",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenPriority": 0.000004,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenPriority": 4e-06,
       "inputModalities": [
         "text",
         "image"
@@ -72,8 +72,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.6",
-      "outputCostPerToken": 0.000006,
-      "outputCostPerTokenPriority": 0.000012,
+      "outputCostPerToken": 6e-06,
+      "outputCostPerTokenPriority": 1.2e-05,
       "outputModalities": [
         "text"
       ],
@@ -81,7 +81,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 短上下文 $2.00/$0.50/$6.00，长上下文 ≥200k $4/$1/$12 每百万 tokens；优先 2 倍；US 区域端点 1.1 倍留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -107,14 +107,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 3e-7,
-      "cacheReadInputTokenCostPriority": 6e-7,
+      "cacheReadInputTokenCost": 3e-07,
+      "cacheReadInputTokenCostPriority": 6e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 500000,
       "defaultReasoningEffort": "high",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenPriority": 0.000004,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenPriority": 4e-06,
       "inputModalities": [
         "text",
         "image"
@@ -125,8 +125,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.5",
-      "outputCostPerToken": 0.000006,
-      "outputCostPerTokenPriority": 0.000012,
+      "outputCostPerToken": 6e-06,
+      "outputCostPerTokenPriority": 1.2e-05,
       "outputModalities": [
         "text"
       ],
@@ -134,7 +134,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 短上下文 $2.00/$0.30/$6.00，长上下文 ≥200k $4/$0.60/$12 每百万 tokens；优先 2 倍留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -160,14 +160,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "low",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -178,8 +178,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.3",
-      "outputCostPerToken": 0.0000025,
-      "outputCostPerTokenPriority": 0.000005,
+      "outputCostPerToken": 2.5e-06,
+      "outputCostPerTokenPriority": 5e-06,
       "outputModalities": [
         "text"
       ],
@@ -187,7 +187,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 短上下文 $1.25/$0.20/$2.50，长上下文 ≥200k $2.50/$0.40/$5.00 每百万 tokens；Batch 8 折留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -212,14 +212,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 2000000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -230,8 +230,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.20-0309-reasoning",
-      "outputCostPerToken": 0.0000025,
-      "outputCostPerTokenPriority": 0.000005,
+      "outputCostPerToken": 2.5e-06,
+      "outputCostPerTokenPriority": 5e-06,
       "outputModalities": [
         "text"
       ],
@@ -239,7 +239,7 @@
       "shutdownDate": "2026-05-15",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 同 grok-4.3：$1.25/$0.20/$2.50，长上下文 $2.50/$0.40/$5.00；Batch 8 折留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -258,14 +258,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 2000000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -276,8 +276,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.20-0309-non-reasoning",
-      "outputCostPerToken": 0.0000025,
-      "outputCostPerTokenPriority": 0.000005,
+      "outputCostPerToken": 2.5e-06,
+      "outputCostPerTokenPriority": 5e-06,
       "outputModalities": [
         "text"
       ],
@@ -285,7 +285,7 @@
       "shutdownDate": "2026-05-15",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 同 grok-4.3：$1.25/$0.20/$2.50，长上下文 $2.50/$0.40/$5.00；Batch 8 折留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -304,14 +304,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 256000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000001,
-      "inputCostPerTokenPriority": 0.000002,
+      "inputCostPerToken": 1e-06,
+      "inputCostPerTokenPriority": 2e-06,
       "inputModalities": [
         "text",
         "image"
@@ -322,8 +322,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-build-0.1",
-      "outputCostPerToken": 0.000002,
-      "outputCostPerTokenPriority": 0.000004,
+      "outputCostPerToken": 2e-06,
+      "outputCostPerTokenPriority": 4e-06,
       "outputModalities": [
         "text"
       ],
@@ -331,7 +331,7 @@
       "shutdownDate": "2026-05-15",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 短上下文 $1.00/$0.20/$2.00，长上下文 ≥200k $2/$0.40/$4 每百万 tokens（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses"
@@ -350,14 +350,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -368,8 +368,8 @@
       "longContextOutputCostMultiplier": 2,
       "mode": "chat",
       "model": "grok-4.20-multi-agent-0309",
-      "outputCostPerToken": 0.0000025,
-      "outputCostPerTokenPriority": 0.000005,
+      "outputCostPerToken": 2.5e-06,
+      "outputCostPerTokenPriority": 5e-06,
       "outputModalities": [
         "text"
       ],
@@ -377,7 +377,7 @@
       "shutdownDate": "2026-05-15",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 同 grok-4.3：$1.25/$0.20/$2.50，长上下文 $2.50/$0.40/$5.00；Batch 8 折留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "responses"
       ],
@@ -416,7 +416,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 输出按分辨率×质量分档：1K·Low $0.04（目录落值）/1.5K·Low $0.05/2K·Low $0.06/1K·Medium $0.06/1.5K·Medium $0.07/2K·Medium $0.08 每张；媒体输入 $0.01/img（目录无输入槽位留档）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -441,7 +441,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 输出 1K $0.02 / 2K $0.02 每张（目录落值）；媒体输入 $0.002/img 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -466,7 +466,7 @@
       "shutdownDate": "2026-11-02",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 输出 1K $0.05（目录落值）/1.5K $0.06/2K $0.07 每张；媒体输入 $0.01/img；官方公告 2026-11-02 退役（Imagine Image Quality Retirement）留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "images"
       ],
@@ -490,7 +490,7 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.08 / 720p $0.14（目录主档）/1080p $0.25 每秒；图生视频输入 $0.01/img 留档；旧 grok-imagine-video（480p $0.05/720p $0.07）目录未收录；grok-imagine-video-1.5-lite 已单独补录（见该行）（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "video"
       ],
@@ -498,7 +498,32 @@
       "videoOutputCostPerSecond": 0.14
     },
     {
-      "audioInputCostPerSecond": 0.00002777777777777778,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "grok-imagine-video-1.5-lite",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方美元价 输出分档 480p $0.02 / 720p $0.03（目录主档，沿 video-1.5 非最低档主档先例）/1080p $0.14 每秒；图生视频输入 $0.01/img 留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.03
+    },
+    {
+      "audioInputCostPerSecond": 2.777777777777778e-05,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
@@ -515,14 +540,14 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 STT $0.10/小时（REST，目录口径折秒 $2.778e-05）；Streaming $0.20/小时留档（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））",
       "supportedAPIProtocols": [
         "audio_transcription"
       ],
       "supportsPromptCaching": false
     },
     {
-      "audioInputCostPerSecond": 0.0008333333333333334,
+      "audioInputCostPerSecond": 0.0013333333333333333,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
@@ -541,11 +566,35 @@
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourcePricingNote": "官方美元价 Speech to Speech (grok-voice-3.0) $0.08/分钟（$4.80/小时）+ $0.004/文本输入（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））；折秒 $1.333e-03/秒（0.08÷60），此前落 $3/小时旧价已回正；文本输入费目录无独立槽位留档；grok-voice-2.0 已标 deprecated",
       "supportedAPIProtocols": [
         "realtime"
       ],
       "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "grok-tts",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方美元价 Text to Speech $15.00/1M chars 折 $1.5e-05/字符（docs.x.ai/developers/pricing（2026-10-17 浏览器渲染，页面 Last updated: October 10, 2026））。grok-tts 为占位名：官方 POST /v1/tts 面请求体无 model 字段（text/voice_id/language），端点级定价——行名仅作统一面路由与计价载体（doubao-tts 占位先例），非官方模型 ID",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 1.5e-05
     }
   ],
   "provider": "xai"

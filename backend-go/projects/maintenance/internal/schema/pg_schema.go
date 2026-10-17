@@ -678,28 +678,31 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "MiniMax 官方供应商，支持 API Key 接入视频生成（Hailuo 系 video_generation）与语音合成（speech 系 t2a_v2）媒体能力",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"MiniMax-Hailuo-2.3\",\"speech-02-turbo\"]",
+		DefaultSupportedModelsJSON: "[\"MiniMax-Hailuo-2.3\",\"speech-2.8-turbo\"]",
 	},
 	{
 		// M3 媒体新增供应商（媒体设计 §9/契约 §9）：火山方舟声明视频能力
 		//（豆包 Seedance 系 contents/generations/tasks）；M6 补 TTS（豆包
-		// openspeech /api/v3/tts）；对话批补聊天（ark OpenAI 兼容端点
+		// openspeech /api/v3/tts/create，2026-10-17 TTS 迁移批自旧端点 /api/v3/tts 迁移）；对话批补聊天（ark OpenAI 兼容端点
 		// /api/v3/chat/completions，豆包 doubao 对话模型面）；2026-10-17 补
 		// 图像生成（豆包 seedream 系 OpenAI 兼容图像端点
 		// /api/v3/images/generations，实测出图成功；Agent Plan 专属端点
-		// /api/plan/v3/images/generations 实测可用）。
+		// /api/plan/v3/images/generations 实测可用）；同日语音识别承接批补
+		// 长转写（豆包录音文件识别 2.0 openspeech /api/v3/auc/bigmodel/
+		// submit|query 异步两段，`/v1/audio/jobs` 统一面，契约 §9.2）。
 		//
 		// DefaultSupportedModelsJSON 换为现役视频模型
 		// doubao-seedance-2-0-mini-260615（既有 doubao-seedance-1-0-pro-250528
-		// 官方「即将下线」）。注意 seed upsert 只在新建库生效（既有库不回填
-		// 默认支持模型，属预期；运营可按需在管理面调整）。
+		// 官方「即将下线」），语音识别承接批追加 volc.seedasr.auc（上游
+		// X-Api-Resource-Id 真实标识）。注意 seed upsert 只在新建库生效
+		//（既有库不回填默认支持模型，属预期；运营可按需在管理面调整）。
 		ID:                         "volcengine",
 		Code:                       "volcengine",
 		Name:                       "火山方舟",
-		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts）与图像生成（豆包 seedream 系 images/generations）能力",
+		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts/create）、图像生成（豆包 seedream 系 images/generations）与语音识别长转写（豆包录音文件识别 2.0 /api/v3/auc/bigmodel/submit|query，语音应用凭据）能力",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"doubao-seedance-2-0-mini-260615\"]",
+		DefaultSupportedModelsJSON: "[\"doubao-seedance-2-0-mini-260615\",\"volc.seedasr.auc\"]",
 	},
 	{
 		// M3 媒体新增供应商（媒体设计 §9/契约 §10）：通义百炼声明视频能力
@@ -989,7 +992,7 @@ var pgSeedProfiles = []pgSeedProfile{
 		ProtocolCode:            "openai",
 		ProtocolVersion:         "v1",
 		BaseURL:                 "https://api.minimax.chat",
-		DefaultHealthCheckModel: "speech-02-turbo",
+		DefaultHealthCheckModel: "speech-2.8-turbo",
 		AccountTypes:            []string{"api_key"},
 		Capabilities:            []string{"video_generation", "tts"},
 		EndpointFamilies:        []string{"video_generation", "tts"},
@@ -1027,18 +1030,24 @@ var pgSeedProfiles = []pgSeedProfile{
 		// 官方「即将下线」；图像域账户检查模型由运营按 seedream 行配置，
 		// images_json 检查形态要求检查模型被目录证实 images 协议）。注意
 		// seed upsert 只在新建库生效（既有库不回填档案行，属预期）。
+		// 2026-10-17 语音识别承接批：Capabilities/EndpointFamilies 补
+		// audio_transcription（复用 M3f openai_v1_audio_transcription 族行，
+		// 不新增 family 行；对照 qwen 档案同构），豆包录音文件识别 2.0 经
+		// openspeech /api/v3/auc/bigmodel/submit|query 异步两段由
+		// /v1/audio/jobs 统一面承接（契约 §9.2）；audio_job_* 端点模式全
+		// opt-in，默认集维持 video_get 不变（账户 endpoint modes 节）。
 		ID:                      "profile_volcengine_openai_v1",
 		ProviderCode:            "volcengine",
 		Name:                    "火山方舟 / OpenAI v1 媒体",
-		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts，语音应用凭据）与图像生成（豆包 seedream 系 /api/v3/images/generations OpenAI 兼容图像端点）能力",
+		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts/create，语音应用凭据）、图像生成（豆包 seedream 系 /api/v3/images/generations OpenAI 兼容图像端点）与语音识别长转写（豆包录音文件识别 2.0 /api/v3/auc/bigmodel/submit|query，语音应用凭据）能力",
 		Enabled:                 1,
 		ProtocolCode:            "openai",
 		ProtocolVersion:         "v1",
 		BaseURL:                 "https://ark.cn-beijing.volces.com",
 		DefaultHealthCheckModel: "doubao-seedance-2-0-mini-260615",
 		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "video_generation", "tts"},
-		EndpointFamilies:        []string{"chat_completions", "video_generation", "tts"},
+		Capabilities:            []string{"chat", "video_generation", "tts", "audio_transcription"},
+		EndpointFamilies:        []string{"chat_completions", "video_generation", "tts", "audio_transcription"},
 	},
 	{
 		// M3 媒体新增供应商档案（媒体设计 §9/契约 §10）：通义百炼 API Key 单

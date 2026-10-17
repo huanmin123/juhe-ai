@@ -191,7 +191,14 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 
 	// ---- pre-auth stage (request/preauth.ts middleware order) ----
-	if err := c.preauth.PreResolveGatewayRuntime(ctx, res, req, func() {}); err != nil {
+	// DispatchStaticResolution：/v1 派发链请求静态身份快照（策略路由分组会话
+	// 亲和设计 §4 三阶段第 1 步）——中间件不消费 RR/weighted 状态，preflight
+	// 在身份解析后经 SelectGatewayRuntimeForDispatchAsync 完成第 3 步。
+	if err := c.preauth.PreResolveGatewayRuntimeWithOptions(ctx, res, req, gatewaypreauth.ResolveGatewayRuntimeOptions{
+		CloseConnectionOnAuthFailure:      true,
+		InspectClientIPPolicyAfterRuntime: boolPtr(false),
+		DispatchStaticResolution:          true,
+	}, func() {}); err != nil {
 		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
 	}
@@ -642,6 +649,7 @@ func (c *gatewayChain) handleUpstreamResponse(
 		StartedAtMs:                attemptStartedAt,
 		Signal:                     ctx,
 		SessionAffinityKey:         context.SessionAffinityKey,
+		GroupAffinityKey:           context.GroupAffinityKey,
 		ClientStrategy:             clientStrategyViewOf(context),
 		ResponseInspectionPolicies: context.ResponseInspectionPolicies,
 		MarkFirstOutput:            firstOutputMetricMarkOf(dispatched.MarkFirstOutput, startedAt, req.MethodUpper()),
@@ -894,6 +902,10 @@ func (c *gatewayChain) preflightOptions(requestLane gatewayproto.RequestLane) *g
 	return &gatewaypreauth.PreflightOptions{
 		TrafficSource: gatewayTrafficSource,
 		RequestLane:   requestLane,
+		// 组级会话亲和三阶段第 1 步开关（策略路由分组会话亲和设计 §4）：/v1
+		// 初始 preflight 的 runtime 解析（models 端点等中间件跳过面）走静态
+		// 身份快照，与中间件静态读共用同一开关语义。
+		DispatchStaticResolution: true,
 	}
 }
 

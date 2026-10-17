@@ -129,6 +129,7 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'groupName'
   | 'accountId'
   | 'accountName'
+  | 'providerCode'
   | 'endpoint'
   | 'model'
   | 'upstreamModel'

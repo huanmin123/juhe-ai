@@ -31,7 +31,7 @@
             <header class="ai-health-account-header">
               <div class="ai-health-account-title">
                 <strong>{{ account.name }}</strong>
-                <a-tag>{{ providerDisplayName(account.providerCode) }}</a-tag>
+                <a-tag><ProviderIcon :provider-code="account.providerCode" :name="providerDisplayName(account.providerCode)" :size="14" /> {{ providerDisplayName(account.providerCode) }}</a-tag>
                 <a-tag :color="accountStatusColor(account.status)">{{ accountStatusLabel(account.status) }}</a-tag>
                 <a-tag :color="healthStatusColor(account.latestStatus)">{{ healthStatusLabel(account.latestStatus) }}</a-tag>
               </div>
@@ -94,6 +94,7 @@ import { message } from '@/lib/antd'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { authState } from '@/composables/useAuth'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'

@@ -23,6 +23,10 @@ const mediaSpeechTransformMaxBytes = 32 * 1024 * 1024
 type mediaSpeechTransform struct {
 	active  bool
 	adapter gatewaymedia.SpeechAdapter
+	// providerKey 是激活计划的 provider 分派键（gemini/minimax/volcengine，
+	// 与 SpeechAdapterForProvider 同键）：计量面按 provider 分口径
+	//（volcengine 按生成时长，其余沿既有字符/token 口径）。
+	providerKey string
 	// request 是归一后的 SpeechRequest（响应转换的 content-type 推导与
 	// minimax extra_info 计量上游形态判定输入；解析失败保持零值）。
 	request gatewaymedia.SpeechRequest
@@ -62,6 +66,7 @@ func mediaSpeechTransformPlan(input HandleUpstreamResponseInput) mediaSpeechTran
 	}
 	plan.active = true
 	plan.adapter = adapter
+	plan.providerKey = adapterKey
 	// 归一 SpeechRequest（转换 content-type 推导与计量上游形态判定输入）；
 	// 解析失败保持零值，adapter 按各自缺省语义处理（minimax format 缺省
 	// mp3）。body 缺失/不可解析的 speech 请求到不了上游 2xx，此分支仅是

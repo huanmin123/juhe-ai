@@ -216,6 +216,17 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 	if item == nil {
 		return nil
 	}
+	// 媒体单价维度（TTS 字符 / 音频秒 / 视频秒 / 视频按次）不在
+	// provider_model_catalog 列集内（39 列种子无此四维），唯一权威源是
+	// go:embed 静态快照层（catalogdata/*.json——计价落法"目录表无列、
+	// 计费读静态层"，2026-10-17 维度修正批起 seed-audio 秒价/视频主档秒价
+	// 在该层落值）：从静态层按 provider+model 补齐，静态未命中保持 nil
+	//（成本不虚计）。token 价仍以 DB 行为运行时权威。
+	mediaRates := pricing.FindProviderModelPricing(item.ProviderCode, item.Model)
+	var mediaSet pricing.PriceSet
+	if mediaRates != nil {
+		mediaSet = mediaRates.PriceSet
+	}
 	return &pricing.Pricing{
 		ProviderCode: item.ProviderCode,
 		Model:        item.Model,
@@ -232,6 +243,10 @@ func chainCatalogPricing(item *gatewayruntimecache.ProviderModelCatalogItem) *pr
 			AudioInputUsdPer1M:          item.AudioInputUsdPer1M,
 			AudioOutputUsdPer1M:         item.AudioOutputUsdPer1M,
 			OutputUsdPerImage:           item.OutputUsdPerImage,
+			TtsInputUsdPer1MChars:       mediaSet.TtsInputUsdPer1MChars,
+			AudioInputUsdPerSecond:      mediaSet.AudioInputUsdPerSecond,
+			VideoOutputUsdPerSecond:     mediaSet.VideoOutputUsdPerSecond,
+			VideoOutputUsdPerCall:       mediaSet.VideoOutputUsdPerCall,
 		},
 		CachedImageInputUsdPer1M: item.CachedImageInputUsdPer1M,
 		ServiceTierPrices:        chainServiceTierPrices(item.ServiceTierPrices),

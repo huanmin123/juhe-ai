@@ -143,8 +143,12 @@ type chainRuntimeDeps struct {
 
 	// G14/G18 session + codex collaborators (optional; the adapters degrade
 	// to the header-only identities Node serves when the resolver is absent).
-	Identity    *sessionIdentityServices
-	CodexBridge gatewaypreauth.CodexBridgePreflight
+	Identity *sessionIdentityServices
+	// GroupAffinity 是组级会话绑定服务（策略路由分组会话亲和设计 §3）：独立
+	// 数据面，消费方为 preauth 键派生/黏住端口、引擎最终成功写回端口与响应层
+	// 三层删除。nil = 未装配（组合测试），组黏性整体不生效（零改动路径）。
+	GroupAffinity *gatewaysession.GroupAffinityService
+	CodexBridge   gatewaypreauth.CodexBridgePreflight
 	// CodexContextRoot / CodexContextStateStore 是 Codex Responses↔Chat 桥
 	// 会话状态（gatewaycodex.ChatBridgeStateService，Node codex-responses/
 	// chat-bridge-state.ts）的组合根装配输入：CodexContextRoot 携带
@@ -602,6 +606,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	//（见上方 dispatchSessionAffinity 装配注释）；本地降级保持
 	// localSessionAffinity。
 	engine.Affinity = dispatchSessionAffinity
+	// 组级会话黏性写回端口（策略路由分组会话亲和设计 §5）：最终协议成功把
+	// 最终成功派发账户所属分组写回组绑定（成功者赢 CAS ≤2 轮）。nil = 未装配
+	//（组合测试），写回句柄为 nil，链面结算自然跳过。
+	engine.GroupAffinity = deps.GroupAffinity
 	// W4-B（BUG-0175）D-114 接线：普通路由速度优先时延降级排序端口
 	//（nil 保持 degradedLatency 显式降级——组合测试专用）。
 	if deps.LatencyService != nil {
@@ -740,6 +748,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		ClientStrategy:     clientStrategyAdapter{deps: codexClientStrategy},
 		SessionIdentity:    sessionIdentityAdapter{services: deps.Identity},
 		SessionAffinity:    sessionAffinityAdapter{services: deps.Identity},
+		GroupAffinity:      deps.GroupAffinity,
 		// 调用方分级影子观测信号口（调用方分级调度设计 §3/§5.4）：preflight
 		// 在本地模型过滤失败按调用方责任渲染终态时透传 model_filter_failed。
 		CallerTier:  callerTier,
@@ -801,10 +810,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// AccountEffects 已有守卫分支。
 	if deps.ConfiguredPolicyAvoidance != nil && deps.ProxyHealthService != nil && deps.Cache != nil {
 		chain.responseAccountEffects = &chainResponseAccountEffects{
-			avoidance:   deps.ConfiguredPolicyAvoidance,
-			proxyHealth: deps.ProxyHealthService,
-			cache:       deps.Cache,
-			affinity:    dispatchSessionAffinity,
+			avoidance:     deps.ConfiguredPolicyAvoidance,
+			proxyHealth:   deps.ProxyHealthService,
+			cache:         deps.Cache,
+			affinity:      dispatchSessionAffinity,
+			groupAffinity: deps.GroupAffinity,
 		}
 	}
 

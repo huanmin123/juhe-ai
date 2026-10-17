@@ -120,8 +120,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 214 {
-		t.Fatalf("first seed model catalog rows = %d, want 214 (目录 220 行，按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2025-11-12；deepseek-v4-flash 残留行已随 JSON 种子生成器修正)", first.ModelCatalogRows)
+	if first.ModelCatalogRows != 195 {
+		t.Fatalf("first seed model catalog rows = %d, want 195 (目录 201 行——2026-10-17 口径核对批 221 + 2025 前模型清理批两阶段 -15 行 gpt 旧行 -9 行无日期疑似 2024 老模型与弃用 glm-asr-2512 + 同日缺口补录 +3 + 同日火山 ASR 承接批 volc.seedasr.auc +1；按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2025-11-12)", first.ModelCatalogRows)
 	}
 	if first.BuiltinQuestionRows != len(builtinModelCheckQuestions) {
 		t.Fatalf("first seed builtin question rows = %d, want %d", first.BuiltinQuestionRows, len(builtinModelCheckQuestions))
@@ -191,12 +191,16 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// volcengine/qwen 档案 +chat_completions 绑定 38→40，复用既有
 	// openai_v1_chat_completions 族不新增 family 行；2026-10-05 全厂商补全批
 	// 起 141→221（补全批 208、复核批 213、占位行批 214、取证批 217、遗留
-	// 取证批 live-translate 218 + openai 三行 221），按种子钟 2026-09-04
-	// 过滤 6 行已 shutdown 行 → 214；deepseek-v4-flash 残留行已随 JSON 生成器修正）后
+	// 取证批 live-translate 218 + openai 三行 221）；TTS 迁移批 +seed-audio-1.0、
+	// JSON 生成器修正 -deepseek-v4-flash 残留行 → 221；2026-10-17 口径核对批
+	// 五家回正（行数不变）+ 2025 前模型清理批两阶段 -15 行 gpt 旧行 -9 行 →
+	// 200（同日缺口补录批 +3）；按种子钟 2026-09-04 过滤 6 行已 shutdown 行 → 194；
+	// 同日火山 ASR 承接批 volc.seedasr.auc +1 → 201 / 可见 195）后
 	// providers 11 / families 13 / profiles
-	// 16 / profile 绑定 40（M3f qwen +audio_transcription、M4b hybrid
+	// 16 / profile 绑定 41（M3f qwen +audio_transcription、M4b hybrid
 	// +video_generation+tts、M6 volcengine +tts、对话批 volcengine/qwen
-	// +chat_completions）/ groups 1（2026-10-07 默认资源收口：仅 GPT）；
+	// +chat_completions、ASR 承接批 volcengine +audio_transcription 复用
+	// 既有 audio_transcription 族）/ groups 1（2026-10-07 默认资源收口：仅 GPT）；
 	// 默认分组派生 route_strategies 与 bindings 1（仅 GPT）、api_keys 1
 	//（1 默认；admin chat 不再预置，由会话创建链按需 Ensure）。
 	// global_settings 2 行种子 + 1 行调度偏好迁移完成记录（PLAN-20261012T033000000Z
@@ -209,7 +213,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"protocols":                           3,
 		"protocol_endpoint_families":          13,
 		"provider_protocol_profiles":          16,
-		"provider_protocol_profile_families":  40,
+		"provider_protocol_profile_families":  41,
 		"groups":                              1,
 		"route_strategies":                    1,
 		"route_strategy_groups":               1,
@@ -218,8 +222,15 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"external_integration_source_tokens":  1,
 		// 72→71：chatImageGenerationTotalTimeoutSeconds 随 2026-10-12 AI 问答
 		// 简化批（生图工具退场）从 seed 删除。
+		// provider_model_catalog 214→195：2026-10-17 口径核对批 221 + 2025 前
+		// 模型清理批两阶段 -24 行（gpt 15 + 无日期疑似 2024 老模型 8 + 弃用
+		// glm-asr-2512 1）→ 197；同日目录缺口补录批 +3（Hailuo-2.3-Fast、
+		// video-1.5-lite、grok-tts 占位行）→ 200；同日火山 ASR 承接批 +1
+		//（volc.seedasr.auc）→ 201；按表内 shutdown 过滤 6 行（原 7 行中的
+		// gpt-3.5-turbo-1106 随清理批移除）：xai 2026-05-15 四行 + gemini
+		// veo-3.0 两行 2025-11-12。
 		"system_settings":        71,
-		"provider_model_catalog": 214,
+		"provider_model_catalog": 195,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {

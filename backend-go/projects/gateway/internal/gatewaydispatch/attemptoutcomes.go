@@ -34,6 +34,20 @@ func newConfirmSessionApiKeyFingerprintFunc(port SessionAffinityPort, ctx contex
 	}
 }
 
+// newConfirmGroupAffinityFunc 构造组级会话黏性的最终成功写回闭包（策略路由分
+// 组会话亲和设计 §5）：把最终成功派发账户所属分组写回/创建组绑定。无组亲和键、
+// 无落组或端口未装配时返回 nil。捕获 WithoutCancel 上下文，与 Key 指纹写回同
+// 一请求生命周期语义。
+func newConfirmGroupAffinityFunc(port GroupAffinityPort, ctx context.Context, groupAffinityKey, routeStrategyID, groupID string) func() {
+	if port == nil || groupAffinityKey == "" || groupID == "" {
+		return nil
+	}
+	writeCtx := context.WithoutCancel(ctx)
+	return func() {
+		port.RememberGroupAsync(writeCtx, groupAffinityKey, routeStrategyID, groupID)
+	}
+}
+
 // handleUpstreamAttemptResponse mirrors the `if (response.ok) {...}` block
 // plus the failed-response tail of the attempt loop.
 func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAttemptResponseContext) (responseKind, responseStopKind, error) {
@@ -111,6 +125,10 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			// 指纹，链面仅在最终协议成功结算消费一次；2xx 响应头阶段不执行，
 			// 写回失败只告警、不改写已完成响应。
 			ConfirmSessionApiKeyFingerprint: newConfirmSessionApiKeyFingerprintFunc(e.Affinity, ctx, in.args.SessionAffinityKey, c.account),
+			// 组级会话黏性（策略路由分组会话亲和设计 §5）：闭包携带本尝试落组
+			// 的组绑定写回，链面仅在最终协议成功结算消费一次（组 → 账户 → Key
+			// 顺序由链面结算块保证）；写回失败只告警，不改写已完成响应。
+			ConfirmGroupAffinity: newConfirmGroupAffinityFunc(e.GroupAffinity, ctx, in.args.GroupAffinityKey, in.args.RouteStrategyID, usageContext.GroupID),
 			// 成功侧结算：ENGAGED 锁复位（Node 完全成功后调用
 			// completeAccountLockSuccessAsync，routes.ts:2481-2483）。
 			ConfirmAccountLockSuccess: func() error {

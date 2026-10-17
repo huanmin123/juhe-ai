@@ -57,6 +57,21 @@ function accountListRequestParams(params?: AccountListParams, includeSystemAccou
   return { ...serialized, domain: params.domain }
 }
 
+// 供应商卡片墙全量计数查询参数：当前域 +（管理面）systemAccountId 范围参数；
+// 空参对象收敛为 undefined 以免挂空 query。
+function accountProviderCountsParams(params?: AccountProviderCountsParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const serialized: Record<string, unknown> = {}
+  if (params.domain) serialized.domain = params.domain
+  if (params.systemAccountId) serialized.systemAccountId = params.systemAccountId
+  return Object.keys(serialized).length > 0 ? serialized : undefined
+}
+
+export interface AccountProviderCountsParams {
+  domain?: string
+  systemAccountId?: string
+}
+
 export interface AccountTestModelOption {
   label: string
   testEndpointModes: AccountSupportedEndpointMode[]
@@ -120,6 +135,7 @@ export interface AccountRuntimeResetResult {
 
 export const accountsApi = {
   list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListRequestParams(params), signal: options?.signal })),
+  providerCounts: (params?: AccountProviderCountsParams) => unwrap<Record<string, number>>(http.get('/accounts/provider-counts', { params: accountProviderCountsParams(params) })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
   tags: (params?: ListParams) => unwrap<AccountTagSummary[]>(http.get('/accounts/tags', { params })),
   deleteTag: (id: string, params?: ListParams) => http.delete(`/accounts/tags/${id}`, { params }),
@@ -165,6 +181,7 @@ export const accountsApi = {
 
 export const myAccountsApi = {
   list: (params?: AccountListParams, options?: RequestControlOptions) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListRequestParams(params, false), signal: options?.signal })),
+  providerCounts: (params?: AccountProviderCountsParams) => unwrap<Record<string, number>>(http.get('/my-accounts/provider-counts', { params: accountProviderCountsParams(params) })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
   tags: () => unwrap<AccountTagSummary[]>(http.get('/my-accounts/tags')),
   deleteTag: (id: string) => http.delete(`/my-accounts/tags/${id}`),

@@ -12,7 +12,10 @@
     </span>
   </div>
   <a-tag v-else-if="columnKey === 'type'" :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
-  <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">{{ account.providerName || providerName(account.providerCode) }}</a-tag>
+  <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">
+    <ProviderIcon class="provider-tag-icon" :name="account.providerName || providerName(account.providerCode)" :provider-code="account.providerCode" :size="14" />
+    {{ account.providerName || providerName(account.providerCode) }}
+  </a-tag>
   <span v-else-if="columnKey === 'systemAccount'" :class="account.systemAccountName ? 'name-cell' : 'muted-cell'">
     {{ account.systemAccountName || '-' }}
   </span>
@@ -89,6 +92,7 @@
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountRowActions from './AccountRowActions.vue'
@@ -166,6 +170,11 @@ const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, prop
 </script>
 
 <style scoped>
+.provider-tag-icon {
+  margin-right: 4px;
+  vertical-align: -0.2em;
+}
+
 .account-group-text {
   display: block;
   width: 100%;

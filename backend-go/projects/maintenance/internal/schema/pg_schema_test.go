@@ -358,6 +358,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	// 档案 +video_generation+tts）；M6 语音批 volcengine 档案 +tts → 38。
 	// 对话批 volcengine/qwen 档案 +chat_completions（复用既有
 	// openai_v1_chat_completions 族，不新增 family 行）→ 40。
+	// 2026-10-17 语音识别承接批 volcengine 档案 +audio_transcription（复用
+	// 既有 openai_v1_audio_transcription 族，不新增 family 行）→ 41。
 	if len(pgSeedProviders) != 11 {
 		t.Fatalf("provider seeds = %d, want 11", len(pgSeedProviders))
 	}
@@ -394,8 +396,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	for _, profile := range pgSeedProfiles {
 		profileFamilyCount += len(profile.EndpointFamilies)
 	}
-	if profileFamilyCount != 40 {
-		t.Fatalf("profile endpoint family bindings = %d, want 40", profileFamilyCount)
+	if profileFamilyCount != 41 {
+		t.Fatalf("profile endpoint family bindings = %d, want 41", profileFamilyCount)
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

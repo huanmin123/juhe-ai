@@ -22,6 +22,12 @@ type ResolveGatewayRuntimeOptions struct {
 	// InspectClientIPPolicyAfterRuntime mirrors the option; nil keeps the
 	// Node default (inspect).
 	InspectClientIPPolicyAfterRuntime *bool
+	// DispatchStaticResolution 是组级会话亲和三阶段第 1 步开关（策略路由分组
+	// 会话亲和设计 §4）：置位时 runtime read 走静态身份快照（不调用动态排序
+	// 器、不消费 RR/weighted 状态、不预选分组），产出带 StaticResolutionOnly
+	// 标记的快照，preflight 在身份解析后经 SelectGatewayRuntimeForDispatchAsync
+	// 完成第 3 步。仅 /v1 派发链置位；其余链路保持完整读（行为不变）。
+	DispatchStaticResolution bool
 }
 
 func (o ResolveGatewayRuntimeOptions) inspectClientIPPolicyAfterRuntime() bool {
@@ -32,6 +38,16 @@ func (o ResolveGatewayRuntimeOptions) inspectClientIPPolicyAfterRuntime() bool {
 // stage before the body pipeline. next mirrors the express next callback;
 // returning an error mirrors next(error) (unexpected failure).
 func (s *Service) PreResolveGatewayRuntime(ctx context.Context, res GatewayResponseWriter, req *GatewayRequest, next func()) error {
+	return s.PreResolveGatewayRuntimeWithOptions(ctx, res, req, ResolveGatewayRuntimeOptions{
+		CloseConnectionOnAuthFailure:      true,
+		InspectClientIPPolicyAfterRuntime: boolPtr(false),
+	}, next)
+}
+
+// PreResolveGatewayRuntimeWithOptions 是 PreResolveGatewayRuntime 的选项化形
+// 式：/v1 派发链传 DispatchStaticResolution=true 请求静态身份快照（策略路由
+// 分组会话亲和设计 §4 三阶段第 1 步），其余链路保持完整读。
+func (s *Service) PreResolveGatewayRuntimeWithOptions(ctx context.Context, res GatewayResponseWriter, req *GatewayRequest, options ResolveGatewayRuntimeOptions, next func()) error {
 	stageStartedAt := s.StartedAt()
 	resolutionReason := ""
 	resolutionOutcome := "success"
@@ -62,10 +78,7 @@ func (s *Service) PreResolveGatewayRuntime(ctx context.Context, res GatewayRespo
 		next()
 		return nil
 	}
-	runtime, err := s.ResolveGatewayRuntimeAsync(ctx, res, req, ResolveGatewayRuntimeOptions{
-		CloseConnectionOnAuthFailure:      true,
-		InspectClientIPPolicyAfterRuntime: boolPtr(false),
-	})
+	runtime, err := s.ResolveGatewayRuntimeAsync(ctx, res, req, options)
 	if err != nil {
 		resolutionOutcome = "unexpected_failure"
 		resolutionReason = errorName(err)
@@ -156,7 +169,7 @@ func (s *Service) ResolveGatewayRuntimeAsync(ctx context.Context, res GatewayRes
 		return nil, nil
 	}
 
-	runtime, err := s.RuntimeCache.ReadCachedGatewayRuntimeAsync(ctx, gatewayAPIKey)
+	runtime, err := s.readGatewayRuntimeForDispatch(ctx, gatewayAPIKey, options)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +196,16 @@ func (s *Service) ResolveGatewayRuntimeAsync(ctx context.Context, res GatewayRes
 		return nil, nil
 	}
 	return &runtime, nil
+}
+
+// readGatewayRuntimeForDispatch 按选项路由完整读 / 静态读（策略路由分组会话
+// 亲和设计 §4 三阶段第 1 步）：静态读与完整读共享缓存、单飞载入与鉴权错误
+// 语义，只把动态模式的分组选择延后到 preflight 第 3 步。
+func (s *Service) readGatewayRuntimeForDispatch(ctx context.Context, gatewayAPIKey string, options ResolveGatewayRuntimeOptions) (gatewayruntimecache.GatewayRuntime, error) {
+	if options.DispatchStaticResolution {
+		return s.RuntimeCache.ReadCachedGatewayRuntimeStaticAsync(ctx, gatewayAPIKey)
+	}
+	return s.RuntimeCache.ReadCachedGatewayRuntimeAsync(ctx, gatewayAPIKey)
 }
 
 // ResolveGatewayAPIKeyForModelsAsync mirrors resolveGatewayApiKeyForModelsAsync.

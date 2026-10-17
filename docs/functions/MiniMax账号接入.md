@@ -32,7 +32,7 @@ type ProviderCode = 'minimax'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | Capabilities | Endpoint Families | 默认健康检查模型 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `profile_minimax_openai_v1` | `minimax` | `openai/v1` | `https://api.minimax.chat` | `api_key` | `video_generation`、`tts`（仅媒体） | `video_generation`、`tts` | `speech-02-turbo` |
+| `profile_minimax_openai_v1` | `minimax` | `openai/v1` | `https://api.minimax.chat` | `api_key` | `video_generation`、`tts`（仅媒体） | `video_generation`、`tts` | `speech-2.8-turbo` |
 
 要点：
 
@@ -61,28 +61,35 @@ type ProviderCode = 'minimax'
 ### 账户 endpoint modes
 
 - 词表（写侧 `normalizeMinimaxEndpointModesForWrite` + 读侧投影）：`audio_speech` + `video_create`/`video_get`/`video_content`/`video_cancel`——全部 opt-in；写侧对 chat/responses 等对话模式报错。
-- 默认集 `audio_speech`（与档案默认健康检查模型 `speech-02-turbo` 对应；同 glm 默认 chat 对的先例结构）。
+- 默认集 `audio_speech`（与档案默认健康检查模型 `speech-2.8-turbo` 对应；同 glm 默认 chat 对的先例结构；原 `speech-02-turbo` 随 2025 前模型清理批移除）。
 - 前端（`accountProviderCapabilities.ts`）：minimax 档案的 endpoint modes 按 families 推导（`video_generation` → video 四值、`tts` → `audio_speech`），不回退 chat 词表；新账户默认集过滤后为空。
 
 ## 模型目录
 
-M3 收录 2 行（`maintenance/internal/schema/model_catalog_data.go` + gateway 静态层 `pricing/data_minimax.go`）：
+模型目录唯一数据源为 `pricing/catalogdata/minimax.json`（go:embed 运行时 + maintenance DB 种子双通道，2026-10-17 缺口补录批后 12 行）；关键行：
 
 | 模型 | mode | 协议 | 定价 |
 | --- | --- | --- | --- |
-| `MiniMax-Hailuo-2.3` | `video` | `video` | 不落价（见下） |
-| `speech-02-turbo` | `audio` | `audio_speech` | 不落价（见下） |
+| `MiniMax-Hailuo-2.3` | `video` | `video` | 按次主档（见下） |
+| `MiniMax-Hailuo-2.3-Fast` | `video` | `video` | 按次主档（见下；2026-10-17 缺口补录批） |
 
 收录与维护规则见《厂商模型目录更新与清洗指南》MiniMax 节。
 
 ## 计价口径（不编造）
 
-- **speech-02-turbo**：官方按量口径 ¥2.00/万字符（platform.minimax.cn 按量计费页「同步语音合成 T2A speech-2.6-turbo / speech-02-turbo 2.00」），官方无美元价；网关计价引擎仅 USD 且无官方汇率折算链 → **不落 `TtsInputUsdPer1MChars`**（自选汇率折算即编造）。字符计量照常落 usage（`extra_info.usage_characters` 回报优先，契约 §2.8），目录无价 → 成本不虚计（0）；官方美元口径可查证后再补字符价。
-- **MiniMax-Hailuo-2.3**：官方按次/档位计费（分辨率 × 时长），platform.minimax.io 定价页为登录态 SPA，无可查证官方精确 USD 秒价（检索所得均为第三方聚合转售口径，不作数）；且轮询响应不回报时长 → **不落 `VideoOutputCostPerSecond`**，终态计费走契约 §2.8 兜底（0 计费 + `usage_missing` 标记），同 glm cogvideox 先例。
+2026-10-17 全供应商口径核对批后，MiniMax 目录主口径为**国内站人民币明文 ÷ 约定汇率 7.0**：账户协议档案实连 `api.minimax.chat` 国内站（账单人民币），国际站 USD 明文与国内价并不同步（实证：speech-2.8-hd 国内 3.50 元/万字符 ≈ $5e-05/字符 vs 国际 $1e-04/字符），不再直落国际价。全部 12 行单价与分档留档见 `catalogdata/minimax.json` 各行 `sourcePricingNote`（数据源与核对方式见《模型价格数据源与取证指南》台账），锚点钉值在 `catalogdata_price_anchors_test.go`。要点：
+
+- **TTS 四行**（speech-2.8-hd/turbo、speech-2.6-hd/turbo；`speech-02-turbo` 已随 2025 前模型清理批移除）：国内同价 hd 3.50 元/万字符、turbo 2.00 元/万字符（同步/异步同价），÷7.0 落 `TtsInputUsdPer1MChars`；计费 1 汉字=2 字符。字符计量照常落 usage（`extra_info.usage_characters` 回报优先，契约 §2.8）。
+- **asr-1.0 已随 2025 前模型清理批移除**（2.50 元/小时 ÷3600 ÷7.0 的秒价口径随行留档于 git 历史；现役 STT 秒价载体见 qwen3-asr-flash）。
+- **MiniMax-H3 / H3-Max**：768P 主档 0.50 元/秒 ÷7.0 落 `VideoOutputUsdPerSecond`（H3-Max 的 480P 低档 0.33 元/秒留注记；输入素材：H3 图片 5 张内免费/超出 0.20 元/张、H3-Max 2 张内/0.50 元，留注记）。
+- **MiniMax-Hailuo-2.3-Fast**（2026-10-17 缺口补录批）：按次/档位计费与 Hailuo-2.3 同规则，按 768P-6s 主档 1.35 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（768P-10s 2.25 元、1080P-6s 2.31 元留注记）；不落每秒价（按次 → 每秒是推导，裁决 §2.4 维持）。
+- **MiniMax-Hailuo-2.3**：按次/档位计费（分辨率 × 时长），按 768P-6s 主档 2.00 元/条 ÷7.0 落 `VideoOutputUsdPerCall`（一次任务 = 一次调用，契约 §2.8 按次计费；768P-10s 4.00 元、1080P-6s 3.50 元留注记）；按次 → 每秒是推导，禁止折算（裁决 §2.4 维持）——不落 `VideoOutputCostPerSecond`；轮询响应不回报时长（契约 §8.1 query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
+- **image-01**：0.025 元/张 ÷7.0 落 `OutputUsdPerImage`（image-01-live 同价留注记）。
+- **M3 / M2.7 / M2.7-highspeed**：国内 2.10/8.40（M3 ≤512k 永久五折实付，恰与国际明文 $0.3/$1.2 等价）、M2.7 2.1/8.4、highspeed 4.2/16.8 元；缓存读 0.42 元、缓存写 2.625 元/百万 tokens；M3 >512k 恢复刊例（恰为 ×2 长上下文分档）、优先服务 1.5 倍留注记。
 
 ## 账号测试
 
-- 档案默认健康检查模型 `speech-02-turbo`（TTS 面）。
+- 档案默认健康检查模型 `speech-2.8-turbo`（TTS 面；2025 前模型清理批换入）。
 - 视频不做自动真实生成探针（按秒/按次计费成本高，媒体设计 §11.9），仅支持手动测试。
 
 ## 测试与验证

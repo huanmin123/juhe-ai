@@ -1,14 +1,14 @@
 {
   "models": [
     {
-      "cacheReadInputTokenCost": 5e-7,
-      "cacheReadInputTokenCostPriority": 8.75e-7,
+      "cacheReadInputTokenCost": 5e-07,
+      "cacheReadInputTokenCostPriority": 8.75e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1047576,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenPriority": 0.0000035,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenPriority": 3.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -18,8 +18,8 @@
       "maxTokens": 32768,
       "mode": "chat",
       "model": "gpt-4.1",
-      "outputCostPerToken": 0.000008,
-      "outputCostPerTokenPriority": 0.000014,
+      "outputCostPerToken": 8e-06,
+      "outputCostPerTokenPriority": 1.4e-05,
       "outputModalities": [
         "text"
       ],
@@ -51,14 +51,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1e-7,
-      "cacheReadInputTokenCostPriority": 1.75e-7,
+      "cacheReadInputTokenCost": 1e-07,
+      "cacheReadInputTokenCostPriority": 1.75e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1047576,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 4e-7,
-      "inputCostPerTokenPriority": 7e-7,
+      "inputCostPerToken": 4e-07,
+      "inputCostPerTokenPriority": 7e-07,
       "inputModalities": [
         "text",
         "image"
@@ -68,8 +68,8 @@
       "maxTokens": 32768,
       "mode": "chat",
       "model": "gpt-4.1-mini",
-      "outputCostPerToken": 0.0000016,
-      "outputCostPerTokenPriority": 0.0000028,
+      "outputCostPerToken": 1.6e-06,
+      "outputCostPerTokenPriority": 2.8e-06,
       "outputModalities": [
         "text"
       ],
@@ -100,14 +100,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.5e-8,
-      "cacheReadInputTokenCostPriority": 5e-8,
+      "cacheReadInputTokenCost": 2.5e-08,
+      "cacheReadInputTokenCostPriority": 5e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1047576,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 1e-7,
-      "inputCostPerTokenPriority": 2e-7,
+      "inputCostPerToken": 1e-07,
+      "inputCostPerTokenPriority": 2e-07,
       "inputModalities": [
         "text",
         "image"
@@ -117,8 +117,8 @@
       "maxTokens": 32768,
       "mode": "chat",
       "model": "gpt-4.1-nano",
-      "outputCostPerToken": 4e-7,
-      "outputCostPerTokenPriority": 8e-7,
+      "outputCostPerToken": 4e-07,
+      "outputCostPerTokenPriority": 8e-07,
       "outputModalities": [
         "text"
       ],
@@ -149,437 +149,19 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 0.00000125,
-      "cacheReadInputTokenCostPriority": 0.000002125,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 128000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000025,
-      "inputCostPerTokenPriority": 0.00000425,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 16384,
-      "maxTokens": 16384,
-      "mode": "chat",
-      "model": "gpt-4o",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenPriority": 0.000017,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-05-13",
-      "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions",
-        "responses"
-      ],
-      "supportedServiceTiers": [
-        "priority"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ],
-        "responses": [
-          "function_calling",
-          "web_search",
-          "file_search",
-          "image_generation",
-          "code_interpreter",
-          "mcp"
-        ]
-      },
-      "supportsPromptCaching": true
-    },
-    {
-      "cacheReadInputTokenCost": 7.5e-8,
-      "cacheReadInputTokenCostPriority": 1.25e-7,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 128000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 1.5e-7,
-      "inputCostPerTokenPriority": 2.5e-7,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 16384,
-      "maxTokens": 16384,
-      "mode": "chat",
-      "model": "gpt-4o-mini",
-      "outputCostPerToken": 6e-7,
-      "outputCostPerTokenPriority": 0.000001,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-07-18",
-      "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions",
-        "responses"
-      ],
-      "supportedServiceTiers": [
-        "priority"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ],
-        "responses": [
-          "function_calling",
-          "web_search",
-          "file_search",
-          "image_generation",
-          "code_interpreter",
-          "mcp"
-        ]
-      },
-      "supportsPromptCaching": true
-    },
-    {
-      "cacheReadInputTokenCost": 0.0000025,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 128000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000005,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-4o-2024-05-13",
-      "outputCostPerToken": 0.000015,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-05-13",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions",
-        "responses"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ],
-        "responses": [
-          "function_calling",
-          "web_search",
-          "file_search",
-          "image_generation",
-          "code_interpreter",
-          "mcp"
-        ]
-      },
-      "supportsPromptCaching": true
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 128000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00001,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-4-turbo",
-      "outputCostPerToken": 0.00003,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-04-09",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions",
-        "responses"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ],
-        "responses": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 128000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00001,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-4-turbo-2024-04-09",
-      "outputCostPerToken": 0.00003,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-04-09",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions",
-        "responses"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ],
-        "responses": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 128000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00001,
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-4-1106-preview",
-      "outputCostPerToken": 0.00003,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2023-11-06",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 8192,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00003,
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 8192,
-      "mode": "chat",
-      "model": "gpt-4",
-      "outputCostPerToken": 0.00006,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2023-06-13",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 8192,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00003,
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 8192,
-      "mode": "chat",
-      "model": "gpt-4-0613",
-      "outputCostPerToken": 0.00006,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2023-06-13",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 16385,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-7,
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-3.5-turbo",
-      "outputCostPerToken": 0.0000015,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2023-06-13",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 16385,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-7,
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-3.5-turbo-0125",
-      "outputCostPerToken": 0.0000015,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-01-25",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 16385,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000001,
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 4096,
-      "maxTokens": 4096,
-      "mode": "chat",
-      "model": "gpt-3.5-turbo-1106",
-      "outputCostPerToken": 0.000002,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2023-11-06",
-      "shutdownDate": "2026-09-28",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ]
-      },
-      "supportsPromptCaching": false
-    },
-    {
-      "cacheCreationInputTokenCost": 0.0000025,
-      "cacheCreationInputTokenCostFlex": 0.00000125,
-      "cacheCreationInputTokenCostPriority": 0.000005,
-      "cacheReadInputTokenCost": 1e-7,
-      "cacheReadInputTokenCostFlex": 5e-8,
-      "cacheReadInputTokenCostPriority": 2e-7,
+      "cacheCreationInputTokenCost": 2.5e-06,
+      "cacheCreationInputTokenCostFlex": 1.25e-06,
+      "cacheCreationInputTokenCostPriority": 5e-06,
+      "cacheReadInputTokenCost": 1e-07,
+      "cacheReadInputTokenCostFlex": 5e-08,
+      "cacheReadInputTokenCostPriority": 2e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenFlex": 0.000001,
-      "inputCostPerTokenPriority": 0.000004,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenFlex": 1e-06,
+      "inputCostPerTokenPriority": 4e-06,
       "inputModalities": [
         "text",
         "image"
@@ -592,9 +174,9 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-6.1-sol",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenFlex": 0.000005,
-      "outputCostPerTokenPriority": 0.00002,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenFlex": 5e-06,
+      "outputCostPerTokenPriority": 2e-05,
       "outputModalities": [
         "text"
       ],
@@ -636,19 +218,19 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 0.0000025,
-      "cacheCreationInputTokenCostFlex": 0.00000125,
-      "cacheCreationInputTokenCostPriority": 0.000005,
-      "cacheReadInputTokenCost": 2e-7,
-      "cacheReadInputTokenCostFlex": 1e-7,
-      "cacheReadInputTokenCostPriority": 4e-7,
+      "cacheCreationInputTokenCost": 2.5e-06,
+      "cacheCreationInputTokenCostFlex": 1.25e-06,
+      "cacheCreationInputTokenCostPriority": 5e-06,
+      "cacheReadInputTokenCost": 2e-07,
+      "cacheReadInputTokenCostFlex": 1e-07,
+      "cacheReadInputTokenCostPriority": 4e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenFlex": 0.000001,
-      "inputCostPerTokenPriority": 0.000004,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenFlex": 1e-06,
+      "inputCostPerTokenPriority": 4e-06,
       "inputModalities": [
         "text",
         "image"
@@ -661,9 +243,9 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-6-sol",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenFlex": 0.000005,
-      "outputCostPerTokenPriority": 0.00002,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenFlex": 5e-06,
+      "outputCostPerTokenPriority": 2e-05,
       "outputModalities": [
         "text"
       ],
@@ -709,19 +291,19 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 1.25e-7,
-      "cacheCreationInputTokenCostFlex": 6.25e-8,
-      "cacheCreationInputTokenCostPriority": 2.5e-7,
-      "cacheReadInputTokenCost": 1e-8,
-      "cacheReadInputTokenCostFlex": 5e-9,
-      "cacheReadInputTokenCostPriority": 2e-8,
+      "cacheCreationInputTokenCost": 1.25e-07,
+      "cacheCreationInputTokenCostFlex": 6.25e-08,
+      "cacheCreationInputTokenCostPriority": 2.5e-07,
+      "cacheReadInputTokenCost": 1e-08,
+      "cacheReadInputTokenCostFlex": 5e-09,
+      "cacheReadInputTokenCostPriority": 2e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 1e-7,
-      "inputCostPerTokenFlex": 5e-8,
-      "inputCostPerTokenPriority": 2e-7,
+      "inputCostPerToken": 1e-07,
+      "inputCostPerTokenFlex": 5e-08,
+      "inputCostPerTokenPriority": 2e-07,
       "inputModalities": [
         "text",
         "image"
@@ -734,9 +316,9 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-6-luna",
-      "outputCostPerToken": 5e-7,
-      "outputCostPerTokenFlex": 2.5e-7,
-      "outputCostPerTokenPriority": 0.000001,
+      "outputCostPerToken": 5e-07,
+      "outputCostPerTokenFlex": 2.5e-07,
+      "outputCostPerTokenPriority": 1e-06,
       "outputModalities": [
         "text"
       ],
@@ -782,20 +364,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 0.0000125,
-      "cacheCreationInputTokenCostFlex": 0.00000625,
-      "cacheCreationInputTokenCostPriority": 0.000025,
-      "cacheReadInputTokenCost": 0.000001,
-      "cacheReadInputTokenCostFlex": 5e-7,
-      "cacheReadInputTokenCostPriority": 0.000002,
+      "cacheCreationInputTokenCost": 1.25e-05,
+      "cacheCreationInputTokenCostFlex": 6.25e-06,
+      "cacheCreationInputTokenCostPriority": 2.5e-05,
+      "cacheReadInputTokenCost": 1e-06,
+      "cacheReadInputTokenCostFlex": 5e-07,
+      "cacheReadInputTokenCostPriority": 2e-06,
       "catalogOrder": -1,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00001,
-      "inputCostPerTokenFlex": 0.000005,
-      "inputCostPerTokenPriority": 0.00002,
+      "inputCostPerToken": 1e-05,
+      "inputCostPerTokenFlex": 5e-06,
+      "inputCostPerTokenPriority": 2e-05,
       "inputModalities": [
         "text",
         "image"
@@ -808,8 +390,8 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-6-astra",
-      "outputCostPerToken": 0.00005,
-      "outputCostPerTokenFlex": 0.000025,
+      "outputCostPerToken": 5e-05,
+      "outputCostPerTokenFlex": 2.5e-05,
       "outputCostPerTokenPriority": 0.0001,
       "outputModalities": [
         "text"
@@ -855,12 +437,12 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 0.000005,
-      "cacheCreationInputTokenCostFlex": 0.0000025,
-      "cacheCreationInputTokenCostPriority": 0.00001,
-      "cacheReadInputTokenCost": 4e-7,
-      "cacheReadInputTokenCostFlex": 2e-7,
-      "cacheReadInputTokenCostPriority": 8e-7,
+      "cacheCreationInputTokenCost": 5e-06,
+      "cacheCreationInputTokenCostFlex": 2.5e-06,
+      "cacheCreationInputTokenCostPriority": 1e-05,
+      "cacheReadInputTokenCost": 4e-07,
+      "cacheReadInputTokenCostFlex": 2e-07,
+      "cacheReadInputTokenCostPriority": 8e-07,
       "catalogOrder": 0,
       "codexDefaultReasoningLevel": "low",
       "codexMultiAgentVersion": "v2",
@@ -874,9 +456,9 @@
       ],
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000004,
-      "inputCostPerTokenFlex": 0.000002,
-      "inputCostPerTokenPriority": 0.000008,
+      "inputCostPerToken": 4e-06,
+      "inputCostPerTokenFlex": 2e-06,
+      "inputCostPerTokenPriority": 8e-06,
       "inputModalities": [
         "text",
         "image"
@@ -889,9 +471,9 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.6-sol",
-      "outputCostPerToken": 0.00002,
-      "outputCostPerTokenFlex": 0.00001,
-      "outputCostPerTokenPriority": 0.00004,
+      "outputCostPerToken": 2e-05,
+      "outputCostPerTokenFlex": 1e-05,
+      "outputCostPerTokenPriority": 4e-05,
       "outputModalities": [
         "text"
       ],
@@ -937,12 +519,12 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 0.0000025,
-      "cacheCreationInputTokenCostFlex": 0.00000125,
-      "cacheCreationInputTokenCostPriority": 0.000005,
-      "cacheReadInputTokenCost": 2e-7,
-      "cacheReadInputTokenCostFlex": 1e-7,
-      "cacheReadInputTokenCostPriority": 4e-7,
+      "cacheCreationInputTokenCost": 2.5e-06,
+      "cacheCreationInputTokenCostFlex": 1.25e-06,
+      "cacheCreationInputTokenCostPriority": 5e-06,
+      "cacheReadInputTokenCost": 2e-07,
+      "cacheReadInputTokenCostFlex": 1e-07,
+      "cacheReadInputTokenCostPriority": 4e-07,
       "catalogOrder": 1,
       "codexDefaultReasoningLevel": "medium",
       "codexMultiAgentVersion": "v2",
@@ -956,9 +538,9 @@
       ],
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenFlex": 0.000001,
-      "inputCostPerTokenPriority": 0.000004,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenFlex": 1e-06,
+      "inputCostPerTokenPriority": 4e-06,
       "inputModalities": [
         "text",
         "image"
@@ -971,9 +553,9 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.6-terra",
-      "outputCostPerToken": 0.000012,
-      "outputCostPerTokenFlex": 0.000006,
-      "outputCostPerTokenPriority": 0.000024,
+      "outputCostPerToken": 1.2e-05,
+      "outputCostPerTokenFlex": 6e-06,
+      "outputCostPerTokenPriority": 2.4e-05,
       "outputModalities": [
         "text"
       ],
@@ -1019,12 +601,12 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 2.5e-7,
-      "cacheCreationInputTokenCostFlex": 1.25e-7,
-      "cacheCreationInputTokenCostPriority": 5e-7,
-      "cacheReadInputTokenCost": 2e-8,
-      "cacheReadInputTokenCostFlex": 1e-8,
-      "cacheReadInputTokenCostPriority": 4e-8,
+      "cacheCreationInputTokenCost": 2.5e-07,
+      "cacheCreationInputTokenCostFlex": 1.25e-07,
+      "cacheCreationInputTokenCostPriority": 5e-07,
+      "cacheReadInputTokenCost": 2e-08,
+      "cacheReadInputTokenCostFlex": 1e-08,
+      "cacheReadInputTokenCostPriority": 4e-08,
       "catalogOrder": 2,
       "codexDefaultReasoningLevel": "medium",
       "codexMultiAgentVersion": "",
@@ -1037,9 +619,9 @@
       ],
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 2e-7,
-      "inputCostPerTokenFlex": 1e-7,
-      "inputCostPerTokenPriority": 4e-7,
+      "inputCostPerToken": 2e-07,
+      "inputCostPerTokenFlex": 1e-07,
+      "inputCostPerTokenPriority": 4e-07,
       "inputModalities": [
         "text",
         "image"
@@ -1052,9 +634,9 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.6-luna",
-      "outputCostPerToken": 0.0000012,
-      "outputCostPerTokenFlex": 6e-7,
-      "outputCostPerTokenPriority": 0.0000024,
+      "outputCostPerToken": 1.2e-06,
+      "outputCostPerTokenFlex": 6e-07,
+      "outputCostPerTokenPriority": 2.4e-06,
       "outputModalities": [
         "text"
       ],
@@ -1100,13 +682,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 0.000015625,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheCreationInputTokenCost": 1.5625e-05,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000125,
+      "inputCostPerToken": 1.25e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1115,7 +697,7 @@
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.6-cyber",
-      "outputCostPerToken": 0.000075,
+      "outputCostPerToken": 7.5e-05,
       "outputModalities": [
         "text"
       ],
@@ -1149,16 +731,16 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5e-7,
-      "cacheReadInputTokenCostFlex": 2.5e-7,
-      "cacheReadInputTokenCostPriority": 0.00000125,
+      "cacheReadInputTokenCost": 5e-07,
+      "cacheReadInputTokenCostFlex": 2.5e-07,
+      "cacheReadInputTokenCostPriority": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000005,
-      "inputCostPerTokenFlex": 0.0000025,
-      "inputCostPerTokenPriority": 0.0000125,
+      "inputCostPerToken": 5e-06,
+      "inputCostPerTokenFlex": 2.5e-06,
+      "inputCostPerTokenPriority": 1.25e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1171,9 +753,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.5",
-      "outputCostPerToken": 0.00003,
-      "outputCostPerTokenFlex": 0.000015,
-      "outputCostPerTokenPriority": 0.000075,
+      "outputCostPerToken": 3e-05,
+      "outputCostPerTokenFlex": 1.5e-05,
+      "outputCostPerTokenPriority": 7.5e-05,
       "outputModalities": [
         "text"
       ],
@@ -1218,16 +800,16 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5e-7,
-      "cacheReadInputTokenCostFlex": 2.5e-7,
-      "cacheReadInputTokenCostPriority": 0.00000125,
+      "cacheReadInputTokenCost": 5e-07,
+      "cacheReadInputTokenCostFlex": 2.5e-07,
+      "cacheReadInputTokenCostPriority": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000005,
-      "inputCostPerTokenFlex": 0.0000025,
-      "inputCostPerTokenPriority": 0.0000125,
+      "inputCostPerToken": 5e-06,
+      "inputCostPerTokenFlex": 2.5e-06,
+      "inputCostPerTokenPriority": 1.25e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1240,9 +822,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.5-2026-04-23",
-      "outputCostPerToken": 0.00003,
-      "outputCostPerTokenFlex": 0.000015,
-      "outputCostPerTokenPriority": 0.000075,
+      "outputCostPerToken": 3e-05,
+      "outputCostPerTokenFlex": 1.5e-05,
+      "outputCostPerTokenPriority": 7.5e-05,
       "outputModalities": [
         "text"
       ],
@@ -1291,8 +873,8 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00003,
-      "inputCostPerTokenFlex": 0.000015,
+      "inputCostPerToken": 3e-05,
+      "inputCostPerTokenFlex": 1.5e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1306,7 +888,7 @@
       "mode": "responses",
       "model": "gpt-5.5-pro",
       "outputCostPerToken": 0.00018,
-      "outputCostPerTokenFlex": 0.00009,
+      "outputCostPerTokenFlex": 9e-05,
       "outputModalities": [
         "text"
       ],
@@ -1344,8 +926,8 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00003,
-      "inputCostPerTokenFlex": 0.000015,
+      "inputCostPerToken": 3e-05,
+      "inputCostPerTokenFlex": 1.5e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1359,7 +941,7 @@
       "mode": "responses",
       "model": "gpt-5.5-pro-2026-04-23",
       "outputCostPerToken": 0.00018,
-      "outputCostPerTokenFlex": 0.00009,
+      "outputCostPerTokenFlex": 9e-05,
       "outputModalities": [
         "text"
       ],
@@ -1393,16 +975,16 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.5e-7,
-      "cacheReadInputTokenCostFlex": 1.3e-7,
-      "cacheReadInputTokenCostPriority": 5e-7,
+      "cacheReadInputTokenCost": 2.5e-07,
+      "cacheReadInputTokenCostFlex": 1.3e-07,
+      "cacheReadInputTokenCostPriority": 5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000025,
-      "inputCostPerTokenFlex": 0.00000125,
-      "inputCostPerTokenPriority": 0.000005,
+      "inputCostPerToken": 2.5e-06,
+      "inputCostPerTokenFlex": 1.25e-06,
+      "inputCostPerTokenPriority": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1415,9 +997,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.4",
-      "outputCostPerToken": 0.000015,
-      "outputCostPerTokenFlex": 0.0000075,
-      "outputCostPerTokenPriority": 0.00003,
+      "outputCostPerToken": 1.5e-05,
+      "outputCostPerTokenFlex": 7.5e-06,
+      "outputCostPerTokenPriority": 3e-05,
       "outputModalities": [
         "text"
       ],
@@ -1462,16 +1044,16 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.5e-7,
-      "cacheReadInputTokenCostFlex": 1.3e-7,
-      "cacheReadInputTokenCostPriority": 5e-7,
+      "cacheReadInputTokenCost": 2.5e-07,
+      "cacheReadInputTokenCostFlex": 1.3e-07,
+      "cacheReadInputTokenCostPriority": 5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000025,
-      "inputCostPerTokenFlex": 0.00000125,
-      "inputCostPerTokenPriority": 0.000005,
+      "inputCostPerToken": 2.5e-06,
+      "inputCostPerTokenFlex": 1.25e-06,
+      "inputCostPerTokenPriority": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1484,9 +1066,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.4-2026-03-05",
-      "outputCostPerToken": 0.000015,
-      "outputCostPerTokenFlex": 0.0000075,
-      "outputCostPerTokenPriority": 0.00003,
+      "outputCostPerToken": 1.5e-05,
+      "outputCostPerTokenFlex": 7.5e-06,
+      "outputCostPerTokenPriority": 3e-05,
       "outputModalities": [
         "text"
       ],
@@ -1531,16 +1113,16 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 7.5e-8,
-      "cacheReadInputTokenCostFlex": 3.75e-8,
-      "cacheReadInputTokenCostPriority": 1.5e-7,
+      "cacheReadInputTokenCost": 7.5e-08,
+      "cacheReadInputTokenCostFlex": 3.75e-08,
+      "cacheReadInputTokenCostPriority": 1.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 7.5e-7,
-      "inputCostPerTokenFlex": 3.75e-7,
-      "inputCostPerTokenPriority": 0.0000015,
+      "inputCostPerToken": 7.5e-07,
+      "inputCostPerTokenFlex": 3.75e-07,
+      "inputCostPerTokenPriority": 1.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1551,9 +1133,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.4-mini",
-      "outputCostPerToken": 0.0000045,
-      "outputCostPerTokenFlex": 0.00000225,
-      "outputCostPerTokenPriority": 0.000009,
+      "outputCostPerToken": 4.5e-06,
+      "outputCostPerTokenFlex": 2.25e-06,
+      "outputCostPerTokenPriority": 9e-06,
       "outputModalities": [
         "text"
       ],
@@ -1598,16 +1180,16 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 7.5e-8,
-      "cacheReadInputTokenCostFlex": 3.75e-8,
-      "cacheReadInputTokenCostPriority": 1.5e-7,
+      "cacheReadInputTokenCost": 7.5e-08,
+      "cacheReadInputTokenCostFlex": 3.75e-08,
+      "cacheReadInputTokenCostPriority": 1.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 7.5e-7,
-      "inputCostPerTokenFlex": 3.75e-7,
-      "inputCostPerTokenPriority": 0.0000015,
+      "inputCostPerToken": 7.5e-07,
+      "inputCostPerTokenFlex": 3.75e-07,
+      "inputCostPerTokenPriority": 1.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1618,9 +1200,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.4-mini-2026-03-17",
-      "outputCostPerToken": 0.0000045,
-      "outputCostPerTokenFlex": 0.00000225,
-      "outputCostPerTokenPriority": 0.000009,
+      "outputCostPerToken": 4.5e-06,
+      "outputCostPerTokenFlex": 2.25e-06,
+      "outputCostPerTokenPriority": 9e-06,
       "outputModalities": [
         "text"
       ],
@@ -1665,14 +1247,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2e-8,
-      "cacheReadInputTokenCostFlex": 1e-8,
+      "cacheReadInputTokenCost": 2e-08,
+      "cacheReadInputTokenCostFlex": 1e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 2e-7,
-      "inputCostPerTokenFlex": 1e-7,
+      "inputCostPerToken": 2e-07,
+      "inputCostPerTokenFlex": 1e-07,
       "inputModalities": [
         "text",
         "image"
@@ -1683,8 +1265,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.4-nano",
-      "outputCostPerToken": 0.00000125,
-      "outputCostPerTokenFlex": 6.25e-7,
+      "outputCostPerToken": 1.25e-06,
+      "outputCostPerTokenFlex": 6.25e-07,
       "outputModalities": [
         "text"
       ],
@@ -1726,14 +1308,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2e-8,
-      "cacheReadInputTokenCostFlex": 1e-8,
+      "cacheReadInputTokenCost": 2e-08,
+      "cacheReadInputTokenCostFlex": 1e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 2e-7,
-      "inputCostPerTokenFlex": 1e-7,
+      "inputCostPerToken": 2e-07,
+      "inputCostPerTokenFlex": 1e-07,
       "inputModalities": [
         "text",
         "image"
@@ -1744,8 +1326,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.4-nano-2026-03-17",
-      "outputCostPerToken": 0.00000125,
-      "outputCostPerTokenFlex": 6.25e-7,
+      "outputCostPerToken": 1.25e-06,
+      "outputCostPerTokenFlex": 6.25e-07,
       "outputModalities": [
         "text"
       ],
@@ -1791,8 +1373,8 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00003,
-      "inputCostPerTokenFlex": 0.000015,
+      "inputCostPerToken": 3e-05,
+      "inputCostPerTokenFlex": 1.5e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1806,7 +1388,7 @@
       "mode": "responses",
       "model": "gpt-5.4-pro",
       "outputCostPerToken": 0.00018,
-      "outputCostPerTokenFlex": 0.00009,
+      "outputCostPerTokenFlex": 9e-05,
       "outputModalities": [
         "text"
       ],
@@ -1845,8 +1427,8 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1050000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00003,
-      "inputCostPerTokenFlex": 0.000015,
+      "inputCostPerToken": 3e-05,
+      "inputCostPerTokenFlex": 1.5e-05,
       "inputModalities": [
         "text",
         "image"
@@ -1860,7 +1442,7 @@
       "mode": "responses",
       "model": "gpt-5.4-pro-2026-03-05",
       "outputCostPerToken": 0.00018,
-      "outputCostPerTokenFlex": 0.00009,
+      "outputCostPerTokenFlex": 9e-05,
       "outputModalities": [
         "text"
       ],
@@ -1895,14 +1477,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.75e-7,
-      "cacheReadInputTokenCostPriority": 3.5e-7,
+      "cacheReadInputTokenCost": 1.75e-07,
+      "cacheReadInputTokenCostPriority": 3.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000175,
-      "inputCostPerTokenPriority": 0.0000035,
+      "inputCostPerToken": 1.75e-06,
+      "inputCostPerTokenPriority": 3.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1913,8 +1495,8 @@
       "maxTokens": 128000,
       "mode": "responses",
       "model": "gpt-5.3-codex",
-      "outputCostPerToken": 0.000014,
-      "outputCostPerTokenPriority": 0.000028,
+      "outputCostPerToken": 1.4e-05,
+      "outputCostPerTokenPriority": 2.8e-05,
       "outputModalities": [
         "text"
       ],
@@ -1946,15 +1528,15 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.75e-7,
-      "cacheReadInputTokenCostFlex": 8.75e-8,
-      "cacheReadInputTokenCostPriority": 3.5e-7,
+      "cacheReadInputTokenCost": 1.75e-07,
+      "cacheReadInputTokenCostFlex": 8.75e-08,
+      "cacheReadInputTokenCostPriority": 3.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000175,
-      "inputCostPerTokenFlex": 8.75e-7,
-      "inputCostPerTokenPriority": 0.0000035,
+      "inputCostPerToken": 1.75e-06,
+      "inputCostPerTokenFlex": 8.75e-07,
+      "inputCostPerTokenPriority": 3.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1965,9 +1547,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.2",
-      "outputCostPerToken": 0.000014,
-      "outputCostPerTokenFlex": 0.000007,
-      "outputCostPerTokenPriority": 0.000028,
+      "outputCostPerToken": 1.4e-05,
+      "outputCostPerTokenFlex": 7e-06,
+      "outputCostPerTokenPriority": 2.8e-05,
       "outputModalities": [
         "text"
       ],
@@ -2010,15 +1592,15 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.75e-7,
-      "cacheReadInputTokenCostFlex": 8.75e-8,
-      "cacheReadInputTokenCostPriority": 3.5e-7,
+      "cacheReadInputTokenCost": 1.75e-07,
+      "cacheReadInputTokenCostFlex": 8.75e-08,
+      "cacheReadInputTokenCostPriority": 3.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000175,
-      "inputCostPerTokenFlex": 8.75e-7,
-      "inputCostPerTokenPriority": 0.0000035,
+      "inputCostPerToken": 1.75e-06,
+      "inputCostPerTokenFlex": 8.75e-07,
+      "inputCostPerTokenPriority": 3.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2029,9 +1611,9 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.2-2025-12-11",
-      "outputCostPerToken": 0.000014,
-      "outputCostPerTokenFlex": 0.000007,
-      "outputCostPerTokenPriority": 0.000028,
+      "outputCostPerToken": 1.4e-05,
+      "outputCostPerTokenFlex": 7e-06,
+      "outputCostPerTokenPriority": 2.8e-05,
       "outputModalities": [
         "text"
       ],
@@ -2077,7 +1659,7 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000021,
+      "inputCostPerToken": 2.1e-05,
       "inputModalities": [
         "text",
         "image"
@@ -2123,7 +1705,7 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000021,
+      "inputCostPerToken": 2.1e-05,
       "inputModalities": [
         "text",
         "image"
@@ -2166,13 +1748,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.25e-7,
-      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "cacheReadInputTokenCost": 1.25e-07,
+      "cacheReadInputTokenCostPriority": 2.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2183,8 +1765,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.1",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenPriority": 0.00002,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenPriority": 2e-05,
       "outputModalities": [
         "text"
       ],
@@ -2223,13 +1805,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.25e-7,
-      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "cacheReadInputTokenCost": 1.25e-07,
+      "cacheReadInputTokenCostPriority": 2.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2240,8 +1822,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.1-2025-11-13",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenPriority": 0.00002,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenPriority": 2e-05,
       "outputModalities": [
         "text"
       ],
@@ -2280,14 +1862,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.25e-7,
-      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "cacheReadInputTokenCost": 1.25e-07,
+      "cacheReadInputTokenCostPriority": 2.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2298,8 +1880,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenPriority": 0.00002,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenPriority": 2e-05,
       "outputModalities": [
         "text"
       ],
@@ -2338,14 +1920,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.25e-7,
-      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "cacheReadInputTokenCost": 1.25e-07,
+      "cacheReadInputTokenCostPriority": 2.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenPriority": 0.0000025,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenPriority": 2.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2356,8 +1938,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5-2025-08-07",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenPriority": 0.00002,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenPriority": 2e-05,
       "outputModalities": [
         "text"
       ],
@@ -2396,14 +1978,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.5e-8,
-      "cacheReadInputTokenCostPriority": 4.5e-8,
+      "cacheReadInputTokenCost": 2.5e-08,
+      "cacheReadInputTokenCostPriority": 4.5e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 2.5e-7,
-      "inputCostPerTokenPriority": 4.5e-7,
+      "inputCostPerToken": 2.5e-07,
+      "inputCostPerTokenPriority": 4.5e-07,
       "inputModalities": [
         "text",
         "image"
@@ -2414,8 +1996,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5-mini",
-      "outputCostPerToken": 0.000002,
-      "outputCostPerTokenPriority": 0.0000036,
+      "outputCostPerToken": 2e-06,
+      "outputCostPerTokenPriority": 3.6e-06,
       "outputModalities": [
         "text"
       ],
@@ -2453,14 +2035,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.5e-8,
-      "cacheReadInputTokenCostPriority": 4.5e-8,
+      "cacheReadInputTokenCost": 2.5e-08,
+      "cacheReadInputTokenCostPriority": 4.5e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 2.5e-7,
-      "inputCostPerTokenPriority": 4.5e-7,
+      "inputCostPerToken": 2.5e-07,
+      "inputCostPerTokenPriority": 4.5e-07,
       "inputModalities": [
         "text",
         "image"
@@ -2471,8 +2053,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5-mini-2025-08-07",
-      "outputCostPerToken": 0.000002,
-      "outputCostPerTokenPriority": 0.0000036,
+      "outputCostPerToken": 2e-06,
+      "outputCostPerTokenPriority": 3.6e-06,
       "outputModalities": [
         "text"
       ],
@@ -2510,14 +2092,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5e-9,
-      "cacheReadInputTokenCostPriority": 5e-8,
+      "cacheReadInputTokenCost": 5e-09,
+      "cacheReadInputTokenCostPriority": 5e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-8,
-      "inputCostPerTokenPriority": 2e-7,
+      "inputCostPerToken": 5e-08,
+      "inputCostPerTokenPriority": 2e-07,
       "inputModalities": [
         "text",
         "image"
@@ -2528,8 +2110,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5-nano",
-      "outputCostPerToken": 4e-7,
-      "outputCostPerTokenPriority": 8e-7,
+      "outputCostPerToken": 4e-07,
+      "outputCostPerTokenPriority": 8e-07,
       "outputModalities": [
         "text"
       ],
@@ -2568,14 +2150,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5e-9,
-      "cacheReadInputTokenCostPriority": 5e-8,
+      "cacheReadInputTokenCost": 5e-09,
+      "cacheReadInputTokenCostPriority": 5e-08,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-8,
-      "inputCostPerTokenPriority": 2e-7,
+      "inputCostPerToken": 5e-08,
+      "inputCostPerTokenPriority": 2e-07,
       "inputModalities": [
         "text",
         "image"
@@ -2586,8 +2168,8 @@
       "maxTokens": 128000,
       "mode": "chat",
       "model": "gpt-5-nano-2025-08-07",
-      "outputCostPerToken": 4e-7,
-      "outputCostPerTokenPriority": 8e-7,
+      "outputCostPerToken": 4e-07,
+      "outputCostPerTokenPriority": 8e-07,
       "outputModalities": [
         "text"
       ],
@@ -2630,7 +2212,7 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000015,
+      "inputCostPerToken": 1.5e-05,
       "inputModalities": [
         "text",
         "image"
@@ -2674,7 +2256,7 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000015,
+      "inputCostPerToken": 1.5e-05,
       "inputModalities": [
         "text",
         "image"
@@ -2714,14 +2296,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 0.000002,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputImageTokenCost": 2e-06,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 202752,
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.000008,
-      "inputCostPerToken": 0.000005,
+      "inputCostPerImageToken": 8e-06,
+      "inputCostPerToken": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2730,7 +2312,7 @@
       "maxOutputTokens": 65536,
       "mode": "image_generation",
       "model": "gpt-image-2.5-sunburst",
-      "outputCostPerImageToken": 0.00003,
+      "outputCostPerImageToken": 3e-05,
       "outputModalities": [
         "image"
       ],
@@ -2746,14 +2328,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 0.000002,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputImageTokenCost": 2e-06,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 202752,
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.000008,
-      "inputCostPerToken": 0.000005,
+      "inputCostPerImageToken": 8e-06,
+      "inputCostPerToken": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2762,7 +2344,7 @@
       "maxOutputTokens": 65536,
       "mode": "image_generation",
       "model": "gpt-image-2.5-flare",
-      "outputCostPerImageToken": 0.00003,
+      "outputCostPerImageToken": 3e-05,
       "outputModalities": [
         "image"
       ],
@@ -2778,13 +2360,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 0.000002,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputImageTokenCost": 2e-06,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.000008,
-      "inputCostPerToken": 0.000005,
+      "inputCostPerImageToken": 8e-06,
+      "inputCostPerToken": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2792,7 +2374,7 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gpt-image-2",
-      "outputCostPerImageToken": 0.00003,
+      "outputCostPerImageToken": 3e-05,
       "outputModalities": [
         "image"
       ],
@@ -2807,13 +2389,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 0.000002,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputImageTokenCost": 2e-06,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.000008,
-      "inputCostPerToken": 0.000005,
+      "inputCostPerImageToken": 8e-06,
+      "inputCostPerToken": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2821,7 +2403,7 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gpt-image-2-2026-04-21",
-      "outputCostPerImageToken": 0.00003,
+      "outputCostPerImageToken": 3e-05,
       "outputModalities": [
         "image"
       ],
@@ -2836,13 +2418,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 0.000002,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputImageTokenCost": 2e-06,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.000008,
-      "inputCostPerToken": 0.000005,
+      "inputCostPerImageToken": 8e-06,
+      "inputCostPerToken": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2850,8 +2432,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gpt-image-1.5",
-      "outputCostPerImageToken": 0.000032,
-      "outputCostPerToken": 0.00001,
+      "outputCostPerImageToken": 3.2e-05,
+      "outputCostPerToken": 1e-05,
       "outputModalities": [
         "image",
         "text"
@@ -2867,13 +2449,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 2.5e-7,
-      "cacheReadInputTokenCost": 2e-7,
+      "cacheReadInputImageTokenCost": 2.5e-07,
+      "cacheReadInputTokenCost": 2e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.0000025,
-      "inputCostPerToken": 0.000002,
+      "inputCostPerImageToken": 2.5e-06,
+      "inputCostPerToken": 2e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2881,7 +2463,7 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gpt-image-1-mini",
-      "outputCostPerImageToken": 0.000008,
+      "outputCostPerImageToken": 8e-06,
       "outputModalities": [
         "image",
         "text"
@@ -2897,13 +2479,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputImageTokenCost": 0.0000025,
-      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputImageTokenCost": 2.5e-06,
+      "cacheReadInputTokenCost": 1.25e-06,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerImageToken": 0.00001,
-      "inputCostPerToken": 0.000005,
+      "inputCostPerImageToken": 1e-05,
+      "inputCostPerToken": 5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -2911,7 +2493,7 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gpt-image-1",
-      "outputCostPerImageToken": 0.00004,
+      "outputCostPerImageToken": 4e-05,
       "outputModalities": [
         "image"
       ],
@@ -2924,52 +2506,6 @@
         "images",
         "responses"
       ],
-      "supportsPromptCaching": true
-    },
-    {
-      "cacheReadInputTokenCost": 0.0000075,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "contextWindowTokens": 200000,
-      "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000015,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 100000,
-      "maxTokens": 100000,
-      "mode": "chat",
-      "model": "o1",
-      "outputCostPerToken": 0.00006,
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2024-12-05",
-      "shutdownDate": "2026-10-23",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "chat_completions",
-        "responses"
-      ],
-      "supportedReasoningEfforts": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "supportedToolsByProtocol": {
-        "chat_completions": [
-          "function_calling"
-        ],
-        "responses": [
-          "function_calling",
-          "file_search",
-          "mcp"
-        ]
-      },
       "supportsPromptCaching": true
     },
     {
@@ -3009,14 +2545,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5e-7,
-      "cacheReadInputTokenCostPriority": 8.75e-7,
+      "cacheReadInputTokenCost": 5e-07,
+      "cacheReadInputTokenCostPriority": 8.75e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 200000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenPriority": 0.0000035,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenPriority": 3.5e-06,
       "inputModalities": [
         "text",
         "image"
@@ -3026,8 +2562,8 @@
       "maxTokens": 100000,
       "mode": "chat",
       "model": "o3",
-      "outputCostPerToken": 0.000008,
-      "outputCostPerTokenPriority": 0.000014,
+      "outputCostPerToken": 8e-06,
+      "outputCostPerTokenPriority": 1.4e-05,
       "outputModalities": [
         "text"
       ],
@@ -3069,7 +2605,7 @@
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 200000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00002,
+      "inputCostPerToken": 2e-05,
       "inputModalities": [
         "text",
         "image"
@@ -3079,7 +2615,7 @@
       "maxTokens": 100000,
       "mode": "responses",
       "model": "o3-pro",
-      "outputCostPerToken": 0.00008,
+      "outputCostPerToken": 8e-05,
       "outputModalities": [
         "text"
       ],
@@ -3103,12 +2639,12 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5.5e-7,
+      "cacheReadInputTokenCost": 5.5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 200000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000011,
+      "inputCostPerToken": 1.1e-06,
       "inputModalities": [
         "text"
       ],
@@ -3117,7 +2653,7 @@
       "maxTokens": 100000,
       "mode": "chat",
       "model": "o3-mini",
-      "outputCostPerToken": 0.0000044,
+      "outputCostPerToken": 4.4e-06,
       "outputModalities": [
         "text"
       ],
@@ -3150,14 +2686,14 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.75e-7,
-      "cacheReadInputTokenCostPriority": 5e-7,
+      "cacheReadInputTokenCost": 2.75e-07,
+      "cacheReadInputTokenCostPriority": 5e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 200000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000011,
-      "inputCostPerTokenPriority": 0.000002,
+      "inputCostPerToken": 1.1e-06,
+      "inputCostPerTokenPriority": 2e-06,
       "inputModalities": [
         "text",
         "image"
@@ -3167,8 +2703,8 @@
       "maxTokens": 100000,
       "mode": "chat",
       "model": "o4-mini",
-      "outputCostPerToken": 0.0000044,
-      "outputCostPerTokenPriority": 0.000008,
+      "outputCostPerToken": 4.4e-06,
+      "outputCostPerTokenPriority": 8e-06,
       "outputModalities": [
         "text"
       ],
@@ -3208,14 +2744,14 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 6e-7,
+      "inputCostPerToken": 6e-07,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-4o-mini-tts",
-      "outputCostPerAudioToken": 0.000012,
+      "outputCostPerAudioToken": 1.2e-05,
       "outputModalities": [
         "audio"
       ],
@@ -3242,15 +2778,15 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000006,
-      "inputCostPerToken": 0.0000025,
+      "inputCostPerAudioToken": 6e-06,
+      "inputCostPerToken": 2.5e-06,
       "inputModalities": [
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-4o-transcribe",
-      "outputCostPerToken": 0.00001,
+      "outputCostPerToken": 1e-05,
       "outputModalities": [
         "text"
       ],
@@ -3265,19 +2801,19 @@
       "supportsPromptCaching": false
     },
     {
-      "audioInputCostPerSecond": 0.00005,
+      "audioInputCostPerSecond": 5e-05,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000003,
-      "inputCostPerToken": 0.00000125,
+      "inputCostPerAudioToken": 3e-06,
+      "inputCostPerToken": 1.25e-06,
       "inputModalities": [
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-4o-mini-transcribe",
-      "outputCostPerToken": 0.000005,
+      "outputCostPerToken": 5e-06,
       "outputModalities": [
         "text"
       ],
@@ -3292,101 +2828,13 @@
       "supportsPromptCaching": false
     },
     {
+      "cacheReadInputTokenCost": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "mode": "audio",
-      "model": "tts-1",
-      "outputModalities": [
-        "audio"
-      ],
-      "releaseDate": "2023-11-06",
-      "responseFormats": [
-        "mp3",
-        "opus",
-        "aac",
-        "flac",
-        "wav",
-        "pcm"
-      ],
-      "shutdownDate": "2027-01-06",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "audio_speech"
-      ],
-      "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.000015
-    },
-    {
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "defaultReasoningEffort": "",
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "mode": "audio",
-      "model": "tts-1-hd",
-      "outputModalities": [
-        "audio"
-      ],
-      "releaseDate": "2023-11-06",
-      "responseFormats": [
-        "mp3",
-        "opus",
-        "aac",
-        "flac",
-        "wav",
-        "pcm"
-      ],
-      "shutdownDate": "2027-01-06",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "audio_speech"
-      ],
-      "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.00003
-    },
-    {
-      "audioInputCostPerSecond": 0.0001,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "defaultReasoningEffort": "",
-      "inputModalities": [
-        "audio"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "mode": "audio",
-      "model": "whisper-1",
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "2023-03-01",
-      "shutdownDate": "2027-02-26",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "audio_transcription"
-      ],
-      "supportsPromptCaching": false
-    },
-    {
-      "cacheReadInputTokenCost": 4.0000000000000003e-7,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000032,
-      "inputCostPerImageToken": 0.000005,
-      "inputCostPerToken": 0.000004,
+      "inputCostPerAudioToken": 3.2e-05,
+      "inputCostPerImageToken": 5e-06,
+      "inputCostPerToken": 4e-06,
       "inputModalities": [
         "text",
         "image",
@@ -3395,8 +2843,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-realtime",
-      "outputCostPerAudioToken": 0.000064,
-      "outputCostPerToken": 0.000016,
+      "outputCostPerAudioToken": 6.4e-05,
+      "outputCostPerToken": 1.6e-05,
       "outputModalities": [
         "text",
         "audio"
@@ -3412,13 +2860,13 @@
       "supportsPromptCaching": false
     },
     {
-      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000032,
-      "inputCostPerImageToken": 0.000005,
-      "inputCostPerToken": 0.000004,
+      "inputCostPerAudioToken": 3.2e-05,
+      "inputCostPerImageToken": 5e-06,
+      "inputCostPerToken": 4e-06,
       "inputModalities": [
         "text",
         "image",
@@ -3427,8 +2875,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-realtime-2.1",
-      "outputCostPerAudioToken": 0.000064,
-      "outputCostPerToken": 0.000024,
+      "outputCostPerAudioToken": 6.4e-05,
+      "outputCostPerToken": 2.4e-05,
       "outputModalities": [
         "text",
         "audio"
@@ -3444,13 +2892,13 @@
       "supportsPromptCaching": false
     },
     {
-      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000032,
-      "inputCostPerImageToken": 0.000005,
-      "inputCostPerToken": 0.000004,
+      "inputCostPerAudioToken": 3.2e-05,
+      "inputCostPerImageToken": 5e-06,
+      "inputCostPerToken": 4e-06,
       "inputModalities": [
         "text",
         "image",
@@ -3459,8 +2907,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-realtime-2",
-      "outputCostPerAudioToken": 0.000064,
-      "outputCostPerToken": 0.000024,
+      "outputCostPerAudioToken": 6.4e-05,
+      "outputCostPerToken": 2.4e-05,
       "outputModalities": [
         "text",
         "audio"
@@ -3479,9 +2927,9 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.00001,
-      "inputCostPerImageToken": 8.000000000000001e-7,
-      "inputCostPerToken": 6e-7,
+      "inputCostPerAudioToken": 1e-05,
+      "inputCostPerImageToken": 8.000000000000001e-07,
+      "inputCostPerToken": 6e-07,
       "inputModalities": [
         "text",
         "image",
@@ -3490,8 +2938,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-realtime-2.1-mini",
-      "outputCostPerAudioToken": 0.00002,
-      "outputCostPerToken": 0.0000024,
+      "outputCostPerAudioToken": 2e-05,
+      "outputCostPerToken": 2.4e-06,
       "outputModalities": [
         "text",
         "audio"
@@ -3510,9 +2958,9 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.00001,
-      "inputCostPerImageToken": 8.000000000000001e-7,
-      "inputCostPerToken": 6e-7,
+      "inputCostPerAudioToken": 1e-05,
+      "inputCostPerImageToken": 8.000000000000001e-07,
+      "inputCostPerToken": 6e-07,
       "inputModalities": [
         "text",
         "image",
@@ -3521,8 +2969,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-realtime-mini",
-      "outputCostPerAudioToken": 0.00002,
-      "outputCostPerToken": 0.0000024,
+      "outputCostPerAudioToken": 2e-05,
+      "outputCostPerToken": 2.4e-06,
       "outputModalities": [
         "text",
         "audio"
@@ -3538,13 +2986,13 @@
       "supportsPromptCaching": false
     },
     {
-      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "cacheReadInputTokenCost": 4.0000000000000003e-07,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000032,
-      "inputCostPerImageToken": 0.000005,
-      "inputCostPerToken": 0.000004,
+      "inputCostPerAudioToken": 3.2e-05,
+      "inputCostPerImageToken": 5e-06,
+      "inputCostPerToken": 4e-06,
       "inputModalities": [
         "text",
         "image",
@@ -3553,8 +3001,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-realtime-1.5",
-      "outputCostPerAudioToken": 0.000064,
-      "outputCostPerToken": 0.000016,
+      "outputCostPerAudioToken": 6.4e-05,
+      "outputCostPerToken": 1.6e-05,
       "outputModalities": [
         "text",
         "audio"
@@ -3573,8 +3021,8 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000032,
-      "inputCostPerToken": 0.0000025,
+      "inputCostPerAudioToken": 3.2e-05,
+      "inputCostPerToken": 2.5e-06,
       "inputModalities": [
         "text",
         "audio"
@@ -3582,8 +3030,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-audio-1.5",
-      "outputCostPerAudioToken": 0.000064,
-      "outputCostPerToken": 0.00001,
+      "outputCostPerAudioToken": 6.4e-05,
+      "outputCostPerToken": 1e-05,
       "outputModalities": [
         "text",
         "audio"
@@ -3603,8 +3051,8 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000032,
-      "inputCostPerToken": 0.0000025,
+      "inputCostPerAudioToken": 3.2e-05,
+      "inputCostPerToken": 2.5e-06,
       "inputModalities": [
         "text",
         "audio"
@@ -3612,8 +3060,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-audio",
-      "outputCostPerAudioToken": 0.000064,
-      "outputCostPerToken": 0.00001,
+      "outputCostPerAudioToken": 6.4e-05,
+      "outputCostPerToken": 1e-05,
       "outputModalities": [
         "text",
         "audio"
@@ -3633,8 +3081,8 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.00001,
-      "inputCostPerToken": 6e-7,
+      "inputCostPerAudioToken": 1e-05,
+      "inputCostPerToken": 6e-07,
       "inputModalities": [
         "text",
         "audio"
@@ -3642,8 +3090,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gpt-audio-mini",
-      "outputCostPerAudioToken": 0.00002,
-      "outputCostPerToken": 0.0000024,
+      "outputCostPerAudioToken": 2e-05,
+      "outputCostPerToken": 2.4e-06,
       "outputModalities": [
         "text",
         "audio"
@@ -3686,7 +3134,7 @@
       "supportsPromptCaching": false
     },
     {
-      "audioInputCostPerSecond": 0.000075,
+      "audioInputCostPerSecond": 7.5e-05,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",

@@ -477,9 +477,14 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		// 走基础集 "images"——ark OpenAI 兼容图像端点 /api/v3/images/
 		// generations 与 chat 同 base_url/凭据（openai 族基础承接集已含
 		// "images"，本分支无需追加），出站 URL 由链上
-		// chainVolcengineImagesUpstreamURL 服务根归一。
+		// chainVolcengineImagesUpstreamURL 服务根归一。audio_transcription
+		// 协议模型（2026-10-17 语音识别承接批，豆包录音文件识别 2.0 长转写
+		// adapter，契约 §9.2：统一 /v1/audio/jobs 面经 openspeech
+		// /api/v3/auc/bigmodel/submit|query 改写——凭据与 TTS 同为
+		// speech_token 单值，同语音服务域）——供 volcengine 账户声明
+		// volc.seedasr.auc 进入 supportedModels。
 		if isVolcengineProviderCodeToken(profile.providerCode) {
-			profileProtocols = append(profileProtocols, "video", "audio_speech")
+			profileProtocols = append(profileProtocols, "video", "audio_speech", "audio_transcription")
 		}
 		// xai openai 档案同族承接 video 协议模型（M3 回填批 grok imagine
 		// adapter，契约 §6.1：统一 /v1/videos 面经媒体 adapter 改写，出站

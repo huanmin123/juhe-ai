@@ -32,6 +32,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 )
 
@@ -668,10 +669,13 @@ func (s *chainConfiguredPolicyAvoidanceSuppression) ResolveLocalSuppressionFilte
 // （Node applyResponseInspectionPolicyRuntimeSideEffects +
 // applyResponseInspectionObservationDecisions）。
 type chainResponseAccountEffects struct {
-	avoidance   *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
-	proxyHealth *gatewayproxyhealth.ProxyHealthService
-	cache       *gatewayruntimecache.Service
-	affinity    gatewaydispatch.SessionAffinityPort
+	avoidance *gatewayaccounteffects.ConfiguredPolicyAvoidanceService
+	// groupAffinity 直接持有组绑定服务具体类型（引擎写回端口只含 Remember，
+	// 响应层删除矩阵还需 ForgetGroupAsync）。
+	groupAffinity *gatewaysession.GroupAffinityService
+	proxyHealth   *gatewayproxyhealth.ProxyHealthService
+	cache         *gatewayruntimecache.Service
+	affinity      gatewaydispatch.SessionAffinityPort
 }
 
 func (e *chainResponseAccountEffects) HandleStreamFailure(account gatewayresponse.AccountView, message string, errorCode string, context gatewayresponse.StreamFailureContext, shouldMutateAccount bool) error {
@@ -684,6 +688,18 @@ func (e *chainResponseAccountEffects) ForgetSessionAffinity(sessionAffinityKey s
 	if e.affinity != nil {
 		_ = e.affinity.ForgetAsync(context.Background(), sessionAffinityKey, accountID)
 	}
+}
+
+// ForgetSessionAffinityLayers 实现 gatewayresponse.SessionAffinityLayersPort
+// （策略路由分组会话亲和设计 §5.2 删除矩阵）：本方法只在「非流式 2xx 协议校验
+// 失败、正文中断等既有响应失败 forget」触发类被响应层消费；组键非空时随账户/
+// Key 层一并删除组绑定，键缺失只执行既有单层删除。删除失败只隔离，不改写已
+// 提交的失败响应。
+func (e *chainResponseAccountEffects) ForgetSessionAffinityLayers(layers gatewayresponse.SessionAffinityLayers) {
+	if e.groupAffinity != nil && layers.GroupAffinityKey != "" {
+		e.groupAffinity.ForgetGroupAsync(context.Background(), layers.GroupAffinityKey)
+	}
+	e.ForgetSessionAffinity(layers.SessionAffinityKey, layers.AccountID)
 }
 
 func (e *chainResponseAccountEffects) DispatchRequestFailureAccountHealthCheck(trafficSource string, accountID string) bool {

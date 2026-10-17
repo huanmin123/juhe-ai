@@ -47,7 +47,7 @@
           <a-tag :class="`type-tag type-tag-${record.type}`">{{ accountTypeText(record.type) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'providerCode'">
-          <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+          <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerName(record.providerCode)" :size="14" /> {{ providerName(record.providerCode) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
@@ -92,7 +92,7 @@
               </div>
               <div class="usage-mobile-subtitle">
                 <a-tag :class="`type-tag type-tag-${record.type}`">{{ accountTypeText(record.type) }}</a-tag>
-                <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+                <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerName(record.providerCode)" :size="14" /> {{ providerName(record.providerCode) }}</a-tag>
                 <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
                 <a-tag v-if="record.accessType === 'authorized'" color="blue">{{ authorizationAccountTagText(record) }}</a-tag>
               </div>
@@ -131,6 +131,7 @@
 </template>
 
 <script setup lang="ts">
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountUsageStatsRow, AccountUsageSummary } from '@/types/domain'

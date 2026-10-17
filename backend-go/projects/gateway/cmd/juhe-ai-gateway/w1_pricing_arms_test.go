@@ -531,3 +531,65 @@ func TestW1GChainCostEstimatorArms(t *testing.T) {
 func gatewayquotaCatalogInput(model string) gatewayquota.CatalogCostInput {
 	return gatewayquota.CatalogCostInput{ProviderCode: "openai", Model: model, InputTokens: 1, OutputTokens: 1}
 }
+
+// 维度修正批（契约 §2.8/§9.2）：媒体单价四维（TTS 字符 / 音频秒 / 视频秒 /
+// 视频按次）不在 provider_model_catalog 列集内，chainCatalogPricing 从
+// go:embed 静态快照层按 provider+model 补齐——DB 行无列时计费仍能读到
+// 静态层落值；静态未命中保持 nil（成本不虚计）。
+func TestW1GChainCatalogPricingMediaRatesFromStaticSnapshot(t *testing.T) {
+	mode := "audio"
+	converted := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "seed-audio-1.0", Mode: &mode,
+	})
+	if converted.AudioInputUsdPerSecond == nil || *converted.AudioInputUsdPerSecond != 0.00238095 {
+		t.Fatalf("seed-audio-1.0 AudioInputUsdPerSecond = %#v, want 0.00238095（静态层补齐）", converted.AudioInputUsdPerSecond)
+	}
+
+	videoMode := "video"
+	video := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "doubao-seedance-2-0-mini-260615", Mode: &videoMode,
+	})
+	if video.VideoOutputUsdPerSecond == nil || *video.VideoOutputUsdPerSecond != 0.0714 {
+		t.Fatalf("seedance mini VideoOutputUsdPerSecond = %#v, want 0.0714", video.VideoOutputUsdPerSecond)
+	}
+
+	missing := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "doubao-seedance-1-0-pro-250528", Mode: &videoMode,
+	})
+	if missing.VideoOutputUsdPerSecond != nil {
+		t.Fatalf("1-0-pro 无官方每秒价必须保持 nil（不编造）: %#v", missing.VideoOutputUsdPerSecond)
+	}
+
+	unknown := chainCatalogPricing(&gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "no-such-media-model",
+	})
+	if unknown.AudioInputUsdPerSecond != nil || unknown.VideoOutputUsdPerSecond != nil {
+		t.Fatalf("静态未命中媒体价必须保持 nil: %#v", unknown.PriceSet)
+	}
+}
+
+// 维度修正批真实复现钉：DB 行无 token 价但静态层命中媒体价的目录行
+// （volcengine seed-audio-1.0 / seedance 系）不得被 priced 过滤剔除——
+// 否则 chainCatalogPricing 的静态层媒体价补齐永远不执行、costUsd 恒 NULL。
+func TestW1GChainHasDirectCatalogPriceSeesStaticMediaRates(t *testing.T) {
+	if !chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "seed-audio-1.0",
+	}) {
+		t.Fatal("seed-audio-1.0 静态层秒价必须计为有价（否则被 priced 过滤误杀）")
+	}
+	if !chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "doubao-seedance-2-0-mini-260615",
+	}) {
+		t.Fatal("seedance mini 静态层秒价必须计为有价")
+	}
+	if chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "no-such-media-model",
+	}) {
+		t.Fatal("静态未命中的行必须保持无价判定")
+	}
+	if chainHasDirectCatalogPrice(gatewayruntimecache.ProviderModelCatalogItem{
+		ProviderCode: "volcengine", Model: "doubao-seedance-1-0-pro-250528",
+	}) {
+		t.Fatal("1-0-pro 无任何单价（token 牌价只留注记不落值）必须保持无价判定")
+	}
+}

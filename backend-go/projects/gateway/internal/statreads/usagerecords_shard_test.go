@@ -19,7 +19,7 @@ import (
 const shardSchema = `
 	CREATE TABLE usage_records (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
-		client_ip TEXT, api_key_id TEXT, group_id TEXT, account_id TEXT, endpoint TEXT,
+		client_ip TEXT, api_key_id TEXT, group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT,
 		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
 		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0, stream INTEGER DEFAULT 0,
 		status_code INTEGER, success INTEGER DEFAULT 0, failure_attribution TEXT,
@@ -44,9 +44,9 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 	seedRows := []string{
 		// 旧记录在前；两条记录跨同一 shard 验证倒序与水合。
 		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id,
-			account_id, endpoint, stream, status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens,
+			account_id, provider_code, endpoint, model, stream, status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens,
 			cache_read_tokens, cost_usd, created_at) VALUES
-			('u-1', 'sys-user-1', 'trace-1', 'gateway', '10.0.0.1', 'key-1', 'g-1', 'acct-1', '/v1/chat',
+			('u-1', 'sys-user-1', 'trace-1', 'gateway', '10.0.0.1', 'key-1', 'g-1', 'acct-1', 'openai', '/v1/chat', 'gpt-5.2',
 			 1, 200, 1, 120, 900, 100, 50, 10, 0.25, '2026-09-04T10:00:00.000Z')`,
 		`INSERT INTO usage_records (id, system_account_id, trace_id, traffic_source, client_ip, error_code, error_message,
 			failure_attribution, success, status_code, created_at) VALUES
@@ -109,6 +109,7 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 				ApiKeyName            *string `json:"apiKeyName"`
 				GroupName             *string `json:"groupName"`
 				AccountName           *string `json:"accountName"`
+				ProviderCode          *string `json:"providerCode"`
 				Success               bool    `json:"success"`
 				StatusCode            *int64  `json:"statusCode"`
 				FailureReason         *string `json:"failureReason"`
@@ -147,6 +148,9 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 		items[1].GroupName == nil || *items[1].GroupName != "默认组" ||
 		items[1].AccountName == nil || *items[1].AccountName != "账户A" {
 		t.Fatalf("hydration wrong: %#v", items[1])
+}
+	if items[1].ProviderCode == nil || *items[1].ProviderCode != "openai" {
+		t.Fatalf("providerCode hydration wrong: %#v", items[1])
 	}
 	// 管理面（admin 未过滤 scope）读全局，system_account 字段注入 display 名。
 	adminHandler := fixture.deps.usageRecordsListHandler(false)

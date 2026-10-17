@@ -95,8 +95,12 @@ type HandleUpstreamResponseInput struct {
 	// UpstreamDispatchResult.RequestBody，已经过模型映射与账户准备）。200 流内
 	// 失败的加密上下文恢复臂（BUG-0289）以它构造清理重放体——不得传客户端
 	// 原始 RawBody，否则重放丢映射。
-	RequestBody                []byte
-	SessionAffinityKey         string
+	RequestBody        []byte
+	SessionAffinityKey string
+	// GroupAffinityKey 是组级会话绑定的键（策略路由分组会话亲和设计 §5.2）：
+	// 非流式 2xx 协议失败 / 正文中断的既有响应失败 forget 面随账户层一并删除
+	// 组绑定；客户端取消路径不消费本字段（组绑定保留）。空串 = 范围外。
+	GroupAffinityKey           string
 	ClientStrategy             *ClientStrategyView
 	ResponseInspectionPolicies []gatewayruntimecache.ResponseInspectionPolicySummary
 	MarkFirstOutput            func()
@@ -463,9 +467,19 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 }
 
 // finalizeStreamFailure 对齐 handleStreamUpstreamResponse 的 !completed 分支。
+// 组级会话亲和（策略路由分组会话亲和设计 §5.2）：流式正文中断属「既有响应
+// 失败 forget」触发类，装配了三层删除面时随账户层一并删除组绑定。
 func (input *HandleUpstreamResponseInput) finalizeStreamFailure(pipeResult StreamPipeResult, usage gatewayproto.ParsedUsage, driver ResponseDriverPort, codexTurnFailureRemembered bool) (UpstreamResponseHandlingResult, error) {
 	if input.Deps != nil && input.Deps.AccountEffects != nil {
-		input.Deps.AccountEffects.ForgetSessionAffinity(input.SessionAffinityKey, input.Account.GetID())
+		if layersEffects, ok := input.Deps.AccountEffects.(SessionAffinityLayersPort); ok {
+			layersEffects.ForgetSessionAffinityLayers(SessionAffinityLayers{
+				GroupAffinityKey:   input.GroupAffinityKey,
+				SessionAffinityKey: input.SessionAffinityKey,
+				AccountID:          input.Account.GetID(),
+			})
+		} else {
+			input.Deps.AccountEffects.ForgetSessionAffinity(input.SessionAffinityKey, input.Account.GetID())
+		}
 	}
 	errorCode := pipeResult.ErrorCode
 	if errorCode == "" && pipeResult.SemanticCommitted {

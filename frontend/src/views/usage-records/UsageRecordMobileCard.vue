@@ -3,7 +3,7 @@
     <div class="mobile-list-card-head">
       <div class="mobile-list-card-title">{{ accountDisplayText(record) }}</div>
       <div class="mobile-list-card-tags">
-        <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+        <a-tag v-if="record.model" color="blue"><ProviderIcon v-if="record.providerCode" :provider-code="record.providerCode" :name="providerDisplayName(record.providerCode)" :size="13" /> {{ record.model }}</a-tag>
         <a-tag v-if="expanded && record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
         <a-tag v-if="record.upstreamModelMismatch && record.upstreamResponseModel" color="red">上游响应 {{ record.upstreamResponseModel }}</a-tag>
         <a-tag v-if="expanded && usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
@@ -81,6 +81,8 @@
 <script setup lang="ts">
 import { CaretDownOutlined, CopyOutlined } from '@ant-design/icons-vue'
 import { ref } from 'vue'
+import ProviderIcon from '@/components/ProviderIcon.vue'
+import { providerDisplayName } from '@/shared/providerDisplay'
 
 import type { UsageRecordListItem } from '@/types/domain'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'

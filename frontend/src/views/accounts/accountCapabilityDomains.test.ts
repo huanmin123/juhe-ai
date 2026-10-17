@@ -286,7 +286,9 @@ const minimaxProfile = mediaVendorProfile({
 const volcengineProfile = mediaVendorProfile({
   id: VOLCENGINE_OPENAI_V1_PROFILE_ID,
   providerCode: 'volcengine',
-  families: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_VIDEO_GENERATION_FAMILY, OPENAI_TTS_FAMILY]
+  // audio_transcription（豆包录音文件识别 2.0，2026-10-17 语音识别承接批）
+  // 与后端档案 profile_volcengine_openai_v1 的 EndpointFamilies 同步。
+  families: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_VIDEO_GENERATION_FAMILY, OPENAI_TTS_FAMILY, 'audio_transcription']
 })
 const qwenProfile = mediaVendorProfile({
   id: QWEN_OPENAI_V1_PROFILE_ID,
@@ -375,7 +377,7 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
     { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
     { name: 'hybrid', profile: hybridProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
     { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: ['images_json'] },
+    { name: 'volcengine', profile: volcengineProfile, video: VIDEO_GROUP, audio: ['audio_speech', ...AUDIO_JOB_GROUP], image: ['images_json'] },
     { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
     { name: 'deepseek', profile: deepseekProfile, video: [], audio: [], image: [] },
     { name: 'anthropic', profile: anthropicProfile, video: [], audio: [], image: [] },

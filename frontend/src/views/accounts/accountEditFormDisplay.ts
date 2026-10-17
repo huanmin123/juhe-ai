@@ -8,7 +8,6 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
-  XAI_OPENAI_V1_PROFILE_ID,
   isHybridProviderCode,
   isDeepSeekProviderCode,
   isGeminiProviderCode,
@@ -176,6 +175,11 @@ export function accountEditModalTitle(options: AccountEditModalTitleOptions): st
   )
 }
 
+// 接入方式展示名（2026-10-17 统一简化）：多档案供应商用协议短词区分——
+// Chat = OpenAI Chat 兼容入口、Claude = Anthropic / Claude Code 入口、
+// Coding = GLM Coding Plan、Gemini = 原生协议；单档案供应商走 fallback
+// （供应商名 + OAuth / API Key，如「xAI API Key」）。供应商本身已由阶段二
+// 摘要条与卡片墙承载，标题不再重复供应商前缀；档案细节由 description 解释。
 function accountTypeChoiceLabel(
   providerCode: string,
   providerProtocolProfileId: string | undefined,
@@ -183,23 +187,20 @@ function accountTypeChoiceLabel(
   providers: ProviderDisplaySource[]
 ): string {
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return 'DeepSeek Claude Code API Key'
-    if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'DeepSeek OpenAI-compatible API Key'
+    if (providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return 'Claude API Key'
+    if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'Chat API Key'
   }
   if (isGlmProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'GLM Coding Anthropic Key'
-    if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'GLM Coding Plan Key'
-    if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用 GLM API Key'
+    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Claude API Key'
+    if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'Coding API Key'
+    if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return 'Chat API Key'
   }
   if (isGeminiProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === GEMINI_NATIVE_V1BETA_PROFILE_ID) return 'Gemini 原生 API Key'
-    if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'Gemini OpenAI Chat API Key'
+    if (providerProtocolProfileId === GEMINI_NATIVE_V1BETA_PROFILE_ID) return 'Gemini API Key'
+    if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'Chat API Key'
   }
-  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Gemini Google OAuth'
+  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Gemini OAuth'
   if (isXaiProviderCode(providerCode) && type === 'oauth') return 'Grok OAuth'
-  if (isXaiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID) {
-    return 'xAI 官方 API Key'
-  }
   return accountEditAccountTypeTitle(providerCode, type, providers)
 }
 
@@ -209,22 +210,19 @@ function accountTypeChoiceTag(
   type: AccountType
 ): string {
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return 'Claude Code'
-    if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'OpenAI 兼容'
+    if (providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return 'Claude'
+    if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'Chat'
   }
   if (isGlmProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Anthropic'
+    if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Claude'
     if (providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return 'Coding'
-    if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '通用'
+    if (providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return 'Chat'
   }
   if (isGeminiProviderCode(providerCode) && type === 'api_key') {
-    if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'OpenAI Chat'
-    return 'Gemini API'
+    if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'Chat'
+    return 'Gemini'
   }
-  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Google OAuth'
+  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'OAuth'
   if (isXaiProviderCode(providerCode) && type === 'oauth') return 'Grok OAuth'
-  if (isXaiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID) {
-    return 'OpenAI v1'
-  }
   return accountTypeText(type)
 }

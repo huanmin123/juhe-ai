@@ -1,37 +1,6 @@
 {
   "models": [
     {
-      "catalogOrder": 0,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "defaultReasoningEffort": "",
-      "inputModalities": [
-        "text"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "mode": "audio",
-      "model": "speech-02-turbo",
-      "outputModalities": [
-        "audio"
-      ],
-      "releaseDate": "",
-      "responseFormats": [
-        "mp3",
-        "pcm",
-        "flac",
-        "wav"
-      ],
-      "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "audio_speech"
-      ],
-      "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.00006
-    },
-    {
       "catalogOrder": 1,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
@@ -48,41 +17,73 @@
       ],
       "releaseDate": "2025-10-28",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "官方国际站按条明文价（platform.minimax.io pricing-paygo：768P-6s $0.28/条 主档，按次计费每条=每次）；分档注释登记：768P-10s $0.56、1080P-6s $0.49、512P-6s $0.10、512P-10s $0.15",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 文生/图生视频 768P-6s 2.00 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 核对；此前落国际站 $0.28 明文，按国内口径回正），按约定汇率 7.0 换算 $0.2857/条（2÷7.0）；768P-10s 4.00 元、1080P-6s 3.50 元留档；Hailuo-2.3-Fast 已单独补录（见该行）",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerCall": 0.28
+      "videoOutputCostPerCall": 0.2857142857142857
     },
     {
-      "cacheReadInputTokenCost": 6e-8,
+      "catalogOrder": 9,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "MiniMax-Hailuo-2.3-Fast",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2025-10-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 图生视频 768P-6s 1.35 元/条 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 历史模型行，2026-10-17 补录），按约定汇率 7.0 换算 $0.19286/条（1.35÷7.0）；768P-10s 2.25 元、1080P-6s 2.31 元留档",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerCall": 0.19285714285714287
+    },
+    {
+      "cacheReadInputTokenCost": 6e-08,
       "catalogOrder": 2,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 3e-7,
+      "inputCostPerToken": 3e-07,
       "inputModalities": [
         "text",
         "image",
         "video"
       ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 512000,
       "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 2,
       "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "MiniMax-M3",
-      "outputCostPerToken": 0.0000012,
+      "outputCostPerToken": 1.2e-06,
       "outputModalities": [
         "text"
       ],
       "releaseDate": "2026-06-01",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 ≤512k 输入 tokens 永久五折实付 2.10/8.40 元、缓存读 0.42 元/百万 tokens（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 语言模型行，2026-10-17 核对），按约定汇率 7.0 换算 $0.3/$1.2/$0.06；>512k 恢复刊例 4.20/16.80 元（恰为目录 longContext ×2 分档）；优先服务 1.5 倍留档",
       "supportedAPIProtocols": [
         "chat_completions"
       ],
@@ -94,29 +95,30 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 3.75e-7,
-      "cacheReadInputTokenCost": 6e-8,
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 6e-08,
       "catalogOrder": 3,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 204800,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 3e-7,
+      "inputCostPerToken": 3e-07,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "chat",
       "model": "MiniMax-M2.7",
-      "outputCostPerToken": 0.0000012,
+      "outputCostPerToken": 1.2e-06,
       "outputModalities": [
         "text"
       ],
       "releaseDate": "2026-03-18",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2.1/8.4 元、缓存读 0.42、缓存写 2.625 元/百万 tokens（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 语言模型行，2026-10-17 核对；缓存写为本批补齐），按约定汇率 7.0 换算 $0.3/$1.2/$0.06/$0.375",
       "supportedAPIProtocols": [
         "chat_completions"
       ],
@@ -128,27 +130,30 @@
       "supportsPromptCaching": true
     },
     {
+      "cacheCreationInputTokenCost": 3.75e-07,
+      "cacheReadInputTokenCost": 6e-08,
       "catalogOrder": 4,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 204800,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 6e-7,
+      "inputCostPerToken": 6e-07,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "chat",
       "model": "MiniMax-M2.7-highspeed",
-      "outputCostPerToken": 0.0000024,
+      "outputCostPerToken": 2.4e-06,
       "outputModalities": [
         "text"
       ],
       "releaseDate": "2026-03-18",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 4.2/16.8 元、缓存读 0.42、缓存写 2.625 元/百万 tokens（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 语言模型行，2026-10-17 核对；缓存读/写为本批补齐），按约定汇率 7.0 换算 $0.6/$2.4/$0.06/$0.375",
       "supportedAPIProtocols": [
         "chat_completions"
       ],
@@ -181,14 +186,15 @@
         "wav"
       ],
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 3.5 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），在售 同步/异步同价，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $50/百万字符（3.5×100÷7.0）；计费 1 汉字=2 字符",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
       "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.0001
+      "ttsInputCostPerChar": 5e-05
     },
     {
       "catalogOrder": 6,
@@ -212,14 +218,15 @@
         "wav"
       ],
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2.0 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），在售 同步/异步同价，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $28.57/百万字符（2.0×100÷7.0）；计费 1 汉字=2 字符",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
       "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.00006
+      "ttsInputCostPerChar": 2.8571428571428574e-05
     },
     {
       "catalogOrder": 7,
@@ -243,14 +250,15 @@
         "wav"
       ],
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 3.5 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），历史模型行，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $50/百万字符（3.5×100÷7.0）；计费 1 汉字=2 字符",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
       "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.0001
+      "ttsInputCostPerChar": 5e-05
     },
     {
       "catalogOrder": 8,
@@ -274,39 +282,15 @@
         "wav"
       ],
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2.0 元/万字符（platform.minimax.cn 定价概览（platform.minimaxi.com 同站），历史模型行，2026-10-17 直取 .md 渲染核对），按约定汇率 7.0 换算 $28.57/百万字符（2.0×100÷7.0）；计费 1 汉字=2 字符",
       "supportedAPIProtocols": [
         "audio_speech"
       ],
       "supportsPromptCaching": false,
-      "ttsInputCostPerChar": 0.00006
-    },
-    {
-      "audioInputCostPerSecond": 0.00010555555555555555,
-      "catalogOrder": 9,
-      "codexDefaultReasoningLevel": "",
-      "codexMultiAgentVersion": "",
-      "defaultReasoningEffort": "",
-      "inputModalities": [
-        "audio"
-      ],
-      "longContextInputTokenThresholdInclusive": false,
-      "mode": "audio",
-      "model": "asr-1.0",
-      "outputModalities": [
-        "text"
-      ],
-      "releaseDate": "",
-      "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
-      "supportedAPIProtocols": [
-        "audio_transcription"
-      ],
-      "supportsPromptCaching": false
+      "ttsInputCostPerChar": 2.8571428571428574e-05
     },
     {
       "catalogOrder": 10,
@@ -325,14 +309,15 @@
       ],
       "releaseDate": "2026-07-31",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 $0.08 明文，按国内口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；2K 0.80 元/秒留档；输入素材：图片 5 张内免费/超出 0.20 元/张，视频输入按生成分辨率秒价计费",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.08
+      "videoOutputCostPerSecond": 0.07142857142857142
     },
     {
       "catalogOrder": 11,
@@ -351,14 +336,15 @@
       ],
       "releaseDate": "",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 768P 0.50 元/秒 主档（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 视频生成-输出价格行，2026-10-17 核对；此前落国际站 480P 档 $0.05 折算，按国内 768P 主档口径回正），按约定汇率 7.0 换算 $0.07143/秒（0.5÷7.0）；480P 0.33 元/秒低档留档；输入素材：图片 2 张内免费/超出 0.50 元/张",
       "supportedAPIProtocols": [
         "video"
       ],
       "supportsPromptCaching": false,
-      "videoOutputCostPerSecond": 0.05
+      "videoOutputCostPerSecond": 0.07142857142857142
     },
     {
       "catalogOrder": 12,
@@ -372,15 +358,16 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "image-01",
-      "outputCostPerImage": 0.0035,
+      "outputCostPerImage": 0.0035714285714285718,
       "outputModalities": [
         "image"
       ],
       "releaseDate": "2025-02-15",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.025 元/张（platform.minimax.cn 定价概览（platform.minimaxi.com 同站） 图像行，image-01 / image-01-live 同价，2026-10-17 核对），按约定汇率 7.0 换算 $0.003571/张（0.025÷7.0）",
       "supportedAPIProtocols": [
         "images"
       ],

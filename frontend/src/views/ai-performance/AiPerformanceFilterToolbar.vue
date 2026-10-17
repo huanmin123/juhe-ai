@@ -199,7 +199,7 @@ const props = defineProps<{
   systemAccountOptionsLoading: boolean
   disabledDate: (current: Dayjs) => boolean
   accountFilterItems: AiPerformanceAccountFilterItem[]
-  accountOptions: Array<{ id: string; name: string; providerName?: string }>
+  accountOptions: Array<{ id: string; name: string; providerCode?: string; providerName?: string }>
   accountsLoading: boolean
   hasActiveAccountFilter: boolean
 }>()

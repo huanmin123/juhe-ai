@@ -759,7 +759,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 	// M1 同步音频计量注入（契约 §2.8 计量来源表，仅成功转发计量）：
 	//   - TTS speech：上游无 usage 回报，网关按请求 input 字符数自算；
 	//     token 口径模型（gpt-4o-mini-tts / gpt-4o-tts 系）无 token 事实时
-	//     同样置 usage_missing（不猜测）；
+	//     同样置 usage_missing（不猜测）；volcengine TTS 按生成原始时长
+	//     （响应 duration 秒，官方计费维度，2026-10-17 维度修正批），不落
+	//     字符口径；
 	//   - STT：usage token（上方 driver 抽取已落既有 token 字段）优先，缺
 	//     失时取 verbose_json duration 秒；两者都缺 → 计量 0 + usage_missing
 	//     标记（不猜测）。
@@ -767,6 +769,19 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		requestPath := input.Req.PathAndQuery()
 		switch {
 		case gatewaymedia.IsSpeechPath(requestPath):
+			if mediaSpeechTransform.active && mediaSpeechTransform.providerKey == "volcengine" {
+				// volcengine TTS（契约 §9.2/§2.8，2026-10-17 维度修正批）：
+				// 官方计费维度是生成原始时长（响应顶层 duration 秒，精确
+				// 至秒），字符不是计费维度——落 audio_input_seconds 秒计
+				// 量，不落字符口径；duration 缺失/非正值 → 0 计量 +
+				// usage_missing（不猜测）。
+				if seconds, hasDuration := gatewaymedia.SpeechReportedDurationSecondsFromJSON(parsedJsonBody.Value); hasDuration {
+					usage.AudioInputSeconds = &seconds
+				} else {
+					usage.UsageMissing = true
+				}
+				break
+			}
 			speechBody := input.Req.ParsedJSONObjectBody()
 			if speechBody == nil && input.Req.Body != nil && len(input.Req.Body.RawBody) > 0 {
 				var parsed map[string]any

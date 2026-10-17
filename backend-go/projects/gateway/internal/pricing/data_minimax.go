@@ -23,4 +23,16 @@ package pricing
 //     §2.8 按次计费）；按条 → 每秒是推导，禁止折算（裁决 §2.4 维持）
 //     ——不落 VideoOutputCostPerSecond；轮询响应不回报时长（契约 §8.1
 //     query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
+//
+// 2026-10-17 全供应商口径核对批：目录主口径由「国际站 USD 明文直落」整体
+// 回正为「国内站人民币明文 ÷ 约定汇率 7.0」——账户协议档案实际连接
+// api.minimax.chat 国内站（账单人民币），国际明文与国内价并不同步（实证：
+// speech-2.8-hd 国内 3.50 元/万字符 ≈ $5e-05/字符 vs 国际 $1e-04/字符）。
+// 13 行全部重取 platform.minimax.cn 定价概览（platform.minimaxi.com 同站，
+// 直取 pricing/overview.md 渲染原文）：TTS 五行按国内 2.00/3.50 元/万字符、
+// asr-1.0 按 2.50 元/小时、H3/H3-Max 按 768P 主档 0.50 元/秒（H3-Max 此前
+// 误落国际 480P 档 $0.05）、Hailuo-2.3 按 2.00 元/条、image-01 按
+// 0.025 元/张；M3/M2.7 值恰与国内÷7.0 等价不动、补 >512k 长上下文 ×2 分档
+// 与缓存写 2.625 元/百万。分档/素材/资源包规则留各行 SourcePricingNote；
+// 锚点见 catalogdata_price_anchors_test.go。
 var minimaxModelPricingData = mustLoadProviderCatalogModels("minimax")

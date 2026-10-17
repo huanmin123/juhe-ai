@@ -43,7 +43,9 @@ export function accountDisplayName(account: AccountListItem): string {
 export function accountTypeText(type: AccountType) {
   if (type === 'oauth') return 'OAuth'
   if (type === 'api_key') return 'API Key'
-  if (type === 'google_oauth') return 'Google OAuth'
+  // google_oauth 与 oauth 的展示名统一为 OAuth（2026-10-17）：类型值仍是
+  // google_oauth，机制文档中的「Google OAuth」指凭据机制，不受展示名影响。
+  if (type === 'google_oauth') return 'OAuth'
   return type || '-'
 }
 
@@ -55,7 +57,7 @@ export function accountClientCompatibilityText(value?: AccountClientCompatibilit
 export function accountTypeTitle(providerName: string, type: AccountType) {
   if (type === 'oauth') return `${providerName} OAuth`
   if (type === 'api_key') return `${providerName} API Key`
-  if (type === 'google_oauth') return `${providerName} Google OAuth`
+  if (type === 'google_oauth') return `${providerName} OAuth`
   return `${providerName} ${type}`.trim()
 }
 

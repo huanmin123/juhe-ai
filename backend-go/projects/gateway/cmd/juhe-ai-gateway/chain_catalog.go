@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
@@ -618,6 +619,20 @@ func chainHasDirectCatalogPrice(item gatewayruntimecache.ProviderModelCatalogIte
 		item.ImageOutputUsdPer1M != nil || item.AudioInputUsdPer1M != nil ||
 		item.AudioOutputUsdPer1M != nil || item.OutputUsdPerImage != nil {
 		return true
+	}
+	// 媒体单价维度（TTS 字符 / 音频秒 / 视频秒 / 视频按次）不在
+	// provider_model_catalog 列集内，唯一权威源是 go:embed 静态快照层
+	//（catalogdata/*.json，计价落法"目录表无列、计费读静态层"）——DB 行无
+	// token 价但静态层命中媒体价的目录行（volcengine seed-audio-1.0 /
+	// seedance 系）不得被 priced 过滤误杀：秒计量落值后运行时计费真实读取
+	// 该价（2026-10-17 维度修正批，真实复现：TTS usage 行 audioInputSeconds
+	// 落值而 costUsd 恒 NULL——priced 过滤把无 token 价媒体行剔除，
+	// chainCatalogPricing 的静态层补齐永远不执行）。
+	if media := pricing.FindProviderModelPricing(item.ProviderCode, item.Model); media != nil {
+		if media.TtsInputUsdPer1MChars != nil || media.AudioInputUsdPerSecond != nil ||
+			media.VideoOutputUsdPerSecond != nil || media.VideoOutputUsdPerCall != nil {
+			return true
+		}
 	}
 	return chainCatalogTierPriceCount(item.ServiceTierPrices) > 0
 }

@@ -15,7 +15,10 @@
         </div>
         <div class="account-mobile-tags">
           <a-tag :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
-          <a-tag color="geekblue">{{ providerName }}</a-tag>
+          <a-tag color="geekblue">
+            <ProviderIcon class="provider-tag-icon" :name="providerName" :provider-code="account.providerCode" :size="14" />
+            {{ providerName }}
+          </a-tag>
           <a-tooltip v-if="!accountIsMedia" :title="accountScheduleSummary(account.availabilitySchedule)">
             <a-tag :color="accountScheduleTagColor(account.availabilitySchedule)">{{ accountScheduleSummary(account.availabilitySchedule) }}</a-tag>
           </a-tooltip>
@@ -104,6 +107,7 @@
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
@@ -327,6 +331,11 @@ function handleActionClick(key: string) {
 
 .account-mobile-tags :deep(.ant-tag) {
   margin-inline-end: 0;
+}
+
+.provider-tag-icon {
+  margin-right: 4px;
+  vertical-align: -0.2em;
 }
 
 .account-mobile-tag-chip {

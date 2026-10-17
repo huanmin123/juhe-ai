@@ -3,6 +3,7 @@
     v-model:open="open"
     :width="editing ? 860 : 720"
     :confirm-loading="confirmLoading"
+    :footer="modalFooter"
     :focus-trigger-after-close="false"
     force-render
     transition-name=""
@@ -14,7 +15,7 @@
     <!-- 标题统一走 slot：不传 :title prop（antd-vue vc-dialog 中显式 title prop 会覆盖 #title slot）。
          编辑态标题栏：静态标题 + 账户名行内编辑 + 类型徽章 + 三态状态；向导态与 basic 详情加载中显示纯标题文字。 -->
     <template #title>
-      <span v-if="!editing || loading">{{ title }}</span>
+      <span v-if="!editing || loading">{{ displayTitle }}</span>
       <div v-else class="modal-title-bar">
         <span class="modal-title-static">编辑账户</span>
         <a-input
@@ -42,6 +43,7 @@
       <!-- 媒体域（video/audio/image）：精简三段式（D7 清单表驱动）；对话域维持现行双形态。 -->
       <AccountMediaForm
         v-else-if="isMediaDomain"
+        :account-counts="accountCounts"
         :account-type-choices="accountTypeChoices"
         :advanced-loaded="advancedLoaded"
         :advanced-loading="advancedLoading"
@@ -56,6 +58,7 @@
         :deleting-tag-id="deletingTagId"
         :editing="editing"
         v-model:error-policy-rules="errorPolicyRules"
+        @picker-expanded-change="providerPickerExpanded = $event"
         :form="form"
         :group-options="groupOptions"
         :group-options-loading="groupOptionsLoading"
@@ -98,7 +101,7 @@
         @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
       />
       <template v-else>
-        <div v-if="!editing" class="wizard-steps" aria-label="创建步骤">
+        <div v-if="!editing && !providerSelectionStage" class="wizard-steps" aria-label="创建步骤">
           <div class="wizard-step" :class="{ current: wizardStep === 1, done: wizardStep > 1 }">
             <span class="wizard-step-no">{{ wizardStep > 1 ? '✓' : '1' }}</span>
             <span class="wizard-step-text">
@@ -127,13 +130,16 @@
           <div class="form-scroll">
             <AccountFormSelector
               v-show="!editing && wizardStep === 1"
+              :account-counts="accountCounts"
               :account-type="form.type"
               :account-type-choices="accountTypeChoices"
               :editing="editing"
+              :open="open"
               :provider-code="form.providerCode"
               :providers="providers"
               :selected-protocol-profile="selectedProtocolProfile"
               :selected-provider="selectedProvider"
+              @picker-expanded-change="providerPickerExpanded = $event"
               @select-provider="$emit('select-provider', $event)"
               @select-type-choice="$emit('select-type-choice', $event)"
             />
@@ -145,7 +151,7 @@
             </div>
 
             <section
-              v-show="editing || wizardStep === 1"
+              v-show="editing || (wizardStep === 1 && !providerPickerExpanded)"
               id="acct-sec-credential"
               class="form-part"
             >
@@ -720,11 +726,23 @@ const advancedActiveKeys = ref<string[]>([])
 // 只控制分区可见性与折叠开合，不参与表单数据、校验与提交逻辑。
 const wizardStep = ref(1)
 
+// 供应商卡片墙展开状态（阶段一=独立供应商选择，配置区隐藏；阶段二=已选摘要 + 配置）。
+// 真值由 AccountFormSelector / AccountMediaForm 透传的 picker-expanded-change 事件驱动。
+const providerPickerExpanded = ref(true)
+
+// 阶段一：弹窗只呈现供应商卡片——标题不指向供应商、隐藏向导步骤指示与底部按钮区。
+const providerSelectionStage = computed(() => !props.editing && providerPickerExpanded.value)
+const displayTitle = computed(() => (providerSelectionStage.value ? '添加账户' : props.title))
+const modalFooter = computed(() => (providerSelectionStage.value ? null : undefined))
+
 // 编辑态 6 张折叠摘要卡的展开 key。
 const benchCardAllKeys = ['dispatch', 'strategy', 'stability', 'balance', 'schedule', 'policy']
 
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
+  // 卡片墙账户计数（providerCode → 当前可见范围 + 当前域的全量计数）：
+  // AccountsView 打开创建弹窗时经 provider-counts 读时聚合接口拉取。
+  accountCounts?: Record<string, number>
   accountDetail?: AccountEditBasicDetail
   accountAdvancedDetail?: AccountAdvancedDetail
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
@@ -778,6 +796,7 @@ const props = withDefaults(defineProps<{
   title: string
   validationFailure?: { message: string; seq: number }
 }>(), {
+  accountCounts: () => ({}),
   advancedLoaded: false,
   advancedLoading: false,
   apiKeyRuntimeLoading: false,

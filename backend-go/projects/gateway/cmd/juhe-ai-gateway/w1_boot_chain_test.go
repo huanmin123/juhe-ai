@@ -605,15 +605,15 @@ func TestW1LBootChainFullRequestCoverage(t *testing.T) {
 		t.Fatalf("场景 W1L-b1 上游诊断外泄，body=%s", body)
 	}
 
-	// ---- 场景 c：未知模型（capability gate 按模型过滤清空候选 → 503 固定契约） ----
+	// ---- 场景 c：未知模型（capability gate 按模型过滤清空候选 → 404 固定契约） ----
 	status, body = w1lPostChatCompletions(t, proc.mainAddress, w1lGatewayKeySecrets["w1l_key_main"], "w1l-unknown-model")
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("场景 W1L-c 期望 503，实际 %d，body=%s", status, body)
+	if status != http.StatusNotFound {
+		t.Fatalf("场景 W1L-c 期望 404，实际 %d，body=%s", status, body)
 	}
-	// BUG-0261：model_unsupported + 非空模型返回精确文案（不再落入能力
-	// 过滤层的泛化协议文案）。
-	if !strings.Contains(body, "当前分组无账户支持请求模型：w1l-unknown-model") || !strings.Contains(body, `"code":"model_unsupported"`) {
-		t.Fatalf("场景 W1L-c 缺少模型不匹配契约（model_unsupported + 精确文案），body=%s", body)
+	// BUG-0261 精确文案 + BUG-0325 修复批：全 model_unsupported 耗尽返回
+	// 404 model_not_found（客户端参数错误语义，原 503 可重试语义已修）。
+	if !strings.Contains(body, "当前分组无账户支持请求模型：w1l-unknown-model") || !strings.Contains(body, `"code":"model_not_found"`) {
+		t.Fatalf("场景 W1L-c 缺少模型不匹配契约（model_not_found + 精确文案），body=%s", body)
 	}
 
 	// ---- 优雅关闭（CTRL_BREAK → exit 0、无 fail 输出） ----

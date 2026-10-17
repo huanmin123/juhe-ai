@@ -2,23 +2,28 @@
   <div class="media-form">
     <!-- 段1 凭据（D7 清单表驱动）：供应商/类型按域矩阵过滤，凭据字段按 档案×域 动态。 -->
     <section class="media-form-section">
-      <div class="media-section-label">
+      <div v-show="!providerPickerExpanded" class="media-section-label">
         <span class="media-section-name">凭据</span>
         <span class="media-section-hint">必填 · 按供应商与能力域动态</span>
         <span class="media-section-line" />
       </div>
       <AccountFormSelector
+        :account-counts="accountCounts"
         :account-type="form.type"
         :account-type-choices="domainAccountTypeChoices"
         :editing="editing"
+        :open="open"
         :provider-code="form.providerCode"
         :providers="domainProviders"
         :selected-protocol-profile="selectedProtocolProfile"
         :selected-provider="selectedProvider"
+        @picker-expanded-change="handlePickerExpandedChange"
         @select-provider="$emit('select-provider', $event)"
         @select-type-choice="$emit('select-type-choice', $event)"
       />
 
+      <!-- 阶段二（已选供应商配置）：卡片墙展开期间整块隐藏，先选供应商再进配置。 -->
+      <div v-show="!providerPickerExpanded">
       <AccountApiKeySection
         v-if="form.type === 'api_key' && !authorizedEditing"
         :base-url-placeholder="baseUrlPlaceholder"
@@ -84,10 +89,11 @@
           <a-input-password v-model:value="form.speechToken" autocomplete="new-password" placeholder="火山语音应用 Access Token" />
         </a-form-item>
       </template>
+      </div>
     </section>
 
     <!-- 段2 模型与映射：支持模型一律必选（D7）；hybrid 视频/音频域保留域内映射编辑。 -->
-    <section class="media-form-section">
+    <section v-show="!providerPickerExpanded" class="media-form-section">
       <div class="media-section-label">
         <span class="media-section-name">模型{{ isHybridMappingDomain ? '与映射' : '' }}</span>
         <span class="media-section-hint">{{ domainModelSectionHint }}</span>
@@ -207,7 +213,7 @@
     </section>
 
     <!-- 段3 调度与运维：并发 + 状态（新建默认 active）+ 代理 + 标签/说明 + 加入分组。 -->
-    <section class="media-form-section">
+    <section v-show="!providerPickerExpanded" class="media-form-section">
       <div class="media-section-label">
         <span class="media-section-name">调度与运维</span>
         <span class="media-section-hint">并发 · 优先级 · 代理 · 归属 · 高级配置</span>
@@ -370,6 +376,8 @@ interface SimpleSelectOption {
 }
 
 const props = withDefaults(defineProps<{
+  /** 卡片墙账户计数（providerCode → 当前范围账户数），透传给第 1 段内嵌的 AccountFormSelector。 */
+  accountCounts?: Record<string, number>
   accountTypeChoices: AccountTypeChoice[]
   authLoading?: boolean
   authResult?: OAuthAuthURLResult
@@ -407,6 +415,7 @@ const props = withDefaults(defineProps<{
   tagOptions: AccountTagSummary[]
   tagOptionsLoading: boolean
 }>(), {
+  accountCounts: () => ({}),
   advancedLoaded: false,
   advancedLoading: false,
   authorizedEditing: false,
@@ -427,6 +436,15 @@ const props = withDefaults(defineProps<{
 const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyRules', { required: true })
 const inheritedErrorPolicyRules = defineModel<AccountErrorPolicyInheritedRule[]>('inheritedErrorPolicyRules', { default: () => [] })
 
+// 供应商卡片墙展开状态（阶段一=独立供应商选择）：展开时隐藏段1凭据字段与段2/段3 配置区，
+// 并上抛弹窗驱动标题与底部按钮区。
+const providerPickerExpanded = ref(true)
+
+function handlePickerExpandedChange(expanded: boolean): void {
+  providerPickerExpanded.value = expanded
+  emit('picker-expanded-change', expanded)
+}
+
 const emit = defineEmits<{
   (event: 'advanced-open'): void
   (event: 'balance-query'): void
@@ -440,6 +458,7 @@ const emit = defineEmits<{
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'open-auth-url'): void
+  (event: 'picker-expanded-change', expanded: boolean): void
   (event: 'proxyOptionsDropdown', open: boolean): void
   (event: 'proxyOptionsSearch', value: string): void
   (event: 'refresh-models'): void

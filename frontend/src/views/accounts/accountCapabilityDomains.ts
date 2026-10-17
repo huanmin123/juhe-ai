@@ -181,8 +181,10 @@ const HYBRID_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...
 const MINIMAX_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: [] }
 // volcengine：seedance（视频）+ 豆包音频生成 TTS（audio_speech，新版语音
 // 控制台 API Key 单值凭据 speech_token）+ seedream 图像（images_json，
-// 2026-10-17 图像批开闸，词表新值与后端写侧同批）；无 chat 域新值。
-const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: AUDIO_SPEECH, image: IMAGES_JSON }
+// 2026-10-17 图像批开闸，词表新值与后端写侧同批）+ 长转写 audio_job_* 四值
+// （2026-10-17 语音识别承接批，豆包录音文件识别 2.0 /v1/audio/jobs 面，
+// opt-in 不进默认集）；无 chat 域新值。
+const VOLCENGINE_MEDIA_ROW: MediaDomainMatrixRow = { video: VIDEO_GROUP, audio: [...AUDIO_SPEECH, ...AUDIO_JOB_GROUP], image: IMAGES_JSON }
 
 function mediaMatrixRowForProfile(input: {
   providerCode?: string

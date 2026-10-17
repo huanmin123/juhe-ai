@@ -45,16 +45,20 @@ const (
 // whitelist (contract §3.2.1). M6 追加 glm 官方通用根同步音频端点（契约
 // §7.2：/api/paas/v4/audio/speech|transcriptions|translations——网关 glm
 // speech 透传分支的出站路径）与火山 TTS 端点（契约 §9.2：/api/v3/tts，
-// handler 在 video_volcengine.go）。
+// handler 在 video_volcengine.go）；承接批追加火山录音文件识别 2.0 端点
+// （契约 §9.2：/api/v3/auc/bigmodel/submit|query，头驱动面 handler 在
+// asr_volcengine.go）。
 var mediaEndpoints = map[endpoint]bool{
-	{http.MethodPost, "/v1/audio/speech"}:                 true,
-	{http.MethodPost, "/v1/audio/transcriptions"}:         true,
-	{http.MethodPost, "/v1/audio/translations"}:           true,
-	{http.MethodPost, "/api/paas/v4/audio/speech"}:        true,
+	{http.MethodPost, "/v1/audio/speech"}:                  true,
+	{http.MethodPost, "/v1/audio/transcriptions"}:          true,
+	{http.MethodPost, "/v1/audio/translations"}:            true,
+	{http.MethodPost, "/api/paas/v4/audio/speech"}:         true,
 	{http.MethodPost, "/api/paas/v4/audio/transcriptions"}: true,
 	{http.MethodPost, "/api/paas/v4/audio/translations"}:   true,
-	{http.MethodPost, "/api/v3/tts/create"}:                      true,
-	{http.MethodPost, "/v1/images/generations"}:           true,
+	{http.MethodPost, "/api/v3/tts/create"}:                true,
+	{http.MethodPost, "/api/v3/auc/bigmodel/submit"}:       true,
+	{http.MethodPost, "/api/v3/auc/bigmodel/query"}:        true,
+	{http.MethodPost, "/v1/images/generations"}:            true,
 }
 
 // acceptsMediaEndpoint matches the exact audio paths, the videos family
@@ -164,6 +168,13 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 	}
 	if isQwenASRPath(r.URL.Path) {
 		m.serveQwenASRCreate(w, r, scenario)
+		return
+	}
+	// 火山录音文件识别 2.0（契约 §9.2 承接批）：头驱动 submit/query 两段面，
+	// handler 在 asr_volcengine.go——成功标志在 X-Api-Status-Code 响应头，
+	// 与 body 驱动的 qwen ASR 面不同构。
+	if isVolcengineASRPath(r.URL.Path) {
+		m.serveVolcengineASR(w, r, scenario)
 		return
 	}
 	if isQwenVideoPath(r.URL.Path) {

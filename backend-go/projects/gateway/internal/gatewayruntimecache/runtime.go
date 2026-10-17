@@ -60,6 +60,51 @@ func (s *Service) ReadGatewayRuntimeByAPIKeyIDAsync(ctx context.Context, apiKeyI
 	return s.dispatchGatewayRuntimeForSend(ctx, runtime)
 }
 
+// ReadCachedGatewayRuntimeStaticAsync 是组级会话亲和三阶段第 1 步（策略路由
+// 分组会话亲和设计 §4）：缓存/载入/清洗与既有读完全一致，但动态模式的分组
+// 选择延后——不调用排序器、不消费任何轮转/加权状态、不预选分组。产出带
+// StaticResolutionOnly 标记，preflight 在身份解析后调用
+// SelectGatewayRuntimeForDispatchAsync 完成第 3 步。
+func (s *Service) ReadCachedGatewayRuntimeStaticAsync(ctx context.Context, apiKey string) (GatewayRuntime, error) {
+	s.syncInvalidationsForRuntime(ctx)
+	cacheKey := HashSecret(apiKey)
+	now := s.nowMs()
+	if cached, ok := s.runtimeCache.get(cacheKey); ok {
+		s.identityCache.get(cacheKey)
+		if isEntryFresh(cached.revalidateAtMs, now) {
+			return s.dispatchGatewayRuntimeStaticForSend(ctx, cached.runtime)
+		}
+		s.refreshGatewayRuntimeInBackground(apiKey, cacheKey)
+		return s.dispatchGatewayRuntimeStaticForSend(ctx, cached.runtime)
+	}
+	runtime, err := s.loadGatewayRuntimeOnce(ctx, apiKey, cacheKey)
+	if err != nil {
+		return GatewayRuntime{}, err
+	}
+	return s.dispatchGatewayRuntimeStaticForSend(ctx, runtime)
+}
+
+// dispatchGatewayRuntimeStaticForSend 是静态解析尾：清洗后不再走动态分支，
+// 一律按静态 clone（并发 overlay 保留既有语义）并打 StaticResolutionOnly
+// 标记。动态模式的分组/账户由第 3 步按黏住或模式序重新选择并覆盖。
+func (s *Service) dispatchGatewayRuntimeStaticForSend(ctx context.Context, runtime GatewayRuntime) (GatewayRuntime, error) {
+	sanitized, err := s.sanitizedGatewayRuntimeForDispatch(runtime)
+	if err != nil {
+		return GatewayRuntime{}, err
+	}
+	var out GatewayRuntime
+	if sanitized.APIKey == nil {
+		out = cloneStaticGatewayRuntime(sanitized)
+	} else {
+		out, err = s.cloneGatewayRuntimeForDispatchAsync(ctx, sanitized)
+		if err != nil {
+			return GatewayRuntime{}, err
+		}
+	}
+	out.StaticResolutionOnly = true
+	return out, nil
+}
+
 // dispatchGatewayRuntimeForSend mirrors the shared dispatch tail of every
 // Node read path: sanitize, then dynamic re-route / concurrency overlay.
 func (s *Service) dispatchGatewayRuntimeForSend(ctx context.Context, runtime GatewayRuntime) (GatewayRuntime, error) {
@@ -357,7 +402,6 @@ func (s *Service) routeCachedDynamicGatewayRuntimeWithFreshSelection(ctx context
 		return cloneStaticGatewayRuntime(runtime), nil
 	}
 	apiKey := CloneGatewayAPIKeyRow(*runtime.APIKey)
-	systemAccountID := apiKey.SystemAccountID
 	orderedBindings := apiKey.GroupBindings
 	if s.opts.Orderer != nil {
 		ordered, err := s.opts.Orderer.OrderAPIKeyGroupBindings(ctx, apiKey)
@@ -366,6 +410,15 @@ func (s *Service) routeCachedDynamicGatewayRuntimeWithFreshSelection(ctx context
 		}
 		orderedBindings = ordered
 	}
+	return s.selectGatewayRuntimeFromOrderedBindings(ctx, runtime, apiKey, orderedBindings)
+}
+
+// selectGatewayRuntimeFromOrderedBindings 是动态选组 walk 的共享实现：按既定
+// 派发序取第一个有 access 且（唯一候选语义下）可派发账户的分组。状态消费
+// （Orderer）由调用方决定——advance 路径在进入前已推进一次，sticky/peek
+// 路径（策略路由分组会话亲和设计 §4）传入纯 peek 序列，本函数零状态消费。
+func (s *Service) selectGatewayRuntimeFromOrderedBindings(ctx context.Context, runtime GatewayRuntime, apiKey GatewayAPIKeyRow, orderedBindings []GatewayAPIKeyGroupBindingRow) (GatewayRuntime, error) {
+	systemAccountID := apiKey.SystemAccountID
 	uniqueCandidateGroupIDs := []string{}
 	seen := map[string]bool{}
 	for _, binding := range orderedBindings {
@@ -411,6 +464,100 @@ func (s *Service) routeCachedDynamicGatewayRuntimeWithFreshSelection(ctx context
 		Accounts:                   []OpenAIAccountSecret{},
 		ResponseInspectionPolicies: []ResponseInspectionPolicySummary{},
 	}, nil
+}
+
+// SelectGatewayRuntimeInput 是组级会话亲和三阶段第 3 步的选择入参（§4）。
+type SelectGatewayRuntimeInput struct {
+	// PreferredGroupID 是会话黏住的分组（空 = 无黏住，按模式派发序选择）。
+	PreferredGroupID string
+	// AdvanceOnStickyMiss 控制无黏住/未命中时的状态语义：true = 推进一次模式
+	// 状态（初始选择阶段）；false = 保持传入快照既有派发序、零推进（最终
+	// profile 重解析阶段，推进预算由初始阶段承担，§4 关键点 5 不得推进两次）。
+	AdvanceOnStickyMiss bool
+}
+
+// SelectGatewayRuntimeForDispatchAsync 完成三阶段第 3 步：黏住命中时以纯
+// peek 生成模式派发序并把黏住组置首（零状态消费），未命中/无黏住时按
+// AdvanceOnStickyMiss 决定是否经既有 Orderer 恰好推进一次。静态模式
+// （failover/normal/merge）无状态可消费，failover 仅在黏住组存在时重排。
+// 返回值一律清除 StaticResolutionOnly 标记（含 no-op 分支）——标记只属于
+// 中间件静态快照，完成第 3 步后的快照已是派发终态，防止后续 preflight
+// 重入（可恢复等待重试等）重复推进模式状态。
+func (s *Service) SelectGatewayRuntimeForDispatchAsync(ctx context.Context, static GatewayRuntime, input SelectGatewayRuntimeInput) (GatewayRuntime, error) {
+	selected, err := s.selectGatewayRuntimeForDispatchInner(ctx, static, input)
+	if err != nil {
+		return GatewayRuntime{}, err
+	}
+	selected.StaticResolutionOnly = false
+	return selected, nil
+}
+
+func (s *Service) selectGatewayRuntimeForDispatchInner(ctx context.Context, static GatewayRuntime, input SelectGatewayRuntimeInput) (GatewayRuntime, error) {
+	if static.APIKey == nil {
+		return static, nil
+	}
+	mode := static.APIKey.RouteStrategyMode
+	stickyEngaged := input.PreferredGroupID != ""
+	if !IsDynamicRouteStrategyMode(mode) {
+		// failover：优先序即派发序；黏住组置首实现「黏备组不回切」。
+		// normal / merge：不重排（§6 边界）。
+		if mode != RouteStrategyModeFailover || !stickyEngaged {
+			return static, nil
+		}
+		apiKey := CloneGatewayAPIKeyRow(*static.APIKey)
+		reordered := reorderGatewayBindingsForStickyGroup(apiKey.GroupBindings, input.PreferredGroupID)
+		return s.selectGatewayRuntimeFromOrderedBindings(ctx, static, apiKey, reordered)
+	}
+	apiKey := CloneGatewayAPIKeyRow(*static.APIKey)
+	var orderedBindings []GatewayAPIKeyGroupBindingRow
+	if stickyEngaged {
+		// 纯 peek（§11 状态阻断项：sticky hit 零状态推进），再置首。
+		peeked := apiKey.GroupBindings
+		if s.opts.Orderer != nil {
+			peekOrderer, implements := s.opts.Orderer.(GatewayGroupBindingPeeker)
+			if !implements {
+				return GatewayRuntime{}, errors.New("组级会话黏性要求分组排序器支持纯读 peek")
+			}
+			peekedRows, err := peekOrderer.PeekAPIKeyGroupBindings(ctx, apiKey)
+			if err != nil {
+				return GatewayRuntime{}, err
+			}
+			peeked = peekedRows
+		}
+		orderedBindings = reorderGatewayBindingsForStickyGroup(peeked, input.PreferredGroupID)
+	} else if input.AdvanceOnStickyMiss && s.opts.Orderer != nil {
+		ordered, err := s.opts.Orderer.OrderAPIKeyGroupBindings(ctx, apiKey)
+		if err != nil {
+			return GatewayRuntime{}, err
+		}
+		orderedBindings = ordered
+	} else {
+		orderedBindings = apiKey.GroupBindings
+	}
+	return s.selectGatewayRuntimeFromOrderedBindings(ctx, static, apiKey, orderedBindings)
+}
+
+// reorderGatewayBindingsForStickyGroup 把黏住分组挪到派发序首位、其余保持
+// 既有顺序；不在列表中时原样返回（§4 视同未命中）。
+func reorderGatewayBindingsForStickyGroup(ordered []GatewayAPIKeyGroupBindingRow, stickyGroupID string) []GatewayAPIKeyGroupBindingRow {
+	if stickyGroupID == "" || len(ordered) <= 1 {
+		return ordered
+	}
+	stickyIndex := -1
+	for i, binding := range ordered {
+		if binding.GroupID == stickyGroupID {
+			stickyIndex = i
+			break
+		}
+	}
+	if stickyIndex <= 0 {
+		return ordered
+	}
+	result := make([]GatewayAPIKeyGroupBindingRow, 0, len(ordered))
+	result = append(result, ordered[stickyIndex])
+	result = append(result, ordered[:stickyIndex]...)
+	result = append(result, ordered[stickyIndex+1:]...)
+	return result
 }
 
 // hasDispatchableCachedGatewayAccount mirrors hasDispatchableCachedGatewayAccount.

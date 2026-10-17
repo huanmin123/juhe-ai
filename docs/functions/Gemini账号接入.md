@@ -71,8 +71,8 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 默认能力 |
 | --- | --- | --- | --- | --- | --- |
-| `profile_gemini_native_v1beta` | `gemini` | `gemini/v1beta` | `https://generativelanguage.googleapis.com` 或 `https://cloudcode-pa.googleapis.com` | Gemini API Key / Google OAuth | API Key / AI Studio 为 native 档案能力；Code Assist / Google One 仅 `generate_content_json`、`generate_content_sse` |
-| `profile_gemini_openai_chat_v1beta` | `gemini` | `openai/v1` | `https://generativelanguage.googleapis.com/v1beta/openai` | Gemini API Key | `chat_json`、`chat_sse` |
+| `profile_gemini_native_v1beta` | `gemini` | `gemini/v1beta` | `https://generativelanguage.googleapis.com` 或 `https://cloudcode-pa.googleapis.com` | Gemini API Key / Gemini OAuth | API Key / AI Studio 为 native 档案能力；Code Assist / Google One 仅 `generate_content_json`、`generate_content_sse` |
+| `profile_gemini_openai_chat_v1beta` | `gemini` | `openai/v1` | `https://generativelanguage.googleapis.com/v1beta/openai` | Chat API Key | `chat_json`、`chat_sse` |
 
 可选 endpoint modes：
 
@@ -98,7 +98,7 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 
 ## 创建账户类型
 
-前端创建流程仍按“供应商 -> 接入类型 -> 凭据与调度配置”展开。
+前端创建流程仍按“供应商 -> 接入类型 -> 凭据与调度配置”展开。页面接入类型自 2026-10-17 起展示为协议短词：`Gemini API Key`（原生）、`Chat API Key`（OpenAI Chat 兼容）、`Gemini OAuth`（三种 OAuth 模式在凭据表单内区分，不再逐模式单列接入类型）。
 
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
@@ -106,7 +106,7 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 | Gemini Code Assist OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=code_assist`、token、必需 `project_id`、`tier_id`、`base_url` | `gemini-3.5-flash` |
 | Google One OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=google_one`、token、探测到的 `project_id` / Drive 配额与 `tier_id` | `gemini-3.5-flash` |
 | Google AI Studio OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 自定义 Client ID / Secret；`oauth_type=ai_studio`、token、可选 `quota_project_id` / `project_id` | `gemini-3.5-flash` |
-| Gemini OpenAI Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
+| Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
 
 保存规则：
 

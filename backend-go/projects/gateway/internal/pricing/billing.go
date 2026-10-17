@@ -36,7 +36,10 @@ type tokenBillingLabels struct {
 	// ttsInputChars / audioInputSeconds 是 M1 音频行项标签（音频设计 §10）；
 	// videoOutputSeconds 是 M2 视频行项标签（媒体设计 §10）；
 	// videoOutputCalls 是视频按次行项标签（2026-10-05 按次计费批，契约 §2.8）。
-	ttsInputChars      string
+	ttsInputChars string
+	// audioInputSeconds 是音频秒行项标签（音频设计 §10）：承载 STT 输入秒
+	// 与 volcengine TTS 生成秒（2026-10-17 维度修正批）——同一 usage 行只
+	// 会是其一，费率按模型目录无混算。
 	audioInputSeconds  string
 	videoOutputSeconds string
 	videoOutputCalls   string
@@ -55,7 +58,7 @@ var defaultTokenBillingLabels = tokenBillingLabels{
 	audioOutput:        "音频输出 Token",
 	imageOutputUnit:    "输出图片",
 	ttsInputChars:      "TTS 输入字符",
-	audioInputSeconds:  "STT 输入秒",
+	audioInputSeconds:  "音频秒",
 	videoOutputSeconds: "视频输出秒",
 	videoOutputCalls:   "视频输出次数",
 }
@@ -199,8 +202,9 @@ var billingPolicies = []*billingPolicy{
 	},
 	{
 		// M3 媒体供应商新增（媒体设计 §9/契约 §9）：火山方舟只有媒体行项
-		//（video_output_seconds，目录未落价——见 data_volcengine.go 计价落法
-		// 注释），token 行项标签沿用默认集。
+		//（video_output_seconds——2026-10-17 国内价口径批起 720p 主档秒价
+		// 已落值，1-0-pro 除外；seed-audio-1.0 音频秒行同批落值），token
+		// 行项标签沿用默认集。
 		id:                       "volcengine",
 		rejectUnsupportedTier:    true,
 		cacheReadIncludedInInput: true,

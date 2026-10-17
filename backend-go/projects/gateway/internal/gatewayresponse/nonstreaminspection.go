@@ -231,10 +231,22 @@ func (input *HandleUpstreamResponseInput) applyInspectionDecisionSideEffects(dec
 
 // forgetSessionAffinityForFailure 对齐
 // forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)。
+// 组级会话亲和（策略路由分组会话亲和设计 §5.2）：本助手承载「非流式 2xx 协议
+// 校验失败 / 正文中断等既有响应失败 forget」触发类，装配了三层删除面时随账户
+// 层一并删除组绑定；未装配或无组键时回落单层语义。
 func (input *HandleUpstreamResponseInput) forgetSessionAffinityForFailure() {
-	if input.Deps != nil && input.Deps.AccountEffects != nil {
-		input.Deps.AccountEffects.ForgetSessionAffinity(input.SessionAffinityKey, input.Account.GetID())
+	if input.Deps == nil || input.Deps.AccountEffects == nil {
+		return
 	}
+	if layersEffects, ok := input.Deps.AccountEffects.(SessionAffinityLayersPort); ok {
+		layersEffects.ForgetSessionAffinityLayers(SessionAffinityLayers{
+			GroupAffinityKey:   input.GroupAffinityKey,
+			SessionAffinityKey: input.SessionAffinityKey,
+			AccountID:          input.Account.GetID(),
+		})
+		return
+	}
+	input.Deps.AccountEffects.ForgetSessionAffinity(input.SessionAffinityKey, input.Account.GetID())
 }
 
 // finalizeAuditWithExtras 优先走扩展审计面（携带 accountId 与 firstTokenMs，

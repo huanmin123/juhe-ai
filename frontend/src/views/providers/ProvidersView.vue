@@ -6,7 +6,13 @@
         <a-empty class="page-empty-card" :description="providerEmptyDescription" />
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'status'">
+        <template v-if="column.key === 'name'">
+          <span class="provider-name-cell">
+            <ProviderIcon class="provider-name-icon" :name="record.name" :provider-code="record.code" :size="16" />
+            <span class="provider-name-text">{{ record.name }}</span>
+          </span>
+        </template>
+        <template v-else-if="column.key === 'status'">
           <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'accountTypes'">
@@ -43,7 +49,10 @@
       <template #card="{ record }">
         <article class="mobile-list-card">
           <div class="mobile-list-card-head">
-            <div class="mobile-list-card-title">{{ record.name }}</div>
+            <div class="mobile-list-card-title">
+              <ProviderIcon class="provider-name-icon" :name="record.name" :provider-code="record.code" :size="16" />
+              <span class="provider-name-text">{{ record.name }}</span>
+            </div>
             <div class="mobile-list-card-tags">
               <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
             </div>
@@ -93,6 +102,8 @@
       :load-error="modelLoadError"
       :loading="modelModalLoading"
       :models="filteredModels"
+      :provider-code="activeProvider?.code"
+      :provider-name="activeProvider?.name"
       :row-actions="modelRowActions"
       :system-account-filter="modelSystemAccountFilter"
       :system-account-filter-selection="modelSystemAccountFilterSelection"
@@ -230,6 +241,7 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, react
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
@@ -946,6 +958,30 @@ watch(() => authState.revision.value, () => {
 </script>
 
 <style scoped>
+.provider-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.provider-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-name-icon {
+  flex: none;
+}
+
+.mobile-list-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .provider-table :deep(.ant-empty) {
   margin: 12px 0;
 }

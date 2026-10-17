@@ -113,6 +113,7 @@ type Server struct {
 	glmVideoTasks        map[string]*glmVideoTask        // glm cogvideo task table (video_glm.go, contract §7.1)
 	minimaxVideoTasks    map[string]*minimaxVideoTask    // minimax hailuo task table (video_minimax.go, contract §8.1)
 	volcengineVideoTasks map[string]*volcengineVideoTask // volcengine seedance task table (video_volcengine.go, contract §9.1)
+	volcengineASRTasks   map[string]*volcengineASRTask   // volcengine seedasr AUC task table (asr_volcengine.go, contract §9.2)
 	qwenVideoTasks       map[string]*qwenVideoTask       // qwen wanx task table (video_qwen.go, contract §10.1)
 	qwenASRTasks         map[string]*qwenASRTask         // qwen paraformer ASR task table (asr_qwen.go, contract §10.2, M3f)
 	xaiVideoTasks        map[string]*xaiVideoTask        // xai grok imagine video task table (video_xai.go, contract §6.1)
@@ -134,9 +135,17 @@ type Request struct {
 	// migration batch: the speech domain authenticates via X-Api-Key and
 	// the gateway strips Authorization before dispatch).
 	APIKeyHeader string
-	Model        string
-	StreamField  string
-	Aborted      bool
+	// ResourceIDHeader records the raw X-Api-Resource-Id header (volcengine
+	// seedasr ASR batch: the AUC submit/query face scopes the billed
+	// resource via this header; chain tests assert the outbound value).
+	ResourceIDHeader string
+	// RequestIDHeader records the raw X-Api-Request-Id header (volcengine
+	// seedasr ASR batch: the gateway-defined request id doubles as the mock
+	// task id on this header-driven protocol — the acceptance credential).
+	RequestIDHeader string
+	Model           string
+	StreamField     string
+	Aborted         bool
 }
 
 // endpoint is one exact method+path pair accepted by the mock, mirroring
@@ -168,7 +177,7 @@ func acceptsEndpoint(method, path string) bool {
 // the requested scenario (sentinel "x-mock-scenario" header or ?scenario=
 // query, defaulting to chat_ok).
 func New() *Server {
-	m := &Server{now: time.Now, videos: map[string]*videoTask{}, veoOperations: map[string]*veoOperation{}, glmVideoTasks: map[string]*glmVideoTask{}, minimaxVideoTasks: map[string]*minimaxVideoTask{}, volcengineVideoTasks: map[string]*volcengineVideoTask{}, qwenVideoTasks: map[string]*qwenVideoTask{}, qwenASRTasks: map[string]*qwenASRTask{}, xaiVideoTasks: map[string]*xaiVideoTask{}}
+	m := &Server{now: time.Now, videos: map[string]*videoTask{}, veoOperations: map[string]*veoOperation{}, glmVideoTasks: map[string]*glmVideoTask{}, minimaxVideoTasks: map[string]*minimaxVideoTask{}, volcengineVideoTasks: map[string]*volcengineVideoTask{}, volcengineASRTasks: map[string]*volcengineASRTask{}, qwenVideoTasks: map[string]*qwenVideoTask{}, qwenASRTasks: map[string]*qwenASRTask{}, xaiVideoTasks: map[string]*xaiVideoTask{}}
 	m.Server = httptest.NewServer(http.HandlerFunc(m.serve))
 	return m
 }
@@ -280,14 +289,16 @@ func (m *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	m.seenReqs = append(m.seenReqs, Request{
-		Method:       r.Method,
-		Path:         r.URL.Path,
-		RawQuery:     r.URL.RawQuery,
-		Body:         string(raw),
-		AuthHeader:   r.Header.Get("Authorization"),
-		APIKeyHeader: r.Header.Get("X-Api-Key"),
-		Model:        parsed.Model,
-		StreamField:  streamField,
+		Method:           r.Method,
+		Path:             r.URL.Path,
+		RawQuery:         r.URL.RawQuery,
+		Body:             string(raw),
+		AuthHeader:       r.Header.Get("Authorization"),
+		APIKeyHeader:     r.Header.Get("X-Api-Key"),
+		ResourceIDHeader: r.Header.Get("X-Api-Resource-Id"),
+		RequestIDHeader:  r.Header.Get("X-Api-Request-Id"),
+		Model:            parsed.Model,
+		StreamField:      streamField,
 	})
 	idx := len(m.seenReqs) - 1
 	m.mu.Unlock()

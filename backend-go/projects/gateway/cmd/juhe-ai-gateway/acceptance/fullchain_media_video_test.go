@@ -814,7 +814,7 @@ func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey,
 // minimax、params 回显 seed 进 ignored / provider_options_applied 命中）→
 // 轮询 queued → queued → completed（status 归一 + file_download_url 冻结）→
 // content 经绝对 URL 无凭据直连下载 mp4 → 管理面 media-jobs 行终态
-//（按次计费口径 cost=$0.28，2026-10-05 按次计费批）→ 账户亲和（上游命中
+//（按次计费口径 cost=roundCost(2/7)=0.2857142857，2026-10-05 按次计费批）→ 账户亲和（上游命中
 // 只打 minimax 账户 key 的 video_generation/query/files 端点）。
 func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	requireFullchainGate(t)
@@ -893,7 +893,7 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	}
 
 	// 管理面 media-jobs：行终态 completed 归因 minimax 账户；按次计费
-	//（2026-10-05 按次计费批）：Hailuo 目录行按条明文主档 $0.28/次（768P-6s），
+	//（2026-10-05 按次计费批；2026-10-17 国内价回正）：Hailuo 目录行按条主档 768P-6s 2.00 元/次 ÷7.0，
 	// 一次任务 = 一次调用，无秒计量也按次计（契约 §2.8 按次计费）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
@@ -901,8 +901,8 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	if row.AccountID != accountID {
 		t.Fatalf("MV minimax row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	if row.CostUsd != 0.28 {
-		t.Fatalf("MV minimax row costUsd=%v, want 0.28（按次计费 VideoOutputCostPerCall × 1）", row.CostUsd)
+	if row.CostUsd != 0.2857142857 {
+		t.Fatalf("MV minimax row costUsd=%v, want 0.2857142857（roundCost(2/7)，按次计费 VideoOutputCostPerCall × 1）", row.CostUsd)
 	}
 
 	// 账户亲和 + 出站形态：minimax key 命中创建（POST /v1/video_generation）

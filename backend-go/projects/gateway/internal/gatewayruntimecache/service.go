@@ -88,6 +88,14 @@ type GroupBindingOrderer interface {
 	OrderAPIKeyGroupBindings(ctx context.Context, apiKey GatewayAPIKeyRow) ([]GatewayAPIKeyGroupBindingRow, error)
 }
 
+// GatewayGroupBindingPeeker 是组级会话黏性（策略路由分组会话亲和设计 §4）
+// 的可选排序器扩展：纯读生成当前模式派发序，不推进任何轮转/加权状态。
+// 组合根的排序器实现该接口后，SelectGatewayRuntimeForDispatchAsync 的
+// sticky 命中路径才可用（否则显式报错，不允许静默退化为 advance）。
+type GatewayGroupBindingPeeker interface {
+	PeekAPIKeyGroupBindings(ctx context.Context, apiKey GatewayAPIKeyRow) ([]GatewayAPIKeyGroupBindingRow, error)
+}
+
 // AccountsSelector is the account-selector seam behind
 // listOpenAIAccountsForGroupResult (M08/J selector port).
 type AccountsSelector interface {

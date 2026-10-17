@@ -203,6 +203,17 @@ func (c *fakeRuntimeCache) ReadCachedGatewayRuntimeAsync(_ context.Context, apiK
 	}
 	return gatewayruntimecache.GatewayRuntime{}, nil
 }
+
+// ReadCachedGatewayRuntimeStaticAsync 是组级会话亲和三阶段第 1 步的 fake：与
+// 完整读同数据，但不打 StaticResolutionOnly 标记——既有测试的 runtime 快照
+// 保持零改动路径（preflight 补全块只对标记快照生效）。
+func (c *fakeRuntimeCache) ReadCachedGatewayRuntimeStaticAsync(ctx context.Context, apiKey string) (gatewayruntimecache.GatewayRuntime, error) {
+	return c.ReadCachedGatewayRuntimeAsync(ctx, apiKey)
+}
+
+func (c *fakeRuntimeCache) SelectGatewayRuntimeForDispatchAsync(_ context.Context, static gatewayruntimecache.GatewayRuntime, _ gatewayruntimecache.SelectGatewayRuntimeInput) (gatewayruntimecache.GatewayRuntime, error) {
+	return static, nil
+}
 func (c *fakeRuntimeCache) ReadCachedGatewaySettingsAsync(context.Context) (gatewayruntimecache.GatewaySettings, error) {
 	return c.settings, nil
 }

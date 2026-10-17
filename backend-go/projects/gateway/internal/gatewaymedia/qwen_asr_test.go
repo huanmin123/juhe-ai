@@ -89,18 +89,18 @@ func TestQwenASRAdapterCreateRequiredFields(t *testing.T) {
 func TestQwenASRAdapterParsePollResponseLifecycle(t *testing.T) {
 	adapter := qwenASRAdapter{}
 	// 创建/首轮 PENDING → queued。
-	ir, err := adapter.ParsePollResponse(200, []byte(`{"output":{"task_id":"asr-1","task_status":"PENDING"},"request_id":"r"}`))
+	ir, err := adapter.ParsePollResponse(200, nil, []byte(`{"output":{"task_id":"asr-1","task_status":"PENDING"},"request_id":"r"}`))
 	if err != nil || ir.Status != JobStatusQueued || ir.UpstreamJobID != "asr-1" || ir.Kind != JobKindAudioTranscription {
 		t.Fatalf("PENDING 归一错误: %+v err=%v", ir, err)
 	}
 	// RUNNING → in_progress。
-	ir, err = adapter.ParsePollResponse(200, []byte(`{"output":{"task_id":"asr-1","task_status":"RUNNING"}}`))
+	ir, err = adapter.ParsePollResponse(200, nil, []byte(`{"output":{"task_id":"asr-1","task_status":"RUNNING"}}`))
 	if err != nil || ir.Status != JobStatusInProgress {
 		t.Fatalf("RUNNING 归一错误: %+v err=%v", ir, err)
 	}
 	// SUCCEEDED + transcription_url + usage JSON 字符串（duration=62.5）。
 	body := `{"output":{"task_id":"asr-1","task_status":"SUCCEEDED","results":[{"file_url":"u","transcription_url":"https://oss/result.json"}]},"usage":"{\"duration\":62.5}"}`
-	ir, err = adapter.ParsePollResponse(200, []byte(body))
+	ir, err = adapter.ParsePollResponse(200, nil, []byte(body))
 	if err != nil {
 		t.Fatalf("SUCCEEDED 解析失败: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestQwenASRAdapterParsePollResponseLifecycle(t *testing.T) {
 		t.Fatalf("usage duration 时长计量照抽失败: %+v", ir.Usage)
 	}
 	// FAILED + output.message（契约 §10.2 钉住）→ code 兜底 FAILED。
-	ir, err = adapter.ParsePollResponse(200, []byte(`{"output":{"task_id":"asr-1","task_status":"FAILED","message":"audio file download failed"}}`))
+	ir, err = adapter.ParsePollResponse(200, nil, []byte(`{"output":{"task_id":"asr-1","task_status":"FAILED","message":"audio file download failed"}}`))
 	if err != nil {
 		t.Fatalf("FAILED 解析失败: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestQwenASRAdapterParsePollResponseLifecycle(t *testing.T) {
 
 func TestQwenASRAdapterUsageDualForm(t *testing.T) {
 	// usage 对象形态兼容（官方文档示例亦展示对象形态，沿万相双形态先例）。
-	ir, err := (qwenASRAdapter{}).ParsePollResponse(200, []byte(
+	ir, err := (qwenASRAdapter{}).ParsePollResponse(200, nil, []byte(
 		`{"output":{"task_id":"asr-2","task_status":"SUCCEEDED","results":[{"transcription_url":"https://x/1.json"}]},"usage":{"duration":12.5}}`))
 	if err != nil {
 		t.Fatalf("对象形态 usage 解析失败: %v", err)
@@ -137,7 +137,7 @@ func TestQwenASRAdapterUsageDualForm(t *testing.T) {
 		"unparsed":  `{"output":{"task_id":"asr-3","task_status":"SUCCEEDED","results":[{"transcription_url":"u"}]},"usage":"not-json"}`,
 		"nokeyword": `{"output":{"task_id":"asr-3","task_status":"SUCCEEDED","results":[{"transcription_url":"u"}]},"usage":"{\"video_duration\":5}"}`,
 	} {
-		ir, err := (qwenASRAdapter{}).ParsePollResponse(200, []byte(usage))
+		ir, err := (qwenASRAdapter{}).ParsePollResponse(200, nil, []byte(usage))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -150,27 +150,27 @@ func TestQwenASRAdapterUsageDualForm(t *testing.T) {
 func TestQwenASRAdapterParsePollResponseProtocolViolations(t *testing.T) {
 	adapter := qwenASRAdapter{}
 	// 受理凭据缺失。
-	if _, err := adapter.ParsePollResponse(200, []byte(`{"output":{"task_status":"PENDING"}}`)); err == nil || !strings.Contains(err.Error(), "task_id") {
+	if _, err := adapter.ParsePollResponse(200, nil, []byte(`{"output":{"task_status":"PENDING"}}`)); err == nil || !strings.Contains(err.Error(), "task_id") {
 		t.Fatalf("缺 task_id 应报协议违约, got %v", err)
 	}
 	// SUCCEEDED 但 results 全缺 transcription_url。
 	body := `{"output":{"task_id":"asr-4","task_status":"SUCCEEDED","results":[{"file_url":"only"}]}}`
-	if _, err := adapter.ParsePollResponse(200, []byte(body)); err == nil || !strings.Contains(err.Error(), "transcription_url") {
+	if _, err := adapter.ParsePollResponse(200, nil, []byte(body)); err == nil || !strings.Contains(err.Error(), "transcription_url") {
 		t.Fatalf("缺产物定位应报协议违约, got %v", err)
 	}
 	// 非 2xx → *UpstreamStatusError（链上层裁决，不伪造终态）。
 	var statusErr *UpstreamStatusError
-	_, err := adapter.ParsePollResponse(500, []byte(`{"code":"InternalError"}`))
+	_, err := adapter.ParsePollResponse(500, nil, []byte(`{"code":"InternalError"}`))
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != 500 {
 		t.Fatalf("非 2xx 应返回 UpstreamStatusError, got %v", err)
 	}
 	// 未知状态值 → in_progress + RawStatus（同万相 §2.6 归一规则）。
-	ir, err := adapter.ParsePollResponse(200, []byte(`{"output":{"task_id":"asr-5","task_status":"SUSPENDED"}}`))
+	ir, err := adapter.ParsePollResponse(200, nil, []byte(`{"output":{"task_id":"asr-5","task_status":"SUSPENDED"}}`))
 	if err != nil || ir.Status != JobStatusInProgress || ir.RawStatus != "SUSPENDED" {
 		t.Fatalf("未知状态归一错误: %+v err=%v", ir, err)
 	}
 	// 非 JSON。
-	if _, err := adapter.ParsePollResponse(200, []byte(`not-json`)); err == nil {
+	if _, err := adapter.ParsePollResponse(200, nil, []byte(`not-json`)); err == nil {
 		t.Fatal("非 JSON 应报错")
 	}
 }
@@ -183,7 +183,7 @@ func TestQwenASRAdapterTaskPlaneDeclarations(t *testing.T) {
 	if adapter.SupportsCancel() {
 		t.Fatal("契约 §10.2 面无取消端点，SupportsCancel 应为 false（本地收敛 cancelled）")
 	}
-	if method, path, _ := adapter.BuildPollRequest("task-9"); method != http.MethodGet || path != "/api/v1/tasks/task-9" {
+	if method, path, _, _ := adapter.BuildPollRequest("task-9"); method != http.MethodGet || path != "/api/v1/tasks/task-9" {
 		t.Fatalf("轮询路径错误: %s %s（应与万相同一 DashScope 任务接口）", method, path)
 	}
 	if got := AudioJobAdapterForProvider("QWEN"); got == nil || got.Provider() != "qwen" {

@@ -523,9 +523,9 @@ const bindingShowsWeight = computed(() => form.mode === 'weighted')
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
 const bindingSectionTooltip = computed(() => {
   if (form.mode === 'normal') return '普通路由只绑定一个分组，请求会直接进入这个分组的账号池。'
-  if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。'
-  if (form.mode === 'failover') return '故障回退按当前顺序将第一行作为主用分组，后续为备用分组；所有行都可拖拽，备用拖到第一行即可晋升主用。主用恢复后继续优先使用主用。'
-  if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。'
+  if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。带会话键的请求首次落组后黏住该分组（黏住期间不参与加权分配），分组故障后按权重重选并重绑。'
+  if (form.mode === 'failover') return '故障回退按当前顺序将第一行作为主用分组，后续为备用分组；所有行都可拖拽，备用拖到第一行即可晋升主用。新会话/无会话请求主用恢复后继续优先使用主用；已黏住备组的会话不回切。'
+  if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。带会话键的请求首次落组后黏住该分组（黏住期间不参与轮转），分组故障后按轮询重选并重绑。'
   if (form.mode === 'merge') return '合并路由按请求合并：每次请求把所有绑定分组里能服务当前请求模型的账号合成一个候选池统一调度——直连支持，或经该账号的模型映射 / 跨协议转换承接即可，因此不要求各分组上游模型或协议一致；不区分分组、全池平级，分组顺序按添加顺序记录，仅作为调度平局与跨组重复账号归属的基础先后。'
   return ''
 })

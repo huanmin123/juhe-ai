@@ -94,6 +94,38 @@ func (o chainGroupBindingOrderer) OrderAPIKeyGroupBindings(ctx context.Context, 
 	return out, nil
 }
 
+// PeekAPIKeyGroupBindings 实现 gatewayruntimecache.GatewayGroupBindingPeeker
+// （策略路由分组会话亲和设计 §4 关键点 3 纯 peek 面）：与 Order 同一投影与
+// 行映射，但不推进 rr 计数器 / weighted debt——sticky hit 路径零状态消费。
+func (o chainGroupBindingOrderer) PeekAPIKeyGroupBindings(ctx context.Context, apiKey gatewayruntimecache.GatewayAPIKeyRow) ([]gatewayruntimecache.GatewayAPIKeyGroupBindingRow, error) {
+	projected := gatewayrouting.APIKeyRow{
+		ID:                apiKey.ID,
+		SystemAccountID:   apiKey.SystemAccountID,
+		RouteStrategyID:   apiKey.RouteStrategyID,
+		RouteStrategyMode: apiKey.RouteStrategyMode,
+		SelectedGroupID:   apiKey.SelectedGroupID,
+		Status:            apiKey.Status,
+		GroupBindings:     chainRoutingBindingRowsOf(apiKey.GroupBindings),
+	}
+	peeked, err := o.selector.PeekAPIKeyGroupBindingsForDispatchAsync(ctx, &projected)
+	if err != nil {
+		return nil, err
+	}
+	originals := make(map[string]gatewayruntimecache.GatewayAPIKeyGroupBindingRow, len(apiKey.GroupBindings))
+	for _, binding := range apiKey.GroupBindings {
+		originals[binding.ID] = binding
+	}
+	out := make([]gatewayruntimecache.GatewayAPIKeyGroupBindingRow, 0, len(peeked))
+	for _, row := range peeked {
+		if original, ok := originals[row.ID]; ok {
+			out = append(out, original)
+			continue
+		}
+		out = append(out, chainCacheBindingRowOf(row))
+	}
+	return out, nil
+}
+
 // chainRoutingBindingRowsOf projects the cache binding rows onto the routing
 // selector rows (Weight keeps its normalized int value; the selector treats
 // it as the value behind Node's optional weight).

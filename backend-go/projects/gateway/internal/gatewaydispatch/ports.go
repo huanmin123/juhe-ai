@@ -608,6 +608,16 @@ type SessionAffinityPort interface {
 	AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.Context, accounts []AccountCandidate, options HighConcurrencyBusyOptions) (bool, error)
 }
 
+// GroupAffinityPort 是组级会话黏性的写回面（策略路由分组会话亲和设计 §5）：
+// 键派生、绑定记录与 CAS 语义由 gatewaysession 组绑定服务承载，引擎只见字符
+// 串键与最终落组。nil 端口 = 功能未装配，写回不生效。
+type GroupAffinityPort interface {
+	// RememberGroupAsync 在最终协议成功后把会话绑定到最终成功派发账户所属
+	// 分组（写入即建即更，成功者赢，CAS ≤2 轮，冲突保留现值）。失败只告警，
+	// 不改写已提交的下游响应。
+	RememberGroupAsync(ctx context.Context, groupAffinityKey, routeStrategyID, groupID string)
+}
+
 // AffinityOrderingOptions mirrors OpenAIAccountDispatchOrderingOptions.
 type AffinityOrderingOptions struct {
 	GroupType             string

@@ -9,8 +9,9 @@ import "testing"
 func audioTestFloat(v float64) *float64 { return &v }
 
 func TestBuildCostBreakdownTtsInputCharsLine(t *testing.T) {
-	// tts-1 静态快照：$15.00/1M chars，无 token 单价。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "gpt", "tts-1"), CostInput{
+	// minimax speech-2.8-turbo（2026-10-17 国内口径批）：2.00 元/万字符 ÷7.0
+	// = $28.5714/1M chars，无 token 单价（tts-1 等旧行已按 2025 前模型清理批移除）。
+	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "speech-2.8-turbo"), CostInput{
 		TtsInputChars: audioTestFloat(2_000_000),
 	})
 	if breakdown == nil {
@@ -28,20 +29,20 @@ func TestBuildCostBreakdownTtsInputCharsLine(t *testing.T) {
 	if line.Quantity != 2_000_000 || line.Unit != LineUnitChar || line.UnitSize != 1_000_000 {
 		t.Fatalf("line = %+v", line)
 	}
-	if line.UnitPriceUsd != 15 {
-		t.Fatalf("unit price = %v want 15", line.UnitPriceUsd)
+	if line.UnitPriceUsd != 28.57142857 {
+		t.Fatalf("unit price = %v want 28.57142857", line.UnitPriceUsd)
 	}
-	if line.CostUsd != 30 {
-		t.Fatalf("cost = %v want 30", line.CostUsd)
+	if line.CostUsd != 57.14285714 {
+		t.Fatalf("cost = %v want 57.14285714（2M chars × $28.57142857/1M）", line.CostUsd)
 	}
-	if breakdown.AccountChargeUsd == nil || *breakdown.AccountChargeUsd != 30 {
-		t.Fatalf("account charge = %v want 30", breakdown.AccountChargeUsd)
+	if breakdown.AccountChargeUsd == nil || *breakdown.AccountChargeUsd != 57.14285714 {
+		t.Fatalf("account charge = %v want 57.14285714", breakdown.AccountChargeUsd)
 	}
 }
 
 func TestBuildCostBreakdownTtsInputCharsNoMeteringNoLine(t *testing.T) {
 	// 无计量（nil）：纯 TTS 模型也不产生行项，charge 回落 0。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "gpt", "tts-1"), CostInput{
+	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "minimax", "speech-2.8-turbo"), CostInput{
 		TtsInputChars: audioTestFloat(0),
 	})
 	if breakdown == nil {
@@ -74,8 +75,9 @@ func TestBuildCostBreakdownTtsNoPriceNoLine(t *testing.T) {
 }
 
 func TestBuildCostBreakdownAudioInputSecondsLine(t *testing.T) {
-	// whisper-1 静态快照：$0.006/min 折算 $0.0001/s。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "gpt", "whisper-1"), CostInput{
+	// qwen3-asr-flash（2026-10-17 国内口径批）：0.00022 元/秒 ÷7.0 折秒
+	// （minimax asr-1.0 已随 2025 前模型清理批移除）。
+	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "qwen", "qwen3-asr-flash"), CostInput{
 		AudioInputSeconds: audioTestFloat(60),
 	})
 	if breakdown == nil {
@@ -93,9 +95,9 @@ func TestBuildCostBreakdownAudioInputSecondsLine(t *testing.T) {
 	if line.Quantity != 60 || line.Unit != LineUnitSecond || line.UnitSize != 1 {
 		t.Fatalf("line = %+v", line)
 	}
-	// 60s × $0.0001/s = $0.006（官方每分钟价回转无损）。
-	if line.CostUsd != 0.006 {
-		t.Fatalf("cost = %v want 0.006", line.CostUsd)
+	// 60s × $3.1429e-05/s = $0.0018857143（roundCost）。
+	if line.CostUsd != 0.0018857143 {
+		t.Fatalf("cost = %v want 0.0018857143", line.CostUsd)
 	}
 }
 

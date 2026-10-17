@@ -310,8 +310,11 @@ type DispatchPreparationInput struct {
 	// PreFilterSkipped 透传 CandidateFilterResult.PreFilterSkipped：候选
 	// 准备完成的决策摘要（gateway_dispatch_candidates /
 	// gateway_dispatch_decision）借此把预过滤层跳过明细并入同一条日志。
-	PreFilterSkipped                []AccountSkipDetail
-	SessionAffinityKey              string
+	PreFilterSkipped   []AccountSkipDetail
+	SessionAffinityKey string
+	// GroupAffinityKey 是组级会话黏性的键（策略路由分组会话亲和设计 §5.1）：
+	// 经 DispatchContext/引擎 args 带到最终成功写回；空串 = 范围外。
+	GroupAffinityKey                string
 	GroupAccess                     gatewayruntimecache.GroupUsageAccessMetadata
 	SystemAccountID                 string
 	APIKeyID                        string

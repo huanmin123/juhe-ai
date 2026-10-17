@@ -111,7 +111,7 @@
           <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'providerCode'">
-          <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
+          <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerText(record.providerCode)" :size="14" /> {{ providerText(record.providerCode) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
@@ -148,7 +148,7 @@
           </div>
           <div class="model-check-mobile-tags">
             <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
-            <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
+            <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerText(record.providerCode)" :size="14" /> {{ providerText(record.providerCode) }}</a-tag>
             <a-tag>{{ modelText(record.model) }}</a-tag>
             <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
             <a-tag :color="triggerKindColor(record.triggerKind)">{{ triggerKindText(record.triggerKind) }}</a-tag>
@@ -186,6 +186,7 @@
 import { ReloadOutlined } from '@ant-design/icons-vue'
 
 import AccountSelect from '@/components/AccountSelect.vue'
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { formatDateTime } from '@/shared/formatters'

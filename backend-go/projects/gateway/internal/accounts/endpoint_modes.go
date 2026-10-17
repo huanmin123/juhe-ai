@@ -85,7 +85,7 @@ var minimaxMediaEndpointModeSet = accountscore.StringSet(accountscore.MinimaxMed
 // 可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat +
 // 2026-10-17 图像域开通）：chat 对（豆包对话 OpenAI 兼容端点 ark
 // /api/v3/chat/completions，出站按 /api/v3 服务根归一）+ video_* 四值
-//（video_generation）+ audio_speech（豆包 TTS openspeech /api/v3/tts adapter，
+// （video_generation）+ audio_speech（豆包 TTS openspeech /api/v3/tts adapter，
 // 语音应用双值凭据 speech_appid/speech_token——缺失即该账户无该能力，派发时
 // 显式失败）+ images_json（豆包 seedream 系图像端点 ark
 // /api/v3/images/generations，出站按 /api/v3 服务根归一）。全部 opt-in；
@@ -593,7 +593,7 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*)、语音合成端点 (audio_speech) 或图像生成端点 (images_json)：%s",
+		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*)、语音合成端点 (audio_speech)、图像生成端点 (images_json) 或长转写任务端点 (audio_job_*)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil

@@ -1,12 +1,17 @@
 <template>
   <a-modal
     v-model:open="open"
-    :title="title"
     width="1180px"
     wrap-class-name="model-price-modal-wrap"
     :footer="null"
     @cancel="emit('cancel')"
   >
+    <template #title>
+      <span class="model-modal-title">
+        <ProviderIcon v-if="providerCode" :provider-code="providerCode" :name="providerName" :size="18" />
+        <span>{{ title }}</span>
+      </span>
+    </template>
     <div class="model-modal-content">
       <div class="model-toolbar">
         <div class="model-toolbar-filters">
@@ -157,6 +162,7 @@
 
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
@@ -195,12 +201,16 @@ const props = withDefaults(defineProps<{
   loadError?: string
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
   isManagementView?: boolean
+  providerCode?: string
+  providerName?: string
   systemAccounts?: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
   systemAccountFilter?: string
   systemAccountFilterSelection?: PrincipalSelection
 }>(), {
   isManagementView: false,
+  providerCode: '',
+  providerName: '',
   systemAccounts: () => [],
   systemAccountsLoading: false,
   systemAccountFilter: '',
@@ -238,6 +248,13 @@ function modelRowKey(record: ProviderModelPricing): string {
 </script>
 
 <style scoped>
+.model-modal-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .model-table :deep(.ant-empty) {
   margin: 12px 0;
 }

@@ -181,8 +181,8 @@ wire_api = "responses"
 			"ANTHROPIC_BASE_URL="+f.gw.baseURL,
 			"ANTHROPIC_AUTH_TOKEN="+route.apiKey,
 			"ANTHROPIC_API_KEY="+route.apiKey,
-			// CLI 默认模型名不在账户 supportedModels 内（网关 503
-			// model_unsupported），显式钉住导入账户的健康模型。
+			// CLI 默认模型名不在账户 supportedModels 内（网关 404
+			// model_not_found，BUG-0325 修复批），显式钉住导入账户的健康模型。
 			"ANTHROPIC_MODEL="+account.Model)
 		// Stage3 惯例（上游偶发重试一次）：claude CLI ≥2.1.220 在 API 错误时
 		// exit=1 且错误详情在 stdout 的 is_error JSON（result 字段）；上游

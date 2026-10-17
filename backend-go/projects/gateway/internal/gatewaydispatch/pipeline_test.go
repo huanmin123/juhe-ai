@@ -147,8 +147,13 @@ func TestFilterCandidatesUnsupportedModelMessage(t *testing.T) {
 	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
 		t.Fatalf("outcome = %s", result.Outcome)
 	}
-	if coordinator.failure == nil || coordinator.failure.ErrorCode != "unsupported_model" {
+	// BUG-0325：模型过滤层耗尽对齐未知模型契约——404 + model_not_found +
+	// invalid_request_error（文案不变），不再 503 + unsupported_model。
+	if coordinator.failure == nil || coordinator.failure.StatusCode != 404 || coordinator.failure.ErrorCode != "model_not_found" {
 		t.Fatalf("failure = %#v", coordinator.failure)
+	}
+	if coordinator.failure.ErrorType != "invalid_request_error" {
+		t.Fatalf("error type = %q", coordinator.failure.ErrorType)
 	}
 	if !strings.Contains(coordinator.failure.Message, "当前分组无账户支持请求模型：no-such-model") {
 		t.Fatalf("message = %q", coordinator.failure.Message)

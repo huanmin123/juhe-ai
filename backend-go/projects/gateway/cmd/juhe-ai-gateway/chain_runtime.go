@@ -62,6 +62,10 @@ type chainRuntimeServices struct {
 	// Identity carries the G14 session identity + affinity services (nil is
 	// rejected by the chain assembly: the preflight dereferences them).
 	Identity *sessionIdentityServices
+	// GroupAffinity 是组级会话绑定服务（策略路由分组会话亲和设计 §3）：独立
+	// 数据面，消费方为 preauth 键派生/黏住端口、引擎最终成功写回端口与响应层
+	// 三层删除。nil 兼容未装配组合（功能整体不生效）。
+	GroupAffinity *gatewaysession.GroupAffinityService
 	// RateLimitStore is the cacheDriver==='redis' fixed-window store for the
 	// system-api rate limiter (nil keeps the memory store); see task item 9.
 	RateLimitStore ratelimit.Store
@@ -830,11 +834,29 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		services.Close()
 		return nil, fmt.Errorf("create gateway session affinity service: %w", affinityErr)
 	}
+	// 组级会话黏性（策略路由分组会话亲和设计 §3）：独立数据面（键空间/记录/
+	// 端口独立），驱动与账户级亲和同源（redisCache 置位走 Redis，否则进程内
+	// TTL——Redis TTL 1h 读不刷新，memory TTL 24h）。
+	groupAffinityConfig := gatewaysession.GroupAffinityConfig{
+		CacheDriver: gatewaysession.CacheDriverMemory,
+		Secret:      cfg.Secret,
+	}
+	if redisCache {
+		groupAffinityConfig.CacheDriver = gatewaysession.CacheDriverRedis
+		groupAffinityConfig.RedisCacheURL = cfg.RedisCacheURL
+		groupAffinityConfig.RedisNamespace = cfg.RedisNamespace
+	}
+	groupAffinityService, groupAffinityErr := gatewaysession.NewGroupAffinityService(groupAffinityConfig)
+	if groupAffinityErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("create gateway group affinity service: %w", groupAffinityErr)
+	}
 	services.Identity = &sessionIdentityServices{
 		Identity: identityService,
 		Affinity: affinityService,
 		Secret:   cfg.Secret,
 	}
+	services.GroupAffinity = groupAffinityService
 	return services, nil
 }
 

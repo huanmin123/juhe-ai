@@ -41,15 +41,20 @@ type AudioJobProviderAdapter interface {
 	// 映射为上游创建请求。错误为请求侧 400 语义（能力边界裁决）。
 	Create(ctx context.Context, in AudioJobCreateInput) (AudioJobCreateOutput, error)
 	// BuildPollRequest 构造轮询请求（GET 任务查询族）。upstreamJobID 由
-	// 调用方保证非空。
-	BuildPollRequest(upstreamJobID string) (method, path string, body []byte)
-	// ParsePollResponse 把上游轮询/创建响应（状态码 + body）归一为
-	// MediaJobIR（Kind=audio_transcription）。非 2xx 返回
-	// *UpstreamStatusError（链上层区分 404 收敛与 5xx 故障）。
-	ParsePollResponse(statusCode int, body []byte) (*MediaJobIR, error)
+	// 调用方保证非空。header 为该厂商轮询面专用头（body 驱动厂商 nil——
+	// 认证头由链上层统一注入；头驱动厂商如火山长转写经此携带任务 ID 与
+	// 资源 ID，契约 §9.2 长转写臂）。
+	BuildPollRequest(upstreamJobID string) (method, path string, header http.Header, body []byte)
+	// ParsePollResponse 把上游轮询/创建响应（HTTP 状态码 + 响应头 + body）
+	// 归一为 MediaJobIR（Kind=audio_transcription）。body 驱动厂商只消费
+	// 状态码与 body；头驱动厂商（火山长转写）经 header 读 X-Api-Status-
+	// Code 承载的业务状态。非 2xx 返回 *UpstreamStatusError（链上层区分
+	// 404 收敛与 5xx 故障）。
+	ParsePollResponse(statusCode int, header http.Header, body []byte) (*MediaJobIR, error)
 	// BuildContentRequest 构造产物下载请求（ContentFromArtifact=true 时
-	// 链上层不调用）。
-	BuildContentRequest(upstreamJobID string) (method, path string)
+	// 链上层不调用）。header/body 语义同 BuildPollRequest（头驱动厂商经
+	// header 携带任务 ID，body 为协议要求的请求体）。
+	BuildContentRequest(upstreamJobID string) (method, path string, header http.Header, body []byte)
 	// ContentFromArtifact 声明产物下载定位来源：true 表示 completed 的
 	// 下载地址是轮询冻结的绝对 Artifact.ContentURL（paraformer 的
 	// transcription_url 结果 JSON 文件链接），链上层直连该 URL 且不携带
@@ -96,7 +101,8 @@ type AudioJobCreateOutput struct {
 // 在两表各挂一条，链上层按 media_jobs.kind 选表）。M3f 首个条目 qwen
 // （paraformer）；后续供应商只新增条目。
 var audioJobAdapters = map[string]AudioJobProviderAdapter{
-	"qwen": qwenASRAdapter{},
+	"qwen":       qwenASRAdapter{},
+	"volcengine": volcengineASRAdapter{},
 }
 
 // AudioJobAdapterForProvider 按 provider_code 解析长转写 adapter；nil 表示
@@ -163,8 +169,9 @@ func (a qwenASRAdapter) Create(_ context.Context, in AudioJobCreateInput) (Audio
 
 // BuildPollRequest 构造轮询请求：GET /api/v1/tasks/{task_id}（契约 §10.2：
 // 与万相视频同一 DashScope 任务接口，task_id 即创建响应的受理凭据）。
-func (qwenASRAdapter) BuildPollRequest(upstreamJobID string) (string, string, []byte) {
-	return http.MethodGet, "/api/v1/tasks/" + upstreamJobID, nil
+// 无厂商专用头（body 驱动协议，认证头链上层 Bearer 注入）。
+func (qwenASRAdapter) BuildPollRequest(upstreamJobID string) (string, string, http.Header, []byte) {
+	return http.MethodGet, "/api/v1/tasks/" + upstreamJobID, nil, nil
 }
 
 // ContentFromArtifact 声明 qwen 长转写的产物下载定位：completed 的下载地址
@@ -176,8 +183,8 @@ func (qwenASRAdapter) ContentFromArtifact() bool { return true }
 
 // BuildContentRequest 在 qwen 形态下不参与下载定位（ContentFromArtifact 为
 // true）；保留接口实现返回空路径，误调用属链上层接线错误。
-func (qwenASRAdapter) BuildContentRequest(string) (string, string) {
-	return http.MethodGet, ""
+func (qwenASRAdapter) BuildContentRequest(string) (string, string, http.Header, []byte) {
+	return http.MethodGet, "", nil, nil
 }
 
 // BuildCancelRequest 在 qwen 形态下不参与取消：契约 §10.2 回填面无任务取消
@@ -256,7 +263,7 @@ func qwenASRUsageSecondsOf(raw json.RawMessage) *float64 {
 //     性）+ usage 时长解析抽 AudioInputSeconds；
 //   - FAILED → failed（错误摘要优先 output.message（契约 §10.2 钉住），
 //     顶层 code/message 兜底；全部缺席以 status 原值兜底，不丢弃终态）。
-func (qwenASRAdapter) ParsePollResponse(statusCode int, body []byte) (*MediaJobIR, error) {
+func (qwenASRAdapter) ParsePollResponse(statusCode int, header http.Header, body []byte) (*MediaJobIR, error) {
 	if statusCode < 200 || statusCode >= 300 {
 		return nil, &UpstreamStatusError{StatusCode: statusCode, Body: string(body)}
 	}

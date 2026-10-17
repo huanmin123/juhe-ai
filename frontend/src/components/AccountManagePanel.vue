@@ -53,7 +53,10 @@
             @click="handleAdd(option.id)"
           >
             <span class="account-manage-panel-option-name">{{ option.name }}</span>
-            <span v-if="option.providerName" class="account-manage-panel-option-provider">{{ option.providerName }}</span>
+            <span v-if="option.providerName" class="account-manage-panel-option-provider">
+              <ProviderIcon :provider-code="option.providerCode" :name="option.providerName" :size="12" />
+              {{ option.providerName }}
+            </span>
           </button>
         </div>
         <div v-else class="account-manage-panel-hint">无匹配账户</div>
@@ -71,6 +74,7 @@
 <script setup lang="ts">
 import { CloseOutlined } from '@ant-design/icons-vue'
 import { computed, ref, watch } from 'vue'
+import ProviderIcon from '@/components/ProviderIcon.vue'
 
 export interface AccountManagePanelItem {
   id: string
@@ -84,6 +88,7 @@ export interface AccountManagePanelItem {
 export interface AccountManagePanelOption {
   id: string
   name: string
+  providerCode?: string
   providerName?: string
 }
 
@@ -302,6 +307,9 @@ function handleResetDefaults() {
 }
 
 .account-manage-panel-option-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   max-width: 100%;
   overflow: hidden;
   color: var(--juhe-muted);

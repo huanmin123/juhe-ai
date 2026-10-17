@@ -104,18 +104,21 @@ type Engine struct {
 	ClientSourceAvoidance ClientSourceAvoidancePort
 	HotQuality            HotQualityPort
 	Affinity              SessionAffinityPort
-	HighConcurrencyQueue  HighConcurrencyWaiter
-	ClientIPConcurrency   ClientIPConcurrencyAcquirer
-	Quota                 AuthorizationQuotaChecker
-	Concurrency           AccountConcurrencyStore
-	Cache                 RuntimeCachePort
-	Locks                 AccountLocks
-	RecoverableWait       RecoverableSuppressionWaiter
-	KeyModel              KeyModelAdmission
-	KeyModelStore         gatewayaccounteffects.KeyModelRuntimeStore
-	Circuits              *gatewaycircuit.CircuitService
-	APIKeyEffects         APIKeyEffectsPort
-	CodexBridge           CodexBridgePort
+	// GroupAffinity 是组级会话黏性写回端口（策略路由分组会话亲和设计 §5）；
+	// nil = 未装配，最终协议成功不写回组绑定。
+	GroupAffinity        GroupAffinityPort
+	HighConcurrencyQueue HighConcurrencyWaiter
+	ClientIPConcurrency  ClientIPConcurrencyAcquirer
+	Quota                AuthorizationQuotaChecker
+	Concurrency          AccountConcurrencyStore
+	Cache                RuntimeCachePort
+	Locks                AccountLocks
+	RecoverableWait      RecoverableSuppressionWaiter
+	KeyModel             KeyModelAdmission
+	KeyModelStore        gatewayaccounteffects.KeyModelRuntimeStore
+	Circuits             *gatewaycircuit.CircuitService
+	APIKeyEffects        APIKeyEffectsPort
+	CodexBridge          CodexBridgePort
 	// ResponseTransformer 挂 B-4 跨协议桥响应面（Node transformUpstreamResponse
 	// driver 链；UpstreamResponseTransformer 端口定义在 ports.go）。nil 时上游
 	// 响应按协议直通（B-4 之前的透传行为）。

@@ -235,8 +235,11 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	if kind != "audio_transcription" || status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s/%s, want audio_transcription/completed/%s", kind, status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0.00075 {
-		t.Fatalf("paraformer 按目录秒价计费 cost_usd = %v, want 0.00075（62.5s × $0.000012/s）", costUsd)
+	// paraformer-v2 已随 2025 前模型清理批移除目录行：无秒价 → cost 0，
+	// usage 行计量照落（audioInputSeconds 62.5）不打 usage_missing（契约
+	// §2.8/§10.2：计量照落成本不虚计）。
+	if costUsd != 0 {
+		t.Fatalf("paraformer 无目录价 cost_usd = %v, want 0（2025 前模型清理批后兜底）", costUsd)
 	}
 
 	// content 下载：completed 的 transcription_url 是引擎渲染的绝对 URL（不经
@@ -607,11 +610,15 @@ func TestChainMediaVolcengineSpeechFullChain(t *testing.T) {
 		}
 	}
 
-	// usage：V3 响应无字符回报 → 网关按请求 input 自算（4 runes）；目录无
-	// 字符价 → 成本不虚计。
-	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"ttsInputChars":4`) && strings.Contains(text, `"endpoint":"POST /v1/audio/speech"`)
-	}, "volcengine tts 请求字符自算终态记录")
+	// usage：维度修正批（契约 §9.2/§2.8）——官方计费维度为生成原始时长，
+	// mock 响应 duration=1.23 秒落 audioInputSeconds，不再落字符口径
+	// ttsInputChars（目录秒价已落值 $0.00238095/秒，成本照算）。
+	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"audioInputSeconds":1.23`) && strings.Contains(text, `"endpoint":"POST /v1/audio/speech"`)
+	}, "volcengine tts 生成时长计量终态记录")
+	if strings.Contains(record, `"ttsInputChars"`) {
+		t.Fatalf("volcengine tts 维度修正后不得再落字符口径: %s", record)
+	}
 }
 
 // TestChainMediaVolcengineSpeechMissingCredentials 钉住能力语义（契约 §9.2 +
@@ -864,4 +871,288 @@ func TestChainMediaVolcengineSpeechAliasModelCrossName(t *testing.T) {
 		t.Fatalf("出站未命中 /api/v3/tts/create + 现役名透传: %+v", requests)
 	}
 	_ = apiKey
+}
+
+// seedMediaVolcengineASRAccount 种 volcengine 分组 + 录音文件识别 2.0 测试
+// 账户 + 独立路由策略与 API Key（独立 group/rs/key 三件，避免跨 provider
+// 候选串扰），返回网关 API Key 明文。凭据带 speech_token（X-Api-Key 出站
+// 凭据，长转写与 TTS 同字段）与 supported_endpoint_modes（audio_job_* 四值，
+// opt-in）。模型约束种 volc.seedasr.auc。base_url 种 ark 官方根占位——长
+// 转写出站不经 base_url（openspeech 语音服务域 URL 构造特例），链级经
+// chainVolcengineASRUpstreamEnv seam 指向 mock。
+func seedMediaVolcengineASRAccount(t *testing.T, fixture *chainFixture, id, apiKey string) string {
+	t.Helper()
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed volcengine asr row: %v: %v", query, err)
+		}
+	}
+	keySecret := "sk-chain-volc-asr"
+	credentials := map[string]any{
+		"api_key":      apiKey,
+		"base_url":     "https://ark.cn-beijing.volces.com",
+		"speech_token": "ark-test-speech-token",
+		"supported_endpoint_modes": []string{
+			"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+		},
+	}
+	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
+		VALUES ('group_volc_asr', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (
+			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
+		) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
+	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES ('group_volc_asr', ?, ?, 1, '2026-10-17T00:00:00.000Z')`, fixture.systemAccount, id)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES (?, 'volcengine', 'volc.seedasr.auc', '2026-10-17T00:00:00.000Z')`, id)
+	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
+		VALUES ('rs_volc_asr', ?, 'volc长转写', 'normal', NULL, 'active')`, fixture.systemAccount)
+	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
+		VALUES ('rsg_volc_asr', 'rs_volc_asr', ?, 'group_volc_asr', 0, 1, 'active', '2026-10-17T00:00:00.000Z')`, fixture.systemAccount)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_volc_asr', ?, 'rs_volc_asr', 'volc长转写Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-17T00:00:00.000Z')`,
+		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
+	return keySecret
+}
+
+// TestChainMediaVolcengineASRLifecycle 覆盖火山长转写臂全生命周期（契约
+// §9.2）：创建（头驱动 submit——X-Api-Key 凭据 + 资源 ID/请求 ID/序列三头
+// + 报文映射与 URL 特例）→ 轮询 20000001 in_progress → 20000000 completed
+// （毫秒计量 ÷1000 落 audio_input_seconds + 目录秒价计费）→ content 同构
+// query 代理转写 JSON → 终态 usage 行。
+func TestChainMediaVolcengineASRLifecycle(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
+	apiKey := seedMediaVolcengineASRAccount(t, fixture, "acc_volc_asr", "sk-volc-asr-a")
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+	defer mock.Close()
+
+	job := mediaAudioJobCreate(t, server.URL, apiKey,
+		`{"model":"volc.seedasr.auc","input_url":"https://oss.example.com/audio/meeting.wav"}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcengineASRCreateOK)})
+	jobID, _ := job["id"].(string)
+	if jobID == "" || !strings.HasPrefix(jobID, "audiojob_") {
+		t.Fatalf("对外 job id 缺失或非 audiojob_ 前缀: %#v", job)
+	}
+	if job["object"] != "audio_job" || job["provider"] != "volcengine" {
+		t.Fatalf("object/provider = %v/%v, want audio_job/volcengine", job["object"], job["provider"])
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("创建响应 status = %v, want queued（submit 受理归一）", job["status"])
+	}
+	providerJobID, _ := job["provider_job_id"].(string)
+	if len(providerJobID) != 32 {
+		t.Fatalf("provider_job_id = %q, want 16 字节 hex 任务 ID（网关生成请求 ID）", providerJobID)
+	}
+
+	// 创建出站断言：POST /api/v3/auc/bigmodel/submit + 头驱动三件套 +
+	// X-Api-Key 凭据（speech_token）+ 无 Authorization 头 + 报文映射。
+	requests := mock.Requests()
+	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/api/v3/auc/bigmodel/submit" {
+		t.Fatalf("创建出站形态错误: %+v", requests)
+	}
+	create := requests[0]
+	if create.APIKeyHeader != "ark-test-speech-token" {
+		t.Fatalf("创建 X-Api-Key = %q, want speech_token 凭据", create.APIKeyHeader)
+	}
+	if create.AuthHeader != "" {
+		t.Fatalf("长转写出站不得携带 Authorization: %q", create.AuthHeader)
+	}
+	if create.ResourceIDHeader != "volc.seedasr.auc" {
+		t.Fatalf("创建 X-Api-Resource-Id = %q, want volc.seedasr.auc", create.ResourceIDHeader)
+	}
+	if create.RequestIDHeader != providerJobID {
+		t.Fatalf("创建 X-Api-Request-Id = %q, want 网关生成任务 ID %q", create.RequestIDHeader, providerJobID)
+	}
+	for _, want := range []string{
+		`"url":"https://oss.example.com/audio/meeting.wav"`,
+		`"format":"wav"`,
+		`"model_name":"bigmodel"`,
+	} {
+		if !strings.Contains(create.Body, want) {
+			t.Fatalf("submit 报文缺少 %s: %s", want, create.Body)
+		}
+	}
+
+	// 轮询两次：#1 20000001 → in_progress；#2 20000000 + duration 1118ms →
+	// completed（计量 1.118 秒）。query 面与 submit 同构头。
+	for index, want := range []string{"in_progress", "completed"} {
+		response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("poll #%d status=%d body=%s", index+1, response.StatusCode, payload)
+		}
+		if object := mediaVideoDecodeJob(t, payload); object["status"] != want {
+			t.Fatalf("poll #%d status = %v, want %s", index+1, object["status"], want)
+		}
+	}
+	requests = mock.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("出站请求计数 = %d, want 3（submit + query×2）", len(requests))
+	}
+	for _, request := range requests[1:] {
+		if request.Method != http.MethodPost || request.Path != "/api/v3/auc/bigmodel/query" {
+			t.Fatalf("轮询出站形态错误: %+v", request)
+		}
+		if request.RequestIDHeader != providerJobID || request.ResourceIDHeader != "volc.seedasr.auc" {
+			t.Fatalf("轮询头错误: requestID=%q resourceID=%q", request.RequestIDHeader, request.ResourceIDHeader)
+		}
+		if request.Body != "{}" {
+			t.Fatalf("query body = %q, want {}", request.Body)
+		}
+	}
+
+	// media_jobs 行终态：completed + 任务 ID + 按目录秒价计费（1.118s ×
+	// $3.1746031746031745e-05，volc.seedasr.auc 现役行 0.8 元/小时 ÷3600
+	// ÷7.0；落库值经 fixedNumber 10 位小数舍入 3.5492063492...→3.54921e-05）。
+	var kind, status, upstreamJobID string
+	var costUsd float64
+	if err := fixture.db.QueryRow(`SELECT kind, status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&kind, &status, &upstreamJobID, &costUsd); err != nil {
+		t.Fatalf("查询 media_jobs 行: %v", err)
+	}
+	if kind != "audio_transcription" || status != "completed" || upstreamJobID != providerJobID {
+		t.Fatalf("media_jobs = %s/%s/%s, want audio_transcription/completed/%s", kind, status, upstreamJobID, providerJobID)
+	}
+	if costUsd != 3.54921e-05 {
+		t.Fatalf("cost_usd = %v, want 3.54921e-05（1.118s × 目录秒价，fixedNumber 10 位小数舍入）", costUsd)
+	}
+
+	// content 下载：同构 query 代理——终态转写 JSON 即产物（无产物 URL），
+	// 携带任务头与凭据直发上游。
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID+"/content", apiKey, "", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("content status=%d body=%s", response.StatusCode, payload)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("content-type = %q, want application/json（转写 JSON 即产物）", got)
+	}
+	if !strings.Contains(string(payload), `"text":"Carry an oily rag."`) || !strings.Contains(string(payload), `"duration":1118`) {
+		t.Fatalf("content 不是终态转写 payload: %s", payload)
+	}
+	if len(mock.Requests()) != 4 {
+		t.Fatalf("content 应再发一次同构 query（submit+query×2+content query=4）: %d", len(mock.Requests()))
+	}
+
+	// 终态 usage：spool 落盘 audioInputSeconds=1.118（毫秒 ÷1000）+
+	// endpoint=/v1/audio/jobs + 目录秒价成本行。
+	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"audioInputSeconds":1.118`) && strings.Contains(text, `"endpoint":"/v1/audio/jobs"`)
+	}, "volcengine asr completed 时长计量终态记录")
+}
+
+// TestChainMediaVolcengineASRPollFailedTerminal 覆盖轮询失败终态（契约 §9.2
+// 状态归一 450000xx→failed）：mock 场景 _poll_failed（#1 即 45000006 音频
+// 拉取失败）——轮询归一 failed 落库（error 随行回显）+ 无计量不虚计（cost 0
+// + usage_missing），failure 任务不产生 audioInputSeconds 行。
+func TestChainMediaVolcengineASRPollFailedTerminal(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
+	apiKey := seedMediaVolcengineASRAccount(t, fixture, "acc_volc_asr_fail", "sk-volc-asr-f")
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+	defer mock.Close()
+
+	job := mediaAudioJobCreate(t, server.URL, apiKey,
+		`{"model":"volc.seedasr.auc","input_url":"https://oss.example.com/audio/offshore.wav"}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcengineASRPollFailed)})
+	jobID, _ := job["id"].(string)
+	if jobID == "" {
+		t.Fatalf("对外 job id 缺失: %#v", job)
+	}
+	// 首次轮询即终态失败（脚本 #1 = 45000006）。
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/audio/jobs/"+jobID, apiKey, "", nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("poll status=%d body=%s", response.StatusCode, payload)
+	}
+	object := mediaVideoDecodeJob(t, payload)
+	if object["status"] != "failed" {
+		t.Fatalf("poll status = %v, want failed（45000006 归一）", object["status"])
+	}
+	var kind, status string
+	var costUsd float64
+	if err := fixture.db.QueryRow(`SELECT kind, status, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&kind, &status, &costUsd); err != nil {
+		t.Fatalf("查询 media_jobs 行: %v", err)
+	}
+	if kind != "audio_transcription" || status != "failed" {
+		t.Fatalf("media_jobs = %s/%s, want audio_transcription/failed", kind, status)
+	}
+	if costUsd != 0 {
+		t.Fatalf("failed 任务 cost_usd = %v, want 0（失败不虚计）", costUsd)
+	}
+	// 终态 usage 行：failed 任务的 usage 行以 success=false 表达（usageMissing
+	// 标记只用于 completed 无计量形态），无 audioInputSeconds 行项、无成本。
+	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"endpoint":"/v1/audio/jobs"`) && strings.Contains(text, `"success":false`) && !strings.Contains(text, `"audioInputSeconds"`)
+	}, "volcengine asr failed 终态 usage 行")
+}
+
+// TestChainMediaVolcengineASRMissingCredentials 覆盖缺凭据显式失败（契约
+// §9.2：speech_token 缺失即该账户无长转写能力，派发出站时显式 400 不静默
+// 回退，稳定错误码 speech_credentials_missing——同 TTS lane 语义）。
+func TestChainMediaVolcengineASRMissingCredentials(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
+	keySecret := "sk-chain-volc-asr-nocred"
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed volcengine asr nocred row: %v: %v", query, err)
+		}
+	}
+	credentials := map[string]any{
+		"api_key":  "sk-volc-asr-nocred",
+		"base_url": "https://ark.cn-beijing.volces.com",
+		"supported_endpoint_modes": []string{
+			"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+		},
+	}
+	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
+		VALUES ('group_volc_asr_nc', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (
+			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
+		) VALUES ('acc_volc_asr_nc', ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1',
+			'acc_volc_asr_nc', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		fixture.systemAccount, mustEncryptCredentials(t, credentials))
+	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES ('group_volc_asr_nc', ?, 'acc_volc_asr_nc', 1, '2026-10-17T00:00:00.000Z')`, fixture.systemAccount)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES ('acc_volc_asr_nc', 'volcengine', 'volc.seedasr.auc', '2026-10-17T00:00:00.000Z')`)
+	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
+		VALUES ('rs_volc_asr_nc', ?, 'volc长转写无凭据', 'normal', NULL, 'active')`, fixture.systemAccount)
+	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
+		VALUES ('rsg_volc_asr_nc', 'rs_volc_asr_nc', ?, 'group_volc_asr_nc', 0, 1, 'active', '2026-10-17T00:00:00.000Z')`, fixture.systemAccount)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
+		VALUES ('key_volc_asr_nc', ?, 'rs_volc_asr_nc', 'volc长转写无凭据Key', ?, 'active', 'schpref-builtin-chat-cost-first', '2026-10-17T00:00:00.000Z')`,
+		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+	defer mock.Close()
+
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/jobs", keySecret,
+		`{"model":"volc.seedasr.auc","input_url":"https://oss.example.com/audio/meeting.wav"}`, nil)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺凭据创建 status=%d body=%s, want 400（本地确定性配置错误）", response.StatusCode, payload)
+	}
+	if !strings.Contains(string(payload), "speech_credentials_missing") {
+		t.Fatalf("缺凭据错误码缺失: %s", payload)
+	}
+	if requests := mock.Requests(); len(requests) != 0 {
+		t.Fatalf("缺凭据不得出站: %+v", requests)
+	}
 }

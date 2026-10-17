@@ -58,7 +58,7 @@
       </template>
       <template v-else-if="column.key === 'model'">
         <span v-if="record.model || record.upstreamModelMismatch || usageRecordServiceTierText(record) || usageRecordReasoningEffortText(record)" class="model-cell">
-          <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+          <a-tag v-if="record.model" color="blue"><ProviderIcon v-if="record.providerCode" :provider-code="record.providerCode" :name="providerDisplayName(record.providerCode)" :size="13" /> {{ record.model }}</a-tag>
           <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
           <a-tag v-if="record.upstreamModelMismatch && record.upstreamResponseModel" color="red">上游响应 {{ record.upstreamResponseModel }}</a-tag>
           <a-tag v-if="usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
@@ -111,7 +111,9 @@
 <script setup lang="ts">
 import { CopyOutlined } from '@ant-design/icons-vue'
 
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import { providerDisplayName } from '@/shared/providerDisplay'
 import type { UsageRecordListItem } from '@/types/domain'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'

@@ -32,6 +32,12 @@ type chainPreauthStubRuntimeCache struct{}
 func (chainPreauthStubRuntimeCache) ReadCachedGatewayRuntimeAsync(context.Context, string) (gatewayruntimecache.GatewayRuntime, error) {
 	return gatewayruntimecache.GatewayRuntime{}, nil
 }
+func (chainPreauthStubRuntimeCache) ReadCachedGatewayRuntimeStaticAsync(context.Context, string) (gatewayruntimecache.GatewayRuntime, error) {
+	return gatewayruntimecache.GatewayRuntime{}, nil
+}
+func (chainPreauthStubRuntimeCache) SelectGatewayRuntimeForDispatchAsync(_ context.Context, static gatewayruntimecache.GatewayRuntime, _ gatewayruntimecache.SelectGatewayRuntimeInput) (gatewayruntimecache.GatewayRuntime, error) {
+	return static, nil
+}
 func (chainPreauthStubRuntimeCache) ReadCachedGatewaySettingsAsync(context.Context) (gatewayruntimecache.GatewaySettings, error) {
 	return gatewayruntimecache.GatewaySettings{}, nil
 }

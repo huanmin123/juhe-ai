@@ -534,6 +534,11 @@ type GatewayRuntime struct {
 	Accounts                   []OpenAIAccountSecret              `json:"accounts"`
 	AccountDispatchDiagnostics *OpenAIAccountsForGroupDiagnostics `json:"accountDispatchDiagnostics,omitempty"`
 	ResponseInspectionPolicies []ResponseInspectionPolicySummary  `json:"responseInspectionPolicies,omitempty"`
+	// StaticResolutionOnly 标记本次 runtime 由静态解析产出（策略路由分组
+	// 会话亲和设计 §4 三阶段第 1 步）：动态模式的分组选择尚未发生、模式状态
+	// 未消费，preflight 在身份解析后须调用 SelectGatewayRuntimeForDispatchAsync
+	// 完成选择。缓存载入路径不设置该标记（克隆时显式赋值）。
+	StaticResolutionOnly bool `json:"-"`
 }
 
 // ProviderModelCatalogItem mirrors ProviderModelCatalogItem

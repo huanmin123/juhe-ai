@@ -11,11 +11,31 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
+// GroupAffinityPort 是组级会话黏性的 preauth 侧协作者面（策略路由分组会话
+// 亲和设计 §3/§4）：组亲和键派生（HMAC purpose group-affinity:v1）与组绑定
+// 黏住读取。由组合根以 *gatewaysession.GroupAffinityService 直接适配
+// （gatewaysession 反向依赖本包，此处不能 import）；nil = 功能未装配，
+// preflight 走零改动路径（不查组绑定、不写回组键）。
+type GroupAffinityPort interface {
+	// DeriveGroupAffinityKeyParts 以平参派生组亲和键；派生失败（密钥缺失
+	// 等）返回错误，preflight 视同范围外（空键）。
+	DeriveGroupAffinityKeyParts(systemAccountID, apiKeyID, routeStrategyID, conversationKey string) (string, error)
+	// StickyGroupAsync 读取会话的组绑定；未命中/过期/记录非法返回 false。
+	// 读不刷新 TTL。
+	StickyGroupAsync(ctx context.Context, groupAffinityKey string) (string, bool)
+}
+
 // RuntimeCacheReader is the read surface of the gateway runtime cache the
 // pre-auth and preflight pipeline consumes. *gatewayruntimecache.Service
 // implements it directly (work package G10).
 type RuntimeCacheReader interface {
 	ReadCachedGatewayRuntimeAsync(ctx context.Context, apiKey string) (gatewayruntimecache.GatewayRuntime, error)
+	// ReadCachedGatewayRuntimeStaticAsync / SelectGatewayRuntimeForDispatchAsync
+	// 是组级会话亲和三阶段的第 1/3 步消费面（策略路由分组会话亲和设计 §4）：
+	// 静态身份快照（不消费模式状态）与身份解析后的派发终态选择。
+	// *gatewayruntimecache.Service 直接实现。
+	ReadCachedGatewayRuntimeStaticAsync(ctx context.Context, apiKey string) (gatewayruntimecache.GatewayRuntime, error)
+	SelectGatewayRuntimeForDispatchAsync(ctx context.Context, static gatewayruntimecache.GatewayRuntime, input gatewayruntimecache.SelectGatewayRuntimeInput) (gatewayruntimecache.GatewayRuntime, error)
 	ReadCachedGatewaySettingsAsync(ctx context.Context) (gatewayruntimecache.GatewaySettings, error)
 	ResolveCachedGroupUsageAccessMetadataAsync(ctx context.Context, groupID, systemAccountID string) (*gatewayruntimecache.GroupUsageAccessMetadata, error)
 	ListCachedOpenAIAccountsForGroupAsync(ctx context.Context, groupID, systemAccountID string, opts gatewayruntimecache.CachedOpenAIAccountsForGroupOptions) ([]gatewayruntimecache.OpenAIAccountSecret, error)
@@ -78,13 +98,17 @@ type Service struct {
 	ClientStrategy  ClientStrategy
 	SessionIdentity SessionIdentityResolver
 	SessionAffinity SessionAffinity
-	Codex           CodexBridgePreflight
-	Candidates      CandidatePipeline
-	Images          ImagePermissionPreflight
-	Responses       ResponseSink
-	Recoverable     RecoverableWait
-	AuditSettings   AuditSettings
-	Observability   Observability
+	// GroupAffinity 是组级会话黏性的协作者端口（策略路由分组会话亲和设计
+	// §3）：组亲和键派生与组绑定读。nil = 功能未装配，preflight 走零改动
+	// 路径（不查组绑定、不写回组键）。
+	GroupAffinity GroupAffinityPort
+	Codex         CodexBridgePreflight
+	Candidates    CandidatePipeline
+	Images        ImagePermissionPreflight
+	Responses     ResponseSink
+	Recoverable   RecoverableWait
+	AuditSettings AuditSettings
+	Observability Observability
 
 	// Clock injects time (tests); defaults to the system clock.
 	Clock Clock

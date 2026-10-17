@@ -12,12 +12,20 @@
     v-bind="$attrs"
     @change="handleChange"
     @update:value="handleUpdateValue"
-  />
+  >
+    <template #option="{ label, providerCode }">
+      <span class="model-filter-option">
+        <ProviderIcon v-if="providerCode" class="model-filter-option-icon" :provider-code="providerCode" :size="14" />
+        <span>{{ label }}</span>
+      </span>
+    </template>
+  </a-select>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import ProviderIcon from '@/components/ProviderIcon.vue'
 import type { ProviderModelOption } from '@/types/domain'
 
 type SelectValue = string | number | string[] | undefined
@@ -91,3 +99,16 @@ function includesKeyword(value: unknown, keyword: string): boolean {
   return typeof value === 'string' && value.toLowerCase().includes(keyword)
 }
 </script>
+
+<style scoped>
+.model-filter-option {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.model-filter-option-icon {
+  flex: none;
+}
+</style>

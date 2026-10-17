@@ -14,11 +14,15 @@ DeepSeek hosted API 当前提供 OpenAI-compatible Chat Completions、原生 Ope
 
 - 一个供应商：`deepseek`
 - 两个当前协议档案：`profile_deepseek_openai_v1`、`profile_deepseek_anthropic_v1`
-- 两个当前账户创建类型：DeepSeek OpenAI-compatible API Key、DeepSeek Claude Code API Key
+- 两个当前账户创建类型：Chat API Key（OpenAI-compatible 档案）、Claude API Key（Claude Code 档案）。2026-10-17 起接入方式展示名统一为协议短词（Chat = OpenAI Chat 兼容、Claude = Claude Code / Anthropic 入口），供应商名由卡片墙与已选摘要条承载，不再重复进标题。
 - 底层账户类型仍为 `api_key`
 - OpenAI-compatible 是默认接入类型，默认声明 Chat Completions 与 Responses 的 JSON / SSE 能力；实际模型仍由目录协议字段精确筛选
 - `deepseek-v4-flash` 与 `deepseek-v4-pro` 都可直连 `/responses` 或 `/v1/responses`；V4 Pro 是本地预兼容，真实可用性以其上游响应为准。Responses / Codex Responses 到 Chat 桥接仍通过显式 `responses -> chat_completions` 模型别名启用
 - 当前不声明 DeepSeek 原生 `message_token_counting`、MCP、代码执行或未经官方确认的 Codex / Responses hosted tool 能力；Anthropic v1 档案默认只声明 `messages_json`、`messages_sse`
+
+## 计价口径（2026-10-17 口径核对批）
+
+- 目录 3 行（`deepseek-flash` / `deepseek-v4.1-flash` / `deepseek-v4-pro`）价格按官方高峰时段人民币明文 ÷ 约定汇率 7.0 落库（api-docs.deepseek.com/zh-cn/quick_start/pricing，2026-10-17 核对）：flash（=DeepSeek-V4.1-Flash，`deepseek-v4.1-flash` 为同一模型别名行）高峰 0.04（缓存命中）/2（未命中）/8（输出）元、v4-pro 高峰 0.30/9/27 元每百万 tokens；空闲时段（工作日 9:00-12:00、14:00-18:00 外及节假日全天）半价在行注记留档，目录不建分时段模型。此前目录值与官方现价不符且无注记，本批全部回正并补取证注记；锚点钉值在 `catalogdata_price_anchors_test.go`。
 
 ## 落地状态
 
@@ -46,8 +50,8 @@ type ProviderCode = 'deepseek'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 默认能力 |
 | --- | --- | --- | --- | --- | --- |
-| `profile_deepseek_openai_v1` | `deepseek` | `openai/v1` | `https://api.deepseek.com` | DeepSeek OpenAI-compatible API Key | `chat_json`、`chat_sse`、`responses_json`、`responses_sse` |
-| `profile_deepseek_anthropic_v1` | `deepseek` | `anthropic/v1` | `https://api.deepseek.com/anthropic` | DeepSeek Claude Code API Key | `messages_json`、`messages_sse` |
+| `profile_deepseek_openai_v1` | `deepseek` | `openai/v1` | `https://api.deepseek.com` | Chat API Key | `chat_json`、`chat_sse`、`responses_json`、`responses_sse` |
+| `profile_deepseek_anthropic_v1` | `deepseek` | `anthropic/v1` | `https://api.deepseek.com/anthropic` | Claude API Key | `messages_json`、`messages_sse` |
 
 OpenAI-compatible 档案声明 Chat Completions 与 Responses 语义，但账号 endpoint modes 只表达账户入口能力，模型目录继续精确筛选。`deepseek-v4-flash` 由官方目录声明 `responses`，`deepseek-v4-pro` 按产品决策同时声明预兼容 `responses`；V4 Pro 的真实可用性仍由上游响应决定。Responses -> Chat bridge 仍由账号模型别名显式声明：只有映射目标是 Chat 且真实上游支持 `chat_sse` 时生效。`/beta` 下的 Chat Prefix Completion 和 FIM Completion 作为 DeepSeek 供应商 beta 能力记录，不扩展成通用 Responses 档案。
 
@@ -57,12 +61,12 @@ DeepSeek Anthropic-compatible 必须保留 `providerCode=deepseek`、独立 Base
 
 前端创建流程仍按“供应商 -> 接入类型 -> 凭据与调度配置”展开。
 
-选择 `DeepSeek` 后展示 OpenAI-compatible API Key 和 Claude Code API Key 两个接入类型：
+选择 `DeepSeek` 后展示 Chat API Key 和 Claude API Key 两个接入类型（协议短词；2026-10-17 前分别显示为「DeepSeek OpenAI-compatible API Key」「DeepSeek Claude Code API Key」）：
 
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 | 下游客户端画像 |
 | --- | --- | --- | --- | --- | --- |
-| DeepSeek OpenAI-compatible API Key | `api_key` | `profile_deepseek_openai_v1` | `api_key`、`base_url` | `deepseek-v4-flash` | 由 API Key / 请求识别 |
-| DeepSeek Claude Code API Key | `api_key` | `profile_deepseek_anthropic_v1` | `api_key`、`base_url` | `deepseek-v4-flash` | Anthropic API / Claude Code |
+| Chat API Key | `api_key` | `profile_deepseek_openai_v1` | `api_key`、`base_url` | `deepseek-v4-flash` | 由 API Key / 请求识别 |
+| Claude API Key | `api_key` | `profile_deepseek_anthropic_v1` | `api_key`、`base_url` | `deepseek-v4-flash` | Anthropic API / Claude Code |
 
 这里的“接入类型”是产品表单概念，不是新增 OAuth 类型。后端保存时仍加密保存 `credentials.api_key`，并根据接入类型写入对应 `provider_protocol_profile_id`。
 
@@ -446,8 +450,8 @@ DeepSeek 账户测试必须复用真实网关链路：
 - 新增 `profile_deepseek_openai_v1`
 - 新增 `profile_deepseek_anthropic_v1`
 - 新增默认 DeepSeek 分组
-- 前端账户创建在选择 `DeepSeek` 后展示 `DeepSeek OpenAI-compatible API Key`
-- 前端账户创建在选择 `DeepSeek` 后展示 `DeepSeek Claude Code API Key`
+- 前端账户创建在选择 `DeepSeek` 后展示 `Chat API Key`（原 `DeepSeek OpenAI-compatible API Key`）
+- 前端账户创建在选择 `DeepSeek` 后展示 `Claude API Key`（原 `DeepSeek Claude Code API Key`）
 - 后端账户创建、编辑、导入和公开推送接口按协议档案解析 DeepSeek 接入类型
 - DeepSeek OpenAI 档案默认启用 Chat 与 Responses JSON/SSE，V4 Flash / V4 Pro 均作为原生 Responses 目标，其中 V4 Pro 为预兼容
 - DeepSeek Anthropic 档案默认只启用 Messages JSON/SSE，不默认启用 Count Tokens

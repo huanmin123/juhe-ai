@@ -48,6 +48,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	// Reads (Node list/options routes read the scope query without parsing).
 	k.Register("GET "+prefix+"/accounts", admin(d.listHandler(false)))
 	k.Register("GET "+prefix+"/accounts/options", admin(d.optionsHandler(false)))
+	k.Register("GET "+prefix+"/accounts/provider-counts", admin(d.providerCountsHandler(false)))
 	k.Register("GET "+prefix+"/accounts/tags", admin(d.scoped(d.tags)))
 	k.Register("DELETE "+prefix+"/accounts/tags/{tagId}", admin(d.scoped(d.deleteTag)))
 	k.Register("GET "+prefix+"/accounts/{id}", admin(d.scoped(d.detail)))
@@ -88,6 +89,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	// Self surface (forceSelfAccessScope).
 	k.Register("GET "+prefix+"/my-accounts", self(d.listHandler(true)))
 	k.Register("GET "+prefix+"/my-accounts/options", self(d.optionsHandler(true)))
+	k.Register("GET "+prefix+"/my-accounts/provider-counts", self(d.providerCountsHandler(true)))
 	k.Register("GET "+prefix+"/my-accounts/tags", self(d.scoped(d.tags)))
 	k.Register("DELETE "+prefix+"/my-accounts/tags/{tagId}", self(d.scoped(d.deleteTag)))
 	k.Register("GET "+prefix+"/my-accounts/{id}", self(d.scoped(d.detail)))

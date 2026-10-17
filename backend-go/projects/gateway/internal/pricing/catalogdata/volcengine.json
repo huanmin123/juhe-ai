@@ -1,6 +1,7 @@
 {
   "models": [
     {
+      "audioInputCostPerSecond": 0.00238095,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
@@ -28,33 +29,30 @@
       "supportedAPIProtocols": [
         "audio_speech"
       ],
-      "supportsPromptCaching": false,
-      "audioInputCostPerSecond": 0.00238095
+      "supportsPromptCaching": false
     },
     {
+      "audioInputCostPerSecond": 3.1746031746031745e-05,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
       "inputModalities": [
-        "text"
+        "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
-      "model": "doubao-tts",
+      "model": "volc.seedasr.auc",
       "outputModalities": [
-        "audio"
+        "text"
       ],
       "releaseDate": "",
-      "responseFormats": [
-        "mp3"
-      ],
       "shutdownDate": "",
-      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateDate": "2026-10-17",
       "sourceExchangeRateToUsd": 7,
       "sourcePricingCurrency": "CNY",
-      "sourcePricingNote": "历史占位目录行（非官方模型 ID）；官方人民币价 语音合成模型2.0 = 3 元/万字符（豆包语音产品计费 PDF volcengine.com/docs/6561/14275），该占位字符价已于 2026-10-17 维度修正批随 seed-audio-1.0 行一并撤除（请求经 adapter 归一出站均为 seed-audio-1.0，计量走时长口径）。2026-10-17 迁移批：旧 openspeech /api/v3/tts 端点已 404 下线，本行保留为既有账户占位兼容——统一面 doubao-tts 由 TTS adapter 归一映射为现役 seed-audio-1.0 出站（契约 §9.2） 现役后付费明文（2026-10-17 浏览器抓取）：语音合成模型 2.0 = 3 元/万字符——但本行请求经 adapter 归一出站均为 seed-audio-1.0（时长口径），字符价不落值不参与计费。",
+      "sourcePricingNote": "豆包录音文件识别 2.0（volc.seedasr.auc 即上游 X-Api-Resource-Id 真实标识，零计费探测 + 真实转写实测确认；1.0 系 volc.bigasr.* 未开通不进目录，对照价标准版 2.3/极速版 4.5/闲时版 1.2 元/小时）。官方计费口径原句（豆包语音计费文档，页面 https://www.volcengine.com/docs/DoubaoVoice/Billinginstructions-21，2026-10-17 抓取，文档中心 getDocDetail API 直取 MDContent——SPA 正文 web_reader/WebFetch 取不到）：「按时长计费的，累加每次调用的语音时长，精确至秒，最终折算为小时/分钟计费」「双声道计费模式，按单声道计费」；后付费 0.8 元/小时（资源包 1 年期折算 0.67~0.77 元/小时）→ 按约定汇率 7.0 换算 0.8÷3600÷7.0 = $3.1746031746031745e-05/秒落 audioInputCostPerSecond（2026-10-17 语音识别承接批，网关计量=query 终态 audio_info.duration 毫秒÷1000 秒；ASR 无输出格式词表，responseFormats 不落）。",
       "supportedAPIProtocols": [
-        "audio_speech"
+        "audio_transcription"
       ],
       "supportsPromptCaching": false
     },

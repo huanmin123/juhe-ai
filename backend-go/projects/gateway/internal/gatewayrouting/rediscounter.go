@@ -94,3 +94,52 @@ func (c *RedisRouteStateCounter) NextRouteCounterIndex(ctx context.Context, key 
 		return 0, &RouteStateURLError{Message: ErrRedisRouteCounterInvalidResult}
 	}
 }
+
+// redisRouteCounterPeekScript mirrors the peek leg of the group session
+// affinity design (策略路由分组会话亲和设计 §4 关键点 3): read the counter
+// without INCR or TTL refresh; a missing key reads as 0.
+const redisRouteCounterPeekScript = `
+      local value = redis.call('GET', KEYS[1])
+      if not value then
+        return 0
+      end
+      return (tonumber(value) - 1) % tonumber(ARGV[1])
+    `
+
+// PeekRouteCounterIndex 是 NextRouteCounterIndex 的纯读变体（组级会话黏性
+// sticky 命中路径专用）：GET 当前值取模，不推进、不刷新 TTL。
+func (c *RedisRouteStateCounter) PeekRouteCounterIndex(ctx context.Context, key string, modulo int64) (int64, error) {
+	client, err := c.clientForUse()
+	if err != nil {
+		return 0, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	result, err := client.Eval(operationCtx, redisRouteCounterPeekScript, []string{key},
+		strconv.FormatInt(modulo, 10),
+	).Result()
+	if err != nil {
+		return 0, err
+	}
+	switch value := result.(type) {
+	case int64:
+		if value < 0 {
+			return 0, nil
+		}
+		return value, nil
+	case string:
+		parsed, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil {
+			return 0, &RouteStateURLError{Message: ErrRedisRouteCounterInvalidResult}
+		}
+		if parsed < 0 {
+			return 0, nil
+		}
+		return parsed, nil
+	default:
+		return 0, &RouteStateURLError{Message: ErrRedisRouteCounterInvalidResult}
+	}
+}

@@ -51,6 +51,62 @@ func (r *routeStateRegistry) nextRoundRobinIndex(key string, bindingCount int) i
 	return index
 }
 
+// peekRoundRobinIndex mirrors nextRoundRobinIndex without advancing the
+// cursor: 组级会话亲和（策略路由分组会话亲和设计 §4）的黏住命中不得消费
+// 轮转状态，这里只读当前 index。
+func (r *routeStateRegistry) peekRoundRobinIndex(key string, bindingCount int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.roundRobin[key] % bindingCount
+}
+
+// peekWeightedOrder mirrors orderWeightedBindings 的选择判定但不落任何状态：
+// 只在锁内读当前 debt 计算本请求的 smooth-weighted 选中项，不记账、不清
+// 理、不写回。sticky 命中路径用它生成剩余序列（§4 关键点 3）；剩余绑定按
+// 优先序稳定排列（同为同请求内回退序，确定性优先，不镜像 advance 路径的
+// debt 排序以避免读后语义混淆）。
+func (r *routeStateRegistry) peekWeightedOrder(key string, bindings []GroupBindingRow) []GroupBindingRow {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.weighted[key]
+	weights := make([]int64, len(bindings))
+	var totalWeight int64
+	for i, binding := range bindings {
+		weight, err := NormalizeAPIKeyGroupBindingWeight(binding.Weight)
+		if err != nil {
+			return bindings
+		}
+		weights[i] = weight
+		totalWeight += weight
+	}
+	selected := bindings[0]
+	selectedCurrentWeight := int64(0)
+	selectedSet := false
+	for i, binding := range bindings {
+		current := state[binding.ID] + weights[i]
+		if !selectedSet || current > selectedCurrentWeight ||
+			(current == selectedCurrentWeight && compareBindingOrderByPriority(binding, selected) < 0) {
+			selected = binding
+			selectedCurrentWeight = current
+			selectedSet = true
+		}
+	}
+	if !selectedSet {
+		return bindings
+	}
+	ordered := make([]GroupBindingRow, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.ID == selected.ID {
+			continue
+		}
+		ordered = append(ordered, binding)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return compareBindingOrderByPriority(ordered[i], ordered[j]) < 0
+	})
+	return append([]GroupBindingRow{selected}, ordered...)
+}
+
 func (r *routeStateRegistry) weightedStateStore(key string, state map[string]int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -107,6 +163,13 @@ type RedisRouteCounter interface {
 	NextRouteCounterIndex(ctx context.Context, key string, modulo int64) (int64, error)
 }
 
+// RedisRouteCounterPeeker 是组级会话黏性 peek 路径的可选端口扩展（策略路由
+// 分组会话亲和设计 §4 关键点 3）：选择器在 Redis 驱动下通过类型断言获取纯
+// 读能力，未实现的计数器保持既有行为。
+type RedisRouteCounterPeeker interface {
+	PeekRouteCounterIndex(ctx context.Context, key string, modulo int64) (int64, error)
+}
+
 // APIKeyGroupRouteSelector mirrors routing/api-key-group-route-selector
 // .service.ts: dispatch-order resolution for an API key's group bindings
 // under the normal/round-robin/weighted strategy modes.
@@ -136,6 +199,118 @@ func NewAPIKeyGroupRouteSelector(runtimeStateDriver string, redisCounter RedisRo
 
 // runtimeStateDriverRedis mirrors the Node "redis" literal.
 const runtimeStateDriverRedis = "redis"
+
+// GroupStickyApplicable 报告组级会话黏性是否适用于该模式与绑定数
+// （策略路由分组会话亲和设计 §6：round_robin / weighted / failover 且活跃
+// 绑定 ≥ 2；normal / merge / 单绑定零额外路径）。
+func GroupStickyApplicable(mode string, activeBindingCount int) bool {
+	if activeBindingCount < 2 {
+		return false
+	}
+	switch mode {
+	case RouteStrategyModeRoundRobin, RouteStrategyModeWeighted, RouteStrategyModeFailover:
+		return true
+	}
+	return false
+}
+
+// ReorderBindingsForStickyGroup 把黏住分组挪到派发序首位、其余保持既有顺序
+// （纯函数，策略路由分组会话亲和设计 §4）；绑定组不在列表中时原样返回
+//（视同未命中）。
+func ReorderBindingsForStickyGroup(ordered []GroupBindingRow, stickyGroupID string) []GroupBindingRow {
+	if stickyGroupID == "" || len(ordered) <= 1 {
+		return ordered
+	}
+	stickyIndex := -1
+	for i, binding := range ordered {
+		if binding.GroupID == stickyGroupID {
+			stickyIndex = i
+			break
+		}
+	}
+	if stickyIndex <= 0 {
+		return ordered
+	}
+	result := make([]GroupBindingRow, 0, len(ordered))
+	result = append(result, ordered[stickyIndex])
+	result = append(result, ordered[:stickyIndex]...)
+	result = append(result, ordered[stickyIndex+1:]...)
+	return result
+}
+
+// PeekAPIKeyGroupBindingsForDispatchAsync mirrors
+// OrderAPIKeyGroupBindingsForDispatchAsync 的纯读变体：生成当前模式派发序但
+// 不推进任何轮转/加权状态（Redis counter 零调用、本地 debt 零写入，
+// §11 状态阻断项）。仅动态模式需要 peek；其余模式返回优先序。
+func (s *APIKeyGroupRouteSelector) PeekAPIKeyGroupBindingsForDispatchAsync(ctx context.Context, apiKey *APIKeyRow) ([]GroupBindingRow, error) {
+	bindings, err := normalizeGatewayAPIKeyGroupBindings(apiKey.GroupBindings)
+	if err != nil {
+		return nil, err
+	}
+	if len(bindings) <= 1 {
+		return bindings, nil
+	}
+	if apiKey.RouteStrategyMode == RouteStrategyModeRoundRobin {
+		if s.RuntimeStateDriver == runtimeStateDriverRedis {
+			index, err := s.peekRedisRouteCounterIndex(ctx, redisRouteStateKey(apiKey, RedisRouteStateRoundRobinMode), int64(len(bindings)))
+			if err != nil {
+				return nil, err
+			}
+			return rotateBindings(bindings, int(index)), nil
+		}
+		return rotateBindings(bindings, s.states.peekRoundRobinIndex(apiKeyRouteStateKey(apiKey), len(bindings))), nil
+	}
+	if apiKey.RouteStrategyMode == RouteStrategyModeWeighted {
+		if s.RuntimeStateDriver == runtimeStateDriverRedis {
+			return s.peekWeightedBindingsWithRedisCounter(ctx, apiKey, bindings)
+		}
+		return s.states.peekWeightedOrder(apiKeyRouteStateKey(apiKey), bindings), nil
+	}
+	return bindings, nil
+}
+
+// peekWeightedBindingsWithRedisCounter 与 orderWeightedBindingsWithRedisCounter
+// 同一累计权重选择，但 GET 当前 counter 而不 INCR（零状态推进）。与 memory
+// peek 同一取舍：剩余序列按纯优先序排列（advance 路径为 weight-desc+priority），
+// 只影响黏住组失败后的同请求后备组顺序，不影响黏住命中与状态语义。
+func (s *APIKeyGroupRouteSelector) peekWeightedBindingsWithRedisCounter(ctx context.Context, apiKey *APIKeyRow, bindings []GroupBindingRow) ([]GroupBindingRow, error) {
+	var totalWeight int64
+	for _, binding := range bindings {
+		weight, err := NormalizeAPIKeyGroupBindingWeight(binding.Weight)
+		if err != nil {
+			return nil, err
+		}
+		totalWeight += weight
+	}
+	selectedWeightIndex, err := s.peekRedisRouteCounterIndex(ctx, redisRouteStateKey(apiKey, RedisRouteStateWeightedMode), totalWeight)
+	if err != nil {
+		return nil, err
+	}
+	selected := bindings[0]
+	var cursor int64
+	for _, binding := range bindings {
+		weight, err := NormalizeAPIKeyGroupBindingWeight(binding.Weight)
+		if err != nil {
+			return nil, err
+		}
+		cursor += weight
+		if selectedWeightIndex < cursor {
+			selected = binding
+			break
+		}
+	}
+	ordered := make([]GroupBindingRow, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.ID == selected.ID {
+			continue
+		}
+		ordered = append(ordered, binding)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return compareBindingOrderByPriority(ordered[i], ordered[j]) < 0
+	})
+	return append([]GroupBindingRow{selected}, ordered...), nil
+}
 
 // OrderAPIKeyGroupBindingsForDispatch mirrors
 // orderGatewayApiKeyGroupBindingsForDispatch: the synchronous ordering path.
@@ -424,6 +599,31 @@ func (s *APIKeyGroupRouteSelector) nextRedisRouteCounterIndex(ctx context.Contex
 		return 0, err
 	}
 	// Node clamps with Math.max(0, Math.trunc(index)).
+	if index < 0 {
+		return 0, nil
+	}
+	return index, nil
+}
+
+// peekRedisRouteCounterIndex 是 nextRedisRouteCounterIndex 的纯读变体：
+// GET 当前 counter（不 INCR、不刷 TTL），组级会话黏性的 peek 路径专用
+// （§11 状态阻断项：sticky hit 的 Redis counter 调用次数为 0 是指推进类
+// 调用；peek GET 不推进）。缺失键取 0。
+func (s *APIKeyGroupRouteSelector) peekRedisRouteCounterIndex(ctx context.Context, key string, modulo int64) (int64, error) {
+	if modulo <= 0 {
+		return 0, nil
+	}
+	if s.Redis == nil {
+		return 0, &RouteStateURLError{Message: ErrHighPerformanceDynamicRouteRequiresStateURL}
+	}
+	peeks, ok := s.Redis.(RedisRouteCounterPeeker)
+	if !ok {
+		return 0, &RouteStateURLError{Message: ErrHighPerformanceDynamicRouteRequiresStateURL}
+	}
+	index, err := peeks.PeekRouteCounterIndex(ctx, key, modulo)
+	if err != nil {
+		return 0, err
+	}
 	if index < 0 {
 		return 0, nil
 	}

@@ -100,8 +100,9 @@ func TestW1ScenarioInvalidJSONBody(t *testing.T) {
 func TestW1ScenarioMissingModel(t *testing.T) {
 	scenario := newW1ScenarioChain(t, w1UpstreamChat("不应被调用"))
 	status, body := chainV1ChatRequest(t, scenario.serverURL, scenario.apiKey, `{"messages":[]}`)
-	// 当前实现契约：无法按支持模型匹配调度时 503 + missing_model。
-	if status != http.StatusServiceUnavailable || !strings.Contains(body, "missing_model") {
+	// 当前实现契约（BUG-0325 修复批）：模型过滤层无法按支持模型匹配调度时
+	// 404 + model_not_found（客户端参数错误语义，不可重试）。
+	if status != http.StatusNotFound || !strings.Contains(body, "model_not_found") || !strings.Contains(body, "请求缺少 model") {
 		t.Fatalf("缺 model = %d body=%s", status, body)
 	}
 }
@@ -109,8 +110,9 @@ func TestW1ScenarioMissingModel(t *testing.T) {
 func TestW1ScenarioUnknownModel(t *testing.T) {
 	scenario := newW1ScenarioChain(t, w1UpstreamChat("不应被调用"))
 	status, body := chainV1ChatRequest(t, scenario.serverURL, scenario.apiKey, `{"model":"gpt-never","messages":[]}`)
-	// 当前实现契约：分组内无账户支持该模型时 503 + model_unsupported。
-	if status != http.StatusServiceUnavailable || !strings.Contains(body, "model_unsupported") {
+	// 当前实现契约（BUG-0325 修复批）：分组内无账户支持该模型时
+	// 404 + model_not_found + 逐模型文案（原 503 通用文案语义错乱已修）。
+	if status != http.StatusNotFound || !strings.Contains(body, "model_not_found") || !strings.Contains(body, "gpt-never") {
 		t.Fatalf("未知模型 = %d body=%s", status, body)
 	}
 }

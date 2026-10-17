@@ -273,13 +273,19 @@ func chainVideoAdapterForAccount(providerCode string) gatewaymedia.VideoProvider
 //     （与万相同一任务接口），URL 按 chainQwenVideoUpstreamURL 归一
 //     （/api/v1 去重，两族共用该函数）；创建请求**不带** X-DashScope-Async
 //     头（该服务天然异步，与万相 §10.1 的关键差异）。
-//   - 其余 provider（openai/gemini/glm/minimax/volcengine/hybrid 等）→ ""：
+//   - volcengine：豆包录音文件识别 2.0 长转写（契约 §9.2 长转写臂，
+//     2026-10-17 承接批）——出站 host 恒 openspeech.bytedance.com 语音服务域
+//     （chainVolcengineASRUpstreamURL 特例，同 TTS 先例），鉴权 X-Api-Key
+//     （speech_token），头驱动受理协议。
+//   - 其余 provider（openai/gemini/glm/minimax/hybrid 等）→ ""：
 //     无长转写 adapter（长转写面未回填的供应商接入前不承接，回填后只新增
 //     audioJobAdapters 注册表条目与本映射分支）。
 func chainAudioJobAdapterKeyOfProvider(providerCode string) string {
 	switch strings.ToLower(strings.TrimSpace(providerCode)) {
 	case "qwen":
 		return "qwen"
+	case "volcengine":
+		return "volcengine"
 	default:
 		return ""
 	}
@@ -301,9 +307,13 @@ func chainAudioJobAdapterForAccount(providerCode string) gatewaymedia.AudioJobPr
 // kind 经 chainMediaJobTaskAdapterFor 泛化解析（M3f：不复制链路，kind 选表）。
 type chainMediaJobTaskAdapter interface {
 	Provider() string
-	BuildPollRequest(upstreamJobID string) (method, path string, body []byte)
-	ParsePollResponse(statusCode int, body []byte) (*gatewaymedia.MediaJobIR, error)
-	BuildContentRequest(upstreamJobID string) (method, path string)
+	// BuildPollRequest 返回轮询请求；header 为厂商专用头（body 驱动厂商
+	// nil，头驱动厂商如火山长转写携带任务 ID 与资源 ID——契约 §9.2）。
+	BuildPollRequest(upstreamJobID string) (method, path string, header http.Header, body []byte)
+	// ParsePollResponse 归一上游响应；header 携带响应头（头驱动厂商经
+	// X-Api-Status-Code 承载业务状态）。
+	ParsePollResponse(statusCode int, header http.Header, body []byte) (*gatewaymedia.MediaJobIR, error)
+	BuildContentRequest(upstreamJobID string) (method, path string, header http.Header, body []byte)
 	ContentFromArtifact() bool
 	BuildCancelRequest(upstreamJobID string) (method, path string)
 	SupportsCancel() bool
@@ -316,9 +326,38 @@ func chainMediaJobTaskAdapterFor(kind gatewaymedia.MediaJobKind, providerCode st
 	case gatewaymedia.JobKindAudioTranscription:
 		return chainAudioJobAdapterForAccount(providerCode)
 	default:
-		return chainVideoAdapterForAccount(providerCode)
+		return chainVideoJobTaskAdapterShell{chainVideoAdapterForAccount(providerCode)}
 	}
 }
+
+// chainVideoJobTaskAdapterShell 把视频任务 adapter 适配到统一任务面消费形状
+//（视频面全部为 body 驱动协议，header 位恒 nil；头驱动位由火山长转写臂的
+// AudioJobProviderAdapter 直接满足——契约 §9.2 长转写臂）。
+type chainVideoJobTaskAdapterShell struct{ inner gatewaymedia.VideoProviderAdapter }
+
+func (s chainVideoJobTaskAdapterShell) Provider() string { return s.inner.Provider() }
+
+func (s chainVideoJobTaskAdapterShell) BuildPollRequest(upstreamJobID string) (string, string, http.Header, []byte) {
+	method, path, body := s.inner.BuildPollRequest(upstreamJobID)
+	return method, path, nil, body
+}
+
+func (s chainVideoJobTaskAdapterShell) ParsePollResponse(statusCode int, _ http.Header, body []byte) (*gatewaymedia.MediaJobIR, error) {
+	return s.inner.ParsePollResponse(statusCode, body)
+}
+
+func (s chainVideoJobTaskAdapterShell) BuildContentRequest(upstreamJobID string) (string, string, http.Header, []byte) {
+	method, path := s.inner.BuildContentRequest(upstreamJobID)
+	return method, path, nil, nil
+}
+
+func (s chainVideoJobTaskAdapterShell) ContentFromArtifact() bool { return s.inner.ContentFromArtifact() }
+
+func (s chainVideoJobTaskAdapterShell) BuildCancelRequest(upstreamJobID string) (string, string) {
+	return s.inner.BuildCancelRequest(upstreamJobID)
+}
+
+func (s chainVideoJobTaskAdapterShell) SupportsCancel() bool { return s.inner.SupportsCancel() }
 
 // ---------------------------------------------------------------------------
 // 创建受理前参数错误短路（媒体设计 §7 创建行、契约 §2.4 规则 2）
@@ -947,11 +986,16 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游账户缺少"+jobLabel+"任务 adapter，任务受理中断", "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
-	ir, parseErr := adapter.ParsePollResponse(upstream.Status(), body)
-	if parseErr != nil || ir == nil || ir.UpstreamJobID == "" {
+	ir, parseErr := adapter.ParsePollResponse(upstream.Status(), upstream.Header, body)
+	// 受理失败三态：解析错误（协议违约/上游错误信封）、无受理凭据、归一 failed
+	//（火山长转写臂：submit 业务失败在响应头 X-Api-Status-Code 450000xx，
+	// ParsePollResponse 归一 failed——受理凭据未确立，不落任务行）。
+	if parseErr != nil || ir == nil || ir.UpstreamJobID == "" || ir.Status == gatewaymedia.JobStatusFailed {
 		message := "上游" + jobLabel + "任务响应缺少受理凭据（job id）"
 		if parseErr != nil {
 			message = parseErr.Error()
+		} else if ir != nil && ir.Error != nil {
+			message = "上游" + jobLabel + "任务受理被上游拒绝: " + ir.Error.Message
 		}
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, message, "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
@@ -1264,8 +1308,8 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		return
 	}
 	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode)
-	method, path, _ := adapter.BuildPollRequest(record.UpstreamJobID)
-	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, nil)
+	method, path, pollHeader, pollBody := adapter.BuildPollRequest(record.UpstreamJobID)
+	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, pollHeader, pollBody)
 	if upstreamErr != nil {
 		c.renderMediaVideoTransportError(res, req, upstreamErr)
 		return
@@ -1275,7 +1319,7 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		return
 	}
 	var statusErr *gatewaymedia.UpstreamStatusError
-	ir, parseErr := adapter.ParsePollResponse(status, body)
+	ir, parseErr := adapter.ParsePollResponse(status, response.Header, body)
 	if parseErr != nil {
 		if errors.As(parseErr, &statusErr) {
 			if statusErr.StatusCode == http.StatusNotFound {
@@ -1370,8 +1414,8 @@ func (c *gatewayChain) serveMediaJobContent(ctx context.Context, res *gatewaypre
 		}
 		response, upstreamErr = c.mediaJobArtifactRequestUpstream(ctx, account, artifactURL)
 	} else {
-		method, path := adapter.BuildContentRequest(record.UpstreamJobID)
-		response, upstreamErr = c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, nil)
+		method, path, contentHeader, contentBody := adapter.BuildContentRequest(record.UpstreamJobID)
+		response, upstreamErr = c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, contentHeader, contentBody)
 	}
 	if upstreamErr != nil {
 		c.renderMediaVideoTransportError(res, req, upstreamErr)
@@ -1436,7 +1480,7 @@ func (c *gatewayChain) serveMediaJobCancel(ctx context.Context, res *gatewayprea
 		return
 	}
 	method, path := adapter.BuildCancelRequest(record.UpstreamJobID)
-	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, nil)
+	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, nil, nil)
 	if upstreamErr != nil {
 		c.renderMediaVideoTransportError(res, req, upstreamErr)
 		return
@@ -1711,7 +1755,7 @@ func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label s
 // 异步不需要），任务面轮询仅需 Authorization，不在此注入。出站代理消费账户
 // 绑定档案（resolveMediaJobAccountProxyURL：未配代理直连行为不变，缺失/停用
 // 失败出站不回落直连）。
-func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *chainMediaJobAccount, kind gatewaymedia.MediaJobKind, method, path string, body []byte) (*gatewayupstream.GatewayUpstreamResponse, error) {
+func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *chainMediaJobAccount, kind gatewaymedia.MediaJobKind, method, path string, extraHeader http.Header, body []byte) (*gatewayupstream.GatewayUpstreamResponse, error) {
 	adapterKey := ""
 	if kind == gatewaymedia.JobKindAudioTranscription {
 		adapterKey = chainAudioJobAdapterKeyOfProvider(account.ProviderCode)
@@ -1721,6 +1765,7 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 	if adapterKey == "" {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 无该种类媒体任务 adapter", account.ID, account.ProviderCode)
 	}
+	isVolcengineASR := kind == gatewaymedia.JobKindAudioTranscription && adapterKey == "volcengine"
 	var upstreamURL string
 	if chainIsGeminiProtocolProfile(account.ProtocolCode, account.ProtocolVersion) {
 		built, err := gatewaygemini.BuildUpstreamURL(account.BaseURL, path, false)
@@ -1728,6 +1773,10 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 			return nil, err
 		}
 		upstreamURL = built
+	} else if isVolcengineASR {
+		// 火山长转写（契约 §9.2）：host 恒 openspeech.bytedance.com 语音服务域
+		// （与账户 ark base_url 无关的 URL 构造特例，同 TTS 先例）。
+		upstreamURL = chainVolcengineASRUpstreamURL(path)
 	} else if adapterKey == "glm" {
 		built, err := chainGlmVideoUpstreamURL(account.BaseURL, path)
 		if err != nil {
@@ -1755,8 +1804,28 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 			Type:        account.Type,
 			Credentials: account.Credentials,
 		}, account.Credential)
+	} else if isVolcengineASR {
+		// 火山长转写鉴权：X-Api-Key 单头（凭据 speech_token 单值，与 TTS 同
+		// 一把新版语音控制台 API Key）；缺失即该账户无长转写能力，显式失败
+		// 不静默回退（同 TTS 缺凭据语义与稳定错误码）。adapter 专用头（资源
+		// ID/任务 ID/序列）经 extraHeader 合并。
+		speechToken, _ := account.Credentials["speech_token"].(string)
+		speechToken = strings.TrimSpace(speechToken)
+		if speechToken == "" {
+			return nil, gatewaypreauth.NewGatewayRequestValidationError(
+				fmt.Sprintf("账户 %s 缺少火山语音凭据（speech_token = 新版语音控制台 API Key），不能承接长音频转写请求", account.ID),
+				gatewaypreauth.WithValidationErrorCode(chainSpeechCredentialsMissingErrorCode),
+				gatewaypreauth.WithValidationErrorStatusCode(http.StatusBadRequest),
+			)
+		}
+		headers.Set("X-Api-Key", speechToken)
 	} else if account.Credential != "" {
 		headers.Set("Authorization", "Bearer "+account.Credential)
+	}
+	for name, values := range extraHeader {
+		for _, value := range values {
+			headers.Set(name, value)
+		}
 	}
 	headers.Set("Accept", "application/json")
 	// 出站代理与同步 lane 同源：账户配了代理档案 → 任务面出站走该代理；

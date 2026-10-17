@@ -214,6 +214,7 @@ const {
 const panelAccountOptions = computed(() => accounts.value.map((option) => ({
   id: option.id,
   name: option.name,
+  providerCode: option.providerCode,
   providerName: providerDisplayName(option.providerCode)
 })))
 const hasOverview = computed(() => Boolean(overview.value))

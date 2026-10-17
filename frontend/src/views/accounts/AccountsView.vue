@@ -189,6 +189,7 @@
       :inherited-error-policy-rules="inheritedErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
+      :account-counts="providerAccountCounts"
       :capability-domain="capabilityDomain"
       :validation-failure="lastValidationFailure"
       :api-key-runtime-details="accountApiKeyRuntimeDetails"
@@ -1133,9 +1134,33 @@ function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gem
   }, 250)
 }
 
+// 供应商卡片墙全量计数（读时聚合）：打开创建弹窗时按当前域与可见范围拉取一次，
+// 不再从已加载列表行归并（列表每页 20 行、受筛选影响，会少算）。
+const providerAccountCounts = ref<Record<string, number>>({})
+const providerAccountCountsLoading = ref(false)
+
+async function loadProviderAccountCounts() {
+  providerAccountCountsLoading.value = true
+  try {
+    const scope = isManagementView.value ? accountScopeParams.value : undefined
+    const params = {
+      domain: capabilityDomain.value,
+      ...(scope?.systemAccountId ? { systemAccountId: scope.systemAccountId } : {})
+    }
+    providerAccountCounts.value = isManagementView.value
+      ? await api.accounts.providerCounts(params)
+      : await api.myAccounts.providerCounts(params)
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载供应商账户计数失败'))
+  } finally {
+    providerAccountCountsLoading.value = false
+  }
+}
+
 watch(modalOpen, (open) => {
   if (open) {
     void loadCurrentProviderModelOptions()
+    if (!editingId.value) void loadProviderAccountCounts()
     return
   }
   clearAccountModelOptionsSearchTimer()

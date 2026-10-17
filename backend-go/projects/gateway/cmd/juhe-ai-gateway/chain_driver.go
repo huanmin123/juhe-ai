@@ -341,15 +341,24 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// M3f 长音频任务创建（POST /v1/audio/jobs）：qwen 账户（paraformer，
 		// 契约 §10.2）出站路径自带 /api/v1 服务根，URL 按
 		// chainQwenVideoUpstreamURL 归一（官方根去重，与万相视频共用该 /api/v1
-		// 归一）；其余无长转写 adapter 的 provider 在 audioJobCreateRequest
-		// 内显式失败（能力缺失不静默回退）。
+		// 归一）；volcengine 账户（录音文件识别 2.0，契约 §9.2 长转写臂）host
+		// 恒 openspeech 语音服务域且 speech_token 凭据在 URL 层先验（同 TTS
+		// 凭据特例先验形态——缺凭据是确定性配置缺位，400 显式失败）；其余无
+		// 长转写 adapter 的 provider 在 audioJobCreateRequest 内显式失败（能力
+		// 缺失不静默回退）。
 		if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
-			if chainAudioJobAdapterKeyOfProvider(account.ProviderCode) == "qwen" {
+			switch chainAudioJobAdapterKeyOfProvider(account.ProviderCode) {
+			case "qwen":
 				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
 				if urlErr != nil {
 					return nil, urlErr
 				}
 				return []string{upstreamURL}, nil
+			case "volcengine":
+				if _, credErr := chainVolcengineSpeechCredentials(account); credErr != nil {
+					return nil, credErr
+				}
+				return []string{chainVolcengineASRUpstreamURL(audioPlan.createRequest.Path)}, nil
 			}
 			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)}, nil
 		} else if audioErr != nil {
@@ -502,6 +511,17 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		headers.Set("Content-Type", "application/json")
 		for name, value := range audioPlan.createRequest.ExtraHeaders {
 			headers.Set(name, value)
+		}
+		// 火山长转写臂（契约 §9.2）：openspeech 语音服务域独立鉴权面——
+		// X-Api-Key: <speech_token> 单头，删掉通用透传预设的 Authorization
+		//（ark Bearer），不得让两个鉴权头并存出站（同 TTS 分支语义）。
+		if chainAudioJobAdapterKeyOfProvider(account.ProviderCode) == "volcengine" {
+			token, credErr := chainVolcengineSpeechCredentials(account)
+			if credErr != nil {
+				return gatewaydispatch.PreparedRequestParts{}, credErr
+			}
+			headers.Del("Authorization")
+			headers.Set("X-Api-Key", token)
 		}
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: audioPlan.createRequest.Body}, nil
 	} else if audioErr != nil {
@@ -1885,7 +1905,7 @@ func chainVolcengineSpeechCredentials(account gatewaydispatch.AccountCandidate) 
 	token := accountCredentialText(account, "speech_token")
 	if token == "" {
 		return "", gatewaypreauth.NewGatewayRequestValidationError(
-			fmt.Sprintf("账户 %s 缺少火山语音凭据（speech_token = 新版语音控制台 API Key），不能承接 audio_speech 请求", account.ID),
+			fmt.Sprintf("账户 %s 缺少火山语音凭据（speech_token = 新版语音控制台 API Key），不能承接语音域请求（audio_speech / 长转写 audio_job_*）", account.ID),
 			gatewaypreauth.WithValidationErrorCode(chainSpeechCredentialsMissingErrorCode),
 			gatewaypreauth.WithValidationErrorStatusCode(http.StatusBadRequest),
 		)
@@ -1920,6 +1940,17 @@ func chainVolcengineSpeechUpstreamURL(path string) string {
 		path = "/" + path
 	}
 	return strings.TrimRight(base, "/") + path
+}
+
+// chainVolcengineASRUpstreamURL 拼接火山长转写出站 URL：固定语音服务域根 +
+// adapter 出站路径（/api/v3/auc/bigmodel/submit|query）。长转写与 TTS 同为
+// openspeech.bytedance.com 语音服务域（与账户 ark base_url 无关的 URL 构造
+// 特例）——直接复用 chainVolcengineSpeechUpstreamURL 的域根解析与测试 seam
+// JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL（语义=语音服务域根，隔离上游
+// 指回同实例），不新增第二个域根常量或 seam env；不经账户 base_url、不走
+// gatewayopenai.BuildUpstreamURL（/v1 强制补缀契约）——同 TTS 特例。
+func chainVolcengineASRUpstreamURL(path string) string {
+	return chainVolcengineSpeechUpstreamURL(path)
 }
 
 // videoCreateRequest 解析“视频创建请求 + 账户”的 adapter 出站计划（M2 视频，

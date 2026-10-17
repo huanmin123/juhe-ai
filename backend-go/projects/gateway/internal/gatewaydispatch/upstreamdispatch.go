@@ -57,6 +57,11 @@ type UpstreamDispatchResult struct {
 	// 把本尝试选中的上游 Key 指纹写回现存同 owner 会话绑定（不创建、不改
 	// owner）；2xx 响应头阶段不执行。nil = 无会话键 / 无选中指纹 / 端口未装配。
 	ConfirmSessionApiKeyFingerprint func()
+	// ConfirmGroupAffinity 是组级会话黏性的最终成功写回句柄（策略路由分组会话
+	// 亲和设计 §5）：链面在 confirmProtocolSuccessSideEffects 中按组 → 账户 →
+	// Key 顺序消费（本句柄最先），把最终成功派发账户所属分组写回/创建组绑定；
+	// 2xx 响应头阶段不执行。nil = 无组亲和键 / 端口未装配。
+	ConfirmGroupAffinity func()
 	// ConfirmAccountLockSuccess 镜像 completeAccountLockSuccessAsync：上游响应
 	// 协议成功后，把 ENGAGED 账户锁 CAS 复位为 LOCKED_IDLE（Node
 	// account-lock.repository.ts:completeAccountLockSuccessAsync,
@@ -452,12 +457,17 @@ func (h *hotQualityAttemptHandle) RecordTerminal(ctx context.Context, terminal H
 // FetchFirstAvailableUpstreamArgs mirrors the fetchFirstAvailableUpstream
 // parameter list (Go groups them; the doc comments name each Node arg).
 type FetchFirstAvailableUpstreamArgs struct {
-	Req                             *gatewaypreauth.GatewayRequest
-	Accounts                        []AccountCandidate
-	Settings                        gatewayruntimecache.GatewaySettings
-	UsageContext                    gatewaypreauth.GatewayFailureUsageContext
-	AuditCapture                    AuditCapture
-	SessionAffinityKey              string
+	Req                *gatewaypreauth.GatewayRequest
+	Accounts           []AccountCandidate
+	Settings           gatewayruntimecache.GatewaySettings
+	UsageContext       gatewaypreauth.GatewayFailureUsageContext
+	AuditCapture       AuditCapture
+	SessionAffinityKey string
+	// GroupAffinityKey / RouteStrategyID 承载组级会话黏性写回上下文（策略路由
+	// 分组会话亲和设计 §5.1）：键空串 = 范围外（无会话键 / 模式不在范围 /
+	// 绑定数不足），写回静默跳过。写回组取本尝试派发上下文的组。
+	GroupAffinityKey                string
+	RouteStrategyID                 string
 	Signal                          context.Context
 	ClientIPAccountAvoidanceTracker gatewaypreauth.ClientIPAccountAvoidanceTracker
 	RequestLane                     string // default 'text'

@@ -39,7 +39,17 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 }
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
-	// 221 rows after the 2026-10-05 遗留取证批 sync from the Go pricing catalog:
+	// 197 rows after the 2026-10-17 2025 前模型清理批（两批合计）sync from
+	// the Go pricing catalog：口径批 221 行 -15 行 2025-01-01 前发布的 gpt 行
+	// （gpt-4o/-4o-mini/-4o-2024-05-13/-4-turbo×2/-4-1106-preview/-4/-4-0613/
+	// -3.5-turbo×3/o1/tts-1/tts-1-hd/whisper-1）→ 206；清理批二阶段（用户裁决
+	// 扩展到无日期疑似 2024 老模型 + 弃用 glm-asr-2512）-9 行：glm -5
+	// （cogvideox-2/-3、cogview-4、embedding-3、glm-asr-2512）、minimax -2
+	// （speech-02-turbo、asr-1.0）、qwen -1（paraformer-v2）、volcengine -1
+	// （doubao-tts 占位价行）→ 197；同日目录缺口补录批 +3（minimax
+	// MiniMax-Hailuo-2.3-Fast、xai grok-imagine-video-1.5-lite 与 grok-tts
+	// 占位行）→ 200；同日火山 ASR 承接批 +1（volc.seedasr.auc，豆包录音
+	// 文件识别 2.0，计价 $3.1746031746031745e-05/秒）→ 201:
 	// 217 rows from the evidence batch + gemini-3.5-live-translate-preview
 	// + 3 openai realtime/audio additions (gpt-realtime-mini / gpt-audio /
 	// gpt-audio-mini missed by the completion batch)
@@ -52,14 +62,14 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// and moved paraformer-v2 to the international-site USD price
 	// $0.000012/second (static layer only — the catalog table has no
 	// per-second price columns).
-	if len(modelCatalogSeedRows) != 220 {
-		t.Fatalf("model catalog seed rows = %d, want 220 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
+	if len(modelCatalogSeedRows) != 201 {
+		t.Fatalf("model catalog seed rows = %d, want 201 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 84, "xai": 14, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 28, "minimax": 13, "volcengine": 15, "qwen": 17}
+	want := map[string]int{"gpt": 69, "xai": 16, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 23, "minimax": 12, "volcengine": 16, "qwen": 16}
 	if len(perProvider) != len(want) {
 		t.Fatalf("provider set = %v, want %v", perProvider, want)
 	}

@@ -204,3 +204,71 @@ func TestMediaSpeechTransformPlanGates(t *testing.T) {
 	}
 	_ = gatewayruntimecache.GatewaySettings{}
 }
+
+func newVolcengineSpeechInputFixture(t *testing.T, requestBody, upstreamBody []byte) (HandleUpstreamResponseInput, *httptest.ResponseRecorder) {
+	t.Helper()
+	input, recorder := newAudioInputFixture(t, "POST", "/v1/audio/speech", requestBody,
+		NewSliceUpstreamBody(upstreamBody), 200,
+		map[string]string{"Content-Type": "application/json"}, "openai")
+	secret := gatewayAccountFixture
+	secret.ProviderCode = "volcengine"
+	input.Account = OpenAIAccountView{Account: secret}
+	input.Deps = &FinalizationDeps{NowMs: func() int64 { return 1200 }}
+	return input, recorder
+}
+
+func TestNonStreamVolcengineSpeechMeteringDurationSeconds(t *testing.T) {
+	// volcengine TTS（契约 §9.2/§2.8，2026-10-17 维度修正批）：官方计费
+	// 维度是生成原始时长——响应顶层 duration 秒落 AudioInputSeconds，
+	// 不落字符口径（字符非官方计费维度）。
+	payload, _ := json.Marshal(map[string]any{
+		"audio":             base64.StdEncoding.EncodeToString([]byte("ID3-volcengine-mp3")),
+		"duration":          3.28,
+		"original_duration": 3.28,
+		"url":               "https://cdn.example/tts.mp3",
+	})
+	requestBody := []byte(`{"model":"seed-audio-1.0","input":"今天天气怎么样","voice":"zh_female_cancan_mars_bigtts","response_format":"mp3"}`)
+	input, recorder := newVolcengineSpeechInputFixture(t, requestBody, payload)
+	result, err := HandleNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Body.String(); got != "ID3-volcengine-mp3" {
+		t.Fatalf("client body must be decoded audio, got %q", got)
+	}
+	if result.Usage.AudioInputSeconds == nil || *result.Usage.AudioInputSeconds != 3.28 {
+		t.Fatalf("AudioInputSeconds = %v want 3.28", result.Usage.AudioInputSeconds)
+	}
+	if result.Usage.TtsInputChars != nil {
+		t.Fatalf("TtsInputChars must stay nil for duration-billed volcengine TTS: %+v", result.Usage)
+	}
+	if result.Usage.UsageMissing {
+		t.Fatalf("duration evidence present, usage_missing must stay false: %+v", result.Usage)
+	}
+}
+
+func TestNonStreamVolcengineSpeechMeteringMissingDurationMarked(t *testing.T) {
+	// duration 缺失 → 0 计量 + usage_missing（不猜测；不落字符口径）。
+	payload, _ := json.Marshal(map[string]any{
+		"audio": base64.StdEncoding.EncodeToString([]byte("ID3-no-duration")),
+		"url":   "https://cdn.example/tts.mp3",
+	})
+	requestBody := []byte(`{"model":"seed-audio-1.0","input":"你好","voice":"zh_female_cancan_mars_bigtts","response_format":"mp3"}`)
+	input, recorder := newVolcengineSpeechInputFixture(t, requestBody, payload)
+	result, err := HandleNonStreamUpstreamResponse(input)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if result.Usage.AudioInputSeconds != nil || result.Usage.TtsInputChars != nil {
+		t.Fatalf("no metering evidence expected: %+v", result.Usage)
+	}
+	if !result.Usage.UsageMissing {
+		t.Fatalf("usage_missing must be set without duration: %+v", result.Usage)
+	}
+}

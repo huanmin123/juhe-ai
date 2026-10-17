@@ -1,13 +1,13 @@
 {
   "models": [
     {
-      "cacheReadInputTokenCost": 6e-9,
+      "cacheReadInputTokenCost": 5.714285714285714e-09,
       "catalogOrder": 0,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 3e-7,
+      "inputCostPerToken": 2.857142857142857e-07,
       "inputModalities": [
         "text",
         "image"
@@ -16,15 +16,16 @@
       "maxOutputTokens": 384000,
       "mode": "chat",
       "model": "deepseek-flash",
-      "outputCostPerToken": 0.0000012,
+      "outputCostPerToken": 1.1428571428571428e-06,
       "outputModalities": [
         "text"
       ],
       "releaseDate": "2026-09-10",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 高峰时段 输入（缓存命中）0.04/输入（未命中）2.0/输出 8.0 元每百万 tokens（api-docs.deepseek.com/zh-cn/quick_start/pricing（2026-10-17 核对），deepseek-flash（DeepSeek-V4.1-Flash）），按约定汇率 7.0 换算（高峰价÷7.0）；空闲时段（工作日 9:00-12:00/14:00-18:00 外及节假日全天）半价留档；此前落值与官方现价不符，本批回正",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses",
@@ -49,13 +50,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 6e-9,
+      "cacheReadInputTokenCost": 5.714285714285714e-09,
       "catalogOrder": 1,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 3e-7,
+      "inputCostPerToken": 2.857142857142857e-07,
       "inputModalities": [
         "text",
         "image"
@@ -64,15 +65,16 @@
       "maxOutputTokens": 384000,
       "mode": "chat",
       "model": "deepseek-v4.1-flash",
-      "outputCostPerToken": 0.0000012,
+      "outputCostPerToken": 1.1428571428571428e-06,
       "outputModalities": [
         "text"
       ],
       "releaseDate": "2026-09-10",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 高峰时段 输入（缓存命中）0.04/输入（未命中）2.0/输出 8.0 元每百万 tokens（api-docs.deepseek.com/zh-cn/quick_start/pricing（2026-10-17 核对），deepseek-flash（DeepSeek-V4.1-Flash）同一模型别名行），按约定汇率 7.0 换算（高峰价÷7.0）；空闲时段（工作日 9:00-12:00/14:00-18:00 外及节假日全天）半价留档；此前落值与官方现价不符，本批回正",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses",
@@ -97,13 +99,13 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 4.4e-8,
+      "cacheReadInputTokenCost": 4.285714285714286e-08,
       "catalogOrder": 20,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "high",
-      "inputCostPerToken": 0.00000132,
+      "inputCostPerToken": 1.2857142857142858e-06,
       "inputModalities": [
         "text"
       ],
@@ -111,15 +113,16 @@
       "maxOutputTokens": 384000,
       "mode": "chat",
       "model": "deepseek-v4-pro",
-      "outputCostPerToken": 0.00000396,
+      "outputCostPerToken": 3.857142857142857e-06,
       "outputModalities": [
         "text"
       ],
       "releaseDate": "2026-04-24",
       "shutdownDate": "",
-      "sourceExchangeRateDate": "",
-      "sourcePricingCurrency": "",
-      "sourcePricingNote": "",
+      "sourceExchangeRateDate": "2026-10-17",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 高峰时段 输入（缓存命中）0.3/输入（未命中）9.0/输出 27.0 元每百万 tokens（api-docs.deepseek.com/zh-cn/quick_start/pricing（2026-10-17 核对），deepseek-v4-pro（DeepSeek-V4-Pro-0813）），按约定汇率 7.0 换算（高峰价÷7.0）；空闲时段（工作日 9:00-12:00/14:00-18:00 外及节假日全天）半价留档；此前落值与官方现价不符，本批回正",
       "supportedAPIProtocols": [
         "chat_completions",
         "responses",

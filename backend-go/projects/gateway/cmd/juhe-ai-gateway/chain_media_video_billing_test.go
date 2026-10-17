@@ -3,8 +3,8 @@ package main
 // 视频任务终态计费纯函数单测（chainMediaJobTerminalCostUsd 及其助手，契约
 // §2.8 网关自算口径 + 2026-10-05 按次计费批）：按次行、请求参数自算计量、
 // usage_missing 三级裁决与来源优先级。静态目录价即快照（glm cogvideox-3
-// $0.2/次、minimax MiniMax-H3 $0.08/s、gemini veo-3.0 $0.40/s），不依赖
-// mock 上游与 spool 链。
+// 1 元/次 ÷7.0、minimax MiniMax-H3 768P 0.50 元/s ÷7.0、gemini veo-3.0
+// $0.40/s，2026-10-17 口径批国内面回正），不依赖 mock 上游与 spool 链。
 import (
 	"testing"
 
@@ -15,27 +15,24 @@ import (
 func billingTestSeconds(v float64) *float64 { return &v }
 
 // TestChainMediaJobTerminalCostUsdVideoPerCall 锁定按次行结算（契约 §2.8
-// 按次计费）：目录行有 VideoOutputCostPerCall（cogvideox-3 $0.2/次）→ 一次
-// 任务 = 一次调用，成本 = PerCall × 1，不依赖秒计量（glm 轮询无时长回报，
-// 快照请求秒数也不进秒价链）。
+// 按次计费）：目录行有 VideoOutputCostPerCall（cogvideox-3 国内 1 元/次
+// ÷7.0）→ 一次任务 = 一次调用，成本 = PerCall × 1，不依赖秒计量（glm 轮询
+// 无时长回报，快照请求秒数也不进秒价链）。
 func TestChainMediaJobTerminalCostUsdVideoPerCall(t *testing.T) {
+	// cogvideox 载体已随 2025 前模型清理批移除，按次机制载体换现役
+	// MiniMax-Hailuo-2.3（国内 768P-6s 主档 2.00 元/条 ÷7.0）。
 	record := &gatewaymedia.MediaJobRecord{
 		Kind:         gatewaymedia.JobKindVideo,
-		ProviderCode: "glm",
+		ProviderCode: "minimax",
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
-			Model:   "cogvideox-3",
+			Model:   "MiniMax-Hailuo-2.3",
 			Seconds: billingTestSeconds(6),
 		},
 		ParamsApplied: []string{"model", "prompt", "seconds"},
 	}
 	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.2 {
-		t.Fatalf("cogvideox-3 per-call cost = %v, want 0.2（PerCall × 1）", cost)
-	}
-	// cogvideox-2：0.5 元/次 ÷ 7.0 = $0.0714（换算快照字面量）。
-	record.RequestSnapshot.Model = "cogvideox-2"
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.0714 {
-		t.Fatalf("cogvideox-2 per-call cost = %v, want 0.0714", cost)
+	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.2857142857 {
+		t.Fatalf("Hailuo-2.3 per-call cost = %v, want 0.2857142857（roundCost(2/7)，PerCall × 1）", cost)
 	}
 	// failed 不虚计（按次行同样只在 completed 计费）。
 	ir.Status = gatewaymedia.JobStatusFailed
@@ -53,19 +50,19 @@ func TestChainMediaJobTerminalCostUsdRequestSelfComputedSeconds(t *testing.T) {
 		Kind:         gatewaymedia.JobKindVideo,
 		ProviderCode: "minimax",
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
-			Model:   "MiniMax-H3", // $0.08/s
+			Model:   "MiniMax-H3", // 768P 0.50 元/s ÷ 7.0
 			Seconds: billingTestSeconds(4),
 		},
 		ParamsApplied: []string{"model", "prompt", "seconds", "input_reference"},
 	}
 	ir := &gatewaymedia.MediaJobIR{Status: gatewaymedia.JobStatusCompleted}
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.32 {
-		t.Fatalf("self-computed cost = %v, want 0.32（4s × $0.08/s）", cost)
+	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.2857142857 {
+		t.Fatalf("self-computed cost = %v, want 0.2857142857（roundCost(4s × 0.5/7)）", cost)
 	}
-	// 上游回报优先：轮询响应带秒计量时以回报为准（2s → 0.16），请求值不覆盖。
+	// 上游回报优先：轮询响应带秒计量时以回报为准，请求值不覆盖。
 	ir.Usage.OutputVideoSeconds = billingTestSeconds(2)
-	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.16 {
-		t.Fatalf("upstream usage wins = %v, want 0.16（2s × $0.08/s）", cost)
+	if cost := chainMediaJobTerminalCostUsd(record, ir); cost != 0.1428571429 {
+		t.Fatalf("upstream usage wins = %v, want 0.1428571429（roundCost(2s × 0.5/7)）", cost)
 	}
 }
 

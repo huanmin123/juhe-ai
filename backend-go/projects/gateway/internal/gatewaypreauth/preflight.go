@@ -23,14 +23,23 @@ import (
 
 // PreflightOptions mirrors OpenAIGatewayRequestPreflightOptions.
 type PreflightOptions struct {
-	Identity                        *OpenAIGatewayRequestIdentity
-	APIKeyRecord                    *gatewayruntimecache.GatewayAPIKeyRow
-	GroupFallbackAPIKeyRecord       *gatewayruntimecache.GatewayAPIKeyRow
-	CandidateAccounts               []gatewayruntimecache.OpenAIAccountSecret
-	RecoverableCandidateScope       *CandidateRecoverableScope
-	ResponseInspectionPolicies      []gatewayruntimecache.ResponseInspectionPolicySummary
-	DisableSessionAffinity          bool
-	TrafficSource                   string
+	Identity                   *OpenAIGatewayRequestIdentity
+	APIKeyRecord               *gatewayruntimecache.GatewayAPIKeyRow
+	GroupFallbackAPIKeyRecord  *gatewayruntimecache.GatewayAPIKeyRow
+	CandidateAccounts          []gatewayruntimecache.OpenAIAccountSecret
+	RecoverableCandidateScope  *CandidateRecoverableScope
+	ResponseInspectionPolicies []gatewayruntimecache.ResponseInspectionPolicySummary
+	DisableSessionAffinity     bool
+	TrafficSource              string
+	// DispatchStaticResolution 请求静态身份快照（策略路由分组会话亲和设计 §4
+	// 三阶段第 1 步）：置位时 runtime read 不消费动态模式状态，preflight 在
+	// 身份解析后经 SelectGatewayRuntimeForDispatchAsync 完成第 3 步。仅 /v1
+	// 派发链初始 preflight 置位。
+	DispatchStaticResolution bool
+	// GroupAffinityKey 是跨组回退重入 preflight 时种子化的组亲和键（§4 关键
+	// 点 2：回退不重查组亲和、不推进模式状态）：初始查询结果经 RouteAction
+	// 原样带回，重入 preflight 只透传给 DispatchContext 供写回消费。
+	GroupAffinityKey                string
 	SettingsOverride                *gatewayruntimecache.GatewaySettings
 	RequestLane                     gatewayproto.RequestLane
 	IgnoreAccountRuntimeSuppression bool
@@ -72,11 +81,17 @@ type PreflightInput struct {
 
 // DispatchContext mirrors OpenAIGatewayDispatchContext.
 type DispatchContext struct {
-	ActiveGatewaySettings                    gatewayruntimecache.GatewaySettings
-	UsageContext                             GatewayFailureUsageContext
-	Accounts                                 []gatewayruntimecache.OpenAIAccountSecret
-	SessionIdentity                          SessionIdentity
-	SessionAffinityKey                       string
+	ActiveGatewaySettings gatewayruntimecache.GatewaySettings
+	UsageContext          GatewayFailureUsageContext
+	Accounts              []gatewayruntimecache.OpenAIAccountSecret
+	SessionIdentity       SessionIdentity
+	SessionAffinityKey    string
+	// GroupAffinityKey / RouteStrategyID 承载组级会话黏性的写回与删除上下文
+	// （策略路由分组会话亲和设计 §5.1）：键空串 = 范围外（无会话键 / 模式不
+	// 在范围 / 绑定数不足 / 功能未装配）。策略 ID 与键计算时的 apiKeyRecord
+	// 同源；跨组回退重入时键从 RouteAction 原样种子化（不重查）。
+	GroupAffinityKey                         string
+	RouteStrategyID                          string
 	ClientStrategy                           ClientStrategyContext
 	ClientIPAccountAvoidance                 ClientIPAccountAvoidanceTracker
 	ModelPriority                            *gatewayrouting.GatewayAccountModelPriority
@@ -120,6 +135,9 @@ type RouteAction struct {
 	RoutePlanSnapshot           gatewayrouting.RoutePlanSnapshot[string]
 	InteractionResourceAffinity *gatewaygemini.AffinityBinding
 	NormalRouteFirstByteConfig  *NormalRouteFirstByteRuntimeConfig
+	// GroupAffinityKey 携带初始 preflight 的组亲和查询结果（策略路由分组会话
+	// 亲和设计 §4 关键点 2）：跨组回退重入 preflight 原样种子化，不重查。
+	GroupAffinityKey string
 }
 
 // RouteActionCoordination mirrors the Exclude<RouteCoordinationResult, dispatchable>
@@ -205,17 +223,22 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	}
 
 	var identity *OpenAIGatewayRequestIdentity
+	// runtime 承载中间件静态身份快照（策略路由分组会话亲和设计 §4 三阶段第 1
+	// 步产物，StaticResolutionOnly=true）；options.Identity 注入路径不解析
+	// runtime（候选/分组由注入方携带）。第 3 步在初始 sessionIdentity 之后完成。
+	var runtime *gatewayruntimecache.GatewayRuntime
 	if options.Identity != nil {
 		identity = options.Identity
 	} else {
-		runtime, err := s.ResolveGatewayRuntimeAsync(ctx, res, req, ResolveGatewayRuntimeOptions{})
+		resolved, err := s.ResolveGatewayRuntimeAsync(ctx, res, req, ResolveGatewayRuntimeOptions{DispatchStaticResolution: options.DispatchStaticResolution})
 		if err != nil {
 			return PreflightResult{}, err
 		}
-		if runtime == nil || runtime.APIKey == nil {
+		if resolved == nil || resolved.APIKey == nil {
 			s.Responses.FinalizeGatewayAuthFailureAudit(req, res, auditCapture)
 			return PreflightResult{}, nil
 		}
+		runtime = resolved
 		settings := runtime.Settings
 		gatewaySettings = &settings
 		apiKeyRecord = runtime.APIKey
@@ -495,6 +518,48 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	sessionIdentity := resolveSessionIdentityFromStrategy(s, req, initialClientStrategy, systemAccountID, apiKeyID)
 	bindAuditSessionIdentity(auditCapture, sessionIdentity, initialClientStrategy.ClientProfile)
 
+	// 组级会话亲和三阶段第 2→3 步（策略路由分组会话亲和设计 §4）：中间件静态
+	// 身份快照在此完成派发终态。组亲和键可计算且模式在范围时先查组绑定——
+	// 命中纯 peek 重排派发序（零状态消费，§4 关键点 3），未命中/无黏住恰好
+	// 推进一次模式状态（与既有单阶段完整读的状态语义一致）。Gemini interaction
+	// 亲和自带分组/账号锚定，不走组黏性也不消费模式状态（§4 关键点 3：策略
+	// 选择未治理派发时不推进）；跨组回退重入（options.Identity != nil）不进
+	// 本块——回退只消费既有候选快照（§4 关键点 2）。
+	groupAffinityKey := options.GroupAffinityKey
+	initialGroupAffinityStickyHit := false
+	runtimeStaticCompleted := false
+	if runtime != nil && runtime.StaticResolutionOnly && options.Identity == nil && interactionResourceAffinity == nil {
+		preferredGroupID := s.resolveStickyGroupForDispatch(ctx, apiKeyRecord, systemAccountID, apiKeyID, sessionIdentity.ConversationKey, trafficSource, &groupAffinityKey)
+		selected, selectErr := s.RuntimeCache.SelectGatewayRuntimeForDispatchAsync(ctx, *runtime, gatewayruntimecache.SelectGatewayRuntimeInput{
+			PreferredGroupID:    preferredGroupID,
+			AdvanceOnStickyMiss: true,
+		})
+		if selectErr != nil {
+			return PreflightResult{}, selectErr
+		}
+		runtime = &selected
+		runtimeStaticCompleted = true
+		initialGroupAffinityStickyHit = preferredGroupID != ""
+		if runtime.APIKey != nil {
+			apiKeyRecord = runtime.APIKey
+			// 组回退作用域记录与派发终态同源（P1-1 复审修复）：快照 cursor 以
+			// 该记录的绑定序计算——旧完整读行为下别名即轮转后的派发序（选中组
+			// cursor=0，请求内可回退），静态化后必须随选中行刷新，否则轮转/黏住
+			// 选中存储次位组时 cursor=1 把请求内跨组回退整体禁用。
+			groupFallbackAPIKeyRecord = asRecordAlias(runtime.APIKey)
+			groupID = runtime.APIKey.SelectedGroupID
+			identity = &OpenAIGatewayRequestIdentity{SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID}
+		}
+		runtimeGroupAccess = runtime.GroupAccess
+		runtimeAccounts = runtime.Accounts
+		runtimeAccountDispatchDiagnostics = runtime.AccountDispatchDiagnostics
+		auditCapture.BindContext(AuditGatewayContext{GroupID: groupID})
+		// 完成态快照回写 req.Runtime：清掉 StaticResolutionOnly 标记，后续
+		// 同请求重入 preflight（可恢复等待重试等）经缓存短路拿到的是派发
+		// 终态，不会二次推进模式状态。
+		req.Runtime = runtime
+	}
+
 	// 可靠性批次2（缺陷3）：options.CandidateAccounts 非 nil 且 Identity 为空
 	// 只出现在 chat 调度覆盖（进程内绑定作用域候选注入）——该场景候选已由绑定
 	// 作用域收敛（usage 按 BoundGroupID 记账），跳过 Key 策略面的 normal 路由
@@ -607,6 +672,44 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		sessionIdentity = resolveSessionIdentityFromStrategy(s, req, clientStrategy, systemAccountID, apiKeyID)
 	}
 	bindAuditSessionIdentity(auditCapture, sessionIdentity, clientStrategy.ClientProfile)
+
+	// 组级会话亲和：最终 profile 身份重解析（策略路由分组会话亲和设计 §4 关键
+	// 点 5）。初始/最终身份键不一致时丢弃初始 lookup 结果按最终会话键补查一次
+	//（本请求第 2 次组亲和 GET，同键跳过——多数请求零额外开销）；重选不重复
+	// 推进模式状态：初始黏住命中（零推进）时未命中补一次推进，初始已推进时
+	// 保持既有派发序（AdvanceOnStickyMiss=false）。
+	if runtimeStaticCompleted && interactionResourceAffinity == nil &&
+		trafficSource == TrafficSourceGateway && apiKeyRecord != nil &&
+		sessionIdentity.ConversationKey != "" && s.GroupAffinity != nil {
+		finalPreferred := ""
+		if derived, deriveErr := s.GroupAffinity.DeriveGroupAffinityKeyParts(systemAccountID, apiKeyID, recordRouteStrategyID(apiKeyRecord), sessionIdentity.ConversationKey); deriveErr == nil && derived != "" && derived != groupAffinityKey {
+			groupAffinityKey = derived
+			if stickyGroupID, hit := s.GroupAffinity.StickyGroupAsync(ctx, derived); hit {
+				finalPreferred = stickyGroupID
+			}
+			if finalPreferred != "" || initialGroupAffinityStickyHit {
+				selected, selectErr := s.RuntimeCache.SelectGatewayRuntimeForDispatchAsync(ctx, *runtime, gatewayruntimecache.SelectGatewayRuntimeInput{
+					PreferredGroupID:    finalPreferred,
+					AdvanceOnStickyMiss: initialGroupAffinityStickyHit,
+				})
+				if selectErr != nil {
+					return PreflightResult{}, selectErr
+				}
+				runtime = &selected
+				if runtime.APIKey != nil {
+					apiKeyRecord = runtime.APIKey
+					groupFallbackAPIKeyRecord = asRecordAlias(runtime.APIKey)
+					groupID = runtime.APIKey.SelectedGroupID
+					identity = &OpenAIGatewayRequestIdentity{SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID}
+				}
+				runtimeGroupAccess = runtime.GroupAccess
+				groupAccess = runtime.GroupAccess
+				runtimeAccounts = runtime.Accounts
+				auditCapture.BindContext(AuditGatewayContext{GroupID: groupID})
+				req.Runtime = runtime
+			}
+		}
+	}
 
 	clientIPAccountAvoidanceTracker := s.AccountAvoidance.CreateTracker(ClientIPAccountAvoidanceInput{
 		SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
@@ -838,6 +941,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			RoutePlanSnapshot:           *routePlanSnapshot,
 			InteractionResourceAffinity: interactionResourceAffinity,
 			NormalRouteFirstByteConfig:  s.normalRouteFirstByteConfigForAPIKey(apiKeyRecord, requestLane, compactionTimeoutsDisabled, options.NormalRouteFirstByteConfig),
+			GroupAffinityKey:            groupAffinityKey,
 		}
 	}
 	routeCoordinator := newPreflightRouteCoordinator(s, ctx, &preflightCoordinatorState{
@@ -937,6 +1041,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
 		StartedAt: input.StartedAt, CandidateAccounts: candidateFilter.Accounts,
 		ModelPriority: candidateFilter.ModelPriority, SessionAffinityKey: sessionAffinityKey,
+		GroupAffinityKey: groupAffinityKey,
 		// W1b 续：预过滤（能力/模型）跳过明细透传给决策摘要。
 		PreFilterSkipped: candidateFilter.PreFilterSkipped,
 		GroupAccess:      *groupAccess, SystemAccountID: systemAccountID,
@@ -1060,6 +1165,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Accounts:                                 compactPreflight.Accounts,
 		SessionIdentity:                          sessionIdentity,
 		SessionAffinityKey:                       sessionAffinityKey,
+		GroupAffinityKey:                         groupAffinityKey,
+		RouteStrategyID:                          recordRouteStrategyID(apiKeyRecord),
 		ClientStrategy:                           clientStrategy,
 		ClientIPAccountAvoidance:                 clientIPAccountAvoidanceTracker,
 		ModelPriority:                            candidateFilter.ModelPriority,
@@ -1595,6 +1702,30 @@ func recordBindings(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) []gatewa
 // recordBindingCount mirrors `apiKeyRecord.group_bindings?.length ?? 0`.
 func recordBindingCount(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) int {
 	return len(recordBindings(apiKeyRecord))
+}
+
+// resolveStickyGroupForDispatch 解析组级会话黏住的分组（策略路由分组会话亲和
+// 设计 §4 关键点 6：生效边界在键计算处一次完成）。无会话键 / 非网关流量 /
+// 无 Key 记录 / 功能未装配 / 模式不在范围 / 活跃绑定少于 2 时返回空串——零
+// 额外开销路径，不发组亲和 GET。命中返回黏住分组，派生键经 groupAffinityKey
+// 带出供写回与删除矩阵消费；未命中键同样带出（首个协议成功负责创建，§5）。
+func (s *Service) resolveStickyGroupForDispatch(ctx context.Context, apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, systemAccountID, apiKeyID, conversationKey, trafficSource string, groupAffinityKey *string) string {
+	if s.GroupAffinity == nil || apiKeyRecord == nil || conversationKey == "" || trafficSource != TrafficSourceGateway {
+		return ""
+	}
+	if !gatewayrouting.GroupStickyApplicable(apiKeyRecord.RouteStrategyMode, recordBindingCount(apiKeyRecord)) {
+		return ""
+	}
+	derived, err := s.GroupAffinity.DeriveGroupAffinityKeyParts(systemAccountID, apiKeyID, recordRouteStrategyID(apiKeyRecord), conversationKey)
+	if err != nil || derived == "" {
+		return ""
+	}
+	*groupAffinityKey = derived
+	stickyGroupID, hit := s.GroupAffinity.StickyGroupAsync(ctx, derived)
+	if !hit {
+		return ""
+	}
+	return stickyGroupID
 }
 
 // recordRouteStrategyID mirrors `apiKeyRecord?.route_strategy_id`.
