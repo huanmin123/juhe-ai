@@ -1702,20 +1702,6 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_proxy(
-  p_proxy_id text,
-  p_reason text
-) RETURNS void
-LANGUAGE plpgsql
-SET search_path = juhe_business, public
-AS $function$
-BEGIN
-  PERFORM juhe_business.account_list_availability_mark_dirty_accounts(ARRAY(
-    SELECT accounts.id FROM accounts WHERE accounts.proxy_profile_id = p_proxy_id
-  ), p_reason);
-END;
-$function$;
-
 CREATE OR REPLACE FUNCTION account_list_availability_mark_dirty_profile(
   p_profile_id text,
   p_reason text
@@ -2109,22 +2095,6 @@ BEGIN
 END;
 $function$;
 
-CREATE OR REPLACE FUNCTION account_list_availability_proxy_dirty_trigger()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = juhe_business, public
-AS $function$
-BEGIN
-  IF TG_OP <> 'DELETE' THEN
-    PERFORM juhe_business.account_list_availability_mark_dirty_proxy(NEW.id, 'proxy_fact_changed');
-  END IF;
-  IF TG_OP <> 'INSERT' THEN
-    PERFORM juhe_business.account_list_availability_mark_dirty_proxy(OLD.id, 'proxy_fact_changed');
-  END IF;
-  RETURN COALESCE(NEW, OLD);
-END;
-$function$;
-
 CREATE OR REPLACE FUNCTION account_list_availability_profile_dirty_trigger()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -2231,10 +2201,6 @@ DROP TRIGGER IF EXISTS account_list_availability_circuits ON account_circuit_inc
 CREATE TRIGGER account_list_availability_circuits
 AFTER INSERT OR UPDATE OR DELETE ON account_circuit_incidents
 FOR EACH ROW EXECUTE FUNCTION account_list_availability_circuit_dirty_trigger();
-DROP TRIGGER IF EXISTS account_list_availability_proxies ON proxy_profiles;
-CREATE TRIGGER account_list_availability_proxies
-AFTER UPDATE OR DELETE ON proxy_profiles
-FOR EACH ROW EXECUTE FUNCTION account_list_availability_proxy_dirty_trigger();
 DROP TRIGGER IF EXISTS account_list_availability_profiles ON provider_protocol_profiles;
 CREATE TRIGGER account_list_availability_profiles
 AFTER UPDATE OR DELETE ON provider_protocol_profiles
@@ -2247,6 +2213,12 @@ DROP TRIGGER IF EXISTS account_list_availability_projection_delete_health ON acc
 CREATE TRIGGER account_list_availability_projection_delete_health
 AFTER DELETE ON account_list_availability_projections
 FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health_trigger();
+-- PLAN-20261017T035500000Z：proxy_profiles 的 dirty 触发器扇出为结构性纯
+-- churn（投影管线构建/写入/读链零 proxy 消费，取证见计划），移除定义并对
+-- 存量库幂等清理；J3a 探测回写不再标脏。
+DROP TRIGGER IF EXISTS account_list_availability_proxies ON proxy_profiles;
+DROP FUNCTION IF EXISTS juhe_business.account_list_availability_proxy_dirty_trigger();
+DROP FUNCTION IF EXISTS juhe_business.account_list_availability_mark_dirty_proxy(text, text);
 `,
 	},
 	{

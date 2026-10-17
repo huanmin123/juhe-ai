@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20261017T035500000Z](计划-20261017T035500000Z-J3a代理触发器纯churn扇出根治.md)：BUG-0313 护航队治理批次 1-5——取证证明投影管线构建/写入/读链全链路零 proxy_profiles 消费，proxy dirty 触发器扇出为结构性纯 churn（J3a 每次探测回写无谓标脏 N 账户全量重投影）；根治=从 schema 移除触发器与 `mark_dirty_proxy` 两函数 + 块尾幂等 DROP 清理存量库，方案 B（WHEN 列守卫）否决。
+
 - [PLAN-20261017T030349000Z](计划-20261017T030349000Z-库端dirty触发器有界等待.md)：BUG-0313 护航队治理批次 1-3——库端 23 个 dirty 触发器（18 业务 + 5 quota crossing）唯一汇聚函数 `account_list_availability_mark_dirty_accounts` 的 7001001 advisory 取锁改为「保存 → 限 2s → 取锁 → 恢复」包裹（零外溢、无 EXCEPTION 捕获、与 Go 侧 `ListDirtyLockWaitTimeout` 同口径），消除管理面写与 stats 聚合写宿主事务无界等锁的最后暴露面；随 ensure-schema 序列交付，部署文档无需同步。
 
 - [PLAN-20261016T235628000Z](计划-20261016T235628000Z-供应商卡片选择与图标实施.md)：添加账户「先选供应商再建账户」——新建向导第 1 步重构为供应商卡片墙（图标/接入方式/账户数/搜索，复用 `selectProvider` 流程与懒加载契约），`ProviderIcon` 本地内联 SVG 图标映射（品牌 path 与登录页同源 + minimax/xai 补录，fallback 字母圆标）接入账户列表、供应商表名称列、模型目录弹窗标题与模型下拉。纯前端零后端零 schema；**已实施完成（2026-10-17：W1 图标基座 + W2 卡片墙 + W3 五处接入，typecheck/单测 1099/回归 12 条/build 全绿，独立复审 pass 无 blocker）**。
