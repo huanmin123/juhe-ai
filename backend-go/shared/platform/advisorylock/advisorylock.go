@@ -17,7 +17,7 @@ import (
 //
 // 锁序契约：能控制事务结构的应用侧写事务，必须把本键的
 // pg_advisory_xact_lock 放在事务首条取锁语句（先取锁后取行锁；其前仅允许
-// SET LOCAL lock_timeout 等事务级配置语句，见 LockAccountListDirty），且只
+// lock_timeout 等事务级配置语句，见 LockAccountListDirty），且只
 // 在 PG 方言执行；事务再持有其他 advisory 键时（如 J1 的 health-projection
 // 键）本键必须最先取。注意库端触发器路径物理上只能在事务中途取本键（函数体
 // 内），因此"首语句"约定只对应用侧成立——未持本键先拿行锁的应用事务与
@@ -40,12 +40,14 @@ type TxExecContext interface {
 }
 
 // LockAccountListDirty 在事务内取 AccountListDirty 序列化锁，取锁前先以
-// SET LOCAL lock_timeout 限定本轮等待（SET LOCAL 只作用于当前事务，提交/
-// 回滚自动还原）。调用方须保证本调用处于事务首条取锁语句位置（锁序契约见
-// AccountListDirty），且仅在 PG 方言调用；等待超过 ListDirtyLockWaitTimeout
-// 返回包裹 55P03 的错误，由调用方按既有重试路径自愈。
+// SELECT set_config('lock_timeout', …, true) 限定本轮等待（is_local=true 与
+// SET LOCAL 等价，只作用于当前事务、提交/回滚自动还原；取函数形式是为了让
+// SQLite 测试夹具可经 no-op 标量注册放行，PG 语义不变）。调用方须保证本调
+// 用处于事务首条取锁语句位置（锁序契约见 AccountListDirty），且仅在 PG 方言
+// 调用；等待超过 ListDirtyLockWaitTimeout 返回包裹 55P03 的错误，由调用方按
+// 既有重试路径自愈。
 func LockAccountListDirty(ctx context.Context, tx TxExecContext) error {
-	if _, err := tx.ExecContext(ctx, `SET LOCAL lock_timeout = '`+ListDirtyLockWaitTimeout+`'`); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('lock_timeout', '`+ListDirtyLockWaitTimeout+`', true)`); err != nil {
 		return fmt.Errorf("设置 AccountListDirty 取锁等待上限失败: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, AccountListDirty); err != nil {

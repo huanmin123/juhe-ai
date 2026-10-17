@@ -407,8 +407,8 @@ func TestW184ResultProjectorTxsTakeDirtyLockFirst(t *testing.T) {
 			t.Fatalf("录制投影结果=%+v err=%v", result, err)
 		}
 		statements := rec.all()
-		if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
-			t.Fatalf("projectStored 事务首语句必须是取锁等待上限 SET LOCAL lock_timeout（BUG-0313），实际: %q", statements[0].query)
+		if !strings.Contains(statements[0].query, "set_config('lock_timeout'") {
+			t.Fatalf("projectStored 事务首语句必须是取锁等待上限事务级 set_config lock_timeout（BUG-0313），实际: %q", statements[0].query)
 		}
 		advisory := w184StatementIndex(statements, advisoryQuery)
 		if advisory != 1 {
@@ -437,8 +437,8 @@ func TestW184ResultProjectorTxsTakeDirtyLockFirst(t *testing.T) {
 			t.Fatalf("录制 no-targets 结果=%+v err=%v", result, err)
 		}
 		statements := rec.all()
-		if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
-			t.Fatalf("ProjectManualNoTargets 事务首语句必须是 SET LOCAL lock_timeout（BUG-0313），实际: %q", statements[0].query)
+		if !strings.Contains(statements[0].query, "set_config('lock_timeout'") {
+			t.Fatalf("ProjectManualNoTargets 事务首语句必须是事务级 set_config lock_timeout（BUG-0313），实际: %q", statements[0].query)
 		}
 		if advisory := w184StatementIndex(statements, advisoryQuery); advisory != 1 {
 			t.Fatalf("ProjectManualNoTargets 事务首条取锁语句必须是 advisory 7001001，实际下标=%d", advisory)
@@ -459,8 +459,8 @@ func TestW184ResultProjectorTxsTakeDirtyLockFirst(t *testing.T) {
 			t.Fatalf("录制 outbound 失败: %v", err)
 		}
 		statements := rec.all()
-		if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
-			t.Fatalf("ProjectManualOutbound 事务首语句必须是 SET LOCAL lock_timeout（BUG-0313），实际: %q", statements[0].query)
+		if !strings.Contains(statements[0].query, "set_config('lock_timeout'") {
+			t.Fatalf("ProjectManualOutbound 事务首语句必须是事务级 set_config lock_timeout（BUG-0313），实际: %q", statements[0].query)
 		}
 		if advisory := w184StatementIndex(statements, advisoryQuery); advisory != 1 {
 			t.Fatalf("ProjectManualOutbound 事务首条取锁语句必须是 advisory 7001001，实际下标=%d", advisory)

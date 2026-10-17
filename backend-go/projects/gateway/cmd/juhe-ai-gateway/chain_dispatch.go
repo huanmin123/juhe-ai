@@ -968,8 +968,12 @@ func newChainListAvailabilityDirtyMarker(composed *composition) gatewayaccountef
 		}
 		defer func() { _ = tx.Rollback() }()
 		// 问题-0184：与 jobs 侧全部 dirty 写事务共用 advisory 锁串行化，
-		// 消除多路径异序持锁的死锁环；必须是本事务首条语句。
-		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisorylock.AccountListDirty); err != nil {
+		// 消除多路径异序持锁的死锁环；必须是本事务首条取锁语句。
+		// 问题-0313：经共享助手先以事务级 set_config 限定 lock_timeout=2s 再
+		// 取锁——/v1 请求路径在资源饱和时不再无界等锁，超时以 55P03 快失败向
+		// 上传播（marker 失败既有语义即向上传播），与 jobs 侧用户裁决同口径：
+		// 投影误差可接受、下轮 J1 健康回写数秒内重新标脏自愈。
+		if err := advisorylock.LockAccountListDirty(ctx, tx); err != nil {
 			return err
 		}
 		// 家族展开：id IN (source) OR authorization_instance_source_account_id

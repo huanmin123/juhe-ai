@@ -159,16 +159,16 @@ func w184RecordedProjector(t *testing.T, postgres bool) []w184RecordedStatement 
 }
 
 // TestW184ProjectionDualAdvisoryLockOrderContract 断言 PG 方言下 projectOutcome
-// 事务以 SET LOCAL lock_timeout（BUG-0313 取锁等待上限）开头，随后前两条取锁
-// 语句分别是 7001001 与 health-projection 键（顺序不可倒置），且任何表访问
-// 语句不得先于两把锁。
+// 事务以事务级 set_config lock_timeout（BUG-0313 取锁等待上限，与 SET LOCAL
+// 等价）开头，随后前两条取锁语句分别是 7001001 与 health-projection 键（顺序
+// 不可倒置），且任何表访问语句不得先于两把锁。
 func TestW184ProjectionDualAdvisoryLockOrderContract(t *testing.T) {
 	statements := w184RecordedProjector(t, true)
 	if len(statements) < 5 {
 		t.Fatalf("录制语句过少: %+v", statements)
 	}
-	if !strings.Contains(statements[0].query, "SET LOCAL lock_timeout") {
-		t.Fatalf("首语句必须是 SET LOCAL lock_timeout（BUG-0313 取锁等待上限），实际: %q", statements[0].query)
+	if !strings.Contains(statements[0].query, "set_config('lock_timeout'") {
+		t.Fatalf("首语句必须是事务级 set_config lock_timeout（BUG-0313 取锁等待上限），实际: %q", statements[0].query)
 	}
 	if !strings.Contains(statements[1].query, "pg_advisory_xact_lock($1)") || strings.Contains(statements[1].query, "hashtextextended") {
 		t.Fatalf("首条取锁语句必须是 pg_advisory_xact_lock($1)（7001001），实际: %q", statements[1].query)

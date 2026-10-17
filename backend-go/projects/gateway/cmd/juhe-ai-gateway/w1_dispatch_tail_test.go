@@ -44,19 +44,25 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// init 为本包 sqlite（modernc.org/sqlite）测试句柄注册 no-op 标量函数
-// pg_advisory_xact_lock：chain_dispatch.go 的 list-availability 脏标记在
-// pgDialect 事务首句执行 SELECT pg_advisory_xact_lock($1)（问题-0184 串行化），
-// SQLite 无此内置函数，sqlite ATTACH 模拟 PG 方言的
-// TestW1XListAvailabilityDirtyMarkerArms 需要该占位（返回 NULL、忽略参数）
-// 事务才能推进。注册只对本 init 之后新开的连接生效；重复注册返回 error
-// （不 panic），本包仅此一处注册，init 一次性执行。
+// init 为本包 sqlite（modernc.org/sqlite）测试句柄注册 no-op 标量函数：
+//   - pg_advisory_xact_lock：chain_dispatch.go 的 list-availability 脏标记在
+//     pgDialect 事务首条取锁语句执行 SELECT pg_advisory_xact_lock($1)
+//     （问题-0184 串行化），SQLite 无此内置函数；
+//   - set_config：问题-0313 取锁助手以 SELECT set_config('lock_timeout', …,
+//     true)（与 SET LOCAL 等价）先行下发事务级等待上限，同为无内置函数。
+//
+// 两者占位为返回 NULL、忽略参数，ATTACH 模拟 PG 方言的
+// TestW1XListAvailabilityDirtyMarkerArms 事务才能推进。注册只对本 init 之后
+// 新开的连接生效；重复注册返回 error（不 panic），本包仅此一处注册，init
+// 一次性执行。
 func init() {
-	if err := sqlite.RegisterDeterministicScalarFunction("pg_advisory_xact_lock", 1,
-		func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-			return nil, nil
-		}); err != nil {
-		panic(err)
+	for name, arity := range map[string]int32{"pg_advisory_xact_lock": 1, "set_config": 3} {
+		if err := sqlite.RegisterDeterministicScalarFunction(name, arity,
+			func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+				return nil, nil
+			}); err != nil {
+			panic(err)
+		}
 	}
 }
 
