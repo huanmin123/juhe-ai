@@ -217,8 +217,8 @@ func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 	if err != nil || cfg.OwnerLease != 45*time.Second || cfg.RetentionInterval != 2*time.Minute || cfg.RetentionBatchSize != 321 {
 		t.Fatalf("F4 runtime settings cfg=%+v err=%v", cfg, err)
 	}
-	if cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 10 {
-		t.Fatalf("default F4 PostgreSQL pool=%d/%d want 5096/10", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
+	if cfg.PostgresMaxOpenConns != 20 || cfg.PostgresMaxIdleConns != 10 {
+		t.Fatalf("default F4 PostgreSQL pool=%d/%d want 20/10", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 	}
 	// 2026-09-30 C4 收编：JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS /
 	// MAX_IDLE_CONNS 收编为常量，pool 覆盖断言删除（取值恒为默认）。

@@ -224,15 +224,17 @@ func (p *ResultProjector) recordRejectedSkip(result ProjectionResult) {
 }
 
 // lockAccountListDirtyInTx 在事务首条取锁语句位置取账户列表 dirty 写序列化
-// advisory 锁（advisorylock.AccountListDirty = 7001001）。锁序契约（问题-0237
-// 的 2026-09-30 生产三方死锁环；锁序约定出处见问题-0184/0192）：本投影器的每秒轮询事务会 UPDATE
-// juhe_business.proxy_profiles，行级触发器 account_list_availability_proxies
-// 经 mark_dirty_accounts 在触发器内取 7001001；若事务先拿 proxy 行锁再等
-// advisory，与首锁 7001001 的合规方（circuitstore applyOneClaim 等）交叉
-// 持锁会形成 40P01 死锁环。因此凡 BeginTx 后将要 UPDATE proxy_profiles
-// 的事务必须在首条取锁语句取本锁；非 PG 方言 no-op（SQLite 单 writer 无死锁）。
-// BUG-0313：取锁等待受事务级 lock_timeout 约束，超时 55P03 失败本轮——
-// 投影游标未推进，下轮从原位置重放，不再随持锁方被主机饿死而无限排队。
+// advisory 锁（advisorylock.AccountListDirty = 7001001）。历史契约（问题-0237
+// 的 2026-09-30 生产三方死锁环；锁序约定出处见问题-0184/0192）：本投影器事务
+// UPDATE juhe_business.proxy_profiles 时，行级触发器
+// account_list_availability_proxies 经 mark_dirty_accounts 在触发器内取
+// 7001001，先拿 proxy 行锁再等 advisory 会与合规方交叉持锁成 40P01 环。
+// 2026-10-17 该触发器已按 PLAN-20261017T035500000Z 移除（proxy UPDATE 不再
+// 隐式标脏），本锁保留为保守串行化：维持与全部 dirty 写方的全序，并使本事务
+// 的等待受 BUG-0313 的 2s lock_timeout 约束（超时 55P03 失败本轮——投影游标
+// 未推进，下轮从原位置重放，不随持锁方被主机饿死而无限排队）。是否可随触发
+// 器移除一并撤销（J3a 退出 dirty 护航队）见问题-0313 后续记录跟进项；非 PG
+// 方言 no-op（SQLite 单 writer）。
 func (p *ResultProjector) lockAccountListDirtyInTx(ctx context.Context, tx *sql.Tx) error {
 	if p.mode != StorePostgres {
 		return nil

@@ -37,7 +37,7 @@ func TestWFLoadManualAdminConfigDeadlineAndPools(t *testing.T) {
 	env3["JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE"] = "10s"
 	cfg, err := LoadManualAdminConfig(wfEnv(env3))
 	// 清理批次 C4：连接池 env 收编常量，仅断言 deadline 显式配置生效。
-	if err != nil || cfg.MaxOpenConns != 5096 || cfg.MaxIdleConns != 10 || cfg.RequestDeadline != 10*time.Second {
+	if err != nil || cfg.MaxOpenConns != 20 || cfg.MaxIdleConns != 10 || cfg.RequestDeadline != 10*time.Second {
 		t.Fatalf("显式配置=%+v err=%v", cfg, err)
 	}
 }

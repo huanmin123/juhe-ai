@@ -72,7 +72,9 @@ func LoadManualAdminConfig(getenv func(string) string) (ManualAdminConfig, error
 	cfg.PostgresURL = managementURL
 	var err error
 	// 清理批次 C4（2026-09-30）：管理面连接池 env 零引用收编为默认常量。
-	cfg.MaxOpenConns = 5096
+	// 2026-10-17 取值收敛 5096→20（BUG-0313 治理批次 3，与审计/F4 池同口径）：
+	// 手动代理测试为低频管理操作，5096 对 PG max_connections=100 是连接风暴隐患。
+	cfg.MaxOpenConns = 20
 	cfg.MaxIdleConns = sqlpool.MaxIdleConns
 	if cfg.RequestDeadline, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE", 25*time.Second, time.Second, 25*time.Second); err != nil {
 		return ManualAdminConfig{}, err

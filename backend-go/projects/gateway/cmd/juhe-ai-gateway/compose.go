@@ -56,12 +56,15 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
-// 系统组合根 PG 池默认规格（gateway-system-api / gateway-chat 两个角色
-// 共用）：open 对齐审计/操作日志 store 的 defaultPostgresPoolSize，idle 取
-// sqlpool 全局上限。sqlpool.ValidatePoolLimits 拒绝 0/0（"无上限"不是合法
-// 池规格），此前两处 0/0 使 PG 模式下业务与 chat 池永远打不开。
+// 系统组合根 PG 池默认规格（system-api / chat / codex-context 三池共用）：
+// idle 取 sqlpool 全局上限。sqlpool.ValidatePoolLimits 拒绝 0/0（"无上限"不
+// 是合法池规格），此前两处 0/0 使 PG 模式下业务与 chat 池永远打不开。
+// 2026-10-17 取值收敛 5096→32（BUG-0313 治理批次 3，生产 pg_stat_activity
+// 实证：gateway 三池合计稳态 16 连接、PG max_connections=100）：3 池 × 32
+// = 96 理论上限仍在 PG 预算内，彻底消除饱和时对全库的连接风暴；池耗尽时
+// database/sql 排队等待而非报错，10 用户规模 32 已远超实际并发。
 const (
-	gatewayPostgresPoolMaxOpen = 5096
+	gatewayPostgresPoolMaxOpen = 32
 	gatewayPostgresPoolMaxIdle = sharedsqlpool.MaxIdleConns
 )
 
@@ -1268,6 +1271,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			DispatchRecoverableWait: chainServices.DispatchRecoverableWait,
 			// G14 session identity services (degrade by driver axes, never nil).
 			Identity: chainServices.Identity,
+			// 组级会话绑定服务（策略路由分组会话亲和设计 §3）：独立数据面，
+			// 与账户级亲和同驱动来源（redisCache 置位走 Redis）。
+			GroupAffinity: chainServices.GroupAffinity,
 			// G18 Codex Responses↔Chat 桥状态（迁移漏装配修复）：segments 根 +
 			// 双模行存储由组合根装配（codex_context_store.go）；两者齐备时链
 			// 组装构造真实桥（newChainCodexBridgePreflight），任一缺席保持

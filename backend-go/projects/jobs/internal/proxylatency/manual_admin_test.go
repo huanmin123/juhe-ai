@@ -225,7 +225,7 @@ func TestLoadManualAdminConfigIsExplicitAndBounded(t *testing.T) {
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE":       "25s",
 	}
 	cfg, err := LoadManualAdminConfig(func(key string) string { return env[key] })
-	if err != nil || !cfg.Enabled || cfg.RequestDeadline != 25*time.Second || cfg.MaxOpenConns != 5096 {
+	if err != nil || !cfg.Enabled || cfg.RequestDeadline != 25*time.Second || cfg.MaxOpenConns != 20 {
 		t.Fatalf("enabled config=%#v err=%v", cfg, err)
 	}
 	env["JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS"] = "0.0.0.0:not-a-port"
