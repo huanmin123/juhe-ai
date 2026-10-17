@@ -63,6 +63,14 @@ const (
 	maximumDirtyClaimLimit   = 500
 	maximumDirtyLeaseMS      = 60 * 60_000
 	maximumDirtyRetryDelayMS = 24 * 60 * 60_000
+
+	// enqueueSubTxRows 是 EnqueueMissing/EnqueueDue 单个子事务的标脏行数上限。
+	// BUG-0313 护航队教训：锁内驻留随事务行数线性增长（主机饱和时单条语句可达
+	// 秒级），单事务装满 limit 会把 7001001 连续持锁拉到分钟级，期间全部 dirty
+	// 写入方（含 /v1 脏标记的 2s lock_timeout）整段超时空转。拆成 20 行/子事务
+	// 把最长连续持锁压到约 1/5，批次之间其他写入方获得取锁窗口；单批失败时先前
+	// 批次已提交，两条扫描都以"未标脏"为过滤条件，调用方下轮重试即续跑。
+	enqueueSubTxRows = 20
 )
 
 func optionalUpdatedAt(updatedAt string) (string, error) {
@@ -274,20 +282,73 @@ func (r *ListAvailabilityRepo) lockDirtyWritesInTx(ctx context.Context, tx txLik
 	return advisorylock.LockAccountListDirty(ctx, tx)
 }
 
+// enqueueSubTransactions 反复执行「独立短事务：取锁 -> 批量扫描 -> 逐行标脏 ->
+// 提交」直到凑满 limit 或扫描排空。selectBatch 只返回当前仍未标脏的下一批
+// 账户（天然游标：先前批次提交后即从扫描中消失）。返回已入队总数；中途出错
+// 时先前子事务已提交、错误原样上抛，无补偿需求。
+func (r *ListAvailabilityRepo) enqueueSubTransactions(ctx context.Context, limit int, nowMS int64, reason string, selectBatch func(tx txLike, batchRows int) ([]string, error)) (int, error) {
+	enqueued := 0
+	for enqueued < limit {
+		batchRows := limit - enqueued
+		if batchRows > enqueueSubTxRows {
+			batchRows = enqueueSubTxRows
+		}
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return enqueued, err
+		}
+		if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+			_ = tx.Rollback()
+			return enqueued, err
+		}
+		accountIDs, err := selectBatch(tx, batchRows)
+		if err != nil {
+			_ = tx.Rollback()
+			return enqueued, err
+		}
+		if len(accountIDs) == 0 {
+			_ = tx.Rollback()
+			break
+		}
+		for _, accountID := range accountIDs {
+			if err := r.markDirtyTx(ctx, tx, accountID, reason, nowMS, nowMS); err != nil {
+				_ = tx.Rollback()
+				return enqueued, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return enqueued, err
+		}
+		enqueued += len(accountIDs)
+		if len(accountIDs) < batchRows {
+			break
+		}
+	}
+	return enqueued, nil
+}
+
+// scanSingleStringColumn 物化单字符串列结果集。
+func scanSingleStringColumn(rows *sql.Rows) ([]string, error) {
+	defer rows.Close()
+	var values []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
 // EnqueueMissing 对齐 enqueueMissing...InClient（worker 专属 bootstrap 扫描）。
+// 拆批语义见 enqueueSubTxRows。
 func (r *ListAvailabilityRepo) EnqueueMissing(ctx context.Context, limit int, nowMS int64) (int, error) {
 	if limit < 1 || limit > maximumDirtyClaimLimit {
 		return 0, fmt.Errorf("limit 必须是 1..%d 的正整数", maximumDirtyClaimLimit)
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
-		return 0, err
-	}
-	rows, err := tx.QueryContext(ctx, `
+	return r.enqueueSubTransactions(ctx, limit, nowMS, "projection_missing", func(tx txLike, batchRows int) ([]string, error) {
+		rows, err := tx.QueryContext(ctx, `
     SELECT accounts.id
     FROM `+r.table("accounts")+` accounts
     LEFT JOIN `+r.table("resource_authorizations")+` authorizations
@@ -305,47 +366,23 @@ func (r *ListAvailabilityRepo) EnqueueMissing(ctx context.Context, limit int, no
       AND projections.account_id IS NULL
       AND dirty_accounts.account_id IS NULL
     ORDER BY accounts.created_at ASC, accounts.id ASC
-    LIMIT ?`, limit)
-	if err != nil {
-		return 0, err
-	}
-	var accountIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, err
+    LIMIT ?`, batchRows)
+		if err != nil {
+			return nil, err
 		}
-		accountIDs = append(accountIDs, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	rows.Close()
-	for _, accountID := range accountIDs {
-		if err := r.markDirtyTx(ctx, tx, accountID, "projection_missing", nowMS, nowMS); err != nil {
-			return 0, err
-		}
-	}
-	return len(accountIDs), tx.Commit()
+		return scanSingleStringColumn(rows)
+	})
 }
 
-// EnqueueDue 对齐 enqueueDue...InClient（到期转移转 dirty）。
+// EnqueueDue 对齐 enqueueDue...InClient（到期转移转 dirty）。拆批语义见
+// enqueueSubTxRows。
 func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS int64) (int, error) {
 	if limit < 1 || limit > maximumDirtyClaimLimit {
 		return 0, fmt.Errorf("limit 必须是 1..%d 的正整数", maximumDirtyClaimLimit)
 	}
 	now := time.UnixMilli(nowMS).UTC().Format(time.RFC3339Nano)
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
-		return 0, err
-	}
-	rows, err := tx.QueryContext(ctx, `
+	return r.enqueueSubTransactions(ctx, limit, nowMS, "projection_due_transition", func(tx txLike, batchRows int) ([]string, error) {
+		rows, err := tx.QueryContext(ctx, `
     SELECT projections.account_id
     FROM `+r.table("account_list_availability_projections")+` projections
     LEFT JOIN `+r.table("account_list_availability_dirty")+` dirty_accounts
@@ -354,30 +391,12 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
       AND projections.next_transition_at <= ?
       AND dirty_accounts.account_id IS NULL
     ORDER BY projections.next_transition_at ASC, projections.account_id ASC
-    LIMIT ?`, instantParam(r.postgres, now, r.now), limit)
-	if err != nil {
-		return 0, err
-	}
-	var accountIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, err
+    LIMIT ?`, instantParam(r.postgres, now, r.now), batchRows)
+		if err != nil {
+			return nil, err
 		}
-		accountIDs = append(accountIDs, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	rows.Close()
-	for _, accountID := range accountIDs {
-		if err := r.markDirtyTx(ctx, tx, accountID, "projection_due_transition", nowMS, nowMS); err != nil {
-			return 0, err
-		}
-	}
-	return len(accountIDs), tx.Commit()
+		return scanSingleStringColumn(rows)
+	})
 }
 
 // EnqueueAllForRuntimeRecovery 对齐 enqueueAll...ForRuntimeRecoveryInClient。
