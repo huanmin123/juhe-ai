@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycallertier"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -87,6 +88,12 @@ type Service struct {
 
 	// Clock injects time (tests); defaults to the system clock.
 	Clock Clock
+
+	// CallerTier 是调用方分级影子观测的信号透传口（调用方分级调度设计 §3/
+	// §5.4）：preflight 只在本地模型过滤失败按调用方责任（4xx 请求校验态）
+	// 渲染终态时透传一次 model_filter_failed 信号，不理解分级语义；nil =
+	// 未装配（组合测试），静默跳过。
+	CallerTier gatewaycallertier.SignalRecorder
 }
 
 // New validates the required wiring. The runtime cache and the observability

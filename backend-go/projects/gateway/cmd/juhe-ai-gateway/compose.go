@@ -1310,6 +1310,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// B-3（BUG-0174）：账户 API Key 轮转 Redis 计数器（StateClient 为
 			// nil 时返回 nil，引擎保持进程内计数器回退）。
 			KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),
+			// 调用方分级影子观测驱动选择（调用方分级调度设计 §6.1/§6.3）：
+			// 与 turn-retry / KeyRotation 同源的 state Redis 客户端判据，
+			// 链装配据此选 Redis / memory 存储（部署形态选择，非运行时回退）。
+			StateClient: chainServices.StateClient,
 			// Codex / Anthropic 用量响应头持久化（compose_codex_usage_headers.go）：
 			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道
 			// （同一适配器实例同时实现 codex / anthropic 两个派发窄口）。

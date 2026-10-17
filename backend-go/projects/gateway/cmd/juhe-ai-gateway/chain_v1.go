@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycallertier"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
@@ -56,7 +57,12 @@ type gatewayChain struct {
 	clock               gatewaypreauth.Clock
 	bodyPipeline        *gatewaybody.Middleware
 	speedFirstAdmission *chainSpeedFirstBodyAdmissionGate
-	finalizationUsage   gatewayusage.UsageRecorder
+	// callerTier 是调用方分级影子观测的记录器（调用方分级调度设计 §8 M1）：
+	// 分母在认证成功点计入（本文件），模型过滤失败信号经 preauth CallerTier
+	// 口透传，非法 JSON 信号经 bodyPipeline 组合适配透传。影子运行，零资源
+	// 效果；nil 仅组合测试（信号与分母整体缺席）。
+	callerTier        *gatewaycallertier.Recorder
+	finalizationUsage gatewayusage.UsageRecorder
 	// finalizationPricing / finalizationSyncPricingAllowed 是完成尝试记录
 	// （chainFinalizationUsage）的同步定价面注入：catalog 与 usageService 共
 	// 享同一实例，gate 与 ServiceConfig.SyncPricingAllowed 同源
@@ -198,6 +204,15 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	if req.Runtime != nil {
 		r = r.WithContext(context.WithValue(r.Context(), chainGatewayRuntimeKey{}, req.Runtime))
 		req.HTTP = r
+		// 调用方分级影子观测请求分母（调用方分级调度设计 §3/§8 M1）：上方
+		// preauth 认证阶段返回且未被提前写响应收尾——req.Runtime 恰在认证
+		// （含 IP 策略 / 用户限额 / 图片车道守卫）全部通过后于 preauth.go
+		// 首次赋值，认证失败路径已在上方 return，到不了这里；每请求因此恰计
+		// 一次分母。best-effort 影子计数，忽略 Recorder 内部错误（分级是辅助
+		// 调度不是事实门槛，设计 §6.2）。
+		if c.callerTier != nil && req.Runtime.APIKey != nil {
+			c.callerTier.RecordRequest(ctx, req.Runtime.APIKey.ID)
+		}
 	}
 
 	// ---- body pipeline (rejectGatewayRawBodyByContentLength ->

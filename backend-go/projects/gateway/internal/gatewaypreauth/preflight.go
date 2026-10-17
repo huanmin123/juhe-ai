@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycallertier"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -573,6 +574,16 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 					ErrorCode: normalRoute.Code, ErrorMessage: normalRoute.Message,
 				},
 			})
+			// 调用方分级影子观测信号（调用方分级调度设计 §3 M1）：本地模型过
+			// 滤失败按 4xx 请求校验态（invalid_request_error，责任方=调用方）
+			// 渲染终态时计一次 model_filter_failed；503 分组无可用账号属容量
+			// 侧、429 授权配额属额度侧，均在设计排除清单内不计。放失败响应写
+			// 完之后：best-effort 影子透传，客户端先拿到原语义响应，存储内部
+			// 错误由 Recorder 经指标暴露（影子边界：不改响应语义与时序）。
+			if normalRoute.StatusCode < 500 && normalRoute.Type == "invalid_request_error" &&
+				s.CallerTier != nil && apiKeyID != "" {
+				s.CallerTier.RecordSignal(ctx, apiKeyID, gatewaycallertier.SignalModelFilterFailed)
+			}
 			return PreflightResult{}, nil
 		}
 	}

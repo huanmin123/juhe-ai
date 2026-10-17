@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycallertier"
 )
 
 // Gateway body boundary middleware, mirroring request/body-middleware.ts
@@ -116,6 +118,15 @@ type Config struct {
 	LaneResolver LaneResolver
 	// Recorder records audit/usage rejections (nil = no-op until G17 wires).
 	Recorder RejectionRecorder
+	// CallerTierSignals 是调用方分级影子观测的信号透传口（调用方分级调度设计
+	// §3/§5.4）：解析器拒绝面只在本地判定出「责任方=调用方的 400 无效请求
+	// 体」时透传一次 invalid_json 信号，不理解分级语义；nil = 未装配（组合
+	// 测试），静默跳过。
+	CallerTierSignals gatewaycallertier.SignalRecorder
+	// GatewayAPIKeyIDOf 从请求解析已认证 API Key ID（组合根适配 preauth 挂进
+	// 请求上下文的 runtime 快照；body 管线运行于认证之后，认证失败的请求到
+	// 不了这里）。nil 或返回空串 = 身份不可用，跳过信号。
+	GatewayAPIKeyIDOf func(r *http.Request) string
 	// Logger receives the pipeline events (nil = discard).
 	Logger Logger
 	// Parser is the shared bounded JSON pool (nil = new default pool).
@@ -322,7 +333,30 @@ func (m *Middleware) HandleParserRejection(w http.ResponseWriter, r *http.Reques
 		"bodyLimit":     perr.Limit,
 	})
 	writeErrorJSON(w, statusCode, payload)
+	// 调用方分级影子观测信号（调用方分级调度设计 §3 M1）：响应写完后的
+	// best-effort 影子计数，不影响已发出的响应语义与状态码。
+	m.recordCallerTierInvalidJSONSignal(r, failure)
 	return true
+}
+
+// recordCallerTierInvalidJSONSignal 在解析器拒绝面透传 invalid_json 影子信
+// 号：只收本地判定、责任方=调用方（FailureAttribution=gateway_policy）的
+// 400「网关请求体无效」；413 尺寸超限与 408 上传中断（下游断开）属容量/
+// 客户端消失侧，在设计 §3 排除清单内不计。身份经 GatewayAPIKeyIDOf 读
+// preauth 解析的已认证 Key（认证失败的请求到不了解析器拒绝面）；缺身份或
+// 未装配即静默跳过。
+func (m *Middleware) recordCallerTierInvalidJSONSignal(r *http.Request, failure RawBodyParserErrorResponse) {
+	if m.cfg.CallerTierSignals == nil || m.cfg.GatewayAPIKeyIDOf == nil {
+		return
+	}
+	if failure.StatusCode != http.StatusBadRequest || failure.FailureAttribution != FailureAttributionGatewayPolicy {
+		return
+	}
+	apiKeyID := m.cfg.GatewayAPIKeyIDOf(r)
+	if apiKeyID == "" {
+		return
+	}
+	m.cfg.CallerTierSignals.RecordSignal(r.Context(), apiKeyID, gatewaycallertier.SignalInvalidJSON)
 }
 
 // Capture mirrors captureGatewayRawBody. The raw body must have been read

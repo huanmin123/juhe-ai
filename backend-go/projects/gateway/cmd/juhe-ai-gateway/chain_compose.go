@@ -25,6 +25,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycallertier"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
@@ -43,6 +44,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/redis/go-redis/v9"
 )
 
 // gatewaybodyLogger adapts the chain slog logger onto the gatewaybody.Logger
@@ -187,6 +189,12 @@ type chainRuntimeDeps struct {
 	// chain_apikey_rotation_redis.go 的 Redis 计数器（StateClient 同源）；
 	// nil 时引擎回落包级进程内计数器。
 	KeyRotation gatewaydispatch.APIKeyRotationCounter
+
+	// StateClient 是该链的 runtime-state Redis 客户端（与 turn-retry /
+	// KeyRotation 同源判据，runtimeStateDriver==='redis' 时非 nil）。调用方
+	// 分级影子观测据此选驱动（chain_compose 装配段）：有则 Redis 跨进程，
+	// 无则进程内 memory（部署形态选择，设计 §6.1；非运行时回退）。
+	StateClient *redis.Client
 
 	// 显式账户错误策略（chain_error_policy*.go）：决策服务 + 状态写侧窄口
 	// （optional；nil 时派发器保留决策事实，状态变更加显式降级日志）。生产
@@ -396,6 +404,17 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// ---- observability ----
 	observability := newSlogObservability(logger, clock)
 
+	// ---- caller tier shadow observation（调用方分级调度设计 §8 M1）----
+	// 驱动选择跟随该链 state Redis 客户端可用性（newCallerTierStore）。
+	// 指标回调接 gatewaycallertier 进程注册表（/__aisys__/metrics 暴露）；
+	// 构造失败 fail-fast（对齐 recorder/codexBridge 的装配惯例）。影子运行，
+	// 零资源效果，不新增任何配置项。
+	callerTier, err := gatewaycallertier.NewRecorder(newCallerTierStore(deps.StateClient), gatewaycallertier.PrometheusMetrics(), nil)
+	if err != nil {
+		recorder.Close()
+		return nil, nil, fmt.Errorf("compose caller tier shadow recorder: %w", err)
+	}
+
 	// ---- body pipeline (request/body-middleware.ts) ----
 	// D-119（BUG-0175）：拒绝记录 Recorder 落 usage failure（Node
 	// recordGatewayBodyRejection）；TextRawBodyLimitMegabytes 读运行时快照
@@ -413,6 +432,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		Parser:                    chainBodyParser,
 		Recorder:                  rejectionRecorder,
 		TextRawBodyLimitMegabytes: chainTextRawBodyLimitOf(deps.Cache),
+		// 调用方分级影子观测（调用方分级调度设计 §3）：解析器拒绝面只在
+		// 「责任方=调用方的 400 无效请求体」时透传 invalid_json 信号；身份
+		// 经 D-119 挂进请求上下文的 runtime 快照解析（body 管线运行于认证
+		// 之后，认证失败的请求到不了这里）。
+		CallerTierSignals: callerTier,
+		GatewayAPIKeyIDOf: chainGatewayAPIKeyIDOf,
 	})
 
 	// ---- route resolver (adapter 1) ----
@@ -715,8 +740,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		ClientStrategy:     clientStrategyAdapter{deps: codexClientStrategy},
 		SessionIdentity:    sessionIdentityAdapter{services: deps.Identity},
 		SessionAffinity:    sessionAffinityAdapter{services: deps.Identity},
-		Codex:              chainCodexBridgePreflight(codexBridge),
-		Recoverable:        deps.Recoverable,
+		// 调用方分级影子观测信号口（调用方分级调度设计 §3/§5.4）：preflight
+		// 在本地模型过滤失败按调用方责任渲染终态时透传 model_filter_failed。
+		CallerTier:  callerTier,
+		Codex:       chainCodexBridgePreflight(codexBridge),
+		Recoverable: deps.Recoverable,
 	})
 	if err != nil {
 		recorder.Close()
@@ -730,6 +758,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		observability: observability,
 		clock:         clock,
 		bodyPipeline:  bodyPipeline,
+		// 调用方分级影子观测记录器（调用方分级调度设计 §8 M1）：分母在本链
+		// 认证成功点计入，信号经 preauth CallerTier 口与 bodyPipeline 适配
+		// 透传；影子运行零资源效果。
+		callerTier: callerTier,
 		speedFirstAdmission: &chainSpeedFirstBodyAdmissionGate{
 			preauth:       preauthService,
 			QueueDefaults: deps.QueueDefaults,
@@ -1094,6 +1126,29 @@ func chainGatewayRuntimeOf(r *http.Request) *gatewayruntimecache.GatewayRuntime 
 	}
 	runtime, _ := r.Context().Value(chainGatewayRuntimeKey{}).(*gatewayruntimecache.GatewayRuntime)
 	return runtime
+}
+
+// chainGatewayAPIKeyIDOf 从请求上下文解析 preauth 已认证的 API Key ID
+// （D-119 runtime 快照同一身份通道，供 gatewaybody 信号透传面消费）；
+// 未解析/类型不符返回空串，调用方按「身份不可用」跳过影子信号。
+func chainGatewayAPIKeyIDOf(r *http.Request) string {
+	if runtime := chainGatewayRuntimeOf(r); runtime != nil && runtime.APIKey != nil {
+		return runtime.APIKey.ID
+	}
+	return ""
+}
+
+// newCallerTierStore 按该链 state Redis 客户端可用性选调用方分级的驱动
+// （调用方分级调度设计 §6.1/§6.3）：与 turn-retry / KeyRotation 同源判据
+// （compose.go 传 chainServices.StateClient，runtimeStateDriver==='redis'
+// 时非 nil）。redis 驱动落 juhe-ai:caller-tiers:<apiKeyID>（滑动 TTL 48h，
+// 重启/丢失回 T2 保守默认）；standalone/memory 驱动落进程内 store。双形态
+// 都是启动时选定的部署形态，非运行时回退。
+func newCallerTierStore(stateClient *redis.Client) gatewaycallertier.Store {
+	if stateClient != nil {
+		return gatewaycallertier.NewRedisStore(stateClient, "juhe-ai:caller-tiers:", time.Now)
+	}
+	return gatewaycallertier.NewMemoryStore(time.Now)
 }
 
 // chainTextRawBodyLimitOf 提供捕获期文本 lane 上限 provider：读运行时设置
