@@ -32,7 +32,7 @@ func TestSetGptRequestOverrideModelCatalogPort(t *testing.T) {
 		SupportedReasoningEfforts: []string{"high"},
 	}}})
 	account := gatewayruntimecache.OpenAIAccountSecret{
-		ID: "a-1", ProviderCode: "openai",
+		ID: "a-1", VendorCode: "openai",
 		Credentials: map[string]any{
 			"service_tier_override":     "flex",
 			"reasoning_effort_override": "high",

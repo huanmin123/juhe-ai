@@ -192,6 +192,116 @@ func TestWAParseUsageFromSseText(t *testing.T) {
 	waOAssertToken(t, usage.OutputTokens, 5, "output")
 }
 
+// 顶层 error 对象帧为流的首个内容（零前置输出）：事件完成（空行）即置位
+// FailedReceived/TerminalReceived，不给透传留窗口（设计 §4 判定时序）。
+func TestWAOpenAIStreamInspectorErrorFrameFirstContent(t *testing.T) {
+	inspector := NewStreamInspector()
+	inspector.PushText("data: {\"error\":{\"code\":\"upstream_error\",\"message\":\"upstream sent an error event\"}}\n\n")
+	snapshot := inspector.Snapshot()
+	if !snapshot.FailedReceived || !snapshot.TerminalReceived {
+		t.Fatalf("首个内容即 error 帧应即时失败且终止: %+v", snapshot)
+	}
+	if snapshot.OutputReceived {
+		t.Fatalf("零前置输出不应有可见输出: %+v", snapshot)
+	}
+	if snapshot.ErrorCode != "upstream_error" || snapshot.ErrorMessage != "upstream sent an error event" {
+		t.Fatalf("错误字段 = %q/%q", snapshot.ErrorCode, snapshot.ErrorMessage)
+	}
+}
+
+// 失败判定状态单调：error 帧之后继续推送正常 chat chunk，FailedReceived
+// 保持 true 不回退（检查器快照只置位不复位）。
+func TestWAOpenAIStreamInspectorFailedReceivedMonotonic(t *testing.T) {
+	inspector := NewStreamInspector()
+	inspector.PushText("data: {\"error\":{\"code\":\"upstream_error\",\"message\":\"upstream sent an error event\"}}\n\n")
+	if snapshot := inspector.Snapshot(); !snapshot.FailedReceived {
+		t.Fatalf("error 帧后应已置位失败: %+v", snapshot)
+	}
+	inspector.PushText("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n")
+	inspector.PushText("data: [DONE]\n\n")
+	snapshot := inspector.Finish()
+	if !snapshot.FailedReceived {
+		t.Fatalf("后续正常帧不得复位 FailedReceived: %+v", snapshot)
+	}
+	if !snapshot.TerminalReceived {
+		t.Fatalf("TerminalReceived 应保持置位: %+v", snapshot)
+	}
+	// 正常 chunk 照常计入输出统计：失败不吞掉后续事件的观察。
+	if !snapshot.OutputReceived || snapshot.OutputEventCount != 1 {
+		t.Fatalf("error 后的 chat chunk 应计入输出: %v/%d", snapshot.OutputReceived, snapshot.OutputEventCount)
+	}
+}
+
+// error 帧携带 usage：失败判定与 usage 捕获互不排斥（同一事件双结论）。
+func TestWAOpenAIStreamInspectorErrorFrameWithUsage(t *testing.T) {
+	inspection := InspectStreamText("data: {\"error\":{\"code\":\"upstream_error\",\"message\":\"upstream sent an error event\"},\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\n")
+	if !inspection.FailedReceived || !inspection.TerminalReceived {
+		t.Fatalf("error+usage 帧应失败且终止: %+v", inspection)
+	}
+	waOAssertToken(t, inspection.Usage.InputTokens, 1, "input")
+	waOAssertToken(t, inspection.Usage.OutputTokens, 2, "output")
+	if inspection.ErrorCode != "upstream_error" {
+		t.Fatalf("错误码 = %q", inspection.ErrorCode)
+	}
+}
+
+// 超大 error 帧（单事件单行超过 inspector 行上限 256KB，streamInspectorMaxLineBytes）：
+// 整流跳过解析（Skipped），不做逐事件分类，因此不判 Failed——设计 §5.2 已知
+// 边界（结构性限制，非本判定缺口）。
+func TestWAOpenAIStreamInspectorOversizedErrorFrameSkipped(t *testing.T) {
+	inspector := NewStreamInspector()
+	// error 对象仅含 message 键：无 "type" 字符串可被前缀探针识别。
+	inspector.PushText("data: {\"error\":{\"message\":\"" + strings.Repeat("x", 256*1024) + "\"}}\n\n")
+	snapshot := inspector.Finish()
+	if !snapshot.Skipped {
+		t.Fatalf("超行限 error 帧应整流跳过: %+v", snapshot)
+	}
+	if snapshot.SkipReason != "SSE 单行超过网关解析上限" {
+		t.Fatalf("跳过原因 = %q", snapshot.SkipReason)
+	}
+	if snapshot.FailedReceived || snapshot.TerminalReceived {
+		t.Fatalf("跳过路径不判失败/终止: %+v", snapshot)
+	}
+}
+
+// 超大 error 帧变体：error 内含 "type" 字段时不触发整流跳过，走 oversized
+// 事件分类路径——事件类型取自 "type" 前缀探针（"upstream_error" 不在
+// oversized 失败/终止类型集），同样不判 Failed。与上一用例共同锚定 §5.2
+// 的两个分支：超大事件一律不解析 JSON、不做负载级失败判定。
+func TestWAOpenAIStreamInspectorOversizedErrorFrameWithTypeNotFailed(t *testing.T) {
+	inspector := NewStreamInspector()
+	inspector.PushText("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"" + strings.Repeat("x", 300*1024) + "\"}}\n\n")
+	snapshot := inspector.Finish()
+	if snapshot.Skipped {
+		t.Fatalf("含 type 的超大帧走 oversized 事件分类而非整流跳过: %+v", snapshot)
+	}
+	if snapshot.FailedReceived {
+		t.Fatalf("oversized 路径不解析 JSON，不应判失败: %+v", snapshot)
+	}
+	if snapshot.LastEventType != "upstream_error" {
+		t.Fatalf("事件类型应取自 type 前缀探针: %q", snapshot.LastEventType)
+	}
+}
+
+// SSE 多 data 行把 JSON 拆成非法负载：DataParseError 记账路径，不判
+// Failed（设计 §3.4「非法 JSON 非失败」的行为锚定）。
+func TestWAOpenAIStreamInspectorSplitJSONDataParseError(t *testing.T) {
+	inspection := InspectStreamText("data: {\"error\":\ndata: \"x\"}}\n\n")
+	if inspection.FailedReceived {
+		t.Fatalf("拆散 JSON 不应判失败: %+v", inspection)
+	}
+	if inspection.EventCount != 1 {
+		t.Fatalf("事件数 = %d，期望 1", inspection.EventCount)
+	}
+	replay := NewStreamInspector()
+	replay.PushText("data: {\"error\":\ndata: \"x\"}}\n\n")
+	replay.Finish()
+	summaries := replay.DrainEventSummaries()
+	if len(summaries) != 1 || !summaries[0].ParseError {
+		t.Fatalf("拆散 JSON summary = %+v", summaries)
+	}
+}
+
 // 请求输入估算与流式 usage 兜底。
 func TestWAOpenAIUsageFallback(t *testing.T) {
 	t.Run("EstimateRequestInputTokens", func(t *testing.T) {

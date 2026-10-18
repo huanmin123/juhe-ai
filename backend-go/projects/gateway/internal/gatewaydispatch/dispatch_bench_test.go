@@ -234,7 +234,7 @@ func BenchmarkDispatchApplyGptAccountRequestOverridesBody(b *testing.B) {
 	}
 	input := GptAccountOverrideInput{
 		// ProviderCode gpt 保持基准继续覆盖值断言阶段（gpt 专属枚举）。
-		ProviderCode:   "gpt",
+		VendorCode:   "gpt",
 		Credentials:    map[string]any{"service_tier_override": "priority", "reasoning_effort_override": "high"},
 		EndpointFamily: "chat_completions",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{

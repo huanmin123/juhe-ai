@@ -357,11 +357,13 @@ func (m *Server) serveVolcengineTTSStream(w http.ResponseWriter, idx int, scenar
 	if half == 0 {
 		half = len(payload)
 	}
+	// A 级帧形态（2026-10-18 真实上游 2.0 出音实测）：音频帧 data 为 base64
+	// 字符串、句级帧带 sentence、终止帧 code 20000000。
 	lines := []string{
-		`{"event":"start","data":{}}`,
-		`{"event":"audio","data":{"audio":"` + base64.StdEncoding.EncodeToString(payload[:half]) + `"}}`,
-		`{"event":"audio","data":{"audio":"` + base64.StdEncoding.EncodeToString(payload[half:]) + `"}}`,
-		`{"event":"done","data":{}}`,
+		`{"code":0,"message":"","data":"` + base64.StdEncoding.EncodeToString(payload[:half]) + `"}`,
+		`{"code":0,"message":"","data":"` + base64.StdEncoding.EncodeToString(payload[half:]) + `"}`,
+		`{"code":0,"message":"","data":null,"sentence":{"phonemes":[],"text":"mock","words":[]}}`,
+		`{"code":20000000,"message":"OK","data":null}`,
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

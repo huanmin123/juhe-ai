@@ -31,9 +31,13 @@ type OpenAIAccountView struct {
 	Account gatewayruntimecache.OpenAIAccountSecret
 }
 
-func (v OpenAIAccountView) GetID() string           { return v.Account.ID }
-func (v OpenAIAccountView) GetName() string         { return v.Account.Name }
-func (v OpenAIAccountView) GetProviderCode() string { return v.Account.ProviderCode }
+func (v OpenAIAccountView) GetID() string   { return v.Account.ID }
+func (v OpenAIAccountView) GetName() string { return v.Account.Name }
+
+// GetProviderCode 投影位承载 vendor 身份（供应商与上游协议面重构设计 §1.1/§2.1
+// 切片）：响应面语音 adapter 分派（mediastream）与响应检查策略的 provider 匹配
+// 同键消费；账户 secret 的 ProviderCode 过渡字段恒空，不再作为身份源。
+func (v OpenAIAccountView) GetProviderCode() string { return v.Account.VendorCode }
 func (v OpenAIAccountView) GetProviderProtocolProfileID() string {
 	return v.Account.ProviderProtocolProfileID
 }

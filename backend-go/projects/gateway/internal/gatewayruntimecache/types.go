@@ -151,9 +151,11 @@ type GatewayAPIKeyGroupBindingRow struct {
 	Priority        int    `json:"priority"`
 	Weight          int    `json:"weight"`
 	Status          string `json:"status"`
-	// ProviderCode 过渡字段：groups.provider_code 已随供应商解耦退役（供应商
-	// 与上游协议面重构设计 §8），SQL 读取不再投影该列，路由语义不消费，读取
-	// 结果恒为零值；字段待组合根切片与消费方一并移除。
+	// ProviderCode 过渡字段（2026-10-18 修复批迁移窗口）：groups.provider_code
+	// 列已在 fresh DDL 恢复（DEFAULT 'gpt' shim，存量数据迁移语义不变），
+	// SQL 投影随之恢复（resolveGroupAccess / ResolveGroupUsageAccessMetadata），
+	// /v1/models 账户并集 factProvider 等消费方在迁移窗口内继续按组 provider
+	// 维度装配；运行时迁移完成后由清理命令与消费方一并统一收口。
 	ProviderCode string `json:"provider_code"`
 	GroupEnabled int    `json:"group_enabled"`
 }
@@ -338,6 +340,14 @@ type OpenAIAccountSecret struct {
 	AccountExpiresAt                  *string                              `json:"accountExpiresAt,omitempty"`
 	ExpiresAt                         *string                              `json:"expiresAt,omitempty"`
 	Credentials                       map[string]any                       `json:"credentials"`
+
+	// VendorCode / ConnectionDriverCode 是供应商解耦后的账户连接身份（供应商
+	// 与上游协议面重构设计 §1.1/§2.1）：组合根按账户行 vendor_code /
+	// connection_driver_code 投影（授权实例经来源账户 resource_* 列）。vendor
+	// 值域与旧 providerCode 同名（gpt/xai/deepseek/anthropic/gemini/glm/
+	// minimax/volcengine/qwen），generic_http 账户 VendorCode 为空串。
+	VendorCode           string `json:"vendorCode"`
+	ConnectionDriverCode string `json:"connectionDriverCode"`
 }
 
 // CloneStaticOpenAIAccountSecret mirrors cloneStaticOpenAIAccountSecret: the

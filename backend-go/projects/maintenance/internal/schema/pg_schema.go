@@ -445,11 +445,62 @@ const pgSeedEndpointFamilyInsert = `
 
 // provider_protocol_profiles seed（pgSeedProfileInsert/
 // pgSeedProfileAccountTypesSelect/pgSeedProfileAccountTypesUpdate/
-// pgSeedProfileFamilyInsert 与 pgSeedProfiles 数据）随供应商与上游协议面重构
-// 批退役：目标架构中协议档案由 §1.1 连接器注册表（connection preset）承担，
-// DDL 已无 provider_protocol_profiles / provider_protocol_profile_families
-// 两表，seed 不再写任何 profile 行。protocols / protocol_endpoint_families
-// 仍为目标表，其 seed 保留。
+// pgSeedProfileFamilyInsert 与 pgSeedProfiles 数据）曾随供应商与上游协议面
+// 重构批退役：目标架构中协议档案由 §1.1 连接器注册表（connection preset）
+// 承担。2026-10-18 修复批恢复旧 provider/profile 种子（迁移窗口并存）：
+// dbb2543e6 移除旧 providers / provider_protocol_profiles /
+// provider_protocol_profile_families 建表的同时退役了其种子行，但运行时
+// accounts 写路径仍以 providers × provider_protocol_profiles JOIN 校验账户
+// 创建，fresh 种子库创建账户 400。以下语句与数据逐字取回 dbb2543e6^ 版本，
+// 幂等语义不变（ON CONFLICT DO NOTHING / 守卫式 repair）；与新 vendors 种子
+// 并存，存量数据迁移语义不变。种子语句不进 collectPostgresSchemaStatements
+// 的 DDL 语句清单，goldenPostgresSchemaStatementCount 及 per-schema 计数
+// 不受影响。protocols / protocol_endpoint_families 仍为目标表，其 seed
+// 与旧版逐字一致，无需重复恢复。
+const pgSeedLegacyProviderInsert = `
+        INSERT INTO "juhe_business"."providers" (
+          id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT DO NOTHING
+      `
+
+// pgSeedLegacyProviderDefaultModelsRepair refreshes empty provider default model lists.
+const pgSeedLegacyProviderDefaultModelsRepair = `
+        UPDATE "juhe_business"."providers"
+        SET default_supported_models_json = $1, updated_at = $2
+        WHERE code = $3
+          AND (default_supported_models_json IS NULL OR btrim(default_supported_models_json) = '' OR default_supported_models_json = '[]')
+      `
+
+const pgSeedLegacyProfileInsert = `
+        INSERT INTO "juhe_business"."provider_protocol_profiles" (
+          id, provider_code, name, description, enabled, protocol_code, protocol_version,
+          base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        ON CONFLICT DO NOTHING
+      `
+
+// pgSeedLegacyProfileAccountTypesSelect reads one profile account_types_json for the repair step.
+const pgSeedLegacyProfileAccountTypesSelect = `
+        SELECT account_types_json
+        FROM "juhe_business"."provider_protocol_profiles"
+        WHERE id = $1
+      `
+
+// pgSeedLegacyProfileAccountTypesUpdate merges missing built-in account types into one profile (from repairBuiltInProviderProfileAccountTypes).
+const pgSeedLegacyProfileAccountTypesUpdate = `
+        UPDATE "juhe_business"."provider_protocol_profiles"
+        SET account_types_json = $1, updated_at = $2
+        WHERE id = $3
+      `
+
+// pgSeedLegacyProfileFamilyInsert seeds one provider_protocol_profile_families row.
+const pgSeedLegacyProfileFamilyInsert = `
+          INSERT INTO "juhe_business"."provider_protocol_profile_families" (
+            profile_id, family_code, enabled, capabilities_json, created_at, updated_at
+          ) VALUES ($1, $2, 1, '[]', $3, $4)
+          ON CONFLICT DO NOTHING
+        `
 
 // pgSeedGroupDefaultRepair marks the built-in default group when its owner has
 // no default group yet（设计 §8：每 system_account_id 至多一个 is_default=1，
@@ -674,6 +725,457 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "通义百炼（阿里云 DashScope）官方供应商，支持 API Key 接入对话（qwen 系 OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别）能力",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"wan2.2-t2v-plus\"]",
+	},
+}
+
+// 2026-10-18 修复批恢复旧 provider/profile 种子数据（迁移窗口并存）：逐字取回
+// dbb2543e6^ 的 DEFAULT_PROVIDER_SEEDS（11 行 providers，含 openai 父行与
+// hybrid）与 DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS（16 行协议档案）。新
+// vendors 种子（pgSeedProviders，9 真实厂商）保留不动；两套种子分别在各自
+// 目标表幂等写入，存量数据迁移语义不变。
+// pgSeedLegacyProvider mirrors DEFAULT_PROVIDER_SEEDS.
+type pgSeedLegacyProvider struct {
+	ID                         string
+	Code                       string
+	Name                       string
+	Description                string
+	ParentCode                 string
+	Enabled                    int
+	DefaultSupportedModelsJSON string
+}
+
+var pgSeedLegacyProviders = []pgSeedLegacyProvider{
+	{
+		ID:                         "openai",
+		Code:                       "openai",
+		Name:                       "OpenAI 兼容",
+		Description:                "通用 OpenAI-compatible 供应商，用于接入兼容 OpenAI v1 协议的上游服务，默认只提供 API Key 透传能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
+	},
+	{
+		ID:                         "gpt",
+		Code:                       "gpt",
+		Name:                       "GPT",
+		Description:                "GPT 官方供应商，继承通用 OpenAI-compatible 能力，并启用 OAuth、Codex Responses 等 GPT 专属能力",
+		ParentCode:                 "openai",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
+	},
+	{
+		ID:                         "xai",
+		Code:                       "xai",
+		Name:                       "xAI / Grok",
+		Description:                "xAI 官方供应商，支持 API Key 与 Grok OAuth 接入 OpenAI v1 文本协议；媒体面支持 Grok Imagine Video 视频（契约 §6.1）",
+		ParentCode:                 "openai",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"grok-4.7\",\"grok-4.6\",\"grok-4.5\",\"grok-imagine-video-1.5\"]",
+	},
+	{
+		ID:                         "deepseek",
+		Code:                       "deepseek",
+		Name:                       "DeepSeek",
+		Description:                "DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 与 Responses 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"deepseek-flash\",\"deepseek-v4.1-flash\",\"deepseek-v4-pro\"]",
+	},
+	{
+		ID:                         "anthropic",
+		Code:                       "anthropic",
+		Name:                       "Anthropic",
+		Description:                "Anthropic 官方供应商，支持 API Key 或 OAuth Access Token（Bearer）接入 Anthropic Messages 原生协议",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"claude-opus-5-5\",\"claude-fable-5-1\",\"claude-opus-5\",\"claude-sonnet-5\"]",
+	},
+	{
+		ID:                         "gemini",
+		Code:                       "gemini",
+		Name:                       "Gemini",
+		Description:                "Google Gemini 官方供应商，支持 API Key 或 Google OAuth 接入 Gemini v1beta Generate Content 与 Interactions；OpenAI 客户端可使用兼容档案",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"gemini-3.8-flash\",\"gemini-3.7-flash\",\"gemini-3.6-flash\",\"gemini-3.5-flash-lite\"]",
+	},
+	{
+		ID:                         "glm",
+		Code:                       "glm",
+		Name:                       "智谱 GLM",
+		Description:                "智谱 GLM 官方供应商，支持通用 GLM API Key、GLM Coding Plan OpenAI Chat 档案，以及 GLM Coding Anthropic v1 Messages 档案",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"glm-5.3\",\"glm-5.2\",\"glm-5.1\",\"glm-5\",\"glm-5-turbo\",\"glm-4.7-flashx\",\"glm-4.7-flash\"]",
+	},
+	{
+		// M3 媒体新增供应商（媒体设计 §9/契约 §8）：MiniMax 仅声明媒体能力
+		//（Hailuo 视频生成 + speech 系 TTS），不承接聊天流量——MiniMax 聊天
+		// 端点非 /v1/chat/completions，目录亦无 chat 模型行。
+		ID:                         "minimax",
+		Code:                       "minimax",
+		Name:                       "MiniMax",
+		Description:                "MiniMax 官方供应商，支持 API Key 接入视频生成（Hailuo 系 video_generation）与语音合成（speech 系 t2a_v2）媒体能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"MiniMax-Hailuo-2.3\",\"speech-2.8-turbo\"]",
+	},
+	{
+		// M3 媒体新增供应商（媒体设计 §9/契约 §9）：火山方舟声明视频能力
+		//（豆包 Seedance 系 contents/generations/tasks）；M6 补 TTS（豆包
+		// openspeech /api/v3/tts/create，2026-10-17 TTS 迁移批自旧端点 /api/v3/tts 迁移）；对话批补聊天（ark OpenAI 兼容端点
+		// /api/v3/chat/completions，豆包 doubao 对话模型面）；2026-10-17 补
+		// 图像生成（豆包 seedream 系 OpenAI 兼容图像端点
+		// /api/v3/images/generations，实测出图成功；Agent Plan 专属端点
+		// /api/plan/v3/images/generations 实测可用）；同日语音识别承接批补
+		// 长转写（豆包录音文件识别 2.0 openspeech /api/v3/auc/bigmodel/
+		// submit|query 异步两段，`/v1/audio/jobs` 统一面，契约 §9.2）。
+		//
+		// DefaultSupportedModelsJSON 换为现役视频模型
+		// doubao-seedance-2-0-mini-260615（既有 doubao-seedance-1-0-pro-250528
+		// 官方「即将下线」），语音识别承接批追加 volc.seedasr.auc（上游
+		// X-Api-Resource-Id 真实标识）。注意 seed upsert 只在新建库生效
+		//（既有库不回填默认支持模型，属预期；运营可按需在管理面调整）。
+		ID:                         "volcengine",
+		Code:                       "volcengine",
+		Name:                       "火山方舟",
+		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts/create）、图像生成（豆包 seedream 系 images/generations）与语音识别长转写（豆包录音文件识别 2.0 /api/v3/auc/bigmodel/submit|query，语音应用凭据）能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"doubao-seedance-2-0-mini-260615\",\"volc.seedasr.auc\"]",
+	},
+	{
+		// M3 媒体新增供应商（媒体设计 §9/契约 §10）：通义百炼声明视频能力
+		//（万相 wan 系 DashScope 异步任务）；M3f 补长转写（paraformer）；
+		// 对话批补聊天（DashScope OpenAI 兼容模式 /compatible-mode/v1/chat/
+		// completions，qwen 对话模型面）。CosyVoice TTS 面仍未回填。
+		ID:                         "qwen",
+		Code:                       "qwen",
+		Name:                       "通义百炼",
+		Description:                "通义百炼（阿里云 DashScope）官方供应商，支持 API Key 接入对话（qwen 系 OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别）能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"wan2.2-t2v-plus\"]",
+	},
+	{
+		ID:                         "hybrid",
+		Code:                       "hybrid",
+		Name:                       "混合供应商",
+		Description:                "混合供应商账户用于创建真实上游账户，并在账户内配置允许的下游协议入口和上游模型映射；不指向其他账户、分组或 API Key",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"claude-opus-5-5\",\"gemini-3.8-flash\",\"glm-5.3\"]",
+	},
+}
+
+// pgSeedLegacyProfile mirrors DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS. AccountTypes
+// and Capabilities are kept as slices; the seed parameters are JSON-encoded
+// from them exactly like the Node JSON.stringify calls.
+type pgSeedLegacyProfile struct {
+	ID                      string
+	ProviderCode            string
+	Name                    string
+	Description             string
+	Enabled                 int
+	ProtocolCode            string
+	ProtocolVersion         string
+	BaseURL                 string
+	DefaultHealthCheckModel string
+	AccountTypes            []string
+	Capabilities            []string
+	EndpointFamilies        []string
+}
+
+var pgSeedLegacyProfiles = []pgSeedLegacyProfile{
+	{
+		ID:                      "profile_openai_openai_v1",
+		ProviderCode:            "openai",
+		Name:                    "OpenAI 兼容 / OpenAI v1",
+		Description:             "通用 OpenAI-compatible 供应商的 OpenAI v1 协议档案，仅承载 API Key 透传、模型目录和通用协议策略",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.openai.com/v1",
+		DefaultHealthCheckModel: "gpt-6-sol",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"responses", "chat", "passthrough"},
+		EndpointFamilies:        []string{"chat_completions", "responses"},
+	},
+	{
+		ID:                      "profile_gpt_openai_v1",
+		ProviderCode:            "gpt",
+		Name:                    "GPT / OpenAI v1",
+		Description:             "GPT 供应商的 OpenAI v1 协议档案，支持 OAuth 与 API Key 两种账户接入方式",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.openai.com/v1",
+		DefaultHealthCheckModel: "gpt-6-sol",
+		AccountTypes:            []string{"oauth", "api_key"},
+		Capabilities:            []string{"responses", "chat"},
+		EndpointFamilies:        []string{"chat_completions", "responses"},
+	},
+	{
+		ID:                      "profile_xai_openai_v1",
+		ProviderCode:            "xai",
+		Name:                    "xAI / OpenAI v1",
+		Description:             "xAI 官方协议档案，支持 API Key 与 Grok OAuth，承载 OpenAI v1 Chat Completions 与 Responses 文本接口",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.x.ai/v1",
+		DefaultHealthCheckModel: "grok-4.7",
+		AccountTypes:            []string{"api_key", "oauth"},
+		Capabilities:            []string{"responses", "chat", "passthrough"},
+		EndpointFamilies:        []string{"chat_completions", "responses"},
+	},
+	{
+		ID:                      "profile_deepseek_anthropic_v1",
+		ProviderCode:            "deepseek",
+		Name:                    "DeepSeek / Anthropic v1",
+		Description:             "DeepSeek 供应商的 Anthropic v1 Messages 协议档案，承载 Claude Code 使用的 /v1/messages 与 /v1/models 直连",
+		Enabled:                 1,
+		ProtocolCode:            "anthropic",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.deepseek.com/anthropic",
+		DefaultHealthCheckModel: "deepseek-flash",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"messages", "models", "passthrough"},
+		EndpointFamilies:        []string{"messages", "models"},
+	},
+	{
+		ID:                      "profile_deepseek_openai_v1",
+		ProviderCode:            "deepseek",
+		Name:                    "DeepSeek / OpenAI v1",
+		Description:             "DeepSeek 供应商的 OpenAI-compatible v1 协议档案，承载 API Key、Chat Completions、原生 Responses、DeepSeek 响应扩展字段与 Codex Responses 桥接",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.deepseek.com",
+		DefaultHealthCheckModel: "deepseek-flash",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat", "responses", "passthrough"},
+		EndpointFamilies:        []string{"chat_completions", "responses"},
+	},
+	{
+		ID:                      "profile_anthropic_anthropic_v1",
+		ProviderCode:            "anthropic",
+		Name:                    "Anthropic / Anthropic v1",
+		Description:             "Anthropic 官方协议档案，支持 API Key 或 OAuth Access Token，承载 anthropic-version 与 Messages 原生协议",
+		Enabled:                 1,
+		ProtocolCode:            "anthropic",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.anthropic.com/v1",
+		DefaultHealthCheckModel: "claude-opus-5-5",
+		AccountTypes:            []string{"api_key", "oauth"},
+		Capabilities:            []string{"messages", "models", "count_tokens", "passthrough"},
+		EndpointFamilies:        []string{"messages", "models", "message_token_counting"},
+	},
+	{
+		ID:                      "profile_gemini_openai_chat_v1beta",
+		ProviderCode:            "gemini",
+		Name:                    "Gemini / OpenAI Chat",
+		Description:             "Gemini 官方 OpenAI Chat Completions 兼容档案，仅用于 OpenAI Chat 直连和 Codex Responses 显式模型映射，不承载 Gemini 原生协议",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://generativelanguage.googleapis.com/v1beta/openai",
+		DefaultHealthCheckModel: "gemini-3.8-flash",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat", "passthrough"},
+		EndpointFamilies:        []string{"chat_completions"},
+	},
+	{
+		ID:                      "profile_gemini_native_v1beta",
+		ProviderCode:            "gemini",
+		Name:                    "Gemini / Gemini v1beta",
+		Description:             "Gemini 官方 API Key 协议档案，承载 x-goog-api-key 与 Gemini v1beta 原生协议直连",
+		Enabled:                 1,
+		ProtocolCode:            "gemini",
+		ProtocolVersion:         "v1beta",
+		BaseURL:                 "https://generativelanguage.googleapis.com",
+		DefaultHealthCheckModel: "gemini-3.8-flash",
+		AccountTypes:            []string{"api_key", "google_oauth"},
+		Capabilities:            []string{"generate_content", "stream_generate_content", "count_tokens", "embed_content", "interactions", "models", "passthrough"},
+		EndpointFamilies:        []string{"models", "generate_content", "stream_generate_content", "count_tokens", "embed_content", "interactions"},
+	},
+	{
+		ID:                      "profile_glm_coding_openai_v1",
+		ProviderCode:            "glm",
+		Name:                    "智谱 GLM Coding / OpenAI Chat",
+		Description:             "智谱 GLM Coding Plan Key 协议档案，使用 Coding Plan OpenAI Chat Completions 兼容端点",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://open.bigmodel.cn/api/coding/paas/v4",
+		DefaultHealthCheckModel: "glm-5.3",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat", "passthrough"},
+		EndpointFamilies:        []string{"chat_completions"},
+	},
+	{
+		ID:                      "profile_glm_coding_anthropic_v1",
+		ProviderCode:            "glm",
+		Name:                    "智谱 GLM Coding / Anthropic v1",
+		Description:             "智谱 GLM Coding Plan Key 的 Anthropic v1 Messages 协议档案，面向 Anthropic Messages 客户端直连",
+		Enabled:                 1,
+		ProtocolCode:            "anthropic",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://open.bigmodel.cn/api/anthropic",
+		DefaultHealthCheckModel: "glm-5.3",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"messages", "models", "passthrough"},
+		EndpointFamilies:        []string{"messages", "models"},
+	},
+	{
+		ID:                      "profile_glm_general_openai_v1",
+		ProviderCode:            "glm",
+		Name:                    "智谱 GLM 通用 / OpenAI Chat",
+		Description:             "智谱通用 GLM API Key 协议档案，使用智谱 OpenAI Chat Completions 兼容端点",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://open.bigmodel.cn/api/paas/v4/",
+		DefaultHealthCheckModel: "glm-5.3",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat", "passthrough"},
+		EndpointFamilies:        []string{"chat_completions"},
+	},
+	{
+		ID:                      "profile_hybrid_openai_chat_v1",
+		ProviderCode:            "hybrid",
+		Name:                    "混合供应商",
+		Description:             "混合供应商通用 API Key 档案；真实上游 Base URL 和目标协议由账户模型映射显式声明",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "",
+		DefaultHealthCheckModel: "",
+		AccountTypes:            []string{"api_key"},
+		// M4b 媒体映射（媒体设计 §9 hybrid 行）：Capabilities/EndpointFamilies
+		// 补媒体族（video_generation/tts，与 schema 端点族 seed
+		// openai_v1_video_generation / openai_v1_tts 同码）——hybrid 聚合中转
+		// 的媒体模型映射（source 对外媒体模型名 → upstream 真实媒体模型名）
+		// 经账号映射的 video_generation/tts 族表达，执行走 openai 形态媒体
+		// 端点（/v1/videos、/v1/audio/speech）直连该中转。
+		Capabilities:     []string{"chat", "responses", "messages", "generate_content", "stream_generate_content", "bridge", "video_generation", "tts"},
+		EndpointFamilies: []string{"chat_completions", "responses", "messages", "generate_content", "stream_generate_content", "video_generation", "tts"},
+	},
+	{
+		ID:                      "profile_hybrid_anthropic_messages_v1",
+		ProviderCode:            "hybrid",
+		Name:                    "混合供应商 Anthropic Messages",
+		Description:             "混合供应商 Anthropic Messages API Key 档案；下游协议由账户模型映射显式声明",
+		Enabled:                 1,
+		ProtocolCode:            "anthropic",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "",
+		DefaultHealthCheckModel: "",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"messages", "bridge"},
+		EndpointFamilies:        []string{"messages"},
+	},
+	{
+		// M3 媒体新增供应商档案（媒体设计 §9/契约 §8）：MiniMax API Key 单
+		// 档案，Capabilities 只声明媒体（video_generation/tts，与
+		// EndpointFamilies 同名）——不声明 chat/responses/passthrough：
+		// MiniMax 聊天端点非 /v1/chat/completions，档案不得让聊天流量路由
+		// 进来（目录亦无 chat 模型行，模型门双保险）。BaseURL 为国内官方根
+		// api.minimax.chat（海外 api.minimaxi.com 由账户 base_url 覆盖）；
+		// 出站路径 /v1/video_generation、/v1/t2a_v2 由链上 openai 归一拼缀。
+		ID:                      "profile_minimax_openai_v1",
+		ProviderCode:            "minimax",
+		Name:                    "MiniMax / OpenAI v1 媒体",
+		Description:             "MiniMax 官方 API Key 协议档案，仅承载视频生成（Hailuo video_generation）与语音合成（speech 系 t2a_v2）媒体能力；MiniMax 聊天端点非 OpenAI Chat 形态，本档案不承接聊天流量",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.minimax.chat",
+		DefaultHealthCheckModel: "speech-2.8-turbo",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"video_generation", "tts"},
+		EndpointFamilies:        []string{"video_generation", "tts"},
+	},
+	{
+		// M3 媒体新增供应商档案（媒体设计 §9/契约 §9）：火山方舟 API Key 单
+		// 档案，Capabilities 声明 video_generation + tts（M6，契约 §9.2：豆包
+		// TTS 走 openspeech 语音服务域 /api/v3/tts，复用 openai_v1_tts 族行，
+		// 语音凭据双值 speech_appid/speech_token 见《火山方舟账号接入.md》）。
+		// 对话批补 chat/chat_completions（复用既有 openai_v1_chat_completions
+		// 族行，不新增 family 行）：ark 官方 OpenAI 兼容端点 /api/v3/chat/
+		// completions 承接豆包对话模型，与媒体面共享 base_url 与 Bearer 凭据
+		//——出站 chat 请求按 /api/v3 服务根归一（服务根去重，不走 openai /v1
+		// 强制补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
+		// 2026-10-17 图像域开通：豆包 seedream 系图像模型经 ark OpenAI 兼容
+		// 图像端点 /api/v3/images/generations 承接（实测出图成功；Agent Plan
+		// 专属端点 /api/plan/v3/images/generations 实测可用），与 chat 同
+		// base_url/Bearer 凭据——能力域矩阵 accountscore.capabilityMatrix
+		// Volcengine 行 image 格与词表 images_json 开通，出站 URL 由链上
+		// chainVolcengineImagesUpstreamURL 服务根归一（三形态语义同 chat）。
+		// 写侧校验不读档案 Capabilities/EndpointFamilies（读取面为协议对与
+		// provider token，见 accounts.write requireEnabledProviderProtocol
+		// Profile 与 accounts.model_mapping_protocol_matrix
+		// providerModelSupportsProtocolProfile），故 Capability arrays 不加
+		// images 值、EndpointFamilies 不新增图像族（避免为展示面引入
+		// protocol_endpoint_families 新行与 family 绑定计数漂移）。
+		// BaseURL 为官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/
+		// contents/generations/tasks、/api/v3/chat/completions 与
+		// /api/v3/images/generations 由链上 chainVolcengineVideoUpstreamURL /
+		// volcengine chat/images 归一拼缀，TTS 出站 host 恒
+		// openspeech.bytedance.com（URL 构造特例）。
+		//
+		// DefaultHealthCheckModel 换为现役视频模型
+		// doubao-seedance-2-0-mini-260615（既有 doubao-seedance-1-0-pro-250528
+		// 官方「即将下线」；图像域账户检查模型由运营按 seedream 行配置，
+		// images_json 检查形态要求检查模型被目录证实 images 协议）。注意
+		// seed upsert 只在新建库生效（既有库不回填档案行，属预期）。
+		// 2026-10-17 语音识别承接批：Capabilities/EndpointFamilies 补
+		// audio_transcription（复用 M3f openai_v1_audio_transcription 族行，
+		// 不新增 family 行；对照 qwen 档案同构），豆包录音文件识别 2.0 经
+		// openspeech /api/v3/auc/bigmodel/submit|query 异步两段由
+		// /v1/audio/jobs 统一面承接（契约 §9.2）；audio_job_* 端点模式全
+		// opt-in，默认集维持 video_get 不变（账户 endpoint modes 节）。
+		ID:                      "profile_volcengine_openai_v1",
+		ProviderCode:            "volcengine",
+		Name:                    "火山方舟 / OpenAI v1 媒体",
+		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）、语音合成（豆包 TTS openspeech /api/v3/tts/create，语音应用凭据）、图像生成（豆包 seedream 系 /api/v3/images/generations OpenAI 兼容图像端点）与语音识别长转写（豆包录音文件识别 2.0 /api/v3/auc/bigmodel/submit|query，语音应用凭据）能力",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://ark.cn-beijing.volces.com",
+		DefaultHealthCheckModel: "doubao-seedance-2-0-mini-260615",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat", "video_generation", "tts", "audio_transcription"},
+		EndpointFamilies:        []string{"chat_completions", "video_generation", "tts", "audio_transcription"},
+	},
+	{
+		// M3 媒体新增供应商档案（媒体设计 §9/契约 §10）：通义百炼 API Key 单
+		// 档案，Capabilities 声明 video_generation 与 audio_transcription
+		//（M3f 长转写，契约 §10.2 回填；EndpointFamilies 同名——video_
+		// generation 复用 minimax 批次族行，audio_transcription 复用 M3f 新增
+		// 族行）。对话批补 chat/chat_completions（复用既有
+		// openai_v1_chat_completions 族行，不新增 family 行）：DashScope 官方
+		// OpenAI 兼容模式 /compatible-mode/v1/chat/completions 承接 qwen 对话
+		// 模型，与媒体面共享 base_url 与 Bearer 凭据——出站 chat 请求按
+		// /compatible-mode/v1 服务根归一（服务根去重，不走 openai /v1 强制
+		// 补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
+		// CosyVoice TTS 面（契约 §10.2）未回填不声明。BaseURL 为 DashScope
+		// 官方根 dashscope.aliyuncs.com；出站路径 /api/v1/services/... 与
+		// /api/v1/tasks/{id} 由链上 chainQwenVideoUpstreamURL 归一拼缀；万相
+		// 创建请求头带 X-DashScope-Async: enable（DashScope 异步任务约定），
+		// paraformer 创建无该头（天然异步服务）。
+		ID:                      "profile_qwen_openai_v1",
+		ProviderCode:            "qwen",
+		Name:                    "通义百炼 / OpenAI v1 媒体",
+		Description:             "通义百炼（阿里云 DashScope）官方 API Key 协议档案，承载对话（qwen 系 /compatible-mode/v1/chat/completions OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别异步任务）能力；CosyVoice TTS 面未回填，本档案不声明",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://dashscope.aliyuncs.com",
+		DefaultHealthCheckModel: "wan2.2-t2v-plus",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat", "video_generation", "audio_transcription"},
+		EndpointFamilies:        []string{"chat_completions", "video_generation", "audio_transcription"},
 	},
 }
 
@@ -945,6 +1447,16 @@ func mustJSON(value any) string {
 		panic(fmt.Sprintf("marshal seed json: %v", err))
 	}
 	return string(encoded)
+}
+
+// pgNullableText maps an empty legacy seed string (e.g. providers.parent_code)
+// to SQL NULL for the nullable text columns of the legacy provider/profile
+// seeds (2026-10-18 修复批恢复，逐字取回 dbb2543e6^ 语义).
+func pgNullableText(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // parseSeedStringArray decodes one JSON string array value.

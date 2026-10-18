@@ -71,8 +71,10 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 		"a.authorization_instance_authorization_id IS NULL",
 		"a.authorization_instance_source_account_id IS NULL",
 		"a.type IN ('api_key','oauth','google_oauth')",
-		"p.enabled = " + "1",
-		modelCheckProfilePredicate("a", "p.id"),
+		// 设计 §8 去供应商化：档案启停门与 profile 谓词改由账户的健康检查连接
+		// 承载（hc = health_check_connection_id 精确行，探针执行面同一取法）。
+		"hc.enabled = " + "1",
+		modelCheckProfilePredicate("a.vendor_code", "hc.connection_preset_code"),
 	}
 	if !options.AllSystemAccounts {
 		where = append(where, "a.system_account_id="+s.placeholder(len(args)+1))
@@ -104,7 +106,10 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 			where = append(where, "("+strings.Join(searchParts, " OR ")+")")
 		}
 	}
-	query := "SELECT a.id,a.name,a.provider_code,a.provider_protocol_profile_id,a.protocol_code,a.protocol_version,COALESCE(a.availability_schedule_json,'') FROM " + s.table("accounts") + " a JOIN " + s.table("provider_protocol_profiles") + " p ON p.id=a.provider_protocol_profile_id WHERE " + strings.Join(where, " AND ") + " ORDER BY LOWER(a.name),a.id LIMIT " + s.placeholder(len(args)+1)
+	// 设计 §8 去供应商化：账户探针身份 = (vendor_code, 健康检查连接
+	// preset)；hc 为 health_check_connection_id 精确行（INNER JOIN：缺连接行
+	// 的账户无法被探针解析，与旧档案行缺失同样失败关闭）。
+	query := "SELECT a.id,a.name,a.vendor_code,a.connection_driver_code,a.protocol_code,a.protocol_version,COALESCE(a.availability_schedule_json,''),hc.connection_preset_code FROM " + s.table("accounts") + " a JOIN " + s.table("account_connections") + " hc ON hc.account_id=a.id AND hc.id=a.health_check_connection_id WHERE " + strings.Join(where, " AND ") + " ORDER BY LOWER(a.name),a.id LIMIT " + s.placeholder(len(args)+1)
 	args = append(args, queryLimit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -121,9 +126,18 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 	candidates := make([]accountOptionRow, 0, limit)
 	for rows.Next() {
 		var candidate accountOptionRow
-		if err := rows.Scan(&candidate.option.ID, &candidate.option.Name, &candidate.option.ProviderCode, &candidate.option.ProviderProtocolProfile, &candidate.option.ProtocolCode, &candidate.option.ProtocolVersion, &candidate.schedule); err != nil {
+		var vendorCode, driverCode, preset string
+		if err := rows.Scan(&candidate.option.ID, &candidate.option.Name, &vendorCode, &driverCode, &candidate.option.ProtocolCode, &candidate.option.ProtocolVersion, &candidate.schedule, &preset); err != nil {
 			return nil, fmt.Errorf("scan J3b account option: %w", err)
 		}
+		// 目录 ID 由 preset 确定性映射得出，下游（modelcheckprofile.Find）
+		// 继续消费旧形状的 profile_* 值。
+		_, profileID, ok := businessCheckProfile(vendorCode, preset)
+		if !ok {
+			continue
+		}
+		candidate.option.ProviderCode = vendorCode
+		candidate.option.ProviderProtocolProfile = profileID
 		candidates = append(candidates, candidate)
 	}
 	if err := rows.Err(); err != nil {
@@ -203,7 +217,11 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 		"source_accounts.deleted_at IS NULL",
 		"source_accounts.system_account_id=ra.resource_owner_system_account_id",
 		"source_accounts.type IN ('api_key','oauth','google_oauth')",
-		modelCheckProfilePredicate("source_accounts", "source_accounts.provider_protocol_profile_id"),
+		// 设计 §8 去供应商化：授权实例的探针身份来自物理 source 账户的
+		// (vendor_code, 健康检查连接 preset)；INNER JOIN source_hc 取
+		// health_check_connection_id 精确行，缺连接行的 source 账户无法被
+		// 探针解析，从选项中剔除。
+		modelCheckProfilePredicate("source_accounts.vendor_code", "source_hc.connection_preset_code"),
 		"bindings.group_id IS NOT NULL",
 		"bindings.enabled=" + "1",
 		"bindings.account_authorization_id=ra.id",
@@ -251,7 +269,7 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 			where = append(where, "("+strings.Join(search, " OR ")+")")
 		}
 	}
-	query := "SELECT options.id,options.name,options.provider_code,options.profile_id,options.protocol_code,options.protocol_version,options.instance_schedule,options.source_schedule,options.source_id FROM (SELECT DISTINCT a.id AS id,COALESCE(source_accounts.name,a.name) AS name,COALESCE(source_accounts.provider_code,a.provider_code) AS provider_code,COALESCE(source_accounts.provider_protocol_profile_id,a.provider_protocol_profile_id) AS profile_id,COALESCE(source_accounts.protocol_code,a.protocol_code) AS protocol_code,COALESCE(source_accounts.protocol_version,a.protocol_version) AS protocol_version,COALESCE(a.availability_schedule_json,'') AS instance_schedule,COALESCE(source_accounts.availability_schedule_json,'') AS source_schedule,source_accounts.id AS source_id FROM " + s.table("accounts") + " a JOIN " + s.table("resource_authorizations") + " ra ON ra.id=a.authorization_instance_authorization_id JOIN " + s.table("accounts") + " source_accounts ON source_accounts.id=a.authorization_instance_source_account_id LEFT JOIN " + s.table("group_accounts") + " bindings ON bindings.account_id=a.id AND " + bindingScope + " LEFT JOIN " + s.table("groups") + " groups ON groups.id=bindings.group_id WHERE " + strings.Join(where, " AND ") + ") AS options ORDER BY LOWER(options.name),options.id LIMIT "
+	query := "SELECT options.id,options.name,options.vendor_code,options.preset,options.protocol_code,options.protocol_version,options.instance_schedule,options.source_schedule,options.source_id FROM (SELECT DISTINCT a.id AS id,COALESCE(source_accounts.name,a.name) AS name,COALESCE(source_accounts.vendor_code,a.vendor_code) AS vendor_code,source_hc.connection_preset_code AS preset,COALESCE(source_accounts.protocol_code,a.protocol_code) AS protocol_code,COALESCE(source_accounts.protocol_version,a.protocol_version) AS protocol_version,COALESCE(a.availability_schedule_json,'') AS instance_schedule,COALESCE(source_accounts.availability_schedule_json,'') AS source_schedule,source_accounts.id AS source_id FROM " + s.table("accounts") + " a JOIN " + s.table("resource_authorizations") + " ra ON ra.id=a.authorization_instance_authorization_id JOIN " + s.table("accounts") + " source_accounts ON source_accounts.id=a.authorization_instance_source_account_id JOIN " + s.table("account_connections") + " source_hc ON source_hc.account_id=source_accounts.id AND source_hc.id=source_accounts.health_check_connection_id LEFT JOIN " + s.table("group_accounts") + " bindings ON bindings.account_id=a.id AND " + bindingScope + " LEFT JOIN " + s.table("groups") + " groups ON groups.id=bindings.group_id WHERE " + strings.Join(where, " AND ") + ") AS options ORDER BY LOWER(options.name),options.id LIMIT "
 	query += s.placeholder(len(args) + 1)
 	args = append(args, options.Limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -270,9 +288,18 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 	candidates := make([]authorizedOptionRow, 0, options.Limit)
 	for rows.Next() {
 		var candidate authorizedOptionRow
-		if err := rows.Scan(&candidate.option.ID, &candidate.option.Name, &candidate.option.ProviderCode, &candidate.option.ProviderProtocolProfile, &candidate.option.ProtocolCode, &candidate.option.ProtocolVersion, &candidate.instanceSchedule, &candidate.sourceSchedule, &candidate.sourceID); err != nil {
+		var vendorCode, preset string
+		if err := rows.Scan(&candidate.option.ID, &candidate.option.Name, &vendorCode, &preset, &candidate.option.ProtocolCode, &candidate.option.ProtocolVersion, &candidate.instanceSchedule, &candidate.sourceSchedule, &candidate.sourceID); err != nil {
 			return nil, fmt.Errorf("scan J3b authorized account option: %w", err)
 		}
+		// WHERE 的 preset 谓词已保证目录内组合，这里同步映射出下游消费的
+		// profile_* ID；谓词与映射同源自 map，漂移时丢弃该行（fail closed）。
+		_, profileID, ok := businessCheckProfile(vendorCode, preset)
+		if !ok {
+			continue
+		}
+		candidate.option.ProviderCode = vendorCode
+		candidate.option.ProviderProtocolProfile = profileID
 		candidates = append(candidates, candidate)
 	}
 	if err := rows.Err(); err != nil {
@@ -373,7 +400,7 @@ func (s *BusinessTargetSource) accountSupportedCheckModels(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("read J3b account options endpoint mode: %w", err)
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT model FROM "+s.table("account_supported_models")+" WHERE account_id="+s.placeholder(1)+" ORDER BY model", accountID)
+	rows, err := s.db.QueryContext(ctx, "SELECT m.public_model FROM "+s.table("account_supported_models")+" asm JOIN "+s.table("models")+" m ON m.id=asm.model_id WHERE asm.account_id="+s.placeholder(1)+" ORDER BY m.public_model", accountID)
 	if err != nil {
 		return nil, fmt.Errorf("read J3b account options supported models: %w", err)
 	}
@@ -423,27 +450,46 @@ func (s *BusinessTargetSource) cooldownClear(column string) string {
 }
 
 // modelCheckProfilePredicate keeps the options query aligned with the
-// immutable Gateway model-check catalog. The values come only from compiled
-// profile definitions, so the generated SQL remains parameter-free and does
-// not widen the query with caller-controlled identifiers.
-func modelCheckProfilePredicate(accountAlias, profileIDColumn string) string {
+// immutable Gateway model-check catalog. 设计 §8 去供应商化：谓词由目录
+// (ProviderCode, profile ID) 经 preset 反查表投影到新列——每个目录组合生成
+// 一条 (vendor_code, connection_preset_code) 等值子句（列名由调用方全限定
+// 传入）；无 preset 映射的目录行（旧 openai 供应商）自然不生成子句。The
+// values come only from compiled profile definitions, so the generated SQL
+// remains parameter-free and does not widen the query with caller-controlled
+// identifiers.
+func modelCheckProfilePredicate(vendorColumn, presetColumn string) string {
 	seen := make(map[string]struct{})
 	clauses := make([]string, 0, len(modelcheckprofile.Profiles()))
 	for _, profile := range modelcheckprofile.Profiles() {
-		provider := escapeSQLLiteral(profile.ProviderCode)
+		vendor := escapeSQLLiteral(profile.ProviderCode)
 		for _, profileID := range profile.ProviderProtocolProfileIDs {
-			key := provider + "\x00" + profileID
+			preset, ok := businessCheckPresetForProfileID(profileID)
+			if !ok {
+				continue
+			}
+			key := vendor + "\x00" + profileID
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
-			clauses = append(clauses, "("+accountAlias+".provider_code='"+provider+"' AND "+profileIDColumn+"='"+escapeSQLLiteral(profileID)+"')")
+			clauses = append(clauses, "("+vendorColumn+"='"+vendor+"' AND "+presetColumn+"='"+escapeSQLLiteral(preset)+"')")
 		}
 	}
 	if len(clauses) == 0 {
 		return "FALSE"
 	}
 	return "(" + strings.Join(clauses, " OR ") + ")"
+}
+
+// businessCheckPresetForProfileID 反查 businessCheckProfileIDByPreset；
+// 供 SQL 谓词生成使用，保持谓词与解析同一映射源。
+func businessCheckPresetForProfileID(profileID string) (string, bool) {
+	for preset, candidate := range businessCheckProfileIDByPreset {
+		if candidate == profileID {
+			return preset, true
+		}
+	}
+	return "", false
 }
 
 func escapeSQLLiteral(value string) string {

@@ -324,15 +324,19 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 // active bindings, authorization-aware, priority/created/id order.
 func (m *SQLReadModels) loadActiveGatewayAPIKeyGroupBindings(ctx context.Context, apiKeyID, routeStrategyID, systemAccountID string) ([]GatewayAPIKeyGroupBindingRow, error) {
 	nowISO := m.now().UTC().Format("2006-01-02T15:04:05.000") + "Z"
-	// 供应商解耦（供应商与上游协议面重构设计 §8）：groups.provider_code 列已
-	// 退役，分组绑定投影不再读取该列；行上的 ProviderCode 过渡字段恒为零值。
+	// 2026-10-18 修复批迁移窗口投影恢复：groups.provider_code 列已在 fresh
+	// DDL 恢复（DEFAULT 'gpt' shim），绑定行 ProviderCode 过渡字段随之恢复
+	// 取值——消费方 gatewayModelsBindings 以 provider_code 为空跳过绑定（
+	// /v1/models 的 §4.7 空态判据），恒零值会使全部绑定被过滤；运行时迁移
+	// 完成后由清理命令与消费方一并统一收口。
 	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT
 			route_strategy_groups.id,
 			route_strategy_groups.group_id,
 			route_strategy_groups.priority,
 			route_strategy_groups.weight,
 			route_strategy_groups.status,
-			groups.enabled
+			groups.enabled,
+			groups.provider_code
 		FROM `+m.table("route_strategies")+` route_strategies
 		INNER JOIN `+m.table("route_strategy_groups")+` route_strategy_groups
 			ON route_strategy_groups.route_strategy_id = route_strategies.id
@@ -370,7 +374,7 @@ func (m *SQLReadModels) loadActiveGatewayAPIKeyGroupBindings(ctx context.Context
 		var weight sql.NullInt64
 		var groupEnabled int
 		if err := rows.Scan(&binding.ID, &binding.GroupID, &binding.Priority, &weight,
-			&binding.Status, &groupEnabled); err != nil {
+			&binding.Status, &groupEnabled, &binding.ProviderCode); err != nil {
 			return nil, err
 		}
 		// normalizeApiKeyGroupBindingWeight: NULL 归一为 1，越界值抛错。

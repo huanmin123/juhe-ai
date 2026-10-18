@@ -64,6 +64,7 @@ func TestChainGptRequestOverrideModelCandidates(t *testing.T) {
 			expect:   []string{"gpt-5.5-20260423", "gpt-5.5"},
 		},
 		{
+			// gpt 家族前缀回退
 			name:     "gpt 家族前缀回退",
 			provider: "gpt",
 			model:    "gpt-5.4-mini-2026-03-17",
@@ -77,13 +78,16 @@ func TestChainGptRequestOverrideModelCandidates(t *testing.T) {
 			expect:   []string{"gpt-5.3-codex"},
 		},
 		{
-			name:     "openai 供应商码同规则",
+			// 非 gpt vendor 回落默认语义：openai/hybrid 已随 vendors 表退役
+			//（供应商与上游协议面重构设计 §1.1/§10），不再命中 openai 系候选
+			// 规则。
+			name:     "非 gpt vendor 回落默认语义（openai 已退役）",
 			provider: "openai",
 			model:    "gpt-4.1-nano-2025-04-14",
-			expect:   []string{"gpt-4.1-nano-2025-04-14", "gpt-4.1-nano", "gpt-4.1"},
+			expect:   []string{"gpt-4.1-nano-2025-04-14"},
 		},
 		{
-			name:     "非 openai 系回落默认语义",
+			name:     "非 gpt vendor 回落默认语义（含空白归一）",
 			provider: "glm",
 			model:    " glm-5 ",
 			expect:   []string{" glm-5 ", "glm-5"},

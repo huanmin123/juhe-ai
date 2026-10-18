@@ -17,16 +17,12 @@ import (
 func TestResolveConfiguredUpstreamModelMappingPreservesFamilies(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','chat_completions',1)`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
@@ -39,16 +35,12 @@ func TestResolveConfiguredUpstreamModelMappingPreservesFamilies(t *testing.T) {
 func TestResolveConfiguredUpstreamModelMappingRejectsUnsupportedCrossFamily(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','messages',1)`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "messages")
 	_, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("unsupported cross-family mapping must fail closed, err=%v", err)
@@ -58,16 +50,12 @@ func TestResolveConfiguredUpstreamModelMappingRejectsUnsupportedCrossFamily(t *t
 func TestResolveConfiguredUpstreamModelMappingAcceptsSameFamily(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','responses',1)`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "responses")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
@@ -80,13 +68,11 @@ func TestResolveConfiguredUpstreamModelMappingAcceptsSameFamily(t *testing.T) {
 func TestResolveConfiguredUpstreamModelMappingReadsMappingWithoutModelRestriction(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','chat_completions',1)`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
@@ -99,16 +85,13 @@ func TestResolveConfiguredUpstreamModelMappingReadsMappingWithoutModelRestrictio
 func TestResolveConfiguredUpstreamModelMappingMappingPrecedesDirectMatch(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-sol'),('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','chat_completions',1)`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-sol")
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
+	seedMappingEntry(t, db, "acct-1", "gpt-5.6-sol", "responses", "gpt-5.6-terra", "chat_completions")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol")
 	if err != nil {
 		t.Fatal(err)
@@ -121,13 +104,11 @@ func TestResolveConfiguredUpstreamModelMappingMappingPrecedesDirectMatch(t *test
 func TestResolveConfiguredUpstreamModelMappingAdmitsAccountSupportedCatalogExternalModel(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','deepseek-v4.1-flash')`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "deepseek-v4.1-flash")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "deepseek-v4.1-flash")
 	if err != nil {
 		t.Fatal(err)
@@ -140,13 +121,11 @@ func TestResolveConfiguredUpstreamModelMappingAdmitsAccountSupportedCatalogExter
 func TestResolveConfiguredUpstreamModelMappingStillRejectsUnsupportedCatalogExternalModel(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "deepseek-v4.1-flash")
 	if err != nil {
 		t.Fatal(err)
@@ -159,16 +138,13 @@ func TestResolveConfiguredUpstreamModelMappingStillRejectsUnsupportedCatalogExte
 func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalModel(t *testing.T) {
 	db := newModelMappingDatabase(t)
 	defer db.Close()
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','glm-5.2'),('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','glm-5.2','responses','gpt-5.6-terra','responses',1)`); err != nil {
-		t.Fatal(err)
-	}
+	seedMappingSupported(t, db, "acct-1", "glm-5.2")
+	seedMappingSupported(t, db, "acct-1", "gpt-5.6-terra")
+	seedMappingEntry(t, db, "acct-1", "glm-5.2", "responses", "gpt-5.6-terra", "responses")
 	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "glm-5.2")
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +153,7 @@ func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalMo
 		t.Fatalf("configured mapping must apply to catalog-external source model: %+v", resolved)
 	}
 	// The mapped upstream must still be covered by the account restriction.
-	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id='acct-1' AND model='gpt-5.6-terra'`); err != nil {
+	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id='acct-1' AND model_id=?`, seedMappingModel(t, db, "gpt-5.6-terra")); err != nil {
 		t.Fatal(err)
 	}
 	restricted, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "glm-5.2")
@@ -189,6 +165,36 @@ func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalMo
 	}
 }
 
+// seedMappingModel 写入内置 models 行（public_model = upstream_model = name）
+// 并返回 model_id，供 account_supported_models / account_entry_mappings 外键
+// 与模型名解析使用（v16 契约：请求名 public_model、上游名 upstream_model）。
+func seedMappingModel(t *testing.T, db *sql.DB, name string) string {
+	t.Helper()
+	id := "model-" + strings.NewReplacer(".", "-", "_", "-").Replace(name)
+	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES (?,'gpt',?,?,'builtin',NULL,'active',1)`, id, name, name); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// seedMappingSupported 写入一条账户支持模型（v16 契约存 model_id）。
+func seedMappingSupported(t *testing.T, db *sql.DB, accountID, name string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id,model_id) VALUES (?,?)`, accountID, seedMappingModel(t, db, name)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedMappingEntry 写入一条账户入口映射（target_model_id 外键解析出
+// models.upstream_model，target_endpoint_family 对应旧 upstream_endpoint_family）。
+func seedMappingEntry(t *testing.T, db *sql.DB, accountID, sourceModel, sourceFamily, upstreamModel, upstreamFamily string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES (? ,?, ?, ?, 'conn-'||?, ?, ?, 1)`,
+		"map-"+accountID+"-"+sourceModel+"-"+sourceFamily, accountID, sourceModel, sourceFamily, accountID, seedMappingModel(t, db, upstreamModel), upstreamFamily); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newModelMappingDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/model-mapping.db?mode=rwc")
@@ -196,8 +202,9 @@ func newModelMappingDatabase(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	for _, ddl := range []string{
-		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			_ = db.Close()
@@ -312,7 +319,7 @@ func (r *modelMappingSingleRowRows) Next(dest []driver.Value) error {
 // 触发 42883 operator does not exist: integer = boolean。同时锁定
 // juhe_business. 前缀与 $N 占位符形态。
 func TestResolveConfiguredUpstreamModelMappingPostgresQueryUsesIntegerEnabledLiteral(t *testing.T) {
-	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, ok := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	if !ok {
 		t.Fatal("OpenAI Responses profile is required")
 	}
@@ -324,14 +331,14 @@ func TestResolveConfiguredUpstreamModelMappingPostgresQueryUsesIntegerEnabledLit
 	}
 	mapping := ""
 	for _, statement := range rec.all() {
-		if strings.Contains(statement.query, "account_model_mappings") {
+		if strings.Contains(statement.query, "account_entry_mappings") {
 			mapping = statement.query
 		}
 	}
 	if mapping == "" {
-		t.Fatal("postgres 模式必须发送 account_model_mappings 查询")
+		t.Fatal("postgres 模式必须发送 account_entry_mappings 查询")
 	}
-	for _, want := range []string{"juhe_business.account_model_mappings", "$1", "enabled=1"} {
+	for _, want := range []string{"juhe_business.account_entry_mappings", "$1", "enabled=1"} {
 		if !strings.Contains(mapping, want) {
 			t.Fatalf("postgres 映射查询缺少 %q: %s", want, mapping)
 		}

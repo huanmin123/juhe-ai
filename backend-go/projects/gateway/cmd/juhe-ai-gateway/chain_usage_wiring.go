@@ -42,13 +42,15 @@ func (chainUsageDefaultProviderCode) DefaultUsageProviderCode() string {
 // chainUsageSemanticResolver implements gatewayusage.UsageSemanticResolver:
 // Node usageSemanticForProfile（providers/drivers/registry.ts）的 Go 落地面，
 // 与 gatewayresponse 的 usageSemanticForProviderCode 同一词汇表（钉住测试
-// 对照）。registry 的 providerCode 驱动回退与 hybrid profile 级覆盖均已落地：
-// anthropic/gemini 真实供应商按 providerCode 分派；hybrid（ProviderCode 归一
-// 后为 "hybrid"，Go 种子两个 hybrid 档案 maintenance pg_schema 均如此）按
-// 档案 ID 决定语义——anthropic-messages 档案 → anthropic、gemini-native
-// 档案 → gemini、其余（openai chat 等）→ openai。档案 ID 用小写包含判断，
-// 兼容 gemini-native 形态（profile_hybrid_gemini_native_v1beta，Node 存在、
-// Go 种子暂未种）及未来新增档案命名。
+// 对照）。入参 profile 的 ProviderCode 投影位现承载 vendor 身份（供应商与上
+// 游协议面重构设计 §1.1/§2.1 切片；分派词表不变——anthropic/gemini 按 vendor
+// 同名值命中，hybrid profile 级覆盖随 vendor 值域退役成保留分支）。registry
+// 的协议驱动回退与 hybrid profile 级覆盖均已落地：anthropic/gemini 真实供应
+// 商按身份分派；hybrid（vendor 值域已无该值，历史分支保留）按档案 ID 决定
+// 语义——anthropic-messages 档案 → anthropic、gemini-native 档案 → gemini、
+// 其余（openai chat 等）→ openai。档案 ID 用小写包含判断，兼容 gemini-native
+// 形态（profile_hybrid_gemini_native_v1beta，Node 存在、Go 种子暂未种）及
+// 未来新增档案命名。
 type chainUsageSemanticResolver struct{}
 
 func (chainUsageSemanticResolver) UsageSemanticForProfile(profile *gatewayusage.ProviderProtocolProfile) string {

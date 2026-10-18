@@ -329,7 +329,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 		ensurer := NewSQLDefaultResources(store, wlStringSealer{empty: true})
 		tx, _ := db.BeginTx(ctx, nil)
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES ('g1','acc','GPT 组','gpt',1,1,'t','t')`); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES ('g1','acc','默认分组',1,1,'t','t')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO route_strategies (id, system_account_id, name, status, is_default, created_at, updated_at) VALUES ('r1','acc','GPT 路由','active',1,'t','t')`); err != nil {
@@ -372,7 +372,7 @@ func TestWlEnsureDefaultResourcesBoundaries(t *testing.T) {
 		tests := []struct {
 			groupName, wantRoute, wantKey string
 		}{
-			{"默认 GPT 分组", "默认 GPT 路由", "默认 GPT API Key"},
+			{"默认分组", "默认路由", "默认API Key"},
 			{"定制组", "定制组", "定制组"},
 			{"", defaultRouteStrategyName, "默认API Key"},
 		}

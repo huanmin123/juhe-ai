@@ -16,12 +16,14 @@ import (
 	"time"
 	"unicode"
 
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 )
 
-// seedBusiness 是 business 库的造数域：系统账户与配套用户、AI 账户、分组、
+// seedBusiness 是 business 库的造数域：系统账户与配套用户、AI 账户（含连接面
+// account_connections / account_endpoint_modes、支持模型与入口映射）、分组、
 // 路由策略与分组绑定、API Key（含本地网关明文 Key）、授权与授权来源、团队、
-// 代理、公告、外部来源系统、响应检查策略、自定义模型目录、账户测试任务与
+// 代理、公告、外部来源系统、响应检查策略、模型目录样本、账户测试任务与
 // 模型检测题库。
 //
 // 范围与覆盖点见 docs/functions/Mockdata造数设计.md「数据边界」；本文件只放
@@ -33,10 +35,11 @@ import (
 // authorizations,teams,group-writes,availability-schedules,quota-limits}.ts）
 // 的语义，不逐行翻译：Node 通过仓储写入的行这里按同一批列直接落库。
 //
-// 字段合法性依据 internal/schema/sqlite_schema_business.go 的 DDL（NOT NULL /
-// CHECK / 唯一索引）与 gateway 读路径的真实查询（分组调度策略必须是完整 16 键
-// 文档、API Key 额度窗口是 {hourly,daily,weekly,monthly,total} 对象、时间计划是
-// {enabled,timezone,mode,windows[,...]} 文档）。
+// 字段合法性依据 internal/schema 的 DDL（NOT NULL / CHECK / 唯一索引）、
+// backend-go/shared/contracts 连接器 registry（49 个允许连接组合与 preset
+// mode 词表的编译期唯一事实源）与 gateway 读路径的真实查询（分组调度策略必须
+// 是完整 16 键文档、API Key 额度窗口是 {hourly,daily,weekly,monthly,total}
+// 对象、时间计划是 {enabled,timezone,mode,windows[,...]} 文档）。
 func seedBusiness(ctx context.Context, e *env) (DomainResult, error) {
 	guard, err := resolveBusinessGuard(ctx, e)
 	if err != nil {
@@ -104,28 +107,41 @@ type businessGuard struct {
 }
 
 // businessCatalog 是从 seed 数据里运行时解析出的真实 ID 组合：账户、分组、
-// 策略都必须引用这些值，硬编码猜测会在 seed 变化后写出读不出来的行。
+// 映射都必须引用这些值，硬编码猜测会在 seed 变化后写出读不出来的行。
+// 供应商与上游协议面重构（设计 §9）后目录源是 vendors + models 单表；
+// provider_protocol_profiles 维度由连接器 registry 的 preset 常量取代。
 type businessCatalog struct {
-	mainProvider   string
-	compatProvider string
-	profiles       []businessProfile
-	models         []string
-	imageModels    []string
-	// audioModels / videoModels 是目录里 mode=audio / mode=video 的模型
-	//（媒体契约 §3.4：business 域样本引用媒体分类目录行）。
-	audioModels []string
-	videoModels []string
+	vendors    []string
+	mainVendor string
+	// models 是目录里的文本模型（supported_endpoint_modes_json 含 chat lane
+	// 形态）；image/audio/video 分类模型单列，账户支持模型与映射 target 只
+	// 从文本列表取，媒体模型按样本需要显式追加。
+	models      []businessModel
+	imageModels []businessModel
+	audioModels []businessModel
+	videoModels []businessModel
 	healthModel string
 }
 
-// businessProfile 是 provider_protocol_profiles 的一行读投影。
-type businessProfile struct {
-	id           string
-	provider     string
-	protocol     string
-	protocolVer  string
-	healthModel  string
-	accountTypes map[string]bool
+// businessModel 是 models 表的一行读投影：id 是 account_supported_models /
+// account_entry_mappings 的外键口径，name（upstream_model）是 media_jobs、
+// account_test_tasks 等文本模型列的引用口径。
+type businessModel struct {
+	id    string
+	name  string
+	modes []string
+}
+
+// hasMode 判断该模型支持任一给定 endpoint mode。
+func (m businessModel) hasMode(modes ...string) bool {
+	for _, want := range modes {
+		for _, mode := range m.modes {
+			if mode == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveBusinessGuard 读取运行时的真实 ID；缺 schema/seed 时返回 skip 原因。
@@ -144,7 +160,7 @@ func resolveBusinessGuard(ctx context.Context, e *env) (businessGuard, error) {
 	if db == nil {
 		return businessGuard{skip: "business 库文件不存在"}, nil
 	}
-	for _, table := range []string{"providers", "provider_protocol_profiles", "groups", "accounts", "api_keys"} {
+	for _, table := range []string{"vendors", "models", "account_connections", "groups", "accounts", "api_keys"} {
 		present, tableErr := queryExistsTable(ctx, db, table)
 		if tableErr != nil {
 			return businessGuard{}, tableErr
@@ -165,8 +181,8 @@ func resolveBusinessGuard(ctx context.Context, e *env) (businessGuard, error) {
 	if err != nil {
 		return businessGuard{}, err
 	}
-	if catalog.mainProvider == "" || len(catalog.profiles) == 0 {
-		return businessGuard{skip: "business 库缺少 seed 的 provider 或协议档案（请先执行 --seed）"}, nil
+	if catalog.mainVendor == "" || len(catalog.models) == 0 {
+		return businessGuard{skip: "business 库缺少 seed 的 vendor 或模型目录（请先执行 --seed）"}, nil
 	}
 	guard.catalog = catalog
 	return guard, nil
@@ -175,104 +191,79 @@ func resolveBusinessGuard(ctx context.Context, e *env) (businessGuard, error) {
 // defaultAdminUsername 与 seed 的 system_accounts 行一致（Node 的 adminUsername）。
 const defaultAdminUsername = "admin"
 
-// loadBusinessCatalog 解析 provider / profile / 目录模型：账户与分组只能引用
-// 真实存在的 provider_code、profile id 与 active 目录模型。
+// loadBusinessCatalog 解析 vendor / 目录模型：账户与映射只能引用真实存在的
+// vendor code 与 active 目录模型行。
 func loadBusinessCatalog(ctx context.Context, db *sql.DB) (businessCatalog, error) {
 	catalog := businessCatalog{}
-	rows, err := db.QueryContext(ctx, "SELECT code FROM providers WHERE enabled = 1 ORDER BY code")
+	vendorRows, err := db.QueryContext(ctx, "SELECT code FROM vendors WHERE enabled = 1 ORDER BY code")
 	if err != nil {
 		return catalog, err
 	}
-	var enabledProviders []string
-	for rows.Next() {
+	for vendorRows.Next() {
 		var code string
-		if err := rows.Scan(&code); err != nil {
-			rows.Close()
+		if err := vendorRows.Scan(&code); err != nil {
+			vendorRows.Close()
 			return catalog, err
 		}
-		enabledProviders = append(enabledProviders, code)
+		catalog.vendors = append(catalog.vendors, code)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	if err := vendorRows.Err(); err != nil {
+		vendorRows.Close()
 		return catalog, err
 	}
-	rows.Close()
-	for _, preferred := range []string{mockProviderGPT, mockProviderCompatOpenAI} {
-		for _, code := range enabledProviders {
-			if code != preferred {
-				continue
-			}
-			if catalog.mainProvider == "" {
-				catalog.mainProvider = code
-			}
-			if preferred == mockProviderCompatOpenAI {
-				catalog.compatProvider = code
+	vendorRows.Close()
+	for _, preferred := range []string{contracts.VendorGPT} {
+		for _, code := range catalog.vendors {
+			if code == preferred && catalog.mainVendor == "" {
+				catalog.mainVendor = code
 			}
 		}
 	}
-	if catalog.mainProvider == "" && len(enabledProviders) > 0 {
-		catalog.mainProvider = enabledProviders[0]
-	}
-	if catalog.compatProvider == "" {
-		catalog.compatProvider = catalog.mainProvider
+	if catalog.mainVendor == "" && len(catalog.vendors) > 0 {
+		catalog.mainVendor = catalog.vendors[0]
 	}
 
-	profileRows, err := db.QueryContext(ctx, `SELECT id, provider_code, protocol_code, protocol_version, default_health_check_model, account_types_json
-		FROM provider_protocol_profiles WHERE enabled = 1 ORDER BY provider_code, id`)
-	if err != nil {
-		return catalog, err
-	}
-	for profileRows.Next() {
-		var (
-			profile      businessProfile
-			healthModel  string
-			accountTypes string
-		)
-		if err := profileRows.Scan(&profile.id, &profile.provider, &profile.protocol, &profile.protocolVer, &healthModel, &accountTypes); err != nil {
-			profileRows.Close()
-			return catalog, err
-		}
-		profile.healthModel = healthModel
-		profile.accountTypes = map[string]bool{}
-		var decoded []string
-		if err := json.Unmarshal([]byte(accountTypes), &decoded); err == nil {
-			for _, item := range decoded {
-				profile.accountTypes[item] = true
-			}
-		}
-		catalog.profiles = append(catalog.profiles, profile)
-	}
-	if err := profileRows.Err(); err != nil {
-		profileRows.Close()
-		return catalog, err
-	}
-	profileRows.Close()
-
-	modelRows, err := db.QueryContext(ctx, `SELECT model, mode FROM provider_model_catalog
-		WHERE status = 'active' AND catalog_visible = 1 ORDER BY catalog_order, model`)
+	modelRows, err := db.QueryContext(ctx, `SELECT id, upstream_model, supported_endpoint_modes_json FROM models
+		WHERE status = 'active' AND catalog_visible ORDER BY catalog_order, upstream_model`)
 	if err != nil {
 		return catalog, err
 	}
 	for modelRows.Next() {
 		var (
-			model string
-			mode  sql.NullString
+			model     businessModel
+			modesJSON string
 		)
-		if err := modelRows.Scan(&model, &mode); err != nil {
+		if err := modelRows.Scan(&model.id, &model.name, &modesJSON); err != nil {
 			modelRows.Close()
 			return catalog, err
 		}
-		if len(catalog.models) < 24 {
-			catalog.models = append(catalog.models, model)
+		var decoded []string
+		if err := json.Unmarshal([]byte(modesJSON), &decoded); err != nil {
+			modelRows.Close()
+			return catalog, fmt.Errorf("解析模型 %s 的 supported_endpoint_modes_json: %w", model.name, err)
 		}
-		if mode.Valid && mode.String == "image" && len(catalog.imageModels) < 6 {
-			catalog.imageModels = append(catalog.imageModels, model)
-		}
-		if mode.Valid && mode.String == "audio" && len(catalog.audioModels) < 6 {
-			catalog.audioModels = append(catalog.audioModels, model)
-		}
-		if mode.Valid && mode.String == "video" && len(catalog.videoModels) < 6 {
-			catalog.videoModels = append(catalog.videoModels, model)
+		model.modes = decoded
+		switch {
+		case model.hasMode(contracts.ModeImagesJSON):
+			if len(catalog.imageModels) < 6 {
+				catalog.imageModels = append(catalog.imageModels, model)
+			}
+		case model.hasMode(contracts.ModeAudioSpeech, contracts.ModeAudioTranscriptionJSON,
+			contracts.ModeAudioJobCreate, contracts.ModeAudioJobGet, contracts.ModeAudioJobContent, contracts.ModeAudioJobCancel):
+			if len(catalog.audioModels) < 6 {
+				catalog.audioModels = append(catalog.audioModels, model)
+			}
+		case model.hasMode(contracts.ModeVideoCreate, contracts.ModeVideoGet,
+			contracts.ModeVideoContent, contracts.ModeVideoCancel):
+			if len(catalog.videoModels) < 6 {
+				catalog.videoModels = append(catalog.videoModels, model)
+			}
+		default:
+			// 其余按文本模型收录（chat / responses / messages / generate_content
+			// 等 lane 形态），账户支持模型与映射 target 只从这里取。
+			if len(catalog.models) < 24 {
+				catalog.models = append(catalog.models, model)
+			}
 		}
 	}
 	if err := modelRows.Err(); err != nil {
@@ -287,15 +278,15 @@ func loadBusinessCatalog(ctx context.Context, db *sql.DB) (businessCatalog, erro
 // textModel 取第一个可用目录模型作为体检模型兜底。
 func (c businessCatalog) textModel() string {
 	if len(c.models) > 0 {
-		return c.models[0]
+		return c.models[0].name
 	}
 	return mockCustomModelLongContext
 }
 
 // modelAt 取第 index 个目录模型，越界回落到首个可用模型。
-func (c businessCatalog) modelAt(index int) string {
+func (c businessCatalog) modelAt(index int) businessModel {
 	if len(c.models) == 0 {
-		return mockCustomModelLongContext
+		return businessModel{name: mockCustomModelLongContext}
 	}
 	if index < len(c.models) {
 		return c.models[index]
@@ -303,11 +294,11 @@ func (c businessCatalog) modelAt(index int) string {
 	return c.models[len(c.models)-1]
 }
 
-// imageModelAt 取第 index 个图像目录模型；目录里没有 image 模式模型时回落到
+// imageModelAt 取第 index 个图像目录模型；目录里没有 image 分类模型时回落到
 // 造数自建的全域图像模型（两种取值都在账户支持模型里有定义）。
-func (c businessCatalog) imageModelAt(index int) string {
+func (c businessCatalog) imageModelAt(index int) businessModel {
 	if len(c.imageModels) == 0 {
-		return mockCustomModelImage
+		return businessModel{name: mockCustomModelImage}
 	}
 	if index < len(c.imageModels) {
 		return c.imageModels[index]
@@ -316,10 +307,10 @@ func (c businessCatalog) imageModelAt(index int) string {
 }
 
 // audioModelAt 取第 index 个音频目录模型；目录里没有 audio 分类模型时回落到
-// 造数自建的全域音频模型（seedCustomProviderModels 有定义，账户支持模型可解析）。
-func (c businessCatalog) audioModelAt(index int) string {
+// 造数自建的全域音频模型（seedMockModels 有定义，账户支持模型可解析）。
+func (c businessCatalog) audioModelAt(index int) businessModel {
 	if len(c.audioModels) == 0 {
-		return mockCustomModelAudio
+		return businessModel{name: mockCustomModelAudio}
 	}
 	if index < len(c.audioModels) {
 		return c.audioModels[index]
@@ -329,35 +320,14 @@ func (c businessCatalog) audioModelAt(index int) string {
 
 // videoModelAt 取第 index 个视频目录模型；目录里没有 video 分类模型时回落
 // sora-2（媒体设计 §4.2 的 OpenAI 视频形态基准模型，media_jobs 样本行用它）。
-func (c businessCatalog) videoModelAt(index int) string {
+func (c businessCatalog) videoModelAt(index int) businessModel {
 	if len(c.videoModels) == 0 {
-		return mockVideoModelFallback
+		return businessModel{name: mockVideoModelFallback}
 	}
 	if index < len(c.videoModels) {
 		return c.videoModels[index]
 	}
 	return c.videoModels[len(c.videoModels)-1]
-}
-
-// profileFor 按首选 provider 与账户类型挑一个可用档案；没有匹配时返回 false，
-// 调用方据此跳过该类账户而不是写出协议不兼容的行。
-func (c businessCatalog) profileFor(provider string, accountType string) (businessProfile, bool) {
-	for _, profile := range c.profiles {
-		if profile.provider == provider && profile.accountTypes[accountType] {
-			return profile, true
-		}
-	}
-	for _, profile := range c.profiles {
-		if profile.accountTypes[accountType] {
-			return profile, true
-		}
-	}
-	for _, profile := range c.profiles {
-		if profile.provider == provider {
-			return profile, true
-		}
-	}
-	return businessProfile{}, false
 }
 
 // 造数标识：ID/名称前缀与 cleanup.go 的定义同源（这里只做本域内引用）。
@@ -369,8 +339,6 @@ const (
 	mockAccountStatusRateLimit  = "rate_limited"
 	mockAccountStatusTemporary  = "temporary_unavailable"
 	mockAccountStatusExpired    = "expired"
-	mockProviderGPT             = "gpt"
-	mockProviderCompatOpenAI    = "openai"
 	mockAuthorizationActive     = "active"
 	mockAuthorizationPaused     = "paused"
 	mockAuthorizationExpired    = "expired"
@@ -383,6 +351,14 @@ const (
 	// mockVideoModelFallback 是目录缺 video 分类行时 media_jobs 样本与账户
 	// 支持模型的回落模型（媒体设计 §4.2 的 OpenAI 视频基准模型）。
 	mockVideoModelFallback = "sora-2"
+	// mockEntrySourceFamily / mockEntryTargetFamily 是 account_entry_mappings
+	// 的 endpoint family 对（设计 §5.2 允许 17 对中的 #1：
+	// chat_completions→chat_completions，形态 chat_json/chat_sse）。
+	mockEntrySourceFamily = "chat_completions"
+	mockEntryTargetFamily = "chat_completions"
+	// mockAccountBaseURL 是主力账户连接的 base_url（gpt_openai_v1 preset 的
+	// DefaultBaseURL；generic 连接 base_url NOT NULL 也用它）。
+	mockAccountBaseURL = "https://api.openai.com/v1"
 )
 
 // businessWriter 承载一次 business 域写入的上下文：统一时钟、信封密钥与按表
@@ -446,6 +422,15 @@ func (w *businessWriter) putJSON(value any) (string, error) {
 	return string(encoded), nil
 }
 
+// exec 执行一条非 INSERT 语句（创建事务收尾的 accounts health 三字段 UPDATE）。
+// 失败即错：半批状态不能留在事务里。
+func (w *businessWriter) exec(tx *sql.Tx, query string, args ...any) error {
+	if _, err := tx.ExecContext(w.ctx, query, args...); err != nil {
+		return fmt.Errorf("执行 %s: %w", query, err)
+	}
+	return nil
+}
+
 // seal 用 accountcrypto 的 v1 信封封装凭据明文，保证 gateway 读路径能解密。
 func (w *businessWriter) seal(value any) (string, error) {
 	return accountcrypto.EncryptJSON(w.secret, value)
@@ -500,12 +485,11 @@ type mockUserSeed struct {
 	lastLogin  time.Duration
 }
 
-// mockGroupSeed 是一条分组样本。
+// mockGroupSeed 是一条分组样本（设计 §8：分组无供应商维度）。
 type mockGroupSeed struct {
 	id             string
 	name           string
 	owner          string
-	provider       string
 	desc           string
 	groupType      string
 	enabled        bool
@@ -526,7 +510,8 @@ type mockProxySeed struct {
 	enabled  bool
 }
 
-// seed 按依赖顺序写入 business 库的全部样本。
+// seed 按依赖顺序写入 business 库的全部样本。模型目录样本先于 AI 账户：
+// account_supported_models / account_entry_mappings 的外键指向 models 行。
 func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
 	users, err := w.seedUsers(tx, guard)
 	if err != nil {
@@ -538,6 +523,9 @@ func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
 	}
 	groups, groupInfo, err := w.seedGroups(tx, guard, users)
 	if err != nil {
+		return err
+	}
+	if err := w.seedMockModels(tx, guard, users); err != nil {
 		return err
 	}
 	accounts, err := w.seedAccounts(tx, guard, users, groups, proxies)
@@ -566,9 +554,6 @@ func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
 	}
 	keys, err := w.seedApiKeys(tx, guard, users, groups)
 	if err != nil {
-		return err
-	}
-	if err := w.seedCustomProviderModels(tx, guard, users); err != nil {
 		return err
 	}
 	if err := w.seedMediaJobs(tx, guard, accounts, keys); err != nil {
@@ -809,10 +794,8 @@ type mockGroupInfo struct {
 }
 
 // seedGroups 写入分组样本：7 个管理员级分组、每用户 1 个默认分组、管理员自有
-// 分组与 3 个"授权给别人"的分组。
+// 分组与 3 个"授权给别人"的分组（设计 §8：分组不再携带供应商维度）。
 func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []mockUserSeed) (map[string]string, map[string]mockGroupInfo, error) {
-	mainProvider := guard.catalog.mainProvider
-	compatProvider := guard.catalog.compatProvider
 	highPolicy := map[string]any{
 		"defaultSoftConcurrency": 12, "maxQueueWaitMs": 45000,
 		"clientIpConcurrencyLimit": 8, "clientIpConcurrencyOverflowMode": "queue",
@@ -830,44 +813,44 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 	}
 	seeds := []mockGroupSeed{
 		{id: CleanupIDPrefix + "group_main", name: CleanupNamePrefix + "主力分组", owner: guard.adminID,
-			provider: mainProvider, desc: "主力业务分组，包含高优先级与常规账户", enabled: true},
+			desc: "主力业务分组，包含高优先级与常规账户", enabled: true},
 		{id: CleanupIDPrefix + "group_high", name: CleanupNamePrefix + "高并发 AI 分组", owner: guard.adminID,
-			provider: mainProvider, desc: "高并发调度分组，用于分组管理页展示软并发、短队列和单 IP 并发限制",
+			desc: "高并发调度分组，用于分组管理页展示软并发、短队列和单 IP 并发限制",
 			groupType: "high_concurrency", enabled: true, policyOverride: highPolicy},
 		{id: CleanupIDPrefix + "group_backup", name: CleanupNamePrefix + "备用分组", owner: guard.adminID,
-			provider: mainProvider, desc: "备用调度分组，包含降级账户和冷却样例", enabled: true},
+			desc: "备用调度分组，包含降级账户和冷却样例", enabled: true},
 		{id: CleanupIDPrefix + "group_oauth", name: CleanupNamePrefix + "OAuth 分组", owner: guard.adminID,
-			provider: mainProvider, desc: "OAuth 账户分组，用于 Codex 额度快照展示", enabled: true},
+			desc: "OAuth 账户分组，用于 Codex 额度快照展示", enabled: true},
 		{id: CleanupIDPrefix + "group_compat", name: CleanupNamePrefix + "OpenAI 兼容分组", owner: guard.adminID,
-			provider: compatProvider, desc: "OpenAI-compatible 标准客户端分组，用于客户端兼容覆盖和通用 API Key 透传展示",
+			desc: "OpenAI-compatible 标准客户端分组，用于客户端兼容覆盖和通用 API Key 透传展示",
 			enabled: true},
 		{id: CleanupIDPrefix + "group_experiment", name: CleanupNamePrefix + "实验分组", owner: guard.adminID,
-			provider: mainProvider, desc: "实验分组，用于授权、额度和模型策略演示", enabled: true},
+			desc: "实验分组，用于授权、额度和模型策略演示", enabled: true},
 		{id: CleanupIDPrefix + "group_empty", name: CleanupNamePrefix + "空分组", owner: guard.adminID,
-			provider: mainProvider, desc: "空分组样本（enabled=0 且无账户绑定）", enabled: false},
+			desc: "空分组样本（enabled=0 且无账户绑定）", enabled: false},
 		{id: CleanupIDPrefix + "group_manager_main", name: CleanupNamePrefix + "管理员自有分组",
-			owner: CleanupIDPrefix + "user_admin", provider: mainProvider,
+			owner: CleanupIDPrefix + "user_admin",
 			desc: "普通管理员自有分组，用于管理员模式按管理员角色筛选和创建目标验收", enabled: true},
 		{id: CleanupIDPrefix + "group_manager_high", name: CleanupNamePrefix + "管理员高并发分组",
-			owner: CleanupIDPrefix + "user_admin", provider: mainProvider,
+			owner: CleanupIDPrefix + "user_admin",
 			desc:      "普通管理员自有高并发分组，用于管理员角色下的 AI 分组管理验收",
 			groupType: "high_concurrency", enabled: true, policyOverride: managerHighPolicy},
 		{id: CleanupIDPrefix + "group_dev_granted", name: CleanupNamePrefix + "研发授权分组",
-			owner: CleanupIDPrefix + "user_dev", provider: mainProvider,
+			owner: CleanupIDPrefix + "user_dev",
 			desc: "研发用户自有分组，主动授权给超级管理员，用于 AI 分组管理查看授权分组", enabled: true},
 		{id: CleanupIDPrefix + "group_ops_granted", name: CleanupNamePrefix + "运维授权高并发分组",
-			owner: CleanupIDPrefix + "user_ops", provider: mainProvider,
+			owner: CleanupIDPrefix + "user_ops",
 			desc:      "运维用户自有高并发分组，授权给超级管理员后暂停，用于授权状态展示",
 			groupType: "high_concurrency", enabled: true, policyOverride: opsGrantedPolicy},
 		{id: CleanupIDPrefix + "group_tester_granted", name: CleanupNamePrefix + "测试授权过期分组",
-			owner: CleanupIDPrefix + "user_tester", provider: mainProvider,
+			owner: CleanupIDPrefix + "user_tester",
 			desc: "测试用户自有分组，授权给超级管理员后过期，用于 AI 分组管理过期状态展示", enabled: true},
 	}
-	// 每个配套用户 1 个默认分组（is_default 唯一索引要求 (owner, provider) 至多一行）。
+	// 每个配套用户 1 个默认分组（is_default 唯一索引要求 (owner) 至多一行）。
 	for _, user := range users {
 		seeds = append(seeds, mockGroupSeed{
 			id: CleanupIDPrefix + "group_default_" + user.key, name: CleanupNamePrefix + "默认分组",
-			owner: user.id, provider: mainProvider, enabled: true, isDefault: true,
+			owner: user.id, enabled: true, isDefault: true,
 			desc: "配套用户的默认分组，用于默认分组与授权分组的分流展示",
 		})
 	}
@@ -889,7 +872,7 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 		}
 		if err := w.put(tx, "groups", map[string]any{
 			"id": seed.id, "system_account_id": seed.owner, "name": seed.name,
-			"provider_code": seed.provider, "description": seed.desc,
+			"description": seed.desc,
 			"enabled": boolInt(seed.enabled), "is_default": boolInt(seed.isDefault),
 			"group_type": groupType, "scheduling_policy_json": policy,
 			"created_at": now, "updated_at": now,
@@ -903,12 +886,11 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 	return ids, info, nil
 }
 
-// mockMappingSeed 是一条账户模型映射样本。
+// mockMappingSeed 是一条账户入口映射样本（account_entry_mappings）。
 type mockMappingSeed struct {
 	sourceModel  string
 	sourceFamily string
-	upstream     string
-	upstreamFam  string
+	targetFam    string
 	enabled      bool
 }
 
@@ -932,8 +914,6 @@ type mockAccountSeed struct {
 	unschedulable bool
 	schedule      string
 	proxy         string
-	compat        string
-	mode          string
 	tags          []string
 	modelSlots    []int
 	extraModels   []string
@@ -948,210 +928,356 @@ type mockAccountSeed struct {
 	keyStrategy string
 	mappings    []mockMappingSeed
 	oauth       bool
+
+	// 连接计划（设计 §2.1）：vendor 为空表示 generic 账户（vendor_code SQL
+	// NULL + generic_http driver）。未显式声明的账户走默认组合
+	// gpt × api_key × gpt_openai_v1 × chat。extraPresets 为该账户追加的第二
+	// 连接 preset（每账户 (account_id, connection_preset_code) 唯一）。
+	domain       string
+	vendor       string
+	driver       string
+	preset       string
+	baseURL      string
+	extraPresets []string
+
+	// 运行时投影：写入时回填，授权实例与账户测试任务样本复用同一连接事实，
+	// 不重新推导。
+	primaryConnectionID string
+	healthConnectionID  string
+	healthModel         string
+	healthMode          string
 }
 
-// seedAccounts 写入 AI 账户及其分组绑定、支持模型、标签与模型映射。
-func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []mockUserSeed, groups map[string]string, proxies map[string]string) ([]mockAccountSeed, error) {
-	keyProfile, ok := guard.catalog.profileFor(guard.catalog.mainProvider, "api_key")
-	if !ok {
-		return nil, fmt.Errorf("mockdata business 找不到可用的 api_key 档案（provider=%s）", guard.catalog.mainProvider)
-	}
-	oauthProfile, oauthOK := guard.catalog.profileFor(guard.catalog.mainProvider, "oauth")
-	compatProfile, compatOK := guard.catalog.profileFor(guard.catalog.compatProvider, "api_key")
-	if !compatOK {
-		compatProfile = keyProfile
-	}
+// accountConnectorPlan 是一条账户连接的造数计划：连接器 registry 允许组合
+// （driver × account type × preset × domain）的投影，modes 是域 lane 与
+// preset 词表的交集（contracts.AllowedModes）。
+type accountConnectorPlan struct {
+	id      string
+	preset  string
+	surface string
+	baseURL string
+	domain  string
+	modes   []string
+}
 
+// mockExtraPresetDomains 是追加连接的 capability domain（acc_media 的第二连接
+// 承载音频域，volcengine_openspeech 组合的 registry 域）。
+var mockExtraPresetDomains = map[string]string{
+	contracts.PresetVolcengineOpenSpeech: contracts.DomainAudio,
+}
+
+// mockConnectorIdentity 解析账户的 vendor_code / connection_driver_code：
+// 显式 driver 优先；generic_* preset 是 vendor SQL NULL 的 generic 账户；其余
+// 未声明连接的账户默认 gpt × gpt_openai_v1（registry 允许组合）。
+func mockConnectorIdentity(seed *mockAccountSeed) (string, string) {
+	preset := seed.preset
+	if preset == "" {
+		preset = contracts.PresetGPTOpenAIV1
+	}
+	if seed.driver != "" {
+		return seed.vendor, seed.driver
+	}
+	switch {
+	case seed.vendor != "":
+		return seed.vendor, seed.vendor
+	case preset == contracts.PresetGenericOpenAIV1 || preset == contracts.PresetGenericAnthropicV1 || preset == contracts.PresetGenericGeminiV1Beta:
+		return "", contracts.DriverGenericHTTP
+	default:
+		return contracts.VendorGPT, contracts.DriverGPT
+	}
+}
+
+// connectorPlansFor 解析一条账户样本的连接计划：主连接 + 追加连接。组合不在
+// registry 允许清单或 mode 交集为空时直接报错——造数不允许写出 registry 外
+// 的组合（三层约束中的 registry 层在写入前失败，而不是撞库时 FK/CHECK 报错）。
+func connectorPlansFor(seed *mockAccountSeed) ([]accountConnectorPlan, error) {
+	preset := seed.preset
+	if preset == "" {
+		preset = contracts.PresetGPTOpenAIV1
+	}
+	domain := seed.domain
+	if domain == "" {
+		domain = contracts.DomainChat
+	}
+	_, driver := mockConnectorIdentity(seed)
+	baseURL := seed.baseURL
+	if baseURL == "" {
+		baseURL = mockAccountBaseURL
+	}
+	oauthType := ""
+	presets := append([]string{preset}, seed.extraPresets...)
+	plans := make([]accountConnectorPlan, 0, len(presets))
+	for index, item := range presets {
+		planDomain := domain
+		if index > 0 {
+			extraDomain, ok := mockExtraPresetDomains[item]
+			if !ok {
+				return nil, fmt.Errorf("mockdata business 账户 %s 的追加 preset %s 没有登记 capability domain", seed.id, item)
+			}
+			planDomain = extraDomain
+		}
+		if !contracts.IsAllowedConnectorCombo(driver, seed.typ, oauthType, item, planDomain) {
+			return nil, fmt.Errorf("mockdata business 账户 %s 的连接组合不在 registry 允许清单: driver=%s type=%s preset=%s domain=%s",
+				seed.id, driver, seed.typ, item, planDomain)
+		}
+		modes := contracts.AllowedModes(planDomain, item, seed.typ, oauthType)
+		if len(modes) == 0 {
+			return nil, fmt.Errorf("mockdata business 账户 %s 的连接组合 mode 交集为空: preset=%s domain=%s", seed.id, item, planDomain)
+		}
+		record, ok := connectorPresetSurface(item)
+		if !ok {
+			return nil, fmt.Errorf("mockdata business 账户 %s 引用了未知 preset %s", seed.id, item)
+		}
+		plans = append(plans, accountConnectorPlan{
+			id:      fmt.Sprintf("%sconn_%s_%d", CleanupIDPrefix, seed.slug, index),
+			preset:  item,
+			surface: record,
+			baseURL: baseURL,
+			domain:  planDomain,
+			modes:   modes,
+		})
+	}
+	return plans, nil
+}
+
+// connectorPresetSurface 返回 preset 注册的协议面（纯媒体 preset 为空串）。
+func connectorPresetSurface(preset string) (string, bool) {
+	for _, combo := range contracts.AllowedConnectorCombos() {
+		if combo.Preset == preset {
+			return combo.Surface, true
+		}
+	}
+	return "", false
+}
+
+// protocolForSurface 把协议面映射到 accounts.protocol_code / protocol_version
+// （protocols seed 的三行词表）。
+func protocolForSurface(surface string) (string, string) {
+	switch surface {
+	case contracts.SurfaceAnthropicV1:
+		return "anthropic", "v1"
+	case contracts.SurfaceGeminiV1Beta:
+		return "gemini", "v1beta"
+	default:
+		return "openai", "v1"
+	}
+}
+
+// preferredHealthMode 从连接 mode 交集中挑健康检查形态：chat 域优先流式
+// responses，媒体域按各自创建形态。
+func preferredHealthMode(domain string, modes []string) string {
+	preferences := map[string][]string{
+		contracts.DomainChat:  {contracts.ModeResponsesSSE, contracts.ModeChatJSON},
+		contracts.DomainImage: {contracts.ModeImagesJSON},
+		contracts.DomainVideo: {contracts.ModeVideoCreate},
+		contracts.DomainAudio: {contracts.ModeAudioSpeech, contracts.ModeAudioTranscriptionJSON},
+	}
+	for _, want := range preferences[domain] {
+		for _, mode := range modes {
+			if mode == want {
+				return mode
+			}
+		}
+	}
+	return modes[0]
+}
+
+// seedAccounts 写入 AI 账户及其连接面（account_connections /
+// account_endpoint_modes）、分组绑定、支持模型、入口映射与标签。
+//
+// 写入顺序沿 schema 创建事务契约（设计 §10）：先插 accounts（health 三字段暂
+// NULL——复合外键任一列为 NULL 时跳过检查），再写连接与 mode/model 关系，最后
+// UPDATE 补齐 health_check_connection_id / health_check_endpoint_mode /
+// health_check_model。
+func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []mockUserSeed, groups map[string]string, proxies map[string]string) ([]mockAccountSeed, error) {
 	seeds := []mockAccountSeed{
 		{id: CleanupIDPrefix + "acc_primary", name: CleanupNamePrefix + "主力 API Key 账户", owner: guard.adminID,
-			group: groups["main"], slug: "primary", typ: "api_key", status: mockAccountStatusActive,
+			group: groups["main"], slug: "primary", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
 			priority: 0, concurrency: 80, super: true, proxy: proxies["http"], schedule: "active",
-			mode: "responses_sse", modelSlots: []int{0, 1, 2}, tags: []string{"主力", "超级优先"},
+			modelSlots: []int{0, 1, 2}, tags: []string{"主力", "超级优先"},
 			notes: "Mockdata 主力账号，超级优先"},
 		{id: CleanupIDPrefix + "acc_proxied", name: CleanupNamePrefix + "带代理 API Key 账户", owner: guard.adminID,
-			group: groups["main"], slug: "proxied", typ: "api_key", status: mockAccountStatusActive,
-			priority: 10, concurrency: 45, proxy: proxies["http"], mode: "responses_sse",
+			group: groups["main"], slug: "proxied", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 10, concurrency: 45, proxy: proxies["http"],
 			modelSlots: []int{1, 2}, tags: []string{"代理"},
 			notes: "Mockdata 代理账号，用于账户授权给用户"},
 		{id: CleanupIDPrefix + "acc_normal", name: CleanupNamePrefix + "普通 API Key 账户", owner: guard.adminID,
-			group: groups["main"], slug: "normal", typ: "api_key", status: mockAccountStatusActive,
-			priority: 30, concurrency: 35, schedule: "inactive", mode: "responses_sse",
+			group: groups["main"], slug: "normal", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 30, concurrency: 35, schedule: "inactive",
 			modelSlots: []int{2, 3}, notes: "Mockdata 普通账号"},
 		{id: CleanupIDPrefix + "acc_standard", name: CleanupNamePrefix + "OpenAI 标准兼容账户", owner: guard.adminID,
-			group: groups["main"], slug: "standard-client", typ: "api_key", status: mockAccountStatusActive,
-			priority: 35, concurrency: 30, mode: "responses_sse", modelSlots: []int{0, 1, 2},
+			group: groups["main"], slug: "standard-client", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 35, concurrency: 30, modelSlots: []int{0, 1, 2},
 			tags: []string{"标准兼容", "模型映射"},
 			mappings: []mockMappingSeed{
-				{sourceModel: mockModelMappingSourceModel, sourceFamily: "chat_completions",
-					upstream: "", upstreamFam: "chat_completions", enabled: true},
-				{sourceModel: "", sourceFamily: "chat_completions",
-					upstream: "", upstreamFam: "chat_completions", enabled: false},
+				{sourceModel: mockModelMappingSourceModel, sourceFamily: mockEntrySourceFamily,
+					targetFam: mockEntryTargetFamily, enabled: true},
+				{sourceModel: "", sourceFamily: mockEntrySourceFamily,
+					targetFam: mockEntryTargetFamily, enabled: false},
 			},
-			notes: "Mockdata OpenAI 标准兼容账号，用于客户端兼容、模型映射和标签展示"},
+			notes: "Mockdata OpenAI 标准兼容账号，用于客户端兼容、入口映射和标签展示"},
 		{id: CleanupIDPrefix + "acc_compat", name: CleanupNamePrefix + "OpenAI 兼容 API Key 账户", owner: guard.adminID,
-			group: groups["compat"], slug: "openai-compatible", typ: "api_key", status: mockAccountStatusActive,
-			priority: 36, concurrency: 28, mode: "chat_json", modelSlots: []int{1, 2},
+			group: groups["compat"], slug: "openai-compatible", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 36, concurrency: 28, modelSlots: []int{1, 2},
 			tags:  []string{"OpenAI兼容", "标准客户端"},
-			notes: "Mockdata OpenAI-compatible 账号，用于 openai_standard 客户端兼容覆盖"},
+			notes: "Mockdata OpenAI-compatible 账号（generic_http 连接，vendor_code 为 NULL），用于 openai_standard 客户端兼容覆盖",
+			// generic 账户：vendor_code SQL NULL + generic_http driver（设计 §2.1）。
+			vendor: "", driver: contracts.DriverGenericHTTP, preset: contracts.PresetGenericOpenAIV1,
+			domain: contracts.DomainChat, baseURL: mockAccountBaseURL},
 		{id: CleanupIDPrefix + "acc_multikey", name: CleanupNamePrefix + "多 API Key 轮换账户", owner: guard.adminID,
-			group: groups["main"], slug: "multi-key-pool", typ: "api_key", status: mockAccountStatusActive,
-			priority: 18, concurrency: 70, balance: true, mode: "responses_sse",
+			group: groups["main"], slug: "multi-key-pool", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 18, concurrency: 70, balance: true,
 			modelSlots: []int{1, 2}, tags: []string{"多Key", "故障隔离", "余额自动关闭"},
 			keyPool: 4, keyStrategy: "weighted_round_robin",
 			notes: "Mockdata 账户内多 API Key；创建请求携带余额开启状态，最终应自动关闭并保留配置"},
 		{id: CleanupIDPrefix + "acc_image", name: CleanupNamePrefix + "图像生成账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "image", typ: "api_key", status: mockAccountStatusActive,
-			priority: 50, concurrency: 18, mode: "images_json", modelSlots: []int{2},
+			group: groups["experiment"], slug: "image", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 50, concurrency: 18, domain: contracts.DomainImage, modelSlots: []int{2},
 			extraModels: []string{mockCustomModelImage}, tags: []string{"图像生成"},
 			notes: "Mockdata 图像生成账号，用于 Images API、图片 token 和系统账户图像权限展示"},
 		{id: CleanupIDPrefix + "acc_media", name: CleanupNamePrefix + "媒体生成账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "media", typ: "api_key", status: mockAccountStatusActive,
-			priority: 55, concurrency: 16, mode: "responses_sse", modelSlots: []int{2},
-			extraModels: []string{mockCustomModelAudio}, mediaModels: true, tags: []string{"音频", "视频任务"},
-			notes: "Mockdata 媒体生成账号，引用目录 audio/video 分类模型（媒体契约 §3.4），media_jobs 任务行的账户亲和载体"},
+			group: groups["experiment"], slug: "media", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 55, concurrency: 16,
+			vendor: contracts.VendorVolcengine, preset: contracts.PresetVolcengineArk,
+			domain: contracts.DomainVideo, baseURL: "https://ark.cn-beijing.volces.com",
+			extraPresets: []string{contracts.PresetVolcengineOpenSpeech},
+			modelSlots:   []int{2},
+			extraModels:  []string{mockCustomModelAudio}, mediaModels: true, tags: []string{"音频", "视频任务"},
+			notes: "Mockdata 媒体生成账号（volcengine_ark 主连接 + volcengine_openspeech 音频连接），引用目录 audio/video 分类模型（媒体契约 §3.4），media_jobs 任务行的账户亲和载体"},
 		{id: CleanupIDPrefix + "acc_burst_fast", name: CleanupNamePrefix + "高并发快响账户", owner: guard.adminID,
-			group: groups["high"], slug: "burst-fast", typ: "api_key", status: mockAccountStatusActive,
-			priority: 2, concurrency: 180, super: true, mode: "responses_sse",
+			group: groups["high"], slug: "burst-fast", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 2, concurrency: 180, super: true,
 			modelSlots: []int{0, 1, 2}, tags: []string{"高并发"},
 			notes: "Mockdata 高并发分组快响账号，用于高并发调度策略展示"},
 		{id: CleanupIDPrefix + "acc_burst_image", name: CleanupNamePrefix + "高并发图像账户", owner: guard.adminID,
-			group: groups["high"], slug: "burst-image", typ: "api_key", status: mockAccountStatusActive,
-			priority: 12, concurrency: 120, mode: "chat_json", modelSlots: []int{1, 2},
+			group: groups["high"], slug: "burst-image", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 12, concurrency: 120, modelSlots: []int{1, 2},
 			extraModels: []string{mockCustomModelImage},
 			notes:       "Mockdata 高并发分组图像 / 长请求账号，用于图像 lane 并发展示"},
 		{id: CleanupIDPrefix + "acc_burst_fallback", name: CleanupNamePrefix + "高并发备用账户", owner: guard.adminID,
-			group: groups["high"], slug: "burst-fallback", typ: "api_key", status: mockAccountStatusActive,
-			priority: 70, concurrency: 90, fallback: true, mode: "responses_sse", modelSlots: []int{1, 2},
+			group: groups["high"], slug: "burst-fallback", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 70, concurrency: 90, fallback: true, modelSlots: []int{1, 2},
 			notes: "Mockdata 高并发分组备用账号，用于软并发触发后的 fallback 展示"},
 		{id: CleanupIDPrefix + "acc_fallback", name: CleanupNamePrefix + "降级备用账户", owner: guard.adminID,
-			group: groups["backup"], slug: "fallback", typ: "api_key", status: mockAccountStatusActive,
-			priority: 80, concurrency: 25, fallback: true, mode: "responses_sse", modelSlots: []int{1, 3},
+			group: groups["backup"], slug: "fallback", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 80, concurrency: 25, fallback: true, modelSlots: []int{1, 3},
 			notes: "Mockdata 备用账号"},
 		{id: CleanupIDPrefix + "acc_oauth", name: CleanupNamePrefix + "OAuth 主力账户", owner: guard.adminID,
-			group: groups["oauth"], slug: "oauth-main", typ: "oauth", status: mockAccountStatusActive,
-			priority: 5, concurrency: 50, proxy: proxies["socks"], mode: "responses_sse",
+			group: groups["oauth"], slug: "oauth-main", typ: contracts.AccountTypeOAuth, status: mockAccountStatusActive,
+			priority: 5, concurrency: 50, proxy: proxies["socks"],
 			modelSlots: []int{0, 1}, oauth: true, tags: []string{"OAuth"},
 			notes: "Mockdata OAuth 主力账号，带 Codex 额度快照"},
 		{id: CleanupIDPrefix + "acc_oauth_backup", name: CleanupNamePrefix + "OAuth 备用账户", owner: guard.adminID,
-			group: groups["oauth"], slug: "oauth-backup", typ: "oauth", status: mockAccountStatusActive,
-			priority: 60, concurrency: 20, fallback: true, mode: "responses_sse",
+			group: groups["oauth"], slug: "oauth-backup", typ: contracts.AccountTypeOAuth, status: mockAccountStatusActive,
+			priority: 60, concurrency: 20, fallback: true,
 			modelSlots: []int{1, 2}, oauth: true, notes: "Mockdata OAuth 备用账号"},
 		{id: CleanupIDPrefix + "acc_pending", name: CleanupNamePrefix + "待检查账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "pending-test", typ: "api_key", status: mockAccountStatusPending,
-			priority: 90, concurrency: 10, mode: "responses_sse", modelSlots: []int{2},
+			group: groups["experiment"], slug: "pending-test", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusPending,
+			priority: 90, concurrency: 10, modelSlots: []int{2},
 			tags:  []string{"待检查"},
 			notes: "Mockdata 待检查账号，用于待检查状态、人工诊断入口和不可调度展示"},
 		{id: CleanupIDPrefix + "acc_disabled", name: CleanupNamePrefix + "手动停用账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "disabled", typ: "api_key", status: mockAccountStatusDisabled,
-			priority: 95, concurrency: 8, mode: "responses_sse", modelSlots: []int{2},
+			group: groups["experiment"], slug: "disabled", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusDisabled,
+			priority: 95, concurrency: 8, modelSlots: []int{2},
 			tags: []string{"停用"}, notes: "Mockdata 手动停用账号，用于停用状态和恢复入口展示"},
 		{id: CleanupIDPrefix + "acc_unschedulable", name: CleanupNamePrefix + "停调账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "unschedulable", typ: "api_key", status: mockAccountStatusActive,
-			priority: 98, concurrency: 8, unschedulable: true, mode: "responses_sse", modelSlots: []int{2},
+			group: groups["experiment"], slug: "unschedulable", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 98, concurrency: 8, unschedulable: true, modelSlots: []int{2},
 			tags:  []string{"停调"},
 			notes: "Mockdata 正常但手动关闭调度账号，用于参与调度筛选和有效可用性展示"},
 		{id: CleanupIDPrefix + "acc_scheduled", name: CleanupNamePrefix + "时间计划停调账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "scheduled-inactive", typ: "api_key", status: mockAccountStatusActive,
-			priority: 100, concurrency: 8, schedule: "inactive", mode: "responses_sse",
+			group: groups["experiment"], slug: "scheduled-inactive", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			priority: 100, concurrency: 8, schedule: "inactive",
 			modelSlots: []int{2}, tags: []string{"时间计划"},
 			notes: "Mockdata 当前不在允许时段内的账号，用于账户时间计划和调度过滤展示"},
 		{id: CleanupIDPrefix + "acc_rate_limited", name: CleanupNamePrefix + "限流中账户", owner: guard.adminID,
-			group: groups["backup"], slug: "rate-limited", typ: "api_key", status: mockAccountStatusRateLimit,
-			priority: 120, concurrency: 15, cooldownIn: 2 * time.Hour, mode: "responses_sse",
+			group: groups["backup"], slug: "rate-limited", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusRateLimit,
+			priority: 120, concurrency: 15, cooldownIn: 2 * time.Hour,
 			modelSlots: []int{2}, errorCode: "rate_limit_exceeded", errorMsg: "Mockdata 模拟上游日额度耗尽",
 			tags: []string{"限流"}, notes: "Mockdata 限流状态账号"},
 		{id: CleanupIDPrefix + "acc_temporary", name: CleanupNamePrefix + "临时不可调用账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "temporary", typ: "api_key", status: mockAccountStatusTemporary,
-			priority: 130, concurrency: 15, cooldownIn: 30 * time.Minute, mode: "responses_sse",
+			group: groups["experiment"], slug: "temporary", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusTemporary,
+			priority: 130, concurrency: 15, cooldownIn: 30 * time.Minute,
 			modelSlots: []int{1, 3}, errorCode: "service_unavailable", errorMsg: "Mockdata 模拟上游 503 维护",
 			notes: "Mockdata 临时不可调用状态账号"},
 		{id: CleanupIDPrefix + "acc_error", name: CleanupNamePrefix + "异常账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "error", typ: "api_key", status: mockAccountStatusError,
-			priority: 160, concurrency: 10, mode: "responses_sse", modelSlots: []int{0},
+			group: groups["experiment"], slug: "error", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusError,
+			priority: 160, concurrency: 10, modelSlots: []int{0},
 			errorCode: "invalid_api_key", errorMsg: "Mockdata 模拟 401 认证失败",
 			notes: "Mockdata 异常状态账号"},
 		{id: CleanupIDPrefix + "acc_expired", name: CleanupNamePrefix + "已到期账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "expired", typ: "api_key", status: mockAccountStatusExpired,
-			priority: 5, concurrency: 5, expiresIn: -24 * time.Hour, mode: "responses_sse",
+			group: groups["experiment"], slug: "expired", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusExpired,
+			priority: 5, concurrency: 5, expiresIn: -24 * time.Hour,
 			modelSlots: []int{3}, notes: "Mockdata 已到期停用账号"},
 		{id: CleanupIDPrefix + "acc_manager_primary", name: CleanupNamePrefix + "管理员 API Key 账户",
 			owner: CleanupIDPrefix + "user_admin", group: groups["manager_main"], slug: "manager-primary",
-			typ: "api_key", status: mockAccountStatusActive, priority: 8, concurrency: 48,
-			mode: "responses_sse", modelSlots: []int{1, 2, 3}, tags: []string{"管理自有"},
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 8, concurrency: 48,
+			modelSlots: []int{1, 2, 3}, tags: []string{"管理自有"},
 			notes: "Mockdata 普通管理员自有账号，用于管理员模式资源归属验收"},
 		{id: CleanupIDPrefix + "acc_manager_burst", name: CleanupNamePrefix + "管理员高并发账户",
 			owner: CleanupIDPrefix + "user_admin", group: groups["manager_high"], slug: "manager-burst",
-			typ: "api_key", status: mockAccountStatusActive, priority: 4, concurrency: 120, super: true,
-			schedule: "active", mode: "responses_sse", modelSlots: []int{0, 1, 2},
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 4, concurrency: 120, super: true,
+			schedule: "active", modelSlots: []int{0, 1, 2},
 			tags:  []string{"管理员高并发"},
 			notes: "Mockdata 普通管理员高并发账号，用于管理员角色高并发分组验收"},
 		{id: CleanupIDPrefix + "acc_dev_shared", name: CleanupNamePrefix + "研发共享给超级管理员账户",
 			owner: CleanupIDPrefix + "user_dev", group: groups["dev_granted"], slug: "dev-admin-grant",
-			typ: "api_key", status: mockAccountStatusActive, priority: 20, concurrency: 24,
-			mode: "responses_sse", modelSlots: []int{2, 3},
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 20, concurrency: 24,
+			modelSlots: []int{2, 3},
 			tags:  []string{"授权共享"},
 			notes: "Mockdata 研发用户自有账号，用于授权分组给超级管理员"},
 		{id: CleanupIDPrefix + "acc_ops_shared", name: CleanupNamePrefix + "运维共享给超级管理员账户",
 			owner: CleanupIDPrefix + "user_ops", group: groups["ops_granted"], slug: "ops-admin-grant",
-			typ: "api_key", status: mockAccountStatusActive, priority: 15, concurrency: 40,
-			mode: "responses_sse", modelSlots: []int{1, 2},
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 15, concurrency: 40,
+			modelSlots: []int{1, 2},
 			tags:  []string{"授权共享"},
 			notes: "Mockdata 运维用户自有账号，用于暂停授权分组展示"},
 		{id: CleanupIDPrefix + "acc_tester_shared", name: CleanupNamePrefix + "测试共享给超级管理员账户",
 			owner: CleanupIDPrefix + "user_tester", group: groups["tester_granted"], slug: "tester-admin-grant",
-			typ: "api_key", status: mockAccountStatusActive, priority: 40, concurrency: 12,
-			mode: "responses_sse", modelSlots: []int{3},
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 40, concurrency: 12,
+			modelSlots: []int{3},
 			notes: "Mockdata 测试用户自有账号，用于过期授权分组展示"},
 	}
 
 	now := w.stamp()
 	for index := range seeds {
 		seed := &seeds[index]
-		profile := keyProfile
-		if seed.typ == "oauth" {
-			if oauthOK {
-				profile = oauthProfile
-			} else {
-				// 没有支持 oauth 的档案时退化写入 api_key 账户：宁可少一个
-				// 类型样本，也不写出协议档案不接受的账户。
-				seed.typ = "api_key"
-			}
-		}
-		if seed.id == CleanupIDPrefix+"acc_compat" {
-			profile = compatProfile
+		plans, err := connectorPlansFor(seed)
+		if err != nil {
+			return nil, err
 		}
 		credentials, fingerprint, mask, err := w.accountCredentials(seed, index)
 		if err != nil {
 			return nil, err
 		}
-		healthModel := profile.healthModel
-		if healthModel == "" {
-			healthModel = guard.catalog.healthModel
-		}
 		scheduleJSON, nextCheck, err := w.accountSchedule(seed)
 		if err != nil {
 			return nil, err
 		}
+		protocolCode, protocolVersion := protocolForSurface(plans[0].surface)
+		vendorCode, _ := mockConnectorIdentity(seed)
 		columns := map[string]any{
 			"id": seed.id, "config_revision": 1, "dispatch_revision": 1,
 			"circuit_projection_revision": 0,
-			"system_account_id":           seed.owner, "provider_code": profile.provider,
-			"provider_protocol_profile_id": profile.id, "protocol_code": profile.protocol,
-			"protocol_version": profile.protocolVer, "name": seed.name, "type": seed.typ,
+			"system_account_id":           seed.owner, "vendor_code": nullString(vendorCode),
+			"connection_driver_code": connectorDriverFor(seed), "oauth_type": nil,
+			"protocol_code": protocolCode, "protocol_version": protocolVersion,
+			"name": seed.name, "type": seed.typ,
 			"status": seed.status, "credentials_encrypted": credentials,
 			"credential_fingerprint": fingerprint, "credential_mask": mask,
 			"oauth_refresh_token_present": 0, "proxy_profile_id": nullString(seed.proxy),
 			"concurrency_limit": seed.concurrency, "priority": seed.priority,
 			"super_priority_enabled": boolInt(seed.super), "fallback_enabled": boolInt(seed.fallback),
-			"client_compatibility": clientCompatibility(seed.compat), "schedulable": boolInt(!seed.unschedulable),
-			"availability_schedule_json": scheduleJSON, "availability_schedule_next_check_at": nextCheck,
+			"schedulable": boolInt(!seed.unschedulable),
+			"capability_domain":                          plans[0].domain,
+			"availability_schedule_json":                 scheduleJSON, "availability_schedule_next_check_at": nextCheck,
 			"notes": seed.notes, "account_expires_at": nullTime(w, seed.expiresIn),
 			"last_used_at": w.at(-90 * time.Minute), "cooldown_until": nullTime(w, seed.cooldownIn),
 			"last_error_code": nullString(seed.errorCode), "last_error_message": nullString(seed.errorMsg),
 			"last_error_trace_id":                            traceFor(seed.errorCode),
 			"cooldown_retest_failure_count":                  0,
 			"temporary_unavailable_continuous_probe_enabled": 1,
-			"health_check_model":                             healthModel, "health_check_endpoint_mode": seed.mode,
+			"health_check_connection_id":                     nil, "health_check_model": nil, "health_check_endpoint_mode": nil,
 			"last_health_check_at": w.at(-1 * time.Hour), "next_health_check_at": w.at(1 * time.Hour),
 			"last_health_success_at": w.at(-1 * time.Hour), "health_check_failure_count": 0,
 			"last_health_check_status_code": 200, "stream_failure_count": 0,
@@ -1160,7 +1286,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			"balance_query_next_refresh_at": nullTime(w, refreshAfter(seed.balance)),
 			"deleted_at":                    nil, "deleted_by": nil, "created_at": now, "updated_at": now,
 		}
-		if seed.typ == "oauth" {
+		if seed.typ == contracts.AccountTypeOAuth {
 			columns["oauth_access_token_expires_at"] = w.at(6 * time.Hour)
 			columns["oauth_refresh_token_present"] = 1
 		}
@@ -1179,6 +1305,29 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 		if err := w.put(tx, "accounts", columns); err != nil {
 			return nil, err
 		}
+		// 连接行 + endpoint mode 行（域 lane ∩ preset 词表的非空子集）。
+		for planIndex, plan := range plans {
+			if err := w.put(tx, "account_connections", map[string]any{
+				"id": plan.id, "account_id": seed.id,
+				"connection_preset_code": plan.preset, "protocol_surface_code": nullString(plan.surface),
+				"base_url": plan.baseURL, "enabled": 1,
+				"created_at": now, "updated_at": now,
+			}); err != nil {
+				return nil, err
+			}
+			for _, mode := range plan.modes {
+				if err := w.put(tx, "account_endpoint_modes", map[string]any{
+					"connection_id": plan.id, "endpoint_mode": mode,
+				}); err != nil {
+					return nil, err
+				}
+			}
+			if planIndex == 0 {
+				seed.primaryConnectionID = plan.id
+				seed.healthConnectionID = plan.id
+				seed.healthMode = preferredHealthMode(plan.domain, plan.modes)
+			}
+		}
 		if err := w.put(tx, "group_accounts", map[string]any{
 			"system_account_id": seed.owner, "group_id": seed.group, "account_id": seed.id,
 			"account_authorization_id":     nil,
@@ -1193,25 +1342,30 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 		models := w.accountModels(seed, guard)
 		for _, model := range models {
 			if err := w.put(tx, "account_supported_models", map[string]any{
-				"account_id": seed.id, "provider_code": profile.provider, "model": model,
+				"account_id": seed.id, "model_id": model.id,
 				"created_at": now,
 			}); err != nil {
 				return nil, err
 			}
 		}
-		for _, mapping := range seed.mappings {
+		seed.healthModel = healthModelFor(seed, models, guard)
+		for mappingIndex, mapping := range seed.mappings {
 			source := mapping.sourceModel
 			if source == "" {
-				source = guard.catalog.modelAt(0)
+				source = guard.catalog.modelAt(0).name
 			}
-			upstream := mapping.upstream
-			if upstream == "" {
-				upstream = guard.catalog.modelAt(1)
+			// target 复合外键 (account_id, target_model_id) 锁定本账户支持模型
+			// 集合：只从 account_supported_models 已写入的行里取。
+			target := models[0]
+			if len(models) > 1 {
+				target = models[1]
 			}
-			if err := w.put(tx, "account_model_mappings", map[string]any{
-				"account_id": seed.id, "provider_code": profile.provider,
+			if err := w.put(tx, "account_entry_mappings", map[string]any{
+				"id": fmt.Sprintf("%sentry_%s_%d", CleanupIDPrefix, seed.slug, mappingIndex),
+				"account_id": seed.id,
 				"source_model": source, "source_endpoint_family": mapping.sourceFamily,
-				"upstream_model": upstream, "upstream_endpoint_family": mapping.upstreamFam,
+				"target_connection_id": seed.primaryConnectionID, "target_model_id": target.id,
+				"target_endpoint_family": mapping.targetFam,
 				"enabled": boolInt(mapping.enabled), "created_at": now, "updated_at": now,
 			}); err != nil {
 				return nil, err
@@ -1232,42 +1386,90 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 				return nil, err
 			}
 		}
+		// 创建事务最后一步（设计 §10）：同一条 UPDATE 补齐 health 三字段——
+		// 此时 (id, health_check_connection_id) 的复合外键目标行已存在。
+		if err := w.exec(tx,
+			"UPDATE accounts SET health_check_connection_id = ?, health_check_endpoint_mode = ?, health_check_model = ? WHERE id = ?",
+			seed.healthConnectionID, seed.healthMode, seed.healthModel, seed.id); err != nil {
+			return nil, err
+		}
 	}
 	return seeds, nil
 }
 
-// accountModels 解析一条账户的支持模型：目录模型按槽位取，附加模型直接拼接；
-// mediaModels 账户追加目录 audio / video 分类模型（媒体契约 §3.4）。
-func (w *businessWriter) accountModels(seed *mockAccountSeed, guard businessGuard) []string {
-	var models []string
-	seen := map[string]bool{}
-	for _, slot := range seed.modelSlots {
-		model := guard.catalog.modelAt(slot)
-		if !seen[model] {
-			seen[model] = true
-			models = append(models, model)
+// connectorDriverFor 解析账户的 connection_driver_code（与 connectorPlansFor
+// 同一身份推导，见 mockConnectorIdentity）。
+func connectorDriverFor(seed *mockAccountSeed) string {
+	_, driver := mockConnectorIdentity(seed)
+	return driver
+}
+
+// healthModelFor 从账户支持模型里挑第一个文本模型作为体检模型；没有文本模型
+// 时回落目录首个文本模型。
+func healthModelFor(seed *mockAccountSeed, models []businessModel, guard businessGuard) string {
+	for _, model := range models {
+		if model.hasMode(contracts.ModeChatJSON, contracts.ModeChatSSE,
+			contracts.ModeResponsesJSON, contracts.ModeResponsesSSE) {
+			return model.name
 		}
 	}
-	for _, model := range seed.extraModels {
-		if !seen[model] {
-			seen[model] = true
-			models = append(models, model)
+	return guard.catalog.textModel()
+}
+
+// accountModels 解析一条账户的支持模型：目录文本模型按槽位取，附加模型直接
+// 拼接；mediaModels 账户追加目录 audio / video 分类模型（媒体契约 §3.4）。
+// 返回值是 models 表行投影：id 进 account_supported_models，name 供文本引用。
+// 造数自建模型的 id 是 seedMockModels 的确定性主键；没有 models 行可指向的
+// 名字（如 video 目录缺行时的 sora-2 回落）只留在 media_jobs 文本列，不进
+// 支持模型集合。
+func (w *businessWriter) accountModels(seed *mockAccountSeed, guard businessGuard) []businessModel {
+	var models []businessModel
+	seen := map[string]bool{}
+	appendModel := func(model businessModel) {
+		if model.id == "" {
+			model.id = mockModelID(model.name)
 		}
+		if model.id == "" || seen[model.id] {
+			return
+		}
+		seen[model.id] = true
+		models = append(models, model)
+	}
+	for _, slot := range seed.modelSlots {
+		appendModel(guard.catalog.modelAt(slot))
+	}
+	for _, name := range seed.extraModels {
+		appendModel(businessModel{name: name})
 	}
 	if seed.mediaModels {
-		for _, model := range []string{guard.catalog.audioModelAt(0), guard.catalog.videoModelAt(0)} {
-			if model != "" && !seen[model] {
-				seen[model] = true
-				models = append(models, model)
+		for _, model := range []businessModel{guard.catalog.audioModelAt(0), guard.catalog.videoModelAt(0)} {
+			if model.name != "" {
+				appendModel(model)
 			}
 		}
 	}
 	return models
 }
 
-// accountCredentials 生成账户凭据信封、指纹与掩码。
+// mockModelID 返回造数自建模型行（seedMockModels）的确定性主键；非造数模型
+// 返回空串。
+func mockModelID(name string) string {
+	switch name {
+	case mockCustomModelLongContext:
+		return CleanupIDPrefix + "model_global_long_context"
+	case mockCustomModelImage:
+		return CleanupIDPrefix + "model_global_image"
+	case mockCustomModelAudio:
+		return CleanupIDPrefix + "model_global_audio"
+	}
+	return ""
+}
+
+// accountCredentials 生成账户凭据信封、指纹与掩码。凭据 JSON 只含 driver
+// credential 键（api_key / OAuth token 形态与 key 池运维配置）；base_url 与
+// endpoint mode 已随连接面拆到 account_connections 行，不再进凭据。
 func (w *businessWriter) accountCredentials(seed *mockAccountSeed, index int) (string, any, string, error) {
-	if seed.typ == "oauth" {
+	if seed.typ == contracts.AccountTypeOAuth {
 		accessToken := "mockdata-oauth-access-" + seed.slug + "-" + strings.Repeat("a", 32)
 		payload := map[string]any{
 			"access_token":  accessToken,
@@ -1275,7 +1477,6 @@ func (w *businessWriter) accountCredentials(seed *mockAccountSeed, index int) (s
 			"client_id":     "mockdata-openai-oauth-client",
 			"account_id":    "mockdata-openai-user-" + seed.slug,
 			"expires_at":    w.at(6 * time.Hour),
-			"base_url":      "https://api.openai.com/v1",
 		}
 		sealed, err := w.seal(payload)
 		if err != nil {
@@ -1285,8 +1486,7 @@ func (w *businessWriter) accountCredentials(seed *mockAccountSeed, index int) (s
 	}
 	primary := "sk-mockdata-admin-" + seed.slug + "-" + strings.Repeat("x", 24)
 	payload := map[string]any{
-		"api_key":  primary,
-		"base_url": "https://api.openai.com/v1",
+		"api_key": primary,
 	}
 	if seed.keyPool > 1 {
 		keys := make([]string, 0, seed.keyPool)
@@ -1366,14 +1566,6 @@ func (w *businessWriter) accountSchedule(seed *mockAccountSeed) (any, any, error
 		return nil, nil, err
 	}
 	return encoded, nextCheck, nil
-}
-
-// clientCompatibility 归一化客户端兼容值：空值取 openai_standard。
-func clientCompatibility(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "openai_standard"
-	}
-	return value
 }
 
 // balanceConfig 生成余额查询配置（未开启时保留 schema 默认空对象）。
@@ -1719,9 +1911,9 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 	}
 	for _, seed := range scheduleSeeds {
 		account := byID[seed.account]
-		model := guard.catalog.modelAt(0)
+		model := guard.catalog.modelAt(0).name
 		if len(account.modelSlots) > 0 {
-			model = guard.catalog.modelAt(account.modelSlots[0])
+			model = guard.catalog.modelAt(account.modelSlots[0]).name
 		}
 		if err := w.put(tx, "model_quality_schedules", map[string]any{
 			"id": seed.id, "system_account_id": seed.owner, "account_id": seed.account,
@@ -1742,7 +1934,7 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 		"trigger_run_id": CleanupIDPrefix + "quality_run_failed",
 		"config_source":  "manual", "config_source_id": nil, "policy_revision": 1,
 		"profile": "quick", "penalty_threshold": 70, "recovery_interval_minutes": 30,
-		"recovery_model":          guard.catalog.modelAt(0),
+		"recovery_model":          guard.catalog.modelAt(0).name,
 		"account_config_revision": 1, "before_status": mockAccountStatusError,
 		"after_status": mockAccountStatusError, "fallback_was_enabled": 1,
 		"super_priority_was_enabled": 0, "started_at": w.at(-2 * time.Hour),
@@ -1767,22 +1959,6 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 		return err
 	}
 
-	// 体检默认模型：账户级 + 系统级（系统级按 provider 主键，只能一行）。
-	for _, owner := range []string{guard.adminID, CleanupIDPrefix + "user_admin"} {
-		if err := w.put(tx, "provider_default_health_check_models", map[string]any{
-			"system_account_id": owner, "provider_code": guard.catalog.mainProvider,
-			"model": mockCustomModelLongContext, "created_at": now, "updated_at": now,
-		}); err != nil {
-			return err
-		}
-	}
-	if err := w.put(tx, "provider_system_default_health_check_models", map[string]any{
-		"provider_code": guard.catalog.mainProvider, "model": mockCustomModelLongContext,
-		"created_at": now, "updated_at": now,
-	}); err != nil {
-		return err
-	}
-
 	// 账户测试任务三态 + 两个会话 + 会话任务链接。
 	taskSeeds := []struct {
 		suffix  string
@@ -1795,7 +1971,7 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 		ended   time.Duration
 	}{
 		{suffix: "success", account: primary, status: "success", message: "Mockdata 测试通过",
-			result:  `{"ok":true,"latencyMs":820,"model":"` + guard.catalog.modelAt(0) + `"}`,
+			result:  `{"ok":true,"latencyMs":820,"model":"` + guard.catalog.modelAt(0).name + `"}`,
 			started: -40 * time.Minute, ended: -39 * time.Minute},
 		{suffix: "failed", account: errorAccount, status: "failed", message: "Mockdata 测试失败",
 			errMsg: "Mockdata 模拟 401 认证失败", started: -35 * time.Minute, ended: -34 * time.Minute},
@@ -1803,15 +1979,29 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 			started: -30 * time.Minute, ended: -29 * time.Minute},
 	}
 	for _, seed := range taskSeeds {
-		profile, _ := guard.catalog.profileFor(guard.catalog.mainProvider, "api_key")
+		// provider 三元组随账户的连接事实（vendor + 主连接 preset + 协议面），
+		// 表上无外键，取 registry 允许组合的投影值。
+		preset := seed.account.preset
+		if preset == "" {
+			preset = contracts.PresetGPTOpenAIV1
+		}
+		surface, surfaceOK := connectorPresetSurface(preset)
+		if !surfaceOK {
+			surface = contracts.SurfaceOpenAIV1
+		}
+		protocolCode, protocolVersion := protocolForSurface(surface)
+		vendor, _ := mockConnectorIdentity(&seed.account)
+		if vendor == "" {
+			vendor = guard.catalog.mainVendor
+		}
 		if err := w.put(tx, "account_test_tasks", map[string]any{
 			"id": CleanupIDPrefix + "test_task_" + seed.suffix, "account_id": seed.account.id,
-			"account_name": seed.account.name, "provider_code": profile.provider,
-			"provider_protocol_profile_id": profile.id, "protocol_code": profile.protocol,
-			"protocol_version": profile.protocolVer, "account_type": seed.account.typ,
+			"account_name": seed.account.name, "provider_code": vendor,
+			"provider_protocol_profile_id": preset, "protocol_code": protocolCode,
+			"protocol_version": protocolVersion, "account_type": seed.account.typ,
 			"request_system_account_id": guard.adminID, "request_role": "super_admin",
-			"diagnostics": "full", "model": guard.catalog.modelAt(0),
-			"test_endpoint_mode": seed.account.mode, "status": seed.status,
+			"diagnostics": "full", "model": guard.catalog.modelAt(0).name,
+			"test_endpoint_mode": seed.account.healthMode, "status": seed.status,
 			"status_message": seed.message, "result_json": nullString(seed.result),
 			"error_message":      nullString(seed.errMsg),
 			"cancel_requested":   boolInt(seed.status == "canceled"),
@@ -2245,36 +2435,35 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 		if !ok {
 			continue
 		}
-		profile, ok := guard.catalog.profileFor(guard.catalog.mainProvider, "api_key")
-		if !ok {
-			return fmt.Errorf("mockdata business 找不到可用的 api_key 档案")
+		if source.primaryConnectionID == "" {
+			return fmt.Errorf("mockdata business 授权实例源账户 %s 缺少主连接投影", source.id)
 		}
 		sealed, err := w.seal(map[string]any{
-			"api_key":  "sk-mockdata-instance-" + userSlug(instance.grantee) + "-" + strings.Repeat("i", 24),
-			"base_url": "https://api.openai.com/v1",
+			"api_key": "sk-mockdata-instance-" + userSlug(instance.grantee) + "-" + strings.Repeat("i", 24),
 		})
 		if err != nil {
 			return err
 		}
 		instanceName := CleanupNamePrefix + strings.TrimPrefix(source.name, CleanupNamePrefix) + "（授权实例）"
 		instanceID := CleanupIDPrefix + "accinst_" + userSlug(instance.grantee) + "_" + source.slug
+		connectionID := CleanupIDPrefix + "conn_accinst_" + userSlug(instance.grantee) + "_" + source.slug
 		if err := w.put(tx, "accounts", map[string]any{
 			"id": instanceID, "config_revision": 1, "dispatch_revision": 1,
 			"circuit_projection_revision": 0, "system_account_id": instance.grantee,
-			"provider_code": profile.provider, "provider_protocol_profile_id": profile.id,
-			"protocol_code": profile.protocol, "protocol_version": profile.protocolVer,
-			"name": instanceName, "type": "api_key", "status": mockAccountStatusActive,
+			"vendor_code": nullString(source.vendor), "connection_driver_code": connectorDriverFor(&source),
+			"oauth_type": nil, "protocol_code": "openai", "protocol_version": "v1",
+			"name": instanceName, "type": source.typ, "status": mockAccountStatusActive,
 			"credentials_encrypted": sealed, "credential_mask": maskSecret("sk-mockdata-instance-" + userSlug(instance.grantee)),
 			"oauth_refresh_token_present": 0, "concurrency_limit": source.concurrency,
 			"priority": source.priority, "super_priority_enabled": 0, "fallback_enabled": 0,
-			"client_compatibility": "openai_standard", "schedulable": 1,
+			"schedulable": 1,
+			"capability_domain": contracts.DomainChat,
 			"notes": "Mockdata 授权账户实例，归属被授权人，用于" + "授权给我的账号" + "视图",
 			"authorization_instance_source_account_id":       instance.sourceAccountID,
 			"authorization_instance_authorization_id":        instance.authorizationID,
 			"authorization_instance_owner_system_account_id": instance.owner,
 			"temporary_unavailable_continuous_probe_enabled": 1,
-			"health_check_model":                             profile.healthModel,
-			"health_check_endpoint_mode":                     source.mode,
+			"health_check_connection_id":                     nil, "health_check_model": nil, "health_check_endpoint_mode": nil,
 			"last_used_at":                                   w.at(-70 * time.Minute),
 			"last_health_check_at":                           w.at(-1 * time.Hour),
 			"next_health_check_at":                           w.at(1 * time.Hour),
@@ -2286,6 +2475,39 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 			"balance_query_config_json":                      "{}",
 			"created_at":                                     now, "updated_at": now,
 		}); err != nil {
+			return err
+		}
+		// 实例账户自己的连接行：复制源账户主连接的 preset/surface/base_url，
+		// mode 交集按源账户 capability domain 重新计算（同组合同交集）。
+		sourcePlans, err := connectorPlansFor(&mockAccountSeed{
+			id: instanceID, slug: source.slug, typ: source.typ,
+			vendor: source.vendor, driver: source.driver, preset: source.preset,
+			domain: contracts.DomainChat, baseURL: mockAccountBaseURL,
+		})
+		if err != nil {
+			return err
+		}
+		primaryPlan := sourcePlans[0]
+		primaryPlan.id = connectionID
+		if err := w.put(tx, "account_connections", map[string]any{
+			"id": primaryPlan.id, "account_id": instanceID,
+			"connection_preset_code": primaryPlan.preset, "protocol_surface_code": nullString(primaryPlan.surface),
+			"base_url": primaryPlan.baseURL, "enabled": 1,
+			"created_at": now, "updated_at": now,
+		}); err != nil {
+			return err
+		}
+		for _, mode := range primaryPlan.modes {
+			if err := w.put(tx, "account_endpoint_modes", map[string]any{
+				"connection_id": primaryPlan.id, "endpoint_mode": mode,
+			}); err != nil {
+				return err
+			}
+		}
+		// 连接行就位后补齐 health 三字段（与 seedAccounts 同一创建事务契约）。
+		if err := w.exec(tx,
+			"UPDATE accounts SET health_check_connection_id = ?, health_check_endpoint_mode = ?, health_check_model = ? WHERE id = ?",
+			connectionID, source.healthMode, source.healthModel, instanceID); err != nil {
 			return err
 		}
 		if err := w.put(tx, "group_accounts", map[string]any{
@@ -2685,15 +2907,15 @@ func (w *businessWriter) apiKeySchedule(seed mockKeySeed) (any, any, error) {
 	return encoded, nextCheck, nil
 }
 
-// mockCustomModelSeed 是一条自定义模型样本。
-type mockCustomModelSeed struct {
+// mockModelSeed 是一条模型目录样本（models 表，设计 §3：单表承载
+// builtin/global/personal 三 scope；custom_provider_models 已退役）。
+type mockModelSeed struct {
 	id       string
 	model    string
 	scope    string
 	owner    string
 	status   string
-	mode     string
-	protocol []string
+	modes    []string
 	notes    string
 	cap      string
 	context  int
@@ -2709,51 +2931,55 @@ type mockCustomModelSeed struct {
 	shutdown string
 }
 
-// seedCustomProviderModels 写入全域 / 个人 / 草稿 / 停用四类自定义模型样本。
-func (w *businessWriter) seedCustomProviderModels(tx *sql.Tx, guard businessGuard, users []mockUserSeed) error {
-	provider := guard.catalog.mainProvider
+// seedMockModels 写入模型目录样本（models 表）：global 文本 / 图像 / 音频、
+// personal 活跃、draft 与 disabled 状态样本。vendor_code 用 registry 真实厂商
+// 值；scope 与 system_account_id 联动 CHECK 要求 personal 行带 owner。
+func (w *businessWriter) seedMockModels(tx *sql.Tx, guard businessGuard, users []mockUserSeed) error {
+	vendor := guard.catalog.mainVendor
+	if vendor == "" {
+		vendor = contracts.VendorGPT
+	}
 	now := w.stamp()
-	emptyArray := "[]"
-	seeds := []mockCustomModelSeed{
+	seeds := []mockModelSeed{
 		{id: CleanupIDPrefix + "model_global_long_context", model: mockCustomModelLongContext,
-			scope: "global", status: "active", mode: "text",
-			protocol: []string{"responses", "chat_completions"},
-			context:  512000, maxOut: 32000, input: 0.2, output: 0.8, cached: 0.05,
-			cap:   "Mockdata 全局长上下文模型，用于模型目录、账户支持模型和映射目标展示",
+			scope: "global", status: "active",
+			modes: []string{contracts.ModeChatJSON, contracts.ModeChatSSE, contracts.ModeResponsesJSON, contracts.ModeResponsesSSE},
+			context: 512000, maxOut: 32000, input: 0.2, output: 0.8, cached: 0.05,
+			cap:   "Mockdata 全局长上下文模型，用于模型目录、账户支持模型和入口映射展示",
 			notes: "Mockdata 全局模型样本"},
 		{id: CleanupIDPrefix + "model_global_image", model: mockCustomModelImage,
-			scope: "global", status: "active", mode: "image",
-			protocol: []string{"images", "responses"},
-			context:  32000, maxOut: 8000, imgIn: 5, imgOut: 40, perImage: 0.02,
+			scope: "global", status: "active",
+			modes: []string{contracts.ModeImagesJSON},
+			context: 32000, maxOut: 8000, imgIn: 5, imgOut: 40, perImage: 0.02,
 			cap:   "Mockdata 全局图像模型，用于图片用量与图像权限验收",
 			notes: "Mockdata 全局图像模型样本"},
 		{id: CleanupIDPrefix + "model_global_audio", model: mockCustomModelAudio,
-			scope: "global", status: "active", mode: "audio",
-			protocol: []string{"audio_speech"},
-			audIn:    0.6, audOut: 12,
+			scope: "global", status: "active",
+			modes: []string{contracts.ModeAudioSpeech},
+			audIn: 0.6, audOut: 12,
 			cap:   "Mockdata 全局音频模型（TTS），用于音频分类目录与同步音频用量验收",
 			notes: "Mockdata 全局音频模型样本"},
 		{id: CleanupIDPrefix + "model_personal_codex", model: "mockdata-personal-codex",
 			scope: "personal", owner: CleanupIDPrefix + "user_admin", status: "active",
-			mode: "text", protocol: []string{"responses"},
+			modes: []string{contracts.ModeResponsesJSON},
 			context: 256000, maxOut: 16000, input: 0.3, output: 1.2,
 			cap:   "Mockdata 普通管理员个人模型，用于个人模型目录和账户模型限制展示",
 			notes: "Mockdata 个人模型样本"},
 		{id: CleanupIDPrefix + "model_draft_text", model: "mockdata-draft-text",
-			scope: "personal", owner: guard.adminID, status: "draft", mode: "text",
-			protocol: []string{"chat_completions", "responses"},
-			input:    0.2, output: 0.8,
+			scope: "personal", owner: guard.adminID, status: "draft",
+			modes: []string{contracts.ModeChatJSON, contracts.ModeResponsesJSON},
+			input: 0.2, output: 0.8,
 			cap:   "Mockdata 草稿文本模型，用于模型目录草稿状态展示",
 			notes: "Mockdata 草稿模型样本"},
 		{id: CleanupIDPrefix + "model_disabled_legacy", model: "mockdata-disabled-legacy",
-			scope: "personal", owner: guard.adminID, status: "disabled", mode: "text",
-			protocol: []string{"chat_completions"}, input: 0.1, output: 0.4,
+			scope: "personal", owner: guard.adminID, status: "disabled",
+			modes: []string{contracts.ModeChatJSON}, input: 0.1, output: 0.4,
 			shutdown: w.dateKey(-7),
 			cap:      "Mockdata 停用模型，用于模型目录停用状态展示",
 			notes:    "Mockdata 停用模型样本"},
 	}
 	for _, seed := range seeds {
-		protocols, err := w.putJSON(seed.protocol)
+		modesJSON, err := w.putJSON(seed.modes)
 		if err != nil {
 			return err
 		}
@@ -2761,27 +2987,28 @@ func (w *businessWriter) seedCustomProviderModels(tx *sql.Tx, guard businessGuar
 		if seed.scope == "personal" {
 			owner = seed.owner
 		}
-		if err := w.put(tx, "custom_provider_models", map[string]any{
-			"id": seed.id, "provider_code": provider, "model": seed.model, "scope": seed.scope,
-			"system_account_id": owner, "status": seed.status, "catalog_visible": 1,
-			"mode":                             seed.mode,
-			"supported_api_protocols_json":     protocols,
-			"supported_service_tiers_json":     emptyArray,
-			"supported_reasoning_efforts_json": emptyArray,
-			"service_tier_prices_json":         "{}",
-			"context_window_tokens":            nullInt(seed.context),
-			"max_output_tokens":                nullInt(seed.maxOut),
-			"input_usd_per_1m":                 nullFloat(seed.input),
-			"output_usd_per_1m":                nullFloat(seed.output),
-			"cached_input_usd_per_1m":          nullFloat(seed.cached),
-			"image_input_usd_per_1m":           nullFloat(seed.imgIn),
-			"image_output_usd_per_1m":          nullFloat(seed.imgOut),
-			"audio_input_usd_per_1m":           nullFloat(seed.audIn),
-			"audio_output_usd_per_1m":          nullFloat(seed.audOut),
-			"output_usd_per_image":             nullFloat(seed.perImage),
-			"shutdown_date":                    nullString(seed.shutdown),
-			"currency":                         "USD",
-			"capability_notes":                 seed.cap, "notes": seed.notes,
+		if err := w.put(tx, "models", map[string]any{
+			"id": seed.id, "vendor_code": vendor, "public_model": seed.model, "upstream_model": seed.model,
+			"scope": seed.scope, "system_account_id": owner, "status": seed.status,
+			"catalog_visible": 1, "catalog_order": nil,
+			"supported_endpoint_modes_json":     modesJSON,
+			"supported_service_tiers_json":      "[]",
+			"supported_reasoning_efforts_json":  "[]",
+			"codex_supported_reasoning_levels_json": "[]",
+			"service_tier_prices_json":          "{}",
+			"context_window_tokens":             nullInt(seed.context),
+			"max_output_tokens":                 nullInt(seed.maxOut),
+			"input_usd_per_1m":                  nullFloat(seed.input),
+			"output_usd_per_1m":                 nullFloat(seed.output),
+			"cached_input_usd_per_1m":           nullFloat(seed.cached),
+			"image_input_usd_per_1m":            nullFloat(seed.imgIn),
+			"image_output_usd_per_1m":           nullFloat(seed.imgOut),
+			"audio_input_usd_per_1m":            nullFloat(seed.audIn),
+			"audio_output_usd_per_1m":           nullFloat(seed.audOut),
+			"output_usd_per_image":              nullFloat(seed.perImage),
+			"shutdown_date":                     nullString(seed.shutdown),
+			"currency":                          "USD",
+			"capability_notes":                  seed.cap, "notes": seed.notes,
 			"created_by": guard.adminID, "updated_by": guard.adminID,
 			"created_at": now, "updated_at": now,
 		}); err != nil {
@@ -2814,7 +3041,7 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		return nil
 	}
 	mediaAccountID := CleanupIDPrefix + "acc_media"
-	var accountID, providerCode, profileID string
+	var accountID, vendorCode string
 	mediaAccount := false
 	for _, account := range accounts {
 		if account.id == mediaAccountID {
@@ -2823,21 +3050,26 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		}
 	}
 	if mediaAccount {
-		if err := tx.QueryRow(`SELECT id, provider_code, COALESCE(provider_protocol_profile_id, '')
-			FROM accounts WHERE id = ?`, mediaAccountID).Scan(&accountID, &providerCode, &profileID); err != nil {
+		if err := tx.QueryRow(`SELECT id, COALESCE(vendor_code, '')
+			FROM accounts WHERE id = ?`, mediaAccountID).Scan(&accountID, &vendorCode); err != nil {
 			return fmt.Errorf("读取媒体账户行: %w", err)
 		}
 	} else {
 		// 老库没有 acc_media 样本（样本表更新滞后）时回落第一个账户，保证
 		// media_jobs 行不缺席；外键仍指向真实存在的行。
 		fallback := accounts[0]
-		if err := tx.QueryRow(`SELECT id, provider_code, COALESCE(provider_protocol_profile_id, '')
-			FROM accounts WHERE id = ?`, fallback.id).Scan(&accountID, &providerCode, &profileID); err != nil {
+		if err := tx.QueryRow(`SELECT id, COALESCE(vendor_code, '')
+			FROM accounts WHERE id = ?`, fallback.id).Scan(&accountID, &vendorCode); err != nil {
 			return fmt.Errorf("读取媒体账户回落行: %w", err)
 		}
 	}
+	if vendorCode == "" {
+		// generic 账户 vendor_code 为 SQL NULL；media_jobs.provider_code NOT NULL
+		// 兜底到 seed 目录的主 vendor（账户亲和三元组的记录面语义）。
+		vendorCode = guard.catalog.mainVendor
+	}
 	apiKeyID := keys["main"]
-	videoModel := guard.catalog.videoModelAt(0)
+	videoModel := guard.catalog.videoModelAt(0).name
 	// mediaJobContentDataURI 把内嵌样本字节编码为 data URI：零资源存储下
 	// artifact 只存定位指针，data URI 是自包含指针的合法形态，管理面详情
 	// 抽屉可不经网络直接内嵌预览。
@@ -2878,7 +3110,7 @@ func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts
 		return w.put(tx, "media_jobs", map[string]any{
 			"id": id, "kind": kind,
 			"api_key_id": rowAPIKeyID, "account_id": accountID,
-			"provider_code": providerCode, "provider_protocol_profile_id": nullString(profileID),
+			"provider_code": vendorCode, "provider_protocol_profile_id": nil,
 			"upstream_job_id":       "upstream_" + CleanupIDPrefix + id,
 			"status":                status,
 			"request_snapshot_json": requestJSON, "artifact_json": artifactJSON,
@@ -3068,10 +3300,6 @@ func (w *businessWriter) seedAnnouncements(tx *sql.Tx, guard businessGuard, user
 
 // seedResponseInspectionPolicies 写入响应检查策略（两条启用 + 一条停用）。
 func (w *businessWriter) seedResponseInspectionPolicies(tx *sql.Tx, guard businessGuard, groups map[string]string) error {
-	profile, ok := guard.catalog.profileFor(guard.catalog.mainProvider, "api_key")
-	if !ok {
-		return fmt.Errorf("mockdata business 找不到可用的 api_key 档案")
-	}
 	now := w.stamp()
 	seeds := []struct {
 		id       string
@@ -3117,7 +3345,7 @@ func (w *businessWriter) seedResponseInspectionPolicies(tx *sql.Tx, guard busine
 		if err := w.put(tx, "response_inspection_policies", map[string]any{
 			"id": seed.id, "name": seed.name, "enabled": boolInt(seed.enabled),
 			"priority": seed.priority, "scope_type": "provider",
-			"protocol_code": profile.protocol, "provider_code": profile.provider,
+			"protocol_code": "openai", "provider_code": guard.catalog.mainVendor,
 			"match_json": matchJSON, "action": seed.action, "notes": seed.notes,
 			"created_at": now, "updated_at": now,
 		}); err != nil {

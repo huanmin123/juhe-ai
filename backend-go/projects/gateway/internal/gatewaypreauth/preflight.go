@@ -474,8 +474,11 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		}
 		filtered := make([]gatewayruntimecache.OpenAIAccountSecret, 0)
 		for _, account := range affinityCandidates {
+			// 供应商身份源切换（供应商与上游协议面重构设计 §1.1/§2.1 切片）：
+			// 绑定 ProviderCode 位现承载 vendor 值（chain_interaction_affinity.go
+			// 投影），候选侧用同名 vendor 值（VendorCode）比对。
 			if account.ID == affinity.AccountID &&
-				account.ProviderCode == affinity.ProviderCode &&
+				account.VendorCode == affinity.ProviderCode &&
 				(affinity.ProviderProtocolProfileID == "" || account.ProviderProtocolProfileID == affinity.ProviderProtocolProfileID) {
 				filtered = append(filtered, account)
 			}

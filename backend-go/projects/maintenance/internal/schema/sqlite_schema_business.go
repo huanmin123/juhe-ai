@@ -298,8 +298,24 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       circuit_projection_revision INTEGER NOT NULL DEFAULT 0 CHECK (circuit_projection_revision >= 0 AND circuit_projection_revision <= dispatch_revision),
       system_account_id TEXT NOT NULL,
       vendor_code TEXT,
-      connection_driver_code TEXT NOT NULL,
+      -- connection_driver_code 放宽为 nullable（2026-10-18 修复批迁移窗口
+      -- 并存）：旧形态写入路径（accounts 写事务、authz instance provision、
+      -- business accounts service）不提供该新形态列，NOT NULL 会卡死 fresh
+      -- 库账户创建；未迁移行该列为 NULL，取值语义由应用层负责，迁移完成后
+      -- 由后续清理命令统一收口。
+      connection_driver_code TEXT,
       oauth_type TEXT,
+      -- 2026-10-18 修复批恢复旧列（迁移窗口并存）：accounts 目标形态（设计
+      -- §2.1 本批切片）删除的两列被已提交运行时按旧列集读写（internal/
+      -- accounts 写入与查询、authz instance provision、business accounts
+      -- service、chain 面读取），fresh 库创建账户 500 no such column。按
+      -- dbb2543e6^ 原类型内联加回；旧 NOT NULL 约束放宽为 nullable——
+      -- 存量库该两列本就可空，部分插入路径（schema 探测夹具、逐列补链的
+      -- 存量行）不应被新约束卡死；真实写入路径均提供值，取值语义由应用层
+      -- 负责。旧 providers / provider_protocol_profiles 外键不随列恢复；
+      -- 新形态列与其约束一概不动，运行时迁移完成后由后续清理命令统一移除。
+      provider_code TEXT,
+      provider_protocol_profile_id TEXT,
       protocol_code TEXT NOT NULL,
       protocol_version TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -315,6 +331,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       priority INTEGER NOT NULL DEFAULT 0,
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       fallback_enabled INTEGER NOT NULL DEFAULT 0,
+      client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
       schedulable INTEGER NOT NULL DEFAULT 1,
       availability_schedule_json TEXT,
       availability_schedule_next_check_at TEXT,
@@ -741,14 +758,35 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
 
     -- account_supported_models 目标形态（设计 §4）与 account_entry_mappings
     -- （设计 §5.1）：与 PG 版同构；models 物理删除 RESTRICT，映射 target 全部
-    -- 复合外键 ID 化。旧 account_model_mappings 由后续迁移命令处理，不写 DROP。
+    -- 复合外键 ID 化。运行时在迁移完成前仍读写旧 account_model_mappings
+    -- （key-model 恢复 CheckContract、seed、accounts/usage 域），ensure 必须为
+    -- 全新库建表（见下）；存量数据迁移由后续迁移命令处理，不写 DROP。
     CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id TEXT NOT NULL,
-      model_id TEXT NOT NULL,
+      -- model_id 保持无显式 NOT NULL（2026-10-18 修复批迁移窗口并存）：共享
+      -- 契约 business-sqlite-gateway-v16 钉死主键 (account_id, model_id)，而
+      -- 旧形态行 (provider_code, model) 不提供 model_id——SQLite 行为表的非
+      -- INTEGER 主键不隐式强制 NOT NULL，NULL model_id 行可落库且主键对
+      -- NULL 不去重，多行合法；PG 侧主键隐式 NOT NULL，PG 模式旧形态写入
+      -- 受此限制（迁移窗口已知边界，随运行时迁移收口）。
+      model_id TEXT,
       created_at TEXT NOT NULL,
+      -- 2026-10-18 修复批恢复旧列（迁移窗口并存）：目标形态收敛为
+      -- (account_id, model_id)，但已提交运行时仍按旧形态 (account_id,
+      -- provider_code, model, created_at) 读写本表（accounts 写路径、
+      -- business accounts、aipublic/transfer/chain 读取），并依赖
+      -- (account_id, model) 唯一性做幂等 upsert。两列按 dbb2543e6^ 原类型
+      -- 加回并放宽为 nullable（新形态行 model/provider_code 为 NULL，唯一
+      -- 约束不对 NULL 去重，两形态互不干扰）；UNIQUE (account_id, model)
+      -- 以表内约束恢复旧主键语义，不新增独立索引语句。旧 providers 外键
+      -- 不随列恢复，取值语义由应用层负责；运行时迁移完成后由后续清理命令
+      -- 统一移除。
+      provider_code TEXT,
+      model TEXT,
       PRIMARY KEY (account_id, model_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
+      FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT,
+      UNIQUE (account_id, model)
     );
 
     CREATE TABLE IF NOT EXISTS account_entry_mappings (
@@ -766,6 +804,193 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id, target_connection_id) REFERENCES account_connections(account_id, id),
       FOREIGN KEY (account_id, target_model_id) REFERENCES account_supported_models(account_id, model_id)
+    );
+
+    -- account_model_mappings（旧账号模型映射）：ensure 为全新库建表；provider_code
+    -- 上的旧 providers 外键随 providers→vendors 收敛移除，取值语义由应用层负责。
+    CREATE TABLE IF NOT EXISTS account_model_mappings (
+      account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      source_model TEXT NOT NULL,
+      source_endpoint_family TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      upstream_endpoint_family TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, source_model, source_endpoint_family),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
+    -- 2026-10-18 修复批（供应商面 7 张旧表）：dbb2543e6 把 providers、
+    -- provider_protocol_profiles、provider_protocol_profile_families、
+    -- provider_model_catalog、custom_provider_models、两张 provider default
+    -- health-check 表从 fresh DDL 移除（注释称由后续迁移命令处理，该命令
+    -- 不存在），但当前运行时仍读写它们（key-model 恢复 CheckContract、
+    -- accounts 管理面等），fresh 库网关启动 fail-fast、管理接口 500。
+    -- ensure 恢复建表，列与约束逐字取回 dbb2543e6^ 版本；protocols 与
+    -- protocol_endpoint_families 仍在当前建表清单，provider_protocol_
+    -- profiles 的 protocols 复合外键保留（providers 自引用与 system_
+    -- accounts 外键同理保留，本批无外键随目标表退役移除）；旧表 6 枚
+    -- 目录/唯一/查询索引（idx_provider_model_catalog_lookup、custom_
+    -- provider_models 三枚、两张 provider default health-check 各一枚）
+    -- 不补建，性能债非功能缺失。存量数据迁移语义不变，ensure 不写 DROP。
+    CREATE TABLE IF NOT EXISTS providers (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT,
+      parent_code TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      default_supported_models_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (parent_code) REFERENCES providers(code)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_protocol_profiles (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      protocol_code TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      default_health_check_model TEXT NOT NULL,
+      account_types_json TEXT NOT NULL,
+      capabilities_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_protocol_profile_families (
+      profile_id TEXT NOT NULL,
+      family_code TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      default_health_check_model TEXT,
+      capabilities_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (profile_id, family_code),
+      FOREIGN KEY (profile_id) REFERENCES provider_protocol_profiles(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_model_catalog (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      mode TEXT,
+      catalog_order INTEGER,
+      release_date TEXT,
+      shutdown_date TEXT,
+      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+      default_reasoning_effort TEXT,
+      codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
+      codex_default_reasoning_level TEXT,
+      codex_multi_agent_version TEXT,
+      context_window_tokens INTEGER,
+      max_input_tokens INTEGER,
+      max_output_tokens INTEGER,
+      max_tokens INTEGER,
+      input_usd_per_1m REAL,
+      output_usd_per_1m REAL,
+      cached_input_usd_per_1m REAL,
+      cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      cache_storage_usd_per_1m_per_hour REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+      long_context_input_token_threshold INTEGER,
+      long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
+      long_context_input_cost_multiplier REAL,
+      long_context_output_cost_multiplier REAL,
+      image_input_usd_per_1m REAL,
+      image_output_usd_per_1m REAL,
+      audio_input_usd_per_1m REAL,
+      audio_output_usd_per_1m REAL,
+      output_usd_per_image REAL,
+      supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
+      catalog_visible INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (provider_code, model),
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      CHECK (status IN ('active', 'disabled')),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object')
+    );
+
+    CREATE TABLE IF NOT EXISTS custom_provider_models (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'personal',
+      system_account_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      catalog_visible INTEGER NOT NULL DEFAULT 1,
+      mode TEXT,
+      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+      default_reasoning_effort TEXT,
+      release_date TEXT,
+      shutdown_date TEXT,
+      context_window_tokens INTEGER,
+      max_input_tokens INTEGER,
+      max_output_tokens INTEGER,
+      input_usd_per_1m REAL,
+      output_usd_per_1m REAL,
+      cached_input_usd_per_1m REAL,
+      cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      cache_storage_usd_per_1m_per_hour REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+      image_input_usd_per_1m REAL,
+      image_output_usd_per_1m REAL,
+      audio_input_usd_per_1m REAL,
+      audio_output_usd_per_1m REAL,
+      output_usd_per_image REAL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      pricing_notes TEXT,
+      capability_notes TEXT,
+      notes TEXT,
+      created_by TEXT NOT NULL,
+      updated_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      CHECK (scope IN ('personal', 'global')),
+      CHECK (status IN ('draft', 'active', 'disabled')),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object'),
+      CHECK (
+        (scope = 'personal' AND system_account_id IS NOT NULL)
+        OR (scope = 'global' AND system_account_id IS NULL)
+      )
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_default_health_check_models (
+      system_account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, provider_code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_system_default_health_check_models (
+      provider_code TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
     CREATE TABLE IF NOT EXISTS account_tags (
@@ -1087,6 +1312,17 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      -- 2026-10-18 修复批恢复旧列（迁移窗口并存）：groups 目标形态（设计 §8
+      -- 本批切片）删除的 provider_code 被已提交运行时按旧列集读写（accounts
+      -- 写路径 groupOwnerAndProvider/defaultGroupForWrite、groups store 行投
+      -- 影、chain 面分组查询），fresh 库创建账户 500 no such column。按
+      -- dbb2543e6^ 原类型/NOT NULL 加回；DEFAULT 'gpt' 为迁移窗口 shim：新
+      -- 种子行（「默认分组」，ID grp_default_gpt_sys_admin）建组语句省略该
+      -- 列，回填其旧世界取值 'gpt'（组名原为「默认 GPT 分组」），使种子行通
+      -- 过运行时「分组 provider_code 必须等于账户供应商」校验；管理面建组
+      -- 显式提供该列，不受 DEFAULT 影响。旧 providers 外键不随列恢复；运行
+      -- 时迁移完成后由后续清理命令统一移除。
+      provider_code TEXT NOT NULL DEFAULT 'gpt',
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,

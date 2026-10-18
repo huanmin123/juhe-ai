@@ -34,7 +34,7 @@ func wbRunNowBusinessFixture(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,updated_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,last_error_code TEXT,last_error_message TEXT,availability_schedule_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,cleared_at TEXT,created_at TEXT,updated_at TEXT)`,
 	} {
@@ -47,7 +47,7 @@ func wbRunNowBusinessFixture(t *testing.T) *sql.DB {
 
 func wbInsertRunNowAccount(t *testing.T, db *sql.DB, id, systemID, status string, configRevision int) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,provider_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled) VALUES (?,?,'openai',?,7,NULL,NULL,?,1,0,0)`, id, systemID, configRevision, status); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled) VALUES (?,?,'gpt',?,7,NULL,NULL,?,1,0,0)`, id, systemID, configRevision, status); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -224,7 +224,7 @@ func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -234,7 +234,7 @@ func TestBusinessSchedulerClaimsOnlyConcurrencyCapacity(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 10; i++ {
 		accountID := "acct-" + strconv.Itoa(i)
-		if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status) VALUES (?,'openai',4,NULL,NULL,'active')`, accountID); err != nil {
+		if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status) VALUES (?,'gpt',4,NULL,NULL,'active')`, accountID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,custom_question_ids) VALUES (?,1,'sys',?,'gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,'[]')`, "sch-"+strconv.Itoa(i), accountID, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
@@ -284,7 +284,7 @@ func TestBusinessSchedulerCompletesIntervalOneSchedule(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER NOT NULL DEFAULT 1,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -292,7 +292,7 @@ func TestBusinessSchedulerCompletesIntervalOneSchedule(t *testing.T) {
 		}
 	}
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status) VALUES ('acct','openai',4,NULL,NULL,'active')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,vendor_code,config_revision,deleted_at,authorization_instance_authorization_id,status) VALUES ('acct','gpt',4,NULL,NULL,'active')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,next_run_at,custom_question_ids) VALUES ('sch',3,'sys','acct','gpt-5.6-sol',1,'quick',70,'fallback',15,1,?,'[]')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
@@ -339,7 +339,7 @@ func TestBusinessSchedulerRunNowSourceContract(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("snapshot found=%t err=%v", found, err)
 	}
-	if snapshot.ScheduleID != "sch" || snapshot.SystemAccountID != "sys" || snapshot.AccountID != "acct" || snapshot.Model != "gpt-5.6-sol" || snapshot.Profile != "quick" || snapshot.Threshold != 70 || snapshot.PenaltyAction != "fallback" || snapshot.IntervalMinutes != 30 || snapshot.RecoveryIntervalMinutes != 10 || snapshot.Revision != 1 || !snapshot.Enabled || snapshot.ConfigRevision != 4 || snapshot.DispatchRevision != 7 || snapshot.ProviderCode != "openai" {
+	if snapshot.ScheduleID != "sch" || snapshot.SystemAccountID != "sys" || snapshot.AccountID != "acct" || snapshot.Model != "gpt-5.6-sol" || snapshot.Profile != "quick" || snapshot.Threshold != 70 || snapshot.PenaltyAction != "fallback" || snapshot.IntervalMinutes != 30 || snapshot.RecoveryIntervalMinutes != 10 || snapshot.Revision != 1 || !snapshot.Enabled || snapshot.ConfigRevision != 4 || snapshot.DispatchRevision != 7 || snapshot.ProviderCode != "gpt" {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
 	if _, found, err := source.ScheduleForRunNow(context.Background(), "sys", "sch-other"); err != nil || found {
@@ -1492,34 +1492,21 @@ func wbRestoreProbeSourceFixture(t *testing.T) (*BusinessTargetSource, *sql.DB) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,type TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,health_check_endpoint_mode TEXT,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,credentials_encrypted TEXT,proxy_profile_id TEXT,availability_schedule_json TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT,name TEXT)`,
-		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,provider_code TEXT,enabled INTEGER,protocol_code TEXT,base_url TEXT)`,
-		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY,enabled INTEGER,type TEXT,host TEXT,port INTEGER,username TEXT,password_encrypted TEXT)`,
-		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
-	} {
+	for _, ddl := range businessSourceContractDDL() {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
-	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1','openai',1,'openai_responses','https://example.invalid/v1')`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.Exec(`INSERT INTO groups VALUES ('group-1','sys',1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct','sys','group-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','sys','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL,'Restore Probe')`, envelope); err != nil {
-		t.Fatal(err)
-	}
+	// v16 契约：探针身份 = (vendor_code, 健康检查连接 preset)。
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct','sys','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse','conn-acct',?,'Restore Probe')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://example.invalid/v1',1)`)
 	source, err := NewBusinessTargetSource(db, false, "secret")
 	if err != nil {
 		t.Fatal(err)

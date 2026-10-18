@@ -417,12 +417,12 @@ type usageResources struct {
 }
 
 type usageAccountRow struct {
-	id        string
-	owner     string
-	provider  string
-	profile   string
-	health    string
-	typ       string
+	id     string
+	owner  string
+	vendor string
+	preset string
+	health string
+	typ    string
 	groupHint string
 }
 
@@ -494,25 +494,58 @@ func loadUsageResources(ctx context.Context, e *env) (usageResources, error) {
 		return resources, nil
 	}
 
-	accountRows, err := db.QueryContext(ctx, `SELECT id, system_account_id, COALESCE(provider_code,''),
-		COALESCE(provider_protocol_profile_id,''), COALESCE(health_check_model,''), COALESCE(type,'')
+	accountRows, err := db.QueryContext(ctx, `SELECT id, system_account_id, COALESCE(vendor_code,''),
+		COALESCE(health_check_model,''), COALESCE(type,'')
 		FROM accounts WHERE id LIKE ? ORDER BY id`, CleanupIDPrefix+"%")
 	if err != nil {
 		return resources, fmt.Errorf("读取 mock 账户: %w", err)
 	}
+	type usageAccountRaw struct {
+		row usageAccountRow
+	}
+	var rawAccounts []usageAccountRaw
 	for accountRows.Next() {
 		var row usageAccountRow
-		if err := accountRows.Scan(&row.id, &row.owner, &row.provider, &row.profile, &row.health, &row.typ); err != nil {
+		if err := accountRows.Scan(&row.id, &row.owner, &row.vendor, &row.health, &row.typ); err != nil {
 			accountRows.Close()
 			return resources, err
 		}
-		resources.accounts = append(resources.accounts, row)
+		rawAccounts = append(rawAccounts, usageAccountRaw{row: row})
 	}
 	if err := accountRows.Err(); err != nil {
 		accountRows.Close()
 		return resources, err
 	}
 	accountRows.Close()
+
+	// 连接 preset 作为 usage_records.provider_protocol_profile_id 的投影
+	//（provider_protocol_profiles 已退役，每账户取首个 enabled 连接）。查询
+	// 串行执行：上一个流式结果集未 Close 前不能在同库发起新查询。
+	presetByAccount := map[string]string{}
+	presetRows, err := db.QueryContext(ctx, `SELECT account_id, connection_preset_code FROM account_connections
+		WHERE account_id LIKE ? AND enabled = 1 ORDER BY account_id, connection_preset_code`, CleanupIDPrefix+"%")
+	if err != nil {
+		return resources, fmt.Errorf("读取 mock 账户连接: %w", err)
+	}
+	for presetRows.Next() {
+		var accountID, preset string
+		if err := presetRows.Scan(&accountID, &preset); err != nil {
+			presetRows.Close()
+			return resources, err
+		}
+		if _, ok := presetByAccount[accountID]; !ok {
+			presetByAccount[accountID] = preset
+		}
+	}
+	if err := presetRows.Err(); err != nil {
+		presetRows.Close()
+		return resources, err
+	}
+	presetRows.Close()
+	for _, item := range rawAccounts {
+		item.row.preset = presetByAccount[item.row.id]
+		resources.accounts = append(resources.accounts, item.row)
+	}
 
 	groupRows, err := db.QueryContext(ctx, `SELECT id, system_account_id, COALESCE(enabled,0)
 		FROM groups WHERE id LIKE ? ORDER BY id`, CleanupIDPrefix+"%")
@@ -555,13 +588,17 @@ func loadUsageResources(ctx context.Context, e *env) (usageResources, error) {
 	}
 	keyRows.Close()
 
-	// 账户模型映射：命中样本的 model_mapping_applied / model_mapping_source 与
-	// upstream_model 都必须来自真实映射行，而不是硬编码猜测。
-	mappingRows, err := db.QueryContext(ctx, `SELECT account_id, source_model, upstream_model,
-		COALESCE(source_endpoint_family,''), COALESCE(upstream_endpoint_family,'')
-		FROM account_model_mappings WHERE enabled = 1 ORDER BY account_id, source_model`)
+	// 账户入口映射：命中样本的 model_mapping_applied / model_mapping_source 与
+	// upstream_model 都必须来自真实映射行，而不是硬编码猜测。upstream_model 是
+	// 映射 target 指向的 models 行（account_entry_mappings.target_model_id）。
+	mappingRows, err := db.QueryContext(ctx, `SELECT m.account_id, m.source_model,
+		COALESCE(models.upstream_model, models.public_model, m.target_model_id),
+		m.source_endpoint_family, m.target_endpoint_family
+		FROM account_entry_mappings m
+		JOIN models ON models.id = m.target_model_id
+		WHERE m.enabled = 1 ORDER BY m.account_id, m.source_model`)
 	if err != nil {
-		return resources, fmt.Errorf("读取账户模型映射: %w", err)
+		return resources, fmt.Errorf("读取账户入口映射: %w", err)
 	}
 	for mappingRows.Next() {
 		var row usageMappingRow
@@ -642,26 +679,33 @@ func loadUsageResources(ctx context.Context, e *env) (usageResources, error) {
 	}
 	groupAuthRows.Close()
 
-	modelRows, err := db.QueryContext(ctx, `SELECT model, COALESCE(mode,'') FROM provider_model_catalog
-		WHERE status = 'active' ORDER BY catalog_order, model`)
+	modelRows, err := db.QueryContext(ctx, `SELECT upstream_model, supported_endpoint_modes_json FROM models
+		WHERE status = 'active' AND catalog_visible ORDER BY catalog_order, upstream_model`)
 	if err != nil {
 		return resources, fmt.Errorf("读取模型目录: %w", err)
 	}
 	for modelRows.Next() {
 		var (
-			model string
-			mode  string
+			model     string
+			modesJSON string
 		)
-		if err := modelRows.Scan(&model, &mode); err != nil {
+		if err := modelRows.Scan(&model, &modesJSON); err != nil {
 			modelRows.Close()
 			return resources, err
 		}
-		resources.models = append(resources.models, model)
-		if mode == "image" {
-			resources.images = append(resources.images, model)
+		var modes []string
+		if err := json.Unmarshal([]byte(modesJSON), &modes); err != nil {
+			modelRows.Close()
+			return resources, fmt.Errorf("解析模型 %s 的 supported_endpoint_modes_json: %w", model, err)
 		}
-		if mode == "audio" {
-			resources.audio = append(resources.audio, model)
+		resources.models = append(resources.models, model)
+		for _, mode := range modes {
+			if mode == "images_json" {
+				resources.images = append(resources.images, model)
+			}
+			if mode == "audio_speech" || mode == "audio_transcription_json" {
+				resources.audio = append(resources.audio, model)
+			}
 		}
 	}
 	if err := modelRows.Err(); err != nil {
@@ -1382,8 +1426,8 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 		"trace_id":                        spec.traceID,
 		"traffic_source":                  spec.scenario.trafficSource,
 		"endpoint":                        spec.variant.method + " " + spec.variant.path,
-		"provider_code":                   spec.scenario.account.provider,
-		"provider_protocol_profile_id":    nullString(spec.scenario.account.profile),
+		"provider_code":                   nullString(spec.scenario.account.vendor),
+		"provider_protocol_profile_id":    nullString(spec.scenario.account.preset),
 		"usage_semantic":                  spec.variant.semantic,
 		"model":                           nullString(spec.model),
 		"upstream_model":                  nullString(spec.upstreamModel),

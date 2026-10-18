@@ -543,4 +543,42 @@ func TestWAClassifyStreamEvent(t *testing.T) {
 			t.Fatalf("正常 chat chunk 不应失败: %+v", classification)
 		}
 	})
+	// 语义锁定补强：仅 JSON 对象形态命中失败判定，数组/数字/布尔一律非失败。
+	t.Run("error 非对象形态非失败", func(t *testing.T) {
+		for _, payload := range []string{`{"error":[]}`, `{"error":123}`, `{"error":true}`} {
+			event := ParseStreamEventData(payload, "", "", 0)
+			classification := ClassifyStreamEvent(event, 0)
+			if classification.Failed {
+				t.Fatalf("%s 不应失败: %+v", payload, classification)
+			}
+			if classification.Terminal {
+				t.Fatalf("%s 不应终止: %+v", payload, classification)
+			}
+		}
+	})
+	// error 是对象即命中，与其内部嵌套结构无关（判定只看顶层键的形态）。
+	t.Run("error 嵌套深对象命中", func(t *testing.T) {
+		event := ParseStreamEventData(`{"error":{"nested":{"deep":true}}}`, "", "", 0)
+		classification := ClassifyStreamEvent(event, 0)
+		if !classification.Failed || !classification.Terminal {
+			t.Fatalf("嵌套 error 对象应失败且终止: %+v", classification)
+		}
+		if classification.ErrorCode != "" || classification.ErrorMessage != "" {
+			t.Fatalf("无 code/message 字段时错误字段应为空: %+v", classification)
+		}
+	})
+	// SSE data: 前缀与 JSON 之间无空格的紧凑帧（抓包常见形态）走同一解析与判定。
+	t.Run("data 前缀无空格 error 帧", func(t *testing.T) {
+		event := ParseSseEventText("data:{\"error\":{\"code\":\"x\"}}")
+		if event.DataParseError {
+			t.Fatalf("紧凑 data 帧不应解析失败: %+v", event)
+		}
+		classification := ClassifyStreamEvent(event, 0)
+		if !classification.Failed || !classification.Terminal {
+			t.Fatalf("紧凑 data error 帧应失败且终止: %+v", classification)
+		}
+		if classification.ErrorCode != "x" {
+			t.Fatalf("错误码 = %q，期望 x", classification.ErrorCode)
+		}
+	})
 }

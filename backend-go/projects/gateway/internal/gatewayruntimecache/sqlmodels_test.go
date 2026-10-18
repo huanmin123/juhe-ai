@@ -29,8 +29,10 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE scheduling_preferences (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, chat_mode TEXT NOT NULL, chat_speed_first_config_json TEXT, built_in INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, config_json TEXT, status TEXT NOT NULL)`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL, weight INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT '')`,
-		// groups 无 provider_code（供应商与上游协议面重构设计 §8：列已退役）。
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
+		// groups.provider_code（2026-10-18 修复批迁移窗口）：列已在 fresh DDL
+		// 恢复（DEFAULT 'gpt' shim），分组访问/绑定投影随之恢复读取该列；
+		// 运行时迁移后由清理命令统一收口。
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT, provider_code TEXT NOT NULL DEFAULT 'gpt')`,
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
 		`CREATE TABLE group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)`,
@@ -314,12 +316,13 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 		}
 	}
 
-	// owner 短路。ProviderCode 过渡字段恒空（groups.provider_code 已退役）。
+	// owner 短路。ProviderCode 过渡字段随 2026-10-18 修复批投影恢复取值
+	// （夹具列 DEFAULT 'gpt'，行未显式提供 → 'gpt'）。
 	owner, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_owner")
 	if err != nil {
 		t.Fatalf("owner read: %v", err)
 	}
-	if owner == nil || owner.GroupAccessType != GroupAccessTypeOwner || owner.ProviderCode != "" {
+	if owner == nil || owner.GroupAccessType != GroupAccessTypeOwner || owner.ProviderCode != "gpt" {
 		t.Fatalf("owner access mismatch: %+v", owner)
 	}
 	// 授权访问。

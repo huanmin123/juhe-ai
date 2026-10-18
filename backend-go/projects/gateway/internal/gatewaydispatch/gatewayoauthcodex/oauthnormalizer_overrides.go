@@ -190,7 +190,7 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, input.ProviderCode); err != nil {
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, input.VendorCode); err != nil {
 		return nil, err
 	}
 	effective := ResolveEffectiveOverrides(overrides, input.ModelCapabilities)
@@ -313,6 +313,14 @@ func SetGptRequestOverrideModelCandidates(expander func(providerCode, model stri
 	}
 }
 
+// overrideVendorCode 解析覆盖运行时需要的供应商身份：只认供应商解耦后的
+// VendorCode（供应商与上游协议面重构设计 §1.1/§2.1）。存量库该列由迁移脚本
+// 回填，代码不做旧列回落（不向后兼容）。为空时返回空串：gpt 专属枚举跳过、
+// 能力解析不查目录（覆盖惰性）。
+func overrideVendorCode(account gatewayruntimecache.OpenAIAccountSecret) string {
+	return strings.TrimSpace(account.VendorCode)
+}
+
 // ResolveGptRequestOverrideModelCapabilities mirrors
 // resolveGptRequestOverrideModelCapabilities.
 func ResolveGptRequestOverrideModelCapabilities(ctx context.Context, account gatewayruntimecache.OpenAIAccountSecret, upstreamModel string) (*GptRequestOverrideModelCapabilities, error) {
@@ -324,13 +332,13 @@ func ResolveGptRequestOverrideModelCapabilities(ctx context.Context, account gat
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, account.ProviderCode); err != nil {
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, overrideVendorCode(account)); err != nil {
 		return nil, err
 	}
 	if overrides.ServiceTier == "" && overrides.ReasoningEffort == "" {
 		return nil, nil
 	}
-	providerCode := strings.TrimSpace(account.ProviderCode)
+	providerCode := overrideVendorCode(account)
 	if providerCode == "" {
 		return nil, nil
 	}
@@ -371,7 +379,7 @@ func ApplyGptAccountRequestOverridesToUpstreamBody(
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, account.ProviderCode); err != nil {
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, overrideVendorCode(account)); err != nil {
 		return nil, err
 	}
 	if !HasApplicableGptAccountRequestOverrides(overrides, endpointFamily, compact) {
@@ -399,7 +407,7 @@ func ApplyGptAccountRequestOverridesToUpstreamBody(
 	}
 	overridden, err := ApplyGptAccountRequestOverridesBody(parsed, GptAccountOverrideInput{
 		Credentials:       account.Credentials,
-		ProviderCode:      account.ProviderCode,
+		VendorCode:        overrideVendorCode(account),
 		EndpointFamily:    endpointFamily,
 		Compact:           compact,
 		ModelCapabilities: capabilities,

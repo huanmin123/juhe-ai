@@ -213,8 +213,9 @@ func TestPathsStoreExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixed := paths.fixedStores()
-	if len(fixed) != 12 {
-		t.Fatalf("fixed stores = %d, want 12", len(fixed))
+	// table-monitor 存储随 f1991b708 生图代理模块删除（fixed 12 → 11）。
+	if len(fixed) != 11 {
+		t.Fatalf("fixed stores = %d, want 11", len(fixed))
 	}
 	shards := paths.codexContextStores()
 	if len(shards) != 2 {
@@ -231,7 +232,7 @@ func TestPathsStoreExpansion(t *testing.T) {
 		t.Fatalf("usage shards = %v, want none before any file exists", got)
 	}
 	all := paths.allStores()
-	if len(all) != 14 {
-		t.Fatalf("all stores = %d, want 14", len(all))
+	if len(all) != 13 {
+		t.Fatalf("all stores = %d, want 13", len(all))
 	}
 }

@@ -81,15 +81,27 @@ import (
 // 重建均原位改写、不新增语句），account-list-projection-pg-dirty-triggers
 // 的 ROW() 比较纳入 vendor_code / connection_driver_code / oauth_type /
 // health_check_connection_id；语句总数与 DO 块数不变。
+// 678→679：2026-10-18 修复批——dbb2543e6 移除旧 account_model_mappings
+// 建表但运行时仍读写（key-model 恢复 CheckContract、seed、accounts/usage
+// 域），fresh 库 chain 网关启动 CheckContract fail-fast；恢复 ensure 建表
+//（+1 TABLE juhe_business，providers 外键随收敛移除），存量迁移语义不变。
+// 679→686：2026-10-18 修复批（同日第二笔）——dbb2543e6 同批移除的其余
+// 7 张旧供应商表（providers、provider_protocol_profiles、profile families、
+// provider_model_catalog、custom_provider_models、两张 provider default
+// health-check）运行时仍读写，恢复 ensure 建表（+7 TABLE juhe_business，
+// 列与约束逐字取回 dbb2543e6^ 版本，protocols 复合外键保留——该表仍在
+// 当前建表清单；旧表索引不补建），存量数据迁移语义不变。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 678
+const goldenPostgresSchemaStatementCount = 686
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 335→313：供应商与上游协议面重构批（见上方 golden 总数注释的 -9+7/-23+3
-	// 明细，全部落在 juhe_business）。
-	"juhe_business": 313,
+	// 明细，全部落在 juhe_business）。313→314：2026-10-18 修复批恢复旧
+	// account_model_mappings ensure 建表（见上方总数注释）。314→321：同日
+	// 第二笔恢复其余 7 张旧供应商表 ensure 建表（+7 TABLE）。
+	"juhe_business": 321,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
 	"juhe_usage":    52,

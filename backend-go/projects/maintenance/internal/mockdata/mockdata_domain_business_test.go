@@ -135,10 +135,14 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "高并发分组", query: "SELECT COUNT(*) FROM groups WHERE group_type = 'high_concurrency' AND scheduling_policy_json IS NOT NULL", min: 3},
 		{name: "分组账户绑定", query: "SELECT COUNT(*) FROM group_accounts", min: 24},
 		{name: "AI 账户", query: "SELECT COUNT(*) FROM accounts", min: 24},
+		{name: "账户连接行", query: "SELECT COUNT(*) FROM account_connections", min: 24},
+		{name: "账户连接 mode 集合", query: "SELECT COUNT(*) FROM account_endpoint_modes", min: 24},
+		{name: "generic 连接样本", query: "SELECT COUNT(*) FROM account_connections WHERE connection_preset_code = 'generic_openai_v1'", min: 1},
+		{name: "厂商媒体连接样本", query: "SELECT COUNT(*) FROM account_connections WHERE connection_preset_code IN ('volcengine_ark','volcengine_openspeech')", min: 2},
 		{name: "账户支持模型", query: "SELECT COUNT(*) FROM account_supported_models", min: 24},
-		{name: "账户模型映射", query: "SELECT COUNT(*) FROM account_model_mappings", min: 2},
-		{name: "模型映射启用样本", query: "SELECT COUNT(*) FROM account_model_mappings WHERE enabled = 1", min: 1},
-		{name: "模型映射停用样本", query: "SELECT COUNT(*) FROM account_model_mappings WHERE enabled = 0", min: 1},
+		{name: "账户入口映射", query: "SELECT COUNT(*) FROM account_entry_mappings", min: 2},
+		{name: "入口映射启用样本", query: "SELECT COUNT(*) FROM account_entry_mappings WHERE enabled = 1", min: 1},
+		{name: "入口映射停用样本", query: "SELECT COUNT(*) FROM account_entry_mappings WHERE enabled = 0", min: 1},
 		{name: "账户标签", query: "SELECT COUNT(*) FROM account_tags", min: 5},
 		{name: "标签绑定", query: "SELECT COUNT(*) FROM account_tag_bindings", min: 5},
 		{name: "Key 级运行态", query: "SELECT COUNT(*) FROM account_api_key_runtime_states", min: 3},
@@ -149,17 +153,15 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "模型质量策略", query: "SELECT COUNT(*) FROM model_quality_policies", min: 2},
 		{name: "模型质量计划", query: "SELECT COUNT(*) FROM model_quality_schedules", min: 2},
 		{name: "质量隔离", query: "SELECT COUNT(*) FROM account_quality_enforcements", min: 1},
-		{name: "账户级体检模型", query: "SELECT COUNT(*) FROM provider_default_health_check_models", min: 1},
-		{name: "系统级体检模型", query: "SELECT COUNT(*) FROM provider_system_default_health_check_models", min: 1},
 		{name: "账户测试任务", query: "SELECT COUNT(*) FROM account_test_tasks", min: 3},
 		{name: "账户测试会话", query: "SELECT COUNT(*) FROM account_test_sessions", min: 2},
 		{name: "账户测试会话任务", query: "SELECT COUNT(*) FROM account_test_session_tasks", min: 3},
 		{name: "账户时间计划事件", query: "SELECT COUNT(*) FROM account_schedule_status_events", min: 3},
 		{name: "账户名检索文档", query: "SELECT COUNT(*) FROM account_name_search_documents", min: 24},
 		{name: "账户名检索词", query: "SELECT COUNT(*) FROM account_name_search_terms", min: 100},
-		{name: "自定义模型", query: "SELECT COUNT(*) FROM custom_provider_models", min: 5},
-		{name: "自定义模型状态种类", query: "SELECT COUNT(DISTINCT status) FROM custom_provider_models", min: 3},
-		{name: "自定义模型 scope 种类", query: "SELECT COUNT(DISTINCT scope) FROM custom_provider_models", min: 2},
+		{name: "模型目录样本", query: "SELECT COUNT(*) FROM models WHERE id LIKE 'mockdata_%'", min: 5},
+		{name: "模型目录状态种类", query: "SELECT COUNT(DISTINCT status) FROM models WHERE id LIKE 'mockdata_%'", min: 3},
+		{name: "模型目录 scope 种类", query: "SELECT COUNT(DISTINCT scope) FROM models WHERE id LIKE 'mockdata_%'", min: 2},
 		{name: "路由策略", query: "SELECT COUNT(*) FROM route_strategies", min: 16},
 		{name: "路由策略模式种类", query: "SELECT COUNT(DISTINCT mode) FROM route_strategies", min: 5},
 		{name: "策略分组绑定", query: "SELECT COUNT(*) FROM route_strategy_groups", min: 16},
@@ -203,13 +205,13 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "媒体任务行", query: "SELECT COUNT(*) FROM media_jobs WHERE kind = 'video'", min: 6},
 		{name: "媒体任务状态种类", query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", min: 6},
 		{name: "媒体任务完成用量", query: "SELECT COUNT(*) FROM media_jobs WHERE status = 'completed' AND usage_json <> '{}' AND cost_usd > 0", min: 1},
-		{name: "音频分类自定义模型", query: "SELECT COUNT(*) FROM custom_provider_models WHERE mode = 'audio'", min: 1},
+		{name: "音频分类模型", query: "SELECT COUNT(*) FROM models WHERE id = 'mockdata_model_global_audio' AND status = 'active'", min: 1},
 		// 媒体账户模型引用（媒体契约 §3.4）：media 账户支持模型按目录分类引用
 		// audio / video 模型（audioModelAt/videoModelAt 的取值口径：目录有该分类
-		// 行时取目录模型，没有时回落造数常量），按 mode 分类 + 回落常量断言，
+		// 行时取目录模型，没有时回落造数常量），按 models 分类 + 回落常量断言，
 		// 不硬编码目录位置或具体模型名，目录批次增删不影响语义。
-		{name: "媒体账户音频模型引用", query: "SELECT COUNT(*) FROM account_supported_models m WHERE m.account_id = 'mockdata_acc_media' AND (m.model = 'mockdata-global-audio' OR EXISTS (SELECT 1 FROM provider_model_catalog c WHERE c.model = m.model AND c.mode = 'audio' AND c.status = 'active' AND c.catalog_visible = 1))", min: 1},
-		{name: "媒体账户视频模型引用", query: "SELECT COUNT(*) FROM account_supported_models m WHERE m.account_id = 'mockdata_acc_media' AND (m.model = 'sora-2' OR EXISTS (SELECT 1 FROM provider_model_catalog c WHERE c.model = m.model AND c.mode = 'video' AND c.status = 'active' AND c.catalog_visible = 1))", min: 1},
+		{name: "媒体账户音频模型引用", query: "SELECT COUNT(*) FROM account_supported_models m WHERE m.account_id = 'mockdata_acc_media' AND (m.model_id = 'mockdata_model_global_audio' OR EXISTS (SELECT 1 FROM models c WHERE c.id = m.model_id AND c.status = 'active' AND c.supported_endpoint_modes_json LIKE '%audio_speech%'))", min: 1},
+		{name: "媒体账户视频模型引用", query: "SELECT COUNT(*) FROM account_supported_models m WHERE m.account_id = 'mockdata_acc_media' AND (EXISTS (SELECT 1 FROM models c WHERE c.id = m.model_id AND c.status = 'active' AND c.supported_endpoint_modes_json LIKE '%video_create%') OR m.model_id IN (SELECT id FROM models WHERE upstream_model = 'sora-2'))", min: 1},
 	}
 	for _, testCase := range cases {
 		testCase := testCase
@@ -240,7 +242,9 @@ func TestSeedBusinessStatusSamples(t *testing.T) {
 		{name: "oauth 类型", query: "SELECT COUNT(*) FROM accounts WHERE type = 'oauth'"},
 		{name: "api_key 类型", query: "SELECT COUNT(*) FROM accounts WHERE type = 'api_key'"},
 		{name: "多 Key 池凭据", query: "SELECT COUNT(*) FROM accounts WHERE id LIKE 'mockdata_acc_multikey'"},
-		{name: "图像生成模型", query: "SELECT COUNT(*) FROM account_supported_models WHERE model = 'mockdata-global-image'"},
+		{name: "generic 账户 vendor 为 NULL", query: "SELECT COUNT(*) FROM accounts WHERE id = 'mockdata_acc_compat' AND vendor_code IS NULL AND connection_driver_code = 'generic_http'"},
+		{name: "厂商账户 vendor 词表", query: "SELECT COUNT(*) FROM accounts a WHERE a.vendor_code IS NOT NULL AND EXISTS (SELECT 1 FROM vendors v WHERE v.code = a.vendor_code)"},
+		{name: "图像生成模型", query: "SELECT COUNT(*) FROM account_supported_models WHERE model_id IN (SELECT id FROM models WHERE upstream_model = 'mockdata-global-image')"},
 		{name: "时间计划停用账户", query: "SELECT COUNT(*) FROM accounts WHERE availability_schedule_json LIKE '%dateRange%'"},
 		{name: "账户时间计划启用样本", query: "SELECT COUNT(*) FROM accounts WHERE availability_schedule_json IS NOT NULL AND availability_schedule_json NOT LIKE '%dateRange%'"},
 		{name: "授权 active", query: "SELECT COUNT(*) FROM resource_authorizations WHERE status = 'active'"},
@@ -280,6 +284,63 @@ func TestSeedBusinessNoSelfAuthorization(t *testing.T) {
 				t.Fatalf("%s = %d，不得生成自授权样本", testCase.query, got)
 			}
 		})
+	}
+}
+
+// TestSeedBusinessConnectorIntegrity 造数连接面三层合法性：外键/唯一约束由
+// schema 保证（插入失败即测试失败），这里核对 registry 层——账户的
+// (driver, type, oauth_type, preset, domain) 五元组必须全部命中连接器 registry
+// 允许组合，health 三元组必须指向 enabled 连接且 mode 属该连接词表，入口映射
+// target 必须锁在本账户支持模型集合内。
+func TestSeedBusinessConnectorIntegrity(t *testing.T) {
+	_, _, db := businessTestEnv(t, businessTestRoot(t))
+	var violations int
+	err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM accounts a
+		JOIN account_connections c ON c.account_id = a.id AND c.id = (
+			SELECT id FROM account_connections WHERE account_id = a.id ORDER BY connection_preset_code LIMIT 1)
+		WHERE NOT (
+			(a.type = 'api_key' AND a.oauth_type IS NULL)
+			OR (a.type = 'oauth' AND a.oauth_type IS NULL)
+			OR (a.type = 'google_oauth' AND a.oauth_type IN ('code_assist','google_one','ai_studio'))
+		)`).Scan(&violations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if violations != 0 {
+		t.Fatalf("账户 oauth_type 与 type 组合不合法的行数 = %d，要求 0", violations)
+	}
+	// 健康检查三元组：连接必须 enabled 且属于本账户，mode 必须在该连接的
+	// endpoint mode 集合里，model 必须可解析为 models 行。
+	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM accounts a
+		WHERE a.health_check_connection_id IS NOT NULL AND (
+			NOT EXISTS (SELECT 1 FROM account_connections c WHERE c.account_id = a.id AND c.id = a.health_check_connection_id AND c.enabled = 1)
+			OR NOT EXISTS (SELECT 1 FROM account_endpoint_modes em WHERE em.connection_id = a.health_check_connection_id AND em.endpoint_mode = a.health_check_endpoint_mode)
+			OR (a.health_check_model IS NOT NULL AND NOT EXISTS (SELECT 1 FROM models m WHERE m.upstream_model = a.health_check_model AND m.status = 'active'))
+		)`).Scan(&violations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if violations != 0 {
+		t.Fatalf("health 三元组不合法的账户行数 = %d，要求 0", violations)
+	}
+	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_entry_mappings e
+		WHERE NOT EXISTS (SELECT 1 FROM account_supported_models s WHERE s.account_id = e.account_id AND s.model_id = e.target_model_id)
+		OR NOT EXISTS (SELECT 1 FROM account_connections c WHERE c.account_id = e.account_id AND c.id = e.target_connection_id AND c.enabled = 1)`).Scan(&violations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if violations != 0 {
+		t.Fatalf("入口映射 target 不在本账户连接/支持模型集合内的行数 = %d，要求 0", violations)
+	}
+	// family pair 必须在 §5.2 的 17 对允许矩阵内（造数样本用 chat_completions
+	// 对，这里按"target family ∈ 文本三族"的矩阵口径核对）。
+	err = db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM account_entry_mappings e
+		WHERE e.target_endpoint_family NOT IN ('chat_completions','messages','generate_content')`).Scan(&violations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if violations != 0 {
+		t.Fatalf("target_endpoint_family 不在允许矩阵内的行数 = %d，要求 0", violations)
 	}
 }
 
@@ -390,11 +451,11 @@ func TestSeedBusinessIdempotent(t *testing.T) {
 	_, first, db := businessTestEnv(t, dir)
 	tables := []string{
 		"system_accounts", "groups", "group_accounts", "accounts", "account_tags",
-		"account_tag_bindings", "account_supported_models", "account_model_mappings",
-		"route_strategies", "route_strategy_groups", "api_keys",
+		"account_tag_bindings", "account_supported_models", "account_entry_mappings",
+		"account_connections", "route_strategies", "route_strategy_groups", "api_keys",
 		"resource_authorizations", "resource_authorization_sources",
 		"resource_authorization_grants", "system_teams", "system_team_members",
-		"announcements", "announcement_reads", "custom_provider_models",
+		"announcements", "announcement_reads", "models",
 		"model_check_question_bank", "account_name_search_documents",
 	}
 	before := map[string]int{}

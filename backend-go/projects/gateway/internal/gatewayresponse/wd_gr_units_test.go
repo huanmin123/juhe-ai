@@ -524,7 +524,7 @@ func TestWdNopStreamLoggerAndAccountView(t *testing.T) {
 	logger.Info("evt", map[string]any{"k": "v"}, "i")
 	logger.Warn("evt", nil, "w")
 	view := OpenAIAccountView{Account: gatewayruntimecache.OpenAIAccountSecret{
-		ID: "acct-1", Name: "账户一", ProviderCode: "openai", ProviderProtocolProfileID: "profile-1",
+		ID: "acct-1", Name: "账户一", VendorCode: "openai", ProviderProtocolProfileID: "profile-1",
 		ProtocolCode: "openai", ProtocolVersion: "v1", ClientCompatibility: "generic",
 	}}
 	if view.GetID() != "acct-1" || view.GetName() != "账户一" || view.GetProviderCode() != "openai" ||

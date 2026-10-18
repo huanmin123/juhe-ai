@@ -136,8 +136,8 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "resource_authorizations.status.active", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM resource_authorizations WHERE status = 'active'", Min: 1},
 		{Name: "resource_authorizations.status.non_active", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM resource_authorizations WHERE status <> 'active'", Min: 1},
 		{Name: "account_api_key_runtime_states.status", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM account_api_key_runtime_states", Min: 2},
-		{Name: "custom_provider_models.scope.personal", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM custom_provider_models WHERE scope = 'personal'", Min: 1},
-		{Name: "custom_provider_models.status_distribution", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM custom_provider_models", Min: 2},
+		{Name: "models.scope.personal", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM models WHERE scope = 'personal'", Min: 1},
+		{Name: "models.status_distribution", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM models", Min: 2},
 		{Name: "model_check_question_bank", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM model_check_question_bank", Min: 1},
 		{Name: "api_keys.mock_sample", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM api_keys WHERE id LIKE '" + id + "' OR name LIKE '" + name + "'", Min: 1},
 		// 业务域媒体任务（媒体契约 §3.4）：kind=video 各状态样本行。

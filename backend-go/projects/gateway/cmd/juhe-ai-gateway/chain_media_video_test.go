@@ -71,9 +71,9 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 		}
 	}
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+		) VALUES (?, ?, 'gpt', 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, id, "2026-10-04T00:00:00.000Z")
@@ -1039,9 +1039,9 @@ func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, bas
 	}
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('group_hyb_vid', ?, 'hybrid', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES ('acc_hyb_vid', ?, 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1', '混合媒体账户', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES ('acc_hyb_vid', ?, 'gpt', 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1', '混合媒体账户', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_hyb_vid', ?, 'acc_hyb_vid', 1, ?)`,
 		fixture.systemAccount, now)

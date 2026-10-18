@@ -422,8 +422,8 @@ func TestW11AEnsureDefaultResourcesFailureArms(t *testing.T) {
 		// the ladder falls through to the millisecond fallback (默认资源收口
 		// 后账户创建不再产生 chat key，名称阶梯由默认 Key 链路覆盖).
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
-			VALUES ('w11a-grp', 'w11a-acc', 'g', 'gpt', '', 1, 1, ?, ?)`, now, now); err != nil {
+		if _, err := tx.Exec(`INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, created_at, updated_at)
+			VALUES ('w11a-grp', 'w11a-acc', 'g', '', 1, 1, ?, ?)`, now, now); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(`INSERT INTO route_strategies (id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at)

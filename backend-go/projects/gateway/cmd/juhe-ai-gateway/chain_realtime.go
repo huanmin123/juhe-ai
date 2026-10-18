@@ -998,12 +998,15 @@ func (c *gatewayChain) enqueueRealtimeTerminalUsage(session *realtimeSession) {
 		AccountID:                   session.account.ID,
 		AccountOwnerSystemAccountID: session.account.AccountOwnerSystemAccountID,
 		Endpoint:                    realtimeUsageEndpoint,
-		ProviderCode:                session.account.ProviderCode,
-		ProviderProtocolProfileID:   session.account.ProviderProtocolProfileID,
-		Model:                       session.model,
-		UpstreamModel:               session.model,
-		StatusCode:                  &statusCode,
-		Success:                     true,
+		// ProviderCode 投影位承载 vendor 身份（供应商与上游协议面重构设计
+		// §1.1/§2.1 切片；usage 行表列改造属后续 usage 列切片），同步计价目录
+		// 同键查找。
+		ProviderCode:              session.account.VendorCode,
+		ProviderProtocolProfileID: session.account.ProviderProtocolProfileID,
+		Model:                     session.model,
+		UpstreamModel:             session.model,
+		StatusCode:                &statusCode,
+		Success:                   true,
 		RequestSnapshot: map[string]any{
 			"authSource":     session.authSource,
 			"closeReason":    session.closeReason,
@@ -1042,7 +1045,8 @@ func (c *gatewayChain) enqueueRealtimeTerminalUsage(session *realtimeSession) {
 		}
 		if c.finalizationPricing != nil {
 			if cost := c.finalizationPricing.EstimateCost(gatewayusage.PricingCostInput{
-				ProviderCode:      session.account.ProviderCode,
+				// vendor 身份（与上方 usage 行 ProviderCode 同值源）。
+				ProviderCode:      session.account.VendorCode,
 				SystemAccountID:   session.systemAccount,
 				Model:             session.model,
 				InputAudioTokens:  input.InputAudioTokens,

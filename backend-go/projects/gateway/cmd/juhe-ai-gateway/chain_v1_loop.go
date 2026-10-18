@@ -1171,14 +1171,17 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 	}
 	// Node 576-578 + 624: the agent-guidance reason may elevate to the
 	// group-fallback key record; both records default to the current one.
+	// 供应商解耦切片后 normalRoute 随行绑定收窄为选中分组单绑定
+	//（gatewayrouting normalroute.go），current.APIKeyRecord 不再携带跨组回退
+	// 候选序——回退基记录改用 preflight 入口别名的未收窄记录
+	//（DispatchContext.GroupFallbackAPIKeyRecord，preflight.go 入口即
+	// apiKeyRecord 别名，先于收窄赋值），恢复 Node groupBindings 多绑定回退
+	// 语义；agent-guidance 升档分支随之收敛为同一记录。
 	groupFallbackRecord := current.APIKeyRecord
 	if current.GroupFallbackAPIKeyRecord != nil {
 		groupFallbackRecord = current.GroupFallbackAPIKeyRecord
 	}
-	fallbackAPIKeyRecord := current.APIKeyRecord
-	if reason == "account_scoped_agent_guidance_exhausted" {
-		fallbackAPIKeyRecord = groupFallbackRecord
-	}
+	fallbackAPIKeyRecord := groupFallbackRecord
 	groupBindingCount := 0
 	if fallbackAPIKeyRecord != nil {
 		groupBindingCount = len(fallbackAPIKeyRecord.GroupBindings)

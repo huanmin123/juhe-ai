@@ -4,8 +4,12 @@
 // schema: vendors（9 真实厂商，无 parent_code）、groups（无供应商维度）、
 // models（目录快照经 modelSeedTargetRows 投影逐行 upsert，过期行按
 // ShutdownDate 写 'disabled'）。provider_protocol_profiles 及其 family 绑定
-// seed 随旧表退役；custom 模型同名清理随 custom_provider_models 表退役
-// （同名冲突改由 models 身份唯一索引与应用层写事务承接）。
+// seed 曾随旧表退役；2026-10-18 修复批恢复旧 providers / profiles / family
+// 绑定种子（迁移窗口并存，逐字取回 dbb2543e6^ 版本，幂等语义不变）——运行时
+// accounts 写路径仍以 providers × provider_protocol_profiles JOIN 校验账户
+// 创建，fresh 种子库缺行会在创建账户时 400。custom 模型同名清理随
+// custom_provider_models 表退役（同名冲突改由 models 身份唯一索引与应用层
+// 写事务承接）。
 //
 // The built-in seed constants (vendors, protocols, endpoint families, groups,
 // global/system settings, quota windows, external integration source) are the
@@ -22,6 +26,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
@@ -99,6 +105,20 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 		}
 	}
 
+	// 2026-10-18 修复批恢复旧 provider 种子（迁移窗口并存）：运行时 accounts
+	// 写路径仍以 providers × provider_protocol_profiles JOIN 校验账户创建，
+	// fresh 种子库必须写入旧 providers 行。语句与数据逐字取回 dbb2543e6^
+	// 版本，幂等语义不变。
+	for _, provider := range pgSeedLegacyProviders {
+		if err := exec(sqSeedLegacyProviderInsert,
+			provider.ID, provider.Code, provider.Name, provider.Description, pgNullableText(provider.ParentCode), provider.Enabled, provider.DefaultSupportedModelsJSON, now, now); err != nil {
+			return SQLiteSeedResult{}, err
+		}
+		if err := exec(sqSeedLegacyProviderDefaultModelsRepair, provider.DefaultSupportedModelsJSON, now, provider.Code); err != nil {
+			return SQLiteSeedResult{}, err
+		}
+	}
+
 	// Node: strip codex-auto-review from the GPT vendor default model list.
 	if err := exec(sqSeedGPTVendorCodexAutoReviewRemoval, now, gptVendorCode); err != nil {
 		return SQLiteSeedResult{}, err
@@ -111,6 +131,17 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 		return SQLiteSeedResult{}, err
 	}
 	if err := seedSQLiteDisableStaleGeneratedModels(ctx, db, exec, now, builtInModelKeys); err != nil {
+		return SQLiteSeedResult{}, err
+	}
+
+	// 2026-10-18 修复批：旧 provider_model_catalog 目录种子与新 models 种子
+	// 并存（数据同源），供运行时目录断言在迁移窗口内读取；upsert 后按旧顺序
+	// 执行六生成商 stale 行停用。
+	legacyBuiltInModelKeys, err := seedSQLiteLegacyModelCatalog(ctx, db, options, now, &result)
+	if err != nil {
+		return SQLiteSeedResult{}, err
+	}
+	if err := seedSQLiteDisableStaleLegacyGeneratedModels(ctx, db, exec, now, legacyBuiltInModelKeys); err != nil {
 		return SQLiteSeedResult{}, err
 	}
 
@@ -152,6 +183,30 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 		}
 	}
 
+	// 2026-10-18 修复批恢复旧 profile 种子（迁移窗口并存）：循环顺序沿旧提交
+	// ——protocols/families（profiles 外键父表）之后写 profiles，再做
+	// account_types 守卫修复与 family 绑定；profile 行 updated_at 按序号
+	// 逐毫秒递增的旧语义保留。
+	baseTime := options.nowTime()
+	for index, profile := range pgSeedLegacyProfiles {
+		profileUpdatedAt := seedTimestamp(baseTime.Add(time.Duration(index) * time.Millisecond))
+		if err := exec(sqSeedLegacyProfileInsert,
+			profile.ID, profile.ProviderCode, profile.Name, profile.Description, profile.Enabled, profile.ProtocolCode, profile.ProtocolVersion, profile.BaseURL, profile.DefaultHealthCheckModel, seedStringify(profile.AccountTypes), seedStringify(profile.Capabilities), now, profileUpdatedAt); err != nil {
+			return SQLiteSeedResult{}, err
+		}
+	}
+	if err := seedSQLiteRepairLegacyProfileAccountTypes(ctx, db, exec, now); err != nil {
+		return SQLiteSeedResult{}, err
+	}
+
+	for _, profile := range pgSeedLegacyProfiles {
+		for _, familyCode := range profile.EndpointFamilies {
+			if err := exec(sqSeedLegacyProfileFamilyInsert, profile.ID, familyCode, now, now); err != nil {
+				return SQLiteSeedResult{}, err
+			}
+		}
+	}
+
 	if err := seedSQLiteBuiltInGroupsForAllSystemAccounts(exec, now); err != nil {
 		return SQLiteSeedResult{}, err
 	}
@@ -171,6 +226,33 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 	}
 
 	return result, nil
+}
+
+// seedSQLiteRepairLegacyProfileAccountTypes ports
+// repairBuiltInProviderProfileAccountTypes: merge the built-in account types
+// into the stored profile row when the stored JSON lacks them（2026-10-18
+// 修复批随旧 profile 种子恢复，逐字取回 dbb2543e6^ 的
+// seedSQLiteRepairProfileAccountTypes）.
+func seedSQLiteRepairLegacyProfileAccountTypes(ctx context.Context, db *sql.DB, exec func(string, ...any) error, now string) error {
+	for _, profile := range pgSeedLegacyProfiles {
+		var accountTypesJSON string
+		err := db.QueryRowContext(ctx, sqSeedLegacyProfileAccountTypesSelect, profile.ID).Scan(&accountTypesJSON)
+		if err != nil {
+			continue // missing row or non-text value mirrors the Node repair skip
+		}
+		current, err := parseSeedStringArray(accountTypesJSON)
+		if err != nil {
+			continue
+		}
+		merged := mergeSeedDistinct(current, profile.AccountTypes)
+		if seedStringSlicesEqual(merged, current) {
+			continue
+		}
+		if err := exec(sqSeedLegacyProfileAccountTypesUpdate, seedStringify(merged), now, profile.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sqSeedSystemAccountsInsert is the Node default super admin insert.
@@ -385,6 +467,98 @@ const sqSeedStaleGeneratedModelDisable = `
     WHERE id = ?
   `
 
+// 2026-10-18 修复批恢复旧 provider_model_catalog 目录种子（迁移窗口并存）：
+// dbb2543e6 把目录种子改写为新 models 表后旧目录表无种子行，运行时目录断言
+// （providers.Store.listProviderModelCatalog 读 provider_model_catalog /
+// custom_provider_models）在 fresh 种子库判「支持模型不在目录」。以下语句逐
+// 字取回 dbb2543e6^ 版本，幂等语义不变（manual-override 感知 ON CONFLICT）；
+// 与新 models 种子并存，数据同源 activeModelCatalogSeedRows。种子语句不计
+// DDL golden（Ensure* 只数 CREATE TABLE/INDEX）。
+const sqSeedLegacyModelCatalogUpsert = `
+    INSERT INTO provider_model_catalog (
+      id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
+      supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+      default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
+      codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
+      input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+      cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
+      long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
+      long_context_input_cost_multiplier, long_context_output_cost_multiplier,
+      image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+      output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, 'active',
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?
+    )
+    ON CONFLICT(provider_code, model) DO UPDATE SET
+      status = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override') THEN provider_model_catalog.status ELSE excluded.status END,
+      mode = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.mode ELSE excluded.mode END,
+      catalog_order = excluded.catalog_order,
+      release_date = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.release_date ELSE excluded.release_date END,
+      shutdown_date = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.shutdown_date ELSE excluded.shutdown_date END,
+      supported_api_protocols_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.supported_api_protocols_json ELSE excluded.supported_api_protocols_json END,
+      supported_service_tiers_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.supported_service_tiers_json ELSE excluded.supported_service_tiers_json END,
+      supported_reasoning_efforts_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.supported_reasoning_efforts_json ELSE excluded.supported_reasoning_efforts_json END,
+      default_reasoning_effort = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.default_reasoning_effort ELSE excluded.default_reasoning_effort END,
+      codex_supported_reasoning_levels_json = excluded.codex_supported_reasoning_levels_json,
+      codex_default_reasoning_level = excluded.codex_default_reasoning_level,
+      codex_multi_agent_version = excluded.codex_multi_agent_version,
+      context_window_tokens = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.context_window_tokens ELSE excluded.context_window_tokens END,
+      max_input_tokens = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.max_input_tokens ELSE excluded.max_input_tokens END,
+      max_output_tokens = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.max_output_tokens ELSE excluded.max_output_tokens END,
+      max_tokens = excluded.max_tokens,
+      input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.input_usd_per_1m ELSE excluded.input_usd_per_1m END,
+      output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_1m ELSE excluded.output_usd_per_1m END,
+      cached_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cached_input_usd_per_1m ELSE excluded.cached_input_usd_per_1m END,
+      cache_write_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cache_write_usd_per_1m ELSE excluded.cache_write_usd_per_1m END,
+      cache_write_1h_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cache_write_1h_usd_per_1m ELSE excluded.cache_write_1h_usd_per_1m END,
+      cache_storage_usd_per_1m_per_hour = CASE
+        WHEN provider_model_catalog.source = 'manual-override'
+        THEN coalesce(provider_model_catalog.cache_storage_usd_per_1m_per_hour, excluded.cache_storage_usd_per_1m_per_hour)
+        ELSE excluded.cache_storage_usd_per_1m_per_hour
+      END,
+      service_tier_prices_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.service_tier_prices_json ELSE excluded.service_tier_prices_json END,
+      long_context_input_token_threshold = excluded.long_context_input_token_threshold,
+      long_context_input_token_threshold_inclusive = excluded.long_context_input_token_threshold_inclusive,
+      long_context_input_cost_multiplier = excluded.long_context_input_cost_multiplier,
+      long_context_output_cost_multiplier = excluded.long_context_output_cost_multiplier,
+      image_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.image_input_usd_per_1m ELSE excluded.image_input_usd_per_1m END,
+      image_output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.image_output_usd_per_1m ELSE excluded.image_output_usd_per_1m END,
+      audio_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.audio_input_usd_per_1m ELSE excluded.audio_input_usd_per_1m END,
+      audio_output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.audio_output_usd_per_1m ELSE excluded.audio_output_usd_per_1m END,
+      output_usd_per_image = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_image ELSE excluded.output_usd_per_image END,
+      supports_prompt_caching = excluded.supports_prompt_caching,
+      catalog_visible = CASE
+        WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override')
+        THEN min(provider_model_catalog.catalog_visible, excluded.catalog_visible)
+        ELSE excluded.catalog_visible
+      END,
+      source = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override') THEN provider_model_catalog.source ELSE excluded.source END,
+      updated_at = excluded.updated_at
+  `
+
+// sqSeedLegacyGeneratedModelRowsSelect lists the generated-provider catalog rows for
+// the stale disable.
+const sqSeedLegacyGeneratedModelRowsSelect = `
+    SELECT id, provider_code, model FROM provider_model_catalog
+    WHERE provider_code IN ('gpt', 'anthropic', 'gemini', 'deepseek', 'glm', 'xai')
+  `
+
+// sqSeedLegacyStaleGeneratedModelDisable hides one stale generated model.
+const sqSeedLegacyStaleGeneratedModelDisable = `
+    UPDATE provider_model_catalog
+    SET status = 'disabled', catalog_visible = 0, updated_at = ?
+    WHERE id = ?
+  `
+
 // sqSeedProtocolInsert seeds one protocols row.
 const sqSeedProtocolInsert = `
       INSERT OR IGNORE INTO protocols (
@@ -397,6 +571,53 @@ const sqSeedEndpointFamilyInsert = `
     INSERT OR IGNORE INTO protocol_endpoint_families (
       id, protocol_code, protocol_version, family_code, name, description, enabled, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+
+// 2026-10-18 修复批恢复旧 provider/profile 种子语句（迁移窗口并存）：逐字取回
+// dbb2543e6^ 版本，幂等语义不变（INSERT OR IGNORE / 守卫式 repair）。种子
+// 语句不进 Ensure* 的 CREATE TABLE/INDEX 语句计数，sqlite golden
+// （goldenSchemaCounts/goldenTotalTables/goldenTotalIndexes）不受影响。
+const sqSeedLegacyProviderInsert = `
+    INSERT OR IGNORE INTO providers (
+      id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+
+// sqSeedLegacyProviderDefaultModelsRepair refreshes empty provider default model lists.
+const sqSeedLegacyProviderDefaultModelsRepair = `
+    UPDATE providers
+    SET default_supported_models_json = ?, updated_at = ?
+    WHERE code = ?
+      AND (default_supported_models_json IS NULL OR trim(default_supported_models_json) = '' OR default_supported_models_json = '[]')
+  `
+
+const sqSeedLegacyProfileInsert = `
+    INSERT OR IGNORE INTO provider_protocol_profiles (
+      id, provider_code, name, description, enabled, protocol_code, protocol_version,
+      base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `
+
+// sqSeedLegacyProfileAccountTypesSelect reads one profile account_types_json for the
+// repair step.
+const sqSeedLegacyProfileAccountTypesSelect = `
+    SELECT account_types_json
+    FROM provider_protocol_profiles
+    WHERE id = ?
+  `
+
+// sqSeedLegacyProfileAccountTypesUpdate merges missing built-in account types.
+const sqSeedLegacyProfileAccountTypesUpdate = `
+    UPDATE provider_protocol_profiles
+    SET account_types_json = ?, updated_at = ?
+    WHERE id = ?
+  `
+
+// sqSeedLegacyProfileFamilyInsert seeds one provider_protocol_profile_families row.
+const sqSeedLegacyProfileFamilyInsert = `
+    INSERT OR IGNORE INTO provider_protocol_profile_families (
+      profile_id, family_code, enabled, capabilities_json, created_at, updated_at
+    ) VALUES (?, ?, 1, '[]', ?, ?)
   `
 
 // sqSeedGroupDefaultRepair marks the built-in group default when its owner has
@@ -707,6 +928,117 @@ func seedSQLiteDisableStaleGeneratedModels(ctx context.Context, db *sql.DB, exec
 	}
 	for _, row := range stale {
 		if err := exec(sqSeedStaleGeneratedModelDisable, now, row.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedSQLiteLegacyModelCatalog 逐字取回 dbb2543e6^ 的 seedSQLiteModelCatalog
+//（2026-10-18 修复批，迁移窗口并存）：按 activeModelCatalogSeedRows 逐行
+// upsert 旧 provider_model_catalog，并执行契约 2026-09-30 的同名 custom
+// 行清理。两处结果字段适配：result.ModelCatalogRows 是新 models 种子的钉值
+// 口径（TestSeedSQLiteDefaultsIdempotentAndComplete 钉 212），旧目录行数不
+// 计入；CustomModelOverlapCleaned 字段已随重构移除，清理语句仍执行并计入
+// StatementCount。
+func seedSQLiteLegacyModelCatalog(ctx context.Context, db *sql.DB, options SeedOptions, now string, result *SQLiteSeedResult) (map[string]bool, error) {
+	asOfUTCDate := seedTimestamp(options.nowTime())[:10]
+	rows := activeModelCatalogSeedRows(asOfUTCDate)
+	builtInModelKeys := make(map[string]bool, len(rows))
+	for _, model := range rows {
+		builtInModelKeys[model.ProviderCode+"\x00"+model.Model] = true
+		if _, err := db.ExecContext(ctx, sqSeedLegacyModelCatalogUpsert,
+			model.ID,
+			model.ProviderCode,
+			model.Model,
+			seedNullableString(model.Mode),
+			seedNullableInt64(model.CatalogOrder),
+			seedNullableString(model.ReleaseDate),
+			seedNullableString(model.ShutdownDate),
+			model.SupportedAPIProtocolsJSON,
+			model.SupportedServiceTiersJSON,
+			model.SupportedReasoningEffortsJSON,
+			seedNullableString(model.DefaultReasoningEffort),
+			model.CodexSupportedReasoningLevelsJSON,
+			seedNullableString(model.CodexDefaultReasoningLevel),
+			seedNullableString(model.CodexMultiAgentVersion),
+			seedNullableInt64(model.ContextWindowTokens),
+			seedNullableInt64(model.MaxInputTokens),
+			seedNullableInt64(model.MaxOutputTokens),
+			seedNullableInt64(model.MaxTokens),
+			seedNullableFloat64(model.InputUsdPer1M),
+			seedNullableFloat64(model.OutputUsdPer1M),
+			seedNullableFloat64(model.CachedInputUsdPer1M),
+			seedNullableFloat64(model.CacheWriteUsdPer1M),
+			seedNullableFloat64(model.CacheWrite1HUsdPer1M),
+			seedNullableFloat64(model.CacheStorageUsdPer1MPerHour),
+			model.ServiceTierPricesJSON,
+			seedNullableInt64(model.LongContextInputTokenThreshold),
+			seedBoolInt(model.LongContextInputTokenThresholdInclusive),
+			seedNullableFloat64(model.LongContextInputCostMultiplier),
+			seedNullableFloat64(model.LongContextOutputCostMultiplier),
+			seedNullableFloat64(model.ImageInputUsdPer1M),
+			seedNullableFloat64(model.ImageOutputUsdPer1M),
+			seedNullableFloat64(model.AudioInputUsdPer1M),
+			seedNullableFloat64(model.AudioOutputUsdPer1M),
+			seedNullableFloat64(model.OutputUsdPerImage),
+			seedBoolInt(model.SupportsPromptCaching),
+			seedBoolInt(model.CatalogVisible),
+			model.Source,
+			now,
+			now,
+		); err != nil {
+			return nil, fmt.Errorf("sqlite seed statement %d (model catalog %s): %w", result.StatementCount+1, model.ID, err)
+		}
+		result.StatementCount++
+	}
+	// 契约 2026-09-30（docs/functions/自定义模型与模型映射设计.md 第 4 节）：
+	// 目录 upsert 后删除与本次 seed 可见内置行（activeModelCatalogSeedRows
+	// 的 (ProviderCode, Model) 集合）同名的 custom_provider_models 存量行。
+	if len(rows) > 0 {
+		valueRows := make([]string, 0, len(rows))
+		args := make([]any, 0, len(rows)*2)
+		for _, model := range rows {
+			valueRows = append(valueRows, "(?, ?)")
+			args = append(args, model.ProviderCode, model.Model)
+		}
+		cleanupResult, err := db.ExecContext(ctx,
+			"DELETE FROM custom_provider_models WHERE (provider_code, model) IN (VALUES "+strings.Join(valueRows, ", ")+")", args...)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite seed statement %d (custom model overlap cleanup): %w", result.StatementCount+1, err)
+		}
+		if _, err := cleanupResult.RowsAffected(); err != nil {
+			return nil, fmt.Errorf("sqlite seed custom model overlap cleanup rows affected: %w", err)
+		}
+		result.StatementCount++
+	}
+	return builtInModelKeys, nil
+}
+
+// seedSQLiteDisableStaleLegacyGeneratedModels 逐字取回 dbb2543e6^ 的
+// seedSQLiteDisableStaleGeneratedModels（2026-10-18 修复批，迁移窗口并存）。
+func seedSQLiteDisableStaleLegacyGeneratedModels(ctx context.Context, db *sql.DB, exec func(string, ...any) error, now string, builtInModelKeys map[string]bool) error {
+	rows, err := db.QueryContext(ctx, sqSeedLegacyGeneratedModelRowsSelect)
+	if err != nil {
+		return fmt.Errorf("sqlite seed select generated model rows: %w", err)
+	}
+	defer rows.Close()
+	type generatedModelRow struct{ ID, ProviderCode, Model string }
+	var stale []generatedModelRow
+	for rows.Next() {
+		var row generatedModelRow
+		if err := rows.Scan(&row.ID, &row.ProviderCode, &row.Model); err != nil {
+			return fmt.Errorf("sqlite seed scan generated model row: %w", err)
+		}
+		if !builtInModelKeys[row.ProviderCode+"\x00"+row.Model] {
+			stale = append(stale, row)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite seed iterate generated model rows: %w", err)
+	}
+	for _, row := range stale {
+		if err := exec(sqSeedLegacyStaleGeneratedModelDisable, now, row.ID); err != nil {
 			return err
 		}
 	}

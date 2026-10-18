@@ -257,7 +257,7 @@ func TestAssertionsPassOnSatisfiedDomain(t *testing.T) {
 		id TEXT PRIMARY KEY,
 		status TEXT NOT NULL
 	)`)
-	createTestTable(t, e, StoreBusiness, `CREATE TABLE custom_provider_models (
+	createTestTable(t, e, StoreBusiness, `CREATE TABLE models (
 		id TEXT PRIMARY KEY,
 		scope TEXT NOT NULL,
 		status TEXT NOT NULL
@@ -281,8 +281,8 @@ func TestAssertionsPassOnSatisfiedDomain(t *testing.T) {
 		{"resource_authorizations", map[string]any{"id": "z2", "status": "paused"}},
 		{"account_api_key_runtime_states", map[string]any{"id": "k1", "status": "active"}},
 		{"account_api_key_runtime_states", map[string]any{"id": "k2", "status": "cooldown"}},
-		{"custom_provider_models", map[string]any{"id": "c1", "scope": "personal", "status": "active"}},
-		{"custom_provider_models", map[string]any{"id": "c2", "scope": "personal", "status": "draft"}},
+		{"models", map[string]any{"id": "c1", "scope": "personal", "status": "active"}},
+		{"models", map[string]any{"id": "c2", "scope": "personal", "status": "draft"}},
 		{"model_check_question_bank", map[string]any{"id": "q1"}},
 		{"api_keys", map[string]any{"id": CleanupIDPrefix + "key_main", "name": CleanupNamePrefix + "主力Key"}},
 	}
@@ -294,7 +294,7 @@ func TestAssertionsPassOnSatisfiedDomain(t *testing.T) {
 	e.recordDomainResult(DomainResult{Name: DomainBusiness, Counts: map[string]int{"accounts": 2}})
 	notCovered, failures := evaluateAssertions(ctx, e)
 	for _, failure := range failures {
-		if strings.HasPrefix(failure, "accounts.") || strings.HasPrefix(failure, "route_strategies.") || strings.HasPrefix(failure, "resource_authorizations.") || strings.HasPrefix(failure, "custom_provider_models.") || failure == "model_check_question_bank" || strings.HasPrefix(failure, "api_keys.") || strings.HasPrefix(failure, "account_api_key_runtime_states.") {
+		if strings.HasPrefix(failure, "accounts.") || strings.HasPrefix(failure, "route_strategies.") || strings.HasPrefix(failure, "resource_authorizations.") || strings.HasPrefix(failure, "models.") || failure == "model_check_question_bank" || strings.HasPrefix(failure, "api_keys.") || strings.HasPrefix(failure, "account_api_key_runtime_states.") {
 			t.Fatalf("business assertion failed unexpectedly: %s", failure)
 		}
 	}

@@ -27,18 +27,30 @@ import (
 	platformmock "github.com/huanminabc/juhe-ai/backend-go-platform/mockupstream"
 )
 
-// seedRealtimeCatalogRow 种 gpt-realtime 目录行（openai 聚合目标的 global
-// 自定义行；audio token 价 $32/$64 per 1M，文本价留空——契约 §4.4 不编造）。
+// seedRealtimeCatalogRow 种 gpt-realtime 目录行（gpt vendor 的 global 自定义
+// 行；audio token 价 $32/$64 per 1M，文本价留空——契约 §4.4 不编造）。行键
+// 随供应商解耦切片对齐 vendor 身份：终态计价目录以账户 vendor（gpt）为查找
+// 键（chain_realtime.go enqueueRealtimeTerminalUsage），目录行 provider_code
+// 承载同名 vendor 值。
 func seedRealtimeCatalogRow(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := "2026-10-04T00:00:00.000Z"
-	if _, err := db.Exec(`INSERT INTO custom_provider_models (
-			id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
-			supported_api_protocols_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
-			created_by, created_at, updated_at)
-		VALUES ('cat_realtime_1', 'openai', 'gpt-realtime', 'global', NULL, 'active', 1, 'audio',
-			'["realtime"]', 32, 64, ?, ?, ?)`, "sys_owner", now, now); err != nil {
-		t.Fatalf("seed realtime catalog: %v", err)
+	// 双行过渡形态：realtime 目录门（chain_realtime.go
+	// resolveRealtimeCatalogModel）暂按 openai 兼容聚合键读取，终态计价目录
+	// 按账户 vendor（gpt）读取——两消费键各自需要同名 provider_code 行；聚合
+	// 门切 vendor 身份属后续 realtime 切片，彼时删除 openai 键行。
+	for _, row := range []struct{ id, providerCode string }{
+		{"cat_realtime_1", "gpt"},
+		{"cat_realtime_1_openai_gate", "openai"},
+	} {
+		if _, err := db.Exec(`INSERT INTO custom_provider_models (
+				id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
+				supported_api_protocols_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
+				created_by, created_at, updated_at)
+			VALUES (?, ?, 'gpt-realtime', 'global', NULL, 'active', 1, 'audio',
+				'["realtime"]', 32, 64, ?, ?, ?)`, row.id, row.providerCode, "sys_owner", now, now); err != nil {
+			t.Fatalf("seed realtime catalog: %v", err)
+		}
 	}
 }
 
@@ -55,9 +67,9 @@ func seedRealtimeAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 		},
 	}
 	if _, err := fixture.db.Exec(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+		) VALUES (?, ?, 'gpt', 'openai', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials)); err != nil {
 		t.Fatalf("seed realtime account: %v", err)
 	}
@@ -664,7 +676,7 @@ func TestChainRealtimeMaxSessionDuration(t *testing.T) {
 }
 
 // TestChainRealtimeModelNotInCatalog 模型解析边界：非 realtime 目录模型 400
-//（不进派发链）。
+// （不进派发链）。
 func TestChainRealtimeModelNotInCatalog(t *testing.T) {
 	fixture := newChainFixture(t)
 	mock := platformmock.New()

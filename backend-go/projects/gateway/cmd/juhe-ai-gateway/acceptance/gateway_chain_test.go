@@ -40,11 +40,17 @@ type chainFixture struct {
 // account_model_mappings 读取按真实 DDL（复合主键，无 id 列）的 Node 排序
 // 查询；fresh 种子库上 runtime resolution 必须直接可用。
 func startChainFixture(t *testing.T) *chainFixture {
+	return startChainFixtureWithUpstream(t, nil)
+}
+
+// startChainFixtureWithUpstream 组装同款链路环境；upstreamHandler 非空时
+// mock 上游行为完全由调用方提供（命中计数在本层统一记账，路径与鉴权由
+// 调用方自决），nil 时保持内置 chat/responses 直通行为。
+func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFunc) *chainFixture {
 	t.Helper()
 
 	var upstreamHits atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamHits.Add(1)
+	defaultHandler := func(w http.ResponseWriter, r *http.Request) {
 		// D4 协议按供应商主推直连：profile_gpt_openai_v1 账户（gpt）在 chat
 		// 会话链以 /v1/responses 直连派发；/v1/chat/completions 服务既有
 		// /v1 链透传场景，两入口形态都在 mock 上游提供。
@@ -80,6 +86,13 @@ func startChainFixture(t *testing.T) *chainFixture {
 			return
 		}
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-acc","object":"chat.completion","model":"` + acceptanceModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"验收直通内容"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
+	}
+	if upstreamHandler == nil {
+		upstreamHandler = defaultHandler
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		upstreamHandler(w, r)
 	}))
 	t.Cleanup(upstream.Close)
 

@@ -73,8 +73,8 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   },
   {
     name: '服务等级与思考级别覆盖边界',
-    exportedPattern: /文本模型账户可选填写字符串 `service_tier_override`、`reasoning_effort_override`；空值表示不覆盖客户端请求。保存值必须是账户已选模型在当前供应商目录声明的能力。模型映射和协议桥接确定最终实际上游模型后，只有该模型精确支持配置值时才覆盖对应请求字段；不支持或能力未知时保留客户端原值/,
-    formalPattern: /`service_tier_override` 与 `reasoning_effort_override` 在模型映射和协议桥接确定实际上游模型后逐字段判断；最终模型精确支持配置值时覆盖对应请求体字段，不支持或能力未知时保留客户端原值，不降级、不报账户覆盖错误/
+    exportedPattern: /文本模型账户可选填写字符串 `service_tier_override`、`reasoning_effort_override`；空值表示不覆盖客户端请求。保存校验只做 token 形状与协议族全集校验[\s\S]*?不再要求已选模型在当前供应商目录声明该值[\s\S]*?思考级别按档位序向下兼容降级到不高于配置值的最高可用档[\s\S]*?服务等级不降级/,
+    formalPattern: /`service_tier_override` 与 `reasoning_effort_override` 在模型映射和协议桥接确定实际上游模型后逐字段判断；思考级别按档位序向下兼容降级到最终模型声明值中不高于配置值的最高档[\s\S]*?服务等级不降级，`default` 恒删除客户端 `service_tier`，`priority`\/`flex` 仅在最终模型声明支持时写入/
   },
   {
     name: '模型映射与跨协议边界',

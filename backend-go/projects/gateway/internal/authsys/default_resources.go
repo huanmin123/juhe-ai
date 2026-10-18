@@ -11,23 +11,23 @@ import (
 )
 
 // defaultResourceGroupSeed mirrors the narrowed DEFAULT_BUILT_IN_GROUPS
-// contract (2026-10-07 默认资源收口): account creation provisions exactly one
-// default family — the GPT group. Other providers (and the hybrid group) are
-// created explicitly by the operator; the hybrid guard in the route/key steps
-// still protects databases that carry legacy default groups.
+// contract (2026-10-07 默认资源收口; 2026-10-17 设计 §8 去供应商化): account
+// creation provisions exactly one default group with no provider dimension —
+// the identity is (system_account_id, name) and every owner keeps at most one
+// is_default=1 group. Other groups are created explicitly by the operator.
 type defaultResourceGroupSeed struct {
 	name        string
-	provider    string
 	description string
 }
 
+// defaultResourceGroupSeeds 对齐 maintenance seed（pgSeedGroups / 内置分组
+// INSERT）：组名「默认分组」、空描述；ID 仍由 newID("grp") 派生，与 seed 的
+// grp_default_gpt_sys_admin 字面 ID 各自独立、派生链不受影响。
 var defaultResourceGroupSeeds = []defaultResourceGroupSeed{
-	{name: "默认 GPT 分组", provider: "gpt"},
+	{name: "默认分组"},
 }
 
 const (
-	hybridProviderCode = "hybrid"
-
 	// defaultRouteStrategyName mirrors DEFAULT_ROUTE_STRATEGY_NAME.
 	defaultRouteStrategyName = "默认路由"
 	// missingDefaultGroupError mirrors the Node ensureDefaultRouteStrategies
@@ -52,11 +52,11 @@ func NewSQLDefaultResources(store *AccountStore, sealer SecretSealer) *SQLDefaul
 }
 
 // EnsureDefaultResources runs inside the account-create transaction and
-// provisions the narrowed default family (2026-10-07 默认资源收口):
-// ensureDefaultBuiltInGroups (GPT only) -> ensureDefaultRouteStrategies ->
-// ensureDefaultAPIKeys. The AI chat key is NOT provisioned here anymore; it is
-// created on demand by the chat-session ensure chain
-// (cmd/juhe-ai-gateway EnsureChatAPIKey).
+// provisions the narrowed default family (2026-10-07 默认资源收口; 2026-10-17
+// 设计 §8 去供应商化): ensureDefaultGroups (the single 默认分组) ->
+// ensureDefaultRouteStrategies -> ensureDefaultAPIKeys. The AI chat key is NOT
+// provisioned here anymore; it is created on demand by the chat-session ensure
+// chain (cmd/juhe-ai-gateway EnsureChatAPIKey).
 func (e *SQLDefaultResources) EnsureDefaultResources(ctx context.Context, tx *sql.Tx, accountID, nowRFC3339 string) error {
 	if e == nil || e.store == nil {
 		return errors.New("default resource ensurer is not initialized")
@@ -73,14 +73,16 @@ func (e *SQLDefaultResources) EnsureDefaultResources(ctx context.Context, tx *sq
 	return e.ensureDefaultAPIKeys(ctx, tx, accountID, nowRFC3339)
 }
 
-// ensureDefaultGroups mirrors ensureDefaultBuiltInGroupsForSystemAccountAsync:
-// for every built-in seed, skip when a default group for the provider already
-// exists, otherwise INSERT with enabled=1 is_default=1 (group_type stays at
-// its schema default 'personal', exactly like the Node statement).
+// ensureDefaultGroups mirrors the maintenance built-in group seed (设计 §8
+// 去供应商化): for the built-in seed, skip when the owner already has any
+// is_default=1 group (每 owner 至多一个默认组，唯一部分索引
+// idx_groups_owner_default_unique 保证), otherwise INSERT with enabled=1
+// is_default=1 and the new-schema column set (no provider_code; group_type
+// stays at its schema default).
 func (e *SQLDefaultResources) ensureDefaultGroups(ctx context.Context, tx *sql.Tx, accountID, nowText string) error {
 	for _, seed := range defaultResourceGroupSeeds {
 		var existing string
-		err := tx.QueryRowContext(ctx, e.store.bind(`SELECT id FROM `+e.store.table("groups")+` WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1`), accountID, seed.provider).Scan(&existing)
+		err := tx.QueryRowContext(ctx, e.store.bind(`SELECT id FROM `+e.store.table("groups")+` WHERE system_account_id = ? AND is_default = 1 ORDER BY updated_at DESC, id ASC LIMIT 1`), accountID).Scan(&existing)
 		if err == nil {
 			continue
 		}
@@ -91,34 +93,33 @@ func (e *SQLDefaultResources) ensureDefaultGroups(ctx context.Context, tx *sql.T
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, e.store.bind(`INSERT INTO `+e.store.table("groups")+` (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)`),
-			id, accountID, seed.name, seed.provider, seed.description, nowText, nowText); err != nil {
+		if _, err := tx.ExecContext(ctx, e.store.bind(`INSERT INTO `+e.store.table("groups")+` (id, system_account_id, name, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1, ?, ?)`),
+			id, accountID, seed.name, seed.description, nowText, nowText); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// ensureDefaultRouteStrategies mirrors ensureDefaultRouteStrategiesForSystemAccountAsync:
-// default groups ordered by created_at ASC, id ASC minus the hybrid provider;
-// per group an idempotent route strategy + binding pair with the Node
-// description and deduplicated name.
+// ensureDefaultRouteStrategies mirrors the maintenance default-groups select
+// (设计 §8): default groups are exactly the owner's is_default=1 rows ordered
+// by created_at ASC, id ASC — there is no provider dimension and no hybrid
+// exclusion anymore; per group an idempotent route strategy + binding pair
+// with the Node description and deduplicated name.
 func (e *SQLDefaultResources) ensureDefaultRouteStrategies(ctx context.Context, tx *sql.Tx, accountID, nowText string) error {
-	rows, err := tx.QueryContext(ctx, e.store.bind(`SELECT id, provider_code, name FROM `+e.store.table("groups")+` WHERE system_account_id = ? AND is_default = 1 ORDER BY created_at ASC, id ASC`), accountID)
+	rows, err := tx.QueryContext(ctx, e.store.bind(`SELECT id, name FROM `+e.store.table("groups")+` WHERE system_account_id = ? AND is_default = 1 ORDER BY created_at ASC, id ASC`), accountID)
 	if err != nil {
 		return err
 	}
-	type bindableGroup struct{ id, provider, name string }
+	type bindableGroup struct{ id, name string }
 	groups := []bindableGroup{}
 	for rows.Next() {
 		var group bindableGroup
-		if err := rows.Scan(&group.id, &group.provider, &group.name); err != nil {
+		if err := rows.Scan(&group.id, &group.name); err != nil {
 			rows.Close()
 			return err
 		}
-		if group.provider != hybridProviderCode {
-			groups = append(groups, group)
-		}
+		groups = append(groups, group)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -171,11 +172,12 @@ func (e *SQLDefaultResources) defaultRouteStrategyIDForGroup(ctx context.Context
 	return id, err
 }
 
-// ensureDefaultAPIKeys mirrors ensureDefaultApiKeysForSystemAccountAsync:
-// one default API key per default route strategy (hybrid excluded), skipping
-// strategies that already carry an is_default=1 key.
+// ensureDefaultAPIKeys mirrors the maintenance default API key seed (设计 §8):
+// one default API key per default route strategy, skipping strategies that
+// already carry an is_default=1 key. Groups have no provider dimension, so
+// there is no hybrid exclusion filter.
 func (e *SQLDefaultResources) ensureDefaultAPIKeys(ctx context.Context, tx *sql.Tx, accountID, nowText string) error {
-	rows, err := tx.QueryContext(ctx, e.store.bind(`SELECT route_strategies.id, route_strategies.name FROM `+e.store.table("route_strategies")+` route_strategies INNER JOIN `+e.store.table("route_strategy_groups")+` route_strategy_groups ON route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id INNER JOIN `+e.store.table("groups")+` groups ON groups.id = route_strategy_groups.group_id AND groups.system_account_id = route_strategy_groups.system_account_id WHERE route_strategies.system_account_id = ? AND route_strategies.is_default = 1 AND groups.provider_code <> ? ORDER BY route_strategies.created_at ASC, route_strategies.id ASC`), accountID, hybridProviderCode)
+	rows, err := tx.QueryContext(ctx, e.store.bind(`SELECT route_strategies.id, route_strategies.name FROM `+e.store.table("route_strategies")+` route_strategies INNER JOIN `+e.store.table("route_strategy_groups")+` route_strategy_groups ON route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id INNER JOIN `+e.store.table("groups")+` groups ON groups.id = route_strategy_groups.group_id AND groups.system_account_id = route_strategy_groups.system_account_id WHERE route_strategies.system_account_id = ? AND route_strategies.is_default = 1 ORDER BY route_strategies.created_at ASC, route_strategies.id ASC`), accountID)
 	if err != nil {
 		return err
 	}

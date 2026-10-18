@@ -98,7 +98,9 @@ func newContractTestDB(t *testing.T) *sql.DB {
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER CHECK (ai_account_limit BETWEEN 0 AND 1000000), expedited_account_limit INTEGER CHECK (expedited_account_limit BETWEEN 0 AND 100), request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON groups(system_account_id) WHERE is_default = 1`,
 		`CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, mode TEXT NOT NULL DEFAULT 'normal', status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, config_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 1, weight INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, key_hash TEXT NOT NULL UNIQUE, key_prefix TEXT NOT NULL, key_suffix TEXT NOT NULL, key_secret_encrypted TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat')), expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -315,39 +317,40 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Groups: exactly the single GPT default, personal type via schema default.
+	// Groups: exactly the single built-in default group (设计 §8 去供应商化,
+	// name 默认分组), personal type via schema default.
 	type groupRow struct {
-		name, provider, groupType string
-		enabled, isDefault        int
+		name, groupType string
+		enabled, isDefault int
 	}
 	groups := map[string]groupRow{}
 	groupCount := 0
-	rows, err := db.Query(`SELECT name, provider_code, group_type, enabled, is_default FROM groups WHERE system_account_id = ?`, item.ID)
+	rows, err := db.Query(`SELECT name, group_type, enabled, is_default FROM groups WHERE system_account_id = ?`, item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
 		var row groupRow
-		if err := rows.Scan(&row.name, &row.provider, &row.groupType, &row.enabled, &row.isDefault); err != nil {
+		if err := rows.Scan(&row.name, &row.groupType, &row.enabled, &row.isDefault); err != nil {
 			t.Fatal(err)
 		}
-		groups[row.provider] = row
+		groups[row.name] = row
 		groupCount++
 	}
 	rows.Close()
-	wantSeed := defaultResourceGroupSeed{name: "默认 GPT 分组", provider: "gpt"}
+	wantSeed := defaultResourceGroupSeed{name: "默认分组"}
 	if groupCount != 1 {
-		t.Fatalf("groups=%d want 1 (GPT only)", groupCount)
+		t.Fatalf("groups=%d want 1 (default only)", groupCount)
 	}
-	row, ok := groups[wantSeed.provider]
+	row, ok := groups[wantSeed.name]
 	if !ok {
-		t.Fatal("missing default GPT group")
+		t.Fatal("missing built-in default group")
 	}
 	if row.name != wantSeed.name || row.enabled != 1 || row.isDefault != 1 || row.groupType != "personal" {
 		t.Fatalf("group %+v != seed %+v", row, wantSeed)
 	}
 
-	// Route strategy: one (the GPT default), default normal/active with the
+	// Route strategy: one (the default), default normal/active with the
 	// Node-generated name.
 	routeNames := map[string]string{}
 	routeCount := 0
@@ -371,8 +374,8 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 	if routeCount != 1 {
 		t.Fatalf("route strategies=%d want 1", routeCount)
 	}
-	if _, ok := routeNames["默认 GPT 路由"]; !ok {
-		t.Fatalf("missing route strategy 默认 GPT 路由 (got %v)", routeNames)
+	if _, ok := routeNames["默认路由"]; !ok {
+		t.Fatalf("missing route strategy 默认路由 (got %v)", routeNames)
 	}
 
 	// Binding: one active priority-1/weight-1 binding for the route.
@@ -416,18 +419,18 @@ func TestCreateSeedsDefaultResources(t *testing.T) {
 	if key.isDefault != 1 {
 		t.Fatalf("default key %+v", key)
 	}
-	if key.name != "默认 GPT API Key" {
+	if key.name != "默认API Key" {
 		t.Fatalf("default key name %q", key.name)
 	}
 	if key.sealed == "" || !strings.HasPrefix(key.sealed, "v1:test-sealed:") {
 		t.Fatalf("key %s not sealed through the injected sealer: %q", key.name, key.sealed)
 	}
-	var keyRouteProvider string
-	if err := db.QueryRow(`SELECT g.provider_code FROM api_keys k JOIN route_strategy_groups rsg ON rsg.route_strategy_id = k.route_strategy_id JOIN groups g ON g.id = rsg.group_id WHERE k.system_account_id = ? AND k.is_default = 1`, item.ID).Scan(&keyRouteProvider); err != nil {
+	var keyRouteGroup string
+	if err := db.QueryRow(`SELECT g.name FROM api_keys k JOIN route_strategy_groups rsg ON rsg.route_strategy_id = k.route_strategy_id JOIN groups g ON g.id = rsg.group_id WHERE k.system_account_id = ? AND k.is_default = 1`, item.ID).Scan(&keyRouteGroup); err != nil {
 		t.Fatal(err)
 	}
-	if keyRouteProvider != "gpt" {
-		t.Fatalf("default key is not bound to the default GPT route: %q", keyRouteProvider)
+	if keyRouteGroup != "默认分组" {
+		t.Fatalf("default key is not bound to the default group route: %q", keyRouteGroup)
 	}
 	if len(secrets.plainIVs) != 1 {
 		t.Fatalf("sealed secrets=%d want 1", len(secrets.plainIVs))
@@ -475,10 +478,10 @@ func TestNextDefaultResourceName(t *testing.T) {
 		t.Fatalf("deduped name=%q err=%v", name, err)
 	}
 	// The suffix rules mirror the Node regex replace.
-	if got := defaultRouteStrategyNameForGroup("默认 GPT 分组"); got != "默认 GPT 路由" {
+	if got := defaultRouteStrategyNameForGroup("默认分组"); got != "默认路由" {
 		t.Fatalf("route name=%q", got)
 	}
-	if got := defaultAPIKeyNameForRouteStrategy("默认 GPT 路由"); got != "默认 GPT API Key" {
+	if got := defaultAPIKeyNameForRouteStrategy("默认路由"); got != "默认API Key" {
 		t.Fatalf("api key name=%q", got)
 	}
 }

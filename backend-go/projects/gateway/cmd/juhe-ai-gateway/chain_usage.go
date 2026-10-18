@@ -423,15 +423,18 @@ func (u *chainFinalizationUsage) resolveFinalizationPricingModel(providerCode, c
 	return u.pricing.ResolvePricingModel(providerCode, catalogSystemAccountID, upstreamModel)
 }
 
-// finalizationAccountProviderOf 取账号视图的 provider 身份字段（Node
-// input.account.providerCode / providerProtocolProfileId）；非 OpenAIAccountView
-// 返回空。
+// finalizationAccountProviderOf 取账号视图的连接身份字段（Node
+// input.account.providerCode / providerProtocolProfileId 的 Go 投影位）。
+// 供应商解耦切片起第一返回值承载 vendor 身份（供应商与上游协议面重构设计
+// §1.1/§2.1：vendor 值域与旧 providerCode 同名）——同时是 usage 行
+// ProviderCode 列的过渡填充值与同步计价目录的查找键；账户 secret 的
+// ProviderCode 过渡字段恒空，不再作为身份源。非 OpenAIAccountView 返回空。
 func finalizationAccountProviderOf(account gatewayresponse.AccountView) (providerCode, providerProtocolProfileID string) {
 	view, ok := account.(gatewayresponse.OpenAIAccountView)
 	if !ok {
 		return "", ""
 	}
-	return view.Account.ProviderCode, view.Account.ProviderProtocolProfileID
+	return view.Account.VendorCode, view.Account.ProviderProtocolProfileID
 }
 
 // finalizationUsageSemanticOf 按账号协议档案解析 usage_semantic（Node
@@ -464,6 +467,9 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		return
 	}
 	accounting := u.finalizationModelAccounting(input.Account, input.RequestedModel)
+	// vendor 身份：账号视图优先（承载 vendor 语义），空回落 usage context；
+	// UsageRecordInput.ProviderCode 字段现承载 vendor 值（usage 行表列改造属
+	// 后续 usage 列切片），同步计价目录同键查找。
 	providerCode, providerProtocolProfileID := finalizationAccountProviderOf(input.Account)
 	providerCode = firstNonEmptyChainUsage(providerCode, input.UsageContext.ProviderCode)
 	catalogSystemAccountID := chainCatalogSystemAccountID(input.Account, input.UsageContext.SystemAccountID)
@@ -714,8 +720,9 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 	// accountUsageModelAccounting）：请求模型取构造点注入值，family 取注入的
 	// 运行时同源值，否则映射后上游模型名在失败行丢失。
 	accounting := u.finalizationModelAccounting(input.Account, u.requestedModel)
-	// provider 身份与 usage_semantic 与成功路径同源：账号视图优先回落
-	// usage context，语义按账号协议档案解析（openai/anthropic/gemini）。
+	// provider 身份与 usage_semantic 与成功路径同源：vendor 身份账号视图优先
+	// 回落 usage context（UsageRecordInput.ProviderCode 现承载 vendor 值），
+	// 语义按账号协议档案解析（openai/anthropic/gemini）。
 	providerCode, providerProtocolProfileID := finalizationAccountProviderOf(input.Account)
 	providerCode = firstNonEmptyChainUsage(providerCode, input.UsageContext.ProviderCode)
 	pricingModel := u.resolveFinalizationPricingModel(
@@ -779,12 +786,15 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 // mapping rows travel with the account so the usage model resolver
 // (usageModelResolverAdapter, chain_ports.go) can resolve the upstream model
 // through gatewayopenai.ResolveAccountModelMapping——2026-09-20 收口：此前
-// 投影丢 ModelMappings，映射后上游模型名在记账侧丢失。
+// 投影丢 ModelMappings，映射后上游模型名在记账侧丢失。ProviderCode 投影位现
+// 承载 vendor 身份（供应商与上游协议面重构设计 §1.1/§2.1 切片；字段名随
+// internal/gatewayusage 契约保留，值源从过渡恒空的 ProviderCode 切到
+// VendorCode），usage 语义分派（anthropic/gemini/hybrid 词表）同键消费。
 func usageModelAccountOf(account gatewaydispatch.AccountCandidate) gatewayusage.UsageModelAccount {
 	out := gatewayusage.UsageModelAccount{
 		ID:                        account.ID,
 		Name:                      account.Name,
-		ProviderCode:              account.ProviderCode,
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		UsageAccess: gatewayusage.UsageAccessFields{
 			AccountOwnerSystemAccountID:      account.AccountOwnerSystemAccountID,
@@ -799,7 +809,9 @@ func usageModelAccountOf(account gatewaydispatch.AccountCandidate) gatewayusage.
 			GroupAuthorizationSourceTeamID:   deref(account.GroupAuthorizationSourceTeamID),
 		},
 		Profile: &gatewayusage.ProviderProtocolProfile{
-			ProviderCode:    account.ProviderCode,
+			// ProviderCode 投影位承载 vendor 身份（与上方 UsageModelAccount 同
+			// 值源）；ProtocolCode/ProfileID 维持账户行既有列。
+			ProviderCode:    account.VendorCode,
 			ProtocolCode:    account.ProtocolCode,
 			ProtocolVersion: account.ProtocolVersion,
 			ProfileID:       account.ProviderProtocolProfileID,

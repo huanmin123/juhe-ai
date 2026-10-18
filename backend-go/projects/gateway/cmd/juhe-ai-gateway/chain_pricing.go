@@ -49,7 +49,10 @@ func newChainCostEstimator(cache *gatewayruntimecache.Service) *chainCostEstimat
 }
 
 // EstimateCatalogCostUSD mirrors estimateCatalogCostUsdAsync: ok=false
-// mirrors the undefined estimate (no inflight reservation).
+// mirrors the undefined estimate (no inflight reservation). 目录查找键
+// （input.ProviderCode）现承载 vendor 身份——值源在 chain_usage.go /
+// chain_realtime.go 的账户视图投影（finalizationAccountProviderOf /
+// session 账户），vendor 为空的手工模型维持目录 miss 的既有 fallback 语义。
 func (e *chainCostEstimator) EstimateCatalogCostUSD(ctx context.Context, input gatewayquota.CatalogCostInput) (float64, bool) {
 	if e == nil || e.cache == nil || strings.TrimSpace(input.Model) == "" {
 		return 0, false
@@ -102,7 +105,8 @@ func newChainUsagePricingCatalog(cache *gatewayruntimecache.Service) *chainUsage
 }
 
 // ResolvePricingModel mirrors resolveCatalogPricingModel: the matched catalog
-// row's model id; empty mirrors the Node undefined.
+// row's model id; empty mirrors the Node undefined. providerCode 入参承载
+// vendor 身份（值源 chain_usage.go / chain_realtime.go 账户视图投影）。
 func (c *chainUsagePricingCatalog) ResolvePricingModel(providerCode, systemAccountID, model string) string {
 	if c == nil || c.cache == nil || strings.TrimSpace(model) == "" {
 		return ""

@@ -152,15 +152,13 @@ func chainGptRequestOverrideCatalogItemsOf(items []gatewayruntimecache.ProviderM
 // chainGptRequestOverrideModelCandidates mirrors the
 // modelPricingProviderDriverForProvider(providerCode).buildModelCandidates(model)
 // fallback chain the capability resolver matches against the catalog rows.
-// gpt / openai vendor codes resolve to the openai-compatible pricing driver;
-// its candidate rules are mirrored from internal/pricing
-// buildOpenAIModelCandidates（该真实组件未导出，越出本写入域，组合根以
-// 逐规则镜像 + 单测钉住）。请求模型自身恒为首个候选（gatewayoauthcodex
-// 端口把 Node 的「精确名优先」折叠进候选链首位的既有语义）。其余 provider
-// code 保持端口内建默认（model + trimmed identity）。
+// 参数值已随供应商解耦承载 vendor 身份（vendor 值域与旧 providerCode 同名，
+// openai/hybrid 不再是 vendor——gpt vendor 承接旧 openai 系候选规则，供应商
+// 与上游协议面重构设计 §1.1/§10）；其 vendor 保持端口内建默认（model +
+// trimmed identity）。
 func chainGptRequestOverrideModelCandidates(providerCode, model string) []string {
 	switch strings.ToLower(strings.TrimSpace(providerCode)) {
-	case "gpt", "openai":
+	case "gpt":
 		return chainOpenAIOverrideModelCandidates(model)
 	default:
 		candidates := []string{model}
@@ -313,21 +311,25 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// chainVolcengineVideoUpstreamURL / chainQwenVideoUpstreamURL 归一
 		//（官方根去重，不走 openai /v1 强制补缀）；其余走 openai 归一。
 		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
-			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "glm" {
+			// 媒体适配器身份源（供应商与上游协议面重构设计 §2.1 切片）：vendor
+			// 值域与旧 providerCode 同名，分支键从 ProviderCode 切到 VendorCode
+			//（ProviderCode 过渡恒空）；generic/空 vendor 无专属 adapter，沿
+			// 默认 openai 归一与既有错误语义。
+			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "glm" {
 				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
 				if urlErr != nil {
 					return nil, urlErr
 				}
 				return []string{upstreamURL}, nil
 			}
-			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "volcengine" {
+			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "volcengine" {
 				upstreamURL, urlErr := chainVolcengineVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
 				if urlErr != nil {
 					return nil, urlErr
 				}
 				return []string{upstreamURL}, nil
 			}
-			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "qwen" {
+			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "qwen" {
 				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
 				if urlErr != nil {
 					return nil, urlErr
@@ -347,7 +349,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// 长转写 adapter 的 provider 在 audioJobCreateRequest 内显式失败（能力
 		// 缺失不静默回退）。
 		if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
-			switch chainAudioJobAdapterKeyOfProvider(account.ProviderCode) {
+			switch chainAudioJobAdapterKeyOfProvider(account.VendorCode) {
 			case "qwen":
 				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
 				if urlErr != nil {
@@ -370,7 +372,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// audio/speech|transcriptions 端点，CogVideo §7.1 同根先例——不得走
 		// openai /v1 强制补缀归一，否则 /api/paas/v4 base 会被错拼
 		// /api/paas/v4/v1/audio/...）。
-		if chainNormalizeProviderToken(account.ProviderCode) == "glm" {
+		if chainNormalizeProviderToken(account.VendorCode) == "glm" {
 			if glmPath, ok := glmSpeechUpstreamPathOf(req); ok {
 				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, glmPath)
 				if urlErr != nil {
@@ -437,7 +439,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// /api/plan/v3/images/generations），不得走 openai /v1 强制补缀归一
 		//（会把官方根错拼 /v1/images/generations）——沿 chat 面同构的服务根
 		// 归一先例（chainVolcengineImagesUpstreamURL 显式路径模式）。
-		if chainNormalizeProviderToken(account.ProviderCode) == "volcengine" &&
+		if chainNormalizeProviderToken(account.VendorCode) == "volcengine" &&
 			chainIsImagesGenerationsPathAndQuery(pathAndQuery) {
 			upstreamURL, urlErr := chainVolcengineImagesUpstreamURL(account.BaseURL, pathAndQuery)
 			if urlErr != nil {
@@ -446,7 +448,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			return []string{upstreamURL}, nil
 		}
 		if chainIsChatCompletionsPathAndQuery(pathAndQuery) {
-			switch chainNormalizeProviderToken(account.ProviderCode) {
+			switch chainNormalizeProviderToken(account.VendorCode) {
 			case "volcengine":
 				upstreamURL, urlErr := chainVolcengineChatUpstreamURL(account.BaseURL, pathAndQuery)
 				if urlErr != nil {
@@ -515,7 +517,7 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		// 火山长转写臂（契约 §9.2）：openspeech 语音服务域独立鉴权面——
 		// X-Api-Key: <speech_token> 单头，删掉通用透传预设的 Authorization
 		//（ark Bearer），不得让两个鉴权头并存出站（同 TTS 分支语义）。
-		if chainAudioJobAdapterKeyOfProvider(account.ProviderCode) == "volcengine" {
+		if chainAudioJobAdapterKeyOfProvider(account.VendorCode) == "volcengine" {
 			token, credErr := chainVolcengineSpeechCredentials(account)
 			if credErr != nil {
 				return gatewaydispatch.PreparedRequestParts{}, credErr
@@ -1345,15 +1347,15 @@ func isCodexOAuthAccount(account gatewaydispatch.AccountCandidate) bool {
 	return account.Type == "oauth" && normalizeProtocol(account.ProtocolCode) == driverProtocolOpenAI
 }
 
-// codexAccountOf 裁剪运行时账户候选为 codex 归一化输入；ProviderCode 随
+// codexAccountOf 裁剪运行时账户候选为 codex 归一化输入；VendorCode 随
 // 请求覆盖 hook 进入供应商感知值域断言（gpt 专属枚举只对 gpt 账户生效，
 // 其它供应商的值域由模型目录能力门决定）。
 func codexAccountOf(account gatewaydispatch.AccountCandidate) gatewaydispatch.OpenAIOAuthCodexAccount {
 	return gatewaydispatch.OpenAIOAuthCodexAccount{
-		ID:           account.ID,
-		APIKey:       account.APIKey,
-		ProviderCode: account.ProviderCode,
-		Credentials:  account.Credentials,
+		ID:          account.ID,
+		APIKey:      account.APIKey,
+		VendorCode:  account.VendorCode,
+		Credentials: account.Credentials,
 	}
 }
 
@@ -1756,7 +1758,7 @@ func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRe
 	if req == nil || req.HTTP == nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
-	if chainNormalizeProviderToken(account.ProviderCode) != "minimax" {
+	if chainNormalizeProviderToken(account.VendorCode) != "minimax" {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
@@ -1809,7 +1811,7 @@ func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.Gatewa
 	if req == nil || req.HTTP == nil {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
-	if chainNormalizeProviderToken(account.ProviderCode) != "volcengine" {
+	if chainNormalizeProviderToken(account.VendorCode) != "volcengine" {
 		return nil, gatewaymedia.SpeechRequest{}, false, nil
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
@@ -1867,7 +1869,7 @@ func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayR
 	if req == nil || req.HTTP == nil {
 		return nil, false
 	}
-	if chainNormalizeProviderToken(account.ProviderCode) != "glm" {
+	if chainNormalizeProviderToken(account.VendorCode) != "glm" {
 		return nil, false
 	}
 	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
@@ -1975,8 +1977,8 @@ func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequ
 	if protocol != driverProtocolOpenAI && protocol != driverProtocolGemini {
 		return nil, nil
 	}
-	if chainVideoAdapterForAccount(account.ProviderCode) == nil {
-		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.ProviderCode)
+	if chainVideoAdapterForAccount(account.VendorCode) == nil {
+		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.VendorCode)
 	}
 	body := req.ParsedJSONObjectBody()
 	if body == nil {
@@ -2004,8 +2006,8 @@ func (d *chainProviderDriver) audioJobCreateRequest(req *gatewaypreauth.GatewayR
 	if normalizeProtocol(account.ProtocolCode) != driverProtocolOpenAI {
 		return nil, nil
 	}
-	if chainAudioJobAdapterForAccount(account.ProviderCode) == nil {
-		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持长音频转写", account.ID, account.ProviderCode)
+	if chainAudioJobAdapterForAccount(account.VendorCode) == nil {
+		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持长音频转写", account.ID, account.VendorCode)
 	}
 	body := req.ParsedJSONObjectBody()
 	if body == nil {

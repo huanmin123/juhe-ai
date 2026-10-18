@@ -760,9 +760,8 @@ func TestW1OwnerListSchedulesPagingAndScoreReaderErrors(t *testing.T) {
 	ctx := context.Background()
 	for _, account := range []string{"acct", "acct-2"} {
 		if account == "acct-2" {
-			if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-2','sys','Second account','openai','profile_openai_openai_v1',NULL,NULL,'active')`); err != nil {
-				t.Fatal(err)
-			}
+			w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,name,vendor_code,connection_driver_code,health_check_connection_id,status) VALUES ('acct-2','sys','Second account','gpt','gpt','conn-acct-2','active')`)
+			w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-2','acct-2','gpt_openai_v1','https://quality.invalid/v1',1)`)
 		}
 		if _, err := manager.CreateSchedule(ctx, "sys", QualityScheduleInput{AccountID: account, Model: "gpt-5.6-sol", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err != nil {
 			t.Fatal(err)

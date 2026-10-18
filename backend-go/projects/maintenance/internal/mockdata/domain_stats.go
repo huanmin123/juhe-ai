@@ -123,10 +123,12 @@ var statsClientIPPolicyHitColumns = []string{
 }
 
 // statsOAuthAccount 是一条 business 库里的 OAuth mock 账户（账户用量快照的宿主）。
+// vendor 是 accounts.vendor_code 投影（快照记录面沿用账户快照 JSON 的
+// provider 键名，值为 vendor code）。
 type statsOAuthAccount struct {
 	id        string
 	owner     string
-	provider  string
+	vendor    string
 	updatedAt time.Time
 }
 
@@ -655,7 +657,7 @@ func (w *statsWriter) oauthAccounts() ([]statsOAuthAccount, error) {
 		return nil, err
 	}
 	rows, err := db.QueryContext(w.ctx,
-		`SELECT id, system_account_id, COALESCE(provider_code,'') FROM accounts
+		`SELECT id, system_account_id, COALESCE(vendor_code,'') FROM accounts
 		 WHERE (id LIKE ? OR name LIKE ?) AND type = 'oauth' ORDER BY id`,
 		CleanupIDPrefix+"%", CleanupNamePrefix+"%")
 	if err != nil {
@@ -665,7 +667,7 @@ func (w *statsWriter) oauthAccounts() ([]statsOAuthAccount, error) {
 	var accounts []statsOAuthAccount
 	for rows.Next() {
 		var account statsOAuthAccount
-		if err := rows.Scan(&account.id, &account.owner, &account.provider); err != nil {
+		if err := rows.Scan(&account.id, &account.owner, &account.vendor); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, account)

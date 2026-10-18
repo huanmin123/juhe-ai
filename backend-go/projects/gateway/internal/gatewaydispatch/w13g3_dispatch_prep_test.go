@@ -1045,7 +1045,7 @@ func TestW13g3GptOverrideTokenValidation(t *testing.T) {
 
 func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 	ctx := context.Background()
-	account := AccountCandidate{ID: "a-1", ProviderCode: "openai", Credentials: map[string]any{"service_tier_override": "priority"}}
+	account := AccountCandidate{ID: "a-1", VendorCode: "openai", Credentials: map[string]any{"service_tier_override": "priority"}}
 	t.Run("invalid credentials surface", func(t *testing.T) {
 		bad := AccountCandidate{ID: "a-1", Credentials: map[string]any{"service_tier_override": "!!"}}
 		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{}`), bad, "responses", false, "gpt-test"); err == nil {
@@ -1053,7 +1053,7 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 		}
 		// gpt 账户保留专属枚举硬失败（其它供应商/空 providerCode 由目录能力
 		// 门兜底，不再请求级报错）。
-		invalidTier := AccountCandidate{ID: "a-1", ProviderCode: "gpt", Credentials: map[string]any{"service_tier_override": "super"}}
+		invalidTier := AccountCandidate{ID: "a-1", VendorCode: "gpt", Credentials: map[string]any{"service_tier_override": "super"}}
 		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{}`), invalidTier, "responses", false, "gpt-test"); err == nil {
 			t.Fatal("invalid tier value must fail")
 		}
@@ -1092,7 +1092,7 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 		}}}
 		SetGptRequestOverrideModelCatalog(catalog)
 		t.Cleanup(func() { SetGptRequestOverrideModelCatalog(nil) })
-		effortAccount := AccountCandidate{ID: "a-1", ProviderCode: "openai", Credentials: map[string]any{"reasoning_effort_override": "high"}}
+		effortAccount := AccountCandidate{ID: "a-1", VendorCode: "openai", Credentials: map[string]any{"reasoning_effort_override": "high"}}
 		for _, tc := range []struct {
 			family string
 			expect string

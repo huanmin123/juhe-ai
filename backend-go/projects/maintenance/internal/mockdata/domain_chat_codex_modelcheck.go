@@ -80,8 +80,8 @@ const (
 	// 的 customQuiz 与 policy_snapshot.customQuestionIds 都用它，保证三处一致。
 	chatCodexQuizQuestionLimit   = 3
 	chatCodexFallbackModel       = "deepseek-v4.1-flash"
-	chatCodexFallbackProvider    = "openai"
-	chatCodexFallbackProfile     = "profile_openai_openai_v1"
+	chatCodexFallbackProvider    = "gpt"
+	chatCodexFallbackProfile     = "gpt_openai_v1"
 	chatCodexEndpointFamily      = "openai_responses"
 	chatCodexTurnLimit           = 50
 	chatCodexRetentionDays       = 30
@@ -245,8 +245,8 @@ func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, er
 	}
 	keyRows.Close()
 
-	accountRows, err := db.QueryContext(ctx, `SELECT id, COALESCE(name,''), system_account_id, COALESCE(provider_code,''),
-		COALESCE(provider_protocol_profile_id,''), COALESCE(protocol_code,''), COALESCE(health_check_endpoint_mode,''),
+	accountRows, err := db.QueryContext(ctx, `SELECT id, COALESCE(name,''), system_account_id, COALESCE(vendor_code,''),
+		COALESCE(protocol_code,''), COALESCE(health_check_endpoint_mode,''),
 		COALESCE(health_check_model,'')
 		FROM accounts WHERE id LIKE ? ORDER BY id`, CleanupIDPrefix+"%")
 	if err != nil {
@@ -260,7 +260,7 @@ func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, er
 	for accountRows.Next() {
 		var item rawAccount
 		if err := accountRows.Scan(&item.row.ID, &item.row.Name, &item.row.Owner, &item.row.Provider,
-			&item.row.Profile, &item.row.Protocol, &item.row.EndpointMode, &item.health); err != nil {
+			&item.row.Protocol, &item.row.EndpointMode, &item.health); err != nil {
 			accountRows.Close()
 			return resources, err
 		}
@@ -271,6 +271,33 @@ func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, er
 		return resources, err
 	}
 	accountRows.Close()
+
+	// 连接 preset 作为 profile 投影（每账户取首个 enabled 连接的
+	// connection_preset_code；provider_protocol_profiles 已退役）。
+	presetByAccount := map[string]string{}
+	presetRows, err := db.QueryContext(ctx, `SELECT account_id, connection_preset_code FROM account_connections
+		WHERE account_id LIKE ? AND enabled = 1 ORDER BY account_id, connection_preset_code`, CleanupIDPrefix+"%")
+	if err != nil {
+		return resources, fmt.Errorf("读取 mock 账户连接: %w", err)
+	}
+	for presetRows.Next() {
+		var accountID, preset string
+		if err := presetRows.Scan(&accountID, &preset); err != nil {
+			presetRows.Close()
+			return resources, err
+		}
+		if _, ok := presetByAccount[accountID]; !ok {
+			presetByAccount[accountID] = preset
+		}
+	}
+	if err := presetRows.Err(); err != nil {
+		presetRows.Close()
+		return resources, err
+	}
+	presetRows.Close()
+	for index := range rawAccounts {
+		rawAccounts[index].row.Profile = presetByAccount[rawAccounts[index].row.ID]
+	}
 
 	groupRows, err := db.QueryContext(ctx, `SELECT id FROM groups WHERE id LIKE ? ORDER BY id`, CleanupIDPrefix+"%")
 	if err != nil {
@@ -291,9 +318,12 @@ func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, er
 	groupRows.Close()
 
 	// 账户检测模型：账户支持模型优先（运行记录里的 model 就是账户支持的模型），
-	// 其次是体检模型，最后回落到目录模型。
+	// 其次是体检模型，最后回落到目录模型。model_id 是支持模型外键口径，
+	// upstream_model 是文本引用口径。
 	modelByAccount := map[string]string{}
-	modelRows, err := db.QueryContext(ctx, `SELECT account_id, model FROM account_supported_models ORDER BY account_id, model`)
+	modelRows, err := db.QueryContext(ctx, `SELECT s.account_id, COALESCE(m.upstream_model, s.model_id)
+		FROM account_supported_models s LEFT JOIN models m ON m.id = s.model_id
+		ORDER BY s.account_id, s.model_id`)
 	if err != nil {
 		return resources, fmt.Errorf("读取账户支持模型: %w", err)
 	}
@@ -313,7 +343,10 @@ func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, er
 	}
 	modelRows.Close()
 
-	catalogRows, err := db.QueryContext(ctx, `SELECT model FROM provider_model_catalog WHERE status = 'active' AND COALESCE(mode,'') <> 'image' ORDER BY catalog_order, model`)
+	catalogRows, err := db.QueryContext(ctx, `SELECT upstream_model FROM models
+		WHERE status = 'active' AND catalog_visible
+		  AND supported_endpoint_modes_json NOT LIKE '%images_json%'
+		ORDER BY catalog_order, upstream_model`)
 	if err != nil {
 		return resources, fmt.Errorf("读取模型目录: %w", err)
 	}
@@ -353,7 +386,7 @@ func loadChatCodexResources(ctx context.Context, e *env) (chatCodexResources, er
 			item.row.Profile = chatCodexFallbackProfile
 		}
 		if item.row.Protocol == "" {
-			item.row.Protocol = "openai_responses"
+			item.row.Protocol = "openai"
 		}
 		if item.row.EndpointMode == "" {
 			item.row.EndpointMode = "responses_sse"

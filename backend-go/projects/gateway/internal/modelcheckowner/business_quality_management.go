@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 )
 
@@ -300,7 +299,7 @@ func (m *BusinessQualityManager) ListSchedules(ctx context.Context, systemID str
 	if err := m.db.QueryRowContext(ctx, m.bind(`SELECT COUNT(*) FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL WHERE mqs.system_account_id=?`), systemID).Scan(&total); err != nil {
 		return QualityScheduleList{}, err
 	}
-	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,mqs.lease_until,aqe.action,aqe.recovery_due_at,a.status,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.system_account_id=? ORDER BY mqs.created_at DESC,mqs.id DESC LIMIT ? OFFSET ?`), systemID, size+1, (page-1)*size)
+	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,COALESCE(a.vendor_code,'') AS provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,mqs.lease_until,aqe.action,aqe.recovery_due_at,a.status,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.system_account_id=? ORDER BY mqs.created_at DESC,mqs.id DESC LIMIT ? OFFSET ?`), systemID, size+1, (page-1)*size)
 	if err != nil {
 		return QualityScheduleList{}, err
 	}
@@ -436,7 +435,7 @@ func (m *BusinessQualityManager) policyTx(ctx context.Context, tx *sql.Tx, syste
 	return out, nil
 }
 func (m *BusinessQualityManager) scheduleByID(ctx context.Context, systemID, id string) (QualityScheduleView, error) {
-	row := m.db.QueryRowContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,mqs.lease_until,aqe.action,aqe.recovery_due_at,a.status,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.id=? AND mqs.system_account_id=?`), id, systemID)
+	row := m.db.QueryRowContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,COALESCE(a.vendor_code,'') AS provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.timeout_penalty_enabled,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,mqs.lease_until,aqe.action,aqe.recovery_due_at,a.status,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.id=? AND mqs.system_account_id=?`), id, systemID)
 	v, err := scanQualitySchedule(row, time.Now().UTC())
 	if errors.Is(err, sql.ErrNoRows) {
 		return QualityScheduleView{}, errors.New("定时检查配置不存在")
@@ -481,15 +480,18 @@ func (m *BusinessQualityManager) enrichRunScores(ctx context.Context, items []Qu
 	return nil
 }
 func (m *BusinessQualityManager) checkScheduleAccount(ctx context.Context, systemID, accountID, model string) error {
-	var provider, profileID string
-	err := m.db.QueryRowContext(ctx, m.bind(`SELECT provider_code,provider_protocol_profile_id FROM `+m.table("accounts")+` WHERE id=? AND system_account_id=? AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`), accountID, systemID).Scan(&provider, &profileID)
+	// 设计 §8 去供应商化：探针身份取 (vendor_code, 健康检查连接 preset)，经
+	// check_profile 映射回目录 profile ID；缺健康检查连接行的账户无执行面，
+	// 与缺目录组合同样按不支持拒绝。
+	var vendorCode, preset string
+	err := m.db.QueryRowContext(ctx, m.bind(`SELECT COALESCE(a.vendor_code,''),hc.connection_preset_code FROM `+m.table("accounts")+` a JOIN `+m.table("account_connections")+` hc ON hc.account_id=a.id AND hc.id=a.health_check_connection_id WHERE a.id=? AND a.system_account_id=? AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL`), accountID, systemID).Scan(&vendorCode, &preset)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("账户不存在、不是当前系统账户的自有账户或无权配置定时检查")
 	}
 	if err != nil {
 		return err
 	}
-	profile, ok := modelcheckprofile.Find(provider, profileID)
+	profile, _, ok := businessCheckProfile(vendorCode, preset)
 	if !ok || profile.ID == "" {
 		return errors.New("账户模型限制或供应商协议不支持定时检查模型")
 	}

@@ -27,6 +27,11 @@ import (
 // provider_system_default_health_check_models、account_model_mappings；
 // 新增 vendors、models、account_connections、account_endpoint_modes、
 // account_entry_mappings（存量库的旧表 DROP 由后续迁移命令处理）。
+// 2026-10-18 修复批：dbb2543e6 移除 8 张旧表建表但运行时仍读写，恢复
+// ensure 建表（account_model_mappings + providers、provider_protocol_
+// profiles、provider_protocol_profile_families、provider_model_catalog、
+// custom_provider_models、两张 provider default health-check），存量数据
+// 迁移语义不变。
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -49,6 +54,7 @@ var goldenBusinessTables = []string{
 	"account_list_availability_projections",
 	"account_list_availability_runtime_overlays",
 	"account_lock_states",
+	"account_model_mappings",
 	"account_name_search_documents",
 	"account_name_search_terms",
 	"account_quality_enforcements",
@@ -64,6 +70,7 @@ var goldenBusinessTables = []string{
 	"announcements",
 	"api_key_schedule_status_events",
 	"api_keys",
+	"custom_provider_models",
 	"external_integration_source_tokens",
 	"external_integration_sources",
 	"global_settings",
@@ -83,6 +90,12 @@ var goldenBusinessTables = []string{
 	"openai_compatible_vector_stores",
 	"protocol_endpoint_families",
 	"protocols",
+	"provider_default_health_check_models",
+	"provider_model_catalog",
+	"provider_protocol_profile_families",
+	"provider_protocol_profiles",
+	"provider_system_default_health_check_models",
+	"providers",
 	"proxy_latency_projection_cursors",
 	"proxy_latency_projection_receipts",
 	"proxy_profiles",
@@ -222,8 +235,16 @@ var goldenSchemaCounts = SQLiteResult{
 	// 的绑定查询索引仍由 EnsureSQLiteBusiness 守卫链尾创建（不进 DDL 常量，
 	// 在 goldenTotalIndexes 计入）。2026-10-17 复审 blocker 修复批仅原位改写
 	// accounts 三列 nullable 与 health_check_endpoint_mode CHECK 词表
-	//（22→25 值），表/索引名单与计数不变。
-	Business: SchemaCounts{Tables: 73, Indexes: 204},
+	//（22→25 值），表/索引名单与计数不变。73→74：2026-10-18 修复批——
+	// dbb2543e6 移除旧 account_model_mappings 建表但运行时仍读写（key-model
+	// 恢复 CheckContract、seed、accounts/usage 域），fresh 库网关启动
+	// fail-fast；恢复 ensure 建表（providers 外键随收敛移除），存量数据迁移
+	// 语义不变。74→81：2026-10-18 修复批（同日第二笔）——dbb2543e6 同批
+	// 移除的其余 7 张旧供应商表（providers、provider_protocol_profiles、
+	// profile families、provider_model_catalog、custom_provider_models、
+	// 两张 provider default health-check）运行时仍读写，恢复 ensure 建表，
+	// 存量数据迁移语义不变；旧表 6 枚索引不补建，Indexes 204 不变。
+	Business: SchemaCounts{Tables: 81, Indexes: 204},
 	// 65/124→59/112：六监控表退役 -6 表 -12 索引（f1991b708 名单已删、
 	// 计数漏改；2026-10-17 专门批取证回正）。
 	Stats:        SchemaCounts{Tables: 59, Indexes: 112},
@@ -235,8 +256,11 @@ var goldenSchemaCounts = SQLiteResult{
 
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
-// verify every schema exactly). 155→152：供应商与上游协议面重构批 -8/+5。
-const goldenTotalTables = 152
+// verify every schema exactly). 155→152：供应商与上游协议面重构批 -8/+5；
+// 152→153：2026-10-18 修复批恢复旧 account_model_mappings ensure 建表；
+// 153→160：2026-10-18 修复批（同日第二笔）恢复其余 7 张旧供应商表 ensure
+// 建表。
+const goldenTotalTables = 160
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one

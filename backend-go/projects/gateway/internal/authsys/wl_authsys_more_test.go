@@ -139,7 +139,7 @@ func TestWlNextDefaultResourceNameSkipsTaken(t *testing.T) {
 	if err != nil || name != "基名" {
 		t.Fatalf("name=%q err=%v", name, err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO groups (id, system_account_id, name, provider_code, created_at, updated_at) VALUES ('g-n1','wl-name','基名','openai','t','t')`); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO groups (id, system_account_id, name, created_at, updated_at) VALUES ('g-n1','wl-name','基名','t','t')`); err != nil {
 		t.Fatal(err)
 	}
 	name, err = ensurer.nextDefaultResourceName(ctx, tx, "groups", "wl-name", "基名")

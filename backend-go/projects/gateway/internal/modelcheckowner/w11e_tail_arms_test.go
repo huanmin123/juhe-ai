@@ -17,9 +17,11 @@ import (
 func w11eQualityDDL() []string {
 	return []string{
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
-		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
+		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 	}
@@ -110,12 +112,9 @@ func TestW11EQualityManagerPolicyArms(t *testing.T) {
 func TestW11EQualityManagerScheduleArms(t *testing.T) {
 	manager, db := w11eQualityManager(t)
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','Account','openai','profile_openai_openai_v1',NULL,NULL,'active')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-sol')`); err != nil {
-		t.Fatal(err)
-	}
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,name,vendor_code,connection_driver_code,health_check_connection_id,deleted_at,status) VALUES ('acct-1','sys-1','Account','gpt','gpt','conn-acct-1',NULL,'active')`)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://w11e.invalid/v1',1)`)
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','`+seedMappingModel(t, db, "gpt-5.6-sol")+`')`)
 	// 非法输入。
 	if _, err := manager.CreateSchedule(ctx, "sys-1", QualityScheduleInput{AccountID: " ", Model: "m", IntervalMinutes: 10, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil || !strings.Contains(err.Error(), "不能为空") {
 		t.Fatalf("空账户必须拒绝: %v", err)
@@ -156,7 +155,7 @@ func TestW11EQualityManagerScheduleArms(t *testing.T) {
 		t.Fatalf("联接列表=%+v err=%v", list, err)
 	}
 	item := list.Items[0]
-	if item.LastRunID == nil || *item.LastRunID != "run-1" || item.LastRunAt == nil || item.LastRunStatus == nil || item.CurrentEnforcementAction != "fallback" || item.CurrentEnforcementRecoveryDueAt != "2026-09-16T12:00:00Z" || item.AccountName != "Account" || item.ProviderCode != "openai" {
+	if item.LastRunID == nil || *item.LastRunID != "run-1" || item.LastRunAt == nil || item.LastRunStatus == nil || item.CurrentEnforcementAction != "fallback" || item.CurrentEnforcementRecoveryDueAt != "2026-09-16T12:00:00Z" || item.AccountName != "Account" || item.ProviderCode != "gpt" {
 		t.Fatalf("联接字段=%+v", item)
 	}
 	// patch 校验。
@@ -183,9 +182,7 @@ func TestW11EQualityManagerScheduleArms(t *testing.T) {
 		t.Fatalf("缺计划必须拒绝: %v", err)
 	}
 	// 字段级更新 + 无变化短路（先放开 terra 模型）。
-	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
-		t.Fatal(err)
-	}
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','`+seedMappingModel(t, db, "gpt-5.6-terra")+`')`)
 	patched, err := manager.PatchSchedule(ctx, "sys-1", item.ID, QualitySchedulePatch{ExpectedRevision: 1, Model: w11eString("gpt-5.6-terra"), IntervalMinutes: w11eInt(45), Profile: w11eString("full"), PenaltyThreshold: w11eInt(80), PenaltyAction: w11eString("disable"), RecoveryIntervalMinutes: w11eInt(20), Enabled: w11eBool(false)})
 	if err != nil || patched.Revision != 2 || patched.Model != "gpt-5.6-terra" || patched.IntervalMinutes != 45 || patched.Profile != "full" || patched.PenaltyThreshold != 80 || patched.PenaltyAction != "disable" || patched.RecoveryIntervalMinutes != 20 || patched.Enabled {
 		t.Fatalf("计划更新=%+v err=%v", patched, err)
@@ -225,13 +222,13 @@ func TestW11EModelLimitsArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE provider_model_catalog (provider_code TEXT,model TEXT,status TEXT,catalog_visible INTEGER,context_window_tokens INTEGER,max_input_tokens INTEGER)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER,context_window_tokens INTEGER,max_input_tokens INTEGER)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO provider_model_catalog VALUES ('openai','gpt-5.6-sol','active',1,200000,120000)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-sol','gpt','gpt-5.6-sol','builtin',NULL,'active',1,200000,120000)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO provider_model_catalog VALUES ('openai','gpt-5.6-terra','active',1,200000,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-terra','gpt','gpt-5.6-terra','builtin',NULL,'active',1,200000,0)`); err != nil {
 		t.Fatal(err)
 	}
 	limits, err := NewVersionedModelLimits(db, false)
@@ -241,11 +238,11 @@ func TestW11EModelLimitsArms(t *testing.T) {
 	if limits.Version() != "business-provider-model-catalog-v1" {
 		t.Fatalf("版本=%q", limits.Version())
 	}
-	tokens, err := limits.MaxInputTokens("openai", "gpt-5.6-sol", modelcheckprofile.ProtocolOpenAIResponses)
+	tokens, err := limits.MaxInputTokens("gpt", "gpt-5.6-sol", modelcheckprofile.ProtocolOpenAIResponses)
 	if err != nil || tokens != 120000 {
 		t.Fatalf("max tokens=%d err=%v", tokens, err)
 	}
-	tokens, err = limits.MaxInputTokens("openai", "gpt-5.6-terra", modelcheckprofile.ProtocolOpenAIResponses)
+	tokens, err = limits.MaxInputTokens("gpt", "gpt-5.6-terra", modelcheckprofile.ProtocolOpenAIResponses)
 	if err != nil || tokens != 200000 {
 		t.Fatalf("回退窗口=%d err=%v", tokens, err)
 	}
@@ -256,16 +253,16 @@ func TestW11EModelLimitsArms(t *testing.T) {
 	if _, err := limits.MaxInputTokens(" ", "m", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("空 provider 必须拒绝: %v", err)
 	}
-	if _, err := limits.MaxInputTokens("openai", " ", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "incomplete") {
+	if _, err := limits.MaxInputTokens("gpt", " ", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("空模型必须拒绝: %v", err)
 	}
-	if _, err := limits.MaxInputTokens("openai", "w11e-missing", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := limits.MaxInputTokens("gpt", "w11e-missing", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("缺模型必须拒绝: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO provider_model_catalog VALUES ('openai','gpt-5.6-bad','active',1,0,-5)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,upstream_model,scope,system_account_id,status,catalog_visible,context_window_tokens,max_input_tokens) VALUES ('m-bad','gpt','gpt-5.6-bad','builtin',NULL,'active',1,0,-5)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := limits.MaxInputTokens("openai", "gpt-5.6-bad", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "invalid") {
+	if _, err := limits.MaxInputTokens("gpt", "gpt-5.6-bad", modelcheckprofile.ProtocolOpenAIResponses); err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("非法快照必须拒绝: %v", err)
 	}
 }
@@ -392,14 +389,15 @@ func TestW11EModelMappingAndEvidenceArms(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,PRIMARY KEY (account_id, model_id))`,
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	profile, _ := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	profile, _ := modelcheckprofile.Find("gpt", "profile_gpt_openai_v1")
 	// db nil 或模型不受 profile 支持时返回空解析。
 	if resolution, err := resolveConfiguredUpstreamModelMapping(context.Background(), nil, false, "acct", profile, "gpt-5.6-sol"); err != nil || resolution.UpstreamModel != "" {
 		t.Fatalf("nil db 解析=%+v err=%v", resolution, err)
@@ -408,14 +406,13 @@ func TestW11EModelMappingAndEvidenceArms(t *testing.T) {
 		t.Fatalf("不支持模型解析=%+v err=%v", resolution, err)
 	}
 	// 映射行缺 family。
-	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','','',1)`); err != nil {
-		t.Fatal(err)
-	}
+	w11eExec(t, db, w11eSeedModelDDL("model-sol", "gpt-5.6-sol"))
+	w11eExec(t, db, `INSERT INTO account_entry_mappings (id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled) VALUES ('map-missing','acct-1','gpt-5.6-sol','responses','conn-x','model-sol','',1)`)
 	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "family is missing") {
 		t.Fatalf("缺 family 必须拒绝: %v", err)
 	}
 	// 映射查询表缺失。
-	if _, err := db.Exec(`DROP TABLE account_model_mappings`); err != nil {
+	if _, err := db.Exec(`DROP TABLE account_entry_mappings`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "model mapping") {

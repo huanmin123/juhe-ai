@@ -585,8 +585,24 @@ var postgresSchemaBusinessTables = []PGStatement{
       circuit_projection_revision bigint NOT NULL DEFAULT 0 CHECK (circuit_projection_revision >= 0 AND circuit_projection_revision <= dispatch_revision),
       system_account_id text NOT NULL,
       vendor_code text,
-      connection_driver_code text NOT NULL,
+      -- connection_driver_code 放宽为 nullable（2026-10-18 修复批迁移窗口
+      -- 并存）：旧形态写入路径（accounts 写事务、authz instance provision、
+      -- business accounts service）不提供该新形态列，NOT NULL 会卡死 fresh
+      -- 库账户创建；未迁移行该列为 NULL，取值语义由应用层负责，迁移完成后
+      -- 由后续清理命令统一收口。
+      connection_driver_code text,
       oauth_type text,
+      -- 2026-10-18 修复批恢复旧列（迁移窗口并存）：accounts 目标形态（设计
+      -- §2.1 本批切片）删除的两列被已提交运行时按旧列集读写（internal/
+      -- accounts 写入与查询、authz instance provision、business accounts
+      -- service、chain 面读取），fresh 库创建账户 500 no such column。按
+      -- dbb2543e6^ 原类型内联加回；旧 NOT NULL 约束放宽为 nullable——
+      -- 存量库该两列本就可空，部分插入路径（schema 探测夹具、逐列补链的
+      -- 存量行）不应被新约束卡死；真实写入路径均提供值，取值语义由应用层
+      -- 负责。旧 providers / provider_protocol_profiles 外键不随列恢复；
+      -- 新形态列与其约束一概不动，运行时迁移完成后由后续清理命令统一移除。
+      provider_code text,
+      provider_protocol_profile_id text,
       protocol_code text NOT NULL,
       protocol_version text NOT NULL,
       name text NOT NULL,
@@ -602,6 +618,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       priority integer NOT NULL DEFAULT 0,
       super_priority_enabled integer NOT NULL DEFAULT 0,
       fallback_enabled integer NOT NULL DEFAULT 0,
+      client_compatibility text NOT NULL DEFAULT 'openai_standard',
       schedulable integer NOT NULL DEFAULT 1,
       availability_schedule_json text,
       availability_schedule_next_check_at text,
@@ -942,18 +959,38 @@ var postgresSchemaBusinessTables = []PGStatement{
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_supported_models (
       account_id text NOT NULL,
-      model_id text NOT NULL,
+      -- model_id 保持无显式 NOT NULL 字样但受主键约束（2026-10-18 修复批
+      -- 迁移窗口并存）：共享契约 business-sqlite-gateway-v16 钉死主键
+      -- (account_id, model_id)；PG 主键隐式 NOT NULL，PG 模式旧形态写入
+      -- （不提供 model_id）受此限制——迁移窗口已知边界，随运行时迁移收口
+      -- （SQLite 行为表主键不隐式强制 NOT NULL，同形 DDL 在 SQLite 侧兼容
+      -- 旧形态 NULL model_id 行）。
+      model_id text,
       created_at text NOT NULL,
+      -- 2026-10-18 修复批恢复旧列（迁移窗口并存）：目标形态收敛为
+      -- (account_id, model_id)，但已提交运行时仍按旧形态 (account_id,
+      -- provider_code, model, created_at) 读写本表（accounts 写路径、
+      -- business accounts、aipublic/transfer/chain 读取），并依赖
+      -- (account_id, model) 唯一性做幂等 upsert。两列按 dbb2543e6^ 原类型
+      -- 加回并放宽为 nullable（新形态行 model/provider_code 为 NULL，唯一
+      -- 约束不对 NULL 去重，两形态互不干扰）；UNIQUE (account_id, model)
+      -- 以表内约束恢复旧主键语义，不新增独立语句（golden 语句计数不变）。
+      -- 旧 providers 外键不随列恢复，取值语义由应用层负责；运行时迁移完成
+      -- 后由后续清理命令统一移除。
+      provider_code text,
+      model text,
       PRIMARY KEY (account_id, model_id),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-      FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
+      FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT,
+      UNIQUE (account_id, model)
     )`,
 	},
 	{
 		// account_entry_mappings（设计 §5.1）：source 存客户端精确 wire model
 		// 字符串（不入 models 外键），target 全部外键 ID 化；复合外键把 target
 		// 锁进同一账户的连接与支持模型集合。family 词表与启用联动校验由应用层
-		// 写事务负责。旧 account_model_mappings 由后续迁移命令处理，不写 DROP。
+		// 写事务负责。运行时在迁移完成前仍读写旧 account_model_mappings，ensure
+		// 为全新库建表（见下）；存量数据迁移由后续迁移命令处理，不写 DROP。
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS account_entry_mappings (
@@ -971,6 +1008,218 @@ var postgresSchemaBusinessTables = []PGStatement{
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id, target_connection_id) REFERENCES account_connections(account_id, id),
       FOREIGN KEY (account_id, target_model_id) REFERENCES account_supported_models(account_id, model_id)
+    )`,
+	},
+	{
+		// account_model_mappings（旧账号模型映射）：ensure 为全新库建表；
+		// provider_code 上的旧 providers 外键随 providers→vendors 收敛移除，
+		// 取值语义由应用层负责。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS account_model_mappings (
+      account_id text NOT NULL,
+      provider_code text NOT NULL,
+      source_model text NOT NULL,
+      source_endpoint_family text NOT NULL,
+      upstream_model text NOT NULL,
+      upstream_endpoint_family text NOT NULL,
+      enabled integer NOT NULL DEFAULT 1,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      PRIMARY KEY (account_id, source_model, source_endpoint_family),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    )`,
+	},
+	{
+		// 2026-10-18 修复批（供应商面 7 张旧表）：dbb2543e6 把 providers、
+		// provider_protocol_profiles、provider_protocol_profile_families、
+		// provider_model_catalog、custom_provider_models、两张 provider
+		// default health-check 表从 fresh DDL 移除（注释称由后续迁移命令
+		// 处理，该命令不存在），但当前运行时仍读写它们（key-model 恢复
+		// CheckContract、accounts 管理面等），fresh 库网关启动 fail-fast、
+		// 管理接口 500。ensure 恢复建表，列与约束逐字取回 dbb2543e6^ 版本；
+		// protocols 与 protocol_endpoint_families 仍在当前建表清单，
+		// provider_protocol_profiles 的 protocols 复合外键保留（providers
+		// 自引用与 system_accounts 外键同理保留，本批无外键随目标表退役
+		// 移除）；旧表目录/唯一/查询索引不补建（性能债非功能缺失）。存量
+		// 数据迁移语义不变，ensure 不写 DROP。PG 外键目标必须已存在，插入
+		// 位置在 providers/protocols 建表之后，依赖顺序成立。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS providers (
+      id text PRIMARY KEY,
+      code text NOT NULL UNIQUE,
+      name text NOT NULL,
+      description text,
+      parent_code text,
+      enabled integer NOT NULL DEFAULT 1,
+      default_supported_models_json text NOT NULL DEFAULT '[]',
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      FOREIGN KEY (parent_code) REFERENCES providers(code)
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS provider_protocol_profiles (
+      id text PRIMARY KEY,
+      provider_code text NOT NULL,
+      name text NOT NULL,
+      description text,
+      enabled integer NOT NULL DEFAULT 1,
+      protocol_code text NOT NULL,
+      protocol_version text NOT NULL,
+      base_url text NOT NULL,
+      default_health_check_model text NOT NULL,
+      account_types_json text NOT NULL,
+      capabilities_json text NOT NULL,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (protocol_code, protocol_version) REFERENCES protocols(code, version)
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS provider_protocol_profile_families (
+      profile_id text NOT NULL,
+      family_code text NOT NULL,
+      enabled integer NOT NULL DEFAULT 1,
+      default_health_check_model text,
+      capabilities_json text NOT NULL DEFAULT '[]',
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      PRIMARY KEY (profile_id, family_code),
+      FOREIGN KEY (profile_id) REFERENCES provider_protocol_profiles(id) ON DELETE CASCADE
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS provider_model_catalog (
+      id text PRIMARY KEY,
+      provider_code text NOT NULL,
+      model text NOT NULL,
+      status text NOT NULL DEFAULT 'active',
+      mode text,
+      catalog_order integer,
+      release_date text,
+      shutdown_date text,
+      supported_api_protocols_json text NOT NULL DEFAULT '[]',
+      supported_service_tiers_json text NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json text NOT NULL DEFAULT '[]',
+      default_reasoning_effort text,
+      codex_supported_reasoning_levels_json text NOT NULL DEFAULT '[]',
+      codex_default_reasoning_level text,
+      codex_multi_agent_version text,
+      context_window_tokens integer,
+      max_input_tokens integer,
+      max_output_tokens integer,
+      max_tokens integer,
+      input_usd_per_1m double precision,
+      output_usd_per_1m double precision,
+      cached_input_usd_per_1m double precision,
+      cache_write_usd_per_1m double precision,
+      cache_write_1h_usd_per_1m double precision,
+      cache_storage_usd_per_1m_per_hour double precision,
+      service_tier_prices_json text NOT NULL DEFAULT '{}',
+      long_context_input_token_threshold integer,
+      long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false,
+      long_context_input_cost_multiplier double precision,
+      long_context_output_cost_multiplier double precision,
+      image_input_usd_per_1m double precision,
+      image_output_usd_per_1m double precision,
+      audio_input_usd_per_1m double precision,
+      audio_output_usd_per_1m double precision,
+      output_usd_per_image double precision,
+      supports_prompt_caching boolean NOT NULL DEFAULT false,
+      catalog_visible boolean NOT NULL DEFAULT true,
+      source text NOT NULL,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      UNIQUE (provider_code, model),
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      CHECK (status IN ('active', 'disabled')),
+      CHECK (jsonb_typeof(service_tier_prices_json::jsonb) = 'object')
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS custom_provider_models (
+      id text PRIMARY KEY,
+      provider_code text NOT NULL,
+      model text NOT NULL,
+      scope text NOT NULL DEFAULT 'personal',
+      system_account_id text,
+      status text NOT NULL DEFAULT 'active',
+      catalog_visible boolean NOT NULL DEFAULT true,
+      mode text,
+      supported_api_protocols_json text NOT NULL DEFAULT '[]',
+      supported_service_tiers_json text NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json text NOT NULL DEFAULT '[]',
+      default_reasoning_effort text,
+      release_date text,
+      shutdown_date text,
+      context_window_tokens integer,
+      max_input_tokens integer,
+      max_output_tokens integer,
+      input_usd_per_1m double precision,
+      output_usd_per_1m double precision,
+      cached_input_usd_per_1m double precision,
+      cache_write_usd_per_1m double precision,
+      cache_write_1h_usd_per_1m double precision,
+      cache_storage_usd_per_1m_per_hour double precision,
+      service_tier_prices_json text NOT NULL DEFAULT '{}',
+      image_input_usd_per_1m double precision,
+      image_output_usd_per_1m double precision,
+      audio_input_usd_per_1m double precision,
+      audio_output_usd_per_1m double precision,
+      output_usd_per_image double precision,
+      currency text NOT NULL DEFAULT 'USD',
+      pricing_notes text,
+      capability_notes text,
+      notes text,
+      created_by text NOT NULL,
+      updated_by text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      CHECK (scope IN ('personal', 'global')),
+      CHECK (status IN ('draft', 'active', 'disabled')),
+      CHECK (jsonb_typeof(service_tier_prices_json::jsonb) = 'object'),
+      CHECK (
+        (scope = 'personal' AND system_account_id IS NOT NULL)
+        OR (scope = 'global' AND system_account_id IS NULL)
+      )
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS provider_default_health_check_models (
+      system_account_id text NOT NULL,
+      provider_code text NOT NULL,
+      model text NOT NULL,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      PRIMARY KEY (system_account_id, provider_code),
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS provider_system_default_health_check_models (
+      provider_code text PRIMARY KEY,
+      model text NOT NULL,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
     )`,
 	},
 	{
@@ -1181,6 +1430,17 @@ var postgresSchemaBusinessTables = []PGStatement{
       id text PRIMARY KEY,
       system_account_id text NOT NULL,
       name text NOT NULL,
+      -- 2026-10-18 修复批恢复旧列（迁移窗口并存）：groups 目标形态（设计 §8
+      -- 本批切片）删除的 provider_code 被已提交运行时按旧列集读写（accounts
+      -- 写路径 groupOwnerAndProvider/defaultGroupForWrite、groups store 行投
+      -- 影、chain 面分组查询），fresh 库创建账户 500 no such column。按
+      -- dbb2543e6^ 原类型/NOT NULL 加回；DEFAULT 'gpt' 为迁移窗口 shim：新
+      -- 种子行（「默认分组」，ID grp_default_gpt_sys_admin）建组语句省略该
+      -- 列，回填其旧世界取值 'gpt'（组名原为「默认 GPT 分组」），使种子行通
+      -- 过运行时「分组 provider_code 必须等于账户供应商」校验；管理面建组
+      -- 显式提供该列，不受 DEFAULT 影响。旧 providers 外键不随列恢复；运行
+      -- 时迁移完成后由后续清理命令统一移除。
+      provider_code text NOT NULL DEFAULT 'gpt',
       description text,
       enabled integer NOT NULL DEFAULT 1,
       is_default integer NOT NULL DEFAULT 0,

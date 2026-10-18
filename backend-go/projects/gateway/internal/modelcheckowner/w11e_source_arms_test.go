@@ -33,22 +33,20 @@ func w11eOpenBusinessDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// w11eSeedAccount 写入一个可解析的 openai api_key 账户并返回凭据信封。
+// w11eSeedAccount 写入一个可解析的 gpt api_key 账户（v16 契约：探针身份 =
+// vendor_code + 健康检查连接 preset，base_url 在 account_connections）并返回
+// 凭据信封。
 func w11eSeedAccount(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	envelope := testCredentialEnvelope(t, "secret", fmt.Sprintf(`{"api_key":"key-%s","supported_endpoint_modes":["responses_sse"]}`, id))
-	if _, err := db.Exec(`INSERT OR IGNORE INTO provider_protocol_profiles(id,enabled,base_url) VALUES ('profile_openai_openai_v1',1,'https://example.invalid/v1')`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.Exec(`INSERT OR IGNORE INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES (?,'sys-1','group-1',1)`, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES (?,'sys-1','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL,?)`, id, envelope, "Account "+id); err != nil {
-		t.Fatal(err)
-	}
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES (?,'sys-1','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse',?,?,'Account '||?)`, id, "conn-"+id, envelope, id)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES (?,?,'gpt_openai_v1','https://example.invalid/v1',1)`, "conn-"+id, id)
 	if _, err := db.Exec(`INSERT OR IGNORE INTO model_quality_policies VALUES ('sys-1',4,'quick',1,82,'fallback',15,0,NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +149,7 @@ func TestW11ESourceResolveDataDrivenFailures(t *testing.T) {
 	baseline := w11eAccountField(t, db, "credentials_encrypted")
 	reset := func(t *testing.T) {
 		t.Helper()
-		w11eExec(t, db, `UPDATE accounts SET provider_code='openai',provider_protocol_profile_id='profile_openai_openai_v1',type='api_key',credentials_encrypted=?,dispatch_revision=7,status='active' WHERE id='acct-1'`, baseline)
+		w11eExec(t, db, `UPDATE accounts SET vendor_code='gpt',connection_driver_code='gpt',type='api_key',credentials_encrypted=?,dispatch_revision=7,status='active' WHERE id='acct-1'`, baseline)
 	}
 	assertResolveFailure := func(t *testing.T, want string) {
 		t.Helper()
@@ -159,8 +157,8 @@ func TestW11ESourceResolveDataDrivenFailures(t *testing.T) {
 			t.Fatalf("期望错误包含 %q: %v", want, err)
 		}
 	}
-	// 供应商 profile 不存在。
-	w11eExec(t, db, `UPDATE accounts SET provider_code='w11e-unknown' WHERE id='acct-1'`)
+	// 供应商 profile 不存在（vendor + preset 组合不在目录内）。
+	w11eExec(t, db, `UPDATE accounts SET vendor_code='w11e-unknown' WHERE id='acct-1'`)
 	assertResolveFailure(t, "provider profile does not support model")
 	reset(t)
 	// 凭据类型不支持。
@@ -175,20 +173,32 @@ func TestW11ESourceResolveDataDrivenFailures(t *testing.T) {
 	w11eExec(t, db, `UPDATE accounts SET dispatch_revision=0 WHERE id='acct-1'`)
 	assertResolveFailure(t, "dispatch revision is invalid")
 	reset(t)
-	// OAuth 凭据落在非 Codex 兼容 profile。
-	w11eExec(t, db, `UPDATE accounts SET type='oauth',credentials_encrypted=? WHERE id='acct-1'`, testCredentialEnvelope(t, "secret", `{"access_token":"token","supported_endpoint_modes":["responses_sse"]}`))
+	// OAuth 凭据落在拒绝 OAuth 的 deepseek OpenAI chat preset（gpt OAuth 走
+	// Codex 适配器，不再触发该错误臂；chat mode 与 deepseek 目录协议对齐，
+	// 让失败命中介配器门而非 mode 门）。
+	w11eExec(t, db, `UPDATE accounts SET vendor_code='deepseek',type='oauth',health_check_endpoint_mode='chat_json',credentials_encrypted=? WHERE id='acct-1'`, testCredentialEnvelope(t, "secret", `{"access_token":"token","supported_endpoint_modes":["chat_json"]}`))
+	w11eExec(t, db, `UPDATE account_connections SET connection_preset_code='deepseek_openai_v1' WHERE id='conn-acct-1'`)
+	// 请求模型经账户支持模型准入（deepseek 目录无 gpt-5.6-sol），让失败命中
+	// 适配器 OAuth 门；断言后清理，保持后续臂的空支持集前提。
+	w11eExec(t, db, w11eSeedModelDDL("model-sol", "gpt-5.6-sol"))
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','model-sol')`)
 	assertResolveFailure(t, "OAuth credential is incompatible with OpenAI provider profile")
+	w11eExec(t, db, `DELETE FROM account_supported_models WHERE account_id='acct-1'`)
 	reset(t)
+	w11eExec(t, db, `UPDATE accounts SET health_check_endpoint_mode='responses_sse' WHERE id='acct-1'`)
+	w11eExec(t, db, `UPDATE account_connections SET connection_preset_code='gpt_openai_v1' WHERE id='conn-acct-1'`)
 	// 模型映射表读取失败。
-	w11eExec(t, db, `DROP TABLE account_model_mappings`)
+	w11eExec(t, db, `DROP TABLE account_entry_mappings`)
 	assertResolveFailure(t, "model mapping")
-	w11eExec(t, db, businessSourceContractDDL()[8])
+	w11eExec(t, db, businessSourceContractDDL()[4])
 	// 支持模型表读取失败。
 	w11eExec(t, db, `DROP TABLE account_supported_models`)
 	assertResolveFailure(t, "supported models")
-	w11eExec(t, db, businessSourceContractDDL()[7])
-	// 配置了账户支持模型但未开放请求模型。
-	w11eExec(t, db, `INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-terra')`)
+	w11eExec(t, db, businessSourceContractDDL()[10])
+	// 配置了账户支持模型但未开放请求模型（新契约存 model_id，模型名经
+	// models.public_model 解析）。
+	w11eExec(t, db, w11eSeedModelDDL("model-terra", "gpt-5.6-terra"))
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-1','model-terra')`)
 	assertResolveFailure(t, "model restriction does not allow model")
 	w11eExec(t, db, `DELETE FROM account_supported_models WHERE account_id='acct-1'`)
 	if _, err := source.Resolve(context.Background(), request); err != nil {
@@ -203,16 +213,17 @@ func w11eExec(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-// w11eSeedVariant 写入指定供应商/profile/端点模式/凭据的账户。
-func w11eSeedVariant(t *testing.T, db *sql.DB, id, provider, profileID, mode, credentialJSON string) {
+// w11eSeedVariant 写入指定厂商/健康检查连接 preset/端点模式/凭据的账户
+// （v16 契约：vendor_code + account_connections.connection_preset_code）。
+func w11eSeedVariant(t *testing.T, db *sql.DB, id, vendor, preset, mode, credentialJSON string) {
 	t.Helper()
-	w11eExec(t, db, `INSERT OR IGNORE INTO provider_protocol_profiles(id,enabled,base_url) VALUES (?,1,'https://w11e.invalid/v1')`, profileID)
 	w11eExec(t, db, `INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES (?,'sys-1','group-1',1)`, id)
 	credentialType := "api_key"
 	if strings.Contains(credentialJSON, "access_token") {
 		credentialType = "oauth"
 	}
-	w11eExec(t, db, `INSERT INTO accounts VALUES (?,'sys-1',?,?,'openai',?,3,7,'active',1,?,NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL,?)`, id, provider, profileID, credentialType, mode, testCredentialEnvelope(t, "secret", credentialJSON), "Account "+id)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES (?,'sys-1',?,?,'openai',?,3,7,'active',1,?,?,?,'Account '||?)`, id, vendor, vendor, credentialType, mode, "conn-"+id, testCredentialEnvelope(t, "secret", credentialJSON), id)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES (?,?,?,'https://w11e.invalid/v1',1)`, "conn-"+id, id, preset)
 }
 
 func w11eAccountField(t *testing.T, db *sql.DB, column string) any {
@@ -228,10 +239,12 @@ func TestW11ESourceAuthorizedTargetArms(t *testing.T) {
 	db := w11eOpenBusinessDB(t)
 	envelope := w11eSeedAccount(t, db, "seed-acct")
 	sourceEnvelope := testCredentialEnvelope(t, "secret", `{"api_key":"source-key","supported_endpoint_modes":["responses_sse"]}`)
-	w11eExec(t, db, `INSERT INTO accounts VALUES ('acct-auth','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,6,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,'grant-1','source-1',NULL,'Authorized')`, envelope)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('acct-auth','sys-1','gpt','gpt','openai','api_key',3,6,'active',1,'responses_sse','conn-acct-auth',?,'grant-1','source-1','Authorized')`, envelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-auth','acct-auth','gpt_openai_v1','https://example.invalid/v1',1)`)
 	w11eExec(t, db, `INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-auth','sys-1','group-1','grant-1',1)`)
 	w11eExec(t, db, `INSERT INTO resource_authorizations VALUES ('grant-1','account','source-1','sys-1','sys-1','use','active',NULL)`)
-	w11eExec(t, db, `INSERT INTO accounts VALUES ('source-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,8,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL,'Source')`, sourceEnvelope)
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('source-1','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_sse','conn-source-1',?,'Source')`, sourceEnvelope)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source-1','source-1','gpt_openai_v1','https://example.invalid/v1',1)`)
 	source := w11eNewSource(t, db)
 	request := RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-auth", Model: "gpt-5.6-sol"}
 	if _, err := source.Resolve(context.Background(), request); err != nil {
@@ -280,12 +293,19 @@ func TestW11ESourceAuthorizedTargetArms(t *testing.T) {
 	w11eExec(t, db, `UPDATE accounts SET credentials_encrypted='v1:bad:bad:bad' WHERE id='source-1'`)
 	assertFailure(t, "envelope is invalid")
 	reset(t)
-	// 来源 OAuth 与 OpenAI profile 不兼容。
-	w11eExec(t, db, `UPDATE accounts SET type='oauth',credentials_encrypted=? WHERE id='source-1'`, testCredentialEnvelope(t, "secret", `{"access_token":"token","supported_endpoint_modes":["responses_sse"]}`))
+	// 来源 OAuth 与拒绝 OAuth 的 deepseek OpenAI chat preset 不兼容（同 owner
+	// 分支：gpt OAuth 已改走 Codex 适配器）。
+	w11eExec(t, db, `UPDATE accounts SET vendor_code='deepseek',type='oauth',credentials_encrypted=? WHERE id='source-1'`, testCredentialEnvelope(t, "secret", `{"access_token":"token","supported_endpoint_modes":["responses_sse"]}`))
+	w11eExec(t, db, `UPDATE account_connections SET connection_preset_code='deepseek_openai_v1' WHERE id='conn-source-1'`)
+	// 同 owner 分支：支持模型准入让失败命中适配器 OAuth 门，断言后清理。
+	w11eExec(t, db, w11eSeedModelDDL("model-sol", "gpt-5.6-sol"))
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('source-1','model-sol')`)
 	assertFailure(t, "OAuth credential is incompatible with OpenAI provider profile")
+	w11eExec(t, db, `DELETE FROM account_supported_models WHERE account_id='source-1'`)
 	reset(t)
-	// 来源供应商 profile 缺失。
-	w11eExec(t, db, `UPDATE accounts SET provider_code='w11e-unknown' WHERE id='source-1'`)
+	w11eExec(t, db, `UPDATE account_connections SET connection_preset_code='gpt_openai_v1' WHERE id='conn-source-1'`)
+	// 来源供应商 profile 缺失（vendor + preset 组合不在目录内）。
+	w11eExec(t, db, `UPDATE accounts SET vendor_code='w11e-unknown' WHERE id='source-1'`)
 	assertFailure(t, "provider profile does not support model")
 	reset(t)
 	// 来源 dispatch revision 无效。
@@ -300,7 +320,7 @@ func TestW11ESourceAuthorizedTargetArms(t *testing.T) {
 	if _, err := source.Resolve(context.Background(), request); err == nil || !strings.Contains(err.Error(), "read J3b Business") {
 		t.Fatalf("表缺失必须失败关闭: %v", err)
 	}
-	w11eExec(t, db, businessSourceContractDDL()[5])
+	w11eExec(t, db, businessSourceContractDDL()[8])
 	w11eExec(t, db, `INSERT INTO resource_authorizations VALUES ('grant-1','account','source-1','sys-1','sys-1','use','active',NULL)`)
 	if _, err := source.Resolve(context.Background(), request); err != nil {
 		t.Fatalf("复位后授权账户必须可解析: %v", err)
@@ -309,7 +329,7 @@ func TestW11ESourceAuthorizedTargetArms(t *testing.T) {
 
 func w11eAccountFields(t *testing.T, db *sql.DB, id string) map[string]any {
 	t.Helper()
-	rows, err := db.Query(`SELECT provider_code,provider_protocol_profile_id,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,availability_schedule_json,credentials_encrypted,proxy_profile_id,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at,name FROM accounts WHERE id=?`, id)
+	rows, err := db.Query(`SELECT vendor_code,connection_driver_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,availability_schedule_json,credentials_encrypted,proxy_profile_id,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at,name FROM accounts WHERE id=?`, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,8 +358,8 @@ func w11eAccountFields(t *testing.T, db *sql.DB, id string) map[string]any {
 
 func w11eRestoreAccount(t *testing.T, db *sql.DB, id string, fields map[string]any) {
 	t.Helper()
-	w11eExec(t, db, `UPDATE accounts SET provider_code=?,provider_protocol_profile_id=?,type=?,config_revision=?,dispatch_revision=?,status=?,schedulable=?,health_check_endpoint_mode=?,account_expires_at=?,cooldown_until=?,last_error_code=?,availability_schedule_json=?,credentials_encrypted=?,proxy_profile_id=?,authorization_instance_authorization_id=?,authorization_instance_source_account_id=?,deleted_at=?,name=? WHERE id=?`,
-		fields["provider_code"], fields["provider_protocol_profile_id"], fields["type"], fields["config_revision"], fields["dispatch_revision"], fields["status"], fields["schedulable"], fields["health_check_endpoint_mode"], fields["account_expires_at"], fields["cooldown_until"], fields["last_error_code"], fields["availability_schedule_json"], fields["credentials_encrypted"], fields["proxy_profile_id"], fields["authorization_instance_authorization_id"], fields["authorization_instance_source_account_id"], fields["deleted_at"], fields["name"], id)
+	w11eExec(t, db, `UPDATE accounts SET vendor_code=?,connection_driver_code=?,type=?,config_revision=?,dispatch_revision=?,status=?,schedulable=?,health_check_endpoint_mode=?,account_expires_at=?,cooldown_until=?,last_error_code=?,availability_schedule_json=?,credentials_encrypted=?,proxy_profile_id=?,authorization_instance_authorization_id=?,authorization_instance_source_account_id=?,deleted_at=?,name=? WHERE id=?`,
+		fields["vendor_code"], fields["connection_driver_code"], fields["type"], fields["config_revision"], fields["dispatch_revision"], fields["status"], fields["schedulable"], fields["health_check_endpoint_mode"], fields["account_expires_at"], fields["cooldown_until"], fields["last_error_code"], fields["availability_schedule_json"], fields["credentials_encrypted"], fields["proxy_profile_id"], fields["authorization_instance_authorization_id"], fields["authorization_instance_source_account_id"], fields["deleted_at"], fields["name"], id)
 }
 
 func TestW11ESourceBuildRequestValidationArms(t *testing.T) {
@@ -381,19 +401,23 @@ func TestW11ESourceBuildRequestValidationArms(t *testing.T) {
 	if _, err := source.BuildScopedRequest(context.Background(), ManagementScope{ActorSystemAccountID: "sys-admin", AllSystemAccounts: true}, RunCommand{TargetID: "acct-1", Model: "gpt-5.6-sol", TrustedComparison: true, TrustedComparisonID: "w11e-missing"}); err == nil || !strings.Contains(err.Error(), "does not exist or is outside scope") {
 		t.Fatalf("全局可信对比缺账户必须 404: %v", err)
 	}
-	// 可信对比账户供应商不同：gpt 与 openai 都支持 gpt-5.6-sol。
-	w11eSeedVariant(t, db, "acct-gpt", "gpt", "profile_gpt_openai_v1", "responses_json", `{"access_token":"gpt-access","account_id":"w11e-chatgpt","supported_endpoint_modes":["responses_json","responses_sse"]}`)
+	// 可信对比账户供应商不同：glm 账户经 account_supported_models 显式支持
+	// gpt-5.6-sol（目录外准入）后可解析同一模型，双方解析成功后命中
+	// vendor_code 比对门拒绝。
+	w11eSeedVariant(t, db, "acct-gpt", "glm", "glm_general_openai_v1", "chat_json", `{"api_key":"glm-key","supported_endpoint_modes":["chat_json"]}`)
+	w11eExec(t, db, w11eSeedModelDDL("model-sol", "gpt-5.6-sol"))
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct-gpt','model-sol')`)
 	if _, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetID: "acct-1", Model: "gpt-5.6-sol", TrustedComparison: true, TrustedComparisonID: "acct-gpt"}); err == nil || !strings.Contains(err.Error(), "相同供应商") {
 		t.Fatalf("跨供应商可信对比必须拒绝: %v", err)
 	}
 	// 可信对比账户协议不同：glm anthropic vs glm openai chat（模型 glm-5.2）。
-	w11eSeedVariant(t, db, "acct-glm-a", "glm", "profile_glm_coding_anthropic_v1", "messages_json", `{"api_key":"glm-a","supported_endpoint_modes":["messages_json"]}`)
-	w11eSeedVariant(t, db, "acct-glm-c", "glm", "profile_glm_coding_openai_v1", "chat_json", `{"api_key":"glm-c","supported_endpoint_modes":["chat_json"]}`)
+	w11eSeedVariant(t, db, "acct-glm-a", "glm", "glm_coding_anthropic_v1", "messages_json", `{"api_key":"glm-a","supported_endpoint_modes":["messages_json"]}`)
+	w11eSeedVariant(t, db, "acct-glm-c", "glm", "glm_coding_openai_v1", "chat_json", `{"api_key":"glm-c","supported_endpoint_modes":["chat_json"]}`)
 	if _, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetID: "acct-glm-a", Model: "glm-5.2", TrustedComparison: true, TrustedComparisonID: "acct-glm-c"}); err == nil || !strings.Contains(err.Error(), "相同协议") {
 		t.Fatalf("跨协议可信对比必须拒绝: %v", err)
 	}
 	// 同协议不同 profile：glm general vs glm coding。
-	w11eSeedVariant(t, db, "acct-glm-g", "glm", "profile_glm_general_openai_v1", "chat_json", `{"api_key":"glm-g","supported_endpoint_modes":["chat_json"]}`)
+	w11eSeedVariant(t, db, "acct-glm-g", "glm", "glm_general_openai_v1", "chat_json", `{"api_key":"glm-g","supported_endpoint_modes":["chat_json"]}`)
 	if _, err := source.BuildRequest(context.Background(), "sys-1", RunCommand{TargetID: "acct-glm-c", Model: "glm-5.2", TrustedComparison: true, TrustedComparisonID: "acct-glm-g"}); err == nil || !strings.Contains(err.Error(), "相同供应商协议配置") {
 		t.Fatalf("跨 profile 可信对比必须拒绝: %v", err)
 	}
@@ -453,7 +477,7 @@ func TestW11ESourcePolicyAndFenceArms(t *testing.T) {
 	if _, _, _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys-1"); err == nil || !strings.Contains(err.Error(), "quality policy") {
 		t.Fatalf("策略读取失败必须传播: %v", err)
 	}
-	w11eExec(t, db, businessSourceContractDDL()[6])
+	w11eExec(t, db, businessSourceContractDDL()[9])
 	// fence 入参不完整与事务取消。
 	if _, err := source.readTargetFence(context.Background(), "  ", "acct-1", Target{}); err == nil || !strings.Contains(err.Error(), "fence request is incomplete") {
 		t.Fatalf("fence 入参缺失必须拒绝: %v", err)

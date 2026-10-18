@@ -442,9 +442,12 @@ func (p *chainVideoCreatePlan) paramsIgnored() []string { return p.params.Params
 // （geminiSpeechAdapterBoundaryError 同裁决）。provider 能力缺失（无 adapter）
 // 保持原生错误（该分支在派发侧先被能力门拦截，到达即配置异常）。
 func chainVideoCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*chainVideoCreatePlan, error) {
-	adapter := chainVideoAdapterForAccount(account.ProviderCode)
+	// 供应商身份源切换（供应商与上游协议面重构设计 §1.1/§2.1 切片）：创建计划
+	// 是 driver 出站构造与创建响应面/媒体车道预过滤的共用入口，adapter 身份
+	// 键与 chain_driver.go 同批从过渡恒空的 ProviderCode 切到 VendorCode。
+	adapter := chainVideoAdapterForAccount(account.VendorCode)
 	if adapter == nil {
-		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.ProviderCode)
+		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.VendorCode)
 	}
 	if body == nil {
 		return nil, nil
@@ -569,9 +572,10 @@ func (p *chainAudioJobCreatePlan) paramsIgnored() []string { return p.params.Par
 // 长转写无模型映射面（hybrid 不承接 audio jobs，M4b 只放开 video_generation/
 // tts 两族），模型名仅走 canonical 拼写优先。
 func chainAudioJobCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*chainAudioJobCreatePlan, error) {
-	adapter := chainAudioJobAdapterForAccount(account.ProviderCode)
+	// 供应商身份源切换（与 chainVideoCreatePlanOf 同批，见彼处注释）。
+	adapter := chainAudioJobAdapterForAccount(account.VendorCode)
 	if adapter == nil {
-		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持长音频转写", account.ID, account.ProviderCode)
+		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持长音频转写", account.ID, account.VendorCode)
 	}
 	if body == nil {
 		return nil, gatewaypreauth.NewGatewayRequestValidationError("长音频任务请求体必须是 JSON 对象（唯一输入形态 input_url 公网音频 URL，不支持 multipart 文件输入）")
@@ -769,8 +773,11 @@ type mediaJobsRuntime struct {
 // 沿 applyGeminiUpstreamAuthHeaders 消费 quota_project_id 等字段，不重复
 // 实现认权分支）。
 type chainMediaJobAccount struct {
-	ID                        string
-	OwnerSystemAccountID      string
+	ID                   string
+	OwnerSystemAccountID string
+	// ProviderCode 投影位承载 vendor 身份（供应商与上游协议面重构设计 §1.1/§2.1
+	// 切片；字段名随任务面既有消费面保留——值源从旧 provider_code 列切到
+	// vendor_code 列，适配器解析与出站归一同键消费）。
 	ProviderCode              string
 	ProviderProtocolProfileID string
 	ProtocolCode              string
@@ -798,7 +805,7 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 		credentialsEncrypted string
 		deletedAt            string
 	)
-	row := m.db.QueryRowContext(ctx, `SELECT id, system_account_id, provider_code,
+	row := m.db.QueryRowContext(ctx, `SELECT id, system_account_id, COALESCE(vendor_code, ''),
 		COALESCE(provider_protocol_profile_id, ''), COALESCE(protocol_code, ''), COALESCE(protocol_version, ''),
 		type, status, COALESCE(capability_domain, 'chat'), COALESCE(health_check_endpoint_mode, ''),
 		COALESCE(cooldown_until, ''), COALESCE(credentials_encrypted, ''), COALESCE(deleted_at, ''),
@@ -981,7 +988,9 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务面未装配，无法受理"+jobLabel+"任务", "service_unavailable")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
-	adapter := chainMediaJobTaskAdapterFor(kind, dispatched.Account.ProviderCode)
+	// 供应商身份源切换（供应商与上游协议面重构设计 §1.1/§2.1 切片）：任务面
+// adapter 解析键与创建计划同批从过渡恒空的 ProviderCode 切到 VendorCode。
+	adapter := chainMediaJobTaskAdapterFor(kind, dispatched.Account.VendorCode)
 	if adapter == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游账户缺少"+jobLabel+"任务 adapter，任务受理中断", "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}

@@ -31,12 +31,14 @@ func w13g2McBusinessDDL(t *testing.T, db *sql.DB) {
 func w13g2McSeedAccounts(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, row := range []string{
-		`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, type, config_revision, dispatch_revision, status, schedulable) VALUES ('acct-1','sys-1','gpt','prof-1','responses','api_key',3,7,'active',1)`,
-		`INSERT INTO provider_protocol_profiles (id, enabled, base_url) VALUES ('prof-1',1,'https://example.test')`,
+		// v16 契约：探针身份 = (vendor_code, 健康检查连接 preset)。
+		`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, protocol_code, type, config_revision, dispatch_revision, status, schedulable, health_check_connection_id) VALUES ('acct-1','sys-1','gpt','gpt','responses','api_key',3,7,'active',1,'conn-acct-1')`,
+		`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.test',1)`,
 		`INSERT INTO groups (id, system_account_id, enabled) VALUES ('grp-1','sys-1',1)`,
 		`INSERT INTO group_accounts (account_id, system_account_id, group_id, enabled) VALUES ('acct-1','sys-1','grp-1',1)`,
 		`INSERT INTO model_quality_policies (system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold, penalty_action, recovery_interval_minutes) VALUES ('sys-1',5,'quality',0,70,'disable',60)`,
-		`INSERT INTO account_supported_models (account_id, model) VALUES ('acct-1','gpt-5.6-sol')`,
+		`INSERT INTO account_supported_models (account_id, model_id) VALUES ('acct-1','model-sol')`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible) VALUES ('model-sol','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',1)`,
 	} {
 		if _, err := db.Exec(row); err != nil {
 			t.Fatal(err)

@@ -20,12 +20,15 @@ func w13g2McResolveFixture(t *testing.T, db *sql.DB, secret string) *BusinessTar
 	}
 	envelope := testCredentialEnvelope(t, secret, `{"api_key":"key-1","supported_endpoint_modes":["responses_sse"]}`)
 	for _, stmt := range []string{
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://example.invalid/v1')`,
+		// v16 契约：探针身份 = (vendor_code, 健康检查连接 preset)，base_url/
+		// 启停在 account_connections。
 		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
-		`INSERT INTO accounts VALUES ('acct-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL,'Account 1')`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-1','sys-1','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse','conn-acct-1',?,'Account 1')`,
+		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-1','acct-1','gpt_openai_v1','https://example.invalid/v1',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-1','sys-1','group-1',1)`,
 		`INSERT INTO resource_authorizations VALUES ('auth-1','account','acct-1','sys-1','sys-1','use','active','2027-01-01T00:00:00Z')`,
-		`INSERT INTO accounts VALUES ('inst-1','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,'2027-01-01T00:00:00Z',NULL,NULL,'auth-1','acct-1','Instance 1')`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,account_expires_at,authorization_instance_authorization_id,authorization_instance_source_account_id,name) VALUES ('inst-1','sys-1','gpt','gpt','openai','api_key',3,7,'active',1,'responses_sse','conn-inst-1',?,'2027-01-01T00:00:00Z','auth-1','acct-1','Instance 1')`,
+		`INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-inst-1','inst-1','gpt_openai_v1','https://example.invalid/v1',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('inst-1','sys-1','group-1','auth-1',1)`,
 	} {
 		args := []any{}
@@ -73,7 +76,7 @@ func TestW13g2McResolveArms(t *testing.T) {
 	}
 	fp.disarm()
 	// 模型映射查询失败。
-	fp.arm("FROM account_model_mappings")
+	fp.arm("FROM account_entry_mappings")
 	if _, err := source.Resolve(ctx, runReq()); err == nil {
 		fp.disarm()
 		t.Fatalf("应失败")

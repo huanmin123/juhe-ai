@@ -152,10 +152,22 @@ type chainCandidateRow struct {
 
 	ID              string
 	SystemAccountID string
+	// VendorCode / ConnectionDriverCode 是供应商解耦后的连接身份列（供应商与
+	// 上游协议面重构设计 §1.1/§2.1）：候选窗口按 accounts.vendor_code /
+	// accounts.connection_driver_code 投影，授权实例经 source_accounts 的
+	// resource_* 别名读取（消费方 resourceVendorCode/
+	// resourceConnectionDriverCode）。vendor 值域与旧 providerCode 同名；两列
+	// 扫描均用 NullString（vendor_code 目标形态即可空；connection_driver_code
+	// 目标形态 NOT NULL，但存量库迁移窗口允许 NULL 行，读取归一为空串）。
+	VendorCode                   sql.NullString
+	ConnectionDriverCode         sql.NullString
+	ResourceVendorCode           sql.NullString
+	ResourceConnectionDriverCode sql.NullString
 	// ProviderCode / ResourceProviderCode 过渡零值字段：候选窗口投影已随供应商
 	// 解耦拆除 provider_code 列（供应商与上游协议面重构设计 §8），SQL 不再赋值，
 	// 恒为零值；字段待消费方（chain_accounts_secret.go 秘钥投影、并集装载器）
-	// 切片与字段移除同批退役。
+	// 切片与字段移除同批退役。运行时消费方按 vendor_code 取身份，代码不做旧列
+	// 回落；存量库由迁移脚本按设计 §8 回填。
 	ProviderCode                             string
 	ResourceProviderCode                     sql.NullString
 	ProviderProtocolProfileID                sql.NullString
@@ -212,7 +224,8 @@ const chainCandidateColumns = `group_accounts.account_id,
 			group_accounts.system_account_id AS binding_system_account_id,
 			group_accounts.group_id, group_accounts.account_authorization_id,
 			group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-			accounts.id, accounts.system_account_id, accounts.provider_protocol_profile_id,
+			accounts.id, accounts.system_account_id, accounts.vendor_code, accounts.connection_driver_code,
+			accounts.provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status,
 			accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled,
 			accounts.fallback_enabled, accounts.client_compatibility,
@@ -223,6 +236,8 @@ const chainCandidateColumns = `group_accounts.account_id,
 			accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id,
 			accounts.authorization_instance_owner_system_account_id,
 			source_accounts.id AS resource_account_id,
+			source_accounts.vendor_code AS resource_vendor_code,
+			source_accounts.connection_driver_code AS resource_connection_driver_code,
 			source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
 			source_accounts.protocol_code AS resource_protocol_code,
 			source_accounts.protocol_version AS resource_protocol_version,
@@ -378,7 +393,7 @@ func (s *chainAccountsSelector) listChatPinnedOpenAIAccountResult(ctx context.Co
 		groupAccess = meta
 	}
 	qualityFreshAfter := chainQualityFreshAfterISO(s.now)
-	rows, err := s.listChatPinnedCandidateRows(ctx, groupID, groupAccess.GroupOwnerSystemAccountID, groupAccess.ProviderCode, accountID)
+	rows, err := s.listChatPinnedCandidateRows(ctx, groupID, groupAccess.GroupOwnerSystemAccountID, accountID)
 	if err != nil {
 		return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
 	}
@@ -535,10 +550,11 @@ func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context
 // chainCandidateWhere 的差异只有可用性条件——不限定 status/schedulable/
 // cooldown/account_expires_at（含禁用、错误、限流、冷却、过期与禁调度账户，
 // 绕过可用性窗口）；保留存在性与凭据结构条件（deleted_at IS NULL、类型集合、
-// 分组启用与 provider 匹配、授权实例戳行排除——chat 绑定口径本就排除实例
-// 戳行，LEFT JOIN 仅为维持 chainCandidateColumns 列形状）。chainCandidateWhere
-// 常量本身不被修改，/v1 常规窗口语义不变。
-func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context, groupID, groupOwnerSystemAccountID, providerCode, accountID string) ([]chainCandidateRow, error) {
+// 分组启用、授权实例戳行排除——chat 绑定口径本就排除实例戳行，LEFT JOIN 仅为
+// 维持 chainCandidateColumns 列形状）。provider 匹配谓词已随供应商解耦拆除
+// （供应商与上游协议面重构设计 §8；组内候选不再按 provider 收窄）。
+// chainCandidateWhere 常量本身不被修改，/v1 常规窗口语义不变。
+func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context, groupID, groupOwnerSystemAccountID, accountID string) ([]chainCandidateRow, error) {
 	query := strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),
@@ -548,14 +564,13 @@ func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context,
 			WHERE group_accounts.group_id = ?
 				AND group_accounts.system_account_id = ?
 				AND group_accounts.enabled = 1
-				AND accounts.provider_code = ?
 				AND accounts.deleted_at IS NULL
 				AND accounts.id = ?
 				AND accounts.authorization_instance_authorization_id IS NULL
 				AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
 			ORDER BY group_accounts.created_at ASC, group_accounts.account_id ASC
 			LIMIT 1`)
-	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupOwnerSystemAccountID, providerCode, accountID)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupOwnerSystemAccountID, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -579,13 +594,15 @@ func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context,
 // ---------------------------------------------------------------------------
 
 // candidateScanDest builds the scan destination for the base window column
-// order (chainCandidateColumns)。provider_code 投影已拆除，扫描位随之收窄；
-// ProviderCode/ResourceProviderCode 过渡字段不再赋值（恒零值）。
+// order (chainCandidateColumns)。vendor/connection_driver 投影位与 SELECT 列序
+// 逐位对应（accounts 两列在 system_account_id 后、resource 两别名在
+// resource_account_id 后）；provider_code 投影已拆除，ProviderCode/
+// ResourceProviderCode 过渡字段不再赋值（恒零值）。
 func candidateScanDest(row *chainCandidateRow) []any {
 	return []any{
 		&row.AccountID, &row.BindingSystemAccountID, &row.GroupID, &row.AccountAuthorizationID,
 		&row.LocalPriority, &row.LocalSuperPriority, &row.LocalFallback,
-		&row.ID, &row.SystemAccountID, &row.ProviderProtocolProfileID,
+		&row.ID, &row.SystemAccountID, &row.VendorCode, &row.ConnectionDriverCode, &row.ProviderProtocolProfileID,
 		&row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.Status,
 		&row.Schedulable, &row.ConcurrencyLimit, &row.Priority, &row.SuperPriorityEnabled,
 		&row.FallbackEnabled, &row.ClientCompatibility,
@@ -596,6 +613,8 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.AuthorizationInstanceSourceAccountID, &row.AuthorizationInstanceAuthorizationID,
 		&row.AuthorizationInstanceOwnerSystemAccountI,
 		&row.ResourceAccountID,
+		&row.ResourceVendorCode,
+		&row.ResourceConnectionDriverCode,
 		&row.ResourceProviderProtocolProfileID,
 		&row.ResourceProtocolCode,
 		&row.ResourceProtocolVersion,
@@ -976,20 +995,30 @@ func chainNameCollator() *collate.Collator { return collate.New(language.Chinese
 
 // resolveGroupAccess mirrors resolveGroupUsageAccessMetadata including the
 // authorized-group branch (group authorization row + local settings
-// overrides).
+// overrides). 2026-10-18 修复批迁移窗口投影恢复：groups.provider_code 列已在
+// fresh DDL 恢复（DEFAULT 'gpt' shim），查询与返回元数据的 ProviderCode 过渡
+// 字段随之恢复取值，与 internal/gatewayruntimecache/sqlmodels.go 的
+// ResolveGroupUsageAccessMetadata 同一列集；运行时迁移完成后由清理命令与
+// 消费方一并统一收口。
 func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID, systemAccountID string) (*gatewayruntimecache.GroupUsageAccessMetadata, error) {
-	var ownerID, providerCode string
+	var ownerID string
 	var enabled int
 	var groupType, schedulingPolicyJSON sql.NullString
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT system_account_id, provider_code, enabled, group_type, scheduling_policy_json FROM `+s.table("groups")+` WHERE id = ?`),
-		groupID).Scan(&ownerID, &providerCode, &enabled, &groupType, &schedulingPolicyJSON)
+	// provider_code（2026-10-18 修复批迁移窗口投影恢复）：过渡字段
+	// GroupUsageAccessMetadata.ProviderCode 的消费方（/v1/models 账户并集
+	// factProvider）在迁移窗口内仍按组 provider 维度装配模型并集，列已在
+	// fresh DDL 恢复（groups.provider_code，DEFAULT 'gpt' shim），投影随之
+	// 恢复；运行时迁移后由清理命令与该字段一并收口。
+	var providerCode sql.NullString
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled, group_type, scheduling_policy_json, provider_code FROM `+s.table("groups")+` WHERE id = ?`),
+		groupID).Scan(&ownerID, &enabled, &groupType, &schedulingPolicyJSON, &providerCode)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if ownerID == "" || providerCode == "" {
+	if ownerID == "" {
 		return nil, nil
 	}
 	if enabled != 1 {
@@ -1006,10 +1035,10 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 	if ownerID == systemAccountID {
 		return &gatewayruntimecache.GroupUsageAccessMetadata{
 			GroupOwnerSystemAccountID: ownerID,
-			ProviderCode:              providerCode,
 			GroupAccessType:           gatewayruntimecache.GroupAccessTypeOwner,
 			GroupType:                 normalizedType,
 			SchedulingPolicy:          policy,
+			ProviderCode:              providerCode.String,
 		}, nil
 	}
 	authorization, err := s.activeResourceAuthorization(ctx, "group", groupID, systemAccountID)
@@ -1047,10 +1076,10 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 	}
 	return &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      ownerID,
-		ProviderCode:                   providerCode,
 		GroupAccessType:                gatewayruntimecache.GroupAccessTypeAuthorized,
 		GroupType:                      localTypeValue,
 		SchedulingPolicy:               localPolicy,
+		ProviderCode:                   providerCode.String,
 		GroupAuthorizationID:           nullStringPtr(sql.NullString{String: authorization.id, Valid: true}),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
 		GroupAuthorizationQuotaLimited: chainResourceAuthorizationQuotaLimited(authorization.limitsJSON),
@@ -1298,9 +1327,34 @@ func (row *chainCandidateRow) resourceProxyProfileID() string {
 	return ""
 }
 
-// resourceProviderCode 返回模型事实主体的 provider 身份。候选窗口投影已随供
-// 应商解耦拆除 provider_code 列，本读取恒为零值（过渡载体，消费方待后续切片
-// 迁移）；见 chainCandidateRow.ProviderCode 过渡注释。
+// resourceVendorCode / resourceConnectionDriverCode 返回模型事实主体的连接
+// 身份（供应商与上游协议面重构设计 §2.1：授权实例的连接列物理为空，读取经
+// 来源账户 resource_account_id 投影；直连账户落回自身列）。vendor 值域与旧
+// providerCode 同名（gpt/xai/deepseek/anthropic/gemini/glm/minimax/volcengine/
+// qwen，generic/NULL vendor 账户为空串）。
+func (row *chainCandidateRow) resourceVendorCode() string {
+	if row.ResourceVendorCode.Valid && row.ResourceVendorCode.String != "" {
+		return row.ResourceVendorCode.String
+	}
+	if row.VendorCode.Valid {
+		return row.VendorCode.String
+	}
+	return ""
+}
+
+func (row *chainCandidateRow) resourceConnectionDriverCode() string {
+	if row.ResourceConnectionDriverCode.Valid && row.ResourceConnectionDriverCode.String != "" {
+		return row.ResourceConnectionDriverCode.String
+	}
+	if row.ConnectionDriverCode.Valid {
+		return row.ConnectionDriverCode.String
+	}
+	return ""
+}
+
+// resourceProviderCode 过渡零值读取：候选窗口投影已随供应商解耦拆除
+// provider_code 列，本读取恒为零值（过渡载体，消费方待后续切片迁移）；见
+// chainCandidateRow.ProviderCode 过渡注释。
 func (row *chainCandidateRow) resourceProviderCode() string {
 	if row.ResourceProviderCode.Valid && row.ResourceProviderCode.String != "" {
 		return row.ResourceProviderCode.String

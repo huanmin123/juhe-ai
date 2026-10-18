@@ -28,18 +28,23 @@ import (
 // chatCodexTestNow 是本域测试固定的时间基准：所有断言都基于它推导。
 var chatCodexTestNow = time.Date(2026, 5, 20, 9, 15, 0, 0, time.UTC)
 
-// chatCodexTestBusinessDDL 是 business 库的测试夹具表（只含本域查询的列）。
+// chatCodexTestBusinessDDL 是 business 库的测试夹具表（只含本域查询的列，
+// 形状对齐 vendors/models/account_connections 新 schema）。
 var chatCodexTestBusinessDDL = []string{
 	`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE)`,
 	`CREATE TABLE api_keys (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL)`,
 	`CREATE TABLE accounts (
 	  id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL,
-	  provider_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT,
+	  vendor_code TEXT, protocol_code TEXT,
 	  health_check_endpoint_mode TEXT, health_check_model TEXT
 	)`,
 	`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`,
-	`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, model TEXT NOT NULL)`,
-	`CREATE TABLE provider_model_catalog (model TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', mode TEXT, catalog_order INTEGER NOT NULL DEFAULT 0)`,
+	`CREATE TABLE account_connections (
+	  id TEXT PRIMARY KEY, account_id TEXT NOT NULL, connection_preset_code TEXT NOT NULL,
+	  protocol_surface_code TEXT, base_url TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
+	)`,
+	`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, model_id TEXT NOT NULL)`,
+	`CREATE TABLE models (id TEXT PRIMARY KEY, upstream_model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', catalog_visible INTEGER NOT NULL DEFAULT 1, catalog_order INTEGER, supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]')`,
 	`CREATE TABLE model_check_question_bank (
 	  id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending'
 	)`,
@@ -84,16 +89,19 @@ func chatCodexTestEnv(t *testing.T, shardCount int) *env {
 	seed(`INSERT INTO groups (id, system_account_id) VALUES (?, ?)`,
 		CleanupIDPrefix+"group_alt", CleanupIDPrefix+"system_account_admin")
 	for _, account := range []string{"account_primary", "account_secondary"} {
-		seed(`INSERT INTO accounts (id, name, system_account_id, provider_code, provider_protocol_profile_id,
-			protocol_code, health_check_endpoint_mode, health_check_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		seed(`INSERT INTO accounts (id, name, system_account_id, vendor_code,
+			protocol_code, health_check_endpoint_mode, health_check_model) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			CleanupIDPrefix+account, CleanupNamePrefix+account, CleanupIDPrefix+"system_account_admin",
-			"openai", "profile_openai_openai_v1", "openai_responses", "responses_sse", "deepseek-v4.1-flash")
-		seed(`INSERT INTO account_supported_models (account_id, model) VALUES (?, ?)`,
-			CleanupIDPrefix+account, "deepseek-v4.1-flash")
+			"gpt", "openai", "responses_sse", "deepseek-v4.1-flash")
+		seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url)
+			VALUES (?, ?, 'gpt_openai_v1', 'openai_v1', 'https://api.openai.com/v1')`,
+			CleanupIDPrefix+"conn_"+account, CleanupIDPrefix+account)
+		seed(`INSERT INTO account_supported_models (account_id, model_id) VALUES (?, ?)`,
+			CleanupIDPrefix+account, CleanupIDPrefix+"model_flash")
 	}
-	seed(`INSERT INTO provider_model_catalog (model, status, mode, catalog_order) VALUES (?, 'active', 'text', 1)`, "deepseek-v4.1-flash")
-	seed(`INSERT INTO provider_model_catalog (model, status, mode, catalog_order) VALUES (?, 'active', 'text', 2)`, "deepseek-v4.1-pro")
-	seed(`INSERT INTO provider_model_catalog (model, status, mode, catalog_order) VALUES (?, 'active', 'image', 3)`, "gpt-image-2")
+	seed(`INSERT INTO models (id, upstream_model, status, catalog_visible, catalog_order, supported_endpoint_modes_json) VALUES (?, ?, 'active', 1, 1, '["chat_json","chat_sse"]')`, CleanupIDPrefix+"model_flash", "deepseek-v4.1-flash")
+	seed(`INSERT INTO models (id, upstream_model, status, catalog_visible, catalog_order, supported_endpoint_modes_json) VALUES (?, ?, 'active', 1, 2, '["chat_json","chat_sse"]')`, CleanupIDPrefix+"model_pro", "deepseek-v4.1-pro")
+	seed(`INSERT INTO models (id, upstream_model, status, catalog_visible, catalog_order, supported_endpoint_modes_json) VALUES (?, ?, 'active', 1, 3, '["images_json"]')`, CleanupIDPrefix+"model_image", "gpt-image-2")
 	seed(`INSERT INTO model_check_question_bank (id, title, status) VALUES (?, ?, 'approved')`,
 		CleanupIDPrefix+"question_approved_1", CleanupNamePrefix+"题库题目一")
 	seed(`INSERT INTO model_check_question_bank (id, title, status) VALUES (?, ?, 'approved')`,

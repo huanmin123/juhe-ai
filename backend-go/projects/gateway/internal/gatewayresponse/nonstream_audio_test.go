@@ -211,7 +211,7 @@ func newVolcengineSpeechInputFixture(t *testing.T, requestBody, upstreamBody []b
 		NewSliceUpstreamBody(upstreamBody), 200,
 		map[string]string{"Content-Type": "application/json"}, "openai")
 	secret := gatewayAccountFixture
-	secret.ProviderCode = "volcengine"
+	secret.VendorCode = "volcengine"
 	input.Account = OpenAIAccountView{Account: secret}
 	input.Deps = &FinalizationDeps{NowMs: func() int64 { return 1200 }}
 	return input, recorder

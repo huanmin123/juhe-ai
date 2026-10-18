@@ -134,6 +134,10 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	}
 
 	providerCode := row.resourceProviderCode()
+	// 连接身份（供应商与上游协议面重构设计 §1.1/§2.1）：vendor/driver 按账户行
+	// 新列投影（授权实例经来源账户 resource_* 别名）；providerCode 过渡恒空。
+	vendorCode := row.resourceVendorCode()
+	connectionDriverCode := row.resourceConnectionDriverCode()
 	protocolCode := row.resourceProtocolCode()
 	protocolVersion := row.resourceProtocolVersion()
 	clientCompatibility := chainResourceClientCompatibility(row, providerCode, protocolCode, protocolVersion)
@@ -147,6 +151,8 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		ID:                               row.ID,
 		ConfigRevision:                   chainConfigRevisionOf(row.ConfigRevision),
 		DispatchRevision:                 nullInt64Ptr(row.DispatchRevision),
+		VendorCode:                       vendorCode,
+		ConnectionDriverCode:             connectionDriverCode,
 		ProviderCode:                     providerCode,
 		ProviderProtocolProfileID:        providerProtocolProfileID,
 		ProtocolCode:                     protocolCode,

@@ -89,9 +89,9 @@ func seedMediaQwenASRAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_qwen_asr', ?, 'qwen', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'qwen', 'profile_qwen_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES (?, ?, 'qwen', 'qwen', 'profile_qwen_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_qwen_asr', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -397,9 +397,9 @@ func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL,
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_glm_speech', ?, 'glm', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES (?, ?, 'glm', 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_glm_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -523,9 +523,9 @@ func seedMediaVolcengineSpeechAccount(t *testing.T, fixture *chainFixture, id, b
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_volcengine_speech', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES (?, ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volcengine_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -900,9 +900,9 @@ func seedMediaVolcengineASRAccount(t *testing.T, fixture *chainFixture, id, apiK
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_volc_asr', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES (?, ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volc_asr', ?, ?, 1, '2026-10-17T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -1121,9 +1121,9 @@ func TestChainMediaVolcengineASRMissingCredentials(t *testing.T) {
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_volc_asr_nc', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES ('acc_volc_asr_nc', ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1',
+		) VALUES ('acc_volc_asr_nc', ?, 'volcengine', 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1',
 			'acc_volc_asr_nc', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		fixture.systemAccount, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)

@@ -104,9 +104,9 @@ func seedMediaGlmVideoAccount(t *testing.T, fixture *chainFixture, id, baseURL, 
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_glm_video', ?, 'glm', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES (?, ?, 'glm', 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_glm_video', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -310,7 +310,7 @@ func TestChainMediaGlmVideoFailedTerminal(t *testing.T) {
 }
 
 // TestChainMediaGlmVideoCancel 覆盖链路 3：DELETE → glm 无上游取消 API
-//（契约 §7.1）→ 不发上游取消请求、直接本地收敛 cancelled + 204；终态行
+// （契约 §7.1）→ 不发上游取消请求、直接本地收敛 cancelled + 204；终态行
 // 轮询回本地对象不再打上游。
 func TestChainMediaGlmVideoCancel(t *testing.T) {
 	fixture := newChainFixture(t)
@@ -355,7 +355,7 @@ func TestChainMediaGlmVideoCancel(t *testing.T) {
 }
 
 // waitGlmSpoolRecord 轮询等待 spool 落盘出现满足谓词的记录并返回该记录原文
-//（smoke 测试同款轮询等待；返回文本供调用方做负断言）。
+// （smoke 测试同款轮询等待；返回文本供调用方做负断言）。
 func waitGlmSpoolRecord(t *testing.T, spoolDir string, predicate func(string) bool, what string) string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

@@ -106,9 +106,9 @@ func seedMediaGeminiVideoAccount(t *testing.T, fixture *chainFixture, id, baseUR
 	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_gem_video', ?, 'gemini', 1, 'personal')`, fixture.systemAccount)
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'gemini', 'profile_gemini_native_v1beta', 'gemini', 'v1beta', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		) VALUES (?, ?, 'gemini', 'gemini', 'profile_gemini_native_v1beta', 'gemini', 'v1beta', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_gem_video', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)

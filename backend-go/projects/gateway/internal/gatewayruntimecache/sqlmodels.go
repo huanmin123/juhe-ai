@@ -328,17 +328,19 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 
 // ResolveGroupUsageAccessMetadata mirrors resolveGroupUsageAccessMetadata:
 // owner short-circuit, active group authorization, local authorization
-// settings override. groups.provider_code 已随供应商解耦退役（供应商与上游协
-// 议面重构设计 §8）：查询不再读取该列，owner/授权维度的既有事实即访问判定，
-// ProviderCode 过渡字段恒为空串。
+// settings override. 2026-10-18 修复批迁移窗口投影恢复：groups.provider_code
+// 列已在 fresh DDL 恢复（DEFAULT 'gpt' shim），过渡字段 ProviderCode 的消费
+// 方（/v1/models 账户并集 factProvider）随之恢复取值；运行时迁移后由清理
+// 命令与该字段一并收口。
 func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, groupID, systemAccountID string) (*GroupUsageAccessMetadata, error) {
 	ctx = ensureModelCtx(ctx)
 	var ownerID string
 	var enabled int
 	var groupType, schedulingJSON sql.NullString
-	err := m.db.QueryRowContext(ctx, m.bind(`SELECT system_account_id, enabled, group_type, scheduling_policy_json
+	var providerCode sql.NullString
+	err := m.db.QueryRowContext(ctx, m.bind(`SELECT system_account_id, enabled, group_type, scheduling_policy_json, provider_code
 		FROM `+m.table("groups")+` WHERE id = ?`), groupID).
-		Scan(&ownerID, &enabled, &groupType, &schedulingJSON)
+		Scan(&ownerID, &enabled, &groupType, &schedulingJSON, &providerCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -362,6 +364,7 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 			GroupAccessType:           GroupAccessTypeOwner,
 			GroupType:                 strPtrIfSet(groupTypeValue),
 			SchedulingPolicy:          schedulingPolicy,
+			ProviderCode:              providerCode.String,
 		}, nil
 	}
 	authorization, err := m.activeGroupAuthorization(ctx, groupID, systemAccountID)
@@ -404,6 +407,7 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 		GroupAccessType:                GroupAccessTypeAuthorized,
 		GroupType:                      strPtrIfSet(effectiveGroupType),
 		SchedulingPolicy:               localPolicy,
+		ProviderCode:                   providerCode.String,
 		GroupAuthorizationID:           strPtrIfSet(authorization.id),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
 		GroupAuthorizationQuotaLimited: boolPtr(authorization.quotaLimited),

@@ -19,12 +19,14 @@ import (
 func wbBusinessQualityDDL(t *testing.T) []string {
 	t.Helper()
 	return []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT,status TEXT NOT NULL DEFAULT 'active')`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,vendor_code TEXT,connection_driver_code TEXT,health_check_connection_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT,status TEXT NOT NULL DEFAULT 'active')`,
+		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,state TEXT,action TEXT,recovery_due_at TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT, source_model TEXT, source_endpoint_family TEXT, upstream_model TEXT, upstream_endpoint_family TEXT, enabled INTEGER)`,
+		`CREATE TABLE account_supported_models (account_id TEXT, model_id TEXT, PRIMARY KEY (account_id, model_id))`,
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT, source_model TEXT, source_endpoint_family TEXT, target_connection_id TEXT, target_model_id TEXT, target_endpoint_family TEXT, enabled INTEGER)`,
 	}
 }
 
@@ -32,9 +34,10 @@ func wbBusinessQualityDDL(t *testing.T) []string {
 // 在创建/更新时重新校验账户与模型约束。
 func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
 	db := wbOpenMemoryDB(t, wbBusinessQualityDDL(t))
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,provider_code,provider_protocol_profile_id,name) VALUES ('acct','sys','openai','profile_openai_openai_v1','Account 1')`); err != nil {
-		t.Fatal(err)
-	}
+	w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,health_check_connection_id,name) VALUES ('acct','sys','gpt','gpt','conn-acct','Account 1')`)
+	w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct','acct','gpt_openai_v1','https://quality.invalid/v1',1)`)
+	w11eExec(t, db, "INSERT OR IGNORE INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('model-sol','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',1)")
+	w11eExec(t, db, `INSERT INTO account_supported_models (account_id,model_id) VALUES ('acct','model-sol')`)
 	manager, err := NewBusinessQualityManager(db, false)
 	if err != nil {
 		t.Fatal(err)
@@ -84,9 +87,8 @@ func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
 		}
 	})
 	t.Run("schedule for unsupported account rejected", func(t *testing.T) {
-		if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,provider_code,provider_protocol_profile_id,name) VALUES ('acct-2','sys','openai','profile_openai_openai_v1','Account 2')`); err != nil {
-			t.Fatal(err)
-		}
+		w11eExec(t, db, `INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,health_check_connection_id,name) VALUES ('acct-2','sys','gpt','gpt','conn-acct-2','Account 2')`)
+		w11eExec(t, db, `INSERT INTO account_connections (id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-acct-2','acct-2','gpt_openai_v1','https://quality.invalid/v1',1)`)
 		if _, err := manager.CreateSchedule(ctx, "sys", QualityScheduleInput{AccountID: "missing", Model: "gpt-5.6-sol", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil || !strings.Contains(err.Error(), "不存在") {
 			t.Fatalf("缺失账户必须拒绝: err=%v", err)
 		}

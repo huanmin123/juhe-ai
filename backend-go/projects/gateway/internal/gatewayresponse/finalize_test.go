@@ -15,9 +15,12 @@ var gatewayAccountFixture = gatewayAccountFixtureValue()
 
 func gatewayAccountFixtureValue() gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
-		ID:                  "acc-1",
-		Name:                "测试账户",
-		ProviderCode:        "openai",
+		ID:   "acc-1",
+		Name: "测试账户",
+		// VendorCode 承载账户身份（供应商与上游协议面重构设计 §1.1/§2.1 切片）：
+		// GetProviderCode 投影位现读 VendorCode，provider 作用域策略/语音 adapter
+		// 分派同键匹配。
+		VendorCode:          "openai",
 		ProtocolCode:        "openai",
 		ProtocolVersion:     "v1",
 		Type:                "api_key",

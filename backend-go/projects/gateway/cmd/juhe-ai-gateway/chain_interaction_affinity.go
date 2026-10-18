@@ -40,13 +40,17 @@ func (c *gatewayChain) interactionAffinityRememberBeforeCommit(
 	if dispatched.Response == nil || !dispatched.Response.OK() {
 		return nil
 	}
-	if dispatched.Account.ProviderCode != gatewaygemini.ProviderCode {
+	// 供应商身份源切换（供应商与上游协议面重构设计 §1.1/§2.1 切片）：gemini
+	// vendor 值与 gatewaygemini.ProviderCode 同名，门从过渡恒空的
+	// ProviderCode 切到 VendorCode；UpstreamAccount 投影位同步承载 vendor 值
+	//（internal/gatewaygemini 的 Remember/绑定校验按同名值判定）。
+	if dispatched.Account.VendorCode != gatewaygemini.ProviderCode {
 		return nil
 	}
 	account := gatewaygemini.UpstreamAccount{
 		ID:                        dispatched.Account.ID,
 		Type:                      dispatched.Account.Type,
-		ProviderCode:              dispatched.Account.ProviderCode,
+		ProviderCode:              dispatched.Account.VendorCode,
 		ProviderProtocolProfileID: dispatched.Account.ProviderProtocolProfileID,
 	}
 	scope := interactionAffinityScopeOf(context)

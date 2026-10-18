@@ -21,7 +21,7 @@ import (
 
 func w1OwnerBusinessRunNowDDL() []string {
 	return []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,authorization_instance_source_account_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,availability_schedule_json TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,authorization_instance_source_account_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,availability_schedule_json TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,cleared_at TEXT,created_at TEXT,updated_at TEXT)`,
@@ -30,7 +30,7 @@ func w1OwnerBusinessRunNowDDL() []string {
 
 func w1OwnerSeedPenaltyAccount(t *testing.T, db *sql.DB, status string, revision int, availability string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,provider_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled,last_error_code,last_error_message) VALUES ('acct','sys','openai',?,7,NULL,NULL,?,?,1,1,0,'model_quality_failed','')`, revision, status, availability); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled,last_error_code,last_error_message) VALUES ('acct','sys','gpt',?,7,NULL,NULL,?,?,1,1,0,'model_quality_failed','')`, revision, status, availability); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -263,7 +263,7 @@ func w1OwnerSchedulerBusinessDDL() []string { return w1OwnerBusinessRunNowDDL() 
 func w1OwnerSeedSchedule(t *testing.T, db *sql.DB, leaseOwner, leaseUntil string) {
 	t.Helper()
 	now := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,provider_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled) VALUES ('acct','sys','openai',4,7,NULL,NULL,'active','gpt-6-luna','',1,0,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled) VALUES ('acct','sys','gpt',4,7,NULL,NULL,'active','gpt-6-luna','',1,0,0)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO model_quality_schedules (id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,updated_at) VALUES ('sch',1,'sys','acct','gpt-6-luna',30,'quick',70,'fallback',10,'[]',1,?,?,?,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano), leaseOwner, leaseUntil); err != nil {
@@ -284,7 +284,7 @@ func TestW1BusinessSchedulerFaultEdges(t *testing.T) {
 		if err := source.CheckContract(ctx); err != nil {
 			t.Fatalf("contract check err=%v", err)
 		}
-		fp.arm("SELECT id,system_account_id,provider_code")
+		fp.arm("SELECT id,system_account_id,vendor_code")
 		if err := source.CheckContract(ctx); err == nil || !strings.Contains(err.Error(), "verify J3b Business scheduler table accounts") || !strings.Contains(err.Error(), "w14m") {
 			t.Fatalf("contract query error=%v", err)
 		}

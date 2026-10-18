@@ -39,7 +39,7 @@ func (s *AccountStore) CheckContract(ctx context.Context) error {
 	relations := map[string]string{
 		"system_accounts":       `id,username,display_name,description,role,status,password_hash,must_change_password,image_generation_enabled,ai_account_limit,expedited_account_limit,request_limits_json,last_login_at,created_at,updated_at`,
 		"system_sessions":       `id,system_account_id,token_hash,expires_at,created_at,last_seen_at`,
-		"groups":                `id,system_account_id,name,provider_code,description,enabled,is_default,group_type,created_at,updated_at`,
+		"groups":                `id,system_account_id,name,description,enabled,is_default,group_type,scheduling_policy_json,created_at,updated_at`,
 		"route_strategies":      `id,system_account_id,name,description,mode,status,is_default,created_at,updated_at`,
 		"route_strategy_groups": `id,route_strategy_id,system_account_id,group_id,priority,weight,status,created_at,updated_at`,
 		"api_keys":              `id,system_account_id,route_strategy_id,name,description,key_hash,key_prefix,key_suffix,key_secret_encrypted,status,is_default,purpose,created_at,updated_at`,

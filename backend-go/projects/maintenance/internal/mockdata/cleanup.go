@@ -51,7 +51,6 @@ func cleanupRules() []cleanupRule {
 	name := CleanupNamePrefix + "%"
 	id := CleanupIDPrefix + "%"
 	trace := CleanupTracePrefix + "%"
-	model := CleanupTracePrefix + "%"
 	return []cleanupRule{
 		// business：先清公告子表。
 		{Store: StoreBusiness, Table: "announcement_reads", Query: "DELETE FROM announcement_reads WHERE announcement_id IN (SELECT id FROM announcements WHERE id LIKE ? OR title LIKE ?)", Args: []any{id, name}},
@@ -59,9 +58,6 @@ func cleanupRules() []cleanupRule {
 		{Store: StoreBusiness, Table: "external_integration_source_tokens", Query: "DELETE FROM external_integration_source_tokens WHERE source_ref_id IN (SELECT id FROM external_integration_sources WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "external_integration_sources", Query: "DELETE FROM external_integration_sources WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "response_inspection_policies", Query: "DELETE FROM response_inspection_policies WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
-		{Store: StoreBusiness, Table: "provider_system_default_health_check_models", Query: "DELETE FROM provider_system_default_health_check_models WHERE model LIKE ?", Args: []any{model}},
-		{Store: StoreBusiness, Table: "provider_default_health_check_models", Query: "DELETE FROM provider_default_health_check_models WHERE model LIKE ? OR system_account_id LIKE ?", Args: []any{model, id}},
-		{Store: StoreBusiness, Table: "custom_provider_models", Query: "DELETE FROM custom_provider_models WHERE id LIKE ? OR model LIKE ?", Args: []any{id, model}},
 		// 账户测试任务族：链接表 → 会话 → 任务。
 		{Store: StoreBusiness, Table: "account_test_session_tasks", Query: "DELETE FROM account_test_session_tasks WHERE task_id IN (SELECT id FROM account_test_tasks WHERE id LIKE ? OR account_name LIKE ? OR status_message LIKE ?)", Args: []any{id, name, name}},
 		{Store: StoreBusiness, Table: "account_test_tasks", Query: "DELETE FROM account_test_tasks WHERE id LIKE ? OR account_name LIKE ? OR status_message LIKE ?", Args: []any{id, name, name}},
@@ -86,10 +82,20 @@ func cleanupRules() []cleanupRule {
 		{Store: StoreBusiness, Table: "api_keys", Query: "DELETE FROM api_keys WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "route_strategy_groups", Query: "DELETE FROM route_strategy_groups WHERE route_strategy_id IN (SELECT id FROM route_strategies WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "route_strategies", Query: "DELETE FROM route_strategies WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
-		// 账户/分组族：子表 → 账户 → 分组。
+		// 账户/分组族：入口映射 → endpoint mode → 连接 → 子表 → 账户 → 分组。
+		// account_connections / account_endpoint_modes / account_entry_mappings
+		// 是连接面新表（供应商与上游协议面重构 §2.1/§5.1）：行按 account_id /
+		// connection_id 关联，先删子表再删 accounts，避免依赖级联顺序。
+		{Store: StoreBusiness, Table: "account_entry_mappings", Query: "DELETE FROM account_entry_mappings WHERE account_id LIKE ?", Args: []any{id}},
+		{Store: StoreBusiness, Table: "account_endpoint_modes", Query: "DELETE FROM account_endpoint_modes WHERE connection_id IN (SELECT id FROM account_connections WHERE account_id LIKE ?)", Args: []any{id}},
+		{Store: StoreBusiness, Table: "account_connections", Query: "DELETE FROM account_connections WHERE account_id LIKE ?", Args: []any{id}},
 		{Store: StoreBusiness, Table: "group_accounts", Query: "DELETE FROM group_accounts WHERE group_id IN (SELECT id FROM groups WHERE id LIKE ? OR name LIKE ?) OR account_id IN (SELECT id FROM accounts WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name, id, name}},
 		{Store: StoreBusiness, Table: "accounts", Query: "DELETE FROM accounts WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "groups", Query: "DELETE FROM groups WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
+		// models：造数模型行按确定性 id 前缀清理。必须排在 accounts 之后——
+		// account_supported_models 对 models 是 ON DELETE RESTRICT，账户级联清空
+		// 支持模型行之前删除 models 会撞约束。
+		{Store: StoreBusiness, Table: "models", Query: "DELETE FROM models WHERE id LIKE ?", Args: []any{id}},
 		// 团队族 → 代理 → 会话 → 系统账户（配套用户最后删）。
 		{Store: StoreBusiness, Table: "system_team_members", Query: "DELETE FROM system_team_members WHERE team_id IN (SELECT id FROM system_teams WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "system_teams", Query: "DELETE FROM system_teams WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
