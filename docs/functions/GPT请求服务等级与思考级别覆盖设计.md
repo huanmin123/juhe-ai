@@ -344,6 +344,7 @@ interface CodexModelCapabilities {
 - 删除「所选支持模型至少一个声明该值」的目录断言与批量编辑 / OAuth 创建的重复值预检层，单次族集校验即最终结论。
 - 保留 Gemini Interactions-only 守卫：`supported_endpoint_modes` 只含 `interactions_*` 的账户不能配置 GenerateContent 请求覆盖。
 - `gpt` 供应商沿用专属值域限定：`ultra`、`fast`、`auto` 不作为持久化合法值。
+- 轮换与重授权（`oauthmgmt.Store.RotateCredentials`，refreshToken / reauthorizeFromCode / reauthorizeFromRefreshToken 共用入口）落库前执行同一 token 形状与族集校验：非法值在事务内先拒绝、不写库；合法存量值按原样保留。存量非法值在下次轮换/重授权保存时同样被拒，与 §6.4 一致。
 
 建议错误：
 
