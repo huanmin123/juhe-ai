@@ -125,14 +125,13 @@ func TestW1RoutingProjections(t *testing.T) {
 	sourceType := "authorization"
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
-		ProviderCode:                   "openai",
 		GroupAccessType:                "authorized",
 		SchedulingPolicy:               &policy,
 		GroupAuthorizationSourceType:   &sourceType,
 		GroupAuthorizationQuotaLimited: boolPtr(true),
 	}
 	projected := projectGroupAccessForRouting(meta)
-	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.ProviderCode != "openai" || projected.GroupAuthorizationQuotaLimited == nil || !*projected.GroupAuthorizationQuotaLimited {
+	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.GroupAuthorizationQuotaLimited == nil || !*projected.GroupAuthorizationQuotaLimited {
 		t.Fatalf("projected = %+v", projected)
 	}
 	if projected.GroupAuthorizationSourceType != "authorization" {

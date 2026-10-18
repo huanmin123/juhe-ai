@@ -55,6 +55,8 @@ func ownerPermissions() ResourcePermissions {
 }
 
 // OptionSummary mirrors GroupOptionSummary (owner + authorized views).
+// ProviderCode 是响应形状兼容字段（Node 契约键保留）：组无 provider 维度
+//（供应商解耦设计 §8），恒空串，不再从 groups 读取。
 type OptionSummary struct {
 	ID                     string              `json:"id"`
 	SystemAccountID        *string             `json:"systemAccountId,omitempty"`
@@ -75,7 +77,8 @@ type OptionSummary struct {
 	Permissions            ResourcePermissions `json:"permissions"`
 }
 
-// EditDetail mirrors GroupEditDetail.
+// EditDetail mirrors GroupEditDetail。ProviderCode 同 OptionSummary：形状兼容
+// 恒空串。
 type EditDetail struct {
 	Name             string  `json:"name"`
 	ProviderCode     string  `json:"providerCode"`
@@ -86,7 +89,9 @@ type EditDetail struct {
 	UpdatedAt        string  `json:"updatedAt"`
 }
 
-// OptionsQuery mirrors parseGroupOptionListOptions after route validation.
+// OptionsQuery mirrors parseGroupOptionOptionListOptions after route
+// validation。ProviderCode 是兼容入参（接受但忽略）：组无 provider 维度
+//（供应商解耦设计 §8），不再生成 provider_code 过滤。
 type OptionsQuery struct {
 	IDs            []string
 	Keyword        string
@@ -104,7 +109,6 @@ type optionRow struct {
 	id                      string
 	systemAccountID         string
 	name                    string
-	providerCode            string
 	enabled                 int64
 	isDefault               int64
 	groupType               string
@@ -118,11 +122,11 @@ type optionRow struct {
 	authorizationLimitsJSON sql.NullString
 }
 
-const optionRowSelectColumns = `g.id, g.system_account_id, g.name, g.provider_code,
+const optionRowSelectColumns = `g.id, g.system_account_id, g.name,
 		g.enabled, g.is_default, g.group_type, g.scheduling_policy_json,
 		g.created_at, g.updated_at`
 
-const optionOuterSelectColumns = `id, system_account_id, name, provider_code,
+const optionOuterSelectColumns = `id, system_account_id, name,
 		enabled, is_default, group_type, scheduling_policy_json,
 		created_at, updated_at,
 		access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json`
@@ -130,7 +134,7 @@ const optionOuterSelectColumns = `id, system_account_id, name, provider_code,
 // authorizedOptionRowSelectColumns mirrors authorizedGroupRowSelectColumns:
 // per-grantee settings overrides for enabled/group_type/scheduling_policy_json
 // plus the settings-aware updated_at.
-const authorizedOptionRowSelectColumns = `g.id, g.system_account_id, g.name, g.provider_code,
+const authorizedOptionRowSelectColumns = `g.id, g.system_account_id, g.name,
 		CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 		g.is_default,
 		COALESCE(s.group_type, g.group_type) AS group_type,
@@ -171,7 +175,7 @@ func (s *Store) authorizedOptionArm() string {
 
 func scanOptionRow(scan func(...any) error) (optionRow, error) {
 	var row optionRow
-	err := scan(&row.id, &row.systemAccountID, &row.name, &row.providerCode,
+	err := scan(&row.id, &row.systemAccountID, &row.name,
 		&row.enabled, &row.isDefault, &row.groupType, &row.schedulingJSON,
 		&row.createdAt, &row.updatedAt,
 		&row.accessType, &row.authorizationID, &row.authorizationStatus,
@@ -180,8 +184,9 @@ func scanOptionRow(scan func(...any) error) (optionRow, error) {
 }
 
 // rowFilter mirrors buildGroupFilter over the union output (unqualified
-// columns) or the direct owner query (alias-qualified columns).
-func rowFilter(alias, providerCode, keyword string, ids []string) (clauses []string, args []any) {
+// columns) or the direct owner query (alias-qualified columns)。供应商解耦后
+// 组无 provider 维度，provider 过滤拆除（设计 §8）。
+func rowFilter(alias, keyword string, ids []string) (clauses []string, args []any) {
 	column := func(name string) string {
 		if alias == "" {
 			return name
@@ -194,10 +199,6 @@ func rowFilter(alias, providerCode, keyword string, ids []string) (clauses []str
 		for _, id := range ids {
 			args = append(args, id)
 		}
-	}
-	if code := strings.TrimSpace(providerCode); code != "" {
-		clauses = append(clauses, column("provider_code")+" = ?")
-		args = append(args, code)
 	}
 	if clause, clauseArgs := keywordFilterAlias(alias, keyword); clause != "" {
 		clauses = append(clauses, clause)
@@ -241,7 +242,7 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 		queryText string
 		queryArgs []any
 	)
-	outerClauses, outerArgs := rowFilter("", query.ProviderCode, query.Keyword, query.IDs)
+	outerClauses, outerArgs := rowFilter("", query.Keyword, query.IDs)
 	outerWhere := ""
 	if len(outerClauses) > 0 {
 		outerWhere = " WHERE " + strings.Join(outerClauses, " AND ")
@@ -249,7 +250,7 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 	switch {
 	case owner == "" && access.canAccessAll():
 		// Direct owner query over every row (Node's unscoped admin branch).
-		clauses, args := rowFilter("g", query.ProviderCode, query.Keyword, query.IDs)
+		clauses, args := rowFilter("g", query.Keyword, query.IDs)
 		where := ""
 		if len(clauses) > 0 {
 			where = " WHERE " + strings.Join(clauses, " AND ")
@@ -271,7 +272,7 @@ func (s *Store) Options(ctx context.Context, access AccessScope, query OptionsQu
 		if viewer == "" {
 			return nil, &ValidationError{Message: "缺少系统账户上下文"}
 		}
-		clauses, args := rowFilter("g", query.ProviderCode, query.Keyword, query.IDs)
+		clauses, args := rowFilter("g", query.Keyword, query.IDs)
 		clauses = append(clauses, "g.system_account_id = ?")
 		args = append(args, viewer)
 		orderColumn := "g.updated_at DESC, g.id DESC"
@@ -366,12 +367,12 @@ func (s *Store) RouteStrategyOptions(ctx context.Context, access AccessScope, qu
 	)
 	switch {
 	case owner == "" && access.canAccessAll():
-		clauses, args := rowFilter("g", query.ProviderCode, query.Keyword, query.IDs)
+		clauses, args := rowFilter("g", query.Keyword, query.IDs)
 		where := ""
 		if len(clauses) > 0 {
 			where = " WHERE " + strings.Join(clauses, " AND ")
 		}
-		queryText = `SELECT g.id, g.name, g.provider_code, g.enabled
+		queryText = `SELECT g.id, g.name, g.enabled
 			FROM ` + s.table("groups") + ` g` + where + `
 			ORDER BY g.updated_at DESC, g.id DESC
 			LIMIT ?`
@@ -380,17 +381,17 @@ func (s *Store) RouteStrategyOptions(ctx context.Context, access AccessScope, qu
 		if viewer == "" {
 			return nil, &ValidationError{Message: "缺少系统账户上下文"}
 		}
-		clauses, outerArgs := rowFilter("", query.ProviderCode, query.Keyword, query.IDs)
+		clauses, outerArgs := rowFilter("", query.Keyword, query.IDs)
 		outerWhere := ""
 		if len(clauses) > 0 {
 			outerWhere = " WHERE " + strings.Join(clauses, " AND ")
 		}
-		queryText = `SELECT id, name, provider_code, enabled FROM (
-				SELECT g.id, g.name, g.provider_code, g.enabled, g.is_default, g.updated_at
+		queryText = `SELECT id, name, enabled FROM (
+				SELECT g.id, g.name, g.enabled, g.is_default, g.updated_at
 				FROM ` + s.table("groups") + ` g
 				WHERE g.system_account_id = ?
 				UNION ALL
-				SELECT g.id, g.name, g.provider_code,
+				SELECT g.id, g.name,
 					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 					g.is_default,
 					COALESCE(s.updated_at, g.updated_at) AS updated_at
@@ -413,7 +414,7 @@ func (s *Store) RouteStrategyOptions(ctx context.Context, access AccessScope, qu
 	for rows.Next() {
 		var option RouteStrategyGroupOption
 		var enabled int64
-		if err := rows.Scan(&option.ID, &option.Name, &option.ProviderCode, &enabled); err != nil {
+		if err := rows.Scan(&option.ID, &option.Name, &enabled); err != nil {
 			return nil, err
 		}
 		option.Enabled = enabled == 1
@@ -453,7 +454,6 @@ func (s *Store) newOptionSummary(row optionRow, names map[string]string, include
 		OwnerSystemAccountID:   row.systemAccountID,
 		OwnerSystemAccountName: ptrString(names[row.systemAccountID]),
 		Name:                   row.name,
-		ProviderCode:           row.providerCode,
 		Enabled:                row.enabled == 1,
 		IsDefault:              !authorized && row.isDefault == 1,
 		GroupType:              groupType,
@@ -496,7 +496,6 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	}
 	var (
 		name           string
-		providerCode   string
 		description    sql.NullString
 		enabled        int64
 		groupType      string
@@ -506,7 +505,7 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	var queryText string
 	var args []any
 	if owner == "" && access.canAccessAll() {
-		queryText = `SELECT g.name, g.provider_code, g.description, g.enabled,
+		queryText = `SELECT g.name, g.description, g.enabled,
 			g.group_type, g.scheduling_policy_json, g.updated_at
 			FROM ` + s.table("groups") + ` g WHERE g.id = ? LIMIT 1`
 		args = []any{id}
@@ -514,12 +513,12 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 		if viewer == "" {
 			return nil, &ValidationError{Message: "缺少系统账户上下文"}
 		}
-		queryText = `SELECT name, provider_code, description, enabled, group_type, scheduling_policy_json, updated_at FROM (
-			SELECT g.name, g.provider_code, g.description, g.enabled, g.group_type, g.scheduling_policy_json, g.updated_at
+		queryText = `SELECT name, description, enabled, group_type, scheduling_policy_json, updated_at FROM (
+			SELECT g.name, g.description, g.enabled, g.group_type, g.scheduling_policy_json, g.updated_at
 			FROM ` + s.table("groups") + ` g
 			WHERE g.id = ? AND g.system_account_id = ?
 			UNION ALL
-			SELECT g.name, g.provider_code, g.description,
+			SELECT g.name, g.description,
 				CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 				COALESCE(s.group_type, g.group_type) AS group_type,
 				CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
@@ -537,7 +536,7 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 		args = []any{id, ownerOrViewer(owner, viewer), id, viewer, ownerOrViewer(owner, viewer)}
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(queryText), args...).Scan(
-		&name, &providerCode, &description, &enabled, &groupType, &schedulingJSON, &updatedAt)
+		&name, &description, &enabled, &groupType, &schedulingJSON, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -554,7 +553,6 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	}
 	return &EditDetail{
 		Name:             name,
-		ProviderCode:     providerCode,
 		Description:      nullPtrString(description),
 		Enabled:          enabled == 1,
 		GroupType:        normalizedType,
@@ -708,7 +706,9 @@ func (d *Deps) accountOptions(w http.ResponseWriter, r *http.Request, access Acc
 
 // RouteStrategyGroupOption mirrors RouteStrategyGroupOption
 // (listRouteStrategyGroupOptionsAsync): the authorization settings override
-// of enabled reflected back to the route-strategy selector.
+// of enabled reflected back to the route-strategy selector。ProviderCode 是
+// 响应形状兼容字段（Node 契约键保留）：组无 provider 维度（供应商解耦设计
+// §8），恒空串，不再从 groups 读取。
 type RouteStrategyGroupOption struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -718,7 +718,8 @@ type RouteStrategyGroupOption struct {
 
 // routeStrategyOptions mirrors GET /route-strategy-options
 // (groups.routes.ts:93): ids/keyword/providerCode/limit over the
-// authorization-aware group rows with {id,name,providerCode,enabled}.
+// authorization-aware group rows with {id,name,providerCode,enabled}（
+// providerCode 恒空串，见 RouteStrategyGroupOption）。
 func (d *Deps) routeStrategyOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	query, ok := parseGroupOptionQuery(w, r)
 	if !ok {
@@ -832,7 +833,8 @@ func groupOptionPurpose(value string) (string, bool) {
 }
 
 // keywordFilterAlias is keywordFilter with a controllable column prefix (the
-// union's outer WHERE reads the unqualified output columns).
+// union's outer WHERE reads the unqualified output columns)。供应商解耦后
+// keyword 只匹配 name（组无 provider 维度，设计 §8）。
 func keywordFilterAlias(alias, keyword string) (string, []any) {
 	text := strings.TrimSpace(keyword)
 	if text == "" {
@@ -843,8 +845,8 @@ func keywordFilterAlias(alias, keyword string) (string, []any) {
 	if alias != "" {
 		prefix = alias + "."
 	}
-	return "(" + prefix + "name >= ? AND " + prefix + "name < ? OR " + prefix + "provider_code >= ? AND " + prefix + "provider_code < ?)",
-		[]any{text, upper, text, upper}
+	return "(" + prefix + "name >= ? AND " + prefix + "name < ?)",
+		[]any{text, upper}
 }
 
 // authorizedGroupPermissions mirrors authorizedGroupPermissions

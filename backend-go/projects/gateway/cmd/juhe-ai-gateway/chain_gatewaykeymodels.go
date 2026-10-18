@@ -47,11 +47,12 @@ func newChainGroupModelUnionLoader(selector *chainAccountsSelector) (*chainGroup
 
 var _ gatewayruntimecache.GroupModelUnionLoader = chainGroupModelUnionLoader{}
 
-// chainUnionMappingRow 是 account_model_mappings 的启用行投影（含 provider_code，
-// 供消费侧供应商门匹配）。
+// chainUnionMappingRow 是 account_entry_mappings 的启用行投影（供应商解耦：
+// 表无 provider 维度，target 全部外键 ID 化——upstream 名经 target_model_id
+// JOIN models.upstream_model 解析，upstream 家族即 target_endpoint_family，
+// 设计 §5.1）。
 type chainUnionMappingRow struct {
-	providerCode string
-	mapping      gatewayopenai.AccountModelMapping
+	mapping gatewayopenai.AccountModelMapping
 }
 
 // ListGroupModelUnion 装载一个调用方在一组分组上的模型并集（并集设计 §4.1/
@@ -139,12 +140,14 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 			continue
 		}
 
-		// 模型事实主体批量装载（并集设计 §4.1/§6.2）。协议档案与 provider 不另
-		// 查库：chainCandidateColumns 已按来源账户取 resource_* 列（实例为来源
-		// 账户档案、直连为 NULL 落回自身列），resourceAccountID() 即 COALESCE
-		// 语义；provider 身份走组访问元数据的过渡字段——候选行 provider 投影已
-		// 随供应商解耦拆除，而旧候选窗口谓词保证行 provider 与组 provider 一致，
-		// groupAccess.ProviderCode 承载同值。
+		// 模型事实主体批量装载（并集设计 §4.1/§6.2）。协议档案不另查库：
+		// chainCandidateColumns 已按来源账户取 resource_* 列，resourceAccountID()
+		// 即 COALESCE 语义；provider 身份取模型事实主体（资源账户）的
+		// accounts.vendor_code（供应商与上游协议面重构设计 §2.1/§8：vendor 值域
+		// 与旧 providerCode 同名，generic_http 账户为空串）——并集语义按「事实
+		// 主体自身的连接身份」收敛，与同位置 resourceProviderProtocolProfileID/
+		// resourceProtocolCode 的 COALESCE 口径一致；组访问元数据的过渡
+		// ProviderCode 已随 groups.provider_code 退役恒空，不再作来源。
 		factIDs := make([]string, 0, len(admitted))
 		seenFact := map[string]bool{}
 		for _, row := range admitted {
@@ -166,17 +169,19 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 
 		for _, row := range admitted {
 			factID := row.resourceAccountID()
-			factProvider := groupAccess.ProviderCode
-			factModels := supportedModels[factID][factProvider]
+			factProvider := row.resourceVendorCode()
+			factModels := supportedModels[factID]
 			// 直接支持模型并入（空 SM 账户此处天然为空集，不产出任何模型——
 			// 并集设计 §4.3 裁决：空集合不展开"全部模型"，无需特判）。
-			for model := range factModels {
+			for model := range factModels.public {
 				models[model] = true
 			}
-			// 有效映射源并入（§4.2）：DB 层已取启用行，此处按 provider 门 +
-			// IsAdmissibleModelMapping 四道代码侧判定 + upstream ∈ 事实主体 SM
-			// 收敛。RuntimeAccount 视图用事实主体档案列——授权实例不得用包装
-			// 实例账户档案。
+			// 有效映射源并入（§4.2）：DB 层已取启用行，此处按
+			// IsAdmissibleModelMapping 判定 + upstream ∈ 事实主体 SM 收敛。
+			// 供应商门已随 account_model_mappings.provider_code 维度退役拆除
+			//（account_entry_mappings 只按 account_id 归属，映射恒在事实主体
+			// 名下）。RuntimeAccount 视图用事实主体档案列——授权实例不得用
+			// 包装实例账户档案。
 			account := &gatewayopenai.RuntimeAccount{
 				ProviderCode:              factProvider,
 				ProviderProtocolProfileID: row.resourceProviderProtocolProfileID(),
@@ -184,15 +189,10 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 				ProtocolVersion:           row.resourceProtocolVersion(),
 			}
 			for _, item := range mappings[factID] {
-				// 供应商门（调度 SQL account_model_mappings.provider_code = 事实
-				// 主体 provider 同条件）：账内跨供应商历史映射行不并入。
-				if item.providerCode != factProvider {
-					continue
-				}
 				if !gatewayopenai.IsAdmissibleModelMapping(item.mapping, account) {
 					continue
 				}
-				if !factModels[item.mapping.UpstreamModel] {
+				if !factModels.upstream[item.mapping.UpstreamModel] {
 					continue
 				}
 				models[item.mapping.SourceModel] = true
@@ -254,48 +254,64 @@ func (l chainGroupModelUnionLoader) listUnionCandidateRows(ctx context.Context, 
 	return out, rows.Err()
 }
 
+// chainUnionFactModels 是一个模型事实主体的支持模型名集合：public 承载
+// direct 并集成员名（models.public_model，设计 §4「direct public_model」），
+// upstream 承载映射有效性门的 upstream 名集合（models.upstream_model——映射
+// 上游名与公开名在别名行上不同，两套集合不得混用）。
+type chainUnionFactModels struct {
+	public   map[string]bool
+	upstream map[string]bool
+}
+
 // loadUnionSupportedModels 按模型事实主体 ID 集批量装载 account_supported_models，
-// 结果按 (accountID, providerCode) 分桶。provider 过滤在消费侧按事实主体
-// provider 精确匹配（§4.1 的 asm.provider_code = COALESCE(...) 条件）；单条
-// IN 查询 + 内存分桶等价且避免逐账户查询。
-func (l chainGroupModelUnionLoader) loadUnionSupportedModels(ctx context.Context, factIDs []string) (map[string]map[string]map[string]bool, error) {
+// 结果按 accountID 分桶（供应商解耦：表无 provider 维度，设计 §4 列收敛为
+// (account_id, model_id, created_at)，模型事实 JOIN models 取名与状态）。
+// 可见性口径：status='active'（§4「关系只允许 active」）；personal 行按
+// models.system_account_id = 账户属主收窄（owner-visible），builtin/global
+// 行全可见。单条 IN 查询 + 内存分桶等价且避免逐账户查询。
+func (l chainGroupModelUnionLoader) loadUnionSupportedModels(ctx context.Context, factIDs []string) (map[string]chainUnionFactModels, error) {
 	s := l.selector
-	out := map[string]map[string]map[string]bool{}
+	out := map[string]chainUnionFactModels{}
 	ids := uniqueNonEmpty(factIDs)
 	if len(ids) == 0 {
 		return out, nil
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?, ", len(ids)), ", ")
-	query := fmt.Sprintf(`SELECT account_id, provider_code, model FROM %s WHERE account_id IN (%s)`,
-		s.table("account_supported_models"), placeholders)
+	query := fmt.Sprintf(`SELECT asm.account_id, m.public_model, m.upstream_model
+		FROM %s asm
+		INNER JOIN %s m ON m.id = asm.model_id
+		INNER JOIN %s acc ON acc.id = asm.account_id
+		WHERE asm.account_id IN (%s)
+			AND m.status = 'active'
+			AND (m.scope IN ('builtin', 'global') OR m.system_account_id = acc.system_account_id)
+		ORDER BY asm.account_id ASC, m.public_model ASC, m.upstream_model ASC`,
+		s.table("account_supported_models"), s.table("models"), s.table("accounts"), placeholders)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), rowsArgs(ids)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var accountID, providerCode, model string
-		if err := rows.Scan(&accountID, &providerCode, &model); err != nil {
+		var accountID, publicModel, upstreamModel string
+		if err := rows.Scan(&accountID, &publicModel, &upstreamModel); err != nil {
 			return nil, err
 		}
-		byProvider := out[accountID]
-		if byProvider == nil {
-			byProvider = map[string]map[string]bool{}
-			out[accountID] = byProvider
+		bucket := out[accountID]
+		if bucket.public == nil {
+			bucket.public = map[string]bool{}
+			bucket.upstream = map[string]bool{}
+			out[accountID] = bucket
 		}
-		byModel := byProvider[providerCode]
-		if byModel == nil {
-			byModel = map[string]bool{}
-			byProvider[providerCode] = byModel
-		}
-		byModel[model] = true
+		bucket.public[publicModel] = true
+		bucket.upstream[upstreamModel] = true
 	}
 	return out, rows.Err()
 }
 
-// loadUnionModelMappings 按模型事实主体 ID 集批量装载 account_model_mappings 全部
+// loadUnionModelMappings 按模型事实主体 ID 集批量装载 account_entry_mappings 全部
 // 启用行（§4.2 的 DB 层条件：enabled = 1），行内含 source/upstream 端点族供
-// IsAdmissibleModelMapping 判定。
+// IsAdmissibleModelMapping 判定；upstream 名经 target_model_id LEFT JOIN
+// models.upstream_model 解析（modelcheckowner business_source 同款读取先例）。
 func (l chainGroupModelUnionLoader) loadUnionModelMappings(ctx context.Context, factIDs []string) (map[string][]chainUnionMappingRow, error) {
 	s := l.selector
 	out := map[string][]chainUnionMappingRow{}
@@ -304,13 +320,14 @@ func (l chainGroupModelUnionLoader) loadUnionModelMappings(ctx context.Context, 
 		return out, nil
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?, ", len(ids)), ", ")
-	// account_model_mappings 无 id 列（PK = account_id + source_model +
-	// source_endpoint_family），排序按 PK 列——loadModelMappingsByAccountIds
-	// 同款注释。
-	query := fmt.Sprintf(`SELECT account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family
-		FROM %s WHERE account_id IN (%s) AND enabled = 1
-		ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC`,
-		s.table("account_model_mappings"), placeholders)
+	// account_entry_mappings 有全局唯一 id 列（设计 §5.1），排序按 id 与
+	// loadModelMappingsByAccountIds 的 PK 列序同构（确定性读序）。
+	query := fmt.Sprintf(`SELECT em.account_id, em.source_model, em.source_endpoint_family, m.upstream_model, em.target_endpoint_family
+		FROM %s em
+		LEFT JOIN %s m ON m.id = em.target_model_id
+		WHERE em.account_id IN (%s) AND em.enabled = 1
+		ORDER BY em.account_id ASC, em.source_model ASC, em.source_endpoint_family ASC, em.id ASC`,
+		s.table("account_entry_mappings"), s.table("models"), placeholders)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), rowsArgs(ids)...)
 	if err != nil {
 		return nil, err
@@ -320,7 +337,7 @@ func (l chainGroupModelUnionLoader) loadUnionModelMappings(ctx context.Context, 
 		var accountID string
 		var item chainUnionMappingRow
 		enabled := true
-		if err := rows.Scan(&accountID, &item.providerCode, &item.mapping.SourceModel, &item.mapping.SourceEndpointFamily,
+		if err := rows.Scan(&accountID, &item.mapping.SourceModel, &item.mapping.SourceEndpointFamily,
 			&item.mapping.UpstreamModel, &item.mapping.UpstreamEndpointFamily); err != nil {
 			return nil, err
 		}

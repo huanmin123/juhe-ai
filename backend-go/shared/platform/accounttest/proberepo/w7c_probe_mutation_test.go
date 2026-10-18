@@ -341,10 +341,16 @@ func TestW7CDeferAndHelperArms(t *testing.T) {
 	if nowText("x") != "x" {
 		t.Fatal("nowText passthrough")
 	}
-	// Provider pool isolation support matrix.
-	for _, provider := range []string{"openai", "GPT", "openai-compatible", "deepseek", "glm", "gemini", "hybrid", "anthropic"} {
+	// Provider pool isolation support matrix（供应商解耦等价词表：真实厂商直取，
+	// 空 vendor + 协议面承接旧 openai-compatible/hybrid 泛化身份）。
+	for _, provider := range []string{"GPT", "gpt", "deepseek", "glm", "gemini", "anthropic"} {
 		if !isAccountAPIKeyPoolProviderSupported(provider, "", "") {
 			t.Fatalf("provider %s must be supported", provider)
+		}
+	}
+	for _, protocol := range []string{"openai", "anthropic", "gemini"} {
+		if !isAccountAPIKeyPoolProviderSupported("", protocol, "") {
+			t.Fatalf("generic %s protocol must be supported", protocol)
 		}
 	}
 	if !isAccountAPIKeyPoolProviderSupported("unknown", " Anthropic ", "") {
@@ -353,7 +359,7 @@ func TestW7CDeferAndHelperArms(t *testing.T) {
 	if isAccountAPIKeyPoolProviderSupported("unknown", "openai", "") {
 		t.Fatal("unknown provider/protocol must not be supported")
 	}
-	if got := IsolationEnabledForTest(h.store, "openai", "openai", "v1", "oauth", nil); got {
+	if got := IsolationEnabledForTest(h.store, "gpt", "openai", "v1", "oauth", nil); got {
 		t.Fatal("oauth accounts have no pool isolation")
 	}
 }

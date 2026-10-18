@@ -26,11 +26,19 @@ var wgUnionBusinessSchema = []string{
       type TEXT NOT NULL DEFAULT 'api_key',
       status TEXT NOT NULL DEFAULT 'active',
       schedulable INTEGER NOT NULL DEFAULT 1,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
-      provider_protocol_profile_id TEXT,
+      vendor_code TEXT,
+      connection_driver_code TEXT NOT NULL DEFAULT 'generic_http',
+      oauth_type TEXT,
       protocol_code TEXT,
       protocol_version TEXT,
+      -- 迁移窗口双列兼容：health-usage/balance-detect/xai-grok/list-
+      -- availability 任务族生产代码仍读 accounts 旧列（provider_code/
+      -- provider_protocol_profile_id/client_compatibility，各自读侧切片
+      -- 未落地），本 fixture 先保留旧列；对应切片完成 vendor_code 迁移后随删。
+      provider_code TEXT NOT NULL DEFAULT 'openai',
+      provider_protocol_profile_id TEXT,
       client_compatibility TEXT,
+      health_check_connection_id TEXT,
       health_check_model TEXT NOT NULL DEFAULT '',
       health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
       account_expires_at TEXT,
@@ -72,10 +80,44 @@ var wgUnionBusinessSchema = []string{
 	`CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       group_type TEXT,
       scheduling_policy_json TEXT
+    )`,
+	// 供应商解耦后探针读侧的连接面/模型目录表（canonical 业务表，测试
+	// fixture 按 fresh DDL 形态预置）。
+	`CREATE TABLE IF NOT EXISTS models (
+      id TEXT PRIMARY KEY,
+      vendor_code TEXT,
+      public_model TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      system_account_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT ''
+    )`,
+	`CREATE TABLE IF NOT EXISTS account_supported_models (
+      account_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (account_id, model_id)
+    )`,
+	`CREATE TABLE IF NOT EXISTS account_connections (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      connection_preset_code TEXT NOT NULL,
+      protocol_surface_code TEXT,
+      base_url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      UNIQUE (account_id, connection_preset_code),
+      UNIQUE (account_id, id)
+    )`,
+	`CREATE TABLE IF NOT EXISTS account_endpoint_modes (
+      connection_id TEXT NOT NULL,
+      endpoint_mode TEXT NOT NULL,
+      PRIMARY KEY (connection_id, endpoint_mode)
     )`,
 	`CREATE TABLE IF NOT EXISTS group_accounts (
       group_id TEXT NOT NULL,

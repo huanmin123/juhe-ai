@@ -39,6 +39,9 @@ func w1nSecretRow(id, accountType, providerCode, encrypted string) *chainCandida
 		ID:                   id,
 		SystemAccountID:      "sys_owner",
 		ProviderCode:         providerCode,
+		// 供应商解耦（设计 §2.1）：连接身份读 vendor_code（chain_accounts_secret
+		// 池化隔离门 resourceVendorCode），与旧 provider 值同名。
+		VendorCode:           sql.NullString{String: providerCode, Valid: providerCode != ""},
 		ProtocolCode:         sql.NullString{String: "openai", Valid: true},
 		ProtocolVersion:      sql.NullString{String: "v1", Valid: true},
 		Name:                 "行-" + id,

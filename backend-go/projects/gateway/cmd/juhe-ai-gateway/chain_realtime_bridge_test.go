@@ -39,16 +39,16 @@ func seedRealtimeCatalogRow(t *testing.T, db *sql.DB) {
 	// resolveRealtimeCatalogModel）暂按 openai 兼容聚合键读取，终态计价目录
 	// 按账户 vendor（gpt）读取——两消费键各自需要同名 provider_code 行；聚合
 	// 门切 vendor 身份属后续 realtime 切片，彼时删除 openai 键行。
-	for _, row := range []struct{ id, providerCode string }{
+	for _, row := range []struct{ id, vendorCode string }{
 		{"cat_realtime_1", "gpt"},
 		{"cat_realtime_1_openai_gate", "openai"},
 	} {
-		if _, err := db.Exec(`INSERT INTO custom_provider_models (
-				id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
-				supported_api_protocols_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
-				created_by, created_at, updated_at)
-			VALUES (?, ?, 'gpt-realtime', 'global', NULL, 'active', 1, 'audio',
-				'["realtime"]', 32, 64, ?, ?, ?)`, row.id, row.providerCode, "sys_owner", now, now); err != nil {
+		if _, err := db.Exec(`INSERT INTO models (
+				id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
+				supported_endpoint_modes_json, audio_input_usd_per_1m, audio_output_usd_per_1m,
+				created_at, updated_at)
+			VALUES (?, ?, 'gpt-realtime', 'gpt-realtime', 'global', 'active', 1,
+				'["realtime_session"]', 32, 64, ?, ?)`, row.id, row.vendorCode, now, now); err != nil {
 			t.Fatalf("seed realtime catalog: %v", err)
 		}
 	}

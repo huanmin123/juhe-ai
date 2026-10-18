@@ -52,46 +52,35 @@ func TestW11FCreateFaults(t *testing.T) {
 	provider := "openai"
 	high := GroupTypeHighConcurrency
 
-	// 缺上下文 / 名称 / 供应商 / 类型 / 策略。
+	// 缺上下文 / 名称 / 类型 / 策略（供应商解耦后 providerCode 兼容入参，
+	// 无供应商校验，设计 §8）。
 	if _, err := store.Create(context.Background(), MutationInput{}, AccessScope{}); err == nil {
 		t.Fatal("Create empty scope must fail")
 	}
 	if _, err := store.Create(context.Background(), MutationInput{ProviderCode: &provider}, admin); err == nil {
 		t.Fatal("Create no name must fail")
 	}
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name}, admin); err == nil {
-		t.Fatal("Create no provider must fail")
+	if _, err := store.Create(context.Background(), MutationInput{Name: &name}, admin); err != nil {
+		t.Fatalf("Create without provider must succeed: %v", err)
 	}
 	bogusType := "bogus"
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &provider, GroupType: &bogusType}, admin); err == nil {
+	if _, err := store.Create(context.Background(), MutationInput{Name: w11fStringPtr(name + "-2"), ProviderCode: &provider, GroupType: &bogusType}, admin); err == nil {
 		t.Fatal("Create bogus type must fail")
 	}
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &provider, GroupType: &high, SchedulingPolicy: map[string]any{"mode": "balanced_fast"}}, admin); err == nil {
+	if _, err := store.Create(context.Background(), MutationInput{Name: w11fStringPtr(name + "-3"), ProviderCode: &provider, GroupType: &high, SchedulingPolicy: map[string]any{"mode": "balanced_fast"}}, admin); err == nil {
 		t.Fatal("Create unknown policy key must fail")
 	}
-	// 供应商查询错误 / 未知供应商 / 停用供应商。
-	env.script.failQuery("SELECT enabled FROM")
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &provider}, admin); err == nil {
-		t.Fatal("Create provider query fault must fail")
-	}
-	missing := "ghost-provider"
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &missing}, admin); err == nil || !strings.Contains(err.Error(), "不支持的供应商") {
-		t.Fatalf("Create missing provider = %v", err)
-	}
-	disabled := "disabled-provider"
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &disabled}, admin); err == nil || !strings.Contains(err.Error(), "供应商已停用") {
-		t.Fatalf("Create disabled provider = %v", err)
-	}
-	// INSERT 错误 / 名称重复。
+	// INSERT 错误 / 名称重复（换名避免与前臂成功行撞唯一索引）。
+	dupName := name + "-4"
 	env.script.failExec("INSERT INTO groups")
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &provider}, admin); err == nil {
+	if _, err := store.Create(context.Background(), MutationInput{Name: &dupName, ProviderCode: &provider}, admin); err == nil {
 		t.Fatal("Create insert fault must fail")
 	}
-	if _, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &provider}, admin); err != nil {
+	if _, err := store.Create(context.Background(), MutationInput{Name: &dupName, ProviderCode: &provider}, admin); err != nil {
 		t.Fatal(err)
 	}
-	_, err := store.Create(context.Background(), MutationInput{Name: &name, ProviderCode: &provider}, admin)
-	if err == nil || !strings.Contains(err.Error(), "同一供应商下分组名称已存在") {
+	_, err := store.Create(context.Background(), MutationInput{Name: &dupName, ProviderCode: &provider}, admin)
+	if err == nil || !strings.Contains(err.Error(), "同名分组已存在") {
 		t.Fatalf("Create duplicate = %v", err)
 	}
 	// 高并发创建带策略 + enabled=false（换名避开唯一索引）。
@@ -109,8 +98,8 @@ func TestW11FPatchFaults(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
 	owner := AccessScope{ViewerID: "w11f-owner"}
-	revision := env.w11fSeedGroup(t, "w11f-p1", "w11f-owner", "w11f-补丁组", "openai", 1, 0, "personal")
-	env.w11fSeedGroup(t, "w11f-p2", "w11f-owner", "w11f-默认组", "openai", 1, 1, "personal")
+	revision := env.w11fSeedGroup(t, "w11f-p1", "w11f-owner", "w11f-补丁组", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-p2", "w11f-owner", "w11f-默认组", 1, 1, "personal")
 	newName := "w11f-新名"
 
 	// Begin / 行查询 / 不存在 / 默认分组只读 / 过期版本。
@@ -131,13 +120,13 @@ func TestW11FPatchFaults(t *testing.T) {
 	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{Name: &newName}, "2001-01-01T00:00:00.000Z", owner); err == nil {
 		t.Fatal("Patch stale version must conflict")
 	}
-	// 名称 / 供应商 / 说明校验与坏 stored 值。
+	// 名称校验与坏 stored 值（providerCode 兼容入参接受但忽略）。
 	blank := " "
 	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{Name: &blank}, revision, owner); err == nil {
 		t.Fatal("Patch blank name must fail")
 	}
-	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &blank}, revision, owner); err == nil {
-		t.Fatal("Patch blank provider must fail")
+	if result, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &blank}, revision, owner); err != nil || len(result.ChangedFields) != 0 {
+		t.Fatalf("Patch ignored provider = %+v/%v", result, err)
 	}
 	bogus := "bogus"
 	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{GroupType: &bogus}, revision, owner); err == nil {
@@ -155,26 +144,11 @@ func TestW11FPatchFaults(t *testing.T) {
 	}
 	env.exec(t, `UPDATE groups SET updated_at = ? WHERE id = 'w11f-p1'`, revision)
 
-	// 供应商切换: 未知供应商 / 已停用 / 有账户 → 拒绝。
+	// 供应商解耦后 providerCode patch 兼容入参：接受但忽略，恒为无变更
+	// no-op（设计 §8）。
 	anthropic := "anthropic"
-	missingProvider := "ghost-provider"
-	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &missingProvider}, revision, owner); err == nil || !strings.Contains(err.Error(), "不支持的供应商") {
-		t.Fatalf("Patch missing provider = %v", err)
-	}
-	disabledProvider := "disabled-provider"
-	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &disabledProvider}, revision, owner); err == nil || !strings.Contains(err.Error(), "供应商已停用") {
-		t.Fatalf("Patch disabled provider = %v", err)
-	}
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, created_at) VALUES ('w11f-acc1', 'w11f-owner', '2024-01-01T00:00:00.000Z')`)
-	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-		VALUES ('w11f-owner', 'w11f-p1', 'w11f-acc1', 1, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
-	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &anthropic}, revision, owner); err == nil || !strings.Contains(err.Error(), "已有账户的分组不允许修改供应商") {
-		t.Fatalf("Patch provider with accounts = %v", err)
-	}
-	// ownedGroupHasAccounts 查询错误。
-	env.script.failQuery("FROM group_accounts")
-	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &anthropic}, revision, owner); err == nil {
-		t.Fatal("Patch hasAccounts fault must fail")
+	if result, err := store.Patch(context.Background(), "w11f-p1", MutationInput{ProviderCode: &anthropic}, revision, owner); err != nil || len(result.ChangedFields) != 0 {
+		t.Fatalf("Patch ignored provider = %+v/%v", result, err)
 	}
 
 	// UPDATE 错误 / affected 0 / 重复名 / commit。
@@ -186,10 +160,10 @@ func TestW11FPatchFaults(t *testing.T) {
 	if _, err := store.Patch(context.Background(), "w11f-p1", MutationInput{Name: &newName}, revision, owner); err == nil {
 		t.Fatal("Patch affected0 must conflict")
 	}
-	env.w11fSeedGroup(t, "w11f-p3", "w11f-owner", "w11f-目标名", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-p3", "w11f-owner", "w11f-目标名", 1, 0, "personal")
 	taken := "w11f-目标名"
 	_, err := store.Patch(context.Background(), "w11f-p1", MutationInput{Name: &taken}, revision, owner)
-	if err == nil || !strings.Contains(err.Error(), "同一供应商下分组名称已存在") {
+	if err == nil || !strings.Contains(err.Error(), "同名分组已存在") {
 		t.Fatalf("Patch duplicate = %v", err)
 	}
 	env.script.failCommit()
@@ -221,7 +195,7 @@ func TestW11FRouteStrategyGuards(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
 	owner := AccessScope{ViewerID: "w11f-owner"}
-	revision := env.w11fSeedGroup(t, "w11f-rg", "w11f-owner", "w11f-路由组", "openai", 1, 0, "personal")
+	revision := env.w11fSeedGroup(t, "w11f-rg", "w11f-owner", "w11f-路由组", 1, 0, "personal")
 
 	// 唯一可用分组 → 停用被拒。
 	env.exec(t, `INSERT INTO route_strategies (id, system_account_id, name) VALUES ('w11f-rs1', 'w11f-owner', 'w11f-策略1')`)
@@ -294,8 +268,8 @@ func TestW11FDeleteFaults(t *testing.T) {
 	if _, err := store.Delete(context.Background(), "w11f-d1", owner); err == nil {
 		t.Fatal("Delete begin fault must fail")
 	}
-	env.w11fSeedGroup(t, "w11f-d1", "w11f-owner", "w11f-删除组", "openai", 1, 0, "personal")
-	env.w11fSeedGroup(t, "w11f-d2", "w11f-owner", "w11f-默认删除", "openai", 1, 1, "personal")
+	env.w11fSeedGroup(t, "w11f-d1", "w11f-owner", "w11f-删除组", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-d2", "w11f-owner", "w11f-默认删除", 1, 1, "personal")
 	env.script.failQuery("SELECT g.system_account_id, g.name, g.is_default")
 	if _, err := store.Delete(context.Background(), "w11f-d1", owner); err == nil {
 		t.Fatal("Delete row fault must fail")
@@ -343,7 +317,7 @@ func TestW11FDeleteFaults(t *testing.T) {
 		t.Fatal("Delete stats dirty fault must fail")
 	}
 	// 正常删除（上一轮提交成功后统计报错，分组已删，重新播种）。
-	env.w11fSeedGroup(t, "w11f-d3", "w11f-owner", "w11f-再次删除", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-d3", "w11f-owner", "w11f-再次删除", 1, 0, "personal")
 	result, err := store.Delete(context.Background(), "w11f-d3", owner)
 	if err != nil || !result.Deleted || result.Name != "w11f-再次删除" {
 		t.Fatalf("Delete hit = %+v/%v", result, err)
@@ -357,7 +331,7 @@ func TestW11FDeleteFaults(t *testing.T) {
 func TestW11FFindDetailFaults(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
-	revision := env.w11fSeedGroup(t, "w11f-f1", "w11f-owner", "w11f-详情组", "openai", 1, 0, "personal")
+	revision := env.w11fSeedGroup(t, "w11f-f1", "w11f-owner", "w11f-详情组", 1, 0, "personal")
 
 	// 查询错误 / 不存在 / 坏 group_type。
 	env.script.failQuery("FROM groups g WHERE g.id = ?")
@@ -415,8 +389,8 @@ func TestW11FFindDetailFaults(t *testing.T) {
 func TestW11FOptionsStore(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
-	env.w11fSeedGroup(t, "w11f-o1", "w11f-owner", "w11f-选项组", "openai", 1, 0, "personal")
-	env.w11fSeedGroup(t, "w11f-o2", "w11f-owner2", "w11f-他人组", "openai", 1, 1, "personal")
+	env.w11fSeedGroup(t, "w11f-o1", "w11f-owner", "w11f-选项组", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-o2", "w11f-owner2", "w11f-他人组", 1, 1, "personal")
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, expires_at, created_by, created_at, updated_at)
 		VALUES ('w11f-oa1', 'group', 'w11f-o2', 'w11f-owner2', 'w11f-grantee', 'active', '2999-01-01T00:00:00Z', 'w11f-owner2', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
 
@@ -501,7 +475,7 @@ func TestW11FOptionsStore(t *testing.T) {
 func TestW11FOptionHandlers(t *testing.T) {
 	env := newW11FEnv(t)
 	env.login(t, "w11foptions", "w11f-pass", "super_admin")
-	env.w11fSeedGroup(t, "w11f-h1", "w11f-howner", "w11f-处理器组", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-h1", "w11f-howner", "w11f-处理器组", 1, 0, "personal")
 
 	// purpose 非法 / 重复参数。
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/groups/options?purpose=bogus", "")
@@ -566,7 +540,7 @@ func TestW11FOptionHandlers(t *testing.T) {
 func TestW11FRouteHelpersAndPatch(t *testing.T) {
 	env := newW11FEnv(t)
 	env.login(t, "w11froute", "w11f-pass", "super_admin")
-	revision := env.w11fSeedGroup(t, "w11f-rh1", "w11f-rhowner", "w11f-路由辅助", "openai", 1, 0, "personal")
+	revision := env.w11fSeedGroup(t, "w11f-rh1", "w11f-rhowner", "w11f-路由辅助", 1, 0, "personal")
 
 	// patch 处理器: 坏 JSON / 坏版本 / 未知字段 / 无变更字段。
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/groups/w11f-rh1", `{bad`)
@@ -623,9 +597,9 @@ func TestW11FRouteHelpersAndPatch(t *testing.T) {
 	if code != http.StatusBadRequest || payload["message"] != "分组参数无效" {
 		t.Fatalf("create unknown field = %d %v", code, payload)
 	}
-	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/groups", `{"name":"w11f-创建","providerCode":"ghost"}`)
-	if code != http.StatusBadRequest || payload["message"] != "不支持的供应商：ghost" {
-		t.Fatalf("create ghost provider = %d %v", code, payload)
+	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/groups", `{"name":"w11f-创建ghost","providerCode":"ghost"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create ignored ghost provider = %d %v", code, payload)
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/groups", `{"name":"w11f-创建成功","providerCode":"openai","enabled":true,"groupType":"high_concurrency","schedulingPolicy":{"maxQueueWaitMs":60000},"description":"d"}`)
 	if code != http.StatusCreated {
@@ -647,7 +621,7 @@ func TestW11FRouteHelpersAndPatch(t *testing.T) {
 	if isRFC3339Instant("2024-01-01T00:00:00Z") != true || isRFC3339Instant("zzz") {
 		t.Fatal("isRFC3339Instant drift")
 	}
-	labels := map[string]string{"name": "名称", "providerCode": "供应商", "description": "说明", "groupType": "分组类型", "schedulingPolicy": "调度策略", "enabled": "启用状态", "unknown": "unknown"}
+	labels := map[string]string{"name": "名称", "description": "说明", "groupType": "分组类型", "schedulingPolicy": "调度策略", "enabled": "启用状态", "unknown": "unknown"}
 	for field, want := range labels {
 		if got := patchFieldLabel(field); got != want {
 			t.Fatalf("patchFieldLabel(%s) = %s", field, got)
@@ -701,7 +675,7 @@ func TestW11FRouteHelpersAndPatch(t *testing.T) {
 // TestW11FCreatePatchBody 直接覆盖 createBody / patchBody 的逐字段分支。
 func TestW11FCreatePatchBody(t *testing.T) {
 	valid := map[string]any{"name": "n", "providerCode": "openai"}
-	if input, ok := createBody(valid); !ok || input.Name == nil || input.ProviderCode == nil {
+	if input, ok := createBody(valid); !ok || input.Name == nil || input.ProviderCode != nil {
 		t.Fatalf("createBody valid = %+v", input)
 	}
 	invalid := []map[string]any{
@@ -794,7 +768,7 @@ func TestW11FGroupAccountIDs(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
 	ctx := context.Background()
-	env.w11fSeedGroup(t, "w11f-ga", "w11f-owner", "w11f-账户组", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-ga", "w11f-owner", "w11f-账户组", 1, 0, "personal")
 
 	// 空 ID → 空结果。
 	if got, err := store.groupAccountIDsByGroupIDs(ctx, nil); err != nil || len(got) != 0 {

@@ -66,7 +66,8 @@ func w1kBodyRequest(t *testing.T, method, path, model string) *gatewaypreauth.Ga
 }
 
 // w1kNormalRouteKeyRow 构造绑定到 fixture 分组的 normal 策略 Key 行，每个
-// provider 一条 active 绑定（同一分组多供应商才不会被 single_provider 跳过）。
+// 传入标识一条 active 绑定（供应商解耦后绑定行无 provider 维度，参数仅保留
+// 绑定行数语义）。
 func w1kNormalRouteKeyRow(fixture *chainFixture, mode string, providers ...string) *gatewayruntimecache.GatewayAPIKeyRow {
 	row := &gatewayruntimecache.GatewayAPIKeyRow{
 		ID:                "key_w1k",
@@ -75,7 +76,7 @@ func w1kNormalRouteKeyRow(fixture *chainFixture, mode string, providers ...strin
 		RouteStrategyMode: mode,
 		Status:            "active",
 	}
-	for index, provider := range providers {
+	for index := range providers {
 		row.GroupBindings = append(row.GroupBindings, gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
 			ID:              fmt.Sprintf("binding_w1k_%d", index),
 			APIKeyID:        "key_w1k",
@@ -84,7 +85,6 @@ func w1kNormalRouteKeyRow(fixture *chainFixture, mode string, providers ...strin
 			Priority:        index,
 			Weight:          1,
 			Status:          "active",
-			ProviderCode:    provider,
 			GroupEnabled:    1,
 		})
 	}
@@ -183,9 +183,6 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 		}
 		if result.RouteSource != "catalog_provider" {
 			t.Fatalf("RouteSource = %q, want catalog_provider", result.RouteSource)
-		}
-		if result.MatchedProviderCode != "openai" {
-			t.Fatalf("MatchedProviderCode = %q, want openai", result.MatchedProviderCode)
 		}
 		if result.RequestedModel != "gpt-test" {
 			t.Fatalf("RequestedModel = %q", result.RequestedModel)

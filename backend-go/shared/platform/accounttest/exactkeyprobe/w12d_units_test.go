@@ -35,7 +35,7 @@ func TestW12dDirectInputToInputArms(t *testing.T) {
 			ID: "w12d-din", ConfigRevision: 5, DispatchRevision: 7, Provider: "deepseek",
 			ProtocolProfileID: "profile_deepseek_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
 			Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json",
-			HealthModel: "w12d-model", CredentialsEncrypted: envelope,
+			HealthModel: "w12d-model", CredentialsEncrypted: envelope, ConnectionBaseURL: "https://api.deepseek.com",
 		},
 		Binding:      DirectBinding{GroupID: "w12d-group", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1",

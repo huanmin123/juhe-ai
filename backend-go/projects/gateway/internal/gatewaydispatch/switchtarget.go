@@ -25,6 +25,10 @@ import (
 // 字段暂缓（ConvertedContext 独立结构化同为暂缓项）。
 type SwitchTarget struct {
 	// ProviderCode 是冻结时账户的供应商；非 Chat 目标用于同供应商硬约束。
+	// 迁移过渡态（供应商解耦切片）：账户投影已拆 provider 维度，冻结源与
+	// 账户侧现均为恒空串，:122 一带的同供应商比较恒真、约束实际失效。收口
+	// 前置：切号冻结目标改按 vendor_code 冻结与比较（与 hybrid 入口映射门
+	// 同批，见 gatewayopenai/mapping.go isHybridProviderCode 注释）。
 	ProviderCode string
 	// ProviderProtocolProfileID 是冻结时账户的协议 profile；本次不做额外
 	// 判定（同供应商内 profile 差异由既有链路处理）。

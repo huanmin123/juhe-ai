@@ -543,14 +543,14 @@ func (d *Deps) queryAccountUsageOptionRows(r *http.Request, ownerSystemAccountID
 			COALESCE(system_accounts.display_name, system_accounts.username) AS system_account_name,
 			COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id) AS owner_system_account_id,
 			COALESCE(owner_accounts.display_name, owner_accounts.username) AS owner_system_account_name,
-			accounts.provider_code,
-			COALESCE(providers.name, accounts.provider_code) AS provider_name,
+			COALESCE(accounts.vendor_code, '') AS provider_code,
+			COALESCE(vendors.name, accounts.vendor_code, '') AS provider_name,
 			accounts.name,
 			accounts.type,
 			accounts.status,
 			CASE WHEN accounts.authorization_instance_authorization_id IS NULL THEN 'owner' ELSE 'authorized' END AS access_type
 		FROM `+d.businessTable("accounts")+` accounts
-		LEFT JOIN `+d.businessTable("providers")+` providers ON providers.code = accounts.provider_code
+		LEFT JOIN `+d.businessTable("vendors")+` vendors ON vendors.code = accounts.vendor_code
 		LEFT JOIN `+d.businessTable("system_accounts")+` system_accounts ON system_accounts.id = accounts.system_account_id
 		LEFT JOIN `+d.businessTable("system_accounts")+` owner_accounts
 			ON owner_accounts.id = COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id)
@@ -980,7 +980,7 @@ func (d *Deps) loadAccountUsageKeywordAccountIds(r *http.Request, scope AccessSc
 	}
 	base := `(
 		(instr(accounts.name, ?) > 0)
-		OR (instr(accounts.provider_code, ?) > 0)
+		OR (instr(COALESCE(accounts.vendor_code, ''), ?) > 0)
 		OR (instr(accounts.type, ?) > 0)
 		OR EXISTS (
 			SELECT 1
@@ -1100,7 +1100,7 @@ func (d *Deps) loadAccountUsageMetadataRows(r *http.Request, scope AccessScope, 
 				accounts.id,
 				accounts.system_account_id,
 				COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) AS system_account_name,
-				accounts.provider_code,
+				COALESCE(accounts.vendor_code, '') AS provider_code,
 				accounts.name,
 				accounts.type,
 				accounts.status,

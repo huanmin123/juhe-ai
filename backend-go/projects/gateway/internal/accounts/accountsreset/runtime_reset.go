@@ -124,12 +124,16 @@ type ResetSummary struct {
 	Credentials                        accountscore.Credentials
 	Status                             string
 	Schedulable                        bool
-	ProviderCode                       string
-	ProviderProtocolProfileID          string
-	ProtocolCode                       string
-	ProtocolVersion                    string
-	ClientCompatibility                string
-	SystemAccountID                    string
+	// ProviderCode 承载 accounts.vendor_code（供应商解耦设计 §2.1：vendor 值域
+	// 与旧 providerCode 同名，NULL 归一空串）；ProviderProtocolProfileID /
+	// ClientCompatibility 词汇已随供应商解耦退役，投影恒空串。包内无消费方，
+	// 字段仅为 scan 形状保留。
+	ProviderCode              string
+	ProviderProtocolProfileID string
+	ProtocolCode              string
+	ProtocolVersion           string
+	ClientCompatibility       string
+	SystemAccountID           string
 	AccessType                         string // 'owner' | 'authorized'
 	AccountExpiresAt                   sql.NullString
 	CooldownUntil                      sql.NullString
@@ -1515,8 +1519,8 @@ func (s *Service) findOwnerResetSummary(ctx context.Context, id, scoped string) 
 	var credentialsEncrypted sql.NullString
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.config_revision, accounts.dispatch_revision,
 			accounts.name, accounts.type, accounts.status, accounts.schedulable,
-			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
-			accounts.protocol_version, accounts.client_compatibility, accounts.system_account_id,
+			COALESCE(accounts.vendor_code, ''), '', accounts.protocol_code,
+			accounts.protocol_version, '', accounts.system_account_id,
 			accounts.credentials_encrypted, accounts.account_expires_at, accounts.cooldown_until,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
 			accounts.last_health_check_at, accounts.last_health_check_error_code,
@@ -1575,8 +1579,8 @@ func (s *Service) findAuthorizedResetSummary(ctx context.Context, id, scoped str
 	var credentialsEncrypted sql.NullString
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.config_revision, accounts.dispatch_revision,
 			accounts.name, accounts.type, accounts.status, accounts.schedulable,
-			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
-			accounts.protocol_version, accounts.client_compatibility, accounts.system_account_id,
+			COALESCE(accounts.vendor_code, ''), '', accounts.protocol_code,
+			accounts.protocol_version, '', accounts.system_account_id,
 			accounts.credentials_encrypted, accounts.account_expires_at, accounts.cooldown_until,
 			accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
 			accounts.last_health_check_at, accounts.last_health_check_error_code,

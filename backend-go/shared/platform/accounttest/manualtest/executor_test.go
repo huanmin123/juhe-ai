@@ -3,8 +3,10 @@ package manualtest
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +114,8 @@ func chatUpstream(t *testing.T, statusCode int, body string, requests *[][]strin
 		if requests != nil {
 			*requests = append(*requests, []string{r.URL.Path, r.Header.Get("authorization")})
 		}
+		rawBody, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(rawBody)))
 		if hold != nil {
 			// 取消路径专用：挂住响应直到测试显式释放（不依赖服务端
 			// r.Context().Done() 的断连感知；客户端取消由 attempt 超时与
@@ -124,7 +128,7 @@ func chatUpstream(t *testing.T, statusCode int, body string, requests *[][]strin
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(strings.ReplaceAll(body, "juhe", challengeAnswerFromBody(rawBody))))
 	}))
 	t.Cleanup(server.Close)
 	if hold != nil {
@@ -139,6 +143,32 @@ func chatUpstream(t *testing.T, statusCode int, body string, requests *[][]strin
 func chatSuccessBody() string {
 	return `{"choices":[{"finish_reason":"stop","message":{"content":"juhe"}}]}`
 }
+
+// challengeAnswerFromBody 解析探针请求里的随机算术挑战（"请计算 A+B，只回复
+// 数字"）并返回十进制答案：2026-10-15 起探针挑战逐请求随机（protocol.go），
+// mock 上游必须回显本次请求期望的数字，固定 "juhe" 报文不再能通过验证。
+func challengeAnswerFromBody(raw []byte) string {
+	body := string(raw)
+	marker := "请计算 "
+	start := strings.Index(body, marker)
+	if start < 0 {
+		return "juhe"
+	}
+	rest := body[start+len(marker):]
+	plus := strings.Index(rest, "+")
+	end := strings.Index(rest, "，")
+	if plus < 0 || end < 0 || plus > end {
+		return "juhe"
+	}
+	left, leftErr := strconv.Atoi(strings.TrimSpace(rest[:plus]))
+	right, rightErr := strconv.Atoi(strings.TrimSpace(rest[plus+1 : end]))
+	if leftErr != nil || rightErr != nil {
+		return "juhe"
+	}
+	return strconv.Itoa(left + right)
+}
+
+
 
 // 快乐路径：draft 解密 → chat_json 诊断 → 成功信封（result_json 形状对照
 // Node AccountTestResult）。
@@ -204,13 +234,14 @@ func TestExecutorDraftHybridMappingUsesMappedProtocol(t *testing.T) {
 		seenPath = r.URL.Path
 		seenAPIKey = r.Header.Get("x-api-key")
 		seenAuthorization = r.Header.Get("authorization")
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Errorf("body must be JSON: %v", err)
 		}
 		seenModel, _ = body["model"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"juhe"}],"stop_reason":"end_turn"}`))
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"` + challengeAnswerFromBody(raw) + `"}],"stop_reason":"end_turn"}`))
 	}))
 	defer server.Close()
 
@@ -365,7 +396,8 @@ func TestExecutorPoolSummaryEnvelope(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":{"message":"bad","code":"invalid_api_key"}}`))
 			return
 		}
-		_, _ = w.Write([]byte(chatSuccessBody()))
+		raw, _ := io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(strings.ReplaceAll(chatSuccessBody(), "juhe", challengeAnswerFromBody(raw))))
 	}))
 	t.Cleanup(server.Close)
 	executor := newTestExecutor(t, nil)
@@ -447,7 +479,9 @@ func TestExecutorSavedAccountPath(t *testing.T) {
 			ProviderCode:    "openai",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
-			Credentials:     map[string]any{"api_key": "sk-saved", "base_url": server.URL + "/v1"},
+			// 供应商解耦：探针上游地址来自候选连接面（凭据 JSON 不再承载 base_url）。
+			BaseURL:     server.URL + "/v1",
+			Credentials: map[string]any{"api_key": "sk-saved"},
 			SelectedAPIKey:  "sk-saved",
 			APIKeyEntries: []proberepo.KeyEntry{
 				{Key: "sk-saved", Fingerprint: "fp", Index: 0},
@@ -480,13 +514,14 @@ func TestExecutorSavedAccountPath(t *testing.T) {
 func TestExecutorSavedAccountModelOutsideSupportedList(t *testing.T) {
 	var seenModel string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Errorf("body must be JSON: %v", err)
 		}
 		seenModel, _ = body["model"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(chatSuccessBody()))
+		_, _ = w.Write([]byte(strings.ReplaceAll(chatSuccessBody(), "juhe", challengeAnswerFromBody(raw))))
 	}))
 	defer server.Close()
 
@@ -511,7 +546,9 @@ func TestExecutorSavedAccountModelOutsideSupportedList(t *testing.T) {
 			ProviderCode:    "openai",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
-			Credentials:     map[string]any{"api_key": "sk-saved", "base_url": server.URL + "/v1"},
+			// 供应商解耦：探针上游地址来自候选连接面（凭据 JSON 不再承载 base_url）。
+			BaseURL:     server.URL + "/v1",
+			Credentials: map[string]any{"api_key": "sk-saved"},
 			SelectedAPIKey:  "sk-saved",
 			APIKeyEntries: []proberepo.KeyEntry{
 				{Key: "sk-saved", Fingerprint: "fp", Index: 0},
@@ -549,13 +586,14 @@ func TestExecutorSavedAccountModelOutsideSupportedList(t *testing.T) {
 func TestExecutorDraftModelOutsideSupportedList(t *testing.T) {
 	var seenModel string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Errorf("body must be JSON: %v", err)
 		}
 		seenModel, _ = body["model"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(chatSuccessBody()))
+		_, _ = w.Write([]byte(strings.ReplaceAll(chatSuccessBody(), "juhe", challengeAnswerFromBody(raw))))
 	}))
 	defer server.Close()
 

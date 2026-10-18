@@ -78,7 +78,9 @@ func w12dSeedSettings(t *testing.T, db *sql.DB) {
 	}
 }
 
-// w12dSeedAPIKeyAccount 插入一个可被 direct input 读到的 api_key 候选。
+// w12dSeedAPIKeyAccount 插入一个可被 direct input 读到的 api_key 候选
+// （供应商解耦形态：vendor_code/connection_driver_code 身份列 + 健康检查
+// 连接行，profile 参数剥掉 profile_ 前缀即连接 preset）。
 func w12dSeedAPIKeyAccount(t *testing.T, db *sql.DB, secret, id, provider, profile string) {
 	t.Helper()
 	envelope, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-`+id+`"}`))
@@ -86,31 +88,64 @@ func w12dSeedAPIKeyAccount(t *testing.T, db *sql.DB, secret, id, provider, profi
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
-		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+		id, system_account_id, vendor_code, connection_driver_code, oauth_type, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-		client_compatibility, health_check_model, health_check_endpoint_mode,
+		health_check_model, health_check_endpoint_mode,
 		created_at, updated_at, config_revision, dispatch_revision
 	) VALUES (
-		$1, 'sys_admin', $2, $3, 'openai', 'v1',
+		$1, 'sys_admin', $2, $2, $3, 'openai', 'v1',
 		$4, 'api_key', 'active', $5, 'w12d-fp', 'w12d-mask',
 		1, 0, 0, 0, 0,
-		'', 'w12d-model', 'chat_json',
+		'w12d-model', 'chat_json',
 		$6, $6, 5, 7
-	)`, id, provider, profile, "w12d-"+id, envelope, w12dFixtureNowText); err != nil {
+	)`, id, provider, w9hOAuthType("api_key"), "w12d-"+id, envelope, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
+	preset := strings.TrimPrefix(profile, "profile_")
+	connectionID := "w12d-conn-" + id
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, 'openai_v1', $4, 1, $5, $5) ON CONFLICT (id) DO NOTHING`,
+		connectionID, id, preset, w9hPresetBaseURL(preset, "api_key"), w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_endpoint_modes (connection_id, endpoint_mode) VALUES ($1, 'chat_json')
+		ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`, connectionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET health_check_connection_id = $1 WHERE id = $2`, connectionID, id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.account_health_jobs_input_versions (account_id, current_version, reserved_at) VALUES ($1, 1, $2)
 		ON CONFLICT (account_id) DO NOTHING`, id, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('w12d-group', 'sys_admin', 'w12d-group', 'gpt', 1, 0, $1, $1)
+	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+		VALUES ('w12d-group', 'sys_admin', 'w12d-group', 1, 0, $1, $1)
 		ON CONFLICT (id) DO NOTHING`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
 		VALUES ('sys_admin', 'w12d-group', $1, 1, $2, $2) ON CONFLICT (group_id, account_id) DO NOTHING`, id, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// w12dSeedConnection 为资源账户写入健康检查连接行（preset/base_url + 单个
+// endpoint mode）并回填 health_check_connection_id。
+func w12dSeedConnection(t *testing.T, db *sql.DB, id, preset, baseURL string) {
+	t.Helper()
+	connectionID := "w12d-conn-" + id
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, 'openai_v1', $4, 1, $5, $5) ON CONFLICT (id) DO NOTHING`,
+		connectionID, id, preset, baseURL, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.account_endpoint_modes (connection_id, endpoint_mode) VALUES ($1, 'chat_json')
+		ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`, connectionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE juhe_business.accounts SET health_check_connection_id = $1 WHERE id = $2`, connectionID, id); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -169,21 +204,28 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 授权场景需要源账户：quota-a 是其授权实例，resource_id 指向源账户。
-	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
-		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-		client_compatibility, health_check_model, health_check_endpoint_mode,
-		created_at, updated_at, config_revision, dispatch_revision
-	) VALUES (
-		'w12d-quota-src', 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1',
-		'w12d-quota-src', 'api_key', 'active', $1, 'w12d-fp-src', 'w12d-mask',
-		1, 0, 0, 0, 0,
-		'', 'w12d-model', 'chat_json',
-		$2, $2, 5, 7
-	)`, envelope, w12dFixtureNowText); err != nil {
+	// 供应商解耦形态：身份/连接事实（vendor_code + 健康检查连接行）写在
+	// 资源账户上；实例行（quota-a）不冗余这些事实。
+	envelopeSrc, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_key":"sk-w12d-quota-src"}`))
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
+		id, system_account_id, vendor_code, connection_driver_code, oauth_type, protocol_code, protocol_version,
+		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
+		health_check_model, health_check_endpoint_mode,
+		created_at, updated_at, config_revision, dispatch_revision
+	) VALUES (
+		'w12d-quota-src', 'sys_admin', 'gpt', 'gpt', NULL, 'openai', 'v1',
+		'w12d-quota-src', 'api_key', 'active', $1, 'w12d-fp-src', 'w12d-mask',
+		1, 0, 0, 0, 0,
+		'w12d-model', 'chat_json',
+		$2, $2, 5, 7
+	)`, envelopeSrc, w12dFixtureNowText); err != nil {
+		t.Fatal(err)
+	}
+	w12dSeedConnection(t, db, "w12d-quota-src", "gpt_openai_v1", "https://api.openai.com/v1")
 	// 授权行先于实例账户：accounts.authorization_instance_authorization_id 有
 	// 外键约束（schema 漂移修复补齐），后插会违反 FK。
 	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
@@ -194,17 +236,17 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
-		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+		id, system_account_id, connection_driver_code, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-		client_compatibility, health_check_model, health_check_endpoint_mode,
+		health_check_model, health_check_endpoint_mode,
 		authorization_instance_source_account_id, authorization_instance_authorization_id,
 		created_at, updated_at, config_revision, dispatch_revision
 	) VALUES (
-		'w12d-quota-a', 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1',
+		'w12d-quota-a', 'sys_admin', 'gpt', 'openai', 'v1',
 		'w12d-quota-a', 'api_key', 'active', $1, 'w12d-fp', 'w12d-mask',
 		1, 0, 0, 0, 0,
-		'', 'w12d-model', 'chat_json',
+		'w12d-model', 'chat_json',
 		'w12d-quota-src', 'w12d-auth-1',
 		$2, $2, 5, 7
 	)`, envelope, w12dFixtureNowText); err != nil {
@@ -214,8 +256,8 @@ func TestW12dReaderQuotaArms(t *testing.T) {
 		ON CONFLICT (account_id) DO NOTHING`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('w12d-group', 'sys_admin', 'w12d-group', 'gpt', 1, 0, $1, $1) ON CONFLICT (id) DO NOTHING`, w12dFixtureNowText); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+		VALUES ('w12d-group', 'sys_admin', 'w12d-group', 1, 0, $1, $1) ON CONFLICT (id) DO NOTHING`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)

@@ -55,6 +55,12 @@ func isOpenAIProtocolProfile(account *RuntimeAccount) bool {
 		gatewayNormalize(account.ProtocolVersion) == ProtocolVersion
 }
 
+// isHybridProviderCode 读 RuntimeAccount.ProviderCode 过渡字段（供应商解耦
+// 后账户行 provider_code 已退役，组合根投影仍随行携带候选过渡值）。设计 §2
+// 终态（跨协议只由映射行与目标账户能力决定）要求拆除本门，但替代性写侧
+// family 联动校验（account_entry_mappings）尚未落地，此刻拆门会把未校验的
+// 跨协议映射行对全部账户放开——门与 chain_driver 的过渡投影同批保留，待
+// 模型目录/账户映射运行时切片一并收口。
 func isHybridProviderCode(account *RuntimeAccount) bool {
 	return gatewayNormalize(account.ProviderCode) == "hybrid"
 }

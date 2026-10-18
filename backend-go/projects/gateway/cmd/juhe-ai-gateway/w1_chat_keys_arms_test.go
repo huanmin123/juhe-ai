@@ -18,7 +18,7 @@ func newW1SChatKeysDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, ddl := range []string{
-		"CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, provider_code TEXT NOT NULL, enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)",
+		"CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, enabled INTEGER DEFAULT 1, is_default INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)",
 		"CREATE TABLE IF NOT EXISTS route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT, mode TEXT, status TEXT DEFAULT 'active', is_default INTEGER DEFAULT 0, config_json TEXT, created_at TEXT, updated_at TEXT)",
 		"CREATE TABLE IF NOT EXISTS route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER, weight INTEGER, status TEXT DEFAULT 'active', created_at TEXT, updated_at TEXT)",
 		"CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT, name TEXT NOT NULL, description TEXT, key_hash TEXT, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT, status TEXT DEFAULT 'active', is_default INTEGER DEFAULT 0, purpose TEXT, expires_at TEXT, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT, updated_at TEXT, UNIQUE(system_account_id, name))",
@@ -159,29 +159,27 @@ func TestW1SChatApiKeyIdForSystemAccount(t *testing.T) {
 func TestW1SDefaultRouteStrategyGroupsHybridFiltered(t *testing.T) {
 	db := newW1SChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "secret")
-	// 2026-10-07 默认资源收口（0e83a580b）：defaultRouteStrategyGroups 收窄为
-	// provider_code='gpt'，非 gpt（含 hybrid）一律不派生默认路由。
-	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g1", "owner", "grp", "gpt")
-	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g2", "owner", "hgrp", "hybrid")
+	// 供应商解耦（设计 §8）：组无 provider 维度，gpt 与 hybrid 默认分组一律
+	// 入选（defaultRouteStrategyGroups 无 provider 过滤）。
+	db.Exec("INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES (?,?,?,1,1,'now','now')", "g1", "owner", "grp")
+	db.Exec("INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES (?,?,?,1,1,'now','now')", "g2", "owner", "hgrp")
 	groups, err := provider.defaultRouteStrategyGroups("owner")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	for _, g := range groups {
-		if g.id == "g2" {
-			t.Fatal("hybrid must be filtered")
-		}
-	}
-	if len(groups) != 1 || groups[0].id != "g1" {
+	if len(groups) != 2 {
 		t.Fatalf("groups = %v", groups)
+	}
+	if groups[0].id != "g1" || groups[1].id != "g2" {
+		t.Fatalf("groups = %v, want [g1 g2]（绑定序）", groups)
 	}
 }
 
 func TestW1SDefaultRouteStrategyGroupsNullName(t *testing.T) {
 	db := newW1SChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "secret")
-	// 收口后仅 provider_code='gpt' 的默认分组入选，NULL name 仍以 nameNull 透传。
-	db.Exec("INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at) VALUES (?,?,?,?,1,1,'now','now')", "g1", "owner", nil, "gpt")
+	// 供应商解耦后默认分组全部入选，NULL name 仍以 nameNull 透传。
+	db.Exec("INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at) VALUES (?, ?, NULL, 1, 1, 'now', 'now')", "g1", "owner")
 	groups, _ := provider.defaultRouteStrategyGroups("owner")
 	if len(groups) != 1 || groups[0].id != "g1" || !groups[0].nameNull {
 		t.Fatalf("groups = %v", groups)

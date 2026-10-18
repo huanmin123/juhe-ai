@@ -156,57 +156,21 @@ func TestProbeProfileProviderMatrix(t *testing.T) {
 	}
 }
 
-// TestDirectBaseURLResolution 覆盖 base_url 解析：凭据配置优先、各 profile
-// 冻结端点、hybrid 缺 URL 报错、协议兜底。
+// TestDirectBaseURLResolution 覆盖新连接面契约下的 base_url 解析：连接行
+// base_url 单一事实源（去尾斜杠归一），缺失 fail closed；旧 profile 冻结端点
+// 表与凭据 base_url 读侧已随供应商解耦退役（上游固定 base 的 A 形态由
+// upstreamenvelope 的 fixedBaseURL 在出站时强制，不在输入层承担）。
 func TestDirectBaseURLResolution(t *testing.T) {
-	credentials := map[string]rawJSON{"base_url": rawJSON(`"https://example.com/v1"`)}
-	base, err := directBaseURL(credentials, DirectAccount{Provider: "openai", Type: "api_key"}, "openai")
+	base, err := directBaseURL(DirectAccount{ConnectionBaseURL: "https://example.com/v1"})
 	if err != nil || base != "https://example.com/v1" {
-		t.Fatalf("凭据 base_url 必须优先: %q %v", base, err)
+		t.Fatalf("连接 base_url 必须直通: %q %v", base, err)
 	}
-	trailing := map[string]rawJSON{"base_url": rawJSON(`"https://example.com/v1///"`)}
-	base, err = directBaseURL(trailing, DirectAccount{Provider: "openai", Type: "api_key"}, "openai")
+	base, err = directBaseURL(DirectAccount{ConnectionBaseURL: "https://example.com/v1///"})
 	if err != nil || base != "https://example.com/v1" {
 		t.Fatalf("尾斜杠必须裁剪: %q %v", base, err)
 	}
-	frozen := []struct {
-		profile string
-		typ     string
-		want    string
-	}{
-		{"profile_gpt_openai_v1", "oauth", "https://chatgpt.com/backend-api/codex"},
-		{"profile_xai_openai_v1", "oauth", "https://cli-chat-proxy.grok.com/v1"},
-		{"profile_xai_openai_v1", "api_key", "https://api.x.ai/v1"},
-		{"profile_deepseek_openai_v1", "api_key", "https://api.deepseek.com"},
-		{"profile_deepseek_anthropic_v1", "api_key", "https://api.deepseek.com/anthropic"},
-		{"profile_glm_general_openai_v1", "api_key", "https://open.bigmodel.cn/api/paas/v4"},
-		{"profile_glm_coding_openai_v1", "api_key", "https://open.bigmodel.cn/api/coding/paas/v4"},
-		{"profile_glm_coding_anthropic_v1", "api_key", "https://open.bigmodel.cn/api/anthropic"},
-		{"profile_gemini_openai_chat_v1beta", "api_key", "https://generativelanguage.googleapis.com/v1beta/openai"},
-		{"profile_anthropic_anthropic_v1", "api_key", "https://api.anthropic.com"},
-		{"profile_hybrid_anthropic_messages_v1", "api_key", "https://api.anthropic.com"},
-		{"profile_hybrid_gemini_native_v1beta", "api_key", "https://generativelanguage.googleapis.com"},
-	}
-	for _, item := range frozen {
-		base, err := directBaseURL(map[string]rawJSON{}, DirectAccount{ProtocolProfileID: item.profile, Type: item.typ}, "openai")
-		if err != nil || base != item.want {
-			t.Errorf("directBaseURL(%s,%s)=%q,%v 期望 %q", item.profile, item.typ, base, err, item.want)
-		}
-	}
-	// Gemini 原生 OAuth 分叉。
-	geminiBase, err := directBaseURL(map[string]rawJSON{"oauth_type": rawJSON(`"code_assist"`)}, DirectAccount{ProtocolProfileID: "profile_gemini_native_v1beta", Type: "google_oauth"}, "gemini")
-	if err != nil || geminiBase != "https://cloudcode-pa.googleapis.com" {
-		t.Fatalf("code_assist 必须走 cloudcode 端点: %q %v", geminiBase, err)
-	}
-	// hybrid 缺冻结 URL → 显式报错。
-	if _, err := directBaseURL(map[string]rawJSON{}, DirectAccount{ProtocolProfileID: "profile_hybrid_openai_chat_v1", Type: "api_key"}, "openai"); err == nil {
-		t.Fatal("hybrid 缺 base_url 必须报错")
-	}
-	// 协议兜底。
-	for protocol, want := range map[string]string{"anthropic": "https://api.anthropic.com", "gemini": "https://generativelanguage.googleapis.com", "openai": "https://api.openai.com"} {
-		if base, _ := directBaseURL(map[string]rawJSON{}, DirectAccount{Provider: "unknown"}, protocol); base != want {
-			t.Errorf("协议兜底 %q → %q 期望 %q", protocol, base, want)
-		}
+	if _, err := directBaseURL(DirectAccount{ProtocolProfileID: "profile_gpt_openai_v1", Type: "oauth"}); err == nil {
+		t.Fatal("缺连接 base_url 必须 fail closed")
 	}
 }
 

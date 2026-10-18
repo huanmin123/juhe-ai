@@ -995,23 +995,16 @@ func chainNameCollator() *collate.Collator { return collate.New(language.Chinese
 
 // resolveGroupAccess mirrors resolveGroupUsageAccessMetadata including the
 // authorized-group branch (group authorization row + local settings
-// overrides). 2026-10-18 修复批迁移窗口投影恢复：groups.provider_code 列已在
-// fresh DDL 恢复（DEFAULT 'gpt' shim），查询与返回元数据的 ProviderCode 过渡
-// 字段随之恢复取值，与 internal/gatewayruntimecache/sqlmodels.go 的
-// ResolveGroupUsageAccessMetadata 同一列集；运行时迁移完成后由清理命令与
-// 消费方一并统一收口。
+// overrides). groups.provider_code 列已随供应商解耦退役（供应商与上游协议面
+// 重构设计 §8，fresh DDL 无该列），查询列集与
+// internal/gatewayruntimecache/sqlmodels.go 的 ResolveGroupUsageAccessMetadata
+// 一致；GroupUsageAccessMetadata.ProviderCode 过渡字段保持恒零值。
 func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID, systemAccountID string) (*gatewayruntimecache.GroupUsageAccessMetadata, error) {
 	var ownerID string
 	var enabled int
 	var groupType, schedulingPolicyJSON sql.NullString
-	// provider_code（2026-10-18 修复批迁移窗口投影恢复）：过渡字段
-	// GroupUsageAccessMetadata.ProviderCode 的消费方（/v1/models 账户并集
-	// factProvider）在迁移窗口内仍按组 provider 维度装配模型并集，列已在
-	// fresh DDL 恢复（groups.provider_code，DEFAULT 'gpt' shim），投影随之
-	// 恢复；运行时迁移后由清理命令与该字段一并收口。
-	var providerCode sql.NullString
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled, group_type, scheduling_policy_json, provider_code FROM `+s.table("groups")+` WHERE id = ?`),
-		groupID).Scan(&ownerID, &enabled, &groupType, &schedulingPolicyJSON, &providerCode)
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled, group_type, scheduling_policy_json FROM `+s.table("groups")+` WHERE id = ?`),
+		groupID).Scan(&ownerID, &enabled, &groupType, &schedulingPolicyJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1038,7 +1031,6 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 			GroupAccessType:           gatewayruntimecache.GroupAccessTypeOwner,
 			GroupType:                 normalizedType,
 			SchedulingPolicy:          policy,
-			ProviderCode:              providerCode.String,
 		}, nil
 	}
 	authorization, err := s.activeResourceAuthorization(ctx, "group", groupID, systemAccountID)
@@ -1079,7 +1071,6 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 		GroupAccessType:                gatewayruntimecache.GroupAccessTypeAuthorized,
 		GroupType:                      localTypeValue,
 		SchedulingPolicy:               localPolicy,
-		ProviderCode:                   providerCode.String,
 		GroupAuthorizationID:           nullStringPtr(sql.NullString{String: authorization.id, Valid: true}),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
 		GroupAuthorizationQuotaLimited: chainResourceAuthorizationQuotaLimited(authorization.limitsJSON),

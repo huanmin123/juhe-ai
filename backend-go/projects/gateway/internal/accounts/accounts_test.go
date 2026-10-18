@@ -140,6 +140,11 @@ var schemaStatements = []string{
 		dispatch_revision INTEGER NOT NULL DEFAULT 1,
 		circuit_projection_revision INTEGER NOT NULL DEFAULT 0,
 		system_account_id TEXT NOT NULL,
+		-- 迁移窗口 DDL（pg_schema_business_tables.go accounts 同形）：B1 写入
+		-- 面起 createInTx 落 vendor_code / connection_driver_code，fixture 同步
+		-- 携带两列（generic 账户 vendor 为 NULL，driver 恒非空）。
+		vendor_code TEXT,
+		connection_driver_code TEXT,
 		provider_code TEXT NOT NULL,
 		provider_protocol_profile_id TEXT NOT NULL,
 		protocol_code TEXT NOT NULL,

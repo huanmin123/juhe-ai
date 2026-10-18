@@ -34,7 +34,7 @@ func TestPreflightSkipsNormalRouteForChatProvidedCandidatesBatch2(t *testing.T) 
 		resolver := &batch2CountingRouteResolver{normal: NormalRouteResult{
 			Outcome: NormalRouteOutcomeFailed, StatusCode: 404, Type: "invalid_request_error",
 			Code: "model_not_routable_for_api_key", Message: "当前 API Key 无法路由该模型",
-			RequestedModel: "gpt-x", MatchedProviderCodes: []string{"openai"},
+			RequestedModel: "gpt-x",
 		}}
 		service, _, sink := newTestService(t, func(s *Service) {
 			s.RouteResolver = resolver

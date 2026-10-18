@@ -132,17 +132,28 @@ func TestChainKeyModelProbeInputLoaderSQLite(t *testing.T) {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, client_compatibility, status, schedulable, health_check_endpoint_mode, health_check_model,
+	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, vendor_code, connection_driver_code, protocol_code, protocol_version,
+		name, type, status, schedulable, health_check_connection_id, health_check_endpoint_mode, health_check_model,
 		credentials_encrypted, temporary_unavailable_continuous_probe_enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'openai', 'profile_openai_openai_v1', 'openai', 'v1',
-		'km-loader-acc', 'api_key', 'openai_standard', 'active', 1, 'chat_json', 'gpt-test', ?, 1,
+		VALUES (?, ?, ?, ?, 'gpt', 'gpt', 'openai', 'v1',
+		'km-loader-acc', 'api_key', 'active', 1, 'km-conn-1', 'chat_json', 'gpt-test', ?, 1,
 		'2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')`,
 		accountID, systemID, configRevID, revisionID, credentials)
+	// 探针连接面（设计 §2.1）：preset + base_url 在健康检查连接行，凭据 JSON
+	// 不再携带 base_url。
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES ('km-conn-1', ?, 'gpt_openai_v1', ?, 1, '2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')`,
+		accountID, baseURL)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, account_authorization_id, created_at, updated_at)
 		VALUES (?, ?, ?, 1, NULL, '2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')`, groupID, systemID, accountID)
-	seed(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES (?, 'openai', 'gpt-test', 'chat_completions', 'gpt-upstream', 'chat_completions', 1, '2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')`, accountID)
+	// 供应商解耦形态（设计 §5.1）：映射 = account_entry_mappings，upstream 名经
+	// target_model_id 外键 JOIN models.upstream_model 解析。
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('km-mdl-gpt-upstream', 'gpt', 'gpt-upstream', 'gpt-upstream', 'builtin', 'active', '["chat_json","chat_sse"]',
+		'2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')`)
+	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('km-map-1', ?, 'gpt-test', 'chat_completions', 'km-conn-1', 'km-mdl-gpt-upstream', 'chat_completions', 1,
+		'2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')`, accountID)
 
 	loader, err := newChainKeyModelProbeInputLoader(db, false, secret)
 	if err != nil {
@@ -164,12 +175,16 @@ func TestChainKeyModelProbeInputLoaderSQLite(t *testing.T) {
 	if input.Type != "api_key" {
 		t.Fatalf("Type = %q, want api_key", input.Type)
 	}
-	if input.Provider != "openai" || input.ProtocolProfileID != "profile_openai_openai_v1" {
+	// 供应商解耦后 provider 身份 = accounts.vendor_code（探针协议 openai），
+	// profile 由健康检查连接 preset 经 ConnectionPresetProfileID 派生。
+	if input.Provider != "openai" || input.ProtocolProfileID != "profile_gpt_openai_v1" {
 		t.Fatalf("provider/profile = (%q, %q)", input.Provider, input.ProtocolProfileID)
 	}
 	if input.BaseURL != baseURL {
 		t.Fatalf("BaseURL = %q, want %q", input.BaseURL, baseURL)
 	}
+	// 探针路由：健康模型直通（映射改写仅 profile_hybrid 档案消费，preset 派生
+	// 档案不触发——account_entry_mappings 行作为 loader SQL 读取形状守卫在场）。
 	if input.EndpointMode != "chat_json" || input.HealthModel != "gpt-test" {
 		t.Fatalf("探针路由 = (%q, %q), want (chat_json, gpt-test)", input.EndpointMode, input.HealthModel)
 	}
@@ -203,8 +218,8 @@ func TestChainKeyModelProbeInputLoaderSQLite(t *testing.T) {
 //   - LEFT JOIN accounts source（deleted_at IS NULL）、LEFT JOIN
 //     resource_authorizations ra；
 //   - 凭据/base_url/协议/provider 取 source 行（ToInput effective 覆盖）；
-//   - mapping 子查询 CASE 走 source.id + source.provider_code（hybrid profile
-//     消费映射 → HealthModel = 映射后 upstream model）；
+//   - mapping 子查询 CASE 走 source.id（供应商解耦后映射只按账户归属，
+//     HealthModel = 映射后 upstream model）；
 //   - 代理 join 的 CASE 取 source.proxy_profile_id；
 //   - binding 子查询要求 ga.account_authorization_id = 授权 ID；
 //   - cooldown fence 列 + sourceID.Valid 臂 → fence.SourceConfigRevision 填
@@ -251,27 +266,32 @@ func TestChainKeyModelProbeInputLoaderSQLiteDelegated(t *testing.T) {
 	}
 	// 授权实例行：rate_limited + 已过期的 cooldown_until + 完整 fence 列
 	//（恢复探针的典型到期场景；ToInput 对 rate_limited 强制 validCooldownFence）。
-	// provider 故意用非 hybrid 的合法 profile：effective 走 source 覆盖不受
-	// 影响，而 mapping 子查询 CASE 误取 a.provider_code 时映射落空（HealthModel
-	// 回退 gpt-test），provider_code 半边也可独立失败。
-	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, client_compatibility, status, schedulable, health_check_endpoint_mode, health_check_model,
+	// vendor_code 取 gpt：effective 走 source 覆盖不受影响，而 mapping 子查询
+	// CASE 误取 a.id 时映射落空（HealthModel 回退事实健康模型），归属半边也可
+	// 独立失败。实例行健康检查三字段物理为 NULL（设计 §2.1），探针事实全取
+	// 来源账户。
+	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, vendor_code, connection_driver_code, protocol_code, protocol_version,
+		name, type, status, schedulable, health_check_endpoint_mode, health_check_model,
 		credentials_encrypted, temporary_unavailable_continuous_probe_enabled,
 		cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation,
 		authorization_instance_source_account_id, authorization_instance_authorization_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'openai', 'profile_openai_openai_v1', 'openai', 'v1',
-		'del-instance', 'api_key', 'openai_standard', 'rate_limited', 1, 'chat_json', 'gpt-test', ?, 1,
+		VALUES (?, ?, ?, ?, 'gpt', 'gpt', 'openai', 'v1',
+		'del-instance', 'api_key', 'rate_limited', 1, NULL, NULL, ?, 1,
 		'2026-10-07T00:00:00.000Z', '2026-10-07T12:00:00.000Z', 'gen-del-1',
 		?, ?, '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		instanceID, instanceSystemID, configRev, dispatchRev, instanceCredentials, sourceID, authID)
-	// 物理来源行：active + 可调度 + 独立凭据（ToInput effective 取此行）+ 委托代理。
-	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, client_compatibility, status, schedulable, health_check_endpoint_mode, health_check_model,
+	// 物理来源行：active + 可调度 + 独立凭据（ToInput effective 取此行）+ 委托代理
+	// + 健康检查连接（preset/base_url 事实源）。
+	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, vendor_code, connection_driver_code, protocol_code, protocol_version,
+		name, type, status, schedulable, health_check_connection_id, health_check_endpoint_mode, health_check_model,
 		credentials_encrypted, proxy_profile_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1',
-		'src-physical', 'api_key', 'openai_standard', 'active', 1, 'chat_json', 'gpt-src', ?, ?,
+		VALUES (?, ?, ?, ?, 'gpt', 'gpt', 'openai', 'v1',
+		'src-physical', 'api_key', 'active', 1, 'km-conn-src', 'chat_json', 'gpt-test', ?, ?,
 		'2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		sourceID, sourceSystemID, sourceConfigRev, 3, sourceCredentials, proxyID)
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES ('km-conn-src', ?, 'gpt_openai_v1', ?, 1, '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
+		sourceID, baseURL)
 	seed(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
 		VALUES (?, 'ai_account', ?, ?, ?, 'active', 'admin', '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		authID, sourceID, sourceSystemID, instanceSystemID)
@@ -279,9 +299,13 @@ func TestChainKeyModelProbeInputLoaderSQLiteDelegated(t *testing.T) {
 	seed(`INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, ?, 1, '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		instanceSystemID, groupID, instanceID, authID)
-	// 映射挂 source.id + source.provider_code（委托 CASE 分支）。
-	seed(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES (?, 'hybrid', 'gpt-test', 'chat_completions', 'gpt-upstream', 'chat_completions', 1, '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`, sourceID)
+	// 映射挂 source.id（委托 CASE 分支；供应商解耦后映射只按账户归属）。
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('km-mdl-del-upstream', 'gpt', 'gpt-upstream', 'gpt-upstream', 'builtin', 'active', '["chat_json","chat_sse"]',
+		'2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`)
+	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('km-map-del-1', ?, 'gpt-test', 'chat_completions', 'km-conn-del-1', 'km-mdl-del-upstream', 'chat_completions', 1,
+		'2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`, sourceID)
 	seed(`INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, created_at, updated_at)
 		VALUES (?, ?, 'del-proxy', 'http', 'proxy.example', 8080, 'proxy-user', ?, 1, '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		proxyID, sourceSystemID, proxyPassword)
@@ -300,11 +324,15 @@ func TestChainKeyModelProbeInputLoaderSQLiteDelegated(t *testing.T) {
 	if input.DispatchRevision != dispatchRev || input.ConfigRevision != configRev {
 		t.Fatalf("revision fence = (dispatch %d, config %d), want (%d, %d)", input.DispatchRevision, input.ConfigRevision, dispatchRev, configRev)
 	}
-	// 映射模型：hybrid profile 消费 source.id 的映射（gpt-test → gpt-upstream）。
-	if input.EndpointMode != "chat_json" || input.HealthModel != "gpt-upstream" {
-		t.Fatalf("探针路由 = (%q, %q), want (chat_json, gpt-upstream)", input.EndpointMode, input.HealthModel)
+	// 探针路由：事实健康模型取来源账户（实例行健康三字段物理 NULL）；来源
+	// 映射行在场守卫 account_entry_mappings 读取形状（映射改写仅 profile_hybrid
+	// 档案消费，preset 派生档案不触发）。
+	if input.EndpointMode != "chat_json" || input.HealthModel != "gpt-test" {
+		t.Fatalf("探针路由 = (%q, %q), want (chat_json, gpt-test)", input.EndpointMode, input.HealthModel)
 	}
-	if input.Provider != "openai" || input.ProtocolProfileID != "profile_hybrid_openai_chat_v1" {
+	// effective provider 取 source.vendor_code；profile 由来源账户健康检查连接
+	// preset 派生。
+	if input.Provider != "openai" || input.ProtocolProfileID != "profile_gpt_openai_v1" {
 		t.Fatalf("provider/profile = (%q, %q)", input.Provider, input.ProtocolProfileID)
 	}
 	// 凭据取 source 行（instance 凭据列非空但不得被消费）。
@@ -390,18 +418,18 @@ func TestChainKeyModelProbeInputLoaderDelegatedBindingMismatch(t *testing.T) {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, client_compatibility, status, schedulable, health_check_endpoint_mode, health_check_model,
+	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, vendor_code, connection_driver_code, protocol_code, protocol_version,
+		name, type, status, schedulable, health_check_endpoint_mode, health_check_model,
 		credentials_encrypted, authorization_instance_source_account_id, authorization_instance_authorization_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1',
-		'del-instance', 'api_key', 'openai_standard', 'active', 1, 'chat_json', 'gpt-test', ?, ?, ?,
+		VALUES (?, ?, ?, ?, 'gpt', 'gpt', 'openai', 'v1',
+		'del-instance', 'api_key', 'active', 1, NULL, NULL, ?, ?, ?,
 		'2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		instanceID, instanceSystemID, 2, 5, instanceCredentials, sourceID, authID)
-	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, client_compatibility, status, schedulable, health_check_endpoint_mode, health_check_model,
+	seed(`INSERT INTO accounts (id, system_account_id, config_revision, dispatch_revision, vendor_code, connection_driver_code, protocol_code, protocol_version,
+		name, type, status, schedulable, health_check_endpoint_mode, health_check_model,
 		credentials_encrypted, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1',
-		'src-physical', 'api_key', 'openai_standard', 'active', 1, 'chat_json', 'gpt-src', ?,
+		VALUES (?, ?, ?, ?, 'gpt', 'gpt', 'openai', 'v1',
+		'src-physical', 'api_key', 'active', 1, 'chat_json', 'gpt-src', ?,
 		'2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')`,
 		sourceID, sourceSystemID, 7, 3, sourceCredentials)
 	seed(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)

@@ -272,10 +272,11 @@ func (r *w11fRows) Next(dest []driver.Value) error {
 var w11fDDL = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
 	`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT, created_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique ON groups(system_account_id, provider_code, name)`,
+	// 供应商解耦（设计 §8）：groups 无 provider_code 列，owner 内名称唯一
+	// 索引为 idx_groups_owner_name_unique。
+	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name)`,
 	`CREATE TABLE IF NOT EXISTS group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
 	`CREATE TABLE IF NOT EXISTS group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
@@ -323,9 +324,6 @@ func newW11FEnv(t *testing.T) *w11fEnv {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := db.Exec(`INSERT INTO providers (code, enabled) VALUES ('openai', 1), ('anthropic', 1), ('disabled-provider', 0)`); err != nil {
-		t.Fatal(err)
 	}
 	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
@@ -429,12 +427,13 @@ func (e *w11fEnv) queryString(t *testing.T, query string, args ...any) string {
 	return value
 }
 
-// w11fSeedGroup 直接插入一个分组行，返回 updated_at。
-func (e *w11fEnv) w11fSeedGroup(t *testing.T, id, owner, name, provider string, enabled, isDefault int, groupType string) string {
+// w11fSeedGroup 直接插入一个分组行，返回 updated_at（供应商解耦后组无
+// provider 维度，设计 §8）。
+func (e *w11fEnv) w11fSeedGroup(t *testing.T, id, owner, name string, enabled, isDefault int, groupType string) string {
 	t.Helper()
 	revision := "2024-01-01T00:00:00.000Z"
-	e.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`, id, owner, name, provider, enabled, isDefault, groupType, revision, revision)
+	e.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`, id, owner, name, enabled, isDefault, groupType, revision, revision)
 	return revision
 }
 
@@ -835,10 +834,10 @@ func TestW11FStoreHelpers(t *testing.T) {
 	if clause, args := keywordFilter(""); clause != "" || args != nil {
 		t.Fatalf("empty keyword = %q/%v", clause, args)
 	}
-	if clause, args := keywordFilter("ab"); clause == "" || len(args) != 4 {
+	if clause, args := keywordFilter("ab"); clause == "" || len(args) != 2 {
 		t.Fatalf("keyword = %q/%v", clause, args)
 	}
-	if clause, args := keywordFilterAlias("", "ab"); clause == "" || len(args) != 4 {
+	if clause, args := keywordFilterAlias("", "ab"); clause == "" || len(args) != 2 {
 		t.Fatalf("keyword alias empty = %q/%v", clause, args)
 	}
 	if clause, _ := keywordFilterAlias("g", "ab"); !strings.Contains(clause, "g.name") {
@@ -896,18 +895,22 @@ func TestW11FStoreHelpers(t *testing.T) {
 	if duplicateGroupNameError(nil, "n") != nil {
 		t.Fatal("nil duplicate drift")
 	}
-	if got := duplicateGroupNameError(errors.New("UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name"), "n"); got == nil {
+	if got := duplicateGroupNameError(errors.New("UNIQUE constraint failed: groups.system_account_id, groups.name"), "n"); got == nil {
 		t.Fatal("sqlite duplicate must map")
 	}
-	if duplicateGroupNameError(errors.New("idx_groups_owner_provider_name_unique_lower violated"), "n") == nil {
-		t.Fatal("lower index duplicate must map")
+	if duplicateGroupNameError(errors.New("idx_groups_owner_name_unique violated"), "n") == nil {
+		t.Fatal("owner-name index duplicate must map")
 	}
 	if duplicateGroupNameError(errors.New("something else"), "n") != nil {
 		t.Fatal("unrelated error must pass through")
 	}
-	// gatewayRuntimeChanged: 仅 providerCode/enabled/groupType/schedulingPolicy 触发。
-	if !gatewayRuntimeChanged([]string{"name", "providerCode"}) || gatewayRuntimeChanged([]string{"name", "description"}) {
+	// gatewayRuntimeChanged: 仅 enabled/groupType/schedulingPolicy 触发
+	//（providerCode 已随供应商解耦退役，设计 §8）。
+	if gatewayRuntimeChanged([]string{"name", "providerCode"}) || gatewayRuntimeChanged([]string{"name", "description"}) {
 		t.Fatal("gatewayRuntimeChanged drift")
+	}
+	if !gatewayRuntimeChanged([]string{"enabled"}) {
+		t.Fatal("gatewayRuntimeChanged enabled drift")
 	}
 	// columnChanged。
 	if columnChanged([]string{"name = ?", "provider_code = ?"}, "provider_code") != true {

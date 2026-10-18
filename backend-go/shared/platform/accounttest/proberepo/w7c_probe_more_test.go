@@ -56,16 +56,21 @@ func TestW7CCredentialHelperMatrix(t *testing.T) {
 
 	h := openTestDB(t)
 	pool := map[string]any{"api_keys": []any{"a", "b"}}
-	if h.store.IsAccountAPIKeyPoolIsolationEnabled("openai", "openai", "v1", "oauth", pool) {
+	// 供应商解耦后的等价词表：gpt 直取；空 vendor（generic_http）+ openai 协议
+	// 面承接旧 openai-compatible 语义。
+	if h.store.IsAccountAPIKeyPoolIsolationEnabled("gpt", "openai", "v1", "oauth", pool) {
 		t.Fatal("oauth accounts are excluded")
 	}
-	if h.store.IsAccountAPIKeyPoolIsolationEnabled("openai", "openai", "v1", "api_key", map[string]any{"api_key": "only"}) {
+	if h.store.IsAccountAPIKeyPoolIsolationEnabled("gpt", "openai", "v1", "api_key", map[string]any{"api_key": "only"}) {
 		t.Fatal("single-key accounts are excluded")
 	}
-	if !h.store.IsAccountAPIKeyPoolIsolationEnabled("openai", "openai", "v1", "api_key", pool) {
-		t.Fatal("openai pool accounts qualify")
+	if !h.store.IsAccountAPIKeyPoolIsolationEnabled("gpt", "openai", "v1", "api_key", pool) {
+		t.Fatal("gpt pool accounts qualify")
 	}
-	if h.store.IsAccountAPIKeyPoolIsolationEnabled("unknown", "openai", "v1", "api_key", pool) {
+	if !h.store.IsAccountAPIKeyPoolIsolationEnabled("", "openai", "v1", "api_key", pool) {
+		t.Fatal("generic openai-compatible pool accounts qualify")
+	}
+	if h.store.IsAccountAPIKeyPoolIsolationEnabled("xai", "openai", "v1", "api_key", pool) {
 		t.Fatal("unsupported providers are excluded")
 	}
 }
@@ -148,8 +153,8 @@ func TestW7CCanceledContextMutationArms(t *testing.T) {
 	if _, err := h.store.ListDueForProbe(ctx, 1); err == nil {
 		t.Fatal("canceled list due must fail")
 	}
-	if _, err := h.store.loadHybridProbeMappings(ctx, "acc-1", "openai"); err == nil {
-		t.Fatal("canceled hybrid mappings must fail")
+	if _, err := h.store.loadProbeConnection(ctx, "acc-1"); err == nil {
+		t.Fatal("canceled probe connection must fail")
 	}
 	if _, err := h.store.LoadAccountMetadataByIds(ctx, []string{"acc-1"}); err == nil {
 		t.Fatal("canceled metadata must fail")
@@ -208,8 +213,14 @@ func TestW7CLoadProbeViewMissingArms(t *testing.T) {
 	}); err != nil || view != nil {
 		t.Fatalf("missing candidate: %v %v", view, err)
 	}
-	// loadSupportedModels skips blank and duplicate rows.
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model) VALUES ('acc-1', ''), ('acc-1', 'gpt-test')`)
+	// loadSupportedModels skips blank and duplicate upstream names（新形状经
+	// models 外键解析，重名 = 两个 model_id 指向同一 upstream_model）。
+	h.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+	    VALUES ('model-blank', 'gpt', '', '', 'global', 'active', ?)`, nowMillisText())
+	h.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('acc-1', 'model-blank', ?)`, nowMillisText())
+	h.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+	    VALUES ('model-dup', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', ?)`, nowMillisText())
+	h.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('acc-1', 'model-dup', ?)`, nowMillisText())
 	account, err := h.store.LoadAccountForTest(context.Background(), "acc-1")
 	if err != nil || account == nil {
 		t.Fatalf("account: %v %v", account, err)

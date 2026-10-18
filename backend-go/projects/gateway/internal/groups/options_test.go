@@ -14,10 +14,10 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-opt-1', ?, 'Alpha 选项组', 'openai', NULL, 1, 1, 'personal', ?, ?)`, adminID, now, now)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-opt-2', ?, 'Beta 选项组', 'gemini', '第二个', 0, 0, 'high_concurrency', ?, ?, ?)`, adminID, storedPolicyJSON(t, map[string]any{"clientIpConcurrencyLimit": 9}), now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-opt-1', ?, 'Alpha 选项组', NULL, 1, 1, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('grp-opt-2', ?, 'Beta 选项组', '第二个', 0, 0, 'high_concurrency', ?, ?, ?)`, adminID, storedPolicyJSON(t, map[string]any{"clientIpConcurrencyLimit": 9}), now, now)
 
 	// purpose=select renders {id,name} pairs only.
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/groups/options?purpose=select", "")
@@ -37,14 +37,15 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("select projection must be {id,name} only: %v", first)
 	}
 
-	// purpose=account renders the full owner summary.
+	// purpose=account renders the full owner summary。providerCode 兼容入参
+	// 接受但忽略（供应商解耦设计 §8）：不再过滤。
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/groups/options?purpose=account&providerCode=gemini", "")
 	if code != http.StatusOK {
 		t.Fatalf("account options: %d %v", code, payload)
 	}
 	items = payload["data"].([]any)
-	if len(items) != 1 {
-		t.Fatalf("providerCode filter mismatch: %v", payload)
+	if len(items) != 2 {
+		t.Fatalf("ignored providerCode filter mismatch: %v", payload)
 	}
 	summary := items[0].(map[string]any)
 	if summary["id"] != "grp-opt-2" || summary["enabled"] != false || summary["isDefault"] != false {
@@ -110,7 +111,7 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("edit-basic: %d %v", code, payload)
 	}
 	edit := payload["data"].(map[string]any)
-	if edit["name"] != "Beta 选项组" || edit["providerCode"] != "gemini" || edit["enabled"] != false || edit["groupType"] != "high_concurrency" {
+	if edit["name"] != "Beta 选项组" || edit["providerCode"] != "" || edit["enabled"] != false || edit["groupType"] != "high_concurrency" {
 		t.Fatalf("edit projection mismatch: %v", edit)
 	}
 	if edit["description"] != "第二个" {

@@ -55,6 +55,14 @@ type DirectAccount struct {
 	CooldownUntil                              *time.Time
 	Cooldown                                   *CooldownFence
 	TemporaryUnavailableContinuousProbeEnabled bool
+	// 供应商解耦（设计 §2.1）：Provider 读取侧由 vendor_code 投影，
+	// ProtocolProfileID 由健康检查连接的 connection_preset_code 经
+	// ConnectionPresetProfileID 派生；OAuthType 是 accounts.oauth_type 列
+	// （OAuth 分流的唯一运行时来源，凭据 JSON 不再携带）；探针上游地址是
+	// 健康检查连接行的 base_url（凭据 JSON 不再携带 base_url）。
+	OAuthType           string
+	ConnectionPresetCode string
+	ConnectionBaseURL   string
 }
 
 type DirectSource struct {
@@ -72,6 +80,10 @@ type DirectSource struct {
 	CooldownUntil        *time.Time
 	LastErrorCode        string
 	CredentialsEncrypted string
+	// 与 DirectAccount 同构的新身份/连接投影（授权实例的资源事实按来源账户读）。
+	OAuthType            string
+	ConnectionPresetCode string
+	ConnectionBaseURL    string
 }
 
 type DirectAuthorization struct {
@@ -126,6 +138,10 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 		effective.Type = d.Source.Type
 		effective.ClientCompatibility = d.Source.ClientCompatibility
 		effective.CredentialsEncrypted = d.Source.CredentialsEncrypted
+		// 新身份/连接面事实归来源资源账户（设计 §2.1 资源事实投影语义）。
+		effective.OAuthType = d.Source.OAuthType
+		effective.ConnectionPresetCode = d.Source.ConnectionPresetCode
+		effective.ConnectionBaseURL = d.Source.ConnectionBaseURL
 		sourceRevision = int64Pointer(d.Source.ConfigRevision)
 	}
 	if !isSupportedDirectProfile(effective.ProtocolProfileID, effective.Provider, effective.Type, d.Account.EndpointMode) || effective.Type != d.Account.Type {
@@ -175,12 +191,14 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 	if err != nil {
 		return Input{}, err
 	}
-	result.BaseURL, err = directBaseURL(credentials, effective, protocol)
+	result.BaseURL, err = directBaseURL(effective)
 	if err != nil {
 		return Input{}, err
 	}
 	if effective.Type == "google_oauth" {
-		oauthType, _ := directString(credentials, "oauth_type")
+		// oauth_type 的运行时唯一来源是 accounts.oauth_type 列（设计 §2.1：
+		// 凭据重加密事务已删除 oauth_type 键，凭据 JSON 不再承载）。
+		oauthType := effective.OAuthType
 		if (oauthType == "code_assist" || oauthType == "google_one") && (probeMode != "generate_content_json" && probeMode != "generate_content_sse") {
 			return Input{}, fmt.Errorf("J1 Gemini Code Assist / Google One 只支持 GenerateContent 探活")
 		}
@@ -230,7 +248,7 @@ func (d DirectInput) ToInput(secret string, now time.Time) (Input, error) {
 	if quotaProject, found := directString(credentials, "quota_project_id"); found {
 		result.OAuthQuotaProjectID = quotaProject
 	}
-	if oauthType, found := directString(credentials, "oauth_type"); found {
+	if oauthType := effective.OAuthType; oauthType != "" {
 		result.OAuthType = oauthType
 	}
 	if projectID, found := directString(credentials, "project_id"); found {
@@ -260,12 +278,9 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	if account.Type != "api_key" && account.Type != "oauth" && account.Type != "google_oauth" {
 		return fmt.Errorf("PG direct input 的 provider/type 不受 J1 支持")
 	}
-	if !isSupportedDirectProfile(account.ProtocolProfileID, account.Provider, account.Type, account.EndpointMode) {
-		return fmt.Errorf("PG direct input 的 endpoint mode 不受 J1 支持")
-	}
-	if err := validateDirectProtocolMetadata(account.ProtocolProfileID, account.ProtocolCode, account.ProtocolVersion); err != nil {
-		return err
-	}
+	// 供应商解耦：profile/provider 协议元数据校验移到 ToInput 的 effective
+	// （授权实例按来源账户投影）之后统一执行；实例行在新 schema 不再冗余
+	// 身份列（vendor_code/preset 均为 NULL），此处只校验账户行自身事实。
 	if account.Status != "active" && account.Status != "pending_test" && account.Status != "temporary_unavailable" && account.Status != "rate_limited" {
 		return fmt.Errorf("PG direct input 的账户状态不可探活")
 	}
@@ -284,27 +299,71 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	return nil
 }
 
-// directProfileProtocolMetadata 是 provider_protocol_profiles 规范种子的协议
-// 元数据投影（maintenance pg_schema.go；profile_hybrid_gemini_native_v1beta
-// 为 Node 遗留形态，种子未含但 isSupportedDirectProfile 保留兼容）。校验对照
-// 该表而不是从 profile 名猜协议：子串猜测把 profile_gemini_openai_chat_v1beta
-// （规范协议 openai/v1）误判为 gemini/v1beta，导致该 profile 全部账户永久
-// 无法构建探活输入（BUG-0283）。
+// directProfileProtocolMetadata 是探针协议元数据投影：profile → (protocol,
+// version)。供应商解耦后读侧身份改为 (vendor_code, 健康检查连接 preset)，由
+// ConnectionPresetProfileID 派生出同一批 profile_* ID（下游取值形状不变），
+// 本表与 isSupportedDirectProfile 继续按 profile 做最终 fail-closed 门禁。
+// generic_* 三档对应新 generic_http 连接（旧 openai-compatible/hybrid 泛化
+// 身份）；profile_hybrid_* 为 Node 遗留形态，种子未含但保留兼容）。
 var directProfileProtocolMetadata = map[string][2]string{
-	"profile_openai_openai_v1":             {"openai", "v1"},
-	"profile_gpt_openai_v1":                {"openai", "v1"},
-	"profile_xai_openai_v1":                {"openai", "v1"},
-	"profile_deepseek_openai_v1":           {"openai", "v1"},
-	"profile_deepseek_anthropic_v1":        {"anthropic", "v1"},
-	"profile_anthropic_anthropic_v1":       {"anthropic", "v1"},
-	"profile_glm_general_openai_v1":        {"openai", "v1"},
-	"profile_glm_coding_openai_v1":         {"openai", "v1"},
-	"profile_glm_coding_anthropic_v1":      {"anthropic", "v1"},
-	"profile_gemini_openai_chat_v1beta":    {"openai", "v1"},
-	"profile_gemini_native_v1beta":         {"gemini", "v1beta"},
+	"profile_openai_openai_v1":          {"openai", "v1"},
+	"profile_gpt_openai_v1":             {"openai", "v1"},
+	"profile_xai_openai_v1":             {"openai", "v1"},
+	"profile_deepseek_openai_v1":        {"openai", "v1"},
+	"profile_deepseek_anthropic_v1":     {"anthropic", "v1"},
+	"profile_anthropic_anthropic_v1":    {"anthropic", "v1"},
+	"profile_glm_general_openai_v1":     {"openai", "v1"},
+	"profile_glm_coding_openai_v1":      {"openai", "v1"},
+	"profile_glm_coding_anthropic_v1":   {"anthropic", "v1"},
+	"profile_gemini_openai_chat_v1beta": {"openai", "v1"},
+	"profile_gemini_native_v1beta":      {"gemini", "v1beta"},
+	"profile_generic_openai_v1":         {"openai", "v1"},
+	"profile_generic_anthropic_v1":      {"anthropic", "v1"},
+	"profile_generic_gemini_v1beta":     {"gemini", "v1beta"},
 	"profile_hybrid_openai_chat_v1":        {"openai", "v1"},
 	"profile_hybrid_anthropic_messages_v1": {"anthropic", "v1"},
 	"profile_hybrid_gemini_native_v1beta":  {"gemini", "v1beta"},
+}
+
+// ConnectionPresetProfileID 把 account_connections.connection_preset_code 确定性地
+// 派生为探针 profile ID（供应商解耦 §8 去供应商化：旧 accounts.provider_code +
+// provider_protocol_profile_id 身份列退役，探针协议目录本身未变）。映射来源：
+// shared/contracts/connector_registry.go 的 preset 词表逐条比对旧 profile 词表；
+// anthropic 目录 ID（profile_anthropic_anthropic_v1）与 preset（anthropic_v1）
+// 字面不同，按字面映射，不做字符串拼推导。不在表内的 preset（minimax_media、
+// volcengine_*、qwen_dashscope 等媒体/新增厂商）没有已注册的 J1 探针协议目录，
+// 返回 false 并由上层 fail closed。
+func ConnectionPresetProfileID(preset string) (string, bool) {
+	switch strings.TrimSpace(preset) {
+	case "gpt_openai_v1":
+		return "profile_gpt_openai_v1", true
+	case "xai_openai_v1":
+		return "profile_xai_openai_v1", true
+	case "deepseek_openai_v1":
+		return "profile_deepseek_openai_v1", true
+	case "deepseek_anthropic_v1":
+		return "profile_deepseek_anthropic_v1", true
+	case "anthropic_v1":
+		return "profile_anthropic_anthropic_v1", true
+	case "glm_general_openai_v1":
+		return "profile_glm_general_openai_v1", true
+	case "glm_coding_openai_v1":
+		return "profile_glm_coding_openai_v1", true
+	case "glm_coding_anthropic_v1":
+		return "profile_glm_coding_anthropic_v1", true
+	case "gemini_openai_chat_v1beta":
+		return "profile_gemini_openai_chat_v1beta", true
+	case "gemini_native_v1beta":
+		return "profile_gemini_native_v1beta", true
+	case "generic_openai_v1":
+		return "profile_generic_openai_v1", true
+	case "generic_anthropic_v1":
+		return "profile_generic_anthropic_v1", true
+	case "generic_gemini_v1beta":
+		return "profile_generic_gemini_v1beta", true
+	default:
+		return "", false
+	}
 }
 
 func validateDirectProtocolMetadata(profile, code, version string) error {
@@ -399,6 +458,14 @@ func isSupportedDirectProfile(profile, provider, accountType, mode string) bool 
 		return provider == "glm" && accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
 	case "profile_gemini_native_v1beta":
 		return provider == "gemini" && (accountType == "api_key" || accountType == "google_oauth") && geminiProfileMode(mode)
+	// generic_http 连接（vendor_code NULL）：厂商未知，不做 provider 交叉校验；
+	// 协议面由 profile 本身固定（与旧 openai-compatible/hybrid 泛化身份等价）。
+	case "profile_generic_openai_v1":
+		return accountType == "api_key" && openAIChatOrResponseMode(mode, true)
+	case "profile_generic_anthropic_v1":
+		return accountType == "api_key" && (mode == "messages_json" || mode == "messages_sse")
+	case "profile_generic_gemini_v1beta":
+		return accountType == "api_key" && geminiProfileMode(mode)
 	default:
 		return false
 	}
@@ -431,11 +498,11 @@ func hybridProfileMode(mode string) bool {
 
 func directProbeProtocolForMode(profile, provider, mode string) string {
 	switch profile {
-	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1":
+	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1", "profile_generic_anthropic_v1":
 		return "anthropic"
-	case "profile_gemini_native_v1beta":
+	case "profile_gemini_native_v1beta", "profile_generic_gemini_v1beta":
 		return "gemini"
-	case "profile_gpt_openai_v1", "profile_openai_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta":
+	case "profile_gpt_openai_v1", "profile_openai_openai_v1", "profile_xai_openai_v1", "profile_deepseek_openai_v1", "profile_glm_general_openai_v1", "profile_glm_coding_openai_v1", "profile_gemini_openai_chat_v1beta", "profile_generic_openai_v1":
 		return "openai"
 	case "profile_hybrid_openai_chat_v1":
 		if mode == "messages_json" || mode == "messages_sse" {
@@ -483,61 +550,17 @@ func probeProfileProvider(profile, protocol string) string {
 	}
 }
 
-func directBaseURL(credentials map[string]json.RawMessage, account DirectAccount, protocol string) (string, error) {
-	// GPT OAuth credentials may retain the generic OpenAI API base URL for
-	// compatibility. J1 must use the Codex backend endpoint for this profile.
-	if (account.ProtocolProfileID == "profile_gpt_openai_v1" || (account.ProtocolProfileID == "" && account.Provider == "gpt")) && account.Type == "oauth" {
-		return "https://chatgpt.com/backend-api/codex", nil
+// directBaseURL 解析探针上游地址。供应商解耦后单一事实源是健康检查连接行的
+// base_url（account_connections.base_url NOT NULL，设计 §2.1：凭据 JSON 不得
+// 再保存 base_url，profile 级默认上游表随 provider_protocol_profiles 一并退
+// 役）；gpt OAuth 的 Codex 固定上游由请求构造层信封（upstreamenvelope A 形态
+// fixedBaseURL）在出站时强制，与本字段解耦。
+func directBaseURL(account DirectAccount) (string, error) {
+	configured := strings.TrimSpace(account.ConnectionBaseURL)
+	if configured == "" {
+		return "", fmt.Errorf("PG direct input 的健康检查连接缺少 base_url")
 	}
-	if configured, found := directString(credentials, "base_url"); found {
-		return strings.TrimRight(configured, "/"), nil
-	}
-	if account.ProtocolProfileID == "profile_hybrid_openai_chat_v1" {
-		return "", fmt.Errorf("J1 hybrid 协议缺少冻结的 base_url")
-	}
-	switch account.ProtocolProfileID {
-	case "profile_gpt_openai_v1":
-		if account.Type == "oauth" {
-			return "https://chatgpt.com/backend-api/codex", nil
-		}
-	case "profile_xai_openai_v1":
-		if account.Type == "oauth" {
-			return "https://cli-chat-proxy.grok.com/v1", nil
-		}
-		return "https://api.x.ai/v1", nil
-	case "profile_deepseek_openai_v1":
-		return "https://api.deepseek.com", nil
-	case "profile_deepseek_anthropic_v1":
-		return "https://api.deepseek.com/anthropic", nil
-	case "profile_glm_general_openai_v1":
-		return "https://open.bigmodel.cn/api/paas/v4", nil
-	case "profile_glm_coding_openai_v1":
-		return "https://open.bigmodel.cn/api/coding/paas/v4", nil
-	case "profile_glm_coding_anthropic_v1":
-		return "https://open.bigmodel.cn/api/anthropic", nil
-	case "profile_gemini_native_v1beta":
-		oauthType, _ := directString(credentials, "oauth_type")
-		if account.Type == "google_oauth" && (oauthType == "code_assist" || oauthType == "google_one") {
-			return "https://cloudcode-pa.googleapis.com", nil
-		}
-		return "https://generativelanguage.googleapis.com", nil
-	case "profile_gemini_openai_chat_v1beta":
-		return "https://generativelanguage.googleapis.com/v1beta/openai", nil
-	case "profile_anthropic_anthropic_v1":
-		return "https://api.anthropic.com", nil
-	case "profile_hybrid_anthropic_messages_v1":
-		return "https://api.anthropic.com", nil
-	case "profile_hybrid_gemini_native_v1beta":
-		return "https://generativelanguage.googleapis.com", nil
-	}
-	switch protocol {
-	case "anthropic":
-		return "https://api.anthropic.com", nil
-	case "gemini":
-		return "https://generativelanguage.googleapis.com", nil
-	default:
-		return "https://api.openai.com", nil
-	}
+	return strings.TrimRight(configured, "/"), nil
 }
 
 func decryptJSONObject(secret, encrypted, label string) (map[string]json.RawMessage, error) {

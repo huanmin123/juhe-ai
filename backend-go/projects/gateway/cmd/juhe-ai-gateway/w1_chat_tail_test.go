@@ -364,12 +364,13 @@ func TestW1YEnsureChatAPIKeyGuardErrors(t *testing.T) {
 	if err != nil || keyID == "" {
 		t.Fatalf("空库自愈 EnsureChatAPIKey = %q, %v", keyID, err)
 	}
-	var groupName, groupProvider string
-	if err := db.QueryRow(`SELECT name, provider_code FROM groups WHERE system_account_id = 'own-nogroups'`).Scan(&groupName, &groupProvider); err != nil {
+	var groupName string
+	// 供应商解耦（设计 §8）：groups 无 provider 维度，自愈分组名为内置默认名。
+	if err := db.QueryRow(`SELECT name FROM groups WHERE system_account_id = 'own-nogroups'`).Scan(&groupName); err != nil {
 		t.Fatalf("回读自愈分组: %v", err)
 	}
-	if groupName != "默认 GPT 分组" || groupProvider != "gpt" {
-		t.Fatalf("自愈分组 = (%q, %q), want (默认 GPT 分组, gpt)", groupName, groupProvider)
+	if groupName != "默认分组" {
+		t.Fatalf("自愈分组 = %q, want 默认分组", groupName)
 	}
 	var strategyCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategies WHERE system_account_id = 'own-nogroups'`).Scan(&strategyCount); err != nil {
@@ -379,32 +380,33 @@ func TestW1YEnsureChatAPIKeyGuardErrors(t *testing.T) {
 		t.Fatalf("自愈策略路由数 = %d, want 1", strategyCount)
 	}
 
-	// 非 gpt 分组场景：gpt 默认分组缺失被自愈补建；openai 分组不再派生
-	// 默认路由（默认资源收口后仅 GPT 一套）。
-	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('grp-w1y-openai', 'own-openai', 'OpenAI 分组', 'openai', 1, 1, '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`)
+	// 已有默认分组场景（供应商解耦 §8：组无 provider 维度）：既有默认分组
+	// 命中 ensureDefaultGroup 跳过分支，默认策略路由按其分组名派生，不再
+	// 追加自愈第二套默认分组。
+	w1yExec(t, db, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+		VALUES ('grp-w1y-openai', 'own-openai', 'OpenAI 分组', 1, 1, '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`)
 	if _, err := provider.EnsureChatAPIKey("own-openai"); err != nil {
-		t.Fatalf("openai 分组场景 EnsureChatAPIKey = %v, want 自愈成功", err)
+		t.Fatalf("既有默认分组场景 EnsureChatAPIKey = %v, want 成功", err)
 	}
 	var openaiRoutes, openaiGroups int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM route_strategies WHERE system_account_id = 'own-openai'`).Scan(&openaiRoutes); err != nil {
-		t.Fatalf("回读 openai 场景策略路由: %v", err)
+		t.Fatalf("回读既有默认分组场景策略路由: %v", err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM groups WHERE system_account_id = 'own-openai'`).Scan(&openaiGroups); err != nil {
-		t.Fatalf("回读 openai 场景分组: %v", err)
+		t.Fatalf("回读既有默认分组场景分组: %v", err)
 	}
-	if openaiRoutes != 1 || openaiGroups != 2 {
-		t.Fatalf("openai 场景 路由/分组 = %d/%d, want 1/2（仅自愈的 GPT 一套派生路由）", openaiRoutes, openaiGroups)
+	if openaiRoutes != 1 || openaiGroups != 1 {
+		t.Fatalf("既有默认分组场景 路由/分组 = %d/%d, want 1/1（既有默认分组直接派生）", openaiRoutes, openaiGroups)
 	}
-	var openaiRouteName, openaiRouteProvider string
-	if err := db.QueryRow(`SELECT route_strategies.name, groups.provider_code FROM route_strategies
+	var openaiRouteName string
+	if err := db.QueryRow(`SELECT route_strategies.name FROM route_strategies
 		INNER JOIN route_strategy_groups ON route_strategy_groups.route_strategy_id = route_strategies.id
 		INNER JOIN groups ON groups.id = route_strategy_groups.group_id
-		WHERE route_strategies.system_account_id = 'own-openai'`).Scan(&openaiRouteName, &openaiRouteProvider); err != nil {
-		t.Fatalf("回读 openai 场景路由绑定: %v", err)
+		WHERE route_strategies.system_account_id = 'own-openai'`).Scan(&openaiRouteName); err != nil {
+		t.Fatalf("回读既有默认分组场景路由绑定: %v", err)
 	}
-	if openaiRouteProvider != "gpt" {
-		t.Fatalf("唯一默认路由应绑定 gpt 分组, got %q（%q）", openaiRouteProvider, openaiRouteName)
+	if openaiRouteName != "OpenAI 路由" {
+		t.Fatalf("默认路由名 = %q, want OpenAI 路由（分组名去 分组 后缀）", openaiRouteName)
 	}
 
 	w1ySeedGPTDefault(t, db, "own-existing")

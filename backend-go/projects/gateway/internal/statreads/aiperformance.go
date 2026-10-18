@@ -389,7 +389,7 @@ func (d *Deps) mergeAiPerformanceStatsWithAccounts(r *http.Request, scope perfSc
 		SELECT
 			accounts.id,
 			accounts.name,
-			accounts.provider_code,
+			COALESCE(accounts.vendor_code, '') AS provider_code,
 			`+systemAccountNameExpr+` AS system_account_name,
 			`+ownerSystemAccountNameExpr+` AS owner_system_account_name,
 			`+accessTypeExpr+` AS access_type

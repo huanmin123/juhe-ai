@@ -69,24 +69,23 @@ func newChainCatalogSource(db *sql.DB, postgres bool) (*chainCatalogSource, erro
 	return &chainCatalogSource{db: db, postgres: postgres}, nil
 }
 
-// chainCatalogColumns pairs the table column with the item JSON key the Node
-// fromRow projection emits. Column sets mirror the CURRENT Node sources byte
-// for byte: provider_model_catalog carries the built-in catalog
-// (provider-model-catalog.repository.ts columns()) while per-account rows live
-// in custom_provider_models (custom-provider-models.repository.ts
-// customProviderModelColumns()) — the drifted columns here (scope /
-// *_json-less capability names on provider_model_catalog) 500'd every
-// catalog read on fresh databases.
-var chainBuiltinCatalogColumns = [][2]string{
+// chainCatalogColumns 是 models 单表（供应商与上游协议面重构设计 §3）的目录
+// 读投影：pair[0] 为 SQL 列表达式、pair[1] 为 Node camelCase 行键。旧
+// provider_model_catalog（内置）与 custom_provider_models（自定义）合并为唯一
+// 物理表后双源共用本列集；`mode` 与 `supportedApiProtocols` 两键不再有物理列，
+// 由 decorate 层从 supported_endpoint_modes_json 反推（seed 正向投影
+// modelSeedProtocolEndpoints 的读侧逆映射，见 catalogDeriveLegacyModeAndProtocols）。
+var chainCatalogColumns = [][2]string{
 	{"id", "id"},
-	{"provider_code", "providerCode"},
-	{"model", "model"},
+	{"COALESCE(vendor_code, '') AS provider_code", "providerCode"},
+	{"public_model", "model"},
+	{"scope", "scope"},
+	{"system_account_id", "systemAccountId"},
 	{"status", "status"},
-	{"mode", "mode"},
 	{"catalog_order", "catalogOrder"},
 	{"release_date", "releaseDate"},
 	{"shutdown_date", "shutdownDate"},
-	{"supported_api_protocols_json", "supportedApiProtocols"},
+	{"supported_endpoint_modes_json", "supportedEndpointModes"},
 	{"supported_service_tiers_json", "supportedServiceTiers"},
 	{"supported_reasoning_efforts_json", "supportedReasoningEfforts"},
 	{"default_reasoning_effort", "defaultReasoningEffort"},
@@ -116,41 +115,6 @@ var chainBuiltinCatalogColumns = [][2]string{
 	{"supports_prompt_caching", "supportsPromptCaching"},
 	{"catalog_visible", "catalogVisible"},
 	{"source", "source"},
-	{"created_at", "createdAt"},
-	{"updated_at", "updatedAt"},
-}
-
-// chainCustomCatalogColumns mirrors customProviderModelColumns().
-var chainCustomCatalogColumns = [][2]string{
-	{"id", "id"},
-	{"provider_code", "providerCode"},
-	{"model", "model"},
-	{"scope", "scope"},
-	{"system_account_id", "systemAccountId"},
-	{"status", "status"},
-	{"catalog_visible", "catalogVisible"},
-	{"mode", "mode"},
-	{"supported_api_protocols_json", "supportedApiProtocols"},
-	{"supported_service_tiers_json", "supportedServiceTiers"},
-	{"supported_reasoning_efforts_json", "supportedReasoningEfforts"},
-	{"default_reasoning_effort", "defaultReasoningEffort"},
-	{"release_date", "releaseDate"},
-	{"shutdown_date", "shutdownDate"},
-	{"context_window_tokens", "contextWindowTokens"},
-	{"max_input_tokens", "maxInputTokens"},
-	{"max_output_tokens", "maxOutputTokens"},
-	{"input_usd_per_1m", "inputUsdPer1M"},
-	{"output_usd_per_1m", "outputUsdPer1M"},
-	{"cached_input_usd_per_1m", "cachedInputUsdPer1M"},
-	{"cache_write_usd_per_1m", "cacheWriteUsdPer1M"},
-	{"cache_write_1h_usd_per_1m", "cacheWrite1hUsdPer1M"},
-	{"cache_storage_usd_per_1m_per_hour", "cacheStorageUsdPer1MPerHour"},
-	{"service_tier_prices_json", "serviceTierPrices"},
-	{"image_input_usd_per_1m", "imageInputUsdPer1M"},
-	{"image_output_usd_per_1m", "imageOutputUsdPer1M"},
-	{"audio_input_usd_per_1m", "audioInputUsdPer1M"},
-	{"audio_output_usd_per_1m", "audioOutputUsdPer1M"},
-	{"output_usd_per_image", "outputUsdPerImage"},
 	{"pricing_notes", "pricingNotes"},
 	{"capability_notes", "capabilityNotes"},
 	{"notes", "notes"},
@@ -158,21 +122,16 @@ var chainCustomCatalogColumns = [][2]string{
 	{"updated_at", "updatedAt"},
 }
 
-// ListProviderModelCatalog mirrors listProviderModelCatalogAsync over the Node
-// source semantics: source-provider expansion (modelCatalogSourceProvider
-// CodesAsync), built-in rows from provider_model_catalog for the expanded
-// built-in codes (the openai-compatible target drops itself: it has no
-// built-in catalog), custom rows from custom_provider_models for every source
-// code (listCustomProviderModelsForCatalog), the model-key scope-priority
-// merge, the isSupportedCatalogModel / active / priced filters and the
-// release-date ordering. The historical account-scoped provider_model_catalog
-// query 500'd on fresh databases — that table has no scope/system_account_id
-// columns.
+// ListProviderModelCatalog mirrors listProviderModelCatalogAsync over the
+// models 单表（供应商与上游协议面重构设计 §3）：vendor_code 维度下 builtin 行
+// （scope='builtin'）承内置目录、global/personal 行承自定义目录（owner 可见性
+// 按 system_account_id）。旧「openai 兼容目标聚合协议子供应商目录」的源扩展
+// 随 providers/provider_protocol_profiles 两表退役拆除——vendor 值域与旧
+// providerCode 同名且每个 vendor 即自身目录维度，源码恒为归一化后的单值；
+// 双源（builtin ∪ custom）合并、scope 优先级、isSupportedCatalogModel/active/
+// priced 过滤与 release-date 排序语义保持。
 func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input gatewayruntimecache.ModelCatalogListOptions) ([]gatewayruntimecache.ProviderModelCatalogItem, error) {
-	sourceCodes, err := s.sourceProviderCodes(ctx, input.ProviderCode)
-	if err != nil {
-		return nil, err
-	}
+	sourceCodes := sourceVendorCodes(input.ProviderCode)
 	if len(sourceCodes) == 0 {
 		return []gatewayruntimecache.ProviderModelCatalogItem{}, nil
 	}
@@ -187,7 +146,7 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 		if err != nil {
 			return nil, err
 		}
-		scanned, err := scanCatalogRows(rows, chainBuiltinCatalogColumns, decorateBuiltinCatalogRow)
+		scanned, err := scanCatalogRows(rows, chainCatalogColumns, decorateBuiltinCatalogRow)
 		if err != nil {
 			return nil, err
 		}
@@ -200,7 +159,7 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 	if err != nil {
 		return nil, err
 	}
-	scanned, err := scanCatalogRows(rows, chainCustomCatalogColumns, decorateCustomCatalogRow)
+	scanned, err := scanCatalogRows(rows, chainCatalogColumns, decorateCustomCatalogRow)
 	if err != nil {
 		return nil, err
 	}
@@ -229,91 +188,24 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 }
 
 // chainCatalogHybridProviderCode / chainCatalogOpenAICompatibleProviderCode
-// mirror the providerProtocol.ts tokens; the protocol pairs mirror the
-// modelCatalogSourceProviderCodesAsync expansion set.
+// mirror the providerProtocol.ts tokens；协议子供应商源扩展（原
+// chainCatalogProtocolPairs + provider-definition ceiling）已随
+// providers/provider_protocol_profiles 退役拆除，常量仅供 openai 自身内置
+// 目录剔除与 hybrid 身份保留判定使用。
 const (
 	chainCatalogHybridProviderCode           = "hybrid"
 	chainCatalogOpenAICompatibleProviderCode = "openai"
-	chainCatalogMaxProviderDefinitions       = 50
 )
 
-var chainCatalogProtocolPairs = [][2]string{
-	{"openai", "v1"},
-	{"anthropic", "v1"},
-	{"gemini", "v1beta"},
-}
-
-// sourceProviderCodes mirrors modelCatalogSourceProviderCodesAsync: hybrid
-// expands to every enabled openai/anthropic/gemini protocol provider, the
-// openai-compatible provider expands to its openai-protocol children plus
-// itself, anything else is its own (normalized) source.
-func (s *chainCatalogSource) sourceProviderCodes(ctx context.Context, providerCode string) ([]string, error) {
+// sourceVendorCodes 归一化目录维度入参（供应商解耦设计 §3：vendor_code 即
+// 目录归属维度；providers/provider_protocol_profiles 协议子供应商聚合随两表
+// 退役拆除，无 hybrid/openai 源扩展，空入参返回空源）。
+func sourceVendorCodes(providerCode string) []string {
 	normalized := chainNormalizeProviderToken(providerCode)
 	if normalized == "" {
-		return []string{}, nil
+		return []string{}
 	}
-	if normalized == chainCatalogHybridProviderCode {
-		codes := []string{}
-		for _, pair := range chainCatalogProtocolPairs {
-			list, err := s.protocolProviderCodes(ctx, pair[0], pair[1])
-			if err != nil {
-				return nil, err
-			}
-			for _, code := range list {
-				token := chainNormalizeProviderToken(code)
-				if token == "" || token == chainCatalogHybridProviderCode {
-					continue
-				}
-				codes = append(codes, token)
-			}
-		}
-		return chainDedupeCatalogCodes(codes), nil
-	}
-	if normalized != chainCatalogOpenAICompatibleProviderCode {
-		return []string{normalized}, nil
-	}
-	list, err := s.protocolProviderCodes(ctx, chainCatalogProtocolPairs[0][0], chainCatalogProtocolPairs[0][1])
-	if err != nil {
-		return nil, err
-	}
-	codes := []string{}
-	for _, code := range list {
-		token := chainNormalizeProviderToken(code)
-		if token == "" || token == normalized {
-			continue
-		}
-		codes = append(codes, token)
-	}
-	return chainDedupeCatalogCodes(append(codes, normalized)), nil
-}
-
-// protocolProviderCodes mirrors listProtocolProviderCodesAsync: distinct
-// provider codes carrying an enabled profile of the protocol, provider row
-// enabled, ordered by code, bounded by the provider-definition ceiling.
-func (s *chainCatalogSource) protocolProviderCodes(ctx context.Context, protocolCode, protocolVersion string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT p.code
-		FROM `+s.table("provider_protocol_profiles")+` ppp
-		INNER JOIN `+s.table("providers")+` p
-			ON p.code = ppp.provider_code
-		WHERE p.enabled = 1
-			AND ppp.enabled = 1
-			AND ppp.protocol_code = ?
-			AND ppp.protocol_version = ?
-		ORDER BY p.code ASC
-		LIMIT ?`), protocolCode, protocolVersion, chainCatalogMaxProviderDefinitions)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	codes := []string{}
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		codes = append(codes, code)
-	}
-	return codes, rows.Err()
+	return []string{normalized}
 }
 
 // chainCatalogBuiltInSourceProviderCodes mirrors the same-named helper: only
@@ -334,19 +226,20 @@ func chainCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderC
 }
 
 // builtinCatalogQuery mirrors listBuiltInProviderModels: availability filter
-// plus the provider_code window, ordered like the Node read.
+// plus the vendor_code window over models.scope='builtin', ordered like the
+// Node read（catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
+// 谓词按方言生成）。
 func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string, codes []string) (string, []any) {
 	availability := ""
 	if !input.IncludeInactive {
-		// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，谓词按方言生成。
 		visible := "CAST(catalog_visible AS integer) = 1"
 		if s.postgres {
 			visible = "catalog_visible = TRUE"
 		}
 		availability = " AND status = 'active' AND " + visible + " AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?) "
 	}
-	base := fmt.Sprintf(`SELECT %s FROM %s`, catalogColumnList(chainBuiltinCatalogColumns), s.table("provider_model_catalog"))
-	query := base + " WHERE provider_code IN (" + chainCatalogPlaceholders(len(codes)) + ") " + availability + " ORDER BY provider_code, catalog_order, model, id"
+	base := fmt.Sprintf(`SELECT %s FROM %s`, catalogColumnList(chainCatalogColumns), s.table("models"))
+	query := base + " WHERE scope = 'builtin' AND vendor_code IN (" + chainCatalogPlaceholders(len(codes)) + ") " + availability + " ORDER BY provider_code, catalog_order, public_model, id"
 	args := chainCatalogCodeArgs(codes)
 	if availability != "" {
 		args = append(args, now)
@@ -355,13 +248,12 @@ func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.Model
 }
 
 // customCatalogQuery mirrors listCustomProviderModelsForCatalog: the
-// global/personal scope window over custom_provider_models across the source
-// codes. The model ordering is dual-dialect like the Node read
-// (custom-provider-models.repository.ts): SQLite orders by
-// `model COLLATE NOCASE`, PostgreSQL has no such collation and orders by
-// `lower(model)`.
+// global/personal scope window over models across the source vendor codes
+// （owner 可见性按 system_account_id）。The model ordering is dual-dialect like
+// the Node read: SQLite orders by `public_model COLLATE NOCASE`, PostgreSQL
+// has no such collation and orders by `lower(public_model)`.
 func (s *chainCatalogSource) customCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string, codes []string) (string, []any) {
-	clauses := []string{"provider_code IN (" + chainCatalogPlaceholders(len(codes)) + ")"}
+	clauses := []string{"vendor_code IN (" + chainCatalogPlaceholders(len(codes)) + ")"}
 	args := chainCatalogCodeArgs(codes)
 	if !input.IncludeInactive {
 		clauses = append(clauses, "status = 'active'", "(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?)")
@@ -374,7 +266,7 @@ func (s *chainCatalogSource) customCatalogQuery(input gatewayruntimecache.ModelC
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
 	query := fmt.Sprintf(`SELECT %s FROM %s WHERE %s ORDER BY provider_code ASC, scope ASC, %s ASC, id ASC`,
-		catalogColumnList(chainCustomCatalogColumns), s.table("custom_provider_models"), strings.Join(clauses, " AND "), s.modelOrderExpression())
+		catalogColumnList(chainCatalogColumns), s.table("models"), strings.Join(clauses, " AND "), s.modelOrderExpression())
 	return query, args
 }
 
@@ -402,6 +294,79 @@ func chainDedupeCatalogCodes(values []string) []string {
 		}
 		seen[value] = true
 		out = append(out, value)
+	}
+	return out
+}
+
+// catalogEndpointModeLegacyProjection 是 models.supported_endpoint_modes_json
+// 元素到旧目录行 (mode, supportedApiProtocols) 投影的读侧逆映射（与
+// maintenance modelSeedProtocolEndpointModes 的正向投影互为镜像；改动必须两处
+// 同步）。generate_content_sse 正向来自 generate_content 与
+// stream_generate_content 两个旧协议声明，反推取两 token 并集。
+var catalogEndpointModeLegacyProjection = map[string][][2]string{
+	"chat_json":                {{"chat", "chat_completions"}},
+	"chat_sse":                 {{"chat", "chat_completions"}},
+	"messages_json":            {{"chat", "messages"}},
+	"messages_sse":             {{"chat", "messages"}},
+	"responses_json":           {{"responses", "responses"}},
+	"responses_sse":            {{"responses", "responses"}},
+	"generate_content_json":    {{"chat", "generate_content"}},
+	"generate_content_sse":     {{"chat", "generate_content"}, {"chat", "stream_generate_content"}},
+	"interactions_json":        {{"chat", "interactions"}},
+	"interactions_sse":         {{"chat", "interactions"}},
+	"images_json":              {{"image_generation", "images"}},
+	"video_create":             {{"video", "video"}},
+	"video_get":                {{"video", "video"}},
+	"video_content":            {{"video", "video"}},
+	"video_cancel":             {{"video", "video"}},
+	"audio_speech":             {{"audio", "audio_speech"}},
+	"audio_transcription_json": {{"audio", "audio_transcription"}},
+	"realtime_session":         {{"audio", "realtime"}},
+	"message_token_counting":   {{"embedding", "message_token_counting"}},
+	"count_tokens":             {{"embedding", "count_tokens"}},
+	"embed_content":            {{"embedding", "embed_content"}},
+}
+
+// catalogDeriveLegacyModeAndProtocols 从 supportedEndpointModes 行键反推旧目
+// 录行的 mode 与 supportedApiProtocols 投影：mode 取词表最高优先命中（video >
+// audio > image_generation > embedding > responses > chat，与旧 seed 行的
+// mode 值域一致），协议 token 去重升序；空 mode 集（draft/disabled 行）不注入
+// mode 键（旧行为 NULL→absent），协议投影保持空数组。
+func catalogDeriveLegacyModeAndProtocols(row map[string]any) {
+	modeRank := map[string]int{"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5}
+	seenProtocols := map[string]bool{}
+	protocols := []string{}
+	bestMode := ""
+	bestRank := -1
+	for _, mode := range catalogStringList(row["supportedEndpointModes"]) {
+		for _, pair := range catalogEndpointModeLegacyProjection[mode] {
+			if rank := modeRank[pair[0]]; rank > bestRank {
+				bestRank = rank
+				bestMode = pair[0]
+			}
+			if !seenProtocols[pair[1]] {
+				seenProtocols[pair[1]] = true
+				protocols = append(protocols, pair[1])
+			}
+		}
+	}
+	sort.Strings(protocols)
+	row["supportedApiProtocols"] = protocols
+	if bestRank >= 0 {
+		row["mode"] = bestMode
+	} else {
+		delete(row, "mode")
+	}
+}
+
+// catalogStringList 读取行内的字符串数组键（JSON 二次解码后的 []any）。
+func catalogStringList(value any) []string {
+	list, _ := value.([]any)
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
 	}
 	return out
 }
@@ -703,14 +668,13 @@ func chainCatalogItemID(item gatewayruntimecache.ProviderModelCatalogItem) strin
 }
 
 // modelOrderExpression mirrors the Node dual-dialect custom-provider model
-// ordering (custom-provider-models.repository.ts listCustomProviderModelsForCatalog
-// vs its postgres arm): `model COLLATE NOCASE` on SQLite, `lower(model)` on
-// PostgreSQL.
+// ordering on the models 单表 public_model 列: `public_model COLLATE NOCASE`
+// on SQLite, `lower(public_model)` on PostgreSQL.
 func (s *chainCatalogSource) modelOrderExpression() string {
 	if s.postgres {
-		return "lower(model)"
+		return "lower(public_model)"
 	}
-	return "model COLLATE NOCASE"
+	return "public_model COLLATE NOCASE"
 }
 
 func catalogColumnList(columns [][2]string) string {
@@ -722,11 +686,12 @@ func catalogColumnList(columns [][2]string) string {
 }
 
 // decorateBuiltinCatalogRow applies the toBuiltInCatalogItem derivations the
-// SQL read cannot express: scope='built_in',
-// supportsServiceTier=len(supportedServiceTiers)>0 and the static capability
-// fallback (decorateBuiltinStaticDerivedCapabilities).
+// SQL read cannot express: scope='built_in', the legacy mode/protocols reverse
+// projection, supportsServiceTier=len(supportedServiceTiers)>0 and the static
+// capability fallback (decorateBuiltinStaticDerivedCapabilities).
 func decorateBuiltinCatalogRow(row map[string]any) {
 	row["scope"] = "built_in"
+	catalogDeriveLegacyModeAndProtocols(row)
 	row["supportsServiceTier"] = catalogStringListLength(row["supportedServiceTiers"]) > 0
 	decorateBuiltinStaticDerivedCapabilities(row)
 }
@@ -810,19 +775,19 @@ func catalogRowInt64Ptr(value any) *int64 {
 }
 
 // decorateCustomCatalogRow applies the toCustomCatalogItem derivations:
-// source custom-global/custom-personal, supportsPromptCaching from a present
-// cachedInputUsdPer1M and supportsServiceTier from the tier list. 能力三键不在此
-// 装饰：custom 表无这三列，能力继承依赖合并键与内置扫描行，在合并后由
+// source custom-global/custom-personal（models.source 列对 custom 行为 NULL，
+// 沿旧 custom 表投影覆盖写）、legacy mode/protocols 反推与
+// supportsServiceTier（supportsPromptCaching 直接读 models 同名列）。
+// 能力三键不在此装饰：能力继承依赖合并键与内置扫描行，在合并后由
 // chainInheritCustomCatalogCapabilities 统一回填（BUG-0229 契约，仅填空；工具
 // 键为二维矩阵）。
 func decorateCustomCatalogRow(row map[string]any) {
+	catalogDeriveLegacyModeAndProtocols(row)
 	if scope, _ := row["scope"].(string); scope == "global" {
 		row["source"] = "custom-global"
 	} else {
 		row["source"] = "custom-personal"
 	}
-	_, hasCachedInput := row["cachedInputUsdPer1M"]
-	row["supportsPromptCaching"] = hasCachedInput
 	row["supportsServiceTier"] = catalogStringListLength(row["supportedServiceTiers"]) > 0
 }
 

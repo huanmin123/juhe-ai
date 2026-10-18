@@ -586,6 +586,7 @@ func TestW1UUsageModelAccountOfProjection(t *testing.T) {
 		ID:                               "acc-1",
 		Name:                             "账号一",
 		ProviderCode:                     "openai",
+		VendorCode:                       "openai",
 		ProviderProtocolProfileID:        "ppp-1",
 		ProtocolCode:                     "openai",
 		ProtocolVersion:                  "v1",
@@ -755,15 +756,17 @@ func TestW1UCatalogDecorateRows(t *testing.T) {
 		t.Fatalf("缺 tier 键 supportsServiceTier = %v，want false", row["supportsServiceTier"])
 	}
 
-	custom := map[string]any{"scope": "global", "supportedServiceTiers": []any{"auto"}}
+	custom := map[string]any{"scope": "global", "supportedServiceTiers": []any{"auto"}, "supportsPromptCaching": false}
 	decorateCustomCatalogRow(custom)
+	// models 单表后 supports_prompt_caching 是物理列（bool 归一透传），
+	// 不再由 cachedInputUsdPer1M 键存在性推导。
 	if custom["source"] != "custom-global" || custom["supportsPromptCaching"] != false || custom["supportsServiceTier"] != true {
 		t.Fatalf("custom global 行派生 = %#v", custom)
 	}
-	custom = map[string]any{"scope": "personal", "cachedInputUsdPer1M": nil}
+	custom = map[string]any{"scope": "personal", "supportsPromptCaching": true}
 	decorateCustomCatalogRow(custom)
 	if custom["source"] != "custom-personal" || custom["supportsPromptCaching"] != true || custom["supportsServiceTier"] != false {
-		t.Fatalf("custom personal 行派生（键存在即缓存，nil 值也算）= %#v", custom)
+		t.Fatalf("custom personal 行派生（supports_prompt_caching 列透传）= %#v", custom)
 	}
 }
 

@@ -203,7 +203,7 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 		distribution[row.SupportedEndpointModesJSON]++
 	}
 	want := map[string]int{
-		`["audio_speech"]`:             16,
+		`["audio_speech"]`:             17,
 		`["audio_transcription_json"]`: 7,
 		`["chat_json","chat_sse"]`:     43,
 		`["chat_json","chat_sse","count_tokens","generate_content_json","generate_content_sse"]`:                                        1,
@@ -212,7 +212,7 @@ func TestModelSeedEndpointModesDistribution(t *testing.T) {
 		`["chat_json","chat_sse","responses_json","responses_sse"]`:                                                                     42,
 		`["embed_content"]`: 3,
 		`["generate_content_json","generate_content_sse"]`: 5,
-		`["images_json"]`: 14,
+		`["images_json"]`: 13,
 		`["images_json","responses_json","responses_sse"]`:            3,
 		`["message_token_counting","messages_json","messages_sse"]`:   15,
 		`["realtime_session"]`:                                        13,

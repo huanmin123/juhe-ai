@@ -117,20 +117,21 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
-		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+		id, system_account_id, vendor_code, connection_driver_code, oauth_type, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-		client_compatibility, health_check_model, health_check_endpoint_mode,
+		health_check_model, health_check_endpoint_mode,
 		created_at, updated_at, config_revision, dispatch_revision
 	) VALUES (
-		'w12d-team-src', 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1',
+		'w12d-team-src', 'sys_admin', 'gpt', 'gpt', NULL, 'openai', 'v1',
 		'w12d-team-src', 'api_key', 'active', $1, 'w12d-fp', 'w12d-mask',
 		1, 0, 0, 0, 0,
-		'', 'w12d-model', 'chat_json',
+		'w12d-model', 'chat_json',
 		$2, $2, 5, 7
 	)`, envelope, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
+	w12dSeedConnection(t, db, "w12d-team-src", "gpt_openai_v1", "https://api.openai.com/v1")
 	// 授权行先于实例账户：accounts.authorization_instance_authorization_id 有
 	// 外键约束（schema 漂移修复补齐），后插会违反 FK。
 	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
@@ -141,17 +142,17 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (
-		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+		id, system_account_id, connection_driver_code, protocol_code, protocol_version,
 		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-		client_compatibility, health_check_model, health_check_endpoint_mode,
+		health_check_model, health_check_endpoint_mode,
 		authorization_instance_source_account_id, authorization_instance_authorization_id,
 		created_at, updated_at, config_revision, dispatch_revision
 	) VALUES (
-		'w12d-team-inst', 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1',
+		'w12d-team-inst', 'sys_admin', 'gpt', 'openai', 'v1',
 		'w12d-team-inst', 'api_key', 'active', $1, 'w12d-fp', 'w12d-mask',
 		1, 0, 0, 0, 0,
-		'', 'w12d-model', 'chat_json',
+		'w12d-model', 'chat_json',
 		'w12d-team-src', 'w12d-team-auth',
 		$2, $2, 5, 7
 	)`, envelope, w12dFixtureNowText); err != nil {
@@ -163,8 +164,8 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('w12d-group', 'sys_admin', 'w12d-group', 'gpt', 1, 0, $1, $1) ON CONFLICT (id) DO NOTHING`, w12dFixtureNowText); err != nil {
+	if _, err := db.Exec(`INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+		VALUES ('w12d-group', 'sys_admin', 'w12d-group', 1, 0, $1, $1) ON CONFLICT (id) DO NOTHING`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)

@@ -255,7 +255,11 @@ func newChainKeyModelProbeInputLoader(db *sql.DB, postgres bool, secret string) 
 // 同形零行读）：业务 schema 未初始化时组合根 fail-fast，而不是每轮探针
 // 逐条 Warn。只校验本 loader 实际读取的关系。
 func (l *chainKeyModelProbeInputLoader) CheckContract(ctx context.Context) error {
-	for _, name := range []string{"accounts", "group_accounts", "account_model_mappings", "proxy_profiles", "resource_authorizations"} {
+	// 供应商解耦（供应商与上游协议面重构设计 §2.1/§5.1）：映射事实表是
+	// account_entry_mappings，upstream model 名经 target_model_id 外键 JOIN
+	// models 解析，探针连接面（preset + base_url）来自 account_connections，
+	// 四表都必须在装配期校验。
+	for _, name := range []string{"accounts", "group_accounts", "account_entry_mappings", "models", "account_connections", "proxy_profiles", "resource_authorizations"} {
 		if _, err := l.db.ExecContext(ctx, l.bind("SELECT 1 FROM "+l.table(name)+" LIMIT 0")); err != nil {
 			return fmt.Errorf("key-model 恢复输入读取缺少业务表 %s: %w", name, err)
 		}
@@ -293,47 +297,75 @@ func (l *chainKeyModelProbeInputLoader) bind(query string) string {
 // 的 LATERAL 改写为标量子查询——单行查询无需分页 CTE，双方言原生支持）：
 //   - mapping 与 jobs 同谓词（enabled + 健康模型 + 家族匹配 + 实映射），
 //     取 updated_at 最新一行；无映射回退 health model 本身（ToInput/
-//     ResolveHybridProbeTarget 语义）。
+//     ResolveHybridProbeTarget 语义）。供应商解耦后映射表是
+//     account_entry_mappings（设计 §5.1）：upstream 名经 target_model_id
+//     外键 JOIN models.upstream_model 解析，upstream 家族即
+//     target_endpoint_family；旧 provider_code 维度随表退役，映射只按
+//     account_id 归属（委托账户 CASE 取 source.id，与旧 account_id+provider
+//     双谓词的归属语义一致——映射恒挂在凭据来源账户名下）。
 //   - binding 取最新启用绑定（候选键序与 jobs 一致）。
 //   - 授权实例账户（delegation）镜像 jobs：凭据/协议/provider 取 source 行。
+//   - provider 身份读 accounts.vendor_code（设计 §2.1：vendor 值域与旧
+//     providerCode 同名，generic_http 为 NULL）；protocol profile 与
+//     client_compatibility 词汇已随供应商解耦退役，投影恒空串——ToInput 对
+//     空 profile 的支持矩阵即 openai 直连形态（isSupportedDirectProfile 的
+//     profile=="" 分支），validateDirectProtocolMetadata 对空 profile 免校验。
 //   - 不做 deleted 之外的 SQL 资格过滤：状态/有效期/冷却由 ToInput 固有
 //     守卫 fail-closed（unknown 中性），调度谓词与配额不做（职责边界）。
 const chainKeyModelProbeInputSQL = `
 SELECT
-  a.id, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version,
-  a.type, a.client_compatibility, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model,
-  (SELECT mm.upstream_model FROM %s mm
-    WHERE mm.account_id = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END)
-      AND mm.provider_code = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.provider_code ELSE source.provider_code END)
-      AND mm.enabled = 1 AND mm.source_model = a.health_check_model
-      AND (mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family)
-      AND mm.source_endpoint_family = CASE
-        WHEN a.health_check_endpoint_mode IN ('chat_json', 'chat_sse') THEN 'chat_completions'
-        WHEN a.health_check_endpoint_mode IN ('responses_json', 'responses_sse') THEN 'responses'
-        WHEN a.health_check_endpoint_mode IN ('messages_json', 'messages_sse') THEN 'messages'
-        WHEN a.health_check_endpoint_mode = 'generate_content_json' THEN 'generate_content'
-        WHEN a.health_check_endpoint_mode = 'generate_content_sse' THEN 'stream_generate_content'
+  a.id, a.config_revision, a.dispatch_revision, a.vendor_code, a.protocol_code, a.protocol_version,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.oauth_type ELSE source.oauth_type END,
+  a.type, a.status, a.schedulable,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE source.health_check_model END,
+  (SELECT m.upstream_model FROM %s em
+    LEFT JOIN %s m ON m.id = em.target_model_id
+    WHERE em.account_id = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END)
+      AND em.enabled = 1 AND em.source_model = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE source.health_check_model END)
+      AND (m.upstream_model <> em.source_model OR em.target_endpoint_family <> em.source_endpoint_family)
+      AND em.source_endpoint_family = CASE
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse') THEN 'chat_completions'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('responses_json', 'responses_sse') THEN 'responses'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('messages_json', 'messages_sse') THEN 'messages'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) = 'generate_content_json' THEN 'generate_content'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) = 'generate_content_sse' THEN 'stream_generate_content'
         ELSE 'interactions'
       END
-    ORDER BY mm.updated_at DESC, mm.source_model ASC LIMIT 1) AS mapped_upstream_model,
-  (SELECT mm.upstream_endpoint_family FROM %s mm
-    WHERE mm.account_id = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END)
-      AND mm.provider_code = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.provider_code ELSE source.provider_code END)
-      AND mm.enabled = 1 AND mm.source_model = a.health_check_model
-      AND (mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family)
-      AND mm.source_endpoint_family = CASE
-        WHEN a.health_check_endpoint_mode IN ('chat_json', 'chat_sse') THEN 'chat_completions'
-        WHEN a.health_check_endpoint_mode IN ('responses_json', 'responses_sse') THEN 'responses'
-        WHEN a.health_check_endpoint_mode IN ('messages_json', 'messages_sse') THEN 'messages'
-        WHEN a.health_check_endpoint_mode = 'generate_content_json' THEN 'generate_content'
-        WHEN a.health_check_endpoint_mode = 'generate_content_sse' THEN 'stream_generate_content'
+    ORDER BY em.updated_at DESC, em.source_model ASC LIMIT 1) AS mapped_upstream_model,
+  (SELECT em.target_endpoint_family FROM %s em
+    LEFT JOIN %s m ON m.id = em.target_model_id
+    WHERE em.account_id = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END)
+      AND em.enabled = 1 AND em.source_model = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE source.health_check_model END)
+      AND (m.upstream_model <> em.source_model OR em.target_endpoint_family <> em.source_endpoint_family)
+      AND em.source_endpoint_family = CASE
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse') THEN 'chat_completions'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('responses_json', 'responses_sse') THEN 'responses'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('messages_json', 'messages_sse') THEN 'messages'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) = 'generate_content_json' THEN 'generate_content'
+        WHEN (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) = 'generate_content_sse' THEN 'stream_generate_content'
         ELSE 'interactions'
       END
-    ORDER BY mm.updated_at DESC, mm.source_model ASC LIMIT 1) AS mapped_upstream_endpoint_family,
+    ORDER BY em.updated_at DESC, em.source_model ASC LIMIT 1) AS mapped_upstream_endpoint_family,
+  (SELECT c.connection_preset_code FROM %s c
+    WHERE c.account_id = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END) AND c.enabled = 1
+    ORDER BY (c.id = COALESCE((CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_connection_id ELSE source.health_check_connection_id END), '')) DESC, c.id ASC
+    LIMIT 1) AS conn_preset,
+  (SELECT c.base_url FROM %s c
+    WHERE c.account_id = (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END) AND c.enabled = 1
+    ORDER BY (c.id = COALESCE((CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_connection_id ELSE source.health_check_connection_id END), '')) DESC, c.id ASC
+    LIMIT 1) AS conn_base_url,
+  (SELECT c.connection_preset_code FROM %s c
+    WHERE c.account_id = source.id AND c.enabled = 1
+    ORDER BY (c.id = COALESCE(source.health_check_connection_id, '')) DESC, c.id ASC
+    LIMIT 1) AS source_conn_preset,
+  (SELECT c.base_url FROM %s c
+    WHERE c.account_id = source.id AND c.enabled = 1
+    ORDER BY (c.id = COALESCE(source.health_check_connection_id, '')) DESC, c.id ASC
+    LIMIT 1) AS source_conn_base_url,
   a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
-  source.id, source.config_revision, source.provider_code, source.provider_protocol_profile_id, source.protocol_code, source.protocol_version, source.type, source.client_compatibility, source.status, source.schedulable,
+  source.id, source.config_revision, source.vendor_code, source.protocol_code, source.protocol_version, source.type, source.status, source.schedulable,
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
   (SELECT ga.group_id FROM %s ga
     WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = 1
@@ -361,30 +393,33 @@ func (l *chainKeyModelProbeInputLoader) LoadAccount(ctx context.Context, account
 		return exactkeyprobe.Input{}, errors.New("key-model 恢复输入读取 account ID 不能为空")
 	}
 	query := l.bind(fmt.Sprintf(chainKeyModelProbeInputSQL,
-		l.table("account_model_mappings"), l.table("account_model_mappings"),
+		l.table("account_entry_mappings"), l.table("models"),
+		l.table("account_entry_mappings"), l.table("models"),
+		l.table("account_connections"), l.table("account_connections"),
+		l.table("account_connections"), l.table("account_connections"),
 		l.table("group_accounts"), l.table("group_accounts"),
 		l.table("accounts"), l.table("accounts"),
 		l.table("resource_authorizations"), l.table("proxy_profiles"),
 	))
 
 	var (
-		id, providerCode, accountType, status        sql.NullString
+		id, vendorCode, accountType, status          sql.NullString
 		configRevision, dispatchRevision             sql.NullInt64
-		profile, protocol, protocolVersion           sql.NullString
-		clientCompatibility                          sql.NullString
+		protocol, protocolVersion, oauthType         sql.NullString
 		schedulable                                  any
 		endpointMode, healthModel                    sql.NullString
 		mappedModel, mappedFamily                    sql.NullString
+		connPreset, connBaseURL                      sql.NullString
+		sourceConnPreset, sourceConnBaseURL          sql.NullString
 		credentials                                  sql.NullString
 		accountExpires, cooldownUntil                sql.NullString
 		continuousProbe                              any
 		observationStarted, cooldownGeneration       sql.NullString
 		sourceID                                     sql.NullString
 		sourceRevision                               sql.NullInt64
-		sourceProvider, sourceProfile                sql.NullString
+		sourceVendor                                 sql.NullString
 		sourceProtocol, sourceProtocolVersion        sql.NullString
-		sourceType, sourceClientCompatibility        sql.NullString
-		sourceStatus                                 sql.NullString
+		sourceType, sourceStatus                     sql.NullString
 		sourceSchedulable                            any
 		sourceExpires, sourceCooldown                sql.NullString
 		sourceError, sourceCredentials               sql.NullString
@@ -398,12 +433,14 @@ func (l *chainKeyModelProbeInputLoader) LoadAccount(ctx context.Context, account
 	)
 	row := l.db.QueryRowContext(ctx, query, normalized)
 	if err := row.Scan(
-		&id, &configRevision, &dispatchRevision, &providerCode, &profile, &protocol, &protocolVersion,
-		&accountType, &clientCompatibility, &status, &schedulable,
-		&endpointMode, &healthModel, &mappedModel, &mappedFamily, &credentials,
+		&id, &configRevision, &dispatchRevision, &vendorCode, &protocol, &protocolVersion, &oauthType,
+		&accountType, &status, &schedulable,
+		&endpointMode, &healthModel, &mappedModel, &mappedFamily,
+		&connPreset, &connBaseURL, &sourceConnPreset, &sourceConnBaseURL,
+		&credentials,
 		&accountExpires, &cooldownUntil, &continuousProbe,
 		&observationStarted, &cooldownGeneration,
-		&sourceID, &sourceRevision, &sourceProvider, &sourceProfile, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceClientCompatibility, &sourceStatus, &sourceSchedulable,
+		&sourceID, &sourceRevision, &sourceVendor, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceStatus, &sourceSchedulable,
 		&sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
 		&groupID, &bindingAuthorizationID,
 		&authorizationID, &authorizationStatus, &authorizationExpires,
@@ -412,16 +449,21 @@ func (l *chainKeyModelProbeInputLoader) LoadAccount(ctx context.Context, account
 		return exactkeyprobe.Input{}, fmt.Errorf("读取 key-model 恢复输入账户行失败: %w", err)
 	}
 
+	// profile 由健康检查连接 preset 经 ConnectionPresetProfileID 确定性派生
+	//（jobs direct_input_reader 同款；preset 无已注册 J1 探针目录时保持空串，
+	// 由 ToInput 的 profile 门禁 fail-closed）。
+	profileID, _ := exactkeyprobe.ConnectionPresetProfileID(connPreset.String)
+	sourceProfileID, _ := exactkeyprobe.ConnectionPresetProfileID(sourceConnPreset.String)
+
 	account := exactkeyprobe.DirectAccount{
 		ID:                           id.String,
 		ConfigRevision:               configRevision.Int64,
 		DispatchRevision:             dispatchRevision.Int64,
-		Provider:                     providerCode.String,
-		ProtocolProfileID:            profile.String,
+		Provider:                     vendorCode.String,
+		ProtocolProfileID:            profileID,
 		ProtocolCode:                 protocol.String,
 		ProtocolVersion:              protocolVersion.String,
 		Type:                         accountType.String,
-		ClientCompatibility:          clientCompatibility.String,
 		Status:                       status.String,
 		Schedulable:                  truthyAny(schedulable),
 		EndpointMode:                 endpointMode.String,
@@ -430,6 +472,9 @@ func (l *chainKeyModelProbeInputLoader) LoadAccount(ctx context.Context, account
 		MappedUpstreamEndpointFamily: mappedFamily.String,
 		CredentialsEncrypted:         credentials.String,
 		TemporaryUnavailableContinuousProbeEnabled: truthyAny(continuousProbe),
+		OAuthType:            oauthType.String,
+		ConnectionPresetCode: connPreset.String,
+		ConnectionBaseURL:    connBaseURL.String,
 	}
 	var err error
 	if account.AccountExpiresAt, err = parseNullableInstant(accountExpires); err != nil {
@@ -477,18 +522,19 @@ func (l *chainKeyModelProbeInputLoader) LoadAccount(ctx context.Context, account
 		direct.Source = &exactkeyprobe.DirectSource{
 			ID:                   sourceID.String,
 			ConfigRevision:       sourceRevision.Int64,
-			Provider:             sourceProvider.String,
-			ProtocolProfileID:    sourceProfile.String,
+			Provider:             sourceVendor.String,
+			ProtocolProfileID:    sourceProfileID,
 			ProtocolCode:         sourceProtocol.String,
 			ProtocolVersion:      sourceProtocolVersion.String,
 			Type:                 sourceType.String,
-			ClientCompatibility:  sourceClientCompatibility.String,
 			Status:               sourceStatus.String,
 			Schedulable:          truthyAny(sourceSchedulable),
 			AccountExpiresAt:     sourceExpiresAt,
 			CooldownUntil:        sourceCooldownUntil,
 			LastErrorCode:        sourceError.String,
 			CredentialsEncrypted: sourceCredentials.String,
+			ConnectionPresetCode: sourceConnPreset.String,
+			ConnectionBaseURL:    sourceConnBaseURL.String,
 		}
 		if direct.Account.Cooldown != nil {
 			value := direct.Source.ConfigRevision

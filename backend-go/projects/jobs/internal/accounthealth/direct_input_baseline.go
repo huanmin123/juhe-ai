@@ -25,8 +25,17 @@ import (
 // fanout.repository.ts:59-60），与两方言读取器内联字面量保持一致，漂移由
 // direct_input 契约测试与本次基线测试共同锚定。
 
-// directInputBaselineProviderCodes mirrors direct_input_reader.go:451。
-var directInputBaselineProviderCodes = [8]string{"gpt", "openai", "xai", "anthropic", "deepseek", "glm", "gemini", "hybrid"}
+// directInputBaselineConnectionPresetCodes mirrors direct_input_reader.go 的
+// J1 preset 白名单（供应商解耦：旧 provider code 白名单换轴为健康检查连接的
+// connection_preset_code 值域，两处字面量必须同步演化）。基线播种按 EXISTS
+// 判定，比候选 SQL 的「health-check 优先」单连接解析略宽——设计上无害（为暂
+// 不符合条件的账户预置版本行免二次迁移），最终资格仍由读取器运行时过滤。
+var directInputBaselineConnectionPresetCodes = [13]string{
+	"gpt_openai_v1", "xai_openai_v1", "deepseek_openai_v1", "deepseek_anthropic_v1",
+	"anthropic_v1", "glm_general_openai_v1", "glm_coding_openai_v1", "glm_coding_anthropic_v1",
+	"gemini_openai_chat_v1beta", "gemini_native_v1beta",
+	"generic_openai_v1", "generic_anthropic_v1", "generic_gemini_v1beta",
+}
 
 // directInputBaselineAccountTypes mirrors direct_input_reader.go:452。
 var directInputBaselineAccountTypes = [3]string{"api_key", "oauth", "google_oauth"}
@@ -50,8 +59,12 @@ func seedDirectInputBaseline(ctx context.Context, db *sql.DB, qualifier, nowPlac
 SELECT a.id, 1, ` + nowPlaceholder + `
 FROM ` + qualifier + `accounts a
 WHERE a.deleted_at IS NULL
-  AND a.provider_code IN ('` + joinBaselineList(directInputBaselineProviderCodes[:]) + `')
   AND a.type IN ('` + joinBaselineList(directInputBaselineAccountTypes[:]) + `')
+  AND EXISTS (
+    SELECT 1 FROM ` + qualifier + `account_connections c
+    WHERE c.account_id = a.id AND c.enabled = 1
+      AND c.connection_preset_code IN ('` + joinBaselineList(directInputBaselineConnectionPresetCodes[:]) + `')
+  )
 ON CONFLICT (account_id) DO NOTHING`
 	result, err := db.ExecContext(ctx, query, sqliteDirectTimestamp(time.Now()))
 	if err != nil {

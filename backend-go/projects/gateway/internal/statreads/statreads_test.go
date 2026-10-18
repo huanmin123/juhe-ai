@@ -110,11 +110,13 @@ const testSchema = `
 		status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 	CREATE TABLE accounts (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL,
+		vendor_code TEXT,
 		type TEXT NOT NULL, status TEXT NOT NULL, deleted_at TEXT, proxy_profile_id TEXT,
 		authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT,
 		authorization_instance_owner_system_account_id TEXT, last_used_at TEXT,
 		last_health_check_at TEXT, last_health_success_at TEXT, next_health_check_at TEXT);
 	CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT);
+	CREATE TABLE vendors (code TEXT PRIMARY KEY, name TEXT NOT NULL);
 	CREATE TABLE api_keys (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL);
 	CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL);
 `

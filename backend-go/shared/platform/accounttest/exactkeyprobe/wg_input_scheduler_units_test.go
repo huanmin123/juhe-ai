@@ -13,7 +13,7 @@ import (
 func wgValidDirectInput(t *testing.T, secret string) DirectInput {
 	t.Helper()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	credentials := mustEnvelopeJSON(t, secret, `{"api_key":"sk-1","base_url":"https://api.test/v1"}`)
+	credentials := mustEnvelopeJSON(t, secret, `{"api_key":"sk-1"}`)
 	return DirectInput{
 		Account: DirectAccount{
 			ID: "acct-in", ConfigRevision: 2, DispatchRevision: 3,
@@ -21,6 +21,7 @@ func wgValidDirectInput(t *testing.T, secret string) DirectInput {
 			Type: "api_key", Status: "active", Schedulable: true,
 			EndpointMode: "chat_json", HealthModel: "gpt-test",
 			CredentialsEncrypted: credentials,
+			ConnectionBaseURL:    "https://api.test/v1",
 		},
 		Binding:      DirectBinding{GroupID: "g-1", Enabled: true, AuthorizationBindingID: "auth-1"},
 		InputVersion: 4,
@@ -48,8 +49,9 @@ func TestToInputSuccessPaths(t *testing.T) {
 	oauth := wgValidDirectInput(t, secret)
 	oauth.Account.Type = "oauth"
 	oauth.Account.EndpointMode = "responses_sse"
+	oauth.Account.OAuthType = "chatgpt"
 	oauth.Account.CredentialsEncrypted = mustEnvelopeJSON(t, secret,
-		`{"access_token":"tok-1","expires_at":"2027-09-10T12:00:00Z","account_id":"chatgpt-1","quota_project_id":"qp","oauth_type":"chatgpt","project_id":"pj"}`)
+		`{"access_token":"tok-1","expires_at":"2027-09-10T12:00:00Z","account_id":"chatgpt-1","quota_project_id":"qp","project_id":"pj"}`)
 	oauthInput, err := oauth.ToInput(secret, now)
 	if err != nil {
 		t.Fatalf("OAuth 装配必须成功: %v", err)
@@ -118,7 +120,8 @@ func TestToInputRejectsInvalidMutations(t *testing.T) {
 		t.Fatalf("冷却账户缺 fence 必须报错: %v", err)
 	}
 	// Google OAuth code_assist 只支持 GenerateContent（Interactions 形态先
-	// 通过资格校验，再在 base URL 之后被显式拒绝）。
+	// 通过资格校验，再在 base URL 之后被显式拒绝）。oauth_type 运行时来源是
+	// accounts.oauth_type 列。
 	gemini := base
 	gemini.Account.Type = "google_oauth"
 	gemini.Account.Provider = "gemini"
@@ -126,7 +129,8 @@ func TestToInputRejectsInvalidMutations(t *testing.T) {
 	gemini.Account.ProtocolCode = "gemini"
 	gemini.Account.ProtocolVersion = "v1beta"
 	gemini.Account.EndpointMode = "interactions_json"
-	gemini.Account.CredentialsEncrypted = mustEnvelopeJSON(t, secret, `{"access_token":"tok","expires_at":"2027-09-10T12:00:00Z","oauth_type":"code_assist"}`)
+	gemini.Account.OAuthType = "code_assist"
+	gemini.Account.CredentialsEncrypted = mustEnvelopeJSON(t, secret, `{"access_token":"tok","expires_at":"2027-09-10T12:00:00Z"}`)
 	if _, err := gemini.ToInput(secret, now); err == nil || !strings.Contains(err.Error(), "GenerateContent") {
 		t.Fatalf("code_assist 必须限定 GenerateContent: %v", err)
 	}
@@ -156,11 +160,6 @@ func TestValidateDirectAccountMatrix(t *testing.T) {
 		{"缺 ID", func(a *DirectAccount) { a.ID = " " }},
 		{"revision 0", func(a *DirectAccount) { a.ConfigRevision = 0 }},
 		{"type 不支持", func(a *DirectAccount) { a.Type = "gopher" }},
-		{"mode 不支持", func(a *DirectAccount) { a.EndpointMode = "gopher_json" }},
-		{"协议元数据不一致", func(a *DirectAccount) {
-			a.ProtocolProfileID = "profile_openai_openai_v1"
-			a.ProtocolCode = "anthropic"
-		}},
 		{"状态不可探活", func(a *DirectAccount) { a.Status = "disabled" }},
 		{"active 不可调度", func(a *DirectAccount) { a.Schedulable = false }},
 		{"已到期", func(a *DirectAccount) { expired := now.Add(-time.Hour); a.AccountExpiresAt = &expired }},
@@ -176,6 +175,22 @@ func TestValidateDirectAccountMatrix(t *testing.T) {
 				t.Fatal("非法账户必须报错")
 			}
 		})
+	}
+	// 供应商解耦：profile/mode 门禁移到 ToInput 的 effective（来源投影后）统一
+	// 执行，validateDirectAccount 只校验账户行自身事实——mode 不支持与协议
+	// 元数据不一致改由 ToInput 拒绝臂覆盖。
+	invalidMode := DirectInput{Account: valid, Binding: DirectBinding{GroupID: "g", Enabled: true}, InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "tls"}
+	invalidMode.Account.EndpointMode = "gopher_json"
+	invalidMode.Account.ConnectionBaseURL = "https://api.test"
+	if _, err := invalidMode.ToInput("secret", now); err == nil {
+		t.Fatal("mode 不支持必须在 ToInput 拒绝")
+	}
+	metadataMismatch := DirectInput{Account: valid, Binding: DirectBinding{GroupID: "g", Enabled: true}, InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "tls"}
+	metadataMismatch.Account.ProtocolProfileID = "profile_openai_openai_v1"
+	metadataMismatch.Account.ProtocolCode = "anthropic"
+	metadataMismatch.Account.ConnectionBaseURL = "https://api.test"
+	if _, err := metadataMismatch.ToInput("secret", now); err == nil {
+		t.Fatal("协议元数据不一致必须在 ToInput 拒绝")
 	}
 	// pending_test 无需 schedulable。
 	pending := valid

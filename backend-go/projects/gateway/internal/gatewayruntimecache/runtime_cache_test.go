@@ -240,7 +240,7 @@ func testAPIKeyRow(id string, mode string, groupIDs ...string) *GatewayAPIKeyRow
 		row.GroupBindings = append(row.GroupBindings, GatewayAPIKeyGroupBindingRow{
 			ID: id + "-b-" + groupID, APIKeyID: id, SystemAccountID: "sys_owner",
 			GroupID: groupID, Priority: len(row.GroupBindings) + 1, Weight: 1,
-			Status: "active", ProviderCode: "gpt", GroupEnabled: 1,
+			Status: "active", GroupEnabled: 1,
 		})
 	}
 	if len(row.GroupBindings) > 0 {
@@ -950,17 +950,14 @@ func TestProviderModelRouteResolutionOutcomes(t *testing.T) {
 	svc := newTestService(t, models, clock, nil)
 	ctx := context.Background()
 
-	matched, err := svc.ResolveCachedProviderModelRouteAsync(ctx, " gpt-x ", []string{"gpt", "gpt"}, "", false)
+	matched, err := svc.ResolveCachedProviderModelRouteAsync(ctx, " gpt-x ", "", false)
 	if err != nil {
 		t.Fatalf("matched resolve: %v", err)
 	}
 	if matched.Outcome != ProviderModelRouteMatched || matched.ModelKey != "gpt-x" {
 		t.Fatalf("matched outcome mismatch: %+v", matched)
 	}
-	if matched.ProviderCode != "" || len(matched.MatchedProviderCodes) != 0 {
-		t.Fatalf("models 语义下供应商载体必须恒空: %+v", matched)
-	}
-	missing, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "unknown", []string{"gpt"}, "", false)
+	missing, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "unknown", "", false)
 	if err != nil {
 		t.Fatalf("missing resolve: %v", err)
 	}
@@ -969,11 +966,11 @@ func TestProviderModelRouteResolutionOutcomes(t *testing.T) {
 	}
 	// 目录归一化 TrimSpace 后精确匹配："gpt-x " 行以 "gpt-x" 命中，大小写
 	// 变体不命中（binary 语义）。
-	caseSensitive, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "GPT-X", []string{"gpt"}, "", false)
+	caseSensitive, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "GPT-X", "", false)
 	if err != nil || caseSensitive.Outcome != ProviderModelRouteMissing {
 		t.Fatalf("大小写必须按 binary 区分: %+v err=%v", caseSensitive, err)
 	}
-	empty, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "gpt-x", nil, "", false)
+	empty, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "gpt-x", "", false)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -981,7 +978,7 @@ func TestProviderModelRouteResolutionOutcomes(t *testing.T) {
 	if empty.Outcome != ProviderModelRouteMatched || empty.ModelKey != "gpt-x" {
 		t.Fatalf("空 providerCodes 不得影响 models 目录判定: %+v", empty)
 	}
-	blank, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "   ", []string{"gpt"}, "", false)
+	blank, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "   ", "", false)
 	if err != nil || blank.Outcome != ProviderModelRouteMissing || blank.ModelKey != "" {
 		t.Fatalf("空模型键必须短路 missing: %+v err=%v", blank, err)
 	}
@@ -1004,7 +1001,7 @@ func TestModelsDirectoryVisibilityByScope(t *testing.T) {
 	ctx := context.Background()
 
 	resolve := func(owner, model string) (ProviderModelRouteOutcome, error) {
-		resolution, err := svc.ResolveCachedProviderModelRouteAsync(ctx, model, nil, owner, true)
+		resolution, err := svc.ResolveCachedProviderModelRouteAsync(ctx, model, owner, true)
 		if err != nil {
 			return "", err
 		}

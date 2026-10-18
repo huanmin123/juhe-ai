@@ -73,13 +73,14 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 		t.Fatal(err)
 	}
 	nowISO := time.Now().UTC().Format(time.RFC3339Nano)
+	// 供应商解耦（设计 §8）：账户身份列为 vendor_code / connection_driver_code。
 	if _, err := composed.DB.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable,
-		provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		client_compatibility, config_revision, dispatch_revision, credentials_encrypted,
+		vendor_code, connection_driver_code, protocol_code, protocol_version,
+		config_revision, dispatch_revision, credentials_encrypted,
 		health_check_model, health_check_endpoint_mode, created_at, updated_at)
 		VALUES (?, ?, 'reset-e2e', 'api_key', 'active', 1,
-		'openai', 'profile_openai_openai_v1', 'openai', 'v1',
-		'openai_standard', 1, 1, ?,
+		'gpt', 'gpt', 'openai', 'v1',
+		1, 1, ?,
 		'', 'chat_json', ?, ?)`,
 		accountID, ownerID, sealed, nowISO, nowISO); err != nil {
 		t.Fatalf("seed account: %v", err)
@@ -97,9 +98,9 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 	seedState(fingerprints[0], "rate_limited")
 	seedState(fingerprints[1], "error")
 	seedState(fingerprints[2], "disabled")
-	// group_accounts.group_id 外键 groups(id)，groups.provider_code 外键 providers(code)。
-	if _, err := composed.DB.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, created_at, updated_at)
-		VALUES ('grp-e2e', ?, 'reset-e2e-group', 'openai', ?, ?)`, ownerID, nowISO, nowISO); err != nil {
+	// group_accounts.group_id 外键 groups(id)；供应商解耦后 groups 无 provider 维度。
+	if _, err := composed.DB.Exec(`INSERT INTO groups (id, system_account_id, name, created_at, updated_at)
+		VALUES ('grp-e2e', ?, 'reset-e2e-group', ?, ?)`, ownerID, nowISO, nowISO); err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
 	if _, err := composed.DB.Exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)

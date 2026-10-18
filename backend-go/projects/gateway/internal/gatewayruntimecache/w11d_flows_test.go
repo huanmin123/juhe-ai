@@ -172,41 +172,38 @@ func TestW11DCatalogSharedAndErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 路由解析（models 单表目录语义）：空模型 → missing。
-	resolution, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "  ", []string{"gpt"}, "sys", false)
+	resolution, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "  ", "sys", false)
 	if err != nil || resolution.Outcome != ProviderModelRouteMissing {
 		t.Fatalf("空模型 = %+v err=%v", resolution, err)
 	}
 	// 目录未装载模型 → missing；目录有模型 → matched（provider 载体恒空）。
-	resolution, err = svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false)
+	resolution, err = svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false)
 	if err != nil || resolution.Outcome != ProviderModelRouteMissing {
 		t.Fatalf("目录无模型 = %+v err=%v", resolution, err)
 	}
 	models.activeModels = []ModelsDirectoryEntry{{PublicModel: "m1", Scope: "builtin"}}
 	svc.ClearGatewayRuntimeCacheLocal(ClearOptions{ClearModelCatalog: true})
-	resolution, err = svc.ResolveCachedProviderModelRouteAsync(ctx, " m1 ", []string{"gpt", "anthropic"}, "sys", false)
+	resolution, err = svc.ResolveCachedProviderModelRouteAsync(ctx, " m1 ", "sys", false)
 	if err != nil || resolution.Outcome != ProviderModelRouteMatched || resolution.ModelKey != "m1" {
 		t.Fatalf("目录命中 = %+v err=%v", resolution, err)
 	}
-	if resolution.ProviderCode != "" || len(resolution.MatchedProviderCodes) != 0 {
-		t.Fatalf("models 语义下供应商载体必须恒空: %+v", resolution)
-	}
 	// 本地缓存命中路径（第二次解析同键，不再触发 loader）。
 	models.activeModels = nil
-	if _, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
+	if _, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false); err != nil {
 		t.Fatal(err)
 	}
 	// 目录 loader 失败传播到路由解析（独立 fake，不污染后续用例数据）。
 	failingPresence := &w11dFailingCatalogModels{fakeModels: newFakeModels()}
 	failingPresence.activeModelsErr = errors.New("w11d models directory down")
 	svc3 := newTestService(t, failingPresence, clock, nil)
-	if _, err := svc3.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err == nil {
+	if _, err := svc3.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false); err == nil {
 		t.Fatal("目录 loader 失败必须传播")
 	}
 	// 共享 models 目录读失败告警。
 	models.activeModels = []ModelsDirectoryEntry{{PublicModel: "m1", Scope: "builtin"}}
 	svc4 := newTestService(t, models, clock, func(o *Options) { o.Logger = logger })
 	svc4.sharedModelsDir = &whReadErrShared{}
-	if _, err := svc4.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
+	if _, err := svc4.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false); err != nil {
 		t.Fatal(err)
 	}
 	found := false
@@ -221,7 +218,7 @@ func TestW11DCatalogSharedAndErrorArms(t *testing.T) {
 	// 共享写失败告警（setSharedModelsDirectoryActiveSet）。
 	svc5 := newTestService(t, models, clock, func(o *Options) { o.Logger = logger })
 	svc5.sharedModelsDir = &whFailingShared{failSet: true}
-	if _, err := svc5.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
+	if _, err := svc5.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false); err != nil {
 		t.Fatal(err)
 	}
 	found = false

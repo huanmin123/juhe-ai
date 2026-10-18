@@ -91,7 +91,8 @@ func TestWhModelsBeforeRequiredAuth(t *testing.T) {
 	if len(sink.modelSends) != 1 || sink.modelSends[0].Protocol != "openai" {
 		t.Fatalf("模型响应 = %+v", sink.modelSends)
 	}
-	if got := sink.modelSends[0].Bindings; len(got) != 1 || got[0].ProviderCode != "openai" || got[0].GroupID != "group_1" {
+	// 供应商解耦（设计 §8）：绑定投影不再携带 provider 维度，ProviderCode 过渡恒空。
+	if got := sink.modelSends[0].Bindings; len(got) != 1 || got[0].ProviderCode != "" || got[0].GroupID != "group_1" {
 		t.Fatalf("bindings = %v", got)
 	}
 	if sink.modelSends[0].Context == nil {
@@ -560,13 +561,10 @@ func TestWhOrchestrationHelpers(t *testing.T) {
 	if apiKeyHasActiveBindingForGroup(*inactive, "group_1") {
 		t.Fatal("非激活绑定不得命中")
 	}
-	if got := groupAccessProviderCode(nil); got != "" {
-		t.Fatal("nil 分组访问 provider 为空")
-	}
 	if fields := groupUsageFieldsOr(nil, nil); fields != nil {
 		t.Fatal("双 nil 字段为 nil")
 	}
-	if fields := groupUsageFieldsOr(nil, validRuntime().GroupAccess); fields == nil || fields.ProviderCode != "openai" {
+	if fields := groupUsageFieldsOr(nil, validRuntime().GroupAccess); fields == nil || fields.GroupAccessType != "owner" {
 		t.Fatalf("runtime 分组字段 = %+v", fields)
 	}
 	// 会话身份解析链：strategy 自带 ClientSource 优先。

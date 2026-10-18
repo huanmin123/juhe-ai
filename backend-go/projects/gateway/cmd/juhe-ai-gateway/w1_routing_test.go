@@ -20,7 +20,6 @@ func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
 	authzID := "authz_1"
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
-		ProviderCode:                   "openai",
 		GroupAccessType:                "shared",
 		GroupType:                      &groupType,
 		SchedulingPolicy:               &gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "speed_first"},
@@ -28,7 +27,7 @@ func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
 		GroupAuthorizationQuotaLimited: boolPtr(true),
 	}
 	projected := projectGroupAccessForRouting(meta)
-	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.ProviderCode != "openai" || projected.GroupType != "high_concurrency" {
+	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.GroupType != "high_concurrency" {
 		t.Fatalf("projection = %+v", projected)
 	}
 	if !strings.Contains(projected.SchedulingPolicy, "speed_first") {
@@ -129,9 +128,9 @@ func TestW1ProjectAPIKeyRowProjections(t *testing.T) {
 		Status:                  "active",
 		GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
 			{ID: "rsg_1", APIKeyID: "key_1", SystemAccountID: "sys_1", GroupID: "grp_1",
-				Priority: 2, Weight: 3, Status: "active", ProviderCode: "openai", GroupEnabled: 1},
+				Priority: 2, Weight: 3, Status: "active", GroupEnabled: 1},
 			{ID: "rsg_2", APIKeyID: "key_1", SystemAccountID: "sys_1", GroupID: "grp_2",
-				Priority: 4, Weight: 1, Status: "active", ProviderCode: "openai", GroupEnabled: 1},
+				Priority: 4, Weight: 1, Status: "active", GroupEnabled: 1},
 		},
 	}
 	projected := projectAPIKeyRowForRouting(record)
@@ -149,7 +148,7 @@ func TestW1ProjectAPIKeyRowProjections(t *testing.T) {
 	// 短投影按 ID 恢复原始行（第一条保留原值，未知 ID 构造 runtime 行）。
 	extra := []gatewayrouting.GroupBindingRow{
 		{ID: "rsg_new", APIKeyID: "key_1", SystemAccountID: "sys_1", GroupID: "grp_9",
-			Priority: 5, Status: "active", ProviderCode: "openai", GroupEnabled: 0},
+			Priority: 5, Status: "active", GroupEnabled: 0},
 	}
 	rebuilt := projectBindingsForRuntime(extra, record.GroupBindings)
 	if len(rebuilt) != 1 {
@@ -201,18 +200,18 @@ func TestW1ChainRouteResolverGuards(t *testing.T) {
 	if _, err := resolver.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{}); err == nil {
 		t.Fatal("nil normal 必须报错")
 	}
-	empty := resolver.rehydrateGroupAccess(context.Background(), "", "sys_1", gatewayrouting.GroupUsageAccessMetadata{ProviderCode: "openai", GroupType: "personal"})
-	if empty == nil || empty.ProviderCode != "openai" {
+	empty := resolver.rehydrateGroupAccess(context.Background(), "", "sys_1", gatewayrouting.GroupUsageAccessMetadata{GroupType: "personal"})
+	if empty == nil || empty.GroupType == nil || *empty.GroupType != "personal" {
 		t.Fatalf("empty group access = %+v", empty)
 	}
 	if got := resolver.listFullAccounts(context.Background(), "", "sys_1", "m", ""); got != nil {
 		t.Fatalf("空 group 列表 = %v", got)
 	}
 	resolver.cache = nil
-	accounts, routeSource, matched := resolver.rehydrateAccounts(context.Background(), "", "sys_1",
-		[]gatewayrouting.UpstreamAccount{{ID: "acc_x", ProviderCode: "openai"}}, "m", "", "source", "matched")
-	if len(accounts) != 1 || accounts[0].ID != "acc_x" || routeSource != "source" || matched != "matched" {
-		t.Fatalf("rehydrate = %+v %q %q", accounts, routeSource, matched)
+	accounts, routeSource := resolver.rehydrateAccounts(context.Background(), "", "sys_1",
+		[]gatewayrouting.UpstreamAccount{{ID: "acc_x", ProviderCode: "openai"}}, "m", "", "source")
+	if len(accounts) != 1 || accounts[0].ID != "acc_x" || routeSource != "source" {
+		t.Fatalf("rehydrate = %+v %q", accounts, routeSource)
 	}
 }
 
@@ -253,14 +252,14 @@ func TestW1ChainRoutingCacheBridge(t *testing.T) {
 	bridge := chainRoutingCache{cache: fixture.cache}
 	ctx := context.Background()
 	meta, ok, err := bridge.ResolveCachedGroupUsageAccessMetadataAsync(ctx, fixture.groupID, fixture.systemAccount)
-	if err != nil || !ok || meta.ProviderCode != "openai" {
+	if err != nil || !ok || meta.GroupAccessType != "owner" {
 		t.Fatalf("group access = %+v, %v, %v", meta, ok, err)
 	}
 	accounts, err := bridge.ListCachedOpenAIAccountsForGroupAsync(ctx, fixture.groupID, fixture.systemAccount, gatewayrouting.CachedAccountsForGroupOptions{})
 	if err != nil || len(accounts) != 1 || accounts[0].ID != fixture.accountID {
 		t.Fatalf("accounts = %+v, %v", accounts, err)
 	}
-	resolution, err := bridge.ResolveCachedProviderModelRouteAsync(ctx, gatewayrouting.ProviderModelRouteInput{Model: "gpt-test", ProviderCodes: []string{"openai"}})
+	resolution, err := bridge.ResolveCachedProviderModelRouteAsync(ctx, gatewayrouting.ProviderModelRouteInput{Model: "gpt-test"})
 	if err != nil {
 		t.Fatalf("model route: %v", err)
 	}
@@ -271,12 +270,12 @@ func TestW1ChainRoutingCacheBridge(t *testing.T) {
 		t.Fatalf("缺失组 = %v, %v", ok, err)
 	}
 	resolver := &chainRouteResolver{cache: fixture.cache}
-	hydrated := resolver.rehydrateGroupAccess(ctx, fixture.groupID, fixture.systemAccount, gatewayrouting.GroupUsageAccessMetadata{ProviderCode: "fallback"})
-	if hydrated == nil || hydrated.ProviderCode != "openai" {
+	hydrated := resolver.rehydrateGroupAccess(ctx, fixture.groupID, fixture.systemAccount, gatewayrouting.GroupUsageAccessMetadata{GroupAccessType: "owner"})
+	if hydrated == nil || hydrated.GroupAccessType != "owner" {
 		t.Fatalf("hydrated = %+v", hydrated)
 	}
-	full, _, _ := resolver.rehydrateAccounts(ctx, fixture.groupID, fixture.systemAccount,
-		[]gatewayrouting.UpstreamAccount{{ID: fixture.accountID}}, "", "", "", "")
+	full, _ := resolver.rehydrateAccounts(ctx, fixture.groupID, fixture.systemAccount,
+		[]gatewayrouting.UpstreamAccount{{ID: fixture.accountID}}, "", "", "")
 	if len(full) != 1 || full[0].ID != fixture.accountID || full[0].APIKey != "sk-upstream-account-key" {
 		t.Fatalf("rehydrated = %+v", full)
 	}

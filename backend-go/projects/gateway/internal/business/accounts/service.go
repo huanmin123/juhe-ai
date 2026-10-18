@@ -82,6 +82,11 @@ type Port interface {
 
 type Service struct{ store *Store }
 
+// ErrModelNotFound 是支持模型解析失败的管理面 400 语义哨兵（错误码风格对齐
+// 网关既有 model_not_found）：请求 supportedModels 中的某个模型名在 models
+// 表按 (vendor_code, upstream_model) + owner 可见性解析不到时返回，不静默跳过。
+var ErrModelNotFound = errors.New("model not found")
+
 func New(db *sql.DB, postgres bool, gate OwnerGate) (*Service, error) {
 	s, err := NewStore(db, postgres, gate)
 	if err != nil {
@@ -119,6 +124,56 @@ func normalize(in CreateInput) error {
 	return nil
 }
 
+// realVendorCodes 是供应商与上游协议面重构设计 §1.1 注册表的 9 个真实厂商值域
+// （与 internal/accounts 写入面、maintenance 迁移命令同词表）。本包只依赖
+// database/sql，不跨包复用注册表，词表以字面量维护。
+var realVendorCodes = map[string]bool{
+	"gpt": true, "xai": true, "deepseek": true, "anthropic": true, "gemini": true,
+	"glm": true, "minimax": true, "volcengine": true, "qwen": true,
+}
+
+// vendorIdentityForProvider 把 provider 语义推导为账户行 (vendor_code,
+// connection_driver_code) 写入值（B1 写入面缺口）：创建请求体不携带
+// vendor/driver 字段，推导规则与迁移命令 vendorOfProvider / driver 推导
+// （providerconnectionmigration/rules.go:770、:919）同口径——
+//   - provider_code 命中 9 厂商：vendor_code = provider_code，
+//     connection_driver_code = provider_code（注册表 driver 名与 vendor 同名；
+//     OpenAI OAuth 账户现以 provider gpt 创建，天然落 vendor gpt）；
+//   - 其余（openai / hybrid 等 generic 语义 provider）：vendor_code 为空串
+//     （SQL NULL）、connection_driver_code = 'generic_http'（设计 §2.1：
+//     generic_http 账户 vendor 恒 NULL）。
+func vendorIdentityForProvider(providerCode string) (vendor, driver string) {
+	if realVendorCodes[providerCode] {
+		return providerCode, providerCode
+	}
+	return "", "generic_http"
+}
+
+// resolveSupportedModelID 按 models 目标形态身份键把支持模型名解析为
+// models.id（B3 写入路径）。语义决策：supportedModels 携带上游模型名，解析键
+// 取 vendor_code + upstream_model——models 身份唯一索引即
+// (coalesce(vendor_code,''), scope, coalesce(system_account_id,''),
+// upstream_model)（pg_seed.go:359），健康检查守卫同样按 upstream_model 名匹配
+// （pg_seed.go:413-415 注释）；public_model 只是展示投影，不作身份键。
+// scope 可见性按资源账户 owner：personal 行必须归属该 owner，builtin/global
+// 全局可见，owner personal 行优先于全局行；status 限定 active（种子停用行
+// 不得新建支持关系）。解析不到返回 ErrModelNotFound。
+func resolveSupportedModelID(ctx context.Context, tx *sql.Tx, s *Store, vendor, owner, model string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("models")+`
+		WHERE COALESCE(vendor_code,'') = ? AND upstream_model = ? AND status = 'active'
+		  AND (scope IN ('builtin','global') OR (scope = 'personal' AND system_account_id = ?))
+		ORDER BY CASE scope WHEN 'personal' THEN 0 WHEN 'global' THEN 1 ELSE 2 END, id
+		LIMIT 1`), vendor, model, owner).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s", ErrModelNotFound, model)
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
 	if err := s.requireOwner(); err != nil {
 		return Account{}, err
@@ -132,8 +187,13 @@ func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
 	}
 	defer tx.Rollback()
 	now := s.stamp()
-	q := `INSERT INTO ` + s.table("accounts") + ` (id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,name,type,status,credentials_encrypted,config_revision,dispatch_revision,schedulable,availability_schedule_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?)`
-	_, err = tx.ExecContext(ctx, s.bind(q), in.ID, in.SystemAccountID, in.ProviderCode, in.ProviderProtocolProfileID, in.ProtocolCode, in.ProtocolVersion, in.Name, in.Type, in.Status, in.CredentialsEncrypted, boolInt(in.Schedulable), nullableString(in.AvailabilityScheduleJSON), now, now)
+	// B1 写入面：accounts 行补 vendor_code / connection_driver_code 两列，
+	// 推导规则见 vendorIdentityForProvider 注释；generic 账户 vendor 落 SQL
+	// NULL（设计 §2.1），driver 恒非空。
+	vendorCode, driverCode := vendorIdentityForProvider(strings.TrimSpace(in.ProviderCode))
+	vendorColumn := sql.NullString{String: vendorCode, Valid: vendorCode != ""}
+	q := `INSERT INTO ` + s.table("accounts") + ` (id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,vendor_code,connection_driver_code,name,type,status,credentials_encrypted,config_revision,dispatch_revision,schedulable,availability_schedule_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?)`
+	_, err = tx.ExecContext(ctx, s.bind(q), in.ID, in.SystemAccountID, in.ProviderCode, in.ProviderProtocolProfileID, in.ProtocolCode, in.ProtocolVersion, vendorColumn, driverCode, in.Name, in.Type, in.Status, in.CredentialsEncrypted, boolInt(in.Schedulable), nullableString(in.AvailabilityScheduleJSON), now, now)
 	if err != nil {
 		// Client retries use the caller-provided account ID as a receipt key.
 		// Returning an existing semantically identical aggregate is safe; a
@@ -148,7 +208,7 @@ func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
 		}
 		return Account{}, err
 	}
-	if err := writeRelations(ctx, tx, s, in.ID, in.SystemAccountID, in.ProviderCode, in.SupportedModels, in.ModelMappings, in.Tags, in.APIKeyBindings, now); err != nil {
+	if err := writeRelations(ctx, tx, s, in.ID, in.SystemAccountID, in.ProviderCode, vendorCode, in.SupportedModels, in.ModelMappings, in.Tags, in.APIKeyBindings, now); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -367,9 +427,25 @@ func nullableString(v *string) any {
 	return *v
 }
 
-func writeRelations(ctx context.Context, tx *sql.Tx, s *Store, id, systemID, provider string, models []string, mappings []ModelMapping, tags []string, keys []APIKeyBinding, now string) error {
+// writeRelations 落账户子关系。supportedModels 走 B3 目标形态：模型名按
+// (vendor_code, upstream_model) + owner 可见性解析 models.id 后写
+// (account_id, model_id)（解析失败返回 ErrModelNotFound，不静默跳过）。
+// modelMappings 写路径决策（B3）：account_entry_mappings 的 target 需
+// connection + model 双解析（设计 §5.1「目标为本账户 connection preset +
+// model + endpoint family」，target_connection_id NOT NULL + 复合外键），而本
+// 包边界不拥有 account_connections、ModelMapping DTO 也不携带连接维度，无法
+// 在包内解析 target_connection_id；伪造连接值或静默丢弃都会破坏聚合契约。
+// 旧 account_model_mappings 表已随 A 路线撤除（maintenance fresh DDL 不再
+// 建表），本路径在 fresh 库上写映射行会失败——这是已登记的待迁移面：映射行
+// 写 account_entry_mappings 的改写与连接维度解析归后续切片，本函数当前不
+// 静默变更 supportedModels 语义。
+func writeRelations(ctx context.Context, tx *sql.Tx, s *Store, id, systemID, provider, vendor string, models []string, mappings []ModelMapping, tags []string, keys []APIKeyBinding, now string) error {
 	for _, m := range models {
-		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_supported_models")+` (account_id,provider_code,model,created_at) VALUES (?,?,?,?)`), id, provider, m, now); err != nil {
+		modelID, err := resolveSupportedModelID(ctx, tx, s, vendor, systemID, m)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_supported_models")+` (account_id,model_id,created_at) VALUES (?,?,?)`), id, modelID, now); err != nil {
 			return err
 		}
 	}
@@ -403,12 +479,22 @@ func writeRelationsPatch(ctx context.Context, tx *sql.Tx, s *Store, id, systemID
 		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id=?`), id); err != nil {
 			return err
 		}
-		var provider string
-		if err := tx.QueryRowContext(ctx, s.bind(`SELECT provider_code FROM `+s.table("accounts")+` WHERE id=?`), id).Scan(&provider); err != nil {
+		// B3 目标形态：模型解析需要账户 vendor 与 owner 可见性（资源账户
+		// system_account_id 即 owner scope），不再读旧 provider_code 键；
+		// generic 账户 vendor_code 为 SQL NULL，经 NullString 扫描后按空串
+		// 参与身份键比较（COALESCE 两侧同形）。
+		var vendorColumn sql.NullString
+		var owner string
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT vendor_code, system_account_id FROM `+s.table("accounts")+` WHERE id=?`), id).Scan(&vendorColumn, &owner); err != nil {
 			return err
 		}
+		vendor := vendorColumn.String
 		for _, m := range *p.SupportedModels {
-			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_supported_models")+` (account_id,provider_code,model,created_at) VALUES (?,?,?,?)`), id, provider, m, now); err != nil {
+			modelID, err := resolveSupportedModelID(ctx, tx, s, vendor, owner, m)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_supported_models")+` (account_id,model_id,created_at) VALUES (?,?,?)`), id, modelID, now); err != nil {
 				return err
 			}
 		}
@@ -431,7 +517,7 @@ func writeRelationsPatch(ctx context.Context, tx *sql.Tx, s *Store, id, systemID
 		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_tag_bindings")+` WHERE account_id=?`), id); err != nil {
 			return err
 		}
-		if err := writeRelations(ctx, tx, s, id, systemID, "", nil, nil, *p.Tags, nil, now); err != nil {
+		if err := writeRelations(ctx, tx, s, id, systemID, "", "", nil, nil, *p.Tags, nil, now); err != nil {
 			return err
 		}
 	}
@@ -451,7 +537,10 @@ func writeRelationsPatch(ctx context.Context, tx *sql.Tx, s *Store, id, systemID
 	return nil
 }
 func readRelations(ctx context.Context, db *sql.DB, s *Store, a *Account) error {
-	rows, err := db.QueryContext(ctx, s.bind(`SELECT model FROM `+s.table("account_supported_models")+` WHERE account_id=? ORDER BY model`), a.ID)
+	// B3 目标形态读取：account_supported_models 只存 model_id，聚合 DTO 的
+	// SupportedModels 投影 models.upstream_model（与写入解析键同语义，往返
+	// 幂等），INNER JOIN 天然排除迁移窗口内无 model_id 的旧形态行。
+	rows, err := db.QueryContext(ctx, s.bind(`SELECT m.upstream_model FROM `+s.table("account_supported_models")+` asm JOIN `+s.table("models")+` m ON m.id=asm.model_id WHERE asm.account_id=? ORDER BY m.upstream_model`), a.ID)
 	if err != nil {
 		return err
 	}

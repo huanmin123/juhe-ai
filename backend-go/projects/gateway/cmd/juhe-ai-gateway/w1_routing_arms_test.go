@@ -51,8 +51,8 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 	if projected.GroupOwnerSystemAccountID != "sys_owner" {
 		t.Errorf("GroupOwnerSystemAccountID = %q, want sys_owner", projected.GroupOwnerSystemAccountID)
 	}
-	if projected.ProviderCode != "openai" || projected.GroupAccessType != "owner" {
-		t.Errorf("ProviderCode/GroupAccessType = %q/%q, want openai/owner", projected.ProviderCode, projected.GroupAccessType)
+	if projected.GroupAccessType != "owner" {
+		t.Errorf("GroupAccessType = %q, want owner", projected.GroupAccessType)
 	}
 	if projected.GroupType != "personal" {
 		t.Errorf("GroupType = %q, want personal（指针已 deref）", projected.GroupType)
@@ -87,7 +87,6 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 	base := gatewayrouting.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
-		ProviderCode:                   "openai",
 		GroupAccessType:                "authorized",
 		GroupType:                      "high_concurrency",
 		GroupAuthorizationID:           "authz_2",
@@ -207,8 +206,8 @@ func TestW1RProjectAPIKeyRowForRouting(t *testing.T) {
 		SelectedGroupID:         "group_main",
 		Status:                  "active",
 		GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-			{ID: "b1", APIKeyID: "key_1", SystemAccountID: "sys_owner", GroupID: "g1", Priority: 3, Weight: 1, Status: "active", ProviderCode: "openai", GroupEnabled: 1},
-			{ID: "b2", GroupID: "g2", Priority: 5, Weight: 2, Status: "disabled", ProviderCode: "openai", GroupEnabled: 0},
+			{ID: "b1", APIKeyID: "key_1", SystemAccountID: "sys_owner", GroupID: "g1", Priority: 3, Weight: 1, Status: "active", GroupEnabled: 1},
+			{ID: "b2", GroupID: "g2", Priority: 5, Weight: 2, Status: "disabled", GroupEnabled: 0},
 		},
 	}
 	row := projectAPIKeyRowForRouting(record)
@@ -223,7 +222,7 @@ func TestW1RProjectAPIKeyRowForRouting(t *testing.T) {
 		t.Fatalf("绑定数 = %d, want 2", len(row.GroupBindings))
 	}
 	first := row.GroupBindings[0]
-	if first.ID != "b1" || first.GroupID != "g1" || first.Status != "active" || first.ProviderCode != "openai" {
+	if first.ID != "b1" || first.GroupID != "g1" || first.Status != "active" {
 		t.Errorf("绑定一 = %+v, want 身份列原样", first)
 	}
 	if first.Priority != 3 || first.Weight == nil || *first.Weight != 1 || first.GroupEnabled != 1 {
@@ -248,7 +247,7 @@ func TestW1RProjectAPIKeyRowForRouting(t *testing.T) {
 // TestW1RProjectBindingsForRuntime 覆盖等长拷贝、按 ID 回查与未知 ID 合成。
 func TestW1RProjectBindingsForRuntime(t *testing.T) {
 	original := []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-		{ID: "b1", APIKeyID: "key_1", SystemAccountID: "sys_owner", GroupID: "g1", Priority: 3, Weight: 1, Status: "active", ProviderCode: "openai", GroupEnabled: 1},
+		{ID: "b1", APIKeyID: "key_1", SystemAccountID: "sys_owner", GroupID: "g1", Priority: 3, Weight: 1, Status: "active", GroupEnabled: 1},
 		{ID: "b2", GroupID: "g2", Priority: 5, Weight: 2, Status: "disabled", GroupEnabled: 0},
 	}
 	// 等长：原样返回运行时行（选择器未过滤）。
@@ -259,7 +258,7 @@ func TestW1RProjectBindingsForRuntime(t *testing.T) {
 	// 过滤后：按 ID 回查命中原始行。
 	filtered := projectBindingsForRuntime(
 		[]gatewayrouting.GroupBindingRow{
-			{ID: "b2", APIKeyID: "key_1", SystemAccountID: "sys_owner", GroupID: "g2", Priority: 5, Weight: strPtrOf_int64(2), Status: "disabled", ProviderCode: "openai", GroupEnabled: 0},
+			{ID: "b2", APIKeyID: "key_1", SystemAccountID: "sys_owner", GroupID: "g2", Priority: 5, Weight: strPtrOf_int64(2), Status: "disabled", GroupEnabled: 0},
 		}, original)
 	if len(filtered) != 1 || !reflect.DeepEqual(filtered[0], original[1]) {
 		t.Fatalf("过滤投影 = %+v, want 原始 b2 行", filtered)
@@ -267,14 +266,14 @@ func TestW1RProjectBindingsForRuntime(t *testing.T) {
 	// 未知 ID：从投影列合成运行时行（weight 指针不保留）。
 	synthesized := projectBindingsForRuntime(
 		[]gatewayrouting.GroupBindingRow{
-			{ID: "bx", APIKeyID: "key_x", SystemAccountID: "sys_x", GroupID: "gx", Priority: 7, Weight: strPtrOf_int64(9), Status: "active", ProviderCode: "openai", GroupEnabled: 1},
+			{ID: "bx", APIKeyID: "key_x", SystemAccountID: "sys_x", GroupID: "gx", Priority: 7, Weight: strPtrOf_int64(9), Status: "active", GroupEnabled: 1},
 		}, original)
 	if len(synthesized) != 1 {
 		t.Fatalf("合成投影长度 = %d, want 1", len(synthesized))
 	}
 	row := synthesized[0]
 	if row.ID != "bx" || row.APIKeyID != "key_x" || row.SystemAccountID != "sys_x" || row.GroupID != "gx" ||
-		row.Priority != 7 || row.Status != "active" || row.ProviderCode != "openai" || row.GroupEnabled != 1 {
+		row.Priority != 7 || row.Status != "active" || row.GroupEnabled != 1 {
 		t.Fatalf("合成行 = %+v, want 投影列回填", row)
 	}
 	if row.Weight != 0 {
@@ -444,8 +443,8 @@ func TestW1RChainRoutingCacheBridgesRuntimeCache(t *testing.T) {
 	if meta.GroupType != "personal" {
 		t.Errorf("GroupType = %q, want personal（指针坍缩）", meta.GroupType)
 	}
-	if meta.ProviderCode != "openai" || meta.GroupAccessType != "owner" {
-		t.Errorf("ProviderCode/GroupAccessType = %q/%q, want openai/owner", meta.ProviderCode, meta.GroupAccessType)
+	if meta.GroupAccessType != "owner" {
+		t.Errorf("GroupAccessType = %q, want owner", meta.GroupAccessType)
 	}
 	if meta.SchedulingPolicy != "" {
 		t.Errorf("SchedulingPolicy = %q, want 空（fixture 无策略）", meta.SchedulingPolicy)
@@ -475,25 +474,22 @@ func TestW1RChainRoutingCacheBridgesRuntimeCache(t *testing.T) {
 	}
 
 	route, err := bridge.ResolveCachedProviderModelRouteAsync(ctx, gatewayrouting.ProviderModelRouteInput{
-		Model: "gpt-test", ProviderCodes: []string{"openai"}, SystemAccountID: fixture.systemAccount, IncludeUnpriced: true,
+		Model: "gpt-test", SystemAccountID: fixture.systemAccount, IncludeUnpriced: true,
 	})
 	if err != nil {
 		t.Fatalf("模型路由读取: %v", err)
 	}
-	if route.Outcome != "matched" || route.ProviderCode != "openai" || route.ModelKey != "gpt-test" {
-		t.Errorf("模型路由 = %+v, want matched openai gpt-test", route)
-	}
-	if len(route.MatchedProviderCodes) != 1 || route.MatchedProviderCodes[0] != "openai" {
-		t.Errorf("MatchedProviderCodes = %v, want [openai]", route.MatchedProviderCodes)
+	if route.Outcome != "matched" || route.ModelKey != "gpt-test" {
+		t.Errorf("模型路由 = %+v, want matched gpt-test", route)
 	}
 	missingRoute, err := bridge.ResolveCachedProviderModelRouteAsync(ctx, gatewayrouting.ProviderModelRouteInput{
-		Model: "unknown-model", ProviderCodes: []string{"openai"}, SystemAccountID: fixture.systemAccount, IncludeUnpriced: true,
+		Model: "unknown-model", SystemAccountID: fixture.systemAccount, IncludeUnpriced: true,
 	})
 	if err != nil {
 		t.Fatalf("缺失模型路由读取: %v", err)
 	}
-	if missingRoute.Outcome != "missing" || missingRoute.ProviderCode != "" {
-		t.Errorf("缺失模型路由 = %+v, want missing 无 provider", missingRoute)
+	if missingRoute.Outcome != "missing" {
+		t.Errorf("缺失模型路由 = %+v, want missing", missingRoute)
 	}
 }
 
@@ -505,7 +501,6 @@ func TestW1RRehydrateGroupAccess(t *testing.T) {
 	ctx := context.Background()
 	fallback := gatewayrouting.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_fb",
-		ProviderCode:              "openai",
 		GroupAccessType:           "owner",
 		SchedulingPolicy:          `{"schedulingPreference":"quality"}`,
 		GroupAuthorizationID:      "authz_fb",
@@ -543,7 +538,7 @@ func TestW1RRehydrateGroupAccess(t *testing.T) {
 }
 
 // TestW1RRehydrateAccounts 覆盖全量回源：命中账户带凭据、未命中账户回退
-// 投影、nil cache 全部投影回退，routeSource/matchedProviderCode 原样透传。
+// 投影、nil cache 全部投影回退，routeSource 原样透传。
 func TestW1RRehydrateAccounts(t *testing.T) {
 	fixture := newChainFixture(t)
 	resolver := &chainRouteResolver{cache: fixture.cache}
@@ -552,10 +547,10 @@ func TestW1RRehydrateAccounts(t *testing.T) {
 		{ID: fixture.accountID, ProviderCode: "openai", ProtocolCode: "openai"},
 		{ID: "acc_unknown", ProviderCode: "openai", ProtocolCode: "openai", SupportedModels: []string{"gpt-pro"}},
 	}
-	accounts, routeSource, matched := resolver.rehydrateAccounts(ctx, fixture.groupID, fixture.systemAccount,
-		projected, "gpt-test", "chat_completions", "catalog_provider", "openai")
-	if routeSource != "catalog_provider" || matched != "openai" {
-		t.Fatalf("routeSource/matched = %q/%q, want catalog_provider/openai", routeSource, matched)
+	accounts, routeSource := resolver.rehydrateAccounts(ctx, fixture.groupID, fixture.systemAccount,
+		projected, "gpt-test", "chat_completions", "catalog_provider")
+	if routeSource != "catalog_provider" {
+		t.Fatalf("routeSource = %q, want catalog_provider", routeSource)
 	}
 	if len(accounts) != 2 {
 		t.Fatalf("账户数 = %d, want 2", len(accounts))
@@ -572,13 +567,13 @@ func TestW1RRehydrateAccounts(t *testing.T) {
 
 	// nil cache：所有投影走 accountFromRoutingProjection。
 	bare := &chainRouteResolver{}
-	accounts, routeSource, matched = bare.rehydrateAccounts(ctx, fixture.groupID, fixture.systemAccount,
-		projected[:1], "gpt-test", "", "account_mapping", "openai")
+	accounts, routeSource = bare.rehydrateAccounts(ctx, fixture.groupID, fixture.systemAccount,
+		projected[:1], "gpt-test", "", "account_mapping")
 	if len(accounts) != 1 || accounts[0].ID != fixture.accountID || accounts[0].APIKey != "" {
 		t.Errorf("nil cache 回源 = %+v, want 投影回退", accounts)
 	}
-	if routeSource != "account_mapping" || matched != "openai" {
-		t.Errorf("nil cache 透传 = %q/%q, want account_mapping/openai", routeSource, matched)
+	if routeSource != "account_mapping" {
+		t.Errorf("nil cache 透传 = %q, want account_mapping", routeSource)
 	}
 }
 

@@ -159,8 +159,8 @@ func TestWhPreflightNormalRouteSelected(t *testing.T) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 		s.RouteResolver = &fakeRouteResolver{normal: NormalRouteResult{
 			Outcome: NormalRouteOutcomeSelected, GroupID: "g2", RouteSource: "model_binding",
-			APIKeyRecord: reroutedRow, MatchedProviderCode: "openai",
-			Accounts: []gatewayruntimecache.OpenAIAccountSecret{account},
+			APIKeyRecord: reroutedRow,
+			Accounts:     []gatewayruntimecache.OpenAIAccountSecret{account},
 		}}
 		s.Candidates = whSuccessfulCandidates(account)
 		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
@@ -196,7 +196,6 @@ func TestWhPreflightNormalRouteFailed(t *testing.T) {
 		s.RouteResolver = &fakeRouteResolver{normal: NormalRouteResult{
 			Outcome: NormalRouteOutcomeFailed, StatusCode: 404, Type: "invalid_request_error",
 			Code: "model_not_allowed", Message: "模型不在任何绑定分组中",
-			MatchedProviderCodes: []string{"openai"},
 		}}
 	})
 	audit := &fakeAuditCapture{}

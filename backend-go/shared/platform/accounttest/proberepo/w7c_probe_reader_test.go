@@ -208,7 +208,7 @@ func TestW7CAllKeysUnavailableMatrix(t *testing.T) {
 }
 
 func TestW7CEndpointModeNormalization(t *testing.T) {
-	// anthropic / gemini / oauth / default fallbacks.
+	// anthropic / gemini / oauth / default fallbacks（空连接 modes 回落协议默认）。
 	anthropic := NormalizedEndpointModes("anthropic", "api_key", nil)
 	if !anthropic[accountprobe.ModeMessagesJSON] || !anthropic[accountprobe.ModeMessagesSSE] || len(anthropic) != 2 {
 		t.Fatalf("anthropic modes: %v", anthropic)
@@ -225,25 +225,15 @@ func TestW7CEndpointModeNormalization(t *testing.T) {
 	if len(def) != 4 || !def[accountprobe.ModeChatSSE] {
 		t.Fatalf("default modes: %v", def)
 	}
-	// Credential list wins; non-text entries are skipped; an all-invalid list
-	// falls back to protocol defaults including the images mode.
-	listed := NormalizedEndpointModes("openai", "api_key", map[string]any{
-		"supported_endpoint_modes": []any{"chat_json", 42, "images_json"},
-	})
+	// 连接声明优先（account_endpoint_modes 投影）；未知值跳过；全部无效回落
+	// 协议默认（含 images 形态）。
+	listed := NormalizedEndpointModes("openai", "api_key", []string{"chat_json", "images_json"})
 	if len(listed) != 2 || !listed[accountprobe.ModeImagesJSON] || listed[accountprobe.ModeChatSSE] {
 		t.Fatalf("listed modes: %v", listed)
 	}
-	invalid := NormalizedEndpointModes("openai", "api_key", map[string]any{
-		"supported_endpoint_modes": []any{"nope"},
-	})
+	invalid := NormalizedEndpointModes("openai", "api_key", []string{"nope"})
 	if len(invalid) != 4 {
 		t.Fatalf("invalid list fallback: %v", invalid)
-	}
-	wrongType := NormalizedEndpointModes("openai", "api_key", map[string]any{
-		"supported_endpoint_modes": "chat_json",
-	})
-	if len(wrongType) != 4 {
-		t.Fatalf("non-list fallback: %v", wrongType)
 	}
 }
 
@@ -319,8 +309,8 @@ func TestW7CLoadAccountMetadataByIds(t *testing.T) {
 	if len(metadata) != 1 {
 		t.Fatalf("deleted/missing accounts must be skipped: %+v", metadata)
 	}
-	if metadata["m-1"].SystemAccountID != "sys-1" || metadata["m-1"].ProviderCode != "openai" {
-		t.Fatalf("metadata: %+v", metadata["m-1"])
+	if metadata["m-1"].SystemAccountID != "sys-1" || metadata["m-1"].ProviderCode != "" {
+		t.Fatalf("metadata（vendor_code 缺省投影空串）: %+v", metadata["m-1"])
 	}
 	if empty, err := h.store.LoadAccountMetadataByIds(context.Background(), nil); err != nil || len(empty) != 0 {
 		t.Fatalf("empty ids: %v %v", empty, err)
@@ -331,22 +321,25 @@ func TestW7CAuthorizedInstanceGroupPath(t *testing.T) {
 	h := openTestDB(t)
 	h.seedSchema(t)
 	credentials := h.sealCredentials(t, map[string]any{
-		"base_url": "https://authorized.example.com",
 		"api_keys": []any{"sk-a", "sk-b"},
 	})
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted, provider_code,
+	// 授权实例行不再冗余身份/连接事实（vendor_code/健康检查列物理为 NULL），
+	// 资源事实全部归来源账户。
+	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted,
 	    authorization_instance_authorization_id, authorization_instance_source_account_id)
-	    VALUES ('inst-1', 'sys-grantee', '实例', 'api_key', 'active', ?, 'openai', 'authz-1', 'src-1')`, credentials)
+	    VALUES ('inst-1', 'sys-grantee', '实例', 'api_key', 'active', ?, 'authz-1', 'src-1')`, credentials)
 	// Source account backing the authorization instance.
-	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted)
-	    VALUES ('src-1', 'sys-owner', '源账户', 'oauth', 'active', ?)`,
-		h.sealCredentials(t, map[string]any{"access_token": "tok-1", "base_url": "https://source.example.com"}))
+	h.exec(t, `INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted, vendor_code, oauth_type)
+	    VALUES ('src-1', 'sys-owner', '源账户', 'oauth', 'active', ?, 'gpt', NULL)`,
+		h.sealCredentials(t, map[string]any{"access_token": "tok-1"}))
+	h.seedModel(t, "src-1", "gpt-test")
+	h.seedProbeConnection(t, "src-1", "gpt_openai_v1", "https://authorized.example.com", "chat_json", "chat_sse")
 	h.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id,
 	    resource_owner_system_account_id, status) VALUES ('authz-1', 'account', 'src-1', 'sys-grantee', 'sys-owner', 'active')`)
 	// Group access for a grantee requires its own active group authorization.
 	h.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id,
 	    resource_owner_system_account_id, status) VALUES ('authz-grp', 'group', 'group-1', 'sys-grantee', 'sys-owner', 'active')`)
-	h.exec(t, `INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('group-1', 'sys-owner', 'openai', 1)`)
+	h.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-1', 'sys-owner', 1)`)
 	h.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-1', 'sys-owner', 'inst-1', 1)`)
 
 	candidate, err := h.store.LoadAccountForGroup(context.Background(), "group-1", "inst-1", "sys-grantee")
@@ -361,6 +354,11 @@ func TestW7CAuthorizedInstanceGroupPath(t *testing.T) {
 	}
 	if candidate.CredentialSourceAccountID != "src-1" || candidate.Type != "oauth" || candidate.SelectedAPIKey != "tok-1" {
 		t.Fatalf("source fallback: %+v", candidate.OpenAIAccountCandidate)
+	}
+	// 资源事实投影：vendor/preset/连接面来自来源账户。
+	if candidate.ProviderCode != "gpt" || candidate.ProviderProtocolProfileID != "profile_gpt_openai_v1" ||
+		candidate.BaseURL != "https://authorized.example.com" {
+		t.Fatalf("resource facts: vendor=%q profile=%q base=%q", candidate.ProviderCode, candidate.ProviderProtocolProfileID, candidate.BaseURL)
 	}
 
 	// Authorization row expired → grantee loses access.
@@ -488,11 +486,11 @@ func TestW7CAssembleProbeViewArms(t *testing.T) {
 		t.Fatalf("missing full reload: %v", err)
 	}
 	// resolveGroupAccess rejects disabled or broken groups.
-	if _, _, ok, err := h.store.resolveGroupAccess(context.Background(), "w7c-missing", "sys-1"); err != nil || ok {
+	if _, ok, err := h.store.resolveGroupAccess(context.Background(), "w7c-missing", "sys-1"); err != nil || ok {
 		t.Fatalf("missing group: %v %v", ok, err)
 	}
 	h.exec(t, `UPDATE groups SET enabled = 0 WHERE id = 'group-1'`)
-	if _, _, ok, err := h.store.resolveGroupAccess(context.Background(), "group-1", "sys-1"); err != nil || ok {
+	if _, ok, err := h.store.resolveGroupAccess(context.Background(), "group-1", "sys-1"); err != nil || ok {
 		t.Fatalf("disabled group: %v %v", ok, err)
 	}
 }

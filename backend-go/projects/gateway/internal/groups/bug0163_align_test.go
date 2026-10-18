@@ -95,17 +95,17 @@ func TestGroupCorruptedStoredPolicyAndTypeAreReadErrors(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// high_concurrency with a broken policy document (missing keys).
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-broken-policy', ?, '坏策略', 'openai', 1, 0, 'high_concurrency', '{"mode":"balanced_fast"}', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('grp-broken-policy', ?, '坏策略', 1, 0, 'high_concurrency', '{"mode":"balanced_fast"}', ?, ?)`, adminID, now, now)
 	// high_concurrency with a NULL policy column.
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-null-policy', ?, '空策略', 'openai', 1, 0, 'high_concurrency', NULL, ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('grp-null-policy', ?, '空策略', 1, 0, 'high_concurrency', NULL, ?, ?)`, adminID, now, now)
 	// An unknown stored group_type (Node normalizeGroupType throws).
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-weird-type', ?, '怪类型', 'openai', 1, 0, 'weird_type', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-weird-type', ?, '怪类型', 1, 0, 'weird_type', ?, ?)`, adminID, now, now)
 	// A personal group without a policy stays readable.
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-ok', ?, '正常组', 'openai', 1, 0, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-ok', ?, '正常组', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 
 	for _, id := range []string{"grp-broken-policy", "grp-null-policy"} {
 		if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/groups/"+id, ""); code != http.StatusInternalServerError {
@@ -201,10 +201,10 @@ func TestGroupAvailabilityGuardCountsAuthorizedGroups(t *testing.T) {
 
 	// alice owns the strategy rs-auth and her only own enabled group;
 	// root's group is bound to the same strategy and granted to alice.
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-alice', ?, 'Alice 唯一组', 'openai', 1, 0, 'personal', ?, ?)`, userAID, now, now)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-granted', ?, '授权组', 'openai', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-alice', ?, 'Alice 唯一组', 1, 0, 'personal', ?, ?)`, userAID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-granted', ?, '授权组', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
 	env.exec(t, `INSERT INTO route_strategies (id, system_account_id, name, status) VALUES ('rs-auth', ?, '授权策略', 'active')`, userAID)
 	env.bindRouteStrategy(t, "rs-auth", userAID, "grp-alice", "active")
 	env.bindRouteStrategy(t, "rs-auth", userAID, "grp-granted", "active")
@@ -250,8 +250,8 @@ func TestGroupMemberPredicateHonorsAuthorizationRows(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	far := "2999-01-01T00:00:00.000Z"
 
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-members', ?, '成员组', 'openai', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-members', ?, '成员组', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
 	// Own account: always counts.
 	seedAccountWithBinding(t, env, ownerID, "grp-members", "acc-own", "", now)
 	// Cross-owner account with an active grant binding: counts.
@@ -296,8 +296,8 @@ func TestGroupAuthorizedListAndDetailAndOptionEndpoints(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	far := "2999-01-01T00:00:00.000Z"
 
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-visible', ?, '授权可见组', 'openai', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-visible', ?, '授权可见组', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, expires_at, limits_json, created_by, created_at, updated_at)
 		VALUES ('authz-view', 'group', 'grp-visible', ?, ?, 'use', 'active', ?, '{"total":{"enabled":true,"limit":5}}', ?, ?, ?)`,
 		ownerID, granteeID, far, ownerID, now, now)
@@ -396,7 +396,7 @@ func TestGroupAuthorizedListAndDetailAndOptionEndpoints(t *testing.T) {
 		t.Fatalf("route-strategy-options rows: %v", payload)
 	}
 	row := strategyRows[0].(map[string]any)
-	if row["id"] != "grp-visible" || row["providerCode"] != "openai" || row["enabled"] != false {
+	if row["id"] != "grp-visible" || row["providerCode"] != "" || row["enabled"] != false {
 		t.Fatalf("route-strategy-options override mismatch: %v", row)
 	}
 }

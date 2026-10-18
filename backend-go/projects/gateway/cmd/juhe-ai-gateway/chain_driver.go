@@ -1092,6 +1092,13 @@ func (d *chainProviderDriver) resolveAccountModelMapping(account gatewaydispatch
 	}
 	runtime := &gatewayopenai.RuntimeAccount{
 		ModelMappings:             openAIModelMappingsOf(account.ModelMappings),
+		// ProviderCode 过渡投影保留（供应商与上游协议面重构设计 §8）：账户行
+		// provider_code 列已退役、该位恒零值；但 gatewayopenai 映射转换矩阵的
+		// hybrid 准入门仍读此位（替代性写侧 family 联动校验未落地，见
+		// internal/gatewayopenai/mapping.go isHybridProviderCode 注释），删除
+		// 投影会拆掉 hybrid 账户 responses→chat 等跨协议改写（由
+		// TestChainDriverInjectsForResponsesToChatBridge 钉住）。投影与映射门
+		// 待模型目录/账户映射运行时切片一并收口。
 		ProviderCode:              account.ProviderCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,

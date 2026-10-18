@@ -156,7 +156,7 @@ func w16fDirectFixture(t *testing.T) (DirectInput, time.Time) {
 			Provider: "gpt", ProtocolProfileID: "profile_gpt_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
 			Type: "api_key", Status: "active", Schedulable: true,
 			EndpointMode: "chat_json", HealthModel: "w16f-model",
-			CredentialsEncrypted: credentials,
+			CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.aggregate.test/v1",
 		},
 		Binding:      DirectBinding{GroupID: "w16f-group", Enabled: true},
 		InputVersion: 1,
@@ -177,7 +177,7 @@ func w16fSource(t *testing.T, provider, profile, code string) *DirectSource {
 		ID: "w16f-src", ConfigRevision: 1, Provider: provider,
 		ProtocolProfileID: profile, ProtocolCode: code, ProtocolVersion: "v1",
 		Type: "api_key", Status: "active", Schedulable: true,
-		CredentialsEncrypted: credentials,
+		CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.aggregate.test/v1",
 	}
 }
 
@@ -198,13 +198,19 @@ func TestW16fToInputSourceMetadataArms(t *testing.T) {
 	if _, err := hybridDirect.ToInput("w16f-secret", now); err == nil {
 		t.Fatal("hybrid 缺模型映射必须报错")
 	}
-	// hybrid 带映射但凭据缺 base_url → base URL 失败臂。
+	// hybrid 带映射 → 探活目标按映射改写；BaseURL 单源连接行（旧「凭据缺
+	// base_url」失败臂随 base_url 退出凭据契约退役，缺失已在连接解析层
+	// fail closed）。
 	mappedDirect := direct
 	mappedDirect.Account.MappedUpstreamModel = "w16f-upstream-model"
 	mappedDirect.Account.MappedUpstreamEndpointFamily = "chat_completions"
 	mappedDirect.Source = w16fSource(t, "hybrid", "profile_hybrid_openai_chat_v1", "openai")
-	if _, err := mappedDirect.ToInput("w16f-secret", now); err == nil || !strings.Contains(err.Error(), "base_url") {
-		t.Fatalf("hybrid 缺 base_url 必须报错: %v", err)
+	mappedInput, err := mappedDirect.ToInput("w16f-secret", now)
+	if err != nil {
+		t.Fatalf("hybrid 带映射必须装配成功: %v", err)
+	}
+	if mappedInput.HealthModel != "w16f-upstream-model" || mappedInput.BaseURL != "https://api.aggregate.test/v1" {
+		t.Fatalf("hybrid 映射输入 = %+v", mappedInput)
 	}
 }
 
@@ -221,7 +227,7 @@ func TestW16fToInputChatGPTUserIDFallback(t *testing.T) {
 			Provider: "gpt", ProtocolProfileID: "profile_gpt_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
 			Type: "oauth", Status: "active", Schedulable: true,
 			EndpointMode: "responses_json", HealthModel: "w16f-model",
-			CredentialsEncrypted: credentials,
+			CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.aggregate.test/v1",
 		},
 		Binding:      DirectBinding{GroupID: "w16f-group", Enabled: true},
 		InputVersion: 1,
@@ -239,14 +245,23 @@ func TestW16fToInputChatGPTUserIDFallback(t *testing.T) {
 }
 
 // TestW16fDirectProfileAndBaseURLArms 覆盖 isSupportedDirectProfile 的 xai
-// provider 不匹配臂与 directBaseURL 的 gemini native 非 code-assist 分支。
+// provider 不匹配臂与 generic profile 的注册事实（供应商解耦后 base_url 单源
+// 连接行，协议分叉不再在输入层承担）。
 func TestW16fDirectProfileAndBaseURLArms(t *testing.T) {
 	if isSupportedDirectProfile("profile_xai_openai_v1", "gpt", "api_key", "chat_json") {
 		t.Fatal("xai profile 配 gpt provider 必须不支持")
 	}
-	base, err := directBaseURL(nil, DirectAccount{ProtocolProfileID: "profile_gemini_native_v1beta", Type: "api_key"}, "gemini")
-	if err != nil || base != "https://generativelanguage.googleapis.com" {
-		t.Fatalf("gemini native 非 code-assist 必须用公共端点: %q %v", base, err)
+	if !isSupportedDirectProfile("profile_generic_openai_v1", "", "api_key", "chat_json") {
+		t.Fatal("generic openai 连接的 api_key chat 形态必须支持")
+	}
+	if isSupportedDirectProfile("profile_generic_openai_v1", "", "oauth", "responses_json") {
+		t.Fatal("generic openai 连接必须保持 API-key-only")
+	}
+	if _, ok := ConnectionPresetProfileID("minimax_media"); ok {
+		t.Fatal("media preset 没有 J1 探针 profile，必须派生失败")
+	}
+	if profile, ok := ConnectionPresetProfileID("anthropic_v1"); !ok || profile != "profile_anthropic_anthropic_v1" {
+		t.Fatalf("anthropic_v1 必须字面映射 profile_anthropic_anthropic_v1，got %q %v", profile, ok)
 	}
 }
 

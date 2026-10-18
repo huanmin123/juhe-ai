@@ -16,11 +16,6 @@ const (
 const (
 	SkipReasonMissingRequestedModel = "missing_requested_model"
 	SkipReasonEmptyBinding          = "empty_binding"
-
-	// SkipReasonSingleProvider 过渡保留（cmd 测试与 statreads 仍引用常量）：
-	// 单 provider 短路已随供应商解耦拆除（供应商与上游协议面重构设计 §7/§8），
-	// 路由不再发出该原因。
-	SkipReasonSingleProvider = "single_provider"
 )
 
 // Failure codes emitted by resolveNormalGatewayModelRoute.
@@ -30,17 +25,11 @@ const (
 	// （不存在、不可见、已禁用或已下线均属此类）→ 404 model_not_found。
 	FailCodeModelNotFound = "model_not_found"
 
-	// 以下错误码随供应商解耦退役，常量过渡保留（消费方仍引用字符串语义），
-	// 路由不再发出：
-	//   - model_not_routable_for_api_key / model_route_unavailable /
-	//     model_target_group_not_bound：供应商目录收窄时代的 400 分类，由
-	//     model_not_found（404）与 model_target_group_unavailable（503）二分
-	//     取代（§6.1：迁移完成后不得再用供应商目录判定）。
-	//   - model_route_ambiguous：单表目录无多供应商歧义，不再发出。
-	FailCodeModelNotRoutableForAPIKey   = "model_not_routable_for_api_key"
-	FailCodeModelRouteAmbiguous         = "model_route_ambiguous"
-	FailCodeModelRouteUnavailable       = "model_route_unavailable"
-	FailCodeModelTargetGroupNotBound    = "model_target_group_not_bound"
+	// model_not_routable_for_api_key / model_route_unavailable /
+	// model_target_group_not_bound / model_route_ambiguous 已随供应商解耦退役
+	// （§6.1：迁移完成后不得再用供应商目录判定）：供应商目录收窄时代的 400
+	// 分类由 model_not_found（404）与 model_target_group_unavailable（503）
+	// 二分取代；单表目录无多供应商歧义。路由不再发出这些错误码。
 	FailCodeModelTargetGroupUnavailable = "model_target_group_unavailable"
 )
 
@@ -70,10 +59,6 @@ type NormalGatewayModelRouteResult struct {
 	Type       string
 	Code       string
 	Message    string
-	// MatchedProviderCodes 过渡字段（供应商解耦后恒空）：字段与 audit 消费方
-	// （gatewaypreauth preflight）保留，赋值点已随供应商目录拆除，待组合根切
-	// 片一并移除。
-	MatchedProviderCodes []string
 
 	// selected
 	APIKeyRecord               *APIKeyRow
@@ -82,10 +67,6 @@ type NormalGatewayModelRouteResult struct {
 	Accounts                   []UpstreamAccount
 	ResponseInspectionPolicies []ResponseInspectionPolicySummary
 	RouteSource                NormalGatewayModelRouteSource
-	// MatchedProviderCode 过渡字段（供应商解耦后恒空串）：字段与 cmd
-	// chain_routing / gatewaypreauth audit 消费方保留，赋值点已随供应商目录
-	// 拆除，待组合根切片一并移除。
-	MatchedProviderCode string
 	// GroupSegments holds the per-binding-group fragments behind the merged
 	// flat pool; filled only when RouteSource == RouteSourceMerged (merge
 	// mode), nil for every other mode. GroupID is the window group (the
@@ -173,11 +154,10 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 			ResponseInspectionPolicies: mappingTarget.ResponseInspectionPolicies,
 			RequestedModel:             requestedModel,
 			RouteSource:                routeSource,
-			MatchedProviderCode:        "",
 		}, nil
 	}
 
-	return s.resolveModelsDirectoryTerminalFailure(ctx, bindings, requestedModel, apiKeyRecord.SystemAccountID)
+	return s.resolveModelsDirectoryTerminalFailure(ctx, requestedModel, apiKeyRecord.SystemAccountID)
 }
 
 // resolveModelsDirectoryTerminalFailure 是无候选时的终态二分（设计 §6.1）：
@@ -185,8 +165,8 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 // 主精确匹配，owner = apiKeyRecord.SystemAccountID）的 active 行 → 404
 // model_not_found（不得用绑定账户改变该分类）；目录可见但分组内硬过滤后无候
 // 选 → 维持 503 model_target_group_unavailable。
-func (s *NormalModelRouteService) resolveModelsDirectoryTerminalFailure(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
-	present, err := s.requestedModelInModelsDirectory(ctx, bindings, requestedModel, systemAccountID)
+func (s *NormalModelRouteService) resolveModelsDirectoryTerminalFailure(ctx context.Context, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
+	present, err := s.requestedModelInModelsDirectory(ctx, requestedModel, systemAccountID)
 	if err != nil {
 		return NormalGatewayModelRouteResult{}, err
 	}
@@ -212,21 +192,11 @@ func (s *NormalModelRouteService) resolveModelsDirectoryTerminalFailure(ctx cont
 
 // requestedModelInModelsDirectory 通过 runtime cache 的 models 单表目录判定
 // 请求模型是否对当前资源可见（Outcome matched = 存在对 systemAccountID 资源
-// 账户可见的 active 目录行，systemAccountID 即请求 owner）。入参的
-// ProviderCodes 是供应商收窄时代的过渡载体（解耦后恒空），仅随输入形状传递。
-func (s *NormalModelRouteService) requestedModelInModelsDirectory(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (bool, error) {
-	providerCodes := make([]string, 0, len(bindings))
-	seen := make(map[string]struct{}, len(bindings))
-	for _, binding := range bindings {
-		if _, ok := seen[binding.ProviderCode]; ok {
-			continue
-		}
-		seen[binding.ProviderCode] = struct{}{}
-		providerCodes = append(providerCodes, binding.ProviderCode)
-	}
+// 账户可见的 active 目录行，systemAccountID 即请求 owner）。供应商解耦后不
+// 再按绑定 provider 收窄目录判定（设计 §8）。
+func (s *NormalModelRouteService) requestedModelInModelsDirectory(ctx context.Context, requestedModel, systemAccountID string) (bool, error) {
 	route, err := s.TargetGroups.RuntimeCache.ResolveCachedProviderModelRouteAsync(ctx, ProviderModelRouteInput{
 		Model:           requestedModel,
-		ProviderCodes:   providerCodes,
 		SystemAccountID: systemAccountID,
 		IncludeUnpriced: true,
 	})
@@ -243,8 +213,8 @@ func (s *NormalModelRouteService) requestedModelInModelsDirectory(ctx context.Co
 // binding group contributes its surviving account fragment, fragments join
 // one flat pool in binding order, and the pool is dispatched as a whole.
 // B9: no single-provider shortcut. B11: no model_route_ambiguous, no single
-// provider narrowing (GroupBindings stay full), RouteSource=merged,
-// MatchedProviderCode empty. B12: duplicate accounts dedupe by binding
+// provider narrowing (GroupBindings stay full), RouteSource=merged.
+// B12: duplicate accounts dedupe by binding
 // priority, the first group wins. B13: the models directory is consulted only
 // to classify the all-fragments-empty failure (404/503 二分).
 func (s *NormalModelRouteService) resolveMergeGatewayModelRoute(ctx context.Context, input ResolveNormalGatewayModelRouteInput, apiKeyRecord *APIKeyRow, bindings []GroupBindingRow, requestedModel string) (NormalGatewayModelRouteResult, error) {
@@ -322,7 +292,7 @@ func (s *NormalModelRouteService) resolveMergeGatewayModelRoute(ctx context.Cont
 // 行 → 404 model_not_found。供应商目录的 model_target_group_not_bound 分类随
 // 供应商解耦退役，model_route_ambiguous 在 merge 中从不发出（B11）。
 func (s *NormalModelRouteService) resolveMergeEmptyPoolFailure(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
-	return s.resolveModelsDirectoryTerminalFailure(ctx, bindings, requestedModel, systemAccountID)
+	return s.resolveModelsDirectoryTerminalFailure(ctx, requestedModel, systemAccountID)
 }
 
 // NormalGatewayModelTargetPriority 过渡保留（导出符号，cmd 与测试仍引用）：

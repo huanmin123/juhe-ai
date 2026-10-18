@@ -147,10 +147,22 @@ func mergePointAccountAt(t *testing.T, fixture *chainFixture, accountID, baseURL
 // mergeWaitForSpoolRecords 轮询 spool 目录直到至少 minimum 条 usage 记录。
 func mergeWaitForSpoolRecords(t *testing.T, dir string, minimum int) []gatewayusage.UsageRecordInput {
 	t.Helper()
+	return mergeWaitForSpoolRecordsUntil(t, dir, func(records []gatewayusage.UsageRecordInput) bool {
+		return len(records) >= minimum
+	})
+}
+
+// mergeWaitForSpoolRecordsUntil 轮询 spool 目录直到条件满足，返回满足时刻的
+// 全部记录；超时返回最后一次快照（由断言侧按缺行报错）。per-attempt 失败行
+// 经 spooledUsageRecorder 异步 drain 逐条落盘，按"任意 N 条"等待会拿到只有
+// 首账号的截断快照，断言侧对后发账号报空值；等待条件必须表达断言真正需要
+// 的记录在场。
+func mergeWaitForSpoolRecordsUntil(t *testing.T, dir string, satisfied func(records []gatewayusage.UsageRecordInput) bool) []gatewayusage.UsageRecordInput {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		records := mergeSpoolRecords(dir)
-		if len(records) >= minimum {
+		if satisfied(records) {
 			return records
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -420,8 +432,18 @@ func TestMergeRouteAuditAttemptGroupIdentity(t *testing.T) {
 		t.Errorf("attempt(%s) GroupID = %q, want %s", compat.accountID, attemptGroups[compat.accountID], compat.groupID)
 	}
 
-	// 尝试级 usage 失败记录同样按账号组记账（3.5）。
-	records := mergeWaitForSpoolRecords(t, spoolDir, 2)
+	// 尝试级 usage 失败记录同样按账号组记账（3.5）。失败行按尝试逐条异步落
+	// 盘，等待条件为两个账号的失败行都在场（总条数条件会拿到只有首账号的
+	// 截断快照，后发账号 map miss 报空组）。
+	records := mergeWaitForSpoolRecordsUntil(t, spoolDir, func(snapshots []gatewayusage.UsageRecordInput) bool {
+		failedAccounts := map[string]bool{}
+		for _, record := range snapshots {
+			if !record.Success && record.AccountID != "" {
+				failedAccounts[record.AccountID] = true
+			}
+		}
+		return failedAccounts[fixture.accountID] && failedAccounts[compat.accountID]
+	})
 	failedGroups := map[string]string{}
 	for _, record := range records {
 		if !record.Success && record.AccountID != "" {

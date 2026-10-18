@@ -765,6 +765,7 @@ func TestChainDriverMinimaxSpeechMissingVoiceValidationError(t *testing.T) {
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_mnx_tts",
 		ProviderCode: "minimax",
+		VendorCode:   "minimax",
 		ProtocolCode: "openai",
 		Type:         "api_key",
 		BaseURL:      "https://mnx.example",
@@ -810,6 +811,7 @@ func TestChainDriverVolcengineSpeechMissingVoiceValidationError(t *testing.T) {
 	account := gatewaydispatch.AccountCandidate{
 		ID:           "acc_volc_tts",
 		ProviderCode: "volcengine",
+		VendorCode:   "volcengine",
 		ProtocolCode: "openai",
 		Type:         "api_key",
 		BaseURL:      "https://ark.cn-beijing.volces.com",
@@ -1175,9 +1177,9 @@ func TestChainMediaVolcengineSpeechStreamFullChain(t *testing.T) {
 	}
 	// 目录行（fixture DB 列集无媒体四维——字符价由 go:embed 静态层补齐，
 	// chainCatalogPricing 媒体单价权威源，见 chain_pricing.go）。
-	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, supported_api_protocols_json, source, created_at, updated_at)
-		VALUES ('cat_volc_seed_tts_2_0', 'active', 'volcengine', 'seed-tts-2.0', '["audio_speech"]', 'builtin',
+	if _, err := fixture.db.Exec(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, source, created_at, updated_at)
+		VALUES ('cat_volc_seed_tts_2_0', 'volcengine', 'seed-tts-2.0', 'seed-tts-2.0', 'builtin', 'active', '["audio_speech"]', 'builtin',
 			'2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z')`); err != nil {
 		t.Fatalf("seed stream catalog row: %v", err)
 	}

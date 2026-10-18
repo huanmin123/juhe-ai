@@ -372,7 +372,7 @@ func TestW13CNormalRouteDuplicateProviderCodes(t *testing.T) {
 	binding := GroupBindingRow{
 		ID: "b1", APIKeyID: "key1", SystemAccountID: "owner1",
 		GroupID: "g1", Priority: 1, Status: RowStatusActive,
-		ProviderCode: "gpt", GroupEnabled: 1,
+		GroupEnabled: 1,
 	}
 	duplicate := binding
 	duplicate.ID = "b2"
@@ -383,8 +383,8 @@ func TestW13CNormalRouteDuplicateProviderCodes(t *testing.T) {
 		GroupBindings: []GroupBindingRow{binding, duplicate},
 	}
 	cache := newFakeRuntimeCache()
-	cache.groupAccess["g1"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
-	cache.groupAccess["g2"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
+	cache.groupAccess["g1"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
+	cache.groupAccess["g2"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cache.accounts["g1"] = []UpstreamAccount{{ID: "a1", ProviderCode: "gpt"}}
 	cache.accounts["g2"] = []UpstreamAccount{{ID: "a2", ProviderCode: "gpt"}}
 	service := NewNormalModelRouteService(cache, PassthroughCapabilityFilter{})

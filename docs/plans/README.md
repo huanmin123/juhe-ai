@@ -23,6 +23,10 @@
 
 - [PLAN-20261007T164058012Z](计划-20261007T164058012Z-客户端版本自动跟版与请求特征加固.md)：客户端版本自动跟版与请求特征加固总计划——源自 codex-proxy-rs 调研（"不降智"机制=第一档真实价值：自动跟版/正文保真/观测随机化；TLS/WS/滞后档位留观）；v2 已吸收外部复审 10 条（全部取证成立）：两期拆分（第一期=阶段 0 设计→C 消费点收敛含 6 处平行锚点与 guard 测试→A 四源拉取+新增 `upstreamClientVersionAutoOverrides` 兄弟键有效手动>有效自动>内置→B UA 证据核实→D 抖动审计；第二期=Grok 426 反应式跟版与 UA 改造证据闭合后立项），任务契约/parser contract/真实出站验收补齐；4 项裁决已按推荐落定（2026-10-08：auto 兄弟键存储模型/一期不含 Grok 与 UA 改造/引入 guard 测试/管理页只读展示自动值）；第一期已实施（2026-10-08，待独立终审）——消费点收敛+guard、auto 兄弟键三层合并、jobs 任务 `upstream-client-version-refresh`、gateway/jobs 60s 刷新、key-model 抖动修复均落地；实施中发现并修复既有缺陷 BUG-0297（jobs 设置读取 PG 占位符反转）与自动键写面收口。第二期：Codex 身份已按用户裁决切换开源源码锚定的 exec surface（`codex_exec/{v} (…) unknown`，dd11b92a5 连带提交了 7 个源码文件，10 个测试/文档文件待提交）；Grok 426 触发器化 + 主源定位完成（grok-build 仓库 xai-grok-shell Cargo.toml），待实施。
 
+- [PLAN-20261006T093638000Z](计划-20261006T093638000Z-在线帮助多篇文档站与协议使用说明.md)：在线帮助多篇文档站——全部在线帮助从用户/管理员两篇长手册重写为多篇小白向教程，覆盖 chat / 视频 / 音频（含 realtime）三类协议的端点、认证、请求参数表、响应结构与可复制 curl 示例，每篇可下载为 Markdown 原文，内容以 Markdown 单一数据源派生；不改 gateway helpweb 托管、会话门控与角色分流。状态：in-progress。
+- [PLAN-20261005T230500000Z](计划-20261005T230500000Z-模型目录JSON单一数据源.md)：模型目录 JSON 单一数据源——当前计价+能力数据散布 `data_*.go` 硬编码、`model_catalog_data.go` 种子、`provider_model_catalog` 表等五层靠手工同步，改为 JSON 单一数据源消除逐层漂移；状态：方案确认中（2026-10-05，待确认 §6 两个细节后实施）。
+- [PLAN-20261005T110000000Z](计划-20261005T110000000Z-模型目录全厂商补全与场景化展示.md)：模型目录补全各大厂商官方 2026-10 在售模型与元信息（对话/音频/视频/图像/embedding 场景主流在售模型 ID + 上下文窗口、模态、协议、发布日期、shutdown 标记、官方明文 USD 价），并修正现存行的失实数据；前端目录元信息投影补齐 minimax/volcengine/qwen 并按场景呈现，火山方舟/通义百炼供应商档案补对话承接；状态：执行中（2026-10-05）。
+
 - [PLAN-20261003T164247971Z](计划-20261003T164247971Z-音频视频模型接入与多供应商扩展.md)：音频/视频模型接入与多供应商扩展总计划——设计契约见《音频视频模型接入与统一媒体网关设计》；范围=同步音频（TTS/STT）链路、`media_jobs` 异步任务框架（`/v1/videos`、`/v1/audio/jobs`）、`audio`/`video` 分类与 lane、受理切换边界统一、零资源存储、`provider_options` 扩展通道、已有供应商音视频能力补齐（openai/gemini/glm，xai 核实）+ 新增 `minimax`/`volcengine`/`qwen`；分期 M1 同步音频 → M2 异步任务+视频 → M3 多厂商 → M4 统计 → M5 Realtime（独立立项）。**已实施完成（2026-10-04 M0-M6 交付收口，2026-10-05 M7 问答音视频工具收口）；真实上游联调与 xAI 语音契约回填为遗留项；M7 问答域工具随 PLAN-20261012T121500000Z（已清理，git 历史可溯） 简化退场，/v1 域能力保留（公开面独立能力）。**
 
 - [PLAN-20261003T071031978Z](计划-20261003T071031978Z-mainProbeFence清理侧接线.md)：BUG-0277 残余项立项——mainProbeFence 清理侧接线：写侧已接线（gatewayaccounteffects settleOnce → `RecordMainProbeFence`，Redis `SET mainProbeFence:<capabilityHash> PX 90000`）但 `ClearMainProbeFence`/`DeferMainProbeFence` 零生产调用，现靠 90s TTL（`KeyModelForegroundPrecommitLeaseMs`）自愈；范围=outbox 行承载 `KeyModelFenceReference` 三元组（gateway `chain_request_failure_health.go:54-70` 与 jobs `worker_health_probe_outbox.go` 两侧 DDL 同步 + `w0cross_contract_golden_test.go` golden 更新）+ `compose_accounts_reset.go:268` 透传替代 `_` 丢弃 + J1 outcome 观察器（success+winner→Clear、unknown→Defer，落点推荐 gateway 观察复用现成方法）；非目标=不动 admitScript/90s TTL 兜底；待开始。
@@ -123,21 +127,28 @@
 - [PLAN-20260723T145206511Z](计划-20260723T145206511Z-列表手动刷新完整响应.md)：统一 AI 账户、分组和策略路由列表为手动触发的单接口完整当前页响应，删除前端动态快照补发和未知占位。
 - [PLAN-20260723T100300000Z-20260723](计划-20260723T100300000Z-账户路由全生命周期验证.md)：完成 Node 网关从质量/速度选路、异常切号、账户电路到恢复重入调度的全生命周期 Mock 验证；不包含生产流量。
 
-## 按需加载专项（当前工作树）
+## 按需加载专项（Node 时期专项，已随 2026-09-30 Node 清零收口）
 
-- [PLAN-20260722T232105005Z（授权用量渐进加载）](计划-20260722T232105005Z-授权用量渐进加载.md)：严格 rows/summary DTO、SQLite worker、权限矩阵、身份签名和竞态门已实现，真实 PostgreSQL 与浏览器证据待补。
-- [PLAN-20260722T232105004Z（首页统计渐进加载）](计划-20260722T232105004Z-首页统计渐进加载.md)：四端点、SQLite worker、Vue 视口加载与本地浏览器网络已验证，真实 PostgreSQL 和失活/失败注入竞态证据待补。
-- [PLAN-20260722T232105007Z（低风险接口收敛）](计划-20260722T232105007Z-低风险接口收敛.md)：品牌/Auth、Chat 死 GET、公告 mutation、授权死 loader 与外部来源回归已实现；Vue `updateToken` 死 method 和完整浏览器证据待补。
-- [PLAN-20260722T232105008Z（AI 性能与统计窗口渐进加载）](计划-20260722T232105008Z-AI性能与统计窗口渐进加载.md)：AI base/series、身份请求门、AI/IP usage-window 与 table history 六字段已实现，真实 PostgreSQL 和浏览器证据待补。
-- [PLAN-20260722T232105002Z（供应商管理渐进加载）](计划-20260722T232105002Z-供应商管理渐进加载.md)：供应商窄 list/options、单 detail/code lookup 与 Vue 点击加载已实现，真实 PostgreSQL 和浏览器证据待补。
-- [PLAN-20260722T232105003Z（模型检查账户选项渐进加载）](计划-20260722T232105003Z-模型检查账户选项渐进加载.md)：专用六字段 account-options、run/history 资格、SQLite worker、PG async 与 Vue 按需 consumer 已实现，真实 PostgreSQL 和浏览器证据待补。
-- [PLAN-20260722T232105006Z（系统设置分区渐进加载）](计划-20260722T232105006Z-系统设置分区渐进加载.md)：section GET/PATCH、SQLite read-worker、完整 settings cache 回填和 Vue 分区已通过本地专项，真实 PostgreSQL、浏览器与完整生命周期证据待补。
+- [PLAN-20260722T232105005Z（授权用量渐进加载）](计划-20260722T232105005Z-授权用量渐进加载.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/authz/usage_routes.go` 承载。
+- [PLAN-20260722T232105004Z（首页统计渐进加载）](计划-20260722T232105004Z-首页统计渐进加载.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/statreads/statreads.go`（usage-overview 端点族）承载。
+- [PLAN-20260722T232105007Z（低风险接口收敛）](计划-20260722T232105007Z-低风险接口收敛.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/authsys/routes.go` 与 `backend-go/projects/gateway/internal/chat/routes.go` 承载；阶段 E 的 `frontend/src/api/domains/externalIntegrationSources.ts` `updateToken` 死 wrapper 为独立前端清理候选，不阻塞本计划关闭。
+- [PLAN-20260722T232105008Z（AI 性能与统计窗口渐进加载）](计划-20260722T232105008Z-AI性能与统计窗口渐进加载.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/statreads/statreads.go` 承载；table-monitor 读面已随 2026-10-14 监控表清退整体退场（`backend-go/projects/maintenance/internal/monitoringretirement/retirement.go`）。
+- [PLAN-20260722T232105002Z（供应商管理渐进加载）](计划-20260722T232105002Z-供应商管理渐进加载.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/providers/routes.go`（/providers/list、/providers/options）承载。
+- [PLAN-20260722T232105003Z（模型检查账户选项渐进加载）](计划-20260722T232105003Z-模型检查账户选项渐进加载.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/modelcheckowner/http.go`（/account-options）承载。
+- [PLAN-20260722T232105006Z（系统设置分区渐进加载）](计划-20260722T232105006Z-系统设置分区渐进加载.md)：已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/settings/routes.go` 承载。
 
 
 
+- [PLAN-20260722T233132000Z](计划-20260722T233132000Z-CodexResponses协议防火墙与会话自愈任务清单.md)：Codex Responses 协议防火墙与会话自愈的配套任务清单——版本化 Responses item contract registry、历史 sanitizer copy-on-write 与重复 ID/禁止字段边界、`store=false` 与未知 item 测试覆盖等逐项勾选。
+- [PLAN-20260722T185502000Z](计划-20260722T185502000Z-官方可落地多供应商OAuth账户接入任务清单.md)：官方可落地多供应商 OAuth 账户接入任务清单——对应《官方可落地 OAuth 账户接入设计》与 PLAN-20260722T174032816Z，逐项勾选供应商 profile 凭据归一化、前端按供应商区分 OAuth 账户类型与授权按钮、Anthropic Bearer Token OAuth 账户闭环及合并回 `master` 等验收项。
+- [PLAN-20260722T174032816Z](计划-20260722T174032816Z-官方可落地多供应商OAuth账户接入.md)：官方可落地多供应商 OAuth 账户接入计划——在隔离 worktree 分支 `codex/oauth-matrix-safe-20260722` 推进多供应商 OAuth 账户接入（前端/后端/存储/网关/测试），配套任务清单见 PLAN-20260722T185502000Z；状态：进行中。
 - [PLAN-20260722T160050118Z](计划-20260722T160050118Z-AI账户热质量与精准切号实施.md)：按定稿设计实施账户短窗口热质量、故障单飞、精准切号、墙钟 handoff、受控半开与后台恢复闭环；不包含生产发布。
 
+- [PLAN-20260722T145435019Z](计划-20260722T145435019Z-供应商订阅认证安全扩展.md)：供应商订阅认证安全扩展——基于 CLIProxyAPI 只读审计建立供应商认证方式的安全准入模型，目标不是直接复制订阅账号代理，而是在每种认证已获官方/条款依据后完成独立账户能力闭环；状态：进行中。
+
 - [PLAN-20260722T124946658Z](计划-20260722T124946658Z-网关流式管道重构.md)：网关流式返回侧单管道重构设计；单写路径、双提交边界、能力保全与 Go 可移植；当前仅设计审查，不改业务代码。
+
+- [PLAN-20260722T044808000Z](计划-20260722T044808000Z-代理选项与日志列表渐进加载.md)：代理选项与日志列表渐进加载——全站页面 API 按需加载审计的剩余 P1/P2 项，从最新 master 独立 worktree 实施（分支 `codex/api-progressive-loading-a1-20260721`）；状态：实施中。
 
 
 
@@ -146,6 +157,7 @@
 - [计划-20260721T155507000Z-账户状态刷新与测试弹窗生命周期.md](计划-20260721T155507000Z-账户状态刷新与测试弹窗生命周期.md)：移除账户列表运行态快照自动轮询，降低账户测试轮询和会话心跳频率，关闭弹窗时取消后台测试，并将测试默认值随列表摘要返回。
 
 - [计划-20260720T150651000Z-全系统日志治理.md](计划-20260720T150651000Z-全系统日志治理.md)：统一 Node、Go、worker/DB service 和日志底座的 trace、阶段、失败现场与非阻塞治理，涵盖网关但不限于网关。
+- [计划-20260720T134150000Z-运行日志热路径无损解耦任务清单.md](计划-20260720T134150000Z-运行日志热路径无损解耦任务清单.md)：运行日志热路径无损解耦的任务清单——对应《运行日志热路径无损解耦设计》，逐项验收业务进程只做 JSON Lines 文件追加、ingest-worker 唯一索引 owner、游标在索引 batch 提交后推进、未消费轮转文件清理保护等（全部勾选完成）；对应实施计划（Node 时期文档）已随 docs/superpowers 目录退场删除，git 历史可溯。
 - [计划-20260720T111555000Z-全局请求阻塞等待治理.md](计划-20260720T111555000Z-全局请求阻塞等待治理.md)：全局审计并消除用户响应前的重复 Redis/DB/IPC 等待和可后台化旁路，保持授权、重试和状态机正确性。
 - [计划-20260719T184255000Z-AI账户状态提示卡片重设计.md](计划-20260719T184255000Z-AI账户状态提示卡片重设计.md)：统一账户状态用户摘要，修正最近/下次检查时间、原因和 traceId，移除内部探针机制噪声。
 - [计划-20260720T181716002Z-供应商认证协议与计价目录扩展.md](计划-20260720T181716002Z-供应商认证协议与计价目录扩展.md)：扩展 xAI、Gemini OAuth / Interactions、Anthropic WIF 非开放边界、模型目录和计价能力。
@@ -178,7 +190,13 @@
 - [计划-20260718T230201007Z-页面数据缓存与增量更新.md](计划-20260718T230201007Z-页面数据缓存与增量更新.md)：历史通用页面缓存与增量确认方案；已由 `PLAN-20260722T123439000Z`（已清理，git 历史可溯） 彻底退场，不再作为当前实现依据。
 - [计划-20260718T230201006Z-AI账户临时不可调用有界恢复探活.md](计划-20260718T230201006Z-AI账户临时不可调用有界恢复探活.md)：为 AI 账户增加临时不可调用持续探活开关，关闭后只在固定 10 分钟内有限复测，最终失败则转为异常并停止长期探活。
 - [计划-20260718T230201005Z-AI账户失败避让与自动恢复收敛.md](计划-20260718T230201005Z-AI账户失败避让与自动恢复收敛.md)：以行为刻画和问题复现为前置，保护协议兼容、确认重试、速度优先与多 Key 等正常内置能力，最小修复非成功清状态和已证明的默认状态断点。
+- [计划-20260718T230201004Z-管理接口渐进加载与事件循环治理.md](计划-20260718T230201004Z-管理接口渐进加载与事件循环治理.md)：管理列表先返回可交互主数据，运行态、余额、用量等动态快照与 Provider/Proxy options 并行异步补齐，失败保留最近成功值，并以 DTO、`Server-Timing` 与 DB service queue 指标建立分段耗时观测；状态：已关闭（Node 归档收口；与 PLAN-20260718T230201011Z 同名近似，两份为各自独立的计划文件，本条仅对应 004Z 文件自身，不与 011Z 互代）。
+- [计划-20260718T230201003Z-Redis队列隔离与后台任务降载.md](计划-20260718T230201003Z-Redis队列隔离与后台任务降载.md)：高性能模式固定 cache、state、queue 三个独立 Redis 资源与独立连接，审计、日志、用量索引等非核心副作用有界 best-effort，大 payload 先写持久数据目录中的有界引用文件，后台统计与清理入口错峰、单飞、短批次、压力门控；状态：已关闭（Node 归档收口）。
+- [计划-20260718T230201002Z-PostgreSQL去事务与统计降载.md](计划-20260718T230201002Z-PostgreSQL去事务与统计降载.md)：普通 PostgreSQL 查询去隐式事务开销，统计写入改为增量、批量、低频且可从使用记录离线重建的后台工作，统计页面继续读取全部现有窗口和汇总字段；状态：已关闭（Node 归档收口）。
+- [计划-20260718T230201001Z-生产管理端性能优先治理.md](计划-20260718T230201001Z-生产管理端性能优先治理.md)：生产管理端性能优先治理实施计划——在不删减任何页面、接口、字段、统计、审计、日志或管理操作的前提下消除生产管理页面与 System API 的秒级长尾，统筹 PostgreSQL 去事务、Redis 队列隔离、管理接口渐进加载三个可独立交付子项目；状态：已关闭（Node 生产治理项随归档收口，Go 性能治理由 PLAN-20260918T064119294Z 承接）。
 - [计划-20260715T125850001Z-模型目录完整性与视图一致性.md](计划-20260715T125850001Z-模型目录完整性与视图一致性.md)：补齐模型目录字段、供应商事实、默认思考和管理员/普通用户视图一致性。
+- [计划-20260711T131649002Z-AI账户上游余额查询实施方案.md](计划-20260711T131649002Z-AI账户上游余额查询实施方案.md)：AI 账户上游余额查询实施方案——物理单 API Key 账户可配置上游余额自动/手动查询并在账户列表安全展示；账户业务表保存启用/配置/下次到期时间，`account_usage_snapshots(kind='relay_balance')` 保存唯一当前结果，`ops-worker` 每分钟按业务索引领取到期账户，手动与自动刷新复用 `background_job_leases` 去重；多 Key 账户允许保存并自动关闭余额查询（2026-07-13 补充）。
+- [计划-20260629T035152000Z-存储适配接口收敛-直接调用点清单.md](计划-20260629T035152000Z-存储适配接口收敛-直接调用点清单.md)：存储适配接口收敛直接调用点清单——归属 [PLAN-20260629T035152001Z 存储适配接口收敛](计划-20260629T035152001Z-存储适配接口收敛.md)，由 `pnpm --filter juhe-ai-backend test:storage-adapter-boundary`（Node 时期命令，已随 Node 清零失效）实时扫描生成的行级调用点清单（SQLite 句柄、`DatabaseClient`、PostgreSQL pool/client、Redis Stream queue、cache/runtime state/driver 分支），不手工维护行号。
 
 > 面向 AI 和维护者。
 > 这里集中保存阶段计划，以及每次需求的具体计划、执行进度、完成情况、关联文档、验证结果和注意事项。
@@ -406,8 +424,8 @@ docs/plans/
 - 不把临时方案伪装成长期架构；长期结论必须同步到对应长期文档。
 - 不把计划写成流水账，重点记录影响后续维护的关键变化。
 - 文件路径、命令、字段名和接口名使用反引号，方便搜索。
-- [计划-20260722T232105000Z-响应检查策略渐进加载.md](计划-20260722T232105000Z-响应检查策略渐进加载.md)：Node/Vue 响应策略列表、详情与 options 分层加载，保留权限和写接口契约。
-- [计划-20260722T232105001Z-策略路由计数与预览渐进加载.md](计划-20260722T232105001Z-策略路由计数与预览渐进加载.md)：Node/Vue 策略路由列表与计数快照分层加载，保留权限和空值语义。
+- [计划-20260722T232105000Z-响应检查策略渐进加载.md](计划-20260722T232105000Z-响应检查策略渐进加载.md)：Node/Vue 响应策略列表、详情与 options 分层加载，保留权限和写接口契约。已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/policyreads/inspection_http.go`（list/provider-options/detail 三端点）承载。
+- [计划-20260722T232105001Z-策略路由计数与预览渐进加载.md](计划-20260722T232105001Z-策略路由计数与预览渐进加载.md)：Node/Vue 策略路由列表与计数快照分层加载，保留权限和空值语义。已关闭——2026-09-30 Node 后端清零，Node 实现与待补 PostgreSQL/浏览器证据随之失效；Go 等价路径由 `backend-go/projects/gateway/internal/routestrategies/core.go`（分页列表读路径并入绑定快照，无独立 list-snapshot 端点，传输形态有差异）承载。
 - [计划-20260722T232105002Z-供应商管理渐进加载.md](计划-20260722T232105002Z-供应商管理渐进加载.md)：供应商列表保留首屏字段，默认档案摘要按需批量读取。
 - [计划-20260722T232105003Z-模型检查账户选项渐进加载.md](计划-20260722T232105003Z-模型检查账户选项渐进加载.md)：模型检查账户 options 按专用投影和权限范围加载。
 - [计划-20260722T232105004Z-首页统计渐进加载.md](计划-20260722T232105004Z-首页统计渐进加载.md)：首页统计 summary 与趋势、模型、错误窗口按需加载。

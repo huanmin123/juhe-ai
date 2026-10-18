@@ -112,10 +112,10 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 	statements := []string{
 		`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 1, request_limits_json TEXT)`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL,
-			vendor_code TEXT, connection_driver_code TEXT,
+			vendor_code TEXT, connection_driver_code TEXT, oauth_type TEXT, health_check_connection_id TEXT,
 			provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT,
 			name TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL,
 			capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER NOT NULL DEFAULT 1,
@@ -157,7 +157,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL,
 			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, provider_code TEXT, model TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, provider_code TEXT, model TEXT NOT NULL, model_id TEXT, created_at TEXT NOT NULL)`,
 		`CREATE TABLE account_api_key_runtime_states (
 			account_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL, key_index INTEGER,
 			status TEXT NOT NULL, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT,
@@ -240,6 +240,43 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL,
 			account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
 			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		// 供应商解耦新表（供应商与上游协议面重构设计 §3/§5.1，maintenance
+		// sqlite_schema_business.go 同构去 FK）：vendors/models 单表目录与
+		// account_entry_mappings 入口映射，供并集装载器与目录源真实读取。
+		`CREATE TABLE vendors (
+			id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
+			enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE models (
+			id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT NOT NULL, upstream_model TEXT NOT NULL,
+			scope TEXT NOT NULL, system_account_id TEXT, status TEXT NOT NULL DEFAULT 'active',
+			catalog_visible INTEGER NOT NULL DEFAULT 1, catalog_order INTEGER,
+			release_date TEXT, shutdown_date TEXT,
+			supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
+			supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+			supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+			default_reasoning_effort TEXT,
+			codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
+			codex_default_reasoning_level TEXT, codex_multi_agent_version TEXT,
+			context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER, max_tokens INTEGER,
+			supports_prompt_caching INTEGER NOT NULL DEFAULT 0, source TEXT,
+			pricing_notes TEXT, capability_notes TEXT, notes TEXT,
+			created_by TEXT, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
+			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
+			service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
+			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
+			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL,
+			output_usd_per_image REAL, currency TEXT NOT NULL DEFAULT 'USD')`,
+		`CREATE TABLE account_connections (
+			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, connection_preset_code TEXT NOT NULL,
+			protocol_surface_code TEXT, base_url TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE account_entry_mappings (
+			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source_model TEXT NOT NULL, source_endpoint_family TEXT NOT NULL,
+			target_connection_id TEXT NOT NULL, target_model_id TEXT NOT NULL, target_endpoint_family TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		// M2 媒体任务面（媒体设计 §8.2）：与 maintenance sqlite_schema_business
 		// 的 media_jobs DDL 同构。
 		`CREATE TABLE media_jobs (
@@ -305,14 +342,18 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		t.Fatalf("encrypt credentials: %v", err)
 	}
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, credentials_encrypted, deleted_at, health_check_model
-		) VALUES (?, ?, 'openai', 'prof_1', 'openai', 'v1', '账户一', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
+		) VALUES (?, ?, 'openai', 'openai', 'prof_1', 'openai', 'v1', '账户一', 'api_key', 'active', 1, ?, NULL, 'gpt-test')`,
 		fixture.accountID, fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, fixture.accountID, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'gpt-test', ?)`,
+	// 供应商解耦形态（设计 §3/§4）：支持模型经 models 单表 + model_id 外键；
+	// 旧 provider_code/model 列保留供禁改的调度水合读取（chain_accounts.go）。
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
 		fixture.accountID, now)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_gpt-test', 'openai', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES ('rs_1', ?, '默认', 'normal', NULL, 'active')`,
 		fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
@@ -448,55 +489,69 @@ func TestChainCatalogSourceListsProviderModels(t *testing.T) {
 		t.Fatalf("create source: %v", err)
 	}
 	now := "2026-09-04T00:00:00.000Z"
-	// openai 协议子供应商 gpt（enabled）+ 一条 gpt 内置目录行。
-	if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov_gpt', 'gpt', 'GPT', 1, ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed provider: %v", err)
+	// 供应商解耦（设计 §3）：目录维度 = models.vendor_code 恒等源，协议子供应
+	// 商聚合已随 providers/provider_protocol_profiles 退役。gpt vendor 的内置
+	// 行只随 "gpt" 维度可见。
+	if _, err := fixture.db.Exec(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, catalog_order,
+			supported_endpoint_modes_json, source, catalog_visible, supports_prompt_caching,
+			input_usd_per_1m, created_at, updated_at)
+		VALUES ('cat_gpt_child', 'gpt', 'gpt-child-model', 'gpt-child-model', 'builtin', 'active', 0,
+			'["chat_json","chat_sse"]', 'builtin', 1, 0, 1.0, ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed gpt builtin catalog: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof_gpt_openai_v1', 'gpt', 'GPT OpenAI v1', 1, 'openai', 'v1', 'https://gpt.invalid/v1', 'gpt-test', '[]', '{}', ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed profile: %v", err)
-	}
-	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
-			catalog_visible, supports_prompt_caching, input_usd_per_1m, created_at, updated_at)
-		VALUES ('cat_gpt_child', 'active', 'gpt', 'gpt-child-model', 0, '["chat_completions"]', 'builtin', 1, 0, 1.0, ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed child catalog: %v", err)
-	}
-	// openai 目标自身的内置行：必须被剔除（openai 兼容没有内置目录）。
-	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
-			catalog_visible, supports_prompt_caching, created_at, updated_at)
-		VALUES ('cat_openai_builtin', 'active', 'openai', 'openai-builtin-model', 0, '["chat_completions"]', 'builtin', 1, 0, ?, ?)`, now, now); err != nil {
+	// openai vendor 自身的内置行：builtin 源剔除（openai 无自身内置目录）。
+	if _, err := fixture.db.Exec(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, catalog_order,
+			supported_endpoint_modes_json, source, catalog_visible, supports_prompt_caching,
+			created_at, updated_at)
+		VALUES ('cat_openai_builtin', 'openai', 'openai-builtin-model', 'openai-builtin-model', 'builtin', 'active', 0,
+			'["chat_json","chat_sse"]', 'builtin', 1, 0, ?, ?)`, now, now); err != nil {
 		t.Fatalf("seed openai builtin catalog: %v", err)
 	}
-	items, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "openai"})
+	// gpt 维度：builtin 行在场（含端点集反推的 chat_completions 协议投影）。
+	gptItems, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"})
 	if err != nil {
-		t.Fatalf("list catalog: %v", err)
+		t.Fatalf("list gpt catalog: %v", err)
 	}
-	byModel := map[string]gatewayruntimecache.ProviderModelCatalogItem{}
-	for _, item := range items {
-		byModel[item.Model] = item
-	}
-	// 子供应商内置行进入聚合目录（这是 openai 兼容“汇总”语义的回归锚点）。
-	child, ok := byModel["gpt-child-model"]
+	child, ok := findCatalogItem(gptItems, "gpt-child-model")
 	if !ok {
-		t.Fatalf("aggregated catalog missing child gpt row: %#v", items)
+		t.Fatalf("gpt catalog missing builtin row: %#v", gptItems)
 	}
 	if child.ProviderCode != "gpt" {
-		t.Fatalf("child row provider = %q, want gpt", child.ProviderCode)
+		t.Fatalf("builtin row provider = %q, want gpt", child.ProviderCode)
 	}
 	if len(child.SupportedAPIProtocols) != 1 || child.SupportedAPIProtocols[0] != "chat_completions" {
-		t.Fatalf("child protocols wrong: %#v", child.SupportedAPIProtocols)
+		t.Fatalf("builtin row protocols wrong: %#v", child.SupportedAPIProtocols)
 	}
-	// fixture seed 的 openai 自定义行（global scope，定价行）同样在场。
+	// openai 维度：内置源剔除自身；fixture seed 的 openai 自定义行
+	//（models global scope，定价行）在场，gpt builtin 行不跨维度泄漏。
+	openaiItems, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "openai"})
+	if err != nil {
+		t.Fatalf("list openai catalog: %v", err)
+	}
+	byModel := map[string]gatewayruntimecache.ProviderModelCatalogItem{}
+	for _, item := range openaiItems {
+		byModel[item.Model] = item
+	}
 	if _, ok := byModel["gpt-test"]; !ok {
-		t.Fatalf("aggregated catalog missing custom openai row: %#v", items)
+		t.Fatalf("openai catalog missing custom row: %#v", openaiItems)
 	}
-	// openai 自身的内置行必须被剔除。
 	if _, ok := byModel["openai-builtin-model"]; ok {
-		t.Fatalf("openai target must drop its own built-in rows: %#v", items)
+		t.Fatalf("openai dimension must drop its own built-in rows: %#v", openaiItems)
 	}
+	if _, ok := byModel["gpt-child-model"]; ok {
+		t.Fatalf("openai dimension must not aggregate gpt builtin rows: %#v", openaiItems)
+	}
+}
+
+func findCatalogItem(items []gatewayruntimecache.ProviderModelCatalogItem, model string) (gatewayruntimecache.ProviderModelCatalogItem, bool) {
+	for _, item := range items {
+		if item.Model == model {
+			return item, true
+		}
+	}
+	return gatewayruntimecache.ProviderModelCatalogItem{}, false
 }
 
 // ---------------------------------------------------------------------------

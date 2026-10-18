@@ -70,8 +70,7 @@ type RuntimeCacheReader interface {
 	// ResolveCachedProviderModelRouteAsync mirrors
 	// resolveCachedProviderModelRouteAsync. 供应商解耦后内部为 models 单表目
 	// 录语义（设计 §3/§6.1）：matched = 请求模型存在 builtin/active 目录行，
-	// missing = 无可见 active 行；ProviderCodes 是供应商收窄时代的过渡入参，
-	// 不再参与判定。
+	// missing = 无可见 active 行。
 	ResolveCachedProviderModelRouteAsync(ctx context.Context, input ProviderModelRouteInput) (ProviderModelRouteResolution, error)
 }
 
@@ -82,11 +81,10 @@ type CachedAccountsForGroupOptions struct {
 }
 
 // ProviderModelRouteInput mirrors resolveCachedProviderModelRouteAsync's
-// input shape. ProviderCodes 过渡保留（供应商解耦后分组不再携带 provider 身
-// 份，路由侧恒传空集合）。
+// input shape. 供应商解耦后分组不再携带 provider 身份（设计 §8），目录判定只
+// 按 model + 可见性 owner。
 type ProviderModelRouteInput struct {
 	Model           string
-	ProviderCodes   []string
 	SystemAccountID string
 	IncludeUnpriced bool
 }
@@ -101,11 +99,8 @@ const (
 )
 
 // ProviderModelRouteResolution mirrors ProviderModelRouteResolution. 供应商解
-// 耦后承载 models 单表目录语义：matched/missing 二值，ProviderCode 与
-// MatchedProviderCodes 恒空。
+// 耦后承载 models 单表目录语义：matched/missing 二值。
 type ProviderModelRouteResolution struct {
-	Outcome              string
-	ModelKey             string
-	ProviderCode         string // 供应商目录时代载体，models 语义下恒空
-	MatchedProviderCodes []string
+	Outcome  string
+	ModelKey string
 }

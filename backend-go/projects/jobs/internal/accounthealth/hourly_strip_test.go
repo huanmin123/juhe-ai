@@ -30,17 +30,17 @@ func newHourlyBusinessFixture(t *testing.T) *ProjectionBusinessDB {
 	t.Cleanup(func() { _ = db.Close() })
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(context.Background(), `CREATE TABLE accounts (
-		id text PRIMARY KEY, provider_code text, system_account_id text)`); err != nil {
+		id text PRIMARY KEY, vendor_code text, system_account_id text)`); err != nil {
 		t.Fatalf("create accounts: %v", err)
 	}
-	seed := []struct{ id, provider, owner string }{
-		{"acc-1", "openai", "sysacc-owner"},
-		{"acc-no-provider", "", "sysacc-owner"},
-		{"acc-no-owner", "openai", ""},
+	seed := []struct{ id, vendor, owner string }{
+		{"acc-1", "gpt", "sysacc-owner"},
+		{"acc-no-vendor", "", "sysacc-owner"},
+		{"acc-no-owner", "gpt", ""},
 	}
 	for _, row := range seed {
-		if _, err := db.ExecContext(context.Background(), `INSERT INTO accounts (id, provider_code, system_account_id)
-			VALUES ('`+row.id+`', '`+row.provider+`', '`+row.owner+`')`); err != nil {
+		if _, err := db.ExecContext(context.Background(), `INSERT INTO accounts (id, vendor_code, system_account_id)
+			VALUES ('`+row.id+`', '`+row.vendor+`', '`+row.owner+`')`); err != nil {
 			t.Fatalf("seed account %s: %v", row.id, err)
 		}
 	}
@@ -64,10 +64,10 @@ func TestRecordAccountHealthHourlyObservation(t *testing.T) {
 		wantStatus bool
 		wantProv   string
 	}{
-		{"success", Outcome{OutcomeID: "o1", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observedAt, StatusCode: 200}, true, true, "openai"},
-		{"upstream failure maps to failure", Outcome{OutcomeID: "o2", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt, ErrorCode: "upstream_protocol_failure"}, true, false, "openai"},
-		{"neutral maps to failure", Outcome{OutcomeID: "o3", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observedAt}, true, false, "openai"},
-		{"missing provider falls to unknown", Outcome{OutcomeID: "o4", AccountID: "acc-no-provider", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, true, false, "unknown"},
+		{"success", Outcome{OutcomeID: "o1", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeSuccess, ObservedAt: observedAt, StatusCode: 200}, true, true, "gpt"},
+		{"upstream failure maps to failure", Outcome{OutcomeID: "o2", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt, ErrorCode: "upstream_protocol_failure"}, true, false, "gpt"},
+		{"neutral maps to failure", Outcome{OutcomeID: "o3", AccountID: "acc-1", Outcome: exactkeyprobe.OutcomeNeutral, ObservedAt: observedAt}, true, false, "gpt"},
+		{"missing vendor falls to unknown", Outcome{OutcomeID: "o4", AccountID: "acc-no-vendor", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, true, false, "unknown"},
 		{"stale skipped", Outcome{OutcomeID: "o5", AccountID: "acc-1", Outcome: OutcomeStale, ObservedAt: observedAt}, false, false, ""},
 		{"deleted account skipped", Outcome{OutcomeID: "o6", AccountID: "acc-gone", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, false, false, ""},
 		{"no owner skipped", Outcome{OutcomeID: "o7", AccountID: "acc-no-owner", Outcome: exactkeyprobe.OutcomeUpstreamFailed, ObservedAt: observedAt}, false, false, ""},

@@ -76,7 +76,6 @@ type GroupBindingRow struct {
 	Priority        int64
 	Weight          *int64
 	Status          string
-	ProviderCode    string
 	GroupEnabled    int64 // Node group_enabled !== 0 marks the group enabled.
 }
 
@@ -84,7 +83,6 @@ type GroupBindingRow struct {
 // GroupUsageAccessMetadata. Tri-state optional booleans stay pointers.
 type GroupUsageAccessMetadata struct {
 	GroupOwnerSystemAccountID      string
-	ProviderCode                   string
 	GroupAccessType                string
 	GroupType                      string
 	SchedulingPolicy               string

@@ -65,15 +65,13 @@ func (c chainRoutingCache) ListCachedOpenAIAccountsForGroupAsync(ctx context.Con
 }
 
 func (c chainRoutingCache) ResolveCachedProviderModelRouteAsync(ctx context.Context, input gatewayrouting.ProviderModelRouteInput) (gatewayrouting.ProviderModelRouteResolution, error) {
-	route, err := c.cache.ResolveCachedProviderModelRouteAsync(ctx, input.Model, input.ProviderCodes, input.SystemAccountID, input.IncludeUnpriced)
+	route, err := c.cache.ResolveCachedProviderModelRouteAsync(ctx, input.Model, input.SystemAccountID, input.IncludeUnpriced)
 	if err != nil {
 		return gatewayrouting.ProviderModelRouteResolution{}, err
 	}
 	return gatewayrouting.ProviderModelRouteResolution{
-		Outcome:              string(route.Outcome),
-		ModelKey:             route.ModelKey,
-		ProviderCode:         route.ProviderCode,
-		MatchedProviderCodes: route.MatchedProviderCodes,
+		Outcome:  string(route.Outcome),
+		ModelKey: route.ModelKey,
 	}, nil
 }
 
@@ -83,7 +81,6 @@ func (c chainRoutingCache) ResolveCachedProviderModelRouteAsync(ctx context.Cont
 func projectGroupAccessForRouting(meta gatewayruntimecache.GroupUsageAccessMetadata) gatewayrouting.GroupUsageAccessMetadata {
 	return gatewayrouting.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      meta.GroupOwnerSystemAccountID,
-		ProviderCode:                   meta.ProviderCode,
 		GroupAccessType:                meta.GroupAccessType,
 		GroupType:                      deref(meta.GroupType),
 		SchedulingPolicy:               renderSchedulingPolicy(meta.SchedulingPolicy),
@@ -101,7 +98,6 @@ func projectGroupAccessForRouting(meta gatewayruntimecache.GroupUsageAccessMetad
 func projectGroupAccessForRuntime(meta gatewayrouting.GroupUsageAccessMetadata) gatewayruntimecache.GroupUsageAccessMetadata {
 	out := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      meta.GroupOwnerSystemAccountID,
-		ProviderCode:                   meta.ProviderCode,
 		GroupAccessType:                meta.GroupAccessType,
 		GroupAuthorizationID:           stringPtr(meta.GroupAuthorizationID),
 		GroupAuthorizationSourceType:   stringPtr(meta.GroupAuthorizationSourceType),
@@ -226,17 +222,15 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 		return gatewaypreauth.NormalRouteResult{}, err
 	}
 	out := gatewaypreauth.NormalRouteResult{
-		Outcome:              result.Outcome,
-		Reason:               result.Reason,
-		RequestedModel:       result.RequestedModel,
-		StatusCode:           result.StatusCode,
-		Type:                 result.Type,
-		Code:                 result.Code,
-		Message:              result.Message,
-		MatchedProviderCodes: result.MatchedProviderCodes,
-		APIKeyRecord:         input.APIKeyRecord,
-		RouteSource:          string(result.RouteSource),
-		MatchedProviderCode:  result.MatchedProviderCode,
+		Outcome:        result.Outcome,
+		Reason:         result.Reason,
+		RequestedModel: result.RequestedModel,
+		StatusCode:     result.StatusCode,
+		Type:           result.Type,
+		Code:           result.Code,
+		Message:        result.Message,
+		APIKeyRecord:   input.APIKeyRecord,
+		RouteSource:    string(result.RouteSource),
 	}
 	if result.Outcome != gatewayrouting.NormalRouteOutcomeSelected {
 		return out, nil
@@ -256,9 +250,9 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 	}
 	out.GroupID = result.GroupID
 	out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, input.APIKeyRecord.SystemAccountID, result.GroupAccess)
-	out.Accounts, out.RouteSource, out.MatchedProviderCode = r.rehydrateAccounts(
+	out.Accounts, out.RouteSource = r.rehydrateAccounts(
 		ctx, result.GroupID, input.APIKeyRecord.SystemAccountID, result.Accounts,
-		result.RequestedModel, localEndpointFamily(view), out.RouteSource, out.MatchedProviderCode,
+		result.RequestedModel, localEndpointFamily(view), out.RouteSource,
 	)
 	return out, nil
 }
@@ -342,14 +336,13 @@ func (r *chainRouteResolver) resolveMergeSelectedRoute(
 		// authorization_quota_exceeded 终局同形态），走 NormalRoute 失败路径
 		// 由 preflight 渲染。
 		return gatewaypreauth.NormalRouteResult{
-			Outcome:              gatewaypreauth.NormalRouteOutcomeFailed,
-			RequestedModel:       result.RequestedModel,
-			StatusCode:           429,
-			Type:                 "rate_limit_exceeded",
-			Code:                 "rate_limit_exceeded",
-			Message:              gatewayquota.AuthorizationQuotaExceededMessage,
-			MatchedProviderCodes: result.MatchedProviderCodes,
-			APIKeyRecord:         input.APIKeyRecord,
+			Outcome:        gatewaypreauth.NormalRouteOutcomeFailed,
+			RequestedModel: result.RequestedModel,
+			StatusCode:     429,
+			Type:           "rate_limit_exceeded",
+			Code:           "rate_limit_exceeded",
+			Message:        gatewayquota.AuthorizationQuotaExceededMessage,
+			APIKeyRecord:   input.APIKeyRecord,
 		}, nil
 	}
 	window := survivors[0]
@@ -390,8 +383,8 @@ func (r *chainRouteResolver) rehydrateAccounts(
 	ctx context.Context,
 	groupID, systemAccountID string,
 	projected []gatewayrouting.UpstreamAccount,
-	requestedModel, endpointFamily, routeSource, matchedProviderCode string,
-) ([]gatewayruntimecache.OpenAIAccountSecret, string, string) {
+	requestedModel, endpointFamily, routeSource string,
+) ([]gatewayruntimecache.OpenAIAccountSecret, string) {
 	full := r.listFullAccounts(ctx, groupID, systemAccountID, requestedModel, endpointFamily)
 	byID := make(map[string]gatewayruntimecache.OpenAIAccountSecret, len(full))
 	for _, account := range full {
@@ -405,7 +398,7 @@ func (r *chainRouteResolver) rehydrateAccounts(
 		}
 		accounts = append(accounts, accountFromRoutingProjection(projection))
 	}
-	return accounts, routeSource, matchedProviderCode
+	return accounts, routeSource
 }
 
 func (r *chainRouteResolver) listFullAccounts(ctx context.Context, groupID, systemAccountID, requestedModel, endpointFamily string) []gatewayruntimecache.OpenAIAccountSecret {
@@ -499,7 +492,6 @@ func projectAPIKeyRowForRouting(record *gatewayruntimecache.GatewayAPIKeyRow) *g
 			Priority:        int64(binding.Priority),
 			Weight:          &weight,
 			Status:          binding.Status,
-			ProviderCode:    binding.ProviderCode,
 			GroupEnabled:    int64(binding.GroupEnabled),
 		})
 	}
@@ -539,7 +531,6 @@ func projectBindingsForRuntime(projected []gatewayrouting.GroupBindingRow, origi
 			GroupID:         binding.GroupID,
 			Priority:        int(binding.Priority),
 			Status:          binding.Status,
-			ProviderCode:    binding.ProviderCode,
 			GroupEnabled:    int(binding.GroupEnabled),
 		})
 	}

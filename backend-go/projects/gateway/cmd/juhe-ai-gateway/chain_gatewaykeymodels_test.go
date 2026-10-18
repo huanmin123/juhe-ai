@@ -86,12 +86,14 @@ func gkmSeedAccount(t *testing.T, db *sql.DB, a gkmAccountSeed) {
 	if a.instanceAuthz != "" {
 		instanceAuthz = a.instanceAuthz
 	}
+	// 供应商解耦（设计 §2.1）：vendor_code 与旧 provider 值同名，是并集装载
+	// 器 factProvider 的事实来源；provider_code 旧列仅为禁改的调度水合投影保留。
 	_, err := db.Exec(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, schedulable, deleted_at, account_expires_at, cooldown_until,
 			authorization_instance_source_account_id, authorization_instance_authorization_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.id, a.owner, a.provider, a.profile, a.protocol, a.version,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.id, a.owner, a.provider, a.provider, a.profile, a.protocol, a.version,
 		a.id, a.accountType, a.status, schedulable, deletedAt, expiresAt, cooldownUntil,
 		sourceID, instanceAuthz)
 	if err != nil {
@@ -119,20 +121,45 @@ func gkmSeedBinding(t *testing.T, db *sql.DB, groupID, bindingOwner, accountID, 
 	}
 }
 
+// gkmSeedSupportedModel 供应商解耦形态（设计 §3/§4）：models 单表行（内置
+// 语义 public=upstream 同名、active、chat 双 mode）+ account_supported_models
+// 经 model_id 外键引用；provider_code/model 旧列为禁改的调度水合投影保留。
 func gkmSeedSupportedModel(t *testing.T, db *sql.DB, accountID, provider, model string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, ?, ?, ?)`,
-		accountID, provider, model, gkmTS(gkmBase)); err != nil {
+	gkmSeedModelRow(t, db, provider, model)
+	if _, err := db.Exec(`INSERT OR IGNORE INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		accountID, provider, model, gkmModelID(model), gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed supported model %s/%s: %v", accountID, model, err)
 	}
 }
 
+// gkmModelID 是 models 行的确定性 id（跨账户共享同名模型行）。
+func gkmModelID(model string) string { return "mdl_" + model }
+
+// gkmSeedModelRow 幂等插入一条 builtin models 行（public=upstream=model）。
+func gkmSeedModelRow(t *testing.T, db *sql.DB, provider, model string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'builtin', 'active', '["chat_json","chat_sse"]', ?, ?)`,
+		gkmModelID(model), provider, model, model, gkmTS(gkmBase), gkmTS(gkmBase)); err != nil {
+		t.Fatalf("seed model row %s: %v", model, err)
+	}
+}
+
+// gkmSeedMapping 供应商解耦形态（设计 §5.1）：account_entry_mappings 行，
+// upstream 名经 target_model_id 外键解析到 models.upstream_model；目标模型
+// 行幂等确保存在（“upstream ∉ SM”场景由不建 asm 行表达，装载器代码侧
+// upstream ∈ SM 门负责拒绝）。旧 account_model_mappings.provider_code 供应商
+// 维度已随表退役——「跨供应商历史映射行」场景不再存在。
 func gkmSeedMapping(t *testing.T, db *sql.DB, accountID, provider, source, sourceFamily, upstream, upstreamFamily string, enabled int) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family,
-			upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		accountID, provider, source, sourceFamily, upstream, upstreamFamily, enabled, gkmTS(gkmBase), gkmTS(gkmBase)); err != nil {
+	gkmSeedModelRow(t, db, provider, upstream)
+	mappingID := "aem_" + accountID + "_" + source + "_" + sourceFamily
+	if _, err := db.Exec(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family,
+			target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mappingID, accountID, source, sourceFamily, "conn-"+accountID, gkmModelID(upstream), upstreamFamily,
+		enabled, gkmTS(gkmBase), gkmTS(gkmBase)); err != nil {
 		t.Fatalf("seed mapping %s/%s: %v", accountID, source, err)
 	}
 }
@@ -466,8 +493,6 @@ func TestGKMUnionLoaderMappingValidity(t *testing.T) {
 	gkmSeedMapping(t, db, "acc_map", "openai", "m-matrix", "video_generation", "gpt-test", "chat_completions", 1)
 	// 矩阵支持的族对（stream_generate_content → generate_content，全档案放行）→ 并入。
 	gkmSeedMapping(t, db, "acc_map", "openai", "m-gemini", "stream_generate_content", "gpt-test", "generate_content", 1)
-	// 供应商门：跨供应商历史映射行 → 不并入。
-	gkmSeedMapping(t, db, "acc_map", "anthropic", "m-provider", "chat_completions", "gpt-test", "chat_completions", 1)
 	// 禁用映射 → 不并入。
 	gkmSeedMapping(t, db, "acc_map", "openai", "m-disabled", "chat_completions", "gpt-test", "chat_completions", 0)
 	// 跨端点族同源模型 → 去重为单条目（responses → chat_completions 依赖

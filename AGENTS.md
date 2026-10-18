@@ -88,7 +88,7 @@
 | 项目定位、模块边界、数据关系或网关主流程变化 | `docs/architecture/架构总览.md` |
 | 新功能、字段、接口、存储、脚本或关键流程 | `docs/architecture/功能开发指导.md` 和 `docs/functions/README.md` |
 | 前端页面、布局、样式、交互、文案或品牌 | `docs/architecture/frontend/README.md` |
-| 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/architecture/Go三项目架构基线.md`；后端实现专题见 `docs/architecture/backend/README.md`（历史） |
+| 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/architecture/Go三项目架构基线.md` |
 | 需求计划、执行进度或关联文档 | `docs/plans/README.md` |
 | 本地安装、运行、联调、测试或验证 | `docs/develop/README.md` |
 | 部署相关变动（compose/env/参数/运行时目录/初始化与验证步骤） | `docs/deploy/README.md` 与 `docker/single-server/README.md`（同步约束见上文"部署变更文档同步"） |

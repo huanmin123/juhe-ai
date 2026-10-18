@@ -161,8 +161,8 @@ func TestF8DirtyCoversAuthorizationInstanceFamily(t *testing.T) {
       authorization_instance_source_account_id)
     VALUES ('acc-inst', 'sys-1', '实例', 'api_key', 'active', ?, 'acc-src')
   `, h.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{"sk-i1", "sk-i2"}}))
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model) VALUES ('acc-inst', 'gpt-test')`)
-	h.exec(t, `INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('group-2', 'sys-1', 'openai', 1)`)
+	h.seedModel(t, "acc-inst", "gpt-test")
+	h.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-2', 'sys-1', 1)`)
 	h.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-2', 'sys-1', 'acc-inst', 1)`)
 
 	// 源账户翻转：group-1（源）+ group-2（实例）都标脏。
@@ -195,8 +195,8 @@ func TestF8DirtyCoversAuthorizationInstanceFamily(t *testing.T) {
       authorization_instance_source_account_id)
     VALUES ('acc-inst', 'sys-1', '实例', 'api_key', 'active', ?, 'acc-src')
   `, h2.sealCredentials(t, map[string]any{"base_url": "https://upstream.example.com/v1", "api_keys": []any{"sk-i1", "sk-i2"}}))
-	h2.exec(t, `INSERT INTO account_supported_models (account_id, model) VALUES ('acc-inst', 'gpt-test')`)
-	h2.exec(t, `INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('group-2', 'sys-1', 'openai', 1)`)
+	h2.seedModel(t, "acc-inst", "gpt-test")
+	h2.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-2', 'sys-1', 1)`)
 	h2.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-2', 'sys-1', 'acc-inst', 1)`)
 	instFp := h2.store.FingerprintAPIKey("sk-i1")
 	h2.seedRuntimeState(t, "acc-inst", instFp, 0, "temporary_unavailable", plusMillis(-1000))

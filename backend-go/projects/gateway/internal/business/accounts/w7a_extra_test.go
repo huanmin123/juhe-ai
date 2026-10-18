@@ -28,17 +28,28 @@ func w7aDB(t *testing.T) *sql.DB {
 	db.SetMaxOpenConns(4)
 	t.Cleanup(func() { _ = db.Close() })
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,name TEXT,type TEXT,status TEXT,credentials_encrypted TEXT,config_revision INTEGER NOT NULL DEFAULT 1,dispatch_revision INTEGER NOT NULL DEFAULT 1,schedulable INTEGER,availability_schedule_json TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,deleted_by TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT,provider_code TEXT,model TEXT,created_at TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,provider_code TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER,created_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_tags (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,created_at TEXT,updated_at TEXT,UNIQUE(system_account_id,name))`,
-		`CREATE TABLE account_tag_bindings (account_id TEXT,tag_id TEXT,system_account_id TEXT,created_at TEXT,UNIQUE(account_id,tag_id))`,
-		`CREATE TABLE group_accounts (account_id TEXT)`,
-		`CREATE TABLE account_api_key_runtime_states (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,key_fingerprint TEXT,status TEXT,created_at TEXT,updated_at TEXT)`,
+	// 目标 DDL 形态（设计 §2.1/§4），与 service_test.go 的 testDB 同构：
+	// accounts 携 vendor_code / connection_driver_code；
+	// account_supported_models 收敛为 (account_id, model_id)；models 承接
+	// 模型身份键 (vendor_code, upstream_model) + scope 可见性。
+	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,vendor_code TEXT,connection_driver_code TEXT,name TEXT,type TEXT,status TEXT,credentials_encrypted TEXT,config_revision INTEGER NOT NULL DEFAULT 1,dispatch_revision INTEGER NOT NULL DEFAULT 1,schedulable INTEGER,availability_schedule_json TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,deleted_by TEXT)`,
+	`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT NOT NULL,upstream_model TEXT NOT NULL,scope TEXT NOT NULL,system_account_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
+	`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,created_at TEXT,PRIMARY KEY (account_id, model_id))`,
+	`CREATE TABLE account_model_mappings (account_id TEXT,provider_code TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER,created_at TEXT,updated_at TEXT)`,
+	`CREATE TABLE account_tags (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,created_at TEXT,updated_at TEXT,UNIQUE(system_account_id,name))`,
+	`CREATE TABLE account_tag_bindings (account_id TEXT,tag_id TEXT,system_account_id TEXT,created_at TEXT,UNIQUE(account_id,tag_id))`,
+	`CREATE TABLE group_accounts (account_id TEXT)`,
+	`CREATE TABLE account_api_key_runtime_states (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,key_fingerprint TEXT,status TEXT,created_at TEXT,updated_at TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// input()/patch 用例的支持模型身份行：gpt-5 走 generic（vendor NULL），
+	// gpt-4 供 patch 支持模型臂解析。
+	seed := `INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status) VALUES ('m-gpt5',NULL,'gpt-5','gpt-5','builtin',NULL,'active'),('m-gpt4',NULL,'gpt-4','gpt-4','builtin',NULL,'active')`
+	if _, err := db.Exec(seed); err != nil {
+		t.Fatal(err)
 	}
 	return db
 }
@@ -524,7 +535,8 @@ func TestW7AScriptedPatchRowsAffectedArms(t *testing.T) {
 		{},
 		{contains: "SELECT config_revision", cols: []string{"config_revision"}, row: []driver.Value{int64(1)}},
 		{contains: "DELETE FROM account_supported_models", affected: 1},
-		{contains: "SELECT provider_code", cols: []string{"provider_code"}, row: []driver.Value{"openai"}},
+		{contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}},
+		{contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}},
 		{contains: "INSERT INTO account_supported_models", affected: 1},
 		{contains: "UPDATE accounts SET config_revision=config_revision+1,updated_at=?", affected: 0},
 	})
@@ -663,7 +675,8 @@ func w7aAccountRowCols() ([]string, []driver.Value) {
 
 func w7aRelationSteps() []w7aStep {
 	return []w7aStep{
-		{contains: "FROM account_supported_models", cols: []string{"model"}, row: []driver.Value{"gpt-5"}},
+		// B3 目标形态：supported models 投影 models.upstream_model。
+		{contains: "FROM account_supported_models", cols: []string{"upstream_model"}, row: []driver.Value{"gpt-5"}},
 		{contains: "FROM account_model_mappings", cols: []string{"source_model", "source_endpoint_family", "upstream_model", "upstream_endpoint_family", "enabled"}, row: []driver.Value{"gpt-5", "chat", "gpt-5", "chat", int64(1)}},
 		{contains: "FROM account_tag_bindings", cols: []string{"name"}, row: []driver.Value{"prod"}},
 		{contains: "FROM account_api_key_runtime_states", cols: []string{"id", "key_fingerprint", "status"}, row: []driver.Value{"k1", "fp1", "active"}},
@@ -756,7 +769,8 @@ func TestW7AScriptedPatchFailureArms(t *testing.T) {
 		{"relations update err", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{
 			{}, rev,
 			{contains: "DELETE FROM account_supported_models", affected: 1},
-			{contains: "SELECT provider_code", cols: []string{"provider_code"}, row: []driver.Value{"openai"}},
+			{contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}},
+			{contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}},
 			{contains: "INSERT INTO account_supported_models", affected: 1},
 			{contains: "SET config_revision=config_revision+1,updated_at=?", execErr: w7aErrBoom},
 		}},
@@ -792,7 +806,11 @@ func TestW7AScriptedWriteRelationsFailureArms(t *testing.T) {
 		"INSERT INTO account_api_key_runtime_states",
 	}
 	for _, target := range targets {
-		steps := []w7aStep{{}, {contains: "INSERT INTO accounts", affected: 1}}
+		steps := []w7aStep{{}, {contains: "INSERT INTO accounts", affected: 1},
+			// B3 目标形态：支持模型先经 models 身份解析，再落
+			// account_supported_models (account_id, model_id)。
+			{contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-gpt5"}},
+		}
 		for _, insert := range targets {
 			step := w7aStep{contains: insert, affected: 1}
 			if insert == target {
@@ -804,6 +822,16 @@ func TestW7AScriptedWriteRelationsFailureArms(t *testing.T) {
 		if _, err := s.Create(ctx, input()); err == nil {
 			t.Fatalf("%s failure must surface", target)
 		}
+	}
+	// B3 解析失败臂：模型名解析不到必须以 ErrModelNotFound 拒绝（事务回滚，
+	// 不静默跳过）。
+	s := w7aReadyScripted(t, []w7aStep{
+		{},
+		{contains: "INSERT INTO accounts", affected: 1},
+		{contains: "SELECT id FROM", noRows: true},
+	})
+	if _, err := s.Create(ctx, input()); !errors.Is(err, ErrModelNotFound) {
+		t.Fatalf("unresolved supported model err=%v", err)
 	}
 }
 
@@ -821,8 +849,9 @@ func TestW7AScriptedPatchRelationsFailureArms(t *testing.T) {
 		steps []w7aStep
 	}{
 		{"models delete", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "DELETE FROM account_supported_models", execErr: w7aErrBoom}}},
-		{"models provider read", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT provider_code", rowsErr: w7aErrBoom}}},
-		{"models insert", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT provider_code", cols: []string{"provider_code"}, row: []driver.Value{"openai"}}, {contains: "INSERT INTO account_supported_models", execErr: w7aErrBoom}}},
+		{"models vendor read", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT vendor_code, system_account_id", rowsErr: w7aErrBoom}}},
+		{"models resolve", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", noRows: true}}},
+		{"models insert", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}}, {contains: "INSERT INTO account_supported_models", execErr: w7aErrBoom}}},
 		{"mappings delete", Patch{ExpectedConfigRevision: 1, ModelMappings: &mappings}, []w7aStep{{}, rev, {contains: "DELETE FROM account_model_mappings", execErr: w7aErrBoom}}},
 		{"mappings provider read", Patch{ExpectedConfigRevision: 1, ModelMappings: &mappings}, []w7aStep{{}, rev, ok("DELETE FROM account_model_mappings"), {contains: "SELECT provider_code", rowsErr: w7aErrBoom}}},
 		{"mappings insert", Patch{ExpectedConfigRevision: 1, ModelMappings: &mappings}, []w7aStep{{}, rev, ok("DELETE FROM account_model_mappings"), {contains: "SELECT provider_code", cols: []string{"provider_code"}, row: []driver.Value{"openai"}}, {contains: "INSERT INTO account_model_mappings", execErr: w7aErrBoom}}},

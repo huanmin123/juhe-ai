@@ -13,6 +13,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // EffectiveAvailabilityLimitations 说明 effectiveAvailability 派生的已知边界
@@ -30,7 +31,10 @@ import (
 // AccountForTestView 是 find_account_for_test 的完整投影（含凭据）。
 type AccountForTestView struct {
 	accountquality.AccountForTest
+	// ProviderCode 投影自 accounts.vendor_code（供应商解耦 §8：旧
+	// provider_code 身份列退役；generic_http 账户为空串）。
 	ProviderCode              string
+	OAuthType                 string
 	ProviderProtocolProfileID string
 	ClientCompatibility       string
 	ProtocolVersion           string
@@ -47,10 +51,15 @@ type AccountForTestView struct {
 }
 
 // accountRowSQL 是账户主查询（owner + authorized instance 双路径合一）。
+// 供应商解耦读侧契约：身份列 vendor_code/oauth_type 替代
+// provider_code/client_compatibility；health-check 两列在授权实例行物理为
+// NULL（设计 §2.1 资源事实投影语义），按来源账户 CASE 投影。
 const accountRowSQL = `
     SELECT a.id, a.system_account_id, a.name, a.type, a.status, a.schedulable,
-      a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.client_compatibility,
-      a.health_check_model, a.health_check_endpoint_mode, a.account_expires_at, a.cooldown_until,
+      a.vendor_code, a.oauth_type, a.protocol_code, a.protocol_version,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE src.health_check_model END,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE src.health_check_endpoint_mode END,
+      a.account_expires_at, a.cooldown_until,
       a.last_error_code, a.last_error_message, a.credentials_encrypted,
       a.authorization_instance_authorization_id, a.authorization_instance_source_account_id,
       a.authorization_instance_owner_system_account_id,
@@ -99,9 +108,8 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		id, systemID, name, accountType      sql.NullString
 		status                               sql.NullString
 		schedulable                          any
-		providerCode, protocolCode           sql.NullString
-		protocolProfile, protocolVersion     sql.NullString
-		clientCompatibility                  sql.NullString
+		vendorCode, oauthType                sql.NullString
+		protocolCode, protocolVersion        sql.NullString
 		healthModel, healthMode              sql.NullString
 		expiresAt, cooldownUntil             sql.NullString
 		lastErrorCode, lastErrorMessage      sql.NullString
@@ -117,7 +125,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 	)
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &schedulable,
-		&providerCode, &protocolProfile, &protocolCode, &protocolVersion, &clientCompatibility,
+		&vendorCode, &oauthType, &protocolCode, &protocolVersion,
 		&healthModel, &healthMode, &expiresAt, &cooldownUntil,
 		&lastErrorCode, &lastErrorMessage, &credentials,
 		&authzID, &sourceID, &authzOwner,
@@ -135,7 +143,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		// Node openAIAccountSecretFromRow：解密失败按候选缺失处理。
 		return nil, nil
 	}
-	supportedModels, err := s.loadSupportedModels(ctx, id.String)
+	supportedModels, err := s.loadSupportedModels(ctx, resolveResourceAccountID(id.String, authzID.String, sourceID.String))
 	if err != nil {
 		return nil, err
 	}
@@ -185,9 +193,8 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		EffectiveAvailable:   available,
 		HasEffectiveAvail:    true,
 	}
-	view.ProviderCode = providerCode.String
-	view.ProviderProtocolProfileID = protocolProfile.String
-	view.ClientCompatibility = clientCompatibility.String
+	view.ProviderCode = vendorCode.String
+	view.OAuthType = oauthType.String
 	view.ProtocolVersion = protocolVersion.String
 	view.HealthCheckModel = healthModel.String
 	view.HealthCheckEndpointMode = healthMode.String
@@ -212,6 +219,15 @@ func truthy(value any) bool {
 	return false
 }
 
+// resolveResourceAccountID 是设计 §2.1 的资源事实归属解析：
+// resource_account_id = COALESCE(authorization_instance_source_account_id, id)。
+func resolveResourceAccountID(accountID, authorizationID, sourceID string) string {
+	if strings.TrimSpace(authorizationID) != "" && strings.TrimSpace(sourceID) != "" {
+		return sourceID
+	}
+	return accountID
+}
+
 func ternary(condition bool, whenTrue, whenFalse string) string {
 	if condition {
 		return whenTrue
@@ -219,8 +235,14 @@ func ternary(condition bool, whenTrue, whenFalse string) string {
 	return whenFalse
 }
 
+// loadSupportedModels 读取账户支持模型的探针侧名字空间。供应商解耦后
+// account_supported_models 只存 model_id 外键；探针把 health_check_model 直接
+// 发往上游，成员校验必须用上游名字空间（models.upstream_model），请求侧公开
+// 名（public_model）属网关入口契约，不经本投影。
 func (s *Store) loadSupportedModels(ctx context.Context, accountID string) ([]string, error) {
-	query := fmt.Sprintf(`SELECT model FROM %s WHERE account_id = ? ORDER BY created_at ASC, model ASC`, s.table("account_supported_models"))
+	query := fmt.Sprintf(`SELECT m.upstream_model FROM %s asm JOIN %s m ON m.id = asm.model_id
+    WHERE asm.account_id = ? ORDER BY asm.created_at ASC, m.upstream_model ASC`,
+		s.table("account_supported_models"), s.table("models"))
 	rows, err := s.db.QueryContext(ctx, s.bind(query), accountID)
 	if err != nil {
 		return nil, err
@@ -445,16 +467,25 @@ type CandidateAccount struct {
 	accountquality.OpenAIAccountCandidate
 	AccountOwnerSystemAccountID string
 	CredentialSourceAccountID   string
-	ProviderCode                string
-	ProviderProtocolProfileID   string
-	ProtocolCode                string
-	ProtocolVersion             string
-	ClientCompatibility         string
-	ProxyURL                    string
-	// BaseURL 取自凭据 base_url（探针上游地址）。
+	// ProviderCode 投影自资源账户 vendor_code（供应商解耦 §8）；
+	// ProviderProtocolProfileID 由资源账户健康检查连接的 connection_preset_code
+	// 经 exactkeyprobe.ConnectionPresetProfileID 派生（下游 profile_* 形状不变）；
+	// ClientCompatibility 随目标 schema 删除恒为空（codex_responses 兼容画像
+	// 形态按设计退役）。OAuthType 来自 accounts.oauth_type 列。
+	ProviderCode              string
+	OAuthType                 string
+	ProviderProtocolProfileID string
+	ClientCompatibility       string
+	ProtocolCode              string
+	ProtocolVersion           string
+	ProxyURL                  string
+	// BaseURL 取自资源账户健康检查连接行 base_url（探针上游地址；凭据 JSON
+	// 不再承载 base_url，设计 §2.1）。
 	BaseURL     string
-	Credentials map[string]any
-	APIKeys     []string
+	ConnectionPresetCode string
+	ConnectionModes      []string
+	Credentials          map[string]any
+	APIKeys              []string
 	// SelectedAPIKey 为默认凭据（oauth 取 access_token，api_key 取首把 Key）。
 	SelectedAPIKey string
 	APIKeyEntries  []KeyEntry
@@ -479,7 +510,7 @@ func (s *Store) FindAccountForGroup(ctx context.Context, groupID, accountID, sys
 
 // LoadAccountForGroup 返回完整候选。
 func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, systemAccountID string) (*CandidateAccount, error) {
-	groupOwner, providerCode, ok, err := s.resolveGroupAccess(ctx, groupID, systemAccountID)
+	groupOwner, ok, err := s.resolveGroupAccess(ctx, groupID, systemAccountID)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -496,43 +527,40 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		return nil, err
 	}
 	query := fmt.Sprintf(`
-    SELECT a.id, a.system_account_id, a.name, a.type, a.status, a.provider_code,
-	  a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.client_compatibility,
+    SELECT a.id, a.system_account_id, a.name, a.type, a.status, a.vendor_code, a.oauth_type,
+	  a.protocol_code, a.protocol_version,
 	      a.config_revision, a.dispatch_revision, a.credentials_encrypted, a.proxy_profile_id,
       a.authorization_instance_authorization_id, a.authorization_instance_source_account_id,
       a.authorization_instance_owner_system_account_id,
-	  src.id AS resource_account_id, src.provider_code AS resource_provider_code,
-	  src.provider_protocol_profile_id AS resource_profile_id, src.protocol_code AS resource_protocol_code, src.protocol_version AS resource_protocol_version,
-	  src.client_compatibility AS resource_client_compatibility,
+	  src.id AS resource_account_id, src.vendor_code AS resource_vendor_code,
+	  src.oauth_type AS resource_oauth_type, src.protocol_code AS resource_protocol_code, src.protocol_version AS resource_protocol_version,
       src.type AS resource_type, src.status AS resource_status,
 	      src.credentials_encrypted AS resource_credentials_encrypted, src.proxy_profile_id AS resource_proxy_profile_id
     FROM %s a
     LEFT JOIN %s src ON src.id = a.authorization_instance_source_account_id AND src.deleted_at IS NULL
-    WHERE a.id = ? AND a.provider_code = ? AND a.deleted_at IS NULL
+    WHERE a.id = ? AND a.deleted_at IS NULL
     LIMIT 1
   `, s.table("accounts"), s.table("accounts"))
 	var (
 		id, systemID, name, accountType, status                sql.NullString
-		provider, profileID, protocolCode, protocolVersion     sql.NullString
-		clientCompatibility                                    sql.NullString
+		vendor, oauthType, protocolCode, protocolVersion       sql.NullString
 		credentials                                            sql.NullString
 		proxyProfileID                                         sql.NullString
 		authzID, sourceID, authzOwner                          sql.NullString
-		resourceAccountID, resourceProvider, resourceProfileID sql.NullString
+		resourceAccountID, resourceVendor, resourceOAuthType   sql.NullString
 		resourceProtocol, resourceProtocolVersion              sql.NullString
-		resourceClientCompatibility                            sql.NullString
 		resourceType, resourceStatus                           sql.NullString
 		resourceCredentials                                    sql.NullString
 		resourceProxyProfileID                                 sql.NullString
 		configRevision, dispatchRevision                       sql.NullInt64
 	)
-	row := s.db.QueryRowContext(ctx, s.bind(query), accountID, providerCode)
-	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &provider,
-		&profileID, &protocolCode, &protocolVersion, &clientCompatibility,
+	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
+	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &vendor, &oauthType,
+		&protocolCode, &protocolVersion,
 		&configRevision, &dispatchRevision, &credentials, &proxyProfileID,
 		&authzID, &sourceID, &authzOwner,
-		&resourceAccountID, &resourceProvider, &resourceProfileID,
-		&resourceProtocol, &resourceProtocolVersion, &resourceClientCompatibility,
+		&resourceAccountID, &resourceVendor, &resourceOAuthType,
+		&resourceProtocol, &resourceProtocolVersion,
 		&resourceType, &resourceStatus,
 		&resourceCredentials, &resourceProxyProfileID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -540,7 +568,6 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		}
 		return nil, err
 	}
-	_ = clientCompatibility
 	_ = configRevision
 	// resolveOpenAIAccountAccess 窄投影。
 	accessOwner := systemAccountID
@@ -569,17 +596,13 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	if resourceCredentialsText == "" {
 		resourceCredentialsText = credentials.String
 	}
-	resourceProviderValue := resourceProvider.String
-	if resourceProviderValue == "" {
-		resourceProviderValue = provider.String
+	resourceVendorValue := resourceVendor.String
+	if resourceVendorValue == "" {
+		resourceVendorValue = vendor.String
 	}
-	resourceProfileValue := resourceProfileID.String
-	if resourceProfileValue == "" {
-		resourceProfileValue = profileID.String
-	}
-	resourceClientCompatibilityValue := resourceClientCompatibility.String
-	if resourceClientCompatibilityValue == "" {
-		resourceClientCompatibilityValue = clientCompatibility.String
+	resourceOAuthTypeValue := resourceOAuthType.String
+	if resourceOAuthTypeValue == "" {
+		resourceOAuthTypeValue = oauthType.String
 	}
 	resourceProtocolValue := resourceProtocol.String
 	if resourceProtocolValue == "" {
@@ -593,6 +616,10 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	if err != nil {
 		return nil, nil
 	}
+	// oauth_type 的运行时唯一来源是 accounts.oauth_type 列（设计 §2.1：凭据
+	// 重加密事务已删除 oauth_type 键）；探针请求构造从凭据投影读取该键，
+	// 这里把列值叠入凭据投影，探针侧取值形状保持不变。
+	credentialsMap["oauth_type"] = resourceOAuthTypeValue
 	resolvedProxyProfileID := proxyProfileID.String
 	if resourceAccountID.String != "" {
 		resolvedProxyProfileID = resourceProxyProfileID.String
@@ -601,6 +628,25 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	if err != nil {
 		return nil, err
 	}
+	// 探针连接面：资源账户的健康检查连接优先，否则 enabled 连接按 id 升序
+	// 首个（多连接账户的确定性取法；注释契约与 jobs direct input reader 一致）。
+	connection, err := s.loadProbeConnection(ctx, resolveResourceAccountID(id.String, authzID.String, sourceID.String))
+	if err != nil {
+		return nil, err
+	}
+	connectionPreset := ""
+	connectionBaseURL := ""
+	var connectionModes []string
+	if connection != nil {
+		connectionPreset = connection.presetCode
+		connectionBaseURL = connection.baseURL
+		modes, err := s.loadConnectionModes(ctx, connection.id)
+		if err != nil {
+			return nil, err
+		}
+		connectionModes = modes
+	}
+	profileID, _ := exactkeyprobe.ConnectionPresetProfileID(connectionPreset)
 	entries := s.AccountAPIKeyEntries(credentialsMap)
 	selectedKey := ""
 	if resourceTypeValue == "oauth" || resourceTypeValue == "google_oauth" {
@@ -633,28 +679,19 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		},
 		AccountOwnerSystemAccountID: accessOwner,
 		CredentialSourceAccountID:   resourceAccountID.String,
-		ProviderCode:                resourceProviderValue,
-		ProviderProtocolProfileID:   resourceProfileValue,
+		ProviderCode:                resourceVendorValue,
+		OAuthType:                   resourceOAuthTypeValue,
+		ProviderProtocolProfileID:   profileID,
 		ProtocolCode:                resourceProtocolValue,
 		ProtocolVersion:             resourceProtocolVersionValue,
-		ClientCompatibility:         resourceClientCompatibilityValue,
 		ProxyURL:                    proxyURL,
-		BaseURL:                     textCredential(credentialsMap, "base_url"),
+		BaseURL:                     connectionBaseURL,
+		ConnectionPresetCode:        connectionPreset,
+		ConnectionModes:             connectionModes,
 		Credentials:                 credentialsMap,
 		APIKeys:                     apiKeys,
 		SelectedAPIKey:              selectedKey,
 		APIKeyEntries:               entries,
-	}
-	if candidate.ProviderProtocolProfileID == "profile_hybrid_openai_chat_v1" {
-		mappingAccountID := candidate.CredentialSourceAccountID
-		if mappingAccountID == "" {
-			mappingAccountID = candidate.ID
-		}
-		mappings, err := s.loadHybridProbeMappings(ctx, mappingAccountID, candidate.ProviderCode)
-		if err != nil {
-			return nil, err
-		}
-		candidate.ModelMappings = mappings
 	}
 	_ = accountAccessType
 	_ = resourceStatus
@@ -662,35 +699,63 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 	return candidate, nil
 }
 
-// loadHybridProbeMappings reads only active rows from the same effective
-// credential source as J1's direct_input reader. The caller performs the
-// source model/family lookup after a manual task has applied its explicit
-// model/mode override; loading the complete enabled set prevents the manual
-// path from silently reusing the account default mapping.
-func (s *Store) loadHybridProbeMappings(ctx context.Context, accountID, providerCode string) ([]accountprobe.ModelMapping, error) {
-	q := fmt.Sprintf(`
-    SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family
-    FROM %s
-    WHERE account_id = ? AND provider_code = ? AND enabled = 1
-    ORDER BY updated_at DESC, source_model ASC, source_endpoint_family ASC
-  `, s.table("account_model_mappings"))
-	rows, err := s.db.QueryContext(ctx, s.bind(q), accountID, providerCode)
+// probeConnection 是资源账户探针连接面的窄投影。
+type probeConnection struct {
+	id         string
+	presetCode string
+	baseURL    string
+}
+
+// loadProbeConnection 解析资源账户的探针连接：health_check_connection_id 指向
+// 的连接优先，否则 enabled 连接按 id 升序首个（多连接账户的确定性取法；与
+// jobs direct input reader 同一契约）。无 enabled 连接返回 (nil, nil)——探针
+// 视图的 BaseURL/preset 为空，请求构造层 fail closed。
+func (s *Store) loadProbeConnection(ctx context.Context, accountID string) (*probeConnection, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, nil
+	}
+	var healthCheckConnectionID sql.NullString
+	if err := s.db.QueryRowContext(ctx, s.bind(
+		`SELECT health_check_connection_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&healthCheckConnectionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取账户健康检查连接失败: %w", err)
+	}
+	query := fmt.Sprintf(`SELECT id, connection_preset_code, base_url FROM %s
+    WHERE account_id = ? AND enabled = 1
+    ORDER BY (id = ?) DESC, id ASC
+    LIMIT 1`, s.table("account_connections"))
+	var conn probeConnection
+	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID, healthCheckConnectionID.String).Scan(&conn.id, &conn.presetCode, &conn.baseURL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读取探针连接失败: %w", err)
+	}
+	return &conn, nil
+}
+
+// loadConnectionModes 读取连接声明的 endpoint modes（account_endpoint_modes，
+// 设计 §2.1：连接面能力正规化存储，凭据 JSON 不再承载 supported_endpoint_modes）。
+func (s *Store) loadConnectionModes(ctx context.Context, connectionID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, s.bind(
+		`SELECT endpoint_mode FROM `+s.table("account_endpoint_modes")+` WHERE connection_id = ? ORDER BY endpoint_mode ASC`), connectionID)
 	if err != nil {
-		return nil, fmt.Errorf("读取 hybrid 账户模型映射失败: %w", err)
+		return nil, fmt.Errorf("读取连接 endpoint modes 失败: %w", err)
 	}
 	defer rows.Close()
-	mappings := make([]accountprobe.ModelMapping, 0)
+	var modes []string
 	for rows.Next() {
-		var mapping accountprobe.ModelMapping
-		if err := rows.Scan(&mapping.SourceModel, &mapping.SourceEndpointFamily, &mapping.UpstreamModel, &mapping.UpstreamEndpointFamily); err != nil {
-			return nil, fmt.Errorf("解码 hybrid 账户模型映射失败: %w", err)
+		var mode sql.NullString
+		if err := rows.Scan(&mode); err != nil {
+			return nil, err
 		}
-		mappings = append(mappings, mapping)
+		if text := strings.TrimSpace(mode.String); text != "" {
+			modes = append(modes, text)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历 hybrid 账户模型映射失败: %w", err)
-	}
-	return mappings, nil
+	return modes, rows.Err()
 }
 
 func mapField(credentials map[string]any, key string) map[string]any {
@@ -703,30 +768,33 @@ func mapField(credentials map[string]any, key string) map[string]any {
 	return nil
 }
 
-// resolveGroupAccess 等价 resolveGroupUsageAccessMetadata（owner + authorized 两分支）。
-func (s *Store) resolveGroupAccess(ctx context.Context, groupID, systemAccountID string) (string, string, bool, error) {
+// resolveGroupAccess 等价 resolveGroupUsageAccessMetadata（owner + authorized
+// 两分支）。供应商解耦后 groups 不再绑定 provider（路由拓扑归路由策略），
+// 分组访问门禁只校验归属 + enabled；账户与分组的成员关系由调用方
+// group_accounts 绑定查询承担。
+func (s *Store) resolveGroupAccess(ctx context.Context, groupID, systemAccountID string) (string, bool, error) {
 	query := fmt.Sprintf(`
-    SELECT system_account_id, provider_code, enabled
+    SELECT system_account_id, enabled
     FROM %s WHERE id = ? LIMIT 1
   `, s.table("groups"))
-	var owner, providerCode sql.NullString
+	var owner sql.NullString
 	var enabled any
-	if err := s.db.QueryRowContext(ctx, s.bind(query), groupID).Scan(&owner, &providerCode, &enabled); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(query), groupID).Scan(&owner, &enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", "", false, nil
+			return "", false, nil
 		}
-		return "", "", false, err
+		return "", false, err
 	}
-	if owner.String == "" || providerCode.String == "" || !truthy(enabled) {
-		return "", "", false, nil
+	if owner.String == "" || !truthy(enabled) {
+		return "", false, nil
 	}
 	if owner.String == systemAccountID {
-		return owner.String, providerCode.String, true, nil
+		return owner.String, true, nil
 	}
 	// 授权分组：active group authorization + 本地设置未被停用。
 	authOwner, ok, err := s.activeGroupAuthorizationOwner(ctx, groupID, systemAccountID)
 	if err != nil || !ok {
-		return "", "", false, err
+		return "", false, err
 	}
 	var localEnabled any
 	localQuery := fmt.Sprintf(`
@@ -736,9 +804,9 @@ func (s *Store) resolveGroupAccess(ctx context.Context, groupID, systemAccountID
   `, s.table("group_authorization_settings"))
 	row := s.db.QueryRowContext(ctx, s.bind(localQuery), authOwner.authorizationID, systemAccountID, groupID)
 	if err := row.Scan(&localEnabled); err == nil && !truthy(localEnabled) {
-		return "", "", false, nil
+		return "", false, nil
 	}
-	return owner.String, providerCode.String, true, nil
+	return owner.String, true, nil
 }
 
 type authorizationRef struct {
@@ -803,7 +871,7 @@ func (s *Store) HasAPIKeyEntry(ctx context.Context, candidate *accountquality.Op
 // LoadAccountForGroupFull 按账户 ID 重载候选凭据（HasAPIKeyEntry 使用）。
 func (s *Store) LoadAccountForGroupFull(ctx context.Context, accountID string) (*CandidateAccount, error) {
 	query := fmt.Sprintf(`
-    SELECT a.id, a.name, a.type, a.status, a.provider_code, a.protocol_code, a.protocol_version,
+    SELECT a.id, a.name, a.type, a.status, a.vendor_code, a.protocol_code, a.protocol_version,
       a.config_revision, a.dispatch_revision, a.credentials_encrypted, a.system_account_id
     FROM %s a
     WHERE a.id = ? AND a.deleted_at IS NULL
@@ -811,12 +879,12 @@ func (s *Store) LoadAccountForGroupFull(ctx context.Context, accountID string) (
   `, s.table("accounts"))
 	var (
 		id, name, accountType, status           sql.NullString
-		provider, protocolCode, protocolVersion sql.NullString
+		vendor, protocolCode, protocolVersion   sql.NullString
 		credentials, systemID                   sql.NullString
 		configRevision, dispatchRevision        sql.NullInt64
 	)
 	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID).Scan(&id, &name, &accountType, &status,
-		&provider, &protocolCode, &protocolVersion,
+		&vendor, &protocolCode, &protocolVersion,
 		&configRevision, &dispatchRevision, &credentials, &systemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -847,7 +915,7 @@ func (s *Store) LoadAccountForGroupFull(ctx context.Context, accountID string) (
 			QuotaRecoveryPolicy: mapField(credentialsMap, "quota_recovery_policy"),
 		},
 		AccountOwnerSystemAccountID: systemID.String,
-		ProviderCode:                provider.String,
+		ProviderCode:                vendor.String,
 		ProtocolVersion:             protocolVersion.String,
 		Credentials:                 credentialsMap,
 		APIKeyEntries:               entries,
@@ -892,11 +960,11 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		SupportedModels:           account.SupportedModels,
 		ModelMappings:             candidate.ModelMappings,
-		BaseURL:                   textCredential(candidate.Credentials, "base_url"),
+		BaseURL:                   candidate.BaseURL,
 		Credentials:               candidate.Credentials,
 		SelectedAPIKey:            candidate.SelectedAPIKey,
 		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
-		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.Credentials),
+		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.ConnectionModes),
 		ProxyURL:                  candidate.ProxyURL,
 	}
 	entries := make([]accountprobe.KeyEntry, 0, len(candidate.APIKeyEntries))
@@ -931,11 +999,11 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		SupportedModels:           account.SupportedModels,
 		ModelMappings:             candidate.ModelMappings,
-		BaseURL:                   textCredential(candidate.Credentials, "base_url"),
+		BaseURL:                   candidate.BaseURL,
 		Credentials:               candidate.Credentials,
 		SelectedAPIKey:            candidate.SelectedAPIKey,
 		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
-		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.Credentials),
+		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.ConnectionModes),
 		ProxyURL:                  candidate.ProxyURL,
 		APIKeyEntries:             candidateKeyEntries(candidate),
 	}
@@ -1027,21 +1095,21 @@ func (s *Store) LoadAccountMetadataByIds(ctx context.Context, ids []string) (map
 			placeholders[index] = "?"
 			args[index] = id
 		}
-		query := "SELECT id, system_account_id, provider_code FROM " + s.table("accounts") +
+		query := "SELECT id, system_account_id, COALESCE(vendor_code, '') FROM " + s.table("accounts") +
 			" WHERE id IN (" + strings.Join(placeholders, ", ") + ") AND deleted_at IS NULL"
 		rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var id, systemID, providerCode sql.NullString
-			if err := rows.Scan(&id, &systemID, &providerCode); err != nil {
+			var id, systemID, vendorCode sql.NullString
+			if err := rows.Scan(&id, &systemID, &vendorCode); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			output[id.String] = accountquality.AccountMetadata{
 				SystemAccountID: systemID.String,
-				ProviderCode:    providerCode.String,
+				ProviderCode:    vendorCode.String,
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -1064,9 +1132,10 @@ func textCredential(credentials map[string]any, key string) string {
 }
 
 // NormalizedEndpointModes 等价 normalizeGatewayEndpointModesForRuntime 的窄投影：
-// credentials.supported_endpoint_modes 数组有效值过滤，空/无效回落协议默认
-// （默认分支按探针视图的协议/类型；protocolCode 传候选凭据来源账户的协议）。
-func NormalizedEndpointModes(protocolCode, accountType string, credentials map[string]any) map[accountprobe.EndpointMode]bool {
+// 连接声明的 endpoint modes（account_endpoint_modes，设计 §2.1）有效值过滤，
+// 空/无效回落协议默认（默认分支按探针视图的协议/类型；protocolCode 传候选凭据
+// 来源账户的协议）。旧 credentials.supported_endpoint_modes 输入随凭据契约删除。
+func NormalizedEndpointModes(protocolCode, accountType string, connectionModes []string) map[accountprobe.EndpointMode]bool {
 	modes := map[accountprobe.EndpointMode]bool{}
 	addDefaults := func() {
 		switch {
@@ -1088,16 +1157,7 @@ func NormalizedEndpointModes(protocolCode, accountType string, credentials map[s
 			modes[accountprobe.ModeResponsesSSE] = true
 		}
 	}
-	list, ok := credentials["supported_endpoint_modes"].([]any)
-	if !ok {
-		addDefaults()
-		return modes
-	}
-	for _, item := range list {
-		text, isText := item.(string)
-		if !isText {
-			continue
-		}
+	for _, text := range connectionModes {
 		switch accountprobe.EndpointMode(text) {
 		case accountprobe.ModeChatJSON, accountprobe.ModeChatSSE,
 			accountprobe.ModeResponsesJSON, accountprobe.ModeResponsesSSE,

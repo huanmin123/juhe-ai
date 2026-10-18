@@ -72,7 +72,7 @@ func (f *fakeRuntimeCache) ResolveCachedProviderModelRouteAsync(_ context.Contex
 		return ProviderModelRouteResolution{}, f.routeErr
 	}
 	if f.providerRoute == nil {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 	return f.providerRoute(input)
 }
@@ -185,7 +185,7 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 		return GroupBindingRow{
 			ID: id, APIKeyID: "key1", SystemAccountID: "owner1",
 			GroupID: groupID, Priority: priority, Status: RowStatusActive,
-			ProviderCode: providerCode, GroupEnabled: 1,
+			GroupEnabled: 1,
 		}
 	}
 	apiKey := func(bindings ...GroupBindingRow) *APIKeyRow {
@@ -197,7 +197,7 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 		}
 	}
 	groupAccess := func(providerCode string) GroupUsageAccessMetadata {
-		return GroupUsageAccessMetadata{ProviderCode: providerCode, GroupAccessType: GroupAccessTypeOwner}
+		return GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	}
 
 	tests := []struct {
@@ -217,8 +217,6 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 		wantMessage          string
 		wantGroupID          string
 		wantRouteSource      NormalGatewayModelRouteSource
-		wantMatchedCode      string
-		wantMatchedCodes     []string
 		wantAccounts         []string
 		wantSelectedBindings []string
 	}{
@@ -233,7 +231,7 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			name: "empty active bindings skip",
 			apiKey: &APIKeyRow{
 				RouteStrategyMode: RouteStrategyModeNormal,
-				GroupBindings:     []GroupBindingRow{{ID: "b1", Status: RowStatusDisabled, ProviderCode: "openai"}},
+				GroupBindings:     []GroupBindingRow{{ID: "b1", Status: RowStatusDisabled}},
 			},
 			request:     RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
 			wantOutcome: NormalRouteOutcomeSkipped,
@@ -257,7 +255,6 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			wantOutcome:          NormalRouteOutcomeSelected,
 			wantGroupID:          "grp_a",
 			wantRouteSource:      RouteSourceCatalogProvider,
-			wantMatchedCode:      "",
 			wantAccounts:         []string{"acc1"},
 			wantSelectedBindings: []string{"b1"},
 		},
@@ -276,12 +273,10 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:          NormalRouteOutcomeSelected,
 			wantGroupID:          "grp_a",
 			wantRouteSource:      RouteSourceCatalogProvider,
-			wantMatchedCode:      "",
 			wantAccounts:         []string{"acc1"},
 			wantSelectedBindings: []string{"b1"},
 		},
@@ -308,12 +303,10 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMissing, ModelKey: "my-model",
-				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:          NormalRouteOutcomeSelected,
 			wantGroupID:          "grp_a",
 			wantRouteSource:      RouteSourceAccountMapping,
-			wantMatchedCode:      "",
 			wantAccounts:         []string{"acc1"},
 			wantSelectedBindings: []string{"b1"},
 		},
@@ -323,14 +316,13 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				binding("b1", "grp_a", "openai", 1),
 				binding("b2", "grp_b", "anthropic", 2),
 			),
-			request:          RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
-			modelsRoute:      ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o"},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   404,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotFound,
-			wantMessage:      "请求模型不存在或不可用：gpt-4o",
-			wantMatchedCodes: nil,
+			request:        RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "gpt-4o"},
+			modelsRoute:    ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o"},
+			wantOutcome:    NormalRouteOutcomeFailed,
+			wantStatusCode: 404,
+			wantType:       "invalid_request_error",
+			wantCode:       FailCodeModelNotFound,
+			wantMessage:    "请求模型不存在或不可用：gpt-4o",
 		},
 		{
 			name: "models directory present but no group candidate fails 503",
@@ -348,14 +340,12 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   503,
-			wantType:         "service_unavailable",
-			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
-			wantMatchedCodes: nil,
+			wantOutcome:    NormalRouteOutcomeFailed,
+			wantStatusCode: 503,
+			wantType:       "service_unavailable",
+			wantCode:       FailCodeModelTargetGroupUnavailable,
+			wantMessage:    "请求模型当前没有可用账号：gpt-4o",
 		},
 		{
 			// §6.1：目录可见但分组全部不可访问时，分类仍只取决于目录（503），
@@ -372,14 +362,12 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   503,
-			wantType:         "service_unavailable",
-			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
-			wantMatchedCodes: nil,
+			wantOutcome:    NormalRouteOutcomeFailed,
+			wantStatusCode: 503,
+			wantType:       "service_unavailable",
+			wantCode:       FailCodeModelTargetGroupUnavailable,
+			wantMessage:    "请求模型当前没有可用账号：gpt-4o",
 		},
 		{
 			name: "directory absent with no accessible groups fails model_not_found",
@@ -394,14 +382,12 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-x",
-				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   404,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotFound,
-			wantMessage:      "请求模型不存在或不可用：gpt-x",
-			wantMatchedCodes: nil,
+			wantOutcome:    NormalRouteOutcomeFailed,
+			wantStatusCode: 404,
+			wantType:       "invalid_request_error",
+			wantCode:       FailCodeModelNotFound,
+			wantMessage:    "请求模型不存在或不可用：gpt-x",
 		},
 		{
 			name: "matched directory but no usable account fails model_target_group_unavailable",
@@ -419,14 +405,12 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			capability: failingCapabilityFilter{reason: "endpoint_mode_mismatch"},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:      NormalRouteOutcomeFailed,
-			wantStatusCode:   503,
-			wantType:         "service_unavailable",
-			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
-			wantMatchedCodes: nil,
+			wantOutcome:    NormalRouteOutcomeFailed,
+			wantStatusCode: 503,
+			wantType:       "service_unavailable",
+			wantCode:       FailCodeModelTargetGroupUnavailable,
+			wantMessage:    "请求模型当前没有可用账号：gpt-4o",
 		},
 		{
 			name: "capability probe filtering is applied before the model filter",
@@ -444,12 +428,10 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 			capability: &scriptedCapabilityFilter{blocked: map[string]bool{"acc1": true}},
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
 			wantOutcome:          NormalRouteOutcomeSelected,
 			wantGroupID:          "grp_b",
 			wantRouteSource:      RouteSourceCatalogProvider,
-			wantMatchedCode:      "",
 			wantAccounts:         []string{"acc2"},
 			wantSelectedBindings: []string{"b2"},
 		},
@@ -487,9 +469,6 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				if result.RouteSource != tt.wantRouteSource {
 					t.Fatalf("route source = %q, want %q", result.RouteSource, tt.wantRouteSource)
 				}
-				if result.MatchedProviderCode != tt.wantMatchedCode {
-					t.Fatalf("matched provider code = %q, want %q", result.MatchedProviderCode, tt.wantMatchedCode)
-				}
 				if got := accountIDs(result.Accounts); !equalStrings(got, tt.wantAccounts) {
 					t.Fatalf("accounts = %v, want %v", got, tt.wantAccounts)
 				}
@@ -520,9 +499,6 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				if result.Message != tt.wantMessage {
 					t.Fatalf("message = %q, want %q", result.Message, tt.wantMessage)
 				}
-				if !equalStrings(result.MatchedProviderCodes, tt.wantMatchedCodes) {
-					t.Fatalf("matched provider codes = %v, want %v", result.MatchedProviderCodes, tt.wantMatchedCodes)
-				}
 			}
 		})
 	}
@@ -543,14 +519,13 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 		SupportedModels: []string{"gpt-4o"},
 	}
 	directAccount := UpstreamAccount{ID: "acc2", ProviderCode: "anthropic", SupportedModels: []string{"other"}}
-	cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: GroupAccessTypeOwner}
+	cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cache.accounts["grp_a"] = []UpstreamAccount{mappingAccount}
-	cache.groupAccess["grp_b"] = GroupUsageAccessMetadata{ProviderCode: "anthropic", GroupAccessType: GroupAccessTypeOwner}
+	cache.groupAccess["grp_b"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cache.accounts["grp_b"] = []UpstreamAccount{directAccount}
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
 		return ProviderModelRouteResolution{
 			Outcome: ProviderModelRouteMatched, ModelKey: "my-model",
-			ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
 		}, nil
 	}
 
@@ -559,8 +534,8 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 		ID: "key1", SystemAccountID: "owner1",
 		RouteStrategyMode: RouteStrategyModeNormal,
 		GroupBindings: []GroupBindingRow{
-			{ID: "b1", GroupID: "grp_a", ProviderCode: "openai", Status: RowStatusActive, GroupEnabled: 1},
-			{ID: "b2", GroupID: "grp_b", ProviderCode: "anthropic", Status: RowStatusActive, GroupEnabled: 1},
+			{ID: "b1", GroupID: "grp_a", Status: RowStatusActive, GroupEnabled: 1},
+			{ID: "b2", GroupID: "grp_b", Status: RowStatusActive, GroupEnabled: 1},
 		},
 	}
 
@@ -580,10 +555,6 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 	if result.GroupID != "grp_a" {
 		t.Fatalf("group id = %q, want grp_a", result.GroupID)
 	}
-	// MatchedProviderCode 过渡字段：供应商解耦后恒空串。
-	if result.MatchedProviderCode != "" {
-		t.Fatalf("matched provider code = %q, want empty (供应商解耦后恒空)", result.MatchedProviderCode)
-	}
 	if got := accountIDs(result.Accounts); !equalStrings(got, []string{"acc1"}) {
 		t.Fatalf("accounts = %v, want [acc1]", got)
 	}
@@ -602,8 +573,8 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 // 目录结果驱动 404/503 终态二分（设计 §6.1）。
 func TestResolveNormalGatewayModelRouteConsultsModelsDirectoryOnEmptyPool(t *testing.T) {
 	bindings := []GroupBindingRow{
-		{ID: "b1", GroupID: "grp_a", ProviderCode: "", Status: RowStatusActive, GroupEnabled: 1},
-		{ID: "b2", GroupID: "grp_b", ProviderCode: "", Status: RowStatusActive, GroupEnabled: 1},
+		{ID: "b1", GroupID: "grp_a", Status: RowStatusActive, GroupEnabled: 1},
+		{ID: "b2", GroupID: "grp_b", Status: RowStatusActive, GroupEnabled: 1},
 	}
 	apiKey := &APIKeyRow{
 		ID: "key1", SystemAccountID: "owner1",
@@ -649,9 +620,6 @@ func TestResolveNormalGatewayModelRouteConsultsModelsDirectoryOnEmptyPool(t *tes
 			}
 			if cache.callsRoute[0].Model != "gpt-x" || !cache.callsRoute[0].IncludeUnpriced {
 				t.Fatalf("directory input = %+v, want model gpt-x + includeUnpriced", cache.callsRoute[0])
-			}
-			if len(result.MatchedProviderCodes) != 0 {
-				t.Fatalf("matched provider codes = %v, want empty (过渡恒空)", result.MatchedProviderCodes)
 			}
 		})
 	}
@@ -840,14 +808,14 @@ func TestGatewayModelFilterFailureMessage(t *testing.T) {
 
 func TestSelectGatewayModelTargetGroup(t *testing.T) {
 	baseBindings := []GroupBindingRow{
-		{ID: "b1", GroupID: "grp_a", ProviderCode: "openai", Status: RowStatusActive, GroupEnabled: 1},
-		{ID: "b2", GroupID: "grp_b", ProviderCode: "anthropic", Status: RowStatusActive, GroupEnabled: 1},
+		{ID: "b1", GroupID: "grp_a", Status: RowStatusActive, GroupEnabled: 1},
+		{ID: "b2", GroupID: "grp_b", Status: RowStatusActive, GroupEnabled: 1},
 	}
 	apiKey := &APIKeyRow{ID: "key1", SystemAccountID: "owner1"}
 
 	t.Run("first viable candidate wins without priority callback", func(t *testing.T) {
 		cache := newFakeRuntimeCache()
-		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 		cache.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"gpt-4o"}}}
 		selector := &TargetGroupSelector{RuntimeCache: cache, CapabilityFilter: PassthroughCapabilityFilter{}}
 
@@ -867,7 +835,7 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 
 	t.Run("duplicate group bindings are visited once", func(t *testing.T) {
 		cache := newFakeRuntimeCache()
-		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 		cache.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"gpt-4o"}}}
 		selector := &TargetGroupSelector{RuntimeCache: cache, CapabilityFilter: PassthroughCapabilityFilter{}}
 
@@ -876,7 +844,7 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 			APIKeyRecord: apiKey,
 			Bindings: []GroupBindingRow{
 				baseBindings[0],
-				{ID: "b1-dup", GroupID: "grp_a", ProviderCode: "openai", Status: RowStatusActive, GroupEnabled: 1},
+				{ID: "b1-dup", GroupID: "grp_a", Status: RowStatusActive, GroupEnabled: 1},
 				baseBindings[1],
 			},
 			TargetModel:       "gpt-4o",
@@ -892,9 +860,9 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 
 	t.Run("priority callback keeps the strictly greatest candidate", func(t *testing.T) {
 		cache := newFakeRuntimeCache()
-		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 		cache.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"gpt-4o"}}}
-		cache.groupAccess["grp_b"] = GroupUsageAccessMetadata{ProviderCode: "anthropic"}
+		cache.groupAccess["grp_b"] = GroupUsageAccessMetadata{}
 		cache.accounts["grp_b"] = []UpstreamAccount{{ID: "acc2", SupportedModels: []string{"gpt-4o"}}}
 		selector := &TargetGroupSelector{RuntimeCache: cache, CapabilityFilter: PassthroughCapabilityFilter{}}
 
@@ -931,16 +899,16 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 			{
 				name: "empty cached accounts",
 				setup: func(f *fakeRuntimeCache) {
-					f.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+					f.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 					f.accounts["grp_a"] = nil
-					f.groupAccess["grp_b"] = GroupUsageAccessMetadata{ProviderCode: "anthropic"}
+					f.groupAccess["grp_b"] = GroupUsageAccessMetadata{}
 					f.accounts["grp_b"] = nil
 				},
 			},
 			{
 				name: "capability probe rejects everything",
 				setup: func(f *fakeRuntimeCache) {
-					f.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+					f.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 					f.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"gpt-4o"}}}
 				},
 				filter: failingCapabilityFilter{reason: "endpoint_mode_mismatch"},
@@ -948,7 +916,7 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 			{
 				name: "model filter rejects everything",
 				setup: func(f *fakeRuntimeCache) {
-					f.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+					f.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 					f.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"other"}}}
 				},
 			},
@@ -980,7 +948,7 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 
 	t.Run("acceptCandidate gate and cache errors propagate", func(t *testing.T) {
 		cache := newFakeRuntimeCache()
-		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{ProviderCode: "openai"}
+		cache.groupAccess["grp_a"] = GroupUsageAccessMetadata{}
 		cache.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"gpt-4o"}}}
 		selector := &TargetGroupSelector{RuntimeCache: cache, CapabilityFilter: PassthroughCapabilityFilter{}}
 		selection, err := selector.SelectGatewayModelTargetGroup(context.Background(), ModelTargetGroupInput{
@@ -1018,7 +986,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 		return GroupBindingRow{
 			ID: id, APIKeyID: "key1", GroupID: groupID,
 			Priority: priority, Weight: weight, Status: RowStatusActive,
-			ProviderCode: "openai", GroupEnabled: 1,
+			GroupEnabled: 1,
 		}
 	}
 

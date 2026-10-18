@@ -205,7 +205,7 @@ func TestW1ScenarioResponsesEndpoint(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	fixture := newChainFixture(t)
 	// 组装链之前把 catalog 行的协议扩到 responses（缓存冷启动生效）。
-	if _, err := fixture.db.Exec(`UPDATE provider_model_catalog SET supported_api_protocols_json = '["chat_completions","responses"]' WHERE model = 'gpt-test'`); err != nil {
+	if _, err := fixture.db.Exec(`UPDATE models SET supported_endpoint_modes_json = '["chat_json","chat_sse","responses_json","responses_sse"]' WHERE public_model = 'gpt-test'`); err != nil {
 		t.Fatalf("update catalog: %v", err)
 	}
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,

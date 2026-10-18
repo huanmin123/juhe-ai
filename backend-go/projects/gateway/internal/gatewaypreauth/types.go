@@ -180,7 +180,6 @@ type OpenAIGatewayRequestIdentity struct {
 // context fields derived from the group access metadata.
 func GroupUsageMetadata(groupAccess gatewayruntimecache.GroupUsageAccessMetadata) GroupUsageMetadataFields {
 	return GroupUsageMetadataFields{
-		ProviderCode:                   groupAccess.ProviderCode,
 		GroupOwnerSystemAccountID:      groupAccess.GroupOwnerSystemAccountID,
 		GroupAccessType:                groupAccess.GroupAccessType,
 		GroupAuthorizationID:           derefString(groupAccess.GroupAuthorizationID),
@@ -191,6 +190,9 @@ func GroupUsageMetadata(groupAccess gatewayruntimecache.GroupUsageAccessMetadata
 
 // GroupUsageMetadataFields mirrors the returned pick.
 type GroupUsageMetadataFields struct {
+	// ProviderCode 过渡字段：组访问元数据不再投影 groups.provider_code（供应
+	// 商与上游协议面重构设计 §8），值恒为空串；组合根（chain_compose）仍在
+	// 读该位，字段待组合根切片一并移除。
 	ProviderCode                   string
 	GroupOwnerSystemAccountID      string
 	GroupAccessType                string

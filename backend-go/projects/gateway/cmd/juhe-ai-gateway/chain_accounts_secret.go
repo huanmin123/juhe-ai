@@ -102,7 +102,7 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 
 	resourceAccountID := row.resourceAccountID()
 	apiKeyPoolEnabled := chainAccountAPIKeyPoolIsolationEnabled(
-		row.resourceProviderCode(), row.resourceProtocolCode(), row.resourceProtocolVersion(), resourceType, credentials)
+		row.resourceVendorCode(), row.resourceProtocolCode(), row.resourceProtocolVersion(), resourceType, credentials)
 	resourceProxyProfileID := row.resourceProxyProfileID()
 	proxyProfile := chainResolveProxyURL(resourceProxyProfileID, options.proxyProfiles)
 
@@ -136,16 +136,18 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	providerCode := row.resourceProviderCode()
 	// 连接身份（供应商与上游协议面重构设计 §1.1/§2.1）：vendor/driver 按账户行
 	// 新列投影（授权实例经来源账户 resource_* 别名）；providerCode 过渡恒空。
+	// 行为键控（池隔离、端点模式归一、客户端兼容默认）统一按 vendor 维度
+	// （§8：账户连接身份=vendor_code），providerCode 不再作为行为键。
 	vendorCode := row.resourceVendorCode()
 	connectionDriverCode := row.resourceConnectionDriverCode()
 	protocolCode := row.resourceProtocolCode()
 	protocolVersion := row.resourceProtocolVersion()
-	clientCompatibility := chainResourceClientCompatibility(row, providerCode, protocolCode, protocolVersion)
+	clientCompatibility := chainResourceClientCompatibility(row, vendorCode, protocolCode, protocolVersion)
 	providerProtocolProfileID := row.ProviderProtocolProfileID.String
 	if row.ResourceProviderProtocolProfileID.Valid && row.ResourceProviderProtocolProfileID.String != "" {
 		providerProtocolProfileID = row.ResourceProviderProtocolProfileID.String
 	}
-	supportedEndpointModes := chainNormalizeGatewayEndpointModesForRuntime(anyToAnyList(credentials["supported_endpoint_modes"]), providerCode, resourceType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion)
+	supportedEndpointModes := chainNormalizeGatewayEndpointModesForRuntime(anyToAnyList(credentials["supported_endpoint_modes"]), vendorCode, resourceType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion)
 
 	secret := &gatewayruntimecache.OpenAIAccountSecret{
 		ID:                               row.ID,
@@ -297,12 +299,13 @@ func chainFingerprintAPIKey(secret, key string) string {
 }
 
 // chainAccountAPIKeyPoolIsolationEnabled mirrors
-// isAccountApiKeyPoolIsolationEnabled.
-func chainAccountAPIKeyPoolIsolationEnabled(providerCode, protocolCode, protocolVersion, accountType string, credentials map[string]any) bool {
+// isAccountApiKeyPoolIsolationEnabled. vendorCode 承载账户连接身份（§8：行为
+// 键控按 vendor_code，generic 账户 vendor 为空串不命中名单）。
+func chainAccountAPIKeyPoolIsolationEnabled(vendorCode, protocolCode, protocolVersion, accountType string, credentials map[string]any) bool {
 	if accountType != "api_key" {
 		return false
 	}
-	if !chainAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion) {
+	if !chainAccountAPIKeyPoolProviderSupported(vendorCode, protocolCode, protocolVersion) {
 		return false
 	}
 	return len(chainAccountAPIKeyEntries("", credentials)) > 1
@@ -310,8 +313,8 @@ func chainAccountAPIKeyPoolIsolationEnabled(providerCode, protocolCode, protocol
 
 // chainAccountAPIKeyPoolProviderSupported mirrors
 // isAccountApiKeyPoolProviderSupported.
-func chainAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion string) bool {
-	code := chainNormalizeProviderToken(providerCode)
+func chainAccountAPIKeyPoolProviderSupported(vendorCode, protocolCode, protocolVersion string) bool {
+	code := chainNormalizeProviderToken(vendorCode)
 	switch code {
 	case "openai", "gpt", "xai", "deepseek", "glm", "gemini", "hybrid", "anthropic":
 		return true
@@ -467,9 +470,9 @@ var (
 
 // chainNormalizeGatewayEndpointModesForRuntime mirrors
 // normalizeGatewayEndpointModesForRuntime (openai / anthropic / gemini /
-// hybrid profile branches).
-func chainNormalizeGatewayEndpointModesForRuntime(value []any, providerCode, accountType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion string) []string {
-	code := chainNormalizeProviderToken(providerCode)
+// hybrid profile branches)。vendorCode 承载账户连接身份（§8）。
+func chainNormalizeGatewayEndpointModesForRuntime(value []any, vendorCode, accountType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion string) []string {
+	code := chainNormalizeProviderToken(vendorCode)
 	if code == "hybrid" {
 		return chainFilterEndpointModes(value, chainHybridEndpointModes)
 	}
@@ -483,14 +486,14 @@ func chainNormalizeGatewayEndpointModesForRuntime(value []any, providerCode, acc
 	if chainIsGeminiProtocolProfile(protocolCode, protocolVersion) {
 		return chainFilterEndpointModes(value, chainGeminiDefaultModes)
 	}
-	return chainNormalizeOpenAIEndpointModesForRuntime(value, providerCode, accountType, clientCompatibility)
+	return chainNormalizeOpenAIEndpointModesForRuntime(value, vendorCode, accountType, clientCompatibility)
 }
 
 // chainNormalizeOpenAIEndpointModesForRuntime mirrors
 // normalizeOpenAIEndpointModesForRuntime + defaultOpenAIEndpointModes. The
 // fallback defaults stay the four chat/responses modes (images_json is
 // opt-in); an explicit credential list passes through the widened filter.
-func chainNormalizeOpenAIEndpointModesForRuntime(value []any, providerCode, accountType, clientCompatibility string) []string {
+func chainNormalizeOpenAIEndpointModesForRuntime(value []any, vendorCode, accountType, clientCompatibility string) []string {
 	filtered := chainFilterEndpointModes(value, chainOpenAIEndpointModeValues)
 	if len(filtered) > 0 {
 		return filtered
@@ -498,7 +501,7 @@ func chainNormalizeOpenAIEndpointModesForRuntime(value []any, providerCode, acco
 	if accountType == "oauth" {
 		return append([]string{}, chainOpenAIResponsesModes...)
 	}
-	code := chainNormalizeProviderToken(providerCode)
+	code := chainNormalizeProviderToken(vendorCode)
 	switch code {
 	case "gpt", "deepseek":
 		return append([]string{}, chainOpenAIDefaultEndpointModes...)
@@ -543,7 +546,7 @@ func chainIsGeminiProtocolProfile(protocolCode, protocolVersion string) bool {
 // chainResourceClientCompatibility mirrors openAIAccountResourceClientCompatibility:
 // the resource row wins, the normalized projection keeps 'openai_standard'
 // as the compatibility default.
-func chainResourceClientCompatibility(row *chainCandidateRow, providerCode, protocolCode, protocolVersion string) string {
+func chainResourceClientCompatibility(row *chainCandidateRow, vendorCode, protocolCode, protocolVersion string) string {
 	value := ""
 	if row.ResourceClientCompatibility.Valid {
 		value = row.ResourceClientCompatibility.String

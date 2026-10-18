@@ -1506,8 +1506,8 @@ func TestW1XCacheBindingRowOfAndConcurrencyError(t *testing.T) {
 		t.Fatalf("101 权重 = %d, want 1", row.Weight)
 	}
 	row := chainCacheBindingRowOf(gatewayrouting.GroupBindingRow{ID: "b1", APIKeyID: "key", SystemAccountID: "sys",
-		GroupID: "grp", Priority: 3, Weight: w1xInt64Ptr(50), Status: "active", ProviderCode: "openai", GroupEnabled: 1})
-	if row.Weight != 50 || row.Priority != 3 || row.GroupEnabled != 1 || row.ProviderCode != "openai" {
+		GroupID: "grp", Priority: 3, Weight: w1xInt64Ptr(50), Status: "active", GroupEnabled: 1})
+	if row.Weight != 50 || row.Priority != 3 || row.GroupEnabled != 1 {
 		t.Fatalf("缓存行投影错误: %+v", row)
 	}
 

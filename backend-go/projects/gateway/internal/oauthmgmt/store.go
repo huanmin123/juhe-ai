@@ -732,6 +732,17 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 	if row.configRevision != input.ExpectedConfigRevision {
 		return nil, &RevisionConflictError{Message: "账户配置版本冲突"}
 	}
+	// 覆盖字段值域落库校验（C3）：service_tier_override / reasoning_effort_override
+	// 与账户写入面凭据归一化同规则（token 形状 + 协议族值域，单一真源
+	// shared/platform requestoverride，见 requestoverride_validation.go）。轮换
+	// （refreshToken）与重授权（reauthorizeFromCode / reauthorizeFromRefreshToken）
+	// 共用本入口；非法值在事务内先拒绝、不写库——否则畸形值落库后会在请求时被
+	// 运行时 gatewayoauthcodex.ReadGptAccountRequestOverrides 打成硬失败。存量
+	// 畸形值在下次轮换/重授权保存时同样被拒（覆盖设计 §6.4：非法存量值在下次
+	// 保存时被后端拒绝），故校验先于凭据未变化的 no-op 分支。
+	if err := validateAccountRequestOverrideCredentials(row.providerCode, input.Credentials); err != nil {
+		return nil, err
+	}
 	current := map[string]any{}
 	if err := decryptJSON(s.secret, row.encrypted, &current); err != nil {
 		return nil, &CredentialsUnavailableError{}

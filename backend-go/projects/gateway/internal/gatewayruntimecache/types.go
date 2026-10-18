@@ -151,13 +151,7 @@ type GatewayAPIKeyGroupBindingRow struct {
 	Priority        int    `json:"priority"`
 	Weight          int    `json:"weight"`
 	Status          string `json:"status"`
-	// ProviderCode 过渡字段（2026-10-18 修复批迁移窗口）：groups.provider_code
-	// 列已在 fresh DDL 恢复（DEFAULT 'gpt' shim，存量数据迁移语义不变），
-	// SQL 投影随之恢复（resolveGroupAccess / ResolveGroupUsageAccessMetadata），
-	// /v1/models 账户并集 factProvider 等消费方在迁移窗口内继续按组 provider
-	// 维度装配；运行时迁移完成后由清理命令与消费方一并统一收口。
-	ProviderCode string `json:"provider_code"`
-	GroupEnabled int    `json:"group_enabled"`
+	GroupEnabled    int    `json:"group_enabled"`
 }
 
 // Clone mirrors the per-binding spread clone.
@@ -402,8 +396,9 @@ type GroupSchedulingPolicy = map[string]any
 type GroupUsageAccessMetadata struct {
 	GroupOwnerSystemAccountID string `json:"groupOwnerSystemAccountId"`
 	// ProviderCode 过渡字段：groups.provider_code 已随供应商解耦退役（供应商
-	// 与上游协议面重构设计 §8），分组访问读取不再返回该身份，值恒为空串；
-	// 字段待组合根切片与 audit 消费方一并移除。
+	// 与上游协议面重构设计 §8），分组访问读取不再投影该列，值恒为空串；
+	// 字段待组合根切片与消费方（gatewaycodex 边界投影、/v1/models
+	// factProvider、audit 消费方）一并移除。
 	ProviderCode                   string                 `json:"providerCode"`
 	GroupAccessType                string                 `json:"groupAccessType"`
 	GroupType                      *string                `json:"groupType,omitempty"`
@@ -527,13 +522,10 @@ func CloneResponseInspectionPolicies(policies []ResponseInspectionPolicySummary)
 // 录语义：matched = 请求模型对请求 owner 资源账户可见（builtin/global 全可
 // 见、personal 仅属主可见）且 status='active'，missing = 无任何可见 active 行
 // （终态 404 model_not_found 数据面）。ambiguous 在单表语义下不再产生，常量
-// 仅为兼容保留；ProviderCode/MatchedProviderCodes 是供应商目录时代的载体，
-// models 语义下恒空。
+// 仅为兼容保留。
 type ProviderModelRouteResolution struct {
-	Outcome              ProviderModelRouteOutcome `json:"outcome"`
-	ModelKey             string                    `json:"modelKey"`
-	ProviderCode         string                    `json:"providerCode,omitempty"`
-	MatchedProviderCodes []string                  `json:"matchedProviderCodes"`
+	Outcome  ProviderModelRouteOutcome `json:"outcome"`
+	ModelKey string                    `json:"modelKey"`
 }
 
 // ProviderModelRouteOutcome mirrors the discriminated union outcome strings.

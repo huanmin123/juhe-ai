@@ -29,17 +29,17 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	far := "2999-01-01T00:00:00.000Z"
 
 	// The grantee's own group (owner arm of the union).
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-own', ?, 'Alice 自有组', 'openai', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-own', ?, 'Alice 自有组', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
 	// The authorized group: owned by root, granted to alice, with a
 	// per-grantee settings row disabling it (settings.enabled=0) and
 	// overriding group_type back to personal.
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('grp-auth', ?, 'Auth 授权组', 'anthropic', 1, 1, 'high_concurrency', ?, ?, ?)`, ownerID, storedPolicyJSON(t, map[string]any{"imageLaneMaxConcurrency": 7}), now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('grp-auth', ?, 'Auth 授权组', 1, 1, 'high_concurrency', ?, ?, ?)`, ownerID, storedPolicyJSON(t, map[string]any{"imageLaneMaxConcurrency": 7}), now, now)
 	// An enabled grant with a past expiry: still listed (the status guard is
 	// the only read filter) but cannot bind to an API key.
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-exp', ?, 'Expired 授权组', 'openai', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-exp', ?, 'Expired 授权组', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
 
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, effective_source_team_id, expires_at, limits_json, created_by, created_at, updated_at)
 		VALUES ('authz-1', 'group', 'grp-auth', ?, ?, 'use', 'active', 'team', 'team-1', ?, '{"daily":{"enabled":true,"limit":100}}', ?, ?, ?)`,
@@ -153,7 +153,7 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("authorized edit policy override mismatch: %v", policy)
 	}
 	// A grantee-untouched field falls back to the group column: name.
-	if edit["name"] != "Auth 授权组" || edit["providerCode"] != "anthropic" {
+	if edit["name"] != "Auth 授权组" || edit["providerCode"] != "" {
 		t.Fatalf("authorized edit passthrough mismatch: %v", edit)
 	}
 	// With settings enabled again the bound permissions flip canBindToApiKey.

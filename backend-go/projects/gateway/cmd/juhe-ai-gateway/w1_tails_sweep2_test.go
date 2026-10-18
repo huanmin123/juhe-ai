@@ -755,34 +755,34 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 	ctx := context.Background()
 	options := gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt", IncludeInactive: true}
 
-	t.Run("内置目录表缺失", func(t *testing.T) {
+	t.Run("models 表缺失", func(t *testing.T) {
 		source, err := newChainCatalogSource(w1uOpenPlainSQLite(t, "w1t-cat-bare.sqlite3"), false)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
 		if _, err := source.ListProviderModelCatalog(ctx, options); err == nil {
-			t.Fatal("缺 provider_model_catalog 表必须查询失败")
+			t.Fatal("缺 models 表必须查询失败")
 		}
 	})
 
-	t.Run("自定义目录表缺失", func(t *testing.T) {
+	t.Run("models 表缺失（种子库删表）", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
-		if _, err := db.Exec(`DROP TABLE custom_provider_models`); err != nil {
-			t.Fatalf("删 custom_provider_models: %v", err)
+		if _, err := db.Exec(`DROP TABLE models`); err != nil {
+			t.Fatalf("删 models: %v", err)
 		}
 		source, err := newChainCatalogSource(db, false)
 		if err != nil {
 			t.Fatalf("构造目录源: %v", err)
 		}
 		if _, err := source.ListProviderModelCatalog(ctx, options); err == nil {
-			t.Fatal("缺 custom_provider_models 表必须查询失败")
+			t.Fatal("缺 models 表必须查询失败")
 		}
 	})
 
 	t.Run("内置目录坏数值行解码失败", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
-		if _, err := db.Exec(`INSERT INTO provider_model_catalog (id, provider_code, model, status, catalog_visible, context_window_tokens, source, created_at, updated_at)
-			VALUES ('w1t-cat-poison', 'gpt', 'w1t-m-poison', 'active', 1, 'not-a-number', 'built_in', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, context_window_tokens, source, created_at, updated_at)
+			VALUES ('w1t-cat-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'builtin', 'active', 1, 'not-a-number', 'builtin', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 坏数值目录行: %v", err)
 		}
 		source, err := newChainCatalogSource(db, false)
@@ -796,8 +796,8 @@ func TestW1TCatalogSourceQueryArms(t *testing.T) {
 
 	t.Run("自定义目录坏数值行解码失败", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
-		if _, err := db.Exec(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, mode, context_window_tokens, created_by, created_at, updated_at)
-			VALUES ('w1t-cpm-poison', 'gpt', 'w1t-m-poison', 'global', NULL, 'active', NULL, 'not-a-number', 'w1t', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, context_window_tokens, created_at, updated_at)
+			VALUES ('w1t-cpm-poison', 'gpt', 'w1t-m-poison', 'w1t-m-poison', 'global', NULL, 'active', 'not-a-number', '2026-09-14T00:00:00.000Z', '2026-09-14T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 坏数值自定义行: %v", err)
 		}
 		source, err := newChainCatalogSource(db, false)

@@ -591,17 +591,26 @@ func TestW16GCircuitResolveArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements := []string{
-		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, provider_code,
+		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code,
 			credentials_encrypted, config_revision, dispatch_revision)
-		 VALUES ('w16g-orphan', 'sys-w16g', 'orphan', 'api_key', 'active', 1, 'openai', ?, 1, 2)`,
-		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, provider_code,
+		 VALUES ('w16g-orphan', 'sys-w16g', 'orphan', 'api_key', 'active', 1, 'gpt', 'gpt', ?, 1, 2)`,
+		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code,
 			credentials_encrypted, config_revision, dispatch_revision)
-		 VALUES ('w16g-missing-group', 'sys-w16g2', 'missing-group', 'api_key', 'active', 1, 'openai', ?, 1, 2)`,
-		`INSERT INTO groups (id, system_account_id, provider_code) VALUES ('g-w16g', 'sys-w16g3', 'openai')`,
+		 VALUES ('w16g-missing-group', 'sys-w16g2', 'missing-group', 'api_key', 'active', 1, 'gpt', 'gpt', ?, 1, 2)`,
+		`INSERT INTO groups (id, system_account_id) VALUES ('g-w16g', 'sys-w16g3')`,
 		`INSERT INTO group_accounts (group_id, system_account_id, account_id) VALUES ('g-w16g', 'sys-w16g3', 'w16g-zero-rev')`,
-		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, provider_code,
+		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code,
 			credentials_encrypted, config_revision, dispatch_revision)
-		 VALUES ('w16g-zero-rev', 'sys-w16g3', 'zero-rev', 'api_key', 'active', 1, 'openai', ?, 1, 0)`,
+		 VALUES ('w16g-zero-rev', 'sys-w16g3', 'zero-rev', 'api_key', 'active', 1, 'gpt', 'gpt', ?, 1, 0)`,
+		// 资源账户连接面：解析成功的候选需要健康检查连接（探针 profile 由
+		// preset 派生；资源事实归属见设计 §2.1）。
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+		 VALUES ('model-w16g', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '')`,
+		`INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('w16g-zero-rev', 'model-w16g', '')`,
+		`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		 VALUES ('conn-w16g-zero-rev', 'w16g-zero-rev', 'gpt_openai_v1', 'openai_v1', 'http://127.0.0.1:1', 1, '', '')`,
+		`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-w16g-zero-rev', 'chat_json')`,
+		`UPDATE accounts SET health_check_connection_id = 'conn-w16g-zero-rev' WHERE id = 'w16g-zero-rev'`,
 	}
 	for index, statement := range statements {
 		if index == 0 || index == 1 || index == 4 {

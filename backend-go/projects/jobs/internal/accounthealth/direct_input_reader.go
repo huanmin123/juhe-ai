@@ -438,14 +438,36 @@ func directInputScanCap(limit int) int {
 	return cap
 }
 
+// directInputCandidatesSQL 的供应商解耦读侧契约（设计 §2.1/§8）：
+//   - 身份列 vendor_code 替代 provider_code；profile 由健康检查连接行的
+//     connection_preset_code 经 exactkeyprobe.ConnectionPresetProfileID 派生
+//     （下游 profile_* 取值形状不变）；client_compatibility 列随目标 schema
+//     删除，恒空（codex_responses 兼容画像形态按设计退役）。
+//   - 探针连接面（preset + base_url）来自账户健康检查连接；多连接账户的确定性
+//     取法：health_check_connection_id 指向的连接优先，否则 enabled 连接按
+//     id 升序首个。授权实例的资源事实按来源账户读（实例行不再冗余身份/健康
+//     检查列，health-check 三字段物理为 NULL）。
+//   - provider IN 白名单等价换轴：旧 IN ('gpt','openai','xai','anthropic',
+//     'deepseek','glm','gemini','hybrid') 逐值映射为 J1 可构造探针身份的
+//     preset 值域（旧 openai-compatible→generic_*，hybrid→generic_*；旧 8 值
+//     与 13 个 preset 一一对应），final fail-closed 仍由 exactkeyprobe 的
+//     profile 门禁承担。
+//   - protocol_code/protocol_version 列本批保留，语义不变。
 const directInputCandidatesSQL = `
 SELECT
-  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.client_compatibility, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
+  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.vendor_code,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.oauth_type ELSE source.oauth_type END,
+  a.protocol_code, a.protocol_version, a.type, a.status, a.schedulable,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE source.health_check_model END,
+  hc.connection_preset_code, hc.base_url,
+  a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
-  source.id, source.config_revision, source.provider_code, source.provider_protocol_profile_id, source.protocol_code, source.protocol_version, source.type, source.client_compatibility, source.status, source.schedulable,
+  source.id, source.config_revision, source.vendor_code, source.oauth_type, source.protocol_code, source.protocol_version, source.type,
+  source_hc.connection_preset_code, source_hc.base_url,
+  source.status, source.schedulable,
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
   binding.group_id, binding.account_authorization_id,
   proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted
@@ -454,6 +476,20 @@ JOIN juhe_business.account_health_jobs_input_versions iv ON iv.account_id = a.id
 LEFT JOIN juhe_business.resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
 LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
 LEFT JOIN LATERAL (
+  SELECT c.connection_preset_code, c.base_url
+  FROM juhe_business.account_connections c
+  WHERE c.account_id = a.id AND c.enabled = 1
+  ORDER BY (c.id = COALESCE(a.health_check_connection_id, '')) DESC, c.id ASC
+  LIMIT 1
+) hc ON a.authorization_instance_authorization_id IS NULL
+LEFT JOIN LATERAL (
+  SELECT c.connection_preset_code, c.base_url
+  FROM juhe_business.account_connections c
+  WHERE c.account_id = source.id AND c.enabled = 1
+  ORDER BY (c.id = COALESCE(source.health_check_connection_id, '')) DESC, c.id ASC
+  LIMIT 1
+) source_hc ON a.authorization_instance_authorization_id IS NOT NULL
+LEFT JOIN LATERAL (
   SELECT ga.group_id, ga.account_authorization_id
   FROM juhe_business.group_accounts ga
   WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = 1
@@ -461,30 +497,10 @@ LEFT JOIN LATERAL (
   ORDER BY ga.updated_at DESC, ga.group_id ASC, ga.account_id ASC LIMIT 1
 ) binding ON TRUE
 LEFT JOIN juhe_business.proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
-LEFT JOIN LATERAL (
-  SELECT mm.upstream_model, mm.upstream_endpoint_family
-  FROM juhe_business.account_model_mappings mm
-  WHERE mm.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END
-    AND mm.provider_code = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.provider_code ELSE source.provider_code END
-    AND mm.enabled = 1
-    AND mm.source_model = a.health_check_model
-    AND (mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family)
-    AND mm.source_endpoint_family = CASE
-      WHEN a.health_check_endpoint_mode IN ('chat_json', 'chat_sse') THEN 'chat_completions'
-      WHEN a.health_check_endpoint_mode IN ('responses_json', 'responses_sse') THEN 'responses'
-      WHEN a.health_check_endpoint_mode IN ('messages_json', 'messages_sse') THEN 'messages'
-      WHEN a.health_check_endpoint_mode = 'generate_content_json' THEN 'generate_content'
-      WHEN a.health_check_endpoint_mode = 'generate_content_sse' THEN 'stream_generate_content'
-      ELSE 'interactions'
-    END
-  ORDER BY mm.updated_at DESC, mm.source_model ASC
-  LIMIT 1
-) mapping ON TRUE
 WHERE a.deleted_at IS NULL
-  AND a.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+  AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta')
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
-  AND (a.provider_protocol_profile_id <> 'profile_hybrid_openai_chat_v1' OR mapping.upstream_model IS NOT NULL)
-  AND a.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
+  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
   -- Cooldown recovery is the path that restores a temporarily unavailable
   -- account. Legacy rows can retain schedulable=0, so do not let that stale
@@ -497,7 +513,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
+    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
     AND source.deleted_at IS NULL AND source.last_error_code IS DISTINCT FROM 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
@@ -506,7 +522,7 @@ WHERE a.deleted_at IS NULL
   -- image accounts eligible for activation, cooldown recovery, and explicit
   -- account loads (ignoreSchedule=$3), but never schedule an active image
   -- account merely because next_health_check_at is due.
-  AND ($3::boolean OR a.status <> 'active' OR a.health_check_endpoint_mode <> 'images_json')
+  AND ($3::boolean OR a.status <> 'active' OR (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) <> 'images_json')
   AND ($3::boolean OR a.status IN ('temporary_unavailable', 'rate_limited') OR a.next_health_check_at IS NULL OR a.next_health_check_at <= $1 OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
   AND ($4 = '' OR a.id = $4)
 -- Keep activation work first, then interleave due cooldown recovery and
@@ -541,31 +557,46 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 	var accountExpires, cooldownUntil, observationStarted, cooldownGeneration sql.NullString
 	var authorizationID, authorizationStatus, authorizationExpires, authorizationLimits sql.NullString
 	var authorizationResourceID, authorizationOwner, authorizationTeam sql.NullString
-	var accountProfile, accountProtocol, accountProtocolVersion, accountClientCompatibility sql.NullString
-	var mappedUpstreamModel, mappedUpstreamFamily sql.NullString
-	var sourceID, sourceProvider, sourceProfile, sourceProtocol, sourceProtocolVersion, sourceType, sourceClientCompatibility, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
+	var accountVendor, accountOAuthType, accountProtocol, accountProtocolVersion sql.NullString
+	var accountEndpointMode, accountHealthModel sql.NullString
+	var accountPreset, accountBaseURL sql.NullString
+	var sourceID, sourceVendor, sourceOAuthType, sourceProtocol, sourceProtocolVersion, sourceType, sourceStatus, sourceExpires, sourceCooldown, sourceError, sourceCredentials sql.NullString
+	var sourcePreset, sourceBaseURL sql.NullString
 	var sourceRevision sql.NullInt64
 	var groupID, bindingAuthorizationID sql.NullString
 	var proxyID, proxyType, proxyHost, proxyUsername, proxyPassword sql.NullString
 	var proxyEnabled sql.NullBool
 	var proxyPort sql.NullInt64
 	if err := rows.Scan(
-		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &result.account.Provider, &accountProfile, &accountProtocol, &accountProtocolVersion, &result.account.Type, &accountClientCompatibility, &result.account.Status, &schedulable,
-		&result.account.EndpointMode, &result.account.HealthModel, &mappedUpstreamModel, &mappedUpstreamFamily, &result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe, &expeditedRecovery,
+		&result.account.ID, &result.inputVersion, &result.account.ConfigRevision, &result.account.DispatchRevision, &accountVendor,
+		&accountOAuthType,
+		&accountProtocol, &accountProtocolVersion, &result.account.Type, &result.account.Status, &schedulable,
+		&accountEndpointMode, &accountHealthModel,
+		&accountPreset, &accountBaseURL,
+		&result.account.CredentialsEncrypted, &accountExpires, &cooldownUntil, &continuousProbe, &expeditedRecovery,
 		&observationStarted, &cooldownGeneration, &result.systemAccount,
 		&authorizationID, &authorizationStatus, &authorizationExpires, &authorizationLimits, &authorizationResourceID, &authorizationOwner, &authorizationTeam,
-		&sourceID, &sourceRevision, &sourceProvider, &sourceProfile, &sourceProtocol, &sourceProtocolVersion, &sourceType, &sourceClientCompatibility, &sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
+		&sourceID, &sourceRevision, &sourceVendor, &sourceOAuthType, &sourceProtocol, &sourceProtocolVersion, &sourceType,
+		&sourcePreset, &sourceBaseURL,
+		&sourceStatus, &sourceSchedulable, &sourceExpires, &sourceCooldown, &sourceError, &sourceCredentials,
 		&groupID, &bindingAuthorizationID,
 		&proxyID, &proxyEnabled, &proxyType, &proxyHost, &proxyPort, &proxyUsername, &proxyPassword,
 	); err != nil {
 		return directCandidate{}, fmt.Errorf("解码 PG direct input 候选失败: %w", err)
 	}
-	result.account.ProtocolProfileID = accountProfile.String
+	// vendor_code nullable（generic_http 账户为 NULL）：Provider 走空串投影，
+	// 真实身份门禁由派生 profile 承担。
+	result.account.Provider = accountVendor.String
+	result.account.OAuthType = accountOAuthType.String
 	result.account.ProtocolCode = accountProtocol.String
 	result.account.ProtocolVersion = accountProtocolVersion.String
-	result.account.ClientCompatibility = accountClientCompatibility.String
-	result.account.MappedUpstreamModel = mappedUpstreamModel.String
-	result.account.MappedUpstreamEndpointFamily = mappedUpstreamFamily.String
+	result.account.EndpointMode = accountEndpointMode.String
+	result.account.HealthModel = accountHealthModel.String
+	result.account.ConnectionPresetCode = accountPreset.String
+	result.account.ConnectionBaseURL = accountBaseURL.String
+	// profile 由健康检查连接 preset 确定性派生；不在 J1 preset 值域的 preset
+	// 派生为空，由 exactkeyprobe 的 profile 门禁 fail closed（隔离为候选失败）。
+	result.account.ProtocolProfileID, _ = exactkeyprobe.ConnectionPresetProfileID(accountPreset.String)
 	result.account.Schedulable = schedulable.Valid && schedulable.Int64 == 1
 	result.account.TemporaryUnavailableContinuousProbeEnabled = continuousProbe.Valid && continuousProbe.Bool
 	// expedited_recovery_enabled 与 schedulable 同构（integer 0/1，NOT NULL
@@ -606,7 +637,8 @@ func scanDirectCandidate(rows *sql.Rows) (directCandidate, error) {
 		if err != nil {
 			return result, err
 		}
-		result.source = &exactkeyprobe.DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceProvider.String, ProtocolProfileID: sourceProfile.String, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ClientCompatibility: sourceClientCompatibility.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
+		sourceProfileID, _ := exactkeyprobe.ConnectionPresetProfileID(sourcePreset.String)
+		result.source = &exactkeyprobe.DirectSource{ID: sourceID.String, ConfigRevision: sourceRevision.Int64, Provider: sourceVendor.String, OAuthType: sourceOAuthType.String, ProtocolProfileID: sourceProfileID, ProtocolCode: sourceProtocol.String, ProtocolVersion: sourceProtocolVersion.String, Type: sourceType.String, ConnectionPresetCode: sourcePreset.String, ConnectionBaseURL: sourceBaseURL.String, Status: sourceStatus.String, Schedulable: sourceSchedulable.Valid && sourceSchedulable.Int64 == 1, AccountExpiresAt: expiresAt, CooldownUntil: cooldownAt, LastErrorCode: sourceError.String, CredentialsEncrypted: sourceCredentials.String}
 		if result.account.Cooldown != nil {
 			value := result.source.ConfigRevision
 			result.account.Cooldown.SourceConfigRevision = &value

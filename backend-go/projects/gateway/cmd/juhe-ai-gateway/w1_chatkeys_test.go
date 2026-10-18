@@ -22,7 +22,7 @@ func w1ChatKeysDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	statements := []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT, provider_code TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT, is_default INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, status TEXT NOT NULL, purpose TEXT, key_secret_encrypted TEXT, expires_at TEXT, route_strategy_id TEXT, key_hash TEXT, key_prefix TEXT, key_suffix TEXT, is_default INTEGER, quota_limits_json TEXT, availability_schedule_json TEXT, availability_schedule_next_check_at TEXT, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategies (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, mode TEXT, status TEXT NOT NULL DEFAULT 'active', is_default INTEGER NOT NULL DEFAULT 0, config_json TEXT, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE route_strategy_groups (id TEXT PRIMARY KEY, route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 1, weight INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
@@ -35,10 +35,10 @@ func w1ChatKeysDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func w1SeedDefaultGroup(t *testing.T, db *sql.DB, id, owner, providerCode string) {
+func w1SeedDefaultGroup(t *testing.T, db *sql.DB, id, owner string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, is_default, enabled, created_at) VALUES (?, ?, ?, ?, 1, 1, '2026-01-01T00:00:00Z')`,
-		id, owner, "分组-"+id, providerCode)
+	_, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, is_default, enabled, created_at) VALUES (?, ?, ?, 1, 1, '2026-01-01T00:00:00Z')`,
+		id, owner, "分组-"+id)
 	if err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
@@ -47,29 +47,32 @@ func w1SeedDefaultGroup(t *testing.T, db *sql.DB, id, owner, providerCode string
 func TestW1ChatAPIKeyDefaultRouteStrategyGroups(t *testing.T) {
 	db := w1ChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "chat-keys-secret")
-	// 无 gpt 默认分组（ensureDefaultGPTGroup 未运行的独立调用）：报错
+	// 无默认分组（ensureDefaultGroup 未运行的独立调用）：报错
 	//（默认策略路由步骤 fail-closed）。
 	if err := provider.ensureDefaultRouteStrategies("sys_1", "2026-01-01T00:00:00Z"); err == nil || !strings.Contains(err.Error(), "默认分组") {
 		t.Fatalf("no groups err = %v", err)
 	}
-	// 默认分组列举（2026-10-07 默认资源收口：仅 gpt）：gpt 命中、SQL NULL
-	// 名称走默认回退、非 gpt 分组被查询过滤。
-	w1SeedDefaultGroup(t, db, "grp_gpt", "sys_1", "gpt")
-	w1SeedDefaultGroup(t, db, "grp_hybrid", "sys_1", "hybrid")
-	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, is_default, enabled, created_at) VALUES ('grp_null', 'sys_1', NULL, 'gpt', 1, 1, '2026-01-01T01:00:00Z')`); err != nil {
+	// 默认分组列举（供应商解耦 §8：组无 provider 维度）：全部默认分组入选、
+	// SQL NULL 名称走默认回退；其他租户不串号。
+	w1SeedDefaultGroup(t, db, "grp_gpt", "sys_1")
+	w1SeedDefaultGroup(t, db, "grp_hybrid", "sys_1")
+	if _, err := db.Exec(`INSERT INTO groups (id, system_account_id, name, is_default, enabled, created_at) VALUES ('grp_null', 'sys_1', NULL, 1, 1, '2026-01-01T01:00:00Z')`); err != nil {
 		t.Fatalf("seed null-name group: %v", err)
 	}
 	// 其他租户的默认分组不得串号。
-	w1SeedDefaultGroup(t, db, "grp_other", "sys_2", "gpt")
+	w1SeedDefaultGroup(t, db, "grp_other", "sys_2")
 	groups, err := provider.defaultRouteStrategyGroups("sys_1")
-	if err != nil || len(groups) != 2 {
+	if err != nil || len(groups) != 3 {
 		t.Fatalf("groups = %+v, %v", groups, err)
 	}
 	if groups[0].id != "grp_gpt" || groups[0].nameNull {
 		t.Fatalf("first = %+v", groups[0])
 	}
-	if groups[1].id != "grp_null" || !groups[1].nameNull {
+	if groups[1].id != "grp_hybrid" || groups[1].nameNull {
 		t.Fatalf("second = %+v", groups[1])
+	}
+	if groups[2].id != "grp_null" || !groups[2].nameNull {
+		t.Fatalf("third = %+v", groups[2])
 	}
 	// 组名投影：X分组 → X路由；空 → 默认路由；无后缀原样。
 	if got := chainDefaultRouteStrategyNameForGroup("默认分组"); got != "默认路由" {
@@ -194,7 +197,7 @@ func TestW1FindChatAPIKey(t *testing.T) {
 func TestW1ChatAPIKeyGptStrategyCurrentBehavior(t *testing.T) {
 	db := w1ChatKeysDB(t)
 	provider := newChatAPIKeyProvider(db, false, "chat-keys-secret")
-	w1SeedDefaultGroup(t, db, "grp_gpt", "sys_1", "gpt")
+	w1SeedDefaultGroup(t, db, "grp_gpt", "sys_1")
 	// gpt 默认分组存在但默认策略路由缺失：EnsureChatAPIKey 先自愈补齐
 	// 默认策略路由 + 绑定（历史 JOIN 缺陷修复后的契约），再建 chat key。
 	keyID, err := provider.EnsureChatAPIKey("sys_1")

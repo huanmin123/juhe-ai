@@ -90,10 +90,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
 		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT, created_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique ON groups(system_account_id, provider_code, name)`,
+		// 供应商解耦（设计 §8）：groups 无 provider_code 列，owner 内名称唯一
+		// 索引为 idx_groups_owner_name_unique。
+		`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_name_unique ON groups(system_account_id, name)`,
 		`CREATE TABLE IF NOT EXISTS group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
 		`CREATE TABLE IF NOT EXISTS group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		// Real resource_authorizations shape (Node business-schema.ts, same
@@ -123,9 +124,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := db.Exec(`INSERT INTO providers (code, enabled) VALUES ('openai', 1), ('anthropic', 1), ('disabled-provider', 0)`); err != nil {
-		t.Fatal(err)
 	}
 	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
@@ -311,7 +309,8 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	}
 	created := dataMap(t, payload)
 	alphaID := created["id"].(string)
-	if created["name"] != "alpha" || created["providerCode"] != "openai" ||
+	// providerCode 为兼容入参：响应键保留但恒空串（供应商解耦设计 §8）。
+	if created["name"] != "alpha" || created["providerCode"] != "" ||
 		created["isDefault"] != false || created["canEdit"] != true || created["canDelete"] != true ||
 		created["groupType"] != "personal" || created["accessType"] != "owner" ||
 		created["ownerSystemAccountId"] != adminID || created["canReturn"] != false {
@@ -346,20 +345,16 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	bravoUpdatedAt := dataMap(t, bravoDetail)["updatedAt"].(string)
 	code, renamed := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+bravoID,
 		`{"expectedUpdatedAt":"`+bravoUpdatedAt+`","name":"alpha"}`)
-	if code != http.StatusConflict || !strings.Contains(renamed["message"].(string), "分组名称已存在") {
+	if code != http.StatusConflict || !strings.Contains(renamed["message"].(string), "同名分组已存在") {
 		t.Fatalf("rename onto existing name: %d %v", code, renamed)
 	}
 
-	// Provider validation.
-	code, badProvider := env.do(t, http.MethodPost, "/__aisys__/api/groups",
+	// providerCode 兼容入参（接受但忽略，供应商解耦设计 §8）：未知/停用
+	// provider 不再校验，create 正常成功且响应 providerCode 恒空串。
+	code, ignoredProvider := env.do(t, http.MethodPost, "/__aisys__/api/groups",
 		`{"name":"gamma","providerCode":"missing"}`)
-	if code != http.StatusBadRequest || badProvider["message"] != "不支持的供应商：missing" {
-		t.Fatalf("unknown provider: %d %v", code, badProvider)
-	}
-	code, disabledProvider := env.do(t, http.MethodPost, "/__aisys__/api/groups",
-		`{"name":"gamma","providerCode":"disabled-provider"}`)
-	if code != http.StatusBadRequest || disabledProvider["message"] != "供应商已停用：disabled-provider" {
-		t.Fatalf("disabled provider: %d %v", code, disabledProvider)
+	if code != http.StatusCreated || dataMap(t, ignoredProvider)["providerCode"] != "" {
+		t.Fatalf("ignored provider create: %d %v", code, ignoredProvider)
 	}
 
 	// High-concurrency group carries a defaulted policy.
@@ -375,7 +370,7 @@ func TestGroupAdminLifecycle(t *testing.T) {
 		t.Fatalf("hc policy: %v", policy)
 	}
 
-	// Pagination + keyword prefix (alpha, bravo, hc).
+	// Pagination + keyword prefix (alpha, bravo, gamma, hc).
 	code, page1 := env.do(t, http.MethodGet, "/__aisys__/api/groups?page=1&pageSize=2", "")
 	page1Data := dataMap(t, page1)
 	if code != 200 || len(page1Data["items"].([]any)) != 2 || page1Data["hasMore"] != true || page1Data["total"] != float64(3) {
@@ -383,7 +378,7 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	}
 	code, page2 := env.do(t, http.MethodGet, "/__aisys__/api/groups?page=2&pageSize=2", "")
 	page2Data := dataMap(t, page2)
-	if code != 200 || len(page2Data["items"].([]any)) != 1 || page2Data["hasMore"] != false || page2Data["total"] != float64(3) {
+	if code != 200 || len(page2Data["items"].([]any)) != 2 || page2Data["hasMore"] != false || page2Data["total"] != float64(4) {
 		t.Fatalf("page 2: %d %v", code, page2)
 	}
 	code, filtered := env.do(t, http.MethodGet, "/__aisys__/api/groups?keyword=al", "")
@@ -448,11 +443,12 @@ func TestGroupAdminLifecycle(t *testing.T) {
 		t.Fatalf("empty patch: %d %v", code, noop)
 	}
 
-	// Provider change blocked while the group owns enabled accounts.
-	code, providerBlocked := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+alphaID,
+	// providerCode patch 兼容入参：接受但忽略（供应商解耦设计 §8）——仅含
+	// 忽略字段的 patch 无可变更内容，路由层按空输入拒绝（分组参数无效）。
+	code, providerIgnored := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+alphaID,
 		`{"expectedUpdatedAt":"`+nextUpdatedAt+`","providerCode":"anthropic"}`)
-	if code != http.StatusBadRequest || providerBlocked["message"] != "已有账户的分组不允许修改供应商" {
-		t.Fatalf("provider change blocked: %d %v", code, providerBlocked)
+	if code != http.StatusBadRequest || providerIgnored["message"] != "分组参数无效" {
+		t.Fatalf("ignored provider patch: %d %v", code, providerIgnored)
 	}
 
 	// Route-strategy binding guard on disable.
@@ -467,8 +463,8 @@ func TestGroupAdminLifecycle(t *testing.T) {
 	// Default-group patch guard.
 	defaultID := "grp-default"
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES (?, ?, '默认分组', 'openai', 1, 1, 'personal', ?, ?)`, defaultID, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`, defaultID, adminID, now, now)
 	code, defaultBlocked := env.do(t, http.MethodPatch, "/__aisys__/api/groups/"+defaultID,
 		`{"expectedUpdatedAt":"`+now+`","name":"renamed-default"}`)
 	if code != http.StatusBadRequest || defaultBlocked["message"] != "默认分组不允许修改" {
@@ -499,8 +495,8 @@ func TestGroupDeleteCascadeAndGuards(t *testing.T) {
 		t.Fatalf("missing group delete must 404: %d %v", code, defaultBlocked)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-default', ?, '默认分组', 'openai', 1, 1, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-default', ?, '默认分组', 1, 1, 'personal', ?, ?)`, adminID, now, now)
 	code, defaultGuard := env.do(t, http.MethodDelete, "/__aisys__/api/groups/grp-default", "")
 	if code != http.StatusBadRequest || defaultGuard["message"] != "默认分组不能删除" {
 		t.Fatalf("default delete guard: %d %v", code, defaultGuard)
@@ -730,15 +726,16 @@ func TestGroupStoreLevelDuplicateName(t *testing.T) {
 		Name: ptrString("dupe"), ProviderCode: ptrString("openai"),
 	}, access)
 	var conflict *ConflictError
-	if !errors.As(err, &conflict) || !strings.Contains(conflict.Message, "分组名称已存在") {
+	if !errors.As(err, &conflict) || !strings.Contains(conflict.Message, "同名分组已存在") {
 		t.Fatalf("duplicate create: %v", err)
 	}
-	// Same name under another provider is allowed.
+	// 供应商解耦后 owner 内名称唯一不再有 provider 维度（设计 §8）：跨 provider
+	// 同名同样冲突。
 	_, err = store.Create(context.Background(), MutationInput{
 		Name: ptrString("dupe"), ProviderCode: ptrString("anthropic"),
 	}, access)
-	if err != nil {
-		t.Fatalf("other provider create: %v", err)
+	if !errors.As(err, &conflict) {
+		t.Fatalf("same name other provider must conflict: %v", err)
 	}
 	detail, err := store.FindDetail(context.Background(), first.ID, access)
 	if err != nil || detail == nil || detail.Name != "dupe" {

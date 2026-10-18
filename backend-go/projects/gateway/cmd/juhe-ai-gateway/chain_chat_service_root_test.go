@@ -259,6 +259,7 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 	volcengineAccount := gatewaydispatch.AccountCandidate{
 		ID:              "acc_volc_chat",
 		ProviderCode:    "volcengine",
+		VendorCode:      "volcengine",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		Type:            "api_key",
@@ -277,6 +278,7 @@ func TestChainDriverChatURLForVolcengineQwenAccounts(t *testing.T) {
 	qwenAccount := gatewaydispatch.AccountCandidate{
 		ID:              "acc_qwen_chat",
 		ProviderCode:    "qwen",
+		VendorCode:      "qwen",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		Type:            "api_key",

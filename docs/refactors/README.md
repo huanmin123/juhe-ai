@@ -4,7 +4,10 @@
 - [重构-0006](重构-0006-chat与gatewaydispatch拆分设计.md)：chat（16.1k）与 gatewaydispatch（13.4k）拆分设计——chat 热路径 SSE 泵保持自由函数直调、拆 chatassets 资产子域；dispatch 两阶段（传输族/oauthcodex 叶子 → candidates 纯函数族，ports 词汇层先下沉）；根 alias 保 80 个消费文件零改动。
 - [重构-0007](重构-0007-组合根cmd拆分设计.md)：cmd/juhe-ai-gateway（26.9k）拆分设计——`package main` 零外部消费方，门面 alias 策略不适用；改为"组合根留守 + 5 波下沉 11.2k 行到约 8 个 internal 子包"，chain_v1.go 定位留守 + 文件内拆分。
 - [复查-0001](复查-0001-gatewaypreauth职责边界复查.md)：gatewaypreauth（扇入 198）职责边界复查——830 处生产限定引用 73.6% 为类型词汇、行为入口仅 5 处在组合根，判定不拆包维持现状；含拆包反事实收益测算与评估文档一处依赖方向事实纠正。R2 该项验收证据。
+- [复查-0002](复查-0002-gatewayruntimecache扇入构成复查.md)：gatewayruntimecache（评估扇入 231 名列第 1）扇入构成复查——引用中 70.7% 为测试文件，生产 68 个消费文件中仅组合根 19 个引用具体 `*Service` 类型、两个最大行为消费方已各自定义窄端口接口（`gatewaypreauth.RuntimeCacheReader` / `gatewaydispatch.RuntimeCachePort`），判定窄接口分组收益不足：维持现状、不拆包、零代码变更。R2 该项验收证据。
+- [复审-20260919](复审-20260919-改革波次.md)：[PLAN-20260918T064119294Z](../plans/计划-20260918T064119294Z-后端架构与性能优化改革.md) §5 独立复审门记录——复审 REFACTOR-0005 accounts 四阶段、DDL 拆分、R1 迁移与两个生产缺陷修复，总体有条件通过（无 P0；1 项 P1 为 R1 收口违背已登记的语义变体保留契约，需合入前处置）；并登记并行在途拆分窗口导致的 gateway 整体编译瞬态（P2）。
 - [REFACTOR-0005](重构-0005-accounts包子域拆分设计.md)：accounts god 包（29.8k 行 / Store 221 方法）按子域（测试会话/余额/运行时重置/导入导出/授权）分三阶段包级拆分设计；共享类型留门面 + alias 兼容 53 个外部消费文件零改动；循环依赖经窄写接口收敛。状态：设计完成待实施。
+- [重构模板](重构模板.md)：新建重构记录时复制的模板（编号占位 REFACTOR-0000）。
 
 > 面向 AI 和维护者。
 > 这里记录每次有复用价值的重构设计、拆分过程、验证结果和复盘，用来沉淀可参考的历史案例。

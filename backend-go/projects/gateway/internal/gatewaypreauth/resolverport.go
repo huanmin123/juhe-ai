@@ -37,21 +37,19 @@ const (
 // NormalRouteResult mirrors NormalGatewayModelRouteResult with the runtime
 // account carrier.
 type NormalRouteResult struct {
-	Outcome              string
-	Reason               string
-	RequestedModel       string
-	StatusCode           int
-	Type                 string
-	Code                 string
-	Message              string
-	MatchedProviderCodes []string
+	Outcome        string
+	Reason         string
+	RequestedModel string
+	StatusCode     int
+	Type           string
+	Code           string
+	Message        string
 
-	APIKeyRecord        *gatewayruntimecache.GatewayAPIKeyRow
-	GroupID             string
-	GroupAccess         *gatewayruntimecache.GroupUsageAccessMetadata
-	Accounts            []gatewayruntimecache.OpenAIAccountSecret
-	RouteSource         string
-	MatchedProviderCode string
+	APIKeyRecord *gatewayruntimecache.GatewayAPIKeyRow
+	GroupID      string
+	GroupAccess  *gatewayruntimecache.GroupUsageAccessMetadata
+	Accounts     []gatewayruntimecache.OpenAIAccountSecret
+	RouteSource  string
 }
 
 // DownstreamCommitState is the G16 commit-state placeholder: the preflight

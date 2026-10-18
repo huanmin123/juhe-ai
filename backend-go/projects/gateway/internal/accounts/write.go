@@ -73,6 +73,35 @@ func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
 // 共用），门面保留同名别名.
 var accountHealthCheckEndpointModes = accountscore.AccountHealthCheckEndpointModes
 
+// realVendorCodes 是供应商与上游协议面重构设计 §1.1 注册表的 9 个真实厂商值域
+// （与 maintenance providerconnectionmigration 的 realVendorCodes 同词表）。
+//
+// vendor_code / connection_driver_code 推导规则（写入面唯一来源，创建请求体
+// 当前不携带 vendor/driver 字段）：按 provider 既有语义推导，与迁移命令的
+// vendorOfProvider / driver 推导（providerconnectionmigration/rules.go:770、
+// :919）同口径，与 chain 面按 vendor_code 取身份的运行时语义一致——
+//   - provider_code 命中 9 厂商：vendor_code = provider_code，
+//     connection_driver_code = provider_code（§1.1 注册表 driver 名与 vendor
+//     同名；oauth 账户同规则，OpenAI OAuth 账户现以 provider gpt 创建，天然
+//     落 vendor gpt）；
+//   - 其余（openai / hybrid 等 generic 语义 provider）：vendor_code = NULL、
+//     connection_driver_code = 'generic_http'（设计 §2.1：generic_http 账户
+//     vendor 恒 NULL，空串由应用层 registry 保证不落库）。
+var realVendorCodes = map[string]bool{
+	"gpt": true, "xai": true, "deepseek": true, "anthropic": true, "gemini": true,
+	"glm": true, "minimax": true, "volcengine": true, "qwen": true,
+}
+
+// accountVendorIdentity 把 provider 语义推导为账户行 (vendor_code,
+// connection_driver_code) 写入值；vendor 走 NullString 承载 generic 账户的
+// SQL NULL。推导规则见 realVendorCodes 注释。
+func accountVendorIdentity(providerCode string) (sql.NullString, string) {
+	if realVendorCodes[providerCode] {
+		return sql.NullString{String: providerCode, Valid: true}, providerCode
+	}
+	return sql.NullString{}, "generic_http"
+}
+
 var accountStatusValues = map[string]bool{
 	"active": true, "pending_test": true, "disabled": true, "error": true,
 	"rate_limited": true, "temporary_unavailable": true, "quality_isolated": true,
@@ -788,6 +817,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		balanceNextRefreshAt = sql.NullString{String: nowISO, Valid: true}
 	}
 
+	// Vendor identity（设计 §1.1/§2.1）：由 provider 语义推导，见
+	// accountVendorIdentity 注释；创建链（直连创建、克隆、批量、导入均汇入
+	// 本函数）统一落 vendor_code / connection_driver_code 两列。
+	vendorCode, connectionDriverCode := accountVendorIdentity(providerCode)
+
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("accounts")+`
 		(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
@@ -796,10 +830,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
 		 cooldown_until, last_error_code, last_error_message, health_check_model, health_check_endpoint_mode,
 		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
-		 expedited_recovery_enabled, capability_domain,
+		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
@@ -807,7 +841,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
 		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
-		boolInt(expeditedRecoveryEnabled), domain,
+		boolInt(expeditedRecoveryEnabled), domain, vendorCode, connectionDriverCode,
 		0, sql.NullString{}, balanceNextRefreshAt,
 		nowISO, nowISO); err != nil {
 		if duplicate := duplicateAccountNameError(err, strings.TrimSpace(input.Name)); duplicate != nil {

@@ -171,22 +171,19 @@ type sharedModelsDirectoryEntry struct {
 // 使旧语义的存量共享条目自然过期、永不被新判定读到。
 const modelsDirectoryActiveSetCacheKey = "active-visible"
 
-// ResolveCachedProviderModelRouteAsync 保留供应商目录时代的签名（cmd 组合根
-// 适配层消费），内部实现改为 models 单表目录语义：matched = 请求模型对
-// systemAccountID 资源账户可见（设计 §2.1：builtin/global 全可见、personal
-// 仅属主可见）且 status='active'，missing = 无任何可见 active 行（终态 404
-// model_not_found 数据面）。入参 providerCodes / includeUnpriced 是供应商收
-// 窄时代的过渡载体，供应商解耦后不参与判定（分组不再携带 provider 身份，
-// 见设计 §8）；systemAccountID 是可见性 owner，随目录判定消费。
-func (s *Service) ResolveCachedProviderModelRouteAsync(ctx context.Context, model string, providerCodes []string, systemAccountID string, includeUnpriced bool) (ProviderModelRouteResolution, error) {
-	_ = providerCodes
+// ResolveCachedProviderModelRouteAsync 承载 models 单表目录语义：matched =
+// 请求模型对 systemAccountID 资源账户可见（设计 §2.1：builtin/global 全可见、
+// personal 仅属主可见）且 status='active'，missing = 无任何可见 active 行
+// （终态 404 model_not_found 数据面）。入参 includeUnpriced 是供应商收窄时
+// 代的过渡载体，供应商解耦后不参与判定（分组不再携带 provider 身份，见设计
+// §8）；systemAccountID 是可见性 owner，随目录判定消费。
+func (s *Service) ResolveCachedProviderModelRouteAsync(ctx context.Context, model string, systemAccountID string, includeUnpriced bool) (ProviderModelRouteResolution, error) {
 	_ = includeUnpriced
 	modelKey := normalizeProviderModelRouteKey(model)
 	if modelKey == "" {
 		return ProviderModelRouteResolution{
-			Outcome:              ProviderModelRouteMissing,
-			ModelKey:             modelKey,
-			MatchedProviderCodes: []string{},
+			Outcome:  ProviderModelRouteMissing,
+			ModelKey: modelKey,
 		}, nil
 	}
 	present, err := s.ResolveCachedGatewayModelsDirectoryActiveAsync(ctx, systemAccountID, modelKey)
@@ -198,9 +195,8 @@ func (s *Service) ResolveCachedProviderModelRouteAsync(ctx context.Context, mode
 		outcome = ProviderModelRouteMatched
 	}
 	return ProviderModelRouteResolution{
-		Outcome:              outcome,
-		ModelKey:             modelKey,
-		MatchedProviderCodes: []string{},
+		Outcome:  outcome,
+		ModelKey: modelKey,
 	}, nil
 }
 

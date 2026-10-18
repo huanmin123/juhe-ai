@@ -44,21 +44,10 @@ func TestW0219ListAvailabilityDirtyMarkerPostgres(t *testing.T) {
 		t.Fatalf("临时子库 ping 失败: %v", err)
 	}
 
-	// provider / protocol profile / 协议列动态取库里已有行：accounts 的
-	// provider_code 与 provider_protocol_profile_id 均有 FK，硬编码会耦合
-	// 种子内容与权威 DDL 演化。
-	var providerCode, profileID, protocolCode, protocolVersion string
-	if err := db.QueryRowContext(ctx, `
-		SELECT pp.provider_code, pp.id, pp.protocol_code, pp.protocol_version
-		FROM juhe_business.provider_protocol_profiles pp
-		JOIN juhe_business.providers p ON p.code = pp.provider_code
-		WHERE pp.enabled = 1
-		LIMIT 1`).Scan(&providerCode, &profileID, &protocolCode, &protocolVersion); err != nil {
-		t.Fatalf("读取既有 provider/protocol profile 失败: %v", err)
-	}
-
-	// system_accounts / accounts 的 NOT NULL 无默认列（username、
-	// display_name、password_hash、created_at、updated_at 等）必须显式提供。
+	// 供应商解耦（设计 §2.1）：accounts 无 provider_code/
+	// provider_protocol_profile_id；vendor_code 可空（本测试只关心
+	// account_list_availability 家族展开脏标记，账户身份置 NULL 即可），
+	// connection_driver_code NOT NULL 显式提供。
 	for _, statement := range []string{
 		`INSERT INTO juhe_business.system_accounts (id, username, display_name, password_hash, created_at, updated_at)
 			VALUES ('w0219-sys', 'w0219-sys', 'w0219', 'w0219-hash', '2026-09-28T00:00:00.000Z', '2026-09-28T00:00:00.000Z')
@@ -76,14 +65,14 @@ func TestW0219ListAvailabilityDirtyMarkerPostgres(t *testing.T) {
 		}
 		if _, err := db.ExecContext(ctx, `
 	INSERT INTO juhe_business.accounts (
-	  id, system_account_id, provider_code, provider_protocol_profile_id,
+	  id, system_account_id, vendor_code, connection_driver_code,
 	  protocol_code, protocol_version, name, type, credentials_encrypted,
 	  health_check_model, health_check_endpoint_mode, authorization_instance_source_account_id,
 	  created_at, updated_at
-	) VALUES ($1, 'w0219-sys', $2, $3, $4, $5, $1, 'api_key', 'w0219-creds', 'w0219-model', 'chat_json', $6,
+	) VALUES ($1, 'w0219-sys', NULL, 'gpt', 'openai', 'v1', $1, 'api_key', 'w0219-creds', 'w0219-model', 'chat_json', $2,
 	  '2026-09-28T00:00:00.000Z', '2026-09-28T00:00:00.000Z')
 	ON CONFLICT (id) DO NOTHING`,
-			id, providerCode, profileID, protocolCode, protocolVersion, source); err != nil {
+			id, source); err != nil {
 			t.Fatalf("seed account %s: %v", id, err)
 		}
 	}

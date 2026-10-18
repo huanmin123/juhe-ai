@@ -121,12 +121,17 @@ func (profileKeySessionIdentity) ResolveGatewaySessionIdentity(_ *GatewayRequest
 	return SessionIdentity{SessionID: "session_" + input.ClientProfile, ConversationKey: "conv_" + input.ClientProfile}
 }
 
-// profileSwitchingStrategy 模拟最终 profile 重解析（initial 无 ProviderCode，
-// final 带 ProviderCode）。
-type profileSwitchingStrategy struct{}
+// profileSwitchingStrategy 模拟最终 profile 重解析（§4 关键点 5）：供应商解
+// 耦后 ClientStrategyInput 不再携带 provider 维度（设计 §8），初始/最终两次
+// 解析入参同形——profile 精化改以解析次数模拟（首次 generic，二次 codex，
+// 对应 body 检查完成后 clientCompatibility 到位的既有语义）。
+type profileSwitchingStrategy struct {
+	calls int64
+}
 
-func (profileSwitchingStrategy) Resolve(_ *GatewayRequest, input ClientStrategyInput) ClientStrategyContext {
-	if input.ProviderCode == "" {
+func (s *profileSwitchingStrategy) Resolve(_ *GatewayRequest, _ ClientStrategyInput) ClientStrategyContext {
+	s.calls++
+	if s.calls == 1 {
 		return ClientStrategyContext{ClientProfile: "generic"}
 	}
 	return ClientStrategyContext{ClientProfile: "codex"}
@@ -139,16 +144,16 @@ func groupStickyStaticRow() gatewayruntimecache.GatewayRuntime {
 	row.RouteStrategyID = "strategy_rr_1"
 	row.SelectedGroupID = "grp_a"
 	row.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-		{ID: "binding_a", APIKeyID: row.ID, GroupID: "grp_a", Status: "active", GroupEnabled: 1, ProviderCode: "openai"},
-		{ID: "binding_b", APIKeyID: row.ID, GroupID: "grp_b", Status: "active", GroupEnabled: 1, ProviderCode: "openai"},
+		{ID: "binding_a", APIKeyID: row.ID, GroupID: "grp_a", Status: "active", GroupEnabled: 1},
+		{ID: "binding_b", APIKeyID: row.ID, GroupID: "grp_b", Status: "active", GroupEnabled: 1},
 	}
 	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_sticky", ProviderCode: "openai", Status: "active"}
 	return gatewayruntimecache.GatewayRuntime{
-		APIKey:                     row,
-		Settings:                   gatewayruntimecache.GatewaySettings{NoAvailableAccountWaitTimeoutSeconds: 30},
-		GroupAccess:                &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "owner"},
-		Accounts:                   []gatewayruntimecache.OpenAIAccountSecret{account},
-		StaticResolutionOnly:       true,
+		APIKey:               row,
+		Settings:             gatewayruntimecache.GatewaySettings{NoAvailableAccountWaitTimeoutSeconds: 30},
+		GroupAccess:          &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "owner"},
+		Accounts:             []gatewayruntimecache.OpenAIAccountSecret{account},
+		StaticResolutionOnly: true,
 	}
 }
 
@@ -302,7 +307,7 @@ func TestGroupStickyPreflightSameKeyAcrossProfileChangeIsSingleGET(t *testing.T)
 	// 形态，初始查询已代表最终身份，补查跳过（全请求 1 次 GET）。
 	affinity := &fakeGroupAffinityPort{bindings: map[string]string{"gak:conv_generic": "grp_b"}}
 	service, cache := groupStickyAffinityTestService(t, affinity, &fixedSessionIdentity{identity: SessionIdentity{SessionID: "session_1", ConversationKey: "conv_generic"}})
-	service.ClientStrategy = profileSwitchingStrategy{}
+	service.ClientStrategy = &profileSwitchingStrategy{}
 
 	context, _ := groupStickyPreflight(t, service, &PreflightOptions{DispatchStaticResolution: true})
 	selects := cache.recordedSelects()
@@ -327,7 +332,7 @@ func TestGroupStickyPreflightProfileChangeWithNewKeyRequeries(t *testing.T) {
 		"gak:conv_codex":   "grp_b",
 	}}
 	service, cache := groupStickyAffinityTestService(t, affinity, profileKeySessionIdentity{})
-	service.ClientStrategy = profileSwitchingStrategy{}
+	service.ClientStrategy = &profileSwitchingStrategy{}
 
 	context, _ := groupStickyPreflight(t, service, &PreflightOptions{DispatchStaticResolution: true})
 	selects := cache.recordedSelects()
@@ -354,7 +359,7 @@ func TestGroupStickyPreflightMissThenHitDoesNotAdvanceTwice(t *testing.T) {
 	//（§4 关键点 5 推进预算由初始阶段承担）。
 	affinity := &fakeGroupAffinityPort{bindings: map[string]string{"gak:conv_codex": "grp_b"}}
 	service, cache := groupStickyAffinityTestService(t, affinity, profileKeySessionIdentity{})
-	service.ClientStrategy = profileSwitchingStrategy{}
+	service.ClientStrategy = &profileSwitchingStrategy{}
 
 	context, _ := groupStickyPreflight(t, service, &PreflightOptions{DispatchStaticResolution: true})
 	selects := cache.recordedSelects()

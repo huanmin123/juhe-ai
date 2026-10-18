@@ -40,37 +40,31 @@ func TestDirectInputRejectsProtocolMetadataMismatch(t *testing.T) {
 	}
 }
 
-func TestDirectInputUsesGrokCLIProxyForOAuthWithoutBaseURL(t *testing.T) {
-	baseURL, err := directBaseURL(map[string]json.RawMessage{}, DirectAccount{ProtocolProfileID: "profile_xai_openai_v1", Type: "oauth"}, "openai")
+// TestDirectInputBaseURLFromConnection 钉住新连接面契约：探针上游地址单一
+// 事实源是健康检查连接行的 base_url（去尾斜杠归一），缺失时 fail closed；
+// 旧 profile 级默认上游表与凭据 base_url 读侧已随供应商解耦退役。
+func TestDirectInputBaseURLFromConnection(t *testing.T) {
+	baseURL, err := directBaseURL(DirectAccount{ConnectionBaseURL: "https://api.x.ai/v1/"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if baseURL != "https://cli-chat-proxy.grok.com/v1" {
-		t.Fatalf("xAI OAuth base URL = %q", baseURL)
+	if baseURL != "https://api.x.ai/v1" {
+		t.Fatalf("connection base URL = %q", baseURL)
 	}
-}
-
-func TestDirectInputUsesCodexBaseURLForOAuthEvenWhenCredentialHasOpenAIBaseURL(t *testing.T) {
-	baseURL, err := directBaseURL(map[string]json.RawMessage{
-		"base_url": json.RawMessage(`"https://api.openai.com/v1"`),
-	}, DirectAccount{ProtocolProfileID: "profile_gpt_openai_v1", Type: "oauth"}, "openai")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if baseURL != "https://chatgpt.com/backend-api/codex" {
-		t.Fatalf("GPT OAuth base URL = %q", baseURL)
+	if _, err := directBaseURL(DirectAccount{}); err == nil {
+		t.Fatal("缺少连接 base_url 必须 fail closed")
 	}
 }
 
 func TestDirectInputSupportsGeminiGoogleOAuthProfile(t *testing.T) {
 	secret := "j1-direct-input-secret"
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
-	credentials, err := EncryptV1Envelope(secret, []byte(`{"access_token":"google-token","expires_at":"2030-08-16T02:00:00Z","quota_project_id":"quota-1","oauth_type":"ai_studio","base_url":"https://generativelanguage.googleapis.com"}`))
+	credentials, err := EncryptV1Envelope(secret, []byte(`{"access_token":"google-token","expires_at":"2030-08-16T02:00:00Z","quota_project_id":"quota-1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	input, err := (DirectInput{
-		Account:      DirectAccount{ID: "gemini-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gemini", ProtocolProfileID: "profile_gemini_native_v1beta", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Type: "google_oauth", Status: "pending_test", EndpointMode: "generate_content_json", HealthModel: "gemini-test", CredentialsEncrypted: credentials},
+		Account:      DirectAccount{ID: "gemini-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gemini", ProtocolProfileID: "profile_gemini_native_v1beta", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Type: "google_oauth", Status: "pending_test", EndpointMode: "generate_content_json", HealthModel: "gemini-test", CredentialsEncrypted: credentials, OAuthType: "ai_studio", ConnectionBaseURL: "https://generativelanguage.googleapis.com"},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -80,11 +74,16 @@ func TestDirectInputSupportsGeminiGoogleOAuthProfile(t *testing.T) {
 	if input.Provider != "gemini" || input.OAuthAccess == nil || input.OAuthQuotaProjectID != "quota-1" || input.EndpointMode != "generate_content_json" {
 		t.Fatalf("mapped Gemini direct input = %#v", input)
 	}
+	// oauth_type 的运行时来源是 accounts.oauth_type 列（设计 §2.1），冻结进
+	// Input.OAuthType 供探针执行器分流 Code Assist 形态。
+	if input.OAuthType != "ai_studio" || input.BaseURL != "https://generativelanguage.googleapis.com" {
+		t.Fatalf("oauth type/base url = %q/%q", input.OAuthType, input.BaseURL)
+	}
 }
 
 func TestDirectInputToInputUsesEffectiveSourceAndProxy(t *testing.T) {
 	secret := "j1-direct-input-secret"
-	credentialCiphertext, err := EncryptV1Envelope(secret, []byte(`{"api_keys":["key-a","key-b"],"base_url":"https://upstream.example/"}`))
+	credentialCiphertext, err := EncryptV1Envelope(secret, []byte(`{"api_keys":["key-a","key-b"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +93,7 @@ func TestDirectInputToInputUsesEffectiveSourceAndProxy(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	input, err := (DirectInput{
-		Account:      DirectAccount{ID: "account-1", ConfigRevision: 7, DispatchRevision: 9, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "responses_json", HealthModel: "gpt-test", CredentialsEncrypted: credentialCiphertext},
+		Account:      DirectAccount{ID: "account-1", ConfigRevision: 7, DispatchRevision: 9, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "responses_json", HealthModel: "gpt-test", CredentialsEncrypted: credentialCiphertext, ConnectionBaseURL: "https://upstream.example/"},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		Proxy:        &DirectProxy{ID: "proxy-1", Enabled: true, Type: "socks5", Host: "127.0.0.1", Port: 1080, Username: "user", PasswordEncrypted: passwordCiphertext},
 		InputVersion: 3, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1",
@@ -129,7 +128,7 @@ func TestDirectInputNormalizesGPTProviderToOpenAIProtocol(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	input, err := (DirectInput{
-		Account:      DirectAccount{ID: "gpt-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "pending_test", EndpointMode: "responses_sse", HealthModel: "gpt-test", CredentialsEncrypted: credentials},
+		Account:      DirectAccount{ID: "gpt-account", ConfigRevision: 1, DispatchRevision: 1, Provider: "gpt", Type: "api_key", Status: "pending_test", EndpointMode: "responses_sse", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -152,9 +151,9 @@ func TestDirectInputRejectsIncompleteAuthorization(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	_, err = (DirectInput{
-		Account:       DirectAccount{ID: "account-1", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials},
+		Account:       DirectAccount{ID: "account-1", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Authorization: &DirectAuthorization{ID: "auth-1", Status: "active", QuotaEligible: false},
-		Source:        &DirectSource{ID: "source-1", ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials},
+		Source:        &DirectSource{ID: "source-1", ConfigRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:       DirectBinding{GroupID: "group-1", Enabled: true, AuthorizationBindingID: "auth-1"},
 		InputVersion:  1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -173,7 +172,7 @@ func TestDirectInputAllowsOwnerCooldownFenceWithoutSourceRevision(t *testing.T) 
 	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "owner-generation"}
 	cooldownUntil := now.Add(-time.Second)
 	input, err := (DirectInput{
-		Account:      DirectAccount{ID: "account-owner", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, CooldownUntil: &cooldownUntil, Cooldown: fence},
+		Account:      DirectAccount{ID: "account-owner", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1", CooldownUntil: &cooldownUntil, Cooldown: fence},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)
@@ -193,7 +192,7 @@ func TestDirectInputRejectsUnavailableProxy(t *testing.T) {
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
 	base := DirectInput{
-		Account:      DirectAccount{ID: "account-proxy", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials},
+		Account:      DirectAccount{ID: "account-proxy", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:      DirectBinding{GroupID: "group-1", Enabled: true},
 		InputVersion: 1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}
@@ -220,9 +219,9 @@ func TestDirectInputAllowsAuthorizedCooldownFenceWithSourceRevision(t *testing.T
 	cooldownUntil := now.Add(-time.Second)
 	fence := &CooldownFence{ObservationStartedAt: now.Add(-time.Minute), Generation: "authorized-generation", SourceConfigRevision: &sourceRevision}
 	input, err := (DirectInput{
-		Account:       DirectAccount{ID: "authorized-cooldown", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, CooldownUntil: &cooldownUntil, Cooldown: fence},
+		Account:       DirectAccount{ID: "authorized-cooldown", ConfigRevision: 1, DispatchRevision: 1, Provider: "openai", Type: "api_key", Status: "temporary_unavailable", Schedulable: true, EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1", CooldownUntil: &cooldownUntil, Cooldown: fence},
 		Authorization: &DirectAuthorization{ID: "auth-1", Status: "active", QuotaEligible: true},
-		Source:        &DirectSource{ID: "source-1", ConfigRevision: sourceRevision, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials},
+		Source:        &DirectSource{ID: "source-1", ConfigRevision: sourceRevision, Provider: "openai", Type: "api_key", Status: "active", Schedulable: true, CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.openai.com/v1"},
 		Binding:       DirectBinding{GroupID: "group-1", Enabled: true, AuthorizationBindingID: "auth-1"},
 		InputVersion:  1, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1},
 	}).ToInput(secret, now)

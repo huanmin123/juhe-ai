@@ -35,9 +35,9 @@ func TestW11FListPageArms(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
 	ctx := context.Background()
-	env.w11fSeedGroup(t, "w11f-l1", "w11f-lowner", "w11f-列表A", "openai", 1, 0, "personal")
-	env.w11fSeedGroup(t, "w11f-l2", "w11f-lowner", "w11f-列表B", "anthropic", 1, 0, "personal")
-	env.w11fSeedGroup(t, "w11f-l3", "w11f-lother", "w11f-授权列表", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-l1", "w11f-lowner", "w11f-列表A", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-l2", "w11f-lowner", "w11f-列表B", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-l3", "w11f-lother", "w11f-授权列表", 1, 0, "personal")
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
 		VALUES ('w11f-la', 'group', 'w11f-l3', 'w11f-lother', 'w11f-lowner', 'active', 'w11f-lother', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
 
@@ -66,7 +66,7 @@ func TestW11FListPageArms(t *testing.T) {
 	if _, err := store.ListPage(ctx, AccessScope{ViewerID: "w11f-admin", IsAdmin: true}, 1, 50, ""); err == nil {
 		t.Fatal("ListPage query fault must fail")
 	}
-	env.script.failQuery("SELECT id, system_account_id, name, provider_code")
+	env.script.failQuery("SELECT id, system_account_id, name, description")
 	if _, err := store.ListPage(ctx, AccessScope{ViewerID: "w11f-lowner"}, 1, 50, ""); err == nil {
 		t.Fatal("ListPage union fault must fail")
 	}
@@ -82,7 +82,7 @@ func TestW11FFindDetailAuthorizedExtras(t *testing.T) {
 	store := env.store
 	ctx := context.Background()
 	// 授权分组 + 多来源（manual active / manual ended / team active）。
-	env.w11fSeedGroup(t, "w11f-s1", "w11f-sowner", "w11f-来源组", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-s1", "w11f-sowner", "w11f-来源组", 1, 0, "personal")
 	env.exec(t, `INSERT INTO system_teams (id, name) VALUES ('w11f-team1', 'w11f-团队一')`)
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
 		VALUES ('w11f-sa', 'group', 'w11f-s1', 'w11f-sowner', 'w11f-sgrantee', 'active', 'w11f-sowner', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
@@ -166,29 +166,18 @@ func TestW11FPatchPolicyArms(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
 	owner := AccessScope{ViewerID: "w11f-pa"}
-	revision := env.w11fSeedGroup(t, "w11f-pa1", "w11f-pa", "w11f-策略组", "openai", 1, 0, "personal")
+	revision := env.w11fSeedGroup(t, "w11f-pa1", "w11f-pa", "w11f-策略组", 1, 0, "personal")
 
-	// 供应商切换成功（无账户）。
+	// 供应商解耦后 providerCode patch 兼容入参：接受但忽略，恒为无变更
+	// no-op（设计 §8）。
 	anthropic := "anthropic"
 	result, err := store.Patch(context.Background(), "w11f-pa1", MutationInput{ProviderCode: &anthropic}, revision, owner)
-	if err != nil || result.Name == "" {
-		t.Fatalf("provider change = %+v/%v", result, err)
+	if err != nil || len(result.ChangedFields) != 0 || result.Name == "" {
+		t.Fatalf("ignored provider patch = %+v/%v", result, err)
 	}
-	// ownedGroupHasAccounts 查询错误（provider 变更路径内）。
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, created_at) VALUES ('w11f-pacc', 'w11f-pa', '2024-01-01T00:00:00.000Z')`)
-	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
-		VALUES ('w11f-pa', 'w11f-pa1', 'w11f-pacc', 1, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
-	current := env.queryString(t, `SELECT updated_at FROM groups WHERE id = 'w11f-pa1'`)
-	openai := "openai"
-	env.script.failQuery("SELECT 1 FROM group_accounts")
-	if _, err := store.Patch(context.Background(), "w11f-pa1", MutationInput{ProviderCode: &openai}, current, owner); err == nil {
-		t.Fatal("hasAccounts query fault must fail")
-	}
-	env.exec(t, `DELETE FROM group_accounts WHERE group_id = 'w11f-pa1'`)
-	env.exec(t, `DELETE FROM accounts WHERE id = 'w11f-pacc'`)
 
 	// 类型转换 personal → high_concurrency（带策略重置 + diff）。
-	current = env.queryString(t, `SELECT updated_at FROM groups WHERE id = 'w11f-pa1'`)
+	current := env.queryString(t, `SELECT updated_at FROM groups WHERE id = 'w11f-pa1'`)
 	high := GroupTypeHighConcurrency
 	result, err = store.Patch(context.Background(), "w11f-pa1", MutationInput{GroupType: &high}, current, owner)
 	if err != nil {
@@ -223,7 +212,7 @@ func TestW11FPatchPolicyArms(t *testing.T) {
 func TestW11FRemoveMetadataAndHelpers(t *testing.T) {
 	env := newW11FEnv(t)
 	env.login(t, "w11frmeta", "w11f-pass", "super_admin")
-	revision := env.w11fSeedGroup(t, "w11f-mg", "w11f-mgowner", "w11f-元数据组", "openai", 1, 0, "personal")
+	revision := env.w11fSeedGroup(t, "w11f-mg", "w11f-mgowner", "w11f-元数据组", 1, 0, "personal")
 	_ = revision
 
 	// 绑定一个策略路由后删除 → sink 记录受影响策略。
@@ -231,7 +220,7 @@ func TestW11FRemoveMetadataAndHelpers(t *testing.T) {
 	env.exec(t, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at)
 		VALUES ('w11f-mrsg', 'w11f-mrs', 'w11f-mgowner', 'w11f-mg', 'disabled', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
 	// 再绑定第二个启用分组，避免唯一可用分组拦截。
-	env.w11fSeedGroup(t, "w11f-mg2", "w11f-mgowner", "w11f-元数据组2", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-mg2", "w11f-mgowner", "w11f-元数据组2", 1, 0, "personal")
 	env.exec(t, `INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, status, created_at, updated_at)
 		VALUES ('w11f-mrsg2', 'w11f-mrs', 'w11f-mgowner', 'w11f-mg2', 'active', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`)
 

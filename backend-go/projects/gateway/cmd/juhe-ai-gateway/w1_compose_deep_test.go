@@ -254,9 +254,10 @@ func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 	w1sEnsureBusinessSchema(t, db)
 	w1sEnsureStatsSchema(t, db)
 	// w1s 共享 DDL 的 accounts 表缺 revalidate 读取列；按 accountkeystates
-	// loadRevalidateAccountRow 的列清单补齐（SQLite ADD COLUMN 逐列追加）。
+	// loadRevalidateAccountRow 的列清单补齐（SQLite ADD COLUMN 逐列追加；
+	// 供应商解耦后连接身份列是 vendor_code，设计 §2.1）。
 	for _, column := range []string{
-		"provider_code TEXT", "protocol_code TEXT", "protocol_version TEXT",
+		"vendor_code TEXT", "protocol_code TEXT", "protocol_version TEXT",
 		"type TEXT", "status TEXT", "schedulable INTEGER DEFAULT 1",
 		"config_revision INTEGER DEFAULT 1", "credentials_encrypted TEXT",
 	} {

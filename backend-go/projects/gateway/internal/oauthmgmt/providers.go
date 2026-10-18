@@ -166,8 +166,10 @@ func endpointModes(value any) ([]any, bool) {
 // parseOpenAICredentialsPatch mirrors the openai oauthCredentialsPatchSchema.
 // service_tier_override / reasoning_effort_override 只做「非空字符串（trim
 // 后）」形状放行（2026-10-18 简化定案，与 anthropic/gemini/grok parser 同
-// 构）：值域（协议族全集）交由账户写入面凭据归一化判定，本层不再做枚举
-// 预检。
+// 构）：值域（协议族全集）不在本层预检，由两个持久化到达点按写入面同一规则
+// 判定——创建经 CreateOAuthAccount → accounts.Create 写入面凭据归一化；轮换/
+// 重授权经 RotateCredentials 落库校验（requestoverride_validation.go，同一
+// shared/platform requestoverride 真源）。
 func parseOpenAICredentialsPatch(patch map[string]any) (map[string]any, bool) {
 	output := map[string]any{}
 	for key, value := range patch {
@@ -255,7 +257,8 @@ func parseGeminiCredentialsPatch(patch map[string]any) (map[string]any, bool) {
 // parseGrokCredentialsPatch mirrors the grok patch schema: base_url plus the
 // service_tier_override / reasoning_effort_override request override tokens
 // (trim-only non-empty strings, same shape as the anthropic/gemini parsers),
-// endpoint modes and the free-form policy keys.
+// endpoint modes and the free-form policy keys. 覆盖字段值域不在本层预检：
+// 与 openai parser 同一持久化到达点规则（requestoverride_validation.go）。
 func parseGrokCredentialsPatch(patch map[string]any) (map[string]any, bool) {
 	output := map[string]any{}
 	for key, value := range patch {

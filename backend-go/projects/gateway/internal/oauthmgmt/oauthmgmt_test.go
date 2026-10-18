@@ -183,6 +183,12 @@ var testSchema = []string{
 		dispatch_revision INTEGER NOT NULL DEFAULT 1,
 		circuit_projection_revision INTEGER NOT NULL DEFAULT 0,
 		system_account_id TEXT NOT NULL,
+		-- 迁移窗口 DDL（accounts fixture 同形，见 internal/accounts
+		-- accounts_test.go）：写入面 createInTx 落 vendor_code /
+		-- connection_driver_code（generic 账户 vendor 为 NULL），创建链路
+		-- （CreateOAuthAccount → accounts.Create）经该写入面，fixture 同步携带。
+		vendor_code TEXT,
+		connection_driver_code TEXT,
 		provider_code TEXT NOT NULL,
 		provider_protocol_profile_id TEXT NOT NULL,
 		protocol_code TEXT NOT NULL,

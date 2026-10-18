@@ -69,22 +69,18 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 	tiers, _ := json.Marshal(map[string]any{
 		"priority": map[string]any{"inputUsdPer1M": 4.0, "outputUsdPer1M": 16.0},
 	})
-	// 长上下文与档位价格列只有内置目录投影（Node custom 列不含 long_context，
-	// 真实 DDL 有列但仓库层不读）；openai 目标源扩展后内置目录走子供应商，
-	// 这里把 gpt 子供应商 + openai/v1 协议档案接上，定价估算行种在 gpt 内置
-	// 目录，经扩展进入 openai 聚合目录。
-	seed(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov_gpt', 'gpt', 'GPT', 1, ?, ?)`, now, now)
-	seed(`INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof_gpt_openai_v1', 'gpt', 'GPT OpenAI v1', 1, 'openai', 'v1', 'https://gpt.invalid/v1', 'gpt-est', '[]', '{}', ?, ?)`, now, now)
-	seed(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, mode, source, catalog_visible,
+	// 供应商解耦（设计 §3）：目录维度 = models.vendor_code，估算行种 gpt
+	// vendor 内置行；长上下文与档位价格列由 models 单表承载。
+	seed(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, source,
+			supported_endpoint_modes_json,
 			input_usd_per_1m, output_usd_per_1m,
 			long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
 			long_context_input_cost_multiplier, long_context_output_cost_multiplier,
 			supported_service_tiers_json, service_tier_prices_json,
 			created_at, updated_at)
-		VALUES ('cat_est', 'active', 'gpt', 'gpt-est', 'chat', 'builtin', 1,
+		VALUES ('cat_est', 'gpt', 'gpt-est', 'gpt-est', 'builtin', 'active', 1, 'builtin',
+			'["chat_json","chat_sse"]',
 			2.5, 10.0,
 			100000, 0,
 			2.0, 1.5,
@@ -114,7 +110,7 @@ func TestChainCostEstimatorEstimateVectors(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		got, ok := estimator.EstimateCatalogCostUSD(ctx, gatewayquota.CatalogCostInput{
-			ProviderCode:    "openai",
+			ProviderCode:    "gpt",
 			SystemAccountID: fixture.systemAccount,
 			Model:           testCase.model,
 			ServiceTier:     testCase.tier,

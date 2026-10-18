@@ -294,7 +294,7 @@ func sqliteDirectTimestamp(t time.Time) string {
 //  2. J1 契约面兜底——statsverify 布局不含 J1 契约要求（含候选 SQL 引用）的
 //     usage_stats_totals/usage_stats_weekly/usage_stats_monthly/
 //     usage_quota_hourly_windows（stats）与 account_health_jobs_input_versions/
-//     proxy_profiles/resource_authorization_grants/account_model_mappings
+//     proxy_profiles/resource_authorization_grants/account_connections
 //     （business），也不播种 J1 settings 六键；常规部署它们由 gateway
 //     preflight / maintenance --ensure-schema 创建，这里按权威 schema
 //     （maintenance/internal/schema，列集逐列一致）做 CREATE TABLE IF NOT
@@ -375,12 +375,12 @@ var sqliteDirectInputNarrowTableColumns = map[string][]string{
 	"accounts": {
 		"config_revision INTEGER",
 		"dispatch_revision INTEGER",
-		"provider_code TEXT",
-		"provider_protocol_profile_id TEXT",
+		"vendor_code TEXT",
+		"oauth_type TEXT",
 		"protocol_code TEXT",
 		"protocol_version TEXT",
 		"type TEXT",
-		"client_compatibility TEXT",
+		"health_check_connection_id TEXT",
 		"health_check_endpoint_mode TEXT",
 		"health_check_model TEXT",
 		"credentials_encrypted TEXT",
@@ -566,19 +566,18 @@ var sqliteDirectInputBusinessContractDDL = []string{
   FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
   FOREIGN KEY (grantee_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
 )`,
-	`CREATE TABLE IF NOT EXISTS account_model_mappings (
+	`CREATE TABLE IF NOT EXISTS account_connections (
+  id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL,
-  source_model TEXT NOT NULL,
-  source_endpoint_family TEXT NOT NULL,
-  upstream_model TEXT NOT NULL,
-  upstream_endpoint_family TEXT NOT NULL,
+  connection_preset_code TEXT NOT NULL,
+  protocol_surface_code TEXT,
+  base_url TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (account_id, source_model, source_endpoint_family),
-  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
-  FOREIGN KEY (provider_code) REFERENCES providers(code)
+  UNIQUE (account_id, connection_preset_code),
+  UNIQUE (account_id, id),
+  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 )`,
 }
 
@@ -701,8 +700,9 @@ func sqliteDirectInputCandidatesQuery(suppressions []DirectInputSuppression) (st
 	cte := "\nWITH suppressions(account_id, input_version, config_revision, dispatch_revision, next_due_at) AS (VALUES " + strings.Join(values, ",") + "),"
 	clause := "\n  AND NOT EXISTS (SELECT 1 FROM suppressions WHERE suppressions.account_id = a.id AND suppressions.input_version = iv.current_version AND suppressions.config_revision = a.config_revision AND suppressions.dispatch_revision = a.dispatch_revision AND suppressions.next_due_at > $1)"
 	marker := "\n-- Keep activation work first"
-	// 首个 WITH 关键字由 suppressions CTE 承担，原 ranked CTE 变为链式成员。
-	query := strings.Replace(sqliteDirectInputCandidatesSQL, "\nWITH ranked_group_bindings", cte+"\nranked_group_bindings", 1)
+	// 首个 WITH 关键字由 suppressions CTE 承担，原 resolved_health_connections
+	// CTE 变为链式成员。
+	query := strings.Replace(sqliteDirectInputCandidatesSQL, "\nWITH resolved_health_connections AS (", cte+"\nresolved_health_connections AS (", 1)
 	query = strings.Replace(query, marker, clause+marker, 1)
 	return query, args
 }
@@ -710,20 +710,35 @@ func sqliteDirectInputCandidatesQuery(suppressions []DirectInputSuppression) (st
 // sqliteDirectInputCandidatesSQL 以 directInputCandidatesSQL 为唯一语义基准，
 // 仅做方言翻译：
 //   - 去 juhe_business./juhe_stats. 前缀；时间参数绑定固定毫秒文本。
-//   - binding/mapping LATERAL → 窗口 CTE（先例 gateway list.go 同款方言翻译）。
+//   - binding LATERAL → 窗口 CTE（先例 gateway list.go 同款方言翻译）。
 //     binding 用两层分区还原 PG LATERAL 的恒定单行语义：第一层
 //     ranked_group_bindings 按 (account, system_account, auth) 取各授权分区
 //     顶行（授权绑定臂：auth=X 账户取 X 分区内顶行）；第二层
 //     selected_group_bindings 对 rank=1 集合按 (account, system_account) 再取
 //     全局顶行（NULL 授权臂——全局顶必属其自身 auth 分区的 rank=1 集合），
 //     外层 join 二选一，杜绝 NULL 授权账户在多 auth 分区下 join 出多行的
-//     漂移。授权匹配挪到 join 条件避免 NULL 授权行匹配不上 partition；
-//     mapping 的 source_endpoint_family 属于唯一键的一部分，进入 partition
-//     才能保持「家族内取顶行」的 LATERAL 语义。
+//     漂移。授权匹配挪到 join 条件避免 NULL 授权行匹配不上 partition。
+//   - PG 的健康检查连接 LATERAL（health_check_connection_id 优先，否则
+//     enabled 连接按 id 升序首个）翻译为 resolved_health_connections 窗口
+//     CTE：按 account 分区内 `(id = health_check_connection_id) DESC, id ASC`
+//     取顶行，与 PG 版同一确定性取法；resource 账户语义（owner 取自身、授权
+//     实例取来源账户）由外层 join 的 CASE 条件承担。
 //   - `$3::boolean` → int 0/1；`IS DISTINCT FROM` → `IS NOT`；窗口排序与
 //     NULLS FIRST 原样保留（内核 3.53.4 支持窗口函数与 NULLS FIRST）。
+//   - 身份换轴与 preset 白名单语义见 directInputCandidatesSQL 注释，两方言
+//     必须同步演化。
 const sqliteDirectInputCandidatesSQL = `
-WITH ranked_group_bindings AS (
+WITH resolved_health_connections AS (
+  SELECT c.id, c.account_id, c.connection_preset_code, c.base_url,
+    ROW_NUMBER() OVER (
+      PARTITION BY c.account_id
+      ORDER BY (c.id = COALESCE(a.health_check_connection_id, '')) DESC, c.id ASC
+    ) AS conn_rank
+  FROM account_connections c
+  JOIN accounts a ON a.id = c.account_id
+  WHERE c.enabled = 1
+),
+ranked_group_bindings AS (
   SELECT ga.account_id, ga.system_account_id, ga.group_id, ga.account_authorization_id, ga.updated_at,
     ROW_NUMBER() OVER (
       PARTITION BY ga.account_id, ga.system_account_id, ga.account_authorization_id
@@ -740,24 +755,21 @@ selected_group_bindings AS (
     ) AS global_rank
   FROM ranked_group_bindings
   WHERE binding_rank = 1
-),
-ranked_model_mappings AS (
-  SELECT mm.account_id, mm.provider_code, mm.source_model, mm.source_endpoint_family, mm.upstream_model, mm.upstream_endpoint_family,
-    ROW_NUMBER() OVER (
-      PARTITION BY mm.account_id, mm.provider_code, mm.source_model, mm.source_endpoint_family
-      ORDER BY mm.updated_at DESC, mm.source_model ASC
-    ) AS mapping_rank
-  FROM account_model_mappings mm
-  WHERE mm.enabled = 1
-    AND (mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family)
 )
 SELECT
-  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.provider_code, a.provider_protocol_profile_id, a.protocol_code, a.protocol_version, a.type, a.client_compatibility, a.status, a.schedulable,
-  a.health_check_endpoint_mode, a.health_check_model, mapping.upstream_model, mapping.upstream_endpoint_family, a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
+  a.id, iv.current_version, a.config_revision, a.dispatch_revision, a.vendor_code,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.oauth_type ELSE source.oauth_type END,
+  a.protocol_code, a.protocol_version, a.type, a.status, a.schedulable,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END,
+  CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_model ELSE source.health_check_model END,
+  hc.connection_preset_code, hc.base_url,
+  a.credentials_encrypted, a.account_expires_at, a.cooldown_until, a.temporary_unavailable_continuous_probe_enabled, a.expedited_recovery_enabled,
   a.cooldown_retest_observation_started_at, a.cooldown_retest_generation,
   a.system_account_id,
   ra.id, ra.status, ra.expires_at, ra.limits_json, ra.resource_id, ra.resource_owner_system_account_id, ra.effective_source_team_id,
-  source.id, source.config_revision, source.provider_code, source.provider_protocol_profile_id, source.protocol_code, source.protocol_version, source.type, source.client_compatibility, source.status, source.schedulable,
+  source.id, source.config_revision, source.vendor_code, source.oauth_type, source.protocol_code, source.protocol_version, source.type,
+  source_hc.connection_preset_code, source_hc.base_url,
+  source.status, source.schedulable,
   source.account_expires_at, source.cooldown_until, source.last_error_code, source.credentials_encrypted,
   binding.group_id, binding.account_authorization_id,
   proxy.id, proxy.enabled, proxy.type, proxy.host, proxy.port, proxy.username, proxy.password_encrypted
@@ -765,6 +777,14 @@ FROM accounts a
 JOIN account_health_jobs_input_versions iv ON iv.account_id = a.id
 LEFT JOIN resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
 LEFT JOIN accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
+LEFT JOIN resolved_health_connections hc
+  ON a.authorization_instance_authorization_id IS NULL
+  AND hc.account_id = a.id
+  AND hc.conn_rank = 1
+LEFT JOIN resolved_health_connections source_hc
+  ON a.authorization_instance_authorization_id IS NOT NULL
+  AND source_hc.account_id = source.id
+  AND source_hc.conn_rank = 1
 LEFT JOIN selected_group_bindings binding
   ON binding.account_id = a.id
   AND binding.system_account_id = a.system_account_id
@@ -774,24 +794,10 @@ LEFT JOIN selected_group_bindings binding
     (a.authorization_instance_authorization_id IS NULL AND binding.global_rank = 1)
   )
 LEFT JOIN proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
-LEFT JOIN ranked_model_mappings mapping
-  ON mapping.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END
-  AND mapping.provider_code = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.provider_code ELSE source.provider_code END
-  AND mapping.source_model = a.health_check_model
-  AND mapping.source_endpoint_family = CASE
-    WHEN a.health_check_endpoint_mode IN ('chat_json', 'chat_sse') THEN 'chat_completions'
-    WHEN a.health_check_endpoint_mode IN ('responses_json', 'responses_sse') THEN 'responses'
-    WHEN a.health_check_endpoint_mode IN ('messages_json', 'messages_sse') THEN 'messages'
-    WHEN a.health_check_endpoint_mode = 'generate_content_json' THEN 'generate_content'
-    WHEN a.health_check_endpoint_mode = 'generate_content_sse' THEN 'stream_generate_content'
-    ELSE 'interactions'
-  END
-  AND mapping.mapping_rank = 1
 WHERE a.deleted_at IS NULL
-  AND a.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+  AND COALESCE(hc.connection_preset_code, source_hc.connection_preset_code) IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta')
   AND a.type IN ('api_key', 'oauth', 'google_oauth')
-  AND (a.provider_protocol_profile_id <> 'profile_hybrid_openai_chat_v1' OR mapping.upstream_model IS NOT NULL)
-  AND a.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
+  AND (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'images_json', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
   AND a.status IN ('active', 'pending_test', 'temporary_unavailable', 'rate_limited')
   -- Cooldown recovery is the path that restores a temporarily unavailable
   -- account. Legacy rows can retain schedulable=0, so do not let that stale
@@ -804,7 +810,7 @@ WHERE a.deleted_at IS NULL
     ra.id IS NOT NULL AND ra.status = 'active' AND (ra.expires_at IS NULL OR ra.expires_at > $1)
     AND ra.resource_type = 'account' AND ra.resource_id = source.id
     AND ra.resource_owner_system_account_id = source.system_account_id AND ra.grantee_system_account_id = a.system_account_id
-    AND source.provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
+    AND source_hc.connection_preset_code IN ('gpt_openai_v1', 'xai_openai_v1', 'deepseek_openai_v1', 'deepseek_anthropic_v1', 'anthropic_v1', 'glm_general_openai_v1', 'glm_coding_openai_v1', 'glm_coding_anthropic_v1', 'gemini_openai_chat_v1beta', 'gemini_native_v1beta', 'generic_openai_v1', 'generic_anthropic_v1', 'generic_gemini_v1beta') AND source.type IN ('api_key', 'oauth', 'google_oauth') AND source.status = 'active' AND source.schedulable = 1
     AND source.deleted_at IS NULL AND source.last_error_code IS NOT 'account_expired'
     AND (source.account_expires_at IS NULL OR source.account_expires_at > $1)
     AND (source.cooldown_until IS NULL OR source.cooldown_until <= $1)
@@ -813,7 +819,7 @@ WHERE a.deleted_at IS NULL
   -- image accounts eligible for activation, cooldown recovery, and explicit
   -- account loads (ignoreSchedule=$3), but never schedule an active image
   -- account merely because next_health_check_at is due.
-  AND ($3 OR a.status <> 'active' OR a.health_check_endpoint_mode <> 'images_json')
+  AND ($3 OR a.status <> 'active' OR (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) <> 'images_json')
   AND ($3 OR a.status IN ('temporary_unavailable', 'rate_limited') OR a.next_health_check_at IS NULL OR a.next_health_check_at <= $1 OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
   AND ($4 = '' OR a.id = $4)
 -- Keep activation work first, then interleave due cooldown recovery and

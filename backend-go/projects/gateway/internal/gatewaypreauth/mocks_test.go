@@ -578,7 +578,7 @@ func validRuntimeRow() *gatewayruntimecache.GatewayAPIKeyRow {
 		},
 		GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{{
 			ID: "binding_1", APIKeyID: "key_1", GroupID: "group_1",
-			Status: "active", GroupEnabled: 1, ProviderCode: "openai",
+			Status: "active", GroupEnabled: 1,
 		}},
 	}
 }

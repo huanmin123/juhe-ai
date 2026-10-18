@@ -55,6 +55,11 @@ func (h *testDB) exec(t *testing.T, query string, args ...any) {
 
 func (h *testDB) seedSchema(t *testing.T) {
 	t.Helper()
+	// 供应商解耦后的 fresh DDL 形态（maintenance pg_schema_business_tables
+	// 的 SQLite 等价窄投影）：accounts 无 provider_code/provider_protocol_profile_id/
+	// client_compatibility，身份列为 vendor_code/oauth_type/connection_driver_code；
+	// 连接面在 account_connections/account_endpoint_modes；支持模型经
+	// account_supported_models(model_id) 外键到 models。
 	h.exec(t, `
     CREATE TABLE accounts (
       id TEXT PRIMARY KEY,
@@ -63,11 +68,12 @@ func (h *testDB) seedSchema(t *testing.T) {
       type TEXT NOT NULL,
       status TEXT NOT NULL,
       schedulable INTEGER NOT NULL DEFAULT 1,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
-      provider_protocol_profile_id TEXT,
+      vendor_code TEXT,
+      connection_driver_code TEXT NOT NULL DEFAULT 'gpt',
+      oauth_type TEXT,
       protocol_code TEXT,
       protocol_version TEXT,
-      client_compatibility TEXT,
+      health_check_connection_id TEXT,
       health_check_model TEXT NOT NULL DEFAULT '',
       health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
       account_expires_at TEXT,
@@ -96,24 +102,48 @@ func (h *testDB) seedSchema(t *testing.T) {
     )`)
 	h.exec(t, `CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1)`)
 	h.exec(t, `
-    CREATE TABLE account_supported_models (
-      account_id TEXT NOT NULL,
-      provider_code TEXT,
-      model TEXT NOT NULL,
+    CREATE TABLE vendors (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1
+    )`)
+	h.exec(t, `
+    CREATE TABLE models (
+      id TEXT PRIMARY KEY,
+      vendor_code TEXT,
+      public_model TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      system_account_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT ''
     )`)
 	h.exec(t, `
-    CREATE TABLE account_model_mappings (
+    CREATE TABLE account_supported_models (
       account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
-      source_model TEXT NOT NULL,
-      source_endpoint_family TEXT NOT NULL,
-      upstream_model TEXT NOT NULL,
-      upstream_endpoint_family TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (account_id, model_id)
+    )`)
+	h.exec(t, `
+    CREATE TABLE account_connections (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      connection_preset_code TEXT NOT NULL,
+      protocol_surface_code TEXT,
+      base_url TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT '',
-      PRIMARY KEY (account_id, source_model, source_endpoint_family)
+      UNIQUE (account_id, connection_preset_code),
+      UNIQUE (account_id, id)
+    )`)
+	h.exec(t, `
+    CREATE TABLE account_endpoint_modes (
+      connection_id TEXT NOT NULL,
+      endpoint_mode TEXT NOT NULL,
+      PRIMARY KEY (connection_id, endpoint_mode)
     )`)
 	h.exec(t, `
     CREATE TABLE account_api_key_runtime_states (
@@ -147,7 +177,6 @@ func (h *testDB) seedSchema(t *testing.T) {
     CREATE TABLE groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       group_type TEXT,
       scheduling_policy_json TEXT
@@ -187,6 +216,34 @@ func (h *testDB) seedSchema(t *testing.T) {
     )`)
 }
 
+// seedModel 写入一条全局模型并绑定到账户支持模型集合，返回模型 ID。
+func (h *testDB) seedModel(t *testing.T, accountID, name string) string {
+	t.Helper()
+	modelID := "model-" + name
+	h.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+	    VALUES (?, 'gpt', ?, ?, 'global', 'active', ?) ON CONFLICT (id) DO NOTHING`,
+		modelID, name, name, nowMillisText())
+	h.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES (?, ?, ?)
+	    ON CONFLICT (account_id, model_id) DO NOTHING`, accountID, modelID, nowMillisText())
+	return modelID
+}
+
+// seedProbeConnection 写入账户的探针连接面（health-check 优先语义下的唯一
+// 连接行）并声明 endpoint modes，同时补齐账户 health_check_connection_id。
+func (h *testDB) seedProbeConnection(t *testing.T, accountID, preset, baseURL string, modes ...string) string {
+	t.Helper()
+	connectionID := "conn-" + accountID
+	h.exec(t, `INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+	    VALUES (?, ?, ?, 'openai_v1', ?, 1, ?, ?) ON CONFLICT (id) DO NOTHING`,
+		connectionID, accountID, preset, baseURL, nowMillisText(), nowMillisText())
+	for _, mode := range modes {
+		h.exec(t, `INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)
+		    ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`, connectionID, mode)
+	}
+	h.exec(t, `UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`, connectionID, accountID)
+	return connectionID
+}
+
 func (h *testDB) sealCredentials(t *testing.T, credentials map[string]any) string {
 	t.Helper()
 	envelope, err := accountcrypto.EncryptJSON(testSecret, credentials)
@@ -196,22 +253,23 @@ func (h *testDB) sealCredentials(t *testing.T, credentials map[string]any) strin
 	return envelope
 }
 
-// seedPoolAccount 写入一个双 Key 池账户（openai api_key、active、可调度、绑定分组）。
+// seedPoolAccount 写入一个双 Key 池账户（gpt api_key、active、可调度、绑定
+// 分组，连接面 gpt_openai_v1 + chat 双模式）。
 func (h *testDB) seedPoolAccount(t *testing.T, accountID string) (key1, key2 string) {
 	t.Helper()
 	h.seedSchema(t)
 	key1, key2 = "sk-key-one", "sk-key-two"
 	credentials := map[string]any{
-		"base_url":              "https://upstream.example.com/v1",
 		"api_keys":              []any{key1, key2},
 		"quota_recovery_policy": map[string]any{"windowHours": float64(24)},
 	}
 	h.exec(t, `
-    INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, health_check_model, health_check_endpoint_mode, credentials_encrypted, dispatch_revision)
-    VALUES (?, 'sys-1', '池账户', 'api_key', 'active', 1, 'gpt-test', 'chat_json', ?, 3)`,
+    INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, health_check_model, health_check_endpoint_mode, credentials_encrypted, dispatch_revision)
+    VALUES (?, 'sys-1', '池账户', 'api_key', 'active', 1, 'gpt', 'gpt-test', 'chat_json', ?, 3)`,
 		accountID, h.sealCredentials(t, credentials))
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model) VALUES (?, 'gpt-test')`, accountID)
-	h.exec(t, `INSERT INTO groups (id, system_account_id, provider_code, enabled) VALUES ('group-1', 'sys-1', 'openai', 1)`)
+	h.seedModel(t, accountID, "gpt-test")
+	h.seedProbeConnection(t, accountID, "gpt_openai_v1", "https://upstream.example.com/v1", "chat_json", "chat_sse")
+	h.exec(t, `INSERT INTO groups (id, system_account_id, enabled) VALUES ('group-1', 'sys-1', 1)`)
 	h.exec(t, `INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled) VALUES ('group-1', 'sys-1', ?, 1)`, accountID)
 	return key1, key2
 }
@@ -633,36 +691,31 @@ func TestLoadProbeViewFixedKey(t *testing.T) {
 	}
 }
 
-// TestLoadProbeViewCarriesHybridMappings verifies the saved-account manual
-// test receives the active mapping rows from the effective credential source.
-// The accountprobe layer then selects the exact row for a manual model/mode.
-func TestLoadProbeViewCarriesHybridMappings(t *testing.T) {
+// TestLoadProbeViewConnectionSurface 钉住供应商解耦后的探针视图连接面事实：
+// BaseURL 来自资源账户健康检查连接行（凭据 JSON 不再承载）、profile 由
+// connection_preset_code 派生、endpoint modes 来自 account_endpoint_modes。
+func TestLoadProbeViewConnectionSurface(t *testing.T) {
 	h := openTestDB(t)
-	h.seedPoolAccount(t, "hybrid-1")
-	h.exec(t, `UPDATE accounts
-    SET provider_code='hybrid', provider_protocol_profile_id='profile_hybrid_openai_chat_v1',
-        protocol_code='openai', protocol_version='v1', health_check_model='client-model',
-        health_check_endpoint_mode='chat_json'
-    WHERE id='hybrid-1'`)
-	h.exec(t, `UPDATE groups SET provider_code='hybrid' WHERE id='group-1'`)
-	h.exec(t, `DELETE FROM account_supported_models WHERE account_id='hybrid-1'`)
-	h.exec(t, `INSERT INTO account_supported_models (account_id, model) VALUES ('hybrid-1', 'client-model')`)
-	h.exec(t, `INSERT INTO account_model_mappings (
-      account_id, provider_code, source_model, source_endpoint_family,
-      upstream_model, upstream_endpoint_family, enabled, updated_at
-    ) VALUES ('hybrid-1', 'hybrid', 'client-model', 'chat_completions', 'claude-target', 'messages', 1, ?)`, nowMillisText())
-
+	h.seedPoolAccount(t, "conn-1")
 	view, err := h.store.LoadProbeView(context.Background(), accountquality.ProbeRequest{
-		AccountID: "hybrid-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
+		AccountID: "conn-1", GroupID: "group-1", SystemAccountID: "sys-1", Full: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view == nil || len(view.ModelMappings) != 1 {
-		t.Fatalf("hybrid view mappings=%+v", view)
+	if view == nil {
+		t.Fatal("view 不得为空")
 	}
-	mapping := view.ModelMappings[0]
-	if mapping.SourceModel != "client-model" || mapping.SourceEndpointFamily != "chat_completions" || mapping.UpstreamModel != "claude-target" || mapping.UpstreamEndpointFamily != "messages" {
-		t.Fatalf("hybrid mapping=%+v", mapping)
+	if view.BaseURL != "https://upstream.example.com/v1" {
+		t.Fatalf("base_url=%q（必须来自连接行）", view.BaseURL)
+	}
+	if view.ProviderProtocolProfileID != "profile_gpt_openai_v1" {
+		t.Fatalf("profile=%q（必须由 preset 派生）", view.ProviderProtocolProfileID)
+	}
+	if view.ProviderCode != "gpt" {
+		t.Fatalf("provider=%q（必须投影 vendor_code）", view.ProviderCode)
+	}
+	if !view.NormalizeEndpointModes[accountprobe.ModeChatJSON] || !view.NormalizeEndpointModes[accountprobe.ModeChatSSE] {
+		t.Fatalf("endpoint modes=%v（必须来自 account_endpoint_modes）", view.NormalizeEndpointModes)
 	}
 }

@@ -324,6 +324,8 @@ type ListItem struct {
 	OwnerSystemAccountID       string                             `json:"ownerSystemAccountId"`
 	OwnerSystemAccountName     *string                            `json:"ownerSystemAccountName,omitempty"`
 	Name                       string                             `json:"name"`
+	// ProviderCode 是响应形状兼容字段（Node GroupListItem 契约键保留）：组无
+	// provider 维度（供应商解耦设计 §8），恒空串，不再从 groups 读取。
 	ProviderCode               string                             `json:"providerCode"`
 	Description                *string                            `json:"description,omitempty"`
 	Enabled                    bool                               `json:"enabled"`
@@ -352,6 +354,8 @@ type Detail struct {
 	OwnerSystemAccountID   string                       `json:"ownerSystemAccountId"`
 	OwnerSystemAccountName *string                      `json:"ownerSystemAccountName,omitempty"`
 	Name                   string                       `json:"name"`
+	// ProviderCode 是响应形状兼容字段（Node GroupSummary 契约键保留）：组无
+	// provider 维度（供应商解耦设计 §8），恒空串，不再从 groups 读取。
 	ProviderCode           string                       `json:"providerCode"`
 	Description            *string                      `json:"description,omitempty"`
 	Enabled                bool                         `json:"enabled"`
@@ -391,7 +395,6 @@ type groupRow struct {
 	id              string
 	systemAccountID string
 	name            string
-	providerCode    string
 	description     sql.NullString
 	enabled         bool
 	isDefault       bool
@@ -401,12 +404,12 @@ type groupRow struct {
 	updatedAt       string
 }
 
-const groupRowColumns = "g.id, g.system_account_id, g.name, g.provider_code, g.description, g.enabled, g.is_default, g.group_type, g.scheduling_policy_json, g.created_at, g.updated_at"
+const groupRowColumns = "g.id, g.system_account_id, g.name, g.description, g.enabled, g.is_default, g.group_type, g.scheduling_policy_json, g.created_at, g.updated_at"
 
 func scanGroupRow(scan func(...any) error) (groupRow, error) {
 	var row groupRow
 	var enabled, isDefault int
-	err := scan(&row.id, &row.systemAccountID, &row.name, &row.providerCode, &row.description,
+	err := scan(&row.id, &row.systemAccountID, &row.name, &row.description,
 		&enabled, &isDefault, &row.groupType, &row.schedulingJSON, &row.createdAt, &row.updatedAt)
 	if err != nil {
 		return groupRow{}, err
@@ -465,15 +468,16 @@ func normalizeListPageValues(page, pageSize int) (int, int) {
 }
 
 // keywordFilter mirrors buildGroupFilter: case-sensitive prefix range over
-// name OR provider_code (textPrefixUpperBound).
+// name (textPrefixUpperBound)。供应商解耦后组无 provider 维度，keyword 不再
+// 匹配 provider_code（设计 §8）。
 func keywordFilter(keyword string) (string, []any) {
 	text := strings.TrimSpace(keyword)
 	if text == "" {
 		return "", nil
 	}
 	upper := textPrefixUpperBound(text)
-	return "(g.name >= ? AND g.name < ? OR g.provider_code >= ? AND g.provider_code < ?)",
-		[]any{text, upper, text, upper}
+	return "(g.name >= ? AND g.name < ?)",
+		[]any{text, upper}
 }
 
 func textPrefixUpperBound(value string) string {
@@ -501,7 +505,7 @@ type accessListRow struct {
 func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
 	var out accessListRow
 	var enabled, isDefault int
-	err := scan(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.providerCode, &out.row.description,
+	err := scan(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.description,
 		&enabled, &isDefault, &out.row.groupType, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
 		&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
 	if err != nil {
@@ -520,7 +524,7 @@ const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NU
 // column order matches groupRowColumns + the access columns (description
 // fifth) so the UNION ALL aligns positionally.
 func (s *Store) authorizedListArm() string {
-	return `SELECT g.id, g.system_account_id, g.name, g.provider_code, g.description,
+	return `SELECT g.id, g.system_account_id, g.name, g.description,
 			CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 			g.is_default,
 			COALESCE(s.group_type, g.group_type) AS group_type,
@@ -579,12 +583,12 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		if viewer == "" {
 			return &ListPageResult{Items: []ListItem{}, Page: page, PageSize: pageSize, GeneratedAt: s.nowISO()}, nil
 		}
-		clauses, outerArgs := rowFilter("", "", keyword, nil)
+		clauses, outerArgs := rowFilter("", keyword, nil)
 		outerWhere := ""
 		if len(clauses) > 0 {
 			outerWhere = " WHERE " + strings.Join(clauses, " AND ")
 		}
-		queryText = `SELECT id, system_account_id, name, provider_code, description, enabled, is_default,
+		queryText = `SELECT id, system_account_id, name, description, enabled, is_default,
 				group_type, scheduling_policy_json, created_at, updated_at,
 				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
 			FROM (
@@ -612,7 +616,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		scan = func(scanFn func(...any) error) (accessListRow, error) {
 			var out accessListRow
 			var enabled, isDefault int
-			err := scanFn(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.providerCode, &out.row.description,
+			err := scanFn(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.description,
 				&enabled, &isDefault, &out.row.groupType, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
 				&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
 			if err != nil {
@@ -953,7 +957,6 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 		OwnerSystemAccountID:   row.row.systemAccountID,
 		OwnerSystemAccountName: ptrString(names[row.row.systemAccountID]),
 		Name:                   row.row.name,
-		ProviderCode:           row.row.providerCode,
 		Description:            nullPtrString(row.row.description),
 		Enabled:                row.row.enabled,
 		IsDefault:              !authorized && row.row.isDefault,
@@ -1195,7 +1198,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		if viewer == "" {
 			return nil, nil
 		}
-		queryText = `SELECT id, system_account_id, name, provider_code, description, enabled, is_default,
+		queryText = `SELECT id, system_account_id, name, description, enabled, is_default,
 				group_type, scheduling_policy_json, created_at, updated_at,
 				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
 			FROM (
@@ -1203,7 +1206,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 				FROM ` + s.table("groups") + ` g
 				WHERE g.id = ? AND g.system_account_id = ?
 				UNION ALL
-				SELECT g.id, g.system_account_id, g.name, g.provider_code, g.description,
+				SELECT g.id, g.system_account_id, g.name, g.description,
 					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 					g.is_default,
 					COALESCE(s.group_type, g.group_type) AS group_type,
@@ -1299,7 +1302,6 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		OwnerSystemAccountID:   row.row.systemAccountID,
 		OwnerSystemAccountName: ptrString(names[row.row.systemAccountID]),
 		Name:                   row.row.name,
-		ProviderCode:           row.row.providerCode,
 		Description:            nullPtrString(row.row.description),
 		Enabled:                row.row.enabled,
 		IsDefault:              !authorized && row.row.isDefault,
@@ -1326,9 +1328,13 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 }
 
 // MutationInput is the normalized create/patch payload; nil pointers mean
-// "field absent" (hasOwnInput semantics).
+// "field absent" (hasOwnInput semantics)。API 入参 ProviderCode 兼容策略
+//（供应商解耦设计 §8：组无 provider 维度）：字段保留以兼容既有调用方
+//（管理面路由、aipublic 自动建组）——接受但忽略，Create/Patch 不落库不校验，
+// 也不计入 Empty()。
 type MutationInput struct {
-	Name             *string
+	Name *string
+	// ProviderCode 接受但忽略（见类型注释）；包内任何写路径不得消费。
 	ProviderCode     *string
 	Description      *string
 	Enabled          *bool
@@ -1336,15 +1342,17 @@ type MutationInput struct {
 	SchedulingPolicy any // decoded JSON object when present
 }
 
-// Empty reports whether no patchable field is present.
+// Empty reports whether no patchable field is present。
+// ProviderCode 是兼容入参，不计入可变更字段。
 func (m MutationInput) Empty() bool {
-	return m.Name == nil && m.ProviderCode == nil && m.Description == nil &&
+	return m.Name == nil && m.Description == nil &&
 		m.Enabled == nil && m.GroupType == nil && m.SchedulingPolicy == nil
 }
 
-// Create mirrors createGroupWithReceiptAsync: provider availability check,
-// normalized fields, owner-scoped unique name
-// (idx_groups_owner_provider_name_unique) and the gateway invalidation hook.
+// Create mirrors createGroupWithReceiptAsync: normalized fields, owner-scoped
+// unique name (idx_groups_owner_name_unique) and the gateway invalidation
+// hook。供应商解耦后组无 provider 维度：不再做 provider 可用性校验，也不落
+// provider_code 列（设计 §8）。
 func (s *Store) Create(ctx context.Context, input MutationInput, access AccessScope) (*ListItem, error) {
 	ctx = ensureCtx(ctx)
 	ownerID, err := access.writeSystemAccountID()
@@ -1352,10 +1360,6 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 		return nil, err
 	}
 	name, err := requiredText(input.Name, "分组名称")
-	if err != nil {
-		return nil, err
-	}
-	providerCode, err := requiredText(input.ProviderCode, "供应商")
 	if err != nil {
 		return nil, err
 	}
@@ -1375,16 +1379,13 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
-	if err := s.assertProviderAvailable(ctx, s.db, providerCode); err != nil {
-		return nil, err
-	}
 	now := s.nowISO()
 	id := s.newI("grp")
 	policyValue := policyJSONString(policyJSON)
 	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("groups")+`
-		(id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`),
-		id, ownerID, name, providerCode, description, boolToInt(enabled), groupType, policyValue, now, now)
+		(id, system_account_id, name, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`),
+		id, ownerID, name, description, boolToInt(enabled), groupType, policyValue, now, now)
 	if err != nil {
 		if duplicate := duplicateGroupNameError(err, name); duplicate != nil {
 			return nil, duplicate
@@ -1407,7 +1408,6 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 		OwnerSystemAccountID:   ownerID,
 		OwnerSystemAccountName: ownerName,
 		Name:                   name,
-		ProviderCode:           providerCode,
 		Description:            description,
 		Enabled:                enabled,
 		IsDefault:              false,
@@ -1440,23 +1440,6 @@ func (s *Store) lookupName(ctx context.Context, id string) *string {
 		return nil
 	}
 	return ptrString(names[id])
-}
-
-// assertProviderAvailable mirrors assertGroupPatchProviderRow +
-// findProviderOptionByCodeAsync route validation.
-func (s *Store) assertProviderAvailable(ctx context.Context, q queryer, code string) error {
-	var enabled sql.NullInt64
-	err := q.QueryRowContext(ctx, s.bind(`SELECT enabled FROM `+s.table("providers")+` WHERE code = ? LIMIT 1`), code).Scan(&enabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return &ValidationError{Message: "不支持的供应商：" + code}
-	}
-	if err != nil {
-		return err
-	}
-	if !enabled.Valid || enabled.Int64 != 1 {
-		return &ValidationError{Message: "供应商已停用：" + code}
-	}
-	return nil
 }
 
 // ownedGroupHasAccounts mirrors ownedGroupHasAccountsAsync.
@@ -1553,17 +1536,6 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		}
 		addChange("name", current.name, name)
 		nextName = name
-	}
-	if input.ProviderCode != nil {
-		providerCode, textErr := requiredText(input.ProviderCode, "供应商")
-		if textErr != nil {
-			return nil, textErr
-		}
-		if providerCode != current.providerCode {
-			assignments = append(assignments, "provider_code = ?")
-			updateArgs = append(updateArgs, providerCode)
-		}
-		addChange("providerCode", current.providerCode, providerCode)
 	}
 	if input.Description != nil {
 		description, textErr := nullableText(input.Description, "分组说明")
@@ -1683,22 +1655,6 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		return result, nil
 	}
 
-	if columnChanged(assignments, "provider_code") {
-		providerCode, textErr := requiredText(input.ProviderCode, "供应商")
-		if textErr != nil {
-			return nil, textErr
-		}
-		if assertErr := s.assertProviderAvailable(ctx, tx, providerCode); assertErr != nil {
-			return nil, assertErr
-		}
-		hasAccounts, hasErr := s.ownedGroupHasAccounts(ctx, tx, current.id)
-		if hasErr != nil {
-			return nil, hasErr
-		}
-		if hasAccounts {
-			return nil, &ValidationError{Message: "已有账户的分组不允许修改供应商"}
-		}
-	}
 	if columnChanged(assignments, "enabled") && !*input.Enabled && current.enabled {
 		if _, guardErr := s.assertRouteStrategiesCanLoseGroupAvailability(ctx, tx, current.id, current.name, "停用分组"); guardErr != nil {
 			return nil, guardErr
@@ -1746,8 +1702,10 @@ func columnChanged(assignments []string, column string) bool {
 
 func gatewayRuntimeChanged(fields []string) bool {
 	for _, field := range fields {
+		// providerCode 已随 groups.provider_code 退役（设计 §8），不再触发
+		// gateway runtime 失效。
 		switch field {
-		case "providerCode", "enabled", "groupType", "schedulingPolicy":
+		case "enabled", "groupType", "schedulingPolicy":
 			return true
 		}
 	}
@@ -2077,17 +2035,18 @@ func (s *Store) markStatsDirty(ctx context.Context, groupIDs []string, reason st
 	return nil
 }
 
-// duplicateGroupNameError mirrors isDuplicateGroupNameError.
+// duplicateGroupNameError mirrors isDuplicateGroupNameError。供应商解耦后
+// owner 内名称唯一索引无 provider 维度（idx_groups_owner_name_unique，设计
+// §8）。
 func duplicateGroupNameError(err error, name string) error {
 	if err == nil {
 		return nil
 	}
 	message := err.Error()
-	if strings.Contains(message, "idx_groups_owner_provider_name_unique") ||
-		strings.Contains(message, "idx_groups_owner_provider_name_unique_lower") ||
-		strings.Contains(message, "UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name") ||
-		strings.Contains(message, "UNIQUE constraint failed: juhe_business.groups.system_account_id, juhe_business.groups.provider_code, juhe_business.groups.name") {
-		return &ConflictError{Message: "同一供应商下分组名称已存在：" + name}
+	if strings.Contains(message, "idx_groups_owner_name_unique") ||
+		strings.Contains(message, "UNIQUE constraint failed: groups.system_account_id, groups.name") ||
+		strings.Contains(message, "UNIQUE constraint failed: juhe_business.groups.system_account_id, juhe_business.groups.name") {
+		return &ConflictError{Message: "同名分组已存在：" + name}
 	}
 	return nil
 }

@@ -39,12 +39,6 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
     )`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS account_api_key_runtime_states_account_fingerprint ON ` +
 			s.table("account_api_key_runtime_states") + ` (account_id, key_fingerprint)`,
-		`CREATE TABLE IF NOT EXISTS ` + s.table("account_supported_models") + ` (
-      account_id TEXT NOT NULL,
-      provider_code TEXT,
-      model TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT ''
-    )`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, s.bind(statement)); err != nil {
@@ -54,7 +48,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
-// ValidateCoreTables 校验探针族依赖的核心业务表存在（不代建）。
+// ValidateCoreTables 校验探针族依赖的核心业务表存在（不代建）。连接面/模型
+// 目录表（account_connections/account_endpoint_modes/models/
+// account_supported_models）属 canonical 业务表（maintenance schema 所有，
+// fresh DDL 恒存在），不进本装配门禁：门禁扩面会把窄表冷启动形态（statsverify
+// 布局）的探针族装配整体降级，改变既有接线契约；表缺失时读侧查询显式报错。
 func (s *Store) ValidateCoreTables(ctx context.Context) error {
 	tables := []string{"accounts", "groups", "group_accounts", "resource_authorizations"}
 	for _, table := range tables {

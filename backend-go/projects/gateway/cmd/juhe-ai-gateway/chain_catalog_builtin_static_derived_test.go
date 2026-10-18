@@ -31,9 +31,13 @@ import (
 // seedBuiltinStaticDerivedRows 种入无工具列的内置目录行（gpt-5.6-terra /
 // gpt-5.6-sol）、一条 custom 全局行（custom-plain-model，无内置对应行）、一条
 // personal custom 行整行覆盖内置 gpt-5.6-sol（cpm_override）与一条 personal
-// 全新自定义模型行（cpm_new_personal）。fixture 的 provider_model_catalog 与
-// 生产一致：没有 supported_tools / input_modalities / output_modalities 列，
-// 也不插入这三个键；custom_provider_models 同样无这三列。
+// 全新自定义模型行（cpm_new_personal）。
+//
+// 双面种子：chat 面目录读取链已收敛 models 单表（供应商与上游协议面重构设计
+// §3），行种 models（mode/协议由 supported_endpoint_modes_json 反推）；管理面
+// （internal/providers）仍读 provider_model_catalog / custom_provider_models
+// 旧表（迁移属后续切片），同内容行同步种旧表维持两面 parity 断言有效。两面
+// 目录表都没有 supported_tools / input_modalities / output_modalities 列。
 func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 	t.Helper()
 	now := "2026-09-04T00:00:00.000Z"
@@ -43,6 +47,35 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 			t.Fatalf("seed row: %v: %v", query, err)
 		}
 	}
+	// chat 面（models 单表）：builtin terra/sol + 三条 custom 行。
+	modelBuiltinInsert := `INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, catalog_order, release_date,
+			supported_endpoint_modes_json, source, catalog_visible,
+			max_output_tokens, input_usd_per_1m, output_usd_per_1m,
+			created_at, updated_at)
+		VALUES (?, 'gpt', ?, ?, 'builtin', 'active', 1, '2026-06-26',
+			'["chat_json","chat_sse","responses_json","responses_sse"]', 'builtin', 1,
+			?, 2.0, 12.0, ?, ?)`
+	seed(modelBuiltinInsert, "cat_terra", "gpt-5.6-terra", "gpt-5.6-terra", 128000, now, now)
+	seed(modelBuiltinInsert, "cat_sol", "gpt-5.6-sol", "gpt-5.6-sol", 64000, now, now)
+	seed(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
+			supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_cpm_plain', 'gpt', 'custom-plain-model', 'custom-plain-model', 'global', 'active', 1,
+			'["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
+	seed(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
+			supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_cpm_override', 'gpt', 'gpt-5.6-sol', 'gpt-5.6-sol', 'personal', ?, 'active', 1,
+			'["chat_json","chat_sse","responses_json","responses_sse"]', 1.5, ?, ?)`,
+		fixture.systemAccount, now, now)
+	seed(`INSERT INTO models (
+			id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
+			supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_cpm_new_personal', 'gpt', 'brand-new-personal-model', 'brand-new-personal-model', 'personal', ?, 'active', 1,
+			'["chat_json","chat_sse"]', 1.0, ?, ?)`,
+		fixture.systemAccount, now, now)
+	// 管理面（旧表，同内容行）：providers.Store 迁移 models 前的 parity 基准。
 	builtinInsert := `INSERT INTO provider_model_catalog (
 			id, status, provider_code, model, catalog_order, release_date,
 			supported_api_protocols_json, source, catalog_visible,
@@ -51,17 +84,14 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 		VALUES (?, 'active', 'gpt', ?, 1, '2026-06-26',
 			'["chat_completions","responses"]', 'builtin', 1,
 			?, 2.0, 12.0, ?, ?)`
-	seed(builtinInsert, "cat_terra", "gpt-5.6-terra", 128000, now, now)
-	seed(builtinInsert, "cat_sol", "gpt-5.6-sol", 64000, now, now)
-	// custom 行：global 行无内置对应行（全新自定义模型），不继承任何能力。
+	seed(builtinInsert, "cat_terra_admin", "gpt-5.6-terra", 128000, now, now)
+	seed(builtinInsert, "cat_sol_admin", "gpt-5.6-sol", 64000, now, now)
 	seed(`INSERT INTO custom_provider_models (
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			input_usd_per_1m, service_tier_prices_json, created_by, created_at, updated_at)
 		VALUES ('cpm_plain', 'gpt', 'custom-plain-model', 'global', NULL, 'active', 1,
-			'[]', '[]', '[]', 1.0, '{}', ?, ?, ?)`, now, now, now)
-	// custom 行：personal 行与内置行同 (provider, model)——scope 优先级整行替换
-	// 内置行后，能力三键按契约从被覆盖内置行继承（仅填空）。
+			'["chat_completions"]', '[]', '[]', 1.0, '{}', ?, ?, ?)`, now, now, now)
 	seed(`INSERT INTO custom_provider_models (
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
@@ -69,7 +99,6 @@ func seedBuiltinStaticDerivedRows(t *testing.T, fixture *chainFixture) {
 		VALUES ('cpm_override', 'gpt', 'gpt-5.6-sol', 'personal', ?, 'active', 1,
 			'["chat_completions","responses"]', '[]', '[]', 1.5, '{}', ?, ?, ?)`,
 		fixture.systemAccount, now, now, now)
-	// custom 行：personal 全新自定义模型（内置无对应行），保持空能力。
 	seed(`INSERT INTO custom_provider_models (
 			id, provider_code, model, scope, system_account_id, status, catalog_visible,
 			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
@@ -208,7 +237,7 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesSurviveCacheHit(t *testing.
 		t.Fatalf("first read missing web_search: %#v", terra)
 	}
 	// 删除底层行：第二次读取若回源将拿不到该模型，能取到即为缓存命中。
-	if _, err := fixture.db.Exec(`DELETE FROM provider_model_catalog`); err != nil {
+	if _, err := fixture.db.Exec(`DELETE FROM models`); err != nil {
 		t.Fatalf("delete catalog rows: %v", err)
 	}
 	second, err := fixture.cache.ListCachedProviderModelCatalogAsync(context.Background(), options)
@@ -326,7 +355,7 @@ func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 	}
 	// 胜出行是 custom personal 行（BUG 场景还原：scope 优先级整行替换）。
 	if overridden.Scope != "personal" || overridden.Source != "custom-personal" ||
-		staticDerivedStringPtrValue(overridden.ID) != "cpm_override" {
+		staticDerivedStringPtrValue(overridden.ID) != "mdl_cpm_override" {
 		t.Fatalf("gpt-5.6-sol must be won by the personal custom row: scope=%s source=%s id=%s",
 			overridden.Scope, overridden.Source, staticDerivedStringPtrValue(overridden.ID))
 	}

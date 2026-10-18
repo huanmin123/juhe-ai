@@ -239,7 +239,7 @@ func (s *Store) ClaimDueForProbe(ctx context.Context, limit int) ([]ProbeCandida
 	query := s.bind(fmt.Sprintf(`
     SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
       states.updated_at, states.recovery_started_at, states.last_error_code,
-      accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
+      accounts.name AS account_name, COALESCE(accounts.vendor_code, '') AS provider_code, accounts.protocol_code, accounts.protocol_version,
       accounts.type, accounts.credentials_encrypted, accounts.config_revision,
       states.probe_claim_token, states.probe_claimed_until
     FROM %s states

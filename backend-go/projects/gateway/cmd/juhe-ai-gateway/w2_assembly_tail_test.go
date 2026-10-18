@@ -1220,8 +1220,8 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 			t.Fatalf("seed: %v: %v", query, err)
 		}
 	}
-	seed(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('w2c_group', 'sys_admin', 'W2C 分组', 'openai', 1, 'personal', ?, ?)`, now, now)
+	seed(`INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('w2c_group', 'sys_admin', 'W2C 分组', 1, 'personal', ?, ?)`, now, now)
 	sealed, err := accounts.EncryptJSON("compose-test-secret", map[string]any{
 		"api_key":  "sk-w2c-upstream",
 		"base_url": upstreamBaseURL,
@@ -1229,17 +1229,21 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 	if err != nil {
 		t.Fatalf("encrypt credentials: %v", err)
 	}
+	// 供应商解耦（设计 §2.1/§4）：身份列 vendor_code/connection_driver_code，
+	// 支持模型走 models 单表 + model_id 外键。
 	seed(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			name, type, status, schedulable, credentials_encrypted, health_check_model, health_check_endpoint_mode,
 			created_at, updated_at
-		) VALUES ('w2c_acc', 'sys_admin', 'openai', 'profile_openai_openai_v1', 'openai', 'v1',
+		) VALUES ('w2c_acc', 'sys_admin', 'gpt', 'gpt', 'openai', 'v1',
 			'W2C 账户', 'api_key', 'active', 1, ?, 'gpt-test', 'chat_json', ?, ?)`,
 		sealed, now, now)
 	seed(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
 		VALUES ('sys_admin', 'w2c_group', 'w2c_acc', 1, ?, ?)`, now, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-		VALUES ('w2c_acc', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_w2c_sm_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, model_id, created_at)
+		VALUES ('w2c_acc', 'mdl_w2c_sm_gpt-test', ?)`, now)
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at)
 		VALUES ('w2c_rs', 'sys_admin', 'W2C 路由', 'normal', 'active', ?, ?)`, now, now)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
@@ -1252,11 +1256,10 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, scheduling_preference_id, created_at, updated_at)
 		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', ?, ?, ?, ?, 'active', 'schpref-builtin-chat-cost-first', ?, ?)`,
 		gatewayruntimecache.HashSecret(secret), secret[:8], secret[len(secret)-8:], secretEncrypted, now, now)
-	// openai 兼容目录源扩展后内置目录不含 openai 自身行；gpt-test 目录行
-	// 改种 custom_provider_models（global scope，带价格），与生产 openai
-	// 兼容目录的自定义模型来源一致。
-	seed(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, catalog_visible, supported_api_protocols_json, input_usd_per_1m, created_by, created_at, updated_at)
-		VALUES ('w2c_cat', 'openai', 'gpt-test', 'global', NULL, 'active', 1, '["chat_completions"]', 1.0, 'sys_admin', ?, ?)`, now, now)
+	// 供应商解耦（设计 §3）：目录读侧收敛 models 单表；gpt-test 目录行种
+	// openai vendor 的 global 自定义行（带价格）。
+	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_w2c_cat', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', 1, '["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
 }
 
 func TestW2CComposeAccountLockInvalidationCallback(t *testing.T) {

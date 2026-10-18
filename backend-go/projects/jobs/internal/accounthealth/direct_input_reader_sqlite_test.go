@@ -28,12 +28,13 @@ const sqliteDirectInputTestBusinessSchema = `
 CREATE TABLE accounts (
   id TEXT PRIMARY KEY,
   system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
-  provider_code TEXT NOT NULL DEFAULT 'openai',
-  provider_protocol_profile_id TEXT NOT NULL DEFAULT 'profile_openai_openai_v1',
+  vendor_code TEXT,
+  connection_driver_code TEXT NOT NULL DEFAULT 'generic_http',
+  oauth_type TEXT,
   protocol_code TEXT NOT NULL DEFAULT 'openai',
   protocol_version TEXT NOT NULL DEFAULT 'v1',
   type TEXT NOT NULL DEFAULT 'api_key',
-  client_compatibility TEXT NOT NULL DEFAULT '',
+  health_check_connection_id TEXT,
   status TEXT NOT NULL DEFAULT 'pending_test',
   schedulable INTEGER NOT NULL DEFAULT 1,
   credentials_encrypted TEXT NOT NULL DEFAULT '',
@@ -127,16 +128,22 @@ CREATE TABLE proxy_profiles (
   username TEXT,
   password_encrypted TEXT
 );
-CREATE TABLE account_model_mappings (
+CREATE TABLE account_connections (
+  id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL DEFAULT 'openai',
-  source_model TEXT NOT NULL,
-  source_endpoint_family TEXT NOT NULL,
-  upstream_model TEXT NOT NULL,
-  upstream_endpoint_family TEXT NOT NULL,
+  connection_preset_code TEXT NOT NULL,
+  protocol_surface_code TEXT,
+  base_url TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT '2026-09-01T00:00:00.000Z',
   updated_at TEXT NOT NULL DEFAULT '2026-09-01T00:00:00.000Z',
-  PRIMARY KEY (account_id, source_model, source_endpoint_family)
+  UNIQUE (account_id, connection_preset_code),
+  UNIQUE (account_id, id)
+);
+CREATE TABLE account_endpoint_modes (
+  connection_id TEXT NOT NULL,
+  endpoint_mode TEXT NOT NULL,
+  PRIMARY KEY (connection_id, endpoint_mode)
 );
 CREATE TABLE system_settings (
   system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
@@ -305,7 +312,8 @@ type sqliteDirectCandidateSeed struct {
 func newSQLiteDirectCandidateSeed(id string) sqliteDirectCandidateSeed {
 	return sqliteDirectCandidateSeed{
 		id: id, status: "pending_test", schedulable: 1, apiKey: "sk-" + id,
-		baseURL: "http://127.0.0.1:1", provider: "openai", profile: "profile_openai_openai_v1",
+		// 供应商解耦默认身份：generic_http + generic_openai_v1 连接（vendor NULL）。
+		baseURL: "http://127.0.0.1:1", provider: "", profile: "generic_openai_v1",
 		endpointMode: "chat_json", healthModel: "gpt-4o-mini",
 		withBinding: true, withVersion: true,
 		configRevision: 5, dispatchRevision: 7, inputVersion: 1,
@@ -323,8 +331,12 @@ func (f *sqliteDirectFixture) seedCandidate(t *testing.T, seed sqliteDirectCandi
 		}
 		credentials = envelope
 	}
+	vendor := any(seed.provider)
+	if vendor == "" {
+		vendor = nil
+	}
 	columns := map[string]any{
-		"id": seed.id, "provider_code": seed.provider, "provider_protocol_profile_id": seed.profile,
+		"id": seed.id, "vendor_code": vendor, "connection_driver_code": "generic_http",
 		"type": "api_key", "status": seed.status, "schedulable": seed.schedulable,
 		"credentials_encrypted": credentials, "health_check_model": seed.healthModel,
 		"health_check_endpoint_mode": seed.endpointMode,
@@ -367,6 +379,21 @@ func (f *sqliteDirectFixture) seedCandidate(t *testing.T, seed sqliteDirectCandi
 		if _, err := f.business.Exec(`INSERT INTO group_accounts (account_id, enabled) VALUES (?, 1) ON CONFLICT (group_id, account_id) DO NOTHING`, seed.id); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// 健康检查连接行：preset = profile 参数（profile_ 前缀剥离兼容旧种子值），
+	// base_url 单源连接行，声明候选的 endpoint mode。
+	connectionID := "conn-" + seed.id
+	preset := strings.TrimPrefix(seed.profile, "profile_")
+	if _, err := f.business.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled)
+		VALUES (?, ?, ?, 'openai_v1', ?, 1) ON CONFLICT (id) DO NOTHING`, connectionID, seed.id, preset, seed.baseURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.business.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)
+		ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`, connectionID, seed.endpointMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.business.Exec(`UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`, connectionID, seed.id); err != nil {
+		t.Fatal(err)
 	}
 }
 

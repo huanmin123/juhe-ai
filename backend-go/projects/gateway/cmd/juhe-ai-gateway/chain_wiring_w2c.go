@@ -141,7 +141,6 @@ func chainRoutingBindingRowsOf(bindings []gatewayruntimecache.GatewayAPIKeyGroup
 			Priority:        int64(binding.Priority),
 			Weight:          &weight,
 			Status:          binding.Status,
-			ProviderCode:    binding.ProviderCode,
 			GroupEnabled:    int64(binding.GroupEnabled),
 		})
 	}
@@ -163,7 +162,6 @@ func chainCacheBindingRowOf(row gatewayrouting.GroupBindingRow) gatewayruntimeca
 		Priority:        int(row.Priority),
 		Weight:          weight,
 		Status:          row.Status,
-		ProviderCode:    row.ProviderCode,
 		GroupEnabled:    int(row.GroupEnabled),
 	}
 }

@@ -31,7 +31,9 @@ import (
 // ensure 建表（account_model_mappings + providers、provider_protocol_
 // profiles、provider_protocol_profile_families、provider_model_catalog、
 // custom_provider_models、两张 provider default health-check），存量数据
-// 迁移语义不变。
+// 迁移语义不变。A 路线撤 shim 批（同日第三笔）：迁移窗口 shim 一次性收敛
+// 撤除（设计 §9 第 11 条：删除所有旧字段和旧 seed，不提供兼容分支），上述
+// 8 张旧表从名单撤回，存量数据 DROP 由迁移命令处理。
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -54,7 +56,6 @@ var goldenBusinessTables = []string{
 	"account_list_availability_projections",
 	"account_list_availability_runtime_overlays",
 	"account_lock_states",
-	"account_model_mappings",
 	"account_name_search_documents",
 	"account_name_search_terms",
 	"account_quality_enforcements",
@@ -70,7 +71,6 @@ var goldenBusinessTables = []string{
 	"announcements",
 	"api_key_schedule_status_events",
 	"api_keys",
-	"custom_provider_models",
 	"external_integration_source_tokens",
 	"external_integration_sources",
 	"global_settings",
@@ -90,12 +90,6 @@ var goldenBusinessTables = []string{
 	"openai_compatible_vector_stores",
 	"protocol_endpoint_families",
 	"protocols",
-	"provider_default_health_check_models",
-	"provider_model_catalog",
-	"provider_protocol_profile_families",
-	"provider_protocol_profiles",
-	"provider_system_default_health_check_models",
-	"providers",
 	"proxy_latency_projection_cursors",
 	"proxy_latency_projection_receipts",
 	"proxy_profiles",
@@ -244,7 +238,12 @@ var goldenSchemaCounts = SQLiteResult{
 	// profile families、provider_model_catalog、custom_provider_models、
 	// 两张 provider default health-check）运行时仍读写，恢复 ensure 建表，
 	// 存量数据迁移语义不变；旧表 6 枚索引不补建，Indexes 204 不变。
-	Business: SchemaCounts{Tables: 81, Indexes: 204},
+	// 81→73：A 路线撤 shim 批（同日第三笔）——迁移窗口 shim 一次性收敛撤除
+	//（设计 §9 第 11 条：删除所有旧字段和旧 seed，不提供兼容分支）：撤回
+	// 74→81 恢复的 8 张旧表 ensure 建表与 account_model_mappings，配套旧
+	// seed（pgSeedLegacyProviders/Profiles、旧 provider_model_catalog 目录
+	// 种子）同批删除；Indexes 204 不变（旧表索引从未补建）。
+	Business: SchemaCounts{Tables: 73, Indexes: 204},
 	// 65/124→59/112：六监控表退役 -6 表 -12 索引（f1991b708 名单已删、
 	// 计数漏改；2026-10-17 专门批取证回正）。
 	Stats:        SchemaCounts{Tables: 59, Indexes: 112},
@@ -259,8 +258,9 @@ var goldenSchemaCounts = SQLiteResult{
 // verify every schema exactly). 155→152：供应商与上游协议面重构批 -8/+5；
 // 152→153：2026-10-18 修复批恢复旧 account_model_mappings ensure 建表；
 // 153→160：2026-10-18 修复批（同日第二笔）恢复其余 7 张旧供应商表 ensure
-// 建表。
-const goldenTotalTables = 160
+// 建表；160→152：A 路线撤 shim 批（同日第三笔）一次性撤回上述 8 张旧表
+// ensure 建表。
+const goldenTotalTables = 152
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one

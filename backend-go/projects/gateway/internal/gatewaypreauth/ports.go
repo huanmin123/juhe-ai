@@ -499,9 +499,10 @@ type ResponseSink interface {
 	SendGeminiModelsGatewayResponse(input ModelsResponseInput) error
 }
 
-// GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影：绑定行的
-// (GroupID, ProviderCode) 对（设计 4.1/6.4 的绑定输入；canonical 定义在本包，
-// gatewayresponse 以别名引用）。
+// GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影：绑定行的激
+// 活分组（设计 6.4 的绑定输入；canonical 定义在本包，gatewayresponse 以别名
+// 引用）。供应商解耦后绑定行不再携带 provider 维度（设计 §8），ProviderCode
+// 为过渡字段恒空串，待消费方切片一并移除。
 type GatewayModelBinding struct {
 	GroupID      string
 	ProviderCode string

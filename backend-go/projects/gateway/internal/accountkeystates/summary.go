@@ -168,7 +168,7 @@ func (s *Store) loadSummarySourceRows(ctx context.Context, ids []string) ([]summ
 	queryTemplate := `
     SELECT accounts.id AS view_account_id,
       COALESCE(source_accounts.id, accounts.id) AS source_account_id,
-      COALESCE(source_accounts.provider_code, accounts.provider_code) AS provider_code,
+      COALESCE(source_accounts.vendor_code, accounts.vendor_code, '') AS provider_code,
       COALESCE(source_accounts.protocol_code, accounts.protocol_code) AS protocol_code,
       COALESCE(source_accounts.protocol_version, accounts.protocol_version) AS protocol_version,
       COALESCE(source_accounts.type, accounts.type) AS type,

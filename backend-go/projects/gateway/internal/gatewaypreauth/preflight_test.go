@@ -249,7 +249,6 @@ func TestPreflight_NormalRouteFailed(t *testing.T) {
 			Outcome:    NormalRouteOutcomeFailed,
 			StatusCode: 404, Type: "invalid_request_error", Code: "model_not_routable_for_api_key",
 			Message: "当前 API Key 无法路由该模型", RequestedModel: "gpt-x",
-			MatchedProviderCodes: []string{"openai"},
 		}}
 		s.RuntimeCache = &fakeRuntimeCache{
 			runtimeByKey: map[string]gatewayruntimecache.GatewayRuntime{"sk-good": validRuntime()},
@@ -528,19 +527,19 @@ func TestUniqueActiveRouteGroupIds(t *testing.T) {
 }
 
 func TestGatewayModelsBindings(t *testing.T) {
+	// 供应商解耦（设计 §8）：绑定行不再携带 provider 维度，去重只按归一化
+	// GroupID；全部激活绑定均有效，非 active 与空组剔除。
 	row := &gatewayruntimecache.GatewayAPIKeyRow{GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-		{GroupID: "g1", ProviderCode: "openai", Status: "active"},
-		{GroupID: " g1 ", ProviderCode: " openai ", Status: "active"}, // 同组同 provider 去重
-		{GroupID: "g2", ProviderCode: "openai", Status: "active"},     // 不同组不去重
-		{GroupID: "g1", ProviderCode: "anthropic", Status: "active"},  // 同组不同 provider 不去重
-		{GroupID: "g3", ProviderCode: "gemini", Status: "disabled"},   // 非 active 剔除
-		{GroupID: "g4", ProviderCode: "", Status: "active"},           // 空 provider 剔除
+		{GroupID: "g1", Status: "active"},
+		{GroupID: " g1 ", Status: "active"}, // 同组去重（TrimSpace 归一）
+		{GroupID: "g2", Status: "active"},   // 不同组不去重
+		{GroupID: "g3", Status: "disabled"}, // 非 active 剔除
+		{GroupID: "", Status: "active"},     // 空组剔除
 	}}
 	bindings := gatewayModelsBindings(row)
 	want := []GatewayModelBinding{
-		{GroupID: "g1", ProviderCode: "openai"},
-		{GroupID: "g2", ProviderCode: "openai"},
-		{GroupID: "g1", ProviderCode: "anthropic"},
+		{GroupID: "g1"},
+		{GroupID: "g2"},
 	}
 	if len(bindings) != len(want) {
 		t.Fatalf("bindings = %v, want %v", bindings, want)

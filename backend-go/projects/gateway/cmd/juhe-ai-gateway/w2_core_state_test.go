@@ -1128,7 +1128,6 @@ func TestW2ARoutingCacheReadErrorArms(t *testing.T) {
 	}
 	if _, err := cache.ResolveCachedProviderModelRouteAsync(context.Background(), gatewayrouting.ProviderModelRouteInput{
 		Model:           "gpt-test",
-		ProviderCodes:   []string{"openai"},
 		SystemAccountID: "sys",
 	}); err == nil {
 		t.Fatalf("provider route read on closed db must fail")
@@ -1156,11 +1155,11 @@ func TestW2ARoutingNormalResolveError(t *testing.T) {
 		GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
 			{
 				ID: "b1", APIKeyID: "key_w2a", SystemAccountID: "sys", GroupID: "g_w2a",
-				Status: "active", ProviderCode: "openai", GroupEnabled: 1,
+				Status: "active", GroupEnabled: 1,
 			},
 			{
 				ID: "b2", APIKeyID: "key_w2a", SystemAccountID: "sys", GroupID: "g_w2b",
-				Status: "active", ProviderCode: "anthropic", GroupEnabled: 1,
+				Status: "active", GroupEnabled: 1,
 			},
 		},
 	}

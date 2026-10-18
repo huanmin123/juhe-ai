@@ -117,7 +117,7 @@ func TestW1AccountBalanceOwnerHealth(t *testing.T) {
 func TestW1GroupBindingRowProjections(t *testing.T) {
 	bindings := []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{{
 		ID: "bind_1", APIKeyID: "key_1", SystemAccountID: "sys_1", GroupID: "grp_1",
-		Priority: 3, Weight: 7, Status: "active", ProviderCode: "openai", GroupEnabled: 1,
+		Priority: 3, Weight: 7, Status: "active", GroupEnabled: 1,
 	}}
 	projected := chainRoutingBindingRowsOf(bindings)
 	if len(projected) != 1 || projected[0].ID != "bind_1" || projected[0].Weight == nil || *projected[0].Weight != 7 {

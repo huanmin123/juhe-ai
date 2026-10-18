@@ -299,7 +299,7 @@ func (d *Deps) loadAiHealthAccountPage(r *http.Request, scope AccessScope, optio
 		SELECT
 			accounts.id,
 			`+systemAccountExpr+` AS system_account_name,
-			COALESCE(source_accounts.provider_code, accounts.provider_code) AS provider_code,
+			COALESCE(source_accounts.vendor_code, accounts.vendor_code, '') AS provider_code,
 			accounts.name,
 			CASE
 				WHEN accounts.authorization_instance_authorization_id IS NOT NULL

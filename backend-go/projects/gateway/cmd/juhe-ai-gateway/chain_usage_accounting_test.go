@@ -70,6 +70,7 @@ func accountingMappedSecret() gatewayruntimecache.OpenAIAccountSecret {
 		ID:                          "acc-accounting",
 		Name:                        "accounting-account",
 		ProviderCode:                "openai",
+		VendorCode:                  "openai",
 		ProviderProtocolProfileID:   "openai-default",
 		ProtocolCode:                gatewayopenai.ProtocolCode,
 		ProtocolVersion:             gatewayopenai.ProtocolVersion,

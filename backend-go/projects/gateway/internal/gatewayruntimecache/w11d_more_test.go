@@ -400,7 +400,7 @@ func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 		o.Logger = logger
 	})
 	// 首次解析：装载活性集合（空名跳过）并写共享。
-	if _, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
+	if _, err := svc.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false); err != nil {
 		t.Fatal(err)
 	}
 	// 冷进程共享命中路径。
@@ -409,7 +409,7 @@ func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cold.Close()
-	resolution, err := cold.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false)
+	resolution, err := cold.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false)
 	if err != nil || resolution.Outcome != ProviderModelRouteMatched {
 		t.Fatalf("共享命中 = %+v err=%v", resolution, err)
 	}
@@ -417,7 +417,7 @@ func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 	failing := newTestService(t, models, clock, func(o *Options) { o.Logger = logger })
 	failing.sharedModelsDir = &whReadErrShared{}
 	failing.sharedCatalog = &whReadErrShared{}
-	if _, err := failing.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
+	if _, err := failing.ResolveCachedProviderModelRouteAsync(ctx, "m1", "sys", false); err != nil {
 		t.Fatal(err)
 	}
 	events := strings.Join(logger.snapshot(), ",")

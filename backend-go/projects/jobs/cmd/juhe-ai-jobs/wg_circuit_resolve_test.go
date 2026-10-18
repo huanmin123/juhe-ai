@@ -34,14 +34,21 @@ func wgSeedRecoveryAccount(t *testing.T, store *proberepoStoreHandle) string {
 		t.Fatal(err)
 	}
 	statements := []string{
-		`INSERT INTO groups (id, system_account_id, provider_code) VALUES ('g-rt', 'sys-rt', 'openai')`,
+		`INSERT INTO groups (id, system_account_id) VALUES ('g-rt', 'sys-rt')`,
 		`INSERT INTO group_accounts (group_id, system_account_id, account_id) VALUES ('g-rt', 'sys-rt', 'acc-rt')`,
-		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, provider_code, credentials_encrypted, config_revision, dispatch_revision)
-		 VALUES ('acc-rt', 'sys-rt', 'rt', 'api_key', 'active', 1, 'openai', ?, 1, 2)`,
+		`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, vendor_code, connection_driver_code, credentials_encrypted, config_revision, dispatch_revision)
+		 VALUES ('acc-rt', 'sys-rt', 'rt', 'api_key', 'active', 1, 'gpt', 'gpt', ?, 1, 2)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, created_at)
+		 VALUES ('model-acc-rt', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '')`,
+		`INSERT INTO account_supported_models (account_id, model_id, created_at) VALUES ('acc-rt', 'model-acc-rt', '')`,
+		`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		 VALUES ('conn-acc-rt', 'acc-rt', 'gpt_openai_v1', 'openai_v1', 'http://127.0.0.1:1', 1, '', '')`,
+		`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn-acc-rt', 'chat_json')`,
+		`UPDATE accounts SET health_check_connection_id = 'conn-acc-rt' WHERE id = 'acc-rt'`,
 	}
 	for index, statement := range statements {
 		var execErr error
-		if index == len(statements)-1 {
+		if index == 2 {
 			_, execErr = store.db.Exec(statement, envelope)
 		} else {
 			_, execErr = store.db.Exec(statement)

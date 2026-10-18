@@ -4,14 +4,13 @@
 // groups（无供应商维度）、models（provider_model_catalog/custom_provider_
 // models 的唯一物理表，目录快照经 modelSeedTargetRows 投影后 bulk upsert，
 // 过期行按 ShutdownDate 写 'disabled'）。provider_protocol_profiles 及其
-// family 绑定 seed 曾随旧表退役（§1.1 连接器注册表接管）；2026-10-18 修复批
-// 恢复旧 providers / profiles / family 绑定种子（迁移窗口并存，逐字取回
-// dbb2543e6^ 版本，幂等语义不变）——运行时 accounts 写路径仍以 providers ×
-// provider_protocol_profiles JOIN 校验账户创建，fresh 种子库缺行会在创建
-// 账户时 400。custom 模型同名清理随 custom_provider_models 表退役（同名
-// 冲突改由 models 身份唯一索引与应用层写事务承接）。pg_schema.go already
-// carried the portable subset (EnsurePostgresSeeds); this file completes it
-// with the pieces the
+// family 绑定 seed 随旧表退役（§1.1 连接器注册表接管）；旧 providers /
+// profiles / family 绑定种子与旧 provider_model_catalog 目录种子的迁移窗口
+// shim 已按 A 路线一次性收敛撤除（设计 §9 第 11 条：删除所有旧字段和旧
+// seed，不提供兼容分支）。custom 模型同名清理随 custom_provider_models 表
+// 退役（同名冲突改由 models 身份唯一索引与应用层写事务承接）。pg_schema.go
+// already carried the portable subset (EnsurePostgresSeeds); this file
+// completes it with the pieces the
 // pg_schema.go header lists as deliberately omitted:
 //
 //   - the models bulk upsert (212 rows x 40 parameters, the static rows are
@@ -42,7 +41,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedprefdomain"
@@ -105,19 +103,6 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		}
 	}
 
-	// 2026-10-18 修复批恢复旧 provider 种子（迁移窗口并存）：运行时 accounts
-	// 写路径仍以 providers × provider_protocol_profiles JOIN 校验账户创建，
-	// fresh 种子库必须写入旧 providers 行（dbb2543e6 把本循环改指 vendors 后
-	// 旧表无数据）。语句与数据逐字取回 dbb2543e6^ 版本，幂等语义不变。
-	for _, provider := range pgSeedLegacyProviders {
-		if err := exec(pgSeedLegacyProviderInsert, provider.ID, provider.Code, provider.Name, provider.Description, pgNullableText(provider.ParentCode), provider.Enabled, provider.DefaultSupportedModelsJSON, now, now); err != nil {
-			return PGSeedResult{}, err
-		}
-		if err := exec(pgSeedLegacyProviderDefaultModelsRepair, provider.DefaultSupportedModelsJSON, now, provider.Code); err != nil {
-			return PGSeedResult{}, err
-		}
-	}
-
 	// Node (SQLite seed-defaults.ts): strip codex-auto-review from the GPT
 	// vendor default model list. PG 老库同样可能残留该已退役模型：上面的
 	// pgSeedProviderInsert 是 ON CONFLICT DO NOTHING，老行原样保留，而
@@ -130,12 +115,6 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 	// 内置模型目录：models bulk upsert（含 ShutdownDate 已过的 disabled 行）
 	// 加受引用守卫保护的 stale builtin disable。
 	if err := seedPostgresModelCatalog(ctx, client, exec, options, now, &result); err != nil {
-		return PGSeedResult{}, err
-	}
-
-	// 2026-10-18 修复批：旧 provider_model_catalog 目录种子与新 models 种子
-	// 并存（数据同源），供运行时目录断言在迁移窗口内读取。
-	if err := seedPostgresLegacyModelCatalog(ctx, client, exec, options, now, &result); err != nil {
 		return PGSeedResult{}, err
 	}
 
@@ -175,27 +154,6 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		}
 	}
 
-	// 2026-10-18 修复批恢复旧 profile 种子（迁移窗口并存）：循环顺序沿旧提交
-	// ——protocols/families（profiles 外键父表）之后写 profiles，再做
-	// account_types 守卫修复与 family 绑定；profile 行 updated_at 按序号
-	// 逐毫秒递增的旧语义保留。
-	baseTime := options.nowTime()
-	for index, profile := range pgSeedLegacyProfiles {
-		profileUpdatedAt := seedTimestamp(baseTime.Add(time.Duration(index) * time.Millisecond))
-		if err := exec(pgSeedLegacyProfileInsert, profile.ID, profile.ProviderCode, profile.Name, profile.Description, profile.Enabled, profile.ProtocolCode, profile.ProtocolVersion, profile.BaseURL, profile.DefaultHealthCheckModel, seedStringify(profile.AccountTypes), seedStringify(profile.Capabilities), now, profileUpdatedAt); err != nil {
-			return PGSeedResult{}, err
-		}
-	}
-	if err := seedPostgresRepairLegacyProfileAccountTypes(ctx, client, exec, now); err != nil {
-		return PGSeedResult{}, err
-	}
-	for _, profile := range pgSeedLegacyProfiles {
-		for _, familyCode := range profile.EndpointFamilies {
-			if err := exec(pgSeedLegacyProfileFamilyInsert, profile.ID, familyCode, now, now); err != nil {
-				return PGSeedResult{}, err
-			}
-		}
-	}
 	for _, group := range pgSeedGroups {
 		if err := exec(pgSeedGroupDefaultRepair, group.SystemAccountID, group.ID); err != nil {
 			return PGSeedResult{}, err
@@ -655,289 +613,6 @@ func buildPostgresModelSeedUpsert(rows []modelSeedTargetRow, now string) (string
 		rowTemplates = append(rowTemplates, row)
 	}
 	return pgSeedModelsColumns + strings.Join(rowTemplates, ",\n          ") + pgSeedModelsUpsertSuffix, args
-}
-
-// 2026-10-18 修复批恢复旧 provider_model_catalog 目录种子（迁移窗口并存）：
-// dbb2543e6 把目录种子改写为新 models 表后旧目录表无种子行，运行时目录断
-// 言（providers.Store.listProviderModelCatalog 读 provider_model_catalog /
-// custom_provider_models）在 fresh 种子库判「支持模型不在目录」。以下语句
-// 与函数逐字取回 dbb2543e6^ 版本，幂等语义不变（manual-override 感知
-// ON CONFLICT 与引用守卫 stale disable）；数据同源 activeModelCatalogSeedRows，
-// 与新 models 种子并存。种子语句不计 DDL golden。
-// pgSeedLegacyModelCatalogColumns lists the 40 target columns of the Node bulk
-// upsert (status is the 'active' literal, the other 39 are parameters).
-const pgSeedLegacyModelCatalogColumns = `
-        INSERT INTO "juhe_business"."provider_model_catalog" (
-          id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
-          supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
-          default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
-          codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
-          input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
-          cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
-          long_context_input_token_threshold, long_context_input_token_threshold_inclusive, long_context_input_cost_multiplier, long_context_output_cost_multiplier,
-          image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-          output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
-        ) VALUES
-          `
-
-// pgSeedLegacyModelCatalogBulkUpsertSuffix is the manual-override aware ON CONFLICT
-// clause of the Node bulk upsert (postgres-seed-defaults.ts).
-const pgSeedLegacyModelCatalogBulkUpsertSuffix = `
-        ON CONFLICT(provider_code, model) DO UPDATE SET
-          status = CASE
-            WHEN "juhe_business"."provider_model_catalog".source IN ('manual-override', 'manual-visibility-override')
-            THEN "juhe_business"."provider_model_catalog".status
-            ELSE excluded.status
-          END,
-          mode = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".mode ELSE excluded.mode END,
-          catalog_order = excluded.catalog_order,
-          release_date = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".release_date ELSE excluded.release_date END,
-          shutdown_date = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".shutdown_date ELSE excluded.shutdown_date END,
-          supported_api_protocols_json = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".supported_api_protocols_json ELSE excluded.supported_api_protocols_json END,
-          supported_service_tiers_json = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".supported_service_tiers_json ELSE excluded.supported_service_tiers_json END,
-          supported_reasoning_efforts_json = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".supported_reasoning_efforts_json ELSE excluded.supported_reasoning_efforts_json END,
-          default_reasoning_effort = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".default_reasoning_effort ELSE excluded.default_reasoning_effort END,
-          codex_supported_reasoning_levels_json = excluded.codex_supported_reasoning_levels_json,
-          codex_default_reasoning_level = excluded.codex_default_reasoning_level,
-          codex_multi_agent_version = excluded.codex_multi_agent_version,
-          context_window_tokens = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".context_window_tokens ELSE excluded.context_window_tokens END,
-          max_input_tokens = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".max_input_tokens ELSE excluded.max_input_tokens END,
-          max_output_tokens = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".max_output_tokens ELSE excluded.max_output_tokens END,
-          max_tokens = excluded.max_tokens,
-          input_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".input_usd_per_1m ELSE excluded.input_usd_per_1m END,
-          output_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".output_usd_per_1m ELSE excluded.output_usd_per_1m END,
-          cached_input_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".cached_input_usd_per_1m ELSE excluded.cached_input_usd_per_1m END,
-          cache_write_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".cache_write_usd_per_1m ELSE excluded.cache_write_usd_per_1m END,
-          cache_write_1h_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".cache_write_1h_usd_per_1m ELSE excluded.cache_write_1h_usd_per_1m END,
-          cache_storage_usd_per_1m_per_hour = CASE
-            WHEN "juhe_business"."provider_model_catalog".source = 'manual-override'
-            THEN coalesce("juhe_business"."provider_model_catalog".cache_storage_usd_per_1m_per_hour, excluded.cache_storage_usd_per_1m_per_hour)
-            ELSE excluded.cache_storage_usd_per_1m_per_hour
-          END,
-          service_tier_prices_json = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".service_tier_prices_json ELSE excluded.service_tier_prices_json END,
-          long_context_input_token_threshold = excluded.long_context_input_token_threshold,
-          long_context_input_token_threshold_inclusive = excluded.long_context_input_token_threshold_inclusive,
-          long_context_input_cost_multiplier = excluded.long_context_input_cost_multiplier,
-          long_context_output_cost_multiplier = excluded.long_context_output_cost_multiplier,
-          image_input_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".image_input_usd_per_1m ELSE excluded.image_input_usd_per_1m END,
-          image_output_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".image_output_usd_per_1m ELSE excluded.image_output_usd_per_1m END,
-          audio_input_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".audio_input_usd_per_1m ELSE excluded.audio_input_usd_per_1m END,
-          audio_output_usd_per_1m = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".audio_output_usd_per_1m ELSE excluded.audio_output_usd_per_1m END,
-          output_usd_per_image = CASE WHEN "juhe_business"."provider_model_catalog".source = 'manual-override' THEN "juhe_business"."provider_model_catalog".output_usd_per_image ELSE excluded.output_usd_per_image END,
-          supports_prompt_caching = excluded.supports_prompt_caching,
-          catalog_visible = CASE
-            WHEN "juhe_business"."provider_model_catalog".source IN ('manual-override', 'manual-visibility-override')
-            THEN "juhe_business"."provider_model_catalog".catalog_visible AND excluded.catalog_visible
-            ELSE excluded.catalog_visible
-          END,
-          source = CASE
-            WHEN "juhe_business"."provider_model_catalog".source IN ('manual-override', 'manual-visibility-override')
-            THEN "juhe_business"."provider_model_catalog".source
-            ELSE excluded.source
-          END,
-          updated_at = excluded.updated_at
-      `
-
-// pgSeedLegacyStaleBuiltInModelsDisable is the Node stale built-in model disable
-// with the PostgreSQL reference guards (manual sources, supported models,
-// mappings, health-check models and account health-check models).
-const pgSeedLegacyStaleBuiltInModelsDisable = `
-    UPDATE "juhe_business"."provider_model_catalog"
-    SET status = 'disabled', catalog_visible = false, updated_at = $1
-    WHERE provider_code IN ('gpt', 'anthropic', 'gemini', 'deepseek', 'glm', 'xai')
-      AND source NOT IN ('manual-override', 'manual-visibility-override')
-      AND NOT EXISTS (
-        SELECT 1
-        FROM jsonb_to_recordset($2::jsonb) AS built_in(provider_code text, model text)
-        WHERE built_in.provider_code = "juhe_business"."provider_model_catalog".provider_code
-          AND built_in.model = "juhe_business"."provider_model_catalog".model
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "juhe_business"."account_supported_models" AS supported_model
-        WHERE supported_model.provider_code = "juhe_business"."provider_model_catalog".provider_code
-          AND supported_model.model = "juhe_business"."provider_model_catalog".model
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "juhe_business"."account_model_mappings" AS model_mapping
-        WHERE model_mapping.provider_code = "juhe_business"."provider_model_catalog".provider_code
-          AND (
-            model_mapping.source_model = "juhe_business"."provider_model_catalog".model
-            OR model_mapping.upstream_model = "juhe_business"."provider_model_catalog".model
-          )
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "juhe_business"."provider_default_health_check_models" AS default_health_model
-        WHERE default_health_model.provider_code = "juhe_business"."provider_model_catalog".provider_code
-          AND default_health_model.model = "juhe_business"."provider_model_catalog".model
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "juhe_business"."provider_system_default_health_check_models" AS system_default_health_model
-        WHERE system_default_health_model.provider_code = "juhe_business"."provider_model_catalog".provider_code
-          AND system_default_health_model.model = "juhe_business"."provider_model_catalog".model
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM "juhe_business"."accounts" AS account
-        WHERE account.provider_code = "juhe_business"."provider_model_catalog".provider_code
-          AND account.health_check_model = "juhe_business"."provider_model_catalog".model
-      )
-  `
-
-// pgSeedLegacyCustomModelOverlapCleanup deletes custom_provider_models rows whose
-// (provider_code, model) collides with a runtime-visible built-in seed row
-// (契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先；存量同名行
-// 由 maintenance seed 自动清理，回归内置定义；可见行集合即
-// activeModelCatalogSeedRows 的 (ProviderCode, Model) 键)。
-// 2026-10-18 修复批随旧目录种子恢复，逐字取回 dbb2543e6^ 版本。
-const pgSeedLegacyCustomModelOverlapCleanup = `
-    DELETE FROM "juhe_business"."custom_provider_models"
-    WHERE EXISTS (
-      SELECT 1
-      FROM jsonb_to_recordset($1::jsonb) AS built_in(provider_code text, model text)
-      WHERE built_in.provider_code = "juhe_business"."custom_provider_models".provider_code
-        AND built_in.model = "juhe_business"."custom_provider_models".model
-    )
-  `
-
-// seedPostgresLegacyModelCatalog ports the Node bulk provider_model_catalog upsert
-// and the guarded stale disable, returning those statement counts.
-func seedPostgresLegacyModelCatalog(ctx context.Context, client postgresSeedClient, exec func(string, ...any) error, options SeedOptions, now string, result *PGSeedResult) error {
-	asOfUTCDate := seedTimestamp(options.nowTime())[:10]
-	rows := activeModelCatalogSeedRows(asOfUTCDate)
-	if len(rows) > 0 {
-		query, args := buildPostgresLegacyModelSeedUpsert(rows, now)
-		if _, err := client.ExecContext(ctx, query, args...); err != nil {
-			return fmt.Errorf("postgres seed statement %d (model catalog bulk upsert): %w", result.StatementCount+1, err)
-		}
-		result.StatementCount++
-	}
-	// pgSeedLegacyBuiltInModelKey mirrors one jsonb_to_recordset row of the
-	// stale disable parameter（旧 pgSeedBuiltInModelKey 字形，2026-10-18 修复批
-	// 随旧目录种子恢复；现行 pgSeedBuiltInModelKey 已是 models 形态，两形并存）.
-	type pgSeedLegacyBuiltInModelKey struct {
-		ProviderCode string `json:"provider_code"`
-		Model        string `json:"model"`
-	}
-	builtIn := make([]pgSeedLegacyBuiltInModelKey, 0, len(rows))
-	for _, row := range rows {
-		builtIn = append(builtIn, pgSeedLegacyBuiltInModelKey{ProviderCode: row.ProviderCode, Model: row.Model})
-	}
-	builtInJSON, err := seedJSONStringify(builtIn)
-	if err != nil {
-		return err
-	}
-	staleResult, err := client.ExecContext(ctx, pgSeedLegacyStaleBuiltInModelsDisable, now, string(builtInJSON))
-	if err != nil {
-		return fmt.Errorf("postgres seed statement %d (stale built-in model disable): %w", result.StatementCount+1, err)
-	}
-	// Node statementCount += staleBuiltInModels.changes.
-	changes, err := staleResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("postgres seed stale disable rows affected: %w", err)
-	}
-	result.StatementCount += int(changes)
-	// 契约 2026-09-30：目录 upsert 后删除与本次 seed 可见内置行同名的
-	// custom_provider_models 存量行（可见行集合 = activeModelCatalogSeedRows）。
-	// CustomModelOverlapCleaned 字段已随目标形态收敛移除，清理语句仍执行并
-	// 计入 StatementCount（2026-10-18 修复批迁移窗口适配）。
-	cleanupResult, err := client.ExecContext(ctx, pgSeedLegacyCustomModelOverlapCleanup, string(builtInJSON))
-	if err != nil {
-		return fmt.Errorf("postgres seed statement %d (custom model overlap cleanup): %w", result.StatementCount+1, err)
-	}
-	if _, err := cleanupResult.RowsAffected(); err != nil {
-		return fmt.Errorf("postgres seed custom model overlap cleanup rows affected: %w", err)
-	}
-	result.StatementCount++
-	return nil
-}
-
-// buildPostgresLegacyModelSeedUpsert renders the Node bulk upsert: one statement
-// with 39 bound parameters per row (status is the 'active' literal) using
-// global $n placeholders.
-func buildPostgresLegacyModelSeedUpsert(rows []modelCatalogSeedRow, now string) (string, []any) {
-	args := make([]any, 0, len(rows)*39)
-	rowTemplates := make([]string, 0, len(rows))
-	for _, model := range rows {
-		first := len(args) + 1
-		args = append(args,
-			model.ID,
-			model.ProviderCode,
-			model.Model,
-			seedNullableString(model.Mode),
-			seedNullableInt64(model.CatalogOrder),
-			seedNullableString(model.ReleaseDate),
-			seedNullableString(model.ShutdownDate),
-			model.SupportedAPIProtocolsJSON,
-			model.SupportedServiceTiersJSON,
-			model.SupportedReasoningEffortsJSON,
-			seedNullableString(model.DefaultReasoningEffort),
-			model.CodexSupportedReasoningLevelsJSON,
-			seedNullableString(model.CodexDefaultReasoningLevel),
-			seedNullableString(model.CodexMultiAgentVersion),
-			seedNullableInt64(model.ContextWindowTokens),
-			seedNullableInt64(model.MaxInputTokens),
-			seedNullableInt64(model.MaxOutputTokens),
-			seedNullableInt64(model.MaxTokens),
-			seedNullableFloat64(model.InputUsdPer1M),
-			seedNullableFloat64(model.OutputUsdPer1M),
-			seedNullableFloat64(model.CachedInputUsdPer1M),
-			seedNullableFloat64(model.CacheWriteUsdPer1M),
-			seedNullableFloat64(model.CacheWrite1HUsdPer1M),
-			seedNullableFloat64(model.CacheStorageUsdPer1MPerHour),
-			model.ServiceTierPricesJSON,
-			seedNullableInt64(model.LongContextInputTokenThreshold),
-			model.LongContextInputTokenThresholdInclusive,
-			seedNullableFloat64(model.LongContextInputCostMultiplier),
-			seedNullableFloat64(model.LongContextOutputCostMultiplier),
-			seedNullableFloat64(model.ImageInputUsdPer1M),
-			seedNullableFloat64(model.ImageOutputUsdPer1M),
-			seedNullableFloat64(model.AudioInputUsdPer1M),
-			seedNullableFloat64(model.AudioOutputUsdPer1M),
-			seedNullableFloat64(model.OutputUsdPerImage),
-			model.SupportsPromptCaching,
-			model.CatalogVisible,
-			model.Source,
-			now,
-			now,
-		)
-		// Node: (${first}, ${first+1}, ${first+2}, 'active', ${first+3}, ...).
-		row := "($" + strconv.Itoa(first) + ", $" + strconv.Itoa(first+1) + ", $" + strconv.Itoa(first+2) + ", 'active'"
-		for index := 3; index < 39; index++ {
-			row += ", $" + strconv.Itoa(first+index)
-		}
-		row += ")"
-		rowTemplates = append(rowTemplates, row)
-	}
-	return pgSeedLegacyModelCatalogColumns + strings.Join(rowTemplates, ",\n          ") + pgSeedLegacyModelCatalogBulkUpsertSuffix, args
-}
-
-// seedPostgresRepairLegacyProfileAccountTypes ports
-// repairBuiltInProviderProfileAccountTypes（2026-10-18 修复批随旧 profile
-// 种子恢复，逐字取回 dbb2543e6^ 的 seedPostgresRepairProfileAccountTypes）。
-func seedPostgresRepairLegacyProfileAccountTypes(ctx context.Context, client postgresSeedClient, exec func(string, ...any) error, now string) error {
-	for _, profile := range pgSeedLegacyProfiles {
-		var accountTypesJSON string
-		err := client.QueryRowContext(ctx, pgSeedLegacyProfileAccountTypesSelect, profile.ID).Scan(&accountTypesJSON)
-		if err != nil {
-			continue // missing row or non-text value mirrors the Node repair skip
-		}
-		current, err := parseSeedStringArray(accountTypesJSON)
-		if err != nil {
-			continue
-		}
-		merged := mergeSeedDistinct(current, profile.AccountTypes)
-		if seedStringSlicesEqual(merged, current) {
-			continue
-		}
-		if err := exec(pgSeedLegacyProfileAccountTypesUpdate, seedStringify(merged), now, profile.ID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // seedPostgresAdminDefaultRouteStrategiesAndAPIKeys ports

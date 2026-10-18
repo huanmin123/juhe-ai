@@ -161,6 +161,8 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, access AccessScope) 
 // createBody validates the route payload (Node groupSchema.strict()): every
 // optional field rejects null (zod optional accepts only undefined) and the
 // schedulingPolicy object runs the strict per-key int/range/enum checks.
+// API 入参 providerCode 兼容策略（供应商解耦设计 §8：组无 provider 维度）：
+// 键保留在允许集内（接受但忽略），服务端不落库不校验。
 func createBody(body map[string]any) (MutationInput, bool) {
 	input := MutationInput{}
 	for key := range body {
@@ -174,12 +176,7 @@ func createBody(body map[string]any) (MutationInput, bool) {
 	if !ok || strings.TrimSpace(name) == "" {
 		return input, false
 	}
-	providerCode, ok := bodyString(body, "providerCode")
-	if !ok || strings.TrimSpace(providerCode) == "" {
-		return input, false
-	}
 	input.Name = &name
-	input.ProviderCode = &providerCode
 	if value, exists := body["description"]; exists {
 		text, isString := value.(string)
 		if !isString {
@@ -231,10 +228,10 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 			return strings.TrimSpace(r.URL.Query().Get("systemAccountId")), nil
 		},
 		Fingerprint: func(r *http.Request) (any, error) {
+			// providerCode 接受但忽略（供应商解耦设计 §8），不进变更指纹。
 			return map[string]any{
-				"owner":        strings.TrimSpace(r.URL.Query().Get("systemAccountId")),
-				"providerCode": kernel.TextField(kernel.BodyField(r, "providerCode")),
-				"name":         kernel.TextField(kernel.BodyField(r, "name")),
+				"owner": strings.TrimSpace(r.URL.Query().Get("systemAccountId")),
+				"name":  kernel.TextField(kernel.BodyField(r, "name")),
 			}, nil
 		},
 	})
@@ -277,10 +274,9 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 				ResourceID:                    item.ID,
 				ResourceName:                  item.Name,
 				Summary:                       "创建分组：" + item.Name,
-				Changes: []authsys.OperationLogChange{
-					{Field: "name", Label: "名称", After: item.Name},
-					{Field: "providerCode", Label: "供应商", After: item.ProviderCode},
-					{Field: "groupType", Label: "分组类型", After: item.GroupType},
+					Changes: []authsys.OperationLogChange{
+						{Field: "name", Label: "名称", After: item.Name},
+						{Field: "groupType", Label: "分组类型", After: item.GroupType},
 					// safeChange('enabled', '启用状态', undefined, group.enabled):
 					// normalizeSafeValue keeps booleans native.
 					{Field: "enabled", Label: "启用状态", AfterValue: item.Enabled},
@@ -387,7 +383,8 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 }
 
 // patchBody mirrors groupPatchSchema.partial(): every field is optional and
-// null is rejected exactly like the create schema.
+// null is rejected exactly like the create schema。providerCode 键保留在
+// patch 允许集（接受但忽略，供应商解耦设计 §8），不进变更输入。
 func patchBody(body map[string]any) MutationInput {
 	input := MutationInput{}
 	if value, exists := body["name"]; exists {
@@ -396,13 +393,6 @@ func patchBody(body map[string]any) MutationInput {
 			return MutationInput{}
 		}
 		input.Name = &text
-	}
-	if value, exists := body["providerCode"]; exists {
-		text, isString := value.(string)
-		if !isString || strings.TrimSpace(text) == "" {
-			return MutationInput{}
-		}
-		input.ProviderCode = &text
 	}
 	if value, exists := body["description"]; exists {
 		text, isString := value.(string)
@@ -558,8 +548,6 @@ func patchFieldLabel(field string) string {
 	switch field {
 	case "name":
 		return "名称"
-	case "providerCode":
-		return "供应商"
 	case "description":
 		return "说明"
 	case "groupType":

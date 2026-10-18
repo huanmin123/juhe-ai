@@ -65,8 +65,8 @@ func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query 
 			case 0:
 				malformed := directInputLifecycleCandidateValues()
 				malformed[0] = "account-malformed-fence"
-				malformed[21] = "2030-08-16T11:00:00Z"
-				malformed[22] = nil
+				malformed[20] = "2030-08-16T11:00:00Z"
+				malformed[21] = nil
 				values = [][]driver.Value{malformed}
 			case 1:
 				values = [][]driver.Value{directInputLifecycleCandidateValues()}
@@ -143,11 +143,12 @@ func directInputLifecycleCandidateValues() []driver.Value {
 }
 
 // directInputLifecycleCandidateValuesFor 的列序与 directInputCandidatesSQL 的
-// SELECT 投影逐列对齐；expedited_recovery_enabled 位于 index 20，其后的账户
-// /授权/来源/binding/proxy 列全部顺延一列。
+// SELECT 投影逐列对齐（供应商解耦形态）：身份 vendor_code/preset，连接面
+// preset/base_url 位于 13/14，expedited_recovery_enabled 位于 index 19，
+// cooldown fence 位于 20/21，binding 两列后接 proxy 七列（共 54 列）。
 func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	secret := "direct-input-rows-lifecycle-secret"
-	credentials, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"],"base_url":"https://api.example.com"}`))
+	credentials, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"]}`))
 	if err != nil {
 		panic(err)
 	}
@@ -156,38 +157,45 @@ func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	values[1] = int64(1)
 	values[2] = int64(2)
 	values[3] = int64(3)
-	values[4] = "openai"
-	values[5] = "profile_openai_openai_v1"
+	values[4] = "gpt" // a.vendor_code
+	values[5] = nil   // 有效 oauth_type（CASE 投影）
 	values[6] = "openai"
 	values[7] = "v1"
 	values[8] = "api_key"
-	values[9] = "openai_standard"
-	values[10] = "active"
-	values[11] = int64(1)
-	values[12] = "chat_json"
-	values[13] = "gpt-test"
-	values[16] = credentials
-	values[19] = false
-	values[20] = int64(0)
-	values[23] = "system-account"
-	values[24] = "authorization-1"
-	values[25] = "active"
+	values[9] = "active"
+	values[10] = int64(1)
+	values[11] = "chat_json" // 健康检查 mode（CASE 投影）
+	values[12] = "gpt-test"  // 健康检查模型（CASE 投影）
+	values[13] = "gpt_openai_v1"
+	values[14] = "https://api.example.com"
+	values[15] = credentials
+	values[18] = false
+	values[19] = int64(0)
+	values[22] = "system-account"
+	values[23] = "authorization-1"
+	values[24] = "active"
 	values[27] = `{}`
 	values[28] = "source-account"
 	values[29] = "owner-account"
-	values[31] = "source-account"
-	values[32] = int64(4)
-	values[33] = "openai"
-	values[34] = "profile_openai_openai_v1"
-	values[35] = "openai"
-	values[36] = "v1"
-	values[37] = "api_key"
-	values[38] = "openai_standard"
+	values[30] = "source-account"
+	values[31] = int64(4)
+	values[32] = "gpt"
+	values[33] = nil
+	values[34] = "openai"
+	values[35] = "v1"
+	values[36] = "api_key"
+	values[37] = "gpt_openai_v1"
+	values[38] = "https://source.example.com"
 	values[39] = "active"
 	values[40] = int64(1)
 	values[44] = credentials
 	values[45] = "group-1"
 	values[46] = "authorization-1"
+	values[47] = "proxy-1"
+	values[48] = true
+	values[49] = "http"
+	values[50] = "127.0.0.1"
+	values[51] = int64(8080)
 	return values
 }
 
@@ -301,24 +309,32 @@ func TestDirectInputCandidatesIncludeResponsesSSE(t *testing.T) {
 	if !strings.Contains(directInputCandidatesSQL, "'responses_json'") {
 		t.Fatal("PG direct input 候选查询必须保留 responses_json")
 	}
+	if !strings.Contains(directInputCandidatesSQL, "hc.base_url") {
+		t.Fatal("PG direct input 候选查询必须携带健康检查连接 base_url")
+	}
 	for _, mode := range []string{"messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"} {
 		if !strings.Contains(directInputCandidatesSQL, "'"+mode+"'") {
 			t.Fatalf("PG direct input 候选查询必须包含 %s", mode)
 		}
 	}
-	if !strings.Contains(directInputCandidatesSQL, "generate_content_sse' THEN 'stream_generate_content'") {
-		t.Fatal("Gemini GenerateContent SSE 必须按 stream_generate_content 查找模型映射")
-	}
-	if !strings.Contains(directInputCandidatesSQL, "mm.upstream_model <> mm.source_model OR mm.upstream_endpoint_family <> mm.source_endpoint_family") {
-		t.Fatal("PG direct input 不得接受 identity model mapping")
-	}
-	for _, column := range []string{"provider_protocol_profile_id", "protocol_code", "protocol_version"} {
+	// 供应商解耦：health-check mode 单源账户/来源账户行（mapping LATERAL 随
+	// account_model_mappings 退役，stream_generate_content 家族映射一并删除），
+	// 探针身份由健康检查连接 preset 派生。
+	for _, column := range []string{"protocol_code", "protocol_version"} {
 		if !strings.Contains(directInputCandidatesSQL, "a."+column) || !strings.Contains(directInputCandidatesSQL, "source."+column) {
 			t.Fatalf("PG direct input 查询必须冻结账户和来源的 %s", column)
 		}
 	}
-	if !strings.Contains(directInputCandidatesSQL, "CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END") {
-		t.Fatal("authorized hybrid mapping must read the physical source account mapping")
+	if strings.Contains(directInputCandidatesSQL, "provider_protocol_profile_id") || strings.Contains(directInputCandidatesSQL, "account_model_mappings") {
+		t.Fatal("PG direct input 查询不得再读取已删除的 profile/mapping 旧列旧表")
+	}
+	if !strings.Contains(directInputCandidatesSQL, "hc.connection_preset_code") || !strings.Contains(directInputCandidatesSQL, "source_hc.connection_preset_code") {
+		t.Fatal("探针身份必须来自健康检查连接 preset（含授权实例来源投影）")
+	}
+	for _, column := range []string{"vendor_code", "oauth_type"} {
+		if !strings.Contains(directInputCandidatesSQL, "a."+column) || !strings.Contains(directInputCandidatesSQL, "source."+column) {
+			t.Fatalf("PG direct input 查询必须冻结账户和来源的 %s", column)
+		}
 	}
 }
 
@@ -346,7 +362,7 @@ func TestDirectInputCandidatesPrioritizeOverdueSchedulesBeforeRecentUpdates(t *t
 }
 
 func TestDirectInputCandidatesExcludeHealthyImagesFromPeriodicScan(t *testing.T) {
-	guard := "AND ($3::boolean OR a.status <> 'active' OR a.health_check_endpoint_mode <> 'images_json')"
+	guard := "OR (CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.health_check_endpoint_mode ELSE source.health_check_endpoint_mode END) <> 'images_json')"
 	guardIndex := strings.Index(directInputCandidatesSQL, guard)
 	dueIndex := strings.Index(directInputCandidatesSQL, "a.next_health_check_at <= $1")
 	if guardIndex < 0 || dueIndex < 0 || guardIndex > dueIndex {
@@ -516,7 +532,7 @@ func TestBuildDirectCandidateInputIsolatesBadProxyWithoutLeakingSecrets(t *testi
 		t.Fatal(err)
 	}
 	now := time.Date(2030, 8, 16, 0, 0, 0, 0, time.UTC)
-	base := exactkeyprobe.DirectInput{Account: exactkeyprobe.DirectAccount{ID: "bad-proxy-account", ConfigRevision: 2, DispatchRevision: 3, Provider: "openai", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials}, Binding: exactkeyprobe.DirectBinding{GroupID: "group-1", Enabled: true}, InputVersion: 4, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: exactkeyprobe.Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1}}
+	base := exactkeyprobe.DirectInput{Account: exactkeyprobe.DirectAccount{ID: "bad-proxy-account", ConfigRevision: 2, DispatchRevision: 3, Provider: "openai", Type: "api_key", Status: "pending_test", EndpointMode: "chat_json", HealthModel: "gpt-test", CredentialsEncrypted: credentials, ConnectionBaseURL: "https://api.example.com/v1"}, Binding: exactkeyprobe.DirectBinding{GroupID: "group-1", Enabled: true}, InputVersion: 4, IssuedAt: now, ExpiresAt: now.Add(time.Hour), TLSPolicy: "j1-direct-upstream-v1", Schedule: exactkeyprobe.Schedule{HealthIntervalMS: 1, FailureThreshold: 1, FailureRetryMS: 1, CooldownNeutralBaseMS: 1, CooldownNeutralMaxMS: 1, CooldownFailureBackoffMS: 1}}
 	bad := base
 	bad.Proxy = &exactkeyprobe.DirectProxy{ID: "bad-proxy", Enabled: false, Type: "http", Host: "127.0.0.1", Port: 8080, PasswordEncrypted: "must-not-escape"}
 	candidate := directCandidate{account: bad.Account, inputVersion: bad.InputVersion}

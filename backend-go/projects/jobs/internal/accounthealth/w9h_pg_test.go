@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,88 @@ func w9hPgDB(t *testing.T) *sql.DB {
 		db.Close()
 		t.Skip(w9hSkipMessage("PG 不可达: " + err.Error()))
 	}
+	// fresh DDL 的 system_settings 外键到 system_accounts(id)：fixtures 以
+	// 'sys_admin' 写 settings/账户行，先幂等补齐属主行（已存在则无操作）。
+	// 覆盖库可能处于新旧 schema 同步中途（可选列缺失），按 information_schema
+	// 实际列形拼装最小插入。
+	columnSet := map[string]bool{}
+	colRows, colErr := db.Query(`SELECT column_name FROM information_schema.columns WHERE table_schema = 'juhe_business' AND table_name = 'system_accounts'`)
+	if colErr != nil {
+		db.Close()
+		t.Skipf("w9h PG gated: system_accounts 列形读取失败: %v", colErr)
+	}
+	for colRows.Next() {
+		var name string
+		if err := colRows.Scan(&name); err == nil {
+			columnSet[name] = true
+		}
+	}
+	colRows.Close()
+	if err := colRows.Err(); err != nil {
+		db.Close()
+		t.Skipf("w9h PG gated: system_accounts 列形遍历失败: %v", err)
+	}
+	candidates := []struct{ column, value string }{
+		{"id", "sys_admin"},
+		{"username", "sys_admin"},
+		{"display_name", "sys_admin"},
+		{"role", "admin"},
+		{"status", "active"},
+		{"password_hash", "w9h-fixture-no-login"},
+		{"created_at", w9hFixtureNow},
+		{"updated_at", w9hFixtureNow},
+	}
+	columns, values, args := "", "", []any{}
+	for _, candidate := range candidates {
+		if !columnSet[candidate.column] {
+			continue
+		}
+		if columns != "" {
+			columns += ", "
+			values += ", "
+		}
+		columns += candidate.column
+		values += "$" + strconv.Itoa(len(args)+1)
+		if candidate.column == "id" {
+			args = append(args, "sys_admin")
+			continue
+		}
+		if candidate.column == "created_at" || candidate.column == "updated_at" {
+			args = append(args, w9hFixtureNow)
+			continue
+		}
+		args = append(args, candidate.value)
+	}
+	if columns == "" {
+		db.Close()
+		t.Skip("w9h PG gated: coverage 库缺少 juhe_business.system_accounts 表")
+	}
+	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts (`+columns+`) VALUES (`+values+`)
+		ON CONFLICT (id) DO NOTHING`, args...); err != nil {
+		db.Close()
+		t.Skipf("w9h PG gated: system_accounts 种子失败（库形不匹配，交由 schema 同步方处理）: %v", err)
+	}
+	// 本组 fixtures 与候选 SQL 以 canonical fresh DDL 类型为准（schedulable
+	// 等布尔/整型列必须可整型比较）。覆盖库若被同步成全文本镜像形态，比较
+	// 语义不成立，按门禁跳过（不降级生产 SQL 去迁就临时镜像）。
+	var dataType string
+	if err := db.QueryRow(`SELECT data_type FROM information_schema.columns WHERE table_schema='juhe_business' AND table_name='accounts' AND column_name='schedulable'`).Scan(&dataType); err != nil {
+		db.Close()
+		t.Skipf("w9h PG gated: accounts.schedulable 列形读取失败: %v", err)
+	}
+	if dataType != "integer" && dataType != "bigint" && dataType != "smallint" && dataType != "boolean" {
+		db.Close()
+		t.Skipf("w9h PG gated: coverage 库 accounts.schedulable 为 %s（全文本镜像形态，非 canonical DDL），等 schema 同步收敛", dataType)
+	}
+	// accounts.vendor_code 外键到 vendors(code)：幂等补齐 fixtures 用到的厂商。
+	for _, vendor := range []string{"gpt", "deepseek"} {
+		if _, err := db.Exec(`INSERT INTO juhe_business.vendors (id, code, name, enabled, created_at, updated_at)
+			VALUES ($1, $1, $1, 1, $2, $2)
+			ON CONFLICT (code) DO NOTHING`, vendor, w9hFixtureNow); err != nil {
+			db.Close()
+			t.Skipf("w9h PG gated: vendors 种子失败（库形不匹配，交由 schema 同步方处理）: %v", err)
+		}
+	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
@@ -100,30 +183,86 @@ const w9hScheduleJSON = `{"enabled":true,"timezone":"UTC","mode":"allow_windows"
 
 // w9hSeedBusinessAccount inserts one business account fixture plus its input
 // version row. Extra columns keep the NOT NULL contract satisfied.
+// w9hPresetBaseURL 按连接 preset 返回断言期望的连接 base_url（gpt OAuth 走
+// Codex 后端；供应商解耦后 base_url 是连接行事实，凭据 JSON 不再承载）。
+func w9hPresetBaseURL(preset, accountType string) string {
+	switch preset {
+	case "gpt_openai_v1":
+		if accountType == "oauth" {
+			return "https://chatgpt.com/backend-api/codex"
+		}
+		return "https://api.openai.com/v1"
+	case "deepseek_openai_v1":
+		return "https://api.deepseek.com"
+	default:
+		return "https://upstream.example.com/v1"
+	}
+}
+
+// w9hSeedBusinessAccount 写入供应商解耦后形态的账户：身份列
+// vendor_code/connection_driver_code + 健康检查连接行（connection_preset_code/
+// base_url/account_endpoint_modes，profile 参数剥掉 profile_ 前缀即 preset）。
+// 授权实例行（sourceID 非空）不写 vendor/连接事实，资源事实归来源账户。
 func w9hSeedBusinessAccount(t *testing.T, db *sql.DB, id, provider, profile, accountType, status, endpointMode string, sourceID, authorizationID sql.NullString) {
 	t.Helper()
-	w9hMustExec(t, db, `INSERT INTO juhe_business.accounts (
-		id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-		name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-		schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-		client_compatibility, health_check_model, health_check_endpoint_mode,
-		authorization_instance_source_account_id, authorization_instance_authorization_id,
-		created_at, updated_at, config_revision, dispatch_revision
-	) VALUES (
-		$1, 'sys_admin', $2, $3, 'openai', 'v1',
-		$4, $5, $6, $7, 'w9h-fp', 'w9h-mask',
-		1, 0, 0, 0, 0,
-		'', 'w9h-model', $8,
-		$9, $10,
-		$11, $12, 1, 1
-	)`, id, provider, profile, "w9h-"+id, accountType, status, w9hCredentialsEnvelope(id), endpointMode, sourceID, authorizationID, w9hFixtureNow, w9hFixtureNow)
+	isInstance := sourceID.Valid && sourceID.String != ""
+	if isInstance {
+		w9hMustExec(t, db, `INSERT INTO juhe_business.accounts (
+			id, system_account_id, connection_driver_code, protocol_code, protocol_version,
+			name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+			schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
+			health_check_model, health_check_endpoint_mode,
+			authorization_instance_source_account_id, authorization_instance_authorization_id,
+			created_at, updated_at, config_revision, dispatch_revision
+		) VALUES (
+			$1, 'sys_admin', $2, 'openai', 'v1',
+			$3, $4, $5, $6, 'w9h-fp', 'w9h-mask',
+			1, 0, 0, 0, 0,
+			'w9h-model', $7,
+			$8, $9,
+			$10, $11, 1, 1
+		)`, id, provider, "w9h-"+id, accountType, status, w9hCredentialsEnvelope(id), endpointMode, sourceID, authorizationID, w9hFixtureNow, w9hFixtureNow)
+	} else {
+		w9hMustExec(t, db, `INSERT INTO juhe_business.accounts (
+			id, system_account_id, vendor_code, connection_driver_code, oauth_type, protocol_code, protocol_version,
+			name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+			schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled,
+			health_check_model, health_check_endpoint_mode,
+			authorization_instance_source_account_id, authorization_instance_authorization_id,
+			created_at, updated_at, config_revision, dispatch_revision
+		) VALUES (
+			$1, 'sys_admin', $2, $2, $3, 'openai', 'v1',
+			$4, $5, $6, $7, 'w9h-fp', 'w9h-mask',
+			1, 0, 0, 0, 0,
+			'w9h-model', $8,
+			$9, $10,
+			$11, $12, 1, 1
+		)`, id, provider, w9hOAuthType(accountType), "w9h-"+id, accountType, status, w9hCredentialsEnvelope(id), endpointMode, sourceID, authorizationID, w9hFixtureNow, w9hFixtureNow)
+		preset := strings.TrimPrefix(profile, "profile_")
+		connectionID := "w9h-conn-" + id
+		w9hMustExec(t, db, `INSERT INTO juhe_business.account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+			VALUES ($1, $2, $3, 'openai_v1', $4, 1, $5, $6) ON CONFLICT (id) DO NOTHING`,
+			connectionID, id, preset, w9hPresetBaseURL(preset, accountType), w9hFixtureNow, w9hFixtureNow)
+		w9hMustExec(t, db, `INSERT INTO juhe_business.account_endpoint_modes (connection_id, endpoint_mode) VALUES ($1, $2)
+			ON CONFLICT (connection_id, endpoint_mode) DO NOTHING`, connectionID, endpointMode)
+		w9hMustExec(t, db, `UPDATE juhe_business.accounts SET health_check_connection_id = $1 WHERE id = $2`, connectionID, id)
+	}
 	w9hMustExec(t, db, `INSERT INTO juhe_business.account_health_jobs_input_versions (account_id, current_version, reserved_at) VALUES ($1, 1, $2)
 		ON CONFLICT (account_id) DO NOTHING`, id, w9hFixtureNow)
-	w9hMustExec(t, db, `INSERT INTO juhe_business.groups (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-		VALUES ('w9h-group', 'sys_admin', 'w9h-group', 'gpt', 1, 0, $1, $2)
+	w9hMustExec(t, db, `INSERT INTO juhe_business.groups (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+		VALUES ('w9h-group', 'sys_admin', 'w9h-group', 1, 0, $1, $2)
 		ON CONFLICT (id) DO NOTHING`, w9hFixtureNow, w9hFixtureNow)
 	w9hMustExec(t, db, `INSERT INTO juhe_business.group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
 		VALUES ('sys_admin', 'w9h-group', $1, 1, $2, $3)`, id, w9hFixtureNow, w9hFixtureNow)
+}
+
+// w9hOAuthType 返回 fixture 的 accounts.oauth_type 列值（google_oauth 账户
+// 用 ai_studio 占位，避免触碰 Code Assist 分流臂）。
+func w9hOAuthType(accountType string) any {
+	if accountType == "google_oauth" {
+		return "ai_studio"
+	}
+	return nil
 }
 
 func w9hCredentialsEnvelope(id string) string {

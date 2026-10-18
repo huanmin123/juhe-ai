@@ -936,12 +936,12 @@ func TestW2BCatalogScanBadValueFault(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "w2b-catalog.sqlite3")
 	plain := w2bOpenPlainSQLiteAt(t, dbPath)
 	seedChainBusinessSchema(t, plain)
-	if _, err := plain.Exec(`INSERT INTO provider_model_catalog (id, provider_code, model, status, source,
-			created_at, updated_at) VALUES ('w2b-cat', 'gpt', 'w2b-model', 'active', 'built_in', '2026-09-04', '2026-09-04')`); err != nil {
+	if _, err := plain.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, source,
+			created_at, updated_at) VALUES ('w2b-cat', 'gpt', 'w2b-model', 'w2b-model', 'builtin', 'active', 'builtin', '2026-09-04', '2026-09-04')`); err != nil {
 		t.Fatalf("seed catalog: %v", err)
 	}
 	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
-		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "FROM provider_model_catalog") }, action: w2bFaultBadValue})
+		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "FROM juhe_business.models") || strings.Contains(query, " FROM models") }, action: w2bFaultBadValue})
 	source := &chainCatalogSource{db: wrapped, postgres: false}
 	if _, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported type") {

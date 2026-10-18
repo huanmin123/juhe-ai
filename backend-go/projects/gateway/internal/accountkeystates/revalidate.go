@@ -113,7 +113,10 @@ func (s *Store) RevalidatePool(ctx context.Context, accountID string, expectedCo
 
 // loadRevalidateAccountRow 等价 revalidate 的首个账户读取（含凭据）。
 func (s *Store) loadRevalidateAccountRow(ctx context.Context, accountID string) (*revalidateAccountRow, error) {
-	query := s.bind(fmt.Sprintf(`SELECT provider_code, protocol_code, protocol_version, type, status, schedulable, config_revision, credentials_encrypted
+	// 供应商解耦（供应商与上游协议面重构设计 §2.1）：accounts.provider_code
+	// 列退役，连接身份读 vendor_code（值域与旧 providerCode 同名，NULL 归一
+	// 空串）；COALESCE 别名保持行投影字段名不变。
+	query := s.bind(fmt.Sprintf(`SELECT COALESCE(vendor_code, '') AS provider_code, protocol_code, protocol_version, type, status, schedulable, config_revision, credentials_encrypted
       FROM %s WHERE id = ? AND deleted_at IS NULL`, s.businessTable("accounts")))
 	var row revalidateAccountRow
 	var credentials sql.NullString

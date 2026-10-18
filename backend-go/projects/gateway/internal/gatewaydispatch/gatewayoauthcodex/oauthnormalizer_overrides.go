@@ -110,16 +110,18 @@ func AssertGptAccountRequestOverrideValuesForProvider(overrides GptAccountReques
 	return assertGptOverrideEnumValues(overrides)
 }
 
-// assertGptOverrideEnumValues 是唯一的 gpt 枚举表：service_tier 仅
-// default|priority|flex，reasoning_effort 仅
-// none|minimal|low|medium|high|xhigh|max（OpenAI 上游 wire 约束）。
+// assertGptOverrideEnumValues 是 gpt 专属 wire 枚举断言：值域单一真源为
+// shared/platform/requestoverride（gpt 供应商属于 openai 协议族，经
+// FamilyForProvider 解析），service_tier 仅 default|priority|flex，
+// reasoning_effort 仅 none|minimal|low|medium|high|xhigh|max（OpenAI 上游
+// wire 约束）。空值表示未配置、直接放行；错误类型与文案是本包既有契约，
+// 逐字保留。
 func assertGptOverrideEnumValues(overrides GptAccountRequestOverrides) error {
-	if overrides.ServiceTier != "" && overrides.ServiceTier != "default" && overrides.ServiceTier != "priority" && overrides.ServiceTier != "flex" {
+	family := requestoverride.FamilyForProvider(gptOverrideProviderCode)
+	if overrides.ServiceTier != "" && !requestoverride.SupportsServiceTier(family, overrides.ServiceTier) {
 		return &GptAccountRequestOverrideError{Message: "GPT 账户请求覆盖字段 service_tier_override 无效"}
 	}
-	switch overrides.ReasoningEffort {
-	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
-	default:
+	if overrides.ReasoningEffort != "" && !requestoverride.SupportsReasoningEffort(family, overrides.ReasoningEffort) {
 		return &GptAccountRequestOverrideError{Message: "GPT 账户请求覆盖字段 reasoning_effort_override 无效"}
 	}
 	return nil

@@ -91,8 +91,13 @@ import (
 // health-check）运行时仍读写，恢复 ensure 建表（+7 TABLE juhe_business，
 // 列与约束逐字取回 dbb2543e6^ 版本，protocols 复合外键保留——该表仍在
 // 当前建表清单；旧表索引不补建），存量数据迁移语义不变。
+// 686→678：A 路线撤 shim 批（同日第三笔）——迁移窗口 shim 一次性收敛撤除
+//（设计 §9 第 11 条：删除所有旧字段和旧 seed，不提供兼容分支）：撤回上述
+// 679→686 恢复的 8 张旧表 ensure 建表（-8 TABLE juhe_business），配套旧
+// seed（pgSeedLegacyProviders/Profiles、旧 provider_model_catalog 目录种子）
+// 与 pgNullableText 同批删除；种子语句不计本 golden，总数变化仅 -8。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 686
+const goldenPostgresSchemaStatementCount = 678
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -100,8 +105,9 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 335→313：供应商与上游协议面重构批（见上方 golden 总数注释的 -9+7/-23+3
 	// 明细，全部落在 juhe_business）。313→314：2026-10-18 修复批恢复旧
 	// account_model_mappings ensure 建表（见上方总数注释）。314→321：同日
-	// 第二笔恢复其余 7 张旧供应商表 ensure 建表（+7 TABLE）。
-	"juhe_business": 321,
+	// 第二笔恢复其余 7 张旧供应商表 ensure 建表（+7 TABLE）。321→313：A 路线
+	// 撤 shim 批一次性撤回上述 8 张旧表 ensure 建表（-8 TABLE）。
+	"juhe_business": 313,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
 	"juhe_usage":    52,

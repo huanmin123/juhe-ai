@@ -13,8 +13,8 @@ func TestW11FDeleteCascadesResourceAuthorizations(t *testing.T) {
 	env := newW11FEnv(t)
 	store := env.store
 	ctx := context.Background()
-	env.w11fSeedGroup(t, "w11f-cg", "w11f-cowner", "w11f-级联组", "openai", 1, 0, "personal")
-	env.w11fSeedGroup(t, "w11f-ck", "w11f-cowner", "w11f-保留组", "openai", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-cg", "w11f-cowner", "w11f-级联组", 1, 0, "personal")
+	env.w11fSeedGroup(t, "w11f-ck", "w11f-cowner", "w11f-保留组", 1, 0, "personal")
 	const seedAuthorization = `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_by, created_at, updated_at)
 		VALUES (?, ?, ?, 'w11f-cowner', 'w11f-cgrantee', 'active', 'w11f-cowner', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
 	env.exec(t, seedAuthorization, "w11f-ca", "group", "w11f-cg")

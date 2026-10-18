@@ -22,7 +22,7 @@ func TestChainCatalogCustomModelOrderDualDialect(t *testing.T) {
 		t.Fatalf("create sqlite source: %v", err)
 	}
 	sqliteQuery, _ := sqliteSource.customCatalogQuery(options, "2026-09-04", []string{"openai"})
-	if !strings.Contains(sqliteQuery, "model COLLATE NOCASE") {
+	if !strings.Contains(sqliteQuery, "public_model COLLATE NOCASE") {
 		t.Fatalf("sqlite query lost the Node NOCASE ordering: %s", sqliteQuery)
 	}
 	// The rendered SQLite query must actually run end to end.
@@ -38,7 +38,7 @@ func TestChainCatalogCustomModelOrderDualDialect(t *testing.T) {
 	if strings.Contains(pgQuery, "COLLATE") {
 		t.Fatalf("pg query still carries COLLATE (no such collation on PostgreSQL): %s", pgQuery)
 	}
-	if !strings.Contains(pgQuery, "lower(model)") {
+	if !strings.Contains(pgQuery, "lower(public_model)") {
 		t.Fatalf("pg query missing the Node postgres ordering: %s", pgQuery)
 	}
 }
@@ -50,12 +50,11 @@ func TestChainCatalogCustomModelNOCASEOrdering(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
 	for index, model := range []string{"beta", "Gamma", "alpha"} {
-		if _, err := fixture.db.Exec(`INSERT INTO custom_provider_models (
-				id, provider_code, model, scope, system_account_id, status, catalog_visible,
-				supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
-				input_usd_per_1m, service_tier_prices_json, created_by, created_at, updated_at
-			) VALUES (?, 'openai', ?, 'personal', ?, 'active', 1, '[]', '[]', '[]', 1.0, '{}', ?, ?, ?)`,
-			"cpm_"+string(rune('a'+index)), model, fixture.systemAccount, fixture.systemAccount, now, now); err != nil {
+		if _, err := fixture.db.Exec(`INSERT INTO models (
+				id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
+				supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at
+			) VALUES (?, 'openai', ?, ?, 'personal', ?, 'active', 1, '["chat_json","chat_sse"]', 1.0, ?, ?)`,
+			"mdl_cpm_"+string(rune('a'+index)), model, model, fixture.systemAccount, now, now); err != nil {
 			t.Fatalf("seed custom row %s: %v", model, err)
 		}
 	}

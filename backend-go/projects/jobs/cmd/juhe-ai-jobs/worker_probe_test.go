@@ -19,6 +19,9 @@ func seedProbeCoreTables(t *testing.T, path string) {
 	}
 	defer db.Close()
 	statements := []string{
+		// 供应商解耦后形态：accounts 身份列为 vendor_code/connection_driver_code/
+		// oauth_type，连接面在 account_connections/account_endpoint_modes（探针
+		// profile 由连接 preset 派生，凭据 JSON 不再承载 base_url）。
 		`CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -26,11 +29,12 @@ func seedProbeCoreTables(t *testing.T, path string) {
       type TEXT NOT NULL,
       status TEXT NOT NULL,
       schedulable INTEGER NOT NULL DEFAULT 1,
-      provider_code TEXT NOT NULL DEFAULT 'openai',
-      provider_protocol_profile_id TEXT,
+      vendor_code TEXT,
+      connection_driver_code TEXT NOT NULL DEFAULT 'generic_http',
+      oauth_type TEXT,
       protocol_code TEXT,
       protocol_version TEXT,
-      client_compatibility TEXT,
+      health_check_connection_id TEXT,
       health_check_model TEXT NOT NULL DEFAULT '',
       health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
       account_expires_at TEXT,
@@ -55,10 +59,42 @@ func seedProbeCoreTables(t *testing.T, path string) {
       deleted_at TEXT,
       updated_at TEXT NOT NULL DEFAULT ''
     )`,
+		`CREATE TABLE IF NOT EXISTS models (
+      id TEXT PRIMARY KEY,
+      vendor_code TEXT,
+      public_model TEXT NOT NULL,
+      upstream_model TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      system_account_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT ''
+    )`,
+		`CREATE TABLE IF NOT EXISTS account_supported_models (
+      account_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (account_id, model_id)
+    )`,
+		`CREATE TABLE IF NOT EXISTS account_connections (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      connection_preset_code TEXT NOT NULL,
+      protocol_surface_code TEXT,
+      base_url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      UNIQUE (account_id, connection_preset_code),
+      UNIQUE (account_id, id)
+    )`,
+		`CREATE TABLE IF NOT EXISTS account_endpoint_modes (
+      connection_id TEXT NOT NULL,
+      endpoint_mode TEXT NOT NULL,
+      PRIMARY KEY (connection_id, endpoint_mode)
+    )`,
 		`CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
-      provider_code TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       group_type TEXT,
       scheduling_policy_json TEXT

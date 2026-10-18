@@ -1267,7 +1267,9 @@ func (s *Store) resolveRouteStrategyForCreate(ctx context.Context, q queryer, ow
 
 // findPreferredDefaultRouteStrategy mirrors findPreferredDefaultRouteStrategy
 // ReferenceAsync: the first active default strategy bound to an active group
-// on the owner's default enabled gpt group, ordered by creation.
+// on the owner's default enabled group, ordered by creation。供应商解耦后组无
+// provider 维度（供应商与上游协议面重构设计 §8），gpt 组过滤拆除——默认组
+// 本身已是 owner 唯一默认行。
 func (s *Store) findPreferredDefaultRouteStrategy(ctx context.Context, q queryer, ownerID string) (*routeStrategyReference, error) {
 	var reference routeStrategyReference
 	err := q.QueryRowContext(ctx, s.bind(`SELECT route_strategies.id, route_strategies.name, route_strategies.mode, route_strategies.status
@@ -1284,9 +1286,8 @@ func (s *Store) findPreferredDefaultRouteStrategy(ctx context.Context, q queryer
 		WHERE route_strategies.system_account_id = ?
 			AND route_strategies.status = 'active'
 			AND route_strategies.is_default = 1
-			AND groups.provider_code = ?
 		ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
-		LIMIT 1`+strategyJoinLockClause(s.pg)), ownerID, gptVendorCode).
+		LIMIT 1`+strategyJoinLockClause(s.pg)), ownerID).
 		Scan(&reference.id, &reference.name, &reference.mode, &reference.status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

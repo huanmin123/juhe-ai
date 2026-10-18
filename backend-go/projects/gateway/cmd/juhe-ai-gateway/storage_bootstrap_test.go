@@ -81,7 +81,8 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 		t.Fatalf("admin rows = %d, want 1", adminRows)
 	}
 	var catalogRows int
-	if err := businessDB.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&catalogRows); err != nil {
+	// 供应商解耦（设计 §3）：目录快照权威表收敛为 models 单表。
+	if err := businessDB.QueryRow("SELECT count(*) FROM models").Scan(&catalogRows); err != nil {
 		t.Fatalf("query model catalog: %v", err)
 	}
 	// 行数与被测种子同源计算：期望值取自同一 bootstrap 种子在临时库上写出的

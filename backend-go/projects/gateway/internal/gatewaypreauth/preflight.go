@@ -601,7 +601,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				"fromGroupId":           previousGroupID,
 				"toGroupId":             normalRoute.GroupID,
 				"routeSource":           normalRoute.RouteSource,
-				"matchedProviderCode":   normalRoute.MatchedProviderCode,
 				"sourceBindingCount":    previousBindingCount,
 				"candidateBindingCount": recordBindingCount(normalRoute.APIKeyRecord),
 			})
@@ -623,10 +622,9 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		}
 		if normalRoute.Outcome == NormalRouteOutcomeFailed {
 			auditCapture.AddGatewayMetadata("normal_model_route_failed", map[string]any{
-				"requestedModel":       normalRoute.RequestedModel,
-				"reason":               normalRoute.Code,
-				"matchedProviderCodes": normalRoute.MatchedProviderCodes,
-				"sourceBindingCount":   previousBindingCount,
+				"requestedModel":     normalRoute.RequestedModel,
+				"reason":             normalRoute.Code,
+				"sourceBindingCount": previousBindingCount,
 			})
 			responsePayload := GatewayErrorPayloadOf(normalRoute.Message, normalRoute.Type, normalRoute.Code)
 			errorPhase := "request_validation"
@@ -663,12 +661,12 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			return PreflightResult{}, err
 		}
 	}
-	if groupAccess != nil {
-		auditCapture.BindContext(AuditGatewayContext{ProviderCode: groupAccess.ProviderCode})
-	}
+	// 组访问元数据的 ProviderCode 维度已随供应商解耦退役（设计 §8）：组不再
+	// 携带 provider 身份，audit BindContext 与 ClientStrategy 均不再取该维度；
+	// 账户级审计身份由派发侧账户绑定（BindContext(AccountID/…)) 承载。
 	clientStrategy := s.ClientStrategy.Resolve(req, ClientStrategyInput{
 		SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
-		Endpoint: input.Endpoint, ProviderCode: groupAccessProviderCode(groupAccess),
+		Endpoint: input.Endpoint,
 		ClientIP: gatewayClientIP,
 	})
 	if clientStrategy.ClientProfile != initialClientStrategy.ClientProfile {
@@ -1399,8 +1397,9 @@ type interactionFailureInput struct {
 }
 
 // gatewayModelsBindings 替代 gatewayModelsProviderCodes（设计 6.4）：同一
-// 激活绑定遍历，返回 (groupID, providerCode) 对——按 (groupID, providerCode)
-// 去重，保持绑定顺序，供 /v1/models 成员装载端口使用。
+// 激活绑定遍历，返回去重后的分组序列（保持绑定顺序），供 /v1/models 成员装
+// 载端口使用。供应商解耦后绑定行不再携带 provider 维度（设计 §8）：全部启
+// 用绑定均有效，空态判据只看激活绑定本身。
 func gatewayModelsBindings(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) []GatewayModelBinding {
 	seen := map[string]bool{}
 	bindings := []GatewayModelBinding{}
@@ -1408,17 +1407,15 @@ func gatewayModelsBindings(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) [
 		if binding.Status != "active" {
 			continue
 		}
-		providerCode := strings.TrimSpace(binding.ProviderCode)
 		groupID := strings.TrimSpace(binding.GroupID)
-		if providerCode == "" {
+		if groupID == "" {
 			continue
 		}
-		key := groupID + "\x00" + providerCode
-		if seen[key] {
+		if seen[groupID] {
 			continue
 		}
-		seen[key] = true
-		bindings = append(bindings, GatewayModelBinding{GroupID: groupID, ProviderCode: providerCode})
+		seen[groupID] = true
+		bindings = append(bindings, GatewayModelBinding{GroupID: groupID})
 	}
 	return bindings
 }
@@ -1660,14 +1657,6 @@ func resolveSessionIdentityFromStrategy(s *Service, req *GatewayRequest, strateg
 		ClientProfile:   strategy.ClientProfile,
 		SystemAccountID: systemAccountID, APIKeyID: apiKeyID,
 	})
-}
-
-// groupAccessProviderCode returns the provider code for the strategy input.
-func groupAccessProviderCode(groupAccess *gatewayruntimecache.GroupUsageAccessMetadata) string {
-	if groupAccess == nil {
-		return ""
-	}
-	return groupAccess.ProviderCode
 }
 
 // groupUsageFieldsOr mirrors the `input.groupAccess ? ... : runtimeGroupAccess ? ... : undefined`

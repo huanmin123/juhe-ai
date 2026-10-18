@@ -254,6 +254,7 @@ func anthropicProtocolSecret() gatewayruntimecache.OpenAIAccountSecret {
 		ID:                        "acc-anthropic-bridge",
 		Name:                      "anthropic-bridge-account",
 		ProviderCode:              "anthropic-bridge",
+		VendorCode:                "anthropic-bridge",
 		ProviderProtocolProfileID: "anthropic-default",
 		ProtocolCode:              "anthropic",
 		ProtocolVersion:           "v1",

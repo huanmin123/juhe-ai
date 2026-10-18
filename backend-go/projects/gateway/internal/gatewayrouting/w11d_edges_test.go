@@ -14,7 +14,7 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	binding := GroupBindingRow{
 		ID: "b1", APIKeyID: "key1", SystemAccountID: "owner1",
 		GroupID: "g1", Priority: 1, Status: RowStatusActive,
-		ProviderCode: "gpt", GroupEnabled: 1,
+		GroupEnabled: 1,
 	}
 	apiKey := &APIKeyRow{
 		ID: "key1", SystemAccountID: "owner1",
@@ -31,7 +31,6 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	bindingAnthropic := binding
 	bindingAnthropic.ID = "b2"
 	bindingAnthropic.GroupID = "g2"
-	bindingAnthropic.ProviderCode = "anthropic"
 	multiKey := &APIKeyRow{
 		ID: "key1", SystemAccountID: "owner1",
 		RouteStrategyMode: RouteStrategyModeNormal, Status: RowStatusActive,
@@ -40,8 +39,8 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	multiInput := input
 	multiInput.APIKeyRecord = multiKey
 	cacheErr := newFakeRuntimeCache()
-	cacheErr.groupAccess["g1"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
-	cacheErr.groupAccess["g2"] = GroupUsageAccessMetadata{ProviderCode: "anthropic", GroupAccessType: GroupAccessTypeOwner}
+	cacheErr.groupAccess["g1"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
+	cacheErr.groupAccess["g2"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cacheErr.accounts["g1"] = []UpstreamAccount{{ID: "a1", ProviderCode: "gpt"}}
 	cacheErr.accounts["g2"] = []UpstreamAccount{{ID: "a2", ProviderCode: "anthropic"}}
 	cacheErr.routeErr = errors.New("w11d route down")
@@ -52,13 +51,12 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 
 	// 账户装载失败 → 错误上抛（154 臂）。
 	cacheAccounts := newFakeRuntimeCache()
-	cacheAccounts.groupAccess["g1"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
-	cacheAccounts.groupAccess["g2"] = GroupUsageAccessMetadata{ProviderCode: "anthropic", GroupAccessType: GroupAccessTypeOwner}
+	cacheAccounts.groupAccess["g1"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
+	cacheAccounts.groupAccess["g2"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cacheAccounts.accounts["g1"] = []UpstreamAccount{{ID: "a1", ProviderCode: "gpt"}}
 	cacheAccounts.providerRoute = func(in ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
 		return ProviderModelRouteResolution{
 			Outcome: ProviderModelRouteMatched, ModelKey: in.Model,
-			ProviderCode: "gpt", MatchedProviderCodes: []string{"gpt"},
 		}, nil
 	}
 	cacheAccounts.accountsErr = errors.New("w11d accounts down")
@@ -70,13 +68,12 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	// 目录 legacy ambiguous outcome → failed（models 语义下按目录可见处理，
 	// 503 model_target_group_unavailable，绝不发出 model_route_ambiguous）。
 	cacheAmbiguous := newFakeRuntimeCache()
-	cacheAmbiguous.groupAccess["g1"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
-	cacheAmbiguous.groupAccess["g2"] = GroupUsageAccessMetadata{ProviderCode: "anthropic", GroupAccessType: GroupAccessTypeOwner}
+	cacheAmbiguous.groupAccess["g1"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
+	cacheAmbiguous.groupAccess["g2"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cacheAmbiguous.accounts["g1"] = []UpstreamAccount{{ID: "a1", ProviderCode: "gpt"}}
 	cacheAmbiguous.providerRoute = func(in ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
 		return ProviderModelRouteResolution{
 			Outcome: ProviderModelRouteAmbiguous, ModelKey: in.Model,
-			MatchedProviderCodes: []string{"gpt", "anthropic"},
 		}, nil
 	}
 	serviceAmbiguous := NewNormalModelRouteService(cacheAmbiguous, PassthroughCapabilityFilter{})
@@ -118,7 +115,7 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 	other := binding
 	other.ID = "b2"
 	other.GroupID = "g2"
-	other.ProviderCode = "other"
+	_ = other
 	mixed = append(mixed, other)
 	mixedKey := &APIKeyRow{
 		ID: "key1", SystemAccountID: "owner1",
@@ -126,8 +123,8 @@ func TestW11DNormalRouteErrorArms(t *testing.T) {
 		GroupBindings: mixed,
 	}
 	cacheMixed := newFakeRuntimeCache()
-	cacheMixed.groupAccess["g1"] = GroupUsageAccessMetadata{ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
-	cacheMixed.groupAccess["g2"] = GroupUsageAccessMetadata{ProviderCode: "other", GroupAccessType: GroupAccessTypeOwner}
+	cacheMixed.groupAccess["g1"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
+	cacheMixed.groupAccess["g2"] = GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 	cacheMixed.accounts["g1"] = []UpstreamAccount{{ID: "a1", ProviderCode: "gpt"}}
 	cacheMixed.accounts["g2"] = []UpstreamAccount{{ID: "a2", ProviderCode: "other"}}
 	serviceMixed := NewNormalModelRouteService(cacheMixed, PassthroughCapabilityFilter{})
@@ -300,7 +297,7 @@ func TestW11DBindingWeightAndRedisArms(t *testing.T) {
 	badBinding := GroupBindingRow{
 		ID: "b1", APIKeyID: "key1", SystemAccountID: "owner1",
 		GroupID: "g1", Priority: 1, Status: RowStatusActive,
-		ProviderCode: "gpt", GroupEnabled: 1, Weight: w11e(0),
+		GroupEnabled: 1, Weight: w11e(0),
 	}
 	goodBinding := badBinding
 	goodBinding.ID = "b2"

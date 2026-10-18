@@ -17,17 +17,27 @@ func testDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	for _, ddl := range []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,name TEXT,type TEXT,status TEXT,credentials_encrypted TEXT,config_revision INTEGER NOT NULL DEFAULT 1,dispatch_revision INTEGER NOT NULL DEFAULT 1,schedulable INTEGER,availability_schedule_json TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,deleted_by TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT,provider_code TEXT,model TEXT,created_at TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT,provider_code TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER,created_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_tags (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,created_at TEXT,updated_at TEXT,UNIQUE(system_account_id,name))`,
-		`CREATE TABLE account_tag_bindings (account_id TEXT,tag_id TEXT,system_account_id TEXT,created_at TEXT,UNIQUE(account_id,tag_id))`,
-		`CREATE TABLE group_accounts (account_id TEXT)`,
-		`CREATE TABLE account_api_key_runtime_states (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,key_fingerprint TEXT,status TEXT,created_at TEXT,updated_at TEXT)`,
+	// 目标 DDL 形态（设计 §2.1/§4）：accounts 携 vendor_code /
+	// connection_driver_code；account_supported_models 收敛为
+	// (account_id, model_id)；models 表承接模型身份键
+	// (vendor_code, upstream_model) + scope 可见性。
+	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,vendor_code TEXT,connection_driver_code TEXT,name TEXT,type TEXT,status TEXT,credentials_encrypted TEXT,config_revision INTEGER NOT NULL DEFAULT 1,dispatch_revision INTEGER NOT NULL DEFAULT 1,schedulable INTEGER,availability_schedule_json TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,deleted_by TEXT)`,
+	`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT NOT NULL,upstream_model TEXT NOT NULL,scope TEXT NOT NULL,system_account_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
+	`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,created_at TEXT,PRIMARY KEY (account_id, model_id))`,
+	`CREATE TABLE account_model_mappings (account_id TEXT,provider_code TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER,created_at TEXT,updated_at TEXT)`,
+	`CREATE TABLE account_tags (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,created_at TEXT,updated_at TEXT,UNIQUE(system_account_id,name))`,
+	`CREATE TABLE account_tag_bindings (account_id TEXT,tag_id TEXT,system_account_id TEXT,created_at TEXT,UNIQUE(account_id,tag_id))`,
+	`CREATE TABLE group_accounts (account_id TEXT)`,
+	`CREATE TABLE account_api_key_runtime_states (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,key_fingerprint TEXT,status TEXT,created_at TEXT,updated_at TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// input() 的支持模型 gpt-5 走 generic（vendor NULL）身份键解析。
+	seed := `INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status) VALUES ('m-gpt5',NULL,'gpt-5','gpt-5','builtin',NULL,'active')`
+	if _, err := db.Exec(seed); err != nil {
+		t.Fatal(err)
 	}
 	return db
 }
@@ -113,6 +123,21 @@ func TestRelationFailureRollsBackAccountCreate(t *testing.T) {
 		t.Fatalf("failed create must rollback account, err=%v", err)
 	}
 }
+// B3 目标形态：支持模型名按 (vendor_code, upstream_model) 解析不到时以
+// ErrModelNotFound 拒绝并整体回滚，不静默跳过。
+func TestCreateRejectsUnknownSupportedModel(t *testing.T) {
+	s := ready(t)
+	ctx := context.Background()
+	in := input()
+	in.SupportedModels = []string{"nope"}
+	if _, err := s.Create(ctx, in); !errors.Is(err, ErrModelNotFound) {
+		t.Fatalf("unresolved supported model err=%v", err)
+	}
+	if _, err := s.Get(ctx, "sys", "a1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("failed create must rollback account, err=%v", err)
+	}
+}
+
 func TestPostgresDialectBinding(t *testing.T) {
 	s := &Store{postgres: true}
 	q := s.bind("SELECT * FROM juhe_business.accounts WHERE id=? AND system_account_id=?")

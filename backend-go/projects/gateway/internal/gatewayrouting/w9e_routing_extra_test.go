@@ -213,7 +213,7 @@ func w9eBinding(id, groupID string, priority int64, weight *int64) GroupBindingR
 	return GroupBindingRow{
 		ID: id, APIKeyID: "key1", GroupID: groupID,
 		Priority: priority, Weight: weight, Status: RowStatusActive,
-		ProviderCode: "openai", GroupEnabled: 1,
+		GroupEnabled: 1,
 	}
 }
 

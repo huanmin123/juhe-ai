@@ -80,9 +80,6 @@ const (
 	w1lUpstreamBadKey  = "sk-w1l-upstream-bad"
 	w1lUpstreamContent = "W1L 全链路上游内容"
 	w1lUpstreamLeak    = "w1l 上游 502 故障"
-	// w1lProfileOpenAIV1 是 seed 写入 provider_protocol_profiles 的 openai v1
-	// 档案 id（pgSeedProfiles），accounts 外键必须指向它。
-	w1lProfileOpenAIV1 = "profile_openai_openai_v1"
 	// w1lSeedTimestamp 是补种子的固定 created_at/updated_at（真实 DDL 的
 	// NOT NULL 时间列；RFC3339 毫秒 UTC，与 seedTimestamp 输出同形）。
 	w1lSeedTimestamp = "2026-09-14T00:00:00.000Z"
@@ -146,14 +143,15 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 	}
 
 	// ---- 分组：主组（场景 a/c）、solo 故障组（场景 b1）、回退两组（场景 b2） ----
+	// 供应商解耦（设计 §8）：组无 provider 维度。
 	for _, group := range []struct{ id, name string }{
 		{"w1l_group_main", "W1L 主分组"},
 		{"w1l_group_solo_bad", "W1L 单故障分组"},
 		{"w1l_group_fb_bad", "W1L 回退故障分组"},
 		{"w1l_group_fb_ok", "W1L 回退正常分组"},
 	} {
-		seed(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-			VALUES (?, 'sys_admin', ?, 'openai', 1, 'personal', ?, ?)`, group.id, group.name, now, now)
+		seed(`INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+			VALUES (?, 'sys_admin', ?, 1, 'personal', ?, ?)`, group.id, group.name, now, now)
 	}
 
 	// ---- 账户：acc_ok（上游 200）与 acc_bad（上游 502） ----
@@ -171,16 +169,28 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 	if err != nil {
 		t.Fatalf("加密 acc_bad 凭据失败: %v", err)
 	}
-	for _, account := range []struct{ id, name, credentials string }{
+	// 供应商解耦（设计 §2.1）：身份列 vendor_code / connection_driver_code，
+	// 探针连接面（preset + base_url）在健康检查连接行。真实 DDL 的
+	// accounts ↔ account_connections 经 health_check_connection_id 复合外键
+	// 互指——按设计写入顺序：先插账户（健康三字段暂 NULL）、再插连接行、
+	// 最后 UPDATE 回填 health_check_connection_id。
+	for _, account := range []struct {
+		id, name, credentials string
+	}{
 		{"w1l_acc_ok", "W1L 正常账户", credOK},
 		{"w1l_acc_bad", "W1L 故障账户", credBad},
 	} {
 		seed(`INSERT INTO accounts (
-				id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+				id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 				name, type, status, schedulable, credentials_encrypted, health_check_model, health_check_endpoint_mode,
 				created_at, updated_at
-			) VALUES (?, 'sys_admin', 'openai', ?, 'openai', 'v1', ?, 'api_key', 'active', 1, ?, 'gpt-test', 'chat_json', ?, ?)`,
-			account.id, w1lProfileOpenAIV1, account.name, account.credentials, now, now)
+			) VALUES (?, 'sys_admin', 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', 1, ?, 'gpt-test', 'chat_json', ?, ?)`,
+			account.id, account.name, account.credentials, now, now)
+		seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+			VALUES (?, ?, 'gpt_openai_v1', ?, 1, ?, ?)`,
+			"w1l_conn_"+account.id, account.id, upstreamBaseURL, now, now)
+		seed(`UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`,
+			"w1l_conn_"+account.id, account.id)
 	}
 
 	// ---- 组成员 + 支持模型（PK (account_id, model)，每账户一行） ----
@@ -193,9 +203,15 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 		seed(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at)
 			VALUES ('sys_admin', ?, ?, 1, ?, ?)`, member[0], member[1], now, now)
 	}
+	// ---- 支持模型 + 模型目录（供应商解耦设计 §3/§4）----
+	// models 单表一行两用：SM 经 model_id 外键引用；同一行即 gpt-test 的
+	// active global 目录行（带价格）。模型身份全局唯一
+	//（idx_models_identity_unique），两账户共享同一 models 行。
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible, supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('mdl_w1l_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', 1, '["chat_json","chat_sse"]', 1.0, ?, ?)`, now, now)
 	for _, accountID := range []string{"w1l_acc_ok", "w1l_acc_bad"} {
-		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-			VALUES (?, 'openai', 'gpt-test', ?)`, accountID, now)
+		seed(`INSERT INTO account_supported_models (account_id, model_id, created_at)
+			VALUES (?, 'mdl_w1l_gpt-test', ?)`, accountID, now)
 	}
 
 	// ---- 路由策略 + 组绑定 + API Key ----
@@ -237,12 +253,7 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 			keySecretEncrypted, now, now)
 	}
 
-	// ---- 模型目录：请求模型 gpt-test 的 active 目录行 ----
-	// openai 兼容目录源扩展后内置目录不含 openai 自身行；gpt-test 目录行
-	// 改种 custom_provider_models（global scope，带价格），与生产 openai
-	// 兼容目录的自定义模型来源一致。
-	seed(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, catalog_visible, supported_api_protocols_json, input_usd_per_1m, created_by, created_at, updated_at)
-		VALUES ('w1l_cat_gpt_test', 'openai', 'gpt-test', 'global', NULL, 'active', 1, '["chat_completions"]', 1.0, 'sys_admin', ?, ?)`, now, now)
+
 
 	// ---- 回读校验：关键行确实落库 ----
 	checks := []struct {
@@ -254,7 +265,8 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 		{"group_accounts", "group_id LIKE 'w1l_%'", 4},
 		{"api_keys", "id LIKE 'w1l_%'", 3},
 		{"route_strategies", "id LIKE 'w1l_%'", 3},
-		{"custom_provider_models", "id = 'w1l_cat_gpt_test'", 1},
+		{"models", "id = 'mdl_w1l_gpt-test'", 1},
+		{"account_connections", "id LIKE 'w1l_conn_%'", 2},
 	}
 	for _, check := range checks {
 		var count int
@@ -610,9 +622,10 @@ func TestW1LBootChainFullRequestCoverage(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("场景 W1L-c 期望 404，实际 %d，body=%s", status, body)
 	}
-	// BUG-0261 精确文案 + BUG-0325 修复批：全 model_unsupported 耗尽返回
-	// 404 model_not_found（客户端参数错误语义，原 503 可重试语义已修）。
-	if !strings.Contains(body, "当前分组无账户支持请求模型：w1l-unknown-model") || !strings.Contains(body, `"code":"model_not_found"`) {
+	// BUG-0261 精确文案 + BUG-0325 修复批：models 单表目录 missing 返回
+	// 404 model_not_found（供应商解耦后未知模型在路由目录判定即终态，
+	// 文案为目录 missing 契约"请求模型不存在或不可用"）。
+	if !strings.Contains(body, "请求模型不存在或不可用：w1l-unknown-model") || !strings.Contains(body, `"code":"model_not_found"`) {
 		t.Fatalf("场景 W1L-c 缺少模型不匹配契约（model_not_found + 精确文案），body=%s", body)
 	}
 

@@ -217,8 +217,8 @@ func TestMergeRecoverableLoaderFansOutAcrossBindings(t *testing.T) {
 // 账号在另一启用绑定组（group_2）中；merge 下过滤在合并池进行，命中后窗口
 // 身份取账号所在片段组。
 func TestMergeInteractionAffinityHitsAcrossGroups(t *testing.T) {
-	accAff := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_aff", ProviderCode: "gemini"}
-	accOther := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_other", ProviderCode: "gemini"}
+	accAff := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_aff", ProviderCode: "gemini", VendorCode: "gemini"}
+	accOther := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_other", ProviderCode: "gemini", VendorCode: "gemini"}
 	cache := &mergeRuntimeCache{
 		fakeRuntimeCache: whRuntimeCacheFor(nil),
 		cachedByGroup: map[string][]gatewayruntimecache.OpenAIAccountSecret{

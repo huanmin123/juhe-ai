@@ -14,7 +14,7 @@ func mergeTestBinding(id, groupID, providerCode string, priority int64) GroupBin
 	return GroupBindingRow{
 		ID: id, APIKeyID: "key1", SystemAccountID: "owner1",
 		GroupID: groupID, Priority: priority, Status: RowStatusActive,
-		ProviderCode: providerCode, GroupEnabled: 1,
+		GroupEnabled: 1,
 	}
 }
 
@@ -28,7 +28,7 @@ func mergeTestAPIKey(mode string, bindings ...GroupBindingRow) *APIKeyRow {
 }
 
 func mergeTestAccess(providerCode string) GroupUsageAccessMetadata {
-	return GroupUsageAccessMetadata{ProviderCode: providerCode, GroupAccessType: GroupAccessTypeOwner}
+	return GroupUsageAccessMetadata{GroupAccessType: GroupAccessTypeOwner}
 }
 
 func mergeTestRequest(model string) RequestView {
@@ -84,7 +84,7 @@ func TestMergeRouteCollectsAllGroupSegments(t *testing.T) {
 	}
 	// Catalog says missing: merge selection must not depend on it (B13).
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 
 	disabledBinding := mergeTestBinding("b3", "grp_c", "openai", 3)
@@ -106,9 +106,6 @@ func TestMergeRouteCollectsAllGroupSegments(t *testing.T) {
 	if result.GroupID != "grp_a" {
 		t.Fatalf("window group = %q, want grp_a", result.GroupID)
 	}
-	if result.MatchedProviderCode != "" {
-		t.Fatalf("matched provider code = %q, want empty (B11)", result.MatchedProviderCode)
-	}
 	if result.RequestedModel != "gpt-4o" {
 		t.Fatalf("requested model = %q, want gpt-4o", result.RequestedModel)
 	}
@@ -118,11 +115,8 @@ func TestMergeRouteCollectsAllGroupSegments(t *testing.T) {
 	if got := accountIDs(result.Accounts); !equalStrings(got, []string{"acc_a1", "acc_a2", "acc_b1"}) {
 		t.Fatalf("flat accounts = %v, want [acc_a1 acc_a2 acc_b1] (binding order + intra-group order)", got)
 	}
-	if result.GroupAccess.ProviderCode != "openai" || result.GroupAccess.GroupAccessType != GroupAccessTypeOwner {
+	if result.GroupAccess.GroupAccessType != GroupAccessTypeOwner {
 		t.Fatalf("top-level group access = %+v, want grp_a access", result.GroupAccess)
-	}
-	if result.GroupSegments[0].GroupAccess.ProviderCode != "openai" || result.GroupSegments[1].GroupAccess.ProviderCode != "anthropic" {
-		t.Fatalf("segment group access = [%+v %+v], want per-group access", result.GroupSegments[0].GroupAccess, result.GroupSegments[1].GroupAccess)
 	}
 	// B11: GroupBindings stay full (no single-provider narrowing); SelectedGroupID = window group.
 	if got := bindingIDs(result.APIKeyRecord.GroupBindings); !equalStrings(got, []string{"b1", "b2", "b3"}) {
@@ -164,7 +158,7 @@ func TestMergeRouteSingleProviderDoesNotSkip(t *testing.T) {
 		{ID: "acc_b1", ProviderCode: "openai", SupportedModels: []string{"gpt-4o"}},
 	}
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 	apiKey := mergeTestAPIKey(RouteStrategyModeMerge,
 		mergeTestBinding("b1", "grp_a", "openai", 1),
@@ -210,7 +204,7 @@ func TestMergeRouteMappingAccountEntersSecondSegment(t *testing.T) {
 		},
 	}
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 	apiKey := mergeTestAPIKey(RouteStrategyModeMerge,
 		mergeTestBinding("b1", "grp_a", "openai", 1),
@@ -246,7 +240,7 @@ func TestMergeRouteSkipsInaccessibleAndEmptyGroups(t *testing.T) {
 		{ID: "acc_b1", ProviderCode: "anthropic", SupportedModels: []string{"gpt-4o"}},
 	}
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 	apiKey := mergeTestAPIKey(RouteStrategyModeMerge,
 		mergeTestBinding("b1", "grp_a", "openai", 1),
@@ -292,49 +286,42 @@ func TestMergeRouteAllEmptyFailureClassification(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		modelsRoute      ProviderModelRouteResolution
-		wantStatusCode   int
-		wantType         string
-		wantCode         string
-		wantMessage      string
-		wantMatchedCodes []string
+		name           string
+		modelsRoute    ProviderModelRouteResolution
+		wantStatusCode int
+		wantType       string
+		wantCode       string
+		wantMessage    string
 	}{
 		{
 			name: "models directory present fails model_target_group_unavailable",
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
-			wantStatusCode:   503,
-			wantType:         "service_unavailable",
-			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
-			wantMatchedCodes: nil,
+			wantStatusCode: 503,
+			wantType:       "service_unavailable",
+			wantCode:       FailCodeModelTargetGroupUnavailable,
+			wantMessage:    "请求模型当前没有可用账号：gpt-4o",
 		},
 		{
 			name: "models directory absent fails 404 model_not_found",
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
-			wantStatusCode:   404,
-			wantType:         "invalid_request_error",
-			wantCode:         FailCodeModelNotFound,
-			wantMessage:      "请求模型不存在或不可用：gpt-4o",
-			wantMatchedCodes: nil,
+			wantStatusCode: 404,
+			wantType:       "invalid_request_error",
+			wantCode:       FailCodeModelNotFound,
+			wantMessage:    "请求模型不存在或不可用：gpt-4o",
 		},
 		{
 			name: "legacy ambiguous outcome never yields model_route_ambiguous (B11)",
 			modelsRoute: ProviderModelRouteResolution{
 				Outcome: ProviderModelRouteAmbiguous, ModelKey: "gpt-4o",
-				MatchedProviderCodes: []string{},
 			},
-			wantStatusCode:   503,
-			wantType:         "service_unavailable",
-			wantCode:         FailCodeModelTargetGroupUnavailable,
-			wantMessage:      "请求模型当前没有可用账号：gpt-4o",
-			wantMatchedCodes: nil,
+			wantStatusCode: 503,
+			wantType:       "service_unavailable",
+			wantCode:       FailCodeModelTargetGroupUnavailable,
+			wantMessage:    "请求模型当前没有可用账号：gpt-4o",
 		},
 	}
 
@@ -354,9 +341,6 @@ func TestMergeRouteAllEmptyFailureClassification(t *testing.T) {
 				t.Fatalf("failure = [%d %s %s %s], want [%d %s %s %s]",
 					result.StatusCode, result.Type, result.Code, result.Message,
 					tt.wantStatusCode, tt.wantType, tt.wantCode, tt.wantMessage)
-			}
-			if !equalStrings(result.MatchedProviderCodes, tt.wantMatchedCodes) {
-				t.Fatalf("matched provider codes = %v, want %v", result.MatchedProviderCodes, tt.wantMatchedCodes)
 			}
 			if result.RequestedModel != "gpt-4o" {
 				t.Fatalf("requested model = %q, want gpt-4o", result.RequestedModel)
@@ -385,7 +369,7 @@ func TestMergeRouteDedupesCrossGroupAccounts(t *testing.T) {
 		{ID: "acc_b1", ProviderCode: "openai", SupportedModels: []string{"gpt-4o"}},
 	}
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 	apiKey := mergeTestAPIKey(RouteStrategyModeMerge,
 		mergeTestBinding("b1", "grp_a", "openai", 1),
@@ -422,7 +406,7 @@ func TestMergeRouteCapabilityFilterAppliesPerGroup(t *testing.T) {
 		{ID: "acc_b1", ProviderCode: "anthropic", SupportedModels: []string{"gpt-4o"}},
 	}
 	cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
-		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model, MatchedProviderCodes: []string{}}, nil
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMissing, ModelKey: input.Model}, nil
 	}
 	apiKey := mergeTestAPIKey(RouteStrategyModeMerge,
 		mergeTestBinding("b1", "grp_a", "openai", 1),
@@ -485,7 +469,6 @@ func TestNonMergeModesLeaveGroupSegmentsEmpty(t *testing.T) {
 			cache.providerRoute = func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
 				return ProviderModelRouteResolution{
 					Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
-					ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
 				}, nil
 			}
 			apiKey := mergeTestAPIKey(mode,

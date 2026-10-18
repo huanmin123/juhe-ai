@@ -10,7 +10,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -257,66 +256,29 @@ func TestChainMergeCatalogItemsIdentityAndEmpty(t *testing.T) {
 	}
 }
 
-// --- DB-backed：sourceProviderCodes 扩展臂 / 错误臂 / 列表过滤臂 ---
+// --- DB-backed：sourceVendorCodes 恒等维度 / 错误臂 / 列表过滤臂 ---
+// 供应商解耦（设计 §3/§8）：providers/provider_protocol_profiles 协议子供应
+// 商源扩展随两表退役拆除，目录维度归一为 vendor_code 恒等源；原扩展臂与
+// closed-DB 扩展错误臂一并退役。
 
-func TestChainCatalogSourceProviderCodesExpansion(t *testing.T) {
-	fixture := newChainFixture(t)
-	now := "2026-09-04T00:00:00.000Z"
-	for _, row := range []struct{ id, code, protocol, version string }{
-		{"prov_w40_gpt", "gpt", "openai", "v1"},
-		{"prov_w40_ant", "ant", "anthropic", "v1"},
-		{"prov_w40_gem", "gem", "gemini", "v1beta"},
-	} {
-		if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)`, row.id, row.code, strings.ToUpper(row.code), now, now); err != nil {
-			t.Fatalf("seed provider %s: %v", row.code, err)
-		}
-		if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?, 'https://w40.invalid', 'm', '[]', '{}', ?, ?)`,
-			"prof_"+row.id, row.code, row.code+" profile", row.protocol, row.version, now, now); err != nil {
-			t.Fatalf("seed profile %s: %v", row.code, err)
+func TestChainCatalogSourceVendorCodesIdentity(t *testing.T) {
+	// 归一化后为空 → 空集。
+	if codes := sourceVendorCodes("   "); len(codes) != 0 {
+		t.Fatalf("空白 provider = %#v", codes)
+	}
+	// 任意非空入参（含 hybrid）→ 归一化单值恒等源。
+	for input, want := range map[string]string{"hybrid": "hybrid", "OpenAI": "openai", " gpt ": "gpt"} {
+		codes := sourceVendorCodes(input)
+		if len(codes) != 1 || codes[0] != want {
+			t.Fatalf("sourceVendorCodes(%q) = %#v, want [%q]", input, codes, want)
 		}
 	}
-	source, err := newChainCatalogSource(fixture.db, false)
-	if err != nil {
-		t.Fatalf("create source: %v", err)
+	// openai 兼容目标在内置目录源中剔除自身（openai vendor 无自身内置目录）。
+	if codes := chainCatalogBuiltInSourceProviderCodes("openai", []string{"openai"}); len(codes) != 0 {
+		t.Fatalf("openai builtin 源剔除后应为空: %#v", codes)
 	}
-	ctx := context.Background()
-
-	// 归一化后为空 → 空集（224 臂）。
-	if codes, err := source.sourceProviderCodes(ctx, "   "); err != nil || len(codes) != 0 {
-		t.Fatalf("空白 provider = %#v err=%v", codes, err)
-	}
-
-	// hybrid → 三协议子供应商展开（227-242 臂）。
-	hybrid, err := source.sourceProviderCodes(ctx, "hybrid")
-	if err != nil {
-		t.Fatalf("hybrid expansion: %v", err)
-	}
-	for _, want := range []string{"gpt", "ant", "gem"} {
-		found := false
-		for _, code := range hybrid {
-			if code == want {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("hybrid 展开缺 %s: %#v", want, hybrid)
-		}
-	}
-	for _, code := range hybrid {
-		if code == "hybrid" {
-			t.Fatalf("hybrid 展开不得包含自身: %#v", hybrid)
-		}
-	}
-
-	// openai 兼容目标 → openai 协议子供应商 + 自身。
-	openai, err := source.sourceProviderCodes(ctx, "openai")
-	if err != nil {
-		t.Fatalf("openai expansion: %v", err)
-	}
-	if len(openai) < 2 {
-		t.Fatalf("openai 展开至少含子供应商与自身: %#v", openai)
+	if codes := chainCatalogBuiltInSourceProviderCodes("gpt", []string{"gpt"}); len(codes) != 1 || codes[0] != "gpt" {
+		t.Fatalf("gpt builtin 源保持恒等: %#v", codes)
 	}
 }
 
@@ -333,15 +295,6 @@ func TestChainCatalogSourceClosedDBErrorArms(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	ctx := context.Background()
-	if _, err := source.protocolProviderCodes(ctx, "openai", "v1"); err == nil {
-		t.Fatal("关闭连接上 protocolProviderCodes 必须报错")
-	}
-	if _, err := source.sourceProviderCodes(ctx, "openai"); err == nil {
-		t.Fatal("关闭连接上 openai 扩展必须报错（248 臂）")
-	}
-	if _, err := source.sourceProviderCodes(ctx, "hybrid"); err == nil {
-		t.Fatal("关闭连接上 hybrid 扩展必须报错（231 臂）")
-	}
 	if _, err := source.ListProviderModelCatalog(ctx, gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err == nil {
 		t.Fatal("关闭连接上目录读取必须报错（148 臂）")
 	}
@@ -350,30 +303,22 @@ func TestChainCatalogSourceClosedDBErrorArms(t *testing.T) {
 func TestChainListProviderModelCatalogFilterArms(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
-	// 目录目标 passthrough 供应商（非 openai 兼容 / 非 hybrid）。
-	if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov_w40_drop', 'catdrop', 'CatDrop', 1, ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed provider: %v", err)
+	seedModel := func(id, model, scope string, price any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(`INSERT INTO models (
+				id, vendor_code, public_model, upstream_model, scope, status, catalog_visible,
+				supported_endpoint_modes_json, input_usd_per_1m, source, created_at, updated_at)
+			VALUES (?, 'catdrop', ?, ?, ?, 'active', 1, '["chat_json","chat_sse"]', ?, 'builtin', ?, ?)`,
+			id, model, model, scope, price, now, now); err != nil {
+			t.Fatalf("seed model row %s: %v", id, err)
+		}
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof_w40_drop', 'catdrop', 'CatDrop profile', 1, 'openai', 'v1', 'https://catdrop.invalid', 'm', '[]', '{}', ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed profile: %v", err)
-	}
-	// audio 模式行：active + 有价，SQL 放行 → isSupported 臂剔除（186）。
-	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, mode, supported_api_protocols_json, source, catalog_visible, supports_prompt_caching, input_usd_per_1m, created_at, updated_at)
-		VALUES ('cat_w40_audio', 'active', 'catdrop', 'catdrop-tts-audio', 'audio', '["chat_completions"]', 'builtin', 1, 0, 1.0, ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed audio row: %v", err)
-	}
+	// 名词排除行（whisper token）：active + 有价，SQL 放行 → isSupported 臂
+	// 剔除（旧 audio-mode+chat-protocol 行在 mode/协议同源自 models 端点集后
+	// 不可再表达，剔除面由名词 token 臂等价覆盖）。
+	seedModel("cat_w40_whisper", "catdrop-whisper-x", "builtin", 1.0)
 	// 无价自定义行：active、可支持 → unpriced 臂剔除（192）。
-	if _, err := fixture.db.Exec(`INSERT INTO custom_provider_models (
-			id, provider_code, model, scope, system_account_id, status, catalog_visible,
-			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
-			service_tier_prices_json, created_by, created_at, updated_at)
-		VALUES ('cpm_w40_free', 'catdrop', 'catdrop-free-model', 'global', NULL, 'active', 1,
-			'[]', '[]', '[]', '[]', 'sys_owner', ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed unpriced row: %v", err)
-	}
+	seedModel("cpm_w40_free", "catdrop-free-model", "global", nil)
 	source, err := newChainCatalogSource(fixture.db, false)
 	if err != nil {
 		t.Fatalf("create source: %v", err)
@@ -393,8 +338,8 @@ func TestChainListProviderModelCatalogFilterArms(t *testing.T) {
 	for _, item := range items {
 		models[item.Model] = true
 	}
-	if models["catdrop-tts-audio"] {
-		t.Fatalf("audio 模式行必须被过滤: %#v", items)
+	if models["catdrop-whisper-x"] {
+		t.Fatalf("whisper 名词行必须被过滤: %#v", items)
 	}
 	if models["catdrop-free-model"] {
 		t.Fatalf("无价行必须被过滤（IncludeUnpriced=false）: %#v", items)
@@ -410,8 +355,8 @@ func TestChainListProviderModelCatalogFilterArms(t *testing.T) {
 		if item.Model == "catdrop-free-model" {
 			found = true
 		}
-		if item.Model == "catdrop-tts-audio" {
-			t.Fatalf("audio 模式行不得因 IncludeUnpriced 放开而回归: %#v", withUnpriced)
+		if item.Model == "catdrop-whisper-x" {
+			t.Fatalf("whisper 名词行不得因 IncludeUnpriced 放开而回归: %#v", withUnpriced)
 		}
 	}
 	if !found {
