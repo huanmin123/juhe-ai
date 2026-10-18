@@ -1,5 +1,7 @@
 # AI 账户状态提示卡片设计
 
+> **迁移与实现归属（2026-10-18）。** 本文原属 `docs/superpowers/specs/`（Node 后端时期设计文档），随该目录退场迁入 `docs/functions/`；文中 Node 路径为当时实现记录。现行实现为 Go 三项目，状态摘要投影对应 gateway `internal/accounts/list_availability_presentation.go`，运行态与探针语义见 [AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)。
+
 ## 1. 背景与目标
 
 当前 AI 账户状态提示把数据库状态、运行态缓存、主动健康检查、真实流量成功信号、冷却复测、质量统计、授权来源和内部调度计数拼在同一张提示卡片中。用户无法判断时间对应哪一种任务，也会把 `runtime.until`、`cooldownUntil` 或旧的 `nextHealthCheckAt` 误解为账户必然恢复时间。

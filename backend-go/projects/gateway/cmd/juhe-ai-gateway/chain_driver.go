@@ -447,6 +447,20 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			}
 			return []string{upstreamURL}, nil
 		}
+		// 向量批（火山方舟向量承接，2026-10-18 重接线）：官方 OpenAI 兼容
+		// 向量端点自带 /api/v3 服务根（/api/v3/embeddings 与多模态面
+		// /api/v3/embeddings/multimodal），不得走 openai /v1 强制补缀归一
+		//（会把官方根错拼 /v1/embeddings*——上游 404 实证）——沿 chat/images
+		// 面同构的服务根归一先例（chainVolcengineChatUpstreamURL 显式路径
+		// 模式；包含匹配同时覆盖多模态子路径）。
+		if chainNormalizeProviderToken(account.VendorCode) == "volcengine" &&
+			chainIsEmbeddingsPathAndQuery(pathAndQuery) {
+			upstreamURL, urlErr := chainVolcengineChatUpstreamURL(account.BaseURL, pathAndQuery)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{upstreamURL}, nil
+		}
 		if chainIsChatCompletionsPathAndQuery(pathAndQuery) {
 			switch chainNormalizeProviderToken(account.VendorCode) {
 			case "volcengine":
@@ -587,6 +601,12 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		// Authorization（ark Bearer），不得让两个鉴权头并存出站。
 		headers.Del("Authorization")
 		headers.Set("X-Api-Key", token)
+		// 流式 TTS 面（seed-tts-2.0）要求 X-Api-Resource-Id 头（模型名即
+		// 资源 ID，2026-10-18 A 级实测：缺失即 45000030 "extract request
+		// resource id" 失败）；同步面无此头。
+		if gatewaymedia.IsVolcengineTTSStreamModel(ir.Model) {
+			headers.Set("X-Api-Resource-Id", gatewaymedia.VolcengineTTSStreamModel)
+		}
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	if normalizeProtocol(account.ProtocolCode) == driverProtocolGemini && geminiAccountUsesCodeAssistRuntime(account) {

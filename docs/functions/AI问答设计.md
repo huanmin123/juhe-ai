@@ -63,9 +63,9 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 - 管理员读取其他用户聊天正文的管理页面或接口。
 - Go 后端实现或 Node / Go 双写。
 
-站内工具的通用执行边界与首个图片工具已由 [内部工具运行时与生图设计](../superpowers/specs/2026-07-20-AI问答内部工具运行时与生图设计.md) 固化并落地。Chat/Responses 都使用同一编排器，模型继续通过真实 API Key 进入现有网关；MCP、Skill 和第三方 Agent 运行时仍是独立范围。
+站内工具的通用执行边界与首个图片工具已由 [内部工具运行时与生图设计](AI问答内部工具运行时与生图设计.md) 固化并落地。Chat/Responses 都使用同一编排器，模型继续通过真实 API Key 进入现有网关；MCP、Skill 和第三方 Agent 运行时仍是独立范围。
 
-图片二次编辑采用“主会话 + 有界图像谱系索引”，不创建供应商私有的长期子会话，也不提供把生成图重新插入输入框的专用编辑流程。用户只需在原会话继续输入普通文本；主模型读取完整文本上下文和最近 12 条不可信谱系元数据，选择明确的 `assetId` 后调用内部图像工具。`chat_conversations.default_image_model` 保存会话默认图像模型，当前只允许 `gpt-image-2`；`chat_image_generations` 为每个助手生成资产保存 `generate/edit`、模型、提示词、来源 `assetId`、根图、尺寸、质量和格式。主上下文不注入图片 Base64；工具执行时才按同会话 `assetId` 读取最多 5 张、合计最多 48 MiB 的有效处理后图片。生成使用 JSON `/v1/images/generations`，编辑使用 multipart `/v1/images/edits` 和重复 `image[]`；网关从 multipart 受限解析 `model` 用于模型感知路由，正文仍原样透传。生成图在聊天页内预览原图并支持下载，不跳离当前页面。完整决策见 [图像编辑与子上下文设计](../superpowers/specs/2026-07-20-AI问答图像编辑与子上下文设计.md)。
+图片二次编辑采用“主会话 + 有界图像谱系索引”，不创建供应商私有的长期子会话，也不提供把生成图重新插入输入框的专用编辑流程。用户只需在原会话继续输入普通文本；主模型读取完整文本上下文和最近 12 条不可信谱系元数据，选择明确的 `assetId` 后调用内部图像工具。`chat_conversations.default_image_model` 保存会话默认图像模型，当前只允许 `gpt-image-2`；`chat_image_generations` 为每个助手生成资产保存 `generate/edit`、模型、提示词、来源 `assetId`、根图、尺寸、质量和格式。主上下文不注入图片 Base64；工具执行时才按同会话 `assetId` 读取最多 5 张、合计最多 48 MiB 的有效处理后图片。生成使用 JSON `/v1/images/generations`，编辑使用 multipart `/v1/images/edits` 和重复 `image[]`；网关从 multipart 受限解析 `model` 用于模型感知路由，正文仍原样透传。生成图在聊天页内预览原图并支持下载，不跳离当前页面。完整决策见 [图像编辑与子上下文设计](AI问答图像编辑与子上下文设计.md)。
 
 ## 4. 总体架构
 
