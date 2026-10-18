@@ -83,7 +83,9 @@ func runMaintenance(argv []string) int {
 	rebuildBatchSize := fs.Int("batch-size", 2000, "rebuild-usage-stats aggregation batch size (clamped to 1..50000; default 2000)")
 	rebuildMaxBatches := fs.Int("max-batches", 1000, "rebuild-usage-stats aggregation batch cap per run (clamped to 1..10000; default 1000; rerun to continue when the cap is hit)")
 	applySuccessCostBackfill := fs.Bool("apply-success-cost-backfill", false, "one-shot idempotent backfill of usage_stats success_cost_usd from total_cost_usd for the six stats tables (maintenance window with jobs stopped; run --ensure-schema first to create the backfill_progress marker table; requires --driver postgres --dsn or --driver sqlite --paths stats=...; resumable from the persisted cursor)")
-	backfillDryRun := fs.Bool("dry-run", false, "with --apply-success-cost-backfill, read-only pending-row count per table; never reads or writes the backfill_progress marker")
+	backfillDryRun := fs.Bool("dry-run", false, "read-only dry-run: with --apply-success-cost-backfill prints the pending-row count per table (never touches the backfill_progress marker); with --migrate-provider-connection-model scans the legacy schema read-only and writes the reviewable manifest to --manifest-out (the only write)")
+	migrateProviderConnectionModel := fs.Bool("migrate-provider-connection-model", false, `provider & upstream protocol-surface migration dry-run slice (供应商与上游协议面重构设计 §10): with --dry-run reads the legacy business schema read-only (--driver postgres --dsn) and writes the reviewable manifest to --manifest-out (blocked counts may be non-zero by design); WITHOUT --dry-run the formal execution branch is not delivered yet and the command exits 2 ("正式执行尚未交付：历史 usage/audit 列改造完成后提供")`)
+	manifestOut := fs.String("manifest-out", "", "manifest JSON output path for --migrate-provider-connection-model --dry-run (required with it; the only dry-run write)")
 	migrateAccountCapabilityDomain := fs.Bool("migrate-account-capability-domain", false, "AI account capability-domain migration (PLAN-20261011T141004000Z): requires --account-capability-domain-stage=m1|m2-cutover plus --node-stopped --go-stopped --backup-confirmed; storage via --driver plus --paths/--dsn")
 	verifyAccountCapabilityDomain := fs.Bool("verify-account-capability-domain", false, "read-only AI account capability-domain verification: requires --account-capability-domain-stage=m1|m2-cutover and --account-capability-domain-check=preflight|postflight (preflight tolerates a missing column, postflight requires it)")
 	accountCapabilityDomainStage := fs.String("account-capability-domain-stage", "", "migration target for --migrate-account-capability-domain/--verify-account-capability-domain: m1 or m2-cutover")
@@ -132,6 +134,13 @@ func runMaintenance(argv []string) int {
 			return schedulingPreferencesMigrateResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *nodeStopped, *goStopped, *backupConfirmed)
 		}
 		return schedulingPreferencesVerifyResult(*bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *schedulingPreferencesCheck)
+	}
+	if *migrateProviderConnectionModel {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {
+			fmt.Fprintln(os.Stderr, "provider connection model migration flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return providerConnectionMigrationResult(*backfillDryRun, *bootstrapDriver, *bootstrapDSN, *manifestOut)
 	}
 	if *migrateChatBinding {
 		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *dropRetiredMonitoringTables {

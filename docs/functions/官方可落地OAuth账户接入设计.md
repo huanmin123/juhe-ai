@@ -177,6 +177,6 @@ Gemini 的 “Google OAuth” 必须继续区分三种模式：
 - [Gemini 账号接入](Gemini账号接入.md)
 - [Anthropic 账号接入](Anthropic账号接入.md)
 - [xAI / Grok 账号接入](xAI账号接入.md)
-- [PLAN-20260727T174540632Z Gemini 与 Grok OAuth 完整补全](../plans/计划-20260727T174540632Z-Gemini与GrokOAuth完整补全.md)
+- PLAN-20260727T174540632Z Gemini 与 Grok OAuth 完整补全（已清理，git 历史可溯）
 - [PLAN-20260722T145435019Z 供应商订阅认证安全扩展](../plans/计划-20260722T145435019Z-供应商订阅认证安全扩展.md)
-- [PLAN-20260722T155636479Z CLIProxyAPI 本地 Sidecar 接入](../plans/计划-20260722T155636479Z-CLIProxyAPI本地Sidecar接入.md)
+- PLAN-20260722T155636479Z CLIProxyAPI 本地 Sidecar 接入（已清理，git 历史可溯）

@@ -79,5 +79,5 @@ Anthropic 目前仅支持把已有 Bearer Token 当作 `oauth` 账户手工导�
 
 ## 关联计划
 
-- [PLAN-20260727T154225823Z](../plans/计划-20260727T154225823Z-Anthropic官方OAuth托管接入复用实现.md)
+- PLAN-20260727T154225823Z（已清理，git 历史可溯）
 - [官方可落地 OAuth 账户接入设计](官方可落地OAuth账户接入设计.md)

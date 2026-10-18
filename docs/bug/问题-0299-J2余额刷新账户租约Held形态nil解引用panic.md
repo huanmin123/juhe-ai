@@ -8,7 +8,7 @@
 - 发现时间：2026-10-09 01:26（生产发布后巡检捕获 jobs panic 日志）
 - 发现方式：生产实证（发布重启窗口 jobs `accountbalance.runner.ioWorker` panic，栈 `runner.go:293`）+ 本地调试复现
 - 模块：后端 / shared / accountbalance / J2 余额刷新
-- 关联计划：无（PLAN-20261008T113056000Z 发布巡检发现，缺陷与该计划无因果——该计划未改 accountbalance）
+- 关联计划：无（PLAN-20261008T113056000Z（已清理，git 历史可溯） 发布巡检发现，缺陷与该计划无因果——该计划未改 accountbalance）
 - 关联 bug：无
 
 ## 问题概述
@@ -17,7 +17,7 @@
 - 期望：`prepareInput` 返回 skipped 形态时调用方跳过该输入，不计错误、不触碰 query。
 - 实际：`prepareInput` 在 `AcquireAccountLease` 返回 `ErrAccountLeaseHeld`（或接口契约上 `!acquired`）时返回 `(runStateSkipped, AccountLease{}, nil query, nil error)`；调用方 `runInputs` 的 skipped 分支只做计数不短路，`itemErr == nil` 不走错误 continue，直落 `dbTask{..., query: *query}` 对 nil 解引用 panic。
 - 触发形态：发布重启窗口上一进程的账户租约 TTL 未过期，新进程首轮 J2 对同账户 `AcquireAccountLease` 必然 Held——每次非优雅重启后首轮都可能触发；同 owner 并发重复输入（手动刷新与周期重叠）同理。
-- 影响范围：每个 Held 形态杀死一个 ioWorker（`safego.Recover` 兜住进程不死，但该 worker 不再消费 ioJobs）；多 Held 并发时 worker 耗尽 → 剩余输入无人消费 → 发送循环阻塞到轮次 ctx 超时（即伴随的两条轮次失败日志）。余额刷新延迟到下一轮（分钟级），无数据损坏。F2 表监控 `owner_lease.go` 同款恢复语义在 BUG-0299 修复批次中一并根治（见 PLAN-20261008T113056000Z 终审查漏修复项 6）。
+- 影响范围：每个 Held 形态杀死一个 ioWorker（`safego.Recover` 兜住进程不死，但该 worker 不再消费 ioJobs）；多 Held 并发时 worker 耗尽 → 剩余输入无人消费 → 发送循环阻塞到轮次 ctx 超时（即伴随的两条轮次失败日志）。余额刷新延迟到下一轮（分钟级），无数据损坏。F2 表监控 `owner_lease.go` 同款恢复语义在 BUG-0299 修复批次中一并根治（见 PLAN-20261008T113056000Z（已清理，git 历史可溯） 终审查漏修复项 6）。
 
 ## 复现步骤
 

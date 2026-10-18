@@ -2,7 +2,7 @@
 
 > 日期：2026-07-20
 > 状态：交互设计已确认，等待用户完成书面规格复核后进入实施计划
-> 关联：`docs/functions/AI问答设计.md`、`docs/architecture/架构总览.md`、PLAN-20260722T022751000Z
+> 关联：`docs/functions/AI问答设计.md`、`docs/architecture/架构总览.md`、PLAN-20260722T022751000Z（已清理，git 历史可溯）
 > 替代范围：本文替代 2026-07-18 生图设计中“直接选择 `gpt-image-2`”和“普通 Responses 模型调用上游托管 `image_generation`”作为最终产品方案的部分；有序消息时间线、私有资产、前端渲染和历史验证记录继续有效。
 
 > **迁移与实现归属（2026-10-18）。** 本文原属 `docs/superpowers/specs/`（Node 后端时期设计文档），随该目录退场迁入 `docs/functions/`；文中 Node 路径与进程结构为当时实现记录。现行实现为 Go 三项目，工具运行时与图像资产生成对应 `backend-go/projects/gateway/internal/chat`，现行行为契约见 [AI 问答设计](AI问答设计.md) 与 [AI 问答工具体系与主子模型设计](AI问答工具体系与主子模型设计.md)。
@@ -280,7 +280,7 @@ GET /my-chat/conversations/{conversationId}/assets/{assetId}/content?variant=ori
 
 ## 14. 文档与后续扩展
 
-- PLAN-20260722T022751000Z 继续追踪本需求，不新建近似重复计划。
+- PLAN-20260722T022751000Z（已清理，git 历史可溯） 继续追踪本需求，不新建近似重复计划。
 - `docs/functions/AI问答设计.md` 和 `docs/architecture/架构总览.md` 在实现前标记“已确认、待实施”，完成后再切换为当前事实。
 - PDF、Word、Excel 后续每个工具单独设计输入资产、worker、产物类型和前端投影；Registry、Orchestrator、协议适配和资产 sink 不重复实现。
 - MCP、Skill、任意代码执行和第三方插件仍是独立范围，不因本地 function tool 运行时自动获得授权。

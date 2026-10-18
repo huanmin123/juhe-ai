@@ -654,7 +654,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 
 ### 7.6 本地单机形态恢复驱动（gateway 进程内，2026-10-08）
 
-§7.4 的生命周期闭环依赖一个后台恢复驱动按期推进到期状态（确认/金丝雀/退避）。在 Redis 共享运行态形态下该职责归 jobs 的 `account-circuit-recovery` 任务族；本地单机形态（SQLite + 无 Redis，memory 运行态）下该任务族 fail-closed disabled，而熔断运行态是 gateway 进程内事实——若 gateway 内无替补驱动，账户熔断后永久冻结直到进程重启（PLAN-20261008T113056000Z 修复的缺口）。
+§7.4 的生命周期闭环依赖一个后台恢复驱动按期推进到期状态（确认/金丝雀/退避）。在 Redis 共享运行态形态下该职责归 jobs 的 `account-circuit-recovery` 任务族；本地单机形态（SQLite + 无 Redis，memory 运行态）下该任务族 fail-closed disabled，而熔断运行态是 gateway 进程内事实——若 gateway 内无替补驱动，账户熔断后永久冻结直到进程重启（PLAN-20261008T113056000Z（已清理，git 历史可溯） 修复的缺口）。
 
 形态归属裁决：**谁拥有运行态，谁负责恢复**。运行态在 memory 驱动（`JUHE_AI_RUNTIME_STATE_DRIVER != "redis"`，即 runtime mode 自动推断的 standalone 默认形态）下归 gateway 进程所有，恢复驱动随 gateway 进程装配（supervisor 组件 `account-circuit-recovery`）；redis 驱动下运行态共享，恢复仍归 jobs，gateway 不装配——同进程不会出现双驱动重复探针（store 级 lease/generation/revision CAS 围栏兜底单 winner，但职责单一化）。这是运行态归属决定的依赖门禁，不是功能开关，无任何配置项。
 
@@ -667,7 +667,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 5. 投影：sweep 的每次 store mutation 以 `MutationEvent` 形状交给主链既有 persist hook（`Bridge.Observe` 包装，§7.5 Go 装配事实段）——恢复转换与请求热路径转换投影同一条 ledger 管道，管理页 circuitSummary 可见推进；owner gate 未就绪（hook 为 nil）时 sweep 照常推进运行态，仅 ledger 展示滞后，不 fail。
 6. 与 BUG-0295 渐进恢复的互补关系：BUG-0295 修的是"进程重启后 ledger → 运行态的重建与懒恢复"（恢复的起点），本节修的是"运行期内到期状态无人推进"（恢复的过程）；两者叠加后本地单机形态的熔断生命周期与 Redis 形态等价闭环。
 
-#### 7.6.1 key-model 能力熔断记忆恢复驱动（gateway 进程内，PLAN-20261008T113056000Z 根治阶段，2026-10-08）
+#### 7.6.1 key-model 能力熔断记忆恢复驱动（gateway 进程内，PLAN-20261008T113056000Z（已清理，git 历史可溯） 根治阶段，2026-10-08）
 
 key-model 能力熔断记忆（单进程内 `(凭据来源账户, Key 指纹, 客户端模型, 上游模型, 端点形态)` 维度的前台准入短电路，D-133/BUG-0175 引入，状态机契约见 `gatewayaccounteffects` 包注释）在 memory 运行态形态下曾有同族缺口：`KeyModelMemoryRecoveryRunner` 已实现但无装配点，且 dispatch 的 Prepare 调用不登记 `RecoveryTarget`——恢复 runner 扫描到到期状态时因 target 缺失直接跳过（空转）。根治阶段补齐三件事：
 

@@ -3,7 +3,7 @@
 > 本文是 PostgreSQL/Redis（performance）模式的存储、运行态与部署设计契约；standalone SQLite 与 performance PostgreSQL+Redis 双模式均由 Go 三项目原生支持（`backend-go/projects/gateway/cmd/juhe-ai-gateway/runtime.go` 的模式推断与装配）。Node 时代拓扑（DB service、Node worker、Redis Streams 任务队列、PgBouncer、三个物理 Redis 实例、`JUHE_AI_ENV_FILE` 分层）已随迁移退役，不再作为现行叙述；现行部署 env 契约以 `docker/single-server/README.md` 与 `docs/deploy/部署指南.md` 为准。
 > 数据库、缓存、运行态和队列的业务语义适配边界见 存储适配接口设计（Node 时代文档，已删除，git 历史可溯）。
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
-> 管理后台页面 revision、字段投影、统一确认、IndexedDB 和最近登录用户预热见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
+> 管理后台页面 revision、字段投影、统一确认、IndexedDB 和最近登录用户预热见 页面数据缓存与增量更新设计（已清理，git 历史可溯）。
 
 ## 背景
 

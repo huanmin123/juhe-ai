@@ -212,7 +212,7 @@ Responses 桥接状态索引写入归 gateway 进程内 bridge state store 所�
 
 standalone 模式的轻量缓存优先使用进程内 LRU 封装（Node 时代 `backend/src/shared/cache.ts` 为历史截面，Go 在 gateway 进程内实现等价缓存）；多实例或跨进程一致性需求出现前，standalone 模式不引入 Redis 等分布式依赖。performance 模式显式引入 Redis 作为跨进程短 TTL 缓存和运行态 state store，具体见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。缓存只用于降低请求链路反查成本，standalone 模式事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
 
-Node 时代 `PLAN-0115` 页面统一确认与 revision / epoch 契约为历史截面，现行以 Go gateway 实现为准；完整契约原文见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
+Node 时代 `PLAN-0115` 页面统一确认与 revision / epoch 契约为历史截面，现行以 Go gateway 实现为准；完整契约原文见 页面数据缓存与增量更新设计（已清理，git 历史可溯）。
 
 高性能模式下，缓存、运行态和队列的全局边界是 Redis / Redis Streams，而不是进程内 memory：
 

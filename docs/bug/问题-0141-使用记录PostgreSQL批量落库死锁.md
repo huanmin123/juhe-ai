@@ -9,7 +9,7 @@
 - 发现方式：生产日志 / PostgreSQL 运行统计 / 代码审计
 - 模块：后端 / Usage worker / Redis Stream / PostgreSQL / accounts
 - 关联计划：PLAN-20260729T094521796Z
-- 关联 bug：BUG-0117
+- 关联 bug：BUG-0117（已清理，git 历史可溯）
 - 责任人：AI
 
 ## 问题概述
