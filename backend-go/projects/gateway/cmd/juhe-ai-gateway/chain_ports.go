@@ -517,8 +517,8 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 			"statusCode":  statusCode,
 		})
 		return gatewaydispatch.FailedUpstreamResponseResult{
-			Action: gatewaydispatch.FailedResponseActionReturnResponse,
-			Response: chainRebuiltUpstreamErrorResponse(input.Response, bodyText),
+			Action:                gatewaydispatch.FailedResponseActionReturnResponse,
+			Response:              chainRebuiltUpstreamErrorResponse(input.Response, bodyText),
 			FailureKind:           chainFailureKindOpaqueHTTP,
 			LastAttempt:           lastAttempt,
 			UpstreamStageRecorded: true,
@@ -2085,9 +2085,10 @@ type chainCodexBridgeDeps struct {
 // gatewaycodex.ChatBridgeStateService + CompactPreflightService. 服务本身无
 // 后台任务与 Close（segments / 行存储生命周期归其构造方）；共享 registry
 // 对齐 Node server 层单 registry 语义（request symbol 存储）。Dispatcher
-// （合成摘要上游派发）保持缺席——dispatch 侧真实实现归后续装配，缺席时
-// bridge 合成路径显式返回「codex compact summary dispatcher 未配置」，
-// 不静默降级。
+// （合成摘要上游派发）由组合根在引擎就绪后晚绑定回填（chain_compose.go，
+// 实现在 chain_codex_compact_dispatch.go：引擎投影 + 有限读回 + 热质量终态
+// 闭包）；未绑定（组合测试显式注入桥）时合成路径显式返回「codex compact
+// summary dispatcher 未配置」，不静默降级。
 func newChainCodexBridgePreflight(deps chainCodexBridgeDeps) (gatewaypreauth.CodexBridgePreflight, error) {
 	clock := deps.Clock
 	if clock == nil {

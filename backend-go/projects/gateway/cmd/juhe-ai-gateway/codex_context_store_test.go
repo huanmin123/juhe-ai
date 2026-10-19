@@ -50,6 +50,16 @@ func TestComposeSystemAPIWiresCodexBridgeState(t *testing.T) {
 		t.Fatalf("真实桥必须同时装配 compact/registry：compact=%v registry=%v",
 			adapter.compact != nil, adapter.registry != nil)
 	}
+	// T5（BUG-0274 残余）：引擎就绪后晚绑定回填的合成摘要 dispatcher 必须就位，
+	// 否则内部 previous 链 compact 的合成路径显式报「未配置」。
+	dispatcher, ok := adapter.compact.Dispatcher.(*chainCompactSummaryDispatcher)
+	if !ok || dispatcher == nil {
+		t.Fatalf("compact 合成摘要 dispatcher 必须装配为引擎适配器，got %T",
+			adapter.compact.Dispatcher)
+	}
+	if dispatcher.engine == nil {
+		t.Fatal("dispatcher 必须绑定组合链引擎")
+	}
 }
 
 // TestNewChainCodexContextStateStoreArms: 装配助手的确定性臂（无网络、无

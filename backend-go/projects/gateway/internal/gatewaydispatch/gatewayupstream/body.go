@@ -64,33 +64,38 @@ func ReadUpstreamBodyLimited(ctx context.Context, upstreamBody io.Reader, input 
 	buffer := make([]byte, 32*1024)
 	for {
 		n, err := ReadStreamChunkWithAbort(signal, upstreamBody, buffer)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
+		// 非 EOF 读错误原样上抛（错误语义与类型保持不变）。
+		if err != nil && err != io.EOF {
 			_ = CloseReader(upstreamBody)
 			if IsUpstreamRequestAbortedError(err) || signal.Err() != nil {
 				return LimitedBodyReadResult{}, err
 			}
 			return LimitedBodyReadResult{}, &UpstreamBodyReadIncompleteError{Cause: err}
 		}
-		if n == 0 {
-			continue
-		}
-		chunk := buffer[:n]
-		if firstByteMs == nil && input.StartedAt != nil {
-			ms := NowMs() - *input.StartedAt
-			firstByteMs = &ms
-			if input.OnFirstByte != nil {
-				input.OnFirstByte()
+		// io.Reader 允许单次 Read 合并返回 (n>0, io.EOF)（小响应整包/尾段与
+		// EOF 同批到达），末批数据必须先入捕获再处理 EOF，否则静默丢数据。
+		if n > 0 {
+			chunk := buffer[:n]
+			if firstByteMs == nil && input.StartedAt != nil {
+				ms := NowMs() - *input.StartedAt
+				firstByteMs = &ms
+				if input.OnFirstByte != nil {
+					input.OnFirstByte()
+				}
+			}
+			readBytes += n
+			capture.Push(chunk)
+			if capture.Truncated {
+				truncated = true
+				_ = CloseReader(upstreamBody)
+				break
 			}
 		}
-		readBytes += n
-		capture.Push(chunk)
-		if capture.Truncated {
-			truncated = true
-			_ = CloseReader(upstreamBody)
+		if err == io.EOF {
 			break
+		}
+		if n == 0 {
+			continue
 		}
 	}
 	body := capture.Buffer()

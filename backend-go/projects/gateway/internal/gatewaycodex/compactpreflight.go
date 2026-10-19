@@ -20,15 +20,20 @@ import (
 // dispatch for Chat bridge accounts. The upstream summary exchange
 // (Node fetchFirstAvailableUpstream + readUpstreamBodyLimited +
 // hotQualityAttempt bookkeeping + releaseConcurrency) stays behind the
-// CompactSummaryDispatcher seam so the dispatch pipeline can wire its real
-// implementation later; every local decision, copy, audit record and status
-// code lives here and mirrors Node byte for byte.
+// CompactSummaryDispatcher seam; the production implementation is the
+// composition-root adapter over gatewaydispatch.Engine
+// (cmd/juhe-ai-gateway/chain_codex_compact_dispatch.go). Every local
+// decision, copy, audit record and status code lives here and mirrors Node
+// byte for byte.
 
 // Compact summary request constants mirror buildCompactSummaryChatBody.
 const (
 	compactSummaryFallbackModel = "codex-compact-summary"
 	compactContextMaxChars      = 120000
-	compactSummaryMaxBytes      = 1024 * 1024
+	// CompactSummaryMaxBytes 是合成摘要上游响应的有限读回上限
+	//（readUpstreamBodyLimited 的 maxBytes；导出供 dispatch seam 装配方复用，
+	// 保持唯一事实源）。
+	CompactSummaryMaxBytes = 1024 * 1024
 )
 
 // CompactQualityTerminal mirrors hotQualityAttempt.recordTerminal's input.
@@ -67,6 +72,20 @@ type CompactSummaryDispatchInput struct {
 	Signal           context.Context
 	StartedAt        int64
 	SyntheticRequest *gatewaypreauth.GatewayRequest
+	// UsageContext / AuditCapture / ClientIPAccountAvoidance /
+	// GroupSchedulingPolicy / RequestLane / RequestClientCompatibility /
+	// ModelPriority / RequestCoordination 是 CompactPreflightInput 的 dispatch
+	// seam 透传（Node 原样转发给 fetchFirstAvailableUpstream）：容器类型与
+	// CompactPreflightInput 同源（avoidance / coordination 从具体类型放宽为
+	// any，由 dispatch 装配方投影回引擎入参形状）。
+	UsageContext               gatewaypreauth.GatewayFailureUsageContext
+	AuditCapture               gatewaypreauth.AuditCaptureContext
+	ClientIPAccountAvoidance   any
+	GroupSchedulingPolicy      *map[string]any
+	RequestLane                string
+	RequestClientCompatibility string
+	ModelPriority              *gatewayrouting.GatewayAccountModelPriority
+	RequestCoordination        any
 }
 
 // CompactSummaryDispatcher mirrors fetchFirstAvailableUpstream for the
@@ -195,13 +214,21 @@ func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Co
 			return
 		}
 		result, dispatchErr := s.Dispatcher.DispatchCompactSummary(ctx, CompactSummaryDispatchInput{
-			Body:             summaryRequest,
-			RawBody:          gatewaybody.SerializeGatewayJSONObject(summaryRequest).Raw,
-			Accounts:         bridgeDispatchAccounts,
-			Settings:         input.ActiveGatewaySettings,
-			Signal:           input.Signal,
-			StartedAt:        input.StartedAt,
-			SyntheticRequest: synthetic,
+			Body:                       summaryRequest,
+			RawBody:                    gatewaybody.SerializeGatewayJSONObject(summaryRequest).Raw,
+			Accounts:                   bridgeDispatchAccounts,
+			Settings:                   input.ActiveGatewaySettings,
+			Signal:                     input.Signal,
+			StartedAt:                  input.StartedAt,
+			SyntheticRequest:           synthetic,
+			UsageContext:               input.UsageContext,
+			AuditCapture:               input.AuditCapture,
+			ClientIPAccountAvoidance:   input.ClientIPAccountAvoidance,
+			GroupSchedulingPolicy:      input.GroupSchedulingPolicy,
+			RequestLane:                input.RequestLane,
+			RequestClientCompatibility: input.RequestClientCompatibility,
+			ModelPriority:              input.ModelPriority,
+			RequestCoordination:        input.RequestCoordination,
 		})
 		exchange = result
 		if dispatchErr != nil {

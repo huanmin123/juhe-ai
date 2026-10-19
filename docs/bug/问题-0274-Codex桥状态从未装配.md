@@ -14,6 +14,7 @@
 - 新文件 `codex_context_store.go`：`newChainCodexContextStateStore`——空根 (nil,nil) 保持既有 no-op 退出；postgres 分支 `Acquire` 业务池（同 role/参数复用）+ `NewPostgresContextStateStore` + `SELECT 1 FROM juhe_codex_context.codex_context_sessions LIMIT 0` 探针，**失败启动 fail-fast**（生产 schema 由 maintenance ensure-schema 预置，缺失属部署错误必须启动期暴露）；sqlite 分支 `NewSQLiteShardContextStateStore`（分片 schema 由组合根前置预检）。
 - `compose.go`：deps 注入两键；sqlite 行存储注册 shutdown（LIFO 防句柄锁）。
 - **配套缺陷（同批）**：jobs retention 删除根错位——`worker_retention.go` 用 `store.ShardRoot`（state-shards 根）解析 segments 相对路径，永远 miss 且"文件不存在=成功"把删除按成功键落账 → segment 文件永不清理（存储泄漏）。修复：jobs `CodexContextRoot` 同款 datadir 派生，`codexStorageProcessor` 删除根改用 segments 根，"不存在=成功"语义保持。
+- **残余补齐（2026-10-19 compact 派发装配批）**：compact 合成摘要 dispatcher 装配——`CompactSummaryDispatchInput` 补齐引擎透传字段（usage/audit/avoidance/groupPolicy/lane/compat/priority/coordination）；新增 `cmd/juhe-ai-gateway/chain_codex_compact_dispatch.go` 复用 `Engine.FetchFirstAvailableUpstream` + `ReadUpstreamBodyLimited`，组合根晚绑定回填 `Dispatcher`（`chain_compose.go`），`chain_ports.go` 缺席注释改写。**同期根因修复**：`ReadUpstreamBodyLimited` 在 `(n>0, io.EOF)` 合并返回时先 break、末批数据静默丢弃（io.Reader 契约违背，Node 原版无此形态，属移植缺陷），改为数据先入捕获再处理 EOF，新增回归三用例 `gatewaydispatch/bodyread_coalesce_test.go`。
 
 ## 部署契约同步
 
@@ -21,9 +22,9 @@
 
 ## 测试
 
-`TestComposeSystemAPIWiresCodexBridgeState`（生产组合根 sqlite 装配断言 bridge/compact/registry 非 nil，装配前必红）；`TestNewChainCodexContextStateStoreArms`（空根降级、PG nil 池 fail-fast）；jobs `TestCodexStorageProcessorDeletesUnderSegmentsRoot`（异源 shardRoot 下修复前必红，"不存在=成功"保持）。
+`TestComposeSystemAPIWiresCodexBridgeState`（生产组合根 sqlite 装配断言 bridge/compact/registry 非 nil，装配前必红）；`TestNewChainCodexContextStateStoreArms`（空根降级、PG nil 池 fail-fast）；jobs `TestCodexStorageProcessorDeletesUnderSegmentsRoot`（异源 shardRoot 下修复前必红，"不存在=成功"保持）；compact 派发装配批新增 `TestCompactSummaryDispatchUpstreamSuccess/UpstreamFailurePropagates/EmptyChoicesPassesThrough`（适配器三路径，httptest 账户 BaseURL 走真实 HTTP）与 `TestReadUpstreamBodyLimitedCoalescedEOF*` 三用例。
 
 ## 残余项
 
-- compact 合成摘要 dispatcher 仍缺席（`chain_ports.go` 注释，compact 摘要上游交换会显式报"未配置"，属独立能力缺口）。
 - PG 探针 fail-fast 的真实缺 schema 场景未做运行断言（生产前置为 ensure-schema）。
+- 桥接七组合的阶段级行为验收（[调度内核通用化设计 §5.4](../functions/调度内核通用化设计.md) 接线前提/D3）尚未执行，见待办清单 #T27。

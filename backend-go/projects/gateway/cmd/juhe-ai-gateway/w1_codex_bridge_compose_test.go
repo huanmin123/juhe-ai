@@ -93,6 +93,11 @@ func TestW1CodexBridgeComposeWiresRealPreflight(t *testing.T) {
 	if adapter.registry == nil {
 		t.Fatal("依赖齐备时适配器必须持有共享 ContextRequestStateRegistry")
 	}
+	// T5（BUG-0274 残余）：引擎就绪后晚绑定回填的合成摘要 dispatcher。
+	if _, ok := adapter.compact.Dispatcher.(*chainCompactSummaryDispatcher); !ok {
+		t.Fatalf("依赖齐备时 compact 合成摘要 dispatcher 必须装配为引擎适配器，got %T",
+			adapter.compact.Dispatcher)
+	}
 }
 
 // TestW1CodexBridgeComposeKeepsNoopDegrade: 依赖缺席（组合测试默认 deps）

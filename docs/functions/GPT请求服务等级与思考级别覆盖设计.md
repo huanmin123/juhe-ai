@@ -355,6 +355,8 @@ interface CodexModelCapabilities {
 
 OAuth 创建流程的 `credentialsPatch` 必须允许携带两个覆盖字段。重新授权只刷新 token 和 OAuth 元数据，不清除既有覆盖配置。
 
+后台自动刷新（jobs `oauthrefresh` 的镜像落库入口）只做 token 轮换与保活，不承担覆盖字段值域守门：其合并写入保留存量值、不执行族集校验。值域的拒绝与修正由创建/编辑写入面（账户凭据归一化）与管理面轮换/重授权入口（`oauthmgmt.Store.RotateCredentials`）负责，存量非法值按 §6.4 在下次保存时被拒绝。
+
 ## 8. 网关运行时覆盖
 
 ### 8.1 优先级

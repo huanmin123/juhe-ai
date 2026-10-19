@@ -818,6 +818,20 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		}
 	}
 
+	// T5（BUG-0274 残余）接线：compact 合成摘要 dispatcher。桥装配（本函数
+	// 前段 newChainCodexBridgePreflight）先于 engine 构造，为不重排桥装配
+	// 顺序，引擎（含 Transport）就绪后经具体适配器类型断言晚绑定回填
+	// Dispatcher——compact 是 *CompactPreflightService 指针，preauth 持有的
+	// 适配器副本与 codexBridge 指向同一 service，回填对全链可见。deps.CodexBridge
+	// 显式注入（组合测试）断言不命中，保持注入方自带语义；未绑定时合成路径
+	// 显式报「codex compact summary dispatcher 未配置」，不静默降级。
+	if adapter, ok := codexBridge.(codexPreflightAdapter); ok && adapter.compact != nil {
+		adapter.compact.Dispatcher = &chainCompactSummaryDispatcher{
+			engine:  engine,
+			auditOf: chain.engineAuditCapture,
+		}
+	}
+
 	shutdown := func() {
 		recorder.Close()
 		if spool != nil {

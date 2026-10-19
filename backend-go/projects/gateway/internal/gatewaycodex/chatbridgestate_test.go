@@ -147,8 +147,10 @@ func TestApplyContextStatePreflightRestore(t *testing.T) {
 	seedReq := newTestRequest(t, "POST", "/v1/responses", nil, nil)
 	attachBody(seedReq, map[string]any{"model": "gpt-5", "instructions": "system prompt", "input": map[string]any{"k": "v"}}, nil)
 	registry.Set(seedReq, &CodexResponsesContextRequestState{
-		RequestKind:           RequestKindResponses,
-		Boundary:              CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"},
+		RequestKind: RequestKindResponses,
+		// ProviderCode 恒空串：生产 codexContextBoundary 已不读入该位
+		//（供应商解耦 B4 W2），种子边界与还原边界必须同形。
+		Boundary:              CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"},
 		CanonicalBody:         map[string]any{"model": "gpt-5", "instructions": "system prompt", "input": map[string]any{"k": "v"}},
 		CurrentBody:           map[string]any{"model": "gpt-5"},
 		CurrentInput:          map[string]any{"k": "v"},
@@ -253,7 +255,8 @@ func TestApplyContextStatePreflightRestore(t *testing.T) {
 func TestApplyContextStatePreflightCompactReference(t *testing.T) {
 	service, registry, sink, _, clock := newBridgeService(t)
 	ctx := context.Background()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	// ProviderCode 恒空串（供应商解耦 B4 W2，与生产 codexContextBoundary 同形）。
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 
 	// Seed a compact snapshot.
 	snapshot, err := service.CreateChatBridgeCompactSnapshot(ctx, CreateChatBridgeCompactSnapshotInput{
@@ -646,7 +649,10 @@ func compactBridgeAccount() gatewayruntimecache.OpenAIAccountSecret {
 
 func seedCompactRequest(t *testing.T, bridge *ChatBridgeStateService, registry *ContextRequestStateRegistry) (*gatewaypreauth.GatewayRequest, string) {
 	t.Helper()
-	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group", ProviderCode: "openai"}
+	// ProviderCode 保持零值：生产 codexContextBoundary 已随 GroupAccess 移除
+	// （commit 3b4dd5cb9）不再携带 ProviderCode，边界按 sys/key/group 严格比对，
+	// 种子行与还原边界必须同形。
+	boundary := CodexContextStateBoundary{SystemAccountID: "sys", APIKeyID: "key", GroupID: "group"}
 	// Seed a chain so the bridge compact restore succeeds.
 	seedReq := newTestRequest(t, "POST", "/v1/responses", nil, nil)
 	attachBody(seedReq, map[string]any{"model": "gpt-5", "input": []any{}}, nil)
