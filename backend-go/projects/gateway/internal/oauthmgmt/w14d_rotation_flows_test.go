@@ -106,8 +106,9 @@ func TestW14dRefreshStoredUpstreamFailure(t *testing.T) {
 
 func TestW14dGrokRotationExactProfileGuard(t *testing.T) {
 	env := newTestEnv(t)
-	// The xai row pins a different profile id: the grok rotation misses it.
-	env.w14dSeedRotatableAccount(t, "w14d-grok-x", "xai", "profile_gpt_openai_v1", "openai", "v1", true)
+	// 行级身份守卫（profile 维度已随 §9.11 目标列集删除）：协议族不符的 xai
+	// 行不可经 grok 重授权（rotatable 拒绝臂）。
+	env.w14dSeedRotatableAccount(t, "w14d-grok-x", "xai", "profile_xai_openai_v1", "gemini", "v1beta", true)
 	env.w14dLoginAdmin(t)
 
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/accounts/w14d-grok-x/reauthorize-from-refresh-token",

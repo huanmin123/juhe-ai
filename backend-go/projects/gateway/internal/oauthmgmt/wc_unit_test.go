@@ -346,12 +346,14 @@ func TestWCProviderPlanAdapters(t *testing.T) {
 	if plan.rotatable(&rotationAccount{ProviderCode: "gpt", Type: "oauth", ProtocolCode: "gemini", ProtocolVersion: "v1"}) {
 		t.Fatalf("协议不符必须拒绝")
 	}
+	// grok 的 profile pin 已由 §2 组合表与入口 requiredProfileForProvider 承载，
+	// rotatable 行级校验只剩 vendor/type + 协议族。
 	grok := grokPlan()
-	if !grok.rotatable(&rotationAccount{ProviderCode: "xai", Type: "oauth", ProviderProtocolProfileID: ProfileXAIOpenAIV1}) {
-		t.Fatalf("grok pin 通过")
+	if !grok.rotatable(&rotationAccount{ProviderCode: "xai", Type: "oauth", ProtocolCode: "openai", ProtocolVersion: "v1"}) {
+		t.Fatalf("grok rotatable 通过")
 	}
-	if grok.rotatable(&rotationAccount{ProviderCode: "xai", Type: "oauth", ProviderProtocolProfileID: "other"}) {
-		t.Fatalf("grok pin 不符必须拒绝")
+	if grok.rotatable(&rotationAccount{ProviderCode: "xai", Type: "oauth", ProtocolCode: "gemini", ProtocolVersion: "v1beta"}) {
+		t.Fatalf("grok 协议不符必须拒绝")
 	}
 	if plan.revisionMessage("fallback") != "专用" || grok.revisionMessage("fallback") != "fallback" {
 		t.Fatalf("revisionMessage")

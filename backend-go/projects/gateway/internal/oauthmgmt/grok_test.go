@@ -114,14 +114,16 @@ func TestGrokSSOToDeviceFlow(t *testing.T) {
 		t.Fatalf("token poll form: %v", tokenForm)
 	}
 
-	// Account assertions: profile pin, credential shape, claim-derived fields.
-	var providerCode, profileID, accountType, name string
-	if err := env.db.QueryRow(`SELECT provider_code, provider_protocol_profile_id, type, name
-		FROM accounts WHERE id = ?`, accountID).Scan(&providerCode, &profileID, &accountType, &name); err != nil {
+	// Account assertions: vendor identity, credential shape, claim-derived fields.
+	// 行身份键 = vendor_code（§2.1：真实厂商 == provider_code）；xai profile pin
+	// 由 requiredProfileForProvider 在路由层校验，目标列集已无 profile 列（§9.11）。
+	var vendorCode, accountType, name string
+	if err := env.db.QueryRow(`SELECT vendor_code, type, name
+		FROM accounts WHERE id = ?`, accountID).Scan(&vendorCode, &accountType, &name); err != nil {
 		t.Fatal(err)
 	}
-	if providerCode != "xai" || profileID != "profile_xai_openai_v1" || accountType != "oauth" || !strings.HasPrefix(name, "cli-chat-proxy.grok.com-") {
-		t.Fatalf("grok account row: %s %s %s %s", providerCode, profileID, accountType, name)
+	if vendorCode != "xai" || accountType != "oauth" || !strings.HasPrefix(name, "cli-chat-proxy.grok.com-") {
+		t.Fatalf("grok account row: %s %s %s", vendorCode, accountType, name)
 	}
 	credentials := env.accountCredentials(t, accountID)
 	if credentials["access_token"] != "grok-access-1" ||
@@ -248,11 +250,12 @@ func TestGrokCodeAndRefreshFamily(t *testing.T) {
 		t.Fatalf("grok missing refresh token: %d %v", code, missing)
 	}
 
-	// Profile pin: another openai-protocol profile is not rotatable via grok.
-	env.exec(t, `UPDATE accounts SET provider_protocol_profile_id = 'profile_other' WHERE id = ?`, strippedID)
+	// 行级身份守卫：协议族不符的 xai 行不可经 grok 轮换（profile 维度已随
+	// §9.11 目标列集删除，pin 由 §2 组合表 + 入口校验承载）。
+	env.exec(t, `UPDATE accounts SET protocol_code = 'gemini', protocol_version = 'v1beta' WHERE id = ?`, strippedID)
 	code, unrotatable := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/accounts/"+strippedID+"/refresh-token", `{"expectedConfigRevision":1}`)
 	if code != http.StatusNotFound || unrotatable["message"] != "Grok OAuth 账户不存在或无权操作" {
-		t.Fatalf("grok unrotatable profile: %d %v", code, unrotatable)
+		t.Fatalf("grok unrotatable protocol family: %d %v", code, unrotatable)
 	}
 }
 

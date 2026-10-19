@@ -326,12 +326,15 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 	if concurrency != 7 || priority != 2 || superPriority != 0 || fallback != 1 {
 		t.Fatalf("调度字段落库: %d %d %d %d", concurrency, priority, superPriority, fallback)
 	}
-	if err := env.db.QueryRow(`SELECT model FROM account_supported_models WHERE account_id = ? ORDER BY model`, accountID).Scan(&models); err != nil {
+	if err := env.db.QueryRow(`SELECT m.upstream_model FROM account_supported_models asm
+		JOIN models m ON m.id = asm.model_id WHERE asm.account_id = ? ORDER BY m.upstream_model`, accountID).Scan(&models); err != nil {
 		t.Fatalf("支持模型: %v", err)
 	}
 
+	// 检查形态取 responses_json：gpt.oauth 连接的 endpoint modes 按 §2.2 收窄
+	// 为 {responses_json, responses_sse}，健康检查形态必须在该连接启用集内。
 	healthBody := `{"refreshToken":"rt-2","providerProtocolProfileId":"profile_gpt_openai_v1",` +
-		`"name":"健康字段账户","healthCheckModel":"gpt-4o-mini","healthCheckEndpointMode":"chat_json",` +
+		`"name":"健康字段账户","healthCheckModel":"gpt-4o-mini","healthCheckEndpointMode":"responses_json",` +
 		`"tags":["tag1"],"proxyProfileId":"proxy-1","notes":"备注"}`
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token", healthBody)
 	if code != http.StatusCreated {
@@ -343,7 +346,7 @@ func TestWCManagedFieldsCreation(t *testing.T) {
 		FROM accounts WHERE id = ?`, healthID).Scan(&healthModel, &healthMode, &notes, &proxy); err != nil {
 		t.Fatal(err)
 	}
-	if healthModel != "gpt-4o-mini" || healthMode != "chat_json" || notes != "备注" || proxy != "proxy-1" {
+	if healthModel != "gpt-4o-mini" || healthMode != "responses_json" || notes != "备注" || proxy != "proxy-1" {
 		t.Fatalf("健康字段落库: %s %s %s %s", healthModel, healthMode, notes, proxy)
 	}
 	if err := env.db.QueryRow(`SELECT name FROM account_tags WHERE id IN (SELECT tag_id FROM account_tag_bindings WHERE account_id = ?)`, healthID).Scan(&tags); err != nil {
@@ -516,8 +519,7 @@ func TestWCRotateCredentialsDirect(t *testing.T) {
 	_, err = env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
 		AccountID: accountID, ExpectedConfigRevision: 99,
 		ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth",
-		ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1,
-		Credentials:                       map[string]any{"access_token": "a"},
+		Credentials: map[string]any{"access_token": "a"},
 	})
 	var revision *RevisionConflictError
 	if !errors.As(err, &revision) {
@@ -531,8 +533,7 @@ func TestWCRotateCredentialsDirect(t *testing.T) {
 	result, err = env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
 		AccountID: accountID, ExpectedConfigRevision: current.ConfigRevision,
 		ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth",
-		ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1,
-		Credentials:                       current.Credentials, Access: access,
+		Credentials: current.Credentials, Access: access,
 	})
 	if err != nil || result == nil || result.Changed {
 		t.Fatalf("相同凭据必须 no-op: %+v %v", result, err)

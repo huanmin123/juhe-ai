@@ -317,6 +317,10 @@ type providerProfile struct {
 	ProtocolCode           string
 	ProtocolVersion        string
 	DefaultSupportedModels []string
+	// DefaultHealthCheckModel 是档案缺省健康检查模型（健康检查三件套缺省
+	// 派生的模型维度，账户未显式提交 healthCheckModel 时使用；不在支持模型
+	// 集时回落首个支持模型，B1 前创建链同规则）。
+	DefaultHealthCheckModel string
 }
 
 // resolveProviderProfile mirrors resolveOpenAI/Anthropic/Gemini/GrokOAuthProviderProfile:
@@ -331,11 +335,13 @@ func (s *Store) resolveProviderProfile(ctx context.Context, providerCode, profil
 		protocolVersion        sql.NullString
 		accountTypesJSON       sql.NullString
 		defaultSupportedModels sql.NullString
+		defaultHealthCheck     sql.NullString
 		providerEnabled        sql.NullInt64
 	}
 	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT ppp.id, ppp.name, ppp.enabled,
 			ppp.protocol_code, ppp.protocol_version, ppp.account_types_json,
-			p.default_supported_models_json, p.enabled AS provider_enabled
+			p.default_supported_models_json, ppp.default_health_check_model,
+			p.enabled AS provider_enabled
 		FROM `+s.table("providers")+` p
 		LEFT JOIN `+s.table("provider_protocol_profiles")+` ppp
 			ON ppp.provider_code = p.code
@@ -344,7 +350,7 @@ func (s *Store) resolveProviderProfile(ctx context.Context, providerCode, profil
 		LIMIT 1`), profileID, providerCode).Scan(
 		&row.id, &row.name, &row.enabled,
 		&row.protocolCode, &row.protocolVersion, &row.accountTypesJSON,
-		&row.defaultSupportedModels, &row.providerEnabled)
+		&row.defaultSupportedModels, &row.defaultHealthCheck, &row.providerEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &ValidationError{Message: "不支持的供应商：" + providerCode}
 	}
@@ -384,7 +390,8 @@ func (s *Store) resolveProviderProfile(ctx context.Context, providerCode, profil
 	profile := &providerProfile{
 		ID: row.id.String, ProviderCode: providerCode, Name: row.name.String,
 		ProtocolCode: row.protocolCode.String, ProtocolVersion: row.protocolVersion.String,
-		DefaultSupportedModels: []string{},
+		DefaultSupportedModels:  []string{},
+		DefaultHealthCheckModel: strings.TrimSpace(row.defaultHealthCheck.String),
 	}
 	if row.defaultSupportedModels.Valid && strings.TrimSpace(row.defaultSupportedModels.String) != "" {
 		_ = json.Unmarshal([]byte(row.defaultSupportedModels.String), &profile.DefaultSupportedModels)
@@ -474,14 +481,22 @@ type CreateAccountInput struct {
 
 // CreateOAuthAccount mirrors createAccountAsync on the M08 slice: profile
 // defaults for supported models, accountCreationStatusInput semantics and the
-// delegated owner-scoped insert with group binding.
+// delegated owner-scoped insert with group binding. 连接维度（供应商与上游协
+// 议面重构设计 §8）：OAuth 建户路由不携带 connections 与健康检查连接维度，
+// 按 vendor/账户类型经 accounts.DefaultConnectionsForOAuthVendor 派生默认连
+// 接集合与健康检查连接维度（显式入参优先）；派生载荷进入 Store.Create 后仍
+// 受写面 §8 全量校验，必填门不放宽。
 func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput, access AccessScope) (*accounts.CreateResult, error) {
+	defaults, err := accounts.DefaultConnectionsForOAuthVendor(input.ProviderCode, input.AccountType, accounts.Credentials(input.Credentials))
+	if err != nil {
+		return nil, err
+	}
+	profile, err := s.resolveProviderProfile(ctx, input.ProviderCode, input.ProviderProtocolProfileID, input.AccountType, requiredProfileForProvider(input.ProviderCode))
+	if err != nil {
+		return nil, err
+	}
 	supportedModels := input.SupportedModels
 	if len(supportedModels) == 0 {
-		profile, err := s.resolveProviderProfile(ctx, input.ProviderCode, input.ProviderProtocolProfileID, input.AccountType, requiredProfileForProvider(input.ProviderCode))
-		if err != nil {
-			return nil, err
-		}
 		// OAuth 建户无法即时枚举上游模型：默认取模型目录里该供应商最新的
 		// 5 个对话模型（目录带 release_date，随目录刷新自动跟进）；目录不可
 		// 用（表缺失/无数据）时回落供应商档案的默认支持模型。
@@ -491,28 +506,48 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 			supportedModels = profile.DefaultSupportedModels
 		}
 	}
+	// 健康检查三件套缺省：preset/mode 取派生连接维度；model 沿用档案缺省
+	// 口径（default_health_check_model，不在支持模型集时回落首个支持模型）。
+	healthCheckModel := input.HealthCheckModel
+	if healthCheckModel == nil {
+		configured := profile.DefaultHealthCheckModel
+		if len(supportedModels) > 0 && !containsString(supportedModels, configured) {
+			configured = supportedModels[0]
+		}
+		if strings.TrimSpace(configured) != "" {
+			healthCheckModel = &configured
+		}
+	}
+	healthCheckEndpointMode := input.HealthCheckEndpointMode
+	if healthCheckEndpointMode == nil {
+		mode := defaults.HealthCheckEndpointMode
+		healthCheckEndpointMode = &mode
+	}
 	creationStatus := accounts.AccountCreationStatusInput(input.Status)
+	healthCheckPreset := defaults.HealthCheckConnectionPresetCode
 	result, err := s.Accounts.Create(ensureContext(ctx), accounts.CreateInput{
-		ProviderCode:              input.ProviderCode,
-		ProviderProtocolProfileID: input.ProviderProtocolProfileID,
-		Name:                      input.Name,
-		AccountType:               input.AccountType,
-		Credentials:               accounts.Credentials(input.Credentials),
-		SupportedModels:           supportedModels,
-		HealthCheckModel:          input.HealthCheckModel,
-		HealthCheckEndpointMode:   input.HealthCheckEndpointMode,
-		ModelMappings:             input.ModelMappings,
-		Tags:                      input.Tags,
-		Status:                    creationStatus,
-		ConcurrencyLimit:          input.ConcurrencyLimit,
-		Priority:                  input.Priority,
-		SuperPriorityEnabled:      input.SuperPriorityEnabled,
-		FallbackEnabled:           input.FallbackEnabled,
-		ProxyProfileID:            input.ProxyProfileID,
-		GroupID:                   input.GroupID,
-		AccountExpiresAt:          input.AccountExpiresAt,
-		AvailabilitySchedule:      input.AvailabilitySchedule,
-		Notes:                     input.Notes,
+		ProviderCode:                    input.ProviderCode,
+		ProviderProtocolProfileID:       input.ProviderProtocolProfileID,
+		Name:                            input.Name,
+		AccountType:                     input.AccountType,
+		Credentials:                     accounts.Credentials(input.Credentials),
+		SupportedModels:                 supportedModels,
+		Connections:                     defaults.Connections,
+		HealthCheckConnectionPresetCode: &healthCheckPreset,
+		HealthCheckModel:                healthCheckModel,
+		HealthCheckEndpointMode:         healthCheckEndpointMode,
+		ModelMappings:                   input.ModelMappings,
+		Tags:                            input.Tags,
+		Status:                          creationStatus,
+		ConcurrencyLimit:                input.ConcurrencyLimit,
+		Priority:                        input.Priority,
+		SuperPriorityEnabled:            input.SuperPriorityEnabled,
+		FallbackEnabled:                 input.FallbackEnabled,
+		ProxyProfileID:                  input.ProxyProfileID,
+		GroupID:                         input.GroupID,
+		AccountExpiresAt:                input.AccountExpiresAt,
+		AvailabilitySchedule:            input.AvailabilitySchedule,
+		Notes:                           input.Notes,
 	}, access.accountsScope())
 	if err != nil {
 		var conflict *accounts.ConflictError
@@ -534,6 +569,16 @@ func requiredProfileForProvider(providerCode string) string {
 		return ProfileXAIOpenAIV1
 	}
 	return ""
+}
+
+// containsString 报告列表是否含精确相等的项（健康检查缺省模型归属判断）。
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // latestCatalogModels returns the provider's newest conversational models from
@@ -562,24 +607,24 @@ func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, li
 	return models, rows.Err()
 }
 
-// rotationAccount mirrors OAuthCredentialRotationAccount.
+// rotationAccount mirrors OAuthCredentialRotationAccount. ProviderCode 承载
+// 目标 schema 的 vendor_code 身份值（§2.1：真实厂商 vendor_code == provider_code）。
 type rotationAccount struct {
-	ID                        string
-	SystemAccountID           string
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
-	Name                      string
-	Type                      string
-	Status                    string
-	LastErrorCode             string
-	ProxyProfileID            string
-	Credentials               map[string]any
-	CredentialFingerprint     string
-	AccountExpiresAt          string
-	ConfigRevision            int64
-	UpdatedAt                 string
+	ID                    string
+	SystemAccountID       string
+	ProviderCode          string
+	ProtocolCode          string
+	ProtocolVersion       string
+	Name                  string
+	Type                  string
+	Status                string
+	LastErrorCode         string
+	ProxyProfileID        string
+	Credentials           map[string]any
+	CredentialFingerprint string
+	AccountExpiresAt      string
+	ConfigRevision        int64
+	UpdatedAt             string
 }
 
 // CredentialsUnavailableError marks a scope-matched account whose sealed
@@ -600,7 +645,6 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 		id               string
 		systemAccountID  string
 		providerCode     string
-		profileID        string
 		protocolCode     string
 		protocolVersion  string
 		name             string
@@ -614,8 +658,11 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 		configRevision   int64
 		updatedAt        string
 	}
-	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT id, system_account_id, provider_code,
-			provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	// 身份键按目标 schema（供应商与上游协议面重构设计 §2.1/§9.11）：真实厂商
+	// vendor_code == provider_code，行读以 COALESCE(vendor_code,'') 承载既有
+	// ProviderCode 语义；provider_protocol_profile_id 列已随目标列集删除。
+	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT id, system_account_id, COALESCE(vendor_code, ''),
+			protocol_code, protocol_version, name, type, status,
 			last_error_code, proxy_profile_id, credentials_encrypted, credential_fingerprint,
 			account_expires_at, config_revision, updated_at
 		FROM `+s.table("accounts")+`
@@ -624,7 +671,7 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 			AND authorization_instance_authorization_id IS NULL`+where+`
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.systemAccountID, &row.providerCode,
-		&row.profileID, &row.protocolCode, &row.protocolVersion, &row.name, &row.accountType,
+		&row.protocolCode, &row.protocolVersion, &row.name, &row.accountType,
 		&row.status, &row.lastErrorCode, &row.proxyProfileID, &row.encrypted, &row.fingerprint,
 		&row.accountExpiresAt, &row.configRevision, &row.updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -645,7 +692,7 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 	}
 	return &rotationAccount{
 		ID: row.id, SystemAccountID: row.systemAccountID,
-		ProviderCode: row.providerCode, ProviderProtocolProfileID: row.profileID,
+		ProviderCode: row.providerCode,
 		ProtocolCode: row.protocolCode, ProtocolVersion: row.protocolVersion,
 		Name: row.name, Type: row.accountType, Status: row.status,
 		LastErrorCode: row.lastErrorCode.String, ProxyProfileID: row.proxyProfileID.String,
@@ -664,15 +711,16 @@ type RotationResult struct {
 	Credentials    map[string]any
 }
 
-// RotateCredentialsInput mirrors rotateOAuthCredentialsAsync input.
+// RotateCredentialsInput mirrors rotateOAuthCredentialsAsync input. 身份 CAS
+// 键 = vendor_code（§2.1 行为键，真实厂商 == provider_code）+ account type +
+// config revision；profile 维度已随目标列集删除（§9.11）。
 type RotateCredentialsInput struct {
-	AccountID                         string
-	ExpectedConfigRevision            int64
-	ExpectedProviderCode              string
-	ExpectedAccountType               string
-	ExpectedProviderProtocolProfileID string
-	Credentials                       map[string]any
-	Access                            AccessScope
+	AccountID              string
+	ExpectedConfigRevision int64
+	ExpectedProviderCode   string
+	ExpectedAccountType    string
+	Credentials            map[string]any
+	Access                 AccessScope
 }
 
 // RotateCredentials mirrors rotateOAuthCredentialsAsync (the recovery-state
@@ -704,19 +752,20 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 		id              string
 		systemAccountID string
 		providerCode    string
-		profileID       string
 		accountType     string
 		encrypted       string
 		configRevision  int64
 	}
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code,
-			provider_protocol_profile_id, type, credentials_encrypted, config_revision
+	// 身份读键 = vendor_code（§2.1 行为键，真实厂商 == provider_code；
+	// §9.11 目标列集无 provider_code / provider_protocol_profile_id）。
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, COALESCE(vendor_code, ''),
+			type, credentials_encrypted, config_revision
 		FROM `+s.table("accounts")+`
 		WHERE id = ?
 			AND deleted_at IS NULL
 			AND authorization_instance_authorization_id IS NULL`+where+`
 		LIMIT 1`), args...).Scan(
-		&row.id, &row.systemAccountID, &row.providerCode, &row.profileID, &row.accountType,
+		&row.id, &row.systemAccountID, &row.providerCode, &row.accountType,
 		&row.encrypted, &row.configRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -725,8 +774,7 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 		return nil, err
 	}
 	if row.providerCode != input.ExpectedProviderCode ||
-		row.accountType != input.ExpectedAccountType ||
-		row.profileID != input.ExpectedProviderProtocolProfileID {
+		row.accountType != input.ExpectedAccountType {
 		return nil, nil
 	}
 	if row.configRevision != input.ExpectedConfigRevision {
@@ -776,11 +824,11 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 		SET credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
 			oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
 			config_revision = config_revision + 1, updated_at = ?
-		WHERE id = ? AND system_account_id = ? AND provider_code = ?
-			AND provider_protocol_profile_id = ? AND type = ? AND config_revision = ?
+		WHERE id = ? AND system_account_id = ? AND COALESCE(vendor_code, '') = ?
+			AND type = ? AND config_revision = ?
 			AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`),
 		sealed, hashSecret(source), maskSecret(source), expiresAt, refreshPresent, updatedAt,
-		row.id, row.systemAccountID, row.providerCode, row.profileID, row.accountType, row.configRevision)
+		row.id, row.systemAccountID, row.providerCode, row.accountType, row.configRevision)
 	if err != nil {
 		return nil, err
 	}

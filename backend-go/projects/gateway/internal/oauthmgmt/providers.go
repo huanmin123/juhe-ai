@@ -45,14 +45,13 @@ type providerPlan struct {
 	refreshInput    func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount, proxyURL string) (map[string]any, error)
 }
 
-// rotatable mirrors findRotatableXxxOAuthAccount: provider code, protocol
-// profile family, account type (and the grok exact profile pin).
+// rotatable mirrors findRotatableXxxOAuthAccount: vendor identity, account
+// type and protocol family. profile 维度已随目标列集删除（§9.11）：grok 的
+// XAI_OPENAI_V1 唯一 profile pin 由 §2 组合表（xai.oauth 仅注册该 preset）与
+// 创建/再授权入口的 requiredProfileForProvider 校验承载，行级不再可查。
 func (p providerPlan) rotatable(account *rotationAccount) bool {
 	if account.ProviderCode != p.providerCode || account.Type != p.accountType {
 		return false
-	}
-	if p.requiredProfileID != "" {
-		return account.ProviderProtocolProfileID == p.requiredProfileID
 	}
 	return account.ProtocolCode == protocolCodeForProvider(p.providerCode) &&
 		account.ProtocolVersion == protocolVersionForProvider(p.providerCode)

@@ -125,13 +125,12 @@ func TestW14dRotationCASConflictAtStore(t *testing.T) {
 	// The store-level CAS: a stale config revision renders the revision
 	// conflict error even when the caller believes the row is fresh.
 	_, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w14d-cas",
-		ExpectedConfigRevision:            7,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:                       map[string]any{"access_token": "new"},
-		Access:                            AccessScope{ViewerID: adminID, IsAdmin: true},
+		AccountID:              "w14d-cas",
+		ExpectedConfigRevision: 7,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		Credentials:            map[string]any{"access_token": "new"},
+		Access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
 	})
 	if err == nil || err.Error() != "账户配置版本冲突" {
 		t.Fatalf("store CAS conflict: %v", err)
@@ -139,13 +138,12 @@ func TestW14dRotationCASConflictAtStore(t *testing.T) {
 	// A wrong provider code misses the row: the store answers (nil, nil),
 	// which the route renders as the 404 arm.
 	missing, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w14d-cas",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              "anthropic",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:                       map[string]any{"access_token": "new"},
-		Access:                            AccessScope{ViewerID: adminID, IsAdmin: true},
+		AccountID:              "w14d-cas",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   "anthropic",
+		ExpectedAccountType:    "oauth",
+		Credentials:            map[string]any{"access_token": "new"},
+		Access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
 	})
 	if err != nil || missing != nil {
 		t.Fatalf("wrong provider must miss: %v %v", missing, err)
@@ -186,9 +184,9 @@ func TestW14dSSOImportDuplicateNameFails(t *testing.T) {
 	// per item while the response stays 200.
 	successSteps := wcDeviceSuccessSteps(`{"access_token":"at","refresh_token":"rt","expires_in":3600,"token_type":"Bearer"}`)
 	env.sso.steps = append(append([]SSODeviceResponse{}, successSteps...), successSteps...)
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, provider_code, provider_protocol_profile_id,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-		VALUES ('w14d-sso-dup', (SELECT id FROM system_accounts WHERE username='root'), 'xai', 'profile_xai_openai_v1',
+		VALUES ('w14d-sso-dup', (SELECT id FROM system_accounts WHERE username='root'), 'xai', 'xai', 'profile_xai_openai_v1',
 		'openai', 'v1', 'w14d-sso-name', 'oauth', 'active', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
 		`{"ssoTokens":["tok-one"],"name":"w14d-sso-name","providerProtocolProfileId":"profile_xai_openai_v1"}`)

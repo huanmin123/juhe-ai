@@ -765,13 +765,12 @@ func (d *Deps) refreshToken(plan providerPlan, selfOnly bool) http.HandlerFunc {
 			return
 		}
 		updated, err := d.Store.RotateCredentials(r.Context(), RotateCredentialsInput{
-			AccountID:                         current.ID,
-			ExpectedConfigRevision:            revision,
-			ExpectedProviderCode:              plan.providerCode,
-			ExpectedAccountType:               plan.accountType,
-			ExpectedProviderProtocolProfileID: current.ProviderProtocolProfileID,
-			Credentials:                       mergeRotationCredentials(current.Credentials, tokenCredentials, plan.preserveBaseURL),
-			Access:                            access,
+			AccountID:              current.ID,
+			ExpectedConfigRevision: revision,
+			ExpectedProviderCode:   plan.providerCode,
+			ExpectedAccountType:    plan.accountType,
+			Credentials:            mergeRotationCredentials(current.Credentials, tokenCredentials, plan.preserveBaseURL),
+			Access:                 access,
 		})
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" 访问令牌刷新失败", plan.revisionConflictMessage)
@@ -842,13 +841,12 @@ func (d *Deps) reauthorizeFromCode(plan providerPlan, selfOnly bool) http.Handle
 			return
 		}
 		updated, err := d.Store.RotateCredentials(r.Context(), RotateCredentialsInput{
-			AccountID:                         current.ID,
-			ExpectedConfigRevision:            revision,
-			ExpectedProviderCode:              plan.providerCode,
-			ExpectedAccountType:               plan.accountType,
-			ExpectedProviderProtocolProfileID: current.ProviderProtocolProfileID,
-			Credentials:                       mergeRotationCredentials(current.Credentials, tokenCredentials.Credentials, plan.preserveBaseURL),
-			Access:                            access,
+			AccountID:              current.ID,
+			ExpectedConfigRevision: revision,
+			ExpectedProviderCode:   plan.providerCode,
+			ExpectedAccountType:    plan.accountType,
+			Credentials:            mergeRotationCredentials(current.Credentials, tokenCredentials.Credentials, plan.preserveBaseURL),
+			Access:                 access,
 		})
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" OAuth 重新授权失败", plan.revisionConflictMessage)
@@ -918,13 +916,12 @@ func (d *Deps) reauthorizeFromRefreshToken(plan providerPlan, selfOnly bool) htt
 			return
 		}
 		updated, err := d.Store.RotateCredentials(r.Context(), RotateCredentialsInput{
-			AccountID:                         current.ID,
-			ExpectedConfigRevision:            revision,
-			ExpectedProviderCode:              plan.providerCode,
-			ExpectedAccountType:               plan.accountType,
-			ExpectedProviderProtocolProfileID: current.ProviderProtocolProfileID,
-			Credentials:                       mergeRotationCredentials(current.Credentials, tokenCredentials, plan.preserveBaseURL),
-			Access:                            access,
+			AccountID:              current.ID,
+			ExpectedConfigRevision: revision,
+			ExpectedProviderCode:   plan.providerCode,
+			ExpectedAccountType:    plan.accountType,
+			Credentials:            mergeRotationCredentials(current.Credentials, tokenCredentials, plan.preserveBaseURL),
+			Access:                 access,
 		})
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" 刷新令牌重新授权失败", plan.revisionConflictMessage)

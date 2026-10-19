@@ -174,6 +174,11 @@ var testSchema = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, parent_code TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	// vendors（供应商与上游协议面重构设计 §1.1/§2.1）：accounts 写入面
+	// createInTx 经 assertVendorEnabled（internal/accounts write.go）校验真实
+	// 厂商 provider 必须存在 enabled=1 的 vendors 行；DDL 与 maintenance
+	// sqlite_schema_business.go 的 vendors 表同构（无 parent_code）。
+	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL, account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -185,12 +190,15 @@ var testSchema = []string{
 		system_account_id TEXT NOT NULL,
 		-- 迁移窗口 DDL（accounts fixture 同形，见 internal/accounts
 		-- accounts_test.go）：写入面 createInTx 落 vendor_code /
-		-- connection_driver_code（generic 账户 vendor 为 NULL），创建链路
+		-- connection_driver_code（generic 账户 vendor 为 NULL）+ oauth_type
+		-- 物理列与 health_check_connection_id（§2.1 复合外键列），创建链路
 		-- （CreateOAuthAccount → accounts.Create）经该写入面，fixture 同步携带。
 		vendor_code TEXT,
 		connection_driver_code TEXT,
-		provider_code TEXT NOT NULL,
-		provider_protocol_profile_id TEXT NOT NULL,
+		oauth_type TEXT,
+		health_check_connection_id TEXT,
+		provider_code TEXT NOT NULL DEFAULT '',
+		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
 		protocol_code TEXT NOT NULL,
 		protocol_version TEXT NOT NULL,
 		name TEXT NOT NULL,
@@ -258,8 +266,66 @@ var testSchema = []string{
 		PRIMARY KEY (group_id, account_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_supported_models (
-		account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, model)
+		account_id TEXT NOT NULL, model_id TEXT NOT NULL, created_at TEXT NOT NULL,
+		PRIMARY KEY (account_id, model_id),
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+		FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
+	)`,
+	// models（§4 单表，写入面 resolveEntryModelID / 健康检查三件套模型解析的
+	// 身份键：vendor_code + upstream_model + owner 可见性 + status=active）。
+	`CREATE TABLE IF NOT EXISTS models (
+		id TEXT PRIMARY KEY,
+		vendor_code TEXT,
+		public_model TEXT NOT NULL,
+		upstream_model TEXT NOT NULL,
+		scope TEXT NOT NULL DEFAULT 'builtin',
+		system_account_id TEXT,
+		status TEXT NOT NULL DEFAULT 'active',
+		supported_endpoint_modes_json TEXT,
+		release_date TEXT,
+		shutdown_date TEXT,
+		catalog_visible INTEGER NOT NULL DEFAULT 1,
+		catalog_order INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+	// account_connections / account_endpoint_modes（§2.1）：createInTx 连接行
+	// 写入 + 健康检查 preset → enabled 连接行解析的写入面两表；列集与
+	// internal/accounts fixture 同形（复合唯一键支撑 accounts 复合外键，
+	// 测试 SQLite 夹具不带该 FK）。
+	`CREATE TABLE IF NOT EXISTS account_connections (
+		id TEXT PRIMARY KEY,
+		account_id TEXT NOT NULL,
+		connection_preset_code TEXT NOT NULL,
+		protocol_surface_code TEXT,
+		base_url TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE (account_id, connection_preset_code),
+		UNIQUE (account_id, id),
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE IF NOT EXISTS account_endpoint_modes (
+		connection_id TEXT NOT NULL,
+		endpoint_mode TEXT NOT NULL,
+		PRIMARY KEY (connection_id, endpoint_mode),
+		FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE
+	)`,
+	// account_entry_mappings（§5.1 目标形态）：replaceAccountModelMappings 的
+	// 整集合替换 DELETE 需要该表存在（OAuth 建户映射通常为空）。
+	`CREATE TABLE IF NOT EXISTS account_entry_mappings (
+		id TEXT PRIMARY KEY,
+		account_id TEXT NOT NULL,
+		source_model TEXT NOT NULL,
+		source_endpoint_family TEXT NOT NULL,
+		target_connection_id TEXT NOT NULL,
+		target_model_id TEXT NOT NULL,
+		target_endpoint_family TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE (account_id, source_model, source_endpoint_family)
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_model_mappings (
 		account_id TEXT NOT NULL, provider_code TEXT NOT NULL, source_model TEXT NOT NULL,
@@ -416,6 +482,14 @@ func seedOAuthCatalog(db *sql.DB) error {
 			VALUES (?, ?, ?, 1, ?, ?, ?)`, provider.id, provider.code, provider.code, provider.models, now, now); err != nil {
 			return err
 		}
+		// vendors 行（assertVendorEnabled 只读 enabled）：id=code 对齐
+		// maintenance pgSeedProviders 的权威播种口径，enabled=1 与九厂商
+		// 内置行一致；name/description 沿用本夹具 providers 行的 code 同名
+		// 简化写法。
+		if _, err := db.Exec(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?, ?)`, provider.code, provider.code, provider.code, provider.models, now, now); err != nil {
+			return err
+		}
 	}
 	for _, profile := range []struct {
 		id, provider, protocol, version, accountTypes, healthCheck string
@@ -431,6 +505,29 @@ func seedOAuthCatalog(db *sql.DB) error {
 			VALUES (?, ?, ?, 1, ?, ?, 'https://example.invalid', ?, ?, '[]', ?, ?)`,
 			profile.id, profile.provider, profile.id, profile.protocol, profile.version,
 			profile.healthCheck, profile.accountTypes, now, now); err != nil {
+			return err
+		}
+	}
+	// models 行（§4 身份键：vendor_code + upstream_model）：写入面
+	// replaceAccountSupportedModels / 健康检查三件套经 resolveEntryModelID 解析
+	// 每个支持/检查模型名，vendor 默认支持模型与测试显式模型名都要有 active
+	// 行；supported_endpoint_modes_json 覆盖各 vendor chat 域全部对话形态。
+	for _, model := range []struct {
+		vendor, name, modes string
+	}{
+		{"gpt", "gpt-4o-mini", `["chat_json","chat_sse","responses_json","responses_sse"]`},
+		{"gpt", "gpt-5", `["chat_json","chat_sse","responses_json","responses_sse"]`},
+		{"gpt", "m1", `["chat_json","chat_sse","responses_json","responses_sse"]`},
+		{"gpt", "m2", `["chat_json","chat_sse","responses_json","responses_sse"]`},
+		{"anthropic", "claude-sonnet-4-5", `["messages_json","messages_sse","message_token_counting"]`},
+		{"gemini", "gemini-2.5-pro", `["generate_content_json","generate_content_sse","interactions_json","interactions_sse","count_tokens","embed_content"]`},
+		{"xai", "grok-4", `["chat_json","chat_sse","responses_json","responses_sse"]`},
+	} {
+		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
+			status, supported_endpoint_modes_json, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', ?, ?, ?)`,
+			"mod-"+model.vendor+"-"+model.name, model.vendor, model.name, model.name,
+			model.modes, now, now); err != nil {
 			return err
 		}
 	}
@@ -626,15 +723,17 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 	if createData["status"] != "pending_test" {
 		t.Fatalf("create status: %v", createData)
 	}
-	var providerCode, profileID, accountType, name, ownerID string
+	var vendorCode, accountType, name, ownerID string
 	var configRevision int64
-	if err := env.db.QueryRow(`SELECT provider_code, provider_protocol_profile_id, type, name, system_account_id, config_revision
-		FROM accounts WHERE id = ?`, accountID).Scan(&providerCode, &profileID, &accountType, &name, &ownerID, &configRevision); err != nil {
+	// 行身份键 = vendor_code（§2.1：真实厂商 == provider_code）；profile 归属
+	// 由路由层 resolveProviderProfile 校验，目标列集已无该列（§9.11）。
+	if err := env.db.QueryRow(`SELECT vendor_code, type, name, system_account_id, config_revision
+		FROM accounts WHERE id = ?`, accountID).Scan(&vendorCode, &accountType, &name, &ownerID, &configRevision); err != nil {
 		t.Fatal(err)
 	}
-	if providerCode != "gpt" || profileID != "profile_gpt_openai_v1" || accountType != "oauth" ||
+	if vendorCode != "gpt" || accountType != "oauth" ||
 		!strings.HasPrefix(name, "api.openai.com-") || ownerID != adminID || configRevision != 1 {
-		t.Fatalf("account row: %s %s %s %s %s %d", providerCode, profileID, accountType, name, ownerID, configRevision)
+		t.Fatalf("account row: %s %s %s %s %d", vendorCode, accountType, name, ownerID, configRevision)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM group_accounts WHERE account_id = ? AND enabled = 1`, accountID) != 1 {
 		t.Fatal("account must join the owner default group")

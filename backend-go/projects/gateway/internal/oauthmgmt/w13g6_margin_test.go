@@ -438,11 +438,11 @@ func TestW13g6ExchangeArms(t *testing.T) {
 func w13g6SeedOAuthAccount(t *testing.T, env *testEnv, id, owner, provider, profile, protocol, version, accountType, creds string, revision int) {
 	t.Helper()
 	const now = "2026-01-01T00:00:00.000Z"
-	if _, err := env.db.Exec(`INSERT INTO accounts (id, config_revision, system_account_id, provider_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	if _, err := env.db.Exec(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code,
+		provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, credential_mask, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?)`,
-		id, revision, owner, provider, profile, protocol, version, "w13g6-"+id, accountType, creds, now, now); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, '', ?, ?)`,
+		id, revision, owner, provider, provider, profile, protocol, version, "w13g6-"+id, accountType, creds, now, now); err != nil {
 		t.Fatalf("seed account %s: %v", id, err)
 	}
 }
@@ -475,13 +475,12 @@ func TestW13g6StoreArms(t *testing.T) {
 	}
 	w13g6SeedOAuthAccount(t, env, "w13g6-rev0", owner, "gpt", "profile_gpt_openai_v1", "openai", "v1", "oauth", sealed, 0)
 	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{
-		AccountID:                         "w13g6-rev0",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:                       nil,
-		Access:                            AccessScope{},
+		AccountID:              "w13g6-rev0",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		Credentials:            nil,
+		Access:                 AccessScope{},
 	}); err == nil {
 		t.Fatal("revision-0 rotation must fail (rotation guard)")
 	}
@@ -624,13 +623,12 @@ func TestW13g6RouteBodyArms(t *testing.T) {
 	}
 	// 存储层同臂（693-695）。
 	if _, err := custom.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w13g6-gpt-acc",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:                       map[string]any{"refresh_token": "r2"},
-		Access:                            AccessScope{},
+		AccountID:              "w13g6-gpt-acc",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		Credentials:            map[string]any{"refresh_token": "r2"},
+		Access:                 AccessScope{},
 	}); err == nil {
 		t.Fatal("advancer error must propagate")
 	}
