@@ -312,3 +312,53 @@ func TestCleanupRetiresExpiredClosedIncidents(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanupRetiresDeletedAccountIncidents 覆盖 BUG-0295 遗留项②：账户行
+// 缺失或已逻辑删除的行（CAS account_not_found 终态、读面已围栏）跟随
+// Cleanup 物理清理；未 dispatched outbox 守卫保留，防重放"ledger 缺失"
+// 空转；在册账户的活动行不在 Cleanup 职责内（孤儿结清扫描负责）。
+func TestCleanupRetiresDeletedAccountIncidents(t *testing.T) {
+	repo, _, db := openControlPlaneFixture(t)
+	ctx := context.Background()
+	mustAccount(t, db, "acc-live", 5, false)
+	mustAccount(t, db, "acc-deleted", 3, true)
+	// 可删：软删账户的活动行。
+	seedIncident(t, db, "sk-orphan-deleted", "acc-deleted", "acc-deleted", "OPEN", 1, 3, 1, 100)
+	// 可删：账户行缺失（物理级联缺口的防御臂）。
+	seedIncident(t, db, "sk-orphan-missing", "acc-missing", "acc-missing", "SUSPECT", 1, 1, 1, 200)
+	// 保留：在册账户的活动行。
+	seedIncident(t, db, "sk-live", "acc-live", "acc-live", "OPEN", 1, 5, 1, 300)
+	// 保留：软删账户但有未 dispatched outbox。
+	seedIncident(t, db, "sk-orphan-pending", "acc-deleted", "acc-deleted", "OPEN", 1, 3, 1, 400)
+	if _, err := db.Exec(`
+		INSERT INTO account_circuit_outbox (
+			event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
+			circuit_scope_key, incident_id, transition_id, dispatch_revision, status,
+			available_at_ms, attempt_count, created_at_ms, updated_at_ms
+		) VALUES ('evt-orphan-p', 'account_circuit_runtime_v1', 'incident:tr-x', 'incident_changed', 'acc-deleted', 'acc-deleted',
+			'sk-orphan-pending', 'incident-sk-orphan-pending', 'tr-x', 3, 'pending', 0, 0, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := repo.Cleanup(ctx, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("应恰好删除两个孤儿账户行: %d", deleted)
+	}
+	for scopeKey, want := range map[string]bool{
+		"sk-orphan-deleted": false,
+		"sk-orphan-missing": false,
+		"sk-live":           true,
+		"sk-orphan-pending": true,
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM account_circuit_incidents WHERE circuit_scope_key = ?`, scopeKey).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if (count > 0) != want {
+			t.Fatalf("%s 存在性不符: count=%d want=%v", scopeKey, count, want)
+		}
+	}
+}

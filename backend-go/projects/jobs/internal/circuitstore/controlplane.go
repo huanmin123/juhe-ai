@@ -750,42 +750,67 @@ func (r *ControlPlaneRepo) insertIncidentChangedOutbox(ctx context.Context, tx *
 }
 
 // Cleanup 对齐 gateway Cleanup 的 incident 删除条件：CLOSED 且保留期到期、
-// 投影水位已覆盖、无未 dispatched outbox。dispatched outbox 的清理由 gateway
-// 写侧维护，本方法只删 incident 行。
+// 投影水位已覆盖、无未 dispatched outbox。BUG-0295 遗留项②起追加 jobs 侧
+// 第二臂：账户行缺失（FK ON DELETE CASCADE 本应级联，防御软删期外的缺行）
+// 或 deleted_at 非空（软删）的行——CAS 写侧终态拒绝（account_not_found）、
+// rebuild/reconcile 读面已围栏不回放、孤儿结清扫描每轮命中终态空转——
+// 已不进任何读面也不会再有投影，跟随同一 outbox 守卫物理清理。gateway
+// 写侧 Cleanup 暂无此臂，成对维护差异以此注释为准。dispatched outbox 的
+// 清理由 gateway 写侧维护，本方法只删 incident 行。
 func (r *ControlPlaneRepo) Cleanup(ctx context.Context, nowMS int64) (int64, error) {
 	if nowMS < 0 {
 		return 0, errors.New("nowMs 必须是非负整数")
 	}
 	incidents := r.table("account_circuit_incidents")
 	outbox := r.table("account_circuit_outbox")
-	condition := "state='CLOSED' AND retained_until_ms<=? AND projected_ledger_revision>=ledger_revision" +
-		" AND NOT EXISTS (SELECT 1 FROM " + outbox + " o WHERE o.circuit_scope_key=" + incidents + ".circuit_scope_key AND o.status<>'dispatched')"
+	accounts := r.table("accounts")
+	noPendingOutbox := "NOT EXISTS (SELECT 1 FROM " + outbox + " o WHERE o.circuit_scope_key=" + incidents + ".circuit_scope_key AND o.status<>'dispatched')"
+	closedCondition := "state='CLOSED' AND retained_until_ms<=? AND projected_ledger_revision>=ledger_revision AND " + noPendingOutbox
+	// 软删/缺行臂不需要水位守卫：账户终态后不会再有任何写方或消费方，
+	// 水位停摆的病态行若沿用 projected>=ledger 条件反而永久滞留。
+	orphanedAccountCondition := "NOT EXISTS (SELECT 1 FROM " + accounts + " a WHERE a.id=" + incidents + ".account_id AND a.deleted_at IS NULL) AND " + noPendingOutbox
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := "SELECT circuit_scope_key FROM " + incidents +
-		" WHERE " + condition + " ORDER BY retained_until_ms,updated_at_ms,circuit_scope_key LIMIT ?"
-	rows, err := tx.QueryContext(ctx, query, nowMS, circuitIncidentCleanupBatchLimit)
+	collect := func(condition string, args ...any) ([]string, error) {
+		query := "SELECT circuit_scope_key FROM " + incidents +
+			" WHERE " + condition + " ORDER BY retained_until_ms,updated_at_ms,circuit_scope_key LIMIT ?"
+		args = append(args, circuitIncidentCleanupBatchLimit)
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var scopeKeys []string
+		for rows.Next() {
+			var scopeKey string
+			if err := rows.Scan(&scopeKey); err != nil {
+				return nil, err
+			}
+			scopeKeys = append(scopeKeys, scopeKey)
+		}
+		return scopeKeys, rows.Err()
+	}
+	closedKeys, err := collect(closedCondition, nowMS)
 	if err != nil {
 		return 0, err
 	}
+	orphanedKeys, err := collect(orphanedAccountCondition)
+	if err != nil {
+		return 0, err
+	}
+	seen := make(map[string]struct{}, len(closedKeys)+len(orphanedKeys))
 	var scopeKeys []string
-	for rows.Next() {
-		var scopeKey string
-		if err := rows.Scan(&scopeKey); err != nil {
-			rows.Close()
-			return 0, err
+	for _, group := range [][]string{closedKeys, orphanedKeys} {
+		for _, scopeKey := range group {
+			if _, ok := seen[scopeKey]; ok {
+				continue
+			}
+			seen[scopeKey] = struct{}{}
+			scopeKeys = append(scopeKeys, scopeKey)
 		}
-		scopeKeys = append(scopeKeys, scopeKey)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
-		return 0, err
 	}
 	if len(scopeKeys) == 0 {
 		return 0, tx.Commit()

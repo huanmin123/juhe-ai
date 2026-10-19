@@ -122,11 +122,15 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 				Warning: fmt.Sprintf("账户 circuit ledger 清理失败: %v", err)}, nil
 		}
 		if orphan.ClosedRetired > 0 || orphan.ConflictRetired > 0 || orphan.StaleSkipped > 0 || orphan.Errors > 0 || cleaned > 0 {
+			// BUG-0295 遗留项③：结清计数全部接入任务日志（skippedHandover /
+			// skippedReopened 此前缺位）。与 gracePending/runtimePresent 等
+			// 上下文计数同口径：只进字段、不进触发条件（纯跳过轮不刷日志）。
 			a.logger.Info("账户 circuit 修复性维护完成",
 				"scanned", orphan.Scanned, "closedRetired", orphan.ClosedRetired,
 				"conflictRetired", orphan.ConflictRetired, "staleSkipped", orphan.StaleSkipped,
 				"gracePending", orphan.GracePending, "runtimePresent", orphan.RuntimePresent,
 				"runningLeased", orphan.RunningLeased, "invalidSkipped", orphan.InvalidSkipped,
+				"skippedHandover", orphan.SkippedHandover, "skippedReopened", orphan.SkippedReopened,
 				"errors", orphan.Errors, "cleanedIncidents", cleaned)
 		}
 		return jobsched.TaskResult{}, nil

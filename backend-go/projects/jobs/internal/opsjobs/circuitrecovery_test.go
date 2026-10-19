@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -653,4 +654,82 @@ func TestCircuitRecoveryResolveErrorReleasesLease(t *testing.T) {
 		t.Fatal("resolver 失败后应释放租约")
 	}
 	// 给定时间推进避免 unused 提示。
+}
+
+// ---- BUG-0295 遗留项①：ListDue 偶发 i/o timeout 的单次重试语义 ----
+
+// bug295ListDueScriptedStore 只实现 ListDue 的脚本化 store：按调用次序回放
+// 预置错误/结果，记录调用次数（Sweep 在 due 为空时不触达其他 store 方法）。
+type bug295ListDueScriptedStore struct {
+	// CircuitStore 仅用于补齐接口方法集；本 mock 只被 Sweep 的 ListDue
+	// 路径触达，嵌入接口其余方法不会被调用。
+	CircuitStore
+	mu     sync.Mutex
+	calls  int
+	errs   []error
+	states [][]CircuitState
+}
+
+func (s *bug295ListDueScriptedStore) ListDue(_ context.Context, _ int64, _ int) ([]CircuitState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	call := s.calls
+	s.calls++
+	if call < len(s.errs) && s.errs[call] != nil {
+		return nil, s.errs[call]
+	}
+	if call < len(s.states) {
+		return s.states[call], nil
+	}
+	return nil, nil
+}
+
+func TestBug295ListDueTimeoutRetriesOnce(t *testing.T) {
+	nowMS := func() int64 { return 1_000 }
+	boom := errors.New("i/o timeout")
+
+	// 首读失败、重读成功：整轮成功，恰好两次调用。
+	recovered := &bug295ListDueScriptedStore{errs: []error{boom}}
+	service, err := NewCircuitRecoveryService(recovered, staticResolver(CircuitRecoveryProbeTarget{}, true), CircuitRecoveryServiceOptions{NowMS: nowMS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("瞬时失败应被单次重试吸收: %v", err)
+	}
+	if result.DueCount != 0 {
+		t.Fatalf("空 due 轮次计数应为 0: %+v", result)
+	}
+	if recovered.calls != 2 {
+		t.Fatalf("应恰好重试一次: %d", recovered.calls)
+	}
+
+	// 持续失败：两次都失败仍整轮报错，报错口径不变。
+	persistent := &bug295ListDueScriptedStore{errs: []error{boom, boom}}
+	service, err = NewCircuitRecoveryService(persistent, staticResolver(CircuitRecoveryProbeTarget{}, true), CircuitRecoveryServiceOptions{NowMS: nowMS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sweep(context.Background()); err == nil || !strings.Contains(err.Error(), "读取账户电路到期状态失败") {
+		t.Fatalf("持续失败必须暴露原始错误: %v", err)
+	}
+	if persistent.calls != 2 {
+		t.Fatalf("持续失败应恰好尝试两次: %d", persistent.calls)
+	}
+
+	// ctx 已取消：不重试（取消语义优先于重试）。
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctxStore := &bug295ListDueScriptedStore{errs: []error{boom}}
+	service, err = NewCircuitRecoveryService(ctxStore, staticResolver(CircuitRecoveryProbeTarget{}, true), CircuitRecoveryServiceOptions{NowMS: nowMS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sweep(cancelled); err == nil {
+		t.Fatal("ctx 取消时首读失败必须直接返回错误")
+	}
+	if ctxStore.calls != 1 {
+		t.Fatalf("ctx 取消不得重试: %d", ctxStore.calls)
+	}
 }

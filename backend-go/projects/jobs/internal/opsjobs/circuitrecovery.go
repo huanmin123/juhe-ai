@@ -142,6 +142,15 @@ func NewCircuitRecoveryService(store CircuitStore, resolveTarget CircuitRecovery
 // 其余 item 的结果仍计入 counters（对齐 Node AggregateError 行为）。
 func (s *CircuitRecoveryService) Sweep(ctx context.Context) (CircuitRecoverySweepResult, error) {
 	due, err := s.store.ListDue(ctx, s.nowMS(), s.batchSize)
+	if err != nil && ctx.Err() == nil {
+		// BUG-0295 遗留项①：偶发 `读取账户电路到期状态失败: i/o timeout`。
+		// 取证：客户端为 go-redis 默认超时（无任何显式覆盖），ListDue 的
+		// Lua 扫描量有界（≤512），超时来自共享 Redis 的瞬时阻塞（网关主链
+		// 重 Lua / 持久化 fork），非算法性慢查。ListDue 脚本只做 due 索引
+		// 归一化、幂等可重放，单次立即重试吸收瞬时抖动；持续故障两次都
+		// 失败仍按原语义整轮报错（报错口径不变），ctx 已取消不重试。
+		due, err = s.store.ListDue(ctx, s.nowMS(), s.batchSize)
+	}
 	if err != nil {
 		return CircuitRecoverySweepResult{}, fmt.Errorf("读取账户电路到期状态失败: %w", err)
 	}

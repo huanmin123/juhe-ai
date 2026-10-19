@@ -277,7 +277,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_circuit_incidents", "business:account_circuit_outbox", "runtime:account_circuit"},
 			GoStatus: GoWired, GoPackage: "opsjobs + circuitstore",
-			GoBinding: "ControlPlaneMaintenance 经组合根接线：Redis CircuitStore 由 circuitstore 提供（Lua 与键形状逐字节对照 gatewaycircuit/Node account-circuit-redis-store.ts，同键空间单实现；容量随 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY），ControlPlaneLedger/Outbox 由 circuitstore 业务库双模适配器提供（ack 回写投影 revision 水位）；reconcile 游标持久化为加法扩展（Node 内存语义保留：游标缺失即从头幂等回放）；2026-10-08 起追加孤儿 incident 结清职责：OrphanIncidentCloser 对运行态缺键且超宽限期的活动行按 CLOSED CAS 结清（写 incidents/outbox），随后 Cleanup 删除保留期到期的 CLOSED 行；缺 JUHE_AI_REDIS_STATE_URL 时组合根登记 disabled",
+			GoBinding: "ControlPlaneMaintenance 经组合根接线：Redis CircuitStore 由 circuitstore 提供（Lua 与键形状逐字节对照 gatewaycircuit/Node account-circuit-redis-store.ts，同键空间单实现；容量随 JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY），ControlPlaneLedger/Outbox 由 circuitstore 业务库双模适配器提供（ack 回写投影 revision 水位）；reconcile 游标持久化为加法扩展（Node 内存语义保留：游标缺失即从头幂等回放）；2026-10-08 起追加孤儿 incident 结清职责：OrphanIncidentCloser 对运行态缺键且超宽限期的活动行按 CLOSED CAS 结清（写 incidents/outbox），随后 Cleanup 删除保留期到期的 CLOSED 行与账户行缺失/已软删的遗留行（BUG-0295 遗留项②，2026-10-19 起，同一无未 dispatched outbox 守卫）；缺 JUHE_AI_REDIS_STATE_URL 时组合根登记 disabled",
 		},
 		{
 			JobName: "account-list-availability-projection-maintenance", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "ops-worker",
