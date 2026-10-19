@@ -46,6 +46,92 @@ func TestExtractUsageResponsesShapeAndCacheWriteChains(t *testing.T) {
 	assertToken(t, usage.OutputImageTokens, 4, "outputImage")
 }
 
+func TestExtractUsageDualShapePicksNonZeroToken(t *testing.T) {
+	// 生产 trace 491069b3-2457-492d-a483-26b05ae4bdfd：Chat 兼容层中转在
+	// input_tokens/output_tokens 里填 0 占位，真实规模只在 prompt_tokens。
+	// 契约见 docs/functions/模型价格与用量统计口径.md §3.2。
+	production := mustParseJSON(t, `{
+		"prompt_tokens": 270139,
+		"completion_tokens": 0,
+		"total_tokens": 270139,
+		"input_tokens": 0,
+		"output_tokens": 0,
+		"claude_cache_creation_5_m_tokens": 0
+	}`)
+	usage := ExtractUsage(production, "")
+	assertToken(t, usage.InputTokens, 270139, "input (fallback to prompt_tokens when input_tokens=0)")
+	assertToken(t, usage.OutputTokens, 0, "output (both shapes zero)")
+
+	cases := []struct {
+		name       string
+		raw        string
+		wantInput  *int
+		wantOutput *int
+	}{
+		{
+			name:       "both non-zero keeps Responses shape precedence",
+			raw:        `{"input_tokens": 20, "output_tokens": 6, "prompt_tokens": 25, "completion_tokens": 9}`,
+			wantInput:  intPtr(20),
+			wantOutput: intPtr(6),
+		},
+		{
+			name:       "output_tokens zero falls back to completion_tokens",
+			raw:        `{"input_tokens": 20, "output_tokens": 0, "completion_tokens": 9}`,
+			wantInput:  intPtr(20),
+			wantOutput: intPtr(9),
+		},
+		{
+			name:       "chat shape only",
+			raw:        `{"prompt_tokens": 12, "completion_tokens": 4}`,
+			wantInput:  intPtr(12),
+			wantOutput: intPtr(4),
+		},
+		{
+			name:       "responses shape only",
+			raw:        `{"input_tokens": 12, "output_tokens": 4}`,
+			wantInput:  intPtr(12),
+			wantOutput: intPtr(4),
+		},
+		{
+			name:       "all zero is a real zero fact",
+			raw:        `{"input_tokens": 0, "output_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}`,
+			wantInput:  intPtr(0),
+			wantOutput: intPtr(0),
+		},
+		{
+			name:       "missing everything stays nil for estimation fallback",
+			raw:        `{}`,
+			wantInput:  nil,
+			wantOutput: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractUsage(mustParseJSON(t, tc.raw), "")
+			assertOptionalToken(t, got.InputTokens, tc.wantInput, "input")
+			assertOptionalToken(t, got.OutputTokens, tc.wantOutput, "output")
+		})
+	}
+}
+
+func intPtr(value int) *int { return &value }
+
+func assertOptionalToken(t *testing.T, got *int, want *int, label string) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Fatalf("%s = %d, want nil", label, *got)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatalf("%s = nil, want %d", label, *want)
+	}
+	if *got != *want {
+		t.Fatalf("%s = %d, want %d", label, *got, *want)
+	}
+}
+
 func TestExtractUsageClaudeCacheFallbackKeys(t *testing.T) {
 	value := mustParseJSON(t, `{
 		"input_tokens": 9,

@@ -8,14 +8,14 @@ import type { AccountScopeParams } from './accountOperationScope'
 /** 供应商模型目录单次取数窗口（后端 `/providers/models/options` 硬上限）。 */
 export const ACCOUNT_MODEL_OPTIONS_LIMIT = 50
 
-/**
- * 目录截断判定：只有「浏览取数」（无 keyword、无 selectedIds）返回满窗口才判定为
- * 截断；带 keyword 的搜索结果和 selectedIds 补拉批次不参与判定（后端在无 keyword
- * 时把 selectedIds 只用于排序、响应仍是 50 条浏览集，有 keyword 时按
- * `selectedIds OR keyword` 补齐，两者都不代表目录全量被截断）。
- */
-export function accountModelOptionsTruncated(optionsCount: number): boolean {
-  return optionsCount >= ACCOUNT_MODEL_OPTIONS_LIMIT
+/** 单次目录取数结果：候选列表 + 服务端截断元数据（多批次补拉时无元数据）。 */
+export interface AccountModelOptionsPage {
+  data: AccountModelSelectOption[]
+  /**
+   * 服务端 hasMore（当前筛选条件下的候选总数超过本批返回条数）。仅在单批次
+   * 请求时有定义；selectedIds 超过 50 切多批的合并结果无法用单响应元数据表达。
+   */
+  hasMore?: boolean
 }
 
 interface UseAccountProviderModelOptionsOptions {
@@ -37,20 +37,18 @@ interface ProviderAccountModelResourceOptions {
 
 export async function loadAccountProviderModelOptionsResource(
   options: ProviderAccountModelResourceOptions
-): Promise<{ data: AccountModelSelectOption[] }> {
+): Promise<AccountModelOptionsPage> {
   const code = options.providerCode.trim()
   if (!code) return { data: [] }
   const scopeParams = options.scopeParams ? { ...options.scopeParams } : undefined
   const selectedIds = normalizedSelectedModelIds(options.selectedIds)
-  return {
-    data: await loadAccountModelOptions(
-      code,
-      scopeParams,
-      selectedIds,
-      options.keyword?.trim() || undefined,
-      normalizedModes(options.modes)
-    )
-  }
+  return loadAccountModelOptions(
+    code,
+    scopeParams,
+    selectedIds,
+    options.keyword?.trim() || undefined,
+    normalizedModes(options.modes)
+  )
 }
 
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
@@ -60,8 +58,12 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
   // （弹窗打开/下拉展开/搜索时请求，切供应商即 reset 清空），“未加载”与
   // “加载后确认为空”必须区分，空态提示只允许在 settled 后出现。
   const providerModelOptionsSettled = ref(false)
-  // 当前目录 scope 的最近一次浏览取数是否命中 50 条窗口（下拉底部截断提示依据）。
-  // 只由浏览取数判定，搜索/selectedIds 补拉不改写，随 scope 切换/reset 清空。
+  // 当前目录 scope 最近一次非搜索取数是否被服务端判定为截断（下拉底部截断
+  // 提示依据）。T25：判定改用响应的 hasMore 元数据——浏览取数与纯 selectedIds
+  // 补拉（无 keyword、单批次）都以服务端判定为准（编辑已有账户的取数恒带
+  // selectedIds，旧"无 selectedIds 才判定"口径让编辑态拿不到提示）；带 keyword
+  // 的搜索不参与判定；元数据缺失（旧响应/多批次）按无法判定处理不改写。随
+  // scope 切换/reset 清空。
   const providerModelOptionsTruncated = ref(false)
   let latestRequestId = 0
   let loadingKey: string | undefined
@@ -116,9 +118,9 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       try {
         const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword, modes)
         if (isCurrentRequest(requestId, requestCatalogScopeKey)) {
-          providerModelOptions.value = modelOptions
-          if (!keyword && !selectedIds.length) {
-            providerModelOptionsTruncated.value = accountModelOptionsTruncated(modelOptions.length)
+          providerModelOptions.value = modelOptions.data
+          if (!keyword && modelOptions.hasMore !== undefined) {
+            providerModelOptionsTruncated.value = modelOptions.hasMore
           }
         }
       } catch (error) {
@@ -189,9 +191,9 @@ async function loadAccountModelOptions(
   selectedIds: string[],
   keyword?: string,
   modes: string[] = []
-): Promise<AccountModelSelectOption[]> {
+): Promise<AccountModelOptionsPage> {
   const selectedIdBatches = chunkedSelectedModelIds(selectedIds)
-  const models = (await Promise.all((selectedIdBatches.length ? selectedIdBatches : [[]]).map((batch) => (
+  const responses = await Promise.all((selectedIdBatches.length ? selectedIdBatches : [[]]).map((batch) => (
     api.providers.modelOptions({
       ...scopeParams,
       providerCode,
@@ -200,17 +202,24 @@ async function loadAccountModelOptions(
       ...(modes.length ? { modes } : {}),
       ...(batch.length ? { selectedIds: batch } : {})
     })
-  )))).flat()
-  return dedupeAccountModelOptions(models.map((item) => {
-    return {
-      label: item.name,
-      value: item.id,
-      supportedApiProtocols: item.supportedApiProtocols,
-      supportedServiceTiers: item.supportedServiceTiers,
-      supportedReasoningEfforts: item.supportedReasoningEfforts,
-      defaultReasoningEffort: item.defaultReasoningEffort
-    }
-  }))
+  )))
+  // hasMore 元数据只在单批次请求时有定义：多批 selectedIds 补拉（已选超过
+  // 50 个）的合并结果无法用单响应元数据表达截断。
+  const hasMore = responses.length === 1 ? responses[0].hasMore : undefined
+  const models = responses.flat()
+  return {
+    data: dedupeAccountModelOptions(models.map((item) => {
+      return {
+        label: item.name,
+        value: item.id,
+        supportedApiProtocols: item.supportedApiProtocols,
+        supportedServiceTiers: item.supportedServiceTiers,
+        supportedReasoningEfforts: item.supportedReasoningEfforts,
+        defaultReasoningEffort: item.defaultReasoningEffort
+      }
+    })),
+    hasMore
+  }
 }
 
 function normalizedModes(values: string[] | undefined): string[] {

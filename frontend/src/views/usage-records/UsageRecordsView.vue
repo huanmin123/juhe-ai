@@ -22,6 +22,7 @@
       :is-management-view="isManagementView"
       :model-options="modelOptions"
       :models-loading="modelOptionsLoading"
+      :models-truncated="modelOptionsTruncated"
       :refresh-loading="loading"
       :result-options="resultOptions"
       :system-accounts="systemAccounts"
@@ -165,6 +166,7 @@ const {
   handleSearch: handleModelOptionsSearch,
   modelOptions,
   modelOptionsLoading,
+  modelOptionsTruncated,
   resetModelOptions
 } = useUsageRecordModelOptions({
   scopeParams: modelOptionsScopeParams,

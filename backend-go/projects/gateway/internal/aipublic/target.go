@@ -149,22 +149,22 @@ func (d *Deps) resolveOwnedTarget(ctx context.Context, username string, hasUsern
 }
 
 // findExistingTargetGroup mirrors findExistingTargetGroupAsync: the option
-// list filtered by provider code + case-insensitive name equality.
+// list filtered by case-insensitive name equality. 组无 provider 维度（设计
+// §8）：providerCode 仅保留兼容签名，不参与匹配。
 func (d *Deps) findExistingTargetGroup(ctx context.Context, ownerID, providerCode, groupName string) (*groups.OptionSummary, error) {
 	if groupName == "" {
 		return nil, errors.New("目标分组不能为空")
 	}
 	options, err := d.Groups.Options(ctx, groups.AccessScope{ViewerID: ownerID}, groups.OptionsQuery{
-		Keyword:      groupName,
-		ProviderCode: providerCode,
-		Limit:        20,
+		Keyword: groupName,
+		Limit:   20,
 	})
 	if err != nil {
 		return nil, err
 	}
 	for index := range options {
 		option := options[index]
-		if option.ProviderCode == providerCode && sameText(option.Name, groupName) {
+		if sameText(option.Name, groupName) {
 			return &option, nil
 		}
 	}
@@ -224,10 +224,12 @@ func (d *Deps) assertProviderCodeEnabled(ctx context.Context, providerCode strin
 	return err
 }
 
-// loadProvider mirrors the listProviders().find(code) + enabled checks.
+// loadProvider mirrors the listProviders().find(code) + enabled checks. 目标
+// schema（§9.1）：真实厂商读 vendors 单表；generic_http 旧词根（openai）无
+// vendors 行，公开 API 兼容按「九厂商之外视为未注册」处理。
 func (d *Deps) loadProvider(ctx context.Context, providerCode string) (enabled bool, err error) {
 	var providerEnabled int64
-	queryErr := d.db().QueryRowContext(ctx, d.bind(`SELECT enabled FROM `+d.table("providers")+`
+	queryErr := d.db().QueryRowContext(ctx, d.bind(`SELECT enabled FROM `+d.table("vendors")+`
 		WHERE code = ? LIMIT 1`), providerCode).Scan(&providerEnabled)
 	if errors.Is(queryErr, sql.ErrNoRows) {
 		return false, errors.New("不支持的供应商：" + providerCode)
@@ -241,7 +243,10 @@ func (d *Deps) loadProvider(ctx context.Context, providerCode string) (enabled b
 	return true, nil
 }
 
-// requireProviderProfile mirrors requireProviderProtocolProfile.
+// requireProviderProfile mirrors requireProviderProtocolProfile. 目标 schema
+// （§9.3）已删除 provider_protocol_profiles：档案身份按 vendor 派生（
+// publicProfileIDForVendor），只校验 vendor 可用与档案 ID 归属，账户类型允许集
+// 由 §1.1 registry 派生（与 oauthmgmt / 导入链同口径）。
 func (d *Deps) requireProviderProfile(ctx context.Context, providerCode string, profileID string) (*providerProfile, error) {
 	if profileID == "" {
 		return nil, errors.New("providerProtocolProfileId 不能为空")
@@ -249,40 +254,15 @@ func (d *Deps) requireProviderProfile(ctx context.Context, providerCode string, 
 	if _, err := d.loadProvider(ctx, providerCode); err != nil {
 		return nil, err
 	}
-	var row struct {
-		id               string
-		providerCode     string
-		name             string
-		enabled          int64
-		accountTypesJSON sql.NullString
-	}
-	err := d.db().QueryRowContext(ctx, d.bind(`SELECT id, provider_code, name, enabled, account_types_json
-		FROM `+d.table("provider_protocol_profiles")+` WHERE id = ? LIMIT 1`), profileID).Scan(
-		&row.id, &row.providerCode, &row.name, &row.enabled, &row.accountTypesJSON)
-	if errors.Is(err, sql.ErrNoRows) {
+	expected := publicProfileIDForVendor(providerCode)
+	if expected == "" || profileID != expected {
 		return nil, errors.New("供应商未配置协议档案：" + providerCode)
 	}
-	if err != nil {
-		return nil, err
+	types := []string{"api_key", "oauth"}
+	if providerCode == "gemini" {
+		types = []string{"api_key", "google_oauth"}
 	}
-	if row.providerCode != providerCode {
-		return nil, errors.New("协议档案 " + row.id + " 不属于供应商 " + providerCode)
-	}
-	if row.enabled != 1 {
-		return nil, errors.New("供应商协议档案已停用：" + row.name)
-	}
-	types := []string{}
-	if row.accountTypesJSON.Valid && row.accountTypesJSON.String != "" {
-		var parsed []any
-		if jsonUnmarshal([]byte(row.accountTypesJSON.String), &parsed) == nil {
-			for _, item := range parsed {
-				if text, isString := item.(string); isString {
-					types = append(types, text)
-				}
-			}
-		}
-	}
-	return &providerProfile{ID: row.id, ProviderCode: row.providerCode, Name: row.name, Enabled: true, AccountTypes: types}, nil
+	return &providerProfile{ID: profileID, ProviderCode: providerCode, Name: profileID, Enabled: true, AccountTypes: types}, nil
 }
 
 // assertSupportedPushAccountType mirrors assertSupportedPushAccountType.

@@ -296,6 +296,13 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	if requestLane == "" {
 		requestLane = gatewayproto.LaneText
 	}
+	// 调度域判定（对话与非对话媒体调度分离设计 §5 ResolveDispatchDomain）：
+	// 媒体创建域（图像 / 同步音频 / 视频创建 / 长音频创建）在 preflight 统一
+	// 清空三类亲和输入——不解析会话亲和键、不查询组亲和黏住、不解析 Gemini
+	// interaction 资源亲和（设计 §5 preflight 结果不变量：三者恒空 / nil）。
+	// 权重与轮询的每次请求组选择推进不受影响（§3.1 关键点 3）。
+	dispatchDomain := gatewayproto.DispatchDomainOfLane(requestLane)
+	dispatchDomainIsConversation := dispatchDomain == gatewayproto.DispatchDomainConversation
 	serverRetryBudget := options.ServerRetryBudget
 	if serverRetryBudget == nil {
 		serverRetryBudget = NewServerRetryBudget(activeGatewaySettings.NoAvailableAccountWaitTimeoutSeconds*1000, s.Clock)
@@ -405,7 +412,10 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	if req.HTTP != nil {
 		interactionResourceID = gatewaygemini.ResourceIDFromRequest(req.HTTP)
 	}
-	if interactionResourceRequest && interactionResourceID == "" {
+	// 媒体创建域不消费 interaction 资源亲和（设计 §5）：亲和解析与 400/404
+	// 校验都是 Gemini interactions 对话面的契约，媒体 lane 一并跳过，亲和保持
+	// nil 不变量。
+	if interactionResourceRequest && dispatchDomainIsConversation && interactionResourceID == "" {
 		s.sendInteractionAffinityFailure(ctx, interactionFailureInput{
 			req: req, res: res, auditCapture: auditCapture,
 			usageContext: currentGroupUsageContext("", nil), startedAt: input.StartedAt,
@@ -414,7 +424,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		})
 		return PreflightResult{}, nil
 	}
-	if interactionResourceID != "" {
+	if interactionResourceID != "" && dispatchDomainIsConversation {
 		affinity, found, affinityErr := s.Affinity.Resolve(ctx, req.HTTP, gatewaygemini.AffinityScope{
 			SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
 		})
@@ -529,10 +539,22 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	// 选择未治理派发时不推进）；跨组回退重入（options.Identity != nil）不进
 	// 本块——回退只消费既有候选快照（§4 关键点 2）。
 	groupAffinityKey := options.GroupAffinityKey
+	if !dispatchDomainIsConversation {
+		// 媒体创建域组亲和键恒空（设计 §5 不变量）：种子键一并丢弃，跨组回退
+		// 重入不再携带组黏性上下文。
+		groupAffinityKey = ""
+	}
 	initialGroupAffinityStickyHit := false
 	runtimeStaticCompleted := false
 	if runtime != nil && runtime.StaticResolutionOnly && options.Identity == nil && interactionResourceAffinity == nil {
-		preferredGroupID := s.resolveStickyGroupForDispatch(ctx, apiKeyRecord, systemAccountID, apiKeyID, sessionIdentity.ConversationKey, trafficSource, &groupAffinityKey)
+		// 媒体创建域不查询组亲和黏住（设计 §3.1 关键点 3/§5）：会话键传空使
+		// sticky 查询短路为空，组选择仍按模式状态推进一次（权重/轮询的每请求
+		// 选择语义不变）。
+		stickyConversationKey := sessionIdentity.ConversationKey
+		if !dispatchDomainIsConversation {
+			stickyConversationKey = ""
+		}
+		preferredGroupID := s.resolveStickyGroupForDispatch(ctx, apiKeyRecord, systemAccountID, apiKeyID, stickyConversationKey, trafficSource, &groupAffinityKey)
 		selected, selectErr := s.RuntimeCache.SelectGatewayRuntimeForDispatchAsync(ctx, *runtime, gatewayruntimecache.SelectGatewayRuntimeInput{
 			PreferredGroupID:    preferredGroupID,
 			AdvanceOnStickyMiss: true,
@@ -678,8 +700,9 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	// 点 5）。初始/最终身份键不一致时丢弃初始 lookup 结果按最终会话键补查一次
 	//（本请求第 2 次组亲和 GET，同键跳过——多数请求零额外开销）；重选不重复
 	// 推进模式状态：初始黏住命中（零推进）时未命中补一次推进，初始已推进时
-	// 保持既有派发序（AdvanceOnStickyMiss=false）。
-	if runtimeStaticCompleted && interactionResourceAffinity == nil &&
+	// 保持既有派发序（AdvanceOnStickyMiss=false）。媒体创建域整块跳过（设计
+	// §5：不查询组亲和，键恒空）。
+	if dispatchDomainIsConversation && runtimeStaticCompleted && interactionResourceAffinity == nil &&
 		trafficSource == TrafficSourceGateway && apiKeyRecord != nil &&
 		sessionIdentity.ConversationKey != "" && s.GroupAffinity != nil {
 		finalPreferred := ""
@@ -862,10 +885,14 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		ProviderProtocolProfileID: gatewayAffinityProviderProfilePool(rawCandidateAccounts),
 	}
 	rawSessionAffinityKey := ""
-	if key, ok := s.SessionAffinity.ResolveKeyFromClientSource(clientStrategy.ClientSource, sessionAffinityScope); ok {
-		rawSessionAffinityKey = key
-	} else if key, ok := s.SessionAffinity.ResolveKey(sessionIdentity, sessionAffinityScope); ok {
-		rawSessionAffinityKey = key
+	// 媒体创建域不解析会话亲和键（设计 §5 preflight 不变量：SessionAffinityKey
+	// 恒空串）——客户端会话身份不再进入媒体调度的候选排序与写回。
+	if dispatchDomainIsConversation {
+		if key, ok := s.SessionAffinity.ResolveKeyFromClientSource(clientStrategy.ClientSource, sessionAffinityScope); ok {
+			rawSessionAffinityKey = key
+		} else if key, ok := s.SessionAffinity.ResolveKey(sessionIdentity, sessionAffinityScope); ok {
+			rawSessionAffinityKey = key
+		}
 	}
 	sessionAffinityKey := rawSessionAffinityKey
 	if options.DisableSessionAffinity {

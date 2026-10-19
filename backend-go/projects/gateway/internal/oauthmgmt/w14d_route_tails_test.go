@@ -79,8 +79,9 @@ func TestW14dSSOImportProfileAndGroupArms(t *testing.T) {
 	env := newTestEnv(t)
 	env.w14dLoginAdmin(t)
 
-	// Dropping the profile table turns the SSO profile resolve into a 500.
-	env.exec(t, `DROP TABLE provider_protocol_profiles`)
+	// Dropping the vendors table turns the SSO profile resolve into a 500
+	//（T30/B4 ⑧：档案域只读 vendors）。
+	env.exec(t, `DROP TABLE vendors`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/sso-to-oauth",
 		`{"ssoToken":"tok","providerProtocolProfileId":"profile_xai_openai_v1","name":"w14d-prof"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {

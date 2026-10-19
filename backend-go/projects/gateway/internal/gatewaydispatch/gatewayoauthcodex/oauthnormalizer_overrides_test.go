@@ -36,7 +36,7 @@ func (m *mockGptOverrideCatalog) ListGptRequestOverrideModelCatalog(ctx context.
 func overrideAccount(credentials map[string]any) gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                          "acc-1",
-		VendorCode:                "gpt",
+		VendorCode:                  "gpt",
 		AccountOwnerSystemAccountID: "sys-1",
 		Credentials:                 credentials,
 	}
@@ -101,7 +101,7 @@ func TestApplyGptAccountRequestOverridesBodyResponses(t *testing.T) {
 func TestApplyGptAccountRequestOverridesBodyChatCompletions(t *testing.T) {
 	body := map[string]any{"model": "gpt-5.3", "messages": []any{}, "reasoning": map[string]any{"effort": "low"}}
 	overridden, err := ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
-		VendorCode:      "gpt",
+		VendorCode:        "gpt",
 		Credentials:       map[string]any{"reasoning_effort_override": "minimal"},
 		EndpointFamily:    "chat_completions",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"minimal"}},
@@ -120,7 +120,7 @@ func TestApplyGptAccountRequestOverridesBodyChatCompletions(t *testing.T) {
 func TestApplyGptAccountRequestOverridesBodyServiceTierDefaultDeletes(t *testing.T) {
 	body := map[string]any{"model": "m", "service_tier": "priority"}
 	overridden, err := ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
-		VendorCode:      "gpt",
+		VendorCode:        "gpt",
 		Credentials:       map[string]any{"service_tier_override": "default"},
 		EndpointFamily:    "responses",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedServiceTiers: []string{"priority"}},
@@ -135,7 +135,7 @@ func TestApplyGptAccountRequestOverridesBodyServiceTierDefaultDeletes(t *testing
 	// （capabilities 为 nil）也删除客户端 service_tier（新语义，取代旧
 	// “能力未声明则惰性”）。
 	overridden, err = ApplyGptAccountRequestOverridesBody(map[string]any{"model": "m", "service_tier": "flex"}, GptAccountOverrideInput{
-		VendorCode:   "gpt",
+		VendorCode:     "gpt",
 		Credentials:    map[string]any{"service_tier_override": "default"},
 		EndpointFamily: "responses",
 	})
@@ -152,7 +152,7 @@ func TestApplyGptAccountRequestOverridesBodyServiceTierDefaultDeletes(t *testing
 func TestApplyGptAccountRequestOverridesBodyDegradesReasoningEffort(t *testing.T) {
 	body := map[string]any{"model": "m", "input": "hi", "reasoning": map[string]any{"effort": "low"}}
 	overridden, err := ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
-		VendorCode:      "gpt",
+		VendorCode:        "gpt",
 		Credentials:       map[string]any{"reasoning_effort_override": "max"},
 		EndpointFamily:    "responses",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"low", "medium"}},
@@ -171,7 +171,7 @@ func TestApplyGptAccountRequestOverridesBodyDegradesReasoningEffort(t *testing.T
 func TestApplyGptAccountRequestOverridesBodyKeepsClientEffortWithoutDegradeTarget(t *testing.T) {
 	body := map[string]any{"model": "m", "input": "hi", "reasoning": map[string]any{"effort": "low"}}
 	overridden, err := ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
-		VendorCode:      "gpt",
+		VendorCode:        "gpt",
 		Credentials:       map[string]any{"reasoning_effort_override": "minimal"},
 		EndpointFamily:    "responses",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"high"}},
@@ -191,7 +191,7 @@ func TestApplyGptAccountRequestOverridesBodyKeepsClientEffortWithoutDegradeTarge
 func TestApplyGptAccountRequestOverridesBodyKeepsClientServiceTierWhenUnsupported(t *testing.T) {
 	body := map[string]any{"model": "m", "input": "hi", "service_tier": "flex"}
 	overridden, err := ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
-		VendorCode:      "gpt",
+		VendorCode:        "gpt",
 		Credentials:       map[string]any{"service_tier_override": "priority"},
 		EndpointFamily:    "responses",
 		ModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedServiceTiers: []string{"flex"}},
@@ -226,7 +226,7 @@ func TestApplyGptAccountRequestOverridesBodyDegradesAcrossFamilies(t *testing.T)
 func TestApplyGptAccountRequestOverridesBodyCompactSkipsReasoning(t *testing.T) {
 	body := map[string]any{"model": "m"}
 	overridden, err := ApplyGptAccountRequestOverridesBody(body, GptAccountOverrideInput{
-		VendorCode:      "gpt",
+		VendorCode:        "gpt",
 		Credentials:       map[string]any{"reasoning_effort_override": "high"},
 		EndpointFamily:    "responses",
 		Compact:           true,
@@ -242,7 +242,7 @@ func TestApplyGptAccountRequestOverridesBodyCompactSkipsReasoning(t *testing.T) 
 
 func TestApplyGptAccountRequestOverridesBodyInvalidValueIsAccountScoped(t *testing.T) {
 	_, err := ApplyGptAccountRequestOverridesBody(map[string]any{}, GptAccountOverrideInput{
-		VendorCode:   "gpt",
+		VendorCode:     "gpt",
 		Credentials:    map[string]any{"service_tier_override": "fast"},
 		EndpointFamily: "responses",
 	})
@@ -264,7 +264,7 @@ func TestApplyGptAccountRequestOverridesBodyProviderAwareEnum(t *testing.T) {
 	overridden, err := ApplyGptAccountRequestOverridesBody(
 		map[string]any{"model": "deepseek-chat", "messages": []any{}},
 		GptAccountOverrideInput{
-			VendorCode:      "deepseek",
+			VendorCode:        "deepseek",
 			Credentials:       map[string]any{"reasoning_effort_override": "ultra"},
 			EndpointFamily:    "chat_completions",
 			ModelCapabilities: capabilities,
@@ -280,7 +280,7 @@ func TestApplyGptAccountRequestOverridesBodyProviderAwareEnum(t *testing.T) {
 	_, err = ApplyGptAccountRequestOverridesBody(
 		map[string]any{"model": "gpt-5.3", "input": "hi"},
 		GptAccountOverrideInput{
-			VendorCode:      "gpt",
+			VendorCode:        "gpt",
 			Credentials:       map[string]any{"reasoning_effort_override": "ultra"},
 			EndpointFamily:    "responses",
 			ModelCapabilities: capabilities,
@@ -309,20 +309,17 @@ func TestApplyGptAccountRequestOverridesBodyProviderAwareEnum(t *testing.T) {
 // 上游 body 路径（非 OAuth api_key 运行时）同样供应商感知：deepseek 目录声明
 // ultra → 应用；gpt 账户同值 → 保留硬失败。
 func TestApplyGptAccountRequestOverridesToUpstreamBodyProviderAware(t *testing.T) {
-	catalog := &mockGptOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{{
+	runtime := GptRequestOverrideRuntime{Catalog: &mockGptOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{{
 		Model:                     "deepseek-chat",
 		SupportedReasoningEfforts: []string{"ultra"},
-	}}}
-	previous := gptRequestOverrideModelCatalog
-	gptRequestOverrideModelCatalog = catalog
-	defer func() { gptRequestOverrideModelCatalog = previous }()
+	}}}}
 
 	deepseek := gatewayruntimecache.OpenAIAccountSecret{
 		ID: "acc-1", VendorCode: "deepseek", AccountOwnerSystemAccountID: "sys-1",
 		Credentials: map[string]any{"reasoning_effort_override": "ultra"},
 	}
-	out, err := ApplyGptAccountRequestOverridesToUpstreamBody(
-		context.Background(), []byte(`{"model":"deepseek-chat","messages":[]}`), deepseek, "chat_completions", false, "")
+	out, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), []byte(`{"model":"deepseek-chat","messages":[]}`), nil, deepseek, "chat_completions", false, "", "", runtime)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -331,29 +328,26 @@ func TestApplyGptAccountRequestOverridesToUpstreamBodyProviderAware(t *testing.T
 	}
 
 	gptAccount := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
-	_, err = ApplyGptAccountRequestOverridesToUpstreamBody(
-		context.Background(), []byte(`{}`), gptAccount, "responses", false, "gpt-x")
+	_, err = ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), []byte(`{}`), nil, gptAccount, "responses", false, "gpt-x", "", runtime)
 	if err == nil || err.Error() != "GPT 账户请求覆盖字段 reasoning_effort_override 无效" {
 		t.Fatalf("err = %v, want gpt 枚举拒绝", err)
 	}
 }
 
-// hook 接线：ApplyOpenAIOAuthCodexAccountRequestOverrides 必须把
+// hook 接线（T15 显式注入）：ApplyOpenAIOAuthCodexAccountRequestOverrides 必须把
 // account.VendorCode 传入 GptAccountOverrideInput（组合根 codexAccountOf 补齐
 // 后供应商感知断言才能拿到供应商）。
 func TestApplyOpenAIOAuthCodexAccountRequestOverridesPassesVendorCode(t *testing.T) {
-	previous := gptAccountRequestOverridesHook
-	gptAccountRequestOverridesHook = ApplyGptAccountRequestOverridesBody
-	t.Cleanup(func() { gptAccountRequestOverridesHook = previous })
-
 	body := map[string]any{"model": "deepseek-chat", "input": "hi"}
 	err := ApplyOpenAIOAuthCodexAccountRequestOverrides(body, OpenAIOAuthCodexNormalizeInput{
 		Account: OpenAIOAuthCodexAccount{
-			ID:           "acc-1",
-			VendorCode: "deepseek",
-			Credentials:  map[string]any{"reasoning_effort_override": "ultra"},
+			ID:          "acc-1",
+			VendorCode:  "deepseek",
+			Credentials: map[string]any{"reasoning_effort_override": "ultra"},
 		},
 		RequestOverrideModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"ultra"}},
+		ApplyGptAccountRequestOverrides:  ApplyGptAccountRequestOverridesBody,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -367,10 +361,6 @@ func TestApplyOpenAIOAuthCodexAccountRequestOverridesPassesVendorCode(t *testing
 // hook 路径同样按 VendorCode 识别身份（供应商解耦过渡形态）：只有 vendor 列
 // 且值为 gpt 时，gpt 专属枚举必须照常生效。
 func TestApplyOpenAIOAuthCodexAccountRequestOverridesPrefersVendorCode(t *testing.T) {
-	previous := gptAccountRequestOverridesHook
-	gptAccountRequestOverridesHook = ApplyGptAccountRequestOverridesBody
-	t.Cleanup(func() { gptAccountRequestOverridesHook = previous })
-
 	body := map[string]any{"model": "gpt-5.3", "input": "hi"}
 	err := ApplyOpenAIOAuthCodexAccountRequestOverrides(body, OpenAIOAuthCodexNormalizeInput{
 		Account: OpenAIOAuthCodexAccount{
@@ -379,6 +369,7 @@ func TestApplyOpenAIOAuthCodexAccountRequestOverridesPrefersVendorCode(t *testin
 			Credentials: map[string]any{"reasoning_effort_override": "ultra"},
 		},
 		RequestOverrideModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"ultra"}},
+		ApplyGptAccountRequestOverrides:  ApplyGptAccountRequestOverridesBody,
 	})
 	if err == nil {
 		t.Fatal("VendorCode=gpt 时 ultra 必须被 gpt 枚举拒绝")
@@ -389,20 +380,17 @@ func TestApplyOpenAIOAuthCodexAccountRequestOverridesPrefersVendorCode(t *testin
 // 供应商跳过 gpt 枚举），gpt 账户的枚举外覆盖值会被静默跳过（无能力声明时
 // 保持惰性 / 有能力声明时直接应用），本用例必须失败。
 func TestApplyOpenAIOAuthCodexAccountRequestOverridesRejectsGptEnumViaVendorCode(t *testing.T) {
-	previous := gptAccountRequestOverridesHook
-	gptAccountRequestOverridesHook = ApplyGptAccountRequestOverridesBody
-	t.Cleanup(func() { gptAccountRequestOverridesHook = previous })
-
 	// gpt 账户 + 枚举外 reasoning_effort_override：即目录声明了 ultra，
 	// gpt 专属 wire 枚举仍必须先拒绝。
 	body := map[string]any{"model": "gpt-5.3", "input": "hi"}
 	err := ApplyOpenAIOAuthCodexAccountRequestOverrides(body, OpenAIOAuthCodexNormalizeInput{
 		Account: OpenAIOAuthCodexAccount{
-			ID:           "acc-1",
-			VendorCode: "gpt",
-			Credentials:  map[string]any{"reasoning_effort_override": "ultra"},
+			ID:          "acc-1",
+			VendorCode:  "gpt",
+			Credentials: map[string]any{"reasoning_effort_override": "ultra"},
 		},
 		RequestOverrideModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedReasoningEfforts: []string{"ultra"}},
+		ApplyGptAccountRequestOverrides:  ApplyGptAccountRequestOverridesBody,
 	})
 	if err == nil || err.Error() != "GPT 账户请求覆盖字段 reasoning_effort_override 无效" {
 		t.Fatalf("err = %v, want gpt 枚举拒绝", err)
@@ -415,11 +403,12 @@ func TestApplyOpenAIOAuthCodexAccountRequestOverridesRejectsGptEnumViaVendorCode
 	body = map[string]any{"model": "gpt-5.3", "input": "hi"}
 	err = ApplyOpenAIOAuthCodexAccountRequestOverrides(body, OpenAIOAuthCodexNormalizeInput{
 		Account: OpenAIOAuthCodexAccount{
-			ID:           "acc-1",
-			VendorCode: "gpt",
-			Credentials:  map[string]any{"service_tier_override": "turbo"},
+			ID:          "acc-1",
+			VendorCode:  "gpt",
+			Credentials: map[string]any{"service_tier_override": "turbo"},
 		},
 		RequestOverrideModelCapabilities: &GptRequestOverrideModelCapabilities{SupportedServiceTiers: []string{"turbo"}},
+		ApplyGptAccountRequestOverrides:  ApplyGptAccountRequestOverridesBody,
 	})
 	if err == nil || err.Error() != "GPT 账户请求覆盖字段 service_tier_override 无效" {
 		t.Fatalf("err = %v, want gpt 枚举拒绝", err)
@@ -433,12 +422,10 @@ func TestResolveGptRequestOverrideModelCapabilities(t *testing.T) {
 	catalog := &mockGptOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{
 		{Model: "gpt-5.3", SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"high", "xhigh"}},
 	}}
-	previous := gptRequestOverrideModelCatalog
-	gptRequestOverrideModelCatalog = catalog
-	defer func() { gptRequestOverrideModelCatalog = previous }()
+	runtime := GptRequestOverrideRuntime{Catalog: catalog}
 
 	account := overrideAccount(map[string]any{"reasoning_effort_override": "xhigh"})
-	capabilities, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-5.3")
+	capabilities, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-5.3", runtime)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -447,13 +434,13 @@ func TestResolveGptRequestOverrideModelCapabilities(t *testing.T) {
 	}
 
 	// 无覆盖配置 → 不解析目录（Node 早退）。
-	noOverrides, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), overrideAccount(nil), "gpt-5.3")
+	noOverrides, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), overrideAccount(nil), "gpt-5.3", runtime)
 	if err != nil || noOverrides != nil {
 		t.Fatalf("no-override resolution = %+v err=%v", noOverrides, err)
 	}
 
 	// 目录未命中 → nil（覆盖保持惰性）。
-	missing, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-9")
+	missing, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-9", runtime)
 	if err != nil || missing != nil {
 		t.Fatalf("missing-model resolution = %+v err=%v", missing, err)
 	}
@@ -465,13 +452,11 @@ func TestResolveGptRequestOverrideModelCapabilitiesUsesVendorCodeIdentity(t *tes
 	catalog := &mockGptOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{
 		{Model: "grok-4.7", SupportedReasoningEfforts: []string{"low", "high"}},
 	}}
-	previous := gptRequestOverrideModelCatalog
-	gptRequestOverrideModelCatalog = catalog
-	defer func() { gptRequestOverrideModelCatalog = previous }()
+	runtime := GptRequestOverrideRuntime{Catalog: catalog}
 
 	account := overrideAccount(map[string]any{"reasoning_effort_override": "high"})
 	account.VendorCode = "xai"
-	capabilities, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "grok-4.7")
+	capabilities, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "grok-4.7", runtime)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -486,7 +471,7 @@ func TestResolveGptRequestOverrideModelCapabilitiesUsesVendorCodeIdentity(t *tes
 	empty := account
 	empty.VendorCode = ""
 	catalog.lastProviderCode = ""
-	resolved, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), empty, "grok-4.7")
+	resolved, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), empty, "grok-4.7", runtime)
 	if err != nil || resolved != nil {
 		t.Fatalf("无身份解析 = %+v err=%v", resolved, err)
 	}
@@ -505,7 +490,7 @@ func TestApplyGptAccountRequestOverridesToUpstreamBodyUsesVendorCodeIdentity(t *
 	// 只有 VendorCode=gpt：ultra 被 gpt 专属枚举拒绝。
 	account := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
 	account.VendorCode = "gpt"
-	_, err := ApplyGptAccountRequestOverridesToUpstreamBody(context.Background(), body, account, "responses", false, "gpt-5.3")
+	_, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, account, "responses", false, "gpt-5.3", "", GptRequestOverrideRuntime{})
 	if err == nil {
 		t.Fatal("只有 VendorCode=gpt 时 ultra 必须被 gpt 枚举拒绝")
 	}
@@ -518,7 +503,7 @@ func TestApplyGptAccountRequestOverridesToUpstreamBodyUsesVendorCodeIdentity(t *
 	legacyOnly := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
 	legacyOnly.VendorCode = ""
 	legacyOnly.ProviderCode = "gpt"
-	if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(context.Background(), body, legacyOnly, "responses", false, "gpt-5.3"); err != nil {
+	if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, legacyOnly, "responses", false, "gpt-5.3", "", GptRequestOverrideRuntime{}); err != nil {
 		t.Fatalf("旧列必须不参与身份解析（禁止回落）：%v", err)
 	}
 
@@ -526,7 +511,7 @@ func TestApplyGptAccountRequestOverridesToUpstreamBodyUsesVendorCodeIdentity(t *
 	vendorWins := overrideAccount(map[string]any{"reasoning_effort_override": "ultra"})
 	vendorWins.VendorCode = "deepseek"
 	vendorWins.ProviderCode = "gpt"
-	if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(context.Background(), body, vendorWins, "responses", false, "gpt-5.3"); err != nil {
+	if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, vendorWins, "responses", false, "gpt-5.3", "", GptRequestOverrideRuntime{}); err != nil {
 		t.Fatalf("两列在场必须只认 VendorCode（禁止回落到旧列）：%v", err)
 	}
 }
@@ -535,13 +520,11 @@ func TestApplyGptAccountRequestOverridesToUpstreamBody(t *testing.T) {
 	catalog := &mockGptOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{
 		{Model: "gpt-5.3", SupportedServiceTiers: []string{"priority"}},
 	}}
-	previous := gptRequestOverrideModelCatalog
-	gptRequestOverrideModelCatalog = catalog
-	defer func() { gptRequestOverrideModelCatalog = previous }()
+	runtime := GptRequestOverrideRuntime{Catalog: catalog}
 
 	account := overrideAccount(map[string]any{"service_tier_override": "priority"})
 	body := []byte(`{"model":"gpt-5.3","input":"hi"}`)
-	out, err := ApplyGptAccountRequestOverridesToUpstreamBody(context.Background(), body, account, "responses", false, "")
+	out, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, account, "responses", false, "", "", runtime)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -555,7 +538,7 @@ func TestApplyGptAccountRequestOverridesToUpstreamBody(t *testing.T) {
 
 	// 无覆盖配置时 body 原样返回（零解析路径）。
 	plain := overrideAccount(nil)
-	out, err = ApplyGptAccountRequestOverridesToUpstreamBody(context.Background(), body, plain, "responses", false, "")
+	out, err = ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(context.Background(), body, nil, plain, "responses", false, "", "", runtime)
 	if err != nil || string(out) != string(body) {
 		t.Fatalf("body should stay untouched: %s err=%v", out, err)
 	}

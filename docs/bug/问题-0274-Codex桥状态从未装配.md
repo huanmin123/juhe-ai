@@ -27,4 +27,28 @@
 ## 残余项
 
 - PG 探针 fail-fast 的真实缺 schema 场景未做运行断言（生产前置为 ensure-schema）。
-- 桥接七组合的阶段级行为验收（[调度内核通用化设计 §5.4](../functions/调度内核通用化设计.md) 接线前提/D3）尚未执行，见待办清单 #T27。
+
+## 桥接七组合阶段级行为验收记录（T27，2026-10-19）
+
+`调度内核通用化设计` §5.4 / D3 要求的七组合阶段级验收已执行（测试 `backend-go/projects/gateway/cmd/juhe-ai-gateway/w27_bridge_combos_test.go`，`TestW27Combo1..7` + `TestW27PostStageSkipIfProcessedMarkDedup`）。oracle 为真实 bridge preflight/restore（组合根真实装配的 `gatewaycodex.ChatBridgeStateService` / `CompactPreflightService` / registry，segments + 双模行存储全真实）；阶段级观察点为 `Engine.BuildPreparedUpstreamRequestParts` 三阶段（Front 内联清理 / OAuth 适配器出站构造 / Post 序列化 body 清理），清理调用以注入 `gatewayoauthcodex.SanitizeCodexHistory` 的探针 hook 计数，并以 hook 恒 nil 的生产形态做 no-op 对照。
+
+**两个如实断言的结构现状（结构性等价的组成部分，不是「无需清理」）**：
+
+1. **清理算法 hook 生产恒 nil**：各组合均以 hook 注入（阶段命中与调用次数取证）+ hook nil（清理 no-op、出站字节不受清理维度影响）双形态驱动；OAuth 路径的已处理标记写入与 hook 无关、无条件生效（nil 下依旧写入，测试钉住）。
+2. **引擎侧 per-account 桥准备端口无生产装配**：`Engine.CodexBridge`（`accountpreparation.go:457` 的 `PrepareContextForAccount` 消费点）全仓唯一赋值在 `gatewaydispatch` w17a 测试；BUG-0274 装配的是 preauth 层桥（preflight/compact restore/registry）。因此 bridge restore 的 registry 产物**不落入 dispatch 请求体**（组合 2/4 断言 dispatch body 仍携带原始 `previous_response_id`）；per-account 桥准备行为（合并 input 写回、删内部 previous_response_id、拒绝外部 previous）以真实桥服务 `PrepareCodexResponsesContextForAccount` 直接取证。§5.4 接线状态更新中「#2 已由 BUG-0274 装配」的表述仅覆盖 preauth 层，引擎端口仍未接线——接线属 §5.4 语义下的后续立项（行为变更，需单独评估），本验收不改生产代码。
+
+**逐组合结论**：
+
+| 组合 | 结论 | 阶段命中 / 标记（oracle 与断言点） |
+| --- | --- | --- |
+| 1. Responses 新会话 → Chat bridge → API Key | 可达，通过 | preflight oracle：registry `responses/none`、审计 `new_session`；桥准备接管 `ActiveBridgeAccountID`。清理调用 Front 1 + Post 1、Adapter 0（探针标记双落点取证：请求上下文 + 序列化出站）；API Key 出站**不写标记**；hook nil 下 input 原样 |
+| 2. Responses 内部 previous（restore 成功）→ Chat bridge → API Key | 可达，通过（dispatch body 不消费恢复产物——引擎端口未接线的现状） | restore oracle：真实快照链恢复（`restored` 审计、合并 input ≥2 轮）；桥准备删 `previous_response_id`、合并 input 写回；清理 Front 1 + Post 1、不写标记；dispatch body 保留原始 `previous_response_id`（现状证据） |
+| 3. Responses 新会话 → Chat bridge → OAuth | 可达，通过 | 桥准备 oracle：responses→chat 映射使 OAuth 账户成 bridge-kind；清理调用恰 1 次（Adapter；Front/Post preserve），请求上下文未被改写；出站**无条件写标记** + Codex 归一化形态（`store=false`/`stream=true`）；hook nil 下标记照写、input 原样 |
+| 4. Responses 内部 previous（restore 成功）→ Chat bridge → OAuth | 可达，通过 | 组合 2 的恢复事实 + 组合 3 的清理形态（Adapter 1 次 + 标记）；dispatch body 保留原始 `previous_response_id` |
+| 5. `/responses/compact` 恢复已有 bridge snapshot → API Key | 可达，真实派发成功 | 晚绑定 `chainCompactSummaryDispatcher` → 真实引擎 → httptest 上游恰好 1 次（POST `*/v1/chat/completions`、Bearer 凭据）；restore/审计 `gateway_summary_compact` + `restoredResponseCount≥1`；200 `response.compaction` + 审计 finalize；合成 chat 请求 + API Key 目标 = 策略全 preserve：0 次清理调用、出站原始字节**不写标记**；终态/释放闭包语义由 #T5 批既有断言钉住，本组合锁定其在完整 preflight 路径中被服务消费 |
+| 6. `/responses/compact` 恢复已有 bridge snapshot → OAuth | 过滤层可达、**适配器层语义不可达**（如实登记，非「无需清理」） | OAuth 账户按映射归 bridge-kind 并进入 bridge 派发窗（`CompactDispatchMode=bridge`）；但 OAuth codex 适配器要求 Codex Responses 形态（必须含 `input` 字段），合成 chat body 在出站构造校验处被拒 → 502 `codex_bridge_compact_summary_failed`，上游 0 请求；校验先于清理调用点故 0 次调用。OAuth 分支恒产出 Codex Responses 形态出站，chat-bridge 合成摘要在该形态下不可达——与 §5.4「OAuth 恒走 codex adapter，部分矩阵组合静态不可达」一致，现以运行证据落档 |
+| 7. 恢复失败/无快照后继续普通请求 | 通过（含一处与组合标题的源码事实差异登记） | 外部 previous（无桥快照）→ preflight 继续（`external_previous_response`），按普通请求进入派发准备：API Key 原生 = Front+Post 2 次、不写标记、`previous_response_id` 原样出站；OAuth 原生 = Adapter 1 次 + 无条件标记。**内部 previous 快照缺失**：preflight 以 404 `codex_bridge_previous_response_not_found`（`restore_failed`）终结，**不**继续普通派发——「继续普通请求」语义仅覆盖外部 previous/无桥状态形态，差异如实登记。另钉：外部 previous × 桥账户在真实桥准备服务处拒绝（「外部 previous_response_id 只能发送给原生 Responses 账号」；引擎端口未接线，该拒绝当前不在生产派发生效） |
+
+**已处理标记去重（SkipIfProcessed）行为钉**（`TestW27PostStageSkipIfProcessedMarkDedup`）：Post 阶段（`policy.Post=sanitize && SkipIfProcessed`）带标记 body 跳过清理（0 次调用、字节原样），无标记 body 恰 1 次调用——§5.4「后置遇到标记必须跳过」以调用次数取证。
+
+**验证口径**：`go test ./cmd/juhe-ai-gateway/ -run 'TestW27' -count=1`（定向）与 `go test ./internal/gatewaycodex/ -count=1`（桥服务回归）。本验收为纯测试 + 文档交付，生产代码零改动；验收未暴露需修复的清理维度缺陷，暴露的接线现状（引擎端口未装配）已在上文登记并属 §5.4 语义下的后续立项决策。

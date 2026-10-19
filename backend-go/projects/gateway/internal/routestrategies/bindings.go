@@ -73,7 +73,6 @@ func (s *Store) bindingRowColumns() string {
 	route_strategy_groups.weight,
 	route_strategy_groups.status,
 	groups.name AS group_name,
-	groups.provider_code,
 	CASE
 		WHEN groups.id IS NULL THEN 0
 		WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
@@ -109,7 +108,7 @@ func scanBindingRow(scan func(...any) error) (bindingRow, error) {
 	row := bindingRow{}
 	var groupEnabled int
 	err := scan(&row.id, &row.routeStrategyID, &row.groupID, &row.priority, &row.weightRaw, &row.status,
-		&row.groupName, &row.providerCode, &groupEnabled)
+		&row.groupName, &groupEnabled)
 	if err != nil {
 		return bindingRow{}, err
 	}
@@ -297,7 +296,7 @@ func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string
 	if lockRows && s.pg {
 		lockClause = " FOR UPDATE OF groups"
 	}
-	return s.bind(`SELECT groups.id, groups.system_account_id, groups.provider_code, groups.name,
+	return s.bind(`SELECT groups.id, groups.system_account_id, groups.name,
 			CASE WHEN groups.system_account_id = ? THEN 1
 				WHEN group_authorization.id IS NOT NULL THEN 1
 				ELSE 0
@@ -349,7 +348,7 @@ func (s *Store) loadBindableGroups(ctx context.Context, q queryer, inputs []Bind
 		var group bindableGroup
 		var enabled, canBind int
 		var name sql.NullString
-		if err := rows.Scan(&group.id, &group.ownerID, &group.providerCode, &name, &canBind, &enabled); err != nil {
+		if err := rows.Scan(&group.id, &group.ownerID, &name, &canBind, &enabled); err != nil {
 			return nil, err
 		}
 		group.name = name.String

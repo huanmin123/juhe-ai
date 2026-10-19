@@ -346,9 +346,12 @@ func (g *chainSpeedFirstBodyAdmissionGate) AdmitBody(
 }
 
 // chainSpeedFirstBodyAdmissionApplies mirrors the applicability guard:
-// speed_first key on a high_concurrency group with hydrated accounts, off the
-// image lane. The normalRoutingConfig key is shared by the five scheduling
-// modes (normal/weighted/failover/round_robin/merge; historical naming).
+// speed_first key on a high_concurrency group with hydrated accounts,
+// conversation domain only. 图像现状排除；T10 落地后音频/视频创建同属
+// StatelessMediaDispatch 域一并排除（对话与非对话媒体调度分离设计 §3.2：并发
+// 保护由 lane 并发槽承接）；realtime 在链入口短路，不达本门。The
+// normalRoutingConfig key is shared by the five scheduling modes
+// (normal/weighted/failover/round_robin/merge; historical naming).
 func chainSpeedFirstBodyAdmissionApplies(runtime *gatewayruntimecache.GatewayRuntime, requestLane gatewayproto.RequestLane) bool {
 	if runtime == nil || runtime.APIKey == nil || runtime.GroupAccess == nil {
 		return false
@@ -363,7 +366,7 @@ func chainSpeedFirstBodyAdmissionApplies(runtime *gatewayruntimecache.GatewayRun
 	if len(runtime.Accounts) == 0 {
 		return false
 	}
-	return requestLane != gatewayproto.LaneImage
+	return gatewayproto.DispatchDomainOfLane(requestLane) == gatewayproto.DispatchDomainConversation
 }
 
 // chainSpeedFirstQueuePolicy projects the consumed queue subset off the

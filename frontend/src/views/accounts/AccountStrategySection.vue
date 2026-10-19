@@ -34,7 +34,11 @@
               show-search
               @dropdown-visible-change="handleSourceModelDropdown(mapping.sourceEndpointFamily, $event)"
               @search="handleSourceModelSearch(mapping.sourceEndpointFamily, $event)"
-            />
+            >
+              <template v-if="sourceModelTruncated" #dropdownRender="{ menuNode }">
+                <ModelOptionsTruncatedHint :menu-node="menuNode" />
+              </template>
+            </a-select>
           </div>
           <SwapRightOutlined class="model-mapping-arrow" />
           <div class="model-mapping-side">
@@ -55,7 +59,11 @@
               show-search
               @dropdown-visible-change="emit('current-provider-model-options-open', $event)"
               @search="emit('current-provider-model-options-search', $event)"
-            />
+            >
+              <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+                <ModelOptionsTruncatedHint :menu-node="menuNode" />
+              </template>
+            </a-select>
           </div>
           <div class="model-mapping-actions">
             <a-switch v-model:checked="mapping.enabled" :disabled="authorizedEditing" />
@@ -97,6 +105,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import ProxySelect from '@/components/ProxySelect.vue'
 import type { SelectOption } from '@/shared/selectLabelCache'
 import {
@@ -135,7 +144,11 @@ const props = defineProps<{
   mappingCurrentProviderSourceModelOptions: ModelMappingSourceModelOption[]
   mappingGeminiSourceModelOptions: ModelMappingSourceModelOption[]
   mappingSourceModelOptions: ModelMappingSourceModelOption[]
+  /** hybrid 账户映射源模型下拉（三协议实例）的服务端截断标志（T25 hasMore）。 */
+  mappingSourceModelOptionsTruncated?: boolean
   mappingUpstreamModelOptions: ModelMappingSourceModelOption[]
+  /** 当前供应商目录（上游模型/非 hybrid 源模型）的服务端截断标志（T25 hasMore）。 */
+  modelsTruncated?: boolean
   proxyOptions: SelectOption[]
   proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
@@ -179,6 +192,11 @@ const endpointModeOptions = computed(() => {
 })
 
 const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
+// T23：源模型下拉的截断提示条件与取数路径一致——非 hybrid 账户走当前供应商
+// 目录（modelsTruncated），hybrid 账户走协议池三实例（mappingSourceModelOptionsTruncated）。
+const sourceModelTruncated = computed(() => (
+  isHybridAccount.value ? Boolean(props.mappingSourceModelOptionsTruncated) : Boolean(props.modelsTruncated)
+))
 
 function setModeEnabled(mode: AccountSupportedEndpointMode, enabled: boolean): void {
   props.form.supportedEndpointModes = enabled

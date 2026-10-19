@@ -49,17 +49,12 @@ func TestW14dCrossProtocolProfileValidation(t *testing.T) {
 	env := newTestEnv(t)
 	env.w14dLoginAdmin(t)
 
-	// An anthropic-provider profile that carries the openai protocol cannot
-	// serve the anthropic OAuth plan.
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('w14d_profile_mismatch', 'anthropic', '协议错位', 1, 'openai', 'v1', 'https://x', 'claude',
-		'["oauth"]', '[]', ?, ?)`, now, now)
+	// 目标 schema 无档案表（T30/B4 ⑧）：跨厂商 profile 身份由 registry 词表
+	// 拒绝（anthropic 路由只接受 profile_anthropic_anthropic_v1）。
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"w14d_profile_mismatch"}`)
-	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "不支持") {
-		t.Fatalf("cross protocol profile: %d %v", code, payload)
+		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "供应商协议档案无效") {
+		t.Fatalf("cross vendor profile: %d %v", code, payload)
 	}
 }
 

@@ -525,6 +525,12 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	if bypassLocalSuppression {
 		bypassed := localSuppressionBypassResult(orderedCandidateAccounts)
 		localSuppressionFilter = &bypassed
+	} else if isNonConversationDispatchLane(input.RequestLane) {
+		// 媒体创建域不进入本地恢复等待窗口（对话与非对话媒体调度分离设计
+		// §3.2/§4.1：不等待账户恢复）：直接消费首趟过滤结果（硬门保留、账户
+		// 照常排除），全部被屏蔽时沿既有候选耗尽/切组路径快速失败。
+		filtered := initialLocalSuppressionFilter
+		localSuppressionFilter = &filtered
 	} else if precheckHalfOpenEligible {
 		bypassed := localSuppressionBypassResult(orderedCandidateAccounts)
 		localSuppressionFilter = &bypassed
@@ -634,9 +640,15 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 		})
 	}
 
-	clientSourceAvoidance, err := e.ClientSourceAvoidance.OrderAsync(ctx, clientIpAccountAvoidance.Accounts, input.ClientStrategy, input.ModelPriority)
-	if err != nil {
-		return PreparationResult{}, err
+	// 客户端来源级失败避让是文本对话调度维度（对话与非对话媒体调度分离设计
+	// §3.2）：媒体创建域不消费来源避让排序，也不产生来源避让写面（失败派发
+	// 器媒体域切断记录）。
+	clientSourceAvoidance := AvoidanceOrder{Accounts: clientIpAccountAvoidance.Accounts}
+	if !isNonConversationDispatchLane(input.RequestLane) {
+		clientSourceAvoidance, err = e.ClientSourceAvoidance.OrderAsync(ctx, clientIpAccountAvoidance.Accounts, input.ClientStrategy, input.ModelPriority)
+		if err != nil {
+			return PreparationResult{}, err
+		}
 	}
 	if clientSourceAvoidance.Applied || clientSourceAvoidance.BypassedAllAvoided {
 		input.AuditCapture.AddGatewayMetadata("client_source_account_avoidance", map[string]any{
@@ -961,13 +973,13 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	}
 
 	applyHotQualityOrder := func() error {
-		// 媒体车道豁免文本调度优化机制（docs/functions/音频视频模型接入与
-		// 统一媒体网关设计.md §3 车道行为规则 + 2026-10-04 主代理裁决；
-		// M5b realtime 车道沿媒体裁决同语义豁免，Realtime 设计 §6）：
-		// audio/video/realtime lane 跳过热质量排序——不排序、不报错、不归并
-		// text、不污染文本质量统计，候选保持既有顺序走普通派发；独立媒体
-		// 质量维度留作后续增强。
-		if isMediaRequestLane(req.RequestLane) {
+		// 非对话调度域豁免文本调度优化机制（对话与非对话媒体调度分离设计
+		// §3.2 + 音频视频模型接入与统一媒体网关设计 §3 车道行为规则 +
+		// 2026-10-04 主代理裁决）：audio/video/realtime lane 沿 2026-10-04
+		// 裁决豁免；T10 落地后图像创建同属 StatelessMediaDispatch 域一并豁免
+		// ——不排序、不报错、不归并 text、不污染文本质量统计，候选保持既有
+		// 顺序走普通派发；独立媒体质量维度留作后续增强。
+		if isNonConversationDispatchLane(req.RequestLane) {
 			return nil
 		}
 		hotQualityOrder, err := e.HotQuality.OrderAsync(ctx, HotQualityOrderInput{
@@ -1214,9 +1226,10 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 
 	// 期二（缓存率设计 5.6/7 高并发分组行）：等待块里的最终 Affinity.
 	// OrderAsync 可能覆盖早先的热质量顺序——最终派发前重应用层内排序。
-	// 失败不阻塞派发：保持等待后亲和序继续，决策摘要标记降级；媒体车道
-	// 与 905 闭包同语义豁免（质量排序从未生效，无重排可言）。
-	if hotQualityReorderPending && !isMediaRequestLane(req.RequestLane) {
+	// 失败不阻塞派发：保持等待后亲和序继续，决策摘要标记降级；非对话调度域
+	// （媒体创建 + realtime）与 905 闭包同语义豁免（质量排序从未生效，无重排
+	// 可言）。
+	if hotQualityReorderPending && !isNonConversationDispatchLane(req.RequestLane) {
 		reorder, reorderErr := e.HotQuality.ReorderOnly(ctx, HotQualityOrderInput{
 			Accounts:                     accounts,
 			ModelPriority:                req.ModelPriority,
@@ -1301,12 +1314,12 @@ func requestModelOrEmpty(req *gatewaypreauth.GatewayRequest) string {
 	return ""
 }
 
-// isMediaRequestLane 判定媒体车道（audio/video/realtime）。词表直接读
-// gatewayproto 的 LaneAudio/LaneVideo/LaneRealtime（媒体设计 §3 车道词表的
-// 唯一权威源；M5b realtime 沿媒体裁决豁免热质量排序，Realtime 设计 §6），
-// 不在此重复维护清单。
-func isMediaRequestLane(lane string) bool {
-	return lane == string(gatewayproto.LaneAudio) || lane == string(gatewayproto.LaneVideo) || lane == string(gatewayproto.LaneRealtime)
+// isNonConversationDispatchLane 判定非对话调度域车道（对话与非对话媒体调度
+// 分离设计 §1/§5：StatelessMediaDispatch = 图像/音频/视频；realtime 沿
+// 2026-10-04 热质量豁免裁决一并豁免）。lane → 域映射唯一权威源是
+// gatewayproto.DispatchDomainOfLane，不在此重复维护词表。
+func isNonConversationDispatchLane(lane string) bool {
+	return gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(lane)) != gatewayproto.DispatchDomainConversation
 }
 
 // gatewayruntimecacheGroupTypeHighConcurrency mirrors groupType value.

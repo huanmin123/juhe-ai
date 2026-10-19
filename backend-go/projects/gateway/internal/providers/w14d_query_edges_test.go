@@ -45,7 +45,7 @@ func TestW14dClosedDBQueryForks(t *testing.T) {
 		t.Fatal("closed DB custom rows must fail")
 	}
 	// Option read family.
-	if _, err := store.ListProviderModelSelectionOptions(ctx, ModelOptionQuery{ProviderCode: "gpt", Limit: 5}); err == nil {
+	if _, _, err := store.ListProviderModelSelectionOptions(ctx, ModelOptionQuery{ProviderCode: "gpt", Limit: 5}); err == nil {
 		t.Fatal("closed DB selection options must fail")
 	}
 	sourceCodes, builtInCodes, err := store.modelOptionSourceCodes(ctx, "", "openai")
@@ -141,23 +141,27 @@ func TestW14dMergeProviderModelOptionRowsUnit(t *testing.T) {
 		{ProviderCode: " ", Model: "dropped"},
 		{ProviderCode: "gpt", Model: "  "},
 	}
-	merged := mergeProviderModelOptionRows(rows, ModelOptionQuery{Limit: 2})
+	merged, total := mergeProviderModelOptionRows(rows, ModelOptionQuery{Limit: 2})
 	if len(merged) != 2 {
 		t.Fatalf("limit applied: %v", merged)
+	}
+	// total 是截断前的去重候选总数（T25 元数据）：limit 2、候选 3。
+	if total != 3 {
+		t.Fatalf("total before limit: %d", total)
 	}
 	// Newest release first.
 	if merged[0].ID != "m-a" {
 		t.Fatalf("newest first: %v", merged)
 	}
 	// The global scope beats built_in at equal model.
-	everything := mergeProviderModelOptionRows(rows, ModelOptionQuery{Limit: 10})
-	if len(everything) != 3 {
-		t.Fatalf("all models: %v", everything)
+	everything, everythingTotal := mergeProviderModelOptionRows(rows, ModelOptionQuery{Limit: 10})
+	if len(everything) != 3 || everythingTotal != 3 {
+		t.Fatalf("all models: %v (total %d)", everything, everythingTotal)
 	}
 	// Keyword filtering keeps selected rows even when they do not match.
-	picked := mergeProviderModelOptionRows(rows, ModelOptionQuery{Limit: 10, Keyword: "zzz", SelectedIDs: []string{"m-c"}})
-	if len(picked) != 1 || picked[0].ID != "m-c" {
-		t.Fatalf("selected survives keyword filter: %v", picked)
+	picked, pickedTotal := mergeProviderModelOptionRows(rows, ModelOptionQuery{Limit: 10, Keyword: "zzz", SelectedIDs: []string{"m-c"}})
+	if len(picked) != 1 || picked[0].ID != "m-c" || pickedTotal != 1 {
+		t.Fatalf("selected survives keyword filter: %v (total %d)", picked, pickedTotal)
 	}
 }
 
@@ -206,25 +210,18 @@ func TestW14dCatalogCompareAndMergeEdges(t *testing.T) {
 		t.Fatalf("blank release: %q", got)
 	}
 
-	// mergeModelCatalogItems: personal beats global beats built_in, and the
-	// preserve-identity fork keeps hybrid rows separate per provider.
+	// mergeModelCatalogItems: personal beats global beats built_in（合并键为
+	// 裸 model；hybrid 身份门已随目标 schema 退役，B4 ⑪）。
 	merged := mergeModelCatalogItems([]ModelCatalogItem{
 		{Model: "m", Scope: catalogScopeBuiltIn, ID: "b"},
 		{Model: "m", Scope: catalogScopeGlobal, ID: "g"},
 		{Model: "m", Scope: catalogScopePersonal, ID: "p"},
-	}, false)
+	})
 	if len(merged) != 1 || merged[0].ID != "p" {
 		t.Fatalf("scope priority merge: %v", merged)
 	}
-	hybrid := mergeModelCatalogItems([]ModelCatalogItem{
-		{Model: "m", Scope: catalogScopeGlobal, ProviderCode: "gpt", ID: "1"},
-		{Model: "m", Scope: catalogScopeGlobal, ProviderCode: "anthropic", ID: "2"},
-	}, true)
-	if len(hybrid) != 2 {
-		t.Fatalf("identity-preserving merge: %v", hybrid)
-	}
 	// Blank model names are dropped.
-	if got := mergeModelCatalogItems([]ModelCatalogItem{{Model: "  ", ID: "x"}}, false); len(got) != 0 {
+	if got := mergeModelCatalogItems([]ModelCatalogItem{{Model: "  ", ID: "x"}}); len(got) != 0 {
 		t.Fatalf("blank model dropped: %v", got)
 	}
 

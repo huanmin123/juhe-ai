@@ -103,8 +103,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	// vendors 种子（设计 §9.1）：创建链 vendor 归属校验按 vendors 表判定，
 	// gpt 为夹具默认真实厂商；anthropic 等其余厂商保持未预置（供「不支持的
 	// 供应商」臂断言），openai 为 generic 语义（无 vendors 行，校验跳过）。
-	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+	// default_supported_models_json 与生产 pgSeedProviders 的 gpt 缺省同口径
+	//（导入链在来源未携带 models 时按 vendor 缺省回落，B4 ⑦）。
+	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '["gpt-4o-mini"]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
 	seedFixtureModels(t, db)
@@ -541,11 +543,11 @@ func seedFixtureModels(t *testing.T, db *sql.DB) {
 			{"-gemini", "gemini"}, {"-glm", "glm"}, {"-minimax", "minimax"}, {"-volcengine", "volcengine"},
 			{"-qwen", "qwen"}, {"-generic", ""},
 		} {
-	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
+			if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
 			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			"mod-fixture-"+model.id+vendor.id, nullStringForFixture(vendor.code), model.name, model.name); err != nil {
-			t.Fatal(err)
-		}
+				"mod-fixture-"+model.id+vendor.id, nullStringForFixture(vendor.code), model.name, model.name); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
@@ -659,7 +661,7 @@ func createPayload(name string) string {
 }
 
 // b1GPTFragment 是 B1 断点批夹具的 §8 连接 + 健康检查三件套 JSON 片段
-//（gpt/gpt_openai_v1/chat_json 形态；healthCheckModel 必须属于载荷
+// （gpt/gpt_openai_v1/chat_json 形态；healthCheckModel 必须属于载荷
 // supportedModels），供内联创建载荷拼接。
 const b1GPTFragment = `"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
 	`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"`
@@ -969,7 +971,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	// 后续写段；generic 片段用 generic_openai_v1——generic_http driver 组合表）。
 	env.exec(t, `UPDATE groups SET enabled = 0 WHERE id = ?`, "grp-default-"+adminID)
 	code, missingGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GenericGPTFragment + `}`)
+		`{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GenericGPTFragment+`}`)
 	if code != 400 || missingGroup["message"] != "当前用户缺少启用的默认分组" {
 		t.Fatalf("missing default group: %d %v", code, missingGroup)
 	}
@@ -978,7 +980,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	// Explicit group bound to another provider is rejected; same-provider
 	// explicit groups are honored.
 	code, wrongGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"wg","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"groupId":"grp-missing"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"wg","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GPTFragment+`,"groupId":"grp-missing"}`)
 	if code != 400 || wrongGroup["message"] != "账户分组无效" {
 		t.Fatalf("wrong group: %d %v", code, wrongGroup)
 	}
@@ -986,7 +988,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-extra', ?, '扩展分组', 'gpt', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	code, okGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"groupId":"grp-extra"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GPTFragment+`,"groupId":"grp-extra"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("explicit group create: %d %v", code, okGroup)
 	}

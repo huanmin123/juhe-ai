@@ -30,7 +30,7 @@ func (e *aipublicEnv) seedProviderRow(code, name string, enabled bool) {
 	if enabled {
 		enabledInt = 1
 	}
-	if _, err := e.db.Exec(`INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+	if _, err := e.db.Exec(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES (?, ?, ?, ?, '[]', ?, ?)`, "prov_"+code, code, name, enabledInt, now, now); err != nil {
 		e.t.Fatal(err)
 	}
@@ -40,11 +40,14 @@ func (e *aipublicEnv) seedProviderRow(code, name string, enabled bool) {
 func (e *aipublicEnv) seedProviderCatalogRow(id, providerCode, model, status string, inputUsd any) {
 	e.t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := e.db.Exec(`INSERT INTO provider_model_catalog (id, provider_code, model, status,
-		input_usd_per_1m, supported_api_protocols_json, supported_service_tiers_json,
-		supported_reasoning_efforts_json, service_tier_prices_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, '[]', '[]', '[]', '{}', ?, ?)`,
-		id, providerCode, model, status, inputUsd, now, now); err != nil {
+	// 目标 schema（设计 §3）：目录并入 models 单表；写面断言按
+	// (vendor_code, upstream_model, scope, status) 身份键解析。
+	// 公开详情读面按 active + 有价 + visible 过滤（inputUsd 为 nil 表示无价）。
+	if _, err := e.db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
+		status, supported_endpoint_modes_json, catalog_visible, input_usd_per_1m,
+		output_usd_per_1m, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'builtin', ?, '["chat_json","chat_sse","responses_json","responses_sse"]', 1, ?, ?, ?, ?)`,
+		id, providerCode, model, model, status, inputUsd, inputUsd, now, now); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -53,12 +56,7 @@ func (e *aipublicEnv) seedProviderCatalogRow(id, providerCode, model, status str
 func (e *aipublicEnv) seedProviderProfile(id, providerCode string) {
 	e.t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := e.db.Exec(`INSERT INTO provider_protocol_profiles
-		(id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES (?, ?, ?, 1, 'openai', 'v1', 'https://profile.example/v1', 'hc-model', '["api_key"]', '["chat_completions"]', ?, ?)`,
-		id, providerCode, "档案"+providerCode, now, now); err != nil {
-		e.t.Fatal(err)
-	}
+	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生。
 	if _, err := e.db.Exec(`INSERT INTO protocol_endpoint_families
 		(id, protocol_code, protocol_version, family_code, name, enabled, created_at, updated_at)
 		VALUES ('fam_'||?, 'openai', 'v1', 'chat_completions', 'Chat Completions', 1, ?, ?)`,

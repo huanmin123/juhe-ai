@@ -131,6 +131,7 @@
       :model-options="ccsExportModelOptions"
       :models-loading="ccsExportModelsLoading"
       :models-ready="ccsExportModelsReady"
+      :models-truncated="ccsExportModelsTruncated"
       @export="exportToCcSwitch"
       @model-options-open="handleCcSwitchModelOptionsOpen"
       @model-options-search="handleCcSwitchModelOptionsSearch"
@@ -301,6 +302,7 @@ const {
   ccsExportModelOptions,
   ccsExportModelsLoading,
   ccsExportModelsReady,
+  ccsExportModelsTruncated,
   ccsExportModalOpen,
   keyCopyingId,
   apiKeyMoreActions,

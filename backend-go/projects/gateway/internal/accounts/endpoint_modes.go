@@ -776,20 +776,24 @@ func isAccountHealthCheckEndpointMode(value string) bool {
 	return accountHealthCheckEndpointModes[value]
 }
 
+// preferredHealthCheckEndpointMode 返回建户/导入缺省时的首选检查形态（流式优先，
+// AI账户检查模型与人工测试设计 §健康检查请求形态 2026-10-19 定案）：真实流量以
+// 流式为主，非流式 2xx 可能被上游伪造或退化为空完成（空 choices 仍回 200），
+// 流式形态能更早暴露上游真实异常。
 func preferredHealthCheckEndpointMode(providerCode, providerProtocolProfileID string) string {
 	if providerProtocolProfileID == "profile_gemini_native_v1beta" {
-		return "generate_content_json"
+		return "generate_content_sse"
 	}
 	if strings.Contains(providerProtocolProfileID, "anthropic") {
-		return "messages_json"
+		return "messages_sse"
 	}
 	if providerCode == anthropicProviderCode {
-		return "messages_json"
+		return "messages_sse"
 	}
 	if providerCode == gptVendorCode {
 		return "responses_sse"
 	}
-	return "chat_json"
+	return "chat_sse"
 }
 
 // resolveDefaultHealthCheckEndpointMode mirrors resolveDefaultHealthCheckEndpointMode.
@@ -804,6 +808,12 @@ func resolveDefaultHealthCheckEndpointMode(providerCode, providerProtocolProfile
 	preferred := preferredHealthCheckEndpointMode(providerCode, providerProtocolProfileID)
 	if containsString(filtered, preferred) {
 		return preferred, nil
+	}
+	// 首选未启用：流式优先（_sse 后缀），其后才取 JSON 形态（_json 后缀）。
+	for _, mode := range filtered {
+		if strings.HasSuffix(mode, "_sse") {
+			return mode, nil
+		}
 	}
 	for _, mode := range filtered {
 		if strings.HasSuffix(mode, "_json") {

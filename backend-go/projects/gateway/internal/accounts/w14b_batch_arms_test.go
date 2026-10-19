@@ -158,10 +158,7 @@ func TestW14BBatchEditContextArms(t *testing.T) {
 func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	env := newTestEnv(t)
 	adminID, targets := w14bBatchSetup(t, env, "")
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		gptCatalogFact(),
-		{Model: "gpt-4o-mini-2", SupportedAPIProtocols: []string{"chat_completions", "responses"}},
-	}})
+	// B4 ⑥：目录读端口已退役，gpt-4o-mini-2 已在 seedFixtureModels 内。
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 	field := func(name string, value any) BatchUpdateField {
 		return BatchUpdateField{Enabled: true, Value: value}

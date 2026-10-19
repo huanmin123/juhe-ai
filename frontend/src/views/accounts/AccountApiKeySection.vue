@@ -176,7 +176,7 @@
           @search="$emit('model-options-search', $event)"
         >
           <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
-            <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+            <ModelOptionsTruncatedHint :menu-node="menuNode" />
           </template>
         </a-select>
         <a-tooltip title="从上游同步可新增模型">
@@ -212,7 +212,7 @@ import { computed, ref, watch } from 'vue'
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus } from '@/types/domain'
 import { followBaseUrlAccountName } from './accountNameSuggestion'
-import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { normalizedAccountApiKeys } from './accountCredentials'

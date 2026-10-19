@@ -102,14 +102,12 @@ func ExtractUsage(value any, serviceTier string) gatewayproto.ParsedUsage {
 	}
 	responsesInputDetails, _ := usage["input_tokens_details"].(map[string]any)
 	chatInputDetails, _ := usage["prompt_tokens_details"].(map[string]any)
-	inputTokens := numberValue(usage["input_tokens"])
-	if inputTokens == nil {
-		inputTokens = numberValue(usage["prompt_tokens"])
-	}
-	outputTokens := numberValue(usage["output_tokens"])
-	if outputTokens == nil {
-		outputTokens = numberValue(usage["completion_tokens"])
-	}
+	// 双口径并存取值规则（docs/functions/模型价格与用量统计口径.md §3.2）：
+	// Responses 口径 input_tokens/output_tokens 优先（两套都非零时维持原行为），
+	// 但其值为 0 时不得吞掉同对象中另一套的非零值——Chat 兼容层中转常在
+	// input_tokens 里填 0 占位，真实规模只在 prompt_tokens。
+	inputTokens := pickNonZeroToken(usage["input_tokens"], usage["prompt_tokens"])
+	outputTokens := pickNonZeroToken(usage["output_tokens"], usage["completion_tokens"])
 	cacheReadTokens := numberValue(responsesInputDetails["cached_tokens"])
 	if cacheReadTokens == nil {
 		cacheReadTokens = numberValue(chatInputDetails["cached_tokens"])
@@ -273,6 +271,25 @@ func firstNumberValue(values ...any) *int {
 		}
 	}
 	return nil
+}
+
+// pickNonZeroToken 按「非零优先」取双口径 token：primary（Responses 口径
+// input_tokens/output_tokens）非零时用它，否则回退 secondary（Chat 口径
+// prompt_tokens/completion_tokens）。两者都为 0 时返回 0（真实零 token 事实），
+// 都缺失时返回 nil（交给估算兜底）。见
+// docs/functions/模型价格与用量统计口径.md §3.2 双口径并存取值规则。
+func pickNonZeroToken(primary, secondary any) *int {
+	value := numberValue(primary)
+	if value == nil {
+		return numberValue(secondary)
+	}
+	if *value > 0 {
+		return value
+	}
+	if fallback := numberValue(secondary); fallback != nil && *fallback > 0 {
+		return fallback
+	}
+	return value
 }
 
 func sumDefined(values ...*int) *int {

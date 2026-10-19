@@ -96,11 +96,6 @@ type Store struct {
 	modelCatalogRefresher  ModelCatalogRefresher
 	returner               AuthorizationGrantReturner
 	trafficRuntimeMigrator TrafficRuntimeMigrator
-	// modelCatalog is the provider model-catalog read port（编译兼容遗留，
-	// model_catalog_validation.go 文件头）：目录断言已切 models 表身份解析，
-	// 断言链不再消费该端口；字段仅由 SetModelCatalogReader 保存（cmd 组合根
-	// compose.go 仍装配，端口拆除随组合根收口切片处理）。
-	modelCatalog AccountModelCatalogReader
 	// deletedGrantRevoker is the SQLite delete-arm port into the authz
 	// per-grant runtime sync domain (delete.go). Nil until
 	// SetDeletedResourceGrantRevoker wires it; a nil port (and the PG

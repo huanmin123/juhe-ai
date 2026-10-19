@@ -191,16 +191,19 @@ func TestWCFindGroupAndRotationFilters(t *testing.T) {
 	}
 }
 
-// TestWCResolveProviderProtocolMismatch：协议版本不符的档案拒绝。
+// TestWCResolveProviderProtocolMismatch：目标 schema 下档案协议由 registry
+// 派生（无 profile 表可改），此处验证派生结果与 vendor 停用门。
 func TestWCResolveProviderProtocolMismatch(t *testing.T) {
 	env := newTestEnv(t)
-	env.exec(t, `UPDATE provider_protocol_profiles SET protocol_code = 'anthropic' WHERE id = 'profile_gpt_openai_v1'`)
-	_, err := env.store.resolveProviderProfile(context.Background(), "gpt", ProfileGPTOpenAIV1, "oauth", "")
-	if err == nil || !strings.Contains(err.Error(), "不支持 OpenAI OAuth") {
-		t.Fatalf("协议不符: %v", err)
+	profile, err := env.store.resolveProviderProfile(context.Background(), "gpt", ProfileGPTOpenAIV1, "oauth", "")
+	if err != nil {
+		t.Fatalf("gpt 档案必须可解析: %v", err)
 	}
-	// 停用供应商。
-	env.exec(t, `UPDATE providers SET enabled = 0 WHERE code = 'gpt'`)
+	if profile.ProtocolCode != "openai" || profile.ProtocolVersion != "v1" {
+		t.Fatalf("registry 派生协议 = %s/%s, want openai/v1", profile.ProtocolCode, profile.ProtocolVersion)
+	}
+	// 停用供应商（目标 vendors 表）。
+	env.exec(t, `UPDATE vendors SET enabled = 0 WHERE code = 'gpt'`)
 	_, err = env.store.resolveProviderProfile(context.Background(), "gpt", ProfileGPTOpenAIV1, "oauth", "")
 	if err == nil || err.Error() != "供应商已停用：gpt" {
 		t.Fatalf("停用供应商: %v", err)

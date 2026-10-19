@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { computed, effectScope } from 'vue'
 
 import { api } from '@/api/client'
+import type { ProviderModelOptionList } from '@/api/domains/providers'
 import type { ProviderModelOption } from '@/types/domain'
 import { filterModelOption, useProviderModelSelectOptions, type ProviderModelSelectOption } from './useProviderModelSelectOptions'
 
@@ -200,5 +201,71 @@ describe('loadModelOptions', () => {
     await list.loadModelOptions()
     expect(api.providers.modelOptions).toHaveBeenCalledTimes(2)
     expect(list.loadFailed.value).toBe(false)
+  })
+})
+
+describe('modelOptionsTruncated（T25 服务端 hasMore 元数据）', () => {
+  function metaList(hasMore?: boolean): ProviderModelOptionList {
+    const list = [modelOption({ id: 'm-1', name: 'One' })] as ProviderModelOptionList
+    if (hasMore !== undefined) list.hasMore = hasMore
+    return list
+  }
+
+  it('单请求浏览取数携带 hasMore=true → 截断标志为真', async () => {
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList(true))
+    const list = setup()
+    await list.loadModelOptions({ force: true })
+    expect(list.modelOptionsTruncated.value).toBe(true)
+  })
+
+  it('单请求浏览取数携带 hasMore=false → 截断标志为假；元数据缺失不改写', async () => {
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList(false))
+    const list = setup()
+    await list.loadModelOptions({ force: true })
+    expect(list.modelOptionsTruncated.value).toBe(false)
+
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList())
+    await list.loadModelOptions({ force: true })
+    expect(list.modelOptionsTruncated.value).toBe(false)
+  })
+
+  it('带 keyword 的搜索不改写标志', async () => {
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList(false))
+    const list = setup()
+    await list.loadModelOptions({ force: true })
+    expect(list.modelOptionsTruncated.value).toBe(false)
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList(true))
+    await list.loadModelOptions({ force: true, keyword: 'one' })
+    expect(list.modelOptionsTruncated.value).toBe(false)
+  })
+
+  it('多供应商批次合并（无 keyword）不改写标志', async () => {
+    const providerCodes = computed(() => ['gpt', 'glm'])
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList(true))
+    const list = setup({ providerCodes })
+    await list.loadModelOptions({ force: true })
+    expect(vi.mocked(api.providers.modelOptions)).toHaveBeenCalledTimes(2)
+    expect(list.modelOptionsTruncated.value).toBe(false)
+  })
+
+  it('selectedIds 单批次补拉以服务端判定为准；多批次不改写', async () => {
+    vi.mocked(api.providers.modelOptions).mockImplementation(async () => metaList(true))
+    const list = setup({ selectedIds: computed(() => ['s-1']) })
+    await list.loadModelOptions({ force: true })
+    expect(list.modelOptionsTruncated.value).toBe(true)
+
+    const multi = computed(() => Array.from({ length: 101 }, (_, index) => `s-${index}`))
+    const batched = setup({ selectedIds: multi })
+    await batched.loadModelOptions({ force: true })
+    expect(batched.modelOptionsTruncated.value).toBe(false)
+  })
+
+  it('resetModelOptions 清空截断标志', async () => {
+    vi.mocked(api.providers.modelOptions).mockResolvedValue(metaList(true))
+    const list = setup()
+    await list.loadModelOptions({ force: true })
+    expect(list.modelOptionsTruncated.value).toBe(true)
+    list.resetModelOptions()
+    expect(list.modelOptionsTruncated.value).toBe(false)
   })
 })

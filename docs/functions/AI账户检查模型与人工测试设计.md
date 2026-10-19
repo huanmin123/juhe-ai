@@ -20,8 +20,9 @@
   - `audio_transcription_json`：向 `POST /v1/audio/transcriptions` 发起 multipart 请求，`file` 使用探针内置小 WAV 样本（不依赖用户上传）；判活 = 2xx + JSON 信封含 `text` 字段（字段存在即判活，不要求非空——静音样本真实上游可能返回空 `text`）。
   - 两者均为真实付费小请求（无免费目录探针等价物），走账户保存的精确 mode 与检查模型；判活证据为上述协议成功信号，不以响应体之外的目录事实替代。
 - 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE；其中 `images_json` 使用 `GET /v1/models` 并确认目录含检查模型，避免后台付费生图。
-- 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、当前 GLM Chat 和 Gemini OpenAI profile 使用 `chat_json`；目标 `profile_glm_coding_openai_responses_v1` 实施后单独使用 `responses_json`；Anthropic profile 使用 `messages_json`；Gemini Native 使用 `generate_content_json`。能力域拆分 M2 起，新建账户未显式提交 `health_check_endpoint_mode` 时按能力域默认落值（AI 账户能力域拆分 v7 定案）：对话域沿用上述现行默认，图像域 `images_json`、音频域 `audio_speech`、视频域 `video_create`；存量账户库中现值不变。
-- 首选 mode 未启用时，优先取 `supported_endpoint_modes` 中第一个已启用 JSON mode，再取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
+- 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、当前 GLM Chat 和 Gemini OpenAI profile 使用 `chat_sse`；目标 `profile_glm_coding_openai_responses_v1` 实施后单独使用 `responses_sse`；Anthropic profile 使用 `messages_sse`；Gemini Native 使用 `generate_content_sse`。能力域拆分 M2 起，新建账户未显式提交 `health_check_endpoint_mode` 时按能力域默认落值（AI 账户能力域拆分 v7 定案）：对话域沿用上述现行默认，图像域 `images_json`、音频域 `audio_speech`、视频域 `video_create`；存量账户库中现值不变。
+- **流式优先（2026-10-19 定案）**：检查形态默认值一律优先取流式形态。理由是真实流量以流式为主，非流式 2xx 可能被上游伪造或退化（实测样例：某中转对 `stream:false` 返回空 `choices` 的 SSE 帧仍回 HTTP 200），流式形态能更早暴露上游真实异常并复用同一份完成证据判定。该口径覆盖建户默认、导入缺省、人工测试形态顺序三面；显式提交的非流式形态仍然生效，存量账户现值不变。
+- 首选 mode 未启用时，先取 `supported_endpoint_modes` 中第一个已启用的流式 mode，再取第一个已启用 JSON mode，最后取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
 - 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`；其他账户优先保留旧检查族对应的、已启用且可检查的 JSON / SSE mode，同族不可用时才回退到首个已启用可检查 mode。加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
 
 历史库迁移使用同一套生产环境变量和加密密钥，并按以下顺序执行：
@@ -181,7 +182,7 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 响应严格为 `Array<{ id, name, testEndpointModes }>`，支持 `keyword`、`limit` 和 `selectedIds`。每个 `testEndpointModes` 都由 Node 使用当前账户已启用 endpoint modes、该模型的 `supportedApiProtocols`、以及当前账户模型映射和映射上游模型协议计算最终可执行交集。HTTP 响应不包含凭据、原始 `supportedApiProtocols` 或完整模型定义。
 
-用户在模型下拉中切换模型后，Vue 直接采用该 options 项的 `testEndpointModes`，并自动选择首个可用形态；加载 options 时若自动选择首个模型也同步形态，不再向浏览器发起第二个 capabilities 请求。后端可保留 `GET /__aisys__/api/accounts/:id/test-options/models/:modelId` 及个人端镜像作为兼容能力接口，但页面不调用它。测试执行仍由后端按账户 ID 读取受控凭据，并在提交时通过 `resolveAccountManualTestSelectionAsync` 重新校验模型与请求形态。
+用户在模型下拉中切换模型后，Vue 直接采用该 options 项的 `testEndpointModes`，并自动选择首个可用形态；加载 options 时若自动选择首个模型也同步形态，不再向浏览器发起第二个 capabilities 请求。`testEndpointModes` 的顺序固定为「账户保存的 `healthCheckEndpointMode` 优先，其后流式形态在前、JSON 形态在后」——同一协议内 `chat_sse` / `responses_sse` / `messages_sse` / `generate_content_sse` / `interactions_sse` 先于对应的 `_json` 形态。后端可保留 `GET /__aisys__/api/accounts/:id/test-options/models/:modelId` 及个人端镜像作为兼容能力接口，但页面不调用它。测试执行仍由后端按账户 ID 读取受控凭据，并在提交时通过 `resolveAccountManualTestSelectionAsync` 重新校验模型与请求形态。
 
 合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。账户目录同步不属于检查形态，不参与自动测试或健康结果；其 `requestUrl` 只说明该次同步的受控目录路径。
 
@@ -325,7 +326,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 
 来源：AI 账户能力域拆分计划 v7 定案（2026-10-12，账户能力域 `chat` / `video` / `audio` / `image`）。本节固定媒体域账户在检查模型体系中的参与范围；定案不修改探针本体与后台调度代码——豁免来自数据落值（域内默认 mode 天然不在后台候选白名单），不新增任何过滤逻辑。
 
-- **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_json`（现行硬编码不变）、图像 `images_json`、音频 `audio_speech`、视频 `video_create`（写侧落值白名单已增补该值，DB CHECK 此前已允许）。仅影响新建账户，存量账户库中现值一个不改。
+- **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_sse`（流式优先，2026-10-19 定案；原 `chat_json`）、图像 `images_json`、音频 `audio_speech`、视频 `video_create`（写侧落值白名单已增补该值，DB CHECK 此前已允许）。仅影响新建账户，存量账户库中现值一个不改。
 - **后台周期检查（J1）参与范围**：后台候选白名单只含对话族 + `images_json` 形态，不含 `audio_speech` / `audio_transcription_json` / `video_create`——音频、视频域账户天然不排入周期检查；图像域沿用既有 images 特殊门（`active` 状态不排入周期检查）。
 - **激活检查（pending_test 首检）**：媒体域没有后台激活检查途径（域内默认 mode 不在候选白名单），后台不会把媒体账户的 `pending_test` 推进为 `active`。因此新建媒体账户表单默认预选「可调度」（`active`，创建语义即跳过首检直接可调度，真实验证靠人工测试与 Mock 链）；导入仍统一落 `pending_test`，此类媒体账户需手动启用，导入预览提示该点（2026-10-14 媒体域状态机定案后，滞留的视频域 `pending_test` 行也可经候选窗口媒体准入臂被视频创建请求选中，视频任务成功后 CAS 回写 `active`——准入臂仅限 `video_create` 检查模式账户；同步 TTS 不使用 `media_jobs`/CAS，长音频转写保持 active-only hydration，不启用恢复准入，与《音频视频模型接入与统一媒体网关设计》生命周期条款一致）。图像域 `images_json` 的人工测试与既有引擎检查语义不变。
 - **模型检测（J3b）参与范围**：按账户 endpoint mode 与 profile 协议兼容性判定参与资格，媒体形态天然不满足对话族候选条件，媒体域账户不参与模型检测（详见《模型检测设计》）。

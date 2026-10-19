@@ -40,7 +40,7 @@ type ModelPriceSet struct {
 // optional keys; defaultReasoningEffort is nullable in Node (always present)
 // while serviceTierPrices / the always-array keys are non-optional objects.
 // ProviderCode/Model/Mode/SupportedAPIProtocols 四键沿用旧目录行形状：
-// ProviderCode=COALESCE(vendor_code,'')（9 值域；vendor_code NULL 的手工模型
+// ProviderCode=COALESCE(vendor_code,”)（9 值域；vendor_code NULL 的手工模型
 // 展示口径 "custom"，对齐设计 §2.1「UI 显示自定义协议连接」）、Model=
 // public_model、Mode 与 SupportedAPIProtocols 由 supported_endpoint_modes_json
 // 派生。
@@ -104,10 +104,10 @@ type ModelCatalogItem struct {
 	SourceExchangeRateDate                  string                   `json:"sourceExchangeRateDate,omitempty"`
 	SourcePricingNote                       string                   `json:"sourcePricingNote,omitempty"`
 	// 媒体单价四维（静态定价表透传；目录表无列，仅供目录展示与前端渲染）。
-	VideoOutputUsdPerSecond                 *float64 `json:"videoOutputUsdPerSecond,omitempty"`
-	VideoOutputUsdPerCall                   *float64 `json:"videoOutputUsdPerCall,omitempty"`
-	TtsInputUsdPer1MChars                   *float64 `json:"ttsInputUsdPer1MChars,omitempty"`
-	AudioInputUsdPerSecond                  *float64 `json:"audioInputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerSecond *float64 `json:"videoOutputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerCall   *float64 `json:"videoOutputUsdPerCall,omitempty"`
+	TtsInputUsdPer1MChars   *float64 `json:"ttsInputUsdPer1MChars,omitempty"`
+	AudioInputUsdPerSecond  *float64 `json:"audioInputUsdPerSecond,omitempty"`
 	// CatalogDisplay mirrors withCatalogDisplay: present on every merged
 	// catalog row (possibly []), absent on the save/mutation responses
 	// (Node toCustomCatalogItem carries no catalogDisplay).
@@ -182,12 +182,11 @@ func (s *Store) ListProviderModelsForRequest(ctx context.Context, providerCode, 
 	if err != nil {
 		return nil, err
 	}
-	// B4 ④：hybrid 身份保留门拆除——providerCode 归一化后单值（设计 §3，
+	// B4 ④/⑪：hybrid 身份保留门拆除——providerCode 归一化后单值（设计 §3，
 	// hybrid 不在 vendors 值域；models.vendor_code 外键到 vendors.code，行查
-	// 询在 hybrid 入参下恒空），preserveProviderIdentity 分支对空输入无效果，
-	// 拆前恒 false、行为不变。
-	items := mergeModelCatalogItems(append(builtIn, custom...), false)
-	inheritCustomCatalogCapabilities(items, builtIn, false)
+	// 询在 hybrid 入参下恒空）；合并/继承不再携带 provider 身份参数。
+	items := mergeModelCatalogItems(append(builtIn, custom...))
+	inheritCustomCatalogCapabilities(items, builtIn)
 	filtered := []ModelCatalogItem{}
 	for _, item := range items {
 		if !isSupportedCatalogModel(item) {
@@ -559,69 +558,53 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	return item, nil
 }
 
-// mergeModelCatalogItems ports mergeModelCatalogItems: dedupe by model (or
-// provider+model for the hybrid identity), higher scope priority wins and
-// later rows win ties.
-func mergeModelCatalogItems(items []ModelCatalogItem, preserveProviderIdentity bool) []ModelCatalogItem {
-	type key struct {
-		provider string
-		model    string
-	}
-	merged := map[key]ModelCatalogItem{}
-	order := []key{}
+// mergeModelCatalogItems ports mergeModelCatalogItems: dedupe by model, higher
+// scope priority wins and later rows win ties. hybrid 身份随目标 schema 退役
+// （B4 ⑪：providers 值域已无 hybrid，合并键恒为裸 model）。
+func mergeModelCatalogItems(items []ModelCatalogItem) []ModelCatalogItem {
+	merged := map[string]ModelCatalogItem{}
+	order := []string{}
 	for _, item := range items {
 		model := strings.TrimSpace(item.Model)
 		if model == "" {
 			continue
 		}
-		itemKey := key{model: model}
-		if preserveProviderIdentity {
-			itemKey.provider = normalizeProviderToken(item.ProviderCode)
-		}
-		existing, ok := merged[itemKey]
+		existing, ok := merged[model]
 		if !ok || catalogScopePriority(item.Scope) >= catalogScopePriority(existing.Scope) {
 			if !ok {
-				order = append(order, itemKey)
+				order = append(order, model)
 			}
-			merged[itemKey] = item
+			merged[model] = item
 		}
 	}
 	output := make([]ModelCatalogItem, 0, len(order))
-	for _, itemKey := range order {
-		output = append(output, merged[itemKey])
+	for _, model := range order {
+		output = append(output, merged[model])
 	}
 	return output
 }
 
 // inheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0229，
 // 契约见 AI问答设计 8.6、工具体系设计 6.4）：合并胜出的 custom（global/personal）
-// 行按 mergeModelCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
+// 行按 mergeModelCatalogItems 的同一合并键（裸 model，hybrid 身份已退役）
 // 查找内置扫描行（scanBuiltInCatalogItem 已过 ApplyBuiltInStaticDerivedFields
 // 静态兜底），仅填空 supportedToolsByProtocol / inputModalities /
 // outputModalities（二维矩阵继承）；一维 supportedTools 投影在二维继承后按
 // 并集回填（custom 行入链时一维恒空）；全新自定义模型（内置无对应行）保持空。
 // 解析本体 InheritBuiltinCatalogCapabilities 与 chat 面
 // （chain_catalog.go chainInheritCustomCatalogCapabilities）同源，两面不漂移。
-func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem, preserveProviderIdentity bool) {
+func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem) {
 	if len(items) == 0 || len(builtinRows) == 0 {
 		return
 	}
-	type key struct {
-		provider string
-		model    string
-	}
-	builtinByKey := make(map[key]ModelCatalogItem, len(builtinRows))
+	builtinByKey := make(map[string]ModelCatalogItem, len(builtinRows))
 	for _, item := range builtinRows {
 		model := strings.TrimSpace(item.Model)
 		if model == "" {
 			continue
 		}
-		itemKey := key{model: model}
-		if preserveProviderIdentity {
-			itemKey.provider = normalizeProviderToken(item.ProviderCode)
-		}
 		// 同优先级内置行后行胜出，与 mergeModelCatalogItems 的决胜语义一致。
-		builtinByKey[itemKey] = item
+		builtinByKey[model] = item
 	}
 	for index := range items {
 		item := &items[index]
@@ -632,11 +615,7 @@ func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem, pre
 		if model == "" {
 			continue
 		}
-		itemKey := key{model: model}
-		if preserveProviderIdentity {
-			itemKey.provider = normalizeProviderToken(item.ProviderCode)
-		}
-		builtin, ok := builtinByKey[itemKey]
+		builtin, ok := builtinByKey[model]
 		if !ok {
 			continue
 		}
@@ -850,23 +829,27 @@ func (s *Store) modelOrderExpression() string {
 
 // ListProviderModelSelectionOptions serves GET /models/options: the merged
 // builtin/custom selection options over the models 单表（双臂同表、谓词分臂）.
-func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query ModelOptionQuery) ([]ModelSelectionOption, error) {
+// 第二返回值 total 是去重与 keyword/selected 过滤后、limit 截断前的候选总数
+// （当前 providerCode/modes/scope 筛选下的可见候选全集），供响应顶层
+// hasMore = total > len(items) 元数据（T25 截断提示根治）。
+func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query ModelOptionQuery) ([]ModelSelectionOption, int, error) {
 	sourceCodes, builtInCodes, err := s.modelOptionSourceCodes(ctx, query.ProviderCode, query.Protocol)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(sourceCodes) == 0 {
-		return []ModelSelectionOption{}, nil
+		return []ModelSelectionOption{}, 0, nil
 	}
 	builtIn, err := s.listBuiltInModelOptions(ctx, builtInCodes, query)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	custom, err := s.listCustomModelOptions(ctx, sourceCodes, query)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return mergeProviderModelOptionRows(append(builtIn, custom...), query), nil
+	options, total := mergeProviderModelOptionRows(append(builtIn, custom...), query)
+	return options, total, nil
 }
 
 // ListProviderModelOptionProviderCodes aggregates the distinct vendor codes
@@ -874,7 +857,7 @@ func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query Mod
 // (v8-D media-domain default-provider convergence). 单表后双臂合流为一条
 // models 查询：builtin 臂的 catalog_visible 谓词收窄为 builtin 行、custom 臂
 // 的 scope 窗口保持，谓词集与 ListProviderModelSelectionOptions 完全同构
-//（hybrid 不在 vendors 值域，经 modelOptionSourceCodes 自然排除），只取
+// （hybrid 不在 vendors 值域，经 modelOptionSourceCodes 自然排除），只取
 // DISTINCT provider_code，不受 options endpoint LIMIT 50 截断。
 func (s *Store) ListProviderModelOptionProviderCodes(ctx context.Context, query ModelOptionQuery) ([]string, error) {
 	// 单表后 DISTINCT 聚合只看 vendor 窗口（builtin ∪ global/personal 同表），
@@ -1190,8 +1173,10 @@ func appendSelectedOrderArgs(args []any, query ModelOptionQuery) []any {
 
 // mergeProviderModelOptionRows ports mergeProviderModelOptionRows: keyword /
 // selected filter, model dedupe with scope priority, release-date ordering
-// and the selected-aware limit.
-func mergeProviderModelOptionRows(rows []modelOptionRow, query ModelOptionQuery) []ModelSelectionOption {
+// and the selected-aware limit. 第二返回值是 limit 截断前的候选总数（len(order)，
+// T25 total 元数据）：selectedIds 全部可见，因此返回条数可能超过 limit，
+// hasMore 必须按 total 与实际返回条数比较而不是与 limit 比较。
+func mergeProviderModelOptionRows(rows []modelOptionRow, query ModelOptionQuery) ([]ModelSelectionOption, int) {
 	selectedIDs := map[string]bool{}
 	for _, id := range query.SelectedIDs {
 		selectedIDs[id] = true
@@ -1268,7 +1253,7 @@ func mergeProviderModelOptionRows(rows []modelOptionRow, query ModelOptionQuery)
 			DefaultReasoningEffort:    row.DefaultReasoningEffort,
 		})
 	}
-	return options
+	return options, len(order)
 }
 
 func optionScopePriority(scope string) int {
@@ -1333,8 +1318,8 @@ func (s *Store) FindProviderModelCapabilities(ctx context.Context, providerCode,
 	for _, item := range customItems {
 		custom = append(custom, testCatalogItemFromCatalogItem(item))
 	}
-	preserveProviderIdentity := normalizeProviderToken(providerCode) == hybridProviderCode
-	winner := mergeTestCatalogItems(append(builtIn, custom...), preserveProviderIdentity)
+	// B4 ⑪：hybrid 身份门随目标 schema 退役，合并键恒为裸 model。
+	winner := mergeTestCatalogItems(append(builtIn, custom...))
 	if winner == nil {
 		return nil, nil
 	}
@@ -1426,37 +1411,30 @@ func (s *Store) findBuiltInTestCatalogItems(ctx context.Context, providerCodes [
 }
 
 // mergeTestCatalogItems ports mergeProviderModelTestCatalogItems +
-// compareProviderModelTestCatalogItems, returning the first row.
-func mergeTestCatalogItems(items []testCatalogItem, preserveProviderIdentity bool) *testCatalogItem {
-	type key struct {
-		provider string
-		model    string
-	}
-	merged := map[key]testCatalogItem{}
-	order := []key{}
+// compareProviderModelTestCatalogItems, returning the first row. hybrid 身份已
+// 退役（B4 ⑪）：合并键恒为裸 model。
+func mergeTestCatalogItems(items []testCatalogItem) *testCatalogItem {
+	merged := map[string]testCatalogItem{}
+	order := []string{}
 	for _, item := range items {
 		model := strings.TrimSpace(item.Model)
 		if model == "" {
 			continue
 		}
-		itemKey := key{model: model}
-		if preserveProviderIdentity {
-			itemKey.provider = normalizeProviderToken(item.ProviderCode)
-		}
-		existing, ok := merged[itemKey]
+		existing, ok := merged[model]
 		if !ok || testCatalogPriority(item.Scope) >= testCatalogPriority(existing.Scope) {
 			if !ok {
-				order = append(order, itemKey)
+				order = append(order, model)
 			}
-			merged[itemKey] = item
+			merged[model] = item
 		}
 	}
 	if len(order) == 0 {
 		return nil
 	}
 	sorted := make([]testCatalogItem, 0, len(order))
-	for _, itemKey := range order {
-		sorted = append(sorted, merged[itemKey])
+	for _, model := range order {
+		sorted = append(sorted, merged[model])
 	}
 	sort.SliceStable(sorted, func(left, right int) bool {
 		return compareProviderModelTestCatalogItems(sorted[left], sorted[right]) < 0

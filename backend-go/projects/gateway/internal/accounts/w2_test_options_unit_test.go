@@ -351,13 +351,13 @@ func TestW2AccountTestEndpointModeOrder(t *testing.T) {
 	gemini := manualTestModeSource{ProviderCode: geminiProviderCode, ProtocolCode: geminiProtocolCodeConstant,
 		ProtocolVersion: geminiProtocolVersionConstant}
 	got = accountTestEndpointModeOrder(gemini)
-	if len(got) == 0 || got[0] != "interactions_json" {
-		t.Fatalf("gemini 顺序不一致：%v", got)
+	if len(got) == 0 || got[0] != "interactions_sse" {
+		t.Fatalf("gemini 顺序不一致（流式优先）：%v", got)
 	}
 	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode, HealthCheckEndpointMode: "chat_json"}
 	got = accountTestEndpointModeOrder(hybrid)
-	if len(got) < 8 || got[0] != "chat_json" {
-		t.Fatalf("hybrid 顺序不一致：%v", got)
+	if len(got) < 8 || got[0] != "chat_json" || got[1] != "chat_sse" {
+		t.Fatalf("hybrid 顺序不一致（defaultMode 置顶后流式优先）：%v", got)
 	}
 	oauth := manualTestModeSource{ProviderCode: "gpt", AccountType: "oauth", HealthCheckEndpointMode: "responses_sse"}
 	got = accountTestEndpointModeOrder(oauth)

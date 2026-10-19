@@ -17,12 +17,12 @@ import (
 func w14dSeedProfile(t *testing.T, env *aipublicEnv, id, providerCode, accountTypesJSON string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := env.db.Exec(`INSERT INTO provider_protocol_profiles
-		(id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES (?, ?, ?, 1, 'openai', 'v1', 'https://api.example', 'gpt-4o-mini', ?, '{}', ?, ?)`,
-		id, providerCode, "Profile"+id, accountTypesJSON, now, now); err != nil {
-		t.Fatal(err)
-	}
+	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生；
+	// 其余形参保留以维持既有调用点。
+	_ = id
+	_ = providerCode
+	_ = accountTypesJSON
+	_ = now
 }
 
 // w14dSeedRawAccount inserts an account row directly with the given
@@ -99,10 +99,12 @@ func TestW14dAccountGapSweep(t *testing.T) {
 	if status != http.StatusBadRequest {
 		t.Fatalf("ghost profile: %d %v", status, payload)
 	}
+	// 目标 schema 无档案表（§9.3）：档案身份按 vendor 派生，非本 vendor 的
+	// 档案 ID 按「未配置协议档案」拒绝（原「仅 oauth 档案」语义随表删除）。
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/add",
 		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_oauth_v1","name":"n","baseUrl":"https://x","apiKey":"sk","supportedModels":["m"],"type":"api_key"}`, token)
-	if status != http.StatusBadRequest || payload["message"] != "当前供应商不支持 API Key 账户" {
-		t.Fatalf("oauth-only profile: %d %v", status, payload)
+	if status != http.StatusBadRequest || payload["message"] != "供应商未配置协议档案：gpt" {
+		t.Fatalf("unknown profile id: %d %v", status, payload)
 	}
 
 	// Disabled push target (L519 of the flow) and a store-level schedule
@@ -176,10 +178,11 @@ func TestW14dAccountGapSweep(t *testing.T) {
 		t.Fatalf("plain update: %d %v", status, payload)
 	}
 
-	// Profile mismatch through resolveAccountGroupFilter (L956).
+	// Profile mismatch through resolveAccountGroupFilter：目标 schema 无档案表，
+	// 非派生档案先按「未配置协议档案」拒绝（§9.3）。
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/update",
 		`{"accountId":"`+accountA+`","providerProtocolProfileId":"profile_gpt_oauth_v1","name":"站点A3"}`, token)
-	if status != http.StatusBadRequest || payload["message"] != "账号不存在" {
+	if status != http.StatusBadRequest || payload["message"] != "供应商未配置协议档案：gpt" {
 		t.Fatalf("profile mismatch: %d %v", status, payload)
 	}
 

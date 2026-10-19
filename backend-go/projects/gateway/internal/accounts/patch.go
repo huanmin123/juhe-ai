@@ -301,8 +301,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			-- B4 W2 行为键过渡投影：provider_code 已停写（设计 §8 行为键按
 			-- vendor），patch 行为键控读 COALESCE(vendor, provider)——vendor 值域
 			-- 与 providerCode 同名，legacy 行回落旧列，新行取 vendor。
-			COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') AS provider_code,
-			accounts.provider_protocol_profile_id, accounts.protocol_code,
+			COALESCE(accounts.vendor_code, '') AS provider_code,
+			'' AS provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.client_compatibility,
 			-- oauth_type 物理列（设计 §2.1）：registry 判定读列优先、credentials
 			-- 回落（兼容存量行）。

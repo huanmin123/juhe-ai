@@ -276,18 +276,10 @@ func TestW2ImportPreviewProviderValidation(t *testing.T) {
 
 	// 停用的供应商与协议档案：直接插库控制 enabled。
 	now := "2026-01-01T00:00:00.000Z"
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-off', 'offprov', '停用供应商', 0, ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('prof-off-openai', 'openai', '停用档案', 0, 'openai', 'v1', 'https://api.openai.com/v1',
-		'm', '["api_key"]', '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('prof-narrow', 'openai', '窄档案', 1, 'openai', 'v1', 'https://api.openai.com/v1',
-		'm', '["oauth"]', '[]', ?, ?)`, now, now)
+	// 目标 schema 以 vendors 行承载供应商启用状态；旧 providers /
+	// provider_protocol_profiles 不再参与导入链（B4 ⑦）。
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-off', 'offprov', '停用供应商', 0, ?, ?)`, now, now)
 
 	cases := []struct {
 		name    string
@@ -296,9 +288,7 @@ func TestW2ImportPreviewProviderValidation(t *testing.T) {
 	}{
 		{"不支持的供应商", w2WithField(w2APIKeyAccount("a", "g"), "providerCode", "nope"), "不支持的供应商：nope"},
 		{"供应商停用", map[string]any{"providerCode": "offprov", "providerProtocolProfileId": "prof-off", "name": "a", "type": "api_key", "status": "active", "groupName": "g"}, "供应商已停用：offprov"},
-		{"profile 停用", map[string]any{"providerCode": "openai", "providerProtocolProfileId": "prof-off-openai", "name": "a", "type": "api_key", "status": "active", "groupName": "g", "credentials": map[string]any{"api_key": "sk-x"}}, "供应商协议档案已停用：停用档案"},
-		{"profile 不存在", w2WithField(w2APIKeyAccount("a", "g"), "providerProtocolProfileId", "missing-profile"), "供应商 openai 未配置协议档案"},
-		{"profile 不支持类型", map[string]any{"providerCode": "openai", "providerProtocolProfileId": "prof-narrow", "name": "a", "type": "api_key", "status": "active", "groupName": "g"}, "供应商协议档案 窄档案 不支持账户类型 api_key"},
+		{"profile 为空", w2WithField(w2APIKeyAccount("a", "g"), "providerProtocolProfileId", ""), "账户 providerProtocolProfileId 不能为空"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

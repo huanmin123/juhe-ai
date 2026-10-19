@@ -7,7 +7,6 @@ package main
 import (
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -108,38 +107,38 @@ func TestChainGptRequestOverrideModelCandidates(t *testing.T) {
 	}
 }
 
-// 组合冒烟：newChainProviderDriverWithCache 必须把目录适配器与候选扩展器
-// Set 到 gatewayoauthcodex 的进程级端口（否则能力解析恒 nil，管理面配置的
-// service_tier / reasoning_effort 覆盖在运行面整段惰性——P0 缺口本体）。
+// 组合冒烟（T15 显式传参收敛后）：newChainProviderDriverWithCache 必须把目录
+// 适配器与候选扩展器装进 driver 的 GptRequestOverrideRuntime 字段（否则能力
+// 解析恒 nil，管理面配置的 service_tier / reasoning_effort 覆盖在运行面整段
+// 惰性——P0 缺口本体）；进程级全局端口与 Set* 已删除，不存在其他注入面。
 func TestNewChainProviderDriverWithCacheRegistersOverridePorts(t *testing.T) {
-	var registeredCatalog gatewaydispatch.GptRequestOverrideModelCatalog
-	var registeredCandidates func(providerCode, model string) []string
-	originalCatalog := registerGptRequestOverrideCatalogPort
-	originalCandidates := registerGptRequestOverrideModelCandidates
-	t.Cleanup(func() {
-		registerGptRequestOverrideCatalogPort = originalCatalog
-		registerGptRequestOverrideModelCandidates = originalCandidates
-	})
-	registerGptRequestOverrideCatalogPort = func(catalog gatewaydispatch.GptRequestOverrideModelCatalog) {
-		registeredCatalog = catalog
+	nilCacheDriver := newChainProviderDriverWithCache(nil, nil)
+	if nilCacheDriver.gptRequestOverrideRuntime.Catalog != nil {
+		t.Fatalf("nil cache 不得装配端口（保持能力解析缺席语义）")
 	}
-	registerGptRequestOverrideModelCandidates = func(expander func(providerCode, model string) []string) {
-		registeredCandidates = expander
+	if nilCacheDriver.gptRequestOverrideRuntime.ModelCandidates != nil {
+		t.Fatalf("nil cache 不得装配候选扩展器")
 	}
 
-	newChainProviderDriverWithCache(nil, nil)
-	if registeredCatalog != nil || registeredCandidates != nil {
-		t.Fatalf("nil cache 不得注册端口（保持能力解析缺席语义）")
+	cache := &gatewayruntimecache.Service{}
+	driver := newChainProviderDriverWithCache(cache, nil)
+	if driver.gptRequestOverrideRuntime.Catalog == nil {
+		t.Fatalf("cache 非空时必须装配目录端口")
+	}
+	if driver.gptRequestOverrideRuntime.ModelCandidates == nil {
+		t.Fatalf("cache 非空时必须装配候选扩展器")
+	}
+	catalog, ok := driver.gptRequestOverrideRuntime.Catalog.(chainGptRequestOverrideModelCatalog)
+	if !ok {
+		t.Fatalf("装配的必须是 runtimecache 目录适配器，实际 %T", driver.gptRequestOverrideRuntime.Catalog)
+	}
+	if catalog.cache != cache {
+		t.Fatalf("目录适配器必须携带注入的 runtime cache")
 	}
 
-	newChainProviderDriverWithCache(&gatewayruntimecache.Service{}, nil)
-	if registeredCatalog == nil {
-		t.Fatalf("cache 非空时必须注册目录端口")
-	}
-	if registeredCandidates == nil {
-		t.Fatalf("cache 非空时必须注册候选扩展器")
-	}
-	if _, ok := registeredCatalog.(chainGptRequestOverrideModelCatalog); !ok {
-		t.Fatalf("注册的必须是 runtimecache 目录适配器，实际 %T", registeredCatalog)
+	// 无 cache 构造器保持零值 runtime（能力解析缺席 = 覆盖惰性）。
+	bare := newChainProviderDriver()
+	if bare.gptRequestOverrideRuntime.Catalog != nil || bare.gptRequestOverrideRuntime.ModelCandidates != nil {
+		t.Fatalf("newChainProviderDriver 必须保持零值 runtime: %+v", bare.gptRequestOverrideRuntime)
 	}
 }

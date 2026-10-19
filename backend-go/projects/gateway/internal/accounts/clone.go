@@ -180,7 +180,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		boundGroupRecordUpdAt     sql.NullString
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
-			accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id,
+			accounts.system_account_id, COALESCE(accounts.vendor_code, '') AS provider_code,
+			'' AS provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.capability_domain,
 			accounts.name, accounts.notes,
 			accounts.type, accounts.status, accounts.credentials_encrypted,

@@ -308,8 +308,13 @@ func (a AccessScope) accountsScope() accounts.AccessScope {
 	return accounts.AccessScope{ViewerID: a.ViewerID, IsAdmin: a.IsAdmin, FilterID: a.FilterID}
 }
 
-// providerProfile mirrors resolveXxxOAuthProviderProfile results: the resolved
-// profile row plus the provider default supported models.
+// providerProfile mirrors the resolved OAuth connection identity: the
+// registry-derived profile id plus the vendor default supported models.
+// 目标 schema（§9.3）删除 provider_protocol_profiles：协议码/版本与账户类型
+// 允许集由编译期 registry（§1.1/§2）确定性派生；vendor 行只提供 enabled 与
+// default_supported_models_json。档案缺省健康检查模型随旧表删除，健康检查
+// 模型缺省改为已解析支持模型集内首个声明该检查形态的模型（用户显式提交
+// 优先）。
 type providerProfile struct {
 	ID                     string
 	ProviderCode           string
@@ -317,86 +322,138 @@ type providerProfile struct {
 	ProtocolCode           string
 	ProtocolVersion        string
 	DefaultSupportedModels []string
-	// DefaultHealthCheckModel 是档案缺省健康检查模型（健康检查三件套缺省
-	// 派生的模型维度，账户未显式提交 healthCheckModel 时使用；不在支持模型
-	// 集时回落首个支持模型，B1 前创建链同规则）。
-	DefaultHealthCheckModel string
+}
+
+// profileIDForProvider 返回 §2 组合表按 vendor 绑定的唯一 profile 身份
+// （与前端表单常量同一词表；grok 的 pin 即 xai 行）。未知 vendor 返回空。
+func profileIDForProvider(providerCode string) string {
+	switch providerCode {
+	case ProviderGPT:
+		return ProfileGPTOpenAIV1
+	case ProviderXAI:
+		return ProfileXAIOpenAIV1
+	case ProviderAnthropic:
+		return ProfileAnthropicV1
+	case ProviderGemini:
+		return ProfileGeminiNativeV1Beta
+	default:
+		return ""
+	}
+}
+
+// profileAccountTypesForProvider 是 §1.1 registry 的账户类型允许集。
+func profileAccountTypesForProvider(providerCode string) []string {
+	if providerCode == ProviderGemini {
+		return []string{"api_key", "google_oauth"}
+	}
+	return []string{"api_key", "oauth"}
 }
 
 // resolveProviderProfile mirrors resolveOpenAI/Anthropic/Gemini/GrokOAuthProviderProfile:
-// provider lookup + enabled check, profile id match + enabled check, protocol
-// match, account-type membership and (grok) the exact profile id pin.
+// vendor lookup + enabled check, profile identity match, account-type membership
+// and (grok) the exact profile id pin. 旧 providers/provider_protocol_profiles
+// 联表读取已拆除（T30/B4 ⑧）：目标 schema 无档案表，协议与允许集改由编译期
+// registry 派生，错误文案保持既有对外契约。
 func (s *Store) resolveProviderProfile(ctx context.Context, providerCode, profileID, accountType, requiredProfileID string) (*providerProfile, error) {
 	var row struct {
-		id                     sql.NullString
-		name                   sql.NullString
 		enabled                sql.NullInt64
-		protocolCode           sql.NullString
-		protocolVersion        sql.NullString
-		accountTypesJSON       sql.NullString
 		defaultSupportedModels sql.NullString
-		defaultHealthCheck     sql.NullString
-		providerEnabled        sql.NullInt64
 	}
-	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT ppp.id, ppp.name, ppp.enabled,
-			ppp.protocol_code, ppp.protocol_version, ppp.account_types_json,
-			p.default_supported_models_json, ppp.default_health_check_model,
-			p.enabled AS provider_enabled
-		FROM `+s.table("providers")+` p
-		LEFT JOIN `+s.table("provider_protocol_profiles")+` ppp
-			ON ppp.provider_code = p.code
-			AND ppp.id = ?
-		WHERE p.code = ?
-		LIMIT 1`), profileID, providerCode).Scan(
-		&row.id, &row.name, &row.enabled,
-		&row.protocolCode, &row.protocolVersion, &row.accountTypesJSON,
-		&row.defaultSupportedModels, &row.defaultHealthCheck, &row.providerEnabled)
+	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT enabled, default_supported_models_json
+		FROM `+s.table("vendors")+`
+		WHERE code = ?
+		LIMIT 1`), providerCode).Scan(&row.enabled, &row.defaultSupportedModels)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &ValidationError{Message: "不支持的供应商：" + providerCode}
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !row.providerEnabled.Valid || row.providerEnabled.Int64 != 1 {
+	if !row.enabled.Valid || row.enabled.Int64 != 1 {
 		return nil, &ValidationError{Message: "供应商已停用：" + providerCode}
 	}
 	profileID = strings.TrimSpace(profileID)
-	if !row.id.Valid || row.id.String == "" {
+	expectedProfileID := profileIDForProvider(providerCode)
+	if expectedProfileID == "" || profileID != expectedProfileID {
 		return nil, &ValidationError{Message: "供应商协议档案无效：" + profileID}
 	}
-	if !row.enabled.Valid || row.enabled.Int64 != 1 {
-		return nil, &ValidationError{Message: "供应商协议档案已停用：" + row.name.String}
+	if requiredProfileID != "" && profileID != requiredProfileID {
+		return nil, &ValidationError{Message: "供应商协议档案 " + profileID + " 不支持 " + oauthLabelForProvider(providerCode) + " OAuth"}
 	}
-	if row.protocolCode.String != protocolCodeForProvider(providerCode) || row.protocolVersion.String != protocolVersionForProvider(providerCode) {
-		return nil, &ValidationError{Message: "供应商协议档案 " + row.name.String + " 不支持 " + oauthLabelForProvider(providerCode) + " OAuth"}
-	}
-	if requiredProfileID != "" && row.id.String != requiredProfileID {
-		return nil, &ValidationError{Message: "供应商协议档案 " + row.name.String + " 不支持 " + oauthLabelForProvider(providerCode) + " OAuth"}
-	}
-	accountTypes := []string{}
-	if row.accountTypesJSON.Valid && strings.TrimSpace(row.accountTypesJSON.String) != "" {
-		_ = json.Unmarshal([]byte(row.accountTypesJSON.String), &accountTypes)
-	}
-	supported := false
-	for _, candidate := range accountTypes {
+	accountTypeSupported := false
+	for _, candidate := range profileAccountTypesForProvider(providerCode) {
 		if candidate == accountType {
-			supported = true
+			accountTypeSupported = true
 			break
 		}
 	}
-	if !supported {
-		return nil, &ValidationError{Message: "供应商协议档案 " + row.name.String + " 不支持 " + oauthLabelForProvider(providerCode) + " OAuth"}
+	if !accountTypeSupported {
+		return nil, &ValidationError{Message: "供应商协议档案 " + profileID + " 不支持 " + oauthLabelForProvider(providerCode) + " OAuth"}
 	}
 	profile := &providerProfile{
-		ID: row.id.String, ProviderCode: providerCode, Name: row.name.String,
-		ProtocolCode: row.protocolCode.String, ProtocolVersion: row.protocolVersion.String,
-		DefaultSupportedModels:  []string{},
-		DefaultHealthCheckModel: strings.TrimSpace(row.defaultHealthCheck.String),
+		ID: profileID, ProviderCode: providerCode, Name: profileID,
+		ProtocolCode:           protocolCodeForProvider(providerCode),
+		ProtocolVersion:        protocolVersionForProvider(providerCode),
+		DefaultSupportedModels: []string{},
 	}
 	if row.defaultSupportedModels.Valid && strings.TrimSpace(row.defaultSupportedModels.String) != "" {
 		_ = json.Unmarshal([]byte(row.defaultSupportedModels.String), &profile.DefaultSupportedModels)
 	}
 	return profile, nil
+}
+
+// firstSupportedModelDeclaringMode 在已解析支持模型集内按顺序取首个声明
+// healthCheckEndpointMode 的模型。目标 schema 已删除档案 default_health_check_model
+// （§9.3），健康检查模型缺省改由真实能力声明决定；无模型声明时回落首个
+// 支持模型，保持写面既有 health_check_connection_conflict 错误面。
+func (s *Store) firstSupportedModelDeclaringMode(ctx context.Context, providerCode, mode string, supportedModels []string) (string, error) {
+	if len(supportedModels) == 0 {
+		return "", nil
+	}
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		return supportedModels[0], nil
+	}
+	placeholders := make([]string, 0, len(supportedModels))
+	args := make([]any, 0, len(supportedModels)+1)
+	args = append(args, providerCode)
+	for _, model := range supportedModels {
+		placeholders = append(placeholders, "?")
+		args = append(args, model)
+	}
+	rows, err := s.db.QueryContext(ensureContext(ctx), s.bind(`SELECT upstream_model, supported_endpoint_modes_json
+		FROM `+s.table("models")+`
+		WHERE vendor_code = ? AND upstream_model IN (`+strings.Join(placeholders, ", ")+`)`), args...)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	declared := map[string]bool{}
+	for rows.Next() {
+		var model, modesJSON string
+		if err := rows.Scan(&model, &modesJSON); err != nil {
+			return "", err
+		}
+		modes := []string{}
+		if strings.TrimSpace(modesJSON) != "" {
+			_ = json.Unmarshal([]byte(modesJSON), &modes)
+		}
+		for _, candidate := range modes {
+			if candidate == mode {
+				declared[model] = true
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	for _, model := range supportedModels {
+		if declared[model] {
+			return model, nil
+		}
+	}
+	return supportedModels[0], nil
 }
 
 // protocolCodeForProvider mirrors the per-provider protocol expectations.
@@ -510,15 +567,16 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 			supportedModels = profile.DefaultSupportedModels
 		}
 	}
-	// 健康检查三件套缺省：preset/mode 取派生连接维度；model 沿用档案缺省
-	// 口径（default_health_check_model，不在支持模型集时回落首个支持模型）。
+	// 健康检查三件套缺省：preset/mode 取派生连接维度；model 取支持模型集内
+	// 首个声明该检查形态的模型（目标 schema 已删除档案 default_health_check_model；
+	// 用户显式提交 healthCheckModel 时优先）。
 	healthCheckModel := input.HealthCheckModel
-	if healthCheckModel == nil {
-		configured := profile.DefaultHealthCheckModel
-		if len(supportedModels) > 0 && !containsString(supportedModels, configured) {
-			configured = supportedModels[0]
+	if healthCheckModel == nil && len(supportedModels) > 0 {
+		configured, selectErr := s.firstSupportedModelDeclaringMode(ctx, input.ProviderCode, defaults.HealthCheckEndpointMode, supportedModels)
+		if selectErr != nil {
+			return nil, selectErr
 		}
-		if strings.TrimSpace(configured) != "" {
+		if configured != "" {
 			healthCheckModel = &configured
 		}
 	}
@@ -594,7 +652,7 @@ func containsString(values []string, target string) bool {
 // 排除图像/向量：旧 mode 谓词（mode != 'image_generation' AND mode !=
 // 'embedding'）经 §2.2 mode 词表逆映射等价改写为 supported_endpoint_modes_json
 // 不含 images_json 与 embedding 族三 mode；空/NULL modes 数组不过滤，等价旧
-// `mode IS NULL OR mode = ''` 保留臂。返回 upstream_model（写入面身份键）。
+// `mode IS NULL OR mode = ”` 保留臂。返回 upstream_model（写入面身份键）。
 // release_date 为空的行排最后；CASE 排序写法对 SQLite 与 PG 同时成立（PG 的
 // DESC 默认 NULLS FIRST，必须显式压后）。
 func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, limit int) ([]string, error) {
@@ -635,11 +693,15 @@ func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, li
 // rotationAccount mirrors OAuthCredentialRotationAccount. ProviderCode 承载
 // 目标 schema 的 vendor_code 身份值（§2.1：真实厂商 vendor_code == provider_code）。
 type rotationAccount struct {
-	ID                    string
-	SystemAccountID       string
-	ProviderCode          string
-	ProtocolCode          string
-	ProtocolVersion       string
+	ID              string
+	SystemAccountID string
+	ProviderCode    string
+	ProtocolCode    string
+	ProtocolVersion string
+	// OAuthType 是目标 schema 的 accounts.oauth_type 判定列（§2.1；仅
+	// google_oauth 资源账户非空）。判定列优先、凭据键回落服务迁移窗口存量行
+	//（#B4 ⑨：refresh 删键前必须完成本读面切换）。
+	OAuthType             string
 	Name                  string
 	Type                  string
 	Status                string
@@ -672,6 +734,7 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 		providerCode     string
 		protocolCode     string
 		protocolVersion  string
+		oauthType        string
 		name             string
 		accountType      string
 		status           string
@@ -687,7 +750,7 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 	// vendor_code == provider_code，行读以 COALESCE(vendor_code,'') 承载既有
 	// ProviderCode 语义；provider_protocol_profile_id 列已随目标列集删除。
 	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT id, system_account_id, COALESCE(vendor_code, ''),
-			protocol_code, protocol_version, name, type, status,
+			protocol_code, protocol_version, COALESCE(oauth_type, ''), name, type, status,
 			last_error_code, proxy_profile_id, credentials_encrypted, credential_fingerprint,
 			account_expires_at, config_revision, updated_at
 		FROM `+s.table("accounts")+`
@@ -696,7 +759,7 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 			AND authorization_instance_authorization_id IS NULL`+where+`
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.systemAccountID, &row.providerCode,
-		&row.protocolCode, &row.protocolVersion, &row.name, &row.accountType,
+		&row.protocolCode, &row.protocolVersion, &row.oauthType, &row.name, &row.accountType,
 		&row.status, &row.lastErrorCode, &row.proxyProfileID, &row.encrypted, &row.fingerprint,
 		&row.accountExpiresAt, &row.configRevision, &row.updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -719,7 +782,8 @@ func (s *Store) findRotationAccount(ctx context.Context, accountID string, acces
 		ID: row.id, SystemAccountID: row.systemAccountID,
 		ProviderCode: row.providerCode,
 		ProtocolCode: row.protocolCode, ProtocolVersion: row.protocolVersion,
-		Name: row.name, Type: row.accountType, Status: row.status,
+		OAuthType: row.oauthType,
+		Name:      row.name, Type: row.accountType, Status: row.status,
 		LastErrorCode: row.lastErrorCode.String, ProxyProfileID: row.proxyProfileID.String,
 		Credentials: credentials, CredentialFingerprint: row.fingerprint.String,
 		AccountExpiresAt: row.accountExpiresAt.String,

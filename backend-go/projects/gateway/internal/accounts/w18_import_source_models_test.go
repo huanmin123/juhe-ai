@@ -79,10 +79,6 @@ func TestW18ChannelModelsPersistDedupOrder(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		w18OpenAIFact("gpt-w18-b"),
-		w18OpenAIFact("gpt-4o-mini"),
-	}})
 
 	document := []any{
 		map[string]any{"type": float64(1), "key": "sk-w18-dedup", "name": "去重频道",
@@ -141,10 +137,6 @@ func TestW18Sub2APIModelFieldsPersist(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		w18OpenAIFact("gpt-w18-pass"),
-		w18OpenAIFact("gpt-4o-mini"),
-	}})
 
 	// B4 W2（设计 §8）：映射条目必须引用 targetConnectionPresetCode，且写入侧
 	// 按 (账户, preset) 解析连接行——导入面连接解析尚未迁移，映射条目会按
@@ -202,9 +194,6 @@ func TestW18Sub2APIModelFieldsBlockedAndGuidanceScope(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		w18OpenAIFact("gpt-4o-mini"),
-	}})
 
 	document := map[string]any{"accounts": []any{
 		map[string]any{"name": "w18 拦截账户", "platform": "openai", "type": "api_key",
@@ -247,9 +236,6 @@ func TestW18ChannelWithoutModelsFallsBackToProviderDefaults(t *testing.T) {
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	// 目录只含供应商默认模型 gpt-4o-mini（default_supported_models_json）。
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		w18OpenAIFact("gpt-4o-mini"),
-	}})
 
 	document := []any{
 		map[string]any{"type": float64(1), "key": "sk-w18-default", "name": "默认频道"},
@@ -320,9 +306,6 @@ func TestW18ChannelModelsInvalidShapeCountsIgnoredField(t *testing.T) {
 			env := newTestEnv(t)
 			seedOpenAICompatibleProvider(t, env)
 			adminID := env.login(t, "root", "root-pass", "super_admin")
-			env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-				w18OpenAIFact("gpt-4o-mini"),
-			}})
 
 			document := []any{
 				map[string]any{"id": float64(1), "type": float64(1), "key": "sk-w18-shape",
@@ -363,9 +346,6 @@ func TestW18ChannelModelsLegalEmptyShapeNotCounted(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		w18OpenAIFact("gpt-4o-mini"),
-	}})
 
 	document := []any{
 		map[string]any{"id": float64(1), "type": float64(1), "key": "sk-w18-empty",

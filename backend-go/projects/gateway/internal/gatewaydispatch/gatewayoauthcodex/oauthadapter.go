@@ -26,6 +26,10 @@ type OpenAIOAuthCodexRequestOptions struct {
 	ModelOverride                    string
 	RequestOverrideModelCapabilities *GptRequestOverrideModelCapabilities
 	SanitizeCodexHistory             bool
+	// ApplyGptAccountRequestOverrides 是覆盖应用的显式传参端口（T15 收敛，
+	// 取代进程级全局 hook 与 SetGptAccountRequestOverridesHook）；生产组合根
+	// 传 ApplyGptAccountRequestOverridesBody，nil 保持覆盖惰性。
+	ApplyGptAccountRequestOverrides func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error)
 }
 
 // var openAIResponsesCompactPattern mirrors the /\/responses\/compact$/ path check.
@@ -86,6 +90,7 @@ func normalizeOpenAIOAuthCodexBody(
 		SanitizeCodexHistory:             options.SanitizeCodexHistory,
 		ModelOverride:                    options.ModelOverride,
 		RequestOverrideModelCapabilities: options.RequestOverrideModelCapabilities,
+		ApplyGptAccountRequestOverrides:  options.ApplyGptAccountRequestOverrides,
 	})
 }
 

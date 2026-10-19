@@ -171,8 +171,8 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 		accounts.id,
 		COALESCE(source_accounts.id, accounts.id),
 		COALESCE(source_accounts.system_account_id, accounts.system_account_id),
-		COALESCE(source_accounts.provider_code, accounts.provider_code),
-		COALESCE(source_accounts.provider_protocol_profile_id, accounts.provider_protocol_profile_id),
+		COALESCE(source_accounts.vendor_code, accounts.vendor_code, ''),
+		'',
 		COALESCE(source_accounts.protocol_code, accounts.protocol_code),
 		COALESCE(source_accounts.protocol_version, accounts.protocol_version),
 		COALESCE(source_accounts.type, accounts.type),
@@ -510,6 +510,8 @@ func AccountTestEndpointModeOrder(source ManualTestModeSource) []string {
 		}
 		return out
 	}
+	// 形态顺序统一流式优先（AI账户检查模型与人工测试设计 §5 2026-10-19 定案）：
+	// 同一协议内 _sse 恒先于 _json，账户已保存的 healthCheckEndpointMode 仍置顶。
 	switch {
 	case accountscore.IsHybridProviderCodeToken(source.ProviderCode):
 		return unique(defaultMode,

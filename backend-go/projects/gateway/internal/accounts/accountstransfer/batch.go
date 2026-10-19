@@ -646,8 +646,8 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 		args = append(args, scoped)
 	}
 	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.config_revision, accounts.system_account_id,
-			COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') AS provider_code,
-			accounts.provider_protocol_profile_id, accounts.protocol_code,
+			COALESCE(accounts.vendor_code, '') AS provider_code,
+			'' AS provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.type, accounts.status, accounts.credentials_encrypted,
 			accounts.proxy_profile_id, accounts.balance_query_enabled, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,

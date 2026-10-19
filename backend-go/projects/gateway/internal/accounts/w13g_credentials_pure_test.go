@@ -637,23 +637,23 @@ func TestW13GEndpointModeDriverArms(t *testing.T) {
 		!strings.Contains(err.Error(), "未注册") {
 		t.Fatalf("未注册驱动：%v", err)
 	}
-	// 健康检查模式：anthropic provider 首选 messages_json。
-	if mode := preferredHealthCheckEndpointMode("anthropic", "profile-x"); mode != "messages_json" {
+	// 健康检查模式：anthropic provider 首选 messages_sse（流式优先）。
+	if mode := preferredHealthCheckEndpointMode("anthropic", "profile-x"); mode != "messages_sse" {
 		t.Fatalf("anthropic 首选：%s", mode)
 	}
 	if mode := preferredHealthCheckEndpointMode("gpt", "profile-g"); mode != "responses_sse" {
 		t.Fatalf("gpt 首选：%s", mode)
 	}
-	if mode := preferredHealthCheckEndpointMode("openai", "profile_gemini_native_v1beta"); mode != "generate_content_json" {
+	if mode := preferredHealthCheckEndpointMode("openai", "profile_gemini_native_v1beta"); mode != "generate_content_sse" {
 		t.Fatalf("gemini native 首选：%s", mode)
 	}
-	if mode := preferredHealthCheckEndpointMode("openai", "deepseek-anthropic-v1"); mode != "messages_json" {
+	if mode := preferredHealthCheckEndpointMode("openai", "deepseek-anthropic-v1"); mode != "messages_sse" {
 		t.Fatalf("profile anthropic 首选：%s", mode)
 	}
-	// resolveDefault：无 _json 时回落第一个可用形态。
+	// resolveDefault：无 _sse 时回落 _json，再回落第一个可用形态。
 	mode, err := resolveDefaultHealthCheckEndpointMode("openai", "p", []string{"chat_sse", "responses_sse"})
 	if err != nil || mode != "chat_sse" {
-		t.Fatalf("无 json 回落：%s %v", mode, err)
+		t.Fatalf("流式首选回落：%s %v", mode, err)
 	}
 	if _, err := resolveDefaultHealthCheckEndpointMode("openai", "p", nil); err == nil {
 		t.Fatal("空形态应报错")

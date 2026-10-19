@@ -60,15 +60,18 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		MissingImpact: "speed-first 路由模式缺少运行时端点与降级清理接线，速度优先请求退化或降级清理不执行，用户遇到模式不生效或残留脏状态",
 	},
 	{
-		Identifier:    "SetGptRequestOverrideModelCatalog(",
+		// T15 覆盖域收敛后进程级 Set* 已删除，接线形态变为 driver 显式字段
+		// （GptRequestOverrideRuntime{Catalog: chainGptRequestOverrideModelCatalog{...}}），
+		// 守卫标识符同步换成装配字面量。
+		Identifier:    "chainGptRequestOverrideModelCatalog{",
 		Name:          "codex 请求覆盖目录端口",
-		Purpose:       "为 codex/gpt 请求覆盖提供模型目录依据（chain_driver.go）",
+		Purpose:       "为 codex/gpt 请求覆盖提供模型目录依据（chain_driver.go GptRequestOverrideRuntime.Catalog）",
 		MissingImpact: "codex 请求覆盖没有模型目录依据，覆盖后的模型名无法校验与映射，codex 请求可能打到上游不存在的模型而报错",
 	},
 	{
-		Identifier:    "SetGptRequestOverrideModelCandidates(",
+		Identifier:    "chainGptRequestOverrideModelCandidates",
 		Name:          "codex 请求覆盖候选端口",
-		Purpose:       "为 codex/gpt 请求覆盖提供候选模型展开（chain_driver.go）",
+		Purpose:       "为 codex/gpt 请求覆盖提供候选模型展开（chain_driver.go GptRequestOverrideRuntime.ModelCandidates）",
 		MissingImpact: "codex 请求覆盖缺少候选模型展开，覆盖目标候选为空，请求覆盖静默不生效",
 	},
 	{

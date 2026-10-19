@@ -170,7 +170,7 @@ func TestW14dDroppedProviderTable(t *testing.T) {
 
 	// The provider precheck surfaces the raw driver error whose non-CJK text
 	// the kernel localize layer renders as 请求参数无效.
-	w14dDropTable(t, env, "providers")
+	w14dDropTable(t, env, "vendors")
 	for _, route := range []struct {
 		method, path, body string
 	}{

@@ -113,20 +113,21 @@ type GptRequestOverrideModelCatalog = gatewayoauthcodex.GptRequestOverrideModelC
 
 type GptRequestOverrideModelCatalogItem = gatewayoauthcodex.GptRequestOverrideModelCatalogItem
 
+type GptRequestOverrideRuntime = gatewayoauthcodex.GptRequestOverrideRuntime
+
 type GptServiceTierOverride = gatewayoauthcodex.GptServiceTierOverride
 
 var (
-	ApplyGptAccountRequestOverridesBody           = gatewayoauthcodex.ApplyGptAccountRequestOverridesBody
-	ApplyGptAccountRequestOverridesToUpstreamBody = gatewayoauthcodex.ApplyGptAccountRequestOverridesToUpstreamBody
-	AssertGptAccountRequestOverrideValues         = gatewayoauthcodex.AssertGptAccountRequestOverrideValues
-	ResolveEffectiveOverrides                     = gatewayoauthcodex.ResolveEffectiveOverrides
-	HasApplicableGptAccountRequestOverrides       = gatewayoauthcodex.HasApplicableGptAccountRequestOverrides
-	ReadGptAccountRequestOverrides                = gatewayoauthcodex.ReadGptAccountRequestOverrides
-	ResolveGptRequestOverrideModelCapabilities    = gatewayoauthcodex.ResolveGptRequestOverrideModelCapabilities
-
-	SetGptAccountRequestOverridesHook    = gatewayoauthcodex.SetGptAccountRequestOverridesHook
-	SetGptRequestOverrideModelCandidates = gatewayoauthcodex.SetGptRequestOverrideModelCandidates
-	SetGptRequestOverrideModelCatalog    = gatewayoauthcodex.SetGptRequestOverrideModelCatalog
+	ApplyGptAccountRequestOverridesBody = gatewayoauthcodex.ApplyGptAccountRequestOverridesBody
+	// ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody 是
+	// api_key 出站链合并入口（T14/T17：原 ApplyGptAccountRequestOverridesToUpstreamBody
+	// + NormalizeOpenAIReasoningFieldsForUpstream 两步随覆盖域收敛被取代）。
+	ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody = gatewayoauthcodex.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody
+	AssertGptAccountRequestOverrideValues                              = gatewayoauthcodex.AssertGptAccountRequestOverrideValues
+	ResolveEffectiveOverrides                                          = gatewayoauthcodex.ResolveEffectiveOverrides
+	HasApplicableGptAccountRequestOverrides                            = gatewayoauthcodex.HasApplicableGptAccountRequestOverrides
+	ReadGptAccountRequestOverrides                                     = gatewayoauthcodex.ReadGptAccountRequestOverrides
+	ResolveGptRequestOverrideModelCapabilities                         = gatewayoauthcodex.ResolveGptRequestOverrideModelCapabilities
 )
 
 // --- Codex turn 规避过滤（原 codexturnavoidance.go）---

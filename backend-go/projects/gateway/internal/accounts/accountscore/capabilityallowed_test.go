@@ -198,13 +198,14 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 }
 
 func TestDefaultHealthCheckEndpointModeForDomain(t *testing.T) {
+	// 对话域流式优先（chat_sse）；未知/空域同落 chat_sse。
 	cases := map[string]string{
-		"chat":  "chat_json",
+		"chat":  "chat_sse",
 		"image": "images_json",
 		"audio": "audio_speech",
 		"video": "video_create",
-		"bogus": "chat_json",
-		"":      "chat_json",
+		"bogus": "chat_sse",
+		"":      "chat_sse",
 	}
 	for domain, want := range cases {
 		if got := DefaultHealthCheckEndpointModeForDomain(domain); got != want {

@@ -323,8 +323,9 @@ func DefaultEndpointModesForDomain(domain, providerCode, accountType string, pro
 
 // DefaultHealthCheckEndpointModeForDomain 是新建账户
 // health_check_endpoint_mode 的按域默认落值（媒体账户生命周期定案表）：
-// chat=chat_json（现行硬编码）、image=images_json、audio=audio_speech、
-// video=video_create。仅入参未显式提供时使用。
+// chat=chat_sse（流式优先，AI账户检查模型与人工测试设计 2026-10-19 定案；
+// 原 chat_json）、image=images_json、audio=audio_speech、video=video_create。
+// 仅入参未显式提供时使用。
 func DefaultHealthCheckEndpointModeForDomain(domain string) string {
 	switch domain {
 	case CapabilityDomainVideo:
@@ -334,7 +335,7 @@ func DefaultHealthCheckEndpointModeForDomain(domain string) string {
 	case CapabilityDomainImage:
 		return "images_json"
 	}
-	return "chat_json"
+	return "chat_sse"
 }
 
 // intersectLaneModes 按 lanes 顺序保留 vocab 内的成员（去重由 lanes 本身

@@ -1046,27 +1046,29 @@ func TestW13g3GptOverrideTokenValidation(t *testing.T) {
 func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 	ctx := context.Background()
 	account := AccountCandidate{ID: "a-1", VendorCode: "openai", Credentials: map[string]any{"service_tier_override": "priority"}}
+	// T15 收敛：目录端口经 GptRequestOverrideRuntime 显式传入（无进程级 Set*）。
+	inertRuntime := GptRequestOverrideRuntime{}
 	t.Run("invalid credentials surface", func(t *testing.T) {
 		bad := AccountCandidate{ID: "a-1", Credentials: map[string]any{"service_tier_override": "!!"}}
-		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{}`), bad, "responses", false, "gpt-test"); err == nil {
+		if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(ctx, []byte(`{}`), nil, bad, "responses", false, "gpt-test", "", inertRuntime); err == nil {
 			t.Fatal("invalid credential token must fail")
 		}
 		// gpt 账户保留专属枚举硬失败（其它供应商/空 providerCode 由目录能力
 		// 门兜底，不再请求级报错）。
 		invalidTier := AccountCandidate{ID: "a-1", VendorCode: "gpt", Credentials: map[string]any{"service_tier_override": "super"}}
-		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{}`), invalidTier, "responses", false, "gpt-test"); err == nil {
+		if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(ctx, []byte(`{}`), nil, invalidTier, "responses", false, "gpt-test", "", inertRuntime); err == nil {
 			t.Fatal("invalid tier value must fail")
 		}
 	})
 	t.Run("inert without capability evidence", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-test"}`)
-		got, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, body, account, "responses", false, "gpt-test")
+		got, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(ctx, body, nil, account, "responses", false, "gpt-test", "", inertRuntime)
 		if err != nil || string(got) != string(body) {
 			t.Fatalf("inert overrides must not touch the body: %s %v", got, err)
 		}
 	})
 	t.Run("invalid json body fails when model unknown", func(t *testing.T) {
-		if _, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`not-json`), account, "responses", false, ""); err == nil {
+		if _, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(ctx, []byte(`not-json`), nil, account, "responses", false, "", "", inertRuntime); err == nil {
 			t.Fatal("invalid JSON body must fail")
 		}
 	})
@@ -1075,9 +1077,7 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 			Model:                 "gpt-test",
 			SupportedServiceTiers: []string{"priority"},
 		}}}
-		SetGptRequestOverrideModelCatalog(catalog)
-		t.Cleanup(func() { SetGptRequestOverrideModelCatalog(nil) })
-		got, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, []byte(`{"model":"gpt-test"}`), account, "responses", false, "gpt-test")
+		got, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(ctx, []byte(`{"model":"gpt-test"}`), nil, account, "responses", false, "gpt-test", "", GptRequestOverrideRuntime{Catalog: catalog})
 		if err != nil {
 			t.Fatalf("apply: %v", err)
 		}
@@ -1090,8 +1090,7 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 			Model:                     "gpt-test",
 			SupportedReasoningEfforts: []string{"high"},
 		}}}
-		SetGptRequestOverrideModelCatalog(catalog)
-		t.Cleanup(func() { SetGptRequestOverrideModelCatalog(nil) })
+		runtime := GptRequestOverrideRuntime{Catalog: catalog}
 		effortAccount := AccountCandidate{ID: "a-1", VendorCode: "openai", Credentials: map[string]any{"reasoning_effort_override": "high"}}
 		for _, tc := range []struct {
 			family string
@@ -1103,7 +1102,7 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 			{"gemini_generate_content", `"thinkingLevel":"high"`},
 		} {
 			body := []byte(`{"model":"gpt-test"}`)
-			got, err := ApplyGptAccountRequestOverridesToUpstreamBody(ctx, body, effortAccount, tc.family, false, "gpt-test")
+			got, err := ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(ctx, body, nil, effortAccount, tc.family, false, "gpt-test", "", runtime)
 			if err != nil {
 				t.Fatalf("%s apply: %v", tc.family, err)
 			}

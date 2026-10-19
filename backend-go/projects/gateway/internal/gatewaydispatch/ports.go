@@ -319,7 +319,11 @@ type CompatibilityRecovery struct {
 
 // UpstreamRequestErrorInput mirrors the handleUpstreamRequestError input.
 type UpstreamRequestErrorInput struct {
-	Req                         *gatewaypreauth.GatewayRequest
+	Req *gatewaypreauth.GatewayRequest
+	// RequestLane 是派发链解析的请求车道（失败派发器据此做调度域判定：媒体
+	// 创建域不派发请求失败健康检查、不记录来源级失败避让——对话与非对话媒体
+	// 调度分离设计 §4.1/§4.2）。
+	RequestLane                 string
 	UsageContext                gatewaypreauth.GatewayFailureUsageContext
 	AuditCapture                AuditCapture
 	AuditAttemptID              string

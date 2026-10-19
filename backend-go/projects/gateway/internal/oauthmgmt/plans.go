@@ -296,7 +296,7 @@ func geminiPlan() providerPlan {
 	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		credentials := current.Credentials
 		info, err := s.refreshGeminiToken(ctx, stringCredential(credentials, "refresh_token"), geminiAuthURLOptions{
-			OAuthType:      geminiAccountOAuthType(credentials),
+			OAuthType:      geminiRotationAccountOAuthType(current, credentials),
 			ClientID:       stringCredential(credentials, "client_id"),
 			ClientSecret:   stringCredential(credentials, "client_secret"),
 			ProjectID:      stringCredential(credentials, "project_id"),
@@ -310,7 +310,7 @@ func geminiPlan() providerPlan {
 		}
 		return buildGeminiOAuthCredentials(info, &geminiCredentialFallback{
 			RefreshToken: stringCredential(credentials, "refresh_token"),
-			OAuthType:    geminiAccountOAuthType(credentials),
+			OAuthType:    geminiRotationAccountOAuthType(current, credentials),
 			ProjectID:    stringCredential(credentials, "project_id"),
 			TierID:       stringCredential(credentials, "tier_id"),
 			BaseURL:      stringCredential(credentials, "base_url"),
@@ -331,7 +331,7 @@ func geminiPlan() providerPlan {
 		}
 		oauthType := optionalTrimmedText(body, "oauthType")
 		if oauthType == "" {
-			oauthType = geminiAccountOAuthType(credentials)
+			oauthType = geminiRotationAccountOAuthType(current, credentials)
 		}
 		info, err := s.refreshGeminiToken(ctx, refreshToken, geminiAuthURLOptions{
 			OAuthType:      oauthType,

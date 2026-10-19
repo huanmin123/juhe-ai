@@ -149,6 +149,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const {
     loading: allProviderModelsLoading,
     loadModelOptions: loadAllProviderModelOptions,
+    modelOptionsTruncated: allProviderModelOptionsTruncated,
     resetModelOptions: resetAllProviderModelOptions,
     selectOptions: mappingSourceModelOptions
   } = useProviderModelSelectOptions({
@@ -161,6 +162,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const {
     loading: anthropicProviderModelsLoading,
     loadModelOptions: loadAnthropicProviderModelOptions,
+    modelOptionsTruncated: anthropicProviderModelOptionsTruncated,
     resetModelOptions: resetAnthropicProviderModelOptions,
     selectOptions: mappingAnthropicSourceModelOptions
   } = useProviderModelSelectOptions({
@@ -173,6 +175,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const {
     loading: geminiProviderModelsLoading,
     loadModelOptions: loadGeminiProviderModelOptions,
+    modelOptionsTruncated: geminiProviderModelOptionsTruncated,
     resetModelOptions: resetGeminiProviderModelOptions,
     selectOptions: mappingGeminiSourceModelOptions
   } = useProviderModelSelectOptions({
@@ -182,6 +185,13 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       message.error(options.extractApiErrorMessage(error, '加载 Gemini 协议模型池失败'))
     }
   })
+  // T23：hybrid 账户的映射源模型下拉按协议取三实例候选；三实例是同一目录
+  // （同 scope、同供应商窗口）的协议切片，服务端截断判定一致，取或即可。
+  const mappingSourceModelOptionsTruncated = computed(() => (
+    allProviderModelOptionsTruncated.value
+    || anthropicProviderModelOptionsTruncated.value
+    || geminiProviderModelOptionsTruncated.value
+  ))
   const strategyModelsLoading = computed(() => providerModelsLoading.value || allProviderModelsLoading.value || anthropicProviderModelsLoading.value || geminiProviderModelsLoading.value)
   const {
     accountTagOptions,
@@ -1081,6 +1091,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     loadCurrentProviderModelOptions,
     loadMappingSourceModelOptions,
     handleAccountTagOptionsDropdown,
+    mappingSourceModelOptionsTruncated,
     providerName,
     providerModelOptions,
     providerModelsLoading,

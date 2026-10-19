@@ -127,6 +127,8 @@ export function useUsageRecordModelOptions(options: UseUsageRecordModelOptionsOp
     handleSearch,
     modelOptions,
     modelOptionsLoading: resource.loading,
+    // T25：服务端 hasMore 元数据判定的目录截断标志（筛选下拉底部搜索提示）。
+    modelOptionsTruncated: resource.modelOptionsTruncated,
     loadModelOptions: (force = false) => loadIfNeeded('', force),
     resetModelOptions
   }

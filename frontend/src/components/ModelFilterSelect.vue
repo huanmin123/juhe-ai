@@ -19,12 +19,16 @@
         <span>{{ label }}</span>
       </span>
     </template>
+    <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+      <ModelOptionsTruncatedHint :menu-node="menuNode" />
+    </template>
   </a-select>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import ProviderIcon from '@/components/ProviderIcon.vue'
 import type { ProviderModelOption } from '@/types/domain'
 
@@ -43,6 +47,8 @@ const props = withDefaults(defineProps<{
   value?: string
   models?: ProviderModelOption[]
   options?: ModelSelectOption[]
+  /** 服务端判定目录被取数窗口截断（T25 hasMore 元数据），下拉底部展示搜索提示。 */
+  modelsTruncated?: boolean
   allowClear?: boolean
   disabled?: boolean
   loading?: boolean
@@ -50,6 +56,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   models: () => [],
   options: () => [],
+  modelsTruncated: false,
   allowClear: true,
   disabled: false,
   loading: false,

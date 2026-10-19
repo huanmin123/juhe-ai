@@ -99,29 +99,26 @@ func TestWCAccountUpdateTypeAndSchedule(t *testing.T) {
 	}
 }
 
-// TestWCAccountAddProfileTypesBrokenJSON：档案 account_types_json 非法时
-// 公开推送拒绝（档案不支持 api_key）。
+// TestWCAccountAddProfileTypesBrokenJSON：目标 schema（§9.3）删除档案表后，
+// 公开推送按 vendor 派生唯一档案身份；非本 vendor 的档案 ID 一律按「未配置
+// 协议档案」拒绝。
 func TestWCAccountAddProfileTypesBrokenJSON(t *testing.T) {
 	env := newWCLifeEnv(t)
-	wcSeedProfile(t, env, "profile_broken_types", "gpt", true, `{bad json`)
 	status, payload, _ := env.doAuth(http.MethodPost, Prefix+"/account/add",
 		strings.Replace(wcAccountBase, `"providerProtocolProfileId":"profile_gpt_openai_v1"`, `"providerProtocolProfileId":"profile_broken_types"`, 1), wcLifeToken)
-	if status != http.StatusBadRequest || payload["message"] != "当前供应商不支持 API Key 账户" {
-		t.Fatalf("档案类型损坏: %d %v", status, payload)
+	if status != http.StatusBadRequest || payload["message"] != "供应商未配置协议档案：gpt" {
+		t.Fatalf("非派生档案: %d %v", status, payload)
 	}
-	// profile 不属于该供应商。
-	wcSeedProfile(t, env, "profile_other_provider", "anthropic", true, `["api_key"]`)
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/add",
 		strings.Replace(wcAccountBase, `"providerProtocolProfileId":"profile_gpt_openai_v1"`, `"providerProtocolProfileId":"profile_other_provider"`, 1), wcLifeToken)
-	if status != http.StatusBadRequest || payload["message"] != "协议档案 profile_other_provider 不属于供应商 gpt" {
+	if status != http.StatusBadRequest || payload["message"] != "供应商未配置协议档案：gpt" {
 		t.Fatalf("档案跨供应商: %d %v", status, payload)
 	}
-	// 停用的档案。
-	wcSeedProfile(t, env, "profile_disabled_p", "gpt", false, `["api_key"]`)
-	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/add",
-		strings.Replace(wcAccountBase, `"providerProtocolProfileId":"profile_gpt_openai_v1"`, `"providerProtocolProfileId":"profile_disabled_p"`, 1), wcLifeToken)
-	if status != http.StatusBadRequest || payload["message"] != "供应商协议档案已停用：profile_disabled_p" {
-		t.Fatalf("停用档案: %d %v", status, payload)
+	// 供应商停用（档案停用语义随档案表删除，改由 vendor.enabled 承载）。
+	env.seedProviderRow("gpt", "GPT", false)
+	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/add", wcAccountBase, wcLifeToken)
+	if status != http.StatusBadRequest || payload["message"] != "供应商已停用：gpt" {
+		t.Fatalf("停用供应商: %d %v", status, payload)
 	}
 }
 

@@ -56,6 +56,8 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   const ccsExportModelOptions = ref<CcSwitchExportModelOption[]>([])
   const ccsExportModelsLoading = ref(false)
   const ccsExportModelsReady = ref(false)
+  // T25：最近一次非搜索目录取数的服务端截断标志（导出弹窗模型下拉底部提示）。
+  const ccsExportModelsTruncated = ref(false)
   const ccsExportModelOptionsGroupId = ref('')
   let ccsExportModelOptionsRequestId = 0
   let ccsExportModelSearchTimer: ReturnType<typeof setTimeout> | undefined
@@ -281,6 +283,11 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
         ...ccsExportModelOptions.value,
         ...resource.data
       ])
+      // T25：非搜索取数（浏览或 defaultModel 的 selectedIds 单批补拉）以服务端
+      // hasMore 判定截断；关键词搜索（增量合并）不改写；元数据缺失按无法判定。
+      if (!keyword.trim() && resource.hasMore !== undefined) {
+        ccsExportModelsTruncated.value = resource.hasMore
+      }
       ccsExportModelsReady.value = true
     } catch (error) {
       if (requestId !== ccsExportModelOptionsRequestId || ccsExportModelOptionsGroupId.value !== groupId) return
@@ -300,6 +307,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     ccsExportModelOptions.value = []
     ccsExportModelsLoading.value = false
     ccsExportModelsReady.value = false
+    ccsExportModelsTruncated.value = false
     ccsExportModelOptionsGroupId.value = ''
   }
 
@@ -372,6 +380,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     ccsExportModelOptions,
     ccsExportModelsLoading,
     ccsExportModelsReady,
+    ccsExportModelsTruncated,
     ccsExportModalOpen,
     ccsExportPreparingId,
     ccsExportingId,

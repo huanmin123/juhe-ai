@@ -154,8 +154,9 @@ func TestW14dCreateServerErrorArms(t *testing.T) {
 	env := newTestEnv(t)
 	env.w14dLoginAdmin(t)
 
-	// Dropping the profile table turns the profile resolve into a 500.
-	env.exec(t, `DROP TABLE provider_protocol_profiles`)
+	// Dropping the vendors table turns the profile resolve into a 500
+	//（T30/B4 ⑧：档案域只读 vendors，不再读旧 profile 表）。
+	env.exec(t, `DROP TABLE vendors`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
 		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
 	if code != http.StatusInternalServerError || payload["message"] != "服务器内部错误" {

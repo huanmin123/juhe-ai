@@ -37,13 +37,13 @@ func (s *Store) CountByProvider(ctx context.Context, access AccessScope, domain 
 		clauses = append(clauses, "accounts.capability_domain = ?")
 		args = append(args, domain)
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT accounts.provider_code, COUNT(*)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT COALESCE(accounts.vendor_code, '') AS provider_code, COUNT(*)
 		FROM `+s.table("accounts")+` accounts
 		LEFT JOIN `+s.table("resource_authorizations")+` authorizations
 			ON authorizations.id = accounts.authorization_instance_authorization_id
 		WHERE `+strings.Join(clauses, " AND ")+`
-		GROUP BY accounts.provider_code
-		ORDER BY accounts.provider_code`), args...)
+		GROUP BY COALESCE(accounts.vendor_code, '')
+		ORDER BY COALESCE(accounts.vendor_code, '')`), args...)
 	if err != nil {
 		return nil, err
 	}

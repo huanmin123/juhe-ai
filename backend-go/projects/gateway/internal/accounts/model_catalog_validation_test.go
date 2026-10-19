@@ -2,8 +2,9 @@ package accounts
 
 // 模型目录校验域测试（model_catalog_validation.go）：目录命中 / 未命中 /
 // 目录异常三条路径，对照归档 account-model-normalization.ts 的断言文案与
-// 触发条件逐条标注。目录读取全部通过 fakeAccountModelCatalog 注入（Mock
-// 可回放、结果稳定），不依赖真实 provider_model_catalog 数据。
+// 触发条件逐条标注。B4 ⑥ 起生产端口 AccountModelCatalogReader 已退役，
+// 目录断言只读 models 单表；本文件保留测试本地 fake 仅用于历史调用计数
+// 断言（当前恒 0），不再注入 Store。
 //
 // gpt 请求覆盖（service_tier_override / reasoning_effort_override）的目录
 // 断言已于 2026-10-18 简化定案删除，本文件的覆盖段改钉写入面协议族值域：
@@ -19,7 +20,14 @@ import (
 	"time"
 )
 
-// ---- fake catalog port ----
+// ---- fake catalog port（测试本地形状；生产接口已退役） ----
+
+type AccountModelCatalogFact struct {
+	Model                     string
+	SupportedAPIProtocols     []string
+	SupportedServiceTiers     []string
+	SupportedReasoningEfforts []string
+}
 
 type modelCatalogCall struct {
 	providerCode    string
@@ -227,13 +235,6 @@ func TestPatchRequestOverridesFamilyDomainWiring(t *testing.T) {
 	}
 	// 支持模型换成目录内未声明任何档位的模型 → 通过（原目录门禁在该场景
 	// 报「所选支持模型中没有模型支持服务等级 priority」，语义反转为放行）。
-	bareFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
-		Model:                     "gpt-4o",
-		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
-		SupportedServiceTiers:     []string{},
-		SupportedReasoningEfforts: []string{},
-	}}}
-	store.SetModelCatalogReader(bareFake)
 	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 1,
 		SupportedModels:        []string{"gpt-4o"},
@@ -372,15 +373,14 @@ func TestModelMappingCatalogMiss(t *testing.T) {
 
 // ---- create / patch / batch 挂接冒烟 ----
 
-func newCatalogWiringStore(t *testing.T, ownerID string, fake *fakeAccountModelCatalog) (*Store, AccessScope) {
+func newCatalogWiringStore(t *testing.T, ownerID string, _ *fakeAccountModelCatalog) (*Store, AccessScope) {
 	t.Helper()
 	env := newTestEnv(t)
-	// B4 W2：supportedModels 走 models 身份键解析（种子见 seedFixtureModels），
-	// 目录断言端口语义不变。
+	// B4 W2：supportedModels 走 models 身份键解析（种子见 seedFixtureModels）；
+	// B4 ⑥：目录读端口已退役，断言只读 models 单表，fake 参数保留仅为历史
+	// 用例签名兼容。
 	env.seedProviderAndDefaultGroup(t, ownerID)
-	store := env.store
-	store.SetModelCatalogReader(fake)
-	return store, AccessScope{ViewerID: ownerID, IsAdmin: true}
+	return env.store, AccessScope{ViewerID: ownerID, IsAdmin: true}
 }
 
 func catalogWiringCreateInput(name string, credentials Credentials, supportedModels []string, mappings []ModelMapping) CreateInput {
@@ -534,7 +534,7 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 // b1SetGenericConnections 把 §8 连接集合与健康检查三件套改写为
 // generic_openai_v1 形态（provider 覆写为 openai/hybrid 等 generic 语义的
 // catalog wiring 测试臂使用；B1 断点批）。检查模型取载荷支持模型首个
-//（缺失时回退 gpt-4o-mini，两模型均在夹具 models 种子内）。
+// （缺失时回退 gpt-4o-mini，两模型均在夹具 models 种子内）。
 func b1SetGenericConnections(input *CreateInput, baseURL string) {
 	preset := "generic_openai_v1"
 	mode := "chat_json"
@@ -554,12 +554,11 @@ func b1SetGenericConnections(input *CreateInput, baseURL string) {
 }
 
 func TestCreateSupportedModelsCatalogNilPort(t *testing.T) {
-	// nil 端口 no-op（self-contained 约定）：目录外模型也能创建，不发起目录读取。
+	// B4 ⑥：目录读端口已退役，创建只按 models 单表解析；本用例保留原断言
+	// 面（模型不在任何注入目录也不受目录门禁），fake 计数恒 0。
 	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
 	store, scope := newCatalogWiringStore(t, "owner-supported-nil", fake)
-	store.SetModelCatalogReader(nil)
-	// B4 W2：模型名须解析到 models 行；m1 在夹具 models 内、不在 fake 目录，
-	// 恰好保持「目录端口 nil 不查询、创建不受目录门禁」的原断言语义。
+	// B4 W2：模型名须解析到 models 行；m1 在夹具 models 内。
 	if _, err := store.Create(context.Background(), catalogWiringCreateInput("supported-nil",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"m1"}, nil), scope); err != nil {
 		t.Fatal(err)
@@ -607,11 +606,8 @@ func TestBatchUpdateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		},
 	}, scope)
 	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：gpt-o1")
-	// 目录内变化 → 批量成功。
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		gptCatalogFact(),
-		{Model: "gpt-4o", SupportedAPIProtocols: []string{"chat_completions", "responses"}},
-	}})
+	// 目录内变化 → 批量成功（gpt-4o 在 seedFixtureModels 内；B4 ⑥ 起目录
+	// 断言只读 models 单表）。
 	if _, err := store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: targets,
 		Updates: map[string]BatchUpdateField{

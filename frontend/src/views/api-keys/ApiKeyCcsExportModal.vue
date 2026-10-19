@@ -37,7 +37,11 @@
           placeholder="选择分组供应商的模型"
           @dropdown-visible-change="handleModelOptionsOpen"
           @search="handleModelOptionsSearch"
-        />
+        >
+          <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+            <ModelOptionsTruncatedHint :menu-node="menuNode" />
+          </template>
+        </a-select>
       </a-form-item>
     </a-form>
   </a-modal>
@@ -46,6 +50,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import {
   canSubmitCcSwitchExport,
   ccswitchClientOptions,
@@ -62,6 +67,8 @@ const props = defineProps<{
   modelOptions: CcSwitchExportModelOption[]
   modelsLoading?: boolean
   modelsReady: boolean
+  /** 服务端 hasMore 判定的目录截断标志（模型下拉底部搜索提示）。 */
+  modelsTruncated?: boolean
 }>()
 
 const emit = defineEmits<{

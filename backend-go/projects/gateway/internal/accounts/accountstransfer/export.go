@@ -223,8 +223,8 @@ func (s *Service) loadExportRows(ctx context.Context, ids []string, access accou
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.provider_code,
-			accounts.provider_protocol_profile_id, accounts.name, accounts.notes, accounts.type,
+	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT accounts.id, COALESCE(accounts.vendor_code, '') AS provider_code,
+			'' AS provider_protocol_profile_id, accounts.name, accounts.notes, accounts.type,
 			accounts.status, accounts.schedulable, accounts.credentials_encrypted,
 			accounts.health_check_model, accounts.health_check_endpoint_mode, accounts.proxy_profile_id,
 			accounts.availability_schedule_json, accounts.account_expires_at, accounts.concurrency_limit,

@@ -600,9 +600,9 @@ func listItemColumns(alias string) []string {
 		alias + ".authorization_instance_authorization_id AS authorization_id",
 		alias + ".authorization_instance_source_account_id AS authorization_instance_source_account_id",
 		"authorizations.effective_source_type AS authorization_effective_source_type",
-		"COALESCE(NULLIF(source_accounts.vendor_code, ''), source_accounts.provider_code, '') AS source_provider_code",
+		"COALESCE(source_accounts.vendor_code, '') AS source_provider_code",
 		"source_vendors.name AS source_provider_name",
-		"source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id",
+		"'' AS source_provider_protocol_profile_id",
 		"source_accounts.protocol_code AS source_protocol_code",
 		"source_accounts.protocol_version AS source_protocol_version",
 		"source_accounts.type AS source_type",
@@ -678,14 +678,14 @@ func (s *Store) listJoins() (cte, joins string) {
 		LEFT JOIN ` + s.table("proxy_profiles") + ` proxy_profiles
 			ON proxy_profiles.id = accounts.proxy_profile_id
 		LEFT JOIN ` + s.table("vendors") + ` vendors
-			ON vendors.code = COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '')
+			ON vendors.code = COALESCE(accounts.vendor_code, '')
 		LEFT JOIN ` + s.table("resource_authorizations") + ` authorizations
 			ON authorizations.id = accounts.authorization_instance_authorization_id
 		LEFT JOIN ` + s.table("accounts") + ` source_accounts
 			ON source_accounts.id = accounts.authorization_instance_source_account_id
 			AND source_accounts.deleted_at IS NULL
 		LEFT JOIN ` + s.table("vendors") + ` source_vendors
-			ON source_vendors.code = COALESCE(NULLIF(source_accounts.vendor_code, ''), source_accounts.provider_code, '')
+			ON source_vendors.code = COALESCE(source_accounts.vendor_code, '')
 		LEFT JOIN ` + s.table("proxy_profiles") + ` source_proxy_profiles
 			ON source_proxy_profiles.id = source_accounts.proxy_profile_id`
 	return cte, joins
@@ -771,11 +771,12 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 	}
 	if options.ProviderCode != "" && options.ProviderCode != "all" {
 		// B4 W2 行为键过渡投影：过滤列同 patch.go COALESCE(vendor, provider)。
-		clauses = append(clauses, "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') = ?")
+		clauses = append(clauses, "COALESCE(accounts.vendor_code, '') = ?")
 		*args = append(*args, options.ProviderCode)
 	}
 	if options.ProviderProtocolProfileID != "" && options.ProviderProtocolProfileID != "all" {
-		clauses = append(clauses, "accounts.provider_protocol_profile_id = ?")
+		// 目标 schema 无该列：档案身份由 vendor 派生，筛选退化为 vendor 等价
+		clauses = append(clauses, "'' = ?")
 		*args = append(*args, options.ProviderProtocolProfileID)
 	}
 	if options.GroupID != "" {
@@ -851,7 +852,7 @@ func listSortColumn(field, nowLiteral string) string {
 		return "accounts.type"
 	case "providerCode":
 		// B4 W2 行为键排序（与过滤列 :763 同口径）。
-		return "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '')"
+		return "COALESCE(accounts.vendor_code, '')"
 	case "systemAccount":
 		return "COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, accounts.system_account_id)"
 	case "concurrency":
@@ -1411,11 +1412,12 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 	}
 	if normalized.ProviderCode != "" && normalized.ProviderCode != "all" {
 		// B4 W2 行为键过渡投影：过滤列同 patch.go COALESCE(vendor, provider)。
-		clauses = append(clauses, "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') = ?")
+		clauses = append(clauses, "COALESCE(accounts.vendor_code, '') = ?")
 		args = append(args, normalized.ProviderCode)
 	}
 	if normalized.ProviderProtocolProfileID != "" && normalized.ProviderProtocolProfileID != "all" {
-		clauses = append(clauses, "accounts.provider_protocol_profile_id = ?")
+		// 目标 schema 无该列：档案身份由 vendor 派生，筛选退化为 vendor 等价
+		clauses = append(clauses, "'' = ?")
 		args = append(args, normalized.ProviderProtocolProfileID)
 	}
 	if normalized.GroupID != "" {
@@ -1472,7 +1474,8 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 	args = append(args, normalized.PageSize, (normalized.Page-1)*normalized.PageSize)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT accounts.id, accounts.system_account_id,
 			COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, accounts.system_account_id) AS system_account_name,
-			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
+			COALESCE(accounts.vendor_code, '') AS provider_code,
+			'' AS provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.name, accounts.type,
 			`+effective+` AS effective_status, accounts.account_expires_at
 		FROM `+s.table("accounts")+` accounts
@@ -1602,7 +1605,8 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		boundGroupName            sql.NullString
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
-			accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id,
+			accounts.system_account_id, COALESCE(accounts.vendor_code, '') AS provider_code,
+			'' AS provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.notes,
 			accounts.type, accounts.capability_domain, accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,

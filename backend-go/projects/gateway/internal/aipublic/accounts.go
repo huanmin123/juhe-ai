@@ -264,9 +264,13 @@ func (d *Deps) loadAccountSupportedModels(ctx context.Context, ids []string) (ma
 		placeholders += "?"
 		args = append(args, id)
 	}
-	rows, err := d.db().QueryContext(ctx, d.bind(`SELECT account_id, model FROM `+d.table("account_supported_models")+`
-		WHERE account_id IN (`+placeholders+`)
-		ORDER BY account_id ASC, model ASC`), args...)
+	// 目标 schema（设计 §4）：account_supported_models 以 model_id 引用 models，
+	// 公开投影仍按 upstream_model 名称呈现。
+	rows, err := d.db().QueryContext(ctx, d.bind(`SELECT supported.account_id, models.upstream_model
+		FROM `+d.table("account_supported_models")+` supported
+		INNER JOIN `+d.table("models")+` models ON models.id = supported.model_id
+		WHERE supported.account_id IN (`+placeholders+`)
+		ORDER BY supported.account_id ASC, models.upstream_model ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -547,12 +551,44 @@ func (d *Deps) addAccount(w http.ResponseWriter, r *http.Request) {
 		GroupID:                   strPtr(group.ID),
 		AvailabilitySchedule:      nil,
 	}
-	// B1 断点批（设计 §8）：连接集合与健康检查三件套直通创建写链；缺失由
-	// Store.Create 按显式 400 拒绝（错误文案列明缺失字段）。
-	input.Connections = parsed.Connections
-	input.HealthCheckConnectionPresetCode = parsed.HealthCheckConnectionPresetCode
-	input.HealthCheckEndpointMode = parsed.HealthCheckEndpointMode
-	input.HealthCheckModel = parsed.HealthCheckModel
+	// B1 断点批（设计 §8）：显式提交的连接集合与健康检查三件套直通创建写链；
+	// 公开 API 的外部契约不要求提交 connections，缺省按 vendor + api_key +
+	// chat 域从 §1.1/§2 registry 派生（与 OAuth 管理式建户同口径），派生载荷
+	// 仍进入 Store.Create 全量校验。
+	connections := parsed.Connections
+	healthPreset := parsed.HealthCheckConnectionPresetCode
+	healthMode := parsed.HealthCheckEndpointMode
+	healthModel := parsed.HealthCheckModel
+	if len(connections) == 0 {
+		baseURL := parsed.BaseURL
+		model := ""
+		if parsed.SupportedModels != nil {
+			if models := normalizedStringList(*parsed.SupportedModels); len(models) > 0 {
+				model = models[0]
+			}
+		}
+		defaults, ok := DefaultPublicConnections(parsed.ProviderCode, baseURL, model)
+		if !ok {
+			kernel.WriteBadRequest(w, "connection_capability_unsupported: 无法为供应商 "+parsed.ProviderCode+" 派生连接")
+			return
+		}
+		connections = defaults.Connections
+		if healthPreset == nil {
+			preset := defaults.HealthCheckConnectionPresetCode
+			healthPreset = &preset
+		}
+		if healthMode == nil {
+			mode := defaults.HealthCheckEndpointMode
+			healthMode = &mode
+		}
+		if healthModel == nil && model != "" {
+			healthModel = &model
+		}
+	}
+	input.Connections = connections
+	input.HealthCheckConnectionPresetCode = healthPreset
+	input.HealthCheckEndpointMode = healthMode
+	input.HealthCheckModel = healthModel
 	if parsed.SupportedModels != nil {
 		input.SupportedModels = normalizedStringList(*parsed.SupportedModels)
 	}
@@ -600,18 +636,20 @@ func (d *Deps) addAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // findDuplicateAccount mirrors findTargetAccount: paged keyword lookup plus
-// provider/profile/name equality.
+// provider/name equality. 目标 schema 不再持久化档案 ID（§2.1），重复判定去掉
+// profile 维度（同 owner + vendor + 分组 + 名称）。
 func (d *Deps) findDuplicateAccount(ctx context.Context, ownerID, providerCode, profileID, groupID, name string) bool {
+	_ = profileID
 	result, err := d.AiAccounts.ListPage(ctx, accounts.AccessScope{ViewerID: ownerID}, accounts.ListOptions{
 		Page: 1, PageSize: 20, Keyword: name,
-		ProviderCode: providerCode, ProviderProtocolProfileID: profileID, GroupID: groupID,
+		ProviderCode: providerCode, GroupID: groupID,
 	})
 	if err != nil {
 		return false
 	}
 	for index := range result.Items {
 		item := result.Items[index]
-		if item.ProviderCode == providerCode && item.ProviderProtocolProfileID == profileID && sameText(item.Name, name) {
+		if item.ProviderCode == providerCode && sameText(item.Name, name) {
 			return true
 		}
 	}
@@ -863,7 +901,9 @@ func (d *Deps) updateAccount(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "公开账号修改仅支持 API Key 账户")
 		return
 	}
-	profile, err := d.requireProviderProfile(r.Context(), basic.ProviderCode, basic.ProviderProtocolProfileID)
+	// 目标 schema（§2.1）accounts 不再持久化档案 ID：按 vendor 派生同一档案
+	// 身份参与类型校验，公开契约的 update 语义不变。
+	profile, err := d.requireProviderProfile(r.Context(), basic.ProviderCode, publicProfileIDForVendor(basic.ProviderCode))
 	if err != nil {
 		kernel.WriteBadRequest(w, err.Error())
 		return
@@ -1003,15 +1043,15 @@ func (d *Deps) resolveAccountGroupFilter(r *http.Request, parsed *accountUpdateB
 	if parsed.HasProvider && parsed.ProviderCode != "" {
 		profileCode = parsed.ProviderCode
 	}
-	profileID, err := d.resolveOptionalProfileID(r.Context(), profileCode, true, parsed.ProfileID, parsed.HasProfileID)
-	if err != nil {
-		return nil, err
-	}
-	if profileID != nil && *profileID != basic.ProviderProtocolProfileID {
-		return nil, errors.New("账号不存在")
-	}
-	if basic.ProviderProtocolProfileID == "" {
-		return nil, errors.New("账号 providerProtocolProfileId 不能为空")
+	if parsed.HasProfileID && parsed.ProfileID != "" {
+		if _, err := d.requireProviderProfile(r.Context(), profileCode, parsed.ProfileID); err != nil {
+			return nil, err
+		}
+		// accounts 不再持久化档案 ID：请求档案与 vendor 派生身份不一致即视为
+		// 找不到该账户（保持公开 API 防误删/防误改语义）。
+		if parsed.ProfileID != publicProfileIDForVendor(profileCode) {
+			return nil, errors.New("账号不存在")
+		}
 	}
 	if !parsed.HasGroupName || parsed.TargetGroupName == "" {
 		if basic.BoundGroupID == nil {
@@ -1029,8 +1069,8 @@ func (d *Deps) resolveAccountGroupFilter(r *http.Request, parsed *accountUpdateB
 	// The account must actually belong to that group.
 	result, err := d.AiAccounts.ListPage(r.Context(), access, accounts.ListOptions{
 		IDs: []string{basic.ID}, Page: 1, PageSize: 1,
-		ProviderCode: basic.ProviderCode, ProviderProtocolProfileID: basic.ProviderProtocolProfileID,
-		GroupID: existing.ID,
+		ProviderCode: basic.ProviderCode,
+		GroupID:      existing.ID,
 	})
 	if err != nil {
 		return nil, err

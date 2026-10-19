@@ -170,7 +170,6 @@ type strategyBindingRow struct {
 	weight          int
 	status          string
 	groupName       sql.NullString
-	providerCode    sql.NullString
 	groupEnabled    bool
 }
 
@@ -195,7 +194,6 @@ func (d *Deps) loadStrategyBindings(ctx context.Context, strategyIDs []string) (
 		route_strategy_groups.weight,
 		route_strategy_groups.status,
 		groups.name AS group_name,
-		groups.provider_code,
 		CASE
 			WHEN groups.id IS NULL THEN 0
 			WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
@@ -217,12 +215,12 @@ func (d *Deps) loadStrategyBindings(ctx context.Context, strategyIDs []string) (
 		var row strategyBindingRow
 		var enabled int64
 		if err := rows.Scan(&row.id, &row.routeStrategyID, &row.groupID, &row.priority, &row.weight,
-			&row.status, &row.groupName, &row.providerCode, &enabled); err != nil {
+			&row.status, &row.groupName, &enabled); err != nil {
 			return nil, err
 		}
 		summary := PublicBindingSummary{
 			ID: row.id, GroupID: row.groupID, GroupName: nullPtrString(row.groupName),
-			ProviderCode: nullPtrString(row.providerCode), Priority: row.priority,
+			Priority: row.priority,
 			Weight: row.weight, Status: row.status, GroupEnabled: enabled == 1,
 		}
 		result[row.routeStrategyID] = append(result[row.routeStrategyID], summary)

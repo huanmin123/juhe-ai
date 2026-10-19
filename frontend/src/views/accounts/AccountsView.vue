@@ -226,6 +226,7 @@
       :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
       :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
+      :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
       :model-options="providerModelOptions"
       :models-loading="strategyModelsLoading"
       :models-settled="providerModelOptionsSettled"
@@ -954,6 +955,7 @@ const {
   mappingCurrentProviderSourceModelOptions,
   mappingGeminiSourceModelOptions,
   mappingSourceModelOptions,
+  mappingSourceModelOptionsTruncated,
   modalConfirmLoading,
   modalOkButtonProps,
   modalOpen,

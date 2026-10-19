@@ -271,13 +271,14 @@ func TestW2AssertEndpointModesCompatible(t *testing.T) {
 }
 
 func TestW2PreferredHealthCheckEndpointMode(t *testing.T) {
+	// 流式优先（2026-10-19 定案）：对话类首选形态一律落 _sse。
 	cases := map[[2]string]string{
-		{"gemini", "profile_gemini_native_v1beta"}:      "generate_content_json",
-		{"xai", "profile_xai_anthropic_v1"}:             "messages_json",
-		{"anthropic", "profile_anthropic_anthropic_v1"}: "messages_json",
+		{"gemini", "profile_gemini_native_v1beta"}:      "generate_content_sse",
+		{"xai", "profile_xai_anthropic_v1"}:             "messages_sse",
+		{"anthropic", "profile_anthropic_anthropic_v1"}: "messages_sse",
 		{"gpt", "profile_gpt_openai_v1"}:                "responses_sse",
-		{"deepseek", "profile_deepseek_openai_v1"}:      "chat_json",
-		{"", ""}: "chat_json",
+		{"deepseek", "profile_deepseek_openai_v1"}:      "chat_sse",
+		{"", ""}: "chat_sse",
 	}
 	for input, want := range cases {
 		if got := preferredHealthCheckEndpointMode(input[0], input[1]); got != want {
@@ -292,7 +293,11 @@ func TestW2PreferredHealthCheckEndpointMode(t *testing.T) {
 		}
 		got, err = resolveDefaultHealthCheckEndpointMode("gpt", "", []string{"chat_sse", "responses_sse"})
 		if err != nil || got != "responses_sse" {
-			t.Fatalf("json 后缀回退不一致：%q %v", got, err)
+			t.Fatalf("首选命中不一致：%q %v", got, err)
+		}
+		got, err = resolveDefaultHealthCheckEndpointMode("openai", "", []string{"chat_json", "responses_json"})
+		if err != nil || got != "chat_json" {
+			t.Fatalf("无 _sse 时回落 _json 不一致：%q %v", got, err)
 		}
 		got, err = resolveDefaultHealthCheckEndpointMode("deepseek", "", []string{"chat_sse"})
 		if err != nil || got != "chat_sse" {

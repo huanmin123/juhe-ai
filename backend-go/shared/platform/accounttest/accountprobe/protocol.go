@@ -233,23 +233,26 @@ func manualTestEndpointModes(defaultMode EndpointMode, normalizedModes map[Endpo
 }
 
 // EndpointModeOrderOpenAI 是 accountTestEndpointModeOrder 的 api_key 分支。
+// 各协议族形态顺序统一流式优先（AI账户检查模型与人工测试设计 §5 2026-10-19
+// 定案）：真实流量以流式为主，_sse 恒先于 _json，与
+// accounts/accountstest.AccountTestEndpointModeOrder 同序。
 func EndpointModeOrderOpenAI() []EndpointMode {
 	return []EndpointMode{ModeChatSSE, ModeResponsesSSE, ModeChatJSON, ModeResponsesJSON, ModeAudioSpeech, ModeAudioTranscriptionJSON}
 }
 
-// EndpointModeOrderAnthropic / Gemini / OAuth 对齐 Node 其余分支。
+// EndpointModeOrderAnthropic / Gemini / OAuth 对齐 Node 其余分支（流式优先）。
 func EndpointModeOrderAnthropic() []EndpointMode {
-	return []EndpointMode{ModeMessagesJSON, ModeMessagesSSE}
+	return []EndpointMode{ModeMessagesSSE, ModeMessagesJSON}
 }
 
 func EndpointModeOrderGemini() []EndpointMode {
 	// M1：gemini 族的 audio_speech 探针形态在尾部（TTS adapter 承载；
 	// gemini 无 /v1/audio/transcriptions 直连形态，不列 transcription）。
-	return []EndpointMode{ModeInteractionsJSON, ModeInteractionsSSE, ModeGenerateContentJSON, ModeGenerateContentSSE, ModeAudioSpeech}
+	return []EndpointMode{ModeInteractionsSSE, ModeGenerateContentSSE, ModeInteractionsJSON, ModeGenerateContentJSON, ModeAudioSpeech}
 }
 
 func EndpointModeOrderOAuth() []EndpointMode {
-	return []EndpointMode{ModeResponsesJSON, ModeResponsesSSE}
+	return []EndpointMode{ModeResponsesSSE, ModeResponsesJSON}
 }
 
 // protocolFamilyForMode 等价 accountTestEndpointModeSourceFamily（模型映射

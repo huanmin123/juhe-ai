@@ -374,6 +374,7 @@ rotationLoop:
 				*in.auditAttemptIndex++
 				requestErrorResult, handleErr := e.FailureDispatcher.HandleUpstreamRequestError(ctx, UpstreamRequestErrorInput{
 					Req:                         in.args.Req,
+					RequestLane:                 in.requestLane,
 					UsageContext:                *usageContext,
 					AuditCapture:                auditCapture,
 					AuditAttemptID:              "",

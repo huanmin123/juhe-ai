@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 const wcLifeToken = "juis_token_lifelifelifelife"
@@ -44,14 +43,12 @@ func wcSeedProfile(t *testing.T, env *aipublicEnv, id, providerCode string, enab
 	if enabled {
 		enabledInt = 1
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := env.db.Exec(`INSERT INTO provider_protocol_profiles
-		(id, provider_code, name, enabled, protocol_code, protocol_version, base_url,
-		 default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'openai', 'v1', 'https://example.invalid', 'm1', ?, '[]', ?, ?)`,
-		id, providerCode, id, enabledInt, accountTypes, now, now); err != nil {
-		t.Fatal(err)
-	}
+	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生；
+	// 其余形参保留以维持既有调用点。
+	_ = id
+	_ = providerCode
+	_ = enabledInt
+	_ = accountTypes
 }
 
 // wcAddGroup 快捷建组并返回组 ID（已存在时复用）。

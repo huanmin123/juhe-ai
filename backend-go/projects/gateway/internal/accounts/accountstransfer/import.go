@@ -204,61 +204,92 @@ type ImportProvider struct {
 	code                   string
 	enabled                bool
 	defaultSupportedModels []string
-	profiles               map[string]*importProviderProfile
+}
+
+// importProtocolForProvider / importAccountTypesForProvider 是目标 schema
+// （§9.3 删除 provider_protocol_profiles）下导入链的档案身份派生：协议码/版本
+// 与账户类型允许集按 vendor 确定性推导。profile ID 本身在目标 schema 已无法
+// 行级校验（导出文件可携带任意既有档案 ID），导入链只要求非空并据此合成身份。
+func importProtocolForProvider(providerCode string) (string, string) {
+	switch providerCode {
+	case "gemini":
+		return "gemini", "v1beta"
+	case "anthropic":
+		return "anthropic", "v1"
+	default:
+		return "openai", "v1"
+	}
+}
+
+func importAccountTypesForProvider(providerCode string) []string {
+	switch providerCode {
+	case "gemini":
+		return []string{"api_key", "google_oauth"}
+	case "xai":
+		// 迁移窗口口径：xai OAuth 专用 profile（profile_xai_openai_v1）在旧
+		// 档案表的 account_types 固定为 oauth；目标组合表的 api_key 预设不
+		// 属于本旧 wire 字段的判定域。
+		return []string{"oauth"}
+	default:
+		return []string{"api_key", "oauth"}
+	}
+}
+
+// importProviderProfileFor 合成请求 profile 身份的派生档案；空 profile ID 或
+// 未知 vendor 返回 nil（调用方按既有文案报错）。enabled 随 vendor 行，保持旧
+// 「档案停用」判定在 vendor 停用时的行为面。目标 schema 无档案表可做行级匹配，
+// 因此任意非空 profile ID 均按该 vendor 的派生协议接受（迁移窗口兼容既有导出
+// 文件中的历史档案 ID）。
+func importProviderProfileFor(provider *ImportProvider, requestedProfileID string) *importProviderProfile {
+	if provider == nil {
+		return nil
+	}
+	requested := strings.TrimSpace(requestedProfileID)
+	if requested == "" {
+		return nil
+	}
+	protocolCode, protocolVersion := importProtocolForProvider(provider.code)
+	return &importProviderProfile{
+		id: requested, providerCode: provider.code, name: requested,
+		enabled:      provider.enabled,
+		protocolCode: protocolCode, protocolVersion: protocolVersion,
+		accountTypes: importAccountTypesForProvider(provider.code),
+	}
 }
 
 func (s *Service) LoadImportProviders(ctx context.Context) (map[string]*ImportProvider, error) {
 	providers := map[string]*ImportProvider{}
+	// 目标 schema（§9.1/§9.3）：vendors 单表；旧 providers /
+	// provider_protocol_profiles 不再存在，档案身份由 registry 派生。
 	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT code, enabled, default_supported_models_json
-		FROM `+s.store.Table("providers")))
+		FROM `+s.store.Table("vendors")))
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var code string
 		var enabled int64
 		var defaultsJSON string
 		if err := rows.Scan(&code, &enabled, &defaultsJSON); err != nil {
-			rows.Close()
 			return nil, err
 		}
-		provider := &ImportProvider{code: code, enabled: enabled == 1, profiles: map[string]*importProviderProfile{}}
+		provider := &ImportProvider{code: code, enabled: enabled == 1}
 		if strings.TrimSpace(defaultsJSON) != "" {
 			_ = json.Unmarshal([]byte(defaultsJSON), &provider.defaultSupportedModels)
 		}
 		providers[code] = provider
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+	// generic_http 旧 provider 词根：目标 schema 的 vendors 只含九家真实厂商，
+	// generic 账户在库内 vendor=NULL；导入 wire（既有导出文件、模板）仍以
+	// "openai" 词根表达，故在读取面合成为 enabled 的兼容条目。默认支持模型沿用
+	// 旧 providers 种子的 generic 缺省（迁移窗口兼容；导入载荷显式 supportedModels
+	// 时优先）。
+	providers["openai"] = &ImportProvider{
+		code: "openai", enabled: true,
+		defaultSupportedModels: []string{"gpt-4o-mini"},
 	}
-	profileRows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT id, provider_code, name, enabled,
-			protocol_code, protocol_version, account_types_json
-		FROM `+s.store.Table("provider_protocol_profiles")))
-	if err != nil {
-		return nil, err
-	}
-	defer profileRows.Close()
-	for profileRows.Next() {
-		var id, providerCode, name, protocolCode, protocolVersion, accountTypesJSON string
-		var enabled int64
-		if err := profileRows.Scan(&id, &providerCode, &name, &enabled, &protocolCode, &protocolVersion, &accountTypesJSON); err != nil {
-			return nil, err
-		}
-		provider, ok := providers[providerCode]
-		if !ok {
-			continue
-		}
-		profile := &importProviderProfile{
-			id: id, providerCode: providerCode, name: name, enabled: enabled == 1,
-			protocolCode: protocolCode, protocolVersion: protocolVersion, accountTypes: []string{},
-		}
-		if strings.TrimSpace(accountTypesJSON) != "" {
-			_ = json.Unmarshal([]byte(accountTypesJSON), &profile.accountTypes)
-		}
-		provider.profiles[id] = profile
-	}
-	return providers, profileRows.Err()
+	return providers, rows.Err()
 }
 
 // ---- plan model ----
@@ -1225,7 +1256,7 @@ func applyImportAccountProtocolProfileDefaults(source *NormalizedImportAccount, 
 		source.Push("账户 providerProtocolProfileId 不能为空")
 		return
 	}
-	profile := provider.profiles[requestedProfileID]
+	profile := importProviderProfileFor(provider, requestedProfileID)
 	if profile == nil || profile.providerCode != source.providerCode {
 		return
 	}
@@ -1332,7 +1363,7 @@ func importCapabilityContextResolvable(source *NormalizedImportAccount, provider
 	if !ok || provider == nil {
 		return false
 	}
-	profile := provider.profiles[source.providerProtocolProfileID]
+	profile := importProviderProfileFor(provider, source.providerProtocolProfileID)
 	return profile != nil && profile.providerCode == source.providerCode && profile.enabled
 }
 
@@ -1378,7 +1409,7 @@ func resolveImportAccountProtocolProfile(source *NormalizedImportAccount, provid
 		source.Push("账户 providerProtocolProfileId 不能为空")
 		return nil
 	}
-	profile := provider.profiles[requestedProfileID]
+	profile := importProviderProfileFor(provider, requestedProfileID)
 	if profile == nil {
 		source.Push("供应商 " + source.providerCode + " 未配置协议档案")
 		return nil

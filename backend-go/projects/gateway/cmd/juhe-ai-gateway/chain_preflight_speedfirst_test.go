@@ -190,6 +190,11 @@ func TestChainSpeedFirstBodyAdmissionGateSkipsNonApplicable(t *testing.T) {
 		{"personal group", speedFirstRuntime(nil, nil, &personal, nil, 1), gatewayproto.LaneText},
 		{"no accounts", speedFirstRuntime(nil, nil, nil, nil, 0), gatewayproto.LaneText},
 		{"image lane", speedFirstRuntime(nil, nil, nil, nil, 1), gatewayproto.LaneImage},
+		// T10（对话与非对话媒体调度分离设计 §3.2）：音频/视频创建同属
+		// StatelessMediaDispatch 域，speed_first 请求体准入排队一并排除——并发
+		// 保护由 lane 并发槽承接。
+		{"audio lane", speedFirstRuntime(nil, nil, nil, nil, 1), gatewayproto.LaneAudio},
+		{"video lane", speedFirstRuntime(nil, nil, nil, nil, 1), gatewayproto.LaneVideo},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

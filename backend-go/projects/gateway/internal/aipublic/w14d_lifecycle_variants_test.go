@@ -14,11 +14,7 @@ import (
 func TestW14dAccountAddAutoCreatesTargetAndGroup(t *testing.T) {
 	env := newAIPublicEnv(t)
 	env.seedProvider("gpt", true)
-	if _, err := env.db.Exec(`INSERT INTO provider_protocol_profiles
-		(id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_gpt_openai_v1', 'gpt', 'OpenAI v1', 1, 'openai', 'v1', 'https://api.openai.com', 'gpt-4o-mini', '["api_key"]', '{}', datetime('now'), datetime('now'))`); err != nil {
-		t.Fatal(err)
-	}
+	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生。
 	scopes := []string{"juhe_ai_public:account_list:read", "juhe_ai_public:account_add:write",
 		"juhe_ai_public:account_update:write", "juhe_ai_public:account_delete:write"}
 	token := env.seedSource("w14d_ext", "w14d_tok", "juis_token_aut0creat3d1111",

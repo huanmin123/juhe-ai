@@ -70,6 +70,7 @@
             :value="model"
             :loading="modelsLoading"
             :models="modelOptions"
+            :models-truncated="modelsTruncated"
             :disabled="businessFiltersDisabled"
             placeholder="全部模型"
             @change="handleModelChange"
@@ -139,6 +140,7 @@
           :value="model"
           :loading="modelsLoading"
           :models="modelOptions"
+          :models-truncated="modelsTruncated"
           :disabled="businessFiltersDisabled"
           placeholder="全部模型"
           @change="handleModelChange"
@@ -211,6 +213,8 @@ defineProps<{
   model: string
   modelOptions: ProviderModelOption[]
   modelsLoading?: boolean
+  /** 服务端 hasMore 判定的目录截断标志（模型筛选下拉底部搜索提示）。 */
+  modelsTruncated?: boolean
   refreshLoading: boolean
   result: ResultFilter
   resultOptions: Array<FilterOption<ResultFilter>>

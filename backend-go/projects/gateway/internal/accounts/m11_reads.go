@@ -579,7 +579,7 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.id = ?
 			AND accounts.deleted_at IS NULL
-			AND accounts.provider_code = 'gemini'
+			AND accounts.vendor_code = 'gemini'
 			AND accounts.type = 'google_oauth'`+scopeClause+`
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID, &row.credentials,

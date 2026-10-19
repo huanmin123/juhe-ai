@@ -109,8 +109,8 @@ func TestLoadAPIKeyRuntimeDetailsDecryptFailure(t *testing.T) {
 	h.seedSchema(t)
 	h.exec(t, `
     INSERT INTO accounts (id, system_account_id, name, type, status, schedulable,
-      provider_code, protocol_code, protocol_version, config_revision, credentials_encrypted)
-    VALUES ('acc-bad', 'sys-owner', 'bad', 'api_key', 'active', 1, 'openai', 'openai', 'v1', 1, 'not-an-envelope')`)
+      provider_code, vendor_code, protocol_code, protocol_version, config_revision, credentials_encrypted)
+    VALUES ('acc-bad', 'sys-owner', 'bad', 'api_key', 'active', 1, 'openai', 'openai', 'openai', 'v1', 1, 'not-an-envelope')`)
 	items, err := h.store.LoadAPIKeyRuntimeDetails(context.Background(), "acc-bad")
 	if err != nil {
 		t.Fatalf("decrypt failure must not propagate: %v", err)

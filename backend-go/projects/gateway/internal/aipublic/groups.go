@@ -123,21 +123,19 @@ type groupRowsPage struct {
 }
 
 // listGroupRows mirrors listGroupsPageAsync(manageableOnly): owner rows only,
-// provider_code equality, keyword prefix range, updated_at DESC ordering.
+// keyword prefix range, updated_at DESC ordering. 供应商解耦后组无 provider
+// 维度（设计 §8）：providerCode 仅作为公开 API 的兼容入参接受但不再参与
+// 过滤（列表响应该字段恒空）。
 func (d *Deps) listGroupRows(ctx context.Context, ownerID string, page, pageSize int, keyword, providerCode string) (*groupRowsPage, error) {
 	clauses := []string{"groups.system_account_id = ?"}
 	args := []any{ownerID}
-	if providerCode != "" {
-		clauses = append(clauses, "groups.provider_code = ?")
-		args = append(args, providerCode)
-	}
 	if keyword != "" {
 		upper := textPrefixUpperBound(keyword)
-		clauses = append(clauses, "((groups.name >= ? AND groups.name < ?) OR (groups.provider_code >= ? AND groups.provider_code < ?))")
-		args = append(args, keyword, upper, keyword, upper)
+		clauses = append(clauses, "groups.name >= ? AND groups.name < ?")
+		args = append(args, keyword, upper)
 	}
 	args = append(args, pageSize+1, (page-1)*pageSize)
-	rows, err := d.db().QueryContext(ctx, d.bind(`SELECT groups.id, groups.name, groups.provider_code,
+	rows, err := d.db().QueryContext(ctx, d.bind(`SELECT groups.id, groups.name,
 		groups.description, groups.enabled, groups.group_type, groups.is_default
 	FROM `+d.table("groups")+` AS groups
 	WHERE `+strings.Join(clauses, " AND ")+`
@@ -152,7 +150,7 @@ func (d *Deps) listGroupRows(ctx context.Context, ownerID string, page, pageSize
 		var item PublicGroupSummary
 		var description sql.NullString
 		var enabled, isDefault int64
-		if err := rows.Scan(&item.ID, &item.Name, &item.ProviderCode, &description, &enabled, &item.GroupType, &isDefault); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &description, &enabled, &item.GroupType, &isDefault); err != nil {
 			return nil, err
 		}
 		item.Enabled = enabled == 1

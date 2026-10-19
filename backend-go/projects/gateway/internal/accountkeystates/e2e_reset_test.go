@@ -96,6 +96,7 @@ func e2eResetStore(t *testing.T) (*Store, *accounts.Store, *sql.DB, []string, fu
       client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
       schedulable INTEGER NOT NULL DEFAULT 1,
       provider_code TEXT NOT NULL DEFAULT 'openai',
+      vendor_code TEXT,
       provider_protocol_profile_id TEXT NOT NULL DEFAULT 'profile_openai_openai_v1',
       protocol_code TEXT NOT NULL DEFAULT 'openai',
       protocol_version TEXT NOT NULL DEFAULT 'v1',
@@ -216,8 +217,8 @@ func e2eResetStore(t *testing.T) (*Store, *accounts.Store, *sql.DB, []string, fu
 		t.Fatal(err)
 	}
 	nowISO := nowMillisText()
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, credentials_encrypted, created_at, updated_at)
-		VALUES ('acc-e2e', 'sys-owner', 'reset-e2e', 'api_key', 'active', ?, ?, ?)`, sealed, nowISO, nowISO); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, type, status, vendor_code, credentials_encrypted, created_at, updated_at)
+		VALUES ('acc-e2e', 'sys-owner', 'reset-e2e', 'api_key', 'active', 'openai', ?, ?, ?)`, sealed, nowISO, nowISO); err != nil {
 		t.Fatal(err)
 	}
 	seed := func(fingerprint, status string) {

@@ -23,6 +23,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -312,13 +313,24 @@ func (l *v1DispatchLoop) stopCompactSseWaitHeartbeat() {
 	}
 }
 
+// dispatchDomainStatelessMediaOf 判定当前派发上下文是否属于媒体创建调度域
+// （对话与非对话媒体调度分离设计 §5）。nil 上下文按对话域处理。
+func dispatchDomainStatelessMediaOf(current *gatewaypreauth.DispatchContext) bool {
+	return current != nil &&
+		gatewayproto.DispatchDomainOfLane(current.RequestLane) == gatewayproto.DispatchDomainStatelessMedia
+}
+
 // waitForRecoverableFailures 镜像 Node routes.ts:1281-1283：单分组（无备用
 // 可切）、切组跳数已达分组上限、或强制等待置位（账户即将恢复且预算未到
 // recoverable_later 交接点）时，引擎在本轮内等待可恢复失败；多分组未切完
 // 的默认是 false——引擎立即上抛，链面先切备用分组（横向有健康账户时明显
 // 优于干等当前组恢复）。此前恒 true，多分组请求在备用分组健康时也要干等
-// 到当前组预算交接才切组。
+// 到当前组预算交接才切组。媒体创建域恒 false（对话与非对话媒体调度分离设计
+// §3.2/§4.1：不等待账户恢复，候选耗尽立即返回最终错误）。
 func (l *v1DispatchLoop) waitForRecoverableFailures(current *gatewaypreauth.DispatchContext) bool {
+	if dispatchDomainStatelessMediaOf(current) {
+		return false
+	}
 	bindings := 0
 	if current.APIKeyRecord != nil {
 		bindings = len(current.APIKeyRecord.GroupBindings)
@@ -613,6 +625,34 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 	// produces it while canRetryUpstream); a writable-ended downstream can no
 	// longer take a different account's response.
 	if writableEndedOf(l.res) {
+		return true
+	}
+	// 对话与非对话媒体调度分离设计 §5：媒体创建不进入流式服务端重试出口。
+	// 实施前核实（2026-10-19）：媒体 JSON 响应当前可达该判定面——媒体创建 2xx
+	// 在 chain_v1.go handleUpstreamResponse 已被拦截（job 对象直渲染），但同步
+	// 音频 STT 与图像 JSON 的 2xx 响应走通用非流式管道，命中响应检查策略时经
+	// inspectBufferedGatewayJSONResponse 产生 StreamServerRetryResponseInspection
+	// 换号 verdict（nonstreaminspection.go）。按设计在消费面切断：媒体域的
+	// RetryUpstream verdict 不换号、不写排除集，按既有耗尽契约渲染终态（用法
+	// 失败行与审计已由 verdict 生产面落库，此处 recordUsage:false 不重复计费）。
+	// codex 加密上下文恢复臂在媒体域不可达（恢复臂只由 codex 客户端画像产生）。
+	if dispatchDomainStatelessMediaOf(l.current) {
+		l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "media_dispatch_server_retry_cut")
+		l.auditCapture.AddGatewayMetadata("media_dispatch_server_retry_cut", map[string]any{
+			"retryReason":      handling.RetryReason,
+			"accountId":        dispatched.Account.ID,
+			"errorCode":        handling.ErrorCode,
+			"candidateCount":   len(l.current.Accounts),
+			"excludedAccounts": false,
+		})
+		l.sendStreamServerRetryExhaustedResponse(streamServerRetryExhaustedInput{
+			message:        handling.Message,
+			retryReason:    handling.RetryReason,
+			errorCode:      handling.ErrorCode,
+			decision:       handling.ResponseInspection,
+			usageContext:   l.current.UsageContext,
+			clientStrategy: &l.current.ClientStrategy,
+		})
 		return true
 	}
 	// BUG-0289 恢复臂：codex 加密上下文流内失败的清理重放 verdict。挂在既有
@@ -918,11 +958,13 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 			case fallback == v1FallbackSwitched:
 				return false
 			case fallback == v1FallbackNone && len(attempt.RecoverableAccountIDs) > 0 &&
+				!dispatchDomainStatelessMediaOf(l.current) &&
 				!l.serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil):
 				// Node routes.ts:1479-1486：切组未成但仍有可恢复账户、等待预算
 				// 未到 recoverable_later 交接点——置强制等待并继续循环，下一轮
 				// 引擎调用进入可恢复等待（优先等即将恢复的账户，保住亲和）；
-				// 预算已到交接点则落入下方耗尽渲染。
+				// 预算已到交接点则落入下方耗尽渲染。媒体创建域不进入该臂
+				// （设计 §4.1 不等待账户恢复），直接耗尽渲染。
 				l.forceRecoverableFailureWait = true
 				return false
 			}

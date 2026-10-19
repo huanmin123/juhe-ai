@@ -338,6 +338,7 @@
                         :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
                         :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
                         :mapping-source-model-options="mappingSourceModelOptions"
+                        :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
                         :mapping-upstream-model-options="mappingUpstreamModelOptions"
                         :proxy-options="proxyOptions"
                         :proxy-options-loading="proxyOptionsLoading"
@@ -525,6 +526,7 @@
                       :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
                       :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
                       :mapping-source-model-options="mappingSourceModelOptions"
+                      :mapping-source-model-options-truncated="mappingSourceModelOptionsTruncated"
                       :mapping-upstream-model-options="mappingUpstreamModelOptions"
                       :proxy-options="proxyOptions"
                       :proxy-options-loading="proxyOptionsLoading"
@@ -786,6 +788,8 @@ const props = withDefaults(defineProps<{
   mappingCurrentProviderSourceModelOptions: SelectOption[]
   mappingGeminiSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
+  /** hybrid 账户映射源模型下拉（三协议实例）的服务端截断标志（T25 hasMore）。 */
+  mappingSourceModelOptionsTruncated?: boolean
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
   /** 当前目录 scope 下候选是否完成过至少一次加载（v8-D 空态提示判据；懒加载下「未加载」与「确认为空」必须区分）。 */

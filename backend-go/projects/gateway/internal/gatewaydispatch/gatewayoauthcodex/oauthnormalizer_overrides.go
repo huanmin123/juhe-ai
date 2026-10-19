@@ -3,9 +3,11 @@ package gatewayoauthcodex
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
@@ -22,9 +24,11 @@ import (
 //	effectiveGptAccountRequestOverrides gate.
 //
 // The catalog read goes through the narrow GptRequestOverrideModelCatalog
-// port (composition-root handover mirrors Node
-// listCachedProviderModelCatalogAsync); a nil port keeps capability resolution
-// returning undefined (overrides inert) instead of guessing.
+// port handed over explicitly per call inside GptRequestOverrideRuntime
+// (composition-root wiring mirrors Node listCachedProviderModelCatalogAsync);
+// a nil port keeps capability resolution returning nil (overrides inert)
+// instead of guessing. Since the T15 convergence the ports ride the explicit
+// per-call parameter — there is no process-level global and no Set* accessor.
 //
 // 值域分层（供应商感知断言）：service_tier / reasoning_effort 的 OpenAI 枚举是
 // gpt 供应商专属的 wire 约束，只对 providerCode 规范化后为 gpt 的账户生效；
@@ -171,22 +175,11 @@ func ResolveEffectiveOverrides(overrides GptAccountRequestOverrides, capabilitie
 	return effective
 }
 
-// gptAccountRequestOverridesHook is the composition-root-injected override
-// hook consumed by applyOpenAIOAuthCodexAccountRequestOverrides when the
-// per-call input leaves the port unset. Set it through
-// SetGptAccountRequestOverridesHook (newChainProviderDriver).
-var gptAccountRequestOverridesHook func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error)
-
-// SetGptAccountRequestOverridesHooks wires the override hook (composition
-// root). The expected value is ApplyGptAccountRequestOverridesBody.
-func SetGptAccountRequestOverridesHook(hook func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error)) {
-	gptAccountRequestOverridesHook = hook
-}
-
 // ApplyGptAccountRequestOverridesBody mirrors applyGptAccountRequestOverrides.
-// It is the hook value assigned to
-// OpenAIOAuthCodexNormalizeInput.ApplyGptAccountRequestOverrides (the port the
-// composition root previously left unwired).
+// It is the explicit hook value assigned to
+// OpenAIOAuthCodexNormalizeInput.ApplyGptAccountRequestOverrides (composition
+// root wires it through OpenAIOAuthCodexRequestOptions since the T15
+// explicit-parameter convergence; there is no process-level fallback port).
 func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAccountOverrideInput) (map[string]any, error) {
 	overrides, err := ReadGptAccountRequestOverrides(input.Credentials)
 	if err != nil {
@@ -200,22 +193,31 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 		return inputBody, nil
 	}
 	body := cloneJSONObject(inputBody)
+	applyGptAccountRequestOverrideWireFields(body, effective, input.EndpointFamily, input.Compact)
+	return body, nil
+}
+
+// applyGptAccountRequestOverrideWireFields 把 effective 覆盖值就地写入 body
+// （共享实现：OAuth hook 路径 ApplyGptAccountRequestOverridesBody 与 api_key
+// 合并路径 ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody
+// 必须保持同一 wire 形态，避免双份漂移）。
+// endpoint family 只保留规范族名（生产调用方只传规范名：OAuth 路径在
+// ApplyOpenAIOAuthCodexAccountRequestOverrides 硬编码 responses；api_key
+// 路径经组合根 gptRequestOverrideEndpointFamily 白名单归一）。
+// Node wire 分支（provider-request-overrides.ts:62-84）：anthropic_messages
+// 写 output_config.effort；gemini 两族写
+// generationConfig.thinkingConfig.thinkingLevel（audit deviation note，
+// 本任务 B-6 补齐）。
+func applyGptAccountRequestOverrideWireFields(body map[string]any, effective GptAccountRequestOverrides, endpointFamily string, compact bool) {
 	if effective.ServiceTier == "default" {
 		delete(body, "service_tier")
 	} else if effective.ServiceTier != "" {
 		body["service_tier"] = effective.ServiceTier
 	}
-	if input.Compact || effective.ReasoningEffort == "" {
-		return body, nil
+	if compact || effective.ReasoningEffort == "" {
+		return
 	}
-	// endpoint family 只保留规范族名（生产调用方只传规范名：OAuth 路径在
-	// ApplyOpenAIOAuthCodexAccountRequestOverrides 硬编码 responses；api_key
-	// 路径经组合根 gptRequestOverrideEndpointFamily 白名单归一）。
-	// Node wire 分支（provider-request-overrides.ts:62-84）：anthropic_messages
-	// 写 output_config.effort；gemini 两族写
-	// generationConfig.thinkingConfig.thinkingLevel（audit deviation note，
-	// 本任务 B-6 补齐）。
-	switch input.EndpointFamily {
+	switch endpointFamily {
 	case "responses":
 		reasoning := map[string]any{}
 		if existing := bridgeObjectValueOf(body["reasoning"]); existing != nil {
@@ -247,7 +249,6 @@ func ApplyGptAccountRequestOverridesBody(inputBody map[string]any, input GptAcco
 		generationConfig["thinkingConfig"] = thinkingConfig
 		body["generationConfig"] = generationConfig
 	}
-	return body, nil
 }
 
 // gptOverrideListContains reports whether values contains target verbatim.
@@ -285,16 +286,26 @@ type GptRequestOverrideModelCatalog interface {
 	ListGptRequestOverrideModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]GptRequestOverrideModelCatalogItem, error)
 }
 
-// gptRequestOverrideModelCatalog is the injectable catalog port; nil keeps
-// ResolveGptRequestOverrideModelCapabilities returning nil (overrides inert).
-var gptRequestOverrideModelCatalog GptRequestOverrideModelCatalog
+// GptRequestOverrideRuntime 是覆盖运行时端口的显式传参载体（T15 收敛：取代
+// 进程级全局目录端口与候选展开器及对应 Set*）。组合根在构造 driver时装入，
+// 随每次能力解析/覆盖应用调用显式传入；nil Catalog 等价旧全局 nil 初始态
+// （能力解析返回 nil，覆盖惰性），nil ModelCandidates 使用包内默认展开
+// （与旧全局初始值同一实现）。
+type GptRequestOverrideRuntime struct {
+	// Catalog ports listCachedProviderModelCatalogAsync for the override
+	// capability resolver (composition-root handover); nil keeps capability
+	// resolution returning nil (overrides inert).
+	Catalog GptRequestOverrideModelCatalog
+	// ModelCandidates mirrors the
+	// modelPricingProviderDriverForProvider(providerCode).buildModelCandidates(model)
+	// fallback chain: the requested model plus vendor-equivalent spellings. nil
+	// falls back to defaultGptRequestOverrideModelCandidates.
+	ModelCandidates func(providerCode, model string) []string
+}
 
-// gptRequestOverrideModelCandidates mirrors the
-// modelPricingProviderDriverForProvider(providerCode).buildModelCandidates(model)
-// fallback chain: the requested model plus vendor-equivalent spellings. The
-// gateway side only needs the plain identity candidate unless a provider
-// driver registers extra spellings.
-var gptRequestOverrideModelCandidates = func(providerCode, model string) []string {
+// defaultGptRequestOverrideModelCandidates 是 ModelCandidates 为 nil 时的默认
+// 展开（与收敛前的全局初始值逐字同实现）：请求模型本体 + trim 归一拼写。
+func defaultGptRequestOverrideModelCandidates(providerCode, model string) []string {
 	candidates := []string{model}
 	if normalized := strings.TrimSpace(model); normalized != model && normalized != "" {
 		candidates = append(candidates, normalized)
@@ -302,17 +313,12 @@ var gptRequestOverrideModelCandidates = func(providerCode, model string) []strin
 	return candidates
 }
 
-// SetGptRequestOverrideModelCatalog wires the catalog port (composition root).
-func SetGptRequestOverrideModelCatalog(catalog GptRequestOverrideModelCatalog) {
-	gptRequestOverrideModelCatalog = catalog
-}
-
-// SetGptRequestOverrideModelCandidates overrides the model-candidate expander
-// (test / provider-driver handover).
-func SetGptRequestOverrideModelCandidates(expander func(providerCode, model string) []string) {
-	if expander != nil {
-		gptRequestOverrideModelCandidates = expander
+// modelCandidatesOf 解析本次调用生效的候选展开器。
+func (runtime GptRequestOverrideRuntime) modelCandidatesOf() func(providerCode, model string) []string {
+	if runtime.ModelCandidates != nil {
+		return runtime.ModelCandidates
 	}
+	return defaultGptRequestOverrideModelCandidates
 }
 
 // overrideVendorCode 解析覆盖运行时需要的供应商身份：只认供应商解耦后的
@@ -323,35 +329,56 @@ func overrideVendorCode(account gatewayruntimecache.OpenAIAccountSecret) string 
 	return strings.TrimSpace(account.VendorCode)
 }
 
-// ResolveGptRequestOverrideModelCapabilities mirrors
-// resolveGptRequestOverrideModelCapabilities.
-func ResolveGptRequestOverrideModelCapabilities(ctx context.Context, account gatewayruntimecache.OpenAIAccountSecret, upstreamModel string) (*GptRequestOverrideModelCapabilities, error) {
+// resolvedGptAccountRequestOverrides 是覆盖调用链一次性的 Read+Assert 前置产物
+// （T14 收敛：api_key 出站链此前对同一凭据 Read×3 / Assert×3，收敛为入口一次，
+// 下游仅查能力/应用覆盖直接复用本产物）。
+type resolvedGptAccountRequestOverrides struct {
+	overrides       GptAccountRequestOverrides
+	vendorCode      string
+	systemAccountID string
+}
+
+// resolveGptAccountRequestOverridesForAccount 读取凭据覆盖并执行供应商感知
+// 值域断言；错误语义与文案与单次 Read/Assert 逐字一致（malformed token 原样
+// 外抛）。
+func resolveGptAccountRequestOverridesForAccount(account gatewayruntimecache.OpenAIAccountSecret) (resolvedGptAccountRequestOverrides, error) {
+	overrides, err := ReadGptAccountRequestOverrides(account.Credentials)
+	if err != nil {
+		return resolvedGptAccountRequestOverrides{}, err
+	}
+	vendorCode := overrideVendorCode(account)
+	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, vendorCode); err != nil {
+		return resolvedGptAccountRequestOverrides{}, err
+	}
+	return resolvedGptAccountRequestOverrides{
+		overrides:       overrides,
+		vendorCode:      vendorCode,
+		systemAccountID: account.AccountOwnerSystemAccountID,
+	}, nil
+}
+
+// resolveModelCapabilities 是「仅查能力」变体（T14）：在已解析前置产物之上
+// 执行目录能力解析，不再重复 Read/Assert。早退顺序与收敛前逐点一致：
+// 模型为空 → 覆盖为空 → 供应商身份为空 → 目录端口缺席 → 目录查询（恰 1 次）。
+func (r resolvedGptAccountRequestOverrides) resolveModelCapabilities(ctx context.Context, runtime GptRequestOverrideRuntime, upstreamModel string) (*GptRequestOverrideModelCapabilities, error) {
 	model := strings.TrimSpace(upstreamModel)
 	if model == "" {
 		return nil, nil
 	}
-	overrides, err := ReadGptAccountRequestOverrides(account.Credentials)
+	if r.overrides.ServiceTier == "" && r.overrides.ReasoningEffort == "" {
+		return nil, nil
+	}
+	if r.vendorCode == "" {
+		return nil, nil
+	}
+	if runtime.Catalog == nil {
+		return nil, nil
+	}
+	catalog, err := runtime.Catalog.ListGptRequestOverrideModelCatalog(ctx, r.vendorCode, r.systemAccountID, true)
 	if err != nil {
 		return nil, err
 	}
-	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, overrideVendorCode(account)); err != nil {
-		return nil, err
-	}
-	if overrides.ServiceTier == "" && overrides.ReasoningEffort == "" {
-		return nil, nil
-	}
-	providerCode := overrideVendorCode(account)
-	if providerCode == "" {
-		return nil, nil
-	}
-	if gptRequestOverrideModelCatalog == nil {
-		return nil, nil
-	}
-	catalog, err := gptRequestOverrideModelCatalog.ListGptRequestOverrideModelCatalog(ctx, providerCode, account.AccountOwnerSystemAccountID, true)
-	if err != nil {
-		return nil, err
-	}
-	for _, candidate := range gptRequestOverrideModelCandidates(providerCode, model) {
+	for _, candidate := range runtime.modelCandidatesOf()(r.vendorCode, model) {
 		for _, item := range catalog {
 			if strings.TrimSpace(item.Model) != candidate {
 				continue
@@ -365,61 +392,193 @@ func ResolveGptRequestOverrideModelCapabilities(ctx context.Context, account gat
 	return nil, nil
 }
 
-// ApplyGptAccountRequestOverridesToUpstreamBody mirrors
-// applyGptAccountRequestOverridesToBody for the gateway non-OAuth request
-// path: body stays untouched unless applicable overrides survive the
-// capability gate; otherwise the JSON object body is rewritten in place.
-func ApplyGptAccountRequestOverridesToUpstreamBody(
+// ResolveGptRequestOverrideModelCapabilities mirrors
+// resolveGptRequestOverrideModelCapabilities：Read+Assert 前置产物一次解析后
+// 进入「仅查能力」变体。目录端口与候选展开器经 runtime 显式传入（T15）。
+func ResolveGptRequestOverrideModelCapabilities(ctx context.Context, account gatewayruntimecache.OpenAIAccountSecret, upstreamModel string, runtime GptRequestOverrideRuntime) (*GptRequestOverrideModelCapabilities, error) {
+	resolved, err := resolveGptAccountRequestOverridesForAccount(account)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.resolveModelCapabilities(ctx, runtime, upstreamModel)
+}
+
+// ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody 是 api_key
+// 出站链的合并入口（T14 + T17 收敛，取代原
+// ApplyGptAccountRequestOverridesToUpstreamBody + 独立
+// NormalizeOpenAIReasoningFieldsForUpstream 两步）：同一凭据 Read/Assert/目录
+// 能力解析各至多一次，body 至多 parse→mutate→serialize 一轮，保序为覆盖先行、
+// reasoning wire 归一随后。零行为差契约：
+//   - 端点族为空（媒体等非五族路径）时与收敛前一致地整段跳过覆盖：不读取
+//     凭据、不执行值域断言，reasoning 归一无动作时逐字节返回原始 body；
+//   - 非法凭据 token / gpt 枚举的错误文案逐字外抛（仅五族路径）；
+//   - 覆盖与归一都无动作时逐字节返回原始 body（零解析路径）；
+//   - 覆盖命中时输出仍是全量重序列化（键序同 json.Marshal(map)）；
+//   - body 非 JSON 对象且覆盖命中 →
+//     「账户请求覆盖要求请求体是有效的 JSON 对象」；覆盖未命中且仅归一涉及
+//     时保持原字节（归一既有语义）。
+//
+// parsedBody 是调用方持有的 request 级已解析 map（与 body 字节同源，例如
+// chain_driver 的 MaterializedParsedJSONObjectBody 缓存）；nil 时本函数按需
+// 自行解析一次。map 永不被改写（改写发生在深拷贝上），调用方缓存可安全复用。
+func ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
 	ctx context.Context,
 	body []byte,
+	parsedBody map[string]any,
 	account gatewayruntimecache.OpenAIAccountSecret,
 	endpointFamily string,
 	compact bool,
 	upstreamModel string,
+	reasoningPath string,
+	runtime GptRequestOverrideRuntime,
 ) ([]byte, error) {
-	overrides, err := ReadGptAccountRequestOverrides(account.Credentials)
-	if err != nil {
-		return nil, err
+	// 端点族为空时收敛前整段跳过覆盖应用（组合根只在该族非空时调用），
+	// 因此这里也不得读取凭据或执行值域断言：媒体等非五族路径的失败面必须
+	// 与旧两步管线一致，不因凭据中的覆盖 token 形状而新增错误。
+	var resolved resolvedGptAccountRequestOverrides
+	if endpointFamily != "" {
+		var resolveErr error
+		resolved, resolveErr = resolveGptAccountRequestOverridesForAccount(account)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
 	}
-	if err := AssertGptAccountRequestOverrideValuesForProvider(overrides, overrideVendorCode(account)); err != nil {
-		return nil, err
-	}
-	if !HasApplicableGptAccountRequestOverrides(overrides, endpointFamily, compact) {
+	overrideGate := HasApplicableGptAccountRequestOverrides(resolved.overrides, endpointFamily, compact)
+	reasoningFamily := openAIReasoningWireFamily(reasoningPath)
+	reasoningGate := reasoningFamily != "" && len(body) > 0
+	if !overrideGate && !reasoningGate {
 		return body, nil
 	}
-	model := strings.TrimSpace(upstreamModel)
-	if model == "" {
-		parsed := map[string]any{}
-		if err := json.Unmarshal(body, &parsed); err != nil || parsed == nil {
+
+	var effective GptAccountRequestOverrides
+	if overrideGate {
+		model := strings.TrimSpace(upstreamModel)
+		if model == "" {
+			// 收敛前语义：模型未随请求传入时先解析 body 提取 model，解析失败
+			// 即覆盖硬失败（先于目录查询）。
+			parsed, parseOK := parsedJSONObjectOf(body, parsedBody)
+			if !parseOK {
+				return nil, &GptAccountRequestOverrideError{Message: "账户请求覆盖要求请求体是有效的 JSON 对象"}
+			}
+			model, _ = parsed["model"].(string)
+		}
+		capabilities, err := resolved.resolveModelCapabilities(ctx, runtime, model)
+		if err != nil {
+			return nil, err
+		}
+		effective = ResolveEffectiveOverrides(resolved.overrides, capabilities)
+		if !HasApplicableGptAccountRequestOverrides(effective, endpointFamily, compact) {
+			effective = GptAccountRequestOverrides{}
+		}
+	}
+	overrideApplied := effective.ServiceTier != "" || (!compact && effective.ReasoningEffort != "")
+	if !overrideApplied && !reasoningGate {
+		return body, nil
+	}
+
+	parsed, parseOK := parsedJSONObjectOf(body, parsedBody)
+	if !parseOK {
+		if overrideApplied {
 			return nil, &GptAccountRequestOverrideError{Message: "账户请求覆盖要求请求体是有效的 JSON 对象"}
 		}
-		model, _ = parsed["model"].(string)
-	}
-	capabilities, err := ResolveGptRequestOverrideModelCapabilities(ctx, account, model)
-	if err != nil {
-		return nil, err
-	}
-	effective := ResolveEffectiveOverrides(overrides, capabilities)
-	if !HasApplicableGptAccountRequestOverrides(effective, endpointFamily, compact) {
 		return body, nil
 	}
-	parsed := map[string]any{}
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed == nil {
-		return nil, &GptAccountRequestOverrideError{Message: "账户请求覆盖要求请求体是有效的 JSON 对象"}
+	// 改写只发生在深拷贝上：调用方的 request 级解析缓存保持只读，候选轮换的
+	// 后续尝试仍能复用同一 map。
+	work := cloneJSONObject(parsed)
+	if overrideApplied {
+		applyGptAccountRequestOverrideWireFields(work, effective, endpointFamily, compact)
 	}
-	overridden, err := ApplyGptAccountRequestOverridesBody(parsed, GptAccountOverrideInput{
-		Credentials:       account.Credentials,
-		VendorCode:        overrideVendorCode(account),
-		EndpointFamily:    endpointFamily,
-		Compact:           compact,
-		ModelCapabilities: capabilities,
-	})
-	if err != nil {
-		return nil, err
+	reasoningChanged := false
+	if reasoningGate {
+		reasoningChanged = applyOpenAIReasoningWireMutation(work, reasoningFamily)
 	}
-	encoded, err := json.Marshal(overridden)
+	if !overrideApplied && !reasoningChanged {
+		return body, nil
+	}
+	encoded, err := json.Marshal(work)
 	if err != nil {
 		return nil, err
 	}
 	return encoded, nil
+}
+
+// parsedJSONObjectOf 返回出站 body 的已解析 JSON 对象：优先复用调用方传入的
+// request 级 map（必须与 body 字节同源），否则解析一次。解析失败或非 JSON
+// 对象（含 null → nil map）返回 ok=false，与收敛前 `json.Unmarshal 失败或
+// parsed == nil` 判定逐字同义。
+func parsedJSONObjectOf(body []byte, parsedBody map[string]any) (map[string]any, bool) {
+	if parsedBody != nil {
+		return parsedBody, true
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed == nil {
+		return nil, false
+	}
+	return parsed, true
+}
+
+// openAIReasoningWireFamily mirrors internal/gatewaydispatch
+// openAIReasoningEndpointFamily（bodypreparation.go，T17 合并所需同源镜像）：
+// reasoning wire 归一的路径 → 规范族。T16 收敛点：端点族词表单一入口落地后
+// 改引共享 helper。
+func openAIReasoningWireFamily(path string) string {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return ""
+	}
+	switch gatewayupstream.StripV1Prefix(parsed.Path) {
+	case "/chat/completions":
+		return "chat_completions"
+	case "/responses", "/responses/compact":
+		return "responses"
+	default:
+		return ""
+	}
+}
+
+// applyOpenAIReasoningWireMutation 是 NormalizeOpenAIReasoningFieldsForUpstream
+// 的 map 级镜像（T17 合并所需同源镜像，bodypreparation.go 语义逐点一致）：
+// chat_completions 族保留顶层 reasoning_effort、删除 reasoning 对象；
+// responses 族保留 reasoning.effort、删除顶层 reasoning_effort；两 shape 的
+// effort 均缺省时不动作。返回是否发生协议字段改写。
+func applyOpenAIReasoningWireMutation(parsed map[string]any, family string) bool {
+	reasoning, hasReasoning := parsed["reasoning"]
+	reasoningObject, _ := reasoning.(map[string]any)
+	nestedEffort, nestedOK := reasoningObject["effort"].(string)
+	nestedEffort = strings.TrimSpace(nestedEffort)
+	flatEffort, flatOK := parsed["reasoning_effort"].(string)
+	flatEffort = strings.TrimSpace(flatEffort)
+	if !nestedOK || nestedEffort == "" {
+		nestedEffort = ""
+	}
+	if !flatOK || flatEffort == "" {
+		flatEffort = ""
+	}
+	if nestedEffort == "" && flatEffort == "" {
+		return false
+	}
+
+	changed := false
+	switch family {
+	case "chat_completions":
+		if flatEffort == "" && nestedEffort != "" {
+			parsed["reasoning_effort"] = nestedEffort
+			changed = true
+		}
+		if hasReasoning {
+			delete(parsed, "reasoning")
+			changed = true
+		}
+	case "responses":
+		if nestedEffort == "" && flatEffort != "" {
+			parsed["reasoning"] = map[string]any{"effort": flatEffort}
+			changed = true
+		}
+		if _, ok := parsed["reasoning_effort"]; ok {
+			delete(parsed, "reasoning_effort")
+			changed = true
+		}
+	}
+	return changed
 }

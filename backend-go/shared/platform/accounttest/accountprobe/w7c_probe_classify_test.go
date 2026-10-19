@@ -391,8 +391,8 @@ func TestW7CProtocolPayloadBuilders(t *testing.T) {
 		t.Fatalf("space escape: %q", got)
 	}
 
-	// Endpoint orders and mode families.
-	if len(EndpointModeOrderOAuth()) != 2 || EndpointModeOrderOAuth()[0] != ModeResponsesJSON {
+	// Endpoint orders and mode families（流式优先：OAuth 的 SSE 形态在前）。
+	if len(EndpointModeOrderOAuth()) != 2 || EndpointModeOrderOAuth()[0] != ModeResponsesSSE {
 		t.Fatal("oauth order")
 	}
 	for mode, family := range map[EndpointMode]string{

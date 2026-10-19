@@ -483,6 +483,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	if signal.Err() != nil && shouldRecordAbortedUpstreamAttempt(err) {
 		if _, handleErr := e.FailureDispatcher.HandleUpstreamRequestError(ctx, UpstreamRequestErrorInput{
 			Req:                         in.args.Req,
+			RequestLane:                 in.requestLane,
 			UsageContext:                *usageContext,
 			AuditCapture:                auditCapture,
 			AuditAttemptID:              c.auditAttemptID,
@@ -525,6 +526,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	}
 	requestErrorResult, handleErr := e.FailureDispatcher.HandleUpstreamRequestError(ctx, UpstreamRequestErrorInput{
 		Req:                         in.args.Req,
+		RequestLane:                 in.requestLane,
 		UsageContext:                *usageContext,
 		AuditCapture:                auditCapture,
 		AuditAttemptID:              c.auditAttemptID,

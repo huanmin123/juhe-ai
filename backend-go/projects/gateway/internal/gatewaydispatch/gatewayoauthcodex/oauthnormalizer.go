@@ -39,8 +39,9 @@ type OpenAIOAuthCodexNormalizeInput struct {
 	RequestOverrideModelCapabilities *GptRequestOverrideModelCapabilities
 	// ApplyGptAccountRequestOverrides mirrors the injected
 	// providers/drivers/gpt/request-overrides dependency; nil keeps the body
-	// unchanged. Errors of type *GptAccountRequestOverrideError become
-	// account-scoped OpenAIOAuthCodexAdapterError.
+	// unchanged (T15：显式传参，无进程级回退). Errors of type
+	// *GptAccountRequestOverrideError become account-scoped
+	// OpenAIOAuthCodexAdapterError.
 	ApplyGptAccountRequestOverrides func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error)
 }
 
@@ -244,10 +245,10 @@ func SanitizeOpenAIOAuthCodexHistory(body map[string]any, accountID string) {
 func ApplyOpenAIOAuthCodexAccountRequestOverrides(body map[string]any, input OpenAIOAuthCodexNormalizeInput) error {
 	hook := input.ApplyGptAccountRequestOverrides
 	if hook == nil {
-		// D-151（BUG-0175）：组合根通过 SetGptAccountRequestOverridesHook 注入
-		// 归档 providers/drivers/gpt/request-overrides.ts 的实现；此前该端口
-		// 零赋值，gpt 账户请求覆盖配置可保存但运行时静默无效。
-		hook = gptAccountRequestOverridesHook
+		// T15 收敛：端口未注入即覆盖惰性，进程级全局回退已删除（组合根经
+		// OpenAIOAuthCodexRequestOptions.ApplyGptAccountRequestOverrides 显式
+		// 传入 ApplyGptAccountRequestOverridesBody；不留任何回退分支）。
+		return nil
 	}
 	if hook == nil {
 		return nil

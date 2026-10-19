@@ -173,10 +173,20 @@ func (e *aipublicEnv) seedProvider(code string, enabled bool) {
 	if enabled {
 		enabledInt = 1
 	}
-	if _, err := e.db.Exec(`INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+	if _, err := e.db.Exec(`INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, "prov_"+code, code, code, enabledInt,
 		`["`+code+`-4o-mini","`+code+`-4o"]`, now, now); err != nil {
 		e.t.Fatal(err)
+	}
+	// 目标 schema（设计 §3/§4）：写面支持模型断言按 models 单表身份键解析，
+	// 默认支持模型必须落表（与 vendors.default_supported_models_json 同集）。
+	for _, model := range []string{code + "-4o-mini", code + "-4o"} {
+		if _, err := e.db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope,
+			status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', '["chat_json","chat_sse","responses_json","responses_sse"]', 1, ?, ?)`,
+			"mod_"+code+"_"+model, code, model, model, now, now); err != nil {
+			e.t.Fatal(err)
+		}
 	}
 }
 
@@ -689,12 +699,7 @@ func seedStrategyForTest(t *testing.T, db *sql.DB, ownerSystemAccountID, groupID
 func TestAIPublicAccountLifecycle(t *testing.T) {
 	env := newAIPublicEnv(t)
 	env.seedProvider("gpt", true)
-	if _, err := env.db.Exec(`INSERT INTO provider_protocol_profiles
-		(id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_gpt_openai_v1', 'gpt', 'OpenAI v1', 1, 'openai', 'v1', 'https://api.openai.com', 'gpt-4o-mini', '["api_key"]', '{}', ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
-	}
+	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生。
 	scopes := []string{
 		"juhe_ai_public:account_list:read", "juhe_ai_public:account_add:write",
 		"juhe_ai_public:account_update:write", "juhe_ai_public:account_delete:write",

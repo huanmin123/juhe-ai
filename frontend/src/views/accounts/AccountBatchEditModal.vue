@@ -249,7 +249,7 @@
                     @search="handleSupportedModelOptionsSearch"
                   >
                     <template v-if="modelOptionsTruncated" #dropdownRender="{ menuNode }">
-                      <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+                      <ModelOptionsTruncatedHint :menu-node="menuNode" />
                     </template>
                   </a-select>
                 </template>
@@ -431,7 +431,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ProxySelect from '@/components/ProxySelect.vue'
-import { accountModelOptionsTruncated, loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
+import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
@@ -445,7 +445,7 @@ import type {
 } from '@/types/domain'
 import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
 import AccountBatchEditField from './AccountBatchEditField.vue'
-import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import {
@@ -786,9 +786,11 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
     if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
     currentProviderModelOptions.value = models.data
     modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
-    // 截断判定与账户编辑表单同口径：仅浏览取数（无 keyword、无 selectedIds）参与。
-    if (!keyword.trim() && !selectedIds.length) {
-      modelOptionsTruncated.value = accountModelOptionsTruncated(models.data.length)
+    // 截断判定与账户编辑表单同口径（T25）：以服务端 hasMore 元数据为准——
+    // 非搜索取数（浏览或纯 selectedIds 单批次补拉）都判定，编辑态恒带
+    // selectedIds 的取数也能正确提示；带 keyword 的搜索与多批次补拉不改写。
+    if (!keyword.trim() && models.hasMore !== undefined) {
+      modelOptionsTruncated.value = models.hasMore
     }
     modelOptionsLoaded.value = true
   } finally {

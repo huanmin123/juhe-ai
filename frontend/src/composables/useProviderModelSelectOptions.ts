@@ -30,6 +30,11 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   const providerModelOptions = ref<ProviderModelOption[]>([])
   const loading = ref(false)
   const loadFailed = ref(false)
+  // T25：最近一次非搜索取数的服务端截断判定（下拉底部截断提示依据）。仅
+  // 浏览取数与纯 selectedIds 补拉的单请求批次以响应 hasMore 元数据改写；带
+  // keyword 的搜索与多请求（多供应商/多 selectedIds 批次）合并不改写；元数据
+  // 缺失按无法判定处理。reset 与 scope 变化清空。
+  const modelOptionsTruncated = ref(false)
   let loadedScopeKey: string | undefined
   let latestRequestId = 0
   let loadingKey: string | undefined
@@ -75,7 +80,10 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     if (params.force !== true && loadedScopeKey === scopeKey) return
     if (typeof input !== 'boolean' && loadingKey === scopeKey && loadingPromise) return loadingPromise
     const requestId = ++latestRequestId
-    if (loadedScopeKey !== scopeKey) providerModelOptions.value = []
+    if (loadedScopeKey !== scopeKey) {
+      providerModelOptions.value = []
+      modelOptionsTruncated.value = false
+    }
     loadedScopeKey = undefined
     loading.value = true
     loadFailed.value = false
@@ -112,6 +120,12 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
         if (isCurrentRequest(requestId, contextKey)) {
           providerModelOptions.value = result
           loadedScopeKey = scopeKey
+          // T25：截断判定以服务端 hasMore 元数据为准；单请求（单一供应商窗口
+          // × 单个 selectedIds 批次）的非搜索取数才参与判定。
+          const singleRequest = requestProviderCodes.length === 1 && requestBatches.length === 1
+          if (!params.keyword?.trim() && singleRequest) {
+            modelOptionsTruncated.value = results[0].hasMore === true
+          }
         }
       } catch (error) {
         if (!isCurrentRequest(requestId, contextKey)) return
@@ -135,6 +149,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     providerModelOptions.value = []
     loading.value = false
     loadFailed.value = false
+    modelOptionsTruncated.value = false
     loadedScopeKey = undefined
     loadingKey = undefined
     loadingPromise = undefined
@@ -169,6 +184,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     loadFailed,
     loading,
     loadModelOptions,
+    modelOptionsTruncated,
     optionValues,
     providerModelOptions,
     resetModelOptions,

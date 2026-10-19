@@ -56,10 +56,9 @@ func TestInheritBuiltInCatalogCapabilities(t *testing.T) {
 }
 
 // TestInheritCustomCatalogCapabilitiesMergeKeys: 管理面回填 map 键与
-// mergeModelCatalogItems 的合并键一致——非 hybrid 用裸 model（跨供应商覆盖也
-// 继承），hybrid（preserveProviderIdentity）用 (provider, model)（不同供应商
-// 同名模型不串能力）；built_in 行不受影响。二维矩阵继承后，一维 supportedTools
-// 过渡投影按矩阵并集回填。
+// mergeModelCatalogItems 的合并键一致——裸 model（跨供应商覆盖也继承；hybrid
+// 身份键已随目标 schema 退役，B4 ⑪）；built_in 行不受影响。二维矩阵继承后，
+// 一维 supportedTools 过渡投影按矩阵并集回填。
 func TestInheritCustomCatalogCapabilitiesMergeKeys(t *testing.T) {
 	builtinRow := ModelCatalogItem{
 		Scope:        catalogScopeBuiltIn,
@@ -84,27 +83,15 @@ func TestInheritCustomCatalogCapabilitiesMergeKeys(t *testing.T) {
 		}
 	}
 	merged := []ModelCatalogItem{customRow("my-chat")}
-	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow}, false)
+	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow})
 	if !containsProtocolTool(merged[0].SupportedToolsByProtocol, "responses", "web_search") ||
 		!containsStringItem(merged[0].InputModalities, "image") ||
 		len(merged[0].OutputModalities) == 0 {
 		t.Fatalf("bare-model key must inherit across providers: matrix=%v in=%v out=%v",
 			merged[0].SupportedToolsByProtocol, merged[0].InputModalities, merged[0].OutputModalities)
 	}
-	merged = []ModelCatalogItem{customRow("my-chat")}
-	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow}, true)
-	if len(merged[0].SupportedToolsByProtocol) != 0 ||
-		len(merged[0].InputModalities) != 0 || len(merged[0].OutputModalities) != 0 {
-		t.Fatalf("hybrid identity must not inherit across providers: matrix=%v in=%v out=%v",
-			merged[0].SupportedToolsByProtocol, merged[0].InputModalities, merged[0].OutputModalities)
-	}
-	merged = []ModelCatalogItem{customRow("openai")}
-	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow}, true)
-	if !containsProtocolTool(merged[0].SupportedToolsByProtocol, "responses", "web_search") {
-		t.Fatalf("same (provider, model) must inherit: %v", merged[0].SupportedToolsByProtocol)
-	}
 	builtinOnly := []ModelCatalogItem{builtinRow}
-	inheritCustomCatalogCapabilities(builtinOnly, nil, false)
+	inheritCustomCatalogCapabilities(builtinOnly, nil)
 	if !containsProtocolTool(builtinOnly[0].SupportedToolsByProtocol, "responses", "web_search") {
 		t.Fatalf("builtin row must stay untouched: %v", builtinOnly[0].SupportedToolsByProtocol)
 	}

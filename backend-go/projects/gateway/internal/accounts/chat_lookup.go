@@ -24,7 +24,7 @@ func (s *Store) FindChatAccount(bindScope chat.ChatBindScope, accountID string) 
 	args := append([]any{accountID}, ownerArgs...)
 	var name, providerCode string
 	var enabled int
-	err := s.db.QueryRow(s.bind(`SELECT accounts.name, accounts.provider_code,
+	err := s.db.QueryRow(s.bind(`SELECT accounts.name, COALESCE(accounts.vendor_code, '') AS provider_code,
 			CASE WHEN `+effective+` = 'active' THEN 1 ELSE 0 END AS chat_enabled
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.id = ? AND accounts.deleted_at IS NULL
@@ -69,7 +69,7 @@ func (s *Store) ListChatAccountOptions(ctx context.Context, bindScope chat.ChatB
 	effective := ownerEffectiveStatusSQL("accounts", now)
 	ownerClause, ownerArgs := chatOwnerScopeClause(bindScope)
 	args := append([]any{}, ownerArgs...)
-	rows, err := s.db.Query(s.bind(`SELECT accounts.id, accounts.name, accounts.provider_code, `+effective+`
+	rows, err := s.db.Query(s.bind(`SELECT accounts.id, accounts.name, COALESCE(accounts.vendor_code, '') AS provider_code, `+effective+`
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.deleted_at IS NULL
 			AND accounts.authorization_instance_authorization_id IS NULL`+ownerClause+`

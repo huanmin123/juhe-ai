@@ -123,7 +123,7 @@
             @search="$emit('model-options-search', $event)"
           >
             <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
-              <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+              <ModelOptionsTruncatedHint :menu-node="menuNode" />
             </template>
           </a-select>
           <a-tooltip title="从上游同步可新增模型">
@@ -365,7 +365,7 @@ import {
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
-import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 import {
   accountModelMappingSourceModelOptions,

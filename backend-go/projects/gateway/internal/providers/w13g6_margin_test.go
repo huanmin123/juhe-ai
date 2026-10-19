@@ -71,7 +71,7 @@ func TestW13g6ClosedStoreErrorArms(t *testing.T) {
 	if _, err := store.ListCatalogListItems(ctx); err == nil {
 		t.Fatal("list items on closed DB must fail")
 	}
-	if _, err := store.ListProviderModelSelectionOptions(ctx, ModelOptionQuery{ProviderCode: "gpt"}); err == nil {
+	if _, _, err := store.ListProviderModelSelectionOptions(ctx, ModelOptionQuery{ProviderCode: "gpt"}); err == nil {
 		t.Fatal("selection options on closed DB must fail")
 	}
 	// 内置模型配置补丁：closed DB 下 BeginTx 失败。
@@ -434,4 +434,3 @@ func TestW13g6BindingCountErrorArm(t *testing.T) {
 		t.Fatal("mapping count on dropped table must fail")
 	}
 }
-

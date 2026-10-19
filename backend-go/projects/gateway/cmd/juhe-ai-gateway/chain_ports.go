@@ -653,9 +653,14 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	// deferral; the automatic path additionally requires the absence of an
 	// explicit decision — a cooldown/disable decision changes account-level
 	// state and never rotates, even when the deferral is unset.
+	// 对话与非对话媒体调度分离设计 §4.1：媒体创建域的兄弟 Key 只按显式错误
+	// 策略决策（retry_next 动作或 keyScoped 决策）轮换——无规则命中时的自动
+	// 轮换路径（decision == nil）不进入媒体域。
+	mediaDispatchDomain := gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane))
+	mediaDispatchRequest := mediaDispatchDomain == gatewayproto.DispatchDomainStatelessMedia
 	hasAlternativeAccountAPIKeys := input.Account.SelectedAPIKeyFingerprint != nil && len(input.Account.APIKeys) > 1
 	explicitRotation := decision != nil && (decision.Action == decisionActionRetryNext || decision.KeyScoped)
-	automaticRotation := decision == nil && !input.DeferAutomaticSameAccountKeyRotation
+	automaticRotation := decision == nil && !input.DeferAutomaticSameAccountKeyRotation && !mediaDispatchRequest
 	sameAccountKeyRotation := hasAlternativeAccountAPIKeys && (explicitRotation || automaticRotation)
 	failureKind := chainFailureKindOpaqueHTTP
 	if decision != nil {
@@ -667,7 +672,9 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	// the stronger call (its probe must not compete with the explicit error
 	// state). The request-level throttle keeps retry_next candidate replays
 	// and the transport branch from double firing.
-	if decision == nil || decision.RuleSource != chainErrorPolicyRuleSourceSystem {
+	// 对话与非对话媒体调度分离设计 §4.2：媒体创建失败不派发请求失败健康检查
+	// ——探针只由文本域失败、显式策略与后台探针编排触发。
+	if !mediaDispatchRequest && (decision == nil || decision.RuleSource != chainErrorPolicyRuleSourceSystem) {
 		d.dispatchRequestFailureHealthCheck(ctx, input.Req, input.UsageContext.TrafficSource, input.Account.ID)
 	}
 	result := gatewaydispatch.FailedUpstreamResponseResult{
@@ -800,15 +807,21 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 		}
 	}
 	d.forgetSessionAffinity(ctx, input.SessionAffinityKey, input.Account.ID)
-	// failure-dispatch.ts:571: the transport failure is independent evidence
-	// for the fixed-model availability confirmation (before the source
-	// avoidance record; the downstream-closed branch does not dispatch).
-	d.dispatchRequestFailureHealthCheck(ctx, input.Req, input.UsageContext.TrafficSource, input.Account.ID)
-	// failure-dispatch.ts:572-579: the transport-failure branch schedules the
-	// client-source avoidance record after the affinity forget (the Node
-	// downstream-closed branch does not record; neither does the failed-
-	// response branch).
-	d.scheduleClientSourceAvoidanceFailure(ctx, input, message)
+	// 对话与非对话媒体调度分离设计 §4.1/§4.2：媒体创建域的传输失败不派发请求
+	// 失败健康检查，也不记录来源级失败避让——两者都是文本对话调度维度，探针
+	// 仍只由文本域失败、显式策略和后台探针编排触发。
+	mediaDispatchRequest := gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane)) == gatewayproto.DispatchDomainStatelessMedia
+	if !mediaDispatchRequest {
+		// failure-dispatch.ts:571: the transport failure is independent evidence
+		// for the fixed-model availability confirmation (before the source
+		// avoidance record; the downstream-closed branch does not dispatch).
+		d.dispatchRequestFailureHealthCheck(ctx, input.Req, input.UsageContext.TrafficSource, input.Account.ID)
+		// failure-dispatch.ts:572-579: the transport-failure branch schedules the
+		// client-source avoidance record after the affinity forget (the Node
+		// downstream-closed branch does not record; neither does the failed-
+		// response branch).
+		d.scheduleClientSourceAvoidanceFailure(ctx, input, message)
+	}
 	return gatewaydispatch.UpstreamRequestErrorResult{
 		Action:           gatewaydispatch.FailedResponseActionSkipAccount,
 		LastAttempt:      lastAttempt,

@@ -10,10 +10,9 @@ package accounts
 // 随 legacy 面拆除：模式声明联动由连接行词表（§2.2）、映射 §5.3 与健康检查
 // 三字段写侧校验承载。
 //
-// AccountModelCatalogReader 端口类型保留为编译兼容遗留（B4 ⑥：cmd 组合根
-// 装配已于组合根收口切片拆除，断言链也不再消费端口；端口类型与
-// SetModelCatalogReader 保存位随 accounts Store 的 s.modelCatalog 字段退役，
-// 拆字段属 Store 列面收口）。
+// AccountModelCatalogReader 编译兼容端口已随 B4 ⑥ 退役（Store 字段、
+// SetModelCatalogReader 保存位与组合根装配全部删除）；目录断言只读 models
+// 单表。
 //
 // gpt 请求覆盖（service_tier_override / reasoning_effort_override）的目录
 // 断言层（归档 account-gpt-request-overrides.validation.ts）已于 2026-10-18
@@ -27,30 +26,6 @@ import (
 	"context"
 	"strings"
 )
-
-// AccountModelCatalogFact mirrors the catalog row fields the accounts
-// validation family consumed: the protocol columns of the mapping pool checks
-// plus the capability lists carried by the same row. 编译兼容遗留（见文件头）：
-// 断言链已切 models 表身份解析，不再消费该形状。
-type AccountModelCatalogFact struct {
-	Model                     string
-	SupportedAPIProtocols     []string
-	SupportedServiceTiers     []string
-	SupportedReasoningEfforts []string
-}
-
-// AccountModelCatalogReader ports listProviderModelCatalog(Async)
-// (model-catalog.service.ts). 编译兼容遗留（见文件头）：组合根装配已拆除，
-// 断言链不调用。
-type AccountModelCatalogReader interface {
-	ListAccountModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]AccountModelCatalogFact, error)
-}
-
-// SetModelCatalogReader wires the catalog port (composition-root handover).
-// 编译兼容遗留（见文件头）：组合根装配已拆除，端口仅被保存，断言链不消费。
-func (s *Store) SetModelCatalogReader(reader AccountModelCatalogReader) {
-	s.modelCatalog = reader
-}
 
 // credentialEndpointModes mirrors endpointModesFromCredentials: the
 // supported_endpoint_modes array when the credential value is one (either the

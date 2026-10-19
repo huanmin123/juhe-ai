@@ -147,11 +147,7 @@ func TestW13g6ValidationArms(t *testing.T) {
 func TestW13g6AccountBoundGroupArms(t *testing.T) {
 	env, token := w13g6Env(t)
 	env.seedTargetUser("user_w13g6own", "w13g6own", "active")
-	if _, err := env.db.Exec(`INSERT INTO provider_protocol_profiles
-		(id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_gpt_openai_v1', 'gpt', 'OpenAI v1', 1, 'openai', 'v1', 'https://api.openai.com', 'gpt-4o-mini', '["api_key"]', '{}', datetime('now'), datetime('now'))`); err != nil {
-		t.Fatal(err)
-	}
+	// 目标 schema（设计 §9.3）无 provider_protocol_profiles：档案身份由 registry 派生。
 	scopes := []string{"juhe_ai_public:account_add:write", "juhe_ai_public:account_update:write"}
 	sourceToken := env.seedSource("w13g6_src2", "w13g6_tok2", w13g6TokenSeed+"a", "active", "active", scopes, "[]", "", "")
 

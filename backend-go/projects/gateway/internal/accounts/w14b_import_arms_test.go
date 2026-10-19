@@ -75,8 +75,8 @@ func TestW14BImportProxyCacheAndOrphanProfile(t *testing.T) {
 		// B1 断点批（设计 §8）：导入账户显式携带连接集合与健康检查三件套。
 		return map[string]any{"name": name, "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
 			"type": "api_key", "status": "active", "groupName": "w14b-gc", "proxyRef": "p1",
-			"credentials": map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
-			"connections": []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
+			"credentials":                     map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
+			"connections":                     []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
 			"healthCheckConnectionPresetCode": "generic_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
 	}
 	result, err := env.store.PreviewImport(context.Background(), w13aRawDoc(
@@ -98,7 +98,7 @@ func TestW14BImportProxyCacheAndOrphanProfile(t *testing.T) {
 func TestW14BImportModelCatalogValidationArms(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}})
+	// B4 ⑥：目录读端口已退役，目录断言只读 models 单表。
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 
@@ -106,8 +106,8 @@ func TestW14BImportModelCatalogValidationArms(t *testing.T) {
 		// B1 断点批（设计 §8）：导入账户显式携带连接集合与健康检查三件套。
 		base := map[string]any{"name": name, "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
 			"type": "api_key", "status": "active", "groupName": "w14b-cat",
-			"credentials": map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
-			"connections": []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
+			"credentials":                     map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
+			"connections":                     []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
 			"healthCheckConnectionPresetCode": "generic_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
 		for key, value := range extra {
 			base[key] = value

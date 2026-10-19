@@ -226,7 +226,9 @@ func (d *Deps) options(w http.ResponseWriter, r *http.Request) {
 
 // modelOptions serves GET /models/options: query normalization (400 on
 // invalid protocol/limit), the enabled-provider 404 fork, then the merged
-// built-in/custom selection options.
+// built-in/custom selection options. T25：envelope data 保持数组（既有调用方
+// 与契约断言零破坏），顶层附加 total（当前筛选条件下的可见候选总数）与
+// hasMore（total > 返回条数），前端以元数据替代"浏览取数达 50 条"的条数推断。
 func (d *Deps) modelOptions(w http.ResponseWriter, r *http.Request) {
 	query, message := normalizeModelOptionQuery(r)
 	if message != "" {
@@ -245,12 +247,16 @@ func (d *Deps) modelOptions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	query.SystemAccountID = requestSystemAccountID(r)
-	providerModelOptions, err := d.Store.ListProviderModelSelectionOptions(r.Context(), query)
+	providerModelOptions, total, err := d.Store.ListProviderModelSelectionOptions(r.Context(), query)
 	if err != nil {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
-	kernel.WriteOK(w, providerModelOptions, "")
+	kernel.WriteJSON(w, http.StatusOK, map[string]any{
+		"data":    providerModelOptions,
+		"total":   total,
+		"hasMore": total > len(providerModelOptions),
+	})
 }
 
 // modelOptionProviderCodes serves GET /models/options/provider-codes (v8-D

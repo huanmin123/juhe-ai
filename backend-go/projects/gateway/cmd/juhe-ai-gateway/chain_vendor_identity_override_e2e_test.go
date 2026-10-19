@@ -14,8 +14,8 @@ package main
 //   - gpt 专属 wire 枚举按供应商生效：同一配置值（reasoning_effort_override
 //     = "ultra"）对 gpt 账户是请求级硬失败，对 xai 账户经目录能力门正常生效。
 //
-// 目录端口以测试替身注入（gatewaydispatch.SetGptRequestOverrideModelCatalog，
-// 用后清零）：真实 runtimecache 目录适配器的投影已有
+// 目录端口以测试替身经 GptRequestOverrideRuntime 显式传入（T15 收敛后无进程级
+// Set*）：真实 runtimecache 目录适配器的投影已有
 // TestChainGptRequestOverrideCatalogItemsOf / 接线冒烟覆盖，本用例的断言焦点
 // 是 vendor 身份从 DB 行贯穿到覆盖运行时，不在目录缓存读本身。
 
@@ -164,18 +164,18 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 		t.Fatalf("存量行 vendor 水合 = %q, want 空串（禁止 provider_code 回落）", legacySecret.VendorCode)
 	}
 
-	// ④ 覆盖改写出站 body：注入目录替身（用后清零，不污染同包其他用例）。
+	// ④ 覆盖改写出站 body：目录替身经 GptRequestOverrideRuntime 显式传入
+	// （T15 收敛：进程级 Set* 已删除，runtime 随调用显式携带，不污染其他用例）。
 	catalog := &vendorOverrideCatalogStub{rows: map[string][]gatewaydispatch.GptRequestOverrideModelCatalogItem{
 		"gpt": {{Model: "gpt-test", SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"high"}}},
 		"xai": {{Model: "grok-4", SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"ultra"}}},
 	}}
-	gatewaydispatch.SetGptRequestOverrideModelCatalog(catalog)
-	t.Cleanup(func() { gatewaydispatch.SetGptRequestOverrideModelCatalog(nil) })
+	overrideRuntime := gatewaydispatch.GptRequestOverrideRuntime{Catalog: catalog}
 
 	// gpt 形状（responses 族）：service_tier 顶层写入 + reasoning.effort 嵌套。
 	gptBody := []byte(`{"model":"gpt-test","input":"hi"}`)
-	gptOut, err := gatewaydispatch.ApplyGptAccountRequestOverridesToUpstreamBody(
-		context.Background(), gptBody, *gptSecret, "responses", false, "gpt-test")
+	gptOut, err := gatewaydispatch.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), gptBody, nil, *gptSecret, "responses", false, "gpt-test", "", overrideRuntime)
 	if err != nil {
 		t.Fatalf("gpt 覆盖应用失败: %v", err)
 	}
@@ -197,8 +197,8 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 	// xai 形状（chat_completions 族）：同一 "ultra" 值在 gpt 枚举下是硬失败，
 	// xai 账户跳过 gpt 枚举、经目录能力门正常改写（供应商感知判据本体）。
 	xaiBody := []byte(`{"model":"grok-4","messages":[{"role":"user","content":"hi"}]}`)
-	xaiOut, err := gatewaydispatch.ApplyGptAccountRequestOverridesToUpstreamBody(
-		context.Background(), xaiBody, *xaiSecret, "chat_completions", false, "grok-4")
+	xaiOut, err := gatewaydispatch.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), xaiBody, nil, *xaiSecret, "chat_completions", false, "grok-4", "", overrideRuntime)
 	if err != nil {
 		t.Fatalf("xai 覆盖应用失败（gpt 枚举不得外溢到其它 vendor）: %v", err)
 	}
@@ -222,8 +222,8 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 		t.Fatalf("acc_v_gpt_bad 未进候选窗口：accounts=%v", result.Accounts)
 	}
 	badBody := []byte(`{"model":"gpt-test","input":"hi"}`)
-	if _, err := gatewaydispatch.ApplyGptAccountRequestOverridesToUpstreamBody(
-		context.Background(), badBody, *badSecret, "responses", false, "gpt-test"); err == nil {
+	if _, err := gatewaydispatch.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), badBody, nil, *badSecret, "responses", false, "gpt-test", "", overrideRuntime); err == nil {
 		t.Fatal("gpt 账户 reasoning_effort_override=ultra 必须被专属枚举拒绝")
 	} else if !strings.Contains(err.Error(), "reasoning_effort_override 无效") {
 		t.Fatalf("gpt 枚举错误文案 = %v", err)
@@ -231,8 +231,8 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 
 	// 存量臂：空 vendor 身份 → 覆盖整段惰性（不改写、不报错）。
 	legacyBody := []byte(`{"model":"gpt-test","input":"hi"}`)
-	legacyOut, err := gatewaydispatch.ApplyGptAccountRequestOverridesToUpstreamBody(
-		context.Background(), legacyBody, *legacySecret, "responses", false, "gpt-test")
+	legacyOut, err := gatewaydispatch.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		context.Background(), legacyBody, nil, *legacySecret, "responses", false, "gpt-test", "", overrideRuntime)
 	if err != nil {
 		t.Fatalf("存量行覆盖必须惰性而非硬失败: %v", err)
 	}

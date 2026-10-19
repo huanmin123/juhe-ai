@@ -59,17 +59,15 @@ func TestW14dProfileValidationErrorArms(t *testing.T) {
 	env := newTestEnv(t)
 	env.w14dLoginAdmin(t)
 
-	// A disabled profile id renders the disabled-profile message.
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json,
-		created_at, updated_at)
-		VALUES ('profile_gpt_off', 'gpt', 'GPT 离线', 0, 'openai', 'v1', 'https://x', 'gpt-4o',
-		'["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	// 目标 schema 无档案表（T30/B4 ⑧）：停用门落在 vendors 行；未知 profile
+	// 身份仍按既有文案拒绝。
+	env.exec(t, `UPDATE vendors SET enabled = 0 WHERE code = 'gpt'`)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-code",
-		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_off"}`)
+		`{"sessionId":"s","callbackUrl":"https://cb","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
 	if code != http.StatusBadRequest || !strings.Contains(payload["message"].(string), "已停用") {
-		t.Fatalf("disabled profile: %d %v", code, payload)
+		t.Fatalf("disabled vendor: %d %v", code, payload)
 	}
+	env.exec(t, `UPDATE vendors SET enabled = 1 WHERE code = 'gpt'`)
 
 	// An unknown profile id renders the invalid-profile message.
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/create-from-code",

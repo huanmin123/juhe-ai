@@ -181,7 +181,7 @@
           @search="$emit('model-options-search', $event)"
         >
           <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
-            <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+            <ModelOptionsTruncatedHint :menu-node="menuNode" />
           </template>
         </a-select>
         <a-tooltip title="从上游同步可新增模型">
@@ -217,7 +217,7 @@ import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
 import { isXaiProviderCode } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
 import { capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
-import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountNameField from './AccountNameField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'

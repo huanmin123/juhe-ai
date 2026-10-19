@@ -52,28 +52,20 @@ type chainProviderDriver struct {
 	// dispatch loop stops re-parsing the full body per candidate attempt
 	// (nil keeps the per-attempt driver-side parse fallback).
 	bodyParser *gatewaybody.JSONParser
+	// gptRequestOverrideRuntime 承载 gpt 账户请求覆盖的显式端口（T15 收敛，
+	// 取代 gatewayoauthcodex 进程级全局目录端口/候选展开器与 Set* 挂载）：
+	// 目录端口 + 候选展开器随每次能力解析/覆盖应用调用显式传入。零值等价
+	// 未接线（能力解析缺席，覆盖惰性）。
+	gptRequestOverrideRuntime gatewaydispatch.GptRequestOverrideRuntime
 }
 
 func newChainProviderDriver() *chainProviderDriver {
-	// D-151（BUG-0175）：gpt 账户请求覆盖 hook 原先零赋值，配置可保存但运行时
-	// 静默无效。此处把归档 providers/drivers/gpt/request-overrides.ts 的
-	// applyGptAccountRequestOverrides 挂到 normalize 链；能力解析走
-	// gatewaydispatch.ResolveGptRequestOverrideModelCapabilities。
-	gatewaydispatch.SetGptAccountRequestOverridesHook(gatewaydispatch.ApplyGptAccountRequestOverridesBody)
+	// D-151（BUG-0175）：gpt 账户请求覆盖运行时随本构造器装配；OAuth 路径的
+	// 覆盖应用 hook（ApplyGptAccountRequestOverridesBody）由 codex 分支经
+	// OpenAIOAuthCodexRequestOptions 显式传入，能力解析端口装在
+	// gptRequestOverrideRuntime（T15 显式传参，无进程级全局挂载）。
 	return &chainProviderDriver{openai: gatewayopenai.NewDriver()}
 }
-
-// registerGptRequestOverrideCatalogPort / registerGptRequestOverrideModelCandidates
-// 是进程级端口 Set 的测试间接层：组合测试可替换观察者而不直接污染
-// gatewaydispatch 全局状态。
-var (
-	registerGptRequestOverrideCatalogPort = func(catalog gatewaydispatch.GptRequestOverrideModelCatalog) {
-		gatewaydispatch.SetGptRequestOverrideModelCatalog(catalog)
-	}
-	registerGptRequestOverrideModelCandidates = func(expander func(providerCode, model string) []string) {
-		gatewaydispatch.SetGptRequestOverrideModelCandidates(expander)
-	}
-)
 
 // newChainProviderDriverWithCache wires the runtime-cache-backed provider model
 // catalog into the D-151 capability resolution and the shared bounded body
@@ -82,20 +74,21 @@ func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service, bodyPar
 	driver := newChainProviderDriver()
 	if cache != nil {
 		// D-151 P0 接线（组合根缺口收口）：能力解析端口
-		// ResolveGptRequestOverrideModelCapabilities 读的是 gatewayoauthcodex
-		// 的进程级目录端口；此前本构造器只把适配器挂在 driver 私有字段
-		// gptOverrideCatalog 上（引擎经 ProviderDriver 接口访问，无任何读取
-		// 点），端口保持 nil → 能力解析恒 nil → ResolveEffectiveOverrides
-		// 无降级候选 → 管理面配置的 service_tier / reasoning_effort 覆盖在运行面
-		// 整段惰性（oauth codex 分支与 api-key 覆盖应用两处消费点同盲）。
+		// ResolveGptRequestOverrideModelCapabilities 读的是 driver 显式携带的
+		// GptRequestOverrideRuntime；runtime 为零值（未装配）时能力解析恒
+		// nil → ResolveEffectiveOverrides 无降级候选 → 管理面配置的
+		// service_tier / reasoning_effort 覆盖在运行面整段惰性（oauth codex
+		// 分支与 api-key 覆盖应用两处消费点同盲）。
 		//
 		// 数据源选 runtimecache 而非每次直查 SQL：端口在每请求构建上游请求时
 		// 调用，runtimecache 的 provider 目录读缓存（24h TTL + Bus 失效 +
 		// singleflight，chain_runtime.go 组合根单实例，键
 		// providerCode:systemAccountID:inactive:unpriced）命中即零 SQL——
 		// 等价 Node listCachedProviderModelCatalogAsync 的 cached 语义。
-		registerGptRequestOverrideCatalogPort(chainGptRequestOverrideModelCatalog{cache: cache})
-		registerGptRequestOverrideModelCandidates(chainGptRequestOverrideModelCandidates)
+		driver.gptRequestOverrideRuntime = gatewaydispatch.GptRequestOverrideRuntime{
+			Catalog:         chainGptRequestOverrideModelCatalog{cache: cache},
+			ModelCandidates: chainGptRequestOverrideModelCandidates,
+		}
 	}
 	driver.bodyParser = bodyParser
 	return driver
@@ -616,8 +609,9 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		modelOverride := canonicalAccountModel(req, account)
 		// D-151（BUG-0175）：请求期能力解析 + body 应用。Node
 		// gpt/driver.ts buildUpstreamRequestParts 的 oauth 分支在构造请求前
-		// 先 normalizeGptRequestOverrideCapabilitiesForGateway。
-		requestOverrideCapabilities, err := gatewaydispatch.ResolveGptRequestOverrideModelCapabilities(ctx, account, modelOverride)
+		// 先 normalizeGptRequestOverrideCapabilitiesForGateway。目录端口与
+		// 候选展开器随 driver 显式传入（T15）。
+		requestOverrideCapabilities, err := gatewaydispatch.ResolveGptRequestOverrideModelCapabilities(ctx, account, modelOverride, d.gptRequestOverrideRuntime)
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, err
 		}
@@ -632,6 +626,8 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 			ModelOverride:                    modelOverride,
 			SanitizeCodexHistory:             historyPrepPolicy.Adapter == gatewaydispatch.HistoryPrepStageSanitize,
 			RequestOverrideModelCapabilities: requestOverrideCapabilities,
+			// T15：覆盖应用显式传参（取代进程级全局 hook 挂载）。
+			ApplyGptAccountRequestOverrides: gatewaydispatch.ApplyGptAccountRequestOverridesBody,
 		})
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, err
@@ -689,23 +685,10 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	}
 	// D-151：api_key 账户的运行时 body 应用（Node applyGptAccountRequestOverrides
 	// 的非 oauth 分支）。端点族取映射上游族，缺省回落请求族；compact 仅出现在
-	// /responses/compact 端点。
-	if endpointFamily := gptRequestOverrideEndpointFamily(req, account, modelMapping); endpointFamily != "" {
-		upstreamModel := ""
-		if requested, ok := gatewaypreauth.RequestModel(req); ok {
-			upstreamModel = requested
-		}
-		if canonical := canonicalAccountModel(req, account); canonical != "" {
-			upstreamModel = canonical
-		}
-		overridesBody, err := gatewaydispatch.ApplyGptAccountRequestOverridesToUpstreamBody(
-			ctx, body, account, endpointFamily,
-			gatewaydispatch.IsOpenAIOAuthCodexCompactRequest(req), upstreamModel)
-		if err != nil {
-			return gatewaydispatch.PreparedRequestParts{}, err
-		}
-		body = overridesBody
-	}
+	// /responses/compact 端点。T14/T17：覆盖应用与 reasoning wire 归一（原独立
+	// NormalizeOpenAIReasoningFieldsForUpstream 调用）合并为单次
+	// parse→mutate→serialize（保序：覆盖先行、归一随后）；Read/Assert/目录
+	// 能力解析各至多一次，目录端口随 driver 显式传入（T15）。
 	reasoningPath := req.PathAndQuery()
 	if modelMapping != nil {
 		switch modelMapping.UpstreamEndpointFamily {
@@ -718,7 +701,34 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 			reasoningPath = ""
 		}
 	}
-	body = gatewaydispatch.NormalizeOpenAIReasoningFieldsForUpstream(reasoningPath, body)
+	// T17：请求级解析缓存仅在出站 body 仍为客户端原始 body（未经兼容体/模型
+	// 映射改写）时与出站字节同源，可安全复用；改写形态传 nil 由合并层按需
+	// 解析一次（缓存 map 永不被改写，后续候选尝试仍可复用）。
+	var overridesParsedBody map[string]any
+	if compatibilityBody == nil && modelMapping == nil {
+		overridesParsedBody = d.materializedParsedJSONObjectBody(req)
+	}
+	upstreamModel := ""
+	if requested, ok := gatewaypreauth.RequestModel(req); ok {
+		upstreamModel = requested
+	}
+	if canonical := canonicalAccountModel(req, account); canonical != "" {
+		upstreamModel = canonical
+	}
+	overridesBody, err := gatewaydispatch.ApplyGptAccountRequestOverridesAndNormalizeReasoningToUpstreamBody(
+		ctx,
+		body,
+		overridesParsedBody,
+		account,
+		gptRequestOverrideEndpointFamily(req, account, modelMapping),
+		gatewaydispatch.IsOpenAIOAuthCodexCompactRequest(req),
+		upstreamModel,
+		reasoningPath,
+		d.gptRequestOverrideRuntime)
+	if err != nil {
+		return gatewaydispatch.PreparedRequestParts{}, err
+	}
+	body = overridesBody
 	// 流式零计费修复：openai 协议标准账户的 chat completions 流式出站补
 	// stream_options.include_usage（见 chainMaybeInjectChatStreamUsageOption）。
 	// 注入发生在全部既有 body 组装/改写（兼容体、模型映射、gpt 覆盖、reasoning

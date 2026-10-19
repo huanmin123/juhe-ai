@@ -643,6 +643,18 @@ type geminiCredentialFallback struct {
 	Scope          string
 }
 
+// geminiRotationAccountOAuthType 判定列优先、凭据键回落（#B4 ⑨）：refresh/
+// reauthorize 读面使用 accounts.oauth_type 物理列；迁移窗口存量行的列值为空
+// 时按凭据推断，保证既有账户刷新不失败。
+func geminiRotationAccountOAuthType(current *rotationAccount, credentials map[string]any) string {
+	if current != nil {
+		if value := normalizeText(current.OAuthType); value != "" {
+			return normalizeGeminiOAuthType(value)
+		}
+	}
+	return geminiAccountOAuthType(credentials)
+}
+
 // geminiAccountOAuthType mirrors accountOAuthType: infer the stored account's
 // oauth type from its credentials.
 func geminiAccountOAuthType(credentials map[string]any) string {
