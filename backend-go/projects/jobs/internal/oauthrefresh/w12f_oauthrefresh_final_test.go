@@ -61,13 +61,12 @@ func TestW12fRotateBeginTxError(t *testing.T) {
 		ExpectedConfigRevision:            1,
 		ExpectedProviderCode:              "gpt",
 		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "p",
 		Credentials:                       map[string]any{"refresh_token": "w12f-rt"},
 	}); err == nil {
 		t.Fatal("句柄关闭后 BeginTx 必须报错")
 	}
 	closedKeepalive := w12fClosedStore(t)
-	if _, err := closedKeepalive.ListDueKeepaliveAccounts(context.Background(), "anthropic", "oauth", "", time.Hour, 5, w12fBaseNow()); err == nil {
+	if _, err := closedKeepalive.ListDueKeepaliveAccounts(context.Background(), "anthropic", "oauth", time.Hour, 5, w12fBaseNow()); err == nil {
 		t.Fatal("句柄关闭后 keepalive 列表必须报错")
 	}
 	if _, err := closedKeepalive.MarkAccountFailureState(context.Background(), "w12f-x", "code", "reason", 1, "active"); err == nil {

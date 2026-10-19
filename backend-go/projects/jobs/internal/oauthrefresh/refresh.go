@@ -643,12 +643,11 @@ func (j *RefreshJob) refreshWithRaceRetry(ctx context.Context, account *Rotation
 		if cause == nil {
 			nextCredentials := mergeCredentials(credentials, BuildOpenAIOAuthCredentials(tokenInfo, refreshToken))
 			rotation, rotateErr := j.store.RotateCredentials(ctx, RotateCredentialsInput{
-				AccountID:                         current.ID,
-				ExpectedConfigRevision:            current.ConfigRevision,
-				ExpectedProviderCode:              ProviderGPT,
-				ExpectedAccountType:               AccountTypeOAuth,
-				ExpectedProviderProtocolProfileID: current.ProviderProtocolProfileID,
-				Credentials:                       nextCredentials,
+				AccountID:              current.ID,
+				ExpectedConfigRevision: current.ConfigRevision,
+				ExpectedProviderCode:   ProviderGPT,
+				ExpectedAccountType:    AccountTypeOAuth,
+				Credentials:            nextCredentials,
 			})
 			if rotateErr != nil {
 				cause = rotateErr

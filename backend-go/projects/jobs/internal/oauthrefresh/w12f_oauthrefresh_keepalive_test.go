@@ -14,8 +14,8 @@ import (
 func TestW12fKeepaliveGeminiXaiRefreshErrors(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
 	now := clock.Now()
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-gm", ProviderCode: "gemini", ProfileID: "profile_gemini_native_v1beta", Type: "google_oauth", Credentials: map[string]any{"access_token": "w12f-at", "refresh_token": "w12f-rt", "expires_at": expiresInMillis(60_000), "oauth_type": "ai_studio", "client_id": "w12f-cid", "client_secret": "w12f-cs"}, Now: now})
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-xai", ProviderCode: "xai", ProfileID: ProfileXAIOpenAIV1, Type: "oauth", Credentials: map[string]any{"access_token": "w12f-at", "refresh_token": "w12f-rt", "expires_at": expiresInMillis(60_000)}, Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-gm", ProviderCode: "gemini", Type: "google_oauth", Credentials: map[string]any{"access_token": "w12f-at", "refresh_token": "w12f-rt", "expires_at": expiresInMillis(60_000), "oauth_type": "ai_studio", "client_id": "w12f-cid", "client_secret": "w12f-cs"}, Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-xai", ProviderCode: "xai", Type: "oauth", Credentials: map[string]any{"access_token": "w12f-at", "refresh_token": "w12f-rt", "expires_at": expiresInMillis(60_000)}, Now: now})
 	exchanger.respond = func(_ int, _ TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{}, errors.New("w12f-upstream-down")
 	}

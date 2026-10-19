@@ -28,10 +28,14 @@ import (
 // 不可 import），由组合根在 sweep 后打点交接日志并在 jobregistry GoBinding
 // 登记冻结依据。
 
-// authorizationFanoutProviderCodes mirrors the Node whitelist
-// (account-health-jobs-input-authorization-fanout.repository.ts:59).
-var authorizationFanoutProviderCodes = []string{
-	"gpt", "openai", "xai", "anthropic", "deepseek", "glm", "gemini", "hybrid",
+// authorizationFanoutVendorCodes mirrors the Node whitelist
+// (account-health-jobs-input-authorization-fanout.repository.ts:59) translated
+// to the target vendor vocabulary（§9.1 九真实厂商）：旧白名单里的
+// openai/hybrid 行经迁移落为 vendor_code IS NULL 的 generic_http 账户，与
+// accounthealth J1 读侧同款等价换轴，由下方 SQL 的 NULL 臂承接；白名单外
+// 身份与 J1 一样最终 fail-closed。
+var authorizationFanoutVendorCodes = []string{
+	"gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen",
 }
 
 // authorizationFanoutAccountTypes mirrors the Node type whitelist
@@ -61,13 +65,13 @@ func (s *Store) EnqueueAccountHealthInputsForAuthorizationSourceTx(ctx context.C
 		FROM %s
 		WHERE authorization_instance_source_account_id = ?
 			AND deleted_at IS NULL
-			AND provider_code IN (%s)
+			AND (vendor_code IS NULL OR COALESCE(vendor_code, '') IN (%s))
 			AND type IN (%s)
 		ORDER BY id ASC%s`, s.table("accounts"),
-		sqlPlaceholders(len(authorizationFanoutProviderCodes)),
+		sqlPlaceholders(len(authorizationFanoutVendorCodes)),
 		sqlPlaceholders(len(authorizationFanoutAccountTypes)), lockSuffix)
 	args := []any{strings.TrimSpace(resourceID)}
-	for _, code := range authorizationFanoutProviderCodes {
+	for _, code := range authorizationFanoutVendorCodes {
 		args = append(args, code)
 	}
 	for _, accountType := range authorizationFanoutAccountTypes {

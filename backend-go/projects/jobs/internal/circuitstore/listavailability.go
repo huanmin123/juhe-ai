@@ -904,9 +904,12 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 	if providerCode == "" || len(providerCode) > 128 {
 		return normalizedProjection{}, errors.New("providerCode 长度必须为 1..128")
 	}
+	// 供应商解耦后（§9.11）profile 维度退役：loader 恒投影空串
+	// （listavailability_rows.go `'' AS provider_protocol_profile_id`），
+	// 校验随之收窄为 0..256（恒空投影合法；列保留供旧读面消费）。
 	profileID := strings.TrimSpace(write.Item.ProviderProtocolProfileID)
-	if profileID == "" || len(profileID) > 256 {
-		return normalizedProjection{}, errors.New("providerProtocolProfileId 长度必须为 1..256")
+	if len(profileID) > 256 {
+		return normalizedProjection{}, errors.New("providerProtocolProfileId 长度必须为 0..256")
 	}
 	accountType := strings.TrimSpace(write.Item.AccountType)
 	if accountType == "" || len(accountType) > 64 {

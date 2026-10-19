@@ -110,67 +110,25 @@ func (c RefreshCandidate) IsDecryptFailure() bool { return c.Account == nil }
 
 // openAIProfileIDs mirrors openAIProtocolProfileIdsForQuery: enabled OpenAI
 // protocol profiles, falling back to the pinned GPT profile constant.
-func (s *Store) openAIProfileIDs(ctx context.Context) ([]string, error) {
-	// 表名必须走 s.table 限定（PG 下 juhe_business 前缀），裸表名在 PG
-	// search_path 里找不到会报 relation does not exist
-	// （2026-09-25 生产 oauth 刷新候选查询修复）。
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+s.table("provider_protocol_profiles")+`.id
-		FROM `+s.table("provider_protocol_profiles")+`
-		INNER JOIN `+s.table("providers")+` ON providers.code = provider_protocol_profiles.provider_code
-		WHERE providers.enabled = 1
-			AND provider_protocol_profiles.enabled = 1
-			AND protocol_code = ?
-			AND protocol_version = ?
-		ORDER BY provider_protocol_profiles.id ASC
-		LIMIT 500`), "openai", "v1")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, strings.TrimSpace(id))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		ids = []string{ProfileGPTOpenAIV1}
-	}
-	return ids, nil
-}
-
+// 供应商解耦后（设计 §9.3/§9.11）profile 表退役，OpenAI 刷新候选身份收敛为
+// (vendor_code='gpt', type='oauth')——该组合在 §1.1 registry 中恰好绑定唯一
+// gpt_openai_v1 预设，不再需要 profile ID 列表门。
+//
 // ListDueOpenAIRefreshAccounts mirrors
 // listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync. leadSeconds/dueBefore
 // semantics and the ordering contract stay byte-identical.
 func (s *Store) ListDueOpenAIRefreshAccounts(ctx context.Context, leadSeconds int, limit int, stoppedErrorCode string, now time.Time) ([]RefreshCandidate, error) {
 	dueBefore := isoMillis(now.Add(time.Duration(leadSeconds) * time.Second))
 	limit = clampInt(limit, 1, 500)
-	profileIDs, err := s.openAIProfileIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	placeholders := make([]string, len(profileIDs))
-	args := make([]any, 0, len(profileIDs)+3)
-	for i, id := range profileIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	args = append(args, stoppedErrorCode, dueBefore, limit)
-	query := `SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+	query := `SELECT id, system_account_id, COALESCE(vendor_code, ''), protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		proxy_profile_id, concurrency_limit, priority,
-		super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
+		super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
 		last_error_code, last_error_message, health_check_model, health_check_endpoint_mode, config_revision
 	FROM ` + s.table("accounts") + `
 	WHERE authorization_instance_authorization_id IS NULL
 		AND deleted_at IS NULL
-		AND provider_protocol_profile_id IN (` + strings.Join(placeholders, ", ") + `)
+		AND COALESCE(vendor_code, '') = ?
 		AND type = 'oauth'
-		AND oauth_refresh_token_present BETWEEN 0 AND 1
 		AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
 		AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
 	ORDER BY oauth_refresh_token_present ASC,
@@ -179,6 +137,7 @@ func (s *Store) ListDueOpenAIRefreshAccounts(ctx context.Context, leadSeconds in
 		updated_at ASC,
 		id ASC
 	LIMIT ?`
+	args := []any{ProviderGPT, stoppedErrorCode, dueBefore, limit}
 	return s.listRefreshCandidates(ctx, query, args...)
 }
 
@@ -194,7 +153,6 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 			id               string
 			systemAccountID  string
 			providerCode     string
-			profileID        string
 			protocolCode     string
 			protocolVersion  string
 			name             string
@@ -207,11 +165,11 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 			lastErrorMessage sql.NullString
 			configRevision   int64
 		)
-		var concurrencyLimit, priority, superPriority, fallbackEnabled, clientCompatibility, schedulable, cooldownUntil any
+		var concurrencyLimit, priority, superPriority, fallbackEnabled, schedulable, cooldownUntil any
 		var healthCheckModel, healthCheckEndpointMode any
-		if err := rows.Scan(&id, &systemAccountID, &providerCode, &profileID, &protocolCode, &protocolVersion, &name, &accountType, &status, &encrypted,
+		if err := rows.Scan(&id, &systemAccountID, &providerCode, &protocolCode, &protocolVersion, &name, &accountType, &status, &encrypted,
 			&proxyProfileID, &concurrencyLimit, &priority,
-			&superPriority, &fallbackEnabled, &clientCompatibility, &schedulable, &accountExpiresAt, &cooldownUntil,
+			&superPriority, &fallbackEnabled, &schedulable, &accountExpiresAt, &cooldownUntil,
 			&lastErrorCode, &lastErrorMessage, &healthCheckModel, &healthCheckEndpointMode, &configRevision); err != nil {
 			return nil, err
 		}
@@ -232,7 +190,7 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 		}
 		candidates = append(candidates, RefreshCandidate{Account: &RotationAccount{
 			ID: id, SystemAccountID: systemAccountID,
-			ProviderCode: providerCode, ProviderProtocolProfileID: profileID,
+			ProviderCode: providerCode,
 			ProtocolCode: protocolCode, ProtocolVersion: protocolVersion,
 			Name: name, Type: accountType, Status: status,
 			LastErrorCode:    lastErrorCode.String,
@@ -252,23 +210,25 @@ func (s *Store) listRefreshCandidates(ctx context.Context, query string, args ..
 // Rotation account + CAS credential writers
 // ---------------------------------------------------------------------------
 
-// RotationAccount mirrors OAuthCredentialRotationAccount.
+// RotationAccount mirrors OAuthCredentialRotationAccount. ProviderCode 承载
+// 目标 schema 的 vendor_code 身份值（§2.1：真实厂商 vendor_code ==
+// provider_code；§9.11 目标列集无 provider_code / provider_protocol_profile_id，
+// profile 维度已删除）。
 type RotationAccount struct {
-	ID                        string
-	SystemAccountID           string
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
-	Name                      string
-	Type                      string
-	Status                    string
-	LastErrorCode             string
-	ProxyProfileID            string
-	Credentials               map[string]any
-	AccountExpiresAt          string
-	ConfigRevision            int64
-	UpdatedAt                 string
+	ID               string
+	SystemAccountID  string
+	ProviderCode     string
+	ProtocolCode     string
+	ProtocolVersion  string
+	Name             string
+	Type             string
+	Status           string
+	LastErrorCode    string
+	ProxyProfileID   string
+	Credentials      map[string]any
+	AccountExpiresAt string
+	ConfigRevision   int64
+	UpdatedAt        string
 }
 
 // CredentialsUnavailableError marks an account whose sealed credentials are
@@ -290,7 +250,6 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 		id               string
 		systemAccountID  string
 		providerCode     string
-		profileID        string
 		protocolCode     string
 		protocolVersion  string
 		name             string
@@ -303,8 +262,10 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 		configRevision   int64
 		updatedAt        string
 	)
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code,
-			provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	// 身份读键 = COALESCE(vendor_code,'')（§9.11 目标列集无 provider_code /
+	// provider_protocol_profile_id；与 gateway oauthmgmt T30 轮换读面同口径）。
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, COALESCE(vendor_code, ''),
+			protocol_code, protocol_version, name, type, status,
 			last_error_code, proxy_profile_id, credentials_encrypted,
 			account_expires_at, config_revision, updated_at
 		FROM `+s.table("accounts")+`
@@ -313,7 +274,7 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 			AND authorization_instance_authorization_id IS NULL
 		LIMIT 1`), accountID).Scan(
 		&id, &systemAccountID, &providerCode,
-		&profileID, &protocolCode, &protocolVersion, &name, &accountType, &status,
+		&protocolCode, &protocolVersion, &name, &accountType, &status,
 		&lastErrorCode, &proxyProfileID, &encrypted,
 		&accountExpiresAt, &configRevision, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -334,7 +295,7 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 	}
 	return &RotationAccount{
 		ID: id, SystemAccountID: systemAccountID,
-		ProviderCode: providerCode, ProviderProtocolProfileID: profileID,
+		ProviderCode: providerCode,
 		ProtocolCode: protocolCode, ProtocolVersion: protocolVersion,
 		Name: name, Type: accountType, Status: status,
 		LastErrorCode:    lastErrorCode.String,
@@ -346,14 +307,15 @@ func (s *Store) FindRotationAccount(ctx context.Context, accountID string) (*Rot
 }
 
 // RotateCredentialsInput mirrors rotateOAuthCredentialsAsync input (jobs
-// internal access).
+// internal access). 身份 CAS 键 = vendor_code（§2.1 行为键，真实厂商 ==
+// provider_code）+ account type + config revision；profile 维度已随目标列集
+// 删除（§9.11）。
 type RotateCredentialsInput struct {
-	AccountID                         string
-	ExpectedConfigRevision            int64
-	ExpectedProviderCode              string
-	ExpectedAccountType               string
-	ExpectedProviderProtocolProfileID string
-	Credentials                       map[string]any
+	AccountID              string
+	ExpectedConfigRevision int64
+	ExpectedProviderCode   string
+	ExpectedAccountType    string
+	Credentials            map[string]any
 }
 
 // RotationResult mirrors OAuthCredentialRotationResult.
@@ -388,17 +350,16 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 	var (
 		id             string
 		providerCode   string
-		profileID      string
 		accountType    string
 		encrypted      string
 		configRevision int64
 	)
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, provider_code, provider_protocol_profile_id, type, credentials_encrypted, config_revision
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT id, COALESCE(vendor_code, ''), type, credentials_encrypted, config_revision
 		FROM `+s.table("accounts")+`
 		WHERE id = ?
 			AND deleted_at IS NULL
 			AND authorization_instance_authorization_id IS NULL
-		LIMIT 1`), input.AccountID).Scan(&id, &providerCode, &profileID, &accountType, &encrypted, &configRevision)
+		LIMIT 1`), input.AccountID).Scan(&id, &providerCode, &accountType, &encrypted, &configRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -406,8 +367,7 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 		return nil, err
 	}
 	if providerCode != input.ExpectedProviderCode ||
-		accountType != input.ExpectedAccountType ||
-		profileID != input.ExpectedProviderProtocolProfileID {
+		accountType != input.ExpectedAccountType {
 		return nil, nil
 	}
 	if configRevision != input.ExpectedConfigRevision {
@@ -446,11 +406,11 @@ func (s *Store) RotateCredentials(ctx context.Context, input RotateCredentialsIn
 		SET credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
 			oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
 			config_revision = config_revision + 1, updated_at = ?
-		WHERE id = ? AND provider_code = ? AND provider_protocol_profile_id = ? AND type = ?
+		WHERE id = ? AND COALESCE(vendor_code, '') = ? AND type = ?
 			AND config_revision = ?
 			AND deleted_at IS NULL AND authorization_instance_authorization_id IS NULL`),
 		sealed, hashSecret(source), maskSecret(source), expiresAt, refreshPresent, updatedAt,
-		id, providerCode, profileID, accountType, configRevision)
+		id, providerCode, accountType, configRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -604,28 +564,25 @@ type KeepaliveCandidate struct {
 }
 
 // ListDueKeepaliveAccounts mirrors the dispatch-preparation refresh window as a
-// batch query: oauth accounts of the provider whose derived
+// batch query: oauth accounts of the vendor whose derived
 // oauth_access_token_expires_at is missing or within the lead window. gemini
-// accounts use type google_oauth, grok pins the XAI OpenAI v1 profile.
-func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, accountType, requiredProfileID string, lead time.Duration, limit int, now time.Time) ([]KeepaliveCandidate, error) {
+// accounts use type google_oauth；身份键 = COALESCE(vendor_code,'')（§2.1
+// 行为键；§9.11 目标列集无 provider_code / provider_protocol_profile_id，
+// profile 维度门已删除——vendor+type 在 §1.1 registry 已唯一绑定预设）。
+func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, accountType string, lead time.Duration, limit int, now time.Time) ([]KeepaliveCandidate, error) {
 	dueBefore := isoMillis(now.Add(lead))
 	limit = clampInt(limit, 1, 500)
-	query := `SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+	query := `SELECT id, system_account_id, COALESCE(vendor_code, ''), protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		proxy_profile_id, account_expires_at, last_error_code, config_revision, updated_at
 	FROM ` + s.table("accounts") + `
 	WHERE authorization_instance_authorization_id IS NULL
 		AND deleted_at IS NULL
-		AND provider_code = ?
+		AND COALESCE(vendor_code, '') = ?
 		AND type = ?
 		AND (status <> 'error' OR last_error_code IS NULL OR last_error_code NOT IN ('oauth_token_refresh_failed', 'oauth_token_refresh_local_configuration_invalid'))
 		AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
 		AND oauth_refresh_token_present = 1`
 	args := []any{providerCode, accountType, dueBefore}
-	if requiredProfileID != "" {
-		query += `
-		AND provider_protocol_profile_id = ?`
-		args = append(args, requiredProfileID)
-	}
 	query += `
 	ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
 	LIMIT ?`
@@ -641,7 +598,6 @@ func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, acco
 			id              string
 			systemAccountID string
 			rowProviderCode string
-			profileID       string
 			protocolCode    string
 			protocolVersion string
 			name            string
@@ -654,7 +610,7 @@ func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, acco
 			configRevision  int64
 			updatedAt       string
 		)
-		if err := rows.Scan(&id, &systemAccountID, &rowProviderCode, &profileID, &protocolCode, &protocolVersion, &name, &rowAccountType, &status, &encrypted,
+		if err := rows.Scan(&id, &systemAccountID, &rowProviderCode, &protocolCode, &protocolVersion, &name, &rowAccountType, &status, &encrypted,
 			&proxyProfileID, &accountExpires, &lastErrorCode, &configRevision, &updatedAt); err != nil {
 			return nil, err
 		}
@@ -669,7 +625,7 @@ func (s *Store) ListDueKeepaliveAccounts(ctx context.Context, providerCode, acco
 		}
 		candidates = append(candidates, KeepaliveCandidate{Account: &RotationAccount{
 			ID: id, SystemAccountID: systemAccountID,
-			ProviderCode: rowProviderCode, ProviderProtocolProfileID: profileID,
+			ProviderCode: rowProviderCode,
 			ProtocolCode: protocolCode, ProtocolVersion: protocolVersion,
 			Name: name, Type: rowAccountType, Status: status,
 			LastErrorCode:    lastErrorCode.String,

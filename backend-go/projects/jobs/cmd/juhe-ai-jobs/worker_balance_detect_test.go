@@ -19,13 +19,16 @@ import (
 )
 
 // balanceFixtureSchema 建立余额探测依赖的冻结业务/统计表
-// （仅测试所需列；生产 DDL 归 maintenance 项目）。
+// （仅测试所需列；生产 DDL 归 maintenance 项目）。accounts 为目标形态
+// （§9.11：provider_code 已删，身份 = vendor_code（nullable；余额候选经
+// Input.Validate 要求非空真实厂商）+ connection_driver_code）。
 func balanceFixtureSchema(ctx context.Context, businessDB, statsDB *sql.DB) error {
 	businessSchema := `
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   system_account_id TEXT NOT NULL,
-  provider_code TEXT NOT NULL DEFAULT 'user-balance-provider',
+  vendor_code TEXT,
+  connection_driver_code TEXT NOT NULL DEFAULT 'generic_http',
   type TEXT NOT NULL,
   status TEXT NOT NULL,
   schedulable INTEGER NOT NULL DEFAULT 1,
@@ -96,8 +99,8 @@ func seedBalanceDetectionAccount(t *testing.T, ctx context.Context, db *sql.DB, 
 	}
 	due := time.Now().UTC().Add(dueOffset).Format(time.RFC3339Nano)
 	if _, err := db.ExecContext(ctx, `
-INSERT INTO accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES ('acc-detect-1', 'sys-1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
+INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+VALUES ('acc-detect-1', 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
 `, envelope, due, due); err != nil {
 		t.Fatal(err)
 	}

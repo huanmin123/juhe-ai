@@ -9,6 +9,9 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 const (
@@ -65,8 +68,9 @@ func (r *PostgresDirectInputReader) CheckContract(ctx context.Context) error {
 
 var proxyLatencyRequiredRelations = []string{
 	"juhe_business.proxy_profiles",
-	"juhe_business.providers",
-	"juhe_business.provider_protocol_profiles",
+	// 供应商解耦后探针 target 事实源（§9.11：providers/provider_protocol_
+	// profiles 表退役，vendor 目录与 registry 派生 target 相交）。
+	"juhe_business.vendors",
 }
 
 func (r *PostgresDirectInputReader) LoadDue(ctx context.Context, limit int) ([]InputDraft, error) {
@@ -299,12 +303,67 @@ func parseProxyLatencyUTC(value, field string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
+// 供应商解耦后（设计 §9.1/§9.3/§9.11）providers/provider_protocol_profiles
+// 表退役：每 vendor 的探针 target 由编译期 registry 确定性派生——preset 取
+// vendor 语义默认档（与 gateway vendorDefaultProtocolContext 同口径：
+// gemini→native、glm→coding openai、其余唯一 chat/媒体预设），URL 取
+// registry default_base_url（与 seed/UI 初始值同一口径），profile ID 走
+// exactkeyprobe.ConnectionPresetProfileID 的 preset→profile_* 固定映射
+// （下游取值形状不变）。无已注册探针协议目录的 vendor（纯媒体/新增）不在
+// target 集内，fail-closed。运行时仍按 vendors.enabled 过滤。
+//
 // Candidates are paged by proxy before targets are expanded. This retains the
 // Node ordering and lets a malformed proxy be skipped without starving later
-// rows. Provider default profiles match Node: enabled profiles win when any
-// exist; otherwise all profiles are candidates, with Gemini/GLM special IDs
-// taking precedence before updated_at/id.
-const proxyLatencyCandidatesSQL = `
+// rows. Enabled vendors win via vendors.enabled; target ordering stays
+// provider_name ASC, provider ASC.
+type j3aVendorProbeTarget struct {
+	provider, profileID, targetURL string
+}
+
+// j3aVendorProbePresets 是 vendor→探针预设的固定表（§1.1 registry 词表）。
+var j3aVendorProbePresets = []struct{ vendor, preset string }{
+	{"gpt", contracts.PresetGPTOpenAIV1},
+	{"xai", contracts.PresetXAIOpenAIV1},
+	{"deepseek", contracts.PresetDeepSeekOpenAIV1},
+	{"anthropic", contracts.PresetAnthropicV1},
+	{"gemini", contracts.PresetGeminiNativeV1Beta},
+	{"glm", contracts.PresetGLMCodingOpenAIV1},
+	{"minimax", contracts.PresetMiniMaxMedia},
+	{"volcengine", contracts.PresetVolcengineArk},
+	{"qwen", contracts.PresetQwenDashScope},
+}
+
+// j3aVendorProbeTargets 是 registry 派生的探针 target 全集（init 期固定）。
+var j3aVendorProbeTargets = buildJ3aVendorProbeTargets()
+
+func buildJ3aVendorProbeTargets() []j3aVendorProbeTarget {
+	targets := make([]j3aVendorProbeTarget, 0, len(j3aVendorProbePresets))
+	for _, entry := range j3aVendorProbePresets {
+		profileID, ok := exactkeyprobe.ConnectionPresetProfileID(entry.preset)
+		if !ok {
+			// 无已注册 J1 探针协议目录的 preset 不构造 target（fail-closed）。
+			continue
+		}
+		targetURL := contracts.PresetDefaultBaseURL(entry.preset)
+		if strings.TrimSpace(targetURL) == "" {
+			continue
+		}
+		targets = append(targets, j3aVendorProbeTarget{provider: entry.vendor, profileID: profileID, targetURL: targetURL})
+	}
+	return targets
+}
+
+// j3aVendorTargetsSQL 把 registry target 全集内联为 VALUES 行（provider,
+// profile_id, target_url），运行时与 vendors.enabled 相交。
+func j3aVendorTargetsSQL() string {
+	rows := make([]string, 0, len(j3aVendorProbeTargets))
+	for _, target := range j3aVendorProbeTargets {
+		rows = append(rows, "('"+target.provider+"','"+target.profileID+"','"+target.targetURL+"')")
+	}
+	return strings.Join(rows, ",")
+}
+
+var proxyLatencyCandidatesSQL = `
 WITH selected_proxies AS (
   SELECT p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled,
     to_char(p.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS config_revision,
@@ -314,21 +373,11 @@ WITH selected_proxies AS (
   ORDER BY (p.last_tested_at IS NOT NULL) ASC,p.last_tested_at ASC,p.updated_at DESC,p.id ASC
   LIMIT $1 OFFSET $2
 ), selected_targets AS (
-  SELECT provider,provider_name,profile_id,target_url
-  FROM (
-    SELECT p.code AS provider,p.name AS provider_name,ppp.id AS profile_id,ppp.base_url AS target_url,
-      row_number() OVER (
-        PARTITION BY p.code
-        ORDER BY CASE WHEN ppp.enabled = 1 THEN 0 ELSE 1 END,
-          CASE WHEN (p.code = 'gemini' AND ppp.id = 'profile_gemini_native_v1beta')
-                    OR (p.code = 'glm' AND ppp.id = 'profile_glm_coding_openai_v1') THEN 0 ELSE 1 END,
-          ppp.updated_at DESC,ppp.id ASC
-      ) AS profile_rank
-    FROM juhe_business.providers p
-    JOIN juhe_business.provider_protocol_profiles ppp ON ppp.provider_code = p.code
-    WHERE p.enabled = 1
-  ) ranked_profiles
-  WHERE profile_rank = 1
+  SELECT v.code AS provider,v.name AS provider_name,t.profile_id,t.target_url
+  FROM juhe_business.vendors v
+  JOIN (VALUES ` + j3aVendorTargetsSQL() + `) AS t(provider,profile_id,target_url)
+    ON t.provider = v.code
+  WHERE v.enabled = 1
 )
 SELECT proxy.id,proxy.type,proxy.host,proxy.port,proxy.username,proxy.password_encrypted,proxy.enabled,
   proxy.config_revision,proxy.last_tested_at,target.provider,target.profile_id,target.target_url

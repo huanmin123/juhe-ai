@@ -42,7 +42,7 @@ func TestW9HRefreshAccountArms(t *testing.T) {
 		t.Fatal("fresh account must not call upstream")
 	}
 	// Missing refresh token surfaces the local configuration error.
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ra-nort", ProviderCode: "gpt", ProfileID: ProfileGPTOpenAIV1, Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ra-nort", ProviderCode: "gpt", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	noToken, err := job.store.FindRotationAccount(context.Background(), "w9h-ra-nort")
 	if err != nil || noToken == nil {
@@ -198,7 +198,6 @@ func TestW9HRunOnceSettingsArms(t *testing.T) {
 
 func TestW9HRunOnceAdmissionBudgetDefersBatch(t *testing.T) {
 	store, db, _ := newTestStore(t)
-	seedProviderProfiles(t, db)
 	seedOpenAIOAuthAccount(t, db, "w9h-defer", openAICredentials(expiresInMillis(60_000)), defaultNow())
 	// The clock advances past the admission deadline after the first read, so
 	// every selected candidate defers to the next cycle.
@@ -252,9 +251,9 @@ func (s *w9hFailingFailureStore) CleanupBackoff(now int64) { s.memory.CleanupBac
 
 func seedUndecryptableAccount(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO accounts (id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	_, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, config_revision, updated_at)
-		VALUES (?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'oauth', 'active', 'not-a-valid-envelope', 1, ?)`,
+		VALUES (?, 'gpt', 'gpt', 'openai', 'v1', ?, 'oauth', 'active', 'not-a-valid-envelope', 1, ?)`,
 		id, "账户-"+id, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +326,6 @@ func readAccountLastMessage(t *testing.T, db *sql.DB, id string) string {
 
 func TestW9HFailureRecordWriteErrorSurfaces(t *testing.T) {
 	store, db, _ := newTestStore(t)
-	seedProviderProfiles(t, db)
 	seedOpenAIOAuthAccount(t, db, "w9h-rec-fail", openAICredentials(expiresInMillis(0)), defaultNow())
 	// The refresh fails (upstream 500) and the failure-state write fails too.
 	job := NewRefreshJob(store, &recordingExchanger{respond: func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
@@ -385,7 +383,7 @@ func TestW9HRefreshCandidateFetchLimitArms(t *testing.T) {
 
 func TestW9HKeepaliveRefreshOneArms(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	source, err := job.store.FindRotationAccount(context.Background(), "w9h-ka")
 	if err != nil || source == nil {
@@ -405,7 +403,7 @@ func TestW9HKeepaliveRefreshOneArms(t *testing.T) {
 	}
 	// Unsupported provider fails with the provider copy (the plan must match
 	// the stored row for the refresh switch to be reached).
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-other", ProviderCode: "other", ProfileID: "profile_gpt_openai_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-other", ProviderCode: "other", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	otherSource, err := job.store.FindRotationAccount(context.Background(), "w9h-ka-other")
 	if err != nil || otherSource == nil {
@@ -425,7 +423,7 @@ func TestW9HKeepaliveRefreshOneArms(t *testing.T) {
 	}
 	// Grok missing refresh token carries the grok message (the stored row must
 	// itself lack the token because refreshOne re-reads the source).
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-grokless", ProviderCode: "xai", ProfileID: ProfileXAIOpenAIV1, Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-grokless", ProviderCode: "xai", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	grokless, err := job.store.FindRotationAccount(context.Background(), "w9h-ka-grokless")
 	if err != nil || grokless == nil {
@@ -435,7 +433,7 @@ func TestW9HKeepaliveRefreshOneArms(t *testing.T) {
 		t.Fatalf("grok missing token err=%v", err)
 	}
 	// Persist seam returning (nil, nil) reads as the source disappearing.
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka2", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka2", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	source2, _ := job.store.FindRotationAccount(context.Background(), "w9h-ka2")
 	job.updateCredentials = func(context.Context, string, map[string]any, int64) (*RotationAccount, error) { return nil, nil }
@@ -470,7 +468,7 @@ func TestW9HKeepaliveRefreshOneArms(t *testing.T) {
 
 func TestW9HKeepaliveConflictReloadArms(t *testing.T) {
 	job, db, clock, _ := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-conflict", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-conflict", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	source, _ := job.store.FindRotationAccount(context.Background(), "w9h-ka-conflict")
 	anthropicPlan := KeepalivePlans()[0]
@@ -496,7 +494,7 @@ func TestW9HKeepaliveConflictReloadArms(t *testing.T) {
 
 func TestW9HKeepaliveConflictAdoptsStillDueRetry(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-adopt", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-adopt", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt-old", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	source, _ := job.store.FindRotationAccount(context.Background(), "w9h-ka-adopt")
 	anthropicPlan := KeepalivePlans()[0]
@@ -531,11 +529,11 @@ func TestW9HKeepaliveConflictAdoptsStillDueRetry(t *testing.T) {
 
 func TestW9HListDueKeepaliveAccountsSkipsUndecryptable(t *testing.T) {
 	job, db, clock, _ := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-good", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-ka-good", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	seedUndecryptableKeepaliveRow(t, db, "w9h-ka-bad")
 	plan := KeepalivePlans()[0]
-	candidates, err := job.store.ListDueKeepaliveAccounts(context.Background(), plan.Provider, plan.AccountType, plan.RequiredProfileID, plan.Lead, 10, clock.Now())
+	candidates, err := job.store.ListDueKeepaliveAccounts(context.Background(), plan.Provider, plan.AccountType, plan.Lead, 10, clock.Now())
 	if err != nil {
 		t.Fatalf("list err=%v", err)
 	}
@@ -546,9 +544,9 @@ func TestW9HListDueKeepaliveAccountsSkipsUndecryptable(t *testing.T) {
 
 func seedUndecryptableKeepaliveRow(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO accounts (id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	_, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, oauth_refresh_token_present, config_revision, updated_at)
-		VALUES (?, 'anthropic', 'profile_anthropic_anthropic_v1', 'openai', 'v1', ?, 'oauth', 'active', 'garbage-envelope', 1, 1, ?)`,
+		VALUES (?, 'anthropic', 'anthropic', 'openai', 'v1', ?, 'oauth', 'active', 'garbage-envelope', 1, 1, ?)`,
 		id, "账户-"+id, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)
@@ -566,15 +564,15 @@ func TestW9HRotateCredentialsGuardArms(t *testing.T) {
 	next := openAICredentials(expiresInMillis(3_600_000))
 
 	// Missing account → (nil, nil).
-	if result, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-ghost", ExpectedConfigRevision: 1, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1, Credentials: next}); err != nil || result != nil {
+	if result, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-ghost", ExpectedConfigRevision: 1, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", Credentials: next}); err != nil || result != nil {
 		t.Fatalf("ghost result=%v err=%v", result, err)
 	}
 	// Provider/profile/type mismatch → (nil, nil).
-	if result, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 1, ExpectedProviderCode: "anthropic", ExpectedAccountType: "oauth", ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1, Credentials: next}); err != nil || result != nil {
+	if result, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 1, ExpectedProviderCode: "anthropic", ExpectedAccountType: "oauth", Credentials: next}); err != nil || result != nil {
 		t.Fatalf("mismatch result=%v err=%v", result, err)
 	}
 	// Stale revision → RevisionConflictError.
-	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 9, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1, Credentials: next}); err == nil || !IsRevisionConflict(err) {
+	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 9, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", Credentials: next}); err == nil || !IsRevisionConflict(err) {
 		t.Fatalf("conflict err=%v", err)
 	}
 	// Invalid revision input fails fast.
@@ -583,11 +581,11 @@ func TestW9HRotateCredentialsGuardArms(t *testing.T) {
 	}
 	// Invalid expires_at fails the canonicalization guard.
 	bad := openAICredentials("not-a-time")
-	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 1, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1, Credentials: bad}); err == nil {
+	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 1, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", Credentials: bad}); err == nil {
 		t.Fatal("bad expires_at must fail")
 	}
 	// Missing credential source fails with the empty-credentials copy.
-	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 1, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1, Credentials: map[string]any{"expires_at": expiresInMillis(0)}}); err == nil || !strings.Contains(err.Error(), "OAuth 凭据不能为空") {
+	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{AccountID: "w9h-rot", ExpectedConfigRevision: 1, ExpectedProviderCode: "gpt", ExpectedAccountType: "oauth", Credentials: map[string]any{"expires_at": expiresInMillis(0)}}); err == nil || !strings.Contains(err.Error(), "OAuth 凭据不能为空") {
 		t.Fatalf("empty credentials err=%v", err)
 	}
 }
@@ -599,7 +597,7 @@ func IsRevisionConflict(err error) bool {
 
 func TestW9HUpdateAccountCredentialsGuardArms(t *testing.T) {
 	_, store, db, clock, _ := newRefreshJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "w9h-upd", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "w9h-upd", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at", "refresh_token": "rt", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	ctx := context.Background()
 	next := map[string]any{"access_token": "at2", "refresh_token": "rt2", "expires_at": expiresInMillis(3_600_000)}

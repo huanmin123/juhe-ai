@@ -51,10 +51,11 @@ func TestWorkerAssemblySnapshotUpsertChannel(t *testing.T) {
 	}
 
 	// owners 归属查询目标：business accounts 两行（同 owner 与不同 owner）。
+	// 目标形态身份列（§9.11）：vendor_code + connection_driver_code。
 	business := openTestSQLite(t, filepath.Join(dir, "business.sqlite3"))
 	mustExec(t, business,
-		"INSERT OR IGNORE INTO accounts (id, system_account_id, name, type, status, provider_code, config_revision, dispatch_revision, updated_at) VALUES ('acc-snap-a', 'sys_owner_a', '快照账户A', 'api_key', 'active', 'openai', 1, 1, '2026-01-01T00:00:00.000Z')",
-		"INSERT OR IGNORE INTO accounts (id, system_account_id, name, type, status, provider_code, config_revision, dispatch_revision, updated_at) VALUES ('acc-snap-b', 'sys_owner_b', '快照账户B', 'api_key', 'active', 'openai', 1, 1, '2026-01-01T00:00:00.000Z')")
+		"INSERT OR IGNORE INTO accounts (id, system_account_id, name, type, status, vendor_code, connection_driver_code, config_revision, dispatch_revision, updated_at) VALUES ('acc-snap-a', 'sys_owner_a', '快照账户A', 'api_key', 'active', 'gpt', 'gpt', 1, 1, '2026-01-01T00:00:00.000Z')",
+		"INSERT OR IGNORE INTO accounts (id, system_account_id, name, type, status, vendor_code, connection_driver_code, config_revision, dispatch_revision, updated_at) VALUES ('acc-snap-b', 'sys_owner_b', '快照账户B', 'api_key', 'active', 'gpt', 'gpt', 1, 1, '2026-01-01T00:00:00.000Z')")
 
 	t.Run("批量映射落行", func(t *testing.T) {
 		stats := openTestSQLite(t, filepath.Join(dir, "stats.sqlite3"))

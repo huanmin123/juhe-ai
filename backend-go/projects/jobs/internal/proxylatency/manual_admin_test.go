@@ -61,17 +61,22 @@ func (a *fakeManualAdminAuditAppender) Append(_ context.Context, input operation
 }
 
 func TestManualAdminSnapshotSQLUsesActiveNodePostgresCatalogFlags(t *testing.T) {
+	// 供应商解耦后 target 事实源 = vendors.enabled ∩ registry 派生 target
+	// （§9.11 旧 providers/profiles 表退役）；enabled 布尔仍是 PostgreSQL
+	// integer 语义（v.enabled = 1）。
 	for _, required := range []string{
-		"CASE WHEN ppp.enabled = 1 THEN 0 ELSE 1 END",
-		"WHERE p.enabled = 1",
+		"juhe_business.vendors",
+		"v.enabled = 1",
+		"AS t(provider,profile_id,target_url)",
+		"WHERE p.id=$1",
 	} {
 		if !strings.Contains(manualAdminSnapshotSQL, required) {
 			t.Fatalf("management snapshot SQL missing PostgreSQL boolean condition %q: %s", required, manualAdminSnapshotSQL)
 		}
 	}
-	for _, forbidden := range []string{"CASE WHEN ppp.enabled THEN", "WHERE p.enabled\n"} {
+	for _, forbidden := range []string{"provider_protocol_profiles", "juhe_business.providers"} {
 		if strings.Contains(manualAdminSnapshotSQL, forbidden) {
-			t.Fatalf("management snapshot SQL must use the active Node PostgreSQL integer catalog flags, not %q: %s", forbidden, manualAdminSnapshotSQL)
+			t.Fatalf("management snapshot SQL must not read the retired provider catalog tables (%q): %s", forbidden, manualAdminSnapshotSQL)
 		}
 	}
 }

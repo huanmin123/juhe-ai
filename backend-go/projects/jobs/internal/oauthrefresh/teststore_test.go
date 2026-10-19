@@ -25,22 +25,11 @@ func newTestStore(t *testing.T) (*Store, *sql.DB, func()) {
 		t.Fatal(err)
 	}
 	schema := `
-CREATE TABLE providers (
-	code TEXT PRIMARY KEY,
-	enabled INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE provider_protocol_profiles (
-	id TEXT PRIMARY KEY,
-	provider_code TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	protocol_code TEXT NOT NULL,
-	protocol_version TEXT NOT NULL
-);
 CREATE TABLE accounts (
 	id TEXT PRIMARY KEY,
 	system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
-	provider_code TEXT NOT NULL,
-	provider_protocol_profile_id TEXT NOT NULL,
+	vendor_code TEXT,
+	connection_driver_code TEXT NOT NULL DEFAULT 'generic_http',
 	protocol_code TEXT NOT NULL DEFAULT 'openai',
 	protocol_version TEXT NOT NULL DEFAULT 'v1',
 	name TEXT NOT NULL,
@@ -54,7 +43,6 @@ CREATE TABLE accounts (
 	priority INTEGER NOT NULL DEFAULT 0,
 	super_priority_enabled INTEGER NOT NULL DEFAULT 0,
 	fallback_enabled INTEGER NOT NULL DEFAULT 0,
-	client_compatibility TEXT NOT NULL DEFAULT '',
 	schedulable INTEGER NOT NULL DEFAULT 1,
 	account_expires_at TEXT,
 	cooldown_until TEXT,
@@ -147,26 +135,10 @@ CREATE TABLE resource_authorization_grants (
 	return store, db, cleanup
 }
 
-func seedProviderProfiles(t *testing.T, db *sql.DB) {
-	t.Helper()
-	_, err := db.Exec(`INSERT INTO providers (code, enabled) VALUES ('gpt', 1), ('anthropic', 1), ('gemini', 1), ('xai', 1)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, enabled, protocol_code, protocol_version) VALUES
-		('profile_gpt_openai_v1', 'gpt', 1, 'openai', 'v1'),
-		('profile_anthropic_anthropic_v1', 'anthropic', 1, 'anthropic', 'v1'),
-		('profile_gemini_native_v1beta', 'gemini', 1, 'gemini', 'v1beta'),
-		('profile_xai_openai_v1', 'xai', 1, 'openai', 'v1')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func seedOpenAIOAuthAccount(t *testing.T, db *sql.DB, id string, credentials map[string]any, now time.Time) {
 	t.Helper()
 	seedAccountRow(t, db, accountRowSeed{
-		ID: id, ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1",
+		ID: id, ProviderCode: ProviderGPT,
 		Type: "oauth", Credentials: credentials, Now: now,
 	})
 }
@@ -174,7 +146,6 @@ func seedOpenAIOAuthAccount(t *testing.T, db *sql.DB, id string, credentials map
 type accountRowSeed struct {
 	ID               string
 	ProviderCode     string
-	ProfileID        string
 	Type             string
 	Status           string
 	LastErrorCode    string
@@ -210,11 +181,11 @@ func seedAccountRow(t *testing.T, db *sql.DB, seed accountRowSeed) {
 	if seed.LastErrorCode != "" {
 		lastErrorCode = sql.NullString{String: seed.LastErrorCode, Valid: true}
 	}
-	_, err = db.Exec(`INSERT INTO accounts (id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+	_, err = db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status,
 		credentials_encrypted, credential_fingerprint, credential_mask, oauth_access_token_expires_at, oauth_refresh_token_present,
 		last_error_code, config_revision, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-		seed.ID, seed.ProviderCode, seed.ProfileID, "openai", "v1", "账户-"+seed.ID, seed.Type, seed.Status,
+		seed.ID, seed.ProviderCode, seed.ProviderCode, "openai", "v1", "账户-"+seed.ID, seed.Type, seed.Status,
 		sealed, hashSecret(source), maskSecret(source), expiresAt, refreshPresent,
 		lastErrorCode, isoMillis(seed.Now))
 	if err != nil {

@@ -13,13 +13,12 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 	store, db, _ := newTestStore(t)
 	ctx := context.Background()
 	now := w12fBaseNow()
-	seedProviderProfiles(t, db)
 	// credentials_encrypted 为非 JSON 垃圾内容 → DecryptJSON 失败传播。
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-null", ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1", Type: "oauth", Credentials: map[string]any{"refresh_token": "w12f-rt"}, Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-null", ProviderCode: "gpt", Type: "oauth", Credentials: map[string]any{"refresh_token": "w12f-rt"}, Now: now})
 	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = 'w12f-garbage' WHERE id = 'w12f-null'`); err != nil {
 		t.Fatal(err)
 	}
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-null2", ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1", Type: "oauth", Credentials: map[string]any{"refresh_token": "w12f-rt"}, Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-null2", ProviderCode: "gpt", Type: "oauth", Credentials: map[string]any{"refresh_token": "w12f-rt"}, Now: now})
 	if _, err := db.Exec(`UPDATE accounts SET credentials_encrypted = 'w12f-garbage' WHERE id = 'w12f-null2'`); err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +26,6 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 		AccountID:                         "w12f-null",
 		ExpectedProviderCode:              "gpt",
 		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
 		ExpectedConfigRevision:            1,
 		Credentials:                       map[string]any{"refresh_token": "w12f-rt"},
 	}); err == nil {
@@ -42,7 +40,6 @@ func TestW12fUpdateAndMarkArms(t *testing.T) {
 	store, db, _ := newTestStore(t)
 	ctx := context.Background()
 	now := w12fBaseNow()
-	seedProviderProfiles(t, db)
 	seedOpenAIOAuthAccount(t, db, "w12f-upd", openAICredentials(expiresInMillis(0)), now)
 
 	// UpdateAccountCredentials：版本冲突。

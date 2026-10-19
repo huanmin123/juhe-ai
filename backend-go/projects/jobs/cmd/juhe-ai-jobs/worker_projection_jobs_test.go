@@ -59,12 +59,14 @@ func projectionSeedDB(t *testing.T, path string) *sql.DB {
 	t.Cleanup(func() { _ = db.Close() })
 	statements := []string{
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT, display_name TEXT)`,
+		// 目标形态 accounts（§9.11：provider_code/provider_protocol_profile_id/
+		// client_compatibility 已删，身份 = vendor_code + connection_driver_code）。
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, config_revision INTEGER, system_account_id TEXT,
-			provider_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT,
+			vendor_code TEXT, connection_driver_code TEXT, protocol_code TEXT, protocol_version TEXT,
 			name TEXT, notes TEXT, type TEXT, status TEXT, schedulable INTEGER,
 			concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER,
-			client_compatibility TEXT, balance_query_enabled INTEGER, balance_query_next_refresh_at TEXT,
+			balance_query_enabled INTEGER, balance_query_next_refresh_at TEXT,
 			availability_schedule_json TEXT, account_expires_at TEXT, cooldown_until TEXT,
 			last_error_code TEXT, last_error_message TEXT, last_error_trace_id TEXT,
 			last_health_check_at TEXT, next_health_check_at TEXT, last_health_check_status_code INTEGER,
@@ -92,7 +94,7 @@ func projectionSeedDB(t *testing.T, path string) *sql.DB {
 			account_id TEXT, system_account_id TEXT, group_id TEXT, account_authorization_id TEXT,
 			local_priority INTEGER, local_super_priority_enabled INTEGER, local_fallback_enabled INTEGER,
 			enabled INTEGER, updated_at TEXT)`,
-		`CREATE TABLE providers (code TEXT PRIMARY KEY, name TEXT)`,
+		`CREATE TABLE vendors (code TEXT PRIMARY KEY, name TEXT)`,
 		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, name TEXT, type TEXT, enabled INTEGER)`,
 		`CREATE TABLE account_tags (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT, created_at TEXT, updated_at TEXT)`,
 		`CREATE TABLE account_tag_bindings (account_id TEXT, system_account_id TEXT, tag_id TEXT)`,
@@ -231,18 +233,18 @@ func TestListProjectionMaintenanceSQLiteRoundTrip(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-1', 'admin', 'Admin')`)
-	exec(`INSERT INTO providers (code, name) VALUES ('openai', 'OpenAI')`)
+	exec(`INSERT INTO vendors (code, name) VALUES ('gpt', 'GPT')`)
 	exec(`INSERT INTO accounts (
-			id, config_revision, system_account_id, provider_code, provider_protocol_profile_id,
+			id, config_revision, system_account_id, vendor_code, connection_driver_code,
 			protocol_code, protocol_version, name, type, status, schedulable,
 			concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-			client_compatibility, health_check_model, health_check_endpoint_mode, created_at, updated_at,
+			health_check_model, health_check_endpoint_mode, created_at, updated_at,
 			last_used_at, dispatch_revision
 		) VALUES (
-			'acct-1', 3, 'sys-1', 'openai', 'profile_openai_openai_v1',
+			'acct-1', 3, 'sys-1', 'gpt', 'gpt',
 			'openai', 'v1', '主账户', 'api_key', 'active', 1,
 			10, 5, 1, 0,
-			'openai_standard', 'gpt-4o-mini', 'chat_completions', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z',
+			'gpt-4o-mini', 'chat_completions', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z',
 			'2026-08-01T00:00:00.000Z', 1)`)
 	exec(`INSERT INTO account_tags (id, system_account_id, name, created_at, updated_at)
 		VALUES ('tag-1', 'sys-1', '生产', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
@@ -286,11 +288,14 @@ func TestListProjectionMaintenanceSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunListAvailabilityMaintenance: %v", err)
 	}
+	if result.Claimed < 1 || result.Projected < 1 {
+		t.Fatalf("claimed/projected = %d/%d, 期望各 ≥1", result.Claimed, result.Projected)
+	}
 	if result.Bootstrapped < 1 {
 		t.Fatalf("bootstrapped = %d, 期望 ≥1（EnqueueMissing 补 dirty）", result.Bootstrapped)
 	}
 	if result.Claimed < 1 || result.Projected < 1 {
-		t.Fatalf("claimed/projected = %d/%d, 期望各 ≥1", result.Claimed, result.Projected)
+		t.Fatalf("claimed/projected = %d/%d, 期望各 ≥1: %+v", result.Claimed, result.Projected, result)
 	}
 	if result.Deleted != 0 || result.Released != 0 {
 		t.Fatalf("单账户单轮不应有删除/重放: %+v", result)

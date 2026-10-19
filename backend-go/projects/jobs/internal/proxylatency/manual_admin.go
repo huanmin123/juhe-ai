@@ -175,7 +175,8 @@ func (s *PostgresManualAdminSource) CheckContract(ctx context.Context) error {
 	defer tx.Rollback()
 	for _, relation := range []string{
 		"juhe_business.system_sessions", "juhe_business.system_accounts", "juhe_business.proxy_profiles",
-		"juhe_business.providers", "juhe_business.provider_protocol_profiles",
+		// 供应商解耦后 target 事实源（§9.11 旧 providers/profiles 表退役）。
+		"juhe_business.vendors",
 	} {
 		if _, err := tx.ExecContext(ctx, "SELECT 1 FROM "+relation+" LIMIT 0"); err != nil {
 			return fmt.Errorf("J3a management 缺少关系读取权限 %s: %w", relation, err)
@@ -341,23 +342,16 @@ func scanManualAdminSnapshotRow(rows *sql.Rows) (manualAdminSnapshotRow, error) 
 	return row, nil
 }
 
-const manualAdminSnapshotSQL = `
+// manualAdminSnapshotSQL 与 J3a 直读候选同源：探针 target 由编译期 registry
+// 派生（j3aVendorTargetsSQL），运行时与 vendors.enabled 相交（§9.11 旧
+// providers/provider_protocol_profiles 表退役）。
+var manualAdminSnapshotSQL = `
 WITH selected_targets AS (
-  SELECT provider,provider_name,profile_id,target_url
-  FROM (
-    SELECT p.code AS provider,p.name AS provider_name,ppp.id AS profile_id,ppp.base_url AS target_url,
-      row_number() OVER (
-        PARTITION BY p.code
-        ORDER BY CASE WHEN ppp.enabled = 1 THEN 0 ELSE 1 END,
-          CASE WHEN (p.code = 'gemini' AND ppp.id = 'profile_gemini_native_v1beta')
-                    OR (p.code = 'glm' AND ppp.id = 'profile_glm_coding_openai_v1') THEN 0 ELSE 1 END,
-          ppp.updated_at DESC,ppp.id ASC
-      ) AS profile_rank
-    FROM juhe_business.providers p
-    JOIN juhe_business.provider_protocol_profiles ppp ON ppp.provider_code = p.code
-    WHERE p.enabled = 1
-  ) ranked_profiles
-  WHERE profile_rank = 1
+  SELECT v.code AS provider,v.name AS provider_name,t.profile_id,t.target_url
+  FROM juhe_business.vendors v
+  JOIN (VALUES ` + j3aVendorTargetsSQL() + `) AS t(provider,profile_id,target_url)
+    ON t.provider = v.code
+  WHERE v.enabled = 1
 )
 SELECT p.id,p.name,p.type,p.host,p.port,COALESCE(p.username,''),COALESCE(p.password_encrypted,''),
   to_char(p.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS config_revision,

@@ -13,12 +13,12 @@ import (
 func TestRefreshJobTerminalAccountUses24hBackoff(t *testing.T) {
 	job, _, db, clock, exchanger := newRefreshJobForTest(t)
 	seedAccountRow(t, db, accountRowSeed{
-		ID: "acc-terminal-24h", ProviderCode: "gpt", ProfileID: ProfileGPTOpenAIV1, Type: "oauth",
+		ID: "acc-terminal-24h", ProviderCode: "gpt", Type: "oauth",
 		Status: "error", LastErrorCode: OpenAIOAuthTokenRefreshFailedErrorCode,
 		Credentials: openAICredentials(expiresInMillis(0)), Now: clock.Now(),
 	})
 	seedAccountRow(t, db, accountRowSeed{
-		ID: "acc-active-300s", ProviderCode: "gpt", ProfileID: ProfileGPTOpenAIV1, Type: "oauth",
+		ID: "acc-active-300s", ProviderCode: "gpt", Type: "oauth",
 		Status: "active",
 		Credentials: openAICredentials(expiresInMillis(0)), Now: clock.Now(),
 	})

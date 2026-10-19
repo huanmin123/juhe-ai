@@ -85,8 +85,9 @@ func TestWFDirectInputCheckContract(t *testing.T) {
 	}
 	for _, required := range []string{
 		"SELECT 1 FROM juhe_business.proxy_profiles LIMIT 0",
-		"SELECT 1 FROM juhe_business.providers LIMIT 0",
-		"SELECT 1 FROM juhe_business.provider_protocol_profiles LIMIT 0",
+		// 供应商解耦后 target 事实源（§9.11：providers/provider_protocol_
+		// profiles 表退役，改 vendors.enabled ∩ registry 派生 target）。
+		"SELECT 1 FROM juhe_business.vendors LIMIT 0",
 		"SET LOCAL TRANSACTION READ ONLY",
 		"SET LOCAL statement_timeout = '5s'",
 		"SET LOCAL lock_timeout = '1s'",
@@ -98,9 +99,9 @@ func TestWFDirectInputCheckContract(t *testing.T) {
 
 	// 关系读取失败必须带出关系名。
 	relationFailure := errors.New("permission denied")
-	rec.failExec("juhe_business.providers", relationFailure)
+	rec.failExec("juhe_business.vendors", relationFailure)
 	err := reader.CheckContract(ctx)
-	if err == nil || !strings.Contains(err.Error(), "juhe_business.providers") {
+	if err == nil || !strings.Contains(err.Error(), "juhe_business.vendors") {
 		t.Fatalf("关系失败 err=%v", err)
 	}
 

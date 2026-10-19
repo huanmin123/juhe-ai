@@ -37,15 +37,13 @@ const (
 	grokDefaultTokenTTL = 6 * 60 * 60 // seconds
 )
 
-// Provider codes mirror domain/provider-protocol.ts.
+// Provider codes mirror domain/provider-protocol.ts. 供应商解耦后（设计 §9.11）
+// profile 词表退役，OAuth 候选身份 = (vendor_code, type)。
 const (
 	ProviderGPT       = "gpt"
 	ProviderAnthropic = "anthropic"
 	ProviderGemini    = "gemini"
 	ProviderXAI       = "xai"
-
-	ProfileGPTOpenAIV1 = "profile_gpt_openai_v1"
-	ProfileXAIOpenAIV1 = "profile_xai_openai_v1"
 
 	AccountTypeOAuth       = "oauth"
 	AccountTypeGoogleOAuth = "google_oauth"

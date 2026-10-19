@@ -57,7 +57,6 @@ func TestW12fRotateCredentialsSuccessTx(t *testing.T) {
 	store, db, _ := newTestStore(t)
 	ctx := context.Background()
 	now := w12fBaseNow()
-	seedProviderProfiles(t, db)
 	seedOpenAIOAuthAccount(t, db, "w12f-rot-ok", openAICredentials(expiresInMillis(0)), now)
 	next := openAICredentials(expiresInMillis(0))
 	next["access_token"] = "w12f-at-rotated"
@@ -65,7 +64,6 @@ func TestW12fRotateCredentialsSuccessTx(t *testing.T) {
 		AccountID:                         "w12f-rot-ok",
 		ExpectedProviderCode:              "gpt",
 		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
 		ExpectedConfigRevision:            1,
 		Credentials:                       next,
 	})

@@ -163,8 +163,8 @@ func TestBalanceRuntimeFenceHitsNanoAndMillisecondStoredText(t *testing.T) {
 func seedBalanceDueRawText(t *testing.T, db *sql.DB, id, dueText string) {
 	t.Helper()
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES (?, 'sys-1', 'api_key', 'active', 1, '{"api_key":"sk-x","base_url":"http://127.0.0.1:1"}', 0, '{}', ?, ?)
+INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+VALUES (?, 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, '{"api_key":"sk-x","base_url":"http://127.0.0.1:1"}', 0, '{}', ?, ?)
 `, id, dueText, dueText); err != nil {
 		t.Fatal(err)
 	}

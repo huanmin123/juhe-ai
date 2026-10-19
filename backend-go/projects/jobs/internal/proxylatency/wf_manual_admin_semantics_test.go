@@ -255,7 +255,7 @@ func TestWFManualAdminExistsAndContract(t *testing.T) {
 		t.Fatalf("auth 契约失败 err=%v", err)
 	}
 
-	// CheckContract：全链路通过（auth 权限、5 个关系、快照、4 条审计 EXPLAIN、写权限）。
+	// CheckContract：全链路通过（auth 权限、4 个关系、快照、4 条审计 EXPLAIN、写权限）。
 	rec3 := newWFRecorder()
 	db3 := wfOpenRecorderDB(t, rec3)
 	source3, _ := NewPostgresManualAdminSource(db3, func() time.Time { return wfProjBase })
@@ -270,7 +270,8 @@ func TestWFManualAdminExistsAndContract(t *testing.T) {
 	}
 	for _, required := range []string{
 		"juhe_business.system_sessions",
-		"juhe_business.provider_protocol_profiles",
+		// 供应商解耦后 target 事实源（§9.11 旧 providers/profiles 表退役）。
+		"juhe_business.vendors",
 		"EXPLAIN INSERT INTO juhe_dataset.operation_logs",
 		"juhe_dataset.operation_log_summary_search_terms",
 	} {

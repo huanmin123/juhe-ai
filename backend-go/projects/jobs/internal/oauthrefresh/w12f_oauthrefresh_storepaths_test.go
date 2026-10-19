@@ -17,15 +17,13 @@ func TestW12fRotateCredentialsMismatchArms(t *testing.T) {
 	store, db, _ := newTestStore(t)
 	ctx := context.Background()
 	now := w12fBaseNow()
-	seedProviderProfiles(t, db)
 	seedOpenAIOAuthAccount(t, db, "w12f-rot", openAICredentials(expiresInMillis(0)), now)
 
 	base := RotateCredentialsInput{
-		AccountID:                         "w12f-rot",
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		ExpectedConfigRevision:            1,
+		AccountID:              "w12f-rot",
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		ExpectedConfigRevision: 1,
 	}
 
 	// provider 不匹配 → nil, nil。
@@ -40,12 +38,6 @@ func TestW12fRotateCredentialsMismatchArms(t *testing.T) {
 	mismatch.ExpectedAccountType = "api_key"
 	if result, err = store.RotateCredentials(ctx, mismatch); err != nil || result != nil {
 		t.Fatalf("type 不匹配必须 nil,nil: %v %v", result, err)
-	}
-	// profile 不匹配。
-	mismatch = base
-	mismatch.ExpectedProviderProtocolProfileID = "profile_anthropic_anthropic_v1"
-	if result, err = store.RotateCredentials(ctx, mismatch); err != nil || result != nil {
-		t.Fatalf("profile 不匹配必须 nil,nil: %v %v", result, err)
 	}
 	// 配置版本冲突。
 	conflict := base
@@ -77,7 +69,6 @@ func TestW12fKeepaliveRefreshOneArms(t *testing.T) {
 	store, db, _ := newTestStore(t)
 	ctx := context.Background()
 	now := w12fBaseNow()
-	seedProviderProfiles(t, db)
 	job := NewKeepaliveJob(store, nil, WithKeepaliveClock(ClockFunc(func() time.Time { return now })))
 
 	// 不支持的供应商。
@@ -87,7 +78,7 @@ func TestW12fKeepaliveRefreshOneArms(t *testing.T) {
 		t.Fatal("不支持的供应商必须报错")
 	}
 	// 源账户缺失 → LocalConfigurationError。
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-ka", ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1", Type: "oauth", Credentials: openAICredentials(expiresInMillis(0)), Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-ka", ProviderCode: "gpt", Type: "oauth", Credentials: openAICredentials(expiresInMillis(0)), Now: now})
 	missingPlan := KeepalivePlan{Provider: ProviderAnthropic, AccountType: "oauth", Lead: time.Hour}
 	if _, err := job.refreshOne(ctx, missingPlan, &RotationAccount{ID: "w12f-ghost", ConfigRevision: 1}, now); err == nil {
 		t.Fatal("源账户缺失必须报错")
@@ -99,19 +90,19 @@ func TestW12fKeepaliveRefreshOneArms(t *testing.T) {
 	}
 	// keepalive 仅支持 anthropic/gemini/xai；openai 账户命中不支持分支。
 	unsupported := KeepalivePlan{Provider: "gpt", AccountType: "oauth", Lead: time.Hour}
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-fresh", ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1", Type: "oauth", Credentials: openAICredentials(expiresInMillis(int64((6 * time.Hour) / time.Millisecond))), Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-fresh", ProviderCode: "gpt", Type: "oauth", Credentials: openAICredentials(expiresInMillis(int64((6 * time.Hour) / time.Millisecond))), Now: now})
 	if _, err := job.refreshOne(ctx, unsupported, &RotationAccount{ID: "w12f-fresh", ConfigRevision: 1}, now); err == nil {
 		t.Fatal("不支持的保活供应商必须报错")
 	}
 	// anthropic 匹配但凭据新鲜（无需刷新）→ false, nil。
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-anth", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth", Credentials: map[string]any{"access_token": "w12f-at", "refresh_token": "w12f-rt", "expires_at": isoMillis(now.Add(6 * time.Hour))}, Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-anth", ProviderCode: "anthropic", Type: "oauth", Credentials: map[string]any{"access_token": "w12f-at", "refresh_token": "w12f-rt", "expires_at": isoMillis(now.Add(6 * time.Hour))}, Now: now})
 	freshPlan := KeepalivePlan{Provider: ProviderAnthropic, AccountType: "oauth", Lead: time.Hour}
 	changed, err := job.refreshOne(ctx, freshPlan, &RotationAccount{ID: "w12f-anth", ConfigRevision: 1}, now)
 	if err != nil || changed {
 		t.Fatalf("新鲜凭据必须跳过: changed=%v err=%v", changed, err)
 	}
 	// anthropic 到期但缺 refresh_token → LocalConfigurationError。
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-anth-nort", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth", Credentials: map[string]any{"access_token": "w12f-at", "expires_at": expiresInMillis(-int64(time.Hour / time.Millisecond))}, Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-anth-nort", ProviderCode: "anthropic", Type: "oauth", Credentials: map[string]any{"access_token": "w12f-at", "expires_at": expiresInMillis(-int64(time.Hour / time.Millisecond))}, Now: now})
 	if _, err := job.refreshOne(ctx, freshPlan, &RotationAccount{ID: "w12f-anth-nort", ConfigRevision: 1}, now); err == nil {
 		t.Fatal("缺 refresh_token 必须报错")
 	}

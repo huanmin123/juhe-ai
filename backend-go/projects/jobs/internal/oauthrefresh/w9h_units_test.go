@@ -1578,7 +1578,7 @@ func TestW9HNewKeepaliveJobOptionWiring(t *testing.T) {
 	if len(plans) != 3 || plans[0].Provider != ProviderAnthropic || plans[1].Provider != ProviderGemini || plans[2].Provider != ProviderXAI {
 		t.Fatalf("plans=%+v", plans)
 	}
-	if plans[2].RequiredProfileID != ProfileXAIOpenAIV1 || plans[2].Lead != GrokKeepaliveLead {
+	if plans[2].Lead != GrokKeepaliveLead {
 		t.Fatalf("grok plan=%+v", plans[2])
 	}
 }
@@ -1608,8 +1608,8 @@ func TestW9HKeepaliveProviderMessages(t *testing.T) {
 	if isRefreshableKeepaliveAccount(KeepalivePlan{Provider: "p", AccountType: "t"}, &RotationAccount{ProviderCode: "x", Type: "t"}) {
 		t.Fatal("provider mismatch not refreshable")
 	}
-	if isRefreshableKeepaliveAccount(KeepalivePlan{Provider: "p", AccountType: "t", RequiredProfileID: "prof"}, &RotationAccount{ProviderCode: "p", Type: "t", ProviderProtocolProfileID: "other"}) {
-		t.Fatal("profile mismatch not refreshable")
+	if isRefreshableKeepaliveAccount(KeepalivePlan{Provider: "p", AccountType: "t"}, &RotationAccount{ProviderCode: "p", Type: "other"}) {
+		t.Fatal("type mismatch not refreshable")
 	}
 	if !shouldKeepaliveRefresh(map[string]any{"access_token": "at", "expires_at": "junk"}, defaultNow(), time.Minute) {
 		t.Fatal("unparsable expiry is due")

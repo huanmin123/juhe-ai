@@ -285,7 +285,10 @@ func j2CandidateSQL(kind candidateReadKind) string {
 	if kind == candidateReadRecovery {
 		limit = "$1"
 	}
-	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,a.provider_code,a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.credential_fingerprint,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
+	// 供应商解耦读侧（设计 §9.11 目标列集无 provider_code）：身份列改
+	// COALESCE(vendor_code,'')，与 jobs cmd SQLite 侧 balanceDetectRuntime
+	// 同口径；generic（vendor NULL）候选由 Input.Validate 拒绝并走跳过日志。
+	return `SELECT a.id,a.system_account_id,a.config_revision,a.dispatch_revision,COALESCE(a.vendor_code,''),a.type,a.status,a.schedulable,a.balance_query_enabled,a.balance_query_config_json,a.balance_query_next_refresh_at,a.credentials_encrypted,a.credential_fingerprint,a.proxy_profile_id,p.id,p.type,p.host,p.port,p.username,p.password_encrypted,p.enabled FROM juhe_business.accounts a LEFT JOIN juhe_business.proxy_profiles p ON p.id=a.proxy_profile_id WHERE a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.type='api_key' AND a.status='active' AND a.schedulable=1 AND ` + predicate + ` ORDER BY ` + orderBy + ` LIMIT ` + limit
 }
 
 func j2CandidateByIDSQL(kind candidateReadKind) string {

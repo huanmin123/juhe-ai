@@ -10,15 +10,14 @@ import (
 func TestProxyLatencyCandidateSQLKeepsBusinessEligibilityAndStableOrder(t *testing.T) {
 	for _, required := range []string{
 		"p.enabled = TRUE",
-		"p.enabled = 1",
-		"ppp.enabled = 1",
-		"profile_gemini_native_v1beta",
-		"profile_glm_coding_openai_v1",
+		// 供应商解耦后 target 事实源 = vendors.enabled ∩ registry 派生 target
+		// （§9.11：providers/provider_protocol_profiles 表退役）。
+		"juhe_business.vendors",
+		"v.enabled = 1",
+		"AS t(provider,profile_id,target_url)",
 		"LIMIT $1 OFFSET $2",
 		"ORDER BY (p.last_tested_at IS NOT NULL) ASC,p.last_tested_at ASC,p.updated_at DESC,p.id ASC",
-		"row_number() OVER",
-		"ppp.updated_at DESC,ppp.id ASC",
-		"p.name AS provider_name",
+		"v.name AS provider_name",
 		"target.provider_name ASC,target.provider ASC",
 	} {
 		if !strings.Contains(proxyLatencyCandidatesSQL, required) {
@@ -30,22 +29,35 @@ func TestProxyLatencyCandidateSQLKeepsBusinessEligibilityAndStableOrder(t *testi
 	}
 }
 
-func TestProxyLatencyCandidateSQLMatchesNodeProfileFallbackAndSpecialPriority(t *testing.T) {
-	// Node first keeps enabled profiles when any exist; only within that candidate
-	// set do Gemini/GLM protocol IDs outrank the ordinary stable ordering.
-	for _, required := range []string{
-		"CASE WHEN ppp.enabled = 1 THEN 0 ELSE 1 END",
-		"CASE WHEN (p.code = 'gemini' AND ppp.id = 'profile_gemini_native_v1beta')",
-		"OR (p.code = 'glm' AND ppp.id = 'profile_glm_coding_openai_v1') THEN 0 ELSE 1 END",
-		"ppp.updated_at DESC,ppp.id ASC",
-	} {
-		if !strings.Contains(proxyLatencyCandidatesSQL, required) {
-			t.Fatalf("profile resolver SQL 缺少 Node 兼容排序 %q", required)
+func TestProxyLatencyCandidateSQLRegistryDerivedTargets(t *testing.T) {
+	// target 全集由编译期 registry 派生：vendor 语义默认档与 gateway
+	// vendorDefaultProtocolContext 同口径（gemini→native、glm→coding openai），
+	// profile ID 走 ConnectionPresetProfileID 固定映射，URL 取
+	// registry default_base_url（与 seed/UI 初始值同口径，非空）。
+	byProvider := map[string]j3aVendorProbeTarget{}
+	for _, target := range j3aVendorProbeTargets {
+		byProvider[target.provider] = target
+	}
+	if byProvider["gemini"].profileID != "profile_gemini_native_v1beta" {
+		t.Fatalf("gemini 默认 target=%+v", byProvider["gemini"])
+	}
+	if byProvider["glm"].profileID != "profile_glm_coding_openai_v1" {
+		t.Fatalf("glm 默认 target=%+v", byProvider["glm"])
+	}
+	if byProvider["gpt"].targetURL != "https://api.openai.com/v1" {
+		t.Fatalf("gpt 默认 target=%+v", byProvider["gpt"])
+	}
+	for _, target := range j3aVendorProbeTargets {
+		if strings.TrimSpace(target.provider) == "" || strings.TrimSpace(target.profileID) == "" || strings.TrimSpace(target.targetURL) == "" {
+			t.Fatalf("registry target 三元组必须完整: %+v", target)
 		}
 	}
-	// An outer enabled-only filter would silently drop Node's all-disabled fallback.
-	if strings.Contains(proxyLatencyCandidatesSQL, "WHERE ppp.enabled") {
-		t.Fatalf("profile resolver must retain Node all-disabled fallback: %s", proxyLatencyCandidatesSQL)
+	// SQL VALUES 行与 registry 全集一一对应（provider 维度）。
+	for _, target := range j3aVendorProbeTargets {
+		required := "('" + target.provider + "','" + target.profileID + "','" + target.targetURL + "')"
+		if !strings.Contains(proxyLatencyCandidatesSQL, required) {
+			t.Fatalf("候选 SQL 缺少 registry target 行 %q", required)
+		}
 	}
 }
 

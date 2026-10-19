@@ -38,10 +38,8 @@ func TestW12fOauthClosedStoreArms(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 
-	// store.go 查询链第一错误。
-	if _, err := store.openAIProfileIDs(ctx); err == nil {
-		t.Fatal("句柄关闭后 openAIProfileIDs 必须报错")
-	}
+	// store.go 查询链第一错误（openAIProfileIDs 已随 profile 表退役删除，
+	// 候选身份收敛为 vendor_code 门）。
 	if _, err := store.ListDueOpenAIRefreshAccounts(ctx, 60, 10, "", now); err == nil {
 		t.Fatal("句柄关闭后 ListDueOpenAIRefreshAccounts 必须报错")
 	}
@@ -54,7 +52,7 @@ func TestW12fOauthClosedStoreArms(t *testing.T) {
 	if _, err := store.UpdateAccountCredentials(ctx, "w12f-acc", map[string]any{"access_token": "w12f"}, 1); err == nil {
 		t.Fatal("句柄关闭后 UpdateAccountCredentials 必须报错")
 	}
-	if _, err := store.ListDueKeepaliveAccounts(ctx, "openai", "api_key", "", time.Hour, 10, now); err == nil {
+	if _, err := store.ListDueKeepaliveAccounts(ctx, "openai", "api_key", time.Hour, 10, now); err == nil {
 		t.Fatal("句柄关闭后 ListDueKeepaliveAccounts 必须报错")
 	}
 
@@ -102,7 +100,7 @@ func TestW12fOauthKeepaliveAndHealthFanoutArms(t *testing.T) {
 	store := w12fClosedStore(t)
 	ctx := context.Background()
 	// keepalive 列表查询错误。
-	if _, err := store.ListDueKeepaliveAccounts(ctx, "openai", "api_key", "", time.Hour, 10, time.Now()); err == nil {
+	if _, err := store.ListDueKeepaliveAccounts(ctx, "openai", "api_key", time.Hour, 10, time.Now()); err == nil {
 		t.Fatal("句柄关闭后 keepalive 列表必须报错")
 	}
 	// healthfanout：非 account 资源直接 0；pg 方言锁后缀分支 + 坏 tx。

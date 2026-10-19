@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-// seedInstanceAccount 建一个授权实例账户（可标 deleted/provider 验证过滤）。
+// seedInstanceAccount 建一个授权实例账户（可标 deleted/vendor 验证过滤）。
+// providerCode 传空串渲染为 NULL（generic_http 账户的目标形态）。
 func seedInstanceAccount(t *testing.T, db *sql.DB, id, providerCode, accountType, sourceAccountID, deletedAt string) {
 	t.Helper()
 	if accountType == "" {
@@ -17,11 +18,15 @@ func seedInstanceAccount(t *testing.T, db *sql.DB, id, providerCode, accountType
 	if deletedAt != "" {
 		deletedArg = deletedAt
 	}
-	_, err := db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	var vendorArg any
+	if providerCode != "" {
+		vendorArg = providerCode
+	}
+	_, err := db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		config_revision, dispatch_revision, authorization_instance_source_account_id, deleted_at, updated_at)
-		VALUES (?, 'sys_admin', ?, 'profile_gpt_openai_v1', 'openai', 'v1', ?, ?, 'active', 'enc', 3, 5, ?, ?, '')`,
-		id, providerCode, id, accountType, sourceAccountID, deletedArg)
+		VALUES (?, 'sys_admin', ?, 'gpt', 'openai', 'v1', ?, ?, 'active', 'enc', 3, 5, ?, ?, '')`,
+		id, vendorArg, id, accountType, sourceAccountID, deletedArg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +46,7 @@ func countOutboxRows(t *testing.T, db *sql.DB) (int, string, int) {
 
 func TestEnqueueAccountHealthInputsSkipsNonAccountResources(t *testing.T) {
 	store, db, _ := newSweepStore(t)
-	seedInstanceAccount(t, db, "inst-1", "openai", "oauth", "res-1", "")
+	seedInstanceAccount(t, db, "inst-1", "gpt", "oauth", "res-1", "")
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -62,13 +67,15 @@ func TestEnqueueAccountHealthInputsSkipsNonAccountResources(t *testing.T) {
 
 func TestEnqueueAccountHealthInputsFanoutWhitelistAndVersions(t *testing.T) {
 	store, db, _ := newSweepStore(t)
-	seedInstanceAccount(t, db, "inst-a", "openai", "oauth", "res-1", "")
+	seedInstanceAccount(t, db, "inst-a", "gpt", "oauth", "res-1", "")
 	seedInstanceAccount(t, db, "inst-b", "anthropic", "api_key", "res-1", "")
-	// 排除路径：已删除实例、白名单外 provider、白名单外 type、无来源账户。
-	seedInstanceAccount(t, db, "inst-deleted", "openai", "oauth", "res-1", "2026-01-01T00:00:00.000Z")
+	// generic NULL vendor 臂：旧 openai/hybrid 实例经迁移落 NULL，仍 fanout。
+	seedInstanceAccount(t, db, "inst-generic", "", "oauth", "res-1", "")
+	// 排除路径：已删除实例、白名单外 vendor、白名单外 type、无来源账户。
+	seedInstanceAccount(t, db, "inst-deleted", "gpt", "oauth", "res-1", "2026-01-01T00:00:00.000Z")
 	seedInstanceAccount(t, db, "inst-provider", "unknown_provider", "oauth", "res-1", "")
-	seedInstanceAccount(t, db, "inst-type", "openai", "completion", "res-1", "")
-	seedInstanceAccount(t, db, "inst-other", "openai", "oauth", "res-2", "")
+	seedInstanceAccount(t, db, "inst-type", "gpt", "completion", "res-1", "")
+	seedInstanceAccount(t, db, "inst-other", "gpt", "oauth", "res-2", "")
 
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
@@ -79,15 +86,15 @@ func TestEnqueueAccountHealthInputsFanoutWhitelistAndVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if enqueued != 2 {
-		t.Fatalf("白名单过滤后应入队 2，得到 %d", enqueued)
+	if enqueued != 3 {
+		t.Fatalf("白名单过滤后应入队 3，得到 %d", enqueued)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	count, kindReason, version := countOutboxRows(t, db)
-	if count != 2 {
-		t.Fatalf("outbox 行数 = %d, want 2", count)
+	if count != 3 {
+		t.Fatalf("outbox 行数 = %d, want 3", count)
 	}
 	if kindReason != "authorization_grant_changed|snapshot" {
 		t.Fatalf("reason|kind = %q", kindReason)
@@ -110,14 +117,14 @@ func TestEnqueueAccountHealthInputsFanoutWhitelistAndVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	count, _, version = countOutboxRows(t, db)
-	if count != 4 || version != 2 {
-		t.Fatalf("二轮后 outbox=%d maxVersion=%d, want 4/2", count, version)
+	if count != 6 || version != 2 {
+		t.Fatalf("二轮后 outbox=%d maxVersion=%d, want 6/2", count, version)
 	}
 }
 
 func TestSweepRunsHealthFanoutInsideFinalizer(t *testing.T) {
 	store, db, clock := newSweepStore(t)
-	seedInstanceAccount(t, db, "inst-a", "openai", "oauth", "acc-src", "")
+	seedInstanceAccount(t, db, "inst-a", "gpt", "oauth", "acc-src", "")
 	// 过期的 account 授权 grant。
 	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
 		status, revoked_at, revoked_by, created_by, expires_at, updated_at)

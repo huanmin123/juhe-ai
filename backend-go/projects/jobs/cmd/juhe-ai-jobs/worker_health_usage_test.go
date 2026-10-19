@@ -21,7 +21,8 @@ func newProbeUsageScopeFixture(t *testing.T) *probeUsageWriter {
 	t.Cleanup(func() { _ = db.Close() })
 	db.SetMaxOpenConns(1)
 	ddl := []string{
-		`CREATE TABLE accounts (id text PRIMARY KEY, deleted_at text, provider_code text,
+		// 目标形态 accounts（§9.11：provider_code 已删，身份 = vendor_code）。
+		`CREATE TABLE accounts (id text PRIMARY KEY, deleted_at text, vendor_code text,
 			system_account_id text, authorization_instance_authorization_id text)`,
 		`CREATE TABLE resource_authorizations (id text PRIMARY KEY, resource_type text,
 			resource_id text, grantee_system_account_id text, resource_owner_system_account_id text,
@@ -36,11 +37,11 @@ func newProbeUsageScopeFixture(t *testing.T) *probeUsageWriter {
 		}
 	}
 	seed := []struct{ statement string }{
-		{`INSERT INTO accounts VALUES ('acc-owner', NULL, 'openai', 'sysacc-owner', NULL)`},
-		{`INSERT INTO accounts VALUES ('acc-instance', NULL, 'openai', 'sysacc-grantee', 'ra-acc-1')`},
-		{`INSERT INTO accounts VALUES ('acc-gone', '2026-01-01', 'openai', 'sysacc-owner', NULL)`},
-		{`INSERT INTO accounts VALUES ('acc-exp', NULL, 'openai', 'sysacc-owner', NULL)`},
-		{`INSERT INTO accounts VALUES ('acc-exp-null', NULL, 'openai', 'sysacc-owner', NULL)`},
+		{`INSERT INTO accounts VALUES ('acc-owner', NULL, 'gpt', 'sysacc-owner', NULL)`},
+		{`INSERT INTO accounts VALUES ('acc-instance', NULL, 'gpt', 'sysacc-grantee', 'ra-acc-1')`},
+		{`INSERT INTO accounts VALUES ('acc-gone', '2026-01-01', 'gpt', 'sysacc-owner', NULL)`},
+		{`INSERT INTO accounts VALUES ('acc-exp', NULL, 'gpt', 'sysacc-owner', NULL)`},
+		{`INSERT INTO accounts VALUES ('acc-exp-null', NULL, 'gpt', 'sysacc-owner', NULL)`},
 		{`INSERT INTO resource_authorizations VALUES ('ra-acc-1', 'account', 'acc-src-1', 'sysacc-grantee', 'sysacc-src-owner', 'active', 'team-1', NULL)`},
 		{`INSERT INTO resource_authorizations VALUES ('ra-group-1', 'group', 'group-1', 'sysacc-owner', 'sysacc-group-owner', 'active', '', '2027-01-01T00:00:00.000Z')`},
 		{`INSERT INTO resource_authorizations VALUES ('ra-group-2', 'group', 'group-2', 'sysacc-owner', 'sysacc-group-owner', 'active', '', '2026-01-01T00:00:00.000Z')`},
@@ -108,8 +109,8 @@ func TestProbeUsageResolveScope(t *testing.T) {
 		normalized.AccountAuthorizationSourceTeamID != "team-1" {
 		t.Fatalf("instance account scope survived: %+v", normalized)
 	}
-	if normalized.ProviderCode != "openai" {
-		t.Fatalf("provider from accounts row = %q", normalized.ProviderCode)
+	if normalized.ProviderCode != "gpt" {
+		t.Fatalf("vendor from accounts row = %q", normalized.ProviderCode)
 	}
 
 	// 已删除账户：解析静默跳过，无作用域 → 归一化清空账户元组（不伪造）。

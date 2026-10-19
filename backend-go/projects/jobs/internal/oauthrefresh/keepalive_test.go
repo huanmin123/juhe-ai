@@ -18,18 +18,15 @@ func newKeepaliveJobForTest(t *testing.T) (*KeepaliveJob, *sql.DB, *fixedClock, 
 func TestKeepaliveDueWindowPerProvider(t *testing.T) {
 	job, db, clock, _ := newKeepaliveJobForTest(t)
 	// anthropic: 60s lead — 59s is due, 61s is not.
-	seedAccountRow(t, db, accountRowSeed{ID: "an-59", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-59", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(59_000)}, Now: clock.Now()})
-	seedAccountRow(t, db, accountRowSeed{ID: "an-61", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-61", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(61_000)}, Now: clock.Now()})
 	// grok: 300s lead — 299s is due, 301s is not.
-	seedAccountRow(t, db, accountRowSeed{ID: "xai-299", ProviderCode: "xai", ProfileID: ProfileXAIOpenAIV1, Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "xai-299", ProviderCode: "xai", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-x", "refresh_token": "rt-x", "expires_at": expiresInMillis(299_000)}, Now: clock.Now()})
-	seedAccountRow(t, db, accountRowSeed{ID: "xai-301", ProviderCode: "xai", ProfileID: ProfileXAIOpenAIV1, Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "xai-301", ProviderCode: "xai", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-x", "refresh_token": "rt-x", "expires_at": expiresInMillis(301_000)}, Now: clock.Now()})
-	// grok with the wrong profile pin is invisible to the keepalive query.
-	seedAccountRow(t, db, accountRowSeed{ID: "xai-wrong-profile", ProviderCode: "xai", ProfileID: "profile_gpt_openai_v1", Type: "oauth",
-		Credentials: map[string]any{"access_token": "at-x", "refresh_token": "rt-x", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 
 	plans := KeepalivePlans()
 	anthropicPlan, grokPlan := plans[0], plans[2]
@@ -50,7 +47,7 @@ func TestKeepaliveDueWindowPerProvider(t *testing.T) {
 	}
 
 	// Boundary: exactly at the lead window counts as due (<= lead).
-	seedAccountRow(t, db, accountRowSeed{ID: "an-60", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-60", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(60_000)}, Now: clock.Now()})
 	result, err := job.RunOnce(context.Background(), anthropicPlan, 0)
 	if err != nil {
@@ -63,7 +60,7 @@ func TestKeepaliveDueWindowPerProvider(t *testing.T) {
 
 func TestKeepalivePreservesStoredBaseURL(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "an-base", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-base", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{
 			"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0),
 			"base_url": "https://anthropic-proxy.example", "client_id": "client-kept",
@@ -97,7 +94,7 @@ func TestKeepalivePreservesStoredBaseURL(t *testing.T) {
 
 func TestKeepaliveGeminiAccountTypeAndMerge(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "gm-1", ProviderCode: "gemini", ProfileID: "profile_gemini_native_v1beta", Type: "google_oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "gm-1", ProviderCode: "gemini", Type: "google_oauth",
 		Credentials: map[string]any{
 			"access_token": "at-g", "refresh_token": "rt-g", "expires_at": expiresInMillis(0),
 			"oauth_type": "ai_studio", "client_id": "cid", "client_secret": "sec",
@@ -125,7 +122,7 @@ func TestKeepaliveGeminiAccountTypeAndMerge(t *testing.T) {
 
 func TestKeepaliveMissingRefreshTokenDoesNotWriteState(t *testing.T) {
 	job, db, clock, _ := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "an-nort", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-nort", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	// Corrupt the row into the flag/credential inconsistency the dispatch
 	// guard defends against: derived present flag stays 1, the decrypted
@@ -154,7 +151,7 @@ func TestKeepaliveMissingRefreshTokenDoesNotWriteState(t *testing.T) {
 
 func TestKeepaliveConflictAdoptsFreshConcurrentRefresh(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "an-race", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-race", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	// A concurrent writer completes a refresh before our persist: the first
 	// CAS conflicts and the re-read finds fresh credentials, so the keepalive
@@ -197,7 +194,7 @@ func TestKeepaliveConflictAdoptsFreshConcurrentRefresh(t *testing.T) {
 
 func TestKeepaliveConflictExhaustionFails(t *testing.T) {
 	job, db, clock, exchanger := newKeepaliveJobForTest(t)
-	seedAccountRow(t, db, accountRowSeed{ID: "an-exhaust", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-exhaust", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	// The concurrent writer keeps winning the CAS; after 3 attempts the
 	// keepalive gives up with the conflict and the stored credentials stay.

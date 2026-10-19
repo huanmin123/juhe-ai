@@ -247,8 +247,8 @@ func seedXAIGrokUsageAccount(t *testing.T, ctx context.Context, db *sql.DB, secr
 		envelope = sealed
 	}
 	_, err := db.ExecContext(ctx, `
-INSERT INTO accounts (id, system_account_id, provider_code, type, status, credentials_encrypted, updated_at)
-VALUES ('acc-grok-1', 'sys-1', 'xai', 'oauth', 'active', ?, ?)
+INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, credentials_encrypted, updated_at)
+VALUES ('acc-grok-1', 'sys-1', 'xai', 'xai', 'oauth', 'active', ?, ?)
 `, envelope, xaiGrokFixtureNow.Format(time.RFC3339Nano))
 	if err != nil {
 		t.Fatal(err)

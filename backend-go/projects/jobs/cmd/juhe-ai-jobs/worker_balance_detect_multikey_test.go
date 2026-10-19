@@ -57,8 +57,8 @@ func seedMultiKeyDueAccount(t *testing.T, db *sql.DB, id string, keys []string, 
 	}
 	due := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES (?, 'sys-1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
+INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+VALUES (?, 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
 `, id, envelope, due, due); err != nil {
 		t.Fatal(err)
 	}

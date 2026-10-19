@@ -33,7 +33,6 @@ func openAICredentials(expiresAt string) map[string]any {
 func newRefreshJobForTest(t *testing.T) (*RefreshJob, *Store, *sql.DB, *fixedClock, *recordingExchanger) {
 	t.Helper()
 	store, db, _ := newTestStore(t)
-	seedProviderProfiles(t, db)
 	clock := &fixedClock{current: defaultNow()}
 	exchanger := &recordingExchanger{}
 	job := NewRefreshJob(store, exchanger, WithClock(clock))
@@ -98,7 +97,7 @@ func TestRefreshJobNotDueSkipped(t *testing.T) {
 func TestRefreshJobStoppedAccountExcluded(t *testing.T) {
 	job, _, db, clock, _ := newRefreshJobForTest(t)
 	seedAccountRow(t, db, accountRowSeed{
-		ID: "acc-stopped", ProviderCode: "gpt", ProfileID: ProfileGPTOpenAIV1, Type: "oauth",
+		ID: "acc-stopped", ProviderCode: "gpt", Type: "oauth",
 		Status: "error", LastErrorCode: OpenAIOAuthTokenRefreshLocalConfigurationInvalidCode,
 		Credentials: openAICredentials(expiresInMillis(0)), Now: clock.Now(),
 	})
@@ -229,9 +228,9 @@ func TestRefreshJobTableDriven(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.Exec(`INSERT INTO accounts (id, provider_code, provider_protocol_profile_id, name, type, status,
+				if _, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, name, type, status,
 					credentials_encrypted, config_revision, updated_at)
-					VALUES ('acc-decrypt', 'gpt', 'profile_gpt_openai_v1', '账户-decrypt', 'oauth', 'active', ?, 1, ?)`,
+					VALUES ('acc-decrypt', 'gpt', 'gpt', '账户-decrypt', 'oauth', 'active', ?, 1, ?)`,
 					foreign, isoMillis(clock.Now())); err != nil {
 					t.Fatal(err)
 				}
@@ -263,9 +262,9 @@ func TestRefreshJobTableDriven(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.Exec(`INSERT INTO accounts (id, provider_code, provider_protocol_profile_id, name, type, status,
+				if _, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, name, type, status,
 					credentials_encrypted, config_revision, updated_at)
-					VALUES ('acc-decrypt-sibling', 'gpt', 'profile_gpt_openai_v1', '账户-decrypt-sibling', 'oauth', 'active', ?, 1, ?)`,
+					VALUES ('acc-decrypt-sibling', 'gpt', 'gpt', '账户-decrypt-sibling', 'oauth', 'active', ?, 1, ?)`,
 					foreign, isoMillis(clock.Now())); err != nil {
 					t.Fatal(err)
 				}
@@ -344,7 +343,7 @@ func TestRefreshJobTableDriven(t *testing.T) {
 func TestRefreshJobRestoreAfterRecovery(t *testing.T) {
 	job, _, db, clock, exchanger := newRefreshJobForTest(t)
 	seedAccountRow(t, db, accountRowSeed{
-		ID: "acc-restore", ProviderCode: "gpt", ProfileID: ProfileGPTOpenAIV1, Type: "oauth",
+		ID: "acc-restore", ProviderCode: "gpt", Type: "oauth",
 		Status: "error", LastErrorCode: OpenAIOAuthTokenRefreshFailedErrorCode,
 		Credentials: openAICredentials(expiresInMillis(0)), Now: clock.Now(),
 	})
@@ -415,7 +414,6 @@ func TestRotateCredentialsNoopReceiptKeepsRevision(t *testing.T) {
 	first, err := store.RotateCredentials(context.Background(), RotateCredentialsInput{
 		AccountID: "acc-noop", ExpectedConfigRevision: account.ConfigRevision,
 		ExpectedProviderCode: ProviderGPT, ExpectedAccountType: AccountTypeOAuth,
-		ExpectedProviderProtocolProfileID: ProfileGPTOpenAIV1,
 		Credentials:                       account.Credentials,
 	})
 	if err != nil {

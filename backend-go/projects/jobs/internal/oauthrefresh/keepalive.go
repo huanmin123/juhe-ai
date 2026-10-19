@@ -74,11 +74,12 @@ func WithKeepaliveLogger(logger *slog.Logger) func(*KeepaliveJob) {
 }
 
 // KeepalivePlan describes one provider's keepalive query parameters.
+// 供应商解耦后（设计 §9.11）profile 维度退役：vendor+type 在 §1.1 registry
+// 已唯一绑定连接预设，不再需要 profile ID 门。
 type KeepalivePlan struct {
-	Provider          string
-	AccountType       string
-	RequiredProfileID string
-	Lead              time.Duration
+	Provider    string
+	AccountType string
+	Lead        time.Duration
 }
 
 // KeepalivePlans returns the three-provider plans.
@@ -86,7 +87,7 @@ func KeepalivePlans() []KeepalivePlan {
 	return []KeepalivePlan{
 		{Provider: ProviderAnthropic, AccountType: AccountTypeOAuth, Lead: AnthropicKeepaliveLead},
 		{Provider: ProviderGemini, AccountType: AccountTypeGoogleOAuth, Lead: GeminiKeepaliveLead},
-		{Provider: ProviderXAI, AccountType: AccountTypeOAuth, RequiredProfileID: ProfileXAIOpenAIV1, Lead: GrokKeepaliveLead},
+		{Provider: ProviderXAI, AccountType: AccountTypeOAuth, Lead: GrokKeepaliveLead},
 	}
 }
 
@@ -99,7 +100,7 @@ func (j *KeepaliveJob) RunOnce(ctx context.Context, plan KeepalivePlan, limit in
 		limit = DefaultKeepaliveBatch
 	}
 	now := j.now()
-	candidates, err := j.store.ListDueKeepaliveAccounts(ctx, plan.Provider, plan.AccountType, plan.RequiredProfileID, plan.Lead, limit, now)
+	candidates, err := j.store.ListDueKeepaliveAccounts(ctx, plan.Provider, plan.AccountType, plan.Lead, limit, now)
 	if err != nil {
 		return result, err
 	}
@@ -273,9 +274,6 @@ func shouldKeepaliveRefresh(credentials map[string]any, now time.Time, lead time
 
 func isRefreshableKeepaliveAccount(plan KeepalivePlan, account *RotationAccount) bool {
 	if account.ProviderCode != plan.Provider || account.Type != plan.AccountType {
-		return false
-	}
-	if plan.RequiredProfileID != "" && account.ProviderProtocolProfileID != plan.RequiredProfileID {
 		return false
 	}
 	return true

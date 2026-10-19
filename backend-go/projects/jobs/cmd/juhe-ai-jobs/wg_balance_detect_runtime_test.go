@@ -74,8 +74,8 @@ func wgSeedDueAccount(t *testing.T, db *sql.DB, id, baseURL string, dueOffset ti
 	}
 	due := time.Now().UTC().Add(dueOffset).Format(time.RFC3339Nano)
 	if _, err := db.Exec(`
-INSERT INTO accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES (?, 'sys-1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
+INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+VALUES (?, 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
 `, id, envelope, due, due); err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +95,8 @@ func TestBalanceRuntimeListDueCandidatesPagination(t *testing.T) {
 	// 解密必失败的行：明文非 JSON 且非封套 → 候选被跳过。
 	due := time.Now().UTC().Add(-3 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := businessDB.Exec(`
-INSERT INTO accounts (id, system_account_id, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
-VALUES ('acc-bad', 'sys-1', 'api_key', 'active', 1, 'not-an-envelope', 0, '{}', ?, ?)
+INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status, schedulable, credentials_encrypted, balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, updated_at)
+VALUES ('acc-bad', 'sys-1', 'gpt', 'gpt', 'api_key', 'active', 1, 'not-an-envelope', 0, '{}', ?, ?)
 `, due, due); err != nil {
 		t.Fatal(err)
 	}

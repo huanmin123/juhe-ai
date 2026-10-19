@@ -148,10 +148,20 @@ func w14jPGSeedStatements() []string {
 		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS updated_at timestamptz`,
 		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS last_tested_at timestamptz`,
 		`ALTER TABLE juhe_business.proxy_profiles ADD COLUMN IF NOT EXISTS created_at timestamptz`,
-		`ALTER TABLE juhe_business.providers ADD COLUMN IF NOT EXISTS updated_at timestamptz`,
-		`ALTER TABLE juhe_business.providers ADD COLUMN IF NOT EXISTS remark text`,
-		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS updated_at timestamptz`,
-		`ALTER TABLE juhe_business.provider_protocol_profiles ADD COLUMN IF NOT EXISTS remark text`,
+		// J3a 探针 target 事实源（§9.11：providers/provider_protocol_profiles 表
+		// 已随目标 schema 删除，读侧切 vendors.enabled ∩ registry 派生 target）。
+		// 共享覆盖库被外部流程周期性重置为最小形状时可能缺 vendors，按
+		// maintenance 权威 DDL 加法幂等补建。
+		`CREATE TABLE IF NOT EXISTS juhe_business.vendors (
+      id text PRIMARY KEY,
+      code text NOT NULL UNIQUE,
+      name text NOT NULL,
+      description text,
+      enabled integer NOT NULL DEFAULT 1,
+      default_supported_models_json text NOT NULL DEFAULT '[]',
+      created_at text NOT NULL,
+      updated_at text NOT NULL
+    )`,
 		// accounts 生产默认值（只影响后续插入）。
 		`ALTER TABLE juhe_business.accounts ALTER COLUMN balance_query_enabled SET DEFAULT 0`,
 		`ALTER TABLE juhe_business.accounts ALTER COLUMN balance_query_config_json SET DEFAULT '{}'`,

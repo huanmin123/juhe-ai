@@ -486,7 +486,7 @@ func TestW13g5ListProjectionValidationArms(t *testing.T) {
 		{"空 accountID", func(w *opsjobs.ProjectionWrite) { w.Item.AccountID = "" }},
 		{"超长 concurrency", func(w *opsjobs.ProjectionWrite) { w.Item.SourceAccountID = strings.Repeat("s", 257) }},
 		{"空 providerCode", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = "" }},
-		{"空 profileID", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = "" }},
+		{"超长 profileID", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = strings.Repeat("p", 257) }},
 		{"空 accountType", func(w *opsjobs.ProjectionWrite) { w.Item.AccountType = "" }},
 		{"空 name", func(w *opsjobs.ProjectionWrite) { w.Item.Name = "   " }},
 		{"空 createdAt", func(w *opsjobs.ProjectionWrite) { w.Scope.CreatedAt = strPtrOrEmpty("") }},
@@ -508,10 +508,12 @@ func TestW13g5ListProjectionValidationArms(t *testing.T) {
 			}
 		})
 	}
-	// 成功归一化：payload 覆盖可用性键、tag/term 去重生效。
+	// 成功归一化：payload 覆盖可用性键、tag/term 去重生效；§9.11 后 profile
+	// 维度退役，空 profileID（loader 恒空投影）必须合法。
 	payloadBase := w13g5ProjectionWrite("w13g5-acc", 1)
 	payloadBase.Item.Payload = map[string]any{"effectiveAvailable": false}
 	payloadBase.Item.EffectiveAvailable = nil
+	payloadBase.Item.ProviderProtocolProfileID = ""
 	normalized, err := normalizeProjectionWrite(payloadBase)
 	if err != nil {
 		t.Fatal(err)

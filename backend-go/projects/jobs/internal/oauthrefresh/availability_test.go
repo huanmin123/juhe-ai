@@ -44,9 +44,9 @@ func seedAccountWithSchedule(t *testing.T, db *sql.DB, id, scheduleJSON, nextChe
 	if deleted {
 		deletedArg = isoMillis(defaultNow())
 	}
-	_, err := db.Exec(`INSERT INTO accounts (id, provider_code, provider_protocol_profile_id, name, type, status,
+	_, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, name, type, status,
 		credentials_encrypted, availability_schedule_json, availability_schedule_next_check_at, deleted_at, updated_at)
-		VALUES (?, 'gpt', 'profile_gpt_openai_v1', ?, 'api_key', ?, '{}', ?, ?, ?, ?)`,
+		VALUES (?, 'gpt', 'gpt', ?, 'api_key', ?, '{}', ?, ?, ?, ?)`,
 		id, "账户-"+id, status, scheduleArg, nextArg, deletedArg, isoMillis(defaultNow()))
 	if err != nil {
 		t.Fatal(err)

@@ -136,7 +136,7 @@ func TestKeepalivePassesProxyURLToTokenExchange(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedProxyProfile(t, db, proxyProfileSeed{ID: "pp-keepalive", Type: "socks5", Host: "proxy.example", Port: 1080, Username: "alice", Password: "secret"})
-	seedAccountRow(t, db, accountRowSeed{ID: "an-proxy", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-proxy", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id = 'pp-keepalive' WHERE id = 'an-proxy'`); err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestKeepaliveInvalidProxyProfileFailsWithoutDirectDial(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedProxyProfile(t, db, proxyProfileSeed{ID: "pp-off", Type: "http", Host: "proxy.example", Port: 8080, Enabled: proxyEnabled(false)})
-	seedAccountRow(t, db, accountRowSeed{ID: "an-proxy-off", ProviderCode: "anthropic", ProfileID: "profile_anthropic_anthropic_v1", Type: "oauth",
+	seedAccountRow(t, db, accountRowSeed{ID: "an-proxy-off", ProviderCode: "anthropic", Type: "oauth",
 		Credentials: map[string]any{"access_token": "at-a", "refresh_token": "rt-a", "expires_at": expiresInMillis(0)}, Now: clock.Now()})
 	if _, err := db.Exec(`UPDATE accounts SET proxy_profile_id = 'pp-off' WHERE id = 'an-proxy-off'`); err != nil {
 		t.Fatal(err)

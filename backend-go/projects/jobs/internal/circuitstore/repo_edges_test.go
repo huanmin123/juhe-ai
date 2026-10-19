@@ -601,7 +601,7 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 		{"空 viewer", func(w *opsjobs.ProjectionWrite) { w.Scope.ViewerSystemAccountID = " " }},
 		{"空 account", func(w *opsjobs.ProjectionWrite) { w.Item.AccountID = " " }},
 		{"空 provider", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = " " }},
-		{"空 profile", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = " " }},
+		{"超长 profile", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = strings.Repeat("p", 257) }},
 		{"空 type", func(w *opsjobs.ProjectionWrite) { w.Item.AccountType = " " }},
 		{"空 name", func(w *opsjobs.ProjectionWrite) { w.Item.Name = "  " }},
 		{"缺 createdAt", func(w *opsjobs.ProjectionWrite) { w.Scope.CreatedAt = nil }},
@@ -620,11 +620,13 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 		})
 	}
 
-	// 合法写入：effectiveAvailable 显式优先、source 账户作为并发维度。
+	// 合法写入：effectiveAvailable 显式优先、source 账户作为并发维度；
+	// §9.11 后 profile 维度退役，空 profileID（loader 恒空投影）必须合法。
 	write := base()
 	available := false
 	write.Item.EffectiveAvailable = &available
 	write.Item.SourceAccountID = "src-1"
+	write.Item.ProviderProtocolProfileID = ""
 	write.Item.TagIDs = []string{"tag-b", "tag-a", "tag-b"}
 	write.SearchTerms = []string{"账", "账"}
 	normalized, err := normalizeProjectionWrite(write)
