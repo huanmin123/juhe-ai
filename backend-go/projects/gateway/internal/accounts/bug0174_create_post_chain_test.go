@@ -115,7 +115,9 @@ func TestCreateSnapshotSkipsNonHealthCapable(t *testing.T) {
 	env.seedOwnerWithLimit(t, owner, nil)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// B1 断点批：registry 中 google_oauth 仅注册于 gemini driver，本用例补
-	// gemini 供应商行与 owner 默认分组（组合前提）。
+	// gemini vendors 行（vendor 归属校验，设计 §9.1）、供应商行与 owner 默认
+	// 分组（组合前提）。
+	env.seedVendor(t, "gemini")
 	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-gemini', 'gemini', 'Gemini', 1, '["gpt-4o-mini"]', ?, ?)`, now, now)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)

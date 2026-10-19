@@ -256,15 +256,22 @@ func m11ScheduleAllowed(scheduleJSON string, now time.Time) bool {
 
 // ---- 门面留根：prepareBalanceDraft（路由侧草稿准备） ----
 
+// draftProtocolProfile 是 profile 行删除后草稿链的协议上下文投影（vendor 语义
+// 推导，protocol_context.go）：m11 刷新面消费 id / protocolCode 两键。
+type draftProtocolProfile struct {
+	id           string
+	protocolCode string
+}
+
 // balanceDraftRow is the draft-test account projection (the strict body
-// account plus the group/provider resolution).
+// account plus the group/owner resolution).
 type balanceDraftRow struct {
 	groupID          string
 	groupName        string
 	ownerID          string
 	accountType      string
 	providerCode     string
-	providerProfile  *providerProfile
+	providerProfile  *draftProtocolProfile
 	credentials      Credentials
 	proxyProfileID   *string
 	supportedModels  []string
@@ -273,8 +280,10 @@ type balanceDraftRow struct {
 }
 
 // prepareBalanceDraft mirrors prepareAccountDraftTestSnapshotAsync for the
-// balance probe: the group/provider contract checks plus the credentials
-// normalization. Errors carry the Node 400 copy.
+// balance probe: the group/owner contract checks plus the credentials
+// normalization. Errors carry the Node 400 copy. profile 行已随目标 schema
+// 退役（§9.3）：providerProtocolProfileId 不再是入参契约，协议上下文由 vendor
+// 语义推导；provider 归属校验改为 vendors 表存在性（enabled，§2.1）。
 func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string]any, access AccessScope) (*balanceDraftRow, error) {
 	groupID := strings.TrimSpace(textString(accountInput["groupId"]))
 	providerCode := strings.TrimSpace(textString(accountInput["providerCode"]))
@@ -282,11 +291,14 @@ func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string
 	if groupID == "" || providerCode == "" || accountType == "" {
 		return nil, &ValidationError{Message: "账户分组无效"}
 	}
-	group, err := s.groupOwnerAndProvider(ctx, s.db, groupID)
+	if err := s.assertVendorEnabled(ctx, s.db, providerCode); err != nil {
+		return nil, err
+	}
+	group, err := s.groupOwnerReference(ctx, s.db, groupID)
 	if err != nil {
 		return nil, err
 	}
-	if group == nil || group.providerCode != providerCode {
+	if group == nil {
 		return nil, &ValidationError{Message: "账户分组无效"}
 	}
 	owner := group.systemAccountID
@@ -296,45 +308,23 @@ func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string
 	if owner == "" {
 		return nil, &ValidationError{Message: "账户分组缺少归属用户，无法测试"}
 	}
-	profileID := strings.TrimSpace(textString(accountInput["providerProtocolProfileId"]))
-	if profileID == "" {
-		return nil, &ValidationError{Message: "账户 providerProtocolProfileId 不能为空"}
-	}
-	profile, err := s.requireEnabledProviderProtocolProfile(ctx, s.db, providerCode, profileID)
-	if err != nil {
-		return nil, err
-	}
-	supported := false
-	for _, item := range profile.accountTypes {
-		if item == accountType {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		return nil, &ValidationError{Message: "供应商 " + providerCode + " 不支持账户类型 " + accountType}
-	}
 	credentialsInput, _ := accountInput["credentials"].(map[string]any)
 	if credentialsInput == nil {
 		credentialsInput = map[string]any{}
 	}
-	// draftAccountCredentials: the oauth draft falls back to the profile base
-	// URL when the input omits base_url.
-	if accountType != "oauth" || textString(credentialsInput["base_url"]) == "" {
-		if accountType == "oauth" {
-			fallback := profile.baseURL
-			if strings.TrimSpace(fallback) == "" {
-				fallback = "https://api.openai.com/v1"
-			}
-			credentialsInput["base_url"] = fallback
-		}
+	// draftAccountCredentials: the oauth draft falls back to the OpenAI 官方根
+	// when the input omits base_url（profile 行的 baseURL 列已随表退役，缺省
+	// 收敛为同一常量）。
+	if accountType == "oauth" && textString(credentialsInput["base_url"]) == "" {
+		credentialsInput["base_url"] = "https://api.openai.com/v1"
 	}
+	protocol := vendorDefaultProtocolContext(providerCode)
 	credentials, err := NormalizeAccountCredentialsForWrite(accountType, Credentials(credentialsInput), &EndpointModeDefaultContext{
 		ProviderCode:              providerCode,
 		AccountType:               accountType,
-		ProviderProtocolProfileID: profile.id,
-		ProtocolCode:              profile.protocolCode,
-		ProtocolVersion:           profile.protocolVersion,
+		ProviderProtocolProfileID: protocol.profileID,
+		ProtocolCode:              protocol.protocolCode,
+		ProtocolVersion:           protocol.protocolVersion,
 	})
 	if err != nil {
 		return nil, err
@@ -345,7 +335,7 @@ func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string
 		ownerID:          owner,
 		accountType:      accountType,
 		providerCode:     providerCode,
-		providerProfile:  profile,
+		providerProfile:  &draftProtocolProfile{id: protocol.profileID, protocolCode: protocol.protocolCode},
 		credentials:      credentials,
 		healthCheckModel: textString(accountInput["healthCheckModel"]),
 		healthCheckMode:  textString(accountInput["healthCheckEndpointMode"]),

@@ -55,10 +55,11 @@ func TestW14LHealthSnapshotReserveArms(t *testing.T) {
 func TestW14LGroupOwnerEdgeArms(t *testing.T) {
 	f := newW14LFaultFixture(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// 空属主 / 空供应商的分组行 → groupOwnerAndProvider 返回 (nil, nil)。
+	// 空属主的分组行 → groupOwnerReference 返回 (nil, nil)（组无 provider 维
+	// 度，owner 是唯一解析维度，设计 §8）。
 	f.exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-w14l-empty', '', '空属主', '', 1, 0, 'personal', ?, ?)`, now, now)
-	group, err := f.store.groupOwnerAndProvider(context.Background(), f.db, "grp-w14l-empty")
+	group, err := f.store.groupOwnerReference(context.Background(), f.db, "grp-w14l-empty")
 	if err != nil || group != nil {
 		t.Fatalf("空属主分组应返回 nil：%+v %v", group, err)
 	}

@@ -3,7 +3,6 @@ package accounts
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -152,76 +151,28 @@ func AccountCreationStatusInput(value any) CreationStatus {
 // store consumes); nil pointers mean the field was absent.
 // （阶段 C 起定义为 accountscore.CreateInput 别名，见上方别名块。）
 
-// providerProfile mirrors requireEnabledProviderProtocolProfileInClientAsync.
-type providerProfile struct {
-	id                      string
-	providerCode            string
-	name                    string
-	protocolCode            string
-	protocolVersion         string
-	baseURL                 string
-	defaultHealthCheckModel string
-	accountTypes            []string
-}
-
-func (s *Store) requireEnabledProviderProtocolProfile(ctx context.Context, q queryer, providerCode, profileID string) (*providerProfile, error) {
-	var row struct {
-		id                      sql.NullString
-		providerCode            sql.NullString
-		name                    sql.NullString
-		enabled                 sql.NullInt64
-		protocolCode            sql.NullString
-		protocolVersion         sql.NullString
-		baseURL                 sql.NullString
-		defaultHealthCheckModel sql.NullString
-		accountTypesJSON        sql.NullString
-		providerEnabled         sql.NullInt64
+// assertVendorEnabled 是 profile 行删除后的 vendor 归属校验（供应商与上游协
+// 议面重构设计 §2.1/§9.1）：vendor_code 只允许 §1.1 九个真实厂商且外键引用
+// vendors.code，真实厂商创建必须在 vendors 表存在且 enabled；generic 语义
+// provider（openai/hybrid 等，vendor_code=NULL）无 vendors 行，跳过校验。
+func (s *Store) assertVendorEnabled(ctx context.Context, q queryer, providerCode string) error {
+	if !realVendorCodes[providerCode] {
+		return nil
 	}
-	err := q.QueryRowContext(ctx, s.bind(`SELECT ppp.id, ppp.provider_code, ppp.name, ppp.enabled,
-			ppp.protocol_code, ppp.protocol_version, ppp.base_url,
-			ppp.default_health_check_model, ppp.account_types_json,
-			p.enabled AS provider_enabled
-		FROM `+s.table("providers")+` p
-		LEFT JOIN `+s.table("provider_protocol_profiles")+` ppp
-			ON ppp.provider_code = p.code
-			AND ppp.id = ?
-		WHERE p.code = ?
-		LIMIT 1`), profileID, providerCode).Scan(
-		&row.id, &row.providerCode, &row.name, &row.enabled,
-		&row.protocolCode, &row.protocolVersion, &row.baseURL,
-		&row.defaultHealthCheckModel, &row.accountTypesJSON, &row.providerEnabled)
+	var enabled int64
+	err := q.QueryRowContext(ctx, s.bind(`SELECT enabled FROM `+s.table("vendors")+`
+		WHERE code = ?
+		LIMIT 1`), providerCode).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, &ValidationError{Message: "不支持的供应商：" + providerCode}
+		return &ValidationError{Message: "不支持的供应商：" + providerCode}
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if !row.providerEnabled.Valid || row.providerEnabled.Int64 != 1 {
-		return nil, &ValidationError{Message: "供应商已停用：" + providerCode}
+	if enabled != 1 {
+		return &ValidationError{Message: "供应商已停用：" + providerCode}
 	}
-	if profileID == "" {
-		return nil, &ValidationError{Message: "供应商协议档案不能为空"}
-	}
-	if !row.id.Valid || row.id.String == "" || (row.providerCode.Valid && row.providerCode.String != providerCode) {
-		return nil, &ValidationError{Message: "供应商协议档案无效：" + profileID}
-	}
-	if !row.enabled.Valid || row.enabled.Int64 != 1 {
-		return nil, &ValidationError{Message: "供应商协议档案已停用：" + row.name.String}
-	}
-	profile := &providerProfile{
-		id:                      row.id.String,
-		providerCode:            providerCode,
-		name:                    row.name.String,
-		protocolCode:            row.protocolCode.String,
-		protocolVersion:         row.protocolVersion.String,
-		baseURL:                 row.baseURL.String,
-		defaultHealthCheckModel: row.defaultHealthCheckModel.String,
-		accountTypes:            []string{},
-	}
-	if row.accountTypesJSON.Valid && strings.TrimSpace(row.accountTypesJSON.String) != "" {
-		_ = json.Unmarshal([]byte(row.accountTypesJSON.String), &profile.accountTypes)
-	}
-	return profile, nil
+	return nil
 }
 
 // requiredAccountCredentialSource mirrors requiredAccountCredentialSource
@@ -372,13 +323,21 @@ func normalizedHealthCheckModel(value string, supportedModels []string) (string,
 	return "", &ValidationError{Message: "账户检查模型必须属于账户支持模型"}
 }
 
-// groupReference mirrors groupOwnerAndProviderForAccountWriteAsync /
-// defaultGroupForAccountWrite rows.
+// groupOwnerReference mirrors groupOwnerAndProviderForAccountWriteAsync rows
+//（组无 provider 维度，设计 §8）：只解析 owner 归属维度。
 type groupReference struct {
 	id              string
 	systemAccountID string
-	providerCode    string
 	name            sql.NullString
+}
+
+// nullStringForOAuthType 把空串 oauth_type 判定值落 SQL NULL（§2.1：非
+// google_oauth 账户与未携带 oauth_type 的 google_oauth 存量形态均 NULL）。
+func nullStringForOAuthType(value string) sql.NullString {
+	if strings.TrimSpace(value) == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: strings.TrimSpace(value), Valid: true}
 }
 
 // Create mirrors createAccountInClientAsync (owner-mode core): provider
@@ -431,24 +390,15 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// providerCode 非空由两个入口前置校验保证（routes.go createBody 与
 	// aipublic parseAccountAddBody 的 requiredTrimmedBody），此处不再重复。
 	providerCode := strings.TrimSpace(input.ProviderCode)
-	profileID := strings.TrimSpace(input.ProviderProtocolProfileID)
-	profile, err := s.requireEnabledProviderProtocolProfile(ctx, tx, providerCode, profileID)
-	if err != nil {
+	// vendor 归属校验（设计 §2.1/§9.1，profile 行删除后的替代门）：真实厂商
+	// 必须在 vendors 表存在且 enabled；generic 语义 provider 无 vendors 行，
+	// 跳过（vendor_code 落 SQL NULL）。
+	if err := s.assertVendorEnabled(ctx, tx, providerCode); err != nil {
 		return nil, err
 	}
 	// accountType 非空由 createBody 保证（routes.go）；aipublic 固定写入
 	// "api_key"。此处不再重复空值校验。
 	accountType := strings.TrimSpace(input.AccountType)
-	supported := false
-	for _, candidate := range profile.accountTypes {
-		if candidate == accountType {
-			supported = true
-			break
-		}
-	}
-	if !supported {
-		return nil, &ValidationError{Message: "供应商协议档案 " + profile.name + " 不支持账户类型 " + accountType}
-	}
 
 	// 能力域保存规则（计划 §服务端统一校验）：域由请求显式
 	// 携带（camelCase capabilityDomain，缺省 chat，创建后不可更改 D3）。
@@ -461,12 +411,51 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if !accountscore.AccountCapabilityDomainSet[domain] {
 		return nil, &ValidationError{Message: "能力域无效"}
 	}
-	profilePredicate := protocolPredicateInput{
-		providerCode:              providerCode,
-		protocolCode:              profile.protocolCode,
-		protocolVersion:           profile.protocolVersion,
-		providerProtocolProfileID: profile.id,
+
+	// 克隆综合（§2）：克隆载荷不携带连接/健康检查时由源账户连接行与 health
+	// 三字段反解综合（连接按 preset/Base URL/endpoint modes/enabled 原样重建，
+	// health 三字段按 preset 重新解析复制）；源无连接行按显式错误拒绝，不做
+	// 跨形态兼容层。
+	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
+		cloneConnections, cloneHealthPreset, cloneHealthMode, cloneHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, strings.TrimSpace(*input.CloneSourceID))
+		if err != nil {
+			return nil, err
+		}
+		input.Connections = cloneConnections
+		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
+			preset := cloneHealthPreset
+			input.HealthCheckConnectionPresetCode = &preset
+		}
+		if input.HealthCheckEndpointMode == nil {
+			mode := cloneHealthMode
+			input.HealthCheckEndpointMode = &mode
+		}
+		if input.HealthCheckModel == nil {
+			model := cloneHealthModel
+			input.HealthCheckModel = &model
+		}
+		if strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
+			return nil, &ValidationError{Message: "克隆源账户健康检查连接缺失，无法克隆：" + strings.TrimSpace(*input.CloneSourceID)}
+		}
 	}
+	// 连接集合（§8）：非空必填 + registry 组合/mode 词表/base URL validator
+	// 全量校验（§2.1/§2.2）。账户类型合法性由同一 registry 组合门承载
+	// （IsAllowedConnectorCombo 五元组含 account_type/oauth_type），不再有
+	// profile 行的 accountTypes 成员校验。
+	vendorCode, connectionDriverCode := accountVendorIdentity(providerCode)
+	resolvedConnections, err := resolveConnectionSet(domain, connectionDriverCode, accountType,
+		accountOAuthTypeForRegistry(accountType, "", input.Credentials), input.Connections)
+	if err != nil {
+		return nil, err
+	}
+	// 账户级协议上下文（profile 行删除后的语义替代，protocol_context.go）：
+	// 由连接载荷的 registry preset/surface 确定性推导，喂给过渡期的
+	// protocol_code/protocol_version 列与 legacy 词表机器。
+	protocol := deriveConnectionProtocolContext(resolvedConnections)
+
+	// 能力域允许集（legacy 词表机器，矩阵门 × 域 lane × 写侧词表；喂参换成
+	// 推导上下文，行为不变）。
+	profilePredicate := protocol.predicate(providerCode)
 	allowedModes := accountscore.AllowedEndpointModes(domain, providerCode, accountType, toProtocolPredicate(profilePredicate))
 	if len(allowedModes) == 0 {
 		return nil, accountscore.CapabilityDomainUnsupportedError(providerCode, domain)
@@ -480,10 +469,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 其余 openai_standard）；此前 INSERT 硬编码 openai_standard，导致
 	// codex_responses 请求类被调度侧 pinned 比较恒淘汰。
 	derivedClientCompatibility := deriveOpenAIAccountClientCompatibility(providerCode, accountType, protocolProfileRef{
-		ProviderCode:              profile.providerCode,
-		ProtocolCode:              profile.protocolCode,
-		ProtocolVersion:           profile.protocolVersion,
-		ProviderProtocolProfileID: profile.id,
+		ProviderCode:              providerCode,
+		ProtocolCode:              protocol.protocolCode,
+		ProtocolVersion:           protocol.protocolVersion,
+		ProviderProtocolProfileID: protocol.profileID,
 	})
 	// modes 缺省（键不存在）时按域落默认集（按域默认能力集；chat 域与现行
 	// 默认逐项一致——I3）。显式 null/非数组/空数组不注入，走既有归一化错误
@@ -506,9 +495,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		ProviderCode:              providerCode,
 		AccountType:               accountType,
 		ClientCompatibility:       derivedClientCompatibility,
-		ProviderProtocolProfileID: profile.id,
-		ProtocolCode:              profile.protocolCode,
-		ProtocolVersion:           profile.protocolVersion,
+		ProviderProtocolProfileID: protocol.profileID,
+		ProtocolCode:              protocol.protocolCode,
+		ProtocolVersion:           protocol.protocolVersion,
 	})
 	if err != nil {
 		return nil, err
@@ -627,17 +616,11 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if err := assertSupportedModelsRequired(supportedModels); err != nil {
 		return nil, err
 	}
-	// 克隆综合（§2）与连接/健康检查三件套校验在下方 INSERT 前执行（分组解析
-	// 与模型目录断言之后、写连接行之前），见 insertAccountConnections 调用处
-	// 的同名注释块。
-
-	// 请求覆盖两字段（service_tier_override / reasoning_effort_override）的
-	// 写入面校验已在上方 NormalizeAccountCredentialsForWrite 内执行（token
-	// 形状 + 协议族值域全集，credentials_normalize.go
-	// normalizeGPTAccountRequestOverrides；2026-10-18 起不再做供应商模型目录
-	// 断言，档位是否被最终上游模型支持由运行时降级/跳过）。模型映射目录断言
-	// 骑最终 owner：repositories.ts create 的 write-side
-	// normalizeAccountModelMappingsForProvider 调用，在下方分组切换之后。
+	// 目录断言（旧 provider 模型目录池）已切 models 表（model_catalog_
+	// validation.go，#B1 剩余①目录段）：映射断言（协议矩阵门 + target 模型
+	// models 身份解析）在分组切换之后骑最终 owner 执行；支持模型断言在分组
+	// 切换后与映射同源执行。模式声明联动由连接行词表（§2.2）、映射 §5.3 与
+	// 健康检查三字段写侧校验承载。
 
 	// Owner context (the group block below switches the owner for admins
 	// binding an explicit group).
@@ -647,14 +630,15 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 
 	// Group resolution: explicit group (owner switch for managed owners) or
-	// the owner's enabled default group for the provider.
+	// the owner's enabled default group（组无 provider 维度，设计 §8：每个
+	// system_account_id 至多一个 is_default=1 分组）.
 	explicitGroupID := ""
 	if input.GroupID != nil {
 		explicitGroupID = strings.TrimSpace(*input.GroupID)
 	}
 	var explicitGroup *groupReference
 	if explicitGroupID != "" {
-		explicitGroup, err = s.groupOwnerAndProvider(ctx, tx, explicitGroupID)
+		explicitGroup, err = s.groupOwnerReference(ctx, tx, explicitGroupID)
 		if err != nil {
 			return nil, err
 		}
@@ -664,7 +648,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 	group := explicitGroup
 	if explicitGroupID == "" {
-		group, err = s.defaultGroupForWrite(ctx, tx, systemAccountID, providerCode)
+		group, err = s.defaultGroupForWrite(ctx, tx, systemAccountID)
 		if err != nil {
 			return nil, err
 		}
@@ -673,41 +657,22 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, &ValidationError{Message: "账户分组无效"}
 	}
 	if group == nil || group.id == "" {
-		return nil, &ValidationError{Message: "当前用户缺少供应商 " + providerCode + " 的启用默认分组"}
+		return nil, &ValidationError{Message: "当前用户缺少启用的默认分组"}
 	}
-	if group.systemAccountID != systemAccountID || group.providerCode != providerCode {
+	if group.systemAccountID != systemAccountID {
 		return nil, &ValidationError{Message: "账户分组无效"}
 	}
 
-	// Supported-model catalog assertion (repositories.ts create:1927, the
-	// write-side normalizeAccountSupportedModelsForProvider): 每个支持模型必须
-	// 落在当前供应商模型目录中且声明支持当前协议档案；hybrid 供应商直通（归档
-	// :69），空集直通（归档 :42，空集由上方 assertSupportedModelsRequired 拒绝）。
-	// 归档 filterIncompatibleDefaults = !hasOwnInput(input,'supportedModels')：
-	// 仅在请求未显式提供支持模型时为 true，而该形态在 create 链恒为空集并先被
-	// assertSupportedModelsRequired 拒绝，目录过滤分支不可达，Go 省略该参数
-	// （恒为 filterIncompatibleDefaults=false 的严格拒绝语义）。personal 目录按
-	// 最终 owner scope 读取（分组切换之后的 systemAccountID），与映射断言同源。
-	if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, supportedModels, providerCode, systemAccountID, protocolPredicateInput{
-		providerCode:              providerCode,
-		protocolCode:              profile.protocolCode,
-		protocolVersion:           profile.protocolVersion,
-		providerProtocolProfileID: profile.id,
-	}); err != nil {
+	// Supported-model catalog assertion（设计 §4，models 表身份门）：每个支持
+	// 模型必须解析到 owner 可见且 active 的 models 行；personal 目录按最终
+	// owner scope 读取（分组切换之后的 systemAccountID），与映射断言同源。
+	if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, supportedModels, providerCode, systemAccountID); err != nil {
 		return nil, err
 	}
-
-	// Model mapping catalog assertion (repositories.ts create:1936, the
-	// write-side normalizeAccountModelMappingsForProvider): 协议档案映射断言
-	// （含 hybrid 跨协议矩阵与协议池）+ 来源/目标模型必须落在当前供应商模型
-	// 目录中且目标模型支持对应上游协议；personal 目录按最终 owner scope 读取。
-	// 上游端点能力取归一化后凭据的 supported_endpoint_modes。
-	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, providerCode, systemAccountID, protocolPredicateInput{
-		providerCode:              providerCode,
-		protocolCode:              profile.protocolCode,
-		protocolVersion:           profile.protocolVersion,
-		providerProtocolProfileID: profile.id,
-	}, input.ModelMappings, credentialEndpointModes(credentials)); err != nil {
+	// Model mapping catalog assertion（设计 §5.1/§5.2，models 表身份门）：
+	// 协议矩阵门 + target 模型 models 身份解析；上游端点能力取归一化后凭据的
+	// supported_endpoint_modes。
+	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, providerCode, systemAccountID, profilePredicate, input.ModelMappings, credentialEndpointModes(credentials)); err != nil {
 		return nil, err
 	}
 
@@ -822,34 +787,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// Vendor identity（设计 §1.1/§2.1）：由 provider 语义推导，见
 	// accountVendorIdentity 注释；创建链（直连创建、克隆、批量、导入均汇入
 	// 本函数）统一落 vendor_code / connection_driver_code 两列。
-	vendorCode, connectionDriverCode := accountVendorIdentity(providerCode)
 
-	// 克隆综合（§2）：克隆载荷不携带连接/健康检查时由源账户连接行与 health
-	// 三字段反解综合（连接按 preset/Base URL/endpoint modes/enabled 原样重建，
-	// health 三字段按 preset 重新解析复制）；源无连接行按显式错误拒绝，不做
-	// 跨形态兼容层。
-	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
-		cloneConnections, cloneHealthPreset, cloneHealthMode, cloneHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, strings.TrimSpace(*input.CloneSourceID))
-		if err != nil {
-			return nil, err
-		}
-		input.Connections = cloneConnections
-		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
-			preset := cloneHealthPreset
-			input.HealthCheckConnectionPresetCode = &preset
-		}
-		if input.HealthCheckEndpointMode == nil {
-			mode := cloneHealthMode
-			input.HealthCheckEndpointMode = &mode
-		}
-		if input.HealthCheckModel == nil {
-			model := cloneHealthModel
-			input.HealthCheckModel = &model
-		}
-		if strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
-			return nil, &ValidationError{Message: "克隆源账户健康检查连接缺失，无法克隆：" + strings.TrimSpace(*input.CloneSourceID)}
-		}
-	}
 	// 健康检查三件套显式提交（供应商与上游协议面重构设计 §8）：三字段必须全部
 	// 由载荷显式携带，缺失按 400 拒绝（错误文案列明缺失字段），不再走档案默认
 	// /域缺省推导（§2.2「新建账户不推导 endpoint mode 默认值」）。空串值保留
@@ -871,19 +809,16 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, err
 	}
 	healthCheckEndpointMode := strings.TrimSpace(*input.HealthCheckEndpointMode)
-	// 连接集合（§8）：非空必填 + registry 组合/mode 词表/base URL validator
-	// 全量校验（§2.1/§2.2）。
-	vendorForRegistry, driverForRegistry := accountVendorIdentity(providerCode)
-	resolvedConnections, err := resolveConnectionSet(domain, driverForRegistry, accountType,
-		accountOAuthTypeForRegistry(accountType, credentials), input.Connections)
-	if err != nil {
-		return nil, err
-	}
 	healthCheckConnectionPresetCode := strings.TrimSpace(*input.HealthCheckConnectionPresetCode)
+
+	// oauth_type 物理列（设计 §2.1：仅 account_type=google_oauth 时非 NULL，
+	// 三值 = 创建载荷凭据推导的既有判定值；其他账户恒 SQL NULL）。
+	oauthType := accountOAuthTypeForRegistry(accountType, "", credentials)
 
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("accounts")+`
 		(id, system_account_id, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+		 oauth_type,
 		 oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
 		 priority, super_priority_enabled, fallback_enabled, schedulable,
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
@@ -892,9 +827,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		id, systemAccountID, profile.protocolCode, profile.protocolVersion,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		id, systemAccountID, protocol.protocolCode, protocol.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
+		nullStringForOAuthType(oauthType),
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
 		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
@@ -937,7 +873,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// health-check 三字段收尾（§2.1 写入序末步）：同一事务内解析 health_check_
 	// connection_id（preset → enabled 连接行）并以一条 UPDATE 补齐三字段，提交
 	// 前读回校验非 NULL（§9 事务级校验硬规则）。初始 INSERT 三列保持 NULL。
-	if err := s.finalizeAccountHealthCheckTrio(ctx, tx, id, vendorForRegistry.String, systemAccountID,
+	if err := s.finalizeAccountHealthCheckTrio(ctx, tx, id, vendorCode.String, systemAccountID,
 		healthCheckConnectionPresetCode, healthCheckEndpointMode, healthCheckModel, supportedModels); err != nil {
 		return nil, err
 	}
@@ -1140,34 +1076,37 @@ func (s *Store) reserveAndEnqueueAccountHealthSnapshot(ctx context.Context, tx *
 	return err
 }
 
-func (s *Store) groupOwnerAndProvider(ctx context.Context, q queryer, groupID string) (*groupReference, error) {
+// groupOwnerReference 解析分组行的 owner 归属（组无 provider 维度，设计 §8）；
+// 缺属主或行不存在返回 (nil, nil)（调用方按「账户分组无效」渲染）。
+func (s *Store) groupOwnerReference(ctx context.Context, q queryer, groupID string) (*groupReference, error) {
 	var row groupReference
-	err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code, name
+	err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, name
 		FROM `+s.table("groups")+` WHERE id = ?`), groupID).
-		Scan(&row.id, &row.systemAccountID, &row.providerCode, &row.name)
+		Scan(&row.id, &row.systemAccountID, &row.name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if row.systemAccountID == "" || row.providerCode == "" {
+	if row.systemAccountID == "" {
 		return nil, nil
 	}
 	return &row, nil
 }
 
-func (s *Store) defaultGroupForWrite(ctx context.Context, q queryer, systemAccountID, providerCode string) (*groupReference, error) {
+// defaultGroupForWrite 解析 owner 的启用默认分组（设计 §8：每个
+// system_account_id 至多一个 is_default=1 分组，无 provider 维度）。
+func (s *Store) defaultGroupForWrite(ctx context.Context, q queryer, systemAccountID string) (*groupReference, error) {
 	var row groupReference
-	err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code, name
+	err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, name
 		FROM `+s.table("groups")+`
 		WHERE system_account_id = ?
-			AND provider_code = ?
 			AND is_default = 1
 			AND enabled = 1
 		ORDER BY updated_at DESC, id ASC
-		LIMIT 1`), systemAccountID, providerCode).
-		Scan(&row.id, &row.systemAccountID, &row.providerCode, &row.name)
+		LIMIT 1`), systemAccountID).
+		Scan(&row.id, &row.systemAccountID, &row.name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

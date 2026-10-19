@@ -1428,17 +1428,11 @@ func (s *Service) validateImportModelCatalogFields(ctx context.Context, source *
 	if err := AssertMappingUpstreamsAllowed(source.modelMappings, source.supportedModels); err != nil {
 		source.Push(err.Error())
 	}
-	// Supported-model catalog assertion (归档 patch 链
-	// normalizeAccountSupportedModelsForProviderAsync :1520 的同语义导入段；
-	// 归档 import plan 的调用方文件已被裁剪，语义对齐 patch/create 链：支持模型
-	// 必须落在当前供应商模型目录中且声明支持当前协议档案，hybrid 供应商直通，
-	// filterIncompatibleDefaults=false 严格拒绝)。owner scope 与映射断言同源
-	// （planCtx.targetOwner），失败作为 per-account message 收集。
-	if err := s.deps.AssertSupportedModelsInProviderCatalog(ctx, s.store.DB(), source.supportedModels, source.providerCode, planCtx.targetOwner, accountscore.ProtocolPredicate{
-		ProviderCode:    source.providerCode,
-		ProtocolCode:    source.protocolCode,
-		ProtocolVersion: source.protocolVersion,
-	}); err != nil {
+	// Supported-model catalog assertion（目录断言切 models 表，设计 §4）：支持
+	// 模型必须解析到 owner 可见且 active 的 models 行（vendor + upstream_model
+	// 身份键）。owner scope 与映射断言同源（planCtx.targetOwner），失败作为
+	// per-account message 收集。
+	if err := s.deps.AssertSupportedModelsInProviderCatalog(ctx, s.store.DB(), source.supportedModels, source.providerCode, planCtx.targetOwner); err != nil {
 		source.Push(importCatalogGuidance(err))
 	}
 	if err := s.deps.AssertModelMappingsInProviderCatalog(ctx, s.store.DB(), source.providerCode, planCtx.targetOwner, accountscore.ProtocolPredicate{

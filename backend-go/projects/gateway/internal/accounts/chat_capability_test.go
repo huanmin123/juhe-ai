@@ -1,7 +1,9 @@
 package accounts
 
-// 对话批（火山方舟/通义百炼对话承接）纯函数直测：档案 chat 承接判定、
-// volcengine/qwen 写侧端点模式词表收 chat 对、协议矩阵 chat 映射放行。
+// 对话批（火山方舟/通义百炼对话承接）纯函数直测：volcengine/qwen 写侧端点
+// 模式词表收 chat 对、协议矩阵 chat 映射放行。（档案 chat 承接判定段已随目
+// 录断言切 models 表拆除——providerModelSupportsProtocolProfile 是 legacy 协
+// 议成员门，无目标形态对应物。）
 
 import (
 	"strings"
@@ -14,31 +16,6 @@ func chatCapabilityProfile(providerCode, profileID string) protocolPredicateInpu
 		protocolCode:              openAIProtocolCode,
 		protocolVersion:           openAIProtocolVersion,
 		providerProtocolProfileID: profileID,
-	}
-}
-
-func TestChatCapabilityVolcengineQwenProfilesAdmitChatProtocolModels(t *testing.T) {
-	cases := []struct {
-		name     string
-		profile  protocolPredicateInput
-		protocol string
-		want     bool
-	}{
-		{name: "volcengine chat model", profile: chatCapabilityProfile("volcengine", volcengineOpenAIV1ProfileID), protocol: "chat_completions", want: true},
-		{name: "volcengine video model", profile: chatCapabilityProfile("volcengine", volcengineOpenAIV1ProfileID), protocol: "video", want: true},
-		{name: "volcengine audio_speech model", profile: chatCapabilityProfile("volcengine", volcengineOpenAIV1ProfileID), protocol: "audio_speech", want: true},
-		{name: "volcengine messages model", profile: chatCapabilityProfile("volcengine", volcengineOpenAIV1ProfileID), protocol: "messages", want: false},
-		{name: "qwen chat model", profile: chatCapabilityProfile("qwen", qwenOpenAIV1ProfileID), protocol: "chat_completions", want: true},
-		{name: "qwen video model", profile: chatCapabilityProfile("qwen", qwenOpenAIV1ProfileID), protocol: "video", want: true},
-		{name: "qwen audio_transcription model", profile: chatCapabilityProfile("qwen", qwenOpenAIV1ProfileID), protocol: "audio_transcription", want: true},
-		{name: "qwen audio_speech model rejected", profile: chatCapabilityProfile("qwen", qwenOpenAIV1ProfileID), protocol: "audio_speech", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := providerModelSupportsProtocolProfile([]string{tc.protocol}, tc.profile); got != tc.want {
-				t.Fatalf("providerModelSupportsProtocolProfile(%q) = %v, want %v", tc.protocol, got, tc.want)
-			}
-		})
 	}
 }
 

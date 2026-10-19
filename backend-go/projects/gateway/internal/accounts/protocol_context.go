@@ -1,0 +1,180 @@
+package accounts
+
+// 账户级协议上下文推导（供应商与上游协议面重构设计 §1.1/§2.1/§9.3）。旧
+// requireEnabledProviderProtocolProfile 从 provider_protocol_profiles 行读取
+// (protocol_code, protocol_version, profile id)——该表已随目标 schema 退役
+// （§9.3），写链不再查库取协议身份。语义替代：connection_preset_code 是 §1.1
+// 编译期 registry 注册值，与旧 profile ID 一一对应（maintenance
+// providerconnectionmigration legacyProfileTargets 同表），registry surface
+// 即 (protocol_code, protocol_version)。
+//
+//   - 创建链（携 connections 载荷）：deriveConnectionProtocolContext 取载荷序
+//     第一个非纯媒体连接的 registry surface 组装账户级上下文（过渡期
+//     accounts.protocol_code / protocol_version 列与 legacy 写侧词表机器的
+//     喂参；多连接跨协议面账户以首个文本连接为准，连接行自身仍逐行携带
+//     registry surface，协议事实归属连接行）。
+//   - 草稿/探针链（无 connections 载荷，model-catalog/refresh、balance/test-
+//     draft）：vendorDefaultProtocolContext 按 vendor 语义落默认档案（与退役
+//     前各 vendor 的默认 profile 行一致）。
+//
+// 本推导是 protocol 列退役（§9.11 后续切片）前的过渡投影；generic（openai/
+// hybrid）与纯媒体集合无 pin，profileID 留空——openai-compatible / anthropic
+// driver 路由只依赖 protocol 对。
+
+import (
+	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+)
+
+// protocolContext 是账户级协议上下文（accounts.protocol_code/protocol_version
+// 列与 legacy 谓词族的过渡喂参）。
+type protocolContext struct {
+	protocolCode    string
+	protocolVersion string
+	profileID       string
+}
+
+// predicate 投影为 legacy 谓词入参（providerCode 由调用方按账户语义补齐）。
+func (c protocolContext) predicate(providerCode string) protocolPredicateInput {
+	return protocolPredicateInput{
+		providerCode:              providerCode,
+		protocolCode:              c.protocolCode,
+		protocolVersion:           c.protocolVersion,
+		providerProtocolProfileID: c.profileID,
+	}
+}
+
+// openAIProtocolContext 是无 pin 的 openai 族上下文（generic / 纯媒体集合）。
+func openAIProtocolContext() protocolContext {
+	return protocolContext{
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+	}
+}
+
+// surfaceProtocolContext 拆分 registry surface → 协议上下文（无 pin）。
+func surfaceProtocolContext(surface string) (protocolContext, bool) {
+	switch surface {
+	case contracts.SurfaceOpenAIV1:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+		}, true
+	case contracts.SurfaceAnthropicV1:
+		return protocolContext{
+			protocolCode:    accountscore.AnthropicProtocolCode,
+			protocolVersion: accountscore.AnthropicProtocolVersion,
+		}, true
+	case contracts.SurfaceGeminiV1Beta:
+		return protocolContext{
+			protocolCode:    accountscore.GeminiProtocolCode,
+			protocolVersion: accountscore.GeminiProtocolVersion,
+		}, true
+	}
+	return protocolContext{}, false
+}
+
+// presetProfileID 是 registry preset → 旧 profile ID pin 的固定对应表（§1.1
+// 注册值一一对应；generic_*/anthropic_v1 官方预设无 pin）。
+var presetProfileID = map[string]string{
+	contracts.PresetGPTOpenAIV1:            accountscore.GptOpenAIV1ProfileID,
+	contracts.PresetXAIOpenAIV1:            accountscore.XaiOpenAIV1ProfileID,
+	contracts.PresetDeepSeekOpenAIV1:       accountscore.DeepSeekOpenAIV1ProfileID,
+	contracts.PresetDeepSeekAnthropicV1:    accountscore.DeepSeekAnthropicV1ProfileID,
+	contracts.PresetGLMGeneralOpenAIV1:     accountscore.GlmGeneralOpenAIV1ProfileID,
+	contracts.PresetGLMCodingOpenAIV1:      accountscore.GlmCodingOpenAIV1ProfileID,
+	contracts.PresetGLMCodingAnthropicV1:   accountscore.GlmCodingAnthropicV1ProfileID,
+	contracts.PresetGeminiOpenAIChatV1Beta: accountscore.GeminiOpenAIChatV1BetaProfileID,
+	contracts.PresetGeminiNativeV1Beta:     geminiNativeV1BetaProfileID,
+	contracts.PresetMiniMaxMedia:           accountscore.MinimaxOpenAIV1ProfileID,
+	contracts.PresetVolcengineArk:          accountscore.VolcengineOpenAIV1ProfileID,
+	contracts.PresetVolcengineOpenSpeech:   accountscore.VolcengineOpenAIV1ProfileID,
+	contracts.PresetQwenDashScope:          accountscore.QwenOpenAIV1ProfileID,
+}
+
+// deriveConnectionProtocolContext 从解析后的连接集合推导账户级协议上下文：
+// 载荷序第一个「有 pin 预设或非纯媒体 surface」的连接定 (protocol, version,
+// pin)。纯媒体预设（minimax_media / volcengine_openspeech，surface 为空）凭
+// preset 对应表落 pin，协议对退 openai 族（媒体 adapter 的上游面恒为 OpenAI
+// 形态，媒体设计 §9）——丢失 pin 会让 legacy 词表路由（resolveCapabilityWrite
+// Context 的 per-vendor 行）解析失败、合法媒体域创建被误拒。无 pin 无 surface
+// （generic 纯媒体集合）退 openai 族无 pin 上下文。
+func deriveConnectionProtocolContext(resolved []resolvedConnection) protocolContext {
+	for _, connection := range resolved {
+		pin := presetProfileID[connection.preset]
+		if pin == "" && connection.surface == "" {
+			continue
+		}
+		context, ok := surfaceProtocolContext(connection.surface)
+		if !ok {
+			context = openAIProtocolContext()
+		}
+		context.profileID = pin
+		return context
+	}
+	return openAIProtocolContext()
+}
+
+// vendorDefaultProtocolContext 是草稿/探针链（无 connections 载荷）的 vendor
+// 语义默认上下文，与退役前各 vendor 的默认 profile 行一致（gemini 默认 native
+// 档案、deepseek/glm 默认 openai 档案；openai/hybrid 语义无 vendor 行，落
+// generic openai 族无 pin）。
+func vendorDefaultProtocolContext(providerCode string) protocolContext {
+	switch normalizeProviderToken(providerCode) {
+	case accountscore.GptVendorCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.GptOpenAIV1ProfileID,
+		}
+	case accountscore.XaiProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.XaiOpenAIV1ProfileID,
+		}
+	case accountscore.DeepSeekProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.DeepSeekOpenAIV1ProfileID,
+		}
+	case accountscore.AnthropicProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.AnthropicProtocolCode,
+			protocolVersion: accountscore.AnthropicProtocolVersion,
+		}
+	case accountscore.GeminiProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.GeminiProtocolCode,
+			protocolVersion: accountscore.GeminiProtocolVersion,
+			profileID:       geminiNativeV1BetaProfileID,
+		}
+	case accountscore.GlmProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.GlmGeneralOpenAIV1ProfileID,
+		}
+	case accountscore.MinimaxProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.MinimaxOpenAIV1ProfileID,
+		}
+	case accountscore.VolcengineProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.VolcengineOpenAIV1ProfileID,
+		}
+	case accountscore.QwenProviderCode:
+		return protocolContext{
+			protocolCode:    accountscore.OpenAIProtocolCode,
+			protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID:       accountscore.QwenOpenAIV1ProfileID,
+		}
+	default:
+		return openAIProtocolContext()
+	}
+}

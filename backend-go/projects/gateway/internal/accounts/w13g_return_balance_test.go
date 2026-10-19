@@ -70,11 +70,11 @@ func TestW13GPrepareBalanceDraftFullFlow(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 	access := AccessScope{ViewerID: adminID}
 
-	// 停用的协议档案 / 类型不支持。
+	// 类型不支持（profile 行删除后由凭据归一化的类型词表拒绝，#B1 剩余①）。
 	if _, err := env.store.prepareBalanceDraft(context.Background(), map[string]any{
 		"groupId": "grp-default-" + adminID, "providerCode": "gpt", "type": "bogus_type",
 		"providerProtocolProfileId": "prof-gpt",
-	}, access); err == nil || !strings.Contains(err.Error(), "不支持账户类型") {
+	}, access); err == nil || !strings.Contains(err.Error(), "bogus_type") {
 		t.Fatalf("类型不支持：%v", err)
 	}
 	// oauth 缺 base_url → 回落 profile base_url。

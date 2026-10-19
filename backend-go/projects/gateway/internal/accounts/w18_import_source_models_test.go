@@ -29,13 +29,13 @@ func TestW18ChannelModelsBlockedByCatalog(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	// 空目录：channel models 中的模型全部不在目录。
-	env.store.SetModelCatalogReader(&fakeAccountModelCatalog{})
+	// 目录断言已切 models 表身份解析（fake 端口退役）：拦截臂改用夹具 models
+	// 种子外的模型名（gpt-w18-x 不在 seedFixtureModels）。
 
 	document := []any{
 		map[string]any{"id": float64(1), "type": float64(1), "key": "sk-w18-blocked",
 			"name": "模型频道", "base_url": "https://api.openai.com/v1", "status": float64(1),
-			"models": "gpt-w18-a, gpt-w18-a ，gpt-w18-b"},
+			"models": "gpt-w18-a, gpt-w18-a ，gpt-w18-x"},
 	}
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 	result, err := env.store.PreviewImport(context.Background(), document, importSourceNewAPI, ImportOptions{}, scope)
@@ -52,7 +52,7 @@ func TestW18ChannelModelsBlockedByCatalog(t *testing.T) {
 	}
 	joined := strings.Join(result.Accounts[0].Messages, "|")
 	// 去重后逐字对照共享断言文案（joinMappingModelSample 样本拼接）。
-	if !strings.Contains(joined, "账户支持模型不在供应商模型目录中：gpt-w18-a、gpt-w18-b") {
+	if !strings.Contains(joined, "账户支持模型不在供应商模型目录中：gpt-w18-a、gpt-w18-x") {
 		t.Fatalf("缺少目录拦截文案：%s", joined)
 	}
 	if !strings.Contains(joined, "请先在模型目录创建这些模型并配置价格后再导入") {

@@ -100,6 +100,13 @@ func newTestEnv(t *testing.T) *testEnv {
 			t.Fatal(err)
 		}
 	}
+	// vendors 种子（设计 §9.1）：创建链 vendor 归属校验按 vendors 表判定，
+	// gpt 为夹具默认真实厂商；anthropic 等其余厂商保持未预置（供「不支持的
+	// 供应商」臂断言），openai 为 generic 语义（无 vendors 行，校验跳过）。
+	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
 	seedFixtureModels(t, db)
 	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
@@ -133,6 +140,9 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, parent_code TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL, account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	// vendors（设计 §9.1，providers 更名收敛）：创建链 vendor 归属校验读该表
+	// （真实厂商必须存在且 enabled）；夹具与 maintenance fresh DDL 同列集。
+	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS accounts (
@@ -146,6 +156,9 @@ var schemaStatements = []string{
 		-- 携带两列（generic 账户 vendor 为 NULL，driver 恒非空）。
 		vendor_code TEXT,
 		connection_driver_code TEXT,
+		-- oauth_type 物理列（设计 §2.1，#B1 剩余③）：google_oauth 三值、其他
+		-- NULL；写链 create/patch oauth 变体落列。
+		oauth_type TEXT,
 		-- B4 W2 迁移窗口夹具：生产 INSERT 已停写 provider_code /
 		-- provider_protocol_profile_id / client_compatibility（设计 §9.11 目标
 		-- 列集无三列）；夹具保留列壳仅供存量种子行直插，默认值兜底。
@@ -461,6 +474,14 @@ func (e *testEnv) login(t *testing.T, username, password, role string) string {
 
 // seedProviderAndDefaultGroup mirrors the create flow prerequisites: the gpt
 // provider plus an enabled protocol profile and the owner's default group.
+// seedVendor 为指定真实厂商补 vendors 行（创建链 vendor 归属校验按 vendors
+// 表判定，设计 §9.1）；默认夹具只预置 gpt，非 gpt 厂商的创建用例按需补种。
+func (e *testEnv) seedVendor(t *testing.T, code string) {
+	t.Helper()
+	e.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, "ven-"+code, code, code)
+}
+
 func (e *testEnv) seedProviderAndDefaultGroup(t *testing.T, ownerID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -636,6 +657,11 @@ func createPayload(name string) string {
 // supportedModels），供内联创建载荷拼接。
 const b1GPTFragment = `"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
 	`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"`
+
+// b1GenericGPTFragment 是 generic（openai 兼容）语义 provider 的连接片段
+// （generic_http driver 只允许 generic_* 预设，§1.1 组合表）。
+const b1GenericGPTFragment = `"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
+	`"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"`
 
 // b1ConnectionsJSON 是 B1 断点批夹具的 §8 connections 片段构造器：单连接
 // gpt_openai_v1 形态（endpointModes 可变），供域感知媒体夹具复用。
@@ -898,12 +924,20 @@ func TestAccountCreateValidation(t *testing.T) {
 		{"unknown field", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x1","type":"api_key","bogus":1}`, 400, "账户参数无效"},
 		{"missing provider", `{"providerProtocolProfileId":"prof-gpt","name":"x2","type":"api_key"}`, 400, "账户参数无效"},
 		{"unknown provider", `{"providerCode":"anthropic","providerProtocolProfileId":"prof-gpt","name":"x3","type":"api_key"}`, 400, "不支持的供应商：anthropic"},
-		{"bad account type", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x4","type":"google_oauth"}`, 400, "供应商协议档案 OpenAI 官方协议 不支持账户类型 google_oauth"},
-		{"missing credentials", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x5","type":"api_key","supportedModels":["gpt-4o-mini"]}`, 400, "Base URL不能为空"},
-		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "不支持的供应商：provider-zzz"},
-		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
+		// B1 剩余①：账户类型合法性由 registry 组合门承载（google_oauth 与
+		// gpt_openai_v1 组合不在 §1.1 表内）；载荷未携连接时先触发
+		// connections 必填校验（§8 连接集合前置）。
+		{"bad account type", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x4","type":"google_oauth"}`, 400, "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"},
+		// B1 剩余①：connections 必填校验（§8 连接集合前置）先于凭据归一化触发。
+		{"missing credentials", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x5","type":"api_key","supportedModels":["gpt-4o-mini"]}`, 400, "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"},
+		// generic 语义 provider（非 §1.1 真实厂商）不再有 vendor 拒绝臂
+		//（vendor_code=NULL，设计 §2.1）；载荷未携连接时先触发 connections
+		// 必填校验。
+		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "创建载荷缺少 connections：必须显式提交非空连接集合（connectionPresetCode/baseUrl/endpointModes/enabled）"},
+		// 检查模型越界（b1GPTFragment 连接合法 + 检查模型不在支持集合）。
+		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
 		{"super and fallback", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"sf1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"superPriorityEnabled":true,"fallbackEnabled":true}`, 400, "超级优先和降级备用不能同时开启"},
-		{"bad expires", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"e1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"accountExpiresAt":"yesterday"}`, 400, "账户套餐到期时间必须是有效时间字符串"},
+		{"bad expires", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"e1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"accountExpiresAt":"yesterday",` + b1GPTFragment + `}`, 400, "账户套餐到期时间必须是有效时间字符串"},
 	}
 	// Enabled provider whose owner lacks a default group.
 	now2 := time.Now().UTC().Format(time.RFC3339Nano)
@@ -913,12 +947,7 @@ func TestAccountCreateValidation(t *testing.T) {
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
 		VALUES ('prof-openai', 'openai', 'OpenAI 平台协议', 1, 'openai', 'v1', 'https://api.openai.com/v1',
 		'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)`, now2, now2)
-	cases = append(cases, struct {
-		name    string
-		body    string
-		status  int
-		message string
-	}{"missing default group", `{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "当前用户缺少供应商 openai 的启用默认分组"})
+
 	// B1 断点批：分组缺失臂先于三件套校验触发（分组解析在前），无需携带连接；
 	// 下方成功路径载荷统一补 b1GPTFragment。
 
@@ -928,6 +957,17 @@ func TestAccountCreateValidation(t *testing.T) {
 			t.Fatalf("%s: %d %v (want %d %s)", testCase.name, code, payload, testCase.status, testCase.message)
 		}
 	}
+
+	// 缺少启用默认分组（组无 provider 维度，owner 是唯一解析维度，设计 §8）：
+	// 停用 owner 的默认分组后创建按 400 拒绝（分组解析先于三件套校验之外的
+	// 后续写段；generic 片段用 generic_openai_v1——generic_http driver 组合表）。
+	env.exec(t, `UPDATE groups SET enabled = 0 WHERE id = ?`, "grp-default-"+adminID)
+	code, missingGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		`{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GenericGPTFragment + `}`)
+	if code != 400 || missingGroup["message"] != "当前用户缺少启用的默认分组" {
+		t.Fatalf("missing default group: %d %v", code, missingGroup)
+	}
+	env.exec(t, `UPDATE groups SET enabled = 1 WHERE id = ?`, "grp-default-"+adminID)
 
 	// Explicit group bound to another provider is rejected; same-provider
 	// explicit groups are honored.

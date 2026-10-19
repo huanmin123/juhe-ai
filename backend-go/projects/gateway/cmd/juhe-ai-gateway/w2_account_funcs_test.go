@@ -978,7 +978,9 @@ func TestW2BBalanceDraftProbeExpiredInput(t *testing.T) {
 }
 
 // TestW2BModelCatalogRefreshSecondListFailure 覆盖 423：上游目录拉取成功后，
-// 第二次本地目录投影读（testModels）失败 → 错误上抛。
+// 第二次本地目录投影读（testModels）失败 → 错误上抛。providers 读面已切
+// models 单表（W3 批）：种子与故障规则同步迁移——每次投影发 builtin + custom
+// 两条 models 查询，afterN=2 让第三次查询（第二次投影的 builtin 臂）失败。
 func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -989,13 +991,18 @@ func TestW2BModelCatalogRefreshSecondListFailure(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "w2b-catalog-refresh.sqlite3")
 	plain := w2bOpenPlainSQLiteAt(t, dbPath)
 	seedChainBusinessSchema(t, plain)
-	if _, err := plain.Exec(`INSERT INTO provider_model_catalog (id, provider_code, model, status, mode,
-			supported_api_protocols_json, input_usd_per_1m, source, created_at, updated_at)
-			VALUES ('w2b-cpm', 'gpt', 'w2b-model', 'active', NULL, '["chat_completions"]', 2.0, 'built_in', '2026-09-04', '2026-09-04')`); err != nil {
+	if _, err := plain.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+			supported_endpoint_modes_json, input_usd_per_1m, source, created_at, updated_at)
+			VALUES ('w2b-cpm', 'gpt', 'w2b-model', 'w2b-model', 'global', 'active', '["chat_json"]', 2.0, NULL, '2026-09-04', '2026-09-04')`); err != nil {
 		t.Fatalf("seed catalog: %v", err)
 	}
 
-	rule := &w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "FROM custom_provider_models") },
+	// models 查询为多行模板拼接（"FROM" 与表名分属两行），匹配按双 token 判定；
+	// 本流程内 DB 查询只有目录投影的 4 条 models 查询（代理为 nil 不落库），
+	// afterN=2 让第 3 次命中（第二次投影的首条查询）失败。
+	rule := &w2bFaultRule{match: func(query string) bool {
+		return strings.Contains(query, "FROM") && strings.Contains(query, "models")
+	},
 		action: w2bFaultQueryError, err: errors.New("w2b 第二次目录投影失败"), afterN: 2}
 	wrapped := w2bOpenFaultySQLiteAt(t, dbPath, rule)
 	wrapped.SetMaxOpenConns(1)

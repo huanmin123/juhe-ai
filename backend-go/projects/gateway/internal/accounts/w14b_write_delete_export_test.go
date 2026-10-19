@@ -63,30 +63,27 @@ func TestW14BCreateValidationArms(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, is_default, enabled, group_type, created_at, updated_at)
 		VALUES ('grp-w14b-openai-default', ?, 'w14b-openai-default', 'openai', 1, 1, 'personal', ?, ?)`, adminID, nowSeed, nowSeed)
 
-	// 供应商不存在 / 停用。
-	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: "bogus", AccountType: "api_key"}, scope); err == nil || !strings.Contains(err.Error(), "不支持的供应商") {
+	// 供应商不存在 / 停用（vendor 归属校验切 vendors 表，设计 §9.1）：
+	// deepseek 为 §1.1 真实厂商且夹具未预置 vendors 行 → 不支持；xai 预置
+	// enabled=0 行 → 停用。
+	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: "deepseek", AccountType: "api_key"}, scope); err == nil || !strings.Contains(err.Error(), "不支持的供应商") {
 		t.Fatalf("未知供应商应拒绝：%v", err)
 	}
-	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: "w14bdis", ProviderProtocolProfileID: "profile-w14b-dis", AccountType: "api_key"}, scope); err == nil || !strings.Contains(err.Error(), "供应商已停用") {
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-w14b-xai-dis', 'xai', 'xAI', 0, ?, ?)`, nowSeed, nowSeed)
+	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: "xai", AccountType: "api_key"}, scope); err == nil || !strings.Contains(err.Error(), "供应商已停用") {
 		t.Fatalf("停用供应商应拒绝：%v", err)
 	}
-	// 档案：为空 / 不存在 / 停用。
+	// 档案校验随 profile 行退役拆除（#B1 剩余①）：profileID 不再是创建契约
+	// 入参，空/未知/停用档案臂不可达。
 	valid := w14bValidCreateInput()
-	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: valid.ProviderCode, AccountType: valid.AccountType}, scope); err == nil || !strings.Contains(err.Error(), "供应商协议档案不能为空") {
-		t.Fatalf("空档案应拒绝：%v", err)
-	}
-	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: valid.ProviderCode, ProviderProtocolProfileID: "profile-nope", AccountType: valid.AccountType}, scope); err == nil || !strings.Contains(err.Error(), "供应商协议档案无效") {
-		t.Fatalf("未知档案应拒绝：%v", err)
-	}
-	if _, err := env.store.Create(ctx, CreateInput{ProviderCode: "w14blive", ProviderProtocolProfileID: "profile-w14b-live-dis", AccountType: valid.AccountType}, scope); err == nil || !strings.Contains(err.Error(), "供应商协议档案已停用") {
-		t.Fatalf("停用档案应拒绝：%v", err)
-	}
 
-	// 档案账户类型不支持 / 健康检查形态非法。
+	// 账户类型合法性由 registry 组合门承载：google_oauth 与 generic_openai_v1
+	// 组合不在 §1.1 表内 → connection_capability_unsupported。
 	badType := valid
 	badType.AccountType = "google_oauth"
-	if _, err := env.store.Create(ctx, badType, scope); err == nil {
-		t.Fatal("档案未注册账户类型应拒绝")
+	if _, err := env.store.Create(ctx, badType, scope); err == nil || !strings.Contains(err.Error(), "connection_capability_unsupported") {
+		t.Fatalf("组合外账户类型应拒绝：%v", err)
 	}
 	badMode := "responses_bogus"
 	badModeInput := valid
@@ -149,20 +146,24 @@ func TestW14BCreateValidationArms(t *testing.T) {
 		t.Fatalf("越界检查模型应拒绝：%v", err)
 	}
 
-	// 显式分组不存在 / 供应商不一致。
+	// 显式分组不存在。
 	missingGroup := "grp-nope"
 	groupInput := valid
 	groupInput.GroupID = &missingGroup
 	if _, err := env.store.Create(ctx, groupInput, scope); err == nil {
 		t.Fatal("缺失分组应拒绝")
 	}
+	// 组无 provider 维度（设计 §8）：同 owner 分组可绑定，旧 provider_code 值
+	// （fixture 行 'other-prov'）不再参与校验。
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, created_at, updated_at)
 		VALUES ('grp-w14b-other', ?, 'w14b-other-group', 'other-prov', ?, ?)`, adminID, now, now)
 	otherGroup := "grp-w14b-other"
 	groupInput.GroupID = &otherGroup
-	if _, err := env.store.Create(ctx, groupInput, scope); err == nil || !strings.Contains(err.Error(), "账户分组无效") {
-		t.Fatalf("跨供应商分组应拒绝：%v", err)
+	name := "w14b-create-group-bind"
+	groupInput.Name = name
+	if _, err := env.store.Create(ctx, groupInput, scope); err != nil {
+		t.Fatalf("同 owner 分组应可绑定（组无 provider 维度）：%v", err)
 	}
 
 	// 空 owner scope。

@@ -38,11 +38,13 @@ type Deps struct {
 	ListExportPage func(ctx context.Context, access accountscore.AccessScope, options accountscore.ListOptions) (ids []string, hasMore bool, err error)
 	// AssertSupportedModelsInProviderCatalog mirrors
 	// Store.assertAccountSupportedModelsInProviderCatalog
-	// (model_mapping_protocol_matrix.go).
-	AssertSupportedModelsInProviderCatalog func(ctx context.Context, q accountscore.Queryer, models []string, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate) error
+	// (model_catalog_validation.go；目录断言已切 models 表身份解析，
+	// providerCode 只推导 vendor 身份键)。
+	AssertSupportedModelsInProviderCatalog func(ctx context.Context, q accountscore.Queryer, models []string, providerCode, systemAccountID string) error
 	// AssertModelMappingsInProviderCatalog mirrors
 	// Store.assertAccountModelMappingsInProviderCatalog
-	// (model_catalog_validation.go).
+	// (model_catalog_validation.go；协议矩阵门 + models 表 target 身份解析，
+	// predicate 以行内协议列喂参).
 	AssertModelMappingsInProviderCatalog func(ctx context.Context, q accountscore.Queryer, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate, mappings []accountscore.ModelMapping, supportedEndpointModes []string) error
 	// NormalizeCredentialsForWrite mirrors NormalizeAccountCredentialsForWrite
 	// (credentials_normalize.go stays a facade surface per 设计 v2). 请求覆盖

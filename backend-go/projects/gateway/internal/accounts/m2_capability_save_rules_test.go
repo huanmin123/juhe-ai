@@ -37,6 +37,9 @@ func m2SeedProvider(t *testing.T, env *testEnv, ownerID, code, profileID, protoc
 	if err != nil {
 		t.Fatal(err)
 	}
+	// vendors 行（设计 §9.1）：创建链 vendor 归属校验按 vendors 表判定。
+	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?)`, "ven-"+code, code, code, now, now)
 	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, 1, ?, ?)`, "prov-"+code, code, code, now, now)
 	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled,
@@ -341,7 +344,10 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-anthropic-video", "anthropic", "profile_anthropic_v1", "api_key", "video",
 			map[string]any{"api_key": "sk-ant-m2", "base_url": "https://api.anthropic.com"}, []string{"messages_json"}))
-	if code != http.StatusBadRequest || m2Message(payload) != "anthropic 不支持视频账户" {
+	// 连接集合校验前置（§8 连接集合先于域允许集）：anthropic_v1 预设与 video
+	// 域组合不在 registry 允许表 → connection_capability_unsupported（域拒绝
+	// 语义由同一组合门承载）。
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "connection_capability_unsupported") {
 		t.Fatalf("anthropic+video 应 400 不支持：%d %v", code, payload)
 	}
 
@@ -350,7 +356,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-deepseek-video", "deepseek", deepSeekOpenAIV1ProfileID, "api_key", "video", apiKeyCredentials(),
 			[]string{"video_create", "video_get", "video_content", "video_cancel"}))
-	if code != http.StatusBadRequest || m2Message(payload) != "deepseek 不支持视频账户" {
+	// 连接集合校验前置（§8）：deepseek_openai_v1 预设 × video 域组合不在
+	// registry 允许表 → connection_capability_unsupported。
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "connection_capability_unsupported") {
 		t.Fatalf("deepseek+video 应 400 不支持：%d %v", code, payload)
 	}
 	// deepseek（openai 档案）+ chat 矩阵内正值 → 201（modes 缺省 = 现行默认）。
@@ -363,7 +371,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-xai-audio", "xai", xaiOpenAIV1ProfileID, "api_key", "audio", apiKeyCredentials(),
 			[]string{"audio_speech"}))
-	if code != http.StatusBadRequest || m2Message(payload) != "xai 不支持音频账户" {
+	// xai_openai_v1 预设 × audio 域组合不在 registry 允许表 → connection_
+	// capability_unsupported（音频待契约回填后随矩阵更新开通）。
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "connection_capability_unsupported") {
 		t.Fatalf("xai+audio 应 400 不支持：%d %v", code, payload)
 	}
 	// xai + video 矩阵内正值 → 201。
@@ -377,7 +387,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		m2CreateBody("m2-gemini-openai-video", "gemini", geminiOpenAIChatV1BetaProfileID, "api_key", "video", apiKeyCredentials(),
 			[]string{"video_create", "video_get", "video_content", "video_cancel"}))
-	if code != http.StatusBadRequest || m2Message(payload) != "gemini 不支持视频账户" {
+	// gemini_openai_chat_v1beta 预设 × video 域组合不在 registry 允许表
+	// （媒体能力挂 native 档案）→ connection_capability_unsupported。
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "connection_capability_unsupported") {
 		t.Fatalf("gemini openai-chat+video 应 400 不支持：%d %v", code, payload)
 	}
 	// gemini（OpenAI Chat 档案）+ chat 矩阵内正值（modes 缺省 = chat 对）→ 201。
@@ -404,7 +416,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		m2CreateBody("m2-oauth-video", "gpt", "prof-gpt", "oauth", "video",
 			map[string]any{"access_token": "tok-m2", "refresh_token": "rtr-m2", "account_id": "acc-m2", "base_url": "https://api.openai.com/v1"},
 			[]string{"video_create"}))
-	if code != http.StatusBadRequest || m2Message(payload) != "gpt 不支持视频账户" {
+	// gpt oauth 预设 × video 域组合不在 registry 允许表（oauth 词表只剩
+	// responses 对，域允许集为空）→ connection_capability_unsupported。
+	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "connection_capability_unsupported") {
 		t.Fatalf("gpt oauth+video 应 400 不支持：%d %v", code, payload)
 	}
 
@@ -418,10 +432,15 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 
 	// v8-A 对话域纯粹化：新建对话账户声明被移出三项（images_json /
 	// audio_transcription_json / realtime_session）→ 400 列出全部越界值；
-	// 音频域承载同一声明则放行（归属迁移，新增隔离只约束对话域）。
+	// 音频域承载同一声明则放行（归属迁移，新增隔离只约束对话域）。连接集合
+	// 携域内 chat 对（§8 连接集合校验前置——媒体值只出现在凭据声明集，触发
+	// 凭据 ⊆ 域允许集的越界列出）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		m2CreateBody("m2-chat-outlier-v8a", "gpt", "prof-gpt", "api_key", "chat", apiKeyCredentials(),
-			[]string{"chat_json", "images_json", "audio_transcription_json", "realtime_session"}))
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"m2-chat-outlier-v8a","type":"api_key",`+
+			`"credentials":{"api_key":"sk-live-m2-v8a","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["chat_json","images_json","audio_transcription_json","realtime_session"]},`+
+			`"supportedModels":["m-default"],"status":"active","capabilityDomain":"chat",`+
+			`"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],`+
+			`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"m-default"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("v8-A 新建对话账户声明移出三项应 400：%d %v", code, payload)
 	}
@@ -439,11 +458,14 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 
 	// modes 显式 null / 空数组：与现状逐项一致（基线探针证实：写侧归一化
 	// 对 null/空数组返回普通 error，HTTP 面现状即 500「服务器内部错误」；
-	// 本切片不改变该路径，文案与状态码原样保留）。
+	// 本切片不改变该路径，文案与状态码原样保留）。连接集合携域内 chat 对
+	// （§8 连接集合校验前置，null 凭据 modes 不参与连接校验）。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"m2-null-modes","type":"api_key",`+
 			`"credentials":{"api_key":"sk-null-modes","base_url":"https://api.openai.com/v1","supported_endpoint_modes":null},`+
-			`"supportedModels":["m-default"],"status":"active"}`)
+			`"supportedModels":["m-default"],"status":"active",`+
+			`"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],`+
+			`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"m-default"}`)
 	if code != http.StatusInternalServerError {
 		t.Fatalf("创建显式 null 应与现状一致（500）：%d %v", code, payload)
 	}

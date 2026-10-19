@@ -189,31 +189,20 @@ func TestRequestOverrideGeminiInteractionsOnlyGuard(t *testing.T) {
 }
 
 func TestCreateRequestOverridesFamilyDomainWiring(t *testing.T) {
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store, scope := newCatalogWiringStore(t, "owner-override-family-create", fake)
-	// priority 覆盖保存成功；目录只被支持模型断言读取一次——覆盖值域不再
-	// 发起目录读取（写入面只做形状 + 协议族值域）。
+	store, scope := newCatalogWiringStore(t, "owner-override-family-create", nil)
+	// priority 覆盖保存成功；覆盖值域不发起目录读取（写入面只做形状 + 协议族
+	// 值域），支持模型目录断言已切 models 身份解析（夹具种子命中）。
 	result, err := store.Create(context.Background(), catalogWiringCreateInput("family-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "priority"}, []string{"gpt-4o-mini"}, nil), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ID == "" || fake.callCount() != 1 {
-		t.Fatalf("create must not consult the catalog for overrides: id=%q calls=%d", result.ID, fake.callCount())
-	}
-	if call := fake.lastCall(); call.systemAccountID != scope.EffectiveViewerID() {
-		t.Fatalf("supported-models assertion must use the request scope: %+v", call)
+	if result.ID == "" {
+		t.Fatalf("create with overrides must succeed: id=%q", result.ID)
 	}
 	// default 哨兵 + 目录未声明任何档位的思考级别：无任何档位声明也恒可保存
 	//（原「所选支持模型中没有模型支持/声明…」目录门禁语义反转，运行时降级/
 	// 跳过）。
-	bareFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
-		Model:                     "gpt-4o-mini",
-		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
-		SupportedServiceTiers:     []string{},
-		SupportedReasoningEfforts: []string{},
-	}}}
-	store.SetModelCatalogReader(bareFake)
 	if _, err := store.Create(context.Background(), catalogWiringCreateInput("family-bare",
 		Credentials{"api_key": "sk-live-secret-1234567890", "service_tier_override": "default", "reasoning_effort_override": "xhigh"},
 		[]string{"gpt-4o-mini"}, nil), scope); err != nil {
@@ -333,38 +322,25 @@ func mapping(sourceModel, sourceFamily, upstreamModel, upstreamFamily string) Mo
 func TestModelMappingCatalogHit(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedProviderAndDefaultGroup(t, "owner-mapping-hit")
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
 	store := env.store
-	store.SetModelCatalogReader(fake)
 	profile := protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: "prof-gpt"}
-	// 非 hybrid 断言前置协议矩阵门（归档 assertAccountModelMappingProtocolAllowed）：
-	// openai 档案下 responses 上游要求 native Responses，端点能力缺失先行拒绝；
-	// 目录命中段改用同协议 chat_completions 映射验证。
+	// 非 hybrid：矩阵门 + models 身份解析（target 模型在夹具 models 种子内，
+	// vendor gpt + owner 可见 + active）→ 通过。目录读取不再经端口（fake 目录
+	// 已随 legacy 面拆除，models 行即权威）。
 	err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile,
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")},
 		[]string{"chat_json", "chat_sse"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 归档 upstreamModelPoolForAccount 不带 includeUnpriced（默认 false）。
-	call := fake.lastCall()
-	if call.providerCode != "gpt" || call.systemAccountID != "owner-1" || call.includeUnpriced {
-		t.Fatalf("catalog call contract: %+v", call)
-	}
-	// 空 mapping 集不发起目录读取；hybrid 供应商走协议池校验（nil 端口 no-op，
-	// 端点能力满足 hybrid 矩阵门禁后才会触达协议池段）。
+	// 空 mapping 集早退；hybrid 只走跨协议矩阵门（协议池段已拆除）。
 	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	// hybrid 供应商走协议池校验（verdict-ao 登记的跳过段，另一代理已落地）：
-	// 池 = 该协议全部启用供应商的目录并集按端点族过滤 → 模型须落在池内。
 	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "hybrid", "owner-1", profile,
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")},
 		[]string{"chat_json", "chat_sse"}); err != nil {
 		t.Fatal(err)
-	}
-	if fake.callCount() != 2 {
-		t.Fatalf("hybrid pool check must query the catalog once more, calls = %d", fake.callCount())
 	}
 }
 
@@ -372,59 +348,26 @@ func TestModelMappingCatalogMiss(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedProviderAndDefaultGroup(t, "owner-mapping-miss")
 	store := env.store
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}})
 	ctx := context.Background()
 	profile := protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1"}
-	// 上游端点能力满足后目录段才会执行（矩阵门禁先于目录校验）。
+	// 上游端点能力满足矩阵门禁后，target 模型必须解析到 models 行（来源模型
+	// 是客户端 wire model 字符串，不作 models 外键，§5.1）。
 	modes := []string{"chat_json", "chat_sse"}
-	// 来源模型不在目录。
-	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-o1", "chat_completions", "gpt-4o-mini", "chat_completions")}, modes),
-		"账号模型别名来源模型不在当前供应商模型目录中：gpt-o1")
-	// 目标模型不在目录。
+	// 目标模型不在 models（夹具无 gpt-o1）。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-o1", "chat_completions")}, modes),
 		"账号模型别名目标模型不在当前供应商模型目录中：gpt-o1")
-	// 目标模型不支持对应上游协议：目录只声明 responses 协议，chat_completions
-	// 的端点族池不含 gpt-4o-mini。
-	missProtocolStore := env.store
-	missProtocolStore.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{
-		{Model: "gpt-4o-mini", SupportedAPIProtocols: []string{"responses"}},
-	}})
-	assertValidationError(t, missProtocolStore.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")}, modes),
-		"账号模型别名目标模型不支持对应上游协议：gpt-4o-mini")
 	// 错误样本只取前 5 个（归档 slice(0, 5).join('、')）。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
 		[]ModelMapping{
-			mapping("m1", "chat_completions", "gpt-4o-mini", "chat_completions"),
-			mapping("m2", "chat_completions", "gpt-4o-mini", "chat_completions"),
-			mapping("m3", "chat_completions", "gpt-4o-mini", "chat_completions"),
-			mapping("m4", "chat_completions", "gpt-4o-mini", "chat_completions"),
-			mapping("m5", "chat_completions", "gpt-4o-mini", "chat_completions"),
-			mapping("m6", "chat_completions", "gpt-4o-mini", "chat_completions"),
+			mapping("m1", "chat_completions", "gpt-o1", "chat_completions"),
+			mapping("m2", "chat_completions", "gpt-o2", "chat_completions"),
+			mapping("m3", "chat_completions", "gpt-o3", "chat_completions"),
+			mapping("m4", "chat_completions", "gpt-o4", "chat_completions"),
+			mapping("m5", "chat_completions", "gpt-o5", "chat_completions"),
+			mapping("m6", "chat_completions", "gpt-o6", "chat_completions"),
 		}, modes),
-		"账号模型别名来源模型不在当前供应商模型目录中：m1、m2、m3、m4、m5")
-}
-
-func TestModelMappingCatalogNilPortAndError(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedProviderAndDefaultGroup(t, "owner-mapping-port")
-	profile := protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1"}
-	mappings := []ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")}
-	// 上游端点能力满足矩阵门禁后，nil 目录端口只让目录段保持 no-op。
-	modes := []string{"chat_json", "chat_sse"}
-	// nil 端口 no-op（不触发协议守卫查询）。
-	store := env.store
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, mappings, modes); err != nil {
-		t.Fatalf("nil port must keep the assertion a no-op: %v", err)
-	}
-	// 目录异常透传，不静默降级（协议守卫已通过 gpt/openai profile，异常来自目录读取）。
-	boom := errors.New("catalog unavailable")
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{err: boom})
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, mappings, modes); !errors.Is(err, boom) {
-		t.Fatalf("catalog failure must propagate verbatim, got %v", err)
-	}
+		"账号模型别名目标模型不在当前供应商模型目录中：gpt-o1、gpt-o2、gpt-o3、gpt-o4、gpt-o5")
 }
 
 // ---- create / patch / batch 挂接冒烟 ----
@@ -541,15 +484,14 @@ func TestPatchWiresSupportedModelsCatalogAssertion(t *testing.T) {
 // ---- 支持模型目录校验挂接（normalizeAccountSupportedModelsForProvider 家族） ----
 
 func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	// 本测试后半段需要直写 providers/groups 种子（openai-compatible 供应商的
-	// 协议档案过滤），直接持有 env 而不是 newCatalogWiringStore 包装。
+	// 本测试后半段需要直写 providers/groups 种子（generic 语义供应商臂），
+	// 直接持有 env 而不是 newCatalogWiringStore 包装。
 	env := newTestEnv(t)
 	env.seedProviderAndDefaultGroup(t, "owner-supported-create")
 	store := env.store
-	store.SetModelCatalogReader(fake)
 	scope := AccessScope{ViewerID: "owner-supported-create", IsAdmin: true}
-	// 目录内 → 创建成功，目录读取带 includeUnpriced=true（归档 :48）。
+	// models 种子内 → 创建成功（vendor gpt + upstream_model + owner 可见 +
+	// active，models 身份口径）。
 	created, err := store.Create(context.Background(), catalogWiringCreateInput("supported-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope)
 	if err != nil {
@@ -558,10 +500,6 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	if created.ID == "" {
 		t.Fatal("created id must not be empty")
 	}
-	last := fake.lastCall()
-	if !last.includeUnpriced || last.providerCode != "gpt" || last.systemAccountID != scope.EffectiveViewerID() {
-		t.Fatalf("supported-models catalog call contract: %+v", last)
-	}
 	// 目录外 → 400，文案逐字对照归档。
 	_, err = store.Create(context.Background(), catalogWiringCreateInput("supported-miss",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-o1", "gpt-o2"}, nil), scope)
@@ -569,10 +507,11 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	// 错误样本只取前 5 个（归档 slice(0, 5).join('、')）。
 	_, err = store.Create(context.Background(), catalogWiringCreateInput("supported-sample",
 		Credentials{"api_key": "sk-live-secret-1234567890"},
-		[]string{"m1", "m2", "m3", "m4", "m5", "m6"}, nil), scope)
-	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：m1、m2、m3、m4、m5")
-	// 协议档案过滤：gpt 供应商在 providerModelSupportsProtocolProfile 短路放行
-	// （归档 isGptVendorCode 分支），需换 openai-compatible 供应商验证档案过滤。
+		[]string{"m2", "m3", "m4", "m5", "m6", "gpt-o9"}, nil), scope)
+	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：m2、m3、m4、m5、m6")
+	// generic 语义供应商（openai，vendor_code=NULL）：身份键 COALESCE(vendor,'')
+	// 命中夹具的 NULL vendor 行 → 同名模型放行（协议档案过滤段已随 legacy 面
+	// 拆除，models 行即权威）。
 	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at)
 		VALUES ('prov-openai-compat', 'openai', 'OpenAI 兼容', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled,
@@ -582,26 +521,13 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 'openai', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.EffectiveViewerID())
-	messagesOnly := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
-		Model:                 "gpt-4o-mini",
-		SupportedAPIProtocols: []string{"messages"},
-	}}}
-	store.SetModelCatalogReader(messagesOnly)
-	compatInput := catalogWiringCreateInput("supported-profile-miss",
+	compatInput := catalogWiringCreateInput("supported-generic-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil)
 	compatInput.ProviderCode = "openai"
 	compatInput.ProviderProtocolProfileID = "prof-openai-compat"
 	b1SetGenericConnections(&compatInput, "https://compat.example.com/v1")
-	_, err = store.Create(context.Background(), compatInput, scope)
-	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：gpt-4o-mini")
-	// 同一目录事实在 gpt 供应商下放行（归档 isGptVendorCode 短路）。
-	store.SetModelCatalogReader(&fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
-		Model:                 "gpt-4o-mini",
-		SupportedAPIProtocols: []string{"messages"},
-	}}})
-	if _, err := store.Create(context.Background(), catalogWiringCreateInput("supported-gpt-passthrough",
-		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil), scope); err != nil {
-		t.Fatal(err)
+	if _, err := store.Create(context.Background(), compatInput, scope); err != nil {
+		t.Fatalf("generic provider create must succeed: %v", err)
 	}
 }
 
@@ -696,10 +622,9 @@ func TestBatchUpdateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	}
 }
 
-// ---- hybrid 供应商：支持模型直通 + 映射协议池校验 ----
+// ---- hybrid 供应商：models 身份解析 + 跨协议矩阵门 ----
 
-func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.T) {
-	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
+func TestHybridAccountWriteChecksModelsIdentityAndMatrixGate(t *testing.T) {
 	env := newTestEnv(t)
 	// hybrid 供应商 + 启用档案 + owner 默认分组。
 	ownerID := "owner-hybrid-write"
@@ -714,19 +639,16 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-hybrid-default', ?, '混合默认分组', 'hybrid', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
 	store := env.store
-	store.SetModelCatalogReader(fake)
 	scope := AccessScope{ViewerID: ownerID, IsAdmin: true}
 
-	// B4 W2：模型名须解析到 models 行；m1 不在 fake 目录，保持「目录外直通」
-	// 语义（hybrid 支持模型不经目录断言）。
+	// hybrid 账户 vendor_code=NULL：支持模型按 COALESCE(vendor,'') 身份键解析
+	// （夹具 NULL vendor 行命中 m1）；映射无协议池段，仅跨协议矩阵门。
 	input := catalogWiringCreateInput("hybrid-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890", "supported_endpoint_modes": []any{"chat_json", "chat_sse"}},
 		[]string{"m1"}, nil)
 	input.ProviderCode = "hybrid"
 	input.ProviderProtocolProfileID = "prof-hybrid"
 	b1SetGenericConnections(&input, "https://hybrid.example.com/v1")
-	// hybrid 支持模型直通（归档 :69），目录不被支持模型断言读取；chat_completions
-	// 同协议映射无映射时也不读目录。
 	created, err := store.Create(context.Background(), input, scope)
 	if err != nil {
 		t.Fatal(err)
@@ -734,19 +656,11 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 	if created.ID == "" {
 		t.Fatal("hybrid create must succeed")
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("hybrid supported models must bypass the catalog, calls = %d", fake.callCount())
-	}
 
-	// hybrid 映射：模型落协议池（fake 目录归属 gpt 供应商 → openai 池命中）。
-	// B4 W2：写入侧双解析需要连接 + 支持成员前置事实（设计 §5.1/§9）；协议池
-	// 断言键仍是行 provider 语义——hybrid 供应商已随 §8 退役，此处以直插旧列
-	// 模拟存量 hybrid 行（行为键 COALESCE(vendor, provider) 回读 'hybrid'）。
+	// hybrid 映射：矩阵门 + target 模型 models 身份解析（写入侧双解析需要
+	// 连接 + 支持成员前置事实，设计 §5.1/§9）。
 	env.seedAccountConnection(t, created.ID, "generic_openai_v1", "gpt-4o-mini", "outside-upstream")
-	env.exec(t, `UPDATE accounts SET provider_code = 'hybrid' WHERE id = ?`, created.ID)
-	poolFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store.SetModelCatalogReader(poolFake)
-	poolHit, err := store.Patch(context.Background(), created.ID, PatchInput{
+	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 1,
 		ModelMappingsPresent:   true,
 		ModelMappings: []ModelMapping{{
@@ -754,45 +668,24 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 			UpstreamModel: "gpt-4o-mini", UpstreamEndpointFamily: "chat_completions",
 			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
-	}, scope)
-	if err != nil {
+	}, scope); err != nil {
 		t.Fatal(err)
 	}
-	if poolFake.callCount() == 0 {
-		t.Fatal("hybrid mapping patch must query the protocol pool catalogs")
-	}
 
-	// hybrid 映射：池外模型 → 拒绝，文案逐字对照归档
-	// （账号模型别名来源模型不在对应协议模型池中：…）。期望 revision 取上一次
-	// 成功 patch 返回的 config_revision（映射替换会递增）。
-	outsideFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store.SetModelCatalogReader(outsideFake)
+	// hybrid 映射：target 模型不在 models → 拒绝。patch 链映射整替换先行，
+	// 写入侧 resolveEntryModelID 以 mapping_target_unsupported 显式拒绝（400
+	// 族；协议池文案随段拆除退役）。上一 patch 递增 revision，期望值取成功返
+	// 回的 config_revision。
 	_, err = store.Patch(context.Background(), created.ID, PatchInput{
-		ExpectedConfigRevision: poolHit.ConfigRevision,
-		ModelMappingsPresent:   true,
-		ModelMappings: []ModelMapping{{
-			SourceModel: "outside-model", SourceEndpointFamily: "chat_completions",
-			UpstreamModel: "gpt-4o-mini", UpstreamEndpointFamily: "chat_completions",
-			TargetConnectionPresetCode: "generic_openai_v1",
-		}},
-	}, scope)
-	assertValidationError(t, err, "账号模型别名来源模型不在对应协议模型池中：outside-model")
-
-	// hybrid 映射：上游池外 → 拒绝（目标模型不在对应上游协议模型池中）。
-	// 上一 patch 校验失败回滚，revision 仍是 poolHit.ConfigRevision；提交相对
-	// 持久行的实际变更（上游模型换成池外模型）才会进入协议池校验。
-	upstreamFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
-	store.SetModelCatalogReader(upstreamFake)
-	_, err = store.Patch(context.Background(), created.ID, PatchInput{
-		ExpectedConfigRevision: poolHit.ConfigRevision,
+		ExpectedConfigRevision: 2,
 		ModelMappingsPresent:   true,
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o-mini", SourceEndpointFamily: "chat_completions",
-			UpstreamModel: "outside-upstream", UpstreamEndpointFamily: "chat_completions",
+			UpstreamModel: "gpt-o1", UpstreamEndpointFamily: "chat_completions",
 			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
 	}, scope)
-	assertValidationError(t, err, "账号模型别名目标模型不在对应上游协议模型池中：outside-upstream")
+	assertValidationError(t, err, `mapping_target_unsupported: target model "gpt-o1" resolves to no active owner-visible models row`)
 }
 
 // TestPatchSupportedModelsUnorderedEqualityAndEmptyArray 对照归档

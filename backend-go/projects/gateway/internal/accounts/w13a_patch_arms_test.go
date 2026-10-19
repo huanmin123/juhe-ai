@@ -129,14 +129,29 @@ func TestW13APatchValidationArms(t *testing.T) {
 		`{"expectedConfigRevision":3,"healthCheckModel":"gpt-x"}`); code != http.StatusBadRequest {
 		t.Fatalf("检查模型越界应 400：%d %v", code, payload)
 	}
-	// 检查协议非法（577-580）与合法变化（581-586）。
+	// 检查协议非法（577-580）：词表外值 400（§8 三件套同现同省契约先行 400，
+	// 单字段词表臂不再单独可达，状态码语义不变）。
 	if code, payload := env.do(t, http.MethodPatch, path,
 		`{"expectedConfigRevision":3,"healthCheckEndpointMode":"bogus"}`); code != http.StatusBadRequest {
 		t.Fatalf("非法检查协议应 400：%d %v", code, payload)
 	}
+	// 三件套同现同省（设计 §8）：单字段提交 400。
 	if code, payload := env.do(t, http.MethodPatch, path,
-		`{"expectedConfigRevision":3,"healthCheckEndpointMode":"responses_json"}`); code != http.StatusOK {
-		t.Fatalf("合法检查协议应 200：%d %v", code, payload)
+		`{"expectedConfigRevision":3,"healthCheckEndpointMode":"responses_json"}`); code != http.StatusBadRequest {
+		t.Fatalf("三件套单字段提交应 400：%d %v", code, payload)
+	}
+	// 合法三件套改选（581-586）：连接行 + 支持模型前置事实落库后，三字段同时
+	// 提交并完整改选（preset → enabled 连接行，mode ∈ 连接 modes，model ∈
+	// 支持模型且声明该 mode）。
+	env.seedAccountConnection(t, "acc-w13a-a", "gpt_openai_v1", "gpt-4o-mini")
+	if code, payload := env.do(t, http.MethodPatch, path,
+		`{"expectedConfigRevision":3,"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_sse","healthCheckModel":"gpt-4o-mini"}`); code != http.StatusOK {
+		t.Fatalf("合法三件套应 200：%d %v", code, payload)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-w13a-a' AND
+		health_check_connection_id = (SELECT id FROM account_connections WHERE account_id = 'acc-w13a-a' AND connection_preset_code = 'gpt_openai_v1')
+		AND health_check_endpoint_mode = 'chat_sse' AND health_check_model = 'gpt-4o-mini'`) != 1 {
+		t.Fatal("三件套应完整改选落库")
 	}
 	// 支持模型变化成功路径（变化臂 + 最终凭据断言入口）。
 	if code, payload := env.do(t, http.MethodPatch, path,
@@ -401,7 +416,7 @@ func TestW13APatchHelperArms(t *testing.T) {
 		t.Fatal("PG 方言应失败")
 	}
 	// assertGroupCanBind：PG 锁后缀臂（1641-1643）与查询错误（1650-1652）。
-	if err := pgStore.assertGroupCanBind(context.Background(), env.db, "grp", "owner", "gpt"); err == nil {
+	if err := pgStore.assertGroupCanBind(context.Background(), env.db, "grp", "owner"); err == nil {
 		t.Fatal("PG 方言分组断言应失败")
 	}
 	// replaceGroupBinding：PG 方言 DELETE 失败（1665-1667）。

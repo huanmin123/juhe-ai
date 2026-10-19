@@ -28,16 +28,8 @@ func TestW10AProtocolMappingMatrix(t *testing.T) {
 		t.Fatal("默认标签应回退 Chat Completions")
 	}
 
-	// 协议池映射。
-	if code, version := protocolPoolForMapping(mappingFamilyMessages); code != anthropicProtocolCodeConstant || version != anthropicProtocolVersionConstant {
-		t.Fatalf("Messages 池错误：%s %s", code, version)
-	}
-	if code, version := protocolPoolForMapping(mappingFamilyGenerateContent); code != geminiProtocolCodeConstant || version != geminiProtocolVersionConstant {
-		t.Fatalf("GenerateContent 池错误：%s %s", code, version)
-	}
-	if code, version := protocolPoolForMapping(mappingFamilyChatCompletions); code != openAIProtocolCode || version != openAIProtocolVersion {
-		t.Fatalf("ChatCompletions 池错误：%s %s", code, version)
-	}
+	// 协议池映射段已随目录断言切 models 表拆除（protocolPoolForMapping 是
+	// legacy 协议池维度），此处仅保留矩阵/文案断言。
 
 	// 不可转换消息（三形态）。
 	if msg := unsupportedProtocolConversionMessage(mappingFamilyMessages, mappingFamilyResponses); !strings.Contains(msg, "Anthropic Messages") {
@@ -335,23 +327,8 @@ func TestW10AMediaMappingMatrix(t *testing.T) {
 	}
 
 	// 协议 token 翻译：媒体族码与目录协议 token 不同名；chat 族同名透传。
-	if token := mappingFamilyProtocolToken(mappingFamilyVideoGeneration); token != "video" {
-		t.Fatalf("video_generation token = %q, want video", token)
-	}
-	if token := mappingFamilyProtocolToken(mappingFamilyTts); token != "audio_speech" {
-		t.Fatalf("tts token = %q, want audio_speech", token)
-	}
-	if token := mappingFamilyProtocolToken(mappingFamilyChatCompletions); token != mappingFamilyChatCompletions {
-		t.Fatal("chat 族 token 应同名透传")
-	}
-
-	// 协议池：媒体族挂 openai 协议对（schema 端点族 seed 同源）。
-	if code, version := protocolPoolForMapping(mappingFamilyVideoGeneration); code != openAIProtocolCode || version != openAIProtocolVersion {
-		t.Fatalf("video_generation 池错误：%s %s", code, version)
-	}
-	if code, version := protocolPoolForMapping(mappingFamilyTts); code != openAIProtocolCode || version != openAIProtocolVersion {
-		t.Fatalf("tts 池错误：%s %s", code, version)
-	}
+	// 协议池段已随目录断言切 models 表拆除（mappingFamilyProtocolToken /
+	// protocolPoolForMapping 是 legacy 协议池维度）。
 
 	// 能力门：媒体上游族要求对应媒体端点模式。
 	if !hasAccountModelMappingUpstreamEndpointFamilyCapability(mappingFamilyVideoGeneration, []string{"video_create"}) {

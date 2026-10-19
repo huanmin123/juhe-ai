@@ -1021,18 +1021,11 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	}
 	supportedModelsChanged = hasOwn("supportedModels") && !UnorderedStringListEqual(account.supportedModels, nextSupportedModels)
 	if supportedModelsChanged {
-		// Supported-model catalog assertion (归档 patch 链
-		// normalizeAccountSupportedModelsForProviderAsync :1520 的同语义批量段；
-		// 归档 batch-edit prepare 的调用方文件已被裁剪，触发条件对齐 patch 链：
-		// 支持模型实际变化时校验目录归属，hybrid 供应商直通，
-		// filterIncompatibleDefaults=false 严格拒绝)。校验失败使整个批量事务
-		// 回滚（all-or-nothing，与 Node 批量仓库事务一致）。
-		if err := s.deps.AssertSupportedModelsInProviderCatalog(ctx, q, nextSupportedModels, account.providerCode, account.systemAccountID, accountscore.ProtocolPredicate{
-			ProviderCode:              account.providerCode,
-			ProtocolCode:              account.protocolCode,
-			ProtocolVersion:           account.protocolVersion,
-			ProviderProtocolProfileID: account.providerProtocolProfileID,
-		}); err != nil {
+		// Supported-model catalog assertion（目录断言切 models 表，设计 §4）：
+		// 每个支持模型必须解析到 owner 可见且 active 的 models 行（vendor +
+		// upstream_model 身份键）。校验失败使整个批量事务回滚（all-or-nothing，
+		// 与 Node 批量仓库事务一致）。
+		if err := s.deps.AssertSupportedModelsInProviderCatalog(ctx, q, nextSupportedModels, account.providerCode, account.systemAccountID); err != nil {
 			return result, err
 		}
 		addChange("supportedModels")
@@ -1109,10 +1102,9 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		}
 		nextModelMappings = mappings
 	}
-	// Model mapping catalog assertion (account-batch-edit.service.ts:257, the
-	// normalizeAccountModelMappingsForProviderAsync catalog segment): 来源/
-	// 目标模型必须落在当前供应商模型目录中且目标模型支持对应上游协议。校验失败
-	// 使整个批量事务回滚（all-or-nothing，与 Node 仓库事务一致）。
+	// Model mapping catalog assertion（目录断言切 models 表）：协议矩阵门 +
+	// target 模型 models 身份解析。校验失败使整个批量事务回滚（all-or-nothing，
+	// 与 Node 仓库事务一致）。
 	if shouldValidateMappings {
 		if err := s.deps.AssertModelMappingsInProviderCatalog(ctx, q, account.providerCode, account.systemAccountID, accountscore.ProtocolPredicate{
 			ProviderCode:              account.providerCode,

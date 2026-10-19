@@ -109,3 +109,83 @@ func TestB1FreshMaintenanceDDLConnectionWrite(t *testing.T) {
 		t.Fatal("fresh UNIQUE (account_id, id) 未生效")
 	}
 }
+
+// TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection 是复合外
+// 键的显式行为验证（#B1 剩余④；此前仅有列集验证）：SQLite
+// `PRAGMA foreign_keys=ON` 下，accounts.health_check_connection_id 的复合外键
+// (id, health_check_connection_id) → account_connections(account_id, id)
+//   - 插入指向不存在连接的账户行 → 外键拒绝；
+//   - 连接行 + 账户行的正常写入序（先 accounts 三字段 NULL——复合外键任一列
+//     NULL 跳过 MATCH，再连接行，再回填三字段）通过。
+func TestB1FreshMaintenanceDDLCompositeForeignKeyRejectsOrphanConnection(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:b1fresh-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
+		t.Fatalf("fresh business DDL ensure: %v", err)
+	}
+	ctx := context.Background()
+	now := "2026-01-01T00:00:00.000Z"
+	if _, err := db.Exec(`INSERT INTO vendors (id, code, name, created_at, updated_at)
+		VALUES ('ven-b1-fk', 'gpt', 'GPT', ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed vendor: %v", err)
+	}
+
+	// 孤儿臂：health_check_connection_id 指向不存在的连接行 → 复合外键拒绝。
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted, capability_domain,
+		health_check_connection_id, created_at, updated_at)
+		VALUES ('acc-b1-fk-orphan', 'owner-b1-fk', 'gpt', 'gpt', 'openai', 'v1', 'b1-fk-orphan', 'api_key',
+		'active', 'sealed', 'chat', 'conn-not-exists', ?, ?)`, now, now); err == nil {
+		t.Fatal("fresh 复合外键未拒绝孤儿 health_check_connection_id")
+	}
+
+	// 正常序：先插账户（三字段暂 NULL，复合外键 NULL 列跳过 MATCH）→ 连接行 →
+	// 回填三字段。
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted, capability_domain,
+		created_at, updated_at)
+		VALUES ('acc-b1-fk-ok', 'owner-b1-fk', 'gpt', 'gpt', 'openai', 'v1', 'b1-fk-ok', 'api_key',
+		'active', 'sealed', 'chat', ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code,
+		protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn-b1-fk-ok', 'acc-b1-fk-ok', 'gpt_openai_v1', 'openai_v1', 'https://api.openai.com/v1', 1, ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+	for _, mode := range []string{"chat_json", "chat_sse"} {
+		if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
+			VALUES ('conn-b1-fk-ok', ?)`, mode); err != nil {
+			t.Fatalf("seed endpoint mode: %v", err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+		supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mod-b1-fk', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', 'active',
+		'["chat_json","chat_sse"]', ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models (account_id, model_id, created_at)
+		VALUES ('acc-b1-fk-ok', 'mod-b1-fk', ?)`, now); err != nil {
+		t.Fatalf("seed supported model: %v", err)
+	}
+	store, err := NewStore(db, false, testSecret, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.finalizeAccountHealthCheckTrio(ctx, db, "acc-b1-fk-ok", "gpt", "owner-b1-fk",
+		"gpt_openai_v1", "chat_json", "gpt-4o-mini", []string{"gpt-4o-mini"}); err != nil {
+		t.Fatalf("正常序三字段回填应通过复合外键：%v", err)
+	}
+	// 回填后外键生效：连接行被 RESTRICT 删除必须拒绝（health-check 引用在）。
+	if _, err := db.Exec(`DELETE FROM account_connections WHERE id = 'conn-b1-fk-ok'`); err == nil {
+		t.Fatal("fresh 复合外键未 RESTRICT 被健康检查引用的连接行删除")
+	}
+}

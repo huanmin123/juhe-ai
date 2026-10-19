@@ -186,8 +186,8 @@ func (s *Store) transferService() *accountstransfer.Service {
 			}
 			return ids, page.HasMore, nil
 		},
-		AssertSupportedModelsInProviderCatalog: func(ctx context.Context, q accountscore.Queryer, models []string, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate) error {
-			return s.assertAccountSupportedModelsInProviderCatalog(ctx, q, models, providerCode, systemAccountID, transferPredicateInput(predicate))
+		AssertSupportedModelsInProviderCatalog: func(ctx context.Context, q accountscore.Queryer, models []string, providerCode, systemAccountID string) error {
+			return s.assertAccountSupportedModelsInProviderCatalog(ctx, q, models, providerCode, systemAccountID)
 		},
 		AssertModelMappingsInProviderCatalog: func(ctx context.Context, q accountscore.Queryer, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate, mappings []accountscore.ModelMapping, supportedEndpointModes []string) error {
 			return s.assertAccountModelMappingsInProviderCatalog(ctx, q, providerCode, systemAccountID, transferPredicateInput(predicate), mappings, supportedEndpointModes)

@@ -278,6 +278,11 @@ func newW14LFaultFixture(t *testing.T) *w14lFixture {
 	}
 	// B4 W2：模型身份键解析依赖夹具 models 种子（与 newTestEnv 同一份）。
 	seedFixtureModels(t, db)
+	// #B1 剩余①：vendor 归属校验按 vendors 表判定（与 newTestEnv 同一种子）。
+	if _, err := db.Exec(`INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-fixture-gpt', 'gpt', 'GPT', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
 	store, err := NewStore(db, false, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -129,12 +129,16 @@ func TestW2PatchBalanceAndProxyAndGroup(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM group_accounts WHERE account_id = ? AND group_id = 'grp-patch-b'`, id) != 1 {
 		t.Fatal("新分组绑定缺失")
 	}
-	// 非同供应商分组拒绝。
+	// 组无 provider 维度（设计 §8）：旧 provider_code 值不同的同 owner 分组
+	// 可绑定（跨供应商拒绝臂随维度拆除退役）。
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
 		VALUES ('grp-patch-gpt2', ?, '其他供应商分组2', 'openai', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
 	code, payload = w2PatchBody(t, env, id, `"groupId":"grp-patch-gpt2"`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("跨供应商分组应拒绝：%d %v", code, payload)
+	if code != http.StatusOK {
+		t.Fatalf("同 owner 分组应可绑定：%d %v", code, payload)
+	}
+	if env.count(t, `SELECT COUNT(*) FROM group_accounts WHERE account_id = ? AND group_id = 'grp-patch-gpt2'`, id) != 1 {
+		t.Fatal("新分组绑定缺失")
 	}
 }
 
@@ -261,7 +265,7 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini")
 
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1"],"healthCheckModel":"gpt-4.1",
+		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1"],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4.1",
 		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":false}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("模型补丁: %d %v", code, payload)

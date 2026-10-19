@@ -36,11 +36,16 @@ type resolvedConnection struct {
 }
 
 // accountOAuthTypeForRegistry 按 §1.1 提取 registry 判定所需的 oauth_type：
-// 仅 google_oauth 账户携带（credentials.oauth_type ∈ {code_assist, google_one,
-// ai_studio}），其余账户 registry 行固定 SQL NULL（空串）。
-func accountOAuthTypeForRegistry(accountType string, credentials Credentials) string {
+// 仅 google_oauth 账户携带（∈ {code_assist, google_one, ai_studio}），其余账户
+// registry 行固定 SQL NULL（空串）。读列优先（accounts.oauth_type 物理列，设
+// 计 §2.1 的运行时唯一来源）、credentials 回落（兼容列值未回填的存量行——
+// 创建链无行可读，恒走 credentials）。
+func accountOAuthTypeForRegistry(accountType, oauthTypeColumn string, credentials Credentials) string {
 	if accountType != contracts.AccountTypeGoogleOAuth {
 		return ""
+	}
+	if text := strings.TrimSpace(oauthTypeColumn); text != "" {
+		return text
 	}
 	if text, ok := credentials["oauth_type"].(string); ok {
 		return strings.TrimSpace(text)

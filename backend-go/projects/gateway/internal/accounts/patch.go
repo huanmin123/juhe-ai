@@ -263,6 +263,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		protocolCode              string
 		protocolVersion           string
 		clientCompatibility       string
+		oauthType                 string
 		proxyProfileID            sql.NullString
 		balanceQueryEnabled       int
 		balanceQueryConfigJSON    string
@@ -302,7 +303,10 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			-- 与 providerCode 同名，legacy 行回落旧列，新行取 vendor。
 			COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') AS provider_code,
 			accounts.provider_protocol_profile_id, accounts.protocol_code,
-			accounts.protocol_version, accounts.client_compatibility, accounts.proxy_profile_id,
+			accounts.protocol_version, accounts.client_compatibility,
+			-- oauth_type 物理列（设计 §2.1）：registry 判定读列优先、credentials
+			-- 回落（兼容存量行）。
+			COALESCE(accounts.oauth_type, '') AS oauth_type, accounts.proxy_profile_id,
 			accounts.balance_query_enabled, accounts.balance_query_config_json,
 			accounts.balance_query_next_refresh_at,
 			accounts.temporary_unavailable_continuous_probe_enabled, accounts.next_health_check_at,
@@ -326,7 +330,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.healthCheckModel, &row.healthCheckEndpointMode,
 		&row.healthCheckConnectionID, &row.currentHealthCheckPreset, &row.providerCode,
 		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
-		&row.clientCompatibility, &row.proxyProfileID, &row.balanceQueryEnabled,
+		&row.clientCompatibility, &row.oauthType, &row.proxyProfileID, &row.balanceQueryEnabled,
 		&row.balanceQueryConfigJSON, &row.balanceQueryNextRefreshAt, &row.temporaryProbeEnabled,
 		&row.nextHealthCheckAt,
 		&row.lastHealthCheckAt, &row.lastHealthSuccessAt, &row.healthCheckFailureCount,
@@ -354,6 +358,14 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 一致）。放在 revision CAS 之后对齐归档顺序：过期版本先返回 409。
 	if input.ClearFailureState && patchHasMixedEditField(input) {
 		return nil, &ValidationError{Message: "重新检查或异常恢复不能与账户字段修改同时提交"}
+	}
+	// 健康检查三件套同现同省（供应商与上游协议面重构设计 §8）：healthCheck
+	// ConnectionPresetCode / healthCheckEndpointMode / healthCheckModel 必须
+	// 同时出现或同时省略，部分提交按 400 拒绝（ValidationError，风格对齐
+	// 既有编辑面文案）。出现时的归属/词表校验与完整三字段改选由下方健康检查
+	// 块在同一事务执行。
+	if healthTrioFields := healthCheckTrioPresentFields(input); healthTrioFields != 0 && healthTrioFields != 3 {
+		return nil, &ValidationError{Message: "健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须同时出现或同时省略"}
 	}
 	// M2 域不可变（D3，计划 §服务端统一校验）：body 携带 capabilityDomain 且
 	// ≠ 行现值 → 400；不携带 = 无操作。域创建后不可更改，编辑面没有改域路径。
@@ -675,15 +687,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			// Node normalizedSupportedModelsForPatch
 			// (account-management-patch.repository.ts:1513-1527)：无序集合相等
 			// （unorderedStringListEquals）即视为未变化，直接沿用当前集合，不触发
-			// 目录校验；支持模型发生变化时才校验目录归属（目录外拒绝），hybrid
-			// 供应商直通。
+			// 目录校验；支持模型发生变化时才校验 models 表身份归属（目录外拒绝）。
 			if !unorderedStringListEqual(supportedModels, next) {
-				if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, next, row.providerCode, row.systemAccountID, protocolPredicateInput{
-					providerCode:              row.providerCode,
-					protocolCode:              row.protocolCode,
-					protocolVersion:           row.protocolVersion,
-					providerProtocolProfileID: row.providerProtocolProfileID,
-				}); err != nil {
+				if err := s.assertAccountSupportedModelsInProviderCatalog(ctx, tx, next, row.providerCode, row.systemAccountID); err != nil {
 					return nil, err
 				}
 				addChange("supportedModels", supportedModels, next)
@@ -732,7 +738,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 		patchVendor, patchDriver := accountVendorIdentity(row.providerCode)
 		resolvedPatchConnections, err := resolveConnectionSet(row.capabilityDomain, patchDriver, row.accountType,
-			accountOAuthTypeForRegistry(row.accountType, patchCredentials), input.Connections)
+			accountOAuthTypeForRegistry(row.accountType, row.oauthType, patchCredentials), input.Connections)
 		if err != nil {
 			return nil, err
 		}
@@ -950,8 +956,12 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			}
 			fingerprint := accountCredentialFingerprint(source)
 			addChange("credentials", "已设置", "已变更")
-			sets = append(sets, "credentials_encrypted = ?", "credential_fingerprint = ?", "credential_mask = ?")
-			setArgs = append(setArgs, sealed, fingerprint, MaskSecret(source))
+			// oauth_type 物理列跟随凭据重封（设计 §2.1：仅 account_type=
+			// google_oauth 时非 NULL，三值 = 判定值；读列优先、credentials 回落
+			// 兼容存量行）。变化伴随 credentials 变更项披露，不单列 changedField。
+			nextOAuthType := nullStringForOAuthType(accountOAuthTypeForRegistry(row.accountType, row.oauthType, normalized))
+			sets = append(sets, "credentials_encrypted = ?", "credential_fingerprint = ?", "credential_mask = ?", "oauth_type = ?")
+			setArgs = append(setArgs, sealed, fingerprint, MaskSecret(source), nextOAuthType)
 		}
 	}
 
@@ -1439,7 +1449,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			return nil, err
 		}
 		if requested != currentGroupID {
-			if err := s.assertGroupCanBind(ctx, tx, requested, row.systemAccountID, row.providerCode); err != nil {
+			if err := s.assertGroupCanBind(ctx, tx, requested, row.systemAccountID); err != nil {
 				return nil, err
 			}
 			var before any
@@ -1952,6 +1962,22 @@ func credentialValueJSONText(value any) string {
 	return string(raw)
 }
 
+// healthCheckTrioPresentFields 统计健康检查三件套在补丁载荷中的出现字段数
+//（§8 同现同省契约的判据）。
+func healthCheckTrioPresentFields(input PatchInput) int {
+	fields := 0
+	if input.HealthCheckConnectionPresetCode != nil {
+		fields++
+	}
+	if input.HealthCheckEndpointMode != nil {
+		fields++
+	}
+	if input.HealthCheckModel != nil {
+		fields++
+	}
+	return fields
+}
+
 // patchHasMixedEditField mirrors the archive mixed-commit allowlist
 // (account-management-patch.repository.ts:1116-1119): every editable field
 // beyond expectedConfigRevision/clearFailureState counts as a mixed commit.
@@ -1969,6 +1995,7 @@ func patchHasMixedEditField(input PatchInput) bool {
 		input.Schedulable != nil ||
 		input.CredentialsPresent ||
 		input.SupportedModelsPresent ||
+		input.HealthCheckConnectionPresetCode != nil ||
 		input.HealthCheckModel != nil ||
 		input.HealthCheckEndpointMode != nil ||
 		input.TagsPresent ||
@@ -2017,25 +2044,26 @@ func (s *Store) loadEnabledGroupBindingID(ctx context.Context, q queryer, accoun
 	return groupID, nil
 }
 
-// assertGroupCanBind mirrors assertGroupCanBindInClient: same owner, same
-// provider, still enabled — otherwise the route renders 400 账户分组无效.
-func (s *Store) assertGroupCanBind(ctx context.Context, q queryer, groupID, systemAccountID, providerCode string) error {
-	var groupOwner, groupProvider string
+// assertGroupCanBind mirrors assertGroupCanBindInClient: same owner, still
+// enabled — otherwise the route renders 400 账户分组无效（组无 provider 维度，
+// 供应商解耦设计 §8）.
+func (s *Store) assertGroupCanBind(ctx context.Context, q queryer, groupID, systemAccountID string) error {
+	var groupOwner string
 	var enabled int64
 	lockSuffix := ""
 	if s.pg {
 		lockSuffix = " FOR UPDATE"
 	}
-	err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id, provider_code, enabled
+	err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled
 		FROM `+s.table("groups")+`
-		WHERE id = ?`+lockSuffix), groupID).Scan(&groupOwner, &groupProvider, &enabled)
+		WHERE id = ?`+lockSuffix), groupID).Scan(&groupOwner, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &ValidationError{Message: "账户分组无效"}
 	}
 	if err != nil {
 		return err
 	}
-	if groupOwner != systemAccountID || groupProvider != providerCode || enabled != 1 {
+	if groupOwner != systemAccountID || enabled != 1 {
 		return &ValidationError{Message: "账户分组无效"}
 	}
 	return nil
