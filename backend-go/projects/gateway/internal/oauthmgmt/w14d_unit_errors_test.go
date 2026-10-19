@@ -308,7 +308,7 @@ func TestW14dClosedStoreForks(t *testing.T) {
 	if _, err := store.resolveProviderProfile(ctx, "gpt", "profile", "oauth", ""); err == nil {
 		t.Fatal("closed DB profile resolve must fail")
 	}
-	if _, err := store.findGroupForProvider(ctx, "grp", AccessScope{ViewerID: "u"}, "gpt"); err == nil {
+	if _, err := store.findEnabledGroupInScope(ctx, "grp", AccessScope{ViewerID: "u"}); err == nil {
 		t.Fatal("closed DB group lookup must fail")
 	}
 	if _, err := store.CreateOAuthAccount(ctx, CreateAccountInput{ProviderCode: "gpt"}, AccessScope{ViewerID: "u"}); err == nil {

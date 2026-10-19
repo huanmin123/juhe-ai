@@ -151,21 +151,36 @@ func TestWCFindGroupAndRotationFilters(t *testing.T) {
 	}
 	accountID := dataMap(t, created)["id"].(string)
 
-	// 分组存在但供应商不符。
+	// 分组存在即通过（§8：分组与 provider 无关，普通分组可含任意厂商账户）；
+	// 原「供应商不符分组必须 false」是 groups.provider_code 旧语义，已随列删
+	// 除改写为存在性断言。
 	adminScope := AccessScope{ViewerID: adminID, IsAdmin: true}
-	ok, err := env.store.findGroupForProvider(context.Background(), "grp-default-gemini-"+adminID, adminScope, "gpt")
-	if err != nil || ok {
-		t.Fatalf("供应商不符分组必须 false: %v %v", ok, err)
+	ok, err := env.store.findEnabledGroupInScope(context.Background(), "grp-default-gemini-"+adminID, adminScope)
+	if err != nil || !ok {
+		t.Fatalf("存在分组必须 true（无 provider 维度）: %v %v", ok, err)
 	}
 	// 分组缺失。
-	ok, err = env.store.findGroupForProvider(context.Background(), "grp-none", adminScope, "gpt")
+	ok, err = env.store.findEnabledGroupInScope(context.Background(), "grp-none", adminScope)
 	if err != nil || ok {
 		t.Fatalf("缺失分组必须 false: %v %v", ok, err)
 	}
 	// 匹配分组。
-	ok, err = env.store.findGroupForProvider(context.Background(), "grp-default-gpt-"+adminID, adminScope, "gpt")
+	ok, err = env.store.findEnabledGroupInScope(context.Background(), "grp-default-gpt-"+adminID, adminScope)
 	if err != nil || !ok {
 		t.Fatalf("匹配分组必须 true: %v %v", ok, err)
+	}
+	// 停用分组必须 false（owner+enabled 存在性校验）。
+	env.exec(t, `UPDATE groups SET enabled = 0 WHERE id = ?`, "grp-default-gpt-"+adminID)
+	ok, err = env.store.findEnabledGroupInScope(context.Background(), "grp-default-gpt-"+adminID, adminScope)
+	if err != nil || ok {
+		t.Fatalf("停用分组必须 false: %v %v", ok, err)
+	}
+	env.exec(t, `UPDATE groups SET enabled = 1 WHERE id = ?`, "grp-default-gpt-"+adminID)
+	// 非 admin scope 钉自己的 owner：他人分组必须 false（§8 owner 归属维度）。
+	otherScope := AccessScope{ViewerID: "other-user", IsAdmin: false}
+	ok, err = env.store.findEnabledGroupInScope(context.Background(), "grp-default-gpt-"+adminID, otherScope)
+	if err != nil || ok {
+		t.Fatalf("他人分组必须 false: %v %v", ok, err)
 	}
 
 	// 软删账号不可轮换读取。

@@ -181,7 +181,10 @@ var testSchema = []string{
 	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL, account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	// groups 目标形态（供应商与上游协议面重构设计 §8）：无 provider_code 列，
+	// 分组与 provider 无关；与 maintenance sqlite_schema_business.go 的 groups
+	// 表同构（group_kind/super_group_members 属超组切片，本夹具不涉及）。
+	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		config_revision INTEGER NOT NULL DEFAULT 1,
@@ -326,12 +329,6 @@ var testSchema = []string{
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
 		UNIQUE (account_id, source_model, source_endpoint_family)
-	)`,
-	`CREATE TABLE IF NOT EXISTS account_model_mappings (
-		account_id TEXT NOT NULL, provider_code TEXT NOT NULL, source_model TEXT NOT NULL,
-		source_endpoint_family TEXT NOT NULL, upstream_model TEXT NOT NULL, upstream_endpoint_family TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, source_model, source_endpoint_family)
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_tags (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -536,11 +533,18 @@ func seedOAuthCatalog(db *sql.DB) error {
 
 func (e *testEnv) seedDefaultGroups(t *testing.T, ownerID string) {
 	t.Helper()
+	// 目标形态（§8）：分组无 provider 维度，owner 至多一个 is_default=1 分组；
+	// 其余按 provider 命名的行只是普通命名分组（ID 保留 provider 词根仅为沿
+	// 用既有测试标识符）。
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, provider := range []string{"gpt", "anthropic", "gemini", "xai"} {
-		e.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-			VALUES (?, ?, '默认分组', ?, 1, 1, 'personal', ?, ?)`,
-			"grp-default-"+provider+"-"+ownerID, ownerID, provider, now, now)
+		isDefault := 0
+		if provider == "gpt" {
+			isDefault = 1
+		}
+		e.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+			VALUES (?, ?, '默认分组', 1, ?, 'personal', ?, ?)`,
+			"grp-default-"+provider+"-"+ownerID, ownerID, isDefault, now, now)
 	}
 }
 

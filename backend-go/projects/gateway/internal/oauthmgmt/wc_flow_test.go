@@ -246,15 +246,28 @@ func TestWCScopeQueryAndStrictBody(t *testing.T) {
 		t.Fatalf("缺 refreshToken（行为存疑，当前 502）: %d %v", code, payload)
 	}
 
-	// 分组校验：跨供应商分组 → 400 账户分组无效。
+	// 分组校验（§8：分组与 provider 无关）：admin 绑定他人 owner 的非默认命
+	// 名分组建 gpt 账户成功。原「跨供应商分组 → 400 账户分组无效」是
+	// groups.provider_code 旧语义（列已随目标 schema 删除）；此处沿用原夹具
+	// 的「Gemini 组」标识符构造跨厂商场景——gpt OAuth 账户进任意命名分组。
+	// admin 显式分组时写面把账户 owner 切到分组 owner（accounts 写面 §8 口
+	// 径），落库归属一断言。
 	env.seedDefaultGroups(t, "seed-owner")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-gemini-x', 'seed-owner', 'Gemini 组', 'gemini', 1, 0, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-gemini-x', 'seed-owner', 'Gemini 组', 1, 0, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	env.exchanger.respond = staticToken(openAITokenPayload("group-check"))
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",
 		`{"refreshToken":"rt-group","providerProtocolProfileId":"profile_gpt_openai_v1","groupId":"grp-gemini-x"}`)
-	if code != http.StatusBadRequest || payload["message"] != "账户分组无效" {
-		t.Fatalf("跨供应商分组: %d %v", code, payload)
+	if code != http.StatusCreated {
+		t.Fatalf("带分组跨厂商建户必须成功: %d %v", code, payload)
+	}
+	groupedID := dataMap(t, payload)["id"].(string)
+	var groupedOwner string
+	if err := env.db.QueryRow(`SELECT system_account_id FROM accounts WHERE id = ?`, groupedID).Scan(&groupedOwner); err != nil {
+		t.Fatal(err)
+	}
+	if groupedOwner != "seed-owner" {
+		t.Fatalf("admin 显式分组建户必须落到分组 owner: %q", groupedOwner)
 	}
 
 	// 重名冲突 → 409（ConflictError 映射）。

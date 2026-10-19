@@ -425,7 +425,7 @@ func TestWCCreateLogWithGroup(t *testing.T) {
 	env.exchanger.respond = staticToken(openAITokenPayload("group-log"))
 	// 找到 root 的 gpt 默认分组（login 已 seed）。
 	var groupID string
-	if err := env.db.QueryRow(`SELECT id FROM groups WHERE provider_code = 'gpt' LIMIT 1`).Scan(&groupID); err != nil {
+	if err := env.db.QueryRow(`SELECT id FROM groups WHERE id LIKE 'grp-default-gpt-%' LIMIT 1`).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/create-from-refresh-token",

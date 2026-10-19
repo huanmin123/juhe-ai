@@ -433,25 +433,29 @@ func oauthLabelForProvider(providerCode string) string {
 	return providerCode
 }
 
-// groupProviderOK mirrors isOpenAIOAuthGroupSummary & friends: the bound group
-// must exist in scope and carry the provider code.
-func (s *Store) findGroupForProvider(ctx context.Context, groupID string, access AccessScope, providerCode string) (bool, error) {
+// findEnabledGroupInScope 校验建户目标分组（供应商与上游协议面重构设计 §8：
+// groups.provider_code 已删除，分组与 provider 无关，普通分组可含任意厂商账
+// 户）：分组在访问 scope 内存在且 enabled 即通过。admin（manageableID 为空）
+// 跨 owner 校验存在性；非 admin 钉自己的 owner。与 accounts 写面
+// groupOwnerReference 的归属口径同向（admin 显式分组时写面把账户 owner 切到
+// 分组 owner），路由面只提前 400 不改语义。
+func (s *Store) findEnabledGroupInScope(ctx context.Context, groupID string, access AccessScope) (bool, error) {
 	where := ""
 	args := []any{groupID}
 	if scoped := access.manageableID(); scoped != "" {
 		where = " AND system_account_id = ?"
 		args = append(args, scoped)
 	}
-	var rowProviderCode string
-	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT provider_code FROM `+s.table("groups")+`
-		WHERE id = ?`+where+` LIMIT 1`), args...).Scan(&rowProviderCode)
+	var id string
+	err := s.db.QueryRowContext(ensureContext(ctx), s.bind(`SELECT id FROM `+s.table("groups")+`
+		WHERE id = ? AND enabled = 1`+where+` LIMIT 1`), args...).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return rowProviderCode == providerCode, nil
+	return true, nil
 }
 
 // CreateAccountInput bundles everything the OAuth create routes hand to the
@@ -582,14 +586,35 @@ func containsString(values []string, target string) bool {
 }
 
 // latestCatalogModels returns the provider's newest conversational models from
-// the built-in model catalog（provider_model_catalog，release_date 降序）。排除
-// 图像/向量模式；release_date 为空的行排最后。CASE 排序写法对 SQLite 与 PG
-// 同时成立（PG 的 DESC 默认 NULLS FIRST，必须显式压后）。
+// the builtin arm of the models 单表（供应商与上游协议面重构设计 §3：
+// provider_model_catalog 已并入 models，旧目录行 scope 固定迁为 builtin，
+// provider_code 值域迁为 vendor_code）。谓词与写入面 resolveEntryModelID 同键
+// 同口径：status='active' + builtin 窗口（catalog_visible 不参与成员资格，
+// §4；shutdown_date 同样不是成员资格维度），默认值因此全部能过建户写面断言。
+// 排除图像/向量：旧 mode 谓词（mode != 'image_generation' AND mode !=
+// 'embedding'）经 §2.2 mode 词表逆映射等价改写为 supported_endpoint_modes_json
+// 不含 images_json 与 embedding 族三 mode；空/NULL modes 数组不过滤，等价旧
+// `mode IS NULL OR mode = ''` 保留臂。返回 upstream_model（写入面身份键）。
+// release_date 为空的行排最后；CASE 排序写法对 SQLite 与 PG 同时成立（PG 的
+// DESC 默认 NULLS FIRST，必须显式压后）。
 func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, limit int) ([]string, error) {
-	rows, err := s.db.QueryContext(ensureContext(ctx), s.bind(`SELECT model FROM `+s.table("provider_model_catalog")+`
-		WHERE provider_code = ? AND (mode IS NULL OR mode = '' OR (mode != 'image_generation' AND mode != 'embedding'))
-		ORDER BY CASE WHEN release_date IS NULL THEN 1 ELSE 0 END, release_date DESC, model ASC
-		LIMIT `+itoa(limit)), providerCode)
+	// json_each / jsonb_array_elements_text 分别是 SQLite 与 PG 的数组展开读
+	// 法（同 providers.endpointModesAnyPredicate 方案，本包不跨包引用私有方
+	// 法，方言分支就地生成；元素列名两者同为 value）。
+	modesSource := "json_each(supported_endpoint_modes_json)"
+	if s.pg {
+		modesSource = "jsonb_array_elements_text(supported_endpoint_modes_json::jsonb)"
+	}
+	rows, err := s.db.QueryContext(ensureContext(ctx), s.bind(`SELECT upstream_model FROM `+s.table("models")+`
+		WHERE scope = 'builtin' AND vendor_code = ? AND status = 'active'
+			AND NOT EXISTS (
+				SELECT 1 FROM `+modesSource+` AS endpoint_mode
+				WHERE endpoint_mode.value IN (?, ?, ?, ?)
+			)
+		ORDER BY CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END,
+			release_date DESC, upstream_model ASC
+		LIMIT `+itoa(limit)), providerCode,
+		"images_json", "embed_content", "count_tokens", "message_token_counting")
 	if err != nil {
 		return nil, err
 	}
