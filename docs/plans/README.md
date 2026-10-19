@@ -140,8 +140,8 @@
 
 
 - [PLAN-20260722T233132000Z](计划-20260722T233132000Z-CodexResponses协议防火墙与会话自愈任务清单.md)：Codex Responses 协议防火墙与会话自愈的配套任务清单——版本化 Responses item contract registry、历史 sanitizer copy-on-write 与重复 ID/禁止字段边界、`store=false` 与未知 item 测试覆盖等逐项勾选；状态：已关闭（Node 归档收口，P0–P2 实现面由 Go gatewaycodex 承载）。
-- [PLAN-20260722T185502000Z](计划-20260722T185502000Z-官方可落地多供应商OAuth账户接入任务清单.md)：官方可落地多供应商 OAuth 账户接入任务清单——对应《官方可落地 OAuth 账户接入设计》与 PLAN-20260722T174032816Z，逐项勾选供应商 profile 凭据归一化、前端按供应商区分 OAuth 账户类型与授权按钮、Anthropic Bearer Token OAuth 账户闭环及合并回 `master` 等验收项。
-- [PLAN-20260722T174032816Z](计划-20260722T174032816Z-官方可落地多供应商OAuth账户接入.md)：官方可落地多供应商 OAuth 账户接入计划——在隔离 worktree 分支 `codex/oauth-matrix-safe-20260722` 推进多供应商 OAuth 账户接入（前端/后端/存储/网关/测试），配套任务清单见 PLAN-20260722T185502000Z；状态：进行中。
+- [PLAN-20260722T185502000Z](计划-20260722T185502000Z-官方可落地多供应商OAuth账户接入任务清单.md)：官方可落地多供应商 OAuth 账户接入任务清单——对应《官方可落地 OAuth 账户接入设计》与 PLAN-20260722T174032816Z，逐项勾选供应商 profile 凭据归一化、前端按供应商区分 OAuth 账户类型与授权按钮、Anthropic Bearer Token OAuth 账户闭环及合并回 `master` 等验收项；状态：已完成（2026-10-19 收口：多供应商 OAuth 矩阵已由 Go 承接，未勾项逐项核对与证据见文内收口注）。
+- [PLAN-20260722T174032816Z](计划-20260722T174032816Z-官方可落地多供应商OAuth账户接入.md)：官方可落地多供应商 OAuth 账户接入计划——在隔离 worktree 分支 `codex/oauth-matrix-safe-20260722` 推进多供应商 OAuth 账户接入（前端/后端/存储/网关/测试），配套任务清单见 PLAN-20260722T185502000Z；状态：已完成（2026-10-19 收口：多供应商 OAuth 矩阵已由 Go 承接——gateway `oauthmgmt` 四供应商 plan 与 `/{provider}-oauth`、`/my-{provider}-oauth` 端点族，jobs `oauthrefresh` 保活刷新，前端 `AccountOAuthSection.vue` / `AccountOAuthAuthorizePanel.vue`；原 worktree/分支 `codex/oauth-matrix-safe-20260722` 已删除，隔离施工与"合并回 master"项失去对象，未勾项逐项核对见文内收口注）。
 - [PLAN-20260722T160050118Z](计划-20260722T160050118Z-AI账户热质量与精准切号实施.md)：按定稿设计实施账户短窗口热质量、故障单飞、精准切号、墙钟 handoff、受控半开与后台恢复闭环；不包含生产发布。
 
 - [PLAN-20260722T145435019Z](计划-20260722T145435019Z-供应商订阅认证安全扩展.md)：供应商订阅认证安全扩展——基于 CLIProxyAPI 只读审计建立供应商认证方式的安全准入模型，目标不是直接复制订阅账号代理，而是在每种认证已获官方/条款依据后完成独立账户能力闭环；状态：进行中。
