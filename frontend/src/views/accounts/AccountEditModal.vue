@@ -72,6 +72,7 @@
         :model-options="modelOptions"
         :models-loading="modelsLoading"
         :models-settled="modelsSettled"
+        :models-truncated="modelsTruncated"
         :model-syncing="modelSyncing"
         :open="open"
         :providers="mediaProviders"
@@ -165,6 +166,7 @@
                 :form="form"
                 :model-options="modelOptions"
                 :models-loading="modelsLoading"
+                :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
                 :protocol-code="selectedProtocolProfile?.protocolCode"
                 :protocol-version="selectedProtocolProfile?.protocolVersion"
@@ -188,6 +190,7 @@
                 :is-management-view="isManagementView"
                 :model-options="modelOptions"
                 :models-loading="modelsLoading"
+                :models-truncated="modelsTruncated"
                 :model-syncing="modelSyncing"
                 :profile-default-endpoint-modes="defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
                   provider: selectedProvider,
@@ -787,6 +790,8 @@ const props = withDefaults(defineProps<{
   modelsLoading: boolean
   /** 当前目录 scope 下候选是否完成过至少一次加载（v8-D 空态提示判据；懒加载下「未加载」与「确认为空」必须区分）。 */
   modelsSettled?: boolean
+  /** 最近一次浏览取数命中 50 条窗口（目录截断），模型下拉需在面板底部提示可用关键词搜索。 */
+  modelsTruncated?: boolean
   modelSyncing?: boolean
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]

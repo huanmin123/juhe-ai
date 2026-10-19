@@ -229,6 +229,7 @@
       :model-options="providerModelOptions"
       :models-loading="strategyModelsLoading"
       :models-settled="providerModelOptionsSettled"
+      :models-truncated="providerModelOptionsTruncated"
       :model-syncing="modelCatalogSyncing"
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
@@ -970,6 +971,7 @@ const {
   providerName,
   providerModelOptions,
   providerModelOptionsSettled,
+  providerModelOptionsTruncated,
   strategyModelsLoading,
   currentDraftTestPayload,
   saveAccount,

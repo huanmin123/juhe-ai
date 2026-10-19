@@ -179,7 +179,11 @@
           show-search
           @dropdown-visible-change="$emit('model-options-open', $event)"
           @search="$emit('model-options-search', $event)"
-        />
+        >
+          <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+            <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+          </template>
+        </a-select>
         <a-tooltip title="从上游同步可新增模型">
           <a-button
             class="supported-models-refresh-button"
@@ -213,6 +217,7 @@ import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
 import { isXaiProviderCode } from '@/shared/providerProtocol'
 import type { AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
 import { capabilityDomainIsMedia, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountNameField from './AccountNameField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
@@ -232,6 +237,8 @@ const props = withDefaults(defineProps<{
   modelOptions: AccountModelSelectOption[]
   modelSyncing?: boolean
   modelsLoading: boolean
+  /** 最近一次浏览取数命中 50 条窗口时在下拉面板底部提示可搜索。 */
+  modelsTruncated?: boolean
   profileDefaultEndpointModes: AccountSupportedEndpointMode[]
   protocolCode?: string
   protocolVersion?: string

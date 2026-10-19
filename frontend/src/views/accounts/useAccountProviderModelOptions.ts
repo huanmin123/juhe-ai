@@ -5,6 +5,19 @@ import { api } from '@/api/client'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 
+/** 供应商模型目录单次取数窗口（后端 `/providers/models/options` 硬上限）。 */
+export const ACCOUNT_MODEL_OPTIONS_LIMIT = 50
+
+/**
+ * 目录截断判定：只有「浏览取数」（无 keyword、无 selectedIds）返回满窗口才判定为
+ * 截断；带 keyword 的搜索结果和 selectedIds 补拉批次不参与判定（后端在无 keyword
+ * 时把 selectedIds 只用于排序、响应仍是 50 条浏览集，有 keyword 时按
+ * `selectedIds OR keyword` 补齐，两者都不代表目录全量被截断）。
+ */
+export function accountModelOptionsTruncated(optionsCount: number): boolean {
+  return optionsCount >= ACCOUNT_MODEL_OPTIONS_LIMIT
+}
+
 interface UseAccountProviderModelOptionsOptions {
   currentProviderCode: () => string
   extractApiErrorMessage: (error: unknown, fallback: string) => string
@@ -47,6 +60,9 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
   // （弹窗打开/下拉展开/搜索时请求，切供应商即 reset 清空），“未加载”与
   // “加载后确认为空”必须区分，空态提示只允许在 settled 后出现。
   const providerModelOptionsSettled = ref(false)
+  // 当前目录 scope 的最近一次浏览取数是否命中 50 条窗口（下拉底部截断提示依据）。
+  // 只由浏览取数判定，搜索/selectedIds 补拉不改写，随 scope 切换/reset 清空。
+  const providerModelOptionsTruncated = ref(false)
   let latestRequestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
@@ -65,6 +81,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelOptions.value = []
     providerModelsLoading.value = false
     providerModelOptionsSettled.value = false
+    providerModelOptionsTruncated.value = false
     loadingKey = undefined
     loadingPromise = undefined
   }
@@ -100,6 +117,9 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
         const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword, modes)
         if (isCurrentRequest(requestId, requestCatalogScopeKey)) {
           providerModelOptions.value = modelOptions
+          if (!keyword && !selectedIds.length) {
+            providerModelOptionsTruncated.value = accountModelOptionsTruncated(modelOptions.length)
+          }
         }
       } catch (error) {
         if (!isCurrentRequest(requestId, requestCatalogScopeKey)) return
@@ -144,8 +164,9 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
   return {
     loadProviderModelOptions,
     providerModelOptions,
-    providerModelsLoading,
     providerModelOptionsSettled,
+    providerModelOptionsTruncated,
+    providerModelsLoading,
     resetProviderModelOptions
   }
 }
@@ -174,7 +195,7 @@ async function loadAccountModelOptions(
     api.providers.modelOptions({
       ...scopeParams,
       providerCode,
-      limit: 50,
+      limit: ACCOUNT_MODEL_OPTIONS_LIMIT,
       ...(keyword ? { keyword } : {}),
       ...(modes.length ? { modes } : {}),
       ...(batch.length ? { selectedIds: batch } : {})
@@ -202,8 +223,8 @@ function normalizedSelectedModelIds(values: string[] | undefined): string[] {
 
 function chunkedSelectedModelIds(values: string[]): string[][] {
   const output: string[][] = []
-  for (let index = 0; index < values.length; index += 50) {
-    output.push(values.slice(index, index + 50))
+  for (let index = 0; index < values.length; index += ACCOUNT_MODEL_OPTIONS_LIMIT) {
+    output.push(values.slice(index, index + ACCOUNT_MODEL_OPTIONS_LIMIT))
   }
   return output
 }

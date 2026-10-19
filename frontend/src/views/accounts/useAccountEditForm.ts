@@ -138,6 +138,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelOptions: loadedProviderModelOptions,
     providerModelsLoading,
     providerModelOptionsSettled,
+    providerModelOptionsTruncated,
     resetProviderModelOptions
   } = useAccountProviderModelOptions({
     currentProviderCode: () => form.providerCode,
@@ -1084,6 +1085,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerModelOptions,
     providerModelsLoading,
     providerModelOptionsSettled,
+    providerModelOptionsTruncated,
     currentDraftTestPayload,
     saveAccount,
     selectAccountType,

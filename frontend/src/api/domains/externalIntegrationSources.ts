@@ -7,8 +7,6 @@ import type {
   ExternalIntegrationSourcePatchPayload,
   ExternalIntegrationSourcePayload,
   ExternalIntegrationSourceSummary,
-  ExternalIntegrationSourceTokenMutationResult,
-  ExternalIntegrationSourceTokenPatchPayload,
   ExternalIntegrationSourceTokenPayload,
   ExternalIntegrationSourceTokenSecretResult,
   ExternalPublicApiCatalog
@@ -30,6 +28,5 @@ export const externalIntegrationSourcesApi = {
   },
   resetBuiltInTestToken: () => unwrap<{ token: CreatedExternalIntegrationSourceToken }>(http.post('/external-integration-sources/built-in-test-token/reset')),
   createToken: (id: string, payload: ExternalIntegrationSourceTokenPayload) => unwrap<{ token: CreatedExternalIntegrationSourceToken }>(http.post(`/external-integration-sources/${id}/tokens`, payload)),
-  tokenSecret: (id: string, tokenId: string) => unwrap<ExternalIntegrationSourceTokenSecretResult>(http.get(`/external-integration-sources/${encodeURIComponent(id)}/tokens/${encodeURIComponent(tokenId)}/secret`)),
-  updateToken: (id: string, tokenId: string, payload: ExternalIntegrationSourceTokenPatchPayload) => unwrap<ExternalIntegrationSourceTokenMutationResult>(http.patch(`/external-integration-sources/${encodeURIComponent(id)}/tokens/${encodeURIComponent(tokenId)}`, payload))
+  tokenSecret: (id: string, tokenId: string) => unwrap<ExternalIntegrationSourceTokenSecretResult>(http.get(`/external-integration-sources/${encodeURIComponent(id)}/tokens/${encodeURIComponent(tokenId)}/secret`))
 }

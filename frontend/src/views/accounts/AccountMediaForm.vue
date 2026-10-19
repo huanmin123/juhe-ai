@@ -48,6 +48,7 @@
         :is-management-view="isManagementView"
         :model-options="domainModelOptions"
         :models-loading="modelsLoading"
+        :models-truncated="modelsTruncated"
         :model-syncing="modelSyncing"
         :profile-default-endpoint-modes="[]"
         :protocol-code="selectedProtocolProfile?.protocolCode"
@@ -120,7 +121,11 @@
             show-search
             @dropdown-visible-change="$emit('model-options-open', $event)"
             @search="$emit('model-options-search', $event)"
-          />
+          >
+            <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+              <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+            </template>
+          </a-select>
           <a-tooltip title="从上游同步可新增模型">
             <a-button
               class="supported-models-refresh-button"
@@ -360,6 +365,7 @@ import {
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
+import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
 import {
   accountModelMappingSourceModelOptions,
@@ -405,6 +411,8 @@ const props = withDefaults(defineProps<{
   modelsLoading: boolean
   /** 当前目录 scope 下候选是否完成过至少一次加载（v8-D 空态提示判据）。 */
   modelsSettled?: boolean
+  /** 最近一次浏览取数命中 50 条窗口时在下拉面板底部提示可搜索。 */
+  modelsTruncated?: boolean
   modelSyncing?: boolean
   open: boolean
   providers: ProviderDefinition[]

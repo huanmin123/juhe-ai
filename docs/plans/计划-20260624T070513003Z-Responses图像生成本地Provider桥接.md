@@ -5,7 +5,7 @@
 ## 基本信息
 
 - 计划 ID：PLAN-20260624T070513003Z
-- 状态：进行中
+- 状态：已完成并随 Node 归档收口（按文首历史注：`JUHE_AI_IMAGE_GENERATION_PROVIDER_*` 外接方案已于 2026-07-24 退出运行时；Go 实现承载：`backend-go/projects/gateway/internal/openaicompat/openaicompatstorage/imagegeneration.go` ImageGeneration executor——以调用方凭据调用网关自身 `/v1/images/generations` 并归一化 JSON/SSE）
 - 创建时间：2026-06-24
 - 更新时间：2026-06-25
 - 需求来源：用户对话

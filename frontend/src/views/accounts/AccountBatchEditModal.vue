@@ -247,7 +247,11 @@
                     placeholder="选择账户实际支持的模型"
                     @dropdown-visible-change="handleSupportedModelOptionsOpen"
                     @search="handleSupportedModelOptionsSearch"
-                  />
+                  >
+                    <template v-if="modelOptionsTruncated" #dropdownRender="{ menuNode }">
+                      <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+                    </template>
+                  </a-select>
                 </template>
               </AccountBatchEditField>
 
@@ -427,7 +431,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ProxySelect from '@/components/ProxySelect.vue'
-import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
+import { accountModelOptionsTruncated, loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
@@ -441,6 +445,7 @@ import type {
 } from '@/types/domain'
 import TimeScheduleSection from '@/views/shared/TimeScheduleSection.vue'
 import AccountBatchEditField from './AccountBatchEditField.vue'
+import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import {
@@ -507,6 +512,8 @@ const modelContextError = ref('')
 const accountDetails = ref<AccountBatchEditContextItem[]>([])
 const currentProviderModelOptions = ref<AccountModelSelectOption[]>([])
 const modelOptions = ref<AccountModelSelectOption[]>([])
+// 支持模型下拉的目录截断提示：与账户编辑表单同口径（仅浏览取数参与判定）。
+const modelOptionsTruncated = ref(false)
 const form = reactive<AccountBatchEditForm>(createAccountBatchEditForm())
 let loadToken = 0
 let modelOptionsRequestId = 0
@@ -676,6 +683,7 @@ async function loadContext(): Promise<void> {
   accountDetails.value = props.accounts.map(accountBatchEditContextFromListItem)
   currentProviderModelOptions.value = []
   modelOptions.value = []
+  modelOptionsTruncated.value = false
   modelOptionsLoaded.value = false
   modelOptionsRequestId += 1
   modelsLoading.value = false
@@ -761,6 +769,10 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
     const scope = props.isManagementView && selectedAccount
       ? accountOperationScopeParams(selectedAccount, props.scopeParams)
       : undefined
+    const selectedIds = [
+      ...effectiveBatchModels.value,
+      ...form.modelMappings.flatMap((mapping) => [mapping.sourceModel, mapping.upstreamModel])
+    ]
     const models = await loadAccountProviderModelOptionsResource({
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
@@ -768,15 +780,16 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
       // 批量编辑仅覆盖对话域账户（媒体域账户不进入批量编辑），模型候选同样
       // 按对话域目录 mode 过滤（v8-C）。
       modes: [...DOMAIN_MODEL_MODES.chat],
-      selectedIds: [
-        ...effectiveBatchModels.value,
-        ...form.modelMappings.flatMap((mapping) => [mapping.sourceModel, mapping.upstreamModel])
-      ],
+      selectedIds,
       keyword
     })
     if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
     currentProviderModelOptions.value = models.data
     modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
+    // 截断判定与账户编辑表单同口径：仅浏览取数（无 keyword、无 selectedIds）参与。
+    if (!keyword.trim() && !selectedIds.length) {
+      modelOptionsTruncated.value = accountModelOptionsTruncated(models.data.length)
+    }
     modelOptionsLoaded.value = true
   } finally {
     if (token === loadToken && requestId === modelOptionsRequestId) modelsLoading.value = false

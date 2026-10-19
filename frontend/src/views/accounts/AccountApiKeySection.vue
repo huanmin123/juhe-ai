@@ -174,7 +174,11 @@
           show-search
           @dropdown-visible-change="$emit('model-options-open', $event)"
           @search="$emit('model-options-search', $event)"
-        />
+        >
+          <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+            <AccountModelOptionsTruncatedHint :menu-node="menuNode" />
+          </template>
+        </a-select>
         <a-tooltip title="从上游同步可新增模型">
           <a-button
             class="supported-models-refresh-button"
@@ -208,6 +212,7 @@ import { computed, ref, watch } from 'vue'
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus } from '@/types/domain'
 import { followBaseUrlAccountName } from './accountNameSuggestion'
+import { AccountModelOptionsTruncatedHint } from './accountModelOptionsTruncatedHint'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { normalizedAccountApiKeys } from './accountCredentials'
@@ -224,6 +229,8 @@ const props = withDefaults(defineProps<{
   modelOptions: AccountModelSelectOption[]
   modelSyncing?: boolean
   modelsLoading: boolean
+  /** 最近一次浏览取数命中 50 条窗口时在下拉面板底部提示可搜索。 */
+  modelsTruncated?: boolean
   protocolCode?: string
   protocolVersion?: string
   title: string

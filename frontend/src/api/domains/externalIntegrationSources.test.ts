@@ -55,7 +55,6 @@ describe('externalIntegrationSourcesApi 请求形状', () => {
     await externalIntegrationSourcesApi.resetBuiltInTestToken()
     await externalIntegrationSourcesApi.createToken('src-1', { name: '令牌' } as never)
     await externalIntegrationSourcesApi.tokenSecret('src-1', 'tok-1')
-    await externalIntegrationSourcesApi.updateToken('src-1', 'tok-1', { name: '改名' } as never)
     expect(requestShapes()).toEqual([
       ['GET', '/external-integration-sources/scopes'],
       ['GET', '/external-integration-sources/api-docs'],
@@ -66,8 +65,7 @@ describe('externalIntegrationSourcesApi 请求形状', () => {
       ['DELETE', '/external-integration-sources/src-1'],
       ['POST', '/external-integration-sources/built-in-test-token/reset'],
       ['POST', '/external-integration-sources/src-1/tokens'],
-      ['GET', '/external-integration-sources/src-1/tokens/tok-1/secret'],
-      ['PATCH', '/external-integration-sources/src-1/tokens/tok-1']
+      ['GET', '/external-integration-sources/src-1/tokens/tok-1/secret']
     ])
   })
 
