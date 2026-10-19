@@ -312,11 +312,17 @@ func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string
 	if credentialsInput == nil {
 		credentialsInput = map[string]any{}
 	}
-	// draftAccountCredentials: the oauth draft falls back to the OpenAI 官方根
-	// when the input omits base_url（profile 行的 baseURL 列已随表退役，缺省
-	// 收敛为同一常量）。
+	// draftAccountCredentials: the oauth draft falls back to the vendor 默认
+	// preset 的 registry default_base_url（§1.1 default_base_url 表，问题 B
+	// 修复：anthropic/xai 等 OAuth 草稿得到各自上游根，不再是恒 OpenAI 官方
+	// 根；profile 行的 baseURL 列已随表退役）；generic 语义退 legacy OpenAI
+	// 官方根。
 	if accountType == "oauth" && textString(credentialsInput["base_url"]) == "" {
-		credentialsInput["base_url"] = "https://api.openai.com/v1"
+		baseURL := vendorDefaultBaseURL(providerCode)
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		credentialsInput["base_url"] = baseURL
 	}
 	protocol := vendorDefaultProtocolContext(providerCode)
 	credentials, err := NormalizeAccountCredentialsForWrite(accountType, Credentials(credentialsInput), &EndpointModeDefaultContext{

@@ -32,12 +32,16 @@ func TestW13ACreateBodyValidationArms(t *testing.T) {
 	if _, message := createBody(valid(nil)); message != "" {
 		t.Fatalf("最小合法体应通过：%s", message)
 	}
+	// providerProtocolProfileId 是过渡 DTO：接受但忽略（§9.3 profile 退役；
+	// 移除归组合根收口），缺失不再拒绝。
+	if _, message := createBody(valid(map[string]any{"providerProtocolProfileId": nil})); message != "" {
+		t.Fatalf("缺失 profile 应接受但忽略：%s", message)
+	}
 	cases := []struct {
 		name      string
 		overrides map[string]any
 	}{
 		{"缺失 providerCode", map[string]any{"providerCode": nil}},
-		{"缺失 profile", map[string]any{"providerProtocolProfileId": nil}},
 		{"缺失名称", map[string]any{"name": nil}},
 		{"缺失类型", map[string]any{"type": nil}},
 		{"未知键", map[string]any{"bogus": 1}},

@@ -178,3 +178,44 @@ func vendorDefaultProtocolContext(providerCode string) protocolContext {
 		return openAIProtocolContext()
 	}
 }
+
+// vendorDefaultPreset 是 vendorDefaultProtocolContext 同一批 vendor 行的 URL
+// 维度：各 vendor 默认 connection preset（§1.1 注册表，与上面各 case 的默认
+// profile ID 一一对应）；generic 语义（openai/hybrid 等，无 vendor preset）
+// 返回空串。两表必须同批维护：protocol_context_test.go 以成对断言钉住。
+func vendorDefaultPreset(providerCode string) string {
+	switch normalizeProviderToken(providerCode) {
+	case accountscore.GptVendorCode:
+		return contracts.PresetGPTOpenAIV1
+	case accountscore.XaiProviderCode:
+		return contracts.PresetXAIOpenAIV1
+	case accountscore.DeepSeekProviderCode:
+		return contracts.PresetDeepSeekOpenAIV1
+	case accountscore.AnthropicProviderCode:
+		return contracts.PresetAnthropicV1
+	case accountscore.GeminiProviderCode:
+		return contracts.PresetGeminiNativeV1Beta
+	case accountscore.GlmProviderCode:
+		return contracts.PresetGLMGeneralOpenAIV1
+	case accountscore.MinimaxProviderCode:
+		return contracts.PresetMiniMaxMedia
+	case accountscore.VolcengineProviderCode:
+		return contracts.PresetVolcengineArk
+	case accountscore.QwenProviderCode:
+		return contracts.PresetQwenDashScope
+	default:
+		return ""
+	}
+}
+
+// vendorDefaultBaseURL 是草稿/探针链 OAuth 草稿缺省 base_url（供应商与上游
+// 协议面重构设计 §1.1 default_base_url 表）：按 vendor 默认 preset 查 registry
+// 注册根；generic 语义无 vendor preset，返回空串由调用方落 legacy OpenAI
+// 官方根。
+func vendorDefaultBaseURL(providerCode string) string {
+	preset := vendorDefaultPreset(providerCode)
+	if preset == "" {
+		return ""
+	}
+	return contracts.PresetDefaultBaseURL(preset)
+}

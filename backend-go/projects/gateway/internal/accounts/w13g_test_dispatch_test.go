@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 )
 
@@ -154,17 +155,31 @@ func TestW13GTestAccountAuthAndDraftGates(t *testing.T) {
 		"healthCheckModel":"gpt-4o-mini","healthCheckEndpointMode":"chat_json","groupId":"grp-default-`+adminID+`"}}`); code != http.StatusBadRequest || payload["message"] != "账户测试草稿与当前账户不一致" {
 		t.Fatalf("type 不一致：%d %v", code, payload)
 	}
-	// 协议档案不一致 → 400（同供应商下的另一个合法档案）。
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof-w13g-alt', 'gpt', 'GPT 备用协议', 1, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-4o-mini',
-		'["api_key"]', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
-	if code, payload := env.do(t, http.MethodPost, base+"/acc-w13g-tb/test", `{"account":{
-		"providerCode":"gpt","providerProtocolProfileId":"prof-w13g-alt","name":"x","type":"api_key",
-		"healthCheckModel":"gpt-4o-mini","healthCheckEndpointMode":"chat_json","groupId":"grp-default-`+adminID+`",
-		"supportedModels":["gpt-4o-mini"],
-		"credentials":{"api_key":"sk-x","base_url":"https://api.openai.com/v1"}}}`); code != http.StatusBadRequest || payload["message"] != "账户测试草稿与当前账户协议档案不一致" {
-		t.Fatalf("档案不一致：%d %v", code, payload)
+	// profile 行已随目标 schema 退役（§9.3）：入参 providerProtocolProfileId
+	// 忽略（协议上下文由 vendor 语义推导供给），「账户测试草稿与当前账户协议
+	// 档案不一致」pin 比对门随 profile 维度一并拆除——saved 草稿携带任意档案
+	// ID 不再 400，一致性契约由 providerCode/type 相等断言承载（上方两臂）。
+	access := AccessScope{ViewerID: adminID, IsAdmin: true}
+	view, err := env.store.FindAccountForTestView(context.Background(), access, "acc-w13g-tb")
+	if err != nil || view == nil {
+		t.Fatalf("测试视图加载：%v %v", view, err)
+	}
+	draftInput, message := parseTestDraftAccountInput(map[string]any{
+		"providerCode": "gpt", "providerProtocolProfileId": "prof-w13g-bogus", "name": "x", "type": "api_key",
+		"healthCheckModel": "gpt-4o-mini", "healthCheckEndpointMode": "chat_json",
+		"groupId":         "grp-default-" + adminID,
+		"supportedModels": []any{"gpt-4o-mini"},
+		"credentials":     map[string]any{"api_key": "sk-x", "base_url": "https://api.openai.com/v1"},
+	})
+	if message != "" {
+		t.Fatalf("草稿解析：%q", message)
+	}
+	draft, err := env.store.savedAccountDraftTestSnapshot(context.Background(), view, draftInput, access)
+	if err != nil {
+		t.Fatalf("异档案 ID 的 saved 草稿应通过（pin 已忽略）：%v", err)
+	}
+	if draft.StateTargetAccountID == nil || *draft.StateTargetAccountID != "acc-w13g-tb" {
+		t.Fatalf("state target 未落：%+v", draft.StateTargetAccountID)
 	}
 	// FindAccountForTestView 的 ListPage 错误 → 500。
 	env.exec(t, `DROP TABLE groups`)
@@ -280,6 +295,15 @@ func TestW13GParseTestBodies(t *testing.T) {
 		parsed.TestSessionID != "sess-1" || parsed.Account == nil || parsed.Account.GroupID != "g1" {
 		t.Fatalf("合法负载：%+v %q", parsed, message)
 	}
+	// providerProtocolProfileId 不再必填（§9.3 profile 退役，推导供给；
+	// 携带时保持接受但忽略）。
+	withoutProfile := map[string]any{
+		"providerCode": "gpt", "name": "n", "type": "api_key",
+		"healthCheckModel": "m", "healthCheckEndpointMode": "chat_json", "groupId": "g1",
+	}
+	if omitted, message := parseTestDraftAccountInput(withoutProfile); message != "" || omitted == nil {
+		t.Fatalf("无档案 ID 草稿应解析通过：%+v %q", omitted, message)
+	}
 
 	// 草稿账户字段矩阵。
 	accountBad := []map[string]any{
@@ -378,7 +402,9 @@ func TestW13GDraftSnapshotPreparationArms(t *testing.T) {
 	access := AccessScope{ViewerID: adminID, IsAdmin: true}
 	build := func(mutate func(*TestDraftAccountInput)) *TestDraftAccountInput {
 		input := &TestDraftAccountInput{
-			ProviderCode: "gpt", ProviderProtocolProfileID: "prof-gpt", Name: "d1", Type: "api_key",
+			// providerProtocolProfileId 已不是入参契约（§9.3 推导供给）：
+			// 恒空提交，协议上下文由 vendor 语义推导。
+			ProviderCode: "gpt", Name: "d1", Type: "api_key",
 			HealthCheckModel: "gpt-4o-mini", HealthCheckEndpointMode: "chat_json", GroupID: groupID,
 			Credentials:     Credentials{"api_key": "sk-w13g-d", "base_url": "https://api.openai.com/v1"},
 			SupportedModels: []string{"gpt-4o-mini"},
@@ -394,8 +420,7 @@ func TestW13GDraftSnapshotPreparationArms(t *testing.T) {
 		mutate func(*TestDraftAccountInput)
 		want   string
 	}{
-		{"供应商不匹配的分组", func(in *TestDraftAccountInput) { in.GroupID = "grp-w13g-none" }, "账户分组无效"},
-		{"空协议档案", func(in *TestDraftAccountInput) { in.ProviderProtocolProfileID = " " }, "账户 providerProtocolProfileId 不能为空"},
+		{"不存在的分组", func(in *TestDraftAccountInput) { in.GroupID = "grp-w13g-none" }, "账户分组无效"},
 		{"坏凭据", func(in *TestDraftAccountInput) {
 			in.Credentials = Credentials{"api_key": " ", "base_url": "https://api.openai.com/v1"}
 		}, "API Key不能为空"},
@@ -447,22 +472,10 @@ func TestW13GDraftSnapshotPreparationArms(t *testing.T) {
 	if draft.ID != "draft-acc-w13g" || draft.ConcurrencyLimit != 9 || draft.Priority != 3 ||
 		!draft.SuperPriorityEnabled || !draft.FallbackEnabled || draft.Notes == nil ||
 		draft.AvailabilitySchedule == nil || draft.AvailabilityScheduleJSON == nil ||
-		draft.ProviderProtocolProfileID == nil || *draft.ProviderProtocolProfileID != "prof-gpt" ||
+		draft.ProviderProtocolProfileID == nil || *draft.ProviderProtocolProfileID != accountscore.GptOpenAIV1ProfileID ||
 		draft.ProtocolCode == nil || draft.ProtocolVersion == nil {
 		t.Fatalf("草稿快照：%+v", draft)
 	}
-
-	// 默认模型回落：无显式列表时用供应商默认。
-	env.exec(t, `UPDATE providers SET default_supported_models_json = '["gpt-4o-mini","gpt-4o"]' WHERE code = 'gpt'`)
-	defaulted := build(func(in *TestDraftAccountInput) { in.SupportedModels = nil })
-	draft, err = env.store.prepareAccountDraftTestSnapshot(context.Background(), defaulted, access, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(draft.SupportedModels) != 2 || draft.SupportedModels[0] != "gpt-4o-mini" {
-		t.Fatalf("默认模型回落：%v", draft.SupportedModels)
-	}
-	env.exec(t, `UPDATE providers SET default_supported_models_json = '[]' WHERE code = 'gpt'`)
 
 	// images_json 检查模式：目录读取失败（fixture 未建 catalog 表）→ 传播。
 	images := build(func(in *TestDraftAccountInput) { in.HealthCheckEndpointMode = "images_json" })
@@ -502,43 +515,47 @@ func TestW13GDraftSnapshotPreparationArms(t *testing.T) {
 	}
 }
 
-func TestW13GDraftProviderProfileArms(t *testing.T) {
+func TestW13GDraftVendorGateArms(t *testing.T) {
+	// draftProviderProfile（providers/profiles JOIN 门）已随 profile 维度拆除，
+	// 供应商归属校验收敛为 assertVendorEnabled（vendors 表，§2.1）。
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
-
-	// 供应商不存在。
-	if _, err := env.store.draftProviderProfile(context.Background(), "nope", "prof-gpt", "api_key"); err == nil ||
-		!strings.Contains(err.Error(), "不支持账户类型") {
-		t.Fatalf("供应商缺失：%v", err)
+	groupID := "grp-default-" + adminID
+	access := AccessScope{ViewerID: adminID, IsAdmin: true}
+	build := func(providerCode string) *TestDraftAccountInput {
+		return &TestDraftAccountInput{
+			ProviderCode: providerCode, Name: "d1", Type: "api_key",
+			HealthCheckModel: "gpt-4o-mini", HealthCheckEndpointMode: "chat_json", GroupID: groupID,
+			Credentials:     Credentials{"api_key": "sk-w13g-v", "base_url": "https://api.openai.com/v1"},
+			SupportedModels: []string{"gpt-4o-mini"},
+		}
 	}
-	// 类型不支持（profile account_types 不含 bogus）。
-	if _, err := env.store.draftProviderProfile(context.Background(), "gpt", "prof-gpt", "bogus_type"); err == nil ||
-		!strings.Contains(err.Error(), "不支持账户类型") {
-		t.Fatalf("类型不支持：%v", err)
+	// 真实厂商缺 vendors 行 → 不支持的供应商（夹具只种 gpt）。
+	if _, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), build("xai"), access, ""); err == nil ||
+		!strings.Contains(err.Error(), "不支持的供应商：xai") {
+		t.Fatalf("缺 vendors 行：%v", err)
 	}
-	// 供应商停用。
-	env.exec(t, `UPDATE providers SET enabled = 0 WHERE code = 'gpt'`)
-	if _, err := env.store.draftProviderProfile(context.Background(), "gpt", "prof-gpt", "api_key"); err == nil ||
-		!strings.Contains(err.Error(), "供应商已停用") {
+	// 真实厂商 vendors 停用 → 供应商已停用。
+	env.exec(t, `UPDATE vendors SET enabled = 0 WHERE code = 'gpt'`)
+	if _, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), build("gpt"), access, ""); err == nil ||
+		!strings.Contains(err.Error(), "供应商已停用：gpt") {
 		t.Fatalf("供应商停用：%v", err)
 	}
-	env.exec(t, `UPDATE providers SET enabled = 1 WHERE code = 'gpt'`)
-	// 非网关协议。
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-w13g-w', 'wv', 'W', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof-w13g-w', 'wv', 'W 协议', 1, 'wvp', 'v1', 'https://w.example/v1', 'm-w', '["api_key"]', '[]',
-		'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
-	if _, err := env.store.draftProviderProfile(context.Background(), "wv", "prof-w13g-w", "api_key"); err == nil ||
-		!strings.Contains(err.Error(), "当前仅支持测试 OpenAI 或 Anthropic 协议账户") {
-		t.Fatalf("非网关协议：%v", err)
+	env.exec(t, `UPDATE vendors SET enabled = 1 WHERE code = 'gpt'`)
+	// generic 语义（openai，无 vendors 行）跳过 vendor 门，推导 openai 族通过。
+	draft, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), build("openai"), access, "")
+	if err != nil {
+		t.Fatalf("generic 语义应通过：%v", err)
 	}
-	// 读错误。
-	env.exec(t, `DROP TABLE providers`)
-	if _, err := env.store.draftProviderProfile(context.Background(), "gpt", "prof-gpt", "api_key"); err == nil {
-		t.Fatal("供应商读错误应报错")
+	if draft.ProviderProtocolProfileID == nil || *draft.ProviderProtocolProfileID != "" ||
+		draft.ProtocolCode == nil || *draft.ProtocolCode != "openai" {
+		t.Fatalf("generic 推导：%+v %v", draft.ProviderProtocolProfileID, draft.ProtocolCode)
+	}
+	// vendors 读错误 → 传播。
+	env.exec(t, `DROP TABLE vendors`)
+	if _, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), build("gpt"), access, ""); err == nil {
+		t.Fatal("vendors 读错误应报错")
 	}
 }
 
@@ -549,7 +566,8 @@ func TestW13GDraftOAuthAndHelpers(t *testing.T) {
 	groupID := "grp-default-" + adminID
 	access := AccessScope{ViewerID: adminID, IsAdmin: true}
 
-	// oauth 草稿无 base_url → 合并 profile base_url。
+	// oauth 草稿无 base_url → 合并 vendor 默认 preset 的 registry 根（§1.1）。
+	// gpt → OpenAI 官方根。
 	record := map[string]any{
 		"providerCode": "gpt", "providerProtocolProfileId": "prof-gpt", "name": "o1", "type": "oauth",
 		"healthCheckModel": "gpt-4o-mini", "healthCheckEndpointMode": "responses_json", "groupId": groupID,
@@ -568,25 +586,47 @@ func TestW13GDraftOAuthAndHelpers(t *testing.T) {
 		t.Fatalf("oauth base_url 合并：%v", draft.Credentials["base_url"])
 	}
 
-	// profile base_url 为空 → 默认 OpenAI 端点（清空 prof-gpt 的 base_url）。
-	env.exec(t, `UPDATE provider_protocol_profiles SET base_url = '' WHERE id = 'prof-gpt'`)
-	record2 := map[string]any{
-		"providerCode": "gpt", "providerProtocolProfileId": "prof-gpt", "name": "o2", "type": "oauth",
-		"healthCheckModel": "gpt-4o-mini", "healthCheckEndpointMode": "responses_json", "groupId": groupID,
-		"credentials":     map[string]any{"refresh_token": "r"},
-		"supportedModels": []any{"gpt-4o-mini"},
+	// 问题 B：anthropic / xai OAuth 草稿缺省 base_url 得到各自上游根（不再是
+	// 恒 OpenAI 官方根）。两例均不带 providerProtocolProfileId（入参已非契约）。
+	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-w13g-anthropic', 'anthropic', 'Anthropic', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-w13g-xai', 'xai', 'xAI', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	vendorCases := []struct {
+		providerCode, name, model, endpointMode, wantBaseURL string
+	}{
+		{"anthropic", "o-anthropic", "claude-fixture", "messages_json", "https://api.anthropic.com/v1"},
+		{"xai", "o-xai", "grok-fixture", "responses_json", "https://api.x.ai/v1"},
 	}
-	input2, _ := parseTestDraftAccountInput(record2)
-	draft2, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), input2, access, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if draft2.Credentials["base_url"] != "https://api.openai.com/v1" {
-		t.Fatalf("空 base_url 默认：%v", draft2.Credentials["base_url"])
+	for _, vendorCase := range vendorCases {
+		credentials := map[string]any{"refresh_token": "r"}
+		if vendorCase.providerCode == "anthropic" {
+			// anthropic 协议 oauth 凭据校验要求 access_token（credentials_normalize.go）。
+			credentials["access_token"] = "t"
+		}
+		vendorRecord := map[string]any{
+			"providerCode": vendorCase.providerCode, "name": vendorCase.name, "type": "oauth",
+			"healthCheckModel": vendorCase.model, "healthCheckEndpointMode": vendorCase.endpointMode,
+			"groupId":         groupID,
+			"credentials":     credentials,
+			"supportedModels": []any{vendorCase.model},
+		}
+		vendorInput, message := parseTestDraftAccountInput(vendorRecord)
+		if message != "" {
+			t.Fatalf("%s oauth 构造：%q", vendorCase.providerCode, message)
+		}
+		vendorDraft, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), vendorInput, access, "")
+		if err != nil {
+			t.Fatalf("%s oauth 草稿：%v", vendorCase.providerCode, err)
+		}
+		if vendorDraft.Credentials["base_url"] != vendorCase.wantBaseURL {
+			t.Fatalf("%s oauth 缺省 base_url = %v, want %v", vendorCase.providerCode,
+				vendorDraft.Credentials["base_url"], vendorCase.wantBaseURL)
+		}
 	}
 
 	// 纯函数：scheduleToMap / scheduleToJSONString / normalizeDraftTextList /
-	// parseStringJSONColumn / credentialTextPresent。
+	// credentialTextPresent。
 	schedule := &AvailabilitySchedule{Enabled: true, Timezone: "UTC", Mode: scheduleModeAllowWindows,
 		Windows: []ScheduleWindow{{DaysOfWeek: []int{1, 2, 3, 4, 5, 6, 7}, Start: "00:00", End: "23:59"}}}
 	if scheduleToMap(nil) != nil {
@@ -606,15 +646,6 @@ func TestW13GDraftOAuthAndHelpers(t *testing.T) {
 	}
 	if list := normalizeDraftTextList([]string{" a ", "a", "", "b"}); len(list) != 2 || list[0] != "a" || list[1] != "b" {
 		t.Fatalf("draft 文本列表：%v", list)
-	}
-	if list := parseStringJSONColumn(sqlNullString(`["a", 1, "b"]`)); len(list) != 2 || list[0] != "a" || list[1] != "b" {
-		t.Fatalf("JSON 列解析：%v", list)
-	}
-	if list := parseStringJSONColumn(sqlNullString("not-json")); len(list) != 0 || list == nil {
-		t.Fatal("坏 JSON 列应空")
-	}
-	if list := parseStringJSONColumn(sqlNullString("")); len(list) != 0 || list == nil {
-		t.Fatal("空 JSON 列应空")
 	}
 	if credentialTextPresent(1) || credentialTextPresent("  ") || !credentialTextPresent(" x ") {
 		t.Fatal("credentialTextPresent")

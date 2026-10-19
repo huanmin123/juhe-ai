@@ -112,7 +112,6 @@ func TestW2RoutesCreateValidation(t *testing.T) {
 
 	cases := map[string]string{
 		"缺 providerCode":        `{"providerProtocolProfileId":"prof-gpt","name":"w2c1","type":"api_key"}`,
-		"缺 profile":             `{"providerCode":"gpt","name":"w2c2","type":"api_key"}`,
 		"缺 name":                `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key"}`,
 		"缺 type":                `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c3"}`,
 		"未知键":                   `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"w2c4","type":"api_key","bogus":1}`,
@@ -125,6 +124,15 @@ func TestW2RoutesCreateValidation(t *testing.T) {
 		if code != http.StatusBadRequest || payload["message"] != "账户参数无效" {
 			t.Fatalf("%s：期望 400 账户参数无效，实际 %d %v", name, code, payload)
 		}
+	}
+	// providerProtocolProfileId 是过渡 DTO：接受但忽略（§9.3 退役；移除归组合根
+	// 收口），缺省不再报「账户参数无效」，载荷落到创建链下一道门——connections
+	// 必填（§8 连接面）。
+	missingProfileCode, missingProfilePayload := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
+		`{"providerCode":"gpt","name":"w2c2","type":"api_key"}`)
+	if missingProfileCode != http.StatusBadRequest ||
+		!strings.Contains(missingProfilePayload["message"].(string), "创建载荷缺少 connections") {
+		t.Fatalf("缺 profile 应落到 connections 门：%d %v", missingProfileCode, missingProfilePayload)
 	}
 	// my-accounts 面创建（用户身份）走同一 body 解析。
 	env.login(t, "self-user", "self-pass", "user")

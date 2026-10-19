@@ -802,7 +802,10 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 		}
 		input.HealthCheckEndpointMode = strings.TrimSpace(mode)
 	}
-	if input.ProviderCode == "" || input.ProviderProtocolProfileID == "" || input.Name == "" ||
+	// providerProtocolProfileId 是过渡入参：profile 行已随目标 schema 退役
+	//（§9.3），协议上下文由 vendor 语义推导供给，字段保持接受但忽略（前端
+	// 仍在发送；字段删除归前端切片）。
+	if input.ProviderCode == "" || input.Name == "" ||
 		input.Type == "" || input.HealthCheckModel == "" || input.HealthCheckEndpointMode == "" {
 		return nil, "账户测试参数无效"
 	}
@@ -1107,10 +1110,9 @@ func (s *Store) savedAccountDraftTestSnapshot(ctx context.Context, view *Account
 	if err != nil {
 		return nil, err
 	}
-	if account.ProviderProtocolProfileID != "" && draft.ProviderProtocolProfileID != nil &&
-		*draft.ProviderProtocolProfileID != account.ProviderProtocolProfileID {
-		return nil, &ValidationError{Message: "账户测试草稿与当前账户协议档案不一致"}
-	}
+	// profile 行已随目标 schema 退役（§9.3）：草稿协议档案不再来自入参，旧的
+	// 「账户测试草稿与当前账户协议档案不一致」pin 比对随 profile 维度一并拆除
+	// ——saved 草稿的一致性契约由上方 providerCode/type 相等断言承载。
 	stateTarget := account.ID
 	draft.StateTargetAccountID = &stateTarget
 	return draft, nil
@@ -1119,30 +1121,29 @@ func (s *Store) savedAccountDraftTestSnapshot(ctx context.Context, view *Account
 type draftTestGroupReference struct {
 	id             string
 	ownerAccountID string
-	providerCode   string
 	name           string
 }
 
 // prepareAccountDraftTestSnapshot mirrors
 // prepareAccountDraftTestSnapshotResolvedAsync (message copy verbatim).
 func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *TestDraftAccountInput, access AccessScope, draftAccountID string) (*TestDraftSnapshot, error) {
-	// Group summary (findGroupSummary): the caller must see the group and its
-	// provider must match the draft.
+	// Group summary (findGroupSummary): the caller must see the group（组无
+	// provider 维度，设计 §8：owner 可见 + enabled 已足够）。
 	group, err := s.findDraftTestGroup(ctx, access, input.GroupID)
 	if err != nil {
 		return nil, err
 	}
-	if group == nil || group.providerCode != input.ProviderCode {
+	if group == nil {
 		return nil, &ValidationError{Message: "账户分组无效"}
 	}
-	profileID := strings.TrimSpace(input.ProviderProtocolProfileID)
-	if profileID == "" {
-		return nil, &ValidationError{Message: "账户 providerProtocolProfileId 不能为空"}
-	}
-	profile, err := s.draftProviderProfile(ctx, input.ProviderCode, profileID, input.Type)
-	if err != nil {
+	// profile 行已随目标 schema 退役（§9.3）：草稿/探针链无 connections 载荷，
+	// 协议上下文按 vendor 语义推导（vendorDefaultProtocolContext，与 balance
+	// 草稿链同源，不再查 providers/provider_protocol_profiles）；provider 归属
+	// 校验改为 vendors 表存在性（assertVendorEnabled，§2.1）。
+	if err := s.assertVendorEnabled(ctx, s.db, input.ProviderCode); err != nil {
 		return nil, err
 	}
+	profile := vendorDefaultProtocolContext(input.ProviderCode)
 	ownerSystemAccountID := group.ownerAccountID
 	if ownerSystemAccountID == "" {
 		ownerSystemAccountID = access.FilterID
@@ -1158,15 +1159,10 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 		ProviderCode:              input.ProviderCode,
 		ProtocolCode:              profile.protocolCode,
 		ProtocolVersion:           profile.protocolVersion,
-		ProviderProtocolProfileID: profile.id,
+		ProviderProtocolProfileID: profile.profileID,
 	}
 	clientCompatibility := "openai_standard"
-	if !isAnthropicProtocolProfileOf(protocolPredicateInput{
-		providerCode:              input.ProviderCode,
-		protocolCode:              profile.protocolCode,
-		protocolVersion:           profile.protocolVersion,
-		providerProtocolProfileID: profile.id,
-	}) {
+	if !isAnthropicProtocolProfileOf(profile.predicate(input.ProviderCode)) {
 		normalized, err := normalizeOpenAIAccountClientCompatibility(input.ProviderCode, input.Type, "", profileRef)
 		if err != nil {
 			return nil, err
@@ -1179,7 +1175,10 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 	}
 	if input.Type == "oauth" {
 		if _, hasBaseURL := credentialsInput["base_url"]; !hasBaseURL || !credentialTextPresent(credentialsInput["base_url"]) {
-			baseURL := profile.baseURL
+			// draftAccountCredentials：oauth 草稿缺省 base_url 按 vendor 默认
+			// preset 的 registry default_base_url 落根（§1.1，与 balance 草稿链
+			// 同源）；generic 语义退 legacy OpenAI 官方根。
+			baseURL := vendorDefaultBaseURL(input.ProviderCode)
 			if baseURL == "" {
 				baseURL = "https://api.openai.com/v1"
 			}
@@ -1195,7 +1194,7 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 		ProviderCode:              input.ProviderCode,
 		AccountType:               input.Type,
 		ClientCompatibility:       clientCompatibility,
-		ProviderProtocolProfileID: profile.id,
+		ProviderProtocolProfileID: profile.profileID,
 		ProtocolCode:              profile.protocolCode,
 		ProtocolVersion:           profile.protocolVersion,
 	})
@@ -1210,11 +1209,9 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 			return nil, err
 		}
 		schedule = normalized
-	} // Supported models: explicit list or the provider defaults.
+	} // Supported models: explicit list（创建链同契约：providers 缺省目录列已
+	// 随表退役，无 vendor 默认回落）。
 	supportedModels := normalizeDraftTextList(input.SupportedModels)
-	if len(supportedModels) == 0 {
-		supportedModels = normalizeDraftTextList(profile.defaultSupportedModels)
-	}
 	if err := assertSupportedModelsRequired(supportedModels); err != nil {
 		return nil, err
 	}
@@ -1238,7 +1235,7 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 		supported := item != nil && containsString(item.SupportedAPIProtocols, "images")
 		modelSupportsImages = &supported
 	}
-	healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(&endpointModeValue, input.ProviderCode, profile.id, enabledModes, modelSupportsImages)
+	healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(&endpointModeValue, input.ProviderCode, profile.profileID, enabledModes, modelSupportsImages)
 	if err != nil {
 		return nil, err
 	}
@@ -1251,13 +1248,7 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 	}
 
 	// Draft endpoint-mode compatibility asserts (assertDraftEndpointModesCompatible).
-	profilePredicate := protocolPredicateInput{
-		providerCode:              input.ProviderCode,
-		protocolCode:              profile.protocolCode,
-		protocolVersion:           profile.protocolVersion,
-		providerProtocolProfileID: profile.id,
-	}
-	if err := assertEndpointModesCompatible(input.ProviderCode, input.Type, clientCompatibility, profilePredicate, enabledModes); err != nil {
+	if err := assertEndpointModesCompatible(input.ProviderCode, input.Type, clientCompatibility, profile.predicate(input.ProviderCode), enabledModes); err != nil {
 		return nil, err
 	}
 
@@ -1282,7 +1273,7 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 		fallback = *input.FallbackEnabled
 	}
 	groupName := group.name
-	providerProfileID := profile.id
+	providerProfileID := profile.profileID
 	protocolCode := profile.protocolCode
 	protocolVersion := profile.protocolVersion
 	availabilityScheduleMap := map[string]any(nil)
@@ -1337,13 +1328,12 @@ func (s *Store) findDraftTestGroup(ctx context.Context, access AccessScope, grou
 	var row struct {
 		id              string
 		systemAccountID string
-		providerCode    string
 		name            string
 		enabled         int
 	}
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code, name, enabled
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, name, enabled
 		FROM `+s.table("groups")+` WHERE id = ? LIMIT 1`), normalized).Scan(
-		&row.id, &row.systemAccountID, &row.providerCode, &row.name, &row.enabled)
+		&row.id, &row.systemAccountID, &row.name, &row.enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1359,80 +1349,8 @@ func (s *Store) findDraftTestGroup(ctx context.Context, access AccessScope, grou
 	return &draftTestGroupReference{
 		id:             row.id,
 		ownerAccountID: row.systemAccountID,
-		providerCode:   row.providerCode,
 		name:           row.name,
 	}, nil
-}
-
-type draftTestProviderProfile struct {
-	id                     string
-	protocolCode           string
-	protocolVersion        string
-	baseURL                string
-	defaultSupportedModels []string
-	accountTypes           []string
-}
-
-// draftProviderProfile mirrors the provider/profile/type/enabled/
-// gateway-protocol gate of the draft preparation chain (message copy
-// verbatim).
-func (s *Store) draftProviderProfile(ctx context.Context, providerCode, profileID, accountType string) (*draftTestProviderProfile, error) {
-	var row struct {
-		id               sql.NullString
-		enabled          sql.NullInt64
-		protocolCode     sql.NullString
-		protocolVersion  sql.NullString
-		baseURL          sql.NullString
-		providerEnabled  sql.NullInt64
-		accountTypesJSON sql.NullString
-		defaultModels    sql.NullString
-	}
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT ppp.id, ppp.enabled, ppp.protocol_code, ppp.protocol_version,
-			ppp.base_url, ppp.account_types_json, p.default_supported_models_json, p.enabled AS provider_enabled
-		FROM `+s.table("providers")+` p
-		LEFT JOIN `+s.table("provider_protocol_profiles")+` ppp
-			ON ppp.provider_code = p.code AND ppp.id = ?
-		WHERE p.code = ?
-		LIMIT 1`), profileID, providerCode).Scan(
-		&row.id, &row.enabled, &row.protocolCode, &row.protocolVersion,
-		&row.baseURL, &row.accountTypesJSON, &row.defaultModels, &row.providerEnabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, &ValidationError{Message: "供应商 " + providerCode + " 不支持账户类型 " + accountType}
-	}
-	if err != nil {
-		return nil, err
-	}
-	profile := &draftTestProviderProfile{
-		id:                     row.id.String,
-		protocolCode:           row.protocolCode.String,
-		protocolVersion:        row.protocolVersion.String,
-		baseURL:                row.baseURL.String,
-		defaultSupportedModels: parseStringJSONColumn(row.defaultModels),
-		accountTypes:           parseStringJSONColumn(row.accountTypesJSON),
-	}
-	supportedType := false
-	for _, candidate := range profile.accountTypes {
-		if candidate == accountType {
-			supportedType = true
-			break
-		}
-	}
-	if !row.id.Valid || row.id.String == "" || !supportedType {
-		return nil, &ValidationError{Message: "供应商 " + providerCode + " 不支持账户类型 " + accountType}
-	}
-	if !row.providerEnabled.Valid || row.providerEnabled.Int64 != 1 {
-		return nil, &ValidationError{Message: "供应商已停用：" + providerCode}
-	}
-	predicate := protocolPredicateInput{
-		providerCode:              providerCode,
-		protocolCode:              profile.protocolCode,
-		protocolVersion:           profile.protocolVersion,
-		providerProtocolProfileID: profile.id,
-	}
-	if !isOpenAIProtocolProfileOf(predicate) && !isAnthropicProtocolProfileOf(predicate) && !isGeminiProtocolProfileOf(predicate) {
-		return nil, &ValidationError{Message: "当前仅支持测试 OpenAI 或 Anthropic 协议账户"}
-	}
-	return profile, nil
 }
 
 func credentialTextPresent(value any) bool {
@@ -1450,23 +1368,6 @@ func normalizeDraftTextList(values []string) []string {
 		}
 		seen[text] = true
 		out = append(out, text)
-	}
-	return out
-}
-
-func parseStringJSONColumn(value sql.NullString) []string {
-	out := []string{}
-	if !value.Valid || strings.TrimSpace(value.String) == "" {
-		return out
-	}
-	var raw []any
-	if json.Unmarshal([]byte(value.String), &raw) != nil {
-		return out
-	}
-	for _, item := range raw {
-		if text, ok := item.(string); ok {
-			out = append(out, text)
-		}
 	}
 	return out
 }

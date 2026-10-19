@@ -195,18 +195,14 @@ func TestW2TestAccountDispatch(t *testing.T) {
 		if code != http.StatusBadRequest || payload["message"] != "账户测试草稿与当前账户不一致" {
 			t.Fatalf("一致性 gate 不一致：%d %v", code, payload)
 		}
-		// 另插一个 gpt 档案：草稿准备成功后与保存账户的档案比较。
-		now := "2026-01-01T00:00:00.000Z"
-		env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-			protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-			capabilities_json, created_at, updated_at)
-			VALUES ('profile_gpt_openai_v1_w2alt', 'gpt', 'OpenAI 备选', 1, 'openai', 'v1',
-			'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key"]', '[]', ?, ?)`, now, now)
+		// profile 行已随目标 schema 退役（§9.3）：入参 providerProtocolProfileId
+		// 忽略（协议上下文由 vendor 语义推导供给），「协议档案不一致」pin 比对门
+		// 随 profile 维度拆除——异档案 ID 的 saved 草稿照常投递。
 		profileBody := strings.Replace(w2DraftAccountBody(groupID),
 			`"providerProtocolProfileId":"prof-gpt"`, `"providerProtocolProfileId":"profile_gpt_openai_v1_w2alt"`, 1)
 		code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts/"+accountID+"/test", `{`+profileBody+`}`)
-		if code != http.StatusBadRequest || payload["message"] != "账户测试草稿与当前账户协议档案不一致" {
-			t.Fatalf("协议档案 gate 不一致：%d %v", code, payload)
+		if code != http.StatusAccepted {
+			t.Fatalf("异档案 ID 草稿应照常投递：%d %v", code, payload)
 		}
 	})
 }
@@ -235,7 +231,7 @@ func TestW2TestDraftRoute(t *testing.T) {
 			message string
 		}{
 			{"分组无效", strings.Replace(w2DraftAccountBody(groupID), groupID, "grp-missing", 1), "账户分组无效"},
-			{"类型不支持", strings.Replace(w2DraftAccountBody(groupID), `"type":"api_key"`, `"type":"vertex"`, 1), "供应商 gpt 不支持账户类型 vertex"},
+			{"真实厂商缺 vendors 行", strings.Replace(w2DraftAccountBody(groupID), `"providerCode":"gpt"`, `"providerCode":"xai"`, 1), "不支持的供应商：xai"},
 			{"检查模型不在支持列表", strings.Replace(w2DraftAccountBody(groupID), `"supportedModels":["gpt-4o-mini"]`, `"supportedModels":["other-model"]`, 1), "账户检查模型必须属于账户支持模型"},
 			{"时间计划无效", strings.Replace(w2DraftAccountBody(groupID), `"healthCheckEndpointMode":"chat_json"`,
 				`"healthCheckEndpointMode":"chat_json","availabilitySchedule":{"enabled":true,"mode":"weird"}`, 1), "时间计划"},
@@ -254,25 +250,14 @@ func TestW2TestDraftRoute(t *testing.T) {
 		}
 	})
 	t.Run("停用供应商", func(t *testing.T) {
-		now := "2026-01-01T00:00:00.000Z"
-		env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-			VALUES ('prov-off-w2', 'offprovider', '停用', 0, '["m1"]', ?, ?)`, now, now)
-		env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-			protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-			capabilities_json, created_at, updated_at)
-			VALUES ('profile_off_w2', 'offprovider', '停用档案', 1, 'openai', 'v1', 'https://api.openai.com/v1',
-			'm1', '["api_key"]', '[]', ?, ?)`, now, now)
-		env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-			VALUES ('grp-off-w2', ?, '停用供应商分组', 'offprovider', 1, 'personal', ?, ?)`, adminID, now, now)
-		body := strings.Replace(w2DraftAccountBody(groupID), `"providerCode":"gpt","providerProtocolProfileId":"prof-gpt"`,
-			`"providerCode":"offprovider","providerProtocolProfileId":"profile_off_w2"`, 1)
-		body = strings.Replace(body, groupID, "grp-off-w2", 1)
-		body = strings.Replace(body, `"supportedModels":["gpt-4o-mini"]`, `"supportedModels":["m1"]`, 1)
-		body = strings.Replace(body, `"healthCheckModel":"gpt-4o-mini"`, `"healthCheckModel":"m1"`, 1)
-		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/test-draft", `{`+body+`}`)
-		if code != http.StatusBadRequest || payload["message"] != "供应商已停用：offprovider" {
+		// 供应商归属校验收敛为 assertVendorEnabled（vendors 表，§2.1）：真实
+		// 厂商 gpt 停用即拒绝；providers 行不再参与草稿链。
+		env.exec(t, `UPDATE vendors SET enabled = 0 WHERE code = 'gpt'`)
+		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/test-draft", `{`+w2DraftAccountBody(groupID)+`}`)
+		if code != http.StatusBadRequest || payload["message"] != "供应商已停用：gpt" {
 			t.Fatalf("停用供应商 gate 不一致：%d %v", code, payload)
 		}
+		env.exec(t, `UPDATE vendors SET enabled = 1 WHERE code = 'gpt'`)
 	})
 	t.Run("用户侧分组不可见", func(t *testing.T) {
 		env.login(t, "user2", "user2-pass", "user")

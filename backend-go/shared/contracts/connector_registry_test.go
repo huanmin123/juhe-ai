@@ -503,6 +503,23 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 	}
 }
 
+// TestPresetDefaultBaseURLAccessor 断言导出访问器 PresetDefaultBaseURL 与
+// record 字段同源：17 个 preset 逐值一致（含 generic 三 preset 空串 = SQL
+// NULL），未知 preset 返回空串。
+func TestPresetDefaultBaseURLAccessor(t *testing.T) {
+	for _, record := range connectorPresetRecords {
+		if got := PresetDefaultBaseURL(record.Code); got != record.DefaultBaseURL {
+			t.Errorf("PresetDefaultBaseURL(%q) = %q, want %q", record.Code, got, record.DefaultBaseURL)
+		}
+	}
+	if len(connectorPresetRecords) != 17 {
+		t.Fatalf("registry preset 数 = %d, want 17", len(connectorPresetRecords))
+	}
+	if got := PresetDefaultBaseURL("no_such_preset"); got != "" {
+		t.Errorf("未知 preset 应返回空串, got %q", got)
+	}
+}
+
 // TestRegistryFingerprint 断言 fingerprint 稳定、64 位小写 hex，
 // 且 canonical JSON 为 162 元素紧凑数组、nullable 字段输出 JSON null。
 func TestRegistryFingerprint(t *testing.T) {

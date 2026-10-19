@@ -153,6 +153,11 @@ func TestW2ParseTestDraftAccountInputMatrix(t *testing.T) {
 	})
 	t.Run("必填缺失", func(t *testing.T) {
 		for key := range valid {
+			// providerProtocolProfileId 不再必填（§9.3 profile 退役，协议上下文
+			// 由 vendor 语义推导供给；携带时接受但忽略）。
+			if key == "providerProtocolProfileId" {
+				continue
+			}
 			record := map[string]any{}
 			for name, value := range valid {
 				if name != key {
@@ -329,17 +334,6 @@ func TestW2PatchSmallHelpers(t *testing.T) {
 			Credentials{"api_keys": []any{"k1"}},
 			Credentials{"api_keys": []any{"k2"}}) {
 			t.Fatal("键不同不应命中")
-		}
-	})
-	t.Run("parseStringJSONColumn", func(t *testing.T) {
-		if got := parseStringJSONColumn(sqlNullString(`["a","b"]`)); len(got) != 2 || got[1] != "b" {
-			t.Fatalf("数组解析不一致：%v", got)
-		}
-		if got := parseStringJSONColumn(sql.NullString{}); len(got) != 0 {
-			t.Fatalf("空列应为空：%v", got)
-		}
-		if got := parseStringJSONColumn(sqlNullString("{bad")); len(got) != 0 {
-			t.Fatalf("坏 JSON 应为空：%v", got)
 		}
 	})
 	t.Run("scheduleToMap 往返", func(t *testing.T) {

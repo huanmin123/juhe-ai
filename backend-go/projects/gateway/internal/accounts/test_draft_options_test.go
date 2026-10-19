@@ -106,8 +106,6 @@ func TestTestDraftOptionsRoutes(t *testing.T) {
 			{"selectedIds 成员非字符串", `{"selectedIds":[9],` + w2DraftAccountBody(groupID) + `}`, "账户草稿测试参数无效"},
 			{"检查模型越界", `{` + strings.Replace(w2DraftAccountBody(groupID),
 				`"supportedModels":["gpt-4o-mini"]`, `"supportedModels":["other-model"]`, 1) + `}`, "账户检查模型必须属于账户支持模型"},
-			{"缺档案", `{` + strings.Replace(w2DraftAccountBody(groupID),
-				`"providerProtocolProfileId":"prof-gpt"`, `"providerProtocolProfileId":"prof-missing"`, 1) + `}`, "供应商 gpt 不支持账户类型 api_key"},
 			{"分组无效", `{` + strings.Replace(w2DraftAccountBody(groupID), groupID, "grp-missing", 1) + `}`, "账户分组无效"},
 		}
 		for _, testCase := range cases {
@@ -118,6 +116,13 @@ func TestTestDraftOptionsRoutes(t *testing.T) {
 			if !strings.Contains(payload["message"].(string), testCase.message) {
 				t.Fatalf("%s：消息缺少 %q：%v", testCase.name, testCase.message, payload["message"])
 			}
+		}
+		// profile 行已随目标 schema 退役（§9.3）：入参档案 ID 忽略（协议上下文
+		// 由 vendor 语义推导供给）——未知 ID 不再 400，草稿目录照常返回。
+		unknownProfile := strings.Replace(w2DraftAccountBody(groupID),
+			`"providerProtocolProfileId":"prof-gpt"`, `"providerProtocolProfileId":"prof-missing"`, 1)
+		if code, payload := env.do(t, http.MethodPost, base+"/test-draft-options", `{`+unknownProfile+`}`); code != http.StatusOK {
+			t.Fatalf("未知档案 ID 应忽略：%d %v", code, payload)
 		}
 		// 坏 JSON → 400。
 		if code, _ := env.doRaw(t, http.MethodPost, base+"/test-draft-options", "{not-json"); code != http.StatusBadRequest {

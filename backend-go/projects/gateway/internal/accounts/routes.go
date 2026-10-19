@@ -927,10 +927,11 @@ func createBody(body map[string]any) (CreateInput, string) {
 	if providerCode == "" {
 		return CreateInput{}, "账户参数无效"
 	}
+	// 过渡 DTO：providerProtocolProfileId 是 legacy profile 面（§9.3 已退役）
+	// 的入参残留——字段保持接受但忽略，创建链协议身份已由 connections 载荷推导
+	// （deriveConnectionProtocolContext，§1.1/§9.3）。目标契约 §8 禁止该字段，
+	// 移除归组合根收口（前端停止发送归前端切片）。
 	profileID := strings.TrimSpace(textString(body["providerProtocolProfileId"]))
-	if profileID == "" {
-		return CreateInput{}, "账户参数无效"
-	}
 	name := strings.TrimSpace(textString(body["name"]))
 	if name == "" {
 		return CreateInput{}, "账户参数无效"

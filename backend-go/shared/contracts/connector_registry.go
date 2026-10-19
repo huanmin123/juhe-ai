@@ -603,6 +603,17 @@ func buildPresetRecordIndex(records []connectorPresetRecord) map[string]connecto
 	return index
 }
 
+// PresetDefaultBaseURL 返回 preset 注册的 nullable default_base_url（设计
+// :58-80 的 17 值表；registry 内空串表达 SQL NULL）。语义与 record 字段一致：
+// 只用于草稿缺省回退、迁移 fallback、seed 和 UI 初始值，不覆盖 API 明确提交
+// 的 baseUrl；generic 三 preset 与未知 preset 返回空串。
+func PresetDefaultBaseURL(preset string) string {
+	if record, ok := connectorPresetRecordIndex[preset]; ok {
+		return record.DefaultBaseURL
+	}
+	return ""
+}
+
 // connectorComboLess 按 driver、account type、oauth type、preset、domain 字典序比较。
 func connectorComboLess(a, b ConnectorCombo) bool {
 	if a.Driver != b.Driver {
