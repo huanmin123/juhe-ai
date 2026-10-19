@@ -760,7 +760,8 @@ func (s *Store) listFilters(options NormalizedListOptions, scoped, now string, a
 		clauses = append(clauses, "("+strings.Join(keywordClauses, " OR ")+")")
 	}
 	if options.ProviderCode != "" && options.ProviderCode != "all" {
-		clauses = append(clauses, "accounts.provider_code = ?")
+		// B4 W2 行为键过渡投影：过滤列同 patch.go COALESCE(vendor, provider)。
+		clauses = append(clauses, "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') = ?")
 		*args = append(*args, options.ProviderCode)
 	}
 	if options.ProviderProtocolProfileID != "" && options.ProviderProtocolProfileID != "all" {
@@ -1398,7 +1399,8 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		args = append(args, keyword, textPrefixUpperBound(keyword))
 	}
 	if normalized.ProviderCode != "" && normalized.ProviderCode != "all" {
-		clauses = append(clauses, "accounts.provider_code = ?")
+		// B4 W2 行为键过渡投影：过滤列同 patch.go COALESCE(vendor, provider)。
+		clauses = append(clauses, "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') = ?")
 		args = append(args, normalized.ProviderCode)
 	}
 	if normalized.ProviderProtocolProfileID != "" && normalized.ProviderProtocolProfileID != "all" {
@@ -1638,8 +1640,9 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		return nil, err
 	}
 	models := []string{}
-	modelRows, err := s.db.QueryContext(ctx, s.bind(`SELECT model FROM `+s.table("account_supported_models")+`
-		WHERE account_id = ? ORDER BY model ASC`), row.id)
+	modelRows, err := s.db.QueryContext(ctx, s.bind(`SELECT models.upstream_model FROM `+s.table("account_supported_models")+` account_supported_models
+		INNER JOIN `+s.table("models")+` models ON models.id = account_supported_models.model_id
+		WHERE account_supported_models.account_id = ? ORDER BY models.upstream_model ASC`), row.id)
 	if err != nil {
 		return nil, err
 	}

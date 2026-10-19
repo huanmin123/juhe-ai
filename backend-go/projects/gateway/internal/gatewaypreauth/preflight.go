@@ -881,7 +881,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	codexCompleted, err := s.Codex.ApplyContextStatePreflight(ctx, CodexContextStateInput{
 		Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
 		StartedAt: input.StartedAt, SystemAccountID: systemAccountID,
-		APIKeyID: apiKeyID, GroupID: groupID, GroupAccess: *groupAccess,
+		APIKeyID: apiKeyID, GroupID: groupID,
 		Signal: input.Signal,
 	})
 	if err != nil {
@@ -1080,7 +1080,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	compactPreflight, err := s.Codex.ApplyChatBridgeCompactPreflight(ctx, CodexCompactPreflightInput{
 		Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
 		StartedAt: input.StartedAt, SystemAccountID: systemAccountID,
-		APIKeyID: apiKeyID, GroupID: groupID, GroupAccess: *groupAccess,
+		APIKeyID: apiKeyID, GroupID: groupID,
 		RequestClientCompatibility: clientStrategy.RequestClientCompatibility,
 		DispatchAccounts:           dispatchPreparation.Accounts,
 		ActiveGatewaySettings:      activeGatewaySettings,

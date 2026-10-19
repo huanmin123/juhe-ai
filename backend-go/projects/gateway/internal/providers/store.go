@@ -1,17 +1,13 @@
-// Package providers owns the T5 management read family over the Node-owned
-// provider catalog tables (providers, provider_protocol_profiles,
-// provider_protocol_profile_families, protocol_endpoint_families,
-// provider_model_catalog, custom_provider_models,
-// provider_default_health_check_models,
-// provider_system_default_health_check_models), ported from
-// backend/src/modules/providers/providers.routes.ts plus
-// provider.repository.ts / provider-model-catalog.repository.ts /
-// custom-provider-models.repository.ts. Node mounts the router once at
-// ${systemApiPrefix}/providers (no my- surface) and distinguishes the
-// management view via the viewScope=admin query; the Go gateway mirrors that
-// contract directly. The model write family (custom models, built-in model
-// patches, default-health-check-model preferences) depends on the C03 model
-// pricing/catalog service and stays a documented 400 deferral.
+// Package providers owns the T5 management read family over the 供应商解耦
+// target schema（供应商与上游协议面重构设计 §8）：vendors（9 个真实厂商，
+// 只读种子）与 models 单表（原 provider_model_catalog +
+// custom_provider_models 合并，见 catalog.go / custom_models.go /
+// builtin_patch.go）。旧 providers/provider_protocol_profiles/
+// provider_protocol_profile_families/protocol_endpoint_families 四表与
+// provider_default_health_check_models/provider_system_default_health_check_models
+// 两张默认检查模型偏好表已从 fresh DDL 删除（设计 §8.11）：供应商读侧改
+// vendors 投影，协议档案维度随表退役（DTO 键保留、恒空/空数组），偏好表读写
+// 按 groups 管理面「入参忽略不落库」同一先例收敛（overlay 恒空、保存不落库）。
 package providers
 
 import (
@@ -24,30 +20,14 @@ import (
 	"time"
 )
 
-// maxProviderDefinitions and maxProviderProtocolProfiles mirror the slice
-// limits in provider.repository.ts. The two preferred profile ids mirror
-// provider-protocol.ts (gemini native v1beta, glm coding openai v1).
-const (
-	maxProviderDefinitions      = 50
-	maxProviderProtocolProfiles = 200
-	preferredGeminiProfileID    = "profile_gemini_native_v1beta"
-	preferredGLMCodingProfile   = "profile_glm_coding_openai_v1"
-	// Provider/protocol codes from domain/provider-protocol.ts.
-	geminiProviderCode       = "gemini"
-	glmProviderCode          = "glm"
-	hybridProviderCode       = "hybrid"
-	openaiProviderCode       = "openai" // OPENAI_COMPATIBLE_PROVIDER_CODE
-	openaiProtocolCode       = "openai"
-	openaiProtocolVersion    = "v1"
-	anthropicProtocolCode    = "anthropic"
-	anthropicProtocolVersion = "v1"
-	geminiProtocolCode       = "gemini"
-	geminiProtocolVersion    = "v1beta"
-)
+// maxProviderDefinitions mirrors the slice limit in the archived provider
+// repository; the catalog list/definitions/options queries keep the same
+// ceiling over vendors.
+const maxProviderDefinitions = 50
 
-// Store is the dual-mode provider catalog persistence (SQLite + PostgreSQL).
-// The catalog tables keep INTEGER 0/1 flags in both modes (Node
-// providerEnabledPredicate), so enabled checks compare against 1.
+// Store is the dual-mode vendor catalog persistence (SQLite + PostgreSQL).
+// The vendors.enabled flag keeps INTEGER 0/1 in both modes (the fresh DDL
+// declares it integer on PostgreSQL too), so enabled checks compare against 1.
 type Store struct {
 	db  *sql.DB
 	pg  bool
@@ -129,14 +109,10 @@ func parseJSONArray(value sql.NullString) []string {
 	return output
 }
 
-// EndpointFamily mirrors ProtocolEndpointFamilyDefinition.
-type EndpointFamily struct {
-	Code        string  `json:"code"`
-	Name        string  `json:"name"`
-	Description *string `json:"description,omitempty"`
-}
-
-// ProtocolProfile mirrors ProviderProtocolProfileDefinition.
+// ProtocolProfile mirrors the archived ProviderProtocolProfileDefinition DTO.
+// The profile tables are retired (设计 §8.11), so every produced value is the
+// empty shape; the type stays because ProviderDefinition.ProtocolProfiles and
+// the /:code payloads keep the key for the not-yet-migrated frontend.
 type ProtocolProfile struct {
 	ID                      string           `json:"id"`
 	ProviderCode            string           `json:"providerCode"`
@@ -152,10 +128,19 @@ type ProtocolProfile struct {
 	EndpointFamilies        []EndpointFamily `json:"endpointFamilies"`
 }
 
-// ProviderDefinition mirrors the Node ProviderDefinition DTO (the flat
-// contract of GET /providers, GET /providers/definitions and
-// GET /providers/{code}); systemDefaultHealthCheckModel rides on the
-// providerWithDefaultHealthCheckModelPreference overlay.
+// EndpointFamily mirrors the archived ProtocolEndpointFamilyDefinition DTO
+// (retired with the profile tables; kept for the ProtocolProfile shape).
+type EndpointFamily struct {
+	Code        string  `json:"code"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
+// ProviderDefinition mirrors the flat provider DTO of GET /providers,
+// GET /providers/definitions and GET /providers/{code}. Vendor rows carry no
+// parent and no protocol profiles any more: parentCode is always absent, the
+// protocol/base-url/default-health-check keys render the empty shape and
+// protocolProfiles stays []（键名保留，前端未迁移）。
 type ProviderDefinition struct {
 	ID                            string            `json:"id"`
 	Code                          string            `json:"code"`
@@ -175,9 +160,8 @@ type ProviderDefinition struct {
 	ProtocolProfiles              []ProtocolProfile `json:"protocolProfiles"`
 }
 
-// ProviderListItem mirrors the catalogue list row of GET /providers/list
-// (mapProviderListRow): the preferred default profile rides along without
-// its id/version and without protocol profiles.
+// ProviderListItem mirrors the catalogue list row of GET /providers/list (the
+// archived mapProviderListRow shape; the protocol/profile keys render empty).
 type ProviderListItem struct {
 	ID                      string   `json:"id"`
 	Code                    string   `json:"code"`
@@ -193,7 +177,7 @@ type ProviderListItem struct {
 	Capabilities            []string `json:"capabilities"`
 }
 
-// ProviderOption mirrors GET /providers/options rows.
+// ProviderOption mirrors GET /providers/options rows (vendors projection).
 type ProviderOption struct {
 	ID      string `json:"id"`
 	Code    string `json:"code"`
@@ -201,352 +185,142 @@ type ProviderOption struct {
 	Enabled bool   `json:"enabled"`
 }
 
-// ListCatalogListItems mirrors listProviderListItemsAsync (GET /list rows):
-// every provider with the lateral preferred default profile, ordered by name
-// then code, bounded by maxProviderDefinitions. Preference overlay is applied
-// by the route (listProviderListItemsForRequestAsync).
+// vendorRowColumns is the shared vendors projection for the list/definitions
+// reads (name ASC, code ASC, bounded by maxProviderDefinitions like the
+// archived provider list).
+const vendorRowColumns = `id, code, name, description, enabled, default_supported_models_json`
+
+// ListCatalogListItems serves the GET /list rows over vendors（旧 providers 行
+// 经 protocol profile lateral 的协议字段随表退役，恒渲染空形状）.
 func (s *Store) ListCatalogListItems(ctx context.Context) ([]ProviderListItem, error) {
 	ctx = ensureCtx(ctx)
-	args := append([]any{}, preferredProfileArgs()...)
-	args = append(args, maxProviderDefinitions)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT p.id, p.code, p.name, p.parent_code, p.description,
-			p.enabled, p.default_supported_models_json,
-			ppp.protocol_code, ppp.base_url, ppp.default_health_check_model,
-			ppp.account_types_json, ppp.capabilities_json
-		FROM `+s.table("providers")+` p`+s.providerJoin()+`
-		ORDER BY p.name ASC, p.code ASC LIMIT ?`), args...)
+	items := []ProviderListItem{}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+vendorRowColumns+`
+		FROM `+s.table("vendors")+`
+		ORDER BY name ASC, code ASC LIMIT ?`), maxProviderDefinitions)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ProviderListItem{}
 	for rows.Next() {
-		var (
-			item                   ProviderListItem
-			enabled                int
-			parentCode, desc       sql.NullString
-			defaultSupportedModels sql.NullString
-			protocolCode, baseURL  sql.NullString
-			healthCheckModel       sql.NullString
-			accountTypes, caps     sql.NullString
-		)
-		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &parentCode, &desc, &enabled,
-			&defaultSupportedModels, &protocolCode, &baseURL, &healthCheckModel, &accountTypes, &caps); err != nil {
-			return nil, err
+		item, scanErr := scanVendorListItem(rows.Scan)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		item.Enabled = enabled == 1
-		item.ParentCode = nullPtrString(parentCode)
-		item.Description = nullPtrString(desc)
-		item.ProtocolCode = protocolCode.String
-		item.BaseURL = baseURL.String
-		item.DefaultHealthCheckModel = healthCheckModel.String
-		item.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
-		item.AccountTypes = parseJSONArray(accountTypes)
-		item.Capabilities = parseJSONArray(caps)
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
-// ListDefinitions mirrors listProvidersAsync() (no code filter): the flat
-// ProviderDefinition rows with the full protocol profile list and the
-// preferred default profile fields (providerDefaultProfileFields).
+func scanVendorListItem(scan func(...any) error) (ProviderListItem, error) {
+	var (
+		item                   ProviderListItem
+		enabled                int
+		description            sql.NullString
+		defaultSupportedModels sql.NullString
+	)
+	if err := scan(&item.ID, &item.Code, &item.Name, &description, &enabled, &defaultSupportedModels); err != nil {
+		return ProviderListItem{}, err
+	}
+	item.Enabled = enabled == 1
+	item.Description = nullPtrString(description)
+	item.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
+	item.AccountTypes = []string{}
+	item.Capabilities = []string{}
+	return item, nil
+}
+
+// ListDefinitions serves GET /providers and GET /providers/definitions: the
+// flat vendors rows with the retired protocol keys rendered empty.
 func (s *Store) ListDefinitions(ctx context.Context) ([]ProviderDefinition, error) {
 	ctx = ensureCtx(ctx)
-	args := append([]any{}, maxProviderDefinitions)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, parent_code, description, enabled,
-			default_supported_models_json
-		FROM `+s.table("providers")+`
-		ORDER BY name ASC, code ASC LIMIT ?`), args...)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+vendorRowColumns+`
+		FROM `+s.table("vendors")+`
+		ORDER BY name ASC, code ASC LIMIT ?`), maxProviderDefinitions)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	definitions := []*ProviderDefinition{}
+	definitions := []ProviderDefinition{}
 	for rows.Next() {
-		definition, scanErr := s.scanProviderDefinition(rows.Scan)
+		definition, scanErr := scanVendorDefinition(rows.Scan)
 		if scanErr != nil {
 			return nil, scanErr
 		}
 		definitions = append(definitions, definition)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := s.attachProtocolProfiles(ctx, definitions); err != nil {
-		return nil, err
-	}
-	output := make([]ProviderDefinition, 0, len(definitions))
-	for _, definition := range definitions {
-		output = append(output, *definition)
-	}
-	return output, nil
+	return definitions, rows.Err()
 }
 
-// FindDefinition resolves one provider by code (the Node GET /:code lookup:
-// listProvidersAsync(code), code-only). Returns (nil, nil) when no row
-// matches (route renders 404).
+// FindDefinition resolves one vendor by code (the GET /providers/{code}
+// lookup). Returns (nil, nil) when no row matches (route renders 404).
 func (s *Store) FindDefinition(ctx context.Context, code string) (*ProviderDefinition, error) {
 	ctx = ensureCtx(ctx)
 	trimmed := strings.TrimSpace(code)
 	if trimmed == "" {
 		return nil, nil
 	}
-	args := append([]any{}, trimmed, maxProviderDefinitions)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, parent_code, description, enabled,
-			default_supported_models_json
-		FROM `+s.table("providers")+`
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+vendorRowColumns+`
+		FROM `+s.table("vendors")+`
 		WHERE code = ?
-		ORDER BY name ASC, code ASC LIMIT ?`), args...)
+		ORDER BY name ASC, code ASC LIMIT 1`), trimmed)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var definition *ProviderDefinition
 	for rows.Next() {
-		record, scanErr := s.scanProviderDefinition(rows.Scan)
+		definition, scanErr := scanVendorDefinition(rows.Scan)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		definition = record
+		return &definition, rows.Err()
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if definition == nil {
-		return nil, nil
-	}
-	if err := s.attachProtocolProfiles(ctx, []*ProviderDefinition{definition}); err != nil {
-		return nil, err
-	}
-	return definition, nil
+	return nil, rows.Err()
 }
 
-func (s *Store) scanProviderDefinition(scan func(...any) error) (*ProviderDefinition, error) {
+func scanVendorDefinition(scan func(...any) error) (ProviderDefinition, error) {
 	var (
 		definition             ProviderDefinition
 		enabled                int
-		parentCode, desc       sql.NullString
+		description            sql.NullString
 		defaultSupportedModels sql.NullString
 	)
-	if err := scan(&definition.ID, &definition.Code, &definition.Name, &parentCode, &desc, &enabled,
-		&defaultSupportedModels); err != nil {
-		return nil, err
+	if err := scan(&definition.ID, &definition.Code, &definition.Name, &description, &enabled, &defaultSupportedModels); err != nil {
+		return ProviderDefinition{}, err
 	}
 	definition.Enabled = enabled == 1
-	definition.ParentCode = nullPtrString(parentCode)
-	definition.Description = nullPtrString(desc)
+	definition.Description = nullPtrString(description)
 	definition.DefaultSupportedModels = parseJSONArray(defaultSupportedModels)
+	definition.AccountTypes = []string{}
+	definition.Capabilities = []string{}
 	definition.ProtocolProfiles = []ProtocolProfile{}
-	return &definition, nil
+	return definition, nil
 }
 
-// attachProtocolProfiles ports providerProtocolProfilesByProviderCode plus
-// providerDefaultProfileFields: one profiles query (provider_code ASC,
-// updated_at DESC, id ASC, LIMIT 200), one families query, then the
-// preferred default profile fields ride onto every definition.
-func (s *Store) attachProtocolProfiles(ctx context.Context, definitions []*ProviderDefinition) error {
-	if len(definitions) == 0 {
-		return nil
-	}
-	codes := make([]string, 0, len(definitions))
-	for _, definition := range definitions {
-		codes = append(codes, definition.Code)
-	}
-	profiles, err := s.listProtocolProfiles(ctx, codes)
-	if err != nil {
-		return err
-	}
-	profileIDs := make([]string, 0, len(profiles))
-	for _, profile := range profiles {
-		profileIDs = append(profileIDs, profile.ID)
-	}
-	families, err := s.listEndpointFamilies(ctx, profileIDs)
-	if err != nil {
-		return err
-	}
-	for index := range profiles {
-		profiles[index].EndpointFamilies = families[profiles[index].ID]
-		if profiles[index].EndpointFamilies == nil {
-			profiles[index].EndpointFamilies = []EndpointFamily{}
-		}
-	}
-	profilesByCode := map[string][]ProtocolProfile{}
-	for _, profile := range profiles {
-		profilesByCode[profile.ProviderCode] = append(profilesByCode[profile.ProviderCode], profile)
-	}
-	for _, definition := range definitions {
-		providerProfiles := profilesByCode[definition.Code]
-		if providerProfiles == nil {
-			providerProfiles = []ProtocolProfile{}
-		}
-		definition.ProtocolProfiles = providerProfiles
-		applyPreferredDefaultProfile(definition, preferredDefaultProtocolProfile(definition.Code, providerProfiles))
-	}
-	return nil
-}
-
-// listProtocolProfiles mirrors listProviderProtocolProfilesAsync.
-func (s *Store) listProtocolProfiles(ctx context.Context, providerCodes []string) ([]ProtocolProfile, error) {
-	where := ""
-	args := []any{}
-	if len(providerCodes) > 0 {
-		where = " WHERE provider_code IN (" + placeholders(len(providerCodes)) + ")"
-		for _, code := range providerCodes {
-			args = append(args, code)
-		}
-	}
-	args = append(args, maxProviderProtocolProfiles)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, name, description, enabled,
-			protocol_code, protocol_version, base_url, default_health_check_model,
-			account_types_json, capabilities_json
-		FROM `+s.table("provider_protocol_profiles")+where+`
-		ORDER BY provider_code ASC, updated_at DESC, id ASC
-		LIMIT ?`), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	profiles := []ProtocolProfile{}
-	for rows.Next() {
-		var profile ProtocolProfile
-		var enabled int
-		var description sql.NullString
-		var accountTypes, capabilities sql.NullString
-		if err := rows.Scan(&profile.ID, &profile.ProviderCode, &profile.Name, &description, &enabled,
-			&profile.ProtocolCode, &profile.ProtocolVersion, &profile.BaseURL, &profile.DefaultHealthCheckModel,
-			&accountTypes, &capabilities); err != nil {
-			return nil, err
-		}
-		profile.Enabled = enabled == 1
-		profile.Description = nullPtrString(description)
-		profile.AccountTypes = parseJSONArray(accountTypes)
-		profile.Capabilities = parseJSONArray(capabilities)
-		profiles = append(profiles, profile)
-	}
-	return profiles, rows.Err()
-}
-
-// listEndpointFamilies mirrors providerEndpointFamiliesByProfileIdAsync.
-func (s *Store) listEndpointFamilies(ctx context.Context, profileIDs []string) (map[string][]EndpointFamily, error) {
-	result := map[string][]EndpointFamily{}
-	if len(profileIDs) == 0 {
-		return result, nil
-	}
-	args := stringSliceToAny(profileIDs)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT ppf.profile_id,
-			f.family_code, f.name, f.description
-		FROM `+s.table("provider_protocol_profile_families")+` ppf
-		INNER JOIN `+s.table("provider_protocol_profiles")+` ppp
-			ON ppp.id = ppf.profile_id
-		INNER JOIN `+s.table("protocol_endpoint_families")+` f
-			ON f.protocol_code = ppp.protocol_code
-			AND f.protocol_version = ppp.protocol_version
-			AND f.family_code = ppf.family_code
-		WHERE ppf.profile_id IN (`+placeholders(len(profileIDs))+`)
-			AND ppf.enabled = 1
-			AND f.enabled = 1
-		ORDER BY ppf.profile_id ASC, f.family_code ASC`), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var profileID string
-		var family EndpointFamily
-		var description sql.NullString
-		if err := rows.Scan(&profileID, &family.Code, &family.Name, &description); err != nil {
-			return nil, err
-		}
-		family.Description = nullPtrString(description)
-		result[profileID] = append(result[profileID], family)
-	}
-	return result, rows.Err()
-}
-
-// applyPreferredDefaultProfile ports providerDefaultProfileFields: the
-// preferred profile fields ride onto the definition; without any profile the
-// Node shape carries empty strings and empty arrays.
-func applyPreferredDefaultProfile(definition *ProviderDefinition, preferred *ProtocolProfile) {
-	if preferred == nil {
-		definition.DefaultProtocolProfileID = ""
-		definition.ProtocolCode = ""
-		definition.ProtocolVersion = ""
-		definition.BaseURL = ""
-		definition.DefaultHealthCheckModel = ""
-		definition.AccountTypes = []string{}
-		definition.Capabilities = []string{}
-		return
-	}
-	definition.DefaultProtocolProfileID = preferred.ID
-	definition.ProtocolCode = preferred.ProtocolCode
-	definition.ProtocolVersion = preferred.ProtocolVersion
-	definition.BaseURL = preferred.BaseURL
-	definition.DefaultHealthCheckModel = preferred.DefaultHealthCheckModel
-	definition.AccountTypes = preferred.AccountTypes
-	definition.Capabilities = preferred.Capabilities
-}
-
-// preferredDefaultProtocolProfile mirrors the in-memory
-// preferredDefaultProtocolProfile pick used by listProvidersAsync: enabled
-// profiles first (else all), then the gemini-native / glm-coding preferred
-// ids, then the first candidate. The definition rows keep the raw profiles
-// slice order (provider_code ASC, updated_at DESC, id ASC).
-func preferredDefaultProtocolProfile(providerCode string, profiles []ProtocolProfile) *ProtocolProfile {
-	enabledProfiles := []ProtocolProfile{}
-	for _, profile := range profiles {
-		if profile.Enabled {
-			enabledProfiles = append(enabledProfiles, profile)
-		}
-	}
-	candidates := enabledProfiles
-	if len(candidates) == 0 {
-		candidates = profiles
-	}
-	if len(candidates) == 0 {
-		return nil
-	}
-	for index := range candidates {
-		if candidates[index].ProviderCode == geminiProviderCode && candidates[index].ID == preferredGeminiProfileID {
-			return &candidates[index]
-		}
-	}
-	for index := range candidates {
-		if candidates[index].ProviderCode == glmProviderCode && candidates[index].ID == preferredGLMCodingProfile {
-			return &candidates[index]
-		}
-	}
-	return &candidates[0]
-}
-
-// ListProviderOptions mirrors listEnabledProviderOptionsAsync: enabled rows
-// only, ordered by name then code, bounded by maxProviderDefinitions.
+// ListProviderOptions serves GET /providers/options: enabled vendor rows only.
 func (s *Store) ListProviderOptions(ctx context.Context) ([]ProviderOption, error) {
 	ctx = ensureCtx(ctx)
-	args := append([]any{}, maxProviderDefinitions)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, enabled
-		FROM `+s.table("providers")+`
+		FROM `+s.table("vendors")+`
 		WHERE enabled = 1
-		ORDER BY name ASC, code ASC LIMIT ?`), args...)
+		ORDER BY name ASC, code ASC LIMIT ?`), maxProviderDefinitions)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	options := []ProviderOption{}
 	for rows.Next() {
-		var option ProviderOption
-		var enabled int
-		if err := rows.Scan(&option.ID, &option.Code, &option.Name, &enabled); err != nil {
-			return nil, err
+		option, scanErr := scanVendorOption(rows.Scan)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		option.Enabled = enabled == 1
 		options = append(options, option)
 	}
 	return options, rows.Err()
 }
 
-// FindProviderOption mirrors findProviderOptionByCodeAsync (code lookup, the
-// enabled flag rides along for the route-level 404 forks).
+// FindProviderOption mirrors the code lookup; the enabled flag rides along for
+// the route-level 404 forks.
 func (s *Store) FindProviderOption(ctx context.Context, code string) (*ProviderOption, error) {
 	ctx = ensureCtx(ctx)
 	trimmed := strings.TrimSpace(code)
@@ -554,7 +328,7 @@ func (s *Store) FindProviderOption(ctx context.Context, code string) (*ProviderO
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, code, name, enabled
-		FROM `+s.table("providers")+`
+		FROM `+s.table("vendors")+`
 		WHERE code = ?
 		LIMIT 1`), trimmed)
 	if err != nil {
@@ -562,51 +336,30 @@ func (s *Store) FindProviderOption(ctx context.Context, code string) (*ProviderO
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var option ProviderOption
-		var enabled int
-		if err := rows.Scan(&option.ID, &option.Code, &option.Name, &enabled); err != nil {
-			return nil, err
+		option, scanErr := scanVendorOption(rows.Scan)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		option.Enabled = enabled == 1
 		return &option, rows.Err()
 	}
 	return nil, rows.Err()
 }
 
-// ProtocolProviderCodes mirrors listProtocolProviderCodesAsync: distinct
-// provider codes carrying an enabled profile of the protocol, provider row
-// enabled, ordered by code, bounded by maxProviderDefinitions.
-func (s *Store) ProtocolProviderCodes(ctx context.Context, protocolCode, protocolVersion string) ([]string, error) {
-	ctx = ensureCtx(ctx)
-	args := append([]any{}, protocolCode, protocolVersion, maxProviderDefinitions)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT p.code
-		FROM `+s.table("provider_protocol_profiles")+` ppp
-		INNER JOIN `+s.table("providers")+` p
-			ON p.code = ppp.provider_code
-		WHERE p.enabled = 1
-			AND ppp.enabled = 1
-			AND ppp.protocol_code = ?
-			AND ppp.protocol_version = ?
-		ORDER BY p.code ASC
-		LIMIT ?`), args...)
-	if err != nil {
-		return nil, err
+func scanVendorOption(scan func(...any) error) (ProviderOption, error) {
+	var (
+		option  ProviderOption
+		enabled int
+	)
+	if err := scan(&option.ID, &option.Code, &option.Name, &enabled); err != nil {
+		return ProviderOption{}, err
 	}
-	defer rows.Close()
-	codes := []string{}
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		codes = append(codes, code)
-	}
-	return codes, rows.Err()
+	option.Enabled = enabled == 1
+	return option, nil
 }
 
-// EnabledNonHybridProviderCodes mirrors the /models/options fallback source
-// pick: listProvidersAsync() filtered to enabled non-hybrid providers
-// (already ordered by name then code, LIMIT 50).
+// EnabledNonHybridProviderCodes serves the /models/options fallback source
+// pick: enabled vendors, already ordered by name then code (hybrid 不在
+// vendors 值域，过滤保留为形状守卫).
 func (s *Store) EnabledNonHybridProviderCodes(ctx context.Context) ([]string, error) {
 	definitions, err := s.ListDefinitions(ctx)
 	if err != nil {
@@ -626,116 +379,37 @@ func (s *Store) EnabledNonHybridProviderCodes(ctx context.Context) ([]string, er
 	return codes, nil
 }
 
-// ListDefaultHealthCheckModelPreferences mirrors
-// listProviderDefaultHealthCheckModelPreferencesAsync: the personal
-// per-system-account preference rows; empty systemAccountID yields no rows.
+// ListDefaultHealthCheckModelPreferences renders the personal per-provider
+// default health-check model overlay. The storage table
+// (provider_default_health_check_models) is retired by 设计 §8.11，overlay 恒
+// 空（与 groups 管理面 providerCode 入参忽略不落库同一先例；键名保留）。
 func (s *Store) ListDefaultHealthCheckModelPreferences(ctx context.Context, systemAccountID string, providerCodes []string) (map[string]string, error) {
-	ctx = ensureCtx(ctx)
-	result := map[string]string{}
-	trimmedAccount := strings.TrimSpace(systemAccountID)
-	if trimmedAccount == "" {
-		return result, nil
-	}
-	codes := normalizeProviderCodeList(providerCodes)
-	where := " WHERE system_account_id = ?"
-	args := append([]any{}, trimmedAccount)
-	if len(codes) > 0 {
-		where += " AND provider_code IN (" + placeholders(len(codes)) + ")"
-		for _, code := range codes {
-			args = append(args, code)
-		}
-	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model
-		FROM `+s.table("provider_default_health_check_models")+where+`
-		ORDER BY provider_code ASC`), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var code, model string
-		if err := rows.Scan(&code, &model); err != nil {
-			return nil, err
-		}
-		code = strings.TrimSpace(code)
-		model = strings.TrimSpace(model)
-		if code == "" || model == "" {
-			continue
-		}
-		result[code] = model
-	}
-	return result, rows.Err()
+	return map[string]string{}, nil
 }
 
-// ListSystemDefaultHealthCheckModels mirrors
-// listProviderSystemDefaultHealthCheckModelsAsync.
+// ListSystemDefaultHealthCheckModels renders the system default overlay; the
+// storage table (provider_system_default_health_check_models) is retired by
+// 设计 §8.11，overlay 恒空.
 func (s *Store) ListSystemDefaultHealthCheckModels(ctx context.Context, providerCodes []string) (map[string]string, error) {
-	ctx = ensureCtx(ctx)
-	result := map[string]string{}
-	codes := normalizeProviderCodeList(providerCodes)
-	where := ""
-	args := []any{}
-	if len(codes) > 0 {
-		where = " WHERE provider_code IN (" + placeholders(len(codes)) + ")"
-		for _, code := range codes {
-			args = append(args, code)
-		}
-	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model
-		FROM `+s.table("provider_system_default_health_check_models")+where+`
-		ORDER BY provider_code ASC`), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var code, model string
-		if err := rows.Scan(&code, &model); err != nil {
-			return nil, err
-		}
-		code = strings.TrimSpace(code)
-		model = strings.TrimSpace(model)
-		if code == "" || model == "" {
-			continue
-		}
-		result[code] = model
-	}
-	return result, rows.Err()
+	return map[string]string{}, nil
 }
 
-// UpsertDefaultHealthCheckModelPreference ports
-// upsertProviderDefaultHealthCheckModelPreferenceAsync (personal rows).
+// UpsertDefaultHealthCheckModelPreference keeps the PUT contract shape but no
+// longer persists：偏好表随供应商解耦退役（设计 §8.11），保存按 groups 管理面
+// 「忽略不落库」先例收敛，路由仍返回校验后的成功体.
 func (s *Store) UpsertDefaultHealthCheckModelPreference(ctx context.Context, systemAccountID, providerCode, model string) error {
-	ctx = ensureCtx(ctx)
-	now := s.nowUTC().Format("2006-01-02T15:04:05.000Z07:00")
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("provider_default_health_check_models")+`
-		(system_account_id, provider_code, model, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(system_account_id, provider_code) DO UPDATE SET
-			model = excluded.model,
-			updated_at = excluded.updated_at`),
-		strings.TrimSpace(systemAccountID), strings.TrimSpace(providerCode), strings.TrimSpace(model), now, now)
-	return err
+	return nil
 }
 
-// UpsertSystemDefaultHealthCheckModel ports
-// upsertProviderSystemDefaultHealthCheckModelAsync.
+// UpsertSystemDefaultHealthCheckModel keeps the PUT contract shape but no
+// longer persists（同上：偏好表退役，忽略不落库）.
 func (s *Store) UpsertSystemDefaultHealthCheckModel(ctx context.Context, providerCode, model string) error {
-	ctx = ensureCtx(ctx)
-	now := s.nowUTC().Format("2006-01-02T15:04:05.000Z07:00")
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("provider_system_default_health_check_models")+`
-		(provider_code, model, created_at, updated_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(provider_code) DO UPDATE SET
-			model = excluded.model,
-			updated_at = excluded.updated_at`),
-		strings.TrimSpace(providerCode), strings.TrimSpace(model), now, now)
-	return err
+	return nil
 }
 
-// overlayListItemHealthCheckModels ports the /list overlay
-// (listProviderListItemsForRequestAsync): personal preference wins, then the
-// system default, then the profile default.
+// overlayListItemHealthCheckModels keeps the /list overlay composition
+// (personal preference wins, then the system default, then the row default);
+// with both preference maps retired-empty the overlay is a no-op.
 func overlayListItemHealthCheckModels(items []ProviderListItem, preferences, systemDefaults map[string]string) {
 	for index := range items {
 		code := items[index].Code
@@ -749,10 +423,9 @@ func overlayListItemHealthCheckModels(items []ProviderListItem, preferences, sys
 	}
 }
 
-// overlayDefinitionHealthCheckModels ports
-// providerWithDefaultHealthCheckModelPreference for ProviderDefinition rows:
-// personal || system || original, plus the systemDefaultHealthCheckModel key
-// (present only when a system default row exists).
+// overlayDefinitionHealthCheckModels keeps the ProviderDefinition overlay
+// composition; with both preference maps retired-empty it is a no-op and the
+// systemDefaultHealthCheckModel key stays absent.
 func overlayDefinitionHealthCheckModels(definitions []ProviderDefinition, preferences, systemDefaults map[string]string) {
 	for index := range definitions {
 		definition := &definitions[index]
@@ -770,34 +443,13 @@ func overlayDefinitionHealthCheckModels(definitions []ProviderDefinition, prefer
 	}
 }
 
-// providerJoin mirrors the Node listProviderListItems lateral: one preferred
-// default profile per provider.
-func (s *Store) providerJoin() string {
-	return ` LEFT JOIN ` + s.table("provider_protocol_profiles") + ` ppp ON ppp.id = (
-		SELECT candidate.id FROM ` + s.table("provider_protocol_profiles") + ` candidate
-		WHERE candidate.provider_code = p.code
-		ORDER BY ` + preferredProfileOrder + ` LIMIT 1
-	)`
-}
-
-// preferredProfileOrder mirrors the Node default-profile pick in SQL: enabled
-// first, then the gemini-native / glm-coding preferred ids, then recency.
-const preferredProfileOrder = `candidate.enabled DESC,
-		CASE WHEN candidate.id IN (?, ?) THEN 0 ELSE 1 END,
-		candidate.updated_at DESC, candidate.id ASC`
-
-// preferredProfileArgs feeds the CASE WHEN candidate.id IN (?, ?) pair of the
-// preferred-profile pick.
-func preferredProfileArgs() []any {
-	return []any{preferredGeminiProfileID, preferredGLMCodingProfile}
-}
-
 func placeholders(count int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", count), ", ")
 }
 
-// normalizeProviderCodeList mirrors the normalized provider code lists of the
-// preference repositories (trim, drop empties, dedupe).
+// normalizeProviderCodeList keeps the normalized code lists of the retired
+// preference repositories (trim, drop empties, dedupe) for the catalog-side
+// vendor windows.
 func normalizeProviderCodeList(codes []string) []string {
 	seen := map[string]bool{}
 	output := []string{}

@@ -35,7 +35,6 @@ type managementRow struct {
 	priority                            any
 	superPriorityEnabled                any
 	fallbackEnabled                     any
-	clientCompatibility                 sql.NullString
 	status                              string
 	schedulable                         any
 	balanceQueryEnabled                 any
@@ -97,7 +96,6 @@ type managementRow struct {
 	sourceLastHealthCheckTraceID        sql.NullString
 	sourceProxyProfileID                sql.NullString
 	sourceConcurrencyLimit              any
-	sourceClientCompatibility           sql.NullString
 	bindingSystemAccountID              sql.NullString
 	boundGroupID                        sql.NullString
 	boundGroupName                      sql.NullString
@@ -122,7 +120,7 @@ const managementRowColumns = `
       account_rows.config_revision,
       account_rows.system_account_id,
       account_rows.provider_code,
-      providers.name AS provider_name,
+      vendors.name AS provider_name,
       account_rows.provider_protocol_profile_id,
       account_rows.protocol_code,
       account_rows.protocol_version,
@@ -133,7 +131,6 @@ const managementRowColumns = `
       account_rows.priority,
       account_rows.super_priority_enabled,
       account_rows.fallback_enabled,
-      account_rows.client_compatibility,
       account_rows.status,
       account_rows.schedulable,
       account_rows.balance_query_enabled,
@@ -195,7 +192,6 @@ const managementRowColumns = `
       account_rows.source_last_health_check_trace_id,
       account_rows.source_proxy_profile_id,
       account_rows.source_concurrency_limit,
-      account_rows.source_client_compatibility,
       COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_name,
       COALESCE(
         account_rows.authorization_resource_owner_system_account_id,
@@ -230,8 +226,8 @@ func managementAccountRowsCTE(table func(string) string) string {
         accounts.id,
         accounts.config_revision,
         accounts.system_account_id,
-        accounts.provider_code,
-        accounts.provider_protocol_profile_id,
+        COALESCE(accounts.vendor_code, '') AS provider_code,
+        '' AS provider_protocol_profile_id,
         accounts.protocol_code,
         accounts.protocol_version,
         accounts.name,
@@ -242,7 +238,6 @@ func managementAccountRowsCTE(table func(string) string) string {
         accounts.priority,
         accounts.super_priority_enabled,
         accounts.fallback_enabled,
-        accounts.client_compatibility,
         accounts.schedulable,
         accounts.balance_query_enabled,
         accounts.balance_query_next_refresh_at,
@@ -281,8 +276,8 @@ func managementAccountRowsCTE(table func(string) string) string {
         authorizations.effective_source_type AS authorization_effective_source_type,
         authorizations.effective_source_team_id AS authorization_effective_source_team_id,
         authorizations.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-        source_accounts.provider_code AS source_provider_code,
-        source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id,
+        COALESCE(source_accounts.vendor_code, '') AS source_provider_code,
+        '' AS source_provider_protocol_profile_id,
         source_accounts.protocol_code AS source_protocol_code,
         source_accounts.protocol_version AS source_protocol_version,
         source_accounts.type AS source_type,
@@ -303,8 +298,7 @@ func managementAccountRowsCTE(table func(string) string) string {
         source_accounts.last_health_check_error_message AS source_last_health_check_error_message,
         source_accounts.last_health_check_trace_id AS source_last_health_check_trace_id,
         source_accounts.proxy_profile_id AS source_proxy_profile_id,
-        source_accounts.concurrency_limit AS source_concurrency_limit,
-        source_accounts.client_compatibility AS source_client_compatibility
+        source_accounts.concurrency_limit AS source_concurrency_limit
       FROM ` + table("accounts") + ` accounts
       LEFT JOIN ` + table("resource_authorizations") + ` authorizations
         ON authorizations.id = accounts.authorization_instance_authorization_id
@@ -384,8 +378,8 @@ func (l *ProjectionItemLoader) managementPageSQL(postgres bool, idCount int) str
       )
     LEFT JOIN ` + table("proxy_profiles") + ` proxy_profiles
       ON proxy_profiles.id = COALESCE(account_rows.source_proxy_profile_id, account_rows.configured_proxy_profile_id)
-    LEFT JOIN ` + table("providers") + ` providers
-      ON providers.code = COALESCE(account_rows.source_provider_code, account_rows.provider_code)
+    LEFT JOIN ` + table("vendors") + ` vendors
+      ON vendors.code = account_rows.provider_code
     WHERE account_rows.id IN (` + placeholdersFor(idCount) + `)
     ORDER BY
       CASE WHEN account_rows.authorization_id IS NOT NULL
@@ -443,7 +437,6 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.priority,
 		&row.superPriorityEnabled,
 		&row.fallbackEnabled,
-		&row.clientCompatibility,
 		&row.status,
 		&row.schedulable,
 		&row.balanceQueryEnabled,
@@ -505,7 +498,6 @@ func scanManagementRow(rows *sql.Rows) (managementRow, error) {
 		&row.sourceLastHealthCheckTraceID,
 		&row.sourceProxyProfileID,
 		&row.sourceConcurrencyLimit,
-		&row.sourceClientCompatibility,
 		&row.systemAccountName,
 		&row.ownerSystemAccountID,
 		&row.ownerSystemAccountName,
@@ -558,9 +550,12 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 			concurrencyLimit = numberValue(row.sourceConcurrencyLimit)
 		}
 	}
+	// client_compatibility 物理列随供应商解耦退役（设计 §2.1/§8.11）：配置值
+	// 恒 nil，兼容键全量由派生函数回退（gpt+openai 协议 → codex_responses，
+	// 其余 openai_standard）。
 	compatibility := normalizeOpenAIAccountClientCompatibility(
 		providerCode, accountType,
-		clientCompatibilityValue(row, authorized),
+		nil,
 		protocolCode, protocolVersion, profileID,
 	)
 	payload := map[string]any{
@@ -651,17 +646,6 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 		}
 	}
 	return payload
-}
-
-func clientCompatibilityValue(row managementRow, authorized bool) any {
-	value := row.clientCompatibility
-	if authorized && row.sourceClientCompatibility.Valid {
-		return row.sourceClientCompatibility.String
-	}
-	if value.Valid {
-		return value.String
-	}
-	return nil
 }
 
 func resolvedProxyProfileID(row managementRow, authorized bool) string {

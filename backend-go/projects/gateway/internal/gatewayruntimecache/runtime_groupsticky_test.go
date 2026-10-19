@@ -41,7 +41,7 @@ func groupStickyTestService(t *testing.T, spy *spyGroupOrderer) (*Service, *fake
 	t.Helper()
 	models := newFakeModels()
 	for _, groupID := range []string{"grp_a", "grp_b"} {
-		access := &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", ProviderCode: "gpt"}
+		access := &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner"}
 		models.groupAccess[groupID+":sys_owner"] = access
 		models.accounts[groupID] = OpenAIAccountsForGroupResult{Accounts: []OpenAIAccountSecret{testAccount("acc-"+groupID, "sys_owner")}}
 	}

@@ -447,7 +447,7 @@ func TestPatchProxySwitchRevalidatesBalanceIdentity(t *testing.T) {
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt",
 		"name":"proxy-balance","type":"api_key",
 		"credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true,
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryEnabled":true,
 		"balanceQueryConfig":{"adapter":"builtin","preferredBuiltinAdapter":"sub2api"}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, payload)
@@ -544,7 +544,7 @@ func TestStoreBalanceSnapshotCleanerDeletesSupersededSnapshots(t *testing.T) {
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt",
 		"name":"snapshot-cleanup","type":"api_key",
 		"credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true,
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryEnabled":true,
 		"balanceQueryConfig":{"adapter":"builtin","preferredBuiltinAdapter":"sub2api"}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, payload)

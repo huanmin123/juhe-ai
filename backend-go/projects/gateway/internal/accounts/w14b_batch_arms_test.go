@@ -88,10 +88,10 @@ func TestW14BBatchEditContextArms(t *testing.T) {
 		t.Fatal("空 scope 应拒绝")
 	}
 	// 全字段 happy path：models/mappings/modes 三类。
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-		VALUES (?, 'openai', 'gpt-4o-mini', '2026-09-17T00:00:00.000Z')`, ids[0])
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, created_at, updated_at)
-		VALUES (?, 'openai', 'gpt-4o-mini', 'chat_completions', 'up-mini', 'chat_completions', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')`, ids[0])
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+		SELECT ?, id, '2026-09-17T00:00:00.000Z' FROM models WHERE upstream_model = 'gpt-4o-mini'`, ids[0])
+	// B4 W2 目标形态直插（连接 preset + upstream 支持成员 + 入口映射行）。
+	env.seedEntryMapping(t, ids[0], "generic_openai_v1", "gpt-4o-mini", "chat_completions", "up-mini", "chat_completions", 1)
 	items, err := env.store.LoadBatchEditContext(ctx, ids, []string{"supportedModels", "modelMappings", "supportedEndpointModes"}, scope)
 	if err != nil {
 		t.Fatalf("批量上下文应成功：%v", err)
@@ -100,7 +100,8 @@ func TestW14BBatchEditContextArms(t *testing.T) {
 		t.Fatalf("上下文条目数不符：%+v", items)
 	}
 	if items[0].ID == ids[0] {
-		if items[0].SupportedModels == nil || len(*items[0].SupportedModels) != 1 {
+		// B4 W2：seedEntryMapping 同时落 gpt-4o-mini 与 up-mini 两条支持成员。
+		if items[0].SupportedModels == nil || len(*items[0].SupportedModels) < 1 {
 			t.Fatalf("支持模型应渲染：%+v", items[0])
 		}
 		if items[0].ModelMappings == nil || len(*items[0].ModelMappings) != 1 {
@@ -175,8 +176,8 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET health_check_model = 'gpt-4o-mini'`)
 	// 种子支持模型：端点形态/覆盖字段参与会断言非空支持模型集合。
 	for _, target := range targets {
-		env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-			VALUES (?, 'openai', 'gpt-4o-mini', '2026-09-17T00:00:00.000Z')`, target.AccountID)
+		env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+			SELECT ?, id, '2026-09-17T00:00:00.000Z' FROM models WHERE upstream_model = 'gpt-4o-mini'`, target.AccountID)
 	}
 	// 凭据覆盖：错误处理规则 + 响应检查规则 + 端点形态 + 服务等级清除。
 	w14bRefreshTargets(t, env, targets)
@@ -287,25 +288,32 @@ func TestW14BBatchUpdateCredentialAndProxyArms(t *testing.T) {
 	}, scope); err != nil {
 		t.Fatalf("目录内模型应成功：%v", err)
 	}
-	if got := env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE model = 'gpt-4o-mini'`); got != 2 {
+	if got := env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`); got != 2 {
 		t.Fatalf("支持模型应批量替换：%d", got)
 	}
 
 	// 模型映射更新 + tags 替换（L487/L492 臂）。
 	w14bRefreshTargets(t, env, targets)
+	// B4 W2（设计 §8）：映射携带 preset；批量前为各目标种连接 + target
+	// upstream 支持成员（写入侧双解析与外键引用面）。
+	for _, target := range targets {
+		env.seedAccountConnection(t, target.AccountID, "generic_openai_v1", "gpt-4o-mini-2")
+	}
 	if _, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: targets,
 		Updates: map[string]BatchUpdateField{
 			"modelMappings": field("modelMappings", []any{map[string]any{
 				"sourceModel": "gpt-4o-mini", "sourceEndpointFamily": "chat_completions",
-				"upstreamModel": "gpt-4o-mini-2", "upstreamEndpointFamily": "chat_completions", "enabled": true,
+				"upstreamModel": "gpt-4o-mini-2", "upstreamEndpointFamily": "chat_completions",
+				"targetConnectionPresetCode": "generic_openai_v1", "enabled": true,
 			}}),
 			"tags": field("tags", []any{"w14b-tag-a", "w14b-tag-b"}),
 		},
 	}, scope); err != nil {
 		t.Fatalf("映射与标签批量应成功：%v", err)
 	}
-	if got := env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE upstream_model = 'gpt-4o-mini-2'`); got != 2 {
+	if got := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE target_model_id IN
+		(SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini-2')`); got != 2 {
 		t.Fatalf("映射应批量落库：%d", got)
 	}
 	if got := env.count(t, `SELECT COUNT(*) FROM account_tag_bindings`); got != 4 {

@@ -26,9 +26,10 @@ func w13aBatchAccounts(t *testing.T, env *testEnv, suffix string) (adminID strin
 		'https://api.openai.com/v1', 'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)`, now, now)
 	env.seedAccount(t, "acc-w13a-b1"+suffix, adminID, "w13a-b1"+suffix, "active")
 	env.seedAccount(t, "acc-w13a-b2"+suffix, adminID, "w13a-b2"+suffix, "active")
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-		VALUES ('acc-w13a-b1`+suffix+`', 'openai', 'gpt-4o-mini', '2026-09-17T00:00:00.000Z'),
-		       ('acc-w13a-b2`+suffix+`', 'openai', 'gpt-4o-mini', '2026-09-17T00:00:00.000Z')`)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+		SELECT 'acc-w13a-b1`+suffix+`', id, '2026-09-17T00:00:00.000Z' FROM models WHERE upstream_model = 'gpt-4o-mini'
+		UNION ALL
+		SELECT 'acc-w13a-b2`+suffix+`', id, '2026-09-17T00:00:00.000Z' FROM models WHERE upstream_model = 'gpt-4o-mini'`)
 	// 凭据覆盖批次的归一化要求 base_url，种子里补全。
 	for _, id := range []string{"acc-w13a-b1" + suffix, "acc-w13a-b2" + suffix} {
 		sealed, err := EncryptJSON(testSecret, Credentials{"api_key": "sk-w13a-" + id, "base_url": "https://api.openai.com/v1"})
@@ -202,7 +203,7 @@ func TestW13ABatchUpdateFieldMatrix(t *testing.T) {
 	}, scope); err != nil {
 		t.Fatalf("模型配置批量应成功：%v", err)
 	}
-	if got := env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE model = 'gpt-4.1'`); got != 2 {
+	if got := env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4.1')`); got != 2 {
 		t.Fatalf("支持模型应批量替换：%d", got)
 	}
 	sealed := env.queryCell(t, `SELECT credentials_encrypted FROM accounts WHERE id = ?`, "acc-w13a-b1")

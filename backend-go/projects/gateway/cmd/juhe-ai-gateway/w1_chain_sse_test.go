@@ -341,8 +341,10 @@ func w1vSeedPlainGroup(t *testing.T, fixture *chainFixture, groupID, baseURL str
 		"acc_"+groupID, fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": baseURL}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		groupID, fixture.systemAccount, "acc_"+groupID, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'gpt-test', ?)`,
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
 		"acc_"+groupID, now)
+	// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_"+groupID, baseURL)
 }
 
 // w1vSeedMultiGroupKey 追加普通路由策略 + 多分组绑定 + API Key，返回 key 明文。
@@ -374,8 +376,10 @@ func w1vSeedMultiGroupKey(t *testing.T, fixture *chainFixture, groupIDs []string
 				accountID, fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": baseURL}))
 			seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 				groupID, fixture.systemAccount, accountID, now)
-			seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'gpt-test', ?)`,
+			seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
 				accountID, now)
+			// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合。
+			chainSeedAccountConnection(t, fixture.db, accountID, baseURL)
 		}
 		seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 			VALUES (?, ?, ?, ?, ?, 1, 'active', ?)`,
@@ -498,7 +502,14 @@ func w1vSeedSpeedFirstStack(t *testing.T, fixture *chainFixture, suffix, schedul
 		accountID, fixture.systemAccount, concurrencyLimit, w1vEncrypt(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		groupID, fixture.systemAccount, accountID, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'gpt-test', ?)`, accountID, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, accountID, now)
+	// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合（upstream 为
+	// nil 的臂无上游指向，连接行带占位 URL）。
+	if upstream != nil {
+		chainSeedAccountConnection(t, fixture.db, accountID, upstream.URL)
+	} else {
+		chainSeedAccountConnection(t, fixture.db, accountID, "https://w1v-speed-placeholder.example.invalid")
+	}
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES (?, ?, 'W1V 速度优先', 'normal', '{"normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":3}}}', 'active')`,
 		strategyID, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
@@ -978,7 +989,9 @@ func TestW1VResponseInspectionRetryRotatesWithinGroup(t *testing.T) {
 		fixture.systemAccount, w1vEncrypt(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": goodUpstream.URL}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, 'acc_w1v_second', 1, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_w1v_second', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_w1v_second', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：第二账户需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_w1v_second", goodUpstream.URL)
 
 	chain, shutdown := w1vComposeChain(t, fixture)
 	defer shutdown()

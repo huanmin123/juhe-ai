@@ -276,8 +276,8 @@ func TestLoadAPIKeyRuntimeSummariesSQLite(t *testing.T) {
 			t.Fatalf("seed: %v\n%s", err, query)
 		}
 	}
-	seed(`INSERT INTO accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-		VALUES ('acct-1', 1, 'sys-1', 'openai', 'p', 'openai', 'v1', '双key账户', 'api_key', 'active', '{"keys":["fp-1","fp-2"]}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	seed(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
+		VALUES ('acct-1', 1, 'sys-1', 'openai', 'openai', 'v1', '双key账户', 'api_key', 'active', '{"keys":["fp-1","fp-2"]}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	seed(`INSERT INTO account_api_key_runtime_states (id, account_id, key_fingerprint, status, next_probe_at, last_failure_at, last_error_code, last_error_message, last_trace_id, key_index)
 		VALUES ('st-1', 'acct-1', 'fp-1', 'active', NULL, NULL, NULL, NULL, NULL, 0),
 			('st-2', 'acct-1', 'fp-2', 'rate_limited', '2030-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'http_429', '限流', 'trace-9', 1)`)
@@ -304,8 +304,8 @@ func TestLoadAPIKeyRuntimeSummariesSQLite(t *testing.T) {
 	}
 
 	// 单 key 账户：不启用池隔离 → 无汇总。
-	seed(`INSERT INTO accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-		VALUES ('acct-single', 1, 'sys-1', 'openai', 'p', 'openai', 'v1', '单key', 'api_key', 'active', '{"keys":["only-1"]}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	seed(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
+		VALUES ('acct-single', 1, 'sys-1', 'openai', 'openai', 'v1', '单key', 'api_key', 'active', '{"keys":["only-1"]}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	summaries, err = poolLoader.loadAPIKeyRuntimeSummaries(ctx, []string{"acct-single"})
 	if err != nil {
 		t.Fatal(err)
@@ -315,8 +315,8 @@ func TestLoadAPIKeyRuntimeSummariesSQLite(t *testing.T) {
 	}
 
 	// 非法凭据 envelope：解密失败 continue（无汇总、不报错）。
-	seed(`INSERT INTO accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-		VALUES ('acct-bad', 1, 'sys-1', 'openai', 'p', 'openai', 'v1', '坏凭据', 'api_key', 'active', '{broken', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	seed(`INSERT INTO accounts (id, config_revision, system_account_id, vendor_code, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
+		VALUES ('acct-bad', 1, 'sys-1', 'openai', 'openai', 'v1', '坏凭据', 'api_key', 'active', '{broken', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	summaries, err = poolLoader.loadAPIKeyRuntimeSummaries(ctx, []string{"acct-bad"})
 	if err != nil {
 		t.Fatalf("解密失败必须 continue 而非报错: %v", err)

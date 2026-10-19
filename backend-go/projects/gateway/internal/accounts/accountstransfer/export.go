@@ -36,6 +36,17 @@ type ExportProxy struct {
 	Enabled     bool    `json:"enabled"`
 }
 
+// ExportConnection 是导出文档的 §8 连接 wire 行（连接只写 connectionPresetCode，
+// 不导出 account_connections.id；导入时服务端重新生成内部 ID）。
+type ExportConnection struct {
+	ConnectionPresetCode string   `json:"connectionPresetCode"`
+	// ProtocolSurfaceCode 纯媒体连接导出 null（§8：纯媒体为 null）。
+	ProtocolSurfaceCode *string  `json:"protocolSurfaceCode"`
+	BaseURL             string   `json:"baseUrl"`
+	EndpointModes       []string `json:"endpointModes"`
+	Enabled             bool     `json:"enabled"`
+}
+
 // ExportAccount mirrors AccountExportAccount.
 type ExportAccount struct {
 	Ref                                        string                             `json:"ref"`
@@ -54,6 +65,8 @@ type ExportAccount struct {
 	SupportedModels                            []string                           `json:"supportedModels,omitempty"`
 	HealthCheckModel                           *string                            `json:"healthCheckModel,omitempty"`
 	HealthCheckEndpointMode                    string                             `json:"healthCheckEndpointMode"`
+	HealthCheckConnectionPresetCode            *string                            `json:"healthCheckConnectionPresetCode,omitempty"`
+	Connections                                []ExportConnection                 `json:"connections,omitempty"`
 	TemporaryUnavailableContinuousProbeEnabled *bool                              `json:"temporaryUnavailableContinuousProbeEnabled,omitempty"`
 	ModelMappings                              []accountscore.ModelMapping        `json:"modelMappings,omitempty"`
 	Tags                                       []string                           `json:"tags,omitempty"`
@@ -310,8 +323,9 @@ func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow,
 		}
 	}
 	models := []string{}
-	modelRows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT model FROM `+s.store.Table("account_supported_models")+`
-		WHERE account_id = ? ORDER BY model ASC`), row.id)
+	modelRows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT models.upstream_model FROM `+s.store.Table("account_supported_models")+` account_supported_models
+		INNER JOIN `+s.store.Table("models")+` models ON models.id = account_supported_models.model_id
+		WHERE account_supported_models.account_id = ? ORDER BY models.upstream_model ASC`), row.id)
 	if err != nil {
 		return ExportAccount{}, err
 	}
@@ -332,6 +346,18 @@ func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow,
 	}
 	if trimmed := strings.TrimSpace(row.healthCheckModel); trimmed != "" {
 		exported.HealthCheckModel = &trimmed
+	}
+	// B1 断点批（设计 §8 wire schema）：连接集合与健康检查连接 preset 只写
+	// 账户内自然键（preset code），不导出 account_connections.id。
+	connections, healthPreset, err := s.exportAccountConnections(ctx, row.id)
+	if err != nil {
+		return ExportAccount{}, err
+	}
+	if len(connections) > 0 {
+		exported.Connections = connections
+	}
+	if trimmed := strings.TrimSpace(healthPreset); trimmed != "" {
+		exported.HealthCheckConnectionPresetCode = &trimmed
 	}
 	if !row.continuousProbeEnabled {
 		exported.TemporaryUnavailableContinuousProbeEnabled = BoolPtr(false)
@@ -359,6 +385,85 @@ func (s *Service) buildExportAccount(ctx context.Context, row *ExportAccountRow,
 	}
 	exported.Notes = accountscore.NullPtrString(row.notes)
 	return exported, nil
+}
+
+// exportAccountConnections 读取账户连接行（§8 wire 投影）与健康检查连接
+// preset（行内反解），供导出文档携带。
+func (s *Service) exportAccountConnections(ctx context.Context, accountID string) ([]ExportConnection, string, error) {
+	connectionRows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT connection_preset_code, protocol_surface_code, base_url, enabled
+		FROM `+s.store.Table("account_connections")+` WHERE account_id = ? ORDER BY connection_preset_code`), accountID)
+	if err != nil {
+		return nil, "", err
+	}
+	presets := []string{}
+	baseURLs := map[string]string{}
+	surfaces := map[string]sql.NullString{}
+	enabled := map[string]int64{}
+	for connectionRows.Next() {
+		var preset, baseURL string
+		var surface sql.NullString
+		var enabledFlag int64
+		if err := connectionRows.Scan(&preset, &surface, &baseURL, &enabledFlag); err != nil {
+			connectionRows.Close()
+			return nil, "", err
+		}
+		presets = append(presets, preset)
+		baseURLs[preset] = baseURL
+		surfaces[preset] = surface
+		enabled[preset] = enabledFlag
+	}
+	if err := connectionRows.Err(); err != nil {
+		return nil, "", err
+	}
+	connectionRows.Close()
+	modesByPreset := map[string][]string{}
+	modeRows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT account_connections.connection_preset_code, account_endpoint_modes.endpoint_mode
+		FROM `+s.store.Table("account_endpoint_modes")+` account_endpoint_modes
+		INNER JOIN `+s.store.Table("account_connections")+` account_connections
+			ON account_connections.id = account_endpoint_modes.connection_id
+		WHERE account_connections.account_id = ?
+		ORDER BY account_connections.connection_preset_code, account_endpoint_modes.endpoint_mode`), accountID)
+	if err != nil {
+		return nil, "", err
+	}
+	defer modeRows.Close()
+	for modeRows.Next() {
+		var preset, mode string
+		if err := modeRows.Scan(&preset, &mode); err != nil {
+			return nil, "", err
+		}
+		modesByPreset[preset] = append(modesByPreset[preset], mode)
+	}
+	if err := modeRows.Err(); err != nil {
+		return nil, "", err
+	}
+	connections := []ExportConnection{}
+	for _, preset := range presets {
+		connection := ExportConnection{
+			ConnectionPresetCode: preset,
+			BaseURL:              baseURLs[preset],
+			EndpointModes:        append([]string(nil), modesByPreset[preset]...),
+			Enabled:              enabled[preset] == 1,
+		}
+		if surfaces[preset].Valid && surfaces[preset].String != "" {
+			surface := surfaces[preset].String
+			connection.ProtocolSurfaceCode = &surface
+		}
+		connections = append(connections, connection)
+	}
+	var healthPreset string
+	if err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT account_connections.connection_preset_code
+		FROM `+s.store.Table("accounts")+` accounts
+		INNER JOIN `+s.store.Table("account_connections")+` account_connections
+			ON account_connections.id = accounts.health_check_connection_id
+		WHERE accounts.id = ?`), accountID).Scan(&healthPreset); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			healthPreset = ""
+		} else {
+			return nil, "", err
+		}
+	}
+	return connections, healthPreset, nil
 }
 
 func (s *Service) exportTagNames(ctx context.Context, accountID string) ([]string, error) {

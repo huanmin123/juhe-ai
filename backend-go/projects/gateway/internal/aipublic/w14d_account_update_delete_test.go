@@ -26,7 +26,7 @@ func TestW14dAccountUpdatePatchSurface(t *testing.T) {
 		`{"targetUsername":"w14d_updater","targetGroupName":"更新组","name":"站点U","providerCode":"gpt",
 		"providerProtocolProfileId":"profile_gpt_openai_v1","type":"api_key","baseUrl":"https://a.example",
 		"apiKey":"sk-a","supportedModels":["gpt-4o-mini"],"status":"disabled","concurrencyLimit":7,"priority":2,
-		"notes":"note"}`, token)
+		"notes":"note","connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://a.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("account add: %d %v", status, payload)
 	}

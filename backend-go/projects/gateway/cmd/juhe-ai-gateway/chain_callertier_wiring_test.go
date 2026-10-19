@@ -75,6 +75,8 @@ func TestGatewayChainCallerTierDenominatorWiring(t *testing.T) {
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL)
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, t.TempDir()))
 	if err != nil {

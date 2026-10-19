@@ -280,12 +280,10 @@ func TestW10ACloneCredentialProjection(t *testing.T) {
 
 func TestW10ABatchLoadMappingsAndOverrides(t *testing.T) {
 	env := newTestEnv(t)
-	now := "2026-09-16T00:00:00.000Z"
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family,
-		upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('acc-w10a-map', 'gpt', 'gpt-4o', 'chat_completions', 'gpt-4o-up', 'chat_completions', 1, ?, ?),
-		       ('acc-w10a-map', 'gpt', 'gpt-4o-mini', 'chat_completions', 'gpt-4o-mini-up', 'responses', 0, ?, ?)`,
-		now, now, now, now)
+	// B4 W2 目标形态直插：连接 preset 固定 generic_openai_v1；第二条 enabled=0
+	// 的 target 家族 responses——夹具直插不经 §5.3 写侧校验，仅喂读路径。
+	env.seedEntryMapping(t, "acc-w10a-map", "generic_openai_v1", "gpt-4o", "chat_completions", "gpt-4o-up", "chat_completions", 1)
+	env.seedEntryMapping(t, "acc-w10a-map", "generic_openai_v1", "gpt-4o-mini", "chat_completions", "gpt-4o-mini-up", "responses", 0)
 
 	empty, err := env.store.loadBatchModelMappings(context.Background(), env.db, []string{})
 	if err != nil || len(empty) != 0 {

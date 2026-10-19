@@ -12,12 +12,25 @@ import (
 )
 
 // mediaCreatePayload 构造带 capabilityDomain 的创建请求体（gpt 档案四域全
-// 支持；status 为空串 = 不携带 status 字段，走缺省哨兵）。
+// 支持；status 为空串 = 不携带 status 字段，走缺省哨兵）。B1 断点批（设计
+// §8）：连接集合的 endpointModes 与健康检查三件套按域显式提交（连接 modes =
+// 域 lane 全集，检查形态 = DefaultHealthCheckEndpointModeForDomain 同值）。
 func mediaCreatePayload(name, domain, status string) string {
+	modes := map[string][]string{
+		"chat":  {"chat_json", "chat_sse"},
+		"image": {"images_json"},
+		"video": {"video_create", "video_get", "video_content", "video_cancel"},
+		"audio": {"audio_speech"},
+	}[domain]
+	healthMode := map[string]string{
+		"chat": "chat_json", "image": "images_json", "video": "video_create", "audio": "audio_speech",
+	}[domain]
 	body := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"` + name +
 		`","type":"api_key","capabilityDomain":"` + domain +
 		`","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},` +
-		`"supportedModels":["gpt-4o-mini"]`
+		`"supportedModels":["gpt-4o-mini"]` +
+		`,"connections":` + b1ConnectionsJSON(modes...) +
+		`,"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"` + healthMode + `","healthCheckModel":"gpt-4o-mini"`
 	if status != "" {
 		body += `,"status":"` + status + `"`
 	}

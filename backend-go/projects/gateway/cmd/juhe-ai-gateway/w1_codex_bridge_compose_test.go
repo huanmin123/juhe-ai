@@ -141,7 +141,6 @@ func TestW1CodexBridgePreflightRealPathNewSession(t *testing.T) {
 		SystemAccountID: "sys",
 		APIKeyID:        "key",
 		GroupID:         "group",
-		GroupAccess:     gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
 		Signal:          signal,
 	})
 	if err != nil {

@@ -158,7 +158,7 @@ func TestChainDriverSwitchTargetDerivation(t *testing.T) {
 			req := switchTargetRequest(t, tt.path, tt.body, tt.requestModel, tt.requestStream)
 			account := gatewaydispatch.AccountCandidate{
 				ID:              "acc-1",
-				ProviderCode:    "openai",
+				VendorCode:      "gpt",
 				ProtocolCode:    "openai",
 				ProtocolVersion: "v1",
 				ModelMappings:   tt.mappings,
@@ -167,8 +167,8 @@ func TestChainDriverSwitchTargetDerivation(t *testing.T) {
 			if target.UpstreamModel != tt.wantModel || target.UpstreamEndpointFamily != tt.wantFamily || target.UpstreamEndpointMode != tt.wantMode {
 				t.Fatalf("target = %#v, want (%s, %s, %s)", target, tt.wantModel, tt.wantFamily, tt.wantMode)
 			}
-			if target.ProviderCode != "openai" {
-				t.Fatalf("providerCode = %q", target.ProviderCode)
+			if target.VendorCode != "gpt" {
+				t.Fatalf("vendorCode = %q", target.VendorCode)
 			}
 		})
 	}
@@ -183,14 +183,14 @@ func TestChainDriverFreezesSwitchTargetOncePerRequest(t *testing.T) {
 	req := switchTargetRequest(t, "/v1/responses", `{"model":"gpt-5","stream":true}`, "gpt-5", true)
 	first := gatewaydispatch.AccountCandidate{
 		ID:              "acc-1",
-		ProviderCode:    "openai",
+		VendorCode:      "gpt",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		SupportedModels: []string{"gpt-5"},
 	}
 	second := gatewaydispatch.AccountCandidate{
 		ID:              "acc-2",
-		ProviderCode:    "glm",
+		VendorCode:      "glm",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		SupportedModels: []string{"gpt-5"},
@@ -240,7 +240,7 @@ func TestWithoutSwitchTargetCaptureStripsFreeze(t *testing.T) {
 	req := switchTargetRequest(t, "/v1/chat/completions", `{"model":"score-model","messages":[]}`, "score-model", false)
 	account := gatewaydispatch.AccountCandidate{
 		ID:              "scoring-1",
-		ProviderCode:    "openai",
+		VendorCode:      "gpt",
 		ProtocolCode:    "openai",
 		ProtocolVersion: "v1",
 		SupportedModels: []string{"score-model"},
@@ -282,7 +282,7 @@ func TestSwitchTargetFreezeFilterFamilyVocabularyConsistent(t *testing.T) {
 		req := switchTargetRequest(t, "/v1/responses/compact", `{"model":"gpt-5"}`, "gpt-5", false)
 		account := gatewaydispatch.AccountCandidate{
 			ID:              "acc-1",
-			ProviderCode:    "openai",
+			VendorCode:      "gpt",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			SupportedModels: []string{"gpt-5-up"},
@@ -312,7 +312,7 @@ func TestSwitchTargetFreezeFilterFamilyVocabularyConsistent(t *testing.T) {
 		}
 		candidate := gatewaydispatch.AccountCandidate{
 			ID:              "cand-1",
-			ProviderCode:    "openai",
+			VendorCode:      "gpt",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			SupportedModels: []string{"gpt-5-up"},
@@ -328,7 +328,7 @@ func TestSwitchTargetFreezeFilterFamilyVocabularyConsistent(t *testing.T) {
 		req := switchTargetRequest(t, "/v1/messages/count_tokens", `{"model":"gpt-5","messages":[]}`, "gpt-5", false)
 		account := gatewaydispatch.AccountCandidate{
 			ID:              "acc-1",
-			ProviderCode:    "openai",
+			VendorCode:      "gpt",
 			ProtocolCode:    "openai",
 			ProtocolVersion: "v1",
 			SupportedModels: []string{"gpt-5"},
@@ -379,9 +379,9 @@ func newSwitchTargetTestLoop(t *testing.T, req *gatewaypreauth.GatewayRequest) (
 
 func switchTargetLoopAccounts() []gatewaydispatch.AccountCandidate {
 	return []gatewaydispatch.AccountCandidate{
-		{ID: "src-1", ProviderCode: "openai", SupportedModels: []string{"other"}},
-		{ID: "glm-1", ProviderCode: "glm", SupportedModels: []string{"gpt-5"}},
-		{ID: "gpt-1", ProviderCode: "openai", SupportedModels: []string{"gpt-5"}},
+		{ID: "src-1", VendorCode: "gpt", SupportedModels: []string{"other"}},
+		{ID: "glm-1", VendorCode: "glm", SupportedModels: []string{"gpt-5"}},
+		{ID: "gpt-1", VendorCode: "gpt", SupportedModels: []string{"gpt-5"}},
 	}
 }
 
@@ -404,7 +404,7 @@ func TestV1DispatchLoopFiltersFrozenSwitchTargetWindow(t *testing.T) {
 		loop, audit, _ := newSwitchTargetTestLoop(t, req)
 		capture := &gatewaydispatch.SwitchTargetCapture{}
 		freezeSwitchTargetForTest(capture, "src-1", &gatewaydispatch.SwitchTarget{
-			ProviderCode:           "openai",
+			VendorCode:             "gpt",
 			UpstreamModel:          "gpt-5",
 			UpstreamEndpointFamily: "responses",
 			UpstreamEndpointMode:   "responses_sse",

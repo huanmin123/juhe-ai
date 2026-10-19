@@ -46,12 +46,12 @@ func TestWeProvidersPatchBuiltInModelFullConfiguration(t *testing.T) {
 	var imageInput float64
 	var tierPricesJSON string
 	var source string
-	if err := env.db.QueryRow(`SELECT mode, supported_service_tiers_json, supported_reasoning_efforts_json,
+	if err := env.db.QueryRow(`SELECT supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 		max_output_tokens, image_input_usd_per_1m, service_tier_prices_json, source
-		FROM provider_model_catalog WHERE id = 'cat-2'`).Scan(&mode, &tiersJSON, &effortsJSON, &maxOutput, &imageInput, &tierPricesJSON, &source); err != nil {
+		FROM models WHERE id = 'cat-2'`).Scan(&mode, &tiersJSON, &effortsJSON, &maxOutput, &imageInput, &tierPricesJSON, &source); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "text" || imageInput != 5 {
+	if mode != `["chat_json","chat_sse","responses_json","responses_sse"]` || imageInput != 5 {
 		t.Fatalf("列投影: mode=%s imageIn=%v", mode, imageInput)
 	}
 	// w14d 缺陷修复：builtInSubmittedFields 经 jsonNullable 产出 int64，
@@ -86,7 +86,7 @@ func TestWeProvidersPatchBuiltInModelFullConfiguration(t *testing.T) {
 		t.Fatalf("status trim: %d %v", code, statusPatched)
 	}
 	var status string
-	if err := env.db.QueryRow(`SELECT status FROM provider_model_catalog WHERE id = 'cat-2'`).Scan(&status); err != nil {
+	if err := env.db.QueryRow(`SELECT status FROM models WHERE id = 'cat-2'`).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "active" {
@@ -133,10 +133,10 @@ func TestWeProvidersCustomModelPatchOptionalFields(t *testing.T) {
 	}
 	var mode any
 	var inputPrice any
-	if err := env.db.QueryRow(`SELECT mode, input_usd_per_1m FROM custom_provider_models WHERE id = ?`, modelID).Scan(&mode, &inputPrice); err != nil {
+	if err := env.db.QueryRow(`SELECT supported_endpoint_modes_json, input_usd_per_1m FROM models WHERE id = ?`, modelID).Scan(&mode, &inputPrice); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "text" || inputPrice != nil {
+	if mode != `["chat_json","chat_sse"]` || inputPrice != nil {
 		t.Fatalf("patch 投影: mode=%v input=%v", mode, inputPrice)
 	}
 }

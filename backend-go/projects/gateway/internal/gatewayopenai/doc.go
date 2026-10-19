@@ -30,10 +30,6 @@ const (
 	// DefaultClientProfile mirrors defaultClientProfile.
 	DefaultClientProfile = "generic_openai"
 
-	// GeminiOpenAIChatProfileID guards anthropic->chat mapping resolution
-	// (GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID).
-	GeminiOpenAIChatProfileID = "profile_gemini_openai_chat_v1beta"
-
 	// Endpoint family tokens.
 	FamilyChatCompletions       = "chat_completions"
 	FamilyResponses             = "responses"

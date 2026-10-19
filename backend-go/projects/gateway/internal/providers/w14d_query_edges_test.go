@@ -35,12 +35,6 @@ func TestW14dClosedDBQueryForks(t *testing.T) {
 	if _, err := store.ListProviderModelsForRequest(ctx, "gpt", "", false, true); err == nil {
 		t.Fatal("closed DB list for request must fail")
 	}
-	if _, err := store.listProviderModelCatalog(ctx, "gpt", "", false, true); err == nil {
-		t.Fatal("closed DB list catalog must fail")
-	}
-	if _, err := store.ModelCatalogSourceProviderCodes(ctx, "openai"); err == nil {
-		t.Fatal("closed DB source codes must fail")
-	}
 	if _, err := store.listBuiltInCatalogModels(ctx, []string{"gpt"}, false); err == nil {
 		t.Fatal("closed DB built-in catalog must fail")
 	}
@@ -61,8 +55,10 @@ func TestW14dClosedDBQueryForks(t *testing.T) {
 	if sourceCodes != nil || builtInCodes != nil {
 		t.Fatalf("error result must be nil: %v %v", sourceCodes, builtInCodes)
 	}
-	if _, _, err := store.modelOptionSourceCodes(ctx, "openai", ""); err == nil {
-		t.Fatal("closed DB provider-scoped option sources must fail")
+	// providerCode 臂已随源扩展退役收敛为纯函数（不触库）。
+	if sourceCodes, builtInCodes, _ := store.modelOptionSourceCodes(ctx, "openai", ""); len(sourceCodes) != 1 ||
+		len(builtInCodes) != 0 || sourceCodes[0] != "openai" {
+		t.Fatalf("provider-scoped option sources: %v %v", sourceCodes, builtInCodes)
 	}
 	if _, err := store.listBuiltInModelOptions(ctx, []string{"gpt"}, ModelOptionQuery{Limit: 5}); err == nil {
 		t.Fatal("closed DB built-in options must fail")
@@ -89,23 +85,16 @@ func TestW14dClosedDBQueryForks(t *testing.T) {
 	if _, err := store.FindProviderOption(ctx, "gpt"); err == nil {
 		t.Fatal("closed DB find provider option must fail")
 	}
-	if _, err := store.ProtocolProviderCodes(ctx, "openai", "v1"); err == nil {
-		t.Fatal("closed DB protocol provider codes must fail")
-	}
 	if _, err := store.EnabledNonHybridProviderCodes(ctx); err == nil {
 		t.Fatal("closed DB enabled codes must fail")
 	}
-	if _, err := store.ListDefaultHealthCheckModelPreferences(ctx, "u1", []string{"gpt"}); err == nil {
-		t.Fatal("closed DB preferences must fail")
+	// 偏好读写随设计 §8.11 退役为 no-op（closed DB 也不触库）。
+	preferences, err := store.ListDefaultHealthCheckModelPreferences(ctx, "u1", []string{"gpt"})
+	if err != nil || len(preferences) != 0 {
+		t.Fatalf("retired preference reader must stay empty: %v %v", preferences, err)
 	}
-	if _, err := store.ListSystemDefaultHealthCheckModels(ctx, []string{"gpt"}); err == nil {
-		t.Fatal("closed DB system defaults must fail")
-	}
-	if err := store.UpsertDefaultHealthCheckModelPreference(ctx, "u1", "gpt", "m"); err == nil {
-		t.Fatal("closed DB preference upsert must fail")
-	}
-	if err := store.UpsertSystemDefaultHealthCheckModel(ctx, "gpt", "m"); err == nil {
-		t.Fatal("closed DB system default upsert must fail")
+	if err := store.UpsertDefaultHealthCheckModelPreference(ctx, "u1", "gpt", "m"); err != nil {
+		t.Fatalf("retired preference upsert must stay no-op: %v", err)
 	}
 	if _, err := store.findBuiltInModelPatchState(ctx, "cat-1"); err == nil {
 		t.Fatal("closed DB built-in patch state must fail")

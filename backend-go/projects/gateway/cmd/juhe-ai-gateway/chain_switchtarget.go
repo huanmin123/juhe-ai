@@ -87,7 +87,9 @@ func (d *chainProviderDriver) switchTargetForRequest(
 		family = mapping.UpstreamEndpointFamily
 	}
 	return &gatewaydispatch.SwitchTarget{
-		ProviderCode:              account.ProviderCode,
+		// vendor 冻结（供应商解耦 B4 W2）：账户连接身份按 vendor_code（设计
+		// §2.1），消费点同供应商门同域比较。
+		VendorCode:                account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		UpstreamModel:             model,
 		UpstreamEndpointFamily:    family,

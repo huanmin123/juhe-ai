@@ -176,7 +176,7 @@ func TestSinkSendOpenAIModelsGatewayResponse(t *testing.T) {
 		Res:          tracking,
 		AuditCapture: audit,
 		UsageContext: usageContextFixture(),
-		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1", ProviderCode: "OpenAI"}},
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1"}},
 		StartedAt:    1000,
 	}
 	sink.SendOpenAIModelsGatewayResponse(input)
@@ -216,20 +216,24 @@ func TestSinkSendOpenAIModelsGatewayResponse(t *testing.T) {
 	if len(audit.finalized) != 1 || audit.finalized[0].Outcome != "success" || audit.finalized[0].StatusCode != 200 {
 		t.Fatalf("finalize = %+v", audit.finalized)
 	}
-	if len(usage.dispatch) != 1 || usage.dispatch[0].ProviderCode != "openai" || !usage.dispatch[0].Success {
+	// B4 W2：绑定行无 provider 维度，用量归因回落 usage context（fixture 未
+	// 带 providerCode → openai_compatible 默认）。
+	if len(usage.dispatch) != 1 || usage.dispatch[0].ProviderCode != "openai_compatible" || !usage.dispatch[0].Success {
 		t.Fatalf("dispatch = %+v", usage.dispatch)
 	}
 }
 
 func TestSinkSendAnthropicAndGeminiModelsResponses(t *testing.T) {
 	sink, tracking, recorder, audit, _, _ := newSinkFixture()
+	// B4 W2：目录条目由 loader items 注入（绑定行已无 provider 维度）。
+	sink.Deps.ModelCatalog.(*mockCatalogLoader).items = []ModelCatalogEntry{{Model: "claude-x", Scope: "built_in", ReleaseDate: "2025-01-02"}}
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil))
 	input := gatewaypreauth.ModelsResponseInput{
 		Req:          req,
 		Res:          tracking,
 		AuditCapture: audit,
 		UsageContext: usageContextFixture(),
-		Bindings:     []gatewaypreauth.GatewayModelBinding{{ProviderCode: "anthropic"}},
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1"}},
 		StartedAt:    1000,
 	}
 	sink.SendAnthropicModelsGatewayResponse(input)
@@ -251,15 +255,17 @@ func TestSinkSendAnthropicAndGeminiModelsResponses(t *testing.T) {
 	recorder2 := httptest.NewRecorder()
 	tracking2 := gatewaypreauth.NewTrackingWriter(recorder2)
 	audit2 := newMockAuditCapture()
+	sink2 := sink
+	sink2.Deps.ModelCatalog = &mockCatalogLoader{items: []ModelCatalogEntry{{Model: "gemini-x", Scope: "built_in", CapabilityNotes: "fast"}}}
 	input2 := gatewaypreauth.ModelsResponseInput{
 		Req:          gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1beta/models", nil)),
 		Res:          tracking2,
 		AuditCapture: audit2,
 		UsageContext: usageContextFixture(),
-		Bindings:     []gatewaypreauth.GatewayModelBinding{{ProviderCode: "gemini"}},
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1"}},
 		StartedAt:    1000,
 	}
-	sink.SendGeminiModelsGatewayResponse(input2)
+	sink2.SendGeminiModelsGatewayResponse(input2)
 	var geminiPayload struct {
 		Models []struct {
 			Name        string `json:"name"`
@@ -284,7 +290,7 @@ func TestSinkModelsLoadFailureReturnsErrorWithoutWriting(t *testing.T) {
 		Res:          tracking,
 		AuditCapture: audit,
 		UsageContext: usageContextFixture(),
-		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1", ProviderCode: "openai"}},
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1"}},
 		StartedAt:    1000,
 	}
 	err := sink.SendOpenAIModelsGatewayResponse(input)

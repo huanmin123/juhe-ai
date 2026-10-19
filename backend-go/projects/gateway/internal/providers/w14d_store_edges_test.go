@@ -206,7 +206,7 @@ func TestW14dPatchConflictWhenRowMoved(t *testing.T) {
 	}
 	// Move the row's optimistic stamp behind the caller's back; the guarded
 	// UPDATE then hits zero rows.
-	env.exec(t, `UPDATE custom_provider_models SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`, current.ID)
+	env.exec(t, `UPDATE models SET updated_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`, current.ID)
 	outcome, err := store.patchCustomProviderModel(ctx, current, customProviderModelUpsertInput{
 		ActorSystemAccountID: "u1", Status: "disabled",
 	}, []string{"status"}, current.UpdatedAt, "", nil)
@@ -242,7 +242,7 @@ func TestW14dPatchWithCleanupAndOwnerPredicate(t *testing.T) {
 	}
 
 	// A mismatched owner predicate turns the same patch into a conflict.
-	env.exec(t, `UPDATE custom_provider_models SET status = 'active' WHERE id = ?`, current.ID)
+	env.exec(t, `UPDATE models SET status = 'active' WHERE id = ?`, current.ID)
 	current.Status = "active"
 	outcome, err = store.patchCustomProviderModel(ctx, current, customProviderModelUpsertInput{
 		ActorSystemAccountID: "u1", Status: "disabled",
@@ -297,12 +297,20 @@ func TestW14dCustomProviderModelBindingsUnit(t *testing.T) {
 		t.Fatalf("binding owner required: %v", err)
 	}
 
-	// Seed two accounts with supported-model and mapping bindings.
+	// Seed two accounts with supported-model and mapping bindings（目标关系形状：
+	// account_supported_models (account_id, model_id) + account_entry_mappings）。
+	modelRow, err := store.upsertCustomProviderModel(ctx, customProviderModelUpsertInput{
+		ProviderCode: "gpt", Model: "bind-model", Scope: catalogScopeGlobal,
+		InputUsdPer1M: ptrFloat64(1), ActorSystemAccountID: "sys_admin",
+	})
+	if err != nil {
+		t.Fatalf("seed bind-model: %v", err)
+	}
 	env.exec(t, `INSERT INTO accounts (id, name) VALUES ('w14d-acc-1', 'acc1'), ('w14d-acc-2', 'acc2')`)
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model) VALUES
-		('w14d-acc-1', 'gpt', 'bind-model'), ('w14d-acc-2', 'gpt', 'bind-model')`)
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, source_model, upstream_model) VALUES
-		('w14d-acc-1', 'bind-model', 'up-model')`)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id) VALUES
+		('w14d-acc-1', ?), ('w14d-acc-2', ?)`, modelRow.ID, modelRow.ID)
+	env.exec(t, `INSERT INTO account_entry_mappings (id, account_id, source_model, target_model_id) VALUES
+		('w14d-map-1', 'w14d-acc-1', 'bind-model', NULL)`)
 
 	summary, err := store.customProviderModelBindings(ctx, "gpt", "bind-model", "global", "")
 	if err != nil {
@@ -313,8 +321,9 @@ func TestW14dCustomProviderModelBindingsUnit(t *testing.T) {
 		t.Fatalf("global summary: %+v", summary)
 	}
 
-	// The personal scope filters by the owner predicate.
+	// The personal scope filters by the owner predicate（行与账户同迁 personal/u1）。
 	env.exec(t, `UPDATE accounts SET system_account_id = 'u1' WHERE id = 'w14d-acc-1'`)
+	env.exec(t, `UPDATE models SET scope = 'personal', system_account_id = 'u1' WHERE id = ?`, modelRow.ID)
 	summary, err = store.customProviderModelBindings(ctx, "gpt", "bind-model", "personal", "u1")
 	if err != nil {
 		t.Fatalf("personal bindings: %v", err)
@@ -359,36 +368,6 @@ func TestW14dDefaultReferenceCleanupTargetsUnit(t *testing.T) {
 	if err != nil || len(input.Targets) != 1 || input.Targets[0].ProviderCode != "w14d-unknown" {
 		t.Fatalf("unknown definition targets: %v %v", err, input)
 	}
-	// Closed DB error fork.
-	if _, err := w14dClosedStore(t, false).defaultReferenceCleanupTargets(ctx, "gpt", "u1", "m", false); err == nil {
-		t.Fatal("closed DB cleanup targets must fail")
-	}
-}
-
-func TestW14dProviderModelDefaultReferenceCodesUnit(t *testing.T) {
-	env := newTestEnv(t)
-	ctx := context.Background()
-	store := env.providersDeps.Store
-
-	// Empty code: empty fan-out.
-	codes, err := store.providerModelDefaultReferenceCodes(ctx, "  ")
-	if err != nil || len(codes) != 0 {
-		t.Fatalf("empty code: %v %v", err, codes)
-	}
-	// Hybrid code: itself only.
-	codes, err = store.providerModelDefaultReferenceCodes(ctx, "hybrid")
-	if err != nil || len(codes) != 1 || codes[0] != "hybrid" {
-		t.Fatalf("hybrid code: %v %v", err, codes)
-	}
-	// Unknown definition: itself only.
-	codes, err = store.providerModelDefaultReferenceCodes(ctx, "w14d-ghost")
-	if err != nil || len(codes) != 1 || codes[0] != "w14d-ghost" {
-		t.Fatalf("unknown code: %v %v", err, codes)
-	}
-	// Closed DB: the definition lookup fails.
-	if _, err := w14dClosedStore(t, false).providerModelDefaultReferenceCodes(ctx, "gpt"); err == nil {
-		t.Fatal("closed DB reference codes must fail")
-	}
 }
 
 func TestW14dNormalizeHelpersEdges(t *testing.T) {
@@ -416,14 +395,14 @@ func TestW14dNormalizeHelpersEdges(t *testing.T) {
 	if got := capabilityTokenPtr(sql.NullString{String: "!!", Valid: true}); got != nil {
 		t.Fatalf("invalid effort pointer: %v", got)
 	}
-	if got := parseCustomModelProtocols(sql.NullString{String: "{broken", Valid: true}); len(got) != 0 {
-		t.Fatalf("broken JSON protocols: %v", got)
+	if got := parseJSONArray(sql.NullString{String: "{broken", Valid: true}); len(got) != 0 {
+		t.Fatalf("broken JSON modes: %v", got)
 	}
-	if got := parseCustomModelProtocols(sql.NullString{String: `["chat_completions","nope",7,"responses"]`, Valid: true}); len(got) != 2 {
-		t.Fatalf("filtered protocols: %v", got)
+	if got := parseJSONArray(sql.NullString{String: `["chat_json","nope",7,"chat_sse"]`, Valid: true}); len(got) != 3 {
+		t.Fatalf("filtered modes: %v", got)
 	}
-	if got := parseCustomModelProtocols(sql.NullString{}); len(got) != 0 {
-		t.Fatalf("null protocols: %v", got)
+	if got := parseJSONArray(sql.NullString{}); len(got) != 0 {
+		t.Fatalf("null modes: %v", got)
 	}
 
 	// parseRfc3339Millis rejects malformed stamps.
@@ -471,8 +450,9 @@ func TestW14dPatchAssignmentsUnit(t *testing.T) {
 	if strings.Contains(joined, "status = ?") {
 		t.Fatalf("equal status must collapse: %v", assignments)
 	}
+	// mode 与 supportedApiProtocols 合写 supported_endpoint_modes_json（models
+	// 单表物理列，提交值与现值同投影时收束为单列赋值或零赋值）。
 	if !strings.Contains(joined, "context_window_tokens = ?") ||
-		!strings.Contains(joined, "mode = ?") || !strings.Contains(joined, "supported_api_protocols_json = ?") ||
 		!strings.Contains(joined, "supported_service_tiers_json = ?") {
 		t.Fatalf("assignments: %v", assignments)
 	}

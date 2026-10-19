@@ -1244,6 +1244,11 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 		VALUES ('mdl_w2c_sm_gpt-test', 'gpt', 'gpt-test', 'gpt-test', 'global', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
 	seed(`INSERT INTO account_supported_models (account_id, model_id, created_at)
 		VALUES ('w2c_acc', 'mdl_w2c_sm_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：w2c_acc 需要 enabled 连接行（health 三字段经
+	// 真实 DDL 复合外键互指，连接行先行、health_check_connection_id 回填）。
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn_w2c_acc', 'w2c_acc', 'gpt_openai_v1', 'openai_v1', ?, 1, ?, ?)`, upstreamBaseURL, now, now)
+	seed(`UPDATE accounts SET health_check_connection_id = 'conn_w2c_acc' WHERE id = 'w2c_acc'`)
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, status, created_at, updated_at)
 		VALUES ('w2c_rs', 'sys_admin', 'W2C 路由', 'normal', 'active', ?, ?)`, now, now)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)

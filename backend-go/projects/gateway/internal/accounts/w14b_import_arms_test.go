@@ -72,9 +72,12 @@ func TestW14BImportProxyCacheAndOrphanProfile(t *testing.T) {
 	// 两个账户复用同一代理 ref：第二次走 proxyLookup 缓存命中臂。
 	sharedProxy := map[string]any{"ref": "p1", "name": "w14b-shared-proxy", "type": "socks5", "host": "proxy.example.com", "port": float64(1080)}
 	account := func(name string) map[string]any {
+		// B1 断点批（设计 §8）：导入账户显式携带连接集合与健康检查三件套。
 		return map[string]any{"name": name, "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
 			"type": "api_key", "status": "active", "groupName": "w14b-gc", "proxyRef": "p1",
-			"credentials": map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"}}
+			"credentials": map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
+			"connections": []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
+			"healthCheckConnectionPresetCode": "generic_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
 	}
 	result, err := env.store.PreviewImport(context.Background(), w13aRawDoc(
 		[]any{account("w14b-pa"), account("w14b-pb")}, []any{sharedProxy},
@@ -100,9 +103,12 @@ func TestW14BImportModelCatalogValidationArms(t *testing.T) {
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 
 	account := func(name string, extra map[string]any) map[string]any {
+		// B1 断点批（设计 §8）：导入账户显式携带连接集合与健康检查三件套。
 		base := map[string]any{"name": name, "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
 			"type": "api_key", "status": "active", "groupName": "w14b-cat",
-			"credentials": map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"}}
+			"credentials": map[string]any{"api_key": "sk-" + name, "base_url": "https://api.openai.com/v1"},
+			"connections": []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": []any{"chat_json", "chat_sse"}, "enabled": true}},
+			"healthCheckConnectionPresetCode": "generic_openai_v1", "healthCheckEndpointMode": "chat_json", "healthCheckModel": "gpt-4o-mini"}
 		for key, value := range extra {
 			base[key] = value
 		}

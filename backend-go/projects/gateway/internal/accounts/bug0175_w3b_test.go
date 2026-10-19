@@ -21,7 +21,7 @@ func TestCredentialsPatchNullDeletesKeys(t *testing.T) {
 	code, created := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"patch-null","type":"api_key",
 		"credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1","service_tier_override":"priority"},
-		"supportedModels":["gpt-4o-mini"],"status":"active"}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, created)
 	}
@@ -68,7 +68,7 @@ func TestCredentialsSingleKeyReplacesPool(t *testing.T) {
 		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"pool","type":"api_key",
 		"credentials":{"api_keys":["sk-pool-1","sk-pool-2","sk-pool-3"],"api_key_strategy":"weighted_round_robin",
 		"api_key_weights":[1,2,3],"base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active"}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, created)
 	}
@@ -110,6 +110,8 @@ func TestAccountTestDraftRoute(t *testing.T) {
 	admin := env.login(t, "admin", "admin-password", "admin")
 	seedTestAccount(t, env, admin)
 
+	// test-draft 是草稿测试通道（不入库），不走 §8 创建载荷契约：不带
+	// connections/healthCheckConnectionPresetCode（B1 断点批）。
 	body := `{"account":{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt",
 		"name":"未保存草稿","type":"api_key","credentials":{"api_key":"sk-draft","base_url":"https://api.openai.com/v1"},
 		"supportedModels":["gpt-4o-mini"],"healthCheckModel":"gpt-4o-mini",

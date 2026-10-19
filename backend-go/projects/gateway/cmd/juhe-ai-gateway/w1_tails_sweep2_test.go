@@ -426,12 +426,17 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 				t.Fatalf("seed 中毒行 %q: %v", query, err)
 			}
 		}
-		mustExec(`INSERT INTO account_supported_models (account_id, model, created_at) VALUES ('acc-w1t-p1', NULL, 'now')`)
+		// B4 第一批目标形态：支持模型名经 model_id JOIN models.upstream_model
+		// 解析，中毒臂经 NULL upstream_model 注入。
+		mustExec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status) VALUES ('mdl-w1t-p1', NULL, 'p1', NULL, 'global', 'active')`)
+		mustExec(`INSERT INTO account_supported_models (account_id, model, model_id, created_at) VALUES ('acc-w1t-p1', NULL, 'mdl-w1t-p1', 'now')`)
 		if _, err := selector.loadSupportedModelsByAccountIds(ctx, []string{"acc-w1t-p1"}); err == nil {
 			t.Fatal("NULL model 必须扫描失败")
 		}
-		mustExec(`INSERT INTO account_model_mappings (account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled)
-			VALUES ('acc-w1t-p2', NULL, 'chat_completions', 'up', 'chat_completions', 1)`)
+		// B4 第一批：映射行走 account_entry_mappings（旧 account_model_mappings
+		// 已随 A 路线撤除），中毒臂注入 NULL source_model。
+		mustExec(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+			VALUES ('entmap-w1t-p2', 'acc-w1t-p2', NULL, 'chat_completions', NULL, NULL, 'chat_completions', 1, 'now', 'now')`)
 		if _, err := selector.loadModelMappingsByAccountIds(ctx, []string{"acc-w1t-p2"}); err == nil {
 			t.Fatal("NULL source_model 必须扫描失败")
 		}
@@ -472,6 +477,12 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		}
 		if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('acc-w1t-extra', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '2026-01-01T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed 额外绑定: %v", err)
+		}
+		// B4 第一批单连接事实源：无连接行账户在 hydration fail closed 丢弃，
+		// 额外账户补一条 enabled 连接。
+		if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+			VALUES ('conn-w1t-extra', 'acc-w1t-extra', 'gpt_openai_v1', 'http://127.0.0.1:9', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+			t.Fatalf("seed 额外连接: %v", err)
 		}
 		result, err := selector.ListOpenAIAccountsForGroupResult(ctx, "grp-limit", "sys_admin",
 			gatewayruntimecache.OpenAIAccountsForGroupOptions{IncludeUnavailable: true})

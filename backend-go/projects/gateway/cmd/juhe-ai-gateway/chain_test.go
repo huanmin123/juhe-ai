@@ -114,7 +114,10 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 1, request_limits_json TEXT)`,
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE accounts (
-			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL,
+			-- provider_code 已随供应商解耦退役（设计 §8）：夹具放宽为可空，仅
+			-- 供未迁移的旧种子继续写入；目标形态种子只写 vendor_code /
+			-- connection_driver_code。
+			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT,
 			vendor_code TEXT, connection_driver_code TEXT, oauth_type TEXT, health_check_connection_id TEXT,
 			provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT,
 			name TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL,
@@ -273,6 +276,8 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, connection_preset_code TEXT NOT NULL,
 			protocol_surface_code TEXT, base_url TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
 			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE account_endpoint_modes (
+			connection_id TEXT NOT NULL, endpoint_mode TEXT NOT NULL, PRIMARY KEY (connection_id, endpoint_mode))`,
 		`CREATE TABLE account_entry_mappings (
 			id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source_model TEXT NOT NULL, source_endpoint_family TEXT NOT NULL,
 			target_connection_id TEXT NOT NULL, target_model_id TEXT NOT NULL, target_endpoint_family TEXT NOT NULL,
@@ -302,6 +307,51 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed schema: %v: %v", statement, err)
 		}
+	}
+}
+
+// chainPointAccountAtUpstream 把既有夹具账户的连接行指向 mock 上游（B4 第一
+// 批单连接事实源：secret BaseURL = account_connections.base_url）。调用点的
+// 旧 credentials.base_url 写点保留无害（credentials.base_url 已不被消费）。
+func chainPointAccountAtUpstream(t *testing.T, db *sql.DB, accountID, baseURL string, modes ...string) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE account_connections SET base_url = ? WHERE account_id = ?`, baseURL, accountID); err != nil {
+		t.Fatalf("update connection base url (%s): %v", accountID, err)
+	}
+	// modes 非空时整集合替换该连接的 endpoint modes（旧世界凭据
+	// supported_endpoint_modes 写点的等价迁移）。
+	if len(modes) > 0 {
+		if _, err := db.Exec(`DELETE FROM account_endpoint_modes WHERE connection_id IN (SELECT id FROM account_connections WHERE account_id = ?)`, accountID); err != nil {
+			t.Fatalf("reset connection endpoint modes (%s): %v", accountID, err)
+		}
+		for _, mode := range modes {
+			if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode)
+				SELECT id, ? FROM account_connections WHERE account_id = ?`, mode, accountID); err != nil {
+				t.Fatalf("seed connection endpoint mode (%s): %v", accountID, err)
+			}
+		}
+	}
+}
+
+// chainSeedAccountConnection 为夹具账户补一条 enabled 连接行（B4 第一批：单
+// 连接事实源 fail closed——无连接行账户在 hydration 丢弃）。modes 供连接行
+// 预置 account_endpoint_modes；省略时 secret 端点模式投影回落既有 vendor 默认
+// 分支（老数据兼容语义）。
+func chainSeedAccountConnection(t *testing.T, db *sql.DB, accountID, baseURL string, modes ...string) {
+	t.Helper()
+	now := "2026-09-04T00:00:00.000Z"
+	connectionID := "conn_" + accountID
+	if _, err := db.Exec(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES (?, ?, 'gpt_openai_v1', 'openai_v1', ?, 1, ?, ?)`, connectionID, accountID, baseURL, now, now); err != nil {
+		t.Fatalf("seed account connection (%s): %v", accountID, err)
+	}
+	for _, mode := range modes {
+		if _, err := db.Exec(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`, connectionID, mode); err != nil {
+			t.Fatalf("seed account endpoint mode (%s): %v", accountID, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE accounts SET health_check_connection_id = ? WHERE id = ?`, connectionID, accountID); err != nil {
+		t.Fatalf("bind health check connection (%s): %v", accountID, err)
 	}
 }
 
@@ -348,6 +398,19 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 		fixture.accountID, fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, fixture.accountID, now)
+	// B4 第一批单连接事实源（设计 §2.1「Base URL 属于连接行」）：夹具按真实
+	// 连接面给 acc_1 预置 enabled 连接 + mode 集合 + health-check 引用；secret
+	// 装配按连接行取 BaseURL（缺失行 fail closed），旧 credentials.base_url
+	// 不再是事实源。上游指向测试用
+	// `UPDATE account_connections SET base_url = ?`（见链路冒烟用例）。
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn_acc_1', ?, 'gpt_openai_v1', 'openai_v1', 'https://conn-acc1.example.invalid/v1', 1, ?, ?)`,
+		fixture.accountID, now, now)
+	// 模式集保持 chat 两模式：/v1/responses 的入口拒绝契约（scenario
+	// endpoint_mode_unsupported）与生产 opt-in 语义一致；需要 responses 能力
+	// 的用例经 chainPointAccountAtUpstream 的变参 modes 显式声明。
+	seed(`INSERT INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES ('conn_acc_1', 'chat_json'), ('conn_acc_1', 'chat_sse')`)
+	seed(`UPDATE accounts SET health_check_connection_id = 'conn_acc_1' WHERE id = ?`, fixture.accountID)
 	// 供应商解耦形态（设计 §3/§4）：支持模型经 models 单表 + model_id 外键；
 	// 旧 provider_code/model 列保留供禁改的调度水合读取（chain_accounts.go）。
 	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
@@ -909,10 +972,15 @@ func TestGatewayChainServeSmokePreauthDispatchResponse(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-smoke","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"链路冒烟"},"finish_reason":"stop"}]}`))
 	}))
 	defer upstream.Close()
-	// Point the seeded account at the mock upstream.
+	// Point the seeded account at the mock upstream. B4 第一批单连接事实源：
+	// 上游指向改连接行 base_url（secret BaseURL = account_connections.base_url），
+	// 凭据 JSON 只承载 api_key（credentials.base_url 依赖已解除）。
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key"}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
+	}
+	if _, err := fixture.db.Exec(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`, upstream.URL); err != nil {
+		t.Fatalf("update connection base url: %v", err)
 	}
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
@@ -1106,12 +1174,14 @@ func mustEncryptCredentials(t *testing.T, credentials map[string]any) string {
 }
 
 // TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL is the
-// account_model_mappings schema-drift regression (X05 defect: the runtime
-// read ordered by a nonexistent `id` column and every runtime-resolution
-// request 500'd on fresh databases). It applies the REAL maintenance business
-// DDL (the same statements maintenance ensure and the gateway SQLite
-// preflight apply), asserts the real composite-primary-key shape, and proves
-// loadModelMappingsByAccountIds reads it with the Node ordering.
+// entry-mappings schema regression (X05 defect lineage: the runtime read once
+// ordered a nonexistent `id` column, then kept reading the removed
+// account_model_mappings table). It applies the REAL maintenance business DDL
+// (the same statements maintenance ensure and the gateway SQLite preflight
+// apply), asserts the real account_entry_mappings shape (global id PK +
+// composite natural key), and proves loadModelMappingsByAccountIds reads it
+// with the entry-mappings ordering and the LEFT JOIN models upstream /
+// target_endpoint_family projection.
 func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "business.sqlite3"))
 	if err != nil {
@@ -1121,23 +1191,39 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
 		t.Fatalf("apply real maintenance business DDL: %v", err)
 	}
-	// Seed the parent rows (providers / profiles / sys_admin) the real DDL
-	// foreign keys point at, then add one account to map models for.
+	// Seed the parent rows (vendors / sys_admin) the real DDL foreign keys
+	// point at, then add one account with a connection fact row and two
+	// supported models to map against.
 	if _, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC) }, Secret: "chain-test-secret"}); err != nil {
 		t.Fatalf("seed real maintenance business data: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts (
-			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at
-		) VALUES ('acc_real_ddl', 'sys_admin', 'openai', 'profile_gpt_openai_v1', 'openai', 'v1',
-			'真实 DDL 账户', 'api_key', 'active', 'envelope', 'gpt-test', 'chat_json', '2026-09-04T00:00:00.000Z', '2026-09-04T00:00:00.000Z')`); err != nil {
-		t.Fatalf("seed account: %v", err)
+	now := "2026-09-04T00:00:00.000Z"
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatalf("seed row: %v: %v", query, err)
+		}
 	}
+	// 设计 §2.1 写入顺序：先账户（health 三字段暂 NULL）、再连接行，最后
+	// UPDATE 回填 health_check_connection_id。
+	seed(`INSERT INTO accounts (
+			id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
+			name, type, status, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at
+		) VALUES ('acc_real_ddl', 'sys_admin', 'gpt', 'gpt', 'openai', 'v1',
+			'真实 DDL 账户', 'api_key', 'active', 'envelope', 'gpt-test', 'chat_json', ?, ?)`, now, now)
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn_real_ddl', 'acc_real_ddl', 'gpt_openai_v1', 'openai_v1', 'https://real-ddl.example.invalid/v1', 1, ?, ?)`, now, now)
+	seed(`UPDATE accounts SET health_check_connection_id = 'conn_real_ddl' WHERE id = 'acc_real_ddl'`)
+	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_real_1', 'gpt', 'gpt-real-1', 'gpt-real-1', 'global', 'active', '["chat_json","chat_sse"]', ?, ?),
+		       ('mdl_real_2', 'gpt', 'gpt-real-2', 'gpt-real-2', 'global', 'active', '["responses_json","responses_sse"]', ?, ?)`, now, now, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, model_id, created_at)
+		VALUES ('acc_real_ddl', 'mdl_real_1', ?), ('acc_real_ddl', 'mdl_real_2', ?)`, now, now)
 
-	// Schema-drift guard: the real table has NO id column and keeps the
-	// Node composite primary key.
+	// Schema-drift guard: the real entry-mappings table keeps the global id
+	// primary key and the composite natural key (设计 §5.1).
 	columns := map[string]bool{}
-	rows, err := db.Query(`PRAGMA table_info(account_model_mappings)`)
+	rows, err := db.Query(`PRAGMA table_info(account_entry_mappings)`)
 	if err != nil {
 		t.Fatalf("pragma table_info: %v", err)
 	}
@@ -1156,34 +1242,31 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate table_info: %v", err)
 	}
-	if columns["id"] {
-		t.Fatal("real account_model_mappings DDL drifted: id column reappeared")
-	}
-	for _, required := range []string{"account_id", "source_model", "source_endpoint_family", "upstream_model", "upstream_endpoint_family", "enabled"} {
+	for _, required := range []string{"id", "account_id", "source_model", "source_endpoint_family", "target_connection_id", "target_model_id", "target_endpoint_family", "enabled"} {
 		if !columns[required] {
-			t.Fatalf("real account_model_mappings DDL missing column %s", required)
+			t.Fatalf("real account_entry_mappings DDL missing column %s", required)
 		}
 	}
 	var pkColumns string
-	if err := db.QueryRow(`SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info('account_model_mappings') WHERE pk > 0 ORDER BY pk)`).Scan(&pkColumns); err != nil {
+	if err := db.QueryRow(`SELECT group_concat(name, ',') FROM (SELECT name FROM pragma_table_info('account_entry_mappings') WHERE pk > 0 ORDER BY pk)`).Scan(&pkColumns); err != nil {
 		t.Fatalf("read primary key: %v", err)
 	}
-	if pkColumns != "account_id,source_model,source_endpoint_family" {
-		t.Fatalf("primary key = %q, want account_id,source_model,source_endpoint_family", pkColumns)
+	if pkColumns != "id" {
+		t.Fatalf("primary key = %q, want id", pkColumns)
 	}
 
 	// Two mapping rows inserted deliberately out of source_model order: the
-	// read must return them in the Node ORDER BY (account_id, source_model,
-	// source_endpoint_family) and must not error on the real DDL.
-	now := "2026-09-04T00:00:00.000Z"
-	for _, row := range []struct{ source, family, upstream string }{
-		{"gpt-pro", "chat_completions", "gpt-real-1"},
-		{"gpt-5", "responses", "gpt-real-2"},
+	// read must return them in the entry-mappings ORDER BY (account_id,
+	// source_model, source_endpoint_family, id) with the target model's
+	// upstream name and the target endpoint family (LEFT JOIN models), and
+	// must not error on the real DDL.
+	for _, row := range []struct{ source, family, targetModel string }{
+		{"gpt-pro", "chat_completions", "mdl_real_1"},
+		{"gpt-5", "responses", "mdl_real_2"},
 	} {
-		if _, err := db.Exec(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-			VALUES ('acc_real_ddl', 'openai', ?, ?, ?, ?, 1, ?, ?)`, row.source, row.family, row.upstream, row.family, now, now); err != nil {
-			t.Fatalf("seed mapping: %v", err)
-		}
+		seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+			VALUES ('entmap_' || ?, 'acc_real_ddl', ?, ?, 'conn_real_ddl', ?, ?, 1, ?, ?)`,
+			row.source, row.source, row.family, row.targetModel, row.family, now, now)
 	}
 
 	selector, err := newChainAccountsSelector(db, false, "chain-test-secret", time.Now, 20)
@@ -1200,6 +1283,12 @@ func TestChainAccountsModelMappingsLoadsOverRealMaintenanceDDL(t *testing.T) {
 	first, second := mappings["acc_real_ddl"][0], mappings["acc_real_ddl"][1]
 	if first.SourceModel != "gpt-5" || second.SourceModel != "gpt-pro" {
 		t.Fatalf("mapping order wrong: %s before %s", first.SourceModel, second.SourceModel)
+	}
+	if first.UpstreamModel != "gpt-real-2" || first.UpstreamEndpointFamily != "responses" || !first.Enabled {
+		t.Fatalf("first mapping = %+v", first)
+	}
+	if second.UpstreamModel != "gpt-real-1" || second.UpstreamEndpointFamily != "chat_completions" {
+		t.Fatalf("second mapping = %+v", second)
 	}
 	if _, exists := mappings["acc_missing"]; exists {
 		t.Fatalf("unknown account must not map: %+v", mappings)
@@ -1250,10 +1339,13 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 	}
 	statements := []string{
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, health_check_connection_id TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT, system_account_id TEXT, group_id TEXT, account_authorization_id TEXT, local_priority INTEGER, local_super_priority_enabled INTEGER, local_fallback_enabled INTEGER, enabled INTEGER, created_at TEXT)`,
-		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT, created_at TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT, source_model TEXT, source_endpoint_family TEXT, upstream_model TEXT, upstream_endpoint_family TEXT, enabled INTEGER)`,
+		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT, model_id TEXT, created_at TEXT)`,
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT, source_model TEXT, source_endpoint_family TEXT, target_connection_id TEXT, target_model_id TEXT, target_endpoint_family TEXT, enabled INTEGER, created_at TEXT, updated_at TEXT)`,
+		`CREATE TABLE account_connections (id TEXT PRIMARY KEY, account_id TEXT, connection_preset_code TEXT, protocol_surface_code TEXT, base_url TEXT, enabled INTEGER, created_at TEXT, updated_at TEXT)`,
+		`CREATE TABLE account_endpoint_modes (connection_id TEXT, endpoint_mode TEXT, PRIMARY KEY (connection_id, endpoint_mode))`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT, upstream_model TEXT, scope TEXT, system_account_id TEXT, status TEXT, supported_endpoint_modes_json TEXT)`,
 		`CREATE TABLE account_api_key_runtime_states (account_id TEXT, key_fingerprint TEXT, key_index INTEGER, status TEXT, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT)`,
 		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT, enabled INTEGER)`,
 		`CREATE TABLE account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,
@@ -1261,11 +1353,13 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 	}
 	now := "2026-01-01T00:00:00.000Z"
 	// 9 个候选超出 final limit 7，验证 hydration 上限消费注入值。
+	// B4 第一批：每个候选带一条 enabled 连接行（单连接事实源水合不丢弃）。
 	for i := 0; i < 9; i++ {
 		id := string(rune('a'+i)) + "-limit-acc"
 		statements = append(statements,
 			`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, deleted_at) VALUES ('`+id+`', 'sys_admin', 'openai', '`+id+`', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, NULL)`,
-			`INSERT INTO group_accounts VALUES ('`+id+`', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '`+now+`')`)
+			`INSERT INTO group_accounts VALUES ('`+id+`', 'sys_admin', 'grp-limit', NULL, 0, 0, 0, 1, '`+now+`')`,
+			`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at) VALUES ('conn-limit-`+id+`', '`+id+`', 'gpt_openai_v1', 'https://`+id+`.example.invalid/v1', 1, '`+now+`', '`+now+`')`)
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

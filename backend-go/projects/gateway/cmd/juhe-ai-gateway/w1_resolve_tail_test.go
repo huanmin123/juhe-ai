@@ -135,7 +135,9 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 	}{
 		{"缺少请求模型跳过", gatewayruntimecache.RouteStrategyModeNormal, "", []string{"openai", "anthropic"}, "missing_requested_model"},
 		{"无绑定跳过", gatewayruntimecache.RouteStrategyModeNormal, "gpt-test", nil, "empty_binding"},
-		{"单供应商跳过", gatewayruntimecache.RouteStrategyModeNormal, "gpt-test", []string{"openai"}, "single_provider"},
+		// B4 W2 对齐现行契约：single_provider 短路已随供应商解耦移除
+		// （V1 b76812c55，绑定行无 provider 维度），单绑定照常解析。
+		{"单绑定照常解析", gatewayruntimecache.RouteStrategyModeNormal, "gpt-test", []string{"openai"}, ""},
 	}
 	for _, testCase := range skipCases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -145,6 +147,13 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("解析失败: %v", err)
+			}
+			if testCase.wantReason == "" {
+				// B4 W2 对齐现行契约：单绑定照常解析（短路已移除）。
+				if result.Outcome != gatewaypreauth.NormalRouteOutcomeSelected || len(result.Accounts) != 1 {
+					t.Fatalf("结果 = %s/%s, want selected（短路已移除）", result.Outcome, result.Reason)
+				}
+				return
 			}
 			if result.Outcome != gatewaypreauth.NormalRouteOutcomeSkipped || result.Reason != testCase.wantReason {
 				t.Fatalf("结果 = %s/%s, want skipped/%s", result.Outcome, result.Reason, testCase.wantReason)
@@ -172,7 +181,7 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 		if result.APIKeyRecord == nil || result.APIKeyRecord.SelectedGroupID != fixture.groupID {
 			t.Fatalf("选择分支必须回写 SelectedGroupID: %+v", result.APIKeyRecord)
 		}
-		if result.GroupAccess == nil || result.GroupAccess.ProviderCode != "openai" {
+		if result.GroupAccess == nil || result.GroupAccess.GroupOwnerSystemAccountID == "" {
 			t.Fatalf("GroupAccess 回填错误: %+v", result.GroupAccess)
 		}
 		if len(result.Accounts) != 1 || result.Accounts[0].ID != fixture.accountID {
@@ -200,8 +209,10 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 		if result.Outcome != gatewaypreauth.NormalRouteOutcomeFailed {
 			t.Fatalf("结果 = %s, want failed", result.Outcome)
 		}
-		if result.StatusCode != 400 || result.Code != "model_not_routable_for_api_key" {
-			t.Fatalf("失败契约 = %d/%s, want 400/model_not_routable_for_api_key", result.StatusCode, result.Code)
+		// §6.1 目录分支终态：目录无 active 可见行 → 404 model_not_found
+		// （迁移完成后不得再用供应商目录判定 400 model_not_routable）。
+		if result.StatusCode != 404 || result.Code != "model_not_found" {
+			t.Fatalf("失败契约 = %d/%s, want 404/model_not_found", result.StatusCode, result.Code)
 		}
 		if result.RequestedModel != "no-such-model" {
 			t.Fatalf("RequestedModel = %q", result.RequestedModel)

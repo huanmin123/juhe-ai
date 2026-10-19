@@ -152,7 +152,7 @@ func TestW7AListAndReplaceCatalogArms(t *testing.T) {
 	store, db := testStore(t)
 	defer db.Close()
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO providers(code,updated_at) VALUES ('openai','r')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO vendors(code,updated_at) VALUES ('openai','r')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ListProviderModels(ctx, " ", false); err == nil {
@@ -179,12 +179,16 @@ func TestW7AListAndReplaceCatalogArms(t *testing.T) {
 			{ID: "i1", Model: "m", Status: "active", Source: "s", SupportedAPIProtocolsJSON: "[]"},
 			{ID: "i2", Model: "m", Status: "active", Source: "s", SupportedAPIProtocolsJSON: "[]"},
 		}}},
+		// 负值 token 列无写侧校验（旧实现同样直写，schema CHECK 为权威）——
+		// 旧断言的失败实为前序用例的 CAS 漂移；新 CAS 门为 vendors 只读比较，
+		// 该用例按透传语义期望成功。
+		{"negative ai limit passthrough", CatalogReplacement{ProviderCode: "openai", ExpectedProviderUpdatedAt: "r", Models: []CatalogModel{{ID: "i", Model: "m2", Status: "active", Source: "s", SupportedAPIProtocolsJSON: "[]", ContextWindowTokens: &negative}}}},
+		// order ok 收尾：整链成功。
 		{"order ok", CatalogReplacement{ProviderCode: "openai", ExpectedProviderUpdatedAt: "r", Models: []CatalogModel{{ID: "i", Model: "m", Status: "active", Source: "s", SupportedAPIProtocolsJSON: "[]", CatalogOrder: &order, CatalogVisible: true}}}},
-		{"negative ai limit", CatalogReplacement{ProviderCode: "openai", ExpectedProviderUpdatedAt: "r", Models: []CatalogModel{{ID: "i", Model: "m2", Status: "active", Source: "s", SupportedAPIProtocolsJSON: "[]", ContextWindowTokens: &negative}}}},
 	}
 	for _, tc := range cases {
 		err := store.ReplaceProviderCatalog(ctx, tc.input)
-		if tc.name == "order ok" {
+		if tc.name == "order ok" || tc.name == "negative ai limit passthrough" {
 			if err != nil {
 				t.Fatalf("%s err=%v", tc.name, err)
 			}

@@ -1,15 +1,19 @@
-// custom_models.go owns the custom_provider_models write domain ported from
-// backend/src/storage/custom-provider-models.repository.ts: the full-row
-// reads (by id / by scope), the INSERT .. ON CONFLICT(id) upsert, the
-// optimistic-concurrency patch with in-transaction default-reference
-// cleanup, the delete with the same cleanup, the AI-account binding summary
-// and the write-side normalization helpers. SQLite and PostgreSQL share the
-// statement text; the store binds ? -> $N for PostgreSQL.
+// custom_models.go owns the custom model write domain over the models 单表
+//（供应商与上游协议面重构设计 §3；scope='global'（system_account_id NULL）与
+// 'personal'（=owner）行承自定义模型）："自定义模型"= custom_provider_models
+// 的直迁，写路径落 public_model/upstream_model（同值写入，Builtin 行默认
+// public=upstream 的同款默认）/vendor_code/status/supported_endpoint_modes_json。
+// 旧 `mode`（text/image/audio/video 四值 UI 分类）与
+// supported_api_protocols_json 无物理列：读取按 UI 分类逆映射派生（见
+// deriveCustomUIMode / DeriveLegacyModeAndProtocols），写入经
+// ForwardCustomModelEndpointModes 合成 modes json。SQLite and PostgreSQL share
+// the statement text; the store binds ? -> $N for PostgreSQL.
 package providers
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -116,8 +120,11 @@ type customModelPatchOutcome struct {
 	ClearedDefaultHealthCheckProviderCodes []string
 }
 
-const customProviderModelColumns = `id, provider_code, model, scope, system_account_id, status, catalog_visible,
-	mode, supported_api_protocols_json, supported_service_tiers_json,
+// customProviderModelColumns 是 models 单表 custom 全行读投影（旧
+// provider_code/model 形状经别名保留，supported_endpoint_modes_json 承
+// mode+protocols 物理来源）。
+const customProviderModelColumns = `id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, system_account_id, status, catalog_visible,
+	supported_endpoint_modes_json, supported_service_tiers_json,
 	supported_reasoning_efforts_json, default_reasoning_effort,
 	release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
 	input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
@@ -136,7 +143,7 @@ func (s *Store) findCustomProviderModelByID(ctx context.Context, id, ownerSystem
 		args = append(args, owner)
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+customProviderModelColumns+`
-		FROM `+s.table("custom_provider_models")+`
+		FROM `+s.table("models")+`
 		WHERE id = ?`+ownerPredicate+`
 		LIMIT 1`), args...)
 	if err != nil {
@@ -153,20 +160,22 @@ func (s *Store) findCustomProviderModelByID(ctx context.Context, id, ownerSystem
 	return nil, rows.Err()
 }
 
-// findCustomProviderModelByScope ports findCustomProviderModelByScopeAsync.
+// findCustomProviderModelByScope ports findCustomProviderModelByScopeAsync
+//（身份键 (COALESCE(vendor_code,''), scope, COALESCE(system_account_id,''),
+// upstream_model) 的等值读法）.
 func (s *Store) findCustomProviderModelByScope(ctx context.Context, providerCode, scope, systemAccountID, model string) (*customProviderModelRecord, error) {
 	query := ""
 	var args []any
 	if scope == catalogScopeGlobal {
 		query = `SELECT ` + customProviderModelColumns + `
-			FROM ` + s.table("custom_provider_models") + `
-			WHERE provider_code = ? AND scope = 'global' AND system_account_id IS NULL AND model = ?
+			FROM ` + s.table("models") + `
+			WHERE vendor_code = ? AND scope = 'global' AND system_account_id IS NULL AND upstream_model = ?
 			LIMIT 1`
 		args = []any{providerCode, model}
 	} else {
 		query = `SELECT ` + customProviderModelColumns + `
-			FROM ` + s.table("custom_provider_models") + `
-			WHERE provider_code = ? AND scope = 'personal' AND system_account_id = ? AND model = ?
+			FROM ` + s.table("models") + `
+			WHERE vendor_code = ? AND scope = 'personal' AND system_account_id = ? AND upstream_model = ?
 			LIMIT 1`
 		args = []any{providerCode, systemAccountID, model}
 	}
@@ -189,11 +198,12 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	var (
 		record          customProviderModelRecord
 		systemAccountID sql.NullString
-		// custom_provider_models.catalog_visible 在 PostgreSQL 为 boolean、
-		// SQLite 为 integer，扫描目标用 NullBool 同时兼容两种驱动。
+		// models.catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
+		// 扫描目标用 NullBool 同时兼容两种驱动。
 		catalogVisible                  sql.NullBool
-		mode, releaseDate, shutdownDate sql.NullString
-		protocols, tiers, efforts       sql.NullString
+		endpointModes                   sql.NullString
+		releaseDate, shutdownDate       sql.NullString
+		tiers, efforts                  sql.NullString
 		defaultEffort                   sql.NullString
 		contextWindow, maxInput         sql.NullInt64
 		maxOutput                       sql.NullInt64
@@ -209,7 +219,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		updatedBy                       sql.NullString
 	)
 	if err := scan(&record.ID, &record.ProviderCode, &record.Model, &record.Scope, &systemAccountID, &record.Status,
-		&catalogVisible, &mode, &protocols, &tiers, &efforts, &defaultEffort,
+		&catalogVisible, &endpointModes, &tiers, &efforts, &defaultEffort,
 		&releaseDate, &shutdownDate, &contextWindow, &maxInput, &maxOutput,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage, &tierPrices,
 		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage, &currency,
@@ -219,8 +229,9 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	}
 	record.SystemAccountID = nullPtrString(systemAccountID)
 	record.CatalogVisible = catalogVisible.Bool && catalogVisible.Valid
-	record.Mode = textPtr(mode)
-	record.SupportedAPIProtocols = parseCustomModelProtocols(protocols)
+	// 旧 mode（四值 UI 分类）/ supportedApiProtocols 无物理列：由
+	// supported_endpoint_modes_json 逆映射派生。
+	record.Mode, record.SupportedAPIProtocols = deriveCustomModelProjection(endpointModes)
 	record.SupportedServiceTiers = parseCapabilityTokenArray(tiers)
 	record.SupportedReasoningEfforts = parseCapabilityTokenArray(efforts)
 	record.DefaultReasoningEffort = capabilityTokenPtr(defaultEffort)
@@ -248,19 +259,62 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	return &record, nil
 }
 
+// deriveCustomModelProjection 把 supported_endpoint_modes_json 列值逆映射成自
+// 定义模型的 (UI 分类 mode, supportedApiProtocols)：UI 分类按
+// image > audio > video > text 收敛（写路径四值词表的读侧逆）；空 mode 集
+// 不注入 mode、协议投影空数组。
+func deriveCustomModelProjection(value sql.NullString) (*string, []string) {
+	modes := parseJSONArray(value)
+	_, protocols := DeriveLegacyModeAndProtocols(modes)
+	if uiMode, ok := deriveCustomUIMode(modes); ok {
+		return &uiMode, protocols
+	}
+	return nil, protocols
+}
+
+// deriveCustomUIMode 从 endpoint modes 反推自定义模型 UI 分类：images_json →
+// image；音频族（audio_speech / audio_transcription_json / realtime_session /
+// audio_job_*）→ audio；视频族 → video；其余（含空集）→ text。
+func deriveCustomUIMode(endpointModes []string) (string, bool) {
+	if len(endpointModes) == 0 {
+		return "", false
+	}
+	has := func(targets ...string) bool {
+		for _, mode := range endpointModes {
+			for _, target := range targets {
+				if mode == target {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if has("images_json") {
+		return "image", true
+	}
+	if has("audio_speech", "audio_transcription_json", "realtime_session",
+		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel") {
+		return "audio", true
+	}
+	if has("video_create", "video_get", "video_content", "video_cancel") {
+		return "video", true
+	}
+	return "text", true
+}
+
 // customModelBuiltInNameConflictMessage is the 2026-09-30 contract rejection
 // text (自定义模型与模型映射设计.md 第 4 节：自定义模型不得与内置模型同名，
 // 内置权威优先)；the routes render it as a 400 body.
 const customModelBuiltInNameConflictMessage = "该模型已由系统内置提供，请直接使用系统模型"
 
-// existsVisibleBuiltInCatalogModel reports whether the provider's built-in
-// catalog carries a runtime-visible row (active + catalog_visible + not
-// shutdown, the listBuiltInCatalogModels availability predicate) with the
-// exact model name.
+// existsVisibleBuiltInCatalogModel reports whether the vendor's builtin 目录
+// carries a runtime-visible row（scope='builtin'，active + catalog_visible +
+// not shutdown）with the exact public_model name.
 func (s *Store) existsVisibleBuiltInCatalogModel(ctx context.Context, providerCode, model string) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT 1
-		FROM `+s.table("provider_model_catalog")+`
-		WHERE provider_code = ? AND model = ?
+		FROM `+s.table("models")+`
+		WHERE vendor_code = ? AND public_model = ?
+			AND scope = 'builtin'
 			AND status = 'active'
 			AND `+s.visibleTruePredicate("catalog_visible")+`
 			AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.todayText()+`)
@@ -275,9 +329,11 @@ func (s *Store) existsVisibleBuiltInCatalogModel(ctx context.Context, providerCo
 	return false, rows.Err()
 }
 
-// upsertCustomProviderModel ports upsertCustomProviderModelAsync. The returned
-// error messages are verbatim repository texts; the route renders them as 400
-// bodies.
+// upsertCustomProviderModel ports upsertCustomProviderModelAsync over the
+// models 单表（identity 唯一索引 (COALESCE(vendor_code,''), scope,
+// COALESCE(system_account_id,''), upstream_model)；id 保留旧 ON CONFLICT 门）。
+// The returned error messages are verbatim repository texts; the route renders
+// them as 400 bodies.
 func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProviderModelUpsertInput) (*customProviderModelRecord, error) {
 	providerCode, err := requiredCustomText(input.ProviderCode, "供应商代码不能为空")
 	if err != nil {
@@ -349,6 +405,16 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		return nil, err
 	}
 	protocols := normalizeCustomProtocols(input.SupportedAPIProtocols)
+	// supported_endpoint_modes_json：协议映射优先，协议为空回退 UI 分类缺省集
+	//（未知协议 deny-by-default 拒绝）。
+	mode := "text"
+	if input.Mode != nil && strings.TrimSpace(*input.Mode) != "" {
+		mode = strings.TrimSpace(*input.Mode)
+	}
+	endpointModes, err := ForwardCustomModelEndpointModes(mode, protocols)
+	if err != nil {
+		return nil, err
+	}
 
 	createdBy := input.ActorSystemAccountID
 	createdAt := now
@@ -357,8 +423,9 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		createdAt = existing.CreatedAt
 	}
 	args := []any{
-		id, providerCode, model, scope, nullableTextValue(systemAccountID), status, s.boolValue(true),
-		nullableTextPtr(input.Mode), mustJSON(protocols),
+		id, providerCode, model, model, scope, nullableTextValue(systemAccountID), status, s.boolValue(true),
+		s.boolValue(input.CachedInputUsdPer1M != nil),
+		mustJSON(endpointModes),
 		mustJSON(capabilities.supportedServiceTiers), mustJSON(capabilities.supportedReasoningEfforts),
 		nullableTextPtr(capabilities.defaultReasoningEffort),
 		nullableDatePtr(input.ReleaseDate), nullableDatePtr(input.ShutdownDate),
@@ -374,9 +441,9 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		nullableTextPtr(input.PricingNotes), nullableTextPtr(input.CapabilityNotes), nullableTextPtr(input.Notes),
 		createdBy, input.ActorSystemAccountID, createdAt, now,
 	}
-	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("custom_provider_models")+` (
-		id, provider_code, model, scope, system_account_id, status, catalog_visible,
-		mode, supported_api_protocols_json, supported_service_tiers_json,
+	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("models")+` (
+		id, vendor_code, public_model, upstream_model, scope, system_account_id, status, catalog_visible,
+		supports_prompt_caching, supported_endpoint_modes_json, supported_service_tiers_json,
 		supported_reasoning_efforts_json, default_reasoning_effort,
 		release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
 		input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
@@ -384,16 +451,17 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 		output_usd_per_image, currency, pricing_notes, capability_notes, notes,
 		created_by, updated_by, created_at, updated_at
 	)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
-		provider_code = excluded.provider_code,
-		model = excluded.model,
+		vendor_code = excluded.vendor_code,
+		public_model = excluded.public_model,
+		upstream_model = excluded.upstream_model,
 		scope = excluded.scope,
 		system_account_id = excluded.system_account_id,
 		status = excluded.status,
 		catalog_visible = excluded.catalog_visible,
-		mode = excluded.mode,
-		supported_api_protocols_json = excluded.supported_api_protocols_json,
+		supports_prompt_caching = excluded.supports_prompt_caching,
+		supported_endpoint_modes_json = excluded.supported_endpoint_modes_json,
 		supported_service_tiers_json = excluded.supported_service_tiers_json,
 		supported_reasoning_efforts_json = excluded.supported_reasoning_efforts_json,
 		default_reasoning_effort = excluded.default_reasoning_effort,
@@ -473,7 +541,7 @@ func (s *Store) patchCustomProviderModel(ctx context.Context, current *customPro
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	update := s.bind(`UPDATE ` + s.table("custom_provider_models") + `
+	update := s.bind(`UPDATE ` + s.table("models") + `
 		SET ` + strings.Join(assignments, ", ") + `, updated_by = ?, updated_at = ?
 		WHERE id = ? AND updated_at = ?` + ownerPredicate)
 	result, err := tx.ExecContext(ctx, update, writeParams...)
@@ -521,7 +589,7 @@ func (s *Store) deleteCustomProviderModel(ctx context.Context, id, ownerSystemAc
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("custom_provider_models")+`
+	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("models")+`
 		WHERE id = ?`+ownerPredicate), args...)
 	if err != nil {
 		return false, err
@@ -549,9 +617,11 @@ type customProviderModelBindingSummary struct {
 	TotalAccountCount           int64
 }
 
-// customProviderModelBindings ports customProviderModelAccountBindingSummaryAsync:
-// three distinct-account counts (supported models, mapping source, mapping
-// upstream) plus the union count, always joined against live accounts.
+// customProviderModelBindings ports customProviderModelAccountBindingSummaryAsync
+// over the target relation shapes：支持模型关系 (account_id, model_id) 直接引用
+// models.id；入口映射 account_entry_mappings 以 source_model（public name）与
+// target_model_id 计两个映射向（旧 account_model_mappings 的
+// source_model/upstream_model 双列随表退役）。
 func (s *Store) customProviderModelBindings(ctx context.Context, providerCode, model, scope, systemAccountID string) (*customProviderModelBindingSummary, error) {
 	providerCode, err := requiredCustomText(providerCode, "供应商代码不能为空")
 	if err != nil {
@@ -573,33 +643,51 @@ func (s *Store) customProviderModelBindings(ctx context.Context, providerCode, m
 	}
 	accounts := s.table("accounts")
 	supportedModels := s.table("account_supported_models")
-	modelMappings := s.table("account_model_mappings")
+	entryMappings := s.table("account_entry_mappings")
 	supportedModelSQL := `SELECT account_supported_models.account_id
 		FROM ` + supportedModels + ` account_supported_models
 		INNER JOIN ` + accounts + ` accounts
 			ON accounts.id = account_supported_models.account_id
 			AND accounts.deleted_at IS NULL
-		WHERE account_supported_models.provider_code = ?
-			AND account_supported_models.model = ?
-			` + ownerPredicate
-	mappingSourceSQL := `SELECT account_model_mappings.account_id
-		FROM ` + modelMappings + ` account_model_mappings
+		WHERE account_supported_models.model_id = ?
+		` + ownerPredicate
+	mappingSourceSQL := `SELECT account_entry_mappings.account_id
+		FROM ` + entryMappings + ` account_entry_mappings
 		INNER JOIN ` + accounts + ` accounts
-			ON accounts.id = account_model_mappings.account_id
+			ON accounts.id = account_entry_mappings.account_id
 			AND accounts.deleted_at IS NULL
-		WHERE account_model_mappings.source_model = ?
-			` + ownerPredicate
-	mappingUpstreamSQL := `SELECT account_model_mappings.account_id
-		FROM ` + modelMappings + ` account_model_mappings
+		WHERE account_entry_mappings.source_model = ?
+		` + ownerPredicate
+	mappingUpstreamSQL := `SELECT account_entry_mappings.account_id
+		FROM ` + entryMappings + ` account_entry_mappings
 		INNER JOIN ` + accounts + ` accounts
-			ON accounts.id = account_model_mappings.account_id
+			ON accounts.id = account_entry_mappings.account_id
 			AND accounts.deleted_at IS NULL
-		WHERE account_model_mappings.upstream_model = ?
-			` + ownerPredicate
+		WHERE account_entry_mappings.target_model_id = ?
+		` + ownerPredicate
 
-	supportedModelArgs := append([]any{providerCode, model}, ownerArgs...)
+	// 支持模型关系按 models.id 计数：身份键定位当前行的物理 id（行缺失时
+	// 三个计数恒 0，守卫语义保持“无绑定可删”）。
+	modelID := ""
+	idQuery := `SELECT id FROM ` + s.table("models") + `
+		WHERE vendor_code = ? AND upstream_model = ? AND scope = ?`
+	idArgs := []any{providerCode, model, scope}
+	if scope == catalogScopeGlobal {
+		idQuery += " AND system_account_id IS NULL LIMIT 1"
+	} else {
+		idQuery += " AND system_account_id = ? LIMIT 1"
+		idArgs = append(idArgs, strings.TrimSpace(systemAccountID))
+	}
+	if err := s.db.QueryRowContext(ctx, s.bind(idQuery), idArgs...).Scan(&modelID); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		modelID = ""
+	}
+	supportedModelArgs := append([]any{modelID}, ownerArgs...)
 	mappingSourceArgs := append([]any{model}, ownerArgs...)
-	mappingUpstreamArgs := append([]any{model}, ownerArgs...)
+	mappingUpstreamArgs := append([]any{modelID}, ownerArgs...)
+	_ = providerCode
 
 	summary := &customProviderModelBindingSummary{}
 	if summary.SupportedModelAccountCount, err = s.countDistinctBoundAccounts(ctx,
@@ -647,6 +735,8 @@ func (s *Store) countDistinctBoundAccounts(ctx context.Context, query string, ar
 // customProviderModelPatchAssignments ports customProviderModelPatchAssignments:
 // only submitted fields participate, equal values are dropped (JSON string
 // equality) and the capability columns re-normalize over the merged next.
+// mode 与 supportedApiProtocols 合写同一物理列 supported_endpoint_modes_json：
+// 两键任一提交即按合并后的 (UI mode, protocols) 重算 modes json。
 func (s *Store) customProviderModelPatchAssignments(current *customProviderModelRecord, next customProviderModelUpsertInput,
 	fields []string) ([]string, []any, customProviderModelRecord, error) {
 	requested := map[string]bool{}
@@ -680,11 +770,27 @@ func (s *Store) customProviderModelPatchAssignments(current *customProviderModel
 		status = current.Status
 	}
 	add("status", "status", status, current.Status, func() { merged.Status = status })
-	add("mode", "mode", nullableTextPtr(next.Mode), nullableTextPtr(current.Mode), func() { merged.Mode = next.Mode })
-	add("supportedApiProtocols", "supported_api_protocols_json",
-		mustJSON(normalizeCustomProtocols(next.SupportedAPIProtocols)),
-		mustJSON(normalizeCustomProtocols(current.SupportedAPIProtocols)),
-		func() { merged.SupportedAPIProtocols = normalizeCustomProtocols(next.SupportedAPIProtocols) })
+	// mode / supportedApiProtocols → supported_endpoint_modes_json 合写。
+	if requested["mode"] || requested["supportedApiProtocols"] {
+		mergedMode := "text"
+		if merged.Mode != nil && strings.TrimSpace(*merged.Mode) != "" {
+			mergedMode = strings.TrimSpace(*merged.Mode)
+		}
+		mergedProtocols := normalizeCustomProtocols(merged.SupportedAPIProtocols)
+		mergedModes, modesErr := ForwardCustomModelEndpointModes(mergedMode, mergedProtocols)
+		if modesErr != nil {
+			return nil, nil, merged, modesErr
+		}
+		currentModes, _, currentProjectionErr := decodeCurrentEndpointModes(current)
+		if currentProjectionErr != nil {
+			return nil, nil, merged, currentProjectionErr
+		}
+		if !patchValuesEqual(mustJSON(mergedModes), mustJSON(currentModes)) {
+			assignments = append(assignments, "supported_endpoint_modes_json = ?")
+			params = append(params, mustJSON(mergedModes))
+			merged.Mode, merged.SupportedAPIProtocols = deriveCustomModelProjection(sql.NullString{String: mustJSON(mergedModes), Valid: true})
+		}
+	}
 	add("supportedServiceTiers", "supported_service_tiers_json",
 		mustJSON(capabilities.supportedServiceTiers), mustJSON(current.SupportedServiceTiers),
 		func() { merged.SupportedServiceTiers = capabilities.supportedServiceTiers })
@@ -704,12 +810,18 @@ func (s *Store) customProviderModelPatchAssignments(current *customProviderModel
 		func() { merged.MaxInputTokens = next.MaxInputTokens })
 	add("maxOutputTokens", "max_output_tokens", nullableInt64Ptr(next.MaxOutputTokens), nullableInt64Ptr(current.MaxOutputTokens),
 		func() { merged.MaxOutputTokens = next.MaxOutputTokens })
+	// cached-input 价变更联动 supports_prompt_caching（读侧直接读列，见
+	// scanCustomCatalogItem；价未提交或未变化时列保持现值）。
+	if requested["cachedInputUsdPer1M"] && !patchValuesEqual(nullableFloat64Ptr(next.CachedInputUsdPer1M), nullableFloat64Ptr(current.CachedInputUsdPer1M)) {
+		assignments = append(assignments, "supports_prompt_caching = ?")
+		params = append(params, s.boolValue(next.CachedInputUsdPer1M != nil))
+	}
+	add("cachedInputUsdPer1M", "cached_input_usd_per_1m", nullableFloat64Ptr(next.CachedInputUsdPer1M), nullableFloat64Ptr(current.CachedInputUsdPer1M),
+		func() { merged.CachedInputUsdPer1M = next.CachedInputUsdPer1M })
 	add("inputUsdPer1M", "input_usd_per_1m", nullableFloat64Ptr(next.InputUsdPer1M), nullableFloat64Ptr(current.InputUsdPer1M),
 		func() { merged.InputUsdPer1M = next.InputUsdPer1M })
 	add("outputUsdPer1M", "output_usd_per_1m", nullableFloat64Ptr(next.OutputUsdPer1M), nullableFloat64Ptr(current.OutputUsdPer1M),
 		func() { merged.OutputUsdPer1M = next.OutputUsdPer1M })
-	add("cachedInputUsdPer1M", "cached_input_usd_per_1m", nullableFloat64Ptr(next.CachedInputUsdPer1M), nullableFloat64Ptr(current.CachedInputUsdPer1M),
-		func() { merged.CachedInputUsdPer1M = next.CachedInputUsdPer1M })
 	add("cacheWriteUsdPer1M", "cache_write_usd_per_1m", nullableFloat64Ptr(next.CacheWriteUsdPer1M), nullableFloat64Ptr(current.CacheWriteUsdPer1M),
 		func() { merged.CacheWriteUsdPer1M = next.CacheWriteUsdPer1M })
 	add("cacheWrite1hUsdPer1M", "cache_write_1h_usd_per_1m", nullableFloat64Ptr(next.CacheWrite1hUsdPer1M), nullableFloat64Ptr(current.CacheWrite1hUsdPer1M),
@@ -737,6 +849,21 @@ func (s *Store) customProviderModelPatchAssignments(current *customProviderModel
 	add("notes", "notes", nullableTextPtr(next.Notes), nullableTextPtr(current.Notes),
 		func() { merged.Notes = next.Notes })
 	return assignments, params, merged, nil
+}
+
+// decodeCurrentEndpointModes 是 patch 合写时的当前行 modes 读取：当前行无独立
+// modes 缓存，从派生的 (UI mode, protocols) 正向重建（与写路径同一投影，往返
+// 稳定）。
+func decodeCurrentEndpointModes(current *customProviderModelRecord) ([]string, string, error) {
+	mode := "text"
+	if current.Mode != nil && strings.TrimSpace(*current.Mode) != "" {
+		mode = strings.TrimSpace(*current.Mode)
+	}
+	modes, err := ForwardCustomModelEndpointModes(mode, normalizeCustomProtocols(current.SupportedAPIProtocols))
+	if err != nil {
+		return nil, mode, err
+	}
+	return modes, mode, nil
 }
 
 func customModelMutationRecordOf(record *customProviderModelRecord) customProviderModelMutationRecord {
@@ -918,25 +1045,6 @@ func capabilityTokenPtr(value sql.NullString) *string {
 		return nil
 	}
 	return &trimmed
-}
-
-func parseCustomModelProtocols(value sql.NullString) []string {
-	output := []string{}
-	if !value.Valid || strings.TrimSpace(value.String) == "" {
-		return output
-	}
-	var raw []any
-	if err := json.Unmarshal([]byte(value.String), &raw); err != nil {
-		return output
-	}
-	for _, item := range raw {
-		text, ok := item.(string)
-		if !ok || !customProviderModelProtocolSet[text] {
-			continue
-		}
-		output = append(output, text)
-	}
-	return output
 }
 
 // normalizeServiceTierPricesValue ports the write-side normalizeServiceTierPrices:

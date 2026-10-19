@@ -217,16 +217,8 @@ func TestW1ChainCandidateResourceProjections(t *testing.T) {
 	if got := row.resourceProxyProfileID(); got != "res_proxy" {
 		t.Fatalf("resource proxy = %q", got)
 	}
-	providerCode := sql.NullString{String: "gemini", Valid: true}
-	row.ResourceProviderCode = providerCode
-	if got := row.resourceProviderCode(); got != "gemini" {
-		t.Fatalf("resource provider = %q", got)
-	}
-	row.ResourceProviderCode = plainID
-	row.ProviderCode = "openai"
-	if got := row.resourceProviderCode(); got != "openai" {
-		t.Fatalf("回退 provider = %q", got)
-	}
+	// B4 W2：chainCandidateRow.ProviderCode/ResourceProviderCode 过渡字段与
+	// resourceProviderCode() 已删除，身份读取统一走 resourceVendorCode。
 	protocolCode := sql.NullString{String: "openai", Valid: true}
 	row.ProtocolCode = protocolCode
 	if got := row.resourceProtocolCode(); got != "openai" {

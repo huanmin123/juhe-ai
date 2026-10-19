@@ -97,13 +97,13 @@ func TestW13GFindAdvancedDetailOwnerArms(t *testing.T) {
 		!strings.Contains(err.Error(), "格式无效") {
 		t.Fatalf("坏错误规则：%v", err)
 	}
-	// account_model_mappings 表缺失 → 映射查询错误。
+	// account_entry_mappings 表缺失 → 映射查询错误（B4 W2 读面已切新表）。
 	if _, err := env.store.FindAdvancedDetail(context.Background(), "acc-w13g-adv2", access); err == nil {
 		t.Fatal("映射查询应先成功")
 	}
-	env.exec(t, `DROP TABLE account_model_mappings`)
+	env.exec(t, `DROP TABLE account_entry_mappings`)
 	if _, err := env.store.FindAdvancedDetail(context.Background(), "acc-w13g-adv2", access); err == nil {
-		t.Fatal("account_model_mappings 缺失应报错")
+		t.Fatal("account_entry_mappings 缺失应报错")
 	}
 }
 
@@ -128,9 +128,8 @@ func TestW13GFindAdvancedDetailAuthorizedHappyPath(t *testing.T) {
 		"2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", runtimeID)
 	// 源账户上的映射与支持模型 → authorized 详情的映射投影。
 	now := "2026-01-01T00:00:00Z"
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family,
-		upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('acc-w13g-adv-src', 'gpt', 'gpt-4o', 'chat_completions', 'up-4o', 'chat_completions', 1, ?, ?)`, now, now)
+	// B4 W2 目标形态直插（连接 preset + upstream 支持成员 + 入口映射行）。
+	env.seedEntryMapping(t, "acc-w13g-adv-src", "generic_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
 	// 锁状态行 → 详情锁字段。
 	env.exec(t, `INSERT INTO account_lock_states (account_id, enabled, lock_state, lock_death_timeout_seconds,
 		lock_retry_interval_seconds, updated_at) VALUES ('acc-w13g-adv-inst', 1, 'ENGAGED', 600, 10, ?)`, now)
@@ -169,11 +168,10 @@ func TestW13GFindCloneContextArms(t *testing.T) {
 		env.seedProviderAndDefaultGroup(t, adminID)
 		env.seedAccount(t, "acc-w13g-clone", adminID, "w13g-clone", "active")
 		now := "2026-01-01T00:00:00Z"
-		env.exec(t, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family,
-			upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-			VALUES ('acc-w13g-clone', 'gpt', 'gpt-4o', 'chat_completions', 'up-4o', 'chat_completions', 1, ?, ?)`, now, now)
-		env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-			VALUES ('acc-w13g-clone', 'gpt', 'gpt-4o', ?)`, now)
+		// B4 W2 目标形态直插：克隆源账户的连接 + 支持成员 + 入口映射行。
+		env.seedEntryMapping(t, "acc-w13g-clone", "generic_openai_v1", "gpt-4o", "chat_completions", "up-4o", "chat_completions", 1)
+		env.exec(t, `INSERT OR IGNORE INTO account_supported_models (account_id, model_id, created_at)
+			VALUES ('acc-w13g-clone', (SELECT id FROM models WHERE upstream_model = 'gpt-4o'), ?)`, now)
 		env.exec(t, `INSERT INTO account_tags (id, system_account_id, name, created_at, updated_at)
 			VALUES ('tag-w13g-clone', ?, '克隆标签', ?, ?)`, adminID, now, now)
 		env.exec(t, `INSERT INTO account_tag_bindings (system_account_id, account_id, tag_id, created_at)
@@ -203,9 +201,9 @@ func TestW13GFindCloneContextArms(t *testing.T) {
 		}
 		// relations 表缺失。
 		env.exec(t, `UPDATE accounts SET credentials_encrypted = '' WHERE id = 'acc-w13g-clone'`)
-		env.exec(t, `DROP TABLE account_model_mappings`)
+		env.exec(t, `DROP TABLE account_entry_mappings`)
 		if _, err := env.store.FindCloneContext(context.Background(), "acc-w13g-clone", adminAccess); err == nil {
-			t.Fatal("account_model_mappings 缺失应报错")
+			t.Fatal("account_entry_mappings 缺失应报错")
 		}
 		// accounts 表缺失。
 		env.exec(t, `DROP TABLE accounts`)
@@ -220,8 +218,8 @@ func TestW13GFindCloneContextArms(t *testing.T) {
 		userID := env2.login(t, "alice", "alice-pass", "user")
 		env2.seedProviderAndDefaultGroup(t, userID)
 		env2.seedAccount(t, "acc-w13g-clone2", userID, "w13g-clone2", "active")
-		env2.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-			VALUES ('acc-w13g-clone2', 'gpt', 'gpt-4o', '2026-01-01T00:00:00Z')`)
+		env2.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+			VALUES ('acc-w13g-clone2', (SELECT id FROM models WHERE upstream_model = 'gpt-4o'), '2026-01-01T00:00:00Z')`)
 		context, err := env2.store.FindCloneContext(context.Background(), "acc-w13g-clone2", AccessScope{ViewerID: userID})
 		if err != nil || context == nil {
 			t.Fatalf("非管理员克隆上下文：%v %v", context, err)

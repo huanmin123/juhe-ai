@@ -103,7 +103,6 @@ type CompactPreflightInput struct {
 	SystemAccountID            string
 	APIKeyID                   string
 	GroupID                    string
-	GroupAccess                gatewayruntimecache.GroupUsageAccessMetadata
 	RequestClientCompatibility string
 	DispatchAccounts           []gatewayruntimecache.OpenAIAccountSecret
 	ActiveGatewaySettings      gatewayruntimecache.GatewaySettings
@@ -165,7 +164,7 @@ func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Co
 		return CompactPreflightResult{}, err
 	}
 	previousResponseID := normalizedOptionalText(body["previous_response_id"])
-	boundary := codexContextBoundary(input.SystemAccountID, input.APIKeyID, input.GroupID, input.GroupAccess)
+	boundary := codexContextBoundary(input.SystemAccountID, input.APIKeyID, input.GroupID)
 	restoreResult, err := s.Bridge.RestoreChatBridgeInputForCompact(ctx, struct {
 		PreviousResponseID string
 		Boundary           CodexContextStateBoundary

@@ -19,7 +19,8 @@ func TestWeProvidersDeleteModelBoundToAccount(t *testing.T) {
 	// cu-2（global gpt-4o）绑定到一个 AI 账户的支持列表。
 	accountID := "acc-bound"
 	env.exec(t, `INSERT INTO accounts (id, system_account_id, name, deleted_at) VALUES (?, 'sys-1', '绑定账户', NULL)`, accountID)
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model) VALUES (?, 'gpt', 'gpt-4o')`, accountID)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id)
+		SELECT ?, id FROM models WHERE id = 'cu-2'`, accountID)
 
 	code, conflict := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-2", "")
 	if code != http.StatusConflict {
@@ -71,13 +72,13 @@ func TestWeProvidersDefaultHealthCheckInvalidSelection(t *testing.T) {
 	}
 }
 
-func TestWeTextProtocolPredicateDialects(t *testing.T) {
-	sqlitePredicate := textProtocolPredicate(&Store{}, "supported_api_protocols_json")
-	if !strings.Contains(sqlitePredicate, "json_array_length") || !strings.Contains(sqlitePredicate, "json_each") {
+func TestWeEndpointModesPredicateDialects(t *testing.T) {
+	sqlitePredicate := (&Store{}).endpointModesAnyPredicate("supported_endpoint_modes_json", []string{"chat_json"})
+	if !strings.Contains(sqlitePredicate, "json_each") {
 		t.Fatal("sqlite 方言应使用 json1")
 	}
-	pgPredicate := textProtocolPredicate(&Store{pg: true}, "supported_api_protocols_json")
-	if !strings.Contains(pgPredicate, "jsonb_array_length") || !strings.Contains(pgPredicate, "?|") {
+	pgPredicate := (&Store{pg: true}).endpointModesAnyPredicate("supported_endpoint_modes_json", []string{"chat_json"})
+	if !strings.Contains(pgPredicate, "jsonb_array_elements_text") {
 		t.Fatal("pg 方言应使用 jsonb")
 	}
 }

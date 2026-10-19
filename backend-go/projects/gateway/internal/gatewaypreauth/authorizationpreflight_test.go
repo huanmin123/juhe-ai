@@ -56,7 +56,7 @@ func TestRejectMissingGatewayGroupAccess(t *testing.T) {
 		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
 		rejected := service.RejectMissingGatewayGroupAccess(MissingGroupAccessInput{
 			Req: req, Res: writer, AuditCapture: &fakeAuditCapture{},
-			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{},
 		})
 		if rejected || len(sink.failureInputs) != 0 {
 			t.Fatal("有授权不应拒绝")
@@ -191,7 +191,7 @@ func TestRejectGatewayAuthorizationQuotaIfExceeded(t *testing.T) {
 		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
 		rejected, err := service.RejectGatewayAuthorizationQuotaIfExceeded(context.Background(), AuthorizationQuotaInput{
 			Req: req, Res: writer, AuditCapture: &fakeAuditCapture{}, StartedAt: 1,
-			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{},
 		})
 		if err != nil || rejected {
 			t.Fatalf("rejected = %v err = %v", rejected, err)
@@ -207,7 +207,6 @@ func TestRejectGatewayAuthorizationQuotaIfExceeded(t *testing.T) {
 		rejected, err := service.RejectGatewayAuthorizationQuotaIfExceeded(context.Background(), AuthorizationQuotaInput{
 			Req: req, Res: writer, AuditCapture: &fakeAuditCapture{}, StartedAt: 1,
 			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{
-				ProviderCode:                   "openai",
 				GroupAuthorizationID:           strPtr("authz_1"),
 				GroupAuthorizationQuotaLimited: boolRef(true),
 			},

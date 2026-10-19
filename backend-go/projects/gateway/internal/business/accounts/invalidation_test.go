@@ -73,7 +73,7 @@ func TestCreateAndPatchFireRuntimeInvalidationAfterCommit(t *testing.T) {
 
 	// A relations-only patch (supportedModels/mappings are union-cache
 	// dependency rows) publishes account_management_patch too.
-	mappings := []ModelMapping{{SourceModel: "gpt-5", SourceEndpointFamily: "chat", UpstreamModel: "gpt-4o", UpstreamEndpointFamily: "chat", Enabled: true}}
+	mappings := []ModelMapping{{SourceModel: "gpt-5", SourceEndpointFamily: "chat_completions", UpstreamModel: "gpt-5", UpstreamEndpointFamily: "chat_completions", TargetConnectionPresetCode: "generic_openai_v1", Enabled: true}}
 	if _, err := s.patch(ctx, "sys", "a1", Patch{ExpectedConfigRevision: 2, ModelMappings: &mappings}); err != nil {
 		t.Fatal(err)
 	}

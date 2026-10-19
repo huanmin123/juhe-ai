@@ -396,7 +396,9 @@ func (s *Store) bind(query string) string {
 var requiredRelations = []string{
 	"accounts",
 	"account_supported_models",
-	"account_model_mappings",
+	// B4 W2（设计 §9.8）：account_model_mappings 已被 account_entry_mappings
+	// 取代（fresh DDL 不再建旧表），清理存在性要求随之切换。
+	"account_entry_mappings",
 	"account_tag_bindings",
 	"account_name_search_terms",
 	"account_name_search_documents",
@@ -953,7 +955,8 @@ func (s *Store) deleteBusiness(ctx context.Context, c candidate, cutoff string) 
 		if err != nil {
 			return result, err
 		}
-		relationTables := []string{"account_supported_models", "account_model_mappings", "account_tag_bindings"}
+		// B4 W2：关系清理随表迁移切 account_entry_mappings（设计 §9.8）。
+		relationTables := []string{"account_supported_models", "account_entry_mappings", "account_tag_bindings"}
 		if s.mode == Postgres {
 			relationTables = append(relationTables, "account_name_search_terms", "account_name_search_documents", "account_api_key_runtime_states")
 		}

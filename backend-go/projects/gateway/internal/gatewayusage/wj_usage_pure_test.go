@@ -443,9 +443,9 @@ func TestWJUsageMetadataHelpers(t *testing.T) {
 		t.Fatalf("AccountUsageMetadata = %+v", metadata)
 	}
 	group := GroupUsageMetadata(GroupUsageAccessMetadata{
-		ProviderCode: "openai", GroupOwnerSystemAccountID: "owner", GroupAccessType: "public",
+		GroupOwnerSystemAccountID: "owner", GroupAccessType: "public",
 	})
-	if group.ProviderCode != "openai" || group.GroupOwnerSystemAccountID != "owner" || group.GroupAccessType != "public" {
+	if group.GroupOwnerSystemAccountID != "owner" || group.GroupAccessType != "public" {
 		t.Fatalf("GroupUsageMetadata = %+v", group)
 	}
 }

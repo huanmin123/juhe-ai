@@ -3,7 +3,6 @@ package gatewayresponse
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -174,22 +173,12 @@ func (m *mockCatalogLoader) ListGatewayKeyModels(_ context.Context, _ string, bi
 	if m.items != nil {
 		return GatewayKeyModelList{Entries: m.items}, nil
 	}
-	// 首个绑定的 provider code 决定返回条目（对齐原 providerCodes 键控行为）。
-	first := ""
-	if len(bindings) > 0 {
-		first = strings.ToLower(strings.TrimSpace(bindings[0].ProviderCode))
-	}
-	switch first {
-	case "anthropic":
-		return GatewayKeyModelList{Entries: []ModelCatalogEntry{{Model: "claude-x", Scope: "built_in", ReleaseDate: "2025-01-02"}}}, nil
-	case "gemini":
-		return GatewayKeyModelList{Entries: []ModelCatalogEntry{{Model: "gemini-x", Scope: "built_in", CapabilityNotes: "fast"}}}, nil
-	default:
-		return GatewayKeyModelList{Entries: []ModelCatalogEntry{
-			{Model: "gpt-x", Scope: "built_in", ReleaseDate: "2024-06-01"},
-			{Model: "custom-y", Scope: "personal", CreatedAt: "2025-03-04T05:06:07Z", CapabilityNotes: "自定义模型"},
-		}}, nil
-	}
+	// B4 W2：绑定行无 provider 维度（GatewayModelBinding.ProviderCode 删除），
+	// mock 不再按绑定 provider 键控；条目由测试经 items 注入，缺省给默认集。
+	return GatewayKeyModelList{Entries: []ModelCatalogEntry{
+		{Model: "gpt-x", Scope: "built_in", ReleaseDate: "2024-06-01"},
+		{Model: "custom-y", Scope: "personal", CreatedAt: "2025-03-04T05:06:07Z", CapabilityNotes: "自定义模型"},
+	}}, nil
 }
 
 var _ = http.Header{}

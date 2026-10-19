@@ -151,7 +151,7 @@ func groupStickyStaticRow() gatewayruntimecache.GatewayRuntime {
 	return gatewayruntimecache.GatewayRuntime{
 		APIKey:               row,
 		Settings:             gatewayruntimecache.GatewaySettings{NoAvailableAccountWaitTimeoutSeconds: 30},
-		GroupAccess:          &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "owner"},
+		GroupAccess:          &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: "owner"},
 		Accounts:             []gatewayruntimecache.OpenAIAccountSecret{account},
 		StaticResolutionOnly: true,
 	}
@@ -163,7 +163,7 @@ func groupStickyAffinityTestService(t *testing.T, affinity *fakeGroupAffinityPor
 	cache := &groupStickyRuntimeCache{
 		fakeRuntimeCache: fakeRuntimeCache{
 			runtimeByKey: map[string]gatewayruntimecache.GatewayRuntime{"sk-good": staticRow},
-			groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+			groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{},
 			accounts:     staticRow.Accounts,
 		},
 		staticRow: staticRow,

@@ -177,7 +177,7 @@ func TestPreflight_QuotaRejectionOrdering(t *testing.T) {
 		service, _, sink := newTestService(t, func(s *Service) {
 			s.APIKeyQuota = quota
 			s.AuthorizationQuota = authz
-			s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}}
+			s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
 		})
 		audit := &fakeAuditCapture{}
 		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
@@ -204,7 +204,7 @@ func TestPreflight_QuotaRejectionOrdering(t *testing.T) {
 		authz := &fakeAuthorizationQuota{decision: gatewayquota.DeniedDecision("授权已超额")}
 		service, _, sink := newTestService(t, func(s *Service) {
 			s.AuthorizationQuota = authz
-			s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}}
+			s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
 		})
 		audit := &fakeAuditCapture{}
 		req, _, writer := newTestRequest("POST", "/v1/chat/completions")
@@ -252,7 +252,7 @@ func TestPreflight_NormalRouteFailed(t *testing.T) {
 		}}
 		s.RuntimeCache = &fakeRuntimeCache{
 			runtimeByKey: map[string]gatewayruntimecache.GatewayRuntime{"sk-good": validRuntime()},
-			groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+			groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{},
 		}
 	})
 	audit := &fakeAuditCapture{}
@@ -291,7 +291,7 @@ func TestPreflight_CandidateFallbackProducesRouteAction(t *testing.T) {
 		s.Candidates = &fakeCandidates{
 			filterResult: CandidateFilterResult{Outcome: CandidateOutcomeFallback, Reason: "no_candidate_accounts"},
 		}
-		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}}
+		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
 	})
 	audit := &fakeAuditCapture{}
 	req, _, writer := newTestRequest("POST", "/v1/chat/completions")
@@ -338,7 +338,7 @@ func TestPreflight_SuccessfulDispatchContext(t *testing.T) {
 		}
 		s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
 		s.RuntimeCache = &fakeRuntimeCache{
-			groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "owner"},
+			groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: "owner"},
 			accounts:    []gatewayruntimecache.OpenAIAccountSecret{account},
 		}
 	})
@@ -413,7 +413,7 @@ func TestPreflight_ServerRetryBudgetObserverWiring(t *testing.T) {
 func TestRouteCoordinatorOwnerContract(t *testing.T) {
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.Candidates = &fakeCandidates{fallbackCandidate: &GroupFallbackCandidate{GroupID: "group_2"}, fallbackFound: true}
-		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}}
+		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
 	})
 	snapshotValue := gatewayrouting.RoutePlanSnapshot[string]{OrderedAllowedTargets: []string{"group_1", "group_2"}, Cursor: 0}
 	snapshot := &snapshotValue
@@ -557,7 +557,7 @@ func TestGatewayModelsBindings(t *testing.T) {
 func TestPreflightErrorPropagation(t *testing.T) {
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.Codex = &fakeCodex{compactErr: errors.New("codex 预检失败")}
-		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}}
+		s.RuntimeCache = &fakeRuntimeCache{groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{}}
 		s.Candidates = &fakeCandidates{
 			filterResult: CandidateFilterResult{
 				Outcome:  CandidateOutcomeAccounts,

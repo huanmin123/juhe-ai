@@ -40,7 +40,7 @@ func TestPreflightSkipsNormalRouteForChatProvidedCandidatesBatch2(t *testing.T) 
 			s.RouteResolver = resolver
 			s.RuntimeCache = &fakeRuntimeCache{
 				runtimeByKey: map[string]gatewayruntimecache.GatewayRuntime{"sk-good": validRuntime()},
-				groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+				groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{},
 			}
 			s.Candidates = &fakeCandidates{filterResult: CandidateFilterResult{Outcome: CandidateOutcomeCompleted}}
 		})

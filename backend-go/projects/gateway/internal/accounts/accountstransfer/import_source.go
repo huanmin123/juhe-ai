@@ -544,7 +544,7 @@ func AdaptCPACodexAuthFile(root map[string]any, state *AdapterState) {
 	if name == "" {
 		name = "CLIProxyAPI Codex OAuth"
 	}
-	acceptAccount(state, 1, map[string]any{
+	codexAccount := map[string]any{
 		"name":                      name,
 		"providerCode":              gptVendorCode,
 		"providerProtocolProfileId": GptOpenAIV1ProfileID,
@@ -552,7 +552,9 @@ func AdaptCPACodexAuthFile(root map[string]any, state *AdapterState) {
 		"status":                    "active",
 		"groupName":                 "CLIProxyAPI 导入",
 		"credentials":               credentials,
-	})
+	}
+	applySourceConnections(codexAccount, "", true)
+	acceptAccount(state, 1, codexAccount)
 }
 
 // adaptedAccountInput is the shared shape for the sub2api adapters.
@@ -601,6 +603,7 @@ func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[strin
 		"groupName":                 input.groupName,
 		"credentials":               credentials,
 	}
+	applySourceConnections(account, "", true)
 	if input.proxyRef != "" {
 		account["proxyRef"] = input.proxyRef
 	}
@@ -619,6 +622,33 @@ func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[strin
 	return account
 }
 
+// applySourceConnections 是来源适配器合成的 §8 连接集合（B1 断点批，设计 §8
+// wire schema）：api_key 通道走 generic_openai_v1（openai 兼容语义），
+// OAuth 通道走 gpt_openai_v1（gpt OAuth 收窄词表 responses 双形态）；健康检查
+// 连接维度随连接写入，模型维度由导入计划在 supportedModels 终值化后按非原生
+// 来源契约补齐（适配器不读库，无法预知供应商默认支持模型）。
+func applySourceConnections(account map[string]any, baseURL string, oauth bool) {
+	preset := "generic_openai_v1"
+	modes := []any{"chat_json", "chat_sse"}
+	healthMode := "chat_json"
+	if oauth {
+		preset = "gpt_openai_v1"
+		modes = []any{"responses_json", "responses_sse"}
+		healthMode = "responses_json"
+	}
+	if baseURL == "" {
+		baseURL = DefaultOpenAIBaseURL
+	}
+	account["connections"] = []any{map[string]any{
+		"connectionPresetCode": preset,
+		"baseUrl":              baseURL,
+		"endpointModes":        modes,
+		"enabled":              true,
+	}}
+	account["healthCheckConnectionPresetCode"] = preset
+	account["healthCheckEndpointMode"] = healthMode
+}
+
 // buildSourceAPIKeyAccount mirrors buildApiKeyAccount: absent numeric fields
 // use the -1 sentinel and stay out of the document.
 func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status, proxyRef string, concurrency, priority int, notes, accountExpires string) map[string]any {
@@ -634,6 +664,7 @@ func buildSourceAPIKeyAccount(apiKeys []string, baseURL, name, groupName, status
 			"base_url": baseURL,
 		},
 	}
+	applySourceConnections(account, baseURL, false)
 	if len(apiKeys) > 1 {
 		list := make([]any, 0, len(apiKeys))
 		for _, key := range apiKeys {

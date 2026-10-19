@@ -539,8 +539,11 @@ func (d *Deps) deleteModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // putDefaultHealthCheckModel serves PUT /{code}/default-health-check-model:
-// the management fork saves the system default, everyone else saves a
-// personal preference after the catalog-visibility validation.
+// the management fork targets the system default, everyone else a personal
+// preference. 目标存储（provider_system_default_health_check_models /
+// provider_default_health_check_models）随供应商解耦退役（设计 §8.11）：路由
+// 保留目录可见性校验与成功体契约，落库按 groups 管理面「忽略不落库」先例
+// 收敛（overlay 读侧恒空对应）。
 func (d *Deps) putDefaultHealthCheckModel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	provider, err := d.Store.FindDefinition(ctx, r.PathValue("code"))

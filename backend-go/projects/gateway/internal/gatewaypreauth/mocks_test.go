@@ -590,9 +590,7 @@ func validRuntime() gatewayruntimecache.GatewayRuntime {
 			NoAvailableAccountWaitTimeoutSeconds: 30,
 			ImageRequestWallTimeoutSeconds:       300,
 		},
-		GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{
-			ProviderCode: "openai", GroupAccessType: "owner",
-		},
+		GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: "owner"},
 	}
 }
 

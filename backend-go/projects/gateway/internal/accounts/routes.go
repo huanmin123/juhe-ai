@@ -950,7 +950,9 @@ func createBody(body map[string]any) (CreateInput, string) {
 			"expeditedRecoveryEnabled", "notes",
 			// M2 能力域契约：capabilityDomain（缺省 chat，创建后不可更改）
 			// 与 cloneSourceId（可选克隆源账户）。
-			"capabilityDomain", "cloneSourceId":
+			"capabilityDomain", "cloneSourceId",
+			// B1 断点批（设计 §8）：连接集合与健康检查三件套的连接维度入参。
+			"connections", "healthCheckConnectionPresetCode":
 		default:
 			return CreateInput{}, "账户参数无效"
 		}
@@ -1005,6 +1007,34 @@ func createBody(body map[string]any) (CreateInput, string) {
 			return CreateInput{}, "账户参数无效"
 		}
 		input.HealthCheckEndpointMode = &text
+	}
+	// B1 断点批（设计 §8）：connections 元素契约
+	// connectionPresetCode/baseUrl/endpointModes/enabled（enabled 必须显式提交，
+	// §2.1）+ 可选 protocolSurfaceCode 回显；未知键拒绝。registry 组合/mode/
+	// base URL 校验在写链 resolveConnectionSet 执行（服务端唯一事实源）。
+	if value, exists := body["connections"]; exists && value != nil {
+		list, ok := value.([]any)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		for _, item := range list {
+			object, ok := item.(map[string]any)
+			if !ok {
+				return CreateInput{}, "账户参数无效"
+			}
+			connection, ok := normalizeConnectionBody(object)
+			if !ok {
+				return CreateInput{}, "账户参数无效"
+			}
+			input.Connections = append(input.Connections, connection)
+		}
+	}
+	if value, exists := body["healthCheckConnectionPresetCode"]; exists && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return CreateInput{}, "账户参数无效"
+		}
+		input.HealthCheckConnectionPresetCode = &text
 	}
 	if value, exists := body["modelMappings"]; exists && value != nil {
 		mappings, ok := value.([]any)
@@ -1174,7 +1204,9 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			"balanceQueryEnabled", "balanceQueryConfig",
 			"temporaryUnavailableContinuousProbeEnabled", "expeditedRecoveryEnabled",
 			// M2 域不可变校验入参（携带即校验，≠ 行现值拒绝）。
-			"capabilityDomain":
+			"capabilityDomain",
+			// B1 断点批（设计 §8）：连接集合整替换与健康检查连接预设。
+			"connections", "healthCheckConnectionPresetCode":
 		default:
 			return PatchInput{}, "账户更新参数无效"
 		}
@@ -1287,6 +1319,33 @@ func patchBody(body map[string]any) (PatchInput, string) {
 			return PatchInput{}, "账户更新参数无效"
 		}
 		input.HealthCheckEndpointMode = &text
+	}
+	// B1 断点批（设计 §8）：连接集合整替换（元素契约与创建同款）与健康检查
+	// 连接预设；registry/validator 校验在补丁事务内执行。
+	if value, exists := body["connections"]; exists && value != nil {
+		list, ok := value.([]any)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		for _, item := range list {
+			object, ok := item.(map[string]any)
+			if !ok {
+				return PatchInput{}, "账户更新参数无效"
+			}
+			connection, ok := normalizeConnectionBody(object)
+			if !ok {
+				return PatchInput{}, "账户更新参数无效"
+			}
+			input.Connections = append(input.Connections, connection)
+		}
+		input.ConnectionsPresent = true
+	}
+	if value, exists := body["healthCheckConnectionPresetCode"]; exists && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return PatchInput{}, "账户更新参数无效"
+		}
+		input.HealthCheckConnectionPresetCode = &text
 	}
 	if value, exists := body["tags"]; exists && value != nil {
 		if _, ok := value.([]any); !ok {

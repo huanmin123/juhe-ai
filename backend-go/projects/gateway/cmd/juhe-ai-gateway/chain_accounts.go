@@ -163,14 +163,15 @@ type chainCandidateRow struct {
 	ConnectionDriverCode         sql.NullString
 	ResourceVendorCode           sql.NullString
 	ResourceConnectionDriverCode sql.NullString
-	// ProviderCode / ResourceProviderCode 过渡零值字段：候选窗口投影已随供应商
-	// 解耦拆除 provider_code 列（供应商与上游协议面重构设计 §8），SQL 不再赋值，
-	// 恒为零值；字段待消费方（chain_accounts_secret.go 秘钥投影、并集装载器）
-	// 切片与字段移除同批退役。运行时消费方按 vendor_code 取身份，代码不做旧列
-	// 回落；存量库由迁移脚本按设计 §8 回填。
-	ProviderCode                             string
-	ResourceProviderCode                     sql.NullString
+	// ProviderProtocolProfileID / ResourceProviderProtocolProfileID /
+	// ClientCompatibility / ResourceClientCompatibility 过渡零值字段：候选窗口
+	// 投影已随目标 schema 一次性收敛拆除 accounts.provider_protocol_profile_id /
+	// accounts.client_compatibility（设计 §9.11，fresh DDL 无列），SQL 不再赋值，
+	// 恒为零值；字段待消费方（chain_gatewaykeymodels.go
+	// resourceProviderProtocolProfileID、chain_accounts_secret.go 端点模式归一）
+	// 切片与字段移除同批退役。
 	ProviderProtocolProfileID                sql.NullString
+	ResourceProviderProtocolProfileID        sql.NullString
 	ProtocolCode                             sql.NullString
 	ProtocolVersion                          sql.NullString
 	Name                                     string
@@ -197,20 +198,28 @@ type chainCandidateRow struct {
 	AuthorizationInstanceAuthorizationID     sql.NullString
 	AuthorizationInstanceOwnerSystemAccountI sql.NullString
 
-	ResourceAccountID                 sql.NullString
-	ResourceProviderProtocolProfileID sql.NullString
-	ResourceProtocolCode              sql.NullString
-	ResourceProtocolVersion           sql.NullString
-	ResourceType                      sql.NullString
-	ResourceStatus                    sql.NullString
-	ResourceSchedulable               sql.NullInt64
-	ResourceAccountExpiresAt          sql.NullString
-	ResourceCooldownUntil             sql.NullString
-	ResourceLastErrorCode             sql.NullString
-	ResourceCredentialsEncrypted      sql.NullString
-	ResourceProxyProfileID            sql.NullString
-	ResourceConcurrencyLimit          sql.NullInt64
-	ResourceClientCompatibility       sql.NullString
+	// ConnectionBaseURL / ConnectionPresetCode 是单连接事实源投影（B4 第一批，
+	// 设计 §2.1「Base URL 属于连接行」）：候选窗口按资源账户（授权实例经
+	// source_accounts，直连账户落自身）解析唯一连接事实——
+	// health_check_connection_id 指向的 enabled 连接优先，否则 enabled 连接按
+	// id 升序首个（与 jobs accounthealth resolved_health_connections 同口径）。
+	// 同账户多连接多候选展开留后续批：本批同账户仍单候选（secret 装配按该
+	// 单连接事实取 BaseURL 与端点模式集，缺失行 fail closed）。
+	ResourceAccountID            sql.NullString
+	ConnectionBaseURL            sql.NullString
+	ConnectionPresetCode         sql.NullString
+	ResourceProtocolCode         sql.NullString
+	ResourceProtocolVersion      sql.NullString
+	ResourceType                 sql.NullString
+	ResourceStatus               sql.NullString
+	ResourceSchedulable          sql.NullInt64
+	ResourceAccountExpiresAt     sql.NullString
+	ResourceCooldownUntil        sql.NullString
+	ResourceLastErrorCode        sql.NullString
+	ResourceCredentialsEncrypted sql.NullString
+	ResourceProxyProfileID       sql.NullString
+	ResourceConcurrencyLimit     sql.NullInt64
+	ResourceClientCompatibility  sql.NullString
 
 	QualityScore        *float64
 	QualityState        *string
@@ -220,15 +229,25 @@ type chainCandidateRow struct {
 	ModelRank       int            // -1 when the row did not come from a ranked window
 }
 
+// chainCandidateColumns 是候选窗口共享投影。供应商解耦目标 schema 收敛：
+// accounts.provider_protocol_profile_id / accounts.client_compatibility（含
+// source_accounts 同名两列）已随设计 §9.11 拆除，不再投影。
+// ConnectionBaseURL / ConnectionPresetCode 是单连接事实源标量子查询（B4 第一
+// 批，设计 §2.1「Base URL 属于连接行」）：按资源账户（授权实例经
+// source_accounts，直连账户 COALESCE 落自身）取其 enabled 连接——
+// health_check_connection_id 指向的连接优先，否则按 id 升序首个（与 jobs
+// accounthealth resolved_health_connections 同口径）；同账户多连接多候选展开
+// 留后续批，本批同账户仍单候选。端点模式集合经 hydration 批装载
+// （loadConnectionEndpointModesByAccountIds，同一选择口径）带出，不在本投影
+// 内做方言相关的聚合拼接。
 const chainCandidateColumns = `group_accounts.account_id,
 			group_accounts.system_account_id AS binding_system_account_id,
 			group_accounts.group_id, group_accounts.account_authorization_id,
 			group_accounts.local_priority, group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
 			accounts.id, accounts.system_account_id, accounts.vendor_code, accounts.connection_driver_code,
-			accounts.provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status,
 			accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled,
-			accounts.fallback_enabled, accounts.client_compatibility,
+			accounts.fallback_enabled,
 			accounts.config_revision, accounts.dispatch_revision, accounts.credentials_encrypted,
 			accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message,
 			accounts.stream_failure_count, accounts.stream_failure_window_started_at,
@@ -236,9 +255,18 @@ const chainCandidateColumns = `group_accounts.account_id,
 			accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id,
 			accounts.authorization_instance_owner_system_account_id,
 			source_accounts.id AS resource_account_id,
+			(SELECT {connectionsTable}.base_url FROM {connectionsTable}
+				WHERE {connectionsTable}.enabled = 1
+					AND {connectionsTable}.account_id = COALESCE(source_accounts.id, accounts.id)
+				ORDER BY ({connectionsTable}.id = COALESCE(source_accounts.health_check_connection_id, accounts.health_check_connection_id)) DESC, {connectionsTable}.id ASC
+				LIMIT 1) AS connection_base_url,
+			(SELECT {connectionsTable}.connection_preset_code FROM {connectionsTable}
+				WHERE {connectionsTable}.enabled = 1
+					AND {connectionsTable}.account_id = COALESCE(source_accounts.id, accounts.id)
+				ORDER BY ({connectionsTable}.id = COALESCE(source_accounts.health_check_connection_id, accounts.health_check_connection_id)) DESC, {connectionsTable}.id ASC
+				LIMIT 1) AS connection_preset_code,
 			source_accounts.vendor_code AS resource_vendor_code,
 			source_accounts.connection_driver_code AS resource_connection_driver_code,
-			source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
 			source_accounts.protocol_code AS resource_protocol_code,
 			source_accounts.protocol_version AS resource_protocol_version,
 			source_accounts.type AS resource_type,
@@ -249,8 +277,7 @@ const chainCandidateColumns = `group_accounts.account_id,
 			source_accounts.last_error_code AS resource_last_error_code,
 			source_accounts.credentials_encrypted AS resource_credentials_encrypted,
 			source_accounts.proxy_profile_id AS resource_proxy_profile_id,
-			source_accounts.concurrency_limit AS resource_concurrency_limit,
-			source_accounts.client_compatibility AS resource_client_compatibility`
+			source_accounts.concurrency_limit AS resource_concurrency_limit`
 
 // chainCandidateModelTail extends the model-candidate window projection.
 const chainCandidateModelTail = `,
@@ -497,6 +524,10 @@ func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context
 		if err != nil {
 			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
 		}
+		connectionModes, err := s.loadConnectionEndpointModesByAccountIds(ctx, resourceIDs)
+		if err != nil {
+			return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
+		}
 		proxyProfileIDs := make([]string, 0, len(batch))
 		for _, item := range batch {
 			if id := item.row.resourceProxyProfileID(); id != "" {
@@ -513,6 +544,7 @@ func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context
 				supportedModels:    supportedModels,
 				modelMappings:      modelMappings,
 				apiKeyRuntimeState: apiKeyRuntimeStates,
+				connectionModes:    connectionModes,
 			})
 			if err != nil {
 				return gatewayruntimecache.OpenAIAccountsForGroupResult{}, err
@@ -545,6 +577,13 @@ func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context
 	}, nil
 }
 
+// expandConnectionsTable 展开 chainCandidateColumns 内单连接事实源子查询的
+// {connectionsTable} 占位（方言限定的 account_connections 表名）。
+// NewReplacer 单趟扫描不会重入替换文本，必须在模板替换后二段执行。
+func (s *chainAccountsSelector) expandConnectionsTable(query string) string {
+	return strings.ReplaceAll(query, "{connectionsTable}", s.table("account_connections"))
+}
+
 // listChatPinnedCandidateRows 是 chat-pinned 直取专用窗口（AI 问答设计 §5.2
 // 2026-10-10 修订）：按账户 ID 直取其在启用分组中的候选行。与共享候选窗
 // chainCandidateWhere 的差异只有可用性条件——不限定 status/schedulable/
@@ -555,7 +594,7 @@ func (s *chainAccountsSelector) assembleOpenAIAccountsForGroupResult(ctx context
 // （供应商与上游协议面重构设计 §8；组内候选不再按 provider 收窄）。
 // chainCandidateWhere 常量本身不被修改，/v1 常规窗口语义不变。
 func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context, groupID, groupOwnerSystemAccountID, accountID string) ([]chainCandidateRow, error) {
-	query := strings.NewReplacer(
+	query := s.expandConnectionsTable(strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),
 	).Replace(`SELECT {columns},
@@ -569,7 +608,7 @@ func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context,
 				AND accounts.authorization_instance_authorization_id IS NULL
 				AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
 			ORDER BY group_accounts.created_at ASC, group_accounts.account_id ASC
-			LIMIT 1`)
+			LIMIT 1`))
 	rows, err := s.db.QueryContext(ctx, s.bind(query), groupID, groupOwnerSystemAccountID, accountID)
 	if err != nil {
 		return nil, err
@@ -596,16 +635,19 @@ func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context,
 // candidateScanDest builds the scan destination for the base window column
 // order (chainCandidateColumns)。vendor/connection_driver 投影位与 SELECT 列序
 // 逐位对应（accounts 两列在 system_account_id 后、resource 两别名在
-// resource_account_id 后）；provider_code 投影已拆除，ProviderCode/
-// ResourceProviderCode 过渡字段不再赋值（恒零值）。
+// resource_account_id 后）；provider_code / provider_protocol_profile_id /
+// client_compatibility 投影已拆除（B4 W2 收口后 chainCandidateRow 不再保留
+// ProviderCode/ResourceProviderCode 过渡字段；ProviderProtocolProfileID 等
+// 其余过渡字段恒零值不赋值）；
+// 列序尾部为单连接事实源两投影（connection_base_url / connection_preset_code）。
 func candidateScanDest(row *chainCandidateRow) []any {
 	return []any{
 		&row.AccountID, &row.BindingSystemAccountID, &row.GroupID, &row.AccountAuthorizationID,
 		&row.LocalPriority, &row.LocalSuperPriority, &row.LocalFallback,
-		&row.ID, &row.SystemAccountID, &row.VendorCode, &row.ConnectionDriverCode, &row.ProviderProtocolProfileID,
+		&row.ID, &row.SystemAccountID, &row.VendorCode, &row.ConnectionDriverCode,
 		&row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.Status,
 		&row.Schedulable, &row.ConcurrencyLimit, &row.Priority, &row.SuperPriorityEnabled,
-		&row.FallbackEnabled, &row.ClientCompatibility,
+		&row.FallbackEnabled,
 		&row.ConfigRevision, &row.DispatchRevision, &row.CredentialsEncrypted,
 		&row.ProxyProfileID, &row.CooldownUntil, &row.LastErrorMessage,
 		&row.StreamFailureCount, &row.StreamFailureWindowStartedAt,
@@ -613,9 +655,10 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.AuthorizationInstanceSourceAccountID, &row.AuthorizationInstanceAuthorizationID,
 		&row.AuthorizationInstanceOwnerSystemAccountI,
 		&row.ResourceAccountID,
+		&row.ConnectionBaseURL,
+		&row.ConnectionPresetCode,
 		&row.ResourceVendorCode,
 		&row.ResourceConnectionDriverCode,
-		&row.ResourceProviderProtocolProfileID,
 		&row.ResourceProtocolCode,
 		&row.ResourceProtocolVersion,
 		&row.ResourceType,
@@ -627,7 +670,6 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.ResourceCredentialsEncrypted,
 		&row.ResourceProxyProfileID,
 		&row.ResourceConcurrencyLimit,
-		&row.ResourceClientCompatibility,
 	}
 }
 
@@ -644,7 +686,7 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 	}
 	replacements := append([]string{"{statusSet}", statusSet}, chainMediaArmReplacement(mediaAdmission)...)
 	where := strings.NewReplacer(replacements...).Replace(chainCandidateWhere)
-	query := strings.NewReplacer(
+	query := s.expandConnectionsTable(strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),
 		"{where}", where,
@@ -657,7 +699,7 @@ func (s *chainAccountsSelector) listCandidateRows(ctx context.Context, groupID s
 				group_accounts.local_priority ASC,
 				group_accounts.created_at ASC,
 				group_accounts.account_id ASC
-			LIMIT ?`)
+			LIMIT ?`))
 	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, includeFlag, now}
 	if mediaAdmission {
 		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
@@ -704,26 +746,34 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 	where := strings.NewReplacer(replacements...).Replace(chainCandidateWhere)
 	tables := fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts"))
 	supportedModelsTable := s.table("account_supported_models")
-	mappingsTable := s.table("account_model_mappings")
+	// B4 第一批（供应商与上游协议面重构设计 §5.1/§4）：映射档读
+	// account_entry_mappings，target 模型经 target_model_id JOIN models 取
+	// upstream_model（V1 批 GKM 装载器同款形态）；direct 档与映射有效性门的
+	// 模型名同样经 model_id JOIN models 解析——direct 请求名按 public_model
+	//（§4「direct 候选要求 request.model == models.public_model」，与 GKM
+	// union 装载器 public/upstream 双集合分工一致），映射门在 upstream 名空间
+	// 比较（与旧行为 `supported.model = mappings.upstream_model` 同构）。
+	mappingsTable := s.table("account_entry_mappings")
+	modelsTable := s.table("models")
 	// direct 档模型谓词：请求模型命中 volcengine TTS 占位名↔现役名等价组时
 	// 展开为组内全部成员（IN (?, ...)），账户声明任一名字都命中 direct 档
 	//（契约 §9.2「派发匹配等价」的候选窗口层——选组/派发两层 Go 匹配与
 	// adapter 归一共用该等价事实，本查询是 preflight 选组的候选窗口，若只
 	// 精确匹配会在两层匹配之前就把账户滤空）；等价组外维持 `= ?` 精确匹配。
 	directModelArgs := gatewayrouting.VolcengineTTSModelAliasVariantsOf(model)
-	directModelPredicate := "direct_models.model = ?"
-	mappedAliasPredicate := "mapped_supported.model = model_mappings.upstream_model"
+	directModelPredicate := "direct_models.public_model = ?"
+	mappedAliasPredicate := "mapped_alias_models.upstream_model = mapped_models.upstream_model"
 	var mappedAliasArgs []any
 	if len(directModelArgs) > 1 {
-		directModelPredicate = fmt.Sprintf("direct_models.model IN (%s)", strings.TrimSuffix(strings.Repeat("?, ", len(directModelArgs)), ", "))
+		directModelPredicate = fmt.Sprintf("direct_models.public_model IN (%s)", strings.TrimSuffix(strings.Repeat("?, ", len(directModelArgs)), ", "))
 		// 映射档 mapped_supported 检查与 Go 映射门同构展开：映射产出模型与
 		// 账户声明模型只要都落等价组即视为一致（否则「映射 upstream=现役名、
 		// 声明=占位名」的账户在本窗口即被剔成 rank 3，Go 层已钉住的映射放行
 		// 行为到不了生产）。谓词仅在请求模型命中组时替换，组外 SQL 与参数
 		// 数量维持原形态。
 		variantPlaceholders := strings.TrimSuffix(strings.Repeat("?, ", len(directModelArgs)), ", ")
-		mappedAliasPredicate = "mapped_supported.model = model_mappings.upstream_model OR (model_mappings.upstream_model IN (" +
-			variantPlaceholders + ") AND mapped_supported.model IN (" + variantPlaceholders + "))"
+		mappedAliasPredicate = "mapped_alias_models.upstream_model = mapped_models.upstream_model OR (mapped_models.upstream_model IN (" +
+			variantPlaceholders + ") AND mapped_alias_models.upstream_model IN (" + variantPlaceholders + "))"
 		for _, variant := range directModelArgs {
 			mappedAliasArgs = append(mappedAliasArgs, variant)
 		}
@@ -731,13 +781,14 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 			mappedAliasArgs = append(mappedAliasArgs, variant)
 		}
 	}
-	query := strings.NewReplacer(
+	query := s.expandConnectionsTable(strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{tail}", chainCandidateModelTail,
 		"{tables}", tables,
 		"{where}", where,
 		"{supportedModels}", supportedModelsTable,
 		"{mappings}", mappingsTable,
+		"{models}", modelsTable,
 		"{directModelPredicate}", directModelPredicate,
 		"{mappedAliasPredicate}", mappedAliasPredicate,
 	).Replace(`WITH eligible_rows AS (
@@ -748,19 +799,21 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 			SELECT
 				CASE
 					WHEN EXISTS (
-						SELECT 1 FROM {supportedModels} direct_models
-						WHERE direct_models.account_id = eligible_rows.model_resource_account_id
+						SELECT 1 FROM {supportedModels} direct_supported
+						INNER JOIN {models} direct_models ON direct_models.id = direct_supported.model_id
+						WHERE direct_supported.account_id = eligible_rows.model_resource_account_id
 							AND {directModelPredicate}
 					) THEN 0
 					WHEN EXISTS (
 						SELECT 1 FROM {mappings} model_mappings
+						INNER JOIN {models} mapped_models ON mapped_models.id = model_mappings.target_model_id
 						WHERE model_mappings.account_id = eligible_rows.model_resource_account_id
 							AND model_mappings.source_model = ?
 							AND model_mappings.source_endpoint_family = ?
 							AND model_mappings.enabled = 1
 							AND (
-								model_mappings.upstream_model <> model_mappings.source_model
-								OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
+								mapped_models.upstream_model <> model_mappings.source_model
+								OR model_mappings.target_endpoint_family <> model_mappings.source_endpoint_family
 							)
 							AND (
 								NOT EXISTS (
@@ -769,6 +822,7 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 								)
 								OR EXISTS (
 									SELECT 1 FROM {supportedModels} mapped_supported
+									INNER JOIN {models} mapped_alias_models ON mapped_alias_models.id = mapped_supported.model_id
 									WHERE mapped_supported.account_id = eligible_rows.model_resource_account_id
 										AND ({mappedAliasPredicate})
 								)
@@ -792,7 +846,7 @@ func (s *chainAccountsSelector) listModelCandidateRows(ctx context.Context, grou
 			COALESCE(local_priority, priority, 0) ASC,
 			binding_created_at ASC,
 			account_id ASC
-		LIMIT ?`)
+		LIMIT ?`))
 	args := []any{groupID, groupAccess.GroupOwnerSystemAccountID, includeFlag, now}
 	if mediaAdmission {
 		// 准入臂占位自带一个 `<= ?`：追加到默认冷却对之后（SQL 文本顺序一致）。
@@ -998,7 +1052,7 @@ func chainNameCollator() *collate.Collator { return collate.New(language.Chinese
 // overrides). groups.provider_code 列已随供应商解耦退役（供应商与上游协议面
 // 重构设计 §8，fresh DDL 无该列），查询列集与
 // internal/gatewayruntimecache/sqlmodels.go 的 ResolveGroupUsageAccessMetadata
-// 一致；GroupUsageAccessMetadata.ProviderCode 过渡字段保持恒零值。
+// 一致；GroupUsageAccessMetadata.ProviderCode 过渡字段已随 B4 W2 删除。
 func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID, systemAccountID string) (*gatewayruntimecache.GroupUsageAccessMetadata, error) {
 	var ownerID string
 	var enabled int
@@ -1343,16 +1397,6 @@ func (row *chainCandidateRow) resourceConnectionDriverCode() string {
 	return ""
 }
 
-// resourceProviderCode 过渡零值读取：候选窗口投影已随供应商解耦拆除
-// provider_code 列，本读取恒为零值（过渡载体，消费方待后续切片迁移）；见
-// chainCandidateRow.ProviderCode 过渡注释。
-func (row *chainCandidateRow) resourceProviderCode() string {
-	if row.ResourceProviderCode.Valid && row.ResourceProviderCode.String != "" {
-		return row.ResourceProviderCode.String
-	}
-	return row.ProviderCode
-}
-
 func (row *chainCandidateRow) resourceProtocolCode() string {
 	if row.ResourceProtocolCode.Valid && row.ResourceProtocolCode.String != "" {
 		return row.ResourceProtocolCode.String
@@ -1572,6 +1616,12 @@ func chainQualityFreshAfterISO(now func() time.Time) string {
 // hydration loads (models / mappings / rotation states / proxy profiles)
 // ---------------------------------------------------------------------------
 
+// loadSupportedModelsByAccountIds mirrors loadSupportedModelsByAccountIds.
+// B4 第一批目标形态（供应商与上游协议面重构设计 §4）：account_supported_models
+// 收敛为 (account_id, model_id, created_at)，支持模型名经 model_id INNER JOIN
+// models.upstream_model 解析（写入解析键同语义，GKM 装载器同款形态）。
+// 资格门（模型 status/owner-visible、请求级 mode 交集）归派发消费方（W2
+// runtime gating），本装载只做数据链名字解析。
 func (s *chainAccountsSelector) loadSupportedModelsByAccountIds(ctx context.Context, accountIDs []string) (map[string][]string, error) {
 	result := map[string][]string{}
 	ids := uniqueNonEmpty(accountIDs)
@@ -1579,7 +1629,11 @@ func (s *chainAccountsSelector) loadSupportedModelsByAccountIds(ctx context.Cont
 		return result, nil
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?, ", len(ids)), ", ")
-	query := fmt.Sprintf(`SELECT account_id, model FROM %s WHERE account_id IN (%s) ORDER BY created_at ASC, model ASC`, s.table("account_supported_models"), placeholders)
+	query := fmt.Sprintf(`SELECT asm.account_id, m.upstream_model
+		FROM %s asm
+		INNER JOIN %s m ON m.id = asm.model_id
+		WHERE asm.account_id IN (%s)
+		ORDER BY asm.created_at ASC, m.upstream_model ASC`, s.table("account_supported_models"), s.table("models"), placeholders)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), rowsArgs(ids)...)
 	if err != nil {
 		return nil, err
@@ -1595,6 +1649,12 @@ func (s *chainAccountsSelector) loadSupportedModelsByAccountIds(ctx context.Cont
 	return result, rows.Err()
 }
 
+// loadModelMappingsByAccountIds mirrors loadModelMappingsByAccountIds. B4 第一
+// 批目标形态：account_entry_mappings LEFT JOIN models（V1 批 GKM 装载器同款
+// 形态）——upstream_model 经 target_model_id 解析（LEFT JOIN 对齐 GKM 读取
+// 先例；FK 世界里目标恒存在），target_endpoint_family 即上游端点族语义；
+// enabled 行与 disabled 行都读并投影（secret.ModelMappings.Enabled 契约保持
+// 不变，派发侧启用过滤归消费方）。
 func (s *chainAccountsSelector) loadModelMappingsByAccountIds(ctx context.Context, accountIDs []string) (map[string][]gatewayruntimecache.AccountModelMapping, error) {
 	result := map[string][]gatewayruntimecache.AccountModelMapping{}
 	ids := uniqueNonEmpty(accountIDs)
@@ -1602,14 +1662,12 @@ func (s *chainAccountsSelector) loadModelMappingsByAccountIds(ctx context.Contex
 		return result, nil
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?, ", len(ids)), ", ")
-	// Node loadModelMappingsByAccountIds orders by the composite primary key
-	// columns (account_model_mappings has NO id column — Node
-	// business-schema.ts and the maintenance DDL define PRIMARY KEY
-	// (account_id, source_model, source_endpoint_family)); ordering by the
-	// drifted `id` column 500s every runtime-resolution read on fresh
-	// databases.
-	query := fmt.Sprintf(`SELECT account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
-		FROM %s WHERE account_id IN (%s) ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC`, s.table("account_model_mappings"), placeholders)
+	query := fmt.Sprintf(`SELECT em.account_id, em.source_model, em.source_endpoint_family, m.upstream_model, em.target_endpoint_family, em.enabled
+		FROM %s em
+		LEFT JOIN %s m ON m.id = em.target_model_id
+		WHERE em.account_id IN (%s)
+		ORDER BY em.account_id ASC, em.source_model ASC, em.source_endpoint_family ASC, em.id ASC`,
+		s.table("account_entry_mappings"), s.table("models"), placeholders)
 	rows, err := s.db.QueryContext(ctx, s.bind(query), rowsArgs(ids)...)
 	if err != nil {
 		return nil, err
@@ -1627,6 +1685,54 @@ func (s *chainAccountsSelector) loadModelMappingsByAccountIds(ctx context.Contex
 		mapping.UpstreamEndpointFamily = upstreamFamily.String
 		mapping.Enabled = enabled == 1
 		result[accountID] = append(result[accountID], mapping)
+	}
+	return result, rows.Err()
+}
+
+// loadConnectionEndpointModesByAccountIds 按模型事实主体 ID 集装载单连接事实源
+// 的 account_endpoint_modes 实际集合（secret 端点模式投影的连接行事实源）。
+// 连接选择口径与候选窗口 connection_base_url/connection_preset_code 标量子
+// 查询及 jobs accounthealth resolved_health_connections 完全一致：
+// health_check_connection_id 指向的 enabled 连接优先，否则 enabled 连接按 id
+// 升序首个——SQL 按该确定性排序取每账户首连接分组，模式集合在 Go 侧收敛
+// （同账户多连接多候选展开留后续批，本批同账户仍单候选）。连接未配 mode 的
+// 老数据产出空集，secret 投影回落既有 vendor 默认分支（chain_accounts_secret.go
+// 兼容分支）。
+func (s *chainAccountsSelector) loadConnectionEndpointModesByAccountIds(ctx context.Context, accountIDs []string) (map[string][]string, error) {
+	result := map[string][]string{}
+	ids := uniqueNonEmpty(accountIDs)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?, ", len(ids)), ", ")
+	query := fmt.Sprintf(`SELECT c.account_id, c.id, m.endpoint_mode
+		FROM %s c
+		INNER JOIN %s a ON a.id = c.account_id
+		LEFT JOIN %s m ON m.connection_id = c.id
+		WHERE c.enabled = 1 AND c.account_id IN (%s)
+		ORDER BY c.account_id ASC, (c.id = COALESCE(a.health_check_connection_id, '')) DESC, c.id ASC, m.endpoint_mode ASC`,
+		s.table("account_connections"), s.table("accounts"), s.table("account_endpoint_modes"), placeholders)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), rowsArgs(ids)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	chosen := map[string]string{}
+	for rows.Next() {
+		var accountID, connectionID string
+		var mode sql.NullString
+		if err := rows.Scan(&accountID, &connectionID, &mode); err != nil {
+			return nil, err
+		}
+		if seen, ok := chosen[accountID]; !ok {
+			// 排序首位即该账户的选定连接（hc 优先 / id 升序），只收它的分组。
+			chosen[accountID] = connectionID
+		} else if seen != connectionID {
+			continue
+		}
+		if mode.Valid && mode.String != "" {
+			result[accountID] = append(result[accountID], mode.String)
+		}
 	}
 	return result, rows.Err()
 }

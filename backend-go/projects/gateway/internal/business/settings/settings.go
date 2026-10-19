@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -36,6 +37,10 @@ type Store struct {
 	now    func() time.Time
 }
 type Setting struct{ Key, ValueJSON, UpdatedAt string }
+
+// ProviderModel 是内置目录行读投影（models 单表 builtin 行）。Mode 与
+// SupportedAPIProtocolsJSON 无物理列：由 supported_endpoint_modes_json 经
+// providers.DeriveLegacyModeAndProtocols 逆映射派生（DTO 键保留）。
 type ProviderModel struct {
 	ProviderCode, Model, Status, Mode                    string
 	CatalogOrder                                         sql.NullInt64
@@ -43,13 +48,18 @@ type ProviderModel struct {
 	ContextWindowTokens, MaxInputTokens, MaxOutputTokens sql.NullInt64
 }
 
-// CatalogReplacement is a complete replacement set for one provider. The
-// current provider revision is mandatory so stale configuration writers lose.
+// CatalogReplacement is a complete replacement set for one vendor's builtin
+// catalog rows. ExpectedProviderUpdatedAt 是 vendors 行 updated_at 的 CAS 门
+// （vendors 只读，比较不再回写）。The current vendor revision is mandatory so
+// stale configuration writers lose.
 type CatalogReplacement struct {
 	ProviderCode, ExpectedProviderUpdatedAt string
 	Models                                  []CatalogModel
 }
 
+// CatalogModel 是一次内置目录重插的行输入：Model 同写 public_model 与
+// upstream_model；SupportedAPIProtocolsJSON（旧协议列表）经
+// providers.ForwardProtocolsToEndpointModes 正向落 supported_endpoint_modes_json。
 type CatalogModel struct {
 	ID, Model, Status, Mode, SupportedAPIProtocolsJSON, Source string
 	CatalogOrder                                               *int64
@@ -200,11 +210,15 @@ func (s *Store) put(ctx context.Context, table, accountID, key, valueJSON, expec
 	return Setting{Key: key, ValueJSON: valueJSON, UpdatedAt: now}, nil
 }
 
+// ListProviderModels 读 models 单表 builtin 行（scope='builtin'，vendor 窗口
+// 等价旧 provider_model_catalog 的 provider_code 窗口）。includeInactive=false
+// 附加 active + catalog_visible 过滤（catalog_visible 在 PostgreSQL 为
+// boolean、SQLite 为 integer，谓词按方言生成）。
 func (s *Store) ListProviderModels(ctx context.Context, providerCode string, includeInactive bool) ([]ProviderModel, error) {
 	if strings.TrimSpace(providerCode) == "" {
 		return nil, errors.New("provider code is required")
 	}
-	q := "SELECT provider_code,model,status,COALESCE(mode,''),catalog_order,supported_api_protocols_json,context_window_tokens,max_input_tokens,max_output_tokens FROM " + s.table("provider_model_catalog") + " WHERE provider_code=?"
+	q := "SELECT COALESCE(vendor_code,'') AS provider_code, public_model AS model, status, catalog_order, supported_endpoint_modes_json, context_window_tokens, max_input_tokens, max_output_tokens FROM " + s.table("models") + " WHERE scope='builtin' AND vendor_code=?"
 	args := []any{providerCode}
 	if !includeInactive {
 		// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
@@ -215,7 +229,7 @@ func (s *Store) ListProviderModels(ctx context.Context, providerCode string, inc
 		}
 		q += " AND status='active' AND " + visiblePredicate
 	}
-	q += " ORDER BY COALESCE(catalog_order,2147483647),model"
+	q += " ORDER BY COALESCE(catalog_order,2147483647), public_model"
 	rows, err := s.db.QueryContext(ctx, s.bind(q), args...)
 	if err != nil {
 		return nil, err
@@ -224,16 +238,137 @@ func (s *Store) ListProviderModels(ctx context.Context, providerCode string, inc
 	var out []ProviderModel
 	for rows.Next() {
 		var m ProviderModel
-		if err := rows.Scan(&m.ProviderCode, &m.Model, &m.Status, &m.Mode, &m.CatalogOrder, &m.SupportedAPIProtocolsJSON, &m.ContextWindowTokens, &m.MaxInputTokens, &m.MaxOutputTokens); err != nil {
+		var endpointModes sql.NullString
+		if err := rows.Scan(&m.ProviderCode, &m.Model, &m.Status, &m.CatalogOrder, &endpointModes, &m.ContextWindowTokens, &m.MaxInputTokens, &m.MaxOutputTokens); err != nil {
 			return nil, err
 		}
+		// 旧 mode / supported_api_protocols_json 无物理列：逆映射派生。
+		mode, protocols := deriveProviderModelProjection(endpointModes)
+		m.Mode = mode
+		encoded, encodeErr := json.Marshal(protocols)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		m.SupportedAPIProtocolsJSON = string(encoded)
 		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
+// deriveProviderModelProjection 与 forwardProtocolEndpointModes 是 models 单表
+// supported_endpoint_modes_json 双向投影的 settings 侧内联副本（同源权威在
+// internal/providers/endpoint_modes.go 的 DeriveLegacyModeAndProtocols /
+// ForwardProtocolsToEndpointModes 与 chat 面 chain_catalog 同名变量；settings
+// 不能 import providers——providers→authsys→settings 依赖环——三处任一改动
+// 必须同步，防止目录读/写投影漂移）。
+var forwardProtocolEndpointModes = map[string][]string{
+	"chat_completions":        {"chat_json", "chat_sse"},
+	"responses":               {"responses_json", "responses_sse"},
+	"messages":                {"messages_json", "messages_sse"},
+	"generate_content":        {"generate_content_json", "generate_content_sse"},
+	"stream_generate_content": {"generate_content_sse"},
+	"interactions":            {"interactions_json", "interactions_sse"},
+	"message_token_counting":  {"message_token_counting"},
+	"count_tokens":            {"count_tokens"},
+	"embed_content":           {"embed_content"},
+	"images":                  {"images_json"},
+	"video":                   {"video_create", "video_get", "video_content", "video_cancel"},
+	"realtime":                {"realtime_session"},
+	"audio_speech":            {"audio_speech"},
+	"audio_transcription":     {"audio_transcription_json"},
+	"completions":             {},
+}
+
+var endpointModeLegacyProjection = map[string][][2]string{
+	"chat_json":                {{"chat", "chat_completions"}},
+	"chat_sse":                 {{"chat", "chat_completions"}},
+	"messages_json":            {{"chat", "messages"}},
+	"messages_sse":             {{"chat", "messages"}},
+	"responses_json":           {{"responses", "responses"}},
+	"responses_sse":            {{"responses", "responses"}},
+	"generate_content_json":    {{"chat", "generate_content"}},
+	"generate_content_sse":     {{"chat", "generate_content"}, {"chat", "stream_generate_content"}},
+	"interactions_json":        {{"chat", "interactions"}},
+	"interactions_sse":         {{"chat", "interactions"}},
+	"images_json":              {{"image_generation", "images"}},
+	"video_create":             {{"video", "video"}},
+	"video_get":                {{"video", "video"}},
+	"video_content":            {{"video", "video"}},
+	"video_cancel":             {{"video", "video"}},
+	"audio_speech":             {{"audio", "audio_speech"}},
+	"audio_transcription_json": {{"audio", "audio_transcription"}},
+	"realtime_session":         {{"audio", "realtime"}},
+	"message_token_counting":   {{"embedding", "message_token_counting"}},
+	"count_tokens":             {{"embedding", "count_tokens"}},
+	"embed_content":            {{"embedding", "embed_content"}},
+}
+
+var endpointModeLegacyRank = map[string]int{
+	"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5,
+}
+
+// deriveProviderModelProjection 把 supported_endpoint_modes_json 逆映射成旧目
+// 录行 (mode, supportedApiProtocols) 投影（空 mode 集渲染空 mode 与空数组）。
+func deriveProviderModelProjection(endpointModes sql.NullString) (string, []string) {
+	var modes []string
+	if endpointModes.Valid && strings.TrimSpace(endpointModes.String) != "" {
+		var raw []any
+		if err := json.Unmarshal([]byte(endpointModes.String), &raw); err == nil {
+			for _, item := range raw {
+				if text, ok := item.(string); ok {
+					modes = append(modes, text)
+				}
+			}
+		}
+	}
+	seenProtocols := map[string]bool{}
+	protocols := []string{}
+	bestMode := ""
+	bestRank := -1
+	for _, mode := range modes {
+		for _, pair := range endpointModeLegacyProjection[mode] {
+			if rank, known := endpointModeLegacyRank[pair[0]]; known && rank > bestRank {
+				bestRank = rank
+				bestMode = pair[0]
+			}
+			if !seenProtocols[pair[1]] {
+				seenProtocols[pair[1]] = true
+				protocols = append(protocols, pair[1])
+			}
+		}
+	}
+	sort.Strings(protocols)
+	return bestMode, protocols
+}
+
+// forwardProtocolEndpointModesList 把协议列表正向映射为 endpoint mode 集
+// （deny-by-default：未知协议返回 false，与 maintenance 种子同拒）。
+func forwardProtocolEndpointModesList(protocols []string) ([]string, bool) {
+	seen := map[string]bool{}
+	modes := []string{}
+	for _, protocol := range protocols {
+		declared, known := forwardProtocolEndpointModes[protocol]
+		if !known {
+			return nil, false
+		}
+		for _, mode := range declared {
+			if !seen[mode] {
+				seen[mode] = true
+				modes = append(modes, mode)
+			}
+		}
+	}
+	sort.Strings(modes)
+	return modes, true
+}
+
 // ReplaceProviderCatalog performs revision-CAS plus obsolete-catalog cleanup
-// in one transaction. It is a complete replacement, not a best-effort patch.
+// in one transaction over the models 单表 builtin 行（供应商解耦设计 §3，
+// 与 chain_catalog 读侧闭环）：CAS 门读 vendors.updated_at（vendors 为 9 行
+// 只读种子，比较不再回写）；整删重插收窄为 DELETE scope='builtin' 的该
+// vendor 行后按身份键 (COALESCE(vendor_code,''), scope,
+// COALESCE(system_account_id,''), upstream_model) ON CONFLICT 重插。It is a
+// complete replacement, not a best-effort patch.
 func (s *Store) ReplaceProviderCatalog(ctx context.Context, input CatalogReplacement) error {
 	if err := s.requireOwner(); err != nil {
 		return err
@@ -251,6 +386,14 @@ func (s *Store) ReplaceProviderCatalog(ctx context.Context, input CatalogReplace
 		if seen[model.Model] {
 			return errors.New("provider catalog contains duplicate model")
 		}
+		// 协议列表 deny-by-default 正向校验（未知协议与 maintenance 种子同拒）。
+		var protocols []string
+		if err := json.Unmarshal([]byte(model.SupportedAPIProtocolsJSON), &protocols); err != nil {
+			return errors.New("provider catalog model is invalid")
+		}
+		if _, ok := forwardProtocolEndpointModesList(protocols); !ok {
+			return errors.New("provider catalog model is invalid")
+		}
 		seen[model.Model] = true
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
@@ -259,19 +402,31 @@ func (s *Store) ReplaceProviderCatalog(ctx context.Context, input CatalogReplace
 		return err
 	}
 	defer tx.Rollback()
-	updated, err := tx.ExecContext(ctx, s.bind("UPDATE "+s.table("providers")+" SET updated_at=? WHERE code=? AND updated_at=?"), now, input.ProviderCode, input.ExpectedProviderUpdatedAt)
-	if err != nil {
+	casGate := "SELECT updated_at FROM " + s.table("vendors") + " WHERE code=? AND updated_at=?"
+	var currentUpdatedAt string
+	if err := tx.QueryRowContext(ctx, s.bind(casGate), input.ProviderCode, input.ExpectedProviderUpdatedAt).Scan(&currentUpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrCAS
+		}
 		return err
 	}
-	count, _ := updated.RowsAffected()
-	if count != 1 {
-		return ErrCAS
-	}
-	if _, err = tx.ExecContext(ctx, s.bind("DELETE FROM "+s.table("provider_model_catalog")+" WHERE provider_code=?"), input.ProviderCode); err != nil {
+	if _, err = tx.ExecContext(ctx, s.bind("DELETE FROM "+s.table("models")+" WHERE scope='builtin' AND vendor_code=?"), input.ProviderCode); err != nil {
 		return err
 	}
 	for _, model := range input.Models {
-		_, err = tx.ExecContext(ctx, s.bind("INSERT INTO "+s.table("provider_model_catalog")+"(id,provider_code,model,status,mode,catalog_order,supported_api_protocols_json,context_window_tokens,max_input_tokens,max_output_tokens,catalog_visible,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), model.ID, input.ProviderCode, model.Model, model.Status, nullableString(model.Mode), model.CatalogOrder, model.SupportedAPIProtocolsJSON, model.ContextWindowTokens, model.MaxInputTokens, model.MaxOutputTokens, s.boolBind(model.CatalogVisible), model.Source, now, now)
+		var protocols []string
+		if err := json.Unmarshal([]byte(model.SupportedAPIProtocolsJSON), &protocols); err != nil {
+			return err
+		}
+		endpointModes, ok := forwardProtocolEndpointModesList(protocols)
+		if !ok {
+			return errors.New("provider catalog model is invalid")
+		}
+		endpointModesJSON, err := json.Marshal(endpointModes)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, s.bind("INSERT INTO "+s.table("models")+"(id,vendor_code,public_model,upstream_model,scope,status,catalog_order,supported_endpoint_modes_json,context_window_tokens,max_input_tokens,max_output_tokens,catalog_visible,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET public_model=excluded.public_model, upstream_model=excluded.upstream_model, status=excluded.status, catalog_order=excluded.catalog_order, supported_endpoint_modes_json=excluded.supported_endpoint_modes_json, context_window_tokens=excluded.context_window_tokens, max_input_tokens=excluded.max_input_tokens, max_output_tokens=excluded.max_output_tokens, catalog_visible=excluded.catalog_visible, source=excluded.source, updated_at=excluded.updated_at"), model.ID, input.ProviderCode, model.Model, model.Model, "builtin", model.Status, model.CatalogOrder, string(endpointModesJSON), model.ContextWindowTokens, model.MaxInputTokens, model.MaxOutputTokens, s.boolBind(model.CatalogVisible), model.Source, now, now)
 		if err != nil {
 			return err
 		}

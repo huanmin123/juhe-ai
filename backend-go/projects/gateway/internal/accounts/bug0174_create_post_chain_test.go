@@ -22,8 +22,12 @@ func sqlNullInt64NonValid() sql.NullInt64 { return sql.NullInt64{} }
 // 三路缓存失效与组统计脏标记（:2440-2443）、事务回滚不残留后链。
 
 // bug0174CreateInput is the minimal health-capable create payload (gpt +
-// api_key, the archive's J1 snapshot condition branch).
+// api_key, the archive's J1 snapshot condition branch). B1 断点批（设计 §8）：
+// 连接集合与健康检查三件套显式提交。
 func bug0174CreateInput(name string) CreateInput {
+	healthModel := "gpt-4o-mini"
+	healthMode := "chat_json"
+	healthPreset := "gpt_openai_v1"
 	return CreateInput{
 		ProviderCode:              "gpt",
 		ProviderProtocolProfileID: "prof-gpt",
@@ -32,6 +36,15 @@ func bug0174CreateInput(name string) CreateInput {
 		Credentials:               Credentials{"api_key": "sk-live-secret-1234567890", "base_url": "https://api.openai.com/v1"},
 		SupportedModels:           []string{"gpt-4o-mini"},
 		Status:                    CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
+		Connections: []ConnectionInput{{
+			ConnectionPresetCode: healthPreset,
+			BaseURL:              "https://api.openai.com/v1",
+			EndpointModes:        []string{"chat_json", "chat_sse"},
+			Enabled:              true,
+		}},
+		HealthCheckConnectionPresetCode: &healthPreset,
+		HealthCheckEndpointMode:         &healthMode,
+		HealthCheckModel:                &healthModel,
 	}
 }
 
@@ -101,25 +114,48 @@ func TestCreateSnapshotSkipsNonHealthCapable(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, owner)
 	env.seedOwnerWithLimit(t, owner, nil)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// B1 断点批：registry 中 google_oauth 仅注册于 gemini driver，本用例补
+	// gemini 供应商行与 owner 默认分组（组合前提）。
+	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('prov-gemini', 'gemini', 'Gemini', 1, '["gpt-4o-mini"]', ?, ?)`, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-gemini-default', ?, 'gemini-default', 'gemini', 1, 1, 'personal', ?, ?)`, owner, now, now)
 	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
 		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
 		capabilities_json, created_at, updated_at)
-		VALUES ('prof-gpt-goog', 'gpt', 'OpenAI Google OAuth', 1, 'openai', 'v1', 'https://api.openai.com/v1',
+		VALUES ('prof-gemini-goog', 'gemini', 'Gemini Google OAuth', 1, 'gemini', 'v1beta', 'https://generativelanguage.googleapis.com',
 		'gpt-4o-mini', '["google_oauth"]', '[]', ?, ?)`, now, now)
 
+	// B1 断点批（设计 §1.1/§8）：registry 中 google_oauth 仅注册于 gemini
+	// driver；连接集合与健康检查三件套按 gemini_native_v1beta 形态显式提交
+	//（providerCode gemini 不在 J1 snapshot 的 gpt/openai 条件内，非健康型臂
+	// 语义不变）。
+	healthModel := "gpt-4o-mini"
+	healthMode := "generate_content_json"
+	healthPreset := "gemini_native_v1beta"
 	input := CreateInput{
-		ProviderCode:              "gpt",
-		ProviderProtocolProfileID: "prof-gpt-goog",
+		ProviderCode:              "gemini",
+		ProviderProtocolProfileID: "prof-gemini-goog",
 		Name:                      "chain-b",
 		AccountType:               "google_oauth",
 		Credentials: Credentials{
 			"refresh_token": "rt-secret-1234567890",
 			"client_id":     "cid-secret-1234567890",
 			"client_secret": "cs-secret-1234567890",
-			"base_url":      "https://api.openai.com/v1",
+			"oauth_type":    "ai_studio",
+			"base_url":      "https://generativelanguage.googleapis.com",
 		},
 		SupportedModels: []string{"gpt-4o-mini"},
 		Status:          CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
+		Connections: []ConnectionInput{{
+			ConnectionPresetCode: healthPreset,
+			BaseURL:              "https://generativelanguage.googleapis.com",
+			EndpointModes:        []string{"generate_content_json", "generate_content_sse"},
+			Enabled:              true,
+		}},
+		HealthCheckConnectionPresetCode: &healthPreset,
+		HealthCheckEndpointMode:         &healthMode,
+		HealthCheckModel:                &healthModel,
 	}
 	result, err := env.store.Create(context.Background(), input, AccessScope{ViewerID: owner})
 	if err != nil {

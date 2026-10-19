@@ -47,7 +47,6 @@ func (s *Service) BuildGatewayUsageContext(input usageContextInput) GatewayFailu
 		context.EffectiveServiceTier = "default"
 	}
 	if input.groupUsageFields != nil {
-		context.ProviderCode = input.groupUsageFields.ProviderCode
 		context.GroupOwnerSystemAccountID = input.groupUsageFields.GroupOwnerSystemAccountID
 		context.GroupAccessType = input.groupUsageFields.GroupAccessType
 		context.GroupAuthorizationID = input.groupUsageFields.GroupAuthorizationID
@@ -577,11 +576,7 @@ func projectRuntimeAccount(account gatewayruntimecache.OpenAIAccountSecret) *gat
 		})
 	}
 	return &gatewayopenai.RuntimeAccount{
-		ModelMappings:             mappings,
-		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
-		ProtocolCode:              account.ProtocolCode,
-		ProtocolVersion:           account.ProtocolVersion,
+		ModelMappings: mappings,
 	}
 }
 

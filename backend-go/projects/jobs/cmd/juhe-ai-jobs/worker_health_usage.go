@@ -91,7 +91,7 @@ type probeUsageScopeRow struct {
 // 静默保留无作用域输入（归一化整组清空，不阻塞观测补记）。
 func (w *probeUsageWriter) resolveScope(ctx context.Context, accountID string, input *usagewriter.UsageRecordInput) {
 	var row probeUsageScopeRow
-	err := w.business.db.QueryRowContext(ctx, w.business.bind(`SELECT a.provider_code, a.system_account_id,
+	err := w.business.db.QueryRowContext(ctx, w.business.bind(`SELECT COALESCE(a.vendor_code, ''), a.system_account_id,
 			a.authorization_instance_authorization_id,
 			ra.resource_owner_system_account_id, ra.status, ra.effective_source_team_id
 		FROM `+w.business.table("accounts")+` a

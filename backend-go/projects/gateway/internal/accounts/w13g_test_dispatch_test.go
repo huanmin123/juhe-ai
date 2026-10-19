@@ -75,8 +75,8 @@ func TestW13GTestOptionsRouteArms(t *testing.T) {
 	if code, _ := env.do(t, http.MethodGet, base+"/acc-w13g-to2/test-options", ""); code != http.StatusNotFound {
 		t.Fatal("空凭据应 404")
 	}
-	// store 错误 → 500。
-	env.exec(t, `DROP TABLE account_model_mappings`)
+	// store 错误 → 500（B4 W2：读面已切 account_entry_mappings）。
+	env.exec(t, `DROP TABLE account_entry_mappings`)
 	if code, _ := env.do(t, http.MethodGet, base+"/acc-w13g-to/test-options", ""); code != http.StatusInternalServerError {
 		t.Fatal("store 错误应 500")
 	}
@@ -94,7 +94,7 @@ func TestW13GTestOptionsRouteArms(t *testing.T) {
 			t.Fatal("模型能力空凭据应 404")
 		}
 		env2.seedAccount(t, "acc-w13g-to4", admin2, "w13g-to4", "active")
-		env2.exec(t, `DROP TABLE account_model_mappings`)
+		env2.exec(t, `DROP TABLE account_entry_mappings`)
 		if code, _ := env2.do(t, http.MethodGet, base+"/acc-w13g-to4/test-options/models/m1", ""); code != http.StatusInternalServerError {
 			t.Fatal("模型能力 store 错误应 500")
 		}

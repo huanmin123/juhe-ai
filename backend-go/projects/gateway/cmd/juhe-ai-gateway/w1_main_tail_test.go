@@ -162,7 +162,7 @@ func w1wOwnerEnv(t *testing.T, coverageDir string, f *w1wOwnerFixture, pairs ...
 		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(f.root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(f.root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(f.root, "stats.sqlite"),
-				"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + runtimeLog,
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + runtimeLog,
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(f.root, "codex-shards"),
 		"JUHE_AI_BUSINESS_OWNER=gateway",
 		"JUHE_AI_BUSINESS_DATABASE_PATH=" + f.businessPath,
@@ -335,14 +335,14 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 		t.Fatalf("打开业务库失败: %v", err)
 	}
 	seedStatements := []string{
-		`INSERT INTO accounts (id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc','w1w-sys','openai','default','openai','v1','w1w-account','api_key','active','w1w-encrypted','gpt-4o','chat_json',42,7,'` + nowText + `','` + nowText + `')`,
-		`INSERT INTO accounts (id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc-iso','w1w-sys','openai','default','openai','v1','w1w-account-isolated','api_key','quality_isolated','w1w-encrypted','gpt-4o','chat_json',11,3,'` + nowText + `','` + nowText + `')`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
+			VALUES ('w1w-acc','w1w-sys',NULL,'generic_http','openai','v1','w1w-account','api_key','active','w1w-encrypted','gpt-4o','chat_json',42,7,'` + nowText + `','` + nowText + `')`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
+			VALUES ('w1w-acc-iso','w1w-sys',NULL,'generic_http','openai','v1','w1w-account-isolated','api_key','quality_isolated','w1w-encrypted','gpt-4o','chat_json',11,3,'` + nowText + `','` + nowText + `')`,
 		`INSERT INTO model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
 			VALUES ('w1w-sched-ok','w1w-sys','w1w-acc','gpt-4o',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
-		`INSERT INTO accounts (id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
-			VALUES ('w1w-acc-bad','w1w-sys','openai','default','openai','v1','w1w-account-bad','api_key','active','w1w-encrypted','gpt-4o','chat_json',13,2,'` + nowText + `','` + nowText + `')`,
+		`INSERT INTO accounts (id,system_account_id,vendor_code,connection_driver_code,protocol_code,protocol_version,name,type,status,credentials_encrypted,health_check_model,health_check_endpoint_mode,config_revision,dispatch_revision,created_at,updated_at)
+			VALUES ('w1w-acc-bad','w1w-sys',NULL,'generic_http','openai','v1','w1w-account-bad','api_key','active','w1w-encrypted','gpt-4o','chat_json',13,2,'` + nowText + `','` + nowText + `')`,
 		`INSERT INTO model_quality_schedules (id,system_account_id,account_id,model,enabled,revision,next_run_at,created_at,updated_at)
 			VALUES ('w1w-sched-bad-model','w1w-sys','w1w-acc-bad','w1w-nonexistent-model',1,1,'` + pastText + `','` + nowText + `','` + nowText + `')`,
 		`INSERT INTO account_quality_enforcements (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,policy_revision,profile,account_config_revision,before_status,after_status,started_at,recovery_due_at,recovery_model,created_at,updated_at)
@@ -646,7 +646,7 @@ func TestW1WOwnerF3F4EnsureSchemaArms(t *testing.T) {
 		"JUHE_AI_DATASET_DATABASE_PATH=" + filepath.Join(root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH=" + filepath.Join(root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH=" + filepath.Join(root, "stats.sqlite"),
-				"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH=" + filepath.Join(root, "runtime-log.sqlite"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=" + filepath.Join(root, "codex-shards"),
 		"JUHE_AI_USAGE_SHARD_ROOT=" + filepath.Join(root, "usage-shards"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY=" + filepath.Join(root, "usage-spool"),
@@ -1004,7 +1004,7 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 		"JUHE_AI_DATASET_DATABASE_PATH="+filepath.Join(root, "dataset.sqlite"),
 		"JUHE_AI_USAGE_CATALOG_DATABASE_PATH="+filepath.Join(root, "usage-catalog.sqlite"),
 		"JUHE_AI_STATS_DATABASE_PATH="+filepath.Join(root, "stats.sqlite"),
-				"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+filepath.Join(root, "runtime-log.sqlite"),
+		"JUHE_AI_RUNTIME_LOG_DATABASE_PATH="+filepath.Join(root, "runtime-log.sqlite"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT="+filepath.Join(root, "codex-shards"),
 		"JUHE_AI_USAGE_SHARD_ROOT="+filepath.Join(root, "usage-shards"),
 		"JUHE_AI_USAGE_SPOOL_DIRECTORY="+filepath.Join(root, "usage-spool"),

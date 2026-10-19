@@ -325,10 +325,18 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 	if isAuthorized {
 		factAccountID = row.sourceAccountID.String
 	}
-	mappingRows, err := s.db.QueryContext(ctx, s.bind(`SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
-		FROM `+s.table("account_model_mappings")+`
-		WHERE account_id = ?
-		ORDER BY source_model ASC, source_endpoint_family ASC`), factAccountID)
+	// account_entry_mappings 目标形态（B4 W2，设计 §5.1）：upstream 名经
+	// target_model_id JOIN models.upstream_model 解析；连接只携带账户内自然键
+	// preset code（§8：连接 ID 永不外露）。
+	mappingRows, err := s.db.QueryContext(ctx, s.bind(`SELECT account_entry_mappings.source_model, account_entry_mappings.source_endpoint_family,
+			models.upstream_model, account_entry_mappings.target_endpoint_family, account_entry_mappings.enabled,
+			account_connections.connection_preset_code
+		FROM `+s.table("account_entry_mappings")+` account_entry_mappings
+		INNER JOIN `+s.table("models")+` models ON models.id = account_entry_mappings.target_model_id
+		INNER JOIN `+s.table("account_connections")+` account_connections
+			ON account_connections.id = account_entry_mappings.target_connection_id
+		WHERE account_entry_mappings.account_id = ?
+		ORDER BY account_entry_mappings.source_model ASC, account_entry_mappings.source_endpoint_family ASC`), factAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +345,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		var mapping ModelMapping
 		var enabled int
 		if err := mappingRows.Scan(&mapping.SourceModel, &mapping.SourceEndpointFamily,
-			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled); err != nil {
+			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled, &mapping.TargetConnectionPresetCode); err != nil {
 			mappingRows.Close()
 			return nil, err
 		}

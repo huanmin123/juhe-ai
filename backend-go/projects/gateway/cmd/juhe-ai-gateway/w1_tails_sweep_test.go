@@ -693,10 +693,11 @@ func TestW1TModelCatalogRefresherTails(t *testing.T) {
 	t.Run("addedModels 与推荐健康检查模型", func(t *testing.T) {
 		db := w1uOpenSeededBusinessDB(t)
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, err := db.Exec(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id,
-			status, mode, supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+		// models 单表（供应商解耦 §3）：global custom 行，modes 由协议正向投影。
+		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
+			status, supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			created_by, created_at, updated_at)
-			VALUES ('cpm-w1t', 'gpt', 'm-add', 'global', NULL, 'active', NULL, '["chat_completions"]', '[]', '[]', 'w1t', ?, ?)`,
+			VALUES ('cpm-w1t', 'gpt', 'm-add', 'm-add', 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'w1t', ?, ?)`,
 			now, now); err != nil {
 			t.Fatalf("seed custom model: %v", err)
 		}
@@ -735,7 +736,7 @@ func TestW1TChainComposeClientCatalogErrorArm(t *testing.T) {
 	// 200 空列表（/v1/models 账户并集设计 §4.6.2）。
 	loader := chainGatewayKeyModelCatalog{cache: w1tNewTailCache(t, &w1tTailModels{})}
 	_, err := loader.ListGatewayKeyModels(context.Background(), "sys-w1t",
-		[]gatewayresponse.GatewayModelBinding{{GroupID: "grp-w1t", ProviderCode: "openai"}})
+		[]gatewayresponse.GatewayModelBinding{{GroupID: "grp-w1t"}})
 	if err == nil || !errors.Is(err, gatewayruntimecache.ErrGroupModelUnionLoaderUnavailable) {
 		t.Fatalf("err = %v, want ErrGroupModelUnionLoaderUnavailable", err)
 	}
@@ -755,7 +756,7 @@ func TestW1TBodyRejectionRecorderArms(t *testing.T) {
 		}
 		runtime := &gatewayruntimecache.GatewayRuntime{
 			APIKey:      &gatewayruntimecache.GatewayAPIKeyRow{ID: "key-w1t", SystemAccountID: "sys-w1t", SelectedGroupID: "grp-w1t"},
-			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "gpt", GroupOwnerSystemAccountID: "sys-w1t", GroupAccessType: "personal"},
+			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys-w1t", GroupAccessType: "personal"},
 		}
 		request := &http.Request{Method: "", URL: &url.URL{}, Header: http.Header{}}
 		request = request.WithContext(context.WithValue(request.Context(), chainGatewayRuntimeKey{}, runtime))

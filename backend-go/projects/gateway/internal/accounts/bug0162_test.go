@@ -199,35 +199,35 @@ func TestBug0162CreateModelMappingEndpointFamilyEnum(t *testing.T) {
 
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"bad-source",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active",
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active",
 		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"bogus","upstreamModel":"u1","upstreamEndpointFamily":"chat_completions"}]}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("bogus source family: %d %v", code, payload)
 	}
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"bad-upstream",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active",
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active",
 		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"chat_completions","upstreamModel":"u1","upstreamEndpointFamily":"responses_sse"}]}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("bogus upstream family: %d %v", code, payload)
 	}
+	// B4 W2（设计 §5.1/§8）：族枚举合法的映射在写入侧走 account_entry_mappings
+	// 双解析——管理面创建链尚无连接行（connection preset 解析不到 enabled
+	// 连接），按 mapping_target_unsupported 显式 400 拒绝；不造无连接兼容层，
+	// 连接面迁移归后续切片。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"good-mapping",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["chat_json"]},
-		"supportedModels":["gpt-4o-mini"],"status":"active",
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active",
 		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"chat_completions","upstreamModel":"u1","upstreamEndpointFamily":"chat_completions"}]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("legal families: %d %v", code, payload)
-	}
-	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE source_endpoint_family = 'chat_completions'
-		AND upstream_endpoint_family = 'chat_completions'`) != 1 {
-		t.Fatal("legal mapping must persist")
+	if code != http.StatusBadRequest {
+		t.Fatalf("legal families (no connection yet): %d %v", code, payload)
 	}
 	// Gemini 源端点族在 openai 档案下被协议矩阵拒绝（归档
 	// assertAccountModelMappingProtocolAllowed：非 native Gemini 档案不支持
 	// Gemini 源端点族），枚举合法但映射门禁拒绝 → 400。
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"gemini-source",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active",
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active",
 		"modelMappings":[{"sourceModel":"m1","sourceEndpointFamily":"stream_generate_content","upstreamModel":"u1","upstreamEndpointFamily":"generate_content"}]}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("gemini source on openai profile: %d %v", code, payload)
@@ -246,7 +246,7 @@ func TestBug0162CreateTemporaryProbeFlagPersisted(t *testing.T) {
 
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"probe-off",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","temporaryUnavailableContinuousProbeEnabled":false}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","temporaryUnavailableContinuousProbeEnabled":false}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create probe-off: %d %v", code, payload)
 	}
@@ -257,7 +257,7 @@ func TestBug0162CreateTemporaryProbeFlagPersisted(t *testing.T) {
 
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"probe-default",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active"}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create probe-default: %d %v", code, payload)
 	}
@@ -268,7 +268,7 @@ func TestBug0162CreateTemporaryProbeFlagPersisted(t *testing.T) {
 
 	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"probe-bad",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","temporaryUnavailableContinuousProbeEnabled":"true"}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","temporaryUnavailableContinuousProbeEnabled":"true"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("non-boolean flag: %d", code)
 	}
@@ -284,7 +284,7 @@ func TestBug0162CreateBalanceCapabilityGuards(t *testing.T) {
 
 	oauth := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"oauth-balance",
 		"type":"oauth","credentials":{"refresh_token":"rt-secret","access_token":"at","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true}`
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["responses_json","responses_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"responses_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryEnabled":true}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", oauth)
 	if code != http.StatusBadRequest || payload["message"] != "上游余额查询仅支持 API Key 账户" {
 		t.Fatalf("oauth balance: %d %v", code, payload)
@@ -292,7 +292,7 @@ func TestBug0162CreateBalanceCapabilityGuards(t *testing.T) {
 
 	noConfig := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"key-noconfig",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true}`
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryEnabled":true}`
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", noConfig)
 	if code != http.StatusBadRequest || payload["message"] != "开启上游余额查询时必须选择查询类型" {
 		t.Fatalf("missing config: %d %v", code, payload)
@@ -300,7 +300,7 @@ func TestBug0162CreateBalanceCapabilityGuards(t *testing.T) {
 
 	badConfig := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"key-badconfig",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryConfig":{"adapter":"bogus"}}`
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryConfig":{"adapter":"bogus"}}`
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", badConfig)
 	if code != http.StatusBadRequest || payload["message"] != "余额查询类型无效" {
 		t.Fatalf("bad config: %d %v", code, payload)
@@ -308,7 +308,7 @@ func TestBug0162CreateBalanceCapabilityGuards(t *testing.T) {
 
 	goodConfig := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"key-goodconfig",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true,
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryEnabled":true,
 		"balanceQueryConfig":{"adapter":"builtin","preferredBuiltinAdapter":"sub2api"}}`
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", goodConfig)
 	if code != http.StatusCreated {
@@ -332,7 +332,7 @@ func TestBug0162CreateInitialHealthCheckDispatch(t *testing.T) {
 	// pending_test (no status field).
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"pending",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"]}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("pending create: %d %v", code, payload)
 	}
@@ -348,7 +348,7 @@ func TestBug0162CreateInitialHealthCheckDispatch(t *testing.T) {
 	// active single-Key WITH balance query: no probe.
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"active-balance",
 		"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active","balanceQueryEnabled":true,
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","balanceQueryEnabled":true,
 		"balanceQueryConfig":{"adapter":"builtin","preferredBuiltinAdapter":"sub2api"}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("balance create: %d %v", code, payload)
@@ -357,7 +357,7 @@ func TestBug0162CreateInitialHealthCheckDispatch(t *testing.T) {
 	// active multi-Key: no probe.
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"active-multi",
 		"type":"api_key","credentials":{"api_keys":["sk-live-secret-1234567890","sk-second-key-0987654321"],"base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active"}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("multi create: %d %v", code, payload)
 	}
@@ -407,9 +407,10 @@ func TestBug0162PatchExtendedFieldsAndHealthReset(t *testing.T) {
 	id := dataMap(t, payload)["id"].(string)
 	env.seedHealthProjection(t, id)
 
+	// B4 W2：账户尚无连接行，映射替换按 mapping_target_unsupported 显式拒绝
+	// （连接面迁移归后续切片）；本用例保持其余扩展字段覆盖。
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id, `{
 		"expectedConfigRevision": 1,
-		"modelMappings": [{"sourceModel":"m1","sourceEndpointFamily":"chat_completions","upstreamModel":"u1","upstreamEndpointFamily":"chat_completions"}],
 		"proxyProfileId": "proxy-1",
 		"groupId": "grp-alt",
 		"temporaryUnavailableContinuousProbeEnabled": false,
@@ -422,7 +423,7 @@ func TestBug0162PatchExtendedFieldsAndHealthReset(t *testing.T) {
 	for _, item := range dataMap(t, patched)["changedFields"].([]any) {
 		changed[item.(string)] = true
 	}
-	for _, field := range []string{"modelMappings", "proxyProfileId", "groupId", "temporaryUnavailableContinuousProbeEnabled", "balanceQueryConfig"} {
+	for _, field := range []string{"proxyProfileId", "groupId", "temporaryUnavailableContinuousProbeEnabled", "balanceQueryConfig"} {
 		if !changed[field] {
 			t.Fatalf("changedFields missing %s: %v", field, changed)
 		}
@@ -440,9 +441,6 @@ func TestBug0162PatchExtendedFieldsAndHealthReset(t *testing.T) {
 	}
 	if env.count(t, `SELECT COUNT(*) FROM group_accounts WHERE account_id = ? AND group_id = 'grp-alt' AND enabled = 1`, id) != 1 {
 		t.Fatal("group binding must switch to grp-alt")
-	}
-	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE account_id = ? AND source_model = 'm1'`, id) != 1 {
-		t.Fatal("model mapping must persist")
 	}
 	// The post-commit configuration probe fires once for the health-relevant
 	// change set.
@@ -519,7 +517,7 @@ func TestBug0162PatchBalanceCapabilityRejected(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 	oauthPayload := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"oauth-acct",
 		"type":"oauth","credentials":{"refresh_token":"rt-secret","access_token":"at","account_id":"acct-1","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"],"status":"active"}`
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["responses_json","responses_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"responses_json","healthCheckModel":"gpt-4o-mini","status":"active"}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", oauthPayload)
 	if code != http.StatusCreated {
 		t.Fatalf("oauth create: %d %v", code, payload)

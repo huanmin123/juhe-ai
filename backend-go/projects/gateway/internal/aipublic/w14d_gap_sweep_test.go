@@ -121,13 +121,13 @@ func TestW14dAccountGapSweep(t *testing.T) {
 	// Two successful pushes (the second carries availabilitySchedule, L514)
 	// give the list two ids (L261).
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/add",
-		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"站点A","baseUrl":"https://a.example","apiKey":"sk-a","supportedModels":["gpt-4o-mini"],"type":"api_key"}`, token)
+		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"站点A","baseUrl":"https://a.example","apiKey":"sk-a","supportedModels":["gpt-4o-mini"],"type":"api_key","connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://a.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("account A: %d %v", status, payload)
 	}
 	groupA := payload["data"].(map[string]any)["target"].(map[string]any)["groupId"]
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/add",
-		`{"targetUsername":"w14downer","targetGroupName":"福利2","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"站点B","baseUrl":"https://b.example","apiKey":"sk-b","supportedModels":["gpt-4o-mini"],"availabilitySchedule":{"enabled":true,"mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"09:00","end":"18:00"}]},"type":"api_key"}`, token)
+		`{"targetUsername":"w14downer","targetGroupName":"福利2","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"站点B","baseUrl":"https://b.example","apiKey":"sk-b","supportedModels":["gpt-4o-mini"],"availabilitySchedule":{"enabled":true,"mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"09:00","end":"18:00"}]},"type":"api_key","connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://b.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("account B: %d %v", status, payload)
 	}

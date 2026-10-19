@@ -137,11 +137,7 @@ func (a *UpstreamAccount) runtimeAccount() *gatewayopenai.RuntimeAccount {
 		})
 	}
 	return &gatewayopenai.RuntimeAccount{
-		ModelMappings:             mappings,
-		ProviderCode:              a.ProviderCode,
-		ProviderProtocolProfileID: a.ProviderProtocolProfileID,
-		ProtocolCode:              a.ProtocolCode,
-		ProtocolVersion:           a.ProtocolVersion,
+		ModelMappings: mappings,
 	}
 }
 

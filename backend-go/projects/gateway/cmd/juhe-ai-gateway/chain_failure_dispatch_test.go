@@ -771,6 +771,8 @@ func TestGatewayChain429SSEFailureYieldsNonStreamErrorContract(t *testing.T) {
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -823,6 +825,8 @@ func TestGatewayChain429JSONRetriesSameAccountThenSucceeds(t *testing.T) {
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -880,9 +884,13 @@ func TestGatewayChain5xxFailsOverToNextCandidate(t *testing.T) {
 	// group_accounts.local_priority，低值在前，避免依赖 CJK 名称 collator）。
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at) VALUES (?, ?, 'acc_2', 1, 10, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_2', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_2', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：acc_2 需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_2", secondUpstream.URL)
 	seed(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-1", "base_url": firstUpstream.URL}), fixture.accountID)
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, firstUpstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -935,9 +943,13 @@ func TestGatewayChainAllUpstreamHTTPFailuresRenderExhaustion(t *testing.T) {
 		fixture.systemAccount, mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-2", "base_url": upstream.URL}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, 'acc_2', 1, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_2', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_2', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：acc_2 需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_2", upstream.URL)
 	seed(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key-1", "base_url": upstream.URL}), fixture.accountID)
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -992,6 +1004,9 @@ func TestGatewayChainResponsesRecoversRejectedEncryptedContent(t *testing.T) {
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行；/v1/responses 透传依赖
+	// 连接行 responses 双模式（等价旧世界凭据 supported_endpoint_modes 写点）。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -2045,6 +2060,8 @@ func TestGatewayChain402InsufficientQuotaCooldownsAccount(t *testing.T) {
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse", "responses_json", "responses_sse")
 	// 桥写侧需要测试 schema 未包含的运行态列（生产 schema 具备）。
 	for _, alter := range []string{
 		`ALTER TABLE accounts ADD COLUMN last_error_trace_id TEXT`,

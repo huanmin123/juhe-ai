@@ -667,12 +667,14 @@ func TestWeBuiltinPatchAssignmentsAndRecords(t *testing.T) {
 		{Name: "outputUsdPerImage", Value: float64(0.2)},
 		{Name: "unknown", Value: 1},
 	}
-	assignments, params := builtinPatchAssignments(store, patch)
+	// mode 与 supportedApiProtocols 合写 supported_endpoint_modes_json
+	//（models 单表物理列）。
+	assignments, params := store.builtinPatchAssignments(&ModelCatalogItem{ProviderCode: "gpt", Model: "m", Status: "active"}, patch)
 	if len(assignments) == 0 {
 		t.Fatal("应产生赋值列")
 	}
 	joined := strings.Join(assignments, ",")
-	for _, expected := range []string{"status", "catalog_visible", "mode", "supported_api_protocols_json",
+	for _, expected := range []string{"status", "catalog_visible", "supported_endpoint_modes_json",
 		"supported_service_tiers_json", "supported_reasoning_efforts_json", "default_reasoning_effort",
 		"release_date", "shutdown_date", "context_window_tokens", "input_usd_per_1m", "output_usd_per_1m",
 		"service_tier_prices_json", "output_usd_per_image"} {

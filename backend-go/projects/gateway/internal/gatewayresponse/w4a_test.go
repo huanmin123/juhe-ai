@@ -173,14 +173,17 @@ func TestSinkModelsAuditFirstTokenMsAndSemantic(t *testing.T) {
 	if got := usage.dispatch[0].UsageSemantic; got != "openai" {
 		t.Fatalf("usageSemantic = %q", got)
 	}
-	// anthropic 供应商的 models 调用语义应为 anthropic。
+	// anthropic 供应商的 models 调用语义应为 anthropic（B4 W2：归因取 usage
+	// context 的 providerCode——绑定行已无 provider 维度）。
+	anthropicContext := usageContextFixture()
+	anthropicContext.ProviderCode = "anthropic"
 	sink2, tracking2, _, _, usage2, _ := newSinkFixture()
 	sink2.SendAnthropicModelsGatewayResponse(gatewaypreauth.ModelsResponseInput{
 		Req:          gatewaypreauth.NewGatewayRequest(httptest.NewRequest("GET", "/v1/models", nil)),
 		Res:          tracking2,
 		AuditCapture: newMockAuditCapture(),
-		UsageContext: usageContextFixture(),
-		Bindings:     []gatewaypreauth.GatewayModelBinding{{ProviderCode: "anthropic"}},
+		UsageContext: anthropicContext,
+		Bindings:     []gatewaypreauth.GatewayModelBinding{{GroupID: "g1"}},
 		StartedAt:    1000,
 	})
 	if len(usage2.dispatch) != 1 || usage2.dispatch[0].UsageSemantic != "anthropic" {

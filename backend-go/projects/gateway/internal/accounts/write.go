@@ -40,10 +40,11 @@ var (
 // enums. The message matches the route-family 400 copy.
 func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
 	mapping := ModelMapping{
-		SourceModel:            strings.TrimSpace(textString(object["sourceModel"])),
-		SourceEndpointFamily:   strings.TrimSpace(textString(object["sourceEndpointFamily"])),
-		UpstreamModel:          strings.TrimSpace(textString(object["upstreamModel"])),
-		UpstreamEndpointFamily: strings.TrimSpace(textString(object["upstreamEndpointFamily"])),
+		SourceModel:                strings.TrimSpace(textString(object["sourceModel"])),
+		SourceEndpointFamily:       strings.TrimSpace(textString(object["sourceEndpointFamily"])),
+		UpstreamModel:              strings.TrimSpace(textString(object["upstreamModel"])),
+		UpstreamEndpointFamily:     strings.TrimSpace(textString(object["upstreamEndpointFamily"])),
+		TargetConnectionPresetCode: strings.TrimSpace(textString(object["targetConnectionPresetCode"])),
 	}
 	if mapping.SourceModel == "" || mapping.UpstreamModel == "" ||
 		mapping.SourceEndpointFamily == "" || mapping.UpstreamEndpointFamily == "" {
@@ -61,12 +62,29 @@ func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
 	// strict(): unknown keys fail the parse.
 	for key := range object {
 		switch key {
-		case "sourceModel", "sourceEndpointFamily", "upstreamModel", "upstreamEndpointFamily", "enabled":
+		case "sourceModel", "sourceEndpointFamily", "upstreamModel", "upstreamEndpointFamily", "enabled",
+			// B4 W2（设计 §5.1/§8）：连接维度自然键入参。
+			"targetConnectionPresetCode":
 		default:
 			return ModelMapping{}, false
 		}
 	}
 	return mapping, true
+}
+
+// normalizeConnectionBody mirrors the §8 connections[] element contract: the
+// required connectionPresetCode / baseUrl / endpointModes（非空字符串数组）/
+// enabled（必须显式布尔，§2.1）plus the optional protocolSurfaceCode echo;
+// unknown keys fail the parse (strict()). 解析器实现下沉 accountscore
+// （ParseConnectionInput），门面/导入/公开面共用同一份。
+func normalizeConnectionBody(object map[string]any) (ConnectionInput, bool) {
+	return accountscore.ParseConnectionInput(object)
+}
+
+// NormalizeConnectionBody 是 normalizeConnectionBody 的导出门面（aipublic 公开
+// 面入参解析复用同一 §8 元素契约，避免第二份解析器）。
+func NormalizeConnectionBody(object map[string]any) (ConnectionInput, bool) {
+	return normalizeConnectionBody(object)
 }
 
 // accountHealthCheckEndpointModes 阶段 C 下沉 accountscore（导入域字段解析器
@@ -119,6 +137,9 @@ type (
 	CreationStatus = accountscore.CreationStatus
 	// CreateInput mirrors accountscore.CreateInput.
 	CreateInput = accountscore.CreateInput
+	// ConnectionInput mirrors accountscore.ConnectionInput（§8 连接行载荷，B1
+	// 断点批；门面别名保持 route/import/测试原调用形态）。
+	ConnectionInput = accountscore.ConnectionInput
 )
 
 // AccountCreationStatusInput mirrors accountCreationStatusInput（accountscore
@@ -606,28 +627,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if err := assertSupportedModelsRequired(supportedModels); err != nil {
 		return nil, err
 	}
-	configuredHealthCheckModel := profile.defaultHealthCheckModel
-	if input.HealthCheckModel != nil {
-		configuredHealthCheckModel = *input.HealthCheckModel
-	}
-	if input.HealthCheckModel == nil && !containsString(supportedModels, configuredHealthCheckModel) && len(supportedModels) > 0 {
-		configuredHealthCheckModel = supportedModels[0]
-	}
-	healthCheckModel, err := normalizedHealthCheckModel(configuredHealthCheckModel, supportedModels)
-	if err != nil {
-		return nil, err
-	}
-	// 健康检查请求形态默认落值按域收窄（媒体账户生命周期定案表）：chat=
-	// chat_json（现行硬编码）、image=images_json、audio=audio_speech、
-	// video=video_create；仅入参未显式提供时生效。video_create 是 M2 写侧
-	// 白名单增补值（writeinput.go），不改变任何检查执行路径。
-	healthCheckEndpointMode := accountscore.DefaultHealthCheckEndpointModeForDomain(domain)
-	if input.HealthCheckEndpointMode != nil {
-		if !accountHealthCheckEndpointModes[*input.HealthCheckEndpointMode] {
-			return nil, &ValidationError{Message: "账户参数无效"}
-		}
-		healthCheckEndpointMode = *input.HealthCheckEndpointMode
-	}
+	// 克隆综合（§2）与连接/健康检查三件套校验在下方 INSERT 前执行（分组解析
+	// 与模型目录断言之后、写连接行之前），见 insertAccountConnections 调用处
+	// 的同名注释块。
 
 	// 请求覆盖两字段（service_tier_override / reasoning_effort_override）的
 	// 写入面校验已在上方 NormalizeAccountCredentialsForWrite 内执行（token
@@ -822,24 +824,81 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 本函数）统一落 vendor_code / connection_driver_code 两列。
 	vendorCode, connectionDriverCode := accountVendorIdentity(providerCode)
 
+	// 克隆综合（§2）：克隆载荷不携带连接/健康检查时由源账户连接行与 health
+	// 三字段反解综合（连接按 preset/Base URL/endpoint modes/enabled 原样重建，
+	// health 三字段按 preset 重新解析复制）；源无连接行按显式错误拒绝，不做
+	// 跨形态兼容层。
+	if input.CloneSourceID != nil && strings.TrimSpace(*input.CloneSourceID) != "" {
+		cloneConnections, cloneHealthPreset, cloneHealthMode, cloneHealthModel, err := s.loadAccountConnectionFacts(ctx, tx, strings.TrimSpace(*input.CloneSourceID))
+		if err != nil {
+			return nil, err
+		}
+		input.Connections = cloneConnections
+		if input.HealthCheckConnectionPresetCode == nil || strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
+			preset := cloneHealthPreset
+			input.HealthCheckConnectionPresetCode = &preset
+		}
+		if input.HealthCheckEndpointMode == nil {
+			mode := cloneHealthMode
+			input.HealthCheckEndpointMode = &mode
+		}
+		if input.HealthCheckModel == nil {
+			model := cloneHealthModel
+			input.HealthCheckModel = &model
+		}
+		if strings.TrimSpace(*input.HealthCheckConnectionPresetCode) == "" {
+			return nil, &ValidationError{Message: "克隆源账户健康检查连接缺失，无法克隆：" + strings.TrimSpace(*input.CloneSourceID)}
+		}
+	}
+	// 健康检查三件套显式提交（供应商与上游协议面重构设计 §8）：三字段必须全部
+	// 由载荷显式携带，缺失按 400 拒绝（错误文案列明缺失字段），不再走档案默认
+	// /域缺省推导（§2.2「新建账户不推导 endpoint mode 默认值」）。空串值保留
+	// 给后续归属/词表校验报既有文案（nil 判缺失）。
+	if input.HealthCheckModel == nil {
+		return nil, &ValidationError{Message: "创建载荷缺少 healthCheckModel：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	}
+	if input.HealthCheckEndpointMode == nil {
+		return nil, &ValidationError{Message: "创建载荷缺少 healthCheckEndpointMode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	}
+	if input.HealthCheckConnectionPresetCode == nil {
+		return nil, &ValidationError{Message: "创建载荷缺少 healthCheckConnectionPresetCode：健康检查三件套（healthCheckConnectionPresetCode、healthCheckEndpointMode、healthCheckModel）必须显式提交"}
+	}
+	if !accountHealthCheckEndpointModes[*input.HealthCheckEndpointMode] {
+		return nil, &ValidationError{Message: "账户参数无效"}
+	}
+	healthCheckModel, err := normalizedHealthCheckModel(*input.HealthCheckModel, supportedModels)
+	if err != nil {
+		return nil, err
+	}
+	healthCheckEndpointMode := strings.TrimSpace(*input.HealthCheckEndpointMode)
+	// 连接集合（§8）：非空必填 + registry 组合/mode 词表/base URL validator
+	// 全量校验（§2.1/§2.2）。
+	vendorForRegistry, driverForRegistry := accountVendorIdentity(providerCode)
+	resolvedConnections, err := resolveConnectionSet(domain, driverForRegistry, accountType,
+		accountOAuthTypeForRegistry(accountType, credentials), input.Connections)
+	if err != nil {
+		return nil, err
+	}
+	healthCheckConnectionPresetCode := strings.TrimSpace(*input.HealthCheckConnectionPresetCode)
+
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("accounts")+`
-		(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+		(id, system_account_id, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		 oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
-		 priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable,
+		 priority, super_priority_enabled, fallback_enabled, schedulable,
 		 availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at,
-		 cooldown_until, last_error_code, last_error_message, health_check_model, health_check_endpoint_mode,
+		 cooldown_until, last_error_code, last_error_message,
 		 balance_query_enabled, balance_query_config_json, temporary_unavailable_continuous_probe_enabled,
 		 expedited_recovery_enabled, capability_domain, vendor_code, connection_driver_code,
 		 stream_failure_count, stream_failure_window_started_at, balance_query_next_refresh_at,
 		 created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		id, systemAccountID, providerCode, profile.id, profile.protocolCode, profile.protocolVersion,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		id, systemAccountID, profile.protocolCode, profile.protocolVersion,
 		strings.TrimSpace(input.Name), accountType, nextStatus, sealed, fingerprint, mask,
 		accessTokenExpiresAt, refreshTokenPresent, proxyProfileID, concurrencyLimit,
-		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), derivedClientCompatibility, boolInt(schedulable),
+		priority, boolInt(superPriorityEnabled), boolInt(fallbackEnabled), boolInt(schedulable),
 		scheduleJSONValue, nextCheckAt, notes, accountExpiresAt,
-		sql.NullString{}, lastErrorCode, lastErrorMessage, healthCheckModel, healthCheckEndpointMode,
+		sql.NullString{}, lastErrorCode, lastErrorMessage,
 		balanceQueryEnabledInt, balanceQueryConfigJSON, temporaryProbeEnabled,
 		boolInt(expeditedRecoveryEnabled), domain, vendorCode, connectionDriverCode,
 		0, sql.NullString{}, balanceNextRefreshAt,
@@ -857,6 +916,12 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		nowISO, nowISO); err != nil {
 		return nil, err
 	}
+	// 连接行写入（§2.1 写入序第二、三步）：account_connections（确定性行 ID）
+	// + account_endpoint_modes——先于支持模型与入口映射，映射解析（§5.1 preset
+	// → enabled 连接）在本事务内即可命中刚写入的连接行（#B1 断点修复）。
+	if err := insertAccountConnections(ctx, tx, s, id, resolvedConnections, nowISO); err != nil {
+		return nil, err
+	}
 	if err := s.replaceAccountSupportedModels(ctx, tx, id, providerCode, supportedModels, nowISO); err != nil {
 		return nil, err
 	}
@@ -867,6 +932,13 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		return nil, err
 	}
 	if _, err := s.replaceAccountTags(ctx, tx, id, systemAccountID, tagNames, nowISO); err != nil {
+		return nil, err
+	}
+	// health-check 三字段收尾（§2.1 写入序末步）：同一事务内解析 health_check_
+	// connection_id（preset → enabled 连接行）并以一条 UPDATE 补齐三字段，提交
+	// 前读回校验非 NULL（§9 事务级校验硬规则）。初始 INSERT 三列保持 NULL。
+	if err := s.finalizeAccountHealthCheckTrio(ctx, tx, id, vendorForRegistry.String, systemAccountID,
+		healthCheckConnectionPresetCode, healthCheckEndpointMode, healthCheckModel, supportedModels); err != nil {
 		return nil, err
 	}
 	// Dispatch revision family advance (repositories.ts:2412-2417): the fresh
@@ -1121,39 +1193,70 @@ func (s *Store) resolveEnabledProxyProfile(ctx context.Context, q queryer, proxy
 	return enabled, nil
 }
 
-// replaceAccountSupportedModels mirrors replaceAccountSupportedModels.
+// replaceAccountSupportedModels 落账户支持模型（供应商与上游协议面重构设计
+// §4 目标形态，B4 W2）：模型名按 models.upstream_model 身份键 + owner 可见性
+// 解析 models.id 后写 (account_id, model_id)——该复合键是
+// account_entry_mappings.target_model_id 外键的引用目标（§9），解析失败按
+// ValidationError（400 族）显式拒绝。owner 取账户行 system_account_id（调用
+// 方签名不携带；授权实例场景由上游面保证直连资源账户写入）。
 func (s *Store) replaceAccountSupportedModels(ctx context.Context, q queryer, accountID, providerCode string, models []string, nowISO string) error {
+	vendorNull, _ := accountVendorIdentity(providerCode)
+	vendor := vendorNull.String
+	var owner string
+	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner); err != nil {
+		return err
+	}
 	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id = ?`), accountID); err != nil {
 		return err
 	}
 	for _, model := range models {
+		modelID, err := s.resolveEntryModelID(ctx, q, vendor, owner, model)
+		if err != nil {
+			return err
+		}
 		if _, err := q.ExecContext(ctx, s.bind(s.insertIgnore(`INSERT INTO `+s.table("account_supported_models")+`
-			(account_id, provider_code, model, created_at) VALUES (?, ?, ?, ?)`,
-			` ON CONFLICT (account_id, model) DO NOTHING`)), accountID, providerCode, model, nowISO); err != nil {
+			(account_id, model_id, created_at) VALUES (?, ?, ?)`,
+			` ON CONFLICT (account_id, model_id) DO NOTHING`)), accountID, modelID, nowISO); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// replaceAccountModelMappings mirrors replaceAccountModelMappings (catalog
-// validation belongs to the model-validation companion slice).
+// replaceAccountModelMappings 落账户入口映射（供应商与上游协议面重构设计
+// §5.1/§8 目标形态，B4 W2）：整集合替换写 account_entry_mappings，每条映射经
+// resolveEntryMappingTargets 双解析（connection preset → enabled
+// account_connections.id；target 模型名 → models.id）+ §5.3 family 联动校验；
+// 任一步失败按 ValidationError（mapping_target_unsupported 语义，400 族）拒绝，
+// 不静默跳过。旧 account_model_mappings 写循环已删除（该表随 A 路线撤除，
+// fresh DDL 不再建表）；providerCode 仅用于推导模型身份键的 vendor（§2.1）。
 func (s *Store) replaceAccountModelMappings(ctx context.Context, q queryer, accountID, providerCode string, mappings []ModelMapping, nowISO string) error {
-	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_model_mappings")+` WHERE account_id = ?`), accountID); err != nil {
+	vendorNull, _ := accountVendorIdentity(providerCode)
+	vendor := vendorNull.String
+	var owner string
+	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner); err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+` WHERE account_id = ?`), accountID); err != nil {
 		return err
 	}
 	for _, mapping := range mappings {
+		connectionID, modelID, err := s.resolveEntryMappingTargets(ctx, q, accountID, vendor, owner, mapping)
+		if err != nil {
+			return err
+		}
 		enabled := 1
 		if mapping.Enabled != nil && !*mapping.Enabled {
 			enabled = 0
 		}
-		if _, err := q.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_model_mappings")+`
-			(account_id, provider_code, source_model, source_endpoint_family, upstream_model,
-			 upstream_endpoint_family, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := q.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_entry_mappings")+`
+			(id, account_id, source_model, source_endpoint_family, target_connection_id,
+			 target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (account_id, source_model, source_endpoint_family) DO NOTHING`),
-			accountID, providerCode, mapping.SourceModel, mapping.SourceEndpointFamily,
-			mapping.UpstreamModel, mapping.UpstreamEndpointFamily, enabled, nowISO, nowISO); err != nil {
+			entryMappingRowID(accountID, mapping.SourceModel, mapping.SourceEndpointFamily),
+			accountID, mapping.SourceModel, mapping.SourceEndpointFamily, connectionID,
+			modelID, mapping.UpstreamEndpointFamily, enabled, nowISO, nowISO); err != nil {
 			return err
 		}
 	}

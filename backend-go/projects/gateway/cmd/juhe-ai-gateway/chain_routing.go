@@ -129,8 +129,11 @@ func projectGroupAccessForRuntime(meta gatewayrouting.GroupUsageAccessMetadata) 
 // 映射行构造函数后，应替换为直接投影。
 func projectAccountForRouting(account gatewayruntimecache.OpenAIAccountSecret) gatewayrouting.UpstreamAccount {
 	projected := gatewayrouting.UpstreamAccount{
-		ID:                        account.ID,
-		ProviderCode:              account.ProviderCode,
+		ID: account.ID,
+		// B4 W2（设计 §8：行为键=vendor）：routing 层 ProviderCode 槽位承载
+		// vendor 身份（值域同名；secret.ProviderCode 过渡字段恒空不再作键，
+		// 与 chain_usage.go 的投影位切换同法）。
+		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,
 		ProtocolVersion:           account.ProtocolVersion,

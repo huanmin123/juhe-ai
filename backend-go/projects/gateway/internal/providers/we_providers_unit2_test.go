@@ -173,11 +173,11 @@ func TestWeBooleanQueryValue(t *testing.T) {
 func TestWeEnabledNonHybridProviderCodes(t *testing.T) {
 	env := newTestEnv(t)
 	now := "2026-01-01T00:00:00.000Z"
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('p1', 'gpt', 'OpenAI', 1, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('p2', 'anthropic', 'Anthropic', 0, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('p3', 'hybrid', 'Hybrid', 1, '[]', ?, ?)`, now, now)
 
 	store, err := NewStore(env.db, false, nil)

@@ -765,7 +765,7 @@ func (r *balanceDetectRuntime) buildQueryInput(ctx context.Context, candidate op
 		providerCode, credentialsText string
 	)
 	query := fmt.Sprintf(`
-      SELECT a.provider_code, a.credentials_encrypted, p.id, p.type, p.host, p.port, p.username, p.password_encrypted
+      SELECT COALESCE(a.vendor_code, ''), a.credentials_encrypted, p.id, p.type, p.host, p.port, p.username, p.password_encrypted
       FROM %s a
       LEFT JOIN %s p ON p.id = a.proxy_profile_id
       WHERE a.id = ? AND a.deleted_at IS NULL

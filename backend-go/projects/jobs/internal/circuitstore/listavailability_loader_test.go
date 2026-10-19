@@ -25,12 +25,13 @@ func newLoaderTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = db.Close() })
 	statements := []string{
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT, display_name TEXT)`,
+		`CREATE TABLE vendors (code TEXT PRIMARY KEY, name TEXT)`,
 		`CREATE TABLE accounts (
 			id TEXT PRIMARY KEY, config_revision INTEGER, system_account_id TEXT,
-			provider_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT,
+			vendor_code TEXT, protocol_code TEXT, protocol_version TEXT,
 			name TEXT, notes TEXT, type TEXT, status TEXT, schedulable INTEGER,
 			concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER,
-			client_compatibility TEXT, balance_query_enabled INTEGER, balance_query_next_refresh_at TEXT,
+			balance_query_enabled INTEGER, balance_query_next_refresh_at TEXT,
 			availability_schedule_json TEXT, account_expires_at TEXT, cooldown_until TEXT,
 			last_error_code TEXT, last_error_message TEXT, last_error_trace_id TEXT,
 			last_health_check_at TEXT, next_health_check_at TEXT, last_health_check_status_code INTEGER,
@@ -179,17 +180,17 @@ func seedOwnerAccount(t *testing.T, db *sql.DB) {
 		}
 	}
 	exec(`INSERT INTO system_accounts (id, username, display_name) VALUES ('sys-1', 'admin', 'Admin')`)
-	exec(`INSERT INTO providers (code, name) VALUES ('openai', 'OpenAI')`)
+	exec(`INSERT INTO vendors (code, name) VALUES ('openai', 'OpenAI')`)
 	exec(`INSERT INTO accounts (
-			id, config_revision, system_account_id, provider_code, provider_protocol_profile_id,
+			id, config_revision, system_account_id, vendor_code,
 			protocol_code, protocol_version, name, type, status, schedulable,
 			concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-			client_compatibility, health_check_model, health_check_endpoint_mode, created_at, updated_at
+			health_check_model, health_check_endpoint_mode, created_at, updated_at
 		) VALUES (
-			'acct-1', 3, 'sys-1', 'openai', 'profile_openai_openai_v1',
+			'acct-1', 3, 'sys-1', 'openai',
 			'openai', 'v1', '主账户', 'api_key', 'active', 1,
 			10, 5, 1, 0,
-			'openai_standard', 'gpt-4o-mini', 'chat_completions', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`)
+			'gpt-4o-mini', 'chat_completions', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`)
 }
 
 func TestProjectionItemLoaderOwnerAccountBaseline(t *testing.T) {

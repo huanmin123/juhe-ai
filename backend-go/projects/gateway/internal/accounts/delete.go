@@ -274,7 +274,14 @@ func (s *Store) enqueueDeletedAccountHealthTombstones(ctx context.Context, tx *s
 		FROM `+s.table("accounts")+`
 		WHERE deleted_at = ?
 			AND id IN (`+idsClause+`)
-			AND provider_code IN (`+providerClause+`)
+			-- B4 W2 健康能力判定随供应商解耦重述（设计 §1.1/§2.1/§8）：真实厂商
+			-- 行按 vendor_code（词表 = 原 provider 词表去掉 openai/hybrid 两 generic
+			-- 语义值）；generic_http 驱动账户（vendor NULL，≡ 旧 openai/hybrid
+			-- 两供应商族）恒健康能力——provider_code 已停写，不得再作判定键。
+			AND (
+				COALESCE(NULLIF(vendor_code, ''), provider_code, '') IN (`+providerClause+`)
+				OR (vendor_code IS NULL AND connection_driver_code = 'generic_http')
+			)
 			AND type IN (`+typeClause+`)
 		ORDER BY id ASC`+lockSuffix), args...)
 	if err != nil {

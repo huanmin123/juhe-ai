@@ -13,6 +13,7 @@ package accounts
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -431,6 +432,8 @@ func TestModelMappingCatalogNilPortAndError(t *testing.T) {
 func newCatalogWiringStore(t *testing.T, ownerID string, fake *fakeAccountModelCatalog) (*Store, AccessScope) {
 	t.Helper()
 	env := newTestEnv(t)
+	// B4 W2：supportedModels 走 models 身份键解析（种子见 seedFixtureModels），
+	// 目录断言端口语义不变。
 	env.seedProviderAndDefaultGroup(t, ownerID)
 	store := env.store
 	store.SetModelCatalogReader(fake)
@@ -442,6 +445,15 @@ func catalogWiringCreateInput(name string, credentials Credentials, supportedMod
 	for key, value := range credentials {
 		merged[key] = value
 	}
+	// B1 断点批（设计 §8）：连接集合与健康检查三件套显式提交（检查模型取支持
+	// 模型首个，缺失时回退 gpt-4o-mini——健康检查模型归属校验在目录断言之后
+	// 的写链执行，不影响目录臂的断言次序）。
+	healthModel := "gpt-4o-mini"
+	if len(supportedModels) > 0 {
+		healthModel = supportedModels[0]
+	}
+	healthMode := "chat_json"
+	healthPreset := "gpt_openai_v1"
 	return CreateInput{
 		ProviderCode:              "gpt",
 		ProviderProtocolProfileID: "prof-gpt",
@@ -451,6 +463,15 @@ func catalogWiringCreateInput(name string, credentials Credentials, supportedMod
 		SupportedModels:           supportedModels,
 		ModelMappings:             mappings,
 		Status:                    CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
+		Connections: []ConnectionInput{{
+			ConnectionPresetCode: healthPreset,
+			BaseURL:              "https://api.openai.com/v1",
+			EndpointModes:        []string{"chat_json", "chat_sse"},
+			Enabled:              true,
+		}},
+		HealthCheckConnectionPresetCode: &healthPreset,
+		HealthCheckEndpointMode:         &healthMode,
+		HealthCheckModel:                &healthModel,
 	}
 }
 
@@ -473,11 +494,14 @@ func TestCreateWiresModelMappingCatalogAssertion(t *testing.T) {
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "responses")}), scope)
 	assertValidationError(t, err, "账号模型别名只支持同协议映射；跨协议 Chat Completions 到 Responses 请改用混合供应商账户")
-	// 同协议映射 + chat 端点能力 → 创建成功。
-	if _, err := store.Create(context.Background(), catalogWiringCreateInput("mapping-hit",
+	// 同协议映射 + chat 端点能力：矩阵/目录门禁通过后，写入侧走
+	// account_entry_mappings 双解析（B4 W2）——管理面创建链尚无连接行，按
+	// mapping_target_unsupported 显式拒绝；连接面迁移归后续切片。
+	_, err = store.Create(context.Background(), catalogWiringCreateInput("mapping-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"},
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")}), scope); err != nil {
-		t.Fatal(err)
+		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")}), scope)
+	if err == nil || !strings.Contains(err.Error(), "mapping_target_unsupported: connection preset") {
+		t.Fatalf("mapping write must fail closed without a connection, got %v", err)
 	}
 }
 
@@ -567,6 +591,7 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil)
 	compatInput.ProviderCode = "openai"
 	compatInput.ProviderProtocolProfileID = "prof-openai-compat"
+	b1SetGenericConnections(&compatInput, "https://compat.example.com/v1")
 	_, err = store.Create(context.Background(), compatInput, scope)
 	assertValidationError(t, err, "账户支持模型不在供应商模型目录中：gpt-4o-mini")
 	// 同一目录事实在 gpt 供应商下放行（归档 isGptVendorCode 短路）。
@@ -580,13 +605,37 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	}
 }
 
+// b1SetGenericConnections 把 §8 连接集合与健康检查三件套改写为
+// generic_openai_v1 形态（provider 覆写为 openai/hybrid 等 generic 语义的
+// catalog wiring 测试臂使用；B1 断点批）。检查模型取载荷支持模型首个
+//（缺失时回退 gpt-4o-mini，两模型均在夹具 models 种子内）。
+func b1SetGenericConnections(input *CreateInput, baseURL string) {
+	preset := "generic_openai_v1"
+	mode := "chat_json"
+	model := "gpt-4o-mini"
+	if len(input.SupportedModels) > 0 {
+		model = input.SupportedModels[0]
+	}
+	input.Connections = []ConnectionInput{{
+		ConnectionPresetCode: preset,
+		BaseURL:              baseURL,
+		EndpointModes:        []string{"chat_json", "chat_sse"},
+		Enabled:              true,
+	}}
+	input.HealthCheckConnectionPresetCode = &preset
+	input.HealthCheckEndpointMode = &mode
+	input.HealthCheckModel = &model
+}
+
 func TestCreateSupportedModelsCatalogNilPort(t *testing.T) {
 	// nil 端口 no-op（self-contained 约定）：目录外模型也能创建，不发起目录读取。
 	fake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
 	store, scope := newCatalogWiringStore(t, "owner-supported-nil", fake)
 	store.SetModelCatalogReader(nil)
+	// B4 W2：模型名须解析到 models 行；m1 在夹具 models 内、不在 fake 目录，
+	// 恰好保持「目录端口 nil 不查询、创建不受目录门禁」的原断言语义。
 	if _, err := store.Create(context.Background(), catalogWiringCreateInput("supported-nil",
-		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"anything"}, nil), scope); err != nil {
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"m1"}, nil), scope); err != nil {
 		t.Fatal(err)
 	}
 	if fake.callCount() != 0 {
@@ -668,11 +717,14 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 	store.SetModelCatalogReader(fake)
 	scope := AccessScope{ViewerID: ownerID, IsAdmin: true}
 
+	// B4 W2：模型名须解析到 models 行；m1 不在 fake 目录，保持「目录外直通」
+	// 语义（hybrid 支持模型不经目录断言）。
 	input := catalogWiringCreateInput("hybrid-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890", "supported_endpoint_modes": []any{"chat_json", "chat_sse"}},
-		[]string{"anything-outside-catalog"}, nil)
+		[]string{"m1"}, nil)
 	input.ProviderCode = "hybrid"
 	input.ProviderProtocolProfileID = "prof-hybrid"
+	b1SetGenericConnections(&input, "https://hybrid.example.com/v1")
 	// hybrid 支持模型直通（归档 :69），目录不被支持模型断言读取；chat_completions
 	// 同协议映射无映射时也不读目录。
 	created, err := store.Create(context.Background(), input, scope)
@@ -687,6 +739,11 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 	}
 
 	// hybrid 映射：模型落协议池（fake 目录归属 gpt 供应商 → openai 池命中）。
+	// B4 W2：写入侧双解析需要连接 + 支持成员前置事实（设计 §5.1/§9）；协议池
+	// 断言键仍是行 provider 语义——hybrid 供应商已随 §8 退役，此处以直插旧列
+	// 模拟存量 hybrid 行（行为键 COALESCE(vendor, provider) 回读 'hybrid'）。
+	env.seedAccountConnection(t, created.ID, "generic_openai_v1", "gpt-4o-mini", "outside-upstream")
+	env.exec(t, `UPDATE accounts SET provider_code = 'hybrid' WHERE id = ?`, created.ID)
 	poolFake := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{gptCatalogFact()}}
 	store.SetModelCatalogReader(poolFake)
 	poolHit, err := store.Patch(context.Background(), created.ID, PatchInput{
@@ -695,6 +752,7 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o-mini", SourceEndpointFamily: "chat_completions",
 			UpstreamModel: "gpt-4o-mini", UpstreamEndpointFamily: "chat_completions",
+			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
 	}, scope)
 	if err != nil {
@@ -715,6 +773,7 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 		ModelMappings: []ModelMapping{{
 			SourceModel: "outside-model", SourceEndpointFamily: "chat_completions",
 			UpstreamModel: "gpt-4o-mini", UpstreamEndpointFamily: "chat_completions",
+			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
 	}, scope)
 	assertValidationError(t, err, "账号模型别名来源模型不在对应协议模型池中：outside-model")
@@ -730,6 +789,7 @@ func TestHybridAccountWriteSkipsSupportedModelsCatalogButChecksPools(t *testing.
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o-mini", SourceEndpointFamily: "chat_completions",
 			UpstreamModel: "outside-upstream", UpstreamEndpointFamily: "chat_completions",
+			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
 	}, scope)
 	assertValidationError(t, err, "账号模型别名目标模型不在对应上游协议模型池中：outside-upstream")

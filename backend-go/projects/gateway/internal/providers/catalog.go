@@ -1,9 +1,11 @@
-// catalog.go owns the provider model catalog read family ported from
-// model-catalog.service.ts + provider-model-catalog.repository.ts +
-// custom-provider-models.repository.ts: the merged built-in/custom catalog
-// (GET /{code}/models), the merged model selection options
-// (GET /models/options) and the model capabilities lookup
-// (GET /{code}/models/{modelId}/capabilities). Fields sourced from Node's
+// catalog.go owns the provider model catalog read family over the models
+// 单表（供应商与上游协议面重构设计 §3；原 provider_model_catalog 与
+// custom_provider_models 合并为唯一物理表）：scope='builtin' 行承内置目录
+// （管理面"内置目录"= vendors 维度下的 builtin 行，只读），global/personal 行
+// 承自定义目录（owner 可见性按 system_account_id）。旧 `mode` 与
+// `supported_api_protocols_json` 无物理列，目录 DTO 的 mode/supportedApiProtocols
+// 键由 supported_endpoint_modes_json 经 DeriveLegacyModeAndProtocols 逆映射
+// 派生（对前端保留键名，见 endpoint_modes.go）。Fields sourced from Node's
 // static in-code pricing tables (inputModalities, outputModalities,
 // supportedTools, generationParameterCapabilities, catalogDisplay, the
 // cachedImageInput/sourcePricing fallbacks) are shape-preserved as empty
@@ -37,6 +39,11 @@ type ModelPriceSet struct {
 // GET /{code}/models. Pointers carrying omitempty correspond to the Node
 // optional keys; defaultReasoningEffort is nullable in Node (always present)
 // while serviceTierPrices / the always-array keys are non-optional objects.
+// ProviderCode/Model/Mode/SupportedAPIProtocols 四键沿用旧目录行形状：
+// ProviderCode=COALESCE(vendor_code,'')（9 值域；vendor_code NULL 的手工模型
+// 展示口径 "custom"，对齐设计 §2.1「UI 显示自定义协议连接」）、Model=
+// public_model、Mode 与 SupportedAPIProtocols 由 supported_endpoint_modes_json
+// 派生。
 type ModelCatalogItem struct {
 	ID                    string   `json:"id"`
 	ProviderCode          string   `json:"providerCode"`
@@ -97,10 +104,10 @@ type ModelCatalogItem struct {
 	SourceExchangeRateDate                  string                   `json:"sourceExchangeRateDate,omitempty"`
 	SourcePricingNote                       string                   `json:"sourcePricingNote,omitempty"`
 	// 媒体单价四维（静态定价表透传；目录表无列，仅供目录展示与前端渲染）。
-	VideoOutputUsdPerSecond                 *float64                 `json:"videoOutputUsdPerSecond,omitempty"`
-	VideoOutputUsdPerCall                   *float64                 `json:"videoOutputUsdPerCall,omitempty"`
-	TtsInputUsdPer1MChars                   *float64                 `json:"ttsInputUsdPer1MChars,omitempty"`
-	AudioInputUsdPerSecond                  *float64                 `json:"audioInputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerSecond                 *float64 `json:"videoOutputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerCall                   *float64 `json:"videoOutputUsdPerCall,omitempty"`
+	TtsInputUsdPer1MChars                   *float64 `json:"ttsInputUsdPer1MChars,omitempty"`
+	AudioInputUsdPerSecond                  *float64 `json:"audioInputUsdPerSecond,omitempty"`
 	// CatalogDisplay mirrors withCatalogDisplay: present on every merged
 	// catalog row (possibly []), absent on the save/mutation responses
 	// (Node toCustomCatalogItem carries no catalogDisplay).
@@ -108,8 +115,9 @@ type ModelCatalogItem struct {
 }
 
 // ModelSelectionOption mirrors ProviderModelSelectionOption. Mode carries the
-// winning catalog row's directory mode (built-in rows always declare one;
-// custom rows may be empty) so callers can apply a client-side second gate.
+// winning catalog row's derived directory mode (逆映射自
+// supported_endpoint_modes_json；空 mode 集渲染为空) so callers can apply a
+// client-side second gate.
 type ModelSelectionOption struct {
 	ID                        string   `json:"id"`
 	Name                      string   `json:"name"`
@@ -120,12 +128,10 @@ type ModelSelectionOption struct {
 	DefaultReasoningEffort    *string  `json:"defaultReasoningEffort,omitempty"`
 }
 
-// ProviderCatalogModeValues mirrors the provider_model_catalog.mode word list
-// (model_catalog_data_gen.go seed): six values. The /models/options `modes`
-// parameter validates against this list. custom_provider_models.mode is a
-// different four-value UI-category vocabulary (text/image/audio/video, fixed
-// by the custom-model write path), so the custom-table filter translates the
-// whitelist via appendCustomCatalogModeFilter (BUG-0324).
+// ProviderCatalogModeValues mirrors the six-value directory mode word list of
+// the /models/options `modes` query（旧 provider_model_catalog.mode 值域）。
+// models 单表无 mode 列：过滤时经 catalogModeEndpointModeExpansion 展开成
+// 25 值 endpoint mode 集做 json 交集。
 var ProviderCatalogModeValues = []string{"chat", "responses", "embedding", "audio", "video", "image_generation"}
 
 // ModelCapabilities mirrors the findProviderModelCapabilitiesAsync payload.
@@ -156,40 +162,14 @@ const catalogScopeBuiltIn = "built_in"
 const catalogScopeGlobal = "global"
 const catalogScopePersonal = "personal"
 
-// ListProviderModelsForRequest ports listProviderModelsForRequestAsync (the
-// GET /{code}/models body): hybrid codes flatten the catalogs of every
-// enabled non-hybrid provider; everything else expands through
-// modelCatalogSourceProviderCodesAsync.
+// ListProviderModelsForRequest serves GET /{code}/models over the models
+// 单表：vendor 即目录维度（设计 §3），旧「openai 兼容目标聚合协议子供应商目
+// 录」的源扩展随 providers/provider_protocol_profiles 退役拆除——源码恒为归
+// 一化后的单值；hybrid 不在 vendors 值域，查询自然返回空。双臂（builtin ∪
+// global/personal）合并、scope 优先级、isSupportedCatalogModel/active/priced
+// 过滤与 release-date 排序语义保持。
 func (s *Store) ListProviderModelsForRequest(ctx context.Context, providerCode, systemAccountID string, includeInactive, includeUnpriced bool) ([]ModelCatalogItem, error) {
-	if isHybridProviderCode(providerCode) {
-		options, err := s.ListProviderOptions(ctx)
-		if err != nil {
-			return nil, err
-		}
-		merged := []ModelCatalogItem{}
-		for _, option := range options {
-			if !option.Enabled || isHybridProviderCode(option.Code) {
-				continue
-			}
-			items, err := s.listProviderModelCatalog(ctx, option.Code, systemAccountID, includeInactive, includeUnpriced)
-			if err != nil {
-				return nil, err
-			}
-			merged = append(merged, items...)
-		}
-		return merged, nil
-	}
-	return s.listProviderModelCatalog(ctx, providerCode, systemAccountID, includeInactive, includeUnpriced)
-}
-
-// listProviderModelCatalog ports buildProviderModelCatalogAsync: source
-// expansion, built-in + custom merge (scope priority), the supported-model
-// filter, the active/priced filters and the release-date ordering.
-func (s *Store) listProviderModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeInactive, includeUnpriced bool) ([]ModelCatalogItem, error) {
-	sourceCodes, err := s.ModelCatalogSourceProviderCodes(ctx, providerCode)
-	if err != nil {
-		return nil, err
-	}
+	sourceCodes := modelCatalogSourceProviderCodes(providerCode)
 	if len(sourceCodes) == 0 {
 		return []ModelCatalogItem{}, nil
 	}
@@ -229,56 +209,26 @@ func (s *Store) listProviderModelCatalog(ctx context.Context, providerCode, syst
 	return filtered, nil
 }
 
-// ModelCatalogSourceProviderCodes ports modelCatalogSourceProviderCodesAsync:
-// hybrid expands to every enabled openai/anthropic/gemini protocol provider,
-// the openai-compatible provider expands to its openai-protocol children plus
-// itself, anything else is its own (normalized) source.
-func (s *Store) ModelCatalogSourceProviderCodes(ctx context.Context, providerCode string) ([]string, error) {
+// 供应商 token（vendor 值域沿用旧 providerCode 同名值；hybrid/openai 仅用于
+// 内置源剔除与 hybrid 身份保留判定）。
+const (
+	hybridProviderCode = "hybrid"
+	openaiProviderCode = "openai"
+)
+
+// modelCatalogSourceProviderCodes 归一化目录维度入参（设计 §3：vendor_code 即
+// 目录归属维度，每个 vendor 即自身目录维度，无协议子供应商源扩展）。
+func modelCatalogSourceProviderCodes(providerCode string) []string {
 	normalized := normalizeProviderToken(providerCode)
 	if normalized == "" {
-		return []string{}, nil
+		return []string{}
 	}
-	if normalized == hybridProviderCode {
-		codes := []string{}
-		for _, pair := range [][2]string{
-			{openaiProtocolCode, openaiProtocolVersion},
-			{anthropicProtocolCode, anthropicProtocolVersion},
-			{geminiProtocolCode, geminiProtocolVersion},
-		} {
-			list, err := s.ProtocolProviderCodes(ctx, pair[0], pair[1])
-			if err != nil {
-				return nil, err
-			}
-			for _, code := range list {
-				token := normalizeProviderToken(code)
-				if token == "" || token == hybridProviderCode {
-					continue
-				}
-				codes = append(codes, token)
-			}
-		}
-		return dedupeStrings(codes), nil
-	}
-	if normalized != openaiProviderCode {
-		return []string{normalized}, nil
-	}
-	list, err := s.ProtocolProviderCodes(ctx, openaiProtocolCode, openaiProtocolVersion)
-	if err != nil {
-		return nil, err
-	}
-	codes := []string{}
-	for _, code := range list {
-		token := normalizeProviderToken(code)
-		if token == "" || token == normalized {
-			continue
-		}
-		codes = append(codes, token)
-	}
-	return dedupeStrings(append(codes, normalized)), nil
+	return []string{normalized}
 }
 
-// modelCatalogBuiltInSourceProviderCodes ports the same-named helper: only
-// the openai-compatible target drops itself from its built-in sources.
+// modelCatalogBuiltInSourceProviderCodes mirrors the same-named helper: only
+// the openai-compatible target drops itself from its built-in sources (it has
+// no built-in catalog of its own).
 func modelCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderCodes []string) []string {
 	if normalizeProviderToken(providerCode) != openaiProviderCode {
 		return sourceProviderCodes
@@ -293,10 +243,12 @@ func modelCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderC
 	return codes
 }
 
-// builtInCatalogColumns mirrors the provider-model-catalog.repository
-// columns() projection.
-const builtInCatalogColumns = `id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
-	supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+// builtInCatalogColumns mirrors the models 单表 builtin 读投影：旧目录行形状
+// （provider_code/model 别名）+ supported_endpoint_modes_json（mode 与
+// supported_api_protocols_json 的物理来源）。
+const builtInCatalogColumns = `id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, status,
+	catalog_order, release_date, shutdown_date, supported_endpoint_modes_json,
+	supported_service_tiers_json, supported_reasoning_efforts_json,
 	default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
 	codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
 	input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
@@ -306,10 +258,9 @@ const builtInCatalogColumns = `id, provider_code, model, status, mode, catalog_o
 	image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
 	output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at`
 
-// listBuiltInCatalogModels mirrors listBuiltInProviderModels(Async): the
-// availability filter (active + catalog_visible + not shutdown) is applied
-// in SQL unless includeInactive lifts it (provider-model-catalog.repository
-// .ts:244-282).
+// listBuiltInCatalogModels reads the builtin arm：scope='builtin' 行按
+// vendor_code 窗口，availability 过滤（active + catalog_visible + 未 shutdown）
+// 在 SQL 施加，includeInactive 抬起（与 chain_catalog builtin 臂同谓词）。
 func (s *Store) listBuiltInCatalogModels(ctx context.Context, providerCodes []string, includeInactive bool) ([]ModelCatalogItem, error) {
 	codes := normalizeProviderCodeList(providerCodes)
 	if len(codes) == 0 {
@@ -324,9 +275,9 @@ func (s *Store) listBuiltInCatalogModels(ctx context.Context, providerCodes []st
 	}
 	args := append([]any{}, stringSliceToAny(codes)...)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+builtInCatalogColumns+`
-		FROM `+s.table("provider_model_catalog")+`
-		WHERE provider_code IN (`+placeholders(len(codes))+`)`+availabilityFilter+`
-		ORDER BY provider_code, catalog_order, model, id`), args...)
+		FROM `+s.table("models")+`
+		WHERE scope = 'builtin' AND vendor_code IN (`+placeholders(len(codes))+`)`+availabilityFilter+`
+		ORDER BY provider_code, catalog_order, public_model, id`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -345,9 +296,10 @@ func (s *Store) listBuiltInCatalogModels(ctx context.Context, providerCodes []st
 func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	var (
 		item                            ModelCatalogItem
-		mode, releaseDate, shutdownDate sql.NullString
+		endpointModes                   sql.NullString
+		releaseDate, shutdownDate       sql.NullString
 		catalogOrder                    sql.NullInt64
-		protocols, tiers, efforts       sql.NullString
+		tiers, efforts                  sql.NullString
 		codexLevels                     sql.NullString
 		codexDefaultLevel               sql.NullString
 		codexMultiAgent                 sql.NullString
@@ -358,9 +310,8 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		cacheWrite1h, cacheStorage      sql.NullFloat64
 		tierPrices                      sql.NullString
 		longThreshold                   sql.NullInt64
-		// PG booleans scan only into NullBool (NullInt64 fails with
-		// "converting driver.Value type bool"); SQLite INTEGER 0/1 still
-		// converts through driver.Bool.
+		// models.catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
+		// 扫描目标用 NullBool 同时兼容两种驱动。
 		longInclusive                    sql.NullBool
 		longInputMultiplier, longOutMult sql.NullFloat64
 		imageIn, imageOut, audioIn       sql.NullFloat64
@@ -368,8 +319,8 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		promptCaching, catalogVisible    sql.NullBool
 	)
 	var defaultEffort sql.NullString
-	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Status, &mode, &catalogOrder,
-		&releaseDate, &shutdownDate, &protocols, &tiers, &efforts, &defaultEffort,
+	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Status, &catalogOrder,
+		&releaseDate, &shutdownDate, &endpointModes, &tiers, &efforts, &defaultEffort,
 		&codexLevels, &codexDefaultLevel, &codexMultiAgent,
 		&contextWindow, &maxInput, &maxOut, &maxTokens,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
@@ -379,11 +330,12 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 		return ModelCatalogItem{}, err
 	}
 	item.Scope = catalogScopeBuiltIn
-	item.Mode = textPtr(mode)
+	// 旧 mode / supportedApiProtocols 无物理列：从 supported_endpoint_modes_json
+	// 逆映射派生（对前端保留键名；空 mode 集不注入 mode 键）。
+	item.Mode, item.SupportedAPIProtocols = deriveLegacyCatalogProjection(endpointModes)
 	item.ReleaseDate = textPtr(releaseDate)
 	item.ShutdownDate = textPtr(shutdownDate)
 	item.CatalogOrder = nullInt64Ptr(catalogOrder)
-	item.SupportedAPIProtocols = parseJSONArray(protocols)
 	item.SupportedServiceTiers = parseJSONArray(tiers)
 	item.SupportedReasoningEfforts = parseJSONArray(efforts)
 	item.DefaultReasoningEffort = textPtr(defaultEffort)
@@ -421,6 +373,19 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	return item, nil
 }
 
+// deriveLegacyCatalogProjection 把 supported_endpoint_modes_json 列值逆映射成
+// 旧目录行 (mode, supportedApiProtocols) 投影；空/坏 JSON 渲染空协议数组且不
+// 注入 mode（旧行为 NULL→absent）。
+func deriveLegacyCatalogProjection(value sql.NullString) (*string, []string) {
+	modes := parseJSONArray(value)
+	mode, protocols := DeriveLegacyModeAndProtocols(modes)
+	copiedMode := mode
+	if mode == "" {
+		return nil, protocols
+	}
+	return &copiedMode, protocols
+}
+
 // ApplyBuiltInStaticDerivedFields ports the toBuiltInCatalogItem capability
 // derivations: modality/tool fallbacks from the static pricing table (the
 // internal/pricing seam), the generated generation-parameter capabilities
@@ -453,14 +418,14 @@ func ApplyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
 	item.GenerationParameterCapabilities = resolved.GenerationParameterCapabilities
 }
 
-// listCustomCatalogModels mirrors listCustomProviderModelsForCatalogAsync
-// fanned across the source codes (single IN query, same clauses).
+// listCustomCatalogModels reads the custom arm（models 单表 global/personal
+// scope 窗口）。
 func (s *Store) listCustomCatalogModels(ctx context.Context, providerCodes []string, systemAccountID string, includeInactive bool) ([]ModelCatalogItem, error) {
 	return s.listCustomModelRows(ctx, providerCodes, systemAccountID, includeInactive, "")
 }
 
-// listCustomModelRows shares the custom_provider_models read shape; a
-// non-empty modelFilter pins the rows to one model (the capabilities path).
+// listCustomModelRows shares the models 单表 custom 读形状；a non-empty
+// modelFilter pins the rows to one public_model (the capabilities path).
 // includeInactive=false carries the active + shutdown clauses, matching both
 // the catalog default and the always-on test-catalog predicates.
 func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string, systemAccountID string, includeInactive bool, modelFilter string) ([]ModelCatalogItem, error) {
@@ -468,7 +433,7 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 	if len(codes) == 0 {
 		return []ModelCatalogItem{}, nil
 	}
-	clauses := []string{"provider_code IN (" + placeholders(len(codes)) + ")"}
+	clauses := []string{"vendor_code IN (" + placeholders(len(codes)) + ")"}
 	args := append([]any{}, stringSliceToAny(codes)...)
 	if !includeInactive {
 		clauses = append(clauses, "status = 'active'",
@@ -481,20 +446,20 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
 	if modelFilter != "" {
-		clauses = append(clauses, "model = ?")
+		clauses = append(clauses, "public_model = ?")
 		args = append(args, modelFilter)
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, model, scope, system_account_id, status,
-			mode, release_date, shutdown_date, supported_api_protocols_json, supported_service_tiers_json,
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, system_account_id, status,
+			supported_endpoint_modes_json, release_date, shutdown_date, supported_service_tiers_json,
 			supported_reasoning_efforts_json, default_reasoning_effort,
 			context_window_tokens, max_input_tokens, max_output_tokens,
 			input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
 			cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
 			image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-			output_usd_per_image, pricing_notes, capability_notes, notes, created_at, updated_at
-		FROM `+s.table("custom_provider_models")+`
+			output_usd_per_image, supports_prompt_caching, pricing_notes, capability_notes, notes, created_at, updated_at
+		FROM `+s.table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+`
-		ORDER BY provider_code ASC, scope ASC, lower(model) ASC, id ASC`), args...)
+		ORDER BY provider_code ASC, scope ASC, `+s.modelOrderExpression()+` ASC, id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -512,36 +477,39 @@ func (s *Store) listCustomModelRows(ctx context.Context, providerCodes []string,
 
 func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	var (
-		item                            ModelCatalogItem
-		systemAccountID                 sql.NullString
-		mode, releaseDate, shutdownDate sql.NullString
-		protocols, tiers, efforts       sql.NullString
-		defaultEffort                   sql.NullString
-		contextWindow, maxInput         sql.NullInt64
-		maxOut                          sql.NullInt64
-		inputUsd, outputUsd             sql.NullFloat64
-		cachedInput, cacheWrite         sql.NullFloat64
-		cacheWrite1h, cacheStorage      sql.NullFloat64
-		tierPrices                      sql.NullString
-		imageIn, imageOut, audioIn      sql.NullFloat64
-		audioOut, outputPerImage        sql.NullFloat64
-		pricingNotes, capabilityNotes   sql.NullString
-		notes                           sql.NullString
+		item                          ModelCatalogItem
+		systemAccountID               sql.NullString
+		endpointModes                 sql.NullString
+		releaseDate, shutdownDate     sql.NullString
+		tiers, efforts                sql.NullString
+		defaultEffort                 sql.NullString
+		contextWindow, maxInput       sql.NullInt64
+		maxOut                        sql.NullInt64
+		inputUsd, outputUsd           sql.NullFloat64
+		cachedInput, cacheWrite       sql.NullFloat64
+		cacheWrite1h, cacheStorage    sql.NullFloat64
+		tierPrices                    sql.NullString
+		imageIn, imageOut, audioIn    sql.NullFloat64
+		audioOut, outputPerImage      sql.NullFloat64
+		pricingNotes, capabilityNotes sql.NullString
+		notes                         sql.NullString
+		promptCaching                 sql.NullBool
 	)
 	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Scope, &systemAccountID, &item.Status,
-		&mode, &releaseDate, &shutdownDate, &protocols, &tiers, &efforts, &defaultEffort,
+		&endpointModes, &releaseDate, &shutdownDate, &tiers, &efforts, &defaultEffort,
 		&contextWindow, &maxInput, &maxOut,
 		&inputUsd, &outputUsd, &cachedInput, &cacheWrite, &cacheWrite1h, &cacheStorage,
 		&tierPrices,
 		&imageIn, &imageOut, &audioIn, &audioOut, &outputPerImage,
-		&pricingNotes, &capabilityNotes, &notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		&promptCaching, &pricingNotes, &capabilityNotes, &notes, &item.CreatedAt, &item.UpdatedAt); err != nil {
 		return ModelCatalogItem{}, err
 	}
 	item.SystemAccountID = nullPtrString(systemAccountID)
-	item.Mode = textPtr(mode)
+	// 旧 mode / supportedApiProtocols 无物理列：从 supported_endpoint_modes_json
+	// 逆映射派生（对前端保留键名）。
+	item.Mode, item.SupportedAPIProtocols = deriveLegacyCatalogProjection(endpointModes)
 	item.ReleaseDate = textPtr(releaseDate)
 	item.ShutdownDate = textPtr(shutdownDate)
-	item.SupportedAPIProtocols = parseJSONArray(protocols)
 	item.SupportedServiceTiers = parseJSONArray(tiers)
 	item.SupportedReasoningEfforts = parseJSONArray(efforts)
 	if defaultEffort.Valid && strings.TrimSpace(defaultEffort.String) != "" {
@@ -566,17 +534,19 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.PricingNotes = textPtr(pricingNotes)
 	item.CapabilityNotes = textPtr(capabilityNotes)
 	item.Notes = textPtr(notes)
-	// toCustomCatalogItem: empty static capability shapes, prompt caching is
-	// derived from the cached-input price, source from the scope and the
-	// generation-parameter capabilities generate from provider+model.
+	// toCustomCatalogItem: empty static capability shapes; prompt caching 直接
+	// 读 models.supports_prompt_caching（写入侧按 cached-input 价维护，与 chat
+	// 面 decorateCustomCatalogRow 同口径）；generation-parameter capabilities
+	// generate from provider+model。
 	item.InputModalities = []string{}
 	item.OutputModalities = []string{}
 	item.SupportedToolsByProtocol = map[string][]string{}
 	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
 		generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens))
 	item.CodexSupportedReasoningLevels = []string{}
-	item.SupportsPromptCaching = item.CachedInputUsdPer1M != nil
+	item.SupportsPromptCaching = promptCaching.Bool && promptCaching.Valid
 	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0
+	// models.source 列对 custom 行为 NULL：沿旧 custom 表投影覆盖写来源标记。
 	if item.Scope == catalogScopeGlobal {
 		item.Source = "custom-global"
 	} else {
@@ -703,7 +673,7 @@ func catalogScopePriority(scope string) int {
 // video 的模型收录。M5b 裁决（Realtime 设计 §6）同构放开 realtime：
 // mode=audio 且协议含 realtime 的目录行收录（显式标注行不受名字 token
 // 排除，沿 M1 裁决）；mode 未标注的行 realtime 协议维持排除（词表放行只
-// 对显式标注行生效）。其余维持排除。
+// 对显式标注行生效）。其余维持排除。mode/protocols 输入为逆映射派生值。
 // 与 chain_catalog.go 的 chainIsSupportedCatalogModel 同源，改动必须两处同步。
 func isSupportedCatalogModel(item ModelCatalogItem) bool {
 	mode := ""
@@ -864,8 +834,18 @@ func (s *Store) visibleTruePredicate(column string) string {
 	return column + " = 1"
 }
 
-// ListProviderModelSelectionOptions ports listProviderModelSelectionOptionsAsync
-// (the GET /models/options body).
+// modelOrderExpression mirrors the archived dual-dialect custom model ordering
+// on the models 单表 public_model 列: `public_model COLLATE NOCASE` on SQLite,
+// `lower(public_model)` on PostgreSQL.
+func (s *Store) modelOrderExpression() string {
+	if s.pg {
+		return "lower(public_model)"
+	}
+	return "public_model COLLATE NOCASE"
+}
+
+// ListProviderModelSelectionOptions serves GET /models/options: the merged
+// builtin/custom selection options over the models 单表（双臂同表、谓词分臂）.
 func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query ModelOptionQuery) ([]ModelSelectionOption, error) {
 	sourceCodes, builtInCodes, err := s.modelOptionSourceCodes(ctx, query.ProviderCode, query.Protocol)
 	if err != nil {
@@ -885,65 +865,50 @@ func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query Mod
 	return mergeProviderModelOptionRows(append(builtIn, custom...), query), nil
 }
 
-// ListProviderModelOptionProviderCodes aggregates the distinct provider codes
+// ListProviderModelOptionProviderCodes aggregates the distinct vendor codes
 // that carry at least one in-catalog model option under the query filter
-// (v8-D media-domain default-provider convergence). The predicate set mirrors
-// ListProviderModelSelectionOptions exactly (active + catalog-visible + not
-// shutdown, builtin ∪ custom rows, hybrid excluded via modelOptionSourceCodes),
-// so the aggregation can never list a provider whose options call would come
-// back empty; only the shape differs — DISTINCT provider_code instead of
-// option rows, so the result is not subject to the options endpoint's
-// LIMIT 50 truncation.
+// (v8-D media-domain default-provider convergence). 单表后双臂合流为一条
+// models 查询：builtin 臂的 catalog_visible 谓词收窄为 builtin 行、custom 臂
+// 的 scope 窗口保持，谓词集与 ListProviderModelSelectionOptions 完全同构
+//（hybrid 不在 vendors 值域，经 modelOptionSourceCodes 自然排除），只取
+// DISTINCT provider_code，不受 options endpoint LIMIT 50 截断。
 func (s *Store) ListProviderModelOptionProviderCodes(ctx context.Context, query ModelOptionQuery) ([]string, error) {
-	sourceCodes, builtInCodes, err := s.modelOptionSourceCodes(ctx, query.ProviderCode, query.Protocol)
+	// 单表后 DISTINCT 聚合只看 vendor 窗口（builtin ∪ global/personal 同表），
+	// openai 自剔除臂不再影响去重结果，builtInCodes 弃用。
+	sourceCodes, _, err := s.modelOptionSourceCodes(ctx, query.ProviderCode, query.Protocol)
+	if err != nil {
+		return nil, err
+	}
+	if len(sourceCodes) == 0 {
+		return []string{}, nil
+	}
+	clauses := []string{
+		"vendor_code IN (" + placeholders(len(sourceCodes)) + ")",
+		"status = 'active'",
+		"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
+		// builtin 臂的目录可见性谓词（custom 行写路径恒 true，不受影响）。
+		"(" + s.visibleTruePredicate("catalog_visible") + " OR scope != 'builtin')",
+	}
+	args := append([]any{}, stringSliceToAny(sourceCodes)...)
+	// 双臂合流查询：builtin 行不受 owner 归属窗口过滤（旧 builtin 臂无窗口），
+	// global/personal 行保持 owner 可见性。
+	if trimmedAccount := strings.TrimSpace(query.SystemAccountID); trimmedAccount != "" {
+		clauses = append(clauses, "(scope = 'builtin' OR (scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
+		args = append(args, trimmedAccount)
+	} else {
+		clauses = append(clauses, "(scope = 'builtin' OR (scope = 'global' AND system_account_id IS NULL))")
+	}
+	args = s.appendCatalogModeFilter(&clauses, args, query.Modes)
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT COALESCE(vendor_code, '') AS provider_code
+		FROM `+s.table("models")+`
+		WHERE `+strings.Join(clauses, " AND ")+`
+		ORDER BY provider_code ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
 	codes := map[string]bool{}
-	if len(builtInCodes) > 0 {
-		clauses := []string{
-			"provider_code IN (" + placeholders(len(builtInCodes)) + ")",
-			"status = 'active'",
-			s.visibleTruePredicate("catalog_visible"),
-			"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
-		}
-		args := append([]any{}, stringSliceToAny(builtInCodes)...)
-		args = appendCatalogModeFilter(&clauses, args, query.Modes)
-		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT provider_code
-			FROM `+s.table("provider_model_catalog")+`
-			WHERE `+strings.Join(clauses, " AND ")+`
-			ORDER BY provider_code ASC`), args...)
-		if err != nil {
-			return nil, err
-		}
-		if err := collectDistinctProviderCodes(rows, codes); err != nil {
-			return nil, err
-		}
-	}
-	if len(sourceCodes) > 0 {
-		clauses := []string{
-			"provider_code IN (" + placeholders(len(sourceCodes)) + ")",
-			"status = 'active'",
-			"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
-		}
-		args := append([]any{}, stringSliceToAny(sourceCodes)...)
-		if trimmedAccount := strings.TrimSpace(query.SystemAccountID); trimmedAccount != "" {
-			clauses = append(clauses, "((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
-			args = append(args, trimmedAccount)
-		} else {
-			clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
-		}
-		args = appendCustomCatalogModeFilter(&clauses, args, query.Modes)
-		rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT provider_code
-			FROM `+s.table("custom_provider_models")+`
-			WHERE `+strings.Join(clauses, " AND ")+`
-			ORDER BY provider_code ASC`), args...)
-		if err != nil {
-			return nil, err
-		}
-		if err := collectDistinctProviderCodes(rows, codes); err != nil {
-			return nil, err
-		}
+	if err := collectDistinctProviderCodes(rows, codes); err != nil {
+		return nil, err
 	}
 	output := make([]string, 0, len(codes))
 	for code := range codes {
@@ -967,25 +932,17 @@ func collectDistinctProviderCodes(rows *sql.Rows, codes map[string]bool) error {
 	return rows.Err()
 }
 
-// modelOptionSourceCodes mirrors providerModelSourceCodesAsync.
+// modelOptionSourceCodes resolves the option source windows. 旧协议子供应商
+// 展开（protocol → 携该协议 profile 的 provider 集合）随
+// providers/provider_protocol_profiles 退役拆除：providerCode 入参取归一化
+// 单值；protocol 入参不再收窄源集（vendors 不携带协议维度，行级协议信息由
+// supported_endpoint_modes_json 派生投影承载），与默认臂同为全部启用 vendor。
 func (s *Store) modelOptionSourceCodes(ctx context.Context, providerCode, protocol string) (sourceCodes, builtInCodes []string, err error) {
 	if providerCode != "" {
-		sourceCodes, err = s.ModelCatalogSourceProviderCodes(ctx, providerCode)
-		if err != nil {
-			return nil, nil, err
-		}
+		sourceCodes = modelCatalogSourceProviderCodes(providerCode)
 		return sourceCodes, modelCatalogBuiltInSourceProviderCodes(providerCode, sourceCodes), nil
 	}
-	switch protocol {
-	case "openai":
-		sourceCodes, err = s.ProtocolProviderCodes(ctx, openaiProtocolCode, openaiProtocolVersion)
-	case "anthropic":
-		sourceCodes, err = s.ProtocolProviderCodes(ctx, anthropicProtocolCode, anthropicProtocolVersion)
-	case "gemini":
-		sourceCodes, err = s.ProtocolProviderCodes(ctx, geminiProtocolCode, geminiProtocolVersion)
-	default:
-		sourceCodes, err = s.EnabledNonHybridProviderCodes(ctx)
-	}
+	sourceCodes, err = s.EnabledNonHybridProviderCodes(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1019,42 +976,33 @@ func (s *Store) listBuiltInModelOptions(ctx context.Context, providerCodes []str
 		return []modelOptionRow{}, nil
 	}
 	clauses := []string{
-		"provider_code IN (" + placeholders(len(codes)) + ")",
+		"scope = 'builtin'",
+		"vendor_code IN (" + placeholders(len(codes)) + ")",
 		"status = 'active'",
 		s.visibleTruePredicate("catalog_visible"),
 		"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
 	}
 	args := append([]any{}, stringSliceToAny(codes)...)
-	args = appendOptionTextFilter(&clauses, args, query)
-	args = appendCatalogModeFilter(&clauses, args, query.Modes)
+	args = s.appendOptionTextFilter(&clauses, args, query)
+	args = s.appendCatalogModeFilter(&clauses, args, query.Modes)
 	args = appendSelectedOrderArgs(args, query)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model, mode, release_date,
-			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT COALESCE(vendor_code, '') AS provider_code, public_model AS model, supported_endpoint_modes_json, release_date,
+			supported_service_tiers_json, supported_reasoning_efforts_json,
 			default_reasoning_effort
-		FROM `+s.table("provider_model_catalog")+`
+		FROM `+s.table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+`
 		ORDER BY `+selectedOrderClause(query)+`CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
-			release_date DESC, lower(model) ASC, provider_code ASC, id ASC`), args...)
+			release_date DESC, `+s.modelOrderExpression()+` ASC, provider_code ASC, id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := []modelOptionRow{}
 	for rows.Next() {
-		var row modelOptionRow
-		var mode, releaseDate sql.NullString
-		var protocols, tiers, efforts sql.NullString
-		var defaultEffort sql.NullString
-		if err := rows.Scan(&row.ProviderCode, &row.Model, &mode, &releaseDate, &protocols, &tiers, &efforts, &defaultEffort); err != nil {
-			return nil, err
+		row, scanErr := scanModelOptionRow(rows.Scan, catalogScopeBuiltIn, false)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		row.Scope = catalogScopeBuiltIn
-		row.Mode = strings.TrimSpace(mode.String)
-		row.ReleaseDate = textPtr(releaseDate)
-		row.SupportedAPIProtocols = parseJSONArray(protocols)
-		row.SupportedServiceTiers = parseJSONArray(tiers)
-		row.SupportedReasoningEfforts = parseJSONArray(efforts)
-		row.DefaultReasoningEffort = textPtr(defaultEffort)
 		items = append(items, row)
 	}
 	return items, rows.Err()
@@ -1066,7 +1014,7 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 		return []modelOptionRow{}, nil
 	}
 	clauses := []string{
-		"provider_code IN (" + placeholders(len(codes)) + ")",
+		"vendor_code IN (" + placeholders(len(codes)) + ")",
 		"status = 'active'",
 		"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
 	}
@@ -1077,121 +1025,139 @@ func (s *Store) listCustomModelOptions(ctx context.Context, providerCodes []stri
 	} else {
 		clauses = append(clauses, "scope = 'global' AND system_account_id IS NULL")
 	}
-	args = appendOptionTextFilter(&clauses, args, query)
-	args = appendCustomCatalogModeFilter(&clauses, args, query.Modes)
+	args = s.appendOptionTextFilter(&clauses, args, query)
+	args = s.appendCatalogModeFilter(&clauses, args, query.Modes)
 	args = appendSelectedOrderArgs(args, query)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_code, model, scope, mode, release_date,
-			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, supported_endpoint_modes_json, release_date,
+			supported_service_tiers_json, supported_reasoning_efforts_json,
 			default_reasoning_effort
-		FROM `+s.table("custom_provider_models")+`
+		FROM `+s.table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+`
 		ORDER BY `+selectedOrderClause(query)+`CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
-			release_date DESC, lower(model) ASC, provider_code ASC, scope ASC, id ASC`), args...)
+			release_date DESC, `+s.modelOrderExpression()+` ASC, provider_code ASC, scope ASC, id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := []modelOptionRow{}
 	for rows.Next() {
-		var row modelOptionRow
-		var mode, releaseDate sql.NullString
-		var protocols, tiers, efforts sql.NullString
-		var defaultEffort sql.NullString
-		if err := rows.Scan(&row.ProviderCode, &row.Model, &row.Scope, &mode, &releaseDate, &protocols, &tiers, &efforts, &defaultEffort); err != nil {
-			return nil, err
+		row, scanErr := scanModelOptionRow(rows.Scan, "", true)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		row.Mode = strings.TrimSpace(mode.String)
-		row.ReleaseDate = textPtr(releaseDate)
-		row.SupportedAPIProtocols = parseJSONArray(protocols)
-		row.SupportedServiceTiers = parseJSONArray(tiers)
-		row.SupportedReasoningEfforts = parseJSONArray(efforts)
-		row.DefaultReasoningEffort = textPtr(defaultEffort)
 		items = append(items, row)
 	}
 	return items, rows.Err()
 }
 
-// appendCatalogModeFilter adds the directory `mode IN (...)` clause when the
-// query carries validated modes. Rows with NULL/empty mode never match an IN
-// list, so they are excluded under domain filtering by design; without modes
-// the clause is skipped and the behavior stays backward compatible. This raw
-// six-value form applies to the built-in catalog table; the custom table goes
-// through appendCustomCatalogModeFilter.
-func appendCatalogModeFilter(clauses *[]string, args []any, modes []string) []any {
-	if len(modes) == 0 {
-		return args
+// scanModelOptionRow 扫描 options 行：scope 由调用方注入（builtin 臂）或按行
+// 读取（custom 臂）；mode 从 supported_endpoint_modes_json 逆映射派生。
+func scanModelOptionRow(scan func(...any) error, scope string, scanScope bool) (modelOptionRow, error) {
+	var row modelOptionRow
+	var endpointModes, releaseDate sql.NullString
+	var tiers, efforts sql.NullString
+	var defaultEffort sql.NullString
+	row.Scope = scope
+	columns := []any{&row.ProviderCode, &row.Model, &endpointModes, &releaseDate, &tiers, &efforts, &defaultEffort}
+	if scanScope {
+		columns = []any{&row.ProviderCode, &row.Model, &row.Scope, &endpointModes, &releaseDate, &tiers, &efforts, &defaultEffort}
 	}
-	*clauses = append(*clauses, "mode IN ("+placeholders(len(modes))+")")
-	return append(args, stringSliceToAny(modes)...)
+	if err := scan(columns...); err != nil {
+		return modelOptionRow{}, err
+	}
+	modes := parseJSONArray(endpointModes)
+	mode, protocols := DeriveLegacyModeAndProtocols(modes)
+	row.Mode = mode
+	row.ReleaseDate = textPtr(releaseDate)
+	row.SupportedAPIProtocols = protocols
+	row.SupportedServiceTiers = parseJSONArray(tiers)
+	row.SupportedReasoningEfforts = parseJSONArray(efforts)
+	row.DefaultReasoningEffort = textPtr(defaultEffort)
+	return row, nil
 }
 
-// customVocabularyModes translates a validated directory-mode whitelist into
-// the custom_provider_models vocabulary. The custom write path only ever
-// stores the four UI-category values text/image/audio/video
-// (parseCustomModelBody), so chat/responses map to text, image_generation
-// maps to image, audio/video are shared by both word lists, and embedding has
-// no custom equivalent (it maps to nothing).
-func customVocabularyModes(modes []string) []string {
-	output := make([]string, 0, len(modes))
-	seen := make(map[string]bool, len(modes))
+// catalogModeEndpointModeExpansion 把六值目录 mode 白名单展开成 25 值 endpoint
+// mode 集合（supported_endpoint_modes_json 的元素域）。单表后 builtin 行与
+// custom 行共用同一 mode 词表，旧 customVocabularyModes 的 text/image 翻译层
+// 随双表退役；展开表与逆映射 catalogEndpointModeLegacyProjection 互为镜像。
+func catalogModeEndpointModeExpansion(modes []string) []string {
+	expansion := catalogModeFilterExpansion()
+	seen := map[string]bool{}
+	output := []string{}
 	for _, mode := range modes {
-		var mapped string
-		switch mode {
-		case "chat", "responses":
-			mapped = "text"
-		case "image_generation":
-			mapped = "image"
-		case "audio":
-			mapped = "audio"
-		case "video":
-			mapped = "video"
-		default:
-			continue
-		}
-		if !seen[mapped] {
-			seen[mapped] = true
-			output = append(output, mapped)
+		for _, endpointMode := range expansion[mode] {
+			if !seen[endpointMode] {
+				seen[endpointMode] = true
+				output = append(output, endpointMode)
+			}
 		}
 	}
+	sort.Strings(output)
 	return output
 }
 
-// appendCustomCatalogModeFilter is the custom_provider_models counterpart of
-// appendCatalogModeFilter and the BUG-0324 root fix: the raw six-value IN
-// list never matched the custom rows' text/image values, hiding every
-// chat/image custom model from the domain-filtered model selectors. A
-// whitelist with no custom equivalent (e.g. modes=embedding) matches nothing,
-// rendered as a constant-false clause valid in both SQL dialects.
-func appendCustomCatalogModeFilter(clauses *[]string, args []any, modes []string) []any {
+func catalogModeFilterExpansion() map[string][]string {
+	return map[string][]string{
+		"chat":             {"chat_json", "chat_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"},
+		"responses":        {"responses_json", "responses_sse"},
+		"embedding":        {"message_token_counting", "count_tokens", "embed_content"},
+		"audio":            {"audio_speech", "audio_transcription_json", "realtime_session"},
+		"video":            {"video_create", "video_get", "video_content", "video_cancel"},
+		"image_generation": {"images_json"},
+	}
+}
+
+// appendCatalogModeFilter adds the endpoint-modes json 交集 clause when the
+// query carries validated modes. 空模式集（draft/disabled 行）不与任何展开集
+// 相交，行为对齐旧 `mode IN (...)` 对 NULL/空 mode 的排除；without modes the
+// clause is skipped and the behavior stays backward compatible.
+func (s *Store) appendCatalogModeFilter(clauses *[]string, args []any, modes []string) []any {
 	if len(modes) == 0 {
 		return args
 	}
-	customModes := customVocabularyModes(modes)
-	if len(customModes) == 0 {
+	endpointModes := catalogModeEndpointModeExpansion(modes)
+	if len(endpointModes) == 0 {
 		*clauses = append(*clauses, "1 = 0")
 		return args
 	}
-	return appendCatalogModeFilter(clauses, args, customModes)
+	*clauses = append(*clauses, s.endpointModesAnyPredicate("supported_endpoint_modes_json", endpointModes))
+	return append(args, stringSliceToAny(endpointModes)...)
+}
+
+// endpointModesAnyPredicate 渲染 supported_endpoint_modes_json 与给定 mode 集
+// 交集非空的方言谓词（SQLite json_each / PG jsonb_array_elements_text）。
+func (s *Store) endpointModesAnyPredicate(column string, modes []string) string {
+	list := placeholders(len(modes))
+	if s.pg {
+		return `EXISTS (
+			SELECT 1
+			FROM jsonb_array_elements_text(` + column + `::jsonb) AS endpoint_mode
+			WHERE endpoint_mode IN (` + list + `)
+		)`
+	}
+	return `EXISTS (
+			SELECT 1
+			FROM json_each(` + column + `) AS endpoint_mode
+			WHERE endpoint_mode.value IN (` + list + `)
+		)`
 }
 
 // appendOptionTextFilter mirrors the WHERE side of the options queries: the
 // (selectedIds OR keyword LIKE) clause is pushed only when a keyword is
-// present (provider-model-catalog.repository.ts:132-134,
-// custom-provider-models.repository.ts:141-143). Without a keyword the
-// selectedIds participate only in the ORDER BY preface and the final
-// selected-aware visibility merge.
-func appendOptionTextFilter(clauses *[]string, args []any, query ModelOptionQuery) []any {
+// present. Without a keyword the selectedIds participate only in the ORDER BY
+// preface and the final selected-aware visibility merge.
+func (s *Store) appendOptionTextFilter(clauses *[]string, args []any, query ModelOptionQuery) []any {
 	if query.Keyword == "" {
 		return args
 	}
 	parts := []string{}
 	if len(query.SelectedIDs) > 0 {
-		parts = append(parts, "model IN ("+placeholders(len(query.SelectedIDs))+")")
+		parts = append(parts, "public_model IN ("+placeholders(len(query.SelectedIDs))+")")
 		for _, id := range query.SelectedIDs {
 			args = append(args, id)
 		}
 	}
-	parts = append(parts, "lower(model) LIKE ?")
+	parts = append(parts, s.modelOrderExpression()+" LIKE ?")
 	args = append(args, "%"+strings.ToLower(query.Keyword)+"%")
 	*clauses = append(*clauses, "("+strings.Join(parts, " OR ")+")")
 	return args
@@ -1203,7 +1169,7 @@ func selectedOrderClause(query ModelOptionQuery) string {
 	if len(query.SelectedIDs) == 0 {
 		return ""
 	}
-	return "CASE WHEN model IN (" + placeholders(len(query.SelectedIDs)) + ") THEN 0 ELSE 1 END, "
+	return "CASE WHEN public_model IN (" + placeholders(len(query.SelectedIDs)) + ") THEN 0 ELSE 1 END, "
 }
 
 // appendSelectedOrderArgs appends the selectedIds parameters consumed by the
@@ -1346,10 +1312,7 @@ func (s *Store) FindProviderModelCapabilities(ctx context.Context, providerCode,
 	if trimmedModel == "" {
 		return nil, nil
 	}
-	sourceCodes, err := s.ModelCatalogSourceProviderCodes(ctx, providerCode)
-	if err != nil {
-		return nil, err
-	}
+	sourceCodes := modelCatalogSourceProviderCodes(providerCode)
 	if len(sourceCodes) == 0 {
 		return nil, nil
 	}
@@ -1412,7 +1375,7 @@ func testCatalogItemFromCatalogItem(item ModelCatalogItem) testCatalogItem {
 }
 
 // findBuiltInTestCatalogItems mirrors findBuiltInProviderModelTestCatalogAsync
-// with the default 'test' projection.
+// with the default 'test' projection over the models 单表 builtin 臂.
 func (s *Store) findBuiltInTestCatalogItems(ctx context.Context, providerCodes []string, model string) ([]testCatalogItem, error) {
 	codes := normalizeProviderCodeList(providerCodes)
 	if len(codes) == 0 {
@@ -1420,16 +1383,17 @@ func (s *Store) findBuiltInTestCatalogItems(ctx context.Context, providerCodes [
 	}
 	args := append([]any{}, stringSliceToAny(codes)...)
 	args = append(args, model)
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, provider_code, model, catalog_order, release_date,
-			supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id, COALESCE(vendor_code, '') AS provider_code, public_model AS model, catalog_order, release_date,
+			supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			default_reasoning_effort
-		FROM `+s.table("provider_model_catalog")+`
-		WHERE provider_code IN (`+placeholders(len(codes))+`)
-			AND model = ?
+		FROM `+s.table("models")+`
+		WHERE scope = 'builtin'
+			AND vendor_code IN (`+placeholders(len(codes))+`)
+			AND public_model = ?
 			AND status = 'active'
 			AND `+s.visibleTruePredicate("catalog_visible")+`
 			AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.todayText()+`)
-		ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC`), args...)
+		ORDER BY provider_code ASC, catalog_order ASC, public_model ASC, id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1439,16 +1403,16 @@ func (s *Store) findBuiltInTestCatalogItems(ctx context.Context, providerCodes [
 		var item testCatalogItem
 		var catalogOrder sql.NullInt64
 		var releaseDate sql.NullString
-		var protocols, tiers, efforts sql.NullString
+		var endpointModes, tiers, efforts sql.NullString
 		var defaultEffort sql.NullString
 		if err := rows.Scan(&item.ID, &item.ProviderCode, &item.Model, &catalogOrder, &releaseDate,
-			&protocols, &tiers, &efforts, &defaultEffort); err != nil {
+			&endpointModes, &tiers, &efforts, &defaultEffort); err != nil {
 			return nil, err
 		}
 		item.Scope = catalogScopeBuiltIn
 		item.CatalogOrder = nullInt64Ptr(catalogOrder)
 		item.ReleaseDate = textPtr(releaseDate)
-		item.SupportedAPIProtocols = parseJSONArray(protocols)
+		_, item.SupportedAPIProtocols = deriveLegacyCatalogProjection(endpointModes)
 		item.SupportedServiceTiers = parseJSONArray(tiers)
 		item.SupportedReasoningEfforts = parseJSONArray(efforts)
 		item.DefaultReasoningEffort = textPtr(defaultEffort)
@@ -1602,19 +1566,6 @@ func normalizeProviderToken(value string) string {
 
 func isHybridProviderCode(value string) bool {
 	return normalizeProviderToken(value) == hybridProviderCode
-}
-
-func dedupeStrings(values []string) []string {
-	seen := map[string]bool{}
-	output := []string{}
-	for _, value := range values {
-		if seen[value] {
-			continue
-		}
-		seen[value] = true
-		output = append(output, value)
-	}
-	return output
 }
 
 func copyStringSlice(values []string) []string {

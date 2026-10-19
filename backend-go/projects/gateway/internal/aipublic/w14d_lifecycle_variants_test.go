@@ -27,7 +27,7 @@ func TestW14dAccountAddAutoCreatesTargetAndGroup(t *testing.T) {
 	body := `{"targetUsername":"w14dbrandnew","targetDisplayName":"新目标","targetGroupName":"自动组",
 		"name":"acc1","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1",
 		"type":"api_key","baseUrl":"https://a.example","apiKey":"sk-x",
-		"supportedModels":["gpt-4o-mini"],"status":"active","concurrencyLimit":5,"priority":1}`
+		"supportedModels":["gpt-4o-mini"],"status":"active","concurrencyLimit":5,"priority":1,"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://a.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/account/add", body, token)
 	if status != http.StatusCreated {
 		t.Fatalf("auto-created add: %d %v", status, payload)

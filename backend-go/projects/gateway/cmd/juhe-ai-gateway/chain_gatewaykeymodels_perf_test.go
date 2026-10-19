@@ -435,16 +435,11 @@ func TestUnionPerfManual(t *testing.T) {
 		t.Fatalf("临时子库 ping: %v", err)
 	}
 
-	sysID, providerCode, profileID := unionPerfSeed(t, db)
+	sysID, providerCode, _ := unionPerfSeed(t, db)
 
-	// 夹具映射有效性 sanity（openai/openai/v1 档案：跨族行必须被接受、恒等行
-	// 必须被拒绝——防止夹具本身构造出无效场景）。
-	runtimeAccount := &gatewayopenai.RuntimeAccount{
-		ProviderCode:              providerCode,
-		ProviderProtocolProfileID: profileID,
-		ProtocolCode:              "openai",
-		ProtocolVersion:           "v1",
-	}
+	// 夹具映射有效性 sanity（B4 W2 拆门后判定只依赖映射行：跨族行必须被
+	// 接受、恒等行必须被拒绝——防止夹具本身构造出无效场景）。
+	runtimeAccount := &gatewayopenai.RuntimeAccount{}
 	source, sourceFamily, upstream, upstreamFamily := unionPerfMappingRowA(0, 0)
 	admissible := gatewayopenai.IsAdmissibleModelMapping(gatewayopenai.AccountModelMapping{
 		SourceModel: source, SourceEndpointFamily: sourceFamily,

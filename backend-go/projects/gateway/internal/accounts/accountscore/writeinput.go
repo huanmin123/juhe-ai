@@ -1,5 +1,7 @@
 package accountscore
 
+import "strings"
+
 // Write-path input contracts shared between the facade write surface and the
 // accountstransfer subdomain (REFACTOR-0005 阶段 C 下沉). These are pure DTO
 // definitions — the normalization/validation logic that consumes them stays in
@@ -28,6 +30,64 @@ func AccountCreationStatusInput(value any) CreationStatus {
 	}
 }
 
+// ConnectionInput 是创建/PATCH/导入共享的连接行载荷（供应商与上游协议面重构
+// 设计 §8）：connectionPresetCode 是账户内自然键（连接 ID 永不由客户端提交，
+// 服务端确定性生成），baseUrl 走 §2.1 registry 数据驱动 validator，
+// endpointModes 必须非空且 ⊆ AllowedModes(domain, preset, account_type,
+// oauth_type)，enabled 必须显式提交。ProtocolSurfaceCode 是 §8 的可选回显字段
+// （纯媒体连接为空）；非空时必须等于 registry preset surface。
+type ConnectionInput struct {
+	ConnectionPresetCode string
+	ProtocolSurfaceCode  string
+	BaseURL              string
+	EndpointModes        []string
+	Enabled              bool
+}
+
+// ParseConnectionInput 解析 §8 connections[] 元素（camelCase 键集：必填
+// connectionPresetCode/baseUrl/endpointModes/enabled + 可选 protocolSurfaceCode
+// 回显；未知键拒绝）。管理面路由、导入计划与公开面共用本解析器，不造第二份。
+func ParseConnectionInput(object map[string]any) (ConnectionInput, bool) {
+	text := func(value any) string {
+		if text, ok := value.(string); ok {
+			return strings.TrimSpace(text)
+		}
+		return ""
+	}
+	connection := ConnectionInput{
+		ConnectionPresetCode: text(object["connectionPresetCode"]),
+		ProtocolSurfaceCode:  text(object["protocolSurfaceCode"]),
+		BaseURL:              text(object["baseUrl"]),
+	}
+	if connection.ConnectionPresetCode == "" || connection.BaseURL == "" {
+		return ConnectionInput{}, false
+	}
+	enabled, ok := object["enabled"].(bool)
+	if !ok {
+		return ConnectionInput{}, false
+	}
+	connection.Enabled = enabled
+	rawModes, ok := object["endpointModes"].([]any)
+	if !ok || len(rawModes) == 0 {
+		return ConnectionInput{}, false
+	}
+	for _, mode := range rawModes {
+		modeText := text(mode)
+		if modeText == "" {
+			return ConnectionInput{}, false
+		}
+		connection.EndpointModes = append(connection.EndpointModes, modeText)
+	}
+	for key := range object {
+		switch key {
+		case "connectionPresetCode", "protocolSurfaceCode", "baseUrl", "endpointModes", "enabled":
+		default:
+			return ConnectionInput{}, false
+		}
+	}
+	return connection, true
+}
+
 // CreateInput is the validated create payload (accountCreateSchema subset the
 // store consumes); nil pointers mean the field was absent.
 type CreateInput struct {
@@ -39,6 +99,16 @@ type CreateInput struct {
 	SupportedModels           []string
 	HealthCheckModel          *string
 	HealthCheckEndpointMode   *string
+	// HealthCheckConnectionPresetCode 是 §8 健康检查三件套的连接维度入参
+	//（camelCase healthCheckConnectionPresetCode）：必须解析到最终连接集合中
+	// 一行 enabled 连接（服务端同事务解析为 health_check_connection_id）。
+	// 克隆上下文由源账户 health_check_connection_id 反解 preset 注入。
+	HealthCheckConnectionPresetCode *string
+	// Connections 是 §8 创建载荷的连接集合（camelCase connections）：非空必填
+	// （克隆载荷由源账户连接行综合）；写入序 accounts → account_connections →
+	// account_endpoint_modes → … → UPDATE health 三字段（§2.1 复合外键事务
+	// 闭环）。
+	Connections []ConnectionInput
 	ModelMappings             []ModelMapping
 	Tags                      []string
 	Status                    CreationStatus

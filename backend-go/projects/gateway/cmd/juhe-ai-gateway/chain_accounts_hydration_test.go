@@ -59,6 +59,11 @@ func TestChainAccountsSelectorHydratesFullSecret(t *testing.T) {
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, local_priority, created_at)
 		VALUES (?, ?, 'acc_pool', 1, 2, ?)`, fixture.groupID, fixture.systemAccount, now)
+	// B4 第一批单连接事实源：BaseURL 断言值移到连接行（health_check_connection_id
+	// 指向的 enabled 连接）；credentials.base_url 不再是事实源。
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn_acc_pool', 'acc_pool', 'gpt_openai_v1', 'openai_v1', 'https://pool.example.com/v1', 1, ?, ?)`, now, now)
+	seed(`UPDATE accounts SET health_check_connection_id = 'conn_acc_pool' WHERE id = 'acc_pool'`)
 	seed(`INSERT INTO account_api_key_runtime_states (account_id, key_fingerprint, key_index, status, cooldown_until, recovery_started_at, updated_at)
 		VALUES ('acc_pool', ?, 1, 'temporary_unavailable', '2026-09-04T01:00:00.000Z', '2026-09-03T23:00:00.000Z', ?)`,
 		chainFingerprintAPIKey("chain-test-secret", "sk-pool-key-b"), now)
@@ -199,7 +204,9 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	// Mapped account: serves gpt-test through an enabled mapping.
+	// Mapped account: serves gpt-test through an enabled mapping. B4 第一批
+	// 目标形态：映射行走 account_entry_mappings（target 经 models 外键解析），
+	// 账户带 enabled 连接行以通过 secret 单连接事实源水合。
 	seed(`INSERT INTO accounts (
 			id, system_account_id, provider_code, protocol_code, protocol_version, name, type, status, schedulable,
 			credentials_encrypted, deleted_at, health_check_model
@@ -207,8 +214,11 @@ func TestChainAccountsSelectorModelRankWindow(t *testing.T) {
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES (?, ?, 'acc_mapped', 1, ?)`, fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES ('acc_mapped', 'openai', 'gpt-pro', 'chat_completions', 'gpt-test', 'chat_completions', 1, ?, ?)`, now, now)
+	seed(`INSERT INTO account_connections (id, account_id, connection_preset_code, protocol_surface_code, base_url, enabled, created_at, updated_at)
+		VALUES ('conn_acc_mapped', 'acc_mapped', 'gpt_openai_v1', 'openai_v1', 'https://mapped.example.invalid/v1', 1, ?, ?)`, now, now)
+	seed(`UPDATE accounts SET health_check_connection_id = 'conn_acc_mapped' WHERE id = 'acc_mapped'`)
+	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('entmap_acc_mapped_gpt-pro', 'acc_mapped', 'gpt-pro', 'chat_completions', 'conn_acc_mapped', 'mdl_gpt-test', 'chat_completions', 1, ?, ?)`, now, now)
 
 	result, err := fixture.selector.ListOpenAIAccountsForGroupResult(context.Background(), fixture.groupID, fixture.systemAccount,
 		gatewayruntimecache.OpenAIAccountsForGroupOptions{RequestedModel: "gpt-pro", RequestedEndpointFamily: "chat_completions"})

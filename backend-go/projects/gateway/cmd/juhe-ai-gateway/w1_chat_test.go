@@ -285,14 +285,16 @@ func TestW1EnsureChatAPIKeyLifecycle(t *testing.T) {
 	if err != nil || created == "" {
 		t.Fatalf("空库自愈 ensure 创建 chat key = %q, %v", created, err)
 	}
-	var groupName, groupProvider string
+	var groupName string
 	var groupDefault int
-	if err := f.db.QueryRow(`SELECT name, provider_code, is_default FROM groups WHERE system_account_id = ?`, f.ownerID).
-		Scan(&groupName, &groupProvider, &groupDefault); err != nil {
+	// B4 W2：groups.provider_code 已退役（设计 §8），自愈重建分组断言只看
+	// 名称与默认位。
+	if err := f.db.QueryRow(`SELECT name, is_default FROM groups WHERE system_account_id = ?`, f.ownerID).
+		Scan(&groupName, &groupDefault); err != nil {
 		t.Fatalf("read rebuilt group: %v", err)
 	}
-	if groupName != "默认 GPT 分组" || groupProvider != "gpt" || groupDefault != 1 {
-		t.Fatalf("rebuilt group = (%q, %q, %d)", groupName, groupProvider, groupDefault)
+	if groupName != "默认分组" || groupDefault != 1 {
+		t.Fatalf("rebuilt group = (%q, %d)", groupName, groupDefault)
 	}
 	// 自愈链已包含 默认分组 → 默认策略路由 → 绑定 → chat key 全程。
 	strategy, err := f.provider.defaultGptRouteStrategyForSystemAccount(f.ownerID)

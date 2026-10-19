@@ -21,7 +21,7 @@ func TestW2CreateFullFieldSuccess(t *testing.T) {
 		"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"全字段账户",
 		"type":"api_key","credentials":{"api_key":"sk-full-field-123456","base_url":"https://api.openai.com/v1"},
 		"supportedModels":["gpt-4o-mini","gpt-4.1"],"healthCheckModel":"gpt-4.1","healthCheckEndpointMode":"chat_json",
-		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","enabled":false}],
+		"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1",
 		"tags":["全字段","测试"],"status":"active","skipInitialHealthCheck":true,
 		"concurrencyLimit":42,"priority":9,"superPriorityEnabled":true,"fallbackEnabled":false,
 		"proxyProfileId":"pp-create","groupId":"grp-default-` + adminID + `",
@@ -73,9 +73,15 @@ func TestW2CreateFullFieldSuccess(t *testing.T) {
 	if got := env.queryCell(t, `SELECT COALESCE(availability_schedule_json,'') FROM accounts WHERE id = ?`, id); got == "" {
 		t.Fatal("时间表未落库")
 	}
-	// 禁用映射。
+	// 禁用映射：B4 W2（设计 §5.1/§8）创建链尚无连接行，映射经创建后的
+	// 连接种子 + PATCH 面落库（与 TestW2PatchSupportedModelsAndMappings 同法）。
+	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini")
+	if code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
+		`{"expectedConfigRevision":1,"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":false}]}`); code != http.StatusOK {
+		t.Fatalf("映射 PATCH 应成功：%d %v", code, patched)
+	}
 	var enabled int
-	if err := env.db.QueryRow(`SELECT enabled FROM account_model_mappings WHERE account_id = ?`, id).Scan(&enabled); err != nil {
+	if err := env.db.QueryRow(`SELECT account_entry_mappings.enabled FROM account_entry_mappings WHERE account_id = ?`, id).Scan(&enabled); err != nil {
 		t.Fatalf("映射未落库：%v", err)
 	}
 	if enabled != 0 {

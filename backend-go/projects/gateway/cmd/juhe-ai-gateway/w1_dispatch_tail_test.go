@@ -423,7 +423,6 @@ func TestW1XLeaseFamilyBlankAndFindStateErrorArms(t *testing.T) {
 func TestW1XSelectorResourceAccessorsTable(t *testing.T) {
 	row := &chainCandidateRow{
 		ID:                           "w1x-row",
-		ProviderCode:                 "openai",
 		ProtocolCode:                 sql.NullString{String: "chat", Valid: true},
 		ProtocolVersion:              sql.NullString{String: "v1", Valid: true},
 		Type:                         "api_key",
@@ -431,7 +430,6 @@ func TestW1XSelectorResourceAccessorsTable(t *testing.T) {
 		ConcurrencyLimit:             7,
 		ProxyProfileID:               sql.NullString{String: "px-1", Valid: true},
 		ResourceAccountID:            sql.NullString{String: "w1x-res", Valid: true},
-		ResourceProviderCode:         sql.NullString{String: "openai-res", Valid: true},
 		ResourceProtocolCode:         sql.NullString{String: "responses", Valid: true},
 		ResourceProtocolVersion:      sql.NullString{String: "v2", Valid: true},
 		ResourceType:                 sql.NullString{String: "oauth", Valid: true},
@@ -445,8 +443,9 @@ func TestW1XSelectorResourceAccessorsTable(t *testing.T) {
 	if got := row.resourceProxyProfileID(); got != "px-res" {
 		t.Fatalf("resourceProxyProfileID = %q", got)
 	}
-	if got := row.resourceProviderCode(); got != "openai-res" {
-		t.Fatalf("resourceProviderCode = %q", got)
+	// B4 W2：resourceProviderCode 过渡读取已删除（vendor 域断言见 resourceVendorCode 用例）。
+	if got := row.resourceVendorCode(); got != "" {
+		t.Fatalf("resourceVendorCode = %q, want 空（夹具未设 vendor 列）", got)
 	}
 	if got := row.resourceProtocolCode(); got != "responses" {
 		t.Fatalf("resourceProtocolCode = %q", got)
@@ -465,7 +464,7 @@ func TestW1XSelectorResourceAccessorsTable(t *testing.T) {
 	}
 
 	// 资源列缺失时逐列回退到物理账户值。
-	fallback := &chainCandidateRow{ID: "w1x-fb", ProviderCode: "openai", Type: "api_key", ConcurrencyLimit: 9,
+	fallback := &chainCandidateRow{ID: "w1x-fb", Type: "api_key", ConcurrencyLimit: 9,
 		ProtocolCode:         sql.NullString{String: "chat", Valid: true},
 		ProtocolVersion:      sql.NullString{String: "v1", Valid: true},
 		CredentialsEncrypted: sql.NullString{String: "creds", Valid: true},
@@ -475,9 +474,6 @@ func TestW1XSelectorResourceAccessorsTable(t *testing.T) {
 	}
 	if got := fallback.resourceProxyProfileID(); got != "px-1" {
 		t.Fatalf("回退 resourceProxyProfileID = %q", got)
-	}
-	if got := fallback.resourceProviderCode(); got != "openai" {
-		t.Fatalf("回退 resourceProviderCode = %q", got)
 	}
 	if got := fallback.resourceProtocolCode(); got != "chat" {
 		t.Fatalf("回退 resourceProtocolCode = %q", got)
@@ -915,12 +911,10 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 	ctx := context.Background()
 	authorizedAccess := &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_admin",
-		ProviderCode:              "openai",
 		GroupAccessType:           gatewayruntimecache.GroupAccessTypeAuthorized,
 	}
 	ownerAccess := &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_admin",
-		ProviderCode:              "openai",
 		GroupAccessType:           gatewayruntimecache.GroupAccessTypeOwner,
 	}
 
@@ -1017,6 +1011,11 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 				`INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, schedulable,
 					concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at)
 					VALUES ('w1x-src-1', 'sys_admin', 'openai', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '` + sealed + `', NULL)`,
+				// B4 第一批单连接事实源：模型事实主体（来源账户）需要 enabled
+				// 连接行，实例账户水合才不丢弃。
+				`INSERT INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+					VALUES ('conn_w1x_src', 'w1x-src-1', 'gpt_openai_v1', 'https://w1x-src.example.invalid/v1', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+				`UPDATE accounts SET health_check_connection_id = 'conn_w1x_src' WHERE id = 'w1x-src-1'`,
 				`DELETE FROM group_accounts WHERE account_id = 'a-limit-acc'`,
 				`UPDATE group_accounts SET enabled = 0 WHERE account_id <> 'a-limit-acc'`,
 				`INSERT INTO group_accounts VALUES ('a-limit-acc', 'sys_admin', 'grp-limit', '` + bindingID + `', 0, 0, 0, 1, '2026-01-01T00:00:00.000Z')`,
@@ -1059,15 +1058,9 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 	t.Run("模型窗口 includeUnavailable + 不可用账户纳入", func(t *testing.T) {
 		db := seedChainSelectorDB(t)
 		t.Cleanup(func() { _ = db.Close() })
-		// 模型窗口 CTE 引用 provider_code，本地 schema 需补列。
-		for _, alter := range []string{
-			`ALTER TABLE account_supported_models ADD COLUMN provider_code TEXT`,
-			`ALTER TABLE account_model_mappings ADD COLUMN provider_code TEXT`,
-		} {
-			if _, err := db.Exec(alter); err != nil {
-				t.Fatalf("alter model schema: %v", err)
-			}
-		}
+		// B4 第一批：provider_code 补列随候选窗口投影拆除退役（模型窗口
+		// CTE 已无 provider 维度）；装载读 account_entry_mappings，本地
+		// schema 已带该表。
 		if _, err := db.Exec(`UPDATE accounts SET status = 'rate_limited' WHERE id = 'a-limit-acc'`); err != nil {
 			t.Fatalf("degrade account: %v", err)
 		}
@@ -2112,7 +2105,6 @@ func TestW1XHydrationLimitBreakAndBadCooldownError(t *testing.T) {
 			gatewayruntimecache.OpenAIAccountsForGroupOptions{
 				PreResolvedGroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{
 					GroupOwnerSystemAccountID: "sys_admin",
-					ProviderCode:              "openai",
 					GroupAccessType:           gatewayruntimecache.GroupAccessTypeOwner,
 				},
 				IncludeUnavailable: true,

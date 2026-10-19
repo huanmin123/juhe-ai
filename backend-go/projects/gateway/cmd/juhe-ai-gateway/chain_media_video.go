@@ -496,11 +496,7 @@ func chainVideoMappedModel(req *gatewaypreauth.GatewayRequest, account gatewaydi
 		return ""
 	}
 	runtime := &gatewayopenai.RuntimeAccount{
-		ModelMappings:             openAIModelMappingsOf(account.ModelMappings),
-		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
-		ProtocolCode:              account.ProtocolCode,
-		ProtocolVersion:           account.ProtocolVersion,
+		ModelMappings: openAIModelMappingsOf(account.ModelMappings),
 	}
 	mapping := gatewayopenai.ResolveAccountModelMapping(runtime, requestedModel, requestMappingSourceFamilyOf(req))
 	if mapping == nil {

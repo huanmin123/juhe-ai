@@ -133,7 +133,7 @@ func TestW2RuntimeResetOwnerDeepBranches(t *testing.T) {
 			"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"多Key重置",
 			"type":"api_key","credentials":{"api_key":"sk-pool-1","api_keys":["sk-pool-1","sk-pool-2"],
 			"api_key_strategy":"failover","base_url":"https://api.openai.com/v1"},
-			"supportedModels":["gpt-4o-mini","gpt-4.1"]}`)
+			"supportedModels":["gpt-4o-mini","gpt-4.1"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`)
 		if code != http.StatusCreated {
 			t.Fatalf("多 Key 创建失败：%d %v", code, payload)
 		}

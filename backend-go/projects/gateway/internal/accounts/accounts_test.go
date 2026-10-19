@@ -100,6 +100,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			t.Fatal(err)
 		}
 	}
+	seedFixtureModels(t, db)
 	service, err := businessauth.New(db, modelcheckauth.SQLite, time.Now, businessauth.OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	if err != nil {
 		t.Fatal(err)
@@ -145,8 +146,11 @@ var schemaStatements = []string{
 		-- 携带两列（generic 账户 vendor 为 NULL，driver 恒非空）。
 		vendor_code TEXT,
 		connection_driver_code TEXT,
-		provider_code TEXT NOT NULL,
-		provider_protocol_profile_id TEXT NOT NULL,
+		-- B4 W2 迁移窗口夹具：生产 INSERT 已停写 provider_code /
+		-- provider_protocol_profile_id / client_compatibility（设计 §9.11 目标
+		-- 列集无三列）；夹具保留列壳仅供存量种子行直插，默认值兜底。
+		provider_code TEXT NOT NULL DEFAULT '',
+		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
 		protocol_code TEXT NOT NULL,
 		protocol_version TEXT NOT NULL,
 		name TEXT NOT NULL,
@@ -162,7 +166,7 @@ var schemaStatements = []string{
 		priority INTEGER NOT NULL DEFAULT 0,
 		super_priority_enabled INTEGER NOT NULL DEFAULT 0,
 		fallback_enabled INTEGER NOT NULL DEFAULT 0,
-		client_compatibility TEXT NOT NULL DEFAULT 'openai_standard',
+		client_compatibility TEXT NOT NULL DEFAULT '',
 		schedulable INTEGER NOT NULL DEFAULT 1,
 		availability_schedule_json TEXT,
 		availability_schedule_next_check_at TEXT,
@@ -187,6 +191,7 @@ var schemaStatements = []string{
 		capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
 		last_health_check_at TEXT,
 		last_health_success_at TEXT,
+		health_check_connection_id TEXT,
 		last_health_check_status_code INTEGER,
 		last_health_check_error_code TEXT,
 		last_health_check_error_message TEXT,
@@ -213,15 +218,62 @@ var schemaStatements = []string{
 		enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
 		PRIMARY KEY (group_id, account_id)
 	)`,
-	`CREATE TABLE IF NOT EXISTS account_supported_models (
-		account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, model)
+	`CREATE TABLE IF NOT EXISTS models (
+		id TEXT PRIMARY KEY,
+		vendor_code TEXT,
+		public_model TEXT NOT NULL,
+		upstream_model TEXT NOT NULL,
+		scope TEXT NOT NULL DEFAULT 'builtin',
+		system_account_id TEXT,
+		status TEXT NOT NULL DEFAULT 'active',
+		supported_endpoint_modes_json TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
 	)`,
-	`CREATE TABLE IF NOT EXISTS account_model_mappings (
-		account_id TEXT NOT NULL, provider_code TEXT NOT NULL, source_model TEXT NOT NULL,
-		source_endpoint_family TEXT NOT NULL, upstream_model TEXT NOT NULL, upstream_endpoint_family TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-		PRIMARY KEY (account_id, source_model, source_endpoint_family)
+	// B4 W2 目标形态（设计 §4：(account_id, model_id)，§9：映射外键引用面）。
+	`CREATE TABLE IF NOT EXISTS account_supported_models (
+		account_id TEXT NOT NULL, model_id TEXT NOT NULL, created_at TEXT NOT NULL,
+		PRIMARY KEY (account_id, model_id),
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+		FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE RESTRICT
+	)`,
+	`CREATE TABLE IF NOT EXISTS account_connections (
+		id TEXT PRIMARY KEY,
+		account_id TEXT NOT NULL,
+		connection_preset_code TEXT NOT NULL,
+		protocol_surface_code TEXT,
+		base_url TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE (account_id, connection_preset_code),
+		-- B1 断点批（设计 §2.1）：复合唯一键支撑 accounts 复合外键
+		-- (id, health_check_connection_id)（测试 SQLite 夹具不带该 FK，生产
+		-- DDL 见 maintenance pg_schema_business_tables.go）。
+		UNIQUE (account_id, id),
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE IF NOT EXISTS account_endpoint_modes (
+		connection_id TEXT NOT NULL,
+		endpoint_mode TEXT NOT NULL,
+		PRIMARY KEY (connection_id, endpoint_mode),
+		FOREIGN KEY (connection_id) REFERENCES account_connections(id) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE IF NOT EXISTS account_entry_mappings (
+		id TEXT PRIMARY KEY,
+		account_id TEXT NOT NULL,
+		source_model TEXT NOT NULL,
+		source_endpoint_family TEXT NOT NULL,
+		target_connection_id TEXT NOT NULL,
+		target_model_id TEXT NOT NULL,
+		target_endpoint_family TEXT NOT NULL,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		UNIQUE (account_id, source_model, source_endpoint_family),
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+		FOREIGN KEY (account_id, target_connection_id) REFERENCES account_connections(account_id, id),
+		FOREIGN KEY (account_id, target_model_id) REFERENCES account_supported_models(account_id, model_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_tags (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -419,6 +471,97 @@ func (e *testEnv) seedProviderAndDefaultGroup(t *testing.T, ownerID string) {
 		VALUES (?, ?, '默认分组', 'gpt', 1, 1, 'personal', ?, ?)`, "grp-default-"+ownerID, ownerID, now, now)
 }
 
+// nullStringForFixture 把空串 vendor 落 SQL NULL（与目标 schema 的可空
+// vendor_code 同形，models 身份键 COALESCE 两侧一致）。
+func nullStringForFixture(code string) any {
+	if code == "" {
+		return nil
+	}
+	return code
+}
+
+// seedFixtureModels 是 B4 W2 夹具模型种子：supportedModels / entry mapping 的
+// target 模型名按 models.upstream_model 身份键解析（owner 可见 + active），
+// builtin 行全局可见。覆盖本包测试引用的全部模型名（盘点：supportedModels
+// 字面量与直插种子）。每个名字按 §1.1 九厂商 + NULL(generic) 全值域落 vendor 身份：写侧
+// 按账户 provider 推导的 vendor_code（gpt→'gpt'，openai/generic→”）做身份键
+// 匹配。
+func seedFixtureModels(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, model := range []struct{ id, name string }{
+		{"gpt-4o", "gpt-4o"},
+		{"gpt-4o-mini", "gpt-4o-mini"},
+		{"gpt-4-1", "gpt-4.1"},
+		{"m-default", "m-default"},
+		{"m1", "m1"},
+		{"other-model", "other-model"},
+		{"gpt-4o-up", "gpt-4o-up"},
+		{"gpt-4o-mini-up", "gpt-4o-mini-up"},
+		{"up-4o", "up-4o"},
+		{"up-mini", "up-mini"},
+		{"custom-a", "custom-a"},
+		{"gpt-w18-pass", "gpt-w18-pass"},
+		{"aaa-model", "aaa-model"},
+		{"m-a", "m-a"},
+		{"u-a", "u-a"},
+		{"o3-mini", "o3-mini"},
+		{"outside-upstream", "outside-upstream"},
+		{"gpt-4o-mini-2", "gpt-4o-mini-2"},
+		{"gpt-w18-b", "gpt-w18-b"},
+	} {
+		for _, vendor := range []struct{ id, code string }{
+			{"-gpt", "gpt"}, {"-xai", "xai"}, {"-deepseek", "deepseek"}, {"-anthropic", "anthropic"},
+			{"-gemini", "gemini"}, {"-glm", "glm"}, {"-minimax", "minimax"}, {"-volcengine", "volcengine"},
+			{"-qwen", "qwen"}, {"-generic", ""},
+		} {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			"mod-fixture-"+model.id+vendor.id, nullStringForFixture(vendor.code), model.name, model.name); err != nil {
+			t.Fatal(err)
+		}
+		}
+	}
+}
+
+// seedEntryMapping 是 B4 W2 目标形态的直插助手（读路径夹具用）：为账户落一行
+// enabled 连接（preset 账户内自然键）+ 双 chat endpoint modes + upstream 模型
+// 支持成员 + 一条入口映射行——等价于写路径 resolveEntryMappingTargets 的最小
+// 事实集（设计 §2.1/§5.1/§9）。
+func (e *testEnv) seedEntryMapping(t *testing.T, accountID, preset, sourceModel, sourceFamily, upstreamModel, targetFamily string, enabled int) {
+	t.Helper()
+	now := "2026-01-01T00:00:00Z"
+	connectionID := "conn-" + accountID + "-" + preset
+	e.exec(t, `INSERT OR IGNORE INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 'https://fixture.invalid/v1', 1, ?, ?)`, connectionID, accountID, preset, now, now)
+	for _, mode := range []string{"chat_json", "chat_sse"} {
+		e.exec(t, `INSERT OR IGNORE INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`, connectionID, mode)
+	}
+	e.exec(t, `INSERT OR IGNORE INTO account_supported_models (account_id, model_id, created_at)
+		VALUES (?, (SELECT id FROM models WHERE upstream_model = ?), ?)`, accountID, upstreamModel, now)
+	e.exec(t, `INSERT OR IGNORE INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family,
+		target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('entmap-fix-'||?||'-'||?, ?, ?, ?, ?, (SELECT id FROM models WHERE upstream_model = ?), ?, ?, ?, ?)`,
+		accountID, sourceModel, accountID, sourceModel, sourceFamily, connectionID, upstreamModel, targetFamily, enabled, now, now)
+}
+
+// seedAccountConnection 为已存在账户落写路径前置事实（B4 W2）：enabled 连接
+// 行（preset 账户内自然键）+ 双 chat endpoint modes + upstream 模型支持成员
+// （FK 引用面）——不含映射行，映射由被测写路径自行落库。
+func (e *testEnv) seedAccountConnection(t *testing.T, accountID, preset string, upstreamModels ...string) {
+	t.Helper()
+	now := "2026-01-01T00:00:00Z"
+	connectionID := "conn-" + accountID + "-" + preset
+	e.exec(t, `INSERT OR IGNORE INTO account_connections (id, account_id, connection_preset_code, base_url, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, 'https://fixture.invalid/v1', 1, ?, ?)`, connectionID, accountID, preset, now, now)
+	for _, mode := range []string{"chat_json", "chat_sse"} {
+		e.exec(t, `INSERT OR IGNORE INTO account_endpoint_modes (connection_id, endpoint_mode) VALUES (?, ?)`, connectionID, mode)
+	}
+	for _, upstream := range upstreamModels {
+		e.exec(t, `INSERT OR IGNORE INTO account_supported_models (account_id, model_id, created_at)
+			VALUES (?, (SELECT id FROM models WHERE upstream_model = ?), ?)`, accountID, upstream, now)
+	}
+}
+
 // seedAccount is the minimal direct row for read-path fixtures.
 func (e *testEnv) seedAccount(t *testing.T, id, ownerID, name, status string) {
 	t.Helper()
@@ -479,9 +622,32 @@ func dataArray(t *testing.T, payload map[string]any) []any {
 }
 
 func createPayload(name string) string {
+	// B1 断点批（设计 §8）：连接集合与健康检查三件套显式提交——gpt/gpt_openai_v1
+	// 形态，检查模型取支持模型首个。
 	return `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"` + name +
 		`","type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},` +
-		`"supportedModels":["gpt-4o-mini","gpt-4.1"],"status":"active","tags":["生产","主力"]}`
+		`"supportedModels":["gpt-4o-mini","gpt-4.1"],"status":"active","tags":["生产","主力"],` +
+		`"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
+		`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`
+}
+
+// b1GPTFragment 是 B1 断点批夹具的 §8 连接 + 健康检查三件套 JSON 片段
+//（gpt/gpt_openai_v1/chat_json 形态；healthCheckModel 必须属于载荷
+// supportedModels），供内联创建载荷拼接。
+const b1GPTFragment = `"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],` +
+	`"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"`
+
+// b1ConnectionsJSON 是 B1 断点批夹具的 §8 connections 片段构造器：单连接
+// gpt_openai_v1 形态（endpointModes 可变），供域感知媒体夹具复用。
+func b1ConnectionsJSON(endpointModes ...string) string {
+	list := ""
+	for index, mode := range endpointModes {
+		if index > 0 {
+			list += ","
+		}
+		list += `"` + mode + `"`
+	}
+	return `[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":[` + list + `],"enabled":true}]`
 }
 
 func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
@@ -553,8 +719,10 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatalf("detail: %d %v", code, detail)
 	}
 	detailData := dataMap(t, detail)
+	// B4 W2（设计 §8/§9.11）：provider_code 列已停写（行为键=vendor_code），
+	// detail 回显 providerCode 为空串属过渡期既定事实。
 	if detailData["name"] != "alpha" || detailData["ownerSystemAccountId"] != adminID ||
-		detailData["providerCode"] != "gpt" ||
+		detailData["providerCode"] != "" ||
 		detailData["status"] != "active" || detailData["configRevision"] != float64(1) {
 		t.Fatalf("detail contract: %v", detailData)
 	}
@@ -733,8 +901,8 @@ func TestAccountCreateValidation(t *testing.T) {
 		{"bad account type", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x4","type":"google_oauth"}`, 400, "供应商协议档案 OpenAI 官方协议 不支持账户类型 google_oauth"},
 		{"missing credentials", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"x5","type":"api_key","supportedModels":["gpt-4o-mini"]}`, 400, "Base URL不能为空"},
 		{"unknown provider", `{"providerCode":"provider-zzz","providerProtocolProfileId":"prof-gpt","name":"g2","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "不支持的供应商：provider-zzz"},
-		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
-		{"super and fallback", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"sf1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"superPriorityEnabled":true,"fallbackEnabled":true}`, 400, "超级优先和降级备用不能同时开启"},
+		{"unsupported health model", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"h1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"claude-3"}`, 400, "账户检查模型必须属于账户支持模型"},
+		{"super and fallback", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"sf1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"superPriorityEnabled":true,"fallbackEnabled":true}`, 400, "超级优先和降级备用不能同时开启"},
 		{"bad expires", `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"e1","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"accountExpiresAt":"yesterday"}`, 400, "账户套餐到期时间必须是有效时间字符串"},
 	}
 	// Enabled provider whose owner lacks a default group.
@@ -751,6 +919,8 @@ func TestAccountCreateValidation(t *testing.T) {
 		status  int
 		message string
 	}{"missing default group", `{"providerCode":"openai","providerProtocolProfileId":"prof-openai","name":"g3","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`, 400, "当前用户缺少供应商 openai 的启用默认分组"})
+	// B1 断点批：分组缺失臂先于三件套校验触发（分组解析在前），无需携带连接；
+	// 下方成功路径载荷统一补 b1GPTFragment。
 
 	for _, testCase := range cases {
 		code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", testCase.body)
@@ -762,7 +932,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	// Explicit group bound to another provider is rejected; same-provider
 	// explicit groups are honored.
 	code, wrongGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"wg","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"groupId":"grp-missing"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"wg","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"groupId":"grp-missing"}`)
 	if code != 400 || wrongGroup["message"] != "账户分组无效" {
 		t.Fatalf("wrong group: %d %v", code, wrongGroup)
 	}
@@ -770,7 +940,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-extra', ?, '扩展分组', 'gpt', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	code, okGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"groupId":"grp-extra"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],` + b1GPTFragment + `,"groupId":"grp-extra"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("explicit group create: %d %v", code, okGroup)
 	}
@@ -792,7 +962,7 @@ func TestAccountCreateValidation(t *testing.T) {
 	// Default creation status: pending_test + health-check notice + paused
 	// scheduling (Node's accountCreationStatusInput derivation).
 	code, pending := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"pending","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"]}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"pending","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GPTFragment+`}`)
 	if code != http.StatusCreated {
 		t.Fatalf("pending create: %d %v", code, pending)
 	}
@@ -807,7 +977,7 @@ func TestAccountCreateValidation(t *testing.T) {
 
 	// Expired package disables at creation with the account_expired marker.
 	code, expired := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"expired","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"status":"active","accountExpiresAt":"2000-01-01T00:00:00Z"}`)
+		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"expired","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],"status":"active","accountExpiresAt":"2000-01-01T00:00:00Z",`+b1GPTFragment+`}`)
 	if code != http.StatusCreated {
 		t.Fatalf("expired create: %d %v", code, expired)
 	}
@@ -1388,8 +1558,10 @@ func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
 		t.Fatalf("create: %d %v", code, payload)
 	}
 	id := dataMap(t, payload)["id"].(string)
-	if got := env.queryCell(t, `SELECT client_compatibility FROM accounts WHERE id = ?`, id); got != "codex_responses" {
-		t.Fatalf("gpt api_key 账户 client_compatibility = %q，期望 codex_responses", got)
+	// B4 W2（设计 §9.11）：client_compatibility 列退役，写侧派生值只进凭据
+	// 归一化（下方 responses_sse 断言保持）；列读取为迁移窗口默认空壳。
+	if got := env.queryCell(t, `SELECT client_compatibility FROM accounts WHERE id = ?`, id); got != "" {
+		t.Fatalf("gpt api_key 账户 client_compatibility = %q，期望空（列已退役）", got)
 	}
 	// 端点模式默认集与列语义同源：codex_responses 账户必须带 responses_sse。
 	sealed := env.queryCell(t, `SELECT credentials_encrypted FROM accounts WHERE id = ?`, id)

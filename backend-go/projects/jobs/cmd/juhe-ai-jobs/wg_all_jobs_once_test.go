@@ -31,13 +31,6 @@ var wgUnionBusinessSchema = []string{
       oauth_type TEXT,
       protocol_code TEXT,
       protocol_version TEXT,
-      -- 迁移窗口双列兼容：health-usage/balance-detect/xai-grok/list-
-      -- availability 任务族生产代码仍读 accounts 旧列（provider_code/
-      -- provider_protocol_profile_id/client_compatibility，各自读侧切片
-      -- 未落地），本 fixture 先保留旧列；对应切片完成 vendor_code 迁移后随删。
-      provider_code TEXT NOT NULL DEFAULT 'openai',
-      provider_protocol_profile_id TEXT,
-      client_compatibility TEXT,
       health_check_connection_id TEXT,
       health_check_model TEXT NOT NULL DEFAULT '',
       health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
@@ -141,14 +134,6 @@ var wgUnionBusinessSchema = []string{
       limits_json TEXT,
       effective_source_type TEXT,
       effective_source_team_id TEXT
-    )`,
-	`CREATE TABLE IF NOT EXISTS providers (code TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1)`,
-	`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (
-      id TEXT PRIMARY KEY,
-      provider_code TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      protocol_code TEXT NOT NULL,
-      protocol_version TEXT NOT NULL
     )`,
 	`CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,

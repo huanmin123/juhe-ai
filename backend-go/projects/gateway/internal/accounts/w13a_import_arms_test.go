@@ -518,7 +518,8 @@ func TestW13AImportCreateInputAndFullExecute(t *testing.T) {
 		"notes":                   "w13a 备注创建",
 		"tags":                    []any{"w13a-tag-a", " w13a-tag-a "},
 		"supportedModels":         []any{"gpt-4o-mini", "m-a", "u-a"},
-		"modelMappings":           []any{map[string]any{"sourceModel": "m-a", "sourceEndpointFamily": "chat_completions", "upstreamModel": "u-a", "upstreamEndpointFamily": "chat_completions"}},
+		// B4 W2（设计 §8）：映射条目须引用 targetConnectionPresetCode 且写入侧
+		// 解析连接行——导入面连接解析未迁移，映射不随导入载荷携带。
 		"temporaryUnavailableContinuousProbeEnabled": false,
 	})
 	result, err := env.store.ExecuteImport(context.Background(), w2NativeDoc(

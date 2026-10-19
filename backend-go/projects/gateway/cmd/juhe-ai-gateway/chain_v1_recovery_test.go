@@ -162,12 +162,16 @@ func TestGatewayChainGroupFallbackAfterFirstGroupExhausted(t *testing.T) {
 		fixture.systemAccount, fallbackCredentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_fb', ?, 'acc_fb', 1, ?)`,
 		fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_fb', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_fb', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：acc_fb 需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_fb", fallbackUpstream.URL)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_2', 'rs_1', ?, 'group_fb', 1, 1, 'active', ?)`, fixture.systemAccount, now)
 	// 主组账户改指 dead upstream（连接拒绝 → transport failure → 耗尽）。
 	seed(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": dead}), fixture.accountID)
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, dead)
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -204,6 +208,8 @@ func TestGatewayChainDispatchExhaustedRendersFixedCopy(t *testing.T) {
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": dead}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, dead)
 
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool")))
 	if err != nil {
@@ -503,6 +509,8 @@ func TestAuditCaptureLifecycleClosesOverChainRequest(t *testing.T) {
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL)
 
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool"))
 	deps.AuditLogEnabled = func() bool { return true }

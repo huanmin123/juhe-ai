@@ -102,7 +102,6 @@ func (p *BridgePreflightPort) ApplyContextStatePreflight(ctx context.Context, in
 		SystemAccountID: input.SystemAccountID,
 		APIKeyID:        input.APIKeyID,
 		GroupID:         input.GroupID,
-		GroupAccess:     input.GroupAccess,
 		Signal:          input.Signal,
 	})
 }
@@ -119,7 +118,6 @@ func (p *BridgePreflightPort) ApplyChatBridgeCompactPreflight(ctx context.Contex
 		SystemAccountID:            input.SystemAccountID,
 		APIKeyID:                   input.APIKeyID,
 		GroupID:                    input.GroupID,
-		GroupAccess:                input.GroupAccess,
 		RequestClientCompatibility: input.RequestClientCompatibility,
 		DispatchAccounts:           input.DispatchAccounts,
 		ActiveGatewaySettings:      input.ActiveGatewaySettings,

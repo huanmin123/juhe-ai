@@ -33,7 +33,13 @@ import (
 // chainSecretOptions mirrors OpenAIAccountSecretOptions (the hydration loads
 // the caller prefetched for the batch).
 type chainSecretOptions struct {
-	proxyProfiles      map[string]chainProxyProfileResolution
+	proxyProfiles map[string]chainProxyProfileResolution
+	// connectionModes 是单连接事实源（health_check_connection_id 指向的 enabled
+	// 连接优先，否则 enabled 连接按 id 升序首个，与候选窗口 connection_base_url
+	// 投影同口径）的 account_endpoint_modes 实际集合，按模型事实主体 ID 分桶
+	//（loadConnectionEndpointModesByAccountIds）。老数据未配 mode 时该桶缺失
+	// 或为空，端点模式投影回落既有 vendor 默认分支（兼容分支）。
+	connectionModes    map[string][]string
 	supportedModels    map[string][]string
 	modelMappings      map[string][]gatewayruntimecache.AccountModelMapping
 	apiKeyRuntimeState map[string][]gatewayruntimecache.AccountAPIKeyRuntimeSelectionState
@@ -101,6 +107,16 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	}
 
 	resourceAccountID := row.resourceAccountID()
+	// 单连接事实源（B4 第一批，设计 §2.1「Base URL 属于连接行」）：secret 的
+	// BaseURL 只读候选窗口带出的连接行 base_url（health_check_connection_id
+	// 指向的 enabled 连接优先，否则 enabled 连接按 id 升序首个）；凭据 JSON
+	// base_url 依赖解除。连接行缺失（设计 §2.1「每个账户至少 1 行」被破坏的
+	// 半成品数据）时 fail closed：沿用 undecryptable credentials 的既有错误
+	// 语义（nil without error，账户在 hydration 丢弃，不虚构协议默认 URL）。
+	baseURL := strings.TrimSpace(row.ConnectionBaseURL.String)
+	if baseURL == "" {
+		return nil, nil
+	}
 	apiKeyPoolEnabled := chainAccountAPIKeyPoolIsolationEnabled(
 		row.resourceVendorCode(), row.resourceProtocolCode(), row.resourceProtocolVersion(), resourceType, credentials)
 	resourceProxyProfileID := row.resourceProxyProfileID()
@@ -133,11 +149,12 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		}
 	}
 
-	providerCode := row.resourceProviderCode()
 	// 连接身份（供应商与上游协议面重构设计 §1.1/§2.1）：vendor/driver 按账户行
-	// 新列投影（授权实例经来源账户 resource_* 别名）；providerCode 过渡恒空。
-	// 行为键控（池隔离、端点模式归一、客户端兼容默认）统一按 vendor 维度
-	// （§8：账户连接身份=vendor_code），providerCode 不再作为行为键。
+	// 新列投影（授权实例经来源账户 resource_* 别名）。B4 W2 收口：候选行
+	// provider_code 过渡投影与 chainCandidateRow 过渡字段已删除，账户 secret
+	// 的 OpenAIAccountSecret.ProviderCode 投影位保持恒零值（运行时行为键统一
+	// 按 vendor 维度，§8：账户连接身份=vendor_code；该字段退役属后续账户
+	// secret 切片）。
 	vendorCode := row.resourceVendorCode()
 	connectionDriverCode := row.resourceConnectionDriverCode()
 	protocolCode := row.resourceProtocolCode()
@@ -147,7 +164,15 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	if row.ResourceProviderProtocolProfileID.Valid && row.ResourceProviderProtocolProfileID.String != "" {
 		providerProtocolProfileID = row.ResourceProviderProtocolProfileID.String
 	}
-	supportedEndpointModes := chainNormalizeGatewayEndpointModesForRuntime(anyToAnyList(credentials["supported_endpoint_modes"]), vendorCode, resourceType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion)
+	// 端点模式事实源（B4 第一批，设计 §2.1「所有模型/健康检查/媒体请求只读取
+	// 选定 account_connections.base_url 和 account_endpoint_modes」）：连接行
+	// account_endpoint_modes 实际集合优先（写入侧已按 domain∩preset 词表收
+	// 窄）；为空（老数据未配 mode 的迁移窗口行）回落既有凭据过滤 + vendor
+	// 默认分支（兼容分支，注释钉住——多连接多候选展开留后续批）。
+	supportedEndpointModes := options.connectionModes[resourceAccountID]
+	if len(supportedEndpointModes) == 0 {
+		supportedEndpointModes = chainNormalizeGatewayEndpointModesForRuntime(anyToAnyList(credentials["supported_endpoint_modes"]), vendorCode, resourceType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion)
+	}
 
 	secret := &gatewayruntimecache.OpenAIAccountSecret{
 		ID:                               row.ID,
@@ -155,7 +180,6 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		DispatchRevision:                 nullInt64Ptr(row.DispatchRevision),
 		VendorCode:                       vendorCode,
 		ConnectionDriverCode:             connectionDriverCode,
-		ProviderCode:                     providerCode,
 		ProviderProtocolProfileID:        providerProtocolProfileID,
 		ProtocolCode:                     protocolCode,
 		ProtocolVersion:                  protocolVersion,
@@ -189,7 +213,7 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		QualityScore:                     row.QualityScore,
 		QualityState:                     row.QualityState,
 		QualityEwmaFirstTokenMs:          row.QualityFirstTokenMs,
-		BaseURL:                          chainBaseURLOf(credentials, protocolCode, protocolVersion),
+		BaseURL:                          baseURL,
 		APIKey:                           apiKey,
 		APIKeys:                          apiKeys,
 		RefreshToken:                     anyStringPtr(credentials["refresh_token"]),
@@ -393,9 +417,12 @@ func chainCopyRuntimeCredentialValue(input, output map[string]any, key string) {
 	}
 }
 
-// chainBaseURLOf mirrors the archive baseUrl projection
-// (openai-account-selector.repository.ts): credentials.base_url wins, missing
-// or empty base_url falls back to defaultBaseUrlForProtocol.
+// chainBaseURLOf 过渡帮手（B4 第一批起 secret 装配不再调用）：凭据 JSON
+// base_url 优先、缺失回落协议默认 URL 的旧投影，仅剩媒体任务面
+// （chain_media_video.go hydrateAccount）一个消费方——该读取面的连接事实源
+// 转换（其 accounts 查询仍带已删列 provider_protocol_profile_id）与消费方
+// 迁移归媒体任务面切片同批处理；secret 单连接事实源语义见
+// openAIAccountSecretFromRow（连接行缺失 fail closed，不虚构协议默认 URL）。
 func chainBaseURLOf(credentials map[string]any, protocolCode, protocolVersion string) string {
 	if base, ok := credentials["base_url"].(string); ok && base != "" {
 		return base

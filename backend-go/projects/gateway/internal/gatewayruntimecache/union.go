@@ -52,9 +52,12 @@ var (
 )
 
 // GroupModelUnionEntry 是分组模型并集的缓存载荷：模型名集合 + 有效期界
-// （设计 §6.3）。
+// （设计 §6.3）。Vendors（B4 W2，供应商与上游协议面重构设计 §2.1/§8）是并集
+// 成员资源账户的去重 vendor_code 集（generic_http 账户空串不入集）：绑定行
+// 已无 provider 维度，/v1/models 目录字典（并集设计 §4.9）改按该集装载。
 type GroupModelUnionEntry struct {
 	Models     []string
+	Vendors    []string
 	ValidUntil time.Time
 }
 
@@ -63,6 +66,9 @@ func (e GroupModelUnionEntry) Clone() GroupModelUnionEntry {
 	cloned := e
 	if e.Models != nil {
 		cloned.Models = append([]string(nil), e.Models...)
+	}
+	if e.Vendors != nil {
+		cloned.Vendors = append([]string(nil), e.Vendors...)
 	}
 	return cloned
 }
@@ -83,6 +89,7 @@ type GroupModelUnionLoader interface {
 // sharedGroupModelUnionEntry 是共享缓存的 JSON 载荷。
 type sharedGroupModelUnionEntry struct {
 	Models     []string  `json:"models"`
+	Vendors    []string  `json:"vendors,omitempty"`
 	ValidUntil time.Time `json:"validUntil"`
 }
 
@@ -299,7 +306,7 @@ func (s *Service) publishUnionLoad(load *unionLoad, cacheKey, versionKey string,
 	if sharedSet {
 		ctx, cancel := context.WithTimeout(context.Background(), unionSharedCacheWriteTimeout)
 		defer cancel()
-		payload := sharedGroupModelUnionEntry{Models: entry.Models, ValidUntil: entry.ValidUntil}
+		payload := sharedGroupModelUnionEntry{Models: entry.Models, Vendors: entry.Vendors, ValidUntil: entry.ValidUntil}
 		if setErr := s.opts.Shared.Cache(versionKey).Set(ctx, cacheKey, payload, sharedTTL); setErr != nil {
 			s.logSharedFailure("gateway_group_model_union_shared_cache_write_failed", setErr)
 		}
@@ -349,7 +356,7 @@ func getSharedGroupModelUnion(ctx context.Context, shared SharedCache, cacheKey 
 	if err != nil || !ok {
 		return GroupModelUnionEntry{}, false, err
 	}
-	return GroupModelUnionEntry{Models: decoded.Models, ValidUntil: decoded.ValidUntil}, true, nil
+	return GroupModelUnionEntry{Models: decoded.Models, Vendors: decoded.Vendors, ValidUntil: decoded.ValidUntil}, true, nil
 }
 
 // cleanupUnionSharedBucket 异步尽力回收旧代共享桶：桶名含旧 token/generation，

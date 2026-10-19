@@ -32,6 +32,7 @@ func w2NativeDoc(accounts, proxies []map[string]any) map[string]any {
 }
 
 // w2APIKeyAccount 构造一条能通过全链路校验的 openai api_key 导入账户。
+// B1 断点批（设计 §8 wire schema）：连接集合与健康检查三件套显式提交。
 func w2APIKeyAccount(name, groupName string) map[string]any {
 	return map[string]any{
 		"ref":                       "acc-" + name,
@@ -41,6 +42,15 @@ func w2APIKeyAccount(name, groupName string) map[string]any {
 		"type":                      "api_key",
 		"status":                    "active",
 		"groupName":                 groupName,
+		"connections": []any{map[string]any{
+			"connectionPresetCode": "generic_openai_v1",
+			"baseUrl":              "https://api.openai.com/v1",
+			"endpointModes":        []any{"chat_json", "chat_sse"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "generic_openai_v1",
+		"healthCheckEndpointMode":         "chat_json",
+		"healthCheckModel":                "gpt-4o-mini",
 		"credentials": map[string]any{
 			"api_key":  "sk-import-" + name,
 			"base_url": "https://api.openai.com/v1",
@@ -514,7 +524,8 @@ func TestW2ImportConfirmExecutesPlan(t *testing.T) {
 		`"proxies":[{"ref":"p1","name":"导入代理","type":"socks5","host":"proxy.example.com","port":1080}],` +
 		`"accounts":[{"ref":"a1","name":"导入账户","providerCode":"openai","providerProtocolProfileId":"` + openAICompatibleProfileID + `",` +
 		`"type":"api_key","status":"active","groupName":"导入分组","proxyRef":"p1",` +
-		`"credentials":{"api_key":"sk-import-1","base_url":"https://api.openai.com/v1"}}]},` +
+		`"credentials":{"api_key":"sk-import-1","base_url":"https://api.openai.com/v1"},` +
+		`"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}]},` +
 		`"options":{"createMissingGroups":true,"createMissingProxies":true,"skipDuplicates":true}}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", body)
 	if code != http.StatusOK {
@@ -604,7 +615,7 @@ func TestW2ImportMediaDomainPreservesPendingTest(t *testing.T) {
 	env := newTestEnv(t)
 	seedOpenAICompatibleProvider(t, env)
 	env.login(t, "root", "root-pass", "super_admin")
-	body := `{"data":{"type":"` + accountImportProtocolType + `","version":1,"accounts":[{"ref":"video-import","name":"导入视频账户","providerCode":"openai","providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active","groupName":"导入视频分组","credentials":{"api_key":"sk-import-video-1","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["video_create"]}}]},"options":{"createMissingGroups":true,"createMissingProxies":false,"skipDuplicates":true}}`
+	body := `{"data":{"type":"` + accountImportProtocolType + `","version":1,"accounts":[{"ref":"video-import","name":"导入视频账户","providerCode":"openai","providerProtocolProfileId":"` + openAICompatibleProfileID + `","type":"api_key","status":"active","groupName":"导入视频分组","credentials":{"api_key":"sk-import-video-1","base_url":"https://api.openai.com/v1","supported_endpoint_modes":["video_create"]},"connections":[{"connectionPresetCode":"generic_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["video_create","video_get","video_content","video_cancel"],"enabled":true}],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"video_create","healthCheckModel":"gpt-4o-mini"}]},"options":{"createMissingGroups":true,"createMissingProxies":false,"skipDuplicates":true}}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", body)
 	if code != http.StatusOK {
 		t.Fatalf("媒体账户导入确认失败：%d %v", code, payload)

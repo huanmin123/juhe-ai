@@ -223,22 +223,37 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 	}
 
 	// Relations: models, tags and mappings in the Node UNION ordering.
+	// 映射行走 account_entry_mappings 目标形态（B4 W2，设计 §5.1）：upstream
+	// 名经 target_model_id JOIN models.upstream_model 解析、target 家族即
+	// target_endpoint_family、目标连接只携带账户内自然键 preset code（§8：
+	// 连接 ID 永不出库）。克隆语义：读出的映射行属于源账户——克隆体写入时由
+	// replaceAccountModelMappings 按「克隆体自身的同 preset enabled 连接」
+	// 重新解析（§8 preset 是账户内自然键，连接行不跨账户引用）；克隆体尚未
+	// 建立同名连接时按 mapping_target_unsupported 显式拒绝，不做跨账户直连
+	// 回填的兼容层。
 	relationRows, err := s.db.QueryContext(ctx, s.bind(`SELECT 'mapping' AS relation_kind,
-			account_model_mappings.source_model AS value_a,
-			account_model_mappings.source_endpoint_family AS value_b,
-			account_model_mappings.upstream_model AS value_c,
-			account_model_mappings.upstream_endpoint_family AS value_d,
-			account_model_mappings.enabled AS enabled
-		FROM `+s.table("account_model_mappings")+` account_model_mappings
-		WHERE account_model_mappings.account_id = ?
+			account_entry_mappings.source_model AS value_a,
+			account_entry_mappings.source_endpoint_family AS value_b,
+			models.upstream_model AS value_c,
+			account_entry_mappings.target_endpoint_family AS value_d,
+			account_entry_mappings.enabled AS enabled,
+			account_connections.connection_preset_code AS value_e
+		FROM `+s.table("account_entry_mappings")+` account_entry_mappings
+		INNER JOIN `+s.table("account_connections")+` account_connections
+			ON account_connections.id = account_entry_mappings.target_connection_id
+		INNER JOIN `+s.table("models")+` models
+			ON models.id = account_entry_mappings.target_model_id
+		WHERE account_entry_mappings.account_id = ?
 		UNION ALL
-		SELECT 'model' AS relation_kind, account_supported_models.model AS value_a,
-			NULL AS value_b, NULL AS value_c, NULL AS value_d, NULL AS enabled
+		SELECT 'model' AS relation_kind, models.upstream_model AS value_a,
+			NULL AS value_b, NULL AS value_c, NULL AS value_d, NULL AS enabled, NULL AS value_e
 		FROM `+s.table("account_supported_models")+` account_supported_models
+		INNER JOIN `+s.table("models")+` models
+			ON models.id = account_supported_models.model_id
 		WHERE account_supported_models.account_id = ?
 		UNION ALL
 		SELECT 'tag' AS relation_kind, account_tags.id AS value_a, account_tags.name AS value_b,
-			NULL AS value_c, NULL AS value_d, NULL AS enabled
+			NULL AS value_c, NULL AS value_d, NULL AS enabled, NULL AS value_e
 		FROM `+s.table("account_tag_bindings")+` account_tag_bindings
 		INNER JOIN `+s.table("account_tags")+` account_tags
 			ON account_tags.id = account_tag_bindings.tag_id
@@ -254,9 +269,9 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 	mappings := []ModelMapping{}
 	for relationRows.Next() {
 		var kind, valueA string
-		var valueB, valueC, valueD sql.NullString
+		var valueB, valueC, valueD, valueE sql.NullString
 		var enabled sql.NullInt64
-		if err := relationRows.Scan(&kind, &valueA, &valueB, &valueC, &valueD, &enabled); err != nil {
+		if err := relationRows.Scan(&kind, &valueA, &valueB, &valueC, &valueD, &enabled, &valueE); err != nil {
 			relationRows.Close()
 			return nil, false, err
 		}
@@ -267,11 +282,12 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			tags = append(tags, TagSummary{ID: valueA, Name: valueB.String})
 		case "mapping":
 			mappings = append(mappings, ModelMapping{
-				SourceModel:            valueA,
-				SourceEndpointFamily:   valueB.String,
-				UpstreamModel:          valueC.String,
-				UpstreamEndpointFamily: valueD.String,
-				Enabled:                boolPtr(enabled.Int64 == 1),
+				SourceModel:                valueA,
+				SourceEndpointFamily:       valueB.String,
+				UpstreamModel:              valueC.String,
+				UpstreamEndpointFamily:     valueD.String,
+				TargetConnectionPresetCode: valueE.String,
+				Enabled:                    boolPtr(enabled.Int64 == 1),
 			})
 		}
 	}

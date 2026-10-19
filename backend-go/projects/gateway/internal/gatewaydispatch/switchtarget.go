@@ -24,12 +24,11 @@ import (
 // SwitchTarget 是请求级、不可变的上游目标快照（设计文档 §2.1）。contextContract
 // 字段暂缓（ConvertedContext 独立结构化同为暂缓项）。
 type SwitchTarget struct {
-	// ProviderCode 是冻结时账户的供应商；非 Chat 目标用于同供应商硬约束。
-	// 迁移过渡态（供应商解耦切片）：账户投影已拆 provider 维度，冻结源与
-	// 账户侧现均为恒空串，:122 一带的同供应商比较恒真、约束实际失效。收口
-	// 前置：切号冻结目标改按 vendor_code 冻结与比较（与 hybrid 入口映射门
-	// 同批，见 gatewayopenai/mapping.go isHybridProviderCode 注释）。
-	ProviderCode string
+	// VendorCode 是冻结时账户的连接身份（供应商与上游协议面重构设计 §2.1：
+	// accounts.vendor_code，generic_http 账户为空串）；非 Chat 目标用于同供应
+	// 商硬约束（B4 W2 收口：字段与比较均按 vendor 域，替代拆掉 provider 维度
+	// 后恒真化的过渡门）。
+	VendorCode string
 	// ProviderProtocolProfileID 是冻结时账户的协议 profile；本次不做额外
 	// 判定（同供应商内 profile 差异由既有链路处理）。
 	ProviderProtocolProfileID string
@@ -121,9 +120,11 @@ func accountServesSwitchTarget(account AccountCandidate, in SwitchTargetFilterIn
 			return false
 		}
 	}
-	// 门 2：供应商——Responses 等非 Chat 目标锁定冻结时供应商。
+	// 门 2：供应商——Responses 等非 Chat 目标锁定冻结时 vendor（B4 W2 收口：
+	// 账户投影与冻结源同按 vendor_code 比较；generic_http 账户 vendor 空串，
+	// 与空目标同样满足 EqualFold——无 vendor 维度的账户间不互斥）。
 	if !strings.EqualFold(strings.TrimSpace(target.UpstreamEndpointFamily), gatewayrouting.EndpointFamilyChatCompletions) {
-		if !strings.EqualFold(strings.TrimSpace(account.ProviderCode), strings.TrimSpace(target.ProviderCode)) {
+		if !strings.EqualFold(strings.TrimSpace(account.VendorCode), strings.TrimSpace(target.VendorCode)) {
 			return false
 		}
 	}

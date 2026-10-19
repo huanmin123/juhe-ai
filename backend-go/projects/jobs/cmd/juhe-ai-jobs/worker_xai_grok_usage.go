@@ -1,7 +1,7 @@
 package main
 
 // xai-grok-usage-refresh 组合根适配器（AI 账户 Grok 用量快照设计 §4，Go 新增
-// 任务族，归档 Node 无对应 scheduled job）：为 provider_code='xai' 且
+// 任务族，归档 Node 无对应 scheduled job）：为 vendor_code='xai' 且
 // type='oauth' 的账户周期性调用上游用量端点并落快照到 stats 库
 // account_usage_snapshots（kind='xai_grok'，source='xai_grok_billing'）。
 //   - 每轮全量扫描候选（xai oauth 账户数少，无 Node 式分页游标与候选租约，
@@ -263,7 +263,7 @@ func (r *xaiGrokUsageRuntime) listCandidates(ctx context.Context) ([]xaiGrokUsag
 	query := fmt.Sprintf(`
       SELECT id, system_account_id, credentials_encrypted, proxy_profile_id
       FROM %s
-      WHERE provider_code = ?
+      WHERE COALESCE(vendor_code, '') = ?
         AND type = 'oauth'
         AND status = 'active'
         AND deleted_at IS NULL

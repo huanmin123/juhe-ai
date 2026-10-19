@@ -249,8 +249,10 @@ func (s *Sink) SendGeminiModelsGatewayResponse(input gatewaypreauth.ModelsRespon
 }
 
 func (s *Sink) sendModelsGatewayResponse(input gatewaypreauth.ModelsResponseInput, protocol string) error {
-	providerCodes := normalizedBindingProviderCodes(input.Bindings)
-	providerCode := modelsUsageProviderCode(providerCodes, input.UsageContext.ProviderCode)
+	// 供应商解耦 B4 W2：绑定行已无 provider 维度（GatewayModelBinding
+	// .ProviderCode 删除），用量归因回落 usage context 的 providerCode（空则
+	// openai_compatible 默认——与绑定维度恒空时期的实际取值同口径）。
+	providerCode := modelsUsageProviderCode(nil, input.UsageContext.ProviderCode)
 	responsePayload, err := s.sendModelsGatewayResponsePayload(input, protocol)
 	if err != nil {
 		// 装载失败：不写 HTTP、不 finalize、不记成功用量，错误原样传给
@@ -357,16 +359,6 @@ func (s *Sink) loadCatalog(input gatewaypreauth.ModelsResponseInput, systemAccou
 		ctx = context.Background()
 	}
 	return s.Deps.ModelCatalog.ListGatewayKeyModels(ctx, systemAccountID, input.Bindings)
-}
-
-// normalizedBindingProviderCodes 返回绑定 provider code 的去重规范化序列
-// （usage 归因沿用首个 provider，行为与原 ProviderCodes 路径一致）。
-func normalizedBindingProviderCodes(bindings []gatewaypreauth.GatewayModelBinding) []string {
-	codes := make([]string, 0, len(bindings))
-	for _, binding := range bindings {
-		codes = append(codes, binding.ProviderCode)
-	}
-	return normalizedProviderCodeList(codes)
 }
 
 func normalizedProviderCodeList(providerCodes []string) []string {

@@ -77,8 +77,13 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, id, "2026-10-04T00:00:00.000Z")
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'sora-2', ?)`,
+	// B4 第一批目标形态：支持模型经 models 单表 + model_id 外键解析。
+	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","responses_json","responses_sse","video_create"]', '2026-10-04T00:00:00.000Z', '2026-10-04T00:00:00.000Z')`)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'sora-2', 'mdl_sora2', ?)`,
 		id, "2026-10-04T00:00:00.000Z")
+	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行（credentials.base_url 不再消费）。
+	chainSeedAccountConnection(t, db, id, baseURL, modes...)
 }
 
 // mediaVideoClient 是带网关 API Key 的客户端请求构造。
@@ -1045,11 +1050,14 @@ func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, bas
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_hyb_vid', ?, 'acc_hyb_vid', 1, ?)`,
 		fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_hyb_vid', 'hybrid', 'sora-2', ?)`, now)
-	seed(`INSERT INTO account_model_mappings (
-			account_id, provider_code, source_model, source_endpoint_family,
-			upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
-		) VALUES ('acc_hyb_vid', 'hybrid', 'sora-2-pro', 'video_generation', 'sora-2', 'video_generation', 1, ?, ?)`, now, now)
+	// B4 第一批目标形态：支持模型 + 入口映射走 models/account_entry_mappings。
+	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_hyb_sora2', 'gpt', 'sora-2', 'sora-2', 'global', 'active', '["chat_json","chat_sse","video_create","video_get","video_content","video_cancel"]', ?, ?)`, now, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_hyb_vid', 'hybrid', 'sora-2', 'mdl_hyb_sora2', ?)`, now)
+	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('entmap_hyb_sora2pro', 'acc_hyb_vid', 'sora-2-pro', 'video_generation', 'conn_acc_hyb_vid', 'mdl_hyb_sora2', 'video_generation', 1, ?, ?)`, now, now)
+	// B4 第一批单连接事实源：BaseURL 与 mode 集改连接行。
+	chainSeedAccountConnection(t, db, "acc_hyb_vid", baseURL, "chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel")
 	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES ('rs_hyb_vid', ?, '混合媒体', 'normal', NULL, 'active')`, fixture.systemAccount)
 	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
 		VALUES ('rsg_hyb_vid', 'rs_hyb_vid', ?, 'group_hyb_vid', 0, 1, 'active', ?)`, fixture.systemAccount, now)

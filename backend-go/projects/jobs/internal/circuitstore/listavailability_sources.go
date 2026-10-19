@@ -772,7 +772,7 @@ func (l *ProjectionItemLoader) loadAPIKeyRuntimeSummaries(ctx context.Context, a
 			accountType          string
 		)
 		err := l.db.QueryRowContext(ctx, `
-        SELECT a.credentials_encrypted, COALESCE(src.provider_code, a.provider_code),
+        SELECT a.credentials_encrypted, COALESCE(src.vendor_code, a.vendor_code, ''),
           COALESCE(src.protocol_code, a.protocol_code), COALESCE(src.protocol_version, a.protocol_version),
           COALESCE(src.type, a.type)
         FROM `+l.table("accounts")+` a

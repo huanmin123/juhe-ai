@@ -110,12 +110,12 @@ func TestWeProvidersCreateAudioModeModel(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("audio create: %d %v", code, created)
 	}
-	var mode, protocols string
-	if err := env.db.QueryRow(`SELECT mode, supported_api_protocols_json FROM custom_provider_models WHERE model = ?`, "my-tts").Scan(&mode, &protocols); err != nil {
+	var protocols string
+	if err := env.db.QueryRow(`SELECT supported_endpoint_modes_json FROM models WHERE public_model = ?`, "my-tts").Scan(&protocols); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "audio" || protocols != `["audio_speech"]` {
-		t.Fatalf("audio row persisted mode=%q protocols=%s", mode, protocols)
+	if protocols != `["audio_speech"]` {
+		t.Fatalf("audio row persisted protocols=%s", protocols)
 	}
 
 	// STT 协议同样合法（同一枚举集合）。
@@ -146,12 +146,12 @@ func TestWeProvidersCreateVideoModeModel(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("video draft create: %d %v", code, created)
 	}
-	var mode, protocols string
-	if err := env.db.QueryRow(`SELECT mode, supported_api_protocols_json FROM custom_provider_models WHERE model = ?`, "my-sora").Scan(&mode, &protocols); err != nil {
+	var protocols string
+	if err := env.db.QueryRow(`SELECT supported_endpoint_modes_json FROM models WHERE public_model = ?`, "my-sora").Scan(&protocols); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "video" || protocols != `["video"]` {
-		t.Fatalf("video row persisted mode=%q protocols=%s", mode, protocols)
+	if protocols != `["video_cancel","video_content","video_create","video_get"]` {
+		t.Fatalf("video row persisted protocols=%s", protocols)
 	}
 
 	// 启用态（默认 status=active）被价格完整性校验挡住：视频分类无管理面

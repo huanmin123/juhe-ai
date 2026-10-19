@@ -208,7 +208,6 @@ type ContextStatePreflightInput struct {
 	SystemAccountID string
 	APIKeyID        string
 	GroupID         string
-	GroupAccess     gatewayruntimecache.GroupUsageAccessMetadata
 	Signal          context.Context
 }
 
@@ -229,7 +228,7 @@ func (s *ChatBridgeStateService) ApplyContextStatePreflight(ctx context.Context,
 		return false, err
 	}
 	canonicalBody := cloneJSONMapShallow(body)
-	boundary := codexContextBoundary(input.SystemAccountID, input.APIKeyID, input.GroupID, input.GroupAccess)
+	boundary := codexContextBoundary(input.SystemAccountID, input.APIKeyID, input.GroupID)
 	previousResponseID := normalizedOptionalText(body["previous_response_id"])
 	if requestKind == RequestKindCompact {
 		previousResponseKind := PreviousKindNone
@@ -964,12 +963,17 @@ func isInternalCodexBridgeResponseID(value string) bool {
 	return internalBridgeResponseIDPattern.MatchString(value)
 }
 
-func codexContextBoundary(systemAccountID, apiKeyID, groupID string, groupAccess gatewayruntimecache.GroupUsageAccessMetadata) CodexContextStateBoundary {
+// codexContextBoundary mirrors the Node boundary construction. 供应商解耦 B4
+// W2：分组访问元数据的过渡 ProviderCode 已删除，boundary 不再读取该位；
+// CodexContextStateBoundary.ProviderCode 作为持久化边界维度保留（sqlite/pg
+// 行列 provider_code TEXT NOT NULL），恒写空串——与拆列前的实际行为一致，
+// 拆列属存储 schema 迁移，不在本批。
+func codexContextBoundary(systemAccountID, apiKeyID, groupID string) CodexContextStateBoundary {
 	return CodexContextStateBoundary{
 		SystemAccountID: systemAccountID,
 		APIKeyID:        apiKeyID,
 		GroupID:         groupID,
-		ProviderCode:    groupAccess.ProviderCode,
+		ProviderCode:    "",
 	}
 }
 
@@ -1440,11 +1444,7 @@ func projectRuntimeAccount(account gatewayruntimecache.OpenAIAccountSecret) *gat
 		})
 	}
 	return &gatewayopenai.RuntimeAccount{
-		ModelMappings:             mappings,
-		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
-		ProtocolCode:              account.ProtocolCode,
-		ProtocolVersion:           account.ProtocolVersion,
+		ModelMappings: mappings,
 	}
 }
 

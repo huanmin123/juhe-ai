@@ -81,8 +81,9 @@ func TestW9CSendAuthenticatedModelsGatewayResponse(t *testing.T) {
 			SystemAccountID: "acc-1",
 			ProviderCode:    "openai",
 		},
+		// B4 W2：绑定行只携带分组维度。
 		Bindings: []GatewayModelBinding{
-			{ProviderCode: "OpenAI"}, {ProviderCode: "openai"}, {ProviderCode: ""},
+			{GroupID: "g1"}, {GroupID: "g1"}, {GroupID: ""},
 		},
 		Protocol:  "openai",
 		StartedAt: 1000,
@@ -139,7 +140,7 @@ func TestW9CSendModelsGatewayResponseProtocolVariants(t *testing.T) {
 		input := gatewaypreauth.ModelsResponseInput{
 			Res:          gatewaypreauth.NewTrackingWriter(recorder),
 			AuditCapture: audit,
-			Bindings:     []GatewayModelBinding{{ProviderCode: "gemini"}},
+			Bindings:     []GatewayModelBinding{{GroupID: "g1"}},
 			Protocol:     tc.protocol,
 		}
 		switch tc.protocol {

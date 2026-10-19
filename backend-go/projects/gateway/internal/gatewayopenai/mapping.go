@@ -20,13 +20,14 @@ type AccountModelMapping struct {
 	RuntimeRouteRuleID string
 }
 
-// RuntimeAccount mirrors OpenAIModelMappingRuntimeAccount.
+// RuntimeAccount mirrors OpenAIModelMappingRuntimeAccount. 供应商解耦 B4 W2
+// 收口：ProviderCode / ProviderProtocolProfileID / ProtocolCode /
+// ProtocolVersion 过渡投影已随 hybrid 门、旧 profile 排除与 OpenAI 档案亲和
+// 判定一并拆除（设计 §2 终态：映射 admissible 只由映射行决定，§5.2 矩阵外
+// family 与 mode 合法性由写侧 validateEntryMappingFamilyLinkage 保证）；
+// account 参数仅保留 nil 语义（无模型事实主体恒不可执行）。
 type RuntimeAccount struct {
-	ModelMappings             []AccountModelMapping
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
+	ModelMappings []AccountModelMapping
 }
 
 // sourceEndpointFamilies are the families eligible for model mapping
@@ -49,36 +50,6 @@ func isAccountModelMappingSourceEndpointFamily(value string) bool {
 	return false
 }
 
-// isOpenAIProtocolProfile mirrors isOpenAIProtocolProfile.
-func isOpenAIProtocolProfile(account *RuntimeAccount) bool {
-	return gatewayNormalize(account.ProtocolCode) == ProtocolCode &&
-		gatewayNormalize(account.ProtocolVersion) == ProtocolVersion
-}
-
-// isHybridProviderCode 读 RuntimeAccount.ProviderCode 过渡字段（供应商解耦
-// 后账户行 provider_code 已退役，组合根投影仍随行携带候选过渡值）。设计 §2
-// 终态（跨协议只由映射行与目标账户能力决定）要求拆除本门，但替代性写侧
-// family 联动校验（account_entry_mappings）尚未落地，此刻拆门会把未校验的
-// 跨协议映射行对全部账户放开——门与 chain_driver 的过渡投影同批保留，待
-// 模型目录/账户映射运行时切片一并收口。
-func isHybridProviderCode(account *RuntimeAccount) bool {
-	return gatewayNormalize(account.ProviderCode) == "hybrid"
-}
-
-// isProfileExcludedSourceFamily 是协议档案排除的唯一判定源：Gemini
-// OpenAI-chat 档案账户不接受 anthropic messages 源族映射（账户模型映射
-// 代码侧第③道判定，先于恒等拒绝与转换矩阵）。
-func isProfileExcludedSourceFamily(account *RuntimeAccount, sourceEndpointFamily string) bool {
-	return account != nil &&
-		account.ProviderProtocolProfileID == GeminiOpenAIChatProfileID &&
-		sourceEndpointFamily == FamilyAnthropicMessages
-}
-
-func gatewayNormalize(value string) string {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	return normalized
-}
-
 // ResolveAccountModelMapping mirrors resolveOpenAIAccountModelMapping.
 func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceEndpointFamily string) *gatewayproto.ResolvedModelMapping {
 	model := strings.TrimSpace(requestedModel)
@@ -86,9 +57,6 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 		return nil
 	}
 	if !isAccountModelMappingSourceEndpointFamily(sourceEndpointFamily) {
-		return nil
-	}
-	if isProfileExcludedSourceFamily(account, sourceEndpointFamily) {
 		return nil
 	}
 	mappings := accountMappings(account)
@@ -107,8 +75,10 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 		return nil
 	}
 	// 命中行之后的三道判定（恒等拒绝、转换矩阵，连同已满足的启用、源族
-	// 可接受集、档案排除）统一走 IsAdmissibleModelMapping 唯一函数源；
-	// 请求级预检与循环内启用跳过保持既有早退语义不变。
+	// 可接受集）统一走 IsAdmissibleModelMapping 唯一函数源；请求级预检与
+	// 循环内启用跳过保持既有早退语义不变。旧协议档案排除（Gemini
+	// OpenAI-chat 档案拒绝 anthropic messages 源族）已随供应商解耦 B4 W2
+	// 拆除：写侧 family 联动校验（account_entry_mappings §5.3）是替代约束。
 	if !IsAdmissibleModelMapping(*mapping, account) {
 		return nil
 	}
@@ -124,12 +94,15 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 }
 
 // IsAdmissibleModelMapping 判定单条账户模型映射行在给定账户（模型事实主体）
-// 上是否为运行时可执行的映射：启用 + 源端点族在可接受集 + 协议档案排除 +
-// 非恒等改写 + 运行时转换矩阵支持（网关模型列表账户并集设计 4.2）。与
+// 上是否为运行时可执行的映射：启用 + 源端点族在可接受集 + 非恒等改写 + 运行
+// 时转换矩阵支持（网关模型列表账户并集设计 4.2）。与
 // ResolveAccountModelMapping 内联的同一组判定共享唯一函数源；矩阵演化时
-// 两侧自动同步，禁止在任何调用方复刻第二份判定。判定只依赖映射行与账户
-// 协议档案/provider，可静态执行；account 为 nil 时无模型事实主体，与
-// ResolveAccountModelMapping（nil 账户解析不到任何行）保持一致返回 false。
+// 两侧自动同步，禁止在任何调用方复刻第二份判定。判定只依赖映射行，可静态
+// 执行；account 为 nil 时无模型事实主体，与 ResolveAccountModelMapping
+// （nil 账户解析不到任何行）保持一致返回 false。跨协议映射不再按
+// provider/provider 档案排除 source family（供应商解耦 B4 W2 拆门）：映射行
+// family/mode 合法性由写侧 validateEntryMappingFamilyLinkage（§5.2 矩阵 +
+// §5.3 mode 交集）在保存时保证，运行时按账户声明放行。
 func IsAdmissibleModelMapping(mapping AccountModelMapping, account *RuntimeAccount) bool {
 	if account == nil {
 		return false
@@ -138,9 +111,6 @@ func IsAdmissibleModelMapping(mapping AccountModelMapping, account *RuntimeAccou
 		return false
 	}
 	if !isAccountModelMappingSourceEndpointFamily(mapping.SourceEndpointFamily) {
-		return false
-	}
-	if isProfileExcludedSourceFamily(account, mapping.SourceEndpointFamily) {
 		return false
 	}
 	if mapping.UpstreamModel == mapping.SourceModel && mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
@@ -165,12 +135,9 @@ func isOpenAIModelMappingRuntimeConversionSupported(mapping *AccountModelMapping
 		(source == FamilyGeminiStreamGenerate && upstream == FamilyGeminiGenerateContent) {
 		return true
 	}
-	if source == FamilyResponses && upstream == FamilyChatCompletions && isOpenAIProtocolProfile(account) {
-		return true
-	}
-	if !isHybridProviderCode(account) {
-		return false
-	}
+	// 跨协议转换矩阵（设计 §2 终态，B4 W2 拆门）：hybrid provider 门与
+	// OpenAI 档案亲和判定已拆除，矩阵内 family 对按账户声明放行；矩阵之外
+	// 的 family 对由写侧 §5.2 校验拒绝，不会出现在 account_entry_mappings。
 	switch {
 	case source == FamilyResponses && upstream == FamilyChatCompletions:
 		return true

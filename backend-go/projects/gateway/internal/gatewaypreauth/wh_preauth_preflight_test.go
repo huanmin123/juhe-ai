@@ -24,10 +24,10 @@ func whRuntimeCacheFor(accounts []gatewayruntimecache.OpenAIAccountSecret) *fake
 				NoAvailableAccountWaitTimeoutSeconds: 30,
 				ImageRequestWallTimeoutSeconds:       300,
 			},
-			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "owner"},
+			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: "owner"},
 			Accounts:    accounts,
 		}},
-		groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "owner"},
+		groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: "owner"},
 		accounts:    accounts,
 	}
 }
@@ -247,9 +247,9 @@ func TestWhPreflightImageLaneUpgrade(t *testing.T) {
 					NoAvailableAccountWaitTimeoutSeconds: 30,
 					ImageRequestWallTimeoutSeconds:       120,
 				},
-				GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+				GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{},
 			}},
-			groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+			groupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{},
 			catalog: []gatewayruntimecache.ProviderModelCatalogItem{{
 				ProviderCode: "openai", Model: "catalog-model",
 				SupportedAPIProtocols: []string{"images"},

@@ -509,12 +509,15 @@ func TestGKMUnionLoaderMappingValidity(t *testing.T) {
 	entry := gkmLoad(t, loader, "sys_owner", "gkm_map")
 	gkmAssertModels(t, entry, "gpt-test", "m-cross", "m-fam", "m-gemini")
 
-	// 协议档案排除（Gemini OpenAI-chat 档案 + anthropic messages 源族）。
+	// B4 W2 拆门：Gemini OpenAI-chat 档案 + anthropic messages 源族不再被
+	// 协议档案前置排除（§5.2 矩阵内族对按账户声明放行，替代约束为写侧
+	// §5.3 family 联动校验）；矩阵外族对（chat_completions → responses 之外的
+	// 逆向对，如 messages → responses）仍被矩阵拒绝。
 	gkmSeedGroup(t, db, "gkm_profile", "sys_owner", "openai", 1)
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_gemini", owner: "sys_owner", profile: "profile_gemini_openai_chat_v1beta"})
 	gkmSeedSupportedModel(t, db, "acc_gemini", "openai", "gpt-x")
-	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-excluded", "messages", "gpt-x", "chat_completions", 1)
-	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-kept", "chat_completions", "gpt-x", "chat_completions", 1)
+	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-kept", "messages", "gpt-x", "chat_completions", 1)
+	gkmSeedMapping(t, db, "acc_gemini", "openai", "m-gem-matrix-out", "chat_completions", "gpt-x", "responses", 1)
 	gkmSeedBinding(t, db, "gkm_profile", "sys_owner", "acc_gemini", "", 1)
 	entry = gkmLoad(t, loader, "sys_owner", "gkm_profile")
 	gkmAssertModels(t, entry, "gpt-x", "m-gem-kept")
@@ -655,14 +658,15 @@ func TestGKMModelCatalogPortMerge(t *testing.T) {
 	}}}
 	union := &gkmFakeUnionLoader{entry: gatewayruntimecache.GroupModelUnionEntry{
 		Models:     []string{"m-missing", "m-hit", "a-first"},
+		Vendors:    []string{"openai"},
 		ValidUntil: gkmBase.Add(30 * time.Minute),
 	}}
 	loader := chainGatewayKeyModelCatalog{cache: gkmPortCache(t, models, union), now: gkmNow}
 
 	result, err := loader.ListGatewayKeyModels(context.Background(), "sys-1", []gatewayresponse.GatewayModelBinding{
-		{GroupID: "grp-b", ProviderCode: "openai"},
-		{GroupID: "grp-a", ProviderCode: "openai"},
-		{GroupID: "grp-b", ProviderCode: "openai"},
+		{GroupID: "grp-b"},
+		{GroupID: "grp-a"},
+		{GroupID: "grp-b"},
 	})
 	if err != nil {
 		t.Fatalf("ListGatewayKeyModels: %v", err)
@@ -717,14 +721,14 @@ func TestGKMModelCatalogPortErrorArms(t *testing.T) {
 	boom := errors.New("并集装载失败")
 	union := &gkmFakeUnionLoader{err: boom}
 	loader := chainGatewayKeyModelCatalog{cache: gkmPortCache(t, &w1hReadModels{}, union), now: gkmNow}
-	if _, err := loader.ListGatewayKeyModels(context.Background(), "sys-1", []gatewayresponse.GatewayModelBinding{{GroupID: "g", ProviderCode: "openai"}}); !errors.Is(err, boom) {
+	if _, err := loader.ListGatewayKeyModels(context.Background(), "sys-1", []gatewayresponse.GatewayModelBinding{{GroupID: "g"}}); !errors.Is(err, boom) {
 		t.Fatalf("union 错误必须上抛, got %v", err)
 	}
 
 	// 目录装载错误（w1tTailModels 的 catalogErr 注入臂）。
-	catalogUnion := &gkmFakeUnionLoader{entry: gatewayruntimecache.GroupModelUnionEntry{Models: []string{"m1"}, ValidUntil: gkmBase.Add(time.Hour)}}
+	catalogUnion := &gkmFakeUnionLoader{entry: gatewayruntimecache.GroupModelUnionEntry{Models: []string{"m1"}, Vendors: []string{"openai"}, ValidUntil: gkmBase.Add(time.Hour)}}
 	_, err := chainGatewayKeyModelCatalog{cache: gkmPortCache(t, &w1tTailModels{catalogErr: errors.New("目录查询失败")}, catalogUnion), now: gkmNow}.
-		ListGatewayKeyModels(context.Background(), "sys-1", []gatewayresponse.GatewayModelBinding{{GroupID: "g", ProviderCode: "openai"}})
+		ListGatewayKeyModels(context.Background(), "sys-1", []gatewayresponse.GatewayModelBinding{{GroupID: "g"}})
 	if err == nil {
 		t.Fatal("目录装载错误必须上抛")
 	}

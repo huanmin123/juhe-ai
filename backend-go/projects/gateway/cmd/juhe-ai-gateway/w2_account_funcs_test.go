@@ -759,7 +759,6 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 		gatewayruntimecache.OpenAIAccountsForGroupOptions{
 			PreResolvedGroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{
 				GroupOwnerSystemAccountID: fixture.systemAccount,
-				ProviderCode:              "openai",
 			},
 		})
 	if err != nil {
@@ -787,7 +786,6 @@ func TestW2BChainAccountsSelectionArms(t *testing.T) {
 			RequestedEndpointFamily: "chat_completions",
 			PreResolvedGroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{
 				GroupOwnerSystemAccountID: fixture.systemAccount,
-				ProviderCode:              "openai",
 			},
 		})
 	if err != nil {
@@ -824,7 +822,7 @@ func TestW2BChainAccountsScanFaultArms(t *testing.T) {
 		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "group_accounts") }, action: w2bFaultShortColumns})
 	selector := &chainAccountsSelector{db: wrapped, postgres: false, secret: "chain-test-secret", now: time.Now,
 		candidateFinalLimit: 4, candidateScanLimit: 8}
-	groupAccess := &gatewayruntimecache.GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys-owner", ProviderCode: "openai"}
+	groupAccess := &gatewayruntimecache.GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys-owner"}
 
 	// 529：基础窗口 Scan 数量不匹配。
 	if _, err := selector.ListOpenAIAccountsForGroupResult(context.Background(), "grp-w2b", "sys-owner",
@@ -884,6 +882,9 @@ func TestW2BAccountSecretInstanceOwnerArms(t *testing.T) {
 		ResourceCredentialsEncrypted:             sql.NullString{String: credentials, Valid: true},
 		AuthorizationInstanceOwnerSystemAccountI: sql.NullString{String: "sys-instance-owner", Valid: true},
 		ResourceProviderProtocolProfileID:        sql.NullString{String: "profile_w2b_override", Valid: true},
+		// B4 第一批单连接事实源：secret 装配 fail closed 读连接行投影，
+		// 行级直驱用例补一条 enabled 连接事实。
+		ConnectionBaseURL: sql.NullString{String: "https://acc-w2b.example.invalid/v1", Valid: true},
 	}
 	access := &chainAccountAccess{accountAccessType: chainAccountAccessAuthorized, accountAuthorizationID: strPtr("auth-w2b")}
 	secretOut, err := selector.openAIAccountSecretFromRow(context.Background(), row, &gatewayruntimecache.GroupUsageAccessMetadata{}, access, chainSecretOptions{})
@@ -941,7 +942,9 @@ func TestW2BCatalogScanBadValueFault(t *testing.T) {
 		t.Fatalf("seed catalog: %v", err)
 	}
 	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
-		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "FROM juhe_business.models") || strings.Contains(query, " FROM models") }, action: w2bFaultBadValue})
+		&w2bFaultRule{match: func(query string) bool {
+			return strings.Contains(query, "FROM juhe_business.models") || strings.Contains(query, " FROM models")
+		}, action: w2bFaultBadValue})
 	source := &chainCatalogSource{db: wrapped, postgres: false}
 	if _, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported type") {

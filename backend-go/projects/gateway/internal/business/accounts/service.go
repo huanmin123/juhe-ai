@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 type Account struct {
@@ -33,12 +36,23 @@ type Account struct {
 	APIKeyBindings            []APIKeyBinding `json:"apiKeyBindings,omitempty"`
 }
 
+// ModelMapping 是账户入口映射的聚合 DTO（供应商与上游协议面重构设计 §5.1/§8）。
+// 连接维度（B3 剩余）：TargetConnectionPresetCode 是账户内自然键——连接 ID
+// 永不由客户端提交，服务端按 (账户, preset) 解析 account_connections.id 后写
+// account_entry_mappings.target_connection_id。UpstreamModel 语义即设计 §8
+// entryMappings[].targetModelId 的入参载体（按 models.upstream_model 身份键解析
+// 为 target_model_id，与 resolveSupportedModelID 同键）；UpstreamEndpointFamily
+// 即 target_endpoint_family（旧字段名保留为写侧兼容入参，接受但不再承载
+// provider_code/upstream 字符串语义）。缺省 preset 的存量调用方（导入器等）
+// 按显式错误（connection 解析失败 → ErrMappingTargetUnsupported）拒绝，不静默
+// 跳过、不造兼容层（迁移窗口裁决归主代理）。
 type ModelMapping struct {
-	SourceModel            string `json:"sourceModel"`
-	SourceEndpointFamily   string `json:"sourceEndpointFamily"`
-	UpstreamModel          string `json:"upstreamModel"`
-	UpstreamEndpointFamily string `json:"upstreamEndpointFamily"`
-	Enabled                bool   `json:"enabled"`
+	SourceModel                string `json:"sourceModel"`
+	SourceEndpointFamily       string `json:"sourceEndpointFamily"`
+	UpstreamModel              string `json:"upstreamModel"`
+	UpstreamEndpointFamily     string `json:"upstreamEndpointFamily"`
+	TargetConnectionPresetCode string `json:"targetConnectionPresetCode"`
+	Enabled                    bool   `json:"enabled"`
 }
 
 type APIKeyBinding struct {
@@ -53,9 +67,15 @@ type CreateInput struct {
 	Schedulable                                                                                 bool
 	AvailabilityScheduleJSON                                                                    *string
 	SupportedModels                                                                             []string
-	ModelMappings                                                                               []ModelMapping
-	Tags                                                                                        []string
-	APIKeyBindings                                                                              []APIKeyBinding
+	ModelMappings                                                                                          []ModelMapping
+	Tags                                                                                                   []string
+	APIKeyBindings                                                                                         []APIKeyBinding
+	// Connections 是 §8 连接行载荷（B1 断点批共享 DTO）：非空时由 create 在同一
+	// 事务内先于映射写入 account_connections + account_endpoint_modes（确定性
+	// 行 ID），使 writeEntryMapping 的 preset 解析在本事务内可命中。完整 §8
+	// registry/validator 校验归 internal/accounts 写链（本聚合为 Port 边界
+	// 形态，不复制允许集合）。
+	Connections []accountscore.ConnectionInput
 }
 
 type Patch struct {
@@ -86,6 +106,12 @@ type Service struct{ store *Store }
 // 网关既有 model_not_found）：请求 supportedModels 中的某个模型名在 models
 // 表按 (vendor_code, upstream_model) + owner 可见性解析不到时返回，不静默跳过。
 var ErrModelNotFound = errors.New("model not found")
+
+// ErrMappingTargetUnsupported 是入口映射 target 解析/联动校验失败的管理面 400
+// 语义哨兵（错误码对齐设计 §5.1 校验 4 / §8 mapping_target_unsupported）：
+// targetConnectionPresetCode 解析不到本账户 enabled 连接、target 模型解析失败、
+// 或 §5.2/§5.3 family 联动校验不满足时返回，不静默跳过。
+var ErrMappingTargetUnsupported = errors.New("mapping_target_unsupported")
 
 func New(db *sql.DB, postgres bool, gate OwnerGate) (*Service, error) {
 	s, err := NewStore(db, postgres, gate)
@@ -152,7 +178,7 @@ func vendorIdentityForProvider(providerCode string) (vendor, driver string) {
 // resolveSupportedModelID 按 models 目标形态身份键把支持模型名解析为
 // models.id（B3 写入路径）。语义决策：supportedModels 携带上游模型名，解析键
 // 取 vendor_code + upstream_model——models 身份唯一索引即
-// (coalesce(vendor_code,''), scope, coalesce(system_account_id,''),
+// (coalesce(vendor_code,”), scope, coalesce(system_account_id,”),
 // upstream_model)（pg_seed.go:359），健康检查守卫同样按 upstream_model 名匹配
 // （pg_seed.go:413-415 注释）；public_model 只是展示投影，不作身份键。
 // scope 可见性按资源账户 owner：personal 行必须归属该 owner，builtin/global
@@ -172,6 +198,201 @@ func resolveSupportedModelID(ctx context.Context, tx *sql.Tx, s *Store, vendor, 
 		return "", err
 	}
 	return id, nil
+}
+
+// mappingPairTargetModes 是设计 §5.2 固定 endpoint family 矩阵的 17 个允许
+// (source, target) pair 及其全部可执行 target mode 形态（§5.3 唯一选择函数的
+// 写侧输入）。矩阵外的 pair 一律拒绝（设计 §5.2 尾注的 mapping_pair_unsupported
+// 语义在本包折叠为同一 ErrMappingTargetUnsupported 400 口径——任务契约「对齐
+// mapping_target_unsupported 风格」；错误码细分归 HTTP 装配层切片）。
+var mappingPairTargetModes = map[string][]string{
+	"chat_completions\x00chat_completions":        {"chat_json", "chat_sse"},
+	"responses\x00chat_completions":               {"chat_sse"},
+	"messages\x00chat_completions":                {"chat_json", "chat_sse"},
+	"generate_content\x00chat_completions":        {"chat_json"},
+	"stream_generate_content\x00chat_completions": {"chat_sse"},
+	"messages\x00messages":                        {"messages_json", "messages_sse"},
+	"chat_completions\x00messages":                {"messages_json", "messages_sse"},
+	"responses\x00messages":                       {"messages_json", "messages_sse"},
+	"generate_content\x00messages":                {"messages_json"},
+	"stream_generate_content\x00messages":         {"messages_sse"},
+	"generate_content\x00generate_content":        {"generate_content_json"},
+	"stream_generate_content\x00generate_content": {"generate_content_sse"},
+	"chat_completions\x00generate_content":        {"generate_content_json", "generate_content_sse"},
+	"responses\x00generate_content":               {"generate_content_json", "generate_content_sse"},
+	"messages\x00generate_content":                {"generate_content_json", "generate_content_sse"},
+	// §5.2 #16：视频映射 target 必须同时声明并启用全部四个 video mode——
+	// 不能把单一 video_create 当作完整可轮询的视频连接。
+	"video_generation\x00video_generation": {"video_create", "video_get", "video_content", "video_cancel"},
+	// §5.2 #17：TTS 只有一个同步语音形态。
+	"tts\x00tts": {"audio_speech"},
+}
+
+// validateEntryMappingFamilyLinkage 是映射写侧的 family 联动校验（设计 §5.3）：
+// 文本目标要求至少一个 source shape 的 target mode 同时落在目标连接
+// account_endpoint_modes 与 target 模型 supported_endpoint_modes_json 的交集内；
+// 视频目标必须四个 mode 在该交集中全部可执行（声明 + 启用）；TTS 目标必须有
+// audio_speech。不满足返回 ErrMappingTargetUnsupported。这是 W2 拆 hybrid 门
+// 的前置（任务契约）。
+func validateEntryMappingFamilyLinkage(sourceFamily, targetFamily string, connectionModes, modelModes []string) error {
+	pairModes, ok := mappingPairTargetModes[sourceFamily+"\x00"+targetFamily]
+	if !ok {
+		return fmt.Errorf("%w: family pair %s->%s is not in the §5.2 matrix", ErrMappingTargetUnsupported, sourceFamily, targetFamily)
+	}
+	connectionSet := stringSet(connectionModes)
+	modelSet := stringSet(modelModes)
+	if targetFamily == "video_generation" {
+		for _, mode := range pairModes {
+			if !connectionSet[mode] || !modelSet[mode] {
+				return fmt.Errorf("%w: video target requires all four modes declared and enabled, missing %s", ErrMappingTargetUnsupported, mode)
+			}
+		}
+		return nil
+	}
+	for _, mode := range pairModes {
+		if connectionSet[mode] && modelSet[mode] {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: no source shape of %s->%s is executable in connection∩model endpoint modes", ErrMappingTargetUnsupported, sourceFamily, targetFamily)
+}
+
+func stringSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
+	}
+	return set
+}
+
+// connectionEndpointModes 读目标连接的 account_endpoint_modes 实际集合（§5.3
+// 联动校验的连接侧输入）。
+func connectionEndpointModes(ctx context.Context, tx *sql.Tx, s *Store, connectionID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT endpoint_mode FROM `+s.table("account_endpoint_modes")+` WHERE connection_id = ? ORDER BY endpoint_mode`), connectionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var modes []string
+	for rows.Next() {
+		var mode string
+		if err := rows.Scan(&mode); err != nil {
+			return nil, err
+		}
+		modes = append(modes, mode)
+	}
+	return modes, rows.Err()
+}
+
+// modelEndpointModes 读 target 模型的 supported_endpoint_modes_json（§3：JSON
+// 字符串数组）。行缺失返回错误；NULL/空数组按空集参与交集（active 模型至少
+// 1 个 mode 是写侧上游契约，这里不重复防御）。
+func modelEndpointModes(ctx context.Context, tx *sql.Tx, s *Store, modelID string) ([]string, error) {
+	var raw sql.NullString
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT supported_endpoint_modes_json FROM `+s.table("models")+` WHERE id = ?`), modelID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return nil, nil
+	}
+	var modes []string
+	if err := json.Unmarshal([]byte(raw.String), &modes); err != nil {
+		return nil, fmt.Errorf("model %s supported_endpoint_modes_json: %w", modelID, err)
+	}
+	return modes, nil
+}
+
+// writeEntryMapping 把一条入口映射写入 account_entry_mappings（设计 §5.1，B3
+// 剩余）：按 (账户, TargetConnectionPresetCode) 解析 enabled 连接行（preset 是
+// 账户内唯一键，连接 ID 永不由客户端提交，§8），复用 resolveSupportedModelID
+// 把 target 模型名解析为 target_model_id，再执行 §5.3 family 联动校验后落行。
+// 任一步失败返回既有 400 语义（ErrMappingTargetUnsupported / ErrModelNotFound
+// 链），不静默跳过；旧行写 account_model_mappings 的循环已删除（该表随 A 路线
+// 撤除）。前置契约：account_connections 行由连接写入面（同账户创建事务的
+// 连接切片/导入器）先于本写路径存在。
+func writeEntryMapping(ctx context.Context, tx *sql.Tx, s *Store, accountID, owner, vendor string, m ModelMapping, now string) error {
+	preset := strings.TrimSpace(m.TargetConnectionPresetCode)
+	var connectionID string
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("account_connections")+`
+		WHERE account_id = ? AND connection_preset_code = ? AND enabled = 1`), accountID, preset).Scan(&connectionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// §8：targetConnectionPresetCode 必须解析到最终连接集合中一行；缺省
+		// （存量导入器旧格式无 preset）、未知或停用都按显式错误拒绝。
+		return fmt.Errorf("%w: connection preset %q resolves to no enabled account connection", ErrMappingTargetUnsupported, preset)
+	}
+	if err != nil {
+		return err
+	}
+	modelID, err := resolveSupportedModelID(ctx, tx, s, vendor, owner, m.UpstreamModel)
+	if err != nil {
+		// §5.1 校验 4：target 模型不满足与连接解析同一 400 语义；%w 链保留
+		// ErrModelNotFound 供上层甄别具体失败模型。
+		return fmt.Errorf("%w: %w", ErrMappingTargetUnsupported, err)
+	}
+	connectionModes, err := connectionEndpointModes(ctx, tx, s, connectionID)
+	if err != nil {
+		return err
+	}
+	modelModes, err := modelEndpointModes(ctx, tx, s, modelID)
+	if err != nil {
+		return err
+	}
+	if err := validateEntryMappingFamilyLinkage(m.SourceEndpointFamily, m.UpstreamEndpointFamily, connectionModes, modelModes); err != nil {
+		return err
+	}
+	// 行 ID 按自然键 (account_id, source_model, source_endpoint_family) 确定性
+	// 生成（与 account_tags 同款 sha256 截断先例；UNIQUE 约束保证同键唯一）。
+	summary := sha256.Sum256([]byte(accountID + "\x00" + m.SourceModel + "\x00" + m.SourceEndpointFamily))
+	entryID := "entmap-" + hex.EncodeToString(summary[:12])
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_entry_mappings")+`
+		(id,account_id,source_model,source_endpoint_family,target_connection_id,target_model_id,target_endpoint_family,enabled,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`),
+		entryID, accountID, m.SourceModel, m.SourceEndpointFamily, connectionID, modelID, m.UpstreamEndpointFamily, boolInt(m.Enabled), now, now)
+	return err
+}
+
+// writeAccountConnections 落 §8 连接行集合（B1 断点批，写入序先于映射）：
+// 每行 preset/baseUrl 非空、endpointModes 非空无重复，行 ID 按 (账户, preset)
+// 确定性生成（与 writeEntryMapping 的 entmap 先例同款 sha256 截断）。
+// protocol_surface_code 空串落 SQL NULL（纯媒体连接，§2.1）。
+func writeAccountConnections(ctx context.Context, tx *sql.Tx, s *Store, accountID string, connections []accountscore.ConnectionInput, now string) error {
+	for _, connection := range connections {
+		preset := strings.TrimSpace(connection.ConnectionPresetCode)
+		baseURL := strings.TrimSpace(connection.BaseURL)
+		if preset == "" || baseURL == "" {
+			return errors.New("connection preset and baseUrl are required")
+		}
+		if len(connection.EndpointModes) == 0 {
+			return errors.New("connection endpointModes are required")
+		}
+		seen := map[string]bool{}
+		for _, mode := range connection.EndpointModes {
+			mode = strings.TrimSpace(mode)
+			if mode == "" || seen[mode] {
+				return errors.New("connection endpointModes must be unique non-empty values")
+			}
+			seen[mode] = true
+		}
+		summary := sha256.Sum256([]byte(accountID + "\x00" + preset))
+		connectionID := "conn-" + hex.EncodeToString(summary[:12])
+		var surface sql.NullString
+		if trimmed := strings.TrimSpace(connection.ProtocolSurfaceCode); trimmed != "" {
+			surface = sql.NullString{String: trimmed, Valid: true}
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_connections")+`
+			(id,account_id,connection_preset_code,protocol_surface_code,base_url,enabled,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?)`),
+			connectionID, accountID, preset, surface, baseURL, boolInt(connection.Enabled), now, now); err != nil {
+			return err
+		}
+		for _, mode := range connection.EndpointModes {
+			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_endpoint_modes")+`
+				(connection_id,endpoint_mode) VALUES (?,?)`), connectionID, strings.TrimSpace(mode)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
@@ -208,7 +429,10 @@ func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
 		}
 		return Account{}, err
 	}
-	if err := writeRelations(ctx, tx, s, in.ID, in.SystemAccountID, in.ProviderCode, vendorCode, in.SupportedModels, in.ModelMappings, in.Tags, in.APIKeyBindings, now); err != nil {
+	if err := writeAccountConnections(ctx, tx, s, in.ID, in.Connections, now); err != nil {
+		return Account{}, err
+	}
+	if err := writeRelations(ctx, tx, s, in.ID, in.SystemAccountID, vendorCode, in.SupportedModels, in.ModelMappings, in.Tags, in.APIKeyBindings, now); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -430,16 +654,13 @@ func nullableString(v *string) any {
 // writeRelations 落账户子关系。supportedModels 走 B3 目标形态：模型名按
 // (vendor_code, upstream_model) + owner 可见性解析 models.id 后写
 // (account_id, model_id)（解析失败返回 ErrModelNotFound，不静默跳过）。
-// modelMappings 写路径决策（B3）：account_entry_mappings 的 target 需
-// connection + model 双解析（设计 §5.1「目标为本账户 connection preset +
-// model + endpoint family」，target_connection_id NOT NULL + 复合外键），而本
-// 包边界不拥有 account_connections、ModelMapping DTO 也不携带连接维度，无法
-// 在包内解析 target_connection_id；伪造连接值或静默丢弃都会破坏聚合契约。
-// 旧 account_model_mappings 表已随 A 路线撤除（maintenance fresh DDL 不再
-// 建表），本路径在 fresh 库上写映射行会失败——这是已登记的待迁移面：映射行
-// 写 account_entry_mappings 的改写与连接维度解析归后续切片，本函数当前不
-// 静默变更 supportedModels 语义。
-func writeRelations(ctx context.Context, tx *sql.Tx, s *Store, id, systemID, provider, vendor string, models []string, mappings []ModelMapping, tags []string, keys []APIKeyBinding, now string) error {
+// modelMappings 走 B4 第一批目标形态（设计 §5.1/§8）：每条映射经
+// writeEntryMapping 双解析（connection preset → enabled account_connections.id；
+// target 模型名 → models.id）+ §5.3 family 联动校验后写 account_entry_mappings；
+// 解析/校验失败按 ErrMappingTargetUnsupported 链拒绝，不静默跳过。旧写
+// account_model_mappings 的循环已删除（该表随 A 路线撤除，fresh DDL 不再建
+// 表）；provider 入参随旧行的 provider_code 列一并退役，签名不再携带。
+func writeRelations(ctx context.Context, tx *sql.Tx, s *Store, id, systemID, vendor string, models []string, mappings []ModelMapping, tags []string, keys []APIKeyBinding, now string) error {
 	for _, m := range models {
 		modelID, err := resolveSupportedModelID(ctx, tx, s, vendor, systemID, m)
 		if err != nil {
@@ -450,7 +671,7 @@ func writeRelations(ctx context.Context, tx *sql.Tx, s *Store, id, systemID, pro
 		}
 	}
 	for _, m := range mappings {
-		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_model_mappings")+` (account_id,provider_code,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)`), id, provider, m.SourceModel, m.SourceEndpointFamily, m.UpstreamModel, m.UpstreamEndpointFamily, boolInt(m.Enabled), now, now); err != nil {
+		if err := writeEntryMapping(ctx, tx, s, id, systemID, vendor, m, now); err != nil {
 			return err
 		}
 	}
@@ -500,15 +721,21 @@ func writeRelationsPatch(ctx context.Context, tx *sql.Tx, s *Store, id, systemID
 		}
 	}
 	if p.ModelMappings != nil {
-		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_model_mappings")+` WHERE account_id=?`), id); err != nil {
+		// B4 第一批目标形态：整集合替换写 account_entry_mappings（§8「任一
+		// 集合字段出现时整集合替换」）。模型解析需要账户 vendor 与 owner
+		// 可见性（与 SupportedModels 分支同口径；generic 账户 vendor_code 为
+		// SQL NULL，经 NullString 扫描后按空串参与身份键比较）。
+		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+` WHERE account_id=?`), id); err != nil {
 			return err
 		}
-		var provider string
-		if err := tx.QueryRowContext(ctx, s.bind(`SELECT provider_code FROM `+s.table("accounts")+` WHERE id=?`), id).Scan(&provider); err != nil {
+		var vendorColumn sql.NullString
+		var owner string
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT vendor_code, system_account_id FROM `+s.table("accounts")+` WHERE id=?`), id).Scan(&vendorColumn, &owner); err != nil {
 			return err
 		}
+		vendor := vendorColumn.String
 		for _, m := range *p.ModelMappings {
-			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_model_mappings")+` (account_id,provider_code,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)`), id, provider, m.SourceModel, m.SourceEndpointFamily, m.UpstreamModel, m.UpstreamEndpointFamily, boolInt(m.Enabled), now, now); err != nil {
+			if err := writeEntryMapping(ctx, tx, s, id, owner, vendor, m, now); err != nil {
 				return err
 			}
 		}
@@ -517,7 +744,7 @@ func writeRelationsPatch(ctx context.Context, tx *sql.Tx, s *Store, id, systemID
 		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_tag_bindings")+` WHERE account_id=?`), id); err != nil {
 			return err
 		}
-		if err := writeRelations(ctx, tx, s, id, systemID, "", "", nil, nil, *p.Tags, nil, now); err != nil {
+		if err := writeRelations(ctx, tx, s, id, systemID, "", nil, nil, *p.Tags, nil, now); err != nil {
 			return err
 		}
 	}
@@ -557,14 +784,22 @@ func readRelations(ctx context.Context, db *sql.DB, s *Store, a *Account) error 
 		return err
 	}
 	rows.Close()
-	rows, err = db.QueryContext(ctx, s.bind(`SELECT source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled FROM `+s.table("account_model_mappings")+` WHERE account_id=? ORDER BY source_model,source_endpoint_family`), a.ID)
+	// B4 第一批目标形态读取：映射行走 account_entry_mappings，target 模型名
+	// 经 LEFT JOIN models.upstream_model 投影（与 V1 批 GKM 装载器同款形态，
+	// 往返幂等），连接自然键经 LEFT JOIN account_connections.connection_preset_code
+	// 投影（连接 ID 不出聚合 DTO）。enabled 行与 disabled 行都读（DTO 带
+	// Enabled 往返）。
+	rows, err = db.QueryContext(ctx, s.bind(`SELECT em.source_model,em.source_endpoint_family,m.upstream_model,em.target_endpoint_family,c.connection_preset_code,em.enabled FROM `+s.table("account_entry_mappings")+` em
+		LEFT JOIN `+s.table("models")+` m ON m.id=em.target_model_id
+		LEFT JOIN `+s.table("account_connections")+` c ON c.id=em.target_connection_id
+		WHERE em.account_id=? ORDER BY em.source_model,em.source_endpoint_family`), a.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var m ModelMapping
 		var e int
-		if err := rows.Scan(&m.SourceModel, &m.SourceEndpointFamily, &m.UpstreamModel, &m.UpstreamEndpointFamily, &e); err != nil {
+		if err := rows.Scan(&m.SourceModel, &m.SourceEndpointFamily, &m.UpstreamModel, &m.UpstreamEndpointFamily, &m.TargetConnectionPresetCode, &e); err != nil {
 			rows.Close()
 			return err
 		}
@@ -685,7 +920,7 @@ func sortedKeys(values []APIKeyBinding) []APIKeyBinding {
 	return out
 }
 func mappingKey(m ModelMapping) string {
-	return m.SourceModel + "\x00" + m.SourceEndpointFamily + "\x00" + m.UpstreamModel + "\x00" + m.UpstreamEndpointFamily + fmt.Sprintf("\x00%t", m.Enabled)
+	return m.SourceModel + "\x00" + m.SourceEndpointFamily + "\x00" + m.UpstreamModel + "\x00" + m.UpstreamEndpointFamily + "\x00" + m.TargetConnectionPresetCode + fmt.Sprintf("\x00%t", m.Enabled)
 }
 func unique(in []string) []string {
 	seen := map[string]bool{}

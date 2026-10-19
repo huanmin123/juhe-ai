@@ -256,10 +256,13 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
 	id := w2PatchAccount(t, env, "模型补丁")
+	// B4 W2（设计 §5.1/§8）：映射写入按 (账户, preset) 解析连接行——PATCH 前种
+	// 连接 + 支持成员前置事实（target upstream gpt-4o-mini 须在支持集内）。
+	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini")
 
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
 		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1"],"healthCheckModel":"gpt-4.1",
-		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","enabled":false}]}`)
+		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":false}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("模型补丁: %d %v", code, payload)
 	}
@@ -269,11 +272,13 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 			t.Fatalf("变更缺少 %s：%v", field, changed)
 		}
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ? AND model = 'gpt-4.1'`, id) != 1 {
+	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ?
+		AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4.1')`, id) != 1 {
 		t.Fatal("支持模型未落库")
 	}
 	var enabled int
-	if err := env.db.QueryRow(`SELECT enabled FROM account_model_mappings WHERE account_id = ? AND source_model = 'gpt-4.1'`, id).Scan(&enabled); err != nil {
+	if err := env.db.QueryRow(`SELECT account_entry_mappings.enabled FROM account_entry_mappings
+		WHERE account_id = ? AND source_model = 'gpt-4.1'`, id).Scan(&enabled); err != nil {
 		t.Fatalf("映射未落库：%v", err)
 	}
 	if enabled != 0 {
@@ -281,11 +286,13 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	}
 
 	// PATCH 面不重复支持模型池断言（目录端口直通）：替换映射并以落库为准。
-	code, payload = w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions"}]`)
+	// 声明集 gpt-4.1 的 chat 形态已随首轮 PATCH 落支持集（target upstream 在
+	// 支持集内），responses 源族替换沿用同一 preset。
+	code, payload = w2PatchBody(t, env, id, `"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1"}]`)
 	if code != http.StatusOK {
 		t.Fatalf("映射替换: %d %v", code, payload)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE account_id = ? AND source_endpoint_family = 'responses'`, id) != 1 {
+	if env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ? AND source_endpoint_family = 'responses'`, id) != 1 {
 		t.Fatal("替换映射未落库")
 	}
 }

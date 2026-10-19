@@ -28,9 +28,14 @@ func newW1ScenarioChain(t *testing.T, upstream http.HandlerFunc) *w1ScenarioChai
 	fixture := newChainFixture(t)
 	upstreamServer := httptest.NewServer(upstream)
 	t.Cleanup(upstreamServer.Close)
+	// B4 第一批单连接事实源：上游指向改连接行 base_url（secret BaseURL =
+	// account_connections.base_url）；credentials.base_url 依赖已解除。
 	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
-		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": upstreamServer.URL}), fixture.accountID); err != nil {
+		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key"}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
+	}
+	if _, err := fixture.db.Exec(`UPDATE account_connections SET base_url = ? WHERE id = 'conn_acc_1'`, upstreamServer.URL); err != nil {
+		t.Fatalf("update connection base url: %v", err)
 	}
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir))

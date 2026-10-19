@@ -102,14 +102,21 @@ func mergeSeedFixture(t *testing.T, second mergeSecondGroup, compatSupportedGPT 
 		second.accountID, ownerID, w1vEncrypt(t, map[string]any{"api_key": "sk-merge-compat-key"}))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		second.groupID, ownerID, second.accountID, now)
-	seed(`INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled, created_at, updated_at)
-		VALUES (?, 'openai', 'glm-test', 'chat_completions', 'ds-test', 'chat_completions', 1, ?, ?)`, second.accountID, now, now)
+	// B4 第一批单连接事实源：第二账户需要 enabled 连接行才能水合（旧世界
+	// 无 credentials.base_url 时回落协议默认 URL，这里给等价占位值）。
+	chainSeedAccountConnection(t, fixture.db, second.accountID, "https://merge-second.example.invalid/v1")
+	// B4 第一批目标形态：映射走 account_entry_mappings，target 经 models
+	// 外键解析（ds-test 模型行 + 连接行同批补齐）。
+	seed(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
+		VALUES ('mdl_ds_test', 'gpt', 'ds-test', 'ds-test', 'global', 'active', '["chat_json","chat_sse"]', ?, ?)`, now, now)
+	seed(`INSERT INTO account_entry_mappings (id, account_id, source_model, source_endpoint_family, target_connection_id, target_model_id, target_endpoint_family, enabled, created_at, updated_at)
+		VALUES ('entmap_merge_glmtest', ?, 'glm-test', 'chat_completions', 'conn_' || ?, 'mdl_ds_test', 'chat_completions', 1, ?, ?)`, second.accountID, second.accountID, now, now)
 	// 路由层模型过滤要求映射的上游模型本身在支持模型内（modelfilter.go
 	// isMappingAllowedBySupportedModels）。
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'ds-test', ?)`,
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'ds-test', 'mdl_ds_test', ?)`,
 		second.accountID, now)
 	if compatSupportedGPT {
-		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'gpt-test', ?)`,
+		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
 			second.accountID, now)
 	}
 	if second.authorizeGroup {
@@ -141,6 +148,8 @@ func mergePointAccountAt(t *testing.T, fixture *chainFixture, accountID, baseURL
 		w1vEncrypt(t, map[string]any{"api_key": "sk-merge-upstream", "base_url": baseURL}), accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, accountID, baseURL)
 	fixture.cache = w1FreshCacheFor(t, fixture)
 }
 

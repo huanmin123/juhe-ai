@@ -353,7 +353,7 @@ func TestExpeditedRecoveryOverLimitDisplayAfterReduction(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, eveID)
 	createBody := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"归属人特供",` +
 		`"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},` +
-		`"supportedModels":["gpt-4o-mini"],"status":"active","expeditedRecoveryEnabled":true}`
+		`"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","expeditedRecoveryEnabled":true}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts", createBody)
 	if code != http.StatusCreated {
 		t.Fatalf("my-accounts create: %d %v", code, payload)
@@ -478,7 +478,7 @@ func TestExpeditedRecoveryCloneExportImportBatchDoNotCarry(t *testing.T) {
 
 	createBody := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"特供克隆源",` +
 		`"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},` +
-		`"supportedModels":["gpt-4o-mini"],"status":"active","expeditedRecoveryEnabled":true}`
+		`"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active","expeditedRecoveryEnabled":true}`
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts", createBody)
 	if code != http.StatusCreated {
 		t.Fatalf("create: %d %v", code, payload)
@@ -504,7 +504,7 @@ func TestExpeditedRecoveryCloneExportImportBatchDoNotCarry(t *testing.T) {
 	expeditedSetOwnerLimit(t, env, adminID, &zero)
 	cloneBody := `{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"特供克隆源-副本",` +
 		`"type":"api_key","credentials":{"api_key":"sk-live-secret-1234567890","base_url":"https://api.openai.com/v1"},` +
-		`"supportedModels":["gpt-4o-mini"],"status":"active"}`
+		`"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","status":"active"}`
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts", cloneBody)
 	if code != http.StatusCreated {
 		t.Fatalf("clone create: %d %v", code, payload)

@@ -322,6 +322,13 @@ type NormalizedImportAccount struct {
 	// 写入 accounts.capability_domain，执行链经 Store.Create 重验 ⊆ allowed。
 	capabilityDomain string
 
+	// connections / healthCheckConnectionPresetCode 是 §8 wire schema 的连接
+	// 集合与健康检查连接维度入参（B1 断点批）：载荷携带则随 ImportCreateInput
+	// 进 Store.Create 全流程落库；旧格式缺省按 per-account message 显式失败，
+	// 不造兼容层。
+	connections                     []accountscore.ConnectionInput
+	healthCheckConnectionPresetCode string
+
 	// Messages aliases the plan item's message list (Node aliases
 	// item.messages into the normalized source).
 	Messages *[]string
@@ -361,6 +368,9 @@ type importPlanContext struct {
 	targetOwner string
 	providers   map[string]*ImportProvider
 	options     ImportOptions
+	// sourceMode 是本次导入的来源模式（B1 断点批：非原生来源的适配器合成
+	// 记录按适配器契约补齐健康检查模型维度）。
+	sourceMode string
 
 	groupLookup map[string]*importGroupOption
 	proxyLookup map[string]*ImportProxyOption
@@ -473,7 +483,7 @@ func (s *Service) buildImportPlan(ctx context.Context, data any, sourceMode stri
 
 	planCtx := &importPlanContext{
 		store: s, access: access, targetOwner: owner, providers: providers,
-		options: rawOptions,
+		options: rawOptions, sourceMode: sourceMode,
 	}
 	proxyPlans, proxyByRef := s.planImportProxies(ctx, rawProxies, planCtx)
 
@@ -769,6 +779,37 @@ func ImportModelMappingsField(record map[string]any, key, label string, messages
 	return output
 }
 
+// ImportConnectionsField 解析导入包账户的 connections 数组（§8 wire schema）：
+// 缺省/非数组返回 nil（由调用方按「旧格式无 connections」显式失败），元素
+// 经共享 accountscore.ParseConnectionInput 严格解析（未知键/缺失必填键报
+// message），不造兼容层。
+func ImportConnectionsField(record map[string]any, key, label string, messages *[]string) []accountscore.ConnectionInput {
+	value, exists := record[key]
+	if !exists || value == nil {
+		return nil
+	}
+	list, ok := value.([]any)
+	if !ok {
+		*messages = append(*messages, label+"必须是连接对象数组")
+		return nil
+	}
+	output := []accountscore.ConnectionInput{}
+	for _, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			*messages = append(*messages, label+"条目必须是对象")
+			return nil
+		}
+		connection, ok := accountscore.ParseConnectionInput(entry)
+		if !ok {
+			*messages = append(*messages, label+"条目必须包含 connectionPresetCode、baseUrl、非空 endpointModes 和显式 enabled")
+			return nil
+		}
+		output = append(output, connection)
+	}
+	return output
+}
+
 func ImportMappingText(value any) string {
 	text, ok := value.(string)
 	if !ok {
@@ -1002,6 +1043,8 @@ var importAccountKeys = map[string]bool{
 	"healthCheckModel": true, "healthCheckEndpointMode": true,
 	"temporaryUnavailableContinuousProbeEnabled": true, "modelMappings": true, "tags": true,
 	"accountExpiresAt": true, "availabilitySchedule": true, "notes": true,
+	// B1 断点批（设计 §8 wire schema）：连接集合与健康检查三件套的连接维度入参。
+	"connections": true, "healthCheckConnectionPresetCode": true,
 }
 
 func (s *Service) planImportAccount(ctx context.Context, value any, index int, planCtx *importPlanContext,
@@ -1062,6 +1105,11 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 	// value in this slice.
 	ImportOptionalBooleanField(record, "temporaryUnavailableContinuousProbeEnabled", "账户 temporaryUnavailableContinuousProbeEnabled", messages)
 	source.modelMappings = ImportModelMappingsField(record, "modelMappings", "账户 modelMappings", messages)
+	// B1 断点批（设计 §8）：connections 元素契约与管理面同款（共享
+	// accountscore.ParseConnectionInput）；健康检查三件套缺失的显式失败在
+	// supportedModels 终值化之后统一裁定（见 planImportAccount 尾段）。
+	source.connections = ImportConnectionsField(record, "connections", "账户 connections", messages)
+	source.healthCheckConnectionPresetCode = ImportOptionalTextField(record, "healthCheckConnectionPresetCode", "账户 healthCheckConnectionPresetCode", messages)
 	source.tags = ImportOptionalTagsField(record, "tags", "账户 tags", messages)
 	source.accountExpiresAt = ImportOptionalDateTimeField(record, "accountExpiresAt", "账户 accountExpiresAt", messages)
 	if rawSchedule, exists := record["availabilitySchedule"]; exists {
@@ -1118,6 +1166,39 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 
 	if err := s.validateImportModelCatalogFields(ctx, source, planCtx); err != nil {
 		return plan, err
+	}
+	// B1 断点批（设计 §8 wire schema）：连接集合与健康检查三件套缺省按
+	// per-account message 显式失败（旧格式导入包报错清单，不造兼容层）。
+	// 非原生来源（sub2api/cpa/channel 等适配器合成）按适配器契约在
+	// supportedModels 终值化后补齐健康检查模型维度——适配器不读库，无法预知
+	// 供应商默认支持模型；连接 preset 与检查形态由适配器写入。
+	if planCtx.sourceMode != ImportSourceNative && len(source.connections) > 0 {
+		if source.healthCheckModel == "" && len(source.supportedModels) > 0 {
+			source.healthCheckModel = source.supportedModels[0]
+		}
+		if source.healthCheckConnectionPresetCode == "" {
+			source.healthCheckConnectionPresetCode = source.connections[0].ConnectionPresetCode
+		}
+		if source.healthCheckEndpointMode == "" {
+			for _, mode := range source.connections[0].EndpointModes {
+				if accountscore.AccountHealthCheckEndpointModes[mode] {
+					source.healthCheckEndpointMode = mode
+					break
+				}
+			}
+		}
+	}
+	if len(source.connections) == 0 {
+		source.Push("账户 connections 不能为空：导入包必须显式提交非空 connections 数组（connectionPresetCode/baseUrl/endpointModes/enabled）")
+	}
+	if source.healthCheckConnectionPresetCode == "" {
+		source.Push("账户 healthCheckConnectionPresetCode 不能为空：健康检查三件套必须显式提交")
+	}
+	if source.healthCheckModel == "" {
+		source.Push("账户 healthCheckModel 不能为空：健康检查三件套必须显式提交")
+	}
+	if source.healthCheckEndpointMode == "" {
+		source.Push("账户 healthCheckEndpointMode 不能为空：健康检查三件套必须显式提交")
 	}
 	if err := s.resolveImportAccountGroup(ctx, &plan, planCtx, groupIDsByKey, groupNamesToCreate); err != nil {
 		return plan, err
@@ -1885,6 +1966,14 @@ func ImportCreateInput(source *NormalizedImportAccount, groupID, proxyProfileID 
 		SupportedModels:           source.supportedModels,
 		ModelMappings:             source.modelMappings,
 		Tags:                      source.tags,
+	}
+	// B1 断点批（设计 §8 wire schema）：连接集合与健康检查三件套的连接维度
+	// 入参随导入负载进 Store.Create 全流程落库（计划层已把缺省报为
+	// per-account message，缺省值不会到达执行链）。
+	input.Connections = source.connections
+	if source.healthCheckConnectionPresetCode != "" {
+		preset := source.healthCheckConnectionPresetCode
+		input.HealthCheckConnectionPresetCode = &preset
 	}
 	// M2 导入严格校验：包内推导域随创建负载落列，执行链经 Store.Create 对
 	// ⊆ allowed 重验（不信任预览结果）。

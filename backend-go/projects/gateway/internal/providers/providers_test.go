@@ -26,17 +26,21 @@ import (
 // protocol_endpoint_families, provider_model_catalog, custom_provider_models,
 // provider_default_health_check_models,
 // provider_system_default_health_check_models plus the auth tables.
+// schemaStatements 是目录读写的目标 schema 子集（供应商与上游协议面重构设计
+// §3/§8 的 fresh DDL 等价形态）：vendors（只读种子）+ models 单表 +
+// account_supported_models / account_entry_mappings 目标形状 + auth 表。旧
+// providers/provider_protocol_profiles/provider_model_catalog/
+// custom_provider_models 与两张默认检查模型偏好表已随重构退役。
 var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, parent_code TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL, account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS protocol_endpoint_families (id TEXT PRIMARY KEY, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL, family_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (protocol_code, protocol_version, family_code))`,
-	`CREATE TABLE IF NOT EXISTS provider_protocol_profile_families (profile_id TEXT NOT NULL, family_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, default_health_check_model TEXT, capabilities_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, family_code))`,
-	`CREATE TABLE IF NOT EXISTS provider_model_catalog (
-		id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-		mode TEXT, catalog_order INTEGER, release_date TEXT, shutdown_date TEXT,
-		supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS models (
+		id TEXT PRIMARY KEY, vendor_code TEXT, public_model TEXT NOT NULL, upstream_model TEXT NOT NULL,
+		scope TEXT NOT NULL, system_account_id TEXT,
+		status TEXT NOT NULL DEFAULT 'active', catalog_visible INTEGER NOT NULL DEFAULT 1,
+		catalog_order INTEGER, release_date TEXT, shutdown_date TEXT,
+		supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
 		supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
 		supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
 		default_reasoning_effort TEXT,
@@ -52,32 +56,14 @@ var schemaStatements = []string{
 		image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
 		audio_output_usd_per_1m REAL, output_usd_per_image REAL,
 		supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
-		catalog_visible INTEGER NOT NULL DEFAULT 1,
-		source TEXT NOT NULL DEFAULT 'built_in',
+		source TEXT, pricing_notes TEXT, capability_notes TEXT, notes TEXT,
+		created_by TEXT, updated_by TEXT,
+		currency TEXT NOT NULL DEFAULT 'USD',
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS custom_provider_models (
-		id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, model TEXT NOT NULL,
-		scope TEXT NOT NULL DEFAULT 'personal', system_account_id TEXT,
-		status TEXT NOT NULL DEFAULT 'active', catalog_visible INTEGER NOT NULL DEFAULT 1,
-		mode TEXT,
-		supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
-		supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
-		supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
-		default_reasoning_effort TEXT,
-		release_date TEXT, shutdown_date TEXT,
-		context_window_tokens INTEGER, max_input_tokens INTEGER, max_output_tokens INTEGER,
-		input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
-		cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
-		service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-		image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
-		audio_output_usd_per_1m REAL, output_usd_per_image REAL,
-		currency TEXT NOT NULL DEFAULT 'USD', pricing_notes TEXT, capability_notes TEXT, notes TEXT,
-		created_by TEXT NOT NULL, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS provider_default_health_check_models (system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, provider_code))`,
-	`CREATE TABLE IF NOT EXISTS provider_system_default_health_check_models (provider_code TEXT PRIMARY KEY, model TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_models_identity_unique ON models (COALESCE(vendor_code, ''), scope, COALESCE(system_account_id, ''), upstream_model)`,
 	`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, system_account_id TEXT, name TEXT NOT NULL, deleted_at TEXT)`,
-	`CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT NOT NULL, provider_code TEXT NOT NULL, model TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS account_model_mappings (account_id TEXT NOT NULL, source_model TEXT NOT NULL, upstream_model TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)`,
+	`CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT NOT NULL, model_id TEXT NOT NULL, PRIMARY KEY (account_id, model_id))`,
+	`CREATE TABLE IF NOT EXISTS account_entry_mappings (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, source_model TEXT NOT NULL, target_model_id TEXT, enabled INTEGER NOT NULL DEFAULT 1)`,
 }
 
 type testEnv struct {
@@ -227,71 +213,22 @@ func ptrInt(value int) *int { return &value }
 
 func ptrFloat64(value float64) *float64 { return &value }
 
-// seedCatalog mirrors the Node catalog fixtures: three providers (one
-// disabled), the gpt preferred-profile ordering case, the gemini
-// preferred-id case, endpoint families and the model catalog rows.
+// seedCatalog 预置 vendors（anthropic 停用、gpt/gemini 启用；hybrid 不在
+// vendors 值域，随设计退役）与 models 单表的 builtin/global/personal 行。协议
+// 列表经包内 ForwardProtocolsToEndpointModes 正向落 supported_endpoint_modes_json
+// （与 maintenance 种子投影同源）；旧偏好表/协议档案随表退役，overlay 断言
+// 相应收空形状。
 func (e *testEnv) seedCatalog(t *testing.T) {
 	t.Helper()
 	const now = "2026-01-01T00:00:00.000Z"
-	e.exec(t, `INSERT INTO providers (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
+	e.exec(t, `INSERT INTO vendors (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-anthropic', 'anthropic', 'Anthropic', 'Claude 官方', 0, '[]', ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO providers (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
+	e.exec(t, `INSERT INTO vendors (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-gemini', 'gemini', 'Gemini', NULL, 1, '["gemini-2.5-pro"]', ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO providers (id, code, name, parent_code, enabled, default_supported_models_json, created_at, updated_at)
+	e.exec(t, `INSERT INTO vendors (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-gpt', 'gpt', 'OpenAI', NULL, 1, '["gpt-4o-mini","gpt-4o"]', ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-hybrid', 'hybrid', 'Hybrid', 1, '[]', ?, ?)`, now, now)
-
-	// gpt: a disabled profile with the newest timestamp must lose against the
-	// enabled profiles (enabled DESC first); the newer enabled profile wins.
-	e.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof-gpt-a', 'gpt', 'OpenAI 官方 A', 1, 'openai', 'v1', 'https://api.a.openai.com/v1',
-		'gpt-4o-mini', '["api_key"]', '["tools"]', ?, '2026-01-01T00:00:00.000Z')`, now)
-	e.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof-gpt-b', 'gpt', 'OpenAI 官方 B', 1, 'openai', 'v1', 'https://api.b.openai.com/v1',
-		'gpt-4.1-mini', '["api_key","oauth"]', '[]', ?, '2026-01-02T00:00:00.000Z')`, now)
-	e.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof-gpt-c', 'gpt', 'OpenAI 归档', 0, 'openai', 'v1', 'https://archive.openai.com/v1',
-		'gpt-3.5-turbo', '[]', '[]', ?, '2026-01-03T00:00:00.000Z')`, now)
-
-	// gemini: the preferred id beats a newer enabled profile.
-	e.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('prof-gem-1', 'gemini', 'Gemini 新', 1, 'gemini', 'v1beta', 'https://gemini.example/v1beta',
-		'gemini-2.5-flash', '[]', '[]', ?, '2026-01-05T00:00:00.000Z')`, now)
-	e.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_gemini_native_v1beta', 'gemini', 'Gemini Native', 1, 'gemini', 'v1beta', 'https://native.example/v1beta',
-		'gemini-2.5-pro', '[]', '[]', ?, '2026-01-01T00:00:00.000Z')`, now)
-
-	// Endpoint families: prof-gpt-b carries chat_completions + responses, the
-	// disabled audio family stays invisible.
-	e.exec(t, `INSERT INTO protocol_endpoint_families (id, protocol_code, protocol_version, family_code, name, enabled, created_at, updated_at)
-		VALUES ('fam-chat', 'openai', 'v1', 'chat_completions', 'Chat Completions', 1, ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO protocol_endpoint_families (id, protocol_code, protocol_version, family_code, name, enabled, created_at, updated_at)
-		VALUES ('fam-responses', 'openai', 'v1', 'responses', 'Responses', 1, ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO protocol_endpoint_families (id, protocol_code, protocol_version, family_code, name, enabled, created_at, updated_at)
-		VALUES ('fam-audio', 'openai', 'v1', 'audio', 'Audio', 0, ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at)
-		VALUES ('prof-gpt-a', 'chat_completions', 1, ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at)
-		VALUES ('prof-gpt-b', 'chat_completions', 1, ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at)
-		VALUES ('prof-gpt-b', 'responses', 1, ?, ?)`, now, now)
-	e.exec(t, `INSERT INTO provider_protocol_profile_families (profile_id, family_code, enabled, created_at, updated_at)
-		VALUES ('prof-gpt-b', 'audio', 0, ?, ?)`, now, now)
-
-	// Health check model defaults: the gemini system default overrides the
-	// profile default; user1 carries a personal gpt preference.
-	e.exec(t, `INSERT INTO provider_system_default_health_check_models (provider_code, model, created_at, updated_at)
-		VALUES ('gemini', 'gemini-2.5-flash', ?, ?)`, now, now)
 	user1 := e.requireAccount(t, "user1", "user-pass", "user")
-	e.exec(t, `INSERT INTO provider_default_health_check_models (system_account_id, provider_code, model, created_at, updated_at)
-		VALUES (?, 'gpt', 'gpt-4o-mini', ?, ?)`, user1, now, now)
-	// Built-in model catalog rows for gpt + gemini.
+	// Built-in model catalog rows for gpt + gemini（models 单表 builtin 行）。
 	e.seedBuiltinModel(t, builtinModelSeed{ID: "cat-1", ProviderCode: "gpt", Model: "gpt-4o", Status: "active",
 		CatalogOrder: ptrInt64(2), ReleaseDate: "2024-05-13", Protocols: `["chat_completions"]`,
 		ContextWindow: ptrInt64(128000), InputUsd: ptrFloat64(5.0)})
@@ -303,6 +240,9 @@ func (e *testEnv) seedCatalog(t *testing.T) {
 		ReleaseDate: "2024-01-01", Protocols: `[]`, InputUsd: ptrFloat64(1.0)})
 	e.seedBuiltinModel(t, builtinModelSeed{ID: "cat-4", ProviderCode: "gemini", Model: "gemini-2.5-pro", Status: "active",
 		ReleaseDate: "2025-03-25", Protocols: `["generate_content"]`, ContextWindow: ptrInt64(1048576), InputUsd: ptrFloat64(1.25)})
+	// gpt-4o-realtime 行经逆映射派生 mode=audio + protocols=[realtime]，沿 M5b
+	// 裁决按显式标注行收录进目录（models 单表无 NULL mode 列，与 chat 面同一
+	// 派生语义）。
 	e.seedBuiltinModel(t, builtinModelSeed{ID: "cat-5", ProviderCode: "gpt", Model: "gpt-4o-realtime", Status: "active",
 		ReleaseDate: "2025-01-01", Protocols: `["realtime"]`, InputUsd: ptrFloat64(5.0)})
 	e.seedBuiltinModel(t, builtinModelSeed{ID: "cat-6", ProviderCode: "gpt", Model: "gpt-4o-unpriced", Status: "active",
@@ -350,7 +290,6 @@ type builtinModelSeed struct {
 	Model          string
 	Status         string
 	CatalogOrder   *int64
-	Mode           string
 	ReleaseDate    string
 	ShutdownDate   string
 	Protocols      string
@@ -362,6 +301,9 @@ type builtinModelSeed struct {
 	CatalogVisible *int
 }
 
+// seedBuiltinModel 把 builtin 行写入 models 单表：Protocols（旧协议列表 JSON）
+// 经 ForwardProtocolsToEndpointModes 正向落 supported_endpoint_modes_json（与
+// maintenance 种子投影同源；未知协议直接失败暴露 fixture 错误）。
 func (e *testEnv) seedBuiltinModel(t *testing.T, seed builtinModelSeed) {
 	t.Helper()
 	const now = "2026-01-01T00:00:00.000Z"
@@ -378,13 +320,14 @@ func (e *testEnv) seedBuiltinModel(t *testing.T, seed builtinModelSeed) {
 	if seed.Efforts == "" {
 		seed.Efforts = "[]"
 	}
-	e.exec(t, `INSERT INTO provider_model_catalog (id, provider_code, model, status, mode, catalog_order,
-		release_date, shutdown_date, supported_api_protocols_json, supported_service_tiers_json,
+	endpointModes := endpointModesJSONForProtocols(t, seed.Protocols)
+	e.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_order,
+		release_date, shutdown_date, supported_endpoint_modes_json, supported_service_tiers_json,
 		supported_reasoning_efforts_json, default_reasoning_effort, context_window_tokens, input_usd_per_1m,
-		catalog_visible, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		seed.ID, seed.ProviderCode, seed.Model, seed.Status, nullable(seed.Mode), seed.CatalogOrder,
-		nullable(seed.ReleaseDate), nullable(seed.ShutdownDate), seed.Protocols, seed.Tiers, seed.Efforts,
+		catalog_visible, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'builtin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'built_in', ?, ?)`,
+		seed.ID, seed.ProviderCode, seed.Model, seed.Model, seed.Status, seed.CatalogOrder,
+		nullable(seed.ReleaseDate), nullable(seed.ShutdownDate), endpointModes, seed.Tiers, seed.Efforts,
 		nullable(seed.DefaultEffort), seed.ContextWindow, seed.InputUsd, catalogVisible, now, now)
 }
 
@@ -401,21 +344,45 @@ type customModelSeed struct {
 	InputUsd        *float64
 }
 
+// seedCustomModel 把 custom 行写入 models 单表（global 行 system_account_id
+// NULL、personal 行携带 owner；public_model 与 upstream_model 同值写入）。
 func (e *testEnv) seedCustomModel(t *testing.T, seed customModelSeed) {
 	t.Helper()
 	const now = "2026-01-01T00:00:00.000Z"
 	if seed.Status == "" {
 		seed.Status = "active"
 	}
-	if seed.Protocols == "" {
-		seed.Protocols = "[]"
-	}
-	e.exec(t, `INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status,
-		release_date, supported_api_protocols_json, context_window_tokens, input_usd_per_1m,
+	endpointModes := endpointModesJSONForProtocols(t, seed.Protocols)
+	e.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		release_date, supported_endpoint_modes_json, context_window_tokens, input_usd_per_1m,
 		created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?)`,
-		seed.ID, seed.ProviderCode, seed.Model, seed.Scope, seed.SystemAccountID, seed.Status,
-		nullable(seed.ReleaseDate), seed.Protocols, seed.ContextWindow, seed.InputUsd, now, now)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?)`,
+		seed.ID, seed.ProviderCode, seed.Model, seed.Model, seed.Scope, seed.SystemAccountID, seed.Status,
+		nullable(seed.ReleaseDate), endpointModes, seed.ContextWindow, seed.InputUsd, now, now)
+}
+
+// endpointModesJSONForProtocols 是测试 fixture 的协议→modes 正向投影（生产
+// 同源：ForwardProtocolsToEndpointModes；空协议列表落 '[]'）。
+func endpointModesJSONForProtocols(t *testing.T, protocolsJSON string) string {
+	t.Helper()
+	var protocols []string
+	if strings.TrimSpace(protocolsJSON) != "" {
+		if err := json.Unmarshal([]byte(protocolsJSON), &protocols); err != nil {
+			t.Fatalf("parse protocols %s: %v", protocolsJSON, err)
+		}
+	}
+	modes, err := ForwardProtocolsToEndpointModes(protocols)
+	if err != nil {
+		t.Fatalf("forward protocols %s: %v", protocolsJSON, err)
+	}
+	if modes == nil {
+		return "[]"
+	}
+	encoded, err := json.Marshal(modes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 func nullable(value string) any {
@@ -439,7 +406,8 @@ func TestProvidersListContract(t *testing.T) {
 		t.Fatalf("admin list: %d %v", code, listed)
 	}
 	items := dataArray(t, listed)
-	if len(items) != 4 {
+	// hybrid 不在 vendors 值域（设计 §8），管理面列表只含种子 vendors。
+	if len(items) != 3 {
 		t.Fatalf("admin list items: %v", items)
 	}
 	anthropic := items[0].(map[string]any)
@@ -453,19 +421,17 @@ func TestProvidersListContract(t *testing.T) {
 			t.Fatalf("list row carries %s: %v", forbidden, anthropic)
 		}
 	}
-	if anthropic["protocolCode"] != "" || anthropic["baseUrl"] != "" {
+	if anthropic["protocolCode"] != "" || anthropic["baseUrl"] != "" || anthropic["defaultHealthCheckModel"] != "" {
 		t.Fatalf("profile-less row defaults: %v", anthropic)
 	}
-	gpt := items[3].(map[string]any)
-	if gpt["code"] != "gpt" || gpt["baseUrl"] != "https://api.b.openai.com/v1" || gpt["protocolCode"] != "openai" {
+	// 协议档案与偏好表随设计 §8.11 退役：协议字段与 overlay 恒空形状。
+	gpt := items[2].(map[string]any)
+	if gpt["code"] != "gpt" || gpt["baseUrl"] != "" || gpt["protocolCode"] != "" || gpt["defaultHealthCheckModel"] != "" {
 		t.Fatalf("gpt row: %v", gpt)
 	}
-	if gpt["defaultHealthCheckModel"] != "gpt-4.1-mini" {
-		t.Fatalf("gpt default health check model (admin, no preference): %v", gpt)
-	}
 	gemini := items[1].(map[string]any)
-	if gemini["defaultHealthCheckModel"] != "gemini-2.5-flash" {
-		t.Fatalf("gemini system default overlay: %v", gemini)
+	if gemini["defaultHealthCheckModel"] != "" {
+		t.Fatalf("gemini overlay (retired storage): %v", gemini)
 	}
 
 	// user1: enabled only, personal preference wins over the profile default.
@@ -475,7 +441,7 @@ func TestProvidersListContract(t *testing.T) {
 		t.Fatalf("user list: %d %v", code, userListed)
 	}
 	userItems := dataArray(t, userListed)
-	if len(userItems) != 3 {
+	if len(userItems) != 2 {
 		t.Fatalf("user list items (enabled only): %v", userItems)
 	}
 	for _, item := range userItems {
@@ -485,14 +451,14 @@ func TestProvidersListContract(t *testing.T) {
 	}
 	for _, item := range userItems {
 		row := item.(map[string]any)
-		if row["code"] == "gpt" && row["defaultHealthCheckModel"] != "gpt-4o-mini" {
-			t.Fatalf("user1 personal preference overlay: %v", row)
+		if row["code"] == "gpt" && row["defaultHealthCheckModel"] != "" {
+			t.Fatalf("user1 overlay (retired storage): %v", row)
 		}
 	}
 
 	// viewScope values other than admin keep the enabled-only fork.
 	code, selfListed := env.do(t, http.MethodGet, "/__aisys__/api/providers/list?viewScope=self", "")
-	if code != http.StatusOK || len(dataArray(t, selfListed)) != 3 {
+	if code != http.StatusOK || len(dataArray(t, selfListed)) != 2 {
 		t.Fatalf("viewScope=self list: %d %v", code, selfListed)
 	}
 
@@ -517,7 +483,7 @@ func TestProvidersRootFlatArrayAdminOnly(t *testing.T) {
 		t.Fatalf("admin root list: %d %v", code, listed)
 	}
 	definitions := dataArray(t, listed)
-	if len(definitions) != 4 {
+	if len(definitions) != 3 {
 		t.Fatalf("root list rows: %v", definitions)
 	}
 	var gpt, gemini, anthropic map[string]any
@@ -535,38 +501,20 @@ func TestProvidersRootFlatArrayAdminOnly(t *testing.T) {
 			anthropic = entry
 		}
 	}
-	if gpt["defaultProtocolProfileId"] != "prof-gpt-b" || gpt["baseUrl"] != "https://api.b.openai.com/v1" ||
-		gpt["defaultHealthCheckModel"] != "gpt-4.1-mini" || gpt["protocolVersion"] != "v1" {
+	// 协议档案维度随表退役：DTO 键保留、恒空形状。
+	if gpt["defaultProtocolProfileId"] != "" || gpt["baseUrl"] != "" ||
+		gpt["defaultHealthCheckModel"] != "" || gpt["protocolVersion"] != "" {
 		t.Fatalf("gpt default profile fields: %v", gpt)
 	}
 	if _, hasSystemDefault := gpt["systemDefaultHealthCheckModel"]; hasSystemDefault {
 		t.Fatalf("gpt must not carry a system default: %v", gpt)
 	}
-	if gemini["systemDefaultHealthCheckModel"] != "gemini-2.5-flash" || gemini["defaultProtocolProfileId"] != "profile_gemini_native_v1beta" {
-		t.Fatalf("gemini overlay: %v", gemini)
+	if _, hasSystemDefault := gemini["systemDefaultHealthCheckModel"]; hasSystemDefault {
+		t.Fatalf("gemini must not carry a system default (retired storage): %v", gemini)
 	}
 	profiles := gpt["protocolProfiles"].([]any)
-	if len(profiles) != 3 {
+	if len(profiles) != 0 {
 		t.Fatalf("gpt profiles: %v", profiles)
-	}
-	// Node orders profiles by provider_code ASC, updated_at DESC, id ASC.
-	profileC := profiles[0].(map[string]any)
-	if profileC["id"] != "prof-gpt-c" || profileC["enabled"] != false {
-		t.Fatalf("profile ordering: %v", profiles)
-	}
-	if families := profileC["endpointFamilies"].([]any); len(families) != 0 {
-		t.Fatalf("prof-gpt-c families: %v", families)
-	}
-	profileB := profiles[1].(map[string]any)
-	if profileB["id"] != "prof-gpt-b" {
-		t.Fatalf("profile b ordering: %v", profiles)
-	}
-	families := profileB["endpointFamilies"].([]any)
-	if len(families) != 2 {
-		t.Fatalf("prof-gpt-b families: %v", families)
-	}
-	if families[0].(map[string]any)["code"] != "chat_completions" || families[1].(map[string]any)["code"] != "responses" {
-		t.Fatalf("families: %v", families)
 	}
 	if anthropic["defaultProtocolProfileId"] != "" || len(anthropic["protocolProfiles"].([]any)) != 0 {
 		t.Fatalf("anthropic empty profile defaults: %v", anthropic)
@@ -600,7 +548,7 @@ func TestProvidersOptionsAndDefinitions(t *testing.T) {
 		t.Fatalf("options: %d %v", code, options)
 	}
 	optionRows := dataArray(t, options)
-	if len(optionRows) != 3 {
+	if len(optionRows) != 2 {
 		t.Fatalf("enabled options only: %v", optionRows)
 	}
 	first := optionRows[0].(map[string]any)
@@ -616,7 +564,7 @@ func TestProvidersOptionsAndDefinitions(t *testing.T) {
 		t.Fatalf("definitions: %d %v", code, definitions)
 	}
 	definitionRows := dataArray(t, definitions)
-	if len(definitionRows) != 3 {
+	if len(definitionRows) != 2 {
 		t.Fatalf("enabled definitions only: %v", definitionRows)
 	}
 	for _, row := range definitionRows {
@@ -627,8 +575,10 @@ func TestProvidersOptionsAndDefinitions(t *testing.T) {
 		if _, exists := entry["protocolProfiles"]; !exists {
 			t.Fatalf("definition without protocolProfiles: %v", entry)
 		}
-		if entry["code"] == "gemini" && entry["systemDefaultHealthCheckModel"] != "gemini-2.5-flash" {
-			t.Fatalf("gemini definition overlay: %v", entry)
+		if entry["code"] == "gemini" {
+			if _, hasSystemDefault := entry["systemDefaultHealthCheckModel"]; hasSystemDefault {
+				t.Fatalf("gemini definition overlay (retired storage): %v", entry)
+			}
 		}
 	}
 
@@ -678,8 +628,8 @@ func TestProvidersDetailByCode(t *testing.T) {
 		t.Fatalf("gpt detail: %d %v", code, gptDetail)
 	}
 	gptData := dataMap(t, gptDetail)
-	if gptData["defaultHealthCheckModel"] != "gpt-4o-mini" {
-		t.Fatalf("user1 preference overlay: %v", gptData)
+	if gptData["defaultHealthCheckModel"] != "" {
+		t.Fatalf("user1 overlay (retired storage): %v", gptData)
 	}
 	if _, hasModels := gptData["models"]; hasModels {
 		t.Fatalf("detail must not embed models (Node /:code shape): %v", gptData)
@@ -806,10 +756,20 @@ func TestProvidersModelOptions(t *testing.T) {
 		}
 	}
 
-	// Protocol filter: gemini protocol sources resolve gemini's catalog.
+	// protocol 入参不再收窄源集（vendors 不携带协议维度，源扩展随
+	// providers/provider_protocol_profiles 退役）：gemini 臂与默认臂同为全部
+	// 启用 vendor，行级协议信息由 modes 派生投影承载。
 	code, protocol := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?protocol=gemini", "")
-	if code != http.StatusOK || len(dataArray(t, protocol)) != 1 || dataArray(t, protocol)[0].(map[string]any)["id"] != "gemini-2.5-pro" {
+	if code != http.StatusOK {
 		t.Fatalf("protocol options: %d %v", code, protocol)
+	}
+	protocolRows := dataArray(t, protocol)
+	protocolSeen := map[string]bool{}
+	for _, row := range protocolRows {
+		protocolSeen[row.(map[string]any)["id"].(string)] = true
+	}
+	if !protocolSeen["gemini-2.5-pro"] || !protocolSeen["gpt-4o-mini"] {
+		t.Fatalf("protocol options must cover all enabled vendors: %v", protocolRows)
 	}
 
 	// Invalid queries render Node's verbatim messages.
@@ -852,7 +812,9 @@ func TestProvidersModelsCatalog(t *testing.T) {
 		t.Fatalf("user models: %d %v", code, models)
 	}
 	rows := dataArray(t, models)
-	userWant := []string{"gpt-4o-personal", "gpt-4o-mini", "gpt-4o"}
+	// gpt-4o-realtime 经 modes 逆映射派生 mode=audio + realtime 协议，沿 M5b
+	// 裁决收录（models 单表无 NULL mode 列）。
+	userWant := []string{"gpt-4o-personal", "gpt-4o-realtime", "gpt-4o-mini", "gpt-4o"}
 	if len(rows) != len(userWant) {
 		t.Fatalf("user model rows: %v", rows)
 	}
@@ -879,7 +841,7 @@ func TestProvidersModelsCatalog(t *testing.T) {
 		t.Fatalf("admin models: %d %v", code, adminModels)
 	}
 	adminRows := dataArray(t, adminModels)
-	adminWant := []string{"gpt-4o-mini", "gpt-4o"}
+	adminWant := []string{"gpt-4o-realtime", "gpt-4o-mini", "gpt-4o"}
 	if len(adminRows) != len(adminWant) {
 		t.Fatalf("admin model rows: %v", adminRows)
 	}
@@ -888,11 +850,11 @@ func TestProvidersModelsCatalog(t *testing.T) {
 			t.Fatalf("admin model %d: %v (want %s)", index, adminRows[index], model)
 		}
 	}
-	fourO := adminRows[1].(map[string]any)
+	fourO := adminRows[2].(map[string]any)
 	if fourO["scope"] != "global" || fourO["source"] != "custom-global" || fourO["inputUsdPer1M"] != float64(6) {
 		t.Fatalf("merged gpt-4o row: %v", fourO)
 	}
-	mini := adminRows[0].(map[string]any)
+	mini := adminRows[1].(map[string]any)
 	if mini["scope"] != "built_in" || mini["source"] != "built_in" || mini["inputUsdPer1M"] != float64(0) {
 		t.Fatalf("gpt-4o-mini row: %v", mini)
 	}
@@ -930,7 +892,7 @@ func TestProvidersModelsCatalog(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("includeInactive: %d %v", code, inactive)
 	}
-	inactiveWant := []string{"gpt-4o-mini", "gpt-4o", "gpt-4o-expired", "gpt-4-secret", "gpt-4o-hidden"}
+	inactiveWant := []string{"gpt-4o-realtime", "gpt-4o-mini", "gpt-4o", "gpt-4o-expired", "gpt-4-secret", "gpt-4o-hidden"}
 	inactiveRows := dataArray(t, inactive)
 	if len(inactiveRows) != len(inactiveWant) {
 		t.Fatalf("includeInactive rows: %v", inactiveRows)
@@ -948,30 +910,22 @@ func TestProvidersModelsCatalog(t *testing.T) {
 		t.Fatalf("includeUnpriced: %d %v", code, unpriced)
 	}
 	unpricedRows := dataArray(t, unpriced)
-	if len(unpricedRows) != 3 || unpricedRows[2].(map[string]any)["model"] != "gpt-4o-unpriced" {
+	if len(unpricedRows) != 4 || unpricedRows[3].(map[string]any)["model"] != "gpt-4o-unpriced" {
 		t.Fatalf("includeUnpriced rows: %v", unpricedRows)
 	}
 
-	// Unsupported names/protocols stay out of the catalog.
+	// Unsupported names stay out of the catalog（realtime 行沿 M5b 收录，见上）。
 	for _, row := range adminRows {
 		model := row.(map[string]any)["model"]
-		if model == "gpt-whisper-box" || model == "gpt-4o-realtime" {
+		if model == "gpt-whisper-box" {
 			t.Fatalf("unsupported model leaked: %v", adminRows)
 		}
 	}
 
-	// Hybrid provider flattens the enabled non-hybrid catalogs.
-	code, hybrid := env.do(t, http.MethodGet, "/__aisys__/api/providers/hybrid/models", "")
-	if code != http.StatusOK {
-		t.Fatalf("hybrid models: %d %v", code, hybrid)
-	}
-	hybridRows := dataArray(t, hybrid)
-	modelsSeen := map[string]bool{}
-	for _, row := range hybridRows {
-		modelsSeen[row.(map[string]any)["model"].(string)] = true
-	}
-	if !modelsSeen["gemini-2.5-pro"] || !modelsSeen["gpt-4o-mini"] {
-		t.Fatalf("hybrid catalog must flatten gemini+gpt: %v", hybridRows)
+	// hybrid 不在 vendors 值域（设计 §8）：目录路由按未知供应商 404。
+	code, hybrid := env.do(t, http.MethodGet, "/__aisys__/api/providers/hybrid/models?viewScope=admin", "")
+	if code != http.StatusNotFound || hybrid["message"] != "供应商不存在" {
+		t.Fatalf("hybrid models must be 404 (retired dimension): %d %v", code, hybrid)
 	}
 
 	// Disabled provider fork: Node uses the shorter message on this route.

@@ -63,12 +63,17 @@ type chainUnionMappingRow struct {
 //  3. 授权门按调度实态顺序逐臂执行（含后置绑定门）；
 //  4. 模型事实主体批量装载 supportedModels 与启用映射行；
 //  5. 映射有效性过滤走 gatewayopenai.IsAdmissibleModelMapping 唯一函数源；
-//  6. validUntil = min(装载时刻+基础TTL, 全部未来到期点)。
+//  6. validUntil = min(装载时刻+基础TTL, 全部未来到期点)；
+//  7. 同步去重收集事实主体 vendor 集（§4.9 字典维度，B4 W2：绑定行无
+//     provider 维度后 /v1/models 元数据字典改按并集成员 vendor 装载）。
 func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, input gatewayruntimecache.GroupModelUnionListOptions) (gatewayruntimecache.GroupModelUnionEntry, error) {
 	s := l.selector
 	now := s.now()
 	caller := strings.TrimSpace(input.CallerSystemAccountID)
 	models := map[string]bool{}
+	// 字典维度（§4.9，B4 W2）：并集成员资源账户的 vendor 去重集。
+	vendors := make([]string, 0, 4)
+	vendorSeen := map[string]bool{}
 	// 默认上界 = 基础 TTL；有任何更近的未来到期点则收窄（§6.3）。
 	validUntil := now.Add(gatewayruntimecache.GroupModelUnionBaseTTL)
 
@@ -142,12 +147,11 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 
 		// 模型事实主体批量装载（并集设计 §4.1/§6.2）。协议档案不另查库：
 		// chainCandidateColumns 已按来源账户取 resource_* 列，resourceAccountID()
-		// 即 COALESCE 语义；provider 身份取模型事实主体（资源账户）的
+		// 即 COALESCE 语义；vendor 身份取模型事实主体（资源账户）的
 		// accounts.vendor_code（供应商与上游协议面重构设计 §2.1/§8：vendor 值域
 		// 与旧 providerCode 同名，generic_http 账户为空串）——并集语义按「事实
-		// 主体自身的连接身份」收敛，与同位置 resourceProviderProtocolProfileID/
-		// resourceProtocolCode 的 COALESCE 口径一致；组访问元数据的过渡
-		// ProviderCode 已随 groups.provider_code 退役恒空，不再作来源。
+		// 主体自身的连接身份」收敛，与同位置 resourceProtocolCode 的 COALESCE
+		// 口径一致。
 		factIDs := make([]string, 0, len(admitted))
 		seenFact := map[string]bool{}
 		for _, row := range admitted {
@@ -169,7 +173,14 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 
 		for _, row := range admitted {
 			factID := row.resourceAccountID()
-			factProvider := row.resourceVendorCode()
+			// vendor 身份（§4.9 字典维度，B4 W2）：去重收集进并集条目，供
+			// /v1/models 端口按 vendor 装载目录元数据（generic 账户空串不入集）。
+			if factVendor := row.resourceVendorCode(); factVendor != "" {
+				if !vendorSeen[factVendor] {
+					vendorSeen[factVendor] = true
+					vendors = append(vendors, factVendor)
+				}
+			}
 			factModels := supportedModels[factID]
 			// 直接支持模型并入（空 SM 账户此处天然为空集，不产出任何模型——
 			// 并集设计 §4.3 裁决：空集合不展开"全部模型"，无需特判）。
@@ -180,14 +191,8 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 			// IsAdmissibleModelMapping 判定 + upstream ∈ 事实主体 SM 收敛。
 			// 供应商门已随 account_model_mappings.provider_code 维度退役拆除
 			//（account_entry_mappings 只按 account_id 归属，映射恒在事实主体
-			// 名下）。RuntimeAccount 视图用事实主体档案列——授权实例不得用
-			// 包装实例账户档案。
-			account := &gatewayopenai.RuntimeAccount{
-				ProviderCode:              factProvider,
-				ProviderProtocolProfileID: row.resourceProviderProtocolProfileID(),
-				ProtocolCode:              row.resourceProtocolCode(),
-				ProtocolVersion:           row.resourceProtocolVersion(),
-			}
+			// 名下）；hybrid 门与档案排除已随 B4 W2 拆除，判定只依赖映射行。
+			account := &gatewayopenai.RuntimeAccount{}
 			for _, item := range mappings[factID] {
 				if !gatewayopenai.IsAdmissibleModelMapping(item.mapping, account) {
 					continue
@@ -205,7 +210,8 @@ func (l chainGroupModelUnionLoader) ListGroupModelUnion(ctx context.Context, inp
 		out = append(out, model)
 	}
 	sort.Strings(out)
-	return gatewayruntimecache.GroupModelUnionEntry{Models: out, ValidUntil: validUntil}, nil
+	sort.Strings(vendors)
+	return gatewayruntimecache.GroupModelUnionEntry{Models: out, Vendors: vendors, ValidUntil: validUntil}, nil
 }
 
 // listUnionCandidateRows 复用 chainCandidateWhere / chainCandidateColumns /
@@ -230,11 +236,14 @@ func (l chainGroupModelUnionLoader) listUnionCandidateRows(ctx context.Context, 
 	const unionStatusSet = "'active', 'rate_limited', 'temporary_unavailable'"
 	where := strings.NewReplacer(append([]string{"{statusSet}", unionStatusSet},
 		chainMediaArmReplacement(false)...)...).Replace(chainCandidateWhere)
-	query := strings.NewReplacer(
+	// {connectionsTable} 二段展开与 chain_accounts.go expandConnectionsTable
+	// 同因：chainCandidateColumns 内的单连接事实源子查询引用方言限定的
+	// account_connections 表名，NewReplacer 单趟扫描不会重入替换文本。
+	query := s.expandConnectionsTable(strings.NewReplacer(
 		"{columns}", chainCandidateColumns,
 		"{from}", fmt.Sprintf(chainCandidateFrom, s.table("group_accounts"), s.table("accounts"), s.table("accounts")),
 		"{where}", where,
-	).Replace(`SELECT {columns} {from} {where}`)
+	).Replace(`SELECT {columns} {from} {where}`))
 	rows, err := s.db.QueryContext(ctx, s.bind(query),
 		groupID, groupAccess.GroupOwnerSystemAccountID,
 		1, now, 1, now, now, now)
@@ -399,17 +408,16 @@ func (c chainGatewayKeyModelCatalog) ListGatewayKeyModels(ctx context.Context, s
 	if c.cache == nil {
 		return gatewayresponse.GatewayKeyModelList{}, fmt.Errorf("网关模型列表装载缺少 runtime cache")
 	}
-	// 1. 绑定去重：排序 providerCodes（字典维度）+ 排序 groupIDs（并集维度）。
-	providerCodes := make([]string, 0, len(bindings))
+	// 1. 绑定去重：排序 groupIDs（并集维度）。供应商解耦 B4 W2：绑定行不再
+	// 携带 provider 维度（GatewayModelBinding.ProviderCode 已删除），目录字典
+	// 改按并集条目的成员 vendor 集装载（见步骤 3）。
 	groupIDs := make([]string, 0, len(bindings))
 	for _, binding := range bindings {
-		providerCodes = append(providerCodes, binding.ProviderCode)
 		groupIDs = append(groupIDs, binding.GroupID)
 	}
-	codes := sortedUniqueProviderCodes(providerCodes)
 	groups := uniqueNonEmpty(groupIDs)
 	sort.Strings(groups)
-	if len(codes) == 0 {
+	if len(groups) == 0 {
 		// §4.7 空态：无激活绑定 → 空列表（HTTP 200），不触发并集装载。
 		return gatewayresponse.GatewayKeyModelList{
 			Entries:    []gatewayresponse.ModelCatalogEntry{},
@@ -419,25 +427,27 @@ func (c chainGatewayKeyModelCatalog) ListGatewayKeyModels(ctx context.Context, s
 
 	validUntil := c.nowFn().Add(gatewayruntimecache.GroupModelUnionBaseTTL)
 	var unionModels []string
-	if len(groups) > 0 {
-		// 2. 并集成员（错误原样上抛；singleflight/共享缓存细节由 runtime cache
-		// 承担，§6.3）。
-		union, err := c.cache.ListCachedGroupModelUnionAsync(ctx, gatewayruntimecache.GroupModelUnionListOptions{
-			CallerSystemAccountID: systemAccountID,
-			GroupIDs:              groups,
-		})
-		if err != nil {
-			return gatewayresponse.GatewayKeyModelList{}, err
-		}
-		unionModels = union.Models
-		validUntil = union.ValidUntil
+	var dictionaryVendors []string
+	// 2. 并集成员（错误原样上抛；singleflight/共享缓存细节由 runtime cache
+	// 承担，§6.3）。
+	union, err := c.cache.ListCachedGroupModelUnionAsync(ctx, gatewayruntimecache.GroupModelUnionListOptions{
+		CallerSystemAccountID: systemAccountID,
+		GroupIDs:              groups,
+	})
+	if err != nil {
+		return gatewayresponse.GatewayKeyModelList{}, err
 	}
+	unionModels = union.Models
+	dictionaryVendors = union.Vendors
+	validUntil = union.ValidUntil
 
-	// 3. 元数据字典（§4.9.1）：按去重 providerCode 复用现有目录缓存路径；
-	// active 行内按 scope 优先级（personal > global > built_in）取每模型最优行。
-	// 成员过滤职责（可见性/价格/模式）已退役——目录只回答"元数据长什么样"。
+	// 3. 元数据字典（§4.9.1，B4 W2 维度迁移）：按并集成员去重 vendor 复用现有
+	// 目录缓存路径；active 行内按 scope 优先级（personal > global > built_in）
+	// 取每模型最优行。成员过滤职责（可见性/价格/模式）已退役——目录只回答
+	// "元数据长什么样"。generic_http 账户（vendor 空串）不入 vendor 集，其模型
+	// 未命中字典时按 §4.9.3 合成条目出。
 	dictionary := map[string]gatewayruntimecache.ProviderModelCatalogItem{}
-	for _, code := range codes {
+	for _, code := range dictionaryVendors {
 		catalog, err := c.cache.ListCachedProviderModelCatalogAsync(ctx, gatewayruntimecache.ModelCatalogListOptions{
 			ProviderCode:    code,
 			SystemAccountID: systemAccountID,

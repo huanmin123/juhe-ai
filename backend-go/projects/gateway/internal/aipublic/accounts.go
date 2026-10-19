@@ -283,29 +283,36 @@ func (d *Deps) loadAccountSupportedModels(ctx context.Context, ids []string) (ma
 
 // accountAddBody mirrors accountPushSchema (strict).
 type accountAddBody struct {
-	TargetUsername       string
-	TargetDisplayName    *string
-	TargetGroupName      string
-	ProviderCode         string
-	ProfileID            string
-	Name                 string
-	AccountType          string
-	BaseURL              string
-	APIKey               string
-	SupportedModels      *[]string
-	Status               string
-	HasStatus            bool
-	ConcurrencyLimit     *int
-	Priority             *int
+	TargetUsername  string
+	TargetDisplayName *string
+	TargetGroupName string
+	ProviderCode    string
+	ProfileID       string
+	Name            string
+	AccountType     string
+	BaseURL         string
+	APIKey          string
+	SupportedModels *[]string
+	Status          string
+	HasStatus       bool
+	ConcurrencyLimit *int
+	Priority        *int
 	AvailabilitySchedule any
-	HasSchedule          bool
-	Notes                *string
+	HasSchedule     bool
+	Notes           *string
+	// B1 断点批（设计 §8）：连接集合与健康检查三件套直通管理面创建写链
+	// （Store.Create 强校验，缺失由写链按 400 文案列明缺失字段）。
+	Connections                     []accounts.ConnectionInput
+	HealthCheckConnectionPresetCode *string
+	HealthCheckEndpointMode         *string
+	HealthCheckModel                *string
 }
 
 func parseAccountAddBody(body map[string]any) (*accountAddBody, string) {
 	allowed := []string{"targetUsername", "targetDisplayName", "targetGroupName", "providerCode",
 		"providerProtocolProfileId", "name", "type", "baseUrl", "apiKey", "supportedModels",
-		"status", "concurrencyLimit", "priority", "availabilitySchedule", "notes"}
+		"status", "concurrencyLimit", "priority", "availabilitySchedule", "notes",
+		"connections", "healthCheckConnectionPresetCode", "healthCheckEndpointMode", "healthCheckModel"}
 	unknown := strictObjectKeys(body, allowed...)
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
@@ -419,6 +426,47 @@ func parseAccountAddBody(body map[string]any) (*accountAddBody, string) {
 		}
 		parsed.Notes = notes
 	}
+	// B1 断点批（设计 §8）：connections 元素契约与管理面同款（复用
+	// accounts.NormalizeConnectionBody，不造第二份解析器）。
+	if bodyHas(body, "connections") {
+		raw := body["connections"]
+		items, isList := raw.([]any)
+		if !isList {
+			return nil, zodInvalidType("array", raw)
+		}
+		for _, item := range items {
+			object, isObject := item.(map[string]any)
+			if !isObject {
+				return nil, zodInvalidType("object", item)
+			}
+			connection, ok := accounts.NormalizeConnectionBody(object)
+			if !ok {
+				return nil, "connections 条目必须包含 connectionPresetCode、baseUrl、非空 endpointModes 和显式 enabled"
+			}
+			parsed.Connections = append(parsed.Connections, connection)
+		}
+	}
+	if bodyHas(body, "healthCheckConnectionPresetCode") {
+		preset, issue := optionalTrimmedBody(body, "healthCheckConnectionPresetCode", 1, 120)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.HealthCheckConnectionPresetCode = preset
+	}
+	if bodyHas(body, "healthCheckEndpointMode") {
+		mode, issue := optionalTrimmedBody(body, "healthCheckEndpointMode", 1, 60)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.HealthCheckEndpointMode = mode
+	}
+	if bodyHas(body, "healthCheckModel") {
+		model, issue := optionalTrimmedBody(body, "healthCheckModel", 1, 200)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.HealthCheckModel = model
+	}
 	return parsed, ""
 }
 
@@ -499,6 +547,12 @@ func (d *Deps) addAccount(w http.ResponseWriter, r *http.Request) {
 		GroupID:                   strPtr(group.ID),
 		AvailabilitySchedule:      nil,
 	}
+	// B1 断点批（设计 §8）：连接集合与健康检查三件套直通创建写链；缺失由
+	// Store.Create 按显式 400 拒绝（错误文案列明缺失字段）。
+	input.Connections = parsed.Connections
+	input.HealthCheckConnectionPresetCode = parsed.HealthCheckConnectionPresetCode
+	input.HealthCheckEndpointMode = parsed.HealthCheckEndpointMode
+	input.HealthCheckModel = parsed.HealthCheckModel
 	if parsed.SupportedModels != nil {
 		input.SupportedModels = normalizedStringList(*parsed.SupportedModels)
 	}

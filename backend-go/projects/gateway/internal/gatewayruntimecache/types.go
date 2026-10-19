@@ -394,12 +394,7 @@ type GroupSchedulingPolicy = map[string]any
 // GroupUsageAccessMetadata mirrors GroupUsageAccessMetadata
 // (storage/openai-account-selector.types.ts).
 type GroupUsageAccessMetadata struct {
-	GroupOwnerSystemAccountID string `json:"groupOwnerSystemAccountId"`
-	// ProviderCode 过渡字段：groups.provider_code 已随供应商解耦退役（供应商
-	// 与上游协议面重构设计 §8），分组访问读取不再投影该列，值恒为空串；
-	// 字段待组合根切片与消费方（gatewaycodex 边界投影、/v1/models
-	// factProvider、audit 消费方）一并移除。
-	ProviderCode                   string                 `json:"providerCode"`
+	GroupOwnerSystemAccountID      string                 `json:"groupOwnerSystemAccountId"`
 	GroupAccessType                string                 `json:"groupAccessType"`
 	GroupType                      *string                `json:"groupType,omitempty"`
 	SchedulingPolicy               *GroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`

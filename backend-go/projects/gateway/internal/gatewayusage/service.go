@@ -64,8 +64,8 @@ type GatewayFailureUsageContext struct {
 
 // GroupUsageAccessMetadata mirrors the consumed GroupUsageAccessMetadata
 // fields (openai-account-selector.types.ts) that groupUsageMetadata reads.
+// 供应商解耦 B4 W2：ProviderCode 过渡字段已随 groups.provider_code 退役删除。
 type GroupUsageAccessMetadata struct {
-	ProviderCode                   string
 	GroupOwnerSystemAccountID      string
 	GroupAccessType                string
 	GroupAuthorizationID           string
@@ -75,7 +75,6 @@ type GroupUsageAccessMetadata struct {
 
 // GroupUsageMetadataFields mirrors the groupUsageMetadata pick.
 type GroupUsageMetadataFields struct {
-	ProviderCode                   string
 	GroupOwnerSystemAccountID      string
 	GroupAccessType                string
 	GroupAuthorizationID           string
@@ -92,7 +91,6 @@ func AccountUsageMetadata(account UsageModelAccount) UsageAccessFields {
 // GroupUsageMetadata mirrors groupUsageMetadata(groupAccess).
 func GroupUsageMetadata(groupAccess GroupUsageAccessMetadata) GroupUsageMetadataFields {
 	return GroupUsageMetadataFields{
-		ProviderCode:                   groupAccess.ProviderCode,
 		GroupOwnerSystemAccountID:      groupAccess.GroupOwnerSystemAccountID,
 		GroupAccessType:                groupAccess.GroupAccessType,
 		GroupAuthorizationID:           groupAccess.GroupAuthorizationID,

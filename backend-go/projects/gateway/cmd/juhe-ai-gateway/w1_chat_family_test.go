@@ -680,6 +680,7 @@ func TestW1HListGatewayKeyModels(t *testing.T) {
 	validUntil := time.Now().Add(time.Hour)
 	union := &gkmFakeUnionLoader{entry: gatewayruntimecache.GroupModelUnionEntry{
 		Models:     []string{"w1h-missing", "w1h-a"},
+		Vendors:    []string{"openai"},
 		ValidUntil: validUntil,
 	}}
 	service, err := gatewayruntimecache.New(&w1hReadModels{catalog: catalog}, gatewayruntimecache.Options{Union: union})
@@ -689,9 +690,9 @@ func TestW1HListGatewayKeyModels(t *testing.T) {
 	t.Cleanup(service.Close)
 	loader := chainGatewayKeyModelCatalog{cache: service}
 	result, err := loader.ListGatewayKeyModels(context.Background(), "sys-w1h", []gatewayresponse.GatewayModelBinding{
-		{GroupID: "grp-b", ProviderCode: "openai"},
-		{GroupID: "grp-a", ProviderCode: "openai"},
-		{GroupID: "grp-b", ProviderCode: "openai"},
+		{GroupID: "grp-b"},
+		{GroupID: "grp-a"},
+		{GroupID: "grp-b"},
 	})
 	if err != nil {
 		t.Fatalf("ListGatewayKeyModels: %v", err)

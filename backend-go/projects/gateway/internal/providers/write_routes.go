@@ -619,7 +619,7 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 	}
 	effective := customProviderModelUpsertInput{Model: parsed.model}
 	if parsed.configurationTemplateID != "" {
-		catalog, err := d.Store.listProviderModelCatalog(ctx, provider.Code, owner, true, true)
+		catalog, err := d.Store.ListProviderModelsForRequest(ctx, provider.Code, owner, true, true)
 		if err != nil {
 			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
@@ -1023,23 +1023,26 @@ func todayUTCString() string {
 }
 
 // providerModelDefaultReferenceCleanupInput ports the same-named route
-// helper: the cleanup targets fan the provider code out through the protocol
-// families so every surface that mirrors the model is cleaned.
+// helper. models 单表后 vendor 即目录维度（设计 §3），旧「协议家族 fan-out」
+// （profile → openai/hybrid 镜像面）随 providers/provider_protocol_profiles
+// 退役拆除：清理目标恒为归一化后的单 vendor。
 func (s *Store) defaultReferenceCleanupTargets(ctx context.Context, providerCode, systemAccountID, model string, clearSystemDefault bool) (*defaultReferenceCleanupInput, error) {
-	codes, err := s.providerModelDefaultReferenceCodes(ctx, providerCode)
-	if err != nil {
-		return nil, err
+	normalized := strings.TrimSpace(providerCode)
+	if normalized == "" {
+		return &defaultReferenceCleanupInput{
+			Model:              model,
+			Targets:            []defaultReferenceCleanupTarget{},
+			SystemAccountID:    systemAccountID,
+			ClearSystemDefault: clearSystemDefault,
+		}, nil
 	}
-	targets := make([]defaultReferenceCleanupTarget, 0, len(codes))
-	for _, code := range codes {
-		customSources, err := s.ModelCatalogSourceProviderCodes(ctx, code)
-		if err != nil {
-			return nil, err
-		}
+	sources := modelCatalogSourceProviderCodes(normalized)
+	targets := make([]defaultReferenceCleanupTarget, 0, len(sources))
+	for _, code := range sources {
 		targets = append(targets, defaultReferenceCleanupTarget{
 			ProviderCode:               code,
-			BuiltInSourceProviderCodes: modelCatalogBuiltInSourceProviderCodes(code, customSources),
-			CustomSourceProviderCodes:  customSources,
+			BuiltInSourceProviderCodes: modelCatalogBuiltInSourceProviderCodes(normalized, sources),
+			CustomSourceProviderCodes:  sources,
 		})
 	}
 	return &defaultReferenceCleanupInput{
@@ -1048,45 +1051,6 @@ func (s *Store) defaultReferenceCleanupTargets(ctx context.Context, providerCode
 		SystemAccountID:    systemAccountID,
 		ClearSystemDefault: clearSystemDefault,
 	}, nil
-}
-
-// providerModelDefaultReferenceCodes ports providerModelDefaultReferenceCodes.
-func (s *Store) providerModelDefaultReferenceCodes(ctx context.Context, providerCode string) ([]string, error) {
-	normalized := strings.TrimSpace(providerCode)
-	if normalized == "" || isHybridProviderCode(normalized) {
-		if normalized == "" {
-			return []string{}, nil
-		}
-		return []string{normalized}, nil
-	}
-	definition, err := s.FindDefinition(ctx, normalized)
-	if err != nil {
-		return nil, err
-	}
-	if definition == nil {
-		return []string{normalized}, nil
-	}
-	protocolCodes := map[string]bool{}
-	for _, profile := range definition.ProtocolProfiles {
-		if profile.Enabled {
-			protocolCodes[profile.ProtocolCode] = true
-		}
-	}
-	seen := map[string]bool{normalized: true}
-	codes := []string{normalized}
-	if protocolCodes["openai"] {
-		if !seen[openaiProviderCode] {
-			seen[openaiProviderCode] = true
-			codes = append(codes, openaiProviderCode)
-		}
-	}
-	if protocolCodes["openai"] || protocolCodes["anthropic"] || protocolCodes["gemini"] {
-		if !seen[hybridProviderCode] {
-			seen[hybridProviderCode] = true
-			codes = append(codes, hybridProviderCode)
-		}
-	}
-	return codes, nil
 }
 
 // customCatalogItemFromRecord ports toCustomCatalogItem for save responses.

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +84,15 @@ type PatchInput struct {
 	// ModelMappings mirrors input.modelMappings (accountUpdateSchema).
 	ModelMappings        []ModelMapping
 	ModelMappingsPresent bool
+	// Connections（B1 断点批，设计 §8）是连接集合整替换入参：保留仍存在 preset
+	// 的 DB id、新 preset 服务端生成 id、删除未提交 preset；禁用连接时引用它的
+	// enabled 映射在同一事务内禁用（§5.1），删除仍被映射引用的连接按 RESTRICT
+	// 语义 400（connection_mapping_conflict）。
+	Connections        []ConnectionInput
+	ConnectionsPresent bool
+	// HealthCheckConnectionPresetCode（设计 §8）是健康检查三件套的连接维度
+	// 入参：必须解析到补丁后最终连接集合中一行 enabled 连接。
+	HealthCheckConnectionPresetCode *string
 	// ProxyProfileID mirrors input.proxyProfileId (nullable id tri-state).
 	ProxyProfileID        *string
 	ProxyProfileIDPresent bool
@@ -156,6 +166,10 @@ func accountPatchChangeLabel(field string) string {
 		return "降级备用"
 	case "supportedModels":
 		return "支持模型"
+	case "connections":
+		return "连接"
+	case "healthCheckConnectionPresetCode":
+		return "检查连接"
 	case "healthCheckModel":
 		return "检查模型"
 	case "healthCheckEndpointMode":
@@ -239,6 +253,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		cooldownRetestLastCode    sql.NullInt64
 		healthCheckModel          string
 		healthCheckEndpointMode   string
+		// healthCheckConnectionID / currentHealthCheckPreset（B1 断点批）：
+		// 行内健康检查连接 id 与其账户内 preset 反解（§8 健康检查三件套的
+		// 连接维度现值）。
+		healthCheckConnectionID   sql.NullString
+		currentHealthCheckPreset  string
 		providerCode              string
 		providerProtocolProfileID string
 		protocolCode              string
@@ -272,7 +291,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_generation,
 			accounts.cooldown_retest_last_at, accounts.cooldown_retest_last_status_code,
 			accounts.health_check_model, accounts.health_check_endpoint_mode,
-			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
+			-- B1 断点批：健康检查连接 id + 其账户内 preset 反解（§8 三件套的
+			-- 连接维度现值；id 为 NULL 时反解投影为空串）。
+			accounts.health_check_connection_id,
+			COALESCE((SELECT account_connections.connection_preset_code
+				FROM `+s.table("account_connections")+` account_connections
+				WHERE account_connections.id = accounts.health_check_connection_id), '') AS current_health_check_preset,
+			-- B4 W2 行为键过渡投影：provider_code 已停写（设计 §8 行为键按
+			-- vendor），patch 行为键控读 COALESCE(vendor, provider)——vendor 值域
+			-- 与 providerCode 同名，legacy 行回落旧列，新行取 vendor。
+			COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') AS provider_code,
+			accounts.provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.client_compatibility, accounts.proxy_profile_id,
 			accounts.balance_query_enabled, accounts.balance_query_config_json,
 			accounts.balance_query_next_refresh_at,
@@ -294,7 +323,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.lastErrorMessage, &row.lastErrorTraceID, &row.cooldownUntil,
 		&row.cooldownRetestCount, &row.cooldownRetestObservation, &row.cooldownRetestGeneration,
 		&row.cooldownRetestLastAt, &row.cooldownRetestLastCode,
-		&row.healthCheckModel, &row.healthCheckEndpointMode, &row.providerCode,
+		&row.healthCheckModel, &row.healthCheckEndpointMode,
+		&row.healthCheckConnectionID, &row.currentHealthCheckPreset, &row.providerCode,
 		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
 		&row.clientCompatibility, &row.proxyProfileID, &row.balanceQueryEnabled,
 		&row.balanceQueryConfigJSON, &row.balanceQueryNextRefreshAt, &row.temporaryProbeEnabled,
@@ -616,8 +646,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Health check model: must remain inside the supported model set.
 	if input.HealthCheckModel != nil || input.HealthCheckEndpointMode != nil || input.SupportedModelsPresent {
 		supportedModels := []string{}
-		modelRows, err := tx.QueryContext(ctx, s.bind(`SELECT model FROM `+s.table("account_supported_models")+`
-			WHERE account_id = ? ORDER BY model ASC`), row.id)
+		modelRows, err := tx.QueryContext(ctx, s.bind(`SELECT models.upstream_model FROM `+s.table("account_supported_models")+` account_supported_models
+			INNER JOIN `+s.table("models")+` models ON models.id = account_supported_models.model_id
+			WHERE account_supported_models.account_id = ? ORDER BY models.upstream_model ASC`), row.id)
 		if err != nil {
 			return nil, err
 		}
@@ -688,6 +719,48 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
+	// 连接集合整替换（B1 断点批，设计 §8）第一阶段：先于 modelMappings 落地，
+	// 保证映射写入/校验面对的是最终连接集合。registry/validator 校验
+	// （§2.1/§2.2）→ 整替换 upsert（保留存量 preset 的 DB id）→ §5.1 禁用
+	// 级联；待删除 preset 登记到 removedPatchConnections，删除终裁在映射整
+	// 替换之后（finishAccountConnectionsReplacement，支持同事务改指向）。
+	removedPatchConnections := []removedConnection{}
+	if input.ConnectionsPresent {
+		patchCredentials := Credentials{}
+		if err := DecryptJSON(s.secret, row.credentialsEncrypted, &patchCredentials); err != nil {
+			return nil, err
+		}
+		patchVendor, patchDriver := accountVendorIdentity(row.providerCode)
+		resolvedPatchConnections, err := resolveConnectionSet(row.capabilityDomain, patchDriver, row.accountType,
+			accountOAuthTypeForRegistry(row.accountType, patchCredentials), input.Connections)
+		if err != nil {
+			return nil, err
+		}
+		removed, connectionsChanged, err := s.beginAccountConnectionsReplacement(ctx, tx, row.id, resolvedPatchConnections, nowISO)
+		if err != nil {
+			return nil, err
+		}
+		removedPatchConnections = removed
+		if connectionsChanged {
+			addChange("connections", "连接集合", "已更新")
+			connectionChanged = true
+			// 既有映射对最终连接/mode 集合重校验（§5.3：映射可执行性依赖
+			// connection ∩ model endpoint modes；modelMappings 显式提交时由
+			// 下方映射块的整替换校验覆盖，此处只补「仅连接参与」的臂）。
+			if !input.ModelMappingsPresent {
+				currentMappings, err := s.loadAccountModelMappings(ctx, tx, row.id)
+				if err != nil {
+					return nil, err
+				}
+				for _, mapping := range currentMappings {
+					if _, _, err := s.resolveEntryMappingTargets(ctx, tx, row.id, patchVendor.String, row.systemAccountID, mapping); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+
 	// Model mappings: schema-validated (endpoint family enums in the body
 	// parser), diffed against the persisted rows and replaced in-place
 	// (account-management-patch.repository.ts modelMappingsChanged).
@@ -707,6 +780,91 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 				return nil, err
 			}
 			modelMappingsChanged = true
+		}
+	}
+
+	// 连接集合整替换第二阶段（映射整替换之后）：删除终裁。仍被映射引用 →
+	// connection_mapping_conflict；仍被 health-check 引用且未改选 →
+	// health_check_connection_conflict（改选 preset 由下方健康检查块解析，
+	// healthKeepPreset 即显式入参）。
+	healthKeepPreset := ""
+	if input.HealthCheckConnectionPresetCode != nil {
+		healthKeepPreset = strings.TrimSpace(*input.HealthCheckConnectionPresetCode)
+	}
+	if err := s.finishAccountConnectionsReplacement(ctx, tx, row.id, removedPatchConnections, healthKeepPreset); err != nil {
+		return nil, err
+	}
+
+	// Health-check 连接预设（B1 断点批，设计 §8）：显式提交时必须解析到最终
+	// 连接集合中一行 enabled 连接；未显式提交但连接集合被整替换时，现值也必须
+	// 仍解析到 enabled 行（§2.1：健康检查引用必须在同一事务中改选完整三字段，
+	// 否则 health_check_connection_conflict）。
+	if input.HealthCheckConnectionPresetCode != nil || input.ConnectionsPresent {
+		healthPreset := strings.TrimSpace(row.currentHealthCheckPreset)
+		if input.HealthCheckConnectionPresetCode != nil {
+			healthPreset = strings.TrimSpace(*input.HealthCheckConnectionPresetCode)
+		}
+		if healthPreset == "" {
+			return nil, &ValidationError{Message: "health_check_connection_conflict: 账户没有健康检查连接"}
+		}
+		var healthConnectionID string
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("account_connections")+`
+			WHERE account_id = ? AND connection_preset_code = ? AND enabled = 1`), row.id, healthPreset).Scan(&healthConnectionID); err != nil {
+			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: connection preset %q resolves to no enabled account connection", healthPreset)}
+		}
+		effectiveMode := row.healthCheckEndpointMode
+		if input.HealthCheckEndpointMode != nil {
+			effectiveMode = strings.TrimSpace(*input.HealthCheckEndpointMode)
+		}
+		connectionModes, err := s.entryConnectionEndpointModes(ctx, tx, healthConnectionID)
+		if err != nil {
+			return nil, err
+		}
+		if !entryModeSet(connectionModes)[effectiveMode] {
+			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在健康检查连接已启用 mode 内", effectiveMode)}
+		}
+		effectiveModel := strings.TrimSpace(row.healthCheckModel)
+		if input.HealthCheckModel != nil {
+			effectiveModel = strings.TrimSpace(*input.HealthCheckModel)
+		}
+		supportedModelNames := []string{}
+		supportedModelRows, err := tx.QueryContext(ctx, s.bind(`SELECT models.upstream_model FROM `+s.table("account_supported_models")+` account_supported_models
+			INNER JOIN `+s.table("models")+` models ON models.id = account_supported_models.model_id
+			WHERE account_supported_models.account_id = ? ORDER BY models.upstream_model ASC`), row.id)
+		if err != nil {
+			return nil, err
+		}
+		for supportedModelRows.Next() {
+			var name string
+			if err := supportedModelRows.Scan(&name); err != nil {
+				supportedModelRows.Close()
+				return nil, err
+			}
+			supportedModelNames = append(supportedModelNames, name)
+		}
+		supportedModelRows.Close()
+		if err := supportedModelRows.Err(); err != nil {
+			return nil, err
+		}
+		if _, err := normalizedHealthCheckModel(effectiveModel, supportedModelNames); err != nil {
+			return nil, err
+		}
+		patchHealthVendor, _ := accountVendorIdentity(row.providerCode)
+		modelID, err := s.resolveEntryModelID(ctx, tx, patchHealthVendor.String, row.systemAccountID, effectiveModel)
+		if err != nil {
+			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查模型 %s 不在本账户可见支持模型内", effectiveModel)}
+		}
+		modelModes, err := s.entryModelEndpointModes(ctx, tx, modelID)
+		if err != nil {
+			return nil, err
+		}
+		if !entryModeSet(modelModes)[effectiveMode] {
+			return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查模型 %s 未声明检查形态 %s", effectiveModel, effectiveMode)}
+		}
+		if healthConnectionID != row.healthCheckConnectionID.String {
+			addChange("healthCheckConnectionPresetCode", row.currentHealthCheckPreset, healthPreset)
+			sets = append(sets, "health_check_connection_id = ?")
+			setArgs = append(setArgs, healthConnectionID)
 		}
 	}
 
@@ -1678,13 +1836,19 @@ func tagListsEqual(tags []TagSummary, names []string) bool {
 }
 
 // loadAccountModelMappings mirrors loadModelMappingsInClient: the persisted
-// mapping rows projected in the AccountModelMapping shape.
+// mapping rows projected in the AccountModelMapping shape（B4 W2：读
+// account_entry_mappings 目标形态——upstream 名经 target_model_id JOIN
+// models.upstream_model，连接只携带账户内自然键 preset code，§8）。
 func (s *Store) loadAccountModelMappings(ctx context.Context, q queryer, accountID string) ([]ModelMapping, error) {
-	rows, err := q.QueryContext(ctx, s.bind(`SELECT source_model, source_endpoint_family,
-			upstream_model, upstream_endpoint_family, enabled
-		FROM `+s.table("account_model_mappings")+`
-		WHERE account_id = ?
-		ORDER BY source_model ASC, source_endpoint_family ASC`), accountID)
+	rows, err := q.QueryContext(ctx, s.bind(`SELECT account_entry_mappings.source_model, account_entry_mappings.source_endpoint_family,
+			models.upstream_model, account_entry_mappings.target_endpoint_family, account_entry_mappings.enabled,
+			account_connections.connection_preset_code
+		FROM `+s.table("account_entry_mappings")+` account_entry_mappings
+		INNER JOIN `+s.table("models")+` models ON models.id = account_entry_mappings.target_model_id
+		INNER JOIN `+s.table("account_connections")+` account_connections
+			ON account_connections.id = account_entry_mappings.target_connection_id
+		WHERE account_entry_mappings.account_id = ?
+		ORDER BY account_entry_mappings.source_model ASC, account_entry_mappings.source_endpoint_family ASC`), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1694,7 +1858,7 @@ func (s *Store) loadAccountModelMappings(ctx context.Context, q queryer, account
 		var mapping ModelMapping
 		var enabled int
 		if err := rows.Scan(&mapping.SourceModel, &mapping.SourceEndpointFamily,
-			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled); err != nil {
+			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled, &mapping.TargetConnectionPresetCode); err != nil {
 			return nil, err
 		}
 		if enabled == 1 {

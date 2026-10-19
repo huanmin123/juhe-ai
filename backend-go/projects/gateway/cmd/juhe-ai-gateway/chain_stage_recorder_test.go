@@ -475,7 +475,9 @@ func seedRetryAttemptCountGroupAccounts(t *testing.T, fixture *chainFixture, gro
 			accountID, fixture.systemAccount, fmt.Sprintf("重试账户 %d", index), w1vEncrypt(t, map[string]any{"api_key": "sk-retry-account-key", "base_url": baseURL}))
 		seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 			groupID, fixture.systemAccount, accountID, now)
-		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES (?, 'openai', 'gpt-test', ?)`,
+		seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES (?, 'openai', 'gpt-test', 'mdl_gpt-test', ?)`,
 			accountID, now)
+		// B4 第一批单连接事实源：账户需要 enabled 连接行才能水合。
+		chainSeedAccountConnection(t, fixture.db, accountID, baseURL)
 	}
 }

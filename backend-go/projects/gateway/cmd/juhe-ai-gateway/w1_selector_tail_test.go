@@ -27,7 +27,6 @@ import (
 func w1nOwnerGroupAccess() *gatewayruntimecache.GroupUsageAccessMetadata {
 	return &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_owner",
-		ProviderCode:              "openai",
 		GroupAccessType:           gatewayruntimecache.GroupAccessTypeOwner,
 	}
 }
@@ -35,10 +34,9 @@ func w1nOwnerGroupAccess() *gatewayruntimecache.GroupUsageAccessMetadata {
 // w1nSecretRow 构造 openAIAccountSecretFromRow 直接调用的最小候选行。
 func w1nSecretRow(id, accountType, providerCode, encrypted string) *chainCandidateRow {
 	return &chainCandidateRow{
-		AccountID:            id,
-		ID:                   id,
-		SystemAccountID:      "sys_owner",
-		ProviderCode:         providerCode,
+		AccountID:       id,
+		ID:              id,
+		SystemAccountID: "sys_owner",
 		// 供应商解耦（设计 §2.1）：连接身份读 vendor_code（chain_accounts_secret
 		// 池化隔离门 resourceVendorCode），与旧 provider 值同名。
 		VendorCode:           sql.NullString{String: providerCode, Valid: providerCode != ""},
@@ -49,7 +47,11 @@ func w1nSecretRow(id, accountType, providerCode, encrypted string) *chainCandida
 		Status:               "active",
 		Schedulable:          1,
 		CredentialsEncrypted: sql.NullString{String: encrypted, Valid: encrypted != ""},
-		ModelRank:            -1,
+		// B4 第一批单连接事实源：secret 装配 fail closed 依赖连接行投影——
+		// 行级用例统一带一条 enabled 连接事实（BaseURL）；丢弃臂在 BaseURL
+		// 判定之前的凭据臂（空凭据/不可解密）先行生效，不受影响。
+		ConnectionBaseURL: sql.NullString{String: "https://" + id + ".example.invalid/v1", Valid: true},
+		ModelRank:         -1,
 	}
 }
 
@@ -353,7 +355,6 @@ func TestW1NOrderChainCandidateRowsQualityBucketGate(t *testing.T) {
 func TestW1NListAccountsForGroupQueryErrorArms(t *testing.T) {
 	groupAccess := &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID: "sys_admin",
-		ProviderCode:              "openai",
 		GroupAccessType:           gatewayruntimecache.GroupAccessTypeOwner,
 	}
 	cases := []struct {
@@ -388,7 +389,9 @@ func TestW1NListAccountsForGroupQueryErrorArms(t *testing.T) {
 		{
 			name: "hydration model_mappings 缺失",
 			prepare: func(t *testing.T, db *sql.DB) {
-				w1nDropTables(t, db, "account_model_mappings")
+				// B4 第一批：映射装载读 account_entry_mappings（旧
+				// account_model_mappings 已随 A 路线撤除）。
+				w1nDropTables(t, db, "account_entry_mappings")
 			},
 		},
 		{

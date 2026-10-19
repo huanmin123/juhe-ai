@@ -127,6 +127,8 @@ func TestGatewayChainCommittedStreamFailureRecordsSingleUsageRow(t *testing.T) {
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL)
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir))
@@ -187,6 +189,8 @@ func TestGatewayChainSuccessfulStreamKeepsSingleUsageRow(t *testing.T) {
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL)
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir))
@@ -239,6 +243,8 @@ func TestGatewayChainNonStreamProtocolFailureRecordsSingleUsageRow(t *testing.T)
 			"supported_endpoint_modes": []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}}), fixture.accountID); err != nil {
 		t.Fatalf("update account credentials: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL)
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir))

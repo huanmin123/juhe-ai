@@ -342,7 +342,7 @@ func TestGroupAccessAsyncMatchesStandaloneSyncSemantics(t *testing.T) {
 	// 路径（cacheDriver != redis 时本地缓存为事实源）。stale-while-revalidate
 	// 属于共享缓存（redis）模式，见 TestSharedModeGroupAccessStaleWhileRevalidate。
 	models := newFakeModels()
-	models.groupAccess["g1:sys"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
+	models.groupAccess["g1:sys"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", GroupAccessType: GroupAccessTypeOwner}
 	clock := newManualClock()
 	svc := newTestService(t, models, clock, nil)
 	ctx := context.Background()
@@ -423,7 +423,7 @@ func (c *fakeSharedCache) Clear(ctx context.Context) error {
 
 func TestSharedModeGroupAccessStaleWhileRevalidate(t *testing.T) {
 	models := newFakeModels()
-	models.groupAccess["g1:sys"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
+	models.groupAccess["g1:sys"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", GroupAccessType: GroupAccessTypeOwner}
 	clock := newManualClock()
 	shared := newFakeSharedFactory()
 	svc := newTestService(t, models, clock, func(o *Options) { o.Shared = shared })
@@ -471,7 +471,7 @@ func TestSharedModeGroupAccessStaleWhileRevalidate(t *testing.T) {
 func TestRuntimeFirstLoadFreshHitAndStaleRefresh(t *testing.T) {
 	models := newFakeModels()
 	models.runtimes["sk-test"] = staticRuntime(t, models, testAPIKeyRow("key_1", "normal", "g1"),
-		&GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner},
+		&GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", GroupAccessType: GroupAccessTypeOwner},
 		[]OpenAIAccountSecret{testAccount("a1", "sys_owner")})
 	clock := newManualClock()
 	svc := newTestService(t, models, clock, nil)
@@ -772,7 +772,7 @@ func TestBusAPIKeyValidationTopicScopedInvalidation(t *testing.T) {
 
 func TestClearReasonDiscrimination(t *testing.T) {
 	models := newFakeModels()
-	models.groupAccess["g1:sys"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
+	models.groupAccess["g1:sys"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys", GroupAccessType: GroupAccessTypeOwner}
 	clock := newManualClock()
 	clears := 0
 	svc := newTestService(t, models, clock, func(o *Options) {
@@ -819,8 +819,8 @@ func TestClearReasonDiscrimination(t *testing.T) {
 
 func TestDynamicRouteReselectionUsesCachedGroupData(t *testing.T) {
 	models := newFakeModels()
-	models.groupAccess["g1:sys_owner"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
-	models.groupAccess["g2:sys_owner"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", ProviderCode: "gpt", GroupAccessType: GroupAccessTypeOwner}
+	models.groupAccess["g1:sys_owner"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", GroupAccessType: GroupAccessTypeOwner}
+	models.groupAccess["g2:sys_owner"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner", GroupAccessType: GroupAccessTypeOwner}
 	models.accounts["g1"] = OpenAIAccountsForGroupResult{Accounts: []OpenAIAccountSecret{testAccount("a1", "sys_owner")}}
 	models.accounts["g2"] = OpenAIAccountsForGroupResult{Accounts: []OpenAIAccountSecret{testAccount("a2", "sys_owner")}}
 	models.concurrency["a2"] = 3

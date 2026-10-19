@@ -40,7 +40,6 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -66,12 +65,6 @@ func TestW13g6ClosedStoreErrorArms(t *testing.T) {
 	if _, err := store.ListProviderModelsForRequest(ctx, "openai", "w13g6-u", false, false); err == nil {
 		t.Fatal("openai models on closed DB must fail")
 	}
-	if _, err := store.ModelCatalogSourceProviderCodes(ctx, "hybrid"); err == nil {
-		t.Fatal("hybrid source codes on closed DB must fail")
-	}
-	if _, err := store.ModelCatalogSourceProviderCodes(ctx, "openai"); err == nil {
-		t.Fatal("openai source codes on closed DB must fail")
-	}
 	if _, err := store.FindProviderModelCapabilities(ctx, "w13g6-ghost", "", "m"); err == nil {
 		t.Fatal("capabilities on closed DB must fail")
 	}
@@ -80,15 +73,6 @@ func TestW13g6ClosedStoreErrorArms(t *testing.T) {
 	}
 	if _, err := store.ListProviderModelSelectionOptions(ctx, ModelOptionQuery{ProviderCode: "gpt"}); err == nil {
 		t.Fatal("selection options on closed DB must fail")
-	}
-	if _, err := store.ProtocolProviderCodes(ctx, "openai", "v1"); err == nil {
-		t.Fatal("protocol provider codes on closed DB must fail")
-	}
-	if err := store.UpsertSystemDefaultHealthCheckModel(ctx, "gpt", "m"); err == nil {
-		t.Fatal("system default upsert on closed DB must fail")
-	}
-	if err := store.UpsertDefaultHealthCheckModelPreference(ctx, "w13g6-u", "gpt", "m"); err == nil {
-		t.Fatal("preference upsert on closed DB must fail")
 	}
 	// 内置模型配置补丁：closed DB 下 BeginTx 失败。
 	current := &ModelCatalogItem{ID: "w13g6-cat", ProviderCode: "gpt", Model: "m", Status: "active",
@@ -99,7 +83,7 @@ func TestW13g6ClosedStoreErrorArms(t *testing.T) {
 		t.Fatal("builtin patch on closed DB must fail")
 	}
 	// pg 分支：table() 前缀。
-	if got := (&Store{pg: true}).table("provider_model_catalog"); got != "juhe_business.provider_model_catalog" {
+	if got := (&Store{pg: true}).table("models"); got != "juhe_business.models" {
 		t.Fatalf("pg table prefix: %s", got)
 	}
 }
@@ -111,8 +95,8 @@ func TestW13g6EmptyInputArms(t *testing.T) {
 	ctx := context.Background()
 	store := env.providersDeps.Store
 
-	if got, err := store.ModelCatalogSourceProviderCodes(ctx, "   "); err != nil || len(got) != 0 {
-		t.Fatalf("blank source codes: %v %v", got, err)
+	if got := modelCatalogSourceProviderCodes("   "); len(got) != 0 {
+		t.Fatalf("blank source codes: %v", got)
 	}
 	if got, err := store.ListProviderModelsForRequest(ctx, "  ", "", false, false); err != nil || len(got) != 0 {
 		t.Fatalf("blank provider catalog: %v %v", got, err)
@@ -131,9 +115,6 @@ func TestW13g6EmptyInputArms(t *testing.T) {
 	}
 	if got, err := store.ListDefaultHealthCheckModelPreferences(ctx, "  ", nil); err != nil || len(got) != 0 {
 		t.Fatalf("blank preferences: %v %v", got, err)
-	}
-	if err := store.attachProtocolProfiles(ctx, nil); err != nil {
-		t.Fatalf("empty attach: %v", err)
 	}
 	if got, err := store.listBuiltInCatalogModels(ctx, nil, false); err != nil || len(got) != 0 {
 		t.Fatalf("empty builtin catalog: %v %v", got, err)
@@ -201,11 +182,6 @@ func TestW13g6EmptyInputArms(t *testing.T) {
 	if err != nil || len(codes) != 0 {
 		t.Fatalf("blank cleanup model: %v %v", codes, err)
 	}
-	// pg 方言分支。
-	pgSQL := availableModelExistsSQL(&Store{pg: true}, []string{"gpt"}, nil, "")
-	if pgSQL.sql == "" || !strings.Contains(pgSQL.sql, "btrim") || !strings.Contains(pgSQL.sql, "TRUE") {
-		t.Fatalf("pg availability sql: %s", pgSQL.sql)
-	}
 	// limitGenerationParameterMaxOutputTokens 的 min-violation 丢弃臂。
 	caps := map[string][]generationParameterCapability{
 		"chat_completions": {{Parameter: "maxOutputTokens", Min: 100, Max: 200, DefaultValue: 150}},
@@ -253,8 +229,8 @@ func TestW13g6PatchAssignmentsMergeClosures(t *testing.T) {
 func TestW13g6BrokenScanRows(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('w13g6-broken', 'w13g6-broken', 'broken', 'abc', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	env.exec(t, `INSERT INTO vendors (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('w13g6-broken', 'w13g6-broken', 'broken', NULL, 'abc', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.login(t, "root", "root-pass", "super_admin")
 
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/list", ""); code != http.StatusInternalServerError {
@@ -271,58 +247,30 @@ func TestW13g6BrokenScanRows(t *testing.T) {
 	}
 }
 
-// TestW13g6BrokenProfileScan 覆盖 profile 扫描错误臂。
-func TestW13g6BrokenProfileScan(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('w13g6-prof-broken', 'gpt', 'broken', 'abc', 'openai', 'v1', 'https://x', 'm', '[]', '[]',
-		'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
-	env.login(t, "root", "root-pass", "super_admin")
-	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers?viewScope=admin", ""); code != http.StatusInternalServerError {
-		t.Fatalf("broken profile scan: %d", code)
-	}
-}
-
-// TestW13g6PreferredProfileAndTokenSkips 覆盖 glm 首选 profile 与空/hybrid 供应商 token 跳过臂。
+// TestW13g6PreferredProfileAndTokenSkips 覆盖空码 vendor 的跳过臂与源码纯函数臂。
 func TestW13g6PreferredProfileAndTokenSkips(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	const now = "2026-01-01T00:00:00.000Z"
-	// glm 首选 profile 分支。
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('w13g6-glm', 'glm', 'GLM', 1, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('profile_glm_coding_openai_v1', 'glm', 'GLM Coding', 1, 'openai', 'v1', 'https://glm.example/v1',
-		'glm-4', '[]', '[]', ?, ?)`, now, now)
-	// 空码供应商（归一化为空 token）与 hybrid 码供应商的 openai profile（hybrid provider 已由 seedCatalog 提供）。
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
+	// 空码供应商（归一化为空 token）在 vendors 行中允许存在，读侧按空 token 跳过。
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('w13g6-blank', '', 'blank', 1, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('w13g6-prof-blank', '', 'blank profile', 1, 'openai', 'v1', 'https://b', 'm', '[]', '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code,
-		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
-		VALUES ('w13g6-prof-hybrid', 'hybrid', 'hybrid profile', 1, 'openai', 'v1', 'https://h', 'm', '[]', '[]', ?, ?)`, now, now)
 	env.login(t, "root", "root-pass", "super_admin")
 
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers?viewScope=admin", ""); code != http.StatusOK {
-		t.Fatalf("preferred profile definitions: %d", code)
+		t.Fatalf("vendors definitions: %d", code)
 	}
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options", ""); code != http.StatusOK {
 		t.Fatalf("protocol-less options: %d", code)
 	}
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?protocol=openai", ""); code != http.StatusOK {
-		t.Fatalf("openai protocol options with blank token: %d", code)
+		t.Fatalf("openai protocol options (retired narrowing): %d", code)
 	}
-	ctx := context.Background()
-	if _, err := env.providersDeps.Store.ModelCatalogSourceProviderCodes(ctx, "hybrid"); err != nil {
-		t.Fatalf("hybrid source expansion: %v", err)
+	if got := modelCatalogSourceProviderCodes("hybrid"); len(got) != 1 || got[0] != "hybrid" {
+		t.Fatalf("hybrid source codes: %v", got)
 	}
-	if _, err := env.providersDeps.Store.ModelCatalogSourceProviderCodes(ctx, "openai"); err != nil {
-		t.Fatalf("openai source expansion: %v", err)
+	if got := modelCatalogSourceProviderCodes("openai"); len(got) != 1 || got[0] != "openai" {
+		t.Fatalf("openai source codes: %v", got)
 	}
 }
 
@@ -331,9 +279,9 @@ func TestW13g6CatalogScanArms(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	// 非数值价格列让内置目录行扫描失败。
-	env.exec(t, `INSERT INTO provider_model_catalog (id, provider_code, model, status, supported_api_protocols_json,
-		input_usd_per_1m, created_at, updated_at)
-		VALUES ('w13g6-cat-broken', 'gpt', 'w13g6-broken-model', 'active', '[]', 'abc',
+	env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+		supported_endpoint_modes_json, input_usd_per_1m, created_at, updated_at)
+		VALUES ('w13g6-cat-broken', 'gpt', 'w13g6-broken-model', 'w13g6-broken-model', 'builtin', 'active', '[]', 'abc',
 		'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.login(t, "root", "root-pass", "super_admin")
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt/models", ""); code != http.StatusInternalServerError {
@@ -341,8 +289,8 @@ func TestW13g6CatalogScanArms(t *testing.T) {
 	}
 
 	// 自定义模型行：全局 gpt-4o 价格列坏行（按 scope 查找命中）。
-	env.exec(t, `UPDATE custom_provider_models SET input_usd_per_1m = 'abc' WHERE id = 'cu-2'`)
-	env.exec(t, `UPDATE custom_provider_models SET default_reasoning_effort = 'medium' WHERE id = 'cu-3'`)
+	env.exec(t, `UPDATE models SET input_usd_per_1m = 'abc' WHERE id = 'cu-2'`)
+	env.exec(t, `UPDATE models SET default_reasoning_effort = 'medium' WHERE id = 'cu-3'`)
 	ctx := context.Background()
 	store := env.providersDeps.Store
 	if _, err := store.listCustomModelRows(ctx, []string{"gpt"}, "", true, ""); err == nil {
@@ -364,65 +312,19 @@ func TestW13g6CatalogScanArms(t *testing.T) {
 	}
 }
 
-// TestW13g6OverlayErrorFallbacks 覆盖偏好/系统默认查询失败的 overlay 兜底臂。
-func TestW13g6OverlayErrorFallbacks(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	w13g6DropTable(t, env, "provider_default_health_check_models")
-	w13g6DropTable(t, env, "provider_system_default_health_check_models")
-	env.login(t, "root", "root-pass", "super_admin")
-
-	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/providers/list?viewScope=admin", ""); code != http.StatusOK {
-		t.Fatalf("list with dropped preference tables: %d %v", code, payload)
-	}
-	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/providers?viewScope=admin", ""); code != http.StatusOK {
-		t.Fatalf("definitions with dropped preference tables: %d %v", code, payload)
-	}
-	if code, payload := env.do(t, http.MethodGet, "/__aisys__/api/providers/definitions", ""); code != http.StatusOK {
-		t.Fatalf("enabled definitions with dropped preference tables: %d %v", code, payload)
-	}
-}
-
-// TestW13g6AttachProfileErrorArms 覆盖 profile/family 查询失败的传播臂。
+// TestW13g6AttachProfileErrorArms 收敛为 vendors 表缺失臂（协议档案/偏好表随
+// 设计 §8.11 退役，对应错误臂随存储删除）。
 func TestW13g6AttachProfileErrorArms(t *testing.T) {
-	t.Run("families-dropped", func(t *testing.T) {
+	t.Run("vendors-dropped", func(t *testing.T) {
 		env := newTestEnv(t)
 		env.seedCatalog(t)
-		w13g6DropTable(t, env, "provider_protocol_profile_families")
+		w13g6DropTable(t, env, "vendors")
 		env.login(t, "root", "root-pass", "super_admin")
 		if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers?viewScope=admin", ""); code != http.StatusInternalServerError {
-			t.Fatalf("dropped families table: %d", code)
-		}
-		if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt?viewScope=admin", ""); code != http.StatusInternalServerError {
-			t.Fatalf("dropped families table on detail: %d", code)
-		}
-	})
-	t.Run("profiles-dropped", func(t *testing.T) {
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		w13g6DropTable(t, env, "provider_protocol_profiles")
-		env.login(t, "root", "root-pass", "super_admin")
-		if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers?viewScope=admin", ""); code != http.StatusInternalServerError {
-			t.Fatalf("dropped profiles table: %d", code)
-		}
-		// cleanup targets 的逐码 source 展开失败臂（providers 在、profiles 表缺）。
-		if _, err := env.providersDeps.Store.defaultReferenceCleanupTargets(context.Background(), "hybrid", "", "m", true); err == nil {
-			t.Fatal("cleanup targets source expansion must fail")
-		}
-	})
-	t.Run("providers-dropped", func(t *testing.T) {
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		w13g6DropTable(t, env, "providers")
-		env.login(t, "root", "root-pass", "super_admin")
-		if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers?viewScope=admin", ""); code != http.StatusInternalServerError {
-			t.Fatalf("dropped providers table on definitions: %d", code)
+			t.Fatalf("dropped vendors table on definitions: %d", code)
 		}
 		if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?providerCode=gpt", ""); code != http.StatusInternalServerError {
-			t.Fatalf("dropped providers table on option lookup: %d", code)
-		}
-		if _, err := env.providersDeps.Store.defaultReferenceCleanupTargets(context.Background(), "hybrid", "", "m", true); err == nil {
-			t.Fatal("cleanup targets on dropped providers must fail")
+			t.Fatalf("dropped vendors table on option lookup: %d", code)
 		}
 	})
 }
@@ -431,24 +333,25 @@ func TestW13g6AttachProfileErrorArms(t *testing.T) {
 func TestW13g6SelectionOptionQueryErrors(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
-	w13g6DropTable(t, env, "custom_provider_models")
+	w13g6DropTable(t, env, "models")
 	env.login(t, "root", "root-pass", "super_admin")
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?providerCode=gpt", ""); code != http.StatusInternalServerError {
-		t.Fatalf("dropped custom table on options: %d", code)
+		t.Fatalf("dropped models table on options: %d", code)
 	}
 	// 默认检查模型校验：目录展开中途失败 -> 500。
 	if code, _ := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?viewScope=admin",
 		`{"model":"gpt-4o"}`); code != http.StatusInternalServerError {
-		t.Fatalf("validate with dropped custom table: %d", code)
+		t.Fatalf("validate with dropped models table: %d", code)
 	}
 }
 
-// TestW13g6PatchCustomModelErrorArms 覆盖自定义 PATCH 的错误传播臂。
+// TestW13g6PatchCustomModelErrorArms 覆盖自定义 PATCH 的错误传播臂（cleanup
+// 偏好表随设计 §8.11 退役为 no-op，事务内 cleanup 错误臂随存储删除）。
 func TestW13g6PatchCustomModelErrorArms(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	store := env.providersDeps.Store
-	current, err := store.upsertCustomProviderModel(ctx, customProviderModelUpsertInput{
+	_, err := store.upsertCustomProviderModel(ctx, customProviderModelUpsertInput{
 		ProviderCode: "gpt", Model: "w13g6-patch-target", SystemAccountID: "w13g6-u1", InputUsdPer1M: ptrFloat64(1),
 	})
 	if err != nil {
@@ -456,22 +359,8 @@ func TestW13g6PatchCustomModelErrorArms(t *testing.T) {
 	}
 	env.login(t, "root", "root-pass", "super_admin")
 
-	// patch 事务内 cleanup 失败：偏好表缺失 -> WriteBadRequest(err.Error())。
-	w13g6DropTable(t, env, "provider_default_health_check_models")
-	if code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+current.ID,
-		`{"expectedUpdatedAt":"`+current.UpdatedAt+`","status":"disabled"}`); code != http.StatusBadRequest {
-		t.Fatalf("patch tx cleanup error must surface as 400: %d", code)
-	}
-
-	// cleanup targets 失败：providers 表缺失。
-	w13g6DropTable(t, env, "providers")
-	if code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+current.ID,
-		`{"expectedUpdatedAt":"`+current.UpdatedAt+`","status":"disabled"}`); code != http.StatusInternalServerError {
-		t.Fatalf("patch cleanup targets error: %d", code)
-	}
-
 	// 自定义模型表缺失：findCustomProviderModelByID 错误臂。
-	w13g6DropTable(t, env, "custom_provider_models")
+	w13g6DropTable(t, env, "models")
 	if code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_w13g6-nope",
 		`{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","status":"disabled"}`); code != http.StatusInternalServerError {
 		t.Fatalf("patch on dropped custom table: %d", code)
@@ -485,7 +374,7 @@ func TestW13g6PatchStoreTxErrorArms(t *testing.T) {
 	store := env.providersDeps.Store
 	current := &customProviderModelRecord{ID: "w13g6-tx", ProviderCode: "gpt", Model: "m", Status: "active",
 		UpdatedAt: "2026-01-01T00:00:00.000Z"}
-	w13g6DropTable(t, env, "custom_provider_models")
+	w13g6DropTable(t, env, "models")
 	if _, err := store.patchCustomProviderModel(ctx, current, customProviderModelUpsertInput{
 		ActorSystemAccountID: "w13g6-u1", Status: "disabled",
 	}, []string{"status"}, current.UpdatedAt, "", nil); err == nil {
@@ -496,47 +385,26 @@ func TestW13g6PatchStoreTxErrorArms(t *testing.T) {
 	}
 }
 
-// TestW13g6BuiltinPatchErrorArms 覆盖内置 PATCH 的 cleanup / 配置写错误臂。
+// TestW13g6BuiltinPatchErrorArms 收敛为 no-op/stale 臂（cleanup 目标与偏好表
+// 随设计 §8.11 退役为 no-op，对应错误臂随存储删除）。
 func TestW13g6BuiltinPatchErrorArms(t *testing.T) {
-	t.Run("cleanup-targets-error", func(t *testing.T) {
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		w13g6DropTable(t, env, "providers")
-		env.login(t, "root", "root-pass", "super_admin")
-		if code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cat-1",
-			`{"expectedUpdatedAt":"`+env.builtinUpdatedAtOf(t, "cat-1")+`","catalogVisible":false}`); code != http.StatusInternalServerError {
-			t.Fatalf("builtin patch cleanup targets error: %d", code)
-		}
-	})
-	t.Run("tx-cleanup-error", func(t *testing.T) {
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		w13g6DropTable(t, env, "provider_system_default_health_check_models")
-		env.login(t, "root", "root-pass", "super_admin")
-		if code, _ := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cat-2",
-			`{"expectedUpdatedAt":"`+env.builtinUpdatedAtOf(t, "cat-2")+`","catalogVisible":false}`); code != http.StatusInternalServerError {
-			t.Fatalf("builtin patch tx cleanup error: %d", code)
-		}
-	})
-	t.Run("store-noop-and-stale", func(t *testing.T) {
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		ctx := context.Background()
-		store := env.providersDeps.Store
-		current, err := store.findBuiltInModelPatchState(ctx, "cat-1")
-		if err != nil || current == nil {
-			t.Fatalf("patch state: %v %v", current, err)
-		}
-		record, err := store.patchBuiltInModelConfiguration(ctx, current, nil, current.UpdatedAt, nil)
-		if err != nil || record == nil || record.ID != "cat-1" {
-			t.Fatalf("empty patch no-op: %v %v", record, err)
-		}
-		if saved, err := store.patchBuiltInModelConfiguration(ctx, current, []builtinPatchField{
-			{Name: "inputUsdPer1M", Value: 9.0},
-		}, "2020-01-01T00:00:00.000Z", nil); err != nil || saved != nil {
-			t.Fatalf("stale builtin patch must return nil: %v %v", saved, err)
-		}
-	})
+	env := newTestEnv(t)
+	env.seedCatalog(t)
+	ctx := context.Background()
+	store := env.providersDeps.Store
+	current, err := store.findBuiltInModelPatchState(ctx, "cat-1")
+	if err != nil || current == nil {
+		t.Fatalf("patch state: %v %v", current, err)
+	}
+	record, err := store.patchBuiltInModelConfiguration(ctx, current, nil, current.UpdatedAt, nil)
+	if err != nil || record == nil || record.ID != "cat-1" {
+		t.Fatalf("empty patch no-op: %v %v", record, err)
+	}
+	if saved, err := store.patchBuiltInModelConfiguration(ctx, current, []builtinPatchField{
+		{Name: "inputUsdPer1M", Value: 9.0},
+	}, "2020-01-01T00:00:00.000Z", nil); err != nil || saved != nil {
+		t.Fatalf("stale builtin patch must return nil: %v %v", saved, err)
+	}
 }
 
 // TestW13g6DeleteBindingErrorArm 覆盖 DELETE 的 bindings 错误臂（accounts 表缺失）。
@@ -557,101 +425,13 @@ func TestW13g6DeleteBindingErrorArm(t *testing.T) {
 	}
 }
 
-// TestW13g6DeleteCleanupTargetErrorArm 覆盖 DELETE 的 cleanup targets 错误臂。
-func TestW13g6DeleteCleanupTargetErrorArm(t *testing.T) {
-	env := newTestEnv(t)
-	ctx := context.Background()
-	store := env.providersDeps.Store
-	created, err := store.upsertCustomProviderModel(ctx, customProviderModelUpsertInput{
-		ProviderCode: "gpt", Model: "w13g6-del-targets", SystemAccountID: "w13g6-u1", InputUsdPer1M: ptrFloat64(1),
-	})
-	if err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	env.login(t, "root", "root-pass", "super_admin")
-	w13g6DropTable(t, env, "providers")
-	if code, _ := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/"+created.ID, ""); code != http.StatusInternalServerError {
-		t.Fatalf("delete cleanup targets error: %d", code)
-	}
-}
-
-// TestW13g6DeleteTxCleanupErrorArm 覆盖 DELETE 事务内 cleanup 失败臂。
-func TestW13g6DeleteTxCleanupErrorArm(t *testing.T) {
-	env := newTestEnv(t)
-	ctx := context.Background()
-	store := env.providersDeps.Store
-	created, err := store.upsertCustomProviderModel(ctx, customProviderModelUpsertInput{
-		ProviderCode: "gpt", Model: "w13g6-del-tx", SystemAccountID: "w13g6-u1", InputUsdPer1M: ptrFloat64(1),
-	})
-	if err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	env.login(t, "root", "root-pass", "super_admin")
-	w13g6DropTable(t, env, "provider_default_health_check_models")
-	if code, _ := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/"+created.ID, ""); code != http.StatusInternalServerError {
-		t.Fatalf("delete tx cleanup error: %d", code)
-	}
-}
-
 // TestW13g6BindingCountErrorArm 覆盖绑定计数的第二段错误臂。
 func TestW13g6BindingCountErrorArm(t *testing.T) {
 	env := newTestEnv(t)
-	w13g6DropTable(t, env, "account_model_mappings")
+	w13g6DropTable(t, env, "account_entry_mappings")
 	if _, err := env.providersDeps.Store.customProviderModelBindings(context.Background(),
 		"gpt", "w13g6-m", "global", ""); err == nil {
 		t.Fatal("mapping count on dropped table must fail")
 	}
 }
 
-// TestW13g6PutDefaultHealthCheckArms 覆盖 PUT 默认检查模型的写入错误臂。
-func TestW13g6PutDefaultHealthCheckArms(t *testing.T) {
-	t.Run("system-default-error", func(t *testing.T) {
-		// 管理面写系统默认失败：系统默认表缺失。
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		w13g6DropTable(t, env, "provider_system_default_health_check_models")
-		env.login(t, "root", "root-pass", "super_admin")
-		if code, _ := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?viewScope=admin",
-			`{"model":"gpt-4o"}`); code != http.StatusInternalServerError {
-			t.Fatalf("system default upsert error: %d", code)
-		}
-	})
-	t.Run("preference-error", func(t *testing.T) {
-		// 个人偏好写失败：偏好表缺失。
-		env := newTestEnv(t)
-		env.seedCatalog(t)
-		w13g6DropTable(t, env, "provider_default_health_check_models")
-		env.login(t, "user1", "user-pass", "user")
-		if code, _ := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-			`{"model":"gpt-4o"}`); code != http.StatusInternalServerError {
-			t.Fatalf("preference upsert error: %d", code)
-		}
-	})
-}
-
-// TestW13g6BlankPreferenceRows 覆盖偏好/系统默认行的空码跳过臂。
-func TestW13g6BlankPreferenceRows(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	user1 := env.requireAccount(t, "user1", "user-pass", "user")
-	env.exec(t, `INSERT INTO provider_default_health_check_models (system_account_id, provider_code, model, created_at, updated_at)
-		VALUES (?, '', 'm', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, user1)
-	env.exec(t, `INSERT INTO provider_system_default_health_check_models (provider_code, model, created_at, updated_at)
-		VALUES ('', 'm', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
-	ctx := context.Background()
-	store := env.providersDeps.Store
-	preferences, err := store.ListDefaultHealthCheckModelPreferences(ctx, user1, nil)
-	if err != nil {
-		t.Fatalf("preferences: %v", err)
-	}
-	if _, exists := preferences[""]; exists {
-		t.Fatalf("blank provider code must be skipped: %v", preferences)
-	}
-	systemDefaults, err := store.ListSystemDefaultHealthCheckModels(ctx, nil)
-	if err != nil {
-		t.Fatalf("system defaults: %v", err)
-	}
-	if _, exists := systemDefaults[""]; exists {
-		t.Fatalf("blank system default code must be skipped: %v", systemDefaults)
-	}
-}

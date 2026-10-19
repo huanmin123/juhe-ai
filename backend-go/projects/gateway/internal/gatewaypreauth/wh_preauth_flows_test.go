@@ -91,8 +91,8 @@ func TestWhModelsBeforeRequiredAuth(t *testing.T) {
 	if len(sink.modelSends) != 1 || sink.modelSends[0].Protocol != "openai" {
 		t.Fatalf("模型响应 = %+v", sink.modelSends)
 	}
-	// 供应商解耦（设计 §8）：绑定投影不再携带 provider 维度，ProviderCode 过渡恒空。
-	if got := sink.modelSends[0].Bindings; len(got) != 1 || got[0].ProviderCode != "" || got[0].GroupID != "group_1" {
+	// 供应商解耦（设计 §8）：绑定投影不携带 provider 维度（B4 W2 字段已删）。
+	if got := sink.modelSends[0].Bindings; len(got) != 1 || got[0].GroupID != "group_1" {
 		t.Fatalf("bindings = %v", got)
 	}
 	if sink.modelSends[0].Context == nil {

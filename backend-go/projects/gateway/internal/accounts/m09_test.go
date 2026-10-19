@@ -82,8 +82,10 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 		t.Fatalf("context items: %v", context)
 	}
 	first := items[0].(map[string]any)
+	// B4 W2：批量上下文 providerCode 走 COALESCE(vendor, provider) 行为键投影
+	// （回显 vendor 值）；providerProtocolProfileId 列停写为空串。
 	if first["id"] != ids[0] || first["configRevision"] != float64(1) ||
-		first["providerCode"] != "gpt" || first["providerProtocolProfileId"] != "prof-gpt" ||
+		first["providerCode"] != "gpt" || first["providerProtocolProfileId"] != "" ||
 		first["protocolCode"] != "openai" || first["protocolVersion"] != "v1" || first["type"] != "api_key" {
 		t.Fatalf("context item contract: %v", first)
 	}
@@ -167,8 +169,14 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 			"supportedModels":{"enabled":true,"value":["gpt-4o-mini","gpt-4.1","o3-mini"]},
 			"healthCheckModel":{"enabled":true,"value":"gpt-4o-mini"},
 			"healthCheckEndpointMode":{"enabled":true,"value":"chat_sse"},
-			"modelMappings":{"enabled":true,"value":[{"sourceModel":"o3-mini","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","enabled":true}]},
+			"modelMappings":{"enabled":true,"value":[{"sourceModel":"o3-mini","sourceEndpointFamily":"responses","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":true}]},
 			"serviceTierOverride":{"enabled":false}}}`
+	// B4 W2（设计 §8）：映射携带 preset；批量前为两个目标种连接 + 双 chat
+	// 形态（target upstream gpt-4o-mini 的支持成员随本批 supportedModels
+	// 写入，同一事务内先模型后映射满足外键引用面）。
+	for _, targetID := range ids {
+		env.seedAccountConnection(t, targetID, "generic_openai_v1")
+	}
 	code, updated := env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update", batchBody)
 	if code != http.StatusOK {
 		t.Fatalf("batch-update: %d %v", code, updated)
@@ -221,7 +229,8 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ?`, ids[0]) != 3 {
 		t.Fatal("batch supported models replace missing")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_model_mappings WHERE account_id = ? AND source_model = 'o3-mini'`, ids[0]) != 1 {
+	// B4 W2：映射行走 account_entry_mappings（§9.8 旧表已撤）。
+	if env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ? AND source_model = 'o3-mini'`, ids[0]) != 1 {
 		t.Fatal("batch model mappings replace missing")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_tag_bindings WHERE account_id = ?`, ids[0]) != 2 {
@@ -355,19 +364,27 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 }
 
 func importNativeDocument() string {
+	// B1 断点批（设计 §8 wire schema）：每条账户携带 connections 与健康检查
+	// 三件套；连接只写 connectionPresetCode（导入时服务端重生成内部 ID）。
 	return `{
 		"type":"juhe-ai-account-import","version":1,
 		"proxies":[{"ref":"proxy-1","name":"导入代理","type":"socks5","host":"127.0.0.1","port":1080,"username":"u1","password":"proxy-secret-1"}],
 		"accounts":[
 			{"ref":"a1","name":"导入一号","providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key","status":"active",
 			 "credentials":{"api_key":"sk-import-secret-1","base_url":"https://api.openai.com/v1"},
-			 "groupName":"导入分组","tags":["导入"],"supportedModels":["gpt-4o-mini"],"notes":"第一条","proxyRef":"proxy-1"},
+			 "groupName":"导入分组","tags":["导入"],"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini","notes":"第一条","proxyRef":"proxy-1",
+			 "connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],
+			 "healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"},
 			{"ref":"a2","name":"导入二号","providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key","status":"disabled",
 			 "credentials":{"api_key":"sk-import-secret-2","base_url":"https://api.openai.com/v1"},
-			 "groupName":"导入分组","supportedModels":["gpt-4o-mini"]},
+			 "groupName":"导入分组","supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini",
+			 "connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],
+			 "healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"},
 			{"ref":"a3","name":"导入一号","providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key","status":"active",
 			 "credentials":{"api_key":"sk-import-secret-3","base_url":"https://api.openai.com/v1"},
-			 "groupName":"导入分组","supportedModels":["gpt-4o-mini"]}
+			 "groupName":"导入分组","supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini",
+			 "connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],
+			 "healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}
 		]
 	}`
 }
@@ -492,7 +509,7 @@ func TestAccountImportPreviewAndConfirm(t *testing.T) {
 	}
 	createdID := a1["accountId"].(string)
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND status = 'pending_test' AND schedulable = 0
-		AND system_account_id = ? AND provider_code = 'gpt' AND notes = '第一条'`, createdID, adminID) != 1 {
+		AND system_account_id = ? AND vendor_code = 'gpt' AND notes = '第一条'`, createdID, adminID) != 1 {
 		t.Fatal("created account row contract violated")
 	}
 	sealed := env.queryCell(t, `SELECT credentials_encrypted FROM accounts WHERE id = ?`, createdID)
@@ -520,7 +537,8 @@ func TestAccountImportPreviewAndConfirm(t *testing.T) {
 	if bound := env.queryCell(t, `SELECT proxy_profile_id FROM accounts WHERE id = ?`, createdID); bound != proxyID {
 		t.Fatalf("proxy binding: %v", bound)
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ? AND model = 'gpt-4o-mini'`, createdID) != 1 {
+	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ?
+		AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, createdID) != 1 {
 		t.Fatal("imported supported models missing")
 	}
 
@@ -554,7 +572,7 @@ func TestAccountImportPreviewAndConfirm(t *testing.T) {
 		"type":"juhe-ai-account-import","version":1,"proxies":[],
 		"accounts":[{"name":"导入三号","providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key",
 			"status":"active","credentials":{"api_key":"sk-import-secret-4","base_url":"https://api.openai.com/v1"},
-			"groupName":"导入分组","supportedModels":["gpt-4o-mini"]}]}}`)
+			"groupName":"导入分组","supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}]}}`)
 	if code != http.StatusOK {
 		t.Fatalf("reuse confirm: %d %v", code, reuse)
 	}
@@ -571,7 +589,7 @@ func TestAccountImportPreviewAndConfirm(t *testing.T) {
 	code, noGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/preview", `{"data":{
 		"type":"juhe-ai-account-import","version":1,
 		"accounts":[{"name":"导入四号","providerCode":"gpt","providerProtocolProfileId":"prof-gpt","type":"api_key",
-			"status":"active","credentials":{"api_key":"sk-import-secret-5","base_url":"https://api.openai.com/v1"},"groupName":"缺失分组","supportedModels":["gpt-4o-mini"]}]},
+			"status":"active","credentials":{"api_key":"sk-import-secret-5","base_url":"https://api.openai.com/v1"},"groupName":"缺失分组","supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}]},
 		"options":{"createMissingGroups":false}}`)
 	if code != http.StatusOK || dataMap(t, noGroup)["canImport"] != false {
 		t.Fatalf("no-group preview: %d %v", code, noGroup)
@@ -625,11 +643,14 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 		t.Fatalf("sub2api confirm item: %v", confirmItem)
 	}
 	createdID := confirmItem["accountId"].(string)
+	// B4 W2：provider_protocol_profile_id 列停写（空串）；支持模型断言切
+	// (account_id, model_id) 目标形态。
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND concurrency_limit = 6 AND priority = 3
-		AND provider_protocol_profile_id = 'profile_openai_openai_v1' AND notes = '来自Sub2API'`, createdID) != 1 {
+		AND provider_protocol_profile_id = '' AND notes = '来自Sub2API'`, createdID) != 1 {
 		t.Fatal("sub2api row contract violated")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ? AND model = 'gpt-4o-mini'`, createdID) != 1 {
+	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ?
+		AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, createdID) != 1 {
 		t.Fatal("sub2api default supported models missing")
 	}
 
@@ -701,7 +722,7 @@ func TestAccountExportByIdsAndFilters(t *testing.T) {
 	code, pending := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"charlie","type":"api_key",
 		"credentials":{"api_key":"sk-pending-secret","base_url":"https://api.openai.com/v1"},
-		"supportedModels":["gpt-4o-mini"]}`)
+		"supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://api.openai.com/v1","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create charlie: %d %v", code, pending)
 	}
@@ -741,7 +762,8 @@ func TestAccountExportByIdsAndFilters(t *testing.T) {
 	}
 
 	alphaDoc := accounts[0].(map[string]any)
-	if alphaDoc["name"] != "alpha" || alphaDoc["providerCode"] != "gpt" || alphaDoc["type"] != "api_key" ||
+	// B4 W2：providerCode 已停写，导出回显空串（过渡期既定事实）。
+	if alphaDoc["name"] != "alpha" || alphaDoc["providerCode"] != "" || alphaDoc["type"] != "api_key" ||
 		alphaDoc["status"] != "active" || alphaDoc["healthCheckEndpointMode"] != "chat_json" {
 		t.Fatalf("alpha export: %v", alphaDoc)
 	}

@@ -169,6 +169,8 @@ func newInspectionRetryChain(t *testing.T, fixture *chainFixture, badSSE string,
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": badUpstream.URL}), fixture.accountID); err != nil {
 		t.Fatalf("update bad account: %v", err)
 	}
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, badUpstream.URL)
 	if goodUpstream == nil {
 		return
 	}
@@ -187,7 +189,9 @@ func newInspectionRetryChain(t *testing.T, fixture *chainFixture, badSSE string,
 		fixture.systemAccount, credentials)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, 'acc_good', 1, ?)`,
 		fixture.groupID, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_good', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at) VALUES ('acc_good', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：acc_good 需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_good", goodUpstream.URL)
 }
 
 // TestGatewayChainResponseInspectionRetrySwitchesAccount：端到端——acc_1 的

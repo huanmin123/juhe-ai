@@ -37,7 +37,6 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 	policy := gatewayruntimecache.GroupSchedulingPolicy{"schedulingPreference": "quality"}
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupOwnerSystemAccountID:      "sys_owner",
-		ProviderCode:                   "openai",
 		GroupAccessType:                "owner",
 		GroupType:                      strPtrOf("personal"),
 		SchedulingPolicy:               &policy,
@@ -94,7 +93,7 @@ func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 		GroupAuthorizationSourceTeamID: "team_9",
 	}
 	out := projectGroupAccessForRuntime(base)
-	if out.GroupOwnerSystemAccountID != "sys_owner" || out.ProviderCode != "openai" || out.GroupAccessType != "authorized" {
+	if out.GroupOwnerSystemAccountID != "sys_owner" || out.GroupAccessType != "authorized" {
 		t.Errorf("身份字段 = %+v, want 原样保留", out)
 	}
 	if out.GroupType == nil || *out.GroupType != "high_concurrency" {
@@ -140,8 +139,9 @@ func TestW1RProjectGroupAccessForRuntime(t *testing.T) {
 // （修改投影不得影响源账户）、ModelMappings 有意留空。
 func TestW1RProjectAccountForRouting(t *testing.T) {
 	account := gatewayruntimecache.OpenAIAccountSecret{
-		ID:                        "acc_1",
-		ProviderCode:              "openai",
+		ID: "acc_1",
+		// B4 W2：routing 层 ProviderCode 槽位承载 vendor 身份（行为键=vendor）。
+		VendorCode:                "openai",
 		ProviderProtocolProfileID: "prof_1",
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
@@ -466,6 +466,7 @@ func TestW1RChainRoutingCacheBridgesRuntimeCache(t *testing.T) {
 	if len(accounts) != 1 {
 		t.Fatalf("分组账户数 = %d, want 1", len(accounts))
 	}
+	// B4 W2：routing 层 ProviderCode 槽位承载 vendor 身份（行为键=vendor）。
 	if accounts[0].ID != fixture.accountID || accounts[0].ProviderCode != "openai" || accounts[0].ProtocolCode != "openai" {
 		t.Errorf("投影账户 = %+v, want acc_1/openai/openai", accounts[0])
 	}

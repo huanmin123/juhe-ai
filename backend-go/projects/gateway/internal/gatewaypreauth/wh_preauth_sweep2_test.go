@@ -80,7 +80,7 @@ func TestWhPreflightDispatchDiagnosticsMetadata(t *testing.T) {
 	runtime := gatewayruntimecache.GatewayRuntime{
 		APIKey:      validRuntimeRow(),
 		Settings:    gatewayruntimecache.GatewaySettings{NoAvailableAccountWaitTimeoutSeconds: 30},
-		GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+		GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{},
 		AccountDispatchDiagnostics: &gatewayruntimecache.OpenAIAccountsForGroupDiagnostics{
 			ScanLimit: 500, FinalLimit: 200, CandidateRowCount: 10, ScannedRowCount: 9,
 			EligibleRowCount: 3, HydrationBatchCount: 1, HydratedAccountCount: 2,

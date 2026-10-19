@@ -236,10 +236,11 @@ func TestWhBuildGatewayUsageContext(t *testing.T) {
 	withTier := service.BuildGatewayUsageContext(usageContextInput{
 		requestSnapshot: UsageRequestSnapshot{RequestedServiceTier: "flex"},
 		groupUsageFields: &GroupUsageMetadataFields{
-			ProviderCode: "openai", GroupOwnerSystemAccountID: "owner", GroupAccessType: "owner",
+			GroupOwnerSystemAccountID: "owner", GroupAccessType: "owner",
 		},
 	})
-	if withTier.RequestedServiceTier != "flex" || withTier.ProviderCode != "openai" || withTier.GroupOwnerSystemAccountID != "owner" {
+	// B4 W2：GroupUsageMetadataFields.ProviderCode 已删，分组维度随 usage context 保留。
+	if withTier.RequestedServiceTier != "flex" || withTier.GroupOwnerSystemAccountID != "owner" {
 		t.Fatalf("分组元数据上下文 = %+v", withTier)
 	}
 }

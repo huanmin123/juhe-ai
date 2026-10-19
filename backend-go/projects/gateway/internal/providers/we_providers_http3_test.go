@@ -102,7 +102,7 @@ func TestWeProvidersPatchCustomModelAllFields(t *testing.T) {
 	var shutdown string
 	var cacheWrite1h, audioOut float64
 	if err := env.db.QueryRow(`SELECT shutdown_date, cache_write_1h_usd_per_1m, audio_output_usd_per_1m
-		FROM custom_provider_models WHERE id = ?`, modelID).Scan(&shutdown, &cacheWrite1h, &audioOut); err != nil {
+		FROM models WHERE id = ?`, modelID).Scan(&shutdown, &cacheWrite1h, &audioOut); err != nil {
 		t.Fatal(err)
 	}
 	if shutdown != "2099-01-01" || cacheWrite1h != 2.4 || audioOut != 20 {
@@ -117,7 +117,7 @@ func TestWeProvidersPatchCustomModelAllFields(t *testing.T) {
 		t.Fatalf("思考档位: %d %v", code, efforts)
 	}
 	var effortsJSON string
-	if err := env.db.QueryRow(`SELECT supported_reasoning_efforts_json FROM custom_provider_models WHERE id = ?`, modelID).Scan(&effortsJSON); err != nil {
+	if err := env.db.QueryRow(`SELECT supported_reasoning_efforts_json FROM models WHERE id = ?`, modelID).Scan(&effortsJSON); err != nil {
 		t.Fatal(err)
 	}
 	if effortsJSON != `["low","medium"]` {

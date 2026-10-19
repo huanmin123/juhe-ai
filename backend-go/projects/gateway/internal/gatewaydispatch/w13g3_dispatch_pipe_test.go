@@ -245,7 +245,7 @@ func (f *w13g3FallbackCache) ResolveCachedGroupUsageAccessMetadataAsync(ctx cont
 	if f.resolveErr != nil {
 		return gatewayruntimecache.GroupUsageAccessMetadata{}, false, f.resolveErr
 	}
-	return gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}, true, nil
+	return gatewayruntimecache.GroupUsageAccessMetadata{}, true, nil
 }
 
 func (f *w13g3FallbackCache) LoadApiKeyTransientStatesForDispatch(ctx context.Context, accountID string, fingerprints []string) ([]gatewayruntimecache.AccountAPIKeyRuntimeSelectionState, error) {

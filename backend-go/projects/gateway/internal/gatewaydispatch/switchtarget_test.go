@@ -49,10 +49,10 @@ func mappingOf(sourceModel, sourceFamily, upstreamModel, upstreamFamily string) 
 	}
 }
 
-func accountWithMappings(id, providerCode string, supportedModels []string, modes []string, mappings []gatewayruntimecache.AccountModelMapping) AccountCandidate {
+func accountWithMappings(id, vendorCode string, supportedModels []string, modes []string, mappings []gatewayruntimecache.AccountModelMapping) AccountCandidate {
 	return AccountCandidate{
 		ID:                        id,
-		ProviderCode:              providerCode,
+		VendorCode:                vendorCode,
 		ProtocolCode:              "openai",
 		ProtocolVersion:           "v1",
 		SupportedModels:           supportedModels,
@@ -62,10 +62,10 @@ func accountWithMappings(id, providerCode string, supportedModels []string, mode
 	}
 }
 
-// frozenResponsesTarget 是原生 Responses 冻结目标（GPT 供应商）。
+// frozenResponsesTarget 是原生 Responses 冻结目标（gpt vendor）。
 func frozenResponsesTarget() SwitchTarget {
 	return SwitchTarget{
-		ProviderCode:           "openai",
+		VendorCode:             "gpt",
 		UpstreamModel:          "gpt-5",
 		UpstreamEndpointFamily: "responses",
 		UpstreamEndpointMode:   "responses_sse",
@@ -75,7 +75,7 @@ func frozenResponsesTarget() SwitchTarget {
 // frozenBridgedChatTarget 是 Responses 初始 mapping 桥接后的 Chat 冻结目标。
 func frozenBridgedChatTarget() SwitchTarget {
 	return SwitchTarget{
-		ProviderCode:           "openai",
+		VendorCode:             "gpt",
 		UpstreamModel:          "gpt-5-chat",
 		UpstreamEndpointFamily: "chat_completions",
 		UpstreamEndpointMode:   "chat_sse",
@@ -121,7 +121,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			target:       frozenResponsesTarget(),
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate:    accountWithMappings("cand", "openai", []string{"GPT-5"}, nil, nil),
+			candidate:    accountWithMappings("cand", "gpt", []string{"GPT-5"}, nil, nil),
 			expectKept:   true,
 		},
 		{
@@ -140,7 +140,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			target:       frozenResponsesTarget(),
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "openai", []string{"gpt-5-chat"}, nil,
+			candidate: accountWithMappings("cand", "gpt", []string{"gpt-5-chat"}, nil,
 				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-chat", "chat_completions")}),
 			expectKept:   false,
 			expectReason: "alias family gate",
@@ -150,14 +150,14 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			// 时保留（冻结源本身经同一别名冻结到该 RHS）。
 			name: "native_responses_same_family_alias_kept",
 			target: SwitchTarget{
-				ProviderCode:           "openai",
+				VendorCode:             "gpt",
 				UpstreamModel:          "gpt-5-upstream",
 				UpstreamEndpointFamily: "responses",
 				UpstreamEndpointMode:   "responses_sse",
 			},
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "openai", []string{"gpt-5-upstream"}, nil,
+			candidate: accountWithMappings("cand", "gpt", []string{"gpt-5-upstream"}, nil,
 				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-upstream", "responses")}),
 			expectKept: true,
 		},
@@ -178,7 +178,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			target:       frozenBridgedChatTarget(),
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate:    accountWithMappings("cand", "openai", []string{"gpt-5"}, nil, nil),
+			candidate:    accountWithMappings("cand", "gpt", []string{"gpt-5"}, nil, nil),
 			expectKept:   false,
 			expectReason: "direct native-shape gate",
 		},
@@ -188,7 +188,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			target:       frozenBridgedChatTarget(),
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate: accountWithMappings("cand", "openai", []string{"gpt-5-mini"}, nil,
+			candidate: accountWithMappings("cand", "gpt", []string{"gpt-5-mini"}, nil,
 				[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "responses", "gpt-5-mini", "chat_completions")}),
 			expectKept:   false,
 			expectReason: "alias model gate",
@@ -220,7 +220,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			target:       frozenResponsesTarget(),
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate:    accountWithMappings("cand", "openai", []string{"GPT-5"}, []string{"responses_sse"}, nil),
+			candidate:    accountWithMappings("cand", "gpt", []string{"GPT-5"}, []string{"responses_sse"}, nil),
 			expectKept:   true,
 		},
 		{
@@ -229,7 +229,7 @@ func TestFilterAccountsForSwitchTarget(t *testing.T) {
 			target:       frozenBridgedChatTarget(),
 			clientModel:  "gpt-5",
 			clientFamily: "responses",
-			candidate:    accountWithMappings("cand", "openai", []string{"gpt-5-chat"}, nil, nil),
+			candidate:    accountWithMappings("cand", "gpt", []string{"gpt-5-chat"}, nil, nil),
 			expectKept:   false,
 			expectReason: "direct native-shape gate",
 		},
@@ -278,13 +278,13 @@ func TestSwitchTargetCaptureFreezeOnce(t *testing.T) {
 	capture := &SwitchTargetCapture{}
 	capture.Freeze(SwitchTargetFreezeInput{
 		SourceAccountID:            "a-1",
-		Target:                     &SwitchTarget{ProviderCode: "openai", UpstreamModel: "gpt-5", UpstreamEndpointFamily: "responses", UpstreamEndpointMode: "responses_sse"},
+		Target:                     &SwitchTarget{VendorCode: "gpt", UpstreamModel: "gpt-5", UpstreamEndpointFamily: "responses", UpstreamEndpointMode: "responses_sse"},
 		ClientRequestedModel:       "gpt-5",
 		ClientSourceEndpointFamily: "responses",
 	})
 	capture.Freeze(SwitchTargetFreezeInput{
 		SourceAccountID: "a-2",
-		Target:          &SwitchTarget{ProviderCode: "glm", UpstreamModel: "glm-x", UpstreamEndpointFamily: "responses"},
+		Target:          &SwitchTarget{VendorCode: "glm", UpstreamModel: "glm-x", UpstreamEndpointFamily: "responses"},
 	})
 	snapshot := capture.Snapshot()
 	if !snapshot.Frozen || snapshot.SourceAccountID != "a-1" || snapshot.Target.UpstreamModel != "gpt-5" {
@@ -314,7 +314,7 @@ func TestSwitchTargetCaptureConcurrentFreeze(t *testing.T) {
 			defer wg.Done()
 			capture.Freeze(SwitchTargetFreezeInput{
 				SourceAccountID:            "acc-" + string(rune('a'+index%26)),
-				Target:                     &SwitchTarget{ProviderCode: "openai", UpstreamModel: "gpt-5", UpstreamEndpointFamily: "responses"},
+				Target:                     &SwitchTarget{VendorCode: "gpt", UpstreamModel: "gpt-5", UpstreamEndpointFamily: "responses"},
 				ClientRequestedModel:       "gpt-5",
 				ClientSourceEndpointFamily: "responses",
 			})
@@ -340,7 +340,7 @@ func TestSwitchTargetCaptureConcurrentFreeze(t *testing.T) {
 	}
 	// 并发结束后再冻结不得覆盖首次值。
 	before := snapshot.SourceAccountID
-	capture.Freeze(SwitchTargetFreezeInput{SourceAccountID: "late", Target: &SwitchTarget{ProviderCode: "glm", UpstreamModel: "x", UpstreamEndpointFamily: "responses"}})
+	capture.Freeze(SwitchTargetFreezeInput{SourceAccountID: "late", Target: &SwitchTarget{VendorCode: "glm", UpstreamModel: "x", UpstreamEndpointFamily: "responses"}})
 	if capture.Snapshot().SourceAccountID != before {
 		t.Fatal("后续冻结不得覆盖首次冻结")
 	}
@@ -415,7 +415,7 @@ func TestEngineAdvancesOnlySwitchTargetServingAccounts(t *testing.T) {
 	engine.Driver = wrapped
 
 	req := newTestResponsesRequest(t, `{"model":"gpt-5","stream":true}`)
-	a1 := accountWithMappings("a-1", "openai", []string{"gpt-5"}, nil, nil)
+	a1 := accountWithMappings("a-1", "gpt", []string{"gpt-5"}, nil, nil)
 	a2 := accountWithMappings("a-2", "glm", []string{"gpt-5"}, nil, nil)
 
 	capture := &SwitchTargetCapture{}
@@ -457,7 +457,7 @@ func TestEngineWithoutFrozenSwitchTargetKeepsInitialSemantics(t *testing.T) {
 		"a-2": {serverB.URL + "/v1/responses"},
 	}
 	req := newTestResponsesRequest(t, `{"model":"gpt-5","stream":true}`)
-	a1 := accountWithMappings("a-1", "openai", []string{"gpt-5"}, nil, nil)
+	a1 := accountWithMappings("a-1", "gpt", []string{"gpt-5"}, nil, nil)
 	a2 := accountWithMappings("a-2", "glm", []string{"gpt-5"}, nil, nil)
 
 	// ctx 注入载体但本请求无账户冻结目标前不过滤；构造后也无 freezeFor，
@@ -496,8 +496,8 @@ func TestEngineFailClosedOnUnresolvedSwitchTarget(t *testing.T) {
 	engine.Driver = wrapped
 
 	req := newTestResponsesRequest(t, `{"model":"gpt-5","stream":true}`)
-	a1 := accountWithMappings("a-1", "openai", []string{"gpt-5"}, nil, nil)
-	a2 := accountWithMappings("a-2", "openai", []string{"gpt-5"}, nil, nil)
+	a1 := accountWithMappings("a-1", "gpt", []string{"gpt-5"}, nil, nil)
+	a2 := accountWithMappings("a-2", "gpt", []string{"gpt-5"}, nil, nil)
 
 	ctx := WithSwitchTargetCapture(context.Background(), &SwitchTargetCapture{})
 	audit := &frozenAudit{sink: &fakeAuditSink{}}
@@ -605,7 +605,7 @@ func TestGroupFallbackCandidateFilteredByFrozenSwitchTarget(t *testing.T) {
 func TestGroupFallbackCandidateFailClosedDiagnosesOnce(t *testing.T) {
 	pipeline, engine, _, _ := newPipeline(t)
 	cache := &switchTargetFallbackCache{accountsByGroup: map[string][]AccountCandidate{
-		"group-2": {accountWithMappings("openai-1", "openai", []string{"gpt-5"}, nil, nil)},
+		"group-2": {accountWithMappings("openai-1", "gpt", []string{"gpt-5"}, nil, nil)},
 	}}
 	engine.Cache = cache
 
@@ -738,7 +738,7 @@ func TestFilterCandidatesUseFrozenFilterContextNotRequestFamily(t *testing.T) {
 	// chat_completions，mapping (gpt-5, chat_completions)→(gpt-5-up, chat)
 	// 命中，冻结目标 (gpt-5-up, chat_completions)；过滤输入族同源。
 	freezeOf(capture, "src-1", SwitchTarget{
-		ProviderCode:           "openai",
+		VendorCode:             "gpt",
 		UpstreamModel:          "gpt-5-up",
 		UpstreamEndpointFamily: "chat_completions",
 	}, "gpt-5", "chat_completions")
@@ -751,7 +751,7 @@ func TestFilterCandidatesUseFrozenFilterContextNotRequestFamily(t *testing.T) {
 		// 候选直持客户端请求模型（通过既有初始模型过滤，初始筛选不变）；
 		// gate 层若按请求路径自行推导族（responses）解析别名会失败并落入
 		// 直连分支被剔除，取冻结快照族（chat_completions）则命中保留。
-		accountWithMappings("chat-alias", "openai", []string{"gpt-5"}, nil,
+		accountWithMappings("chat-alias", "gpt", []string{"gpt-5"}, nil,
 			[]gatewayruntimecache.AccountModelMapping{mappingOf("gpt-5", "chat_completions", "gpt-5-up", "chat_completions")}),
 	}
 	result, err := pipeline.FilterCandidates(ctx, input)

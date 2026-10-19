@@ -331,8 +331,10 @@ func TestAccountImportCPAYAMLSource(t *testing.T) {
 		t.Fatalf("cpa yaml confirm items: %v", confirmItems)
 	}
 	createdID := confirmItems[0].(map[string]any)["accountId"].(string)
+	// B4 W2：openai 兼容 provider 落 generic 账户（vendor_code SQL NULL、
+	// driver generic_http）；provider_code 已停写。
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND name = 'cpa-yaml-provider 1'
-		AND provider_code = 'openai'`, createdID) != 1 {
+		AND vendor_code IS NULL AND connection_driver_code = 'generic_http'`, createdID) != 1 {
 		t.Fatal("cpa yaml row contract violated")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM groups WHERE name = 'CLIProxyAPI 导入'`) != 1 {

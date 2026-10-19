@@ -250,10 +250,12 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 	waMapping := func(source, upstream string) AccountModelMapping {
 		return AccountModelMapping{SourceModel: "m", SourceEndpointFamily: source, UpstreamModel: "m-up", UpstreamEndpointFamily: upstream}
 	}
-	hybrid := &RuntimeAccount{ProviderCode: "hybrid", ProtocolCode: "openai", ProtocolVersion: "v1", ModelMappings: []AccountModelMapping{waMapping(FamilyChatCompletions, FamilyAnthropicMessages)}}
+	// 供应商解耦 B4 W2 拆门后 RuntimeAccount 不再携带 provider/档案投影，
+	// 跨协议映射按账户声明（映射行）放行。
+	account := &RuntimeAccount{ModelMappings: []AccountModelMapping{waMapping(FamilyChatCompletions, FamilyAnthropicMessages)}}
 
-	t.Run("混合账户 chat 到 messages", func(t *testing.T) {
-		resolved := ResolveAccountModelMapping(hybrid, " m ", FamilyChatCompletions)
+	t.Run("chat 到 messages", func(t *testing.T) {
+		resolved := ResolveAccountModelMapping(account, " m ", FamilyChatCompletions)
 		if resolved == nil {
 			t.Fatal("应解析出映射")
 		}
@@ -262,60 +264,48 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		}
 	})
 	t.Run("空模型或空来源族", func(t *testing.T) {
-		if ResolveAccountModelMapping(hybrid, "  ", FamilyChatCompletions) != nil {
+		if ResolveAccountModelMapping(account, "  ", FamilyChatCompletions) != nil {
 			t.Fatal("空模型不解析")
 		}
-		if ResolveAccountModelMapping(hybrid, "m", "") != nil {
+		if ResolveAccountModelMapping(account, "m", "") != nil {
 			t.Fatal("空来源族不解析")
 		}
 	})
 	t.Run("来源族白名单", func(t *testing.T) {
-		if ResolveAccountModelMapping(hybrid, "m", "unknown_family") != nil {
+		if ResolveAccountModelMapping(account, "m", "unknown_family") != nil {
 			t.Fatal("未知来源族不解析")
 		}
-		if ResolveAccountModelMapping(hybrid, "m", FamilyGeminiStreamGenerate) != nil {
+		if ResolveAccountModelMapping(account, "m", FamilyGeminiStreamGenerate) != nil {
 			t.Fatal("无匹配行不解析")
 		}
 	})
-	t.Run("gemini-openai-chat 档位拒绝 anthropic 来源", func(t *testing.T) {
-		account := &RuntimeAccount{
-			ProviderProtocolProfileID: GeminiOpenAIChatProfileID,
-			ProviderCode:              "hybrid",
-			ProtocolCode:              "openai",
-			ProtocolVersion:           "v1",
-			ModelMappings:             []AccountModelMapping{waMapping(FamilyAnthropicMessages, FamilyChatCompletions)},
-		}
-		if resolved := ResolveAccountModelMapping(account, "m", FamilyAnthropicMessages); resolved != nil {
-			t.Fatalf("gemini-openai-chat 档位应拒绝 anthropic 来源: %+v", resolved)
+	t.Run("anthropic 来源按声明放行（旧 gemini-openai-chat 档案排除已拆除）", func(t *testing.T) {
+		messagesAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{waMapping(FamilyAnthropicMessages, FamilyChatCompletions)}}
+		resolved := ResolveAccountModelMapping(messagesAccount, "m", FamilyAnthropicMessages)
+		if resolved == nil || resolved.UpstreamEndpointFamily != FamilyChatCompletions {
+			t.Fatalf("messages→chat 映射行应按声明放行: %+v", resolved)
 		}
 	})
 	t.Run("禁用与同构映射", func(t *testing.T) {
 		disabled := false
-		account := &RuntimeAccount{ProviderCode: "hybrid", ModelMappings: []AccountModelMapping{
+		sameFamilyAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{
 			{SourceModel: "m", SourceEndpointFamily: FamilyChatCompletions, UpstreamModel: "m", UpstreamEndpointFamily: FamilyChatCompletions},
 			{SourceModel: "m", SourceEndpointFamily: FamilyResponses, UpstreamModel: "m2", UpstreamEndpointFamily: FamilyChatCompletions, Enabled: &disabled},
 		}}
-		account.ProtocolCode = "openai"
-		account.ProtocolVersion = "v1"
-		if resolved := ResolveAccountModelMapping(account, "m", FamilyChatCompletions); resolved != nil {
+		if resolved := ResolveAccountModelMapping(sameFamilyAccount, "m", FamilyChatCompletions); resolved != nil {
 			t.Fatalf("同构映射不解析: %+v", resolved)
 		}
-		if resolved := ResolveAccountModelMapping(account, "m", FamilyResponses); resolved != nil {
+		if resolved := ResolveAccountModelMapping(sameFamilyAccount, "m", FamilyResponses); resolved != nil {
 			t.Fatalf("禁用映射不解析: %+v", resolved)
 		}
 	})
-	t.Run("openai 账户 responses 到 chat", func(t *testing.T) {
-		account := &RuntimeAccount{ProtocolCode: "openai", ProtocolVersion: "v1", ModelMappings: []AccountModelMapping{
+	t.Run("responses 到 chat", func(t *testing.T) {
+		responsesAccount := &RuntimeAccount{ModelMappings: []AccountModelMapping{
 			waMapping(FamilyResponses, FamilyChatCompletions),
 		}}
-		resolved := ResolveAccountModelMapping(account, "m", FamilyResponses)
+		resolved := ResolveAccountModelMapping(responsesAccount, "m", FamilyResponses)
 		if resolved == nil || resolved.UpstreamModel != "m-up" {
-			t.Fatalf("openai responses 到 chat 应解析: %+v", resolved)
-		}
-		// 同一行在非 openai 协议档位且非混合账户下不受支持。
-		other := &RuntimeAccount{ProviderCode: "vendor", ProtocolCode: "anthropic", ProtocolVersion: "v1", ModelMappings: account.ModelMappings}
-		if ResolveAccountModelMapping(other, "m", FamilyResponses) != nil {
-			t.Fatal("非 openai/混合账户不支持该转换")
+			t.Fatalf("responses 到 chat 应解析: %+v", resolved)
 		}
 	})
 	t.Run("nil 账户", func(t *testing.T) {
@@ -324,7 +314,6 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		}
 	})
 	t.Run("转换支持矩阵", func(t *testing.T) {
-		hybridAccount := &RuntimeAccount{ProviderCode: "hybrid"}
 		sameFamily := &AccountModelMapping{SourceEndpointFamily: FamilyChatCompletions, UpstreamEndpointFamily: FamilyChatCompletions}
 		if !isOpenAIModelMappingRuntimeConversionSupported(sameFamily, nil) {
 			t.Fatal("同族总是支持")
@@ -333,14 +322,13 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		if !isOpenAIModelMappingRuntimeConversionSupported(geminiFlatten, nil) {
 			t.Fatal("gemini stream 到非 stream 支持")
 		}
+		// 跨协议矩阵不再按账户身份收窄（hybrid 门已拆除）：矩阵内族对按账户
+		// 声明放行，矩阵外族对恒拒绝。
 		cross := &AccountModelMapping{SourceEndpointFamily: FamilyGeminiGenerateContent, UpstreamEndpointFamily: FamilyAnthropicMessages}
-		if isOpenAIModelMappingRuntimeConversionSupported(cross, &RuntimeAccount{ProviderCode: "vendor"}) {
-			t.Fatal("非混合账户不支持跨协议")
+		if !isOpenAIModelMappingRuntimeConversionSupported(cross, &RuntimeAccount{}) {
+			t.Fatal("gemini 到 messages 按声明放行")
 		}
-		if !isOpenAIModelMappingRuntimeConversionSupported(cross, hybridAccount) {
-			t.Fatal("混合账户支持 gemini 到 messages")
-		}
-		// 其余跨协议组合。
+		// 其余矩阵内跨协议组合。
 		pairs := [][2]string{
 			{FamilyResponses, FamilyAnthropicMessages},
 			{FamilyChatCompletions, FamilyGeminiGenerateContent},
@@ -349,9 +337,14 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		}
 		for _, pair := range pairs {
 			mapping := &AccountModelMapping{SourceEndpointFamily: pair[0], UpstreamEndpointFamily: pair[1]}
-			if !isOpenAIModelMappingRuntimeConversionSupported(mapping, hybridAccount) {
-				t.Fatalf("混合账户应支持 %v 到 %v", pair[0], pair[1])
+			if !isOpenAIModelMappingRuntimeConversionSupported(mapping, &RuntimeAccount{}) {
+				t.Fatalf("矩阵内应支持 %v 到 %v", pair[0], pair[1])
 			}
+		}
+		// 矩阵外族对拒绝。
+		outside := &AccountModelMapping{SourceEndpointFamily: FamilyChatCompletions, UpstreamEndpointFamily: FamilyResponses}
+		if isOpenAIModelMappingRuntimeConversionSupported(outside, &RuntimeAccount{}) {
+			t.Fatal("矩阵外 chat 到 responses 恒拒绝")
 		}
 	})
 }

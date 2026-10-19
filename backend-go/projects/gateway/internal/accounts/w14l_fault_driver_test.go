@@ -276,6 +276,8 @@ func newW14LFaultFixture(t *testing.T) *w14lFixture {
 			t.Fatal(err)
 		}
 	}
+	// B4 W2：模型身份键解析依赖夹具 models 种子（与 newTestEnv 同一份）。
+	seedFixtureModels(t, db)
 	store, err := NewStore(db, false, testSecret, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +380,11 @@ func (f *w14lFixture) scope() AccessScope {
 }
 
 // w14lCreateInput 构造合法的 Create 输入（对齐 catalogWiringCreateInput）。
+// B1 断点批（设计 §8）：连接集合与健康检查三件套显式提交。
 func w14lCreateInput(name string) CreateInput {
+	healthModel := "gpt-4o-mini"
+	healthMode := "chat_json"
+	healthPreset := "gpt_openai_v1"
 	return CreateInput{
 		ProviderCode:              "gpt",
 		ProviderProtocolProfileID: "prof-gpt",
@@ -390,5 +396,14 @@ func w14lCreateInput(name string) CreateInput {
 		},
 		SupportedModels: []string{"gpt-4o-mini"},
 		Status:          CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
+		Connections: []ConnectionInput{{
+			ConnectionPresetCode: healthPreset,
+			BaseURL:              "https://api.openai.com/v1",
+			EndpointModes:        []string{"chat_json", "chat_sse"},
+			Enabled:              true,
+		}},
+		HealthCheckConnectionPresetCode: &healthPreset,
+		HealthCheckEndpointMode:         &healthMode,
+		HealthCheckModel:                &healthModel,
 	}
 }

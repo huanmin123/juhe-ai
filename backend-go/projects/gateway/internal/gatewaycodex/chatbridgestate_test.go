@@ -46,7 +46,6 @@ func bridgeBaseInput(req *gatewaypreauth.GatewayRequest, res gatewaypreauth.Gate
 		SystemAccountID: "sys",
 		APIKeyID:        "key",
 		GroupID:         "group",
-		GroupAccess:     gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
 		Signal:          context.Background(),
 	}
 }
@@ -698,7 +697,6 @@ func TestApplyChatBridgeCompactPreflightCompleted(t *testing.T) {
 		UsageContext:    gatewaypreauth.GatewayFailureUsageContext{TrafficSource: "gateway"},
 		StartedAt:       1,
 		SystemAccountID: "sys", APIKeyID: "key", GroupID: "group",
-		GroupAccess:      gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
 		DispatchAccounts: []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
 		Signal:           context.Background(),
 	})
@@ -763,7 +761,6 @@ func TestApplyChatBridgeCompactPreflightFailurePaths(t *testing.T) {
 			Req: req, AuditCapture: &recordedAudit{},
 			UsageContext:    gatewaypreauth.GatewayFailureUsageContext{},
 			SystemAccountID: "sys", APIKeyID: "key", GroupID: "group",
-			GroupAccess:      gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
 			DispatchAccounts: []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
 			Signal:           context.Background(),
 		})
@@ -789,7 +786,6 @@ func TestApplyChatBridgeCompactPreflightFailurePaths(t *testing.T) {
 			Req: req, AuditCapture: &recordedAudit{},
 			UsageContext:    gatewaypreauth.GatewayFailureUsageContext{},
 			SystemAccountID: "sys", APIKeyID: "key", GroupID: "group",
-			GroupAccess:      gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
 			DispatchAccounts: []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
 			Signal:           context.Background(),
 		})
@@ -822,7 +818,6 @@ func TestApplyChatBridgeCompactPreflightFailurePaths(t *testing.T) {
 			Req: req, AuditCapture: &recordedAudit{},
 			UsageContext:    gatewaypreauth.GatewayFailureUsageContext{},
 			SystemAccountID: "sys", APIKeyID: "key", GroupID: "group",
-			GroupAccess:      gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
 			DispatchAccounts: []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
 			Signal:           context.Background(),
 		})

@@ -2126,7 +2126,6 @@ func chainCodexContextStateInputOf(input gatewaypreauth.CodexContextStateInput) 
 		SystemAccountID: input.SystemAccountID,
 		APIKeyID:        input.APIKeyID,
 		GroupID:         input.GroupID,
-		GroupAccess:     input.GroupAccess,
 		Signal:          input.Signal,
 	}
 }
@@ -2145,7 +2144,6 @@ func chainCodexCompactPreflightInputOf(input gatewaypreauth.CodexCompactPrefligh
 		SystemAccountID:            input.SystemAccountID,
 		APIKeyID:                   input.APIKeyID,
 		GroupID:                    input.GroupID,
-		GroupAccess:                input.GroupAccess,
 		RequestClientCompatibility: input.RequestClientCompatibility,
 		DispatchAccounts:           input.DispatchAccounts,
 		ActiveGatewaySettings:      input.ActiveGatewaySettings,
@@ -2273,13 +2271,7 @@ func (usageModelResolverAdapter) ResolveUsageModel(account gatewayusage.UsageMod
 		UpstreamEndpointFamily: sourceEndpointFamily,
 	}
 	runtimeAccount := &gatewayopenai.RuntimeAccount{
-		ModelMappings:             account.ModelMappings,
-		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
-	}
-	if account.Profile != nil {
-		runtimeAccount.ProtocolCode = account.Profile.ProtocolCode
-		runtimeAccount.ProtocolVersion = account.Profile.ProtocolVersion
+		ModelMappings: account.ModelMappings,
 	}
 	resolved := gatewayopenai.ResolveAccountModelMapping(runtimeAccount, requestedModel, sourceEndpointFamily)
 	if resolved == nil {

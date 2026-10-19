@@ -1096,7 +1096,6 @@ func (r *chainBodyRejectionRecorder) recordUsageFailure(requestCtx *kernel.Reque
 				},
 			},
 		},
-		ProviderCode:              groupFields.ProviderCode,
 		GroupOwnerSystemAccountID: groupFields.GroupOwnerSystemAccountID,
 		GroupAccessType:           groupFields.GroupAccessType,
 	}

@@ -58,7 +58,7 @@ func TestW14dPatchModelConflictAfterExternalWrite(t *testing.T) {
 	env.login(t, "w14d-owner", "owner-pass", "user")
 
 	updatedAt := env.updatedAtOf(t, "custom_model_w14d-c1")
-	env.exec(t, `UPDATE custom_provider_models SET updated_at = '2020-06-06T00:00:00.000Z' WHERE id = 'custom_model_w14d-c1'`)
+	env.exec(t, `UPDATE models SET updated_at = '2020-06-06T00:00:00.000Z' WHERE id = 'custom_model_w14d-c1'`)
 	code, conflict := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_w14d-c1",
 		`{"status":"disabled","expectedUpdatedAt":"`+updatedAt+`"}`)
 	if code != http.StatusConflict {
@@ -67,8 +67,8 @@ func TestW14dPatchModelConflictAfterExternalWrite(t *testing.T) {
 
 	// A custom row seeded with an empty status still patches (the fallback
 	// keeps the current status when the patch omits one).
-	env.exec(t, `UPDATE custom_provider_models SET status = '' WHERE id = 'custom_model_w14d-c1'`)
-	env.exec(t, `UPDATE custom_provider_models SET updated_at = ? WHERE id = 'custom_model_w14d-c1'`, updatedAt)
+	env.exec(t, `UPDATE models SET status = '' WHERE id = 'custom_model_w14d-c1'`)
+	env.exec(t, `UPDATE models SET updated_at = ? WHERE id = 'custom_model_w14d-c1'`, updatedAt)
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_w14d-c1",
 		`{"contextWindowTokens":777,"expectedUpdatedAt":"`+updatedAt+`"}`)
 	if code != http.StatusOK {
@@ -91,7 +91,7 @@ func TestW14dPatchBuiltInValidationAndConflict(t *testing.T) {
 	}
 
 	// A row moved behind the caller renders the 409 conflict.
-	env.exec(t, `UPDATE provider_model_catalog SET updated_at = '2020-06-06T00:00:00.000Z' WHERE id = 'cat-2'`)
+	env.exec(t, `UPDATE models SET updated_at = '2020-06-06T00:00:00.000Z' WHERE id = 'cat-2'`)
 	code, conflict := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cat-2",
 		`{"mode":"text","expectedUpdatedAt":"`+updatedAt+`"}`)
 	if code != http.StatusConflict {
@@ -109,8 +109,8 @@ func TestW14dDeleteModelBindingGuardAndSuccess(t *testing.T) {
 	// binding summary joins live accounts on the owner, so the seeded account
 	// carries the same system account id.
 	env.exec(t, `INSERT INTO accounts (id, name, system_account_id) VALUES ('w14d-acc-del', 'acc', ?)`, ownerID)
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model) VALUES
-		('w14d-acc-del', 'gpt', 'delete-guard-model')`)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id)
+		SELECT 'w14d-acc-del', id FROM models WHERE id = 'custom_model_w14d-d1'`)
 	code, guarded := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/custom_model_w14d-d1", "")
 	if code != http.StatusConflict || !strings.Contains(guarded["message"].(string), "个账户支持模型") {
 		t.Fatalf("bound delete: %d %v", code, guarded)
@@ -167,11 +167,7 @@ func TestW14dPutDefaultHealthCheckModelDiagnostics(t *testing.T) {
 	if code != http.StatusOK || dataMap(t, saved)["defaultHealthCheckModel"] != "gpt-4o" {
 		t.Fatalf("personal save: %d %v", code, saved)
 	}
-	ownerID := env.requireAccount(t, "user1", "user-pass", "user")
-	if env.preferenceCount(t, `SELECT COUNT(*) FROM provider_default_health_check_models
-		WHERE system_account_id = ? AND provider_code = 'gpt' AND model = 'gpt-4o'`, ownerID) != 1 {
-		t.Fatal("personal preference row missing")
-	}
+	// 偏好表随设计 §8.11 退役：PUT 校验真实、落库按「忽略不落库」收敛。
 }
 
 func TestW14dCreateModelUpsertErrorFork(t *testing.T) {
@@ -182,7 +178,7 @@ func TestW14dCreateModelUpsertErrorFork(t *testing.T) {
 
 	// Drop the custom table: the scope lookup inside the store upsert fails
 	// after the handler-side validation passed.
-	env.exec(t, `DROP TABLE custom_provider_models`)
+	env.exec(t, `DROP TABLE models`)
 	code, failed := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"doomed-model","inputUsdPer1M":1}`)
 	if code != http.StatusBadRequest || failed["message"] == "" {
@@ -197,7 +193,7 @@ func TestW14dCreateModelTemplateCatalogError(t *testing.T) {
 	env.login(t, "user1", "user-pass", "user")
 
 	// The template lookup fails when the built-in catalog table is gone.
-	env.exec(t, `DROP TABLE provider_model_catalog`)
+	env.exec(t, `DROP TABLE models`)
 	code, failed := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
 		`{"model":"from-template","configurationTemplateId":"cat-2","inputUsdPer1M":1}`)
 	if code != http.StatusInternalServerError || failed["message"] != "服务器内部错误" {
@@ -213,7 +209,7 @@ func TestW14dReadFamilyServerErrorArms(t *testing.T) {
 
 	// Default-health-check selection: the active catalog read fails once the
 	// built-in catalog table is gone (the definition read still succeeds).
-	env.exec(t, `DROP TABLE provider_model_catalog`)
+	env.exec(t, `DROP TABLE models`)
 	code, put := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
 		`{"model":"gpt-4o"}`)
 	if code != http.StatusInternalServerError {

@@ -1,9 +1,11 @@
-// builtin_patch.go ports the built-in model configuration write family of
-// backend/src/storage/provider-model-catalog.repository.ts:
+// builtin_patch.go ports the built-in model configuration write family over
+// the models 单表（scope='builtin' 行；供应商与上游协议面重构设计 §3）:
 // findBuiltInProviderModelPatchStateAsync (full-row read via the shared
 // catalog scan) and patchBuiltInProviderModelConfigurationAsync (the
 // optimistic-concurrency UPDATE with the manual-override source transition
-// and the in-transaction default-reference cleanup).
+// and the in-transaction default-reference cleanup). 旧 `mode` 与
+// supported_api_protocols_json 补丁键合写 supported_endpoint_modes_json
+// （正向映射见 endpoint_modes.go）。
 package providers
 
 import (
@@ -20,13 +22,12 @@ type builtinPatchField struct {
 }
 
 // findBuiltInModelPatchState ports findBuiltInProviderModelPatchStateAsync:
-// the full provider_model_catalog row (Node projects the submitted columns;
-// the full row is a behavior-identical superset). Returns nil when the id
-// does not resolve.
+// the models builtin 全行读（scope='builtin' 门沿用旧双表分离的行域保证）。
+// Returns nil when the id does not resolve.
 func (s *Store) findBuiltInModelPatchState(ctx context.Context, id string) (*ModelCatalogItem, error) {
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+builtInCatalogColumns+`
-		FROM `+s.table("provider_model_catalog")+`
-		WHERE id = ?
+		FROM `+s.table("models")+`
+		WHERE id = ? AND scope = 'builtin'
 		LIMIT 1`), id)
 	if err != nil {
 		return nil, err
@@ -57,7 +58,8 @@ func configurationChanges(current *ModelCatalogItem, patch []builtinPatchField) 
 }
 
 // builtInCurrentValue resolves the current record value for a patch field
-// (nil for absent keys, mirroring the undefined comparison).
+// (nil for absent keys, mirroring the undefined comparison). mode 与
+// supportedApiProtocols 为逆映射派生值（DTO 键保留）。
 func builtInCurrentValue(current *ModelCatalogItem, field string) any {
 	switch field {
 	case "status":
@@ -136,7 +138,7 @@ func serviceTierPricesToAny(prices map[string]ModelPriceSet) map[string]any {
 // the updated_at guard detects a concurrent write.
 func (s *Store) patchBuiltInModelConfiguration(ctx context.Context, current *ModelCatalogItem,
 	patch []builtinPatchField, expectedUpdatedAt string, cleanup *defaultReferenceCleanupInput) (*customProviderModelMutationRecord, error) {
-	assignments, params := builtinPatchAssignments(s, patch)
+	assignments, params := s.builtinPatchAssignments(current, patch)
 	if len(assignments) == 0 {
 		return builtinMutationRecord(current), nil
 	}
@@ -161,9 +163,9 @@ func (s *Store) patchBuiltInModelConfiguration(ctx context.Context, current *Mod
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("provider_model_catalog")+`
+	result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("models")+`
 		SET `+strings.Join(assignments, ", ")+sourceAssignment+`, updated_at = ?
-		WHERE id = ? AND updated_at = ?`), writeParams...)
+		WHERE id = ? AND updated_at = ? AND scope = 'builtin'`), writeParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -185,13 +187,37 @@ func (s *Store) patchBuiltInModelConfiguration(ctx context.Context, current *Mod
 	return builtinMutationRecordOf(current, patch, updatedAt), nil
 }
 
-// builtinPatchAssignments ports configurationPatchAssignments.
-func builtinPatchAssignments(s *Store, patch []builtinPatchField) ([]string, []any) {
+// builtinPatchAssignments ports configurationPatchAssignments. mode 与
+// supportedApiProtocols 合写 supported_endpoint_modes_json：两键任一出现在
+// patch 中即按合并后的 (mode, protocols) 正向重算（协议映射优先，空协议回退
+// 目录 mode 缺省集；未知协议容忍跳过——管理面内置补丁的历史值域含 completions
+// 等无 mode 映射的遗留声明，与 maintenance 种子的空集映射同口径）。
+func (s *Store) builtinPatchAssignments(current *ModelCatalogItem, patch []builtinPatchField) ([]string, []any) {
 	assignments := []string{}
 	params := []any{}
 	add := func(column string, value any) {
 		assignments = append(assignments, column+" = ?")
 		params = append(params, value)
+	}
+	merged := mergedBuiltInItem(current, patch)
+	modeSubmitted := false
+	protocolsSubmitted := false
+	for _, field := range patch {
+		switch field.Name {
+		case "mode":
+			modeSubmitted = true
+		case "supportedApiProtocols":
+			protocolsSubmitted = true
+		}
+	}
+	if modeSubmitted || protocolsSubmitted {
+		// 物理等值收束：派生 mode（六值）与提交 mode（历史词表）不同但正 Forward
+		// 投影一致时不算变化（DTO 派生键的往返伪差异不落库、不推进 updated_at）。
+		mergedModes := forwardBuiltinEndpointModes(merged.Mode, merged.SupportedAPIProtocols)
+		currentModes := forwardBuiltinEndpointModes(current.Mode, current.SupportedAPIProtocols)
+		if mustJSON(mergedModes) != mustJSON(currentModes) {
+			add("supported_endpoint_modes_json", mustJSON(mergedModes))
+		}
 	}
 	for _, field := range patch {
 		switch field.Name {
@@ -203,10 +229,8 @@ func builtinPatchAssignments(s *Store, patch []builtinPatchField) ([]string, []a
 				continue
 			}
 			add("catalog_visible", s.boolValue(visible))
-		case "mode":
-			add("mode", nullableText(field.Value))
-		case "supportedApiProtocols":
-			add("supported_api_protocols_json", mustJSON(stringListJSON(field.Value)))
+		case "mode", "supportedApiProtocols":
+			// 已并入 supported_endpoint_modes_json 合写。
 		case "supportedServiceTiers":
 			add("supported_service_tiers_json", mustJSON(stringListJSON(field.Value)))
 		case "supportedReasoningEfforts":
@@ -250,6 +274,41 @@ func builtinPatchAssignments(s *Store, patch []builtinPatchField) ([]string, []a
 		}
 	}
 	return assignments, params
+}
+
+// forwardBuiltinEndpointModes 把内置补丁合并后的 (六值 mode, protocols) 正向
+// 投影为 endpoint modes：协议非空走协议映射（未知协议容忍跳过——管理面内置
+// 补丁的历史值域含 completions 等无 mode 映射的遗留声明，与 maintenance 种子
+// 的空集映射同口径），协议为空回退目录 mode 缺省集
+//（catalogModeFilterExpansion）。
+func forwardBuiltinEndpointModes(mode *string, protocols []string) []string {
+	seen := map[string]bool{}
+	modes := []string{}
+	for _, protocol := range protocols {
+		for _, endpointMode := range catalogProtocolEndpointModes[protocol] {
+			if !seen[endpointMode] {
+				seen[endpointMode] = true
+				modes = append(modes, endpointMode)
+			}
+		}
+	}
+	sortStrings(modes)
+	if len(modes) > 0 {
+		return modes
+	}
+	if mode != nil {
+		return catalogModeFilterExpansion()[strings.ToLower(strings.TrimSpace(*mode))]
+	}
+	return []string{}
+}
+
+// sortStrings 原位 ASCII 升序（modes json 元素唯一升序契约）。
+func sortStrings(values []string) {
+	for index := 1; index < len(values); index++ {
+		for position := index; position > 0 && values[position] < values[position-1]; position-- {
+			values[position], values[position-1] = values[position-1], values[position]
+		}
+	}
 }
 
 // nullableText mirrors the repository helper: trimmed non-empty string or nil.

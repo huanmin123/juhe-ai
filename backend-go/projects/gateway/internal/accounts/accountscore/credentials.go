@@ -9,13 +9,20 @@ import (
 // Credentials mirrors AccountCredentials: an open record of credential fields.
 type Credentials map[string]any
 
-// ModelMapping mirrors AccountModelMapping.
+// ModelMapping mirrors AccountModelMapping. 供应商解耦 B4 W2（设计 §5.1/§8）：
+// TargetConnectionPresetCode 是账户内自然键——连接 ID 永不由客户端提交，写侧
+// 按 (账户, preset) 解析 account_connections.id 后写
+// account_entry_mappings.target_connection_id；缺省/未知/停用 preset 按
+// mapping_target_unsupported（400 族）显式拒绝，不造兼容层。UpstreamModel 语义
+// 即 entryMappings[].targetModelId 的入参载体（按 models.upstream_model 身份键
+// 解析为 target_model_id）。
 type ModelMapping struct {
-	SourceModel            string `json:"sourceModel"`
-	SourceEndpointFamily   string `json:"sourceEndpointFamily"`
-	UpstreamModel          string `json:"upstreamModel"`
-	UpstreamEndpointFamily string `json:"upstreamEndpointFamily"`
-	Enabled                *bool  `json:"enabled,omitempty"`
+	SourceModel                string `json:"sourceModel"`
+	SourceEndpointFamily       string `json:"sourceEndpointFamily"`
+	UpstreamModel              string `json:"upstreamModel"`
+	UpstreamEndpointFamily     string `json:"upstreamEndpointFamily"`
+	TargetConnectionPresetCode string `json:"targetConnectionPresetCode"`
+	Enabled                    *bool  `json:"enabled,omitempty"`
 }
 
 // AuthorizedAccountReader is the narrow cross-package port of the authz

@@ -60,10 +60,11 @@ func m2SeedAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name string
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// B4 W2：profile 列停写——直插行落空串，与 API 创建行的批量签名键一致。
 	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
+		VALUES (?, ?, 'gpt', '', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
 		id, ownerID, name, sealed, now, now)
 }
 
@@ -88,7 +89,29 @@ func m2SeedDomainAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name,
 		id, ownerID, providerCode, profileID, name, sealed, domain, now, now)
 }
 
-// m2CreateBody 构造 POST /accounts 负载。
+// m2ConnectionContractByProvider 是 B1 断点批夹具的 provider → (连接 preset,
+// 合法 base URL) 映射（registry §1.1 同词表；媒体 preset 用根路径 suffix）。
+var m2ConnectionContractByProvider = map[string]struct {
+	preset  string
+	baseURL string
+}{
+	"gpt":        {"gpt_openai_v1", "https://api.openai.com/v1"},
+	"xai":        {"xai_openai_v1", "https://api.x.ai/v1"},
+	"deepseek":   {"deepseek_openai_v1", "https://api.deepseek.com"},
+	"anthropic":  {"anthropic_v1", "https://api.anthropic.com/v1"},
+	"gemini":     {"gemini_native_v1beta", "https://generativelanguage.googleapis.com"},
+	"glm":        {"glm_general_openai_v1", "https://open.bigmodel.cn/api/paas/v4"},
+	"minimax":    {"minimax_media", "https://api.minimax.chat"},
+	"volcengine": {"volcengine_ark", "https://ark.cn-beijing.volces.com"},
+	"qwen":       {"qwen_dashscope", "https://dashscope.aliyuncs.com"},
+	"openai":     {"generic_openai_v1", "https://upstream.example.com/v1"},
+	"hybrid":     {"generic_openai_v1", "https://upstream.example.com/v1"},
+}
+
+// m2CreateBody 构造 POST /accounts 负载。B1 断点批（设计 §8）：连接集合
+// endpointModes 与请求 modes 同集显式提交（越界 modes 仍由写链既有域校验先行
+// 拒绝），健康检查三件套显式提交（检查形态取 modes 中首个可检查形态，
+// 检查模型取支持模型 m-default）。
 func m2CreateBody(name, provider, profileID, accountType, domain string, credentials map[string]any, modes []string) string {
 	body := map[string]any{
 		"providerCode":              provider,
@@ -108,6 +131,56 @@ func m2CreateBody(name, provider, profileID, accountType, domain string, credent
 			list = append(list, mode)
 		}
 		body["credentials"].(map[string]any)["supported_endpoint_modes"] = list
+	}
+	if contract, ok := m2ConnectionContractByProvider[provider]; ok {
+		// gemini OpenAI Chat 档案按 profileID 覆写连接契约（registry preset
+		// gemini_openai_chat_v1beta，suffix /v1beta/openai）。
+		if provider == "gemini" && profileID == geminiOpenAIChatV1BetaProfileID {
+			contract = struct {
+				preset  string
+				baseURL string
+			}{"gemini_openai_chat_v1beta", "https://generativelanguage.googleapis.com/v1beta/openai"}
+		}
+		connectionModes := modes
+		if len(connectionModes) == 0 {
+			// 缺省 modes 臂（含显式空数组臂——该臂测的是凭据归一化对空数组的
+			// 既有 500 路径，连接集合仍需合法非空 modes）：DefaultEndpointModes
+			// 需要完整档案谓词，夹具谓词不可解析时按域 lane 收敛到该 preset 词表
+			// 内的基础集合。
+			effectiveDomain := domain
+			if effectiveDomain == "" {
+				effectiveDomain = accountscore.CapabilityDomainChat
+			}
+			connectionModes = map[string][]string{
+				accountscore.CapabilityDomainChat:  {"chat_json", "chat_sse"},
+				accountscore.CapabilityDomainImage: {"images_json"},
+				accountscore.CapabilityDomainVideo: {"video_create", "video_get", "video_content", "video_cancel"},
+				accountscore.CapabilityDomainAudio: {"audio_speech"},
+			}[effectiveDomain]
+			if len(connectionModes) == 0 {
+				connectionModes = []string{"chat_json", "chat_sse"}
+			}
+		}
+		connections := []any{map[string]any{
+			"connectionPresetCode": contract.preset,
+			"baseUrl":              contract.baseURL,
+			"endpointModes":        connectionModes,
+			"enabled":              true,
+		}}
+		body["connections"] = connections
+		body["healthCheckConnectionPresetCode"] = contract.preset
+		healthMode := ""
+		for _, mode := range connectionModes {
+			if accountHealthCheckEndpointModes[mode] {
+				healthMode = mode
+				break
+			}
+		}
+		if healthMode == "" {
+			healthMode = "chat_json"
+		}
+		body["healthCheckEndpointMode"] = healthMode
+		body["healthCheckModel"] = "m-default"
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -212,9 +285,11 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	}
 
 	// audio 域 modes 缺省 → audio_speech。
+	// B1 断点批（§1.1 组合表）：volcengine_ark 无 audio 域，audio 缺省 modes 臂
+	// 改走 gpt（gpt_openai_v1 audio lane 注册 audio_speech），断言语义不变。
 	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		m2CreateBody("m2-audio-absent", "volcengine", volcengineOpenAIV1ProfileID, "api_key", "audio",
-			map[string]any{"api_key": "ak-volc-m2", "base_url": "https://ark.example.com/api/v3"}, nil))
+		m2CreateBody("m2-audio-absent", "gpt", "prof-gpt", "api_key", "audio",
+			map[string]any{"api_key": "ak-volc-m2", "base_url": "https://api.openai.com/v1"}, nil))
 	if code != http.StatusCreated {
 		t.Fatalf("volcengine audio 创建应 201：%d", code)
 	}
@@ -773,6 +848,11 @@ func TestM2ImportCapabilityDomainStrict(t *testing.T) {
 	mixedAccount["credentials"].(map[string]any)["supported_endpoint_modes"] = []any{"chat_json", "video_create"}
 	videoAccount := w2APIKeyAccount("m2-导入视频", "导入分组")
 	videoAccount["credentials"].(map[string]any)["supported_endpoint_modes"] = videoModes
+	// B1 断点批：视频域账户的连接集合改写为 video lane 全集 + video_create 检查形态。
+	videoAccount["connections"] = []any{map[string]any{"connectionPresetCode": "generic_openai_v1", "baseUrl": "https://api.openai.com/v1", "endpointModes": videoModes, "enabled": true}}
+	videoAccount["healthCheckConnectionPresetCode"] = "generic_openai_v1"
+	videoAccount["healthCheckEndpointMode"] = "video_create"
+	videoAccount["healthCheckModel"] = "gpt-4o-mini"
 	absentAccount := w2APIKeyAccount("m2-导入缺省", "导入分组")
 
 	// 预览：混合包冲突 → per-account message + CanImport=false；推导域回显。
@@ -891,8 +971,8 @@ func TestM2BatchSameDomain(t *testing.T) {
 	// 值退化为普通编辑，无特殊分支）。
 	m2SeedAccountWithModes(t, env, "acc-m2-batch-legacy", adminID, "m2-batch-legacy", []string{"chat_json", "video_create"})
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-		VALUES ('acc-m2-batch-legacy', 'gpt', 'm-default', ?)`, now)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id, created_at)
+		VALUES ('acc-m2-batch-legacy', (SELECT id FROM models WHERE upstream_model = 'm-default'), ?)`, now)
 
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update",
 		batchBody([]map[string]any{target(chatA, revisionA+1), target("acc-m2-batch-legacy", 1)},

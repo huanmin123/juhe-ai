@@ -279,11 +279,11 @@ func TestModelCatalogRefreshHandlerClosedLoop(t *testing.T) {
 		{id: "cpm-b", model: "mock-model-configured"},
 	}
 	for _, item := range models {
-		if _, err := db.Exec(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id,
-			status, mode, supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+		if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
+			status, supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			created_by, created_at, updated_at)
-			VALUES (?, 'gpt', ?, 'global', NULL, 'active', NULL, '["chat_completions"]', '[]', '[]', 'catalog-admin', ?, ?)`,
-			item.id, item.model, now, now); err != nil {
+			VALUES (?, 'gpt', ?, ?, 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'catalog-admin', ?, ?)`,
+			item.id, item.model, item.model, now, now); err != nil {
 			t.Fatalf("seed custom model: %v", err)
 		}
 	}
@@ -706,11 +706,11 @@ func TestModelCatalogRefreshOAuthAccountDiscovery(t *testing.T) {
 	adminID := createComposeSessionAdmin(t, composed)
 	seedCatalogRefreshDraftFixtures(t, db, adminID)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := db.Exec(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id,
-			status, mode, supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id,
+			status, supported_endpoint_modes_json, supported_service_tiers_json, supported_reasoning_efforts_json,
 			created_by, created_at, updated_at)
-			VALUES (?, 'gpt', ?, 'global', NULL, 'active', NULL, '["chat_completions"]', '[]', '[]', 'catalog-admin', ?, ?)`,
-		"cpm-oauth", "mock-model-a", now, now); err != nil {
+			VALUES (?, 'gpt', ?, ?, 'global', NULL, 'active', '["chat_json","chat_sse"]', '[]', '[]', 'catalog-admin', ?, ?)`,
+		"cpm-oauth", "mock-model-a", "mock-model-a", now, now); err != nil {
 		t.Fatalf("seed custom model: %v", err)
 	}
 
@@ -815,22 +815,25 @@ func (d *cannedJSONDoer) Do(*http.Request) (*http.Response, error) {
 func seedCatalogRefreshDraftFixtures(t *testing.T, db *sql.DB, adminID string) string {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// vendors 只读种子（供应商解耦 §8）；协议档案表随重构退役，profile 维度
+	// 不再预置。
 	statements := []struct {
 		query string
 		args  []any
 	}{
-		{"INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at) VALUES ('prov-gpt', 'gpt', 'OpenAI', 1, ?, ?)", []any{now, now}},
-		{"INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at) VALUES ('prof-gpt', 'gpt', 'OpenAI 官方协议', 1, 'openai', 'v1', 'https://api.openai.com/v1', 'mock-model-configured', '[\"api_key\"]', '[]', ?, ?)", []any{now, now}},
+		{"INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at) VALUES ('prov-gpt', 'gpt', 'OpenAI', 1, ?, ?)", []any{now, now}},
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement.query, statement.args...); err != nil {
 			t.Fatalf("seed catalog fixture: %v", err)
 		}
 	}
+	// groups.provider_code 随供应商解耦删除：默认组按 (system_account_id,
+	// is_default) 定位。
 	var groupID string
-	if err := db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1
+	if err := db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1
 		ORDER BY updated_at DESC, id ASC LIMIT 1`, adminID).Scan(&groupID); err != nil {
-		t.Fatalf("locate default gpt group: %v", err)
+		t.Fatalf("locate default group: %v", err)
 	}
 	return groupID
 }

@@ -714,7 +714,7 @@ func TestAIPublicAccountLifecycle(t *testing.T) {
 	addBody := `{"targetUsername":"welfare","targetGroupName":"福利","providerCode":"gpt",` +
 		`"providerProtocolProfileId":"profile_gpt_openai_v1","name":"站点A","type":"api_key",` +
 		`"baseUrl":"https://a.example","apiKey":"sk-a","supportedModels":["gpt-4o-mini"],` +
-		`"concurrencyLimit":10,"priority":3}`
+		`"concurrencyLimit":10,"priority":3,"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://a.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/add", addBody, token)
 	if status != 201 {
 		t.Fatalf("account add: %d %v", status, payload)

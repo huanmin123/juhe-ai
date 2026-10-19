@@ -270,7 +270,8 @@ func TestProvidersModelCacheInvalidationDelete(t *testing.T) {
 
 	// The AI-account binding guard (409) commits nothing.
 	env.exec(t, `INSERT INTO accounts (id, system_account_id, name) VALUES ('acc-inv', 'sys-inv', 'A1')`)
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model) VALUES ('acc-inv', 'gpt', 'gpt-4o')`)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id)
+		SELECT 'acc-inv', id FROM models WHERE id = 'cu-2'`)
 	code, bound := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-2", "")
 	if code != http.StatusConflict {
 		t.Fatalf("bound delete: %d %v", code, bound)

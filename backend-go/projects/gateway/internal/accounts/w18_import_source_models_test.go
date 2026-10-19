@@ -112,7 +112,7 @@ func TestW18ChannelModelsPersistDedupOrder(t *testing.T) {
 	accountID := *executed.Accounts[0].AccountID
 	// 落库顺序即写入顺序（replaceAccountSupportedModels 按映射列表逐条插入），
 	// 按 rowid 读取验证首次出现顺序与去重。
-	rows, err := env.db.Query(`SELECT model FROM account_supported_models WHERE account_id = ? ORDER BY rowid`, accountID)
+	rows, err := env.db.Query(`SELECT models.upstream_model FROM account_supported_models INNER JOIN models ON models.id = account_supported_models.model_id WHERE account_supported_models.account_id = ? ORDER BY account_supported_models.rowid`, accountID)
 	if err != nil {
 		t.Fatalf("读取 supported_models 失败：%v", err)
 	}
@@ -146,16 +146,16 @@ func TestW18Sub2APIModelFieldsPersist(t *testing.T) {
 		w18OpenAIFact("gpt-4o-mini"),
 	}})
 
+	// B4 W2（设计 §8）：映射条目必须引用 targetConnectionPresetCode，且写入侧
+	// 按 (账户, preset) 解析连接行——导入面连接解析尚未迁移，映射条目会按
+	// mapping_target_unsupported 显式拒绝；本用例的「模型字段透传」意图由
+	// supportedModels / 健康检查承载，不携带映射。
 	document := map[string]any{"accounts": []any{
 		map[string]any{"name": "w18 透传账户", "platform": "openai", "type": "api_key",
 			"credentials":             map[string]any{"api_key": "sk-w18-pass", "base_url": "https://api.openai.com/v1"},
 			"supportedModels":         []any{"gpt-w18-pass", "gpt-4o-mini"},
 			"healthCheckModel":        "gpt-w18-pass",
 			"healthCheckEndpointMode": "chat_json",
-			"modelMappings": []any{map[string]any{
-				"sourceModel": "gpt-4o-mini", "sourceEndpointFamily": "chat_completions",
-				"upstreamModel": "gpt-w18-pass", "upstreamEndpointFamily": "chat_completions",
-			}},
 		},
 	}}
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
@@ -178,7 +178,7 @@ func TestW18Sub2APIModelFieldsPersist(t *testing.T) {
 	}
 	accountID := *executed.Accounts[0].AccountID
 	if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-		WHERE account_id = ? AND provider_code = 'openai' AND model IN ('gpt-w18-pass','gpt-4o-mini')`, accountID); count != 2 {
+		WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model IN ('gpt-w18-pass','gpt-4o-mini'))`, accountID); count != 2 {
 		t.Fatalf("supportedModels 应逐条落库：%d", count)
 	}
 	var healthModel, healthMode string
@@ -189,10 +189,9 @@ func TestW18Sub2APIModelFieldsPersist(t *testing.T) {
 	if healthModel != "gpt-w18-pass" || healthMode != "chat_json" {
 		t.Fatalf("健康检查字段不一致：%q %q", healthModel, healthMode)
 	}
-	if count := env.count(t, `SELECT COUNT(*) FROM account_model_mappings
-		WHERE account_id = ? AND source_model = 'gpt-4o-mini' AND source_endpoint_family = 'chat_completions'
-		AND upstream_model = 'gpt-w18-pass' AND upstream_endpoint_family = 'chat_completions' AND enabled = 1`, accountID); count != 1 {
-		t.Fatalf("modelMappings 应落库：%d", count)
+	// B4 W2：映射条目随连接面迁移暂不随导入落库（见上方 document 注释）。
+	if count := env.count(t, `SELECT COUNT(*) FROM account_entry_mappings WHERE account_id = ?`, accountID); count != 0 {
+		t.Fatalf("无连接事实时不得落映射行：%d", count)
 	}
 }
 
@@ -272,7 +271,7 @@ func TestW18ChannelWithoutModelsFallsBackToProviderDefaults(t *testing.T) {
 	}
 	accountID := *executed.Accounts[0].AccountID
 	if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-		WHERE account_id = ? AND model = 'gpt-4o-mini'`, accountID); count != 1 {
+		WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, accountID); count != 1 {
 		t.Fatalf("应落库供应商默认支持模型：%d", count)
 	}
 }
@@ -350,7 +349,7 @@ func TestW18ChannelModelsInvalidShapeCountsIgnoredField(t *testing.T) {
 			}
 			accountID := *executed.Accounts[0].AccountID
 			if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-				WHERE account_id = ? AND model = 'gpt-4o-mini'`, accountID); count != 1 {
+				WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, accountID); count != 1 {
 				t.Fatalf("应仅落库供应商默认支持模型（未写入异常 models）：%d", count)
 			}
 		})
@@ -393,7 +392,7 @@ func TestW18ChannelModelsLegalEmptyShapeNotCounted(t *testing.T) {
 	}
 	accountID := *executed.Accounts[0].AccountID
 	if count := env.count(t, `SELECT COUNT(*) FROM account_supported_models
-		WHERE account_id = ? AND model = 'gpt-4o-mini'`, accountID); count != 1 {
+		WHERE account_id = ? AND model_id IN (SELECT id FROM models WHERE upstream_model = 'gpt-4o-mini')`, accountID); count != 1 {
 		t.Fatalf("应仅落库供应商默认支持模型：%d", count)
 	}
 }

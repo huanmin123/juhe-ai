@@ -525,7 +525,7 @@ func (f *fakeCacheFallback) ListCachedOpenAIAccountsForGroupAsync(ctx context.Co
 }
 
 func (f *fakeCacheFallback) ResolveCachedGroupUsageAccessMetadataAsync(ctx context.Context, groupID, systemAccountID string) (gatewayruntimecache.GroupUsageAccessMetadata, bool, error) {
-	return gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}, true, nil
+	return gatewayruntimecache.GroupUsageAccessMetadata{}, true, nil
 }
 
 func (f *fakeCacheFallback) LoadApiKeyTransientStatesForDispatch(ctx context.Context, accountID string, fingerprints []string) ([]gatewayruntimecache.AccountAPIKeyRuntimeSelectionState, error) {

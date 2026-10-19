@@ -55,6 +55,8 @@ func seedChatDispatchPinGroup(t *testing.T, fixture *chainFixture, mainURL, pinU
 	}
 	seed(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`,
 		mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-account-key", "base_url": mainURL}), fixture.accountID)
+	// B4 第一批单连接事实源：上游指向同步改连接行。
+	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, mainURL)
 	pinCredentials := mustEncryptCredentials(t, map[string]any{"api_key": "sk-upstream-pin-key", "base_url": pinURL})
 	seed(`INSERT INTO accounts (
 			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
@@ -65,8 +67,10 @@ func seedChatDispatchPinGroup(t *testing.T, fixture *chainFixture, mainURL, pinU
 		VALUES ('group_pin', ?, 'openai', 1, 'personal', NULL)`, fixture.systemAccount)
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_pin', ?, 'acc_pin', 1, ?)`, fixture.systemAccount, now)
-	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
-		VALUES ('acc_pin', 'openai', 'gpt-test', ?)`, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, model_id, created_at)
+		VALUES ('acc_pin', 'openai', 'gpt-test', 'mdl_gpt-test', ?)`, now)
+	// B4 第一批单连接事实源：acc_pin 需要 enabled 连接行才能水合。
+	chainSeedAccountConnection(t, fixture.db, "acc_pin", pinURL)
 }
 
 // composeChatDispatchChain 组装 full-chain（含 spool 目录），返回 chain 与

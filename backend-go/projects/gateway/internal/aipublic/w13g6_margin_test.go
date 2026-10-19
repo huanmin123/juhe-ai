@@ -158,7 +158,7 @@ func TestW13g6AccountBoundGroupArms(t *testing.T) {
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/account/add",
 		`{"targetUsername":"w13g6own","targetGroupName":"绑定组","name":"站点B","providerCode":"gpt",
 		"providerProtocolProfileId":"profile_gpt_openai_v1","type":"api_key","baseUrl":"https://a.example",
-		"apiKey":"sk-b","supportedModels":["gpt-4o-mini"]}`, sourceToken)
+		"apiKey":"sk-b","supportedModels":["gpt-4o-mini"],"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://a.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`, sourceToken)
 	if status != http.StatusCreated {
 		t.Fatalf("account add: %d %v", status, payload)
 	}

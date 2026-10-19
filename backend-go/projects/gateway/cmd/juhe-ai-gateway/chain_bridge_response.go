@@ -565,11 +565,7 @@ func chainBridgeResponseMappingOf(req *gatewaypreauth.GatewayRequest, account ga
 		})
 	}
 	runtimeAccount := &gatewayopenai.RuntimeAccount{
-		ModelMappings:             mappings,
-		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
-		ProtocolCode:              account.ProtocolCode,
-		ProtocolVersion:           account.ProtocolVersion,
+		ModelMappings: mappings,
 	}
 	resolved := gatewayopenai.ResolveAccountModelMapping(runtimeAccount, requestedModel, requestMappingSourceFamilyOf(req))
 	if resolved == nil {

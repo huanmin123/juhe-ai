@@ -25,10 +25,10 @@ func (env *testEnv) seedWriteFixtures(t *testing.T) (user1, user2 string) {
 	const now = "2026-01-01T00:00:00.000Z"
 	env.seedCustomModel(t, customModelSeed{ID: "cu-img", ProviderCode: "gpt", Model: "gpt-image-studio",
 		Scope: "global", Protocols: `["images"]`})
-	env.exec(t, `UPDATE custom_provider_models SET mode = 'image', image_input_usd_per_1m = 8 WHERE id = 'cu-img'`)
+	env.exec(t, `UPDATE models SET image_input_usd_per_1m = 8 WHERE id = 'cu-img'`)
 	env.seedCustomModel(t, customModelSeed{ID: "cu-expired", ProviderCode: "gpt", Model: "gpt-custom-expired",
 		Scope: "global", ReleaseDate: "2024-01-01", Protocols: `["chat_completions"]`, InputUsd: ptrFloat64(1)})
-	env.exec(t, `UPDATE custom_provider_models SET shutdown_date = '2020-01-01' WHERE id = 'cu-expired'`)
+	env.exec(t, `UPDATE models SET shutdown_date = '2020-01-01' WHERE id = 'cu-expired'`)
 	_ = now
 	return user1, user2
 }
@@ -37,7 +37,7 @@ func (env *testEnv) seedWriteFixtures(t *testing.T) (user1, user2 string) {
 func (env *testEnv) updatedAtOf(t *testing.T, id string) string {
 	t.Helper()
 	var updatedAt string
-	if err := env.db.QueryRow(`SELECT updated_at FROM custom_provider_models WHERE id = ?`, id).Scan(&updatedAt); err != nil {
+	if err := env.db.QueryRow(`SELECT updated_at FROM models WHERE id = ?`, id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	return updatedAt
@@ -46,7 +46,7 @@ func (env *testEnv) updatedAtOf(t *testing.T, id string) string {
 func (env *testEnv) builtinUpdatedAtOf(t *testing.T, id string) string {
 	t.Helper()
 	var updatedAt string
-	if err := env.db.QueryRow(`SELECT updated_at FROM provider_model_catalog WHERE id = ?`, id).Scan(&updatedAt); err != nil {
+	if err := env.db.QueryRow(`SELECT updated_at FROM models WHERE id = ?`, id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
 	}
 	return updatedAt
@@ -335,54 +335,21 @@ func TestProvidersPatchCustomModel(t *testing.T) {
 	}
 }
 
-// TestProvidersPatchCustomModelDefaultCleanup covers the
-// default-health-check-model reference cleanup on patch transitions.
+// TestProvidersPatchCustomModelDefaultCleanup 收敛为补丁事务形状断言：默认检
+// 查模型偏好表随供应商解耦退役（设计 §8.11），清理执行器为 no-op，响应不再
+// 携带 defaultHealthCheckModelCleared（键仅在有清理时出现）。
 func TestProvidersPatchCustomModelDefaultCleanup(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
 	env.seedWriteFixtures(t)
-	user1 := env.requireAccount(t, "user1", "user-pass", "user")
-	const now = "2026-01-01T00:00:00.000Z"
-	// seedCatalog already wrote user1's gpt preference; replace it with the
-	// row under test.
-	env.exec(t, `INSERT INTO provider_default_health_check_models (system_account_id, provider_code, model, created_at, updated_at)
-		VALUES (?, 'gpt', 'gpt-4o-personal', ?, ?)
-		ON CONFLICT(system_account_id, provider_code) DO UPDATE SET model = excluded.model, updated_at = excluded.updated_at`, user1, now, now)
-	env.exec(t, `INSERT INTO provider_system_default_health_check_models (provider_code, model, created_at, updated_at)
-		VALUES ('gpt', 'gpt-4o-personal', ?, ?)`, now, now)
-
 	env.login(t, "user1", "user-pass", "user")
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cu-1",
 		`{"expectedUpdatedAt":"`+env.updatedAtOf(t, "cu-1")+`","status":"disabled"}`)
 	if code != http.StatusOK {
 		t.Fatalf("disable own model: %d %v", code, patched)
 	}
-	if dataMap(t, patched)["defaultHealthCheckModelCleared"] != true {
-		t.Fatalf("cleared flag missing: %v", patched)
-	}
-	if got := env.preferenceCount(t, `SELECT COUNT(*) FROM provider_default_health_check_models WHERE system_account_id = ?`, user1); got != 0 {
-		t.Fatalf("personal preference must be cleared: %d", got)
-	}
-	// Personal transitions never clear the system default.
-	if got := env.preferenceCount(t, `SELECT COUNT(*) FROM provider_system_default_health_check_models WHERE provider_code = 'gpt' AND model = 'gpt-4o-personal'`); got != 1 {
-		t.Fatalf("system default must survive a personal patch: %d", got)
-	}
-
-	// A transition shadowed by the built-in gpt-4o cleans nothing.
-	env.login(t, "root", "root-pass", "super_admin")
-	env.exec(t, `INSERT INTO provider_system_default_health_check_models (provider_code, model, created_at, updated_at)
-		VALUES ('gpt', 'gpt-4o', ?, ?)
-		ON CONFLICT(provider_code) DO UPDATE SET model = excluded.model, updated_at = excluded.updated_at`, now, now)
-	code, global := env.do(t, http.MethodPatch, "/__aisys__/api/providers/gpt/models/cu-2",
-		`{"expectedUpdatedAt":"`+env.updatedAtOf(t, "cu-2")+`","status":"disabled"}`)
-	if code != http.StatusOK {
-		t.Fatalf("disable global model: %d %v", code, global)
-	}
-	if _, exists := dataMap(t, global)["defaultHealthCheckModelCleared"]; exists {
-		t.Fatalf("built-in shadow must keep the reference: %v", global)
-	}
-	if got := env.preferenceCount(t, `SELECT COUNT(*) FROM provider_system_default_health_check_models WHERE provider_code = 'gpt' AND model = 'gpt-4o'`); got != 1 {
-		t.Fatalf("shadowed system default must survive: %d", got)
+	if _, exists := dataMap(t, patched)["defaultHealthCheckModelCleared"]; exists {
+		t.Fatalf("retired cleanup must stay silent: %v", patched)
 	}
 }
 
@@ -407,7 +374,7 @@ func TestProvidersPatchBuiltInModel(t *testing.T) {
 		t.Fatalf("built-in patch result: %v", result)
 	}
 	var source string
-	if err := env.db.QueryRow(`SELECT source FROM provider_model_catalog WHERE id = 'cat-1'`).Scan(&source); err != nil {
+	if err := env.db.QueryRow(`SELECT source FROM models WHERE id = 'cat-1'`).Scan(&source); err != nil {
 		t.Fatal(err)
 	}
 	if source != "manual-visibility-override" {
@@ -424,7 +391,7 @@ func TestProvidersPatchBuiltInModel(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("reprice built-in: %d %v", code, repriced)
 	}
-	if err := env.db.QueryRow(`SELECT source FROM provider_model_catalog WHERE id = 'cat-1'`).Scan(&source); err != nil {
+	if err := env.db.QueryRow(`SELECT source FROM models WHERE id = 'cat-1'`).Scan(&source); err != nil {
 		t.Fatal(err)
 	}
 	if source != "manual-override" {
@@ -519,7 +486,9 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 	// verbatim message.
 	env.login(t, "root", "root-pass", "super_admin")
 	env.exec(t, `INSERT INTO accounts (id, system_account_id, name) VALUES ('acc-1', 'sys-1', 'A1')`)
-	env.exec(t, `INSERT INTO account_supported_models (account_id, provider_code, model) VALUES ('acc-1', 'gpt', 'gpt-4o')`)
+	// 绑定关系引用被删行 cu-2（global gpt-4o 自定义行）的 models.id。
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id)
+		SELECT 'acc-1', id FROM models WHERE id = 'cu-2'`)
 	code, bound := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-2", "")
 	if code != http.StatusConflict {
 		t.Fatalf("bound delete: %d %v", code, bound)
@@ -528,8 +497,9 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 		t.Fatalf("binding message: %v", bound)
 	}
 	// Mapping bindings extend the message.
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, source_model, upstream_model) VALUES ('acc-1', 'gpt-4o', 'up')`)
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, source_model, upstream_model) VALUES ('acc-1', 'src', 'gpt-4o')`)
+	env.exec(t, `INSERT INTO account_entry_mappings (id, account_id, source_model) VALUES ('acc-map-src', 'acc-1', 'gpt-4o')`)
+	env.exec(t, `INSERT INTO account_entry_mappings (id, account_id, source_model, target_model_id)
+		SELECT 'acc-map-up', 'acc-1', 'src', id FROM models WHERE id = 'cu-2'`)
 	code, bound = env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-2", "")
 	if code != http.StatusConflict || bound["message"] != "模型已绑定 AI 账户，不能删除；请先从1 个账户支持模型、1 个账户映射下游模型、1 个账户映射上游模型中移除后再删除" {
 		t.Fatalf("mapping binding message: %v", bound)
@@ -543,16 +513,13 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 		t.Fatalf("delete-me create: %d %v", code, created)
 	}
 	const now = "2026-01-01T00:00:00.000Z"
-	env.exec(t, `INSERT INTO provider_system_default_health_check_models (provider_code, model, created_at, updated_at)
-		VALUES ('gpt', 'delete-me', ?, ?)`, now, now)
+	_ = now
 	deleteID := dataMap(t, created)["id"].(string)
 	code, deleted = env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/"+deleteID, "")
 	if code != http.StatusOK || dataMap(t, deleted)["deleted"] != true {
 		t.Fatalf("delete-me delete: %d %v", code, deleted)
 	}
-	if got := env.preferenceCount(t, `SELECT COUNT(*) FROM provider_system_default_health_check_models WHERE provider_code = 'gpt' AND model = 'delete-me'`); got != 0 {
-		t.Fatalf("system default must be cleared on delete: %d", got)
-	}
+	// 偏好表随设计 §8.11 退役：delete-me 清理为 no-op，无行可断言。
 
 	// Unknown id.
 	code, unknown := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/custom_model_nope", "")
@@ -583,10 +550,10 @@ func TestProvidersPutDefaultHealthCheckModel(t *testing.T) {
 	if data["providerCode"] != "gpt" || data["defaultHealthCheckModel"] != "gpt-4o" {
 		t.Fatalf("save payload: %v", data)
 	}
-	// The overlay picks the new preference up.
+	// 偏好表退役：overlay（defaultHealthCheckModel）恒空形状。
 	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt", "")
-	if code != http.StatusOK || dataMap(t, detail)["defaultHealthCheckModel"] != "gpt-4o" {
-		t.Fatalf("overlay after save: %d %v", code, detail)
+	if code != http.StatusOK || dataMap(t, detail)["defaultHealthCheckModel"] != "" {
+		t.Fatalf("overlay after save (retired storage): %d %v", code, detail)
 	}
 
 	// Invalid selections.
@@ -616,9 +583,7 @@ func TestProvidersPutDefaultHealthCheckModel(t *testing.T) {
 	if code != http.StatusOK || dataMap(t, system)["defaultHealthCheckModel"] != "gpt-4o-mini" {
 		t.Fatalf("system default save: %d %v", code, system)
 	}
-	if got := env.preferenceCount(t, `SELECT COUNT(*) FROM provider_system_default_health_check_models WHERE provider_code = 'gpt' AND model = 'gpt-4o-mini'`); got != 1 {
-		t.Fatalf("system default row: %d", got)
-	}
+	// 偏好表随设计 §8.11 退役：系统默认写为 no-op，无行可断言。
 	// The user fork ignores viewScope=admin and writes a personal row.
 	env.login(t, "user1", "user-pass", "user")
 	code, userFork := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?viewScope=admin", `{"model":"gpt-4o-mini"}`)

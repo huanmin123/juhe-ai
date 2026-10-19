@@ -159,18 +159,8 @@ func TestBuildBasePayloadAuthorizedRow(t *testing.T) {
 // TestRowMappingHelpers 覆盖行映射辅助函数的分支。
 func TestRowMappingHelpers(t *testing.T) {
 	row := managementRow{}
-	// clientCompatibilityValue。
-	if got := clientCompatibilityValue(row, false); got != nil {
-		t.Fatalf("无配置返回 nil: %v", got)
-	}
-	row.clientCompatibility = sql.NullString{String: "codex_responses", Valid: true}
-	if got := clientCompatibilityValue(row, false); got != "codex_responses" {
-		t.Fatalf("owner 行取自身配置: %v", got)
-	}
-	row.sourceClientCompatibility = sql.NullString{String: "claude_code", Valid: true}
-	if got := clientCompatibilityValue(row, true); got != "claude_code" {
-		t.Fatalf("authorized 行取来源配置: %v", got)
-	}
+	// clientCompatibility 物理列随供应商解耦退役（设计 §8.11）：配置值恒 nil，
+	// 兼容键全量由派生函数回退（clientCompatibilityValue 已删除）。
 	// resolvedProxyProfileID。
 	if got := resolvedProxyProfileID(row, true); got != "" {
 		t.Fatalf("authorized 无来源代理为空: %s", got)

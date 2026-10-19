@@ -211,25 +211,25 @@ func TestW9DListAndReplaceScriptedFailureArms(t *testing.T) {
 	if _, err := list.ListProviderModels(ctx, "openai", false); err == nil {
 		t.Fatal("list query failure must fail")
 	}
-	// 列表 Scan 失败（driver 值类型不兼容）。
-	scan := w9dOpen(t, []w9dStep{{cols: []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}, rows: [][]driver.Value{{"openai", "m", "active", "", "bad-int", "[]", nil, nil, nil}}}})
+	// 列表 Scan 失败（driver 值类型不兼容；8 列投影，catalog_order 位置注入坏值）。
+	scan := w9dOpen(t, []w9dStep{{cols: []string{"a", "b", "c", "d", "e", "f", "g", "h"}, rows: [][]driver.Value{{"openai", "m", "active", "bad-int", "[]", nil, nil, nil}}}})
 	if _, err := scan.ListProviderModels(ctx, "openai", false); err == nil {
 		t.Fatal("list scan failure must fail")
 	}
-	// 目录替换：CAS UPDATE 失败 / DELETE 失败 / INSERT 失败 / COMMIT 失败。
-	casUpd := "UPDATE providers SET updated_at=?"
-	del := "DELETE FROM provider_model_catalog"
-	ins := "INSERT INTO provider_model_catalog"
+	// 目录替换：CAS 门（vendors 只读 SELECT）失败/失配 / DELETE 失败 / INSERT 失败 / COMMIT 失败。
+	casGate := "SELECT updated_at FROM vendors"
+	del := "DELETE FROM models"
+	ins := "INSERT INTO models"
 	model := CatalogModel{ID: "i", Model: "m", Status: "active", Source: "s", SupportedAPIProtocolsJSON: "[]"}
 	cases := []struct {
 		name  string
 		steps []w9dStep
 	}{
-		{"cas update", []w9dStep{{beginErr: nil}, {contains: casUpd, execErr: w9dErrBoom}}},
-		{"cas mismatch", []w9dStep{{beginErr: nil}, {contains: casUpd, affected: 0}}},
-		{"delete", []w9dStep{{beginErr: nil}, {contains: casUpd, affected: 1}, {contains: del, execErr: w9dErrBoom}}},
-		{"insert", []w9dStep{{beginErr: nil}, {contains: casUpd, affected: 1}, {contains: del}, {contains: ins, execErr: w9dErrBoom}}},
-		{"commit", []w9dStep{{beginErr: nil}, {contains: casUpd, affected: 1}, {contains: del}, {contains: ins}, {commitErr: w9dErrBoom}}},
+		{"cas gate error", []w9dStep{{beginErr: nil}, {contains: casGate, rowsErr: w9dErrBoom}}},
+		{"cas mismatch", []w9dStep{{beginErr: nil}, {contains: casGate, cols: []string{"updated_at"}, rows: nil}}},
+		{"delete", []w9dStep{{beginErr: nil}, {contains: casGate, cols: []string{"updated_at"}, rows: [][]driver.Value{{"r"}}}, {contains: del, execErr: w9dErrBoom}}},
+		{"insert", []w9dStep{{beginErr: nil}, {contains: casGate, cols: []string{"updated_at"}, rows: [][]driver.Value{{"r"}}}, {contains: del}, {contains: ins, execErr: w9dErrBoom}}},
+		{"commit", []w9dStep{{beginErr: nil}, {contains: casGate, cols: []string{"updated_at"}, rows: [][]driver.Value{{"r"}}}, {contains: del}, {contains: ins}, {commitErr: w9dErrBoom}}},
 	}
 	for _, tc := range cases {
 		store := w9dOpen(t, tc.steps)

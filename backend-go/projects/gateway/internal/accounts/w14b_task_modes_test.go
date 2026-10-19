@@ -89,9 +89,9 @@ func TestW14BTargetModelModesWithMapping(t *testing.T) {
 	env.exec(t, `INSERT INTO provider_model_catalog (provider_code, model, mode, release_date, supported_api_protocols_json, status, catalog_visible)
 		VALUES ('gpt', 'gpt-4o-mini', NULL, '2024-07-18', '["chat_completions","responses"]', 'active', 1),
 		       ('gpt', 'custom-a', NULL, '2024-06-01', '["chat_completions"]', 'active', 1)`)
-	// 账户模型映射：gpt-4o-mini → custom-a（触发映射解析 + 目录缓存臂）。
-	env.exec(t, `INSERT INTO account_model_mappings (account_id, provider_code, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, created_at, updated_at)
-		VALUES ('acc-w14b-map', 'gpt', 'gpt-4o-mini', 'chat_completions', 'custom-a', 'chat_completions', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')`)
+	// 账户模型映射：gpt-4o-mini → custom-a（触发映射解析 + 目录缓存臂）；
+	// B4 W2 目标形态直插。
+	env.seedEntryMapping(t, "acc-w14b-map", "generic_openai_v1", "gpt-4o-mini", "chat_completions", "custom-a", "chat_completions", 1)
 
 	gotOptions, err := env.store.FindManualTestOptionsContext(ctx, "acc-w14b-map", &scope)
 	if err != nil || gotOptions == nil {

@@ -107,7 +107,9 @@ func (s *Service) LoadBatchEditContext(ctx context.Context, accountIDs []string,
 		scopeClause = " AND system_account_id = ?"
 		args = append(args, scoped)
 	}
-	columns := `id, config_revision, system_account_id, provider_code,
+	// B4 W2 行为键过渡投影（同 patch.go）：行为键读 COALESCE(vendor, provider)。
+	columns := `id, config_revision, system_account_id,
+		COALESCE(NULLIF(vendor_code, ''), provider_code, '') AS provider_code,
 		provider_protocol_profile_id, protocol_code, protocol_version, type`
 	if fieldSet["supportedEndpointModes"] {
 		columns += ", credentials_encrypted"
@@ -240,8 +242,9 @@ func (s *Service) LoadBatchSupportedModels(ctx context.Context, q accountscore.Q
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT account_id, model FROM `+s.store.Table("account_supported_models")+`
-		WHERE account_id IN (`+accountscore.Placeholders(len(ids))+`) ORDER BY account_id ASC, model ASC`), accountscore.AnySlice(ids)...)
+	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT account_supported_models.account_id, models.upstream_model FROM `+s.store.Table("account_supported_models")+` account_supported_models
+		INNER JOIN `+s.store.Table("models")+` models ON models.id = account_supported_models.model_id
+		WHERE account_supported_models.account_id IN (`+accountscore.Placeholders(len(ids))+`) ORDER BY account_id ASC, models.upstream_model ASC`), accountscore.AnySlice(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -263,11 +266,19 @@ func (s *Service) LoadBatchModelMappings(ctx context.Context, q accountscore.Que
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT account_id, source_model, source_endpoint_family,
-			upstream_model, upstream_endpoint_family, enabled
-		FROM `+s.store.Table("account_model_mappings")+`
-		WHERE account_id IN (`+accountscore.Placeholders(len(ids))+`)
-		ORDER BY account_id ASC, source_model ASC, source_endpoint_family ASC`), accountscore.AnySlice(ids)...)
+	// account_entry_mappings 目标形态（B4 W2，设计 §5.1/§8）：upstream 名经
+	// target_model_id JOIN models.upstream_model 解析；连接只携带账户内自然键
+	// preset code（连接/映射行 ID 永不出导出面）。
+	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT account_entry_mappings.account_id, account_entry_mappings.source_model,
+			account_entry_mappings.source_endpoint_family, models.upstream_model,
+			account_entry_mappings.target_endpoint_family, account_entry_mappings.enabled,
+			account_connections.connection_preset_code
+		FROM `+s.store.Table("account_entry_mappings")+` account_entry_mappings
+		INNER JOIN `+s.store.Table("models")+` models ON models.id = account_entry_mappings.target_model_id
+		INNER JOIN `+s.store.Table("account_connections")+` account_connections
+			ON account_connections.id = account_entry_mappings.target_connection_id
+		WHERE account_entry_mappings.account_id IN (`+accountscore.Placeholders(len(ids))+`)
+		ORDER BY account_entry_mappings.account_id ASC, account_entry_mappings.source_model ASC, account_entry_mappings.source_endpoint_family ASC`), accountscore.AnySlice(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +288,7 @@ func (s *Service) LoadBatchModelMappings(ctx context.Context, q accountscore.Que
 		var mapping accountscore.ModelMapping
 		var enabled int64
 		if err := rows.Scan(&accountID, &mapping.SourceModel, &mapping.SourceEndpointFamily,
-			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled); err != nil {
+			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled, &mapping.TargetConnectionPresetCode); err != nil {
 			return nil, err
 		}
 		mapping.Enabled = BoolPtr(enabled == 1)
@@ -635,7 +646,8 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 		args = append(args, scoped)
 	}
 	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT accounts.id, accounts.config_revision, accounts.system_account_id,
-			accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code,
+			COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '') AS provider_code,
+			accounts.provider_protocol_profile_id, accounts.protocol_code,
 			accounts.protocol_version, accounts.type, accounts.status, accounts.credentials_encrypted,
 			accounts.proxy_profile_id, accounts.balance_query_enabled, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
@@ -1438,10 +1450,11 @@ func NormalizeBatchModelMappings(value any) ([]accountscore.ModelMapping, error)
 			return nil, &accountscore.ValidationError{Message: "账户 modelMappings 条目必须是对象"}
 		}
 		mapping := accountscore.ModelMapping{
-			SourceModel:            strings.TrimSpace(textString(record["sourceModel"])),
-			SourceEndpointFamily:   strings.TrimSpace(textString(record["sourceEndpointFamily"])),
-			UpstreamModel:          strings.TrimSpace(textString(record["upstreamModel"])),
-			UpstreamEndpointFamily: strings.TrimSpace(textString(record["upstreamEndpointFamily"])),
+			SourceModel:                strings.TrimSpace(textString(record["sourceModel"])),
+			SourceEndpointFamily:       strings.TrimSpace(textString(record["sourceEndpointFamily"])),
+			UpstreamModel:              strings.TrimSpace(textString(record["upstreamModel"])),
+			UpstreamEndpointFamily:     strings.TrimSpace(textString(record["upstreamEndpointFamily"])),
+			TargetConnectionPresetCode: strings.TrimSpace(textString(record["targetConnectionPresetCode"])),
 		}
 		if mapping.SourceModel == "" || mapping.SourceEndpointFamily == "" ||
 			mapping.UpstreamModel == "" || mapping.UpstreamEndpointFamily == "" {
@@ -1464,6 +1477,15 @@ func NormalizeBatchModelMappings(value any) ([]accountscore.ModelMapping, error)
 		}
 		mapping.Enabled = &enabled
 		out = append(out, mapping)
+	}
+	// B4 W2（设计 §8）：非恒等条目必须提交 targetConnectionPresetCode
+	// （写入侧按 (账户, preset) 解析 enabled 连接行）；缺省按显式 400 拒绝，
+	// 不造无 preset 的兼容层。恒等条目已按既有契约丢弃，不要求；重复 source
+	// 与形态校验保持既有优先级，preset 校验在整表去重后统一执行。
+	for _, mapping := range out {
+		if mapping.TargetConnectionPresetCode == "" {
+			return nil, &accountscore.ValidationError{Message: "账户 modelMappings 条目必须包含 targetConnectionPresetCode"}
+		}
 	}
 	return out, nil
 }

@@ -317,12 +317,12 @@ func TestSQLGroupUsageAccessOwnerAuthorizedAndDisabled(t *testing.T) {
 	}
 
 	// owner 短路。groups.provider_code 列已随供应商解耦退役（设计 §8），
-	// ProviderCode 过渡字段恒空串。
+	// ProviderCode 过渡字段已随 B4 W2 删除。
 	owner, err := models.ResolveGroupUsageAccessMetadata(ctx, "g1", "sys_owner")
 	if err != nil {
 		t.Fatalf("owner read: %v", err)
 	}
-	if owner == nil || owner.GroupAccessType != GroupAccessTypeOwner || owner.ProviderCode != "" {
+	if owner == nil || owner.GroupAccessType != GroupAccessTypeOwner {
 		t.Fatalf("owner access mismatch: %+v", owner)
 	}
 	// 授权访问。

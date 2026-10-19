@@ -58,7 +58,11 @@ func (s *Store) CheckContract(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return ErrOwnerGate
 	}
-	for _, table := range []string{"accounts", "account_supported_models", "account_model_mappings", "account_tags", "account_tag_bindings", "group_accounts", "account_api_key_runtime_states"} {
+	// account_entry_mappings 是映射聚合的现行载体（供应商与上游协议面重构
+	// 设计 §5.1；旧 account_model_mappings 表已随 A 路线撤除，fresh DDL 不再
+	// 建表）。account_connections/account_endpoint_modes 是映射 target 解析的
+	// 连接事实源（§2.1），与聚合写路径同批纳入契约校验。
+	for _, table := range []string{"accounts", "account_supported_models", "account_entry_mappings", "account_connections", "account_endpoint_modes", "account_tags", "account_tag_bindings", "group_accounts", "account_api_key_runtime_states"} {
 		if _, err := s.db.ExecContext(ctx, "SELECT 1 FROM "+s.table(table)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify accounts relation %s: %w", table, err)
 		}

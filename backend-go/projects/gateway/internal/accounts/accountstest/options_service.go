@@ -314,15 +314,23 @@ func SupportedEndpointModesFromCredentials(credentials accountscore.Credentials)
 // write-path projection
 // （原根包私有方法 loadTestAccountModelMappings，根包测试经由 Store 转发访问）.
 func (s *Service) LoadTestAccountModelMappings(ctx context.Context, q accountscore.Queryer, accountID, model string) ([]accountscore.ModelMapping, error) {
-	query := `SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
-		FROM ` + s.store.Table("account_model_mappings") + `
-		WHERE account_id = ?`
+	// account_entry_mappings 目标形态（B4 W2，设计 §5.1）：upstream 名经
+	// target_model_id JOIN models.upstream_model 解析；连接只携带账户内自然键
+	// preset code（§8）。
+	query := `SELECT account_entry_mappings.source_model, account_entry_mappings.source_endpoint_family,
+			models.upstream_model, account_entry_mappings.target_endpoint_family, account_entry_mappings.enabled,
+			account_connections.connection_preset_code
+		FROM ` + s.store.Table("account_entry_mappings") + ` account_entry_mappings
+		INNER JOIN ` + s.store.Table("models") + ` models ON models.id = account_entry_mappings.target_model_id
+		INNER JOIN ` + s.store.Table("account_connections") + ` account_connections
+			ON account_connections.id = account_entry_mappings.target_connection_id
+		WHERE account_entry_mappings.account_id = ?`
 	args := []any{accountID}
 	if model != "" {
-		query += ` AND source_model = ?`
+		query += ` AND account_entry_mappings.source_model = ?`
 		args = append(args, model)
 	}
-	query += ` ORDER BY source_endpoint_family ASC, source_model ASC`
+	query += ` ORDER BY account_entry_mappings.source_endpoint_family ASC, account_entry_mappings.source_model ASC`
 	rows, err := q.QueryContext(ctx, s.store.Bind(query), args...)
 	if err != nil {
 		return nil, err
@@ -333,7 +341,7 @@ func (s *Service) LoadTestAccountModelMappings(ctx context.Context, q accountsco
 		var mapping accountscore.ModelMapping
 		var enabled sql.NullInt64
 		if err := rows.Scan(&mapping.SourceModel, &mapping.SourceEndpointFamily,
-			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled); err != nil {
+			&mapping.UpstreamModel, &mapping.UpstreamEndpointFamily, &enabled, &mapping.TargetConnectionPresetCode); err != nil {
 			return nil, err
 		}
 		if enabled.Valid {

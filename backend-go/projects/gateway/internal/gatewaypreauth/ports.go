@@ -171,7 +171,6 @@ type CodexContextStateInput struct {
 	SystemAccountID string
 	APIKeyID        string
 	GroupID         string
-	GroupAccess     gatewayruntimecache.GroupUsageAccessMetadata
 	Signal          context.Context
 }
 
@@ -185,7 +184,6 @@ type CodexCompactPreflightInput struct {
 	SystemAccountID            string
 	APIKeyID                   string
 	GroupID                    string
-	GroupAccess                gatewayruntimecache.GroupUsageAccessMetadata
 	RequestClientCompatibility string
 	DispatchAccounts           []gatewayruntimecache.OpenAIAccountSecret
 	ActiveGatewaySettings      gatewayruntimecache.GatewaySettings
@@ -501,11 +499,11 @@ type ResponseSink interface {
 
 // GatewayModelBinding 是一次 /v1/models 成员装载的激活绑定投影：绑定行的激
 // 活分组（设计 6.4 的绑定输入；canonical 定义在本包，gatewayresponse 以别名
-// 引用）。供应商解耦后绑定行不再携带 provider 维度（设计 §8），ProviderCode
-// 为过渡字段恒空串，待消费方切片一并移除。
+// 引用）。供应商解耦后绑定行不携带 provider 维度（设计 §8，B4 W2 删除过渡
+// ProviderCode 字段）：全部启用绑定均有效，目录元数据字典改按并集条目的成员
+// vendor 集装载（chain_gatewaykeymodels.go）。
 type GatewayModelBinding struct {
-	GroupID      string
-	ProviderCode string
+	GroupID string
 }
 
 // ModelsResponseInput mirrors the models response input.
@@ -514,8 +512,8 @@ type ModelsResponseInput struct {
 	Res          GatewayResponseWriter
 	AuditCapture AuditCaptureContext
 	UsageContext GatewayFailureUsageContext
-	// Bindings 是该 API Key 激活绑定的 (groupID, providerCode) 对（
-	// gatewayModelsBindings 产出），替代原 ProviderCodes 成员过滤输入。
+	// Bindings 是该 API Key 激活绑定的分组 ID 投影（gatewayModelsBindings
+	// 产出），替代原 ProviderCodes 成员过滤输入。
 	Bindings []GatewayModelBinding
 	// Context 携带请求 ctx，贯穿并集缓存等待与数据面装载（设计 4.6.1）；
 	// 由 preflight 的 ctx 传入，不以 context.Background() 代替请求取消。

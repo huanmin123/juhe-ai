@@ -29,11 +29,24 @@ func w14bSeedCreateProvider(t *testing.T, env *testEnv) {
 }
 
 func w14bValidCreateInput() CreateInput {
+	healthModel := "gpt-4o-mini"
+	healthMode := "chat_json"
+	healthPreset := "generic_openai_v1"
 	return CreateInput{
 		ProviderCode: "openai", ProviderProtocolProfileID: openAICompatibleProfileID,
 		Name: "w14b-create", AccountType: "api_key",
 		Credentials:     Credentials{"api_key": "sk-w14b-create-123", "base_url": "https://api.openai.com/v1"},
 		SupportedModels: []string{"gpt-4o-mini"},
+		// B1 断点批（设计 §8）：连接集合与健康检查三件套显式提交。
+		Connections: []ConnectionInput{{
+			ConnectionPresetCode: healthPreset,
+			BaseURL:              "https://api.openai.com/v1",
+			EndpointModes:        []string{"chat_json", "chat_sse"},
+			Enabled:              true,
+		}},
+		HealthCheckConnectionPresetCode: &healthPreset,
+		HealthCheckEndpointMode:         &healthMode,
+		HealthCheckModel:                &healthModel,
 	}
 }
 
