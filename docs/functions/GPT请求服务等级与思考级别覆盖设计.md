@@ -228,6 +228,8 @@ interface CodexModelCapabilities {
 
 成本计算只消费 `billed_service_tier`。Priority 与 Flex 平级，均使用模型精确档位价格；模型未提供对应档位精确价格时保持未定价，禁止按标准价格倍率猜测。普通缓存写入与 1 小时缓存写入分别选择各自的档位价格，不能用普通缓存写入档位价格替代 1 小时价格。
 
+`service_tier_override=default` 的删档计费口径裁决（2026-10-19）：该覆盖值无条件删除客户端 `service_tier`、强制回标准档，对目录未声明服务档位的模型即从 priority 价回落为标准价；该结果与实际上游执行档位一致、方向为降价，作为长期计费契约保留，不额外公告，代码不调整。
+
 ### 5.2 Codex attestation 边界
 
 - `x-oai-attestation` 只允许 GPT OAuth Codex 适配链路透传客户端当前请求原值。
