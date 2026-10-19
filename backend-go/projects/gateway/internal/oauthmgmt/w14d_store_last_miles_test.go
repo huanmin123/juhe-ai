@@ -70,11 +70,10 @@ func TestW14dRotationExpiresAtWriteArm(t *testing.T) {
 
 	// A canonical expires_at rides onto the rotated row.
 	result, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w14d-exp",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
+		AccountID:              "w14d-exp",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
 		Credentials: map[string]any{
 			"access_token": "brand-new", "refresh_token": "r2",
 			"expires_at": "2030-01-01T00:00:00Z",

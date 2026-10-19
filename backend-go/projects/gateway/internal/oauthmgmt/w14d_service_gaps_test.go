@@ -85,13 +85,12 @@ func TestW14dRotationNoopAndExpiresValidation(t *testing.T) {
 
 	// An invalid expires_at is rejected before the transaction.
 	_, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w14d-noop",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:                       map[string]any{"access_token": "a", "expires_at": "yesterday"},
-		Access:                            AccessScope{ViewerID: adminID, IsAdmin: true},
+		AccountID:              "w14d-noop",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		Credentials:            map[string]any{"access_token": "a", "expires_at": "yesterday"},
+		Access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
 	})
 	if err == nil || err.Error() != "OAuth 凭据 expires_at 必须是带 Z 或数值 offset 的 RFC3339 时间" {
 		t.Fatalf("expires validation: %v", err)
@@ -103,13 +102,12 @@ func TestW14dRotationNoopAndExpiresValidation(t *testing.T) {
 		t.Fatalf("find rotation account: %v %v", current, err)
 	}
 	result, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "w14d-noop",
-		ExpectedConfigRevision:            current.ConfigRevision,
-		ExpectedProviderCode:              "gpt",
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:                       current.Credentials,
-		Access:                            AccessScope{ViewerID: adminID, IsAdmin: true},
+		AccountID:              "w14d-noop",
+		ExpectedConfigRevision: current.ConfigRevision,
+		ExpectedProviderCode:   "gpt",
+		ExpectedAccountType:    "oauth",
+		Credentials:            current.Credentials,
+		Access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
 	})
 	if err != nil {
 		t.Fatalf("no-op rotation: %v", err)

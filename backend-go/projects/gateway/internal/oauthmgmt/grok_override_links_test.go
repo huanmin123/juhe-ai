@@ -132,13 +132,12 @@ func TestGrokOverrideRotateLink(t *testing.T) {
 	revision := int64(1)
 	rotate := func(credentials map[string]any) (*RotationResult, error) {
 		result, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-			AccountID:                         "grok-ov-rot",
-			ExpectedConfigRevision:            revision,
-			ExpectedProviderCode:              ProviderXAI,
-			ExpectedAccountType:               "oauth",
-			ExpectedProviderProtocolProfileID: ProfileXAIOpenAIV1,
-			Credentials:                       credentials,
-			Access:                            AccessScope{IsAdmin: true},
+			AccountID:              "grok-ov-rot",
+			ExpectedConfigRevision: revision,
+			ExpectedProviderCode:   ProviderXAI,
+			ExpectedAccountType:    "oauth",
+			Credentials:            credentials,
+			Access:                 AccessScope{IsAdmin: true},
 		})
 		if err == nil && result != nil && result.Changed {
 			revision = result.ConfigRevision
@@ -149,7 +148,7 @@ func TestGrokOverrideRotateLink(t *testing.T) {
 	// 合法值：覆盖字段随轮换凭据落库保留，出站生效。
 	result, err := rotate(map[string]any{
 		"access_token": "a2", "refresh_token": "r2", "base_url": GrokOAuthBaseURL,
-		"expires_at": "2026-01-02T03:04:05.000Z",
+		"expires_at":            "2026-01-02T03:04:05.000Z",
 		"service_tier_override": "priority", "reasoning_effort_override": "max",
 	})
 	if err != nil || result == nil || !result.Changed {
@@ -221,11 +220,10 @@ func TestGrokOverrideRotateLink(t *testing.T) {
 	env.w14dSeedRotatableAccountWithCreds(t, "grok-ov-anth", "anthropic", ProfileAnthropicV1, "anthropic", "v1",
 		map[string]any{"access_token": "ant-a", "refresh_token": "ant-r"}, true)
 	if _, err := env.store.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                         "grok-ov-anth",
-		ExpectedConfigRevision:            1,
-		ExpectedProviderCode:              ProviderAnthropic,
-		ExpectedAccountType:               "oauth",
-		ExpectedProviderProtocolProfileID: ProfileAnthropicV1,
+		AccountID:              "grok-ov-anth",
+		ExpectedConfigRevision: 1,
+		ExpectedProviderCode:   ProviderAnthropic,
+		ExpectedAccountType:    "oauth",
 		Credentials: map[string]any{
 			"access_token": "ant-a2", "refresh_token": "ant-r2",
 			"service_tier_override": "priority",
