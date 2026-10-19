@@ -518,11 +518,12 @@ var geminiOAuthMetadataKeys = []string{
 	"project_id", "tier_id", "base_url",
 }
 
-// geminiOAuthContextType mirrors geminiOAuthContextType.
-func geminiOAuthContextType(credentials Credentials) string {
-	switch credentialText(credentials["oauth_type"]) {
-	case "code_assist", "google_one", "ai_studio":
-		return credentialText(credentials["oauth_type"])
+// geminiOAuthContextType mirrors geminiOAuthContextType. oauth_type 判定读列
+// 优先（#B4 ⑪，judgmentGoogleOAuthType）：凭据键回落兼容迁移窗口存量行；
+// 列与键都无三值判定值时保留原 base_url/project_id/client_id 启发式。
+func geminiOAuthContextType(oauthTypeColumn string, credentials Credentials) string {
+	if judgment := judgmentGoogleOAuthType(oauthTypeColumn, credentials); judgment != "" {
+		return judgment
 	}
 	baseURL := credentialText(credentials["base_url"])
 	if strings.Contains(baseURL, "generativelanguage.googleapis.com") {
@@ -566,11 +567,13 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 		configRevision  int64
 		systemAccountID string
 		credentials     string
+		oauthType       string
 		authorizationID sql.NullString
 		sourceAccountID sql.NullString
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.credentials_encrypted,
+			COALESCE(accounts.oauth_type, '') AS oauth_type,
 			accounts.authorization_instance_authorization_id,
 			accounts.authorization_instance_source_account_id
 		FROM `+s.table("accounts")+` accounts
@@ -580,7 +583,7 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 			AND accounts.type = 'google_oauth'`+scopeClause+`
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID, &row.credentials,
-		&row.authorizationID, &row.sourceAccountID)
+		&row.oauthType, &row.authorizationID, &row.sourceAccountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -599,7 +602,7 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 		return nil, err
 	}
 	metadata := projectCredentialKeys(credentials, geminiOAuthMetadataKeys)
-	oauthType := geminiOAuthContextType(credentials)
+	oauthType := geminiOAuthContextType(row.oauthType, credentials)
 	context := &OAuthReauthorizationContext{
 		ID:             row.id,
 		ConfigRevision: row.configRevision,

@@ -152,9 +152,6 @@ func TestW14BFaultInjectedStoreArms(t *testing.T) {
 		t.Fatal("DeleteTag 应传播错误")
 	}
 	// 手动测试选项链。
-	if _, err := store.protocolProviderCodes(ctx, "openai", "v1"); err == nil {
-		t.Fatal("protocolProviderCodes 应传播错误")
-	}
 	if _, err := store.listBuiltInTestCatalogOptions(ctx, []string{"gpt"}, ManualTestOptionsQuery{}); err == nil {
 		t.Fatal("listBuiltInTestCatalogOptions 应传播错误")
 	}

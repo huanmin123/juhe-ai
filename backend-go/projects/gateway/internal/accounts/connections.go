@@ -53,6 +53,31 @@ func accountOAuthTypeForRegistry(accountType, oauthTypeColumn string, credential
 	return ""
 }
 
+// googleOAuthTypeValues 是 §1.1 registry 的 oauth_type 三值集（判定值域，
+// 与 contracts OAuth type 常量同源）。
+var googleOAuthTypeValues = map[string]bool{
+	contracts.OAuthTypeCodeAssist: true,
+	contracts.OAuthTypeGoogleOne:  true,
+	contracts.OAuthTypeAIStudio:   true,
+}
+
+// judgmentGoogleOAuthType 提取 google_oauth 判定值（#B4 ⑪ 读面切列）：判定列
+// 三值优先、credentials["oauth_type"] 三值回落。回落只服务两类形态——迁移
+// 窗口存量行（B1 前创建的行列 NULL，回填归迁移命令正式执行）与「refresh
+// 删键」切片落地后的凭据键缺省形态；收口前提 = 存量回填迁移执行 + 各读面
+// 切列完成，届时可删回落。两源皆无三值时返回空串，由调用方按各自启发式兜底。
+func judgmentGoogleOAuthType(oauthTypeColumn string, credentials Credentials) string {
+	if text := strings.TrimSpace(oauthTypeColumn); googleOAuthTypeValues[text] {
+		return text
+	}
+	if text, ok := credentials["oauth_type"].(string); ok {
+		if text = strings.TrimSpace(text); googleOAuthTypeValues[text] {
+			return text
+		}
+	}
+	return ""
+}
+
 // connectorComboSurface 返回五元组在 registry 的协议面（纯媒体为空串）；
 // 未注册组合 ok=false。
 func connectorComboSurface(driver, accountType, oauthType, preset, domain string) (string, bool) {

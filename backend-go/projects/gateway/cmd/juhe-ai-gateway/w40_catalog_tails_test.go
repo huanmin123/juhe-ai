@@ -11,10 +11,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
 func TestChainCatalogScopePriority(t *testing.T) {
@@ -364,34 +362,6 @@ func TestChainListProviderModelCatalogFilterArms(t *testing.T) {
 	}
 }
 
-func TestAccountModelCatalogReaderAdapterTails(t *testing.T) {
-	// 错误臂：无 schema 库 → 查询失败原样返回（1763 错误臂）。
-	bare, err := sql.Open("sqlite", "file:w40-adapter-bare?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("open bare: %v", err)
-	}
-	t.Cleanup(func() { _ = bare.Close() })
-	bareStore, err := providers.NewStore(bare, false, time.Now)
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	if _, err := (accountModelCatalogReaderAdapter{store: bareStore}).ListAccountModelCatalog(context.Background(), "gpt", "sys", true); err == nil {
-		t.Fatal("无 schema 库必须报错")
-	}
-
-	// 成功臂：fixture 库 → 目录行投影为 facts（1768 成功路径）。
-	fixture := newChainFixture(t)
-	store, err := providers.NewStore(fixture.db, false, time.Now)
-	if err != nil {
-		t.Fatalf("new fixture store: %v", err)
-	}
-	facts, err := (accountModelCatalogReaderAdapter{store: store}).ListAccountModelCatalog(context.Background(), "openai", fixture.systemAccount, false)
-	if err != nil {
-		t.Fatalf("adapter list: %v", err)
-	}
-	for _, fact := range facts {
-		if fact.Model == "" {
-			t.Fatalf("fact 缺 model: %#v", facts)
-		}
-	}
-}
+// B4 ⑥：TestAccountModelCatalogReaderAdapterTails 随 accountModelCatalogReaderAdapter
+// 装配拆除一并删除——断言链已切 models 表身份解析（accounts/model_catalog_validation.go），
+// 端口行为由 accounts 包的目录断言测试（model_catalog_validation_test.go）钉住。

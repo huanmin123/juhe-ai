@@ -42,12 +42,6 @@ type compositionWiringGuardEntry struct {
 // 必须存在的接线清单。新增受审计约束的组合根端口时，请在这里同步加一行。
 var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 	{
-		Identifier:    "SetModelCatalogReader(",
-		Name:          "模型目录校验端口",
-		Purpose:       "把账户模型目录校验接到 model catalog 读取（compose.go accountModelCatalogReaderAdapter）",
-		MissingImpact: "账户默认模型/模型目录校验静默空转，目录数据错误不再被拦截，用户可能把不存在的模型配置成账户默认模型，直到真实请求打到上游才报错",
-	},
-	{
 		Identifier:    "SetRuntimeCooldownSettings(",
 		Name:          "rate_limited 冷却设置端口",
 		Purpose:       "账户存储从设置读取 rate_limited 运行时冷却时长（compose.go runtimeCooldownSettingsAdapter）",

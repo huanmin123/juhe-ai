@@ -458,32 +458,9 @@ func TestW2TestCatalogSourceCodes(t *testing.T) {
 	store := env.store
 	ctx := ensureCtx(context.Background())
 
-	// 基础供应商：gpt（openai/v1 档案）+ anthropic + gemini + openai 兼容供应商。
-	now := "2026-01-01T00:00:00.000Z"
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-anth', 'anthropic', 'Anthropic', 1, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('profile_anthropic_anthropic_v1', 'anthropic', 'Anthropic', 1, 'anthropic', 'v1',
-		'https://api.anthropic.com', 'm', '["api_key"]', '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-gem', 'gemini', 'Gemini', 1, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('profile_gemini_gemini_v1beta', 'gemini', 'Gemini', 1, 'gemini', 'v1beta',
-		'https://generativelanguage.googleapis.com', 'm', '["api_key"]', '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-openai-compat-w2', 'openai', 'OpenAI 兼容', 1, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('profile_openai_openai_v1_w2', 'openai', 'OpenAI 兼容', 1, 'openai', 'v1',
-		'https://api.openai.com/v1', 'm', '["api_key"]', '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('prov-off-w2', 'offprovider', '停用', 0, '[]', ?, ?)`, now, now)
-
+	// B4 ⑧：目录源码与 providers.modelCatalogSourceProviderCodes 同构单值归一
+	// （设计 §3：vendor_code 即目录归属维度，源扩展随 providers/profiles 退役
+	// 拆除）。旧 providers/profiles 聚合 fixture 不再被目录链消费，不补插。
 	t.Run("普通供应商直通", func(t *testing.T) {
 		codes, err := store.testCatalogSourceCodes(ctx, "gpt")
 		if err != nil || len(codes) != 1 || codes[0] != "gpt" {
@@ -496,42 +473,19 @@ func TestW2TestCatalogSourceCodes(t *testing.T) {
 			t.Fatalf("空供应商应返回空：%v %v", codes, err)
 		}
 	})
-	t.Run("hybrid 聚合三个协议族", func(t *testing.T) {
+	t.Run("hybrid 归一单值（目录查询恒空）", func(t *testing.T) {
+		// hybrid 不在 vendors 值域（设计 §439），源码恒为单值、models 目录行
+		// 自然为空；旧三族目录池聚合随协议子供应商源扩展拆除（§555：运行时
+		// providerCode=hybrid 引用终态清零）。
 		codes, err := store.testCatalogSourceCodes(ctx, hybridProviderCode)
-		if err != nil {
-			t.Fatalf("hybrid 源码错误：%v", err)
-		}
-		set := map[string]bool{}
-		for _, code := range codes {
-			set[code] = true
-			if code == hybridProviderCode {
-				t.Fatalf("聚合结果不应包含 hybrid 自身：%v", codes)
-			}
-		}
-		for _, expected := range []string{"gpt", "anthropic", "gemini", "openai"} {
-			if !set[expected] {
-				t.Fatalf("聚合缺少 %s：%v", expected, codes)
-			}
-		}
-		// 停用供应商不进入聚合。
-		if set["offprovider"] {
-			t.Fatalf("停用供应商不应进入聚合：%v", codes)
+		if err != nil || len(codes) != 1 || codes[0] != hybridProviderCode {
+			t.Fatalf("hybrid 源码应单值归一：%v %v", codes, err)
 		}
 	})
-	t.Run("openai 兼容聚合同协议供应商", func(t *testing.T) {
+	t.Run("openai 兼容归一单值", func(t *testing.T) {
 		codes, err := store.testCatalogSourceCodes(ctx, "openai")
-		if err != nil {
-			t.Fatalf("openai 源码错误：%v", err)
-		}
-		set := map[string]bool{}
-		for _, code := range codes {
-			set[code] = true
-		}
-		if !set["openai"] || !set["gpt"] {
-			t.Fatalf("openai 兼容聚合缺少自身或 gpt：%v", codes)
-		}
-		if set["anthropic"] {
-			t.Fatalf("openai 兼容聚合不应包含 anthropic：%v", codes)
+		if err != nil || len(codes) != 1 || codes[0] != "openai" {
+			t.Fatalf("openai 兼容源码应单值归一：%v %v", codes, err)
 		}
 	})
 

@@ -403,7 +403,8 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 
 	// The source account drifts after provisioning: the list must reflect the
 	// live source values instead of the instance's frozen snapshot.
-	env.exec(t, `INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
+	// B4 ⑨：provider_name 显示面 JOIN vendors（行为键），fixture 行平移。
+	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
 		VALUES ('prov-claude', 'claude', 'Claude', 1, ?, ?)`, now, now)
 	env.exec(t, `UPDATE accounts SET provider_code = 'claude', provider_protocol_profile_id = 'prof-claude',
 		protocol_code = 'anthropic', protocol_version = 'v2', type = 'oauth',

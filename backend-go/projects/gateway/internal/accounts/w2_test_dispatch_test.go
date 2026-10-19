@@ -53,11 +53,12 @@ func TestW2TestOptionsRoutes(t *testing.T) {
 		}
 	})
 	t.Run("keyword 与 limit", func(t *testing.T) {
-		// 额外目录行：keyword 命中时返回两个模型。
-		env.exec(t, `INSERT OR IGNORE INTO provider_model_catalog
-			(id, provider_code, model, status, mode, release_date, supported_api_protocols_json, catalog_visible, created_at, updated_at)
-			VALUES ('cat-2', 'gpt', 'gpt-4.1', 'active', NULL, '2026-02-01',
-			'["chat_completions","responses"]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+		// 额外目录行：keyword 命中时返回两个模型（B4 ⑧：models 单表 REPLACE
+		// seedFixtureModels 同名行）。
+		env.exec(t, `REPLACE INTO models
+			(id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, release_date, created_at, updated_at)
+			VALUES ('mod-fixture-gpt-4-1-gpt', 'gpt', 'gpt-4.1', 'gpt-4.1', 'builtin', 'active',
+			'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-02-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 		code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/"+accountID+"/test-options?keyword=gpt-4", "")
 		if code != http.StatusOK || len(dataArray(t, payload)) != 2 {
 			t.Fatalf("keyword 命中数量不一致：%d %v", code, payload)

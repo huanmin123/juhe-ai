@@ -29,31 +29,31 @@ func TestW10AValueOrSource(t *testing.T) {
 
 func TestW10AGeminiOAuthContextType(t *testing.T) {
 	base := "https://api.example.com"
-	if got := geminiOAuthContextType(Credentials{"oauth_type": "google_one"}); got != "google_one" {
+	if got := geminiOAuthContextType("", Credentials{"oauth_type": "google_one"}); got != "google_one" {
 		t.Fatalf("枚举透传不一致：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"oauth_type": "ai_studio"}); got != "ai_studio" {
+	if got := geminiOAuthContextType("", Credentials{"oauth_type": "ai_studio"}); got != "ai_studio" {
 		t.Fatalf("枚举透传不一致：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"oauth_type": "code_assist"}); got != "code_assist" {
+	if got := geminiOAuthContextType("", Credentials{"oauth_type": "code_assist"}); got != "code_assist" {
 		t.Fatalf("枚举透传不一致：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"base_url": "https://generativelanguage.googleapis.com/v1"}); got != "ai_studio" {
+	if got := geminiOAuthContextType("", Credentials{"base_url": "https://generativelanguage.googleapis.com/v1"}); got != "ai_studio" {
 		t.Fatalf("generativelanguage 应 ai_studio：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"project_id": "proj-1", "base_url": base}); got != "code_assist" {
+	if got := geminiOAuthContextType("", Credentials{"project_id": "proj-1", "base_url": base}); got != "code_assist" {
 		t.Fatalf("project_id 应 code_assist：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"base_url": "https://cloudcode-pa.googleapis.com"}); got != "code_assist" {
+	if got := geminiOAuthContextType("", Credentials{"base_url": "https://cloudcode-pa.googleapis.com"}); got != "code_assist" {
 		t.Fatalf("cloudcode-pa 应 code_assist：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"client_id": "custom-client", "base_url": base}); got != "ai_studio" {
+	if got := geminiOAuthContextType("", Credentials{"client_id": "custom-client", "base_url": base}); got != "ai_studio" {
 		t.Fatalf("自定义 client_id 应 ai_studio：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"client_id": geminiCLIOAuthClientID, "base_url": base}); got != "code_assist" {
+	if got := geminiOAuthContextType("", Credentials{"client_id": geminiCLIOAuthClientID, "base_url": base}); got != "code_assist" {
 		t.Fatalf("CLI client_id 应 code_assist：%s", got)
 	}
-	if got := geminiOAuthContextType(Credentials{"base_url": base}); got != "code_assist" {
+	if got := geminiOAuthContextType("", Credentials{"base_url": base}); got != "code_assist" {
 		t.Fatalf("默认应 code_assist：%s", got)
 	}
 }

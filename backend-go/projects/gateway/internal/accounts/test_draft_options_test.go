@@ -11,12 +11,13 @@ import (
 )
 
 // seedDraftCatalogExtra 追加一个目录内、草稿支持列表外的模型（gpt-4.1）。
+// B4 ⑧：models 单表 REPLACE seedFixtureModels 同名行。
 func seedDraftCatalogExtra(t *testing.T, env *testEnv) {
 	t.Helper()
-	env.exec(t, `INSERT OR IGNORE INTO provider_model_catalog
-		(id, provider_code, model, status, mode, release_date, supported_api_protocols_json, catalog_visible, created_at, updated_at)
-		VALUES ('cat-tdo-411', 'gpt', 'gpt-4.1', 'active', NULL, '2026-02-01',
-		'["chat_completions","responses"]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	env.exec(t, `REPLACE INTO models
+		(id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, release_date, created_at, updated_at)
+		VALUES ('mod-fixture-gpt-4-1-gpt', 'gpt', 'gpt-4.1', 'gpt-4.1', 'builtin', 'active',
+		'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-02-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 }
 
 func TestTestDraftOptionsRoutes(t *testing.T) {

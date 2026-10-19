@@ -216,10 +216,6 @@ func (s *Store) testCatalogSourceCodes(ctx context.Context, providerCode string)
 	return s.testService().TestCatalogSourceCodes(ctx, providerCode)
 }
 
-func (s *Store) protocolProviderCodes(ctx context.Context, protocolCode, protocolVersion string) ([]string, error) {
-	return s.testService().ProtocolProviderCodes(ctx, protocolCode, protocolVersion)
-}
-
 func (s *Store) listBuiltInTestCatalogOptions(ctx context.Context, providerCodes []string, query ManualTestOptionsQuery) ([]testOptionRow, error) {
 	return s.testService().ListBuiltInTestCatalogOptions(ctx, providerCodes, query)
 }

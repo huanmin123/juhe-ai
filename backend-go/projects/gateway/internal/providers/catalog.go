@@ -182,8 +182,12 @@ func (s *Store) ListProviderModelsForRequest(ctx context.Context, providerCode, 
 	if err != nil {
 		return nil, err
 	}
-	items := mergeModelCatalogItems(append(builtIn, custom...), isHybridProviderCode(providerCode))
-	inheritCustomCatalogCapabilities(items, builtIn, isHybridProviderCode(providerCode))
+	// B4 ④：hybrid 身份保留门拆除——providerCode 归一化后单值（设计 §3，
+	// hybrid 不在 vendors 值域；models.vendor_code 外键到 vendors.code，行查
+	// 询在 hybrid 入参下恒空），preserveProviderIdentity 分支对空输入无效果，
+	// 拆前恒 false、行为不变。
+	items := mergeModelCatalogItems(append(builtIn, custom...), false)
+	inheritCustomCatalogCapabilities(items, builtIn, false)
 	filtered := []ModelCatalogItem{}
 	for _, item := range items {
 		if !isSupportedCatalogModel(item) {
@@ -1562,10 +1566,6 @@ func assignPrice(prices map[string]*float64, key string, target **float64) {
 func normalizeProviderToken(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	return normalized
-}
-
-func isHybridProviderCode(value string) bool {
-	return normalizeProviderToken(value) == hybridProviderCode
 }
 
 func copyStringSlice(values []string) []string {

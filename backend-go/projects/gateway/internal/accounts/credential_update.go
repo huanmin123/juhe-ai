@@ -33,8 +33,11 @@ func applyAccountCredentialsPatch(current, patch Credentials) Credentials {
 // mergeAccountCredentialsForUpdate mirrors mergeAccountCredentialsForUpdate:
 // the legacy full-record submit keeps optional current fields unless the
 // request carries a replacement, and api_key accounts resolve the
-// single-key/pool replacement pair.
-func mergeAccountCredentialsForUpdate(accountType string, current, requested Credentials) Credentials {
+// single-key/pool replacement pair. oauthTypeColumn 是 accounts.oauth_type
+// 判定列现值（#B4 ⑪ 读面切列）：google_oauth 的 oauth_type 保列优先——封套
+// 键随「refresh 删键」切片消失后，legacy 全量提交合并按列回填判定值，不让
+// 判定事实跟着封套键一起丢；凭据键回落兼容迁移窗口存量行（列 NULL）。
+func mergeAccountCredentialsForUpdate(accountType, oauthTypeColumn string, current, requested Credentials) Credentials {
 	credentials := Credentials{}
 	for key, value := range current {
 		credentials[key] = value
@@ -79,6 +82,14 @@ func mergeAccountCredentialsForUpdate(accountType string, current, requested Cre
 			"drive_storage_usage", "drive_tier_updated_at",
 		} {
 			preserveCredentialText(credentials, current, key)
+		}
+		// oauth_type 判定列优先（#B4 ⑪）：requested/现值封套都没有文本时按列
+		// 三值回填（judgmentGoogleOAuthType 自带凭据键回落，服务迁移窗口存量
+		// 行）。重封链（patch.go）按同一列值重算 oauth_type 列，两侧不漂移。
+		if !hasCredentialText(credentials["oauth_type"]) {
+			if judgment := judgmentGoogleOAuthType(oauthTypeColumn, current); judgment != "" {
+				credentials["oauth_type"] = judgment
+			}
 		}
 	}
 	return credentials

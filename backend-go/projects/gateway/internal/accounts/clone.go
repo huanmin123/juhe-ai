@@ -157,6 +157,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		accountType               string
 		status                    string
 		credentialsEncrypted      string
+		oauthType                 string
 		concurrencyLimit          int
 		priority                  int
 		superPriorityEnabled      int64
@@ -182,7 +183,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id,
 			accounts.protocol_code, accounts.protocol_version, accounts.capability_domain,
 			accounts.name, accounts.notes,
-			accounts.type, accounts.status, accounts.credentials_encrypted, accounts.concurrency_limit,
+			accounts.type, accounts.status, accounts.credentials_encrypted,
+			COALESCE(accounts.oauth_type, '') AS oauth_type, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			accounts.client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.proxy_profile_id, accounts.availability_schedule_json, accounts.account_expires_at,
@@ -201,7 +203,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.capabilityDomain,
 		&row.name,
 		&row.notes, &row.accountType, &row.status, &row.credentialsEncrypted,
-		&row.concurrencyLimit, &row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
+		&row.oauthType, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
 		&row.clientCompatibility, &row.healthCheckModel, &row.healthCheckEndpointMode,
 		&row.proxyProfileID, &row.availabilitySchedule, &row.accountExpiresAt,
 		&row.continuousProbeEnabled, &row.balanceQueryEnabled, &row.balanceQueryConfigJSON,
@@ -344,7 +346,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
 		Status:                    row.status,
-		CredentialOptions:         projectCloneCredentialOptions(credentials),
+		CredentialOptions:         projectCloneCredentialOptions(row.oauthType, credentials),
 		ConcurrencyLimit:          row.concurrencyLimit,
 		Priority:                  row.priority,
 		SuperPriorityEnabled:      row.superPriorityEnabled == 1,
@@ -370,8 +372,11 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 }
 
 // projectCloneCredentialOptions mirrors projectCloneCredentialOptions: counts
-// and configuration survive, secret material does not.
-func projectCloneCredentialOptions(credentials Credentials) CloneCredentialOptions {
+// and configuration survive, secret material does not. oauth_type 判定读列
+// 优先（#B4 ⑪，judgmentGoogleOAuthType）：凭据键回落兼容迁移窗口存量行；
+// 「refresh 删键」切片删掉封套键后克隆预填不再丢判定值（丢值会让克隆体
+// google_oauth 组合门五元组缺 oauth_type → 400）。
+func projectCloneCredentialOptions(oauthTypeColumn string, credentials Credentials) CloneCredentialOptions {
 	out := CloneCredentialOptions{}
 	if count := cloneCredentialAPIKeyCount(credentials); count > 0 {
 		out.APIKeyCount = &count
@@ -400,12 +405,8 @@ func projectCloneCredentialOptions(credentials Credentials) CloneCredentialOptio
 	}
 	out.ClientID = credentialTextPointer(credentials, "client_id")
 	out.QuotaProjectID = credentialTextPointer(credentials, "quota_project_id")
-	if oauthType, ok := credentials["oauth_type"].(string); ok {
-		switch oauthType {
-		case "code_assist", "google_one", "ai_studio":
-			text := oauthType
-			out.OAuthType = &text
-		}
+	if oauthType := judgmentGoogleOAuthType(oauthTypeColumn, credentials); oauthType != "" {
+		out.OAuthType = &oauthType
 	}
 	out.TierID = credentialTextPointer(credentials, "tier_id")
 	out.ProjectID = credentialTextPointer(credentials, "project_id")

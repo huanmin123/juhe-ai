@@ -919,7 +919,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if input.CredentialsPatch {
 			next = applyAccountCredentialsPatch(current, requested)
 		} else {
-			next = mergeAccountCredentialsForUpdate(row.accountType, current, requested)
+			next = mergeAccountCredentialsForUpdate(row.accountType, row.oauthType, current, requested)
 		}
 		normalized, err := NormalizeAccountCredentialsForWrite(row.accountType, next, &EndpointModeDefaultContext{
 			ProviderCode:              row.providerCode,

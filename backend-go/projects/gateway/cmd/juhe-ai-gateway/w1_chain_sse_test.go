@@ -661,8 +661,13 @@ func TestW1VChainResolveRouteActionFallbackAttemptedArms(t *testing.T) {
 
 	newCase := func(t *testing.T, resolve []w1vResolveStep, blockedGroupID string) (*gatewayChain, func(), string) {
 		fixture := newChainFixture(t)
+		// A 组账户必须带非空连接 base_url：单连接事实源契约下 secret 装配对空
+		// base_url fail closed（chain_accounts_secret.go，设计 §2.1「Base URL
+		// 属于连接行」且 NOT NULL），空串会让 A 组账户在水合期被丢弃、normalRoute
+		// 越过 A 直选 B，整条脚本错位。A 组实际不可派发由脚本保证（初始窗口被
+		// filterEmptyCalls 排空、回退由 resolve 定向 B），占位 URL 不可达。
 		secret := w1vSeedMultiGroupKey(t, fixture, []string{"w1v_group_a", "w1v_group_b"},
-			map[int]bool{0: true, 1: true}, map[int]string{0: "", 1: goodUpstream.URL})
+			map[int]bool{0: true, 1: true}, map[int]string{0: "https://w1v-group-a-placeholder.example.invalid", 1: goodUpstream.URL})
 		chain, shutdown := w1vComposeChain(t, fixture)
 		// 仅把初始预检的候选窗口排空（拍成 RouteAction(A)）；回退预检的候选
 		// 阶段照常透传真实管道。

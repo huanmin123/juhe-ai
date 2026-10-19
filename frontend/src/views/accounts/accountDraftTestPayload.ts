@@ -59,7 +59,11 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
   const credentials = accountDraftTestCredentials(payload.credentials, input.accountDetail)
   return {
     providerCode: payload.providerCode,
-    providerProtocolProfileId: payload.providerProtocolProfileId,
+    // providerProtocolProfileId 是草稿链入参契约（#B4 ⑩）：后端
+    // prepareBalanceDraft 按入参推导协议上下文（gemini openai_chat 等双档案
+    // 供应商缺入参会被 vendor 默认归一 → 词表外 400），故从表单直取而不随
+    // 保存载荷收口（#B4 ⑫ 停发范围仅创建/更新载荷）。
+    providerProtocolProfileId: input.form.providerProtocolProfileId,
     name: payload.name ?? input.accountDetail?.name ?? input.form.name.trim(),
     type: payload.type,
     credentials,

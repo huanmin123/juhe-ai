@@ -395,19 +395,20 @@ func w2cNewMockDB(t *testing.T, steps []w2cMockStep) *sql.DB {
 
 // w2cKeysScript 里的片段名取自各查询的稳定子串。
 const (
-	// w2cQGPTGroupExists 命中 ensureDefaultGPTGroup 的存在性探针（列表查询
-	// 的谓词顺序是 is_default 在前，不会误命中）。
-	w2cQGPTGroupExists = "provider_code = 'gpt' AND is_default = 1"
-	w2cQGroups         = "FROM groups WHERE system_account_id"
-	w2cQRStratForGroup = "ORDER BY route_strategies.updated_at DESC"
-	w2cQGPTStrategy    = "route_strategies.id, route_strategies.name"
-	w2cQAPIKeyName     = "SELECT name FROM api_keys"
-	w2cQRStratName     = "SELECT name FROM route_strategies"
-	w2cQAPIKeysInsert  = "INSERT INTO api_keys"
-	w2cQRStratInsert   = "INSERT INTO route_strategies"
-	w2cQRSGInsert      = "INSERT INTO route_strategy_groups"
-	w2cQChatKeyID      = "purpose = 'chat' LIMIT 1"
-	w2cQFindChatKey    = "key_secret_encrypted"
+	// w2cQDefaultGroupExists 命中 defaultGPTGroupIDForOwner 的存在性探针
+	//（设计 §8 去供应商化后探针无 provider_code 谓词；"SELECT id FROM groups"
+	// 与列表查询 "SELECT id, name FROM groups" 以列子句区分，不会误命中）。
+	w2cQDefaultGroupExists = "SELECT id FROM groups WHERE system_account_id"
+	w2cQGroups             = "FROM groups WHERE system_account_id"
+	w2cQRStratForGroup     = "ORDER BY route_strategies.updated_at DESC"
+	w2cQGPTStrategy        = "route_strategies.id, route_strategies.name"
+	w2cQAPIKeyName         = "SELECT name FROM api_keys"
+	w2cQRStratName         = "SELECT name FROM route_strategies"
+	w2cQAPIKeysInsert      = "INSERT INTO api_keys"
+	w2cQRStratInsert       = "INSERT INTO route_strategies"
+	w2cQRSGInsert          = "INSERT INTO route_strategy_groups"
+	w2cQChatKeyID          = "purpose = 'chat' LIMIT 1"
+	w2cQFindChatKey        = "key_secret_encrypted"
 )
 
 func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
@@ -422,7 +423,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "gpt策略查询错误78",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: [][]driver.Value{{"rs_exists"}}},
 				{include: w2cQChatKeyID, columns: []string{"id"}, values: nil},
@@ -433,7 +434,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "nextDefaultApiKeyName查询错误87",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: [][]driver.Value{{"rs_exists"}}},
 				{include: w2cQChatKeyID, columns: []string{"id"}, values: nil},
@@ -445,7 +446,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "route策略组查询错误205",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, queryErr: errors.New("w2c: 组内策略查询失败")},
 			},
@@ -454,7 +455,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "nextDefaultRouteStrategyName查询错误214",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: nil},
 				{include: w2cQRStratName, queryErr: errors.New("w2c: 策略名称查询失败")},
@@ -464,7 +465,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "route策略名scan错误312",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: [][]driver.Value{{"rs_exists"}}},
 				{include: w2cQChatKeyID, columns: []string{"id"}, values: nil},
@@ -476,7 +477,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "route策略名scan错误334",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: nil},
 				{include: w2cQRStratName, columns: []string{"a", "b"}, values: [][]driver.Value{{"x", "y"}}},
@@ -486,7 +487,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "apiKeys名称迭代错误317",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: [][]driver.Value{{"rs_exists"}}},
 				{include: w2cQChatKeyID, columns: []string{"id"}, values: nil},
@@ -498,7 +499,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "route策略名迭代错误339",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: nil},
 				{include: w2cQRStratName, columns: []string{"name"}, values: [][]driver.Value{{"AI 对话路由"}}, rowsErr: errors.New("w2c: 策略名称迭代失败")},
@@ -508,7 +509,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 		{
 			name: "route策略INSERT冲突且回读为空233",
 			steps: []w2cMockStep{
-				{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+				{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 				{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", "默认组"}}},
 				{include: w2cQRStratForGroup, columns: []string{"id"}, values: nil},
 				{include: w2cQRStratName, columns: []string{"name"}, values: nil},
@@ -535,7 +536,7 @@ func TestW2CChatAPIKeyProviderErrorArms(t *testing.T) {
 	// 到已有策略 → continue 走完后续 API Key 创建。
 	t.Run("route策略INSERT冲突竞态恢复231", func(t *testing.T) {
 		db := w2cNewMockDB(t, []w2cMockStep{
-			{include: w2cQGPTGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
+			{include: w2cQDefaultGroupExists, columns: []string{"id"}, values: [][]driver.Value{{"g1"}}},
 			{include: w2cQGroups, columns: []string{"id", "name"}, values: [][]driver.Value{{"g1", nil}}},
 			{include: w2cQRStratForGroup, columns: []string{"id"}, values: [][]driver.Value{{"rs_exists"}}, emptyFirstN: 1},
 			{include: w2cQRStratName, columns: []string{"name"}, values: nil},

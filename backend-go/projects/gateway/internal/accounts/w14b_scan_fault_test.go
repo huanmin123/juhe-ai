@@ -68,9 +68,6 @@ func TestW14BFaultInjectedScanArms(t *testing.T) {
 	if _, err := store.ListTags(ctx, scope); err == nil {
 		t.Fatal("ListTags scan 应失败")
 	}
-	if _, err := store.protocolProviderCodes(ctx, "openai", "v1"); err == nil {
-		t.Fatal("protocolProviderCodes scan 应失败")
-	}
 	if err := store.hydrateTags(ctx, []ListItem{{ID: "acc-w14b-scan"}}, []string{"acc-w14b-scan"}); err == nil {
 		t.Fatal("hydrateTags scan 应失败")
 	}

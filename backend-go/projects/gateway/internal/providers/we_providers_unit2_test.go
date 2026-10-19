@@ -168,8 +168,10 @@ func TestWeBooleanQueryValue(t *testing.T) {
 	}
 }
 
-// TestWeEnabledNonHybridProviderCodes 锁定模型选项兜底来源的过滤契约：
-// 仅启用且非 hybrid 的供应商进入候选。
+// TestWeEnabledNonHybridProviderCodes 锁定模型选项兜底来源的过滤契约：仅启用
+// 供应商进入候选。B4 ④：hybrid 过滤门已拆除——vendors 值域只有 §1.1 九真实
+// 厂商（设计 §439，hybrid 行不在值域），门在生产形态恒 false、拆除行为不变；
+// 停用过滤仍由本用例钉住。
 func TestWeEnabledNonHybridProviderCodes(t *testing.T) {
 	env := newTestEnv(t)
 	now := "2026-01-01T00:00:00.000Z"
@@ -177,8 +179,6 @@ func TestWeEnabledNonHybridProviderCodes(t *testing.T) {
 		VALUES ('p1', 'gpt', 'OpenAI', 1, '[]', ?, ?)`, now, now)
 	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('p2', 'anthropic', 'Anthropic', 0, '[]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
-		VALUES ('p3', 'hybrid', 'Hybrid', 1, '[]', ?, ?)`, now, now)
 
 	store, err := NewStore(env.db, false, nil)
 	if err != nil {

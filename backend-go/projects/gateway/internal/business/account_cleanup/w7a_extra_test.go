@@ -52,7 +52,12 @@ func w7aCleanupStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 			source_type TEXT, source_id TEXT, scope_type TEXT, scope_id TEXT
 		)`,
 		`CREATE TABLE account_supported_models (account_id TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT)`,
+		// account_entry_mappings（设计 §5.1/§9.8，列集同 internal/accounts
+		// 夹具的 B4 第一批目标形态）：替代旧 account_model_mappings 夹具行，
+		// 满足 CheckContract requiredRelations 与 relationTables 清理目标；
+		// TestW7ACheckContractMissingRelation 仍以自行 DROP 单表承载缺关系
+		// fail-closed 断言。
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT,updated_at TEXT,UNIQUE(account_id,source_model,source_endpoint_family))`,
 		`CREATE TABLE account_tag_bindings (account_id TEXT)`,
 		`CREATE TABLE account_name_search_terms (account_id TEXT)`,
 		`CREATE TABLE account_name_search_documents (account_id TEXT)`,

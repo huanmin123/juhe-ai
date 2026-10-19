@@ -4,6 +4,8 @@ package accounts
 // profile 行删除后，连接载荷的 registry preset/surface 是协议身份的唯一来源。
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
@@ -111,6 +113,148 @@ func TestVendorDefaultProtocolContext(t *testing.T) {
 	if got := vendorDefaultProtocolContext("openai"); got.profileID != "" ||
 		got.protocolCode != accountscore.OpenAIProtocolCode {
 		t.Fatalf("generic 默认 = %+v", got)
+	}
+}
+
+func TestDraftProtocolContext(t *testing.T) {
+	// 草稿链入参推导（#B4 ⑩）：显式 profileId 按反查表落上下文；无入参或
+	// 词表外 ID 回落 vendor 默认（gemini → native）。
+	if got := draftProtocolContext("gemini", accountscore.GeminiOpenAIChatV1BetaProfileID); got != (protocolContext{
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.GeminiOpenAIChatV1BetaProfileID,
+	}) {
+		t.Fatalf("openai_chat 入参应落 openai 族上下文：%+v", got)
+	}
+	if got := draftProtocolContext("gemini", geminiNativeV1BetaProfileID); got.profileID != geminiNativeV1BetaProfileID ||
+		got.protocolCode != accountscore.GeminiProtocolCode {
+		t.Fatalf("native 入参应落 gemini 上下文：%+v", got)
+	}
+	if got := draftProtocolContext("deepseek", accountscore.DeepSeekAnthropicV1ProfileID); got.protocolCode != accountscore.AnthropicProtocolCode {
+		t.Fatalf("anthropic 档案入参应落 anthropic 上下文：%+v", got)
+	}
+	// 无入参 = vendor 默认（现状不变）。
+	if got, want := draftProtocolContext("gemini", ""), vendorDefaultProtocolContext("gemini"); got != want {
+		t.Fatalf("无入参应回落 vendor 默认：%+v != %+v", got, want)
+	}
+	// 词表外 ID 无协议事实，回落 vendor 默认（不新增 400 路径）。
+	if got, want := draftProtocolContext("gemini", "profile-bogus"), vendorDefaultProtocolContext("gemini"); got != want {
+		t.Fatalf("词表外入参应回落 vendor 默认：%+v != %+v", got, want)
+	}
+}
+
+func TestProfileIDProtocolContextPairsWithPresetTable(t *testing.T) {
+	// profileIDProtocolContext 与 presetProfileID 同批维护：两表键集互为镜像，
+	// 新增/删除 profile pin 必须同批落两侧。
+	reverse := map[string]string{}
+	for preset, id := range presetProfileID {
+		if _, ok := profileIDProtocolContext[id]; !ok {
+			t.Errorf("preset %q 的 pin %q 缺 draft 反查行", preset, id)
+		}
+		reverse[id] = preset
+	}
+	for id := range profileIDProtocolContext {
+		if _, ok := reverse[id]; !ok {
+			t.Errorf("draft 反查行 %q 不是 presetProfileID 的任何 pin", id)
+		}
+	}
+	// 关键协议对与 registry surface 语义一致（§1.1）：gemini openai_chat 是
+	// openai_v1 surface、native 是 gemini_v1beta、双 anthropic 档案是
+	// anthropic_v1。
+	pairs := map[string]protocolContext{
+		accountscore.GeminiOpenAIChatV1BetaProfileID: {
+			protocolCode: accountscore.OpenAIProtocolCode, protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID: accountscore.GeminiOpenAIChatV1BetaProfileID,
+		},
+		geminiNativeV1BetaProfileID: {
+			protocolCode: accountscore.GeminiProtocolCode, protocolVersion: accountscore.GeminiProtocolVersion,
+			profileID: geminiNativeV1BetaProfileID,
+		},
+		accountscore.DeepSeekAnthropicV1ProfileID: {
+			protocolCode: accountscore.AnthropicProtocolCode, protocolVersion: accountscore.AnthropicProtocolVersion,
+			profileID: accountscore.DeepSeekAnthropicV1ProfileID,
+		},
+		accountscore.GlmCodingAnthropicV1ProfileID: {
+			protocolCode: accountscore.AnthropicProtocolCode, protocolVersion: accountscore.AnthropicProtocolVersion,
+			profileID: accountscore.GlmCodingAnthropicV1ProfileID,
+		},
+		accountscore.GptOpenAIV1ProfileID: {
+			protocolCode: accountscore.OpenAIProtocolCode, protocolVersion: accountscore.OpenAIProtocolVersion,
+			profileID: accountscore.GptOpenAIV1ProfileID,
+		},
+	}
+	for id, want := range pairs {
+		if got := profileIDProtocolContext[id]; got != want {
+			t.Errorf("反查行 %q = %+v, want %+v", id, got, want)
+		}
+	}
+}
+
+func TestB4DraftBalanceRespectsInputProfileID(t *testing.T) {
+	env := newTestEnv(t)
+	adminID := env.login(t, "root", "root-pass", "super_admin")
+	env.seedProviderAndDefaultGroup(t, adminID)
+	env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('ven-fixture-gemini', 'gemini', 'Gemini', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	access := AccessScope{ViewerID: adminID}
+	groupID := "grp-default-" + adminID
+
+	// 带入参（#B4 ⑩）：gemini openai_chat 存量账户的 openai 族端点模式草稿
+	// 不再被 vendor 默认 native 上下文归一进 gemini 词表 → 不再 400。
+	row, err := env.store.prepareBalanceDraft(context.Background(), map[string]any{
+		"groupId": groupID, "providerCode": "gemini", "type": "api_key",
+		"providerProtocolProfileId": accountscore.GeminiOpenAIChatV1BetaProfileID,
+		"credentials": map[string]any{
+			"api_key": "sk-gemini-chat", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+			"supported_endpoint_modes": []any{"chat_json", "chat_sse"},
+		},
+	}, access)
+	if err != nil || row == nil {
+		t.Fatalf("openai_chat 入参草稿应通过：%v", err)
+	}
+	if row.providerProfile == nil ||
+		row.providerProfile.id != accountscore.GeminiOpenAIChatV1BetaProfileID ||
+		row.providerProfile.protocolCode != accountscore.OpenAIProtocolCode {
+		t.Fatalf("草稿档案应按入参落 openai_chat/openai：%+v", row.providerProfile)
+	}
+
+	// 无入参 + gemini 族模式：回落 vendor 默认 native，现状通过路径不变。
+	row, err = env.store.prepareBalanceDraft(context.Background(), map[string]any{
+		"groupId": groupID, "providerCode": "gemini", "type": "api_key",
+		"credentials": map[string]any{
+			"api_key": "sk-gemini-native", "base_url": "https://generativelanguage.googleapis.com",
+			"supported_endpoint_modes": []any{"generate_content_json", "generate_content_sse"},
+		},
+	}, access)
+	if err != nil || row == nil {
+		t.Fatalf("无入参 gemini 草稿应通过：%v", err)
+	}
+	if row.providerProfile == nil || row.providerProfile.id != geminiNativeV1BetaProfileID ||
+		row.providerProfile.protocolCode != accountscore.GeminiProtocolCode {
+		t.Fatalf("无入参应落 native/gemini：%+v", row.providerProfile)
+	}
+
+	// 无入参 + openai 族模式：仍被 gemini 词表拒绝（不带入参行为与现状一致）。
+	if _, err := env.store.prepareBalanceDraft(context.Background(), map[string]any{
+		"groupId": groupID, "providerCode": "gemini", "type": "api_key",
+		"credentials": map[string]any{
+			"api_key": "sk-gemini-chat", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+			"supported_endpoint_modes": []any{"chat_json", "chat_sse"},
+		},
+	}, access); err == nil || !strings.Contains(err.Error(), "上游接口能力包含不支持的能力") {
+		t.Fatalf("无入参 openai 族模式应保持现状 400：%v", err)
+	}
+
+	// 词表外入参 ID：回落 vendor 默认（与无入参同败），不新增 400 之外的路径。
+	if _, err := env.store.prepareBalanceDraft(context.Background(), map[string]any{
+		"groupId": groupID, "providerCode": "gemini", "type": "api_key",
+		"providerProtocolProfileId": "profile-bogus",
+		"credentials": map[string]any{
+			"api_key": "sk-gemini-chat", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+			"supported_endpoint_modes": []any{"chat_json", "chat_sse"},
+		},
+	}, access); err == nil || !strings.Contains(err.Error(), "上游接口能力包含不支持的能力") {
+		t.Fatalf("词表外入参应回落 vendor 默认（同败）：%v", err)
 	}
 }
 

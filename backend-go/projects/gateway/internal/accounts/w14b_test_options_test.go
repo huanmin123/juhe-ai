@@ -10,31 +10,17 @@ import (
 	"testing"
 )
 
-const w14bTestCatalogDDL = `
-CREATE TABLE IF NOT EXISTS provider_model_catalog (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	provider_code TEXT NOT NULL,
-	model TEXT NOT NULL,
-	mode TEXT,
-	release_date TEXT,
-	supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
-	catalog_order INTEGER NOT NULL DEFAULT 0,
-	status TEXT NOT NULL DEFAULT 'active',
-	catalog_visible INTEGER NOT NULL DEFAULT 1,
-	shutdown_date TEXT
-);
-CREATE TABLE IF NOT EXISTS custom_provider_models (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	provider_code TEXT NOT NULL,
-	model TEXT NOT NULL,
-	scope TEXT NOT NULL DEFAULT 'global',
-	system_account_id TEXT,
-	mode TEXT,
-	release_date TEXT,
-	supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
-	status TEXT NOT NULL DEFAULT 'active',
-	shutdown_date TEXT
-);
+// B4 ⑧：目录 fixture 随读取面切 models 单表（provider_model_catalog/
+// custom_provider_models 旧表 DDL 已拆除）。builtin 行按 seedFixtureModels 的
+// 同名 id REPLACE 覆盖（精确保控该模型名的目录行，避免种子全集 mode 行漏进
+// 判定）；custom 行落 global/personal scope（旧表行等价形态）。
+const w14bTestCatalogRows = `
+REPLACE INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+	supported_endpoint_modes_json, release_date, catalog_visible, created_at, updated_at)
+VALUES ('mod-fixture-gpt-4o-mini-gpt', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', NULL, 'active',
+	'["chat_json","chat_sse","responses_json","responses_sse"]', '2024-07-18', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+       ('mdl-b4-w14b-gpt-old', 'gpt', 'gpt-old', 'gpt-old', 'builtin', NULL, 'active',
+	'[]', NULL, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
 `
 
 const w14bTestSessionDDL = `
@@ -102,20 +88,21 @@ func w14bSeedTestAccount(t *testing.T, env *testEnv, id, name string) string {
 
 func TestW14BManualTestOptionsFlow(t *testing.T) {
 	env := newTestEnv(t)
-	env.exec(t, w14bTestCatalogDDL)
+	env.exec(t, w14bTestCatalogRows)
 	adminID := w14bSeedTestAccount(t, env, "acc-w14b-opt", "w14b-opt")
 	scope := AccessScope{ViewerID: adminID, IsAdmin: true}
 	ctx := context.Background()
 
-	// 内置目录：两条 openai 模型（一条含发布日期）。
-	env.exec(t, `INSERT INTO provider_model_catalog (provider_code, model, mode, release_date, supported_api_protocols_json, status, catalog_visible)
-		VALUES ('gpt', 'gpt-4o-mini', NULL, '2024-07-18', '["chat_completions","responses"]', 'active', 1),
-		       ('gpt', 'gpt-old', NULL, NULL, '[]', 'active', 1)`)
-	// 自定义目录：全局 + 个人 scope，同名模型两条不同发布日期（胜者比较臂）。
-	env.exec(t, `INSERT INTO custom_provider_models (provider_code, model, scope, system_account_id, mode, release_date, supported_api_protocols_json, status)
-		VALUES ('gpt', 'custom-a', 'global', NULL, NULL, '2024-01-01', '["chat_completions"]', 'active'),
-		       ('gpt', 'custom-a', 'personal', ?, NULL, '2024-06-01', '["chat_completions"]', 'active'),
-		       ('gpt', 'custom-old', 'global', NULL, NULL, NULL, '[]', 'retired')`, adminID)
+	// 自定义目录：全局 + 个人 scope，同名模型两条不同发布日期（胜者比较臂）；
+	// retired 行不进候选。
+	env.exec(t, `REPLACE INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status,
+		supported_endpoint_modes_json, release_date, created_at, updated_at)
+		VALUES ('mdl-b4-w14b-custom-a-global', 'gpt', 'custom-a', 'custom-a', 'global', NULL, 'active',
+			'["chat_json","chat_sse"]', '2024-01-01', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+		       ('mdl-b4-w14b-custom-a-personal', 'gpt', 'custom-a', 'custom-a', 'personal', ?, 'active',
+			'["chat_json","chat_sse"]', '2024-06-01', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+		       ('mdl-b4-w14b-custom-old', 'gpt', 'custom-old', 'custom-old', 'global', NULL, 'retired',
+			'[]', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
 
 	// 空 accountID → nil, nil。
 	if got, err := env.store.FindManualTestOptionsContext(ctx, "", &scope); err != nil || got != nil {

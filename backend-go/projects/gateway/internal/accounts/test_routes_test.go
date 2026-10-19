@@ -64,6 +64,9 @@ var testFamilySchema = []string{
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (session_id, task_id)
 	)`,
+	// B4 ⑧ 迁移窗口 fixture 壳：目录读取已切 models 单表，两张旧目录表仅供
+	// 旧 provider/profile 种子助手直插（与 accounts.provider_code 列壳同一
+	// 先例）；新目录行一律走 testCatalogDDL 的 models REPLACE。
 	`CREATE TABLE IF NOT EXISTS provider_model_catalog (
 		id TEXT PRIMARY KEY,
 		provider_code TEXT NOT NULL,
@@ -95,10 +98,13 @@ var testFamilySchema = []string{
 	)`,
 }
 
-const testCatalogDDL = `INSERT INTO provider_model_catalog
-	(id, provider_code, model, status, mode, release_date, supported_api_protocols_json, catalog_visible, created_at, updated_at)
-	VALUES ('cat-1', 'gpt', 'gpt-4o-mini', 'active', NULL, '2026-01-01',
-	'["chat_completions","responses"]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
+// testCatalogDDL 是测试目录行的唯一权威 seed：models 单表 builtin 行按
+// seedFixtureModels 的同名 id REPLACE 覆盖（精确保控 gpt-4o-mini 的目录行，
+// 避免种子全集 mode 行的 video 派生挡住对话测试形态）。B4 ⑧（设计 §4）。
+const testCatalogDDL = `REPLACE INTO models
+	(id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, release_date, created_at, updated_at)
+	VALUES ('mod-fixture-gpt-4o-mini-gpt', 'gpt', 'gpt-4o-mini', 'gpt-4o-mini', 'builtin', 'active',
+	'["chat_json","chat_sse","responses_json","responses_sse"]', '2026-01-01', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`
 
 type fakeTestEffects struct {
 	mu         sync.Mutex
@@ -142,13 +148,14 @@ func newTestFamilyEnv(t *testing.T, effects *fakeTestEffects) *testEnv {
 	return env
 }
 
-// seedTestCatalog seeds the gpt provider profile fixture plus the model
-// catalog row the options/capabilities reads consume.
+// seedTestCatalog seeds the gpt provider profile fixture plus the models 单表
+// catalog row the options/capabilities reads consume（B4 ⑧：目录行 REPLACE
+// models，无需 OR IGNORE 语义）.
 func (e *testEnv) seedTestCatalog(t *testing.T) {
 	t.Helper()
 	e.exec(t, strings.Replace(testProviderDDL, "INSERT INTO providers", "INSERT OR IGNORE INTO providers", 1))
 	e.exec(t, strings.Replace(testProfileDDL, "INSERT INTO provider_protocol_profiles", "INSERT OR IGNORE INTO provider_protocol_profiles", 1))
-	e.exec(t, strings.Replace(testCatalogDDL, "INSERT INTO provider_model_catalog", "INSERT OR IGNORE INTO provider_model_catalog", 1))
+	e.exec(t, testCatalogDDL)
 }
 
 func seedTestAccount(t *testing.T, env *testEnv, ownerID string) string {

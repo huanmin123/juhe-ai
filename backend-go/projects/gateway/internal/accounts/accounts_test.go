@@ -240,6 +240,12 @@ var schemaStatements = []string{
 		system_account_id TEXT,
 		status TEXT NOT NULL DEFAULT 'active',
 		supported_endpoint_modes_json TEXT,
+		-- B4 ⑧（设计 §4）：测试目录读取切 models 单表所需列（与 maintenance
+		-- fresh DDL 同名同语义；夹具此前只建写入面子集）。
+		release_date TEXT,
+		shutdown_date TEXT,
+		catalog_visible INTEGER NOT NULL DEFAULT 1,
+		catalog_order INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`,
@@ -535,8 +541,8 @@ func seedFixtureModels(t *testing.T, db *sql.DB) {
 			{"-gemini", "gemini"}, {"-glm", "glm"}, {"-minimax", "minimax"}, {"-volcengine", "volcengine"},
 			{"-qwen", "qwen"}, {"-generic", ""},
 		} {
-	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	if _, err := db.Exec(`INSERT OR IGNORE INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, catalog_visible, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 'builtin', 'active', '["audio_speech","audio_transcription_json","chat_json","chat_sse","generate_content_json","generate_content_sse","images_json","interactions_json","interactions_sse","messages_json","messages_sse","responses_json","responses_sse","video_create","video_get","video_content","video_cancel"]', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 			"mod-fixture-"+model.id+vendor.id, nullStringForFixture(vendor.code), model.name, model.name); err != nil {
 			t.Fatal(err)
 		}

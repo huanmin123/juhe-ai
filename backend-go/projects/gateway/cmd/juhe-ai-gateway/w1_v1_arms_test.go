@@ -612,16 +612,17 @@ func TestW1VSwitchToFallbackGroupHopLimit(t *testing.T) {
 }
 
 // TestW1VSwitchToFallbackGroupSelectsFallbackRecordAndHandsExhaustedSet：
-// agent guidance 原因把回退记录升级为 GroupFallbackAPIKeyRecord；请求级耗尽
-// 集原样移交给候选解析入参（routes.ts:576-578/624-625）。
+// 回退基记录恒取未收窄的 GroupFallbackAPIKeyRecord（供应商解耦切片后
+// current.APIKeyRecord 已被 normalRoute 收窄为选中分组单绑定，回退候选序只在
+// preflight 入口别名的未收窄记录上，原因无关——chain_v1_loop.go 回退基记录
+// 注释，652a70af4）；请求级耗尽集原样移交给候选解析入参（routes.ts:624-625）。
 func TestW1VSwitchToFallbackGroupSelectsFallbackRecordAndHandsExhaustedSet(t *testing.T) {
 	cases := []struct {
-		name           string
-		reason         string
-		wantMainRecord bool
+		name   string
+		reason string
 	}{
-		{"agent_guidance_uses_group_fallback_record", "account_scoped_agent_guidance_exhausted", false},
-		{"plain_reason_keeps_main_record", "upstream_accounts_exhausted", true},
+		{"agent_guidance_uses_group_fallback_record", "account_scoped_agent_guidance_exhausted"},
+		{"plain_reason_uses_group_fallback_record", "upstream_accounts_exhausted"},
 	}
 	for _, testCase := range cases {
 		sink := &recordingFailureSink{}
@@ -648,12 +649,8 @@ func TestW1VSwitchToFallbackGroupSelectsFallbackRecordAndHandsExhaustedSet(t *te
 		if stub.captured == nil {
 			t.Fatalf("%s: 候选解析未被调用", testCase.name)
 		}
-		wantRecord := recordFallback
-		if testCase.wantMainRecord {
-			wantRecord = recordMain
-		}
-		if stub.captured.APIKeyRecord != wantRecord {
-			t.Fatalf("%s: APIKeyRecord 选择错误", testCase.name)
+		if stub.captured.APIKeyRecord != recordFallback {
+			t.Fatalf("%s: 回退基记录必须取未收窄的 GroupFallbackAPIKeyRecord", testCase.name)
 		}
 		if _, ok := stub.captured.ExcludedAccountIDs["acc_sentinel"]; !ok {
 			t.Fatalf("%s: 请求级耗尽集未移交: %v", testCase.name, stub.captured.ExcludedAccountIDs)

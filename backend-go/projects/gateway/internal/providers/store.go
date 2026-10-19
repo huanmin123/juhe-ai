@@ -358,8 +358,9 @@ func scanVendorOption(scan func(...any) error) (ProviderOption, error) {
 }
 
 // EnabledNonHybridProviderCodes serves the /models/options fallback source
-// pick: enabled vendors, already ordered by name then code (hybrid 不在
-// vendors 值域，过滤保留为形状守卫).
+// pick: enabled vendors, already ordered by name then code. B4 ④：hybrid 门
+// 拆除——ListDefinitions 读 vendors（设计 §439 只保留 §1.1 九真实厂商，hybrid
+// 不在值域），过滤无真实语义（拆前恒 false，行为不变）。
 func (s *Store) EnabledNonHybridProviderCodes(ctx context.Context) ([]string, error) {
 	definitions, err := s.ListDefinitions(ctx)
 	if err != nil {
@@ -367,7 +368,7 @@ func (s *Store) EnabledNonHybridProviderCodes(ctx context.Context) ([]string, er
 	}
 	codes := []string{}
 	for _, definition := range definitions {
-		if !definition.Enabled || isHybridProviderCode(definition.Code) {
+		if !definition.Enabled {
 			continue
 		}
 		trimmed := strings.TrimSpace(definition.Code)

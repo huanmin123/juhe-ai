@@ -211,7 +211,7 @@ func TestW10ACloneCredentialProjection(t *testing.T) {
 		"response_inspection_rules": []any{map[string]any{"code": "5xx"}},
 		"quota_recovery_policy":     map[string]any{"enabled": true},
 	}
-	options := projectCloneCredentialOptions(credentials)
+	options := projectCloneCredentialOptions("", credentials)
 	if options.APIKeyCount == nil || *options.APIKeyCount != 2 {
 		t.Fatalf("API Key 计数应跳过空白：%v", options.APIKeyCount)
 	}
@@ -239,7 +239,7 @@ func TestW10ACloneCredentialProjection(t *testing.T) {
 		t.Fatal("额度恢复策略应保留")
 	}
 	// 未支持策略与未知 oauth_type 不投影。
-	minimal := projectCloneCredentialOptions(Credentials{
+	minimal := projectCloneCredentialOptions("", Credentials{
 		"api_key_strategy": "bogus", "oauth_type": "bogus",
 	})
 	if minimal.APIKeyStrategy != nil || minimal.OAuthType != nil {

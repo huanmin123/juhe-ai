@@ -477,7 +477,9 @@ func TestW13GDraftSnapshotPreparationArms(t *testing.T) {
 		t.Fatalf("草稿快照：%+v", draft)
 	}
 
-	// images_json 检查模式：目录读取失败（fixture 未建 catalog 表）→ 传播。
+	// images_json 检查模式：目录读取失败（B4 ⑧ 后目录源是 models 单表，DROP
+	// 制造读错误）→ 传播。
+	env.exec(t, `DROP TABLE models`)
 	images := build(func(in *TestDraftAccountInput) { in.HealthCheckEndpointMode = "images_json" })
 	if _, err := env.store.prepareAccountDraftTestSnapshot(context.Background(), images, access, ""); err == nil {
 		t.Fatal("images 目录读错误应报错")

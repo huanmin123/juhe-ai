@@ -225,7 +225,7 @@ func TestW10AListSortAndAvailability(t *testing.T) {
 		"fallback":         "accounts.fallback_enabled",
 		"name":             "accounts.name",
 		"type":             "accounts.type",
-		"providerCode":     "accounts.provider_code",
+		"providerCode":     "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '')",
 		"systemAccount":    "COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, accounts.system_account_id)",
 		"concurrency":      "accounts.concurrency_limit",
 		"accountExpiresAt": "accounts.account_expires_at",

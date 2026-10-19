@@ -801,45 +801,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create provider store: %w", err)
 	}
-	// 账户模型目录校验端口（model_catalog_validation.go 的
-	// AccountModelCatalogReader）：把请求面 provider 模型目录适配到 accounts
-	// 断言域。SQLite/PG 双模无条件装配——nil 端口保持断言 no-op 的
-	// self-contained 约定只服务 store 级测试与隔离部署，不作为运行形态。
-	//
-	// 端口读取通道约束：accounts 断言在账户创建/更新/批量/导入的写事务内
-	// 执行（write 路径 BeginTx 之后经端口取目录），而 SQLite 业务句柄
-	// SetMaxOpenConns(1)——事务占住唯一连接后，端口若复用同一池，池等待
-	// 没有超时上限，请求只能挂到外部超时。SQLite 模式下端口改走同一业务库
-	// 文件的专用读取句柄（WAL 允许一写多读，busy_timeout 承担写锁竞争），
-	// 池上限同为 1，并按上方 apiKeyDatasetDB 的同款约定登记 shutdowns 关闭
-	// 链（先于 Shutdown 尾部的业务句柄关闭执行）；PostgreSQL 池本就是多
-	// 连接，事务内读取复用现有池，不另开句柄。
-	modelCatalogReaderStore := providerStore
-	if !composed.pgDialect {
-		modelCatalogReaderDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.BusinessDatabasePath))
-		if err != nil {
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("open account model catalog reader sqlite database: %w", err)
-		}
-		modelCatalogReaderDB.SetMaxOpenConns(1)
-		if err := configureSQLiteConnection(modelCatalogReaderDB); err != nil {
-			if closeErr := modelCatalogReaderDB.Close(); closeErr != nil {
-				slog.Debug("关闭账户模型目录读取 sqlite 句柄失败", "event", "gateway_handle_close_failed", "component", "model_catalog_reader_db", "error", closeErr)
-			}
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("configure account model catalog reader sqlite database: %w", err)
-		}
-		modelCatalogReaderStore, err = providers.NewStore(modelCatalogReaderDB, composed.pgDialect, time.Now)
-		if err != nil {
-			if closeErr := modelCatalogReaderDB.Close(); closeErr != nil {
-				slog.Debug("关闭账户模型目录读取 sqlite 句柄失败", "event", "gateway_handle_close_failed", "component", "model_catalog_reader_db", "error", closeErr)
-			}
-			closeOwnedBusiness()
-			return nil, fmt.Errorf("create account model catalog reader provider store: %w", err)
-		}
-		composed.shutdowns = append(composed.shutdowns, func() { _ = modelCatalogReaderDB.Close() })
-	}
-	accountStore.SetModelCatalogReader(accountModelCatalogReaderAdapter{store: modelCatalogReaderStore})
+	// B4 ⑥：AccountModelCatalogReader 装配拆除。断言链已切 models 表身份解析
+	// （accounts/model_catalog_validation.go），端口不再被断言消费；旧装配
+	// （providers 目录适配 + SQLite 专用读取句柄）是编译兼容遗留，随组合根
+	// 收口拆除——目录断言的事实源是 accounts 事务内的 models 查询，与该端口
+	// 无关。BUG-0162 余额/目录刷新端口的进程内装配不受影响（下一行）。
 	// BUG-0162 第五刀：余额手动刷新 + 模型目录刷新两个执行端口的进程内装配
 	// （去跨进程战役：原 Node jobs /account-balance/manual HTTP 桥已随第四刀
 	// 删除；上游 /models 拉取此前在 Go 侧无实现）。2026-10-04 起余额端口双方言
@@ -1851,39 +1817,3 @@ func (a runtimeCooldownSettingsAdapter) DefaultTemporaryUnschedulableMinutes() i
 }
 
 var _ accounts.RuntimeCooldownSettings = runtimeCooldownSettingsAdapter{}
-
-// accountModelCatalogReaderAdapter 把 providers Store 的请求面模型目录
-// （ListProviderModelsForRequest，Node listProviderModelsForRequestAsync）
-// 适配成 accounts.AccountModelCatalogReader 端口（model_catalog_validation.go
-// 端口注释指定的组合根交接）。includeInactive 恒传 false：两条断言路径
-// （gpt 请求覆盖、模型别名目录段）的归档实现从不放开 availability 过滤
-// （端口注释 Inactive rows stay filtered）；includeUnpriced 由 accounts 断言
-// 调用方决定（gpt 覆盖段 true、别名目录段 false）并原样透传。
-type accountModelCatalogReaderAdapter struct {
-	store *providers.Store
-}
-
-func (a accountModelCatalogReaderAdapter) ListAccountModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]accounts.AccountModelCatalogFact, error) {
-	items, err := a.store.ListProviderModelsForRequest(ctx, providerCode, systemAccountID, false, includeUnpriced)
-	if err != nil {
-		return nil, err
-	}
-	return accountModelCatalogFacts(items), nil
-}
-
-// accountModelCatalogFacts 把目录行投影成断言域 fact（四列直接拷贝；协议 /
-// 等级 slice 共享底层数组，断言族对目录只读，不另行深拷贝）。
-func accountModelCatalogFacts(items []providers.ModelCatalogItem) []accounts.AccountModelCatalogFact {
-	facts := make([]accounts.AccountModelCatalogFact, 0, len(items))
-	for _, item := range items {
-		facts = append(facts, accounts.AccountModelCatalogFact{
-			Model:                     item.Model,
-			SupportedAPIProtocols:     item.SupportedAPIProtocols,
-			SupportedServiceTiers:     item.SupportedServiceTiers,
-			SupportedReasoningEfforts: item.SupportedReasoningEfforts,
-		})
-	}
-	return facts
-}
-
-var _ accounts.AccountModelCatalogReader = accountModelCatalogReaderAdapter{}

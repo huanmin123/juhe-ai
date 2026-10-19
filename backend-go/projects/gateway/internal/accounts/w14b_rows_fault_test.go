@@ -68,9 +68,6 @@ func TestW14BFaultInjectedRowsArms(t *testing.T) {
 	if _, err := store.ListTags(ctx, scope); err == nil {
 		t.Fatal("ListTags rows.Err 应传播")
 	}
-	if _, err := store.protocolProviderCodes(ctx, "openai", "v1"); err == nil {
-		t.Fatal("protocolProviderCodes rows.Err 应传播")
-	}
 	if _, err := store.listBuiltInTestCatalogOptions(ctx, []string{"gpt"}, ManualTestOptionsQuery{}); err == nil {
 		t.Fatal("listBuiltInTestCatalogOptions rows.Err 应传播")
 	}

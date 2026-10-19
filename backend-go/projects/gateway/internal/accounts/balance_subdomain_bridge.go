@@ -282,8 +282,9 @@ type balanceDraftRow struct {
 // prepareBalanceDraft mirrors prepareAccountDraftTestSnapshotAsync for the
 // balance probe: the group/owner contract checks plus the credentials
 // normalization. Errors carry the Node 400 copy. profile 行已随目标 schema
-// 退役（§9.3）：providerProtocolProfileId 不再是入参契约，协议上下文由 vendor
-// 语义推导；provider 归属校验改为 vendors 表存在性（enabled，§2.1）。
+// 退役（§9.3）：协议上下文由入参 providerProtocolProfileId 反查推导（#B4 ⑩，
+// draftProtocolContext），无入参回落 vendor 语义默认；provider 归属校验改为
+// vendors 表存在性（enabled，§2.1）。
 func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string]any, access AccessScope) (*balanceDraftRow, error) {
 	groupID := strings.TrimSpace(textString(accountInput["groupId"]))
 	providerCode := strings.TrimSpace(textString(accountInput["providerCode"]))
@@ -324,7 +325,7 @@ func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string
 		}
 		credentialsInput["base_url"] = baseURL
 	}
-	protocol := vendorDefaultProtocolContext(providerCode)
+	protocol := draftProtocolContext(providerCode, strings.TrimSpace(textString(accountInput["providerProtocolProfileId"])))
 	credentials, err := NormalizeAccountCredentialsForWrite(accountType, Credentials(credentialsInput), &EndpointModeDefaultContext{
 		ProviderCode:              providerCode,
 		AccountType:               accountType,

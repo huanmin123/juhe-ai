@@ -50,7 +50,13 @@ func cleanupTestStore(t *testing.T, gate OwnerGate) (*Store, *sql.DB) {
 			source_type TEXT, source_id TEXT, scope_type TEXT, scope_id TEXT
 		)`,
 		`CREATE TABLE account_supported_models (account_id TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT)`,
+		// account_entry_mappings（设计 §5.1/§9.8）：清理存在性检查
+		// （CheckContract requiredRelations）与关系删除（deleteBusiness
+		// relationTables）均已从 account_model_mappings 切到该目标形态；
+		// 列集与 internal/accounts 夹具的 B4 第一批目标形态一致（复合外键
+		// 因本夹具未建模 account_connections / account_supported_models
+		// 复合键而省略）。
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT,updated_at TEXT,UNIQUE(account_id,source_model,source_endpoint_family))`,
 		`CREATE TABLE account_tag_bindings (account_id TEXT)`,
 		`CREATE TABLE account_name_search_terms (account_id TEXT)`,
 		`CREATE TABLE account_name_search_documents (account_id TEXT)`,
@@ -95,7 +101,7 @@ func seedDeletedAccountTree(t *testing.T, db *sql.DB) {
 	if _, err := db.Exec(`INSERT INTO group_accounts(account_id,account_authorization_id) VALUES ('root',NULL), (NULL,'auth-child')`); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"account_supported_models", "account_model_mappings", "account_tag_bindings", "account_name_search_terms", "account_name_search_documents", "account_api_key_runtime_states"} {
+	for _, table := range []string{"account_supported_models", "account_entry_mappings", "account_tag_bindings", "account_name_search_terms", "account_name_search_documents", "account_api_key_runtime_states"} {
 		if _, err := db.Exec("INSERT INTO " + table + "(account_id) VALUES ('root'), ('child')"); err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +158,7 @@ func TestCleanupDeletesBusinessRowsAfterClearedFenceAndReplays(t *testing.T) {
 	if result.Completed != 1 || result.PhysicallyDeletedAccounts != 2 || result.PhysicallyDeletedAuthorizations != 1 || result.PhysicallyDeletedGrants != 1 || result.PhysicallyDeletedGroupBindings != 2 {
 		t.Fatalf("unexpected delete result=%+v", result)
 	}
-	for _, table := range []string{"accounts", "resource_authorizations", "resource_authorization_grants", "group_accounts", "account_supported_models", "account_model_mappings", "account_tag_bindings"} {
+	for _, table := range []string{"accounts", "resource_authorizations", "resource_authorization_grants", "group_accounts", "account_supported_models", "account_entry_mappings", "account_tag_bindings"} {
 		var count int
 		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("table=%s count=%d error=%v", table, count, err)
@@ -241,7 +247,9 @@ func TestCleanupRejectsStaleBusinessCAS(t *testing.T) {
 func TestCleanupRollsBackBusinessMutationOnDeleteError(t *testing.T) {
 	store, db := cleanupTestStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
 	seedDeletedAccountTree(t, db)
-	if _, err := db.Exec(`DROP TABLE account_model_mappings`); err != nil {
+	// 关系删除失败臂随 §9.8 表迁移切 account_entry_mappings（生产
+	// relationTables 现行清理目标），缺表即触发 deleteBusiness 失败回滚。
+	if _, err := db.Exec(`DROP TABLE account_entry_mappings`); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.Cleanup(context.Background(), CleanupInput{

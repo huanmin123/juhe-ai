@@ -190,14 +190,14 @@ func TestW13GMergeCredentialsForUpdate(t *testing.T) {
 		t.Fatalf("其余键保留：%v", merged)
 	}
 	// api_key：单 key 替换池。
-	merged = mergeAccountCredentialsForUpdate("api_key",
+	merged = mergeAccountCredentialsForUpdate("api_key", "",
 		Credentials{"api_keys": []any{"a", "b"}, "api_key_strategy": "round_robin", "api_key": "old"},
 		Credentials{"api_key": "new"})
 	if _, exists := merged["api_keys"]; exists || merged["api_key"] != "new" {
 		t.Fatalf("单 key 替换池：%v", merged)
 	}
 	// api_key：池替换单 key，策略与权重保留 current。
-	merged = mergeAccountCredentialsForUpdate("api_key",
+	merged = mergeAccountCredentialsForUpdate("api_key", "",
 		Credentials{"api_key": "old", "api_key_strategy": "round_robin",
 			"api_key_weights": []any{float64(2)}},
 		Credentials{"api_keys": []any{"a", "b"}})
@@ -205,28 +205,28 @@ func TestW13GMergeCredentialsForUpdate(t *testing.T) {
 		t.Fatalf("池替换单 key：%v", merged)
 	}
 	// api_key：均未提供 → 保留 current 键。
-	merged = mergeAccountCredentialsForUpdate("api_key",
+	merged = mergeAccountCredentialsForUpdate("api_key", "",
 		Credentials{"api_key": "old", "api_keys": []any{"a"}},
 		Credentials{"base_url": "u"})
 	if merged["api_key"] != "old" || merged["api_key"] == nil {
 		t.Fatalf("保留 current：%v", merged)
 	}
 	// oauth：可选字段保留。
-	merged = mergeAccountCredentialsForUpdate("oauth",
+	merged = mergeAccountCredentialsForUpdate("oauth", "",
 		Credentials{"access_token": "old-at", "scope": "read"},
 		Credentials{})
 	if merged["access_token"] != "old-at" || merged["scope"] != "read" {
 		t.Fatalf("oauth 保留：%v", merged)
 	}
 	// google_oauth：可选字段保留。
-	merged = mergeAccountCredentialsForUpdate("google_oauth",
+	merged = mergeAccountCredentialsForUpdate("google_oauth", "",
 		Credentials{"refresh_token": "rt", "drive_storage_limit": float64(3)},
 		Credentials{})
 	if merged["refresh_token"] != "rt" || merged["drive_storage_limit"] != float64(3) {
 		t.Fatalf("google 保留：%v", merged)
 	}
 	// 空数组/空白文本不覆盖 current。
-	merged = mergeAccountCredentialsForUpdate("api_key",
+	merged = mergeAccountCredentialsForUpdate("api_key", "",
 		Credentials{"api_key": "old"},
 		Credentials{"api_key": "  ", "supported_endpoint_modes": []any{}})
 	if merged["api_key"] != "old" {

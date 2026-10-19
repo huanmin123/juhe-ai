@@ -14,8 +14,11 @@ package accounts
 //     喂参；多连接跨协议面账户以首个文本连接为准，连接行自身仍逐行携带
 //     registry surface，协议事实归属连接行）。
 //   - 草稿/探针链（无 connections 载荷，model-catalog/refresh、balance/test-
-//     draft）：vendorDefaultProtocolContext 按 vendor 语义落默认档案（与退役
-//     前各 vendor 的默认 profile 行一致）。
+//     draft）：载荷显式携带 providerProtocolProfileId 时按入参 ID 反查协议
+//     上下文（draftProtocolContext，#B4 ⑩——gemini openai_chat 存量账户曾
+//     被 vendor 默认 native 归一、openai 族端点模式落词表外 400）；无入参
+//     或入参 ID 词表外回落 vendorDefaultProtocolContext（vendor 语义默认
+//     档案，与退役前各 vendor 的默认 profile 行一致）。
 //
 // 本推导是 protocol 列退役（§9.11 后续切片）前的过渡投影；generic（openai/
 // hybrid）与纯媒体集合无 pin，profileID 留空——openai-compatible / anthropic
@@ -113,6 +116,90 @@ func deriveConnectionProtocolContext(resolved []resolvedConnection) protocolCont
 		return context
 	}
 	return openAIProtocolContext()
+}
+
+// draftProtocolContext 解析草稿链（model-catalog/refresh、balance/test-draft
+// 的 prepareBalanceDraft）协议上下文：载荷显式携带 providerProtocolProfileId
+// 时按入参 ID 反查（修复 #B4 ⑩：gemini openai_chat 存量账户带 openai 族端点
+// 模式草稿，曾被 vendor 默认 native 上下文归一进 gemini 词表 → 组合词表外
+// 400）；无入参或入参 ID 词表外回落 vendor 默认——无入参路径行为不变，词表
+// 外 ID 无协议事实可推导，不新增 400 路径。
+func draftProtocolContext(providerCode, profileID string) protocolContext {
+	if profileID != "" {
+		if context, ok := profileIDProtocolContext[profileID]; ok {
+			return context
+		}
+	}
+	return vendorDefaultProtocolContext(providerCode)
+}
+
+// profileIDProtocolContext 是草稿链入参 profileId 的反查表（§9.3 后 profile
+// 行已退役，入参 ID 只能对 §1.1 编译期 registry 对应表落协议上下文）。键集
+// 与 presetProfileID 的值集一一对应，同批维护（protocol_context_test 成对
+// 断言钉住）；协议对按各档案的 registry surface 落（gemini openai_chat 为
+// openai_v1 surface，native 为 gemini_v1beta；纯媒体预设同
+// deriveConnectionProtocolContext 的 pin 保留、协议对退 openai 族）。
+var profileIDProtocolContext = map[string]protocolContext{
+	accountscore.GptOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.GptOpenAIV1ProfileID,
+	},
+	accountscore.XaiOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.XaiOpenAIV1ProfileID,
+	},
+	accountscore.DeepSeekOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.DeepSeekOpenAIV1ProfileID,
+	},
+	accountscore.DeepSeekAnthropicV1ProfileID: {
+		protocolCode:    accountscore.AnthropicProtocolCode,
+		protocolVersion: accountscore.AnthropicProtocolVersion,
+		profileID:       accountscore.DeepSeekAnthropicV1ProfileID,
+	},
+	accountscore.GlmGeneralOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.GlmGeneralOpenAIV1ProfileID,
+	},
+	accountscore.GlmCodingOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.GlmCodingOpenAIV1ProfileID,
+	},
+	accountscore.GlmCodingAnthropicV1ProfileID: {
+		protocolCode:    accountscore.AnthropicProtocolCode,
+		protocolVersion: accountscore.AnthropicProtocolVersion,
+		profileID:       accountscore.GlmCodingAnthropicV1ProfileID,
+	},
+	accountscore.GeminiOpenAIChatV1BetaProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.GeminiOpenAIChatV1BetaProfileID,
+	},
+	geminiNativeV1BetaProfileID: {
+		protocolCode:    accountscore.GeminiProtocolCode,
+		protocolVersion: accountscore.GeminiProtocolVersion,
+		profileID:       geminiNativeV1BetaProfileID,
+	},
+	accountscore.MinimaxOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.MinimaxOpenAIV1ProfileID,
+	},
+	accountscore.VolcengineOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.VolcengineOpenAIV1ProfileID,
+	},
+	accountscore.QwenOpenAIV1ProfileID: {
+		protocolCode:    accountscore.OpenAIProtocolCode,
+		protocolVersion: accountscore.OpenAIProtocolVersion,
+		profileID:       accountscore.QwenOpenAIV1ProfileID,
+	},
 }
 
 // vendorDefaultProtocolContext 是草稿/探针链（无 connections 载荷）的 vendor

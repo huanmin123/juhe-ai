@@ -544,8 +544,10 @@ func listItemColumns(alias string) []string {
 		alias + ".config_revision",
 		alias + ".system_account_id",
 		"COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, " + alias + ".system_account_id) AS system_account_name",
-		alias + ".provider_code",
-		"providers.name AS provider_name",
+		// B4 W2 行为键过渡投影（与 patch.go :304 同口径）：vendor 值域与旧
+		// providerCode 同名，新行取 vendor_code、legacy 行回落旧列。
+		"COALESCE(NULLIF(" + alias + ".vendor_code, ''), " + alias + ".provider_code, '') AS provider_code",
+		"vendors.name AS provider_name",
 		alias + ".provider_protocol_profile_id",
 		alias + ".protocol_code",
 		alias + ".protocol_version",
@@ -598,8 +600,8 @@ func listItemColumns(alias string) []string {
 		alias + ".authorization_instance_authorization_id AS authorization_id",
 		alias + ".authorization_instance_source_account_id AS authorization_instance_source_account_id",
 		"authorizations.effective_source_type AS authorization_effective_source_type",
-		"source_accounts.provider_code AS source_provider_code",
-		"source_providers.name AS source_provider_name",
+		"COALESCE(NULLIF(source_accounts.vendor_code, ''), source_accounts.provider_code, '') AS source_provider_code",
+		"source_vendors.name AS source_provider_name",
 		"source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id",
 		"source_accounts.protocol_code AS source_protocol_code",
 		"source_accounts.protocol_version AS source_protocol_version",
@@ -629,9 +631,17 @@ func listItemColumns(alias string) []string {
 // (Node account-management-list.repository.ts:324-325 — both dialects share
 // the plain LEFT JOIN and the `authorizations` alias). The source trio mirrors
 // Node :326-328 plus the COALESCE display joins :451-454 split into dedicated
-// `source_providers`/`source_proxy_profiles` aliases so owner rows keep the
+// `source_vendors`/`source_proxy_profiles` aliases so owner rows keep the
 // instance-frozen display values. Every join is LEFT and keyed on a unique
 // column, so pagination's pageSize+1 probe cannot fan out.
+//
+// 供应商名 JOIN 切 vendors（B4 ⑨，设计 §439：providers 表已更名收敛为
+// vendors 且 fresh DDL 无 providers，旧 JOIN 在 fresh 库直接 no such table）。
+// JOIN 键与投影走 B4 W2 行为键 COALESCE(vendor, provider)——与 patch.go 行读
+// (:304) 和本文件过滤列 (:763) 同一口径：新行 provider_code 停写、行为键取
+// vendor_code；legacy 行 vendor_code 为空回落旧列。generic 语义账户
+// （vendor_code 为 NULL 且旧列不在 vendors 值域）JOIN 不中，provider_name 走
+// LEFT JOIN 的 NULL（响应层 omitempty）。
 func (s *Store) listJoins() (cte, joins string) {
 	if s.pg {
 		joins = ` LEFT JOIN LATERAL (
@@ -667,15 +677,15 @@ func (s *Store) listJoins() (cte, joins string) {
 			ON system_accounts_ref.id = accounts.system_account_id
 		LEFT JOIN ` + s.table("proxy_profiles") + ` proxy_profiles
 			ON proxy_profiles.id = accounts.proxy_profile_id
-		LEFT JOIN ` + s.table("providers") + ` providers
-			ON providers.code = accounts.provider_code
+		LEFT JOIN ` + s.table("vendors") + ` vendors
+			ON vendors.code = COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '')
 		LEFT JOIN ` + s.table("resource_authorizations") + ` authorizations
 			ON authorizations.id = accounts.authorization_instance_authorization_id
 		LEFT JOIN ` + s.table("accounts") + ` source_accounts
 			ON source_accounts.id = accounts.authorization_instance_source_account_id
 			AND source_accounts.deleted_at IS NULL
-		LEFT JOIN ` + s.table("providers") + ` source_providers
-			ON source_providers.code = source_accounts.provider_code
+		LEFT JOIN ` + s.table("vendors") + ` source_vendors
+			ON source_vendors.code = COALESCE(NULLIF(source_accounts.vendor_code, ''), source_accounts.provider_code, '')
 		LEFT JOIN ` + s.table("proxy_profiles") + ` source_proxy_profiles
 			ON source_proxy_profiles.id = source_accounts.proxy_profile_id`
 	return cte, joins
@@ -840,7 +850,8 @@ func listSortColumn(field, nowLiteral string) string {
 	case "type":
 		return "accounts.type"
 	case "providerCode":
-		return "accounts.provider_code"
+		// B4 W2 行为键排序（与过滤列 :763 同口径）。
+		return "COALESCE(NULLIF(accounts.vendor_code, ''), accounts.provider_code, '')"
 	case "systemAccount":
 		return "COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, accounts.system_account_id)"
 	case "concurrency":

@@ -55,7 +55,6 @@ export function validateAccountLockConfigForm(form: AccountFormModel): string | 
 
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']
-  providerProtocolProfileId: AccountFormModel['providerProtocolProfileId']
   name?: string
   type: AccountFormModel['type']
   credentials: Record<string, unknown>
@@ -83,7 +82,12 @@ export type AccountSavePayload = {
   cloneSourceId?: string
 }
 
-export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type' | 'status'> & {
+// 过渡 DTO 收口（#B4 ⑫）：providerProtocolProfileId 是 legacy profile 面
+// 入参残留，后端创建链接受但忽略（协议身份由 connections 载荷推导，§1.1/§9.3），
+// 创建/更新载荷停止发送；草稿测试载荷（accountDraftTestPayload）与模型目录
+// 同步载荷仍需显式携带（后端草稿链按入参推导协议上下文，#B4 ⑩），OAuth
+// managed 创建（oauthmgmt parseManagedFields）仍必填消费，均不在停发范围。
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'type' | 'status'> & {
   status?: AccountSavePayload['status']
 }
 
@@ -300,7 +304,6 @@ export function buildAccountSavePayload(input: {
   const balancePayload = buildAccountBalancePayload(input.form)
   return {
     providerCode: input.form.providerCode,
-    providerProtocolProfileId: input.form.providerProtocolProfileId,
     name: input.form.name.trim() || undefined,
     type: input.form.type,
     credentials: accountCredentials(input),

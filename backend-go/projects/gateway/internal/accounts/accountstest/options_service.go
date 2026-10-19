@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
 // Manual test model options surface: the port of
@@ -17,11 +18,11 @@ import (
 // modules/accounts/account-test-endpoint-modes.ts +
 // modules/accounts/account-test-options.service.ts plus the catalog read
 // subset (provider-model-options.service.ts + model-catalog.service.ts
-// findProviderModelTestCatalogItemAsync). The catalog reads query the same
-// provider_model_catalog / custom_provider_models / providers tables the
-// providers slice serves; the accounts store reads them directly (same
-// pattern as requireEnabledProviderProtocolProfile) so the slice stays
-// self-contained without a cross-package dependency.
+// findProviderModelTestCatalogItemAsync). The catalog reads query the models
+// 单表（B4 ⑧，设计 §4：provider_model_catalog/custom_provider_models 两表已
+// 合并为 models，builtin/global/personal scope 承载可见性）与 vendors（§439，
+// providers 更名收敛），与 providers slice 同键同谓词；SQL 面自包含、mode 派
+// 生复用 providers.DeriveLegacyModeAndProtocols（与管理面目录投影同源不漂移）。
 
 // ManualTestContext mirrors AccountManualTestOptionsContext: the controlled
 // account projection the test-options surface consumes. Credentials are
@@ -645,48 +646,17 @@ type TestCatalogItem struct {
 // TestCatalogSourceCodes mirrors providerModelSourceCodesAsync for the
 // providerCode branch (modelCatalogSourceProviderCodesAsync)
 // （原根包私有方法 testCatalogSourceCodes，根包测试经由 Store 转发访问）.
-func (s *Service) TestCatalogSourceCodes(ctx context.Context, providerCode string) ([]string, error) {
+// B4 ⑧：与 providers.modelCatalogSourceProviderCodes 同构单值归一（设计 §3：
+// vendor_code 即目录归属维度，旧「openai 兼容目标聚合协议子供应商目录」与
+// hybrid 三族目录池的源扩展随 providers/provider_protocol_profiles 退役拆除
+// ——源码恒为归一化后的单值；hybrid/openai 不在 vendors 值域，目录查询自然
+// 返回空）。
+func (s *Service) TestCatalogSourceCodes(_ context.Context, providerCode string) ([]string, error) {
 	normalized := accountscore.NormalizeProviderToken(providerCode)
 	if normalized == "" {
 		return []string{}, nil
 	}
-	if normalized == accountscore.HybridProviderCode {
-		codes := []string{}
-		for _, pair := range [][2]string{
-			{accountscore.OpenAIProtocolCode, accountscore.OpenAIProtocolVersion},
-			{accountscore.AnthropicProviderCode, accountscore.AnthropicProtocolVersion},
-			{accountscore.GeminiProviderCode, accountscore.GeminiProtocolVersion},
-		} {
-			list, err := s.ProtocolProviderCodes(ctx, pair[0], pair[1])
-			if err != nil {
-				return nil, err
-			}
-			for _, code := range list {
-				token := accountscore.NormalizeProviderToken(code)
-				if token == "" || token == accountscore.HybridProviderCode {
-					continue
-				}
-				codes = append(codes, token)
-			}
-		}
-		return DedupeTestStrings(codes), nil
-	}
-	if normalized != accountscore.OpenAICompatibleProviderCode {
-		return []string{normalized}, nil
-	}
-	list, err := s.ProtocolProviderCodes(ctx, accountscore.OpenAIProtocolCode, accountscore.OpenAIProtocolVersion)
-	if err != nil {
-		return nil, err
-	}
-	codes := []string{}
-	for _, code := range list {
-		token := accountscore.NormalizeProviderToken(code)
-		if token == "" || token == normalized {
-			continue
-		}
-		codes = append(codes, token)
-	}
-	return DedupeTestStrings(append(codes, normalized)), nil
+	return []string{normalized}, nil
 }
 
 // DedupeTestStrings keeps first-occurrence order
@@ -702,31 +672,6 @@ func DedupeTestStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-// ProtocolProviderCodes mirrors listOpenAI/Anthropic/GeminiProtocolProviderCodesAsync:
-// enabled providers with an enabled profile on the protocol pair
-// （原根包私有方法 protocolProviderCodes，根包测试经由 Store 转发访问）.
-func (s *Service) ProtocolProviderCodes(ctx context.Context, protocolCode, protocolVersion string) ([]string, error) {
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT DISTINCT p.code
-		FROM `+s.store.Table("providers")+` p
-		JOIN `+s.store.Table("provider_protocol_profiles")+` ppp ON ppp.provider_code = p.code
-		WHERE p.enabled = 1 AND ppp.enabled = 1
-			AND ppp.protocol_code = ? AND ppp.protocol_version = ?
-		ORDER BY p.code ASC`), protocolCode, protocolVersion)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	codes := []string{}
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		codes = append(codes, code)
-	}
-	return codes, rows.Err()
 }
 
 // testCatalogAvailability mirrors the availability filter shared by the
@@ -786,20 +731,24 @@ func TestCatalogBuiltInSourceCodes(providerCode string, sourceCodes []string) []
 
 // ListBuiltInTestCatalogOptions mirrors listBuiltInProviderModelOptionsAsync
 // （原根包私有方法 listBuiltInTestCatalogOptions，根包测试经由 Store 转发访问）.
+// B4 ⑧：provider_model_catalog 并入 models 单表（设计 §4），builtin 臂 =
+// scope='builtin' 按 vendor_code 窗口，mode/supported_api_protocols 经
+// supported_endpoint_modes_json 逆映射派生（与 providers.listBuiltInCatalogModels
+// 同键同谓词，列名 public_model 即目录模型名）。
 func (s *Service) ListBuiltInTestCatalogOptions(ctx context.Context, providerCodes []string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
 	codes := NormalizeTestProviderCodeList(providerCodes)
 	if len(codes) == 0 {
 		return []TestOptionRow{}, nil
 	}
-	clauses := []string{"provider_code IN (" + accountscore.Placeholders(len(codes)) + ")"}
+	clauses := []string{"scope = 'builtin'", "vendor_code IN (" + accountscore.Placeholders(len(codes)) + ")"}
 	args := append([]any{}, accountscore.AnySlice(codes)...)
 	args = s.appendTestOptionTextFilter(&clauses, args, query)
 	args = append(args, selectedOrderArgs(query)...)
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT provider_code, model, mode, release_date, supported_api_protocols_json
-		FROM `+s.store.Table("provider_model_catalog")+`
+	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT COALESCE(vendor_code, '') AS provider_code, public_model AS model, supported_endpoint_modes_json, release_date
+		FROM `+s.store.Table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+s.testCatalogAvailability()+`
 		ORDER BY `+testSelectedOrderClause(query)+`CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
-			release_date DESC, lower(model) ASC, provider_code ASC, id ASC`), args...)
+			release_date DESC, lower(public_model) ASC, vendor_code ASC, id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -809,12 +758,18 @@ func (s *Service) ListBuiltInTestCatalogOptions(ctx context.Context, providerCod
 
 // ListCustomTestCatalogOptions mirrors listCustomProviderModelOptionsAsync
 // （原根包私有方法 listCustomTestCatalogOptions，根包测试经由 Store 转发访问）.
+// B4 ⑧：custom_provider_models 并入 models 单表，global/personal scope 窗口
+// （与 providers.listCustomModelRows 同谓词；custom 臂无 catalog_visible 过滤，
+// 沿旧表语义）。
 func (s *Service) ListCustomTestCatalogOptions(ctx context.Context, providerCodes []string, systemAccountID string, query ManualTestOptionsQuery) ([]TestOptionRow, error) {
 	codes := NormalizeTestProviderCodeList(providerCodes)
 	if len(codes) == 0 {
 		return []TestOptionRow{}, nil
 	}
-	clauses := []string{"provider_code IN (" + accountscore.Placeholders(len(codes)) + ")"}
+	clauses := []string{
+		"scope IN ('global', 'personal')",
+		"vendor_code IN (" + accountscore.Placeholders(len(codes)) + ")",
+	}
 	args := append([]any{}, accountscore.AnySlice(codes)...)
 	if trimmed := strings.TrimSpace(systemAccountID); trimmed != "" {
 		clauses = append(clauses, "((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
@@ -824,12 +779,12 @@ func (s *Service) ListCustomTestCatalogOptions(ctx context.Context, providerCode
 	}
 	args = s.appendTestOptionTextFilter(&clauses, args, query)
 	args = append(args, selectedOrderArgs(query)...)
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT provider_code, model, scope, mode, release_date, supported_api_protocols_json
-		FROM `+s.store.Table("custom_provider_models")+`
+	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT COALESCE(vendor_code, '') AS provider_code, public_model AS model, scope, supported_endpoint_modes_json, release_date
+		FROM `+s.store.Table("models")+`
 		WHERE `+strings.Join(clauses, " AND ")+` AND status = 'active'
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.TestTodayText()+`)
 		ORDER BY `+testSelectedOrderClause(query)+`CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
-			release_date DESC, lower(model) ASC, provider_code ASC, scope ASC, id ASC`), args...)
+			release_date DESC, lower(public_model) ASC, vendor_code ASC, scope ASC, id ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -839,19 +794,19 @@ func (s *Service) ListCustomTestCatalogOptions(ctx context.Context, providerCode
 
 // appendTestOptionTextFilter mirrors the WHERE side of the options queries:
 // the (selectedIds OR keyword LIKE) clause is pushed only when a keyword is
-// present.
+// present. models 单表列名 public_model（WHERE 阶段不可引用 SELECT 别名 model）。
 func (s *Service) appendTestOptionTextFilter(clauses *[]string, args []any, query ManualTestOptionsQuery) []any {
 	if query.Keyword == "" {
 		return args
 	}
 	parts := []string{}
 	if len(query.SelectedIDs) > 0 {
-		parts = append(parts, "model IN ("+accountscore.Placeholders(len(query.SelectedIDs))+")")
+		parts = append(parts, "public_model IN ("+accountscore.Placeholders(len(query.SelectedIDs))+")")
 		for _, id := range query.SelectedIDs {
 			args = append(args, id)
 		}
 	}
-	parts = append(parts, "lower(model) LIKE ?")
+	parts = append(parts, "lower(public_model) LIKE ?")
 	args = append(args, "%"+strings.ToLower(query.Keyword)+"%")
 	*clauses = append(*clauses, "("+strings.Join(parts, " OR ")+")")
 	return args
@@ -876,22 +831,24 @@ func scanTestOptionRows(rows *sql.Rows, fixedScope string) ([]TestOptionRow, err
 	items := []TestOptionRow{}
 	for rows.Next() {
 		var row TestOptionRow
-		var mode, releaseDate, protocols sql.NullString
+		var endpointModesJSON, releaseDate sql.NullString
 		var scope sql.NullString
 		var err error
 		if fixedScope != "" {
-			err = rows.Scan(&row.Provider, &row.Model, &mode, &releaseDate, &protocols)
+			err = rows.Scan(&row.Provider, &row.Model, &endpointModesJSON, &releaseDate)
 			row.Scope = fixedScope
 		} else {
-			err = rows.Scan(&row.Provider, &row.Model, &scope, &mode, &releaseDate, &protocols)
+			err = rows.Scan(&row.Provider, &row.Model, &scope, &endpointModesJSON, &releaseDate)
 			row.Scope = scope.String
 		}
 		if err != nil {
 			return nil, err
 		}
-		row.Mode = mode.String
+		// 旧 (mode, supported_api_protocols_json) 物理列已并入 models 单表的
+		// supported_endpoint_modes_json，读侧逆映射派生（与 providers 目录投影
+		// 同源，管理面/chat 面/测试面不漂移）。
+		row.Mode, row.SupportedAPIProtocols = providers.DeriveLegacyModeAndProtocols(TestParseJSONArray(endpointModesJSON))
 		row.ReleaseDate = releaseDate.String
-		row.SupportedAPIProtocols = TestParseJSONArray(protocols)
 		items = append(items, row)
 	}
 	return items, rows.Err()
@@ -952,13 +909,16 @@ type TestCatalogCandidate struct {
 
 // CollectTestCatalogCandidates mirrors the built-in + custom catalog sweep
 // （原根包私有方法 collectTestCatalogCandidates，根包测试经由 Store 转发访问）.
+// B4 ⑧：双臂切 models 单表——builtin 臂 scope='builtin'；custom 臂
+// scope IN ('global','personal') 排除 builtin 行（旧 custom_provider_models 表
+// 天然无 builtin 行），owner 窗口沿旧表语义不加（与 options 臂不同）。
 func (s *Service) CollectTestCatalogCandidates(ctx context.Context, builtInCodes, sourceCodes []string, model, availability string) ([]TestCatalogCandidate, error) {
 	candidates := []TestCatalogCandidate{}
 	if codes := NormalizeTestProviderCodeList(builtInCodes); len(codes) > 0 {
-		rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT model, mode, supported_api_protocols_json, release_date
-			FROM `+s.store.Table("provider_model_catalog")+`
-			WHERE provider_code IN (`+accountscore.Placeholders(len(codes))+`) AND model = ?`+availability+`
-			ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC`), append(accountscore.AnySlice(codes), model)...)
+		rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT public_model AS model, supported_endpoint_modes_json, release_date
+			FROM `+s.store.Table("models")+`
+			WHERE scope = 'builtin' AND vendor_code IN (`+accountscore.Placeholders(len(codes))+`) AND public_model = ?`+availability+`
+			ORDER BY vendor_code ASC, catalog_order ASC, public_model ASC, id ASC`), append(accountscore.AnySlice(codes), model)...)
 		if err != nil {
 			return nil, err
 		}
@@ -969,11 +929,11 @@ func (s *Service) CollectTestCatalogCandidates(ctx context.Context, builtInCodes
 		}
 		candidates = append(candidates, collected...)
 	}
-	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT model, mode, supported_api_protocols_json, release_date, scope
-		FROM `+s.store.Table("custom_provider_models")+`
-		WHERE provider_code IN (`+accountscore.Placeholders(len(sourceCodes))+`) AND model = ? AND status = 'active'
+	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT public_model AS model, supported_endpoint_modes_json, release_date, scope
+		FROM `+s.store.Table("models")+`
+		WHERE scope IN ('global', 'personal') AND vendor_code IN (`+accountscore.Placeholders(len(sourceCodes))+`) AND public_model = ? AND status = 'active'
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.TestTodayText()+`)
-		ORDER BY provider_code ASC, scope ASC, lower(model) ASC, id ASC`),
+		ORDER BY vendor_code ASC, scope ASC, lower(public_model) ASC, id ASC`),
 		append(accountscore.AnySlice(sourceCodes), model)...)
 	if err != nil {
 		return nil, err
@@ -990,23 +950,21 @@ func scanTestCandidates(rows *sql.Rows, fixedScope string, withScope bool) ([]Te
 	candidates := []TestCatalogCandidate{}
 	for rows.Next() {
 		var (
-			item        TestCatalogItem
-			mode        sql.NullString
-			protocols   sql.NullString
-			releaseDate sql.NullString
-			scope       sql.NullString
+			item              TestCatalogItem
+			endpointModesJSON sql.NullString
+			releaseDate       sql.NullString
+			scope             sql.NullString
 		)
 		var err error
 		if withScope {
-			err = rows.Scan(&item.Model, &mode, &protocols, &releaseDate, &scope)
+			err = rows.Scan(&item.Model, &endpointModesJSON, &releaseDate, &scope)
 		} else {
-			err = rows.Scan(&item.Model, &mode, &protocols, &releaseDate)
+			err = rows.Scan(&item.Model, &endpointModesJSON, &releaseDate)
 		}
 		if err != nil {
 			return nil, err
 		}
-		item.Mode = mode.String
-		item.SupportedAPIProtocols = TestParseJSONArray(protocols)
+		item.Mode, item.SupportedAPIProtocols = providers.DeriveLegacyModeAndProtocols(TestParseJSONArray(endpointModesJSON))
 		entry := TestCatalogCandidate{item: item, releaseDate: releaseDate.String, scope: fixedScope}
 		if withScope {
 			entry.scope = scope.String

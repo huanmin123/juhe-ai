@@ -10,9 +10,10 @@ package accounts
 // 随 legacy 面拆除：模式声明联动由连接行词表（§2.2）、映射 §5.3 与健康检查
 // 三字段写侧校验承载。
 //
-// AccountModelCatalogReader 端口类型保留为编译兼容遗留（cmd 组合根
-// compose.go 仍装配该端口，cmd 生产代码本批禁改）；断言链已不消费端口，端口
-// 拆除随组合根收口切片处理。
+// AccountModelCatalogReader 端口类型保留为编译兼容遗留（B4 ⑥：cmd 组合根
+// 装配已于组合根收口切片拆除，断言链也不再消费端口；端口类型与
+// SetModelCatalogReader 保存位随 accounts Store 的 s.modelCatalog 字段退役，
+// 拆字段属 Store 列面收口）。
 //
 // gpt 请求覆盖（service_tier_override / reasoning_effort_override）的目录
 // 断言层（归档 account-gpt-request-overrides.validation.ts）已于 2026-10-18
@@ -39,14 +40,14 @@ type AccountModelCatalogFact struct {
 }
 
 // AccountModelCatalogReader ports listProviderModelCatalog(Async)
-// (model-catalog.service.ts). 编译兼容遗留（见文件头）：cmd 组合根仍装配，
-// 断言链不再调用。
+// (model-catalog.service.ts). 编译兼容遗留（见文件头）：组合根装配已拆除，
+// 断言链不调用。
 type AccountModelCatalogReader interface {
 	ListAccountModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]AccountModelCatalogFact, error)
 }
 
 // SetModelCatalogReader wires the catalog port (composition-root handover).
-// 编译兼容遗留（见文件头）：端口仅被保存，断言链不消费。
+// 编译兼容遗留（见文件头）：组合根装配已拆除，端口仅被保存，断言链不消费。
 func (s *Store) SetModelCatalogReader(reader AccountModelCatalogReader) {
 	s.modelCatalog = reader
 }

@@ -311,7 +311,7 @@ func TestW7AScriptedSoftDeleteOrphanAndDeleteBusinessArms(t *testing.T) {
 		{cols: accCols, rows: [][]driver.Value{rootRow}},
 		{affected: 2},         // group_accounts
 		{affected: 1},         // account_supported_models
-		{affected: 1},         // account_model_mappings
+		{affected: 1},         // account_entry_mappings（§9.8 表迁移，步序同 relationTables）
 		{affected: 1},         // account_tag_bindings
 		{affected: 1},         // group_accounts(auth)
 		{affected: 1},         // sources
