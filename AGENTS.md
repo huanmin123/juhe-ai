@@ -20,7 +20,7 @@
 
 - 这里是 `juhe-ai`，定位为轻量级 OpenAI 兼容中转与账号管理项目。
 - 前端使用 Vue 3 + TypeScript + Ant Design Vue；后端使用 Go：`gateway`（管理面、公开面与 `/v1` 网关链主入口）、`jobs`（后台任务与探针/统计/retention 任务族）、`maintenance`（schema/seed 一次性 CLI）。
-- 当前启用 OpenAI 供应商，支持 OpenAI OAuth 与 OpenAI API Key 两种账户创建方式；其他供应商保留架构扩展空间。
+- 供应商与账户创建：已接入 gpt、xai（Grok）、anthropic、gemini、deepseek、glm、minimax、volcengine、qwen 九家真实厂商（未知厂商按 generic_http 通用连接器接入）；账户创建支持 API Key（九家全覆盖）与 OAuth（gpt / gemini / anthropic / xai），组合、能力域与 endpoint mode 以连接器注册表为准（[供应商与上游协议面重构设计](docs/functions/供应商与上游协议面重构设计.md) §2、[官方可落地 OAuth 账户接入设计](docs/functions/官方可落地OAuth账户接入设计.md)）。
 
 ## 核心业务边界
 
