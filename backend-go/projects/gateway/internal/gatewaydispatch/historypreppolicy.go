@@ -33,6 +33,19 @@ type HistoryPrepPolicy struct {
 	SkipIfProcessed bool
 }
 
+// CodexOAuthVendorEligible 判定 openai 协议 OAuth 账户是否套用 GPT/Codex
+// 归一化（GPT/Codex 归一化、Codex 头装配与 sanitize 历史清理只属于 gpt
+// 供应商账户；xAI（Grok）OAuth 等已知非 gpt 厂商一律排除，走「原样透传」
+// 口径，docs/functions/xAI账号接入.md）。
+//
+// 迁移期兼容语义：存量账户 vendor_code 回填迁移尚未正式执行（待办 B1），
+// 空值代表「未知/未回填」，必须维持既有 Codex 归一化行为以免误伤存量
+// OpenAI OAuth 账户；回填迁移完成后收口为只保留 "gpt"（空值随迁移清零，
+// 不再表达合法形态）。
+func CodexOAuthVendorEligible(vendorCode string) bool {
+	return vendorCode == "gpt" || vendorCode == ""
+}
+
 // HistoryPrepPolicyForRequest 由账户协议形态与请求 compat/endpoint family
 // 计算历史准备策略。纯函数：只读取入参，无副作用；compat/family 的画像
 // 字符串比较只允许出现在这里（内核其余文件不得再出现）。
@@ -45,24 +58,24 @@ type HistoryPrepPolicy struct {
 //  2. Codex→API Key（compat=codex_responses + responses 族 + 非 oauth）：
 //     Front=sanitize_inline，Adapter=preserve，Post=sanitize，
 //     SkipIfProcessed=true；
-//  3. Codex→OAuth（defer 条件命中）：Front=preserve，Adapter=sanitize，
-//     Post=preserve，SkipIfProcessed=true；
-//  4. OAuth 能力门拒绝组合（compat 非空非 codex_responses + oauth）：生产被
-//     chain_driver OAuth 能力门淘汰、静态不可达，防御性归入第 3 行同值。
+//  3. Codex→OAuth（defer 条件命中，vendor gpt/空）：Front=preserve，
+//     Adapter=sanitize，Post=preserve，SkipIfProcessed=true；
+//  4. OAuth 能力门拒绝组合（compat 非空非 codex_responses + gpt 形态
+//     oauth）：生产被 chain_driver OAuth 能力门淘汰、静态不可达，防御性
+//     归入第 3 行同值。
 //
-// oauth 分支按 account.Type 收敛（第 3 行 defer 判定的 vendor/profile 要素
-// 在生产 OpenAI OAuth 账户上全部满足）；归并的两类防御形态与第 4 行同一
-// 原则，且保持结构等价：
-//   - oauth 非 GPT/openai-v1 画像形态（可构造、生产不存在）：改造前 Front
-//     守卫命中但 hook 恒 nil 为 no-op、Post 被适配器已处理标记跳过；
-//   - oauth + compat 非空非 codex_responses（能力门淘汰）。
-//     该收敛同时保证 chain_driver isCodexOAuthAccount 分支内 Adapter 恒为
-//     sanitize，适配器选项取值与改造前逐点一致（已处理标记写入不变）。
+// oauth 分支按 account.Type + CodexOAuthVendorEligible 收敛：gpt/空 vendor
+// 的 oauth 账户走第 3/4 行（第 3 行 defer 判定的 vendor/profile 要素在
+// 生产 OpenAI OAuth 账户上全部满足）；已知非 gpt 供应商的 oauth 账户
+// （如 xAI Grok OAuth，本批起为真实生产形态）不再走 OAuth 特化行，落入
+// 与非 oauth 账户一致的判定路径（第 2 行或第 1 行）。这些行在 SanitizeCodex
+// History hook 生产恒 nil 下 Front/Post 均为 no-op，对原样透传 body 无实
+// 际改写；hook 非-nil 仅存在于测试注入形态。
 func HistoryPrepPolicyForRequest(account AccountCandidate, requestClientCompatibility, endpointFamily string) HistoryPrepPolicy {
-	if account.Type == "oauth" {
-		// Codex→OAuth（defer 命中）及上述两类防御归并形态。适配器标记由
-		// OAuth adapter 在 Adapter=sanitize 下写入，Post 依 SkipIfProcessed
-		// 语义跳过，表达为 Post=preserve。
+	if account.Type == "oauth" && CodexOAuthVendorEligible(account.VendorCode) {
+		// Codex→OAuth（defer 命中）及防御归并形态。适配器标记由 OAuth
+		// adapter 在 Adapter=sanitize 下写入，Post 依 SkipIfProcessed 语义
+		// 跳过，表达为 Post=preserve。
 		return HistoryPrepPolicy{
 			Front:           HistoryPrepStagePreserve,
 			Adapter:         HistoryPrepStageSanitize,

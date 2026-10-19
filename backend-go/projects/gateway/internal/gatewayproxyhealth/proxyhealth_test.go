@@ -89,6 +89,81 @@ func TestGatewayUpstreamBucketKeys(t *testing.T) {
 	}
 }
 
+// TestGatewayUpstreamBucketKeysVendorBoundary 钉住 oauth 账户上游桶键的供应
+// 商边界（docs/functions/xAI账号接入.md）：xAI（Grok）OAuth 的真实上游主机是
+// cli-chat-proxy.grok.com，失败信号必须按真实 BaseURL 入桶（与普通账户同推导），
+// 不得记入 GPT 管理式 OAuth 的 ChatGPT Codex 常量桶跨主机混算；gpt 与迁移期
+// 空 vendor 仍固定 chatgpt.com codex 桶（存量行为逐点不变）。
+func TestGatewayUpstreamBucketKeysVendorBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  accountFixture
+		expected []string
+	}{
+		{
+			name: "xai oauth buckets by real base url",
+			fixture: accountFixture{
+				id: "acc_x1", systemAccountID: "sys1", providerCode: "openai",
+				protocolCode: "openai", protocolVersion: "v1", vendorCode: "xai",
+				baseURL: "https://cli-chat-proxy.grok.com/v1", accountType: "oauth",
+			},
+			expected: []string{
+				"baseUrl:https://cli-chat-proxy.grok.com/v1:owner:sys1",
+				"provider:openai:owner:sys1",
+			},
+		},
+		{
+			name: "xai oauth base url still normalized like plain accounts",
+			fixture: accountFixture{
+				id: "acc_x2", systemAccountID: "sys1", providerCode: "openai",
+				protocolCode: "openai", protocolVersion: "v1", vendorCode: "xai",
+				baseURL: "https://cli-chat-proxy.grok.com", accountType: "oauth",
+			},
+			expected: []string{
+				"baseUrl:https://cli-chat-proxy.grok.com/v1:owner:sys1",
+				"provider:openai:owner:sys1",
+			},
+		},
+		{
+			name: "gpt oauth keeps chatgpt codex constant bucket",
+			fixture: accountFixture{
+				id: "acc_g1", systemAccountID: "sys1", providerCode: "openai",
+				protocolCode: "openai", protocolVersion: "v1", vendorCode: "gpt",
+				baseURL: "https://chatgpt.com/backend-api", accountType: "oauth",
+			},
+			expected: []string{
+				"baseUrl:https://chatgpt.com/backend-api/codex:owner:sys1",
+				"provider:openai:owner:sys1",
+			},
+		},
+		{
+			name: "empty vendor oauth keeps chatgpt codex constant bucket",
+			fixture: accountFixture{
+				id: "acc_e1", systemAccountID: "sys1", providerCode: "openai",
+				protocolCode: "openai", protocolVersion: "v1",
+				baseURL: "https://api.openai.com", accountType: "oauth",
+			},
+			expected: []string{
+				"baseUrl:https://chatgpt.com/backend-api/codex:owner:sys1",
+				"provider:openai:owner:sys1",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GatewayUpstreamBucketKeys(tt.fixture.build(), BucketScopeUpstream)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("keys = %v, want %v", got, tt.expected)
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Fatalf("keys[%d] = %q, want %q", i, got[i], tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
 func TestNormalizeOpenAIBaseURLForBucket(t *testing.T) {
 	tests := []struct {
 		name     string

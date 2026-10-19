@@ -4,18 +4,31 @@ import (
 	"testing"
 )
 
-// HistoryPrepPolicyForRequest 五形态取值表测试（调度内核通用化批次 3b，
-// docs/functions/调度内核通用化设计.md §5.4）。原
-// TestDefersCodexResponsesHistorySanitization 的四个场景已并入本表：
+// HistoryPrepPolicyForRequest 取值表测试（调度内核通用化批次 3b，
+// docs/functions/调度内核通用化设计.md §5.4；xAI 供应商边界批按
+// CodexOAuthVendorEligible 口径补 xAI Grok OAuth 与迁移期空 vendor 形态）。
+// 原 TestDefersCodexResponsesHistorySanitization 的四个场景已并入本表：
 // defer 判定被策略计算取代，判定口径见 historypreppolicy.go 注释。
 func TestHistoryPrepPolicyForRequest(t *testing.T) {
 	apiKey := testAccounts("prep-policy-a")[0]
 	oauthGPTShape := testAccounts("prep-policy-o")[0]
 	oauthGPTShape.Type = "oauth"
 	oauthGPTShape.ProviderCode = "gpt"
+	oauthGPTShape.VendorCode = "gpt"
 	oauthGPTShape.ProtocolCode = "openai"
 	oauthGPTShape.ProtocolVersion = "v1"
 	oauthGPTShape.ProviderProtocolProfileID = GPTOpenAIV1ProfileID
+	// 迁移期兼容形态：vendor_code 回填迁移尚未执行，空值视同 gpt 形态
+	// （维持既有 sanitize 行为，见 CodexOAuthVendorEligible）。
+	oauthEmptyVendorShape := oauthGPTShape
+	oauthEmptyVendorShape.ID = "prep-policy-o-empty"
+	oauthEmptyVendorShape.VendorCode = ""
+	// 本批起为真实生产形态：xAI（Grok）OAuth 账户，协议码同为 openai。
+	oauthXaiShape := oauthGPTShape
+	oauthXaiShape.ID = "prep-policy-o-xai"
+	oauthXaiShape.ProviderCode = "xai"
+	oauthXaiShape.VendorCode = "xai"
+	oauthXaiShape.ProviderProtocolProfileID = "profile_xai_openai_v1"
 
 	cases := []struct {
 		name    string
@@ -65,10 +78,19 @@ func TestHistoryPrepPolicyForRequest(t *testing.T) {
 			want: HistoryPrepPolicy{Front: HistoryPrepStagePreserve, Adapter: HistoryPrepStageSanitize, Post: HistoryPrepStagePreserve, SkipIfProcessed: true},
 		},
 		{
-			name:    "oauth 非 GPT 画像形态（可构造、生产不存在）归并 defer 同值，适配器 sanitize 保持",
-			account: AccountCandidate{ID: "prep-policy-x", Type: "oauth", ProviderCode: "other", ProtocolCode: "openai", ProtocolVersion: "v1"},
-			compat:  "codex_responses", family: "responses",
+			name:    "迁移期兼容：空 vendor oauth 与 gpt 形态同归并（回填迁移未执行）",
+			account: oauthEmptyVendorShape, compat: "codex_responses", family: "responses",
 			want: HistoryPrepPolicy{Front: HistoryPrepStagePreserve, Adapter: HistoryPrepStageSanitize, Post: HistoryPrepStagePreserve, SkipIfProcessed: true},
+		},
+		{
+			name:    "xAI Grok OAuth：codex_responses + responses 族落到与非 oauth 一致的 Codex→API Key 行（hook 生产恒 nil 为 no-op）",
+			account: oauthXaiShape, compat: "codex_responses", family: "responses",
+			want: HistoryPrepPolicy{Front: HistoryPrepStageSanitizeInline, Adapter: HistoryPrepStagePreserve, Post: HistoryPrepStageSanitize, SkipIfProcessed: true},
+		},
+		{
+			name:    "xAI Grok OAuth：compat 为空落到与非 oauth 一致的全 preserve",
+			account: oauthXaiShape, compat: "", family: "chat",
+			want: HistoryPrepPolicy{Front: HistoryPrepStagePreserve, Adapter: HistoryPrepStagePreserve, Post: HistoryPrepStagePreserve, SkipIfProcessed: false},
 		},
 	}
 	for _, tc := range cases {

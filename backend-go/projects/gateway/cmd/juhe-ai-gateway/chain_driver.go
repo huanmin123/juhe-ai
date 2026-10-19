@@ -624,8 +624,9 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		// 调度内核通用化批次 3b：适配器历史清理选项改由通用 HistoryPrepPolicy
 		// 承载（单一来源为 gatewaydispatch.HistoryPrepPolicyForRequest 纯函数，
 		// 此处按链面已有信息重算）。isCodexOAuthAccount 分支的账户均为 oauth
-		// 形态，策略 Adapter 恒为 sanitize，选项取值与改造前常量 true 逐点
-		// 一致（OAuth adapter 的已处理标记写入不变）。
+		// + eligible vendor（gpt/迁移期空值）形态，策略 Adapter 恒为 sanitize，
+		// 选项取值与改造前常量 true 逐点一致（OAuth adapter 的已处理标记写入
+		// 不变）；非 gpt 供应商 oauth 账户在分支外走 preserve 口径。
 		historyPrepPolicy := gatewaydispatch.HistoryPrepPolicyForRequest(account, requestClientCompatibility, gatewaydispatch.GatewayRequestEndpointFamily(req))
 		parts, err := gatewaydispatch.BuildOpenAIOAuthCodexRequestParts(req, req.HTTP.Header, codexAccountOf(account), codexIdentityOf(account), gatewaydispatch.OpenAIOAuthCodexRequestOptions{
 			ModelOverride:                    modelOverride,
@@ -723,7 +724,45 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	// 注入发生在全部既有 body 组装/改写（兼容体、模型映射、gpt 覆盖、reasoning
 	// 归一）之后、发出之前，不回写请求级 body 缓存（候选轮换语义不变）。
 	body = chainMaybeInjectChatStreamUsageOption(req, account, modelMapping, body)
+	// xAI（Grok）OAuth 透传出站的 Grok CLI 身份三头（xAI 账号接入文档口径，
+	// 见 applyXaiGrokOAuthIdentityHeaders）：仅按账户与目标主机条件注入，
+	// body 不再改写。
+	applyXaiGrokOAuthIdentityHeaders(headers, account)
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+}
+
+// xaiGrokCLIOAuthUpstreamHost 是 xAI Grok CLI OAuth 上游主机（xAI 账号接入
+// 文档：仅当目标主机精确为该主机时补充 CLI 身份头；api.x.ai 与自定义主机
+// 不得携带）。与 upstreamidentity.ApplySystemClientHeaders 的 xai oauth 分支
+// 同源（identity.go EqualFold 精确主机匹配）。
+const xaiGrokCLIOAuthUpstreamHost = "cli-chat-proxy.grok.com"
+
+// applyXaiGrokOAuthIdentityHeaders 对 xAI（Grok）OAuth 账户的通用透传出站
+// 补充 Grok CLI 身份三头（docs/functions/xAI账号接入.md「路由与身份」）：
+// X-XAI-Token-Auth: xai-grok-cli、x-grok-client-version 与
+// xai-grok-workspace/<version> User-Agent，版本取
+// upstreamidentity.EffectiveGrokCLIVersion()（内置锚点 + 手动/自动跟版覆盖
+// 同源）。触发条件：账户为 oauth 且 vendor 为 xai，目标主机（账户连接行
+// BaseURL）精确等于 xaiGrokCLIOAuthUpstreamHost；其余条件（api.x.ai、自定义
+// 主机、非 xai oauth 账户）一律不注入。
+//
+// 采用 Set（覆盖）而非「客户端未带 UA 才注入」：主链透传保留客户端原 UA，
+// 而上游对 cli-chat-proxy.grok.com 强制 Grok CLI 版本门槛（低于门槛返回
+// 426 Upgrade Required），客户端 UA 不满足门槛；覆盖语义对齐主链 anthropic
+// OAuth CLI 身份先例（applyAnthropicOAuthCliIdentityHeaders）。头名与
+// upstreamidentity 包 xai 分支一致；不复制版本字面量（版本守卫测试锁定）。
+func applyXaiGrokOAuthIdentityHeaders(headers http.Header, account gatewaydispatch.AccountCandidate) {
+	if headers == nil || account.Type != "oauth" || account.VendorCode != "xai" {
+		return
+	}
+	parsed, err := url.Parse(strings.TrimSpace(account.BaseURL))
+	if err != nil || !strings.EqualFold(parsed.Hostname(), xaiGrokCLIOAuthUpstreamHost) {
+		return
+	}
+	grokVersion := upstreamidentity.EffectiveGrokCLIVersion()
+	headers.Set("User-Agent", "xai-grok-workspace/"+grokVersion)
+	headers.Set("X-XAI-Token-Auth", "xai-grok-cli")
+	headers.Set("X-Grok-Client-Version", grokVersion)
 }
 
 // chainMaybeInjectChatStreamUsageOption 判定本次出站是否满足注入条件并注入
@@ -986,9 +1025,17 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	//（codex_responses 列）上挤掉，或把 codex 客户端恒淘汰（列 openai_standard
 	// 的存量数据）——两个方向都与 Node 语义冲突，故不在此比较。
 	// D-99 eliminated 裁决（Node gpt/driver.ts accountSupportsRequest）：
-	// D-99 eliminated 裁决（Node gpt/driver.ts accountSupportsRequest）：
-	// OAuth 账户只服务 codex_responses 客户端形态，其他客户端兼容类直接淘汰。
-	if account.Type == "oauth" && requestClientCompatibility != "" &&
+	// GPT/Codex 管理式 OAuth 只服务 codex_responses 客户端形态，其他客户端
+	// 兼容类直接淘汰。供应商边界：本门按
+	// gatewaydispatch.CodexOAuthVendorEligible 收窄到 gpt/迁移期空 vendor 的
+	// oauth 账户（与 isCodexOAuthAccount 同判据）；xAI（Grok）OAuth 等已知
+	// 非 gpt 供应商的 oauth 账户不再被本门淘汰——普通 openai_standard 客户端
+	// 的 /v1/responses 由其承接（docs/functions/xAI账号接入.md 协议边界），
+	// /chat/completions 仍由账户 responses-only endpoint modes 阻断
+	//（endpointModeMismatchReason → endpoint_mode_unsupported），本门不承担
+	// 端点面职责。
+	if account.Type == "oauth" && gatewaydispatch.CodexOAuthVendorEligible(account.VendorCode) &&
+		requestClientCompatibility != "" &&
 		!strings.EqualFold(requestClientCompatibility, "codex_responses") {
 		return "oauth_account_client_compatibility_unsupported"
 	}
@@ -1359,8 +1406,15 @@ func clientUpstreamBody(req *gatewaypreauth.GatewayRequest) []byte {
 	return nil
 }
 
+// isCodexOAuthAccount 判定账户是否走 GPT/Codex OAuth 归一化装配：oauth +
+// openai 协议 + 供应商资格（gatewaydispatch.CodexOAuthVendorEligible）。
+// 供应商边界（xAI 账号接入文档口径）：已知非 gpt 供应商的 openai 协议
+// OAuth 账户（如 xAI Grok OAuth，协议码同为 openai）不得进入本分支的
+// Codex 头装配与 body 归一化，保持原样透传 + Grok CLI 身份头口径。
 func isCodexOAuthAccount(account gatewaydispatch.AccountCandidate) bool {
-	return account.Type == "oauth" && normalizeProtocol(account.ProtocolCode) == driverProtocolOpenAI
+	return account.Type == "oauth" &&
+		normalizeProtocol(account.ProtocolCode) == driverProtocolOpenAI &&
+		gatewaydispatch.CodexOAuthVendorEligible(account.VendorCode)
 }
 
 // codexAccountOf 裁剪运行时账户候选为 codex 归一化输入；VendorCode 随
