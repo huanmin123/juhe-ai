@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
@@ -800,21 +801,29 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 		account              chainMediaJobAccount
 		credentialsEncrypted string
 		deletedAt            string
+		healthCheckPreset    string
 	)
-	row := m.db.QueryRowContext(ctx, `SELECT id, system_account_id, COALESCE(vendor_code, ''),
-		COALESCE(provider_protocol_profile_id, ''), COALESCE(protocol_code, ''), COALESCE(protocol_version, ''),
-		type, status, COALESCE(capability_domain, 'chat'), COALESCE(health_check_endpoint_mode, ''),
-		COALESCE(cooldown_until, ''), COALESCE(credentials_encrypted, ''), COALESCE(deleted_at, ''),
-		COALESCE(proxy_profile_id, '')
-		FROM `+m.mediaAccountsTable()+` WHERE id = ?`, accountID)
+	// provider_protocol_profile_id 列已退役（设计 §2.1/§9.11）：档案身份由
+	// 健康检查连接的 preset 确定性派生（与 accounts/patch.go 同源映射）。
+	row := m.db.QueryRowContext(ctx, `SELECT accounts.id, accounts.system_account_id, COALESCE(accounts.vendor_code, ''),
+		COALESCE(conn.connection_preset_code, ''), COALESCE(accounts.protocol_code, ''), COALESCE(accounts.protocol_version, ''),
+		accounts.type, accounts.status, COALESCE(accounts.capability_domain, 'chat'), COALESCE(accounts.health_check_endpoint_mode, ''),
+		COALESCE(accounts.cooldown_until, ''), COALESCE(accounts.credentials_encrypted, ''), COALESCE(accounts.deleted_at, ''),
+		COALESCE(accounts.proxy_profile_id, '')
+		FROM `+m.mediaAccountsTable()+` accounts
+		LEFT JOIN `+m.mediaConnectionsTable()+` conn ON conn.id = accounts.health_check_connection_id
+		WHERE accounts.id = ?`, accountID)
 	if err := row.Scan(&account.ID, &account.OwnerSystemAccountID, &account.ProviderCode,
-		&account.ProviderProtocolProfileID, &account.ProtocolCode, &account.ProtocolVersion,
+		&healthCheckPreset, &account.ProtocolCode, &account.ProtocolVersion,
 		&account.Type, &account.Status, &account.CapabilityDomain, &account.HealthCheckEndpointMode,
 		&account.CooldownUntil, &credentialsEncrypted, &deletedAt, &account.ProxyProfileID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("水合媒体任务账户失败: %w", err)
+	}
+	if profileID, ok := exactkeyprobe.ConnectionPresetProfileID(healthCheckPreset); ok {
+		account.ProviderProtocolProfileID = profileID
 	}
 	account.Deleted = strings.TrimSpace(deletedAt) != ""
 	credentials := map[string]any{}
@@ -836,6 +845,14 @@ func (m *mediaJobsRuntime) mediaAccountsTable() string {
 		return "juhe_business.accounts"
 	}
 	return "accounts"
+}
+
+// mediaConnectionsTable 按方言限定 account_connections 表名。
+func (m *mediaJobsRuntime) mediaConnectionsTable() string {
+	if m.postgres {
+		return "juhe_business.account_connections"
+	}
+	return "account_connections"
 }
 
 // mediaJobProxyUnavailableError 标记任务面出站代理解析失败（档案缺失/停用/
