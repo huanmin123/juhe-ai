@@ -124,7 +124,9 @@ func newMemoryProxyHealth(clock *fakeClock) (*ProxyHealthService, *MemoryRuntime
 func newMemoryLatencyService(clock *fakeClock) (*LatencyDegradationService, *MemoryRuntimeStateStore) {
 	store := NewMemoryRuntimeStateStore(clock.Now)
 	return NewLatencyDegradationService(store, clock.Now, LatencyDegradationOptions{
-		LockRetryDelay: func(int) {},
+		// 真实短暂让出：无延迟重试在满包并发下会让同一索引锁的 50 次尝试
+		// 全部落在持有者释放前（逐 key 清理并发时报「索引锁获取失败」）。
+		LockRetryDelay: func(int) { time.Sleep(200 * time.Microsecond) },
 		Random:         func() float64 { return 0.5 },
 	}), store
 }

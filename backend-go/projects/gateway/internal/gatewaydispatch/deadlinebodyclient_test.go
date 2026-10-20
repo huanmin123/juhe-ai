@@ -77,8 +77,13 @@ func TestObservedFirstBytePendingReadError(t *testing.T) {
 }
 
 func TestDecideFirstByteDeadlineNilHandlerAborts(t *testing.T) {
+	// 读必须真正挂起：若 goroutine 立即返回，observed 可能在决策前 settle，
+	// 结果类型变成 read（满包并发下实测偶发），不再覆盖 nil handler 分支。
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
 	observed := ObserveFirstBytePendingRead(func() (chunkResult, error) {
-		return chunkResult{N: 1}, nil // 永不 settle 的等待由决策先行返回
+		<-block
+		return chunkResult{N: 1}, nil
 	})
 	result := DecideFirstByteDeadlineAfterPendingRead(observed, nil, FirstByteDeadlineDecisionInput{}, FirstByteDeadlineDecisionWaitOptions{})
 	if result.Type != DeadlineDecisionAction || result.Action != FirstByteDeadlineActionAbort {
