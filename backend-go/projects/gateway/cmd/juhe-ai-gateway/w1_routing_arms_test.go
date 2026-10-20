@@ -309,6 +309,11 @@ func TestW1RAccountFromRoutingProjection(t *testing.T) {
 		rebuilt.ProtocolCode != "openai" || rebuilt.ProtocolVersion != "v1" {
 		t.Fatalf("重建账户 = %+v, want 身份列回填", rebuilt)
 	}
+	// 投影槽位承载 vendor 身份，VendorCode 必须同步回填——否则回退路径上的
+	// 切号冻结 / OAuth 归一化 / GPT 传输门会把账户判成无 vendor。
+	if rebuilt.VendorCode != "openai" {
+		t.Fatalf("VendorCode = %q, want 与投影 ProviderCode 同值", rebuilt.VendorCode)
+	}
 	if len(rebuilt.SupportedModels) != 1 || rebuilt.SupportedModels[0] != "gpt-pro" {
 		t.Fatalf("SupportedModels = %v, want [gpt-pro]", rebuilt.SupportedModels)
 	}
