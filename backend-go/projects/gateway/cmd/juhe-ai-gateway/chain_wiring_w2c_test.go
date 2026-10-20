@@ -509,9 +509,10 @@ func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 		t.Fatal("an input without attempt id must fall back to the no-op lifecycle")
 	}
 
-	// 媒体车道豁免（2026-10-04 裁决 + 媒体设计 §3）：audio/video lane 不参与
-	// 热质量统计，工厂返回 nil 保持引擎中性 no-op lifecycle。
-	for _, lane := range []string{"audio", "video"} {
+	// 非对话调度域豁免（对话与非对话媒体调度分离设计 §4.2）：媒体创建
+	// （image/audio/video）不参与热质量统计，工厂返回 nil 保持引擎中性
+	// no-op lifecycle。
+	for _, lane := range []string{"image", "audio", "video"} {
 		if got := factory(gatewaydispatch.HotQualityLifecycleInput{
 			AttemptID:       "att-media-" + lane,
 			AccountID:       "a1",

@@ -788,11 +788,12 @@ func chainHotQualityAccountViewOf(account gatewaydispatch.AccountCandidate) gate
 // (attempt record / first-byte / terminal settlement) onto the engine hook.
 func newChainHotQualityLifecycleFactory(runtime *gatewayhotquality.GatewayHotQualityRuntime) gatewaydispatch.HotQualityAttemptLifecycleFactory {
 	return func(input gatewaydispatch.HotQualityLifecycleInput) gatewaydispatch.HotQualityAttemptLifecycle {
-		// 媒体车道豁免文本调度优化机制（媒体设计 §3 + 2026-10-04 主代理
-		// 裁决）：audio/video lane 不参与热质量统计，返回 nil 保持引擎中性
-		// no-op lifecycle——否则每次媒体派发尝试的 attempt 记账都会被
-		// NormalizeHotQualityScope 的 text/image 词表拒斥并刷 WARN。
-		if input.RequestLane == string(gatewayproto.LaneAudio) || input.RequestLane == string(gatewayproto.LaneVideo) {
+		// 非对话调度域（媒体创建 + realtime）豁免文本调度优化机制（对话与
+		// 非对话媒体调度分离设计 §4.2：媒体请求不直接写入热质量）：返回 nil
+		// 保持引擎中性 no-op lifecycle——媒体派发尝试不记账、不写样本、不
+		// 进入质量统计。T10 起图像同属 StatelessMediaDispatch 域一并豁免
+		// （此前仅 audio/video 豁免是 2026-10-04 的过渡裁决）。
+		if gatewayproto.DispatchDomainOfLane(gatewayproto.RequestLane(input.RequestLane)) != gatewayproto.DispatchDomainConversation {
 			return nil
 		}
 		lifecycle, err := gatewayhotquality.NewGatewayHotQualityAttemptLifecycle(gatewayhotquality.GatewayHotQualityAttemptLifecycleInput{
