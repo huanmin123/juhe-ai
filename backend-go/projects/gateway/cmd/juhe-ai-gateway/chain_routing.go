@@ -544,9 +544,12 @@ func projectBindingsForRuntime(projected []gatewayrouting.GroupBindingRow, origi
 // the full re-hydration misses (the projection carries the identity columns
 // the dispatch layer keys on)。routing 层的 ProviderCode 槽位承载的是 vendor
 // 身份（见 projectAccountForRouting），因此必须同时回填 VendorCode——下游
-// 切号冻结（chain_switchtarget）、OAuth 归一化与 GPT 传输门读的都是
-// VendorCode，只填 ProviderCode 会让回退路径上的账户在那些门里被判成
-// 「无 vendor」，损失同供应商约束与 GPT 专属归一化。
+// 有多处按 VendorCode 判身份：切号冻结门（gatewaydispatch/switchtarget.go
+// 门 2）在空 vendor 时与任何非空目标都不相等，同供应商约束会失效；而
+// CodexOAuthVendorEligible / codexOAuthVendorBucketEligible 把空串当作
+// 「迁移期未回填」按 GPT 处理，会让 xAI 等非 gpt 的 OAuth 账户错误套用
+// Codex 归一化与 ChatGPT 桶键。只填 ProviderCode 会让回退路径上的账户
+// 同时踩这两个反向错误。
 func accountFromRoutingProjection(account gatewayrouting.UpstreamAccount) gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:                        account.ID,
