@@ -605,8 +605,12 @@ func w11cWaitForScopeDrained(t *testing.T, bridge *Bridge, scopeKey string) {
 		bridge.mu.Lock()
 		_, pending := bridge.pending[scopeKey]
 		_, failed := bridge.persistenceFailures[scopeKey]
+		// pending 在 drainScope 调用持久化之前就被移除（bridge.go 先 delete
+		// 再 persistWithRetry），只等 pending 空会与 CAS 写入形成竞态；worker
+		// 退出发生在持久化返回之后，作为真正的排空信号。
+		_, running := bridge.workers[scopeKey]
 		bridge.mu.Unlock()
-		if !pending && !failed {
+		if !pending && !failed && !running {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
