@@ -169,6 +169,7 @@
       :models-loading="testModelsLoading"
       :models-optional="Boolean(draftTestingAccountPayload)"
       :models-ready="testModelsReady"
+      :models-truncated="testModelOptionsTruncated"
       :provider-name="providerName"
       :result="testResult"
       :running="testRunning"
@@ -1258,6 +1259,7 @@ const {
   testForm,
   testModalOpen,
   testModelOptions,
+  testModelOptionsTruncated,
   testModelsError,
   testModelsLoading,
   testModelsReady,

@@ -183,6 +183,31 @@ describe('useAccountTestModels 草稿测试选项', () => {
     expect(accountsTestDraftOptions).not.toHaveBeenCalled()
   })
 
+  it('T23：浏览取数按服务端 hasMore 置截断标志，关键词搜索不改写', async () => {
+    accountsTestDraftOptions.mockResolvedValueOnce(Object.assign([
+      { id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', testEndpointModes: ['chat_sse'] }
+    ], { hasMore: true }))
+    const { hook } = setupTestModels()
+    hook.initializeDraftTestOptions(
+      draftAccountListItem(),
+      draftPayloadFixture(),
+      'gpt-5.6-sol',
+      ['chat_json'],
+      'create'
+    )
+    await hook.loadDraftTestModelOptions()
+    expect(hook.testModelOptionsTruncated.value).toBe(true)
+
+    accountsTestDraftOptions.mockResolvedValueOnce(Object.assign([
+      { id: 'gpt-5.6-mini', name: 'Mini', testEndpointModes: ['chat_sse'] }
+    ], { hasMore: true }))
+    await hook.loadDraftTestModelOptions(' mini ')
+    expect(hook.testModelOptionsTruncated.value).toBe(true)
+
+    hook.resetTestModels()
+    expect(hook.testModelOptionsTruncated.value).toBe(false)
+  })
+
   it('选项加载失败时保留播种的默认模型并记录错误', async () => {
     accountsTestDraftOptions.mockRejectedValueOnce(new Error('上游目录不可用'))
     const { hook } = setupTestModels()

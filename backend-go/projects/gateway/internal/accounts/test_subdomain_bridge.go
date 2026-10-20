@@ -246,6 +246,12 @@ func (s *Store) AccountManualTestOptions(ctx context.Context, account *ManualTes
 	return s.testService().AccountManualTestOptions(ctx, account, query)
 }
 
+// AccountManualTestOptionsWithTotal 转发元数据变体（T23 test-options 顶层
+// total/hasMore）。
+func (s *Store) AccountManualTestOptionsWithTotal(ctx context.Context, account *ManualTestContext, query ManualTestOptionsQuery) ([]ManualTestOption, int, error) {
+	return s.testService().AccountManualTestOptionsWithTotal(ctx, account, query)
+}
+
 func (s *Store) AccountManualTestModelCapabilities(ctx context.Context, account *ManualTestContext, modelInput string) (*ManualTestModelCapabilities, error) {
 	return s.testService().AccountManualTestModelCapabilities(ctx, account, modelInput)
 }

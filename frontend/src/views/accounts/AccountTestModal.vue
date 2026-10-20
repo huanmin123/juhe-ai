@@ -40,7 +40,11 @@
               @dropdown-visible-change="$emit('load-model-options', $event)"
               @search="$emit('search-model-options', $event)"
               @update:value="$emit('update:model', String($event))"
-            />
+            >
+              <template v-if="modelsTruncated" #dropdownRender="{ menuNode }">
+                <ModelOptionsTruncatedHint :menu-node="menuNode" />
+              </template>
+            </a-select>
             <div v-if="modelsError" class="test-field-error">{{ modelsError }}</div>
           </a-form-item>
           <a-form-item class="test-config-field" label="测试请求形态">
@@ -108,6 +112,7 @@ import type {
   AccountTestTask
 } from '@/types/domain'
 import type { AccountTestEndpointMode } from './accountTestFlow'
+import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHint'
 import {
   accountTestSingleOutputLines,
   type AccountTestOutputLine
@@ -130,6 +135,7 @@ const props = defineProps<{
   modelsLoading: boolean
   modelsOptional?: boolean
   modelsReady: boolean
+  modelsTruncated?: boolean
   open: boolean
   providerName?: (providerCode?: string) => string
   result?: AccountTestResult

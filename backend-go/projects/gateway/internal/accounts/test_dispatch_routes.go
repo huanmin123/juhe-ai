@@ -206,13 +206,19 @@ func (d *Deps) testOptions(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, message)
 		return
 	}
-	options, err := d.Store.AccountManualTestOptions(ctx, context, query)
+	options, total, err := d.Store.AccountManualTestOptionsWithTotal(ctx, context, query)
 	if err != nil {
 		d.writeTestError(w, err)
 		return
 	}
 	setNoStoreHeaders(w)
-	kernel.WriteOK(w, options, "")
+	// T23：data 保持数组，顶层附加 total（limit 截断前候选总数）与
+	// hasMore（total > 返回条数），前端以元数据替代条数推断。
+	kernel.WriteJSON(w, http.StatusOK, map[string]any{
+		"data":    options,
+		"total":   total,
+		"hasMore": total > len(options),
+	})
 }
 
 func (d *Deps) testOptionsModel(w http.ResponseWriter, r *http.Request) {
@@ -454,13 +460,17 @@ func (d *Deps) testDraftOptions(w http.ResponseWriter, r *http.Request, access A
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "读取草稿测试模型选项失败"))
 		return
 	}
-	options, err := d.Store.AccountManualTestOptions(ctx, manualTestCapabilitiesContextFromDraft(draft), query)
+	options, total, err := d.Store.AccountManualTestOptionsWithTotal(ctx, manualTestCapabilitiesContextFromDraft(draft), query)
 	if err != nil {
 		d.writeTestError(w, err)
 		return
 	}
 	setNoStoreHeaders(w)
-	kernel.WriteOK(w, options, "")
+	kernel.WriteJSON(w, http.StatusOK, map[string]any{
+		"data":    options,
+		"total":   total,
+		"hasMore": total > len(options),
+	})
 }
 
 // parseDraftTestOptionsBody mirrors the POST /test-draft-options body schema

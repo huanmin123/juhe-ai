@@ -89,7 +89,28 @@ export interface AccountModelCatalogRefreshResult {
   recommendedHealthCheckModel?: string
 }
 
-export type AccountTestOptions = AccountManualTestModelOption[]
+/**
+ * `/accounts/{id}/test-options` 与 `POST /accounts/test-draft-options` 的返回
+ * 列表（T23）：envelope data 数组 + 服务端截断元数据。`total` 是 keyword/
+ * selected 过滤与去重后、limit 截断前的候选总数，`hasMore` = total > 返回条数；
+ * 旧响应未携带元数据时两者为 undefined，消费方按「无法判定 → 不提示」处理。
+ */
+export type AccountTestOptions = AccountManualTestModelOption[] & {
+  total?: number
+  hasMore?: boolean
+}
+
+interface AccountTestOptionsEnvelope {
+  data: AccountManualTestModelOption[]
+  total?: number
+  hasMore?: boolean
+}
+
+function attachAccountTestOptionsMeta(list: AccountTestOptions, payload: AccountTestOptionsEnvelope): AccountTestOptions {
+  if (typeof payload.total === 'number') list.total = payload.total
+  if (typeof payload.hasMore === 'boolean') list.hasMore = payload.hasMore
+  return list
+}
 
 export interface AccountUpdatePayload extends Record<string, unknown> {
   expectedConfigRevision: number
@@ -163,12 +184,18 @@ export const accountsApi = {
   batchUpdate: (payload: AccountBatchEditRequest, params?: ListParams) => unwrap<AccountBatchEditResult>(http.post('/accounts/batch-update', payload, { params })),
   updateTags: (id: string, payload: { tags: string[]; expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountMutationResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
   updateAuthorizedDispatch: (id: string, payload: AuthorizedAccountDispatchPayload, params?: ListParams) => unwrap<AuthorizedAccountDispatchMutationResult>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
-  testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/accounts/${id}/test-options`, { ...noTimeout, params, signal: options?.signal })),
+  testOptions: async (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => {
+    const response = await http.get<AccountTestOptionsEnvelope>(`/accounts/${id}/test-options`, { ...noTimeout, params, signal: options?.signal })
+    return attachAccountTestOptionsMeta(response.data.data as AccountTestOptions, response.data)
+  },
   bindGroup: (id: string, payload: { groupId: string; expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountMutationResult>(http.post(`/accounts/${id}/group`, payload, { params })),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
   test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { ...noTimeout, params, signal: options?.signal })),
   testDraft: (payload: AccountDraftTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/accounts/test-draft', payload, { ...noTimeout, params, signal: options?.signal })),
-  testDraftOptions: (payload: AccountTestDraftOptionsPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.post('/accounts/test-draft-options', payload, { ...noTimeout, params, signal: options?.signal })),
+  testDraftOptions: async (payload: AccountTestDraftOptionsPayload, params?: ListParams, options?: RequestControlOptions) => {
+    const response = await http.post<AccountTestOptionsEnvelope>('/accounts/test-draft-options', payload, { ...noTimeout, params, signal: options?.signal })
+    return attachAccountTestOptionsMeta(response.data.data as AccountTestOptions, response.data)
+  },
   createTestSession: (params?: ListParams) => unwrap<AccountTestSession>(http.post('/accounts/test-sessions', {}, { ...noTimeout, params })),
   heartbeatTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/heartbeat`, {}, { ...noTimeout, params })),
   completeTestSession: (sessionId: string, params?: ListParams) => unwrap<AccountTestSession>(http.post(`/accounts/test-sessions/${sessionId}/complete`, {}, { ...noTimeout, params })),
@@ -209,12 +236,18 @@ export const myAccountsApi = {
   batchUpdate: (payload: AccountBatchEditRequest) => unwrap<AccountBatchEditResult>(http.post('/my-accounts/batch-update', payload)),
   updateTags: (id: string, payload: { tags: string[]; expectedConfigRevision: number }) => unwrap<AccountMutationResult>(http.patch(`/my-accounts/${id}/tags`, payload)),
   updateAuthorizedDispatch: (id: string, payload: AuthorizedAccountDispatchPayload) => unwrap<AuthorizedAccountDispatchMutationResult>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
-  testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/my-accounts/${id}/test-options`, { ...noTimeout, params, signal: options?.signal })),
+  testOptions: async (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => {
+    const response = await http.get<AccountTestOptionsEnvelope>(`/my-accounts/${id}/test-options`, { ...noTimeout, params, signal: options?.signal })
+    return attachAccountTestOptionsMeta(response.data.data as AccountTestOptions, response.data)
+  },
   bindGroup: (id: string, payload: { groupId: string; expectedConfigRevision: number }) => unwrap<AccountMutationResult>(http.post(`/my-accounts/${id}/group`, payload)),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
   test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { ...noTimeout, signal: options?.signal })),
   testDraft: (payload: AccountDraftTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post('/my-accounts/test-draft', payload, { ...noTimeout, signal: options?.signal })),
-  testDraftOptions: (payload: AccountTestDraftOptionsPayload, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.post('/my-accounts/test-draft-options', payload, { ...noTimeout, signal: options?.signal })),
+  testDraftOptions: async (payload: AccountTestDraftOptionsPayload, options?: RequestControlOptions) => {
+    const response = await http.post<AccountTestOptionsEnvelope>('/my-accounts/test-draft-options', payload, { ...noTimeout, signal: options?.signal })
+    return attachAccountTestOptionsMeta(response.data.data as AccountTestOptions, response.data)
+  },
   createTestSession: () => unwrap<AccountTestSession>(http.post('/my-accounts/test-sessions', {}, noTimeout)),
   heartbeatTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/heartbeat`, {}, noTimeout)),
   completeTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/complete`, {}, noTimeout)),

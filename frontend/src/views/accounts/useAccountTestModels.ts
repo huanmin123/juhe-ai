@@ -35,6 +35,9 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelsLoading = computed(() => testModelOptionsLoading.value)
   const testModelsReady = ref(false)
   const testModelsError = ref('')
+  // T23：浏览取数（无 keyword）的截断标志，取服务端 hasMore 元数据；缺失视为
+  // 无法判定、不改写。
+  const testModelOptionsTruncated = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
   let selectedAccount: AccountListItem | undefined
   let loadedOptionsAccountKey = ''
@@ -77,6 +80,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     return requestTestModelOptions({
       account,
       optionsKey: accountOptionsKey(account, normalizedKeyword, selectedIds),
+      browse: normalizedKeyword === '',
       fetcher: (signal) => fetchSavedAccountTestOptions(account, normalizedKeyword, selectedIds, signal),
       applyResponseOptions: (response) => {
         testModelOptions.value = normalizeModelOptions(response)
@@ -121,6 +125,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     return requestTestModelOptions({
       account,
       optionsKey: draftOptionsKey(account, normalizedKeyword, selectedIds),
+      browse: normalizedKeyword === '',
       fetcher: (signal) => fetchDraftTestOptions(context, normalizedKeyword, selectedIds, signal),
       applyResponseOptions: (response) => {
         testModelOptions.value = mergeDraftModelOptions(context.defaultOption, response)
@@ -131,6 +136,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   async function requestTestModelOptions(request: {
     account: AccountListItem
     optionsKey: string
+    browse: boolean
     fetcher: (signal: AbortSignal) => Promise<AccountTestOptions>
     applyResponseOptions: (response: AccountTestOptions) => void
   }): Promise<AccountTestOptions | undefined> {
@@ -148,6 +154,9 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       if (!isCurrentOptionsRequest(requestToken, request.account.id)) return undefined
       loadedOptionsAccountKey = request.optionsKey
       request.applyResponseOptions(response)
+      if (request.browse && typeof response.hasMore === 'boolean') {
+        testModelOptionsTruncated.value = response.hasMore
+      }
       if (!input.testForm.model) {
         input.testForm.model = defaultModel || testModelOptions.value[0]?.value || ''
       }
@@ -263,6 +272,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelOptionsLoading.value = false
     testModelsReady.value = false
     testModelsError.value = ''
+    testModelOptionsTruncated.value = false
     testModelOptions.value = []
     testEndpointModes.value = []
     input.testForm.model = ''
@@ -301,6 +311,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     restoreTestSelection,
     testEndpointModes,
     testModelOptions,
+    testModelOptionsTruncated,
     testModelsError,
     testModelsLoading,
     testModelsReady,

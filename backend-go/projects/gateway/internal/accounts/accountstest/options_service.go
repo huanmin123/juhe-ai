@@ -1005,9 +1005,17 @@ func TestCatalogReleaseDate(value string) string {
 
 // AccountManualTestOptions mirrors accountManualTestOptionsAsync.
 func (s *Service) AccountManualTestOptions(ctx context.Context, account *ManualTestContext, query ManualTestOptionsQuery) ([]ManualTestOption, error) {
+	options, _, err := s.AccountManualTestOptionsWithTotal(ctx, account, query)
+	return options, err
+}
+
+// AccountManualTestOptionsWithTotal 是 AccountManualTestOptions 的元数据变体
+// （T23）：total 为目录合并/去重后、limit 截断前的候选总数（与 providers
+// /models/options 同口径），供端点顶层 hasMore 使用。
+func (s *Service) AccountManualTestOptionsWithTotal(ctx context.Context, account *ManualTestContext, query ManualTestOptionsQuery) ([]ManualTestOption, int, error) {
 	systemAccountID := account.OwnerSystemAccountID
 	if systemAccountID == "" {
-		return nil, &accountscore.ValidationError{Message: "账户归属数据异常，无法读取测试模型"}
+		return nil, 0, &accountscore.ValidationError{Message: "账户归属数据异常，无法读取测试模型"}
 	}
 	selectedIDs := append([]string{}, query.SelectedIDs...)
 	if healthModel := strings.TrimSpace(account.HealthCheckModel); healthModel != "" {
@@ -1017,20 +1025,20 @@ func (s *Service) AccountManualTestOptions(ctx context.Context, account *ManualT
 	}
 	sourceCodes, err := s.TestCatalogSourceCodes(ctx, account.ProviderCode)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(sourceCodes) == 0 {
-		return []ManualTestOption{}, nil
+		return []ManualTestOption{}, 0, nil
 	}
 	builtInCodes := TestCatalogBuiltInSourceCodes(account.ProviderCode, sourceCodes)
 	optionQuery := ManualTestOptionsQuery{Keyword: query.Keyword, Limit: query.Limit, SelectedIDs: selectedIDs}
 	builtIn, err := s.ListBuiltInTestCatalogOptions(ctx, builtInCodes, optionQuery)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	custom, err := s.ListCustomTestCatalogOptions(ctx, sourceCodes, systemAccountID, optionQuery)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	source := account.ModeSource()
 	eligible := []TestOptionRow{}
@@ -1039,7 +1047,7 @@ func (s *Service) AccountManualTestOptions(ctx context.Context, account *ManualT
 			eligible = append(eligible, row)
 		}
 	}
-	options := MergeTestOptionRows(eligible, optionQuery)
+	options, total := MergeTestOptionRowsWithTotal(eligible, optionQuery)
 	cache := map[string]*TestCatalogItem{}
 	resolved := []ManualTestOption{}
 	for _, option := range options {
@@ -1049,13 +1057,13 @@ func (s *Service) AccountManualTestOptions(ctx context.Context, account *ManualT
 			SupportedAPIProtocols: option.Protocols,
 		}, systemAccountID, cache)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if len(modes) > 0 {
 			resolved = append(resolved, ManualTestOption{ID: option.Model, Name: option.Model, TestEndpointModes: modes})
 		}
 	}
-	return resolved, nil
+	return resolved, total, nil
 }
 
 // ModeSource projects the context onto the endpoint-mode resolution input
@@ -1087,6 +1095,15 @@ type MergedTestOption struct {
 // limit)
 // （原根包私有函数，根包测试经由转发访问）.
 func MergeTestOptionRows(rows []TestOptionRow, query ManualTestOptionsQuery) []MergedTestOption {
+	options, _ := MergeTestOptionRowsWithTotal(rows, query)
+	return options
+}
+
+// MergeTestOptionRowsWithTotal 是 MergeTestOptionRows 的元数据变体（T23）：
+// total 为 keyword/selected 过滤与去重后、limit 截断前的候选总数，供
+// test-options 端点顶层 hasMore = total > 返回条数。旧函数保持数组返回值，
+// 既有调用方与断言零破坏。
+func MergeTestOptionRowsWithTotal(rows []TestOptionRow, query ManualTestOptionsQuery) ([]MergedTestOption, int) {
 	selected := map[string]bool{}
 	for _, id := range query.SelectedIDs {
 		selected[id] = true
@@ -1149,7 +1166,7 @@ func MergeTestOptionRows(rows []TestOptionRow, query ManualTestOptionsQuery) []M
 		}
 		options = append(options, MergedTestOption{Model: model, Mode: byModel[model].Mode, Protocols: byModel[model].SupportedAPIProtocols})
 	}
-	return options
+	return options, len(order)
 }
 
 // OptionScopePriorityValue mirrors the option scope priority
