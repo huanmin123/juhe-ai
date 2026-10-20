@@ -148,6 +148,10 @@ func newCompactSummaryUpstream(t *testing.T, statusCode int, payload string) *co
 		if model, ok := parsed["model"].(string); ok {
 			upstream.gotModel = model
 		}
+		// 首字耗时按整毫秒取整（NowMs），本机 httptest 常在派发同一毫秒内
+		// 返回，使 FirstByteMs 合法地记为 0。成功率用例断言正样本，这里给
+		// 上游加固定延迟，消除测量精度抖动。
+		time.Sleep(2 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(upstream.statusCode)
 		_, _ = io.WriteString(w, upstream.payload)
