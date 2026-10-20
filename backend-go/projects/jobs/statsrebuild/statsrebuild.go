@@ -16,7 +16,8 @@
 //     usage_quota_hourly_windows_expiry（配额小时窗 expiry 游标）两行；
 //  2. 从 usage_records 逐批重放聚合（AggregateUsageStatsBatch，批间各自
 //     提交，中断后重跑本编排即重新清空并从零重放）；
-//  3. 重放排干后运行 WindowRefresher.RunStages 全部九个窗口/排行阶段
+//  3. 重放排干后运行 WindowRefresher.RunStages 全部八个窗口/排行阶段
+//     （授权范围窗口阶段已随日摘要直读退役，见下方清空表注释）
 //     （usage_rank_snapshots、overview/model/error rank windows、
 //     ai_performance_summary_windows、scope range windows、system metrics
 //     trend windows），使统计缓存面在一次离线执行内回到与在线收敛一致的

@@ -49,8 +49,6 @@ func TestW1J2BootstrapMutualExclusion(t *testing.T) {
 		{"--apply-account-balance-postgres", "--import-business-dataset"},
 		{"--apply-account-balance-postgres", "--ensure-schema"},
 		{"--apply-account-balance-postgres", "--seed"},
-		{"--apply-account-balance-postgres", "--check-go-runtime-metrics"},
-		{"--apply-account-balance-postgres", "--apply-go-runtime-metrics"},
 		{"--apply-account-balance-postgres", "--mockdata"},
 		{"--apply-account-balance-postgres", "--verify-mockdata-coverage"},
 		{"--apply-account-balance-postgres", "--apply-j3a-proxy-latency-postgres"},

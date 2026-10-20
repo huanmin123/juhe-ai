@@ -57,7 +57,6 @@ func TestBDBusinessDatasetMutexBranches(t *testing.T) {
 		{"export with version", []string{"-export-business-dataset", "-version"}, "business dataset export/import flags are mutually exclusive"},
 		{"export with ensure-schema", []string{"-export-business-dataset", "-ensure-schema"}, "business dataset export/import flags are mutually exclusive"},
 		{"import with snapshot", []string{"-import-business-dataset", "-postgres-schema-snapshot"}, "PostgreSQL schema snapshot flag is mutually exclusive"},
-		{"import with metrics", []string{"-import-business-dataset", "-check-go-runtime-metrics"}, "business dataset export/import flags are mutually exclusive"},
 		{"import with mockdata", []string{"-import-business-dataset", "-mockdata"}, "business dataset export/import flags are mutually exclusive"},
 		{"replace-existing with seed", []string{"-business-dataset-replace-existing", "-seed"}, "storage bootstrap flags are mutually exclusive"},
 	}

@@ -131,11 +131,13 @@ func seedFixtures(t *testing.T, db *sql.DB, fixtures []accountFixture) {
 		if f.sourceID != "" {
 			source = "'" + f.sourceID + "'"
 		}
+		// 目标 schema（设计 §2.1/§9.11）：无 provider_code /
+		// provider_protocol_profile_id，身份落 vendor_code + driver。
 		statement := `INSERT INTO accounts
-			(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			 name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode,
 			 authorization_instance_source_account_id, deleted_at, created_at, updated_at)
-			VALUES ('` + f.id + `', 'sys-1', 'gpt', 'profile-1', 'openai', 'v1',
+			VALUES ('` + f.id + `', 'sys-1', 'gpt', 'gpt', 'openai', 'v1',
 			 '` + f.id + `', 'api_key', '` + fixtureCredentials(t, f) + `', 'model-x', 'chat_json',
 			 ` + source + `, ` + deletedAt + `, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`
 		if _, err := db.Exec(statement); err != nil {

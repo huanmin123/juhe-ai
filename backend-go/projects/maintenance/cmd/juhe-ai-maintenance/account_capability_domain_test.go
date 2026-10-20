@@ -53,9 +53,9 @@ func seedCapabilityDomainAccounts(t *testing.T, pathsFlag string, fixtures map[s
 			t.Fatalf("encrypt: %v", err)
 		}
 		if _, err := db.Exec(`INSERT INTO accounts
-			(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			 name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
-			VALUES (?, 'sys-1', 'gpt', 'profile-1', 'openai', 'v1', ?, 'api_key', ?, 'm', 'chat_json',
+			VALUES (?, 'sys-1', 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, 'm', 'chat_json',
 			 '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, id, id, sealed); err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}

@@ -198,7 +198,7 @@ func TestRebuildUsageStatsSQLiteEndToEnd(t *testing.T) {
 		t.Fatalf("报告 completed/source/processed = %v/%s/%d, want true/flag/3",
 			report.Completed, report.ConfirmOfflineSource, report.Rebuild.ProcessedRows)
 	}
-	if len(report.Rebuild.ClearedTables) == 0 || len(report.Rebuild.WindowStages) != 9 {
+	if len(report.Rebuild.ClearedTables) == 0 || len(report.Rebuild.WindowStages) != 8 {
 		t.Fatalf("报告 clearedTables/windowStages = %d/%d", len(report.Rebuild.ClearedTables), len(report.Rebuild.WindowStages))
 	}
 

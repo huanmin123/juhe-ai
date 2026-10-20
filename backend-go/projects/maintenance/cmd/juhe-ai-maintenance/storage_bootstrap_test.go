@@ -21,7 +21,7 @@ import (
 // sqlite 分支完全相同的 ensure+seed 出口（bootstrap.OpenSQLiteFile +
 // schema.EnsureSQLiteBusiness + schema.SeedSQLiteDefaults，同一默认墙钟），
 // 再在期望库上执行与被测断言完全同一条活跃行数查询
-// （SELECT count(*) FROM provider_model_catalog）返回计数：seed 只 upsert
+// （SELECT count(*) FROM models）返回计数：seed 只 upsert
 // ShutdownDate 仍在未来的活跃行（internal/schema activeModelCatalogSeedRows
 // 按当前 UTC 日期过滤），两侧同出口、同查询、同日期口径，任何 shutdown
 // 日期到达都不再分叉。不直接取 seed 出口自报的 ModelCatalogRows：断言对象
@@ -42,7 +42,7 @@ func seedActiveModelCatalogRowCount(t *testing.T, secret string) int {
 		t.Fatalf("seed catalog count source: %v", err)
 	}
 	var count int
-	if err := db.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&count); err != nil {
+	if err := db.QueryRow("SELECT count(*) FROM models").Scan(&count); err != nil {
 		t.Fatalf("query catalog count source: %v", err)
 	}
 	return count
@@ -169,7 +169,7 @@ func TestRunStorageBootstrapSQLiteEndToEnd(t *testing.T) {
 		t.Fatalf("admin rows = %d, want 1", adminRows)
 	}
 	var catalogRows int
-	if err := db.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&catalogRows); err != nil {
+	if err := db.QueryRow("SELECT count(*) FROM models").Scan(&catalogRows); err != nil {
 		t.Fatalf("query catalog: %v", err)
 	}
 	// 行数期望与被测侧同源对称计算：期望库重放同一 ensure+seed 后用同一条

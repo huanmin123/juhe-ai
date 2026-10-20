@@ -74,8 +74,6 @@ func TestWMMainExitBranches(t *testing.T) {
 		// runMaintenance 的互斥分支（全部返回 2）。
 		branch("snapshot mutex", []string{"-postgres-schema-snapshot", "-ensure-schema"}, 2, "PostgreSQL schema snapshot flag is mutually exclusive"),
 		branch("storage mutex", []string{"-ensure-schema", "-check-boundary"}, 2, "storage bootstrap flags are mutually exclusive"),
-		branch("metrics check+apply", []string{"-check-go-runtime-metrics", "-apply-go-runtime-metrics"}, 2, "Go runtime metrics check and apply flags are mutually exclusive"),
-		branch("metrics mutex with version", []string{"-check-go-runtime-metrics", "-version"}, 2, "Go runtime metrics flags are mutually exclusive"),
 		branch("no command selected", nil, 2, "runtime is not switched yet"),
 		// schema snapshot 预检链（env 门控逐级返回 2）。
 		branch("snapshot missing target", []string{"-postgres-schema-snapshot"}, 2, "JUHE_AI_SCHEMA_SNAPSHOT_TARGET"),
@@ -83,8 +81,6 @@ func TestWMMainExitBranches(t *testing.T) {
 		branch("snapshot missing confirm", []string{"-postgres-schema-snapshot"}, 2, "READ_ONLY"),
 		branch("snapshot sqlite url rejected", []string{"-postgres-schema-snapshot"}, 1, "仅支持 PostgreSQL"),
 		// runner 用法错误。
-		branch("metrics check without url", []string{"-check-go-runtime-metrics"}, 2, "requires --go-runtime-metrics-postgres-url"),
-		branch("metrics apply without confirmations", []string{"-apply-go-runtime-metrics", "-go-runtime-metrics-postgres-url", "postgres://m@127.0.0.1:5432/db"}, 2, "--node-stopped --go-stopped --backup-confirmed"),
 		// J3a/J3b bootstrap apply 命令（现行生产初始化契约）：与其他命令
 		// 互斥、无 env 拒绝裸跑（对照基线 j3a/j3b bootstrap without env 分支）。
 		branch("j3 apply mutex with storage bootstrap", []string{"-apply-j3b-model-check-sqlite", "-ensure-schema"}, 2, "storage bootstrap flags are mutually exclusive"),
