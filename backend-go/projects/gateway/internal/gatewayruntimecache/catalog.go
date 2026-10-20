@@ -47,6 +47,16 @@ func (s *Service) ListCachedProviderModelCatalogAsync(ctx context.Context, input
 	}
 
 	s.mu.Lock()
+	// 本地缓存 miss 与登记 leader 之间的窗口：上一个 leader 可能已经写入
+	// 缓存并注销 pending，此时再登记会重复装载（singleflight 退化为 2 次
+	// loader 调用）。在锁内复核本地缓存，把 miss→leader 变成原子步骤；
+	// 共享层读取有 Redis I/O，不在 s.mu 内执行。
+	if s.sharedCatalog == nil {
+		if cached, ok := s.catalogCache.get(cacheKey); ok {
+			s.mu.Unlock()
+			return CloneProviderModelCatalogItems(cached), nil
+		}
+	}
 	if pending, ok := s.pendingCatalogLoads[cacheKey]; ok {
 		s.mu.Unlock()
 		if err := awaitCatalogLoad(ctx, pending); err != nil {
