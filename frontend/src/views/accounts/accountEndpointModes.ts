@@ -302,24 +302,26 @@ export function defaultAccountTestEndpointModeForSelection(
   return shared[0]
 }
 
+// accountTestEndpointModeOrder 与后端 accounts/accountstest.AccountTestEndpointModeOrder
+// 同序：流式优先（2026-10-19 定案），同一协议内 _sse 恒在 _json 之前。
 export function accountTestEndpointModeOrder(account?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
   if (isHybridProviderCode(contextProviderCode(account))) {
     return [
-      'chat_json',
       'chat_sse',
-      'responses_json',
       'responses_sse',
-      'messages_json',
       'messages_sse',
-      'generate_content_json',
-      'generate_content_sse'
+      'generate_content_sse',
+      'chat_json',
+      'responses_json',
+      'messages_json',
+      'generate_content_json'
     ]
   }
   const protocolKind = accountProviderProtocolKind(account)
-  if (protocolKind === 'anthropic_v1') return ['messages_json', 'messages_sse']
-  if (protocolKind === 'gemini_v1beta') return ['generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse']
-  if (account?.type === 'oauth') return ['responses_json', 'responses_sse']
-  return ['chat_json', 'responses_json', 'chat_sse', 'responses_sse']
+  if (protocolKind === 'anthropic_v1') return ['messages_sse', 'messages_json']
+  if (protocolKind === 'gemini_v1beta') return ['interactions_sse', 'generate_content_sse', 'interactions_json', 'generate_content_json']
+  if (account?.type === 'oauth') return ['responses_sse', 'responses_json']
+  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
 }
 
 function chatCapabilityName(context?: AccountEndpointModeLabelContext): string {

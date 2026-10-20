@@ -131,7 +131,7 @@ export function createAccountBatchEditForm(): AccountBatchEditForm {
     responseInspectionRules: [],
     supportedModels: [],
     healthCheckModel: '',
-    healthCheckEndpointMode: 'chat_json',
+    healthCheckEndpointMode: 'chat_sse',
     modelMappings: [],
     supportedEndpointModes: [],
     serviceTierOverride: '',

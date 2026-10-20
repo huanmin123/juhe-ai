@@ -58,8 +58,8 @@ const formalProtocolMarkdown = nodeFs.readFileSync(nodePath.resolve(repoRoot, 'd
 const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
   {
     name: '账户级健康检查模型与请求形态',
-    exportedPattern: /`healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时 GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_json`、Anthropic 默认 `messages_json`、Gemini Native 默认 `generate_content_json`/,
-    formalPattern: /\| `healthCheckEndpointMode` \| 否 \| 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。省略时 GPT 文本模型默认 `responses_sse`，纯图片模型默认 `images_json`，OpenAI-compatible 默认 `chat_json`，Anthropic 默认 `messages_json`，Gemini Native 默认 `generate_content_json`。 \|/
+    exportedPattern: /`healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时按流式优先解析：GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_sse`、Anthropic 默认 `messages_sse`、Gemini Native 默认 `generate_content_sse`。/,
+    formalPattern: /\| `healthCheckEndpointMode` \| 否 \| 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。省略时按流式优先解析（\[AI账户检查模型与人工测试设计\]\(AI账户检查模型与人工测试设计\.md\) §健康检查请求形态 2026-10-19 定案）：GPT 文本模型 `responses_sse`，纯图片模型 `images_json`，OpenAI-compatible `chat_sse`，Anthropic `messages_sse`，Gemini Native `generate_content_sse`；非原生来源先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退。 \|/
   },
   {
     name: 'xAI / Grok OAuth 约束',

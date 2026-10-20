@@ -59,13 +59,13 @@ func TestW13AAccountManualTestEndpointModes(t *testing.T) {
 	if len(modes) == 0 || modes[0] != "chat_sse" {
 		t.Fatalf("健康检查模式应排最前：%v", modes)
 	}
-	// Anthropic 协议只保留 messages 族。
+	// Anthropic 协议只保留 messages 族（流式优先：messages_sse 在前）。
 	anthropic := manualTestModeSource{
 		ProviderCode: "anthropic", ProviderProtocolProfileID: "profile_anthropic_anthropic_v1",
 		ProtocolCode: "anthropic", ProtocolVersion: "v1", AccountType: "api_key",
 	}
-	if modes = accountManualTestEndpointModes(anthropic); len(modes) == 0 || modes[0] != "messages_json" {
-		t.Fatalf("Anthropic 顺序不一致：%v", modes)
+	if modes = accountManualTestEndpointModes(anthropic); len(modes) == 0 || modes[0] != "messages_sse" {
+		t.Fatalf("Anthropic 顺序不一致（流式优先）：%v", modes)
 	}
 	// Gemini 协议。
 	gemini := manualTestModeSource{

@@ -176,7 +176,7 @@ func (s *Service) FindManualTestContextRow(ctx context.Context, accountID string
 		COALESCE(source_accounts.protocol_code, accounts.protocol_code),
 		COALESCE(source_accounts.protocol_version, accounts.protocol_version),
 		COALESCE(source_accounts.type, accounts.type),
-		COALESCE(source_accounts.client_compatibility, accounts.client_compatibility),
+		'' /* client_compatibility 列已退役（设计 §9.11）：显示值按 vendor/type 派生 */,
 		COALESCE(source_accounts.health_check_model, accounts.health_check_model),
 		COALESCE(source_accounts.health_check_endpoint_mode, accounts.health_check_endpoint_mode)` +
 		credentialsColumn + `
@@ -515,14 +515,14 @@ func AccountTestEndpointModeOrder(source ManualTestModeSource) []string {
 	switch {
 	case accountscore.IsHybridProviderCodeToken(source.ProviderCode):
 		return unique(defaultMode,
-			"chat_json", "chat_sse", "responses_json", "responses_sse",
-			"messages_json", "messages_sse", "generate_content_json", "generate_content_sse")
+			"chat_sse", "responses_sse", "messages_sse", "generate_content_sse",
+			"chat_json", "responses_json", "messages_json", "generate_content_json")
 	case accountscore.IsAnthropicProtocolProfileOf(source.predicate()):
-		return unique(defaultMode, "messages_json", "messages_sse")
+		return unique(defaultMode, "messages_sse", "messages_json")
 	case accountscore.IsGeminiProtocolProfileOf(source.predicate()):
-		return unique(defaultMode, "interactions_json", "interactions_sse", "generate_content_json", "generate_content_sse")
+		return unique(defaultMode, "interactions_sse", "generate_content_sse", "interactions_json", "generate_content_json")
 	case source.AccountType == "oauth":
-		return unique(defaultMode, "responses_json", "responses_sse")
+		return unique(defaultMode, "responses_sse", "responses_json")
 	default:
 		return unique(defaultMode, "chat_sse", "responses_sse", "chat_json", "responses_json")
 	}

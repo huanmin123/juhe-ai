@@ -291,7 +291,7 @@ export const accountImportProtocolMarkdown = [
   '- 导入创建时 `status: "active"` 会转为 `pending_test`，测试通过后才参与调度；明确不希望调度时填 `disabled`。',
   '- `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。',
   '- `healthCheckModel` 只在账户创建阶段按默认链补齐；账户落库后后台检查严格读取该字段，不会动态跟随供应商默认值。',
-  '- `healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时 GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_json`、Anthropic 默认 `messages_json`、Gemini Native 默认 `generate_content_json`。',
+  '- `healthCheckEndpointMode` 必须是账户已启用的请求形态；省略时按流式优先解析：GPT 官方默认 `responses_sse`、OpenAI-compatible 默认 `chat_sse`、Anthropic 默认 `messages_sse`、Gemini Native 默认 `generate_content_sse`。',
   '- 通用 OpenAI-compatible 上游如需原生处理 OpenAI Responses 透传，请在 `credentials.supported_endpoint_modes` 的上游接口能力中包含 `responses_json` 或 `responses_sse`。',
   '- 普通供应商账户的 `modelMappings` 只做账号模型别名和 OpenAI v1 内部 bridge：OpenAI Chat 只能映射到 Chat Completions，OpenAI Responses 可映射到 Responses 或 Chat Completions，Anthropic Messages 只能映射到 Messages，Gemini native `streamGenerateContent` 可映射到 `generateContent`。其他跨协议方向不要写入普通账户导入数据。',
   '- 混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝。',

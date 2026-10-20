@@ -281,7 +281,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。 |
 | `healthCheckModel` | 否 | 账户级检查模型；省略时按“个人默认 > 管理员系统默认 > 协议档案默认”初始化，最终必须持久化且属于账户 `supportedModels`。 |
-| `healthCheckEndpointMode` | 否 | 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。省略时 GPT 文本模型默认 `responses_sse`，纯图片模型默认 `images_json`，OpenAI-compatible 默认 `chat_json`，Anthropic 默认 `messages_json`，Gemini Native 默认 `generate_content_json`。 |
+| `healthCheckEndpointMode` | 否 | 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：GPT 文本模型 `responses_sse`，纯图片模型 `images_json`，OpenAI-compatible `chat_sse`，Anthropic `messages_sse`，Gemini Native `generate_content_sse`；非原生来源先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退。 |
 | `modelMappings` | 否 | 账号模型映射列表；普通供应商账户只允许当前账号供应商模型目录内的同协议模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge；混合供应商账户允许用该字段声明其他下游模型 / 协议入口到真实上游模型 / 协议的跨协议映射。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |

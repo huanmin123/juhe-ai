@@ -345,7 +345,9 @@ export function defaultHealthCheckEndpointModeForCapabilityDomain(input: {
   if (input.capabilityDomain === 'image') return 'images_json'
   if (input.capabilityDomain === 'video') return 'video_create'
   if (input.capabilityDomain === 'audio') return 'audio_speech'
-  return 'chat_json'
+  // 对话域流式优先（AI账户检查模型与人工测试设计 2026-10-19 定案，与后端
+  // accountscore.DefaultHealthCheckEndpointModeForDomain 同值）。
+  return 'chat_sse'
 }
 
 /** 媒体账户生命周期定案（v7）：新建表单默认 status 预选——chat=pending_test（现行），image/audio/video=active。 */

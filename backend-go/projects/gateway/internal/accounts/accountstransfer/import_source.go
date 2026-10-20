@@ -627,14 +627,17 @@ func adaptOAuthAccount(input adaptedAccountInput, state *AdapterState) map[strin
 // OAuth 通道走 gpt_openai_v1（gpt OAuth 收窄词表 responses 双形态）；健康检查
 // 连接维度随连接写入，模型维度由导入计划在 supportedModels 终值化后按非原生
 // 来源契约补齐（适配器不读库，无法预知供应商默认支持模型）。
+// 形态顺序与检查形态均流式优先（AI账户检查模型与人工测试设计 2026-10-19
+// 定案）：非原生导入的检查形态缺省取 connections[0].EndpointModes 首个可检查
+// 形态（import.go），故 endpointModes 自身必须 _sse 在前。
 func applySourceConnections(account map[string]any, baseURL string, oauth bool) {
 	preset := "generic_openai_v1"
-	modes := []any{"chat_json", "chat_sse"}
-	healthMode := "chat_json"
+	modes := []any{"chat_sse", "chat_json"}
+	healthMode := "chat_sse"
 	if oauth {
 		preset = "gpt_openai_v1"
-		modes = []any{"responses_json", "responses_sse"}
-		healthMode = "responses_json"
+		modes = []any{"responses_sse", "responses_json"}
+		healthMode = "responses_sse"
 	}
 	if baseURL == "" {
 		baseURL = DefaultOpenAIBaseURL

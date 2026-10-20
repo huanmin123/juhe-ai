@@ -97,13 +97,13 @@ assertDeepEqual(
 )
 assertDeepEqual(
   accountTestEndpointModesForModel(openAIAccount, undefined, { supportedApiProtocols: ['responses', 'images'] }),
-  ['responses_json', 'responses_sse', 'images_json'],
-  '模型声明 Responses 与 Images 时必须完整显示两类可用请求形态'
+  ['responses_sse', 'responses_json', 'images_json'],
+  '模型声明 Responses 与 Images 时必须完整显示两类可用请求形态（流式优先）'
 )
 assertDeepEqual(
   accountTestEndpointModesForModel(openAIAccount, undefined, { supportedApiProtocols: ['responses'] }),
-  ['responses_json', 'responses_sse'],
-  '模型协议选择只能来自目录能力，不能根据模型名猜测 Images'
+  ['responses_sse', 'responses_json'],
+  '模型协议选择只能来自目录能力，不能根据模型名猜测 Images（流式优先）'
 )
 assertFalse(
   accountTestEndpointModesForModel({ ...openAIAccount, type: 'oauth' }, undefined, { supportedApiProtocols: ['images'] }).includes('images_json'),

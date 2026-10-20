@@ -8,10 +8,13 @@ import {
 import { accountTestEndpointModesForAccount, accountTestEndpointModesForModel } from '../../views/accounts/accountEndpointModes'
 import { providerModelsForProtocolProfile } from '../../views/accounts/accountEditFormPayload'
 
+// 流式优先（2026-10-19 定案）：缺省首选一律取已启用的 _sse 形态，无 _sse 才回 _json。
 assert.equal(defaultAccountHealthCheckEndpointMode('gpt', 'profile_gpt_openai_v1', ['chat_json', 'responses_sse']), 'responses_sse')
 assert.equal(defaultAccountHealthCheckEndpointMode('openai', 'profile_openai_openai_v1', ['responses_json', 'chat_json']), 'chat_json')
+assert.equal(defaultAccountHealthCheckEndpointMode('openai', 'profile_openai_openai_v1', ['chat_sse', 'chat_json']), 'chat_sse')
 assert.equal(defaultAccountHealthCheckEndpointMode('anthropic', 'profile_anthropic_anthropic_v1', ['messages_json']), 'messages_json')
 assert.equal(defaultAccountHealthCheckEndpointMode('gemini', 'profile_gemini_native_v1beta', ['generate_content_json']), 'generate_content_json')
+assert.equal(defaultAccountHealthCheckEndpointMode('gemini', 'profile_gemini_native_v1beta', ['generate_content_sse', 'count_tokens']), 'generate_content_sse')
 assert.equal(defaultAccountHealthCheckEndpointMode('gpt', 'profile_gpt_openai_v1', ['chat_json']), 'chat_json')
 assert.equal(defaultAccountHealthCheckEndpointMode('anthropic', 'profile_anthropic_anthropic_v1', ['messages_sse', 'message_token_counting']), 'messages_sse')
 assert.equal(defaultAccountHealthCheckEndpointMode('gemini', 'profile_gemini_native_v1beta', ['generate_content_sse', 'count_tokens']), 'generate_content_sse')
@@ -56,7 +59,7 @@ const hybridEndpointModes = accountTestEndpointModesForAccount({
     supported_endpoint_modes: ['chat_json', 'messages_sse', 'generate_content_sse', 'count_tokens']
   }
 })
-assert.deepEqual(hybridEndpointModes, ['messages_sse', 'chat_json', 'generate_content_sse'], '混合供应商人工测试应保留全部已启用生成协议并排除工具接口')
+assert.deepEqual(hybridEndpointModes, ['messages_sse', 'generate_content_sse', 'chat_json'], '混合供应商人工测试应保留全部已启用生成协议并排除工具接口（流式优先：_sse 先于 _json）')
 
 const accountTestModelsSource = readFileSync(
   new URL('../../views/accounts/useAccountTestModels.ts', import.meta.url),
