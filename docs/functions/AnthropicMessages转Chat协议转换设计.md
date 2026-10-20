@@ -108,6 +108,8 @@ Chat SSE 转 Anthropic SSE 的顺序固定为：
 5. Chat `[DONE]` 或上游正常结束时关闭所有 content block，发送 `message_delta`
 6. 最后发送 `message_stop`
 
+`message_start` 在首个内容 delta 时就发出，此时上游 usage chunk 往往尚未到达，只能先写 `input_tokens=0` 占位；因此收尾的 `message_delta.usage` 必须回填真实 `input_tokens` 与 cache 字段（有值时），不能只写 `output_tokens`，否则客户端与网关合并 usage 后输入 token 恒为 0（生产缺陷见 `docs/待办与阻塞事项.md` T9b）。
+
 Chat `[DONE]` 不透传给 Anthropic 客户端；它只作为上游流结束信号。如果上游 SSE error 在尚未完成时出现，转换为 Anthropic `event: error`，不伪装成成功 message。非流式上游如果返回非法 JSON 或过大 body，桥接层返回稳定 Anthropic error JSON，不让 body 转换异常扩散为网关 500。
 
 ## 不支持能力的返回策略

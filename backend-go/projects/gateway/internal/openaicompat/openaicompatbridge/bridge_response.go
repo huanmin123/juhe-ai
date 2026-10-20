@@ -185,18 +185,8 @@ func chatUsageToAnthropicUsage(usage map[string]any) map[string]any {
 	if usage == nil {
 		return nil
 	}
-	promptTokens := int64(0)
-	if value, ok := bridgeIntegerValue(usage["prompt_tokens"]); ok {
-		promptTokens = value
-	} else if value, ok := bridgeIntegerValue(usage["input_tokens"]); ok {
-		promptTokens = value
-	}
-	completionTokens := int64(0)
-	if value, ok := bridgeIntegerValue(usage["completion_tokens"]); ok {
-		completionTokens = value
-	} else if value, ok := bridgeIntegerValue(usage["output_tokens"]); ok {
-		completionTokens = value
-	}
+	promptTokens := bridgeUsageToken(usage, "prompt_tokens", "input_tokens")
+	completionTokens := bridgeUsageToken(usage, "completion_tokens", "output_tokens")
 	output := map[string]any{
 		"input_tokens":  float64(promptTokens),
 		"output_tokens": float64(completionTokens),
@@ -765,6 +755,28 @@ func (s *AnthropicFromChatStreamState) ensureMessageStarted(out *[]string) {
 	}))
 }
 
+// anthropicMessageDeltaUsage 构造 message_delta 的 usage。Anthropic 流式桥接
+// 在首个内容 delta 时就必须发出 message_start，此时上游用量 chunk 尚未到达，
+// 只能先写 input_tokens=0 占位；收尾的 message_delta 因此必须回填真实
+// input / 缓存字段，否则客户端与网关两侧合并 usage 后 input 恒为 0
+// （生产缺陷见 docs/待办与阻塞事项.md T9b）。
+func anthropicMessageDeltaUsage(usage map[string]any, outputTokens float64) map[string]any {
+	delta := map[string]any{"output_tokens": outputTokens}
+	if usage == nil {
+		return delta
+	}
+	for _, key := range []string{
+		"input_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+	} {
+		if value, ok := usage[key].(float64); ok {
+			delta[key] = value
+		}
+	}
+	return delta
+}
+
 func (s *AnthropicFromChatStreamState) appendTextDelta(out *[]string, text string) {
 	s.ensureMessageStarted(out)
 	s.closeStartedToolBlocks(out, false)
@@ -956,7 +968,7 @@ func CompleteAnthropicFromChatStream(state *AnthropicFromChatStreamState) []stri
 			"stop_reason":   stopReason,
 			"stop_sequence": nil,
 		},
-		"usage": map[string]any{"output_tokens": outputTokens},
+		"usage": anthropicMessageDeltaUsage(state.Usage, outputTokens),
 	}))
 	output = append(output, anthropicSse("message_stop", map[string]any{"type": "message_stop"}))
 	return output
@@ -1143,18 +1155,8 @@ func chatUsageToGeminiUsage(usage map[string]any) map[string]any {
 	if usage == nil {
 		return nil
 	}
-	promptTokens := int64(0)
-	if value, ok := bridgeIntegerValue(usage["prompt_tokens"]); ok {
-		promptTokens = value
-	} else if value, ok := bridgeIntegerValue(usage["input_tokens"]); ok {
-		promptTokens = value
-	}
-	completionTokens := int64(0)
-	if value, ok := bridgeIntegerValue(usage["completion_tokens"]); ok {
-		completionTokens = value
-	} else if value, ok := bridgeIntegerValue(usage["output_tokens"]); ok {
-		completionTokens = value
-	}
+	promptTokens := bridgeUsageToken(usage, "prompt_tokens", "input_tokens")
+	completionTokens := bridgeUsageToken(usage, "completion_tokens", "output_tokens")
 	totalTokens := promptTokens + completionTokens
 	if value, ok := bridgeIntegerValue(usage["total_tokens"]); ok {
 		totalTokens = value

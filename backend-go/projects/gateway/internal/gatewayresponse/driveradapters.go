@@ -34,6 +34,9 @@ type ResponseDriverPort interface {
 	NewStreamInspector() gatewayproto.StreamInspector
 	// StreamDriver 返回流管道视图。
 	StreamDriver() StreamDriver
+	// ApplyStreamUsageFallback 对齐 applyGatewayProtocolStreamUsageFallbackForRequest：
+	// 按协议执行流式 usage 估算兜底（输入按请求体估算，输出按已解析输出估算）。
+	ApplyStreamUsageFallback(facts UsageFallbackFacts, usage gatewayproto.ParsedUsage, input UsageFallbackInput) (gatewayproto.ParsedUsage, bool, *int, *int)
 }
 
 // ---- openai 适配 ----
@@ -82,6 +85,18 @@ func (d *OpenAIResponseDriver) NewStreamInspector() gatewayproto.StreamInspector
 }
 
 func (d *OpenAIResponseDriver) StreamDriver() StreamDriver { return DefaultOpenAIStreamDriver() }
+
+// ApplyStreamUsageFallback 复用 gatewayopenai 的估算实现；Completed 来自
+// 管道结果且恒为已确定值，因此 CompletedSet 恒 true。
+func (d *OpenAIResponseDriver) ApplyStreamUsageFallback(facts UsageFallbackFacts, usage gatewayproto.ParsedUsage, input UsageFallbackInput) (gatewayproto.ParsedUsage, bool, *int, *int) {
+	result := gatewayopenai.ApplyStreamUsageFallback(facts.JSONBody, facts.RawBody, usage, gatewayopenai.StreamUsageFallbackInput{
+		Completed:             input.Completed,
+		CompletedSet:          true,
+		OutputReceived:        input.OutputReceived,
+		EstimatedOutputTokens: input.EstimatedOutputTokens,
+	})
+	return result.Usage, result.Estimated, result.EstimatedInputTokens, result.EstimatedOutputTokens
+}
 
 // openAIResponseEndpointFamily 对齐 gatewayopenai 的 containment 映射。
 func openAIResponseEndpointFamily(pathAndQuery string) gatewayproto.ResponseEndpointFamily {
@@ -146,6 +161,32 @@ func (d *AnthropicResponseDriver) NewStreamInspector() gatewayproto.StreamInspec
 
 func (d *AnthropicResponseDriver) StreamDriver() StreamDriver { return anthropicStreamDriver{} }
 
+// ApplyStreamUsageFallback 复用 gatewayanthropic 的估算实现。协议实现只读取
+// InputTokens/OutputTokens 参与门控与估算，其余字段原样保留在本侧 usage 上，
+// 因此无需完整的 proto→协议转换。
+func (d *AnthropicResponseDriver) ApplyStreamUsageFallback(facts UsageFallbackFacts, usage gatewayproto.ParsedUsage, input UsageFallbackInput) (gatewayproto.ParsedUsage, bool, *int, *int) {
+	result := gatewayanthropic.ApplyStreamUsageFallback(
+		gatewayanthropic.RequestFacts{JSONBody: facts.JSONBody, JSONParsed: facts.JSONParsed, RawBody: facts.RawBody},
+		gatewayanthropic.ParsedUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		gatewayanthropic.StreamUsageFallbackInput{
+			OutputReceived:        input.OutputReceived,
+			EstimatedOutputTokens: input.EstimatedOutputTokens,
+			HasEstimatedOutput:    input.HasEstimatedOutput,
+		},
+	)
+	next := usage
+	var estimatedInput, estimatedOutput *int
+	if result.HasEstimatedInput {
+		estimatedInput = &result.EstimatedInputTokens
+		next.InputTokens = estimatedInput
+	}
+	if result.HasEstimatedOutput {
+		estimatedOutput = &result.EstimatedOutputTokens
+		next.OutputTokens = estimatedOutput
+	}
+	return next, result.Estimated, estimatedInput, estimatedOutput
+}
+
 // ---- gemini 适配 ----
 
 // GeminiResponseDriver 适配 gatewaygemini（G04）。
@@ -191,6 +232,30 @@ func (d *GeminiResponseDriver) NewStreamInspector() gatewayproto.StreamInspector
 }
 
 func (d *GeminiResponseDriver) StreamDriver() StreamDriver { return geminiStreamDriver{} }
+
+// ApplyStreamUsageFallback 复用 gatewaygemini 的估算实现，语义同 Anthropic 适配。
+func (d *GeminiResponseDriver) ApplyStreamUsageFallback(facts UsageFallbackFacts, usage gatewayproto.ParsedUsage, input UsageFallbackInput) (gatewayproto.ParsedUsage, bool, *int, *int) {
+	result := gatewaygemini.ApplyStreamUsageFallback(
+		gatewaygemini.RequestFacts{JSONBody: facts.JSONBody, JSONParsed: facts.JSONParsed, RawBody: facts.RawBody},
+		gatewaygemini.ParsedUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		gatewaygemini.StreamUsageFallbackInput{
+			OutputReceived:        input.OutputReceived,
+			EstimatedOutputTokens: input.EstimatedOutputTokens,
+			HasEstimatedOutput:    input.HasEstimatedOutput,
+		},
+	)
+	next := usage
+	var estimatedInput, estimatedOutput *int
+	if result.HasEstimatedInput {
+		estimatedInput = &result.EstimatedInputTokens
+		next.InputTokens = estimatedInput
+	}
+	if result.HasEstimatedOutput {
+		estimatedOutput = &result.EstimatedOutputTokens
+		next.OutputTokens = estimatedOutput
+	}
+	return next, result.Estimated, estimatedInput, estimatedOutput
+}
 
 // ---- inspector 适配（剥掉包内返回值以满足窄接口） ----
 //

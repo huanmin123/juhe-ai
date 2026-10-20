@@ -66,6 +66,18 @@ type UsageFallbackInput struct {
 	HasEstimatedOutput    bool
 }
 
+// UsageFallbackFacts 是请求侧估算事实（各协议 RequestFacts 的公共视图）：
+// 估算兜底按客户端请求体统计输入 token，与响应侧字节无关。
+type UsageFallbackFacts struct {
+	// JSONBody 是解析成功的请求体值；nil 表示无解析结果。
+	JSONBody any
+	// JSONParsed 表示请求体是 JSON 且已解析成功（解析成功但非对象时
+	// JSONBody 为 nil、本字段为 true，估算不再回退原始字节长度）。
+	JSONParsed bool
+	// RawBody 是原始请求体字节（仅在未解析时用于字节长度估算）。
+	RawBody []byte
+}
+
 // HandleUpstreamResponseInput 对齐 HandleUpstreamResponseInput。
 type HandleUpstreamResponseInput struct {
 	Req              *gatewaypreauth.GatewayRequest

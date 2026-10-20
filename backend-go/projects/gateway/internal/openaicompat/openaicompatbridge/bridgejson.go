@@ -54,6 +54,22 @@ func bridgeIntegerValue(value any) (int64, bool) {
 	}
 }
 
+// bridgeUsageToken 按「非零优先」取双口径 token：Chat 口径
+// prompt_tokens/completion_tokens 与 Responses 口径
+// input_tokens/output_tokens 并存时，某一路的 0 是兼容层占位而非真实用量，
+// 不得吞掉另一路的非零值。契约见
+// docs/functions/模型价格与用量统计口径.md §3.2 双口径并存取值规则。
+func bridgeUsageToken(usage map[string]any, primary, secondary string) int64 {
+	if usage == nil {
+		return 0
+	}
+	if value, ok := bridgeIntegerValue(usage[primary]); ok && value != 0 {
+		return value
+	}
+	value, _ := bridgeIntegerValue(usage[secondary])
+	return value
+}
+
 // bridgeNumberValue mirrors a `typeof value === 'number'` check.
 func bridgeNumberValue(value any) (float64, bool) {
 	switch number := value.(type) {

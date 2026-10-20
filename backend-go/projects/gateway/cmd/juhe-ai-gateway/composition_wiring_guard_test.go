@@ -101,6 +101,12 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		Purpose:       "组合根把 runtime-reset bridge 适配为健康检查派发器（chainKeyModelHealthDispatcher）并注入 chainRuntimeDeps，是上一条 attempt 级派发的装配源头",
 		MissingImpact: "健康检查派发装配链在组合根断裂，attempt 级 SetDispatcher 必然拿到 nil，效果等同上一条缺口",
 	},
+	{
+		Identifier:    "UsageFallback: streamUsageFallbackHookOf(",
+		Name:          "流式 usage 估算兜底 hook",
+		Purpose:       "把网关协议的 ApplyStreamUsageFallback 装配进 FinalizationDeps.UsageFallback（chain_v1.go，请求体事实在构造时捕获）",
+		MissingImpact: "上游流式响应缺少 usage 时不会按请求体/可见输出估算，使用记录落 0 token / 0 成本，计费与统计低估真实消耗",
+	},
 }
 
 // TestCompositionWiringGuard 断言 gateway 组合根源码池包含全部接线清单项。

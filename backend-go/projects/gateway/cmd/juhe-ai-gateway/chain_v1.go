@@ -675,6 +675,11 @@ func (c *gatewayChain) handleUpstreamResponse(
 			// W4-B（BUG-0175）D-132 接线：响应检查的运行态副作用写侧
 			//（avoid_account_ttl / avoid_upstream_bucket_ttl 跨请求落地）。
 			AccountEffects: c.responseAccountEffects,
+			// 流式 usage 估算兜底：文档 §3.2/§3.4 承诺「缺 usage 且已产生可见
+			// 输出时按请求体估算」，但该 hook 此前从未在生产组合根装配，估算
+			// 分支对生产流量恒空转（docs/待办与阻塞事项.md T9c）。请求事实取自
+			// 客户端请求体，协议分派由 driver 适配器完成。
+			UsageFallback: streamUsageFallbackHookOf(req),
 		},
 	}
 	if dispatched.ResponsePrecommitDeadlineAtMs != nil {
@@ -1098,4 +1103,38 @@ func newRequestBudgets(traceID string, acceptedAtMs int64, clock gatewaypreauth.
 		return requestBudgets{}, fmt.Errorf("create gateway request attempt tracker: %w", err)
 	}
 	return requestBudgets{wall: wall, coordination: coordination, tracker: tracker}, nil
+}
+
+// streamUsageFallbackHookOf 构造流式 usage 估算兜底 hook（Go 落点对齐
+// applyGatewayProtocolStreamUsageFallbackForRequest）。请求事实在构造时捕获，
+// 协议分派由 driver 适配器完成；req 缺失时返回 nil，维持「缺省恒等」。
+func streamUsageFallbackHookOf(req *gatewaypreauth.GatewayRequest) gatewayresponse.StreamUsageFallbackHook {
+	if req == nil {
+		return nil
+	}
+	return func(driver gatewayresponse.ResponseDriverPort, usage gatewayproto.ParsedUsage, input gatewayresponse.UsageFallbackInput) (gatewayproto.ParsedUsage, bool, *int, *int) {
+		if driver == nil {
+			return usage, false, nil, nil
+		}
+		return driver.ApplyStreamUsageFallback(usageFallbackFactsOf(req), usage, input)
+	}
+}
+
+// usageFallbackFactsOf 取请求侧估算事实：优先已解析 JSON 对象；解析成功但非
+// 对象（如数组）时置 JSONParsed 阻止字节长度兜底；未解析时回落到原始字节。
+func usageFallbackFactsOf(req *gatewaypreauth.GatewayRequest) gatewayresponse.UsageFallbackFacts {
+	facts := gatewayresponse.UsageFallbackFacts{}
+	if req == nil || req.Body == nil {
+		return facts
+	}
+	facts.RawBody = req.Body.RawBody
+	if parsed := req.ParsedJSONObjectBody(); parsed != nil {
+		facts.JSONBody = parsed
+		facts.JSONParsed = true
+		return facts
+	}
+	if state := req.BodyState(); state != nil {
+		facts.JSONParsed = state.IsJSON && state.JSONParseStatus == gatewaybody.JSONParseStatusParsed
+	}
+	return facts
 }

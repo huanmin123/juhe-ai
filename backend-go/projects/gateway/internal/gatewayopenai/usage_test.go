@@ -104,6 +104,21 @@ func TestExtractUsageDualShapePicksNonZeroToken(t *testing.T) {
 			wantInput:  nil,
 			wantOutput: nil,
 		},
+		{
+			// primary 缺失 + secondary 在场为 0 必须与「全缺失」区分：
+			// 前者是上游明确回报零 token，不能触发估算覆盖。
+			name:       "primary missing with secondary zero keeps zero not nil",
+			raw:        `{"prompt_tokens": 0}`,
+			wantInput:  intPtr(0),
+			wantOutput: nil,
+		},
+		{
+			// 部分中转把 token 数按字符串返回，numberValue 需照常解析。
+			name:       "numeric strings parse then fall back on zero",
+			raw:        `{"input_tokens": "0", "prompt_tokens": "270139", "output_tokens": "0", "completion_tokens": "148"}`,
+			wantInput:  intPtr(270139),
+			wantOutput: intPtr(148),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

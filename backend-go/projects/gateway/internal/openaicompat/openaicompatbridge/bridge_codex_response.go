@@ -925,8 +925,8 @@ func codexUpstreamChatSseErrorFailure(data map[string]any) CodexResponsesChatBri
 
 // codexChatUsageToResponsesUsage mirrors chatUsageToResponsesUsage.
 func codexChatUsageToResponsesUsage(usage map[string]any) map[string]any {
-	inputTokens, _ := bridgeIntegerValue(usage["prompt_tokens"])
-	outputTokens, _ := bridgeIntegerValue(usage["completion_tokens"])
+	inputTokens := bridgeUsageToken(usage, "prompt_tokens", "input_tokens")
+	outputTokens := bridgeUsageToken(usage, "completion_tokens", "output_tokens")
 	totalTokens, hasTotal := bridgeIntegerValue(usage["total_tokens"])
 	if !hasTotal {
 		totalTokens = inputTokens + outputTokens
