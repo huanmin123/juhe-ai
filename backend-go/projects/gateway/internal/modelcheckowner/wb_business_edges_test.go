@@ -47,12 +47,12 @@ func wbAuthorizedFixture(t *testing.T) (*sql.DB, *BusinessTargetSource) {
 	db := wbOpenMemoryDB(t, businessSourceContractDDL())
 	envelope := testCredentialEnvelope(t, "secret", `{"api_key":"source-key","supported_endpoint_modes":["responses_sse"]}`)
 	statements := []string{
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://example.invalid/v1')`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source','acct-source','gpt_openai_v1','https://example.invalid/v1',1),('conn-virtual','acct-virtual','gpt_openai_v1','https://example.invalid/v1',1)`,
 		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
 		`INSERT INTO resource_authorizations VALUES ('grant-1','account','acct-source','sys-1','sys-1','use','active',NULL)`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-source','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,8,'active',1,'responses_sse','` + envelope + `')`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-source','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_sse','conn-source','` + envelope + `')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-source','sys-1','group-1',1)`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('acct-virtual','sys-1','openai','profile_openai_openai_v1','openai','api_key',5,6,'active',1,'responses_sse','` + envelope + `','grant-1','acct-source')`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('acct-virtual','sys-1','gpt','gpt','openai','api_key',5,6,'active',1,'responses_sse','conn-virtual','` + envelope + `','grant-1','acct-source')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-virtual','sys-1','group-1','grant-1',1)`,
 	}
 	for _, statement := range statements {
@@ -81,15 +81,13 @@ func TestWBBuildRequestComparisonCompatibilityMatrix(t *testing.T) {
 	envelopeB := testCredentialEnvelope(t, "secret", `{"api_key":"key-b","supported_endpoint_modes":["chat_json"]}`)
 	envelopeC := testCredentialEnvelope(t, "secret", `{"api_key":"key-c","supported_endpoint_modes":["messages_json"]}`)
 	statements := []string{
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://a.example/v1')`,
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_gpt_openai_chat_v1',1,'https://b.example/v1')`,
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_anthropic_anthropic_v1',1,'https://c.example/v1')`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-a','acct-a','gpt_openai_v1','https://a.example/v1',1),('conn-b','acct-b','gpt_openai_v1','https://b.example/v1',1),('conn-c','acct-c','anthropic_v1','https://c.example/v1',1)`,
 		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-a','sys-1','group-1',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-b','sys-1','group-1',1)`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-a','sys-1','openai','profile_openai_openai_v1','openai','api_key',1,1,'active',1,'responses_sse','` + envelopeA + `')`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-b','sys-1','openai','profile_gpt_openai_chat_v1','openai','api_key',1,1,'active',1,'chat_json','` + envelopeB + `')`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-c','sys-1','anthropic','profile_anthropic_anthropic_v1','anthropic','api_key',1,1,'active',1,'messages_json','` + envelopeC + `')`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-a','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'responses_sse','conn-a','` + envelopeA + `')`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-b','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'chat_json','conn-b','` + envelopeB + `')`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-c','sys-1','anthropic','anthropic','anthropic','api_key',1,1,'active',1,'messages_json','conn-c','` + envelopeC + `')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-c','sys-1','group-1',1)`,
 		`INSERT INTO model_quality_policies VALUES ('sys-1',1,'quick',1,70,'fallback',10,0,NULL)`,
 	}
@@ -195,13 +193,13 @@ func TestWBStoreProjectOutcomeItemDriftConflicts(t *testing.T) {
 // 空恢复模型 + 空健康模型的恢复任务必须被跳过而不是生成坏任务。
 func TestWBBusinessSchedulerSkipsBlankRecoveryModel(t *testing.T) {
 	db := wbOpenMemoryDB(t, []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,health_check_model TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,vendor_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,health_check_model TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,timeout_penalty_enabled INTEGER NOT NULL DEFAULT 0,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`,
 	})
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai',4,1,NULL,NULL,'quality_isolated','')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai','gpt',4,1,NULL,NULL,'quality_isolated','')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {

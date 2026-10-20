@@ -348,14 +348,14 @@ func TestW14MBusinessModelsPostgresArms(t *testing.T) {
 		t.Fatal("postgres 模式在 sqlite 上应报错")
 	}
 	// 支持模型扫描错误。
-	fp.armScan("FROM account_supported_models WHERE account_id=?")
+	fp.armScan("FROM account_supported_models")
 	defer fp.disarm()
 	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "scan J3b account supported model") {
 		t.Fatalf("err = %v", err)
 	}
 	fp.disarm()
 	// 迭代错误。
-	fp.armNextErr("FROM account_supported_models WHERE account_id=?")
+	fp.armNextErr("FROM account_supported_models")
 	if _, err := resolveConfiguredUpstreamModelMapping(ctx, db, false, "acct-1", profile, "gpt-5.6-sol"); err == nil || !strings.Contains(err.Error(), "iterate J3b account supported models") {
 		t.Fatalf("err = %v", err)
 	}
@@ -368,8 +368,10 @@ func TestW14MBusinessModelsMappingSupportArms(t *testing.T) {
 	w14mSeedPlainAccount(t, db, "acct-1")
 	profile, _ := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
 	statements := []string{
-		`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6')`,
-		`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','other-model','responses',1)`,
+		`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-gpt56','gpt','gpt-5.6','gpt-5.6','builtin',NULL,'active',1)`,
+		`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-other','gpt','other-model','other-model','builtin',NULL,'active',1)`,
+		`INSERT INTO account_supported_models VALUES ('acct-1','m-gpt56')`,
+		`INSERT INTO account_entry_mappings VALUES ('map-1','acct-1','gpt-5.6-sol','responses','conn-acct-1','m-other','responses',1)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -692,7 +694,7 @@ func TestW14MBuildRequestComparisonFreezeArms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fp.armAfter("ORDER BY model", tc.threshold)
+			fp.armAfter("ORDER BY m.public_model", tc.threshold)
 			defer fp.disarm()
 			_, err := source.BuildRequest(ctx, "sys-1", command)
 			if err == nil || !strings.Contains(err.Error(), tc.need) {

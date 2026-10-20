@@ -187,7 +187,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			accounts.type, accounts.status, accounts.credentials_encrypted,
 			COALESCE(accounts.oauth_type, '') AS oauth_type, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-			accounts.client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
+			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.proxy_profile_id, accounts.availability_schedule_json, accounts.account_expires_at,
 			accounts.temporary_unavailable_continuous_probe_enabled, accounts.balance_query_enabled,
 			accounts.balance_query_config_json,

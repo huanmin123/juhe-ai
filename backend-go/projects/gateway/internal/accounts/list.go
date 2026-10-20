@@ -544,11 +544,11 @@ func listItemColumns(alias string) []string {
 		alias + ".config_revision",
 		alias + ".system_account_id",
 		"COALESCE(system_accounts_ref.display_name, system_accounts_ref.username, " + alias + ".system_account_id) AS system_account_name",
-		// B4 W2 行为键过渡投影（与 patch.go :304 同口径）：vendor 值域与旧
-		// providerCode 同名，新行取 vendor_code、legacy 行回落旧列。
-		"COALESCE(NULLIF(" + alias + ".vendor_code, ''), " + alias + ".provider_code, '') AS provider_code",
+		// 供应商解耦（设计 §9.11）：accounts.provider_code 已从目标 schema 删除，
+		// 行为键只剩 vendor_code——generic_http 账户（vendor NULL）投影空串。
+		"COALESCE(" + alias + ".vendor_code, '') AS provider_code",
 		"vendors.name AS provider_name",
-		alias + ".provider_protocol_profile_id",
+		"'' AS provider_protocol_profile_id",
 		alias + ".protocol_code",
 		alias + ".protocol_version",
 		alias + ".name",
@@ -563,7 +563,9 @@ func listItemColumns(alias string) []string {
 		alias + ".priority",
 		alias + ".super_priority_enabled",
 		alias + ".fallback_enabled",
-		alias + ".client_compatibility",
+		// client_compatibility 列已随设计 §9.11 退役：投影空串，显示值由
+		// normalizeOpenAIAccountClientCompatibility 按 vendor/type/protocol 派生。
+		"'' AS client_compatibility",
 		alias + ".schedulable",
 		alias + ".availability_schedule_json",
 		alias + ".account_expires_at",
@@ -608,7 +610,9 @@ func listItemColumns(alias string) []string {
 		"source_accounts.type AS source_type",
 		"source_accounts.proxy_profile_id AS source_proxy_profile_id",
 		"source_accounts.concurrency_limit AS source_concurrency_limit",
-		"source_accounts.client_compatibility AS source_client_compatibility",
+		// client_compatibility 列已退役（设计 §9.11）：来源投影 NULL，显示值
+		// 由 normalizeOpenAIAccountClientCompatibility 按来源 vendor/type 派生。
+		"NULL AS source_client_compatibility",
 		"source_proxy_profiles.id AS resolved_source_proxy_profile_id",
 		"source_proxy_profiles.name AS source_proxy_profile_name",
 		"source_proxy_profiles.type AS source_proxy_profile_type",
@@ -1610,7 +1614,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 			accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.notes,
 			accounts.type, accounts.capability_domain, accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-			accounts.client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
+			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
 			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id,
 			(
 				SELECT group_accounts.group_id

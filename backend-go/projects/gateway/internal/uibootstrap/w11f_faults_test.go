@@ -175,9 +175,9 @@ func w11fFaultFixture(t *testing.T) (*Deps, *w11fScript) {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('w11f-sa', 'w11f-user', 'W11F')`,
-		`INSERT INTO groups (id, name, system_account_id, provider_code, enabled, is_default) VALUES
-			('w11f-g1', 'w11f-openai组', 'w11f-sa', 'openai', 1, 1),
-			('w11f-g2', 'w11f-gpt组', 'w11f-sa', 'gpt', 1, 1)`,
+		// 设计 §8：组无 provider 维度，owner 单默认组（启用）。
+		`INSERT INTO groups (id, name, system_account_id, enabled, is_default) VALUES
+			('w11f-g2', 'w11f-默认组', 'w11f-sa', 1, 1)`,
 		`INSERT INTO route_strategies (id, name, system_account_id, mode, status, is_default, created_at) VALUES
 			('w11f-rs1', 'w11f-策略一', 'w11f-sa', 'normal', 'active', 1, '2026-01-01')`,
 		`INSERT INTO route_strategy_groups (route_strategy_id, system_account_id, group_id, status) VALUES
@@ -244,21 +244,21 @@ func TestW11FBootstrapRowBranches(t *testing.T) {
 	if _, err := deps.findUserReferenceData(context.Background(), "w11f-sa"); err == nil {
 		t.Fatal("query fault must fail")
 	}
-	cols := []string{"system_account_id", "provider_code", "group_id", "group_name", "group_enabled",
+	cols := []string{"system_account_id", "group_id", "group_name", "group_enabled",
 		"route_strategy_id", "route_strategy_name", "route_strategy_mode", "route_strategy_status", "route_binding_status"}
-	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", "p", "g", "n", "notabool", nil, nil, nil, nil, nil}}, nil)
+	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", "g", "n", "notabool", nil, nil, nil, nil, nil}}, nil)
 	if _, err := deps.findUserReferenceData(context.Background(), "w11f-sa"); err == nil {
 		t.Fatal("scan fault must fail")
 	}
-	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil, nil}}, w11fBoom)
+	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil}}, w11fBoom)
 	if _, err := deps.findUserReferenceData(context.Background(), "w11f-sa"); err == nil {
 		t.Fatal("rows.Err fault must fail")
 	}
-	// 空行（无 provider）→ reference nil（sawRow=true 但跳过；此处罐装行主键存在）。
-	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil, nil}}, nil)
+	// 组缺失行（LEFT JOIN 全 NULL）→ reference 存在但无 providerDefaults。
+	script.canned("FROM system_accounts", cols, [][]driver.Value{{"sa", nil, nil, nil, nil, nil, nil, nil, nil}}, nil)
 	reference, err := deps.findUserReferenceData(context.Background(), "w11f-sa")
 	if err != nil || reference == nil || reference.SystemAccountID != "w11f-sa" {
-		t.Fatalf("null provider row = %v/%v", reference, err)
+		t.Fatalf("null group row = %v/%v", reference, err)
 	}
 	if len(reference.ProviderDefaults) != 0 {
 		t.Fatalf("provider defaults = %+v", reference.ProviderDefaults)

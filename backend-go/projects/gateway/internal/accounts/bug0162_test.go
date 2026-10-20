@@ -164,10 +164,10 @@ func TestBug0162DeleteEnqueuesHealthTombstone(t *testing.T) {
 	id := dataMap(t, payload)["id"].(string)
 	env.exec(t, `UPDATE accounts SET config_revision = 3, dispatch_revision = 4 WHERE id = ?`, id)
 	// A non-health-capable provider/type pairing (custom provider) rides along.
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES ('acc-custom', ?, 'custom-x', 'prof-gpt', 'openai', 'v1', 'custom', 'api_key', 'active',
+		VALUES ('acc-custom', ?, NULL, 'generic_http', 'openai', 'v1', 'custom', 'api_key', 'active',
 		'cipher', 'sk-***', 'm', '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, adminID)
 
 	code, _ = env.do(t, http.MethodDelete, "/__aisys__/api/accounts/"+id, "")
@@ -395,8 +395,8 @@ func TestBug0162PatchExtendedFieldsAndHealthReset(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 	// Alternate bindable group + enabled proxy profile.
 	now := "2026-09-01T00:00:00.000Z"
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-alt', ?, '备用分组', 'gpt', 1, 0, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-alt', ?, '备用分组', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, created_at, updated_at)
 		VALUES ('proxy-1', ?, '出口代理', 'http', 'proxy.example.internal', 8080, 1, ?, ?)`, adminID, now, now)
 

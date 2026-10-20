@@ -429,6 +429,15 @@ func (e *dualEnv) seedTeamWithMembers(teamID, teamName string, memberIDs ...stri
 	}
 }
 
+// isRealVendorCode 判定 §1.1 的 9 个真实厂商值域（generic 语义承运方返回 false）。
+func isRealVendorCode(code string) bool {
+	switch code {
+	case "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen":
+		return true
+	}
+	return false
+}
+
 // seedGroup：PG groups 无 status 列且 created_at NOT NULL；SQLite 夹具相反。
 func (e *dualEnv) seedGroup(groupID, ownerID, name string, chain dualProviderChain, isDefault bool) {
 	e.t.Helper()
@@ -436,26 +445,36 @@ func (e *dualEnv) seedGroup(groupID, ownerID, name string, chain dualProviderCha
 	if isDefault {
 		defaultFlag = 1
 	}
+	// 组无 provider 维度（设计 §8）：两方言都不再写 provider_code。
+	_ = chain
 	if e.pg {
-		e.exec(`INSERT INTO `+e.tbl("groups")+` (id, system_account_id, name, provider_code, enabled, is_default, created_at, updated_at)
-			VALUES (?, ?, ?, ?, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			groupID, ownerID, name, chain.ProviderCode, defaultFlag)
+		e.exec(`INSERT INTO `+e.tbl("groups")+` (id, system_account_id, name, enabled, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			groupID, ownerID, name, defaultFlag)
 		return
 	}
-	e.exec(`INSERT INTO `+e.tbl("groups")+` (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES (?, ?, ?, 'active', ?, 1, ?, '2026-01-01T00:00:00Z')`,
-		groupID, name, ownerID, chain.ProviderCode, defaultFlag)
+	e.exec(`INSERT INTO `+e.tbl("groups")+` (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES (?, ?, ?, 'active', 1, ?, '2026-01-01T00:00:00Z')`,
+		groupID, name, ownerID, defaultFlag)
 }
 
 // seedSourceAccount：两个臂的同名列超集（fixture accounts 列覆盖 PG 必填列）。
 func (e *dualEnv) seedSourceAccount(accountID, ownerID, name string, chain dualProviderChain) {
 	e.t.Helper()
-	e.exec(`INSERT INTO `+e.tbl("accounts")+` (id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code,
+	// 供应商解耦（设计 §2.1）：vendor_code + connection_driver_code 承载身份，
+	// provider_protocol_profile_id 列已退役。
+	vendor := any(nil)
+	driver := "generic_http"
+	if isRealVendorCode(chain.ProviderCode) {
+		vendor = chain.ProviderCode
+		driver = chain.ProviderCode
+	}
+	e.exec(`INSERT INTO `+e.tbl("accounts")+` (id, system_account_id, vendor_code, connection_driver_code, protocol_code,
 		protocol_version, name, type, status, credentials_encrypted, credential_mask, health_check_model,
 		health_check_endpoint_mode, concurrency_limit, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 'oauth', 'active', '{}', '', 'gpt-4o-mini', 'chat_json', 100,
 		'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		accountID, ownerID, chain.ProviderCode, chain.ProfileID, chain.ProtocolCode, chain.ProtocolVersion, name)
+		accountID, ownerID, vendor, driver, chain.ProtocolCode, chain.ProtocolVersion, name)
 }
 
 // ---------------------------------------------------------------------------

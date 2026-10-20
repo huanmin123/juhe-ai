@@ -186,10 +186,10 @@ func TestListOauthUsageProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES ('acc-codex', ?, 'gpt', 'prof-gpt', 'openai', 'v1', 'Codex 账户', 'oauth', 'active', ?, 'oa***en', 'gpt-4o-mini', ?, ?)`,
+		VALUES ('acc-codex', ?, 'gpt', 'gpt', 'openai', 'v1', 'Codex 账户', 'oauth', 'active', ?, 'oa***en', 'gpt-4o-mini', ?, ?)`,
 		adminID, sealed, now, now)
 	// An api_key account must not carry the projection (type gate).
 	env.seedAccount(t, "acc-apikey", adminID, "Key 账户", "active")

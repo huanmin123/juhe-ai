@@ -109,8 +109,8 @@ func (s *Service) LoadBatchEditContext(ctx context.Context, accountIDs []string,
 	}
 	// B4 W2 行为键过渡投影（同 patch.go）：行为键读 COALESCE(vendor, provider)。
 	columns := `id, config_revision, system_account_id,
-		COALESCE(NULLIF(vendor_code, ''), provider_code, '') AS provider_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, type`
+		COALESCE(vendor_code, '') AS provider_code,
+		'' AS provider_protocol_profile_id, protocol_code, protocol_version, type`
 	if fieldSet["supportedEndpointModes"] {
 		columns += ", credentials_encrypted"
 	}
@@ -651,7 +651,7 @@ func (s *Service) queryBatchAccountRows(ctx context.Context, q accountscore.Quer
 			accounts.protocol_version, accounts.type, accounts.status, accounts.credentials_encrypted,
 			accounts.proxy_profile_id, accounts.balance_query_enabled, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-			accounts.client_compatibility, accounts.schedulable, accounts.availability_schedule_json,
+			'' AS client_compatibility, accounts.schedulable, accounts.availability_schedule_json,
 			accounts.account_expires_at, accounts.notes, accounts.cooldown_until, accounts.last_error_code,
 			accounts.last_error_message, accounts.cooldown_retest_failure_count,
 			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_last_at,

@@ -112,14 +112,16 @@ func TestW14MTrustProjectionWriteArms(t *testing.T) {
 
 // w14mOptionsDDL 与 account_options_test 的表结构一致（含 protocol_version）。
 var w14mOptionsDDL = []string{
-	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,availability_schedule_json TEXT,proxy_profile_id TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
-	`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,enabled INTEGER)`,
+	// 目标 schema（设计 §2.1/§9）：账户探针身份 = (vendor_code, 健康检查连接)。
+	`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,vendor_code TEXT,connection_driver_code TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,availability_schedule_json TEXT,proxy_profile_id TEXT,health_check_connection_id TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
+	`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,base_url TEXT,enabled INTEGER)`,
+	`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
 	// w14mOptionsAccountsDDL 的 group_accounts 需含 system_account_id。
 	`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
 	`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
 	`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
-	`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
-	`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+	`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT)`,
+	`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 }
 
 func w14mOptionsDB(t *testing.T) (*sql.DB, *w14mFailpoint) {
@@ -130,10 +132,10 @@ func w14mOptionsDB(t *testing.T) (*sql.DB, *w14mFailpoint) {
 func w14mSeedOptionAccount(t *testing.T, db *sql.DB, id, systemID string) {
 	t.Helper()
 	statements := []string{
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1)`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-` + id + `','` + id + `','gpt_openai_v1','https://example.invalid/v1',1)`,
 		`INSERT INTO groups VALUES ('group-1','` + systemID + `',1)`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('` + id + `','` + systemID + `','group-1',1)`,
-		`INSERT INTO accounts(id,system_account_id,name,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,type,status,schedulable,deleted_at) VALUES ('` + id + `','` + systemID + `','` + id + `','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL)`,
+		`INSERT INTO accounts(id,system_account_id,name,vendor_code,connection_driver_code,protocol_code,protocol_version,type,status,schedulable,health_check_connection_id,deleted_at) VALUES ('` + id + `','` + systemID + `','` + id + `','gpt','gpt','openai','1','api_key','active',1,'conn-` + id + `',NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -225,10 +227,7 @@ func TestW14MAccountOptionsQueryArms(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		envelope := testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`)
 		w14mSeedAuthorizedFixture(t, db, envelope)
-		// 账户选项查询引用 protocol_version 与非空 name，业务契约 DDL 尚未包含。
-		if _, err := db.Exec(`ALTER TABLE accounts ADD COLUMN protocol_version TEXT`); err != nil {
-			t.Fatal(err)
-		}
+		// 业务契约 DDL 已含 protocol_version 与 name；此处仅补齐非空值。
 		if _, err := db.Exec(`UPDATE accounts SET name=id, protocol_version='1' WHERE name IS NULL OR protocol_version IS NULL`); err != nil {
 			t.Fatal(err)
 		}

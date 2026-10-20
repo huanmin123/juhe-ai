@@ -29,7 +29,7 @@ func (e *testEnv) seedProbePropagationInstance(t *testing.T, adminID, sourceID, 
 	e.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
 		grantee_system_account_id, status, created_by, created_at, updated_at)
 		VALUES ('ra-'||?, 'account', ?, ?, 'sys-grantee', 'active', 'sys-grantee', ?, ?)`, instanceID, sourceID, adminID, now, now)
-	e.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	e.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, config_revision,
 		authorization_instance_source_account_id, authorization_instance_authorization_id,
@@ -37,7 +37,7 @@ func (e *testEnv) seedProbePropagationInstance(t *testing.T, adminID, sourceID, 
 		cooldown_retest_failure_count, cooldown_retest_observation_started_at, cooldown_retest_generation,
 		cooldown_retest_last_at, cooldown_retest_last_status_code, cooldown_until,
 		created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', ?, 'cipher', 'sk-***', 'm', 1,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, 'cipher', 'sk-***', 'm', 1,
 		?, 'ra-'||?, 1,
 		2, '2026-08-31T23:00:00.000Z', 'gen-old',
 		'2026-08-31T23:30:00.000Z', 429, '2026-09-01T00:05:00.000Z',

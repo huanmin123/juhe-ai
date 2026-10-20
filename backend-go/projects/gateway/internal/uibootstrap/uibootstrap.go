@@ -168,10 +168,12 @@ func (d *Deps) findUserReferenceData(ctx context.Context, systemAccountID string
 	if owner == "" {
 		return nil, nil
 	}
+	// 供应商解耦后组无 provider 维度（设计 §8）：每 owner 至多一个启用默认组，
+	// 查询不再读 provider 列；响应仍按既有契约形状把该默认组挂在 providerCode
+	// 键下（构建期默认资源只保留 GPT 口径默认分组，见 2026-10-07 收口）。
 	query := `
 		SELECT
 			system_accounts.id AS system_account_id,
-			groups.provider_code,
 			groups.id AS group_id,
 			groups.name AS group_name,
 			groups.enabled AS group_enabled,
@@ -204,7 +206,6 @@ func (d *Deps) findUserReferenceData(ctx context.Context, systemAccountID string
 			AND default_routes.group_id = groups.id
 		WHERE system_accounts.id = ?
 		ORDER BY
-			groups.provider_code ASC,
 			CASE WHEN default_routes.route_binding_status = 'active' THEN 0 ELSE 1 END ASC,
 			CASE WHEN default_routes.route_strategy_status = 'active' THEN 0 ELSE 1 END ASC,
 			default_routes.route_strategy_created_at ASC,
@@ -221,7 +222,6 @@ func (d *Deps) findUserReferenceData(ctx context.Context, systemAccountID string
 		sawRow = true
 		var (
 			systemAccountID string
-			providerCode    sql.NullString
 			groupID         sql.NullString
 			groupName       sql.NullString
 			groupEnabled    sql.NullBool
@@ -231,11 +231,13 @@ func (d *Deps) findUserReferenceData(ctx context.Context, systemAccountID string
 			strategyStatus  sql.NullString
 			bindingStatus   sql.NullString
 		)
-		if err := rows.Scan(&systemAccountID, &providerCode, &groupID, &groupName, &groupEnabled,
+		if err := rows.Scan(&systemAccountID, &groupID, &groupName, &groupEnabled,
 			&strategyID, &strategyName, &strategyMode, &strategyStatus, &bindingStatus); err != nil {
 			return nil, err
 		}
-		code := strings.TrimSpace(providerCode.String)
+		// 组无 provider 维度：owner 的唯一默认组按 GPT 口径投影（组不存在时
+		// LEFT JOIN 给出 NULL 行，跳过）。
+		code := gptVendorCode
 		id := strings.TrimSpace(groupID.String)
 		name := strings.TrimSpace(groupName.String)
 		if code == "" || id == "" || name == "" {

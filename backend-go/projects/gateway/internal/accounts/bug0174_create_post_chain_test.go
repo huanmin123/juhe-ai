@@ -120,8 +120,8 @@ func TestCreateSnapshotSkipsNonHealthCapable(t *testing.T) {
 	env.seedVendor(t, "gemini")
 	env.exec(t, `INSERT INTO providers (id, code, name, enabled, default_supported_models_json, created_at, updated_at)
 		VALUES ('prov-gemini', 'gemini', 'Gemini', 1, '["gpt-4o-mini"]', ?, ?)`, now, now)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-gemini-default', ?, 'gemini-default', 'gemini', 1, 1, 'personal', ?, ?)`, owner, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-gemini-default', ?, 'gemini-default', 1, 1, 'personal', ?, ?)`, owner, now, now)
 	env.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled,
 		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
 		capabilities_json, created_at, updated_at)

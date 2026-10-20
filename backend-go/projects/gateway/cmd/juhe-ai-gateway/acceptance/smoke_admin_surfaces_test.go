@@ -128,10 +128,19 @@ func TestAdminSmokeSurfaces(t *testing.T) {
 		// 复用管理面建账主干（gpt / api_key / seed 默认分组）；健康检查模型
 		// 缺省落 supportedModels[0]（accounts/write.go 默认链）。
 		_, created := client.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
-			"providerCode":              "gpt",
-			"providerProtocolProfileId": "profile_gpt_openai_v1",
-			"name":                      "验收测试选项账户" + runTag,
-			"type":                      "api_key",
+			"providerCode": "gpt",
+			"name":         "验收测试选项账户" + runTag,
+			"type":         "api_key",
+			// §8 连接集合 + 健康检查三件套显式提交（写链必填）。
+			"connections": []map[string]any{{
+				"connectionPresetCode": "gpt_openai_v1",
+				"baseUrl":              "https://api.openai.com/v1",
+				"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
+				"enabled":              true,
+			}},
+			"healthCheckConnectionPresetCode": "gpt_openai_v1",
+			"healthCheckEndpointMode":         "chat_json",
+			"healthCheckModel":                "gpt-5.6-sol",
 			"credentials":               map[string]any{"api_key": "sk-acceptance-" + runTag, "base_url": "https://api.openai.com/v1"},
 			"supportedModels":           []string{"gpt-5.6-sol"},
 			"skipInitialHealthCheck":    true,

@@ -30,9 +30,9 @@ func w14bBatchSetup(t *testing.T, env *testEnv, suffix string) (string, []BatchU
 		if err != nil {
 			t.Fatal(err)
 		}
-		env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+		env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 			protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
-			VALUES (?, ?, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', ?, ?, ?)`,
+			VALUES (?, ?, NULL, 'generic_http', 'openai', 'v1', ?, 'api_key', 'active', ?, ?, ?)`,
 			"acc-"+name, adminID, name, sealed, now, now)
 	}
 	revision := func(id string) int64 {

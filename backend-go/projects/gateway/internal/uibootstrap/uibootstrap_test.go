@@ -15,9 +15,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 )
 
+// bootstrapSchema mirrors the target groups contract (供应商解耦设计 §8):
+// 组无 provider 维度，每个 system_account_id 至多一个 is_default=1 分组
+//（唯一部分索引在维护库 DDL 上表达，夹具按业务语义播种单默认组）。
 const bootstrapSchema = `
 	CREATE TABLE system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT);
-	CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0);
 	CREATE TABLE route_strategies (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '');
 	CREATE TABLE route_strategy_groups (route_strategy_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, status TEXT NOT NULL);
 `
@@ -34,16 +37,15 @@ func newBootstrapFixture(t *testing.T) *Deps {
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, username, display_name) VALUES ('sa-1', 'user1', 'User One')`,
-		`INSERT INTO groups (id, name, system_account_id, provider_code, enabled, is_default) VALUES
-			('g-1', '默认组', 'sa-1', 'openai', 1, 1),
-			('g-2', '代码组', 'sa-1', 'anthropic', 1, 1),
-			('g-3', '停用组', 'sa-1', 'gemini', 0, 1)`,
+		// 单默认组（设计 §8）：owner 的默认分组不再按供应商分叉。
+		`INSERT INTO groups (id, name, system_account_id, enabled, is_default) VALUES
+			('g-1', '默认组', 'sa-1', 1, 1)`,
 		`INSERT INTO route_strategies (id, name, system_account_id, mode, status, is_default, created_at) VALUES
 			('rs-1', '策略一', 'sa-1', 'normal', 'active', 1, '2026-01-01'),
 			('rs-2', '策略二', 'sa-1', 'hybrid', 'paused', 1, '2026-01-02')`,
 		`INSERT INTO route_strategy_groups (route_strategy_id, system_account_id, group_id, status) VALUES
 			('rs-1', 'sa-1', 'g-1', 'active'),
-			('rs-2', 'sa-1', 'g-2', 'paused')`,
+			('rs-2', 'sa-1', 'g-1', 'paused')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {
@@ -84,31 +86,28 @@ func TestBootstrapReferenceDataAdminScoped(t *testing.T) {
 	if data["systemAccountId"] != "sa-1" {
 		t.Fatalf("systemAccountId wrong: %#v", data)
 	}
-	// Node keeps disabled default groups in the list (enabled only gates the
-	// preferred strategy), ordered by provider_code ASC.
+	// 组无 provider 维度（设计 §8）：owner 的唯一默认组按 GPT 口径投影为单条
+	// providerDefaults；默认路由按「启用绑定 + 启用策略」优先排序（rs-1 active
+	// 绑定在前）。
 	defaults := data["providerDefaults"].([]any)
-	if len(defaults) != 3 {
+	if len(defaults) != 1 {
 		t.Fatalf("providerDefaults wrong: %#v", defaults)
 	}
-	anthropic := defaults[0].(map[string]any)
-	if anthropic["providerCode"] != "anthropic" {
-		t.Fatalf("first default wrong: %#v", anthropic)
+	only := defaults[0].(map[string]any)
+	if only["providerCode"] != "gpt" {
+		t.Fatalf("default providerCode wrong: %#v", only)
 	}
-	if anthropic["defaultGroup"].(map[string]any)["id"] != "g-2" {
-		t.Fatalf("default group wrong: %#v", anthropic)
+	if only["defaultGroup"].(map[string]any)["id"] != "g-1" {
+		t.Fatalf("default group wrong: %#v", only)
 	}
-	strategy := anthropic["defaultRouteStrategy"].(map[string]any)
-	if strategy["id"] != "rs-2" || strategy["status"] != "paused" {
+	strategy := only["defaultRouteStrategy"].(map[string]any)
+	if strategy["id"] != "rs-1" || strategy["status"] != "active" {
 		t.Fatalf("default route strategy wrong: %#v", strategy)
 	}
-	openai := defaults[2].(map[string]any)
-	if openai["providerCode"] != "openai" || openai["defaultGroup"].(map[string]any)["id"] != "g-1" {
-		t.Fatalf("openai default wrong: %#v", openai)
-	}
-	// preferred 只认 gpt 供应商 + enabled 组 + active 绑定；openai 不等于 gpt，
-	// 因此 preferred 缺省。
-	if _, ok := data["preferredDefaultRouteStrategy"]; ok {
-		t.Fatalf("preferred should be absent: %#v", data)
+	// preferred：默认组启用 + 绑定 active + 策略 active → rs-1。
+	preferred := data["preferredDefaultRouteStrategy"].(map[string]any)
+	if preferred["id"] != "rs-1" || preferred["mode"] != "normal" {
+		t.Fatalf("preferred strategy wrong: %#v", preferred)
 	}
 }
 

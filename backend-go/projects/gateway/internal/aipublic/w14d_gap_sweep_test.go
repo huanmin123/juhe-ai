@@ -34,10 +34,12 @@ func w14dSeedRawAccount(t *testing.T, env *aipublicEnv, id, ownerID, profileID s
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// 目标 schema（§2.1）：身份键为 vendor_code；profile 列仅作迁移窗口壳。
 	if _, err := env.db.Exec(`INSERT INTO accounts
-		(id, config_revision, dispatch_revision, system_account_id, provider_code, provider_protocol_profile_id,
+		(id, config_revision, dispatch_revision, system_account_id, vendor_code,
+		 connection_driver_code, provider_code, provider_protocol_profile_id,
 		 protocol_code, protocol_version, name, type, status, credentials_encrypted, schedulable, created_at, updated_at)
-		VALUES (?, 1, 1, ?, 'gpt', ?, 'openai', 'v1', ?, 'api_key', 'active', ?, 1, ?, ?)`,
+		VALUES (?, 1, 1, ?, 'gpt', 'gpt', 'gpt', ?, 'openai', 'v1', ?, 'api_key', 'active', ?, 1, ?, ?)`,
 		id, ownerID, profileID, "raw-"+id, sealed, now, now); err != nil {
 		t.Fatal(err)
 	}
@@ -203,10 +205,11 @@ func TestW14dAccountGapSweep(t *testing.T) {
 	if status != http.StatusBadRequest || payload["message"] != "API Key 不能为空" {
 		t.Fatalf("missing api key: %d %v", status, payload)
 	}
+	// 目标 schema 不再持久化档案 ID：无档案列的存量行按 vendor 派生身份正常更新。
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/update",
 		`{"accountId":"acc_raw3","name":"raw3"}`, token)
-	if status != http.StatusBadRequest || payload["message"] != "providerProtocolProfileId 不能为空" {
-		t.Fatalf("empty profile: %d %v", status, payload)
+	if status != http.StatusOK {
+		t.Fatalf("empty profile row update: %d %v", status, payload)
 	}
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/update",
 		`{"accountId":"acc_raw4","name":"raw4"}`, token)

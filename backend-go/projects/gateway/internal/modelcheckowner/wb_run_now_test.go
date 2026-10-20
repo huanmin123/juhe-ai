@@ -732,7 +732,7 @@ func TestRestoreSchedulePenaltiesQualityIsolate(t *testing.T) {
 // fallback 处罚恢复：降级标记按行内记录的前值恢复。
 func TestRestoreSchedulePenaltiesFallback(t *testing.T) {
 	f := wbNewRestoreFixture(t)
-	if _, err := f.db.Exec(`INSERT INTO accounts (id,system_account_id,provider_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled,last_error_code) VALUES ('acct','sys','openai',6,7,NULL,NULL,'active',1,1,0,'model_quality_failed')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO accounts (id,system_account_id,vendor_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,schedulable,fallback_enabled,super_priority_enabled,last_error_code) VALUES ('acct','sys','gpt',6,7,NULL,NULL,'active',1,1,0,'model_quality_failed')`); err != nil {
 		t.Fatal(err)
 	}
 	f.insertEnforcement(t, "acct", "active", "fallback", "schedule", "sch", "", 6, 0, 1)

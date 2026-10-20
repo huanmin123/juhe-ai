@@ -778,7 +778,7 @@ func TestRuntimeResetAuthorizedInstance(t *testing.T) {
 	authID := "ra-test-1"
 	instanceID := "acc-instance-1"
 	groupID := ""
-	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1`, granteeID).Scan(&groupID); err != nil {
+	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, granteeID).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
@@ -792,11 +792,10 @@ func TestRuntimeResetAuthorizedInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, provider_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		credential_mask, health_check_model, health_check_endpoint_mode, created_at, updated_at,
 		authorization_instance_authorization_id, authorization_instance_source_account_id)
-		VALUES (?, 1, 1, ?, 'gpt', 'prof-gpt', 'openai', 'v1', '授权实例', 'api_key', 'error', ?, '', 'gpt-4.1', 'chat_json', ?, ?, ?, ?)`,
+		VALUES (?, 1, 1, ?, 'gpt', 'gpt', 'openai', 'v1', '授权实例', 'api_key', 'error', ?, '', 'gpt-4.1', 'chat_json', ?, ?, ?, ?)`,
 		instanceID, granteeID, credentials, now, now, authID, sourceID)
 	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at, account_authorization_id)
 		VALUES (?, ?, ?, 1, ?, ?, ?)`, granteeID, groupID, instanceID, now, now, authID)
@@ -891,11 +890,10 @@ func TestRuntimeResetPendingTestAuthorizedRefused(t *testing.T) {
 		VALUES ('ra-test-2', 'account', ?, ?, ?, 'use', 'active', 'manual', ?, ?, ?)`,
 		sourceID, ownerID, granteeID, ownerID, now, now)
 	credentials, _ := EncryptJSON(testSecret, map[string]any{"api_key": "sk-i2", "base_url": "https://api.openai.com/v1"})
-	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, provider_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		credential_mask, health_check_model, health_check_endpoint_mode, created_at, updated_at,
 		authorization_instance_authorization_id, authorization_instance_source_account_id)
-		VALUES ('acc-instance-2', 1, 1, ?, 'gpt', 'prof-gpt', 'openai', 'v1', '实例二', 'api_key', 'pending_test', ?, '',
+		VALUES ('acc-instance-2', 1, 1, ?, 'gpt', 'gpt', 'openai', 'v1', '实例二', 'api_key', 'pending_test', ?, '',
 		'gpt-4.1', 'chat_json', ?, ?, 'ra-test-2', ?)`, granteeID, credentials, now, now, sourceID)
 	env.login(t, "alice", "alice-pass", "user")
 	env.store.SetRuntimeResetEffects(&fakeRuntimeEffects{})

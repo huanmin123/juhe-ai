@@ -3,7 +3,7 @@ package settings
 // w15b PostgreSQL 门禁回归(BUG-0308):upsertSystemSettings 的 account-health
 // 分区在 reserveAccountHealthInputVersions 里必须先把外层 accounts 流式
 // SELECT 读完并关闭 rows,再在同事务上做版本预留 QueryRow/Exec。修复前的
-// 写法在"存在至少一行 openai 账户"时 100% 得到 driver: bad connection
+// 写法在"存在至少一行 generic_http 账户"时 100% 得到 driver: bad connection
 // (与 modelcheckowner claim 同根因);SQLite 全量缓冲无此约束,故本契约只
 // 能由真实 pgx + PostgreSQL 钉死。
 //
@@ -108,7 +108,8 @@ func w15bSettingsCoverPostgresDB(t *testing.T) *sql.DB {
 		`CREATE TABLE juhe_business.accounts (
 			id text PRIMARY KEY,
 			deleted_at text,
-			provider_code text,
+			vendor_code text,
+			connection_driver_code text NOT NULL,
 			type text,
 			config_revision int,
 			dispatch_revision int)`,
@@ -128,13 +129,15 @@ func TestW15BUpsertAccountHealthSectionUnderPgx(t *testing.T) {
 	db := w15bSettingsCoverPostgresDB(t)
 	ctx := context.Background()
 	now := time.Now()
-	for _, account := range []struct{ id, provider, typ string }{
-		{"acc-w15b-oauth", "openai", "oauth"},
-		{"acc-w15b-key", "openai", "api_key"},
-		{"acc-w15b-other", "anthropic", "api_key"},
+	for _, account := range []struct {
+		id, vendor, driver, typ string
+	}{
+		{"acc-w15b-oauth", "", "generic_http", "oauth"},
+		{"acc-w15b-key", "", "generic_http", "api_key"},
+		{"acc-w15b-other", "anthropic", "anthropic", "api_key"},
 	} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, deleted_at, provider_code, type, config_revision, dispatch_revision)
-			VALUES ($1, NULL, $2, $3, 1, 1)`, account.id, account.provider, account.typ); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, deleted_at, vendor_code, connection_driver_code, type, config_revision, dispatch_revision)
+			VALUES ($1, NULL, NULLIF($2, ''), $3, $4, 1, 1)`, account.id, account.vendor, account.driver, account.typ); err != nil {
 			t.Fatalf("种子账户失败: %v", err)
 		}
 	}
@@ -169,7 +172,7 @@ func TestW15BUpsertAccountHealthSectionUnderPgx(t *testing.T) {
 		t.Fatalf("统计版本行失败: %v", err)
 	}
 	if others != 2 {
-		t.Fatalf("只应预留 2 个 openai 账户,实际 %d 行", others)
+		t.Fatalf("只应预留 2 个 generic_http 账户,实际 %d 行", others)
 	}
 	// 第二次写入走 UPDATE 臂:版本自增,且仍不得触发流式 busy。
 	if err := store.upsertSystemSettings(ctx, "account-health", map[string]any{"accountHealthCheckIntervalHours": 12}); err != nil {

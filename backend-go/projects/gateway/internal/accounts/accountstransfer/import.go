@@ -1211,10 +1211,22 @@ func (s *Service) planImportAccount(ctx context.Context, value any, index int, p
 			source.healthCheckConnectionPresetCode = source.connections[0].ConnectionPresetCode
 		}
 		if source.healthCheckEndpointMode == "" {
+			// 检查形态缺省流式优先（AI账户检查模型与人工测试设计 2026-10-19
+			// 定案）：先取首个可检查 _sse 形态，再退回连接声明顺序首个可检查
+			// 形态。适配器合成的连接已按 _sse 在前排列，此分支兜住上游包内
+			// endpointModes 顺序不规范的来源。
 			for _, mode := range source.connections[0].EndpointModes {
-				if accountscore.AccountHealthCheckEndpointModes[mode] {
+				if accountscore.AccountHealthCheckEndpointModes[mode] && strings.HasSuffix(mode, "_sse") {
 					source.healthCheckEndpointMode = mode
 					break
+				}
+			}
+			if source.healthCheckEndpointMode == "" {
+				for _, mode := range source.connections[0].EndpointModes {
+					if accountscore.AccountHealthCheckEndpointModes[mode] {
+						source.healthCheckEndpointMode = mode
+						break
+					}
 				}
 			}
 		}
@@ -1501,10 +1513,8 @@ func (s *Service) resolveImportAccountGroup(ctx context.Context, plan *importAcc
 			item.Messages = append(item.Messages, "分组不存在或无权使用："+source.groupID)
 			return nil
 		}
-		if group.providerCode != source.providerCode {
-			item.Messages = append(item.Messages, "分组供应商与账户供应商不一致："+group.name.String)
-			return nil
-		}
+		// 组无 provider 维度（设计 §8）：分组供应商一致性校验随列退役，
+		// groupId 归属与启用状态由 FindImportGroupByID 的作用域查询保证。
 		plan.groupID = group.id
 		return nil
 	}
@@ -1602,7 +1612,9 @@ type GroupReference struct {
 // companion slice).
 func (s *Service) FindImportGroupByID(ctx context.Context, groupID string, access accountscore.AccessScope) (*GroupReference, error) {
 	scoped := access.ManageableID()
-	query := `SELECT id, system_account_id, provider_code, name FROM ` + s.store.Table("groups") + ` WHERE id = ?`
+	// 组无 provider 维度（设计 §8）：组身份只有 (system_account_id, name)，
+	// 投影不再携带 provider 列，providerCode 恒空。
+	query := `SELECT id, system_account_id, '' AS provider_code, name FROM ` + s.store.Table("groups") + ` WHERE id = ?`
 	args := []any{groupID}
 	if scoped != "" {
 		query += ` AND system_account_id = ?`
@@ -1636,9 +1648,9 @@ func (s *Service) findImportGroupOptionByName(ctx context.Context, providerCode,
 	}
 	var id string
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id FROM `+s.store.Table("groups")+`
-		WHERE system_account_id = ? AND provider_code = ? AND name = ?
+		WHERE system_account_id = ? AND name = ?
 		ORDER BY updated_at DESC, id ASC
-		LIMIT 1`), owner, providerCode, normalized).Scan(&id)
+		LIMIT 1`), owner, normalized).Scan(&id)
 	var option *importGroupOption
 	if err == nil {
 		option = &importGroupOption{id: id, name: normalized, providerCode: providerCode}
@@ -1961,10 +1973,10 @@ func (s *Service) createImportProxy(ctx context.Context, proxy *importProxyPlan,
 func (s *Service) CreateImportGroup(ctx context.Context, group ImportGroupCreatePlan, ownerID, nowISO string) (string, bool, error) {
 	groupID := s.deps.NewResourceID("grp")
 	_, err := s.store.DB().ExecContext(ctx, s.store.Bind(`INSERT INTO `+s.store.Table("groups")+`
-		(id, system_account_id, name, provider_code, description, enabled, is_default, group_type,
+		(id, system_account_id, name, description, enabled, is_default, group_type,
 		 scheduling_policy_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, '由账户导入自动创建', 1, 0, 'personal', NULL, ?, ?)`),
-		groupID, ownerID, group.Name, group.ProviderCode, nowISO, nowISO)
+		VALUES (?, ?, ?, '由账户导入自动创建', 1, 0, 'personal', NULL, ?, ?)`),
+		groupID, ownerID, group.Name, nowISO, nowISO)
 	if err == nil {
 		return groupID, false, nil
 	}
@@ -2067,11 +2079,13 @@ func DuplicateImportGroupNameError(err error, name string) error {
 		return nil
 	}
 	message := err.Error()
-	if strings.Contains(message, "idx_groups_owner_provider_name_unique") ||
-		strings.Contains(message, "idx_groups_owner_provider_name_unique_lower") ||
-		strings.Contains(message, "UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name") ||
-		strings.Contains(message, "UNIQUE constraint failed: juhe_business.groups.system_account_id, juhe_business.groups.provider_code, juhe_business.groups.name") {
-		return &accountscore.ConflictError{Message: "同一供应商下分组名称已存在：" + name}
+	// 组无 provider 维度（设计 §8）：唯一身份是 binary (system_account_id,
+	// name)，索引名 idx_groups_owner_name_unique；旧 provider 三元唯一索引
+	// 随列退役，不再匹配。
+	if strings.Contains(message, "idx_groups_owner_name_unique") ||
+		strings.Contains(message, "UNIQUE constraint failed: groups.system_account_id, groups.name") ||
+		strings.Contains(message, "UNIQUE constraint failed: juhe_business.groups.system_account_id, juhe_business.groups.name") {
+		return &accountscore.ConflictError{Message: "分组名称已存在：" + name}
 	}
 	return nil
 }

@@ -48,7 +48,7 @@ func TestW13AM11ReadRoutesForbiddenArms(t *testing.T) {
 		adminID, adminID, adminID, "2026-09-17T00:00:00.000Z", "2026-09-17T00:00:00.000Z")
 	// gemini/google_oauth 账户（重授权上下文只读取该供应商/类型组合）。
 	env.seedAccount(t, "acc-w13a-m11g", adminID, "w13a-m11g", "active")
-	env.exec(t, `UPDATE accounts SET provider_code = 'gemini', type = 'google_oauth' WHERE id = 'acc-w13a-m11g'`)
+	env.exec(t, `UPDATE accounts SET vendor_code = 'gemini', connection_driver_code = 'gemini', type = 'google_oauth' WHERE id = 'acc-w13a-m11g'`)
 	env.exec(t, `UPDATE accounts SET authorization_instance_source_account_id = 'acc-w13a-m11a',
 		authorization_instance_authorization_id = 'authz-w13a-2' WHERE id = 'acc-w13a-m11g'`)
 

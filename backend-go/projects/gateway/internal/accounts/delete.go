@@ -279,7 +279,7 @@ func (s *Store) enqueueDeletedAccountHealthTombstones(ctx context.Context, tx *s
 			-- 语义值）；generic_http 驱动账户（vendor NULL，≡ 旧 openai/hybrid
 			-- 两供应商族）恒健康能力——provider_code 已停写，不得再作判定键。
 			AND (
-				COALESCE(NULLIF(vendor_code, ''), provider_code, '') IN (`+providerClause+`)
+				COALESCE(vendor_code, '') IN (`+providerClause+`)
 				OR (vendor_code IS NULL AND connection_driver_code = 'generic_http')
 			)
 			AND type IN (`+typeClause+`)

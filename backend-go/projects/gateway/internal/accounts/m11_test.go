@@ -143,10 +143,10 @@ func (e *testEnv) seedM11Account(t *testing.T, id, ownerID, name, accountType, s
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	e.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	e.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, schedulable, created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, ?, ?, ?, 'sk-***', 'gpt-4o-mini', 1, ?, ?)`,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, ?, ?, ?, 'sk-***', 'gpt-4o-mini', 1, ?, ?)`,
 		id, ownerID, name, accountType, status, sealed, now, now)
 }
 
@@ -264,10 +264,10 @@ func TestM11OAuthReauthorizationContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES ('acc-gem', ?, 'gemini', 'prof-gem', 'gemini', 'v1', 'Gemini 账户', 'google_oauth', 'active',
+		VALUES ('acc-gem', ?, 'gemini', 'gemini', 'gemini', 'v1', 'Gemini 账户', 'google_oauth', 'active',
 		?, '***', '', ?, ?)`, adminID, sealed, now, now)
 
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/acc-gem/oauth-reauthorization-context", "")
@@ -616,8 +616,8 @@ func TestM11TrafficMigrationContract(t *testing.T) {
 		t.Fatalf("same account: %d %v", code, same)
 	}
 	// Cross-group target → 400.
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-other', ?, '其它分组', 'gpt', 1, 0, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-other', ?, '其它分组', 1, 0, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
 	// Group reassignment replaces the account's prior binding. Keeping both rows
 	// makes the selected binding depend on RFC3339Nano's variable-width textual
 	// fraction when the repository orders by updated_at.
@@ -855,10 +855,10 @@ func TestM11ReturnAuthorizationContract(t *testing.T) {
 	}
 	// A not_found terminal status renders 404 with the Node copy (a fresh
 	// instance avoids the mutationGuard dedup on the first fingerprint).
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_authorization_id, created_at, updated_at)
-		VALUES ('acc-ret-b', ?, 'gpt', 'prof-gpt', 'openai', 'v1', '授权实例B', 'api_key', 'active',
+		VALUES ('acc-ret-b', ?, 'gpt', 'gpt', 'openai', 'v1', '授权实例B', 'api_key', 'active',
 		'sealed', '***', 'gpt-4o-mini', 'ra-ret-b', ?, ?)`, granteeID, now, now)
 	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
 		grantee_system_account_id, status, effective_source_type, created_by, created_at, updated_at)
@@ -990,8 +990,8 @@ func TestM11GroupBindingContract(t *testing.T) {
 		t.Fatalf("seed create: %d %v", code, created)
 	}
 	accountID := dataMap(t, created)["id"].(string)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-target', ?, '目标分组', 'gpt', 1, 0, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-target', ?, '目标分组', 1, 0, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
 
 	// Body contract: unknown key / missing group / bad revision → 400.
 	code, badBody := env.do(t, http.MethodPost, "/__aisys__/api/accounts/"+accountID+"/group",

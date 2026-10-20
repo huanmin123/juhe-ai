@@ -88,7 +88,10 @@ func (s *Store) provisionAuthorizedAccountInstance(ctx context.Context, tx *sql.
 	if err != nil {
 		return err
 	}
-	if instance == nil || instance.id == "" || instance.providerCode == "" {
+	// 供应商解耦（设计 §2.1）：vendor_code 为 NULL 是 generic_http 账户的合法
+	// 身份；connection_driver_code 才是资源账户必填身份列，空 driver 表示源行
+	// 不完整，沿用归档实现的「退化跳过」语义。实例缺失同样跳过。
+	if instance == nil || instance.id == "" || instance.driver == "" {
 		return nil
 	}
 	return s.bindInstanceToGranteeGroup(ctx, tx, instance, in, now)
@@ -98,7 +101,10 @@ func (s *Store) provisionAuthorizedAccountInstance(ctx context.Context, tx *sql.
 // (archived `SELECT *` narrowed to the consumed fields). capability_domain
 // 承载域继承（AI 账户能力域拆分 D3）：实例域恒等于源域，插入臂与软删除
 // 恢复臂都从源行直读（列 NOT NULL DEFAULT 'chat'，无空值臂）。
-const sourceAccountColumns = `provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+// 供应商解耦（设计 §2.1/§9.11）：账户身份改为 vendor_code +
+// connection_driver_code，provider_protocol_profile_id 列已删除。
+const sourceAccountColumns = `COALESCE(vendor_code, '') AS vendor_code, connection_driver_code,
+		protocol_code, protocol_version,
 		name, type, concurrency_limit, temporary_unavailable_continuous_probe_enabled,
 		health_check_model, health_check_endpoint_mode, capability_domain`
 
@@ -110,20 +116,21 @@ const sourceAccountColumns = `provider_code, provider_protocol_profile_id, proto
 // degenerate self-grant) silently skips provisioning exactly like the
 // archived `return undefined`.
 func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.Tx, in authorizedInstanceProvision, nowTime time.Time, now string) (*instanceAccountRef, error) {
-	var liveID, liveProvider string
-	err := tx.QueryRowContext(ctx, s.bind(`SELECT id, provider_code FROM `+s.table("accounts")+`
+	var liveID, liveProvider, liveDriver string
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT id, COALESCE(vendor_code, '') AS provider_code,
+			COALESCE(connection_driver_code, '') AS connection_driver_code FROM `+s.table("accounts")+`
 		WHERE authorization_instance_authorization_id = ? AND deleted_at IS NULL LIMIT 1`), in.RuntimeAuthorizationID).
-		Scan(&liveID, &liveProvider)
+		Scan(&liveID, &liveProvider, &liveDriver)
 	if err == nil {
-		return &instanceAccountRef{id: liveID, providerCode: liveProvider}, nil
+		return &instanceAccountRef{id: liveID, providerCode: liveProvider, driver: liveDriver}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 
 	var source struct {
-		providerCode              string
-		providerProtocolProfileID string
+		vendorCode                string
+		connectionDriverCode      string
 		protocolCode              string
 		protocolVersion           string
 		name                      string
@@ -136,7 +143,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT `+sourceAccountColumns+` FROM `+s.table("accounts")+`
 		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), in.SourceAccountID).
-		Scan(&source.providerCode, &source.providerProtocolProfileID, &source.protocolCode,
+		Scan(&source.vendorCode, &source.connectionDriverCode, &source.protocolCode,
 			&source.protocolVersion, &source.name, &source.accountType, &source.concurrencyLimit,
 			&source.continuousProbeEnabled, &source.healthCheckModel, &source.healthCheckEndpointMode,
 			&source.capabilityDomain)
@@ -170,8 +177,8 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("accounts")+`
-			SET provider_code = ?,
-				provider_protocol_profile_id = ?,
+			SET vendor_code = NULLIF(?, ''),
+				connection_driver_code = ?,
 				protocol_code = ?,
 				protocol_version = ?,
 				name = ?,
@@ -197,7 +204,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 				deleted_by = NULL,
 				updated_at = ?
 			WHERE id = ?`),
-			source.providerCode, source.providerProtocolProfileID, source.protocolCode,
+			source.vendorCode, source.connectionDriverCode, source.protocolCode,
 			source.protocolVersion, restoredName, source.accountType,
 			source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
 			source.capabilityDomain,
@@ -210,7 +217,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		if err := s.advanceInstanceDispatchRevision(ctx, tx, deletedID, nowTime.UnixMilli()); err != nil {
 			return nil, err
 		}
-		return &instanceAccountRef{id: deletedID, providerCode: source.providerCode}, nil
+		return &instanceAccountRef{id: deletedID, providerCode: source.vendorCode, driver: source.connectionDriverCode}, nil
 	}
 
 	// Insert arm (:355-370): a fresh instance with empty credentials and the
@@ -221,7 +228,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("accounts")+`
-		(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+		(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 		 name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
 		 proxy_profile_id, concurrency_limit,
 		 priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
@@ -233,7 +240,7 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 		 authorization_instance_owner_system_account_id,
 		 created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		id, in.GranteeID, source.providerCode, source.providerProtocolProfileID, source.protocolCode,
+		id, in.GranteeID, nullableVendorCode(source.vendorCode), source.connectionDriverCode, source.protocolCode,
 		source.protocolVersion, name, source.accountType, instanceEmptyCredentials, "",
 		source.concurrencyLimit, 0, 0, 0,
 		source.continuousProbeEnabled, source.healthCheckModel, source.healthCheckEndpointMode,
@@ -244,7 +251,16 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 	if err := s.replaceInstanceNameSearchTerms(ctx, tx, id, in.GranteeID, name, now); err != nil {
 		return nil, err
 	}
-	return &instanceAccountRef{id: id, providerCode: source.providerCode}, nil
+	return &instanceAccountRef{id: id, providerCode: source.vendorCode, driver: source.connectionDriverCode}, nil
+}
+
+// nullableVendorCode 把空厂商串落 SQL NULL（设计 §2.1：generic_http 账户
+// vendor_code 必须为 NULL，空串由应用层 registry 保证不落库）。
+func nullableVendorCode(code string) any {
+	if strings.TrimSpace(code) == "" {
+		return nil
+	}
+	return code
 }
 
 // instanceEmptyCredentials is the NOT NULL placeholder document discussed in
@@ -253,9 +269,12 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 const instanceEmptyCredentials = "{}"
 
 // instanceAccountRef is the provisioning result the bind step consumes.
+// driver 是源账户的 connection_driver_code：目标 schema 下 vendor 可空
+// （generic_http），driver 才是资源账户的必填身份列，绑定守卫以它判定行完整。
 type instanceAccountRef struct {
 	id           string
 	providerCode string
+	driver       string
 }
 
 // uniqueAuthorizedAccountInstanceName mirrors :371-387: the trimmed source
@@ -385,20 +404,19 @@ func (s *Store) bindInstanceToGranteeGroup(ctx context.Context, tx *sql.Tx, inst
 // group for the instance provider.
 func (s *Store) groupIDForAuthorizationBinding(ctx context.Context, q queryer, providerCode, systemAccountID, targetGroupID string) (string, error) {
 	if targetGroupID != "" {
-		var id, owner, groupProvider string
+		var id, owner string
 		var enabled int
-		err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code, enabled
+		err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, enabled
 			FROM `+s.table("groups")+` WHERE id = ? LIMIT 1`), targetGroupID).
-			Scan(&id, &owner, &groupProvider, &enabled)
+			Scan(&id, &owner, &enabled)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && owner != systemAccountID) {
 			return "", failf("目标分组不存在或不属于被授权用户")
 		}
 		if err != nil {
 			return "", err
 		}
-		if groupProvider != providerCode {
-			return "", failf("目标分组供应商与授权账户不一致")
-		}
+		// 组无 provider 维度（设计 §8）：分组供应商一致性校验随列退役，
+		// 「同供应商」由授权资源与分组成员关系决定。
 		if enabled != 1 {
 			return "", failf("目标分组已停用，请选择启用分组")
 		}
@@ -421,9 +439,11 @@ func (s *Store) groupIDForAuthorizationBinding(ctx context.Context, q queryer, p
 // keeps the verbatim rejection, the team fanout fails with the member label.
 func (s *Store) defaultGroupIDForProvider(ctx context.Context, q queryer, providerCode, systemAccountID string) (string, error) {
 	var id string
+	// 组无 provider 维度（设计 §8）：每 owner 至多一个启用默认组。
+	_ = providerCode
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("groups")+`
-		WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 AND enabled = 1
-		ORDER BY updated_at DESC, id ASC LIMIT 1`), systemAccountID, providerCode).Scan(&id)
+		WHERE system_account_id = ? AND is_default = 1 AND enabled = 1
+		ORDER BY updated_at DESC, id ASC LIMIT 1`), systemAccountID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -439,16 +459,17 @@ func (s *Store) defaultGroupIDForProvider(ctx context.Context, q queryer, provid
 // is never auto-created, so a missing default group fails the whole enclosing
 // transaction with the member label (name, falling back to the id). The gate
 // order mirrors provisionAuthorizedAccountInstance: an expired grant skips
-// silently, and an empty source provider stays the archived degenerate skip
-// (the bind step never resolves a group for it).
+// silently. 供应商解耦后 vendor_code 可空（generic_http），不再按空 provider
+// 跳过。
 func (s *Store) provisionTeamAccountInstanceForMember(ctx context.Context, tx *sql.Tx, sourceAccountID, ownerID, memberID string, grantExpiresAt *string, nowTime time.Time, now string) error {
 	if grantExpiresAt != nil && *grantExpiresAt != "" &&
 		authorizationExpiresPassed(*grantExpiresAt, nowTime) {
 		return nil
 	}
-	var providerCode string
-	err := tx.QueryRowContext(ctx, s.bind(`SELECT provider_code FROM `+s.table("accounts")+`
-		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), sourceAccountID).Scan(&providerCode)
+	var providerCode, driverCode string
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT COALESCE(vendor_code, '') AS provider_code,
+			COALESCE(connection_driver_code, '') AS connection_driver_code FROM `+s.table("accounts")+`
+		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), sourceAccountID).Scan(&providerCode, &driverCode)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Source deleted: ensureAccountAuthorizationInstance skips silently for
 		// the same condition, so the fanout skips before resolving groups.
@@ -457,9 +478,8 @@ func (s *Store) provisionTeamAccountInstanceForMember(ctx context.Context, tx *s
 	if err != nil {
 		return err
 	}
-	if providerCode == "" {
-		// The archived bind short-circuits on the degenerate empty provider
-		// (instance.providerCode check) without requiring any group.
+	if driverCode == "" {
+		// 退化源行（缺 driver）沿用归档的静默跳过。
 		return nil
 	}
 	groupID, err := s.defaultGroupIDForProvider(ctx, tx, providerCode, memberID)

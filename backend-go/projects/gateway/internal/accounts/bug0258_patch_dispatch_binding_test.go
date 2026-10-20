@@ -24,8 +24,8 @@ func bug0258Seed(t *testing.T, env *testEnv, accountID string, accountSuper int,
 	if accountSuper != 0 {
 		env.exec(t, `UPDATE accounts SET super_priority_enabled = ? WHERE id = ?`, accountSuper, accountID)
 	}
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-b258', 'owner-1', 'BUG0258分组', 'gpt', 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-b258', 'owner-1', 'BUG0258分组', 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id,
 		local_priority, local_super_priority_enabled, local_fallback_enabled, enabled, created_at, updated_at)
 		VALUES ('owner-1', 'grp-b258', ?, ?, ?, ?, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,

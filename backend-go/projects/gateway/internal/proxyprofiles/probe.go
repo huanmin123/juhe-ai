@@ -32,7 +32,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -150,6 +152,66 @@ type proxyTestBeforeState struct {
 	TestedAt       *string
 }
 
+// proxyTestVendorPresets 是 vendor→探针预设的固定表（设计 §1.1 registry
+// 词表），与 jobs proxylatency 的 j3aVendorProbePresets 同源同序。只有同时
+// 具备已注册探针协议目录（exactkeyprobe.ConnectionPresetProfileID）和默认
+// Base URL 的 preset 才构成 target（fail-closed）。
+var proxyTestVendorPresets = []struct{ vendor, preset string }{
+	{"gpt", contracts.PresetGPTOpenAIV1},
+	{"xai", contracts.PresetXAIOpenAIV1},
+	{"deepseek", contracts.PresetDeepSeekOpenAIV1},
+	{"anthropic", contracts.PresetAnthropicV1},
+	{"gemini", contracts.PresetGeminiNativeV1Beta},
+	{"glm", contracts.PresetGLMCodingOpenAIV1},
+	{"minimax", contracts.PresetMiniMaxMedia},
+	{"volcengine", contracts.PresetVolcengineArk},
+	{"qwen", contracts.PresetQwenDashScope},
+}
+
+// proxyTestVendorTargets 是 registry 派生的探针 target 全集；var 便于测试
+// 把单个 vendor 指向本地 fixture（与 proxyTestOutboundTargets 同做法）。
+var proxyTestVendorTargets = buildProxyTestVendorTargets()
+
+func buildProxyTestVendorTargets() []proxyTestTarget {
+	targets := make([]proxyTestTarget, 0, len(proxyTestVendorPresets))
+	for _, entry := range proxyTestVendorPresets {
+		profileID, ok := exactkeyprobe.ConnectionPresetProfileID(entry.preset)
+		if !ok {
+			continue
+		}
+		targetURL := contracts.PresetDefaultBaseURL(entry.preset)
+		if strings.TrimSpace(targetURL) == "" {
+			continue
+		}
+		targets = append(targets, proxyTestTarget{Provider: entry.vendor, ProfileID: profileID, URL: targetURL})
+	}
+	return targets
+}
+
+// proxyTestVendorTargetsSQL 把 registry target 全集内联为 SELECT ... UNION ALL
+// 派生表（provider/profile_id/target_url），运行时与 vendors.enabled 相交。
+// 用 UNION ALL 而不是 JOIN (VALUES ...) AS t(...)：后者 SQLite 不支持列别名
+// （开发实例跑 SQLite，生产跑 PostgreSQL，语句必须双方言可执行）。
+func proxyTestVendorTargetsSQL() string {
+	rows := make([]string, 0, len(proxyTestVendorTargets))
+	for i, target := range proxyTestVendorTargets {
+		prefix := "SELECT"
+		if i > 0 {
+			prefix = "UNION ALL SELECT"
+		}
+		rows = append(rows, prefix+" "+proxyTestSQLString(target.Provider)+" AS provider,"+
+			proxyTestSQLString(target.ProfileID)+" AS profile_id,"+
+			proxyTestSQLString(target.URL)+" AS target_url")
+	}
+	return strings.Join(rows, " ")
+}
+
+// proxyTestSQLString renders a compile-time registry constant as a SQL string
+// literal (single quotes doubled, no user input reaches this path).
+func proxyTestSQLString(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
 type proxyTestSnapshot struct {
 	ProxyID           string
 	ProxyName         string
@@ -164,12 +226,14 @@ type proxyTestSnapshot struct {
 
 // LoadProxyTestSnapshot mirrors the jobs management snapshot
 // (manual_admin.go manualAdminSnapshotSQL): one proxy row joined against the
-// best enabled protocol profile of every enabled provider (enabled first,
-// the frozen gemini/glm preferences next, updated_at DESC, id ASC), targets
-// ordered by provider name/code. A missing proxy returns (nil, nil). The
-// snapshot never filters on proxy enabled: disabled proxies stay testable.
-// Stale/deleted providers after the run are the caller's re-check, matching
-// the Node route's before/after findProxyAsync pair.
+// registry probe target of every enabled vendor, targets ordered by vendor
+// name/code. Probe targets are the compile-time registry presets
+// (vendor→preset→profile/default URL, 设计 §1.1), matching jobs byte for
+// byte; the retired providers/provider_protocol_profiles tables are not
+// consulted. A missing proxy returns (nil, nil). The snapshot never filters
+// on proxy enabled: disabled proxies stay testable. Stale/deleted vendors
+// after the run are the caller's re-check, matching the Node route's
+// before/after findProxyAsync pair.
 func (s *Store) LoadProxyTestSnapshot(ctx context.Context, id string) (*proxyTestSnapshot, error) {
 	lastTestedAtColumn := "p.last_tested_at"
 	if s.pg {
@@ -179,21 +243,11 @@ func (s *Store) LoadProxyTestSnapshot(ctx context.Context, id string) (*proxyTes
 	}
 	query := `
 WITH selected_targets AS (
-  SELECT provider,provider_name,profile_id,target_url
-  FROM (
-    SELECT p.code AS provider,p.name AS provider_name,ppp.id AS profile_id,ppp.base_url AS target_url,
-      row_number() OVER (
-        PARTITION BY p.code
-        ORDER BY CASE WHEN ppp.enabled = 1 THEN 0 ELSE 1 END,
-          CASE WHEN (p.code = 'gemini' AND ppp.id = 'profile_gemini_native_v1beta')
-                    OR (p.code = 'glm' AND ppp.id = 'profile_glm_coding_openai_v1') THEN 0 ELSE 1 END,
-          ppp.updated_at DESC,ppp.id ASC
-      ) AS profile_rank
-    FROM ` + s.table("providers") + ` p
-    JOIN ` + s.table("provider_protocol_profiles") + ` ppp ON ppp.provider_code = p.code
-    WHERE p.enabled = 1
-  ) ranked_profiles
-  WHERE profile_rank = 1
+  SELECT v.code AS provider,v.name AS provider_name,t.profile_id,t.target_url
+  FROM ` + s.table("vendors") + ` v
+  JOIN (` + proxyTestVendorTargetsSQL() + `) AS t
+    ON t.provider = v.code
+  WHERE v.enabled = 1
 )
 SELECT p.id,p.name,p.type,p.host,p.port,COALESCE(p.username,''),COALESCE(p.password_encrypted,''),
   p.test_status,p.latency_ms,p.outbound_ip,p.outbound_region,p.last_test_message,

@@ -22,13 +22,20 @@ import (
 )
 
 const proxyTestCatalogSchema = `
-	CREATE TABLE providers (
-		id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
-		enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-	CREATE TABLE provider_protocol_profiles (
-		id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-		base_url TEXT NOT NULL, updated_at TEXT NOT NULL);
+	CREATE TABLE vendors (
+		id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
+		enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 `
+
+// useLocalProxyTestTargets pins the registry-derived probe targets to a local
+// fixture (same test hook pattern as proxyTestOutboundTargets).
+func useLocalProxyTestTargets(t *testing.T, targets ...proxyTestTarget) {
+	t.Helper()
+	original := proxyTestVendorTargets
+	proxyTestVendorTargets = targets
+	t.Cleanup(func() { proxyTestVendorTargets = original })
+}
 
 func newProxyTestFixture(t *testing.T) *proxyFixture {
 	t.Helper()
@@ -130,14 +137,13 @@ func TestProxyTestRunsThroughForwardProxy(t *testing.T) {
 		VALUES ('proxy-1', 'sa-1', '测试代理', 'http', ?, ?, 1, 'unknown', '2026-01-01', '2026-01-01')`, proxyHost, proxyPort); err != nil {
 		t.Fatalf("seed proxy: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('provider-1', 'openai', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
-		t.Fatalf("seed provider: %v", err)
+	if _, err := fixture.db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('vendor-1', 'gpt', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
+		t.Fatalf("seed vendor: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, enabled, base_url, updated_at)
-		VALUES ('profile-1', 'openai', 1, ?, '2026-01-01')`, target.URL); err != nil {
-		t.Fatalf("seed profile: %v", err)
-	}
+	useLocalProxyTestTargets(t, proxyTestTarget{
+		Provider: "gpt", ProfileID: "profile_gpt_openai_v1", URL: target.URL,
+	})
 
 	recorder := postProxyTest(t, fixture, "proxy-1", true)
 	if recorder.Code != http.StatusOK {
@@ -285,14 +291,13 @@ func TestProxyTestTransportFailureClassification(t *testing.T) {
 		VALUES ('proxy-1', 'sa-1', '断连代理', 'http', '127.0.0.1', ?, 1, 'unknown', '2026-01-01', '2026-01-01')`, closedPort); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('provider-1', 'openai', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
-		t.Fatalf("seed provider: %v", err)
+	if _, err := fixture.db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('vendor-1', 'gpt', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
+		t.Fatalf("seed vendor: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, enabled, base_url, updated_at)
-		VALUES ('profile-1', 'openai', 1, 'http://127.0.0.1:9/v1/models', '2026-01-01')`); err != nil {
-		t.Fatalf("seed profile: %v", err)
-	}
+	useLocalProxyTestTargets(t, proxyTestTarget{
+		Provider: "gpt", ProfileID: "profile_gpt_openai_v1", URL: "http://127.0.0.1:9/v1/models",
+	})
 	recorder := postProxyTest(t, fixture, "proxy-1", true)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status: %d body %s", recorder.Code, recorder.Body.String())

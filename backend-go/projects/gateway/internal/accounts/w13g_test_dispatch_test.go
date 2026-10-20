@@ -133,7 +133,7 @@ func TestW13GTestAccountAuthAndDraftGates(t *testing.T) {
 		VALUES ('prof-w13g-x', 'wx', 'X 协议', 1, 'wxp', 'v1', 'https://x.example/v1', 'm-x', '["api_key"]', '[]',
 		'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	env.seedAccount(t, "acc-w13g-tx", adminID, "w13g-tx", "active")
-	env.exec(t, `UPDATE accounts SET provider_code = 'wx', provider_protocol_profile_id = 'prof-w13g-x',
+	env.exec(t, `UPDATE accounts SET vendor_code = NULL, connection_driver_code = 'generic_http',
 		protocol_code = 'wxp' WHERE id = 'acc-w13g-tx'`)
 	if code, payload := env.do(t, http.MethodPost, base+"/acc-w13g-tx/test", `{}`); code != http.StatusBadRequest || payload["message"] != unsupportedGatewayProtocolTestMessage {
 		t.Fatalf("协议拒绝：%d %v", code, payload)

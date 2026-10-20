@@ -182,25 +182,33 @@ func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if _, err := seed.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'` + server.URL + `/v1')`); err != nil {
+	// 目标 schema（§9.3）无档案表：探针身份由 vendor + 健康检查连接派生，
+	// 连接行承载 baseUrl（旧 profile base_url 的等价物）。
+	if _, err := seed.Exec(`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-chat','acct-chat','gpt_openai_v1','` + server.URL + `/v1',1),('conn-chat-gpt','acct-chat-gpt','gpt_openai_v1','` + server.URL + `/v1',1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := seed.Exec(`INSERT INTO groups VALUES ('group-1','sys-1',1)`); err != nil {
 		t.Fatal(err)
 	}
 	credential := testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["chat_json"]}`)
-	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted,name) VALUES ('acct-chat','sys-1','openai','profile_openai_openai_v1','openai','api_key',1,1,'active',1,'chat_json',?,'Chat Shape')`, credential); err != nil {
+	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-chat','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'chat_json','conn-chat',?,'Chat Shape')`, credential); err != nil {
 		t.Fatal(err)
 	}
 	// 目录内模型拒绝用例的对照账户：mode 同为 chat_json，但支持模型只登记
 	// 目录内 gpt 系。
-	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted,name) VALUES ('acct-chat-gpt','sys-1','openai','profile_openai_openai_v1','openai','api_key',1,1,'active',1,'chat_json',?,'Chat Shape GPT')`, credential); err != nil {
+	if _, err := seed.Exec(`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,name) VALUES ('acct-chat-gpt','sys-1','gpt','gpt','openai','api_key',1,1,'active',1,'chat_json','conn-chat-gpt',?,'Chat Shape GPT')`, credential); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := seed.Exec(`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-chat','sys-1','group-1',1),('acct-chat-gpt','sys-1','group-1',1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := seed.Exec(`INSERT INTO account_supported_models VALUES ('acct-chat','deepseek-v4.1-flash'),('acct-chat-gpt','gpt-5.6-sol')`); err != nil {
+	// 目标 schema（§4）：account_supported_models 以 model_id 引用 models；
+	// 目录外支持模型必须存在 active 的 owner-visible 行（本用例验证目录外
+	// 模型仍可检测，故在此登记行并保持 account_supported_models 关系）。
+	if _, err := seed.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-ds','gpt','deepseek-v4.1-flash','deepseek-v4.1-flash','builtin',NULL,'active',1),('m-gpt56','gpt','gpt-5.6-sol','gpt-5.6-sol','builtin',NULL,'active',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Exec(`INSERT INTO account_supported_models VALUES ('acct-chat','m-ds'),('acct-chat-gpt','m-gpt56')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := seed.Close(); err != nil {

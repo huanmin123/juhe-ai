@@ -102,14 +102,24 @@ func startChainFixtureWithUpstream(t *testing.T, upstreamHandler http.HandlerFun
 	// 通过管理面创建指向 mock 上游的账户（凭据由服务端密封），并绑定
 	// seed 默认 GPT 分组（pgSeedGroups：grp_default_gpt_sys_admin）。
 	_, accountCreated := admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
-		"providerCode":              "gpt",
-		"providerProtocolProfileId": "profile_gpt_openai_v1",
-		"name":                      "链路验收账户",
-		"type":                      "api_key",
-		"credentials":               map[string]any{"api_key": upstreamAccountKey, "base_url": upstream.URL},
-		"supportedModels":           []string{acceptanceModel},
-		"status":                    "active",
-		"groupId":                   "grp_default_gpt_sys_admin",
+		"providerCode": "gpt",
+		"name":         "链路验收账户",
+		"type":         "api_key",
+		"credentials":  map[string]any{"api_key": upstreamAccountKey, "base_url": upstream.URL},
+		// §8 连接集合 + 健康检查三件套：mock 上游按 /v1/{chat/completions,
+		// responses} 两种入口服务两条链路。
+		"connections": []map[string]any{{
+			"connectionPresetCode": "gpt_openai_v1",
+			"baseUrl":              upstream.URL,
+			"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "gpt_openai_v1",
+		"healthCheckEndpointMode":         "chat_json",
+		"healthCheckModel":                acceptanceModel,
+		"supportedModels":                 []string{acceptanceModel},
+		"status":                          "active",
+		"groupId":                         "grp_default_gpt_sys_admin",
 	}, wantStatus(http.StatusCreated))
 	accountID := str(data(accountCreated)["id"])
 	if accountID == "" {

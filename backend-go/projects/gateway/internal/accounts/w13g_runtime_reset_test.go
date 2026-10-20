@@ -169,17 +169,17 @@ func w13gSeedAuthInstance(t *testing.T, env *testEnv, ownerID, granteeID, suffix
 	env.login(t, "root", "root-pass", "super_admin")
 	// owner 与 grantee 的默认分组在整个测试内复用，先查再补种避免唯一冲突。
 	var seeded string
-	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1`, ownerID).Scan(&seeded); errors.Is(err, sql.ErrNoRows) {
+	if err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, ownerID).Scan(&seeded); errors.Is(err, sql.ErrNoRows) {
 		env.seedProviderAndDefaultGroup(t, ownerID)
 	} else if err != nil {
 		t.Fatal(err)
 	}
 	sourceID = "acc-w13g-src-" + suffix
 	env.seedAccount(t, sourceID, ownerID, "w13g-src-"+suffix, "active")
-	err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1`, granteeID).Scan(&groupID)
+	err := env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, granteeID).Scan(&groupID)
 	if errors.Is(err, sql.ErrNoRows) {
 		env.seedProviderAndDefaultGroup(t, granteeID)
-		err = env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND is_default = 1`, granteeID).Scan(&groupID)
+		err = env.db.QueryRow(`SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, granteeID).Scan(&groupID)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -195,11 +195,10 @@ func w13gSeedAuthInstance(t *testing.T, env *testEnv, ownerID, granteeID, suffix
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, provider_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		credential_mask, health_check_model, health_check_endpoint_mode, created_at, updated_at,
 		authorization_instance_authorization_id, authorization_instance_source_account_id)
-		VALUES (?, 1, 1, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', ?, ?, '', 'gpt-4o-mini', 'chat_json', ?, ?, ?, ?)`,
+		VALUES (?, 1, 1, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, ?, '', 'gpt-4o-mini', 'chat_json', ?, ?, ?, ?)`,
 		instanceID, granteeID, "w13g-inst-"+suffix, instanceStatus, sealed, now, now, authID, sourceID)
 	if withBinding {
 		env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at, account_authorization_id)
@@ -891,11 +890,10 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, provider_code,
-		provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
+	env.exec(t, `INSERT INTO accounts (id, config_revision, dispatch_revision, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, status, credentials_encrypted,
 		credential_mask, health_check_model, health_check_endpoint_mode, created_at, updated_at,
 		authorization_instance_authorization_id, authorization_instance_source_account_id)
-		VALUES ('acc-w13g-inst-empty', 1, 1, ?, 'gpt', 'prof-gpt', 'openai', 'v1', 'w13g-empty', 'api_key',
+		VALUES ('acc-w13g-inst-empty', 1, 1, ?, 'gpt', 'gpt', 'openai', 'v1', 'w13g-empty', 'api_key',
 		'rate_limited', ?, '', 'gpt-4o-mini', 'chat_json', ?, ?, 'ra-w13g-empty', '')`,
 		alice, sealed, now, now)
 	empty := base

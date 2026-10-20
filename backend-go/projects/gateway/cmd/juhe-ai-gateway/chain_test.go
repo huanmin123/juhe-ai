@@ -528,10 +528,10 @@ func TestChainAccountsSelectorListsDispatchableAccounts(t *testing.T) {
 		t.Fatalf("accounts=%d want 1", len(result.Accounts))
 	}
 	account := result.Accounts[0]
-	// ProviderCode 过渡字段恒零值：候选窗口 provider_code 投影已随供应商解耦拆
-	// 除（供应商与上游协议面重构设计 §8），见 chainCandidateRow.ProviderCode 过
-	// 渡注释。
-	if account.ID != fixture.accountID || account.ProviderCode != "" || account.ProtocolCode != "openai" {
+	// 运行时候选/secret 的 provider 投影位与 vendor 同值（供应商与上游协议面
+	// 重构设计 §8：账户连接身份=vendor_code；本夹具沿用 legacy vendor 值
+	// 'openai'，目标形态种子应写 9 个真实厂商之一）。
+	if account.ID != fixture.accountID || account.ProviderCode != account.VendorCode || account.VendorCode != "openai" || account.ProtocolCode != "openai" {
 		t.Fatalf("account identity wrong: %#v", account)
 	}
 	if account.APIKey != "sk-upstream-account-key" {

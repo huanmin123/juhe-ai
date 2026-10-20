@@ -270,8 +270,12 @@ func (d *Deps) providerDetail(w http.ResponseWriter, r *http.Request) {
 // writeProviderBasicDetail renders the basic tab: provider + profiles with no
 // pagination fields.
 func (d *Deps) writeProviderBasicDetail(w http.ResponseWriter, definition *providers.ProviderDefinition) {
-	profiles := make([]PublicProviderProtocolProfile, 0, len(definition.ProtocolProfiles))
-	for _, profile := range definition.ProtocolProfiles {
+	// 目标 schema（§9.3）删除 provider_protocol_profiles 后，档案身份由编译期
+	// registry 按 vendor 派生：公开 basic tab 仍返回单条「该 vendor 的连接档案」
+	// （preset 的 baseUrl/mode/协议面来自 registry），形状与旧契约一致。
+	derived := publicDerivedProtocolProfiles(definition.Code)
+	profiles := make([]PublicProviderProtocolProfile, 0, len(derived))
+	for _, profile := range derived {
 		families := make([]PublicProviderEndpointFamily, 0, len(profile.EndpointFamilies))
 		for _, family := range profile.EndpointFamilies {
 			families = append(families, PublicProviderEndpointFamily{Code: family.Code, Name: family.Name})
@@ -279,7 +283,6 @@ func (d *Deps) writeProviderBasicDetail(w http.ResponseWriter, definition *provi
 		profiles = append(profiles, PublicProviderProtocolProfile{
 			ID:                      profile.ID,
 			Name:                    profile.Name,
-			Description:             profile.Description,
 			Enabled:                 profile.Enabled,
 			ProtocolCode:            profile.ProtocolCode,
 			ProtocolVersion:         profile.ProtocolVersion,

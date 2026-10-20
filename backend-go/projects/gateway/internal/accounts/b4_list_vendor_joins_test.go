@@ -1,19 +1,17 @@
 package accounts
 
-// B4 ⑨：账户列表供应商显示面切 vendors + 行为键（设计 §439/§8）。
+// B4 ⑨：账户列表供应商显示面切 vendors（设计 §9.11/§8）。
 //
 // fresh DDL 无 providers 表，旧 `LEFT JOIN providers ON code = provider_code`
-// 在 fresh 库直接 no such table（列表故障面）。切换后 JOIN 键与投影走
-// COALESCE(vendor, provider) 行为键（与 patch.go 行读、本文件过滤/排序列同
-// 口径）。本用例在夹具库上钉三种行形态：
+// 在 fresh 库直接 no such table（列表故障面）。供应商解耦后账户身份列只剩
+// vendor_code：JOIN 键、过滤列与排序键统一走 `COALESCE(accounts.vendor_code,'')`。
+// 本用例在夹具库上钉两种目标行形态：
 //
-//  1. 新行（vendor_code='gpt'，provider_code 停写默认 ''）→ 命中 vendors 行，
-//     providerName 回显、providerCode 行为键取 vendor；
-//  2. legacy 行（vendor_code NULL，provider_code='gpt'）→ 行为键回落旧列，
-//     仍命中同一 vendors 行（存量迁移窗口契约）；
-//  3. generic 行（vendor_code NULL，provider_code='openai'）→ 'openai' 不在
-//     vendors 值域（§439 删除 openai/hybrid 行），JOIN 不中 provider_name 为
-//     NULL（响应 omitempty），列表不得报错。
+//  1. 真实厂商行（vendor_code='gpt'）→ 命中 vendors 行，providerName 回显、
+//     providerCode 取 vendor 值；
+//  2. generic_http 行（vendor_code NULL，driver='generic_http'）→ vendors JOIN
+//     不中，provider_name 为 NULL（响应 omitempty）、providerCode 为空串，
+//     列表不得报错。
 
 import (
 	"context"
@@ -37,17 +35,16 @@ func TestB4ListProviderNameJoinsVendors(t *testing.T) {
 		}
 		return value
 	}
-	seed := func(t *testing.T, id, name string, vendorCode, providerCode any) {
+	seed := func(t *testing.T, id, name string, vendorCode any, driver string) {
 		t.Helper()
-		env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, provider_code,
-			provider_protocol_profile_id, protocol_code, protocol_version, name, type, status,
+		env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+			protocol_code, protocol_version, name, type, status,
 			credentials_encrypted, credential_mask, health_check_model, created_at, updated_at)
-			VALUES (?, ?, ?, ?, '', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-see***', 'gpt-4o-mini', ?, ?)`,
-			id, adminID, vendorCode, providerCode, name, sealed(t, id), now, now)
+			VALUES (?, ?, ?, ?, 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-see***', 'gpt-4o-mini', ?, ?)`,
+			id, adminID, vendorCode, driver, name, sealed(t, id), now, now)
 	}
-	seed(t, "acc-b4-vendor", "b4-vendor", "gpt", "")
-	seed(t, "acc-b4-legacy", "b4-legacy", nil, "gpt")
-	seed(t, "acc-b4-generic", "b4-generic", nil, "openai")
+	seed(t, "acc-b4-vendor", "b4-vendor", "gpt", "gpt")
+	seed(t, "acc-b4-generic", "b4-generic", nil, "generic_http")
 
 	page, err := env.store.ListPage(context.Background(), scope, ListOptions{Page: 1, PageSize: 10})
 	if err != nil {
@@ -62,29 +59,19 @@ func TestB4ListProviderNameJoinsVendors(t *testing.T) {
 		t.Fatal("vendor 行应在列表中")
 	}
 	if vendor.ProviderName == nil || *vendor.ProviderName != "GPT" {
-		t.Fatalf("新行 providerName 应取 vendors.name：%+v", vendor.ProviderName)
+		t.Fatalf("真实厂商行 providerName 应取 vendors.name：%+v", vendor.ProviderName)
 	}
 	if vendor.ProviderCode != "gpt" {
-		t.Fatalf("新行 providerCode 行为键应取 vendor_code：%q", vendor.ProviderCode)
-	}
-	legacy := byID["acc-b4-legacy"]
-	if legacy.ID == "" {
-		t.Fatal("legacy 行应在列表中")
-	}
-	if legacy.ProviderName == nil || *legacy.ProviderName != "GPT" {
-		t.Fatalf("legacy 行 providerName 应经行为键回落命中 vendors：%+v", legacy.ProviderName)
-	}
-	if legacy.ProviderCode != "gpt" {
-		t.Fatalf("legacy 行 providerCode 应回落旧列：%q", legacy.ProviderCode)
+		t.Fatalf("真实厂商行 providerCode 应取 vendor_code：%q", vendor.ProviderCode)
 	}
 	generic := byID["acc-b4-generic"]
 	if generic.ID == "" {
 		t.Fatal("generic 行应在列表中")
 	}
 	if generic.ProviderName != nil {
-		t.Fatalf("generic 行（openai 不在 vendors 值域）providerName 应为 NULL：%+v", generic.ProviderName)
+		t.Fatalf("generic_http 行（vendor NULL）providerName 应为 NULL：%+v", generic.ProviderName)
 	}
-	if generic.ProviderCode != "openai" {
-		t.Fatalf("generic 行 providerCode 应回落旧列原值：%q", generic.ProviderCode)
+	if generic.ProviderCode != "" {
+		t.Fatalf("generic_http 行 providerCode 应为空串：%q", generic.ProviderCode)
 	}
 }

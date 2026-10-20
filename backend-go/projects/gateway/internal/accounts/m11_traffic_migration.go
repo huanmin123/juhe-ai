@@ -464,7 +464,7 @@ func (s *Store) trafficManagedRow(ctx context.Context, accountID string, access 
 		args = append(args, scoped)
 	}
 	var row trafficManagedRow
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, provider_code, status,
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, COALESCE(vendor_code, '') AS provider_code, status,
 			schedulable, account_expires_at, cooldown_until
 		FROM `+s.table("accounts")+`
 		WHERE id = ?

@@ -120,10 +120,8 @@ func (s *Store) ListAuthorizationGranteeGroups(ctx context.Context, options auth
 		clauses = append(clauses, "groups.id IN ("+placeholders(len(ids))+")")
 		params = append(params, idsToAny(ids)...)
 	}
-	if providerCode := strings.TrimSpace(options.ProviderCode); providerCode != "" {
-		clauses = append(clauses, "groups.provider_code = ?")
-		params = append(params, providerCode)
-	}
+	// groups.provider_code 已随供应商解耦退役（设计 §8）：providerCode 仅作为
+	// 公开 API 兼容入参接受，不参与分组过滤。
 	if keyword := strings.TrimSpace(options.Keyword); keyword != "" {
 		clauses = append(clauses, "(groups.name >= ? AND groups.name < ?)")
 		params = append(params, keyword, textPrefixUpperBound(keyword))

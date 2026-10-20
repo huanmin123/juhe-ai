@@ -88,10 +88,10 @@ func TestDeleteAuthorizationChainSQLitePerGrantSync(t *testing.T) {
 
 	// The authorization-instance account fans one health snapshot per revoked
 	// account grant (rg-live and rg-team) before the soft delete lands.
-	e(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	e(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_source_account_id, created_at, updated_at)
-		VALUES ('acc-inst', 'sys-grantee', 'gpt', 'prof-gpt', 'openai', 'v1', '授权实例', 'api_key', 'active',
+		VALUES ('acc-inst', 'sys-grantee', 'gpt', 'gpt', 'openai', 'v1', '授权实例', 'api_key', 'active',
 		'sealed', '***', 'gpt-4o-mini', ?, ?, ?)`, id, now, now)
 
 	code, _ = env.do(t, http.MethodDelete, "/__aisys__/api/accounts/"+id, "")

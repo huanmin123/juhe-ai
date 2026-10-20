@@ -277,8 +277,8 @@ func TestListPageAuthorizedInstanceRuntimeOverlayKeyDerivation(t *testing.T) {
 	}
 	env.seedAuthorizationInstance(t, "acc-rt-inst", memberID, runtimeID, "acc-rt-src")
 	now := "2026-10-03T00:00:00.000Z"
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-rt', ?, '成员分组', 'gpt', 1, 'personal', ?, ?)`, memberID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-rt', ?, '成员分组', 1, 'personal', ?, ?)`, memberID, now, now)
 	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id,
 		enabled, created_at, updated_at)
 		VALUES (?, 'grp-rt', 'acc-rt-inst', ?, 1, ?, ?)`, memberID, runtimeID, now, now)

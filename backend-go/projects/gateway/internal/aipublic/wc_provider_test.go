@@ -176,24 +176,26 @@ func TestWCProviderDetailBasic(t *testing.T) {
 	if len(profiles) != 1 {
 		t.Fatalf("protocolProfiles: %v", profiles)
 	}
+	// 目标 schema（§9.3）删除档案表：公开 basic tab 的档案按 vendor 从 registry
+	// 派生（preset 默认 baseUrl、chat 域允许 mode 全集、协议面能力词表）。
 	profile := profiles[0].(map[string]any)
-	if profile["id"] != "profile_gpt_openai_v1" || profile["baseUrl"] != "https://profile.example/v1" ||
+	if profile["id"] != "profile_gpt_openai_v1" || profile["baseUrl"] != "https://api.openai.com/v1" ||
 		profile["protocolCode"] != "openai" || profile["protocolVersion"] != "v1" ||
-		profile["defaultHealthCheckModel"] != "hc-model" || profile["enabled"] != true {
+		profile["enabled"] != true {
 		t.Fatalf("profile 投影: %v", profile)
 	}
-	if accountTypes := profile["accountTypes"].([]any); len(accountTypes) != 1 || accountTypes[0] != "api_key" {
+	if accountTypes := profile["accountTypes"].([]any); len(accountTypes) != 2 || accountTypes[0] != "api_key" {
 		t.Fatalf("accountTypes: %v", profile["accountTypes"])
 	}
-	if capabilities := profile["capabilities"].([]any); len(capabilities) != 1 || capabilities[0] != "chat_completions" {
+	if capabilities := profile["capabilities"].([]any); len(capabilities) != 1 || capabilities[0] != "openai_v1" {
 		t.Fatalf("capabilities: %v", profile["capabilities"])
 	}
 	families := profile["endpointFamilies"].([]any)
-	if len(families) != 1 {
+	if len(families) != 4 {
 		t.Fatalf("endpointFamilies: %v", families)
 	}
 	family := families[0].(map[string]any)
-	if family["code"] != "chat_completions" || family["name"] != "Chat Completions" {
+	if family["code"] != "chat_json" || family["name"] != "chat_json" {
 		t.Fatalf("endpointFamily 投影: %v", family)
 	}
 

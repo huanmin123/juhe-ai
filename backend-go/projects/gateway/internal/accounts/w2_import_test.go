@@ -309,10 +309,10 @@ func TestW2ImportPreviewGroupResolution(t *testing.T) {
 	seedOpenAICompatibleProvider(t, env)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	now := "2026-01-01T00:00:00.000Z"
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-existing', ?, '已有分组', 'openai', 1, 'personal', ?, ?)`, adminID, now, now)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-other', ?, '其他供应商分组', 'gpt', 1, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-existing', ?, '已有分组', 1, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-other', ?, '其他供应商分组', 1, 'personal', ?, ?)`, adminID, now, now)
 
 	t.Run("groupId 不存在", func(t *testing.T) {
 		account := w2WithField(w2APIKeyAccount("a", ""), "groupId", "grp-missing")
@@ -322,11 +322,14 @@ func TestW2ImportPreviewGroupResolution(t *testing.T) {
 			t.Fatalf("消息不一致：%s", w2Messages(item))
 		}
 	})
-	t.Run("groupId 供应商不一致", func(t *testing.T) {
+	t.Run("groupId 跨厂商分组可接受（组无 provider 维度）", func(t *testing.T) {
+		// 设计 §8：组无 provider 维度，分组供应商一致性校验随之退役；跨厂商
+		// 分组不再阻断导入。
 		account := w2WithField(w2APIKeyAccount("a", ""), "groupId", "grp-other")
 		result := w2Preview(t, env, w2NativeDoc([]map[string]any{account}, nil), "", ImportOptions{}, adminID)
-		if !strings.Contains(w2Messages(w2Item(t, result, 0)), "分组供应商与账户供应商不一致：其他供应商分组") {
-			t.Fatalf("消息不一致：%s", w2Messages(w2Item(t, result, 0)))
+		item := w2Item(t, result, 0)
+		if strings.Contains(w2Messages(item), "分组供应商与账户供应商不一致") {
+			t.Fatalf("不应再校验分组供应商：%s", w2Messages(item))
 		}
 	})
 	t.Run("groupId 与 groupName 并存时优先 groupId", func(t *testing.T) {

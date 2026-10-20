@@ -74,11 +74,11 @@ func (e *testEnv) seedAuthorizationInstance(t *testing.T, id, namespaceID, runti
 	if err != nil {
 		t.Fatalf("加密授权实例凭据失败: %v", err)
 	}
-	e.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	e.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_authorization_id, authorization_instance_source_account_id,
 		created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', 'active',
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active',
 		?, 'masked', 'gpt-4o-mini', ?, ?, ?, ?)`, id, namespaceID, "授权实例-"+id, sealed, runtimeID, sourceID, now, now)
 }
 
@@ -395,32 +395,31 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 
 	// Bound group with local scheduling overrides on the member's binding.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-proj', ?, '成员分组', 'gpt', 1, 'personal', ?, ?)`, memberID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-proj', ?, '成员分组', 1, 'personal', ?, ?)`, memberID, now, now)
 	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id,
 		local_priority, local_super_priority_enabled, local_fallback_enabled, enabled, created_at, updated_at)
 		VALUES (?, 'grp-proj', 'acc-proj-inst', ?, 42, 1, 1, 1, ?, ?)`, memberID, runtimeTeam, now, now)
 
 	// The source account drifts after provisioning: the list must reflect the
 	// live source values instead of the instance's frozen snapshot.
-	// B4 ⑨：provider_name 显示面 JOIN vendors（行为键），fixture 行平移。
+	// 供应商解耦（设计 §2.1/§9.1）：账户身份是 vendor_code（9 个真实厂商之一），
+	// provider_name 显示面 JOIN vendors；fixture 用 anthropic 承载跨厂商投影。
 	env.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-claude', 'claude', 'Claude', 1, ?, ?)`, now, now)
-	env.exec(t, `UPDATE accounts SET provider_code = 'claude', provider_protocol_profile_id = 'prof-claude',
+		VALUES ('prov-anthropic', 'anthropic', 'Anthropic', 1, ?, ?)`, now, now)
+	env.exec(t, `UPDATE accounts SET vendor_code = 'anthropic', connection_driver_code = 'anthropic',
 		protocol_code = 'anthropic', protocol_version = 'v2', type = 'oauth',
-		concurrency_limit = 1234, client_compatibility = 'codex_responses'
+		concurrency_limit = 1234
 		WHERE id = 'acc-proj-src'`)
 
 	// gpt vendor on an openai/v1 profile: the strict normalizer renders
 	// codex_responses for the oauth type unconditionally, whatever the stored
 	// legacy value (Node account-client-compatibility.ts:42-45).
 	env.seedAccount(t, "acc-oauth-src", ownerID, "OAuth源账户", "active")
-	env.exec(t, `UPDATE accounts SET type = 'oauth', client_compatibility = 'openai_standard'
-		WHERE id = 'acc-oauth-src'`)
-	// gpt+api_key keeps a stored valid compatibility as-is (:46).
+	env.exec(t, `UPDATE accounts SET type = 'oauth' WHERE id = 'acc-oauth-src'`)
+	// gpt+api_key：client_compatibility 列已退役（设计 §9.11），显示值由
+	// vendor/type 派生——gpt+api_key 缺省即 codex_responses。
 	env.seedAccount(t, "acc-key-codex", ownerID, "Codex密钥账户", "active")
-	env.exec(t, `UPDATE accounts SET client_compatibility = 'codex_responses'
-		WHERE id = 'acc-key-codex'`)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-oauth-src",
 		GranteeType: "team", GranteeID: "team-proj",
@@ -449,9 +448,9 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 		t.Fatalf("instance accessType: %v", instance["accessType"])
 	}
 	for key, want := range map[string]any{
-		"providerCode":              "claude",
-		"providerName":              "Claude",
-		"providerProtocolProfileId": "prof-claude",
+		"providerCode":              "anthropic",
+		"providerName":              "Anthropic",
+		"providerProtocolProfileId": "",
 		"protocolCode":              "anthropic",
 		"protocolVersion":           "v2",
 		"type":                      "oauth",
@@ -492,10 +491,10 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	// create-tail provision binds the fresh instance to the grantee's enabled
 	// default group for the instance provider (archived
 	// defaultGroupIdForAuthorizationBinding :397-423), so manual5 needs one
-	// for the drifted claude provider before the grant.
+	// for the source vendor before the grant.
 	now2 := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-manual-default', ?, '手动授权默认分组', 'claude', 1, 1, 'personal', ?, ?)`, manualID, now2, now2)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-manual-default', ?, '手动授权默认分组', 1, 1, 'personal', ?, ?)`, manualID, now2, now2)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-proj-src",
 		GranteeType: "system_account", GranteeID: manualID,
@@ -520,7 +519,7 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	if manualItem["accountAuthorizationId"] != runtimeManual || manualItem["authorizationInstanceSourceAccountId"] != "acc-proj-src" {
 		t.Fatalf("manual instance stamp fields: %v", manualItem)
 	}
-	if manualItem["providerCode"] != "claude" || manualItem["concurrencyLimit"] != float64(1234) {
+	if manualItem["providerCode"] != "anthropic" || manualItem["concurrencyLimit"] != float64(1234) {
 		t.Fatalf("manual instance live source values: %v", manualItem)
 	}
 	manualPermissions := manualItem["permissions"].(map[string]any)
@@ -540,14 +539,14 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	if source == nil || source["accessType"] != "owner" {
 		t.Fatalf("owner source row: %v", source)
 	}
-	if source["providerCode"] != "claude" || source["providerName"] != "Claude" || source["concurrencyLimit"] != float64(1234) {
+	if source["providerCode"] != "anthropic" || source["providerName"] != "Anthropic" || source["concurrencyLimit"] != float64(1234) {
 		t.Fatalf("owner source live values: %v", source)
 	}
-	// Owner rows normalize identically: the non-gpt claude row collapses to
+	// Owner rows normalize identically: the non-gpt anthropic row collapses to
 	// openai_standard, the gpt+oauth legacy row renders codex_responses and the
 	// gpt+api_key row passes its stored codex_responses through.
 	if source["clientCompatibility"] != "openai_standard" {
-		t.Fatalf("owner claude clientCompatibility: %v", source["clientCompatibility"])
+		t.Fatalf("owner source clientCompatibility: %v", source["clientCompatibility"])
 	}
 	oauthSource := items["acc-oauth-src"]
 	if oauthSource == nil || oauthSource["clientCompatibility"] != "codex_responses" {
@@ -591,8 +590,8 @@ func TestPatchRenameSyncsAuthorizationInstanceNames(t *testing.T) {
 	// The provision create-tail binds the instance to the grantee's enabled
 	// default group for the instance provider (archived :397-423).
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-rename-default', ?, '授权默认分组', 'gpt', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-rename-default', ?, '授权默认分组', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-rename-src",
 		GranteeType: "system_account", GranteeID: granteeID,

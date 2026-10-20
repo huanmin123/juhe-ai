@@ -153,12 +153,12 @@ func TestW13g2InstanceNameLadder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_ld13', 'owner', '源L', 'gpt', 'oauth')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_ld13', 'owner', '源L', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
 	// 占用 baseName 与 baseName-abcde（ld1 命名空间）。
 	for _, name := range []string{"源L", "源L-abcde"} {
-		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES (?, 'ld1', ?, 'gpt', 'oauth')`,
+		if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES (?, 'ld1', ?, 'gpt', 'gpt', 'oauth')`,
 			"acc_ld13_occ_"+strings.ReplaceAll(name, "-", "_"), name); err != nil {
 			t.Fatal(err)
 		}
@@ -170,7 +170,7 @@ func TestW13g2InstanceNameLadder(t *testing.T) {
 		t.Fatalf("梯子应落到 -abcde-2: %q %v", name, err)
 	}
 	// 占用 -abcde-2 后落到 -abcde-3。
-	if _, err := tx.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_ld13_n2', 'ld1', '源L-abcde-2', 'gpt', 'oauth')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_ld13_n2', 'ld1', '源L-abcde-2', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
 	name, err = s.uniqueAuthorizedAccountInstanceName(ctx, tx, "源L", "ld1", "rt_abcde", "")

@@ -35,14 +35,11 @@ func init() {
 // ---------------------------------------------------------------------------
 
 // w9fBrokenSchema: port/updated_at 列故意放宽为可空/文本，用于构造扫描错误
-// 与 JOIN 列 NULL 的混合目标行。providers.code 不加 UNIQUE 以便构造重复目标。
+// 与 JOIN 列 NULL 的混合目标行。
 const w9fBrokenSchema = `
-	CREATE TABLE providers (
+	CREATE TABLE vendors (
 		id TEXT PRIMARY KEY, code TEXT, name TEXT, enabled INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-	CREATE TABLE provider_protocol_profiles (
-		id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-		base_url TEXT NOT NULL, updated_at TEXT NOT NULL);
 	CREATE TABLE proxy_profiles (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, host TEXT NOT NULL,
 		port TEXT NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1,
@@ -82,15 +79,11 @@ func w9fInsertBrokenProxy(t *testing.T, db *sql.DB, id, name string, updatedAt a
 	}
 }
 
-func w9fInsertProviderTarget(t *testing.T, db *sql.DB, id, code string, name any, profileID string) {
+func w9fInsertProviderTarget(t *testing.T, db *sql.DB, id, code string, name any) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`,
+	if _, err := db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, '2026-09-04T00:00:00Z', '2026-09-04T00:00:00Z')`,
 		id, code, name); err != nil {
-		t.Fatalf("insert provider: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, enabled, base_url, updated_at) VALUES (?, ?, 1, 'http://example.test/v1', '2026-09-04T00:00:00Z')`,
-		profileID, code); err != nil {
-		t.Fatalf("insert profile: %v", err)
+		t.Fatalf("insert vendor: %v", err)
 	}
 }
 
@@ -139,8 +132,8 @@ func TestW9FLoadSnapshotScanErrorOnBadPort(t *testing.T) {
 
 func TestW9FLoadSnapshotRejectsMixedNullTargetIdentifiers(t *testing.T) {
 	fixture := newW9FBrokenFixture(t)
-	// provider.name 为 NULL → JOIN 目标行三标识混合 NULL → 必须报错。
-	w9fInsertProviderTarget(t, fixture.db, "pv1", "openai", nil, "prof1")
+	// vendor.name 为 NULL → JOIN 目标行标识混合 NULL → 必须报错。
+	w9fInsertProviderTarget(t, fixture.db, "pv1", "gpt", nil)
 	if _, err := fixture.db.Exec(`INSERT INTO proxy_profiles (id, name, type, host, port, test_status, updated_at) VALUES ('px1', '代理', 'http', '127.0.0.1', '1', 'unknown', '2026-09-04T12:00:00.000Z')`); err != nil {
 		t.Fatalf("insert proxy: %v", err)
 	}
@@ -308,7 +301,7 @@ func TestW9FRunProxyTestCancelledBeforeTargets(t *testing.T) {
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer target.Close()
-	w9fInsertProviderTarget(t, fixture.db, "pv1", "openai", "OpenAI", "prof1")
+	w9fInsertProviderTarget(t, fixture.db, "pv1", "gpt", "OpenAI")
 	w9fInsertRealProxy(t, fixture.db)
 	snapshot, err := fixture.store.LoadProxyTestSnapshot(context.Background(), "px1")
 	if err != nil || snapshot == nil {
@@ -336,7 +329,7 @@ func TestW9FRunProxyTestCancelledMidProbe(t *testing.T) {
 		}
 	}))
 	defer target.Close()
-	w9fInsertProviderTarget(t, fixture.db, "pv1", "openai", "OpenAI", "prof1")
+	w9fInsertProviderTarget(t, fixture.db, "pv1", "gpt", "OpenAI")
 	w9fInsertRealProxy(t, fixture.db)
 	snapshot, err := fixture.store.LoadProxyTestSnapshot(context.Background(), "px1")
 	if err != nil || snapshot == nil || len(snapshot.Targets) == 0 {

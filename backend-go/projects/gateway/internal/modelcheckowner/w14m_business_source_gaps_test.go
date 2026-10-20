@@ -349,14 +349,14 @@ func TestW14MSupportedModelsErrorArms(t *testing.T) {
 	request := RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}
 
 	// supportedModels 查询失败（首个 ORDER BY model 匹配即 supportedModels）。
-	fp.arm("WHERE account_id=? ORDER BY model")
+	fp.arm("ORDER BY m.public_model")
 	if _, err := source.Resolve(ctx, request); err == nil || !strings.Contains(err.Error(), "read J3b Business account supported models") {
 		t.Fatalf("supported models 查询失败应传播: %v", err)
 	}
 	fp.disarm()
 
 	// supportedModels 行扫描列数不匹配。
-	fp.armScan("WHERE account_id=? ORDER BY model")
+	fp.armScan("ORDER BY m.public_model")
 	if _, err := source.Resolve(ctx, request); err == nil || !strings.Contains(err.Error(), "scan J3b Business account supported model") {
 		t.Fatalf("supported models 扫描失败应传播: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestW14MReadTargetFenceQueryErrorArms(t *testing.T) {
 		{"account", "a LEFT JOIN", "read J3b Business target fence account"},
 		{"groups", "ON ra.resource_type", "read J3b Business target fence groups"},
 		{"authorizations", "OR (grantee_system_account_id=", "read J3b Business target fence authorizations"},
-		{"mappings", "ORDER BY source_model", "read J3b Business target fence mappings"},
+		{"mappings", "ORDER BY aem.source_model", "read J3b Business target fence mappings"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,7 +392,7 @@ func TestW14MReadTargetFenceQueryErrorArms(t *testing.T) {
 	}
 
 	// fence 内 supported-models 查询：第 2 次匹配（fence）失败，第 1 次（resolve）放行。
-	fp.armAfter("ORDER BY model", 1)
+	fp.armAfter("ORDER BY m.public_model", 1)
 	if _, err := source.BuildRequest(ctx, "sys-1", command); err == nil || !strings.Contains(err.Error(), "fence supported models") {
 		t.Fatalf("fence supported models 查询失败应传播: %v", err)
 	}
@@ -407,14 +407,14 @@ func TestW14MBuildRequestFreezeRecheckErrorArms(t *testing.T) {
 	command := RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}
 
 	// 冻结重读（第二次 Resolve）中 supported-models 查询失败 → target changed。
-	fp.armAfter("ORDER BY model", 2)
+	fp.armAfter("ORDER BY m.public_model", 2)
 	if _, err := source.BuildRequest(ctx, "sys-1", command); err == nil || !strings.Contains(err.Error(), "target changed while freezing") {
 		t.Fatalf("冻结重读失败应报 target changed: %v", err)
 	}
 	fp.disarm()
 
 	// 冻结后第二次 fence 读取失败 → fence changed。
-	fp.armAfter("ORDER BY model", 3)
+	fp.armAfter("ORDER BY m.public_model", 3)
 	if _, err := source.BuildRequest(ctx, "sys-1", command); err == nil || !strings.Contains(err.Error(), "target fence changed while freezing") {
 		t.Fatalf("二次 fence 失败应报 fence changed: %v", err)
 	}
@@ -488,12 +488,13 @@ func TestW14MSameTargetFenceCompareArms(t *testing.T) {
 func w14mSeedAuthorizedFixture(t *testing.T, db *sql.DB, sourceEnvelope string) {
 	t.Helper()
 	statements := []string{
-		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://example.invalid/v1')`,
 		`INSERT INTO groups VALUES ('group-1','sys-1',1)`,
 		`INSERT INTO resource_authorizations VALUES ('grant-1','account','acct-source','sys-1','sys-1','use','active',NULL)`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-source','sys-1','openai','profile_openai_openai_v1','openai','api_key',3,8,'active',1,'responses_sse','` + sourceEnvelope + `')`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-source','acct-source','gpt_openai_v1','https://example.invalid/v1',1)`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted) VALUES ('acct-source','sys-1','gpt','gpt','openai','api_key',3,8,'active',1,'responses_sse','conn-source','` + sourceEnvelope + `')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-source','sys-1','group-1',1)`,
-		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('acct-virtual','sys-1','openai','profile_openai_openai_v1','openai','api_key',5,6,'active',1,'responses_sse','` + sourceEnvelope + `','grant-1','acct-source')`,
+		`INSERT INTO account_connections(id,account_id,connection_preset_code,base_url,enabled) VALUES ('conn-virtual','acct-virtual','gpt_openai_v1','https://example.invalid/v1',1)`,
+		`INSERT INTO accounts(id,system_account_id,vendor_code,connection_driver_code,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,health_check_connection_id,credentials_encrypted,authorization_instance_authorization_id,authorization_instance_source_account_id) VALUES ('acct-virtual','sys-1','gpt','gpt','openai','api_key',5,6,'active',1,'responses_sse','conn-virtual','` + sourceEnvelope + `','grant-1','acct-source')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,account_authorization_id,enabled) VALUES ('acct-virtual','sys-1','group-1','grant-1',1)`,
 	}
 	for _, statement := range statements {
@@ -511,7 +512,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
 		source := w11eNewSource(t, db)
-		fp.arm("WHERE account_id=? AND source_model=?")
+		fp.arm("aem.account_id=? AND aem.source_model=?")
 		defer fp.disarm()
 		if _, err := source.Resolve(ctx, request); err == nil || !strings.Contains(err.Error(), "read J3b account model mapping") {
 			t.Fatalf("err = %v", err)
@@ -521,8 +522,15 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 	t.Run("modelRestriction", func(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
-		if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-source','other-model')`); err != nil {
-			t.Fatal(err)
+		// 目标 schema 以 model_id 外键表达支持模型：先登记 models 行再建关系，
+		// 否则 JOIN 无行等价于「无支持模型」（不限制），旧语义会失真。
+		for _, statement := range []string{
+			`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-other-model','gpt','other-model','other-model','builtin',NULL,'active',1)`,
+			`INSERT INTO account_supported_models VALUES ('acct-source','m-other-model')`,
+		} {
+			if _, err := db.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
 		}
 		source := w11eNewSource(t, db)
 		defer fp.disarm()
@@ -535,7 +543,7 @@ func TestW14MAuthorizedTargetErrorArms(t *testing.T) {
 		db, fp := w14mBusinessDB(t)
 		w14mSeedAuthorizedFixture(t, db, testCredentialEnvelope(t, "secret", `{"api_key":"key","supported_endpoint_modes":["responses_sse"]}`))
 		source := w11eNewSource(t, db)
-		fp.arm("WHERE account_id=? ORDER BY model")
+		fp.arm("ORDER BY m.public_model")
 		defer fp.disarm()
 		if _, err := source.Resolve(ctx, request); err == nil || !strings.Contains(err.Error(), "read J3b Business account supported models") {
 			t.Fatalf("err = %v", err)

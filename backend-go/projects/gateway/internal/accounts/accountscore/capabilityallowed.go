@@ -150,6 +150,25 @@ func capabilityDomainMatrixAllows(row, domain string) bool {
 	return allowed[domain]
 }
 
+// profileMatches 精确匹配协议档案 ID（设计 §2.1：
+// provider_protocol_profile_id 列退役后，档案由连接 preset 派生，可能为空）。
+func profileMatches(profileID string, expected ...string) bool {
+	for _, candidate := range expected {
+		if profileID == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// profileUnpinnedMatches 供「一族只有一个档案」的分支使用：档案为空时由
+// vendor + 协议面唯一确定该分支，按通配放行；有多档案的 vendor（deepseek /
+// glm）必须先用协议面区分族，不能走这里。
+func profileUnpinnedMatches(profileID string, expected ...string) bool {
+	return profileID == "" || profileMatches(profileID, expected...)
+}
+
+
 // resolveCapabilityWriteContext 解析上下文（provider×type×协议档案）对应的
 // 矩阵行与既有写侧词表——词表即当前归一化路径（providerAccountCredentialDrivers
 // 逐个 driver 的 normalizeForWrite 值域校验 + 类型断言）可接受的全部模式值，
@@ -167,38 +186,50 @@ func resolveCapabilityWriteContext(providerCode, accountType string, profile Pro
 	profileID := profile.ProviderProtocolProfileID
 	openaiProtocol := IsOpenAIProtocolProfileOf(profile)
 	anthropicProtocol := IsAnthropicProtocolProfileOf(profile)
+	// 供应商解耦（设计 §2.1/§9.11）：generic_http 账户 vendor 为空，接口能力
+	// 矩阵行由协议面决定（openai/anthropic/gemini 三个 generic preset）。
+	if provider == "" {
+		switch {
+		case openaiProtocol:
+			return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
+		case anthropicProtocol:
+			return capabilityMatrixAnthropic, append([]string{}, AnthropicEndpointModeValues...)
+		case IsGeminiProtocolProfileOf(profile):
+			return capabilityMatrixGeminiNative, append([]string{}, GeminiEndpointModeValues...)
+		}
+	}
 	switch {
 	case provider == OpenAICompatibleProviderCode && openaiProtocol:
 		return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
-	case provider == GeminiProviderCode && profileID == GeminiOpenAIChatV1BetaProfileID && openaiProtocol:
+	case provider == GeminiProviderCode && profileUnpinnedMatches(profileID, GeminiOpenAIChatV1BetaProfileID) && openaiProtocol:
 		return capabilityMatrixGeminiOpenAIChat, openAIFamilyVocabulary(accountType)
 	case provider == GptVendorCode && openaiProtocol:
 		return capabilityMatrixOpenAI, openAIFamilyVocabulary(accountType)
 	case (accountType == "api_key" || accountType == "oauth") &&
-		provider == XaiProviderCode && openaiProtocol && profileID == XaiOpenAIV1ProfileID:
+		provider == XaiProviderCode && openaiProtocol && profileUnpinnedMatches(profileID, XaiOpenAIV1ProfileID):
 		return capabilityMatrixXai, openAIFamilyVocabulary(accountType)
 	case IsDeepSeekProviderCodeToken(providerCode) &&
-		(anthropicProtocol || profileID == DeepSeekAnthropicV1ProfileID):
+		(anthropicProtocol || (protocol == "" && profileMatches(profileID, DeepSeekAnthropicV1ProfileID))):
 		// deepseek anthropic 档案 pin：normalizeDeepSeekEndpointModesForWrite
 		// 收敛为 Messages 对；矩阵按「anthropic / deepseek-anthropic」行收紧。
 		return capabilityMatrixAnthropic, append([]string{}, AnthropicMessagesEndpointModeValues...)
-	case IsDeepSeekProviderCodeToken(providerCode) && openaiProtocol && profileID == DeepSeekOpenAIV1ProfileID:
+	case IsDeepSeekProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, DeepSeekOpenAIV1ProfileID):
 		return capabilityMatrixDeepSeekOpenAI, openAIFamilyVocabulary(accountType)
 	case provider == AnthropicProviderCode && anthropicProtocol:
 		return capabilityMatrixAnthropic, append([]string{}, AnthropicEndpointModeValues...)
 	case provider == GeminiProviderCode && IsGeminiProtocolProfileOf(profile):
 		return capabilityMatrixGeminiNative, append([]string{}, GeminiEndpointModeValues...)
 	case IsGlmProviderCodeToken(providerCode) &&
-		(anthropicProtocol || profileID == GlmCodingAnthropicV1ProfileID):
+		(anthropicProtocol || (protocol == "" && profileMatches(profileID, GlmCodingAnthropicV1ProfileID))):
 		return capabilityMatrixGlmAnthropic, append([]string{}, AnthropicMessagesEndpointModeValues...)
 	case IsGlmProviderCodeToken(providerCode) && openaiProtocol &&
-		(profileID == GlmGeneralOpenAIV1ProfileID || profileID == GlmCodingOpenAIV1ProfileID):
+		profileUnpinnedMatches(profileID, GlmGeneralOpenAIV1ProfileID, GlmCodingOpenAIV1ProfileID):
 		return capabilityMatrixGlmOpenAI, glmOpenAIVocabulary()
-	case IsMinimaxProviderCodeToken(providerCode) && openaiProtocol && profileID == MinimaxOpenAIV1ProfileID:
+	case IsMinimaxProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, MinimaxOpenAIV1ProfileID):
 		return capabilityMatrixMinimax, append([]string{}, MinimaxMediaEndpointModeValues...)
-	case IsVolcengineProviderCodeToken(providerCode) && openaiProtocol && profileID == VolcengineOpenAIV1ProfileID:
+	case IsVolcengineProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, VolcengineOpenAIV1ProfileID):
 		return capabilityMatrixVolcengine, append([]string{}, VolcengineEndpointModeValues...)
-	case IsQwenProviderCodeToken(providerCode) && openaiProtocol && profileID == QwenOpenAIV1ProfileID:
+	case IsQwenProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, QwenOpenAIV1ProfileID):
 		return capabilityMatrixQwen, append([]string{}, QwenEndpointModeValues...)
 	case IsHybridProviderCodeToken(providerCode):
 		return capabilityMatrixHybrid, append([]string{}, HybridEndpointModeValues...)
@@ -224,35 +255,35 @@ func legacyDefaultEndpointModes(providerCode, accountType string, profile Protoc
 	}
 	switch {
 	case (provider == OpenAICompatibleProviderCode ||
-		(provider == GeminiProviderCode && profileID == GeminiOpenAIChatV1BetaProfileID)) && openaiProtocol:
+		(provider == GeminiProviderCode && profileUnpinnedMatches(profileID, GeminiOpenAIChatV1BetaProfileID))) && openaiProtocol:
 		return openAIDefaults()
 	case provider == GptVendorCode && openaiProtocol:
 		return openAIDefaults()
 	case (accountType == "api_key" || accountType == "oauth") &&
-		provider == XaiProviderCode && openaiProtocol && profileID == XaiOpenAIV1ProfileID:
+		provider == XaiProviderCode && openaiProtocol && profileUnpinnedMatches(profileID, XaiOpenAIV1ProfileID):
 		// xai driver pin：normalizeOpenAIEndpointModesForWrite 按 xai 档案取
 		// 默认（DefaultOpenAIEndpointModes 只看 provider+type，xai 落四值）。
 		return DefaultOpenAIEndpointModes(ModeDefaultContext{ProviderCode: XaiProviderCode, AccountType: accountType})
 	case IsDeepSeekProviderCodeToken(providerCode) &&
-		(anthropicProtocol || profileID == DeepSeekAnthropicV1ProfileID):
+		(anthropicProtocol || (protocol == "" && profileMatches(profileID, DeepSeekAnthropicV1ProfileID))):
 		return DefaultAnthropicEndpointModes(ModeDefaultContext{ProviderProtocolProfileID: DeepSeekAnthropicV1ProfileID})
-	case IsDeepSeekProviderCodeToken(providerCode) && openaiProtocol && profileID == DeepSeekOpenAIV1ProfileID:
+	case IsDeepSeekProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, DeepSeekOpenAIV1ProfileID):
 		return DefaultOpenAIEndpointModes(ModeDefaultContext{ProviderCode: DeepSeekProviderCode, AccountType: accountType})
 	case provider == AnthropicProviderCode && anthropicProtocol:
 		return DefaultAnthropicEndpointModes(ModeDefaultContext{ProviderProtocolProfileID: profileID})
 	case provider == GeminiProviderCode && IsGeminiProtocolProfileOf(profile):
 		return DefaultGeminiEndpointModes(ModeDefaultContext{})
 	case IsGlmProviderCodeToken(providerCode) &&
-		(anthropicProtocol || profileID == GlmCodingAnthropicV1ProfileID):
+		(anthropicProtocol || (protocol == "" && profileMatches(profileID, GlmCodingAnthropicV1ProfileID))):
 		return DefaultAnthropicEndpointModes(ModeDefaultContext{ProviderProtocolProfileID: GlmCodingAnthropicV1ProfileID})
 	case IsGlmProviderCodeToken(providerCode) && openaiProtocol &&
-		(profileID == GlmGeneralOpenAIV1ProfileID || profileID == GlmCodingOpenAIV1ProfileID):
+		profileUnpinnedMatches(profileID, GlmGeneralOpenAIV1ProfileID, GlmCodingOpenAIV1ProfileID):
 		return DefaultOpenAIEndpointModes(ModeDefaultContext{ProviderCode: GlmProviderCode, AccountType: accountType})
-	case IsMinimaxProviderCodeToken(providerCode) && openaiProtocol && profileID == MinimaxOpenAIV1ProfileID:
+	case IsMinimaxProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, MinimaxOpenAIV1ProfileID):
 		return []string{"audio_speech"}
-	case IsVolcengineProviderCodeToken(providerCode) && openaiProtocol && profileID == VolcengineOpenAIV1ProfileID:
+	case IsVolcengineProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, VolcengineOpenAIV1ProfileID):
 		return []string{"video_get"}
-	case IsQwenProviderCodeToken(providerCode) && openaiProtocol && profileID == QwenOpenAIV1ProfileID:
+	case IsQwenProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, QwenOpenAIV1ProfileID):
 		return []string{"video_get"}
 	case IsHybridProviderCodeToken(providerCode):
 		return append([]string{}, HybridEndpointModeValues...)

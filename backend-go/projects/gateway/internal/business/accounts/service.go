@@ -62,7 +62,7 @@ type APIKeyBinding struct {
 }
 
 type CreateInput struct {
-	ID, SystemAccountID, ProviderCode, ProviderProtocolProfileID, ProtocolCode, ProtocolVersion string
+	ID, SystemAccountID, ProviderCode, ProtocolCode, ProtocolVersion string
 	Name, Type, Status, CredentialsEncrypted                                                    string
 	Schedulable                                                                                 bool
 	AvailabilityScheduleJSON                                                                    *string
@@ -141,7 +141,7 @@ func (s *Service) Delete(ctx context.Context, systemID, id string, expected int6
 }
 
 func normalize(in CreateInput) error {
-	if strings.TrimSpace(in.ID) == "" || strings.TrimSpace(in.SystemAccountID) == "" || strings.TrimSpace(in.ProviderCode) == "" || strings.TrimSpace(in.ProviderProtocolProfileID) == "" || strings.TrimSpace(in.ProtocolCode) == "" || strings.TrimSpace(in.ProtocolVersion) == "" || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Type) == "" || strings.TrimSpace(in.CredentialsEncrypted) == "" {
+	if strings.TrimSpace(in.ID) == "" || strings.TrimSpace(in.SystemAccountID) == "" || strings.TrimSpace(in.ProviderCode) == "" || strings.TrimSpace(in.ProtocolCode) == "" || strings.TrimSpace(in.ProtocolVersion) == "" || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Type) == "" || strings.TrimSpace(in.CredentialsEncrypted) == "" {
 		return errors.New("account identity and credentials are required")
 	}
 	if in.Status == "" {
@@ -413,8 +413,11 @@ func (s *Store) create(ctx context.Context, in CreateInput) (Account, error) {
 	// NULL（设计 §2.1），driver 恒非空。
 	vendorCode, driverCode := vendorIdentityForProvider(strings.TrimSpace(in.ProviderCode))
 	vendorColumn := sql.NullString{String: vendorCode, Valid: vendorCode != ""}
-	q := `INSERT INTO ` + s.table("accounts") + ` (id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,vendor_code,connection_driver_code,name,type,status,credentials_encrypted,config_revision,dispatch_revision,schedulable,availability_schedule_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?)`
-	_, err = tx.ExecContext(ctx, s.bind(q), in.ID, in.SystemAccountID, in.ProviderCode, in.ProviderProtocolProfileID, in.ProtocolCode, in.ProtocolVersion, vendorColumn, driverCode, in.Name, in.Type, in.Status, in.CredentialsEncrypted, boolInt(in.Schedulable), nullableString(in.AvailabilityScheduleJSON), now, now)
+	// 目标 accounts 无 provider_code / provider_protocol_profile_id 两列
+	// （设计 §2.1/§11）：身份只落 vendor_code + connection_driver_code，
+	// provider 入参仅用于推导这对值。
+	q := `INSERT INTO ` + s.table("accounts") + ` (id,system_account_id,protocol_code,protocol_version,vendor_code,connection_driver_code,name,type,status,credentials_encrypted,config_revision,dispatch_revision,schedulable,availability_schedule_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?)`
+	_, err = tx.ExecContext(ctx, s.bind(q), in.ID, in.SystemAccountID, in.ProtocolCode, in.ProtocolVersion, vendorColumn, driverCode, in.Name, in.Type, in.Status, in.CredentialsEncrypted, boolInt(in.Schedulable), nullableString(in.AvailabilityScheduleJSON), now, now)
 	if err != nil {
 		// Client retries use the caller-provided account ID as a receipt key.
 		// Returning an existing semantically identical aggregate is safe; a
@@ -455,7 +458,9 @@ func (s *Store) get(ctx context.Context, systemID, id string) (Account, error) {
 	var a Account
 	var sched int
 	var av sql.NullString
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,name,type,status,config_revision,dispatch_revision,schedulable,availability_schedule_json,created_at,updated_at FROM `+s.table("accounts")+` WHERE id=? AND system_account_id=? AND deleted_at IS NULL`), id, systemID).Scan(&a.ID, &a.SystemAccountID, &a.ProviderCode, &a.ProviderProtocolProfileID, &a.ProtocolCode, &a.ProtocolVersion, &a.Name, &a.Type, &a.Status, &a.ConfigRevision, &a.DispatchRevision, &sched, &av, &a.CreatedAt, &a.UpdatedAt)
+	// 读侧投影与 internal/accounts 同口径：provider_code 取 vendor_code
+	// （generic 账户为空串），provider_protocol_profile_id 恒空。
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id,system_account_id,COALESCE(vendor_code,'') AS provider_code,'' AS provider_protocol_profile_id,protocol_code,protocol_version,name,type,status,config_revision,dispatch_revision,schedulable,availability_schedule_json,created_at,updated_at FROM `+s.table("accounts")+` WHERE id=? AND system_account_id=? AND deleted_at IS NULL`), id, systemID).Scan(&a.ID, &a.SystemAccountID, &a.ProviderCode, &a.ProviderProtocolProfileID, &a.ProtocolCode, &a.ProtocolVersion, &a.Name, &a.Type, &a.Status, &a.ConfigRevision, &a.DispatchRevision, &sched, &av, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
@@ -849,7 +854,10 @@ func readRelations(ctx context.Context, db *sql.DB, s *Store, a *Account) error 
 }
 
 func equivalentCreate(a Account, in CreateInput) bool {
-	if a.ID != in.ID || a.SystemAccountID != in.SystemAccountID || a.ProviderCode != in.ProviderCode || a.ProviderProtocolProfileID != in.ProviderProtocolProfileID || a.ProtocolCode != in.ProtocolCode || a.ProtocolVersion != in.ProtocolVersion || a.Name != in.Name || a.Type != in.Type || a.Status != in.Status || a.Schedulable != in.Schedulable || !sameOptionalString(a.AvailabilityScheduleJSON, in.AvailabilityScheduleJSON) {
+	// 读侧 ProviderCode 是 vendor_code 投影（generic 为空串），入参仍是
+	// 旧 provider 语义，比较前按同一推导规则归一。
+	vendorCode, _ := vendorIdentityForProvider(strings.TrimSpace(in.ProviderCode))
+	if a.ID != in.ID || a.SystemAccountID != in.SystemAccountID || a.ProviderCode != vendorCode || a.ProtocolCode != in.ProtocolCode || a.ProtocolVersion != in.ProtocolVersion || a.Name != in.Name || a.Type != in.Type || a.Status != in.Status || a.Schedulable != in.Schedulable || !sameOptionalString(a.AvailabilityScheduleJSON, in.AvailabilityScheduleJSON) {
 		return false
 	}
 	return sameStrings(a.SupportedModels, in.SupportedModels) && sameMappings(a.ModelMappings, in.ModelMappings) && sameStrings(a.Tags, in.Tags) && sameKeys(a.APIKeyBindings, in.APIKeyBindings)

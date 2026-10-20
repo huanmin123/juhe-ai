@@ -95,7 +95,7 @@ func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
 	})
 	t.Run("list schedules", func(t *testing.T) {
 		list, err := manager.ListSchedules(ctx, "sys", 0, 500)
-		if err != nil || len(list.Items) != 1 || list.Page != 1 || list.PageSize != 50 || list.Items[0].AccountName != "Account 1" || list.Items[0].ProviderCode != "openai" {
+		if err != nil || len(list.Items) != 1 || list.Page != 1 || list.PageSize != 50 || list.Items[0].AccountName != "Account 1" || list.Items[0].ProviderCode != "gpt" {
 			t.Fatalf("定时检查清单=%+v err=%v", list, err)
 		}
 	})

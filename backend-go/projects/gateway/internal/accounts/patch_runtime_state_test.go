@@ -39,10 +39,10 @@ func seedPoolAccount(t *testing.T, env *testEnv, ownerID, id, name string, keys 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
 		id, ownerID, name, sealed, now, now)
 	for index, key := range keys {
 		env.exec(t, `INSERT INTO account_api_key_runtime_states (id, system_account_id, account_id, key_fingerprint, key_index, status, updated_at)

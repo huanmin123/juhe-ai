@@ -53,8 +53,7 @@ func TestW17aRsPureHelperArms(t *testing.T) {
 		*(targets[4].(*sql.NullString)) = sql.NullString{String: "1", Valid: true}
 		*(targets[5].(*string)) = "active"
 		*(targets[6].(*sql.NullString)) = sql.NullString{String: "组", Valid: true}
-		*(targets[7].(*sql.NullString)) = sql.NullString{String: "openai", Valid: true}
-		*(targets[8].(*int)) = 2
+		*(targets[7].(*int)) = 2
 		return nil
 	})
 	var invalidGroup *ValidationError
@@ -82,8 +81,8 @@ func TestW17aRsBindingStoreEmptyArms(t *testing.T) {
 	}
 	// 模式与绑定数不匹配 → replace/reconcile 的验证臂。
 	writes := []bindingWrite{
-		{groupID: "g1", providerCode: "openai", priority: 1, weight: 1, status: "active", groupEnabled: true},
-		{groupID: "g2", providerCode: "openai", priority: 2, weight: 1, status: "active", groupEnabled: true},
+		{groupID: "g1", priority: 1, weight: 1, status: "active", groupEnabled: true},
+		{groupID: "g2", priority: 2, weight: 1, status: "active", groupEnabled: true},
 	}
 	if _, err := store.replaceBindings(ctx, env.db, "rs-w17a", "owner-w17a", ModeNormal, writes, "2026-01-01T00:00:00.000Z"); err == nil {
 		t.Fatal("普通路由双绑定应报验证错误")

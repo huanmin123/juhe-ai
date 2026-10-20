@@ -115,6 +115,7 @@ func w15bCoverPostgresDB(t *testing.T) *sql.DB {
 			authorization_instance_authorization_id text,
 			status text,
 			health_check_model text,
+			vendor_code text,
 			availability_schedule_json text,
 			schedulable int,
 			fallback_enabled int,
@@ -273,8 +274,8 @@ func TestW15BClaimQualityRecoveryDueRowsUnderPgx(t *testing.T) {
 		{"acc-w15b-iso", "quality_isolated"},
 		{"acc-w15b-ok", "active"},
 	} {
-		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, provider_code, config_revision, dispatch_revision, deleted_at, status, health_check_model, updated_at)
-			VALUES ($1, 'sys-w15b', 'openai', 3, 5, NULL, $2, 'gpt-w15b-health', $3)`, account.id, account.status, stamp); err != nil {
+		if _, err := db.Exec(`INSERT INTO juhe_business.accounts (id, system_account_id, provider_code, vendor_code, config_revision, dispatch_revision, deleted_at, status, health_check_model, updated_at)
+			VALUES ($1, 'sys-w15b', 'openai', 'gpt', 3, 5, NULL, $2, 'gpt-w15b-health', $3)`, account.id, account.status, stamp); err != nil {
 			t.Fatalf("种子账户失败: %v", err)
 		}
 	}

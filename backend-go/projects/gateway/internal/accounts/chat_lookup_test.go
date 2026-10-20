@@ -6,7 +6,8 @@ package accounts
 // deleted_at 非空与 authorization_instance_authorization_id 非空仍排除，排序
 // name ASC, id ASC（同名跨 owner 按 id 决胜）；数据范围按 ChatBindScope 收
 // 敛——admin/super_admin 读全量号池，普通用户仅自己名下（他人行、已删行、
-// 实例戳行仍排除）。选项投影含 providerCode/status（/my-chat/accounts 形状）。
+// 实例戳行仍排除）。选项投影含 providerCode/status（/my-chat/accounts 形状）；
+// 供应商解耦后 providerCode 取 vendor_code，generic_http 账户为空串。
 
 import (
 	"context"
@@ -36,10 +37,10 @@ func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
 		{id: "acc_active_1", owner: "owner-a", name: "可用账户", status: "active", schedulable: 1, deletedAt: nil, authorization: nil},
 	} {
 		if _, err := env.db.Exec(
-			`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+			`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 				protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted,
 				deleted_at, authorization_instance_authorization_id, created_at, updated_at)
-			VALUES (?, ?, 'openai', 'prof-1', 'openai', 'v1', ?, 'api_key', ?, ?, 'enc', ?, ?,
+			VALUES (?, ?, NULL, 'generic_http', 'openai', 'v1', ?, 'api_key', ?, ?, 'enc', ?, ?,
 				'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 			row.id, row.owner, row.name, row.status, row.schedulable, row.deletedAt, row.authorization); err != nil {
 			t.Fatal(err)
@@ -52,10 +53,10 @@ func TestListChatAccountOptionsAdminSeesAllUndeleted(t *testing.T) {
 	want := []chat.ChatAccountOption{
 		// status 投影为生效状态原值：status=disabled 原样；schedulable=0 合成
 		// disabled（ownerEffectiveStatusSQL）。name 排序为字节序（停 < 可 < 禁）。
-		{ID: "acc_inactive", Name: "停用账户", ProviderCode: "openai", Status: "disabled"},
-		{ID: "acc_active_1", Name: "可用账户", ProviderCode: "openai", Status: "active"},
-		{ID: "acc_active_2", Name: "可用账户", ProviderCode: "openai", Status: "active"},
-		{ID: "acc_unschedulable", Name: "禁调度账户", ProviderCode: "openai", Status: "disabled"},
+		{ID: "acc_inactive", Name: "停用账户", ProviderCode: "", Status: "disabled"},
+		{ID: "acc_active_1", Name: "可用账户", ProviderCode: "", Status: "active"},
+		{ID: "acc_active_2", Name: "可用账户", ProviderCode: "", Status: "active"},
+		{ID: "acc_unschedulable", Name: "禁调度账户", ProviderCode: "", Status: "disabled"},
 	}
 	if len(options) != len(want) {
 		t.Fatalf("options = %v, want %v", options, want)
@@ -107,10 +108,10 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 		{id: "acc_own_stamped", owner: viewer, name: "e 自有实例戳", status: "active", schedulable: 1, deletedAt: nil, authorization: "authz-1"},
 	} {
 		if _, err := env.db.Exec(
-			`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+			`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 				protocol_code, protocol_version, name, type, status, schedulable, credentials_encrypted,
 				deleted_at, authorization_instance_authorization_id, created_at, updated_at)
-			VALUES (?, ?, 'openai', 'prof-1', 'openai', 'v1', ?, 'api_key', ?, ?, 'enc', ?, ?,
+			VALUES (?, ?, NULL, 'generic_http', 'openai', 'v1', ?, 'api_key', ?, ?, 'enc', ?, ?,
 				'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 			row.id, row.owner, row.name, row.status, row.schedulable, row.deletedAt, row.authorization); err != nil {
 			t.Fatal(err)
@@ -123,8 +124,8 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []chat.ChatAccountOption{
-			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"},
-			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "openai", Status: "disabled"},
+			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Status: "active"},
+			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Status: "disabled"},
 		}
 		if len(options) != len(want) {
 			t.Fatalf("viewer options = %v, want %v", options, want)
@@ -143,8 +144,8 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 			id      string
 			wantRef *chat.ChatAccountRef
 		}{
-			{name: "自有 active 行", id: "acc_own_active", wantRef: &chat.ChatAccountRef{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Enabled: true}},
-			{name: "自有停用行可见但 Enabled=false", id: "acc_own_disabled", wantRef: &chat.ChatAccountRef{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "openai", Enabled: false}},
+			{name: "自有 active 行", id: "acc_own_active", wantRef: &chat.ChatAccountRef{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Enabled: true}},
+			{name: "自有停用行可见但 Enabled=false", id: "acc_own_disabled", wantRef: &chat.ChatAccountRef{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Enabled: false}},
 			{name: "他人行不可见", id: "acc_other_active", wantRef: nil},
 			{name: "已删行不可见", id: "acc_own_deleted", wantRef: nil},
 			{name: "实例戳行不可见", id: "acc_own_stamped", wantRef: nil},
@@ -170,9 +171,9 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []chat.ChatAccountOption{
-			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"},
-			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "openai", Status: "disabled"},
-			{ID: "acc_other_active", Name: "c 他人可用", ProviderCode: "openai", Status: "active"},
+			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "", Status: "active"},
+			{ID: "acc_own_disabled", Name: "b 自有停用", ProviderCode: "", Status: "disabled"},
+			{ID: "acc_other_active", Name: "c 他人可用", ProviderCode: "", Status: "active"},
 		}
 		if len(options) != len(want) {
 			t.Fatalf("admin options = %v, want %v", options, want)

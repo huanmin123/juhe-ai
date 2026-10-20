@@ -315,8 +315,8 @@ func (f *w14lFixture) seedBase() {
 		protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
 		VALUES ('prof-gpt', 'gpt', 'gpt 协议', 1, 'openai', 'v1', 'https://api.openai.com/v1',
 		'gpt-4o-mini', '["api_key","oauth"]', '[]', ?, ?)`, now, now)
-	f.exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-w14l-default', ?, '默认分组', 'gpt', 1, 1, 'personal', ?, ?)`, f.owner, now, now)
+	f.exec(`INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-w14l-default', ?, '默认分组', 1, 1, 'personal', ?, ?)`, f.owner, now, now)
 }
 
 // seedRowAccount 直接插入一行账户（等价 env.seedAccount）。
@@ -327,10 +327,10 @@ func (f *w14lFixture) seedRowAccount(id, name, status string) {
 		f.t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***', 'gpt-4o-mini', ?, ?)`,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***', 'gpt-4o-mini', ?, ?)`,
 		id, f.owner, name, status, sealed, now, now)
 }
 

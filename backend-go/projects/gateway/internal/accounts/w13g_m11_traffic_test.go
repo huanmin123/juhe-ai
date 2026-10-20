@@ -112,9 +112,9 @@ func TestW13GMigrateAuthorizedTrafficMatrix(t *testing.T) {
 	// 源账户 + 复用既有运行时行。授权实例摘要的 ProviderCode 由源账户覆盖
 	//（list.go 源值替换），因此必须改源账户的供应商，改实例行无效。
 	instX := w13gSeedTrafficInstance(t, env, authzStore, ownerID, memberID, "acc-w13g-tmsrc-x", "x")
-	env.exec(t, `UPDATE accounts SET provider_code = 'tx' WHERE id = 'acc-w13g-tmsrc-x'`)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-w13g-tx', ?, 'TX 组', 'tx', 1, 0, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, memberID)
+	env.exec(t, `UPDATE accounts SET vendor_code = 'xai', connection_driver_code = 'xai' WHERE id = 'acc-w13g-tmsrc-x'`)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-w13g-tx', ?, 'TX 组', 1, 0, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, memberID)
 	env.exec(t, `UPDATE group_accounts SET group_id = 'grp-w13g-tx', updated_at = '2026-01-01T00:00:00Z'
 		WHERE account_id = ?`, instX)
 	// 先在同组外比较（跨组）。

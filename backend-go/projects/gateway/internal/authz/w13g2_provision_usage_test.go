@@ -20,11 +20,11 @@ func w13g2SeedProvision(t *testing.T, f *fixture) {
 	t.Helper()
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_p13', 'owner', '源账户P', 'gpt', 'oauth')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_p13', 'owner', '源账户P', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES ('tg_p13', '默认P', 'grantee', 'active', 'gpt', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES ('tg_p13', '默认P', 'grantee', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -230,8 +230,8 @@ func TestW13g2ProvisionGuards(t *testing.T) {
 
 	// groupIDForAuthorizationBinding：停用分组 failf（394-396）与默认分组
 	// 缺失 failf（403-405）。
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, updated_at)
-		VALUES ('tg_p13_off', '停用', 'grantee', 'active', 'gpt', 0, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, updated_at)
+		VALUES ('tg_p13_off', '停用', 'grantee', 'active', 0, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	tx = w13g2Tx(t, f)
@@ -284,8 +284,8 @@ func TestW13g2ProvisionSyncNames(t *testing.T) {
 	}
 
 	// authorization id 缺失的实例行 → continue（549-551）。
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type, authorization_instance_source_account_id)
-		VALUES ('acc_p13_orphan', 'grantee', '旧名', 'gpt', 'oauth', 'acc_p13')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type, authorization_instance_source_account_id)
+		VALUES ('acc_p13_orphan', 'grantee', '旧名', 'gpt', 'gpt', 'oauth', 'acc_p13')`); err != nil {
 		t.Fatal(err)
 	}
 	changed, err = f.store.SyncAccountAuthorizationInstanceNamesForSourceAccount(ctx, "acc_p13", "再改名")

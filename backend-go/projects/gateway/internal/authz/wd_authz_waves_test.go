@@ -198,10 +198,10 @@ func TestWdGranteeGroupOptionClauses(t *testing.T) {
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_c1", "grantee")
 	f.seedGroup(t, "grp_c2", "grantee")
-	if _, err := f.db.Exec(`UPDATE groups SET enabled = 1, provider_code = 'openai', is_default = 1, updated_at = '2026-01-02T00:00:00Z' WHERE id = 'grp_c1'`); err != nil {
+	if _, err := f.db.Exec(`UPDATE groups SET enabled = 1, is_default = 1, updated_at = '2026-01-02T00:00:00Z' WHERE id = 'grp_c1'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE groups SET enabled = 1, provider_code = 'anthropic', is_default = 0, updated_at = '2026-01-03T00:00:00Z' WHERE id = 'grp_c2'`); err != nil {
+	if _, err := f.db.Exec(`UPDATE groups SET enabled = 1, is_default = 0, updated_at = '2026-01-03T00:00:00Z' WHERE id = 'grp_c2'`); err != nil {
 		t.Fatal(err)
 	}
 	base := authorizationGranteeGroupOptionListOptions{
@@ -215,12 +215,13 @@ func TestWdGranteeGroupOptionClauses(t *testing.T) {
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("ids 子句错误: %#v %v", rows, err)
 	}
-	// providerCode 子句。
+	// providerCode 子句（设计 §8）：组无 provider 维度，入参接受但不参与过滤，
+	// 结果与无过滤一致。
 	withProvider := base
 	withProvider.ProviderCode = "anthropic"
 	rows, err = f.store.ListAuthorizationGranteeGroups(context.Background(), withProvider)
-	if err != nil || len(rows) != 1 || rows[0].ID != "grp_c2" {
-		t.Fatalf("provider 子句错误: %#v %v", rows, err)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("provider 子句应被忽略: %#v %v", rows, err)
 	}
 	// keyword 子句（组名前缀）。
 	withKeyword := base

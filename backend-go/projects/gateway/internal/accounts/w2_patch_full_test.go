@@ -77,8 +77,8 @@ func TestW2PatchBalanceAndProxyAndGroup(t *testing.T) {
 	seedImportProxy(t, env, "pp-patch-disabled", adminID, "停用代理")
 	env.exec(t, `UPDATE proxy_profiles SET enabled = 0 WHERE id = 'pp-patch-disabled'`)
 	// 第二个 openai 分组用于换绑。
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-patch-b', ?, '补丁分组B', 'gpt', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-patch-b', ?, '补丁分组B', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
 	id := w2PatchAccount(t, env, "综合补丁")
 
 	// 余额查询开启 + 自定义配置。
@@ -131,8 +131,8 @@ func TestW2PatchBalanceAndProxyAndGroup(t *testing.T) {
 	}
 	// 组无 provider 维度（设计 §8）：旧 provider_code 值不同的同 owner 分组
 	// 可绑定（跨供应商拒绝臂随维度拆除退役）。
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-patch-gpt2', ?, '其他供应商分组2', 'openai', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-patch-gpt2', ?, '其他供应商分组2', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, adminID)
 	code, payload = w2PatchBody(t, env, id, `"groupId":"grp-patch-gpt2"`)
 	if code != http.StatusOK {
 		t.Fatalf("同 owner 分组应可绑定：%d %v", code, payload)

@@ -16,9 +16,12 @@ func seedPhysicalAccount(t *testing.T, f *fixture, id, ownerID string) {
 	// BUG-0175 create-tail provisioning clones the source provider onto its
 	// instance row, and these tests fan out only the explicitly seeded
 	// whitelist instances.
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, type, status,
+	// 白名单外身份：目标 schema 只认 9 个真实厂商，minimax 是真实厂商但不在
+	// Node 健康 fanout 白名单，用来表达「明确排除」的源账户。
+	vendor, driver := downstreamVendorIdentity("minimax")
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
 		config_revision, dispatch_revision, deleted_at)
-		VALUES (?, ?, 'unknown_provider', 'oauth', 'active', 1, 1, NULL)`, id, ownerID); err != nil {
+		VALUES (?, ?, ?, ?, 'oauth', 'active', 1, 1, NULL)`, id, ownerID, vendor, driver); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -26,13 +29,12 @@ func seedPhysicalAccount(t *testing.T, f *fixture, id, ownerID string) {
 // seedGranteeDefaultGroup satisfies the archived create-tail default-group
 // fallback for account grants created without a target group (BUG-0175
 // provisioning): the binding requires an enabled default group carrying the
-// instance provider.
-func seedGranteeDefaultGroup(t *testing.T, f *fixture, granteeID, providerCode string) {
+// instance provider（组无 provider 维度后，providerCode 入参仅为调用点兼容保留）。
+func seedGranteeDefaultGroup(t *testing.T, f *fixture, granteeID, _ string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status,
-		provider_code, enabled, is_default, updated_at)
-		VALUES (?, 'default', ?, 'active', ?, 1, 1, '2026-01-01T00:00:00Z')
-		ON CONFLICT(id) DO NOTHING`, "grp-default-"+granteeID, granteeID, providerCode); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES (?, 'default', ?, 'active', 1, 1, '2026-01-01T00:00:00Z')
+		ON CONFLICT(id) DO NOTHING`, "grp-default-"+granteeID, granteeID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -53,13 +55,25 @@ func seedDownstreamInstance(t *testing.T, f *fixture, id, sourceAccountID, grant
 	if deletedAt != "" {
 		deletedArg = deletedAt
 	}
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, provider_code, type, status,
+	vendor, driver := downstreamVendorIdentity(providerCode)
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code, type, status,
 		config_revision, dispatch_revision, authorization_instance_source_account_id,
 		authorization_instance_authorization_id, deleted_at)
-		VALUES (?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`,
-		id, granteeUserID, providerCode, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
+		VALUES (?, ?, ?, ?, ?, 'active', 3, 5, ?, ?, ?)`,
+		id, granteeUserID, vendor, driver, accountType, sourceAccountID, instanceAuthorization, deletedArg); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// downstreamVendorIdentity 把 provider 语义映射为目标账户身份列（设计 §2.1）：
+// 9 个真实厂商 vendor_code = driver = providerCode；generic 语义（openai /
+// hybrid / 其它未知值）vendor_code 为 NULL、driver 为 generic_http。
+func downstreamVendorIdentity(providerCode string) (any, string) {
+	switch providerCode {
+	case "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen":
+		return providerCode, providerCode
+	}
+	return nil, "generic_http"
 }
 
 func hourlyLimits(hours int) *string {
@@ -271,7 +285,7 @@ func TestRevokeResyncsBindingsAndFansOutHealthInputs(t *testing.T) {
 	// Excluded by each fanout filter: soft-deleted, provider outside the
 	// whitelist, type outside the whitelist, and an instance of another source.
 	seedDownstreamInstance(t, f, "inst-deleted", "res-1", "grantee", runtimeID, "openai", "oauth", "2026-01-01T00:00:00.000Z")
-	seedDownstreamInstance(t, f, "inst-provider", "res-1", "grantee", runtimeID, "unknown_provider", "oauth", "")
+	seedDownstreamInstance(t, f, "inst-provider", "res-1", "grantee", runtimeID, "minimax", "oauth", "")
 	seedDownstreamInstance(t, f, "inst-type", "res-1", "grantee", runtimeID, "openai", "completion", "")
 	seedDownstreamInstance(t, f, "inst-other", "res-9", "grantee", runtimeID, "openai", "oauth", "")
 

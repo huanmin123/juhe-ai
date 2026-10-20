@@ -136,8 +136,8 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 
 	// Cross-owner batch is refused with the same-scope copy.
 	aliceID := env.login(t, "alice", "alice-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-alice', ?, '默认分组', 'gpt', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-alice', ?, '默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
 	code, aliceCreated := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts", createPayload("alice-batch"))
 	if code != http.StatusCreated {
 		t.Fatalf("alice create: %d %v", code, aliceCreated)
@@ -519,7 +519,7 @@ func TestAccountImportPreviewAndConfirm(t *testing.T) {
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND status = 'disabled'`, a2["accountId"].(string)) != 1 {
 		t.Fatal("disabled import must keep the status")
 	}
-	if env.count(t, `SELECT COUNT(*) FROM groups WHERE name = '导入分组' AND system_account_id = ? AND provider_code = 'gpt'
+	if env.count(t, `SELECT COUNT(*) FROM groups WHERE name = '导入分组' AND system_account_id = ?
 		AND is_default = 0 AND group_type = 'personal'`, adminID) != 1 {
 		t.Fatal("imported group missing")
 	}
@@ -646,7 +646,7 @@ func TestAccountImportSourceModesAndConfirm(t *testing.T) {
 	// B4 W2：provider_protocol_profile_id 列停写（空串）；支持模型断言切
 	// (account_id, model_id) 目标形态。
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE id = ? AND concurrency_limit = 6 AND priority = 3
-		AND provider_protocol_profile_id = '' AND notes = '来自Sub2API'`, createdID) != 1 {
+		AND notes = '来自Sub2API'`, createdID) != 1 {
 		t.Fatal("sub2api row contract violated")
 	}
 	if env.count(t, `SELECT COUNT(*) FROM account_supported_models WHERE account_id = ?
@@ -732,10 +732,10 @@ func TestAccountExportByIdsAndFilters(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET proxy_profile_id = 'pp-exp' WHERE id = ?`, alphaID)
 	// An authorization instance never exports (skipped like a missing row).
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_source_account_id, created_at, updated_at)
-		VALUES ('acc-authz', ?, 'gpt', 'prof-gpt', 'openai', 'v1', '授权实例', 'api_key', 'active',
+		VALUES ('acc-authz', ?, 'gpt', 'gpt', 'openai', 'v1', '授权实例', 'api_key', 'active',
 		'sealed', 'masked', 'gpt-4o-mini', 'acc-owner', ?, ?)`, adminID, now, now)
 
 	byIDs := `{"accountIds":["` + alphaID + `","` + bravoID + `","` + pendingID + `","acc-authz","acc-missing"]}`
@@ -762,8 +762,8 @@ func TestAccountExportByIdsAndFilters(t *testing.T) {
 	}
 
 	alphaDoc := accounts[0].(map[string]any)
-	// B4 W2：providerCode 已停写，导出回显空串（过渡期既定事实）。
-	if alphaDoc["name"] != "alpha" || alphaDoc["providerCode"] != "" || alphaDoc["type"] != "api_key" ||
+	// 供应商解耦（设计 §9.11）：导出 providerCode 取 vendor_code（gpt）。
+	if alphaDoc["name"] != "alpha" || alphaDoc["providerCode"] != "gpt" || alphaDoc["type"] != "api_key" ||
 		alphaDoc["status"] != "active" || alphaDoc["healthCheckEndpointMode"] != "chat_json" {
 		t.Fatalf("alpha export: %v", alphaDoc)
 	}
@@ -851,8 +851,8 @@ func TestAccountExportByIdsAndFilters(t *testing.T) {
 
 	// The self surface exports the caller's own accounts.
 	aliceID := env.login(t, "alice", "alice-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-alice-exp', ?, '默认分组', 'gpt', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-alice-exp', ?, '默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
 	code, aliceAccount := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts", createPayload("alice-export"))
 	if code != http.StatusCreated {
 		t.Fatalf("alice create: %d %v", code, aliceAccount)

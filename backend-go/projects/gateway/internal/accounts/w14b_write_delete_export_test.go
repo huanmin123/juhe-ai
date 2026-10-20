@@ -60,8 +60,8 @@ func TestW14BCreateValidationArms(t *testing.T) {
 	ctx := context.Background()
 	// openai 供应商的启用默认分组（默认分组解析按 owner+provider 命中）。
 	nowSeed := "2026-09-17T00:00:00.000Z"
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, is_default, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-w14b-openai-default', ?, 'w14b-openai-default', 'openai', 1, 1, 'personal', ?, ?)`, adminID, nowSeed, nowSeed)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, is_default, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-w14b-openai-default', ?, 'w14b-openai-default', 1, 1, 'personal', ?, ?)`, adminID, nowSeed, nowSeed)
 
 	// 供应商不存在 / 停用（vendor 归属校验切 vendors 表，设计 §9.1）：
 	// deepseek 为 §1.1 真实厂商且夹具未预置 vendors 行 → 不支持；xai 预置
@@ -156,8 +156,8 @@ func TestW14BCreateValidationArms(t *testing.T) {
 	// 组无 provider 维度（设计 §8）：同 owner 分组可绑定，旧 provider_code 值
 	// （fixture 行 'other-prov'）不再参与校验。
 	now := "2026-09-17T00:00:00.000Z"
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, created_at, updated_at)
-		VALUES ('grp-w14b-other', ?, 'w14b-other-group', 'other-prov', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, created_at, updated_at)
+		VALUES ('grp-w14b-other', ?, 'w14b-other-group', ?, ?)`, adminID, now, now)
 	otherGroup := "grp-w14b-other"
 	groupInput.GroupID = &otherGroup
 	name := "w14b-create-group-bind"
@@ -244,8 +244,8 @@ func TestW14BExportAccountsArms(t *testing.T) {
 		proxy_profile_id = 'proxy-w14b-exp', notes = 'w14b 导出备注', priority = 3 WHERE id = 'acc-w14b-exp-a'`, sealed)
 	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, created_at, updated_at)
 		VALUES (?, 'grp-w14b-exp', 'acc-w14b-exp-a', ?, ?)`, adminID, now, now)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, created_at, updated_at)
-		VALUES ('grp-w14b-exp', ?, 'w14b-exp-group', 'openai', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, created_at, updated_at)
+		VALUES ('grp-w14b-exp', ?, 'w14b-exp-group', ?, ?)`, adminID, now, now)
 	// 授权实例账户（导出应跳过）+ 损坏密文账户。
 	env.seedAccount(t, "acc-w14b-exp-inst", adminID, "w14b-exp-inst", "active")
 	env.exec(t, `UPDATE accounts SET authorization_instance_authorization_id = 'authz-w14b' WHERE id = 'acc-w14b-exp-inst'`)

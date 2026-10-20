@@ -20,11 +20,11 @@ func w13g2SeedProvisionFail(t *testing.T, s *Store) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_f13', 'owner', '源F', 'gpt', 'oauth')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_f13', 'owner', '源F', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES ('tg_f13', '默认F', 'grantee', 'active', 'gpt', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES ('tg_f13', '默认F', 'grantee', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -63,13 +63,13 @@ func TestW13g2FailpointProvisionArms(t *testing.T) {
 	}
 
 	t.Run("ensureLiveQuery", func(t *testing.T) {
-		fp.arm("SELECT id, provider_code FROM")
+		fp.arm("SELECT id, COALESCE(vendor_code, '') AS provider_code,")
 		defer fp.disarm()
 		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
 	})
 
 	t.Run("ensureSourceQuery", func(t *testing.T) {
-		fp.arm("SELECT provider_code, provider_protocol_profile_id")
+		fp.arm("SELECT COALESCE(vendor_code, '') AS vendor_code, connection_driver_code")
 		defer fp.disarm()
 		w13g2CreateAccountGrant(t, "acc_f13", "gn1")
 	})
@@ -87,7 +87,7 @@ func TestW13g2FailpointProvisionArms(t *testing.T) {
 	})
 
 	t.Run("instanceInsert", func(t *testing.T) {
-		fp.arm("(id, system_account_id, provider_code, provider_protocol_profile_id")
+		fp.arm("(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,")
 		defer fp.disarm()
 		w13g2CreateAccountGrant(t, "acc_f13", "grantee")
 	})
@@ -202,7 +202,7 @@ func TestW13g2FailpointProvisionArms(t *testing.T) {
 		if _, err := s.Revoke(ctx, created.Item.ID, created.Item.UpdatedAt, "owner"); err != nil {
 			t.Fatal(err)
 		}
-		fp.arm("SET provider_code = ?")
+		fp.arm("SET vendor_code = NULLIF(?, '')")
 		defer fp.disarm()
 		if _, err := s.Create(ctx, CreateInput{
 			ResourceType: "account", ResourceID: "acc_f13",
@@ -388,7 +388,7 @@ func TestW13g2FailpointSyncArms(t *testing.T) {
 			t.Fatal(err)
 		}
 		// account 资源的 grant 才会扇出健康输入；换 account 资源。
-		if _, err := s.db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_s13f', 'owner', 'S源', 'gpt', 'oauth')`); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_s13f', 'owner', 'S源', 'gpt', 'gpt', 'oauth')`); err != nil {
 			t.Fatal(err)
 		}
 		accCreated, err := s.Create(ctx, CreateInput{

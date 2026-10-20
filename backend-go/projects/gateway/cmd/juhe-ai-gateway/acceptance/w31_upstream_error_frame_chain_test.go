@@ -143,14 +143,23 @@ func TestW31StreamTopLevelErrorFrameBeforeCommitSwitchesCandidate(t *testing.T) 
 
 	// 候选 2：同一 mock 上游、OK 凭据，绑定同一 seed 默认分组。
 	_, created := admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
-		"providerCode":              "gpt",
-		"providerProtocolProfileId": "profile_gpt_openai_v1",
-		"name":                      "W31 正常候选账户",
-		"type":                      "api_key",
-		"credentials":               map[string]any{"api_key": w31OKUpstreamKey, "base_url": upstream.upstream.URL},
-		"supportedModels":           []string{acceptanceModel},
-		"status":                    "active",
-		"groupId":                   "grp_default_gpt_sys_admin",
+		"providerCode": "gpt",
+		"name":         "W31 正常候选账户",
+		"type":         "api_key",
+		"credentials":  map[string]any{"api_key": w31OKUpstreamKey, "base_url": upstream.upstream.URL},
+		// §8 连接集合 + 健康检查三件套显式提交（写链必填）。
+		"connections": []map[string]any{{
+			"connectionPresetCode": "gpt_openai_v1",
+			"baseUrl":              upstream.upstream.URL,
+			"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
+			"enabled":              true,
+		}},
+		"healthCheckConnectionPresetCode": "gpt_openai_v1",
+		"healthCheckEndpointMode":         "chat_json",
+		"healthCheckModel":                acceptanceModel,
+		"supportedModels":                 []string{acceptanceModel},
+		"status":                          "active",
+		"groupId":                         "grp_default_gpt_sys_admin",
 	}, wantStatus(http.StatusCreated))
 	okAccountID := str(data(created)["id"])
 	if okAccountID == "" {

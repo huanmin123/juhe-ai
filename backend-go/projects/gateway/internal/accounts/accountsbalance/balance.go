@@ -93,7 +93,7 @@ func (s *Service) LoadBalanceInputDigests(ctx context.Context, accountIDs []stri
 			args = append(args, id)
 			placeholders = append(placeholders, "?")
 		}
-		query := s.store.Bind(`SELECT id, provider_code, COALESCE(credential_fingerprint, ''), COALESCE(balance_query_config_json, ''), COALESCE(credentials_encrypted, ''), COALESCE(proxy_profile_id, '')
+		query := s.store.Bind(`SELECT id, COALESCE(vendor_code, '') AS provider_code, COALESCE(credential_fingerprint, ''), COALESCE(balance_query_config_json, ''), COALESCE(credentials_encrypted, ''), COALESCE(proxy_profile_id, '')
 			FROM ` + s.store.Table("accounts") + `
 			WHERE deleted_at IS NULL AND id IN (` + strings.Join(placeholders, ", ") + `)`)
 		rows, err := s.store.DB().QueryContext(ctx, query, args...)
@@ -390,7 +390,7 @@ func (s *Service) FindBalanceManualRefreshCandidate(ctx context.Context, account
 	ctx = accountscore.EnsureCtx(ctx)
 	var row BalanceRefreshCandidate
 	var schedulable int
-	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, system_account_id, provider_code, type, status, schedulable,
+	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, system_account_id, COALESCE(vendor_code, '') AS provider_code, type, status, schedulable,
 			config_revision, dispatch_revision, credentials_encrypted, COALESCE(credential_fingerprint, ''),
 			balance_query_config_json, balance_query_next_refresh_at, proxy_profile_id
 		FROM `+s.store.Table("accounts")+`

@@ -115,7 +115,9 @@ func TestWCAccountAddProfileTypesBrokenJSON(t *testing.T) {
 		t.Fatalf("档案跨供应商: %d %v", status, payload)
 	}
 	// 供应商停用（档案停用语义随档案表删除，改由 vendor.enabled 承载）。
-	env.seedProviderRow("gpt", "GPT", false)
+	if _, err := env.db.Exec(`UPDATE vendors SET enabled = 0 WHERE code = 'gpt'`); err != nil {
+		t.Fatal(err)
+	}
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/add", wcAccountBase, wcLifeToken)
 	if status != http.StatusBadRequest || payload["message"] != "供应商已停用：gpt" {
 		t.Fatalf("停用供应商: %d %v", status, payload)

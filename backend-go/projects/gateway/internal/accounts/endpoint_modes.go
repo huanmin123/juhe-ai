@@ -322,7 +322,7 @@ var providerAccountCredentialDrivers = []credentialDriver{
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			openAICompatible := normalizeProviderToken(c.providerCode) == openAICompatibleProviderCodeConstant ||
 				(normalizeProviderToken(c.providerCode) == geminiProviderCode &&
-					c.providerProtocolProfileID == geminiOpenAIChatV1BetaProfileID)
+					profileUnpinnedMatches(c.providerProtocolProfileID, geminiOpenAIChatV1BetaProfileID))
 			return openAICompatible && isOpenAIProtocolProfileOf(c.predicate())
 		},
 		normalizeForWrite: func(value optionalValue, c endpointModeDefaultContext) ([]string, error) {
@@ -344,7 +344,7 @@ var providerAccountCredentialDrivers = []credentialDriver{
 			return (c.accountType == "api_key" || c.accountType == "oauth") &&
 				isXaiProviderCodeToken(c.providerCode) &&
 				isOpenAIProtocolProfileOf(c.predicate()) &&
-				c.providerProtocolProfileID == xaiOpenAIV1ProfileID
+				profileMatches(c.providerProtocolProfileID, xaiOpenAIV1ProfileID)
 		},
 		normalizeForWrite: func(value optionalValue, c endpointModeDefaultContext) ([]string, error) {
 			pinned := c
@@ -359,10 +359,10 @@ var providerAccountCredentialDrivers = []credentialDriver{
 			if !isDeepSeekProviderCodeToken(c.providerCode) {
 				return false
 			}
-			if isOpenAIProtocolProfileOf(c.predicate()) && c.providerProtocolProfileID == deepSeekOpenAIV1ProfileID {
+			if isOpenAIProtocolProfileOf(c.predicate()) && profileUnpinnedMatches(c.providerProtocolProfileID, deepSeekOpenAIV1ProfileID) {
 				return true
 			}
-			return isAnthropicProtocolProfileOf(c.predicate()) && c.providerProtocolProfileID == deepSeekAnthropicV1ProfileID
+			return isAnthropicProtocolProfileOf(c.predicate()) && profileUnpinnedMatches(c.providerProtocolProfileID, deepSeekAnthropicV1ProfileID)
 		},
 		normalizeForWrite: normalizeDeepSeekEndpointModesForWrite,
 	},
@@ -393,10 +393,9 @@ var providerAccountCredentialDrivers = []credentialDriver{
 				return false
 			}
 			if isOpenAIProtocolProfileOf(c.predicate()) {
-				return c.providerProtocolProfileID == glmGeneralOpenAIV1ProfileID ||
-					c.providerProtocolProfileID == glmCodingOpenAIV1ProfileID
+				return profileUnpinnedMatches(c.providerProtocolProfileID, glmGeneralOpenAIV1ProfileID, glmCodingOpenAIV1ProfileID)
 			}
-			return isAnthropicProtocolProfileOf(c.predicate()) && c.providerProtocolProfileID == glmCodingAnthropicV1ProfileID
+			return isAnthropicProtocolProfileOf(c.predicate()) && profileUnpinnedMatches(c.providerProtocolProfileID, glmCodingAnthropicV1ProfileID)
 		},
 		normalizeForWrite: normalizeGLMEndpointModesForWrite,
 	},
@@ -408,7 +407,7 @@ var providerAccountCredentialDrivers = []credentialDriver{
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isMinimaxProviderCodeToken(c.providerCode) &&
 				isOpenAIProtocolProfileOf(c.predicate()) &&
-				c.providerProtocolProfileID == minimaxOpenAIV1ProfileID
+				profileUnpinnedMatches(c.providerProtocolProfileID, minimaxOpenAIV1ProfileID)
 		},
 		normalizeForWrite: normalizeMinimaxEndpointModesForWrite,
 	},
@@ -422,7 +421,7 @@ var providerAccountCredentialDrivers = []credentialDriver{
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isVolcengineProviderCodeToken(c.providerCode) &&
 				isOpenAIProtocolProfileOf(c.predicate()) &&
-				c.providerProtocolProfileID == volcengineOpenAIV1ProfileID
+				profileUnpinnedMatches(c.providerProtocolProfileID, volcengineOpenAIV1ProfileID)
 		},
 		normalizeForWrite: normalizeVolcengineEndpointModesForWrite,
 	},
@@ -436,7 +435,7 @@ var providerAccountCredentialDrivers = []credentialDriver{
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isQwenProviderCodeToken(c.providerCode) &&
 				isOpenAIProtocolProfileOf(c.predicate()) &&
-				c.providerProtocolProfileID == qwenOpenAIV1ProfileID
+				profileUnpinnedMatches(c.providerProtocolProfileID, qwenOpenAIV1ProfileID)
 		},
 		normalizeForWrite: normalizeQwenEndpointModesForWrite,
 	},
@@ -467,7 +466,7 @@ func normalizeGeminiEndpointModesForWrite(value optionalValue, defaults endpoint
 // anthropic profiles pin the messages pair, openai profiles normalize plainly.
 func normalizeDeepSeekEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	anthropicMessagesModes := accountscore.StringSet(accountscore.AnthropicMessagesEndpointModeValues)
-	if isAnthropicProtocolProfileOf(context.predicate()) || context.providerProtocolProfileID == deepSeekAnthropicV1ProfileID {
+	if isAnthropicProtocolProfileOf(context.predicate()) || (normalizeProviderToken(context.protocolCode) == "" && profileMatches(context.providerProtocolProfileID, deepSeekAnthropicV1ProfileID)) {
 		pinned := context
 		pinned.providerCode = deepSeekProviderCode
 		pinned.providerProtocolProfileID = deepSeekAnthropicV1ProfileID
@@ -499,7 +498,7 @@ func normalizeDeepSeekEndpointModesForWrite(value optionalValue, context endpoin
 // 候选过滤无账户可命中，与 M2 openai 族 video_* 同语义，不进默认集)。
 func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	anthropicMessagesModes := accountscore.StringSet(accountscore.AnthropicMessagesEndpointModeValues)
-	if isAnthropicProtocolProfileOf(context.predicate()) || context.providerProtocolProfileID == glmCodingAnthropicV1ProfileID {
+	if isAnthropicProtocolProfileOf(context.predicate()) || (normalizeProviderToken(context.protocolCode) == "" && profileMatches(context.providerProtocolProfileID, glmCodingAnthropicV1ProfileID)) {
 		pinned := context
 		pinned.providerCode = glmProviderCode
 		pinned.providerProtocolProfileID = glmCodingAnthropicV1ProfileID
@@ -535,7 +534,7 @@ func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointMode
 	}
 	if len(unsupported) > 0 {
 		chatCapabilityName := "对话补全"
-		if context.providerProtocolProfileID == glmCodingOpenAIV1ProfileID {
+		if profileMatches(context.providerProtocolProfileID, glmCodingOpenAIV1ProfileID) {
 			chatCapabilityName = "OpenAI Chat Completions"
 		}
 		return nil, fmt.Errorf("智谱 GLM 账户上游接口能力只支持 %s (JSON)、%s (Streaming)、视频生成端点 (video_*) 或同步音频端点 (audio_speech/audio_transcription_json)：%s",
@@ -643,11 +642,43 @@ func optOrDefault(value optionalValue, defaults []string) optionalValue {
 // providerAccountCredentialDriverForContext mirrors
 // providerAccountCredentialDriverForContext: normalize the provider token and
 // fall back to the openai-compatible driver when both tokens are blank.
+// profileMatches 精确匹配协议档案 ID（设计 §2.1：
+// provider_protocol_profile_id 列退役后，档案由连接 preset 派生，可能为空）。
+func profileMatches(profileID string, expected ...string) bool {
+	for _, candidate := range expected {
+		if profileID == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// profileUnpinnedMatches 供「一族只有一个档案」的 driver 分支使用：档案为空
+// 时由 vendor + 协议面唯一确定该 driver，按通配放行；deepseek / glm 这类一
+// vendor 多档案的驱动必须先用协议面区分族，不能走这里。
+func profileUnpinnedMatches(profileID string, expected ...string) bool {
+	return profileID == "" || profileMatches(profileID, expected...)
+}
+
+
 func providerAccountCredentialDriverForContext(context endpointModeDefaultContext) (*credentialDriver, error) {
 	normalized := context
 	normalized.providerCode = normalizeProviderToken(context.providerCode)
 	if normalized.providerCode == "" && normalizeProviderToken(context.protocolCode) == "" {
 		return &providerAccountCredentialDrivers[0], nil
+	}
+	// 供应商解耦（设计 §2.1/§9.11）：generic_http 账户 vendor_code 为 NULL，
+	// 驱动族由协议面决定（generic_openai_v1 / generic_anthropic_v1 /
+	// generic_gemini_v1beta 三个 preset 各自的接口能力词表）。
+	if normalized.providerCode == "" {
+		switch {
+		case isOpenAIProtocolProfileOf(normalized.predicate()):
+			return &providerAccountCredentialDrivers[0], nil
+		case isAnthropicProtocolProfileOf(normalized.predicate()):
+			return credentialDriverByID("anthropic")
+		case isGeminiProtocolProfileOf(normalized.predicate()):
+			return credentialDriverByID("gemini")
+		}
 	}
 	for index := range providerAccountCredentialDrivers {
 		if providerAccountCredentialDrivers[index].supportsContext(normalized) {
@@ -656,6 +687,17 @@ func providerAccountCredentialDriverForContext(context endpointModeDefaultContex
 	}
 	return nil, nil
 }
+
+// credentialDriverByID 按注册表 id 取 driver（供 vendor 缺失时的协议面分派）。
+func credentialDriverByID(id string) (*credentialDriver, error) {
+	for index := range providerAccountCredentialDrivers {
+		if providerAccountCredentialDrivers[index].id == id {
+			return &providerAccountCredentialDrivers[index], nil
+		}
+	}
+	return nil, errors.New("接口能力驱动不存在：" + id)
+}
+
 
 // normalizeEndpointModesForWrite mirrors the storage helper of the same name:
 // resolve the driver for the context and delegate; an unregistered context is

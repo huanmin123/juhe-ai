@@ -26,7 +26,6 @@ type queryer interface {
 type bindingWrite struct {
 	groupID      string
 	groupName    *string
-	providerCode string
 	priority     int
 	weight       int
 	status       string
@@ -43,7 +42,6 @@ type bindingRow struct {
 	weight          int
 	status          string
 	groupName       sql.NullString
-	providerCode    sql.NullString
 	groupEnabled    bool
 }
 
@@ -52,7 +50,6 @@ func (r bindingRow) summary() GroupBinding {
 		ID:           r.id,
 		GroupID:      r.groupID,
 		GroupName:    nullPtrString(r.groupName),
-		ProviderCode: nullPtrString(r.providerCode),
 		Priority:     r.priority,
 		Weight:       r.weight,
 		Status:       r.status,
@@ -255,7 +252,6 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 		write := bindingWrite{
 			groupID:      groupID,
 			groupName:    group.namePtr(),
-			providerCode: group.providerCode,
 			priority:     derefIntOr(input.Priority, 0),
 			weight:       derefIntOr(input.Weight, 1),
 			status:       input.Status,
@@ -276,7 +272,6 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 type bindableGroup struct {
 	id           string
 	ownerID      string
-	providerCode string
 	name         string
 	enabled      bool
 	canBind      bool
@@ -417,7 +412,6 @@ func bindingWritesFromSummaries(bindings []GroupBinding) []bindingWrite {
 		writes = append(writes, bindingWrite{
 			groupID:      binding.GroupID,
 			groupName:    binding.GroupName,
-			providerCode: derefOrEmpty(binding.ProviderCode),
 			priority:     binding.Priority,
 			weight:       binding.Weight,
 			status:       binding.Status,
@@ -544,9 +538,6 @@ func bindingSummaryFromWrite(id string, binding bindingWrite) GroupBinding {
 		Weight:       binding.weight,
 		Status:       binding.status,
 		GroupEnabled: binding.groupEnabled,
-	}
-	if binding.providerCode != "" {
-		summary.ProviderCode = &binding.providerCode
 	}
 	return summary
 }

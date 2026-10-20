@@ -509,7 +509,7 @@ func TestWdGranteeOptionReadsAndHandlers(t *testing.T) {
 	// 分组选项：需要 grantee active 门 + grantee 自己命名空间的 enabled 分组。
 	f.seedAccount(t, "grantee", "active")
 	f.seedGroup(t, "grp_opt", "grantee")
-	if _, err := f.db.Exec(`UPDATE groups SET enabled = 1, is_default = 1, provider_code = 'openai' WHERE id = 'grp_opt'`); err != nil {
+	if _, err := f.db.Exec(`UPDATE groups SET enabled = 1, is_default = 1 WHERE id = 'grp_opt'`); err != nil {
 		t.Fatal(err)
 	}
 	groups, err := f.store.ListAuthorizationGranteeGroups(context.Background(), authorizationGranteeGroupOptionListOptions{

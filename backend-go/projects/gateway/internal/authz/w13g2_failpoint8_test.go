@@ -223,11 +223,11 @@ func TestW13g2BindingInsertArms(t *testing.T) {
 	}
 	// 健康输入版本 UPDATE 失败（439-441）与 INSERT 失败（444-446）：直接
 	// 驱动 account 资源授权的 enqueue 扇出。
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_bi13', 'owner', 'BI源', 'gpt', 'oauth')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_bi13', 'owner', 'BI源', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES ('tg_bi13', 'D', 'grantee', 'active', 'gpt', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES ('tg_bi13', 'D', 'grantee', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	accCreated, err := s.Create(ctx, CreateInput{

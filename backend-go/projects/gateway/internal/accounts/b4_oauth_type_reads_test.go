@@ -30,8 +30,9 @@ func b4SeedGoogleOAuthAccount(t *testing.T, env *testEnv, id, ownerID, envelopeO
 	if columnOAuthType == "" {
 		column = nil
 	}
-	env.exec(t, `UPDATE accounts SET type = 'google_oauth', provider_code = 'gemini',
-		credentials_encrypted = ?, oauth_type = ? WHERE id = ?`, sealed, column, id)
+	env.exec(t, `UPDATE accounts SET type = 'google_oauth', vendor_code = 'gemini',
+		connection_driver_code = 'gemini', credentials_encrypted = ?, oauth_type = ? WHERE id = ?`,
+		sealed, column, id)
 }
 
 func TestB4ClonePrefersOAuthTypeColumn(t *testing.T) {

@@ -682,7 +682,7 @@ func (s *Store) reserveAccountHealthInputVersions(ctx context.Context, tx *sql.T
 		lockSuffix = " FOR UPDATE"
 	}
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, config_revision, dispatch_revision FROM `+s.table("accounts")+`
-		WHERE deleted_at IS NULL AND provider_code = 'openai' AND type IN ('api_key','oauth')
+		WHERE deleted_at IS NULL AND vendor_code IS NULL AND connection_driver_code = 'generic_http' AND type IN ('api_key','oauth')
 		ORDER BY id ASC`)+lockSuffix)
 	if err != nil {
 		return err

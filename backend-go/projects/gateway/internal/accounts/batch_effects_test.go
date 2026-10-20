@@ -216,10 +216,10 @@ func TestAccountBatchUpdateAdvancesDispatchFamily(t *testing.T) {
 	now := "2026-01-01T00:00:00.000Z"
 	// Authorization instance of ids[0] (the batch surface itself excludes
 	// instances, so only the root is targeted).
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_source_account_id, created_at, updated_at)
-		VALUES ('acc-authz-inst', ?, 'gpt', 'prof-gpt', 'openai', 'v1', '授权实例', 'api_key', 'active',
+		VALUES ('acc-authz-inst', ?, 'gpt', 'gpt', 'openai', 'v1', '授权实例', 'api_key', 'active',
 		'sealed', 'masked', 'gpt-4o-mini', ?, ?, ?)`, adminID, ids[0], now, now)
 
 	code, updated := env.do(t, http.MethodPost, "/__aisys__/api/accounts/batch-update",

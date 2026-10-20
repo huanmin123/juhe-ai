@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // PatchChange mirrors AccountManagementPatchChange（REFACTOR-0005 阶段 B 下沉
@@ -302,8 +303,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			-- vendor），patch 行为键控读 COALESCE(vendor, provider)——vendor 值域
 			-- 与 providerCode 同名，legacy 行回落旧列，新行取 vendor。
 			COALESCE(accounts.vendor_code, '') AS provider_code,
-			'' AS provider_protocol_profile_id, accounts.protocol_code,
-			accounts.protocol_version, accounts.client_compatibility,
+			accounts.protocol_code,
+			accounts.protocol_version, '' AS client_compatibility,
 			-- oauth_type 物理列（设计 §2.1）：registry 判定读列优先、credentials
 			-- 回落（兼容存量行）。
 			COALESCE(accounts.oauth_type, '') AS oauth_type, accounts.proxy_profile_id,
@@ -329,7 +330,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.cooldownRetestLastAt, &row.cooldownRetestLastCode,
 		&row.healthCheckModel, &row.healthCheckEndpointMode,
 		&row.healthCheckConnectionID, &row.currentHealthCheckPreset, &row.providerCode,
-		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion,
+		&row.protocolCode, &row.protocolVersion,
 		&row.clientCompatibility, &row.oauthType, &row.proxyProfileID, &row.balanceQueryEnabled,
 		&row.balanceQueryConfigJSON, &row.balanceQueryNextRefreshAt, &row.temporaryProbeEnabled,
 		&row.nextHealthCheckAt,
@@ -342,6 +343,11 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	if err != nil {
 		return nil, err
+	}
+	// 供应商解耦（设计 §2.1）：provider_protocol_profile_id 列已退役，协议档案
+	// 由账户健康检查连接的 preset 确定性派生（与 jobs 探针读侧同一映射）。
+	if profileID, ok := exactkeyprobe.ConnectionPresetProfileID(row.currentHealthCheckPreset); ok {
+		row.providerProtocolProfileID = profileID
 	}
 	// 说明：此处曾有一道 `!access.CanAccessAll() && row.systemAccountID !=
 	// access.ViewerID` 的越权守卫，但非管理员查询已带
@@ -1963,7 +1969,7 @@ func credentialValueJSONText(value any) string {
 }
 
 // healthCheckTrioPresentFields 统计健康检查三件套在补丁载荷中的出现字段数
-//（§8 同现同省契约的判据）。
+// （§8 同现同省契约的判据）。
 func healthCheckTrioPresentFields(input PatchInput) int {
 	fields := 0
 	if input.HealthCheckConnectionPresetCode != nil {

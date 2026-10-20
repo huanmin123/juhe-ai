@@ -32,7 +32,7 @@ func TestW13g2BadScanArms(t *testing.T) {
 		VALUES ('teammem_bs13', 'team_bs13', 'bs1', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_bs13', 'owner', 'B源', 'gpt', 'oauth')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_bs13', 'owner', 'B源', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Create(ctx, CreateInput{

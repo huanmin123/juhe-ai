@@ -74,7 +74,7 @@ func TestW13AMigrateOwnerTrafficGuards(t *testing.T) {
 
 	// 跨供应商。
 	env.seedAccount(t, "acc-w13a-tm-p", adminID, "w13a-tm-p", "active")
-	env.exec(t, `UPDATE accounts SET provider_code = 'openai' WHERE id = 'acc-w13a-tm-p'`)
+	env.exec(t, `UPDATE accounts SET vendor_code = NULL, connection_driver_code = 'generic_http' WHERE id = 'acc-w13a-tm-p'`)
 	bindGroup("acc-w13a-tm-p", "grp-default-"+adminID)
 	if _, err := env.store.MigrateTraffic(context.Background(), "acc-w13a-tm-s",
 		TrafficMigrationInput{TargetAccountID: "acc-w13a-tm-p"}, scope); err == nil ||

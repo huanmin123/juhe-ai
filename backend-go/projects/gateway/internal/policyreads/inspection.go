@@ -21,8 +21,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
 
 // ===========================================================================
@@ -332,7 +335,7 @@ func (s *InspectionStore) providerNames(ctx context.Context, codes []string) (ma
 		args = append(args, code)
 	}
 	args = append(args, len(unique))
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT code, name FROM `+s.table("providers")+`
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT code, name FROM `+s.table("vendors")+`
 		WHERE code IN (`+strings.Join(placeholders, ",")+`)
 		ORDER BY code ASC
 		LIMIT ?`), args...)
@@ -387,9 +390,9 @@ func (s *InspectionStore) ListPage(ctx context.Context) (*InspectionListResult, 
 		defaultRules = append(defaultRules, overview)
 	}
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
-		rip.provider_code, p.name AS provider_name, rip.action, rip.updated_at
+		rip.provider_code, v.name AS provider_name, rip.action, rip.updated_at
 		FROM `+s.table("response_inspection_policies")+` rip
-		LEFT JOIN `+s.table("providers")+` p ON p.code = rip.provider_code
+		LEFT JOIN `+s.table("vendors")+` v ON v.code = rip.provider_code
 		ORDER BY rip.priority ASC, rip.updated_at DESC, rip.id ASC
 		LIMIT ?`), maxManagementResponseInspectionPolicies)
 	if err != nil {
@@ -475,9 +478,9 @@ func (s *InspectionStore) FindDetail(ctx context.Context, id string) (*Inspectio
 	var providerName sql.NullString
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
 		rip.provider_code, rip.match_json, rip.action, rip.notes, rip.updated_at,
-		p.name AS provider_name
+		v.name AS provider_name
 		FROM `+s.table("response_inspection_policies")+` rip
-		LEFT JOIN `+s.table("providers")+` p ON p.code = rip.provider_code
+		LEFT JOIN `+s.table("vendors")+` v ON v.code = rip.provider_code
 		WHERE rip.id = ?`), normalizedID).Scan(&row.id, &row.name, &row.enabled, &row.priority, &row.scopeType,
 		&row.protocolCode, &row.providerCode, &row.matchJSON, &row.action, &row.notes, &row.updatedAt, &providerName)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -503,18 +506,33 @@ func (s *InspectionStore) ProviderOptions(ctx context.Context, protocolCode, sco
 		return []InspectionProviderOption{}, nil
 	}
 	keyword = strings.TrimSpace(keyword)
-	where := []string{"p.enabled = 1", "ppp.enabled = 1", "ppp.protocol_code = ?"}
-	args := []any{protocolCode}
+	// 供应商协议档案两表退役（设计 §9.3）：协议面支持关系取连接器 registry
+	// （编译期唯一事实源），候选仍是 vendors 行（启用 + 支持该协议面）。
+	vendors := inspectionProtocolVendors(protocolCode)
+	if len(vendors) == 0 {
+		return []InspectionProviderOption{}, nil
+	}
+	codes := make([]string, 0, len(vendors))
+	for code := range vendors {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	placeholders := make([]string, len(codes))
+	args := make([]any, 0, len(codes)+2)
+	for i, code := range codes {
+		placeholders[i] = "?"
+		args = append(args, code)
+	}
+	where := []string{"v.enabled = 1", "v.code IN (" + strings.Join(placeholders, ",") + ")"}
 	if keyword != "" {
-		where = append(where, "(lower(p.code) LIKE lower(?) ESCAPE '\\' OR lower(p.name) LIKE lower(?) ESCAPE '\\')")
+		where = append(where, "(lower(v.code) LIKE lower(?) ESCAPE '\\' OR lower(v.name) LIKE lower(?) ESCAPE '\\')")
 		pattern := escapeLikePrefix(keyword) + "%"
 		args = append(args, pattern, pattern)
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT p.code, p.name
-		FROM `+s.table("providers")+` p
-		INNER JOIN `+s.table("provider_protocol_profiles")+` ppp ON ppp.provider_code = p.code
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT v.code, v.name
+		FROM `+s.table("vendors")+` v
 		WHERE `+strings.Join(where, "\n        AND ")+`
-		ORDER BY p.name ASC, p.code ASC`), args...)
+		ORDER BY v.name ASC, v.code ASC`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -528,6 +546,30 @@ func (s *InspectionStore) ProviderOptions(ctx context.Context, protocolCode, sco
 		options = append(options, option)
 	}
 	return options, rows.Err()
+}
+
+// inspectionProtocolSurfaces 是响应检查策略 protocol_code 到连接器协议面的
+// 映射（设计 §1 身份表：openai_v1 / anthropic_v1 / gemini_v1beta）。
+var inspectionProtocolSurfaces = map[string]string{
+	protocolCodeOpenAI:    contracts.SurfaceOpenAIV1,
+	protocolCodeAnthropic: contracts.SurfaceAnthropicV1,
+	protocolCodeGemini:    contracts.SurfaceGeminiV1Beta,
+}
+
+// inspectionProtocolVendors 返回连接器 registry 中声明该协议面的真实厂商集合。
+// generic_http 行 Vendor 为空，不是供应商（设计 §1），自然排除。
+func inspectionProtocolVendors(protocolCode string) map[string]bool {
+	vendors := map[string]bool{}
+	surface := inspectionProtocolSurfaces[strings.TrimSpace(protocolCode)]
+	if surface == "" {
+		return vendors
+	}
+	for _, combo := range contracts.AllowedConnectorCombos() {
+		if combo.Vendor != "" && combo.Surface == surface {
+			vendors[combo.Vendor] = true
+		}
+	}
+	return vendors
 }
 
 func inspectionSupportedProtocol(code string) bool {
@@ -546,15 +588,15 @@ func (s *InspectionStore) isProtocolProviderCode(ctx context.Context, q queryer,
 	if code == "" || strings.TrimSpace(protocolCode) == "" {
 		return false, nil
 	}
+	// 档案两表退役（设计 §9.3）：协议面支持关系由连接器 registry 判定，启用
+	// 状态仍读 vendors（与 provider-options 候选同口径）。
+	if !inspectionProtocolVendors(protocolCode)[code] {
+		return false, nil
+	}
 	var found int
-	err := q.QueryRowContext(ctx, s.bind(`SELECT 1
-		FROM `+s.table("provider_protocol_profiles")+`
-		INNER JOIN `+s.table("providers")+` ON providers.code = provider_protocol_profiles.provider_code
-		WHERE provider_protocol_profiles.provider_code = ?
-			AND providers.enabled = 1
-			AND provider_protocol_profiles.enabled = 1
-			AND protocol_code = ?
-		LIMIT 1`), code, strings.TrimSpace(protocolCode)).Scan(&found)
+	err := q.QueryRowContext(ctx, s.bind(`SELECT 1 FROM `+s.table("vendors")+`
+		WHERE code = ? AND enabled = 1
+		LIMIT 1`), code).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

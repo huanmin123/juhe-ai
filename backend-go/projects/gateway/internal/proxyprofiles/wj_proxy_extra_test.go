@@ -614,13 +614,9 @@ func TestWJTestHandlerRunErrorIs502(t *testing.T) {
 		VALUES ('p-bad', 'sa-1', '坏类型', 'ftp', 'h', 8080, 1, 'unknown', '2026-01-01', '2026-01-01')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-1', 'openai', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
-		t.Fatalf("seed provider: %v", err)
-	}
-	if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, enabled, base_url, updated_at)
-		VALUES ('pp-1', 'openai', 1, 'https://api.example.com/v1', '2026-01-01')`); err != nil {
-		t.Fatalf("seed profile: %v", err)
+	if _, err := fixture.db.Exec(`INSERT INTO vendors (id, code, name, enabled, created_at, updated_at)
+		VALUES ('vendor-1', 'gpt', 'OpenAI', 1, '2026-01-01', '2026-01-01')`); err != nil {
+		t.Fatalf("seed vendor: %v", err)
 	}
 	recorder := postProxyTest(t, fixture, "p-bad", true)
 	if recorder.Code != http.StatusBadGateway {

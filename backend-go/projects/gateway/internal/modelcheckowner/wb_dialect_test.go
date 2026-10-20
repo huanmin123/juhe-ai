@@ -313,21 +313,27 @@ func TestWBResolveConfiguredUpstreamModelShimDelegatesToStrictMapping(t *testing
 	if !ok {
 		t.Fatal("测试前提失败：找不到 openai responses 画像")
 	}
+	// 目标 schema（§4/§9）：支持模型经 model_id 引用 models，映射落
+	// account_entry_mappings。
 	db := wbOpenMemoryDB(t, []string{
-		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT)`,
-		`CREATE TABLE account_model_mappings (account_id TEXT, source_model TEXT, source_endpoint_family TEXT, upstream_model TEXT, upstream_endpoint_family TEXT, enabled INTEGER)`,
+		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT,upstream_model TEXT,scope TEXT,system_account_id TEXT,status TEXT,catalog_visible INTEGER)`,
+		`CREATE TABLE account_supported_models (account_id TEXT, model_id TEXT)`,
+		`CREATE TABLE account_entry_mappings (id TEXT PRIMARY KEY,account_id TEXT,source_model TEXT,source_endpoint_family TEXT,target_connection_id TEXT,target_model_id TEXT,target_endpoint_family TEXT,enabled INTEGER)`,
 	})
 	model := "gpt-5.6-sol"
 	if got, err := resolveConfiguredUpstreamModel(context.Background(), db, false, "acct-1", profile, model); err != nil || got != model {
 		t.Fatalf("无映射时必须返回请求模型: got=%q err=%v", got, err)
 	}
-	if _, err := db.Exec(`INSERT INTO account_model_mappings VALUES ('acct-1','gpt-5.6-sol','responses','gpt-5.6-terra','responses',1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id,vendor_code,public_model,upstream_model,scope,system_account_id,status,catalog_visible) VALUES ('m-terra','gpt','gpt-5.6-terra','gpt-5.6-terra','builtin',NULL,'active',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_entry_mappings VALUES ('map-1','acct-1','gpt-5.6-sol','responses','conn-1','m-terra','responses',1)`); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := resolveConfiguredUpstreamModel(context.Background(), db, false, "acct-1", profile, model); err != nil || got != "gpt-5.6-terra" {
 		t.Fatalf("启用映射时必须返回配置的上游模型: got=%q err=%v", got, err)
 	}
-	if _, err := db.Exec(`DROP TABLE account_model_mappings`); err != nil {
+	if _, err := db.Exec(`DROP TABLE account_entry_mappings`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := resolveConfiguredUpstreamModel(context.Background(), db, false, "acct-1", profile, model); err == nil || !strings.Contains(err.Error(), "model mapping") {

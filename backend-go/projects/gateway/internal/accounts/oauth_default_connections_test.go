@@ -189,8 +189,8 @@ func TestOAuthManagedDefaultsCreateWritesConnectionRows(t *testing.T) {
 			// §2.1 真实厂商规则补行。创建链要求 owner 有启用的默认分组。
 			env.exec(t, `INSERT OR IGNORE INTO vendors (id, code, name, enabled, created_at, updated_at)
 				VALUES (?, ?, ?, 1, ?, ?)`, "ven-"+testCase.provider, testCase.provider, testCase.provider, now, now)
-			env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-				VALUES (?, ?, '默认分组', ?, 1, 1, 'personal', ?, ?)`,
+			env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+				VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`,
 				"grp-default-"+ownerID, ownerID, testCase.provider, now, now)
 			env.exec(t, `INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
 				supported_endpoint_modes_json, created_at, updated_at)

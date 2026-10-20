@@ -254,9 +254,10 @@ func TestW13ABatchUpdateValidationArms(t *testing.T) {
 		{AccountID: "acc-w13a-b1x", ConfigRevision: revision("acc-w13a-b1x")},
 		{AccountID: "acc-w13a-b2x", ConfigRevision: revision("acc-w13a-b2x")},
 	}
-	// seedAccount 全部落在 gpt/prof-gpt，第二账户改成 openai 兼容档案。
-	env.exec(t, `UPDATE accounts SET provider_code = 'openai', provider_protocol_profile_id = ?
-		WHERE id = 'acc-w13a-b2x'`, openAICompatibleProfileID)
+	// seedAccount 全部落在 gpt，第二账户改成 generic_http（openai 兼容语义）：
+	// vendor 为空 + driver generic_http 即目标 schema 的兼容账户身份（设计 §2.1）。
+	env.exec(t, `UPDATE accounts SET vendor_code = NULL, connection_driver_code = 'generic_http'
+		WHERE id = 'acc-w13a-b2x'`)
 	_, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: mixed,
 		Updates: map[string]BatchUpdateField{

@@ -195,10 +195,19 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 
 	t.Run("accounts", func(t *testing.T) {
 		_, created := client.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
-			"providerCode":              "gpt",
-			"providerProtocolProfileId": "profile_gpt_openai_v1",
-			"name":                      "验收账户" + runTag,
-			"type":                      "api_key",
+			"providerCode": "gpt",
+			"name":         "验收账户" + runTag,
+			"type":         "api_key",
+			// §8 连接集合 + 健康检查三件套显式提交（写链必填）。
+			"connections": []map[string]any{{
+				"connectionPresetCode": "gpt_openai_v1",
+				"baseUrl":              "https://api.openai.com/v1",
+				"endpointModes":        []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
+				"enabled":              true,
+			}},
+			"healthCheckConnectionPresetCode": "gpt_openai_v1",
+			"healthCheckEndpointMode":         "chat_json",
+			"healthCheckModel":                "gpt-5.6-sol",
 			// Node 契约收紧（credentials_normalize）：api_key 账户 Base URL 必填，
 			// 空 base_url 现在渲染 400。
 			"credentials":            map[string]any{"api_key": "sk-acceptance-" + runTag, "base_url": "https://api.openai.com/v1"},

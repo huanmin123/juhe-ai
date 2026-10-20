@@ -57,8 +57,8 @@ func TestW14LGroupOwnerEdgeArms(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// 空属主的分组行 → groupOwnerReference 返回 (nil, nil)（组无 provider 维
 	// 度，owner 是唯一解析维度，设计 §8）。
-	f.exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-w14l-empty', '', '空属主', '', 1, 0, 'personal', ?, ?)`, now, now)
+	f.exec(`INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-w14l-empty', '', '空属主', 1, 0, 'personal', ?, ?)`, now, now)
 	group, err := f.store.groupOwnerReference(context.Background(), f.db, "grp-w14l-empty")
 	if err != nil || group != nil {
 		t.Fatalf("空属主分组应返回 nil：%+v %v", group, err)
@@ -179,10 +179,10 @@ func TestW14LOAuthReauthContextArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedGemini := func(id, authID string) {
-		f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+		f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 			protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 			health_check_model, authorization_instance_authorization_id, created_at, updated_at)
-			VALUES (?, ?, 'gemini', 'prof-gemini', 'gemini', 'v1', ?, 'google_oauth', 'active', ?, 'cid***', '',
+			VALUES (?, ?, 'gemini', 'gemini', 'gemini', 'v1', ?, 'google_oauth', 'active', ?, 'cid***', '',
 			?, ?, ?)`, id, f.owner, id, sealed, authID, now, now)
 	}
 	seedGemini("acc-w14l-gem", "")
@@ -209,19 +209,19 @@ func TestW14LOAuthReauthForbiddenAndBadCredentialsArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES ('acc-w14l-gem-f', ?, 'gemini', 'prof-gemini', 'gemini', 'v1', '跨域', 'google_oauth',
+		VALUES ('acc-w14l-gem-f', ?, 'gemini', 'gemini', 'gemini', 'v1', '跨域', 'google_oauth',
 		'active', ?, 'rt***', '', ?, ?)`, f.owner, sealed, now, now)
 	if got, err := f.store.FindOAuthReauthorizationContext(ctx, "acc-w14l-gem-f", foreign); got != nil || err != nil {
 		t.Fatalf("跨域非管理员应返回 nil：%+v %v", got, err)
 	}
 	// 坏凭据密文 → 解密错误臂。
-	f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES ('acc-w14l-gem-bad', ?, 'gemini', 'prof-gemini', 'gemini', 'v1', '坏凭据', 'google_oauth',
+		VALUES ('acc-w14l-gem-bad', ?, 'gemini', 'gemini', 'gemini', 'v1', '坏凭据', 'google_oauth',
 		'active', 'not-a-valid-sealed-payload', 'x***', '', ?, ?)`, f.owner, now, now)
 	if _, err := f.store.FindOAuthReauthorizationContext(ctx, "acc-w14l-gem-bad", f.scope()); err == nil {
 		t.Fatal("坏凭据应报错")

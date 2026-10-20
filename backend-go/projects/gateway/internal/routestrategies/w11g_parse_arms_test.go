@@ -92,32 +92,32 @@ func TestW11GBindingRowGuards(t *testing.T) {
 		}
 	}
 	// 合法行。
-	row, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "5", Valid: true}, "active", "grp", "openai", int64(1)))
+	row, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "5", Valid: true}, "active", "grp", int64(1)))
 	if err != nil || row.weight != 5 {
 		t.Fatalf("valid row=%+v err=%v", row, err)
 	}
 	// 非法优先级。
-	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(0), sql.NullString{}, "active", "grp", "openai", int64(1))); err == nil {
+	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(0), sql.NullString{}, "active", "grp", int64(1))); err == nil {
 		t.Fatal("zero priority must fail")
 	}
 	// 非法状态。
-	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{}, "bogus", "grp", "openai", int64(1))); err == nil {
+	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{}, "bogus", "grp", int64(1))); err == nil {
 		t.Fatal("bad status must fail")
 	}
 	// 非法权重。
-	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "101", Valid: true}, "active", "grp", "openai", int64(1))); err == nil {
+	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "101", Valid: true}, "active", "grp", int64(1))); err == nil {
 		t.Fatal("bad weight must fail")
 	}
-	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "x", Valid: true}, "active", "grp", "openai", int64(1))); err == nil {
+	if _, err := scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "x", Valid: true}, "active", "grp", int64(1))); err == nil {
 		t.Fatal("non-numeric weight must fail")
 	}
 	// REAL 形式的整数权重。
-	row, err = scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "5.0", Valid: true}, "active", "grp", "openai", int64(1)))
+	row, err = scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{String: "5.0", Valid: true}, "active", "grp", int64(1)))
 	if err != nil || row.weight != 5 {
 		t.Fatalf("real weight row=%+v err=%v", row, err)
 	}
 	// NULL/空白权重回填 1。
-	row, err = scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{}, "active", "grp", "openai", int64(1)))
+	row, err = scanBindingRow(build("b1", "rs1", "g1", int64(1), sql.NullString{}, "active", "grp", int64(1)))
 	if err != nil || row.weight != 1 {
 		t.Fatalf("null weight row=%+v err=%v", row, err)
 	}

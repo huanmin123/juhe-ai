@@ -726,15 +726,13 @@ func (f *fullchainFixture) createAccount(name, upstreamKey, groupID string, extr
 	f.t.Helper()
 	credentials := map[string]any{"api_key": upstreamKey, "base_url": f.mock.server.URL}
 	payload := map[string]any{
-		"providerCode":              "gpt",
-		"providerProtocolProfileId": "profile_gpt_openai_v1",
-		"name":                      name,
-		"type":                      "api_key",
-		"credentials":               credentials,
-		"supportedModels":           []string{acceptanceModel, fullchainProbeModel},
-		"healthCheckModel":          fullchainProbeModel,
-		"status":                    "active",
-		"groupId":                   groupID,
+		"providerCode":    "gpt",
+		"name":            name,
+		"type":            "api_key",
+		"credentials":     credentials,
+		"supportedModels": []string{acceptanceModel, fullchainProbeModel},
+		"status":          "active",
+		"groupId":         groupID,
 	}
 	for key, value := range extra {
 		if key == "credentials" {
@@ -746,12 +744,66 @@ func (f *fullchainFixture) createAccount(name, upstreamKey, groupID string, extr
 		}
 		payload[key] = value
 	}
+	// §8 连接集合 + 健康检查三件套显式提交（写链必填）：mock 账户按
+	// provider 派生连接 preset，base URL 跟随 credentials 的 mock 地址。
+	providerCode := str(payload["providerCode"])
+	preset := presetForProvider(providerCode)
+	baseURL := str(credentials["base_url"])
+	connectionModes, healthMode := acceptanceChatConnectionModes(preset)
+	payload["connections"] = []map[string]any{{
+		"connectionPresetCode": preset,
+		"baseUrl":              baseURL,
+		"endpointModes":        connectionModes,
+		"enabled":              true,
+	}}
+	payload["healthCheckConnectionPresetCode"] = preset
+	payload["healthCheckEndpointMode"] = healthMode
+	payload["healthCheckModel"] = fullchainProbeModel
 	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", payload, wantStatus(http.StatusCreated))
 	accountID := str(data(created)["id"])
 	if accountID == "" {
 		f.t.Fatalf("fullchain account create payload wrong: %#v", created)
 	}
 	return accountID
+}
+
+// presetForProvider 返回 chat 场景的 connection preset（设计 §1.1 registry
+// 词表；与 profileForProvider 同 vendor 维度）。
+func presetForProvider(providerCode string) string {
+	switch providerCode {
+	case "gpt":
+		return "gpt_openai_v1"
+	case "openai", "hybrid":
+		return "generic_openai_v1"
+	case "deepseek":
+		return "deepseek_openai_v1"
+	case "glm":
+		return "glm_general_openai_v1"
+	case "xai":
+		return "xai_openai_v1"
+	case "anthropic":
+		return "anthropic_v1"
+	case "gemini":
+		return "gemini_native_v1beta"
+	case "minimax":
+		return "minimax_media"
+	case "volcengine":
+		return "volcengine_ark"
+	case "qwen":
+		return "qwen_dashscope"
+	}
+	return "gpt_openai_v1"
+}
+
+// acceptanceChatConnectionModes 返回 preset 对应的 chat 端点模式与健康检查
+// 模式（健康检查模式必须落在连接的 endpointModes 内）。
+func acceptanceChatConnectionModes(preset string) ([]string, string) {
+	switch preset {
+	case "anthropic_v1", "deepseek_anthropic_v1", "glm_coding_anthropic_v1", "generic_anthropic_v1":
+		return []string{"messages_json", "messages_sse"}, "messages_json"
+	default:
+		return []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}, "chat_json"
+	}
 }
 
 // createGroup 创建 personal 分组（默认 gpt 供应商）。

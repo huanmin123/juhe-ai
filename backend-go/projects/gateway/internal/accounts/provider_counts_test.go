@@ -34,7 +34,7 @@ func TestProviderCountsGroupingDomainAndScope(t *testing.T) {
 	env.seedAccount(t, "pc-chat-gpt", adminID, "pc-chat-gpt", "active")
 	env.seedAccount(t, "pc-xai-1", adminID, "pc-xai-1", "active")
 	env.seedAccount(t, "pc-xai-2", adminID, "pc-xai-2", "active")
-	env.exec(t, `UPDATE accounts SET provider_code = 'xai' WHERE id IN ('pc-xai-1', 'pc-xai-2')`)
+	env.exec(t, `UPDATE accounts SET vendor_code = 'xai', connection_driver_code = 'xai' WHERE id IN ('pc-xai-1', 'pc-xai-2')`)
 	env.exec(t, `UPDATE accounts SET capability_domain = 'video' WHERE id = 'pc-xai-2'`)
 
 	// 缺省 = 全量分组：gpt 1、xai 2（跨域合计）。
@@ -91,7 +91,7 @@ func TestProviderCountsSelfSurfaceScope(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, adminID)
 	env.seedAccount(t, "pc-admin-1", adminID, "pc-admin-1", "active")
 	env.seedAccount(t, "pc-admin-2", adminID, "pc-admin-2", "active")
-	env.exec(t, `UPDATE accounts SET provider_code = 'xai' WHERE id = 'pc-admin-2'`)
+	env.exec(t, `UPDATE accounts SET vendor_code = 'xai', connection_driver_code = 'xai' WHERE id = 'pc-admin-2'`)
 
 	// 管理面随 systemAccountId 过滤：指定不存在的范围 = 0 行计数。
 	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/accounts/provider-counts?systemAccountId=sys-nobody", "")
@@ -108,7 +108,7 @@ func TestProviderCountsSelfSurfaceScope(t *testing.T) {
 	env.seedAccount(t, "pc-alice-1", aliceID, "pc-alice-1", "active")
 	env.seedAccount(t, "pc-alice-2", aliceID, "pc-alice-2", "active")
 	env.seedAccount(t, "pc-alice-3", aliceID, "pc-alice-3", "active")
-	env.exec(t, `UPDATE accounts SET provider_code = 'xai' WHERE id IN ('pc-alice-2', 'pc-alice-3')`)
+	env.exec(t, `UPDATE accounts SET vendor_code = 'xai', connection_driver_code = 'xai' WHERE id IN ('pc-alice-2', 'pc-alice-3')`)
 
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/my-accounts/provider-counts", "")
 	if code != http.StatusOK {

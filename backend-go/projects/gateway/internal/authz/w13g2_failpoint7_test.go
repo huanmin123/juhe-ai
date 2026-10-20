@@ -73,7 +73,7 @@ func TestW13g2ProvisionMisc(t *testing.T) {
 	// shortID 空（authorizationID 无 "_" 且长度≤6 之外——空串）→ 兜底
 	//（269-273）。
 	tx := mustTx(t, db)
-	if _, err := tx.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_misc', 'grantee', ' Misc源 ', 'gpt', 'oauth')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_misc', 'grantee', ' Misc源 ', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
 	name, err := s.uniqueAuthorizedAccountInstanceName(ctx, tx, "Misc源", "grantee", "ab3", "")

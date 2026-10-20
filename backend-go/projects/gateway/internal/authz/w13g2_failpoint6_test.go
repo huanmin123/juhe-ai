@@ -79,11 +79,11 @@ func TestW13g2FailpointReturnArms(t *testing.T) {
 	fp.disarm()
 
 	// account 资源的 Return：enqueue 扇出查询失败（761-763）。
-	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_ra13', 'owner', 'A源', 'gpt', 'oauth')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_ra13', 'owner', 'A源', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES ('tg_ra13', 'T', 'grantee', 'active', 'gpt', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES ('tg_ra13', 'T', 'grantee', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	accCreated, err := s.Create(ctx, CreateInput{
@@ -222,11 +222,11 @@ func TestW13g2UsageDetailDirectAccount(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "ud1", "active")
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, provider_code, type) VALUES ('acc_ud13', 'owner', 'U源', 'gpt', 'oauth')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, vendor_code, connection_driver_code, type) VALUES ('acc_ud13', 'owner', 'U源', 'gpt', 'gpt', 'oauth')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES ('tg_ud13', 'D', 'ud1', 'active', 'gpt', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES ('tg_ud13', 'D', 'ud1', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()

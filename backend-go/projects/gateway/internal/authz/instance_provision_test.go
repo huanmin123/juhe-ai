@@ -16,27 +16,41 @@ import (
 // assertion is meaningful.
 func (f *fixture) seedProvisionSource(t *testing.T, id, ownerID, name, providerCode string) {
 	t.Helper()
+	// vendor_code 由 providerCode 参数承载（generic 语义落 NULL + generic_http）。
+	vendor, driver := provisionVendorIdentity(providerCode)
 	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, status,
-		provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type,
+		vendor_code,
+		connection_driver_code, protocol_code, protocol_version, type,
 		credentials_encrypted, credential_mask, concurrency_limit,
 		temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
 		schedulable, created_at, updated_at)
-		VALUES (?, ?, ?, 'active', ?, 'prof-1', 'chat_json', 'v1', 'oauth',
+		VALUES (?, ?, ?, 'active', ?, ?, 'chat_json', 'v1', 'oauth',
 		'{"api_key":"owner-secret"}', 'sk-****cret', 7000,
 		1, 'gpt-4o-mini', 'chat_json', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		id, ownerID, name, providerCode); err != nil {
+		id, ownerID, name, vendor, driver); err != nil {
 		t.Fatal(err)
 	}
 }
 
+// provisionVendorIdentity 把 provider 语义映射为目标账户身份列（设计 §2.1）：
+// 9 个真实厂商 vendor_code = 驱动 = providerCode；其余 generic 语义
+// （openai/hybrid 等）vendor_code 为 NULL、driver 为 generic_http。
+func provisionVendorIdentity(providerCode string) (any, string) {
+	switch providerCode {
+	case "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen":
+		return providerCode, providerCode
+	}
+	return nil, "generic_http"
+}
+
 // seedGranteeGroup inserts a group owned by the grantee with the provider,
 // enabled and default flags the binding validations read.
-func (f *fixture) seedGranteeGroup(t *testing.T, id, granteeID, providerCode string, enabled, isDefault int) {
+func (f *fixture) seedGranteeGroup(t *testing.T, id, granteeID, _ string, enabled, isDefault int) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status,
-		provider_code, enabled, is_default, updated_at)
-		VALUES (?, ?, ?, 'active', ?, ?, ?, '2026-01-01T00:00:00Z')`,
-		id, "Group "+id, granteeID, providerCode, enabled, isDefault); err != nil {
+	// 组无 provider 维度（设计 §8）：providerCode 入参仅为调用点兼容保留。
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES (?, ?, ?, 'active', ?, ?, '2026-01-01T00:00:00Z')`,
+		id, "Group "+id, granteeID, enabled, isDefault); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -83,7 +97,7 @@ func (f *fixture) provisionInstanceByAuthorization(t *testing.T, resourceID, gra
 	runtimeID := accountRuntimeIDFor(t, f, resourceID, granteeID)
 	row := &provisionInstanceRow{}
 	err := f.db.QueryRow(`SELECT id, system_account_id, name, status, schedulable,
-		credentials_encrypted, credential_fingerprint, provider_code, provider_protocol_profile_id,
+		credentials_encrypted, credential_fingerprint, COALESCE(vendor_code, '') AS provider_code, '' AS provider_protocol_profile_id,
 		protocol_code, protocol_version, type, concurrency_limit,
 		temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
 		capability_domain,
@@ -148,7 +162,8 @@ func TestProvisionInstanceOnCreateWithTargetGroup(t *testing.T) {
 	if row.credentialsEncrypted != "{}" || row.credentialFingerprint != nil {
 		t.Fatalf("instance credentials must stay empty: %q %v", row.credentialsEncrypted, row.credentialFingerprint)
 	}
-	if row.providerCode != "gpt" || row.providerProtocolProfile != "prof-1" ||
+	// 供应商解耦（设计 §9.11）：provider 身份取 vendor_code，档案列已退役。
+	if row.providerCode != "gpt" || row.providerProtocolProfile != "" ||
 		row.protocolCode != "chat_json" || row.protocolVersion != "v1" || row.accountType != "oauth" {
 		t.Fatalf("provider inheritance: %+v", row)
 	}
@@ -240,12 +255,8 @@ func TestProvisionTargetGroupValidationsVerbatim(t *testing.T) {
 			target:  "grp-owner",
 			wantErr: "目标分组不存在或不属于被授权用户",
 		},
-		{
-			name:    "provider mismatch",
-			setup:   func(f *fixture) { f.seedGranteeGroup(t, "grp-claude", "grantee", "claude", 1, 0) },
-			target:  "grp-claude",
-			wantErr: "目标分组供应商与授权账户不一致",
-		},
+		// 供应商解耦（设计 §8）：组无 provider 维度，「目标分组供应商与授权账户
+		// 不一致」校验随列退役，跨厂商分组不再是拒绝条件。
 		{
 			name:    "group disabled",
 			setup:   func(f *fixture) { f.seedGranteeGroup(t, "grp-off", "grantee", "gpt", 0, 0) },

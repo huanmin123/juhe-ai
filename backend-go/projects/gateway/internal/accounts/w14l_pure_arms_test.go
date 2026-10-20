@@ -125,10 +125,10 @@ func TestW14LPatchAuthorizedDispatchTxArms(t *testing.T) {
 	ptrInt := func(value int) *int { return &value }
 	now := "2026-03-10T08:00:00.000Z"
 	// 真实行：账户授权实例绑定 + 分组绑定，使事务内 UPDATE 命中。
-	f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, authorization_instance_authorization_id, config_revision, created_at, updated_at)
-		VALUES ('acc-w14l-dispatch', ?, 'gpt', 'prof-gpt', 'openai', 'v1', 'w14l-dispatch', 'api_key',
+		VALUES ('acc-w14l-dispatch', ?, 'gpt', 'gpt', 'openai', 'v1', 'w14l-dispatch', 'api_key',
 		'active', 'sealed', 'mask', 'gpt-4o-mini', 'aa-w14l-1', 1, ?, ?)`, f.owner, now, now)
 	f.exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id,
 		local_priority, enabled, created_at, updated_at)

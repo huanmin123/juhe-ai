@@ -366,7 +366,7 @@ func TestW13AImportGroupAndProxyResolutionArms(t *testing.T) {
 		[]map[string]any{
 			// groupId + groupName 同时填写 + groupId 不存在。
 			account(map[string]any{"groupId": "grp-w13a-none", "groupName": "w13a-g", "name": "w13a-r1"}),
-			// groupId 存在但供应商不一致。
+			// groupId 存在（组无 provider 维度，设计 §8：不再校验供应商一致性）。
 			account(map[string]any{"groupId": "grp-default-" + adminID, "name": "w13a-r2"}),
 			// groupId 与 groupName 都缺。
 			account(map[string]any{"groupId": nil, "groupName": nil, "name": "w13a-r3"}),
@@ -399,7 +399,10 @@ func TestW13AImportGroupAndProxyResolutionArms(t *testing.T) {
 	if got := strings.Join(result.Accounts[0].Messages, "|"); !strings.Contains(got, "分组不存在或无权使用") {
 		t.Fatalf("第 0 个账户缺分组不存在消息：%s", got)
 	}
-	assertMessage(1, "分组供应商与账户供应商不一致")
+	// 组无 provider 维度（设计 §8）：跨厂商分组不再是导入拒绝条件。
+	if result.Accounts[1].Action == importActionFailed {
+		t.Fatalf("第 1 个账户不应因分组供应商失败：%+v", result.Accounts[1])
+	}
 	assertMessage(2, "账户 groupId 或 groupName 必填")
 	assertMessage(3, "proxyRef 和 proxyProfileId 只能填写一个")
 	assertMessage(4, "代理不存在")
@@ -480,8 +483,8 @@ func TestW13AImportExecuteArms(t *testing.T) {
 	now := "2026-09-17T00:00:00.000Z"
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
 		VALUES ('proxy-w13a-reuse-hit', ?, 'w13a-reuse-proxy', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, adminID, now, now)
-	env.exec(t, `INSERT INTO "groups" (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-w13a-reuse-hit', ?, 'w13a-reuse-group', 'openai', 1, 0, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO "groups" (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-w13a-reuse-hit', ?, 'w13a-reuse-group', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	result, err = env.store.ExecuteImport(context.Background(), w2NativeDoc(
 		[]map[string]any{w2APIKeyAccount("w13a-reuse-acct2", "w13a-reuse-group")},
 		[]map[string]any{w2Proxy("p-reuse2", "w13a-reuse-proxy")},

@@ -47,8 +47,8 @@ func m2SeedProvider(t *testing.T, env *testEnv, ownerID, code, profileID, protoc
 		capabilities_json, created_at, updated_at)
 		VALUES (?, ?, ?, 1, ?, ?, 'https://upstream.example.com/v1', 'm-default', ?, '[]', ?, ?)`,
 		profileID, code, code+" 协议", protocolCode, protocolVersion, string(typesJSON), now, now)
-	env.exec(t, `INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 1, 1, 'personal', ?, ?)`, "grp-"+code+"-"+ownerID, ownerID, "默认分组-"+code, code, now, now)
+	env.exec(t, `INSERT OR IGNORE INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 1, 'personal', ?, ?)`, "grp-"+code+"-"+ownerID, ownerID, "默认分组-"+code, code, now, now)
 }
 
 // m2SeedAccountWithModes 直插一个带指定 modes 的存量账户（遗留混合账户夹具）。
@@ -64,10 +64,10 @@ func m2SeedAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name string
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// B4 W2：profile 列停写——直插行落空串，与 API 创建行的批量签名键一致。
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gpt', '', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'gpt-4o-mini', ?, ?)`,
 		id, ownerID, name, sealed, now, now)
 }
 
@@ -85,11 +85,23 @@ func m2SeedDomainAccountWithModes(t *testing.T, env *testEnv, id, ownerID, name,
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	// 账户身份取 vendor_code + connection_driver_code（设计 §2.1）：真实厂商
+	// 两列同值，generic 语义落 NULL + generic_http。
+	vendor, driver := downstreamTestVendorIdentity(providerCode)
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, capability_domain, created_at, updated_at)
 		VALUES (?, ?, ?, ?, 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-***', 'm-default', ?, ?, ?)`,
-		id, ownerID, providerCode, profileID, name, sealed, domain, now, now)
+		id, ownerID, vendor, driver, name, sealed, domain, now, now)
+}
+
+// downstreamTestVendorIdentity 把 provider 语义映射为账户身份列（设计 §2.1）。
+func downstreamTestVendorIdentity(providerCode string) (any, string) {
+	switch providerCode {
+	case "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "minimax", "volcengine", "qwen":
+		return providerCode, providerCode
+	}
+	return nil, "generic_http"
 }
 
 // m2ConnectionContractByProvider 是 B1 断点批夹具的 provider → (连接 preset,

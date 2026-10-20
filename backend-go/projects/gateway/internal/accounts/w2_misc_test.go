@@ -36,13 +36,13 @@ func TestW2ImportDuplicateErrorsAndPlanFlag(t *testing.T) {
 			t.Fatal("非唯一约束错误应返回 nil")
 		}
 		messages := []string{
-			"UNIQUE constraint failed: index 'idx_groups_owner_provider_name_unique'",
-			"UNIQUE constraint failed: groups.system_account_id, groups.provider_code, groups.name",
-			"UNIQUE constraint failed: juhe_business.groups.system_account_id, juhe_business.groups.provider_code, juhe_business.groups.name",
+			"UNIQUE constraint failed: index 'idx_groups_owner_name_unique'",
+			"UNIQUE constraint failed: groups.system_account_id, groups.name",
+			"UNIQUE constraint failed: juhe_business.groups.system_account_id, juhe_business.groups.name",
 		}
 		for _, message := range messages {
 			duplicate := duplicateImportGroupNameError(errors.New(message), "分组一")
-			if duplicate == nil || duplicate.Error() != "同一供应商下分组名称已存在：分组一" {
+			if duplicate == nil || duplicate.Error() != "分组名称已存在：分组一" {
 				t.Fatalf("唯一约束识别不一致：%s -> %v", message, duplicate)
 			}
 		}

@@ -645,12 +645,12 @@ func TestWeInspectionPatchProtocolChangeAndProviderRename(t *testing.T) {
 	}
 	providerUpdated := dataMap(t, providerDetail)["updatedAt"].(string)
 	code, renamed, _ := env.do(t, http.MethodPatch, "/__aisys__/api/response-inspection-policies/"+providerID,
-		`{"expectedUpdatedAt":"`+providerUpdated+`","providerCode":"openai-res"}`)
-	if code != 200 || dataMap(t, renamed)["providerCode"] != "openai-res" {
+		`{"expectedUpdatedAt":"`+providerUpdated+`","providerCode":"deepseek"}`)
+	if code != 200 || dataMap(t, renamed)["providerCode"] != "deepseek" {
 		t.Fatalf("供应商切换: %d %v", code, renamed)
 	}
 	code, afterRename, _ := env.do(t, http.MethodGet, "/__aisys__/api/response-inspection-policies/"+providerID, "")
-	if dataMap(t, afterRename)["providerName"] != "OpenAI Res" {
+	if dataMap(t, afterRename)["providerName"] != "DeepSeek" {
 		t.Fatalf("切换后 providerName: %v", afterRename)
 	}
 }

@@ -412,7 +412,8 @@ func TestW14fOwnerDurableErrorArms(t *testing.T) {
 // ---- model limits / config ----
 
 func TestW14fOwnerModelLimitsArms(t *testing.T) {
-	ddl := []string{`CREATE TABLE provider_model_catalog (provider_code TEXT, model TEXT, status TEXT, catalog_visible INTEGER, max_input_tokens INTEGER, context_window_tokens INTEGER)`}
+	// 目标 schema（设计 §3）：容量快照读 models 单表（vendor_code/upstream_model）。
+	ddl := []string{`CREATE TABLE models (id TEXT, vendor_code TEXT, upstream_model TEXT, scope TEXT DEFAULT 'builtin', status TEXT, catalog_visible INTEGER, max_input_tokens INTEGER, context_window_tokens INTEGER)`}
 	db := wbOpenMemoryDB(t, ddl)
 	limits := &VersionedModelLimits{db: db}
 	// 未知模型 → not found。
@@ -421,7 +422,7 @@ func TestW14fOwnerModelLimitsArms(t *testing.T) {
 		t.Fatalf("未知模型应报错: %v", err)
 	}
 	// limit 非法（0）→ invalid。
-	if _, err := db.Exec(`INSERT INTO provider_model_catalog VALUES ('openai','w14f-zero','active',1,0,0)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO models (id, vendor_code, upstream_model, status, catalog_visible, max_input_tokens, context_window_tokens) VALUES ('w14f-zero','openai','w14f-zero','active',1,0,0)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := limits.MaxInputTokens("openai", "w14f-zero", ""); err == nil ||

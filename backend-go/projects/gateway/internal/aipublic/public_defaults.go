@@ -154,3 +154,79 @@ func defaultHealthCheckMode(modes []string) string {
 	}
 	return ""
 }
+
+// PublicDerivedProtocolProfile 是公开 basic tab 的单条连接档案投影（target
+// schema 下档案身份来自 registry，不再是数据行）。
+type PublicDerivedProtocolProfile struct {
+	ID                      string
+	Name                    string
+	Enabled                 bool
+	ProtocolCode            string
+	ProtocolVersion         string
+	BaseURL                 string
+	DefaultHealthCheckModel string
+	AccountTypes            []string
+	Capabilities            []string
+	EndpointFamilies        []PublicProviderEndpointFamily
+}
+
+// publicDerivedProtocolProfiles 按 vendor 派生公开 basic tab 的档案列表：
+// 取该 vendor 在 chat 域的 api_key 连接预设（OpenAI 协议面优先），baseUrl 取
+// registry default_base_url，capabilities 取该协议面的 public 能力词表。
+func publicDerivedProtocolProfiles(vendorCode string) []PublicDerivedProtocolProfile {
+	preset := publicConnectionPresetForVendor(vendorCode)
+	if preset == "" {
+		return nil
+	}
+	profileID := publicProfileIDForVendor(vendorCode)
+	if profileID == "" {
+		return nil
+	}
+	protocolCode, protocolVersion := publicProtocolOfPreset(preset)
+	surface := ""
+	for _, combo := range contracts.AllowedConnectorCombos() {
+		if combo.Preset == preset {
+			surface = combo.Surface
+			break
+		}
+	}
+	accountTypes := []string{contracts.AccountTypeAPIKey}
+	if vendorCode == contracts.VendorGemini {
+		accountTypes = []string{contracts.AccountTypeAPIKey, contracts.AccountTypeGoogleOAuth}
+	} else if vendorCode != contracts.VendorMiniMax {
+		accountTypes = append(accountTypes, contracts.AccountTypeOAuth)
+	}
+	capabilities := []string{}
+	if surface != "" {
+		capabilities = append(capabilities, surface)
+	}
+	families := []PublicProviderEndpointFamily{}
+	for _, mode := range contracts.AllowedModes(contracts.DomainChat, preset, contracts.AccountTypeAPIKey, "") {
+		families = append(families, PublicProviderEndpointFamily{Code: mode, Name: mode})
+	}
+	return []PublicDerivedProtocolProfile{{
+		ID:                      profileID,
+		Name:                    profileID,
+		Enabled:                 true,
+		ProtocolCode:            protocolCode,
+		ProtocolVersion:         protocolVersion,
+		BaseURL:                 contracts.PresetDefaultBaseURL(preset),
+		DefaultHealthCheckModel: "",
+		AccountTypes:            accountTypes,
+		Capabilities:            capabilities,
+		EndpointFamilies:        families,
+	}}
+}
+
+// publicProtocolOfPreset 从 preset 推出 (protocol_code, protocol_version)：
+// anthropic 面 → anthropic/v1；gemini native → gemini/v1beta；其余 → openai/v1。
+func publicProtocolOfPreset(preset string) (string, string) {
+	switch preset {
+	case contracts.PresetAnthropicV1, contracts.PresetGenericAnthropicV1, contracts.PresetDeepSeekAnthropicV1, contracts.PresetGLMCodingAnthropicV1:
+		return "anthropic", "v1"
+	case contracts.PresetGeminiNativeV1Beta, contracts.PresetGenericGeminiV1Beta:
+		return "gemini", "v1beta"
+	default:
+		return "openai", "v1"
+	}
+}

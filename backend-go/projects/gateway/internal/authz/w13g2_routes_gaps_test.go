@@ -61,11 +61,11 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	seedResourceAccount(t, f, "acc_w13s", "owner1", "源账户")
 	// grantee 的默认分组：provider_code 与源账户一致（bind 的供应商校验），
 	// is_default=1。
-	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, provider_code, enabled, is_default, updated_at)
-		VALUES ('tg_w13s', '默认分组', 'grantee', 'active', 'gpt', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
+		VALUES ('tg_w13s', '默认分组', 'grantee', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE accounts SET provider_code = 'gpt' WHERE id = 'acc_w13s'`); err != nil {
+	if _, err := f.db.Exec(`UPDATE accounts SET vendor_code = 'gpt', connection_driver_code = 'gpt' WHERE id = 'acc_w13s'`); err != nil {
 		t.Fatal(err)
 	}
 

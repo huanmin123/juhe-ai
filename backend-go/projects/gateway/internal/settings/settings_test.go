@@ -987,7 +987,7 @@ func TestSettingsGlobalEndpoints(t *testing.T) {
 func createAccountHealthFixtureTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, type TEXT NOT NULL, config_revision INTEGER NOT NULL DEFAULT 0, dispatch_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, vendor_code TEXT, connection_driver_code TEXT NOT NULL, type TEXT NOT NULL, config_revision INTEGER NOT NULL DEFAULT 0, dispatch_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
 		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
       account_id TEXT PRIMARY KEY,
       current_version INTEGER NOT NULL CHECK (current_version >= 1),
@@ -1000,10 +1000,10 @@ func createAccountHealthFixtureTables(t *testing.T, db *sql.DB) {
 	}
 }
 
-func insertFixtureAccount(t *testing.T, db *sql.DB, id, providerCode, accountType, deletedAt string) {
+func insertFixtureAccount(t *testing.T, db *sql.DB, id, vendorCode, driver, accountType, deletedAt string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO accounts (id, provider_code, type, config_revision, dispatch_revision, deleted_at) VALUES (?, ?, ?, 0, 0, ?)`,
-		id, providerCode, accountType, nullableFixtureText(deletedAt)); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts (id, vendor_code, connection_driver_code, type, config_revision, dispatch_revision, deleted_at) VALUES (?, ?, ?, ?, 0, 0, ?)`,
+		id, nullableFixtureText(vendorCode), driver, accountType, nullableFixtureText(deletedAt)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1039,16 +1039,16 @@ func accountHealthVersionRows(t *testing.T, db *sql.DB) map[string]int64 {
 
 // TestSettingsSectionPatchAccountHealthReservesInputVersions covers the
 // account-health slice through the PATCH /settings/sections/:key route:
-// exactly the live openai api_key/oauth accounts get versions rows (first
-// save seeds 1, second save bumps to 2); deleted and non-openai accounts
-// never appear.
+// exactly the live generic_http api_key/oauth accounts get versions rows
+// (first save seeds 1, second save bumps to 2); deleted and vendor-backed
+// accounts never appear.
 func TestSettingsSectionPatchAccountHealthReservesInputVersions(t *testing.T) {
 	env := newTestEnv(t)
 	createAccountHealthFixtureTables(t, env.db)
-	insertFixtureAccount(t, env.db, "acc-openai-deleted", "openai", "api_key", "2024-01-01T00:00:00Z")
-	insertFixtureAccount(t, env.db, "acc-anthropic", "anthropic", "api_key", "")
-	insertFixtureAccount(t, env.db, "acc-openai-key", "openai", "api_key", "")
-	insertFixtureAccount(t, env.db, "acc-openai-oauth", "openai", "oauth", "")
+	insertFixtureAccount(t, env.db, "acc-generic-deleted", "", "generic_http", "api_key", "2024-01-01T00:00:00Z")
+	insertFixtureAccount(t, env.db, "acc-anthropic", "anthropic", "anthropic", "api_key", "")
+	insertFixtureAccount(t, env.db, "acc-generic-key", "", "generic_http", "api_key", "")
+	insertFixtureAccount(t, env.db, "acc-generic-oauth", "", "generic_http", "oauth", "")
 	env.login(t, "root", "root-pass", "super_admin")
 
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/account-health",
@@ -1064,7 +1064,7 @@ func TestSettingsSectionPatchAccountHealthReservesInputVersions(t *testing.T) {
 	if len(versions) != 2 {
 		t.Fatalf("versions rows: %v", versions)
 	}
-	if versions["acc-openai-key"] != 1 || versions["acc-openai-oauth"] != 1 {
+	if versions["acc-generic-key"] != 1 || versions["acc-generic-oauth"] != 1 {
 		t.Fatalf("first reservation: %v", versions)
 	}
 
@@ -1074,7 +1074,7 @@ func TestSettingsSectionPatchAccountHealthReservesInputVersions(t *testing.T) {
 		t.Fatalf("second patch: %d %v", code, payload)
 	}
 	versions = accountHealthVersionRows(t, env.db)
-	if versions["acc-openai-key"] != 2 || versions["acc-openai-oauth"] != 2 {
+	if versions["acc-generic-key"] != 2 || versions["acc-generic-oauth"] != 2 {
 		t.Fatalf("second reservation: %v", versions)
 	}
 }
@@ -1099,7 +1099,7 @@ func TestSettingsAccountHealthReservationGatedArms(t *testing.T) {
 	}
 
 	// (c) Another section never reserves, even with eligible accounts.
-	insertFixtureAccount(t, env.db, "acc-openai-key", "openai", "api_key", "")
+	insertFixtureAccount(t, env.db, "acc-generic-key", "", "generic_http", "api_key", "")
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/api-rate-limit",
 		`{"systemApiRateLimitIpReadPerMinute":600}`)
 	if code != http.StatusOK {
@@ -1130,7 +1130,7 @@ func TestSettingsAccountHealthReservationGatedArms(t *testing.T) {
 func TestSettingsAccountHealthReservationFailureRollsBack(t *testing.T) {
 	env := newW11FEnv(t)
 	createAccountHealthFixtureTables(t, env.db)
-	insertFixtureAccount(t, env.db, "acc-openai-key", "openai", "api_key", "")
+	insertFixtureAccount(t, env.db, "acc-generic-key", "", "generic_http", "api_key", "")
 	env.script.failQuery("FROM account_health_jobs_input_versions")
 
 	if _, err := env.store.UpdateSection(context.Background(), "account-health",
@@ -1260,7 +1260,7 @@ func TestSettingsAccountHealthReservationPostgresDialect(t *testing.T) {
 	joined := strings.Join(recorder.queries(), "\n")
 	for _, expected := range []string{
 		"FROM juhe_business.accounts",
-		"provider_code = 'openai'",
+		"vendor_code IS NULL AND connection_driver_code = 'generic_http'",
 		"type IN ('api_key','oauth')",
 		"ORDER BY id ASC",
 		"FROM juhe_business.account_health_jobs_input_versions",

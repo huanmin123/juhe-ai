@@ -146,7 +146,7 @@ var schemaStatements = []string{
 	// （真实厂商必须存在且 enabled）；夹具与 maintenance fresh DDL 同列集。
 	`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS proxy_profiles (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, type TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT, password_encrypted TEXT, enabled INTEGER NOT NULL DEFAULT 1, test_status TEXT NOT NULL DEFAULT 'unknown', latency_ms INTEGER, outbound_ip TEXT, outbound_region TEXT, last_test_message TEXT, last_tested_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		config_revision INTEGER NOT NULL DEFAULT 1,
@@ -161,11 +161,8 @@ var schemaStatements = []string{
 		-- oauth_type 物理列（设计 §2.1，#B1 剩余③）：google_oauth 三值、其他
 		-- NULL；写链 create/patch oauth 变体落列。
 		oauth_type TEXT,
-		-- B4 W2 迁移窗口夹具：生产 INSERT 已停写 provider_code /
-		-- provider_protocol_profile_id / client_compatibility（设计 §9.11 目标
-		-- 列集无三列）；夹具保留列壳仅供存量种子行直插，默认值兜底。
-		provider_code TEXT NOT NULL DEFAULT '',
-		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
+		-- 设计 §9.11 目标列集无 provider_code / provider_protocol_profile_id /
+		-- client_compatibility 三列，夹具与 fresh DDL 同列集。
 		protocol_code TEXT NOT NULL,
 		protocol_version TEXT NOT NULL,
 		name TEXT NOT NULL,
@@ -181,7 +178,6 @@ var schemaStatements = []string{
 		priority INTEGER NOT NULL DEFAULT 0,
 		super_priority_enabled INTEGER NOT NULL DEFAULT 0,
 		fallback_enabled INTEGER NOT NULL DEFAULT 0,
-		client_compatibility TEXT NOT NULL DEFAULT '',
 		schedulable INTEGER NOT NULL DEFAULT 1,
 		availability_schedule_json TEXT,
 		availability_schedule_next_check_at TEXT,
@@ -496,8 +492,8 @@ func (e *testEnv) seedProviderAndDefaultGroup(t *testing.T, ownerID string) {
 	// Idempotent per env: several fixtures seed the same provider/profile.
 	e.exec(t, strings.Replace(testProviderDDL, "INSERT INTO providers", "INSERT OR IGNORE INTO providers", 1))
 	e.exec(t, strings.Replace(testProfileDDL, "INSERT INTO provider_protocol_profiles", "INSERT OR IGNORE INTO provider_protocol_profiles", 1))
-	e.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES (?, ?, '默认分组', 'gpt', 1, 1, 'personal', ?, ?)`, "grp-default-"+ownerID, ownerID, now, now)
+	e.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES (?, ?, '默认分组', 1, 1, 'personal', ?, ?)`, "grp-default-"+ownerID, ownerID, now, now)
 }
 
 // nullStringForFixture 把空串 vendor 落 SQL NULL（与目标 schema 的可空
@@ -599,10 +595,10 @@ func (e *testEnv) seedAccount(t *testing.T, id, ownerID, name, status string) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	e.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	e.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***'+?, 'gpt-4o-mini', ?, ?)`,
+		VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', ?, ?, 'sk-see***'+?, 'gpt-4o-mini', ?, ?)`,
 		id, ownerID, name, status, sealed, id, now, now)
 }
 
@@ -753,10 +749,9 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatalf("detail: %d %v", code, detail)
 	}
 	detailData := dataMap(t, detail)
-	// B4 W2（设计 §8/§9.11）：provider_code 列已停写（行为键=vendor_code），
-	// detail 回显 providerCode 为空串属过渡期既定事实。
+	// 供应商解耦（设计 §9.11）：账户 provider 回显取 vendor_code（gpt）。
 	if detailData["name"] != "alpha" || detailData["ownerSystemAccountId"] != adminID ||
-		detailData["providerCode"] != "" ||
+		detailData["providerCode"] != "gpt" ||
 		detailData["status"] != "active" || detailData["configRevision"] != float64(1) {
 		t.Fatalf("detail contract: %v", detailData)
 	}
@@ -985,8 +980,8 @@ func TestAccountCreateValidation(t *testing.T) {
 		t.Fatalf("wrong group: %d %v", code, wrongGroup)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-extra', ?, '扩展分组', 'gpt', 1, 0, 'personal', ?, ?)`, adminID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-extra', ?, '扩展分组', 1, 0, 'personal', ?, ?)`, adminID, now, now)
 	code, okGroup := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
 		`{"providerCode":"gpt","providerProtocolProfileId":"prof-gpt","name":"okgroup","type":"api_key","credentials":{"api_key":"sk-1","base_url":"https://api.openai.com/v1"},"supportedModels":["gpt-4o-mini"],`+b1GPTFragment+`,"groupId":"grp-extra"}`)
 	if code != http.StatusCreated {
@@ -1286,8 +1281,8 @@ func TestAccountOptionsEndpoint(t *testing.T) {
 		SELECT 'prof-gpt2', 'gpt', 'OpenAI 官方协议', 1, 'openai', 'v1', 'https://api.openai.com/v1', 'gpt-4o-mini',
 		'["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
 		WHERE NOT EXISTS (SELECT 1 FROM provider_protocol_profiles WHERE id = 'prof-gpt2')`)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-alice', ?, '默认分组', 'gpt', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-alice', ?, '默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID)
 	code, mine := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts/options", "")
 	if items := dataArray(t, mine); code != 200 || len(items) != 0 {
 		t.Fatalf("alice empty options: %d %v", code, mine)
@@ -1606,10 +1601,10 @@ func TestCreateDerivesClientCompatibilityColumn(t *testing.T) {
 		t.Fatalf("create: %d %v", code, payload)
 	}
 	id := dataMap(t, payload)["id"].(string)
-	// B4 W2（设计 §9.11）：client_compatibility 列退役，写侧派生值只进凭据
-	// 归一化（下方 responses_sse 断言保持）；列读取为迁移窗口默认空壳。
-	if got := env.queryCell(t, `SELECT client_compatibility FROM accounts WHERE id = ?`, id); got != "" {
-		t.Fatalf("gpt api_key 账户 client_compatibility = %q，期望空（列已退役）", got)
+	// 设计 §9.11：client_compatibility 列已从账户表退役，写侧派生值只进凭据
+	// 归一化（下方 responses_sse 断言保持），不再有列可读。
+	if columns := env.count(t, `SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'client_compatibility'`); columns != 0 {
+		t.Fatalf("accounts.client_compatibility 列应已退役，实际存在 %d 列", columns)
 	}
 	// 端点模式默认集与列语义同源：codex_responses 账户必须带 responses_sse。
 	sealed := env.queryCell(t, `SELECT credentials_encrypted FROM accounts WHERE id = ?`, id)

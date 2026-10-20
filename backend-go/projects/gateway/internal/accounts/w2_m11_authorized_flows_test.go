@@ -39,8 +39,8 @@ func TestW2AuthorizedTrafficMigration(t *testing.T) {
 	granteeID := env.login(t, "grantee-w2", "grantee-pass", "user")
 	ownerID := env.login(t, "owner-w2", "owner-pass", "user")
 	env.login(t, "grantee-w2", "grantee-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-authz-w2', ?, '授权迁移分组', 'gpt', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-authz-w2', ?, '授权迁移分组', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
 	source, target := w2SeedAuthorizedPair(t, env, granteeID, ownerID, "grp-authz-w2")
 
 	t.Run("默认临时不可用迁移", func(t *testing.T) {
@@ -128,8 +128,8 @@ func TestW2AuthorizedRuntimeReset(t *testing.T) {
 	granteeID := env.login(t, "grantee-rr", "grantee-pass", "user")
 	ownerID := env.login(t, "owner-rr", "owner-pass", "user")
 	env.login(t, "grantee-rr", "grantee-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-authz-rr', ?, '授权重置分组', 'gpt', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-authz-rr', ?, '授权重置分组', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
 	source, _ := w2SeedAuthorizedPair(t, env, granteeID, ownerID, "grp-authz-rr")
 
 	// 预置失败痕迹后重置：授权实例走绑定调度恢复分支。

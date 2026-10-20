@@ -99,8 +99,7 @@ func newPolicyTestEnv(t *testing.T) *policyTestEnv {
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS providers (code TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)`,
-		`CREATE TABLE IF NOT EXISTS provider_protocol_profiles (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, protocol_code TEXT NOT NULL, protocol_version TEXT, enabled INTEGER NOT NULL DEFAULT 1)`,
+		`CREATE TABLE IF NOT EXISTS vendors (id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, default_supported_models_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS external_integration_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, scopes_json TEXT NOT NULL, rate_limits_json TEXT, expires_at TEXT, notes TEXT, last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS external_integration_source_tokens (id TEXT PRIMARY KEY, source_ref_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, token_secret_encrypted TEXT, token_prefix TEXT NOT NULL, token_suffix TEXT NOT NULL, status TEXT NOT NULL, scopes_json TEXT NOT NULL, expires_at TEXT, last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revoked_at TEXT)`,
@@ -248,11 +247,13 @@ const localizedBadRequest = "请求参数无效"
 
 func seedInspectionProviders(t *testing.T, e *policyTestEnv) {
 	t.Helper()
-	e.exec(t, `INSERT INTO providers (code, name, enabled) VALUES ('gpt', 'GPT 官方', 1), ('openai-res', 'OpenAI Res', 1), ('disabled-provider', '停用供应商', 0)`)
-	e.exec(t, `INSERT INTO provider_protocol_profiles (id, provider_code, protocol_code, protocol_version, enabled) VALUES
-		('ppp-1', 'gpt', 'openai', 'v1', 1),
-		('ppp-2', 'openai-res', 'openai', 'v1', 1),
-		('ppp-3', 'openai-res', 'anthropic', 'v1', 1)`)
+	// vendors 只保留注册表允许的真实厂商；协议面支持关系由连接器 registry
+	// 判定（设计 §1/§9.3），不再有 provider_protocol_profiles 可种。
+	e.exec(t, `INSERT INTO vendors (id, code, name, enabled, created_at, updated_at) VALUES
+		('v-gpt', 'gpt', 'GPT 官方', 1, '2026-01-01', '2026-01-01'),
+		('v-deepseek', 'deepseek', 'DeepSeek', 1, '2026-01-01', '2026-01-01'),
+		('v-anthropic', 'anthropic', 'Anthropic', 1, '2026-01-01', '2026-01-01'),
+		('v-qwen', 'qwen', 'Qwen 停用', 0, '2026-01-01', '2026-01-01')`)
 }
 
 func TestInspectionListDefaultsAndProviderOptions(t *testing.T) {
@@ -288,8 +289,8 @@ func TestInspectionListDefaultsAndProviderOptions(t *testing.T) {
 		t.Fatalf("policies must start empty: %v", result["policies"])
 	}
 
-	// Provider options: only enabled providers with an enabled profile for the
-	// requested protocol, prefix keyword filter, case-insensitive.
+	// Provider options: enabled vendors declared by the connector registry for
+	// the requested protocol surface, prefix keyword filter, case-insensitive.
 	code, options, _ := env.do(t, http.MethodGet, "/__aisys__/api/response-inspection-policies/provider-options?protocolCode=openai&scopeType=provider", "")
 	if code != 200 {
 		t.Fatalf("provider options status: %d %v", code, options)
@@ -299,7 +300,7 @@ func TestInspectionListDefaultsAndProviderOptions(t *testing.T) {
 	for _, item := range optionItems {
 		codes = append(codes, item.(map[string]any)["code"].(string))
 	}
-	if len(codes) != 2 || codes[0] != "gpt" || codes[1] != "openai-res" {
+	if len(codes) != 2 || codes[0] != "deepseek" || codes[1] != "gpt" {
 		t.Fatalf("provider options: %v", codes)
 	}
 	code, keywordOptions, _ := env.do(t, http.MethodGet, "/__aisys__/api/response-inspection-policies/provider-options?protocolCode=openai&scopeType=provider&keyword=GPT", "")
@@ -308,7 +309,7 @@ func TestInspectionListDefaultsAndProviderOptions(t *testing.T) {
 		t.Fatalf("keyword options: %d %v", code, keywordOptions)
 	}
 	code, protocolOptions, _ := env.do(t, http.MethodGet, "/__aisys__/api/response-inspection-policies/provider-options?protocolCode=anthropic&scopeType=provider", "")
-	if code != 200 || len(dataSlice(t, protocolOptions)) != 1 {
+	if code != 200 || len(dataSlice(t, protocolOptions)) != 2 {
 		t.Fatalf("anthropic options: %d %v", code, protocolOptions)
 	}
 	code, protocolScope, _ := env.do(t, http.MethodGet, "/__aisys__/api/response-inspection-policies/provider-options?protocolCode=openai&scopeType=protocol", "")
@@ -490,7 +491,7 @@ func TestInspectionPatchLifecycle(t *testing.T) {
 
 	// Membership revalidation runs when the patch touches scope fields.
 	code, membership, _ := env.do(t, http.MethodPatch, "/__aisys__/api/response-inspection-policies/"+policyID,
-		`{"expectedUpdatedAt":"`+nextUpdatedAt+`","scopeType":"provider","providerCode":"disabled-provider"}`)
+		`{"expectedUpdatedAt":"`+nextUpdatedAt+`","scopeType":"provider","providerCode":"qwen"}`)
 	if code != http.StatusBadRequest || membership["message"] != "响应检查策略供应商必须使用同协议启用档案" {
 		t.Fatalf("membership: %d %v", code, membership)
 	}

@@ -32,10 +32,14 @@ import (
 // ('authorization_grant_changed') passed by every grant-terminating call site.
 const AuthorizationGrantHealthFanoutReason = "authorization_grant_changed"
 
-// authorizationFanoutProviderCodes mirrors the Node whitelist
-// (account-health-jobs-input-authorization-fanout.repository.ts:36/:62).
+// authorizationFanoutProviderCodes 是 Node 白名单
+// (account-health-jobs-input-authorization-fanout.repository.ts:36/:62) 的目标
+// schema 重述（设计 §2.1/§9.11）：原 8 值中的 openai / hybrid 是 generic 语义，
+// 目标库没有这两个 vendor——它们对应 vendor_code IS NULL 且
+// connection_driver_code='generic_http' 的行，因此这里只保留 6 个真实厂商，
+// generic 臂由 SQL 的 driver 条件表达，集合语义与 Node 逐值等价。
 var authorizationFanoutProviderCodes = []string{
-	"gpt", "openai", "xai", "anthropic", "deepseek", "glm", "gemini", "hybrid",
+	"gpt", "xai", "anthropic", "deepseek", "glm", "gemini",
 }
 
 // authorizationFanoutAccountTypes mirrors the Node type whitelist
@@ -358,7 +362,10 @@ func (s *Store) enqueueGrantAccountHealthInputs(ctx context.Context, tx *sql.Tx,
 		FROM %s
 		WHERE authorization_instance_source_account_id = ?
 			AND deleted_at IS NULL
-			AND provider_code IN (%s)
+			AND (
+				COALESCE(vendor_code, '') IN (%s)
+				OR (vendor_code IS NULL AND connection_driver_code = 'generic_http')
+			)
 			AND type IN (%s)
 		ORDER BY id ASC%s`, s.table("accounts"),
 		sqlPlaceholders(len(authorizationFanoutProviderCodes)),

@@ -20,10 +20,10 @@ func seedM11GeminiAccount(f *w14lFixture, id string, credentials Credentials) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.exec(`INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+	f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 		health_check_model, created_at, updated_at)
-		VALUES (?, ?, 'gemini', 'prof-gemini', 'gemini', 'v1', ?, 'google_oauth', 'active', ?, 'x***', '', ?, ?)`,
+		VALUES (?, ?, 'gemini', 'gemini', 'gemini', 'v1', ?, 'google_oauth', 'active', ?, 'x***', '', ?, ?)`,
 		id, f.owner, id, sealed, now, now)
 }
 

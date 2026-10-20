@@ -389,11 +389,11 @@ func TestExpeditedRecoveryAuthorizedInstanceCountsGranteeQuota(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, id := range []string{"acc-exp-inst-1", "acc-exp-inst-2"} {
-		env.exec(t, `INSERT INTO accounts (id, system_account_id, provider_code, provider_protocol_profile_id,
+		env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
 			protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
 			health_check_model, authorization_instance_authorization_id, authorization_instance_source_account_id,
 			authorization_instance_owner_system_account_id, created_at, updated_at)
-			VALUES (?, ?, 'gpt', 'prof-gpt', 'openai', 'v1', ?, 'api_key', 'active', 'enc', 'm', 'gpt-4o-mini',
+			VALUES (?, ?, 'gpt', 'gpt', 'openai', 'v1', ?, 'api_key', 'active', 'enc', 'm', 'gpt-4o-mini',
 			'auth-exp-1', 'acc-exp-src-base', ?, ?, ?)`, id, grantee, id+"-实例名", sourceOwner, now, now)
 	}
 

@@ -34,7 +34,7 @@ func w7aDB(t *testing.T) *sql.DB {
 		// 模型身份键 (vendor_code, upstream_model) + scope 可见性 +
 		// supported_endpoint_modes_json；映射行走 account_entry_mappings（连接
 		// 事实源 account_connections/account_endpoint_modes 同批入夹具）。
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,vendor_code TEXT,connection_driver_code TEXT,name TEXT,type TEXT,status TEXT,credentials_encrypted TEXT,config_revision INTEGER NOT NULL DEFAULT 1,dispatch_revision INTEGER NOT NULL DEFAULT 1,schedulable INTEGER,availability_schedule_json TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,deleted_by TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,protocol_code TEXT,protocol_version TEXT,vendor_code TEXT,connection_driver_code TEXT,name TEXT,type TEXT,status TEXT,credentials_encrypted TEXT,config_revision INTEGER NOT NULL DEFAULT 1,dispatch_revision INTEGER NOT NULL DEFAULT 1,schedulable INTEGER,availability_schedule_json TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,deleted_by TEXT)`,
 		`CREATE TABLE models (id TEXT PRIMARY KEY,vendor_code TEXT,public_model TEXT NOT NULL,upstream_model TEXT NOT NULL,scope TEXT NOT NULL,system_account_id TEXT,status TEXT NOT NULL DEFAULT 'active',supported_endpoint_modes_json TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model_id TEXT,created_at TEXT,PRIMARY KEY (account_id, model_id))`,
 		`CREATE TABLE account_connections (id TEXT PRIMARY KEY,account_id TEXT,connection_preset_code TEXT,protocol_surface_code TEXT,base_url TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT,updated_at TEXT,UNIQUE(account_id,connection_preset_code))`,
@@ -351,7 +351,6 @@ func TestW7ANormalizeRejectsEveryMissingField(t *testing.T) {
 		"id":            func(in *CreateInput) { in.ID = " " },
 		"systemAccount": func(in *CreateInput) { in.SystemAccountID = "" },
 		"provider":      func(in *CreateInput) { in.ProviderCode = "" },
-		"profile":       func(in *CreateInput) { in.ProviderProtocolProfileID = "" },
 		"protocol":      func(in *CreateInput) { in.ProtocolCode = "" },
 		"version":       func(in *CreateInput) { in.ProtocolVersion = "" },
 		"name":          func(in *CreateInput) { in.Name = " " },

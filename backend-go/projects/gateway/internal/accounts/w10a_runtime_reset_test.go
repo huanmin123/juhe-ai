@@ -463,8 +463,8 @@ func TestW10AAuthorizedRuntimeResetUnchanged(t *testing.T) {
 	granteeID := env.login(t, "grantee-w10a", "grantee-pass", "user")
 	ownerID := env.login(t, "owner-w10a", "owner-pass", "user")
 	env.login(t, "grantee-w10a", "grantee-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-w10a', ?, 'w10a授权分组', 'gpt', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-w10a', ?, 'w10a授权分组', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
 	w10aSeedAuthorizedInstance(t, env, granteeID, ownerID, "grp-w10a", "acc-w10a-inst")
 
 	// 干净活跃实例：无失败态可清 → unchanged 结果（changed=false，状态保持）。
@@ -546,8 +546,8 @@ func TestW10AAuthorizedResetQuotaSkipped(t *testing.T) {
 	granteeID := env.login(t, "grantee-w10aq", "grantee-pass", "user")
 	ownerID := env.login(t, "owner-w10aq", "owner-pass", "user")
 	env.login(t, "grantee-w10aq", "grantee-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-w10aq', ?, 'w10a额度分组', 'gpt', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
+		VALUES ('grp-w10aq', ?, 'w10a额度分组', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
 	w10aSeedAuthorizedInstance(t, env, granteeID, ownerID, "grp-w10aq", "acc-w10aq-inst")
 
 	// 端口超额：授权实例进入 authorization_quota 跳过，不做失败态清理。

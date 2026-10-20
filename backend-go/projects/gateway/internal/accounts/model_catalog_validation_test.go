@@ -519,8 +519,8 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		capabilities_json, created_at, updated_at)
 		VALUES ('prof-openai-compat', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1', 'https://compat.example.com/v1',
 		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 'openai', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.EffectiveViewerID())
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.EffectiveViewerID())
 	compatInput := catalogWiringCreateInput("supported-generic-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"gpt-4o-mini"}, nil)
 	compatInput.ProviderCode = "openai"
@@ -632,8 +632,8 @@ func TestHybridAccountWriteChecksModelsIdentityAndMatrixGate(t *testing.T) {
 		VALUES ('prof-hybrid', 'hybrid', '混合协议', 1, 'openai', 'v1', 'https://hybrid.example.com/v1',
 		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-hybrid-default', ?, '混合默认分组', 'hybrid', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
+	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
+		VALUES ('grp-hybrid-default', ?, '混合默认分组', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
 	store := env.store
 	scope := AccessScope{ViewerID: ownerID, IsAdmin: true}
 
