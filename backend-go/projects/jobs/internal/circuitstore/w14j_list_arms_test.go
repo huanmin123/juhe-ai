@@ -185,9 +185,16 @@ func TestW14JNormalizeProjectionWriteArms(t *testing.T) {
 	if _, err := normalizeProjectionWrite(longConcurrency); err == nil {
 		t.Fatal("超长 concurrencyAccountId 必须报错")
 	}
+	// §9.11 后 loader 按 COALESCE(vendor_code,'') 投影：generic_http 账户
+	// （vendor NULL）空 providerCode 合法。
+	genericProvider := base
+	genericProvider.Item.ProviderCode = ""
+	if _, err := normalizeProjectionWrite(genericProvider); err != nil {
+		t.Fatalf("空 providerCode（generic 账户）不得报错: %v", err)
+	}
 	badProvider := base
-	badProvider.Item.ProviderCode = ""
+	badProvider.Item.ProviderCode = strings.Repeat("p", 129)
 	if _, err := normalizeProjectionWrite(badProvider); err == nil {
-		t.Fatal("空 providerCode 必须报错")
+		t.Fatal("超长 providerCode 必须报错")
 	}
 }

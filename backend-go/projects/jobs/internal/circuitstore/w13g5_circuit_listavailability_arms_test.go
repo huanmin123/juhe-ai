@@ -357,9 +357,9 @@ func TestW13g5ListApplyClaimsArms(t *testing.T) {
 	if err != nil || result["w13g5-claim-token"] {
 		t.Fatalf("claim 缺失必须返回 false: %v %v", result, err)
 	}
-	// 归一化错误传播臂（providerCode 为空）。
+	// 归一化错误传播臂（accountType 为空）。
 	invalid := w13g5ProjectionWrite("w13g5-acc", 1)
-	invalid.Item.ProviderCode = ""
+	invalid.Item.AccountType = ""
 	w13g5SeedDirty(t, db, "w13g5-acc", "w13g5-viewer", 1, "w13g5-claim-token")
 	if _, err := list.ApplyClaims(ctx, []opsjobs.ProjectionWrite{invalid}); err == nil {
 		t.Fatal("归一化失败必须传播")
@@ -485,7 +485,7 @@ func TestW13g5ListProjectionValidationArms(t *testing.T) {
 		{"超长 viewer", func(w *opsjobs.ProjectionWrite) { w.Scope.ViewerSystemAccountID = strings.Repeat("v", 257) }},
 		{"空 accountID", func(w *opsjobs.ProjectionWrite) { w.Item.AccountID = "" }},
 		{"超长 concurrency", func(w *opsjobs.ProjectionWrite) { w.Item.SourceAccountID = strings.Repeat("s", 257) }},
-		{"空 providerCode", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = "" }},
+		{"超长 providerCode", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = strings.Repeat("p", 129) }},
 		{"超长 profileID", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = strings.Repeat("p", 257) }},
 		{"空 accountType", func(w *opsjobs.ProjectionWrite) { w.Item.AccountType = "" }},
 		{"空 name", func(w *opsjobs.ProjectionWrite) { w.Item.Name = "   " }},

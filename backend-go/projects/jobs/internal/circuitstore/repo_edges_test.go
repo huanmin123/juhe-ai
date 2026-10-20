@@ -600,7 +600,7 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 	}{
 		{"空 viewer", func(w *opsjobs.ProjectionWrite) { w.Scope.ViewerSystemAccountID = " " }},
 		{"空 account", func(w *opsjobs.ProjectionWrite) { w.Item.AccountID = " " }},
-		{"空 provider", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = " " }},
+		{"超长 provider", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = strings.Repeat("p", 129) }},
 		{"超长 profile", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = strings.Repeat("p", 257) }},
 		{"空 type", func(w *opsjobs.ProjectionWrite) { w.Item.AccountType = " " }},
 		{"空 name", func(w *opsjobs.ProjectionWrite) { w.Item.Name = "  " }},

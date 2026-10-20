@@ -900,9 +900,11 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 	if len(concurrencyAccountID) > 256 {
 		return normalizedProjection{}, errors.New("concurrencyAccountId 长度必须为 1..256")
 	}
+	// 供应商解耦后 loader 按 COALESCE(vendor_code,'') 投影，generic_http
+	// 账户（vendor NULL）恒为空串；空值合法，只校验上限（与 profileID 同口径）。
 	providerCode := strings.TrimSpace(write.Item.ProviderCode)
-	if providerCode == "" || len(providerCode) > 128 {
-		return normalizedProjection{}, errors.New("providerCode 长度必须为 1..128")
+	if len(providerCode) > 128 {
+		return normalizedProjection{}, errors.New("providerCode 长度必须为 0..128")
 	}
 	// 供应商解耦后（§9.11）profile 维度退役：loader 恒投影空串
 	// （listavailability_rows.go `'' AS provider_protocol_profile_id`），
