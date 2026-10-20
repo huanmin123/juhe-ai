@@ -195,10 +195,10 @@ func parseStreamMessageBody(raw map[string]json.RawMessage) (*streamMessageBody,
 		return nil, &invalidRequestError{Message: "请选择模型"}
 	}
 	if body.ReasoningEffort != "" && !chatReasoningEffortSet[body.ReasoningEffort] {
-		return nil, &invalidRequestError{Message: "Invalid enum value. Expected 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max', received '" + body.ReasoningEffort + "'"}
+		return nil, &invalidRequestError{Message: "Invalid enum value. Expected " + quotedEnumValues(chatReasoningEfforts) + ", received '" + body.ReasoningEffort + "'"}
 	}
 	if body.ServiceTier != "" && !chatServiceTierSet[body.ServiceTier] {
-		return nil, &invalidRequestError{Message: "Invalid enum value. Expected 'default' | 'priority' | 'flex', received '" + body.ServiceTier + "'"}
+		return nil, &invalidRequestError{Message: "Invalid enum value. Expected " + quotedEnumValues(chatServiceTiers) + ", received '" + body.ServiceTier + "'"}
 	}
 	return body, nil
 }

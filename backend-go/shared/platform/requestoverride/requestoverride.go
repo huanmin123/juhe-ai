@@ -99,6 +99,58 @@ func SupportsReasoningEffort(family, value string) bool {
 	return contains(reasoningEffortsByFamily[family], value)
 }
 
+// ReasoningEffortsWithout 返回该协议族思考级别全集去掉 excluded 后的视图
+// （副本，保持真源顺序）。供确有业务语义的子集使用（例如 chat 会话面不接受
+// 显式 `none`；自定义模型能力不声明 `default` 服务等级）。
+func ReasoningEffortsWithout(family string, excluded ...string) []string {
+	return without(reasoningEffortsByFamily[family], excluded)
+}
+
+// ServiceTiersWithout 返回该协议族服务等级全集去掉 excluded 后的视图（副本）。
+func ServiceTiersWithout(family string, excluded ...string) []string {
+	return without(serviceTiersByFamily[family], excluded)
+}
+
+// ReasoningEffortSet 返回该协议族思考级别全集的集合视图（副本）。
+func ReasoningEffortSet(family string) map[string]bool {
+	return toSet(reasoningEffortsByFamily[family])
+}
+
+// ReasoningEffortSetWithout 返回去掉 excluded 后的集合视图（副本）。
+func ReasoningEffortSetWithout(family string, excluded ...string) map[string]bool {
+	return toSet(without(reasoningEffortsByFamily[family], excluded))
+}
+
+// ServiceTierSetWithout 返回去掉 excluded 后的集合视图（副本）。
+func ServiceTierSetWithout(family string, excluded ...string) map[string]bool {
+	return toSet(without(serviceTiersByFamily[family], excluded))
+}
+
+// ServiceTierSet 返回该协议族服务等级全集的集合视图（副本）。
+func ServiceTierSet(family string) map[string]bool {
+	return toSet(serviceTiersByFamily[family])
+}
+
+func without(values []string, excluded []string) []string {
+	skip := toSet(excluded)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if skip[value] {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func toSet(values []string) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for _, value := range values {
+		out[value] = true
+	}
+	return out
+}
+
 // SupportsServiceTier 报告该协议族是否接受该服务等级值。
 func SupportsServiceTier(family, value string) bool {
 	return contains(serviceTiersByFamily[family], value)

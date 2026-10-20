@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"regexp"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
 // ---------------------------------------------------------------------------
@@ -173,7 +175,7 @@ func hasOpenAIReasoningSummaryRequest(body map[string]any) bool {
 // validateOpenAIToAnthropicReasoningOptions mirrors the same Node validator.
 func validateOpenAIToAnthropicReasoningOptions(body map[string]any) error {
 	effort := reasoningEffortFromOpenAIBody(body)
-	if hasOpenAIReasoningEffortRequest(body) && (effort == "" || !supportedAnthropicBridgeReasoningEfforts[effort]) {
+	if hasOpenAIReasoningEffortRequest(body) && (effort == "" || !requestoverride.SupportsReasoningEffort(requestoverride.FamilyOpenAI, effort)) {
 		return bridgeValidationError(
 			"OpenAI 到 Anthropic 桥接只支持 reasoning.effort / reasoning_effort 为 none、minimal、low、medium、high、xhigh、max",
 			"openai_anthropic_bridge_reasoning_effort_unsupported")

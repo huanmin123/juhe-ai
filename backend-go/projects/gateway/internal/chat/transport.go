@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
 // Transport plumbing ported from chat-transport.ts, chat-tools.ts,
@@ -429,8 +431,21 @@ type ProviderModelCatalogItem struct {
 	GenerationParameterCapabilities map[string][]ChatGenerationParameterCapability `json:"generationParameterCapabilities,omitempty"`
 }
 
-var chatReasoningEffortSet = map[string]bool{"minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
-var chatServiceTierSet = map[string]bool{"default": true, "priority": true, "flex": true}
+// 值域来自 shared/platform/requestoverride 单一真源（T19 收敛）：chat 会话面
+// 不接受显式 `none`（关闭推理由“不设置”表达），服务等级用 OpenAI 族全集。
+var chatReasoningEfforts = requestoverride.ReasoningEffortsWithout(requestoverride.FamilyOpenAI, "none")
+var chatReasoningEffortSet = requestoverride.ReasoningEffortSetWithout(requestoverride.FamilyOpenAI, "none")
+var chatServiceTiers = requestoverride.ServiceTiers(requestoverride.FamilyOpenAI)
+var chatServiceTierSet = requestoverride.ServiceTierSet(requestoverride.FamilyOpenAI)
+
+// quotedEnumValues 渲染 zod 风格的枚举错误片段（'a' | 'b'），顺序取真源。
+func quotedEnumValues(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+value+"'")
+	}
+	return strings.Join(quoted, " | ")
+}
 
 // buildChatModelOptions mirrors buildChatModelOptions.
 func buildChatModelOptions(modelIDs []string, catalog []ProviderModelCatalogItem) []*ChatModelOption {

@@ -18,6 +18,8 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
 // customModelProtocolEnum mirrors the customModelSchema protocol enum.
@@ -820,9 +822,11 @@ func validateCustomModelCapabilities(providerCode string, input customProviderMo
 		return "只有文本自定义模型支持服务等级和思考能力配置"
 	}
 	if normalizeProviderToken(providerCode) == "gpt" {
-		gptServiceTiers := map[string]bool{"priority": true, "flex": true}
-		gptReasoningEfforts := map[string]bool{"none": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
-		if len(serviceTiers) > 2 || len(reasoningEfforts) > 7 {
+		// 值域来自 shared/platform/requestoverride 单一真源（T19）：自定义模型
+		// 能力不声明 `default` 服务等级（default 是运行时“强制标准档”指令）。
+		gptServiceTiers := requestoverride.ServiceTierSetWithout(requestoverride.FamilyOpenAI, "default")
+		gptReasoningEfforts := requestoverride.ReasoningEffortSet(requestoverride.FamilyOpenAI)
+		if len(serviceTiers) > len(gptServiceTiers) || len(reasoningEfforts) > len(gptReasoningEfforts) {
 			return "自定义模型参数无效"
 		}
 		for _, tier := range serviceTiers {

@@ -74,10 +74,8 @@ const (
 	structuredOutputSyntheticToolName = "emit_structured_output"
 )
 
-var supportedAnthropicBridgeReasoningEfforts = map[string]bool{
-	"none": true, "minimal": true, "low": true, "medium": true,
-	"high": true, "xhigh": true, "max": true,
-}
+// 思考级别值域来自 shared/platform/requestoverride（T19 单一真源）：Chat→
+// Anthropic 桥的转换接受 OpenAI 族全集，最终是否落地由目标模型声明收窄。
 
 var supportedAnthropicBridgeReasoningSummaries = map[string]bool{
 	"auto": true, "concise": true, "detailed": true, "none": true,

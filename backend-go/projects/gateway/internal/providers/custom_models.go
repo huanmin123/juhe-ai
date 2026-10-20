@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/requestoverride"
 )
 
 // customProviderModelRecord mirrors CustomProviderModelRecord.
@@ -952,9 +954,11 @@ func normalizeCustomModelCapabilities(providerCode string, input customModelCapa
 		return nil, err
 	}
 	if normalizeProviderToken(providerCode) == "gpt" {
-		gptServiceTiers := map[string]bool{"priority": true, "flex": true}
-		gptReasoningEfforts := map[string]bool{"none": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
-		if len(input.SupportedServiceTiers) > 2 || len(input.SupportedReasoningEfforts) > 7 {
+		// 值域来自 shared/platform/requestoverride 单一真源（T19）：自定义模型
+		// 能力不声明 `default` 服务等级（default 是运行时“强制标准档”指令）。
+		gptServiceTiers := requestoverride.ServiceTierSetWithout(requestoverride.FamilyOpenAI, "default")
+		gptReasoningEfforts := requestoverride.ReasoningEffortSet(requestoverride.FamilyOpenAI)
+		if len(input.SupportedServiceTiers) > len(gptServiceTiers) || len(input.SupportedReasoningEfforts) > len(gptReasoningEfforts) {
 			return nil, fmt.Errorf("自定义模型参数无效")
 		}
 		for _, value := range supportedServiceTiers {

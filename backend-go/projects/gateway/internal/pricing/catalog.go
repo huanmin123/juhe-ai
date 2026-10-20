@@ -102,6 +102,36 @@ func buildOpenAIModelCandidates(model string) []string {
 	return candidates.list
 }
 
+// ModelCandidatesForRequestOverride 返回 gpt 账户请求覆盖能力解析使用的候选
+// 链：请求模型本体在前，其后是 OpenAI 兼容驱动的别名展开（日期后缀、11 条
+// 前缀规则、gpt-5.3-codex 特例；插入序去重）。非 gpt vendor 维持该解析器
+// 既有契约（本体 + trim 拼写），不引入价格目录 lookup 的 vendor 专属展开——
+// 两处消费语义不同，此处只收敛 gpt 别名规则的唯一事实源。
+func ModelCandidatesForRequestOverride(providerCode, model string) []string {
+	candidates := []string{model}
+	add := func(value string) {
+		if value == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == value {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+	if normalizeProviderToken(providerCode) != "gpt" {
+		if trimmed := strings.TrimSpace(model); trimmed != model && trimmed != "" {
+			add(trimmed)
+		}
+		return candidates
+	}
+	for _, candidate := range buildOpenAIModelCandidates(model) {
+		add(candidate)
+	}
+	return candidates
+}
+
 // glmModelCandidateBases mirrors glmModelCandidateBases sorted by length desc.
 var glmModelCandidateBasesBySpecificity = sortStringsByLengthDesc([]string{
 	"glm-5.3", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5",

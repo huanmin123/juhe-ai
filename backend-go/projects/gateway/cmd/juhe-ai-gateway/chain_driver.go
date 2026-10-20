@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
@@ -30,6 +29,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
@@ -142,69 +142,11 @@ func chainGptRequestOverrideCatalogItemsOf(items []gatewayruntimecache.ProviderM
 	return out
 }
 
-// chainGptRequestOverrideModelCandidates mirrors the
-// modelPricingProviderDriverForProvider(providerCode).buildModelCandidates(model)
-// fallback chain the capability resolver matches against the catalog rows.
-// 参数值已随供应商解耦承载 vendor 身份（vendor 值域与旧 providerCode 同名，
-// openai/hybrid 不再是 vendor——gpt vendor 承接旧 openai 系候选规则，供应商
-// 与上游协议面重构设计 §1.1/§10）；其 vendor 保持端口内建默认（model +
-// trimmed identity）。
+// chainGptRequestOverrideModelCandidates 把覆盖能力解析的候选展开委托给
+// pricing 的唯一事实源（T18 收敛：删除组合根逐字镜像的 11 条前缀规则与日期
+// 正则；gpt 之外的 vendor 行为保持原契约）。
 func chainGptRequestOverrideModelCandidates(providerCode, model string) []string {
-	switch strings.ToLower(strings.TrimSpace(providerCode)) {
-	case "gpt":
-		return chainOpenAIOverrideModelCandidates(model)
-	default:
-		candidates := []string{model}
-		if normalized := strings.TrimSpace(model); normalized != model && normalized != "" {
-			candidates = append(candidates, normalized)
-		}
-		return candidates
-	}
-}
-
-// chainOverrideModelDateSuffixPattern mirrors pricing.modelDateSuffixPattern
-// (/-(?:\d{4}-\d{2}-\d{2}|\d{8})$/).
-var chainOverrideModelDateSuffixPattern = regexp.MustCompile(`-(?:\d{4}-\d{2}-\d{2}|\d{8})$`)
-
-// chainOpenAIOverrideModelCandidates mirrors buildOpenAIModelCandidates
-// (insertion order, dedup) prefixed with the requested model identity.
-func chainOpenAIOverrideModelCandidates(model string) []string {
-	candidates := []string{model}
-	add := func(value string) {
-		if value == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == value {
-				return
-			}
-		}
-		candidates = append(candidates, value)
-	}
-	if withoutDate := chainOverrideModelDateSuffixPattern.ReplaceAllString(model, ""); withoutDate != model {
-		add(withoutDate)
-	}
-	for _, rule := range []struct{ prefix, base string }{
-		{"gpt-5.6-sol-", "gpt-5.6-sol"},
-		{"gpt-5.6-terra-", "gpt-5.6-terra"},
-		{"gpt-5.6-luna-", "gpt-5.6-luna"},
-		{"gpt-5.5-", "gpt-5.5"},
-		{"gpt-5.4-mini-", "gpt-5.4-mini"},
-		{"gpt-5.4-nano-", "gpt-5.4-nano"},
-		{"gpt-5.4-", "gpt-5.4"},
-		{"gpt-image-2-", "gpt-image-2"},
-		{"gpt-4.1-nano-", "gpt-4.1-nano"},
-		{"gpt-4.1-mini-", "gpt-4.1-mini"},
-		{"gpt-4.1-", "gpt-4.1"},
-	} {
-		if strings.HasPrefix(model, rule.prefix) {
-			add(rule.base)
-		}
-	}
-	if model == "gpt-5.3-codex" {
-		add("gpt-5.3-codex")
-	}
-	return candidates
+	return pricing.ModelCandidatesForRequestOverride(providerCode, model)
 }
 
 // PrepareGatewayUpstreamAccount mirrors prepareGatewayUpstreamAccount. The
