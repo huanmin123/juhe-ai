@@ -11,22 +11,22 @@ import (
 	"strings"
 )
 
-// GroupBindingPreview mirrors RouteStrategyGroupBindingPreview.
+// GroupBindingPreview mirrors RouteStrategyGroupBindingPreview（组无 provider
+// 维度，设计 §8：绑定行不携带 providerCode）。
 type GroupBindingPreview struct {
 	ID           string  `json:"id"`
 	GroupID      string  `json:"groupId"`
 	GroupName    *string `json:"groupName,omitempty"`
-	ProviderCode *string `json:"providerCode,omitempty"`
 	Status       string  `json:"status"`
 	GroupEnabled bool    `json:"groupEnabled"`
 }
 
-// GroupBinding mirrors RouteStrategyGroupBindingSummary.
+// GroupBinding mirrors RouteStrategyGroupBindingSummary（组无 provider 维度，
+// 设计 §8：绑定行不携带 providerCode）。
 type GroupBinding struct {
 	ID           string  `json:"id"`
 	GroupID      string  `json:"groupId"`
 	GroupName    *string `json:"groupName,omitempty"`
-	ProviderCode *string `json:"providerCode,omitempty"`
 	Priority     int     `json:"priority"`
 	Weight       int     `json:"weight"`
 	Status       string  `json:"status"`
@@ -438,7 +438,6 @@ func newGroupBindingPreview(binding GroupBinding) GroupBindingPreview {
 		ID:           binding.ID,
 		GroupID:      binding.GroupID,
 		GroupName:    binding.GroupName,
-		ProviderCode: binding.ProviderCode,
 		Status:       binding.Status,
 		GroupEnabled: binding.GroupEnabled,
 	}

@@ -43,12 +43,12 @@ type PublicGroupSummary struct {
 	IsDefault    bool    `json:"isDefault"`
 }
 
-// PublicBindingSummary mirrors PublicRouteStrategyGroupBindingSummary.
+// PublicBindingSummary mirrors PublicRouteStrategyGroupBindingSummary（组无
+// provider 维度，设计 §8：公开策略绑定不携带 providerCode）。
 type PublicBindingSummary struct {
 	ID           string  `json:"id"`
 	GroupID      string  `json:"groupId"`
 	GroupName    *string `json:"groupName,omitempty"`
-	ProviderCode *string `json:"providerCode,omitempty"`
 	Priority     int     `json:"priority"`
 	Weight       int     `json:"weight"`
 	Status       string  `json:"status"`
@@ -195,7 +195,6 @@ func sanitizeStrategy(detail *routestrategies.Detail) PublicStrategySummary {
 			ID:           binding.ID,
 			GroupID:      binding.GroupID,
 			GroupName:    binding.GroupName,
-			ProviderCode: binding.ProviderCode,
 			Priority:     binding.Priority,
 			Weight:       binding.Weight,
 			Status:       binding.Status,
