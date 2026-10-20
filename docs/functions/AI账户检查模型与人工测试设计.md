@@ -21,7 +21,7 @@
   - 两者均为真实付费小请求（无免费目录探针等价物），走账户保存的精确 mode 与检查模型；判活证据为上述协议成功信号，不以响应体之外的目录事实替代。
 - 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE；其中 `images_json` 使用 `GET /v1/models` 并确认目录含检查模型，避免后台付费生图。
 - 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、当前 GLM Chat 和 Gemini OpenAI profile 使用 `chat_sse`；目标 `profile_glm_coding_openai_responses_v1` 实施后单独使用 `responses_sse`；Anthropic profile 使用 `messages_sse`；Gemini Native 使用 `generate_content_sse`。能力域拆分 M2 起，新建账户未显式提交 `health_check_endpoint_mode` 时按能力域默认落值（AI 账户能力域拆分 v7 定案）：对话域沿用上述现行默认，图像域 `images_json`、音频域 `audio_speech`、视频域 `video_create`；存量账户库中现值不变。
-- **流式优先（2026-10-19 定案）**：检查形态默认值一律优先取流式形态。理由是真实流量以流式为主，非流式 2xx 可能被上游伪造或退化（实测样例：某中转对 `stream:false` 返回空 `choices` 的 SSE 帧仍回 HTTP 200），流式形态能更早暴露上游真实异常并复用同一份完成证据判定。该口径覆盖建户默认、导入缺省、人工测试形态顺序三面；显式提交的非流式形态仍然生效，存量账户现值不变。
+- **流式优先（2026-10-19 定案）**：检查形态默认值一律优先取流式形态。理由是真实流量以流式为主，非流式 2xx 可能被上游伪造或退化（实测样例：某中转对 `stream:false` 返回空 `choices` 的 SSE 帧仍回 HTTP 200），流式形态能更早暴露上游真实异常并复用同一份完成证据判定。该口径覆盖全部缺省生产面：前端建户表单、按能力域默认落值、OAuth 管理式建户、公开推送建户、导入适配器合成与导入缺省回退、人工测试形态顺序；显式提交的非流式形态仍然生效，存量账户现值不变。
 - 首选 mode 未启用时，先取 `supported_endpoint_modes` 中第一个已启用的流式 mode，再取第一个已启用 JSON mode，最后取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
 - 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`；其他账户优先保留旧检查族对应的、已启用且可检查的 JSON / SSE mode，同族不可用时才回退到首个已启用可检查 mode。加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
 

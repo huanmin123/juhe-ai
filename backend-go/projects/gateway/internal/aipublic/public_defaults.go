@@ -8,7 +8,8 @@ package aipublic
 //     供应商有历史档案 ID；其余真实厂商在公开 API 中同样按 vendor 派生同形 ID）；
 //   - 连接预设取 registry 中该 (driver, api_key, domain=chat) 的 OpenAI 协议面
 //     预设（pub key 推送语义即 OpenAI 兼容 wire），无 OpenAI 面时取首个允许项；
-//   - endpointModes 取 AllowedModes 全集，健康检查形态优先 JSON（非流式）。
+//   - endpointModes 取 AllowedModes 全集，健康检查形态流式优先（_sse 先于
+//     _json，AI账户检查模型与人工测试设计 2026-10-19 定案）。
 //
 // 公开 API 的外部契约不变：调用方仍提交 providerProtocolProfileId；不提交
 // connections 时由这里派生，显式提交时按原样进入写链校验。
@@ -142,8 +143,15 @@ func DefaultPublicConnections(vendorCode, baseURL, healthCheckModel string) (*Pu
 	}, true
 }
 
-// defaultHealthCheckMode 在连接 mode 集合内取缺省检查形态：优先 JSON（非流式）。
+// defaultHealthCheckMode 在连接 mode 集合内取缺省检查形态：流式优先
+// （AI账户检查模型与人工测试设计 2026-10-19 定案）——首个 _sse 形态，无 _sse
+// 时才回落 _json，再无则取首个 mode。
 func defaultHealthCheckMode(modes []string) string {
+	for _, mode := range modes {
+		if strings.HasSuffix(mode, "_sse") {
+			return mode
+		}
+	}
 	for _, mode := range modes {
 		if strings.HasSuffix(mode, "_json") {
 			return mode

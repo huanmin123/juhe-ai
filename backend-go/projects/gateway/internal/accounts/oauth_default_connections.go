@@ -77,9 +77,15 @@ func DefaultConnectionsForOAuthVendor(providerCode, accountType string, credenti
 }
 
 // defaultHealthCheckModeForConnectionModes 在派生连接的启用 mode 集合内取缺省
-// 检查形态：优先 ASCII 序首个 JSON（非流式）形态，无 JSON 形态时回落首个 mode
+// 检查形态：流式优先（AI账户检查模型与人工测试设计 2026-10-19 定案）——取
+// ASCII 序首个 _sse 形态，无 _sse 时才回落 _json，再无则取首个 mode
 // （contracts.AllowedModes 已按 ASCII 升序返回）。
 func defaultHealthCheckModeForConnectionModes(modes []string) string {
+	for _, mode := range modes {
+		if strings.HasSuffix(mode, "_sse") {
+			return mode
+		}
+	}
 	for _, mode := range modes {
 		if strings.HasSuffix(mode, "_json") {
 			return mode

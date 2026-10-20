@@ -252,7 +252,10 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("chat 缺省默认集应与现行一致：%v", modes)
 	}
 	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, chatID); mode != "chat_json" {
-		t.Fatalf("chat 域健康检查默认应保持 chat_json：%s", mode)
+		// 创建载荷必须显式提交健康检查形态（服务端不落默认），此处断言夹具
+		// 显式提交值原样入库；域级检查形态默认值见
+		// DefaultHealthCheckEndpointModeForDomain（现为流式优先 chat_sse）。
+		t.Fatalf("chat 域创建载荷显式提交的检查形态应保持 chat_json：%s", mode)
 	}
 
 	// 显式 chat 域等价缺省。
