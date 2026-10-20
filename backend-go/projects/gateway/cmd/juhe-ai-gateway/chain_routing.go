@@ -131,8 +131,8 @@ func projectAccountForRouting(account gatewayruntimecache.OpenAIAccountSecret) g
 	projected := gatewayrouting.UpstreamAccount{
 		ID: account.ID,
 		// B4 W2（设计 §8：行为键=vendor）：routing 层 ProviderCode 槽位承载
-		// vendor 身份（值域同名；secret.ProviderCode 过渡字段恒空不再作键，
-		// 与 chain_usage.go 的投影位切换同法）。
+		// vendor 身份（值域同名）；本投影统一取 VendorCode，不使用
+		// secret.ProviderCode 的同值投影。
 		ProviderCode:              account.VendorCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode:              account.ProtocolCode,

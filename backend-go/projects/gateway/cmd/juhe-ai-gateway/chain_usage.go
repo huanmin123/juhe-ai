@@ -427,8 +427,8 @@ func (u *chainFinalizationUsage) resolveFinalizationPricingModel(providerCode, c
 // input.account.providerCode / providerProtocolProfileId 的 Go 投影位）。
 // 供应商解耦切片起第一返回值承载 vendor 身份（供应商与上游协议面重构设计
 // §1.1/§2.1：vendor 值域与旧 providerCode 同名）——同时是 usage 行
-// ProviderCode 列的过渡填充值与同步计价目录的查找键；账户 secret 的
-// ProviderCode 过渡字段恒空，不再作为身份源。非 OpenAIAccountView 返回空。
+// ProviderCode 列的过渡填充值与同步计价目录的查找键；本函数只读账号视图的
+// VendorCode，不依赖 secret.ProviderCode 的同值投影。非 OpenAIAccountView 返回空。
 func finalizationAccountProviderOf(account gatewayresponse.AccountView) (providerCode, providerProtocolProfileID string) {
 	view, ok := account.(gatewayresponse.OpenAIAccountView)
 	if !ok {
@@ -788,8 +788,8 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 // through gatewayopenai.ResolveAccountModelMapping——2026-09-20 收口：此前
 // 投影丢 ModelMappings，映射后上游模型名在记账侧丢失。ProviderCode 投影位现
 // 承载 vendor 身份（供应商与上游协议面重构设计 §1.1/§2.1 切片；字段名随
-// internal/gatewayusage 契约保留，值源从过渡恒空的 ProviderCode 切到
-// VendorCode），usage 语义分派（anthropic/gemini/hybrid 词表）同键消费。
+// internal/gatewayusage 契约保留，值源取 VendorCode），usage 语义分派
+// （anthropic/gemini/hybrid 词表）同键消费。
 func usageModelAccountOf(account gatewaydispatch.AccountCandidate) gatewayusage.UsageModelAccount {
 	out := gatewayusage.UsageModelAccount{
 		ID:                        account.ID,

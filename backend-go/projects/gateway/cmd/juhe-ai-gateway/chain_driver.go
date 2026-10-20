@@ -247,9 +247,8 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		//（官方根去重，不走 openai /v1 强制补缀）；其余走 openai 归一。
 		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
 			// 媒体适配器身份源（供应商与上游协议面重构设计 §2.1 切片）：vendor
-			// 值域与旧 providerCode 同名，分支键从 ProviderCode 切到 VendorCode
-			//（ProviderCode 过渡恒空）；generic/空 vendor 无专属 adapter，沿
-			// 默认 openai 归一与既有错误语义。
+			// 值域与旧 providerCode 同名，分支键取 VendorCode。generic/空 vendor
+			// 在 videoCreateRequest 已按能力缺失直接失败，不会进入本 URL 归一。
 			if chainVideoAdapterKeyOfProvider(account.VendorCode) == "glm" {
 				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
 				if urlErr != nil {

@@ -443,9 +443,9 @@ func (p *chainVideoCreatePlan) paramsIgnored() []string { return p.params.Params
 // （geminiSpeechAdapterBoundaryError 同裁决）。provider 能力缺失（无 adapter）
 // 保持原生错误（该分支在派发侧先被能力门拦截，到达即配置异常）。
 func chainVideoCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*chainVideoCreatePlan, error) {
-	// 供应商身份源切换（供应商与上游协议面重构设计 §1.1/§2.1 切片）：创建计划
+	// 供应商身份源（供应商与上游协议面重构设计 §1.1/§2.1 切片）：创建计划
 	// 是 driver 出站构造与创建响应面/媒体车道预过滤的共用入口，adapter 身份
-	// 键与 chain_driver.go 同批从过渡恒空的 ProviderCode 切到 VendorCode。
+	// 键取 VendorCode。
 	adapter := chainVideoAdapterForAccount(account.VendorCode)
 	if adapter == nil {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.VendorCode)
@@ -1001,8 +1001,8 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务面未装配，无法受理"+jobLabel+"任务", "service_unavailable")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
-	// 供应商身份源切换（供应商与上游协议面重构设计 §1.1/§2.1 切片）：任务面
-// adapter 解析键与创建计划同批从过渡恒空的 ProviderCode 切到 VendorCode。
+	// 供应商身份源（供应商与上游协议面重构设计 §1.1/§2.1 切片）：任务面
+	// adapter 解析键与创建计划一致，取 VendorCode。
 	adapter := chainMediaJobTaskAdapterFor(kind, dispatched.Account.VendorCode)
 	if adapter == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游账户缺少"+jobLabel+"任务 adapter，任务受理中断", "upstream_error")
