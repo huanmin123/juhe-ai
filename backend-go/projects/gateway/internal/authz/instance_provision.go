@@ -404,16 +404,21 @@ func (s *Store) bindInstanceToGranteeGroup(ctx context.Context, tx *sql.Tx, inst
 // group for the instance provider.
 func (s *Store) groupIDForAuthorizationBinding(ctx context.Context, q queryer, providerCode, systemAccountID, targetGroupID string) (string, error) {
 	if targetGroupID != "" {
-		var id, owner string
+		var id, owner, groupKind string
 		var enabled int
-		err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, enabled
+		err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, enabled, group_kind
 			FROM `+s.table("groups")+` WHERE id = ? LIMIT 1`), targetGroupID).
-			Scan(&id, &owner, &enabled)
+			Scan(&id, &owner, &enabled, &groupKind)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && owner != systemAccountID) {
 			return "", failf("目标分组不存在或不属于被授权用户")
 		}
 		if err != nil {
 			return "", err
+		}
+		// 超级分组不得直接持有 group_accounts 行（超级分组设计 §5）：授权实例
+		// 供给同样不能在目标分组或默认分组上绕开该约束。
+		if groupKind != "standard" {
+			return "", &Fail{Message: "超级分组不能直接绑定账户", Code: "group_kind_conflict"}
 		}
 		// 组无 provider 维度（设计 §8）：分组供应商一致性校验随列退役，
 		// 「同供应商」由授权资源与分组成员关系决定。
@@ -438,17 +443,22 @@ func (s *Store) groupIDForAuthorizationBinding(ctx context.Context, q queryer, p
 // account has no such group; the caller decides the policy — the direct bind
 // keeps the verbatim rejection, the team fanout fails with the member label.
 func (s *Store) defaultGroupIDForProvider(ctx context.Context, q queryer, providerCode, systemAccountID string) (string, error) {
-	var id string
+	var id, groupKind string
 	// 组无 provider 维度（设计 §8）：每 owner 至多一个启用默认组。
 	_ = providerCode
-	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("groups")+`
+	err := q.QueryRowContext(ctx, s.bind(`SELECT id, group_kind FROM `+s.table("groups")+`
 		WHERE system_account_id = ? AND is_default = 1 AND enabled = 1
-		ORDER BY updated_at DESC, id ASC LIMIT 1`), systemAccountID).Scan(&id)
+		ORDER BY updated_at DESC, id ASC LIMIT 1`), systemAccountID).Scan(&id, &groupKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
+	}
+	// 防御性校验：应用层保证 super 组 is_default=0，但存量/迁移数据不得
+	// 绕过账户绑定守卫（超级分组设计 §5）。
+	if groupKind != "standard" {
+		return "", &Fail{Message: "超级分组不能直接绑定账户", Code: "group_kind_conflict"}
 	}
 	return id, nil
 }

@@ -481,7 +481,7 @@ func TestW1CChainAccountAPIKeyPoolProviderSupported(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := chainAccountAPIKeyPoolProviderSupported(tc.providerCode, tc.protocolCode, tc.protocolVersion); got != tc.want {
+			if got := chainAccountAPIKeyPoolProviderSupported(tc.providerCode, "", tc.protocolCode, tc.protocolVersion); got != tc.want {
 				t.Fatalf("期望 %v 实际 %v", tc.want, got)
 			}
 		})
@@ -507,7 +507,7 @@ func TestW1CChainAccountAPIKeyPoolIsolationEnabled(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := chainAccountAPIKeyPoolIsolationEnabled(tc.providerCode, tc.protocolCode, tc.protocolVersion, tc.accountType, tc.credentials)
+			got := chainAccountAPIKeyPoolIsolationEnabled(tc.providerCode, "", tc.protocolCode, tc.protocolVersion, tc.accountType, tc.credentials)
 			if got != tc.want {
 				t.Fatalf("期望 %v 实际 %v", tc.want, got)
 			}

@@ -34,35 +34,12 @@ export interface CcSwitchExportInput {
 }
 
 export function canSubmitCcSwitchExport(input: {
-  groupId?: string
   app?: CcSwitchClientApp
   modelsLoading?: boolean
-  modelsReady?: boolean
 }): boolean {
-  return Boolean(input.groupId?.trim() && input.app && input.modelsReady && !input.modelsLoading)
-}
-
-export function defaultCcSwitchClientAppForGroups(
-  groups: readonly CcSwitchExportGroupOption[]
-): CcSwitchClientApp | undefined {
-  if (groups.length !== 1) return undefined
-  return defaultCcSwitchClientAppForProvider(groups[0].providerCode)
-}
-
-export function defaultCcSwitchClientAppForProvider(providerCode: string): CcSwitchClientApp | undefined {
-  switch (providerCode.trim().toLowerCase()) {
-    case 'gpt':
-    case 'openai':
-      return 'codex'
-    case 'anthropic':
-      return 'claude'
-    case 'gemini':
-      return 'gemini'
-    case 'xai':
-      return 'grokbuild'
-    default:
-      return undefined
-  }
+  // 导出只需要 endpoint + API key + client app；分组只是可选的模型参考，
+  // 模型也可以为空（T34）。不再从分组或 vendor 推断客户端类型。
+  return Boolean(input.app && !input.modelsLoading)
 }
 
 export function buildCcSwitchExportModelOptions(
@@ -129,18 +106,19 @@ export function buildCcSwitchExportGroupOptions(
   const seenGroupIds = new Set<string>()
 
   return bindings.flatMap((binding) => {
-    const providerCode = binding.providerCode?.trim()
-    if (binding.status !== 'active' || !binding.groupEnabled || !providerCode || seenGroupIds.has(binding.groupId)) {
+    if (binding.status !== 'active' || !binding.groupEnabled || seenGroupIds.has(binding.groupId)) {
       return []
     }
     seenGroupIds.add(binding.groupId)
-    const provider = providerByCode.get(providerCode)
+    const providerCode = binding.providerCode?.trim() || ''
+    const provider = providerCode ? providerByCode.get(providerCode) : undefined
     return [{
       groupId: binding.groupId,
       groupName: binding.groupName?.trim() || binding.groupId,
       providerCode,
-      providerName: provider?.name?.trim() || providerCode,
-      defaultModel: provider?.defaultHealthCheckModel?.trim() || ''
+      providerName: provider?.name?.trim() || '自定义协议连接',
+      // 分组只作为模型参考，不再提供默认客户端推断依据（T34）。
+      defaultModel: ''
     }]
   })
 }

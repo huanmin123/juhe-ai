@@ -222,16 +222,16 @@ func TestW1PassiveScheduleJitterWindowMs(t *testing.T) {
 
 func TestW1AccountsSecretHelpers(t *testing.T) {
 	// chainAccountAPIKeyPoolProviderSupported。
-	if !chainAccountAPIKeyPoolProviderSupported("OpenAI ", "openai", "v1") {
+	if !chainAccountAPIKeyPoolProviderSupported("OpenAI ", "", "openai", "v1") {
 		t.Fatal("openai 必须支持")
 	}
-	if !chainAccountAPIKeyPoolProviderSupported("unknown", "anthropic", "v1") {
+	if !chainAccountAPIKeyPoolProviderSupported("unknown", "", "anthropic", "v1") {
 		t.Fatal("anthropic v1 必须支持")
 	}
-	if chainAccountAPIKeyPoolProviderSupported("unknown", "anthropic", "v2") {
+	if chainAccountAPIKeyPoolProviderSupported("unknown", "", "anthropic", "v2") {
 		t.Fatal("anthropic v2 不得支持")
 	}
-	if chainAccountAPIKeyPoolProviderSupported("", "", "") {
+	if chainAccountAPIKeyPoolProviderSupported("", "", "", "") {
 		t.Fatal("空不得支持")
 	}
 	// chainNormalizeAPIKeyWeight。

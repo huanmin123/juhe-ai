@@ -67,7 +67,7 @@ func (a usageAttemptRecorderAdapter) RecordFailedUpstreamAttempt(ctx context.Con
 	})
 }
 
-// usageContextForAccount 按账号解析尝试级 usage 组作用域（合并路由设计 3.5
+// usageContextForAccount 按账号解析尝试级 usage 组作用域（超级分组设计 §4.2
 // 第 2 条，engine 失败路 choke point）：账号 BoundGroupID 非空且不等于请求级
 // 窗口组时，浅拷贝 usage context 并把 GroupID 覆盖为账号组——不修改共享请求
 // 级上下文；访问五元组由 usageModelAccountOf 从账号自带值投影（service 失败
@@ -2064,6 +2064,37 @@ type codexPreflightAdapter struct {
 	bridge   *gatewaycodex.ChatBridgeStateService
 	compact  *gatewaycodex.CompactPreflightService
 	registry *gatewaycodex.ContextRequestStateRegistry
+}
+
+// PrepareContextForAccount / GetContextState / CompletionHandlerForRequest make
+// the same real bridge service usable through gatewaydispatch.CodexBridgePort.
+// 之前只有 preauth 适配器接线，engine.CodexBridge 恒 nil，bridge 账户的真实
+// dispatch body 永远拿不到恢复历史（T32）。三个方法共享 preauth 已构造的
+// registry，不新建第二份请求态。
+func (a codexPreflightAdapter) PrepareContextForAccount(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) error {
+	if a.bridge == nil || a.registry == nil {
+		return nil
+	}
+	_, err := a.bridge.PrepareCodexResponsesContextForAccount(a.registry, req, account)
+	return err
+}
+
+func (a codexPreflightAdapter) GetContextState(req *gatewaypreauth.GatewayRequest) *gatewaydispatch.CodexBridgeState {
+	if a.registry == nil {
+		return nil
+	}
+	state, ok := a.registry.Get(req)
+	if !ok {
+		return nil
+	}
+	return &gatewaydispatch.CodexBridgeState{PreviousResponseID: state.PreviousResponseID}
+}
+
+func (a codexPreflightAdapter) CompletionHandlerForRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) gatewaydispatch.CodexBridgeCompletionHandler {
+	if a.bridge == nil || a.registry == nil {
+		return nil
+	}
+	return a.bridge.CompletionHandlerForRequest(a.registry, req, account, requestModelHintOf(req))
 }
 
 // chainCodexBridgePreflight keeps the preflight port non-nil: the adapter

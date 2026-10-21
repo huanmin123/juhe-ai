@@ -10,11 +10,12 @@
     @ok="submit"
   >
     <a-form layout="vertical" class="modal-form">
-      <a-form-item label="模型参考分组" required>
+      <a-form-item label="模型参考分组（可选）">
         <a-select
           v-model:value="selectedGroupId"
+          allow-clear
           :options="groupOptions"
-          placeholder="选择分组"
+          placeholder="选择分组（仅用于参考模型，不决定客户端）"
           @change="applySelectedGroupDefaultModel"
         />
       </a-form-item>
@@ -31,10 +32,10 @@
           allow-clear
           show-search
           option-filter-prop="label"
-          :disabled="!modelsReady"
+          :disabled="!selectedGroupId || !modelsReady"
           :loading="modelsLoading"
           :options="modelOptions"
-          placeholder="选择分组供应商的模型"
+          placeholder="可选：选择参考分组的模型"
           @dropdown-visible-change="handleModelOptionsOpen"
           @search="handleModelOptionsSearch"
         >
@@ -54,7 +55,6 @@ import { ModelOptionsTruncatedHint } from '@/components/ModelOptionsTruncatedHin
 import {
   canSubmitCcSwitchExport,
   ccswitchClientOptions,
-  defaultCcSwitchClientAppForGroups,
   type CcSwitchClientApp,
   type CcSwitchExportGroupOption,
   type CcSwitchExportModelOption
@@ -88,9 +88,7 @@ const groupOptions = computed(() => props.groups.map((group) => ({
   label: group.groupName + ' · ' + group.providerName
 })))
 const canExport = computed(() => canSubmitCcSwitchExport({
-  groupId: selectedGroupId.value,
   app: clientApp.value,
-  modelsReady: props.modelsReady,
   modelsLoading: props.modelsLoading
 }))
 
@@ -129,12 +127,11 @@ watch(
 )
 
 function resetForm(): void {
-  const [firstGroup] = props.groups
-  selectedGroupId.value = firstGroup?.groupId || ''
+  // 分组可选、客户端必须由用户明确选择；不从分组/vendor 推断（T34）。
+  selectedGroupId.value = ''
   model.value = ''
   defaultModelAppliedGroupId.value = ''
-  clientApp.value = defaultCcSwitchClientAppForGroups(props.groups)
-  if (selectedGroupId.value) emit('model-options-open', selectedGroupId.value, true)
+  clientApp.value = undefined
 }
 
 function applySelectedGroupDefaultModel(): void {
@@ -156,7 +153,7 @@ function close(): void {
 }
 
 function submit(): void {
-  if (!selectedGroupId.value || !clientApp.value) return
+  if (!clientApp.value) return
   emit('export', {
     groupId: selectedGroupId.value,
     app: clientApp.value,

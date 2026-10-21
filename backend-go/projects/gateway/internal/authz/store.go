@@ -43,7 +43,12 @@ type Conflict struct {
 func (c *Conflict) Error() string { return "授权配置已被其他操作更新，请刷新后重试" }
 
 // Fail is a domain rejection rendered as 400 with the verbatim Node message.
-type Fail struct{ Message string }
+// Code 非空时由路由渲染为 {code,message}（超级分组绑定守卫等新契约），
+// 既有调用保持空 Code 的纯消息响应不变。
+type Fail struct {
+	Message string
+	Code    string
+}
 
 func (f *Fail) Error() string { return f.Message }
 

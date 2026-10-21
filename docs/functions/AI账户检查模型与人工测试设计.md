@@ -114,6 +114,8 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 - 账户列表单项测试。
 - 管理侧、用户侧和授权实例侧测试。
 
+generic_http 账户（`vendor_code=NULL`）的人工测试候选与测试请求校验按 `account_supported_models.model_id` 读取真实 `models` 行，保留 modes/协议等元数据，再与账户连接的 endpoint modes 求交集；不得因 provider 为空返回空候选、伪造 `custom` 或按模型名猜 vendor。
+
 人工测试使用账户或草稿配置作为请求输入，默认不参与账户控制状态：
 
 - 测试成功和失败都不修改 `healthCheckModel`、`supportedModels` 或其他账户配置。

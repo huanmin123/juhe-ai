@@ -316,3 +316,34 @@ func (s *Service) setSharedModelsDirectoryActiveSet(ctx context.Context, set mod
 		s.logSharedFailure("gateway_models_directory_shared_cache_write_failed", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// account-scoped model catalog (account_supported_models → models)
+// ---------------------------------------------------------------------------
+
+// AccountModelCatalogSource is the account-scoped model catalog seam behind
+// ListAccountSupportedModelCatalogAsync. SQLReadModels implements it over the
+// wired CatalogSource when that source also implements this interface.
+type AccountModelCatalogSource interface {
+	ListAccountSupportedModelCatalog(ctx context.Context, accountID, systemAccountID string) ([]ProviderModelCatalogItem, error)
+}
+
+// ListAccountSupportedModelCatalogAsync reads the exact models bound to one
+// account (account_supported_models.model_id → models 行). 供应商与上游协议面
+// 重构设计 §3/§4：模型身份由真实 models 行承载，generic_http 账户不得用空
+// vendor 伪造目录，也不得按模型名猜 vendor。不缓存：调用方是会话模型列表、
+// 人工测试候选和计价身份解析，读取量按账户支持模型收敛。
+func (s *Service) ListAccountSupportedModelCatalogAsync(ctx context.Context, accountID, systemAccountID string) ([]ProviderModelCatalogItem, error) {
+	if s == nil || s.models == nil {
+		return nil, errors.New("gatewayruntimecache 账户模型目录读取器未接线")
+	}
+	source, ok := s.models.(AccountModelCatalogSource)
+	if !ok || source == nil {
+		return nil, errors.New("gatewayruntimecache 账户模型目录源未接线")
+	}
+	items, err := source.ListAccountSupportedModelCatalog(ctx, accountID, systemAccountID)
+	if err != nil {
+		return nil, err
+	}
+	return CloneProviderModelCatalogItems(items), nil
+}

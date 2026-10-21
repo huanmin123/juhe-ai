@@ -15,20 +15,17 @@ package main
 //  1. 清理算法 hook 生产恒 nil——gatewayoauthcodex.SanitizeCodexHistory 全仓
 //     仅测试赋值；各组合分别以 hook 注入（取证阶段命中与调用次数）与
 //     hook nil（生产现状 no-op、body 字节不因清理维度改变）两形态驱动。
-//  2. 引擎侧 per-account 桥准备端口 engine.CodexBridge 无生产装配（全仓唯一
-//     赋值在 gatewaydispatch w17a 测试）——BUG-0274 装配的是 preauth 层桥
-//     （preflight/compact restore/registry），bridge restore 的 registry 产物
-//     不落入 dispatch 请求体。per-account 桥准备行为以真实桥服务
-//     PrepareCodexResponsesContextForAccount 直接取证（等价于引擎端口在
-//     w17a fake 处消费的同一实现）。
+//  2. 引擎侧 per-account 桥准备端口 engine.CodexBridge 已在本批（T32）接线，
+//     与 preauth 共用同一 ChatBridgeStateService + registry；bridge restore 的
+//     registry 产物会进入真实 dispatch 请求体（见 TestW32EngineBridgeWired...）。
+//     未经过 preflight 的 fresh request 在 registry miss 时保持 no-op。
 //
 // 逐组合结论（与 docs/bug/问题-0274-Codex桥状态从未装配.md 验收记录对应）：
 //  1. Responses 新会话 → Chat bridge → API Key：可达；Front+Post 各 1 次、
 //     Adapter 0 次、出站不写标记。
 //  2. Responses 携带内部 previous_response_id（restore 成功）→ Chat bridge →
-//     API Key：可达；恢复产物（合并 input、删 previous_response_id）只落在
-//     registry 与真实桥准备服务，dispatch body 保持原样（引擎端口未接线）；
-//     清理阶段形态同组合 1。
+//     API Key：可达；恢复产物（合并 input、删 previous_response_id）经 T32
+//     接线的 engine.CodexBridge 进入真实 dispatch body；清理阶段形态同组合 1。
 //  3. Responses 新会话 → Chat bridge → OAuth：可达（映射使 OAuth 账户成
 //     bridge-kind）；Adapter 1 次 + 无条件标记写入、Front/Post 0 次。
 //  4. Responses 携带内部 previous_response_id（restore 成功）→ Chat bridge →
@@ -265,8 +262,8 @@ func w27SeedBridgeChainRound(t *testing.T, adapter codexPreflightAdapter, accoun
 	return "resp_chat_bridge_w27_seed1"
 }
 
-// w27PrepareParts 驱动 dispatch 准备链三阶段（生产形态：engine.CodexBridge
-// 为 nil，per-account 桥准备 nil-skip；与生产派发所见一致）。
+// w27PrepareParts 驱动 dispatch 准备链三阶段（engine.CodexBridge 已接线；
+// 未经 preflight 的请求在 registry miss 时保持 no-op）。
 func w27PrepareParts(t *testing.T, chain *gatewayChain, req *gatewaypreauth.GatewayRequest, account gatewayruntimecache.OpenAIAccountSecret, compat string) gatewaydispatch.PreparedRequestParts {
 	t.Helper()
 	parts, err := chain.engine.BuildPreparedUpstreamRequestParts(context.Background(), req, account,
@@ -344,10 +341,9 @@ func TestW27Combo1ResponsesNewSessionChatBridgeAPIKey(t *testing.T) {
 		t.Fatalf("preflight 审计 = %+v，want new_session", audit.metadata)
 	}
 
-	// ② per-account 桥准备 oracle（引擎端口生产未接线，行为以真实桥服务取证）：
-	// 显式桥账户准备成功并接管 ActiveBridgeAccountID。
-	if chain.engine.CodexBridge != nil {
-		t.Fatal("生产组合根 engine.CodexBridge 必须未装配（本验收覆盖现状形态）")
+	// ② per-account 桥准备 oracle：引擎端口已接线到同一真实桥服务。
+	if chain.engine.CodexBridge == nil {
+		t.Fatal("生产组合根 engine.CodexBridge 必须装配真实桥（T32）")
 	}
 	explicitBridge, err := adapter.bridge.PrepareCodexResponsesContextForAccount(adapter.registry, req, account)
 	if err != nil || !explicitBridge {
@@ -447,7 +443,7 @@ func TestW27Combo2ResponsesInternalPreviousChatBridgeAPIKey(t *testing.T) {
 	}
 	dispatchBody := w27ParseBody(t, parts.Body)
 	if _, still := dispatchBody["previous_response_id"]; !still {
-		t.Fatal("引擎端口未接线的现状下，dispatch body 必须仍携带原始 previous_response_id（registry 恢复产物不落入派发请求体）")
+		t.Fatal("未经 preflight 的 fresh request 在 registry miss 时应保持原 body")
 	}
 	w27AssertUnmarked(t, parts.Body, "API Key 桥恢复")
 }
@@ -565,8 +561,8 @@ func TestW27Combo4ResponsesInternalPreviousChatBridgeOAuth(t *testing.T) {
 		t.Fatalf("桥准备后 input 长度 = %d，want %d", len(items), len(restoredInput))
 	}
 
-	// ③ 派发准备链阶段取证：Adapter 1 次 + 标记写入；dispatch body 保持原样
-	// （携带 previous_response_id——引擎端口未接线的现状证据）。
+	// ③ 派发准备链阶段取证：Adapter 1 次 + 标记写入；fresh request 未经
+	// preflight，registry miss 保持原 body。
 	probe := &w27SanitizeProbe{}
 	_ = w27InstallSanitizeHook(t, probe.sanitize)
 	freshReq, _ := w1CodexBridgeRequest(http.MethodPost, "/v1/responses", map[string]any{
@@ -582,7 +578,7 @@ func TestW27Combo4ResponsesInternalPreviousChatBridgeOAuth(t *testing.T) {
 	}
 	dispatchBody := w27ParseBody(t, parts.Body)
 	if _, still := dispatchBody["previous_response_id"]; !still {
-		t.Fatal("引擎端口未接线现状下 dispatch body 保留原始 previous_response_id")
+		t.Fatal("未经 preflight 的 fresh request 在 registry miss 时应保持原 body")
 	}
 }
 
@@ -910,8 +906,7 @@ func TestW27Combo7RestoreFailureOrNoSnapshotContinuesPlain(t *testing.T) {
 		if _, err := w27RunContextStatePreflight(t, adapter, req, res, audit); err != nil {
 			t.Fatalf("preflight: %v", err)
 		}
-		// per-account 桥准备的真实拒绝行为（引擎端口生产未接线，行为以真实
-		// 桥服务取证；该拒绝当前不在生产派发生效）。
+		// per-account 桥准备的真实拒绝行为（T32 起同一实现在生产 dispatch 生效）。
 		_, prepErr := adapter.bridge.PrepareCodexResponsesContextForAccount(adapter.registry, req, account)
 		if prepErr == nil || prepErr.Error() != "外部 previous_response_id 只能发送给原生 Responses 账号" {
 			t.Fatalf("外部 previous × 桥账户准备错误 = %v，want 固定文案", prepErr)
@@ -971,4 +966,88 @@ func TestW27PostStageSkipIfProcessedMarkDedup(t *testing.T) {
 			t.Fatal("hook 不改写时 body 必须字节原样")
 		}
 	})
+}
+
+// TestW32EngineBridgeWiredDispatchRestores 钉住 T32 的生产接线：同一 preflight
+// 请求进入真实 dispatch 时，engine.CodexBridge 必须把恢复历史合并进出站
+// body、删除内部 previous_response_id（不再只停留在 registry/组件 oracle）。
+func TestW32EngineBridgeWiredDispatchRestores(t *testing.T) {
+	chain, adapter := w27WiredChain(t)
+	account := w27APIKeyBridgeAccount("https://w27-upstream.invalid/v1")
+	prevID := w27SeedBridgeChainRound(t, adapter, account)
+
+	req, res := w1CodexBridgeRequest(http.MethodPost, "/v1/responses", map[string]any{
+		"model": w27Model, "previous_response_id": prevID,
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "w32 wired turn"}},
+	})
+	audit := &w27AuditCapture{}
+	completed, err := w27RunContextStatePreflight(t, adapter, req, res, audit)
+	if err != nil || completed {
+		t.Fatalf("preflight = completed=%v err=%v", completed, err)
+	}
+	state, ok := adapter.registry.Get(req)
+	if !ok || !state.Restored {
+		t.Fatalf("registry state = %+v ok=%v, want restored", state, ok)
+	}
+	restoredInput, _ := state.MaterializedInput.([]any)
+	if len(restoredInput) < 2 {
+		t.Fatalf("restored input len = %d, want >=2", len(restoredInput))
+	}
+	if chain.engine.CodexBridge == nil {
+		t.Fatal("engine.CodexBridge 未接线（T32）")
+	}
+	parts := w27PrepareParts(t, chain, req, account, "codex_responses")
+	body := w27ParseBody(t, parts.Body)
+	if _, still := body["previous_response_id"]; still {
+		t.Fatal("接线后 dispatch body 必须删除内部 previous_response_id")
+	}
+	items, _ := body["input"].([]any)
+	if len(items) != len(restoredInput) {
+		t.Fatalf("dispatch input len = %d, want restored %d", len(items), len(restoredInput))
+	}
+}
+
+// TestW32EngineBridgeWiredNativeAccountNotTakenOver：非 bridge 的 native
+// Responses 账户不得被桥恢复逻辑接管（无 ActiveBridgeAccountID、无历史合并）。
+func TestW32EngineBridgeWiredNativeAccountNotTakenOver(t *testing.T) {
+	chain, adapter := w27WiredChain(t)
+	account := w27APIKeyNativeAccount("https://w27-upstream.invalid/v1")
+	req, res := w1CodexBridgeRequest(http.MethodPost, "/v1/responses", map[string]any{
+		"model": w27Model,
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "w32 native turn"}},
+	})
+	audit := &w27AuditCapture{}
+	if _, err := w27RunContextStatePreflight(t, adapter, req, res, audit); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	state, _ := adapter.registry.Get(req)
+	if state.ActiveBridgeAccountID != "" {
+		t.Fatalf("native 账户被桥接管: %+v", state)
+	}
+	parts := w27PrepareParts(t, chain, req, account, "codex_responses")
+	items := w27BodyInputItems(t, parts.Body)
+	if len(items) != 1 {
+		t.Fatalf("native dispatch input len = %d, want 1（无历史合并）", len(items))
+	}
+}
+
+// TestW32EngineBridgeWiredRejectsExternalPrevious：外部 previous_response_id
+// 在真实 dispatch 的桥准备口即被拒绝，而不是只在组件 oracle 中拒绝。
+func TestW32EngineBridgeWiredRejectsExternalPrevious(t *testing.T) {
+	chain, adapter := w27WiredChain(t)
+	account := w27APIKeyBridgeAccount("https://w27-upstream.invalid/v1")
+	req, res := w1CodexBridgeRequest(http.MethodPost, "/v1/responses", map[string]any{
+		"model": w27Model, "previous_response_id": "resp_external_w32_not_a_bridge_id",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "w32 external"}},
+	})
+	audit := &w27AuditCapture{}
+	if _, err := w27RunContextStatePreflight(t, adapter, req, res, audit); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	_, err := chain.engine.BuildPreparedUpstreamRequestParts(context.Background(), req, account,
+		gatewaypreauth.GatewayFailureUsageContext{SystemAccountID: w27SysID, APIKeyID: w27KeyID, GroupID: w27GroupID},
+		"codex_responses")
+	if err == nil || !strings.Contains(err.Error(), "外部 previous_response_id 只能发送给原生 Responses 账号") {
+		t.Fatalf("dispatch external previous error = %v", err)
+	}
 }

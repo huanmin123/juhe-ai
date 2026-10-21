@@ -13,6 +13,7 @@ package main
 //     兜底契约）。
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -283,5 +284,39 @@ func TestChainFinalizationUsageCostSkippedWithoutPricingModel(t *testing.T) {
 	record := recorder.records[0]
 	if record.CostUsd != nil || record.CacheReadCostUsd != nil || record.CacheWriteCostUsd != nil {
 		t.Fatalf("定价模型名为空时三成本字段必须为 NULL: %+v", record)
+	}
+}
+
+// T36：generic_http 账户 vendor 为空时，计价身份由目标 models 行解析出的
+// vendor 提供（不是账户 connector、不是模型名猜 vendor）；usage 行 provider
+// 同步写解析值。
+func TestChainFinalizationUsageGenericResolvesModelVendor(t *testing.T) {
+	recorder := &capturingUsageRecorder{}
+	catalog := &fakeChainUsagePricingCatalog{cost: floatPtrOf(0.02)}
+	called := false
+	usage := chainFinalizationUsage{
+		recorder: recorder, pricing: catalog, syncPricingAllowed: true,
+		resolveModelVendor: func(_ context.Context, accountID, systemAccountID, upstreamModel string) (string, bool) {
+			called = true
+			if accountID != "acc_1" || systemAccountID != "owner_sys_acc" || upstreamModel != "gpt-request-alias" {
+				t.Fatalf("resolver input = %q/%q/%q", accountID, systemAccountID, upstreamModel)
+			}
+			return "gpt", true
+		},
+	}
+	input := completedAttemptCostInput()
+	input.UsageContext.ProviderCode = ""
+	usage.RecordCompletedUpstreamAttempt(input)
+	if !called {
+		t.Fatal("generic 账户必须调用模型 vendor 解析器")
+	}
+	if len(catalog.inputs) != 1 || catalog.inputs[0].ProviderCode != "gpt" {
+		t.Fatalf("pricing input = %+v, want ProviderCode=gpt", catalog.inputs)
+	}
+	if len(recorder.records) != 1 || recorder.records[0].ProviderCode != "gpt" {
+		t.Fatalf("record provider = %+v, want gpt", recorder.records)
+	}
+	if recorder.records[0].CostUsd == nil || *recorder.records[0].CostUsd != 0.02 {
+		t.Fatalf("CostUsd = %v, want 0.02", recorder.records[0].CostUsd)
 	}
 }

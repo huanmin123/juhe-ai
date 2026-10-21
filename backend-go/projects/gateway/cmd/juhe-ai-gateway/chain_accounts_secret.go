@@ -118,7 +118,7 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		return nil, nil
 	}
 	apiKeyPoolEnabled := chainAccountAPIKeyPoolIsolationEnabled(
-		row.resourceVendorCode(), row.resourceProtocolCode(), row.resourceProtocolVersion(), resourceType, credentials)
+		row.resourceVendorCode(), row.resourceConnectionDriverCode(), row.resourceProtocolCode(), row.resourceProtocolVersion(), resourceType, credentials)
 	resourceProxyProfileID := row.resourceProxyProfileID()
 	proxyProfile := chainResolveProxyURL(resourceProxyProfileID, options.proxyProfiles)
 
@@ -325,12 +325,13 @@ func chainFingerprintAPIKey(secret, key string) string {
 
 // chainAccountAPIKeyPoolIsolationEnabled mirrors
 // isAccountApiKeyPoolIsolationEnabled. vendorCode 承载账户连接身份（§8：行为
-// 键控按 vendor_code，generic 账户 vendor 为空串不命中名单）。
-func chainAccountAPIKeyPoolIsolationEnabled(vendorCode, protocolCode, protocolVersion, accountType string, credentials map[string]any) bool {
+// 键控按 vendor_code）；generic_http 账户 vendor 为空，但连接器本身支持
+// API Key 池隔离，按 connection_driver_code 放行。
+func chainAccountAPIKeyPoolIsolationEnabled(vendorCode, connectionDriverCode, protocolCode, protocolVersion, accountType string, credentials map[string]any) bool {
 	if accountType != "api_key" {
 		return false
 	}
-	if !chainAccountAPIKeyPoolProviderSupported(vendorCode, protocolCode, protocolVersion) {
+	if !chainAccountAPIKeyPoolProviderSupported(vendorCode, connectionDriverCode, protocolCode, protocolVersion) {
 		return false
 	}
 	return len(chainAccountAPIKeyEntries("", credentials)) > 1
@@ -338,7 +339,10 @@ func chainAccountAPIKeyPoolIsolationEnabled(vendorCode, protocolCode, protocolVe
 
 // chainAccountAPIKeyPoolProviderSupported mirrors
 // isAccountApiKeyPoolProviderSupported.
-func chainAccountAPIKeyPoolProviderSupported(vendorCode, protocolCode, protocolVersion string) bool {
+func chainAccountAPIKeyPoolProviderSupported(vendorCode, connectionDriverCode, protocolCode, protocolVersion string) bool {
+	if chainNormalizeProviderToken(connectionDriverCode) == "generic_http" {
+		return true
+	}
 	code := chainNormalizeProviderToken(vendorCode)
 	switch code {
 	case "openai", "gpt", "xai", "deepseek", "glm", "gemini", "hybrid", "anthropic":

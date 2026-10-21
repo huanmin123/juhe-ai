@@ -1998,7 +1998,7 @@ func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequ
 	if protocol != driverProtocolOpenAI && protocol != driverProtocolGemini {
 		return nil, nil
 	}
-	if chainVideoAdapterForAccount(account.VendorCode) == nil {
+	if chainVideoAdapterForAccount(account) == nil {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.VendorCode)
 	}
 	body := req.ParsedJSONObjectBody()

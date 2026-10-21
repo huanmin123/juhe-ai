@@ -52,3 +52,7 @@
 **已处理标记去重（SkipIfProcessed）行为钉**（`TestW27PostStageSkipIfProcessedMarkDedup`）：Post 阶段（`policy.Post=sanitize && SkipIfProcessed`）带标记 body 跳过清理（0 次调用、字节原样），无标记 body 恰 1 次调用——§5.4「后置遇到标记必须跳过」以调用次数取证。
 
 **验证口径**：`go test ./cmd/juhe-ai-gateway/ -run 'TestW27' -count=1`（定向）与 `go test ./internal/gatewaycodex/ -count=1`（桥服务回归）。本验收为纯测试 + 文档交付，生产代码零改动；验收未暴露需修复的清理维度缺陷，暴露的接线现状（引擎端口未装配）已在上文登记并属 §5.4 语义下的后续立项决策。
+
+## T32 接线（2026-10-21）
+
+`engine.CodexBridge` 已在组合根接线：`codexPreflightAdapter` 同时实现 `gatewaydispatch.CodexBridgePort`，`chain_compose.go` 在桥依赖齐备时赋值 `engine.CodexBridge`，与 preauth 共用同一 `ChatBridgeStateService` 与 `ContextRequestStateRegistry`。新增 dispatch 级验收：`TestW32EngineBridgeWiredDispatchRestores`（恢复历史合并进出站 body、删除内部 `previous_response_id`）、`TestW32EngineBridgeWiredNativeAccountNotTakenOver`（native Responses 不被接管）、`TestW32EngineBridgeWiredRejectsExternalPrevious`（外部 previous 在真实 dispatch 准备口拒绝）；`TestW27Combo1..7` 保持通过。上表组合 2/4/7 中“dispatch body 保留原始 `previous_response_id`”是 T27 时点记录；T32 后 bridge 账户的 dispatch body 已消费恢复产物。

@@ -234,6 +234,13 @@ func TestW13g2ProvisionGuards(t *testing.T) {
 		VALUES ('tg_p13_off', '停用', 'grantee', 'active', 0, '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
+	// 超级分组不得直接持有 group_accounts 行（超级分组设计 §5）：授权实例
+	// 供给的目标分组路径必须返回带 group_kind_conflict 的领域错误。必须在
+	// 开启事务前写入，避免 SQLite 单连接下 tx 与 db 互等。
+	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, group_kind, updated_at)
+		VALUES ('tg_p13_super', '超级', 'grantee', 'active', 1, 0, 'super', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	tx = w13g2Tx(t, f)
 	_, err := f.store.groupIDForAuthorizationBinding(ctx, tx, "gpt", "grantee", "tg_p13_off")
 	if err == nil || !strings.Contains(err.Error(), "停用") {
@@ -246,6 +253,12 @@ func TestW13g2ProvisionGuards(t *testing.T) {
 	_, err = f.store.groupIDForAuthorizationBinding(ctx, tx, "gpt", "grantee", "tg_missing")
 	if err == nil || !strings.Contains(err.Error(), "不存在") {
 		t.Fatalf("缺失目标分组应 failf: %v", err)
+	}
+	// 超级分组不得直接持有 group_accounts 行（超级分组设计 §5）：授权实例
+	// 供给的目标分组路径必须返回带 group_kind_conflict 的领域错误。
+	_, err = f.store.groupIDForAuthorizationBinding(ctx, tx, "gpt", "grantee", "tg_p13_super")
+	if fail, ok := err.(*Fail); !ok || fail.Code != "group_kind_conflict" {
+		t.Fatalf("超级分组目标应返回 group_kind_conflict: %#v", err)
 	}
 	if _, err := f.store.groupIDForAuthorizationBinding(w13g2CanceledCtx(), tx, "gpt", "grantee", "tg_p13"); err == nil {
 		t.Fatalf("canceled groupID 应失败")

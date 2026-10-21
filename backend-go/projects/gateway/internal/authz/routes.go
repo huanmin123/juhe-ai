@@ -448,7 +448,7 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		var fail *Fail
 		var conflict *Conflict
 		if errorsAsFail(err, &fail) {
-			kernel.WriteBadRequest(w, fail.Message)
+			writeFail(w, fail)
 			return
 		}
 		if errorsAsConflict(err, &conflict) {
@@ -765,7 +765,7 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 		// infrastructure errors and land on the 500 channel with the cause.
 		var fail *Fail
 		if errorsAsFail(err, &fail) {
-			kernel.WriteBadRequest(w, fail.Message)
+			writeFail(w, fail)
 			return
 		}
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "修改授权失败", err)
@@ -830,6 +830,16 @@ func errorsAsFail(err error, target **Fail) bool {
 		return true
 	}
 	return false
+}
+
+// writeFail 保留既有纯消息 400；带 Code 的领域错误按 {code,message} 渲染
+// （超级分组绑定守卫）。两类响应都是 400，前端可继续按 message 兜底。
+func writeFail(w http.ResponseWriter, fail *Fail) {
+	if fail.Code != "" {
+		kernel.WriteJSON(w, http.StatusBadRequest, map[string]any{"code": fail.Code, "message": fail.Message})
+		return
+	}
+	kernel.WriteBadRequest(w, fail.Message)
 }
 
 func errorsAsConflict(err error, target **Conflict) bool {

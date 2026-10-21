@@ -142,6 +142,19 @@ func (m *SQLReadModels) ListProviderModelCatalog(ctx context.Context, input Mode
 	return m.catalog.ListProviderModelCatalog(ctx, input)
 }
 
+// ListAccountSupportedModelCatalog delegates to the wired CatalogSource when it
+// also implements the account-scoped seam.
+func (m *SQLReadModels) ListAccountSupportedModelCatalog(ctx context.Context, accountID, systemAccountID string) ([]ProviderModelCatalogItem, error) {
+	if m.catalog == nil {
+		return nil, errors.New("gatewayruntimecache 模型目录源未接线（CatalogSource）")
+	}
+	source, ok := m.catalog.(AccountModelCatalogSource)
+	if !ok || source == nil {
+		return nil, errors.New("gatewayruntimecache 账户模型目录源未接线（AccountModelCatalogSource）")
+	}
+	return source.ListAccountSupportedModelCatalog(ctx, accountID, systemAccountID)
+}
+
 // ModelsDirectoryEntry 是 models 目录可见性行的路由判定子集（供应商与上游协
 // 议面重构设计 §2.1/§6.1）：public_model 原值 + scope + personal 行的属主。
 type ModelsDirectoryEntry struct {

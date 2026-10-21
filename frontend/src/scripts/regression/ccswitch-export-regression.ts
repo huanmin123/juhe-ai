@@ -8,8 +8,6 @@ import {
   buildCcSwitchExportUrl,
   canSubmitCcSwitchExport,
   ccswitchClientOptions,
-  defaultCcSwitchClientAppForGroups,
-  defaultCcSwitchClientAppForProvider,
   isCcSwitchExportModelSelectionValid,
   shouldLoadCcSwitchExportModelOptions
 } from '../../views/api-keys/ccswitchExport'
@@ -47,10 +45,9 @@ const modelOptionalUrl = new URL(buildCcSwitchExportUrl({
 }))
 assert.equal(modelOptionalUrl.searchParams.get('app'), 'claude')
 assert.equal(modelOptionalUrl.searchParams.has('model'), false)
-assert.equal(canSubmitCcSwitchExport({ groupId: 'group-openai', app: 'codex', modelsReady: true }), true)
-assert.equal(canSubmitCcSwitchExport({ groupId: 'group-openai', app: 'codex', modelsReady: false }), false)
-assert.equal(canSubmitCcSwitchExport({ groupId: 'group-openai', app: 'codex', modelsLoading: true, modelsReady: true }), false)
-assert.equal(canSubmitCcSwitchExport({ groupId: 'group-openai', modelsReady: true }), false)
+assert.equal(canSubmitCcSwitchExport({ app: 'codex' }), true)
+assert.equal(canSubmitCcSwitchExport({ app: 'codex', modelsLoading: true }), false)
+assert.equal(canSubmitCcSwitchExport({}), false)
 assert.deepEqual(ccswitchClientOptions, [
   { label: 'Codex', value: 'codex' },
   { label: 'Claude CLI', value: 'claude' },
@@ -59,13 +56,6 @@ assert.deepEqual(ccswitchClientOptions, [
   { label: 'Grok Build', value: 'grokbuild' },
   { label: 'OpenCode', value: 'opencode' }
 ])
-assert.equal(defaultCcSwitchClientAppForProvider('gpt'), 'codex')
-assert.equal(defaultCcSwitchClientAppForProvider('openai'), 'codex')
-assert.equal(defaultCcSwitchClientAppForProvider('anthropic'), 'claude')
-assert.equal(defaultCcSwitchClientAppForProvider('gemini'), 'gemini')
-assert.equal(defaultCcSwitchClientAppForProvider('xai'), 'grokbuild')
-assert.equal(defaultCcSwitchClientAppForProvider('deepseek'), undefined)
-
 const groups = buildCcSwitchExportGroupOptions([
   {
     id: 'binding-openai',
@@ -119,13 +109,8 @@ assert.deepEqual(groups, [{
   groupName: 'OpenAI 分组',
   providerCode: 'openai',
   providerName: 'OpenAI',
-  defaultModel: 'gpt-5.4-mini'
+  defaultModel: ''
 }])
-assert.equal(defaultCcSwitchClientAppForGroups(groups), 'codex')
-assert.equal(defaultCcSwitchClientAppForGroups([
-  ...groups,
-  { ...groups[0], groupId: 'group-gemini', providerCode: 'gemini' }
-]), undefined)
 assert.deepEqual(buildCcSwitchExportModelOptions([
   { label: 'GPT 5.4', value: 'gpt-5.4' },
   { label: 'GPT 5.4', value: 'gpt-5.4' },
@@ -167,7 +152,7 @@ const [ccsModalSource, apiKeysViewSource] = await Promise.all([
   readFile(new URL('../../views/api-keys/ApiKeyCcsExportModal.vue', import.meta.url), 'utf8'),
   readFile(new URL('../../views/api-keys/ApiKeysView.vue', import.meta.url), 'utf8')
 ])
-assert.match(ccsModalSource, /:disabled="!modelsReady"/, '已有模型目录时，模型下拉不得因后台刷新而被锁住')
+assert.match(ccsModalSource, /:disabled="!selectedGroupId \|\| !modelsReady"/, '模型下拉仅在选中参考分组且目录就绪时启用')
 assert.doesNotMatch(ccsModalSource, /:disabled="!modelsReady \|\| modelsLoading"/, '模型下拉不能在打开时立即被自身刷新锁住')
 assert.match(apiKeysViewSource, /:model-options="ccsExportModelOptions"/, '父页面必须传入模型候选')
 assert.match(apiKeysViewSource, /:models-loading="ccsExportModelsLoading"/, '父页面必须传入模型加载状态')

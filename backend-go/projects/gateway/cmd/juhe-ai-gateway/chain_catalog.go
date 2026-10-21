@@ -187,6 +187,66 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 	return out, nil
 }
 
+// accountModelCatalogColumns 在统一目录列集上追加 upstream_model：账户作用域
+// 目录必须同时给出 model_id（ID）、vendor（ProviderCode）、public/upstream 名，
+// 计价与模型映射才能按真实 models 行解析，不靠名字猜 vendor。
+var accountModelCatalogColumns = func() [][2]string {
+	columns := make([][2]string, 0, len(chainCatalogColumns)+1)
+	columns = append(columns, chainCatalogColumns...)
+	columns = append(columns, [2]string{"upstream_model", "upstreamModel"})
+	return columns
+}()
+
+// ListAccountSupportedModelCatalog 实现 gatewayruntimecache.AccountModelCatalogSource：
+// 只返回 account_supported_models 显式绑定的 active models 行，保留完整目录
+// 元数据（context window、reasoning、价格、modes/protocols 派生）。generic_http
+// 账户的 vendor_code 为空不再导致空目录；不按 vendor 聚合、不伪造 custom。
+func (s *chainCatalogSource) ListAccountSupportedModelCatalog(ctx context.Context, accountID, systemAccountID string) ([]gatewayruntimecache.ProviderModelCatalogItem, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return []gatewayruntimecache.ProviderModelCatalogItem{}, nil
+	}
+	query := fmt.Sprintf(`SELECT %s FROM (
+		SELECT models.* FROM %s models
+		INNER JOIN %s supported ON supported.model_id = models.id
+		WHERE supported.account_id = ?
+		  AND models.status = 'active'
+		  AND (models.scope IN ('builtin', 'global')
+		       OR (models.scope = 'personal' AND models.system_account_id = ?))
+	) models
+	ORDER BY catalog_order ASC, lower(public_model) ASC, id ASC`,
+		catalogColumnList(accountModelCatalogColumns), s.table("models"), s.table("account_supported_models"))
+	rows, err := s.db.QueryContext(ctx, s.bind(query), accountID, strings.TrimSpace(systemAccountID))
+	if err != nil {
+		return nil, err
+	}
+	scanned, err := scanCatalogRows(rows, accountModelCatalogColumns, decorateAccountModelCatalogRow)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]gatewayruntimecache.ProviderModelCatalogItem, 0, len(scanned))
+	for _, item := range scanned {
+		if !chainIsSupportedCatalogModel(item) {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(left, right int) bool {
+		return chainCompareCatalogItems(out[left], out[right]) < 0
+	})
+	return out, nil
+}
+
+// decorateAccountModelCatalogRow 按行 scope 复用 builtin/custom 装饰器：
+// builtin 行走静态能力兜底，global/personal 行走 custom 来源标记；两条路径
+// 都从 supported_endpoint_modes_json 反推 mode/supportedApiProtocols。
+func decorateAccountModelCatalogRow(row map[string]any) {
+	if scope, _ := row["scope"].(string); scope == "builtin" {
+		decorateBuiltinCatalogRow(row)
+		return
+	}
+	decorateCustomCatalogRow(row)
+}
+
 // chainCatalogHybridProviderCode / chainCatalogOpenAICompatibleProviderCode
 // mirror the providerProtocol.ts tokens；协议子供应商源扩展（原
 // chainCatalogProtocolPairs + provider-definition ceiling）已随

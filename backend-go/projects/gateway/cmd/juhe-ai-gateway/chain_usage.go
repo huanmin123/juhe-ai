@@ -248,7 +248,7 @@ func (s chainAttemptAuditSink) StartAttempt(input gatewaydispatch.StartAttemptIn
 		HasBody:      len(input.Body) > 0,
 		Model:        requestModelHintOf(input.RequestForModelAccounting),
 		// 3.5：尝试级审计行 group_id 按所服务账号 BoundGroupID 显式覆盖
-		// （merge 按账号记账），空回落请求级窗口组快照。
+		// （超级分组按成员账号记账），空回落请求级窗口组快照。
 		GroupIDOverride: usageAccountGroupIDOverride(input.Account),
 	})
 }
@@ -304,9 +304,9 @@ func (s chainAttemptAuditSink) RecordFailedDispatchAttempt(input gatewaydispatch
 	})
 }
 
-// usageAccountGroupIDOverride 解析尝试级记账的账号组覆盖值（合并路由设计
-// 3.5）：账号 BoundGroupID 非空时返回该组（账号按组加载后 merge 池全量组
-// 标），为空返回空串（回落窗口组）。gatewaydispatch.AccountCandidate 即
+// usageAccountGroupIDOverride 解析尝试级记账的账号组覆盖值（超级分组设计
+// §4.2）：账号 BoundGroupID 非空时返回该成员组（超级分组按成员片段组标），
+// 为空返回空串（回落窗口组）。gatewaydispatch.AccountCandidate 即
 // gatewayruntimecache.OpenAIAccountSecret 的类型别名，直接取值。
 func usageAccountGroupIDOverride(account gatewaydispatch.AccountCandidate) string {
 	if account.BoundGroupID == nil {
@@ -329,6 +329,10 @@ type chainFinalizationUsage struct {
 	// ServiceConfig.SyncPricingAllowed 同一字面量，chain_compose.go）。
 	pricing            gatewayusage.PricingCatalog
 	syncPricingAllowed bool
+	// resolveModelVendor 解析账户显式绑定的目标 models 行 vendor：generic_http
+	// 账户（账户 vendor 为空）计价时必须按 model_id 对应的 models.vendor_code
+	// 查价，不得按空账户 vendor 或模型名猜 vendor。nil 保持旧路径（仅测试）。
+	resolveModelVendor func(ctx context.Context, accountID, systemAccountID, upstreamModel string) (string, bool)
 	// requestedModel / sourceEndpointFamily / models 是按请求注入的运行时同源
 	// 值：失败记账用 requestedModel（完成路径的 CompletedAttemptInput 自带
 	// RequestedModel，无需重复注入）；family 必须与派发链模型改写同源
@@ -470,9 +474,23 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	// vendor 身份：账号视图优先（承载 vendor 语义），空回落 usage context；
 	// UsageRecordInput.ProviderCode 字段现承载 vendor 值（usage 行表列改造属
 	// 后续 usage 列切片），同步计价目录同键查找。
-	providerCode, providerProtocolProfileID := finalizationAccountProviderOf(input.Account)
-	providerCode = firstNonEmptyChainUsage(providerCode, input.UsageContext.ProviderCode)
+	accountVendorCode, providerProtocolProfileID := finalizationAccountProviderOf(input.Account)
+	providerCode := firstNonEmptyChainUsage(accountVendorCode, input.UsageContext.ProviderCode)
 	catalogSystemAccountID := chainCatalogSystemAccountID(input.Account, input.UsageContext.SystemAccountID)
+	// generic_http 账户 vendor 为空：按 account_supported_models.model_id 对应
+	// 的真实 models.vendor_code 计价（设计 §3「模型由 vendor_code 选择计费
+	// 驱动、通用连接器不是价格归属」）。即使 usage context 带了旧 provider
+	// 值，也以账户 vendor 为空为准重新解析；解析不唯一时保持空值 → cost
+	// NULL，不静默按账户 vendor 或首个候选降级。
+	if strings.TrimSpace(accountVendorCode) == "" && u.resolveModelVendor != nil {
+		if view, ok := input.Account.(gatewayresponse.OpenAIAccountView); ok {
+			lookupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if vendor, resolved := u.resolveModelVendor(lookupCtx, view.Account.ID, catalogSystemAccountID, accounting.upstreamModel); resolved {
+				providerCode = vendor
+			}
+			cancel()
+		}
+	}
 	pricingModel := u.resolveFinalizationPricingModel(providerCode, catalogSystemAccountID, accounting.upstreamModel)
 	modelMappingApplied := accounting.modelMappingApplied
 	record := gatewayusage.UsageRecordInput{
@@ -643,7 +661,7 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 // usageModelAccountOf 的 UsageAccessFields 投影面；非 OpenAIAccountView 的
 // 测试实现保持零值，归一化按缺失 scope 清空 accountId，与 Node 行为一致）。
 //
-// 合并路由设计 3.5（按账号所属组记账）：账号 BoundGroupID 非空时，该尝试记
+// 超级分组设计 §4.2（按账号所属组记账）：账号 BoundGroupID 非空时，该尝试记
 // 录的 GroupID 与访问五元组（GroupOwnerSystemAccountID / GroupAccessType /
 // GroupAuthorizationID / SourceType / SourceTeamID）整体取账号自带值——账号
 // 按组加载时已由该组 groupAccess 填充（chain_accounts_secret.go），整体替换
@@ -954,4 +972,42 @@ func usageStableHash(value string) int {
 		hash *= 16777619
 	}
 	return int(hash)
+}
+
+// resolveAccountModelVendor 从账户显式绑定的真实 models 行解析目标模型
+// vendor（供应商与上游协议面重构设计 §3：模型由 vendor_code 选择计费驱动；
+// 通用连接器不是价格归属）。generic_http 账户 vendor 为空，但
+// account_supported_models.model_id 能唯一指向 models 行；命中 0 个或多个时
+// 返回 false，由调用方保持 cost NULL 并停止该笔计价，不静默降级。
+func (c *gatewayChain) resolveAccountModelVendor(ctx context.Context, accountID, systemAccountID, upstreamModel string) (string, bool) {
+	if c == nil || c.cache == nil {
+		return "", false
+	}
+	accountID = strings.TrimSpace(accountID)
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if accountID == "" || upstreamModel == "" {
+		return "", false
+	}
+	items, err := c.cache.ListAccountSupportedModelCatalogAsync(ctx, accountID, systemAccountID)
+	if err != nil {
+		return "", false
+	}
+	vendor := ""
+	matches := 0
+	for _, item := range items {
+		if strings.TrimSpace(item.UpstreamModel) != upstreamModel && strings.TrimSpace(item.Model) != upstreamModel {
+			continue
+		}
+		candidate := strings.TrimSpace(item.ProviderCode)
+		if candidate == "" {
+			// vendor_code=NULL 的手工模型：继续走既有手工价格契约。
+			continue
+		}
+		vendor = candidate
+		matches++
+	}
+	if matches != 1 {
+		return "", false
+	}
+	return vendor, true
 }

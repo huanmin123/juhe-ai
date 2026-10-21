@@ -449,7 +449,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		chainRoutingCache{cache: deps.Cache},
 		chainCapabilityFilter{},
 	)
-	// merge（B14）：解析期逐片段配额批查与 dispatch 窗口门共用同一 G07 服务
+	// 超级分组解析期逐片段配额批查与 dispatch 窗口门共用同一 G07 服务
 	// （chainDispatchQuota → gatewaydispatch.AuthorizationQuotaChecker）。
 	routeResolver := &chainRouteResolver{cache: deps.Cache, normal: normalRoute, quota: newChainDispatchQuota(deps.AuthzQuota)}
 
@@ -816,6 +816,13 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			affinity:      dispatchSessionAffinity,
 			groupAffinity: deps.GroupAffinity,
 		}
+	}
+
+	// T32：同一真实桥适配器同时接入 engine.CodexBridge（此前只有 preauth
+	// 适配器接线，engine 侧恒 nil，bridge 账户的 dispatch body 拿不到恢复
+	// 历史）。显式注入的非本适配器类型保持注入方语义。
+	if adapter, ok := codexBridge.(codexPreflightAdapter); ok && adapter.bridge != nil {
+		engine.CodexBridge = adapter
 	}
 
 	// T5（BUG-0274 残余）接线：compact 合成摘要 dispatcher。桥装配（本函数

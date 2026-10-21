@@ -39,7 +39,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
@@ -51,6 +50,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // ---------------------------------------------------------------------------
@@ -256,14 +256,33 @@ func chainVideoAdapterKeyOfProvider(providerCode string) string {
 	}
 }
 
-// chainVideoAdapterForAccount 解析账户的视频 adapter；nil 表示该 provider 无
-// 视频 adapter（调用方按能力缺失处理）。
-func chainVideoAdapterForAccount(providerCode string) gatewaymedia.VideoProviderAdapter {
-	key := chainVideoAdapterKeyOfProvider(providerCode)
+// chainVideoAdapterForAccount 解析账户的视频 adapter；nil 表示该账户没有
+// 可用的视频 adapter（调用方按能力缺失处理）。real vendor 优先；generic_http
+// 账户 vendor 为空时按冻结的连接协议面回退：openai_v1 → openai adapter、
+// gemini_v1beta → gemini adapter（连接器 registry 明确允许这两族的 video 域，
+// 不得因为 vendor 为空而拒绝，也不得反向收窄 registry）。
+func chainVideoAdapterForAccount(account gatewaydispatch.AccountCandidate) gatewaymedia.VideoProviderAdapter {
+	key := chainVideoAdapterKeyForIdentity(account.VendorCode, account.ProtocolCode)
 	if key == "" {
 		return nil
 	}
 	return gatewaymedia.VideoAdapterForProvider(key)
+}
+
+// chainVideoAdapterKeyForIdentity 是视频 adapter 的统一身份解析：real vendor
+// 优先；vendor 为空（generic_http）时按协议面回退。媒体任务面只有
+// chainMediaJobAccount 的列式快照，复用本函数避免再造候选结构。
+func chainVideoAdapterKeyForIdentity(vendorCode, protocolCode string) string {
+	key := chainVideoAdapterKeyOfProvider(vendorCode)
+	if key == "" {
+		switch normalizeProtocol(protocolCode) {
+		case driverProtocolOpenAI:
+			key = "openai"
+		case driverProtocolGemini:
+			key = "gemini"
+		}
+	}
+	return key
 }
 
 // chainAudioJobAdapterKeyOfProvider 把账户 provider_code 归一为长转写
@@ -321,20 +340,27 @@ type chainMediaJobTaskAdapter interface {
 }
 
 // chainMediaJobTaskAdapterFor 按任务种类解析账户的任务面 adapter；nil 表示
-// 该 provider 无该 kind 的 adapter（调用方按能力缺失处理）。
-func chainMediaJobTaskAdapterFor(kind gatewaymedia.MediaJobKind, providerCode string) chainMediaJobTaskAdapter {
+// 该账户无该 kind 的 adapter（调用方按能力缺失处理）。视频面与创建计划共用
+// chainVideoAdapterForAccount 的 vendor/协议面解析；长转写仍只认 qwen/volcengine。
+func chainMediaJobTaskAdapterFor(kind gatewaymedia.MediaJobKind, vendorCode, protocolCode string) chainMediaJobTaskAdapter {
 	switch kind {
 	case gatewaymedia.JobKindAudioTranscription:
-		return chainAudioJobAdapterForAccount(providerCode)
+		return chainAudioJobAdapterForAccount(vendorCode)
 	default:
-		return chainVideoJobTaskAdapterShell{chainVideoAdapterForAccount(providerCode)}
+		key := chainVideoAdapterKeyForIdentity(vendorCode, protocolCode)
+		if key == "" {
+			return nil
+		}
+		return chainVideoJobTaskAdapterShell{gatewaymedia.VideoAdapterForProvider(key)}
 	}
 }
 
 // chainVideoJobTaskAdapterShell 把视频任务 adapter 适配到统一任务面消费形状
 //（视频面全部为 body 驱动协议，header 位恒 nil；头驱动位由火山长转写臂的
 // AudioJobProviderAdapter 直接满足——契约 §9.2 长转写臂）。
-type chainVideoJobTaskAdapterShell struct{ inner gatewaymedia.VideoProviderAdapter }
+type chainVideoJobTaskAdapterShell struct {
+	inner gatewaymedia.VideoProviderAdapter
+}
 
 func (s chainVideoJobTaskAdapterShell) Provider() string { return s.inner.Provider() }
 
@@ -352,7 +378,9 @@ func (s chainVideoJobTaskAdapterShell) BuildContentRequest(upstreamJobID string)
 	return method, path, nil, nil
 }
 
-func (s chainVideoJobTaskAdapterShell) ContentFromArtifact() bool { return s.inner.ContentFromArtifact() }
+func (s chainVideoJobTaskAdapterShell) ContentFromArtifact() bool {
+	return s.inner.ContentFromArtifact()
+}
 
 func (s chainVideoJobTaskAdapterShell) BuildCancelRequest(upstreamJobID string) (string, string) {
 	return s.inner.BuildCancelRequest(upstreamJobID)
@@ -446,7 +474,7 @@ func chainVideoCreatePlanOf(body map[string]any, req *gatewaypreauth.GatewayRequ
 	// 供应商身份源（供应商与上游协议面重构设计 §1.1/§2.1 切片）：创建计划
 	// 是 driver 出站构造与创建响应面/媒体车道预过滤的共用入口，adapter 身份
 	// 键取 VendorCode。
-	adapter := chainVideoAdapterForAccount(account.VendorCode)
+	adapter := chainVideoAdapterForAccount(account)
 	if adapter == nil {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.VendorCode)
 	}
@@ -1003,7 +1031,7 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 	}
 	// 供应商身份源（供应商与上游协议面重构设计 §1.1/§2.1 切片）：任务面
 	// adapter 解析键与创建计划一致，取 VendorCode。
-	adapter := chainMediaJobTaskAdapterFor(kind, dispatched.Account.VendorCode)
+	adapter := chainMediaJobTaskAdapterFor(kind, dispatched.Account.VendorCode, dispatched.Account.ProtocolCode)
 	if adapter == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "上游账户缺少"+jobLabel+"任务 adapter，任务受理中断", "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
@@ -1108,7 +1136,7 @@ func chainVideoRequestBodyOf(req *gatewaypreauth.GatewayRequest) map[string]any 
 
 // chainMediaJobSnapshotScopeOf 把创建时派发上下文的记账 scope 五元组冻结进
 // request_snapshot（任务终态 usage 行身份维度，媒体设计 §10）。取值与
-// applyUsageAccountScope 同源（chain_usage.go 合并路由 3.5）：Account scope
+// applyUsageAccountScope 同源（chain_usage.go 超级分组设计 §4.2）：Account scope
 // 取账户视图；账户 BoundGroupID 非空时 Group scope 整体取账户自带五元组，
 // 否则取派发 UsageContext 的窗口组五元组——避免"组 ID 属账号组、五元组属
 // 窗口组"的混合记录。投影侧（终态 usage 行）经 NormalizeUsageRecordInput
@@ -1237,7 +1265,7 @@ func (c *gatewayChain) loadMediaVideoAccount(ctx context.Context, res *gatewaypr
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务账户不可用（已删除或禁用）", "media_job_unreachable")
 		return nil
 	}
-	if chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode) == nil {
+	if chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode) == nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusServiceUnavailable, "媒体任务账户供应商暂不支持该种类媒体任务面", "media_job_unreachable")
 		return nil
 	}
@@ -1329,7 +1357,7 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 	if account == nil {
 		return
 	}
-	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode)
+	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode)
 	method, path, pollHeader, pollBody := adapter.BuildPollRequest(record.UpstreamJobID)
 	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, record.Kind, method, path, pollHeader, pollBody)
 	if upstreamErr != nil {
@@ -1421,7 +1449,7 @@ func (c *gatewayChain) serveMediaJobContent(ctx context.Context, res *gatewaypre
 	if account == nil {
 		return
 	}
-	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode)
+	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode)
 	defaultContentType := "video/mp4"
 	if record.Kind == gatewaymedia.JobKindAudioTranscription {
 		defaultContentType = "application/json"
@@ -1490,7 +1518,7 @@ func (c *gatewayChain) serveMediaJobCancel(ctx context.Context, res *gatewayprea
 	if account == nil {
 		return
 	}
-	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode)
+	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode)
 	if !adapter.SupportsCancel() {
 		// UpdateStatus 的非终态守卫：0 行 = 行已终态（并发轮询/清理先落终态），
 		// 不把终态行回退为 cancelled；本地收敛语义已达成，仍回 204。
@@ -1790,7 +1818,7 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 	if kind == gatewaymedia.JobKindAudioTranscription {
 		adapterKey = chainAudioJobAdapterKeyOfProvider(account.ProviderCode)
 	} else {
-		adapterKey = chainVideoAdapterKeyOfProvider(account.ProviderCode)
+		adapterKey = chainVideoAdapterKeyForIdentity(account.ProviderCode, account.ProtocolCode)
 	}
 	if adapterKey == "" {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 无该种类媒体任务 adapter", account.ID, account.ProviderCode)

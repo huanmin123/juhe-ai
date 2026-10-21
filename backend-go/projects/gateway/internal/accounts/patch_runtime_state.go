@@ -304,11 +304,11 @@ func changesHaveField(changes []PatchChange, field string) bool {
 // isAccountAPIKeyPoolIsolationEnabled mirrors isAccountApiKeyPoolIsolationEnabled
 // (account-api-key-rotation.ts:141-155): api_key accounts on a supported
 // provider with more than one effective key run the isolated Key pool.
-func isAccountAPIKeyPoolIsolationEnabled(providerCode, protocolCode, protocolVersion, accountType string, credentials Credentials) bool {
+func isAccountAPIKeyPoolIsolationEnabled(providerCode, connectionDriverCode, protocolCode, protocolVersion, accountType string, credentials Credentials) bool {
 	if accountType != "api_key" {
 		return false
 	}
-	if !isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion) {
+	if !isAccountAPIKeyPoolProviderSupported(providerCode, connectionDriverCode, protocolCode, protocolVersion) {
 		return false
 	}
 	return EffectiveAccountApiKeyCount(credentials) > 1
@@ -316,7 +316,10 @@ func isAccountAPIKeyPoolIsolationEnabled(providerCode, protocolCode, protocolVer
 
 // isAccountAPIKeyPoolProviderSupported mirrors
 // isAccountApiKeyPoolProviderSupported (account-api-key-rotation.ts:157-171).
-func isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion string) bool {
+func isAccountAPIKeyPoolProviderSupported(providerCode, connectionDriverCode, protocolCode, protocolVersion string) bool {
+	if normalizeProviderToken(connectionDriverCode) == "generic_http" {
+		return true
+	}
 	normalized := normalizeProviderToken(providerCode)
 	if normalized == openAICompatibleProviderCodeConstant || normalized == gptVendorCode {
 		return true

@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 )
 
 // serveMediaJobsCenterContent 服务任务中心两面的内容获取路由。ownerScoped
@@ -67,7 +67,7 @@ func (c *gatewayChain) serveMediaJobsCenterContent(w http.ResponseWriter, r *htt
 		writeMediaJobsCenterError(w, http.StatusServiceUnavailable, "媒体任务账户不可用（已删除或禁用）")
 		return
 	}
-	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode)
+	adapter := chainMediaJobTaskAdapterFor(record.Kind, account.ProviderCode, account.ProtocolCode)
 	if adapter == nil {
 		writeMediaJobsCenterError(w, http.StatusServiceUnavailable, "该任务种类暂不支持内容获取")
 		return

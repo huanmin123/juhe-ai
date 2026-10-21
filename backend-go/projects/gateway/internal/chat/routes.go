@@ -106,6 +106,9 @@ type Deps struct {
 	Executor GenerationExecutor
 	// ModelCatalog lists group accounts and provider model catalogs.
 	ModelCatalog ModelCatalog
+	// AccountModelCatalog resolves the exact models bound to one account; used
+	// when the account has no vendor (generic_http). Optional.
+	AccountModelCatalog AccountModelCatalog
 	// ChatKeys provisions and resolves the chat-scoped API key.
 	ChatKeys ChatAPIKeyProvider
 	// GatewayKeys validates gateway API keys (group bindings + image flag).

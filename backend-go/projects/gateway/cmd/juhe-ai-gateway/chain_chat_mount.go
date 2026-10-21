@@ -65,15 +65,16 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	}
 	compactions := chat.NewCompactionService(store, executor, tokenCount, chatNow)
 	deps := &chat.Deps{
-		Store:          store,
-		RequireSession: composed.authDeps.RequireSession(true),
-		Hub:            hub,
-		Generations:    hub,
-		AttachStream:   chatAttachStreamHandler(hub),
-		Executor:       executor,
-		ModelCatalog:   chatModelCatalog{cache: services.Cache},
-		ChatKeys:       newChatAPIKeyProvider(composed.db, composed.pgDialect, cfg.Secret),
-		GatewayKeys:    chatGatewayKeyValidator{cache: services.Cache},
+		Store:               store,
+		RequireSession:      composed.authDeps.RequireSession(true),
+		Hub:                 hub,
+		Generations:         hub,
+		AttachStream:        chatAttachStreamHandler(hub),
+		Executor:            executor,
+		ModelCatalog:        chatModelCatalog{cache: services.Cache},
+		AccountModelCatalog: chatModelCatalog{cache: services.Cache},
+		ChatKeys:            newChatAPIKeyProvider(composed.db, composed.pgDialect, cfg.Secret),
+		GatewayKeys:         chatGatewayKeyValidator{cache: services.Cache},
 		// AI 问答会话账户绑定的解析校验端口（accounts.Store 只读查询
 		// FindChatAccount）：账户选择/切换与发送前置校验的存在性 + 启用口径。
 		AccountLookup: accountLookup,

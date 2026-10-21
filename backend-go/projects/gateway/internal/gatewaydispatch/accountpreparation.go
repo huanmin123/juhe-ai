@@ -373,17 +373,22 @@ func isAccountApiKeyPoolIsolationEnabled(account AccountCandidate, entries []api
 	if account.Type != "api_key" {
 		return false
 	}
-	if !isAccountAPIKeyPoolProviderSupported(account.ProviderCode, account.ProtocolCode, account.ProtocolVersion) {
+	if !isAccountAPIKeyPoolProviderSupported(account.ProviderCode, account.ConnectionDriverCode, account.ProtocolCode, account.ProtocolVersion) {
 		return false
 	}
 	return len(entries) > 1
 }
 
 // isAccountAPIKeyPoolProviderSupported mirrors
-// isAccountApiKeyPoolProviderSupported（归档 :157-171）：openai-compatible
+// isAccountAPIKeyPoolProviderSupported（归档 :157-171）：openai-compatible
 // 供应商码族（openai/gpt）、deepseek、glm、gemini、anthropic 供应商，或
 // anthropic 协议 profile（protocolCode=anthropic 且 protocolVersion=v1）。
-func isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVersion string) bool {
+// generic_http 是连接器而非供应商，按 connection_driver_code 放行；不得把空
+// vendor 加到供应商字符串白名单里。
+func isAccountAPIKeyPoolProviderSupported(providerCode, connectionDriverCode, protocolCode, protocolVersion string) bool {
+	if normalizeProviderToken(connectionDriverCode) == "generic_http" {
+		return true
+	}
 	switch normalizeProviderToken(providerCode) {
 	case "openai", "gpt", "deepseek", "glm", "gemini", "anthropic":
 		return true

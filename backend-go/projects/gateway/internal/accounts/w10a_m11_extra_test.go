@@ -76,25 +76,29 @@ func TestW10AErrorTypeMessages(t *testing.T) {
 func TestW10AIsAPIKeyPoolProviderSupported(t *testing.T) {
 	// openai 兼容 / gpt。
 	for _, code := range []string{openAICompatibleProviderCodeConstant, gptVendorCode, "OPENAI", "Gpt"} {
-		if !isAccountAPIKeyPoolProviderSupported(code, "", "") {
+		if !isAccountAPIKeyPoolProviderSupported(code, "", "", "") {
 			t.Fatalf("%s 应支持 API Key 池", code)
 		}
 	}
 	// deepseek / glm / gemini。
 	for _, code := range []string{"deepseek", "glm", "gemini"} {
-		if !isAccountAPIKeyPoolProviderSupported(code, "", "") {
+		if !isAccountAPIKeyPoolProviderSupported(code, "", "", "") {
 			t.Fatalf("%s 应支持 API Key 池", code)
 		}
 	}
+	// generic_http 连接器（vendor 为空）。
+	if !isAccountAPIKeyPoolProviderSupported("", "generic_http", "openai", "v1") {
+		t.Fatal("generic_http 应支持 API Key 池")
+	}
 	// anthropic 协议档案。
-	if !isAccountAPIKeyPoolProviderSupported("", anthropicProtocolCodeConstant, anthropicProtocolVersionConstant) {
+	if !isAccountAPIKeyPoolProviderSupported("", "", anthropicProtocolCodeConstant, anthropicProtocolVersionConstant) {
 		t.Fatal("anthropic 协议档案应支持")
 	}
 	// anthropic 供应商代码。
-	if !isAccountAPIKeyPoolProviderSupported(anthropicProviderCode, "", "") {
+	if !isAccountAPIKeyPoolProviderSupported(anthropicProviderCode, "", "", "") {
 		t.Fatal("anthropic 供应商应支持")
 	}
-	if isAccountAPIKeyPoolProviderSupported("weird-vendor", "", "") {
+	if isAccountAPIKeyPoolProviderSupported("weird-vendor", "", "", "") {
 		t.Fatal("未识别供应商不应支持")
 	}
 }

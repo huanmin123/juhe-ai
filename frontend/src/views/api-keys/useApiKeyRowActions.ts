@@ -2,12 +2,12 @@ import { ref } from 'vue'
 
 import type { RowActionItem } from '@/components/rowActions'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
+import { api } from '@/api/client'
 import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ApiKeySummary } from '@/types/domain'
-import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
 import { mergeApiKeyMutationResult } from './apiKeyMutation'
 import { refreshedApiKeyListItem } from './apiKeyRefreshRow'
 import type { ApiKeyScopeParams } from './apiKeyScope'
@@ -176,10 +176,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
         })
       ])
       const groups = buildCcSwitchExportGroupOptions(strategy.groupBindings, providerResource.data)
-      if (!groups.length) {
-        message.warning('当前策略路由没有可用于导出 CCS 的启用分组')
-        return
-      }
+      // 分组只作为可选模型参考，空分组也允许打开导出窗口（T34）。
       ccsExportApiKey.value = apiKey
       ccsExportGroups.value = groups
       resetCcSwitchExportModelOptions()
@@ -198,21 +195,23 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
       message.error('请重新选择要导出的 API Key')
       return
     }
-    if (!ccsExportGroups.value.some((group) => group.groupId === selection.groupId)) {
-      message.error('所选分组已不可用，请重新打开导出窗口')
-      return
-    }
-    if (
-      !ccsExportModelsReady.value
-      || ccsExportModelsLoading.value
-      || ccsExportModelOptionsGroupId.value !== selection.groupId
-    ) {
-      message.error('分组供应商模型尚未加载完成，请稍后重试')
-      return
-    }
-    if (!isCcSwitchExportModelSelectionValid(ccsExportModelOptions.value, selection.model)) {
-      message.error('所选模型不属于当前分组供应商，请重新选择')
-      return
+    if (selection.groupId) {
+      if (!ccsExportGroups.value.some((group) => group.groupId === selection.groupId)) {
+        message.error('所选分组已不可用，请重新打开导出窗口')
+        return
+      }
+      if (selection.model && (
+        !ccsExportModelsReady.value
+        || ccsExportModelsLoading.value
+        || ccsExportModelOptionsGroupId.value !== selection.groupId
+      )) {
+        message.error('参考分组模型尚未加载完成，请稍后重试')
+        return
+      }
+      if (selection.model && !isCcSwitchExportModelSelectionValid(ccsExportModelOptions.value, selection.model)) {
+        message.error('所选模型不属于当前参考分组，请重新选择')
+        return
+      }
     }
     if (ccsExportingId.value) return
     ccsExportingId.value = apiKey.id
@@ -271,23 +270,16 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     }
     ccsExportModelsLoading.value = true
     try {
-      const resource = await loadAccountProviderModelOptionsResource({
-        isManagementView: input.isManagementView(),
-        providerCode: group.providerCode,
-        scopeParams: input.operationScopeParams(apiKey),
-        selectedIds: group.defaultModel ? [group.defaultModel] : [],
-        keyword
-      })
+      const resource = input.isManagementView()
+        ? await api.groups.modelOptions(groupId, { keyword, limit: 50 })
+        : await api.myGroups.modelOptions(groupId, { keyword, limit: 50 })
       if (requestId !== ccsExportModelOptionsRequestId || ccsExportModelOptionsGroupId.value !== groupId) return
       ccsExportModelOptions.value = buildCcSwitchExportModelOptions([
         ...ccsExportModelOptions.value,
-        ...resource.data
+        ...resource.map((item) => ({ label: item.name, value: item.name }))
       ])
-      // T25：非搜索取数（浏览或 defaultModel 的 selectedIds 单批补拉）以服务端
-      // hasMore 判定截断；关键词搜索（增量合并）不改写；元数据缺失按无法判定。
-      if (!keyword.trim() && resource.hasMore !== undefined) {
-        ccsExportModelsTruncated.value = resource.hasMore
-      }
+      // 分组模型参考端点按 50 条截断；当前 UI 不做增量元数据提示。
+      ccsExportModelsTruncated.value = false
       ccsExportModelsReady.value = true
     } catch (error) {
       if (requestId !== ccsExportModelOptionsRequestId || ccsExportModelOptionsGroupId.value !== groupId) return

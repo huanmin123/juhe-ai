@@ -60,6 +60,14 @@ type ModelCatalog interface {
 	ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem
 }
 
+// AccountModelCatalog is the account-scoped model directory used when an
+// account has no vendor identity (generic_http): models are resolved from the
+// real account_supported_models.model_id rows, preserving full metadata.
+// Optional: nil keeps the legacy vendor-catalog path for existing tests.
+type AccountModelCatalog interface {
+	ListAccountSupportedModels(accountID, systemAccountID string) []ProviderModelCatalogItem
+}
+
 // ProcessedImage mirrors ChatProcessedImage.
 type ProcessedImage struct {
 	Buffer           []byte

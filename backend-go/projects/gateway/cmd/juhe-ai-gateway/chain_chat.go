@@ -249,8 +249,25 @@ func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID stri
 	if err != nil {
 		return nil
 	}
-	// Marshal→Unmarshal 往返是 runtimecache 大结构到 chat 传输小结构的类型
-	// 投影：两侧均为纯 JSON 数据（字段 tag 同形），往返恒成功（w2 登记）。
+	return chatCatalogItemsFromRuntime(items)
+}
+
+// ListAccountSupportedModels 实现 chat.AccountModelCatalog：generic_http 账户
+// 按 account_supported_models.model_id 取真实 models 行（完整元数据）。
+func (c chatModelCatalog) ListAccountSupportedModels(accountID, systemAccountID string) []chat.ProviderModelCatalogItem {
+	if c.cache == nil {
+		return nil
+	}
+	items, err := c.cache.ListAccountSupportedModelCatalogAsync(context.Background(), accountID, systemAccountID)
+	if err != nil {
+		return nil
+	}
+	return chatCatalogItemsFromRuntime(items)
+}
+
+// chatCatalogItemsFromRuntime 是 runtimecache 大结构到 chat 传输小结构的类型
+// 投影：两侧均为纯 JSON 数据（字段 tag 同形），往返恒成功（w2 登记）。
+func chatCatalogItemsFromRuntime(items []gatewayruntimecache.ProviderModelCatalogItem) []chat.ProviderModelCatalogItem {
 	encoded, _ := json.Marshal(items)
 	var out []chat.ProviderModelCatalogItem
 	_ = json.Unmarshal(encoded, &out)

@@ -194,9 +194,10 @@ func (rt *chatRoutes) convergeChatAccountScope(ref *ChatAccountRef, systemAccoun
 	return []ChatTransportAccount{}
 }
 
-// loadChatModelCatalogForScope 取绑定账户作用域的账户快照与目录：provider
-// 目录按账户 provider_code 单值取列表，与 account_supported_models 的交集由
-// 账户视图的模型/协议过滤自然收窄（空集合表示不限制）。
+// loadChatModelCatalogForScope 取绑定账户作用域的账户快照与目录：真实 vendor
+// 账户按 provider_code 取供应商目录；generic_http 账户（vendor 为空）按
+// account_supported_models.model_id 取真实 models 行，保留完整元数据。两层目录
+// 都与账户视图的模型/协议过滤自然收窄（空集合表示不限制）。
 func (rt *chatRoutes) loadChatModelCatalogForScope(scope *chatBindingScope, systemAccountID, requestedModel string) ([]ChatTransportAccount, []ProviderModelCatalogItem) {
 	accounts := scope.accounts
 	catalog := []ProviderModelCatalogItem{}
@@ -206,6 +207,11 @@ func (rt *chatRoutes) loadChatModelCatalogForScope(scope *chatBindingScope, syst
 	for _, account := range accounts {
 		code := normalizeProviderToken(account.ProviderCode)
 		if code == "" {
+			// generic_http：vendor 为空不代表没有模型；用账户显式绑定的
+			// models 行补齐，禁止按空 provider 查目录或伪造 custom。
+			if rt.deps.AccountModelCatalog != nil {
+				catalog = append(catalog, rt.deps.AccountModelCatalog.ListAccountSupportedModels(account.ID, systemAccountID)...)
+			}
 			continue
 		}
 		catalog = append(catalog, rt.deps.ModelCatalog.ListProviderCatalog(code, systemAccountID)...)
