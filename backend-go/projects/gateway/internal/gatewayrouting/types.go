@@ -73,8 +73,10 @@ type GroupBindingRow struct {
 	GroupEnabled    int64 // Node group_enabled !== 0 marks the group enabled.
 	// GroupKind / MemberGroupIDs 承载超级分组目标（超级分组设计 §4.2）：
 	// standard 组为空；super 组携带按 priority 排序的 enabled 成员组 ID。
-	GroupKind      string
-	MemberGroupIDs []string
+	// DisabledMemberGroupIDs 只用于审计 member_disabled，不进入候选展开。
+	GroupKind              string
+	MemberGroupIDs         []string
+	DisabledMemberGroupIDs []string
 }
 
 // GroupUsageAccessMetadata mirrors storage/openai-account-selector.types.ts

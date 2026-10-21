@@ -66,6 +66,11 @@ func mergeSuperGroupsMigrationResult(dryRun bool, driver, paths, dsn, manifestOu
 			return 2
 		}
 		db, err = sql.Open("sqlite", "file:"+businessPath+"?mode=rwc&_pragma=busy_timeout(5000)")
+		if db != nil {
+			// 与其它 maintenance SQLite 入口一致：单连接串行化，避免迁移事务
+			// 与连接池内另一条连接争写锁导致 database is locked。
+			db.SetMaxOpenConns(1)
+		}
 		dialect = mergesupermigration.DialectSQLite
 	} else {
 		db, err = openPostgresBootstrap(parsedDSN)

@@ -72,6 +72,9 @@ type NormalGatewayModelRouteResult struct {
 	// target's expanded pool; filled only for super targets (GroupKind=super),
 	// nil for standard targets. GroupID stays the super group (route_group).
 	GroupSegments []NormalRouteGroupSegment
+	// SkippedSuperGroupIDs 是选中目标之前评估为空候选的超级分组绑定
+	// （设计 §4.2 外层目标分类的 no_candidate 证据）。
+	SkippedSuperGroupIDs []string
 }
 
 // ResolveNormalGatewayModelRouteInput mirrors
@@ -151,6 +154,7 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 			RequestedModel:             requestedModel,
 			RouteSource:                routeSource,
 			GroupSegments:              mappingTarget.GroupSegments,
+			SkippedSuperGroupIDs:       mappingTarget.SkippedSuperGroupIDs,
 		}, nil
 	}
 

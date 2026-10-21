@@ -113,7 +113,7 @@ type DispatchContext struct {
 	RoutePlanSnapshot                        gatewayrouting.RoutePlanSnapshot[string]
 	// TargetOutcomes 承载解析期已尝试但未选中的超级分组目标分类（设计
 	// §4.2）：派发循环据此把它们并入目标级终态聚合，避免丢掉 capacity。
-	TargetOutcomes []NormalRouteTargetOutcome
+	TargetOutcomes                           []NormalRouteTargetOutcome
 	InteractionResourceAffinity              *gatewaygemini.AffinityBinding
 	HotQualityExplorationReservation         *HotQualityExplorationReservation
 	SettleHotQualityExplorationAfterDispatch func(outcome string) error
@@ -622,6 +622,12 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				if len(memberSkips) > 0 {
 					auditCapture.AddGatewayMetadata("super_group_member_skips", map[string]any{"members": memberSkips})
 				}
+			}
+			// 选中目标自身的成员跳过（成功路径也要留证，设计 §4.2）。
+			if len(normalRoute.MemberSkips) > 0 {
+				auditCapture.AddGatewayMetadata("super_group_member_skips", map[string]any{
+					"members": memberSkipAuditRows(normalRoute.MemberSkips, normalRoute.GroupID),
+				})
 			}
 			targetCircuit, err := s.Circuits.InspectClientIPErrorCircuit(ctx, ClientIPErrorCircuitInput{
 				SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
@@ -1889,11 +1895,18 @@ func targetOutcomeAuditRows(outcomes []NormalRouteTargetOutcome) ([]map[string]s
 	memberSkips := make([]map[string]string, 0)
 	for _, outcome := range outcomes {
 		targets = append(targets, map[string]string{"groupId": outcome.GroupID, "classification": outcome.Classification})
-		for _, skip := range outcome.MemberSkips {
-			memberSkips = append(memberSkips, map[string]string{
-				"memberGroupId": skip.GroupID, "reason": skip.Reason, "targetGroupId": outcome.GroupID,
-			})
-		}
+		memberSkips = append(memberSkips, memberSkipAuditRows(outcome.MemberSkips, outcome.GroupID)...)
 	}
 	return targets, memberSkips
+}
+
+// memberSkipAuditRows 投影单目标的成员跳过原因（设计 §4.2）。
+func memberSkipAuditRows(skips []NormalRouteMemberSkip, targetGroupID string) []map[string]string {
+	rows := make([]map[string]string, 0, len(skips))
+	for _, skip := range skips {
+		rows = append(rows, map[string]string{
+			"memberGroupId": skip.GroupID, "reason": skip.Reason, "targetGroupId": targetGroupID,
+		})
+	}
+	return rows
 }

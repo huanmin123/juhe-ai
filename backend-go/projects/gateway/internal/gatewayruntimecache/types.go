@@ -168,8 +168,11 @@ type GatewayAPIKeyGroupBindingRow struct {
 	GroupEnabled    int    `json:"group_enabled"`
 	// GroupKind / MemberGroupIDs 承载超级分组目标（超级分组设计 §4.2）：
 	// standard 组为空；super 组携带按 priority 排序的 enabled 成员组 ID。
-	GroupKind      string   `json:"group_kind,omitempty"`
-	MemberGroupIDs []string `json:"member_group_ids,omitempty"`
+	// DisabledMemberGroupIDs 保留同一快照里 enabled=false 的成员行，仅用于
+	// 审计成员跳过原因 member_disabled（设计 §4.2），不进入候选展开。
+	GroupKind              string   `json:"group_kind,omitempty"`
+	MemberGroupIDs         []string `json:"member_group_ids,omitempty"`
+	DisabledMemberGroupIDs []string `json:"disabled_member_group_ids,omitempty"`
 }
 
 // Clone mirrors the per-binding spread clone.

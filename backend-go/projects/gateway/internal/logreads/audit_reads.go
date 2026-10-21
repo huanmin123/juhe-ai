@@ -590,6 +590,7 @@ type AuditLogAttemptSummary struct {
 	AccountID                   string `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID string `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupID                     string `json:"groupId,omitempty"`
+	MemberGroupID               string `json:"memberGroupId,omitempty"`
 	ProxyURL                    string `json:"proxyUrl,omitempty"`
 	ProviderCode                string `json:"providerCode,omitempty"`
 	Model                       string `json:"model,omitempty"`
@@ -1056,6 +1057,7 @@ func (s *auditLogSQLReader) listAttempts(ctx context.Context, auditLogID string)
 			AccountID:                   readOptionalText(row["account_id"]),
 			AccountOwnerSystemAccountID: readOptionalText(row["account_owner_system_account_id"]),
 			GroupID:                     readOptionalText(row["group_id"]),
+			MemberGroupID:               readOptionalText(row["member_group_id"]),
 			ProxyURL:                    attemptProxyURL(row["proxy_url"]),
 			ProviderCode:                readOptionalText(row["provider_code"]),
 			Model:                       readOptionalText(row["attempt_model"]),

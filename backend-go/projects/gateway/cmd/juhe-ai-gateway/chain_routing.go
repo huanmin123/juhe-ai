@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -246,6 +247,11 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 		updated.GroupBindings = projectBindingsForRuntime(result.APIKeyRecord.GroupBindings, input.APIKeyRecord.GroupBindings)
 		out.APIKeyRecord = &updated
 	}
+	// 选中目标之前评估为空的超级分组绑定记 no_candidate（设计 §4.2）：
+	// 外层终态聚合与审计都按全体已尝试目标计算。
+	if len(result.SkippedSuperGroupIDs) > 0 {
+		out.TargetOutcomes = skippedSuperTargetOutcomes(result.SkippedSuperGroupIDs)
+	}
 	// 超级分组目标（超级分组设计 §4.2）：候选已按成员展开并携带成员片段，
 	// 逐片段重水化 + 成员级配额批查，窗口组保留超级分组本身
 	// （route_group），账号组标为实际成员分组（member_group）。GroupSegments
@@ -298,8 +304,9 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 ) (gatewaypreauth.NormalRouteResult, error) {
 	systemAccountID := input.APIKeyRecord.SystemAccountID
 	endpointFamily := localEndpointFamily(view)
+	selectedBinding, _ := bindingForGroup(input.APIKeyRecord, result.GroupID)
 
-	accounts, err := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, result)
+	accounts, memberSkips, err := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, selectedBinding, result)
 	if err != nil {
 		return gatewaypreauth.NormalRouteResult{}, err
 	}
@@ -307,6 +314,7 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 		out.GroupID = result.GroupID
 		out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, systemAccountID, result.GroupAccess)
 		out.Accounts = accounts
+		out.MemberSkips = memberSkips
 		if out.APIKeyRecord != nil {
 			out.APIKeyRecord.SelectedGroupID = result.GroupID
 			// 绑定行必须与选中目标一致：superTargetMemberIDs / 窗口配额跳过 /
@@ -317,18 +325,19 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 		}
 		return out, nil
 	}
-	// 逐成员跳过原因（设计 §4.2）：disabled 成员行在 runtimecache 装载阶段即被
-	// 剔除，这里把"进入展开的成员组"与"被配额剔空"落成审计可读的成员级投影。
-	memberSkips := make([]gatewaypreauth.NormalRouteMemberSkip, 0, len(result.GroupSegments))
-	for _, segment := range result.GroupSegments {
-		memberSkips = append(memberSkips, gatewaypreauth.NormalRouteMemberSkip{
-			GroupID: segment.GroupID, Reason: "capacity_exhausted",
-		})
+	// 当前超级分组目标全部成员被剔除：按成员原因聚合目标分类（任一成员
+	// capacity → capacity_exhausted；否则 no_candidate），继续外层快照。
+	classification := "no_candidate"
+	for _, skip := range memberSkips {
+		if skip.Reason == "capacity_exhausted" {
+			classification = "capacity_exhausted"
+			break
+		}
 	}
-	// 当前超级分组目标全部成员被配额剔空 → capacity_exhausted，继续快照。
-	outcomes := []gatewaypreauth.NormalRouteTargetOutcome{{
-		GroupID: result.GroupID, Classification: "capacity_exhausted", MemberSkips: memberSkips,
-	}}
+	outcomes := append([]gatewaypreauth.NormalRouteTargetOutcome(nil), out.TargetOutcomes...)
+	outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+		GroupID: result.GroupID, Classification: classification, MemberSkips: memberSkips,
+	})
 	// 目标快照 = 绑定序中当前目标之后的全部 active 绑定（普通分组与超级分组
 	// 一视同仁）；成员不提升为外层目标，同组不重复尝试。
 	seen := map[string]struct{}{result.GroupID: {}}
@@ -358,15 +367,22 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 			})
 			continue
 		}
+		for _, skippedGroupID := range nextResult.SkippedSuperGroupIDs {
+			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+				GroupID: skippedGroupID, Classification: "no_candidate",
+			})
+		}
 		var nextAccounts []gatewayruntimecache.OpenAIAccountSecret
+		var nextSkips []gatewaypreauth.NormalRouteMemberSkip
 		nextRouteSource := string(nextResult.RouteSource)
 		if len(nextResult.GroupSegments) > 0 {
 			// 后续超级分组目标：同样逐成员展开 + 成员级配额批查。
-			expanded, expandErr := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, nextResult)
+			expanded, skips, expandErr := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, target, nextResult)
 			if expandErr != nil {
 				return gatewaypreauth.NormalRouteResult{}, expandErr
 			}
 			nextAccounts = expanded
+			nextSkips = skips
 		} else {
 			// 普通分组目标：账号无组标，窗口组即该分组。
 			nextAccounts, nextRouteSource = r.rehydrateAccounts(
@@ -389,6 +405,7 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 		out.GroupAccess = r.rehydrateGroupAccess(ctx, target.GroupID, systemAccountID, nextResult.GroupAccess)
 		out.Accounts = nextAccounts
 		out.RouteSource = nextRouteSource
+		out.MemberSkips = nextSkips
 		out.TargetOutcomes = outcomes
 		return out, nil
 	}
@@ -419,6 +436,26 @@ func (r *chainRouteResolver) orderedFallbackTargets(currentGroupID string, recor
 		targets = append(targets, binding)
 	}
 	return targets
+}
+
+// skippedSuperTargetOutcomes 把选中目标前评估为空的超级分组绑定投影为
+// no_candidate 目标分类（设计 §4.2），按绑定序去重。
+func skippedSuperTargetOutcomes(groupIDs []string) []gatewaypreauth.NormalRouteTargetOutcome {
+	outcomes := make([]gatewaypreauth.NormalRouteTargetOutcome, 0, len(groupIDs))
+	seen := make(map[string]struct{}, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if groupID == "" {
+			continue
+		}
+		if _, dup := seen[groupID]; dup {
+			continue
+		}
+		seen[groupID] = struct{}{}
+		outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+			GroupID: groupID, Classification: "no_candidate",
+		})
+	}
+	return outcomes
 }
 
 // superTargetExhaustedResult 按设计 §4.2 的固定优先级构造外层终态：
@@ -464,17 +501,25 @@ func superTargetExhaustedResult(requestedModel string, record *gatewayruntimecac
 }
 
 // superGroupSegmentAccounts 展开一个超级分组目标的成员片段并执行成员级配额
-// 批查；被否决账号剔除，返回幸存账号（保持片段顺序与成员组标）。
+// 批查；被否决账号剔除，返回幸存账号（全局 route_rank 序）与逐成员跳过原因
+// （设计 §4.2：member_disabled / no_candidate / capacity_exhausted）。
 func (r *chainRouteResolver) superGroupSegmentAccounts(
 	ctx context.Context,
 	systemAccountID, endpointFamily string,
+	binding gatewayruntimecache.GatewayAPIKeyGroupBindingRow,
 	result gatewayrouting.NormalGatewayModelRouteResult,
-) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+) ([]gatewayruntimecache.OpenAIAccountSecret, []gatewaypreauth.NormalRouteMemberSkip, error) {
 	accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0)
+	skips := make([]gatewaypreauth.NormalRouteMemberSkip, 0, len(result.GroupSegments)+len(binding.DisabledMemberGroupIDs))
+	for _, memberID := range binding.DisabledMemberGroupIDs {
+		skips = append(skips, gatewaypreauth.NormalRouteMemberSkip{GroupID: memberID, Reason: "member_disabled"})
+	}
+	segmented := make(map[string]struct{}, len(result.GroupSegments))
 	for _, segment := range result.GroupSegments {
 		if segment.GroupID == "" {
 			continue
 		}
+		segmented[segment.GroupID] = struct{}{}
 		full := r.listFullAccounts(ctx, segment.GroupID, systemAccountID, result.RequestedModel, endpointFamily)
 		byID := make(map[string]gatewayruntimecache.OpenAIAccountSecret, len(full))
 		for _, account := range full {
@@ -497,16 +542,59 @@ func (r *chainRouteResolver) superGroupSegmentAccounts(
 		groupAccess := r.rehydrateGroupAccess(ctx, segment.GroupID, systemAccountID, segment.GroupAccess)
 		decisions, err := r.quota.CheckBatchAsync(ctx, *groupAccess, fragment)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		survivors := 0
 		for _, account := range fragment {
 			if decision, ok := decisions[account.ID]; ok && !decision.Allowed {
 				continue
 			}
 			accounts = append(accounts, account)
+			survivors++
+		}
+		if survivors == 0 {
+			skips = append(skips, gatewaypreauth.NormalRouteMemberSkip{GroupID: segment.GroupID, Reason: "capacity_exhausted"})
 		}
 	}
-	return accounts, nil
+	// enabled 成员未进入片段：被能力/模型过滤后没有候选（设计 §4.2）。
+	for _, memberID := range binding.MemberGroupIDs {
+		if _, ok := segmented[memberID]; !ok {
+			skips = append(skips, gatewaypreauth.NormalRouteMemberSkip{GroupID: memberID, Reason: "no_candidate"})
+		}
+	}
+	// 片段按成员聚合会打散全局 route_rank 序：以解析池的全局序为准重排，
+	// 保证后成员的 direct 命中排在前成员的 mapping 命中之前（设计 §4.2）。
+	return orderSuperGroupAccountsByPool(accounts, result.Accounts), skips, nil
+}
+
+// orderSuperGroupAccountsByPool 按解析池顺序稳定重排超级分组幸存账号；
+// 池外的账号（防御性）保留在尾部。
+func orderSuperGroupAccountsByPool(accounts []gatewayruntimecache.OpenAIAccountSecret, pool []gatewayrouting.UpstreamAccount) []gatewayruntimecache.OpenAIAccountSecret {
+	if len(accounts) < 2 || len(pool) == 0 {
+		return accounts
+	}
+	position := make(map[string]int, len(pool))
+	for index, projection := range pool {
+		if _, exists := position[projection.ID]; !exists {
+			position[projection.ID] = index
+		}
+	}
+	ordered := append([]gatewayruntimecache.OpenAIAccountSecret(nil), accounts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, leftOK := position[ordered[i].ID]
+		right, rightOK := position[ordered[j].ID]
+		switch {
+		case leftOK && rightOK:
+			return left < right
+		case leftOK:
+			return true
+		case rightOK:
+			return false
+		default:
+			return false
+		}
+	})
+	return ordered
 }
 
 // rehydrateGroupAccess re-reads the full group access metadata; the lossy
@@ -635,16 +723,17 @@ func projectAPIKeyRowForRouting(record *gatewayruntimecache.GatewayAPIKeyRow) *g
 	for _, binding := range record.GroupBindings {
 		weight := int64(binding.Weight)
 		bindings = append(bindings, gatewayrouting.GroupBindingRow{
-			ID:              binding.ID,
-			APIKeyID:        binding.APIKeyID,
-			SystemAccountID: binding.SystemAccountID,
-			GroupID:         binding.GroupID,
-			Priority:        int64(binding.Priority),
-			Weight:          &weight,
-			Status:          binding.Status,
-			GroupEnabled:    int64(binding.GroupEnabled),
-			GroupKind:       binding.GroupKind,
-			MemberGroupIDs:  append([]string(nil), binding.MemberGroupIDs...),
+			ID:                     binding.ID,
+			APIKeyID:               binding.APIKeyID,
+			SystemAccountID:        binding.SystemAccountID,
+			GroupID:                binding.GroupID,
+			Priority:               int64(binding.Priority),
+			Weight:                 &weight,
+			Status:                 binding.Status,
+			GroupEnabled:           int64(binding.GroupEnabled),
+			GroupKind:              binding.GroupKind,
+			MemberGroupIDs:         append([]string(nil), binding.MemberGroupIDs...),
+			DisabledMemberGroupIDs: append([]string(nil), binding.DisabledMemberGroupIDs...),
 		})
 	}
 	return &gatewayrouting.APIKeyRow{
@@ -677,13 +766,16 @@ func projectBindingsForRuntime(projected []gatewayrouting.GroupBindingRow, origi
 			continue
 		}
 		out = append(out, gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-			ID:              binding.ID,
-			APIKeyID:        binding.APIKeyID,
-			SystemAccountID: binding.SystemAccountID,
-			GroupID:         binding.GroupID,
-			Priority:        int(binding.Priority),
-			Status:          binding.Status,
-			GroupEnabled:    int(binding.GroupEnabled),
+			ID:                     binding.ID,
+			APIKeyID:               binding.APIKeyID,
+			SystemAccountID:        binding.SystemAccountID,
+			GroupID:                binding.GroupID,
+			Priority:               int(binding.Priority),
+			Status:                 binding.Status,
+			GroupEnabled:           int(binding.GroupEnabled),
+			GroupKind:              binding.GroupKind,
+			MemberGroupIDs:         append([]string(nil), binding.MemberGroupIDs...),
+			DisabledMemberGroupIDs: append([]string(nil), binding.DisabledMemberGroupIDs...),
 		})
 	}
 	return out

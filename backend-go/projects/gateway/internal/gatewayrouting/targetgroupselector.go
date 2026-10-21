@@ -25,6 +25,10 @@ type ModelTargetGroupSelection struct {
 
 	GroupID                    string
 	ResponseInspectionPolicies []ResponseInspectionPolicySummary
+	// SkippedSuperGroupIDs 是选中目标之前被评估为空候选的超级分组绑定。
+	// 外层目标分类据此把未产生候选的超级目标记为 no_candidate（设计 §4.2），
+	// 不包含选中目标之后尚未评估的绑定。
+	SkippedSuperGroupIDs []string
 }
 
 // ModelTargetGroupInput mirrors selectGatewayModelTargetGroup's input.
@@ -53,14 +57,19 @@ type TargetGroupSelector struct {
 // SelectGatewayModelTargetGroup mirrors selectGatewayModelTargetGroup.
 func (s *TargetGroupSelector) SelectGatewayModelTargetGroup(ctx context.Context, input ModelTargetGroupInput) (*ModelTargetGroupSelection, error) {
 	sourceEndpointFamily := input.Request.requestEndpointFamily()
+	bindings := uniqueGatewayGroupBindings(input.Bindings)
 	var selected *ModelTargetGroupSelection
 	selectedPriority := negInf()
-	for _, binding := range uniqueGatewayGroupBindings(input.Bindings) {
+	skippedSupers := make([]string, 0)
+	for _, binding := range bindings {
 		candidate, ok, err := s.resolveModelTargetGroupCandidate(ctx, input, binding, sourceEndpointFamily)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
+			if binding.GroupKind == GroupKindSuper && binding.GroupEnabled != 0 {
+				skippedSupers = append(skippedSupers, binding.GroupID)
+			}
 			continue
 		}
 		if input.AcceptCandidate != nil && !input.AcceptCandidate(candidate) {
@@ -72,6 +81,7 @@ func (s *TargetGroupSelector) SelectGatewayModelTargetGroup(ctx context.Context,
 			ResponseInspectionPolicies: []ResponseInspectionPolicySummary{},
 		}
 		if input.CandidatePriority == nil {
+			selection.SkippedSuperGroupIDs = skippedSuperGroupsBefore(bindings, skippedSupers, binding.GroupID)
 			return selection, nil
 		}
 		priority := input.CandidatePriority(candidate)
@@ -80,7 +90,39 @@ func (s *TargetGroupSelector) SelectGatewayModelTargetGroup(ctx context.Context,
 			selectedPriority = priority
 		}
 	}
+	if selected != nil {
+		selected.SkippedSuperGroupIDs = skippedSuperGroupsBefore(bindings, skippedSupers, selected.GroupID)
+	}
 	return selected, nil
+}
+
+// skippedSuperGroupsBefore 只保留绑定序中位于选中目标之前的跳过项：选中目标
+// 之后尚未评估的绑定不属于本请求的目标快照（设计 §4.2）。
+func skippedSuperGroupsBefore(bindings []GroupBindingRow, skipped []string, selectedGroupID string) []string {
+	if len(skipped) == 0 {
+		return nil
+	}
+	selectedIndex := len(bindings)
+	for index, binding := range bindings {
+		if binding.GroupID == selectedGroupID {
+			selectedIndex = index
+			break
+		}
+	}
+	before := make(map[string]struct{}, selectedIndex)
+	for index := 0; index < selectedIndex; index++ {
+		before[bindings[index].GroupID] = struct{}{}
+	}
+	out := make([]string, 0, len(skipped))
+	for _, groupID := range skipped {
+		if _, ok := before[groupID]; ok {
+			out = append(out, groupID)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // CollectGatewayModelGroupSegments walks the same per-group skeleton as

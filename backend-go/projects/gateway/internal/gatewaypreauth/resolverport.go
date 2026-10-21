@@ -53,6 +53,9 @@ type NormalRouteResult struct {
 	// TargetOutcomes 是超级分组外层目标的失败分类（设计 §4.2）：仅在超级
 	// 分组解析器实际尝试过的目标上填充，用于审计与验收断言。
 	TargetOutcomes []NormalRouteTargetOutcome
+	// MemberSkips 是最终选中超级分组目标的成员跳过原因（设计 §4.2）：
+	// 成功路径也要写入审计（如某成员被成员行停用/配额拒绝，另一成员承接）。
+	MemberSkips []NormalRouteMemberSkip
 }
 
 // NormalRouteTargetOutcome 是外层目标级失败分类；MemberSkips 是该目标被跳过

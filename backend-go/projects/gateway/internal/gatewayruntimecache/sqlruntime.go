@@ -422,27 +422,34 @@ func (m *SQLReadModels) attachSuperGroupMembers(ctx context.Context, bindings []
 	for _, id := range superIDs {
 		args = append(args, id)
 	}
-	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT super_group_id, member_group_id
+	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT super_group_id, member_group_id, enabled
 		FROM `+m.table("super_group_members")+`
-		WHERE super_group_id IN (`+placeholders+`) AND enabled = 1
+		WHERE super_group_id IN (`+placeholders+`)
 		ORDER BY priority ASC, member_group_id ASC`), args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	members := make(map[string][]string, len(superIDs))
+	disabledMembers := make(map[string][]string, len(superIDs))
 	for rows.Next() {
 		var superID, memberID string
-		if err := rows.Scan(&superID, &memberID); err != nil {
+		var enabled int
+		if err := rows.Scan(&superID, &memberID, &enabled); err != nil {
 			return err
 		}
-		members[superID] = append(members[superID], memberID)
+		if enabled == 1 {
+			members[superID] = append(members[superID], memberID)
+			continue
+		}
+		disabledMembers[superID] = append(disabledMembers[superID], memberID)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	for _, index := range superIndexes {
 		bindings[index].MemberGroupIDs = members[bindings[index].GroupID]
+		bindings[index].DisabledMemberGroupIDs = disabledMembers[bindings[index].GroupID]
 	}
 	return nil
 }

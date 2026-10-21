@@ -305,11 +305,11 @@ func seedAuditReads(t *testing.T, env *readsTestEnv) {
 		VALUES ('log-3', 'trace-internal', 'account_health_check', 'GET', '/v1/models', 'success', 1, 0,
 		'internal', '2026-06-03T10:00:00.000Z', '2026-06-03T10:00:00.100Z', '2026-06-03T10:00:01.000Z')`)
 	env.exec(t, `INSERT INTO audit_log_attempts (id, audit_log_id, attempt_index, account_id,
-		account_owner_system_account_id, group_id, proxy_url, provider_code, attempt_model, attempt_upstream_model,
+		account_owner_system_account_id, group_id, member_group_id, proxy_url, provider_code, attempt_model, attempt_upstream_model,
 		attempt_pricing_model, attempt_model_mapping_applied, attempt_model_mapping_source,
 		attempt_source_endpoint_family, attempt_upstream_endpoint_family, upstream_method, upstream_url,
 		upstream_status_code, success, error_phase, error_code, error_message, started_at, ended_at, duration_ms)
-		VALUES ('att-1', 'log-1', 0, 'acc-1', 'sys-1', 'grp-1', 'http://proxy:8080', 'openai', 'gpt-4o-mini',
+		VALUES ('att-1', 'log-1', 0, 'acc-1', 'sys-1', 'grp-1', 'grp-member-1', 'http://proxy:8080', 'openai', 'gpt-4o-mini',
 		'gpt-4o-mini-2024', 'gpt-4o-mini-price', 1, 'alias', 'chat', 'chat', 'POST', 'https://upstream/v1/chat', 429,
 		0, 'upstream', 'rate_limited', '429', '2026-06-01T10:00:00.000Z', '2026-06-01T10:00:00.300Z', 300)`)
 	env.exec(t, `INSERT INTO audit_log_attempts (id, audit_log_id, attempt_index, account_id, group_id, provider_code,
@@ -528,6 +528,7 @@ func TestAuditLogReadsRuntimeErrorGroupsAndDetail(t *testing.T) {
 	firstAttempt := attempts[0].(map[string]any)
 	if wantString(t, firstAttempt, "id") != "att-1" || wantFloat(t, firstAttempt, "attemptIndex") != 0 ||
 		wantString(t, firstAttempt, "model") != "gpt-4o-mini" ||
+		wantString(t, firstAttempt, "memberGroupId") != "grp-member-1" ||
 		wantString(t, firstAttempt, "upstreamUrl") != "https://upstream/v1/chat" ||
 		wantFloat(t, firstAttempt, "upstreamStatusCode") != 429 || !wantBool(t, firstAttempt, "modelMappingApplied") {
 		t.Fatalf("attempt mapping: %v", firstAttempt)

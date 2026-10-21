@@ -40,6 +40,7 @@ import (
 type superTargetOutcome struct {
 	GroupID        string
 	Classification string
+	MemberSkips    []gatewaypreauth.NormalRouteMemberSkip
 }
 
 const (
@@ -994,7 +995,7 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 	// 的终态（如上游 2xx 后正文截断），标记 non_replayable 后直接结束，
 	// 不尝试外层切目标（设计 §4.2）。
 	if l.superTargetTrackingEnabled() {
-		l.trackSuperTargetOutcome(l.current.UsageContext.GroupID, superTargetNonReplayable)
+		l.trackSuperTargetOutcome(l.current.UsageContext.GroupID, superTargetNonReplayable, nil)
 		l.auditCapture.AddGatewayMetadata("super_group_target_outcome", map[string]any{
 			"groupId":        l.current.UsageContext.GroupID,
 			"classification": superTargetNonReplayable,
@@ -1045,20 +1046,28 @@ func superTargetClassificationPriority(classification string) int {
 }
 
 // trackSuperTargetOutcome 按目标分组记录一次失败分类；同组已有更强分类时
-// 保留原值（固定优先级合并，不采用 last-write-wins）。
-func (l *v1DispatchLoop) trackSuperTargetOutcome(groupID, classification string) {
+// 保留原值（固定优先级合并，不采用 last-write-wins）。分类升级时同步采用
+// 新分类的成员跳过原因，同级时补齐缺失的成员投影。
+func (l *v1DispatchLoop) trackSuperTargetOutcome(groupID, classification string, memberSkips []gatewaypreauth.NormalRouteMemberSkip) {
 	if groupID == "" || classification == "" || !l.superTargetTrackingEnabled() {
 		return
 	}
 	for index := range l.superTargetOutcomes {
 		if l.superTargetOutcomes[index].GroupID == groupID {
-			if superTargetClassificationPriority(classification) > superTargetClassificationPriority(l.superTargetOutcomes[index].Classification) {
+			currentPriority := superTargetClassificationPriority(l.superTargetOutcomes[index].Classification)
+			nextPriority := superTargetClassificationPriority(classification)
+			if nextPriority > currentPriority {
 				l.superTargetOutcomes[index].Classification = classification
+				l.superTargetOutcomes[index].MemberSkips = memberSkips
+			} else if nextPriority == currentPriority && len(l.superTargetOutcomes[index].MemberSkips) == 0 {
+				l.superTargetOutcomes[index].MemberSkips = memberSkips
 			}
 			return
 		}
 	}
-	l.superTargetOutcomes = append(l.superTargetOutcomes, superTargetOutcome{GroupID: groupID, Classification: classification})
+	l.superTargetOutcomes = append(l.superTargetOutcomes, superTargetOutcome{
+		GroupID: groupID, Classification: classification, MemberSkips: memberSkips,
+	})
 }
 
 // seedPreflightTargetOutcomes 把解析期已尝试但未选中的目标分类并入循环期
@@ -1068,8 +1077,30 @@ func (l *v1DispatchLoop) seedPreflightTargetOutcomes() {
 		return
 	}
 	for _, outcome := range l.current.TargetOutcomes {
-		l.trackSuperTargetOutcome(outcome.GroupID, outcome.Classification)
+		l.trackSuperTargetOutcome(outcome.GroupID, outcome.Classification, outcome.MemberSkips)
 	}
+}
+
+// currentMemberSkips 把当前目标的候选账号按成员组投影为同一失败原因
+// （设计 §4.2 成员级投影）；标准目标无成员组标时返回 nil。
+func (l *v1DispatchLoop) currentMemberSkips(reason string) []gatewaypreauth.NormalRouteMemberSkip {
+	if l.current == nil || reason == "" {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(l.current.Accounts))
+	skips := make([]gatewaypreauth.NormalRouteMemberSkip, 0, len(l.current.Accounts))
+	for _, account := range l.current.Accounts {
+		if account.BoundGroupID == nil || *account.BoundGroupID == "" {
+			continue
+		}
+		memberID := *account.BoundGroupID
+		if _, ok := seen[memberID]; ok {
+			continue
+		}
+		seen[memberID] = struct{}{}
+		skips = append(skips, gatewaypreauth.NormalRouteMemberSkip{GroupID: memberID, Reason: reason})
+	}
+	return skips
 }
 
 // superTargetClassificationFromReason 把切组原因映射为目标级分类（设计 §4.2）。
@@ -1143,17 +1174,32 @@ func (l *v1DispatchLoop) renderSuperTargetExhausted(attempt *gatewaydispatch.Ups
 				classification = superTargetCapacityExhausted
 			}
 		}
-		l.trackSuperTargetOutcome(l.current.UsageContext.GroupID, classification)
+		memberSkipReason := ""
+		switch classification {
+		case superTargetUpstreamExhausted:
+			memberSkipReason = "upstream_exhausted"
+		case superTargetCapacityExhausted:
+			memberSkipReason = "capacity_exhausted"
+		}
+		l.trackSuperTargetOutcome(l.current.UsageContext.GroupID, classification, l.currentMemberSkips(memberSkipReason))
 	}
 	classification, ok := l.aggregateSuperTargetOutcomes()
 	if !ok {
 		return false
 	}
-	outcomes := make([]map[string]string, 0, len(l.superTargetOutcomes))
+	outcomes := make([]map[string]any, 0, len(l.superTargetOutcomes))
 	for _, outcome := range l.superTargetOutcomes {
-		outcomes = append(outcomes, map[string]string{
+		row := map[string]any{
 			"groupId": outcome.GroupID, "classification": outcome.Classification,
-		})
+		}
+		if len(outcome.MemberSkips) > 0 {
+			members := make([]map[string]string, 0, len(outcome.MemberSkips))
+			for _, skip := range outcome.MemberSkips {
+				members = append(members, map[string]string{"memberGroupId": skip.GroupID, "reason": skip.Reason})
+			}
+			row["memberSkips"] = members
+		}
+		outcomes = append(outcomes, row)
 	}
 	l.auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": outcomes})
 	statusCode := http.StatusServiceUnavailable
@@ -1430,7 +1476,7 @@ func (l *v1DispatchLoop) exhaustDispatchFailedAccounts(attempt *gatewaydispatch.
 func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason string) (v1FallbackSwitch, error) {
 	current := l.current
 	if classification := superTargetClassificationFromReason(reason); classification != "" {
-		l.trackSuperTargetOutcome(current.UsageContext.GroupID, classification)
+		l.trackSuperTargetOutcome(current.UsageContext.GroupID, classification, l.currentMemberSkips(classification))
 		l.auditCapture.AddGatewayMetadata("super_group_target_outcome", map[string]any{
 			"groupId":        current.UsageContext.GroupID,
 			"classification": classification,

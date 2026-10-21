@@ -1,8 +1,7 @@
 // 超级分组设计 §7 的链级 fixture：成员级配额门（dispatch-member-quota）、
-// usage 实际服务成员组（usage-member-group）与审计双身份
-// （audit-route-and-member）。外层 429/503 分类（outer-*、
-// dispatch-upstream-exhausted、dispatch-non-replayable-stop）依赖尚未落地的
-// 目标级失败分类，登记在 docs/待办与阻塞事项.md。
+// 成员行停用跳过（dispatch-member-disabled-skip）、空候选超级目标
+// （dispatch-skipped-super-records-no-candidate）、usage 实际服务成员组
+// （usage-member-group）与审计双身份（audit-route-and-member）。
 package main
 
 import (
@@ -253,6 +252,11 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 		if bound := result.Accounts[0].BoundGroupID; bound == nil || *bound != second.groupID {
 			t.Fatalf("survivor stamp = %v, want %s", bound, second.groupID)
 		}
+		// 设计 §4.2：成功路径也要留证被配额剔除的成员。
+		if len(result.MemberSkips) != 1 || result.MemberSkips[0].GroupID != fixture.groupID ||
+			result.MemberSkips[0].Reason != "capacity_exhausted" {
+			t.Fatalf("member skips = %+v, want [%s/capacity_exhausted]", result.MemberSkips, fixture.groupID)
+		}
 		var status string
 		var schedulable int
 		if err := fixture.db.QueryRow(`SELECT status, schedulable FROM accounts WHERE id = ?`, fixture.accountID).Scan(&status, &schedulable); err != nil {
@@ -274,5 +278,106 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 			denied.Code != "rate_limit_exceeded" {
 			t.Fatalf("all members denied = %+v, want 429 rate_limit_exceeded", denied)
 		}
+		if len(denied.TargetOutcomes) != 1 || len(denied.TargetOutcomes[0].MemberSkips) != 2 {
+			t.Fatalf("denied outcomes = %+v, want both member skips", denied.TargetOutcomes)
+		}
+		for _, skip := range denied.TargetOutcomes[0].MemberSkips {
+			if skip.Reason != "capacity_exhausted" {
+				t.Fatalf("denied member skip = %+v, want capacity_exhausted", skip)
+			}
+		}
 	})
+
+	t.Run("dispatch-member-disabled-skip", func(t *testing.T) {
+		second := superMemberGroup{groupID: "group_compat", accountID: "acc_compat"}
+		fixture := superSeedFixture(t, second)
+		normal := gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})
+		record := &gatewayruntimecache.GatewayAPIKeyRow{
+			ID: "key_1", SystemAccountID: fixture.systemAccount,
+			RouteStrategyID: "rs_super", RouteStrategyMode: gatewayruntimecache.RouteStrategyModeNormal,
+			SelectedGroupID: "grp_super", Status: "active",
+			GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{{
+				ID: "rsg_super", APIKeyID: "key_1", GroupID: "grp_super", Status: "active",
+				GroupEnabled: 1, Priority: 1, GroupKind: "super",
+				MemberGroupIDs:         []string{second.groupID},
+				DisabledMemberGroupIDs: []string{fixture.groupID},
+			}},
+		}
+		resolver := &chainRouteResolver{cache: fixture.cache, normal: normal}
+		result, err := resolver.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{
+			Req: routeRequest("gpt-test"), APIKeyRecord: record,
+		})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if result.Outcome != gatewaypreauth.NormalRouteOutcomeSelected || result.GroupID != "grp_super" {
+			t.Fatalf("outcome = %+v", result)
+		}
+		found := false
+		for _, skip := range result.MemberSkips {
+			if skip.GroupID == fixture.groupID && skip.Reason == "member_disabled" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("member skips = %+v, want %s/member_disabled", result.MemberSkips, fixture.groupID)
+		}
+	})
+
+	t.Run("dispatch-skipped-super-records-no-candidate", func(t *testing.T) {
+		// S 的成员全部无模型能力 → 目标选择层直接跳到普通分组 G2；
+		// S 必须以 no_candidate 进入目标级审计（设计 §4.2）。
+		fixture := seedSuperOuterFixture(t, "failover",
+			superOuterTarget{groupID: "grp_super_a", kind: "super", members: []superOuterMember{
+				{groupID: "group_sa1", accountID: "acc_sa1"},
+				{groupID: "group_sa2", accountID: "acc_sa2"},
+			}},
+			superOuterTarget{groupID: "group_standard_b", kind: "standard", accountID: "acc_sb"},
+		)
+		if _, err := fixture.db.Exec(`DELETE FROM account_supported_models WHERE account_id IN ('acc_sa1','acc_sa2')`); err != nil {
+			t.Fatal(err)
+		}
+		fixture.cache = w1FreshCacheFor(t, fixture)
+		normal := gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})
+		record := &gatewayruntimecache.GatewayAPIKeyRow{
+			ID: "key_1", SystemAccountID: fixture.systemAccount,
+			RouteStrategyID: "rs_outer", RouteStrategyMode: gatewayruntimecache.RouteStrategyModeFailover,
+			SelectedGroupID: "grp_super_a", Status: "active",
+			GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
+				{ID: "rsg_a", APIKeyID: "key_1", GroupID: "grp_super_a", Status: "active", GroupEnabled: 1, Priority: 1,
+					GroupKind: "super", MemberGroupIDs: []string{"group_sa1", "group_sa2"}},
+				{ID: "rsg_b", APIKeyID: "key_1", GroupID: "group_standard_b", Status: "active", GroupEnabled: 1, Priority: 2},
+			},
+		}
+		resolver := &chainRouteResolver{cache: fixture.cache, normal: normal}
+		result, err := resolver.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{
+			Req: routeRequest("gpt-test"), APIKeyRecord: record,
+		})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if result.Outcome != gatewaypreauth.NormalRouteOutcomeSelected || result.GroupID != "group_standard_b" {
+			t.Fatalf("outcome = %+v, want standard B selected", result)
+		}
+		if len(result.TargetOutcomes) != 1 || result.TargetOutcomes[0].GroupID != "grp_super_a" ||
+			result.TargetOutcomes[0].Classification != "no_candidate" {
+			t.Fatalf("target outcomes = %+v, want grp_super_a/no_candidate", result.TargetOutcomes)
+		}
+	})
+}
+
+// TestOrderSuperGroupAccountsByPool 钉住全局 route_rank 序：解析池中后成员
+// 的 direct 命中必须排在前成员的 mapping 命中之前（设计 §4.2）。
+func TestOrderSuperGroupAccountsByPool(t *testing.T) {
+	accounts := []gatewayruntimecache.OpenAIAccountSecret{
+		{ID: "acc_a_direct"}, {ID: "acc_a_mapped"}, {ID: "acc_b_direct"},
+	}
+	pool := []gatewayrouting.UpstreamAccount{
+		{ID: "acc_a_direct"}, {ID: "acc_b_direct"}, {ID: "acc_a_mapped"},
+	}
+	ordered := orderSuperGroupAccountsByPool(accounts, pool)
+	if got := accountSecretIDs(ordered); len(got) != 3 ||
+		got[0] != "acc_a_direct" || got[1] != "acc_b_direct" || got[2] != "acc_a_mapped" {
+		t.Fatalf("ordered = %v", got)
+	}
 }

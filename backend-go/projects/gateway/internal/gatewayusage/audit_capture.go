@@ -811,9 +811,10 @@ func (c *AuditCaptureContext) RecordFailedDispatchAttempt(input RecordFailedDisp
 		AttemptIndex:                input.AttemptIndex,
 		AccountID:                   input.Account.ID,
 		AccountOwnerSystemAccountID: input.Account.UsageAccess.AccountOwnerSystemAccountID,
-		// 3.5：尝试级 group_id 优先取显式账号组覆盖（merge 按账号记账），
-		// 空回落请求级窗口组快照。
+		// 3.5：尝试级 group_id 优先取显式账号组覆盖（超级分组按成员组记账），
+		// 空回落请求级窗口组快照；member_group_id 同步成员组（设计 §4.3）。
 		GroupID:                firstNonEmpty(input.GroupIDOverride, c.gatewayContextSnapshot().GroupID),
+		MemberGroupID:          firstNonEmpty(input.GroupIDOverride, c.gatewayContextSnapshot().GroupID),
 		ProxyURL:               SanitizeURLCredentialsForLog(input.Account.ProxyURL),
 		ProviderCode:           input.Account.ProviderCode,
 		Model:                  requestedModel,
