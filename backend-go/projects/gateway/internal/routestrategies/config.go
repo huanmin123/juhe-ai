@@ -8,35 +8,62 @@ import (
 )
 
 // Route strategy mode/config normalization mirrors
-// backend/src/domain/route-strategy.ts. Only the five RouteStrategyMode values
-// are accepted ('normal' | 'weighted' | 'failover' | 'round_robin' | 'merge');
-// the scheduling preference (normalRoutingConfig) is carried by every mode and
+// backend/src/domain/route-strategy.ts. Only the four RouteStrategyMode values
+// are accepted ('normal' | 'weighted' | 'failover' | 'round_robin'); the
+// scheduling preference (normalRoutingConfig) is carried by every mode and
 // still only persists when speed_first (cost_first keeps config_json NULL).
 
-// Route strategy modes (RouteStrategyMode, domain/types.ts).
+// Route strategy modes (RouteStrategyMode, domain/types.ts). merge 已退役
+// （超级分组设计 §5）：旧 merge 行由 maintenance 迁移为 super 分组，运行时
+// 不再承认该模式。
 const (
 	ModeNormal     = "normal"
 	ModeWeighted   = "weighted"
 	ModeFailover   = "failover"
 	ModeRoundRobin = "round_robin"
-	ModeMerge      = "merge"
 )
 
-// IsRouteStrategyMode reports whether the raw value is one of the five modes.
+// IsRouteStrategyMode reports whether the raw value is one of the four modes.
 func IsRouteStrategyMode(value string) bool {
 	switch value {
-	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge:
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin:
 		return true
 	}
 	return false
 }
 
+// IsWritableRouteStrategyMode 是写入口可接受的四种模式（超级分组设计 §5：
+// merge 已从路由模式退役）。
+func IsWritableRouteStrategyMode(value string) bool {
+	switch value {
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin:
+		return true
+	}
+	return false
+}
+
+// RejectUnsupportedRouteModePayload 检查写入口 payload：未知 mode（含 merge /
+// merge*）或任意 merge 前缀顶层键统一返回 unsupported_route_mode（设计 §5）。
+func RejectUnsupportedRouteModePayload(body map[string]any) (string, string) {
+	if raw, present := body["mode"]; present {
+		if text, ok := raw.(string); ok && !IsWritableRouteStrategyMode(text) {
+			return "unsupported_route_mode", "不支持的路由模式"
+		}
+	}
+	for key := range body {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "merge") {
+			return "unsupported_route_mode", "不支持的路由模式"
+		}
+	}
+	return "", ""
+}
+
 // ModeSupportsSchedulingPreference reports whether the mode may carry the
 // scheduling preference (normalRoutingConfig): normal plus the passthrough
-// modes weighted/failover/round_robin and merge.
+// modes weighted/failover/round_robin.
 func ModeSupportsSchedulingPreference(mode string) bool {
 	switch mode {
-	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge:
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin:
 		return true
 	}
 	return false

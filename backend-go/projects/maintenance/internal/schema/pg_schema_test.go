@@ -84,7 +84,7 @@ import (
 // 678→679：2026-10-18 修复批——dbb2543e6 移除旧 account_model_mappings
 // 建表但运行时仍读写（key-model 恢复 CheckContract、seed、accounts/usage
 // 域），fresh 库 chain 网关启动 CheckContract fail-fast；恢复 ensure 建表
-//（+1 TABLE juhe_business，providers 外键随收敛移除），存量迁移语义不变。
+// （+1 TABLE juhe_business，providers 外键随收敛移除），存量迁移语义不变。
 // 679→686：2026-10-18 修复批（同日第二笔）——dbb2543e6 同批移除的其余
 // 7 张旧供应商表（providers、provider_protocol_profiles、profile families、
 // provider_model_catalog、custom_provider_models、两张 provider default
@@ -92,12 +92,12 @@ import (
 // 列与约束逐字取回 dbb2543e6^ 版本，protocols 复合外键保留——该表仍在
 // 当前建表清单；旧表索引不补建），存量数据迁移语义不变。
 // 686→678：A 路线撤 shim 批（同日第三笔）——迁移窗口 shim 一次性收敛撤除
-//（设计 §9 第 11 条：删除所有旧字段和旧 seed，不提供兼容分支）：撤回上述
+// （设计 §9 第 11 条：删除所有旧字段和旧 seed，不提供兼容分支）：撤回上述
 // 679→686 恢复的 8 张旧表 ensure 建表（-8 TABLE juhe_business），配套旧
 // seed（pgSeedLegacyProviders/Profiles、旧 provider_model_catalog 目录种子）
 // 与 pgNullableText 同批删除；种子语句不计本 golden，总数变化仅 -8。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 678
+const goldenPostgresSchemaStatementCount = 681
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -106,8 +106,10 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 明细，全部落在 juhe_business）。313→314：2026-10-18 修复批恢复旧
 	// account_model_mappings ensure 建表（见上方总数注释）。314→321：同日
 	// 第二笔恢复其余 7 张旧供应商表 ensure 建表（+7 TABLE）。321→313：A 路线
-	// 撤 shim 批一次性撤回上述 8 张旧表 ensure 建表（-8 TABLE）。
-	"juhe_business": 313,
+	// 撤 shim 批一次性撤回上述 8 张旧表 ensure 建表（-8 TABLE）。313→316：
+	// 超级分组首批 +3（groups.group_kind 幂等 ALTER、super_group_members
+	// TABLE、idx_super_group_members_member_group INDEX）。
+	"juhe_business": 316,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
 	"juhe_usage":    52,
@@ -226,8 +228,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 1 条 DROP COLUMN
 	// IF EXISTS（调度偏好 enabled 退役）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。
-	if alterColumns != 98 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 98", alterColumns)
+	if alterColumns != 99 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 99", alterColumns)
 	}
 	if droppedColumns != 1 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 1", droppedColumns)

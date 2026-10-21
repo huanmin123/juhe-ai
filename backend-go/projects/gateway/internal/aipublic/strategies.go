@@ -31,7 +31,7 @@ type strategyListQuery struct {
 	HasPageSize    bool
 }
 
-var strategyModeOptions = []string{"normal", "weighted", "failover", "round_robin", "merge", "all"}
+var strategyModeOptions = []string{"normal", "weighted", "failover", "round_robin", "all"}
 var strategyStatusOptions = []string{"active", "disabled", "all"}
 
 func parseStrategyListQuery(values url.Values) (*strategyListQuery, string) {
@@ -221,7 +221,7 @@ func (d *Deps) loadStrategyBindings(ctx context.Context, strategyIDs []string) (
 		summary := PublicBindingSummary{
 			ID: row.id, GroupID: row.groupID, GroupName: nullPtrString(row.groupName),
 			Priority: row.priority,
-			Weight: row.weight, Status: row.status, GroupEnabled: enabled == 1,
+			Weight:   row.weight, Status: row.status, GroupEnabled: enabled == 1,
 		}
 		result[row.routeStrategyID] = append(result[row.routeStrategyID], summary)
 	}
@@ -256,7 +256,7 @@ type strategyBindingInput struct {
 	Status   string
 }
 
-var strategyMutationModes = []string{"normal", "weighted", "failover", "round_robin", "merge"}
+var strategyMutationModes = []string{"normal", "weighted", "failover", "round_robin"}
 
 func parseStrategyBindings(body map[string]any) ([]strategyBindingInput, string) {
 	raw, exists := body["groupBindings"]
@@ -381,6 +381,10 @@ func isPlainObject(value any) bool {
 func (d *Deps) addRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if !kernel.DecodeJSON(w, r, &body) {
+		return
+	}
+	if code, message := routestrategies.RejectUnsupportedRouteModePayload(body); code != "" {
+		writeCodeError(w, http.StatusBadRequest, code, message)
 		return
 	}
 	parsed, issue := parseStrategyAddBody(body)
@@ -560,6 +564,10 @@ func parseStrategyUpdateBody(body map[string]any) (*strategyUpdateBody, string) 
 func (d *Deps) updateRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if !kernel.DecodeJSON(w, r, &body) {
+		return
+	}
+	if code, message := routestrategies.RejectUnsupportedRouteModePayload(body); code != "" {
+		writeCodeError(w, http.StatusBadRequest, code, message)
 		return
 	}
 	parsed, issue := parseStrategyUpdateBody(body)

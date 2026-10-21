@@ -396,8 +396,11 @@ func TestGroupAuthorizedListAndDetailAndOptionEndpoints(t *testing.T) {
 		t.Fatalf("route-strategy-options rows: %v", payload)
 	}
 	row := strategyRows[0].(map[string]any)
-	if row["id"] != "grp-visible" || row["providerCode"] != "" || row["enabled"] != false {
+	if row["id"] != "grp-visible" || row["groupKind"] != "standard" || row["enabled"] != false {
 		t.Fatalf("route-strategy-options override mismatch: %v", row)
+	}
+	if _, hasProviderCode := row["providerCode"]; hasProviderCode {
+		t.Fatalf("route-strategy-options must not return providerCode: %v", row)
 	}
 }
 

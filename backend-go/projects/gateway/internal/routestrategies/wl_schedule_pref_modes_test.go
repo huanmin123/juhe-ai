@@ -1,4 +1,4 @@
-// 调度偏好通用化回归：全部五种模式共享 normalRoutingConfig（speed_first 落盘、
+// 调度偏好通用化回归：全部四种模式共享 normalRoutingConfig（speed_first 落盘、
 // cost_first 保持 config_json NULL）。
 package routestrategies
 
@@ -11,7 +11,7 @@ import (
 )
 
 func TestWlSchedulePrefModeSupportsPredicate(t *testing.T) {
-	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin} {
 		if !ModeSupportsSchedulingPreference(mode) {
 			t.Fatalf("mode %q 必须支持调度偏好", mode)
 		}
@@ -35,7 +35,7 @@ func TestWlSchedulePrefNormalizeForWriteModes(t *testing.T) {
 	costRaw := map[string]any{"schedulingPreference": "cost_first"}
 	badPrefRaw := map[string]any{"schedulingPreference": "bogus"}
 
-	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin} {
 		t.Run(mode, func(t *testing.T) {
 			// nil 输入回落 cost_first 默认对象（routeStrategyConfigJSON 仍判 NULL）。
 			normal, err := normalizeConfigForWrite(nil, mode)
@@ -119,7 +119,7 @@ func TestWlSchedulePrefConfigJSONRoundTrip(t *testing.T) {
 func TestWlSchedulePrefNormalInput(t *testing.T) {
 	current := &NormalRoutingConfig{SchedulingPreference: "cost_first"}
 	empty := MutationInput{}
-	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin} {
 		if got := empty.normalInput(current); got == nil {
 			t.Fatalf("mode %q 无新输入必须 feed-forward 当前配置", mode)
 		}
@@ -200,7 +200,7 @@ func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	}
 }
 
-// TestWlSchedulePrefHTTPModeMatrix：P2 五模式写入口一律拒绝旧调度字段；
+// TestWlSchedulePrefHTTPModeMatrix：P2 四模式写入口一律拒绝旧调度字段；
 // 不携带调度字段的 cost_first 创建臂保持原有行为（渲染默认对象、config_json
 // NULL）。速度配置的落盘/回读语义由存储层测试覆盖（回滚 oracle）。
 func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
@@ -210,9 +210,9 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	groupB := env.createGroup(t, adminID, "bravo", true)
 	path := "/__aisys__/api/route-strategies"
 
-	// failover/merge 需要两个启用分组，其余模式单绑定即可。
+	// failover 需要两个启用分组，其余模式单绑定即可。
 	bindingsFor := func(mode string) string {
-		if mode == ModeFailover || mode == ModeMerge {
+		if mode == ModeFailover {
 			return bindingJSON(groupA, 0) + "," + bindingJSON(groupB, 0)
 		}
 		return bindingJSON(groupA, 0)
@@ -220,7 +220,7 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	speedBody := func(mode, name string) string {
 		return `{"name":"` + name + `","mode":"` + mode + `","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000,"speedFirstConfig":{"slowTriggerCount":4}},"groupBindings":[` + bindingsFor(mode) + `]}`
 	}
-	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin} {
 		code, payload := env.createStrategy(t, path, speedBody(mode, "sf-"+mode))
 		if code != http.StatusBadRequest || payload["message"] != LegacySchedulingConfigRejectedMessage {
 			t.Fatalf("%s speed_first create must be rejected: %d %v", mode, code, payload)
@@ -245,6 +245,13 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 		if configJSON.Valid {
 			t.Fatalf("%s cost_first config_json 必须为 NULL: %v", mode, configJSON)
 		}
+	}
+
+	// merge 已从路由模式退役：写入口统一返回 unsupported_route_mode（设计 §5）。
+	code, payload := env.createStrategy(t, path,
+		`{"name":"m-legacy","mode":"merge","groupBindings":[`+bindingJSON(groupA, 0)+`,`+bindingJSON(groupB, 0)+`]}`)
+	if code != http.StatusBadRequest || payload["code"] != "unsupported_route_mode" {
+		t.Fatalf("merge create must be unsupported: %d %v", code, payload)
 	}
 }
 

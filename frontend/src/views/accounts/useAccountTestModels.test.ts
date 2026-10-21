@@ -185,7 +185,7 @@ describe('useAccountTestModels 草稿测试选项', () => {
 
   it('T23：浏览取数按服务端 hasMore 置截断标志，关键词搜索不改写', async () => {
     accountsTestDraftOptions.mockResolvedValueOnce(Object.assign([
-      { id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', testEndpointModes: ['chat_sse'] }
+      { id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', testEndpointModes: ['chat_sse' as const] }
     ], { hasMore: true }))
     const { hook } = setupTestModels()
     hook.initializeDraftTestOptions(
@@ -199,7 +199,7 @@ describe('useAccountTestModels 草稿测试选项', () => {
     expect(hook.testModelOptionsTruncated.value).toBe(true)
 
     accountsTestDraftOptions.mockResolvedValueOnce(Object.assign([
-      { id: 'gpt-5.6-mini', name: 'Mini', testEndpointModes: ['chat_sse'] }
+      { id: 'gpt-5.6-mini', name: 'Mini', testEndpointModes: ['chat_sse' as const] }
     ], { hasMore: true }))
     await hook.loadDraftTestModelOptions(' mini ')
     expect(hook.testModelOptionsTruncated.value).toBe(true)

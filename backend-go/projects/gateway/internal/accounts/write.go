@@ -1080,9 +1080,10 @@ func (s *Store) reserveAndEnqueueAccountHealthSnapshot(ctx context.Context, tx *
 // 缺属主或行不存在返回 (nil, nil)（调用方按「账户分组无效」渲染）。
 func (s *Store) groupOwnerReference(ctx context.Context, q queryer, groupID string) (*groupReference, error) {
 	var row groupReference
-	err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, name
+	var groupKind string
+	err := q.QueryRowContext(ctx, s.bind(`SELECT id, system_account_id, name, group_kind
 		FROM `+s.table("groups")+` WHERE id = ?`), groupID).
-		Scan(&row.id, &row.systemAccountID, &row.name)
+		Scan(&row.id, &row.systemAccountID, &row.name, &groupKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1091,6 +1092,9 @@ func (s *Store) groupOwnerReference(ctx context.Context, q queryer, groupID stri
 	}
 	if row.systemAccountID == "" {
 		return nil, nil
+	}
+	if groupKind == "super" {
+		return nil, &ValidationError{Message: "超级分组不能直接绑定账户", Code: "group_kind_conflict"}
 	}
 	return &row, nil
 }

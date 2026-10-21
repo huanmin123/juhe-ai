@@ -18,8 +18,8 @@ const apiSource = readSource('frontend/src/api/domains/routeStrategies.ts')
 // —— 策略路由侧（P2 终态）：调度偏好独立实体后编辑器回归纯拓扑职责，不再配置、
 // 不再回填、不再提交任何调度字段；速度运行态入口按历史策略行配置事实独立保留。——
 assert(
-  viewSource.includes("const speedFirstRuntimeSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin', 'merge']"),
-  '速度运行态判断必须覆盖 normal/weighted/failover/round_robin/merge 五种模式'
+  viewSource.includes("const speedFirstRuntimeSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin']"),
+  '速度运行态判断必须覆盖 normal/weighted/failover/round_robin 四种模式'
 )
 assert(!viewSource.includes("record.mode !== 'normal'"), '模式展示文本不得再把运行态判断限定在 normal 模式')
 assert(
@@ -60,7 +60,7 @@ assert(
 )
 assert(
   !payloadSource.includes('schedulingPreference') && !payloadSource.includes('firstByteDeadlineMs') && !payloadSource.includes('speedFirstConfig'),
-  '策略路由保存 payload 不得组装任何调度字段（weighted/failover/round_robin/merge 与 normal 一致回归纯拓扑职责）'
+  '策略路由保存 payload 不得组装任何调度字段（weighted/failover/round_robin 与 normal 一致回归纯拓扑职责）'
 )
 
 console.log('前端策略路由速度优先首字截止契约回归通过：策略编辑器不再配置或提交调度字段，首字截止契约等价迁往调度偏好页（默认 30000 毫秒、范围 10000-60000 毫秒、仅速度优先携带）')

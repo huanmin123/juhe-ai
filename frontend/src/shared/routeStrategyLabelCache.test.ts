@@ -29,7 +29,6 @@ describe('routeStrategyModeText', () => {
     expect(routeStrategyModeText('weighted')).toBe('权重调度路由')
     expect(routeStrategyModeText('round_robin')).toBe('轮询路由')
     expect(routeStrategyModeText('failover')).toBe('故障回退路由')
-    expect(routeStrategyModeText('merge')).toBe('合并路由')
     expect(routeStrategyModeText('normal')).toBe('普通路由')
     expect(routeStrategyModeText(undefined)).toBe('普通路由')
   })

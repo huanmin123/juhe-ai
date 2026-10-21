@@ -33,8 +33,9 @@ const (
 	FailCodeModelTargetGroupUnavailable = "model_target_group_unavailable"
 )
 
-// NormalRouteGroupSegment carries one binding group's contribution to a
-// merged route pool (merge mode only; empty for other modes).
+// NormalRouteGroupSegment carries one member group's contribution to a super
+// target's expanded candidate pool (超级分组设计 §4.2; empty for standard
+// targets).
 type NormalRouteGroupSegment struct {
 	GroupID     string
 	GroupAccess GroupUsageAccessMetadata
@@ -67,10 +68,9 @@ type NormalGatewayModelRouteResult struct {
 	Accounts                   []UpstreamAccount
 	ResponseInspectionPolicies []ResponseInspectionPolicySummary
 	RouteSource                NormalGatewayModelRouteSource
-	// GroupSegments holds the per-binding-group fragments behind the merged
-	// flat pool; filled only when RouteSource == RouteSourceMerged (merge
-	// mode), nil for every other mode. GroupID is the window group (the
-	// first non-empty segment's group, 合并路由设计 3.4).
+	// GroupSegments holds the per-member-group fragments behind a super
+	// target's expanded pool; filled only for super targets (GroupKind=super),
+	// nil for standard targets. GroupID stays the super group (route_group).
 	GroupSegments []NormalRouteGroupSegment
 }
 
@@ -117,12 +117,8 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 		return NormalGatewayModelRouteResult{Outcome: NormalRouteOutcomeSkipped, Reason: SkipReasonEmptyBinding, RequestedModel: requestedModel}, nil
 	}
 
-	// Merge mode (合并路由设计 3.1/B9-B13): collect every bound group's
-	// surviving fragment into one flat pool.
-	if apiKeyRecord.RouteStrategyMode == RouteStrategyModeMerge {
-		return s.resolveMergeGatewayModelRoute(ctx, input, apiKeyRecord, bindings, requestedModel)
-	}
-
+	// 超级分组目标（超级分组设计 §4.2）：目标选择器已按成员组展开候选并
+	// 携带 GroupSegments，此处直接透传；标准目标的片段为空。
 	mappingTarget, err := s.TargetGroups.SelectGatewayModelTargetGroup(ctx, ModelTargetGroupInput{
 		Request:                    input.Request,
 		APIKeyRecord:               apiKeyRecord,
@@ -154,6 +150,7 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 			ResponseInspectionPolicies: mappingTarget.ResponseInspectionPolicies,
 			RequestedModel:             requestedModel,
 			RouteSource:                routeSource,
+			GroupSegments:              mappingTarget.GroupSegments,
 		}, nil
 	}
 
@@ -206,93 +203,6 @@ func (s *NormalModelRouteService) requestedModelInModelsDirectory(ctx context.Co
 	// models 语义下目录只会返回 matched/missing；非 missing 一律按目录可见
 	// 处理（终态 503），不得把异常 outcome 降级成对客户端的 404。
 	return route.Outcome != ProviderModelRouteMissing, nil
-}
-
-// resolveMergeGatewayModelRoute implements the merge-mode branch of
-// ResolveNormalGatewayModelRoute (合并路由设计 3.1): every active+enabled
-// binding group contributes its surviving account fragment, fragments join
-// one flat pool in binding order, and the pool is dispatched as a whole.
-// B9: no single-provider shortcut. B11: no model_route_ambiguous, no single
-// provider narrowing (GroupBindings stay full), RouteSource=merged.
-// B12: duplicate accounts dedupe by binding
-// priority, the first group wins. B13: the models directory is consulted only
-// to classify the all-fragments-empty failure (404/503 二分).
-func (s *NormalModelRouteService) resolveMergeGatewayModelRoute(ctx context.Context, input ResolveNormalGatewayModelRouteInput, apiKeyRecord *APIKeyRow, bindings []GroupBindingRow, requestedModel string) (NormalGatewayModelRouteResult, error) {
-	// Defensive only (the runtime cache SQL already loads enabled groups):
-	// merge consults enabled bindings exclusively.
-	enabled := make([]GroupBindingRow, 0, len(bindings))
-	for _, binding := range bindings {
-		if binding.GroupEnabled == 0 {
-			continue
-		}
-		enabled = append(enabled, binding)
-	}
-	if len(enabled) == 0 {
-		return NormalGatewayModelRouteResult{Outcome: NormalRouteOutcomeSkipped, Reason: SkipReasonEmptyBinding, RequestedModel: requestedModel}, nil
-	}
-
-	candidates, err := s.TargetGroups.CollectGatewayModelGroupSegments(ctx, ModelTargetGroupInput{
-		Request:                    input.Request,
-		APIKeyRecord:               apiKeyRecord,
-		Bindings:                   enabled,
-		TargetModel:                requestedModel,
-		RequestClientCompatibility: input.RequestClientCompatibility,
-	})
-	if err != nil {
-		return NormalGatewayModelRouteResult{}, err
-	}
-
-	segments := make([]NormalRouteGroupSegment, 0, len(candidates))
-	accounts := make([]UpstreamAccount, 0)
-	seenAccounts := make(map[string]struct{})
-	for _, candidate := range candidates {
-		fragment := make([]UpstreamAccount, 0, len(candidate.Accounts))
-		for _, account := range candidate.Accounts {
-			if _, ok := seenAccounts[account.ID]; ok {
-				// B12: the same account bound to several groups joins the
-				// pool through its highest-priority (first-seen) group.
-				continue
-			}
-			seenAccounts[account.ID] = struct{}{}
-			fragment = append(fragment, account)
-		}
-		if len(fragment) == 0 {
-			continue
-		}
-		segments = append(segments, NormalRouteGroupSegment{
-			GroupID:     candidate.Binding.GroupID,
-			GroupAccess: candidate.GroupAccess,
-			Accounts:    fragment,
-		})
-		accounts = append(accounts, fragment...)
-	}
-	if len(segments) == 0 {
-		return s.resolveMergeEmptyPoolFailure(ctx, enabled, requestedModel, apiKeyRecord.SystemAccountID)
-	}
-
-	updatedRecord := *apiKeyRecord
-	updatedRecord.SelectedGroupID = segments[0].GroupID
-	return NormalGatewayModelRouteResult{
-		Outcome:                    NormalRouteOutcomeSelected,
-		APIKeyRecord:               &updatedRecord,
-		GroupID:                    segments[0].GroupID,
-		GroupAccess:                segments[0].GroupAccess,
-		Accounts:                   accounts,
-		ResponseInspectionPolicies: []ResponseInspectionPolicySummary{},
-		RequestedModel:             requestedModel,
-		RouteSource:                RouteSourceMerged,
-		GroupSegments:              segments,
-	}, nil
-}
-
-// resolveMergeEmptyPoolFailure classifies the all-fragments-empty merge
-// failure against the models 单表目录 (B13, 设计 §6.1 终态二分)：目录存在对当
-// 前资源可见的 active 行（builtin/global 全可见、personal 属主匹配）→ 绑定分
-// 组只是无可用账号（model_target_group_unavailable，503）；目录无可见 active
-// 行 → 404 model_not_found。供应商目录的 model_target_group_not_bound 分类随
-// 供应商解耦退役，model_route_ambiguous 在 merge 中从不发出（B11）。
-func (s *NormalModelRouteService) resolveMergeEmptyPoolFailure(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
-	return s.resolveModelsDirectoryTerminalFailure(ctx, requestedModel, systemAccountID)
 }
 
 // NormalGatewayModelTargetPriority 过渡保留（导出符号，cmd 与测试仍引用）：

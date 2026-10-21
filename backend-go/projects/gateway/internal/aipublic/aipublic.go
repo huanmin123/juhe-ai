@@ -61,26 +61,27 @@ const Prefix = "/__aipublic__"
 
 // Scope constants mirror storage/external-integration-source-constants.ts.
 const (
-	scopeGroupListRead       = "juhe_ai_public:group_list:read"
-	scopeStrategyListRead    = "juhe_ai_public:route_strategy_list:read"
-	scopeApiKeyListRead      = "juhe_ai_public:api_key_list:read"
-	scopeAccountListRead     = "juhe_ai_public:account_list:read"
-	scopeProviderListRead    = "juhe_ai_public:provider_list:read"
-	scopeProviderDetailRead  = "juhe_ai_public:provider_detail:read"
-	scopeGroupAddWrite       = "juhe_ai_public:group_add:write"
-	scopeGroupUpdateWrite    = "juhe_ai_public:group_update:write"
-	scopeGroupDeleteWrite    = "juhe_ai_public:group_delete:write"
-	scopeStrategyAddWrite    = "juhe_ai_public:route_strategy_add:write"
-	scopeStrategyUpdateWrite = "juhe_ai_public:route_strategy_update:write"
-	scopeStrategyDeleteWrite = "juhe_ai_public:route_strategy_delete:write"
-	scopeApiKeyAddWrite      = "juhe_ai_public:api_key_add:write"
-	scopeApiKeyUpdateWrite   = "juhe_ai_public:api_key_update:write"
-	scopeApiKeyDeleteWrite   = "juhe_ai_public:api_key_delete:write"
-	scopeAccountAddWrite     = "juhe_ai_public:account_add:write"
-	scopeAccountUpdateWrite  = "juhe_ai_public:account_update:write"
-	scopeAccountDeleteWrite  = "juhe_ai_public:account_delete:write"
-	builtInTestSourceID      = "extsrc_builtin_test"
-	builtInTestTokenID       = "exttok_builtin_test"
+	scopeGroupListRead                = "juhe_ai_public:group_list:read"
+	scopeStrategyListRead             = "juhe_ai_public:route_strategy_list:read"
+	scopeApiKeyListRead               = "juhe_ai_public:api_key_list:read"
+	scopeAccountListRead              = "juhe_ai_public:account_list:read"
+	scopeProviderListRead             = "juhe_ai_public:provider_list:read"
+	scopeProviderDetailRead           = "juhe_ai_public:provider_detail:read"
+	scopeGroupAddWrite                = "juhe_ai_public:group_add:write"
+	scopeGroupUpdateWrite             = "juhe_ai_public:group_update:write"
+	scopeGroupDeleteWrite             = "juhe_ai_public:group_delete:write"
+	scopeGroupSuperMembersUpdateWrite = "juhe_ai_public:group_super_members_update:write"
+	scopeStrategyAddWrite             = "juhe_ai_public:route_strategy_add:write"
+	scopeStrategyUpdateWrite          = "juhe_ai_public:route_strategy_update:write"
+	scopeStrategyDeleteWrite          = "juhe_ai_public:route_strategy_delete:write"
+	scopeApiKeyAddWrite               = "juhe_ai_public:api_key_add:write"
+	scopeApiKeyUpdateWrite            = "juhe_ai_public:api_key_update:write"
+	scopeApiKeyDeleteWrite            = "juhe_ai_public:api_key_delete:write"
+	scopeAccountAddWrite              = "juhe_ai_public:account_add:write"
+	scopeAccountUpdateWrite           = "juhe_ai_public:account_update:write"
+	scopeAccountDeleteWrite           = "juhe_ai_public:account_delete:write"
+	builtInTestSourceID               = "extsrc_builtin_test"
+	builtInTestTokenID                = "exttok_builtin_test"
 )
 
 // Deps bundles the X04 collaborators. The resource stores are the same
@@ -134,6 +135,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	register(http.MethodPost, "/group/add", scopeGroupAddWrite, d.addGroup)
 	register(http.MethodPost, "/group/update", scopeGroupUpdateWrite, d.updateGroup)
 	register(http.MethodPost, "/group/del", scopeGroupDeleteWrite, d.deleteGroup)
+	register(http.MethodPost, "/group/super-members/update", scopeGroupSuperMembersUpdateWrite, d.updateSuperMembers)
 	register(http.MethodGet, "/route-strategy/list", scopeStrategyListRead, d.listRouteStrategies)
 	register(http.MethodPost, "/route-strategy/add", scopeStrategyAddWrite, d.addRouteStrategy)
 	register(http.MethodPost, "/route-strategy/update", scopeStrategyUpdateWrite, d.updateRouteStrategy)

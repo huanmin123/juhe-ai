@@ -422,8 +422,8 @@ func TestW11FOptionsStore(t *testing.T) {
 	if summaries[0].IsDefault {
 		t.Fatal("authorized row must force isDefault=false")
 	}
-	// ids / keyword / providerCode 过滤。
-	summaries, err = store.Options(ctx, AccessScope{ViewerID: "w11f-owner"}, OptionsQuery{IDs: []string{"w11f-o1"}, Keyword: "w11f-选项", ProviderCode: "openai"})
+	// ids / keyword 过滤。
+	summaries, err = store.Options(ctx, AccessScope{ViewerID: "w11f-owner"}, OptionsQuery{IDs: []string{"w11f-o1"}, Keyword: "w11f-选项"})
 	if err != nil || len(summaries) != 1 {
 		t.Fatalf("filtered manageable = %v/%v", summaries, err)
 	}

@@ -112,7 +112,8 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 	statements := []string{
 		`CREATE TABLE system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE system_accounts (id TEXT PRIMARY KEY, status TEXT NOT NULL, image_generation_enabled INTEGER NOT NULL DEFAULT 1, request_limits_json TEXT)`,
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
+		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE accounts (
 			-- provider_code 已随供应商解耦退役（设计 §8）：夹具放宽为可空，仅
 			-- 供未迁移的旧种子继续写入；目标形态种子只写 vendor_code /
@@ -1338,7 +1339,8 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	statements := []string{
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, enabled INTEGER, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT)`,
+		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, provider_code TEXT, vendor_code TEXT, connection_driver_code TEXT, provider_protocol_profile_id TEXT, protocol_code TEXT, protocol_version TEXT, name TEXT, type TEXT, status TEXT, capability_domain TEXT NOT NULL DEFAULT 'chat', schedulable INTEGER, concurrency_limit INTEGER, priority INTEGER, super_priority_enabled INTEGER, fallback_enabled INTEGER, client_compatibility TEXT, config_revision INTEGER, dispatch_revision INTEGER, last_health_success_at TEXT, credentials_encrypted TEXT, proxy_profile_id TEXT, cooldown_until TEXT, last_error_message TEXT, last_error_code TEXT, stream_failure_count INTEGER, stream_failure_window_started_at TEXT, account_expires_at TEXT, health_check_model TEXT, health_check_endpoint_mode TEXT, health_check_connection_id TEXT, authorization_instance_source_account_id TEXT, authorization_instance_authorization_id TEXT, authorization_instance_owner_system_account_id TEXT, deleted_at TEXT)`,
 		`CREATE TABLE group_accounts (account_id TEXT, system_account_id TEXT, group_id TEXT, account_authorization_id TEXT, local_priority INTEGER, local_super_priority_enabled INTEGER, local_fallback_enabled INTEGER, enabled INTEGER, created_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT, model_id TEXT, created_at TEXT)`,
@@ -1349,7 +1351,7 @@ func seedChainSelectorDB(t *testing.T) *sql.DB {
 		`CREATE TABLE account_api_key_runtime_states (account_id TEXT, key_fingerprint TEXT, key_index INTEGER, status TEXT, cooldown_until TEXT, next_probe_at TEXT, recovery_started_at TEXT)`,
 		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY, type TEXT, host TEXT, port INTEGER, username TEXT, password_encrypted TEXT, enabled INTEGER)`,
 		`CREATE TABLE account_quality_scores (account_id TEXT PRIMARY KEY, quality_score REAL, quality_state TEXT, ewma_first_token_ms REAL, last_sample_at TEXT)`,
-		`INSERT INTO groups VALUES ('grp-limit', 'sys_admin', 'openai', 1, 'personal', NULL)`,
+		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type, scheduling_policy_json) VALUES ('grp-limit', 'sys_admin', 'openai', 1, 'personal', NULL)`,
 	}
 	now := "2026-01-01T00:00:00.000Z"
 	// 9 个候选超出 final limit 7，验证 hydration 上限消费注入值。

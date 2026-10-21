@@ -8,7 +8,12 @@ func (e *ConflictError) Error() string { return e.Message }
 
 // ValidationError maps to the Node 400 mutation message set surfaced through
 // the body validation and repository normalization layers.
-type ValidationError struct{ Message string }
+type ValidationError struct {
+	Message string
+	// Code 非空时作为稳定错误码随 {code,message} 返回（超级分组禁止直接
+	// 绑定账户：group_kind_conflict）。
+	Code string
+}
 
 func (e *ValidationError) Error() string { return e.Message }
 

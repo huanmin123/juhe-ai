@@ -37,17 +37,24 @@ func TestGroupOptionsAndEditBasicLocksIn(t *testing.T) {
 		t.Fatalf("select projection must be {id,name} only: %v", first)
 	}
 
-	// purpose=account renders the full owner summary。providerCode 兼容入参
-	// 接受但忽略（供应商解耦设计 §8）：不再过滤。
+	// purpose=account renders the full owner summary。providerCode 已随组供应商
+	// 维度退役：出现即 400 legacy_group_provider_field（超级分组设计 §5）。
 	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/groups/options?purpose=account&providerCode=gemini", "")
+	if code != http.StatusBadRequest || payload["code"] != "legacy_group_provider_field" {
+		t.Fatalf("legacy providerCode field must be rejected: %d %v", code, payload)
+	}
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/groups/options?purpose=account", "")
 	if code != http.StatusOK {
 		t.Fatalf("account options: %d %v", code, payload)
 	}
 	items = payload["data"].([]any)
 	if len(items) != 2 {
-		t.Fatalf("ignored providerCode filter mismatch: %v", payload)
+		t.Fatalf("account options rows mismatch: %v", payload)
 	}
 	summary := items[0].(map[string]any)
+	if summary["groupKind"] != "standard" {
+		t.Fatalf("account options must carry groupKind: %v", summary)
+	}
 	if summary["id"] != "grp-opt-2" || summary["enabled"] != false || summary["isDefault"] != false {
 		t.Fatalf("summary fields mismatch: %v", summary)
 	}

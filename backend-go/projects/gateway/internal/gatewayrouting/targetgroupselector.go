@@ -1,6 +1,12 @@
 package gatewayrouting
 
-import "context"
+import (
+	"context"
+	"sort"
+)
+
+// GroupKindSuper 是 groups.group_kind 的超级分组值（超级分组设计 §3.1）。
+const GroupKindSuper = "super"
 
 // ModelTargetGroupCandidate mirrors GatewayModelTargetGroupCandidate.
 type ModelTargetGroupCandidate struct {
@@ -8,6 +14,9 @@ type ModelTargetGroupCandidate struct {
 	GroupAccess GroupUsageAccessMetadata
 	Accounts    []UpstreamAccount
 	ModelFilter GatewayModelAccountFilterResult
+	// GroupSegments 仅超级分组目标非空：按成员组携带展开后的候选片段，
+	// 组合根据此复用逐片段重水化与成员级配额门（设计 §4.2）。
+	GroupSegments []NormalRouteGroupSegment
 }
 
 // ModelTargetGroupSelection mirrors GatewayModelTargetGroupSelection.
@@ -76,10 +85,10 @@ func (s *TargetGroupSelector) SelectGatewayModelTargetGroup(ctx context.Context,
 
 // CollectGatewayModelGroupSegments walks the same per-group skeleton as
 // SelectGatewayModelTargetGroup but keeps every group's surviving candidate
-// instead of selecting one group (merge mode, 合并路由设计 3.1). Order
-// follows the (already dispatch-ordered) bindings; groups without access
-// metadata or without an account surviving the capability and model filters
-// are omitted.
+// instead of selecting one group. 超级分组目标的成员展开即经此入口产出
+// GroupSegments（fixture 也用它直接观察候选层）。Order follows the (already
+// dispatch-ordered) bindings; groups without access metadata or without an
+// account surviving the capability and model filters are omitted.
 func (s *TargetGroupSelector) CollectGatewayModelGroupSegments(ctx context.Context, input ModelTargetGroupInput) ([]ModelTargetGroupCandidate, error) {
 	sourceEndpointFamily := input.Request.requestEndpointFamily()
 	candidates := make([]ModelTargetGroupCandidate, 0, len(input.Bindings))
@@ -101,6 +110,9 @@ func (s *TargetGroupSelector) CollectGatewayModelGroupSegments(ctx context.Conte
 // cached accounts → capability filter → model filter. ok=false mirrors the
 // selector's per-group `continue` branches.
 func (s *TargetGroupSelector) resolveModelTargetGroupCandidate(ctx context.Context, input ModelTargetGroupInput, binding GroupBindingRow, sourceEndpointFamily string) (ModelTargetGroupCandidate, bool, error) {
+	if binding.GroupKind == GroupKindSuper {
+		return s.resolveSuperGroupMemberCandidate(ctx, input, binding, sourceEndpointFamily)
+	}
 	groupAccess, found, err := s.RuntimeCache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, binding.GroupID, input.APIKeyRecord.SystemAccountID)
 	if err != nil {
 		return ModelTargetGroupCandidate{}, false, err
@@ -135,6 +147,141 @@ func (s *TargetGroupSelector) resolveModelTargetGroupCandidate(ctx context.Conte
 		Accounts:    modelFilter.Accounts,
 		ModelFilter: modelFilter,
 	}, true, nil
+}
+
+type superGroupAccountChoice struct {
+	rank        int
+	memberIndex int
+	groupID     string
+	account     UpstreamAccount
+}
+
+// resolveSuperGroupMemberCandidate 展开超级分组目标（超级分组设计 §4.2）：
+// 逐 enabled 成员执行与单组相同的分组访问、账户、能力与模型过滤，再按
+// route_rank ASC -> member_priority ASC -> member_group_id ASC -> account_id
+// ASC 去重排序（同一账号保留最小出现），片段按最终候选序携带成员组。
+// 成员顺序只在既有调度比较器完全相等时决胜的最终语义仍由下游 dispatch
+// comparator 承接；本层保证 direct(0) 先于 mapping(1) 与成员组归属稳定。
+func (s *TargetGroupSelector) resolveSuperGroupMemberCandidate(ctx context.Context, input ModelTargetGroupInput, binding GroupBindingRow, sourceEndpointFamily string) (ModelTargetGroupCandidate, bool, error) {
+	if len(binding.MemberGroupIDs) == 0 {
+		return ModelTargetGroupCandidate{}, false, nil
+	}
+	superAccess, found, err := s.RuntimeCache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, binding.GroupID, input.APIKeyRecord.SystemAccountID)
+	if err != nil {
+		return ModelTargetGroupCandidate{}, false, err
+	}
+	if !found {
+		return ModelTargetGroupCandidate{}, false, nil
+	}
+	type memberCandidate struct {
+		index     int
+		candidate ModelTargetGroupCandidate
+	}
+	members := make([]memberCandidate, 0, len(binding.MemberGroupIDs))
+	for index, memberGroupID := range binding.MemberGroupIDs {
+		memberGroupID = trimModel(memberGroupID)
+		if memberGroupID == "" || memberGroupID == binding.GroupID {
+			continue
+		}
+		memberBinding := GroupBindingRow{
+			ID:              binding.ID + ":" + memberGroupID,
+			APIKeyID:        binding.APIKeyID,
+			SystemAccountID: binding.SystemAccountID,
+			GroupID:         memberGroupID,
+			Priority:        int64(index),
+			Weight:          binding.Weight,
+			Status:          RowStatusActive,
+			GroupEnabled:    1,
+		}
+		candidate, ok, resolveErr := s.resolveModelTargetGroupCandidate(ctx, input, memberBinding, sourceEndpointFamily)
+		if resolveErr != nil {
+			return ModelTargetGroupCandidate{}, false, resolveErr
+		}
+		if !ok {
+			continue
+		}
+		members = append(members, memberCandidate{index: index, candidate: candidate})
+	}
+	if len(members) == 0 {
+		return ModelTargetGroupCandidate{}, false, nil
+	}
+
+	best := make(map[string]superGroupAccountChoice)
+	for _, member := range members {
+		for _, account := range member.candidate.Accounts {
+			rank := member.candidate.ModelFilter.ModelPriority.RankByAccountID[account.ID]
+			if rank != 0 {
+				rank = 1
+			}
+			choice := superGroupAccountChoice{rank: rank, memberIndex: member.index, groupID: member.candidate.Binding.GroupID, account: account}
+			current, exists := best[account.ID]
+			if !exists || superGroupAccountChoiceLess(choice, current) {
+				best[account.ID] = choice
+			}
+		}
+	}
+	choices := make([]superGroupAccountChoice, 0, len(best))
+	for _, choice := range best {
+		choices = append(choices, choice)
+	}
+	sort.SliceStable(choices, func(i, j int) bool { return superGroupAccountChoiceLess(choices[i], choices[j]) })
+
+	accessByGroup := make(map[string]GroupUsageAccessMetadata, len(members))
+	for _, member := range members {
+		accessByGroup[member.candidate.Binding.GroupID] = member.candidate.GroupAccess
+	}
+	segmentIndex := make(map[string]int, len(members))
+	segments := make([]NormalRouteGroupSegment, 0, len(members))
+	pooled := make([]UpstreamAccount, 0, len(choices))
+	rankByAccountID := make(map[string]int, len(choices))
+	directCount, mappingCount := 0, 0
+	for _, choice := range choices {
+		pooled = append(pooled, choice.account)
+		rankByAccountID[choice.account.ID] = choice.rank
+		if choice.rank == 0 {
+			directCount++
+		} else {
+			mappingCount++
+		}
+		index, exists := segmentIndex[choice.groupID]
+		if !exists {
+			index = len(segments)
+			segmentIndex[choice.groupID] = index
+			segments = append(segments, NormalRouteGroupSegment{GroupID: choice.groupID, GroupAccess: accessByGroup[choice.groupID]})
+		}
+		segments[index].Accounts = append(segments[index].Accounts, choice.account)
+	}
+	return ModelTargetGroupCandidate{
+		Binding:     binding,
+		GroupAccess: superAccess,
+		Accounts:    pooled,
+		ModelFilter: GatewayModelAccountFilterResult{
+			Accounts:             pooled,
+			DirectMatchedCount:   directCount,
+			MappingMatchedCount:  mappingCount,
+			RequestedModel:       input.TargetModel,
+			SourceEndpointFamily: sourceEndpointFamily,
+			ModelPriority: GatewayAccountModelPriority{
+				RequestedModel:       input.TargetModel,
+				SourceEndpointFamily: sourceEndpointFamily,
+				RankByAccountID:      rankByAccountID,
+			},
+		},
+		GroupSegments: segments,
+	}, true, nil
+}
+
+func superGroupAccountChoiceLess(left, right superGroupAccountChoice) bool {
+	if left.rank != right.rank {
+		return left.rank < right.rank
+	}
+	if left.memberIndex != right.memberIndex {
+		return left.memberIndex < right.memberIndex
+	}
+	if left.groupID != right.groupID {
+		return left.groupID < right.groupID
+	}
+	return left.account.ID < right.account.ID
 }
 
 // uniqueGatewayGroupBindings mirrors uniqueGatewayGroupBindings: drop empty

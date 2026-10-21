@@ -36,7 +36,7 @@ export interface GroupListParams extends ListParams {
 export interface GroupOptionParams extends ListParams {
   ids?: string[]
   keyword?: string
-  providerCode?: string
+  groupKind?: 'standard' | 'super'
   limit?: number
   manageableOnly?: boolean
   preferDefault?: boolean

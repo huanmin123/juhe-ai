@@ -184,7 +184,7 @@ var testSchema = []string{
 	// groups 目标形态（供应商与上游协议面重构设计 §8）：无 provider_code 列，
 	// 分组与 provider 无关；与 maintenance sqlite_schema_business.go 的 groups
 	// 表同构（group_kind/super_group_members 属超组切片，本夹具不涉及）。
-	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		config_revision INTEGER NOT NULL DEFAULT 1,

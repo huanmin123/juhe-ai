@@ -1087,7 +1087,8 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     -- groups 目标形态（设计 §8，迁移窗口 shim 已按 A 路线一次性收敛撤除）：
     -- 无 provider_code 列与 providers 外键；owner 内名称唯一与「每 owner 至多
     -- 一个默认组」的唯一索引见索引区（idx_groups_owner_name_unique /
-    -- idx_groups_owner_default_unique）。
+    -- idx_groups_owner_default_unique）。group_kind 区分普通分组与超级分组
+    -- （超级分组设计 §3.1），缺省 standard，创建后不可经 PATCH 修改。
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -1096,9 +1097,28 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,
       group_type TEXT NOT NULL DEFAULT 'personal',
+      group_kind TEXT NOT NULL DEFAULT 'standard' CHECK(group_kind IN ('standard','super')),
       scheduling_policy_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    -- super_group_members 超级分组成员关系（超级分组设计 §3.2）：只保存
+    -- 成员普通分组、顺序与启停；不直接绑定账号。super/member 两侧
+    -- ON DELETE RESTRICT，删除或停用成员分组前必须由写入口先解除引用
+    -- （应用层返回 409 super_group_member_reference_conflict）。
+    CREATE TABLE IF NOT EXISTS super_group_members (
+      id TEXT PRIMARY KEY,
+      super_group_id TEXT NOT NULL,
+      member_group_id TEXT NOT NULL,
+      priority INTEGER NOT NULL CHECK(priority >= 0),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (super_group_id, member_group_id),
+      UNIQUE (super_group_id, priority),
+      FOREIGN KEY (super_group_id) REFERENCES groups(id) ON DELETE RESTRICT,
+      FOREIGN KEY (member_group_id) REFERENCES groups(id) ON DELETE RESTRICT
     );
 
     CREATE TABLE IF NOT EXISTS group_authorization_settings (
@@ -1611,6 +1631,10 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE INDEX IF NOT EXISTS idx_groups_name_lookup ON groups(name, id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_name_lookup ON groups(system_account_id, name, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON groups(system_account_id) WHERE is_default = 1;
+    -- super_group_members 成员侧引用索引：分组级停用/删除/改类型前的
+    -- 引用检查与迁移器复用键查询都按 member_group_id 命中（超级分组设计
+    -- §3.2）；super_group_id 侧由表内两枚 UNIQUE 约束的自动索引覆盖。
+    CREATE INDEX IF NOT EXISTS idx_super_group_members_member_group ON super_group_members(member_group_id);
     CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);
     CREATE INDEX IF NOT EXISTS idx_system_teams_name_lookup ON system_teams(name, id);

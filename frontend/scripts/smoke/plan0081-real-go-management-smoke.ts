@@ -235,7 +235,7 @@ interface GroupDetailRecord extends GroupRecord {
   accountIds: string[]
 }
 
-type RouteStrategyMode = 'normal' | 'weighted' | 'failover' | 'round_robin' | 'merge'
+type RouteStrategyMode = 'normal' | 'weighted' | 'failover' | 'round_robin'
 
 interface RouteStrategyListItem {
   id: string
@@ -2112,7 +2112,7 @@ function assertApiKeyListItem(value: unknown, scope: 'admin' | 'self', label: st
   }
   if (Object.hasOwn(value, 'routeStrategyMode')) {
     expect(
-      ['normal', 'weighted', 'failover', 'round_robin', 'merge'].includes(String(value.routeStrategyMode)),
+      ['normal', 'weighted', 'failover', 'round_robin'].includes(String(value.routeStrategyMode)),
       `${label}.routeStrategyMode must be a valid route strategy mode`
     )
   }
@@ -2241,7 +2241,7 @@ function assertRouteStrategyConfigForMode(
   label: string,
   detail: boolean
 ): void {
-  // 调度偏好（历史命名 normalRoutingConfig）自通用化起由 normal/weighted/failover/round_robin/merge 五种模式共享。
+  // 调度偏好（历史命名 normalRoutingConfig）自通用化起由 normal/weighted/failover/round_robin 四种模式共享。
   void detail
   expect(isRecord(value.normalRoutingConfig), `${label}.normalRoutingConfig must be an object for ${String(value.mode)} mode`)
 }
@@ -2251,7 +2251,6 @@ function isRouteStrategyMode(value: unknown): value is RouteStrategyMode {
     || value === 'weighted'
     || value === 'failover'
     || value === 'round_robin'
-    || value === 'merge'
 }
 
 function assertClientIPStatsList(value: unknown): ClientIPStatsListResult {

@@ -78,11 +78,11 @@ func TestW14dParseAccountListQuery(t *testing.T) {
 
 func TestW14dParseStrategyListQuery(t *testing.T) {
 	query, issue := parseStrategyListQuery(w14dQuery("targetUsername", "alice", "keyword", "k",
-		"mode", "merge", "status", "active", "page", "1", "pageSize", "10"))
+		"mode", "normal", "status", "active", "page", "1", "pageSize", "10"))
 	if issue != "" {
 		t.Fatalf("happy path: %q", issue)
 	}
-	if query.Mode != "merge" || query.Status != "active" || !query.HasMode || !query.HasStatus {
+	if query.Mode != "normal" || query.Status != "active" || !query.HasMode || !query.HasStatus {
 		t.Fatalf("parsed: %+v", query)
 	}
 	_, issue = parseStrategyListQuery(w14dQuery("targetUsername", "alice", "mode", "mystery"))

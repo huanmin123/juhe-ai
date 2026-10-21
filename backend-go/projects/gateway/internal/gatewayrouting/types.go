@@ -1,16 +1,12 @@
 package gatewayrouting
 
-// RouteStrategyMode mirrors the Node RouteStrategyMode union
-// (domain/types.ts): 'normal' | 'weighted' | 'failover' | 'round_robin' |
-// 'merge'. merge is the merged-route mode
-// (docs/functions/合并路由设计.md): all bound groups' servable accounts join
-// one flat pool.
+// RouteStrategyMode consts mirror the four writable modes. 超级分组不是路由
+// 模式：super 目标由 GroupBindingRow.GroupKind 表达，模式仍为四种之一。
 const (
 	RouteStrategyModeNormal     = "normal"
 	RouteStrategyModeWeighted   = "weighted"
 	RouteStrategyModeFailover   = "failover"
 	RouteStrategyModeRoundRobin = "round_robin"
-	RouteStrategyModeMerge      = "merge"
 )
 
 // Row status values (storage/gateway-api-key.repository.ts).
@@ -41,14 +37,12 @@ const (
 
 // NormalGatewayModelRouteSource mirrors the Node
 // NormalGatewayModelRouteSource union: where the routed model was resolved
-// from. RouteSourceMerged extends the Node union for merge mode (设计 B11:
-// merge 固定 routeSource=merged，写进审计字段契约).
+// from.
 type NormalGatewayModelRouteSource string
 
 const (
 	RouteSourceAccountMapping  NormalGatewayModelRouteSource = "account_mapping"
 	RouteSourceCatalogProvider NormalGatewayModelRouteSource = "catalog_provider"
-	RouteSourceMerged          NormalGatewayModelRouteSource = "merged"
 )
 
 // APIKeyRow mirrors storage/gateway-api-key.repository.ts
@@ -77,6 +71,10 @@ type GroupBindingRow struct {
 	Weight          *int64
 	Status          string
 	GroupEnabled    int64 // Node group_enabled !== 0 marks the group enabled.
+	// GroupKind / MemberGroupIDs 承载超级分组目标（超级分组设计 §4.2）：
+	// standard 组为空；super 组携带按 priority 排序的 enabled 成员组 ID。
+	GroupKind      string
+	MemberGroupIDs []string
 }
 
 // GroupUsageAccessMetadata mirrors storage/openai-account-selector.types.ts

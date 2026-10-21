@@ -145,7 +145,7 @@ func parseMutationFields(body map[string]any, requireName bool) (MutationInput, 
 			return input, invalidMutationMessage
 		}
 		text, ok := raw.(string)
-		if !ok || !IsRouteStrategyMode(text) {
+		if !ok || !IsWritableRouteStrategyMode(text) {
 			return input, invalidMutationMessage
 		}
 		input.Mode = &text

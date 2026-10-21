@@ -175,7 +175,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 		options.PageSize = 50
 	}
 	switch strings.TrimSpace(r.URL.Query().Get("mode")) {
-	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge:
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin:
 		options.Mode = strings.TrimSpace(r.URL.Query().Get("mode"))
 	}
 	switch strings.TrimSpace(r.URL.Query().Get("status")) {
@@ -440,6 +440,10 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 		if !kernel.DecodeJSON(w, r, &body) {
 			return
 		}
+		if code, message := RejectUnsupportedRouteModePayload(body); code != "" {
+			kernel.WriteJSON(w, http.StatusBadRequest, map[string]any{"code": code, "message": message})
+			return
+		}
 		input, problem := parseCreateBody(body)
 		if problem != "" {
 			kernel.WriteBadRequest(w, problem)
@@ -512,6 +516,10 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 	// fractional digits) all match the stored canonical version.
 	if !hasExpected || !isString {
 		kernel.WriteBadRequest(w, "策略路由配置版本格式不正确")
+		return
+	}
+	if code, message := RejectUnsupportedRouteModePayload(body); code != "" {
+		kernel.WriteJSON(w, http.StatusBadRequest, map[string]any{"code": code, "message": message})
 		return
 	}
 	expected, validInstant := canonicalRFC3339Instant(expected)
@@ -671,6 +679,13 @@ func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
 	}
 	if d.Log != nil {
 		d.Log.Warn("route_strategy_mutation_rejected", "error", err.Error())
+	}
+	var validation *ValidationError
+	if errors.As(err, &validation) && validation.Code != "" {
+		kernel.WriteJSON(w, http.StatusBadRequest, map[string]string{
+			"code": validation.Code, "message": validation.Message,
+		})
+		return
 	}
 	kernel.WriteBadRequest(w, err.Error())
 }

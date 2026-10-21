@@ -102,6 +102,7 @@ var goldenBusinessTables = []string{
 	"route_strategies",
 	"route_strategy_groups",
 	"scheduling_preferences",
+	"super_group_members",
 	"system_accounts",
 	"system_sessions",
 	"system_settings",
@@ -243,7 +244,10 @@ var goldenSchemaCounts = SQLiteResult{
 	// 74→81 恢复的 8 张旧表 ensure 建表与 account_model_mappings，配套旧
 	// seed（pgSeedLegacyProviders/Profiles、旧 provider_model_catalog 目录
 	// 种子）同批删除；Indexes 204 不变（旧表索引从未补建）。
-	Business: SchemaCounts{Tables: 73, Indexes: 204},
+	// 73→74：超级分组首批——新增 super_group_members 表（+1 TABLE），
+	// groups 增加 group_kind 列（列不计入 DDL 语句数）；Indexes 204→205
+	//（+1：idx_super_group_members_member_group）。
+	Business: SchemaCounts{Tables: 74, Indexes: 205},
 	// 65/124→59/112：六监控表退役 -6 表 -12 索引（f1991b708 名单已删、
 	// 计数漏改；2026-10-17 专门批取证回正）。
 	Stats:        SchemaCounts{Tables: 59, Indexes: 112},
@@ -259,8 +263,8 @@ var goldenSchemaCounts = SQLiteResult{
 // 152→153：2026-10-18 修复批恢复旧 account_model_mappings ensure 建表；
 // 153→160：2026-10-18 修复批（同日第二笔）恢复其余 7 张旧供应商表 ensure
 // 建表；160→152：A 路线撤 shim 批（同日第三笔）一次性撤回上述 8 张旧表
-// ensure 建表。
-const goldenTotalTables = 152
+// ensure 建表；152→153：超级分组首批新增 super_group_members。
+const goldenTotalTables = 153
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
@@ -269,8 +273,9 @@ const goldenTotalTables = 152
 // scheduling_preferences batch adds four inline business indexes plus the
 // guarded idx_api_keys_scheduling_preference created by EnsureSQLiteBusiness
 // (调度偏好独立实体 PLAN-20261012T033000000Z). 385→366：供应商与上游协议面
-// 重构批 business 索引 -23/+3。
-const goldenTotalIndexes = 366
+// 重构批 business 索引 -23/+3；366→367：超级分组首批新增
+// idx_super_group_members_member_group。
+const goldenTotalIndexes = 367
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

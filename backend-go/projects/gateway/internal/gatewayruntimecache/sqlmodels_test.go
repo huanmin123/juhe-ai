@@ -32,7 +32,8 @@ func newSQLTestDB(t *testing.T) *sql.DB {
 		// groups.provider_code（2026-10-18 修复批迁移窗口）：列已在 fresh DDL
 		// 恢复（DEFAULT 'gpt' shim），分组访问/绑定投影随之恢复读取该列；
 		// 运行时迁移后由清理命令统一收口。
-		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT, provider_code TEXT NOT NULL DEFAULT 'gpt')`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, group_kind TEXT NOT NULL DEFAULT 'standard', scheduling_policy_json TEXT, provider_code TEXT NOT NULL DEFAULT 'gpt')`,
+		`CREATE TABLE super_group_members (id TEXT PRIMARY KEY, super_group_id TEXT NOT NULL, member_group_id TEXT NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`,
 		`CREATE TABLE group_authorization_settings (authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT, updated_at TEXT)`,

@@ -35,7 +35,7 @@ export interface RouteStrategyGroupBindingSummary {
 export interface RouteStrategyGroupOption {
   id: string
   name: string
-  providerCode: string
+  groupKind: 'standard' | 'super'
   enabled: boolean
 }
 
@@ -92,7 +92,7 @@ export interface RouteStrategySpeedFirstLatencyRuntime {
   items: RouteStrategySpeedFirstLatencyRuntimeItem[]
 }
 
-// 调度偏好配置（历史命名 normalRoutingConfig）：自调度偏好通用化起由 normal/weighted/failover/round_robin/merge 五种模式共享。
+// 调度偏好配置（历史命名 normalRoutingConfig）：自调度偏好通用化起由 normal/weighted/failover/round_robin 四种模式共享。
 export type RouteStrategyNormalRoutingConfig =
   | {
       schedulingPreference: 'cost_first'
@@ -107,7 +107,7 @@ export type RouteStrategyNormalRoutingConfig =
 
 export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
 
-export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover' | 'merge'
+export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover'
 export type RouteStrategyStatus = 'active' | 'disabled'
 
 export interface RouteStrategySummary {

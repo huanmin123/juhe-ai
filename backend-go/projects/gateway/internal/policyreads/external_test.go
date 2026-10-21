@@ -28,7 +28,7 @@ func TestExternalScopesAndAPIDocs(t *testing.T) {
 		t.Fatalf("catalog head: %v", catalog)
 	}
 	items, ok := catalog["items"].([]any)
-	if !ok || len(items) != 18 {
+	if !ok || len(items) != 19 {
 		t.Fatalf("catalog items: %v", catalog)
 	}
 	for _, entry := range items {

@@ -69,13 +69,6 @@ type routePlanInput struct {
 // createOpenAIGatewayRoutePlanSnapshot mirrors createOpenAIGatewayRoutePlanSnapshot.
 func (s *Service) createOpenAIGatewayRoutePlanSnapshot(input routePlanInput) (gatewayrouting.RoutePlanSnapshot[string], error) {
 	orderedAllowedTargets := uniqueActiveRouteGroupIds(input.apiKeyRecord)
-	// B18（合并路由设计 3.4）：merge 池已包含全部分组的账号，不存在分组回
-	// 退——快照截断为单目标 [窗口组]，cursor=0。单目标下
-	// canAttemptAPIKeyGroupFallback 的 `cursor < len-1` 恒假，回退链路自然
-	// 短路，无需为其新增 merge 分支。
-	if input.apiKeyRecord != nil && input.apiKeyRecord.RouteStrategyMode == gatewayruntimecache.RouteStrategyModeMerge {
-		orderedAllowedTargets = []string{input.groupId}
-	}
 	if !containsString(orderedAllowedTargets, input.groupId) {
 		orderedAllowedTargets = append([]string{input.groupId}, orderedAllowedTargets...)
 	}
@@ -148,20 +141,43 @@ func canAttemptAPIKeyGroupFallback(apiKeyRecord *gatewayruntimecache.GatewayAPIK
 	return currentIndex >= 0 && currentIndex < len(bindings)-1
 }
 
-// isMergeRouteStrategy reports whether the record is bound to a merge mode
-// strategy（合并路由设计：mode 识别统一走
-// gatewayruntimecache.RouteStrategyModeMerge）。
-func isMergeRouteStrategy(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) bool {
-	return apiKeyRecord != nil && apiKeyRecord.RouteStrategyMode == gatewayruntimecache.RouteStrategyModeMerge
+// superBindingOutcomeTargets 返回记录中全部 active 超级分组绑定，按给定分类
+// 生成审计目标列表（超级分组设计 §4.2 的目标级失败观测）。
+func superBindingOutcomeTargets(record *gatewayruntimecache.GatewayAPIKeyRow, classification string) []map[string]string {
+	if record == nil {
+		return nil
+	}
+	targets := make([]map[string]string, 0)
+	for _, binding := range record.GroupBindings {
+		if binding.Status != "active" || binding.GroupKind != "super" {
+			continue
+		}
+		targets = append(targets, map[string]string{"groupId": binding.GroupID, "classification": classification})
+	}
+	return targets
 }
 
-// mergeFanoutCandidateAccounts 按绑定优先级逐组列出并扇出合并 merge 扁平池
-// （合并路由设计 3.4“候选重解析扇出”防池收窄）：跨组重复账号按绑定优先级去
-// 重（首次出现组胜出，3.1 第 5 条）；重建后全量重新组标 BoundGroupID=所在组
-// ——listing 只对 account_authorized 账号赋值（chain_accounts_secret.go），
-// owner / group_authorized 账号恒 nil，必须显式覆盖写（3.1 第 4 条）。list
-// 为单组列出闭包，保持 Cached/Fresh/Recoverable 各自的模型过滤与运行态语义。
-func mergeFanoutCandidateAccounts(groupIDs []string, list func(groupID string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+// superTargetMemberIDs 返回 groupID 是超级分组目标时的 enabled 成员组 ID
+// （priority 序，超级分组设计 §4.2）。非超级分组目标返回 nil。
+func superTargetMemberIDs(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, groupID string) []string {
+	if apiKeyRecord == nil || groupID == "" {
+		return nil
+	}
+	for _, binding := range apiKeyRecord.GroupBindings {
+		if binding.GroupID == groupID && binding.GroupKind == "super" {
+			return binding.MemberGroupIDs
+		}
+	}
+	return nil
+}
+
+// fanoutCandidateAccounts 按绑定优先级逐组列出并扇出候选扁平池（超级分组
+// 成员展开的候选重解析扇出，防止池收窄）：跨组重复账号按绑定优先级去重
+// （首次出现组胜出）；重建后全量重新组标 BoundGroupID=所在组——listing 只对
+// account_authorized 账号赋值（chain_accounts_secret.go），owner /
+// group_authorized 账号恒 nil，必须显式覆盖写。list 为单组列出闭包，保持
+// Cached/Fresh/Recoverable 各自的模型过滤与运行态语义。
+func fanoutCandidateAccounts(groupIDs []string, list func(groupID string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 	pool := make([]gatewayruntimecache.OpenAIAccountSecret, 0)
 	seen := map[string]bool{}
 	for _, groupID := range groupIDs {
@@ -182,20 +198,19 @@ func mergeFanoutCandidateAccounts(groupIDs []string, list func(groupID string) (
 	return pool, nil
 }
 
-// listMergeOrSingleAccounts 统一单组 / merge 扇出读取：mergeGroupIDs 非空时
-// 扇出合并（去重 + 组标），否则按单组读取（不组标，保持存量语义）。
-func listMergeOrSingleAccounts(mergeGroupIDs []string, fallbackGroupID string, list func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if len(mergeGroupIDs) == 0 {
+// listFanoutOrSingleAccounts 统一单组 / 扇出读取：fanoutGroupIDs 非空时扇出
+// 合并（去重 + 组标），否则按单组读取（不组标，保持存量语义）。
+func listFanoutOrSingleAccounts(fanoutGroupIDs []string, fallbackGroupID string, list func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	if len(fanoutGroupIDs) == 0 {
 		return list(fallbackGroupID)
 	}
-	return mergeFanoutCandidateAccounts(mergeGroupIDs, list)
+	return fanoutCandidateAccounts(fanoutGroupIDs, list)
 }
 
-// listMergeAffinityCandidatePool 构造 B20 亲和过滤用的 merge 合并池：按绑定
-// 优先级逐组 ListCached（不按请求模型预过滤，与单组亲和路径的空 options 列
-// 出语义一致）+ 组标 + 去重。
-func (s *Service) listMergeAffinityCandidatePool(ctx context.Context, apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, systemAccountID string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	return mergeFanoutCandidateAccounts(uniqueActiveRouteGroupIds(apiKeyRecord), func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+// listGroupFanoutAffinityCandidatePool 按给定分组序列扇出亲和候选池（超级分组
+// 成员展开共用，不按请求模型预过滤 + 组标 + 去重）。
+func (s *Service) listGroupFanoutAffinityCandidatePool(ctx context.Context, groupIDs []string, systemAccountID string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	return fanoutCandidateAccounts(groupIDs, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 		return s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(ctx, group, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{})
 	})
 }
@@ -590,13 +605,13 @@ type recoveryInput struct {
 	systemAccountID string
 	apiKeyID        string
 	groupID         string
-	// mergeGroupIDs（合并路由设计 3.4）：merge 上下文下按绑定优先级的启用
-	// 分组集合；非空时 active/recoverable 读取按其扇出重建扁平池，等待
-	// scopeKey 仍取 input.groupID（窗口组）。空保持单组读取。
-	mergeGroupIDs []string
+	// fanoutGroupIDs（超级分组设计 §4.2）：超级分组目标下按 enabled 成员组
+	// 集合扇出 active/recoverable 读取并重建扁平池，等待 scopeKey 仍取
+	// input.groupID（超级分组本身）。空保持单组读取。
+	fanoutGroupIDs []string
 	// recoverableScope（可靠性批次2 缺陷5）：provided 候选（chat 调度覆盖）
 	// 的可恢复等待作用域；非空时 active/recoverable 读取按注入的绑定作用域
-	// 组集合（+account 模式目标账户）收敛，忽略 groupID/mergeGroupIDs，
+	// 组集合（+account 模式目标账户）收敛，忽略 groupID/fanoutGroupIDs，
 	// 保证等待重读绝不逃逸绑定作用域。
 	recoverableScope         *CandidateRecoverableScope
 	startedAt                int64
@@ -612,7 +627,7 @@ func (s *Service) waitForRecoverableOpenAIGatewayCandidateAccounts(input recover
 	requestedModel, _ := RequestModel(input.req)
 	requestedEndpointFamily := gatewayRequestEndpointFamily(input.req)
 	loadActiveAccounts := func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-		return listMergeOrSingleAccounts(input.mergeGroupIDs, input.groupID, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+		return listFanoutOrSingleAccounts(input.fanoutGroupIDs, input.groupID, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 			return s.RuntimeCache.ListFreshOpenAIAccountsForGroupAsync(s.requestContext(), group, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
 				RequestedModel: requestedModel, RequestedEndpointFamily: requestedEndpointFamily,
 			})
@@ -620,7 +635,7 @@ func (s *Service) waitForRecoverableOpenAIGatewayCandidateAccounts(input recover
 	}
 	windowMs := input.serverRetryBudget.RemainingMs(nil)
 	loadRecoverableAccounts := func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-		return listMergeOrSingleAccounts(input.mergeGroupIDs, input.groupID, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+		return listFanoutOrSingleAccounts(input.fanoutGroupIDs, input.groupID, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 			return s.RuntimeCache.ListRecoverableUnavailableOpenAIAccountsForGroupAsync(s.requestContext(), group, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
 				RequestedModel: requestedModel, RequestedEndpointFamily: requestedEndpointFamily,
 			}, &windowMs)

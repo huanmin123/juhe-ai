@@ -51,7 +51,7 @@ export function groupsTableColumns(isManagementView: boolean): Array<Record<stri
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '分组名称', dataIndex: 'name', key: 'name', width: 240, fixed: 'left', customHeaderCell: () => ({ class: 'group-name-header-cell' }) },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
-    { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130 }
+    { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130, customRender: ({ record }: { record: { groupKind?: string; groupType: string } }) => record.groupKind === 'super' ? '超级分组' : (record.groupType === 'high_concurrency' ? '高并发分组' : '个人分组') }
   ]
   if (isManagementView) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })

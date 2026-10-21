@@ -1,0 +1,419 @@
+// Package mergesupermigration 实现 merge 路由策略到超级分组的迁移（超级分组
+// 设计 §6）：
+//
+//   - Plan 只读扫描 mode='merge' 的策略，逐条判定 mapped / blocked 并生成
+//     确定性目标（超级分组 ID/名称、成员行与归一 priority）；
+//   - Apply 在单个业务库事务内重新计算同一计划并写入：生成 disabled 的超级
+//     分组与 super_group_members、把策略改写为 normal、替换为一条绑定超级分组
+//     的 route_strategy_groups 行；任一守卫失败整笔回滚；
+//   - blocked 策略不写库，由调用方在 manifest 中复核；全部 merge 行解决前
+//     不允许上线（设计 §6 第 5 条）。
+package mergesupermigration
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Dialect 是业务库方言。
+type Dialect string
+
+const (
+	DialectPostgres Dialect = "postgres"
+	DialectSQLite   Dialect = "sqlite"
+)
+
+// 迁移判定词表。
+const (
+	DispositionMapped  = "mapped"
+	DispositionBlocked = "blocked"
+)
+
+// 阻断原因词表（manifest 固定口径）。
+const (
+	BlockedBindingsEmpty            = "bindings_empty"
+	BlockedBindingsExceed20         = "bindings_exceed_20"
+	BlockedMemberDuplicate          = "member_duplicate"
+	BlockedMemberMissing            = "member_missing"
+	BlockedMemberOwnerMismatch      = "member_owner_mismatch"
+	BlockedMemberNested             = "member_nested"
+	BlockedEnabledMembersLessThan2  = "enabled_members_less_than_2"
+	BlockedMemberDispatchMismatch   = "member_dispatch_policy_mismatch"
+	BlockedMigrationGroupExists     = "migration_group_exists"
+	BlockedMigrationGroupIDConflict = "migration_group_id_conflict"
+)
+
+// maxSuperGroupMembers 与超级分组设计 §3.2 的成员行上限一致。
+const maxSuperGroupMembers = 20
+
+// minEnabledMembers 与启用超级分组的 enabled 成员下限一致。
+const minEnabledMembers = 2
+
+// Options 是 Plan/Apply 的注入参数。
+type Options struct {
+	Dialect Dialect
+	// BatchID 是稳定复用键的一部分（设计 §6：manifest 复用键
+	// (system_account_id, migration_batch_id, source_route_strategy_id)）。必填。
+	BatchID string
+	Now     time.Time // 零值取当前 UTC
+}
+
+// MemberPlan 是成员行计划；Priority 为归一后的连续值。
+type MemberPlan struct {
+	MemberGroupID string `json:"member_group_id"`
+	Priority      int    `json:"priority"`
+	Enabled       bool   `json:"enabled"`
+}
+
+// StrategyPlan 是单条 merge 策略的迁移计划。
+type StrategyPlan struct {
+	StrategyID       string       `json:"source_route_strategy_id"`
+	OwnerID          string       `json:"system_account_id"`
+	Name             string       `json:"source_route_strategy_name"`
+	Disposition      string       `json:"disposition"`
+	BlockedReason    string       `json:"blocked_reason,omitempty"`
+	SourceBindingIDs []string     `json:"source_binding_ids"`
+	SuperGroupID     string       `json:"target_super_group_id,omitempty"`
+	SuperGroupName   string       `json:"target_super_group_name,omitempty"`
+	Members          []MemberPlan `json:"members,omitempty"`
+}
+
+// Plan 是一次迁移的完整计划/manifest 主体。
+type Plan struct {
+	BatchID    string         `json:"migration_batch_id"`
+	Strategies []StrategyPlan `json:"strategies"`
+	Mapped     int            `json:"mapped_count"`
+	Blocked    int            `json:"blocked_count"`
+}
+
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func bind(query string, dialect Dialect) string {
+	if dialect != DialectPostgres {
+		return query
+	}
+	var builder strings.Builder
+	builder.Grow(len(query) + 8)
+	index := 1
+	for _, r := range query {
+		if r == '?' {
+			builder.WriteString(fmt.Sprintf("$%d", index))
+			index++
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
+}
+
+func table(name string, dialect Dialect) string {
+	if dialect == DialectPostgres {
+		return "juhe_business." + name
+	}
+	return name
+}
+
+// SuperGroupID 返回确定性目标组 ID（同一策略同一批次稳定）。
+func SuperGroupID(strategyID string) string { return "mgsg_" + strategyID }
+
+// SuperGroupName 返回设计 §6 固定的稳定名称。
+func SuperGroupName(strategyID string) string { return "migration-super-group:" + strategyID }
+
+// BuildPlan 只读扫描并返回迁移计划。
+func BuildPlan(ctx context.Context, db *sql.DB, options Options) (Plan, error) {
+	return planWith(ctx, db, options)
+}
+
+func planWith(ctx context.Context, q querier, options Options) (Plan, error) {
+	if options.Dialect != DialectPostgres && options.Dialect != DialectSQLite {
+		return Plan{}, fmt.Errorf("不支持的业务库方言 %q（仅 postgres/sqlite）", options.Dialect)
+	}
+	if strings.TrimSpace(options.BatchID) == "" {
+		return Plan{}, fmt.Errorf("migration batch id 必填")
+	}
+	rows, err := q.QueryContext(ctx, bind(`SELECT id, system_account_id, name FROM `+table("route_strategies", options.Dialect)+`
+		WHERE mode = 'merge' ORDER BY id`, options.Dialect))
+	if err != nil {
+		return Plan{}, err
+	}
+	defer rows.Close()
+	plan := Plan{BatchID: options.BatchID}
+	for rows.Next() {
+		strategy := StrategyPlan{Disposition: DispositionMapped}
+		if err := rows.Scan(&strategy.StrategyID, &strategy.OwnerID, &strategy.Name); err != nil {
+			return Plan{}, err
+		}
+		plan.Strategies = append(plan.Strategies, strategy)
+	}
+	if err := rows.Err(); err != nil {
+		return Plan{}, err
+	}
+	for index := range plan.Strategies {
+		if err := planStrategy(ctx, q, options.Dialect, &plan.Strategies[index]); err != nil {
+			return Plan{}, err
+		}
+		if plan.Strategies[index].Disposition == DispositionMapped {
+			plan.Mapped++
+		} else {
+			plan.Blocked++
+		}
+	}
+	return plan, nil
+}
+
+type sourceBinding struct {
+	ID       string
+	GroupID  string
+	Status   string
+	Priority int
+}
+
+type memberFact struct {
+	ID             string
+	OwnerID        string
+	GroupKind      string
+	GroupType      string
+	SchedulingJSON sql.NullString
+}
+
+func planStrategy(ctx context.Context, q querier, dialect Dialect, plan *StrategyPlan) error {
+	rows, err := q.QueryContext(ctx, bind(`SELECT id, group_id, status, priority
+		FROM `+table("route_strategy_groups", dialect)+`
+		WHERE route_strategy_id = ?
+		ORDER BY priority ASC, created_at ASC, id ASC`, dialect), plan.StrategyID)
+	if err != nil {
+		return err
+	}
+	bindings := []sourceBinding{}
+	for rows.Next() {
+		var binding sourceBinding
+		if err := rows.Scan(&binding.ID, &binding.GroupID, &binding.Status, &binding.Priority); err != nil {
+			rows.Close()
+			return err
+		}
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(bindings) == 0 {
+		return block(plan, BlockedBindingsEmpty)
+	}
+	if len(bindings) > maxSuperGroupMembers {
+		return block(plan, BlockedBindingsExceed20)
+	}
+	plan.SuperGroupID = SuperGroupID(plan.StrategyID)
+	plan.SuperGroupName = SuperGroupName(plan.StrategyID)
+
+	seen := make(map[string]bool, len(bindings))
+	firstFingerprint := ""
+	enabledCount := 0
+	for _, binding := range bindings {
+		if seen[binding.GroupID] {
+			return block(plan, BlockedMemberDuplicate)
+		}
+		seen[binding.GroupID] = true
+		fact, found, err := loadMemberFact(ctx, q, dialect, binding.GroupID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return block(plan, BlockedMemberMissing)
+		}
+		if fact.OwnerID != plan.OwnerID {
+			return block(plan, BlockedMemberOwnerMismatch)
+		}
+		if fact.GroupKind != "standard" {
+			return block(plan, BlockedMemberNested)
+		}
+		fingerprint, err := dispatchFingerprint(fact.GroupType, fact.SchedulingJSON)
+		if err != nil {
+			return err
+		}
+		if firstFingerprint == "" {
+			firstFingerprint = fingerprint
+		} else if fingerprint != firstFingerprint {
+			return block(plan, BlockedMemberDispatchMismatch)
+		}
+		member := MemberPlan{MemberGroupID: binding.GroupID, Priority: len(plan.Members)}
+		if binding.Status == "active" {
+			member.Enabled = true
+			enabledCount++
+		}
+		plan.Members = append(plan.Members, member)
+		plan.SourceBindingIDs = append(plan.SourceBindingIDs, binding.ID)
+	}
+	if enabledCount < minEnabledMembers {
+		return block(plan, BlockedEnabledMembersLessThan2)
+	}
+	// 目标名称/ID 冲突：同一 owner 下已有同名分组，或目标 ID 已被占用。
+	var existing int
+	err = q.QueryRowContext(ctx, bind(`SELECT 1 FROM `+table("groups", dialect)+`
+		WHERE system_account_id = ? AND name = ? LIMIT 1`, dialect), plan.OwnerID, plan.SuperGroupName).Scan(&existing)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		return block(plan, BlockedMigrationGroupExists)
+	}
+	err = q.QueryRowContext(ctx, bind(`SELECT 1 FROM `+table("groups", dialect)+`
+		WHERE id = ? LIMIT 1`, dialect), plan.SuperGroupID).Scan(&existing)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		return block(plan, BlockedMigrationGroupIDConflict)
+	}
+	return nil
+}
+
+func block(plan *StrategyPlan, reason string) error {
+	plan.Disposition = DispositionBlocked
+	plan.BlockedReason = reason
+	plan.Members = nil
+	return nil
+}
+
+func loadMemberFact(ctx context.Context, q querier, dialect Dialect, groupID string) (memberFact, bool, error) {
+	var fact memberFact
+	err := q.QueryRowContext(ctx, bind(`SELECT id, system_account_id, group_kind, group_type, scheduling_policy_json
+		FROM `+table("groups", dialect)+` WHERE id = ? LIMIT 1`, dialect), groupID).
+		Scan(&fact.ID, &fact.OwnerID, &fact.GroupKind, &fact.GroupType, &fact.SchedulingJSON)
+	if err == sql.ErrNoRows {
+		return memberFact{}, false, nil
+	}
+	if err != nil {
+		return memberFact{}, false, err
+	}
+	return fact, true, nil
+}
+
+// dispatchFingerprint 与超级分组设计 §3.3 的成员调度指纹同构：
+// SHA256("group-dispatch-fingerprint:v1\n" + canonical_json({group_type,
+// scheduling_policy_json}))。
+func dispatchFingerprint(groupType string, schedulingJSON sql.NullString) (string, error) {
+	var policy any
+	if schedulingJSON.Valid && strings.TrimSpace(schedulingJSON.String) != "" {
+		if err := json.Unmarshal([]byte(schedulingJSON.String), &policy); err != nil {
+			return "", err
+		}
+	}
+	canonical, err := json.Marshal(map[string]any{
+		"group_type":             groupType,
+		"scheduling_policy_json": policy,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(append([]byte("group-dispatch-fingerprint:v1\n"), canonical...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// Apply 在单个业务库事务内执行迁移：重新计算计划 → 写入全部 mapped 策略 →
+// 提交。返回实际执行后的计划（含 blocked 明细）。blocked 策略不写库。
+func Apply(ctx context.Context, db *sql.DB, options Options) (Plan, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Plan{}, err
+	}
+	defer tx.Rollback()
+	plan, err := planWith(ctx, tx, options)
+	if err != nil {
+		return Plan{}, err
+	}
+	now := options.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	nowISO := now.UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	for index := range plan.Strategies {
+		strategy := &plan.Strategies[index]
+		if strategy.Disposition != DispositionMapped {
+			continue
+		}
+		if err := applyStrategy(ctx, tx, options.Dialect, strategy, nowISO); err != nil {
+			return Plan{}, fmt.Errorf("迁移策略 %s 失败: %w", strategy.StrategyID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Plan{}, err
+	}
+	return plan, nil
+}
+
+func applyStrategy(ctx context.Context, tx *sql.Tx, dialect Dialect, plan *StrategyPlan, nowISO string) error {
+	groupType, schedulingJSON, err := firstMemberDispatchFacts(ctx, tx, dialect, plan)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("groups", dialect)+`
+		(id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
+		VALUES (?, ?, ?, NULL, 0, 0, ?, 'super', ?, ?, ?)`, dialect),
+		plan.SuperGroupID, plan.OwnerID, plan.SuperGroupName, groupType, schedulingJSON, nowISO, nowISO); err != nil {
+		return err
+	}
+	for _, member := range plan.Members {
+		if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("super_group_members", dialect)+`
+			(id, super_group_id, member_group_id, priority, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, dialect),
+			fmt.Sprintf("sgm_%s_%d", plan.StrategyID, member.Priority), plan.SuperGroupID, member.MemberGroupID,
+			member.Priority, boolInt(member.Enabled), nowISO, nowISO); err != nil {
+			return err
+		}
+	}
+	update, err := tx.ExecContext(ctx, bind(`UPDATE `+table("route_strategies", dialect)+`
+		SET mode = 'normal', updated_at = ? WHERE id = ? AND mode = 'merge'`, dialect), nowISO, plan.StrategyID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := update.RowsAffected(); affected != 1 {
+		return fmt.Errorf("策略不再处于 merge 状态（并发迁移？）")
+	}
+	if _, err := tx.ExecContext(ctx, bind(`DELETE FROM `+table("route_strategy_groups", dialect)+`
+		WHERE route_strategy_id = ?`, dialect), plan.StrategyID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("route_strategy_groups", dialect)+`
+		(id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 1, 1, 'active', ?, ?)`, dialect),
+		"rsg_"+plan.StrategyID, plan.StrategyID, plan.OwnerID, plan.SuperGroupID, nowISO, nowISO); err != nil {
+		return err
+	}
+	return nil
+}
+
+func firstMemberDispatchFacts(ctx context.Context, q querier, dialect Dialect, plan *StrategyPlan) (string, string, error) {
+	if len(plan.Members) == 0 {
+		return "", "", fmt.Errorf("策略 %s 没有成员", plan.StrategyID)
+	}
+	var groupType string
+	var schedulingJSON sql.NullString
+	if err := q.QueryRowContext(ctx, bind(`SELECT group_type, scheduling_policy_json FROM `+table("groups", dialect)+`
+		WHERE id = ? LIMIT 1`, dialect), plan.Members[0].MemberGroupID).Scan(&groupType, &schedulingJSON); err != nil {
+		return "", "", err
+	}
+	policy := ""
+	if schedulingJSON.Valid {
+		policy = schedulingJSON.String
+	}
+	return groupType, policy, nil
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}

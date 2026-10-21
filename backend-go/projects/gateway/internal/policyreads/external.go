@@ -52,6 +52,7 @@ var externalIntegrationScopeOptions = []ExternalScopeOption{
 	{Value: "juhe_ai_public:group_add:write", Label: "POST 分组新增"},
 	{Value: "juhe_ai_public:group_update:write", Label: "POST 分组修改"},
 	{Value: "juhe_ai_public:group_delete:write", Label: "POST 分组删除"},
+	{Value: "juhe_ai_public:group_super_members_update:write", Label: "POST 超级分组成员更新"},
 	{Value: "juhe_ai_public:account_add:write", Label: "POST 账号新增"},
 	{Value: "juhe_ai_public:account_update:write", Label: "POST 账号修改"},
 	{Value: "juhe_ai_public:account_delete:write", Label: "POST 账号删除"},

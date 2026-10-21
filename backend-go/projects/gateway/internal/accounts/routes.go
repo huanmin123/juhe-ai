@@ -806,6 +806,12 @@ func (d *Deps) writeError(w http.ResponseWriter, err error) {
 			kernel.WriteError(w, status, revision.Message)
 		}
 	case errors.As(err, &validation):
+		if validation.Code != "" {
+			kernel.WriteJSON(w, http.StatusBadRequest, map[string]string{
+				"code": validation.Code, "message": validation.Message,
+			})
+			return
+		}
 		kernel.WriteBadRequest(w, validation.Message)
 	case errors.As(err, &forbidden):
 		kernel.WriteError(w, http.StatusForbidden, forbidden.Error())

@@ -260,6 +260,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		healthCheckConnectionID   sql.NullString
 		currentHealthCheckPreset  string
 		providerCode              string
+		connectionDriverCode      string
 		providerProtocolProfileID string
 		protocolCode              string
 		protocolVersion           string
@@ -303,6 +304,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			-- vendor），patch 行为键控读 COALESCE(vendor, provider)——vendor 值域
 			-- 与 providerCode 同名，legacy 行回落旧列，新行取 vendor。
 			COALESCE(accounts.vendor_code, '') AS provider_code,
+			COALESCE(accounts.connection_driver_code, '') AS connection_driver_code,
 			accounts.protocol_code,
 			accounts.protocol_version, '' AS client_compatibility,
 			-- oauth_type 物理列（设计 §2.1）：registry 判定读列优先、credentials
@@ -330,6 +332,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		&row.cooldownRetestLastAt, &row.cooldownRetestLastCode,
 		&row.healthCheckModel, &row.healthCheckEndpointMode,
 		&row.healthCheckConnectionID, &row.currentHealthCheckPreset, &row.providerCode,
+		&row.connectionDriverCode,
 		&row.protocolCode, &row.protocolVersion,
 		&row.clientCompatibility, &row.oauthType, &row.proxyProfileID, &row.balanceQueryEnabled,
 		&row.balanceQueryConfigJSON, &row.balanceQueryNextRefreshAt, &row.temporaryProbeEnabled,
@@ -1105,8 +1108,8 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if credentialsChanged {
 			poolCredentials = nextCredentials
 		}
-		if isAccountAPIKeyPoolIsolationEnabled(row.providerCode, row.protocolCode,
-			row.protocolVersion, row.accountType, poolCredentials) {
+		if isAccountAPIKeyPoolIsolationEnabled(row.providerCode, row.connectionDriverCode,
+			row.protocolCode, row.protocolVersion, row.accountType, poolCredentials) {
 			retained, err := s.hasRetainedActiveAccountAPIKeyState(ctx, tx, row.id,
 				currentCredentials, poolCredentials)
 			if err != nil {
@@ -2056,18 +2059,22 @@ func (s *Store) loadEnabledGroupBindingID(ctx context.Context, q queryer, accoun
 func (s *Store) assertGroupCanBind(ctx context.Context, q queryer, groupID, systemAccountID string) error {
 	var groupOwner string
 	var enabled int64
+	var groupKind string
 	lockSuffix := ""
 	if s.pg {
 		lockSuffix = " FOR UPDATE"
 	}
-	err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled
+	err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id, enabled, group_kind
 		FROM `+s.table("groups")+`
-		WHERE id = ?`+lockSuffix), groupID).Scan(&groupOwner, &enabled)
+		WHERE id = ?`+lockSuffix), groupID).Scan(&groupOwner, &enabled, &groupKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &ValidationError{Message: "账户分组无效"}
 	}
 	if err != nil {
 		return err
+	}
+	if groupKind == "super" {
+		return &ValidationError{Message: "超级分组不能直接绑定账户", Code: "group_kind_conflict"}
 	}
 	if groupOwner != systemAccountID || enabled != 1 {
 		return &ValidationError{Message: "账户分组无效"}

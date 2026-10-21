@@ -46,11 +46,20 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/groups/route-strategy-options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.routeStrategyOptions(w, r, adminScope(r))
 	})))
+	k.Register("GET "+prefix+"/groups/{id}/model-options", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.groupModelOptions(w, r, adminScope(r))
+	})))
 	k.Register("GET "+prefix+"/groups/{id}", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, adminScope(r))
 	})))
 	k.Register("GET "+prefix+"/groups/{id}/edit-basic", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.editBasic(w, r, adminScope(r))
+	})))
+	k.Register("GET "+prefix+"/groups/{id}/super-members", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.getSuperMembers(w, r, adminScope(r))
+	})))
+	k.Register("PATCH "+prefix+"/groups/{id}/super-members", d.Auth.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.patchSuperMembers(w, r, adminScope(r))
 	})))
 	k.Register("POST "+prefix+"/groups", d.mountGuardedCreate(false))
 	k.Register("POST "+prefix+"/groups/{id}/return-authorization", d.mountGuardedReturnAuthorization(false))
@@ -77,11 +86,20 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/my-groups/route-strategy-options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.routeStrategyOptions(w, r, selfScope(r))
 	})))
+	k.Register("GET "+prefix+"/my-groups/{id}/model-options", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.groupModelOptions(w, r, selfScope(r))
+	})))
 	k.Register("GET "+prefix+"/my-groups/{id}", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, selfScope(r))
 	})))
 	k.Register("GET "+prefix+"/my-groups/{id}/edit-basic", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.editBasic(w, r, selfScope(r))
+	})))
+	k.Register("GET "+prefix+"/my-groups/{id}/super-members", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.getSuperMembers(w, r, selfScope(r))
+	})))
+	k.Register("PATCH "+prefix+"/my-groups/{id}/super-members", d.Auth.RequireSession(true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.patchSuperMembers(w, r, selfScope(r))
 	})))
 	k.Register("POST "+prefix+"/my-groups", d.mountGuardedCreate(true))
 	k.Register("POST "+prefix+"/my-groups/{id}/return-authorization", d.mountGuardedReturnAuthorization(true))
@@ -167,7 +185,7 @@ func createBody(body map[string]any) (MutationInput, bool) {
 	input := MutationInput{}
 	for key := range body {
 		switch key {
-		case "name", "providerCode", "description", "enabled", "groupType", "schedulingPolicy":
+		case "name", "providerCode", "description", "enabled", "groupType", "groupKind", "schedulingPolicy":
 		default:
 			return input, false
 		}
@@ -197,6 +215,13 @@ func createBody(body map[string]any) (MutationInput, bool) {
 			return MutationInput{}, false
 		}
 		input.GroupType = &text
+	}
+	if value, exists := body["groupKind"]; exists {
+		text, isString := value.(string)
+		if !isString || (text != GroupKindStandard && text != GroupKindSuper) {
+			return MutationInput{}, false
+		}
+		input.GroupKind = &text
 	}
 	if value, exists := body["schedulingPolicy"]; exists {
 		policy, isObject := value.(map[string]any)
@@ -274,9 +299,9 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 				ResourceID:                    item.ID,
 				ResourceName:                  item.Name,
 				Summary:                       "创建分组：" + item.Name,
-					Changes: []authsys.OperationLogChange{
-						{Field: "name", Label: "名称", After: item.Name},
-						{Field: "groupType", Label: "分组类型", After: item.GroupType},
+				Changes: []authsys.OperationLogChange{
+					{Field: "name", Label: "名称", After: item.Name},
+					{Field: "groupType", Label: "分组类型", After: item.GroupType},
 					// safeChange('enabled', '启用状态', undefined, group.enabled):
 					// normalizeSafeValue keeps booleans native.
 					{Field: "enabled", Label: "启用状态", AfterValue: item.Enabled},
@@ -511,8 +536,13 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 // writeMutationError maps store errors onto the Node route family contract:
 // conflicts (duplicate name, patch conflicts) → 409; everything else → 400.
 func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
+	var codeErr *CodeError
 	var conflict *ConflictError
 	var validation *ValidationError
+	if errors.As(err, &codeErr) {
+		kernel.WriteJSON(w, codeErr.Status, map[string]any{"code": codeErr.Code, "message": codeErr.Message})
+		return
+	}
 	if errors.As(err, &conflict) {
 		kernel.WriteError(w, http.StatusConflict, conflict.Message)
 		return
@@ -522,6 +552,121 @@ func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
 		return
 	}
 	kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+}
+
+// groupModelOptions 服务 GET /groups/{id}/model-options 与个人面同源路由：
+// CC Switch 导出只用分组做模型参考，候选来自分组内账户的
+// account_supported_models 真实 models 行（T34）。
+func (d *Deps) groupModelOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	options, err := d.Store.ListGroupModelOptions(r.Context(), r.PathValue("id"), r.URL.Query().Get("keyword"), limit, access)
+	if err != nil {
+		d.writeMutationError(w, err)
+		return
+	}
+	kernel.WriteOK(w, options, "")
+}
+
+// getSuperMembers 服务 GET /groups/{id}/super-members 与个人面同源路由。
+func (d *Deps) getSuperMembers(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	summary, err := d.Store.GetSuperMembers(r.Context(), r.PathValue("id"), access)
+	if err != nil {
+		d.writeMutationError(w, err)
+		return
+	}
+	kernel.WriteOK(w, summary, "")
+}
+
+// patchSuperMembers 服务 PATCH /groups/{id}/super-members 与个人面同源路由，
+// 严格只接受 {expectedRevision, members:[{memberGroupId,priority,enabled}]}。
+func (d *Deps) patchSuperMembers(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	expectedRevision, members, codeErr := parseSuperMembersBody(r)
+	if codeErr != nil {
+		d.writeMutationError(w, codeErr)
+		return
+	}
+	summary, err := d.Store.ReplaceSuperMembers(r.Context(), r.PathValue("id"), expectedRevision, members, access)
+	if err != nil {
+		d.writeMutationError(w, err)
+		return
+	}
+	kernel.WriteOK(w, summary, "")
+}
+
+// parseSuperMembersBody 按设计 §5 严格解析成员替换请求体；未知键、缺键、
+// 非整数或负数 priority 统一返回 super_group_member_invalid。
+func parseSuperMembersBody(r *http.Request) (string, []SuperMemberInput, *CodeError) {
+	invalid := func() (string, []SuperMemberInput, *CodeError) {
+		return "", nil, codeError(400, CodeSuperGroupMemberInvalid, "超级分组成员参数无效")
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.UseNumber()
+	var body map[string]json.RawMessage
+	if err := decoder.Decode(&body); err != nil {
+		return invalid()
+	}
+	for key := range body {
+		switch key {
+		case "expectedRevision", "members":
+		default:
+			return invalid()
+		}
+	}
+	rawRevision, exists := body["expectedRevision"]
+	if !exists {
+		return invalid()
+	}
+	var expectedRevision string
+	if err := json.Unmarshal(rawRevision, &expectedRevision); err != nil || strings.TrimSpace(expectedRevision) == "" {
+		return invalid()
+	}
+	rawMembers, exists := body["members"]
+	if !exists {
+		return invalid()
+	}
+	var memberRows []map[string]json.RawMessage
+	if err := json.Unmarshal(rawMembers, &memberRows); err != nil {
+		return invalid()
+	}
+	members := make([]SuperMemberInput, 0, len(memberRows))
+	for _, raw := range memberRows {
+		for key := range raw {
+			switch key {
+			case "memberGroupId", "priority", "enabled":
+			default:
+				return invalid()
+			}
+		}
+		memberIDRaw, hasID := raw["memberGroupId"]
+		priorityRaw, hasPriority := raw["priority"]
+		enabledRaw, hasEnabled := raw["enabled"]
+		if !hasID || !hasPriority || !hasEnabled {
+			return invalid()
+		}
+		var memberID string
+		if err := json.Unmarshal(memberIDRaw, &memberID); err != nil || strings.TrimSpace(memberID) == "" {
+			return invalid()
+		}
+		var priority json.Number
+		if err := json.Unmarshal(priorityRaw, &priority); err != nil {
+			return invalid()
+		}
+		priorityValue, parseErr := priority.Int64()
+		if parseErr != nil || priorityValue < 0 {
+			return invalid()
+		}
+		var enabled bool
+		if err := json.Unmarshal(enabledRaw, &enabled); err != nil {
+			return invalid()
+		}
+		members = append(members, SuperMemberInput{MemberGroupID: strings.TrimSpace(memberID), Priority: int(priorityValue), Enabled: enabled})
+	}
+	return strings.TrimSpace(expectedRevision), members, nil
 }
 
 func actorResolver(r *http.Request) string {

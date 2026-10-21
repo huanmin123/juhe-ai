@@ -142,6 +142,8 @@ func chainRoutingBindingRowsOf(bindings []gatewayruntimecache.GatewayAPIKeyGroup
 			Weight:          &weight,
 			Status:          binding.Status,
 			GroupEnabled:    int64(binding.GroupEnabled),
+			GroupKind:       binding.GroupKind,
+			MemberGroupIDs:  append([]string(nil), binding.MemberGroupIDs...),
 		})
 	}
 	return out

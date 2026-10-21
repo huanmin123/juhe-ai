@@ -56,10 +56,6 @@ const roundRobinCreatePayload: RouteStrategyMutationPayload = {
   ...payload,
   mode: 'round_robin'
 }
-const mergeCreatePayload: RouteStrategyMutationPayload = {
-  ...payload,
-  mode: 'merge'
-}
 const patchPayload: RouteStrategyPatchPayload = {
   description: '仅更新说明',
   expectedUpdatedAt: '2026-07-29T00:00:00.000Z'
@@ -114,7 +110,6 @@ try {
   await routeStrategiesApi.create(weightedCreatePayload, { systemAccountId })
   await routeStrategiesApi.create(failoverCreatePayload)
   await routeStrategiesApi.create(roundRobinCreatePayload)
-  await routeStrategiesApi.create(mergeCreatePayload)
 } finally {
   http.defaults.adapter = originalAdapter
 }
@@ -146,9 +141,8 @@ assertPersonalDelete(capturedRequests[12], 'useScopedRouteStrategiesApi 个人�
 assertRouteStrategyModeCreate(capturedRequests[13], weightedCreatePayload, 'weighted')
 assertRouteStrategyModeCreate(capturedRequests[14], failoverCreatePayload, 'failover')
 assertRouteStrategyModeCreate(capturedRequests[15], roundRobinCreatePayload, 'round_robin')
-assertRouteStrategyModeCreate(capturedRequests[16], mergeCreatePayload, 'merge')
 
-console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及五种模式纯拓扑 payload（不含调度字段）正确')
+console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及四种模式纯拓扑 payload（不含调度字段）正确')
 
 function assertManagementCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
@@ -234,7 +228,7 @@ function assertMutationBody(body: unknown, source: string, action: '创建' | '�
 function assertRouteStrategyModeCreate(
   request: CapturedRequest,
   expectedPayload: RouteStrategyMutationPayload,
-  mode: 'weighted' | 'failover' | 'round_robin' | 'merge'
+  mode: 'weighted' | 'failover' | 'round_robin'
 ): void {
   assert.equal(request.method, 'POST', `${mode} 模式创建必须发送 POST`)
   assert.equal(request.url, '/route-strategies', `${mode} 模式创建必须请求 /route-strategies`)

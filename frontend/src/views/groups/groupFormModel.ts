@@ -1,7 +1,7 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
 import { preferredDefaultProviderCode } from '@/shared/providerProtocol'
-import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
+import type { GroupKind, GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { GPT_VENDOR_CODE } from '../accounts/accountOptions'
 import {
   cloneHighConcurrencySchedulingPolicy,
@@ -16,13 +16,14 @@ export type GroupEditForm = {
   description: string
   enabled: boolean
   groupType: GroupType
+  groupKind: GroupKind
   schedulingPolicy: Required<GroupSchedulingPolicy>
 }
 
 type GroupFormSeed = Pick<
   GroupSummary,
   'name' | 'providerCode' | 'description' | 'enabled' | 'groupType' | 'accessType'
-> & Partial<Pick<GroupSummary, 'schedulingPolicy'>>
+> & Partial<Pick<GroupSummary, 'schedulingPolicy' | 'groupKind'>>
 
 export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefinition[]>) {
   let editBaseline: GroupEditForm | undefined
@@ -33,6 +34,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     description: '',
     enabled: true,
     groupType: 'personal',
+    groupKind: 'standard',
     schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
   })
 
@@ -64,6 +66,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       description: '',
       enabled: true,
       groupType: 'personal' as GroupType,
+      groupKind: 'standard' as GroupKind,
       schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
     })
   }
@@ -78,6 +81,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       description: group.description ?? '',
       enabled: group.enabled,
       groupType: group.groupType,
+      groupKind: group.groupKind ?? 'standard',
       schedulingPolicy
     })
     editBaseline = currentGroupFormSnapshot()
@@ -122,6 +126,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       description: current.description,
       enabled: current.enabled,
       groupType: current.groupType,
+      groupKind: current.groupKind,
       ...(current.groupType === 'high_concurrency' ? { schedulingPolicy: writableSchedulingPolicy(current) } : {})
     }
   }
@@ -133,6 +138,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       description: form.description.trim(),
       enabled: form.enabled,
       groupType: form.groupType,
+      groupKind: form.groupKind,
       schedulingPolicy: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
     }
   }

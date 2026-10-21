@@ -22,13 +22,24 @@
           @dropdown-visible-change="emit('provider-dropdown-visible-change', $event)"
         />
       </a-form-item>
-      <a-form-item label="分组类型" required tooltip="个人分组按账号并发直接调度；高并发分组会启用短队列、单账户软阈值和可选单 IP 并发限制。">
+      <a-form-item label="分组形态" required tooltip="普通分组直接拥有账号；超级分组只组合同一所有者的普通分组，作为一个分组目标被路由绑定。超级分组先创建为停用草稿，添加至少两个启用成员后再启用。">
+        <a-radio-group
+          v-model:value="form.groupKind"
+          button-style="solid"
+          :disabled="groupKindLocked"
+          @change="(event: any) => { if (event.target.value === 'super') form.enabled = false }"
+        >
+          <a-radio-button value="standard">普通分组</a-radio-button>
+          <a-radio-button value="super">超级分组</a-radio-button>
+        </a-radio-group>
+      </a-form-item>
+      <a-form-item v-if="form.groupKind !== 'super'" label="分组类型" required tooltip="个人分组按账号并发直接调度；高并发分组会启用短队列、单账户软阈值和可选单 IP 并发限制。">
         <a-radio-group v-model:value="form.groupType" button-style="solid">
           <a-radio-button value="personal">个人分组</a-radio-button>
           <a-radio-button value="high_concurrency">高并发分组</a-radio-button>
         </a-radio-group>
       </a-form-item>
-      <div v-if="form.groupType === 'high_concurrency'" class="scheduling-policy-grid">
+      <div v-if="form.groupKind !== 'super' && form.groupType === 'high_concurrency'" class="scheduling-policy-grid">
         <a-form-item label="最大单账户排队阈值" tooltip="达到该阈值后优先切到其他账户；实际值不会超过账户并发上限。">
           <a-input-number v-model:value="form.schedulingPolicy.defaultSoftConcurrency" :min="1" :max="1000000" />
         </a-form-item>
@@ -63,6 +74,7 @@ defineProps<{
   clientIpConcurrencyLimit: number
   clientIpLimitEnabled: boolean
   editingAuthorizedGroup: boolean
+  groupKindLocked: boolean
   form: GroupEditForm
   maxQueueWaitSeconds: number
   open: boolean

@@ -1164,6 +1164,8 @@ export interface GroupSchedulingPolicy {
   imageLaneMaxConcurrency?: number
 }
 
+export type GroupKind = 'standard' | 'super'
+
 export interface GroupSummary {
   id: string
   systemAccountId?: string
@@ -1174,6 +1176,8 @@ export interface GroupSummary {
   enabled: boolean
   isDefault: boolean
   groupType: GroupType
+  /** 分组形态：普通分组直接拥有账号；超级分组只拥有成员关系（超级分组设计 §3.1）。 */
+  groupKind?: GroupKind
   schedulingPolicy?: GroupSchedulingPolicy
   accountIds?: string[]
   accountCount?: number
@@ -1226,6 +1230,27 @@ export interface GroupMutationResult {
   updatedAt: string
 }
 
+export interface SuperGroupMember {
+  memberGroupId: string
+  memberGroupName: string
+  priority: number
+  enabled: boolean
+  groupEnabled: boolean
+}
+
+export interface SuperGroupMembersSummary {
+  superGroupId: string
+  groupKind: 'super'
+  revision: string
+  members: SuperGroupMember[]
+}
+
+export interface SuperGroupMemberInput {
+  memberGroupId: string
+  priority: number
+  enabled: boolean
+}
+
 export interface GroupListResult {
   items: GroupListItem[]
   generatedAt: string
@@ -1245,6 +1270,7 @@ export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pic
   | 'enabled'
   | 'isDefault'
   | 'groupType'
+  | 'groupKind'
   | 'schedulingPolicy'
   | 'accessType'
   | 'groupAuthorizationId'

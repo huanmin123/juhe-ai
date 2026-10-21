@@ -206,12 +206,12 @@ describe('groupOptionParams', () => {
     expect(groupOptionParams(undefined)).toBeUndefined()
   })
 
-  it('保留 ids/keyword/providerCode（trim）/布尔字段与 purpose', () => {
+  it('保留 ids/keyword/groupKind/布尔字段与 purpose', () => {
     expect(groupOptionParams({
       systemAccountId: 'sa-1',
       ids: ['g-1', 'g-2'],
       keyword: '  关键  ',
-      providerCode: ' openai ',
+      groupKind: 'super',
       limit: 10,
       manageableOnly: false,
       preferDefault: true,
@@ -220,7 +220,7 @@ describe('groupOptionParams', () => {
       systemAccountId: 'sa-1',
       ids: 'g-1,g-2',
       keyword: '关键',
-      providerCode: 'openai',
+      groupKind: 'super',
       limit: 10,
       manageableOnly: false,
       preferDefault: true,

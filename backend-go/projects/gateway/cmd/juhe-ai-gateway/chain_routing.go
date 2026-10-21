@@ -118,10 +118,10 @@ func projectGroupAccessForRuntime(meta gatewayrouting.GroupUsageAccessMetadata) 
 }
 
 // projectAccountForRouting projects the full runtime account into the
-// routing-layer view. ModelMappings are carried over (合并路由设计 3.1/3.2)：
+// routing-layer view. ModelMappings are carried over（超级分组/普通目标共用）：
 // routing 层模型过滤（gatewayrouting.FilterAccountsByRequestedModel）需要映
-// 射行才能承认“映射来源模型”账号——丢行会把映射账号静默过滤出合并池/目标
-// 组；dispatch driver 的权威映射解析不受影响。
+// 射行才能承认“映射来源模型”账号——丢行会把映射账号静默过滤出候选池；
+// dispatch driver 的权威映射解析不受影响。
 //
 // 范围边界说明：gatewayrouting 的映射行类型（gatewayAccountModelMapping）与
 // 其构造函数未导出，组合根无法以类型字面量构造该行——此处以受控反射按导出
@@ -201,7 +201,7 @@ func (chainCapabilityFilter) FilterAccountsByRequestCapability(_ context.Context
 type chainRouteResolver struct {
 	cache  *gatewayruntimecache.Service
 	normal *gatewayrouting.NormalModelRouteService
-	// quota 承载 merge 解析期逐片段配额批查（B14 权威门）。与 dispatch 窗口
+	// quota 承载超级分组解析期逐片段配额批查（权威门）。与 dispatch 窗口
 	// 门同一底层服务（chainDispatchQuota）；nil（部分组合测试零值）时片段
 	// 配额剔除不生效，生产组合根 fail-fast 要求必装配。
 	quota gatewaydispatch.AuthorizationQuotaChecker
@@ -246,10 +246,13 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 		updated.GroupBindings = projectBindingsForRuntime(result.APIKeyRecord.GroupBindings, input.APIKeyRecord.GroupBindings)
 		out.APIKeyRecord = &updated
 	}
-	// merge（合并路由设计 3.1/3.4/B14-B16）：按片段扇出 rehydrate + 全池组标
-	// + 逐片段配额批查（权威门），窗口组在幸存片段上重算。
-	if result.RouteSource == gatewayrouting.RouteSourceMerged || len(result.GroupSegments) > 0 {
-		return r.resolveMergeSelectedRoute(ctx, input, view, result, out)
+	// 超级分组目标（超级分组设计 §4.2）：候选已按成员展开并携带成员片段，
+	// 逐片段重水化 + 成员级配额批查，窗口组保留超级分组本身
+	// （route_group），账号组标为实际成员分组（member_group）。GroupSegments
+	// 只有超级分组目标会填充；目标身份按解析结果的 GroupID 判定，不能取
+	// 加载行的 SelectedGroupID（failover 外层目标可能已轮转到其他绑定）。
+	if len(result.GroupSegments) > 0 && isSuperGroupRouteTarget(input.APIKeyRecord, result.GroupID) {
+		return r.resolveSuperGroupSelectedRoute(ctx, input, view, result, out)
 	}
 	out.GroupID = result.GroupID
 	out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, input.APIKeyRecord.SystemAccountID, result.GroupAccess)
@@ -260,21 +263,30 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 	return out, nil
 }
 
-// resolveMergeSelectedRoute 兑现 merge selected 结果的组合根语义（合并路由设
-// 计 3.1/3.4/B14/B15）：
-//  1. 按片段扇出 rehydrate：每个片段用其 GroupID 走现有 listFullAccounts 机
-//     制取全量账号（保留 ModelMappings），按账号 ID 映射回片段；
-//  2. 全池组标（3.1 第 4 条）：每个账号显式写 BoundGroupID = 所在片段组——
-//     现有赋值点只覆盖 account_authorized 账号（chain_accounts_secret.go），
-//     owner / group_authorized 账号恒 nil，必须全量覆盖写；
-//  3. 逐片段配额批查（B14 权威门）：对每片段以该组 groupAccess 调
-//     CheckBatchAsync，被否决账号从片段剔除，片段空则丢弃；全部片段被剔空
-//     → 失败结果（429 + rate_limit_exceeded + 配额超限文案），由 preflight
-//     的 NormalRoute 失败路径渲染；
-//  4. 结果组装：Accounts = 各幸存片段扁平池（片段序），GroupID/GroupAccess =
-//     首个幸存片段的组（首片段被配额剔空时窗口组后移，与“首个非空片段”口
-//     径一致），APIKeyRecord.SelectedGroupID 同步窗口组。
-func (r *chainRouteResolver) resolveMergeSelectedRoute(
+// isSuperGroupRouteTarget 判定解析结果的目标分组是否为超级分组（绑定行
+// groupKind）。使用解析结果的 GroupID 而不是加载行的 SelectedGroupID：
+// failover/weighted 等外层模式在解析前可能已轮转/重排选中组。
+func isSuperGroupRouteTarget(apiKey *gatewayruntimecache.GatewayAPIKeyRow, groupID string) bool {
+	if apiKey == nil || groupID == "" {
+		return false
+	}
+	for _, binding := range apiKey.GroupBindings {
+		if binding.GroupID == groupID && binding.GroupKind == "super" {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveSuperGroupSelectedRoute 兑现超级分组目标的组合根语义（超级分组设计
+// §4.2/§4.3）：
+//  1. 逐成员片段重水化，账号显式组标 BoundGroupID = 成员分组（member_group）；
+//  2. 逐片段成员级授权配额批查，被否决账号剔除；
+//  3. 窗口组保持超级分组本身（route_group_id），不随成员切换；
+//  4. 全部成员被剔空的目标准入 capacity_exhausted，并沿一次性目标快照尝试
+//     其余 active 超级分组目标（设计 §4.2）；全部目标耗尽时映射 429
+//     rate_limit_exceeded，TargetOutcomes 记录逐目标分类。
+func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 	ctx context.Context,
 	input gatewaypreauth.NormalRouteInput,
 	view gatewayrouting.RequestView,
@@ -283,12 +295,98 @@ func (r *chainRouteResolver) resolveMergeSelectedRoute(
 ) (gatewaypreauth.NormalRouteResult, error) {
 	systemAccountID := input.APIKeyRecord.SystemAccountID
 	endpointFamily := localEndpointFamily(view)
-	type mergeSegment struct {
-		groupID     string
-		groupAccess *gatewayruntimecache.GroupUsageAccessMetadata
-		accounts    []gatewayruntimecache.OpenAIAccountSecret
+
+	// 目标快照：当前目标 + 其余 active 超级分组绑定（外层模式沿一次性快照
+	// 继续；成员不提升为外层目标，设计 §4.2）。
+	type superTarget struct {
+		groupID            string
+		result             gatewayrouting.NormalGatewayModelRouteResult
+		skipClassification string
 	}
-	survivors := make([]mergeSegment, 0, len(result.GroupSegments))
+	targets := []superTarget{{groupID: result.GroupID, result: result}}
+	if input.APIKeyRecord != nil {
+		for _, binding := range input.APIKeyRecord.GroupBindings {
+			if binding.GroupID == result.GroupID || binding.Status != "active" || binding.GroupKind != "super" {
+				continue
+			}
+			narrowed := *input.APIKeyRecord
+			narrowed.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{binding}
+			narrowed.SelectedGroupID = binding.GroupID
+			nextResult, err := r.normal.ResolveNormalGatewayModelRoute(ctx, gatewayrouting.ResolveNormalGatewayModelRouteInput{
+				Request:      routingRequestView(input.Req, &narrowed),
+				APIKeyRecord: projectAPIKeyRowForRouting(&narrowed),
+			})
+			if err != nil {
+				return gatewaypreauth.NormalRouteResult{}, err
+			}
+			if nextResult.Outcome != gatewayrouting.NormalRouteOutcomeSelected || len(nextResult.GroupSegments) == 0 {
+				classification := ""
+				if nextResult.Code == "model_target_group_unavailable" {
+					classification = "no_candidate"
+				}
+				targets = append(targets, superTarget{groupID: binding.GroupID, skipClassification: classification})
+				continue
+			}
+			targets = append(targets, superTarget{groupID: binding.GroupID, result: nextResult})
+		}
+	}
+
+	outcomes := make([]gatewaypreauth.NormalRouteTargetOutcome, 0, len(targets))
+	for _, target := range targets {
+		if target.skipClassification != "" {
+			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+				GroupID: target.groupID, Classification: target.skipClassification,
+			})
+			continue
+		}
+		accounts, err := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, target.result)
+		if err != nil {
+			return gatewaypreauth.NormalRouteResult{}, err
+		}
+		if len(accounts) == 0 {
+			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+				GroupID: target.groupID, Classification: "capacity_exhausted",
+			})
+			continue
+		}
+		// 目标存活：窗口组/配额元数据取该目标超级分组本身，账号组标取成员组。
+		if target.groupID != result.GroupID {
+			out.GroupID = target.groupID
+			out.GroupAccess = r.rehydrateGroupAccess(ctx, target.groupID, systemAccountID, target.result.GroupAccess)
+			if out.APIKeyRecord != nil {
+				out.APIKeyRecord.SelectedGroupID = target.groupID
+			}
+		} else {
+			out.GroupID = result.GroupID
+			out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, systemAccountID, result.GroupAccess)
+			if out.APIKeyRecord != nil {
+				out.APIKeyRecord.SelectedGroupID = result.GroupID
+			}
+		}
+		out.Accounts = accounts
+		out.TargetOutcomes = outcomes
+		return out, nil
+	}
+	return gatewaypreauth.NormalRouteResult{
+		Outcome:        gatewaypreauth.NormalRouteOutcomeFailed,
+		RequestedModel: result.RequestedModel,
+		StatusCode:     429,
+		Type:           "rate_limit_exceeded",
+		Code:           "rate_limit_exceeded",
+		Message:        gatewayquota.AuthorizationQuotaExceededMessage,
+		APIKeyRecord:   input.APIKeyRecord,
+		TargetOutcomes: outcomes,
+	}, nil
+}
+
+// superGroupSegmentAccounts 展开一个超级分组目标的成员片段并执行成员级配额
+// 批查；被否决账号剔除，返回幸存账号（保持片段顺序与成员组标）。
+func (r *chainRouteResolver) superGroupSegmentAccounts(
+	ctx context.Context,
+	systemAccountID, endpointFamily string,
+	result gatewayrouting.NormalGatewayModelRouteResult,
+) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0)
 	for _, segment := range result.GroupSegments {
 		if segment.GroupID == "" {
 			continue
@@ -298,68 +396,33 @@ func (r *chainRouteResolver) resolveMergeSelectedRoute(
 		for _, account := range full {
 			byID[account.ID] = account
 		}
-		accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(segment.Accounts))
+		fragment := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(segment.Accounts))
 		for _, projection := range segment.Accounts {
 			account, ok := byID[projection.ID]
 			if !ok {
 				account = accountFromRoutingProjection(projection)
 			}
-			// 全池组标：不限于授权账号（合并路由设计 3.1 第 4 条）。
 			boundGroupID := segment.GroupID
 			account.BoundGroupID = &boundGroupID
-			accounts = append(accounts, account)
+			fragment = append(fragment, account)
 		}
-		if len(accounts) == 0 {
+		if len(fragment) == 0 || r.quota == nil {
+			accounts = append(accounts, fragment...)
 			continue
 		}
 		groupAccess := r.rehydrateGroupAccess(ctx, segment.GroupID, systemAccountID, segment.GroupAccess)
-		// B14 权威门：逐片段授权配额批查。quota 未装配（部分组合测试）时
-		// 不做剔除——生产组合根 fail-fast 要求 AuthorizationQuota 必装配。
-		if r.quota != nil {
-			decisions, err := r.quota.CheckBatchAsync(ctx, *groupAccess, accounts)
-			if err != nil {
-				return gatewaypreauth.NormalRouteResult{}, err
-			}
-			allowed := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(accounts))
-			for _, account := range accounts {
-				if decision, ok := decisions[account.ID]; ok && !decision.Allowed {
-					continue
-				}
-				allowed = append(allowed, account)
-			}
-			accounts = allowed
+		decisions, err := r.quota.CheckBatchAsync(ctx, *groupAccess, fragment)
+		if err != nil {
+			return nil, err
 		}
-		if len(accounts) == 0 {
-			continue
+		for _, account := range fragment {
+			if decision, ok := decisions[account.ID]; ok && !decision.Allowed {
+				continue
+			}
+			accounts = append(accounts, account)
 		}
-		survivors = append(survivors, mergeSegment{groupID: segment.GroupID, groupAccess: groupAccess, accounts: accounts})
 	}
-	if len(survivors) == 0 {
-		// B14：全部片段被配额剔空 → 429 终局（与 preparation.go 窗口门的
-		// authorization_quota_exceeded 终局同形态），走 NormalRoute 失败路径
-		// 由 preflight 渲染。
-		return gatewaypreauth.NormalRouteResult{
-			Outcome:        gatewaypreauth.NormalRouteOutcomeFailed,
-			RequestedModel: result.RequestedModel,
-			StatusCode:     429,
-			Type:           "rate_limit_exceeded",
-			Code:           "rate_limit_exceeded",
-			Message:        gatewayquota.AuthorizationQuotaExceededMessage,
-			APIKeyRecord:   input.APIKeyRecord,
-		}, nil
-	}
-	window := survivors[0]
-	accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(survivors))
-	for _, segment := range survivors {
-		accounts = append(accounts, segment.accounts...)
-	}
-	out.GroupID = window.groupID
-	out.GroupAccess = window.groupAccess
-	out.Accounts = accounts
-	if out.APIKeyRecord != nil {
-		out.APIKeyRecord.SelectedGroupID = window.groupID
-	}
-	return out, nil
+	return accounts, nil
 }
 
 // rehydrateGroupAccess re-reads the full group access metadata; the lossy
@@ -496,6 +559,8 @@ func projectAPIKeyRowForRouting(record *gatewayruntimecache.GatewayAPIKeyRow) *g
 			Weight:          &weight,
 			Status:          binding.Status,
 			GroupEnabled:    int64(binding.GroupEnabled),
+			GroupKind:       binding.GroupKind,
+			MemberGroupIDs:  append([]string(nil), binding.MemberGroupIDs...),
 		})
 	}
 	return &gatewayrouting.APIKeyRow{

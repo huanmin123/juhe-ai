@@ -221,6 +221,13 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteSchedulingPreferenceEnabledRetired(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure scheduling_preferences.enabled retirement: %w", err)
 	}
+	// 超级分组（超级分组设计 §3.1）：新库由 groups 建表 DDL 直接声明
+	// group_kind；存量库按 PRAGMA table_info 早退守卫幂等补列。DEFAULT
+	// 'standard' 与建表 DDL 同构；常量 CHECK 词表在 ADD COLUMN 时合法，
+	// 存量行取默认值恒满足约束。
+	if err := ensureSQLiteTableColumn(ctx, db, "groups", "group_kind", "TEXT NOT NULL DEFAULT 'standard' CHECK(group_kind IN ('standard','super'))"); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure groups.group_kind: %w", err)
+	}
 	// 媒体工作室退场（2026-10-14 契约修订）：ensure 恢复幂等加法，不做
 	// purpose CHECK 收窄重建、不删 studio_domains_json 列——purpose 词表由
 	// 建表 DDL 固定为三值 legacy 形状（'studio' 仅为存量遗留词表值），存量

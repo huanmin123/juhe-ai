@@ -25,6 +25,7 @@ export const DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS: ExternalIntegrationScop
   { value: 'juhe_ai_public:group_add:write', label: 'POST 分组新增' },
   { value: 'juhe_ai_public:group_update:write', label: 'POST 分组修改' },
   { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
+  { value: 'juhe_ai_public:group_super_members_update:write', label: 'POST 超级分组成员更新' },
   { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
   { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
   { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' },

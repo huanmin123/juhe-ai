@@ -1174,11 +1174,12 @@ var postgresSchemaBusinessTables = []PGStatement{
 	},
 	{
 		// groups 目标形态（设计 §8，迁移窗口 shim 已按 A 路线一次性收敛撤除）：
-		// 无 provider_code 列与 providers 外键；分组目标列收敛为设计 :382 列表
-		// （group_kind / super_group_members 属后续批），owner 内名称唯一与
-		// 「每 owner 至多一个默认组」的唯一索引见索引清单
+		// 无 provider_code 列与 providers 外键；group_kind 区分普通分组与超级
+		// 分组（超级分组设计 §3.1），缺省 standard，创建后不可经 PATCH 修改。
+		// owner 内名称唯一与「每 owner 至多一个默认组」的唯一索引见索引清单
 		// （idx_groups_owner_name_unique / idx_groups_owner_default_unique）。
-		// 存量库删列由迁移命令处理，ensure 不写 DROP。
+		// 存量库删列由迁移命令处理，ensure 不写 DROP；group_kind 存量库由
+		// 下方幂等 ALTER 补列。
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS groups (
@@ -1189,6 +1190,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       enabled integer NOT NULL DEFAULT 1,
       is_default integer NOT NULL DEFAULT 0,
       group_type text NOT NULL DEFAULT 'personal',
+      group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super')),
       scheduling_policy_json text,
       created_at text NOT NULL,
       updated_at text NOT NULL
@@ -1229,6 +1231,27 @@ var postgresSchemaBusinessTables = []PGStatement{
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_authorization_id) REFERENCES resource_authorizations(id)
+    )`,
+	},
+	{
+		// super_group_members 超级分组成员关系（超级分组设计 §3.2）：只保存
+		// 成员普通分组、顺序与启停，不直接绑定账号。super/member 两侧
+		// ON DELETE RESTRICT，删除或停用成员分组前必须由写入口先解除引用
+		// （应用层返回 409 super_group_member_reference_conflict）。
+		SchemaName: "juhe_business",
+		Source:     "business",
+		SQL: `CREATE TABLE IF NOT EXISTS super_group_members (
+      id text PRIMARY KEY,
+      super_group_id text NOT NULL,
+      member_group_id text NOT NULL,
+      priority integer NOT NULL CHECK (priority >= 0),
+      enabled integer NOT NULL DEFAULT 1,
+      created_at text NOT NULL,
+      updated_at text NOT NULL,
+      CONSTRAINT super_group_members_unique_member UNIQUE (super_group_id, member_group_id),
+      CONSTRAINT super_group_members_unique_priority UNIQUE (super_group_id, priority),
+      FOREIGN KEY (super_group_id) REFERENCES groups(id) ON DELETE RESTRICT,
+      FOREIGN KEY (member_group_id) REFERENCES groups(id) ON DELETE RESTRICT
     )`,
 	},
 	{
@@ -2395,6 +2418,14 @@ BEGIN
   END IF;
 END
 $$`,
+	},
+	{
+		// groups.group_kind（超级分组设计 §3.1）：新库由建表 DDL 内联声明；
+		// 存量库由幂等 ALTER 补列。DEFAULT 'standard' 与 DDL 同构，常量
+		// CHECK 词表对存量行（取默认值）恒满足。
+		SchemaName: "juhe_business",
+		Source:     "super-group-groups-kind-column",
+		SQL:        `ALTER TABLE groups ADD COLUMN IF NOT EXISTS group_kind text NOT NULL DEFAULT 'standard' CHECK (group_kind IN ('standard','super'))`,
 	},
 	{
 		// api_keys.scheduling_preference_id 绑定列（调度偏好独立实体

@@ -4,7 +4,7 @@ import type { RouteStrategyGroupOption } from '@/types/domain'
 import { loadGroupOptionsResource } from './useGroupOptionsResource'
 
 function group(id: string, name: string): RouteStrategyGroupOption {
-  return { id, name, providerCode: 'openai', enabled: true }
+  return { id, name, groupKind: 'standard', enabled: true }
 }
 
 function createApi() {

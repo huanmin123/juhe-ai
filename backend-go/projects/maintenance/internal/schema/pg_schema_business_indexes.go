@@ -623,6 +623,14 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_default_unique ON groups(system_account_id) WHERE is_default = 1`,
 	},
 	{
+		// super_group_members 成员侧引用索引：分组级停用/删除/改类型前的
+		// 引用检查与迁移器复用键查询都按 member_group_id 命中（超级分组设计
+		// §3.2）；super_group_id 侧由表内两枚 UNIQUE 约束的自动索引覆盖。
+		SchemaName: "juhe_business",
+		Source:     "super-group-members",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_super_group_members_member_group ON super_group_members(member_group_id)`,
+	},
+	{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_groups_name_lookup ON groups(name, id)`,

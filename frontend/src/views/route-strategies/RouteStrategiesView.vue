@@ -441,13 +441,7 @@ const form = reactive({
   status: 'active' as RouteStrategyStatus,
   groupBindings: [] as BindingFormRow[]
 })
-const modelProviderCodes = computed(() => {
-  const selectedGroupIds = new Set(form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
-  return [...new Set(groupOptionsRaw.value
-    .filter((group) => selectedGroupIds.has(group.id))
-    .map((group) => group.providerCode?.trim() ?? '')
-    .filter(Boolean))]
-})
+const modelProviderCodes = computed<string[]>(() => [])
 // 混合智能路由移除后，表单内暂无可选模型；模型候选机制保留，按绑定分组供应商作用域按需加载。
 const selectedModelIds = computed<string[]>(() => [])
 const {
@@ -463,8 +457,7 @@ const modeOptions: Array<{ label: string; value: RouteStrategyMode }> = [
   { label: '普通路由', value: 'normal' },
   { label: '权重调度路由', value: 'weighted' },
   { label: '故障回退路由', value: 'failover' },
-  { label: '轮询路由', value: 'round_robin' },
-  { label: '合并路由', value: 'merge' }
+  { label: '轮询路由', value: 'round_robin' }
 ]
 
 const statusOptions: Array<{ label: string; value: RouteStrategyStatus }> = [
@@ -484,7 +477,7 @@ const modeFilterOptions = [
 
 // 速度优先运行态（策略维度遗留配置语义）覆盖的路由模式：仅用于列表运行态汇总
 // 展示与「查看速度状态」入口判断，不再参与任何编辑器配置或写侧 payload。
-const speedFirstRuntimeSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin', 'merge']
+const speedFirstRuntimeSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin']
 
 const columns = computed<Array<Record<string, unknown>>>(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -518,7 +511,7 @@ const bindingRemoveDisabled = computed(() => form.groupBindings.length <= minimu
 const bindingShowsDragHandle = computed(() => form.mode === 'failover' || form.mode === 'round_robin')
 const bindingShowsDragColumn = computed(() => bindingShowsDragHandle.value && form.groupBindings.length > 1)
 const bindingShowsRole = computed(() => form.mode === 'failover')
-const bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')
+const bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
 const bindingSectionTooltip = computed(() => {
@@ -526,7 +519,6 @@ const bindingSectionTooltip = computed(() => {
   if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。带会话键的请求首次落组后黏住该分组（黏住期间不参与加权分配），分组故障后按权重重选并重绑。'
   if (form.mode === 'failover') return '故障回退按当前顺序将第一行作为主用分组，后续为备用分组；所有行都可拖拽，备用拖到第一行即可晋升主用。新会话/无会话请求主用恢复后继续优先使用主用；已黏住备组的会话不回切。'
   if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。带会话键的请求首次落组后黏住该分组（黏住期间不参与轮转），分组故障后按轮询重选并重绑。'
-  if (form.mode === 'merge') return '合并路由按请求合并：每次请求把所有绑定分组里能服务当前请求模型的账号合成一个候选池统一调度——直连支持，或经该账号的模型映射 / 跨协议转换承接即可，因此不要求各分组上游模型或协议一致；不区分分组、全池平级，分组顺序按添加顺序记录，仅作为调度平局与跨组重复账号归属的基础先后。'
   return ''
 })
 const bindingColumns = computed<BindingColumn[]>(() => [
@@ -764,7 +756,6 @@ function isRouteStrategyModeFilter(value: unknown): value is RouteStrategyMode |
     || value === 'weighted'
     || value === 'failover'
     || value === 'round_robin'
-    || value === 'merge'
 }
 
 function isRouteStrategyStatusFilter(value: unknown): value is RouteStrategyStatus | 'all' {
@@ -1148,7 +1139,7 @@ function selectedGroupOptionsFromBindings(bindings: RouteStrategyGroupBindingSum
     selectedGroups.set(id, {
       id,
       name: binding.groupName?.trim() || id,
-      providerCode: binding.providerCode?.trim() || '',
+      groupKind: 'standard',
       enabled: binding.groupEnabled
     })
   }
@@ -1284,7 +1275,7 @@ function ensureMinimumBindingRowsForMode() {
 }
 
 function minimumBindingRowsForMode(mode: RouteStrategyMode): number {
-  return mode === 'weighted' || mode === 'round_robin' || mode === 'failover' || mode === 'merge' ? 2 : 1
+  return mode === 'weighted' || mode === 'round_robin' || mode === 'failover' ? 2 : 1
 }
 
 function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; priority: number; weight: number; status: 'active' | 'disabled' }>): boolean {
@@ -1307,7 +1298,7 @@ function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; pr
       return false
     }
   }
-  if ((form.mode === 'weighted' || form.mode === 'round_robin' || form.mode === 'merge') && activeBindings.length < 2) {
+  if ((form.mode === 'weighted' || form.mode === 'round_robin') && activeBindings.length < 2) {
     message.warning(`${routeStrategyModeText(form.mode)}至少需要两个启用分组`)
     return false
   }
@@ -1509,7 +1500,6 @@ function routeStrategyModeColor(mode: RouteStrategyMode): string {
   if (mode === 'weighted') return 'purple'
   if (mode === 'round_robin') return 'blue'
   if (mode === 'failover') return 'orange'
-  if (mode === 'merge') return 'lime'
   return 'default'
 }
 

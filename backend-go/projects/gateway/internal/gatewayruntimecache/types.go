@@ -22,12 +22,12 @@ package gatewayruntimecache
 import "encoding/json"
 
 // Route strategy modes mirror domain/route-strategy.ts RouteStrategyMode.
+// merge 已退役（超级分组设计 §5），运行时只承认四种模式。
 const (
 	RouteStrategyModeNormal     = "normal"
 	RouteStrategyModeWeighted   = "weighted"
 	RouteStrategyModeFailover   = "failover"
 	RouteStrategyModeRoundRobin = "round_robin"
-	RouteStrategyModeMerge      = "merge"
 )
 
 // IsDynamicRouteStrategyMode mirrors isDynamicRouteStrategyMode: only
@@ -46,7 +46,7 @@ func IsDynamicRouteStrategyMode(mode string) bool {
 func NormalizeRouteStrategyMode(value string) string {
 	switch value {
 	case RouteStrategyModeNormal, RouteStrategyModeWeighted,
-		RouteStrategyModeFailover, RouteStrategyModeRoundRobin, RouteStrategyModeMerge:
+		RouteStrategyModeFailover, RouteStrategyModeRoundRobin:
 		return value
 	default:
 		return RouteStrategyModeNormal
@@ -152,6 +152,10 @@ type GatewayAPIKeyGroupBindingRow struct {
 	Weight          int    `json:"weight"`
 	Status          string `json:"status"`
 	GroupEnabled    int    `json:"group_enabled"`
+	// GroupKind / MemberGroupIDs 承载超级分组目标（超级分组设计 §4.2）：
+	// standard 组为空；super 组携带按 priority 排序的 enabled 成员组 ID。
+	GroupKind      string   `json:"group_kind,omitempty"`
+	MemberGroupIDs []string `json:"member_group_ids,omitempty"`
 }
 
 // Clone mirrors the per-binding spread clone.
@@ -556,11 +560,15 @@ type GatewayRuntime struct {
 // Model), so the deep billing structures stay raw JSON exactly as delivered by
 // the loader; the flat pricing fields are mirrored field by field.
 type ProviderModelCatalogItem struct {
-	ID                    *string  `json:"id,omitempty"`
-	Scope                 string   `json:"scope"`
-	Status                string   `json:"status"`
-	ProviderCode          string   `json:"providerCode"`
-	Model                 string   `json:"model"`
+	ID           *string `json:"id,omitempty"`
+	Scope        string  `json:"scope"`
+	Status       string  `json:"status"`
+	ProviderCode string  `json:"providerCode"`
+	Model        string  `json:"model"`
+	// UpstreamModel 只在账户作用域目录（account_supported_models JOIN models）
+	// 中填充：计价按实际目标模型行解析 vendor 时必须区分 public_model 与
+	// 上游真实模型名（供应商与上游协议面重构设计 §3/§4）。
+	UpstreamModel         string   `json:"upstreamModel,omitempty"`
 	Mode                  *string  `json:"mode,omitempty"`
 	CatalogOrder          *int     `json:"catalogOrder,omitempty"`
 	ReleaseDate           *string  `json:"releaseDate,omitempty"`

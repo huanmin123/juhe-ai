@@ -1,12 +1,17 @@
-import type { AccountGroupOptionSummary, GroupEditDetail, GroupListItem, GroupListResult, GroupMutationResult, GroupOptionSummary, GroupSummary, RouteStrategyGroupOption } from '@/types/domain'
+import type { AccountGroupOptionSummary, GroupEditDetail, GroupListItem, GroupListResult, GroupMutationResult, GroupOptionSummary, GroupSummary, RouteStrategyGroupOption, SuperGroupMemberInput, SuperGroupMembersSummary } from '@/types/domain'
 import type { GroupListParams, GroupOptionParams, ListParams } from '../contracts'
 import { http, unwrap } from '../http'
 import { groupListParams, groupOptionParams } from '../params'
 
-type MyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault' | 'purpose'>
-type RouteStrategyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'systemAccountId'>
+type MyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'groupKind' | 'limit' | 'manageableOnly' | 'preferDefault' | 'purpose'>
+type RouteStrategyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'groupKind' | 'limit' | 'systemAccountId'>
 type MyRouteStrategyGroupOptionParams = Omit<RouteStrategyGroupOptionParams, 'systemAccountId'>
 type GroupPatchPayload = Record<string, unknown> & { expectedUpdatedAt: string }
+
+export interface GroupModelOption {
+  id: string
+  name: string
+}
 
 export const groupsApi = {
   list: async (params?: GroupListParams) => (await unwrap<GroupListResult>(http.get('/groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }) }))).items,
@@ -18,8 +23,11 @@ export const groupsApi = {
     .map(({ canAuthorize, ...option }) => ({ ...option, permissions: { canAuthorize } })),
   accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
   routeStrategyOptions: (params?: RouteStrategyGroupOptionParams) => unwrap<RouteStrategyGroupOption[]>(http.get('/groups/route-strategy-options', { params: groupOptionParams(params) })),
+  modelOptions: (id: string, params?: { keyword?: string; limit?: number }) => unwrap<GroupModelOption[]>(http.get(`/groups/${id}/model-options`, { params })),
   create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupListItem>(http.post('/groups', payload, { params })),
   update: (id: string, payload: GroupPatchPayload, params?: ListParams) => unwrap<GroupMutationResult>(http.patch(`/groups/${id}`, payload, { params })),
+  superMembers: (id: string, params?: ListParams) => unwrap<SuperGroupMembersSummary>(http.get(`/groups/${id}/super-members`, { params })),
+  updateSuperMembers: (id: string, payload: { expectedRevision: string; members: SuperGroupMemberInput[] }, params?: ListParams) => unwrap<SuperGroupMembersSummary>(http.patch(`/groups/${id}/super-members`, payload, { params })),
   returnAuthorization: (id: string, params?: ListParams) => http.post(`/groups/${id}/return-authorization`, {}, { params }),
   delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
 }
@@ -34,8 +42,11 @@ export const myGroupsApi = {
     .map(({ canAuthorize, ...option }) => ({ ...option, permissions: { canAuthorize } })),
   accountOptions: (params?: MyGroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
   routeStrategyOptions: (params?: MyRouteStrategyGroupOptionParams) => unwrap<RouteStrategyGroupOption[]>(http.get('/my-groups/route-strategy-options', { params: groupOptionParams(params, false) })),
+  modelOptions: (id: string, params?: { keyword?: string; limit?: number }) => unwrap<GroupModelOption[]>(http.get(`/my-groups/${id}/model-options`, { params })),
   create: (payload: Record<string, unknown>) => unwrap<GroupListItem>(http.post('/my-groups', payload)),
   update: (id: string, payload: GroupPatchPayload) => unwrap<GroupMutationResult>(http.patch(`/my-groups/${id}`, payload)),
+  superMembers: (id: string) => unwrap<SuperGroupMembersSummary>(http.get(`/my-groups/${id}/super-members`)),
+  updateSuperMembers: (id: string, payload: { expectedRevision: string; members: SuperGroupMemberInput[] }) => unwrap<SuperGroupMembersSummary>(http.patch(`/my-groups/${id}/super-members`, payload)),
   returnAuthorization: (id: string) => http.post(`/my-groups/${id}/return-authorization`, {}),
   delete: (id: string) => http.delete(`/my-groups/${id}`)
 }

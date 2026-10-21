@@ -21,6 +21,7 @@ var aipublicScopeValues = []string{
 	scopeGroupListRead, scopeStrategyListRead, scopeApiKeyListRead, scopeAccountListRead,
 	scopeProviderListRead, scopeProviderDetailRead,
 	scopeGroupAddWrite, scopeGroupUpdateWrite, scopeGroupDeleteWrite,
+	scopeGroupSuperMembersUpdateWrite,
 	scopeStrategyAddWrite, scopeStrategyUpdateWrite, scopeStrategyDeleteWrite,
 	scopeApiKeyAddWrite, scopeApiKeyUpdateWrite, scopeApiKeyDeleteWrite,
 	scopeAccountAddWrite, scopeAccountUpdateWrite, scopeAccountDeleteWrite,

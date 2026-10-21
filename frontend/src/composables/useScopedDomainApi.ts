@@ -29,6 +29,7 @@ type GroupListParams = Parameters<typeof api.groups.listPage>[0]
 type GroupMutationScopeParams = Parameters<typeof api.groups.create>[1]
 type GroupMutationPayload = Parameters<typeof api.groups.create>[0]
 type GroupPatchPayload = Parameters<typeof api.groups.update>[1]
+type GroupSuperMembersPatchPayload = Parameters<typeof api.groups.updateSuperMembers>[1]
 type GroupOptionParams = Parameters<typeof api.groups.options>[0]
 type RouteStrategyGroupOptionParams = Parameters<typeof api.groups.routeStrategyOptions>[0]
 type RouteStrategyListParams = Parameters<typeof api.routeStrategies.list>[0]
@@ -102,6 +103,12 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     update: (id: string, payload: GroupPatchPayload, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.update(id, payload, params)
       : api.myGroups.update(id, payload),
+    superMembers: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
+      ? api.groups.superMembers(id, params)
+      : api.myGroups.superMembers(id),
+    updateSuperMembers: (id: string, payload: GroupSuperMembersPatchPayload, params?: GroupMutationScopeParams) => isManagementView.value
+      ? api.groups.updateSuperMembers(id, payload, params)
+      : api.myGroups.updateSuperMembers(id, payload),
     returnAuthorization: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.returnAuthorization(id, params)
       : api.myGroups.returnAuthorization(id),

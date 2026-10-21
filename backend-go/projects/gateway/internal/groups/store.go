@@ -318,12 +318,12 @@ type AuthorizationSourceSummarySummary struct {
 // memberCount/accountIds, authorization fields only on authorized rows, and
 // accountStats carrying the hydrate keys (currentConcurrency/todayUsage).
 type ListItem struct {
-	ID                         string                             `json:"id"`
-	SystemAccountID            *string                            `json:"systemAccountId,omitempty"`
-	SystemAccountName          *string                            `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID       string                             `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName     *string                            `json:"ownerSystemAccountName,omitempty"`
-	Name                       string                             `json:"name"`
+	ID                     string  `json:"id"`
+	SystemAccountID        *string `json:"systemAccountId,omitempty"`
+	SystemAccountName      *string `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID   string  `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName *string `json:"ownerSystemAccountName,omitempty"`
+	Name                   string  `json:"name"`
 	// ProviderCode 是响应形状兼容字段（Node GroupListItem 契约键保留）：组无
 	// provider 维度（供应商解耦设计 §8），恒空串，不再从 groups 读取。
 	ProviderCode               string                             `json:"providerCode"`
@@ -331,6 +331,7 @@ type ListItem struct {
 	Enabled                    bool                               `json:"enabled"`
 	IsDefault                  bool                               `json:"isDefault"`
 	GroupType                  string                             `json:"groupType"`
+	GroupKind                  string                             `json:"groupKind"`
 	AccessType                 string                             `json:"accessType"`
 	GroupAuthorizationID       *string                            `json:"groupAuthorizationId,omitempty"`
 	AuthorizationStatus        *string                            `json:"authorizationStatus,omitempty"`
@@ -348,12 +349,12 @@ type ListItem struct {
 // effective permissions; the accountStats numeric projection (juhe_stats +
 // runtime concurrency) is owned by the stats wiring.
 type Detail struct {
-	ID                     string                       `json:"id"`
-	SystemAccountID        *string                      `json:"systemAccountId,omitempty"`
-	SystemAccountName      *string                      `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID   string                       `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName *string                      `json:"ownerSystemAccountName,omitempty"`
-	Name                   string                       `json:"name"`
+	ID                     string  `json:"id"`
+	SystemAccountID        *string `json:"systemAccountId,omitempty"`
+	SystemAccountName      *string `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID   string  `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName *string `json:"ownerSystemAccountName,omitempty"`
+	Name                   string  `json:"name"`
 	// ProviderCode 是响应形状兼容字段（Node GroupSummary 契约键保留）：组无
 	// provider 维度（供应商解耦设计 §8），恒空串，不再从 groups 读取。
 	ProviderCode           string                       `json:"providerCode"`
@@ -361,6 +362,7 @@ type Detail struct {
 	Enabled                bool                         `json:"enabled"`
 	IsDefault              bool                         `json:"isDefault"`
 	GroupType              string                       `json:"groupType"`
+	GroupKind              string                       `json:"groupKind"`
 	SchedulingPolicy       any                          `json:"schedulingPolicy"`
 	AccountIDs             []string                     `json:"accountIds"`
 	AccountStats           AccountStats                 `json:"accountStats"`
@@ -399,18 +401,19 @@ type groupRow struct {
 	enabled         bool
 	isDefault       bool
 	groupType       string
+	groupKind       string
 	schedulingJSON  sql.NullString
 	createdAt       string
 	updatedAt       string
 }
 
-const groupRowColumns = "g.id, g.system_account_id, g.name, g.description, g.enabled, g.is_default, g.group_type, g.scheduling_policy_json, g.created_at, g.updated_at"
+const groupRowColumns = "g.id, g.system_account_id, g.name, g.description, g.enabled, g.is_default, g.group_type, g.group_kind, g.scheduling_policy_json, g.created_at, g.updated_at"
 
 func scanGroupRow(scan func(...any) error) (groupRow, error) {
 	var row groupRow
 	var enabled, isDefault int
 	err := scan(&row.id, &row.systemAccountID, &row.name, &row.description,
-		&enabled, &isDefault, &row.groupType, &row.schedulingJSON, &row.createdAt, &row.updatedAt)
+		&enabled, &isDefault, &row.groupType, &row.groupKind, &row.schedulingJSON, &row.createdAt, &row.updatedAt)
 	if err != nil {
 		return groupRow{}, err
 	}
@@ -506,7 +509,7 @@ func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
 	var out accessListRow
 	var enabled, isDefault int
 	err := scan(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.description,
-		&enabled, &isDefault, &out.row.groupType, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
+		&enabled, &isDefault, &out.row.groupType, &out.row.groupKind, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
 		&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
 	if err != nil {
 		return accessListRow{}, err
@@ -528,6 +531,7 @@ func (s *Store) authorizedListArm() string {
 			CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 			g.is_default,
 			COALESCE(s.group_type, g.group_type) AS group_type,
+			g.group_kind,
 			CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
 				THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
 			g.created_at,
@@ -583,13 +587,13 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		if viewer == "" {
 			return &ListPageResult{Items: []ListItem{}, Page: page, PageSize: pageSize, GeneratedAt: s.nowISO()}, nil
 		}
-		clauses, outerArgs := rowFilter("", keyword, nil)
+		clauses, outerArgs := rowFilter("", keyword, nil, "")
 		outerWhere := ""
 		if len(clauses) > 0 {
 			outerWhere = " WHERE " + strings.Join(clauses, " AND ")
 		}
 		queryText = `SELECT id, system_account_id, name, description, enabled, is_default,
-				group_type, scheduling_policy_json, created_at, updated_at,
+				group_type, group_kind, scheduling_policy_json, created_at, updated_at,
 				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
 			FROM (
 				SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
@@ -617,7 +621,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 			var out accessListRow
 			var enabled, isDefault int
 			err := scanFn(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.description,
-				&enabled, &isDefault, &out.row.groupType, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
+				&enabled, &isDefault, &out.row.groupType, &out.row.groupKind, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
 				&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
 			if err != nil {
 				return accessListRow{}, err
@@ -961,6 +965,7 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 		Enabled:                row.row.enabled,
 		IsDefault:              !authorized && row.row.isDefault,
 		GroupType:              groupType,
+		GroupKind:              row.row.groupKind,
 		AccessType:             row.accessType,
 		GroupAuthorizationID:   nullPtrString(row.authorizationID),
 		AuthorizationStatus:    nullPtrString(row.authorizationStatus),
@@ -1199,7 +1204,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 			return nil, nil
 		}
 		queryText = `SELECT id, system_account_id, name, description, enabled, is_default,
-				group_type, scheduling_policy_json, created_at, updated_at,
+				group_type, group_kind, scheduling_policy_json, created_at, updated_at,
 				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
 			FROM (
 				SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
@@ -1210,6 +1215,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 					CASE WHEN g.enabled = 1 THEN COALESCE(s.enabled, 1) ELSE 0 END AS enabled,
 					g.is_default,
 					COALESCE(s.group_type, g.group_type) AS group_type,
+					g.group_kind,
 					CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
 						THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
 					g.created_at,
@@ -1306,6 +1312,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		Enabled:                row.row.enabled,
 		IsDefault:              !authorized && row.row.isDefault,
 		GroupType:              groupType,
+		GroupKind:              row.row.groupKind,
 		SchedulingPolicy:       policy,
 		AccountIDs:             accountIDs,
 		AccountStats:           accountStats,
@@ -1329,8 +1336,8 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 
 // MutationInput is the normalized create/patch payload; nil pointers mean
 // "field absent" (hasOwnInput semantics)。API 入参 ProviderCode 兼容策略
-//（供应商解耦设计 §8：组无 provider 维度）：字段保留以兼容既有调用方
-//（管理面路由、aipublic 自动建组）——接受但忽略，Create/Patch 不落库不校验，
+// （供应商解耦设计 §8：组无 provider 维度）：字段保留以兼容既有调用方
+// （管理面路由、aipublic 自动建组）——接受但忽略，Create/Patch 不落库不校验，
 // 也不计入 Empty()。
 type MutationInput struct {
 	Name *string
@@ -1339,11 +1346,13 @@ type MutationInput struct {
 	Description      *string
 	Enabled          *bool
 	GroupType        *string
+	GroupKind        *string
 	SchedulingPolicy any // decoded JSON object when present
 }
 
 // Empty reports whether no patchable field is present。
-// ProviderCode 是兼容入参，不计入可变更字段。
+// ProviderCode 是兼容入参，不计入可变更字段；GroupKind 仅创建时消费，
+// 普通 PATCH 不解析该键（routes 白名单拒绝），不参与 Empty。
 func (m MutationInput) Empty() bool {
 	return m.Name == nil && m.Description == nil &&
 		m.Enabled == nil && m.GroupType == nil && m.SchedulingPolicy == nil
@@ -1367,6 +1376,10 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
+	groupKind, err := normalizeGroupKind(input.GroupKind)
+	if err != nil {
+		return nil, err
+	}
 	policyJSON, err := schedulingPolicyJSON(groupType, input.SchedulingPolicy, s.globalConcurrencyMax())
 	if err != nil {
 		return nil, err
@@ -1374,6 +1387,11 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	enabled := true
 	if input.Enabled != nil {
 		enabled = *input.Enabled
+	}
+	// 启用超级分组必须有 2..20 个 enabled 成员；创建时尚无成员，因此必须
+	// 先以 disabled 草稿创建，再写入成员后启用（设计 §3.2）。
+	if groupKind == GroupKindSuper && enabled {
+		return nil, codeError(400, CodeSuperGroupMemberMinEnabled, "启用超级分组至少需要两个启用成员")
 	}
 	description, err := nullableText(input.Description, "分组说明")
 	if err != nil {
@@ -1383,9 +1401,9 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	id := s.newI("grp")
 	policyValue := policyJSONString(policyJSON)
 	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("groups")+`
-		(id, system_account_id, name, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`),
-		id, ownerID, name, description, boolToInt(enabled), groupType, policyValue, now, now)
+		(id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`),
+		id, ownerID, name, description, boolToInt(enabled), groupType, groupKind, policyValue, now, now)
 	if err != nil {
 		if duplicate := duplicateGroupNameError(err, name); duplicate != nil {
 			return nil, duplicate
@@ -1412,6 +1430,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 		Enabled:                enabled,
 		IsDefault:              false,
 		GroupType:              groupType,
+		GroupKind:              groupKind,
 		AccessType:             "owner",
 		UpdatedAt:              now,
 		AccountStats:           AccountStats{},
@@ -1511,6 +1530,17 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	if current.isDefault {
 		return nil, &ValidationError{Message: "默认分组不允许修改"}
 	}
+	// group_kind 创建后不可经普通 PATCH 改变（设计 §3.1）；类型变更只允许
+	// 迁移命令显式搬迁。路由层白名单已拒绝该键，这里兜底。
+	if input.GroupKind != nil {
+		normalizedKind, kindErr := normalizeGroupKind(input.GroupKind)
+		if kindErr != nil {
+			return nil, kindErr
+		}
+		if normalizedKind != current.groupKind {
+			return nil, codeError(400, CodeGroupKindConflict, "分组类型创建后不可修改")
+		}
+	}
 	if expected := strings.TrimSpace(expectedUpdatedAt); expected != "" && expected != current.updatedAt {
 		return nil, &ConflictError{Message: "分组已被其他操作更新，请刷新后重试"}
 	}
@@ -1558,6 +1588,8 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 
 	hasGroupTypeInput := input.GroupType != nil
 	hasSchedulingPolicyInput := input.SchedulingPolicy != nil
+	persistedGroupType := current.groupType
+	persistedSchedulingJSON := current.schedulingJSON
 	if hasGroupTypeInput || hasSchedulingPolicyInput {
 		beforeGroupType, typeErr := normalizeStoredGroupType(current.groupType)
 		if typeErr != nil {
@@ -1572,6 +1604,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 				return nil, typeErr
 			}
 			afterGroupType = normalized
+			persistedGroupType = afterGroupType
 			if beforeGroupType != afterGroupType {
 				assignments = append(assignments, "group_type = ?")
 				updateArgs = append(updateArgs, afterGroupType)
@@ -1610,6 +1643,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			}
 			assignments = append(assignments, "scheduling_policy_json = ?")
 			updateArgs = append(updateArgs, policyJSONString(afterJSON))
+			persistedSchedulingJSON = policyJSONString(afterJSON)
 			if hasSchedulingPolicyInput {
 				beforePolicy, beforeErr := parseCurrentPolicy()
 				if beforeErr != nil {
@@ -1637,6 +1671,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			if canonicalPolicy(beforePolicy) != canonicalPolicy(afterPolicy) {
 				assignments = append(assignments, "scheduling_policy_json = ?")
 				updateArgs = append(updateArgs, policyJSONString(afterJSON))
+				persistedSchedulingJSON = policyJSONString(afterJSON)
 			}
 			addChange("schedulingPolicy", canonicalPolicy(beforePolicy), canonicalPolicy(afterPolicy))
 		}
@@ -1658,6 +1693,35 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	if columnChanged(assignments, "enabled") && !*input.Enabled && current.enabled {
 		if _, guardErr := s.assertRouteStrategiesCanLoseGroupAvailability(ctx, tx, current.id, current.name, "停用分组"); guardErr != nil {
 			return nil, guardErr
+		}
+		// 分组级停用（groups.enabled=0）被超级分组引用为成员时必须先解除
+		// 引用（设计 §3.2；成员行级 enabled=false 不走此守卫）。
+		if current.groupKind == GroupKindStandard {
+			if refErr := s.assertNoSuperGroupMemberReference(ctx, tx, current.id); refErr != nil {
+				return nil, refErr
+			}
+		}
+	}
+	if columnChanged(assignments, "enabled") && *input.Enabled && !current.enabled && current.groupKind == GroupKindSuper {
+		enabledMembers, countErr := s.countEnabledSuperMembers(ctx, tx, current.id)
+		if countErr != nil {
+			return nil, countErr
+		}
+		if enabledMembers < minSuperGroupEnabledMembers {
+			return nil, codeError(400, CodeSuperGroupMemberMinEnabled, "启用超级分组至少需要两个启用成员")
+		}
+	}
+	if (columnChanged(assignments, "group_type") || columnChanged(assignments, "scheduling_policy_json")) && current.groupKind == GroupKindStandard {
+		normalizedType, typeErr := normalizeStoredGroupType(persistedGroupType)
+		if typeErr != nil {
+			return nil, &ValidationError{Message: typeErr.Error()}
+		}
+		fingerprint, fpErr := groupDispatchFingerprint(normalizedType, persistedSchedulingJSON)
+		if fpErr != nil {
+			return nil, fpErr
+		}
+		if refErr := s.assertSuperGroupFingerprintCompatible(ctx, tx, current.id, fingerprint); refErr != nil {
+			return nil, refErr
 		}
 	}
 
@@ -1779,10 +1843,10 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		where = " AND " + clause
 		args = append(args, clauseArgs...)
 	}
-	var ownerID, name string
+	var ownerID, name, groupKind string
 	var isDefault int
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT g.system_account_id, g.name, g.is_default
-		FROM `+s.table("groups")+` g WHERE g.id = ?`+where+` LIMIT 1`), args...).Scan(&ownerID, &name, &isDefault)
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT g.system_account_id, g.name, g.is_default, g.group_kind
+		FROM `+s.table("groups")+` g WHERE g.id = ?`+where+` LIMIT 1`), args...).Scan(&ownerID, &name, &isDefault, &groupKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &DeleteResult{}, nil
 	}
@@ -1791,6 +1855,12 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	}
 	if isDefault == 1 {
 		return nil, &ValidationError{Message: "默认分组不能删除"}
+	}
+	// 普通分组被超级分组引用为成员时，删除前必须先解除成员关系（设计 §3.2）。
+	if groupKind == GroupKindStandard {
+		if refErr := s.assertNoSuperGroupMemberReference(ctx, tx, id); refErr != nil {
+			return nil, refErr
+		}
 	}
 	affected, err := s.preserveRouteStrategiesBeforeDelete(ctx, tx, id, name)
 	if err != nil {
@@ -1807,6 +1877,9 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		sql  string
 		args []any
 	}{
+		// 删除超级分组自身时先清成员行（设计 §3.2）；成员分组被删除时该组
+		// 不是 super 侧，DELETE 不命中，且上方引用守卫已拒绝此路径。
+		{s.bind(`DELETE FROM ` + s.table("super_group_members") + ` WHERE super_group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("route_strategy_groups") + ` WHERE group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("group_accounts") + ` WHERE group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("group_authorization_settings") + ` WHERE group_id = ?`), []any{id}},

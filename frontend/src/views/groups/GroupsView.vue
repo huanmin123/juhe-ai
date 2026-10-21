@@ -66,6 +66,7 @@
       v-model:client-ip-limit-enabled="clientIpLimitEnabled"
       :client-ip-concurrency-limit="formClientIpConcurrencyLimit"
       :editing-authorized-group="editingAuthorizedGroup"
+      :group-kind-locked="Boolean(editingId)"
       :form="form"
       :max-queue-wait-seconds="formMaxQueueWaitSeconds"
       :provider-locked="providerLocked"
@@ -79,6 +80,15 @@
       @max-queue-wait-seconds-change="setFormMaxQueueWaitSeconds"
       @provider-dropdown-visible-change="handleProviderOptionsDropdown"
       @save="saveGroup"
+    />
+
+    <SuperGroupMembersModal
+      v-model:open="memberModalOpen"
+      :group-id="memberGroup?.id ?? ''"
+      :group-name="memberGroup?.name ?? ''"
+      :management="isManagementView"
+      :system-account-id="memberGroup ? groupOperationScopeParams(memberGroup)?.systemAccountId : undefined"
+      @saved="refreshGroups"
     />
 
   </a-card>
@@ -111,6 +121,7 @@ import {
 } from './groupDisplay'
 import { reconcileCreatedGroup } from './groupListMutation'
 import GroupEditModal from './GroupEditModal.vue'
+import SuperGroupMembersModal from './SuperGroupMembersModal.vue'
 import GroupsList from './GroupsList.vue'
 import {
   defaultGroupsPageState,
@@ -131,6 +142,8 @@ import {
 } from './groupRowActions'
 
 const modalOpen = ref(false)
+const memberModalOpen = ref(false)
+const memberGroup = ref<GroupListItem>()
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
@@ -316,6 +329,11 @@ function providerName(providerCode?: string) {
 function handleGroupAction(key: string, group: GroupListItem) {
   if (key === 'edit') {
     void openEdit(group)
+    return
+  }
+  if (key === 'members') {
+    memberGroup.value = group
+    memberModalOpen.value = true
     return
   }
   if (key === 'return-authorization') {

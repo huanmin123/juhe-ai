@@ -142,7 +142,9 @@ func TestW1ProjectAPIKeyRowProjections(t *testing.T) {
 	}
 	// 等长路径：原样返回副本。
 	same := projectBindingsForRuntime(projected.GroupBindings, record.GroupBindings)
-	if len(same) != 2 || same[0] != record.GroupBindings[0] {
+	if len(same) != 2 || same[0].ID != record.GroupBindings[0].ID ||
+		same[0].GroupKind != record.GroupBindings[0].GroupKind ||
+		len(same[0].MemberGroupIDs) != len(record.GroupBindings[0].MemberGroupIDs) {
 		t.Fatalf("等长恢复 = %+v", same)
 	}
 	// 短投影按 ID 恢复原始行（第一条保留原值，未知 ID 构造 runtime 行）。
@@ -158,7 +160,7 @@ func TestW1ProjectAPIKeyRowProjections(t *testing.T) {
 		t.Fatalf("未知 ID 重建 = %+v", rebuilt[0])
 	}
 	matched := projectBindingsForRuntime([]gatewayrouting.GroupBindingRow{{ID: "rsg_1", Priority: 9}}, record.GroupBindings)
-	if len(matched) != 1 || matched[0] != record.GroupBindings[0] {
+	if len(matched) != 1 || matched[0].ID != record.GroupBindings[0].ID || matched[0].Priority != record.GroupBindings[0].Priority {
 		t.Fatalf("按 ID 恢复 = %+v", matched)
 	}
 }

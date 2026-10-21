@@ -466,15 +466,13 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		if err != nil {
 			return PreflightResult{}, err
 		}
-		mergeStrategy := isMergeRouteStrategy(apiKeyRecord)
+		superMemberIDs := superTargetMemberIDs(apiKeyRecord, groupID)
 		affinityCandidates := options.CandidateAccounts
 		if affinityCandidates == nil {
-			if mergeStrategy {
-				// B20（合并路由设计“交互资源亲和”）：亲和账号可能来自任一
-				// 绑定分组——过滤在合并池进行（按绑定扇出列出 + 组标；模型
-				// 过滤语义与单组亲和路径一致：不按请求模型预过滤，下游
-				// FilterCandidates 对亲和请求 BypassModelFilter）。
-				affinityCandidates, err = s.listMergeAffinityCandidatePool(ctx, apiKeyRecord, systemAccountID)
+			if len(superMemberIDs) > 0 {
+				// 超级分组目标：亲和账号来自任一 enabled 成员，窗口身份保持
+				// 超级分组本身（设计 §4.1 亲和边界）。
+				affinityCandidates, err = s.listGroupFanoutAffinityCandidatePool(ctx, superMemberIDs, systemAccountID)
 			} else {
 				affinityCandidates, err = s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(ctx, groupID, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{})
 			}
@@ -503,17 +501,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				message: "创建该 Interaction 的上游账号当前不可用",
 			})
 			return PreflightResult{}, nil
-		}
-		if mergeStrategy {
-			// B20：命中后窗口身份取该账号所在片段组（请求级身份与账号组一致）。
-			if bound := filtered[0].BoundGroupID; bound != nil && *bound != "" && *bound != groupID {
-				groupID = *bound
-				identity = &OpenAIGatewayRequestIdentity{SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID}
-				runtimeGroupAccess, err = s.RuntimeCache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, groupID, systemAccountID)
-				if err != nil {
-					return PreflightResult{}, err
-				}
-			}
 		}
 		auditCapture.BindContext(AuditGatewayContext{GroupID: groupID, ProviderCode: affinity.ProviderCode})
 		auditCapture.AddGatewayMetadata("gemini_interaction_account_affinity", map[string]any{
@@ -613,11 +600,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			runtimeGroupAccess = normalRoute.GroupAccess
 			runtimeAccounts = normalRoute.Accounts
 			runtimeAccountDispatchDiagnostics = nil
-			// 3.4 窗口身份：merge 的窗口组（首个非空片段组）可不同于加载时的
-			// SelectedGroupID（首个绑定组）——请求级审计上下文同步取窗口组。
-			if isMergeRouteStrategy(apiKeyRecord) {
-				auditCapture.BindContext(AuditGatewayContext{GroupID: groupID})
-			}
 			auditCapture.AddGatewayMetadata("normal_model_route", map[string]any{
 				"requestedModel":        normalRoute.RequestedModel,
 				"fromGroupId":           previousGroupID,
@@ -626,6 +608,13 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				"sourceBindingCount":    previousBindingCount,
 				"candidateBindingCount": recordBindingCount(normalRoute.APIKeyRecord),
 			})
+			if len(normalRoute.TargetOutcomes) > 0 {
+				targets := make([]map[string]string, 0, len(normalRoute.TargetOutcomes))
+				for _, outcome := range normalRoute.TargetOutcomes {
+					targets = append(targets, map[string]string{"groupId": outcome.GroupID, "classification": outcome.Classification})
+				}
+				auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": targets})
+			}
 			targetCircuit, err := s.Circuits.InspectClientIPErrorCircuit(ctx, ClientIPErrorCircuitInput{
 				SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
 				ClientIP: gatewayClientIP, Endpoint: input.Endpoint,
@@ -648,6 +637,20 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				"reason":             normalRoute.Code,
 				"sourceBindingCount": previousBindingCount,
 			})
+			// 超级分组外层目标分类（设计 §4.2）：解析器实际尝试过的目标优先；
+			// 全无候选时按全部超分组绑定投影 no_candidate。
+			switch {
+			case len(normalRoute.TargetOutcomes) > 0:
+				targets := make([]map[string]string, 0, len(normalRoute.TargetOutcomes))
+				for _, outcome := range normalRoute.TargetOutcomes {
+					targets = append(targets, map[string]string{"groupId": outcome.GroupID, "classification": outcome.Classification})
+				}
+				auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": targets})
+			case normalRoute.Code == "model_target_group_unavailable":
+				if targets := superBindingOutcomeTargets(apiKeyRecord, "no_candidate"); len(targets) > 0 {
+					auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": targets})
+				}
+			}
 			responsePayload := GatewayErrorPayloadOf(normalRoute.Message, normalRoute.Type, normalRoute.Code)
 			errorPhase := "request_validation"
 			if normalRoute.StatusCode >= 500 {
@@ -1083,8 +1086,9 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Signal:                          input.Signal,
 		IgnoreAccountRuntimeSuppression: options.IgnoreAccountRuntimeSuppression,
 		RouteCoordinator:                routeCoordinator,
-		// B14/T4：merge 上下文跳过窗口级配额门（解析期逐片段批查是权威门）。
-		SkipGroupQuotaWindowCheck: isMergeRouteStrategy(apiKeyRecord),
+		// 超级分组目标跳过窗口级配额门：成员级配额由组合根逐片段批查
+		// （chain_routing.go superGroupSegmentAccounts）。
+		SkipGroupQuotaWindowCheck: len(superTargetMemberIDs(apiKeyRecord, groupID)) > 0,
 	})
 	if err != nil {
 		return PreflightResult{}, err
@@ -1802,13 +1806,11 @@ func candidateLoader(s *Service, options *PreflightOptions, interaction *gateway
 	if options.CandidateAccounts != nil || interaction != nil {
 		return nil
 	}
-	// 3.4（合并路由设计“候选重解析扇出”）：merge 下默认闭包按单一 groupID
-	// 重读会把扁平池静默收窄回窗口组，必须按绑定分组扇出重建扁平池（去重
-	// + 重组标）；模型过滤语义与单组闭包一致（同参数逐组列出）。
-	if isMergeRouteStrategy(apiKeyRecord) {
-		groupIDs := uniqueActiveRouteGroupIds(apiKeyRecord)
+	// 超级分组目标按 enabled 成员扇出读取（候选重解析扇出，防止池收窄），
+	// 模型过滤语义与单组闭包一致（同参数逐组列出）。
+	if memberIDs := superTargetMemberIDs(apiKeyRecord, groupID); len(memberIDs) > 0 {
 		return func(model, sourceEndpointFamily string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-			return mergeFanoutCandidateAccounts(groupIDs, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+			return fanoutCandidateAccounts(memberIDs, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 				return s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(s.requestContext(), group, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
 					RequestedModel: model, RequestedEndpointFamily: sourceEndpointFamily,
 				})
@@ -1844,9 +1846,10 @@ func recoverableLoader(s *Service, options *PreflightOptions, interaction *gatew
 		}
 		return nil
 	}
-	// 3.4：merge 下逐绑定扇出刷新/恢复读取（等待 scopeKey 保持窗口组）。
-	if isMergeRouteStrategy(apiKeyRecord) {
-		input.mergeGroupIDs = uniqueActiveRouteGroupIds(apiKeyRecord)
+	// 超级分组目标按 enabled 成员扇出刷新/恢复读取，等待 scopeKey 仍取超级
+	// 分组本身。
+	if memberIDs := superTargetMemberIDs(apiKeyRecord, input.groupID); len(memberIDs) > 0 {
+		input.fanoutGroupIDs = memberIDs
 	}
 	return func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 		return s.waitForRecoverableOpenAIGatewayCandidateAccounts(input)

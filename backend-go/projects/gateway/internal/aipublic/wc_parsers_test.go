@@ -109,8 +109,8 @@ func TestWCParseStrategyBodies(t *testing.T) {
 	if _, issue := parseStrategyListQuery(mustParseQuery(t, "targetUsername=ab&keyword="+strings.Repeat("k", 121))); issue != zodStringMax(120) {
 		t.Fatalf("keyword 过长: %q", issue)
 	}
-	query, issue := parseStrategyListQuery(mustParseQuery(t, "targetUsername=ab&keyword=k&mode=merge&status=disabled&page=3&pageSize=7"))
-	if issue != "" || query.Mode != "merge" || query.Status != "disabled" || query.Page != 3 {
+	query, issue := parseStrategyListQuery(mustParseQuery(t, "targetUsername=ab&keyword=k&mode=weighted&status=disabled&page=3&pageSize=7"))
+	if issue != "" || query.Mode != "weighted" || query.Status != "disabled" || query.Page != 3 {
 		t.Fatalf("list 全量: %+v %q", query, issue)
 	}
 

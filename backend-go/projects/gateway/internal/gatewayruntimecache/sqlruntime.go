@@ -332,7 +332,8 @@ func (m *SQLReadModels) loadActiveGatewayAPIKeyGroupBindings(ctx context.Context
 			route_strategy_groups.priority,
 			route_strategy_groups.weight,
 			route_strategy_groups.status,
-			groups.enabled
+			groups.enabled,
+			groups.group_kind
 		FROM `+m.table("route_strategies")+` route_strategies
 		INNER JOIN `+m.table("route_strategy_groups")+` route_strategy_groups
 			ON route_strategy_groups.route_strategy_id = route_strategies.id
@@ -370,7 +371,7 @@ func (m *SQLReadModels) loadActiveGatewayAPIKeyGroupBindings(ctx context.Context
 		var weight sql.NullInt64
 		var groupEnabled int
 		if err := rows.Scan(&binding.ID, &binding.GroupID, &binding.Priority, &weight,
-			&binding.Status, &groupEnabled); err != nil {
+			&binding.Status, &groupEnabled, &binding.GroupKind); err != nil {
 			return nil, err
 		}
 		// normalizeApiKeyGroupBindingWeight: NULL 归一为 1，越界值抛错。
@@ -390,7 +391,54 @@ func (m *SQLReadModels) loadActiveGatewayAPIKeyGroupBindings(ctx context.Context
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := m.attachSuperGroupMembers(ctx, bindings); err != nil {
+		return nil, err
+	}
 	return bindings, nil
+}
+
+// attachSuperGroupMembers 为 super 绑定装载 enabled 成员组（priority 序）。
+// 成员资格与同 owner 约束已由写入口保证；运行期只消费快照。
+func (m *SQLReadModels) attachSuperGroupMembers(ctx context.Context, bindings []GatewayAPIKeyGroupBindingRow) error {
+	superIndexes := make([]int, 0)
+	superIDs := make([]string, 0)
+	for index := range bindings {
+		if bindings[index].GroupKind == "super" {
+			superIndexes = append(superIndexes, index)
+			superIDs = append(superIDs, bindings[index].GroupID)
+		}
+	}
+	if len(superIDs) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(superIDs)), ",")
+	args := make([]any, 0, len(superIDs))
+	for _, id := range superIDs {
+		args = append(args, id)
+	}
+	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT super_group_id, member_group_id
+		FROM `+m.table("super_group_members")+`
+		WHERE super_group_id IN (`+placeholders+`) AND enabled = 1
+		ORDER BY priority ASC, member_group_id ASC`), args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	members := make(map[string][]string, len(superIDs))
+	for rows.Next() {
+		var superID, memberID string
+		if err := rows.Scan(&superID, &memberID); err != nil {
+			return err
+		}
+		members[superID] = append(members[superID], memberID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, index := range superIndexes {
+		bindings[index].MemberGroupIDs = members[bindings[index].GroupID]
+	}
+	return nil
 }
 
 // maxRouteStrategyGroupBindings mirrors route-strategy-group-binding-limits.
