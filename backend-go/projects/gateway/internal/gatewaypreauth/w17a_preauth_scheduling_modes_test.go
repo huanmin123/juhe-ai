@@ -2,7 +2,7 @@ package gatewaypreauth
 
 // w17a 覆盖波次：调度偏好（speed_first）在各调度模式下通用化后的
 // preflight helper 行为。normalRoutingConfig 键是 normal/weighted/failover/
-// round_robin/merge 共享的组内调度配置（历史命名）。
+// round_robin 共享的组内调度配置（历史命名）。
 
 import (
 	"testing"
@@ -15,13 +15,12 @@ func TestW17ASchedulingPreferenceModes(t *testing.T) {
 	service, _, _ := newTestService(t, nil)
 	raw := []byte(`{"schedulingPreference":"speed_first","firstByteDeadlineMs":30000}`)
 
-	// 五种调度模式（含 normal 基线）：双 helper 都返回有效配置且 deadline 正确解码。
+	// 四种调度模式（含 normal 基线）：双 helper 都返回有效配置且 deadline 正确解码。
 	for _, mode := range []string{
 		gatewayruntimecache.RouteStrategyModeNormal,
 		gatewayruntimecache.RouteStrategyModeWeighted,
 		gatewayruntimecache.RouteStrategyModeFailover,
 		gatewayruntimecache.RouteStrategyModeRoundRobin,
-		gatewayruntimecache.RouteStrategyModeMerge,
 	} {
 		row := validRuntimeRow()
 		row.RouteStrategyMode = mode

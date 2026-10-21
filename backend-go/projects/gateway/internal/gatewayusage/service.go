@@ -283,7 +283,7 @@ func (s *Service) RecordFailedUpstreamAttempt(ctx Ctx, usageContext GatewayUsage
 	fields.Set("errorCode", orNil(errorCode))
 	setLogErrorMessageFields(fields, logErrorMessage)
 	fields.Set("apiKeyId", orNil(usageContext.APIKeyID))
-	// 诊断字段（合并路由设计 3.5 已知口径）：保持请求级窗口组口径，不随账
+	// 诊断字段（超级分组设计 §4.2 已知口径）：保持请求级窗口组口径，不随账
 	// 号 BoundGroupID 覆盖——统计事实在 usage 记录的 GroupID（由调用方
 	// choke point 按账号解析）与账号五元组，日志 groupId 非统计事实。
 	fields.Set("groupId", orNil(usageContext.GroupID))

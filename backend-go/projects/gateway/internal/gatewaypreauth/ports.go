@@ -328,11 +328,11 @@ type DispatchPreparationInput struct {
 	Signal                          context.Context
 	IgnoreAccountRuntimeSuppression bool
 	RouteCoordinator                gatewayrouting.GatewayRouteCoordinatorOwner
-	// SkipGroupQuotaWindowCheck（合并路由设计 B14/T4）：merge 上下文必须跳
-	// 过以窗口组 GroupAccess 对整池做 CheckBatchAsync 的窗口级配额门——窗口
-	// 组为带组级配额的授权组时会否决整池（首组配额耗尽 + 次组充足也 429）。
-	// merge 的权威门是解析期逐片段批查（组合根 chain_routing.go）。preflight
-	// 组装处对 merge 置 true，其余模式保持 false（行为不变）。
+	// SkipGroupQuotaWindowCheck：超级分组目标必须跳过以窗口组 GroupAccess 对
+	// 成员展开整池做 CheckBatchAsync 的窗口级配额门——超级分组窗口组带组级
+	// 配额时会否决整池。权威门是解析期逐成员片段批查（组合根
+	// chain_routing.go superGroupSegmentAccounts）。preflight 组装处对超级分组
+	// 目标置 true，其余场景保持 false（行为不变）。
 	SkipGroupQuotaWindowCheck bool
 }
 

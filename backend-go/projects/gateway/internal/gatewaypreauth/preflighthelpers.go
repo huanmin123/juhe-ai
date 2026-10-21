@@ -35,6 +35,7 @@ func (s *Service) BuildGatewayUsageContext(input usageContextInput) GatewayFailu
 		SystemAccountID:          input.identity.SystemAccountID,
 		APIKeyID:                 input.identity.APIKeyID,
 		GroupID:                  input.identity.GroupID,
+		RouteGroupID:             input.identity.GroupID,
 		Endpoint:                 input.endpoint,
 		RequestSnapshot:          input.requestSnapshot,
 		RequestedServiceTier:     input.requestSnapshot.RequestedServiceTier,

@@ -746,7 +746,6 @@ func TestW1FSpeedFirstAdmissionGuards(t *testing.T) {
 	weightedMode := "weighted"
 	failoverMode := "failover"
 	roundRobinMode := "round_robin"
-	mergeMode := "merge"
 	costFirst := "cost_first"
 
 	t.Run("applicability 守卫", func(t *testing.T) {
@@ -760,7 +759,6 @@ func TestW1FSpeedFirstAdmissionGuards(t *testing.T) {
 			{"weighted 模式适用", speedFirstRuntime(&weightedMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
 			{"failover 模式适用", speedFirstRuntime(&failoverMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
 			{"round_robin 模式适用", speedFirstRuntime(&roundRobinMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
-			{"merge 模式适用", speedFirstRuntime(&mergeMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
 			{"非 speed_first 偏好", speedFirstRuntime(nil, &costFirst, nil, nil, 1), gatewayproto.LaneText, false},
 			{"非 high_concurrency 分组", speedFirstRuntime(nil, nil, &personal, nil, 1), gatewayproto.LaneText, false},
 			{"无账户", speedFirstRuntime(nil, nil, nil, nil, 0), gatewayproto.LaneText, false},

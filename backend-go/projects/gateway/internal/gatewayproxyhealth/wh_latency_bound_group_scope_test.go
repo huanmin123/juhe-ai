@@ -5,15 +5,15 @@ import (
 	"testing"
 )
 
-// 合并路由（merge 模式）速度优先状态键逐账号解析（设计 3.6 / B25-B27）：
+// 超级分组（成员组标）速度优先状态键逐账号解析（设计 3.6 / B25-B27）：
 // 状态键组分量与存储 latencyState.Scope.GroupID 必须同源（同一解析值）；
 // 账号 BoundGroupID 非空时解析为其绑定组，否则回落窗口组（存量键形零回归）。
 
-func mergeScope(groupID string) *LatencyDegradationScope {
+func boundGroupScope(groupID string) *LatencyDegradationScope {
 	return &LatencyDegradationScope{SystemAccountID: "sys", RouteStrategyID: "rs1", GroupID: groupID}
 }
 
-func mergeBoundAccount(id, boundGroupID string) SuppressibleGatewayAccount {
+func boundGroupAccount(id, boundGroupID string) SuppressibleGatewayAccount {
 	account := latencyAccount(id)
 	account.BoundGroupID = boundGroupID
 	return account
@@ -27,10 +27,10 @@ func TestResolvedLatencyScopeForAccount(t *testing.T) {
 	if got := resolvedLatencyScopeForAccount(window, latencyAccount("a")); !reflect.DeepEqual(got, window) {
 		t.Fatalf("无绑定组必须原样回落: got %+v, want %+v", got, window)
 	}
-	if got := resolvedLatencyScopeForAccount(window, mergeBoundAccount("a", "   ")); !reflect.DeepEqual(got, window) {
+	if got := resolvedLatencyScopeForAccount(window, boundGroupAccount("a", "   ")); !reflect.DeepEqual(got, window) {
 		t.Fatalf("空白绑定组必须视同缺失回落: got %+v, want %+v", got, window)
 	}
-	got := resolvedLatencyScopeForAccount(window, mergeBoundAccount("a", " g2 "))
+	got := resolvedLatencyScopeForAccount(window, boundGroupAccount("a", " g2 "))
 	if got.GroupID != "g2" {
 		t.Fatalf("绑定组胜出且去除空白: got GroupID=%q", got.GroupID)
 	}
@@ -42,9 +42,9 @@ func TestResolvedLatencyScopeForAccount(t *testing.T) {
 }
 
 // 回归红线（存量零回归）：无绑定组账号的键形与现状完全一致；
-// merge 账号（BoundGroupID=g2，窗口组 g1）的键与存储 Scope.GroupID 均为 g2，
+// 超级分组账号（BoundGroupID=g2，窗口组 g1）的键与存储 Scope.GroupID 均为 g2，
 // 且写路径读回（ListDegradedRuntime 的 ScopeGroupID）同值。
-func TestMergeScopeSlowSampleKeyMatchesStoredScope(t *testing.T) {
+func TestBoundGroupScopeSlowSampleKeyMatchesStoredScope(t *testing.T) {
 	ctx := contextBackground()
 	clock := newFakeClock(1_000_000)
 	service, store := newMemoryLatencyService(clock)
@@ -74,15 +74,15 @@ func TestMergeScopeSlowSampleKeyMatchesStoredScope(t *testing.T) {
 		t.Fatalf("存量 Scope 必须与现状一致: got %+v, want %+v", legacyState.Scope, *scope)
 	}
 
-	// merge 账号：键与存储 Scope 都落在绑定组 g2；窗口组 g1 旧键不得存在。
-	merged := mergeBoundAccount("merged", "g2")
+	// 超级分组账号：键与存储 Scope 都落在成员组 g2；窗口组 g1 旧键不得存在。
+	member := boundGroupAccount("member", "g2")
 	for i := 0; i < 3; i++ {
-		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, merged, scope, &config, ""); err != nil {
-			t.Fatalf("merged slow %d: %v", i, err)
+		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, member, scope, &config, ""); err != nil {
+			t.Fatalf("member slow %d: %v", i, err)
 		}
 	}
-	windowKey := accountLatencyStateKey(*scope, merged)
-	if windowKey != "v1:sys:rs1:g1:merged" {
+	windowKey := accountLatencyStateKey(*scope, member)
+	if windowKey != "v1:sys:rs1:g1:member" {
 		t.Fatalf("窗口组旧键形漂移: %q", windowKey)
 	}
 	if raw, err = store.GetJSON(ctx, windowKey); err != nil || raw != nil {
@@ -90,20 +90,20 @@ func TestMergeScopeSlowSampleKeyMatchesStoredScope(t *testing.T) {
 	}
 	boundScope := *scope
 	boundScope.GroupID = "g2"
-	boundKey := accountLatencyStateKey(boundScope, merged)
-	if boundKey != "v1:sys:rs1:g2:merged" {
-		t.Fatalf("merge 键形漂移: %q", boundKey)
+	boundKey := accountLatencyStateKey(boundScope, member)
+	if boundKey != "v1:sys:rs1:g2:member" {
+		t.Fatalf("绑定组键形漂移: %q", boundKey)
 	}
 	raw, err = store.GetJSON(ctx, boundKey)
 	if err != nil || raw == nil {
-		t.Fatalf("merge 键必须存在: raw=%v err=%v", raw, err)
+		t.Fatalf("绑定组键必须存在: raw=%v err=%v", raw, err)
 	}
-	mergedState, ok := decodeLatencyState(raw)
+	memberState, ok := decodeLatencyState(raw)
 	if !ok {
-		t.Fatalf("merge 状态解码失败: %s", string(raw))
+		t.Fatalf("绑定组状态解码失败: %s", string(raw))
 	}
-	if !reflect.DeepEqual(mergedState.Scope, boundScope) {
-		t.Fatalf("存储 Scope 必须为解析值: got %+v, want %+v", mergedState.Scope, boundScope)
+	if !reflect.DeepEqual(memberState.Scope, boundScope) {
+		t.Fatalf("存储 Scope 必须为解析值: got %+v, want %+v", memberState.Scope, boundScope)
 	}
 
 	// 写路径读回：管理面运行态查询返回的 ScopeGroupID 与解析值同源。
@@ -118,12 +118,12 @@ func TestMergeScopeSlowSampleKeyMatchesStoredScope(t *testing.T) {
 	for _, item := range items {
 		scopeByAccount[item.AccountID] = item.ScopeGroupID
 	}
-	if scopeByAccount["legacy"] != "g1" || scopeByAccount["merged"] != "g2" {
+	if scopeByAccount["legacy"] != "g1" || scopeByAccount["member"] != "g2" {
 		t.Fatalf("运行态 ScopeGroupID 必须与解析值同源: got %v", scopeByAccount)
 	}
 
 	// 恢复观察写路径：窗口 scope g1 入口必须命中 g2 键上的既有状态。
-	result, err := service.RecordNormalRouteFirstByteSuccess(ctx, merged, scope, &config, int64Ptr(100))
+	result, err := service.RecordNormalRouteFirstByteSuccess(ctx, member, scope, &config, int64Ptr(100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,18 +134,18 @@ func TestMergeScopeSlowSampleKeyMatchesStoredScope(t *testing.T) {
 
 // 排序逐账号解析：g1 降级账号后置；g2 账号只受 g2 作用域状态影响——
 // 其在 g2 的降级状态生效（后置），窗口组 g1 的旧式状态对它不可见。
-func TestMergeScopeOrderAsyncIndependentGroupScopes(t *testing.T) {
+func TestBoundGroupScopeOrderAsyncIndependentGroupScopes(t *testing.T) {
 	ctx := contextBackground()
 	clock := newFakeClock(1_000_000)
 	service, store := newMemoryLatencyService(clock)
 	windowScope := latencyScope()
-	g2Scope := mergeScope("g2")
+	g2Scope := boundGroupScope("g2")
 	config := speedFirstConfig()
 
 	degradedInG1 := latencyAccount("a-g1")             // g1 账号，g1 降级
-	degradedInG2 := mergeBoundAccount("b-g2", "g2")    // g2 账号，g2 降级
+	degradedInG2 := boundGroupAccount("b-g2", "g2")    // g2 账号，g2 降级
 	normal := latencyAccount("c-normal")               // g1 账号，无状态
-	onlyWindowState := mergeBoundAccount("e-g2", "g2") // g2 账号，仅存在 g1 旧式状态
+	onlyWindowState := boundGroupAccount("e-g2", "g2") // g2 账号，仅存在 g1 旧式状态
 
 	for i := 0; i < 3; i++ {
 		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, degradedInG1, windowScope, &config, ""); err != nil {
@@ -190,21 +190,21 @@ func TestMergeScopeOrderAsyncIndependentGroupScopes(t *testing.T) {
 }
 
 // 清理组无关（B27）：按账号组记键的降级状态必须被 ForAccount 清理覆盖。
-func TestMergeScopeClearForAccountIgnoresGroup(t *testing.T) {
+func TestBoundGroupScopeClearForAccountIgnoresGroup(t *testing.T) {
 	ctx := contextBackground()
 	clock := newFakeClock(1_000_000)
 	service, _ := newMemoryLatencyService(clock)
 	scope := latencyScope()
 	config := speedFirstConfig()
-	merged := mergeBoundAccount("merged", "g2")
+	member := boundGroupAccount("member", "g2")
 
 	for i := 0; i < 3; i++ {
-		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, merged, scope, &config, ""); err != nil {
+		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, member, scope, &config, ""); err != nil {
 			t.Fatalf("slow %d: %v", i, err)
 		}
 	}
 	cleared, err := service.ClearNormalRouteLatencyDegradationForAccount(ctx, ClearNormalRouteLatencyDegradationForAccountInput{
-		SystemAccountID: "sys", AccountID: "merged",
+		SystemAccountID: "sys", AccountID: "member",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -226,16 +226,16 @@ func TestMergeScopeClearForAccountIgnoresGroup(t *testing.T) {
 // 探针成功回写同源闭环（B26 的 gateway 侧）：candidate 从存储 state 重建
 // （Scope.GroupID=账号组），RecordNormalRouteRecoveryProbeSuccess 以同一账号
 // 形态校验命中并在同一键上推进/清除，两轮探针成功后状态整体清除。
-func TestMergeScopeRecoveryProbeSuccessOnResolvedKey(t *testing.T) {
+func TestBoundGroupScopeRecoveryProbeSuccessOnResolvedKey(t *testing.T) {
 	ctx := contextBackground()
 	clock := newFakeClock(1_000_000)
 	service, store := newMemoryLatencyService(clock)
 	scope := latencyScope()
 	config := speedFirstConfig()
-	merged := mergeBoundAccount("merged", "g2")
+	member := boundGroupAccount("member", "g2")
 
 	for i := 0; i < 3; i++ {
-		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, merged, scope, &config, ""); err != nil {
+		if _, err := service.RecordNormalRouteFirstByteSlow(ctx, member, scope, &config, ""); err != nil {
 			t.Fatalf("slow %d: %v", i, err)
 		}
 	}
@@ -249,12 +249,12 @@ func TestMergeScopeRecoveryProbeSuccessOnResolvedKey(t *testing.T) {
 		t.Fatalf("探针候选数 = %d, want 1", len(candidates))
 	}
 	candidate := candidates[0]
-	if candidate.Scope.GroupID != "g2" || candidate.StateKey != "v1:sys:rs1:g2:merged" {
+	if candidate.Scope.GroupID != "g2" || candidate.StateKey != "v1:sys:rs1:g2:member" {
 		t.Fatalf("探针候选必须按存储 Scope 重建: StateKey=%q Scope=%+v", candidate.StateKey, candidate.Scope)
 	}
 
 	for round := 1; round <= 2; round++ {
-		result, err := service.RecordNormalRouteRecoveryProbeSuccess(ctx, merged, candidate, int64Ptr(100))
+		result, err := service.RecordNormalRouteRecoveryProbeSuccess(ctx, member, candidate, int64Ptr(100))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -278,7 +278,7 @@ func TestMergeScopeRecoveryProbeSuccessOnResolvedKey(t *testing.T) {
 			candidate = next[0]
 		}
 	}
-	raw, err := store.GetJSON(ctx, "v1:sys:rs1:g2:merged")
+	raw, err := store.GetJSON(ctx, "v1:sys:rs1:g2:member")
 	if err != nil || raw != nil {
 		t.Fatalf("恢复后解析键必须删除: raw=%v err=%v", raw, err)
 	}

@@ -861,11 +861,11 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	var hotQualityReorderPending bool
 	var err error
 
-	// T4/B14（合并路由设计）：merge 上下文跳过窗口级配额批查——此处用窗口
-	// 组 GroupAccess 对整池 CheckBatchAsync，窗口组为带组级配额的授权组时会
-	// 否决整池（首组配额耗尽 + 次组充足也 429）。merge 的权威门是解析期逐
-	// 片段批查（组合根 chain_routing.go resolveMergeSelectedRoute），此门有
-	// 意跳过；全池实际耗尽由下方 no_available_upstream_account 终局承接。
+	// 超级分组目标跳过窗口级配额批查——此处用窗口组 GroupAccess 对成员展开
+	// 后的整池 CheckBatchAsync 会以超级分组窗口自身（若带组级配额）否决整池。
+	// 超级分组的权威门是解析期逐片段成员级批查（组合根 chain_routing.go
+	// superGroupSegmentAccounts），此门有意跳过；全池实际耗尽由下方
+	// no_available_upstream_account 终局承接。
 	if req.SkipGroupQuotaWindowCheck {
 		accounts = input.accounts
 	} else {

@@ -97,7 +97,7 @@ func realtimeBridgeCompose(t *testing.T, fixture *chainFixture, withRedis bool) 
 	if withRedis {
 		tokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: client}, "")
 	}
-	chain, spoolDir, shutdown := mergeComposeChain(t, fixture, func(deps *chainRuntimeDeps) {
+	chain, spoolDir, shutdown := composeChainWithSpool(t, fixture, func(deps *chainRuntimeDeps) {
 		deps.RealtimeTokens = tokens
 	})
 	t.Cleanup(shutdown)

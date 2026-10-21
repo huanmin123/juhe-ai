@@ -226,7 +226,7 @@ var auditReadsDDL = []string{
 	`CREATE TABLE IF NOT EXISTS audit_logs (
 	  id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
 	  system_account_id TEXT, api_key_id TEXT, conversation_key TEXT, session_id TEXT,
-	  session_client_type TEXT, group_id TEXT, account_id TEXT, provider_code TEXT,
+	  session_client_type TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT,
 	  method TEXT NOT NULL, path TEXT NOT NULL, query_string TEXT, model TEXT,
 	  upstream_model TEXT, pricing_model TEXT, model_mapping_applied INTEGER NOT NULL DEFAULT 0,
 	  model_mapping_source TEXT, source_endpoint_family TEXT, upstream_endpoint_family TEXT,
@@ -243,7 +243,7 @@ var auditReadsDDL = []string{
 	)`,
 	`CREATE TABLE IF NOT EXISTS audit_log_attempts (
 	  id TEXT PRIMARY KEY, audit_log_id TEXT NOT NULL, attempt_index INTEGER NOT NULL,
-	  account_id TEXT, account_owner_system_account_id TEXT, group_id TEXT, proxy_url TEXT,
+	  account_id TEXT, account_owner_system_account_id TEXT, group_id TEXT, member_group_id TEXT, proxy_url TEXT,
 	  provider_code TEXT, attempt_model TEXT, attempt_upstream_model TEXT, attempt_pricing_model TEXT,
 	  attempt_model_mapping_applied INTEGER NOT NULL DEFAULT 0, attempt_model_mapping_source TEXT,
 	  attempt_source_endpoint_family TEXT, attempt_upstream_endpoint_family TEXT,

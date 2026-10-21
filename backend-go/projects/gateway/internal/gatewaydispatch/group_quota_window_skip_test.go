@@ -1,8 +1,8 @@
 package gatewaydispatch
 
-// 合并路由设计 B14/T4：dispatch 侧配额窗口门在 merge 上下文跳过（解析期逐
-// 片段批查是权威门）。窗口组为带组级配额的授权组且组配额耗尽时，未跳过的
-// 窗口门会否决整池（429），跳过后账户照常进入派发上下文。
+// 超级分组设计 §4.2：dispatch 侧配额窗口门在超级分组目标跳过（解析期逐
+// 成员片段批查是权威门）。窗口组为带组级配额的超级分组且组配额耗尽时，未
+// 跳过的窗口门会否决成员展开整池（429），跳过后账户照常进入派发上下文。
 
 import (
 	"context"
@@ -11,11 +11,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
-// TestPrepareDispatchAccountsSkipsGroupQuotaWindowGateForMerge 锁定 T4：
-// SkipGroupQuotaWindowCheck 置位时，即使窗口门配额端口否决全部账户，账户也
-// 不被剔除（首组配额耗尽 + 次组有配额的 merge 请求得以由次组服务）；不置位
-// 时维持现状：全池否决 → 429 authorization_quota_exceeded 终局。
-func TestPrepareDispatchAccountsSkipsGroupQuotaWindowGateForMerge(t *testing.T) {
+// TestPrepareDispatchAccountsSkipsGroupQuotaWindowGateForSuperGroup 锁定超级
+// 分组语义：SkipGroupQuotaWindowCheck 置位时，即使窗口门配额端口否决全部
+// 账户，账户也不被剔除（成员级配额权威门在解析期）；不置位时维持现状：
+// 全池否决 → 429 authorization_quota_exceeded 终局。
+func TestPrepareDispatchAccountsSkipsGroupQuotaWindowGateForSuperGroup(t *testing.T) {
 	// 现状臂：窗口门生效——配额端口否决全部账户 → 429 终局。
 	{
 		pipeline, engine, _, _ := newPipeline(t)
@@ -36,8 +36,8 @@ func TestPrepareDispatchAccountsSkipsGroupQuotaWindowGateForMerge(t *testing.T) 
 			t.Fatalf("failure = %#v, want 429 rate_limit_exceeded (quota)", coordinator.failure)
 		}
 	}
-	// merge 臂：窗口门跳过——全部账户保留进入派发上下文，且配额端口不再被
-	// 消费（权威门在解析期）。
+	// 超级分组臂：窗口门跳过——全部账户保留进入派发上下文，且配额端口不再
+	// 被消费（权威门在解析期）。
 	{
 		pipeline, engine, _, _ := newPipeline(t)
 		quotaCalls := 0
@@ -49,13 +49,13 @@ func TestPrepareDispatchAccountsSkipsGroupQuotaWindowGateForMerge(t *testing.T) 
 		input.SkipGroupQuotaWindowCheck = true
 		result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
 		if err != nil {
-			t.Fatalf("PrepareDispatchAccounts (merge): %v", err)
+			t.Fatalf("PrepareDispatchAccounts (super): %v", err)
 		}
 		if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
-			t.Fatalf("merge outcome = %s, want accounts", result.Outcome)
+			t.Fatalf("super outcome = %s, want accounts", result.Outcome)
 		}
 		if len(result.Accounts) != 2 {
-			t.Fatalf("merge accounts = %v, want both kept", accountIDs(result.Accounts))
+			t.Fatalf("super accounts = %v, want both kept", accountIDs(result.Accounts))
 		}
 		if quotaCalls != 0 {
 			t.Fatalf("窗口门跳过后配额端口仍被调用 %d 次", quotaCalls)

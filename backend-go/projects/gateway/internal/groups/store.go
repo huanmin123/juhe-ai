@@ -1711,6 +1711,15 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			return nil, codeError(400, CodeSuperGroupMemberMinEnabled, "启用超级分组至少需要两个启用成员")
 		}
 	}
+	if (columnChanged(assignments, "group_type") || columnChanged(assignments, "scheduling_policy_json")) && current.groupKind == GroupKindSuper {
+		var memberCount int
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("super_group_members")+` WHERE super_group_id = ?`), current.id).Scan(&memberCount); err != nil {
+			return nil, err
+		}
+		if memberCount > 0 {
+			return nil, codeError(409, CodeSuperGroupMemberDispatchConflict, "超级分组的调度策略由成员分组决定，请先调整成员再变更")
+		}
+	}
 	if (columnChanged(assignments, "group_type") || columnChanged(assignments, "scheduling_policy_json")) && current.groupKind == GroupKindStandard {
 		normalizedType, typeErr := normalizeStoredGroupType(persistedGroupType)
 		if typeErr != nil {

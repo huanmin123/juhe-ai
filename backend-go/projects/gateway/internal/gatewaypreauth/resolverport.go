@@ -50,6 +50,24 @@ type NormalRouteResult struct {
 	GroupAccess  *gatewayruntimecache.GroupUsageAccessMetadata
 	Accounts     []gatewayruntimecache.OpenAIAccountSecret
 	RouteSource  string
+	// TargetOutcomes 是超级分组外层目标的失败分类（设计 §4.2）：仅在超级
+	// 分组解析器实际尝试过的目标上填充，用于审计与验收断言。
+	TargetOutcomes []NormalRouteTargetOutcome
+}
+
+// NormalRouteTargetOutcome 是外层目标级失败分类；MemberSkips 是该目标被跳过
+// 的成员及其原因（设计 §4.2 的成员级投影）。
+type NormalRouteTargetOutcome struct {
+	GroupID        string
+	Classification string
+	MemberSkips    []NormalRouteMemberSkip
+}
+
+// NormalRouteMemberSkip 是单成员跳过原因（取值域：member_disabled /
+// no_candidate / capacity_exhausted / upstream_exhausted）。
+type NormalRouteMemberSkip struct {
+	GroupID string
+	Reason  string
 }
 
 // DownstreamCommitState is the G16 commit-state placeholder: the preflight

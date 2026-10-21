@@ -38,6 +38,7 @@
       </template>
       <template v-else-if="column.key === 'group'">
         <span :class="record.groupName ? 'name-cell' : 'muted-cell'">{{ displayUsageRecordGroupName(record.groupName, record.groupId) }}</span>
+        <span v-if="record.routeGroupId && record.routeGroupId !== record.groupId" class="muted-cell"> · 路由组 {{ displayUsageRecordGroupName(record.routeGroupName, record.routeGroupId) }}</span>
       </template>
       <template v-else-if="column.key === 'account'">
         <span :class="record.accountName || record.accountId ? 'name-cell' : 'muted-cell'">{{ accountDisplayText(record) }}</span>

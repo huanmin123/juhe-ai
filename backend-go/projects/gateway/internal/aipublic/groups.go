@@ -215,7 +215,7 @@ type groupAddBody struct {
 	TargetUsername    string
 	TargetDisplayName *string
 	Name              string
-	ProviderCode      string
+	GroupKind         string
 	Description       *string
 	Enabled           *bool
 	HasEnabled        bool
@@ -224,7 +224,9 @@ type groupAddBody struct {
 }
 
 func parseGroupAddBody(body map[string]any) (*groupAddBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "targetDisplayName", "name", "providerCode", "description", "enabled", "groupType")
+	// 契约（接口契约与权限矩阵）：公开建组接受 groupKind，不接受已退役的
+	// providerCode；分组目标不含供应商维度。
+	unknown := strictObjectKeys(body, "targetUsername", "targetDisplayName", "name", "groupKind", "description", "enabled", "groupType")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -244,11 +246,18 @@ func parseGroupAddBody(body map[string]any) (*groupAddBody, string) {
 		return nil, issue
 	}
 	parsed.Name = name
-	providerCode, issue := requiredTrimmedBody(body, "providerCode", 1, 60)
-	if issue != "" {
-		return nil, issue
+	groupKind := ""
+	if raw, ok := body["groupKind"]; ok && raw != nil {
+		text, isString := raw.(string)
+		if !isString {
+			return nil, "groupKind 必须是字符串"
+		}
+		groupKind = strings.TrimSpace(text)
 	}
-	parsed.ProviderCode = providerCode
+	if groupKind != "" && groupKind != "standard" && groupKind != "super" {
+		return nil, "groupKind 只能是 standard 或 super"
+	}
+	parsed.GroupKind = groupKind
 	description, issue := optionalTrimmedBody(body, "description", 0, 500)
 	if issue != "" {
 		return nil, issue
@@ -282,11 +291,6 @@ func (d *Deps) addGroup(w http.ResponseWriter, r *http.Request) {
 		d.mockGroupAdd(w, body)
 		return
 	}
-	// Node asserts the provider before resolving the target user.
-	if err := d.assertProviderCodeEnabled(r.Context(), parsed.ProviderCode); err != nil {
-		kernel.WriteBadRequest(w, err.Error())
-		return
-	}
 	target, err := d.ensureTargetSystemAccount(r.Context(), parsed.TargetUsername, parsed.TargetDisplayName)
 	if err != nil {
 		kernel.WriteBadRequest(w, serviceMessage(err, "分组新增失败"))
@@ -296,7 +300,7 @@ func (d *Deps) addGroup(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteBadRequest(w, "目标用户已停用："+target.Account.Username)
 		return
 	}
-	existing, err := d.findExistingTargetGroup(r.Context(), target.Account.ID, parsed.ProviderCode, parsed.Name)
+	existing, err := d.findExistingTargetGroup(r.Context(), target.Account.ID, "", parsed.Name)
 	if err != nil {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
@@ -313,10 +317,10 @@ func (d *Deps) addGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := d.Groups.Create(r.Context(), groups.MutationInput{
-		Name:         &parsed.Name,
-		ProviderCode: &parsed.ProviderCode,
-		Description:  parsed.Description,
-		GroupType:    strPtr(groupTypeOr(parsed.GroupType, parsed.HasGroupType)),
+		Name:        &parsed.Name,
+		GroupKind:   groupKindPtr(parsed.GroupKind),
+		Description: parsed.Description,
+		GroupType:   strPtr(groupTypeOr(parsed.GroupType, parsed.HasGroupType)),
 	}, groups.AccessScope{ViewerID: target.Account.ID})
 	if err != nil {
 		kernel.WriteBadRequest(w, serviceMessage(err, "分组新增失败"))
@@ -330,6 +334,15 @@ func (d *Deps) addGroup(w http.ResponseWriter, r *http.Request) {
 	d.writeStatsCreated(w, map[string]any{
 		"action": "created", "target": target.Public, "group": sanitizeGroup(summary),
 	})
+}
+
+// groupKindPtr 把 groupKind 可选值投影为 MutationInput 指针（空 = 缺省
+// standard，由分组域归一）。
+func groupKindPtr(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
 }
 
 func groupTypeOr(value string, present bool) string {
@@ -374,19 +387,21 @@ func parseGroupUpdateBody(body map[string]any) (*groupUpdateBody, string) {
 		return nil, issue
 	}
 	parsed.GroupID = groupID
-	if bodyHas(body, "name") {
-		name, issue := optionalTrimmedBody(body, "name", 1, 80)
-		if issue != "" {
-			return nil, issue
-		}
-		parsed.Name = name
-	}
+	// providerCode 作为历史兼容入参接受但忽略（分组目标已无供应商维度）；
+	// 建组入口按契约严格拒绝该字段。
 	if bodyHas(body, "providerCode") {
 		providerCode, issue := optionalTrimmedBody(body, "providerCode", 1, 60)
 		if issue != "" {
 			return nil, issue
 		}
 		parsed.ProviderCode = providerCode
+	}
+	if bodyHas(body, "name") {
+		name, issue := optionalTrimmedBody(body, "name", 1, 80)
+		if issue != "" {
+			return nil, issue
+		}
+		parsed.Name = name
 	}
 	if bodyHas(body, "description") {
 		description, issue := nullableTrimmedBodyField(body, "description", 500)
@@ -452,18 +467,9 @@ func (d *Deps) updateGroup(w http.ResponseWriter, r *http.Request) {
 		d.writeNotFoundEnvelope(w, "分组不存在")
 		return
 	}
-	if parsed.ProviderCode != nil {
-		if err := d.assertProviderCodeEnabled(r.Context(), *parsed.ProviderCode); err != nil {
-			kernel.WriteBadRequest(w, err.Error())
-			return
-		}
-	}
 	mutation := groups.MutationInput{}
 	if parsed.Name != nil {
 		mutation.Name = parsed.Name
-	}
-	if parsed.ProviderCode != nil {
-		mutation.ProviderCode = parsed.ProviderCode
 	}
 	mutation.Description = parsed.Description
 	if parsed.HasEnabled {

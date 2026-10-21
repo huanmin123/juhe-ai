@@ -181,10 +181,13 @@ func (s *Store) hasActiveGroupAuthorization(ctx context.Context, q queryer, grou
 		return false, nil
 	}
 	var found int
-	err := q.QueryRowContext(ctx, s.bind(`SELECT 1 FROM `+s.table("resource_authorizations")+`
-		WHERE resource_type = 'group' AND resource_id = ?
-		  AND grantee_system_account_id = ? AND status = 'active'
-		  AND (expires_at IS NULL OR expires_at > ?)
+	err := q.QueryRowContext(ctx, s.bind(`SELECT 1 FROM `+s.table("resource_authorizations")+` ra
+		LEFT JOIN `+s.table("group_authorization_settings")+` gas
+		  ON gas.authorization_id = ra.id AND gas.group_id = ra.resource_id
+		WHERE ra.resource_type = 'group' AND ra.resource_id = ?
+		  AND ra.grantee_system_account_id = ? AND ra.status = 'active'
+		  AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+		  AND COALESCE(gas.enabled, 1) = 1
 		LIMIT 1`), groupID, viewer, s.nowISO()).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -344,6 +347,23 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 			return nil, err
 		}
 	}
+	// 成员集合变更后，把成员组的调度事实回写到超级分组自身（group_type 与
+	// scheduling_policy_json）：超级分组目标在运行期按自身 GroupAccess 执行
+	// 容量/队列门，只有与成员一致才符合设计 §4.3「按实际成员分组执行」。
+	if len(normalized) > 0 {
+		firstMemberID := normalized[0].MemberGroupID
+		var memberType string
+		var memberScheduling sql.NullString
+		if err := tx.QueryRowContext(ctx, s.bind(`SELECT group_type, scheduling_policy_json
+			FROM `+s.table("groups")+` WHERE id = ?`), firstMemberID).Scan(&memberType, &memberScheduling); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("groups")+`
+			SET group_type = ?, scheduling_policy_json = ? WHERE id = ?`),
+			memberType, nullableSchedulingJSON(memberScheduling), groupID); err != nil {
+			return nil, err
+		}
+	}
 	nextUpdatedAt, err := nextGroupUpdatedAt(facts.updatedAt, s.now())
 	if err != nil {
 		return nil, err
@@ -361,6 +381,14 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 	}
 	s.invalidateRuntime("super_group_members_updated")
 	return s.superMembersSummary(ctx, s.db, groupID, nextUpdatedAt)
+}
+
+// nullableSchedulingJSON 把 sql.NullString 投影为可写入的 NULL 或文本。
+func nullableSchedulingJSON(value sql.NullString) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.String
 }
 
 type superMemberRow struct {

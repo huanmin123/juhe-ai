@@ -41,16 +41,30 @@ func IsDynamicRouteStrategyMode(mode string) bool {
 	}
 }
 
-// NormalizeRouteStrategyMode mirrors normalizeRouteStrategyMode: unknown or
-// empty values fall back to "normal".
+// NormalizeRouteStrategyMode 归一化路由模式：空值回落 normal；未知值（含已
+// 退役的 merge）原样返回，由装载侧按“不支持的路由策略模式”显式拒绝——设计
+// §6.5 要求未迁移的 merge 行不得带着旧模式上线，禁止静默降级为 normal。
 func NormalizeRouteStrategyMode(value string) string {
+	switch value {
+	case "", RouteStrategyModeNormal, RouteStrategyModeWeighted,
+		RouteStrategyModeFailover, RouteStrategyModeRoundRobin:
+		if value == "" {
+			return RouteStrategyModeNormal
+		}
+		return value
+	default:
+		return value
+	}
+}
+
+// IsSupportedRouteStrategyMode 报告模式是否属于四种可运行模式。
+func IsSupportedRouteStrategyMode(value string) bool {
 	switch value {
 	case RouteStrategyModeNormal, RouteStrategyModeWeighted,
 		RouteStrategyModeFailover, RouteStrategyModeRoundRobin:
-		return value
-	default:
-		return RouteStrategyModeNormal
+		return true
 	}
+	return false
 }
 
 // GatewaySettings mirrors GatewaySettings in

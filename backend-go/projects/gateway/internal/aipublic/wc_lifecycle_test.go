@@ -55,7 +55,7 @@ func wcSeedProfile(t *testing.T, env *aipublicEnv, id, providerCode string, enab
 func wcAddGroup(t *testing.T, env *aipublicEnv, username, name string) string {
 	t.Helper()
 	status, payload, _ := env.doAuth(http.MethodPost, Prefix+"/group/add",
-		`{"targetUsername":"`+username+`","name":"`+name+`","providerCode":"gpt"}`, wcLifeToken)
+		`{"targetUsername":"`+username+`","name":"`+name+`"}`, wcLifeToken)
 	if status != http.StatusOK && status != http.StatusCreated {
 		t.Fatalf("建组失败: %d %v", status, payload)
 	}
@@ -107,10 +107,10 @@ func TestWCGroupValidation(t *testing.T) {
 		{"list 缺 targetUsername", http.MethodGet, Prefix + "/group/list", ""},
 		{"list page=0", http.MethodGet, Prefix + "/group/list?targetUsername=pusher&page=0", ""},
 		{"list pageSize=101", http.MethodGet, Prefix + "/group/list?targetUsername=pusher&pageSize=101", ""},
-		{"add 未知 body 键", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"pusher","name":"n","providerCode":"gpt","x":1}`},
-		{"add 缺 name", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"pusher","providerCode":"gpt"}`},
-		{"add 用户名过短", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"p","name":"n","providerCode":"gpt"}`},
-		{"add groupType 非法", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"pusher","name":"n","providerCode":"gpt","groupType":"bogus"}`},
+		{"add 未知 body 键", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"pusher","name":"n","x":1}`},
+		{"add 缺 name", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"pusher"}`},
+		{"add 用户名过短", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"p","name":"n"}`},
+		{"add groupType 非法", http.MethodPost, Prefix + "/group/add", `{"targetUsername":"pusher","name":"n","groupType":"bogus"}`},
 		{"del 未知键", http.MethodPost, Prefix + "/group/del", `{"groupId":"g","x":1}`},
 		{"del 缺 groupId", http.MethodPost, Prefix + "/group/del", `{}`},
 	}
@@ -192,11 +192,12 @@ func TestWCGroupUpdateDeleteBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 停用的 providerCode → 400 供应商已停用。
+	// providerCode 作为历史兼容入参接受但忽略（分组目标已无供应商维度），
+	// 停用供应商不再阻断更新。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/update",
 		`{"groupId":"`+groupID+`","providerCode":"anthropic"}`, wcLifeToken)
-	if status != http.StatusBadRequest || payload["message"] != "供应商已停用：anthropic" {
-		t.Fatalf("停用供应商 update: %d %v", status, payload)
+	if status != http.StatusOK {
+		t.Fatalf("providerCode 兼容入参 update: %d %v", status, payload)
 	}
 
 	// description 显式 null + enabled=false + groupType 更新。
@@ -554,7 +555,7 @@ func TestWCAccountUpdateDeleteBranches(t *testing.T) {
 
 	// update：targetGroupName 与实际绑定不符 → 400 账号不存在。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/update",
-		`{"accountId":"`+accountID+`","targetGroupName":"别的组","name":"改名"}`, wcLifeToken)
+		`{"accountId":"`+accountID+`","targetGroupName":"别的组","providerCode":"gpt","name":"改名"}`, wcLifeToken)
 	if status != http.StatusBadRequest || payload["message"] != "账号不存在" {
 		t.Fatalf("分组不符 update: %d %v", status, payload)
 	}
@@ -597,7 +598,7 @@ func TestWCAccountUpdateDeleteBranches(t *testing.T) {
 
 	// del：携带匹配的供应商/档案/分组字段成功删除。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/del",
-		`{"accountId":"`+accountID+`","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","targetGroupName":"福利"}`, wcLifeToken)
+		`{"accountId":"`+accountID+`","providerProtocolProfileId":"profile_gpt_openai_v1","targetGroupName":"福利","providerCode":"gpt"}`, wcLifeToken)
 	if status != http.StatusOK || payload["data"].(map[string]any)["action"] != "deleted" {
 		t.Fatalf("del: %d %v", status, payload)
 	}
@@ -629,7 +630,7 @@ func TestWCAccountRejectsNonAPIKeyRow(t *testing.T) {
 // （group 语义是复用而非 409）。
 func TestWCGroupAddDuplicateConflict(t *testing.T) {
 	env := newWCLifeEnv(t)
-	body := `{"targetUsername":"pusher","name":"冲突组","providerCode":"gpt"}`
+	body := `{"targetUsername":"pusher","name":"冲突组"}`
 	status, payload, _ := env.doAuth(http.MethodPost, Prefix+"/group/add", body, wcLifeToken)
 	if status != http.StatusCreated {
 		t.Fatalf("首次 add: %d %v", status, payload)

@@ -500,6 +500,7 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		SystemAccountID: input.UsageContext.SystemAccountID,
 		APIKeyID:        input.UsageContext.APIKeyID,
 		GroupID:         input.UsageContext.GroupID,
+		RouteGroupID:    input.UsageContext.RouteGroupID,
 		Endpoint:        input.UsageContext.Endpoint,
 		ProviderCode:    providerCode,
 		// 账号视图 provider 身份优先，空回落 usage context；协议档案 id 随账号
@@ -684,6 +685,11 @@ func applyUsageAccountScope(record *gatewayusage.UsageRecordInput, account gatew
 	record.AccountAuthorizationSourceType = derefString(secret.AccountAuthorizationSourceType)
 	record.AccountAuthorizationSourceTeamID = derefString(secret.AccountAuthorizationSourceTeamID)
 	if secret.BoundGroupID != nil && *secret.BoundGroupID != "" {
+		// 超级分组目标：groupId 记实际成员组，routeGroupId 保留路由目标
+		// （超级分组），设计 §4.3。
+		if record.RouteGroupID == "" {
+			record.RouteGroupID = record.GroupID
+		}
 		record.GroupID = *secret.BoundGroupID
 		record.GroupOwnerSystemAccountID = secret.GroupOwnerSystemAccountID
 		record.GroupAccessType = secret.GroupAccessType

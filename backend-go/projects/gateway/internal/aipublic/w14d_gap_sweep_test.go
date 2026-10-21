@@ -72,9 +72,9 @@ func TestW14dAccountGapSweep(t *testing.T) {
 	// targetGroupName, missing providerProtocolProfileId, missing name,
 	// missing baseUrl, missing apiKey.
 	for _, body := range []string{
-		`{"targetUsername":"w14downer","targetGroupName":"福利","targetDisplayName":"` + strings.Repeat("d", 81) + `","providerCode":"gpt","providerProtocolProfileId":"p","name":"n","baseUrl":"https://x","apiKey":"sk"}`,
-		`{"targetUsername":"w14downer","providerCode":"gpt","providerProtocolProfileId":"p","name":"n","baseUrl":"https://x","apiKey":"sk"}`,
-		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","name":"n","baseUrl":"https://x","apiKey":"sk","supportedModels":["m"]}`,
+		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","targetDisplayName":"` + strings.Repeat("d", 81) + `","providerProtocolProfileId":"p","name":"n","baseUrl":"https://x","apiKey":"sk"}`,
+		`{"targetUsername":"w14downer","providerProtocolProfileId":"p","name":"n","baseUrl":"https://x","apiKey":"sk"}`,
+		`{"targetUsername":"w14downer","targetGroupName":"福利","name":"n","providerCode":"gpt","baseUrl":"https://x","apiKey":"sk","supportedModels":["m"]}`,
 		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","providerProtocolProfileId":"p","baseUrl":"https://x","apiKey":"sk","supportedModels":["m"]}`,
 		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","providerProtocolProfileId":"p","name":"n","apiKey":"sk","supportedModels":["m"]}`,
 		`{"targetUsername":"w14downer","targetGroupName":"福利","providerCode":"gpt","providerProtocolProfileId":"p","name":"n","baseUrl":"https://x","supportedModels":["m"]}`,
@@ -263,7 +263,7 @@ func TestW14dStrategyGapSweep(t *testing.T) {
 	token := w14dSeedAllScopes(t, env, "extsrc_ss", "exttok_ss", "juis_token_ss1ss1ss1ss1ss1x")
 
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"绑定组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14downer","name":"绑定组"}`, token)
 	if status != 201 {
 		t.Fatalf("seed group: %d %v", status, payload)
 	}
@@ -343,7 +343,7 @@ func TestW14dGroupApiKeyGapSweep(t *testing.T) {
 	// Group add with description feeds the scan branch (L160); over-long
 	// description and disabled target render 400 (L255/L297).
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"描述组","providerCode":"gpt","description":"带描述"}`, token)
+		`{"targetUsername":"w14downer","name":"描述组","description":"带描述"}`, token)
 	if status != 201 {
 		t.Fatalf("group with description: %d %v", status, payload)
 	}
@@ -352,13 +352,13 @@ func TestW14dGroupApiKeyGapSweep(t *testing.T) {
 		t.Fatalf("group list: %d %v", status, payload)
 	}
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"长描述组","providerCode":"gpt","description":"`+strings.Repeat("d", 501)+`"}`, token)
+		`{"targetUsername":"w14downer","name":"长描述组","description":"`+strings.Repeat("d", 501)+`"}`, token)
 	if status != http.StatusBadRequest {
 		t.Fatalf("long description: %d %v", status, payload)
 	}
 	env.seedTargetUser("user_frozen3", "frozen3", "disabled")
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"frozen3","name":"冻结组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"frozen3","name":"冻结组"}`, token)
 	if status != http.StatusBadRequest || payload["message"] != "目标用户已停用：frozen3" {
 		t.Fatalf("disabled group target: %d %v", status, payload)
 	}

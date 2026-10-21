@@ -89,7 +89,7 @@ func TestW13g6NotFoundArms(t *testing.T) {
 		{"api-key del 404", http.MethodPost, "/__aipublic__/api-key/del",
 			`{"targetUsername":"w14downer","apiKeyId":"w13g6-missing"}`, 200, "not_found"},
 		{"group update 404", http.MethodPost, "/__aipublic__/group/update",
-			`{"targetUsername":"w14downer","groupId":"w13g6-missing","name":"n","providerCode":"gpt"}`, 404, ""},
+			`{"targetUsername":"w14downer","groupId":"w13g6-missing","name":"n"}`, 404, ""},
 		{"group del 404", http.MethodPost, "/__aipublic__/group/del",
 			`{"targetUsername":"w14downer","groupId":"w13g6-missing"}`, 404, ""},
 		{"strategy update 404", http.MethodPost, "/__aipublic__/route-strategy/update",
@@ -174,7 +174,7 @@ func TestW13g6AccountBoundGroupArms(t *testing.T) {
 
 	// 空绑定组的投影载体（accounts.go 1003-1007）。
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w13g6own","name":"空组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w13g6own","name":"空组"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("empty group add: %d %v", status, payload)
 	}
@@ -193,7 +193,7 @@ func TestW13g6StrategyBindingArms(t *testing.T) {
 
 	// 先建绑定策略，再移除绑定行得到"无绑定策略"：绑定汇总的 nil 值兜底臂（strategies.go 231-233）。
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"汇总组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14downer","name":"汇总组"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("summary group add: %d %v", status, payload)
 	}
@@ -271,7 +271,7 @@ func TestW13g6ValidationCacheErrorArms(t *testing.T) {
 
 	// 先经原环境播种一枚 API Key（需要合法绑定策略）。
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"缓存组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14downer","name":"缓存组"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("cache group add: %d %v", status, payload)
 	}

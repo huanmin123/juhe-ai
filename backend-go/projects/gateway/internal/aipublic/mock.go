@@ -127,13 +127,9 @@ func (d *Deps) mockGroupAdd(w http.ResponseWriter, body map[string]any) {
 	if name == "" {
 		name = "公开接口分组"
 	}
+	// 分组目标已去供应商维度（接口契约：公开建组不接受 providerCode），
+	// mock 投影与真实路径保持同一契约，空值即空投影。
 	providerCode := textFrom(body, "providerCode")
-	if providerCode == "" {
-		// Node mockPublicGroupAdd calls requiredProviderCode -> the route
-		// renders 400 供应商编码不能为空.
-		kernelWriteBadRequest(w, "供应商编码不能为空")
-		return
-	}
 	groupType := textFrom(body, "groupType")
 	if groupType == "" {
 		groupType = "personal"

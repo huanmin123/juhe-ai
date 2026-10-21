@@ -541,6 +541,7 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 	accountLockTrafficEnabled := args.AccountStateMutationEnabled && usageContext.TrafficSource == "gateway"
 
 	var lastAttempt *UpstreamAttempt
+	terminalUpstreamFailure := false
 	var agentGuidanceResponse *gatewaypreauth.GatewayAgentGuidanceResponse
 	auditAttemptIndex := 0
 	concurrencyRetryWaitBudgetMs := e.Config.AccountConcurrencyRetryBudgetMs
@@ -1054,6 +1055,7 @@ wholePoolRound:
 						capacityLimitFailures:                &capacityLimitFailures,
 						pendingApiKeyFailures:                &pendingApiKeyFailures,
 						lastAttempt:                          &lastAttempt,
+						semanticCommitFailure:                &terminalUpstreamFailure,
 						agentGuidanceResponse:                &agentGuidanceResponse,
 						auditAttemptIndex:                    &auditAttemptIndex,
 						concurrencyRetryWaitBudgetMs:         &concurrencyRetryWaitBudgetMs,
@@ -1356,11 +1358,12 @@ wholePoolRound:
 	//     UpstreamAttemptError 最终失败路径。
 
 	return UpstreamDispatchResult{}, &UpstreamAttemptError{
-		Message:               buildUpstreamAttemptFailureMessage(len(args.Accounts), lastAttempt),
-		LastAttempt:           lastAttempt,
-		FailedAccountIDs:      setToSlice(failedAccountIDs),
-		AgentGuidanceResponse: agentGuidanceResponse,
-		RecoverableAccountIDs: setToSlice(recoverableFailedAccountIDs),
+		Message:                 buildUpstreamAttemptFailureMessage(len(args.Accounts), lastAttempt),
+		LastAttempt:             lastAttempt,
+		FailedAccountIDs:        setToSlice(failedAccountIDs),
+		AgentGuidanceResponse:   agentGuidanceResponse,
+		RecoverableAccountIDs:   setToSlice(recoverableFailedAccountIDs),
+		TerminalUpstreamFailure: terminalUpstreamFailure || (lastAttempt != nil && lastAttempt.SemanticCommitted),
 	}
 }
 

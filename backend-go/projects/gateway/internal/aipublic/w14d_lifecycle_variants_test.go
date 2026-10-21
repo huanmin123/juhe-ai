@@ -20,8 +20,8 @@ func TestW14dAccountAddAutoCreatesTargetAndGroup(t *testing.T) {
 	token := env.seedSource("w14d_ext", "w14d_tok", "juis_token_aut0creat3d1111",
 		"active", "active", scopes, "[]", "", "")
 
-	body := `{"targetUsername":"w14dbrandnew","targetDisplayName":"新目标","targetGroupName":"自动组",
-		"name":"acc1","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1",
+	body := `{"targetUsername":"w14dbrandnew","targetDisplayName":"新目标","targetGroupName":"自动组","providerCode":"gpt",
+		"name":"acc1","providerProtocolProfileId":"profile_gpt_openai_v1",
 		"type":"api_key","baseUrl":"https://a.example","apiKey":"sk-x",
 		"supportedModels":["gpt-4o-mini"],"status":"active","concurrencyLimit":5,"priority":1,"connections":[{"connectionPresetCode":"gpt_openai_v1","baseUrl":"https://a.example","endpointModes":["chat_json","chat_sse"],"enabled":true}],"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4o-mini"}`
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/account/add", body, token)
@@ -47,13 +47,13 @@ func TestW14dAccountAddAutoCreatesTargetAndGroup(t *testing.T) {
 	// The disabled provider renders the verbatim diagnostic.
 	env.seedProvider("off", false)
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/add",
-		`{"targetUsername":"w14dbrandnew","targetGroupName":"自动组","name":"acc2","type":"api_key","baseUrl":"https://a.example","providerCode":"off","providerProtocolProfileId":"profile_gpt_openai_v1","apiKey":"sk-x","supportedModels":["m"]}`, token)
+		`{"targetUsername":"w14dbrandnew","targetGroupName":"自动组","name":"acc2","providerCode":"gpt","type":"api_key","baseUrl":"https://a.example","providerCode":"off","providerProtocolProfileId":"profile_gpt_openai_v1","apiKey":"sk-x","supportedModels":["m"]}`, token)
 	if status != http.StatusBadRequest || payload["message"] != "供应商已停用：off" {
 		t.Fatalf("disabled provider: %d %v", status, payload)
 	}
 	// An unknown provider renders the unsupported diagnostic.
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/account/add",
-		`{"targetUsername":"w14dbrandnew","targetGroupName":"自动组","name":"acc3","type":"api_key","baseUrl":"https://a.example","providerCode":"mystery","providerProtocolProfileId":"profile_gpt_openai_v1","apiKey":"sk-x","supportedModels":["m"]}`, token)
+		`{"targetUsername":"w14dbrandnew","targetGroupName":"自动组","name":"acc3","providerCode":"gpt","type":"api_key","baseUrl":"https://a.example","providerCode":"mystery","providerProtocolProfileId":"profile_gpt_openai_v1","apiKey":"sk-x","supportedModels":["m"]}`, token)
 	if status != http.StatusBadRequest || payload["message"] != "不支持的供应商：mystery" {
 		t.Fatalf("unknown provider: %d %v", status, payload)
 	}
@@ -72,7 +72,7 @@ func TestW14dApiKeyOptionalPatches(t *testing.T) {
 
 	// Group + strategy through the stores via the HTTP add paths.
 	env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14dkeyer","name":"Key组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14dkeyer","name":"Key组"}`, token)
 	if status, _, _ := env.doAuth(http.MethodGet, "/__aipublic__/group/list?targetUsername=w14dkeyer", "", token); status != http.StatusOK {
 		t.Fatalf("group list: %d", status)
 	}
@@ -129,7 +129,7 @@ func TestW14dStrategyAddWithConfigs(t *testing.T) {
 		"active", "active", scopes, "[]", "", "")
 
 	if status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14dstrat","name":"策略组","providerCode":"gpt"}`, token); status != http.StatusCreated {
+		`{"targetUsername":"w14dstrat","name":"策略组"}`, token); status != http.StatusCreated {
 		t.Fatalf("group add for strategy: %d %v", status, payload)
 	}
 	var groupID string
@@ -177,7 +177,7 @@ func TestW14dGroupUpdateAndDeletePaths(t *testing.T) {
 		"active", "active", scopes, "[]", "", "")
 
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14dgrpr","name":"组A","providerCode":"gpt","description":"first"}`, token)
+		`{"targetUsername":"w14dgrpr","name":"组A","description":"first"}`, token)
 	if status != http.StatusCreated {
 		t.Fatalf("group add: %d %v", status, payload)
 	}
@@ -185,14 +185,14 @@ func TestW14dGroupUpdateAndDeletePaths(t *testing.T) {
 
 	// Re-adding the same name short-circuits through the existing arm.
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14dgrpr","name":"组A","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14dgrpr","name":"组A"}`, token)
 	if status != http.StatusOK || payload["data"].(map[string]any)["action"] != "existing" {
 		t.Fatalf("group existing: %d %v", status, payload)
 	}
 
 	// The update patch applies the optional arms.
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/update",
-		`{"targetUsername":"w14dgrpr","groupId":"`+groupID+`","name":"组B","providerCode":"gpt","description":null,"enabled":false,"groupType":"high_concurrency"}`, token)
+		`{"targetUsername":"w14dgrpr","groupId":"`+groupID+`","name":"组B","description":null,"enabled":false,"groupType":"high_concurrency"}`, token)
 	if status != http.StatusOK {
 		t.Fatalf("group update: %d %v", status, payload)
 	}

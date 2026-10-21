@@ -2,7 +2,7 @@ package gatewayruntimecache
 
 // w17a 覆盖波次：loadGatewayAPIKeyByHash 的调度配置解码门通用化。
 // normalRoutingConfig 键是调度模式共享的组内调度配置键（历史命名）：同一
-// config_json 在 normal/weighted/failover/round_robin/merge 模式下都解码
+// config_json 在 normal/weighted/failover/round_robin 模式下都解码
 // 出 speed_first 配置；无/空 config_json 回落 nil、空对象回落 cost_first
 // 的既有行为不变。P2 起策略 config 的调度维度只剩 purpose=chat 键消费
 // （普通 Key 的派发配置来自偏好合成，NULL 绑定显式错误），故本测试键全部
@@ -34,7 +34,6 @@ func TestW17ASQLSchedulingModeDecode(t *testing.T) {
 		{"rs_w17a_weighted", RouteStrategyModeWeighted, "sk-w17a-weighted"},
 		{"rs_w17a_failover", RouteStrategyModeFailover, "sk-w17a-failover"},
 		{"rs_w17a_roundrobin", RouteStrategyModeRoundRobin, "sk-w17a-roundrobin"},
-		{"rs_w17a_merge", RouteStrategyModeMerge, "sk-w17a-merge"},
 	}
 	seed := []string{
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
@@ -66,7 +65,7 @@ func TestW17ASQLSchedulingModeDecode(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// 五种调度模式：同一 config_json 都解码出 speed_first + firstByteDeadlineMs。
+	// 四种调度模式：同一 config_json 都解码出 speed_first + firstByteDeadlineMs。
 	for _, m := range modes {
 		runtime, err := models.ReadGatewayRuntimeByKeyHash(ctx, HashSecret(m.keyHash))
 		if err != nil || runtime.APIKey == nil {

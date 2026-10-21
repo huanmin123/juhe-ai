@@ -46,7 +46,7 @@ func TestW14dDroppedGroupTables(t *testing.T) {
 		method, path, body string
 	}{
 		{http.MethodGet, "/__aipublic__/group/list?targetUsername=w14downer", ""},
-		{http.MethodPost, "/__aipublic__/group/add", `{"targetUsername":"w14downer","name":"g","providerCode":"gpt"}`},
+		{http.MethodPost, "/__aipublic__/group/add", `{"targetUsername":"w14downer","name":"g"}`},
 		{http.MethodPost, "/__aipublic__/group/update", `{"targetUsername":"w14downer","groupId":"g1","name":"n"}`},
 		{http.MethodPost, "/__aipublic__/group/del", `{"targetUsername":"w14downer","groupId":"g1"}`},
 	} {
@@ -64,7 +64,7 @@ func TestW14dDroppedStrategyTables(t *testing.T) {
 	// A real binding group keeps the binding validation green so Create fails
 	// on the dropped strategy table instead.
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"绑定组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14downer","name":"绑定组"}`, token)
 	if status != 201 {
 		t.Fatalf("seed group: %d %v", status, payload)
 	}
@@ -137,7 +137,7 @@ func TestW14dDroppedBindingTables(t *testing.T) {
 	// Seed a real strategy so the list hydration actually runs, then drop the
 	// binding table to break it.
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"绑定组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14downer","name":"绑定组"}`, token)
 	if status != 201 {
 		t.Fatalf("seed group: %d %v", status, payload)
 	}
@@ -162,23 +162,23 @@ func TestW14dDroppedProviderTable(t *testing.T) {
 	// A real group keeps the ownership lookup green so the update reaches the
 	// provider precheck.
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"w14downer","name":"g","providerCode":"gpt"}`, token)
+		`{"targetUsername":"w14downer","name":"g"}`, token)
 	if status != 201 {
 		t.Fatalf("seed group: %d %v", status, payload)
 	}
 	groupID := payload["data"].(map[string]any)["group"].(map[string]any)["id"].(string)
 
-	// The provider precheck surfaces the raw driver error whose non-CJK text
-	// the kernel localize layer renders as 请求参数无效.
+	// 分组目标已去供应商维度：vendors 表缺失不再影响分组写入口。
 	w14dDropTable(t, env, "vendors")
 	for _, route := range []struct {
 		method, path, body string
+		want               int
 	}{
-		{http.MethodPost, "/__aipublic__/group/add", `{"targetUsername":"w14downer","name":"g2","providerCode":"gpt"}`},
-		{http.MethodPost, "/__aipublic__/group/update", `{"targetUsername":"w14downer","groupId":"` + groupID + `","name":"n2","providerCode":"gpt"}`},
+		{http.MethodPost, "/__aipublic__/group/add", `{"targetUsername":"w14downer","name":"g2"}`, http.StatusCreated},
+		{http.MethodPost, "/__aipublic__/group/update", `{"targetUsername":"w14downer","groupId":"` + groupID + `","name":"n2"}`, http.StatusOK},
 	} {
 		status, payload, _ := env.doAuth(route.method, route.path, route.body, token)
-		if status != http.StatusBadRequest || payload["message"] != "请求参数无效" {
+		if status != route.want {
 			t.Fatalf("%s %s: %d %v", route.method, route.path, status, payload)
 		}
 	}

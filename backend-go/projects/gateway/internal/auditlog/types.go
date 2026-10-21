@@ -191,6 +191,7 @@ type AuditLogAttemptInput struct {
 	AccountID                   string `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID string `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupID                     string `json:"groupId,omitempty"`
+	MemberGroupID               string `json:"memberGroupId,omitempty"`
 	ProxyURL                    string `json:"proxyUrl,omitempty"`
 	ProviderCode                string `json:"providerCode,omitempty"`
 	Model                       string `json:"model,omitempty"`
@@ -226,6 +227,7 @@ type AuditLogInput struct {
 	SystemAccountID        string                 `json:"systemAccountId,omitempty"`
 	APIKeyID               string                 `json:"apiKeyId,omitempty"`
 	GroupID                string                 `json:"groupId,omitempty"`
+	RouteGroupID           string                 `json:"routeGroupId,omitempty"`
 	AccountID              string                 `json:"accountId,omitempty"`
 	ProviderCode           string                 `json:"providerCode,omitempty"`
 	Method                 string                 `json:"method"`

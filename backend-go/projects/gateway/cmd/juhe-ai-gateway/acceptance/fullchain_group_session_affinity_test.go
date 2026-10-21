@@ -284,24 +284,6 @@ func TestFullchainGroupSessionAffinity(t *testing.T) {
 	if got := hitsN(); got[keyN1] != 8 || got[keyN2] != 7 {
 		t.Fatalf("验收6：重选后应黏住新组 N2，命中 %v", got)
 	}
-
-	// ---- 验收 8：merge 不适用组黏性（GroupStickyApplicable 白名单外），
-	// 全链证据 = 同一会话请求在合并路由扁平池上正常服务、无组亲和副作用
-	//（不做分布断言，合并分布语义归合并路由设计域）----
-	keyM1 := fullchainUpstreamKey(t, "GroupAffinity-m1")
-	keyM2 := fullchainUpstreamKey(t, "GroupAffinity-m2")
-	routeM := f.newRoute("GroupAffinityMerge", "merge", []fullchainGroupSpec{
-		{accounts: []fullchainAccountSpec{{key: keyM1}}},
-		{accounts: []fullchainAccountSpec{{key: keyM2}}},
-	}, nil, nil)
-	sessionM := "sess-group-affinity-m"
-	for i := 0; i < 6; i++ {
-		requireAffinityResponseOK(t, fmt.Sprintf("GM-%d", i),
-			f.chatSessionAsCodex(t, routeM.apiKey, sessionM, responsesSessionBody(fmt.Sprintf("组亲和-M%d", i))))
-	}
-	if got := groupAffinityHits(f, keyM1, keyM2); got[keyM1]+got[keyM2] != 6 {
-		t.Fatalf("验收8：merge 会话 6 请求应全链服务（合计命中 6），命中 %v", got)
-	}
 }
 
 // TestFullchainGroupSessionAffinityRedisDriver 生产数据面的全链黏组证据。

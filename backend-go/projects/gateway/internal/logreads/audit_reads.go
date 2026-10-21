@@ -566,6 +566,7 @@ type AuditLogListItem struct {
 	SystemAccountID     string `json:"systemAccountId,omitempty"`
 	APIKeyID            string `json:"apiKeyId,omitempty"`
 	GroupID             string `json:"groupId,omitempty"`
+	RouteGroupID        string `json:"routeGroupId,omitempty"`
 	AccountID           string `json:"accountId,omitempty"`
 	Method              string `json:"method"`
 	Path                string `json:"path"`
@@ -798,7 +799,7 @@ func (s *auditLogSQLReader) Runtime() AuditLogRuntime {
 }
 
 const auditLogListSelectColumns = `al.id, al.trace_id, al.session_id, al.session_client_type, al.traffic_source, ` +
-	`al.system_account_id, al.api_key_id, al.group_id, al.account_id, al.method, al.path, al.model, ` +
+	`al.system_account_id, al.api_key_id, al.group_id, al.route_group_id, al.account_id, al.method, al.path, al.model, ` +
 	`al.upstream_model, al.model_mapping_applied, al.stream, al.audit_outcome, al.success, al.lifecycle_status, ` +
 	`al.final_status_code, al.duration_ms, al.http_duration_ms, al.created_at`
 
@@ -1151,6 +1152,7 @@ func auditLogListItemFromRow(row map[string]any) AuditLogListItem {
 		SystemAccountID:     readOptionalText(row["system_account_id"]),
 		APIKeyID:            readOptionalText(row["api_key_id"]),
 		GroupID:             readOptionalText(row["group_id"]),
+		RouteGroupID:        readOptionalText(row["route_group_id"]),
 		AccountID:           readOptionalText(row["account_id"]),
 		Method:              readRawString(row["method"]),
 		Path:                readRawString(row["path"]),

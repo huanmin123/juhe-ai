@@ -86,17 +86,18 @@ func TestWCMockGroupFamily(t *testing.T) {
 		t.Fatalf("mock 用户名投影: %v", data["target"])
 	}
 
-	// add：缺 providerCode 的回退分支在 schema 之后，HTTP 层到不了
-	//（providerCode 为必填），直接调用 mock 处理器锁定该分支。
+	// add：分组目标已去供应商维度，mock 处理器对缺 providerCode 的载荷照常
+	// 投影（providerCode 为空串），不再走 400 回退分支。
 	recorder := httptest.NewRecorder()
 	(&Deps{}).mockGroupAdd(recorder, map[string]any{"targetUsername": "u1", "name": "n1"})
-	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "供应商编码不能为空") {
+	if recorder.Code != http.StatusOK {
 		t.Fatalf("mock add 缺供应商: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// add：完整字段投影（description/enabled=false/groupType）。
+	// add：完整字段投影（description/enabled=false/groupType）；分组目标已去
+	// 供应商维度，mock 与真实路径同样不携带 providerCode。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/add",
-		`{"targetUsername":"u1","name":"组名","providerCode":"gpt","description":"描述","enabled":false,"groupType":"high_concurrency"}`, token)
+		`{"targetUsername":"u1","name":"组名","description":"描述","enabled":false,"groupType":"high_concurrency"}`, token)
 	data = mustMockEnvelope(t, status, payload, http.StatusOK)
 	if data["action"] != "mock" {
 		t.Fatalf("mock add action: %v", data)
@@ -304,7 +305,7 @@ func TestWCMockAccountFamily(t *testing.T) {
 	}
 
 	// del：显式 accountId 投影 + 固定 disabled。
-	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/del", `{"targetUsername":"u1","accountId":"a-2","targetGroupName":"GN2"}`, token)
+	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/del", `{"targetUsername":"u1","accountId":"a-2","targetGroupName":"GN2","providerCode":"gpt"}`, token)
 	data = mustMockEnvelope(t, status, payload, http.StatusOK)
 	account = data["account"].(map[string]any)
 	if account["id"] != "a-2" || account["status"] != "disabled" || account["schedulable"] != false {

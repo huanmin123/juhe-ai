@@ -533,8 +533,8 @@ func TestUsageAttemptRecorderAdapterFailedAttemptCarriesSourceEndpointFamily(t *
 // 捕获修复前必红的守卫：newAuditCapture 必须把请求侧 family 注入
 // AuditCaptureInput，审计 attempt 行的模型映射记账才能在记账时命中。
 func TestNewAuditCaptureCarriesSourceEndpointFamilyForModelAccounting(t *testing.T) {
-	req := mergeRouteRequest("glm-5.3-flash")
-	dispatcher := &mergeCapturingAuditDispatcher{}
+	req := routeRequest("glm-5.3-flash")
+	dispatcher := &capturingAuditDispatcher{}
 	chain := &gatewayChain{
 		auditSettings: gatewayusage.FixedAuditLogSettingsSource{Settings: gatewayusage.AuditLogSettings{
 			Enabled:           true,

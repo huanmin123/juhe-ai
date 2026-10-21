@@ -983,7 +983,7 @@ func normalizedRouteStrategyMode(value sql.NullString) (*string, error) {
 		return nil, nil
 	}
 	switch value.String {
-	case "normal", "weighted", "failover", "round_robin", "merge":
+	case "normal", "weighted", "failover", "round_robin":
 		mode := value.String
 		return &mode, nil
 	default:

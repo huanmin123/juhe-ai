@@ -426,6 +426,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		enteredGroups:       map[string]bool{},
 	}
 	context, err := loop.resolveRouteAction(ctx, preflight)
+	if err == nil && context != nil {
+		loop.current = context
+		loop.seedPreflightTargetOutcomes()
+	}
 	if err != nil {
 		// Node runs resolveRouteAction outside the preflight try (routes.ts:
 		// 518-520); a fallback preparation error propagates to the express

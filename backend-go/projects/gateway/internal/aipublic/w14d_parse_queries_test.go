@@ -180,19 +180,30 @@ func TestW14dParseStrategyBodySchemas(t *testing.T) {
 }
 
 func TestW14dParseGroupBodySchemas(t *testing.T) {
+	// 契约：接受 groupKind，不接受已退役的 providerCode。
 	add, issue := parseGroupAddBody(map[string]any{
-		"targetUsername": " alice ", "name": "group", "providerCode": " gpt ",
+		"targetUsername": " alice ", "name": "group", "groupKind": " super ",
 		"description": "d", "enabled": true, "groupType": "personal",
 	})
 	if issue != "" {
 		t.Fatalf("group add: %q", issue)
 	}
-	if add.TargetUsername != "alice" || add.ProviderCode != "gpt" || add.Description == nil ||
+	if add.TargetUsername != "alice" || add.GroupKind != "super" || add.Description == nil ||
 		add.Enabled == nil || !*add.Enabled || add.GroupType != "personal" {
 		t.Fatalf("group add parsed: %+v", add)
 	}
+	if _, issue = parseGroupAddBody(map[string]any{
+		"targetUsername": "alice", "name": "n", "providerCode": "gpt",
+	}); issue != zodUnrecognizedKeys("providerCode") {
+		t.Fatalf("providerCode must be rejected: %q", issue)
+	}
+	if _, issue = parseGroupAddBody(map[string]any{
+		"targetUsername": "alice", "name": "n", "groupKind": "bogus",
+	}); issue != "groupKind 只能是 standard 或 super" {
+		t.Fatalf("groupKind enum: %q", issue)
+	}
 	_, issue = parseGroupAddBody(map[string]any{
-		"targetUsername": "alice", "name": "n", "providerCode": "gpt", "groupType": "mystery",
+		"targetUsername": "alice", "name": "n", "groupType": "mystery",
 	})
 	if issue != zodEnumMessage([]string{"personal", "high_concurrency"}, "mystery") {
 		t.Fatalf("group add enum: %q", issue)

@@ -58,6 +58,8 @@ export interface UsageRecordSummary {
   apiKeyName?: string
   groupId?: string
   groupName?: string
+  routeGroupId?: string
+  routeGroupName?: string
   accountId?: string
   accountName?: string
   endpoint?: string
@@ -127,6 +129,8 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'apiKeyName'
   | 'groupId'
   | 'groupName'
+  | 'routeGroupId'
+  | 'routeGroupName'
   | 'accountId'
   | 'accountName'
   | 'providerCode'

@@ -130,7 +130,7 @@ func TestW14dMutationBodyValidationForks(t *testing.T) {
 	}{
 		{"group add strict", "/__aipublic__/group/add", `{"targetUsername":"w14duser","nope":1}`},
 		{"group add required", "/__aipublic__/group/add", `{"targetUsername":"w14duser"}`},
-		{"group add display name", "/__aipublic__/group/add", `{"targetUsername":"w14duser","targetDisplayName":" ","name":"g","providerCode":"gpt"}`},
+		{"group add display name", "/__aipublic__/group/add", `{"targetUsername":"w14duser","targetDisplayName":" ","name":"g"}`},
 		{"group update no fields", "/__aipublic__/group/update", `{"groupId":"g"}`},
 		{"strategy add bindings", "/__aipublic__/route-strategy/add", `{"targetUsername":"w14duser","name":"s"}`},
 		{"strategy add bindings empty", "/__aipublic__/route-strategy/add", `{"targetUsername":"w14duser","name":"s","groupBindings":[]}`},
@@ -146,7 +146,7 @@ func TestW14dMutationBodyValidationForks(t *testing.T) {
 	// A supported-models-less account add renders the verbatim 400.
 	env.seedTargetUser("w14d_add", "w14dadd", "active")
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/account/add",
-		`{"targetUsername":"w14dadd","name":"acc","providerCode":"gpt","providerProtocolProfileId":"profile-x"}`, token)
+		`{"targetUsername":"w14dadd","name":"acc","providerProtocolProfileId":"profile-x"}`, token)
 	if status != http.StatusBadRequest || payload["message"] == "" {
 		t.Fatalf("account add missing models: %d %v", status, payload)
 	}

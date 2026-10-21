@@ -19,7 +19,6 @@ func TestGroupStickyApplicable(t *testing.T) {
 		{RouteStrategyModeWeighted, 3, true},
 		{RouteStrategyModeFailover, 2, true},
 		{RouteStrategyModeNormal, 2, false},
-		{RouteStrategyModeMerge, 2, false},
 		{RouteStrategyModeRoundRobin, 1, false},
 		{RouteStrategyModeFailover, 0, false},
 		{"", 5, false},

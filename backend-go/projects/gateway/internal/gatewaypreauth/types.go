@@ -152,6 +152,9 @@ type GatewayFailureUsageContext struct {
 	SystemAccountID                string
 	APIKeyID                       string
 	GroupID                        string
+	// RouteGroupID 是路由绑定的目标分组（超级分组目标时即超级分组本身），
+	// 与实际服务成员组 GroupID 一起构成响应/审计的双层身份（设计 §4.3）。
+	RouteGroupID                   string
 	Endpoint                       string
 	RequestSnapshot                UsageRequestSnapshot
 	RequestedServiceTier           string

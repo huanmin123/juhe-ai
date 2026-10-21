@@ -58,18 +58,19 @@ func TestWCDisabledOwnerRejectedEverywhere(t *testing.T) {
 	}
 }
 
-// TestWCGroupAddProviderPrecheck：group add 的供应商预检（停用/未知）。
+// TestWCGroupAddProviderPrecheck：group add 不再接受 providerCode（分组目标已
+// 去供应商维度），任何 providerCode 载荷按未知键拒绝。
 func TestWCGroupAddProviderPrecheck(t *testing.T) {
 	env := newWCLifeEnv(t)
 	status, payload, _ := env.doAuth(http.MethodPost, Prefix+"/group/add",
 		`{"targetUsername":"pusher","name":"n","providerCode":"anthropic"}`, wcLifeToken)
-	if status != http.StatusBadRequest || payload["message"] != "供应商已停用：anthropic" {
-		t.Fatalf("停用供应商: %d %v", status, payload)
+	if status != http.StatusBadRequest || payload["message"] != "请求参数无效" {
+		t.Fatalf("providerCode 必须拒绝: %d %v", status, payload)
 	}
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/add",
 		`{"targetUsername":"pusher","name":"n","providerCode":"claude"}`, wcLifeToken)
-	if status != http.StatusBadRequest || payload["message"] != "不支持的供应商：claude" {
-		t.Fatalf("未知供应商: %d %v", status, payload)
+	if status != http.StatusBadRequest || payload["message"] != "请求参数无效" {
+		t.Fatalf("providerCode 必须拒绝: %d %v", status, payload)
 	}
 }
 

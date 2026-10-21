@@ -19,7 +19,7 @@ import (
 const shardSchema = `
 	CREATE TABLE usage_records (
 		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
-		client_ip TEXT, api_key_id TEXT, group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT,
+		client_ip TEXT, api_key_id TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT, endpoint TEXT,
 		model TEXT, upstream_model TEXT, upstream_response_model TEXT, billed_service_tier TEXT,
 		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0, stream INTEGER DEFAULT 0,
 		status_code INTEGER, success INTEGER DEFAULT 0, failure_attribution TEXT,

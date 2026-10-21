@@ -13,7 +13,7 @@
       <a-form-item label="分组名称" required>
         <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
       </a-form-item>
-      <a-form-item label="所属供应商" required tooltip="供应商决定这个分组后续可绑定的账户范围。">
+      <a-form-item v-if="form.groupKind !== 'super'" label="所属供应商" required tooltip="供应商决定这个分组后续可绑定的账户范围。">
         <a-select
           v-model:value="form.providerCode"
           :options="providerOptions"

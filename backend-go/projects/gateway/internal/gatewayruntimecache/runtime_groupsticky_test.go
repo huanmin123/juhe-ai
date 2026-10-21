@@ -244,11 +244,11 @@ func TestSelectGatewayRuntimeFailoverStickyReorders(t *testing.T) {
 	}
 }
 
-func TestSelectGatewayRuntimeNormalAndMergeAreNoop(t *testing.T) {
+func TestSelectGatewayRuntimeNormalIsNoop(t *testing.T) {
 	spy := &spyGroupOrderer{}
 	svc, models := groupStickyTestService(t, spy)
 	ctx := context.Background()
-	for _, mode := range []string{RouteStrategyModeNormal, RouteStrategyModeMerge} {
+	for _, mode := range []string{RouteStrategyModeNormal} {
 		static := groupStickyStaticRow(t, svc, models, mode, "grp_a", "grp_b")
 		selected, err := svc.SelectGatewayRuntimeForDispatchAsync(ctx, static, SelectGatewayRuntimeInput{PreferredGroupID: "grp_b", AdvanceOnStickyMiss: true})
 		if err != nil {

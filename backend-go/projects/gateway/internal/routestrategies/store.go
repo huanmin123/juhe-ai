@@ -568,7 +568,7 @@ func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []Group
 }
 
 // normalConfigForMode renders normalRoutingConfig for every mode supporting the
-// scheduling preference (all five modes; the cost_first default fills in when
+// scheduling preference (all four modes; the cost_first default fills in when
 // absent).
 func normalConfigForMode(mode string, normal *NormalRoutingConfig) *NormalRoutingConfig {
 	if !ModeSupportsSchedulingPreference(mode) {

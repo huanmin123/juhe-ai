@@ -115,29 +115,42 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidateForArgs(ctx context
 			continue
 		}
 		seenGroupIDs[candidateGroupID] = struct{}{}
+		// 超级分组目标（超级分组设计 §4.2）：超级分组自身不持有 group_accounts
+		// 行，候选必须按 enabled 成员组逐组列出并带上成员组标；普通分组保持
+		// 单组读取。
+		memberGroupIDs := memberGroupIDsForFallback(bindings, candidateGroupID)
+		listIDs := []string{candidateGroupID}
+		if len(memberGroupIDs) > 0 {
+			listIDs = memberGroupIDs
+		}
+		accounts := make([]AccountCandidate, 0)
+		for _, listGroupID := range listIDs {
+			listed, err := p.engine.Cache.ListCachedOpenAIAccountsForGroupAsync(ctx, listGroupID, input.SystemAccountID, CachedAccountsOptions{
+				RequestedModel:          requestedModel,
+				RequestedEndpointFamily: sourceEndpointFamily,
+			})
+			if err != nil {
+				return GroupFallbackCandidateOutput{}, false, err
+			}
+			boundGroupID := listGroupID
+			for _, account := range listed {
+				if _, excluded := excludedAccountIDs[account.ID]; excluded {
+					continue
+				}
+				if len(memberGroupIDs) > 0 {
+					account.BoundGroupID = &boundGroupID
+				}
+				accounts = append(accounts, account)
+			}
+		}
+		if len(accounts) == 0 {
+			continue
+		}
 		groupAccess, found, err := p.engine.Cache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, candidateGroupID, input.SystemAccountID)
 		if err != nil {
 			return GroupFallbackCandidateOutput{}, false, err
 		}
 		if !found {
-			continue
-		}
-		accounts, err := p.engine.Cache.ListCachedOpenAIAccountsForGroupAsync(ctx, candidateGroupID, input.SystemAccountID, CachedAccountsOptions{
-			RequestedModel:          requestedModel,
-			RequestedEndpointFamily: sourceEndpointFamily,
-		})
-		if err != nil {
-			return GroupFallbackCandidateOutput{}, false, err
-		}
-		filtered := make([]AccountCandidate, 0, len(accounts))
-		for _, account := range accounts {
-			if _, excluded := excludedAccountIDs[account.ID]; excluded {
-				continue
-			}
-			filtered = append(filtered, account)
-		}
-		accounts = filtered
-		if len(accounts) == 0 {
 			continue
 		}
 		capabilityFilter := FilterGatewayAccountsByRequestCapability(input.Req, accounts, p.engine.Driver, input.RequestClientCompatibility, "")
@@ -217,4 +230,18 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidateForArgs(ctx context
 		return output, true, nil
 	}
 	return GroupFallbackCandidateOutput{}, false, nil
+}
+
+// memberGroupIDsForFallback 返回候选分组是超级分组目标时的 enabled 成员组；
+// 普通分组返回 nil（单组读取路径）。
+func memberGroupIDsForFallback(bindings []gatewayruntimecache.GatewayAPIKeyGroupBindingRow, groupID string) []string {
+	for _, binding := range bindings {
+		if binding.GroupID == groupID {
+			if binding.GroupKind == "super" {
+				return binding.MemberGroupIDs
+			}
+			return nil
+		}
+	}
+	return nil
 }

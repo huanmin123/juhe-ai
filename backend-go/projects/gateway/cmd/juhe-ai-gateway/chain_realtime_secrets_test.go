@@ -1,7 +1,7 @@
 package main
 
 // M5b realtime ephemeral token 签发端点链级测试（Realtime 设计 §2/§4）：
-// mergeComposeChain（chainSmokeDeps 先例）+ miniredis 真 go-redis 客户端，
+// composeChainWithSpool（chainSmokeDeps 先例）+ miniredis 真 go-redis 客户端，
 // 覆盖：签发 200 形态与 token 可校验、缺 model 400、非 POST 404、
 // 认证失败 401、服务未装配 503。
 import (
@@ -34,7 +34,7 @@ func realtimeSecretsCompose(t *testing.T, withRedis bool) (*gatewayChain, string
 	if withRedis {
 		tokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: client}, "")
 	}
-	chain, _, shutdown := mergeComposeChain(t, fixture, func(deps *chainRuntimeDeps) {
+	chain, _, shutdown := composeChainWithSpool(t, fixture, func(deps *chainRuntimeDeps) {
 		deps.RealtimeTokens = tokens
 	})
 	t.Cleanup(shutdown)

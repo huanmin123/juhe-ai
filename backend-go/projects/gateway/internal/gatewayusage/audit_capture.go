@@ -601,8 +601,8 @@ type StartAttemptInput struct {
 	HasBody              bool
 	Model                string // requestForModelAccounting override
 	SourceEndpointFamily string // requestForModelAccounting override
-	// GroupIDOverride（合并路由设计 3.5）：尝试级审计行 group_id 的显式来源
-	// ——merge 上下文按所服务账号 BoundGroupID 填充；空回落共享
+	// GroupIDOverride（超级分组设计 §4.2）：尝试级审计行 group_id 的显式来源
+	// ——超级分组上下文按所服务账号 BoundGroupID 填充；空回落共享
 	// gatewayContext 快照的请求级窗口组。禁止通过临时改写共享快照实现
 	// （in-progress 审计与 finalize 都读该快照）。
 	GroupIDOverride string
@@ -633,7 +633,7 @@ type RecordFailedDispatchAttemptInput struct {
 	ErrorMessage         string
 	Model                string
 	SourceEndpointFamily string
-	// GroupIDOverride（合并路由设计 3.5）：同 StartAttemptInput——尝试级
+	// GroupIDOverride（超级分组设计 §4.2）：同 StartAttemptInput——尝试级
 	// group_id 按账号 BoundGroupID 显式传入，空回落窗口组快照。
 	GroupIDOverride string
 }
@@ -669,6 +669,7 @@ func (c *AuditCaptureContext) StartAttempt(input StartAttemptInput) string {
 		// 3.5：尝试级 group_id 优先取显式账号组覆盖（merge 按账号记账），
 		// 空回落请求级窗口组快照。
 		GroupID:                firstNonEmpty(input.GroupIDOverride, c.gatewayContextSnapshot().GroupID),
+		MemberGroupID:          firstNonEmpty(input.GroupIDOverride, c.gatewayContextSnapshot().GroupID),
 		ProxyURL:               SanitizeURLCredentialsForLog(input.Account.ProxyURL),
 		ProviderCode:           input.Account.ProviderCode,
 		Model:                  requestedModel,
@@ -1066,6 +1067,7 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 		SystemAccountID:        gatewayContext.SystemAccountID,
 		APIKeyID:               gatewayContext.APIKeyID,
 		GroupID:                gatewayContext.GroupID,
+		RouteGroupID:           firstNonEmpty(gatewayContext.RouteGroupID, gatewayContext.GroupID),
 		ProviderCode:           gatewayContext.ProviderCode,
 		TrafficSource:          firstNonEmpty(gatewayContext.TrafficSource, c.trafficSource),
 		AccountID:              firstNonEmpty(input.AccountID, gatewayContext.AccountID),
@@ -1196,6 +1198,7 @@ func (c *AuditCaptureContext) enqueueInProgressAudit() {
 		SystemAccountID:   gatewayContext.SystemAccountID,
 		APIKeyID:          gatewayContext.APIKeyID,
 		GroupID:           gatewayContext.GroupID,
+		RouteGroupID:      firstNonEmpty(gatewayContext.RouteGroupID, gatewayContext.GroupID),
 		AccountID:         gatewayContext.AccountID,
 		ProviderCode:      gatewayContext.ProviderCode,
 		TrafficSource:     firstNonEmpty(gatewayContext.TrafficSource, trafficSource),

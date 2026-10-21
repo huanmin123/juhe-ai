@@ -111,6 +111,9 @@ type DispatchContext struct {
 	RequestAttemptTracker                    *gatewayrouting.GatewayRequestAttemptTracker
 	DownstreamCommitState                    *DownstreamCommitState
 	RoutePlanSnapshot                        gatewayrouting.RoutePlanSnapshot[string]
+	// TargetOutcomes 承载解析期已尝试但未选中的超级分组目标分类（设计
+	// §4.2）：派发循环据此把它们并入目标级终态聚合，避免丢掉 capacity。
+	TargetOutcomes []NormalRouteTargetOutcome
 	InteractionResourceAffinity              *gatewaygemini.AffinityBinding
 	HotQualityExplorationReservation         *HotQualityExplorationReservation
 	SettleHotQualityExplorationAfterDispatch func(outcome string) error
@@ -578,6 +581,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	// 判定，避免多 provider 分组的专用 chat Key 策略把绑定会话请求按 Key 绑定
 	// 面判成 400（model_target_group_not_bound 等）。API Key 分组回退注入的
 	// 候选恒带 Identity，外部 /v1 直连不注入候选，两者 normal 路由语义不变。
+	var preflightTargetOutcomes []NormalRouteTargetOutcome
 	if interactionResourceAffinity == nil && !hasInitialModelsResponseProtocol && options.Identity == nil &&
 		options.CandidateAccounts == nil &&
 		trafficSource == TrafficSourceGateway && apiKeyRecord != nil {
@@ -600,6 +604,10 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			runtimeGroupAccess = normalRoute.GroupAccess
 			runtimeAccounts = normalRoute.Accounts
 			runtimeAccountDispatchDiagnostics = nil
+			// 请求级审计与循环期聚合都取最终命中组（设计 §4.2：route_group_id
+			// 必须是超级分组而不是 runtime 静态选中的标准组）。
+			auditCapture.BindContext(AuditGatewayContext{GroupID: groupID})
+			preflightTargetOutcomes = normalRoute.TargetOutcomes
 			auditCapture.AddGatewayMetadata("normal_model_route", map[string]any{
 				"requestedModel":        normalRoute.RequestedModel,
 				"fromGroupId":           previousGroupID,
@@ -609,11 +617,11 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				"candidateBindingCount": recordBindingCount(normalRoute.APIKeyRecord),
 			})
 			if len(normalRoute.TargetOutcomes) > 0 {
-				targets := make([]map[string]string, 0, len(normalRoute.TargetOutcomes))
-				for _, outcome := range normalRoute.TargetOutcomes {
-					targets = append(targets, map[string]string{"groupId": outcome.GroupID, "classification": outcome.Classification})
-				}
+				targets, memberSkips := targetOutcomeAuditRows(normalRoute.TargetOutcomes)
 				auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": targets})
+				if len(memberSkips) > 0 {
+					auditCapture.AddGatewayMetadata("super_group_member_skips", map[string]any{"members": memberSkips})
+				}
 			}
 			targetCircuit, err := s.Circuits.InspectClientIPErrorCircuit(ctx, ClientIPErrorCircuitInput{
 				SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
@@ -632,6 +640,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			}
 		}
 		if normalRoute.Outcome == NormalRouteOutcomeFailed {
+			preflightTargetOutcomes = normalRoute.TargetOutcomes
 			auditCapture.AddGatewayMetadata("normal_model_route_failed", map[string]any{
 				"requestedModel":     normalRoute.RequestedModel,
 				"reason":             normalRoute.Code,
@@ -641,11 +650,11 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			// 全无候选时按全部超分组绑定投影 no_candidate。
 			switch {
 			case len(normalRoute.TargetOutcomes) > 0:
-				targets := make([]map[string]string, 0, len(normalRoute.TargetOutcomes))
-				for _, outcome := range normalRoute.TargetOutcomes {
-					targets = append(targets, map[string]string{"groupId": outcome.GroupID, "classification": outcome.Classification})
-				}
+				targets, memberSkips := targetOutcomeAuditRows(normalRoute.TargetOutcomes)
 				auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": targets})
+				if len(memberSkips) > 0 {
+					auditCapture.AddGatewayMetadata("super_group_member_skips", map[string]any{"members": memberSkips})
+				}
 			case normalRoute.Code == "model_target_group_unavailable":
 				if targets := superBindingOutcomeTargets(apiKeyRecord, "no_candidate"); len(targets) > 0 {
 					auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": targets})
@@ -1218,6 +1227,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		RequestAttemptTracker:                    requestAttemptTracker,
 		DownstreamCommitState:                    downstreamCommitState,
 		RoutePlanSnapshot:                        *routePlanSnapshot,
+		TargetOutcomes:                           preflightTargetOutcomes,
 		InteractionResourceAffinity:              interactionResourceAffinity,
 		HotQualityExplorationReservation:         dispatchPreparation.HotQualityExplorationReservation,
 		SettleHotQualityExplorationAfterDispatch: settleHotQuality,
@@ -1871,3 +1881,19 @@ func onceSettle(settle func(outcome string) error) func(outcome string) error {
 // requestContext returns a background context for out-of-band cache reads
 // (the Node closures close over the express req; Go uses the service context).
 func (s *Service) requestContext() context.Context { return context.Background() }
+
+// targetOutcomeAuditRows 把目标级分类与成员级跳过原因投影为审计行（设计
+// §4.2：目标级 classification + 逐成员 reason）。
+func targetOutcomeAuditRows(outcomes []NormalRouteTargetOutcome) ([]map[string]string, []map[string]string) {
+	targets := make([]map[string]string, 0, len(outcomes))
+	memberSkips := make([]map[string]string, 0)
+	for _, outcome := range outcomes {
+		targets = append(targets, map[string]string{"groupId": outcome.GroupID, "classification": outcome.Classification})
+		for _, skip := range outcome.MemberSkips {
+			memberSkips = append(memberSkips, map[string]string{
+				"memberGroupId": skip.GroupID, "reason": skip.Reason, "targetGroupId": outcome.GroupID,
+			})
+		}
+	}
+	return targets, memberSkips
+}

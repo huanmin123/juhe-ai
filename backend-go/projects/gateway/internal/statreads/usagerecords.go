@@ -422,7 +422,7 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 
 // usageRecordListSelectColumns mirror usageRecordListSelectColumns.
 const usageRecordListSelectColumns = `ur.id, ur.system_account_id, ur.trace_id, ur.traffic_source, ur.client_ip,
-	ur.api_key_id, ur.group_id, ur.account_id, ur.provider_code, ur.endpoint, ur.model, ur.upstream_model,
+	ur.api_key_id, ur.group_id, ur.route_group_id, ur.account_id, ur.provider_code, ur.endpoint, ur.model, ur.upstream_model,
 	ur.upstream_response_model, ur.billed_service_tier, ur.effective_reasoning_effort,
 	ur.model_mapping_applied, ur.stream, ur.status_code, ur.success, ur.failure_attribution,
 	ur.error_code, ur.error_message, ur.first_token_ms, ur.duration_ms, ur.input_tokens,
@@ -655,7 +655,7 @@ func openUsageShardDB(path string) (*sql.DB, error) {
 // usageRecordListItemFromRow.
 func (d *Deps) hydrateUsageRecordItems(r *http.Request, scope AccessScope, rows []Row) ([]usageRecordListItem, error) {
 	apiKeyIDs := collectColumn(rows, "api_key_id")
-	groupIDs := collectColumn(rows, "group_id")
+	groupIDs := append(collectColumn(rows, "group_id"), collectColumn(rows, "route_group_id")...)
 	accountIDs := collectColumn(rows, "account_id")
 	systemAccountIDs := collectColumn(rows, "system_account_id")
 	apiKeyNames, err := d.loadBusinessNameMap(r, "api_keys", apiKeyIDs)
@@ -769,6 +769,7 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 		ClientIp:                 row.nullText("client_ip"),
 		ApiKeyId:                 row.nullText("api_key_id"),
 		GroupId:                  row.nullText("group_id"),
+		RouteGroupId:             row.nullText("route_group_id"),
 		AccountId:                row.nullText("account_id"),
 		ProviderCode:             row.nullText("provider_code"),
 		Endpoint:                 row.nullText("endpoint"),
@@ -809,6 +810,12 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 		if name := groupNames[groupID]; name != "" {
 			value := name
 			item.GroupName = &value
+		}
+	}
+	if routeGroupID := optionalText(row["route_group_id"]); routeGroupID != "" {
+		if name := groupNames[routeGroupID]; name != "" {
+			value := name
+			item.RouteGroupName = &value
 		}
 	}
 	if accountID := optionalText(row["account_id"]); accountID != "" {
@@ -964,6 +971,8 @@ type usageRecordListItem struct {
 	ApiKeyName               *string  `json:"apiKeyName,omitempty"`
 	GroupId                  *string  `json:"groupId,omitempty"`
 	GroupName                *string  `json:"groupName,omitempty"`
+	RouteGroupId             *string  `json:"routeGroupId,omitempty"`
+	RouteGroupName           *string  `json:"routeGroupName,omitempty"`
 	AccountId                *string  `json:"accountId,omitempty"`
 	AccountName              *string  `json:"accountName,omitempty"`
 	ProviderCode             *string  `json:"providerCode,omitempty"`

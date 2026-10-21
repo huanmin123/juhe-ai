@@ -283,9 +283,12 @@ func isSuperGroupRouteTarget(apiKey *gatewayruntimecache.GatewayAPIKeyRow, group
 //  1. 逐成员片段重水化，账号显式组标 BoundGroupID = 成员分组（member_group）；
 //  2. 逐片段成员级授权配额批查，被否决账号剔除；
 //  3. 窗口组保持超级分组本身（route_group_id），不随成员切换；
-//  4. 全部成员被剔空的目标准入 capacity_exhausted，并沿一次性目标快照尝试
-//     其余 active 超级分组目标（设计 §4.2）；全部目标耗尽时映射 429
-//     rate_limit_exceeded，TargetOutcomes 记录逐目标分类。
+//  4. 全部成员被剔空的目标记 capacity_exhausted，并沿一次性目标快照继续尝试
+//     快照内其余 active 绑定目标（含普通分组，设计 §4.2「沿一次性目标快照
+//     继续下一个目标」）；
+//  5. 快照耗尽时按固定优先级聚合终态：任一 capacity → 429
+//     rate_limit_exceeded；全部 no_candidate → 503 model_target_group_unavailable；
+//     其余 → 503 upstream_candidates_exhausted。
 func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 	ctx context.Context,
 	input gatewaypreauth.NormalRouteInput,
@@ -296,87 +299,168 @@ func (r *chainRouteResolver) resolveSuperGroupSelectedRoute(
 	systemAccountID := input.APIKeyRecord.SystemAccountID
 	endpointFamily := localEndpointFamily(view)
 
-	// 目标快照：当前目标 + 其余 active 超级分组绑定（外层模式沿一次性快照
-	// 继续；成员不提升为外层目标，设计 §4.2）。
-	type superTarget struct {
-		groupID            string
-		result             gatewayrouting.NormalGatewayModelRouteResult
-		skipClassification string
+	accounts, err := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, result)
+	if err != nil {
+		return gatewaypreauth.NormalRouteResult{}, err
 	}
-	targets := []superTarget{{groupID: result.GroupID, result: result}}
-	if input.APIKeyRecord != nil {
-		for _, binding := range input.APIKeyRecord.GroupBindings {
-			if binding.GroupID == result.GroupID || binding.Status != "active" || binding.GroupKind != "super" {
-				continue
-			}
-			narrowed := *input.APIKeyRecord
-			narrowed.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{binding}
-			narrowed.SelectedGroupID = binding.GroupID
-			nextResult, err := r.normal.ResolveNormalGatewayModelRoute(ctx, gatewayrouting.ResolveNormalGatewayModelRouteInput{
-				Request:      routingRequestView(input.Req, &narrowed),
-				APIKeyRecord: projectAPIKeyRowForRouting(&narrowed),
-			})
-			if err != nil {
-				return gatewaypreauth.NormalRouteResult{}, err
-			}
-			if nextResult.Outcome != gatewayrouting.NormalRouteOutcomeSelected || len(nextResult.GroupSegments) == 0 {
-				classification := ""
-				if nextResult.Code == "model_target_group_unavailable" {
-					classification = "no_candidate"
-				}
-				targets = append(targets, superTarget{groupID: binding.GroupID, skipClassification: classification})
-				continue
-			}
-			targets = append(targets, superTarget{groupID: binding.GroupID, result: nextResult})
-		}
-	}
-
-	outcomes := make([]gatewaypreauth.NormalRouteTargetOutcome, 0, len(targets))
-	for _, target := range targets {
-		if target.skipClassification != "" {
-			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
-				GroupID: target.groupID, Classification: target.skipClassification,
-			})
-			continue
-		}
-		accounts, err := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, target.result)
-		if err != nil {
-			return gatewaypreauth.NormalRouteResult{}, err
-		}
-		if len(accounts) == 0 {
-			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
-				GroupID: target.groupID, Classification: "capacity_exhausted",
-			})
-			continue
-		}
-		// 目标存活：窗口组/配额元数据取该目标超级分组本身，账号组标取成员组。
-		if target.groupID != result.GroupID {
-			out.GroupID = target.groupID
-			out.GroupAccess = r.rehydrateGroupAccess(ctx, target.groupID, systemAccountID, target.result.GroupAccess)
-			if out.APIKeyRecord != nil {
-				out.APIKeyRecord.SelectedGroupID = target.groupID
-			}
-		} else {
-			out.GroupID = result.GroupID
-			out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, systemAccountID, result.GroupAccess)
-			if out.APIKeyRecord != nil {
-				out.APIKeyRecord.SelectedGroupID = result.GroupID
-			}
-		}
+	if len(accounts) > 0 {
+		out.GroupID = result.GroupID
+		out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, systemAccountID, result.GroupAccess)
 		out.Accounts = accounts
+		if out.APIKeyRecord != nil {
+			out.APIKeyRecord.SelectedGroupID = result.GroupID
+			// 绑定行必须与选中目标一致：superTargetMemberIDs / 窗口配额跳过 /
+			// 候选与可恢复 loader 都按绑定行的 GroupKind+MemberGroupIDs 扇出。
+			if selectedBinding, ok := bindingForGroup(input.APIKeyRecord, result.GroupID); ok {
+				out.APIKeyRecord.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{selectedBinding}
+			}
+		}
+		return out, nil
+	}
+	// 逐成员跳过原因（设计 §4.2）：disabled 成员行在 runtimecache 装载阶段即被
+	// 剔除，这里把"进入展开的成员组"与"被配额剔空"落成审计可读的成员级投影。
+	memberSkips := make([]gatewaypreauth.NormalRouteMemberSkip, 0, len(result.GroupSegments))
+	for _, segment := range result.GroupSegments {
+		memberSkips = append(memberSkips, gatewaypreauth.NormalRouteMemberSkip{
+			GroupID: segment.GroupID, Reason: "capacity_exhausted",
+		})
+	}
+	// 当前超级分组目标全部成员被配额剔空 → capacity_exhausted，继续快照。
+	outcomes := []gatewaypreauth.NormalRouteTargetOutcome{{
+		GroupID: result.GroupID, Classification: "capacity_exhausted", MemberSkips: memberSkips,
+	}}
+	// 目标快照 = 绑定序中当前目标之后的全部 active 绑定（普通分组与超级分组
+	// 一视同仁）；成员不提升为外层目标，同组不重复尝试。
+	seen := map[string]struct{}{result.GroupID: {}}
+	for _, target := range r.orderedFallbackTargets(result.GroupID, input.APIKeyRecord) {
+		if _, dup := seen[target.GroupID]; dup {
+			continue
+		}
+		seen[target.GroupID] = struct{}{}
+		narrowed := *input.APIKeyRecord
+		narrowed.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{target}
+		narrowed.SelectedGroupID = target.GroupID
+		nextResult, resolveErr := r.normal.ResolveNormalGatewayModelRoute(ctx, gatewayrouting.ResolveNormalGatewayModelRouteInput{
+			Request:                    routingRequestView(input.Req, &narrowed),
+			APIKeyRecord:               projectAPIKeyRowForRouting(&narrowed),
+			RequestClientCompatibility: input.RequestClientCompatibility,
+		})
+		if resolveErr != nil {
+			return gatewaypreauth.NormalRouteResult{}, resolveErr
+		}
+		if nextResult.Outcome != gatewayrouting.NormalRouteOutcomeSelected {
+			classification := "no_candidate"
+			if nextResult.Code == "rate_limit_exceeded" {
+				classification = "capacity_exhausted"
+			}
+			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+				GroupID: target.GroupID, Classification: classification,
+			})
+			continue
+		}
+		var nextAccounts []gatewayruntimecache.OpenAIAccountSecret
+		nextRouteSource := string(nextResult.RouteSource)
+		if len(nextResult.GroupSegments) > 0 {
+			// 后续超级分组目标：同样逐成员展开 + 成员级配额批查。
+			expanded, expandErr := r.superGroupSegmentAccounts(ctx, systemAccountID, endpointFamily, nextResult)
+			if expandErr != nil {
+				return gatewaypreauth.NormalRouteResult{}, expandErr
+			}
+			nextAccounts = expanded
+		} else {
+			// 普通分组目标：账号无组标，窗口组即该分组。
+			nextAccounts, nextRouteSource = r.rehydrateAccounts(
+				ctx, target.GroupID, systemAccountID, nextResult.Accounts,
+				nextResult.RequestedModel, endpointFamily, nextRouteSource,
+			)
+		}
+		if len(nextAccounts) == 0 {
+			outcomes = append(outcomes, gatewaypreauth.NormalRouteTargetOutcome{
+				GroupID: target.GroupID, Classification: "capacity_exhausted",
+			})
+			continue
+		}
+		selected := *input.APIKeyRecord
+		selected.SelectedGroupID = target.GroupID
+		selected.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{target}
+		out.Outcome = gatewaypreauth.NormalRouteOutcomeSelected
+		out.APIKeyRecord = &selected
+		out.GroupID = target.GroupID
+		out.GroupAccess = r.rehydrateGroupAccess(ctx, target.GroupID, systemAccountID, nextResult.GroupAccess)
+		out.Accounts = nextAccounts
+		out.RouteSource = nextRouteSource
 		out.TargetOutcomes = outcomes
 		return out, nil
 	}
-	return gatewaypreauth.NormalRouteResult{
+	return superTargetExhaustedResult(result.RequestedModel, input.APIKeyRecord, outcomes), nil
+}
+
+// orderedFallbackTargets 返回绑定序中当前目标之后的 active 绑定；current 之前
+// 的绑定不进入本请求快照（一次性目标快照语义，避免回切已尝试目标）。
+func (r *chainRouteResolver) orderedFallbackTargets(currentGroupID string, record *gatewayruntimecache.GatewayAPIKeyRow) []gatewayruntimecache.GatewayAPIKeyGroupBindingRow {
+	if record == nil {
+		return nil
+	}
+	index := -1
+	for i, binding := range record.GroupBindings {
+		if binding.GroupID == currentGroupID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return nil
+	}
+	targets := make([]gatewayruntimecache.GatewayAPIKeyGroupBindingRow, 0, len(record.GroupBindings))
+	for _, binding := range record.GroupBindings[index+1:] {
+		if binding.Status != "active" || binding.GroupEnabled == 0 {
+			continue
+		}
+		targets = append(targets, binding)
+	}
+	return targets
+}
+
+// superTargetExhaustedResult 按设计 §4.2 的固定优先级构造外层终态：
+// 任一 capacity → 429；全部 no_candidate → 503 model_target_group_unavailable；
+// 其余 → 503 upstream_candidates_exhausted。
+func superTargetExhaustedResult(requestedModel string, record *gatewayruntimecache.GatewayAPIKeyRow, outcomes []gatewaypreauth.NormalRouteTargetOutcome) gatewaypreauth.NormalRouteResult {
+	hasCapacity := false
+	allNoCandidate := len(outcomes) > 0
+	for _, outcome := range outcomes {
+		switch outcome.Classification {
+		case "capacity_exhausted":
+			hasCapacity = true
+			allNoCandidate = false
+		case "no_candidate":
+		default:
+			allNoCandidate = false
+		}
+	}
+	base := gatewaypreauth.NormalRouteResult{
 		Outcome:        gatewaypreauth.NormalRouteOutcomeFailed,
-		RequestedModel: result.RequestedModel,
-		StatusCode:     429,
-		Type:           "rate_limit_exceeded",
-		Code:           "rate_limit_exceeded",
-		Message:        gatewayquota.AuthorizationQuotaExceededMessage,
-		APIKeyRecord:   input.APIKeyRecord,
+		RequestedModel: requestedModel,
+		APIKeyRecord:   record,
 		TargetOutcomes: outcomes,
-	}, nil
+	}
+	switch {
+	case hasCapacity:
+		base.StatusCode = 429
+		base.Type = "rate_limit_exceeded"
+		base.Code = "rate_limit_exceeded"
+		base.Message = gatewayquota.AuthorizationQuotaExceededMessage
+	case allNoCandidate:
+		base.StatusCode = 503
+		base.Type = "service_unavailable"
+		base.Code = "model_target_group_unavailable"
+		base.Message = "请求模型当前没有可用账号：" + requestedModel
+	default:
+		base.StatusCode = 503
+		base.Type = "service_unavailable"
+		base.Code = "upstream_candidates_exhausted"
+		base.Message = "上游候选已耗尽，请重试"
+	}
+	return base
 }
 
 // superGroupSegmentAccounts 展开一个超级分组目标的成员片段并执行成员级配额
@@ -718,4 +802,18 @@ func renderSchedulingPolicy(policy *gatewayruntimecache.GroupSchedulingPolicy) s
 		return ""
 	}
 	return string(raw)
+}
+
+// bindingForGroup 返回记录中指定分组的绑定行（用于把选中目标的绑定写回
+// APIKeyRecord，保证成员扇出消费点看到正确 GroupKind/MemberGroupIDs）。
+func bindingForGroup(record *gatewayruntimecache.GatewayAPIKeyRow, groupID string) (gatewayruntimecache.GatewayAPIKeyGroupBindingRow, bool) {
+	if record == nil {
+		return gatewayruntimecache.GatewayAPIKeyGroupBindingRow{}, false
+	}
+	for _, binding := range record.GroupBindings {
+		if binding.GroupID == groupID {
+			return binding, true
+		}
+	}
+	return gatewayruntimecache.GatewayAPIKeyGroupBindingRow{}, false
 }

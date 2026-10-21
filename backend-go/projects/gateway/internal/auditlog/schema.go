@@ -1,5 +1,10 @@
 package auditlog
 
+import (
+	"context"
+	"database/sql"
+)
+
 const sqliteSchema = `
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS audit_log_owner_leases (
@@ -9,7 +14,7 @@ CREATE TABLE IF NOT EXISTS audit_log_owner_leases (
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, traffic_source TEXT NOT NULL,
   system_account_id TEXT, api_key_id TEXT, conversation_key TEXT, session_id TEXT,
-  session_client_type TEXT, group_id TEXT, account_id TEXT, provider_code TEXT,
+  session_client_type TEXT, group_id TEXT, route_group_id TEXT, account_id TEXT, provider_code TEXT,
   method TEXT NOT NULL, path TEXT NOT NULL, query_string TEXT, model TEXT,
   upstream_model TEXT, pricing_model TEXT, model_mapping_applied INTEGER NOT NULL DEFAULT 0,
   model_mapping_source TEXT, source_endpoint_family TEXT, upstream_endpoint_family TEXT,
@@ -27,7 +32,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS audit_log_attempts (
   id TEXT PRIMARY KEY, audit_log_id TEXT NOT NULL REFERENCES audit_logs(id) ON DELETE CASCADE,
   attempt_index INTEGER NOT NULL, account_id TEXT, account_owner_system_account_id TEXT,
-  group_id TEXT, proxy_url TEXT, provider_code TEXT, attempt_model TEXT,
+  group_id TEXT, member_group_id TEXT, proxy_url TEXT, provider_code TEXT, attempt_model TEXT,
   attempt_upstream_model TEXT, attempt_pricing_model TEXT,
   attempt_model_mapping_applied INTEGER NOT NULL DEFAULT 0, attempt_model_mapping_source TEXT,
   attempt_source_endpoint_family TEXT, attempt_upstream_endpoint_family TEXT,
@@ -99,7 +104,7 @@ CREATE TABLE IF NOT EXISTS juhe_dataset.audit_log_owner_leases (
 CREATE TABLE IF NOT EXISTS juhe_dataset.audit_logs (
   id text PRIMARY KEY, trace_id text NOT NULL, traffic_source text NOT NULL,
   system_account_id text, api_key_id text, conversation_key text, session_id text,
-  session_client_type text, group_id text, account_id text, provider_code text,
+  session_client_type text, group_id text, route_group_id text, account_id text, provider_code text,
   method text NOT NULL, path text NOT NULL, query_string text, model text, upstream_model text,
   pricing_model text, model_mapping_applied boolean NOT NULL DEFAULT false,
   model_mapping_source text, source_endpoint_family text, upstream_endpoint_family text,
@@ -116,7 +121,7 @@ CREATE TABLE IF NOT EXISTS juhe_dataset.audit_logs (
 CREATE TABLE IF NOT EXISTS juhe_dataset.audit_log_attempts (
   id text PRIMARY KEY, audit_log_id text NOT NULL REFERENCES juhe_dataset.audit_logs(id) ON DELETE CASCADE,
   attempt_index integer NOT NULL, account_id text, account_owner_system_account_id text, group_id text,
-  proxy_url text, provider_code text, attempt_model text, attempt_upstream_model text,
+  member_group_id text, proxy_url text, provider_code text, attempt_model text, attempt_upstream_model text,
   attempt_pricing_model text, attempt_model_mapping_applied boolean NOT NULL DEFAULT false,
   attempt_model_mapping_source text, attempt_source_endpoint_family text,
   attempt_upstream_endpoint_family text, upstream_method text NOT NULL, upstream_url text NOT NULL,
@@ -178,3 +183,39 @@ CREATE INDEX IF NOT EXISTS idx_audit_error_groups_model_updated ON juhe_dataset.
 CREATE INDEX IF NOT EXISTS idx_audit_error_groups_status_updated ON juhe_dataset.audit_error_groups(status_code, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_audit_error_groups_api_key_account ON juhe_dataset.audit_error_groups(api_key_id, system_account_id);
 `
+
+// auditSuperGroupColumn 描述超级分组双层身份列（设计 §4.3）。
+type auditSuperGroupColumn struct {
+	table      string
+	column     string
+	definition string
+}
+
+var sqliteSuperGroupAuditColumns = []auditSuperGroupColumn{
+	{table: "audit_logs", column: "route_group_id", definition: "TEXT"},
+	{table: "audit_log_attempts", column: "member_group_id", definition: "TEXT"},
+}
+
+// ensureSQLiteAuditColumn 幂等补列（PRAGMA 守卫；SQLite 无 ADD COLUMN IF
+// NOT EXISTS）。
+func ensureSQLiteAuditColumn(ctx context.Context, db *sql.DB, table, column, definition string) error {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+column+` `+definition)
+	return err
+}

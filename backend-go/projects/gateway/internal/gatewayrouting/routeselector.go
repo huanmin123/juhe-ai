@@ -202,7 +202,7 @@ const runtimeStateDriverRedis = "redis"
 
 // GroupStickyApplicable 报告组级会话黏性是否适用于该模式与绑定数
 // （策略路由分组会话亲和设计 §6：round_robin / weighted / failover 且活跃
-// 绑定 ≥ 2；normal / merge / 单绑定零额外路径）。
+// 绑定 ≥ 2；normal / 单绑定零额外路径）。
 func GroupStickyApplicable(mode string, activeBindingCount int) bool {
 	if activeBindingCount < 2 {
 		return false

@@ -503,7 +503,8 @@ const saveGroup = submitAction('groups.save', async () => {
     message.warning('请填写分组名称')
     return
   }
-  if (!form.providerCode.trim() && !editingAuthorizedGroup.value) {
+  // 超级分组只组合普通分组、不直接持有账号，因此不需要供应商维度。
+  if (form.groupKind !== 'super' && !form.providerCode.trim() && !editingAuthorizedGroup.value) {
     message.warning('请选择供应商')
     return
   }

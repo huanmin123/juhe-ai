@@ -588,8 +588,21 @@ func TestW11DSettingsCacheLoadedSlot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW11DTypesCloneArms(t *testing.T) {
-	if got := NormalizeRouteStrategyMode("bogus"); got != RouteStrategyModeNormal {
-		t.Fatalf("未知模式 = %q", got)
+	// 设计 §6.5：未知模式（含已退役 merge）不得静默降级为 normal——原样返回
+	// 由装载侧显式拒绝。
+	if got := NormalizeRouteStrategyMode("bogus"); got != "bogus" {
+		t.Fatalf("未知模式 = %q，应原样返回", got)
+	}
+	if got := NormalizeRouteStrategyMode(""); got != RouteStrategyModeNormal {
+		t.Fatalf("空模式 = %q，应回落 normal", got)
+	}
+	if IsSupportedRouteStrategyMode("bogus") || IsSupportedRouteStrategyMode("merge") {
+		t.Fatal("未知/退役模式不得判定为受支持")
+	}
+	for _, mode := range []string{RouteStrategyModeNormal, RouteStrategyModeWeighted, RouteStrategyModeFailover, RouteStrategyModeRoundRobin} {
+		if !IsSupportedRouteStrategyMode(mode) {
+			t.Fatalf("%s 应受支持", mode)
+		}
 	}
 	if got := NormalizeRouteStrategyMode(RouteStrategyModeFailover); got != RouteStrategyModeFailover {
 		t.Fatalf("已知模式 = %q", got)

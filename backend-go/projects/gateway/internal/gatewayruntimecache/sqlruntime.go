@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -272,6 +273,11 @@ func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate stri
 	}
 	if expired || status != "active" {
 		return nil, nil
+	}
+	// 设计 §6.5：未完成 merge→超级分组迁移的策略不得带着旧模式上线。未知模式
+	// 显式报错（fail-closed），不静默降级为 normal。
+	if !IsSupportedRouteStrategyMode(NormalizeRouteStrategyMode(routeStrategyMode)) {
+		return nil, fmt.Errorf("路由策略 %s 的模式不受支持（%q），请先执行 merge→超级分组迁移", routeStrategyID, routeStrategyMode)
 	}
 
 	bindings, err := m.loadActiveGatewayAPIKeyGroupBindings(ctx, id, routeStrategyID, systemAccountID)

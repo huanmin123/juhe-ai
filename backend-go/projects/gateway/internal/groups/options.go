@@ -81,6 +81,8 @@ type OptionSummary struct {
 type EditDetail struct {
 	Name             string  `json:"name"`
 	ProviderCode     string  `json:"providerCode"`
+	// GroupKind 让编辑弹窗区分普通/超级分组（超级分组不展示供应商与账号项）。
+	GroupKind        string  `json:"groupKind"`
 	Description      *string `json:"description,omitempty"`
 	Enabled          bool    `json:"enabled"`
 	GroupType        string  `json:"groupType"`
@@ -512,15 +514,15 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	var args []any
 	if owner == "" && access.canAccessAll() {
 		queryText = `SELECT g.name, g.description, g.enabled,
-			g.group_type, g.scheduling_policy_json, g.updated_at
+			g.group_type, g.scheduling_policy_json, g.updated_at, g.group_kind
 			FROM ` + s.table("groups") + ` g WHERE g.id = ? LIMIT 1`
 		args = []any{id}
 	} else {
 		if viewer == "" {
 			return nil, &ValidationError{Message: "缺少系统账户上下文"}
 		}
-		queryText = `SELECT name, description, enabled, group_type, scheduling_policy_json, updated_at FROM (
-			SELECT g.name, g.description, g.enabled, g.group_type, g.scheduling_policy_json, g.updated_at
+		queryText = `SELECT name, description, enabled, group_type, scheduling_policy_json, updated_at, group_kind FROM (
+			SELECT g.name, g.description, g.enabled, g.group_type, g.scheduling_policy_json, g.updated_at, g.group_kind
 			FROM ` + s.table("groups") + ` g
 			WHERE g.id = ? AND g.system_account_id = ?
 			UNION ALL
@@ -529,7 +531,8 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 				COALESCE(s.group_type, g.group_type) AS group_type,
 				CASE WHEN COALESCE(s.group_type, g.group_type) = 'high_concurrency'
 					THEN COALESCE(s.scheduling_policy_json, g.scheduling_policy_json) ELSE NULL END AS scheduling_policy_json,
-				COALESCE(s.updated_at, g.updated_at) AS updated_at
+				COALESCE(s.updated_at, g.updated_at) AS updated_at,
+				g.group_kind
 			FROM ` + s.table("resource_authorizations") + ` ra
 			INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
 			` + s.authorizationSettingsJoin() + `
@@ -541,8 +544,9 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 		) group_edit_rows LIMIT 1`
 		args = []any{id, ownerOrViewer(owner, viewer), id, viewer, ownerOrViewer(owner, viewer)}
 	}
+	var groupKind string
 	err := s.db.QueryRowContext(ctx, s.bind(queryText), args...).Scan(
-		&name, &description, &enabled, &groupType, &schedulingJSON, &updatedAt)
+		&name, &description, &enabled, &groupType, &schedulingJSON, &updatedAt, &groupKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -559,6 +563,7 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 	}
 	return &EditDetail{
 		Name:             name,
+		GroupKind:        groupKind,
 		Description:      nullPtrString(description),
 		Enabled:          enabled == 1,
 		GroupType:        normalizedType,

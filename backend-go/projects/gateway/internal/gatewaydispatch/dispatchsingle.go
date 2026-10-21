@@ -47,6 +47,9 @@ type dispatchSingleAccountInput struct {
 	capacityLimitFailures                *[]AccountCapacityLimitFailure
 	pendingApiKeyFailures                *[]PendingAccountApiKeyFailure
 	lastAttempt                          **UpstreamAttempt
+	// semanticCommitFailure 在"上游响应已开始、正文传输失败"（proven body
+	// transport failure）时置位：此时请求语义已提交，不允许换目标重放。
+	semanticCommitFailure                *bool
 	agentGuidanceResponse                **gatewaypreauth.GatewayAgentGuidanceResponse
 	auditAttemptIndex                    *int
 	concurrencyRetryWaitBudgetMs         *int64
@@ -930,6 +933,15 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			}
 
 			// Error path (Node catch in the attempt loop).
+			// 语义提交点：上游响应头已收到、正文读取失败（StartedBodyTransportError
+			// / Incomplete / NonStreamBodyPipeError）→ 标记不可安全重放，终态
+			// UpstreamAttemptError 据此置 TerminalUpstreamFailure（设计 §4.2）。
+			if in.semanticCommitFailure != nil && IsProvenUpstreamBodyTransportError(attemptErr) {
+				*in.semanticCommitFailure = true
+				if *in.lastAttempt != nil {
+					(*in.lastAttempt).SemanticCommitted = true
+				}
+			}
 			kind, stop, err := e.handleUpstreamAttemptError(ctx, upstreamAttemptErrorContext{
 				loop:                          c,
 				account:                       c.account,

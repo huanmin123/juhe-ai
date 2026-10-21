@@ -131,7 +131,7 @@ func TestGatewayHTTPCompletionObserveDelivery(t *testing.T) {
 // 同源（chain_compose.go usageModelResolver: usageModelResolverAdapter{}）：
 // 缺省时 auditModelAccounting 的 c.input.Models 为 nil，映射解析被整体跳过、
 // upstreamModel 回落请求模型，定价入参吃不到映射目标。
-func auditGapChain(dispatcher *mergeCapturingAuditDispatcher, pricing gatewayusage.PricingCatalog) *gatewayChain {
+func auditGapChain(dispatcher *capturingAuditDispatcher, pricing gatewayusage.PricingCatalog) *gatewayChain {
 	return &gatewayChain{
 		auditSettings: gatewayusage.FixedAuditLogSettingsSource{Settings: gatewayusage.AuditLogSettings{
 			Enabled:                true,
@@ -151,9 +151,9 @@ func auditGapChain(dispatcher *mergeCapturingAuditDispatcher, pricing gatewayusa
 // CancelAuditCapture（生产 defer LIFO 顺序）时不得二次投递。
 func TestNewAuditCaptureFlushesHTTPCompletedAtOnCompleteSignal(t *testing.T) {
 	const startedAt = int64(1728000000000)
-	dispatcher := &mergeCapturingAuditDispatcher{}
+	dispatcher := &capturingAuditDispatcher{}
 	chain := auditGapChain(dispatcher, nil)
-	req := mergeRouteRequest("glm-5.3-flash")
+	req := routeRequest("glm-5.3-flash")
 	subject := newGatewayHTTPCompletion()
 	capture := chain.newAuditCapture(req, "trace_http_completion", startedAt, subject)
 	concrete := auditCaptureConcrete(capture)
@@ -192,10 +192,10 @@ func TestNewAuditCaptureFlushesHTTPCompletedAtOnCompleteSignal(t *testing.T) {
 // 主行的 pricing_model 必须经同步定价目录解析落值。
 func TestNewAuditCaptureResolvesPricingModelForAttemptAndMainRows(t *testing.T) {
 	catalog := &accountingPricingCatalog{resolvedPricingModel: "deepseek-v4.1-flash-priced"}
-	dispatcher := &mergeCapturingAuditDispatcher{}
+	dispatcher := &capturingAuditDispatcher{}
 	chain := auditGapChain(dispatcher, catalog)
 	subject := newGatewayHTTPCompletion()
-	capture := chain.newAuditCapture(mergeRouteRequest("glm-5.3-flash"), "trace_audit_pricing", 1728000000000, subject)
+	capture := chain.newAuditCapture(routeRequest("glm-5.3-flash"), "trace_audit_pricing", 1728000000000, subject)
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture) })
 	concrete := auditCaptureConcrete(capture)
 
@@ -266,10 +266,10 @@ func anthropicProtocolSecret() gatewayruntimecache.OpenAIAccountSecret {
 // extras.FirstTokenMs 写进 finalize 输入，审计行 first_token_ms 落值；扩展
 // 面与 Finalize 二选一（响应层先探扩展面），不产生第二次 finalize 投递。
 func TestChainResponseAuditCaptureFinalizeExtendedCarriesFirstTokenMs(t *testing.T) {
-	dispatcher := &mergeCapturingAuditDispatcher{}
+	dispatcher := &capturingAuditDispatcher{}
 	chain := auditGapChain(dispatcher, nil)
 	subject := newGatewayHTTPCompletion()
-	capture := chain.newAuditCapture(mergeRouteRequest("glm-5.3-flash"), "trace_first_token", 1728000000000, subject)
+	capture := chain.newAuditCapture(routeRequest("glm-5.3-flash"), "trace_first_token", 1728000000000, subject)
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture) })
 
 	responseCapture, ok := responseAuditCaptureOf(capture).(gatewayresponse.AuditFinalizeExtender)
@@ -306,10 +306,10 @@ func TestChainResponseAuditCaptureFinalizeExtendedCarriesFirstTokenMs(t *testing
 // map[string]any 分支保持透传。
 func TestChainResponseAuditCaptureCompleteAttemptCarriesUpstreamHeaders(t *testing.T) {
 	// http.Header 分支。
-	dispatcher := &mergeCapturingAuditDispatcher{}
+	dispatcher := &capturingAuditDispatcher{}
 	chain := auditGapChain(dispatcher, nil)
 	subject := newGatewayHTTPCompletion()
-	capture := chain.newAuditCapture(mergeRouteRequest("glm-5.3-flash"), "trace_attempt_headers", 1728000000000, subject)
+	capture := chain.newAuditCapture(routeRequest("glm-5.3-flash"), "trace_attempt_headers", 1728000000000, subject)
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture) })
 	concrete := auditCaptureConcrete(capture)
 	responseCapture := responseAuditCaptureOf(capture)
@@ -358,10 +358,10 @@ func TestChainResponseAuditCaptureCompleteAttemptCarriesUpstreamHeaders(t *testi
 	}
 
 	// map[string]any 分支保持透传。
-	dispatcher2 := &mergeCapturingAuditDispatcher{}
+	dispatcher2 := &capturingAuditDispatcher{}
 	chain2 := auditGapChain(dispatcher2, nil)
 	subject2 := newGatewayHTTPCompletion()
-	capture2 := chain2.newAuditCapture(mergeRouteRequest("glm-5.3-flash"), "trace_attempt_headers_map", 1728000000000, subject2)
+	capture2 := chain2.newAuditCapture(routeRequest("glm-5.3-flash"), "trace_attempt_headers_map", 1728000000000, subject2)
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture2) })
 	concrete2 := auditCaptureConcrete(capture2)
 	responseCapture2 := responseAuditCaptureOf(capture2)

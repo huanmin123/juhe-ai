@@ -49,7 +49,9 @@ func (s *Store) ListGroupModelOptions(ctx context.Context, groupID string, keywo
 		  AND ga.group_id IN (
 		    SELECT id FROM ` + s.table("groups") + ` WHERE id = ? AND group_kind = 'standard'
 		    UNION
-		    SELECT member_group_id FROM ` + s.table("super_group_members") + ` WHERE super_group_id = ? AND enabled = 1
+		    SELECT m.member_group_id FROM ` + s.table("super_group_members") + ` m
+		      INNER JOIN ` + s.table("groups") + ` mg ON mg.id = m.member_group_id
+		      WHERE m.super_group_id = ? AND m.enabled = 1 AND mg.enabled = 1 AND mg.group_kind = 'standard'
 		  )` + keywordClause + `
 		GROUP BY models.id, models.public_model
 		ORDER BY lower(models.public_model) ASC, models.id ASC

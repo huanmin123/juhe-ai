@@ -23,6 +23,9 @@ type UpstreamAttempt struct {
 	ResponseHeaders           map[string]string
 	ResponseBodyText          string
 	ParsedResponseBody        map[string]any
+	// SemanticCommitted 标记该尝试已越过语义提交点（上游响应已开始），
+	// 失败时不可安全重放（设计 §4.2 non_replayable）。
+	SemanticCommitted bool
 }
 
 // TransportFailureKind values mirror the Node union.

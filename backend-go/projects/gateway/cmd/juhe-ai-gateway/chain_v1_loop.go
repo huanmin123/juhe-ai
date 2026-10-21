@@ -25,6 +25,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -34,6 +35,19 @@ import (
 // ---------------------------------------------------------------------------
 // dispatch loop with the api-key group fallback (routes.ts second half)
 // ---------------------------------------------------------------------------
+
+// superTargetOutcome 是一次外层超级分组目标的失败分类（设计 §4.2）。
+type superTargetOutcome struct {
+	GroupID        string
+	Classification string
+}
+
+const (
+	superTargetNoCandidate       = "no_candidate"
+	superTargetCapacityExhausted = "capacity_exhausted"
+	superTargetUpstreamExhausted = "upstream_exhausted"
+	superTargetNonReplayable     = "non_replayable"
+)
 
 // v1DispatchLoop carries the mutable per-request state of the Node dispatch
 // loop (routes.ts:537-566 locals): the current preflight context, the
@@ -93,6 +107,10 @@ type v1DispatchLoop struct {
 	// 可恢复账户且等待预算未到 recoverable_later 交接点时置位——下一轮引擎
 	// 调用强制进入可恢复等待（优先等即将恢复的账户，保住亲和）。
 	forceRecoverableFailureWait bool
+	// superTargetOutcomes 记录超级分组外层目标的失败分类（超级分组设计 §4.2）：
+	// no_candidate / capacity_exhausted / upstream_exhausted / non_replayable。
+	// 只对含超级分组绑定的请求收集，terminal 聚合后映射 429/503 契约。
+	superTargetOutcomes []superTargetOutcome
 	// ---- W4-B（BUG-0175 D-114）speed-first per-request 状态
 	//（routes.ts:542-546 locals）----
 	// speedFirstByteRetryCount 是本请求已执行的速度优先切号次数（上限
@@ -972,9 +990,219 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 		l.renderDispatchExhausted(ctx, attempt)
 		return true
 	}
+	// 超级分组：非 attempt 的派发错误代表传输层/响应层已进入不可安全重放
+	// 的终态（如上游 2xx 后正文截断），标记 non_replayable 后直接结束，
+	// 不尝试外层切目标（设计 §4.2）。
+	if l.superTargetTrackingEnabled() {
+		l.trackSuperTargetOutcome(l.current.UsageContext.GroupID, superTargetNonReplayable)
+		l.auditCapture.AddGatewayMetadata("super_group_target_outcome", map[string]any{
+			"groupId":        l.current.UsageContext.GroupID,
+			"classification": superTargetNonReplayable,
+			"reason":         "unexpected_dispatch_error",
+		})
+	}
 	// Node top-level catch: an unexpected dispatch error keeps the 503
 	// upstream contract — never the orchestrator 500 (V5).
 	l.renderUnexpectedDispatchFailure(ctx, dispatchErr)
+	return true
+}
+
+// superTargetTrackingEnabled 判断本次请求是否涉及超级分组绑定；只有涉及
+// 超级分组时才启用外层目标分类，避免改变普通分组既有耗尽契约。
+func (l *v1DispatchLoop) superTargetTrackingEnabled() bool {
+	if l.current == nil {
+		return false
+	}
+	records := []*gatewayruntimecache.GatewayAPIKeyRow{l.current.APIKeyRecord, l.current.GroupFallbackAPIKeyRecord}
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		for _, binding := range record.GroupBindings {
+			if binding.GroupKind == "super" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// superTargetClassificationPriority 是同一目标多次分类时的保留优先级
+// （设计 §4.2：non_replayable > no_candidate > capacity_exhausted >
+// upstream_exhausted），避免后到的弱分类覆盖强分类。
+func superTargetClassificationPriority(classification string) int {
+	switch classification {
+	case superTargetNonReplayable:
+		return 4
+	case superTargetNoCandidate:
+		return 3
+	case superTargetCapacityExhausted:
+		return 2
+	case superTargetUpstreamExhausted:
+		return 1
+	}
+	return 0
+}
+
+// trackSuperTargetOutcome 按目标分组记录一次失败分类；同组已有更强分类时
+// 保留原值（固定优先级合并，不采用 last-write-wins）。
+func (l *v1DispatchLoop) trackSuperTargetOutcome(groupID, classification string) {
+	if groupID == "" || classification == "" || !l.superTargetTrackingEnabled() {
+		return
+	}
+	for index := range l.superTargetOutcomes {
+		if l.superTargetOutcomes[index].GroupID == groupID {
+			if superTargetClassificationPriority(classification) > superTargetClassificationPriority(l.superTargetOutcomes[index].Classification) {
+				l.superTargetOutcomes[index].Classification = classification
+			}
+			return
+		}
+	}
+	l.superTargetOutcomes = append(l.superTargetOutcomes, superTargetOutcome{GroupID: groupID, Classification: classification})
+}
+
+// seedPreflightTargetOutcomes 把解析期已尝试但未选中的目标分类并入循环期
+// 聚合（设计 §4.2：外层终态按全体目标聚合，任一 capacity 即 429）。
+func (l *v1DispatchLoop) seedPreflightTargetOutcomes() {
+	if l.current == nil || len(l.current.TargetOutcomes) == 0 {
+		return
+	}
+	for _, outcome := range l.current.TargetOutcomes {
+		l.trackSuperTargetOutcome(outcome.GroupID, outcome.Classification)
+	}
+}
+
+// superTargetClassificationFromReason 把切组原因映射为目标级分类（设计 §4.2）。
+func superTargetClassificationFromReason(reason string) string {
+	switch reason {
+	case "upstream_accounts_exhausted", "normal_route_speed_first_exhausted", "stream_server_retry_exhausted":
+		return superTargetUpstreamExhausted
+	case "no_candidate_accounts", "all_accounts_cooldown":
+		return superTargetNoCandidate
+	case "authorization_quota_exceeded", "high_concurrency_group_busy", "group_capacity_busy":
+		return superTargetCapacityExhausted
+	}
+	return ""
+}
+
+// aggregateSuperTargetOutcomes 按设计 §4.2 的固定优先级聚合：
+// non_replayable > capacity_exhausted > 全 no_candidate > upstream_exhausted。
+func (l *v1DispatchLoop) aggregateSuperTargetOutcomes() (string, bool) {
+	if len(l.superTargetOutcomes) == 0 {
+		return "", false
+	}
+	allNoCandidate := true
+	hasCapacity := false
+	hasUpstream := false
+	for _, outcome := range l.superTargetOutcomes {
+		switch outcome.Classification {
+		case superTargetNonReplayable:
+			return superTargetNonReplayable, true
+		case superTargetCapacityExhausted:
+			hasCapacity = true
+			allNoCandidate = false
+		case superTargetUpstreamExhausted:
+			hasUpstream = true
+			allNoCandidate = false
+		case superTargetNoCandidate:
+		default:
+			allNoCandidate = false
+		}
+	}
+	if hasCapacity {
+		return superTargetCapacityExhausted, true
+	}
+	if allNoCandidate {
+		return superTargetNoCandidate, true
+	}
+	if hasUpstream {
+		return superTargetUpstreamExhausted, true
+	}
+	return "", false
+}
+
+// renderSuperTargetExhausted 在超级分组请求耗尽时按聚合分类渲染终态：
+// capacity → 429 rate_limit_exceeded；全 no_candidate → 503
+// model_target_group_unavailable；upstream → 503 upstream_candidates_exhausted。
+// non_replayable 保留既有传输终态（返回 false 交回既有渲染）。
+func (l *v1DispatchLoop) renderSuperTargetExhausted(attempt *gatewaydispatch.UpstreamAttemptError) bool {
+	if !l.superTargetTrackingEnabled() {
+		return false
+	}
+	if attempt != nil {
+		classification := superTargetUpstreamExhausted
+		switch {
+		case attempt.TerminalUpstreamFailure:
+			classification = superTargetNonReplayable
+		case attempt.LastAttempt == nil:
+			classification = superTargetNoCandidate
+		default:
+			// 引擎内全部候选因并发上限失败属容量侧（设计 §4.2），与配额拒绝
+			// 同归 capacity_exhausted。
+			if reason, _ := classifyGatewayDispatchExhaustion(attempt.LastAttempt); reason == "account_concurrency_exhausted" {
+				classification = superTargetCapacityExhausted
+			}
+		}
+		l.trackSuperTargetOutcome(l.current.UsageContext.GroupID, classification)
+	}
+	classification, ok := l.aggregateSuperTargetOutcomes()
+	if !ok {
+		return false
+	}
+	outcomes := make([]map[string]string, 0, len(l.superTargetOutcomes))
+	for _, outcome := range l.superTargetOutcomes {
+		outcomes = append(outcomes, map[string]string{
+			"groupId": outcome.GroupID, "classification": outcome.Classification,
+		})
+	}
+	l.auditCapture.AddGatewayMetadata("super_group_target_outcomes", map[string]any{"targets": outcomes})
+	statusCode := http.StatusServiceUnavailable
+	message := "上游候选已耗尽，请重试"
+	errorType := "service_unavailable"
+	errorCode := "upstream_candidates_exhausted"
+	errorPhase := "dispatch"
+	recordUsage := false
+	switch classification {
+	case superTargetCapacityExhausted:
+		statusCode = http.StatusTooManyRequests
+		message = gatewayquota.AuthorizationQuotaExceededMessage
+		errorType = "rate_limit_exceeded"
+		errorCode = "rate_limit_exceeded"
+		errorPhase = "quota"
+		recordUsage = true
+	case superTargetNoCandidate:
+		requestedModel, _ := gatewaypreauth.RequestModel(l.req)
+		message = "请求模型当前没有可用账号：" + requestedModel
+		errorCode = "model_target_group_unavailable"
+		recordUsage = true
+	case superTargetNonReplayable:
+		return false
+	}
+	auditOutcome := gatewaypreauth.AuditOutcomeUpstreamFailed
+	failureScope := "upstream"
+	if classification == superTargetCapacityExhausted {
+		// 配额/并发拒绝不是上游失败：审计归因落在网关容量侧，避免污染上游
+		// 失败率指标（与既有 429 配额终态一致）。
+		auditOutcome = gatewaypreauth.AuditOutcomeGatewayFailed
+		failureScope = "capacity"
+	}
+	l.c.preauth.Responses.SendGatewayFailureResponse(gatewaypreauth.FailureResponseInput{
+		Req:             l.req,
+		Res:             l.res,
+		AuditCapture:    l.auditCapture,
+		UsageContext:    l.current.UsageContext,
+		StartedAt:       l.startedAt,
+		StatusCode:      statusCode,
+		ResponsePayload: gatewaypreauth.GatewayErrorPayloadOf(message, errorType, errorCode),
+		Audit: gatewaypreauth.FailureAudit{
+			Outcome:      auditOutcome,
+			ErrorPhase:   errorPhase,
+			ErrorCode:    errorCode,
+			ErrorMessage: message,
+		},
+		RecordUsage:  boolPtr(recordUsage),
+		FailureScope: failureScope,
+	})
 	return true
 }
 
@@ -985,6 +1213,10 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 // (upstream-dispatch.ts buildUpstreamAttemptFailureMessage,
 // dispatch-exhaustion-classifier.ts).
 func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *gatewaydispatch.UpstreamAttemptError) {
+	if l.renderSuperTargetExhausted(attempt) {
+		l.confirmClientIPAccountAvoidanceAfterFinalFailure(ctx, l.current, "gateway_failure_response")
+		return
+	}
 	lastAttempt := attempt.LastAttempt
 	fields := map[string]any{
 		"event":         "gateway_dispatch_exhausted",
@@ -1197,6 +1429,14 @@ func (l *v1DispatchLoop) exhaustDispatchFailedAccounts(attempt *gatewaydispatch.
 // switchToFallbackGroup mirrors switchToFallbackGroup (routes.ts:570-662).
 func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason string) (v1FallbackSwitch, error) {
 	current := l.current
+	if classification := superTargetClassificationFromReason(reason); classification != "" {
+		l.trackSuperTargetOutcome(current.UsageContext.GroupID, classification)
+		l.auditCapture.AddGatewayMetadata("super_group_target_outcome", map[string]any{
+			"groupId":        current.UsageContext.GroupID,
+			"classification": classification,
+			"reason":         reason,
+		})
+	}
 	if current.InteractionResourceAffinity != nil {
 		return v1FallbackNone, nil
 	}
@@ -1297,6 +1537,7 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 	// 含 WithoutLimit 的 Unbounded wall budget）随之生效。
 	l.adoptDispatchContextBudgets(next)
 	l.current = next
+	l.seedPreflightTargetOutcomes()
 	// Node 652-657: a switched fallback resets the per-group stream server-
 	// retry bookkeeping (streamServerRetryExcludedAccountIds /
 	// streamServerRetryCount) and the W4-B speed-first cutover state

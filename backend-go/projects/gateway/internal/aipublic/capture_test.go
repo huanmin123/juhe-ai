@@ -180,10 +180,10 @@ func TestAIPublicCaptureLifecycle(t *testing.T) {
 	}
 
 	// POST with a JSON body: the parsed document lands in the request
-	// snapshot (group add rejects the payload here, but the capture still
-	// sees the body exactly like the Node body parser).
+	// snapshot regardless of the business outcome（分组新增在去供应商维度后
+	// 对该载荷成功）。
 	code, _, _ = env.doAuth(http.MethodPost, Prefix+"/group/add", `{"name":"捕获组","targetUsername":"huanmin"}`, token)
-	if code != http.StatusOK && code != http.StatusBadRequest {
+	if code != http.StatusOK && code != http.StatusCreated && code != http.StatusBadRequest {
 		t.Fatalf("post status: %d", code)
 	}
 	inputs = capture.recorded()

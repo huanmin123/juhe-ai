@@ -388,7 +388,7 @@ func TestAIPublicGroupLifecycle(t *testing.T) {
 	token := env.seedSource("extsrc_g", "exttok_g", "juis_token_gggggggggggggggg",
 		"active", "active", scopes, "[]", "", "")
 
-	addBody := `{"targetUsername":"pusher","name":"福利站","providerCode":"gpt"}`
+	addBody := `{"targetUsername":"pusher","name":"福利站","groupKind":"standard"}`
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add", addBody, token)
 	if status != 201 {
 		t.Fatalf("group add: %d %v", status, payload)
@@ -468,13 +468,13 @@ func TestAIPublicProviderValidation(t *testing.T) {
 		"active", "active", scopes, "[]", "", "")
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
 		`{"targetUsername":"pusher","name":"x","providerCode":"gpt"}`, token)
-	if status != 400 || payload["message"] != "供应商已停用：gpt" {
-		t.Fatalf("disabled provider: %d %v", status, payload)
+	if status != 400 || payload["message"] != "请求参数无效" {
+		t.Fatalf("providerCode must be rejected: %d %v", status, payload)
 	}
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"pusher","name":"x","providerCode":"claude"}`, token)
-	if status != 400 || payload["message"] != "不支持的供应商：claude" {
-		t.Fatalf("unknown provider: %d %v", status, payload)
+		`{"targetUsername":"pusher","name":"x","groupKind":"bogus"}`, token)
+	if status != 400 || payload["message"] != "groupKind 只能是 standard 或 super" {
+		t.Fatalf("groupKind enum: %d %v", status, payload)
 	}
 }
 
@@ -495,7 +495,7 @@ func TestAIPublicStrategyLifecycle(t *testing.T) {
 
 	// Seed a group to bind.
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"pusher","name":"绑定组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"pusher","name":"绑定组"}`, token)
 	if status != 201 {
 		t.Fatalf("seed group: %d %v", status, payload)
 	}
@@ -571,7 +571,7 @@ func TestAIPublicStrategyAddDisabledTarget(t *testing.T) {
 
 	// Seed a group owned by pusher for the binding payload.
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"pusher","name":"绑定组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"pusher","name":"绑定组"}`, token)
 	if status != 201 {
 		t.Fatalf("seed group: %d %v", status, payload)
 	}
@@ -619,7 +619,7 @@ func TestAIPublicApiKeyLifecycle(t *testing.T) {
 
 	// Seed group + strategy.
 	env.doAuth(http.MethodPost, "/__aipublic__/group/add",
-		`{"targetUsername":"pusher","name":"Key组","providerCode":"gpt"}`, token)
+		`{"targetUsername":"pusher","name":"Key组"}`, token)
 	status, payload, _ := env.doAuth(http.MethodPost, "/__aipublic__/route-strategy/add",
 		`{"targetUsername":"pusher","name":"Key策略","groupBindings":[{"groupId":null}]}`, token)
 	_ = payload

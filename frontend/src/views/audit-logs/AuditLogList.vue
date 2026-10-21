@@ -68,6 +68,7 @@
       </template>
       <template v-else-if="column.key === 'group'">
         <span>{{ displayAuditGroupName(record.groupName, record.groupId) }}</span>
+        <span v-if="record.routeGroupId && record.routeGroupId !== record.groupId" class="muted-cell"> · 路由组 {{ displayAuditGroupName(record.routeGroupName, record.routeGroupId) }}</span>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
         <span>{{ displayAuditSystemAccountName(record.systemAccountName, record.systemAccountId) }}</span>

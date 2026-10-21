@@ -310,7 +310,7 @@ func TestWCUpdateMappingLongTail(t *testing.T) {
 	// 账号：targetGroupName 指向存在但未绑定的分组 → 400 账号不存在
 	//（命中成员校验分支）。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/account/update",
-		`{"accountId":"`+accountID+`","targetGroupName":"第二组","name":"改名"}`, wcLifeToken)
+		`{"accountId":"`+accountID+`","targetGroupName":"第二组","providerCode":"gpt","name":"改名"}`, wcLifeToken)
 	if status != http.StatusBadRequest || payload["message"] != "账号不存在" {
 		t.Fatalf("未绑定分组: %d %v", status, payload)
 	}

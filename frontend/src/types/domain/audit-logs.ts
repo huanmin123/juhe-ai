@@ -17,6 +17,8 @@ export interface AuditLogSummary {
   apiKeyName?: string
   groupId?: string
   groupName?: string
+  routeGroupId?: string
+  routeGroupName?: string
   accountId?: string
   accountName?: string
   providerCode?: string
@@ -62,7 +64,7 @@ export type AuditLogListItem = Pick<AuditLogSummary,
   | 'id' | 'traceId' | 'sessionId' | 'sessionClientType'
   | 'trafficSource'
   | 'systemAccountId' | 'systemAccountName'
-  | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName'
+  | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName' | 'routeGroupId' | 'routeGroupName'
   | 'accountId' | 'accountName'
   | 'method' | 'path' | 'model' | 'upstreamModel' | 'modelMappingApplied'
   | 'stream' | 'auditOutcome' | 'success' | 'finalStatusCode' | 'lifecycleStatus'
@@ -77,6 +79,7 @@ export interface AuditLogAttemptSummary {
   accountOwnerSystemAccountId?: string
   groupId?: string
   groupName?: string
+  memberGroupId?: string
   proxyUrl?: string
   providerCode?: string
   model?: string
