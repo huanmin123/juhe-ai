@@ -87,6 +87,7 @@ var postgresSchemaUsage = []PGStatement{
       client_ip text,
       api_key_id text,
       group_id text,
+      route_group_id text,
       account_id text,
       endpoint text,
       provider_code text,
@@ -168,6 +169,13 @@ var postgresSchemaUsage = []PGStatement{
 		SchemaName: "juhe_usage",
 		Source:     "usage-records-m1-audio-metering-pg-columns",
 		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS usage_missing integer NOT NULL DEFAULT 0`,
+	},
+	{
+		// 超级分组双层身份（超级分组设计 §4.3）：route_group_id 记路由目标
+		// （超级分组），group_id 记实际服务成员组。
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-super-group-route-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS route_group_id text`,
 	},
 	{
 		// M2 视频计量列（媒体设计 §10）：视频任务输出秒数，任务终态回填；

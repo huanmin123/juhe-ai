@@ -358,9 +358,12 @@ func applyStrategy(ctx context.Context, tx *sql.Tx, dialect Dialect, plan *Strat
 	if err != nil {
 		return err
 	}
+	// 迁移产物守卫（设计 §6）：plan 阶段已保证 enabled=true 成员数 ≥2，生成的
+	// 超级分组必须直接 enabled=1——否则改写后的 normal 策略会绑定一个 disabled
+	// 目标，runtimecache 装载时被 groups.enabled=1 过滤掉，迁移后整体不可用。
 	if _, err := tx.ExecContext(ctx, bind(`INSERT INTO `+table("groups", dialect)+`
 		(id, system_account_id, name, description, enabled, is_default, group_type, group_kind, scheduling_policy_json, created_at, updated_at)
-		VALUES (?, ?, ?, NULL, 0, 0, ?, 'super', ?, ?, ?)`, dialect),
+		VALUES (?, ?, ?, NULL, 1, 0, ?, 'super', ?, ?, ?)`, dialect),
 		plan.SuperGroupID, plan.OwnerID, plan.SuperGroupName, groupType, schedulingJSON, nowISO, nowISO); err != nil {
 		return err
 	}

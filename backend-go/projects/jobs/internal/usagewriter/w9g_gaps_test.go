@@ -93,6 +93,16 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 		return input
 	}
 
+	// 目标测试库可能仍是旧表结构：写入前按生产部署同款幂等 ALTER 补齐新列
+	// （生产由 maintenance --ensure-schema 承担）。
+	for _, statement := range []string{
+		`ALTER TABLE juhe_usage.usage_records ADD COLUMN IF NOT EXISTS route_group_id text`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("ensure column: %v", err)
+		}
+	}
+
 	plan, err := BuildWritePlan(ctx, []UsageRecordInput{baseInput("a"), baseInput("b")}, WritePlanOptions{
 		Postgres:   true,
 		ShardCount: 4,

@@ -87,6 +87,7 @@ var usageRecordColumns = []string{
 	"client_ip",
 	"api_key_id",
 	"group_id",
+	"route_group_id",
 	"account_id",
 	"endpoint",
 	"provider_code",

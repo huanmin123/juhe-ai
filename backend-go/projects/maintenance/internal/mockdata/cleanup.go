@@ -90,6 +90,9 @@ func cleanupRules() []cleanupRule {
 		{Store: StoreBusiness, Table: "account_endpoint_modes", Query: "DELETE FROM account_endpoint_modes WHERE connection_id IN (SELECT id FROM account_connections WHERE account_id LIKE ?)", Args: []any{id}},
 		{Store: StoreBusiness, Table: "account_connections", Query: "DELETE FROM account_connections WHERE account_id LIKE ?", Args: []any{id}},
 		{Store: StoreBusiness, Table: "group_accounts", Query: "DELETE FROM group_accounts WHERE group_id IN (SELECT id FROM groups WHERE id LIKE ? OR name LIKE ?) OR account_id IN (SELECT id FROM accounts WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name, id, name}},
+		// super_group_members 两侧都是 groups 的 ON DELETE RESTRICT 外键，
+		// 必须先于 groups 清理，否则超级分组样本会卡住分组族删除。
+		{Store: StoreBusiness, Table: "super_group_members", Query: "DELETE FROM super_group_members WHERE super_group_id IN (SELECT id FROM groups WHERE id LIKE ? OR name LIKE ?) OR member_group_id IN (SELECT id FROM groups WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name, id, name}},
 		{Store: StoreBusiness, Table: "accounts", Query: "DELETE FROM accounts WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "groups", Query: "DELETE FROM groups WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		// models：造数模型行按确定性 id 前缀清理。必须排在 accounts 之后——

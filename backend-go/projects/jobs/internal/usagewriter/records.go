@@ -26,6 +26,7 @@ type UsageRecordInput struct {
 	ClientIP                         string   `json:"clientIp,omitempty"`
 	APIKeyID                         string   `json:"apiKeyId,omitempty"`
 	GroupID                          string   `json:"groupId,omitempty"`
+	RouteGroupID                     string   `json:"routeGroupId,omitempty"`
 	AccountID                        string   `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`

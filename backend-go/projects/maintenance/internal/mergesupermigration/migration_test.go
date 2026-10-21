@@ -115,8 +115,8 @@ func TestPlanAndApply(t *testing.T) {
 	if err := db.QueryRow(`SELECT mode FROM route_strategies WHERE id = 's1'`).Scan(&mode); err != nil || mode != "normal" {
 		t.Fatalf("s1 mode = %q/%v", mode, err)
 	}
-	if err := db.QueryRow(`SELECT group_kind, enabled FROM groups WHERE id = 'mgsg_s1'`).Scan(&groupKind, &enabled); err != nil || groupKind != "super" || enabled != 0 {
-		t.Fatalf("generated group = %q/%d/%v", groupKind, enabled, err)
+	if err := db.QueryRow(`SELECT group_kind, enabled FROM groups WHERE id = 'mgsg_s1'`).Scan(&groupKind, &enabled); err != nil || groupKind != "super" || enabled != 1 {
+		t.Fatalf("generated group = %q/%d/%v, want super/enabled=1", groupKind, enabled, err)
 	}
 	var memberCount, bindingCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM super_group_members WHERE super_group_id = 'mgsg_s1'`).Scan(&memberCount); err != nil || memberCount != 2 {

@@ -160,7 +160,7 @@ func resolveBusinessGuard(ctx context.Context, e *env) (businessGuard, error) {
 	if db == nil {
 		return businessGuard{skip: "business 库文件不存在"}, nil
 	}
-	for _, table := range []string{"vendors", "models", "account_connections", "groups", "accounts", "api_keys"} {
+	for _, table := range []string{"vendors", "models", "account_connections", "groups", "super_group_members", "accounts", "api_keys"} {
 		present, tableErr := queryExistsTable(ctx, db, table)
 		if tableErr != nil {
 			return businessGuard{}, tableErr
@@ -486,12 +486,16 @@ type mockUserSeed struct {
 }
 
 // mockGroupSeed 是一条分组样本（设计 §8：分组无供应商维度）。
+// groupKind 为空按 standard；超级分组不接受账户直绑，账户绑定由
+// seedSuperGroupMembers 落到其成员普通分组上。
 type mockGroupSeed struct {
 	id             string
 	name           string
 	owner          string
 	desc           string
 	groupType      string
+	groupKind      string
+	members        []string
 	enabled        bool
 	isDefault      bool
 	policyOverride map[string]any
@@ -793,8 +797,9 @@ type mockGroupInfo struct {
 	policy    any
 }
 
-// seedGroups 写入分组样本：7 个管理员级分组、每用户 1 个默认分组、管理员自有
-// 分组与 3 个"授权给别人"的分组（设计 §8：分组不再携带供应商维度）。
+// seedGroups 写入分组样本：管理员级普通分组、每用户 1 个默认分组、管理员自有
+// 分组与 3 个"授权给别人"的分组（设计 §8：分组不再携带供应商维度），以及 1 个
+// 由两个普通分组成员构成的超级分组。
 func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []mockUserSeed) (map[string]string, map[string]mockGroupInfo, error) {
 	highPolicy := map[string]any{
 		"defaultSoftConcurrency": 12, "maxQueueWaitMs": 45000,
@@ -845,6 +850,12 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 		{id: CleanupIDPrefix + "group_tester_granted", name: CleanupNamePrefix + "测试授权过期分组",
 			owner: CleanupIDPrefix + "user_tester",
 			desc: "测试用户自有分组，授权给超级管理员后过期，用于 AI 分组管理过期状态展示", enabled: true},
+		// 超级分组样本（超级分组设计 §3.1/§3.2）：成员是两个启用普通分组，
+		// 用于分组编辑器成员面板与「普通路由绑定单目标」的路由展示。
+		{id: CleanupIDPrefix + "group_super", name: CleanupNamePrefix + "超级分组", owner: guard.adminID,
+			desc:      "超级分组样本，组合主力分组与备用分组成员，用于超级分组成员面板与路由绑定展示",
+			groupKind: "super", enabled: true,
+			members: []string{CleanupIDPrefix + "group_main", CleanupIDPrefix + "group_backup"}},
 	}
 	// 每个配套用户 1 个默认分组（is_default 唯一索引要求 (owner) 至多一行）。
 	for _, user := range users {
@@ -862,6 +873,10 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 		if groupType == "" {
 			groupType = "personal"
 		}
+		groupKind := seed.groupKind
+		if groupKind == "" {
+			groupKind = "standard"
+		}
 		var policy any
 		if groupType == "high_concurrency" {
 			encoded, err := w.putJSON(mockHighConcurrencyPolicy(seed.policyOverride))
@@ -873,11 +888,23 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 		if err := w.put(tx, "groups", map[string]any{
 			"id": seed.id, "system_account_id": seed.owner, "name": seed.name,
 			"description": seed.desc,
-			"enabled": boolInt(seed.enabled), "is_default": boolInt(seed.isDefault),
-			"group_type": groupType, "scheduling_policy_json": policy,
+			"enabled":     boolInt(seed.enabled), "is_default": boolInt(seed.isDefault),
+			"group_type": groupType, "group_kind": groupKind, "scheduling_policy_json": policy,
 			"created_at": now, "updated_at": now,
 		}); err != nil {
 			return nil, nil, err
+		}
+		for priority, memberID := range seed.members {
+			if err := w.put(tx, "super_group_members", map[string]any{
+				"id":              fmt.Sprintf("%ssgm_%s_%d", CleanupIDPrefix, strings.TrimPrefix(seed.id, CleanupIDPrefix+"group_"), priority),
+				"super_group_id":  seed.id,
+				"member_group_id": memberID,
+				"priority":        priority,
+				"enabled":         1,
+				"created_at":      now, "updated_at": now,
+			}); err != nil {
+				return nil, nil, err
+			}
 		}
 		key := strings.TrimPrefix(seed.id, CleanupIDPrefix+"group_")
 		ids[key] = seed.id
@@ -2642,13 +2669,10 @@ func (w *businessWriter) seedApiKeys(tx *sql.Tx, guard businessGuard, users []mo
 			owner: admin, status: "active", mode: "normal",
 			bindings: []mockKeyBinding{{group: groups["dev_granted"], priority: 1, weight: 1, status: "active"}},
 			quota:    mockQuotaLimits(10, 80, 300), lastUsed: -2 * time.Hour},
-		{slug: "merge", name: CleanupNamePrefix + "合并路由 Key",
-			desc: "Mockdata 合并模式 Key，用于 merge 模式与多分组候选池展示", owner: admin,
-			status: "active", mode: "merge",
-			bindings: []mockKeyBinding{
-				{group: groups["main"], priority: 1, weight: 1, status: "active"},
-				{group: groups["backup"], priority: 2, weight: 1, status: "active"},
-			},
+		{slug: "super_group", name: CleanupNamePrefix + "超级分组 Key",
+			desc:  "Mockdata 超级分组 Key，普通路由绑定一个超级分组目标，用于成员候选池展示",
+			owner: admin, status: "active", mode: "normal",
+			bindings: []mockKeyBinding{{group: groups["super"], priority: 1, weight: 1, status: "active"}},
 			quota: map[string]any{
 				"hourly": map[string]any{"enabled": true, "hours": 24, "limit": 500},
 				"daily":  map[string]any{"enabled": true, "limit": 3000},

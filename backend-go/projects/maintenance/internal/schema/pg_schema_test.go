@@ -97,7 +97,7 @@ import (
 // seed（pgSeedLegacyProviders/Profiles、旧 provider_model_catalog 目录种子）
 // 与 pgNullableText 同批删除；种子语句不计本 golden，总数变化仅 -8。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 681
+const goldenPostgresSchemaStatementCount = 682
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -112,7 +112,7 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	"juhe_business": 316,
 	"juhe_chat":     52,
 	"juhe_dataset":  7,
-	"juhe_usage":    52,
+	"juhe_usage":    53,
 	// 256→238：同六监控表退役 -18（2026-10-17 专门批取证回正）。
 	"juhe_stats":         238,
 	"juhe_codex_context": 16,
@@ -228,8 +228,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 1 条 DROP COLUMN
 	// IF EXISTS（调度偏好 enabled 退役）、1 条 CREATE EXTENSION、2 个含
 	// CREATE TRIGGER 的语句块。
-	if alterColumns != 99 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 99", alterColumns)
+	if alterColumns != 100 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 100", alterColumns)
 	}
 	if droppedColumns != 1 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 1", droppedColumns)
