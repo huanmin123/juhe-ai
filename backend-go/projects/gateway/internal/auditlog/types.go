@@ -324,6 +324,10 @@ type Store interface {
 	// acquired current fence. Published blobs are never candidates.
 	CleanupOrphanedBlobTemps(context.Context, OwnerLease, time.Time) error
 	Persist(context.Context, OwnerLease, AuditLogInput) (PersistResult, error)
+	// RetractInProgress deletes one lifecycle_status='in_progress' envelope
+	// (W13 phantom-shell retraction at capture-cancel time). Lifecycle-
+	// guarded: unknown or already-finalized ids are no-ops.
+	RetractInProgress(context.Context, OwnerLease, string) (bool, error)
 	CleanupRetention(context.Context, OwnerLease, RetentionConfig) (RetentionResult, error)
 	AppendHotSearch(context.Context, OwnerLease, []AuditLogInput) (int, error)
 	CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error)

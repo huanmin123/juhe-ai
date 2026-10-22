@@ -91,6 +91,10 @@ func (s *renewGraceFakeStore) SearchHotSearch(context.Context, HotSearchOptions)
 	return HotSearchResult{}, nil
 }
 
+func (s *renewGraceFakeStore) RetractInProgress(context.Context, OwnerLease, string) (bool, error) {
+	return false, nil
+}
+
 func (s *renewGraceFakeStore) Close() error { return nil }
 
 // renewGraceConfig 返回合法 retention 配置；TTL=3s → 续租周期=1s（下限）、

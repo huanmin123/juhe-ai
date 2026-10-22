@@ -59,6 +59,10 @@ func (s *w16aOwnerFakeStore) AppendHotSearch(context.Context, OwnerLease, []Audi
 	return 0, nil
 }
 
+func (s *w16aOwnerFakeStore) RetractInProgress(context.Context, OwnerLease, string) (bool, error) {
+	return false, nil
+}
+
 func (s *w16aOwnerFakeStore) CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error) {
 	return 0, nil
 }

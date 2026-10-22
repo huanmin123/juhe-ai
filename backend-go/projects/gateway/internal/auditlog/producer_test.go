@@ -21,15 +21,18 @@ type fakeStore struct {
 	renewCalls   int
 	persistCalls int
 	hotCalls     int
+	retractCalls int
 
 	renewOK    bool
 	renewErr   error
 	persistErr error
 	persistIgn bool
 	hotErr     error
+	retractErr error
 
-	persisted []AuditLogInput
-	hotInputs [][]AuditLogInput
+	persisted  []AuditLogInput
+	hotInputs  [][]AuditLogInput
+	retractIDs []string
 
 	signal  chan struct{}
 	signalN int
@@ -62,7 +65,7 @@ func (f *fakeStore) waitForCalls(t *testing.T, want int) {
 func (f *fakeStore) countCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.renewCalls + f.persistCalls + f.hotCalls
+	return f.renewCalls + f.persistCalls + f.hotCalls + f.retractCalls
 }
 
 func (f *fakeStore) EnsureSchema(context.Context) error { return nil }
@@ -110,6 +113,24 @@ func (f *fakeStore) AppendHotSearch(_ context.Context, _ OwnerLease, inputs []Au
 		return 0, f.hotErr
 	}
 	return len(inputs), nil
+}
+
+func (f *fakeStore) RetractInProgress(_ context.Context, _ OwnerLease, auditLogID string) (bool, error) {
+	f.mu.Lock()
+	f.retractCalls++
+	f.retractIDs = append(f.retractIDs, auditLogID)
+	err := f.retractErr
+	f.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (f *fakeStore) retractions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.retractIDs...)
 }
 
 func (f *fakeStore) CleanupHotSearch(context.Context, OwnerLease, time.Time, int) (int64, error) {

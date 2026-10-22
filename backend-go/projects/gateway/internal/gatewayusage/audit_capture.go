@@ -916,7 +916,10 @@ func servedMemberGroupID(attempts []AuditLogAttemptInput) string {
 	return ""
 }
 
-// Cancel mirrors cancel.
+// Cancel mirrors cancel. An un-finalized capture that already wrote an
+// in_progress envelope (a stream attempt had started) retracts the phantom
+// envelope here — without this the request-finally cancel leaves a permanent
+// lifecycle_status='in_progress' shell in the audit list (W13).
 func (c *AuditCaptureContext) Cancel() {
 	c.mu.Lock()
 	if c.finalized {
@@ -929,12 +932,22 @@ func (c *AuditCaptureContext) Cancel() {
 	c.activeCaptureRegistered = false
 	cancel := c.cancelHTTPListener
 	c.cancelHTTPListener = nil
+	envelopeEnqueued := c.inProgressAuditEnqueued
+	dispatcher := c.input.Dispatcher
+	auditLogID := c.auditLogID
 	c.mu.Unlock()
 	if registered {
 		atomic.AddInt64(&activeAuditCaptureCount, -1)
 	}
 	if cancel != nil {
 		cancel()
+	}
+	// 信封撤回只发生在「已写 in_progress 信封且未 finalize」的路径；store 侧
+	// 删除带 lifecycle 守卫，对未知/已终态 id 是无害 no-op。
+	if envelopeEnqueued {
+		if retractor, ok := dispatcher.(AuditLogRetractor); ok {
+			retractor.DispatchAuditLogRetraction(context.Background(), auditLogID)
+		}
 	}
 }
 

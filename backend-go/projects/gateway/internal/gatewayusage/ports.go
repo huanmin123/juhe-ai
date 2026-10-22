@@ -67,6 +67,16 @@ type AuditDispatcher interface {
 	DispatchAuditLog(ctx Ctx, input AuditLogInput)
 }
 
+// AuditLogRetractor is the optional retraction surface of the audit
+// dispatcher (W13): a capture that wrote an in_progress envelope and then
+// ended without a finalized audit (request aborted / capture canceled)
+// retracts the phantom envelope instead of leaving a permanent
+// lifecycle_status='in_progress' shell. Implementations must ignore unknown
+// or already-finalized ids (the store delete is guarded by the lifecycle).
+type AuditLogRetractor interface {
+	DispatchAuditLogRetraction(ctx Ctx, auditLogID string)
+}
+
 // DispatchOverflowSpool ports persistUsageRecordForQueueOverflow: the
 // performance-mode overflow compensation invoked when the finalization queue
 // is full (usage-record-spool.ts persistUsageRecordToSpool).

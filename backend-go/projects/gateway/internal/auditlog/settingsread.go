@@ -178,7 +178,7 @@ func openSettingsSQLiteReadOnly(path string) (*sql.DB, error) {
 }
 
 // ReadRetentionSettings 直读四个审计保留键。未装配读取目标时返回全缺省
-//（无覆盖，仅 env 生效）；行存在但值非法按 F4 语义报错（调用方跳过本轮，
+// （无覆盖，仅 env 生效）；行存在但值非法按 F4 语义报错（调用方跳过本轮，
 // 不静默扩大或缩小清理范围）。
 func (r *BusinessSettingsReader) ReadRetentionSettings(ctx context.Context) (RetentionSettings, error) {
 	if !r.configured() {

@@ -53,10 +53,12 @@ const (
 var producerQueueMaxBytes = int64(256) * 1024 * 1024
 
 // queuedAudit pairs the input with its estimated byte size so the worker can
-// release the budget exactly at dequeue time.
+// release the budget exactly at dequeue time. retractionID 非空表示这是一条
+// in_progress 信封撤回命令（W13）：不占字节预算，直接删除幽灵信封行。
 type queuedAudit struct {
-	input AuditLogInput
-	bytes int
+	input        AuditLogInput
+	bytes        int
+	retractionID string
 }
 
 type Producer struct {
@@ -219,8 +221,28 @@ func (p *Producer) QueueBytes() int64 {
 	return p.queueBytes.Load()
 }
 
+// Retract enqueues the retraction of one in_progress envelope (W13: a
+// capture canceled after the envelope was written leaves a phantom shell
+// unless the row is deleted). Fire-and-forget like Capture; the store delete
+// is lifecycle-guarded, so unknown or already-finalized ids are no-ops.
+func (p *Producer) Retract(auditLogID string) {
+	if p == nil || p.store == nil || auditLogID == "" {
+		return
+	}
+	p.start.Do(p.startWorkers)
+	select {
+	case p.queue <- queuedAudit{retractionID: auditLogID}:
+	default:
+		p.warn("F3 审计采集队列已满，丢弃信封撤回命令", "auditLogID", auditLogID)
+	}
+}
+
 func (p *Producer) workerLoop() {
 	for item := range p.queue {
+		if item.retractionID != "" {
+			p.retractOne(item.retractionID)
+			continue
+		}
 		p.persistOne(item.input)
 		// Release the byte budget only after persistence settles so the
 		// gauge covers queued + in-flight residency (exactly the residency
@@ -228,6 +250,33 @@ func (p *Producer) workerLoop() {
 		// triggers drops instead of letting residency grow without bound.
 		p.queueBytes.Add(-int64(item.bytes))
 	}
+}
+
+// retractOne runs the lease-renewed delete of one in_progress envelope. The
+// lifecycle guard in the DELETE makes this a no-op for finalized or unknown
+// ids, so a retract racing a finalize cannot destroy the terminal row.
+func (p *Producer) retractOne(auditLogID string) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			p.warn("F3 审计信封撤回 panic 已隔离", "panic", recovered, "auditLogID", auditLogID)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lease := p.lease.Lease()
+	if p.cfg.OwnerLease > 0 {
+		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer renewCancel()
+		if _, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease); err != nil {
+			p.warn("F3 信封撤回租约续期失败", "error", err, "auditLogID", auditLogID)
+			return
+		}
+	}
+	retracted, err := p.store.RetractInProgress(ctx, lease, auditLogID)
+	if err != nil {
+		p.warn("F3 审计信封撤回失败", "error", err, "auditLogID", auditLogID)
+	}
+	_ = retracted
 }
 
 // persistOne keeps the retired write sequence (renew → persist → hot search)

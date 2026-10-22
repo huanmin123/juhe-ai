@@ -2276,6 +2276,17 @@ func (d auditUsageDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gateway
 	d.producer.Capture(decoded)
 }
 
+// DispatchAuditLogRetraction implements gatewayusage.AuditLogRetractor (W13):
+// a capture canceled after its in_progress envelope was written retracts the
+// phantom shell instead of leaving a permanent lifecycle_status='in_progress'
+// row in the audit list.
+func (d auditUsageDispatcher) DispatchAuditLogRetraction(_ gatewayusage.Ctx, auditLogID string) {
+	if d.producer == nil {
+		return
+	}
+	d.producer.Retract(auditLogID)
+}
+
 // auditSettingsSourceAdapter implements gatewayusage.AuditLogSettingsSource.
 type auditSettingsSourceAdapter struct {
 	enabled                  func() bool
