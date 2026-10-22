@@ -36,10 +36,10 @@ assertIncludes(
   'applyProviderModelMutationResult(result, patch)',
   '编辑模型后应使用窄响应局部更新当前行'
 )
-assertIncludes(
+assertNotIncludes(
   providersViewSource,
-  'result.defaultHealthCheckModelCleared && isActiveProviderDefaultHealthCheckModel(result.model)',
-  '模型失效后的窄响应必须同步移除当前默认检查标记'
+  'result.defaultHealthCheckModelCleared',
+  '默认检查模型已改为目录派生，窄响应不得再维护可写默认标记'
 )
 assertNotIncludes(
   providersViewSource,

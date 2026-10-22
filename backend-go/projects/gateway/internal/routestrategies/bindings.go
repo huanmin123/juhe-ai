@@ -270,12 +270,11 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 
 // bindableGroup mirrors RouteStrategyBindableGroupRow (owner branch).
 type bindableGroup struct {
-	id        string
-	ownerID   string
-	name      string
-	enabled   bool
-	canBind   bool
-	groupKind string
+	id      string
+	ownerID string
+	name    string
+	enabled bool
+	canBind bool
 }
 
 func (g bindableGroup) namePtr() *string {
@@ -292,7 +291,7 @@ func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string
 	if lockRows && s.pg {
 		lockClause = " FOR UPDATE OF groups"
 	}
-	return s.bind(`SELECT groups.id, groups.system_account_id, groups.name, groups.group_kind,
+	return s.bind(`SELECT groups.id, groups.system_account_id, groups.name,
 			CASE WHEN groups.system_account_id = ? THEN 1
 				WHEN group_authorization.id IS NOT NULL THEN 1
 				ELSE 0
@@ -344,7 +343,7 @@ func (s *Store) loadBindableGroups(ctx context.Context, q queryer, inputs []Bind
 		var group bindableGroup
 		var enabled, canBind int
 		var name sql.NullString
-		if err := rows.Scan(&group.id, &group.ownerID, &name, &group.groupKind, &canBind, &enabled); err != nil {
+		if err := rows.Scan(&group.id, &group.ownerID, &name, &canBind, &enabled); err != nil {
 			return nil, err
 		}
 		group.name = name.String

@@ -17,7 +17,7 @@ const accountOptionsSource = readFileSync(resolve(frontendRoot, 'src/views/model
 const capabilitySource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/modelCheckProviderCapabilities.ts'), 'utf8')
 const schedulesModalSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualitySchedulesModal.vue'), 'utf8')
 const modelChecksViewSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelChecksView.vue'), 'utf8')
-const qualityConfigSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualityConfigPopover.vue'), 'utf8')
+const qualityConfigSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualityConfigForm.vue'), 'utf8')
 const runPanelSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelCheckRunPanel.vue'), 'utf8')
 const runModelOptionsSource = computedSource(modelChecksViewSource, 'const runModelOptions = computed')
 const openSchedulesSource = functionSource(modelChecksViewSource, 'async function openSchedules')

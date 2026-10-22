@@ -130,12 +130,21 @@ function splitTopLevel(text: string, separator: string, mask?: Uint8Array, offse
 // 从 openIdx（指向开括号）找到匹配闭括号索引。
 function matchBracket(text: string, mask: Uint8Array, openIdx: number): number {
   const open = text[openIdx]
-  const close = open === '(' ? ')' : open === '{' ? '}' : open === '[' ? ']' : ''
+  const close = open === '(' ? ')' : open === '{' ? '}' : open === '[' ? ']' : open === '<' ? '>' : ''
   if (!close) return -1
   let depth = 0
   for (let i = openIdx; i < text.length; i++) {
     const m = mask[i]
     if (m === MASK_STR || m === MASK_RAW || m === MASK_COMMENT) continue
+    if (open === '<') {
+      // TS 泛型参数：忽略箭头函数 `=>` 里的 `>`，避免提前收口。
+      if (text[i] === '<') depth++
+      else if (text[i] === '>' && text[i - 1] !== '=') {
+        depth--
+        if (depth === 0) return i
+      }
+      continue
+    }
     if (text[i] === open) depth++
     else if (text[i] === close) {
       depth--
@@ -308,6 +317,37 @@ function collectFrontendEndpoints(): FrontendEndpoint[] {
     else endpoints.set(key, { method: method.toUpperCase(), template, origins: [origin] })
   }
 
+  // 参数化 fetch/apiUrl(path) 的端点只能在调用点展开实参后确定；这里统一
+  // 扫描 API 目录内的调用点，任一实参不是字面量都按解析失败处理。
+  const expandParameterizedFetch = (fnName: string, paramPosition: number, method: string, location: string): void => {
+    const callRe = new RegExp(`\\b${escapeRegExp(fnName)}\\s*\\(`, 'g')
+    const usable: Array<{ source: { file: string; stripped: string; mask: Uint8Array }; match: RegExpMatchArray }> = []
+    for (const source of allSources) {
+      for (const call of source.stripped.matchAll(callRe)) {
+        if (call.index === undefined) continue
+        if (isFunctionDeclarationSite(source.stripped, call.index)) continue
+        usable.push({ source, match: call })
+      }
+    }
+    if (usable.length === 0) {
+      throw new FrontendParseError(location, `参数化 fetch 所在函数 ${fnName} 在 api 目录内无调用点`)
+    }
+    for (const { source, match: call } of usable) {
+      const callOpen = source.stripped.indexOf('(', call.index ?? 0)
+      const callClose = matchBracket(source.stripped, source.mask, callOpen)
+      const callArgs = splitTopLevel(source.stripped.slice(callOpen + 1, callClose), ',', source.mask, callOpen + 1)
+      const argText = callArgs[paramPosition]?.trim()
+      if (!argText || !/^['"`]/.test(argText)) {
+        throw new FrontendParseError(
+          `${rel(source.file)}:${lineOfIndex(source.stripped, call.index ?? 0)}`,
+          `函数 ${fnName} 第 ${paramPosition + 1} 个实参不是字面量: ${argText ?? '(缺失)'}`
+        )
+      }
+      const resolved = resolveUrlExpression(argText, collectHelperDefs(source.stripped), location)
+      add(method, resolved.template, location)
+    }
+  }
+
   for (const { file, stripped, mask } of allSources) {
     const helpers = collectHelperDefs(stripped)
 
@@ -354,8 +394,16 @@ function collectFrontendEndpoints(): FrontendEndpoint[] {
             add(method, normalizeTemplateText(inner.slice(1, -1)), location)
           } else if (/^\w+$/.test(inner)) {
             const template = findConstTemplateBefore(stripped, inner, match.index)
-            if (template) add(method, normalizeTemplateText(template.slice(1, -1)), location)
-            else throw new FrontendParseError(location, `fetch(apiUrl(${inner})) 的 ${inner} 模板定义未找到`)
+            if (template) {
+              add(method, normalizeTemplateText(template.slice(1, -1)), location)
+            } else {
+              const fn = findEnclosingFunction(stripped, match.index)
+              const paramPosition = fn?.params.indexOf(inner) ?? -1
+              if (!fn || paramPosition < 0) {
+                throw new FrontendParseError(location, `fetch(apiUrl(${inner})) 的 ${inner} 模板定义未找到，且不是当前函数参数`)
+              }
+              expandParameterizedFetch(fn.name, paramPosition, method, location)
+            }
           } else {
             throw new FrontendParseError(location, `fetch(apiUrl(...)) 参数无法解析: ${inner}`)
           }
@@ -373,33 +421,7 @@ function collectFrontendEndpoints(): FrontendEndpoint[] {
             throw new FrontendParseError(location, `fetch URL 模板引用多个函数参数: ${paramRefs.join(', ')}`)
           }
           const pathParam = paramRefs[0]
-          const paramPosition = fn.params.indexOf(pathParam)
-          const callRe = new RegExp(`\\b${escapeRegExp(fn.name)}\\s*\\(`, 'g')
-          const usable: Array<{ source: { file: string; stripped: string; mask: Uint8Array }; match: RegExpMatchArray }> = []
-          for (const source of allSources) {
-            for (const call of source.stripped.matchAll(callRe)) {
-              if (call.index === undefined) continue
-              if (isFunctionDeclarationSite(source.stripped, call.index)) continue
-              usable.push({ source, match: call })
-            }
-          }
-          if (usable.length === 0) {
-            throw new FrontendParseError(location, `参数化 fetch 所在函数 ${fn.name} 在 api 目录内无调用点`)
-          }
-          for (const { source, match: call } of usable) {
-            const callOpen = source.stripped.indexOf('(', call.index ?? 0)
-            const callClose = matchBracket(source.stripped, source.mask, callOpen)
-            const callArgs = splitTopLevel(source.stripped.slice(callOpen + 1, callClose), ',', source.mask, callOpen + 1)
-            const argText = callArgs[paramPosition]?.trim()
-            if (!argText || !/^['"`]/.test(argText)) {
-              throw new FrontendParseError(
-                `${rel(source.file)}:${lineOfIndex(source.stripped, call.index ?? 0)}`,
-                `函数 ${fn.name} 第 ${paramPosition + 1} 个实参不是字面量: ${argText ?? '(缺失)'}`
-              )
-            }
-            const resolved = resolveUrlExpression(argText, collectHelperDefs(source.stripped), location)
-            add(method, resolved.template, location)
-          }
+          expandParameterizedFetch(fn.name, fn.params.indexOf(pathParam), method, location)
         } else {
           throw new FrontendParseError(location, `fetch URL 无法解析: ${urlExpr}`)
         }

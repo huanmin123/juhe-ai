@@ -52,7 +52,8 @@ const (
 // maxSuperGroupMembers 与超级分组设计 §3.2 的成员行上限一致。
 const maxSuperGroupMembers = 20
 
-// minEnabledMembers 与启用超级分组的 enabled 成员下限一致。
+// minEnabledMembers 仅用于历史 merge 迁移产物守卫，不代表当前超级分组启用或
+// 路由绑定契约；当前写入口已不要求 enabled 成员数下限。
 const minEnabledMembers = 2
 
 // Options 是 Plan/Apply 的注入参数。

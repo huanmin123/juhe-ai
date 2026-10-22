@@ -205,11 +205,19 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 			ids = append(ids, f.createStandard(t, fmt.Sprintf("组-%02d", index)))
 		}
 		revision, _ := f.members(t, super)
-		if code, payload := f.patchMembers(t, super, revision, membersJSON(ids...)); code != http.StatusOK {
+		code, payload := f.patchMembers(t, super, revision, membersJSON(ids...))
+		if code != http.StatusOK {
 			t.Fatalf("20 members: %d %v", code, payload)
+		}
+		revision = payload["data"].(map[string]any)["revision"].(string)
+		if code, payload = f.enableGroup(t, super, revision); code != http.StatusOK {
+			t.Fatalf("enable 20-member super: %d %v", code, payload)
 		}
 		if got := f.env.count(t, `SELECT COUNT(*) FROM super_group_members WHERE super_group_id = ?`, super); got != 20 {
 			t.Fatalf("member rows = %d", got)
+		}
+		if got := f.env.count(t, `SELECT enabled FROM groups WHERE id = ?`, super); got != 1 {
+			t.Fatalf("super must be enabled, enabled=%d", got)
 		}
 	})
 

@@ -201,3 +201,39 @@ func TestSuperGroupDispatchFixtures(t *testing.T) {
 		}
 	})
 }
+
+// TestSuperGroupRouteEmptyTargetIsUnavailable 覆盖 0 成员超级分组在运行期
+// 的 no_candidate 语义：单独作为目标时返回 503 model_target_group_unavailable；
+// 外层 failover 中记录 skippedSuperGroupIDs 后继续到下一个分组目标。
+func TestSuperGroupRouteEmptyTargetIsUnavailable(t *testing.T) {
+	matchedDirectory := func(input ProviderModelRouteInput) (ProviderModelRouteResolution, error) {
+		return ProviderModelRouteResolution{Outcome: ProviderModelRouteMatched, ModelKey: input.Model}, nil
+	}
+
+	cache := superDispatchCache(t)
+	cache.providerRoute = matchedDirectory
+	apiKey := routeTestAPIKey(RouteStrategyModeNormal, superGroupBinding("b1", "grp_super", nil, 1))
+	result := runRouteTest(t, cache, nil, apiKey, routeTestRequest("gpt-4o"))
+	if result.Outcome != NormalRouteOutcomeFailed || result.StatusCode != 503 || result.Code != FailCodeModelTargetGroupUnavailable {
+		t.Fatalf("empty super target = %+v, want 503 %s", result, FailCodeModelTargetGroupUnavailable)
+	}
+
+	fallbackCache := superDispatchCache(t)
+	fallbackCache.providerRoute = matchedDirectory
+	fallbackCache.groupAccess["grp_fallback"] = routeTestAccess()
+	fallbackCache.accounts["grp_fallback"] = []UpstreamAccount{directAccount("acc_fallback")}
+	fallbackKey := routeTestAPIKey(RouteStrategyModeFailover,
+		superGroupBinding("b1", "grp_super", nil, 1),
+		routeTestBinding("b2", "grp_fallback", 2),
+	)
+	fallback := runRouteTest(t, fallbackCache, nil, fallbackKey, routeTestRequest("gpt-4o"))
+	if fallback.Outcome != NormalRouteOutcomeSelected || fallback.GroupID != "grp_fallback" {
+		t.Fatalf("empty super fallback = %q/%q, want selected/grp_fallback", fallback.Outcome, fallback.GroupID)
+	}
+	if len(fallback.SkippedSuperGroupIDs) != 1 || fallback.SkippedSuperGroupIDs[0] != "grp_super" {
+		t.Fatalf("skipped super IDs = %v, want [grp_super]", fallback.SkippedSuperGroupIDs)
+	}
+	if len(fallback.GroupSegments) != 0 {
+		t.Fatalf("fallback target must not carry super segments: %+v", fallback.GroupSegments)
+	}
+}

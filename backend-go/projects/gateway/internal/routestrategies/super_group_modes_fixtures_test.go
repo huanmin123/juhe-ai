@@ -165,6 +165,14 @@ func TestSuperGroupModeFixtures(t *testing.T) {
 		if len(singleBindings) != 1 || singleBindings[0]["groupId"] != single || singleBindings[0]["status"] != "active" {
 			t.Fatalf("single-member super binding: %v", singleBindings)
 		}
+		// 0 成员超级分组同样允许绑定；运行期由目标选择器记 no_candidate。
+		empty := env.createSuperGroup(t, env.admin, "normal-super-empty")
+		emptyID := env.createModeStrategy(t,
+			`{"name":"nsuper-empty","groupBindings":[`+modeBinding(empty, 1, 0)+`]}`)
+		emptyBindings := env.bindings(t, emptyID)
+		if len(emptyBindings) != 1 || emptyBindings[0]["groupId"] != empty || emptyBindings[0]["status"] != "active" {
+			t.Fatalf("empty-member super binding: %v", emptyBindings)
+		}
 	})
 
 	t.Run("mode-weighted-standard", func(t *testing.T) {
