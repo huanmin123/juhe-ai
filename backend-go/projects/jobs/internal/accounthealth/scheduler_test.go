@@ -666,6 +666,73 @@ func TestApplyCooldownNeutralKeepsTemporaryUnavailableAndDefers(t *testing.T) {
 	}
 }
 
+func TestCooldownNeutralTerminalizesAfterSevenDays(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Second)
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-cooldownObservationTimeout), Generation: "generation-1"}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	input.Schedule = exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: fence}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, StatusCode: 403, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.AccountStatus != "error" || outcome.NextDueAt != nil || outcome.ErrorCode != "cooldown_retest_neutral_timeout" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_error" || outcome.CooldownFence == nil || !sameCooldownFence(outcome.CooldownFence, fence) || !sameCooldownFence(outcome.Projection.CooldownFence, fence) {
+		t.Fatalf("seven-day neutral observation must become projected terminal: %#v", outcome)
+	}
+	if !strings.Contains(outcome.ErrorMessage, "HTTP 403") || !strings.Contains(outcome.ErrorMessage, "7 天") {
+		t.Fatalf("neutral terminal message must carry observation window and last status: %q", outcome.ErrorMessage)
+	}
+}
+
+func TestCooldownNeutralBeforeSevenDaysStillDefers(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Second)
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-cooldownObservationTimeout + time.Minute), Generation: "generation-1"}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	input.Schedule = exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: fence}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, StatusCode: 403, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.AccountStatus != "temporary_unavailable" || outcome.NextDueAt == nil || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_defer" || outcome.ErrorCode != "" {
+		t.Fatalf("neutral before the seven-day window must keep deferring: %#v", outcome)
+	}
+}
+
+func TestCooldownTaskFailureNeverTerminalizes(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Second)
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-cooldownObservationTimeout - time.Hour), Generation: "generation-1"}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "temporary_unavailable", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	input.Schedule = exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "temporary_unavailable", CooldownFence: fence}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeTaskFailed, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.AccountStatus == "error" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_defer" {
+		t.Fatalf("local task failure must not terminalize an account: %#v", outcome)
+	}
+}
+
+func TestCooldownNeutralTerminalizesRateLimitedAfterSevenDays(t *testing.T) {
+	now := time.Now().UTC()
+	input := testInput("https://api.example.com", "chat_json")
+	cooldownUntil := now.Add(-time.Second)
+	fence := &exactkeyprobe.CooldownFence{ObservationStartedAt: now.Add(-cooldownObservationTimeout), Generation: "generation-1"}
+	input.Eligibility = exactkeyprobe.Eligibility{AccountStatus: "rate_limited", Schedulable: true, BoundGroup: true, AuthorizationEligible: true, CooldownUntil: &cooldownUntil}
+	input.Cooldown = fence
+	input.Schedule = exactkeyprobe.Schedule{HealthIntervalMS: int64(time.Hour / time.Millisecond), FailureThreshold: 1, FailureRetryMS: int64(time.Minute / time.Millisecond), CooldownNeutralBaseMS: 30_000, CooldownNeutralMaxMS: 15 * 60_000, CooldownFailureBackoffMS: int64(time.Minute / time.Millisecond)}
+	prior := CurrentState{InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, AccountStatus: "rate_limited", CooldownFence: fence}
+	outcome := Outcome{Outcome: exactkeyprobe.OutcomeNeutral, StatusCode: 429, ObservedAt: now}
+	applyOutcomeDecision(&outcome, input, prior, true, "cooldown_retest")
+	if outcome.AccountStatus != "error" || outcome.ErrorCode != "cooldown_retest_neutral_timeout" || outcome.Projection == nil || outcome.Projection.TransitionKind != "cooldown_error" {
+		t.Fatalf("seven-day neutral rate-limited observation must become projected terminal: %#v", outcome)
+	}
+}
+
 func TestCooldownRetestUsesInputFenceWhenCurrentStateFenceChanged(t *testing.T) {
 	now := time.Now().UTC()
 	input := testInput("https://api.example.com", "chat_json")

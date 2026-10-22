@@ -1,8 +1,6 @@
 import { computed, reactive, type ComputedRef } from 'vue'
 
-import { preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import type { GroupKind, GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
-import { GPT_VENDOR_CODE } from '../accounts/accountOptions'
 import {
   cloneHighConcurrencySchedulingPolicy,
   defaultClientIpConcurrencyLimit,
@@ -10,9 +8,10 @@ import {
   normalizeClientIpConcurrencyLimit
 } from './groupSchedulingPolicy'
 
+// 分组无供应商维度（供应商与上游协议面重构设计 §8：groups.provider_code 已
+// 删除，后端 API 对该键「接受但忽略」）。表单与请求载荷不再携带 providerCode。
 export type GroupEditForm = {
   name: string
-  providerCode: string
   description: string
   enabled: boolean
   groupType: GroupType
@@ -22,15 +21,14 @@ export type GroupEditForm = {
 
 type GroupFormSeed = Pick<
   GroupSummary,
-  'name' | 'providerCode' | 'description' | 'enabled' | 'groupType' | 'accessType'
+  'name' | 'description' | 'enabled' | 'groupType' | 'accessType'
 > & Partial<Pick<GroupSummary, 'schedulingPolicy' | 'groupKind'>>
 
-export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefinition[]>) {
+export function useGroupFormModel(_availableProviders: ComputedRef<ProviderDefinition[]>) {
   let editBaseline: GroupEditForm | undefined
   let editAccessType: 'owner' | 'authorized' | undefined
   const form = reactive<GroupEditForm>({
     name: '',
-    providerCode: GPT_VENDOR_CODE,
     description: '',
     enabled: true,
     groupType: 'personal',
@@ -50,19 +48,11 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
   })
   const formClientIpConcurrencyLimit = computed(() => normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) || defaultClientIpConcurrencyLimit)
 
-  function defaultProviderCode() {
-    const providerCode = preferredDefaultProviderCode(availableProviders.value)
-    if (!providerCode) throw new Error('没有可用供应商')
-    return providerCode
-  }
-
   function resetGroupFormForCreate() {
     editBaseline = undefined
     editAccessType = undefined
-    const providerCode = defaultProviderCode()
     Object.assign(form, {
       name: '',
-      providerCode,
       description: '',
       enabled: true,
       groupType: 'personal' as GroupType,
@@ -77,7 +67,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       : cloneHighConcurrencySchedulingPolicy()
     Object.assign(form, {
       name: group.name,
-      providerCode: group.providerCode,
       description: group.description ?? '',
       enabled: group.enabled,
       groupType: group.groupType,
@@ -112,7 +101,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     }
     if (editAccessType !== 'authorized') {
       if (current.name !== editBaseline.name) payload.name = current.name
-      if (current.providerCode !== editBaseline.providerCode) payload.providerCode = current.providerCode
       if (current.description !== editBaseline.description) payload.description = current.description
     }
     return payload
@@ -122,7 +110,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     const current = currentGroupFormSnapshot()
     return {
       name: current.name,
-      providerCode: current.providerCode,
       description: current.description,
       enabled: current.enabled,
       groupType: current.groupType,
@@ -134,7 +121,6 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
   function currentGroupFormSnapshot(): GroupEditForm {
     return {
       name: form.name.trim(),
-      providerCode: form.providerCode.trim(),
       description: form.description.trim(),
       enabled: form.enabled,
       groupType: form.groupType,

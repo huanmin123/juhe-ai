@@ -107,6 +107,18 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		Purpose:       "把网关协议的 ApplyStreamUsageFallback 装配进 FinalizationDeps.UsageFallback（chain_v1.go，请求体事实在构造时捕获）",
 		MissingImpact: "上游流式响应缺少 usage 时不会按请求体/可见输出估算，使用记录落 0 token / 0 成本，计费与统计低估真实消耗",
 	},
+	{
+		Identifier:    "cacheOptions.Shared = sharedFactory",
+		Name:          "网关运行时缓存 Redis shared cache 端口",
+		Purpose:       "高性能模式（cacheDriver=redis）下把模型目录/分组访问/响应检查策略缓存切到 Redis 共享层（chain_runtime.go）",
+		MissingImpact: "本地 LRU 重新成为跨进程事实源，堆随 API Key/分组/模型组合增长并再次逼近 GOMEMLIMIT，GC 抖动抬高网关 CPU",
+	},
+	{
+		Identifier:    "cacheOptions.RequireShared = redisCache",
+		Name:          "网关运行时缓存 shared 缺失 fail-fast 门",
+		Purpose:       "cacheDriver=redis 时要求 Shared 已接线，漏接即启动失败而不是静默退回本地缓存",
+		MissingImpact: "Shared 漏接重新退化为进程内缓存事实源，堆随组合增长且问题只能在生产运行数天后暴露",
+	},
 }
 
 // TestCompositionWiringGuard 断言 gateway 组合根源码池包含全部接线清单项。

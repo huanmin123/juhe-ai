@@ -85,6 +85,7 @@ export function accountErrorCodeText(code?: string): string {
   if (code === 'cooldown_retest_failed') return '后台复测失败'
   if (code === 'cooldown_retest_long_term_unavailable') return '长期不可用每小时复测'
   if (code === 'cooldown_retest_observation_timeout') return '长期不可用超过 7 天'
+  if (code === 'cooldown_retest_neutral_timeout') return '上游持续拒绝超过 7 天'
   if (code === 'account_activation_check_timeout') return '激活检查超过 24 小时'
   if (code === 'account_health_check_failed') return '后台健康检测失败'
   return code || '未分类异常'

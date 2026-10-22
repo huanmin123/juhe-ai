@@ -98,12 +98,17 @@ func TestW12ERunReleaseErrorJoins(t *testing.T) {
 	runErr := errors.New("w12e cycle fail")
 	releaseErr := errors.New("w12e release fail")
 	runner := NewRunner(cfg, store, fakeInputReader{}, nil)
-	runner.runOwnedFn = func(context.Context, OwnerLease) error { return runErr }
-	runner.releaseOwnerLease = func(context.Context, OwnerLease) error { return releaseErr }
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// 只在首轮结束后取消：若依赖 500ms 超时，最后一轮 acquire 会在 deadline
+	// 边缘偶发失败并把 LastError 覆盖成 schema 读取超时（与本用例断言竞争）。
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := runner.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("应合并 run/release 错误并循环到超时: %v", err)
+	runner.runOwnedFn = func(context.Context, OwnerLease) error {
+		cancel()
+		return runErr
+	}
+	runner.releaseOwnerLease = func(context.Context, OwnerLease) error { return releaseErr }
+	if err := runner.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("应合并 run/release 错误并在取消后退出: %v", err)
 	}
 	if !strings.Contains(runner.Status().LastError, releaseErr.Error()) {
 		t.Fatalf("释放错误应记录: %+v", runner.Status())

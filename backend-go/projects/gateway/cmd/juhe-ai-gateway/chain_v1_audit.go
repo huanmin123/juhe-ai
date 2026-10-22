@@ -124,6 +124,7 @@ func (c preauthAuditCapture) BindContext(context gatewaypreauth.AuditGatewayCont
 		SystemAccountID:   context.SystemAccountID,
 		APIKeyID:          context.APIKeyID,
 		GroupID:           context.GroupID,
+		RouteGroupID:      context.RouteGroupID,
 		ProviderCode:      context.ProviderCode,
 		TrafficSource:     context.TrafficSource,
 		SessionID:         context.SessionID,

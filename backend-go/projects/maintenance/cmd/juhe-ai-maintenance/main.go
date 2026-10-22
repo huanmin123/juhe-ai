@@ -84,6 +84,8 @@ func runMaintenance(argv []string) int {
 	rebuildMaxBatches := fs.Int("max-batches", 1000, "rebuild-usage-stats aggregation batch cap per run (clamped to 1..10000; default 1000; rerun to continue when the cap is hit)")
 	applySuccessCostBackfill := fs.Bool("apply-success-cost-backfill", false, "one-shot idempotent backfill of usage_stats success_cost_usd from total_cost_usd for the six stats tables (maintenance window with jobs stopped; run --ensure-schema first to create the backfill_progress marker table; requires --driver postgres --dsn or --driver sqlite --paths stats=...; resumable from the persisted cursor)")
 	backfillDryRun := fs.Bool("dry-run", false, "read-only dry-run: with --apply-success-cost-backfill prints the pending-row count per table (never touches the backfill_progress marker); with --migrate-provider-connection-model scans the legacy schema read-only and writes the reviewable manifest to --manifest-out (the only write)")
+	importLegacyBusiness := fs.Bool("import-legacy-business", false, `business database rebuild backfill (2026-10-22 cutover): reads a legacy provider-era database via --legacy-dsn and writes business configuration rows (accounts/groups/routing/keys/authorizations/settings/teams/tags/integrations) into the freshly ensured target --dsn; historical usage/audit/statistics/model-check domains are intentionally discarded; --dry-run runs the whole transaction and rolls back`)
+	legacyDSN := fs.String("legacy-dsn", "", "legacy provider-era PostgreSQL URL read by --import-legacy-business")
 	migrateProviderConnectionModel := fs.Bool("migrate-provider-connection-model", false, `provider & upstream protocol-surface migration dry-run slice (供应商与上游协议面重构设计 §10): with --dry-run reads the legacy business schema read-only (--driver postgres --dsn) and writes the reviewable manifest to --manifest-out (blocked counts may be non-zero by design); WITHOUT --dry-run the formal execution branch is not delivered yet and the command exits 2 ("正式执行尚未交付：历史 usage/audit 列改造完成后提供")`)
 	manifestOut := fs.String("manifest-out", "", "manifest JSON output path for --migrate-provider-connection-model --dry-run (required with it; the only dry-run write)")
 	migrateMergeSuperGroups := fs.Bool("migrate-merge-super-groups", false, "merge route-strategy migration to super groups (超级分组设计 §6): with --dry-run writes the reviewable manifest to --manifest-out; without --dry-run requires --node-stopped --go-stopped --backup-confirmed and applies mapped strategies in one business transaction (--driver postgres --dsn or --driver sqlite --paths)")
@@ -143,6 +145,13 @@ func runMaintenance(argv []string) int {
 			return 2
 		}
 		return mergeSuperGroupsMigrationResult(*backfillDryRun, *bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *manifestOut, *migrationBatchID, *nodeStopped, *goStopped, *backupConfirmed)
+	}
+	if *importLegacyBusiness {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables || *migrateProviderConnectionModel || *migrateMergeSuperGroups {
+			fmt.Fprintln(os.Stderr, "legacy business import flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return legacyBusinessImportResult(*backfillDryRun, *legacyDSN, *bootstrapDSN, *seedSecret)
 	}
 	if *migrateProviderConnectionModel {
 		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *applyStudioRetirement || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage || *rebuildUsageStats || *applySuccessCostBackfill || *migrateChatBinding || *migrateAccountCapabilityDomain || *verifyAccountCapabilityDomain || *migrateSchedulingPreferences || *verifySchedulingPreferences || *dropRetiredMonitoringTables {

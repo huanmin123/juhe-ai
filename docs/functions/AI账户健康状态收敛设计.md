@@ -39,11 +39,11 @@
 - 该字段为 `false` 且状态为 `temporary_unavailable` 时，观察窗口固定为 10 分钟，下一次退避不得越过截止点；截止后必须执行一次真实最终探针，`complete_success` 可按来源恢复，只有独立 `transport_incomplete` 才写入 `cooldown_retest_limited_probe_timeout` 并转为 `error`。完整 framing 中性结果、worker 停止或任务未形成真实上游尝试时不能只按墙钟判异常。
 - 已处于 `temporary_unavailable` 时真实 `true -> false` 保存会从保存时间重开 10 分钟窗口并清理本轮复测计数；重复保存 `false` 不续期。`rate_limited` 始终沿用原恢复规则。
 
-- 只有独立 `transport_incomplete`（自动探针归类为 `upstream_failure`）才推进冷却恢复失败计数：第 1 至 5 次按 `3`、`6`、`12`、`24`、`48` 秒策略基线进入快速通道；第 6 次起进入慢速通道。慢速每轮按全局被动策略重新偏移到 `1` 至 `5` 分钟策略窗口，不受 `maxPauseMinutes` 截断。
-- `framing_complete_neutral`、`probe_task_failure` 和其他已执行但无法归因的 `unknown` 都不增加持久失败计数、不推进长期或终态；它们同样按全局被动策略在 `1` 至 `5` 分钟策略窗口内重新偏移顺延。`stale` 队列项由投递和写回围栏直接丢弃，不安排新的复测。
+- 只有独立 `transport_incomplete`（自动探针归类为 `upstream_failure`）才推进冷却恢复失败计数：第 1 至 5 次按 `3`、`6`、`12`、`24`、`48` 秒策略基线进入快速通道；第 6 次起进入慢速通道，每轮基准 `60` 秒并按全局被动策略偏移，不受 `maxPauseMinutes` 截断。
+- `framing_complete_neutral`、`probe_task_failure` 和其他已执行但无法归因的 `unknown` 都不增加持久失败计数，也不进入长期不可用阶段；中性结果按 `CooldownNeutralBaseMS`（默认 `30` 秒）为基线、随观察时长翻倍并封顶 `CooldownNeutralMaxMS`（默认 `15` 分钟）顺延。`stale` 队列项由投递和写回围栏直接丢弃，不安排新的复测。
 - 默认从 `cooldown_retest_observation_started_at` 连续累计真实 `upstream_failure` 满 `12` 小时后的下一次真实失败进入长期不可用阶段；长期阶段固定每 `1` 小时复检一次，不使用更长的配置间隔。
-- 只有独立 `transport_incomplete` 才启动并推进观察窗口；从观察起点满 7 天后的下一次独立 `transport_incomplete`，repository 原子写入 `status = error`、`schedulable = false`、清空 `cooldown_until`，并写入 `last_error_code = cooldown_retest_observation_timeout`。`framing_complete_neutral` 只顺延，`probe_task_failure` / `stale` / `unknown` 不计数。
-- 终态错误信息必须包含观察起点、持续 7 天和最后一次本地 transport 错误，便于运维定位；不得用上游业务 status/body 充当终态依据。
+- 从观察起点满 7 天仍未出现任何 `complete_success` 时，下一次真实上游结果即收敛终态：独立 `transport_incomplete` 写入 `cooldown_retest_observation_timeout`，独立 `framing_complete_neutral` 写入 `cooldown_retest_neutral_timeout`；两者都原子写入 `status = error`、`schedulable = false`、清空 `cooldown_until`。观察起点在每次 `cooldown_success` 恢复时清空，因此该字段等价于"连续未成功时长"。`probe_task_failure` / `stale` / `unknown` 不计数、不触发终态。
+- 终态错误信息必须包含观察起点、持续 7 天和最后一次真实上游结果（transport 错误或中性 HTTP 状态），便于运维定位；不得用上游业务 status/body 推断凭据失效或授权失败，中性终态只陈述"完整响应但持续未成功"这一本地可验证事实。
 - 转为 `error` 后不再进入冷却复检候选。
 
 用户显式 `temporary_unavailable` / `rate_limited` 不进入无来源自动清理：只允许 TTL、匹配来源恢复动作或人工恢复；普通/后台无 provenance 成功不得清理。
@@ -75,6 +75,7 @@ accounts.health_check_failure_started_at
 | --- | --- |
 | 待检查从首次独立 `transport_incomplete` 起满 24 小时 | `account_activation_check_timeout` |
 | 冷却恢复从独立 `transport_incomplete` 观察起点满 7 天 | `cooldown_retest_observation_timeout` |
+| 冷却恢复观察起点满 7 天且下一次为独立 `framing_complete_neutral` | `cooldown_retest_neutral_timeout` |
 
 ## 7. 并发和原子性
 
@@ -87,7 +88,7 @@ accounts.health_check_failure_started_at
 
 - `account-pending-test-regression`：完整 HTTP / 协议失败中性、独立 transport 失败的 1 小时复检与 24 小时终态、重新检查和异常恢复。
 - `account-health-check-regression`：SQLite 字段、PostgreSQL 行锁和双存储写入契约。
-- `cooldown-retest-recovery-regression`：长期阶段每小时复检、仅 transport 证据推进 7 天终态、显式来源恢复边界及终态恢复。
+- `cooldown-retest-recovery-regression`：长期阶段每小时复检、transport 与中性证据各自推进 7 天终态、本地任务失败不触发终态、显式来源恢复边界及终态恢复。
 - `disabled-account-state-guard-regression`：待检查和异常自有账户均可停用，异常恢复不直接激活。
 - `account-status-formatters-regression`：菜单名称、重新检查资格、异常/待检查停用入口和提示文案。
 - `account-test-local-restore-regression`：保存账户的模型和精确请求形态匹配时仅恢复自有不可调度账户；任一选择不匹配时保持原状态。

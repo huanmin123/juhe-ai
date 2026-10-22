@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url'
 
 import { computed } from 'vue'
 
-import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import { useGroupFormModel } from '../../views/groups/groupFormModel'
 import { defaultHighConcurrencySchedulingPolicy } from '../../views/groups/groupSchedulingPolicy'
 
@@ -18,14 +17,13 @@ const highConcurrencyPolicy = {
 const completeHighConcurrencyPolicy = { ...defaultHighConcurrencySchedulingPolicy, ...highConcurrencyPolicy }
 const highConcurrencyGroup = {
   name: '高并发分组',
-  providerCode: 'gpt',
   description: '原说明',
   enabled: true,
   groupType: 'high_concurrency' as const,
   schedulingPolicy: completeHighConcurrencyPolicy,
   accessType: 'owner' as const
 }
-const model = useGroupFormModel(computed(() => FALLBACK_PROVIDERS))
+const model = useGroupFormModel(computed(() => []))
 
 model.applyGroupToForm(highConcurrencyGroup)
 assert.deepEqual(model.groupEditPatch(), {}, '未修改分组不得生成 PATCH 字段')
@@ -37,7 +35,7 @@ model.applyGroupToForm(highConcurrencyGroup)
 model.form.schedulingPolicy.defaultSoftConcurrency = 8
 assert.deepEqual(model.groupEditPatch(), {
   schedulingPolicy: { ...highConcurrencyPolicy, defaultSoftConcurrency: 8 }
-}, '高并发策略修改不得附带名称、供应商、说明、状态或分组类型')
+}, '高并发策略修改不得附带名称、说明、状态或分组类型')
 
 model.applyGroupToForm({ ...highConcurrencyGroup, accessType: 'authorized' })
 model.form.name = '不允许提交的授权名称'
@@ -46,7 +44,6 @@ assert.deepEqual(model.groupEditPatch(), { enabled: false }, '授权分组只能
 
 model.applyGroupToForm({
   name: '普通分组',
-  providerCode: 'gpt',
   description: '',
   enabled: true,
   groupType: 'personal',
@@ -64,7 +61,8 @@ assert.deepEqual(model.groupEditPatch(), { groupType: 'personal' }, '切换到�
 
 model.resetGroupFormForCreate()
 const createPayload = model.groupCreatePayload()
-assert.deepEqual(Object.keys(createPayload).sort(), ['description', 'enabled', 'groupType', 'name', 'providerCode'], '普通分组创建只提交必需表单字段')
+assert.deepEqual(Object.keys(createPayload).sort(), ['description', 'enabled', 'groupKind', 'groupType', 'name'], '普通分组创建只提交必需表单字段（分组无供应商维度，设计 §8）')
+assert.equal('providerCode' in createPayload, false, '分组创建载荷不得携带已退役的 providerCode')
 
 const groupsViewSource = readFileSync(fileURLToPath(new URL('../../views/groups/GroupsView.vue', import.meta.url)), 'utf8')
 const saveStart = groupsViewSource.indexOf("const saveGroup = submitAction('groups.save'")

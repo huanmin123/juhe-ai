@@ -604,9 +604,13 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			runtimeGroupAccess = normalRoute.GroupAccess
 			runtimeAccounts = normalRoute.Accounts
 			runtimeAccountDispatchDiagnostics = nil
-			// 请求级审计与循环期聚合都取最终命中组（设计 §4.2：route_group_id
-			// 必须是超级分组而不是 runtime 静态选中的标准组）。
-			auditCapture.BindContext(AuditGatewayContext{GroupID: groupID})
+			// 请求级审计双层身份（超级分组设计 §4.3）：GroupID 保持路由绑定目标
+			// （超级分组本身，供循环期目标聚合与窗口语义使用），RouteGroupID 显式
+			// 绑定同一目标——消费侧按「GroupID=实际服务组、RouteGroupID=路由目标」
+			// 落库时，超级分组目标下的实际服务组由尝试级 GroupIDOverride 按账号
+			// BoundGroupID 提供；请求级 group_id 回落请求级绑定组（此处即超级分组，
+			// 无账号可归因的 /v1/models 等请求维持原语义）。
+			auditCapture.BindContext(AuditGatewayContext{GroupID: groupID, RouteGroupID: groupID})
 			preflightTargetOutcomes = normalRoute.TargetOutcomes
 			auditCapture.AddGatewayMetadata("normal_model_route", map[string]any{
 				"requestedModel":        normalRoute.RequestedModel,
@@ -1447,22 +1451,34 @@ type interactionFailureInput struct {
 // 激活绑定遍历，返回去重后的分组序列（保持绑定顺序），供 /v1/models 成员装
 // 载端口使用。供应商解耦后绑定行不再携带 provider 维度（设计 §8）：全部启
 // 用绑定均有效，空态判据只看激活绑定本身。
+//
+// 超级分组目标按成员组展开（超级分组设计 §4.2）：并集装载器的输入是"持有
+// 账号的分组"，超级分组自身不直接拥有 group_accounts 行，只传超级分组 ID
+// 会得到空并集（/v1/models 空列表）。成员保持绑定行的 priority 序
+// （MemberGroupIDs 由 sqlruntime 按 priority ASC, member_group_id ASC 装载）；
+// disabled 成员行单独存于 DisabledMemberGroupIDs，不参与展开。
 func gatewayModelsBindings(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) []GatewayModelBinding {
 	seen := map[string]bool{}
 	bindings := []GatewayModelBinding{}
+	appendGroup := func(groupID string) {
+		groupID = strings.TrimSpace(groupID)
+		if groupID == "" || seen[groupID] {
+			return
+		}
+		seen[groupID] = true
+		bindings = append(bindings, GatewayModelBinding{GroupID: groupID})
+	}
 	for _, binding := range recordBindings(apiKeyRecord) {
 		if binding.Status != "active" {
 			continue
 		}
-		groupID := strings.TrimSpace(binding.GroupID)
-		if groupID == "" {
+		if binding.GroupKind == "super" {
+			for _, memberID := range binding.MemberGroupIDs {
+				appendGroup(memberID)
+			}
 			continue
 		}
-		if seen[groupID] {
-			continue
-		}
-		seen[groupID] = true
-		bindings = append(bindings, GatewayModelBinding{GroupID: groupID})
+		appendGroup(binding.GroupID)
 	}
 	return bindings
 }

@@ -53,7 +53,6 @@
       :loading="loading"
       :mobile-has-more="mobileHasMore"
       :mobile-loading-more="mobileLoadingMore"
-      :provider-name="providerName"
       :table-pagination="tablePagination"
       @action="handleGroupAction"
       @change="handleTableChange"
@@ -69,16 +68,12 @@
       :group-kind-locked="Boolean(editingId)"
       :form="form"
       :max-queue-wait-seconds="formMaxQueueWaitSeconds"
-      :provider-locked="providerLocked"
-      :provider-options="providerOptions"
-      :provider-options-loading="groupOptionsLoading"
       :saving="groupSaving"
       :show-target-alert="!editingId && isManagementView"
       :target-system-account-label="targetSystemAccountLabel"
       :title="groupModalTitle"
       @client-ip-concurrency-limit-change="setFormClientIpConcurrencyLimit"
       @max-queue-wait-seconds-change="setFormMaxQueueWaitSeconds"
-      @provider-dropdown-visible-change="handleProviderOptionsDropdown"
       @save="saveGroup"
     />
 
@@ -108,17 +103,11 @@ import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { providerDisplayName } from '@/shared/providerDisplay'
-import type { GroupListItem, ProviderDefinition } from '@/types/domain'
-import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
-import {
-  groupStats
-} from './groupDisplay'
+import type { GroupListItem } from '@/types/domain'
 import { reconcileCreatedGroup } from './groupListMutation'
 import GroupEditModal from './GroupEditModal.vue'
 import SuperGroupMembersModal from './SuperGroupMembersModal.vue'
@@ -128,7 +117,6 @@ import {
   groupsActiveFilterCount,
   groupsListParams,
   groupsPageSize,
-  groupsProviderOptions,
   groupsTableColumns,
   isAllGroupsSystemAccountFilter,
   type GroupsPageState
@@ -147,14 +135,6 @@ const memberGroup = ref<GroupListItem>()
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
-const providers = ref<ProviderDefinition[]>([])
-const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
-const groupOptionsLoaded = ref(false)
-const groupOptionsScopeKey = ref('')
-const groupOptionsLoading = ref(false)
-let groupOptionsRequestId = 0
-let groupOptionsLoadingKey: string | undefined
-let groupOptionsLoadingPromise: Promise<void> | undefined
 let groupEditRequestId = 0
 const groupPageEpoch = ref(0)
 const groupPageActive = ref(true)
@@ -173,14 +153,12 @@ const {
   resetGroupFormForCreate,
   setFormClientIpConcurrencyLimit,
   setFormMaxQueueWaitSeconds
-} = useGroupFormModel(availableProviders)
+} = useGroupFormModel(computed(() => []))
 type GroupEditTarget = Pick<GroupListItem, 'id' | 'systemAccountId' | 'updatedAt'> & {
   accessType: 'owner' | 'authorized'
-  providerLocked: boolean
 }
 let editingTarget: GroupEditTarget | undefined
 const editingAccessType = ref<'owner' | 'authorized'>()
-const editingProviderLocked = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const groupsApi = useScopedGroupsApi(isManagementView)
 const {
@@ -268,7 +246,6 @@ onDeactivated(() => {
   groupPageActive.value = false
   groupPageEpoch.value += 1
   groupEditRequestId += 1
-  invalidateGroupOptions()
 })
 
 onActivated(() => {
@@ -280,7 +257,6 @@ watch(authState.revision, () => {
   groupPageEpoch.value += 1
   groupEditRequestId += 1
   invalidateSystemAccountOptions()
-  invalidateGroupOptions()
   invalidatePendingLoads()
   groups.value = []
   systemAccountFilter.value = defaultGroupsPageState().systemAccountFilter
@@ -291,24 +267,12 @@ watch(authState.revision, () => {
 })
 onBeforeUnmount(() => {
   groupEditRequestId += 1
-  invalidateGroupOptions()
-})
-const providerOptions = computed(() => {
-  const options = groupsProviderOptions(availableProviders.value)
-  const selectedCode = form.providerCode.trim()
-  if (!selectedCode || options.some((option) => option.value === selectedCode)) return options
-  const selectedName = providerDisplayName(selectedCode, availableProviders.value)
-  return [
-    ...options,
-    { label: selectedName === '未知供应商' ? selectedCode : selectedName, value: selectedCode, disabled: false }
-  ]
 })
 const editingAuthorizedGroup = computed(() => editingAccessType.value === 'authorized')
 const groupModalTitle = computed(() => {
   if (!editingId.value) return '新建分组'
   return editingAuthorizedGroup.value ? '编辑授权分组使用配置' : '编辑分组'
 })
-const providerLocked = computed(() => Boolean(editingId.value && editingProviderLocked.value))
 const activeFilterCount = computed(() => groupsActiveFilterCount(systemAccountFilter.value))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
@@ -321,10 +285,6 @@ const targetSystemAccountLabel = computed(() => {
     || principalLabelForId('system_account', systemAccountId)
     || ''
 })
-
-function providerName(providerCode?: string) {
-  return providerDisplayName(providerCode, availableProviders.value)
-}
 
 function handleGroupAction(key: string, group: GroupListItem) {
   if (key === 'edit') {
@@ -357,60 +317,8 @@ function groupEditTarget(group: GroupListItem): GroupEditTarget {
     id: group.id,
     systemAccountId: group.systemAccountId,
     updatedAt: group.updatedAt,
-    accessType: isAuthorizedGroup(group) ? 'authorized' : 'owner',
-    providerLocked: groupStats(group).total > 0
+    accessType: isAuthorizedGroup(group) ? 'authorized' : 'owner'
   }
-}
-
-async function loadGroupOptions(force = false): Promise<void> {
-  const scopeKey = `${isManagementView.value ? 'management' : 'self'}:${authState.revision.value}`
-  if (!force && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
-    return
-  }
-  if (!force && groupOptionsLoadingKey === scopeKey && groupOptionsLoadingPromise) return groupOptionsLoadingPromise
-
-  const requestId = ++groupOptionsRequestId
-  groupOptionsLoading.value = true
-  const request = (async () => {
-    try {
-      const providerList = await loadProviderOptionsResource({
-        force,
-        isCurrent: () => requestId === groupOptionsRequestId && scopeKey === `${isManagementView.value ? 'management' : 'self'}:${authState.revision.value}`,
-        isManagementView: isManagementView.value
-      })
-      if (requestId !== groupOptionsRequestId || scopeKey !== `${isManagementView.value ? 'management' : 'self'}:${authState.revision.value}`) return
-      providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
-      groupOptionsLoaded.value = true
-      groupOptionsScopeKey.value = scopeKey
-    } catch (error) {
-      if (requestId !== groupOptionsRequestId) return
-      console.error(error)
-      message.error(extractApiErrorMessage(error, '加载供应商选项失败，请重试'))
-    } finally {
-      if (requestId === groupOptionsRequestId) {
-        groupOptionsLoading.value = false
-        groupOptionsLoadingKey = undefined
-        groupOptionsLoadingPromise = undefined
-      }
-    }
-  })()
-  groupOptionsLoadingKey = scopeKey
-  groupOptionsLoadingPromise = request
-  return request
-}
-
-function invalidateGroupOptions(): void {
-  groupOptionsRequestId += 1
-  groupOptionsLoadingKey = undefined
-  groupOptionsLoadingPromise = undefined
-  groupOptionsLoading.value = false
-  groupOptionsLoaded.value = false
-  groupOptionsScopeKey.value = ''
-  providers.value = []
-}
-
-function handleProviderOptionsDropdown(open: boolean): void {
-  if (open) void loadGroupOptions()
 }
 
 function refreshGroups() {
@@ -453,7 +361,6 @@ function openCreate() {
   editingId.value = undefined
   editingTarget = undefined
   editingAccessType.value = undefined
-  editingProviderLocked.value = false
   resetGroupFormForCreate()
   modalOpen.value = true
 }
@@ -469,7 +376,6 @@ async function openEdit(group: GroupListItem) {
     applyGroupToForm({ ...group, accessType: target.accessType })
     editingTarget = target
     editingAccessType.value = target.accessType
-    editingProviderLocked.value = target.providerLocked
     editingId.value = group.id
     modalOpen.value = true
     return
@@ -486,7 +392,6 @@ async function openEdit(group: GroupListItem) {
     applyGroupToForm({ ...detail, accessType: target.accessType })
     editingTarget = { ...target, updatedAt: detail.updatedAt }
     editingAccessType.value = target.accessType
-    editingProviderLocked.value = target.providerLocked
     editingId.value = group.id
     modalOpen.value = true
   } catch (error) {
@@ -501,11 +406,6 @@ async function openEdit(group: GroupListItem) {
 const saveGroup = submitAction('groups.save', async () => {
   if (!form.name.trim()) {
     message.warning('请填写分组名称')
-    return
-  }
-  // 超级分组只组合普通分组、不直接持有账号，因此不需要供应商维度。
-  if (form.groupKind !== 'super' && !form.providerCode.trim() && !editingAuthorizedGroup.value) {
-    message.warning('请选择供应商')
     return
   }
   try {
@@ -530,7 +430,6 @@ const saveGroup = submitAction('groups.save', async () => {
         ...item,
         updatedAt: updated.updatedAt,
         ...(changedFields.has('name') && typeof patch.name === 'string' ? { name: patch.name } : {}),
-        ...(changedFields.has('providerCode') && typeof patch.providerCode === 'string' ? { providerCode: patch.providerCode } : {}),
         ...(changedFields.has('description') && typeof patch.description === 'string' ? { description: patch.description || undefined } : {}),
         ...(changedFields.has('enabled') && typeof patch.enabled === 'boolean' ? { enabled: patch.enabled } : {}),
         ...(changedFields.has('groupType') && (patch.groupType === 'personal' || patch.groupType === 'high_concurrency') ? { groupType: patch.groupType } : {})

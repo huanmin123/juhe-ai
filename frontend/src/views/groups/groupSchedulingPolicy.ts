@@ -89,7 +89,20 @@ export function groupTypeColor(groupType?: GroupType): string {
   return groupType === 'high_concurrency' ? 'purple' : 'blue'
 }
 
-export function groupPolicySummary(group: Pick<GroupSummary, 'groupType'> & Partial<Pick<GroupSummary, 'schedulingPolicy'>>): string {
+// groupKind 与 groupType 正交：超级分组只拥有成员关系，不能渲染成「个人/高并发」类型标签
+// （超级分组设计 §3.1）。
+export function groupKindText(group: Pick<GroupSummary, 'groupType' | 'groupKind'>): string {
+  return group.groupKind === 'super' ? '超级分组' : groupTypeText(group.groupType)
+}
+
+export function groupKindColor(group: Pick<GroupSummary, 'groupType' | 'groupKind'>): string {
+  return group.groupKind === 'super' ? 'geekblue' : groupTypeColor(group.groupType)
+}
+
+export function groupPolicySummary(group: Pick<GroupSummary, 'groupType' | 'groupKind'> & Partial<Pick<GroupSummary, 'schedulingPolicy'>>): string {
+  if (group.groupKind === 'super') {
+    return '超级分组按成员顺序展开成员分组的账号候选'
+  }
   if (group.groupType !== 'high_concurrency') {
     return '个人分组保持稳定调度'
   }

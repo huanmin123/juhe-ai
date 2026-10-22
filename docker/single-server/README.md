@@ -25,6 +25,7 @@ Prometheus（infra 机，经既有 SSH 隧道）──> 生产机宿主回环 12
 ```
 
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
+- **存量库结构重建 + 业务回迁（2026-10-22 上线采用，一次性）**：当旧库与 HEAD schema 差额过大、无法用 `--ensure-schema` 就地升级时，按「新建空库 → `--ensure-schema --seed` → `--import-legacy-business` 回迁业务配置」切换。回迁命令为 `juhe-ai-maintenance --import-legacy-business --legacy-dsn <旧库> --dsn <目标库> --secret <JUHE_AI_SECRET>`（`--dry-run` 完整执行后回滚只出报告）。只回迁账户/连接/模型/分组/路由/API Key/授权/设置/团队/标签/外部来源/配额窗口，**历史用量、审计、操作日志、统计、模型检测运行态整体丢弃**；凭据密文逐字节复制，要求新旧库同一 `JUHE_AI_SECRET`。目标库必须为空业务库（回迁拒绝非空库），全部写入单事务提交。契约与验收口径见 `docs/functions/供应商与上游协议面重构设计.md` §10.1。
 - 8 个 PG schema：6 个由 `maintenance --ensure-schema` 建（business/usage/stats/chat/dataset/codex_context）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres`（J2 account_balance 四表，2026-10-02 起取代手工 SQL）建表（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
 - `--ensure-schema` 幂等契约（2026-10-14 起）：普通 ensure **恢复幂等加法**——schema 收敛只剩建表/补列/建索引/内置行补种等加法动作，**studio 退场清理已移出普通 ensure**（studio 行/列/表改由一次性显式命令 `--apply-studio-retirement` 清理，见下「更新发布」节）；仍随 ensure 执行的破坏性收敛以「更新发布」节维护窗口为准（如调度偏好 `DROP COLUMN enabled`），**存量库上跑 ensure 前必须先停写并完成可恢复备份**——写者运行时跑 ensure 会打断仍在运行的旧版进程，ensure 之后才备份会让备份失去回滚价值。
 - chat 库加表随例行 `--ensure-schema` 幂等生效，无一次性迁移：如 2026-10-02 的 `juhe_chat.chat_user_tool_preferences`（AI 对话工具默认绑定，见 docs/functions/AI问答工具体系与主子模型设计.md §7）。

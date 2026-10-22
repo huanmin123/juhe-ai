@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -199,6 +200,23 @@ func logTail(path string, limit int) string {
 // maintenance storage bootstrap
 // ---------------------------------------------------------------------------
 
+// provisionJ3bPostgresSchema 按部署 runbook 的受控预置步骤创建 juhe_j3b
+// schema：gateway 的 J3b bootstrap 明确拒绝自行建 schema，验收 harness 作为
+// 受控数据库流程必须先建 schema，再执行 --apply-j3b-model-check-postgres。
+func provisionJ3bPostgresSchema(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres for j3b schema: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS juhe_j3b"); err != nil {
+		t.Fatalf("create juhe_j3b schema: %v", err)
+	}
+}
+
 // runMaintenanceEnsureSeed 调用 juhe-ai-maintenance --ensure-schema --seed。
 // runMaintenanceJ3bPostgresApply 应用 juhe_j3b schema（幂等）：模型检测
 // owner 默认常驻后，PG 模式的专属 schema 按契约由 maintenance 显式补齐。
@@ -393,7 +411,8 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		// PG 模式没有启动期 ensure：schema/seed 由外部 maintenance 执行。
 		runMaintenanceEnsureSeed(t, "postgres", "", opts.PGDSN, secret)
 		// 模型检测 owner 默认常驻（2026-09-21）：juhe_j3b schema 按契约由
-		// maintenance 显式应用，harness 与部署 runbook 保持一致。
+		// 受控数据库流程预置，harness 与部署 runbook 保持一致。
+		provisionJ3bPostgresSchema(t, opts.PGDSN)
 		runMaintenanceJ3bPostgresApply(t, opts.PGDSN)
 	} else {
 		env["JUHE_AI_DATABASE_DRIVER"] = "sqlite"

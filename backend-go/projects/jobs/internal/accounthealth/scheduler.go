@@ -1163,6 +1163,23 @@ func applyCooldownDecision(outcome *Outcome, input exactkeyprobe.Input, prior Cu
 		outcome.AccountStatus = "active"
 		outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_success", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, Values: map[string]any{"last_health_check_at": observed.Format(time.RFC3339Nano), "last_health_success_at": observed.Format(time.RFC3339Nano), "last_health_check_status_code": outcome.StatusCode}}
 	case exactkeyprobe.OutcomeNeutral, exactkeyprobe.OutcomeTaskFailed:
+		// 中性结果同样必须收敛（T44）：观察起点满 7 天且期间没有任何成功
+		// （cooldown_success 会清空 observation_started_at，因此该字段即
+		// "连续未成功时长"），说明上游持续返回完整但非成功的响应，账户事实
+		// 上不可用。若只按 transport 失败推进终态，这类账户会在 15 分钟封顶
+		// 的顺延里无限循环（生产 70 个账户超过 7 天仍为 TU）。
+		// probe_task_failure 属本地输入/配置问题，不作为上游证据终止。
+		if outcome.Outcome == exactkeyprobe.OutcomeNeutral {
+			elapsed := observed.Sub(fence.ObservationStartedAt)
+			if elapsed >= cooldownObservationTimeout {
+				outcome.AccountStatus = "error"
+				outcome.ErrorCode = "cooldown_retest_neutral_timeout"
+				outcome.ErrorMessage = fmt.Sprintf("冷却复测观察期已超过 7 天（起点 %s）且上游持续完整拒绝（最近 HTTP %d）", fence.ObservationStartedAt.UTC().Format(time.RFC3339), outcome.StatusCode)
+				outcome.CooldownFence = fence
+				outcome.Projection = &Projection{TargetAccountID: input.AccountID, TransitionKind: "cooldown_error", InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, SourceRevision: input.Eligibility.SourceConfigRevision, ExpectedAccountStatus: expectedStatus, ExpectedCooldownFence: fence, CooldownFence: fence}
+				return
+			}
+		}
 		growthStep := cooldownDeferGrowthStep(fence, observed, base)
 		delay := schedulejitter.Delay(cooldownDefer(growthStep, base, maxDelay))
 		next := observed.Add(delay)

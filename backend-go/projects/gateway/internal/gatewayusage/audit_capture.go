@@ -379,6 +379,12 @@ func (c *AuditCaptureContext) BindContext(context AuditGatewayContext) {
 	if context.GroupID != "" {
 		c.gatewayContext.GroupID = context.GroupID
 	}
+	// RouteGroupID 与 GroupID 独立合并（超级分组设计 §4.3）：请求级审计行
+	// 的 route_group_id 是路由绑定目标，group_id 是实际服务组；两者在超级
+	// 分组目标下不同，不能被 GroupID 覆盖或反向覆盖。
+	if context.RouteGroupID != "" {
+		c.gatewayContext.RouteGroupID = context.RouteGroupID
+	}
 	if context.AccountID != "" {
 		c.gatewayContext.AccountID = context.AccountID
 	}
@@ -894,6 +900,22 @@ func (c *AuditCaptureContext) Finalize(input FinalizeAuditInput) {
 	}
 }
 
+// servedMemberGroupID 返回本次请求实际服务的成员组：取最后一条成功尝试的
+// group_id（派发侧按账号 BoundGroupID 覆盖为成员组）；没有成功尝试时返回空串，
+// 由调用方回落请求级绑定组。
+func servedMemberGroupID(attempts []AuditLogAttemptInput) string {
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.Success == nil || !*attempt.Success {
+			continue
+		}
+		if groupID := strings.TrimSpace(attempt.GroupID); groupID != "" {
+			return groupID
+		}
+	}
+	return ""
+}
+
 // Cancel mirrors cancel.
 func (c *AuditCaptureContext) Cancel() {
 	c.mu.Lock()
@@ -1058,6 +1080,15 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 		parts := strings.SplitN(sanitizedOriginalURL, "?", 2)
 		queryString = strings.Join(parts[1:], "?")
 	}
+	// 请求级双层身份（超级分组设计 §4.3）：route_group_id 恒为路由绑定目标；
+	// group_id 优先取本次实际服务的成员组（成功尝试的 group_id，由派发侧按
+	// 账号 BoundGroupID 覆盖），无成功尝试时回落请求级绑定组。超级分组不得
+	// 被伪装成实际成员分组。
+	requestGroupID := gatewayContext.GroupID
+	routeGroupID := firstNonEmpty(gatewayContext.RouteGroupID, gatewayContext.GroupID)
+	if memberGroupID := servedMemberGroupID(retainedAttempts); memberGroupID != "" {
+		requestGroupID = memberGroupID
+	}
 	auditLog := AuditLogInput{
 		ID:                     auditLogID,
 		LifecycleStatus:        AuditLifecycleFinalized,
@@ -1067,8 +1098,8 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 		ConversationKey:        gatewayContext.ConversationKey,
 		SystemAccountID:        gatewayContext.SystemAccountID,
 		APIKeyID:               gatewayContext.APIKeyID,
-		GroupID:                gatewayContext.GroupID,
-		RouteGroupID:           firstNonEmpty(gatewayContext.RouteGroupID, gatewayContext.GroupID),
+		GroupID:                requestGroupID,
+		RouteGroupID:           routeGroupID,
 		ProviderCode:           gatewayContext.ProviderCode,
 		TrafficSource:          firstNonEmpty(gatewayContext.TrafficSource, c.trafficSource),
 		AccountID:              firstNonEmpty(input.AccountID, gatewayContext.AccountID),

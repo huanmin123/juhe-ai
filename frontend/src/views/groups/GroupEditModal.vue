@@ -13,15 +13,6 @@
       <a-form-item label="分组名称" required>
         <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
       </a-form-item>
-      <a-form-item v-if="form.groupKind !== 'super'" label="所属供应商" required tooltip="供应商决定这个分组后续可绑定的账户范围。">
-        <a-select
-          v-model:value="form.providerCode"
-          :options="providerOptions"
-          :loading="providerOptionsLoading"
-          :disabled="providerLocked || editingAuthorizedGroup"
-          @dropdown-visible-change="emit('provider-dropdown-visible-change', $event)"
-        />
-      </a-form-item>
       <a-form-item label="分组形态" required tooltip="普通分组直接拥有账号；超级分组只组合同一所有者的普通分组，作为一个分组目标被路由绑定。超级分组先创建为停用草稿，添加至少两个启用成员后再启用。">
         <a-radio-group
           v-model:value="form.groupKind"
@@ -78,9 +69,6 @@ defineProps<{
   form: GroupEditForm
   maxQueueWaitSeconds: number
   open: boolean
-  providerLocked: boolean
-  providerOptions: Array<{ label: string; value: string; disabled?: boolean }>
-  providerOptionsLoading: boolean
   saving: boolean
   showTargetAlert: boolean
   targetSystemAccountLabel?: string
@@ -90,7 +78,6 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'client-ip-concurrency-limit-change', value: unknown): void
   (event: 'max-queue-wait-seconds-change', value: unknown): void
-  (event: 'provider-dropdown-visible-change', open: boolean): void
   (event: 'save'): void
   (event: 'update:clientIpLimitEnabled', value: boolean): void
   (event: 'update:open', value: boolean): void

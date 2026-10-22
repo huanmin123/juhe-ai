@@ -36,15 +36,12 @@ assert.match(groupEditSource, /requestId !== groupEditRequestId/, '分组编辑�
 assert.match(groupsViewSource, /useResponsivePagedList<GroupListItem/, '分组列表必须使用 Node 轻量列表 DTO，而不是伪装成完整详情')
 assert.doesNotMatch(groupsViewSource, /updateGroupItems[\s\S]{0,250}\.\.\.updated/, '编辑响应不得把详情字段临时灌回轻量列表，避免授权限额刷新前后闪变')
 
-assert.match(groupModalSource, /@dropdown-visible-change="emit\('provider-dropdown-visible-change', \$event\)"/, '供应商下拉必须暴露展开事件')
-assert.match(groupModalSource, /:loading="providerOptionsLoading"/, '供应商下拉必须显示按需请求的加载状态')
-assert.match(groupsViewSource, /@provider-dropdown-visible-change="handleProviderOptionsDropdown"/, '分组页面必须接收供应商下拉展开事件')
-assert.match(groupsViewSource, /function handleProviderOptionsDropdown\(open: boolean\): void \{\s*if \(open\) void loadGroupOptions\(\)\s*\}/, '仅展开供应商下拉时才加载远程候选')
-assert.match(groupsViewSource, /selectedCode[\s\S]*options\.some[\s\S]*value: selectedCode/, '供应商候选必须补齐列表行中的已选值')
-const groupOptionLoadSource = sourceBetween(groupsViewSource, 'async function loadGroupOptions', 'function invalidateGroupOptions')
-assert.match(groupOptionLoadSource, /groupOptionsLoadingPromise/, '同一分组弹窗的供应商候选请求必须 singleflight')
-assert.match(groupOptionLoadSource, /requestId !== groupOptionsRequestId/, '迟到供应商候选不得覆盖当前身份状态')
-assert.equal((groupOptionLoadSource.match(/message\.error\(/g) ?? []).length, 1, '同一供应商候选失败只能提示一次')
+// 分组已无供应商维度（供应商与上游协议面重构设计 §8：groups.provider_code
+// 已删除，后端对 providerCode 键「接受但忽略」）：表单与列表不得再出现供应商
+// 选择器或按需加载的供应商候选。
+assert.doesNotMatch(groupModalSource, /providerOptions|providerOptionsLoading|provider-dropdown-visible-change/, '分组表单不得保留供应商选择器')
+assert.doesNotMatch(groupsViewSource, /loadGroupOptions|handleProviderOptionsDropdown|groupsProviderOptions/, '分组页面不得再加载供应商候选')
+assert.doesNotMatch(groupsViewSource, /providerCode/, '分组表单不得携带已退役的 providerCode 字段')
 
 const externalSourceEditSource = sourceBetween(externalSourcesViewSource, 'function openEditSource', 'async function saveSource')
 assert.match(externalSourceEditSource, /createSourceFormFromRecord\(record\)/, '编辑外部来源必须直接使用列表行填充表单')
@@ -60,8 +57,8 @@ assert.match(externalSourceModalSource, /@dropdown-visible-change="emit\('scope-
 assert.match(externalSourceModalSource, /:loading="scopeOptionsLoading"/, 'scope 下拉必须显示按需请求状态')
 assert.match(externalSourcesViewSource, /availableScopeOptions[\s\S]*sourceForm\.scopes[\s\S]*label: value/, '编辑外部来源必须在远程 scope 候选未加载时保留已选值')
 assert.match(externalSourceFormSource, /DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS/, '公开接口 scope 常量必须提供本地默认值')
-assert.equal(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.length, 18, '本地 scope 标签字典必须覆盖后端的 18 个公开接口 scope')
-assert.equal(new Set(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.map((item) => item.value)).size, 18, '本地 scope 标签字典不得包含重复值')
+assert.equal(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.length, 19, '本地 scope 标签字典必须覆盖后端的 19 个公开接口 scope（含超级分组成员更新）')
+assert.equal(new Set(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.map((item) => item.value)).size, 19, '本地 scope 标签字典不得包含重复值')
 assert.deepEqual(DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES, ['juhe_ai_public:group_list:read'], '新增来源默认 scope 必须与完整标签字典独立维护')
 const externalSourceRecord = {
   id: 'extsrc_1',

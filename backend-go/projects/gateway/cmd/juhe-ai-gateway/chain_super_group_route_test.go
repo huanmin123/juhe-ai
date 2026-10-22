@@ -155,18 +155,28 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 		if log == nil {
 			t.Fatal("audit log 未派发")
 		}
-		if log.GroupID != "grp_super" {
-			t.Fatalf("request-level audit GroupID = %q, want grp_super", log.GroupID)
+		// 双层身份（设计 §4.3）：route_group_id 为路由目标（超级分组），
+		// group_id 为实际服务成员组。
+		if log.RouteGroupID != "grp_super" {
+			t.Fatalf("request-level audit RouteGroupID = %q, want grp_super", log.RouteGroupID)
+		}
+		if log.GroupID != second.groupID {
+			t.Fatalf("request-level audit GroupID = %q, want 实际服务成员组 %s", log.GroupID, second.groupID)
 		}
 		attemptGroups := map[string]string{}
+		attemptMembers := map[string]string{}
 		for _, attempt := range log.Attempts {
 			attemptGroups[attempt.AccountID] = attempt.GroupID
+			attemptMembers[attempt.AccountID] = attempt.MemberGroupID
 		}
 		if attemptGroups[fixture.accountID] != fixture.groupID {
 			t.Fatalf("attempt(%s) group = %q, want %s", fixture.accountID, attemptGroups[fixture.accountID], fixture.groupID)
 		}
 		if attemptGroups[second.accountID] != second.groupID {
 			t.Fatalf("attempt(%s) group = %q, want %s", second.accountID, attemptGroups[second.accountID], second.groupID)
+		}
+		if attemptMembers[second.accountID] != second.groupID {
+			t.Fatalf("attempt(%s) member_group_id = %q, want %s", second.accountID, attemptMembers[second.accountID], second.groupID)
 		}
 	})
 

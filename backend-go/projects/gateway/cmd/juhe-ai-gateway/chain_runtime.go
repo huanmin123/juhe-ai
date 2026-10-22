@@ -365,7 +365,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// HighConcurrencyQueue 共用同一事实源。
 	services.ConcurrencyTracker = concurrencyTracker
 	models.SetConcurrencySource(concurrencyTracker)
-	cache, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{
+	cacheOptions := gatewayruntimecache.Options{
 		Bus:                     composed.Bus,
 		Logger:                  chainCacheEventLogger{inner: slog.Default()},
 		UpdateAgeOnGet:          cfg.RuntimeMode == "standalone",
@@ -377,7 +377,14 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Orderer: newChainGroupBindingOrderer(routeSelector),
 		// /v1/models 分组模型并集装载端口（chain_gatewaykeymodels.go）。
 		Union: unionLoader,
-	})
+	}
+	// 高性能模式（cacheDriver=redis）下，模型目录 / 分组访问 / 响应检查策略
+	// 的跨进程事实源固定为 Redis；进程内 LRU 只允许作易失 L1。Shared 为
+	// nil 时 runtime cache 会把本地缓存当作事实源，堆随 API Key/分组/模型
+	// 组合增长（2026-10-21 生产堆逼近 GOMEMLIMIT 的接线根因）。
+	cacheOptions.Shared = sharedFactory
+	cacheOptions.RequireShared = redisCache
+	cache, err := gatewayruntimecache.New(models, cacheOptions)
 	if err != nil {
 		services.Close()
 		return nil, fmt.Errorf("create gateway runtime cache: %w", err)

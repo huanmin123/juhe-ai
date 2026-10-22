@@ -44,7 +44,7 @@
 | 边界 | 契约 |
 | --- | --- |
 | 调度边界 | 不改变 `/v1` 请求调度、候选资格和路由结果；只改变 jobs 恢复扫描在冷却类内部的候选排序与恢复探针节奏。`accounts.status`、`schedulable`、账户排序、超级优先、降级备用、会话亲和的任何比特都不受特供影响。 |
-| 证据边界 | 复活条件不变：匹配来源 `complete_success`；`framing_complete_neutral` / `unknown` 的语义与现行完全一致（中性只顺延、unknown 不计数不推进）。特供不新增任何"成功"形态。 |
+| 证据边界 | 复活条件不变：匹配来源 `complete_success`；`framing_complete_neutral` / `unknown` 的语义与现行完全一致（中性在 7 天观察窗内只顺延、满窗后的下一次中性结果按上位设计写 `cooldown_retest_neutral_timeout`；unknown 不计数不推进）。特供不新增任何"成功"形态，也不豁免中性终态。 |
 | 状态覆盖边界 | 特供只作用于**已具备合法冷却 fence、且被归类为冷却复测任务的** `temporary_unavailable` / `rate_limited`（`nextDue` 对两类同判据，无合法五元 fence 即不进入复测）。用户显式限流/停用状态没有冷却 fence，本就不进入冷却复测：特供不得使其进入，也不得被无关 transport 复测接管（沿用上位设计的用户显式状态来源保护）。`pending_test` 激活检查（含 24 小时 `account_activation_check_timeout`）、`error` 终态的人工恢复、Key 级冷却复测不加速。 |
 | 授权实例边界 | 特供标记打在授权实例自己的 `accounts` 行上，名额计入被授权方系统账户（见 §3.11）；来源账户的特供不传染实例，实例特供不回写来源（与"来源可用性参与 `effectiveAvailability`、运行态不回写"的既有授权边界一致）。 |
 | 名额边界 | 默认 3；`expedited_account_limit = 0` 表示该用户**禁止新增/重新启用**特供（语义有意不同于 `aiAccountLimit` 的"0 = 不限制"，见 §3.11）。已有特供标记按"上限下调不回溯"保留，直至用户显式取消；管理员可调范围 0–100。设置特供走"事务 + 锁 + 计数"校验（§9）；取消特供无条件允许、不校验。 |
@@ -62,7 +62,7 @@
 | 失败慢速道 | 连续失败 >5 轮后固定 60s（jitter 后 30–90s） | 基准 **15s**（jitter 后 7.5–22.5s） | `cooldownSlowRetryDelay` 按 `Eligibility.ExpeditedRecovery` 分支 | 持续失败的特供号保持高压复测，不因失败次数而松弛 |
 | 长期降频道 | 超过最大恢复观察窗（设置 `cooldownAccountRetestMaxBackoffHours`，默认 12h）降为 1 小时/轮（jitter 后 30–90 分钟） | **不降频**，保持特供节奏 | `applyCooldownDecision` 长期道分支按 `ExpeditedRecovery` 跳过 | 12 小时降频对临期账户无意义；探针密度已有名额约束兜底 |
 | 有界观察 10 分钟 `error` | 未开持续探针的 `temporary_unavailable` 超过 10 分钟有界观察写 `cooldown_retest_limited_probe_timeout` | **视同持续探针**，不适用 | `boundedCooldownRemaining` 判定追加 `ExpeditedRecovery` | 见 §3.7 |
-| 7 天观察超时 `error` | 写 `cooldown_retest_observation_timeout` | **保留** | 不改 | 防无限烧探针的停损（§3.8） |
+| 7 天观察超时 `error` | transport 失败写 `cooldown_retest_observation_timeout`；满窗后的中性结果写 `cooldown_retest_neutral_timeout` | **保留** | 不改 | 防无限烧探针的停损（§3.8） |
 | 失败初始退避 | 3s 基准（jitter 后 1.5–4.5s） | 不变 | 不改 | 首轮复测已经够快 |
 | 失败指数退避 | 3s 起每轮 ×2 | 不变 | 不改 | 特供只改封顶与慢速道 |
 | 中性顺延基数 | 30s 基准（jitter 后 15–45s） | 不变 | 不改 | 30s 起步已足够快，收益全在封顶 |

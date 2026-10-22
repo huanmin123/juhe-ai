@@ -33,12 +33,9 @@
           </span>
         </div>
       </template>
-      <template v-else-if="column.key === 'providerCode'">
-        <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerName(record.providerCode)" :size="14" /> {{ providerName(record.providerCode) }}</a-tag>
-      </template>
       <template v-else-if="column.key === 'groupType'">
         <a-tooltip :title="groupPolicySummary(record)">
-          <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
+          <a-tag :color="groupKindColor(record)">{{ groupKindText(record) }}</a-tag>
         </a-tooltip>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
@@ -98,8 +95,7 @@
             </div>
           </div>
           <div class="mobile-list-card-tags">
-            <a-tag color="geekblue"><ProviderIcon :provider-code="record.providerCode" :name="providerName(record.providerCode)" :size="14" /> {{ providerName(record.providerCode) }}</a-tag>
-            <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
+            <a-tag :color="groupKindColor(record)">{{ groupKindText(record) }}</a-tag>
             <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
           </div>
         </div>
@@ -143,7 +139,6 @@
 <script setup lang="ts">
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
-import ProviderIcon from '@/components/ProviderIcon.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -163,9 +158,9 @@ import {
   groupSystemAccountText
 } from './groupDisplay'
 import {
-  groupPolicySummary,
-  groupTypeColor,
-  groupTypeText
+  groupKindColor,
+  groupKindText,
+  groupPolicySummary
 } from './groupSchedulingPolicy'
 import {
   groupMoreActions,
@@ -179,7 +174,6 @@ defineProps<{
   loading: boolean
   mobileHasMore: boolean
   mobileLoadingMore: boolean
-  providerName: (providerCode?: string) => string
   tablePagination?: false | Record<string, unknown>
 }>()
 

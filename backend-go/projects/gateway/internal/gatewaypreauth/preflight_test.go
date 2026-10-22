@@ -554,6 +554,41 @@ func TestGatewayModelsBindings(t *testing.T) {
 	}
 }
 
+// 超级分组目标按成员组展开（超级分组设计 §4.2）：超级分组不直接持有
+// group_accounts 行，只传超级分组 ID 会让 /v1/models 并集装载器得到空集合。
+func TestGatewayModelsBindingsExpandsSuperMembers(t *testing.T) {
+	row := &gatewayruntimecache.GatewayAPIKeyRow{GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
+		{GroupID: "grp_super", Status: "active", GroupKind: "super",
+			MemberGroupIDs:         []string{"g_member_b", "g_member_a"},
+			DisabledMemberGroupIDs: []string{"g_member_off"}},
+		{GroupID: "g_standard", Status: "active"},
+		{GroupID: "grp_super_2", Status: "active", GroupKind: "super",
+			MemberGroupIDs: []string{"g_member_a"}}, // 与已展开成员跨超级分组去重
+		{GroupID: "grp_super_off", Status: "disabled", GroupKind: "super",
+			MemberGroupIDs: []string{"g_member_never"}},
+	}}
+	bindings := gatewayModelsBindings(row)
+	want := []GatewayModelBinding{
+		{GroupID: "g_member_b"},
+		{GroupID: "g_member_a"},
+		{GroupID: "g_standard"},
+	}
+	if len(bindings) != len(want) {
+		t.Fatalf("bindings = %v, want %v", bindings, want)
+	}
+	for i, binding := range bindings {
+		if binding != want[i] {
+			t.Fatalf("bindings[%d] = %v, want %v（成员按 priority 序展开，disabled 成员行不参与）", i, binding, want[i])
+		}
+	}
+	// 超级分组自身绝不能出现在并集输入里（无 group_accounts 行）。
+	for _, binding := range bindings {
+		if binding.GroupID == "grp_super" || binding.GroupID == "g_member_off" {
+			t.Fatalf("bindings 含非法分组 %q: %v", binding.GroupID, bindings)
+		}
+	}
+}
+
 func TestPreflightErrorPropagation(t *testing.T) {
 	service, _, _ := newTestService(t, func(s *Service) {
 		s.Codex = &fakeCodex{compactErr: errors.New("codex 预检失败")}

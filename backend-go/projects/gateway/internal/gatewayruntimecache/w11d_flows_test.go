@@ -676,13 +676,21 @@ func TestW11DRuntimeStaleRefreshWarns(t *testing.T) {
 	if err := svc.AwaitBackgroundWork(ctx); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, event := range logger.snapshot() {
-		if event == "gateway_runtime_stale_refresh_failed" {
-			found = true
+	// AwaitBackgroundWork 等的是 pending.done，而告警在 awaitGatewayRuntimeLoad
+	// 返回之后才写日志；断言必须等可观察结果出现，不能假设 done 已覆盖告警。
+	hasStaleRefreshWarn := func() bool {
+		for _, event := range logger.snapshot() {
+			if event == "gateway_runtime_stale_refresh_failed" {
+				return true
+			}
 		}
+		return false
 	}
-	if !found {
+	deadline := time.Now().Add(2 * time.Second)
+	for !hasStaleRefreshWarn() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !hasStaleRefreshWarn() {
 		t.Fatalf("运行态后台刷新失败告警缺失: %v", logger.snapshot())
 	}
 }

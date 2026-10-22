@@ -193,6 +193,9 @@ type Options struct {
 	// Shared enables the Redis shared-cache layer (cacheDriver === 'redis').
 	// Nil keeps every app cache process-local like the Node memory mode.
 	Shared SharedCacheFactory
+	// RequireShared 让 cacheDriver=redis 的组合根在 Shared 漏接时启动失败，
+	// 而不是静默退回进程内 LRU（后者会把本地缓存当事实源并随组合增长堆）。
+	RequireShared bool
 	// UpdateAgeOnGet mirrors updateAgeOnGet: runtimeMode === 'standalone'.
 	UpdateAgeOnGet bool
 	// SyncInvalidationsOnRead mirrors runtimeStateDriver === 'redis': pre-read
@@ -317,6 +320,9 @@ type responseInspectionPolicyCacheEntry struct {
 func New(models ReadModels, opts Options) (*Service, error) {
 	if models == nil {
 		return nil, errors.New("gatewayruntimecache 需要 ReadModels")
+	}
+	if opts.RequireShared && opts.Shared == nil {
+		return nil, errors.New("cacheDriver redis 需要 Shared shared cache factory")
 	}
 	clock := opts.Clock
 	if clock == nil {

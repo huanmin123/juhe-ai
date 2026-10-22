@@ -92,8 +92,9 @@ func TestAcceptanceFreshPostgresBoot(t *testing.T) {
 	client.do(http.MethodPost, "/__aisys__/api/auth/login",
 		map[string]any{"username": "admin", "password": acceptanceAdminPassword}, wantStatus(http.StatusOK))
 	// 渲染级断言：seed 分组列表可读（seed 分组名，见 pg_schema.go pgSeedGroups）。
+	// 列表接口返回分页信封 {data:{items:[...]}}，不是数组。
 	_, payload := client.do(http.MethodGet, "/__aisys__/api/groups", nil, wantStatus(http.StatusOK))
-	items, _ := payload["data"].([]any)
+	items, _ := data(payload)["items"].([]any)
 	if len(items) == 0 {
 		t.Fatalf("PG seed groups empty: %#v", payload)
 	}

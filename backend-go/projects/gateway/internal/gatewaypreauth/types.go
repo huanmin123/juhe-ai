@@ -202,9 +202,14 @@ type GroupUsageMetadataFields struct {
 
 // AuditGatewayContext mirrors AuditGatewayContext: the bound identity fields.
 type AuditGatewayContext struct {
-	SystemAccountID   string
-	APIKeyID          string
-	GroupID           string
+	SystemAccountID string
+	APIKeyID        string
+	// GroupID 是实际服务分组（超级分组目标时为其成员分组）。
+	GroupID string
+	// RouteGroupID 是路由绑定目标（超级分组目标时即超级分组本身）；与
+	// GroupID 一起构成请求级审计的双层身份（超级分组设计 §4.3）。空值时
+	// 消费侧回落 GroupID。
+	RouteGroupID      string
 	ProviderCode      string
 	TrafficSource     string
 	SessionID         string

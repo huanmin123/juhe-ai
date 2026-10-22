@@ -1,5 +1,4 @@
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
 export interface GroupsPagePaginationState {
@@ -39,19 +38,12 @@ export function groupsListParams(systemAccountId: string | undefined, pageState:
   }
 }
 
-export function groupsProviderOptions(providers: ProviderDefinition[]): Array<{ label: string; value: string; disabled: boolean }> {
-  return providers.map((provider) => ({
-    label: provider.name,
-    value: provider.code,
-    disabled: !provider.enabled
-  }))
-}
-
 export function groupsTableColumns(isManagementView: boolean): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '分组名称', dataIndex: 'name', key: 'name', width: 240, fixed: 'left', customHeaderCell: () => ({ class: 'group-name-header-cell' }) },
-    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
-    { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130, customRender: ({ record }: { record: { groupKind?: string; groupType: string } }) => record.groupKind === 'super' ? '超级分组' : (record.groupType === 'high_concurrency' ? '高并发分组' : '个人分组') }
+    // 类型标签由 GroupsList 的 bodyCell 统一按 groupKind/groupType 渲染；此处不再保留
+    // 会被 bodyCell 覆盖的 customRender，避免两套文案分叉。
+    { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130 }
   ]
   if (isManagementView) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
