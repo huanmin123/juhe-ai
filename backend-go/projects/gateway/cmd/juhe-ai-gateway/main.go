@@ -641,6 +641,12 @@ func main() {
 	// Queue-saturation drops become a Prometheus gauge seam (before Serve, so
 	// the write happens before any scrape goroutine reads it).
 	gatewayusage.SetAuditCapturedDroppedTotal(auditProducer.DroppedTotal)
+	// W14 队列可观测面：深度/字节驻留 gauge + 单条持久化时延直方图（生产者经
+	// 观察者回调上报，result ∈ ok|error|panic）。
+	gatewayusage.SetAuditLogQueueGauges(auditProducer.QueueDepth, auditProducer.QueueBytes)
+	auditProducer.SetPersistDurationObserver(func(result string, durationMS int64) {
+		gatewayusage.RecordAuditLogPersistDuration(result, float64(durationMS)/1000)
+	})
 	var operationStore operationlog.Store
 	if operationConfig.Enabled {
 		if operationConfig.Mode == operationlog.ModePostgres {

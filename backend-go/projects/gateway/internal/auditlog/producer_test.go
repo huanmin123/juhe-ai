@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -357,4 +358,164 @@ func TestProducerNilReceiverAndNilStoreAreInert(t *testing.T) {
 	var nilProducer *Producer
 	nilProducer.Capture(producerTestInput("nil-receiver"))
 	NewProducer(nil, fixedLeaseSource{}, Config{}, nil).Capture(producerTestInput("nil-store"))
+}
+
+// ---- W14 队列字节预算与可观测面 ----
+
+// blockingStore 在 Release 前让每次 Persist 挂起（慢存储注入）：租约续约照常
+// 成功，Persist 阻塞在信号上，用于锁定「慢存储下队列字节驻留有界」。
+type blockingStore struct {
+	fakeStore
+	release chan struct{}
+}
+
+func (f *blockingStore) Persist(ctx context.Context, lease OwnerLease, input AuditLogInput) (PersistResult, error) {
+	<-f.release
+	f.mu.Lock()
+	f.persistCalls++
+	f.persisted = append(f.persisted, input)
+	f.mu.Unlock()
+	return PersistResult{}, nil
+}
+
+// TestProducerCaptureBoundsQueueBytesUnderSlowStore 锁定 W14 核心契约：
+// 慢存储挂住全部 worker 时，字节预算（而非条数上限）决定准入——
+// 预算满后继续采集只丢弃不阻塞；驻留 gauge 等于预算上界；释放后台账归零、
+// 已准入条目全部落库。正常小记录不因预算误丢（预算按估算字节精确放开）。
+func TestProducerCaptureBoundsQueueBytesUnderSlowStore(t *testing.T) {
+	previousBudget := producerQueueMaxBytes
+	input := producerTestInput("w14-bound")
+	input.Payloads = []AuditLogPayloadInput{{ID: "p1", PartType: PayloadPartUpstreamRequest, Body: PayloadBody{Bytes: []byte("0123456789abcdef"), Present: true}}}
+
+	store := &blockingStore{fakeStore: fakeStore{renewOK: true}, release: make(chan struct{})}
+	producer := NewProducer(store, fixedLeaseSource{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, nil)
+	const total = 10
+	items := make([]AuditLogInput, total)
+	estimate := 0
+	for index := 0; index < total; index++ {
+		items[index] = input
+		items[index].ID = input.ID + "-" + strconv.Itoa(index)
+		items[index].TraceID = "trace-" + items[index].ID
+		estimate = estimateAuditInputBytes(items[index])
+	}
+	// 预算恰好容纳 3 条：第 4 条起必须因字节预算丢弃（而非条数上限）。
+	producerQueueMaxBytes = int64(3 * estimate)
+	t.Cleanup(func() { producerQueueMaxBytes = previousBudget })
+
+	for index := 0; index < total; index++ {
+		producer.Capture(items[index])
+	}
+
+	if dropped := producer.DroppedTotal(); dropped != total-3 {
+		t.Fatalf("预算 3 条时应丢弃 %d 条，实际 %d", total-3, dropped)
+	}
+	if got := producer.QueueBytes(); got != int64(3*estimate) {
+		t.Fatalf("驻留 gauge 必须钉在预算上界 %d，实际 %d", 3*estimate, got)
+	}
+	if producer.QueueDepth() > 3 {
+		t.Fatalf("队列深度不得超过准入数 3，实际 %d", producer.QueueDepth())
+	}
+	close(store.release)
+	store.waitForCalls(t, 3)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && producer.QueueBytes() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := producer.QueueBytes(); got != 0 {
+		t.Fatalf("释放后台账必须归零，实际 %d", got)
+	}
+	if persisted := store.persistedInputs(); len(persisted) != 3 {
+		t.Fatalf("已准入条目必须全部落库，实际 %d", len(persisted))
+	}
+}
+
+// TestProducerCaptureDropsOversizeInput 锁定单条超预算臂：单条估算超出
+// 全局预算时立即丢弃（不占队列），warn 与丢弃计数可观测。
+func TestProducerCaptureDropsOversizeInput(t *testing.T) {
+	previousBudget := producerQueueMaxBytes
+	producerQueueMaxBytes = 1024
+	t.Cleanup(func() { producerQueueMaxBytes = previousBudget })
+
+	fake := &fakeStore{renewOK: true}
+	logger := &fakeProducerLogger{warns: &[]string{}}
+	producer := NewProducer(fake, fixedLeaseSource{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, logger)
+	oversize := producerTestInput("w14-oversize")
+	oversize.Payloads = []AuditLogPayloadInput{{ID: "p1", PartType: PayloadPartUpstreamRequest, Body: PayloadBody{Bytes: make([]byte, 4096), Present: true}}}
+	producer.Capture(oversize)
+
+	if dropped := producer.DroppedTotal(); dropped != 1 {
+		t.Fatalf("单条超预算必须丢弃一次，实际 %d", dropped)
+	}
+	if got := producer.QueueBytes(); got != 0 {
+		t.Fatalf("超预算条目不得占预算，实际 %d", got)
+	}
+	if _, persists, _ := fake.counts(); persists != 0 {
+		t.Fatalf("超预算条目不得进入持久化，实际 %d", persists)
+	}
+	found := false
+	for _, warn := range logger.snapshot() {
+		if strings.Contains(warn, "单条超出队列字节预算") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("必须记录单条超预算告警: %v", logger.snapshot())
+	}
+}
+
+// TestProducerPersistDurationObserver 锁定时延观察者契约：成功落库上报
+// "ok"，持久化失败上报 "error"，未接线观察者时静默。
+func TestProducerPersistDurationObserver(t *testing.T) {
+	fake := &fakeStore{renewOK: true}
+	producer := NewProducer(fake, fixedLeaseSource{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, nil)
+	var mu sync.Mutex
+	var results []string
+	producer.SetPersistDurationObserver(func(result string, durationMS int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		results = append(results, result)
+	})
+	producer.Capture(producerTestInput("w14-ok"))
+	fake.waitForCalls(t, 3)
+	failing := &fakeStore{renewOK: true, persistErr: errors.New("persist down")}
+	failingProducer := NewProducer(failing, fixedLeaseSource{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, nil)
+	failingProducer.SetPersistDurationObserver(func(result string, durationMS int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		results = append(results, result)
+	})
+	failingProducer.Capture(producerTestInput("w14-error"))
+	failing.waitForCalls(t, 2)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := len(results) >= 2
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(results) != 2 || results[0] != "ok" || results[1] != "error" {
+		t.Fatalf("时延观察结果 = %v, want [ok error]", results)
+	}
+}
+
+// TestEstimateAuditInputBytesDominatesOnBodies 锁定估算口径：payload 正文
+// 按精确字节计（驻留主体），错误文本计入，空记录有固定基线。
+func TestEstimateAuditInputBytesDominatesOnBodies(t *testing.T) {
+	baseline := estimateAuditInputBytes(producerTestInput("est"))
+	withBody := producerTestInput("est")
+	withBody.Payloads = []AuditLogPayloadInput{{ID: "p1", PartType: PayloadPartUpstreamRequest, Body: PayloadBody{Bytes: make([]byte, 10_000), Present: true}}}
+	if got := estimateAuditInputBytes(withBody); got < baseline+10_000 {
+		t.Fatalf("正文必须按精确字节计入: baseline=%d got=%d", baseline, got)
+	}
+	withError := producerTestInput("est")
+	withError.ErrorMessage = strings.Repeat("e", 500)
+	if got := estimateAuditInputBytes(withError); got < baseline+500 {
+		t.Fatalf("错误文本必须计入: baseline=%d got=%d", baseline, got)
+	}
 }

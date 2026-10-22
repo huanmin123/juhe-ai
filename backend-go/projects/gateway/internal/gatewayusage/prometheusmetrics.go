@@ -42,6 +42,10 @@ var prometheusDurationBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10}
 // First-output buckets mirror firstOutputDurationBuckets (seconds).
 var prometheusFirstOutputBuckets = []float64{0.25, 0.5, 1, 2, 5, 10, 30, 60}
 
+// Audit persistence spans lease renewal + row write + hot-search append with
+// a 10s per-record deadline; the tail buckets expose slow-store degradation.
+var prometheusAuditPersistBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+
 // HTTPMetricRouteGroup mirrors HttpMetricRouteGroup.
 type HTTPMetricRouteGroup = string
 
@@ -120,6 +124,13 @@ type prometheusMetrics struct {
 	operationDropSlot atomic.Pointer[func() int64]
 	dbPoolOnce        sync.Once
 	dbPoolSlot        atomic.Pointer[func() sql.DBStats]
+	auditQueueOnce    sync.Once
+	auditQueueSlot    atomic.Pointer[struct {
+		depth func() int
+		bytes func() int64
+	}]
+	auditPersistOnce    sync.Once
+	auditPersistTracker atomic.Pointer[prommetrics.HistogramVec]
 }
 
 func newPrometheusMetrics() *prometheusMetrics {
@@ -261,6 +272,54 @@ func (m *prometheusMetrics) setAuditCapturedDroppedTotal(fn func() int64) {
 // composition, before the HTTP server starts (mirror of the F3 audit seam).
 func SetOperationLogDroppedTotal(fn func() int64) {
 	prometheusDefault.setOperationLogDroppedTotal(fn)
+}
+
+// SetAuditLogQueueGauges wires the F3 audit producer queue depth and
+// estimated byte residency gauges into the exposition. Call once during
+// composition, before the HTTP server starts (W14 队列可观测面).
+func SetAuditLogQueueGauges(depth func() int, bytes func() int64) {
+	prometheusDefault.setAuditLogQueueGauges(depth, bytes)
+}
+
+// setAuditLogQueueGauges registers the two scrape-time gauge families once
+// and swaps the accessors on later calls (mirrors setDroppedTotalFunc).
+func (m *prometheusMetrics) setAuditLogQueueGauges(depth func() int, bytes func() int64) {
+	accessors := &struct {
+		depth func() int
+		bytes func() int64
+	}{depth: depth, bytes: bytes}
+	m.auditQueueSlot.Store(accessors)
+	m.auditQueueOnce.Do(func() {
+		prommetrics.NewGaugeFunc(m.registry, "juhe_ai_audit_log_queue_depth", "Audit captures currently queued in the bounded F3 producer.", prometheusServiceLabels, func() float64 {
+			if accessor := m.auditQueueSlot.Load(); accessor != nil && accessor.depth != nil {
+				return float64(accessor.depth())
+			}
+			return 0
+		})
+		prommetrics.NewGaugeFunc(m.registry, "juhe_ai_audit_log_queue_bytes", "Estimated byte residency of audit captures currently queued in the bounded F3 producer.", prometheusServiceLabels, func() float64 {
+			if accessor := m.auditQueueSlot.Load(); accessor != nil && accessor.bytes != nil {
+				return float64(accessor.bytes())
+			}
+			return 0
+		})
+	})
+}
+
+// RecordAuditLogPersistDuration records one F3 audit persistence latency
+// (result "ok" | "error" | "panic"). Push-based: the producer calls the
+// composition-wired observer per record.
+func RecordAuditLogPersistDuration(result string, durationSeconds float64) {
+	prometheusDefault.recordAuditLogPersistDuration(result, durationSeconds)
+}
+
+func (m *prometheusMetrics) recordAuditLogPersistDuration(result string, durationSeconds float64) {
+	m.auditPersistOnce.Do(func() {
+		tracker := prommetrics.NewHistogramVec(m.registry, "juhe_ai_audit_log_persist_duration_seconds", "F3 audit per-record persistence latency (lease renewal + row write + hot-search append).", prometheusServiceLabels, []string{"result"}, prometheusAuditPersistBuckets)
+		m.auditPersistTracker.Store(&tracker)
+	})
+	if tracker := m.auditPersistTracker.Load(); tracker != nil {
+		(*tracker).WithLabelValues(result).Observe(durationSeconds)
+	}
 }
 
 // setOperationLogDroppedTotal is the per-instance seam (mirror of the F3
