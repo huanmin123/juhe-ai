@@ -100,7 +100,7 @@ fi
 FRONTEND_REBUILD=0
 if [[ " ${TARGETS[*]} " == *" gateway "* ]]; then
   echo "== [0/6] 前端漏发门禁 =="
-  LIVE_BUILD_ID=$($SSH "$SERVER" "docker exec juhe-ai-go-gateway cat /app/frontend/dist/build-info.json" \
+  LIVE_BUILD_ID=$($SSH "$SERVER" "docker exec juhe-ai-go-gateway cat /app/frontend/dist/build-info.json 2>/dev/null" \
     | sed -n 's/.*"buildId"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p')
   if [ -z "$LIVE_BUILD_ID" ]; then
     echo "[FAIL] 无法读取线上前端 buildId（gateway 容器内 /app/frontend/dist/build-info.json）。" >&2
