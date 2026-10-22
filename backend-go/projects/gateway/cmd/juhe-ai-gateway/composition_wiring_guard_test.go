@@ -119,6 +119,18 @@ var compositionWiringGuardEntries = []compositionWiringGuardEntry{
 		Purpose:       "cacheDriver=redis 时要求 Shared 已接线，漏接即启动失败而不是静默退回本地缓存",
 		MissingImpact: "Shared 漏接重新退化为进程内缓存事实源，堆随组合增长且问题只能在生产运行数天后暴露",
 	},
+	{
+		Identifier:    "ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache",
+		Name:          "settings 快照跨实例失效回调",
+		Purpose:       "settings_updated 与跨实例失效同步（reason 为空）到达时清空本进程 settings 60s 快照（chain_runtime.go，Node clearSettingsRepositoryCache 对应物）",
+		MissingImpact: "写入方进程外的实例 settings 快照滞留到自然过期（60s），限流/配额等按旧设置执行",
+	},
+	{
+		Identifier:    "Node stats-writer 桥仅多进程拆分时启用，接线时需同步补齐角色",
+		Name:          "client-ip 策略缓存直写路径裁决与可观测 Logger",
+		Purpose:       "NewPolicyCache 保持 ProcessRole/WorkerRole 零值（单进程直写统计库）并注入 slog 适配 Logger，命中缓冲丢弃/写回失败有 WARN（chain_runtime.go）",
+		MissingImpact: "IP 封禁命中记录写回失败与缓冲丢弃完全静默，且直写/桥接裁决失去锚点，角色字段可能被误补",
+	},
 }
 
 // TestCompositionWiringGuard 断言 gateway 组合根源码池包含全部接线清单项。

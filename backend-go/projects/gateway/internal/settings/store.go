@@ -582,6 +582,26 @@ func queryArgs(keys []string, first string) []any {
 	return args
 }
 
+// InvalidateSnapshotCache clears the process-local settings:system and
+// settings:global 60s snapshot caches so the next read reloads from the
+// database. The writing process self-clears inside Update / section writes;
+// remote peers clear through the gateway runtime cache invalidation loop
+// (Node clearSettingsRepositoryCache), which calls this hook on
+// settings_updated and cross-instance invalidation syncs. Memory-only, no IO.
+// Nil-receiver safe: partial compositions（测试夹具）may wire the callback
+// without a store.
+func (s *Store) InvalidateSnapshotCache() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.cached = nil
+	s.cachedAt = time.Time{}
+	s.globalCached = nil
+	s.globalCachedAt = time.Time{}
+	s.mu.Unlock()
+}
+
 // Update mirrors updateSettingsAsync: strict whitelist + value validation,
 // the online usageStatsTimezone guard, a single upsert transaction, cache
 // clear + gateway runtime invalidation, then the fresh full snapshot.

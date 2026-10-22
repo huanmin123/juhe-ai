@@ -375,6 +375,11 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// D-110: the dynamic group-binding orderer seam (nil would keep the
 		// stored binding order for every dynamic strategy mode).
 		Orderer: newChainGroupBindingOrderer(routeSelector),
+		// settings_updated / 跨实例失效同步（reason 为空）到达时清空本进程
+		// settings 快照（Node clearSettingsRepositoryCache）：本进程写入方在
+		// Store.Update 内自清；跨实例同步只能走该回调，否则远端实例的 60s
+		// settings 快照会滞留到自然过期。回调仅内存置空，无 IO。
+		ClearSettingsCache: composed.settingsStore.InvalidateSnapshotCache,
 		// /v1/models 分组模型并集装载端口（chain_gatewaykeymodels.go）。
 		Union: unionLoader,
 	}
@@ -411,6 +416,11 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		return nil, fmt.Errorf("create client-ip policy source: %w", err)
 	}
 	policyCache, err := gatewayclientip.NewPolicyCache(gatewayclientip.PolicyCacheOptions{
+		// 单进程拓扑下 ProcessRole/WorkerRole 保持零值：shouldUseStatsWriterBridge
+		// 恒 false，IP 命中缓冲直接经 Source.RecordClientIPPolicyHits 写本进程
+		// 统计库（Node stats-writer 桥仅多进程拆分时启用，接线时需同步补齐角色）。
+		// Logger 让命中缓冲丢弃/写回失败可观测（零值时这些警告被静默丢弃）。
+		Logger:      chainCacheEventLogger{inner: slog.Default()},
 		CacheDriver: cfg.CacheDriver,
 		RuntimeMode: cfg.RuntimeMode,
 		Source:      policySource,

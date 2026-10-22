@@ -1297,3 +1297,69 @@ func TestSettingsAccountHealthReservationPostgresDialect(t *testing.T) {
 		t.Fatalf("non account-health section must not reserve:\n%s", joined)
 	}
 }
+
+// TestStoreInvalidateSnapshotCacheClearsSystemAndGlobalCaches 锁定 W15 ② 的
+// 跨实例失效回调语义：InvalidateSnapshotCache 必须同时清空 settings:system
+// 与 settings:global 的 60s 进程内快照，让下一次读回源数据库；nil 接收者
+// 安全（部分组合的测试夹具会无 store 接线该回调）。
+func TestStoreInvalidateSnapshotCacheClearsSystemAndGlobalCaches(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:invalidate-snapshot-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`,
+		`CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for key, value := range seedSystemSettings {
+		raw, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if _, execErr := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?)`, key, string(raw), "2026-01-01T00:00:00.000Z"); execErr != nil {
+			t.Fatal(execErr)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO global_settings (key, value_json, updated_at) VALUES ('appName', '"聚合 AI"', '2026-01-01T00:00:00.000Z'), ('appIcon', '"/__aisys__/brand-icon.svg"', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(db, false, time.Now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.Load(ctx); err != nil {
+		t.Fatalf("load system snapshot: %v", err)
+	}
+	if _, err := store.LoadGlobal(ctx); err != nil {
+		t.Fatalf("load global snapshot: %v", err)
+	}
+	// 缓存老化窗口内直改数据库：读仍命中 60s 快照（证明缓存确实存在）。
+	if _, err := db.Exec(`UPDATE global_settings SET value_json = '"改名"' WHERE key = 'appName'`); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := store.LoadGlobal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached["appName"] != "聚合 AI" {
+		t.Fatalf("60s 窗口内必须命中快照，实际 %v", cached["appName"])
+	}
+	store.InvalidateSnapshotCache()
+	fresh, err := store.LoadGlobal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh["appName"] != "改名" {
+		t.Fatalf("失效后必须回源读到新值，实际 %v", fresh["appName"])
+	}
+	// nil 接收者安全：部分组合（测试夹具）在无 store 时也接线该回调。
+	var nilStore *Store
+	nilStore.InvalidateSnapshotCache()
+}
