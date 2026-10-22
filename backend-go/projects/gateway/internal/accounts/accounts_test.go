@@ -755,6 +755,11 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		detailData["status"] != "active" || detailData["configRevision"] != float64(1) {
 		t.Fatalf("detail contract: %v", detailData)
 	}
+	// 编辑表单以 providerProtocolProfileId 选择账户类型与凭证组件；列退役后必须
+	// 由健康检查连接 preset 派生（与 patch 读侧同源），空值会让编辑弹窗整块空白。
+	if detailData["providerProtocolProfileId"] != "profile_gpt_openai_v1" {
+		t.Fatalf("edit detail must derive profile id from health check preset: %v", detailData["providerProtocolProfileId"])
+	}
 	credentials := detailData["credentials"].(map[string]any)
 	if credentials["api_key"] != "sk-live-secret-1234567890" {
 		t.Fatalf("detail credentials must be readable for editing: %v", credentials)

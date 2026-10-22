@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // List sort fields mirror AccountListSortField (account-list-options.ts).
@@ -1603,7 +1604,11 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		clientCompatibility       string
 		healthCheckModel          string
 		healthCheckEndpointMode   string
-		authorizationID           sql.NullString
+		// 供应商解耦（设计 §9.11）：provider_protocol_profile_id 列已退役，
+		// 编辑面档案由健康检查连接的 preset 确定性派生（与 patch 读侧同源）。
+		healthCheckConnectionID  sql.NullString
+		currentHealthCheckPreset string
+		authorizationID          sql.NullString
 		sourceAccountID           sql.NullString
 		boundGroupID              sql.NullString
 		boundGroupName            sql.NullString
@@ -1615,6 +1620,10 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 			accounts.type, accounts.capability_domain, accounts.credentials_encrypted, accounts.status, accounts.concurrency_limit,
 			accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
 			'' AS client_compatibility, accounts.health_check_model, accounts.health_check_endpoint_mode,
+			accounts.health_check_connection_id,
+			COALESCE((SELECT account_connections.connection_preset_code
+				FROM `+s.table("account_connections")+` account_connections
+				WHERE account_connections.id = accounts.health_check_connection_id), '') AS current_health_check_preset,
 			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id,
 			(
 				SELECT group_accounts.group_id
@@ -1645,13 +1654,19 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		&row.name, &row.notes, &row.accountType, &row.capabilityDomain, &row.credentialsEncrypted,
 		&row.status, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled,
 		&row.fallbackEnabled, &row.clientCompatibility, &row.healthCheckModel,
-		&row.healthCheckEndpointMode, &row.authorizationID, &row.sourceAccountID,
+		&row.healthCheckEndpointMode, &row.healthCheckConnectionID, &row.currentHealthCheckPreset,
+		&row.authorizationID, &row.sourceAccountID,
 		&row.boundGroupID, &row.boundGroupName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	// 供应商解耦（设计 §2.1/§9.11）：编辑面档案由健康检查连接 preset 派生，
+	// 空 preset（无健康检查连接）保持空串，前端按不完整配置拒绝保存。
+	if profileID, ok := exactkeyprobe.ConnectionPresetProfileID(row.currentHealthCheckPreset); ok {
+		row.providerProtocolProfileID = profileID
 	}
 	// 凭据面可见性门：owner 行放行、越权行 404、授权实例行保留 403（Node
 	// 出处见 gateCredentialRow）。
