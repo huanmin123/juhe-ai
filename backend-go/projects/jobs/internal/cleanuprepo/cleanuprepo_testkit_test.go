@@ -383,7 +383,7 @@ func createKitBusinessSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	execKitSchema(t, db, `CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, status TEXT DEFAULT 'active',
-      schedulable INTEGER DEFAULT 1, cooldown_until TEXT, provider_code TEXT DEFAULT '',
+      schedulable INTEGER DEFAULT 1, cooldown_until TEXT, vendor_code TEXT, connection_driver_code TEXT DEFAULT '',
       type TEXT DEFAULT '', deleted_at TEXT, deleted_by TEXT,
       authorization_instance_authorization_id TEXT, authorization_instance_source_account_id TEXT,
       config_revision INTEGER DEFAULT 0, dispatch_revision INTEGER DEFAULT 0,

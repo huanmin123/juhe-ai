@@ -7,10 +7,11 @@ package main
 //   - usage-catalog 库（juhe_usage / UsageCatalogSQLitePath）只承载使用记录
 //     分片目录（usage_record_shards/usage_records），没有任何定价列，不是
 //     定价数据源；
-//   - 正确数据源是业务库两张表：provider_model_catalog（maintenance 播种的
-//     内置定价快照）+ custom_provider_models（运营自定义模型，global/personal
-//     scope），即 Node listProviderModelCatalog 的同源读取（gateway 侧实现见
-//     cmd/juhe-ai-gateway/chain_catalog.go，billing 引擎见
+//   - 正确数据源是业务库 models 单表（供应商与上游协议面重构设计 §3：
+//     provider_model_catalog 与 custom_provider_models 已合并为唯一物理表），
+//     内置行 scope='builtin'、运营自定义行 global/personal，均按 vendor_code
+//     归属供应商；即 Node listProviderModelCatalog 的同源读取（gateway 侧实现
+//     见 cmd/juhe-ai-gateway/chain_catalog.go，billing 引擎见
 //     gateway/internal/pricing —— 跨 module 不可 import，本文件按其语义做
 //     忠实移植，覆盖冻结路径消费面：BuildCostBreakdown 于已解析目录行）。
 //
@@ -69,7 +70,7 @@ func newUsagePricingCatalog(db *sql.DB, postgres bool) *usagePricingCatalog {
 }
 
 // usageCatalogModelVariants 镜像 gatewayrouting.VolcengineTTSModelAliasVariantsOf
-//（跨 module 不可 import，语义与取值以 gateway 侧为权威、以契约为准）：
+// （跨 module 不可 import，语义与取值以 gateway 侧为权威、以契约为准）：
 // volcengine TTS 占位名 doubao-tts ↔ 现役名 seed-audio-1.0 等价组（EqualFold
 // 语义）；组外模型返回仅含自身的单元素列表（行为零变化）。计价解析是
 // 「派发匹配等价」的第六消费点：占位名 doubao-tts 请求的用量按 seed-audio-1.0
@@ -85,11 +86,19 @@ func usageCatalogModelVariants(model string) []string {
 }
 
 // firstUsageCatalogRow 按「精确优先 + TTS 等价变体回退」在合并目录中找行；
-// 未命中返回 nil。
+// 未命中返回 nil。合并视图以 public_model 为键，上游回包常用 upstream_model，
+// 因此未命中 public 键时再按 upstream_model 等值匹配（trim 相等，大小写敏感，
+// 与旧目录的 model 匹配语义一致）。
 func firstUsageCatalogRow(rows map[string]usageCatalogPricingRow, model string) *usageCatalogPricingRow {
 	for _, variant := range usageCatalogModelVariants(model) {
-		if row, ok := rows[strings.TrimSpace(variant)]; ok {
+		trimmed := strings.TrimSpace(variant)
+		if row, ok := rows[trimmed]; ok {
 			return &row
+		}
+		for _, row := range rows {
+			if strings.TrimSpace(row.upstreamModel) == trimmed {
+				return &row
+			}
 		}
 	}
 	return nil
@@ -224,11 +233,14 @@ func (c *usagePricingCatalog) bind(query string) string {
 	return out.String()
 }
 
-// usageCatalogPricingColumns 是 provider_model_catalog（内置目录）的定价读取
-// 列（maintenance schema 冻结形状，含长上下文 4 列：pg_schema_business_tables
-// 的 provider_model_catalog 定义）。
+// usageCatalogPricingColumns 是 models 单表的定价读取列（供应商与上游协议面
+// 重构设计 §3：内置目录与自定义模型同表，列集以 pg_schema_business_tables.go
+// 的 models 定义为准）。模型身份为 public_model，upstream_model 用于上游回包
+// 名称回退匹配；mode 由 supported_endpoint_modes_json 反推（本文件只消费
+// image_generation 分支）。
 var usageCatalogPricingColumns = strings.Join([]string{
-	"model", "mode", "supported_service_tiers_json", "service_tier_prices_json",
+	"public_model", "upstream_model", "supported_endpoint_modes_json",
+	"supported_service_tiers_json", "service_tier_prices_json",
 	"input_usd_per_1m", "output_usd_per_1m", "cached_input_usd_per_1m",
 	"cache_write_usd_per_1m", "cache_write_1h_usd_per_1m", "cache_storage_usd_per_1m_per_hour",
 	"image_input_usd_per_1m", "image_output_usd_per_1m",
@@ -237,50 +249,36 @@ var usageCatalogPricingColumns = strings.Join([]string{
 	"long_context_input_cost_multiplier", "long_context_output_cost_multiplier",
 }, ", ")
 
-// usageCatalogCustomPricingColumns 是 custom_provider_models（自定义模型）的
-// 定价读取列：对齐 gateway chainCustomCatalogColumns（Node
-// customProviderModelColumns）的定价面——该表没有长上下文 4 列，自定义模型
-// 无长上下文定价，行结构字段保持 nil（applyLongContext 对 nil 阈值短路）。
-var usageCatalogCustomPricingColumns = strings.Join([]string{
-	"model", "mode", "supported_service_tiers_json", "service_tier_prices_json",
-	"input_usd_per_1m", "output_usd_per_1m", "cached_input_usd_per_1m",
-	"cache_write_usd_per_1m", "cache_write_1h_usd_per_1m", "cache_storage_usd_per_1m_per_hour",
-	"image_input_usd_per_1m", "image_output_usd_per_1m",
-	"audio_input_usd_per_1m", "audio_output_usd_per_1m", "output_usd_per_image",
-}, ", ")
-
 func (c *usagePricingCatalog) loadBuiltin(ctx context.Context, providerCode string, today string) ([]usageCatalogPricingRow, error) {
 	// 镜像 chain_catalog.go builtinCatalogQuery / Node listBuiltInProviderModels：
-	// active + 目录可见 + 未下线；顺序 catalog_order, model, id。
-	// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，谓词按方言生成。
+	// scope='builtin' + active + 目录可见 + 未下线；顺序 catalog_order,
+	// public_model, id。catalog_visible 在 PostgreSQL 为 boolean、SQLite 为
+	// integer，谓词按方言生成。
 	visible := "CAST(catalog_visible AS integer) = 1"
 	if c.postgres {
 		visible = "catalog_visible = TRUE"
 	}
-	query := c.bind(`SELECT ` + usageCatalogPricingColumns + `, '' AS scope FROM ` + c.table("provider_model_catalog") + `
-		WHERE provider_code = ? AND status = 'active'
+	query := c.bind(`SELECT ` + usageCatalogPricingColumns + `, '' AS scope FROM ` + c.table("models") + `
+		WHERE scope = 'builtin' AND vendor_code = ? AND status = 'active'
 		  AND ` + visible + `
 		  AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?)
-		ORDER BY catalog_order, model, id`)
-	return c.scanRows(ctx, query, true, providerCode, today)
+		ORDER BY catalog_order, public_model, id`)
+	return c.scanRows(ctx, query, providerCode, today)
 }
 
 func (c *usagePricingCatalog) loadCustom(ctx context.Context, providerCode string, systemAccountID string, today string) ([]usageCatalogPricingRow, error) {
 	// 镜像 chain_catalog.go customCatalogQuery / Node listCustomProviderModelsForCatalog：
 	// global 行（system_account_id IS NULL）+ personal 行（本 system account）。
-	// 列集用 usageCatalogCustomPricingColumns（无长上下文 4 列），行结构字段
-	// 保持零值 = 自定义模型无长上下文定价（Node 合并语义一致）。
-	query := c.bind(`SELECT ` + usageCatalogCustomPricingColumns + `, scope FROM ` + c.table("custom_provider_models") + `
-		WHERE provider_code = ? AND status = 'active'
+	query := c.bind(`SELECT ` + usageCatalogPricingColumns + `, scope FROM ` + c.table("models") + `
+		WHERE scope IN ('global', 'personal') AND vendor_code = ? AND status = 'active'
 		  AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?)
 		  AND ((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))
 		ORDER BY id`)
-	return c.scanRows(ctx, query, false, providerCode, today, strings.TrimSpace(systemAccountID))
+	return c.scanRows(ctx, query, providerCode, today, strings.TrimSpace(systemAccountID))
 }
 
-// scanRows 扫描目录行：withLongContext 对应内置目录查询（列集含长上下文
-// 4 列）；custom 查询传 false，行结构的长上下文字段保持零值。
-func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, withLongContext bool, args ...any) ([]usageCatalogPricingRow, error) {
+// scanRows 扫描目录行（内置与自定义同列集，均携带长上下文 4 列）。
+func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, args ...any) ([]usageCatalogPricingRow, error) {
 	rows, err := c.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -290,44 +288,41 @@ func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, withLo
 	for rows.Next() {
 		var (
 			row                usageCatalogPricingRow
-			mode               sql.NullString
+			endpointModesJSON  sql.NullString
 			supportedTiersJSON sql.NullString
 			tierPricesJSON     sql.NullString
 			scope              sql.NullString
 			longContext        usageCatalogLongContextScan
 		)
 		dest := []any{
-			&row.model, &mode, &supportedTiersJSON, &tierPricesJSON,
+			&row.model, &row.upstreamModel, &endpointModesJSON,
+			&supportedTiersJSON, &tierPricesJSON,
 			&row.inputUsdPer1M, &row.outputUsdPer1M, &row.cachedInputUsdPer1M,
 			&row.cacheWriteUsdPer1M, &row.cacheWrite1hUsdPer1M, &row.cacheStorageUsdPer1MPerHour,
 			&row.imageInputUsdPer1M, &row.imageOutputUsdPer1M,
 			&row.audioInputUsdPer1M, &row.audioOutputUsdPer1M, &row.outputUsdPerImage,
+			&longContext.threshold, &longContext.thresholdInclusive,
+			&longContext.inputMultiplier, &longContext.outputMultiplier,
+			&scope,
 		}
-		if withLongContext {
-			dest = append(dest, &longContext.threshold, &longContext.thresholdInclusive,
-				&longContext.inputMultiplier, &longContext.outputMultiplier)
-		}
-		dest = append(dest, &scope)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
-		row.mode = mode.String
+		row.mode = usageCatalogModeFromEndpointModes(endpointModesJSON.String)
 		row.supportedServiceTiers = decodeUsageCatalogStringList(supportedTiersJSON)
 		row.serviceTierPrices = decodeUsageCatalogTierPrices(tierPricesJSON)
-		if withLongContext {
-			if longContext.threshold.Valid {
-				value := longContext.threshold.Int64
-				row.longContextInputTokenThreshold = &value
-			}
-			row.longContextInputTokenThresholdInclusive = longContext.thresholdInclusive.Valid && longContext.thresholdInclusive.Bool
-			if longContext.inputMultiplier.Valid {
-				value := longContext.inputMultiplier.Float64
-				row.longContextInputCostMultiplier = &value
-			}
-			if longContext.outputMultiplier.Valid {
-				value := longContext.outputMultiplier.Float64
-				row.longContextOutputCostMultiplier = &value
-			}
+		if longContext.threshold.Valid {
+			value := longContext.threshold.Int64
+			row.longContextInputTokenThreshold = &value
+		}
+		row.longContextInputTokenThresholdInclusive = longContext.thresholdInclusive.Valid && longContext.thresholdInclusive.Bool
+		if longContext.inputMultiplier.Valid {
+			value := longContext.inputMultiplier.Float64
+			row.longContextInputCostMultiplier = &value
+		}
+		if longContext.outputMultiplier.Valid {
+			value := longContext.outputMultiplier.Float64
+			row.longContextOutputCostMultiplier = &value
 		}
 		row.scope = scope.String
 		out = append(out, row)
@@ -335,8 +330,44 @@ func (c *usagePricingCatalog) scanRows(ctx context.Context, query string, withLo
 	return out, rows.Err()
 }
 
-// usageCatalogLongContextScan 聚合长上下文 4 列的可空扫描目标（仅内置目录
-// 查询使用；custom_provider_models 无这些列）。
+// usageCatalogModeFromEndpointModes 从 models.supported_endpoint_modes_json 反推
+// 旧目录行 mode（与 gateway chain_catalog.go catalogDeriveLegacyModeAndProtocols
+// 同优先级：video > audio > image_generation > embedding > responses > chat）。
+// 本文件只消费 image_generation 分支（按张/图片 token 计价），其余 mode 仅供
+// 行结构完整。
+func usageCatalogModeFromEndpointModes(raw string) string {
+	var modes []string
+	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &modes) != nil {
+		return ""
+	}
+	has := func(values ...string) bool {
+		for _, mode := range modes {
+			for _, value := range values {
+				if mode == value {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch {
+	case has("video_create", "video_get", "video_content", "video_cancel"):
+		return "video"
+	case has("audio_speech", "audio_transcription_json", "realtime_session"):
+		return "audio"
+	case has("images_json"):
+		return "image_generation"
+	case has("message_token_counting", "count_tokens", "embed_content"):
+		return "embedding"
+	case has("responses_json", "responses_sse"):
+		return "responses"
+	default:
+		return "chat"
+	}
+}
+
+// usageCatalogLongContextScan 聚合 models 单表长上下文 4 列的可空扫描目标
+// （内置与自定义行同列集）。
 type usageCatalogLongContextScan struct {
 	threshold          sql.NullInt64
 	thresholdInclusive sql.NullBool
@@ -387,6 +418,7 @@ type usageCatalogPriceSet struct {
 // usageCatalogPricingRow mirrors pricing.Pricing 的目录行消费面。
 type usageCatalogPricingRow struct {
 	model                                   string
+	upstreamModel                           string
 	mode                                    string
 	scope                                   string
 	supportedServiceTiers                   []string

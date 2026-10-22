@@ -20,15 +20,18 @@ func pricingCatalogFixtureSQL(t *testing.T, dir string) *usagePricingCatalog {
 	t.Helper()
 	db := openTestSQLite(t, filepath.Join(dir, "business-pricing.sqlite3"))
 	mustExec(t, db,
-		`CREATE TABLE IF NOT EXISTS provider_model_catalog (
+		`CREATE TABLE IF NOT EXISTS models (
           id TEXT PRIMARY KEY,
-          provider_code TEXT NOT NULL,
-          model TEXT NOT NULL,
+          vendor_code TEXT,
+          public_model TEXT NOT NULL,
+          upstream_model TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          system_account_id TEXT,
           status TEXT NOT NULL DEFAULT 'active',
-          mode TEXT,
+          catalog_visible INTEGER NOT NULL DEFAULT 1,
           catalog_order INTEGER,
           shutdown_date TEXT,
-          catalog_visible INTEGER NOT NULL DEFAULT 1,
+          supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
           supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
           service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
           input_usd_per_1m REAL, output_usd_per_1m REAL,
@@ -42,61 +45,47 @@ func pricingCatalogFixtureSQL(t *testing.T, dir string) *usagePricingCatalog {
           long_context_input_cost_multiplier REAL,
           long_context_output_cost_multiplier REAL
         )`,
-		// 列集按 maintenance 真实 DDL（sqlite_schema_business.go / pg_schema_business
-		// tables.go 的 custom_provider_models）：无长上下文 4 列——该表在生产就
-		// 没有这些列，伪造会让 loadCustom 每查必错还被测试掩盖。
-		`CREATE TABLE IF NOT EXISTS custom_provider_models (
-          id TEXT PRIMARY KEY,
-          provider_code TEXT NOT NULL,
-          model TEXT NOT NULL,
-          scope TEXT NOT NULL DEFAULT 'personal',
-          system_account_id TEXT,
-          status TEXT NOT NULL DEFAULT 'active',
-          mode TEXT,
-          shutdown_date TEXT,
-          supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
-          service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-          input_usd_per_1m REAL, output_usd_per_1m REAL,
-          cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL,
-          cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
-          image_input_usd_per_1m REAL, image_output_usd_per_1m REAL,
-          audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL,
-          output_usd_per_image REAL
-        )`,
+		// models 单表（设计 §3）：内置 scope='builtin'，自定义 global/personal。
 		// 内置目录：openai 计费主行 + 过滤臂（下线/隐藏/草稿）+ anthropic 行 +
 		// tier 混合行 + gemini 长上下文行。
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, mode, catalog_order,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status,
+          supported_endpoint_modes_json, catalog_order,
           supported_service_tiers_json, service_tier_prices_json,
           input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
           cache_write_usd_per_1m, cache_write_1h_usd_per_1m,
           long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
           long_context_input_cost_multiplier, long_context_output_cost_multiplier)
-         VALUES ('b1', 'openai', 'gpt-test', 'active', 'chat', 1,
+         VALUES ('b1', 'openai', 'gpt-test', 'gpt-test-upstream', 'builtin', 'active',
+          '["chat_json"]', 1,
           '["priority"]', '{"priority":{"inputUsdPer1M":1.0,"outputUsdPer1M":2.0,"cachedInputUsdPer1M":0.2,"cacheWriteUsdPer1M":2.0,"cacheWrite1hUsdPer1M":3.0}}',
           0.5, 1.5, 0.125, 1.25, 2.5, 200000, 0, 2.0, 2.0)`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, shutdown_date) VALUES ('b2', 'openai', 'gpt-stale', 'active', '2020-01-01')`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, catalog_visible) VALUES ('b3', 'openai', 'gpt-hidden', 'active', 0)`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status) VALUES ('b4', 'openai', 'gpt-draft', 'draft')`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m) VALUES ('b5', 'anthropic', 'claude-test', 'active', 3.0, 15.0, 0.3)`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, supported_service_tiers_json, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m)
-         VALUES ('b6', 'openai', 'gpt-mixed', 'active', '["flex"]', '{"flex":{"inputUsdPer1M":1.0}}', 0.5, 1.5)`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, input_usd_per_1m, output_usd_per_1m, long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier)
-         VALUES ('b7', 'gemini', 'gem-test', 'active', 0.5, 1.5, 200000, 2.0, 2.0)`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, input_usd_per_1m, output_usd_per_1m, long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier)
-         VALUES ('b8', 'openai', 'gpt-dual', 'active', 0.7, 1.7, 200000, 2.0, 2.0)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, shutdown_date) VALUES ('b2', 'openai', 'gpt-stale', 'gpt-stale', 'builtin', 'active', '2020-01-01')`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, catalog_visible) VALUES ('b3', 'openai', 'gpt-hidden', 'gpt-hidden', 'builtin', 'active', 0)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status) VALUES ('b4', 'openai', 'gpt-draft', 'gpt-draft', 'builtin', 'draft')`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m) VALUES ('b5', 'anthropic', 'claude-test', 'claude-test', 'builtin', 'active', 3.0, 15.0, 0.3)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_service_tiers_json, service_tier_prices_json, input_usd_per_1m, output_usd_per_1m)
+         VALUES ('b6', 'openai', 'gpt-mixed', 'gpt-mixed', 'builtin', 'active', '["flex"]', '{"flex":{"inputUsdPer1M":1.0}}', 0.5, 1.5)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, input_usd_per_1m, output_usd_per_1m, long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier)
+         VALUES ('b7', 'gemini', 'gem-test', 'gem-test', 'builtin', 'active', 0.5, 1.5, 200000, 2.0, 2.0)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, input_usd_per_1m, output_usd_per_1m, long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier)
+         VALUES ('b8', 'openai', 'gpt-dual', 'gpt-dual', 'builtin', 'active', 0.7, 1.7, 200000, 2.0, 2.0)`,
 		// volcengine TTS 现役行（按秒价：audio_input_usd_per_1m = $2380.95/百万秒
 		// = $0.00238095/秒），供占位名↔现役名等价组计价测试。
-		`INSERT INTO provider_model_catalog (id, provider_code, model, status, mode, audio_input_usd_per_1m)
-         VALUES ('b9', 'volcengine', 'seed-audio-1.0', 'active', 'audio', 2380.95)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, audio_input_usd_per_1m)
+         VALUES ('b9', 'volcengine', 'seed-audio-1.0', 'seed-audio-1.0', 'builtin', 'active', '["audio_speech"]', 2380.95)`,
 		// 自定义目录：global 覆盖内置（gpt-dual，覆盖后长上下文定价被清空——
-		// custom 表无这些列）；personal 命中本账户、不命中他账户。
-		`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, input_usd_per_1m, output_usd_per_1m)
-         VALUES ('c1', 'openai', 'gpt-dual', 'global', NULL, 'active', 2.0, 3.0)`,
-		`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, output_usd_per_1m)
-         VALUES ('c2', 'openai', 'gpt-personal', 'personal', 'sys_a', 'active', 9.9)`,
-		`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, output_usd_per_1m)
-         VALUES ('c3', 'openai', 'gpt-other-sys', 'personal', 'sys_b', 'active', 8.8)`,
-		`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status) VALUES ('c4', 'openai', 'gpt-disabled', 'global', NULL, 'disabled')`,
+		// global 行未填长上下文列）；personal 命中本账户、不命中他账户。
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, input_usd_per_1m, output_usd_per_1m)
+         VALUES ('c1', 'openai', 'gpt-dual', 'gpt-dual', 'global', NULL, 'active', 2.0, 3.0)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, output_usd_per_1m)
+         VALUES ('c2', 'openai', 'gpt-personal', 'gpt-personal', 'personal', 'sys_a', 'active', 9.9)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status, output_usd_per_1m)
+         VALUES ('c3', 'openai', 'gpt-other-sys', 'gpt-other-sys', 'personal', 'sys_b', 'active', 8.8)`,
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, system_account_id, status) VALUES ('c4', 'openai', 'gpt-disabled', 'gpt-disabled', 'global', NULL, 'disabled')`,
+		// 上游模型名回退：public_model 是请求名，upstream_model 与 public 不同，
+		// 上游回包按 upstream_model 计价解析必须命中所属行。
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, input_usd_per_1m, output_usd_per_1m)
+         VALUES ('b10', 'openai', 'gpt-alias-public', 'gpt-alias-upstream', 'builtin', 'active', 1.0, 2.0)`,
 	)
 	return newUsagePricingCatalog(db, false)
 }
@@ -182,6 +171,7 @@ func TestUsagePricingCatalogResolvePricingModel(t *testing.T) {
 		want      string
 	}{
 		{"upstream命中", "gpt-test", "gpt-other", "gpt-test"},
+		{"upstream名称回退", "gpt-alias-upstream", "", "gpt-alias-public"},
 		{"trim匹配", "  gpt-test  ", "", "gpt-test"},
 		{"requested回退", "gpt-missing", "gpt-personal", "gpt-personal"},
 		{"全部未命中", "gpt-missing", "gpt-also-missing", ""},
@@ -455,16 +445,20 @@ func TestUsagePricingCatalogFreezeWithFallback(t *testing.T) {
 func TestUsagePricingCatalogCacheTTL(t *testing.T) {
 	db := openTestSQLite(t, filepath.Join(t.TempDir(), "ttl.sqlite3"))
 	// 与适配器 SELECT 列集一致的完整表形状（列缺失会让查询失败并被负缓存）。
+	// 与适配器 SELECT 列集一致的 models 单表形状（列缺失会让查询失败并进负缓存）。
 	mustExec(t, db,
-		`CREATE TABLE provider_model_catalog (
+		`CREATE TABLE models (
           id TEXT PRIMARY KEY,
-          provider_code TEXT NOT NULL,
-          model TEXT NOT NULL,
+          vendor_code TEXT,
+          public_model TEXT NOT NULL,
+          upstream_model TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          system_account_id TEXT,
           status TEXT NOT NULL DEFAULT 'active',
-          mode TEXT,
+          catalog_visible INTEGER NOT NULL DEFAULT 1,
           catalog_order INTEGER,
           shutdown_date TEXT,
-          catalog_visible INTEGER NOT NULL DEFAULT 1,
+          supported_endpoint_modes_json TEXT NOT NULL DEFAULT '[]',
           supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
           service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
           input_usd_per_1m REAL, output_usd_per_1m REAL,
@@ -478,27 +472,7 @@ func TestUsagePricingCatalogCacheTTL(t *testing.T) {
           long_context_input_cost_multiplier REAL,
           long_context_output_cost_multiplier REAL
         )`,
-		`INSERT INTO provider_model_catalog (id, provider_code, model, input_usd_per_1m) VALUES ('x', 'openai', 'm1', 1.0)`,
-		// load 同时读 custom_provider_models（maintenance 真实形状：无长上下文
-		// 4 列，空表即可；列缺失/缺表会让整链报错并进负缓存）。
-		`CREATE TABLE custom_provider_models (
-          id TEXT PRIMARY KEY,
-          provider_code TEXT NOT NULL,
-          model TEXT NOT NULL,
-          scope TEXT NOT NULL DEFAULT 'personal',
-          system_account_id TEXT,
-          status TEXT NOT NULL DEFAULT 'active',
-          mode TEXT,
-          shutdown_date TEXT,
-          supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
-          service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
-          input_usd_per_1m REAL, output_usd_per_1m REAL,
-          cached_input_usd_per_1m REAL, cache_write_usd_per_1m REAL,
-          cache_write_1h_usd_per_1m REAL, cache_storage_usd_per_1m_per_hour REAL,
-          image_input_usd_per_1m REAL, image_output_usd_per_1m REAL,
-          audio_input_usd_per_1m REAL, audio_output_usd_per_1m REAL,
-          output_usd_per_image REAL
-        )`)
+		`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, input_usd_per_1m) VALUES ('x', 'openai', 'm1', 'm1', 'builtin', 1.0)`)
 	now := time.Unix(1_000_000, 0)
 	catalog := newUsagePricingCatalog(db, false)
 	catalog.now = func() time.Time { return now }
@@ -507,7 +481,7 @@ func TestUsagePricingCatalogCacheTTL(t *testing.T) {
 	if got := catalog.ResolvePricingModel(ctx, "openai", "", "m1", ""); got != "m1" {
 		t.Fatalf("首查必须命中: %q", got)
 	}
-	mustExec(t, db, `UPDATE provider_model_catalog SET model = 'm2' WHERE id = 'x'`)
+	mustExec(t, db, `UPDATE models SET public_model = 'm2', upstream_model = 'm2' WHERE id = 'x'`)
 	if got := catalog.ResolvePricingModel(ctx, "openai", "", "m2", ""); got != "" {
 		t.Fatalf("TTL 窗口内必须读缓存: %q", got)
 	}

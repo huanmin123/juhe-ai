@@ -24,7 +24,7 @@ type managementRow struct {
 	ownerSystemAccountID                string
 	ownerSystemAccountName              sql.NullString
 	providerCode                        string
-	providerName                        string
+	providerName                        sql.NullString
 	providerProtocolProfileID           string
 	protocolCode                        string
 	protocolVersion                     string
@@ -563,7 +563,6 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 		"configRevision":            numberValue(row.configRevision, 1),
 		"ownerSystemAccountId":      row.ownerSystemAccountID,
 		"providerCode":              providerCode,
-		"providerName":              row.providerName,
 		"providerProtocolProfileId": profileID,
 		"protocolCode":              protocolCode,
 		"protocolVersion":           protocolVersion,
@@ -576,6 +575,12 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 		"healthCheckEndpointMode":   row.healthCheckEndpointMode,
 		"accessType":                accessTypeOf(authorized),
 		"permissions":               permissionsOf(authorized, row.authorizationEffectiveSourceType),
+	}
+	// providerName?: string（网关 DTO 为 *string + omitempty）：vendor_code NULL
+	// 的 generic_http 账户没有厂商行，LEFT JOIN 结果为 NULL，载荷必须省略该键
+	//（此前恒写 string 会因 Scan NULL 失败使整个投影批次重放）。
+	if row.providerName.Valid && row.providerName.String != "" {
+		payload["providerName"] = row.providerName.String
 	}
 	// notes?: string | null → undefined 省略。
 	if row.notes.Valid && row.notes.String != "" {

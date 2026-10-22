@@ -118,6 +118,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 		Repo:              repo,
 		RuntimeProbe:      projectionRuntimeProbe{concurrency: circuitstore.NewOverlayConcurrencySource(overlayStore), runtime: runtimeReader},
 		Overlays:          circuitstore.NewOverlayReconciler(overlayStore, repo),
+		Logger:            a.logger,
 		LoadItems:         loader.LoadItems,
 		SyncSchedules: func(syncCtx context.Context, nowMS int64) error {
 			// Node syncAccountAvailabilityScheduleStatusesAsync(now)：

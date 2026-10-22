@@ -885,8 +885,8 @@ func workerUsageOverflowSpoolDirectory(config workerConfig) string {
 // 停机排空。BUG-0175 D-72 补齐注入缺口：
 //   - FreezePricing：Node 两条路径都在入队时点冻结定价事实；Go 单路径在
 //     writer 侧冻结（C03 目录适配器已接线，见 worker_usage_pricing_catalog.go：
-//     数据源=业务库 provider_model_catalog + custom_provider_models；目录读取
-//     失败回落确定性 fallback 快照，读侧契约不变）；
+//     数据源=业务库 models 单表，内置 builtin + 自定义 global/personal 按
+//     vendor_code 合并；目录读取失败回落确定性 fallback 快照，读侧契约不变）；
 //   - CatalogSnapshot：镜像 usageRecordPricingSnapshotForWrite 的
 //     `databaseDriver !== 'postgres'` 守卫；
 //   - BusinessDB（仅 SQLite；PG 路径的 last_used_at 副作用在主事务内随
@@ -923,8 +923,8 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 			return err
 		}
 		a.addCloser(business.close)
-		// SQLite 模式：定价目录读业务库（provider_model_catalog /
-		// custom_provider_models），与 shard store 的业务库副作用共用同一句柄。
+		// SQLite 模式：定价目录读业务库 models 单表，与 shard store 的业务库
+		// 副作用共用同一句柄。
 		pricingCatalog = newUsagePricingCatalog(business.db, false)
 		// stats 库镜像写句柄：SQLite standalone 模式下聚合器唯一输入源
 		//（usage_records 由 statsverify EnsureSchema 建为聚合形状；stats 家族

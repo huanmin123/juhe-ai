@@ -367,7 +367,7 @@ func TestDeleteAccountPGErrorStages(t *testing.T) {
 		{"quota bindings", "request_quota_hourly_window_scope_bindings"},
 		{"account update", "UPDATE juhe_business.accounts"},
 		{"deleted ids", "SELECT id FROM juhe_business.accounts WHERE deleted_at"},
-		{"tombstone select", "provider_code IN"},
+		{"tombstone select", "vendor_code IN"},
 		{"version select", "SELECT current_version"},
 		{"version upsert", "INSERT INTO account_health_jobs_input_versions"},
 		{"outbox insert", "INSERT INTO account_health_jobs_input_outbox"},
@@ -386,7 +386,7 @@ func TestDeleteAccountPGErrorStages(t *testing.T) {
 			[][]driver.Value{{"account", "acc-src"}})
 		rec.script("WHERE resource_type = 'account' AND resource_id", []string{"id"}, [][]driver.Value{{"auth-7"}})
 		rec.script("SELECT id FROM juhe_business.accounts WHERE deleted_at", []string{"id"}, [][]driver.Value{{"acc-inst"}})
-		rec.script("provider_code IN", []string{"id", "config_revision", "dispatch_revision"},
+		rec.script("vendor_code IN", []string{"id", "config_revision", "dispatch_revision"},
 			[][]driver.Value{{"acc-inst", int64(4), int64(6)}})
 		store := &DeletedAccountStore{Business: openKitFailingRecorderPG(rec, stage.failOn), Now: kitNow}
 		_, err := store.orphanSweepPostgres(context.Background(), 10)

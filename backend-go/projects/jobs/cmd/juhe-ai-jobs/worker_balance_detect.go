@@ -791,6 +791,13 @@ func (r *balanceDetectRuntime) buildQueryInput(ctx context.Context, candidate op
 		inputVersion = *candidate.InputVersion
 	}
 	now := r.nowFunc().UTC()
+	// generic_http 账户的 vendor_code 按设计为 NULL（供应商与上游协议面重构设计
+	// §10 规则 2：旧 openai/hybrid 不提升为真实 vendor）。余额探测只要求 provider
+	// 非空来区分“可查询的 API Key 账户”，这里用 generic_http 占位，不改变
+	// 账户的真实 vendor 归属。
+	if strings.TrimSpace(providerCode) == "" {
+		providerCode = "generic_http"
+	}
 	input := accountbalance.Input{
 		AccountID:       candidate.ID,
 		SystemAccountID: candidate.SystemAccountID,

@@ -38,7 +38,10 @@ func renderLogicallyDeleteTombstone(db *DB, count int, listFn func(int) string) 
       FROM %s
       WHERE deleted_at = ?
         AND id IN (%s)
-        AND provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+        AND (
+          vendor_code IN ('gpt', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini')
+          OR (vendor_code IS NULL AND connection_driver_code = 'generic_http')
+        )
         AND type IN ('api_key', 'oauth', 'google_oauth')
       ORDER BY id ASC%s
 		`, db.Table("juhe_business", "accounts"), listFn(count), lockSuffix))

@@ -38,10 +38,10 @@ func seedKitDeletedAccount(t *testing.T, business *DB, id, deletedAt, instanceAu
 		return value
 	}
 	mustExecKit(t, business, `INSERT INTO accounts (
-      id, system_account_id, status, schedulable, provider_code, type, deleted_at,
+      id, system_account_id, status, schedulable, vendor_code, connection_driver_code, type, deleted_at,
       authorization_instance_authorization_id, authorization_instance_source_account_id,
       created_at, updated_at)
-    VALUES (?, 'sys-1', 'disabled', 0, 'openai', 'oauth', ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+    VALUES (?, 'sys-1', 'disabled', 0, NULL, 'generic_http', 'oauth', ?, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		id, nullIfEmpty(deletedAt), nullIfEmpty(instanceAuthID), nullIfEmpty(instanceSourceID))
 }
 
@@ -213,7 +213,7 @@ func TestOrphanSweepPostgres(t *testing.T) {
 	rec.script("WHERE resource_type = 'account' AND resource_id", []string{"id"}, [][]driver.Value{{"auth-7"}})
 	// 注意：PG 路径经 Bind 改写为 $n，脚本匹配键不能包含字面 `?`。
 	rec.script("SELECT id FROM juhe_business.accounts WHERE deleted_at", []string{"id"}, [][]driver.Value{{"acc-inst"}})
-	rec.script("provider_code IN", []string{"id", "config_revision", "dispatch_revision"},
+	rec.script("vendor_code IN", []string{"id", "config_revision", "dispatch_revision"},
 		[][]driver.Value{{"acc-inst", int64(4), int64(6)}})
 
 	orphaned, err := store.orphanSweepPostgres(context.Background(), 10)
@@ -299,10 +299,10 @@ func seedKitOrphanInstance(t *testing.T, business *DB, id, authID, sourceID stri
 		return value
 	}
 	mustExecKit(t, business, `INSERT INTO accounts (
-      id, system_account_id, status, provider_code, type, config_revision, dispatch_revision,
+      id, system_account_id, status, vendor_code, connection_driver_code, type, config_revision, dispatch_revision,
       authorization_instance_authorization_id, authorization_instance_source_account_id,
       created_at, updated_at)
-    VALUES (?, 'sys-1', 'active', 'openai', 'oauth', 4, 6, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+    VALUES (?, 'sys-1', 'active', NULL, 'generic_http', 'oauth', 4, 6, ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		id, nullIfEmpty(authID), nullIfEmpty(sourceID))
 }
 
@@ -541,8 +541,8 @@ func TestRevokeAuthorizationInstancePostgres(t *testing.T) {
 func TestLogicallyDeleteAccountsTxSQLite(t *testing.T) {
 	store, business := newKitDeletedAccountStore(t, nil)
 	mustExecKit(t, business, `INSERT INTO accounts (
-      id, system_account_id, status, provider_code, type, config_revision, dispatch_revision, created_at, updated_at)
-    VALUES ('acc-t','sys-1','active','openai','oauth',4,6,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`)
+      id, system_account_id, status, vendor_code, connection_driver_code, type, config_revision, dispatch_revision, created_at, updated_at)
+    VALUES ('acc-t','sys-1','active',NULL,'generic_http','oauth',4,6,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`)
 	for _, table := range []string{"account_tag_bindings", "account_name_search_terms", "account_name_search_documents"} {
 		mustExecKit(t, business, `INSERT INTO `+table+` (id, account_id) VALUES ('r-1','acc-t')`)
 	}

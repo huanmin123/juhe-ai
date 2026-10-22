@@ -233,7 +233,7 @@ func TestOrphanSweepSQLiteErrorStages(t *testing.T) {
 		{"auth revoke", "UPDATE resource_authorizations"},
 		{"account update", "SET status = 'disabled'"},
 		{"deleted ids", "deleted_at = ? AND id IN"},
-		{"tombstone select", "provider_code IN"},
+		{"tombstone select", "vendor_code IN"},
 		{"version select", "SELECT current_version"},
 		{"version upsert", "INSERT INTO account_health_jobs_input_versions"},
 		{"outbox insert", "INSERT INTO account_health_jobs_input_outbox"},

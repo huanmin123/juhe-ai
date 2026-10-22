@@ -960,12 +960,17 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
 		}
 		// 同上（BUG-0239）：tombstone SELECT 的前置 `?` 与 IN 列表由同一次
 		// Bind 编号；lockSuffix（FOR UPDATE）无占位符不受影响。
+		// 供应商身份按目标列集判定：真实厂商走 vendor_code，旧 openai/hybrid
+		// 按设计迁为 vendor NULL + generic_http（设计 §10 规则 2）。
 		tombstones, err := queryRows(ctx, tx, s.Business.Bind(fmt.Sprintf(`
       SELECT id, config_revision, dispatch_revision
       FROM %s
       WHERE deleted_at = ?
         AND id IN (%s)
-        AND provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
+        AND (
+          vendor_code IN ('gpt', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini')
+          OR (vendor_code IS NULL AND connection_driver_code = 'generic_http')
+        )
         AND type IN ('api_key', 'oauth', 'google_oauth')
       ORDER BY id ASC%s
 		`, s.table("accounts"), placeholderList(len(deletedIDs)), lockSuffix)),

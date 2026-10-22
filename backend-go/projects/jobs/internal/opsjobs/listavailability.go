@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -206,6 +207,9 @@ type ListAvailabilityOptions struct {
 	Overlays          OverlayReconciler
 	LoadItems         ItemLoader
 	SyncSchedules     AvailabilityScheduleSyncer
+	// Logger 记录批次物化失败；nil 时用 slog.Default（失败继续保持
+	// Node 的释放重放语义，但不得静默）。
+	Logger *slog.Logger
 }
 
 // ProjectionReplayDelayMS 对齐 projectionReplayDelayMs：
@@ -548,7 +552,16 @@ func runListAvailabilityMaintenanceBatch(ctx context.Context, opts ListAvailabil
 		staleClaims += staleThisViewer
 		if batchErr != nil {
 			// Node 行为：批量物化失败标记运行态依赖不可用，并把该 viewer
-			// 未完成 claim 释放为重放后继续处理其余 viewer。
+			// 未完成 claim 释放为重放后继续处理其余 viewer。原始错误必须
+			// 可观测：否则脏队列只会表现为反复超时/恢复代次上涨。
+			logger := opts.Logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("账户列表投影批次物化失败",
+				"viewerSystemAccountId", viewerSystemAccountID,
+				"claims", len(viewerClaims),
+				"error", batchErr)
 			if markErr := repo.MarkRuntimeDependencyUnavailable(ctx, "projection_runtime_materialization_failed",
 				time.UnixMilli(opts.NowMS()).UTC().Format(time.RFC3339Nano)); markErr != nil {
 				return ListAvailabilityMaintenanceResult{}, errors.Join(batchErr, markErr)

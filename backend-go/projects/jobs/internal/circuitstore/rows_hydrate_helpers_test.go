@@ -24,7 +24,7 @@ func TestBuildBasePayloadOwnerRow(t *testing.T) {
 	row := managementRow{
 		id: "acc-1", systemAccountID: "sys-1", ownerSystemAccountID: "sys-1",
 		configRevision: sql.NullInt64{Int64: 4, Valid: true},
-		providerCode:   "openai", providerName: "OpenAI",
+		providerCode:   "openai", providerName: sql.NullString{String: "OpenAI", Valid: true},
 		providerProtocolProfileID: "profile-1", protocolCode: "openai", protocolVersion: "v1",
 		name: "账户甲", accountType: "api_key",
 		concurrencyLimit: 10, priority: 5,
@@ -103,7 +103,7 @@ func TestBuildBasePayloadOwnerRow(t *testing.T) {
 func TestBuildBasePayloadAuthorizedRow(t *testing.T) {
 	row := managementRow{
 		id: "acc-2", systemAccountID: "sys-2", ownerSystemAccountID: "sys-owner",
-		providerCode: "openai", providerName: "OpenAI",
+		providerCode: "openai", providerName: sql.NullString{String: "OpenAI", Valid: true},
 		providerProtocolProfileID: "local-profile", protocolCode: "openai", protocolVersion: "v1",
 		name: "授权实例", accountType: "api_key",
 		concurrencyLimit: 2, priority: 1,
@@ -680,4 +680,28 @@ func TestProjectionLoadConfigPostgresDialect(t *testing.T) {
 	}
 	var _ opsjobs.ItemLoader = nil
 	_ = config
+}
+
+// TestBuildBasePayloadOmitsNullProviderName：vendor_code NULL 的 generic_http
+// 账户没有厂商行（LEFT JOIN vendors 结果为 NULL），payload 必须省略
+// providerName 键而不是产出空串；此前字段为 string 会让 Scan 直接失败并使
+// 整个投影批次释放重放。
+func TestBuildBasePayloadOmitsNullProviderName(t *testing.T) {
+	row := managementRow{
+		id: "acc-generic", systemAccountID: "sys-1", ownerSystemAccountID: "sys-1",
+		providerCode: "", providerName: sql.NullString{},
+		status: "active", schedulable: 1, accountType: "api_key",
+	}
+	payload := buildBasePayload(row, nil, nil)
+	if _, exists := payload["providerName"]; exists {
+		t.Fatalf("NULL provider_name 不得写入 providerName: %v", payload["providerName"])
+	}
+	if got := payload["providerCode"]; got != "" {
+		t.Fatalf("providerCode = %v want empty", got)
+	}
+	row.providerName = sql.NullString{String: "OpenAI", Valid: true}
+	payload = buildBasePayload(row, nil, nil)
+	if got := payload["providerName"]; got != "OpenAI" {
+		t.Fatalf("有效 provider_name 必须保留: %v", got)
+	}
 }
