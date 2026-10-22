@@ -1295,9 +1295,19 @@ export async function applyProviderDefinitionDefaultsAfterLoad(
   if (pristine.has('providerProtocolProfileId')) input.form.providerProtocolProfileId = resolved.providerProtocolProfileId
   if (pristine.has('baseUrl')) input.form.baseUrl = resolved.baseUrl
   if (pristine.has('clientCompatibility')) input.form.clientCompatibility = resolved.clientCompatibility
-  if (pristine.has('healthCheckEndpointMode')) input.form.healthCheckEndpointMode = resolved.healthCheckEndpointMode
+  // 同 supportedEndpointModes：媒体供应商解析出的默认集为空时，健康检查形态
+  // 已由域默认 watch 落位（video_create / audio_speech 等），不得用空默认集
+  // 推导出的 chat 形态覆盖。
+  if (pristine.has('healthCheckEndpointMode') && resolved.supportedEndpointModes.length > 0) {
+    input.form.healthCheckEndpointMode = resolved.healthCheckEndpointMode
+  }
   if (pristine.has('oauthMode')) input.form.oauthMode = resolved.oauthMode
-  if (pristine.has('supportedEndpointModes')) input.form.supportedEndpointModes = [...resolved.supportedEndpointModes]
+  // 媒体供应商的协议档案默认集为空（媒体 modes 全部 opt-in，由域默认 watch
+  // 按账户能力域落位）；此时空数组不是权威默认值，回填会清掉 watch 已选的
+  // 视频/音频组。仅在解析出非空默认集时覆盖。
+  if (pristine.has('supportedEndpointModes') && resolved.supportedEndpointModes.length > 0) {
+    input.form.supportedEndpointModes = [...resolved.supportedEndpointModes]
+  }
 }
 
 function providerDefaultState(form: ProviderDefaultState): ProviderDefaultState {

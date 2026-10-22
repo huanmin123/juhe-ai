@@ -9,10 +9,7 @@ import {
   GPT_OPENAI_V1_PROFILE_ID,
   HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
   MINIMAX_OPENAI_V1_PROFILE_ID,
-  OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
-  OPENAI_TTS_FAMILY,
-  OPENAI_VIDEO_GENERATION_FAMILY,
   QWEN_OPENAI_V1_PROFILE_ID,
   VOLCENGINE_OPENAI_V1_PROFILE_ID,
   XAI_OPENAI_V1_PROFILE_ID
@@ -44,6 +41,7 @@ import {
   preferredMediaDomainProviderCode
 } from './accountCapabilityDomains'
 import { FALLBACK_PROVIDERS } from './accountOptions'
+import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 
 describe('能力域枚举与标签', () => {
   it('域枚举固定为四值，顺序与 CHECK 约束一致', () => {
@@ -253,22 +251,8 @@ function fallbackProfileById(id: string): AccountProviderProfileLike {
   return profile as AccountProviderProfileLike
 }
 
-// minimax/volcengine/qwen 不在 FALLBACK_PROVIDERS，用与加载定义同形的最小档案
-//（openai 协议 + 媒体 families）代表其写侧词表。
-function mediaVendorProfile(input: {
-  id: string
-  providerCode: string
-  families: string[]
-}): AccountProviderProfileLike {
-  return {
-    id: input.id,
-    providerCode: input.providerCode,
-    protocolCode: 'openai',
-    protocolVersion: 'v1',
-    endpointFamilies: input.families.map((code) => ({ code }))
-  }
-}
-
+// 三家媒体供应商现在也在 FALLBACK_PROVIDERS，直接复用真实回退档案，
+// 避免测试自造档案与生产回退形状漂移（T47）。
 const gptProfile = fallbackProfileById(GPT_OPENAI_V1_PROFILE_ID)
 const openaiCompatibleProfile = fallbackProfileById(OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID)
 const xaiProfile = fallbackProfileById(XAI_OPENAI_V1_PROFILE_ID)
@@ -278,23 +262,9 @@ const anthropicProfile = fallbackProfileById(ANTHROPIC_ANTHROPIC_V1_PROFILE_ID)
 const geminiNativeProfile = fallbackProfileById(GEMINI_NATIVE_V1BETA_PROFILE_ID)
 const geminiOpenAIChatProfile = fallbackProfileById(GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID)
 const hybridProfile = fallbackProfileById(HYBRID_OPENAI_CHAT_V1_PROFILE_ID)
-const minimaxProfile = mediaVendorProfile({
-  id: MINIMAX_OPENAI_V1_PROFILE_ID,
-  providerCode: 'minimax',
-  families: [OPENAI_VIDEO_GENERATION_FAMILY, OPENAI_TTS_FAMILY]
-})
-const volcengineProfile = mediaVendorProfile({
-  id: VOLCENGINE_OPENAI_V1_PROFILE_ID,
-  providerCode: 'volcengine',
-  // audio_transcription（豆包录音文件识别 2.0，2026-10-17 语音识别承接批）
-  // 与后端档案 profile_volcengine_openai_v1 的 EndpointFamilies 同步。
-  families: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_VIDEO_GENERATION_FAMILY, OPENAI_TTS_FAMILY, 'audio_transcription']
-})
-const qwenProfile = mediaVendorProfile({
-  id: QWEN_OPENAI_V1_PROFILE_ID,
-  providerCode: 'qwen',
-  families: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_VIDEO_GENERATION_FAMILY, 'audio_transcription']
-})
+const minimaxProfile = fallbackProfileById(MINIMAX_OPENAI_V1_PROFILE_ID)
+const volcengineProfile = fallbackProfileById(VOLCENGINE_OPENAI_V1_PROFILE_ID)
+const qwenProfile = fallbackProfileById(QWEN_OPENAI_V1_PROFILE_ID)
 
 describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 ∩ 供应商词表（v8-A）', () => {
   it('gpt：恰为 chat×2+responses×2（v8-A 移出 realtime/短转写/images_json）', () => {
@@ -579,5 +549,33 @@ describe('preferredMediaDomainProviderCode：媒体域新建默认供应商收�
       providers: [geminiNative],
       providerCodesWithDomainModels: new Set(['gemini'])
     })).toBe('gemini')
+  })
+})
+
+describe('媒体域三家供应商回退定义（T47）', () => {
+  it.each([
+    ['minimax', ['video']],
+    ['volcengine', ['video', 'audio', 'image']],
+    ['qwen', ['video', 'audio']]
+  ] as const)('%s 在 FALLBACK_PROVIDERS 且媒体域可建户', (code, domains) => {
+    const provider = FALLBACK_PROVIDERS.find((item) => item.code === code)
+    expect(provider, `FALLBACK_PROVIDERS 缺少媒体供应商 ${code}`).toBeTruthy()
+    expect(provider!.protocolProfiles.length).toBeGreaterThan(0)
+    for (const domain of domains) {
+      expect(capabilityDomainAccountTypes({
+        capabilityDomain: domain,
+        providerCode: code,
+        profile: provider!.protocolProfiles[0]
+      })).toEqual(['api_key'])
+    }
+  })
+
+  it('媒体表单合并逻辑保留三家供应商（服务端空档案不覆盖内置协议形状）', () => {
+    const merged = mergeAccountProviderDefinitions(FALLBACK_PROVIDERS, [])
+    for (const code of ['minimax', 'volcengine', 'qwen']) {
+      const provider = merged.find((item) => item.code === code)
+      expect(provider, `合并后缺少 ${code}`).toBeTruthy()
+      expect(provider!.protocolProfiles.length).toBeGreaterThan(0)
+    }
   })
 })

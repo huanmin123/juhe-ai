@@ -709,8 +709,9 @@ import {
   defaultAccountEndpointModes,
   endpointModesEqual
 } from './accountEndpointModes'
-import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT } from './accountOptions'
+import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
+import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -827,9 +828,11 @@ const isMediaDomain = computed(() =>
   || props.capabilityDomain === 'image')
 
 // 媒体域供应商清单保障：列表页传入的 providers 是轻量 options（protocolProfiles
-// 懒加载），FALLBACK_PROVIDERS 也不含 minimax/volcengine/qwen——三段式的供应商×
-// 类型矩阵过滤依赖完整 protocolProfiles，缺定义时整个供应商会被静默滤掉。这里在
-// 媒体弹窗打开时拉一次全量完整定义兜底；对话域不走此路径（行为零变化）。
+// 懒加载），服务端完整定义在协议档案表退役后 protocolProfiles 恒为空；三段式的
+// 供应商×类型矩阵过滤依赖完整 protocolProfiles，缺定义时整个供应商会被静默滤掉。
+// 这里在媒体弹窗打开时拉一次全量定义，并与 FALLBACK_PROVIDERS（含
+// minimax/volcengine/qwen 媒体回退）按「空档案保留内置协议形状」合并；
+// 对话域不走此路径（行为零变化）。
 const mediaProviderDefinitions = ref<ProviderDefinition[] | undefined>(undefined)
 watch(
   [open, () => props.capabilityDomain],
@@ -841,7 +844,10 @@ watch(
   },
   { immediate: true }
 )
-const mediaProviders = computed(() => mediaProviderDefinitions.value ?? props.providers)
+const mediaProviders = computed(() => mergeAccountProviderDefinitions(
+  props.providers.length ? props.providers : FALLBACK_PROVIDERS,
+  mediaProviderDefinitions.value ?? []
+))
 
 // 能力域上下文同步（D3）：域由路由注入、不是可编辑字段。表单在新建/编辑/克隆
 // 装载路径会被整块 Object.assign 重置，这里在弹窗打开与结构字段变化后重放注入，

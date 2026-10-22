@@ -32,10 +32,19 @@ import {
   GPT_VENDOR_CODE,
   XAI_OPENAI_V1_PROFILE_ID,
   XAI_PROVIDER_CODE,
+  MINIMAX_OPENAI_V1_PROFILE_ID,
+  MINIMAX_PROVIDER_CODE,
+  OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
-  OPENAI_RESPONSES_FAMILY
+  OPENAI_RESPONSES_FAMILY,
+  OPENAI_TTS_FAMILY,
+  OPENAI_VIDEO_GENERATION_FAMILY,
+  QWEN_OPENAI_V1_PROFILE_ID,
+  QWEN_PROVIDER_CODE,
+  VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  VOLCENGINE_PROVIDER_CODE
 } from '@/shared/providerProtocol'
 
 export { GPT_VENDOR_CODE }
@@ -382,7 +391,114 @@ export const GLM_PROVIDER: ProviderDefinition = {
   ]
 }
 
-export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, XAI_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, HYBRID_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER]
+// 媒体域三家供应商不在对话域 options 清单，也没有旧协议档案可读（B4 退役后
+// `/providers/definitions` 的 protocolProfiles 恒为空）；媒体表单按
+// `protocolProfiles[].endpointFamilies` 过滤供应商与推导可勾选 modes，缺本地
+// 回退会整批静默消失（T47）。档案 id 与后端 accountscore registry 的 preset
+// 对应关系见 shared/providerProtocol.ts 的 CONNECTION_PRESET_BY_PROFILE_ID。
+const MINIMAX_PROVIDER: ProviderDefinition = {
+  id: MINIMAX_PROVIDER_CODE,
+  code: MINIMAX_PROVIDER_CODE,
+  name: 'MiniMax',
+  enabled: true,
+  defaultProtocolProfileId: MINIMAX_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.minimax.chat',
+  defaultHealthCheckModel: 'MiniMax-M3',
+  defaultSupportedModels: ['MiniMax-M3', 'MiniMax-H3', 'image-01', 'speech-2.8-hd'],
+  accountTypes: ['api_key'],
+  capabilities: ['video', 'audio'],
+  protocolProfiles: [
+    {
+      id: MINIMAX_OPENAI_V1_PROFILE_ID,
+      providerCode: MINIMAX_PROVIDER_CODE,
+      name: 'MiniMax / 媒体',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://api.minimax.chat',
+      defaultHealthCheckModel: 'MiniMax-M3',
+      accountTypes: ['api_key'],
+      capabilities: ['video', 'audio'],
+      endpointFamilies: [
+        { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },
+        { code: OPENAI_TTS_FAMILY, name: '语音合成' }
+      ]
+    }
+  ]
+}
+
+const VOLCENGINE_PROVIDER: ProviderDefinition = {
+  id: VOLCENGINE_PROVIDER_CODE,
+  code: VOLCENGINE_PROVIDER_CODE,
+  name: '火山引擎',
+  enabled: true,
+  defaultProtocolProfileId: VOLCENGINE_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://ark.cn-beijing.volces.com',
+  defaultHealthCheckModel: 'doubao-seed-2-1-pro-260915',
+  defaultSupportedModels: ['doubao-seed-2-1-pro-260915', 'doubao-seedance-2-5-260628', 'doubao-seedream-5-0-260128', 'seed-tts-2.0'],
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'video', 'audio', 'image'],
+  protocolProfiles: [
+    {
+      id: VOLCENGINE_OPENAI_V1_PROFILE_ID,
+      providerCode: VOLCENGINE_PROVIDER_CODE,
+      name: '火山引擎 Ark / OpenAI 兼容',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://ark.cn-beijing.volces.com',
+      defaultHealthCheckModel: 'doubao-seed-2-1-pro-260915',
+      accountTypes: ['api_key'],
+      capabilities: ['chat', 'video', 'audio', 'image'],
+      endpointFamilies: [
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
+        { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },
+        { code: OPENAI_TTS_FAMILY, name: '语音合成' },
+        { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' }
+      ]
+    }
+  ]
+}
+
+const QWEN_PROVIDER: ProviderDefinition = {
+  id: QWEN_PROVIDER_CODE,
+  code: QWEN_PROVIDER_CODE,
+  name: '通义千问',
+  enabled: true,
+  defaultProtocolProfileId: QWEN_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  defaultHealthCheckModel: 'qwen3.8-max',
+  defaultSupportedModels: ['qwen3.8-max', 'wan3.0-video', 'qwen3-tts-flash', 'qwen-image-3.0'],
+  accountTypes: ['api_key'],
+  capabilities: ['chat', 'video', 'audio'],
+  protocolProfiles: [
+    {
+      id: QWEN_OPENAI_V1_PROFILE_ID,
+      providerCode: QWEN_PROVIDER_CODE,
+      name: '通义千问 DashScope / OpenAI 兼容',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      defaultHealthCheckModel: 'qwen3.8-max',
+      accountTypes: ['api_key'],
+      capabilities: ['chat', 'video', 'audio'],
+      endpointFamilies: [
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
+        { code: OPENAI_VIDEO_GENERATION_FAMILY, name: '视频生成' },
+        { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: '音频转写' }
+      ]
+    }
+  ]
+}
+
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, XAI_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, HYBRID_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER, MINIMAX_PROVIDER, VOLCENGINE_PROVIDER, QWEN_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20
