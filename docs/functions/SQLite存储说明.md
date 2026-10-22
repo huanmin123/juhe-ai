@@ -61,7 +61,7 @@ F1 运行日志索引库、F4 操作日志专库和余额手动刷新租约库�
 - `system_accounts`、`system_sessions`
 - `global_settings`、`system_settings`
 - `providers`、`protocols`、`protocol_endpoint_families`、`provider_protocol_profiles`、`provider_protocol_profile_families`、`proxy_profiles`
-- `accounts`、`account_supported_models`、`account_model_mappings`、`account_tags`、`account_tag_bindings`、`account_test_tasks`、`account_test_sessions`、`account_test_session_tasks`、`custom_provider_models`、`provider_default_health_check_models`、`provider_system_default_health_check_models`、`groups`、`group_authorization_settings`、`group_accounts`、`group_account_stats_dirty`、`route_strategies`、`route_strategy_groups`、`scheduling_preferences`、`api_keys`
+- `accounts`、`account_supported_models`、`account_model_mappings`、`account_tags`、`account_tag_bindings`、`account_test_tasks`、`account_test_sessions`、`account_test_session_tasks`、`custom_provider_models`、`groups`、`group_authorization_settings`、`group_accounts`、`group_account_stats_dirty`、`route_strategies`、`route_strategy_groups`、`scheduling_preferences`、`api_keys`
 - `system_teams`、`system_team_members`
 - `resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`
 - `external_integration_sources`、`external_integration_source_tokens`
@@ -175,7 +175,7 @@ Responses 桥接状态索引写入归 gateway 进程内 bridge state store 所�
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写敏感唯一，`Prod` 和 `prod` 属于两个不同标签；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
 - `custom_provider_models` 保存管理员全局自定义模型和用户个人自定义模型。`scope = global` 的模型不绑定 `system_account_id`，所有系统账户可见；`scope = personal` 的模型只对对应 `system_account_id` 可见。文本类自定义模型额外保存 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`；空数组表示该模型未声明能力，不参与运行时降级候选，也不支撑供应商级覆盖字段显示。状态为 `active` 且可解析价格的模型会进入当前作用域的 `/v1/models`、账号支持模型和账号模型映射选项。
-- `provider_default_health_check_models` 保存系统账户维度的供应商个人默认检查模型，主键为 `system_account_id + provider_code`；`provider_system_default_health_check_models` 保存管理员维护的供应商系统默认，主键为 `provider_code`。有效初始化优先级为个人默认、管理员系统默认、`provider_protocol_profiles` 内置默认；默认值只用于新账户，不能改写已有 `accounts.health_check_model`。删除或停用被引用的自定义模型时同步清理对应默认记录。
+- 目标 schema 不再保存供应商级默认检查模型（`provider_default_health_check_models` / `provider_system_default_health_check_models` 已随《供应商与上游协议面重构设计》§9.11 删除）。供应商列表展示的默认检查模型由 `models` 单表按最新发布时间且可文本生成的模型只读派生；新建账户检查模型由创建事务按最终支持模型集解析，目录默认变化不改写已有账户。
 - AI 账户的 `credentials_encrypted` 可选保存非秘密配置 `service_tier_override` 和 `reasoning_effort_override`；账户读取、授权只读详情、导入导出和运行时快照使用同一字段。保存校验只做 token 形状与协议族全集校验，值域单一真源为 Go `backend-go/shared/platform/requestoverride`（前端镜像词表同源）；模型目录精确数组只在运行时决定思考级别向下兼容降级与服务等级是否写入；`ultra` 和 Responses Multi-agent Beta 不作为这两个字段的合法值仅是 gpt 供应商的专属枚举限定。
 - 账户批量编辑在业务库单个事务中按 `expectedVersions` 校验全部目标，计算最终白名单配置并统一更新主表和关联表；任一账户无权限、属于授权实例、跨作用域、版本冲突或最终配置非法时整批回滚。事务提交后再失效缓存，并对代理、检查模型、支持模型、映射或 endpoint modes 变化投递后台系统检查。
 - 高并发分组已使用 `groups.group_type` 和 `groups.scheduling_policy_json`：前者保存分组调度类型，默认 `personal`；后者接收最大单账户排队阈值和分组最大等待时间，快速优先、慢请求分流、亲和打破、备用启用和分组级短等待容量都使用代码内置默认开启策略。默认分组使用个人分组语义。

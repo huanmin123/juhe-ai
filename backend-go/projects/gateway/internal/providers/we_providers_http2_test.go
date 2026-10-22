@@ -136,47 +136,8 @@ func TestWeProvidersReadEndpointsVariants(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 默认检查模型与删除：补充分支
+// 删除：补充分支
 // ---------------------------------------------------------------------------
-
-func TestWeProvidersPutDefaultHealthCheckModelVariants(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	env.seedWriteFixtures(t)
-	env.login(t, "root", "root-pass", "super_admin")
-
-	// 管理请求（带 systemAccountId=all）落系统级默认。
-	code, systemDefault := env.do(t, http.MethodPut, "/__aisys__/api/providers/gemini/default-health-check-model?systemAccountId=all",
-		`{"model":"gemini-2.5-pro"}`)
-	if code != http.StatusOK {
-		t.Fatalf("系统默认: %d %v", code, systemDefault)
-	}
-	// 未知供应商 → 404。
-	code, missing := env.do(t, http.MethodPut, "/__aisys__/api/providers/nope/default-health-check-model",
-		`{"model":"x"}`)
-	if code != http.StatusNotFound || missing["message"] != "供应商不存在" {
-		t.Fatalf("未知供应商: %d %v", code, missing)
-	}
-	// 非法 body → 400。
-	code, badBody := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"bogus":1}`)
-	if code != http.StatusBadRequest || badBody["message"] != "默认检查模型参数无效" {
-		t.Fatalf("非法 body: %d %v", code, badBody)
-	}
-	// 非 JSON body → 400。
-	code, notJSON := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `not-json`)
-	if code != http.StatusBadRequest || notJSON["message"] != "请求体必须是 JSON 对象" {
-		t.Fatalf("非 JSON: %d %v", code, notJSON)
-	}
-
-	// 个人偏好分支：普通用户必须带 systemAccountId（自身）。
-	env.login(t, "user1", "user-pass", "user")
-	code, personal := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"gpt-4o-mini"}`)
-	if code != http.StatusOK {
-		t.Fatalf("个人偏好: %d %v", code, personal)
-	}
-}
 
 func TestWeProvidersDeleteModelForbiddenAndMissing(t *testing.T) {
 	env := newTestEnv(t)

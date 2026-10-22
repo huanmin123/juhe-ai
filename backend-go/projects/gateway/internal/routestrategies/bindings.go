@@ -242,18 +242,6 @@ func (s *Store) normalizeBindings(ctx context.Context, q queryer, inputs []Bindi
 		if !ok || !group.canBind {
 			return nil, &ValidationError{Message: routeStrategyGroupBoundaryError}
 		}
-		// 超级分组作为路由目标时必须已启用且有 2..20 个 enabled 成员
-		// （超级分组设计 §3.2）：成员数不足优先返回 min_enabled（含 disabled
-		// 超级分组的绑定尝试），再走通用停用分组检查。
-		if input.Status == "active" && group.groupKind == "super" {
-			enabledMembers, countErr := s.countEnabledSuperMembers(ctx, q, groupID)
-			if countErr != nil {
-				return nil, countErr
-			}
-			if enabledMembers < 2 {
-				return nil, &ValidationError{Message: "启用超级分组至少需要两个启用成员", Code: codeSuperGroupMemberMinEnabled}
-			}
-		}
 		if input.Status == "active" && !group.enabled {
 			name := groupID
 			if group.name != "" {
@@ -412,20 +400,6 @@ func validateModeBindings(mode string, bindings []bindingWrite) error {
 		}
 	}
 	return nil
-}
-
-// codeSuperGroupMemberMinEnabled 是路由绑定/启用超级分组时的稳定错误码
-// （超级分组设计 §3.2/§7）。
-const codeSuperGroupMemberMinEnabled = "super_group_member_min_enabled"
-
-// countEnabledSuperMembers 返回超级分组的 enabled 成员数；绑定校验用。
-func (s *Store) countEnabledSuperMembers(ctx context.Context, q queryer, superGroupID string) (int, error) {
-	var count int
-	if err := q.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("super_group_members")+`
-		WHERE super_group_id = ? AND enabled = 1`), superGroupID).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
 }
 
 // bindingWritesFromSummaries mirrors routeStrategyGroupBindingWritesFromSummary

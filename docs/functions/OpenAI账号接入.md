@@ -75,7 +75,7 @@ type GptAccountType = 'api_key' | 'oauth'
 
 默认检查模型：
 
-- `gpt-5.6-sol` 作为 `profile_gpt_openai_v1` 的内置默认检查模型。GPT 专属 `DEFAULT_GPT_SUPPORTED_MODELS` 只包含资料完整且当前可见的内置模型；新账户按“当前系统账户个人默认 > 管理员维护的 GPT 系统默认 > 协议档案内置默认”初始化 `healthCheckModel`，个人默认保存到 `provider_default_health_check_models`。默认值只影响新账户，已有账户和后台系统检查始终读取账户自己的检查模型。
+- 供应商级默认检查模型不再配置或持久化（相关表已随《供应商与上游协议面重构设计》§9.11 删除）。模型目录页的 GPT 默认检查模型由系统按最新发布时间且可用于文本生成的目录模型只读派生；新账户的 `healthCheckModel` 由创建事务在最终支持模型集内解析，已有账户和后台系统检查始终读取账户自己的检查模型。
 
 ## GPT OAuth 创建方式
 

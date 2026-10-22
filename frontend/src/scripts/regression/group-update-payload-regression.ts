@@ -62,7 +62,13 @@ assert.deepEqual(model.groupEditPatch(), { groupType: 'personal' }, '切换到�
 model.resetGroupFormForCreate()
 const createPayload = model.groupCreatePayload()
 assert.deepEqual(Object.keys(createPayload).sort(), ['description', 'enabled', 'groupKind', 'groupType', 'name'], '普通分组创建只提交必需表单字段（分组无供应商维度，设计 §8）')
+assert.equal(createPayload.enabled, true, '创建表单默认启用')
 assert.equal('providerCode' in createPayload, false, '分组创建载荷不得携带已退役的 providerCode')
+
+const groupEditModalSource = readFileSync(fileURLToPath(new URL('../../views/groups/GroupEditModal.vue', import.meta.url)), 'utf8')
+assert.doesNotMatch(groupEditModalSource, /form\.enabled\s*=\s*false/, '切换为超级分组不得强制把启用状态改为停用')
+const superGroupMembersModalSource = readFileSync(fileURLToPath(new URL('../../views/groups/SuperGroupMembersModal.vue', import.meta.url)), 'utf8')
+assert.doesNotMatch(superGroupMembersModalSource, /至少需要两个启用成员/, '超级分组成员弹窗不得提示启用需要两个以上成员')
 
 const groupsViewSource = readFileSync(fileURLToPath(new URL('../../views/groups/GroupsView.vue', import.meta.url)), 'utf8')
 const saveStart = groupsViewSource.indexOf("const saveGroup = submitAction('groups.save'")

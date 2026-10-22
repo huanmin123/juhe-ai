@@ -4,6 +4,7 @@ import {
   normalizedAccountApiKeyWeights
 } from './accountCredentials'
 import { normalizeFormTagNames } from './accountEditFormPayload'
+import { connectionPresetCodeForProfile } from '@/shared/providerProtocol'
 import {
   buildAccountUpdatePayload,
   type AccountSavePayload
@@ -25,6 +26,17 @@ export function buildAccountBasicEditSnapshot(
   form: AccountFormModel,
   currentCredentials: Record<string, unknown> = {}
 ): AccountBasicEditSnapshot {
+  // PATCH 健康检查三件套必须同现（§8）：基础编辑按档案补齐连接 preset，
+  // 账户的档案由健康检查连接反向派生，二者一致；模型为空时三件套整体省略。
+  const healthCheckModel = form.healthCheckModel.trim()
+  const healthCheckConnectionPresetCode = connectionPresetCodeForProfile(form.providerProtocolProfileId)
+  const healthCheckTrio = healthCheckModel && healthCheckConnectionPresetCode
+    ? {
+        healthCheckModel,
+        healthCheckEndpointMode: form.healthCheckEndpointMode,
+        healthCheckConnectionPresetCode
+      }
+    : {}
   const values = compactRecord({
     name: form.name.trim(),
     concurrencyLimit: Math.trunc(Number(form.concurrencyLimit)),
@@ -35,8 +47,7 @@ export function buildAccountBasicEditSnapshot(
     groupId: form.groupId,
     tags: normalizeFormTagNames(form.tags).sort(),
     supportedModels: normalizedTextList(form.supportedModels).sort(),
-    healthCheckModel: form.healthCheckModel.trim(),
-    healthCheckEndpointMode: form.healthCheckEndpointMode
+    ...healthCheckTrio
   })
   values.notes = form.notes
   return {
@@ -63,11 +74,23 @@ export function buildAccountAdvancedUpdatePatch(
   expectedConfigRevision: number,
   statusSelectionExplicit = false
 ): AccountUpdateDelta | undefined {
-  return buildAccountUpdateDelta(
-    buildAccountUpdatePayload(current, statusSelectionExplicit),
+  const currentUpdate = buildAccountUpdatePayload(current, statusSelectionExplicit) as Record<string, unknown>
+  const delta = buildAccountUpdateDelta(
+    currentUpdate,
     buildAccountUpdatePayload(baseline),
     expectedConfigRevision
   )
+  if (!delta) return undefined
+  // PATCH 健康检查三件套同现同省（§8）：差量命中任一项时补齐其余两项，
+  // 否则只发 endpoint mode/model 会被后端 400 拒绝。
+  const healthTrioKeys = ['healthCheckConnectionPresetCode', 'healthCheckEndpointMode', 'healthCheckModel'] as const
+  const changesHealthTrio = healthTrioKeys.some((key) => delta[key] !== undefined && delta[key] !== null)
+  if (changesHealthTrio) {
+    for (const key of healthTrioKeys) {
+      if (currentUpdate[key] !== undefined) delta[key] = currentUpdate[key]
+    }
+  }
+  return delta
 }
 
 function buildAccountUpdateDelta(

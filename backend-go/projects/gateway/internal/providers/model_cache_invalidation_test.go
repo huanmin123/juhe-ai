@@ -205,8 +205,7 @@ func TestProvidersModelCacheInvalidationPatchCustom(t *testing.T) {
 // fork: the committed configuration update publishes
 // provider_model_configuration_updated before the operation log, while the
 // no-change fork, the 409 guard, the admin gate and schema failures stay
-// silent; the default-health-check-model preference write is not a catalog
-// commit and never publishes.
+// silent.
 func TestProvidersModelCacheInvalidationPatchBuiltIn(t *testing.T) {
 	env, recorder := newInvalidationTestEnv(t)
 	env.seedCatalog(t)
@@ -250,13 +249,6 @@ func TestProvidersModelCacheInvalidationPatchBuiltIn(t *testing.T) {
 	}
 	assertCalls(t, recorder, invalidationCall{topic: inval.TopicGatewayRuntime, reason: "provider_model_configuration_updated"})
 
-	// The default-health-check-model preference is not a model catalog
-	// commit: Node attaches no invalidation to that route either.
-	code, preference := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-4o"}`)
-	if code != http.StatusOK {
-		t.Fatalf("preference save: %d %v", code, preference)
-	}
-	assertCalls(t, recorder, invalidationCall{topic: inval.TopicGatewayRuntime, reason: "provider_model_configuration_updated"})
 }
 
 // TestProvidersModelCacheInvalidationDelete covers DELETE: only a committed

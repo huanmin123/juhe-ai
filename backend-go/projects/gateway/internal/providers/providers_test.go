@@ -200,6 +200,20 @@ func dataArray(t *testing.T, payload map[string]any) []any {
 	return data
 }
 
+func jsonStringItems(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	output := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok {
+			output = append(output, text)
+		}
+	}
+	return output
+}
+
 func clearSession(t *testing.T, e *testEnv) {
 	t.Helper()
 	e.mu.Lock()
@@ -394,8 +408,58 @@ func nullable(value string) any {
 
 // TestProvidersListContract covers GET /list: the management fork
 // (viewScope=admin) sees disabled providers, ordinary callers see enabled
-// only, the list DTO carries no management extras and the
-// defaultHealthCheckModel overlay prefers personal > system default.
+// only, the list DTO carries no management extras, and capabilities /
+// defaultHealthCheckModel are derived from the vendor's built-in models.
+// TestProvidersDeriveVendorCatalogSummaries 钉住供应商摘要的只读派生口径：
+// capabilities 是 builtin 可见目录行的协议并集（排除 hidden/expired/disabled），
+// defaultHealthCheckModel 是最新发布时间且可用于文本生成的模型；纯媒体
+// vendor 没有文本模型时回落最新目录模型。
+func TestProvidersDeriveVendorCatalogSummaries(t *testing.T) {
+	env := newTestEnv(t)
+	env.seedCatalog(t)
+	const now = "2026-01-01T00:00:00.000Z"
+	env.exec(t, `INSERT INTO vendors (id, code, name, description, enabled, default_supported_models_json, created_at, updated_at)
+		VALUES ('prov-minimax', 'minimax', 'MiniMax', NULL, 1, '[]', ?, ?)`, now, now)
+	env.seedBuiltinModel(t, builtinModelSeed{ID: "cat-mm-1", ProviderCode: "minimax", Model: "MiniMax-Hailuo-2.3",
+		Status: "active", ReleaseDate: "2026-07-31", Protocols: `["video"]`, InputUsd: ptrFloat64(1.0)})
+	env.seedBuiltinModel(t, builtinModelSeed{ID: "cat-mm-2", ProviderCode: "minimax", Model: "speech-2.8-turbo",
+		Status: "active", ReleaseDate: "2026-01-01", Protocols: `["audio_speech"]`, InputUsd: ptrFloat64(1.0)})
+
+	items, err := env.providersDeps.Store.ListCatalogListItems(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byCode := map[string]ProviderListItem{}
+	for _, item := range items {
+		byCode[item.Code] = item
+	}
+	gpt := byCode["gpt"]
+	if got := strings.Join(gpt.Capabilities, ","); got != "chat_completions,realtime,responses" {
+		t.Fatalf("gpt capabilities: %q", got)
+	}
+	if gpt.DefaultHealthCheckModel != "gpt-4o-mini" {
+		t.Fatalf("gpt default health check model: %q", gpt.DefaultHealthCheckModel)
+	}
+	gemini := byCode["gemini"]
+	if got := strings.Join(gemini.Capabilities, ","); got != "generate_content,stream_generate_content" {
+		t.Fatalf("gemini capabilities: %q", got)
+	}
+	if gemini.DefaultHealthCheckModel != "gemini-2.5-pro" {
+		t.Fatalf("gemini default health check model: %q", gemini.DefaultHealthCheckModel)
+	}
+	anthropic := byCode["anthropic"]
+	if len(anthropic.Capabilities) != 0 || anthropic.DefaultHealthCheckModel != "" {
+		t.Fatalf("model-less vendor summary: %+v", anthropic)
+	}
+	minimax := byCode["minimax"]
+	if got := strings.Join(minimax.Capabilities, ","); got != "audio_speech,video" {
+		t.Fatalf("minimax capabilities: %q", got)
+	}
+	if minimax.DefaultHealthCheckModel != "MiniMax-Hailuo-2.3" {
+		t.Fatalf("media-only vendor must fall back to the newest catalog model: %q", minimax.DefaultHealthCheckModel)
+	}
+}
+
 func TestProvidersListContract(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
@@ -424,17 +488,26 @@ func TestProvidersListContract(t *testing.T) {
 	if anthropic["protocolCode"] != "" || anthropic["baseUrl"] != "" || anthropic["defaultHealthCheckModel"] != "" {
 		t.Fatalf("profile-less row defaults: %v", anthropic)
 	}
-	// 协议档案与偏好表随设计 §8.11 退役：协议字段与 overlay 恒空形状。
+	// 协议档案随表退役；capabilities/defaultHealthCheckModel 由 builtin 目录派生。
 	gpt := items[2].(map[string]any)
-	if gpt["code"] != "gpt" || gpt["baseUrl"] != "" || gpt["protocolCode"] != "" || gpt["defaultHealthCheckModel"] != "" {
+	if gpt["code"] != "gpt" || gpt["baseUrl"] != "" || gpt["protocolCode"] != "" {
 		t.Fatalf("gpt row: %v", gpt)
 	}
+	if got := strings.Join(jsonStringItems(gpt["capabilities"]), ","); got != "chat_completions,realtime,responses" {
+		t.Fatalf("gpt capabilities: %q (%v)", got, gpt)
+	}
+	if gpt["defaultHealthCheckModel"] != "gpt-4o-mini" {
+		t.Fatalf("gpt default health check model: %v", gpt)
+	}
 	gemini := items[1].(map[string]any)
-	if gemini["defaultHealthCheckModel"] != "" {
-		t.Fatalf("gemini overlay (retired storage): %v", gemini)
+	if got := strings.Join(jsonStringItems(gemini["capabilities"]), ","); got != "generate_content,stream_generate_content" {
+		t.Fatalf("gemini capabilities: %q (%v)", got, gemini)
+	}
+	if gemini["defaultHealthCheckModel"] != "gemini-2.5-pro" {
+		t.Fatalf("gemini default health check model: %v", gemini)
 	}
 
-	// user1: enabled only, personal preference wins over the profile default.
+	// user1: enabled only; derived values are scope-independent.
 	env.login(t, "user1", "user-pass", "user")
 	code, userListed := env.do(t, http.MethodGet, "/__aisys__/api/providers/list", "")
 	if code != http.StatusOK {
@@ -451,8 +524,8 @@ func TestProvidersListContract(t *testing.T) {
 	}
 	for _, item := range userItems {
 		row := item.(map[string]any)
-		if row["code"] == "gpt" && row["defaultHealthCheckModel"] != "" {
-			t.Fatalf("user1 overlay (retired storage): %v", row)
+		if row["code"] == "gpt" && row["defaultHealthCheckModel"] != "gpt-4o-mini" {
+			t.Fatalf("user1 derived default: %v", row)
 		}
 	}
 
@@ -501,10 +574,12 @@ func TestProvidersRootFlatArrayAdminOnly(t *testing.T) {
 			anthropic = entry
 		}
 	}
-	// 协议档案维度随表退役：DTO 键保留、恒空形状。
-	if gpt["defaultProtocolProfileId"] != "" || gpt["baseUrl"] != "" ||
-		gpt["defaultHealthCheckModel"] != "" || gpt["protocolVersion"] != "" {
-		t.Fatalf("gpt default profile fields: %v", gpt)
+	// 协议档案维度随表退役；capabilities/defaultHealthCheckModel 由目录派生。
+	if gpt["defaultProtocolProfileId"] != "" || gpt["baseUrl"] != "" || gpt["protocolVersion"] != "" {
+		t.Fatalf("gpt profile fields: %v", gpt)
+	}
+	if gpt["defaultHealthCheckModel"] != "gpt-4o-mini" {
+		t.Fatalf("gpt derived default: %v", gpt)
 	}
 	if _, hasSystemDefault := gpt["systemDefaultHealthCheckModel"]; hasSystemDefault {
 		t.Fatalf("gpt must not carry a system default: %v", gpt)
@@ -622,14 +697,14 @@ func TestProvidersDetailByCode(t *testing.T) {
 		t.Fatalf("user viewScope detail: %d %v", code, missing)
 	}
 
-	// Enabled provider with the personal preference overlay.
+	// Enabled provider with derived catalog summary.
 	code, gptDetail := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt", "")
 	if code != http.StatusOK {
 		t.Fatalf("gpt detail: %d %v", code, gptDetail)
 	}
 	gptData := dataMap(t, gptDetail)
-	if gptData["defaultHealthCheckModel"] != "" {
-		t.Fatalf("user1 overlay (retired storage): %v", gptData)
+	if gptData["defaultHealthCheckModel"] != "gpt-4o-mini" {
+		t.Fatalf("gpt derived default: %v", gptData)
 	}
 	if _, hasModels := gptData["models"]; hasModels {
 		t.Fatalf("detail must not embed models (Node /:code shape): %v", gptData)

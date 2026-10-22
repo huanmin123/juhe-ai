@@ -1,7 +1,6 @@
 import type {
   ProviderDefinition,
   ProviderListItem,
-  ProviderDefaultHealthCheckModelResult,
   ProviderModelOption,
   ProviderModelCapabilities,
   ProviderModelMutationResult,
@@ -53,9 +52,6 @@ export const providersApi = {
   modelOptionProviderCodes: (params?: ProviderModelOptionsParams) => unwrap<{ providerCodes: string[] }>(http.get('/providers/models/options/provider-codes', { params })),
   modelCapabilities: (code: string, modelId: string, params?: ListParams) => unwrap<ProviderModelCapabilities>(http.get(`/providers/${code}/models/${encodeURIComponent(modelId)}/capabilities`, { params })),
   models: (code: string, params?: ProviderModelsParams) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`, { params })),
-  setDefaultHealthCheckModel: async (code: string, model: string, params?: ListParams) => {
-    return unwrap<ProviderDefaultHealthCheckModelResult>(http.put(`/providers/${code}/default-health-check-model`, { model }, { params }))
-  },
   createModel: async (code: string, payload: ProviderModelUpsertPayload, params?: ListParams) => {
     return unwrap<ProviderModelPricing>(http.post(`/providers/${code}/models`, payload, { params }))
   },

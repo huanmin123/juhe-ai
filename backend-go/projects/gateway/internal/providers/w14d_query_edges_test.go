@@ -88,14 +88,6 @@ func TestW14dClosedDBQueryForks(t *testing.T) {
 	if _, err := store.EnabledNonHybridProviderCodes(ctx); err == nil {
 		t.Fatal("closed DB enabled codes must fail")
 	}
-	// 偏好读写随设计 §8.11 退役为 no-op（closed DB 也不触库）。
-	preferences, err := store.ListDefaultHealthCheckModelPreferences(ctx, "u1", []string{"gpt"})
-	if err != nil || len(preferences) != 0 {
-		t.Fatalf("retired preference reader must stay empty: %v %v", preferences, err)
-	}
-	if err := store.UpsertDefaultHealthCheckModelPreference(ctx, "u1", "gpt", "m"); err != nil {
-		t.Fatalf("retired preference upsert must stay no-op: %v", err)
-	}
 	if _, err := store.findBuiltInModelPatchState(ctx, "cat-1"); err == nil {
 		t.Fatal("closed DB built-in patch state must fail")
 	}

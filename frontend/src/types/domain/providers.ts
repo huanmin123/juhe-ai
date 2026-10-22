@@ -198,11 +198,6 @@ export interface ProviderModelCapabilities {
   defaultReasoningEffort?: ProviderModelReasoningEffort
 }
 
-export interface ProviderDefaultHealthCheckModelResult {
-  providerCode: ProviderCode
-  defaultHealthCheckModel: string
-}
-
 export interface ProviderModelsParams {
   systemAccountId?: string
   viewScope?: 'admin' | 'self'
@@ -253,5 +248,4 @@ export interface ProviderModelMutationResult {
   model: string
   status: ProviderModelStatus
   updatedAt: string
-  defaultHealthCheckModelCleared?: boolean
 }

@@ -5,9 +5,9 @@
 // builtin_patch.go）。旧 providers/provider_protocol_profiles/
 // provider_protocol_profile_families/protocol_endpoint_families 四表与
 // provider_default_health_check_models/provider_system_default_health_check_models
-// 两张默认检查模型偏好表已从 fresh DDL 删除（设计 §8.11）：供应商读侧改
-// vendors 投影，协议档案维度随表退役（DTO 键保留、恒空/空数组），偏好表读写
-// 按 groups 管理面「入参忽略不落库」同一先例收敛（overlay 恒空、保存不落库）。
+// 两张默认检查模型偏好表已从 fresh DDL 删除（设计 §9.11）：供应商读侧改
+// vendors 投影，协议档案维度随表退役；capabilities 与 defaultHealthCheckModel
+// 改由 models 单表内置目录行只读派生（协议并集、最新发布时间文本模型）。
 package providers
 
 import (
@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -110,7 +111,7 @@ func parseJSONArray(value sql.NullString) []string {
 }
 
 // ProtocolProfile mirrors the archived ProviderProtocolProfileDefinition DTO.
-// The profile tables are retired (设计 §8.11), so every produced value is the
+// The profile tables are retired (设计 §9.11), so every produced value is the
 // empty shape; the type stays because ProviderDefinition.ProtocolProfiles and
 // the /:code payloads keep the key for the not-yet-migrated frontend.
 type ProtocolProfile struct {
@@ -138,9 +139,9 @@ type EndpointFamily struct {
 
 // ProviderDefinition mirrors the flat provider DTO of GET /providers,
 // GET /providers/definitions and GET /providers/{code}. Vendor rows carry no
-// parent and no protocol profiles any more: parentCode is always absent, the
-// protocol/base-url/default-health-check keys render the empty shape and
-// protocolProfiles stays []（键名保留，前端未迁移）。
+// parent and no protocol profiles any more: parentCode/baseUrl/accountTypes
+// stay empty, protocolProfiles stays [], while capabilities and
+// defaultHealthCheckModel are derived from the vendor's built-in models rows.
 type ProviderDefinition struct {
 	ID                            string            `json:"id"`
 	Code                          string            `json:"code"`
@@ -161,7 +162,8 @@ type ProviderDefinition struct {
 }
 
 // ProviderListItem mirrors the catalogue list row of GET /providers/list (the
-// archived mapProviderListRow shape; the protocol/profile keys render empty).
+// archived mapProviderListRow shape; capabilities/defaultHealthCheckModel are
+// derived from the vendor's built-in models rows).
 type ProviderListItem struct {
 	ID                      string   `json:"id"`
 	Code                    string   `json:"code"`
@@ -209,7 +211,16 @@ func (s *Store) ListCatalogListItems(ctx context.Context) ([]ProviderListItem, e
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 关闭行集后再查 models：测试与生产都可能有单连接池，不能在打开的
+	// rows 上再发查询。
+	rows.Close()
+	if err := s.applyListItemCatalogSummaries(ctx, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func scanVendorListItem(scan func(...any) error) (ProviderListItem, error) {
@@ -249,7 +260,14 @@ func (s *Store) ListDefinitions(ctx context.Context) ([]ProviderDefinition, erro
 		}
 		definitions = append(definitions, definition)
 	}
-	return definitions, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := s.applyDefinitionCatalogSummaries(ctx, definitions); err != nil {
+		return nil, err
+	}
+	return definitions, nil
 }
 
 // FindDefinition resolves one vendor by code (the GET /providers/{code}
@@ -268,14 +286,31 @@ func (s *Store) FindDefinition(ctx context.Context, code string) (*ProviderDefin
 		return nil, err
 	}
 	defer rows.Close()
+	var found *ProviderDefinition
 	for rows.Next() {
 		definition, scanErr := scanVendorDefinition(rows.Scan)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		return &definition, rows.Err()
+		found = &definition
+		break
 	}
-	return nil, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if found == nil {
+		return nil, nil
+	}
+	summaries, err := s.vendorCatalogSummaries(ctx, []string{found.Code})
+	if err != nil {
+		return nil, err
+	}
+	if summary, ok := summaries[found.Code]; ok {
+		found.Capabilities = summary.Capabilities
+		found.DefaultHealthCheckModel = summary.DefaultHealthCheckModel
+	}
+	return found, nil
 }
 
 func scanVendorDefinition(scan func(...any) error) (ProviderDefinition, error) {
@@ -380,77 +415,187 @@ func (s *Store) EnabledNonHybridProviderCodes(ctx context.Context) ([]string, er
 	return codes, nil
 }
 
-// ListDefaultHealthCheckModelPreferences renders the personal per-provider
-// default health-check model overlay. The storage table
-// (provider_default_health_check_models) is retired by 设计 §8.11，overlay 恒
-// 空（与 groups 管理面 providerCode 入参忽略不落库同一先例；键名保留）。
-func (s *Store) ListDefaultHealthCheckModelPreferences(ctx context.Context, systemAccountID string, providerCodes []string) (map[string]string, error) {
-	return map[string]string{}, nil
+// vendorCatalogSummary 是供应商摘要里由 models 单表只读派生的两项事实：
+// 该 vendor 内置目录声明的协议并集，以及最新发布时间、可用于健康检查的
+// 文本生成模型。供应商级默认检查模型配置表已随重构删除（设计 §9.11），
+// 这里必须是纯派生，不能再引入第二份可写状态。
+type vendorCatalogSummary struct {
+	Capabilities            []string
+	DefaultHealthCheckModel string
 }
 
-// ListSystemDefaultHealthCheckModels renders the system default overlay; the
-// storage table (provider_system_default_health_check_models) is retired by
-// 设计 §8.11，overlay 恒空.
-func (s *Store) ListSystemDefaultHealthCheckModels(ctx context.Context, providerCodes []string) (map[string]string, error) {
-	return map[string]string{}, nil
+// healthCheckTextProtocols 是可用于协议最小检查的文本生成协议集合，与
+// isProviderModelUsableForAccountTest 同源；媒体协议（images/video/audio/
+// realtime/embedding）不参与默认检查模型选择。
+var healthCheckTextProtocols = map[string]bool{
+	"chat_completions":        true,
+	"responses":               true,
+	"messages":                true,
+	"generate_content":        true,
+	"stream_generate_content": true,
 }
 
-// UpsertDefaultHealthCheckModelPreference keeps the PUT contract shape but no
-// longer persists：偏好表随供应商解耦退役（设计 §8.11），保存按 groups 管理面
-// 「忽略不落库」先例收敛，路由仍返回校验后的成功体.
-func (s *Store) UpsertDefaultHealthCheckModelPreference(ctx context.Context, systemAccountID, providerCode, model string) error {
-	return nil
+// vendorCatalogSummaries 按 vendor code 汇总 models 单表的内置目录行：
+// capabilities 取 SupportedAPIProtocols 并集，defaultHealthCheckModel 取
+// 最新发布且文本可用的模型（纯媒体 vendor 回落最新模型）。
+func (s *Store) vendorCatalogSummaries(ctx context.Context, codes []string) (map[string]vendorCatalogSummary, error) {
+	summaries := map[string]vendorCatalogSummary{}
+	normalized := normalizeProviderCodeList(codes)
+	if len(normalized) == 0 {
+		return summaries, nil
+	}
+	items, err := s.listBuiltInCatalogModels(ctx, normalized, false)
+	if err != nil {
+		return nil, err
+	}
+	byVendor := map[string][]ModelCatalogItem{}
+	for _, item := range items {
+		byVendor[item.ProviderCode] = append(byVendor[item.ProviderCode], item)
+	}
+	for code, models := range byVendor {
+		protocols := map[string]bool{}
+		for _, model := range models {
+			for _, protocol := range model.SupportedAPIProtocols {
+				protocols[protocol] = true
+			}
+		}
+		capabilities := make([]string, 0, len(protocols))
+		for protocol := range protocols {
+			capabilities = append(capabilities, protocol)
+		}
+		sort.Strings(capabilities)
+		summaries[code] = vendorCatalogSummary{
+			Capabilities:            capabilities,
+			DefaultHealthCheckModel: latestHealthCheckModel(models),
+		}
+	}
+	return summaries, nil
 }
 
-// UpsertSystemDefaultHealthCheckModel keeps the PUT contract shape but no
-// longer persists（同上：偏好表退役，忽略不落库）.
-func (s *Store) UpsertSystemDefaultHealthCheckModel(ctx context.Context, providerCode, model string) error {
-	return nil
-}
-
-// overlayListItemHealthCheckModels keeps the /list overlay composition
-// (personal preference wins, then the system default, then the row default);
-// with both preference maps retired-empty the overlay is a no-op.
-func overlayListItemHealthCheckModels(items []ProviderListItem, preferences, systemDefaults map[string]string) {
+func (s *Store) applyListItemCatalogSummaries(ctx context.Context, items []ProviderListItem) error {
+	codes := make([]string, 0, len(items))
 	for index := range items {
-		code := items[index].Code
-		if model := preferences[code]; model != "" {
-			items[index].DefaultHealthCheckModel = model
+		codes = append(codes, items[index].Code)
+	}
+	summaries, err := s.vendorCatalogSummaries(ctx, codes)
+	if err != nil {
+		return err
+	}
+	for index := range items {
+		summary, ok := summaries[items[index].Code]
+		if !ok {
+			items[index].Capabilities = []string{}
 			continue
 		}
-		if model := systemDefaults[code]; model != "" {
-			items[index].DefaultHealthCheckModel = model
-		}
+		items[index].Capabilities = summary.Capabilities
+		items[index].DefaultHealthCheckModel = summary.DefaultHealthCheckModel
 	}
+	return nil
 }
 
-// overlayDefinitionHealthCheckModels keeps the ProviderDefinition overlay
-// composition; with both preference maps retired-empty it is a no-op and the
-// systemDefaultHealthCheckModel key stays absent.
-func overlayDefinitionHealthCheckModels(definitions []ProviderDefinition, preferences, systemDefaults map[string]string) {
+func (s *Store) applyDefinitionCatalogSummaries(ctx context.Context, definitions []ProviderDefinition) error {
+	codes := make([]string, 0, len(definitions))
 	for index := range definitions {
-		definition := &definitions[index]
-		personal := preferences[definition.Code]
-		system := systemDefaults[definition.Code]
-		if personal != "" {
-			definition.DefaultHealthCheckModel = personal
-		} else if system != "" {
-			definition.DefaultHealthCheckModel = system
+		codes = append(codes, definitions[index].Code)
+	}
+	summaries, err := s.vendorCatalogSummaries(ctx, codes)
+	if err != nil {
+		return err
+	}
+	for index := range definitions {
+		summary, ok := summaries[definitions[index].Code]
+		if !ok {
+			definitions[index].Capabilities = []string{}
+			continue
 		}
-		if system != "" {
-			copied := system
-			definition.SystemDefaultHealthCheckModel = &copied
+		definitions[index].Capabilities = summary.Capabilities
+		definitions[index].DefaultHealthCheckModel = summary.DefaultHealthCheckModel
+	}
+	return nil
+}
+
+// latestHealthCheckModel 返回目录内最新发布且可用于文本生成的模型；没有
+// 文本模型时回落到最新目录模型。release_date 为空视为最旧，同日按
+// catalog_order 升序（空值最后）和 model 名升序稳定兜底。
+func latestHealthCheckModel(models []ModelCatalogItem) string {
+	if name := latestCatalogModelName(models, true); name != "" {
+		return name
+	}
+	return latestCatalogModelName(models, false)
+}
+
+func latestCatalogModelName(models []ModelCatalogItem, textOnly bool) string {
+	candidates := make([]ModelCatalogItem, 0, len(models))
+	for _, model := range models {
+		if textOnly && !isTextGenerationModel(model) {
+			continue
+		}
+		candidates = append(candidates, model)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		return catalogModelNewer(candidates[left], candidates[right])
+	})
+	return candidates[0].Model
+}
+
+func isTextGenerationModel(model ModelCatalogItem) bool {
+	if len(model.SupportedAPIProtocols) == 0 {
+		return true
+	}
+	for _, protocol := range model.SupportedAPIProtocols {
+		if healthCheckTextProtocols[protocol] {
+			return true
 		}
 	}
+	return false
+}
+
+func catalogModelNewer(left, right ModelCatalogItem) bool {
+	leftRelease := releaseDateText(left.ReleaseDate)
+	rightRelease := releaseDateText(right.ReleaseDate)
+	if leftRelease != rightRelease {
+		if leftRelease == "" {
+			return false
+		}
+		if rightRelease == "" {
+			return true
+		}
+		return leftRelease > rightRelease
+	}
+	leftOrder, leftHasOrder := catalogOrderValue(left.CatalogOrder)
+	rightOrder, rightHasOrder := catalogOrderValue(right.CatalogOrder)
+	if leftHasOrder != rightHasOrder {
+		return leftHasOrder
+	}
+	if leftHasOrder && leftOrder != rightOrder {
+		return leftOrder < rightOrder
+	}
+	return left.Model < right.Model
+}
+
+func releaseDateText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func catalogOrderValue(value *int64) (int64, bool) {
+	if value == nil {
+		return 0, false
+	}
+	return *value, true
 }
 
 func placeholders(count int) string {
 	return strings.TrimSuffix(strings.Repeat("?, ", count), ", ")
 }
 
-// normalizeProviderCodeList keeps the normalized code lists of the retired
-// preference repositories (trim, drop empties, dedupe) for the catalog-side
-// vendor windows.
+// normalizeProviderCodeList normalizes code lists (trim, drop empties,
+// dedupe) for the catalog-side vendor windows.
 func normalizeProviderCodeList(codes []string) []string {
 	seen := map[string]bool{}
 	output := []string{}

@@ -166,8 +166,11 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 		if len(rows) != 1 {
 			t.Fatalf("member rows = %d, want 1", len(rows))
 		}
-		if got := f.env.count(t, `SELECT enabled FROM groups WHERE id = ?`, super); got != 0 {
-			t.Fatalf("super must stay disabled, enabled=%d", got)
+		if code, payload := f.enableGroup(t, super, after); code != http.StatusOK {
+			t.Fatalf("enable super with one member: %d %v", code, payload)
+		}
+		if got := f.env.count(t, `SELECT enabled FROM groups WHERE id = ?`, super); got != 1 {
+			t.Fatalf("super must be enabled, enabled=%d", got)
 		}
 	})
 
@@ -233,8 +236,12 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 			t.Fatalf("empty draft: %d %v", code, payload)
 		}
 		revision, _ = f.members(t, super)
-		status, payload := f.enableGroup(t, super, revision)
-		assertCode(t, status, payload, http.StatusBadRequest, CodeSuperGroupMemberMinEnabled)
+		if code, payload := f.enableGroup(t, super, revision); code != http.StatusOK {
+			t.Fatalf("enable empty super: %d %v", code, payload)
+		}
+		if got := f.env.count(t, `SELECT enabled FROM groups WHERE id = ?`, super); got != 1 {
+			t.Fatalf("super must be enabled, enabled=%d", got)
+		}
 	})
 
 	t.Run("member-self", func(t *testing.T) {
@@ -427,4 +434,45 @@ func TestSuperGroupAPIFixtures(t *testing.T) {
 			t.Fatalf("noop must keep revision: got %v want %s", payload["data"].(map[string]any)["revision"], revision)
 		}
 	})
+}
+
+// TestSuperGroupEnableAndMemberSaveWithoutMinimum 覆盖 2026-10-22 契约变更：
+// 超级分组创建即可启用；已启用超级分组保存 1 个或 0 个成员均成功。该测试
+// 不是 §7 fixture，不进入 fixture 注册表。
+func TestSuperGroupEnableAndMemberSaveWithoutMinimum(t *testing.T) {
+	f := newSuperFixtureEnv(t)
+
+	code, payload := f.env.do(t, http.MethodPost, f.prefix+"/groups",
+		`{"name":"创建即启用超级组","groupKind":"super","enabled":true}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create enabled super: %d %v", code, payload)
+	}
+	created := payload["data"].(map[string]any)
+	if created["groupKind"] != "super" || created["enabled"] != true {
+		t.Fatalf("created super = %v", created)
+	}
+	super := created["id"].(string)
+	if got := f.env.count(t, `SELECT enabled FROM groups WHERE id = ?`, super); got != 1 {
+		t.Fatalf("created super must be enabled, enabled=%d", got)
+	}
+
+	member := f.createStandard(t, "单成员")
+	revision, _ := f.members(t, super)
+	code, payload = f.patchMembers(t, super, revision, membersJSON(member))
+	if code != http.StatusOK {
+		t.Fatalf("save single member on enabled super: %d %v", code, payload)
+	}
+	revision = payload["data"].(map[string]any)["revision"].(string)
+
+	code, payload = f.patchMembers(t, super, revision, "[]")
+	if code != http.StatusOK {
+		t.Fatalf("save zero members on enabled super: %d %v", code, payload)
+	}
+	_, rows := f.members(t, super)
+	if len(rows) != 0 {
+		t.Fatalf("member rows = %d, want 0", len(rows))
+	}
+	if got := f.env.count(t, `SELECT enabled FROM groups WHERE id = ?`, super); got != 1 {
+		t.Fatalf("super must stay enabled, enabled=%d", got)
+	}
 }

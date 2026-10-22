@@ -119,6 +119,31 @@ export function isOpenAICompatibleProviderCode(value: unknown): boolean {
   return normalized === OPENAI_COMPATIBLE_PROVIDER_CODE || normalized === GPT_VENDOR_CODE
 }
 
+// 账户创建载荷的 connections[] 使用连接预设 code（设计 §1.1/§9.3）；前端表单仍以
+// 协议档案 id 驱动，二者一一对应。hybrid 无 preset（vendors 值域不含 hybrid），
+// 迁移完成后删除本表。
+const CONNECTION_PRESET_BY_PROFILE_ID: Record<string, string> = {
+  [OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID]: 'generic_openai_v1',
+  [GPT_OPENAI_V1_PROFILE_ID]: 'gpt_openai_v1',
+  [XAI_OPENAI_V1_PROFILE_ID]: 'xai_openai_v1',
+  [DEEPSEEK_OPENAI_V1_PROFILE_ID]: 'deepseek_openai_v1',
+  [DEEPSEEK_ANTHROPIC_V1_PROFILE_ID]: 'deepseek_anthropic_v1',
+  [ANTHROPIC_ANTHROPIC_V1_PROFILE_ID]: 'anthropic_v1',
+  [GLM_GENERAL_OPENAI_V1_PROFILE_ID]: 'glm_general_openai_v1',
+  [GLM_CODING_OPENAI_V1_PROFILE_ID]: 'glm_coding_openai_v1',
+  [GLM_CODING_ANTHROPIC_V1_PROFILE_ID]: 'glm_coding_anthropic_v1',
+  [GEMINI_NATIVE_V1BETA_PROFILE_ID]: 'gemini_native_v1beta',
+  [GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID]: 'gemini_openai_chat_v1beta',
+  [MINIMAX_OPENAI_V1_PROFILE_ID]: 'minimax_media',
+  [VOLCENGINE_OPENAI_V1_PROFILE_ID]: 'volcengine_ark',
+  [QWEN_OPENAI_V1_PROFILE_ID]: 'qwen_dashscope'
+}
+
+export function connectionPresetCodeForProfile(profileId: string | undefined): string | undefined {
+  const key = String(profileId ?? '').trim()
+  return key ? CONNECTION_PRESET_BY_PROFILE_ID[key] : undefined
+}
+
 export function preferredDefaultProvider(providers: ProviderDefinition[]): ProviderDefinition | undefined {
   const enabledProviders = providers.filter((provider) => provider.enabled)
   return enabledProviders.find((provider) => isGptVendorCode(provider.code)) ?? enabledProviders[0]

@@ -49,7 +49,7 @@ func (e *VersionConflictError) Error() string { return e.Message }
 // ValidationError maps to Node throw-Error paths rendered as 400 (config
 // normalization, binding boundary, mode binding rules, delete guards).
 // ValidationError 是策略写入的业务校验错误；Code 非空时作为稳定错误码
-// 随 {code,message} 返回（超级分组设计 §7 的 super_group_member_min_enabled）。
+// 随 {code,message} 返回。
 type ValidationError struct {
 	Message string
 	Code    string

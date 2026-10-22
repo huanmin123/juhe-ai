@@ -1,10 +1,10 @@
 // write_test.go pins the providers model-catalog write family contracts
 // byte-for-byte against the Node routes (providers.routes.ts:184-606):
-// create/edit/delete custom models, the built-in configuration patch and the
-// default-health-check-model preference, including auth posture (session
-// level with per-route admin forks), validation messages, optimistic
-// concurrency (409), the AI-account binding guard, the default-reference
-// cleanup and the configuration-template inheritance.
+// create/edit/delete custom models and the built-in configuration patch,
+// including auth posture (session level with per-route admin forks),
+// validation messages, optimistic concurrency (409), the AI-account binding
+// guard, the default-reference cleanup and the configuration-template
+// inheritance.
 package providers
 
 import (
@@ -531,83 +531,6 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 	code, anonymous := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-2", "")
 	if code != http.StatusUnauthorized {
 		t.Fatalf("anonymous delete: %d %v", code, anonymous)
-	}
-}
-
-// TestProvidersPutDefaultHealthCheckModel covers the preference endpoint:
-// validation messages, the personal/system fork and the overlay pickup.
-func TestProvidersPutDefaultHealthCheckModel(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
-
-	code, saved := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-4o"}`)
-	if code != http.StatusOK {
-		t.Fatalf("save preference: %d %v", code, saved)
-	}
-	data := dataMap(t, saved)
-	if data["providerCode"] != "gpt" || data["defaultHealthCheckModel"] != "gpt-4o" {
-		t.Fatalf("save payload: %v", data)
-	}
-	// 偏好表退役：overlay（defaultHealthCheckModel）恒空形状。
-	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt", "")
-	if code != http.StatusOK || dataMap(t, detail)["defaultHealthCheckModel"] != "" {
-		t.Fatalf("overlay after save (retired storage): %d %v", code, detail)
-	}
-
-	// Invalid selections.
-	code, unknown := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"nope"}`)
-	if code != http.StatusBadRequest || unknown["message"] != "模型不在当前用户可见目录中：nope" {
-		t.Fatalf("unknown model: %d %v", code, unknown)
-	}
-	code, image := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-image-studio"}`)
-	if code != http.StatusBadRequest || image["message"] != "默认检查模型只能选择文本生成模型" {
-		t.Fatalf("image model: %d %v", code, image)
-	}
-	// The expired custom model is visible in the inactive diagnosis pass but
-	// still unavailable, so the answer is the availability message.
-	code, expired := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-custom-expired"}`)
-	if code != http.StatusBadRequest || expired["message"] != "只能把当前可用的模型设置为默认检查模型" {
-		t.Fatalf("expired model: %d %v", code, expired)
-	}
-	// A disabled built-in model exists in the inactive diagnosis.
-	code, disabledModel := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-4-secret"}`)
-	if code != http.StatusBadRequest || disabledModel["message"] != "只能把当前可用的模型设置为默认检查模型" {
-		t.Fatalf("disabled model: %d %v", code, disabledModel)
-	}
-
-	// The admin management fork saves the system default.
-	env.login(t, "root", "root-pass", "super_admin")
-	code, system := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?viewScope=admin", `{"model":"gpt-4o-mini"}`)
-	if code != http.StatusOK || dataMap(t, system)["defaultHealthCheckModel"] != "gpt-4o-mini" {
-		t.Fatalf("system default save: %d %v", code, system)
-	}
-	// 偏好表随设计 §8.11 退役：系统默认写为 no-op，无行可断言。
-	// The user fork ignores viewScope=admin and writes a personal row.
-	env.login(t, "user1", "user-pass", "user")
-	code, userFork := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?viewScope=admin", `{"model":"gpt-4o-mini"}`)
-	if code != http.StatusOK || dataMap(t, userFork)["defaultHealthCheckModel"] != "gpt-4o-mini" {
-		t.Fatalf("user viewScope fork: %d %v", code, userFork)
-	}
-
-	// Schema and lookup forks.
-	code, badBody := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":" "}`)
-	if code != http.StatusBadRequest || badBody["message"] != "默认检查模型参数无效" {
-		t.Fatalf("bad body: %d %v", code, badBody)
-	}
-	code, strict := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-4o","extra":1}`)
-	if code != http.StatusBadRequest || strict["message"] != "默认检查模型参数无效" {
-		t.Fatalf("strict body: %d %v", code, strict)
-	}
-	code, missingProvider := env.do(t, http.MethodPut, "/__aisys__/api/providers/nope/default-health-check-model", `{"model":"gpt-4o"}`)
-	if code != http.StatusNotFound || missingProvider["message"] != "供应商不存在" {
-		t.Fatalf("unknown provider: %d %v", code, missingProvider)
-	}
-	clearSession(t, env)
-	code, anonymous := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", `{"model":"gpt-4o"}`)
-	if code != http.StatusUnauthorized {
-		t.Fatalf("anonymous put: %d %v", code, anonymous)
 	}
 }
 

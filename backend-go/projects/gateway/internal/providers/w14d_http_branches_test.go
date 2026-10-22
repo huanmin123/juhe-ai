@@ -1,8 +1,7 @@
 // w14d_http_branches_test.go pins the previously uncovered HTTP branches of
 // the write family: 400 body edges, the optimistic concurrency 409s, the
 // capability validation 400 on the built-in fork, the delete guard and the
-// default-health-check-model selection diagnostics plus the dropped-table
-// 500 arms.
+// dropped-table 500 arms.
 //
 // 不可达分支登记（w14d）：patchModel/deleteModel 的 403 canMutateCustomModel
 // 分支不可达——非管理员查询带 personal-owner 谓词，只能取回自己的行（此时
@@ -124,68 +123,6 @@ func TestW14dDeleteModelBindingGuardAndSuccess(t *testing.T) {
 	}
 }
 
-func TestW14dPutDefaultHealthCheckModelDiagnostics(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
-
-	// An unusable (image) model in the active catalog renders the specific
-	// diagnostic rather than the generic one.
-	code, imageModel := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"gpt-image-studio"}`)
-	if code != http.StatusBadRequest || imageModel["message"] != "默认检查模型只能选择文本生成模型" {
-		t.Fatalf("image default model: %d %v", code, imageModel)
-	}
-
-	// An unknown model renders the visibility diagnostic.
-	code, unknown := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"no-such-model"}`)
-	if code != http.StatusBadRequest || unknown["message"] != "模型不在当前用户可见目录中：no-such-model" {
-		t.Fatalf("unknown default model: %d %v", code, unknown)
-	}
-
-	// Strict body: extra keys are rejected.
-	code, strict := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"gpt-4o","extra":1}`)
-	if code != http.StatusBadRequest || strict["message"] != "默认检查模型参数无效" {
-		t.Fatalf("strict body: %d %v", code, strict)
-	}
-
-	// A disabled images-only model exists in the inactive scan but is unusable.
-	env.seedBuiltinModel(t, builtinModelSeed{ID: "w14d-cat-expired", ProviderCode: "gpt", Model: "w14d-expired-model",
-		Status: "disabled", Protocols: `["images"]`})
-	code, expired := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"w14d-expired-model"}`)
-	if code != http.StatusBadRequest || expired["message"] != "默认检查模型只能选择文本生成模型" {
-		t.Fatalf("expired unusable model: %d %v", code, expired)
-	}
-
-	// A happy personal save lands in the preference table.
-	code, saved := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"gpt-4o"}`)
-	if code != http.StatusOK || dataMap(t, saved)["defaultHealthCheckModel"] != "gpt-4o" {
-		t.Fatalf("personal save: %d %v", code, saved)
-	}
-	// 偏好表随设计 §8.11 退役：PUT 校验真实、落库按「忽略不落库」收敛。
-}
-
-func TestW14dCreateModelUpsertErrorFork(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	env.seedWriteFixtures(t)
-	env.login(t, "user1", "user-pass", "user")
-
-	// Drop the custom table: the scope lookup inside the store upsert fails
-	// after the handler-side validation passed.
-	env.exec(t, `DROP TABLE models`)
-	code, failed := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
-		`{"model":"doomed-model","inputUsdPer1M":1}`)
-	if code != http.StatusBadRequest || failed["message"] == "" {
-		t.Fatalf("dropped table create: %d %v", code, failed)
-	}
-}
-
 func TestW14dCreateModelTemplateCatalogError(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
@@ -207,16 +144,8 @@ func TestW14dReadFamilyServerErrorArms(t *testing.T) {
 	env.seedWriteFixtures(t)
 	env.login(t, "user1", "user-pass", "user")
 
-	// Default-health-check selection: the active catalog read fails once the
-	// built-in catalog table is gone (the definition read still succeeds).
+	// Models list: dropping the built-in catalog surfaces the 500 arm.
 	env.exec(t, `DROP TABLE models`)
-	code, put := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model",
-		`{"model":"gpt-4o"}`)
-	if code != http.StatusInternalServerError {
-		t.Fatalf("default model 500: %d %v", code, put)
-	}
-
-	// Models list: the same drop surfaces the 500 arm.
 	code, listed := env.do(t, http.MethodGet, "/__aisys__/api/providers/gpt/models", "")
 	if code != http.StatusInternalServerError {
 		t.Fatalf("models 500: %d %v", code, listed)

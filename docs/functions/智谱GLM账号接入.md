@@ -243,7 +243,7 @@ GLM 账户测试必须复用真实网关链路：
 - OpenAI 标准测试路径使用 `/v1/chat/completions`。
 - GLM Coding 账户的普通测试路径使用 `/v1/chat/completions`；需要验证 Codex Responses bridge 时，应在普通 GLM OpenAI v1 账户配置 `responses -> chat_completions` 模型别名后从 `/v1/responses` 进入本地 bridge，下游请求带 Codex turn metadata，上游实际仍是该账号自己的 `/chat/completions`。
 - 方案目标的 Responses 档案实施后，必须增加独立 `/v1/responses` JSON/SSE 测试，确认请求命中 `/api/v1/responses`；该测试与 Chat bridge 分开计账和审计。
-- 新建账户的检查模型按“个人默认 > 管理员系统默认 > 协议档案默认”初始化；当前档案默认均为 `glm-5.2`，保存后后台检查严格使用账户自己的 `healthCheckModel`。
+- 新建账户的检查模型由创建事务在最终支持模型集内解析（首个声明该检查形态的模型，无声明时回落首个支持模型），保存后后台检查严格使用账户自己的 `healthCheckModel`。
 - OpenAI 标准测试请求不发送 Responses 字段，例如 `input`、`instructions`、`max_output_tokens`、`store` 或 Codex 专属 metadata；Codex bridge 测试只发送最小 Responses SSE 请求。
 - 人工测试成功或失败都不改写账户状态、检查模型、调度、冷却或最近错误。
 - Coding Plan 测试会消耗套餐资源，应保持最小 prompt、低输出上限和明确的用户提示；账户页面不提供多账户批量测试。

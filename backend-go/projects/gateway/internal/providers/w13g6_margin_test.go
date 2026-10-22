@@ -39,7 +39,6 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -113,9 +112,6 @@ func TestW13g6EmptyInputArms(t *testing.T) {
 	if got, err := store.FindProviderOption(ctx, "  "); err != nil || got != nil {
 		t.Fatalf("blank find option: %v %v", got, err)
 	}
-	if got, err := store.ListDefaultHealthCheckModelPreferences(ctx, "  ", nil); err != nil || len(got) != 0 {
-		t.Fatalf("blank preferences: %v %v", got, err)
-	}
 	if got, err := store.listBuiltInCatalogModels(ctx, nil, false); err != nil || len(got) != 0 {
 		t.Fatalf("empty builtin catalog: %v %v", got, err)
 	}
@@ -128,11 +124,6 @@ func TestW13g6EmptyInputArms(t *testing.T) {
 	if got, err := store.listCustomModelOptions(ctx, nil, ModelOptionQuery{}); err != nil || len(got) != 0 {
 		t.Fatalf("empty custom options: %v %v", got, err)
 	}
-	// overlay 空列表早退。
-	request := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/list", nil)
-	env.providersDeps.overlayListItems(request, []ProviderListItem{})
-	env.providersDeps.overlayDefinitions(request, nil)
-
 	// 纯函数分支。
 	if optionScopePriority("personal") != 3 || optionScopePriority("global") != 2 || optionScopePriority("built_in") != 1 {
 		t.Fatal("optionScopePriority arms")
@@ -329,7 +320,7 @@ func TestW13g6AttachProfileErrorArms(t *testing.T) {
 	})
 }
 
-// TestW13g6SelectionOptionQueryErrors 覆盖模型选项自定义查询错误臂与默认检查模型校验错误臂。
+// TestW13g6SelectionOptionQueryErrors 覆盖模型选项自定义查询错误臂。
 func TestW13g6SelectionOptionQueryErrors(t *testing.T) {
 	env := newTestEnv(t)
 	env.seedCatalog(t)
@@ -337,11 +328,6 @@ func TestW13g6SelectionOptionQueryErrors(t *testing.T) {
 	env.login(t, "root", "root-pass", "super_admin")
 	if code, _ := env.do(t, http.MethodGet, "/__aisys__/api/providers/models/options?providerCode=gpt", ""); code != http.StatusInternalServerError {
 		t.Fatalf("dropped models table on options: %d", code)
-	}
-	// 默认检查模型校验：目录展开中途失败 -> 500。
-	if code, _ := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?viewScope=admin",
-		`{"model":"gpt-4o"}`); code != http.StatusInternalServerError {
-		t.Fatalf("validate with dropped models table: %d", code)
 	}
 }
 

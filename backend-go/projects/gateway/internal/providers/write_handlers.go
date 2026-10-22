@@ -1,13 +1,10 @@
 // write_handlers.go carries the remaining write family handlers:
 // PATCH /{code}/models/{modelId} (the built-in fork with the admin gate and
-// operation log plus the custom fork with ownership), DELETE
-// /{code}/models/{modelId} (the AI-account binding guard) and PUT
-// /{code}/default-health-check-model (personal preference vs system default
-// with the visibility validation).
+// operation log plus the custom fork with ownership) and DELETE
+// /{code}/models/{modelId} (the AI-account binding guard).
 package providers
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -536,120 +533,4 @@ func (d *Deps) deleteModel(w http.ResponseWriter, r *http.Request) {
 		d.notifyCommittedModelCacheInvalidation(modelCacheDeletedReason)
 	}
 	kernel.WriteOK(w, map[string]any{"deleted": deleted}, "")
-}
-
-// putDefaultHealthCheckModel serves PUT /{code}/default-health-check-model:
-// the management fork targets the system default, everyone else a personal
-// preference. 目标存储（provider_system_default_health_check_models /
-// provider_default_health_check_models）随供应商解耦退役（设计 §8.11）：路由
-// 保留目录可见性校验与成功体契约，落库按 groups 管理面「忽略不落库」先例
-// 收敛（overlay 读侧恒空对应）。
-func (d *Deps) putDefaultHealthCheckModel(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	provider, err := d.Store.FindDefinition(ctx, r.PathValue("code"))
-	if err != nil {
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
-		return
-	}
-	if provider == nil {
-		kernel.WriteNotFound(w, "供应商不存在")
-		return
-	}
-	body, ok := decodeModelBody(w, r)
-	if !ok {
-		return
-	}
-	model, ok := parseHealthCheckModelBody(body)
-	if !ok {
-		kernel.WriteBadRequest(w, "默认检查模型参数无效")
-		return
-	}
-	saveAsSystemDefault := isManagementProviderRequest(r)
-	target := ""
-	if !saveAsSystemDefault {
-		target = requestSystemAccountID(r)
-		if target == "" {
-			kernel.WriteBadRequest(w, "请选择要设置默认检查模型的系统账户")
-			return
-		}
-	}
-	validatedModel, message, err := d.validateDefaultHealthCheckModelSelection(ctx, provider.Code, target, model)
-	if err != nil {
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
-		return
-	}
-	if message != "" {
-		kernel.WriteBadRequest(w, message)
-		return
-	}
-	if saveAsSystemDefault {
-		if err := d.Store.UpsertSystemDefaultHealthCheckModel(ctx, provider.Code, validatedModel); err != nil {
-			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
-			return
-		}
-	} else {
-		if err := d.Store.UpsertDefaultHealthCheckModelPreference(ctx, target, provider.Code, validatedModel); err != nil {
-			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
-			return
-		}
-	}
-	kernel.WriteOK(w, map[string]any{
-		"providerCode":            provider.Code,
-		"defaultHealthCheckModel": validatedModel,
-	}, "")
-}
-
-// parseHealthCheckModelBody mirrors defaultHealthCheckModelSchema (strict).
-func parseHealthCheckModelBody(body map[string]json.RawMessage) (string, bool) {
-	for key := range body {
-		if key != "model" {
-			return "", false
-		}
-	}
-	raw, ok := body["model"]
-	if !ok {
-		return "", false
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err != nil {
-		return "", false
-	}
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return "", false
-	}
-	return trimmed, true
-}
-
-// validateDefaultHealthCheckModelSelection ports
-// validateDefaultHealthCheckModelSelection: (validated model, "" = valid).
-func (d *Deps) validateDefaultHealthCheckModelSelection(ctx context.Context, providerCode, systemAccountID, model string) (string, string, error) {
-	activeCatalog, err := d.Store.ListProviderModelsForRequest(ctx, providerCode, systemAccountID, false, true)
-	if err != nil {
-		return "", "", err
-	}
-	for index := range activeCatalog {
-		if strings.TrimSpace(activeCatalog[index].Model) != model {
-			continue
-		}
-		if !isProviderModelUsableForAccountTest(&activeCatalog[index]) {
-			return "", "默认检查模型只能选择文本生成模型", nil
-		}
-		return activeCatalog[index].Model, "", nil
-	}
-	// 非活动目录仅用于给出具体诊断，不应让同名的过期来源遮蔽活动来源。
-	inactiveCatalog, err := d.Store.ListProviderModelsForRequest(ctx, providerCode, systemAccountID, true, true)
-	if err != nil {
-		return "", "", err
-	}
-	for index := range inactiveCatalog {
-		if strings.TrimSpace(inactiveCatalog[index].Model) != model {
-			continue
-		}
-		if !isProviderModelUsableForAccountTest(&inactiveCatalog[index]) {
-			return "", "默认检查模型只能选择文本生成模型", nil
-		}
-		return "", "只能把当前可用的模型设置为默认检查模型", nil
-	}
-	return "", "模型不在当前用户可见目录中：" + model, nil
 }

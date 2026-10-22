@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import type { ProviderDefinition } from '@/types/domain'
-import { applyProviderDefinitionDefaultsAfterLoad } from '../../views/accounts/useAccountEditForm'
+import { applyProviderDefinitionDefaultsAfterLoad, mergeAccountProviderDefinitions } from '../../views/accounts/useAccountEditForm'
+import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
 
 const accountListDataSource = readFileSync(
   fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)),
@@ -73,7 +74,7 @@ assert.match(scopeKeySource, /systemAccountId \?\? 'all'/, '管理视图 definit
 const openCreateSource = sourceBetween(accountEditFormSource, 'async function openCreate()', 'watch(')
 const providerSelectSource = sourceBetween(accountEditFormSource, 'function selectProvider(', 'function selectAccountType(')
 const defaultFormSource = sourceBetween(accountEditFormSource, 'function defaultForm(', 'function resetForm(')
-const mergedDefinitionsSource = sourceBetween(accountEditFormSource, 'function mergeAccountProviderDefinitions(', 'function authorizedAccountBasicDetail(')
+const mergedDefinitionsSource = sourceBetween(accountEditFormSource, 'export function mergeProviderDefinition(', 'function authorizedAccountBasicDetail(')
 assert.doesNotMatch(openCreateSource, /ensureProviderDefinition|providers\.detail|providers\.definitions/, '打开新增弹窗不得加载供应商详情')
 assert.match(providerSelectSource, /ensureProviderDefinition\(providerCode, systemAccountId\)/, '只有用户选择供应商后才加载该供应商详情')
 assert.match(providerSelectSource, /applyProviderDefinitionDefaultsAfterLoad\(/, '供应商选择流程必须在 detail 返回后安全回填权威默认值')
@@ -82,16 +83,65 @@ assert.match(accountEditFormSource, /mergeAccountProviderDefinitions\([\s\S]*FAL
 assert.match(accountEditFormSource, /const availableProviders = computed\(mergedProviderDefinitions\)/, '表单展示与默认值必须共用同一套供应商定义合并逻辑')
 assert.match(defaultFormSource, /defaultAccountForm\(providerCode, type, mergedProviderDefinitions\(\), providerProtocolProfileId\)/, '表单默认值必须使用已合并的完整供应商定义')
 assert.doesNotMatch(defaultFormSource, /defaultAccountForm\([^\n]*options\.providers\.value/, '表单默认值不得直接使用缺少协议档案的轻量供应商 options')
-assert.match(mergedDefinitionsSource, /\[\.\.\.FALLBACK_PROVIDERS, \.\.\.loadedDefinitions\]/, '已加载 definition 必须覆盖内置回退定义')
-assert.match(mergedDefinitionsSource, /\{\s*\.\.\.definition,/, '合并结果必须保留完整 definition 的 Base URL、协议档案和账户类型能力')
+assert.match(mergedDefinitionsSource, /mergeProviderDefinition\(fallbackByCode\.get/, '合并必须按内置回退定义补齐协议档案')
+assert.match(mergedDefinitionsSource, /loaded\.protocolProfiles\.length > 0/, '服务端返回完整协议档案时仍以服务端为准')
+assert.match(mergedDefinitionsSource, /protocolProfiles: fallback\.protocolProfiles/, '服务端协议档案为空时必须保留内置定义的协议形状')
 assert.match(accountsViewSource, /providerDefinitions,[\s\S]*ensureProviderDefinition,[\s\S]*useAccountEditForm\([\s\S]*ensureProviderDefinition,[\s\S]*providerDefinitions,/, '账户页必须把按需详情状态和加载入口接入编辑表单')
 
 assert.match(providerResourceSource, /options\.includeDefinitions[\s\S]*api\.providers\.definitions/, '完整 definitions 标志必须路由到 definitions API')
 assert.match(providerResourceSource, /api\.providers\.options/, '轻量路径必须路由到 provider options API')
 
 await verifyAsyncProviderDefinitionDefaults()
+verifyRetiredProtocolShapeMerge()
 
 console.log('账户供应商定义按需加载回归通过：列表首屏零供应商 options，筛选展开才加载候选，用户选择后只读取当前供应商详情')
+
+function verifyRetiredProtocolShapeMerge(): void {
+  // 协议档案表退役后 GET /providers/{code} 的空形状（vendor 身份 + 恒空协议键）。
+  const retiredDeepSeek = {
+    id: 'deepseek',
+    code: 'deepseek',
+    name: 'DeepSeek',
+    enabled: true,
+    defaultProtocolProfileId: '',
+    protocolCode: '',
+    protocolVersion: '',
+    baseUrl: '',
+    defaultHealthCheckModel: '',
+    defaultSupportedModels: [],
+    accountTypes: [],
+    capabilities: [],
+    protocolProfiles: []
+  } as ProviderDefinition
+  const merged = mergeAccountProviderDefinitions([retiredDeepSeek], [retiredDeepSeek])
+  const form = defaultAccountForm('deepseek', '', merged)
+  assert.equal(form.type, 'api_key', '服务端协议档案为空时，内置定义必须继续提供账户类型（否则凭证区整块不渲染）')
+  assert.equal(form.providerProtocolProfileId, 'profile_deepseek_openai_v1', '服务端协议档案为空时必须保留内置默认档案')
+  assert.equal(merged[0].protocolProfiles.length, 2, '内置 DeepSeek 的两个协议档案不得被空的服务端定义覆盖')
+
+  const fullDefinition = {
+    ...retiredDeepSeek,
+    defaultProtocolProfileId: 'profile_server_v1',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    accountTypes: ['api_key'],
+    protocolProfiles: [{
+      id: 'profile_server_v1',
+      providerCode: 'deepseek',
+      name: 'server profile',
+      enabled: true,
+      protocolCode: 'openai',
+      protocolVersion: 'v1',
+      baseUrl: 'https://server.example/v1',
+      defaultHealthCheckModel: 'deepseek-v4-flash',
+      accountTypes: ['api_key'],
+      capabilities: ['chat'],
+      endpointFamilies: []
+    }]
+  } as ProviderDefinition
+  const mergedWithServerProfiles = mergeAccountProviderDefinitions([retiredDeepSeek], [fullDefinition])
+  assert.equal(mergedWithServerProfiles[0].protocolProfiles[0].id, 'profile_server_v1', '服务端返回完整协议档案时必须覆盖内置定义')
+}
 
 async function verifyAsyncProviderDefinitionDefaults(): Promise<void> {
   const initialDefaults = providerDefaults({

@@ -514,6 +514,17 @@ assert.equal('error_handling_rules' in savePayload.credentials, false, '只读�
 assert.equal('quota_recovery_policy' in savePayload.credentials, false, '未编辑额度恢复策略的新建账户不得持久化运行时默认值')
 assert.equal(draftPayload.healthCheckModel, 'gpt-5.4', '新增和编辑人工测试草稿必须携带表单检查模型')
 assert.deepEqual(savePayload.supportedModels, ['gpt-5.5', 'gpt-5.4'], '账户保存必须保留支持模型')
+assert.deepEqual(
+  savePayload.connections,
+  [{
+    connectionPresetCode: 'gpt_openai_v1',
+    baseUrl: form.baseUrl,
+    endpointModes: [...form.supportedEndpointModes],
+    enabled: true
+  }],
+  '创建载荷必须显式提交 connections：协议档案映射到连接预设，Base URL 与接口能力取当前表单'
+)
+assert.equal(savePayload.healthCheckConnectionPresetCode, 'gpt_openai_v1', '创建载荷必须显式提交健康检查连接 preset')
 
 const basicBaseline = buildAccountBasicEditSnapshot(form, {
   api_key: form.apiKey,
@@ -521,6 +532,11 @@ const basicBaseline = buildAccountBasicEditSnapshot(form, {
   supported_endpoint_modes: form.supportedEndpointModes,
   service_tier_override: 'priority'
 })
+assert.equal(
+  basicBaseline.values.healthCheckConnectionPresetCode,
+  'gpt_openai_v1',
+  '基础编辑快照必须补齐健康检查连接 preset，PATCH 三件套才能同现'
+)
 assert.equal(
   buildAccountBasicUpdatePatch(basicBaseline, basicBaseline, 7),
   undefined,

@@ -156,13 +156,14 @@ func TestSuperGroupModeFixtures(t *testing.T) {
 		if got := env.count(t, `SELECT COUNT(*) FROM super_group_members WHERE super_group_id = ? AND enabled = 1`, super); got != 2 {
 			t.Fatalf("super members = %d", got)
 		}
-		// topology-super-1 的绑定侧 oracle：只有一个启用成员的超级分组绑定被拒。
+		// topology-super-1 的绑定侧 oracle：只有 1 个启用成员的超级分组可以正常绑定。
 		only := env.createGroup(t, env.admin, "normal-super-only", true)
 		single := env.createSuperGroup(t, env.admin, "normal-super-single", only)
-		code, payload := env.createStrategy(t, "/__aisys__/api/route-strategies",
+		singleID := env.createModeStrategy(t,
 			`{"name":"nsuper-single","groupBindings":[`+modeBinding(single, 1, 0)+`]}`)
-		if code != http.StatusBadRequest || payload["code"] != "super_group_member_min_enabled" {
-			t.Fatalf("single-member super binding: %d %v", code, payload)
+		singleBindings := env.bindings(t, singleID)
+		if len(singleBindings) != 1 || singleBindings[0]["groupId"] != single || singleBindings[0]["status"] != "active" {
+			t.Fatalf("single-member super binding: %v", singleBindings)
 		}
 	})
 
@@ -283,4 +284,3 @@ func TestSuperGroupModeFixtures(t *testing.T) {
 		}
 	})
 }
-

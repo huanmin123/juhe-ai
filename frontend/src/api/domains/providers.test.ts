@@ -34,10 +34,6 @@ function requestShapes(): Array<[string, string]> {
   return requests.map((request) => [request.method, request.url])
 }
 
-function payloadOf(request: CapturedRequest): Record<string, unknown> {
-  return JSON.parse(String(request.data)) as Record<string, unknown>
-}
-
 beforeEach(() => installCaptureAdapter())
 afterEach(() => {
   http.defaults.adapter = originalAdapter
@@ -53,7 +49,6 @@ describe('providersApi 请求形状', () => {
     await providersApi.modelOptions()
     await providersApi.modelCapabilities('openai', 'gpt-4o')
     await providersApi.models('openai')
-    await providersApi.setDefaultHealthCheckModel('openai', 'gpt-4o-mini')
     await providersApi.createModel('openai', { model: 'gpt-4o' } as never)
     await providersApi.updateModel('openai', 'm-1', { pricing: {} } as never)
     await providersApi.deleteModel('openai', 'm-1')
@@ -66,7 +61,6 @@ describe('providersApi 请求形状', () => {
       ['GET', '/providers/models/options'],
       ['GET', '/providers/openai/models/gpt-4o/capabilities'],
       ['GET', '/providers/openai/models'],
-      ['PUT', '/providers/openai/default-health-check-model'],
       ['POST', '/providers/openai/models'],
       ['PATCH', '/providers/openai/models/m-1'],
       ['DELETE', '/providers/openai/models/m-1']
@@ -76,11 +70,6 @@ describe('providersApi 请求形状', () => {
   it('modelId 路径段进行 encodeURIComponent 编码，providerCode 不编码', async () => {
     await providersApi.modelCapabilities('openai', 'm/o?del')
     expect(requests[0].url).toBe('/providers/openai/models/m%2Fo%3Fdel/capabilities')
-  })
-
-  it('setDefaultHealthCheckModel 使用 PUT 并携带 model', async () => {
-    await providersApi.setDefaultHealthCheckModel('openai', 'gpt-4o-mini')
-    expect(payloadOf(requests[0])).toEqual({ model: 'gpt-4o-mini' })
   })
 
   it('modelOptions 直接透传选项参数（不做归一化）', async () => {

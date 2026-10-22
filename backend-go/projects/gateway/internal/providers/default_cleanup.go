@@ -2,7 +2,7 @@
 // ported from backend/src/storage/provider-model-default-reference-cleanup.repository.ts.
 // The two storage tables it cleaned (provider_default_health_check_models /
 // provider_system_default_health_check_models) are retired by 供应商与上游协议
-// 面重构设计 §8.11（表与 seed 一并删除），清理随之 vacuous：执行器恒返回无
+// 面重构设计 §9.11（表与 seed 一并删除），清理随之 vacuous：执行器恒返回无
 // 变更 provider codes，不再触碰任何旧表。入参/出参形状保留，调用方（自定义
 // 模型补丁/删除、内置行配置补丁）的响应契约（defaultHealthCheckModelCleared
 // 仅在有清理时出现）由空结果自然保持——键恒缺席。
@@ -33,7 +33,7 @@ type defaultReferenceCleanupInput struct {
 }
 
 // clearUnavailableProviderModelDefaultReferences is the retired-storage no-op:
-// the preference tables are gone (设计 §8.11)，无引用可清，恒返回空变更集。
+// the preference tables are gone (设计 §9.11)，无引用可清，恒返回空变更集。
 func clearUnavailableProviderModelDefaultReferences(ctx context.Context, tx *sql.Tx, s *Store, input *defaultReferenceCleanupInput) ([]string, error) {
 	_ = ctx
 	_ = tx

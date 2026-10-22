@@ -127,7 +127,7 @@ schema 权威是 maintenance 的 Go DDL（`backend-go/projects/maintenance/inter
 - SQLite JSON 字符串字段在 PostgreSQL 中按用途选择 `jsonb` 或 `text`。需要按字段筛选、局部更新或索引的配置字段使用 `jsonb`。
 - 真正表示 PostgreSQL instant 的查询和持久化列优先使用 `timestamptz`；SQLite 以及经明确证明需要版本、CAS 或共享 schema 兼容的列，可以保存 canonical UTC RFC3339 text，但写入必须严格校验并拒绝无 offset。内部传输、比较和持久化继续使用 RFC3339 绝对时间，管理 API 输出 UTC `Z` 或明确数字 offset；Vue / 浏览器按用户本地时区展示。date-only 与业务日历字段另行明确，并使用显式 IANA timezone；不得把这些例外机械扩展为 schema-wide 数据库迁移。
 - 金额和成本如果需要精确累加，优先使用 `numeric`；只作为展示缓存且已有浮点口径的字段可以保持 `double precision`，但统计总量字段必须固定类型并写清楚。
-- `juhe_business.accounts` 使用 `health_check_model` 保存账户必填检查模型，不保留 `default_test_model` 或 `health_check_enabled`；`provider_default_health_check_models` 保存个人供应商默认，`provider_system_default_health_check_models` 保存管理员系统默认，协议档案保留内置默认。三层默认只初始化新账户。
+- `juhe_business.accounts` 使用 `health_check_model` 保存账户必填检查模型，不保留 `default_test_model` 或 `health_check_enabled`。供应商级默认检查模型表已随《供应商与上游协议面重构设计》§9.11 删除；新建账户检查模型由创建事务按最终支持模型集解析，供应商列表展示值由 `models` 单表按最新发布时间且可文本生成的模型只读派生。
 - `juhe_business.provider_model_catalog` 和 `juhe_business.custom_provider_models` 复用 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`，并各用一个 `service_tier_prices_json` 保存非标准实际档位价格；标准价继续使用现有扁平字段，不新增价格表。支持请求覆盖的供应商账户凭据 JSON 可选保存现有 `service_tier_override`、`reasoning_effort_override`。字段值由所属供应商模型共同能力和目标 driver 校验，`ultra` 与 Responses Multi-agent Beta 不属于这两个账户覆盖字段。
 
 ### 约束与并发

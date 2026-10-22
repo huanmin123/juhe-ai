@@ -497,20 +497,6 @@ func TestW14dSmallMutationHelpers(t *testing.T) {
 
 func TestW14dProviderModelUsabilityPredicates(t *testing.T) {
 	imageMode := "image"
-	// isProviderModelUsableForAccountTest.
-	if isProviderModelUsableForAccountTest(&ModelCatalogItem{Mode: &imageMode}) {
-		t.Fatal("image mode is not usable for account tests")
-	}
-	if !isProviderModelUsableForAccountTest(&ModelCatalogItem{}) {
-		t.Fatal("no protocols defaults to usable")
-	}
-	if isProviderModelUsableForAccountTest(&ModelCatalogItem{SupportedAPIProtocols: []string{"images"}}) {
-		t.Fatal("images-only protocol is not usable")
-	}
-	if !isProviderModelUsableForAccountTest(&ModelCatalogItem{SupportedAPIProtocols: []string{"images", "chat_completions"}}) {
-		t.Fatal("mixed protocols with a text protocol are usable")
-	}
-
 	// providerModelIsUsableAsDefault.
 	invisible := false
 	if providerModelIsUsableAsDefault("active", &invisible, nil, nil, nil) {
@@ -632,22 +618,5 @@ func TestW14dBuiltInSubmittedFieldsAndMerge(t *testing.T) {
 		len(broken.SupportedServiceTiers) != 0 || len(broken.SupportedReasoningEfforts) != 0 ||
 		broken.ContextWindowTokens != nil {
 		t.Fatalf("type-mismatched patch must collapse to defaults: %+v", broken)
-	}
-}
-
-func TestW14dParseHealthCheckModelBodyForks(t *testing.T) {
-	if _, ok := parseHealthCheckModelBody(map[string]json.RawMessage{
-		"model": {}, "extra": {},
-	}); ok {
-		t.Fatal("extra keys must fail the strict schema")
-	}
-	if _, ok := parseHealthCheckModelBody(map[string]json.RawMessage{}); ok {
-		t.Fatal("missing model key must fail")
-	}
-	if _, ok := parseHealthCheckModelBody(map[string]json.RawMessage{"model": {}}); ok {
-		t.Fatal("non-string model must fail")
-	}
-	if model, ok := parseHealthCheckModelBody(map[string]json.RawMessage{"model": json.RawMessage(`" m " `)}); !ok || model != "m" {
-		t.Fatalf("valid model: %q ok=%v", model, ok)
 	}
 }

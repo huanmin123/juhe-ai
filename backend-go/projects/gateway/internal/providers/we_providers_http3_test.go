@@ -126,7 +126,7 @@ func TestWeProvidersPatchCustomModelAllFields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 关闭数据库：写路径（创建/补丁/删除/默认检查模型）的内部错误分支。
+// 关闭数据库：写路径（创建/补丁/删除）的内部错误分支。
 // 关库后 auth 中间件会先失败，因此直调 handler 并注入管理员身份。
 // ---------------------------------------------------------------------------
 
@@ -174,7 +174,6 @@ func TestWeProvidersWriteErrorsWhenDatabaseClosed(t *testing.T) {
 		{"patchBuiltIn", http.HandlerFunc(deps.patchModel), http.MethodPatch, "/x", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","mode":"text"}`, map[string]string{"code": "gpt", "modelId": "cat-2"}},
 		{"patchCustom", http.HandlerFunc(deps.patchModel), http.MethodPatch, "/x", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","inputUsdPer1M":2}`, map[string]string{"code": "gpt", "modelId": "cu-1"}},
 		{"delete", http.HandlerFunc(deps.deleteModel), http.MethodDelete, "/x", "", map[string]string{"code": "gpt", "modelId": "cu-2"}},
-		{"putDefault", http.HandlerFunc(deps.putDefaultHealthCheckModel), http.MethodPut, "/x", `{"model":"gpt-4o"}`, map[string]string{"code": "gpt"}},
 		{"createWithTemplate", http.HandlerFunc(deps.createModel), http.MethodPost, "/x", `{"model":"y","configurationTemplateId":"cat-2","supportedApiProtocols":["chat_completions"]}`, map[string]string{"code": "gpt"}},
 	}
 	for _, tc := range cases {

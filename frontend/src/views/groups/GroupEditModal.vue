@@ -13,12 +13,11 @@
       <a-form-item label="分组名称" required>
         <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
       </a-form-item>
-      <a-form-item label="分组形态" required tooltip="普通分组直接拥有账号；超级分组只组合同一所有者的普通分组，作为一个分组目标被路由绑定。超级分组先创建为停用草稿，添加至少两个启用成员后再启用。">
+      <a-form-item label="分组形态" required tooltip="普通分组直接拥有账号；超级分组只组合同一所有者的普通分组，作为一个分组目标被路由绑定。分组形态创建后不可修改；成员可随时添加，未配置启用成员时该目标暂不可用。">
         <a-radio-group
           v-model:value="form.groupKind"
           button-style="solid"
           :disabled="groupKindLocked"
-          @change="(event: any) => { if (event.target.value === 'super') form.enabled = false }"
         >
           <a-radio-button value="standard">普通分组</a-radio-button>
           <a-radio-button value="super">超级分组</a-radio-button>

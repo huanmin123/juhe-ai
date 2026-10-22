@@ -1388,11 +1388,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
-	// 启用超级分组必须有 2..20 个 enabled 成员；创建时尚无成员，因此必须
-	// 先以 disabled 草稿创建，再写入成员后启用（设计 §3.2）。
-	if groupKind == GroupKindSuper && enabled {
-		return nil, codeError(400, CodeSuperGroupMemberMinEnabled, "启用超级分组至少需要两个启用成员")
-	}
+	// 超级分组创建即可启用；成员数量不构成创建或启用条件（设计 §3.2）。
 	description, err := nullableText(input.Description, "分组说明")
 	if err != nil {
 		return nil, err
@@ -1530,8 +1526,8 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	if current.isDefault {
 		return nil, &ValidationError{Message: "默认分组不允许修改"}
 	}
-	// group_kind 创建后不可经普通 PATCH 改变（设计 §3.1）；类型变更只允许
-	// 迁移命令显式搬迁。路由层白名单已拒绝该键，这里兜底。
+	// group_kind 创建后固定，不提供 standard ↔ super 互转（设计 §3.1）。
+	// 路由层白名单已拒绝该键，这里兜底。
 	if input.GroupKind != nil {
 		normalizedKind, kindErr := normalizeGroupKind(input.GroupKind)
 		if kindErr != nil {
@@ -1700,15 +1696,6 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			if refErr := s.assertNoSuperGroupMemberReference(ctx, tx, current.id); refErr != nil {
 				return nil, refErr
 			}
-		}
-	}
-	if columnChanged(assignments, "enabled") && *input.Enabled && !current.enabled && current.groupKind == GroupKindSuper {
-		enabledMembers, countErr := s.countEnabledSuperMembers(ctx, tx, current.id)
-		if countErr != nil {
-			return nil, countErr
-		}
-		if enabledMembers < minSuperGroupEnabledMembers {
-			return nil, codeError(400, CodeSuperGroupMemberMinEnabled, "启用超级分组至少需要两个启用成员")
 		}
 	}
 	if (columnChanged(assignments, "group_type") || columnChanged(assignments, "scheduling_policy_json")) && current.groupKind == GroupKindSuper {

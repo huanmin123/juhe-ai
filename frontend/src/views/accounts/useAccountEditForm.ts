@@ -1182,20 +1182,52 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 }
 
-function mergeAccountProviderDefinitions(
+/**
+ * 供应商读面随协议档案表退役后（供应商与上游协议面重构设计 §9.11），
+ * `/providers/{code}` 只返回 vendors 身份字段：`protocolProfiles`、
+ * `accountTypes`、`defaultProtocolProfileId` 恒为空。前端账户表单尚未迁移到
+ * 连接预设契约，仍以内置定义驱动账户类型与凭证区渲染，因此服务端详情为空时
+ * 必须保留内置定义的协议形状；服务端返回完整档案（旧库或迁移完成后）仍以
+ * 服务端为准。
+ */
+export function mergeProviderDefinition(
+  fallback: ProviderDefinition | undefined,
+  loaded: ProviderDefinition | undefined
+): ProviderDefinition | undefined {
+  if (!fallback) return loaded
+  if (!loaded) return fallback
+  if (loaded.protocolProfiles.length > 0) return loaded
+  return {
+    ...fallback,
+    ...loaded,
+    defaultProtocolProfileId: fallback.defaultProtocolProfileId,
+    protocolCode: fallback.protocolCode,
+    protocolVersion: fallback.protocolVersion,
+    baseUrl: fallback.baseUrl,
+    defaultHealthCheckModel: loaded.defaultHealthCheckModel || fallback.defaultHealthCheckModel,
+    defaultSupportedModels: loaded.defaultSupportedModels.length ? loaded.defaultSupportedModels : fallback.defaultSupportedModels,
+    accountTypes: fallback.accountTypes,
+    capabilities: fallback.capabilities,
+    protocolProfiles: fallback.protocolProfiles
+  }
+}
+
+export function mergeAccountProviderDefinitions(
   providerOptions: ProviderDefinition[],
   loadedDefinitions: ProviderDefinition[]
 ): ProviderDefinition[] {
-  const definitionsByCode = new Map<string, ProviderDefinition>()
-  for (const provider of [...FALLBACK_PROVIDERS, ...loadedDefinitions]) {
-    definitionsByCode.set(provider.code, provider)
-  }
+  const fallbackByCode = new Map<string, ProviderDefinition>(
+    FALLBACK_PROVIDERS.map((provider) => [provider.code, provider])
+  )
+  const loadedByCode = new Map<string, ProviderDefinition>(
+    loadedDefinitions.map((provider) => [provider.code, provider])
+  )
   const base = providerOptions.length ? providerOptions : FALLBACK_PROVIDERS
   const merged: ProviderDefinition[] = []
   const seen = new Set<string>()
   for (const provider of base) {
     seen.add(provider.code)
-    const definition = definitionsByCode.get(provider.code)
+    const definition = mergeProviderDefinition(fallbackByCode.get(provider.code), loadedByCode.get(provider.code))
     if (!definition) {
       merged.push(provider)
       continue
@@ -1213,7 +1245,7 @@ function mergeAccountProviderDefinitions(
   for (const provider of loadedDefinitions) {
     if (!provider.code || seen.has(provider.code)) continue
     seen.add(provider.code)
-    merged.push(provider)
+    merged.push(mergeProviderDefinition(fallbackByCode.get(provider.code), provider) ?? provider)
   }
   return merged
 }

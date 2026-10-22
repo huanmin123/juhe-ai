@@ -30,11 +30,11 @@ type Deps struct {
 // session auth only, the admin gate on GET /providers (providersRouter
 // requireAdmin) and the viewScope=admin management fork on /list, /:code and
 // /:code/models. Node has no my-providers surface; the earlier Go mirror is
-// removed. The write family (POST/PATCH/DELETE /{code}/models,
-// PUT /{code}/default-health-check-model) is session-level in Node
-// (providers.routes.ts:188-241,334-606 — getRequestAuthContext without an
-// admin gate), so Go mounts it behind RequireSession(true) (the write touch)
-// and enforces the per-route admin forks inside the handlers.
+// removed. The write family (POST/PATCH/DELETE /{code}/models) is
+// session-level in Node (providers.routes.ts:188-241,334-606 —
+// getRequestAuthContext without an admin gate), so Go mounts it behind
+// RequireSession(true) (the write touch) and enforces the per-route admin
+// forks inside the handlers.
 func (d *Deps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	admin := d.Auth.RequireAdmin
@@ -57,7 +57,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("POST "+base+"/{code}/models", write(http.HandlerFunc(d.createModel)))
 	k.Register("PATCH "+base+"/{code}/models/{modelId}", write(http.HandlerFunc(d.patchModel)))
 	k.Register("DELETE "+base+"/{code}/models/{modelId}", write(http.HandlerFunc(d.deleteModel)))
-	k.Register("PUT "+base+"/{code}/default-health-check-model", write(http.HandlerFunc(d.putDefaultHealthCheckModel)))
 }
 
 // isManagementProviderRequest mirrors providers.routes.ts:612-618: the
@@ -123,9 +122,9 @@ func booleanQueryValue(r *http.Request, key string) *bool {
 	return nil
 }
 
-// listItems serves GET /list: the catalogue list rows with the
-// defaultHealthCheckModel preference overlay; the management fork
-// (viewScope=admin + admin role) sees disabled providers too.
+// listItems serves GET /list: the catalogue list rows with the catalog-derived
+// capabilities/defaultHealthCheckModel; the management fork (viewScope=admin
+// + admin role) sees disabled providers too.
 func (d *Deps) listItems(w http.ResponseWriter, r *http.Request) {
 	items, err := d.Store.ListCatalogListItems(r.Context())
 	if err != nil {
@@ -141,38 +140,17 @@ func (d *Deps) listItems(w http.ResponseWriter, r *http.Request) {
 		}
 		items = enabled
 	}
-	d.overlayListItems(r, items)
 	kernel.WriteOK(w, items, "")
 }
 
-func (d *Deps) overlayListItems(r *http.Request, items []ProviderListItem) {
-	if len(items) == 0 {
-		return
-	}
-	codes := make([]string, 0, len(items))
-	for _, item := range items {
-		codes = append(codes, item.Code)
-	}
-	preferences, err := d.Store.ListDefaultHealthCheckModelPreferences(r.Context(), requestSystemAccountID(r), codes)
-	if err != nil {
-		preferences = map[string]string{}
-	}
-	systemDefaults, err := d.Store.ListSystemDefaultHealthCheckModels(r.Context(), codes)
-	if err != nil {
-		systemDefaults = map[string]string{}
-	}
-	overlayListItemHealthCheckModels(items, preferences, systemDefaults)
-}
-
 // listDefinitions serves GET / (requireAdmin): the flat ProviderDefinition
-// array (non-paginated envelope) with the preference overlay.
+// array (non-paginated envelope) with catalog-derived summary fields.
 func (d *Deps) listDefinitions(w http.ResponseWriter, r *http.Request) {
 	definitions, err := d.Store.ListDefinitions(r.Context())
 	if err != nil {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
-	d.overlayDefinitions(r, definitions)
 	kernel.WriteOK(w, definitions, "")
 }
 
@@ -191,27 +169,7 @@ func (d *Deps) definitions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	definitions = enabled
-	d.overlayDefinitions(r, definitions)
 	kernel.WriteOK(w, definitions, "")
-}
-
-func (d *Deps) overlayDefinitions(r *http.Request, definitions []ProviderDefinition) {
-	if len(definitions) == 0 {
-		return
-	}
-	codes := make([]string, 0, len(definitions))
-	for _, definition := range definitions {
-		codes = append(codes, definition.Code)
-	}
-	preferences, err := d.Store.ListDefaultHealthCheckModelPreferences(r.Context(), requestSystemAccountID(r), codes)
-	if err != nil {
-		preferences = map[string]string{}
-	}
-	systemDefaults, err := d.Store.ListSystemDefaultHealthCheckModels(r.Context(), codes)
-	if err != nil {
-		systemDefaults = map[string]string{}
-	}
-	overlayDefinitionHealthCheckModels(definitions, preferences, systemDefaults)
 }
 
 // options serves GET /options: enabled {id, code, name, enabled} rows.
@@ -352,9 +310,9 @@ func normalizeSelectedIDs(r *http.Request) []string {
 	return output
 }
 
-// find serves GET /{code}: the ProviderDefinition by code with the
-// preference overlay; non-management requests receive the Node 404 for
-// disabled providers.
+// find serves GET /{code}: the ProviderDefinition by code with catalog-derived
+// summary fields; non-management requests receive the Node 404 for disabled
+// providers.
 func (d *Deps) find(w http.ResponseWriter, r *http.Request) {
 	definition, err := d.Store.FindDefinition(r.Context(), r.PathValue("code"))
 	if err != nil {
@@ -365,9 +323,7 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteNotFound(w, "供应商不存在或已停用")
 		return
 	}
-	roster := []ProviderDefinition{*definition}
-	d.overlayDefinitions(r, roster)
-	kernel.WriteOK(w, roster[0], "")
+	kernel.WriteOK(w, *definition, "")
 }
 
 // models serves GET /{code}/models: the merged model catalog; the 404 fork

@@ -161,10 +161,37 @@ const providerCapabilityLabels: Record<string, string> = {
   chat: 'Chat',
   chat_completions: 'Chat',
   messages: 'Messages',
-  count_tokens: 'Count Tokens'
+  count_tokens: 'Count Tokens',
+  generate_content: 'Generate Content',
+  stream_generate_content: 'Stream Generate Content',
+  interactions: 'Interactions',
+  embed_content: 'Embed Content',
+  message_token_counting: 'Message Token Counting',
+  images: 'Images',
+  video: 'Video',
+  realtime: 'Realtime',
+  audio_speech: 'Audio Speech',
+  audio_transcription: 'Audio Transcription',
+  completions: 'Completions'
 }
 
-const providerCapabilityOrder = ['responses', 'chat', 'messages', 'count_tokens'] as const
+const providerCapabilityOrder = [
+  'responses',
+  'chat',
+  'messages',
+  'count_tokens',
+  'generate_content',
+  'stream_generate_content',
+  'interactions',
+  'embed_content',
+  'message_token_counting',
+  'images',
+  'video',
+  'realtime',
+  'audio_speech',
+  'audio_transcription',
+  'completions'
+] as const
 
 export function hasAnyNumber(...values: Array<number | undefined>): boolean {
   return values.some((value) => typeof value === 'number')

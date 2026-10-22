@@ -1,7 +1,6 @@
 // write_routes.go ports the Node providers write family
-// (providers.routes.ts:184-606): POST/PATCH/DELETE /{code}/models and
-// PUT /{code}/default-health-check-model, including the zod request
-// contracts (strict objects, trimmed strings, nullable numbers), the
+// (providers.routes.ts:184-606): POST/PATCH/DELETE /{code}/models, including
+// the zod request contracts (strict objects, trimmed strings, nullable numbers), the
 // session-level auth posture (per-route admin forks only), the optimistic
 // concurrency (expectedUpdatedAt -> 409), the configuration-template
 // inheritance, the custom-model pricing/capability validation, the built-in
@@ -33,7 +32,7 @@ var customModelProtocolEnum = map[string]bool{
 	"embed_content": true, "interactions": true,
 	"completions": true, "images": true,
 	"audio_speech": true, "audio_transcription": true,
-	"video": true,
+	"video":    true,
 	"realtime": true,
 }
 
@@ -975,24 +974,6 @@ func customModelBoundToAccountMessage(summary *customProviderModelBindingSummary
 		return "模型已绑定 AI 账户，不能删除；请先从" + strings.Join(details, "、") + "中移除后再删除"
 	}
 	return "模型已绑定 AI 账户，不能删除；请先解除账户绑定后再删除"
-}
-
-// isProviderModelUsableForAccountTest ports isProviderModelUsableForAccountTest.
-func isProviderModelUsableForAccountTest(item *ModelCatalogItem) bool {
-	if item.Mode != nil && (*item.Mode == "image" || *item.Mode == "audio" || *item.Mode == "video") {
-		return false
-	}
-	if len(item.SupportedAPIProtocols) == 0 {
-		return true
-	}
-	textProtocols := map[string]bool{"chat_completions": true, "responses": true, "messages": true,
-		"generate_content": true, "stream_generate_content": true}
-	for _, protocol := range item.SupportedAPIProtocols {
-		if textProtocols[protocol] {
-			return true
-		}
-	}
-	return false
 }
 
 // providerModelIsUsableAsDefault ports providerModelIsUsableAsDefault.

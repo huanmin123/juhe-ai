@@ -31,6 +31,7 @@ import {
 } from './accountModelMappingProtocolMatrix'
 import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
 import {
+  connectionPresetCodeForProfile,
   isHybridProviderCode,
   isVolcengineProviderCode
 } from '@/shared/providerProtocol'
@@ -53,11 +54,22 @@ export function validateAccountLockConfigForm(form: AccountFormModel): string | 
   return undefined
 }
 
+// 连接集合载荷（设计 §8/§9.3）：创建时以账户当前表单的档案、Base URL 与
+// 接口能力推导唯一连接行；PATCH 不发送该字段（更新链只在显式提供时整集合替换）。
+export type AccountConnectionPayload = {
+  connectionPresetCode: string
+  baseUrl: string
+  endpointModes: AccountFormModel['supportedEndpointModes']
+  enabled: boolean
+}
+
 export type AccountSavePayload = {
   providerCode: AccountFormModel['providerCode']
   name?: string
   type: AccountFormModel['type']
   credentials: Record<string, unknown>
+  connections?: AccountConnectionPayload[]
+  healthCheckConnectionPresetCode?: string
   concurrencyLimit: number
   priority: number
   status: AccountFormModel['status']
@@ -302,11 +314,25 @@ export function buildAccountSavePayload(input: {
   responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): AccountSavePayload {
   const balancePayload = buildAccountBalancePayload(input.form)
+  // 创建链按 §8 要求显式提交 connections 与健康检查连接 preset；协议档案与
+  // 连接预设一一对应（见 shared/providerProtocol 映射），健康检查沿用同一连接。
+  const connectionPresetCode = connectionPresetCodeForProfile(input.form.providerProtocolProfileId)
+  const connections: AccountConnectionPayload[] | undefined = connectionPresetCode && input.form.baseUrl.trim()
+    ? [{
+        connectionPresetCode,
+        baseUrl: input.form.baseUrl.trim(),
+        endpointModes: [...input.form.supportedEndpointModes],
+        enabled: true
+      }]
+    : undefined
   return {
     providerCode: input.form.providerCode,
     name: input.form.name.trim() || undefined,
     type: input.form.type,
     credentials: accountCredentials(input),
+    ...(connections
+      ? { connections, healthCheckConnectionPresetCode: connectionPresetCode }
+      : {}),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
     status: input.form.status,
@@ -341,6 +367,9 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, statusSel
     fallbackEnabled: payload.fallbackEnabled,
     supportedModels: payload.supportedModels,
     ...(payload.healthCheckModel ? { healthCheckModel: payload.healthCheckModel } : {}),
+    ...(payload.healthCheckConnectionPresetCode
+      ? { healthCheckConnectionPresetCode: payload.healthCheckConnectionPresetCode }
+      : {}),
     healthCheckEndpointMode: payload.healthCheckEndpointMode,
     temporaryUnavailableContinuousProbeEnabled: payload.temporaryUnavailableContinuousProbeEnabled,
     modelMappings: payload.modelMappings,

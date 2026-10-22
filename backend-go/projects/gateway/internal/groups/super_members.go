@@ -26,7 +26,6 @@ const (
 	CodeGroupKindConflict                 = "group_kind_conflict"
 	CodeSuperGroupMemberInvalid           = "super_group_member_invalid"
 	CodeSuperGroupMemberLimit             = "super_group_member_limit"
-	CodeSuperGroupMemberMinEnabled        = "super_group_member_min_enabled"
 	CodeSuperGroupMemberOwnerMismatch     = "super_group_member_owner_mismatch"
 	CodeSuperGroupMemberUnauthorized      = "super_group_member_unauthorized"
 	CodeSuperGroupMemberNested            = "super_group_member_nested"
@@ -38,9 +37,6 @@ const (
 
 // maxSuperGroupMembers 是设计 §3.2 的成员行上限（enabled 与 disabled 行都计数）。
 const maxSuperGroupMembers = 20
-
-// minSuperGroupEnabledMembers 是启用或绑定超级分组时的 enabled 成员下限。
-const minSuperGroupEnabledMembers = 2
 
 // CodeError 是带稳定错误码与 HTTP 状态的领域错误；错误体固定 {code,message}。
 type CodeError struct {
@@ -255,9 +251,9 @@ func (s *Store) superMembersSummary(ctx context.Context, q queryer, groupID, rev
 }
 
 // ReplaceSuperMembers 完整替换超级分组成员集合（设计 §5 PATCH）：单事务内
-// 完成 owner/可见性、group_kind、同 owner、非嵌套、调度指纹、行数与启用
-// 成员下限校验；expectedRevision 与 groups.updated_at 做 CAS；no-op 不推进
-// revision 且不重写成员行。
+// 完成 owner/可见性、group_kind、同 owner、非嵌套、调度指纹与行数校验；
+// expectedRevision 与 groups.updated_at 做 CAS；no-op 不推进 revision 且不重写
+// 成员行。成员数量不构成超级分组启用条件。
 func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevision string, members []SuperMemberInput, access AccessScope) (*SuperMembersSummary, error) {
 	ctx = ensureCtx(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -295,7 +291,6 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 	}
 
 	var firstFingerprint string
-	enabledCount := 0
 	for _, member := range normalized {
 		if member.MemberGroupID == groupID {
 			return nil, codeError(400, CodeSuperGroupMemberInvalid, "超级分组不能把自己作为成员")
@@ -319,12 +314,6 @@ func (s *Store) ReplaceSuperMembers(ctx context.Context, groupID, expectedRevisi
 		} else if fingerprint != firstFingerprint {
 			return nil, codeError(400, CodeSuperGroupMemberDispatchMismatch, "成员分组的调度策略不一致")
 		}
-		if member.Enabled {
-			enabledCount++
-		}
-	}
-	if facts.enabled && enabledCount < minSuperGroupEnabledMembers {
-		return nil, codeError(400, CodeSuperGroupMemberMinEnabled, "启用超级分组至少需要两个启用成员")
 	}
 
 	currentRows, err := s.superMemberRows(ctx, tx, groupID)
@@ -504,14 +493,4 @@ func (s *Store) assertSuperGroupFingerprintCompatible(ctx context.Context, q que
 		}
 	}
 	return nil
-}
-
-// countEnabledSuperMembers 返回超级分组的 enabled 成员数。
-func (s *Store) countEnabledSuperMembers(ctx context.Context, q queryer, superGroupID string) (int, error) {
-	var count int
-	if err := q.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("super_group_members")+`
-		WHERE super_group_id = ? AND enabled = 1`), superGroupID).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
 }

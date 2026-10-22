@@ -54,24 +54,6 @@ func TestWeProvidersPatchModelWrongProvider(t *testing.T) {
 	}
 }
 
-func TestWeProvidersDefaultHealthCheckInvalidSelection(t *testing.T) {
-	env := newTestEnv(t)
-	env.seedCatalog(t)
-	env.seedWriteFixtures(t)
-	env.login(t, "root", "root-pass", "super_admin")
-
-	// 非法模型名：不在目录中 → 具体诊断消息。
-	code, missing := env.do(t, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=all",
-		`{"model":"gpt-not-exist"}`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("非法默认模型: %d %v", code, missing)
-	}
-	message, _ := missing["message"].(string)
-	if !strings.Contains(message, "gpt-not-exist") {
-		t.Fatalf("应包含模型名: %s", message)
-	}
-}
-
 func TestWeEndpointModesPredicateDialects(t *testing.T) {
 	sqlitePredicate := (&Store{}).endpointModesAnyPredicate("supported_endpoint_modes_json", []string{"chat_json"})
 	if !strings.Contains(sqlitePredicate, "json_each") {

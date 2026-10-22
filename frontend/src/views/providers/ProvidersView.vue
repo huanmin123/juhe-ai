@@ -311,7 +311,6 @@ const selectedModelCategory = ref<ModelCategoryKey>('text')
 const modelModalOpen = ref(false)
 const customModelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
-const activeProviderScopedDefaultHealthCheckModel = ref<string>()
 const modelSystemAccountFilter = ref('')
 const modelSystemAccountFilterSelection = ref<PrincipalSelection>()
 const editingCustomModelId = ref<string>()
@@ -352,7 +351,6 @@ const {
     const fallback = currentUserPrincipalSelection()
     modelSystemAccountFilter.value = fallback?.id ?? ''
     modelSystemAccountFilterSelection.value = fallback
-    invalidateActiveProviderDetail()
     if (modelModalOpen.value && activeProvider.value) void reloadActiveProviderModels(true)
   }
 })
@@ -365,16 +363,8 @@ const currentCategoryModels = computed(() => {
 const modelColumns = computed(() => buildProviderModelColumns(selectedModelCategory.value, currentCategoryModels.value))
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
-const activeProviderDefaultHealthCheckModel = computed(() => {
-  if (activeProviderScopedDefaultHealthCheckModel.value !== undefined) {
-    return activeProviderScopedDefaultHealthCheckModel.value
-  }
-  const selectedOwnerId = modelSystemAccountFilter.value.trim()
-  const viewerId = authState.currentUser.value?.id ?? ''
-  return !isManagementView.value || (selectedOwnerId && selectedOwnerId === viewerId)
-    ? activeProvider.value?.defaultHealthCheckModel ?? ''
-    : ''
-})
+// 默认检查模型由后端按目录最新发布时间派生，前端只读展示。
+const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑内置模型' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const customModelTargetProviderCode = computed(() => editingCustomModelProviderCode.value ?? activeProvider.value?.code ?? '')
@@ -492,7 +482,6 @@ function isCurrentProviderListRequest(sequence: number, signature: string): bool
 }
 
 async function openModelModal(provider: ProviderDefinition) {
-  invalidateActiveProviderDetail()
   activeProvider.value = provider
   modelModalOpen.value = true
   modelKeyword.value = ''
@@ -509,7 +498,6 @@ function handleProviderAction(key: string, provider: ProviderDefinition) {
 
 function resetModelModal() {
   modelRequestSequence += 1
-  invalidateActiveProviderDetail()
   modelLoading.value = false
   activeProvider.value = null
   modelKeyword.value = ''
@@ -694,12 +682,7 @@ function currentUserPrincipalSelection(): PrincipalSelection | undefined {
 }
 
 function handleModelSystemAccountChange(): void {
-  invalidateActiveProviderDetail()
   void reloadActiveProviderModels(true)
-}
-
-function invalidateActiveProviderDetail(): void {
-  activeProviderScopedDefaultHealthCheckModel.value = undefined
 }
 
 function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
@@ -793,26 +776,6 @@ function applyProviderModelMutationResult(
   providerModels.value = providerModels.value.map((item) => item.id === result.id
     ? { ...item, ...normalizedPatch, status: result.status, updatedAt: result.updatedAt } as ProviderModelPricing
     : item)
-  if (result.defaultHealthCheckModelCleared && isActiveProviderDefaultHealthCheckModel(result.model)) {
-    applyProviderDefaultHealthCheckModel(result.providerCode, '')
-  }
-}
-
-async function setDefaultHealthCheckModel(record: ProviderModelPricing) {
-  const provider = activeProvider.value
-  if (!provider) return
-  ensureModelSystemAccountFilter()
-  modelLoading.value = true
-  try {
-    const result = await api.providers.setDefaultHealthCheckModel(provider.code, record.model, modelProviderQueryParams())
-    applyProviderDefaultHealthCheckModel(provider.code, result.defaultHealthCheckModel)
-    message.success(`默认检查模型已设置为 ${result.defaultHealthCheckModel}`)
-  } catch (error) {
-    console.error(error)
-    message.error(extractModelErrorMessage(error, '默认检查模型设置失败'))
-  } finally {
-    modelLoading.value = false
-  }
 }
 
 function modelCatalogQueryParams(): ProviderModelsParams {
@@ -837,17 +800,6 @@ function modelOperationQueryParams(payload: ProviderModelUpsertPayload): Pick<Pr
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
   if (modelLoading.value) return []
   const actions: RowActionItem[] = []
-  const isDefault = isActiveProviderDefaultHealthCheckModel(record.model)
-  if (getModelCategory(record) === 'text') {
-    const unavailableForSystemDefault = isManagementView.value && record.scope === 'personal'
-    actions.push({
-      key: 'set-default-health-check-model',
-      label: isDefault ? '默认检查' : '设为默认检查',
-      icon: 'test',
-      tone: isDefault ? 'success' : 'info',
-      disabled: isDefault || unavailableForSystemDefault || (record.status ?? 'active') !== 'active'
-    })
-  }
   if (!canMutateModel(record)) return actions
   actions.push({ key: 'edit', label: record.scope === 'built_in' ? '编辑配置' : '编辑', icon: 'edit', tone: 'info' })
   if (record.scope !== 'built_in') {
@@ -858,10 +810,6 @@ function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
 
 function handleModelAction(key: string, record: ProviderModelPricing) {
   if (modelLoading.value) return
-  if (key === 'set-default-health-check-model') {
-    void setDefaultHealthCheckModel(record)
-    return
-  }
   if (key === 'edit') {
     void openEditCustomModel(record)
     return
@@ -876,37 +824,6 @@ function canMutateModel(record: ProviderModelPricing): boolean {
   if (record.scope === 'built_in') return isManagementView.value
   if (isManagementView.value) return true
   return record.systemAccountId === authState.currentUser.value?.id
-}
-
-function isActiveProviderDefaultHealthCheckModel(model: string): boolean {
-  const current = activeProviderDefaultHealthCheckModel.value.trim()
-  return Boolean(current && model.trim() === current)
-}
-
-function applyProviderDefaultHealthCheckModel(providerCode: string, defaultHealthCheckModel: string) {
-  activeProviderScopedDefaultHealthCheckModel.value = defaultHealthCheckModel
-  const selectedOwnerId = modelSystemAccountFilter.value.trim()
-  const viewerId = authState.currentUser.value?.id ?? ''
-  if (!isManagementView.value || (selectedOwnerId && selectedOwnerId === viewerId)) {
-    providers.value = providers.value.map((provider) => (
-      provider.code === providerCode
-        ? providerWithDefaultHealthCheckModel(provider, defaultHealthCheckModel)
-        : provider
-    ))
-    if (activeProvider.value?.code === providerCode) {
-      activeProvider.value = providerWithDefaultHealthCheckModel(activeProvider.value, defaultHealthCheckModel)
-    }
-  }
-}
-
-function providerWithDefaultHealthCheckModel(provider: ProviderDefinition, defaultHealthCheckModel: string): ProviderDefinition {
-  return {
-    ...provider,
-    defaultHealthCheckModel,
-    systemDefaultHealthCheckModel: isManagementView.value
-      ? defaultHealthCheckModel
-      : provider.systemDefaultHealthCheckModel
-  }
 }
 
 function extractModelErrorMessage(error: unknown, fallback: string) {

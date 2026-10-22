@@ -13,7 +13,7 @@
       class="members-alert"
       type="info"
       show-icon
-      message="成员必须与超级分组属于同一所有者、使用相同调度策略；启用超级分组至少需要两个启用成员，最多 20 行。"
+      message="成员必须与超级分组属于同一所有者、使用相同调度策略；最多 20 行。成员可随时添加、停用或调整顺序；未配置启用成员时该目标暂不可用。"
     />
     <div class="members-toolbar">
       <a-select
