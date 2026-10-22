@@ -30,23 +30,14 @@ export function groupRowActions(group: GroupRow): RowActionItem[] {
     }
     return actions
   }
-  if (group.groupKind === 'super' && canEditGroup(group)) {
-    actions.push({ key: 'members', label: '成员', icon: 'members', tone: 'primary' })
-  }
-  if (canDeleteGroup(group)) {
-    actions.push(deleteGroupAction(group))
-  }
-  return actions
-}
-
-export function groupMoreActions(group: GroupRow): RowActionItem[] {
-  if (isAuthorizedGroup(group)) return []
-  const actions: RowActionItem[] = []
   if (canEditGroup(group)) {
     actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
   }
   if (group.groupKind === 'super' && canEditGroup(group)) {
     actions.push({ key: 'members', label: '成员', icon: 'members', tone: 'primary' })
+  }
+  if (canDeleteGroup(group)) {
+    actions.push(deleteGroupAction(group))
   }
   return actions
 }

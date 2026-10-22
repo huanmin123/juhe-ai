@@ -73,9 +73,8 @@
       </template>
       <template v-else-if="column.key === 'actions'">
         <RowActions
-          v-if="groupRowActions(record).length || groupMoreActions(record).length"
+          v-if="groupRowActions(record).length"
           :actions="groupRowActions(record)"
-          :more-actions="groupMoreActions(record)"
           @action-click="emit('action', $event, record)"
         />
       </template>
@@ -123,11 +122,10 @@
             <strong>{{ formatUsageSummary(groupStats(record).todayUsage) }}</strong>
           </div>
         </div>
-        <div v-if="groupRowActions(record).length || groupMoreActions(record).length" class="mobile-list-card-actions">
+        <div v-if="groupRowActions(record).length" class="mobile-list-card-actions">
           <RowActions
             variant="button"
             :actions="groupRowActions(record)"
-            :more-actions="groupMoreActions(record)"
             @action-click="emit('action', $event, record)"
           />
         </div>
@@ -162,10 +160,7 @@ import {
   groupKindText,
   groupPolicySummary
 } from './groupSchedulingPolicy'
-import {
-  groupMoreActions,
-  groupRowActions
-} from './groupRowActions'
+import { groupRowActions } from './groupRowActions'
 
 defineProps<{
   columns: Array<Record<string, unknown>>
