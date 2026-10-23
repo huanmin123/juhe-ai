@@ -48,9 +48,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, description TEXT, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0, image_generation_enabled INTEGER NOT NULL DEFAULT 0, ai_account_limit INTEGER, expedited_account_limit INTEGER, request_limits_json TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS system_sessions (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY, vendor_code TEXT)`,
 		`CREATE TABLE media_jobs (
 			id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, account_id TEXT NOT NULL,
-			provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
+			provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 			status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 			error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
 			params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
@@ -194,11 +195,20 @@ func TestMediaJobsListRequiresAdmin(t *testing.T) {
 
 func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	env := newTestEnv(t)
+	// vendor 水合源：accounts 行（B4① 拆除 media_jobs.provider_code 后读面
+	// 经 LEFT JOIN accounts 取 vendor_code）。
+	for _, seed := range []struct{ id, vendor string }{
+		{"acc_1", "gpt"}, {"acc_2", "gpt"},
+	} {
+		if _, err := env.db.Exec("INSERT INTO accounts (id, vendor_code) VALUES (?, ?)", seed.id, seed.vendor); err != nil {
+			t.Fatalf("seed accounts: %v", err)
+		}
+	}
 	longPrompt := strings.Repeat("长", 200)
 	seconds := 4.0
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_admin_completed", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_1", AccountID: "acc_1",
-		ProviderCode: "openai", UpstreamJobID: "up_1", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_1", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: longPrompt, Seconds: &seconds, Size: "1280x720"},
 	})
 	secondsOut := 4.0
@@ -208,7 +218,7 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	}
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_admin_failed", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_2", AccountID: "acc_2",
-		ProviderCode: "openai", UpstreamJobID: "up_2", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_2", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "失败任务"},
 	})
 	if _, err := env.repo.UpdateTerminal(context.Background(), "video_admin_failed", gatewaymedia.JobStatusFailed,
@@ -240,7 +250,7 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 	if completed == nil {
 		t.Fatalf("completed 行缺失: %#v", rows)
 	}
-	if completed["status"] != "completed" || completed["kind"] != "video" || completed["providerCode"] != "openai" {
+	if completed["status"] != "completed" || completed["kind"] != "video" || completed["providerCode"] != "gpt" {
 		t.Fatalf("completed 行形状错误: %#v", completed)
 	}
 	if completed["providerJobId"] != "up_1" || completed["apiKeyId"] != "key_1" || completed["accountId"] != "acc_1" {
@@ -352,7 +362,7 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	expires := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_detail_completed", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_detail", AccountID: "acc_detail",
-		ProviderCode: "openai", UpstreamJobID: "up_detail", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_detail", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{
 			Model: "sora-2", Prompt: "全量提示词", Seconds: &seconds, Size: "1280x720", N: 1,
 			ProviderOptionsApplied: []string{"resolution"},
@@ -367,7 +377,7 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	}
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_detail_failed", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_detail", AccountID: "acc_detail",
-		ProviderCode: "openai", UpstreamJobID: "up_detail_failed", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_detail_failed", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "失败任务"},
 	})
 	if _, err := env.repo.UpdateTerminal(context.Background(), "video_detail_failed", gatewaymedia.JobStatusFailed,
@@ -377,7 +387,7 @@ func TestMediaJobsDetailReturnsFullRecord(t *testing.T) {
 	}
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "audiojob_detail_transcription", Kind: gatewaymedia.JobKindAudioTranscription, APIKeyID: "key_detail", AccountID: "acc_detail",
-		ProviderCode: "qwen", UpstreamJobID: "up_detail_transcription", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_detail_transcription", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "paraformer-v2", Language: "zh"},
 	})
 
@@ -486,17 +496,17 @@ func TestMyMediaJobsScopesToCaller(t *testing.T) {
 	}
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_owner_a", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", AccountID: "acc_a",
-		ProviderCode: "openai", UpstreamJobID: "up_a", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_a", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 A 任务一"},
 	})
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_owner_a2", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_a1", AccountID: "acc_a",
-		ProviderCode: "openai", UpstreamJobID: "up_a2", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_a2", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 A 任务二"},
 	})
 	env.seedJob(t, gatewaymedia.MediaJobRecord{
 		ID: "video_owner_b", Kind: gatewaymedia.JobKindVideo, APIKeyID: "key_b1", AccountID: "acc_b",
-		ProviderCode: "openai", UpstreamJobID: "up_b", Status: gatewaymedia.JobStatusQueued,
+		UpstreamJobID: "up_b", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "用户 B 任务"},
 	})
 

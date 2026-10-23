@@ -22,8 +22,8 @@ func TestVolcengineTTSStreamModelDispatch(t *testing.T) {
 
 // TestVolcengineTTSStreamBuildRequest 钉住 unidirectional 请求构造（V1a
 // 报文契约）：路径 /api/v3/tts/unidirectional，req_params 三件套 +
-// audio_params.format，speed → speech_rate（B 级字段名待回填）；2.0 词表
-// 与 1.0 区间校验。
+// audio_params.format，speed → speech_rate 换算 (speed-1)×100（2026-10-23
+// 官方字段表回填）；2.0 词表与流式面区间 [0.5, 2.0] 校验。
 func TestVolcengineTTSStreamBuildRequest(t *testing.T) {
 	adapter := volcengineSpeechAdapter{}
 	path, body, err := adapter.BuildRequest(SpeechRequest{
@@ -52,20 +52,56 @@ func TestVolcengineTTSStreamBuildRequest(t *testing.T) {
 		t.Fatalf("audio_params = %v", params)
 	}
 
-	// speed → audio_params.speech_rate（B 级映射位）。
+	// speed → audio_params.speech_rate（2026-10-23 官方字段名回填），
+	// 倍率换算 (speed-1)×100：1.5 倍速 → 50，非倍率直传。
 	speedValue := 1.5
-	if _, _, err := adapter.BuildRequest(SpeechRequest{
+	_, body, err = adapter.BuildRequest(SpeechRequest{
 		Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", Speed: &speedValue,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("speed BuildRequest: %v", err)
 	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("speed body 非法 JSON: %v", err)
+	}
+	params, _ = decoded.ReqParams["audio_params"].(map[string]any)
+	if params == nil || params["speech_rate"] != float64(50) {
+		t.Fatalf("speed=1.5 应换算 speech_rate=50，audio_params = %v", params)
+	}
 
-	// 越界与词表外：本地 400 语义（ErrParamUnsupported 文案校验）。
-	outOfRange := 5.0
-	if _, _, err := adapter.BuildRequest(SpeechRequest{
-		Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", Speed: &outOfRange,
-	}); err == nil || !strings.Contains(err.Error(), "[0.2, 3.0]") {
-		t.Fatalf("speed 越界应 400: %v", err)
+	// 流式面官方可表达倍速边界 [0.5, 2.0]（speech_rate 恰落 ±端点）。
+	for _, tc := range []struct{ speed, want float64 }{{0.5, -50}, {2.0, 100}} {
+		speed := tc.speed
+		if _, body, err := adapter.BuildRequest(SpeechRequest{
+			Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", Speed: &speed,
+		}); err != nil {
+			t.Fatalf("speed=%v 边界应通过: %v", speed, err)
+		} else {
+			var decoded struct {
+				ReqParams struct {
+					AudioParams struct {
+						SpeechRate int `json:"speech_rate"`
+					} `json:"audio_params"`
+				} `json:"req_params"`
+			}
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("speed=%v body 非法 JSON: %v", speed, err)
+			}
+			if got := decoded.ReqParams.AudioParams.SpeechRate; got != int(tc.want) {
+				t.Fatalf("speed=%v 应换算 speech_rate=%d，got %d", speed, int(tc.want), got)
+			}
+		}
+	}
+
+	// 越界本地 400（§2.4 规则 2）：0.2/3.0 是同步面 [0.2,3.0] 合法值，
+	// 但流式面 speech_rate [-50,100] 无法表达，本地拒绝不静默外发。
+	for _, speed := range []float64{0.2, 3.0, 5.0} {
+		speed := speed
+		if _, _, err := adapter.BuildRequest(SpeechRequest{
+			Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", Speed: &speed,
+		}); err == nil || !strings.Contains(err.Error(), "[0.5, 2.0]") {
+			t.Fatalf("speed=%v 越界应 400: %v", speed, err)
+		}
 	}
 	if _, _, err := adapter.BuildRequest(SpeechRequest{
 		Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", ResponseFormat: "opus",
@@ -77,6 +113,29 @@ func TestVolcengineTTSStreamBuildRequest(t *testing.T) {
 		Model: VolcengineTTSStreamModel, Input: "x", Voice: "v", ResponseFormat: "pcm",
 	}); err != nil {
 		t.Fatalf("pcm 应被 2.0 词表接受: %v", err)
+	}
+}
+
+// TestVolcengineTTSStreamSpeedRate 钉住倍率→官方 speech_rate 换算样本
+// （2026-10-23 官方文档字段表：默认 0、[-50, 100]、100=2.0 倍速、-50=0.5
+// 倍速；math.Round 半数远离零——1.15 的 float64 乘积 14.999999999999998
+// 取整后仍命中 15，此样本防实现改用截断/浮点比较退化）。
+func TestVolcengineTTSStreamSpeedRate(t *testing.T) {
+	cases := []struct {
+		speed float64
+		want  int
+	}{
+		{0.5, -50},
+		{0.75, -25},
+		{1.0, 0},
+		{1.15, 15},
+		{1.5, 50},
+		{2.0, 100},
+	}
+	for _, tc := range cases {
+		if got := volcengineTTSStreamSpeedRate(tc.speed); got != tc.want {
+			t.Fatalf("volcengineTTSStreamSpeedRate(%v) = %d, want %d", tc.speed, got, tc.want)
+		}
 	}
 }
 

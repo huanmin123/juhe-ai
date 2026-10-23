@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -58,9 +59,28 @@ func IsVolcengineTTSStreamModel(model string) bool {
 	return strings.TrimSpace(model) == VolcengineTTSStreamModel
 }
 
-// volcengineTTSStreamRequest 是 unidirectional 面的请求体（B 级：req_params
-// 全字段以官方文档实施首步回填；speech_rate 为速度映射位——2.0 官方字段名
-// 待实弹核对，暂按 audio_params 同族命名落位并留 TODO-B 标注）。
+// volcengineTTSStreamSpeedMin/Max 是 2.0 流式面的 speed 声明区间（2026-10-23
+// 官方文档字段表回填：req_params.audio_params.speech_rate 取值 [-50, 100]，
+// 100 代表 2.0 倍速、-50 代表 0.5 倍速——经 (speed-1)×100 换算后可表达倍速
+// [0.5, 2.0]）。同步面 VolcengineSpeechSpeedMin/Max（[0.2, 3.0]，audio_config
+// 倍率形态直传）是另一 API 的另一区间，不共享常量避免改义。
+const (
+	volcengineTTSStreamSpeedMin = 0.5
+	volcengineTTSStreamSpeedMax = 2.0
+)
+
+// volcengineTTSStreamSpeedRate 把 OpenAI 风格倍率换算为 2.0 流式面官方
+// speech_rate 语义（官方文档字段表明文：默认 0、[-50, 100]、100 代表 2.0
+// 倍速、-50 代表 0.5 倍速）：speech_rate = (speed-1)×100。浮点取整用
+// math.Round（半数远离零）——1.15 的 float64 乘积为 14.999999999999998，
+// 取整后仍命中 15（换算样本由 TestVolcengineTTSStreamSpeedRate 钉住）。
+func volcengineTTSStreamSpeedRate(speed float64) int {
+	return int(math.Round((speed - 1) * 100))
+}
+
+// volcengineTTSStreamRequest 是 unidirectional 面的请求体（req_params 全字段
+// 以官方文档回填；audio_params.speech_rate 为速度映射位——字段名与取值语义
+// 已按 2026-10-23 官方文档字段表回填，换算见 volcengineTTSStreamSpeedRate）。
 type volcengineTTSStreamRequest struct {
 	User      map[string]any `json:"user"`
 	ReqParams map[string]any `json:"req_params"`
@@ -68,9 +88,10 @@ type volcengineTTSStreamRequest struct {
 
 // buildVolcengineTTSStreamRequest 构造 2.0 流式面请求体与路径。能力边界
 // 裁决（沿同步面 §2.4 规则 2 先例）：response_format 词表外 → 400；speed
-// 超声明区间 [0.2, 3.0]（与 1.0 同族区间）→ 400。provider_options 命中
-// volcengine 的子对象 deep-merge 到 req_params 层（厂商个例参数如
-// enable_emotion，契约 §2.1 L3）。
+// 超流式面官方可表达区间 [0.5, 2.0] → 400（speech_rate = (speed-1)×100 换算
+// 后官方可表达范围仅 [-50, 100]；同步面 [0.2, 3.0] 是倍率直传的另一 API
+// 区间，不适用于流式面）。provider_options 命中 volcengine 的子对象
+// deep-merge 到 req_params 层（厂商个例参数如 enable_emotion，契约 §2.1 L3）。
 func buildVolcengineTTSStreamRequest(ir SpeechRequest) (string, []byte, error) {
 	format := strings.TrimSpace(ir.ResponseFormat)
 	if format == "" {
@@ -86,16 +107,16 @@ func buildVolcengineTTSStreamRequest(ir SpeechRequest) (string, []byte, error) {
 	if !supported {
 		return "", nil, fmt.Errorf("该模型仅支持 response_format=mp3/pcm/ogg_opus/wav，不支持 %s，网关不做服务端格式转换", format)
 	}
-	if ir.Speed != nil && (*ir.Speed < VolcengineSpeechSpeedMin || *ir.Speed > VolcengineSpeechSpeedMax) {
-		return "", nil, fmt.Errorf("speed=%v 超出该厂商支持区间 [0.2, 3.0]", *ir.Speed)
+	if ir.Speed != nil && (*ir.Speed < volcengineTTSStreamSpeedMin || *ir.Speed > volcengineTTSStreamSpeedMax) {
+		return "", nil, fmt.Errorf("speed=%v 超出流式 2.0 面官方可表达区间 [0.5, 2.0]", *ir.Speed)
 	}
 	audioParams := map[string]any{
 		"format": format,
 	}
 	if ir.Speed != nil {
-		// TODO-B（实施首步回填）：2.0 速度字段名以官方文档/实弹核对；
-		// speech_rate 为同族暂定命名。
-		audioParams["speech_rate"] = *ir.Speed
+		// 官方 speech_rate 语义（2026-10-23 字段表回填）：倍率换算
+		// (speed-1)×100，非倍率直传——1.5 直传会被上游解析为 1.015 倍速。
+		audioParams["speech_rate"] = volcengineTTSStreamSpeedRate(*ir.Speed)
 	}
 	body := volcengineTTSStreamRequest{
 		User: map[string]any{"uid": volcASRUpstreamUserID},

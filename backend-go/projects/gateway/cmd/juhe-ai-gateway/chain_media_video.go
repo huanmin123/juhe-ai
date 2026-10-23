@@ -356,7 +356,7 @@ func chainMediaJobTaskAdapterFor(kind gatewaymedia.MediaJobKind, vendorCode, pro
 }
 
 // chainVideoJobTaskAdapterShell 把视频任务 adapter 适配到统一任务面消费形状
-//（视频面全部为 body 驱动协议，header 位恒 nil；头驱动位由火山长转写臂的
+// （视频面全部为 body 驱动协议，header 位恒 nil；头驱动位由火山长转写臂的
 // AudioJobProviderAdapter 直接满足——契约 §9.2 长转写臂）。
 type chainVideoJobTaskAdapterShell struct {
 	inner gatewaymedia.VideoProviderAdapter
@@ -414,6 +414,39 @@ func chainVideoCreateDeterministicParamStatus(statusCode int) bool {
 func chainMediaCreateParamErrorShortCircuit(requestLane string, statusCode int) bool {
 	return requestLane == string(gatewayproto.LaneVideo) &&
 		chainVideoCreateDeterministicParamStatus(statusCode)
+}
+
+// chainAudioSyncBusinessRejectionStatus 报告音频同步 lane 上游非 2xx 状态码
+// 是否确定性业务拒绝（BUG-0326 档案分级）：4xx 中除保留集（401 凭据失效、
+// 403 显式策略/系统额度语义、407 上游代理鉴权、408 上游请求超时、429 受理
+// 前限流——五者维持既有失败派发语义：错误策略状态机 + 候选切换 + 耗尽 503）
+// 之外的状态，对同一请求换任何账户都会原样重演，属于请求侧参数/业务校验
+// 拒绝，按档案透传上游状态码与错误信封、不进重试循环。5xx/传输错误不在此
+// 列（维持既有重试 + 耗尽 503）。
+func chainAudioSyncBusinessRejectionStatus(statusCode int) bool {
+	if statusCode < http.StatusBadRequest || statusCode >= http.StatusInternalServerError {
+		return false
+	}
+	switch statusCode {
+	case http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusProxyAuthRequired,
+		http.StatusRequestTimeout,
+		http.StatusTooManyRequests:
+		return false
+	}
+	return true
+}
+
+// chainMediaSyncAudioRejectionShortCircuit 报告失败派发输入是否命中"音频同
+// 步业务拒绝短路"（BUG-0326 修复）：音频同步 lane（LaneAudio；speech 与
+// transcriptions/translations 同步端点族——gatewaymedia/lane.go 路径词表，
+// 火山 TTS create/unidirectional 两出站面同属本 lane）+ 确定性业务拒绝 4xx。
+// 消费点与创建参数错误短路同位（chain_ports.go HandleFailedUpstreamResponse，
+// 审计尝试与 usage 失败记录落账之后、SkipAccount 决策之前）。
+func chainMediaSyncAudioRejectionShortCircuit(requestLane string, statusCode int) bool {
+	return requestLane == string(gatewayproto.LaneAudio) &&
+		chainAudioSyncBusinessRejectionStatus(statusCode)
 }
 
 // chainRebuiltUpstreamErrorResponse 用失败面已捕获的响应体重建可读上游响应
@@ -694,7 +727,7 @@ func chainVideoJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatew
 		Prompt:                 record.RequestSnapshot.Prompt,
 		Size:                   record.RequestSnapshot.Size,
 		Error:                  record.Error,
-		Provider:               record.ProviderCode,
+		Provider:               record.VendorCode,
 		ProviderJobID:          record.UpstreamJobID,
 		ParamsApplied:          record.ParamsApplied,
 		ParamsIgnored:          record.ParamsIgnored,
@@ -750,7 +783,7 @@ func chainAudioJobObjectOf(record *gatewaymedia.MediaJobRecord, liveStatus gatew
 		Model:                  record.RequestSnapshot.Model,
 		Language:               record.RequestSnapshot.Language,
 		Error:                  record.Error,
-		Provider:               record.ProviderCode,
+		Provider:               record.VendorCode,
 		ProviderJobID:          record.UpstreamJobID,
 		ParamsApplied:          record.ParamsApplied,
 		ParamsIgnored:          record.ParamsIgnored,
@@ -1061,12 +1094,16 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, message, "internal_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
+	// provider_code 持久列已随 B4① 存储迁移退役：列名是 provider 维度但语义
+	// 已是 vendor，且 adapter.Provider() 对 gpt 账户持久化的是 legacy token
+	// "openai"。读面供应商一律经 accounts.vendor_code 水合；创建响应的内存行
+	// 直接携带派发账户 vendor。
 	record := gatewaymedia.MediaJobRecord{
 		ID:                        newChainMediaJobID(kind),
 		Kind:                      kind,
 		APIKeyID:                  context.UsageContext.APIKeyID,
 		AccountID:                 dispatched.Account.ID,
-		ProviderCode:              adapter.Provider(),
+		VendorCode:                dispatched.Account.VendorCode,
 		ProviderProtocolProfileID: dispatched.Account.ProviderProtocolProfileID,
 		UpstreamJobID:             ir.UpstreamJobID,
 		Status:                    ir.Status,
@@ -1105,6 +1142,35 @@ func (c *gatewayChain) handleVideoCreateUpstreamErrorPassthrough(
 	_ = upstream.Body.Close()
 	if readErr != nil || len(body) > maxMediaJobObjectBytes {
 		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "读取上游视频任务错误响应失败", "upstream_error")
+		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
+	}
+	contentType := strings.TrimSpace(upstream.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	res.Header().Set("Content-Type", contentType)
+	res.WriteHeader(upstream.Status())
+	_, _ = res.Write(body)
+	return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
+}
+
+// handleAudioSyncUpstreamErrorPassthrough 处理音频同步 lane（/v1/audio/speech
+// 与 STT 同步端点族）业务拒绝 4xx 的短路透传（BUG-0326，chain_v1.go
+// handleUpstreamResponse 的音频错误分支）：失败派发器对确定性业务拒绝 4xx
+// 已短路为 ReturnResponse，错误状态与上游错误体原样透传客户端——不进 chat
+// 语义的 JSON 检查管道（响应检查改写会把上游业务拒绝吞成 502
+// response_inspection_failed，与视频创建参数短路同款裁决）。诊断/非网关
+// 流量的同类透传响应同臂受益（诊断必须观察上游真实终态）。错误体读取失败
+// 的本地兜底与视频臂同码族（502 upstream_error）。
+func (c *gatewayChain) handleAudioSyncUpstreamErrorPassthrough(
+	res *gatewaypreauth.TrackingWriter,
+	req *gatewaypreauth.GatewayRequest,
+	upstream *gatewayupstream.GatewayUpstreamResponse,
+) gatewayresponse.UpstreamResponseHandlingResult {
+	body, readErr := io.ReadAll(io.LimitReader(upstream.Body, maxMediaJobObjectBytes+1))
+	_ = upstream.Body.Close()
+	if readErr != nil || len(body) > maxMediaJobObjectBytes {
+		c.renderMediaVideoLocalError(res, req, http.StatusBadGateway, "读取上游语音错误响应失败", "upstream_error")
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	contentType := strings.TrimSpace(upstream.Header.Get("Content-Type"))
@@ -1391,7 +1457,7 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 		// 按秒计量（上游回报优先、无回报按生效请求 seconds 自算）× 秒价；长
 		// 音频 AudioInputSeconds × 秒价（契约 §2.8 网关自算口径 + 按次计费），
 		// 失败/无计量依据（usage_missing）不虚计；成本随终态一次落行。
-		costUsd := chainMediaJobTerminalCostUsd(record, ir)
+		costUsd := chainMediaJobTerminalCostUsd(account, record, ir)
 		updated, updateErr := c.mediaJobs.repo.UpdateTerminal(ctx, record.ID, ir.Status, ir.Error, ir.Artifact, ir.Usage, costUsd)
 		if updateErr != nil {
 			c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "回填媒体任务终态失败", "internal_error")
@@ -1598,7 +1664,7 @@ const volcengineVideoServiceRoot = "/api/v3"
 //   - base 为官方裸域名（路径为空）：adapter 出站路径自带 /api/v3 服务根，
 //     直拼不变；
 //   - base 以 /api/v3 结尾：去重——剥 adapter 出站路径的 /api/v3 前缀直拼
-//    （镜像 chainGlmVideoUpstreamURL 的 /api/paas/v4 去重先例）；
+//     （镜像 chainGlmVideoUpstreamURL 的 /api/paas/v4 去重先例）；
 //   - base 为其他非空路径：视为用户显式指定的完整服务根（如火山 Agent Plan
 //     专属端点 https://ark.cn-beijing.volces.com/api/plan/v3，实测
 //     /api/plan/v3/contents/generations/tasks 可用）——同样剥 adapter 出站
@@ -1609,7 +1675,7 @@ const volcengineVideoServiceRoot = "/api/v3"
 // 合规提示：Agent Plan 专属端点官方条款为文本模型不可用于通用 API 调用，仅
 // 图像/视频/语音面开放 API（docs/functions/火山方舟账号接入.md 将同步）。
 // 不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
-//（endpoint_test.go 钉住的 openai 族契约），会把官方根
+// （endpoint_test.go 钉住的 openai 族契约），会把官方根
 // https://ark.cn-beijing.volces.com 错拼 /v1/api/v3/...。
 func chainVolcengineVideoUpstreamURL(baseURL, path string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
@@ -1682,7 +1748,7 @@ func chainIsChatCompletionsPathAndQuery(pathAndQuery string) bool {
 }
 
 // chainIsImagesGenerationsPathAndQuery 报告路径是否图像生成面
-//（POST /v1/images/generations 统一面；query 剥离后大小写不敏感匹配）。
+// （POST /v1/images/generations 统一面；query 剥离后大小写不敏感匹配）。
 func chainIsImagesGenerationsPathAndQuery(pathAndQuery string) bool {
 	path, _ := gatewayopenai.SplitPathAndQuery(pathAndQuery)
 	return strings.Contains(strings.ToLower(path), "/images/generations")
@@ -1702,7 +1768,7 @@ func chainIsEmbeddingsPathAndQuery(pathAndQuery string) bool {
 // 后的 chat 路径直拼；服务根判定走显式路径模式（chainChatServiceRootExplicit
 // Path，见 chainChatServiceRootUpstreamURL 三形态注释）。不得走
 // gatewayopenai.BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1
-//（endpoint_test.go 钉住的 openai 族契约），会把官方根
+// （endpoint_test.go 钉住的 openai 族契约），会把官方根
 // https://ark.cn-beijing.volces.com 错拼 /v1/chat/completions。
 func chainVolcengineChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
 	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine", chainChatServiceRootExplicitPath)
@@ -1948,10 +2014,16 @@ func (c *gatewayChain) readMediaJobUpstreamObject(res *gatewaypreauth.TrackingWr
 // 时一次任务 = 一次调用，成本 = PerCall × 1，不依赖秒计量。目录未命中、
 // 行无按次价（秒价行经本入口试算只产出 0——无 PerCall 槽位不成行项）返回
 // 0，调用方回退秒价链。计费键沿 chain_usage costModel 先例（请求模型直达）。
-func chainMediaJobVideoPerCallCostUsd(record *gatewaymedia.MediaJobRecord) float64 {
+// 计价目录查找键取水合账户 vendor（B4①：media_jobs 不再持久化 provider_code，
+// 与任务面 adapter 解析同键；sync 链 chain_usage.go vendor 同源）。
+func chainMediaJobVideoPerCallCostUsd(account *chainMediaJobAccount, record *gatewaymedia.MediaJobRecord) float64 {
+	vendorCode := ""
+	if account != nil {
+		vendorCode = account.ProviderCode
+	}
 	one := 1.0
 	cost := pricing.EstimateProviderCostUsd(pricing.CostInput{
-		ProviderCode: record.ProviderCode,
+		ProviderCode: vendorCode,
 		Model:        record.RequestSnapshot.Model,
 		VideoCalls:   &one,
 	})
@@ -1994,7 +2066,7 @@ func chainMediaJobVideoUsageSecondsOf(record *gatewaymedia.MediaJobRecord, ir *g
 // 长转写行维持原口径：AudioInputSeconds × 秒价（paraformer 目录未落 USD 秒
 // 价 → 估不出返回 0，计量照落成本不虚计，契约 §10.2）。failed/目录未命中
 // 返回 0——失败任务不虚计、无计量不猜测。
-func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatewaymedia.MediaJobIR) float64 {
+func chainMediaJobTerminalCostUsd(account *chainMediaJobAccount, record *gatewaymedia.MediaJobRecord, ir *gatewaymedia.MediaJobIR) float64 {
 	if ir.Status != gatewaymedia.JobStatusCompleted {
 		return 0
 	}
@@ -2003,7 +2075,7 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 			return 0
 		}
 		cost := pricing.EstimateProviderCostUsd(pricing.CostInput{
-			ProviderCode:      record.ProviderCode,
+			ProviderCode:      accountProviderCodeForPricing(account),
 			Model:             record.RequestSnapshot.Model,
 			AudioInputSeconds: ir.Usage.AudioInputSeconds,
 		})
@@ -2013,7 +2085,7 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 		return *cost
 	}
 	// 按次计费先行（契约 §2.8 按次上游）：按次行不走秒价链。
-	if cost := chainMediaJobVideoPerCallCostUsd(record); cost > 0 {
+	if cost := chainMediaJobVideoPerCallCostUsd(account, record); cost > 0 {
 		return cost
 	}
 	seconds := chainMediaJobVideoUsageSecondsOf(record, ir)
@@ -2021,7 +2093,7 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 		return 0
 	}
 	cost := pricing.EstimateProviderCostUsd(pricing.CostInput{
-		ProviderCode:       record.ProviderCode,
+		ProviderCode:       accountProviderCodeForPricing(account),
 		Model:              record.RequestSnapshot.Model,
 		OutputVideoSeconds: seconds,
 	})
@@ -2029,6 +2101,15 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 		return 0
 	}
 	return *cost
+}
+
+// accountProviderCodeForPricing 取水合账户的 vendor 计价键（chainMediaJobAccount.ProviderCode
+// 投影位值源已切 accounts.vendor_code；nil 防御仅测试直呼路径需要）。
+func accountProviderCodeForPricing(account *chainMediaJobAccount) string {
+	if account == nil {
+		return ""
+	}
+	return account.ProviderCode
 }
 
 // enqueueMediaJobTerminalUsage 经既有 usage spool 链写终态 usage_records
@@ -2069,13 +2150,15 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 		AccountID:                   record.AccountID,
 		AccountOwnerSystemAccountID: account.OwnerSystemAccountID,
 		Endpoint:                    endpoint,
-		ProviderCode:                record.ProviderCode,
-		ProviderProtocolProfileID:   record.ProviderProtocolProfileID,
-		Model:                       record.RequestSnapshot.Model,
-		UpstreamModel:               record.RequestSnapshot.Model,
-		StatusCode:                  &statusCode,
-		Success:                     ir.Status == gatewaymedia.JobStatusCompleted,
-		DurationMs:                  chainMediaJobDurationMsOf(record),
+		// vendor 身份：账户行 vendor（B4① 拆除 media_jobs.provider_code 后
+		// usage 行供应商与 sync 链 chain_usage.go 同源——账号视图 vendor 值）。
+		ProviderCode:              account.ProviderCode,
+		ProviderProtocolProfileID: record.ProviderProtocolProfileID,
+		Model:                     record.RequestSnapshot.Model,
+		UpstreamModel:             record.RequestSnapshot.Model,
+		StatusCode:                &statusCode,
+		Success:                   ir.Status == gatewaymedia.JobStatusCompleted,
+		DurationMs:                chainMediaJobDurationMsOf(record),
 		RequestSnapshot: map[string]any{
 			"kind": string(record.Kind), "jobId": record.ID, "upstreamJobId": record.UpstreamJobID,
 		},
@@ -2100,7 +2183,7 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 			} else {
 				input.UsageMissing = true
 			}
-		} else if chainMediaJobVideoPerCallCostUsd(record) > 0 {
+		} else if chainMediaJobVideoPerCallCostUsd(account, record) > 0 {
 			// 按次计费行（契约 §2.8 按次上游，2026-10-05 按次计费批）：一次
 			// 任务 = 一次调用，成本已随 CostUsd 落行；usage 行不落秒计量
 			//（按次上游无秒计量概念），也不打 usage_missing——计量与计费依据

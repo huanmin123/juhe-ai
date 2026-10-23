@@ -33,11 +33,15 @@ const MediaJobRetentionTTL = 7 * 24 * time.Hour
 // CostUsd 是终态计费回填列（M2：轮询终态时按 OutputVideoSeconds × 秒价
 // 算出随 UpdateTerminal 落行；非终态行保持 0）。
 type MediaJobRecord struct {
-	ID                        string
-	Kind                      MediaJobKind
-	APIKeyID                  string
-	AccountID                 string
-	ProviderCode              string
+	ID        string
+	Kind      MediaJobKind
+	APIKeyID  string
+	AccountID string
+	// VendorCode 是账户行 vendor_code 的读面水合值（LEFT JOIN accounts；B4①
+	// 起 media_jobs 不再持久化 provider_code 列——列名是 provider 维度但语义
+	// 已是 vendor，且对 gpt 账户持久化的是 legacy token "openai"）。创建响应
+	// 的内存行由派发账户直接赋值；不落库。
+	VendorCode                string
 	ProviderProtocolProfileID string
 	UpstreamJobID             string
 	Status                    MediaJobStatus
@@ -155,11 +159,11 @@ func (r *MediaJobsRepo) Insert(ctx context.Context, record MediaJobRecord) error
 	applied := marshalStringList(record.ParamsApplied)
 	ignored := marshalStringList(record.ParamsIgnored)
 	_, err = r.db.ExecContext(ctx, r.bind(`INSERT INTO `+r.table()+` (
-		id, kind, api_key_id, account_id, provider_code, provider_protocol_profile_id,
+		id, kind, api_key_id, account_id, provider_protocol_profile_id,
 		upstream_job_id, status, request_snapshot_json, artifact_json, error_json, usage_json,
 		params_applied_json, params_ignored_json, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		record.ID, string(record.Kind), record.APIKeyID, record.AccountID, record.ProviderCode,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		record.ID, string(record.Kind), record.APIKeyID, record.AccountID,
 		nullString(record.ProviderProtocolProfileID), record.UpstreamJobID, string(record.Status),
 		string(snapshotJSON), string(artifactJSON), errorJSON, usageJSON,
 		applied, ignored, mediaJobTimeLayout(now), mediaJobTimeLayout(now))
@@ -227,7 +231,7 @@ func (r *MediaJobsRepo) UpdateTerminal(ctx context.Context, id string, status Me
 // GetByIDAndAPIKey 按 id + 归属 API Key 取行（列表/鉴权过滤，媒体设计 §8.2）。
 // 未命中（不存在或非本人）返回 ErrMediaJobNotFound。
 func (r *MediaJobsRepo) GetByIDAndAPIKey(ctx context.Context, id, apiKeyID string) (*MediaJobRecord, error) {
-	rows, err := r.query(ctx, `WHERE id = ? AND api_key_id = ?`, id, apiKeyID, 1, 0)
+	rows, err := r.query(ctx, `WHERE mj.id = ? AND mj.api_key_id = ?`, id, apiKeyID, 1, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +244,7 @@ func (r *MediaJobsRepo) GetByIDAndAPIKey(ctx context.Context, id, apiKeyID strin
 // GetManagementByID 按 id 取单行全量（管理面详情端点消费：无归属过滤，
 // 行解码与列表查询同源）。未命中返回 ErrMediaJobNotFound。
 func (r *MediaJobsRepo) GetManagementByID(ctx context.Context, id string) (*MediaJobRecord, error) {
-	rows, err := r.query(ctx, `WHERE id = ?`, id, 1, 0)
+	rows, err := r.query(ctx, `WHERE mj.id = ?`, id, 1, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -271,9 +275,9 @@ func (r *MediaJobsRepo) listByAPIKeyWhere(ctx context.Context, apiKeyID, kind st
 		offset = 0
 	}
 	if strings.TrimSpace(kind) == "" {
-		return r.query(ctx, `WHERE api_key_id = ?`, apiKeyID, limit, offset)
+		return r.query(ctx, `WHERE mj.api_key_id = ?`, apiKeyID, limit, offset)
 	}
-	return r.query(ctx, `WHERE api_key_id = ? AND kind = ?`, apiKeyID, kind, limit, offset)
+	return r.query(ctx, `WHERE mj.api_key_id = ? AND mj.kind = ?`, apiKeyID, kind, limit, offset)
 }
 
 // ListExpired 取超过保留 TTL 的行（清理 job 消费：置 expired / 删行；清理
@@ -282,7 +286,7 @@ func (r *MediaJobsRepo) ListExpired(ctx context.Context, before time.Time, limit
 	if limit <= 0 {
 		limit = 100
 	}
-	return r.query(ctx, `WHERE created_at < ?`, mediaJobTimeLayout(before.UTC()), limit, 0)
+	return r.query(ctx, `WHERE mj.created_at < ?`, mediaJobTimeLayout(before.UTC()), limit, 0)
 }
 
 // MediaJobListQuery 是管理面任务列表的查询参数（GET /__aisys__/api/media-jobs
@@ -310,7 +314,7 @@ func (r *MediaJobsRepo) ListManagement(ctx context.Context, query MediaJobListQu
 	}
 	where, args := r.mediaJobManagementWhere(query)
 	total := 0
-	if err := r.db.QueryRowContext(ctx, r.bind(`SELECT COUNT(*) FROM `+r.table()+` `+where), args...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, r.bind(`SELECT COUNT(*) FROM `+r.table()+` mj `+where), args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计媒体任务行失败: %w", err)
 	}
 	rows, err := r.query(ctx, where, append(args, query.Limit, query.Offset)...)
@@ -327,7 +331,7 @@ func (r *MediaJobsRepo) GetByOwnerAndID(ctx context.Context, id, ownerSystemAcco
 	if owner == "" {
 		return nil, ErrMediaJobNotFound
 	}
-	where := `WHERE id = ? AND EXISTS (SELECT 1 FROM ` + r.apiKeysTable() + ` ak WHERE ak.id = ` + r.table() + `.api_key_id AND ak.system_account_id = ?)`
+	where := `WHERE mj.id = ? AND EXISTS (SELECT 1 FROM ` + r.apiKeysTable() + ` ak WHERE ak.id = mj.api_key_id AND ak.system_account_id = ?)`
 	rows, err := r.query(ctx, where, id, owner, 1, 0)
 	if err != nil {
 		return nil, err
@@ -338,28 +342,29 @@ func (r *MediaJobsRepo) GetByOwnerAndID(ctx context.Context, id, ownerSystemAcco
 	return rows[0], nil
 }
 
-// mediaJobManagementWhere 构造管理面过滤 WHERE 片段（参数顺序与占位一致）。
+// mediaJobManagementWhere 构造管理面过滤 WHERE 片段（参数顺序与占位一致；
+// 列名带 mj 别名——查询已 LEFT JOIN accounts，accounts 同名列不限定会歧义）。
 func (r *MediaJobsRepo) mediaJobManagementWhere(query MediaJobListQuery) (string, []any) {
 	conditions := []string{}
 	args := []any{}
 	if status := strings.TrimSpace(query.Status); status != "" {
-		conditions = append(conditions, "status = ?")
+		conditions = append(conditions, "mj.status = ?")
 		args = append(args, status)
 	}
 	if kind := strings.TrimSpace(query.Kind); kind != "" {
-		conditions = append(conditions, "kind = ?")
+		conditions = append(conditions, "mj.kind = ?")
 		args = append(args, kind)
 	}
 	if apiKeyID := strings.TrimSpace(query.APIKeyID); apiKeyID != "" {
-		conditions = append(conditions, "api_key_id = ?")
+		conditions = append(conditions, "mj.api_key_id = ?")
 		args = append(args, apiKeyID)
 	}
 	if accountID := strings.TrimSpace(query.AccountID); accountID != "" {
-		conditions = append(conditions, "account_id = ?")
+		conditions = append(conditions, "mj.account_id = ?")
 		args = append(args, accountID)
 	}
 	if owner := strings.TrimSpace(query.OwnerSystemAccountID); owner != "" {
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM "+r.apiKeysTable()+" ak WHERE ak.id = "+r.table()+".api_key_id AND ak.system_account_id = ?)")
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM "+r.apiKeysTable()+" ak WHERE ak.id = mj.api_key_id AND ak.system_account_id = ?)")
 		args = append(args, owner)
 	}
 	if len(conditions) == 0 {
@@ -378,13 +383,26 @@ func (r *MediaJobsRepo) apiKeysTable() string {
 
 // query 是共用的行读取（WHERE 片段 + 分页；倒序 created_at DESC, id DESC 稳定
 // 排序）。args 尾部两个整数是 LIMIT / OFFSET（管理面查询与归属过滤共用）。
-// JSON 列解码失败按坏行跳过（行级容错：单行损坏不拖垮列表/轮询）。
+// LEFT JOIN accounts 水合 vendor_code（B4① 拆除 provider_code 列后读面唯一
+// 供应商来源；账户删除后任务行仍存在，LEFT JOIN 空vendor 回空串）。JSON 列
+// 解码失败按坏行跳过（行级容错：单行损坏不拖垮列表/轮询）。
 func (r *MediaJobsRepo) query(ctx context.Context, where string, args ...any) ([]*MediaJobRecord, error) {
-	stmt := `SELECT id, kind, api_key_id, account_id, provider_code, provider_protocol_profile_id,
-		upstream_job_id, status, request_snapshot_json, artifact_json, error_json, usage_json, cost_usd,
-		params_applied_json, params_ignored_json, created_at, updated_at
-		FROM ` + r.table() + ` ` + where + ` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+	stmt := `SELECT mj.id, mj.kind, mj.api_key_id, mj.account_id, COALESCE(acc.vendor_code, '') AS vendor_code, mj.provider_protocol_profile_id,
+		mj.upstream_job_id, mj.status, mj.request_snapshot_json, mj.artifact_json, mj.error_json, mj.usage_json, mj.cost_usd,
+		mj.params_applied_json, mj.params_ignored_json, mj.created_at, mj.updated_at
+		FROM ` + r.table() + ` mj
+		LEFT JOIN ` + r.accountsTable() + ` acc ON acc.id = mj.account_id
+		` + where + ` ORDER BY mj.created_at DESC, mj.id DESC LIMIT ? OFFSET ?`
 	return r.scanRows(ctx, r.bind(stmt), args...)
+}
+
+// accountsTable 是 vendor 水合 JOIN 的 accounts 表名（PG 与 media_jobs 同
+// schema 限定）。
+func (r *MediaJobsRepo) accountsTable() string {
+	if r.postgres {
+		return "juhe_business.accounts"
+	}
+	return "accounts"
 }
 
 // scanRows 执行语句并解码行集（query/selectRows 共用）。
@@ -403,7 +421,7 @@ func (r *MediaJobsRepo) scanRows(ctx context.Context, stmt string, args ...any) 
 			snapshotJSON, artifactJSON, errorJSON, usageJSON string
 			appliedJSON, ignoredJSON, createdAt, updatedAt   string
 		)
-		if err := dbRows.Scan(&record.ID, &kind, &record.APIKeyID, &record.AccountID, &record.ProviderCode,
+		if err := dbRows.Scan(&record.ID, &kind, &record.APIKeyID, &record.AccountID, &record.VendorCode,
 			&providerProfileID, &record.UpstreamJobID, &status, &snapshotJSON, &artifactJSON, &errorJSON, &usageJSON,
 			&record.CostUsd,
 			&appliedJSON, &ignoredJSON, &createdAt, &updatedAt); err != nil {

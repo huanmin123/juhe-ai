@@ -125,10 +125,12 @@ func (d *Deps) listHandler(w http.ResponseWriter, r *http.Request) {
 // 上游任务号（用户面不透出平台内部信息）。
 func mediaJobListPayload(record *gatewaymedia.MediaJobRecord, includeProviderJobID bool) mediaJobListRow {
 	row := mediaJobListRow{
-		ID:            record.ID,
-		Kind:          string(record.Kind),
-		Status:        string(record.Status),
-		ProviderCode:  record.ProviderCode,
+		ID:     record.ID,
+		Kind:   string(record.Kind),
+		Status: string(record.Status),
+		// providerCode 键保持前端契约，值经账户 vendor_code 水合（B4① 拆除
+		// media_jobs.provider_code 列）。
+		ProviderCode:  record.VendorCode,
 		Model:         record.RequestSnapshot.Model,
 		PromptSummary: mediaJobPromptSummary(record.RequestSnapshot.Prompt),
 		Seconds:       record.RequestSnapshot.Seconds,
@@ -270,10 +272,11 @@ func (d *Deps) myDetailHandler(w http.ResponseWriter, r *http.Request) {
 // includeProviderJobID 为假时省略上游任务号（用户面不透出平台内部信息）。
 func mediaJobDetailPayload(record *gatewaymedia.MediaJobRecord, includeProviderJobID bool) *mediaJobDetailRow {
 	row := &mediaJobDetailRow{
-		ID:                     record.ID,
-		Kind:                   string(record.Kind),
-		Status:                 string(record.Status),
-		ProviderCode:           record.ProviderCode,
+		ID:     record.ID,
+		Kind:   string(record.Kind),
+		Status: string(record.Status),
+		// providerCode 键保持前端契约，值经账户 vendor_code 水合（B4①）。
+		ProviderCode:           record.VendorCode,
 		Model:                  record.RequestSnapshot.Model,
 		Prompt:                 strings.TrimSpace(record.RequestSnapshot.Prompt),
 		Seconds:                record.RequestSnapshot.Seconds,
