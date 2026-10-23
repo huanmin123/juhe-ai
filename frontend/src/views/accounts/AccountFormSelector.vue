@@ -4,8 +4,8 @@
     <template v-if="editing">
       <div v-if="showAccountTypePicker" class="account-entry-head">
         <span class="entry-label">账户类型</span>
+        <!-- 不用 block：block 会撑满容器并均分列宽，长接入方式名（如 Grok OAuth）被省略截断 -->
         <a-segmented
-          block
           :value="selectedAccountTypeChoiceValue"
           :disabled="editing"
           :options="segmentedTypeOptions"
@@ -54,8 +54,8 @@
         </div>
         <div v-if="showAccountTypePicker" class="account-entry-head">
           <span class="entry-label">账户类型</span>
+          <!-- 不用 block：block 会撑满容器并均分列宽，长接入方式名（如 Grok OAuth）被省略截断 -->
           <a-segmented
-            block
             :value="selectedAccountTypeChoiceValue"
             :disabled="editing"
             :options="segmentedTypeOptions"
@@ -85,10 +85,13 @@ const props = withDefaults(defineProps<{
   selectedProvider?: ProviderDefinition
   /** 卡片墙账户计数（providerCode → 当前范围账户数）；缺省视为全部为 0。 */
   accountCounts?: Record<string, number>
-  /** 弹窗 open 状态：每次打开时把卡片墙复位为展开。 */
+  /** 克隆态：打开即阶段二（已选摘要 + 配置，来源供应商已预选），不强制展开卡片墙。 */
+  cloning?: boolean
+  /** 弹窗 open 状态：每次打开时复位阶段——新建复位为展开，克隆保持收起。 */
   open?: boolean
 }>(), {
   accountCounts: () => ({}),
+  cloning: false,
   open: false
 })
 
@@ -101,12 +104,12 @@ const emit = defineEmits<{
 const searchKeyword = ref('')
 const pickerExpanded = ref(true)
 
-// 弹窗每次打开时复位为阶段一（独立的供应商卡片选择），配置区由上层按本事件隐藏。
+// 弹窗打开时：新建复位为阶段一（独立的供应商卡片选择），克隆直接进入阶段二；配置区可见性由上层按本事件驱动。
 watch(() => props.open, (next) => {
   if (!next) return
-  pickerExpanded.value = true
+  pickerExpanded.value = !props.cloning
   searchKeyword.value = ''
-  emit('picker-expanded-change', true)
+  emit('picker-expanded-change', !props.cloning)
 })
 
 const enabledProviders = computed(() => props.providers.filter((provider) => provider.enabled))

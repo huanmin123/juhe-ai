@@ -33,9 +33,16 @@
     </a-tooltip>
     <span v-else class="muted-cell">不使用</span>
   </template>
-  <a-tooltip v-else-if="columnKey === 'concurrency'" :title="concurrencyTooltip">
-    <a-tag color="blue">{{ concurrencyText }}</a-tag>
-  </a-tooltip>
+  <AccountConcurrencyEditor
+    v-else-if="columnKey === 'concurrency'"
+    :current-concurrency="account.currentConcurrency"
+    :editable="canEdit(account) && !isAuthorizedAccount(account)"
+    :editing="concurrencyEditing"
+    :limit="account.concurrencyLimit"
+    :save-limit="(limit) => saveConcurrency(account, limit)"
+    @cancel-edit="$emit('cancel-concurrency-edit', account.id)"
+    @start-edit="$emit('start-concurrency-edit', account.id)"
+  />
   <AccountUsageCell
     v-else-if="columnKey === 'usage'"
     :account="account"
@@ -94,6 +101,7 @@ import { computed } from 'vue'
 
 import ProviderIcon from '@/components/ProviderIcon.vue'
 import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
+import AccountConcurrencyEditor from './AccountConcurrencyEditor.vue'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
@@ -119,10 +127,12 @@ defineEmits<{
   (event: 'edit', account: AccountListItem): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountListItem): void
   (event: 'cancel-priority-edit', accountId: string): void
+  (event: 'cancel-concurrency-edit', accountId: string): void
   (event: 'return-authorization', account: AccountListItem): void
   (event: 'refresh-balance', accountId: string): void
   (event: 'balance-details-request', accountId: string): void
   (event: 'start-priority-edit', accountId: string): void
+  (event: 'start-concurrency-edit', accountId: string): void
   (event: 'test', account: AccountListItem): void
 }>()
 
@@ -132,11 +142,13 @@ const props = defineProps<{
   canDelete: (account: AccountListItem) => boolean
   canEdit: (account: AccountListItem) => boolean
   columnKey: string
+  concurrencyEditing: boolean
   groupName: (accountId: string) => string | undefined
   menuItems: (account: AccountListItem) => AccountMenuItem[]
   providerName: (providerCode?: string) => string
   priorityEditing: boolean
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
+  saveConcurrency: (account: AccountListItem, limit: number) => Promise<boolean>
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   balanceRefreshing?: boolean
   balanceDetails?: AccountBalanceDetails
@@ -165,8 +177,6 @@ const proxyTooltip = computed(() => {
   if (currentProxy.value) return `${currentProxy.value.name}（${currentProxy.value.type}）`
   return '代理配置不存在或当前不可见'
 })
-const concurrencyText = computed(() => `${Math.max(0, props.account.currentConcurrency ?? 0)}/${props.account.concurrencyLimit}`)
-const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, props.account.currentConcurrency ?? 0)} 个请求，配置上限 ${props.account.concurrencyLimit}`)
 </script>
 
 <style scoped>

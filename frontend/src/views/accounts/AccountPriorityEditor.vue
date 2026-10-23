@@ -27,19 +27,17 @@
         <CheckOutlined v-else />
       </button>
     </div>
-    <a-tooltip v-else :title="editable ? '点击修改调度优先级；数字越小越优先。' : '调度优先级：数字越小越优先。'">
-      <a-button
-        v-if="editable"
-        class="account-priority-trigger"
-        size="small"
-        type="link"
-        @click="startEditing"
-      >
-        <span>{{ priority }}</span>
-        <EditOutlined class="account-priority-edit-icon" />
-      </a-button>
-      <span v-else class="account-priority-readonly">{{ priority }}</span>
-    </a-tooltip>
+    <a-button
+      v-if="editable"
+      class="account-priority-trigger"
+      size="small"
+      type="link"
+      @click="startEditing"
+    >
+      <span>{{ priority }}</span>
+      <EditOutlined class="account-priority-edit-icon" />
+    </a-button>
+    <span v-else class="account-priority-readonly">{{ priority }}</span>
   </div>
 </template>
 
@@ -146,6 +144,19 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
 .account-priority-trigger:hover,
 .account-priority-trigger:focus-visible {
   color: var(--juhe-accent);
+}
+
+/* antd 的 .ant-btn-link:not(:disabled):not(.ant-btn-disabled):hover 以更高优先级
+   压掉组件 hover 色，这里用同级链式选择器反压，保证悬浮互动反馈可见。 */
+.account-priority-trigger.ant-btn-link:not(:disabled):not(.ant-btn-disabled):hover,
+.account-priority-trigger.ant-btn-link:not(:disabled):not(.ant-btn-disabled):focus-visible {
+  color: var(--juhe-accent);
+  background-color: var(--juhe-accent-soft);
+}
+
+.account-priority-trigger:hover .account-priority-edit-icon,
+.account-priority-trigger:focus-visible .account-priority-edit-icon {
+  color: var(--juhe-accent-strong);
 }
 
 .account-priority-edit-icon {

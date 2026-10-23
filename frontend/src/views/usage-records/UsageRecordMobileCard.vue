@@ -43,7 +43,7 @@
         <div class="mobile-list-meta-item">
           <span>延迟</span>
           <strong class="latency-summary">
-            <span v-for="part in usageRecordLatencyParts(record)" :key="part">{{ part }}</span>
+            <span v-for="part in usageRecordLatencySummaryParts(record)" :key="part">{{ part }}</span>
           </strong>
         </div>
         <div class="mobile-list-meta-item">
@@ -98,7 +98,7 @@ import {
   statusCodeText,
   trafficSourceColor,
   trafficSourceText,
-  usageRecordLatencyParts,
+  usageRecordLatencySummaryParts,
   usageRecordDisplayCostUsd,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,

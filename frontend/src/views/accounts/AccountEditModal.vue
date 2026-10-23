@@ -54,6 +54,7 @@
         :balance-query-loading="balanceQueryLoading"
         :base-url-placeholder="baseUrlPlaceholder"
         :capability-domain="capabilityDomain"
+        :cloning="cloning"
         :credential-title="credentialTitle"
         :deleting-tag-id="deletingTagId"
         :editing="editing"
@@ -106,8 +107,8 @@
           <div class="wizard-step" :class="{ current: wizardStep === 1, done: wizardStep > 1 }">
             <span class="wizard-step-no">{{ wizardStep > 1 ? '✓' : '1' }}</span>
             <span class="wizard-step-text">
-              <span class="wizard-step-title">类型与凭证</span>
-              <span class="wizard-step-sub">必填 · 密钥或授权</span>
+              <span class="wizard-step-title">类型、分组与凭证</span>
+              <span class="wizard-step-sub">必填 · 分组与密钥或授权</span>
             </span>
           </div>
           <div class="wizard-step-bar" :class="{ done: wizardStep > 1 }" />
@@ -134,6 +135,7 @@
               :account-counts="accountCounts"
               :account-type="form.type"
               :account-type-choices="accountTypeChoices"
+              :cloning="cloning"
               :editing="editing"
               :open="open"
               :provider-code="form.providerCode"
@@ -242,6 +244,17 @@
                   />
                 </div>
               </section>
+
+              <!-- 创建向导第 1 步的「加入分组」（创建/编辑均必选）：跟随凭证 section 的 v-show 可见性；
+                   编辑态分组在常用配置 bench 区，此处不重复渲染。 -->
+              <AccountGroupField
+                v-if="!editing"
+                :form="form"
+                :group-options="groupOptions"
+                :group-options-loading="groupOptionsLoading"
+                @group-options-dropdown="$emit('group-options-dropdown', $event)"
+                @group-options-search="$emit('group-options-search', $event)"
+              />
             </section>
 
             <section
@@ -698,6 +711,7 @@ import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountBalanceQuerySection from './AccountBalanceQuerySection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountGptRequestOverridesSection from './AccountGptRequestOverridesSection.vue'
+import AccountGroupField from './AccountGroupField.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
@@ -740,7 +754,8 @@ const wizardStep = ref(1)
 const providerPickerExpanded = ref(true)
 
 // 阶段一：弹窗只呈现供应商卡片——标题不指向供应商、隐藏向导步骤指示与底部按钮区。
-const providerSelectionStage = computed(() => !props.editing && providerPickerExpanded.value)
+// 编辑态不渲染供应商选择；克隆豁免阶段一（克隆打开即配置态，「更换」只在表单内展开卡片墙）。
+const providerSelectionStage = computed(() => !props.editing && !props.cloning && providerPickerExpanded.value)
 const displayTitle = computed(() => (providerSelectionStage.value ? '添加账户' : props.title))
 const modalFooter = computed(() => (providerSelectionStage.value ? null : undefined))
 
@@ -768,6 +783,9 @@ const props = withDefaults(defineProps<{
   // 当前能力域（M2 域拆分）：AccountsView 按 route.meta 注入；chat 走现行双形态，
   // 媒体域走精简三段式。域不是可编辑字段，仅承载创建 payload 与表单分发。
   capabilityDomain?: AccountCapabilityDomain
+  // 克隆态（AccountsView 以 Boolean(cloningSourceId) 传入）：豁免阶段一，打开即配置态，
+  // 来源供应商已预选；「更换」只在表单内展开卡片墙，弹窗标题与底部按钮不切换阶段一形态。
+  cloning?: boolean
   confirmLoading: boolean
   credentialTitle: string
   editing: boolean
@@ -816,6 +834,7 @@ const props = withDefaults(defineProps<{
   balanceQueryCanRun: false,
   balanceQueryLoading: false,
   capabilityDomain: 'chat',
+  cloning: false,
   loading: false,
   testButtonDisabled: false,
   testLoading: false

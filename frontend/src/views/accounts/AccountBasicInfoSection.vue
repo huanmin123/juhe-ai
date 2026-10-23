@@ -1,21 +1,13 @@
 <template>
   <!-- bench 变体：编辑工作台"常用配置区"：加入分组 + 标签/说明；名称/调度/状态由弹框标题栏与摘要卡承载 -->
   <section v-if="variant === 'bench'" class="form-section">
-    <a-form-item label="加入分组" :required="editing">
-      <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
-        <GroupSelect
-          v-model:value="form.groupId"
-          v-model:selected-group="form.group"
-          :filter-option="false"
-          :open="groupDropdownOpen"
-          :loading="groupOptionsLoading"
-          :options="groupOptions"
-          placeholder="输入分组名称"
-          @dropdown-visible-change="handleGroupDropdownVisibleChange"
-          @search="$emit('group-options-search', $event)"
-        />
-      </div>
-    </a-form-item>
+    <AccountGroupField
+      :form="form"
+      :group-options="groupOptions"
+      :group-options-loading="groupOptionsLoading"
+      @group-options-dropdown="$emit('group-options-dropdown', $event)"
+      @group-options-search="$emit('group-options-search', $event)"
+    />
     <AccountMetaFields
       v-if="!authorizedEditing"
       :deleting-tag-id="deletingTagId"
@@ -26,24 +18,9 @@
       @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
     />
   </section>
+  <!-- full 变体：仅创建向导第 2 步；「加入分组」已上移第 1 步（AccountEditModal 内 AccountGroupField），此处只保留标签/说明与调度区 -->
   <section v-else class="form-section">
     <div class="form-grid attribution-grid">
-      <!-- 保存校验（accountSavePayload）只对编辑态强制分组；新建态可空，创建成功提示会引导补绑。 -->
-      <a-form-item label="加入分组" :required="editing">
-        <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
-          <GroupSelect
-            v-model:value="form.groupId"
-            v-model:selected-group="form.group"
-            :filter-option="false"
-            :open="groupDropdownOpen"
-            :loading="groupOptionsLoading"
-            :options="groupOptions"
-            placeholder="输入分组名称"
-            @dropdown-visible-change="handleGroupDropdownVisibleChange"
-            @search="$emit('group-options-search', $event)"
-          />
-        </div>
-      </a-form-item>
       <AccountMetaFields
         :deleting-tag-id="deletingTagId"
         :form="form"
@@ -80,13 +57,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import GroupSelect from '@/components/GroupSelect.vue'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
+import AccountGroupField from './AccountGroupField.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   authorizedEditing: boolean
   editing: boolean
   form: AccountFormModel
@@ -100,37 +76,12 @@ const props = withDefaults(defineProps<{
   variant: 'full'
 })
 
-const emit = defineEmits<{
+defineEmits<{
   (event: 'delete-tag', tagId: string): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
   (event: 'tag-options-dropdown', open: boolean): void
 }>()
-
-const groupDropdownOpen = ref(false)
-const groupDropdownRequested = ref(false)
-
-watch(
-  () => props.form.providerCode,
-  () => {
-    groupDropdownOpen.value = false
-    groupDropdownRequested.value = false
-  }
-)
-
-function markGroupDropdownRequested(): void {
-  groupDropdownRequested.value = true
-}
-
-function handleGroupDropdownVisibleChange(open: boolean): void {
-  if (open && !groupDropdownRequested.value) {
-    groupDropdownOpen.value = false
-    return
-  }
-  groupDropdownOpen.value = open
-  if (!open) groupDropdownRequested.value = false
-  emit('group-options-dropdown', open)
-}
 </script>
 
 <style scoped>

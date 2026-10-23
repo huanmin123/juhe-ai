@@ -244,9 +244,9 @@ export const settingGroups: readonly SettingGroupDef[] = [
   {
     key: 'scheduling',
     title: '调度与恢复',
-    hint: '7 项 · 健康检测 / 临时不可调用 / 冷却复测',
+    hint: '9 项 · 健康检测 / 临时不可调用 / 冷却复测',
     sectionKeys: ['account-health', 'gateway-core', 'cooldown-retest'],
-    itemCount: 7,
+    itemCount: 9,
     fields: [
       { divider: '正常账号健康检测 · 只检测长期没有真实成功请求的正常账号' },
       { key: 'accountHealthCheckIntervalHours', label: '检测间隔', kind: 'number', unit: '小时', min: 1, max: 168, tip: '账号近期已有真实成功请求时不再额外探测' },
@@ -256,6 +256,8 @@ export const settingGroups: readonly SettingGroupDef[] = [
       { key: 'defaultTemporaryUnschedulableMinutes', label: '最大暂停时间', kind: 'number', unit: '分钟', min: 1, max: 1440, tip: '账号进入临时不可调用后先走快速恢复通道：3 秒起步，失败后翻倍；单次等待不超过该上限' },
       { key: 'temporaryUnschedulableRetryIntervalSeconds', label: '安全原地重试间隔', kind: 'number', unit: '秒', min: 0, max: 3600, tip: '仅对可安全重放的文本请求，在主请求已发出且响应头到达前发生传输异常时使用；完整 HTTP、正文中断、配置首字截止和副作用请求不占次数' },
       { key: 'temporaryUnschedulableRetryAttempts', label: '安全原地重试次数', kind: 'number', unit: '次', min: 0, max: 10, tip: '整次请求共享的同账户重试上限；兄弟 Key 会先尝试且不占次数。不按上游状态码或正文判断，也不写账户或 Key 状态' },
+      { key: 'sameAccountRetryFastFailMaxMs', label: '同账户重试耗时门槛', kind: 'number', unit: '毫秒', min: 0, max: 60000, tip: '失败尝试耗时达到该门槛时不再原地重试，直接轮换下一账号；慢失败上游不再连续烧同账号。0 = 全部直切' },
+      { key: 'gatewayAttemptStartMinWindowMs', label: '尝试启动最小剩余预算', kind: 'number', unit: '毫秒', min: 0, max: 60000, tip: '剩余墙钟预算不足以支撑一次新尝试时不再启动，主动收尾并交还客户端重试。0 = 仅保留最终响应预留' },
       { divider: '冷却账户复测 · 仅复测临时不可调用和限流中的账户' },
       { key: 'cooldownAccountRetestMaxBackoffHours', label: '长期不可用观察阈值', kind: 'number', unit: '小时', min: 1, max: 720, tip: '从进入临时不可调用或限流中开始计时，超过后不转异常，而是显示为长期不可用' }
     ],
@@ -277,7 +279,11 @@ export const settingGroups: readonly SettingGroupDef[] = [
             { key: 'defaultTemporaryUnschedulableMinutes', text: displayNumber(num(access, 'defaultTemporaryUnschedulableMinutes'), '分钟') },
             { key: 'temporaryUnschedulableRetryIntervalSeconds', text: displayNumber(num(access, 'temporaryUnschedulableRetryIntervalSeconds'), '秒') },
             { key: 'temporaryUnschedulableRetryAttempts', text: displayNumber(num(access, 'temporaryUnschedulableRetryAttempts'), '次') }
-          ], access, '默认 2 分钟 · 3 秒 · 3 次')
+          ], access, '默认 2 分钟 · 3 秒 · 3 次'),
+          mergedRow('dispatch-budget', '同账户重试耗时门槛 · 尝试启动最小剩余预算', [
+            { key: 'sameAccountRetryFastFailMaxMs', text: displayNumber(num(access, 'sameAccountRetryFastFailMaxMs'), '毫秒') },
+            { key: 'gatewayAttemptStartMinWindowMs', text: displayNumber(num(access, 'gatewayAttemptStartMinWindowMs'), '毫秒') }
+          ], access, '默认 10000 毫秒 · 30000 毫秒')
         ]
       },
       {
@@ -454,7 +460,7 @@ export const settingsTotalItemCount = settingGroups.reduce((sum, group) => sum +
  */
 export const settingsSectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds', 'upstreamClientVersionOverrides'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'sameAccountRetryFastFailMaxMs', 'gatewayAttemptStartMinWindowMs', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds', 'upstreamClientVersionOverrides'],
   'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],

@@ -11,6 +11,7 @@
         :account-counts="accountCounts"
         :account-type="form.type"
         :account-type-choices="domainAccountTypeChoices"
+        :cloning="cloning"
         :editing="editing"
         :open="open"
         :provider-code="form.providerCode"
@@ -267,7 +268,8 @@
         </a-form-item>
       </div>
       <div class="media-attribution-grid">
-        <a-form-item label="加入分组" :required="editing">
+        <!-- 加入分组为创建/编辑均必选（validateAccountSaveForm 无编辑态豁免），星号恒显 -->
+        <a-form-item label="加入分组" required>
           <GroupSelect
             v-model:value="form.groupId"
             v-model:selected-group="form.group"
@@ -395,6 +397,8 @@ const props = withDefaults(defineProps<{
   balanceQueryLoading?: boolean
   baseUrlPlaceholder: string
   capabilityDomain: AccountCapabilityDomain
+  /** 克隆态透传：内嵌 AccountFormSelector 打开即阶段二（已选摘要 + 配置），不强制展开卡片墙。 */
+  cloning?: boolean
   credentialTitle: string
   deletingTagId?: string
   editing: boolean
@@ -430,6 +434,7 @@ const props = withDefaults(defineProps<{
   authLoading: false,
   balanceQueryCanRun: false,
   balanceQueryLoading: false,
+  cloning: false,
   mappingAnthropicSourceModelOptions: () => [],
   mappingCurrentProviderSourceModelOptions: () => [],
   mappingGeminiSourceModelOptions: () => [],

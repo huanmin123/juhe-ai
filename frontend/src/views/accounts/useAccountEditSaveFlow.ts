@@ -215,12 +215,12 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
             ? await createOAuthAccountFromUnifiedForm()
             : await createApiKeyAccount(payload)
           await saveCreatedAccountLockConfig(created)
-          message.success(accountCreatedSuccessText('OAuth 账户', created?.status === 'active', Boolean(options.form.groupId)))
+          message.success(accountCreatedSuccessText('OAuth 账户', created?.status === 'active'))
         }
       } else {
         const created = await createApiKeyAccount(payload)
         await saveCreatedAccountLockConfig(created)
-        message.success(accountCreatedSuccessText('账户', created?.status === 'active', Boolean(options.form.groupId)))
+        message.success(accountCreatedSuccessText('账户', created?.status === 'active'))
       }
       options.modalOpen.value = false
       await options.loadData()
@@ -749,8 +749,7 @@ function geminiOAuthClientPayload(form: AccountFormModel): Record<string, unknow
   }
 }
 
-// 创建成功提示：未选分组时追加可用性提示——路由策略只引用分组，不挂分组的账户不会被任何路由调用。
-export function accountCreatedSuccessText(label: string, active: boolean, hasGroup: boolean): string {
-  const base = active ? `${label}已创建并启用` : `${label}已创建，等待后台检查`
-  return hasGroup ? base : `${base}；未加入分组，暂无法被路由调用，可稍后在编辑中绑定`
+// 创建成功提示：加入分组为必选项（validateAccountSaveForm 创建/编辑一致强校验），不存在未分组分支。
+export function accountCreatedSuccessText(label: string, active: boolean): string {
+  return active ? `${label}已创建并启用` : `${label}已创建，等待后台检查`
 }

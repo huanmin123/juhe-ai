@@ -94,17 +94,18 @@ export type AccountSavePayload = {
   cloneSourceId?: string
 }
 
-// 过渡 DTO 收口（#B4 ⑫）：providerProtocolProfileId 是 legacy profile 面
-// 入参残留，后端创建链接受但忽略（协议身份由 connections 载荷推导，§1.1/§9.3），
-// 创建/更新载荷停止发送；草稿测试载荷（accountDraftTestPayload）与模型目录
-// 同步载荷仍需显式携带（后端草稿链按入参推导协议上下文，#B4 ⑩），OAuth
-// managed 创建（oauthmgmt parseManagedFields）仍必填消费，均不在停发范围。
+// 过渡 DTO 收口（#B4 ⑫ + OAuth managed 创建收口）：providerProtocolProfileId
+// 是 legacy profile 面入参残留，普通创建链后端接受但忽略（协议身份由
+// connections 载荷推导，§1.1/§9.3），创建/更新载荷停止发送；OAuth managed
+// 创建载荷同样停发——oauthmgmt 创建链缺省时按 registry 由 provider 派生唯一
+// 合法档案身份（显式提交值仍保留等值校验）。草稿测试载荷
+// （accountDraftTestPayload）与模型目录同步载荷仍需显式携带（后端草稿链按
+// 入参推导协议上下文，draftProtocolContext 契约），不在停发范围。
 export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'type' | 'status'> & {
   status?: AccountSavePayload['status']
 }
 
 export type AccountOAuthCreateCommonPayload = {
-  providerProtocolProfileId?: string
   capabilityDomain?: AccountCapabilityDomain
   name?: string
   groupId?: string
@@ -135,11 +136,11 @@ export type AccountOAuthCreateCommonPayload = {
   notes?: string
 }
 
-// 向导步骤归属：创建向导（三步）下校验消息应带回的步骤。名称/供应商/类型/凭证/模型/检查字段
-// 都在第 1 步，归属与调度字段在第 2 步、高级配置字段在第 3 步。
+// 向导步骤归属：创建向导（三步）下校验消息应带回的步骤。名称/供应商/类型/加入分组/凭证/模型/检查字段
+// 都在第 1 步，标签与调度字段在第 2 步、高级配置字段在第 3 步。
 // 与 validateAccountSaveForm 的消息文本同文件维护：调整上方消息文案时须同步本表关键词。
 const VALIDATION_STEP_HINTS: Array<{ step: 2 | 3; keywords: string[] }> = [
-  { step: 2, keywords: ['加入分组', '标签'] },
+  { step: 2, keywords: ['标签'] },
   { step: 3, keywords: ['时段', '余额', '锁死', '服务等级', '思考级别', '错误处理策略', '响应检查策略', '映射'] }
 ]
 
@@ -170,7 +171,7 @@ export function validateAccountSaveForm(input: {
   if (!form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
   if (!form.type) return '请先选择账户类型'
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
-  if (editingId && !form.groupId) return '请选择加入分组'
+  if (!form.groupId) return '请选择加入分组'
   const apiKeyCount = normalizedAccountApiKeys(form).length
   if (form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'
   if (form.type === 'api_key' && apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
@@ -395,7 +396,8 @@ export function buildOAuthCreateCommonPayload(input: {
   const credentials = accountCredentials(input)
   const payload: AccountOAuthCreateCommonPayload = {
     name: input.form.name.trim() || undefined,
-    providerProtocolProfileId: input.form.providerProtocolProfileId,
+    // OAuth managed 创建收口：停发 providerProtocolProfileId，后端按 registry
+    // 由 provider 派生唯一合法档案身份（缺省派生 + 显式值等值校验）。
     // M2 能力域（D3）：OAuth 创建同样携带当前域（媒体域 gemini native google_oauth
     // 走此通道；chat 域显式携带 'chat'）。
     capabilityDomain: input.form.capabilityDomain,

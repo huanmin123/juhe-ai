@@ -7,7 +7,7 @@
     :mode="mode"
     :options="selectOptions"
     :placeholder="placeholder"
-    :cache-key="selectCacheKey"
+    :cache-key="cacheKey"
     :preference-key="preferenceKey"
     :hidden-option-values="hiddenOptionValues"
     v-bind="$attrs"
@@ -53,7 +53,6 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   mode?: SelectMode
   placeholder?: string
-  showProviderLabel?: boolean
 }>(), {
   groups: () => [],
   options: () => [],
@@ -67,8 +66,7 @@ const props = withDefaults(defineProps<{
   disabled: false,
   loading: false,
   mode: undefined,
-  placeholder: '输入分组名称搜索',
-  showProviderLabel: false
+  placeholder: '输入分组名称搜索'
 })
 
 const emit = defineEmits<{
@@ -81,14 +79,13 @@ const selectOptions = computed(() => {
   const baseOptions = [
     ...props.options,
     ...props.groups.map((group) => ({
-      label: groupSelectOptionLabel(group, { showProvider: props.showProviderLabel }),
+      label: groupSelectOptionLabel(group),
       value: group.id
     }))
   ]
-  return mergeSelectedGroupOptions(baseOptions, normalizedSelectedIds.value, normalizedSelectedGroups.value, selectCacheKey.value)
+  return mergeSelectedGroupOptions(baseOptions, normalizedSelectedIds.value, normalizedSelectedGroups.value, props.cacheKey)
 })
 
-const selectCacheKey = computed(() => props.showProviderLabel ? `${props.cacheKey}:provider-label` : props.cacheKey)
 const normalizedSelectedIds = computed(() => [
   ...selectedValues(props.value),
   ...props.selectedIds

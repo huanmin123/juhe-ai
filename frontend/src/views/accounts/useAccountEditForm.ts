@@ -20,7 +20,7 @@ import type {
   SystemAccountPrincipalSummary
 } from '@/types/domain'
 import {
-  groupOptionsForProviderWithSelected,
+  groupOptionsWithSelected,
   resolveAccountDefaultGroupSelection,
   targetSystemAccountLabel as buildTargetSystemAccountLabel
 } from './accountDerivedState'
@@ -212,7 +212,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId, options.systemAccountSelection?.value)
   })
 
-  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
+  const groupOptions = computed(() => groupOptionsWithSelected(options.groups.value, [form.groupId]))
   const availableProviders = computed(mergedProviderDefinitions)
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value

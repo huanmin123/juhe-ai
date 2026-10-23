@@ -1171,7 +1171,7 @@ export interface GroupSummary {
   systemAccountId?: string
   systemAccountName?: string
   name: string
-  providerCode: ProviderCode
+  // 分组供应商维度已退役：后端列表仍回恒空串 providerCode 作为 Node 契约形状兼容键，前端类型不再声明。
   description?: string
   enabled: boolean
   isDefault: boolean
@@ -1219,9 +1219,10 @@ export interface GroupListItem extends Omit<
   canReturn: boolean
 }
 
+// 编辑详情同 GroupSummary：后端仍回恒空串 providerCode 兼容键，前端类型已退役不再声明。
 export type GroupEditDetail = Pick<
   GroupSummary,
-  'name' | 'providerCode' | 'description' | 'enabled' | 'groupType' | 'schedulingPolicy'
+  'name' | 'description' | 'enabled' | 'groupType' | 'schedulingPolicy'
 > & { updatedAt: string }
 
 export interface GroupMutationResult {
@@ -1266,7 +1267,6 @@ export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pic
   | 'systemAccountName'
   | 'ownerSystemAccountId'
   | 'ownerSystemAccountName'
-  | 'providerCode'
   | 'enabled'
   | 'isDefault'
   | 'groupType'

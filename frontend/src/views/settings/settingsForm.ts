@@ -27,6 +27,8 @@ export interface SystemForm {
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
+  sameAccountRetryFastFailMaxMs: number
+  gatewayAttemptStartMinWindowMs: number
   textFirstResponseTimeoutSeconds: number
   textNonStreamFirstResponseTimeoutSeconds: number
   textStreamIdleTimeoutSeconds: number
@@ -76,6 +78,8 @@ export const defaultSystemSettings: SystemForm = {
   defaultTemporaryUnschedulableMinutes: 2,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
+  sameAccountRetryFastFailMaxMs: 10000,
+  gatewayAttemptStartMinWindowMs: 30000,
   textFirstResponseTimeoutSeconds: 120,
   textNonStreamFirstResponseTimeoutSeconds: 600,
   textStreamIdleTimeoutSeconds: 30,
@@ -133,6 +137,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     defaultTemporaryUnschedulableMinutes: integerValue(settings.defaultTemporaryUnschedulableMinutes, '临时不可调用最大暂停时间', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '安全原地重试间隔', 0, 3600),
     temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '安全原地重试次数', 0, 10),
+    sameAccountRetryFastFailMaxMs: integerValue(settings.sameAccountRetryFastFailMaxMs, '同账户重试快速失败耗时门槛', 0, 60000),
+    gatewayAttemptStartMinWindowMs: integerValue(settings.gatewayAttemptStartMinWindowMs, '尝试启动最小剩余预算', 0, 60000),
     textFirstResponseTimeoutSeconds: integerValue(settings.textFirstResponseTimeoutSeconds, '文本首响应等待上限', 10, 3600),
     textNonStreamFirstResponseTimeoutSeconds: integerValue(settings.textNonStreamFirstResponseTimeoutSeconds, '非流式响应等待上限', 10, 3600),
     textStreamIdleTimeoutSeconds: integerValue(settings.textStreamIdleTimeoutSeconds, '文本流式停顿上限', 1, 3600),

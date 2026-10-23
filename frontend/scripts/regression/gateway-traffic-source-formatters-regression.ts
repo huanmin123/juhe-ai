@@ -14,6 +14,7 @@ const runtimeRecoveryProbeUsageRecord: UsageRecordSummary = {
   trafficSource: 'runtime_recovery_probe',
   stream: false,
   success: true,
+  compactionExpected: false,
   createdAt: '2026-06-21T00:00:00.000Z'
 }
 
@@ -26,6 +27,7 @@ const cooldownRetestUsageRecord: UsageRecordSummary = {
   trafficSource: 'cooldown_retest',
   stream: false,
   success: true,
+  compactionExpected: false,
   createdAt: '2026-06-21T00:00:00.000Z'
 }
 

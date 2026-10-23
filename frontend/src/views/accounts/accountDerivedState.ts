@@ -181,21 +181,22 @@ export function groupNameByAccountIdMap(accounts: AccountListItem[], groups: Gro
   return map
 }
 
-export function manageableGroupsForProvider(groups: GroupOptionSummary[], providerCode?: string): GroupOptionSummary[] {
-  return groups.filter((group) => isManageableGroupForProvider(group, providerCode))
+export function manageableGroups(groups: GroupOptionSummary[]): GroupOptionSummary[] {
+  return groups.filter(isManageableGroup)
 }
 
-export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string): boolean {
+// 分组实体的供应商维度已退役（GroupOptionSummary 无 providerCode），
+// 可管理判定只看权限，不再做供应商过滤。
+export function isManageableGroup(group: GroupOptionSummary): boolean {
   return canManageGroupAccounts(group)
-    && (!providerCode || group.providerCode === providerCode)
 }
 
-export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string): SelectOption[] {
-  return manageableGroupsForProvider(groups, providerCode).map((group) => ({ label: group.name, value: group.id }))
+export function groupOptionsFrom(groups: GroupOptionSummary[]): SelectOption[] {
+  return manageableGroups(groups).map((group) => ({ label: group.name, value: group.id }))
 }
 
-export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[], providerCode: string | undefined, selectedIds: Array<string | undefined>): SelectOption[] {
-  const options = groupOptionsForProvider(groups, providerCode)
+export function groupOptionsWithSelected(groups: GroupOptionSummary[], selectedIds: Array<string | undefined>): SelectOption[] {
+  const options = groupOptionsFrom(groups)
   const merged = new Map(options.map((option) => [option.value, option]))
   for (const id of selectedIds) {
     const normalizedId = id?.trim()
@@ -208,9 +209,8 @@ export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[]
   return [...merged.values()]
 }
 
-export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
-  const candidates = manageableGroupsForProvider(groups, providerCode)
-  return candidates.find((group) => group.isDefault)
+export function defaultGroup(groups: GroupOptionSummary[]): GroupOptionSummary | undefined {
+  return manageableGroups(groups).find((group) => group.isDefault)
 }
 
 export function resolveAccountDefaultGroupSelection(input: {
@@ -219,24 +219,25 @@ export function resolveAccountDefaultGroupSelection(input: {
   selectedGroupId?: string
   cachedDefaultGroup?: GroupSelection
 }): GroupSelection | undefined {
+  // providerCode 仅保留空串守卫语义（未选供应商不预选）；分组候选已无供应商过滤。
   const providerCode = input.providerCode.trim()
   if (!providerCode) return undefined
   const currentGroup = input.groups.find((group) => group.id === input.selectedGroupId)
-  if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
+  if (currentGroup && isManageableGroup(currentGroup)) {
     return { id: currentGroup.id, name: currentGroup.name }
   }
-  const defaultGroup = defaultGroupForProvider(input.groups, providerCode)
-  if (defaultGroup) return { id: defaultGroup.id, name: defaultGroup.name }
+  const systemDefaultGroup = defaultGroup(input.groups)
+  if (systemDefaultGroup) return { id: systemDefaultGroup.id, name: systemDefaultGroup.name }
   if (input.cachedDefaultGroup) return input.cachedDefaultGroup
   // 兜底：无系统默认组、无用户引用数据默认组时预选首个可管理分组
   // （后端 preferDefault 已把默认组排前，此处通常即选项列表第一项）。
-  const firstGroup = manageableGroupsForProvider(input.groups, providerCode)[0]
+  const firstGroup = manageableGroups(input.groups)[0]
   return firstGroup ? { id: firstGroup.id, name: firstGroup.name } : undefined
 }
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountListItem): SelectOption[] {
   if (!account) return []
-  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId])
+  return groupOptionsWithSelected(groups, [account.boundGroupId])
 }
 
 export function bindGroupTip(account?: AccountListItem): string {

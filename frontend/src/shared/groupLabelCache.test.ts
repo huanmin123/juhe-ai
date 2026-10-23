@@ -81,15 +81,6 @@ describe('groupSelectOptionLabel', () => {
     expect(groupSelectOptionLabel(group({ id: 'g', name: '分组' }))).toBe('分组')
   })
 
-  it('showProvider 追加供应商后缀', () => {
-    expect(groupSelectOptionLabel(group({ id: 'g', name: '分组', providerCode: 'openai' }), { showProvider: true }))
-      .toBe('分组 (OpenAI 兼容)')
-    expect(groupSelectOptionLabel(group({ id: 'g', name: '分组', providerCode: ' custom ' }), { showProvider: true }))
-      .toBe('分组 (custom)')
-    expect(groupSelectOptionLabel(group({ id: 'g', name: '分组' }), { showProvider: true }))
-      .toBe('分组 (未知供应商)')
-  })
-
   it('authorized 分组追加授权来源后缀', () => {
     expect(groupSelectOptionLabel(group({ id: 'g', name: '分组', accessType: 'authorized', ownerSystemAccountName: '张三' })))
       .toBe('分组（来自 张三 授权）')

@@ -23,7 +23,7 @@ import (
 
 var traceMu sync.Mutex
 
-const traceLogPath = `C:/sub2api-lite/.local/tmp_trace_sql.log`
+const traceLogPath = `F:/sub2api-lite/.local/tmp_trace_sql.log`
 
 func logTraceSQL(kind, query string) {
 	traceMu.Lock()

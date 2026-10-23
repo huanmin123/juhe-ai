@@ -15,6 +15,8 @@ export interface SystemSettings {
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
+  sameAccountRetryFastFailMaxMs: number
+  gatewayAttemptStartMinWindowMs: number
   textFirstResponseTimeoutSeconds: number
   textNonStreamFirstResponseTimeoutSeconds: number
   textStreamIdleTimeoutSeconds: number

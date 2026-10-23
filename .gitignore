@@ -63,3 +63,7 @@ backend-go/docker/single-server/build/bin/
 .playwright-cli
 /.zcode/
 /.codex/
+
+# 本地运行时残留（含 account-health-input.key 等敏感文件，禁止入库）
+/data/
+/backend-go/projects/maintenance/data/

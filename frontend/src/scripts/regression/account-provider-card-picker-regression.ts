@@ -70,8 +70,8 @@ assert.doesNotMatch(editingBranchSource, /provider-card|ProviderIcon|provider-su
 // ---- 展开状态：弹窗每次打开复位为展开，「更换」重新展开 ----
 
 const expandResetSource = sourceBetween(selectorScript, 'watch(() => props.open', 'const enabledProviders')
-assert.match(expandResetSource, /if \(!next\) return[\s\S]*?pickerExpanded\.value = true/, '弹窗每次打开必须复位卡片墙为展开')
-assert.match(expandResetSource, /emit\('picker-expanded-change', true\)/, '弹窗打开复位展开时必须通知上层隐藏配置区')
+assert.match(expandResetSource, /if \(!next\) return[\s\S]*?pickerExpanded\.value = !props\.cloning/, '弹窗打开复位必须区分克隆：新建展开卡片墙，克隆保持收起直接进入阶段二')
+assert.match(expandResetSource, /emit\('picker-expanded-change', !props\.cloning\)/, '弹窗打开复位必须按「新建展开/克隆收起」语义通知上层')
 assert.match(cardGridSource, /v-if="pickerExpanded"/, '卡片墙必须受展开状态控制')
 assert.match(cardGridSource, /@click="handlePickerExpand">更换/, '「更换」必须重新展开卡片墙')
 
@@ -145,7 +145,7 @@ assert.doesNotMatch(mediaSelectorSlice, /loadCurrentProviderModelOptions|provide
 // ---- ⑤ 两阶段交互（弹窗/媒体侧）：阶段一弹窗只呈现供应商卡片 ----
 
 assert.match(modalSource, /const providerPickerExpanded = ref\(true\)/, '弹窗必须持有卡片墙展开状态')
-assert.match(modalSource, /const providerSelectionStage = computed\(\(\) => !props\.editing && providerPickerExpanded\.value\)/, '弹窗必须以「卡片墙展开且非编辑」判定阶段一')
+assert.match(modalSource, /const providerSelectionStage = computed\(\(\) => !props\.editing && !props\.cloning && providerPickerExpanded\.value\)/, '弹窗必须以「卡片墙展开且非编辑/克隆」判定阶段一（克隆豁免阶段一）')
 assert.match(modalSelectorSlice, /@picker-expanded-change="providerPickerExpanded = \$event"/, '弹窗必须监听选择器展开状态事件')
 assert.match(modalMediaFormSlice, /@picker-expanded-change="providerPickerExpanded = \$event"/, '媒体域 AccountMediaForm 必须把展开状态事件上抛弹窗')
 assert.match(modalSource, /v-show="editing \|\| \(wizardStep === 1 && !providerPickerExpanded\)"/, '对话域凭据配置区必须在卡片墙展开期间隐藏')
@@ -161,7 +161,17 @@ assert.match(mediaFormSource, /function handlePickerExpandedChange\(expanded: bo
 assert.match(mediaFormSource, /<div v-show="!providerPickerExpanded" class="media-section-label">/, '阶段一必须隐藏「凭据」小节头')
 assert.equal((mediaFormSource.match(/v-show="!providerPickerExpanded"/g) ?? []).length, 4, '媒体域段1凭据标签与字段、段2/段3配置区必须在卡片墙展开期间隐藏')
 
-console.log('账户供应商卡片墙回归通过：阶段一弹窗只呈现供应商卡片（中性标题/无向导/无凭据头/无底部按钮）+ 横向卡片（logo/名称/账户类型/账户数）+ 全量计数读时聚合（provider-counts 双面接口，不受分页筛选影响）+ 搜索/排序 + 编辑态零卡片墙 + 卡片点击零预取')
+// ---- ⑥ 克隆态豁免阶段一：克隆打开即阶段二（来源供应商已预选），「更换」只在表单内展开卡片墙 ----
+
+assert.match(selectorScript, /cloning\?: boolean/, 'AccountFormSelector 必须声明 cloning prop')
+assert.match(modalSource, /cloning\?: boolean/, 'AccountEditModal 必须声明 cloning prop')
+assert.match(mediaFormSource, /cloning\?: boolean/, 'AccountMediaForm 必须声明 cloning 透传 prop')
+assert.match(modalSelectorSlice, /:cloning="cloning"/, '对话域 AccountFormSelector 必须接收 cloning')
+assert.match(modalMediaFormSlice, /:cloning="cloning"/, '媒体域 AccountMediaForm 必须接收 cloning')
+assert.match(accountsViewModalSlice, /:cloning="Boolean\(cloningSourceId\)"/, 'AccountsView 必须以 cloningSourceId 驱动弹窗克隆态')
+assert.match(mediaSelectorSlice, /:cloning="cloning"/, '媒体域内嵌 AccountFormSelector 必须接收克隆透传')
+
+console.log('账户供应商卡片墙回归通过：阶段一弹窗只呈现供应商卡片（中性标题/无向导/无凭据头/无底部按钮）+ 横向卡片（logo/名称/账户类型/账户数）+ 全量计数读时聚合（provider-counts 双面接口，不受分页筛选影响）+ 搜索/排序 + 编辑态零卡片墙 + 克隆态豁免阶段一（打开即阶段二，更换仅在表单内展开）+ 卡片点击零预取')
 
 function componentTemplate(source: string): string {
   return source.slice(source.indexOf('<template>'), source.lastIndexOf('</template>'))

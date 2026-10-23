@@ -83,16 +83,39 @@
         <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'tokens'">
-        <div class="token-cell">
-          <span v-for="part in usageRecordUsageParts(record)" :key="part">{{ part }}</span>
+        <div v-if="usageRecordHasMediaMetering(record)" class="token-cell">
+          <span v-for="part in usageRecordMediaParts(record)" :key="part">{{ part }}</span>
+        </div>
+        <div v-else class="token-cell">
+          <span class="token-item">
+            <svg class="token-icon token-icon-input" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
+            {{ formatTokens(record.inputTokens) }}
+          </span>
+          <span class="token-item">
+            <svg class="token-icon token-icon-output" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" /></svg>
+            {{ formatTokens(record.outputTokens) }}
+          </span>
+          <span v-if="(record.cacheReadTokens ?? 0) > 0" class="token-item">
+            <svg class="token-icon token-icon-cache" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
+            {{ formatCacheTokens(record.cacheReadTokens) }}
+          </span>
         </div>
       </template>
       <template v-else-if="column.key === 'cost'">
         <UsageRecordCostCell :record="record" />
       </template>
       <template v-else-if="column.key === 'latency'">
-        <div class="latency-cell">
-          <span v-for="part in usageRecordLatencyParts(record)" :key="part">{{ part }}</span>
+        <div class="latency-cell" :style="usageRecordLatencyBarVars(record, usageRecordIsCompaction(record))">
+          <span class="latency-bar" aria-hidden="true"></span>
+          <div class="latency-rows">
+            <span class="latency-label">首字</span>
+            <span v-if="record.firstTokenMs == null || usageRecordIsCompaction(record)" class="latency-value latency-value-neutral">{{ formatDuration(record.firstTokenMs) }}</span>
+            <span v-else class="latency-value" :class="latencySeverityClass(firstTokenSeverity(record.firstTokenMs))">{{ formatDuration(record.firstTokenMs) }}</span>
+            <span class="latency-label">总耗时</span>
+            <span class="latency-value" :class="latencySeverityClass(durationSeverity(record.durationMs, usageRecordIsCompaction(record)))">{{ formatDuration(record.durationMs) }}</span>
+            <span class="latency-label" title="输出 Token ÷ 完整耗时（含首字等待）">TPS</span>
+            <span class="latency-value latency-tps">{{ formatUsageOutputTps(record) }}</span>
+          </div>
         </div>
       </template>
       <template v-else-if="column.key === 'createdAt'">
@@ -119,22 +142,32 @@ import type { UsageRecordListItem } from '@/types/domain'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'
+import { durationSeverity, firstTokenSeverity, usageRecordLatencyBarVars, type LatencySeverity } from './usageRecordLatencyHealth'
 import {
   accountDisplayText,
   displayName,
   displayUsageRecordGroupName,
+  formatCacheTokens,
   formatDateTime,
+  formatDuration,
   formatEndpoint,
+  formatTokens,
+  formatUsageOutputTps,
   statusCodeColor,
   statusCodeText,
   trafficSourceColor,
   trafficSourceText,
-  usageRecordLatencyParts,
+  usageRecordHasMediaMetering,
+  usageRecordIsCompaction,
+  usageRecordMediaParts,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
-  usageRecordSystemAccountText,
-  usageRecordUsageParts
+  usageRecordSystemAccountText
 } from './usageRecordFormatters'
+
+function latencySeverityClass(severity: LatencySeverity): string {
+  return `latency-sev-${severity}`
+}
 
 withDefaults(defineProps<{
   columns: Array<Record<string, any>>
@@ -175,9 +208,34 @@ function handleTableChange(...args: unknown[]): void {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  color: var(--juhe-fg-soft);
+  color: var(--juhe-fg);
   font-size: 12px;
   line-height: 1.3;
+}
+
+.token-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+
+.token-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.token-icon-input {
+  color: var(--juhe-ok-strong);
+}
+
+.token-icon-output {
+  color: var(--juhe-violet-strong);
+}
+
+.token-icon-cache {
+  color: var(--juhe-accent-strong);
 }
 
 .model-cell {
@@ -203,11 +261,60 @@ function handleTableChange(...args: unknown[]): void {
 
 .latency-cell {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  color: var(--juhe-fg-soft);
+  align-items: stretch;
+  gap: 6px;
   font-size: 12px;
-  line-height: 1.3;
+  line-height: 1.35;
+}
+
+.latency-bar {
+  width: 4px;
+  flex: none;
+  border-radius: 999px;
+  background: linear-gradient(to bottom, var(--latency-bar-from) 0 40%, var(--latency-bar-to) 60% 100%);
+}
+
+.latency-rows {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: baseline;
+}
+
+.latency-label {
+  color: var(--juhe-muted);
+}
+
+.latency-value {
+  color: var(--juhe-fg);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-value-neutral {
+  color: var(--juhe-fg-soft);
+  font-weight: 400;
+}
+
+.latency-tps {
+  color: var(--juhe-fg-soft);
+}
+
+.latency-sev-good {
+  color: var(--juhe-latency-good-text);
+}
+
+.latency-sev-warn {
+  color: var(--juhe-latency-warn-text);
+}
+
+.latency-sev-slow {
+  color: var(--juhe-latency-slow-text);
+}
+
+.latency-sev-critical {
+  color: var(--juhe-latency-critical-text);
 }
 
 .trace-id-cell {

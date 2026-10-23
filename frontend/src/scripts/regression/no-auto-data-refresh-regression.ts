@@ -44,7 +44,9 @@ const groups = source('views/groups/GroupsView.vue')
 const groupsAuthWatcher = authRevisionWatcher(groups)
 assert.doesNotMatch(activated(groups), /\bloadData\s*\(/, '分组重新激活不得加载业务数据')
 assert.doesNotMatch(groupsAuthWatcher, /\b(?:loadData|loadGroupOptions)\s*\(/, '分组身份变化不得加载主数据或辅助选项')
-assert.match(groupsAuthWatcher, /invalidateSystemAccountOptions\(\)[\s\S]*invalidateGroupOptions\(\)[\s\S]*invalidatePendingLoads\(\)[\s\S]*groups\.value = \[\][\s\S]*systemAccountFilterSelection\.value = undefined[\s\S]*systemAccounts\.value = \[\][\s\S]*resetSystemAccountOptionsSearch\(\)/, '分组身份变化必须使主数据和系统账户选项失效并清空筛选')
+// GroupsView 的分组供应商选项机制已随供应商解耦整体退役（34d80ffb8 删除 invalidateGroupOptions，
+// groups.provider_code 已删——watcher 契约只保留系统账户选项失效与主数据清空）
+assert.match(groupsAuthWatcher, /invalidateSystemAccountOptions\(\)[\s\S]*invalidatePendingLoads\(\)[\s\S]*groups\.value = \[\][\s\S]*systemAccountFilterSelection\.value = undefined[\s\S]*systemAccounts\.value = \[\][\s\S]*resetSystemAccountOptionsSearch\(\)/, '分组身份变化必须使主数据和系统账户选项失效并清空筛选')
 
 const providers = source('views/providers/ProvidersView.vue')
 const providerRequestInvalidation = sourceBetween(providers, 'function invalidateProviderPageRequests', 'function deactivateProviderPage')

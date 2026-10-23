@@ -17,6 +17,26 @@
   --juhe-warn: #a98548;
   --juhe-danger: #9d5547;
   --juhe-violet: #7a6d8f;
+  /* 图标重点色：与 ok/accent/violet 同色相的加饱和档，仅限小面积图标级强调 */
+  --juhe-ok-strong: #3f9163;
+  --juhe-accent-strong: #3f8fa0;
+  --juhe-violet-strong: #7e68c2;
+  /* 延迟健康度分档色（对照 sub2api 面板口径，2026-10-23 用户裁决引入）：
+     无后缀用于渐变色条（sub2api 500 系），-text 后缀用于档位数值文字（600 系，小字对比度） */
+  --juhe-latency-good: #10b981;
+  --juhe-latency-good-text: #059669;
+  --juhe-latency-warn: #fbbf24;
+  --juhe-latency-warn-text: #d97706;
+  --juhe-latency-slow: #f97316;
+  --juhe-latency-slow-text: #ea580c;
+  --juhe-latency-critical: #ef4444;
+  --juhe-latency-critical-text: #dc2626;
+  /* 压缩记录延迟色条：浅紫固定顶 + 档位紫底（时间越久越深），同属 sub2api 对照口径 */
+  --juhe-latency-compaction-light: #d8b4fe;
+  --juhe-latency-compaction-good: #c084fc;
+  --juhe-latency-compaction-warn: #a855f7;
+  --juhe-latency-compaction-slow: #9333ea;
+  --juhe-latency-compaction-critical: #7e22ce;
   --juhe-ok-soft: #ebf0ec;
   --juhe-warn-soft: #f5f0e3;
   --juhe-danger-soft: #f6ecea;

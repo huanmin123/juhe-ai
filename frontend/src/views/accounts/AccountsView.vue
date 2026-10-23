@@ -119,6 +119,7 @@
       :can-edit="canEditAccount"
       :can-select="canSelectAccountForBatch"
       :columns="managedColumns"
+      :editing-concurrency-account-id="editingConcurrencyAccountId"
       :editing-priority-account-id="editingPriorityAccountId"
       :group-name="groupNameForAccount"
       :is-management-view="isManagementView"
@@ -133,6 +134,7 @@
       :proxy="proxyById"
       :refreshing="mobileRefreshing"
       :row-selection="rowSelection"
+      :save-concurrency="saveAccountConcurrency"
       :save-priority="saveAccountPriority"
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
@@ -143,6 +145,7 @@
       :load-balance-details="loadBalanceDetails"
       @change="handleAccountTableChange"
       @cancel-priority-edit="closePriorityEditor"
+      @cancel-concurrency-edit="closeConcurrencyEditor"
       @clone="openClone"
       @delete="removeAccount"
       @edit="openEdit"
@@ -154,6 +157,7 @@
       @refresh-balance="refreshAccountBalance"
       @sort-change="handleAccountSortChange"
       @start-priority-edit="startPriorityEditor"
+      @start-concurrency-edit="startConcurrencyEditor"
       @test="openTestModal"
       @toggle-selection="toggleAccountSelection"
     />
@@ -205,6 +209,7 @@
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
+      :cloning="Boolean(cloningSourceId)"
       :account-detail="editingAccountDetail"
       :account-advanced-detail="editingAccountAdvancedDetail"
       :advanced-loaded="accountAdvancedDetailLoaded"
@@ -390,6 +395,8 @@ const balanceDetailsErrors = ref(new Map<string, string>())
 const balanceDetailsRequests = new Map<string, Promise<AccountBalanceDetails>>()
 const editingPriorityAccountId = ref<string>()
 const prioritySavingIds = ref(new Set<string>())
+const editingConcurrencyAccountId = ref<string>()
+const concurrencySavingIds = ref(new Set<string>())
 const balanceQueryTesting = ref(false)
 const modelCatalogSyncing = ref(false)
 const batchDisableConfirmOpen = ref(false)
@@ -543,6 +550,7 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
 
 async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
   closePriorityEditor()
+  closeConcurrencyEditor()
   if (!options?.append) {
     clearBalanceDetailsCache()
   }
@@ -612,6 +620,7 @@ function handleProviderFilterDropdown(open: boolean): void {
 }
 
 function startPriorityEditor(accountId: string): void {
+  closeConcurrencyEditor()
   editingPriorityAccountId.value = accountId
 }
 
@@ -620,13 +629,25 @@ function closePriorityEditor(accountId?: string): void {
   editingPriorityAccountId.value = undefined
 }
 
+function startConcurrencyEditor(accountId: string): void {
+  closePriorityEditor()
+  editingConcurrencyAccountId.value = accountId
+}
+
+function closeConcurrencyEditor(accountId?: string): void {
+  if (accountId && editingConcurrencyAccountId.value !== accountId) return
+  editingConcurrencyAccountId.value = undefined
+}
+
 function refreshData(): void {
   closePriorityEditor()
+  closeConcurrencyEditor()
   refreshAccountList()
 }
 
 async function refreshMobileAccounts(): Promise<void> {
   closePriorityEditor()
+  closeConcurrencyEditor()
   await refreshMobileAccountList()
 }
 
@@ -764,6 +785,42 @@ async function saveAccountPriority(account: AccountListItem, priority: number): 
   }
 }
 
+async function saveAccountConcurrency(account: AccountListItem, limit: number): Promise<boolean> {
+  if (!canEditAccount(account) || isAuthorizedAccount(account)) {
+    message.warning('当前账户无权修改并发上限')
+    return false
+  }
+  if (!Number.isInteger(limit) || limit < 1) {
+    message.warning('并发上限必须是大于等于 1 的整数')
+    return false
+  }
+  if (limit === account.concurrencyLimit) return true
+  if (concurrencySavingIds.value.has(account.id)) return false
+
+  concurrencySavingIds.value = new Set(concurrencySavingIds.value).add(account.id)
+  const scopeParams = accountOperationScopeParams(account, accountScopeParams.value)
+  try {
+    const configRevision = Number(account.configRevision)
+    if (!Number.isInteger(configRevision) || configRevision < 1) {
+      message.warning('账户配置版本缺失，请刷新列表后重试')
+      return false
+    }
+    const updated = isManagementView.value
+      ? await api.accounts.update(account.id, { concurrencyLimit: limit, expectedConfigRevision: configRevision }, scopeParams)
+      : await api.myAccounts.update(account.id, { concurrencyLimit: limit, expectedConfigRevision: configRevision })
+    updateLoadedAccount({ ...account, concurrencyLimit: limit, configRevision: updated.configRevision })
+    message.success('并发上限已更新')
+    return true
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '更新并发上限失败'))
+    return false
+  } finally {
+    const next = new Set(concurrencySavingIds.value)
+    next.delete(account.id)
+    concurrencySavingIds.value = next
+  }
+}
+
 async function queryBalanceFromEdit(): Promise<void> {
   if (balanceQueryTesting.value) return
   const balancePayload = buildAccountBalancePayload(form)
@@ -827,12 +884,14 @@ const tableScrollY = computed(accountTableScrollY)
 
 function handleAccountTableChange(...args: unknown[]): void {
   closePriorityEditor()
+  closeConcurrencyEditor()
   if (tableChangeAction(args[3]) === 'sort') return
   void handleAccountTableChangeAndLoad(args[0])
 }
 
 function handleAccountSortChange(sorts: Parameters<typeof handleAccountListSortChange>[0]): void {
   closePriorityEditor()
+  closeConcurrencyEditor()
   handleAccountListSortChange(sorts)
 }
 
@@ -932,6 +991,7 @@ const {
   authLoading,
   authResult,
   availableProviders,
+  cloningSourceId,
   createScopeParams,
   lastValidationFailure,
   editingAccountDetail,

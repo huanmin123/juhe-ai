@@ -7,7 +7,7 @@ import type { AccountListItem, GroupOptionSummary } from '@/types/domain'
 import {
   bindGroupOptionsForAccount,
   bindGroupTip as buildBindGroupTip,
-  defaultGroupForProvider
+  defaultGroup
 } from './accountDerivedState'
 import { accountOperationScopeParams } from './accountOperationScope'
 
@@ -46,7 +46,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     const selectedGroup = groupSelectionForId(
       options.groupIdForAccount(account.id) ?? account.boundGroupId,
       account.boundGroupName
-    ) ?? defaultGroupSelectionForProvider(account.providerCode)
+    ) ?? defaultGroupSelection()
     setBindGroup(selectedGroup)
     bindGroupModalOpen.value = true
     await nextTick()
@@ -57,7 +57,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
       selectedIds: [bindGroupForm.groupId]
     })
     if (bindingAccount.value?.id !== account.id || bindGroupForm.groupId) return
-    setBindGroup(defaultGroupSelectionForProvider(account.providerCode))
+    setBindGroup(defaultGroupSelection())
   }
 
   async function saveBindGroup() {
@@ -105,8 +105,9 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     saveBindGroup
   }
 
-  function defaultGroupSelectionForProvider(providerCode: string): GroupSelection | undefined {
-    const group = defaultGroupForProvider(options.groups.value, providerCode)
+  // 分组实体已无供应商维度：默认分组在可管理候选中按 isDefault 取值，不按供应商过滤。
+  function defaultGroupSelection(): GroupSelection | undefined {
+    const group = defaultGroup(options.groups.value)
     return group ? { id: group.id, name: group.name } : undefined
   }
 

@@ -85,7 +85,9 @@ assert.match(tableSource, /<a-tag v-if="typeof record\.statusCode === 'number'" 
 assert.match(tableSource, /<a-tag v-if="record\.upstreamModelMismatch && record\.upstreamResponseModel" color="red">上游响应 \{\{ record\.upstreamResponseModel \}\}<\/a-tag>/, '桌面端模型不一致提示必须显示上游实际响应模型')
 assert.doesNotMatch(tableSource, /模型不一致/, '桌面端不得保留独立模型不一致标签')
 assert.doesNotMatch(tableSource, /column\.key === 'media'/, '媒体用量不得保留独立模板分支')
-assert.match(tableSource, /column\.key === 'tokens'[\s\S]*?usageRecordUsageParts\(record\)/, '用量列必须按计费类型切换（对话 token 三项 / 媒体计量）')
+assert.match(tableSource, /column\.key === 'tokens'[\s\S]*?usageRecordHasMediaMetering\(record\)[\s\S]*?usageRecordMediaParts\(record\)[\s\S]*?formatCacheTokens\(record\.cacheReadTokens\)/, '用量列媒体记录走文本行，对话记录走输入/输出/缓存读图标行')
+assert.match(tableSource, /column\.key === 'latency'[\s\S]*?usageRecordLatencyBarVars\(record, usageRecordIsCompaction\(record\)\)[\s\S]*?latency-bar[\s\S]*?firstTokenSeverity[\s\S]*?durationSeverity\(record\.durationMs, usageRecordIsCompaction\(record\)\)[\s\S]*?formatUsageOutputTps\(record\)/, '延迟列必须渲染健康度渐变条、压缩感知分档着色和输出 TPS 行')
+assert.doesNotMatch(tableSource, /<a-tag[^>]*>压缩<\/a-tag>/, '压缩识别由紫色渐变条承担，模型列不得再渲染压缩 tag')
 
 const resultCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordResultCell.vue'), 'utf8')
 assert.match(resultCellSource, /record\.success \? '成功' : '失败'/, '结果单元格必须显示语义成功或失败')
@@ -109,6 +111,7 @@ assert.doesNotMatch(formatterSource, /HTTP \$\{record\.statusCode\}|上游非成
 assert.match(formatterSource, /return 'orange'/, '失败 2xx 状态码必须使用非成功颜色')
 assert.match(formatterSource, /downstream_closed.*下游连接关闭/s, '下游关闭必须统一展示为下游连接关闭')
 assert.doesNotMatch(formatterSource, /触发方未识别|历史记录.*下游连接关闭/, '下游连接关闭文案不得附带触发方或历史记录分类')
+assert.match(formatterSource, /record\.compactionExpected === true/, '压缩识别必须以 compactionExpected 字段为主判定，endpoint 推断仅回退存量行')
 
 const costCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordCostCell.vue'), 'utf8')
 assert.doesNotMatch(costCellSource, />计价信息</, '成本明细不得保留独立计价信息分组')

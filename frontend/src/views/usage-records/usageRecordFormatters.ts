@@ -25,6 +25,14 @@ export function formatTokens(value?: unknown): string {
   return new Intl.NumberFormat('zh-CN').format(numberValue(value) ?? 0)
 }
 
+/** 缓存读缩写：≥1M 显示 X.XM、≥1K 显示 X.XK，避免大缓存数字撑宽用量列。 */
+export function formatCacheTokens(tokens?: unknown): string {
+  const value = numberValue(tokens) ?? 0
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return formatTokens(value)
+}
+
 export function isAnthropicUsageRecord(record: UsageRecordSummary): boolean {
   return record.usageSemantic === 'anthropic' || record.providerCode === 'anthropic'
 }
@@ -68,14 +76,6 @@ export function usageRecordHasMediaMetering(record: Pick<UsageRecordListItem,
   return usageRecordMediaParts(record).length > 0
 }
 
-/** 用量列按计费类型切换：媒体记录只展示媒体计量，对话记录只展示 token 三项；后续新增计费类型在同一切换点扩展。 */
-export function usageRecordUsageParts(record: Pick<UsageRecordListItem,
-  'inputTokens' | 'outputTokens' | 'cacheReadTokens' |
-  'inputAudioTokens' | 'outputAudioTokens' | 'ttsInputChars' | 'audioInputSeconds' | 'outputVideoSeconds'>): string[] {
-  if (usageRecordHasMediaMetering(record)) return usageRecordMediaParts(record)
-  return usageRecordTokenParts(record)
-}
-
 export function formatRecordTokens(record: UsageRecordListItem): string {
   return usageRecordTokenParts(record).join(' / ')
 }
@@ -114,11 +114,39 @@ export function formatDuration(value?: unknown): string {
   return formatMillisecondsAsSeconds(numberValue(value))
 }
 
-export function usageRecordLatencyParts(record: UsageRecordListItem): string[] {
-  return [
-    `首 token ${formatDuration(record.firstTokenMs)}`,
+/**
+ * 压缩请求识别：以 `compactionExpected` 字段为主判定（后端单点判定后全链路透传，
+ * 覆盖显式压缩路径与 `/responses` 内联压缩触发器形态）；endpoint 推断仅用于回退
+ * 识别字段上线前的存量行（POST 且路径以 `/responses/compact` 结尾）。
+ */
+export function usageRecordIsCompaction(record: Pick<UsageRecordListItem, 'compactionExpected' | 'endpoint'>): boolean {
+  if (record.compactionExpected === true) return true
+  return /^POST \S*\/responses\/compact\/?$/.test(record.endpoint?.trim() ?? '')
+}
+
+/**
+ * 输出 TPS = 输出 Token ÷ 完整耗时（含首字等待，口径偏保守且与 AI 性能监控一致）。
+ * 媒体计量、输出 ≤ 0 或耗时缺失/非正的记录显示占位符。
+ */
+export function formatUsageOutputTps(record: Pick<UsageRecordListItem,
+  'outputTokens' | 'durationMs' |
+  'inputAudioTokens' | 'outputAudioTokens' | 'ttsInputChars' | 'audioInputSeconds' | 'outputVideoSeconds'>): string {
+  if (usageRecordHasMediaMetering(record)) return '—'
+  const outputTokens = numberValue(record.outputTokens)
+  const durationMs = numberValue(record.durationMs)
+  if (!outputTokens || outputTokens <= 0 || !durationMs || durationMs <= 0) return '—'
+  return `${(outputTokens * 1000 / durationMs).toFixed(1)} t/s`
+}
+
+/** 延迟摘要行：首字 / 总耗时恒有两行，TPS 仅在可计算时追加第三行。 */
+export function usageRecordLatencySummaryParts(record: UsageRecordListItem): string[] {
+  const parts = [
+    `首字 ${formatDuration(record.firstTokenMs)}`,
     `总耗时 ${formatDuration(record.durationMs)}`
   ]
+  const tps = formatUsageOutputTps(record)
+  if (tps !== '—') parts.push(`TPS ${tps}`)
+  return parts
 }
 
 export function usageRecordServiceTierText(record: UsageRecordListItem): string | undefined {

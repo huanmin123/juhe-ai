@@ -5,7 +5,6 @@ export interface GroupOptionsResourceApi {
     ids?: string[]
     keyword?: string
     limit?: number
-    providerCode?: string
     systemAccountId?: string
   }): Promise<RouteStrategyGroupOption[]>
 }

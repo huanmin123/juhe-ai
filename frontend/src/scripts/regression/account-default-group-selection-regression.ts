@@ -1,75 +1,104 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { resolveAccountDefaultGroupSelection } from '@/views/accounts/accountDerivedState'
+import { groupOptionsFrom, resolveAccountDefaultGroupSelection } from '@/views/accounts/accountDerivedState'
 import type { GroupOptionSummary } from '@/types/domain'
 
-const anthropicCachedDefault = { id: 'anthropic-default', name: '默认 Anthropic 分组' }
+// 新契约：分组实体的供应商维度已退役（GroupOptionSummary 无 providerCode），
+// 候选不做供应商过滤；预选优先级 = 已选可管理分组 > isDefault 系统默认分组 >
+// 用户引用数据 providerDefaults 默认分组 > 首个可管理分组；供应商切换不清空候选。
 
+const referenceDataDefaultGroup = { id: 'ref-default', name: '用户引用数据默认分组' }
+
+// 跨供应商历史分组在候选列表中并存且全部可见。
+const crossProviderGroups = [
+  group({ id: 'gpt-group', name: 'GPT 分组' }),
+  group({ id: 'anthropic-group', name: 'Anthropic 分组' }),
+  group({ id: 'deepseek-group', name: 'DeepSeek 分组' })
+]
+assert.deepEqual(
+  groupOptionsFrom(crossProviderGroups).map((option) => option.value),
+  ['gpt-group', 'anthropic-group', 'deepseek-group'],
+  '分组实体供应商维度退役后，跨供应商候选必须全部可见'
+)
+
+// 供应商切换不清空候选：已选可管理分组不受供应商维度限制，保持预选。
+assert.deepEqual(
+  resolveAccountDefaultGroupSelection({
+    groups: crossProviderGroups,
+    providerCode: 'anthropic',
+    selectedGroupId: 'gpt-group'
+  }),
+  { id: 'gpt-group', name: 'GPT 分组' },
+  '切换供应商后已选可管理分组必须保持预选，不得因供应商切换清空候选'
+)
+
+// 优先级 1：已选可管理分组 > isDefault 系统默认分组 > 用户引用数据默认分组。
+const manualGroup = group({ id: 'manual-group', name: '手选分组' })
+assert.deepEqual(
+  resolveAccountDefaultGroupSelection({
+    groups: [manualGroup, group({ id: 'system-default', name: '系统默认分组', isDefault: true })],
+    providerCode: 'anthropic',
+    selectedGroupId: manualGroup.id,
+    cachedDefaultGroup: referenceDataDefaultGroup
+  }),
+  { id: manualGroup.id, name: manualGroup.name },
+  '已选可管理分组必须优先，不得被系统默认分组或引用数据默认分组覆盖'
+)
+
+// 优先级 2：isDefault 系统默认分组 > 用户引用数据默认分组。
+const loadedDefault = group({ id: 'system-default', name: '系统默认分组', isDefault: true })
+assert.deepEqual(
+  resolveAccountDefaultGroupSelection({
+    groups: [loadedDefault],
+    providerCode: 'anthropic',
+    selectedGroupId: 'gone-group',
+    cachedDefaultGroup: referenceDataDefaultGroup
+  }),
+  { id: loadedDefault.id, name: loadedDefault.name },
+  '系统默认分组必须优先于用户引用数据默认分组'
+)
+
+// 优先级 3：候选缺失时回填用户引用数据 providerDefaults 默认分组（按供应商存的用户偏好）。
 assert.deepEqual(
   resolveAccountDefaultGroupSelection({
     groups: [],
     providerCode: 'anthropic',
-    selectedGroupId: 'gpt-default',
-    cachedDefaultGroup: anthropicCachedDefault
+    selectedGroupId: 'gone-group',
+    cachedDefaultGroup: referenceDataDefaultGroup
   }),
-  anthropicCachedDefault,
-  '切换到 Anthropic 且旧 GPT 选项已清空时，必须回填 Anthropic 缓存默认分组'
+  referenceDataDefaultGroup,
+  '候选缺失时必须回填用户引用数据默认分组'
 )
 
-const anthropicManualGroup = group({ id: 'anthropic-manual', name: 'Anthropic 手选分组', providerCode: 'anthropic' })
+// 优先级 4：首个可管理分组兜底；引用数据默认分组仍优先于它。
+const firstGroup = group({ id: 'first-group', name: '首个可管理分组' })
+assert.deepEqual(
+  resolveAccountDefaultGroupSelection({ groups: [firstGroup], providerCode: 'deepseek' }),
+  { id: firstGroup.id, name: firstGroup.name },
+  '无默认组且无引用数据默认分组时必须预选首个可管理分组（创建向导默认选中）'
+)
+const cachedFirstGroup = { id: 'cached-first', name: '引用数据默认分组' }
 assert.deepEqual(
   resolveAccountDefaultGroupSelection({
-    groups: [anthropicManualGroup, group({ id: 'anthropic-default', name: '默认 Anthropic 分组', providerCode: 'anthropic', isDefault: true })],
-    providerCode: 'anthropic',
-    selectedGroupId: anthropicManualGroup.id,
-    cachedDefaultGroup: anthropicCachedDefault
+    groups: [firstGroup],
+    providerCode: 'deepseek',
+    cachedDefaultGroup: cachedFirstGroup
   }),
-  { id: anthropicManualGroup.id, name: anthropicManualGroup.name },
-  '当前供应商已加载且可管理的手选分组必须优先，不得被默认分组覆盖'
+  cachedFirstGroup,
+  '引用数据默认分组必须仍优先于首个可管理分组兜底'
 )
 
-const anthropicLoadedDefault = group({ id: 'anthropic-loaded-default', name: '已加载 Anthropic 默认分组', providerCode: 'anthropic', isDefault: true })
-assert.deepEqual(
-  resolveAccountDefaultGroupSelection({
-    groups: [anthropicLoadedDefault],
-    providerCode: 'anthropic',
-    selectedGroupId: 'gpt-default',
-    cachedDefaultGroup: anthropicCachedDefault
-  }),
-  { id: anthropicLoadedDefault.id, name: anthropicLoadedDefault.name },
-  '当前供应商已加载默认组必须优先于缓存默认组'
-)
-
+// 空串守卫：未选供应商不预选（保留原守卫行为）；候选与缓存皆缺失时返回 undefined。
 assert.equal(
-  resolveAccountDefaultGroupSelection({
-    groups: [],
-    providerCode: 'anthropic',
-    selectedGroupId: 'gpt-default'
-  }),
+  resolveAccountDefaultGroupSelection({ groups: crossProviderGroups, providerCode: '' }),
+  undefined,
+  '未选供应商时不得预选分组'
+)
+assert.equal(
+  resolveAccountDefaultGroupSelection({ groups: [], providerCode: 'anthropic' }),
   undefined,
   '缓存缺失且没有可用候选时必须返回 undefined'
-)
-
-const deepseekFirstGroup = group({ id: 'deepseek-first', name: 'DeepSeek 首个分组', providerCode: 'deepseek' })
-assert.deepEqual(
-  resolveAccountDefaultGroupSelection({
-    groups: [deepseekFirstGroup],
-    providerCode: 'deepseek'
-  }),
-  { id: deepseekFirstGroup.id, name: deepseekFirstGroup.name },
-  '无默认组且无缓存时必须预选首个可管理分组（创建向导默认选中）'
-)
-
-const deepseekCachedDefault = { id: 'deepseek-cached', name: 'DeepSeek 缓存默认分组' }
-assert.deepEqual(
-  resolveAccountDefaultGroupSelection({
-    groups: [deepseekFirstGroup],
-    providerCode: 'deepseek',
-    cachedDefaultGroup: deepseekCachedDefault
-  }),
-  deepseekCachedDefault,
-  '缓存默认组必须仍优先于首个可管理分组兜底'
 )
 
 const formSource = readFileSync(
@@ -92,7 +121,7 @@ assert.match(
 assert.match(
   cachedDefaultGroupSource,
   /providerDefaults[\s\S]*item\.providerCode === providerCode[\s\S]*defaultGroup/,
-  '缓存默认分组必须按当前供应商匹配'
+  '用户引用数据默认分组必须按当前供应商匹配（per-provider 用户偏好，不是分组实体属性）'
 )
 assert.match(
   ensureDefaultGroupSource,
@@ -120,7 +149,7 @@ assert.match(
   '作用域切换仍必须清空旧分组选项内容'
 )
 
-console.log('账户默认分组选择回归通过：Anthropic 切换后的空选项窗口会回填当前作用域缓存默认组，已加载手选组与默认组保持既定优先级，无默认组与缓存时预选首个可管理分组，旧作用域选项仍同步清空')
+console.log('账户默认分组选择回归通过：分组候选无供应商过滤（跨供应商候选全部可见、供应商切换不清空已选），预选优先级为已选可管理分组 > 系统默认分组 > 引用数据 per-provider 默认分组 > 首个可管理分组，旧作用域选项仍同步清空')
 
 function group(overrides: Partial<GroupOptionSummary> & Pick<GroupOptionSummary, 'id' | 'name'>): GroupOptionSummary {
   return {

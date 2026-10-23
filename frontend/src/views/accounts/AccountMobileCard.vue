@@ -53,9 +53,16 @@
       </div>
       <div class="account-mobile-meta-item">
         <span>实时并发</span>
-        <a-tooltip :title="concurrencyTooltip">
-          <strong>{{ concurrencyText }}</strong>
-        </a-tooltip>
+        <AccountConcurrencyEditor
+          :current-concurrency="account.currentConcurrency"
+          :editable="canEdit && !isAuthorizedAccount(account)"
+          :editing="concurrencyEditing"
+          :limit="account.concurrencyLimit"
+          mobile
+          :save-limit="(limit) => saveConcurrency(account, limit)"
+          @cancel-edit="$emit('cancel-concurrency-edit', account.id)"
+          @start-edit="$emit('start-concurrency-edit', account.id)"
+        />
       </div>
       <!-- 时间计划与优先级是对话域调度语义：媒体域不渲染（计划 D7 / 移动端卡片按域裁剪）。 -->
       <div v-if="!accountIsMedia" class="account-mobile-meta-item">
@@ -111,6 +118,7 @@ import ProviderIcon from '@/components/ProviderIcon.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { AccountBalanceDetails, AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
+import AccountConcurrencyEditor from './AccountConcurrencyEditor.vue'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
@@ -139,6 +147,8 @@ const props = defineProps<{
   providerName: string
   priorityEditing: boolean
   proxy?: ProxyProfileOptionSummary
+  concurrencyEditing: boolean
+  saveConcurrency: (account: AccountListItem, limit: number) => Promise<boolean>
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   selected: boolean
   balanceRefreshing?: boolean
@@ -155,10 +165,12 @@ const emit = defineEmits<{
   (event: 'bind-group'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
   (event: 'cancel-priority-edit', accountId: string): void
+  (event: 'cancel-concurrency-edit', accountId: string): void
   (event: 'return-authorization'): void
   (event: 'refresh-balance'): void
   (event: 'balance-details-request', accountId: string): void
   (event: 'start-priority-edit', accountId: string): void
+  (event: 'start-concurrency-edit', accountId: string): void
   (event: 'test'): void
   (event: 'toggle-selection'): void
 }>()
@@ -184,8 +196,6 @@ const prioritySuffix = computed(() => {
   if (!props.account.fallbackEnabled) return ''
   return props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'
 })
-const concurrencyText = computed(() => `${Math.max(0, props.account.currentConcurrency ?? 0)}/${props.account.concurrencyLimit}`)
-const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, props.account.currentConcurrency ?? 0)} 个请求，配置上限 ${props.account.concurrencyLimit}`)
 const actions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
   if (props.canEdit) {

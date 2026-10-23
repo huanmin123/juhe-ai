@@ -8,16 +8,17 @@ import {
   usageRecordCostTokenRows
 } from '../../views/usage-records/usageRecordCostDetails'
 import {
+  formatCacheTokens,
   formatCost,
   formatRecordTokens,
   usageRecordHasMediaMetering,
-  usageRecordLatencyParts,
+  usageRecordIsCompaction,
+  usageRecordLatencySummaryParts,
   usageRecordMediaParts,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
   usageRecordDisplayCostUsd,
-  usageRecordTokenParts,
-  usageRecordUsageParts
+  usageRecordTokenParts
 } from '../../views/usage-records/usageRecordFormatters'
 
 const richRecord = usageRecordFixture({
@@ -78,19 +79,10 @@ assertArrayEqual(usageRecordMediaParts(usageRecordFixture({
   '视频秒 8.0'
 ], '字符按千分位、媒体秒按一位小数展示')
 assertTrue(!usageRecordHasMediaMetering(usageRecordFixture({})), '全零或缺失媒体计量时不应切换为媒体展示')
-assertArrayEqual(usageRecordUsageParts(richRecord), [
-  '音入 11',
-  '音出 13'
-], '媒体记录的用量列切换为只展示媒体计量，不再叠加 token 三项')
-assertArrayEqual(usageRecordUsageParts(usageRecordFixture({
-  inputTokens: 1000,
-  outputTokens: 250,
-  cacheReadTokens: 125
-})), [
-  '输入 1,000',
-  '输出 250',
-  '缓存读 125'
-], '对话记录的用量列切换为只展示 token 三项')
+assertEqual(formatCacheTokens(520_000), '520.0K', '千位以上的缓存读缩写为 K')
+assertEqual(formatCacheTokens(52_100_000), '52.1M', '百万位以上的缓存读缩写为 M')
+assertEqual(formatCacheTokens(125), '125', '千位以下的缓存读保持千分位原值')
+assertEqual(formatCacheTokens(undefined), '0', '缺失的缓存读按 0 展示')
 
 const anthropicCostRecord = usageRecordFixture({
   providerCode: 'anthropic',
@@ -271,7 +263,22 @@ const displayFactsRecord = usageRecordFixture({
 })
 assertEqual(usageRecordServiceTierText(displayFactsRecord) ?? '', 'Flex', '模型列应展示实际计费档位')
 assertEqual(usageRecordReasoningEffortText(displayFactsRecord) ?? '', '超高', '模型列应展示有效思考级别')
-assertArrayEqual(usageRecordLatencyParts(displayFactsRecord), ['首 token 0.32s', '总耗时 1.3s'], '延迟列必须合并首 token 与总耗时')
+assertArrayEqual(usageRecordLatencySummaryParts(displayFactsRecord), ['首字 0.32s', '总耗时 1.3s'], '无输出 Token 时延迟摘要只合并首字与总耗时')
+assertArrayEqual(usageRecordLatencySummaryParts(usageRecordFixture({
+  firstTokenMs: 320,
+  durationMs: 1250,
+  outputTokens: 250
+})), ['首字 0.32s', '总耗时 1.3s', 'TPS 200.0 t/s'], '可计算输出吞吐时延迟摘要追加 TPS 行')
+assertArrayEqual(usageRecordLatencySummaryParts(usageRecordFixture({
+  firstTokenMs: 320,
+  durationMs: 1250,
+  outputTokens: 250,
+  inputAudioTokens: 11
+})), ['首字 0.32s', '总耗时 1.3s'], '媒体记录的延迟摘要不追加 TPS 行')
+
+assertEqual(usageRecordIsCompaction(displayFactsRecord), false, '普通对话记录不按压缩识别')
+assertEqual(usageRecordIsCompaction(usageRecordFixture({ endpoint: 'POST /v1/responses/compact' })), true, '显式压缩路径记录按压缩识别')
+assertEqual(usageRecordIsCompaction(usageRecordFixture({ compactionExpected: true })), true, 'compactionExpected 字段命中即识别为压缩，不依赖 endpoint 推断')
 
 const breakdownCostOnlyRecord = usageRecordFixture({
   costBreakdown: {
@@ -303,6 +310,7 @@ function usageRecordFixture(overrides: Partial<UsageRecordSummary>): UsageRecord
     endpoint: '/v1/chat/completions',
     stream: false,
     success: true,
+    compactionExpected: false,
     createdAt: '2026-07-01T00:00:00.000Z',
     ...overrides
   }

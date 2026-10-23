@@ -31,11 +31,13 @@
         :can-delete="canDelete"
         :can-edit="canEdit"
         :column-key="tableColumnKey(column)"
+        :concurrency-editing="editingConcurrencyAccountId === record.id"
         :group-name="groupName"
         :menu-items="menuItems"
         :priority-editing="editingPriorityAccountId === record.id"
         :provider-name="providerName"
         :proxy="proxy"
+        :save-concurrency="saveConcurrency"
         :save-priority="savePriority"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
         :balance-details="balanceDetails?.get(record.id)"
@@ -44,6 +46,7 @@
         :load-balance-details="loadBalanceDetails"
         @bind-group="$emit('bind-group', $event)"
         @cancel-priority-edit="$emit('cancel-priority-edit', $event)"
+        @cancel-concurrency-edit="$emit('cancel-concurrency-edit', $event)"
         @clone="$emit('clone', $event)"
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
@@ -52,6 +55,7 @@
         @refresh-balance="$emit('refresh-balance', $event)"
         @balance-details-request="$emit('balance-details-request', $event)"
         @start-priority-edit="$emit('start-priority-edit', $event)"
+        @start-concurrency-edit="$emit('start-concurrency-edit', $event)"
         @test="$emit('test', $event)"
       />
     </template>
@@ -68,6 +72,8 @@
         :priority-editing="editingPriorityAccountId === record.id"
         :provider-name="record.providerName || providerName(record.providerCode)"
         :proxy="proxy(record.proxyProfileId)"
+        :concurrency-editing="editingConcurrencyAccountId === record.id"
+        :save-concurrency="saveConcurrency"
         :save-priority="savePriority"
         :selected="isSelected(record.id)"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
@@ -76,6 +82,7 @@
         :balance-details-error="balanceDetailsErrors?.get(record.id)"
         :load-balance-details="loadBalanceDetails"
         @cancel-priority-edit="$emit('cancel-priority-edit', $event)"
+        @cancel-concurrency-edit="$emit('cancel-concurrency-edit', $event)"
         @delete="$emit('delete', record.id)"
         @clone="$emit('clone', record)"
         @edit="$emit('edit', record)"
@@ -85,6 +92,7 @@
         @refresh-balance="$emit('refresh-balance', record.id)"
         @balance-details-request="$emit('balance-details-request', $event)"
         @start-priority-edit="$emit('start-priority-edit', $event)"
+        @start-concurrency-edit="$emit('start-concurrency-edit', $event)"
         @test="$emit('test', record)"
         @toggle-selection="$emit('toggle-selection', record)"
       />
@@ -108,6 +116,7 @@ defineProps<{
   canEdit: (account: AccountListItem) => boolean
   canSelect: (account: AccountListItem) => boolean
   columns: Array<Record<string, unknown>>
+  editingConcurrencyAccountId?: string
   editingPriorityAccountId?: string
   groupName: (accountId: string) => string | undefined
   isManagementView: boolean
@@ -122,6 +131,7 @@ defineProps<{
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   refreshing: boolean
   rowSelection: Record<string, unknown>
+  saveConcurrency: (account: AccountListItem, limit: number) => Promise<boolean>
   savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   tableScrollX: number
   tableScrollY: string
@@ -137,6 +147,7 @@ defineEmits<{
   (event: 'change', ...args: unknown[]): void
   (event: 'clone', account: AccountListItem): void
   (event: 'cancel-priority-edit', accountId: string): void
+  (event: 'cancel-concurrency-edit', accountId: string): void
   (event: 'delete', accountId: string): void
   (event: 'edit', account: AccountListItem): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountListItem): void
@@ -147,6 +158,7 @@ defineEmits<{
   (event: 'balance-details-request', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'start-priority-edit', accountId: string): void
+  (event: 'start-concurrency-edit', accountId: string): void
   (event: 'test', account: AccountListItem): void
   (event: 'toggle-selection', account: AccountListItem): void
 }>()

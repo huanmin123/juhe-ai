@@ -62,21 +62,22 @@ assert(!groupOptionsResourceSource.includes("purpose: 'account'"), '策略路由
 assert(routeStrategiesViewSource.includes('form.groupBindings'), '策略路由表单必须维护分组绑定行')
 assert(routeStrategiesViewSource.includes('groupBindings = form.groupBindings.map'), '策略路由保存必须归一化分组绑定 payload')
 assert(routeStrategiesViewSource.includes('请选择分组'), '策略路由表单必须校验分组不能为空')
-assert(!routeStrategiesViewSource.includes('v-model:value="binding.priority"'), '故障回退、轮询和合并路由不得展示分组优先级或顺序输入')
+// 合并路由（merge）已随超级分组重构退役（2026-10-21，提交 8ac216feb）：路由模式只保留
+// normal / weighted / failover / round_robin，编辑器不展示合并路由，前端 merge 引用清零；
+// 目标契约见 docs/functions/超级分组设计.md，旧 merge 口径仅作历史基线保留在
+// docs/functions/合并路由设计.md。本区块按退役后契约锁定编辑器行为。
+assert(!routeStrategiesViewSource.includes('v-model:value="binding.priority"'), '策略路由分组绑定不得展示分组优先级或顺序输入')
 assert(routeStrategiesViewSource.includes("bindingShowsDragHandle = computed(() => form.mode === 'failover' || form.mode === 'round_robin')"), '故障回退和轮询路由必须通过拖拽手柄调整分组顺序')
-assert(routeStrategiesViewSource.includes("bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')"), '故障回退、轮询和合并路由必须按当前行顺序生成隐藏优先级')
+assert(routeStrategiesViewSource.includes("bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin')"), '故障回退和轮询路由必须按当前行顺序生成隐藏优先级')
 assert(routeStrategiesViewSource.includes('priority: bindingOrderUsesPosition.value ? index + 1 : binding.priority'), '隐藏优先级路由保存必须按分组添加顺序生成 priority')
 assert(routeStrategiesViewSource.includes('minimumBindingRowsForMode'), '策略路由表单必须按路由模式维护最少分组行数')
-assert(routeStrategiesViewSource.includes("mode === 'weighted' || mode === 'round_robin' || mode === 'failover' || mode === 'merge' ? 2 : 1"), '权重、轮询、故障回退和合并路由表单必须至少展示两个分组行')
-assert(routeStrategiesViewSource.includes("{ label: '合并路由', value: 'merge' }"), '路由模式选项必须包含合并路由')
-assert(routeStrategiesViewSource.includes("(form.mode === 'weighted' || form.mode === 'round_robin' || form.mode === 'merge') && activeBindings.length < 2"), '合并路由与权重、轮询一致，保存前必须校验至少两个启用分组')
-assert(routeStrategiesViewSource.includes('合并路由按请求合并：每次请求把所有绑定分组里能服务当前请求模型的账号合成一个候选池统一调度——直连支持，或经该账号的模型映射 / 跨协议转换承接即可，因此不要求各分组上游模型或协议一致；不区分分组、全池平级，分组顺序按添加顺序记录，仅作为调度平局与跨组重复账号归属的基础先后。'), '合并路由绑定区块必须解释请求时按当前请求模型合并、全池平级、不要求上游模型或协议一致的语义')
-assert(!routeStrategiesViewSource.includes('不区分分组，拖拽顺序'), '合并路由提示不得再声称可拖拽排序')
+assert(routeStrategiesViewSource.includes("mode === 'weighted' || mode === 'round_robin' || mode === 'failover' ? 2 : 1"), '权重、轮询和故障回退路由表单必须至少展示两个分组行')
+assert(!routeStrategiesViewSource.includes('合并路由'), '合并路由已退役，路由策略编辑器不得再展示合并路由（由超级分组替代）')
+assert(routeStrategiesViewSource.includes("(form.mode === 'weighted' || form.mode === 'round_robin') && activeBindings.length < 2"), '权重和轮询路由保存前必须校验至少两个启用分组')
 assert(routeStrategiesViewSource.includes("if (form.mode === 'round_robin') return form.groupBindings.length > 1"), '轮询路由所有分组行都允许拖拽排序')
-assert(routeStrategiesViewSource.includes("|| value === 'merge'"), '页面状态持久化守卫必须接受合并路由过滤值')
+assert(routeStrategiesViewSource.includes("modeFilter: RouteStrategyMode | 'all'"), '页面状态持久化的模式过滤只允许四种路由模式或全部')
 assert(routeStrategiesViewSource.includes('bindingRemoveDisabled'), '策略路由分组删除按钮必须按当前模式最少行数禁用')
 assert(routeStrategiesViewSource.includes('bindingRowDragEnabled(index)'), '故障回退路由必须按行控制拖拽范围')
-assert(!routeStrategiesViewSource.includes("form.mode === 'round_robin' || form.mode === 'merge') return form.groupBindings.length > 1"), '合并路由为平级全池，绑定行不得提供拖拽排序')
 assert(routeStrategiesViewSource.includes("if (form.mode === 'failover') return index >= 0 && index < form.groupBindings.length && form.groupBindings.length > 1"), '故障回退路由必须允许所有分组行拖拽排序，包括只有一个备用分组时')
 assert(routeStrategiesViewSource.includes('Math.max(0, index)'), '故障回退路由必须允许把备用分组拖到第一行晋升为主用')
 assert(routeStrategiesViewSource.includes('bindingRoleText(index)'), '故障回退路由必须展示主用和备用角色')
@@ -151,7 +152,7 @@ async function assertRouteStrategySelectedOptionMerge(): Promise<void> {
 async function assertGroupSelectedOptionMerge(): Promise<void> {
   const selected = groupOption('selected-group')
   const windowOption = groupOption('window-group')
-  const requests: Array<{ ids?: string[]; keyword?: string; limit?: number; providerCode?: string; systemAccountId?: string }> = []
+  const requests: Array<{ ids?: string[]; keyword?: string; limit?: number; systemAccountId?: string }> = []
   let applied: RouteStrategyGroupOption[] = []
   const result = await loadGroupOptionsResource({
     api: {
@@ -178,7 +179,7 @@ async function assertGroupSelectedOptionMerge(): Promise<void> {
 async function assertKnownGroupSelectedOptionMerge(): Promise<void> {
   const selected = groupOption('known-selected-group')
   const windowOption = groupOption('known-window-group')
-  const requests: Array<{ ids?: string[]; keyword?: string; limit?: number; providerCode?: string; systemAccountId?: string }> = []
+  const requests: Array<{ ids?: string[]; keyword?: string; limit?: number; systemAccountId?: string }> = []
   const result = await loadGroupOptionsResource({
     api: {
       routeStrategyOptions: async (params) => {
@@ -212,7 +213,6 @@ function groupOption(id: string): RouteStrategyGroupOption {
   return {
     id,
     name: id,
-    providerCode: 'gpt',
     enabled: true
   }
 }

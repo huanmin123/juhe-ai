@@ -84,6 +84,8 @@ export interface UsageRecordSummary {
   stream: boolean
   statusCode?: number
   success: boolean
+  /** 压缩预期：网关入库时单点判定并随用量记录全链路透传；历史存量行恒为 false。 */
+  compactionExpected: boolean
   failureAttribution?: UsageFailureAttribution
   /** Bounded list-only diagnostic category retained as a compatibility fallback. */
   failureReason?: string
@@ -149,6 +151,7 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'failureReason'
   | 'errorCode'
   | 'errorMessage'
+  | 'compactionExpected'
   | 'firstTokenMs'
   | 'durationMs'
   | 'inputTokens'
