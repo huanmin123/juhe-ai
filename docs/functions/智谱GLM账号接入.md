@@ -48,7 +48,7 @@ type ProviderCode = 'glm'
 
 OpenAI Chat 两套现有档案的账户真实能力仍只声明 `chat_completions`；Anthropic v1 档案只声明 Messages / Models，不默认写入 `message_token_counting`。Responses 档案只有在代码落地且通过 Mock + 最小真实请求后，才可写入 `responses_json/responses_sse`。普通 GLM 账户不会隐式启用 Codex bridge；需要把 Responses / Codex Responses 转到 GLM Chat 时，必须通过账号模型别名显式声明 `responses -> chat_completions`，账户真实 endpoint modes 仍保持 `chat_json/chat_sse`。
 
-存储实现必须允许同一供应商在同一协议版本下存在多条协议档案。当前如果 `provider_protocol_profiles` 仍用 `UNIQUE(provider_code, protocol_code, protocol_version)` 作为唯一约束，GLM 两条 `glm + openai/v1` 档案会互相冲突；落地前应改为以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 后按 `provider_code + connection_type` 做业务唯一约束。分组名称唯一、默认分组唯一和账户加入分组校验按 `provider_code` 维度执行。
+存储实现必须允许同一供应商在同一协议版本下存在多条协议档案。当前如果 `provider_protocol_profiles` 仍用 `UNIQUE(provider_code, protocol_code, protocol_version)` 作为唯一约束，GLM 两条 `glm + openai/v1` 档案会互相冲突；落地前应改为以 `id` 作为稳定唯一键，或新增 `profile_kind` / `connection_type` 后按 `provider_code + connection_type` 做业务唯一约束。分组名称唯一约束为 `(system_account_id, name)`、每个系统账户作用域最多一个默认分组；分组实体的 `provider_code` 供应商维度已退役，账户加入分组不再按 `provider_code` 校验（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md)）。
 
 `https://open.bigmodel.cn/api/anthropic` 已接入为独立 Anthropic v1 档案：
 
@@ -232,7 +232,7 @@ GLM 模型目录必须单独维护在 `glm` 供应商下，不要混进 GPT 价�
 
 GLM 默认只创建一个供应商默认分组：默认 GLM 分组。通用 GLM API、GLM Coding OpenAI Chat、目标 Responses 和 GLM Coding Anthropic Messages 的差异由 AI 账户接入类型和 `provider_protocol_profile_id` 表达，不再拆成多个默认分组。
 
-账户加入分组只校验同一 `providerCode=glm`。分组只负责调度、并发、排序和 API Key 号池，不承接通用 / Coding / Anthropic 的协议语义。
+账户加入分组不再按 `providerCode` 校验（分组实体的供应商维度已退役）。分组只负责调度、并发、排序和 API Key 号池，不承接通用 / Coding / Anthropic 的协议语义。
 
 API Key 绑定的路由策略允许跨供应商分组；一个本地 API Key 可以通过策略路由同时使用 GPT、GLM、DeepSeek 等供应商分组。请求进入网关后先按模型和账户能力筛选目标供应商，再在目标供应商分组内按账户自身接入类型、endpoint mode、支持模型和模型映射过滤候选账户。跨供应商路由详见 [自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [策略路由设计](策略路由设计.md)。
 
