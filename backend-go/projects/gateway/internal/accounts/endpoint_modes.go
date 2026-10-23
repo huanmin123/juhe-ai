@@ -48,7 +48,6 @@ const (
 	volcengineProviderCode               = accountscore.VolcengineProviderCode
 	qwenProviderCode                     = accountscore.QwenProviderCode
 	xaiProviderCode                      = accountscore.XaiProviderCode
-	hybridProviderCode                   = accountscore.HybridProviderCode
 	openAICompatibleProviderCodeConstant = accountscore.OpenAICompatibleProviderCode
 )
 
@@ -57,7 +56,6 @@ var openAIChatEndpointModes = accountscore.OpenAIChatEndpointModes
 var openAIResponsesEndpointModes = accountscore.OpenAIResponsesEndpointModes
 var anthropicEndpointModeValues = accountscore.AnthropicEndpointModeValues
 var geminiEndpointModeValues = accountscore.GeminiEndpointModeValues
-var hybridEndpointModeValues = accountscore.HybridEndpointModeValues
 var openAIChatEndpointModeSet = accountscore.StringSet(openAIChatEndpointModes)
 
 // glmVideoEndpointModeSet 是 glm OpenAI 协议档案可显式勾选的视频端点模式
@@ -117,7 +115,6 @@ func stringSet(values []string) map[string]bool {
 func isOpenAIEndpointMode(value string) bool    { return accountscore.IsOpenAIEndpointMode(value) }
 func isAnthropicEndpointMode(value string) bool { return accountscore.IsAnthropicEndpointMode(value) }
 func isGeminiEndpointMode(value string) bool    { return accountscore.IsGeminiEndpointMode(value) }
-func isHybridEndpointMode(value string) bool    { return accountscore.IsHybridEndpointMode(value) }
 
 // ---- provider-protocol.ts predicates ----
 
@@ -151,10 +148,6 @@ func isQwenProviderCodeToken(value string) bool {
 
 func isGeminiProviderCodeToken(value string) bool {
 	return accountscore.IsGeminiProviderCodeToken(value)
-}
-
-func isHybridProviderCodeToken(value string) bool {
-	return accountscore.IsHybridProviderCodeToken(value)
 }
 
 // protocolPredicateInput mirrors the ProviderProtocolDefinition/
@@ -301,10 +294,6 @@ func defaultGeminiEndpointModes(endpointModeDefaultContext) []string {
 	return accountscore.DefaultGeminiEndpointModes(accountscore.ModeDefaultContext{})
 }
 
-func normalizeHybridEndpointModesForWrite(value optionalValue) ([]string, error) {
-	return normalizeEndpointModeList(value, isHybridEndpointMode, append([]string{}, hybridEndpointModeValues...), "上游接口能力")
-}
-
 // ---- credential driver registry (account-credentials.registry.ts) ----
 
 // credentialDriver mirrors ProviderAccountCredentialDriver for the write path.
@@ -438,15 +427,6 @@ var providerAccountCredentialDrivers = []credentialDriver{
 				profileUnpinnedMatches(c.providerProtocolProfileID, qwenOpenAIV1ProfileID)
 		},
 		normalizeForWrite: normalizeQwenEndpointModesForWrite,
-	},
-	{
-		id: "hybrid",
-		supportsContext: func(c endpointModeDefaultContext) bool {
-			return isHybridProviderCodeToken(c.providerCode)
-		},
-		normalizeForWrite: func(value optionalValue, _ endpointModeDefaultContext) ([]string, error) {
-			return normalizeHybridEndpointModesForWrite(value)
-		},
 	},
 }
 
@@ -660,7 +640,6 @@ func profileUnpinnedMatches(profileID string, expected ...string) bool {
 	return profileID == "" || profileMatches(profileID, expected...)
 }
 
-
 func providerAccountCredentialDriverForContext(context endpointModeDefaultContext) (*credentialDriver, error) {
 	normalized := context
 	normalized.providerCode = normalizeProviderToken(context.providerCode)
@@ -697,7 +676,6 @@ func credentialDriverByID(id string) (*credentialDriver, error) {
 	}
 	return nil, errors.New("接口能力驱动不存在：" + id)
 }
-
 
 // normalizeEndpointModesForWrite mirrors the storage helper of the same name:
 // resolve the driver for the context and delegate; an unregistered context is
@@ -787,11 +765,9 @@ func assertGeminiEndpointModesCompatible(modes []string, accountType string) err
 }
 
 // assertEndpointModesCompatible mirrors account-batch-edit.service.ts
-// assertEndpointModesCompatible: hybrid accounts skip the asserts entirely.
+// assertEndpointModesCompatible：按协议面分派的批量/写入兼容断言，未知协议
+// 族直通（legacy hybrid token 的整段豁免门已随 §555 终态扫描拆除）。
 func assertEndpointModesCompatible(providerCode, accountType, clientCompatibility string, profile protocolPredicateInput, modes []string) error {
-	if isHybridProviderCodeToken(providerCode) {
-		return nil
-	}
 	if isAnthropicProtocolProfileOf(profile) {
 		return assertAnthropicEndpointModesCompatible(modes, accountType)
 	}

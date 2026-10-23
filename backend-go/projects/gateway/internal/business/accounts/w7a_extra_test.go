@@ -546,13 +546,16 @@ func TestW7AScriptedPatchRowsAffectedArms(t *testing.T) {
 	if _, err := s.Patch(ctx, "sys", "a1", Patch{ExpectedConfigRevision: 1, Name: &name}); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("base cas err=%v", err)
 	}
-	// 关联-only 分支 CAS 更新影响 0 行。
+	// 关联-only 分支 CAS 更新影响 0 行。（BUG-0335 同型写序修复后，支持模型
+	// 分支先读 vendor/owner、解析 next 模型，再按 next 集合对称清理悬空入口
+	// 映射与被替换支持模型行，最后重插。）
 	s2 := w7aReadyScripted(t, []w7aStep{
 		{},
 		{contains: "SELECT config_revision", cols: []string{"config_revision"}, row: []driver.Value{int64(1)}},
-		{contains: "DELETE FROM account_supported_models", affected: 1},
 		{contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}},
 		{contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}},
+		{contains: "DELETE FROM account_entry_mappings", affected: 1},
+		{contains: "DELETE FROM account_supported_models", affected: 1},
 		{contains: "INSERT INTO account_supported_models", affected: 1},
 		{contains: "UPDATE accounts SET config_revision=config_revision+1,updated_at=?", affected: 0},
 	})
@@ -787,9 +790,10 @@ func TestW7AScriptedPatchFailureArms(t *testing.T) {
 		{"base commit err", Patch{ExpectedConfigRevision: 1, Name: &name}, []w7aStep{{}, rev, {contains: "UPDATE accounts SET name=?", affected: 1}, {commitErr: w7aErrBoom}}},
 		{"relations update err", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{
 			{}, rev,
-			{contains: "DELETE FROM account_supported_models", affected: 1},
 			{contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}},
 			{contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}},
+			{contains: "DELETE FROM account_entry_mappings", affected: 1},
+			{contains: "DELETE FROM account_supported_models", affected: 1},
 			{contains: "INSERT INTO account_supported_models", affected: 1},
 			{contains: "SET config_revision=config_revision+1,updated_at=?", execErr: w7aErrBoom},
 		}},
@@ -905,10 +909,11 @@ func TestW7AScriptedPatchRelationsFailureArms(t *testing.T) {
 		patch Patch
 		steps []w7aStep
 	}{
-		{"models delete", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "DELETE FROM account_supported_models", execErr: w7aErrBoom}}},
-		{"models vendor read", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT vendor_code, system_account_id", rowsErr: w7aErrBoom}}},
-		{"models resolve", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", noRows: true}}},
-		{"models insert", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, ok("DELETE FROM account_supported_models"), {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}}, {contains: "INSERT INTO account_supported_models", execErr: w7aErrBoom}}},
+		{"models mappings delete", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}}, {contains: "DELETE FROM account_entry_mappings", execErr: w7aErrBoom}}},
+		{"models delete", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}}, ok("DELETE FROM account_entry_mappings"), {contains: "DELETE FROM account_supported_models", execErr: w7aErrBoom}}},
+		{"models vendor read", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "SELECT vendor_code, system_account_id", rowsErr: w7aErrBoom}}},
+		{"models resolve", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", noRows: true}}},
+		{"models insert", Patch{ExpectedConfigRevision: 1, SupportedModels: &models}, []w7aStep{{}, rev, {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "SELECT id FROM", cols: []string{"id"}, row: []driver.Value{"m-m"}}, ok("DELETE FROM account_entry_mappings"), ok("DELETE FROM account_supported_models"), {contains: "INSERT INTO account_supported_models", execErr: w7aErrBoom}}},
 		{"mappings delete", Patch{ExpectedConfigRevision: 1, ModelMappings: &mappings}, []w7aStep{{}, rev, {contains: "DELETE FROM account_entry_mappings", execErr: w7aErrBoom}}},
 		{"mappings vendor read", Patch{ExpectedConfigRevision: 1, ModelMappings: &mappings}, []w7aStep{{}, rev, ok("DELETE FROM account_entry_mappings"), {contains: "SELECT vendor_code, system_account_id", rowsErr: w7aErrBoom}}},
 		{"mappings connection resolve", Patch{ExpectedConfigRevision: 1, ModelMappings: &mappings}, []w7aStep{{}, rev, ok("DELETE FROM account_entry_mappings"), {contains: "SELECT vendor_code, system_account_id", cols: []string{"vendor_code", "system_account_id"}, row: []driver.Value{nil, "sys"}}, {contains: "FROM account_connections", noRows: true}}},

@@ -439,9 +439,9 @@ func TestW13AImportExecuteArms(t *testing.T) {
 		t.Fatalf("不可导入计划应原样返回：%+v %v", result, err)
 	}
 
-	// 库内同名账户在执行层失败（既有测试把该语义固定为当前契约；
-	// skipDuplicates 只作用于文档内重复，执行层跳过臂要求原始唯一索引
-	// 错误，而 Store.Create 已归一化，故库内重名恒为 failed）。
+	// 库内同名账户在执行层按 skipDuplicates 选项分臂（BUG-0294/A15 修复后：
+	// 执行层识别 Store.Create 预转的 *ConflictError，skip 臂可达；开启时
+	// 库内重名记 skip，显式关闭时失败——见 w10a_import_arms_test.go）。
 	if _, err := env.store.ExecuteImport(context.Background(), w2NativeDoc(
 		[]map[string]any{w2APIKeyAccount("w13a-dup-acct", "w13a-g-exec")},
 		[]map[string]any{w2Proxy("p-exec", "w13a-exec-proxy")},
@@ -455,9 +455,9 @@ func TestW13AImportExecuteArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionFailed ||
+	if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionSkip ||
 		!strings.Contains(strings.Join(result.Accounts[0].Messages, "|"), "账户名称已存在") {
-		t.Fatalf("库内重名应失败：%+v", result.Accounts)
+		t.Fatalf("库内重名开启 skipDuplicates 应跳过：%+v", result.Accounts)
 	}
 
 	// 执行：未启用代理创建 + 账户引用文档内代理 → 代理跳过（1558-1559）、

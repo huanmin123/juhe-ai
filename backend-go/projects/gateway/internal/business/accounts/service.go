@@ -63,13 +63,13 @@ type APIKeyBinding struct {
 
 type CreateInput struct {
 	ID, SystemAccountID, ProviderCode, ProtocolCode, ProtocolVersion string
-	Name, Type, Status, CredentialsEncrypted                                                    string
-	Schedulable                                                                                 bool
-	AvailabilityScheduleJSON                                                                    *string
-	SupportedModels                                                                             []string
-	ModelMappings                                                                                          []ModelMapping
-	Tags                                                                                                   []string
-	APIKeyBindings                                                                                         []APIKeyBinding
+	Name, Type, Status, CredentialsEncrypted                         string
+	Schedulable                                                      bool
+	AvailabilityScheduleJSON                                         *string
+	SupportedModels                                                  []string
+	ModelMappings                                                    []ModelMapping
+	Tags                                                             []string
+	APIKeyBindings                                                   []APIKeyBinding
 	// Connections 是 §8 连接行载荷（B1 断点批共享 DTO）：非空时由 create 在同一
 	// 事务内先于映射写入 account_connections + account_endpoint_modes（确定性
 	// 行 ID），使 writeEntryMapping 的 preset 解析在本事务内可命中。完整 §8
@@ -702,25 +702,62 @@ func writeRelations(ctx context.Context, tx *sql.Tx, s *Store, id, systemID, ven
 }
 func writeRelationsPatch(ctx context.Context, tx *sql.Tx, s *Store, id, systemID string, p Patch, now string) error {
 	if p.SupportedModels != nil {
-		if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id=?`), id); err != nil {
-			return err
-		}
 		// B3 目标形态：模型解析需要账户 vendor 与 owner 可见性（资源账户
 		// system_account_id 即 owner scope），不再读旧 provider_code 键；
 		// generic 账户 vendor_code 为 SQL NULL，经 NullString 扫描后按空串
-		// 参与身份键比较（COALESCE 两侧同形）。
+		// 参与身份键比较（COALESCE 两侧同形）。解析先于任何删除。
 		var vendorColumn sql.NullString
 		var owner string
 		if err := tx.QueryRowContext(ctx, s.bind(`SELECT vendor_code, system_account_id FROM `+s.table("accounts")+` WHERE id=?`), id).Scan(&vendorColumn, &owner); err != nil {
 			return err
 		}
 		vendor := vendorColumn.String
+		// BUG-0335 同型写序修复（与 internal/accounts
+		// replaceAccountSupportedModels 同口径）：account_entry_mappings 的复合
+		// 外键 (account_id, target_model_id) →
+		// account_supported_models(account_id, model_id)（设计 §5.1，无级联
+		// 动作）把入口映射 target 锁进同一账户的支持模型集合；先全删支持模型
+		// 集合会让仍指向被替换模型行的存量入口映射悬空，DELETE 被 23503 拦截
+		// （BUG-0335 生产编辑账户保存 500 的同型缺陷）。设计 §8 的既定原则是
+		// 依赖映射在同事务内一并解决（不是拒绝），因此先把 next 模型名全部
+		// 解析成 models.id（解析只读 models 表，先解析后删不影响事务原子性，
+		// 错误语义不变：目录外模型仍按 ErrModelNotFound 400 族拒绝），随后按
+		// next 目标集合做对称选择性删除：入口映射只删 target_model_id 不在
+		// next 集合内的行，支持模型只删 model_id 不在 next 集合内的行——幸存
+		// 行全程不被删除，指向它的映射保留有效，外键在事务内每一步都满足。
+		// 不能全删支持模型集合：即使先清了悬空映射，全删仍会连带删除仍被
+		// 保留映射引用的幸存行，即刻违反外键。只改支持模型、未带
+		// modelMappings 的 PATCH 不触发下方整集合替换分支，幸存映射因此不丢；
+		// next 集合为空时两个删除退化为删除该账户全部行。
+		nextIDs := make([]string, 0, len(*p.SupportedModels))
 		for _, m := range *p.SupportedModels {
 			modelID, err := resolveSupportedModelID(ctx, tx, s, vendor, owner, m)
 			if err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_supported_models")+` (account_id,model_id,created_at) VALUES (?,?,?)`), id, modelID, now); err != nil {
+			nextIDs = append(nextIDs, modelID)
+		}
+		if len(nextIDs) > 0 {
+			args := append([]any{id}, accountscore.AnySlice(nextIDs)...)
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+` WHERE account_id=? AND target_model_id NOT IN (`+accountscore.Placeholders(len(nextIDs))+`)`), args...); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id=? AND model_id NOT IN (`+accountscore.Placeholders(len(nextIDs))+`)`), args...); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+` WHERE account_id=?`), id); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id=?`), id); err != nil {
+				return err
+			}
+		}
+		for _, modelID := range nextIDs {
+			// 复合主键 (account_id, model_id) 下选择性删除对幸存行幂等，重插
+			// 由冲突跳过（幸存行 created_at 保留首次创建值）；最终集合与全删
+			// 重建完全一致。
+			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_supported_models")+` (account_id,model_id,created_at) VALUES (?,?,?) ON CONFLICT (account_id, model_id) DO NOTHING`), id, modelID, now); err != nil {
 				return err
 			}
 		}

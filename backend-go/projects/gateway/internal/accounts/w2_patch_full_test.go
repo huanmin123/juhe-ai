@@ -262,10 +262,12 @@ func TestW2PatchSupportedModelsAndMappings(t *testing.T) {
 	id := w2PatchAccount(t, env, "模型补丁")
 	// B4 W2（设计 §5.1/§8）：映射写入按 (账户, preset) 解析连接行——PATCH 前种
 	// 连接 + 支持成员前置事实（target upstream gpt-4o-mini 须在支持集内）。
+	// T52 门禁：映射 target 必须落在本次 PATCH 生效后的支持模型集合内，因此
+	// supportedModels 变更为只增不删（保留 gpt-4o-mini 作为映射 target）。
 	env.seedAccountConnection(t, id, "generic_openai_v1", "gpt-4o-mini")
 
 	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1"],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4.1",
+		`{"expectedConfigRevision":1,"supportedModels":["gpt-4.1","gpt-4o","gpt-4o-mini"],"healthCheckConnectionPresetCode":"generic_openai_v1","healthCheckEndpointMode":"chat_json","healthCheckModel":"gpt-4.1",
 		"modelMappings":[{"sourceModel":"gpt-4.1","sourceEndpointFamily":"chat_completions","upstreamModel":"gpt-4o-mini","upstreamEndpointFamily":"chat_completions","targetConnectionPresetCode":"generic_openai_v1","enabled":false}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("模型补丁: %d %v", code, payload)

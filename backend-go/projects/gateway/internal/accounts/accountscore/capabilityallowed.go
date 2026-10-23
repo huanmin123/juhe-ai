@@ -19,7 +19,7 @@ import (
 //   - 默认能力集（default）＝ 新建账户 modes 缺省时按域落默认集；chat 域缺省
 //     ⊆ 域允许集（BUG-0323 根治口径）：现行默认本就域内的供应商（openai 族/
 //     gemini/anthropic/glm）逐项不变，媒体优先供应商（volcengine/qwen 缺省
-//     video_get、hybrid 全词表并集）落词表内基础对话对，由测试钉住。
+//     video_get）落词表内基础对话对，由测试钉住。
 //   - 严格不变式：账户声明集（credentials JSON 的 supported_endpoint_modes）
 //     必须 ⊆ 所在域允许集，全链路强制——新建/导入/克隆/编辑/批量同一规则，
 //     越界一律拒绝（CapabilityDomainOutlierError），不存在任何跨域保留
@@ -107,7 +107,6 @@ const (
 	capabilityMatrixGlmAnthropic     = "glm-coding-anthropic" // 「glm-coding-anthropic」行（glm anthropic 路由整体）
 	capabilityMatrixGeminiNative     = "gemini-native"        // 「gemini native」行
 	capabilityMatrixGeminiOpenAIChat = "gemini-openai-chat"   // 「gemini（OpenAI Chat 档案）」行
-	capabilityMatrixHybrid           = "hybrid"               // 「hybrid」行
 	capabilityMatrixMinimax          = "minimax"              // 「minimax」行
 	capabilityMatrixVolcengine       = "volcengine"           // 「volcengine」行
 	capabilityMatrixQwen             = "qwen"                 // 「qwen」行
@@ -129,15 +128,14 @@ var capabilityDomainMatrix = map[string]map[string]bool{
 	capabilityMatrixGlmAnthropic:     {CapabilityDomainChat: true, CapabilityDomainVideo: false, CapabilityDomainAudio: false, CapabilityDomainImage: false},
 	capabilityMatrixGeminiNative:     {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
 	capabilityMatrixGeminiOpenAIChat: {CapabilityDomainChat: true, CapabilityDomainVideo: false, CapabilityDomainAudio: false, CapabilityDomainImage: false},
-	capabilityMatrixHybrid:           {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
 	capabilityMatrixMinimax:          {CapabilityDomainChat: false, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
 	// volcengine 行图像格 2026-10-17 开通（真实上游取证：ark 官方 OpenAI
 	// 兼容图像端点 /api/v3/images/generations 实测出图成功
 	//（doubao-seedream-5-0-flash-260915，OpenAI images 形态响应 data[].url +
 	// usage）；Agent Plan 专属端点 /api/plan/v3/images/generations 实测可用，
 	// 出站 URL 由链上 chainVolcengineImagesUpstreamURL 服务根归一承接）。
-	capabilityMatrixVolcengine:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
-	capabilityMatrixQwen:             {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
+	capabilityMatrixVolcengine: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
+	capabilityMatrixQwen:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
 }
 
 // capabilityDomainMatrixAllows 查矩阵门：行未列出（未知上下文）默认拒绝，
@@ -167,7 +165,6 @@ func profileMatches(profileID string, expected ...string) bool {
 func profileUnpinnedMatches(profileID string, expected ...string) bool {
 	return profileID == "" || profileMatches(profileID, expected...)
 }
-
 
 // resolveCapabilityWriteContext 解析上下文（provider×type×协议档案）对应的
 // 矩阵行与既有写侧词表——词表即当前归一化路径（providerAccountCredentialDrivers
@@ -231,8 +228,6 @@ func resolveCapabilityWriteContext(providerCode, accountType string, profile Pro
 		return capabilityMatrixVolcengine, append([]string{}, VolcengineEndpointModeValues...)
 	case IsQwenProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, QwenOpenAIV1ProfileID):
 		return capabilityMatrixQwen, append([]string{}, QwenEndpointModeValues...)
-	case IsHybridProviderCodeToken(providerCode):
-		return capabilityMatrixHybrid, append([]string{}, HybridEndpointModeValues...)
 	}
 	return "", nil
 }
@@ -240,7 +235,7 @@ func resolveCapabilityWriteContext(providerCode, accountType string, profile Pro
 // legacyDefaultEndpointModes 返回上下文的现行（chat 时代）写侧默认集——
 // 即 modes 键缺省时各 driver 归一化落下的集合。路由与集合全部复用既有
 // 默认解析（DefaultOpenAI/Anthropic/GeminiEndpointModes + 门面
-// minimax/volcengine/qwen/hybrid 的固定默认），逐项不改（I3）。
+// minimax/volcengine/qwen 的固定默认），逐项不改（I3）。
 func legacyDefaultEndpointModes(providerCode, accountType string, profile ProtocolPredicate) []string {
 	provider := NormalizeProviderToken(providerCode)
 	protocol := NormalizeProviderToken(profile.ProtocolCode)
@@ -285,8 +280,6 @@ func legacyDefaultEndpointModes(providerCode, accountType string, profile Protoc
 		return []string{"video_get"}
 	case IsQwenProviderCodeToken(providerCode) && openaiProtocol && profileUnpinnedMatches(profileID, QwenOpenAIV1ProfileID):
 		return []string{"video_get"}
-	case IsHybridProviderCodeToken(providerCode):
-		return append([]string{}, HybridEndpointModeValues...)
 	}
 	return nil
 }

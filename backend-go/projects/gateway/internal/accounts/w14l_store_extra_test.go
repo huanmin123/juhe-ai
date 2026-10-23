@@ -74,6 +74,11 @@ func TestW14LTestSessionAccessArms(t *testing.T) {
 	ctx := context.Background()
 	owner := f.scope()
 	foreign := AccessScope{ViewerID: "w14l-stranger"}
+	// B4① 读面经 accounts JOIN 水合 vendor：store 直驱造任务前先种账户行。
+	f.exec(`INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
+		protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
+		VALUES ('acc-x', 'w14l-owner', 'gpt', 'gpt', 'openai', 'v1', 'w14l-x', 'api_key', 'active', '{}',
+		'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	session, err := f.store.CreateTestSession(ctx, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +116,7 @@ func TestW14LTestSessionAccessArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := f.store.CreateTestTask(ctx, TestTaskCreateInput{
-		AccountID: "acc-x", AccountName: "w14l-blocked", ProviderCode: "gpt",
+		AccountID: "acc-x", AccountName: "w14l-blocked",
 		ProviderProtocolProfileID: "prof-gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 		AccountType: "api_key", Access: owner, Diagnostics: "full", SessionID: blocked.ID,
 	}); err == nil || !strings.Contains(err.Error(), "取消") {
@@ -127,7 +132,7 @@ func TestW14LTestSessionAccessArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, err := f.store.CreateTestTask(ctx, TestTaskCreateInput{
-		AccountID: "acc-x", AccountName: "w14l-live", ProviderCode: "gpt",
+		AccountID: "acc-x", AccountName: "w14l-live",
 		ProviderProtocolProfileID: "prof-gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 		AccountType: "api_key", Access: owner, Diagnostics: "full", SessionID: live.ID,
 	})

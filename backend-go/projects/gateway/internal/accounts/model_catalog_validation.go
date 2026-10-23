@@ -62,24 +62,16 @@ func credentialEndpointModes(credentials Credentials) []string {
 // assertAccountModelMappingsInProviderCatalog 是映射写入断言（设计 §5.1/§5.2
 // + 目录断言切 models 表）：
 //
-//   - 协议矩阵门（纯函数，无表读取）：非 hybrid 走
-//     assertAccountModelMappingProtocolAllowed（per-profile 白名单 + 上游
-//     endpoint-mode 能力门），hybrid 走 assertHybridAccountModelMappingProtocol
-//     Allowed（跨协议矩阵）。batch/import 以行内协议列喂参。
+//   - 协议矩阵门（纯函数，无表读取）：assertAccountModelMappingProtocolAllowed
+//     （per-profile 白名单 + 上游 endpoint-mode 能力门）。batch/import 以行内
+//     协议列喂参；legacy hybrid 跨协议矩阵分支已随 §555 终态扫描拆除（混合
+//     供应商 token 形态不再是映射断言的分派维度，协议面由连接 preset 推导）。
 //   - 目录段（models 表身份解析）：每条映射的 target 模型名必须解析到 owner
 //     可见且 active 的 models 行（vendor_code + upstream_model，与写入面
 //     resolveEntryModelID 同键）。来源模型是客户端 wire model 字符串、不作
 //     models 外键（§5.1），旧来源目录段与协议池段随 legacy 面拆除。
 func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, mappings []ModelMapping, supportedEndpointModes []string) error {
 	if len(mappings) == 0 {
-		return nil
-	}
-	if isHybridProviderCodeToken(providerCode) {
-		for _, mapping := range mappings {
-			if err := assertHybridAccountModelMappingProtocolAllowed(mapping, supportedEndpointModes); err != nil {
-				return err
-			}
-		}
 		return nil
 	}
 	for _, mapping := range mappings {

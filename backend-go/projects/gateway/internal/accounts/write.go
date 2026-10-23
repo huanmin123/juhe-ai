@@ -1142,6 +1142,22 @@ func (s *Store) resolveEnabledProxyProfile(ctx context.Context, q queryer, proxy
 // account_entry_mappings.target_model_id 外键的引用目标（§9），解析失败按
 // ValidationError（400 族）显式拒绝。owner 取账户行 system_account_id（调用
 // 方签名不携带；授权实例场景由上游面保证直连资源账户写入）。
+//
+// BUG-0335 写序修复：account_entry_mappings 的复合外键
+// (account_id, target_model_id) → account_supported_models(account_id, model_id)
+// （设计 §5.1，无级联动作）把入口映射 target 锁进同一账户的支持模型集合。
+// 先删支持模型集合会让仍指向被替换模型行的入口映射悬空，DELETE 被 23503
+// 拦截（生产编辑账户保存 500）。设计 §8 的既定原则是依赖映射在同事务内一并
+// 解决（不是拒绝），因此本函数先把 next 模型名全部解析成 models.id（解析只读
+// models 表，先解析后删不影响事务原子性，错误语义不变），随后按 next 目标
+// 集合做对称的选择性删除：入口映射只删 target_model_id 不在 next 集合内的行，
+// 支持模型只删 model_id 不在 next 集合内的行（复合主键 (account_id, model_id)
+// 下对幸存行幂等，重插由下方 insertIgnore 跳过）——幸存行全程不被删除，指向
+// 它的映射保留有效，外键在事务内每一步都满足。不能全删支持模型集合：即使
+// 先清了悬空映射，全删仍会连带删除仍被保留映射引用的幸存行，即刻违反外键。
+// 只改支持模型、未带 modelMappings 的 PATCH（输入缺席或与现值相等）不触发
+// replaceAccountModelMappings，幸存映射因此不丢；next 集合为空时两个删除均
+// 退化为删除该账户全部行。
 func (s *Store) replaceAccountSupportedModels(ctx context.Context, q queryer, accountID, providerCode string, models []string, nowISO string) error {
 	vendorNull, _ := accountVendorIdentity(providerCode)
 	vendor := vendorNull.String
@@ -1149,14 +1165,33 @@ func (s *Store) replaceAccountSupportedModels(ctx context.Context, q queryer, ac
 	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner); err != nil {
 		return err
 	}
-	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id = ?`), accountID); err != nil {
-		return err
-	}
+	nextIDs := make([]string, 0, len(models))
 	for _, model := range models {
 		modelID, err := s.resolveEntryModelID(ctx, q, vendor, owner, model)
 		if err != nil {
 			return err
 		}
+		nextIDs = append(nextIDs, modelID)
+	}
+	if len(nextIDs) > 0 {
+		args := append([]any{accountID}, accountscore.AnySlice(nextIDs)...)
+		if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+`
+			WHERE account_id = ? AND target_model_id NOT IN (`+accountscore.Placeholders(len(nextIDs))+`)`), args...); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+`
+			WHERE account_id = ? AND model_id NOT IN (`+accountscore.Placeholders(len(nextIDs))+`)`), args...); err != nil {
+			return err
+		}
+	} else {
+		if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+` WHERE account_id = ?`), accountID); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_supported_models")+` WHERE account_id = ?`), accountID); err != nil {
+			return err
+		}
+	}
+	for _, modelID := range nextIDs {
 		if _, err := q.ExecContext(ctx, s.bind(s.insertIgnore(`INSERT INTO `+s.table("account_supported_models")+`
 			(account_id, model_id, created_at) VALUES (?, ?, ?)`,
 			` ON CONFLICT (account_id, model_id) DO NOTHING`)), accountID, modelID, nowISO); err != nil {

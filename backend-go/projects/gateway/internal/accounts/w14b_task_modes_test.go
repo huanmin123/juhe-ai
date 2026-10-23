@@ -25,7 +25,7 @@ func TestW14BTestTaskCancelFailArms(t *testing.T) {
 		t.Fatalf("会话创建应成功：%v", err)
 	}
 	task, err := env.store.CreateTestTask(ctx, TestTaskCreateInput{
-		AccountID: "acc-w14b-tc", AccountName: "w14b-tc", ProviderCode: "gpt",
+		AccountID: "acc-w14b-tc", AccountName: "w14b-tc",
 		ProviderProtocolProfileID: "prof-gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 		AccountType: "api_key", Access: scope, Diagnostics: "full", SessionID: session.ID,
 	})

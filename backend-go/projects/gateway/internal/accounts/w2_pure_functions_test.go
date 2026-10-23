@@ -22,9 +22,6 @@ func TestW2OpenAIImagesEndpointMode(t *testing.T) {
 		if !isOpenAIEndpointMode("images_json") {
 			t.Fatal("images_json 应是 openai 族合法上游接口能力")
 		}
-		if !isHybridEndpointMode("images_json") {
-			t.Fatal("hybrid 词表是三族并集，应随 openai 族扩展包含 images_json")
-		}
 		// M1 同步音频 + M2 同步视频：词表扩至 11（audio_speech /
 		// audio_transcription_json / video_create / video_get /
 		// video_content / video_cancel 追加在尾部，opt-in 同 images_json）；
@@ -251,8 +248,10 @@ func TestW2AssertEndpointModesCompatible(t *testing.T) {
 		}
 	})
 	t.Run("分发", func(t *testing.T) {
+		// legacy hybrid token 直通门已随 §555 终态扫描拆除（B4④）：空 profile
+		// 谓词不命中任何协议族分支，按未知协议族直通（行为与拆除前一致）。
 		if err := assertEndpointModesCompatible("hybrid", "oauth", "", protocolPredicateInput{}, nil); err != nil {
-			t.Fatalf("hybrid 直通：%v", err)
+			t.Fatalf("hybrid token 空谓词应按未知协议族直通：%v", err)
 		}
 		if err := assertEndpointModesCompatible("gpt", "oauth", "", protocolPredicateInput{protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion}, []string{"chat_json"}); err == nil {
 			t.Fatal("openai 分发应拒绝 oauth+chat")

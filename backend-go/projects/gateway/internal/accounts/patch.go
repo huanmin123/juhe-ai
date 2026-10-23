@@ -790,6 +790,37 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		// 语义；写后重读恒等于输入，会让变更条件退化为恒 false）。
 		preWriteModelMappings = currentMappings
 		if !modelMappingsEqual(currentMappings, input.ModelMappings) {
+			// T52（BUG-0335 独立复审非阻塞发现）：与 batch/import 链同位的映射
+			// target 预校验。account_entry_mappings 复合外键
+			// (account_id, target_model_id) → account_supported_models(account_id,
+			// model_id)（设计 §5.1，无级联动作）把映射 target 锁进支持模型集合；
+			// 缺此预校验时越界 target 在生产 PG 由 23503 兜底成 500。校验基准是
+			// 本次 PATCH 生效后的支持模型集合：上方 SupportedModelsPresent 块已在
+			// 同一事务先落地新集合，此处同事务读回的即生效集合（未提交支持模型时
+			// 读到的就是库中当前集合）；错误族与文案同
+			// AssertMappingUpstreamsAllowed（batch.go/import.go 调用点同源）。
+			supportedModelNames := []string{}
+			supportedModelRows, err := tx.QueryContext(ctx, s.bind(`SELECT models.upstream_model FROM `+s.table("account_supported_models")+` account_supported_models
+				INNER JOIN `+s.table("models")+` models ON models.id = account_supported_models.model_id
+				WHERE account_supported_models.account_id = ? ORDER BY models.upstream_model ASC`), row.id)
+			if err != nil {
+				return nil, err
+			}
+			for supportedModelRows.Next() {
+				var name string
+				if err := supportedModelRows.Scan(&name); err != nil {
+					supportedModelRows.Close()
+					return nil, err
+				}
+				supportedModelNames = append(supportedModelNames, name)
+			}
+			supportedModelRows.Close()
+			if err := supportedModelRows.Err(); err != nil {
+				return nil, err
+			}
+			if err := assertMappingUpstreamsAllowed(input.ModelMappings, supportedModelNames); err != nil {
+				return nil, err
+			}
 			addChange("modelMappings", currentMappings, input.ModelMappings)
 			if err := s.replaceAccountModelMappings(ctx, tx, row.id, row.providerCode, input.ModelMappings, nowISO); err != nil {
 				return nil, err

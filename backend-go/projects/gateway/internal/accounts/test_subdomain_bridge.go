@@ -300,10 +300,6 @@ func normalizeGeminiEndpointModesForRuntime(value []string, defaults endpointMod
 	return accountstest.NormalizeGeminiEndpointModesForRuntime(value, toModeDefaultContext(defaults))
 }
 
-func normalizeHybridEndpointModesForRuntime(value []string) []string {
-	return accountstest.NormalizeHybridEndpointModesForRuntime(value)
-}
-
 func accountManualTestEndpointModes(source manualTestModeSource) []string {
 	return accountstest.AccountManualTestEndpointModes(source)
 }

@@ -26,8 +26,6 @@ const (
 	MinimaxProviderCode    = "minimax"
 	VolcengineProviderCode = "volcengine"
 	QwenProviderCode       = "qwen"
-	// HybridProviderCode mirrors the hybrid pseudo provider token.
-	HybridProviderCode = "hybrid"
 	// OpenAICompatibleProviderCode mirrors openai (openai-compatible token).
 	OpenAICompatibleProviderCode = "openai"
 	// Protocol code/version pairs mirror provider-protocol.ts:1-2 and the
@@ -152,14 +150,12 @@ var (
 		"embed_content", "interactions_json", "interactions_sse", "audio_speech",
 		"video_create", "video_get", "video_content", "video_cancel",
 	}
-	HybridEndpointModeValues = append(append(append([]string{}, OpenAIEndpointModeValues...), AnthropicEndpointModeValues...), GeminiEndpointModeValues...)
 )
 
 var (
 	openAIEndpointModeSet     = StringSet(OpenAIEndpointModeValues)
 	anthropicEndpointModeSet  = StringSet(AnthropicEndpointModeValues)
 	geminiEndpointModeSet     = StringSet(GeminiEndpointModeValues)
-	hybridEndpointModeSet     = StringSet(HybridEndpointModeValues)
 	openAIChatEndpointModeSet = StringSet(OpenAIChatEndpointModes)
 )
 
@@ -171,9 +167,6 @@ func IsAnthropicEndpointMode(value string) bool { return anthropicEndpointModeSe
 
 // IsGeminiEndpointMode mirrors isGeminiEndpointMode.
 func IsGeminiEndpointMode(value string) bool { return geminiEndpointModeSet[value] }
-
-// IsHybridEndpointMode mirrors isHybridEndpointMode.
-func IsHybridEndpointMode(value string) bool { return hybridEndpointModeSet[value] }
 
 // ---- provider-protocol.ts predicates ----
 
@@ -215,11 +208,6 @@ func IsQwenProviderCodeToken(value string) bool {
 // IsGeminiProviderCodeToken mirrors isGeminiProviderCodeToken.
 func IsGeminiProviderCodeToken(value string) bool {
 	return NormalizeProviderToken(value) == GeminiProviderCode
-}
-
-// IsHybridProviderCodeToken mirrors isHybridProviderCodeToken.
-func IsHybridProviderCodeToken(value string) bool {
-	return NormalizeProviderToken(value) == HybridProviderCode
 }
 
 // ProtocolPredicate mirrors the ProviderProtocolDefinition/
@@ -272,7 +260,7 @@ func DefaultOpenAIEndpointModes(input ModeDefaultContext) []string {
 	switch providerCode {
 	case GptVendorCode, DeepSeekProviderCode:
 		return append([]string{}, OpenAIDefaultEndpointModes...)
-	case OpenAICompatibleProviderCode, GlmProviderCode, GeminiProviderCode, HybridProviderCode:
+	case OpenAICompatibleProviderCode, GlmProviderCode, GeminiProviderCode:
 		return append([]string{}, OpenAIChatEndpointModes...)
 	}
 	return append([]string{}, OpenAIDefaultEndpointModes...)

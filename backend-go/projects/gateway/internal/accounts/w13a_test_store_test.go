@@ -12,6 +12,8 @@ import (
 func TestW13ATestStoreSessionArms(t *testing.T) {
 	env := newTestFamilyEnv(t, &fakeTestEffects{accept: true})
 	ctx := context.Background()
+	// B4① 读面经 accounts JOIN 水合 vendor：store 直驱造任务前先种账户行。
+	env.seedAccount(t, "acc-x", "sys-w13a", "w13a 账户", "active")
 
 	// 缺少调用者上下文 → ValidationError（378-380）。
 	if _, err := env.store.CreateTestSession(ctx, AccessScope{}); err == nil {
@@ -77,6 +79,9 @@ func TestW13ATestStoreSessionArms(t *testing.T) {
 func TestW13ATestStoreTaskArms(t *testing.T) {
 	env := newTestFamilyEnv(t, &fakeTestEffects{accept: true})
 	ctx := context.Background()
+	// B4① 读面经 accounts JOIN 水合 vendor：store 直驱造任务前先种账户行。
+	env.seedAccount(t, "acc-w13a-tt", "sys-w13a", "w13a-tt", "active")
+	env.seedAccount(t, "acc-w13a-tt2", "sys-w13a", "w13a-tt2", "active")
 
 	// queued 任务：取消成功（882-890）。
 	task, err := env.store.CreateTestTask(ctx, TestTaskCreateInput{

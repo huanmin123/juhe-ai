@@ -105,9 +105,10 @@ func TestW10AImportDuplicateAccountSkipAndFail(t *testing.T) {
 		},
 	}
 
-	// 未开启 skipDuplicates → failed 臂。
+	// 显式关闭 skipDuplicates → failed 臂（选项未设置时 resolve() 默认视为
+	// 开启：SkipDuplicates == nil || *o.SkipDuplicates，与计划层跳过契约一致）。
 	result, err := env.store.ExecuteImport(context.Background(), document, importSourceSub2Api,
-		ImportOptions{}, AccessScope{ViewerID: adminID, IsAdmin: true})
+		ImportOptions{SkipDuplicates: boolPtrW10(false)}, AccessScope{ViewerID: adminID, IsAdmin: true})
 	if err != nil {
 		t.Fatalf("ExecuteImport 错误：%v", err)
 	}
@@ -125,27 +126,27 @@ func TestW10AImportDuplicateAccountSkipAndFail(t *testing.T) {
 		t.Fatalf("重复名消息缺失：%s", message)
 	}
 
-	// 开启 skipDuplicates：skip 臂数学不可达（Create 已把 UNIQUE 冲突预转为
-	// ConflictError，import.go:1654 的 duplicateAccountNameError 不再命中原始
-	// 约束文本），按已文档化的当前行为（w2_import_test.go）断言 failed。
+	// 开启 skipDuplicates：BUG-0294/A15 修复后执行层识别 Create 预转的
+	// *ConflictError，skip 臂可达——重名记 skip（Node 契约），
+	// Summary.Accounts.Skip 计数，failed 臂由未开启分支（上方）单独覆盖。
 	skipOptions := ImportOptions{SkipDuplicates: boolPtrW10(true)}
 	result, err = env.store.ExecuteImport(context.Background(), document, importSourceSub2Api,
 		skipOptions, AccessScope{ViewerID: adminID, IsAdmin: true})
 	if err != nil {
 		t.Fatalf("ExecuteImport skip 错误：%v", err)
 	}
-	if result.Summary.Accounts.Failed != 1 {
-		t.Fatalf("skip 配置下当前行为为 failed：%+v", result.Summary)
+	if result.Summary.Accounts.Skip != 1 {
+		t.Fatalf("skipDuplicates=true 时重名应记 skip：%+v", result.Summary)
 	}
-	if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionFailed {
-		t.Fatalf("账户项应按当前行为失败：%+v", result.Accounts)
+	if len(result.Accounts) != 1 || result.Accounts[0].Action != importActionSkip {
+		t.Fatalf("账户项应跳过：%+v", result.Accounts)
 	}
 	message = ""
 	if result.Accounts[0].Messages != nil {
 		message = strings.Join(result.Accounts[0].Messages, "|")
 	}
 	if !strings.Contains(message, "同一用户下账户名称已存在") {
-		t.Fatalf("失败消息缺失：%s", message)
+		t.Fatalf("skip 消息缺失：%s", message)
 	}
 }
 

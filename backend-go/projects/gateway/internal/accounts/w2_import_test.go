@@ -581,10 +581,8 @@ func TestW2ImportConfirmExecutesPlan(t *testing.T) {
 	}
 
 	// 重复导入语义：换 ref（改变指纹避开幂等窗）但保持同名重放。
-	// 行为存疑：Create 已把 UNIQUE 冲突转成 ConflictError（消息为「同一用户下
-	// 账户名称已存在」），ExecuteImport 再次用 duplicateAccountNameError 判定
-	// 的是转换后的错误文本，不再包含 UNIQUE 特征，因此 skipDuplicates=true 时
-	// 重名账户仍落为 failed 而不是 skip。按当前实际行为断言。
+	// BUG-0294/A15 修复后：执行层识别 Create 预转的 *ConflictError，
+	// skipDuplicates=true 时重名账户记 skip（Node 契约，问题-0162 第 277 行）。
 	replayBody := strings.Replace(body, `"ref":"a1","name":"导入账户"`, `"ref":"a1-replay","name":"导入账户"`, 1)
 	code, payload = env.do(t, http.MethodPost, "/__aisys__/api/accounts/import/confirm", replayBody)
 	if code != http.StatusOK {
@@ -592,13 +590,13 @@ func TestW2ImportConfirmExecutesPlan(t *testing.T) {
 	}
 	data = dataMap(t, payload)
 	second := data["accounts"].([]any)[0].(map[string]any)
-	if second["action"] != "failed" {
-		t.Fatalf("重放行为存疑（当前实际为 failed）：%v", second)
+	if second["action"] != "skip" {
+		t.Fatalf("skipDuplicates=true 时重名应记 skip：%v", second)
 	}
 	if !strings.Contains(strings.Join(w2ToStrings(second["messages"].([]any)), "|"), "同一用户下账户名称已存在：导入账户") {
 		t.Fatalf("重放消息不一致：%v", second["messages"])
 	}
-	// 重名失败不影响首次已创建的账户。
+	// 重名跳过不影响首次已创建的账户。
 	if env.count(t, `SELECT COUNT(*) FROM accounts WHERE name = '导入账户' AND deleted_at IS NULL`) != 1 {
 		t.Fatal("重放不应创建第二个同名账户")
 	}

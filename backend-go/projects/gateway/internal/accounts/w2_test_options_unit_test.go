@@ -93,21 +93,15 @@ func TestW2RuntimeEndpointModeNormalizers(t *testing.T) {
 			}
 		}
 	})
-	t.Run("hybrid 过滤未知并回退全量", func(t *testing.T) {
-		got := normalizeHybridEndpointModesForRuntime([]string{"chat_json", "messages_json", "weird", "chat_json"})
-		if len(got) != 2 || got[0] != "chat_json" || got[1] != "messages_json" {
-			t.Fatalf("归一结果不一致：%v", got)
-		}
-		fallback := normalizeHybridEndpointModesForRuntime([]string{"weird"})
-		if len(fallback) != len(hybridEndpointModeValues) {
-			t.Fatalf("全量回退不一致：%v", fallback)
-		}
-	})
+	// hybrid 运行时归一（normalizeHybridEndpointModesForRuntime）已随 §555
+	// 终态扫描拆除（B4④）：legacy hybrid token 不再是供应商维度。
 }
 
 func TestW2OpenAIModelMappingRuntimeConversion(t *testing.T) {
 	openAI := manualTestModeSource{ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion}
-	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode}
+	// legacy hybrid token 无协议面：跨协议转换矩阵已随 §555 终态扫描拆除
+	//（B4④），只剩同族直通与 stream→generate 归一。
+	hybrid := manualTestModeSource{ProviderCode: "hybrid"}
 
 	cases := []struct {
 		name      string
@@ -119,14 +113,15 @@ func TestW2OpenAIModelMappingRuntimeConversion(t *testing.T) {
 		{"gemini 流式到非流式", ModelMapping{SourceEndpointFamily: "stream_generate_content", UpstreamEndpointFamily: "generate_content"}, openAI, true},
 		{"openai responses 到 chat", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "chat_completions"}, openAI, true},
 		{"openai messages 到 chat 不支持", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, openAI, false},
-		{"hybrid messages 到 chat", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, hybrid, true},
-		{"hybrid chat 到 messages", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "messages"}, hybrid, true},
-		{"hybrid responses 到 messages", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "messages"}, hybrid, true},
-		{"hybrid generate_content 到 chat", ModelMapping{SourceEndpointFamily: "generate_content", UpstreamEndpointFamily: "chat_completions"}, hybrid, true},
-		{"hybrid stream 到 messages", ModelMapping{SourceEndpointFamily: "stream_generate_content", UpstreamEndpointFamily: "messages"}, hybrid, true},
-		{"hybrid chat 到 generate_content", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "generate_content"}, hybrid, true},
-		{"hybrid responses 到 generate_content", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "generate_content"}, hybrid, true},
-		{"hybrid messages 到 generate_content", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "generate_content"}, hybrid, true},
+		{"hybrid 同族直通保留", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, hybrid, true},
+		{"hybrid messages 到 chat 退役", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, hybrid, false},
+		{"hybrid chat 到 messages 退役", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "messages"}, hybrid, false},
+		{"hybrid responses 到 messages 退役", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "messages"}, hybrid, false},
+		{"hybrid generate_content 到 chat 退役", ModelMapping{SourceEndpointFamily: "generate_content", UpstreamEndpointFamily: "chat_completions"}, hybrid, false},
+		{"hybrid stream 到 messages 退役", ModelMapping{SourceEndpointFamily: "stream_generate_content", UpstreamEndpointFamily: "messages"}, hybrid, false},
+		{"hybrid chat 到 generate_content 退役", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "generate_content"}, hybrid, false},
+		{"hybrid responses 到 generate_content 退役", ModelMapping{SourceEndpointFamily: "responses", UpstreamEndpointFamily: "generate_content"}, hybrid, false},
+		{"hybrid messages 到 generate_content 退役", ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "generate_content"}, hybrid, false},
 		{"hybrid chat 到 chat 变体不支持", ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "responses"}, hybrid, false},
 	}
 	for _, testCase := range cases {
@@ -187,7 +182,8 @@ func TestW2IsAccountManualTestModel(t *testing.T) {
 	openAI := manualTestModeSource{ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion}
 	anthropic := manualTestModeSource{ProviderCode: anthropicProviderCode, ProtocolCode: anthropicProtocolCodeConstant, ProtocolVersion: anthropicProtocolVersionConstant}
 	gemini := manualTestModeSource{ProviderCode: geminiProviderCode, ProtocolCode: geminiProtocolCodeConstant, ProtocolVersion: geminiProtocolVersionConstant}
-	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode}
+	// legacy hybrid token 无协议面：与未知供应商同类（B4④ 残留门拆除）。
+	hybrid := manualTestModeSource{ProviderCode: "hybrid"}
 
 	t.Run("audio 模式一律不可测", func(t *testing.T) {
 		if isAccountManualTestModel(testCatalogItem{Mode: "Audio"}, openAI) {
@@ -215,21 +211,18 @@ func TestW2IsAccountManualTestModel(t *testing.T) {
 			t.Fatal("图像模式应排除")
 		}
 	})
-	t.Run("hybrid 协议判定", func(t *testing.T) {
-		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"chat_completions"}}, hybrid) {
-			t.Fatal("hybrid 支持文本协议")
+	t.Run("hybrid 协议判定（终态：未注册上下文一律不可测）", func(t *testing.T) {
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"chat_completions"}}, hybrid) {
+			t.Fatal("hybrid token 未注册上下文不得放行文本协议")
 		}
-		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"stream_generate_content"}}, hybrid) {
-			t.Fatal("hybrid 支持流式协议")
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"stream_generate_content"}}, hybrid) {
+			t.Fatal("hybrid token 未注册上下文不得放行流式协议")
 		}
-		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"images"}}, manualTestModeSource{ProviderCode: hybridProviderCode, AccountType: "api_key"}) {
-			t.Fatal("hybrid api_key 支持 images")
-		}
-		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"images"}}, manualTestModeSource{ProviderCode: hybridProviderCode, AccountType: "oauth"}) {
-			t.Fatal("hybrid oauth 不支持 images")
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"images"}}, manualTestModeSource{ProviderCode: "hybrid", AccountType: "api_key"}) {
+			t.Fatal("hybrid token api_key 不得放行 images")
 		}
 		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"embeddings"}}, hybrid) {
-			t.Fatal("hybrid 不支持 embeddings")
+			t.Fatal("hybrid token 不得放行 embeddings")
 		}
 	})
 	t.Run("openai 协议判定", func(t *testing.T) {
@@ -354,10 +347,12 @@ func TestW2AccountTestEndpointModeOrder(t *testing.T) {
 	if len(got) == 0 || got[0] != "interactions_sse" {
 		t.Fatalf("gemini 顺序不一致（流式优先）：%v", got)
 	}
-	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode, HealthCheckEndpointMode: "chat_json"}
+	// legacy hybrid token：hybrid 顺序分支已随 §555 终态扫描拆除（B4④），
+	// 无协议面时按默认协议族顺序（oauth 之外的四值 openai 族列表）。
+	hybrid := manualTestModeSource{ProviderCode: "hybrid", HealthCheckEndpointMode: "chat_json"}
 	got = accountTestEndpointModeOrder(hybrid)
-	if len(got) < 8 || got[0] != "chat_json" || got[1] != "chat_sse" {
-		t.Fatalf("hybrid 顺序不一致（defaultMode 置顶后流式优先）：%v", got)
+	if len(got) != 4 || got[0] != "chat_json" || got[1] != "chat_sse" {
+		t.Fatalf("hybrid token 应按默认协议族顺序（defaultMode 置顶）：%v", got)
 	}
 	oauth := manualTestModeSource{ProviderCode: "gpt", AccountType: "oauth", HealthCheckEndpointMode: "responses_sse"}
 	got = accountTestEndpointModeOrder(oauth)
@@ -477,8 +472,8 @@ func TestW2TestCatalogSourceCodes(t *testing.T) {
 		// hybrid 不在 vendors 值域（设计 §439），源码恒为单值、models 目录行
 		// 自然为空；旧三族目录池聚合随协议子供应商源扩展拆除（§555：运行时
 		// providerCode=hybrid 引用终态清零）。
-		codes, err := store.testCatalogSourceCodes(ctx, hybridProviderCode)
-		if err != nil || len(codes) != 1 || codes[0] != hybridProviderCode {
+		codes, err := store.testCatalogSourceCodes(ctx, "hybrid")
+		if err != nil || len(codes) != 1 || codes[0] != "hybrid" {
 			t.Fatalf("hybrid 源码应单值归一：%v %v", codes, err)
 		}
 	})

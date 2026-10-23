@@ -316,7 +316,6 @@ func (d *Deps) testAccount(w http.ResponseWriter, r *http.Request) {
 	task, err := d.Store.CreateTestTask(ctx, TestTaskCreateInput{
 		AccountID:                 view.item.ID,
 		AccountName:               view.item.Name,
-		ProviderCode:              view.item.ProviderCode,
 		ProviderProtocolProfileID: view.item.ProviderProtocolProfileID,
 		ProtocolCode:              view.item.ProtocolCode,
 		ProtocolVersion:           view.item.ProtocolVersion,
@@ -409,7 +408,6 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 	task, err := d.Store.CreateTestTask(ctx, TestTaskCreateInput{
 		AccountID:                 draft.ID,
 		AccountName:               draft.Name,
-		ProviderCode:              draft.ProviderCode,
 		ProviderProtocolProfileID: profileID,
 		ProtocolCode:              protocolCode,
 		ProtocolVersion:           protocolVersion,

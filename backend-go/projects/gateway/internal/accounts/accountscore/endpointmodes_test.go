@@ -52,12 +52,3 @@ func TestOpenAIDefaultEndpointModesExcludeImages(t *testing.T) {
 		t.Fatalf("oauth 默认仍是 responses 对：%v", oauth)
 	}
 }
-
-func TestHybridEndpointModeValuesFollowOpenAIUnion(t *testing.T) {
-	if !IsHybridEndpointMode("images_json") {
-		t.Fatal("hybrid 词表是三族并集，应随 openai 族扩展包含 images_json")
-	}
-	if HybridEndpointModeValues[0] != "images_json" {
-		t.Fatalf("hybrid 并集中 images_json 应随 openai 族居首：%v", HybridEndpointModeValues)
-	}
-}

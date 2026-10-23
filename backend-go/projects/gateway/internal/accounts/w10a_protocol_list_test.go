@@ -41,9 +41,6 @@ func TestW10AProtocolMappingMatrix(t *testing.T) {
 	if msg := unsupportedProtocolConversionMessage(mappingFamilyChatCompletions, mappingFamilyResponses); !strings.Contains(msg, "Chat Completions 到 Responses") {
 		t.Fatalf("默认跨协议消息不一致：%s", msg)
 	}
-	if msg := unsupportedHybridProtocolConversionMessage(mappingFamilyMessages, mappingFamilyChatCompletions); !strings.Contains(msg, "Messages 到 Chat Completions") {
-		t.Fatalf("混合不可转换消息不一致：%s", msg)
-	}
 	if msg := missingUpstreamEndpointFamilyCapabilityMessage(mappingFamilyResponses); !strings.Contains(msg, "Responses") {
 		t.Fatalf("缺失上游能力消息不一致：%s", msg)
 	}
@@ -116,23 +113,6 @@ func TestW10AProtocolMappingMatrix(t *testing.T) {
 		SourceEndpointFamily: mappingFamilyResponses, UpstreamEndpointFamily: mappingFamilyResponses,
 	}, openAIProfile, []string{"chat_json"}); err == nil || !strings.Contains(err.Error(), "原生上游") {
 		t.Fatalf("requiresNativeResponses 应拒绝：%v", err)
-	}
-
-	// assertHybridAccountModelMappingProtocolAllowed。
-	validHybrid := ModelMapping{
-		SourceEndpointFamily: mappingFamilyChatCompletions, UpstreamEndpointFamily: mappingFamilyChatCompletions,
-	}
-	if err := assertHybridAccountModelMappingProtocolAllowed(validHybrid, []string{"chat_json"}); err != nil {
-		t.Fatalf("合法混合映射应通过：%v", err)
-	}
-	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
-		SourceEndpointFamily: mappingFamilyGenerateContent, UpstreamEndpointFamily: mappingFamilyResponses,
-	}, []string{"responses_json"}); err == nil {
-		t.Fatal("规则表外的混合映射应拒绝")
-	}
-	if err := assertHybridAccountModelMappingProtocolAllowed(validHybrid, nil); err == nil ||
-		!strings.Contains(err.Error(), "要求账户至少启用一种对应的上游接口能力") {
-		t.Fatalf("混合缺失能力应拒绝：%v", err)
 	}
 }
 
@@ -308,9 +288,9 @@ func TestW10AUsageStatsTodayKey(t *testing.T) {
 }
 
 // TestW10AMediaMappingMatrix 覆盖 M4b 媒体映射矩阵（媒体设计 §9 hybrid 行）：
-// video_generation / tts 族的标签、协议 token 翻译、规则放行（普通 openai 档案
-// 与 hybrid）、能力门（video_create / audio_speech 端点模式）与 chat 语义零
-// 变化回归。
+// video_generation / tts 族的标签、协议 token 翻译、规则放行（普通 openai 档案）、
+// 能力门（video_create / audio_speech 端点模式）与 chat 语义零变化回归。
+// hybrid 跨协议矩阵断言已随 §555 终态扫描拆除（B4④）。
 func TestW10AMediaMappingMatrix(t *testing.T) {
 	// 标签与族判定。
 	if accountModelMappingEndpointFamilyLabel(mappingFamilyVideoGeneration) != "Video Generation" {
@@ -358,8 +338,8 @@ func TestW10AMediaMappingMatrix(t *testing.T) {
 	openAIProfile := protocolPredicateInput{protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion}
 	anthropicProfile := protocolPredicateInput{protocolCode: anthropicProtocolCodeConstant, protocolVersion: anthropicProtocolVersionConstant}
 
-	// 非 hybrid：openai 档案 + 媒体模式放行；缺媒体模式拒绝；anthropic 档案
-	// 拒绝（媒体上游面恒为 OpenAI 形态媒体端点）。
+	// openai 档案 + 媒体模式放行；缺媒体模式拒绝；anthropic 档案拒绝（媒体
+	// 上游面恒为 OpenAI 形态媒体端点）。
 	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
 		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
 	}, openAIProfile, []string{"video_create"}); err != nil {
@@ -383,32 +363,8 @@ func TestW10AMediaMappingMatrix(t *testing.T) {
 		t.Fatalf("anthropic 档案媒体映射应拒绝：%v", err)
 	}
 
-	// hybrid：媒体同族放行；规则表外（媒体→chat）拒绝；缺能力拒绝。
-	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
-		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
-	}, []string{"video_create"}); err != nil {
-		t.Fatalf("hybrid 视频映射应通过：%v", err)
-	}
-	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
-		SourceEndpointFamily: mappingFamilyTts, UpstreamEndpointFamily: mappingFamilyTts,
-	}, []string{"audio_speech"}); err != nil {
-		t.Fatalf("hybrid tts 映射应通过：%v", err)
-	}
-	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
-		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyChatCompletions,
-	}, []string{"chat_json"}); err == nil {
-		t.Fatal("hybrid 媒体→chat 跨族映射应拒绝")
-	}
-	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
-		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
-	}, nil); err == nil || !strings.Contains(err.Error(), "要求账户至少启用一种对应的上游接口能力") {
-		t.Fatalf("hybrid 缺媒体能力应拒绝：%v", err)
-	}
-
-	// chat 语义零变化回归：15 条跨协议矩阵仍在，chat 拒绝臂不受媒体族影响。
-	if len(hybridAccountModelMappingProtocolRules) != 17 {
-		t.Fatalf("hybrid 矩阵行数 = %d, want 17（15 chat + 2 媒体）", len(hybridAccountModelMappingProtocolRules))
-	}
+	// chat 语义零变化回归：普通账户规则行数不变（媒体族映射只经 openai 档案
+	// 白名单声明），chat 拒绝臂不受媒体族影响。
 	if len(accountModelMappingProtocolRules) != 8 {
 		t.Fatalf("普通账户规则行数 = %d, want 8（6 chat + 2 媒体）", len(accountModelMappingProtocolRules))
 	}

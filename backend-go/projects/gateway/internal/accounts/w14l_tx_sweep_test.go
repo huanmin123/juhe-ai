@@ -192,7 +192,7 @@ func w14lSequences() map[string]w14lSequence {
 					return err
 				}
 				task, err := f.store.CreateTestTask(context.Background(), TestTaskCreateInput{
-					AccountID: "w14l-task-acc", AccountName: "w14l-task", ProviderCode: "gpt",
+					AccountID: "w14l-task-acc", AccountName: "w14l-task",
 					ProviderProtocolProfileID: "prof-gpt", ProtocolCode: "openai", ProtocolVersion: "v1",
 					AccountType: "api_key", Access: scope, Diagnostics: "full",
 					SessionID: session.ID, Model: "gpt-4o-mini", TestEndpointMode: "chat_json",
@@ -210,11 +210,11 @@ func w14lSequences() map[string]w14lSequence {
 		"cleanup-tasks": {
 			setup: func(f *w14lFixture) {
 				old := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
-				f.exec(`INSERT INTO account_test_tasks (id, account_id, account_name, provider_code,
+				f.exec(`INSERT INTO account_test_tasks (id, account_id, account_name,
 					provider_protocol_profile_id, protocol_code, protocol_version, account_type,
 					request_system_account_id, request_role, diagnostics, status, status_message, cancel_requested,
 					queued_at, queued_deadline_at, finished_at, created_at, updated_at)
-					VALUES ('task-w14l-old', 'acc-x', '旧任务', 'gpt', 'prof-gpt', 'openai', 'v1', 'api_key',
+					VALUES ('task-w14l-old', 'acc-x', '旧任务', 'prof-gpt', 'openai', 'v1', 'api_key',
 					?, 'super_admin', 'full', 'succeeded', 'done', 0, ?, ?, ?, ?, ?)`,
 					f.owner, old, old, old, old, old)
 				f.exec(`INSERT INTO account_test_sessions (id, request_system_account_id, request_role,

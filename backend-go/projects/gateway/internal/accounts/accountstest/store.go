@@ -152,11 +152,12 @@ type TestDraftSnapshot struct {
 	Notes                     *string                     `json:"notes,omitempty"`
 }
 
-// TestTaskCreateInput mirrors CreateAccountTestTaskInput.
+// TestTaskCreateInput mirrors CreateAccountTestTaskInput. ProviderCode 列已随
+// B4① 存储迁移退役：行读面 providerCode 由 accounts.vendor_code 水合，不再
+// 随任务行落列。
 type TestTaskCreateInput struct {
 	AccountID                 string
 	AccountName               string
-	ProviderCode              string
 	ProviderProtocolProfileID string
 	ProtocolCode              string
 	ProtocolVersion           string
@@ -207,7 +208,7 @@ type TestTaskRow struct {
 	ErrorMessage               sql.NullString
 }
 
-const testTaskSelectColumns = `t.id, st.session_id, t.account_id, t.account_name, t.provider_code,
+const testTaskSelectColumns = `t.id, st.session_id, t.account_id, t.account_name, COALESCE(acc.vendor_code, '') AS provider_code,
 	t.provider_protocol_profile_id, t.protocol_code, t.protocol_version, t.account_type,
 	t.request_system_account_id, t.request_role, t.request_system_account_filter_id,
 	t.status, t.status_message, t.model, t.test_endpoint_mode, t.result_json,
@@ -494,6 +495,7 @@ func (s *Service) ListSessionTasks(ctx context.Context, q accountscore.Queryer, 
 	rows, err := q.QueryContext(ctx, s.store.Bind(`SELECT `+testTaskSelectColumns+`
 		FROM `+s.store.Table("account_test_session_tasks")+` st
 		JOIN `+s.store.Table("account_test_tasks")+` t ON t.id = st.task_id
+		LEFT JOIN `+s.store.Table("accounts")+` acc ON acc.id = t.account_id
 		WHERE st.session_id = ?
 		ORDER BY t.queued_at ASC, t.id ASC`), sessionID)
 	if err != nil {
@@ -690,13 +692,13 @@ func (s *Service) CreateTestTask(ctx context.Context, input TestTaskCreateInput)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, s.store.Bind(`INSERT INTO `+s.store.Table("account_test_tasks")+`
-		(id, account_id, account_name, provider_code, provider_protocol_profile_id,
+		(id, account_id, account_name, provider_protocol_profile_id,
 		 protocol_code, protocol_version, account_type,
 		 request_system_account_id, request_role, request_system_account_filter_id,
 		 diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
 		 cancel_requested, queued_at, queued_deadline_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', `+s.store.BoolFalseLiteral()+`, ?, ?, ?, ?)`),
-		id, input.AccountID, input.AccountName, input.ProviderCode, input.ProviderProtocolProfileID,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', `+s.store.BoolFalseLiteral()+`, ?, ?, ?, ?)`),
+		id, input.AccountID, input.AccountName, input.ProviderProtocolProfileID,
 		input.ProtocolCode, input.ProtocolVersion, input.AccountType,
 		input.Access.ViewerID, TestRequestRole(input.Access), TestTrimmedOrNull(input.Access.FilterID),
 		input.Diagnostics, TestTrimmedOrNull(input.Model), TestTrimmedOrNull(input.TestEndpointMode),
@@ -784,11 +786,15 @@ func SessionCancelReason(row *TestSessionRow) string {
 
 // testTaskRowSelect 必须经方法构造：表名要走 Table() 方言前缀（PG 为
 // juhe_business.*），const 表达式无法调用方法曾导致裸表名在 PG 42P01
-// （2026-09-25 生产/测试「测试账号连接」500 根因）。
+// （2026-09-25 生产/测试「测试账号连接」500 根因）。accounts 必须是 LEFT
+// JOIN：任务行存续独立于账户行（media_jobs「引用列不加外键」同构契约），
+// 草稿测试（acctdraft_*）与已删除账户的任务仍须可读，vendor 水合缺失即
+// 空串投影。
 func (s *Service) testTaskRowSelect() string {
 	return `SELECT ` + testTaskSelectColumns + `
 	FROM ` + s.store.Table("account_test_tasks") + ` t
 	LEFT JOIN ` + s.store.Table("account_test_session_tasks") + ` st ON st.task_id = t.id
+	LEFT JOIN ` + s.store.Table("accounts") + ` acc ON acc.id = t.account_id
 	WHERE t.id = ? LIMIT 1`
 }
 
@@ -843,6 +849,7 @@ func (s *Service) ListTestTasks(ctx context.Context, ids []string, access *accou
 	rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT `+testTaskSelectColumns+`
 		FROM `+s.store.Table("account_test_tasks")+` t
 		LEFT JOIN `+s.store.Table("account_test_session_tasks")+` st ON st.task_id = t.id
+		LEFT JOIN `+s.store.Table("accounts")+` acc ON acc.id = t.account_id
 		WHERE t.id IN (`+placeholders+`)`), accountscore.AnySlice(normalized)...)
 	if err != nil {
 		return nil, err

@@ -34,7 +34,6 @@ var testFamilySchema = []string{
 		id TEXT PRIMARY KEY,
 		account_id TEXT NOT NULL,
 		account_name TEXT NOT NULL,
-		provider_code TEXT NOT NULL,
 		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
 		protocol_code TEXT NOT NULL DEFAULT '',
 		protocol_version TEXT NOT NULL DEFAULT '',

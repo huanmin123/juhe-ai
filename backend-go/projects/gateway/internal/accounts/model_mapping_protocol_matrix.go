@@ -3,13 +3,14 @@ package accounts
 // 账户模型映射协议矩阵（写侧校验域）。对照归档实现：
 //
 //   - storage/account-model-mapping-protocol-matrix.ts：普通账户 6 条源→上游
-//     转换白名单（accountModelMappingProtocolRules）、混合供应商账户 15 条跨
-//     协议矩阵（hybridAccountModelMappingProtocolRules）、单条映射配对断言
+//     转换白名单（accountModelMappingProtocolRules）、单条映射配对断言
 //     （assertSupportedAccountModelMappingEndpointFamilyConversion）、按供应
-//     商协议档案的映射断言（assertAccountModelMappingProtocolAllowed）、
-//     hybrid 映射断言（assertHybridAccountModelMappingProtocolAllowed）、端
+//     商协议档案的映射断言（assertAccountModelMappingProtocolAllowed）、端
 //     点族展示标签（accountModelMappingEndpointFamilyLabel）与上游端点能力
 //     判定（hasAccountModelMappingUpstreamEndpointFamilyCapability）。
+//     hybrid 15 条跨协议矩阵与 assertHybridAccountModelMappingProtocolAllowed
+//     已随 §555 终态扫描拆除（hybrid 不再是供应商，映射断言按连接 preset
+//     推导的协议面分派）。
 //   - storage/account-model-normalization.ts：hybrid 协议模型池校验
 //     （assertMappingModelsInProtocolPools(Async)，verdict-ao 登记的
 //     model_catalog_validation.go hybrid 跳过段）、协议档案目录支持判定
@@ -17,6 +18,7 @@ package accounts
 //     （normalizeAccountSupportedModelsForProviderAsync 的目录段；归档唯一
 //     消费点 account-management-patch.repository.ts:1520
 //     normalizedSupportedModelsForPatch，filterIncompatibleDefaults=false）。
+//     协议池段已随目录断言切 models 表整段删除（见文件尾注）。
 //
 // 端点族枚举与归档 AccountModelMappingEndpointFamily 值一致
 // （write.go accountSourceEndpointFamilies/accountUpstreamEndpointFamilies）。
@@ -76,31 +78,9 @@ var accountModelMappingProtocolRules = []protocolConversionRule{
 	{source: mappingFamilyTts, upstream: mappingFamilyTts, upstreamProfile: "openai"},
 }
 
-// hybridAccountModelMappingProtocolRules mirrors the same-named table: 混合
-// 供应商账户的 15 条跨协议转换矩阵（3 个上游协议族，Go hybrid 账户已可用，
-// 见 endpoint_modes.go 的 hybrid provider/endpoint-mode 家族）。
-var hybridAccountModelMappingProtocolRules = []protocolConversionRule{
-	{source: mappingFamilyChatCompletions, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
-	{source: mappingFamilyResponses, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
-	{source: mappingFamilyMessages, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
-	{source: mappingFamilyGenerateContent, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
-	{source: mappingFamilyStreamGenerateContent, upstream: mappingFamilyChatCompletions, upstreamProfile: "openai"},
-	{source: mappingFamilyMessages, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
-	{source: mappingFamilyChatCompletions, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
-	{source: mappingFamilyResponses, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
-	{source: mappingFamilyGenerateContent, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
-	{source: mappingFamilyStreamGenerateContent, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
-	{source: mappingFamilyGenerateContent, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
-	{source: mappingFamilyStreamGenerateContent, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
-	{source: mappingFamilyChatCompletions, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
-	{source: mappingFamilyResponses, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
-	{source: mappingFamilyMessages, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
-	// M4b 媒体映射（媒体设计 §9 hybrid 行）：hybrid 聚合中转的媒体模型映射
-	// ——source 对外视频/语音模型名 → upstream 该中转的真实媒体模型名，同族
-	// 改写（媒体上游面恒为 OpenAI 形态媒体端点，无跨协议矩阵需求）。
-	{source: mappingFamilyVideoGeneration, upstream: mappingFamilyVideoGeneration, upstreamProfile: "openai"},
-	{source: mappingFamilyTts, upstream: mappingFamilyTts, upstreamProfile: "openai"},
-}
+// hybridAccountModelMappingProtocolRules（混合供应商账户 15 条跨协议矩阵）
+// 已随 §555 终态扫描拆除：hybrid 不再是供应商维度，映射断言统一走
+// accountModelMappingProtocolRules 按 per-profile 白名单分派。
 
 func findProtocolConversionRule(rules []protocolConversionRule, source, upstream string) *protocolConversionRule {
 	for index := range rules {
@@ -189,11 +169,6 @@ func unsupportedProtocolConversionMessage(source, upstream string) string {
 		" 到 " + accountModelMappingEndpointFamilyLabel(upstream) + " 请改用混合供应商账户"
 }
 
-func unsupportedHybridProtocolConversionMessage(source, upstream string) string {
-	return "混合供应商账户暂不支持 " + accountModelMappingEndpointFamilyLabel(source) +
-		" 到 " + accountModelMappingEndpointFamilyLabel(upstream) + " 的协议转换"
-}
-
 func missingUpstreamEndpointFamilyCapabilityMessage(upstream string) string {
 	return "启用的模型映射上游协议 " + accountModelMappingEndpointFamilyLabel(upstream) +
 		" 要求账户至少启用一种对应的上游接口能力"
@@ -260,23 +235,6 @@ func assertAccountModelMappingProtocolAllowed(mapping ModelMapping, profile prot
 	}
 	if isGeminiGenerateContentMappingSource(mapping.SourceEndpointFamily) && !geminiNativeProfile {
 		return &ValidationError{Message: "当前供应商协议不支持 Gemini native 账号模型别名"}
-	}
-	if mappingEnabled(mapping) && !hasAccountModelMappingUpstreamEndpointFamilyCapability(mapping.UpstreamEndpointFamily, supportedEndpointModes) {
-		if rule.requiresNativeResponses {
-			return &ValidationError{Message: "上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游"}
-		}
-		return &ValidationError{Message: missingUpstreamEndpointFamilyCapabilityMessage(mapping.UpstreamEndpointFamily)}
-	}
-	return nil
-}
-
-// assertHybridAccountModelMappingProtocolAllowed mirrors the same-named
-// function: the hybrid cross-protocol matrix gate. 归档签名里的
-// options.providerProfile 在函数体内不被消费，Go 签名省略该参数。
-func assertHybridAccountModelMappingProtocolAllowed(mapping ModelMapping, supportedEndpointModes []string) error {
-	rule := findProtocolConversionRule(hybridAccountModelMappingProtocolRules, mapping.SourceEndpointFamily, mapping.UpstreamEndpointFamily)
-	if rule == nil {
-		return &ValidationError{Message: unsupportedHybridProtocolConversionMessage(mapping.SourceEndpointFamily, mapping.UpstreamEndpointFamily)}
 	}
 	if mappingEnabled(mapping) && !hasAccountModelMappingUpstreamEndpointFamilyCapability(mapping.UpstreamEndpointFamily, supportedEndpointModes) {
 		if rule.requiresNativeResponses {

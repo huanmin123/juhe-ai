@@ -325,22 +325,17 @@ func TestModelMappingCatalogHit(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, "owner-mapping-hit")
 	store := env.store
 	profile := protocolPredicateInput{providerCode: "gpt", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: "prof-gpt"}
-	// 非 hybrid：矩阵门 + models 身份解析（target 模型在夹具 models 种子内，
-	// vendor gpt + owner 可见 + active）→ 通过。目录读取不再经端口（fake 目录
-	// 已随 legacy 面拆除，models 行即权威）。
+	// 矩阵门 + models 身份解析（target 模型在夹具 models 种子内，vendor gpt +
+	// owner 可见 + active）→ 通过。目录读取不再经端口（fake 目录已随 legacy 面
+	// 拆除，models 行即权威）。
 	err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile,
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")},
 		[]string{"chat_json", "chat_sse"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 空 mapping 集早退；hybrid 只走跨协议矩阵门（协议池段已拆除）。
+	// 空 mapping 集早退（hybrid 分派分支已随 §555 终态扫描拆除，B4④）。
 	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "hybrid", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")},
-		[]string{"chat_json", "chat_sse"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -532,9 +527,9 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 }
 
 // b1SetGenericConnections 把 §8 连接集合与健康检查三件套改写为
-// generic_openai_v1 形态（provider 覆写为 openai/hybrid 等 generic 语义的
-// catalog wiring 测试臂使用；B1 断点批）。检查模型取载荷支持模型首个
-// （缺失时回退 gpt-4o-mini，两模型均在夹具 models 种子内）。
+// generic_openai_v1 形态（provider 覆写为 openai 等 generic 语义的 catalog
+// wiring 测试臂使用；B1 断点批）。检查模型取载荷支持模型首个（缺失时回退
+// gpt-4o-mini，两模型均在夹具 models 种子内）。
 func b1SetGenericConnections(input *CreateInput, baseURL string) {
 	preset := "generic_openai_v1"
 	mode := "chat_json"
@@ -618,60 +613,68 @@ func TestBatchUpdateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 	}
 }
 
-// ---- hybrid 供应商：models 身份解析 + 跨协议矩阵门 ----
+// ---- generic（vendor_code=NULL）账户：models 身份解析 + 映射门 ----
+//
+// legacy hybrid 供应商写臂已随 §555 终态扫描拆除（B4④）：hybrid 不再是供应
+// 商维度，本用例改由 generic openai 兼容根（providerCode=openai，vendor 为
+// NULL）承载 NULL vendor 的 models 身份解析与 patch 链映射门覆盖；hybrid
+// token 建户按未注册上下文 400 拒绝（能力域矩阵无该行）。
 
-func TestHybridAccountWriteChecksModelsIdentityAndMatrixGate(t *testing.T) {
+func TestGenericNullVendorAccountWriteChecksModelsIdentityAndMappingGate(t *testing.T) {
 	env := newTestEnv(t)
-	// hybrid 供应商 + 启用档案 + owner 默认分组。
-	ownerID := "owner-hybrid-write"
-	env.exec(t, `INSERT OR IGNORE INTO providers (id, code, name, enabled, created_at, updated_at)
-		VALUES ('prov-hybrid', 'hybrid', '混合供应商', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
-	env.exec(t, `INSERT OR IGNORE INTO provider_protocol_profiles (id, provider_code, name, enabled,
-		protocol_code, protocol_version, base_url, default_health_check_model, account_types_json,
-		capabilities_json, created_at, updated_at)
-		VALUES ('prof-hybrid', 'hybrid', '混合协议', 1, 'openai', 'v1', 'https://hybrid.example.com/v1',
-		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+	// owner 默认分组（generic 供应商无 vendors 行，不需要 providers/profiles 种子）。
+	ownerID := "owner-generic-nullvendor"
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-hybrid-default', ?, '混合默认分组', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
+		VALUES ('grp-generic-default', ?, '通用默认分组', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
 	store := env.store
 	scope := AccessScope{ViewerID: ownerID, IsAdmin: true}
 
-	// hybrid 账户 vendor_code=NULL：支持模型按 COALESCE(vendor,'') 身份键解析
-	// （夹具 NULL vendor 行命中 m1）；映射无协议池段，仅跨协议矩阵门。
-	input := catalogWiringCreateInput("hybrid-hit",
+	// §555 终态：legacy hybrid token 的能力域矩阵行已拆除（B4④），创建在能力
+	// 域门按未注册上下文 400 拒绝。
+	hybridInput := catalogWiringCreateInput("hybrid-rejected",
+		Credentials{"api_key": "sk-live-secret-1234567890"}, []string{"m1"}, nil)
+	hybridInput.ProviderCode = "hybrid"
+	b1SetGenericConnections(&hybridInput, "https://hybrid.example.com/v1")
+	_, err := store.Create(context.Background(), hybridInput, scope)
+	assertValidationError(t, err, "hybrid 不支持对话账户")
+
+	// generic 账户 vendor_code=NULL：支持模型按 COALESCE(vendor,'') 身份键解析
+	// （夹具 NULL vendor 行命中 m1）；providerProtocolProfileId 是过渡 DTO、
+	// 创建链协议身份已由连接载荷推导（routes.go createBody 注释），不覆写。
+	input := catalogWiringCreateInput("generic-nullvendor-hit",
 		Credentials{"api_key": "sk-live-secret-1234567890", "supported_endpoint_modes": []any{"chat_json", "chat_sse"}},
 		[]string{"m1"}, nil)
-	input.ProviderCode = "hybrid"
-	input.ProviderProtocolProfileID = "prof-hybrid"
-	b1SetGenericConnections(&input, "https://hybrid.example.com/v1")
+	input.ProviderCode = "openai"
+	b1SetGenericConnections(&input, "https://generic.example.com/v1")
 	created, err := store.Create(context.Background(), input, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.ID == "" {
-		t.Fatal("hybrid create must succeed")
+		t.Fatal("generic create must succeed")
 	}
 
-	// hybrid 映射：矩阵门 + target 模型 models 身份解析（写入侧双解析需要
-	// 连接 + 支持成员前置事实，设计 §5.1/§9）。
-	env.seedAccountConnection(t, created.ID, "generic_openai_v1", "gpt-4o-mini", "outside-upstream")
+	// 映射：per-profile 矩阵门 + target 模型 models 身份解析（写入侧双解析需要
+	// 连接 + 支持成员前置事实，设计 §5.1/§9）。T52 门禁：映射 target 必须落
+	// 在支持模型集合内，target 取创建集合内的 m1（NULL vendor 行）。
+	env.seedAccountConnection(t, created.ID, "generic_openai_v1", "outside-upstream")
 	if _, err := store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 1,
 		ModelMappingsPresent:   true,
 		ModelMappings: []ModelMapping{{
 			SourceModel: "gpt-4o-mini", SourceEndpointFamily: "chat_completions",
-			UpstreamModel: "gpt-4o-mini", UpstreamEndpointFamily: "chat_completions",
+			UpstreamModel: "m1", UpstreamEndpointFamily: "chat_completions",
 			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
 	}, scope); err != nil {
 		t.Fatal(err)
 	}
 
-	// hybrid 映射：target 模型不在 models → 拒绝。patch 链映射整替换先行，
-	// 写入侧 resolveEntryModelID 以 mapping_target_unsupported 显式拒绝（400
-	// 族；协议池文案随段拆除退役）。上一 patch 递增 revision，期望值取成功返
-	// 回的 config_revision。
+	// 映射：target 不在支持模型集合 → patch 链 T52 预校验按 batch/import
+	// 同文案 400 族拒绝（映射 target 锁进支持模型集合，设计 §5.1；越界 target
+	// 在生产 PG 由复合外键 23503 兜底成 500，修复前无此语义化门禁）。上一
+	// patch 递增 revision，期望值取成功返回的 config_revision。
 	_, err = store.Patch(context.Background(), created.ID, PatchInput{
 		ExpectedConfigRevision: 2,
 		ModelMappingsPresent:   true,
@@ -681,7 +684,7 @@ func TestHybridAccountWriteChecksModelsIdentityAndMatrixGate(t *testing.T) {
 			TargetConnectionPresetCode: "generic_openai_v1",
 		}},
 	}, scope)
-	assertValidationError(t, err, `mapping_target_unsupported: target model "gpt-o1" resolves to no active owner-visible models row`)
+	assertValidationError(t, err, "映射上游模型只能选择账户支持模型：gpt-o1")
 }
 
 // TestPatchSupportedModelsUnorderedEqualityAndEmptyArray 对照归档

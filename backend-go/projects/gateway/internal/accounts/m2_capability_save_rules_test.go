@@ -120,7 +120,6 @@ var m2ConnectionContractByProvider = map[string]struct {
 	"volcengine": {"volcengine_ark", "https://ark.cn-beijing.volces.com"},
 	"qwen":       {"qwen_dashscope", "https://dashscope.aliyuncs.com"},
 	"openai":     {"generic_openai_v1", "https://upstream.example.com/v1"},
-	"hybrid":     {"generic_openai_v1", "https://upstream.example.com/v1"},
 }
 
 // m2CreateBody 构造 POST /accounts 负载。B1 断点批（设计 §8）：连接集合
@@ -510,7 +509,7 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 
 // TestM2ChatDomainLegacyDefaultsPin 把 chat 域默认集按 BUG-0323 根治口径钉住：
 // 现行默认本就域内的供应商（openai 族/gemini/anthropic/glm）与现行归一化缺省
-// 逐项全等；媒体优先供应商（volcengine/qwen/hybrid）改为域内断言——缺省恒 ⊆
+// 逐项全等；媒体优先供应商（volcengine/qwen）改为域内断言——缺省恒 ⊆
 // chat 域允许集，volcengine/qwen 落词表内基础对话对。
 func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 	contexts := []struct {
@@ -571,17 +570,14 @@ func TestM2ChatDomainLegacyDefaultsPin(t *testing.T) {
 			}
 		})
 	}
-	// hybrid 现行缺省为全词表并集 → 与 chat lane 集求交收敛为非空域内子集。
+	// §555 终态：legacy hybrid token 的矩阵行已拆除（B4④ 残留门）——chat 域
+	// 允许集与默认集恒空（与「未注册上下文」同类），建户 400。
 	hybridProfile := protocolPredicateInput{providerCode: "hybrid"}
-	hybridDefault := accountscoreDefaultForTest("hybrid", "api_key", hybridProfile)
-	hybridAllowed := accountscore.AllowedEndpointModes(accountscore.CapabilityDomainChat, "hybrid", "api_key", toProtocolPredicate(hybridProfile))
-	if len(hybridDefault) == 0 {
-		t.Fatalf("hybrid chat 默认集不应为空：%v", hybridDefault)
+	if got := accountscore.AllowedEndpointModes(accountscore.CapabilityDomainChat, "hybrid", "api_key", toProtocolPredicate(hybridProfile)); len(got) != 0 {
+		t.Fatalf("hybrid token chat 允许集应为空（矩阵无该行）：%v", got)
 	}
-	for _, mode := range hybridDefault {
-		if !containsString(hybridAllowed, mode) {
-			t.Fatalf("hybrid chat 默认集应 ⊆ chat 允许集，越界值 %s：%v（允许集 %v）", mode, hybridDefault, hybridAllowed)
-		}
+	if got := accountscoreDefaultForTest("hybrid", "api_key", hybridProfile); len(got) != 0 {
+		t.Fatalf("hybrid token chat 默认集应为空（矩阵无该行）：%v", got)
 	}
 	// 矩阵关闭格（2026-10-12 裁决）：minimax chat 域的允许集与默认集恒空。
 	minimaxProfile := protocolPredicateInput{providerCode: "minimax", protocolCode: "openai", protocolVersion: "v1", providerProtocolProfileID: minimaxOpenAIV1ProfileID}

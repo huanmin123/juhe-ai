@@ -447,32 +447,11 @@ func NormalizeGeminiEndpointModesForRuntime(value []string, defaults accountscor
 	return output
 }
 
-// NormalizeHybridEndpointModesForRuntime mirrors the hybrid runtime
-// normalization（原根包私有函数，根包测试经由转发访问）.
-func NormalizeHybridEndpointModesForRuntime(value []string) []string {
-	known := accountscore.StringSet(accountscore.HybridEndpointModeValues)
-	output := []string{}
-	seen := map[string]bool{}
-	for _, item := range value {
-		if !known[item] || seen[item] {
-			continue
-		}
-		seen[item] = true
-		output = append(output, item)
-	}
-	if len(output) == 0 {
-		return append([]string{}, accountscore.HybridEndpointModeValues...)
-	}
-	return output
-}
-
 // AccountManualTestEndpointModes mirrors the same-named helper
 // （原根包私有函数，根包测试经由转发访问）.
 func AccountManualTestEndpointModes(source ManualTestModeSource) []string {
 	enabled := source.SupportedEndpointModes
 	switch {
-	case accountscore.IsHybridProviderCodeToken(source.ProviderCode):
-		enabled = NormalizeHybridEndpointModesForRuntime(source.SupportedEndpointModes)
 	case accountscore.IsAnthropicProtocolProfileOf(source.predicate()):
 		enabled = NormalizeAnthropicEndpointModesForRuntime(source.SupportedEndpointModes, source.defaultContext())
 	case accountscore.IsGeminiProtocolProfileOf(source.predicate()):
@@ -514,10 +493,6 @@ func AccountTestEndpointModeOrder(source ManualTestModeSource) []string {
 	// 形态顺序统一流式优先（AI账户检查模型与人工测试设计 §5 2026-10-19 定案）：
 	// 同一协议内 _sse 恒先于 _json，账户已保存的 healthCheckEndpointMode 仍置顶。
 	switch {
-	case accountscore.IsHybridProviderCodeToken(source.ProviderCode):
-		return unique(defaultMode,
-			"chat_sse", "responses_sse", "messages_sse", "generate_content_sse",
-			"chat_json", "responses_json", "messages_json", "generate_content_json")
 	case accountscore.IsAnthropicProtocolProfileOf(source.predicate()):
 		return unique(defaultMode, "messages_sse", "messages_json")
 	case accountscore.IsGeminiProtocolProfileOf(source.predicate()):
@@ -554,7 +529,8 @@ func IsTestMappingSourceFamily(value string) bool {
 
 // IsOpenAIModelMappingRuntimeConversionSupported mirrors the same-named
 // helper (model-mapping.ts; also ported in gatewayopenai/mapping.go)
-// （原根包私有函数，根包测试经由转发访问）.
+// （原根包私有函数，根包测试经由转发访问）. legacy hybrid 跨协议转换矩阵已随
+// §555 终态扫描拆除：转换支持只由映射族配对与协议面（连接 preset 推导）判定。
 func IsOpenAIModelMappingRuntimeConversionSupported(mapping accountscore.ModelMapping, source ManualTestModeSource) bool {
 	src := mapping.SourceEndpointFamily
 	upstream := mapping.UpstreamEndpointFamily
@@ -562,21 +538,6 @@ func IsOpenAIModelMappingRuntimeConversionSupported(mapping accountscore.ModelMa
 		return true
 	}
 	if src == "responses" && upstream == "chat_completions" && accountscore.IsOpenAIProtocolProfileOf(source.predicate()) {
-		return true
-	}
-	if !accountscore.IsHybridProviderCodeToken(source.ProviderCode) {
-		return false
-	}
-	switch {
-	case src == "responses" && upstream == "chat_completions",
-		src == "messages" && upstream == "chat_completions",
-		(src == "generate_content" || src == "stream_generate_content") && upstream == "chat_completions",
-		src == "chat_completions" && upstream == "messages",
-		src == "responses" && upstream == "messages",
-		(src == "generate_content" || src == "stream_generate_content") && upstream == "messages",
-		src == "chat_completions" && upstream == "generate_content",
-		src == "responses" && upstream == "generate_content",
-		src == "messages" && upstream == "generate_content":
 		return true
 	}
 	return false
@@ -844,11 +805,14 @@ func (s *Service) appendTestOptionTextFilter(clauses *[]string, args []any, quer
 	return args
 }
 
+// testSelectedOrderClause 把已选模型置顶。必须用物理列 public_model：PG 的
+// ORDER BY 别名只能独立引用、不能出现在表达式里，`CASE WHEN model IN (...)`
+// 会按 FROM 表解析 model 列（SQLSTATE 42703），SQLite 宽松解析掩盖了该差异。
 func testSelectedOrderClause(query ManualTestOptionsQuery) string {
 	if len(query.SelectedIDs) == 0 {
 		return ""
 	}
-	return "CASE WHEN model IN (" + accountscore.Placeholders(len(query.SelectedIDs)) + ") THEN 0 ELSE 1 END, "
+	return "CASE WHEN public_model IN (" + accountscore.Placeholders(len(query.SelectedIDs)) + ") THEN 0 ELSE 1 END, "
 }
 
 func selectedOrderArgs(query ManualTestOptionsQuery) []any {
@@ -1351,8 +1315,7 @@ func (s *Service) manualTestEndpointModesForTargetModel(ctx context.Context, sou
 	// v8-C 对话协议面排除：图像/视频目录行（mode ∈ {image_generation, video}）
 	// 不参与 chat_completions/responses/messages/generate_content 族（含
 	// interactions）测试形态；images_json 测试面的图像模型分支不受影响。
-	// AccountManualTestEndpointModes 只产出对话族模式（hybrid 词表也不含
-	// video/audio 值），整段跳过等价于逐族排除。
+	// AccountManualTestEndpointModes 只产出对话族模式，整段跳过等价于逐族排除。
 	itemMode := strings.ToLower(strings.TrimSpace(item.Mode))
 	itemModeBlocksChatFace := itemMode == "image_generation" || itemMode == "video"
 	if !itemModeBlocksChatFace {
@@ -1451,20 +1414,6 @@ func IsAccountManualTestModel(item TestCatalogItem, source ManualTestModeSource)
 		return !itemModeBlocksChatFace && itemMode != "image"
 	}
 	switch {
-	case accountscore.IsHybridProviderCodeToken(source.ProviderCode):
-		for _, protocol := range protocols {
-			switch protocol {
-			case "chat_completions", "responses", "messages", "generate_content", "stream_generate_content":
-				if !itemModeBlocksChatFace {
-					return true
-				}
-			case "images":
-				if source.AccountType == "api_key" {
-					return true
-				}
-			}
-		}
-		return false
 	case accountscore.IsOpenAIProtocolProfileOf(source.predicate()):
 		for _, protocol := range protocols {
 			switch protocol {

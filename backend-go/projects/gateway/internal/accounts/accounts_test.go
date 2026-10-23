@@ -1581,6 +1581,12 @@ func TestAccountCloneContext(t *testing.T) {
 	if data["configRevision"] == nil {
 		t.Fatal("configRevision missing")
 	}
+	// 克隆表单以 providerProtocolProfileId 选择账户类型与凭证组件；列退役后必须
+	// 由健康检查连接 preset 派生（与编辑面读侧同源，BUG-0332/0333），空值会让
+	// 克隆弹窗整块空白、创建按钮禁用。
+	if data["providerProtocolProfileId"] != "profile_gpt_openai_v1" {
+		t.Fatalf("clone context must derive profile id from health check preset: %v", data["providerProtocolProfileId"])
+	}
 	raw, _ := json.Marshal(payload)
 	if strings.Contains(string(raw), "sk-live-secret-1234567890") {
 		t.Fatal("clone context leaked raw credential material")

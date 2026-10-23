@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
 // M09 clone-context slice: GET /accounts/{id}/clone-context ported from
@@ -165,23 +167,31 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		clientCompatibility       string
 		healthCheckModel          string
 		healthCheckEndpointMode   string
-		proxyProfileID            sql.NullString
-		availabilitySchedule      sql.NullString
-		accountExpiresAt          sql.NullString
-		continuousProbeEnabled    int64
-		balanceQueryEnabled       int64
-		balanceQueryConfigJSON    string
-		authorizationID           sql.NullString
-		sourceAccountID           sql.NullString
-		capabilityDomain          string
-		boundGroupID              sql.NullString
-		boundGroupName            sql.NullString
-		boundGroupBindingUpdAt    sql.NullString
-		boundGroupRecordUpdAt     sql.NullString
+		// 供应商解耦（设计 §9.11）：provider_protocol_profile_id 列已退役，
+		// 克隆面档案由健康检查连接的 preset 确定性派生（与编辑面读侧同源）。
+		healthCheckConnectionID  sql.NullString
+		currentHealthCheckPreset string
+		proxyProfileID           sql.NullString
+		availabilitySchedule     sql.NullString
+		accountExpiresAt         sql.NullString
+		continuousProbeEnabled   int64
+		balanceQueryEnabled      int64
+		balanceQueryConfigJSON   string
+		authorizationID          sql.NullString
+		sourceAccountID          sql.NullString
+		capabilityDomain         string
+		boundGroupID             sql.NullString
+		boundGroupName           sql.NullString
+		boundGroupBindingUpdAt   sql.NullString
+		boundGroupRecordUpdAt    sql.NullString
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, COALESCE(accounts.vendor_code, '') AS provider_code,
 			'' AS provider_protocol_profile_id,
+			accounts.health_check_connection_id,
+			COALESCE((SELECT account_connections.connection_preset_code
+				FROM `+s.table("account_connections")+` account_connections
+				WHERE account_connections.id = accounts.health_check_connection_id), '') AS current_health_check_preset,
 			accounts.protocol_code, accounts.protocol_version, accounts.capability_domain,
 			accounts.name, accounts.notes,
 			accounts.type, accounts.status, accounts.credentials_encrypted,
@@ -201,7 +211,8 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 			AND accounts.deleted_at IS NULL`+scopeClause+`
 		LIMIT 1`), args...).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID, &row.providerCode,
-		&row.providerProtocolProfileID, &row.protocolCode, &row.protocolVersion, &row.capabilityDomain,
+		&row.providerProtocolProfileID, &row.healthCheckConnectionID, &row.currentHealthCheckPreset,
+		&row.protocolCode, &row.protocolVersion, &row.capabilityDomain,
 		&row.name,
 		&row.notes, &row.accountType, &row.status, &row.credentialsEncrypted,
 		&row.oauthType, &row.concurrencyLimit, &row.priority, &row.superPriorityEnabled, &row.fallbackEnabled,
@@ -215,6 +226,12 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	// 供应商解耦（设计 §2.1/§9.11）：克隆面档案由健康检查连接 preset 派生，
+	// 空 preset（无健康检查连接）保持空串，前端按不完整配置拒绝提交。
+	// 与编辑面 FindEditBasicDetail（BUG-0332）同源。
+	if profileID, ok := exactkeyprobe.ConnectionPresetProfileID(row.currentHealthCheckPreset); ok {
+		row.providerProtocolProfileID = profileID
 	}
 	// canManageResourceOwner: users only ever manage their own rows.
 	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID {

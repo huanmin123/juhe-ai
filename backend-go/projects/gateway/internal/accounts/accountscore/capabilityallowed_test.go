@@ -29,7 +29,6 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 	volcengine := capabilityAllowedPredicate("volcengine", "openai", "v1", VolcengineOpenAIV1ProfileID)
 	qwen := capabilityAllowedPredicate("qwen", "openai", "v1", QwenOpenAIV1ProfileID)
 	minimax := capabilityAllowedPredicate("minimax", "openai", "v1", MinimaxOpenAIV1ProfileID)
-	hybrid := capabilityAllowedPredicate("hybrid", "", "", "")
 	deepSeekOpenAI := capabilityAllowedPredicate("deepseek", "openai", "v1", DeepSeekOpenAIV1ProfileID)
 	xaiOpenAI := capabilityAllowedPredicate("xai", "openai", "v1", XaiOpenAIV1ProfileID)
 
@@ -105,20 +104,16 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
 		{name: "minimax audio 矩阵内", domain: "audio", providerCode: "minimax", accountType: "api_key", profile: minimax,
 			want: []string{"audio_speech"}},
-		{name: "hybrid audio 含 v8-A 新移入两项（词表全支持）", domain: "audio", providerCode: "hybrid", accountType: "api_key", profile: hybrid,
-			want: []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "audio_transcription_json", "realtime_session"}},
-		{name: "hybrid 四域非空", domain: "chat", providerCode: "hybrid", accountType: "api_key", profile: hybrid,
-			want: nil}, // 非空断言走下方分支
+		// §555 终态：legacy hybrid token 不再是供应商维度——矩阵无该行，任何
+		// 域的允许集为空（与「未注册上下文」同类，B4④ 残留门拆除）。
+		{name: "hybrid token 未注册上下文空（audio）", domain: "audio", providerCode: "hybrid", accountType: "api_key", profile: capabilityAllowedPredicate("hybrid", "", "", ""),
+			want: []string{}},
+		{name: "hybrid token 未注册上下文空（chat）", domain: "chat", providerCode: "hybrid", accountType: "api_key", profile: capabilityAllowedPredicate("hybrid", "", "", ""),
+			want: []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := AllowedEndpointModes(tc.domain, tc.providerCode, tc.accountType, tc.profile)
-			if tc.want == nil {
-				if len(got) == 0 {
-					t.Fatalf("hybrid chat 允许集应非空：%v", got)
-				}
-				return
-			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("AllowedEndpointModes(%s,%s,%s) = %v, want %v", tc.domain, tc.providerCode, tc.accountType, got, tc.want)
 			}
@@ -129,7 +124,6 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 func TestDefaultEndpointModesForDomain(t *testing.T) {
 	volcengine := capabilityAllowedPredicate("volcengine", "openai", "v1", VolcengineOpenAIV1ProfileID)
 	qwen := capabilityAllowedPredicate("qwen", "openai", "v1", QwenOpenAIV1ProfileID)
-	hybrid := capabilityAllowedPredicate("hybrid", "", "", "")
 	gptOpenAI := capabilityAllowedPredicate("gpt", "openai", "v1", GptOpenAIV1ProfileID)
 	geminiNative := capabilityAllowedPredicate("gemini", "gemini", "v1beta", "profile_gemini_native_v1beta")
 	deepSeekOpenAI := capabilityAllowedPredicate("deepseek", "openai", "v1", DeepSeekOpenAIV1ProfileID)
@@ -185,15 +179,10 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 	if got := DefaultEndpointModesForDomain("chat", "qwen", "api_key", qwen); !reflect.DeepEqual(got, []string{"chat_json", "chat_sse"}) {
 		t.Fatalf("qwen chat 默认集应落词表内基础对话对：%v", got)
 	}
-	// hybrid 现行缺省为全词表并集 → 与 chat lane 集求交收敛为非空域内子集
-	// （词表并集覆盖 13 值锚集全部成员，当前实现恰为全 13 值；断言契约口径
-	// =非空且 ⊆ chat 域 lane 集，不 pin 顺序）。
-	hybridChat := DefaultEndpointModesForDomain("chat", "hybrid", "api_key", hybrid)
-	if len(hybridChat) == 0 {
-		t.Fatalf("hybrid chat 默认集不应为空：%v", hybridChat)
-	}
-	if outliers := OutOfDomainModes(hybridChat, chatDomainLaneModes()); len(outliers) > 0 {
-		t.Fatalf("hybrid chat 默认集应 ⊆ chat 域 lane 集，越界=%v：%v", outliers, hybridChat)
+	// §555 终态：legacy hybrid token 的矩阵行已拆除（B4④），任何域的默认集
+	// 为空（词表未注册），与「未注册上下文」同类。
+	if got := DefaultEndpointModesForDomain("chat", "hybrid", "api_key", capabilityAllowedPredicate("hybrid", "", "", "")); len(got) != 0 {
+		t.Fatalf("hybrid token 默认集应为空（矩阵无该行）：%v", got)
 	}
 }
 

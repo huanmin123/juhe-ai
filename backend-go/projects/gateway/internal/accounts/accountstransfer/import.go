@@ -1887,7 +1887,14 @@ func (s *Service) executeImportPlan(ctx context.Context, plan *ImportPlan, acces
 		input := ImportCreateInput(&account.source, groupID, account.proxyProfileID)
 		createdID, createdStatus, err := s.deps.Writer.CreateAccount(ctx, input, access)
 		if err != nil {
-			if accountscore.DuplicateAccountNameError(err, account.source.name) != nil && PlanSkipDuplicates(plan) {
+			// 重名分类（BUG-0294/A15）：Create 已把原始 UNIQUE 冲突预转为
+			// *accountscore.ConflictError（write.go 的 duplicateAccountNameError），
+			// 执行层除保留原始 UNIQUE 文本分类外，还须识别该预转结果，
+			// skipDuplicates 的 skip 臂才可达（Node 契约：开启时重名记 skip）。
+			// CreateAccount 路径上的 ConflictError 只可能是账户重名——代理/分组
+			// 重名的 ConflictError 由本文件各自的创建臂产生，不经过这里。
+			var nameConflict *accountscore.ConflictError
+			if (accountscore.DuplicateAccountNameError(err, account.source.name) != nil || errors.As(err, &nameConflict)) && PlanSkipDuplicates(plan) {
 				account.item.Action = ImportActionSkip
 				account.item.Messages = []string{err.Error()}
 				plan.result.Summary.Accounts.Create--

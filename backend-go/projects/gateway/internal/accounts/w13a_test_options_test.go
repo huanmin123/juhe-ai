@@ -1,7 +1,7 @@
 package accounts
 
 // w13a test_options_service.go 纯函数补臂：端点能力运行时归一（OpenAI/
-// Anthropic/Gemini/Hybrid）、测试端点顺序、模型映射族与运行时转换支持、
+// Anthropic/Gemini）、测试端点顺序、模型映射族与运行时转换支持、
 // 查询参数归一与上限、凭据端点能力投影、去重。
 
 import (
@@ -19,7 +19,7 @@ func TestW13ATestEndpointModeRuntimeHelpers(t *testing.T) {
 	if modes := normalizeOpenAIEndpointModesForRuntime([]string{"bogus"}, defaults); len(modes) == 0 {
 		t.Fatal("空集应回退默认")
 	}
-	// Anthropic / Gemini / Hybrid。
+	// Anthropic / Gemini。
 	anthropicDefaults := endpointModeDefaultContext{providerCode: "anthropic", accountType: "api_key", protocolCode: "anthropic", protocolVersion: "v1"}
 	got = normalizeAnthropicEndpointModesForRuntime([]string{"messages_json", "bogus"}, anthropicDefaults)
 	if !reflect.DeepEqual(got, []string{"messages_json"}) {
@@ -38,14 +38,9 @@ func TestW13ATestEndpointModeRuntimeHelpers(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("Gemini 默认不应为空")
 	}
-	got = normalizeHybridEndpointModesForRuntime([]string{"chat_json", "bogus", "messages_json"})
-	if !reflect.DeepEqual(got, []string{"chat_json", "messages_json"}) {
-		t.Fatalf("Hybrid 归一不一致：%v", got)
-	}
-	got = normalizeHybridEndpointModesForRuntime([]string{"bogus"})
-	if len(got) < 4 {
-		t.Fatalf("Hybrid 空集应回退全表：%v", got)
-	}
+	// Hybrid 运行时归一已随 §555 终态扫描拆除（B4④）：legacy hybrid token
+	// 不再是供应商维度，协议面分支（anthropic/gemini/openai）之外一律按
+	// 未注册上下文处理。
 }
 
 func TestW13AAccountManualTestEndpointModes(t *testing.T) {
@@ -75,12 +70,13 @@ func TestW13AAccountManualTestEndpointModes(t *testing.T) {
 	if modes = accountManualTestEndpointModes(gemini); len(modes) == 0 {
 		t.Fatal("Gemini 模式不应为空")
 	}
-	// Hybrid 供应商。
+	// legacy hybrid token（无协议面）：与未知供应商同类，终态为空（B4④ 残留
+	// 门拆除，hybrid 分支退役）。
 	hybrid := manualTestModeSource{
 		ProviderCode: "hybrid", AccountType: "api_key",
 	}
-	if modes = accountManualTestEndpointModes(hybrid); len(modes) == 0 {
-		t.Fatal("Hybrid 模式不应为空")
+	if modes = accountManualTestEndpointModes(hybrid); len(modes) != 0 {
+		t.Fatalf("hybrid token 未注册上下文应为空：%v", modes)
 	}
 	// 未知供应商：空。
 	unknown := manualTestModeSource{ProviderCode: "bogus", AccountType: "api_key"}
@@ -107,22 +103,19 @@ func TestW13ATestMappingHelpers(t *testing.T) {
 		t.Fatal("responses→chat 在 OpenAI 协议应支持")
 	}
 	if isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
-		t.Fatal("messages→chat 在非 Hybrid 不应支持")
+		t.Fatal("messages→chat 在非 OpenAI 协议面不应支持")
 	}
+	// legacy hybrid token 的跨协议转换矩阵已随 §555 终态扫描拆除（B4④）：
+	// hybrid 来源只剩同族直通与 stream→generate 归一，跨协议一律不支持。
 	hybrid := manualTestModeSource{ProviderCode: "hybrid"}
-	for _, pair := range [][2]string{
-		{"responses", "chat_completions"}, {"messages", "chat_completions"},
-		{"generate_content", "chat_completions"}, {"stream_generate_content", "chat_completions"},
-		{"chat_completions", "messages"}, {"responses", "messages"},
-		{"generate_content", "messages"}, {"chat_completions", "generate_content"},
-		{"responses", "generate_content"}, {"messages", "generate_content"},
-	} {
-		if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: pair[0], UpstreamEndpointFamily: pair[1]}, hybrid) {
-			t.Fatalf("Hybrid %s→%s 应支持", pair[0], pair[1])
-		}
+	if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, hybrid) {
+		t.Fatal("hybrid 同族直通应保留")
+	}
+	if isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, hybrid) {
+		t.Fatal("hybrid messages→chat 跨协议转换应随矩阵拆除退役")
 	}
 	if isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "bogus"}, hybrid) {
-		t.Fatal("Hybrid 未知目标不应支持")
+		t.Fatal("未知目标不应支持")
 	}
 }
 
