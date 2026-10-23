@@ -48,6 +48,25 @@ type Authenticator struct {
 	db   *sql.DB
 	mode Mode
 	now  func() time.Time
+	// initialPasswordGateDisabled mirrors the dev-only
+	// JUHE_AI_AUTH_MUST_CHANGE_PASSWORD_GATE_DISABLED switch: when set, the
+	// seeded initial-password gate is normalized away at every actor and
+	// credential construction site, so /auth/me, the session 403 gate and the
+	// login surfaces all observe mustChangePassword=false. The stored
+	// must_change_password column is never written; disabling the switch
+	// restores the gate immediately.
+	initialPasswordGateDisabled bool
+}
+
+// SetInitialPasswordGateDisabled enables the dev-only initial-password gate
+// bypass described on the field. It must be called before the first
+// authentication; the Authenticator is not safe for concurrent
+// reconfiguration.
+func (a *Authenticator) SetInitialPasswordGateDisabled(disabled bool) {
+	if a == nil {
+		return
+	}
+	a.initialPasswordGateDisabled = disabled
 }
 
 func New(db *sql.DB, mode Mode, now func() time.Time) (*Authenticator, error) {
@@ -154,8 +173,8 @@ func (a *Authenticator) authenticateToken(ctx context.Context, token string, rej
 			return Actor{}, fmt.Errorf("touch management session: %w", err)
 		}
 	}
-	actor.MustChangePassword = mustChange
-	if rejectMustChange && mustChange {
+	actor.MustChangePassword = mustChange && !a.initialPasswordGateDisabled
+	if rejectMustChange && actor.MustChangePassword {
 		return Actor{}, ErrMustChange
 	}
 	return actor, nil

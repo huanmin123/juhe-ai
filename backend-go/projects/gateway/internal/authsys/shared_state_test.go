@@ -3,6 +3,7 @@ package authsys
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -241,5 +242,87 @@ func TestSharedDriversSurfaceStoreErrorsAsFailClosed(t *testing.T) {
 	}
 	if blocked {
 		t.Fatal("a failed check must not claim a lock either")
+	}
+}
+
+// TestSharedCaptchaCrossInstanceConsumption proves the store-level
+// multi-instance contract behind the single-instance tests: two
+// SharedCaptchaService instances over the same Redis behave as one — the
+// challenge issued by instance A is consumed by instance B, and it is gone
+// for any instance afterwards (BUG-0171.4 store-level regression).
+func TestSharedCaptchaCrossInstanceConsumption(t *testing.T) {
+	store, server := newMiniredisStore(t)
+	now := time.Unix(1_800_000_000, 0)
+	instanceA := NewSharedCaptchaService(store, func() time.Time { return now })
+	instanceB := NewSharedCaptchaService(store, func() time.Time { return now })
+
+	result, err := instanceA.Issue("203.0.113.30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := sharedCaptchaAnswerForTest(t, instanceA, result.Challenge.CaptchaID, server, "juhe-ai:dev:state:test_store:challenge:")
+
+	if verified, err := instanceB.VerifyWithError(result.Challenge.CaptchaID, strings.ToLower(answer)); err != nil || !verified {
+		t.Fatalf("instance B must consume the challenge issued by instance A: verified=%v err=%v", verified, err)
+	}
+	// The consumption is store-global: instance A sees the same consumed
+	// state, and a second B attempt misses too.
+	if verified, err := instanceA.VerifyWithError(result.Challenge.CaptchaID, answer); err != nil || verified {
+		t.Fatalf("second consumption must miss on instance A: verified=%v err=%v", verified, err)
+	}
+	if verified, err := instanceB.VerifyWithError(result.Challenge.CaptchaID, answer); err != nil || verified {
+		t.Fatalf("second consumption must miss on instance B: verified=%v err=%v", verified, err)
+	}
+}
+
+// TestSharedLoginGuardCrossInstanceLock proves the shared throttle contract:
+// failures recorded through instance A reach the threshold, so instance B's
+// Check hits the lock — one shared failure counter, no per-instance bypass.
+func TestSharedLoginGuardCrossInstanceLock(t *testing.T) {
+	store, _ := newMiniredisStore(t)
+	now := time.Unix(1_900_000_000, 0)
+	instanceA := NewSharedLoginGuard(store, func() time.Time { return now })
+	instanceB := NewSharedLoginGuard(store, func() time.Time { return now })
+
+	for i := 1; i <= 9; i++ {
+		if blocked, _, _, err := instanceA.Failed("203.0.113.31", "Cross-User"); blocked || err != nil {
+			t.Fatalf("A failure %d must not lock yet: blocked=%v err=%v", i, blocked, err)
+		}
+	}
+	blocked, _, _, err := instanceA.Failed("203.0.113.31", "cross-user")
+	if err != nil || !blocked {
+		t.Fatalf("A's 10th failure must lock: err=%v blocked=%v", err, blocked)
+	}
+	// B sees the A-side IP lock even though it recorded none of the failures.
+	blocked, retry, message, err := instanceB.Check("203.0.113.31", "other-user")
+	if err != nil || !blocked || message != "尝试过于频繁，请稍后再试" || retry <= 0 {
+		t.Fatalf("B must hit the A-side ip lock: err=%v blocked=%v retry=%d message=%q", err, blocked, retry, message)
+	}
+	// The username dimension is shared the same way: fresh IP, same username.
+	blocked, _, message, err = instanceB.Check("198.51.100.44", "Cross-User")
+	if err != nil || !blocked || message != "账号暂时锁定，请稍后再试" {
+		t.Fatalf("B must hit the A-side username lock: err=%v blocked=%v message=%q", err, blocked, message)
+	}
+}
+
+// TestSharedCaptchaVerifySurfacesStoreError proves the 2026-10-23 K2
+// close-out: a state-store failure on the verify path returns the error
+// instead of masquerading as a wrong code — postLogin maps it to 500 like
+// the D8 login-guard shape — while the bool CaptchaIssuer shim keeps
+// degrading it to false for error-free callers.
+func TestSharedCaptchaVerifySurfacesStoreError(t *testing.T) {
+	store := newWlFakeStateStore()
+	store.getJSONErr = errors.New("redis down")
+	service := NewSharedCaptchaService(store, func() time.Time { return time.Unix(1_800_000_000, 0) })
+
+	verified, err := service.VerifyWithError("challenge-id", "ABCDE")
+	if err == nil {
+		t.Fatal("a state-store failure must surface as an error, not a silent false")
+	}
+	if verified {
+		t.Fatal("a failed verify must not claim success either")
+	}
+	if service.Verify("challenge-id", "ABCDE") {
+		t.Fatal("the bool CaptchaIssuer shim must not claim success on a store failure")
 	}
 }

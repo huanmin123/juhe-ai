@@ -40,10 +40,11 @@ type captchaChallengeRecord struct {
 // verifyCaptchaChallengeAsync / consumeCaptchaIssueAllowanceAsync) so challenge
 // consumption is atomic across instances (GETDEL) and the per-IP issue window
 // is a shared counter (BUG-0171.4). The memory driver remains
-// modelcheckauth.CaptchaService. Verify surfaces state-store failures as a
-// failed verification (the CaptchaIssuer surface is error-free because the
-// memory driver must keep satisfying it); Issue propagates them to the
-// existing 500 path.
+// modelcheckauth.CaptchaService. Issue propagates state-store failures to the
+// existing 500 path; Verify does the same since the 2026-10-23 K2 close-out
+// (BUG-0171): VerifyWithError is the fail-closed error face the login handler
+// consumes (a store failure lands as 500, never as a wrong-code 400), while
+// the bool Verify stays as the error-free CaptchaIssuer compatibility shim.
 type SharedCaptchaService struct {
 	store RedisStateStore
 	now   func() time.Time
@@ -118,16 +119,33 @@ func (s *SharedCaptchaService) Issue(clientIP string) (modelcheckauth.CaptchaIss
 
 // Verify mirrors verifyCaptchaChallengeAsync: GETDEL consumes the challenge
 // exactly once, then the expiry and normalized answer decide the result.
+// VerifyWithError is the error-carrying face; this bool shim keeps
+// SharedCaptchaService satisfying the error-free CaptchaIssuer surface
+// (compose.go assigns both drivers to it) and degrades a store failure to
+// false exactly like the memory driver's contract.
 func (s *SharedCaptchaService) Verify(captchaID, code string) bool {
+	verified, _ := s.VerifyWithError(captchaID, code)
+	return verified
+}
+
+// VerifyWithError is the fail-closed verify face (BUG-0171 K2 close-out,
+// 2026-10-23): a state-store failure propagates to the caller — postLogin
+// maps it to 500 like the Node login try/catch -> next(error) path and the
+// D8 login-guard verdict — instead of masquerading as a wrong code. A
+// missing, expired, or mismatched challenge stays (false, nil).
+func (s *SharedCaptchaService) VerifyWithError(captchaID, code string) (bool, error) {
 	var record captchaChallengeRecord
 	ok, err := s.store.GetDeleteJSON(nil, s.challengeKey(captchaID), &record)
-	if err != nil || !ok {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
 	}
 	if record.ExpiresAt < s.now().UnixMilli() {
-		return false
+		return false, nil
 	}
-	return normalizeSharedCaptchaCode(code) == record.Answer
+	return normalizeSharedCaptchaCode(code) == record.Answer, nil
 }
 
 const sharedCaptchaAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -222,3 +240,4 @@ var sharedCaptchaGlyphs = map[rune][]string{
 }
 
 var _ CaptchaIssuer = (*SharedCaptchaService)(nil)
+var _ CaptchaErrorVerifier = (*SharedCaptchaService)(nil)

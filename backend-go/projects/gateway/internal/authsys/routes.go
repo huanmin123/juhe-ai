@@ -83,7 +83,16 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 				kernel.WriteBadRequest(w, "登录参数无效")
 				return
 			}
-			if !d.Captcha.Verify(*body.CaptchaID, *body.CaptchaCode) {
+			verified, verifyErr := verifyCaptcha(d.Captcha, *body.CaptchaID, *body.CaptchaCode)
+			// BUG-0171 K2 close-out (2026-10-23): a captcha state-store
+			// failure is fail-closed — the handler answers 500 like the
+			// Node login try/catch -> next(error) path and the D8
+			// login-guard shape, never the 400 "wrong captcha" contract.
+			if verifyErr != nil {
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", verifyErr)
+				return
+			}
+			if !verified {
 				kernel.WriteError(w, http.StatusBadRequest, "验证码错误或已过期")
 				return
 			}

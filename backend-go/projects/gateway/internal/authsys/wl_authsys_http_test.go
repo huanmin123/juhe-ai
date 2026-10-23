@@ -153,6 +153,23 @@ func TestWlGetCaptchaContracts(t *testing.T) {
 	})
 }
 
+// TestWlPostLoginCaptchaStoreFailureIsFailClosed proves the 2026-10-23 K2
+// close-out: a captcha state-store failure on the login verify path answers
+// 500 like the D8 login-guard shape and the Node login try/catch, never the
+// 400「验证码错误或已过期」wrong-code contract.
+func TestWlPostLoginCaptchaStoreFailureIsFailClosed(t *testing.T) {
+	deps, _, server := newTestEnv(t)
+	deps.CaptchaDisabled = false
+	store := newWlFakeStateStore()
+	store.getJSONErr = errors.New("redis down")
+	deps.Captcha = NewSharedCaptchaService(store, deps.Now)
+	body := `{"username":"wlcaptcha","password":"pass-1234","captchaId":"c1","captchaCode":"AAAAA"}`
+	response, _ := postJSON(t, server, "/__aisys__/api/auth/login", body, "")
+	if response.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+}
+
 func TestWlPostLoginValidationBranches(t *testing.T) {
 	deps, _, server := newTestEnv(t)
 	seedAccount(t, deps, "wllogin", "pass-1234", "admin")

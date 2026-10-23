@@ -61,6 +61,7 @@ func (a *Authenticator) VerifySystemAccountCredentials(ctx context.Context, user
 	if status != "active" || !verifySystemAccountPassword(password, passwordHash) {
 		return VerifiedCredentials{}, false, nil
 	}
+	verified.MustChangePassword = verified.MustChangePassword && !a.initialPasswordGateDisabled
 	verified.CredentialRevision = hashString(passwordHash)
 	return verified, true, nil
 }

@@ -183,6 +183,21 @@ func TestW1iLoadRuntimeConfigMissingRedisURL(t *testing.T) {
 	}
 }
 
+// 2026-10-23 K2 本地收口批：redis runtime-state 驱动缺 JUHE_AI_REDIS_STATE_URL
+// 的启动负例断言，错误串对齐 runtime.go 原文（shared captcha/login-guard
+// 双驱动都依赖该 URL，缺失必须在装配前失败）。
+func TestW1iLoadRuntimeConfigMissingRedisStateURL(t *testing.T) {
+	dir := t.TempDir()
+	env := w1iFakeEnv(map[string]string{
+		"JUHE_AI_DATABASE_PATH":        filepath.Join(dir, "db.sqlite3"),
+		"JUHE_AI_RUNTIME_STATE_DRIVER": "redis",
+	})
+	_, err := loadRuntimeConfig(env)
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_STATE_DRIVER=redis 时缺少 JUHE_AI_REDIS_STATE_URL") {
+		t.Fatalf("missing redis state url: %v", err)
+	}
+}
+
 func TestW1iLoadRuntimeConfigPort(t *testing.T) {
 	dir := t.TempDir()
 	env := w1iFakeEnv(map[string]string{

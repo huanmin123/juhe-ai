@@ -100,10 +100,35 @@ func AuthContextFrom(r *http.Request) *AuthContext {
 // CaptchaIssuer is the captcha surface the auth routes consume
 // (Issue/Verify). *modelcheckauth.CaptchaService is the process-local memory
 // driver; SharedCaptchaService is the Redis runtime-state driver
-// (BUG-0171.4).
+// (BUG-0171.4). The Verify face is error-free because the memory driver's
+// process-local store never fails; drivers whose verify can hit a state-store
+// error additionally implement CaptchaErrorVerifier.
 type CaptchaIssuer interface {
 	Issue(clientIP string) (modelcheckauth.CaptchaIssueResult, error)
 	Verify(captchaID, code string) bool
+}
+
+// CaptchaErrorVerifier is the optional fail-closed verify surface (BUG-0171
+// K2 close-out, 2026-10-23): drivers whose Verify consumes a state store
+// implement it, and postLogin maps a non-nil error to 500 like the Node
+// login try/catch -> next(error) path and the D8 login-guard verdict. The
+// memory driver keeps satisfying only CaptchaIssuer; verifyCaptcha falls
+// back to its error-free Verify when this face is absent.
+type CaptchaErrorVerifier interface {
+	VerifyWithError(captchaID, code string) (bool, error)
+}
+
+// verifyCaptcha runs the login captcha check through the error-carrying
+// VerifyWithError face when the driver provides one (Redis runtime-state
+// driver) and falls back to the error-free CaptchaIssuer.Verify otherwise
+// (the process-local memory driver, whose store never fails). A non-nil
+// error is fail-closed: postLogin answers 500 instead of reading it as a
+// wrong code.
+func verifyCaptcha(captcha CaptchaIssuer, captchaID, code string) (bool, error) {
+	if verifier, ok := captcha.(CaptchaErrorVerifier); ok {
+		return verifier.VerifyWithError(captchaID, code)
+	}
+	return captcha.Verify(captchaID, code), nil
 }
 
 // LoginGuardDriver is the login-throttle surface the auth routes consume.
