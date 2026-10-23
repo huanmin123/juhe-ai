@@ -100,8 +100,16 @@ fi
 FRONTEND_REBUILD=0
 if [[ " ${TARGETS[*]} " == *" gateway "* ]]; then
   echo "== [0/6] 前端漏发门禁 =="
-  LIVE_BUILD_ID=$($SSH "$SERVER" "docker exec juhe-ai-go-gateway cat /app/frontend/dist/build-info.json 2>/dev/null" \
+  # 停写窗口形态（B4① 起窗口序列先 stop gateway/jobs 再发布）：容器停止/重建中
+  # docker exec 不可用——远端命令尾缀 || true 防 pipefail 中止，LIVE_BUILD_ID 为空
+  # 时回退读服务器 build/frontend-dist/build-info.json（上次发布上传、与容器内
+  # dist 同源的产物）；两处都读不到才判定无法判定并中止。
+  LIVE_BUILD_ID=$($SSH "$SERVER" "docker exec juhe-ai-go-gateway cat /app/frontend/dist/build-info.json 2>/dev/null || true" \
     | sed -n 's/.*"buildId"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p')
+  if [ -z "$LIVE_BUILD_ID" ]; then
+    LIVE_BUILD_ID=$($SSH "$SERVER" "cat $SERVER_DIR/build/frontend-dist/build-info.json 2>/dev/null || true" \
+      | sed -n 's/.*"buildId"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p')
+  fi
   if [ -z "$LIVE_BUILD_ID" ]; then
     echo "[FAIL] 无法读取线上前端 buildId（gateway 容器内 /app/frontend/dist/build-info.json）。" >&2
     echo "       前端版本未知时不能判定是否漏发，发布中止；确认容器状态后重试。" >&2
