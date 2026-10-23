@@ -195,7 +195,10 @@ docker compose stop gateway jobs
 # 4) 收列（幂等；fresh 列不存在零操作；PG boundary 索引随列删除自动移除）
 docker compose run --rm maintenance --ensure-schema --driver postgres --dsn "$JUHE_AI_POSTGRES_URL"
 # 5) 收列核验：确认该批列已不存在（应返回 0 行）
-docker compose exec postgres psql -U juhe_ai juhe_ai -c "SELECT table_schema, table_name, column_name FROM information_schema.columns WHERE column_name IN ('provider_code','provider_protocol_profile_id') AND (table_schema='juhe_codex_context' OR (table_schema='juhe_business' AND table_name IN ('account_list_availability_projections','account_list_availability_projection_index','account_test_tasks','media_jobs')));"
+docker compose exec postgres psql -U juhe_ai -d juhe_ai -c "SELECT table_schema, table_name, column_name FROM information_schema.columns WHERE (table_schema='juhe_codex_context' AND column_name='provider_code') OR (table_schema='juhe_business' AND column_name IN ('provider_code','provider_protocol_profile_id') AND table_name IN ('account_list_availability_projections','account_list_availability_projection_index')) OR (table_schema='juhe_business' AND column_name='provider_code' AND table_name IN ('account_test_tasks','media_jobs'));"
+#   注意口径：account_test_tasks/media_jobs 本批只退役 provider_code，两表的
+#   provider_protocol_profile_id 写面已停、列本体保留（残留登记于待办 B4①），
+#   不在核验范围；2026-10-24 首次执行实测 0 行。
 # 6) 核验通过后按发布流程启动新版 gateway/jobs（deploy.sh all），逐容器 healthy 后公网健康检查
 ```
 
