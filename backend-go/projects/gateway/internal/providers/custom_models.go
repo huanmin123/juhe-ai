@@ -1,5 +1,5 @@
 // custom_models.go owns the custom model write domain over the models 单表
-//（供应商与上游协议面重构设计 §3；scope='global'（system_account_id NULL）与
+// （供应商与上游协议面重构设计 §3；scope='global'（system_account_id NULL）与
 // 'personal'（=owner）行承自定义模型）："自定义模型"= custom_provider_models
 // 的直迁，写路径落 public_model/upstream_model（同值写入，Builtin 行默认
 // public=upstream 的同款默认）/vendor_code/status/supported_endpoint_modes_json。
@@ -13,8 +13,8 @@ package providers
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -163,7 +163,7 @@ func (s *Store) findCustomProviderModelByID(ctx context.Context, id, ownerSystem
 }
 
 // findCustomProviderModelByScope ports findCustomProviderModelByScopeAsync
-//（身份键 (COALESCE(vendor_code,''), scope, COALESCE(system_account_id,''),
+// （身份键 (COALESCE(vendor_code,”), scope, COALESCE(system_account_id,”),
 // upstream_model) 的等值读法）.
 func (s *Store) findCustomProviderModelByScope(ctx context.Context, providerCode, scope, systemAccountID, model string) (*customProviderModelRecord, error) {
 	query := ""
@@ -202,23 +202,23 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		systemAccountID sql.NullString
 		// models.catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
 		// 扫描目标用 NullBool 同时兼容两种驱动。
-		catalogVisible                  sql.NullBool
-		endpointModes                   sql.NullString
-		releaseDate, shutdownDate       sql.NullString
-		tiers, efforts                  sql.NullString
-		defaultEffort                   sql.NullString
-		contextWindow, maxInput         sql.NullInt64
-		maxOutput                       sql.NullInt64
-		inputUsd, outputUsd             sql.NullFloat64
-		cachedInput, cacheWrite         sql.NullFloat64
-		cacheWrite1h, cacheStorage      sql.NullFloat64
-		tierPrices                      sql.NullString
-		imageIn, imageOut, audioIn      sql.NullFloat64
-		audioOut, outputPerImage        sql.NullFloat64
-		currency                        sql.NullString
-		pricingNotes, capabilityNotes   sql.NullString
-		notes                           sql.NullString
-		updatedBy                       sql.NullString
+		catalogVisible                sql.NullBool
+		endpointModes                 sql.NullString
+		releaseDate, shutdownDate     sql.NullString
+		tiers, efforts                sql.NullString
+		defaultEffort                 sql.NullString
+		contextWindow, maxInput       sql.NullInt64
+		maxOutput                     sql.NullInt64
+		inputUsd, outputUsd           sql.NullFloat64
+		cachedInput, cacheWrite       sql.NullFloat64
+		cacheWrite1h, cacheStorage    sql.NullFloat64
+		tierPrices                    sql.NullString
+		imageIn, imageOut, audioIn    sql.NullFloat64
+		audioOut, outputPerImage      sql.NullFloat64
+		currency                      sql.NullString
+		pricingNotes, capabilityNotes sql.NullString
+		notes                         sql.NullString
+		updatedBy                     sql.NullString
 	)
 	if err := scan(&record.ID, &record.ProviderCode, &record.Model, &record.Scope, &systemAccountID, &record.Status,
 		&catalogVisible, &endpointModes, &tiers, &efforts, &defaultEffort,
@@ -332,8 +332,8 @@ func (s *Store) existsVisibleBuiltInCatalogModel(ctx context.Context, providerCo
 }
 
 // upsertCustomProviderModel ports upsertCustomProviderModelAsync over the
-// models 单表（identity 唯一索引 (COALESCE(vendor_code,''), scope,
-// COALESCE(system_account_id,''), upstream_model)；id 保留旧 ON CONFLICT 门）。
+// models 单表（identity 唯一索引 (COALESCE(vendor_code,”), scope,
+// COALESCE(system_account_id,”), upstream_model)；id 保留旧 ON CONFLICT 门）。
 // The returned error messages are verbatim repository texts; the route renders
 // them as 400 bodies.
 func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProviderModelUpsertInput) (*customProviderModelRecord, error) {
@@ -591,6 +591,30 @@ func (s *Store) deleteCustomProviderModel(ctx context.Context, id, ownerSystemAc
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// 死账户悬挂引用清理（BUG-0336，外键口径对齐）：account_supported_models
+	// 的 model_id 外键为 RESTRICT，不区分引用账户是否存活；绑定守卫只统计活
+	// 账户（活引用在 handler 以 409 语义拒绝），软删/缺失账户的悬挂引用行会让
+	// DELETE models 以 23503 兜底成 500（2026-10-22 重建回迁的软删账户数据首次
+	// 暴露）。删除前在同事务先清 entry_mappings（复合外键指向 supported_models，
+	// 先解引用再删被引用行；source_model 为模型名文本键，同口径一并清理），
+	// 再清 supported_models；NOT EXISTS 同时覆盖软删账户与孤儿行。
+	deadRefSQL := `DELETE FROM %s WHERE %s AND NOT EXISTS (
+		SELECT 1 FROM ` + s.table("accounts") + ` accounts
+		WHERE accounts.id = %s AND accounts.deleted_at IS NULL)`
+	deadRefStatements := []struct {
+		table     string
+		predicate string
+		identity  string
+	}{
+		{table: s.table("account_entry_mappings"), predicate: "target_model_id = ?", identity: "account_entry_mappings.account_id"},
+		{table: s.table("account_entry_mappings"), predicate: "source_model = (SELECT upstream_model FROM " + s.table("models") + " WHERE id = ?)", identity: "account_entry_mappings.account_id"},
+		{table: s.table("account_supported_models"), predicate: "model_id = ?", identity: "account_supported_models.account_id"},
+	}
+	for _, statement := range deadRefStatements {
+		if _, err := tx.ExecContext(ctx, s.bind(fmt.Sprintf(deadRefSQL, statement.table, statement.predicate, statement.identity)), id); err != nil {
+			return false, err
+		}
+	}
 	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("models")+`
 		WHERE id = ?`+ownerPredicate), args...)
 	if err != nil {

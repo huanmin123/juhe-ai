@@ -534,6 +534,55 @@ func TestProvidersDeleteCustomModel(t *testing.T) {
 	}
 }
 
+// TestProvidersDeleteCustomModelCleansDeadAccountReferences（BUG-0336）钉住
+// 删除路径的死账户悬挂引用清理：account_supported_models.model_id 外键为
+// RESTRICT、不区分引用账户存活，而绑定守卫只统计活账户——软删账户的引用行
+// 曾让 DELETE models 以 23503 兜底成 500。回归在真实外键开启下断言：
+// 死账户的 entry_mappings（target/source 双向）与 supported_models 引用随
+// 删除同事务清理，删除成功；活账户引用仍 409。
+func TestProvidersDeleteCustomModelCleansDeadAccountReferences(t *testing.T) {
+	env := newTestEnv(t)
+	// 外键约束必须真实生效（与生产 PG 口径一致），否则回归退化为语句序列断言。
+	env.exec(t, `PRAGMA foreign_keys = ON`)
+	env.seedCatalog(t)
+	env.seedWriteFixtures(t)
+	env.login(t, "root", "root-pass", "super_admin")
+
+	// 死账户持有全部三类引用；活账户持有 supported_models 引用（守卫应放行
+	// 死引用模型、拦截活引用模型）。
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, name, deleted_at)
+		VALUES ('acc-dead', 'sys-dead', 'Dead', '2026-10-22T07:00:42.803Z')`)
+	env.exec(t, `INSERT INTO accounts (id, system_account_id, name)
+		VALUES ('acc-live', 'sys-live', 'Live')`)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id)
+		SELECT 'acc-dead', id FROM models WHERE id = 'cu-1'`)
+	env.exec(t, `INSERT INTO account_entry_mappings (id, account_id, source_model, target_model_id)
+		SELECT 'acc-dead-map-up', 'acc-dead', 'cu-1-model', id FROM models WHERE id = 'cu-1'`)
+	env.exec(t, `INSERT INTO account_entry_mappings (id, account_id, source_model)
+		VALUES ('acc-dead-map-src', 'acc-dead', 'gpt-4o-personal')`)
+	env.exec(t, `INSERT INTO account_supported_models (account_id, model_id)
+		SELECT 'acc-live', id FROM models WHERE id = 'cu-2'`)
+
+	// 死引用模型：守卫计 0（活账户视角）→ 删除成功且悬挂行被同事务清理。
+	code, deleted := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-1", "")
+	if code != http.StatusOK || dataMap(t, deleted)["deleted"] != true {
+		t.Fatalf("dead-reference delete: %d %v", code, deleted)
+	}
+	var dangling int
+	env.db.QueryRow(`SELECT (SELECT count(*) FROM account_supported_models WHERE model_id = 'cu-1')
+		+ (SELECT count(*) FROM account_entry_mappings WHERE target_model_id = 'cu-1')
+		+ (SELECT count(*) FROM account_entry_mappings WHERE source_model = 'gpt-4o-personal')`).Scan(&dangling)
+	if dangling != 0 {
+		t.Fatalf("dead-account references must be cleaned in-tx, dangling=%d", dangling)
+	}
+
+	// 活引用模型：守卫 409 语义拒绝不变。
+	code, bound := env.do(t, http.MethodDelete, "/__aisys__/api/providers/gpt/models/cu-2", "")
+	if code != http.StatusConflict {
+		t.Fatalf("live-reference delete must stay 409: %d %v", code, bound)
+	}
+}
+
 // TestProvidersCustomShutdownFilter closes the T5 review item on
 // /{code}/models: the active / visible / shutdown filters hold for custom
 // rows too (no catalog_visible clause; shutdown/expiry hides by default and
