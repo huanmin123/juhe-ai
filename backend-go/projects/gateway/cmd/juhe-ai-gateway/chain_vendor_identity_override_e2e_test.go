@@ -79,7 +79,7 @@ func TestChainVendorIdentityFromSeedToOverrideBody(t *testing.T) {
 	// JOIN models；夹具近似 DDL 保留 NOT NULL 旧 model 列，按值回填保持行合法
 	//（装载器只消费 model_id JOIN，见 loadSupportedModelsByAccountIds）。
 	seed(`INSERT INTO account_supported_models (account_id, model, model_id, created_at)
-		VALUES ('acc_v_gpt', 'gpt-test', 'mdl_v_gpt', ?), ('acc_v_xai', 'openai', 'grok-4', 'mdl_v_xai', ?)`, now, now)
+		VALUES ('acc_v_gpt', 'gpt-test', 'mdl_v_gpt', ?), ('acc_v_xai', 'grok-4', 'mdl_v_xai', ?)`, now, now)
 
 	// 四个账户行（目标形态不写 provider_code 旧列；列已随存储迁移退役，
 	// vendor_code NULL 即身份空串——回落禁用由读面 COALESCE 保证）：

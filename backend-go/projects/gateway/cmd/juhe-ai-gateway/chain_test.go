@@ -179,7 +179,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			PRIMARY KEY (account_id, source_model, source_endpoint_family))`,
 		`CREATE TABLE response_inspection_policies (
 			id TEXT PRIMARY KEY, name TEXT, enabled INTEGER NOT NULL, priority INTEGER NOT NULL,
-			scope_type TEXT NOT NULL, protocol_code TEXT, match_json TEXT,
+			scope_type TEXT NOT NULL, protocol_code TEXT, provider_code TEXT, match_json TEXT,
 			action TEXT, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		// Real-DDL shape (Node provider-model-catalog.repository.ts columns()
 		// + maintenance sqlite_schema.go): built-in catalog rows only. The

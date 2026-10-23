@@ -25,7 +25,7 @@ func newChatKeysFallbackDB(t *testing.T) *sql.DB {
 	statements := []string{
 		`CREATE TABLE groups (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT,
-			provider_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+			enabled INTEGER NOT NULL DEFAULT 1,
 			is_default INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE route_strategies (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT, description TEXT,
