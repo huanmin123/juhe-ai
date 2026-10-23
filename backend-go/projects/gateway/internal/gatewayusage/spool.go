@@ -71,6 +71,10 @@ type UsageRecordSpool struct {
 	replayStop   bool
 	replayWake   chan struct{}
 	replayActive bool
+	// replayDone 在回放 goroutine 退出时关闭；StopReplay 借此等待在途
+	// 回放写/删文件结束，调用方（组合根停机、测试 TempDir 清理）才能安全
+	// 删除 spool 目录——只置位不等待会让退出中的写与目录 RemoveAll 竞争。
+	replayDone chan struct{}
 }
 
 type spoolCapacity struct {
@@ -89,6 +93,7 @@ func NewUsageRecordSpool(config SpoolConfig, clock Clock, logger Logger) *UsageR
 		clock:      clock,
 		logger:     logger,
 		replayWake: make(chan struct{}, 1),
+		replayDone: make(chan struct{}),
 	}
 }
 
@@ -374,6 +379,7 @@ func (s *UsageRecordSpool) StartReplay(replay SpoolReplay) {
 	s.replayStop = false
 	s.replayMu.Unlock()
 	go func() {
+		defer close(s.replayDone)
 		defer safego.Recover("gatewayusage.spool.replay_loop")
 		for {
 			s.replayMu.Lock()
@@ -394,15 +400,22 @@ func (s *UsageRecordSpool) StartReplay(replay SpoolReplay) {
 	}()
 }
 
-// StopReplay mirrors stopUsageRecordSpoolReplay.
+// StopReplay mirrors stopUsageRecordSpoolReplay: 置位停止标志、唤醒回放
+// 循环并等待其在途一趟写/删文件结束（join），保证返回后 spool 目录不再有
+// 并发写者。
 func (s *UsageRecordSpool) StopReplay() {
 	s.replayMu.Lock()
 	s.replayStop = true
 	wake := s.replayWake
+	active := s.replayActive
+	done := s.replayDone
 	s.replayMu.Unlock()
 	select {
 	case wake <- struct{}{}:
 	default:
+	}
+	if active && done != nil {
+		<-done
 	}
 }
 

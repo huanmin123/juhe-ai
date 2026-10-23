@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -189,6 +190,22 @@ func TestGatewayChainCommittedStreamFailureInterruptsWithoutAccountSwitch(t *tes
 	chainPointAccountAtUpstream(t, fixture.db, fixture.accountID, upstream.URL, "chat_json", "chat_sse")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
+	// Windows 的文件删除异步生效：spool 目录文件较多时，t.TempDir 的
+	// RemoveAll 会与尚未生效的删除竞争（约 1/10 unlinkat "directory is not
+	// empty"）。shutdown 已 join 全部写手（recorder drain wg + spool
+	// StopReplay join），此处只需先行尽力删除并短暂等待删除生效，让
+	// TempDir 清理面对的已是空目录。Cleanup 后注册先于 TempDir 清理执行
+	// （Cleanup LIFO），且晚于 defer shutdown 的写手 join。
+	t.Cleanup(func() {
+		target := filepath.Join(spoolDir, "gateway-chain")
+		for attempt := 0; attempt < 5; attempt++ {
+			if err := os.RemoveAll(target); err == nil {
+				time.Sleep(50 * time.Millisecond)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	chain, shutdown, err := composeGatewayChain(chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, spoolDir))
 	if err != nil {
 		t.Fatalf("compose gateway chain: %v", err)
