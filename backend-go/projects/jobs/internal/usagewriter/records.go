@@ -27,7 +27,7 @@ type UsageRecordInput struct {
 	APIKeyID                         string   `json:"apiKeyId,omitempty"`
 	GroupID                          string   `json:"groupId,omitempty"`
 	RouteGroupID                     string   `json:"routeGroupId,omitempty"`
-	CompactionExpected               bool     `json:"compactionExpected,omitempty"`
+	CompactionExpected               bool     `json:"compactionExpected"`
 	AccountID                        string   `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`
@@ -80,16 +80,16 @@ type UsageRecordInput struct {
 	// M1 同步音频计量（音频设计 §10）：TTS 输入字符数、STT 音频秒数与
 	// usage_missing 标记（上游无 usage 回报也无 duration）。
 	// M2 视频计量（媒体设计 §10）：OutputVideoSeconds 是视频任务输出秒数。
-	TtsInputChars                    *int64   `json:"ttsInputChars,omitempty"`
-	AudioInputSeconds                *float64 `json:"audioInputSeconds,omitempty"`
-	OutputVideoSeconds               *float64 `json:"outputVideoSeconds,omitempty"`
-	UsageMissing                     bool     `json:"usageMissing,omitempty"`
-	CostUsd                          *float64 `json:"costUsd,omitempty"`
-	ErrorCode                        string   `json:"errorCode,omitempty"`
-	ErrorMessage                     string   `json:"errorMessage,omitempty"`
-	RequestSnapshot                  any      `json:"requestSnapshot,omitempty"`
-	ResponseSnapshot                 any      `json:"responseSnapshot,omitempty"`
-	CreatedAt                        string   `json:"createdAt,omitempty"`
+	TtsInputChars      *int64   `json:"ttsInputChars,omitempty"`
+	AudioInputSeconds  *float64 `json:"audioInputSeconds,omitempty"`
+	OutputVideoSeconds *float64 `json:"outputVideoSeconds,omitempty"`
+	UsageMissing       bool     `json:"usageMissing,omitempty"`
+	CostUsd            *float64 `json:"costUsd,omitempty"`
+	ErrorCode          string   `json:"errorCode,omitempty"`
+	ErrorMessage       string   `json:"errorMessage,omitempty"`
+	RequestSnapshot    any      `json:"requestSnapshot,omitempty"`
+	ResponseSnapshot   any      `json:"responseSnapshot,omitempty"`
+	CreatedAt          string   `json:"createdAt,omitempty"`
 }
 
 // UsageFailureAttribution mirrors the Node union.
