@@ -105,6 +105,7 @@ const UsageShardBaseSchemaSQL = `
       api_key_id TEXT,
       group_id TEXT,
       route_group_id TEXT,
+      compaction_expected INTEGER NOT NULL DEFAULT 0,
       account_id TEXT,
       endpoint TEXT,
       provider_code TEXT,
@@ -299,6 +300,12 @@ func (s *SqliteShardStore) openShardDB(location UsageRecordShardLocation) (*sql.
 		db.Close()
 		return nil, err
 	}
+	// 压缩标记列（使用记录延迟健康分档设计 §压缩请求识别）：存量分片文件的
+	// 幂等补列，模式同 upstream_response_model。
+	if err := ensureCompactionExpectedColumn(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s.shardDBs[location.FilePath] = db
 	return db, nil
 }
@@ -375,6 +382,42 @@ func ensureUpstreamResponseModelColumn(db *sql.DB) error {
 	}
 	if !has {
 		if _, err := db.Exec("ALTER TABLE usage_records ADD COLUMN upstream_response_model TEXT"); err != nil {
+			// A concurrent writer may have added it first; treat duplicate
+			// column errors as success like the Node presence check.
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ensureCompactionExpectedColumn 对既有 usage 分片文件补 compaction_expected
+// 压缩标记列（使用记录延迟健康分档设计 §压缩请求识别；ensureUpstreamResponseModelColumn
+// 同款幂等：PRAGMA 探测 + ALTER ADD COLUMN，并发重复列错误视为成功）。
+func ensureCompactionExpectedColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(usage_records)")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	has := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var ctype sql.NullString
+		var notNull any
+		var dflt any
+		var pk any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err == nil && name == "compaction_expected" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.Exec("ALTER TABLE usage_records ADD COLUMN compaction_expected INTEGER NOT NULL DEFAULT 0"); err != nil {
 			// A concurrent writer may have added it first; treat duplicate
 			// column errors as success like the Node presence check.
 			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {

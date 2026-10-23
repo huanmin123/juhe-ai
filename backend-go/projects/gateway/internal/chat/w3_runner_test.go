@@ -343,9 +343,9 @@ func TestRunnerBudgetsW3(t *testing.T) {
 				total += len(block.Text)
 			}
 		}
-		// 行为存疑：预算耗尽后 truncateUTF8(input, 0) 返回完整原值，后续增量
-		// 仍被全量追加（实测 196608+5），文本总量可越过 192 KiB 上限。
-		if total != chatGenerationTextMaxBytes+5 {
+		// BUG-0294/A13 修复后：预算耗尽时 truncateUTF8(input, 0) 返回空串，
+		// 后续增量不再放行，文本总量严格钳在 192 KiB 上限。
+		if total != chatGenerationTextMaxBytes {
 			t.Fatalf("文本预算裁剪行为变化: %d", total)
 		}
 	})

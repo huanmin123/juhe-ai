@@ -188,7 +188,7 @@ func TestW13BParseStreamMessageBodyContentBlocks(t *testing.T) {
 }
 
 func TestW13BStringHelpers(t *testing.T) {
-	if truncateUTF8("abcdef", 0) != "abcdef" || truncateUTF8("", -1) != "" {
+	if truncateUTF8("abcdef", 0) != "" || truncateUTF8("", -1) != "" {
 		t.Fatalf("truncateUTF8 边界失败")
 	}
 	if got := truncateUTF8("a\u4e2d\u6587b", 4); got != "a\u4e2d" {

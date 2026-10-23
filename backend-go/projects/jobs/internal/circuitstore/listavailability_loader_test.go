@@ -211,7 +211,7 @@ func TestProjectionItemLoaderOwnerAccountBaseline(t *testing.T) {
 	if item.EffectiveAvailable == nil || !*item.EffectiveAvailable {
 		t.Fatalf("effectiveAvailable 应为 true")
 	}
-	if item.ProviderCode != "openai" || item.AccountType != "api_key" || item.Name != "主账户" {
+	if item.AccountType != "api_key" || item.Name != "主账户" {
 		t.Fatalf("base 列不符: %+v", item)
 	}
 	if item.ConcurrencyLimit != 10 || item.Priority != 5 || !item.SuperPriorityEnabled || item.FallbackEnabled {

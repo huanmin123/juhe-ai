@@ -73,6 +73,41 @@ func TestBuildWritePlanColumnsAndDefaults(t *testing.T) {
 	}
 }
 
+// TestBuildWritePlanCompactionExpectedParam 钉压缩标记列（使用记录延迟健康
+// 分档设计 §压缩请求识别）：编码对齐 success 布尔列（true→1，缺省→0），列序
+// 锚点紧跟 route_group_id。
+func TestBuildWritePlanCompactionExpectedParam(t *testing.T) {
+	clock := fixedClock("2026-01-02T03:04:05.000Z")
+	expected := UsageRecordInput{
+		SystemAccountID: "sys1", TraceID: "t1", TrafficSource: TrafficSourceGateway,
+		Success: true, CompactionExpected: true,
+	}
+	plan, err := BuildWritePlan(context.Background(), []UsageRecordInput{expected}, planOptions(), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := plan.RowsByShard[0].Rows[0].Params
+	if len(params) != len(UsageRecordColumns) {
+		t.Fatalf("column/param count mismatch: %d vs %d", len(UsageRecordColumns), len(params))
+	}
+	if columnIndexOf("compaction_expected") != columnIndexOf("route_group_id")+1 {
+		t.Fatalf("compaction_expected must follow route_group_id (got %d, route_group_id at %d)",
+			columnIndexOf("compaction_expected"), columnIndexOf("route_group_id"))
+	}
+	if got := params[columnIndexOf("compaction_expected")]; got != 1 {
+		t.Fatalf("compaction_expected = %v, want 1", got)
+	}
+
+	plain := UsageRecordInput{SystemAccountID: "sys1", TraceID: "t2", TrafficSource: TrafficSourceGateway, Success: true}
+	plan, err = BuildWritePlan(context.Background(), []UsageRecordInput{plain}, planOptions(), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.RowsByShard[0].Rows[0].Params[columnIndexOf("compaction_expected")]; got != 0 {
+		t.Fatalf("default compaction_expected = %v, want 0", got)
+	}
+}
+
 func TestBuildWritePlanFailureAttributionDefaults(t *testing.T) {
 	clock := fixedClock("2026-01-02T03:04:05.000Z")
 	tests := []struct {

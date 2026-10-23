@@ -97,6 +97,7 @@ func TestW9GPostgresStoreWriteBatch(t *testing.T) {
 	// （生产由 maintenance --ensure-schema 承担）。
 	for _, statement := range []string{
 		`ALTER TABLE juhe_usage.usage_records ADD COLUMN IF NOT EXISTS route_group_id text`,
+		`ALTER TABLE juhe_usage.usage_records ADD COLUMN IF NOT EXISTS compaction_expected integer NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("ensure column: %v", err)

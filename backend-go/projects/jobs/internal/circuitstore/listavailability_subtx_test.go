@@ -61,7 +61,7 @@ func TestEnqueueDueSubTransactionsBatching(t *testing.T) {
 		}
 		accountValues += fmt.Sprintf("('%s', 'viewer-1')", accountID)
 		projectionValues += fmt.Sprintf(
-			"('viewer-1', '%s', 'active', 'enabled', 'openai', 'p', 'api_key', '%s', 0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1, '2026-09-04T09:00:00.000Z', '2026-09-04T09:00:00.000Z')",
+			"('viewer-1', '%s', 'active', 'enabled', 'api_key', '%s', 0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1, '2026-09-04T09:00:00.000Z', '2026-09-04T09:00:00.000Z')",
 			accountID, accountID)
 	}
 	if _, err := db.Exec(`INSERT INTO accounts (id, system_account_id) VALUES ` + accountValues); err != nil {
@@ -70,7 +70,7 @@ func TestEnqueueDueSubTransactionsBatching(t *testing.T) {
 	if _, err := db.Exec(`
 		INSERT INTO account_list_availability_projections (
 			viewer_system_account_id, account_id, effective_status, schedulable_bucket,
-			provider_code, provider_protocol_profile_id, account_type, name_sort_key,
+			account_type, name_sort_key,
 			priority_sort_key, super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
 			created_at_sort_key, payload_json, source_generation, next_transition_at, projected_at
 		) VALUES ` + projectionValues); err != nil {

@@ -23,7 +23,7 @@ func newMediaJobsTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(`CREATE TABLE media_jobs (
 		id TEXT PRIMARY KEY, kind TEXT NOT NULL, api_key_id TEXT NOT NULL, account_id TEXT NOT NULL,
-		provider_code TEXT NOT NULL, provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
+		provider_protocol_profile_id TEXT, upstream_job_id TEXT NOT NULL,
 		status TEXT NOT NULL, request_snapshot_json TEXT NOT NULL DEFAULT '{}', artifact_json TEXT NOT NULL DEFAULT '{}',
 		error_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL NOT NULL DEFAULT 0,
 		params_applied_json TEXT NOT NULL DEFAULT '[]', params_ignored_json TEXT NOT NULL DEFAULT '[]',
@@ -36,8 +36,8 @@ func newMediaJobsTestDB(t *testing.T) *sql.DB {
 func seedMediaJobsRow(t *testing.T, db *sql.DB, id, status string, age time.Duration) {
 	t.Helper()
 	at := time.Now().UTC().Add(-age).Format("2006-01-02T15:04:05.000Z")
-	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id, provider_code,
-		upstream_job_id, status, created_at, updated_at) VALUES (?, 'video', 'key', 'acc', 'openai', ?, ?, ?, ?)`,
+	if _, err := db.Exec(`INSERT INTO media_jobs (id, kind, api_key_id, account_id,
+		upstream_job_id, status, created_at, updated_at) VALUES (?, 'video', 'key', 'acc', ?, ?, ?, ?)`,
 		id, "up_"+id, status, at, at); err != nil {
 		t.Fatalf("seed %s: %v", id, err)
 	}

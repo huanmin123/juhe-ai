@@ -87,24 +87,22 @@ type ProjectionScope struct {
 
 // ProjectionItem 是 loader 物化出的列表项投影（payload 由网关域组装）。
 type ProjectionItem struct {
-	AccountID                 string
-	EffectiveStatus           string // 唯一投影状态（rate_limited 等，由网关分类）
-	CurrentConcurrency        int
-	SourceAccountID           string // authorization instance source account
-	AuthorizationID           string
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	AccountType               string
-	BoundGroupID              string
-	Name                      string
-	Priority                  int
-	SuperPriorityEnabled      bool
-	FallbackEnabled           bool
-	ConcurrencyLimit          int
-	AccountExpiresAt          string
-	LastUsedAt                string
-	Payload                   map[string]any
-	TagIDs                    []string
+	AccountID            string
+	EffectiveStatus      string // 唯一投影状态（rate_limited 等，由网关分类）
+	CurrentConcurrency   int
+	SourceAccountID      string // authorization instance source account
+	AuthorizationID      string
+	AccountType          string
+	BoundGroupID         string
+	Name                 string
+	Priority             int
+	SuperPriorityEnabled bool
+	FallbackEnabled      bool
+	ConcurrencyLimit     int
+	AccountExpiresAt     string
+	LastUsedAt           string
+	Payload              map[string]any
+	TagIDs               []string
 	// NextTransitionCandidates 是候选状态边界（RFC3339）。
 	NextTransitionCandidates []string
 	// EffectiveAvailable 对齐 Node schedulableBucket 的

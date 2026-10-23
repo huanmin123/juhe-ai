@@ -274,7 +274,7 @@ func TestEstimateUsageRecordBytes(t *testing.T) {
 func TestUsageRecordInputJSONRoundTrip(t *testing.T) {
 	// The json tags must match the G17/Node wire format so a spooled or
 	// forwarded record decodes field-for-field.
-	encoded := `{"traceId":"t1","trafficSource":"gateway","success":true,"inputTokens":3,"costUsd":0.25,"createdAt":"2026-01-02T03:04:05.000Z"}`
+	encoded := `{"traceId":"t1","trafficSource":"gateway","success":true,"compactionExpected":true,"inputTokens":3,"costUsd":0.25,"createdAt":"2026-01-02T03:04:05.000Z"}`
 	var input UsageRecordInput
 	if err := json.Unmarshal([]byte(encoded), &input); err != nil {
 		t.Fatal(err)
@@ -284,5 +284,9 @@ func TestUsageRecordInputJSONRoundTrip(t *testing.T) {
 	}
 	if input.InputTokens == nil || *input.InputTokens != 3 || input.CostUsd == nil || *input.CostUsd != 0.25 {
 		t.Fatalf("token/cost fields = %+v", input)
+	}
+	// spool 契约钉住：gateway 侧编码 compactionExpected，缺 tag 或改名会静默丢标记。
+	if !input.CompactionExpected {
+		t.Fatalf("compactionExpected = false, want true (decoded = %+v)", input)
 	}
 }

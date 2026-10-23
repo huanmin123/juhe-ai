@@ -838,33 +838,31 @@ func (r *ListAvailabilityRepo) LoadSearchTerms(ctx context.Context, accountIDs [
 // ---- apply / delete / release ----
 
 type normalizedProjection struct {
-	viewerSystemAccountID     string
-	accountID                 string
-	concurrencyAccountID      string
-	currentConcurrency        int64
-	sourceAccountID           *string
-	authorizationID           *string
-	effectiveStatus           string
-	schedulableBucket         string
-	providerCode              string
-	providerProtocolProfileID string
-	accountType               string
-	boundGroupID              *string
-	nameSortKey               string
-	prioritySortKey           int64
-	superPrioritySortKey      int64
-	fallbackSortKey           int64
-	concurrencySortKey        int64
-	accountExpiresAtSortKey   *string
-	lastUsedAtSortKey         *string
-	createdAtSortKey          string
-	payload                   []byte
-	tagIDs                    []string
-	searchTerms               []string
-	searchIndexComplete       bool
-	sourceGeneration          int64
-	nextTransitionAt          *string
-	projectedAt               string
+	viewerSystemAccountID   string
+	accountID               string
+	concurrencyAccountID    string
+	currentConcurrency      int64
+	sourceAccountID         *string
+	authorizationID         *string
+	effectiveStatus         string
+	schedulableBucket       string
+	accountType             string
+	boundGroupID            *string
+	nameSortKey             string
+	prioritySortKey         int64
+	superPrioritySortKey    int64
+	fallbackSortKey         int64
+	concurrencySortKey      int64
+	accountExpiresAtSortKey *string
+	lastUsedAtSortKey       *string
+	createdAtSortKey        string
+	payload                 []byte
+	tagIDs                  []string
+	searchTerms             []string
+	searchIndexComplete     bool
+	sourceGeneration        int64
+	nextTransitionAt        *string
+	projectedAt             string
 }
 
 func boolSortKey(value bool) int64 {
@@ -900,19 +898,9 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 	if len(concurrencyAccountID) > 256 {
 		return normalizedProjection{}, errors.New("concurrencyAccountId 长度必须为 1..256")
 	}
-	// 供应商解耦后 loader 按 COALESCE(vendor_code,'') 投影，generic_http
-	// 账户（vendor NULL）恒为空串；空值合法，只校验上限（与 profileID 同口径）。
-	providerCode := strings.TrimSpace(write.Item.ProviderCode)
-	if len(providerCode) > 128 {
-		return normalizedProjection{}, errors.New("providerCode 长度必须为 0..128")
-	}
-	// 供应商解耦后（§9.11）profile 维度退役：loader 恒投影空串
-	// （listavailability_rows.go `'' AS provider_protocol_profile_id`），
-	// 校验随之收窄为 0..256（恒空投影合法；列保留供旧读面消费）。
-	profileID := strings.TrimSpace(write.Item.ProviderProtocolProfileID)
-	if len(profileID) > 256 {
-		return normalizedProjection{}, errors.New("providerProtocolProfileId 长度必须为 0..256")
-	}
+	// provider_code / provider_protocol_profile_id 投影列已随 B4① 存储迁移
+	// 退役（§9.11 读面改由 accounts CTE 投影 vendor，两列沦为纯写负载）：
+	// 写面停写，normalize 不再收该维度。
 	accountType := strings.TrimSpace(write.Item.AccountType)
 	if accountType == "" || len(accountType) > 64 {
 		return normalizedProjection{}, errors.New("accountType 长度必须为 1..64")
@@ -944,29 +932,27 @@ func normalizeProjectionWrite(write opsjobs.ProjectionWrite) (normalizedProjecti
 		return normalizedProjection{}, fmt.Errorf("账户列表投影 payload 序列化失败: %w", err)
 	}
 	normalized := normalizedProjection{
-		viewerSystemAccountID:     viewer,
-		accountID:                 accountID,
-		concurrencyAccountID:      concurrencyAccountID,
-		currentConcurrency:        int64(write.Item.CurrentConcurrency),
-		sourceAccountID:           textPtr(write.Item.SourceAccountID),
-		authorizationID:           textPtr(write.Item.AuthorizationID),
-		effectiveStatus:           write.Item.EffectiveStatus,
-		schedulableBucket:         opsjobs.SchedulableBucket(write.Item.EffectiveStatus, effectiveAvailable),
-		providerCode:              providerCode,
-		providerProtocolProfileID: profileID,
-		accountType:               accountType,
-		boundGroupID:              textPtr(write.Item.BoundGroupID),
-		nameSortKey:               nameSortKey,
-		prioritySortKey:           int64(write.Item.Priority),
-		superPrioritySortKey:      boolSortKey(write.Item.SuperPriorityEnabled),
-		fallbackSortKey:           boolSortKey(write.Item.FallbackEnabled),
-		concurrencySortKey:        int64(write.Item.ConcurrencyLimit),
-		accountExpiresAtSortKey:   textPtr(write.Item.AccountExpiresAt),
-		lastUsedAtSortKey:         textPtr(write.Item.LastUsedAt),
-		createdAtSortKey:          createdAtSortKey,
-		payload:                   payloadBytes,
-		sourceGeneration:          write.Claim.Generation,
-		projectedAt:               projectedAt,
+		viewerSystemAccountID:   viewer,
+		accountID:               accountID,
+		concurrencyAccountID:    concurrencyAccountID,
+		currentConcurrency:      int64(write.Item.CurrentConcurrency),
+		sourceAccountID:         textPtr(write.Item.SourceAccountID),
+		authorizationID:         textPtr(write.Item.AuthorizationID),
+		effectiveStatus:         write.Item.EffectiveStatus,
+		schedulableBucket:       opsjobs.SchedulableBucket(write.Item.EffectiveStatus, effectiveAvailable),
+		accountType:             accountType,
+		boundGroupID:            textPtr(write.Item.BoundGroupID),
+		nameSortKey:             nameSortKey,
+		prioritySortKey:         int64(write.Item.Priority),
+		superPrioritySortKey:    boolSortKey(write.Item.SuperPriorityEnabled),
+		fallbackSortKey:         boolSortKey(write.Item.FallbackEnabled),
+		concurrencySortKey:      int64(write.Item.ConcurrencyLimit),
+		accountExpiresAtSortKey: textPtr(write.Item.AccountExpiresAt),
+		lastUsedAtSortKey:       textPtr(write.Item.LastUsedAt),
+		createdAtSortKey:        createdAtSortKey,
+		payload:                 payloadBytes,
+		sourceGeneration:        write.Claim.Generation,
+		projectedAt:             projectedAt,
 	}
 	if normalized.currentConcurrency < 0 {
 		return normalizedProjection{}, errors.New("currentConcurrency 必须是非负整数")
@@ -1012,19 +998,17 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 	result, err := tx.ExecContext(ctx, `
     INSERT INTO `+projections+` (
       viewer_system_account_id, account_id, source_account_id, authorization_id,
-      effective_status, schedulable_bucket, provider_code, provider_protocol_profile_id,
+      effective_status, schedulable_bucket,
       account_type, bound_group_id, name_sort_key, priority_sort_key,
       super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
       account_expires_at_sort_key, last_used_at_sort_key, created_at_sort_key,
       payload_json, source_generation, next_transition_at, projected_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(viewer_system_account_id, account_id) DO UPDATE SET
       source_account_id = excluded.source_account_id,
       authorization_id = excluded.authorization_id,
       effective_status = excluded.effective_status,
       schedulable_bucket = excluded.schedulable_bucket,
-      provider_code = excluded.provider_code,
-      provider_protocol_profile_id = excluded.provider_protocol_profile_id,
       account_type = excluded.account_type,
       bound_group_id = excluded.bound_group_id,
       name_sort_key = excluded.name_sort_key,
@@ -1041,7 +1025,7 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
       projected_at = excluded.projected_at
     WHERE `+projections+`.source_generation <= excluded.source_generation`,
 		value.viewerSystemAccountID, value.accountID, value.sourceAccountID, value.authorizationID,
-		value.effectiveStatus, value.schedulableBucket, value.providerCode, value.providerProtocolProfileID,
+		value.effectiveStatus, value.schedulableBucket,
 		value.accountType, value.boundGroupID, value.nameSortKey, value.prioritySortKey,
 		value.superPrioritySortKey, value.fallbackSortKey, value.concurrencySortKey,
 		value.accountExpiresAtSortKey, value.lastUsedAtSortKey, value.createdAtSortKey,
@@ -1071,16 +1055,14 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 	if _, err := tx.ExecContext(ctx, `
     INSERT INTO `+r.table("account_list_availability_projection_index")+` (
       viewer_system_account_id, account_id, effective_status, schedulable_bucket,
-      provider_code, provider_protocol_profile_id, account_type, bound_group_id,
+      account_type, bound_group_id,
       name_sort_key, priority_sort_key, super_priority_sort_key, fallback_sort_key,
       concurrency_sort_key, account_expires_at_sort_key, last_used_at_sort_key,
       created_at_sort_key, access_type_sort_key, search_index_complete, authorization_quota_exceeded
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(viewer_system_account_id, account_id) DO UPDATE SET
       effective_status = excluded.effective_status,
       schedulable_bucket = excluded.schedulable_bucket,
-      provider_code = excluded.provider_code,
-      provider_protocol_profile_id = excluded.provider_protocol_profile_id,
       account_type = excluded.account_type,
       bound_group_id = excluded.bound_group_id,
       name_sort_key = excluded.name_sort_key,
@@ -1095,7 +1077,7 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
       search_index_complete = excluded.search_index_complete,
       authorization_quota_exceeded = excluded.authorization_quota_exceeded`,
 		value.viewerSystemAccountID, value.accountID, value.effectiveStatus, value.schedulableBucket,
-		value.providerCode, value.providerProtocolProfileID, value.accountType, value.boundGroupID,
+		value.accountType, value.boundGroupID,
 		value.nameSortKey, value.prioritySortKey, value.superPrioritySortKey, value.fallbackSortKey,
 		value.concurrencySortKey, value.accountExpiresAtSortKey, value.lastUsedAtSortKey,
 		value.createdAtSortKey, accessType, boolParam(value.searchIndexComplete), boolParam(quotaExceeded)); err != nil {

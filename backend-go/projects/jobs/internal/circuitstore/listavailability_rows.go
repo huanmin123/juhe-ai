@@ -560,7 +560,7 @@ func buildBasePayload(row managementRow, tags []map[string]any, lock *accountLoc
 	)
 	payload := map[string]any{
 		"id":                        row.id,
-		"configRevision":            numberValue(row.configRevision, 1),
+		"configRevision":            nullInt64Number(row.configRevision, 1),
 		"ownerSystemAccountId":      row.ownerSystemAccountID,
 		"providerCode":              providerCode,
 		"providerProtocolProfileId": profileID,

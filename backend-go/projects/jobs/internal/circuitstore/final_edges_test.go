@@ -166,9 +166,10 @@ func TestComposeEntryRuntimeAndBalance(t *testing.T) {
 		},
 		balance: &balanceSnapshotRecord{
 			snapshot: map[string]any{"totalBalance": 5.5, "keyBalances": []any{1}},
-			// 行为存疑相关：configRevision 经 numberValue 恒回默认 1（见
-			// TestBuildBasePayloadOwnerRow），此处用 revision 0 跳过校验。
-			snapshotRevision: 0,
+			// BUG-0294/A4 修复后：configRevision 行值 3 经 nullInt64Number 透传，
+			// snapshotRevision=3 与之精确匹配（修复前行值被静默回退为 1，
+			// 只能用 revision 0 跳过校验）。
+			snapshotRevision: 3,
 			nextRefreshAfter: "2026-09-04T10:00:00.000Z",
 		},
 		concurrency: -3,

@@ -181,6 +181,60 @@ func TestSqliteShardStoreSchemaUpgradeAddsColumn(t *testing.T) {
 	}
 }
 
+// TestSqliteShardStoreSchemaUpgradeAddsCompactionExpectedColumn 覆盖压缩标记
+// 列的存量分片升级：旧 schema（无该列）→ openShardDB 后 PRAGMA 守卫幂等补列。
+func TestSqliteShardStoreSchemaUpgradeAddsCompactionExpectedColumn(t *testing.T) {
+	root := t.TempDir()
+	store := NewSqliteShardStore(SqliteShardStoreConfig{
+		CatalogDB:  openStoreDB(t, filepath.Join(root, "catalog.sqlite3")),
+		ShardRoot:  root,
+		ShardCount: 16,
+	})
+	location := UsageRecordShardLocationForBucket("20260102", 4, root)
+	// Pre-create an old-schema shard file without compaction_expected.
+	if err := os.MkdirAll(filepath.Dir(location.FilePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old, err := sql.Open("sqlite", location.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(UsageShardBaseSchemaSQL); err != nil {
+		t.Fatal(err)
+	}
+	// Roll the schema back to the pre-compaction_expected generation.
+	if _, err := old.Exec(`ALTER TABLE usage_records DROP COLUMN compaction_expected`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+	defer store.Close()
+
+	db, err := store.openShardDB(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasColumn bool
+	rows, err := db.Query(`PRAGMA table_info(usage_records)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, dflt, pk any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == "compaction_expected" {
+			hasColumn = true
+		}
+	}
+	rows.Close()
+	if !hasColumn {
+		t.Fatal("compaction_expected column not added")
+	}
+}
+
 func TestWriterAgainstSqliteStoreEndToEnd(t *testing.T) {
 	// 全链路（进程内队列 → 批量计划 → SQLite 分片落库 → 目录表），
 	// 全部限制在 t.TempDir() 内。

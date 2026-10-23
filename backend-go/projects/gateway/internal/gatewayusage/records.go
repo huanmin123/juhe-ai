@@ -19,6 +19,11 @@ type UsageRecordInput struct {
 	APIKeyID                         string   `json:"apiKeyId,omitempty"`
 	GroupID                          string   `json:"groupId,omitempty"`
 	RouteGroupID                     string   `json:"routeGroupId,omitempty"`
+	// CompactionExpected 是请求侧压缩期望（用量记录压缩标记设计 §压缩请求
+	// 识别：/responses/compact 路径或 /responses 请求体含内联压缩触发器）：
+	// 非探针请求经 spool JSON 透传落列 compaction_expected。与 jobs
+	// usagewriter 镜像结构同名同 tag、字段序同样紧邻 RouteGroupID。
+	CompactionExpected               bool     `json:"compactionExpected"`
 	AccountID                        string   `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`

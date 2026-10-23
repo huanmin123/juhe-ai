@@ -27,6 +27,7 @@ type UsageRecordInput struct {
 	APIKeyID                         string   `json:"apiKeyId,omitempty"`
 	GroupID                          string   `json:"groupId,omitempty"`
 	RouteGroupID                     string   `json:"routeGroupId,omitempty"`
+	CompactionExpected               bool     `json:"compactionExpected,omitempty"`
 	AccountID                        string   `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`

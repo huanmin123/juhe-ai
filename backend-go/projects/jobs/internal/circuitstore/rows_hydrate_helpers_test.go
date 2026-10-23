@@ -51,12 +51,11 @@ func TestBuildBasePayloadOwnerRow(t *testing.T) {
 	if payload["id"] != "acc-1" || payload["accessType"] != "owner" {
 		t.Fatalf("基础键不符: %v", payload)
 	}
-	if payload["configRevision"] != float64(1) && payload["configRevision"] != int64(1) && payload["configRevision"] != 1 {
+	if payload["configRevision"] != float64(4) {
 		t.Fatalf("configRevision 数值化: %v", payload["configRevision"])
 	}
-	// 行为存疑：buildBasePayload 把 sql.NullInt64 形状的 configRevision 传入
-	// numberValue（switch 不识别结构体类型），行值 4 被回退为默认 1；
-	// 当前按实际行为断言，见最终报告「疑似生产问题」。
+	// BUG-0294/A4 修复后：sql.NullInt64 形状的 configRevision 经 nullInt64Number
+	// 解包，Valid 行值 4 原样透传（修复前经 numberValue 被静默回退为默认 1）。
 	if payload["concurrencyLimit"] != float64(10) || payload["priority"] != float64(5) {
 		t.Fatalf("排序/容量键数值化不符: %v %v", payload["concurrencyLimit"], payload["priority"])
 	}

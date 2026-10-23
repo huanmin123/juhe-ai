@@ -46,6 +46,10 @@ type GatewayUsageContext struct {
 	EffectiveServiceTier     UsageServiceTier
 	RequestedReasoningEffort UsageReasoningEffort
 	EffectiveReasoningEffort UsageReasoningEffort
+	// CompactionExpected 是请求侧压缩期望（用量记录压缩标记设计 §压缩请求
+	// 识别）：由调用方从请求级上下文投影，失败记账两条入口直传
+	// UsageRecordInput.CompactionExpected。
+	CompactionExpected bool
 }
 
 // GatewayFailureUsageContext mirrors GatewayFailureUsageContext (records.ts).
@@ -304,6 +308,7 @@ func (s *Service) RecordFailedUpstreamAttempt(ctx Ctx, usageContext GatewayUsage
 		SystemAccountID:                  usageContext.SystemAccountID,
 		APIKeyID:                         usageContext.APIKeyID,
 		GroupID:                          usageContext.GroupID,
+		CompactionExpected:               usageContext.CompactionExpected,
 		AccountID:                        account.ID,
 		AccountOwnerSystemAccountID:      account.UsageAccess.AccountOwnerSystemAccountID,
 		GroupOwnerSystemAccountID:        account.UsageAccess.GroupOwnerSystemAccountID,
@@ -430,6 +435,7 @@ func (s *Service) RecordGatewayFailure(ctx Ctx, usageContext GatewayFailureUsage
 		SystemAccountID:                usageContext.SystemAccountID,
 		APIKeyID:                       usageContext.APIKeyID,
 		GroupID:                        groupID,
+		CompactionExpected:             usageContext.CompactionExpected,
 		GroupOwnerSystemAccountID:      groupOwnerSystemAccountID,
 		GroupAccessType:                groupAccessType,
 		GroupAuthorizationID:           groupAuthorizationID,

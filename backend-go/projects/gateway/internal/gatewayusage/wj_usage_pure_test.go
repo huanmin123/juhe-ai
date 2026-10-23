@@ -111,10 +111,9 @@ func TestWJEstimateJSONLikeBytesTypes(t *testing.T) {
 	if got := EstimateJSONLikeBytes(selfMap, EstimateJSONLikeBytesOptions{}); got == 0 {
 		t.Fatal("循环对象必须有估算值")
 	}
-	// 行为存疑：OrderedObject 自引用会使 identitySet 失效（它只按
-	// slice/map 指针跟踪容器），visitJSONLikeValue 对 *OrderedObject 无限
-	// 递归直至栈溢出，因此本测试无法覆盖该输入（Node WeakSet 对普通对象
-	// 生效，不会栈溢出）。已单列到交付报告。
+	// OrderedObject 自引用：identitySet 已按 Ptr 指针登记指针容器（w14g 修复，
+	// BUG-0294/A17 复核确认有限终止），指针容器循环引用回归见
+	// bug0294_repro_a17_test.go。
 	// 非结构体未知类型按 16 字节兜底。
 	if got := EstimateJSONLikeBytes(struct{}{}, EstimateJSONLikeBytesOptions{}); got != 2 {
 		t.Fatalf("空结构体 = %d, 期望仅括号 2 字节", got)

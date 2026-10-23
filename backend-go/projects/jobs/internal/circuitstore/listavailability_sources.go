@@ -55,6 +55,16 @@ func numberValue(value any, fallback ...int) float64 {
 	return float64(defaultValue)
 }
 
+// nullInt64Number 先解包 sql.NullInt64 再数值化：Valid=true 透传真实行值，
+// NULL（Valid=false）落 fallback。numberValue 的 any switch 不识别 NullInt64
+// 结构体，直接传入会把非 NULL 行值静默回退为默认（BUG-0294/A4 根因）。
+func nullInt64Number(value sql.NullInt64, fallback int) float64 {
+	if !value.Valid {
+		return float64(fallback)
+	}
+	return float64(value.Int64)
+}
+
 func finiteNumber(text string) (float64, bool) {
 	if text == "" {
 		return 0, false

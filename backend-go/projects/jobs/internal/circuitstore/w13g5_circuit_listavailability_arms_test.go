@@ -139,11 +139,11 @@ func TestW13g5ListMarkDirtyAndEnqueueArms(t *testing.T) {
 	}
 	// EnqueueDue：投影到期转移。
 	if _, err := db.Exec(`INSERT INTO account_list_availability_projections (
-		viewer_system_account_id, account_id, effective_status, schedulable_bucket, provider_code,
-		provider_protocol_profile_id, account_type, name_sort_key, priority_sort_key,
+		viewer_system_account_id, account_id, effective_status, schedulable_bucket,
+		account_type, name_sort_key, priority_sort_key,
 		super_priority_sort_key, fallback_sort_key, concurrency_sort_key, created_at_sort_key,
 		payload_json, source_generation, next_transition_at, projected_at
-	) VALUES ('w13g5-viewer', 'w13g5-acc', 'available', 'available', 'openai', 'profile', 'api',
+	) VALUES ('w13g5-viewer', 'w13g5-acc', 'available', 'available', 'api',
 		'w13g5-name', 0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1, '2026-09-18T07:00:00.000Z', '2026-09-18T08:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -326,8 +326,7 @@ func w13g5ProjectionWrite(accountID string, generation int64) opsjobs.Projection
 	return opsjobs.ProjectionWrite{
 		Claim: opsjobs.DirtyClaim{AccountID: accountID, ViewerSystemAccountID: "w13g5-viewer", Generation: generation, ClaimToken: "w13g5-claim-token"},
 		Item: opsjobs.ProjectionItem{
-			AccountID: accountID, SourceAccountID: accountID, ProviderCode: "openai",
-			ProviderProtocolProfileID: "profile", AccountType: "api", Name: "w13g5-name",
+			AccountID: accountID, SourceAccountID: accountID, AccountType: "api", Name: "w13g5-name",
 			EffectiveStatus: "available", Payload: map[string]any{"accessType": "owner"},
 			EffectiveAvailable: &available,
 		},
@@ -386,11 +385,11 @@ func TestW13g5ListApplyClaimsStaleGenerationArm(t *testing.T) {
 	w13g5SeedAccount(t, db, "w13g5-acc", "w13g5-viewer")
 	// 既有投影 source_generation 更高 → upsert WHERE 不命中 → written=false。
 	if _, err := db.Exec(`INSERT INTO account_list_availability_projections (
-		viewer_system_account_id, account_id, effective_status, schedulable_bucket, provider_code,
-		provider_protocol_profile_id, account_type, name_sort_key, priority_sort_key,
+		viewer_system_account_id, account_id, effective_status, schedulable_bucket,
+		account_type, name_sort_key, priority_sort_key,
 		super_priority_sort_key, fallback_sort_key, concurrency_sort_key, created_at_sort_key,
 		payload_json, source_generation, projected_at
-	) VALUES ('w13g5-viewer', 'w13g5-acc', 'available', 'available', 'openai', 'profile', 'api',
+	) VALUES ('w13g5-viewer', 'w13g5-acc', 'available', 'available', 'api',
 		'w13g5-name', 0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 9, '2026-09-18T08:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -418,11 +417,11 @@ func TestW13g5ListApplyDeletionClaimArms(t *testing.T) {
 	// 成功路径：有投影 → deleted=true 且 viewer health 置脏。
 	w13g5SeedAccount(t, db, "w13g5-acc", "w13g5-viewer")
 	if _, err := db.Exec(`INSERT INTO account_list_availability_projections (
-		viewer_system_account_id, account_id, effective_status, schedulable_bucket, provider_code,
-		provider_protocol_profile_id, account_type, name_sort_key, priority_sort_key,
+		viewer_system_account_id, account_id, effective_status, schedulable_bucket,
+		account_type, name_sort_key, priority_sort_key,
 		super_priority_sort_key, fallback_sort_key, concurrency_sort_key, created_at_sort_key,
 		payload_json, source_generation, projected_at
-	) VALUES ('w13g5-viewer', 'w13g5-acc', 'available', 'available', 'openai', 'profile', 'api',
+	) VALUES ('w13g5-viewer', 'w13g5-acc', 'available', 'available', 'api',
 		'w13g5-name', 0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1, '2026-09-18T08:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -485,8 +484,7 @@ func TestW13g5ListProjectionValidationArms(t *testing.T) {
 		{"超长 viewer", func(w *opsjobs.ProjectionWrite) { w.Scope.ViewerSystemAccountID = strings.Repeat("v", 257) }},
 		{"空 accountID", func(w *opsjobs.ProjectionWrite) { w.Item.AccountID = "" }},
 		{"超长 concurrency", func(w *opsjobs.ProjectionWrite) { w.Item.SourceAccountID = strings.Repeat("s", 257) }},
-		{"超长 providerCode", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = strings.Repeat("p", 129) }},
-		{"超长 profileID", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = strings.Repeat("p", 257) }},
+		{"超长 sourceAccount", func(w *opsjobs.ProjectionWrite) { w.Item.SourceAccountID = strings.Repeat("s", 300) }},
 		{"空 accountType", func(w *opsjobs.ProjectionWrite) { w.Item.AccountType = "" }},
 		{"空 name", func(w *opsjobs.ProjectionWrite) { w.Item.Name = "   " }},
 		{"空 createdAt", func(w *opsjobs.ProjectionWrite) { w.Scope.CreatedAt = strPtrOrEmpty("") }},
@@ -508,12 +506,11 @@ func TestW13g5ListProjectionValidationArms(t *testing.T) {
 			}
 		})
 	}
-	// 成功归一化：payload 覆盖可用性键、tag/term 去重生效；§9.11 后 profile
-	// 维度退役，空 profileID（loader 恒空投影）必须合法。
+	// 成功归一化：payload 覆盖可用性键、tag/term 去重生效；B4① 后 provider
+	// 维度投影列退役，normalize 不再收该维度。
 	payloadBase := w13g5ProjectionWrite("w13g5-acc", 1)
 	payloadBase.Item.Payload = map[string]any{"effectiveAvailable": false}
 	payloadBase.Item.EffectiveAvailable = nil
-	payloadBase.Item.ProviderProtocolProfileID = ""
 	normalized, err := normalizeProjectionWrite(payloadBase)
 	if err != nil {
 		t.Fatal(err)

@@ -86,11 +86,11 @@ func w13g5SeedProjection(t *testing.T, db *sql.DB, viewer, accountID string, gen
 		next = nextTransitionAt
 	}
 	if _, err := db.Exec(`INSERT INTO account_list_availability_projections (
-		viewer_system_account_id, account_id, effective_status, schedulable_bucket, provider_code,
-		provider_protocol_profile_id, account_type, name_sort_key, priority_sort_key,
+		viewer_system_account_id, account_id, effective_status, schedulable_bucket,
+		account_type, name_sort_key, priority_sort_key,
 		super_priority_sort_key, fallback_sort_key, concurrency_sort_key, created_at_sort_key,
 		payload_json, source_generation, next_transition_at, projected_at
-	) VALUES (?, ?, 'available', 'available', 'openai', 'profile', 'api', 'w13g5-name', 0, 0, 0, 0,
+	) VALUES (?, ?, 'available', 'available', 'api', 'w13g5-name', 0, 0, 0, 0,
 		'2026-01-01T00:00:00.000Z', '{}', ?, ?, '2026-09-18T08:00:00.000Z')`,
 		viewer, accountID, generation, next); err != nil {
 		t.Fatal(err)

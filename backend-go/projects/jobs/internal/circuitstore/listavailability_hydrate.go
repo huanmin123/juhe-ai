@@ -286,7 +286,7 @@ func (l *ProjectionItemLoader) composeEntry(input composeInput) (hydratedEntry, 
 	// ---- balance snapshot（配置匹配才发布；forList 去掉 keyBalances）----
 	var balancePayload map[string]any
 	if !authorized && booleanValue(row.balanceQueryEnabled) && input.balance != nil &&
-		balanceSnapshotMatchesConfiguration(row.balanceQueryNextRefreshAt.String, numberValue(row.configRevision, 1), input.balance) {
+		balanceSnapshotMatchesConfiguration(row.balanceQueryNextRefreshAt.String, nullInt64Number(row.configRevision, 1), input.balance) {
 		balancePayload = balanceForListPayload(input.balance.snapshot)
 	}
 

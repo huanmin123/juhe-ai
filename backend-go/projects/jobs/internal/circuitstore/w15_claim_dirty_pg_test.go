@@ -55,15 +55,17 @@ func TestW15ClaimDirtyPostgresOnW1Cover(t *testing.T) {
 	var viewer string
 	if err := db.QueryRowContext(ctx, `SELECT id FROM juhe_business.system_accounts ORDER BY id LIMIT 1`).Scan(&viewer); err != nil {
 		viewer = "w15-sys"
-		if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.system_accounts (id, username, display_name, password_hash) VALUES ('w15-sys', 'w15-sys', 'w15', 'x') ON CONFLICT (id) DO NOTHING`); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.system_accounts (id, username, display_name, password_hash, created_at, updated_at) VALUES ('w15-sys', 'w15-sys', 'w15', 'x', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z') ON CONFLICT (id) DO NOTHING`); err != nil {
 			t.Skipf("w15 PG gated: system_accounts 种子不可用: %v", err)
 		}
 	}
 	const acct = "w15-acct"
-	// accounts 父行：AI 账户域的必填列取最小集，其余走列默认。
+	// accounts 父行：AI 账户域的必填列取最小集，其余走列默认。provider_code /
+	// provider_protocol_profile_id 已随 B4① 存储迁移退役，身份列写
+	// vendor_code + connection_driver_code（vendor 同名 driver）。
 	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.accounts
-		(id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
-		VALUES ('w15-acct', $1, 'deepseek', 'profile_deepseek_openai_v1', 'anthropic', '1', 'w15', 'openai', '', 'gpt-4o', 'chat_json', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+		(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version, name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at)
+		VALUES ('w15-acct', $1, 'deepseek', 'deepseek', 'anthropic', '1', 'w15', 'openai', '', 'gpt-4o', 'chat_json', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
 		ON CONFLICT (id) DO NOTHING`, viewer); err != nil {
 		t.Skipf("w15 PG gated: accounts 种子不可用: %v", err)
 	}

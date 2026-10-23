@@ -102,10 +102,10 @@ func TestW14JEnqueueDueAndRefreshCandidates(t *testing.T) {
 		INSERT INTO system_accounts (id) VALUES ('w14j-viewer');
 		INSERT INTO account_list_availability_projections (
 			viewer_system_account_id, account_id, effective_status, schedulable_bucket,
-			provider_code, provider_protocol_profile_id, account_type, name_sort_key,
+			account_type, name_sort_key,
 			priority_sort_key, super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
 			created_at_sort_key, payload_json, source_generation, next_transition_at, projected_at
-		) VALUES ('w14j-viewer', 'w14j-acc', 'rate_limited', 'cooling', 'openai', 'p1', 'api_key',
+		) VALUES ('w14j-viewer', 'w14j-acc', 'rate_limited', 'cooling', 'api_key',
 			'acc', 0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1,
 			'2026-09-18T07:00:00.000Z', '2026-09-18T07:30:00.000Z')`); err != nil {
 		t.Fatal(err)
@@ -159,12 +159,10 @@ func TestW14JNormalizeProjectionWriteArms(t *testing.T) {
 		Claim: opsjobs.DirtyClaim{AccountID: "w14j-acc", ViewerSystemAccountID: "w14j-viewer", Generation: 1, ClaimToken: "w14j-token"},
 		Scope: opsjobs.ProjectionScope{AccountID: "w14j-acc", ViewerSystemAccountID: "w14j-viewer", CreatedAt: &created},
 		Item: opsjobs.ProjectionItem{
-			AccountID:                 "w14j-acc",
-			EffectiveStatus:           "active",
-			ProviderCode:              "openai",
-			ProviderProtocolProfileID: "p1",
-			AccountType:               "api_key",
-			Name:                      "w14j-账户",
+			AccountID:       "w14j-acc",
+			EffectiveStatus: "active",
+			AccountType:     "api_key",
+			Name:            "w14j-账户",
 		},
 	}
 	if _, err := normalizeProjectionWrite(base); err != nil {
@@ -186,15 +184,5 @@ func TestW14JNormalizeProjectionWriteArms(t *testing.T) {
 		t.Fatal("超长 concurrencyAccountId 必须报错")
 	}
 	// §9.11 后 loader 按 COALESCE(vendor_code,'') 投影：generic_http 账户
-	// （vendor NULL）空 providerCode 合法。
-	genericProvider := base
-	genericProvider.Item.ProviderCode = ""
-	if _, err := normalizeProjectionWrite(genericProvider); err != nil {
-		t.Fatalf("空 providerCode（generic 账户）不得报错: %v", err)
-	}
-	badProvider := base
-	badProvider.Item.ProviderCode = strings.Repeat("p", 129)
-	if _, err := normalizeProjectionWrite(badProvider); err == nil {
-		t.Fatal("超长 providerCode 必须报错")
-	}
+	// provider 维度投影列已退役（B4①）：normalize 不再收 providerCode。
 }

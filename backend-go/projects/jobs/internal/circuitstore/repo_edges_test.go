@@ -293,10 +293,10 @@ func TestEnqueueDueTransitionsDueProjections(t *testing.T) {
 		if _, err := db.Exec(`
 			INSERT INTO account_list_availability_projections (
 				viewer_system_account_id, account_id, effective_status, schedulable_bucket,
-				provider_code, provider_protocol_profile_id, account_type, name_sort_key,
+				account_type, name_sort_key,
 				priority_sort_key, super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
 				created_at_sort_key, payload_json, source_generation, next_transition_at, projected_at
-			) VALUES ('viewer-1', ?, 'active', 'enabled', 'openai', 'p', 'api_key', ?,
+			) VALUES ('viewer-1', ?, 'active', 'enabled', 'api_key', ?,
 				0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 1, ?, '2026-09-04T09:00:00.000Z')`,
 			accountID, accountID, nextTransitionAt); err != nil {
 			t.Fatal(err)
@@ -447,10 +447,10 @@ func TestApplyClaimsGuards(t *testing.T) {
 	if _, err := db.Exec(`
 		INSERT INTO account_list_availability_projections (
 			viewer_system_account_id, account_id, effective_status, schedulable_bucket,
-			provider_code, provider_protocol_profile_id, account_type, name_sort_key,
+			account_type, name_sort_key,
 			priority_sort_key, super_priority_sort_key, fallback_sort_key, concurrency_sort_key,
 			created_at_sort_key, payload_json, source_generation, projected_at
-		) VALUES ('viewer-1', 'acc-1', 'active', 'enabled', 'openai', 'p', 'api_key', 'acc-1',
+		) VALUES ('viewer-1', 'acc-1', 'active', 'enabled', 'api_key', 'acc-1',
 			0, 0, 0, 0, '2026-01-01T00:00:00.000Z', '{}', 9, '2026-09-04T09:00:00.000Z')`); err != nil {
 		t.Fatal(err)
 	}
@@ -478,13 +478,11 @@ func TestApplyClaimsGuards(t *testing.T) {
 // validProjectionItem 构造能通过 normalizeProjectionWrite 的最小载荷。
 func validProjectionItem(accountID string) opsjobs.ProjectionItem {
 	return opsjobs.ProjectionItem{
-		AccountID:                 accountID,
-		EffectiveStatus:           "active",
-		ProviderCode:              "openai",
-		ProviderProtocolProfileID: "p",
-		AccountType:               "api_key",
-		Name:                      "账户",
-		Payload:                   map[string]any{"id": accountID},
+		AccountID:       accountID,
+		EffectiveStatus: "active",
+		AccountType:     "api_key",
+		Name:            "账户",
+		Payload:         map[string]any{"id": accountID},
 	}
 }
 
@@ -600,8 +598,7 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 	}{
 		{"空 viewer", func(w *opsjobs.ProjectionWrite) { w.Scope.ViewerSystemAccountID = " " }},
 		{"空 account", func(w *opsjobs.ProjectionWrite) { w.Item.AccountID = " " }},
-		{"超长 provider", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderCode = strings.Repeat("p", 129) }},
-		{"超长 profile", func(w *opsjobs.ProjectionWrite) { w.Item.ProviderProtocolProfileID = strings.Repeat("p", 257) }},
+		{"超长 sourceAccount", func(w *opsjobs.ProjectionWrite) { w.Item.SourceAccountID = strings.Repeat("s", 300) }},
 		{"空 type", func(w *opsjobs.ProjectionWrite) { w.Item.AccountType = " " }},
 		{"空 name", func(w *opsjobs.ProjectionWrite) { w.Item.Name = "  " }},
 		{"缺 createdAt", func(w *opsjobs.ProjectionWrite) { w.Scope.CreatedAt = nil }},
@@ -621,12 +618,11 @@ func TestNormalizeProjectionWriteValidation(t *testing.T) {
 	}
 
 	// 合法写入：effectiveAvailable 显式优先、source 账户作为并发维度；
-	// §9.11 后 profile 维度退役，空 profileID（loader 恒空投影）必须合法。
+	// B4① 后 provider 维度投影列退役，normalize 不再收该维度。
 	write := base()
 	available := false
 	write.Item.EffectiveAvailable = &available
 	write.Item.SourceAccountID = "src-1"
-	write.Item.ProviderProtocolProfileID = ""
 	write.Item.TagIDs = []string{"tag-b", "tag-a", "tag-b"}
 	write.SearchTerms = []string{"账", "账"}
 	normalized, err := normalizeProjectionWrite(write)

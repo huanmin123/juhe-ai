@@ -1490,8 +1490,13 @@ func (s *Store) GetConversationSyncHead(conversationID, ownerID, nowValue string
 }
 
 // truncateUTF8 mirrors boundedUtf8: cut at maxBytes without splitting a rune.
+// 预算 <=0 表示装不下任何内容，返回空串（与 generation_websearch.go 的
+// truncateUTF8Bytes 语义一致）；预算耗尽时调用方的 delta 空串早退即禁止追加。
 func truncateUTF8(value string, maxBytes int) string {
-	if maxBytes <= 0 || len(value) <= maxBytes {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
 		return value
 	}
 	end := maxBytes
